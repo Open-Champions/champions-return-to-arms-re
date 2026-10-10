@@ -59,7 +59,7 @@ own disc with the tools in this repository; they are not part of it.
 | G2 | The clone starts with every handle list empty (attached spells +0x364, +0x360, +0x234, +0x238, +0x2e4, +0x4b8, +0x588), so the copy cannot share or delete the real player's spells | Observed | handle_initEmpty 0x1a1860; Player_clone lines for those offsets |
 | G3 | For every unconfirmed frame the prediction loop writes the local input into the lockstep pad slot, points the player table at the copy, runs Player_run on it, and then restores exactly four things: the shared seed, hp, mana and the table pointer | Observed | net_predictLocalPlayer 0x131d88 (loop tail 0x132bf4–0x132cf0) |
 | G4 | The local player's own input is passed through the same lossy encode → decode as the wire before the simulation uses it; simulation and prediction each have their own copy of the codec state | Observed | net_frameLoop: encode calls 0x13a29c–0x13a328, decode calls 0x13a84c–0x13a99c, pad_apply 0x13ac84; prediction: 0x132134–0x13285c, 0x132b5c; state at 0x5bf798/0x5bf7e8 and 0x5bf6f8/0x5bf748 |
-| G5 | pad_apply rebuilds every pad field from the input record. Its two globals that could differ between machines (0x41bfc0, 0x41c138) are never written anywhere in the program Executing the function showed two exceptions: it leaves pad words +0x00–0x07 and +0x24 alone, and it decrements 0x41bfc0 itself whenever that is non-zero (nothing else writes it). | Observed | 0x174410; brute-force displacement search |
+| G5 | pad_apply rebuilds every pad field from the input record. Its two globals that could differ between machines (0x41bfc0, 0x41c138) are never set to a non-zero value anywhere in the program (corrected by the claims audit: `pad_updateRumble` stores 0x41c138 every tick at 0x174790, counting down and clamping at 0, so it stays 0). Executing the function showed two exceptions: it leaves pad words +0x00–0x07 and +0x24 alone, and it decrements 0x41bfc0 itself whenever that is non-zero (nothing else writes it). | Observed | 0x174410; brute-force displacement search |
 | G6 | Box queries never return the copy; object run and draw loops skip whatever the exclude mask names (0x20000 while simulating, 0x200000 while predicting and drawing) | Observed | 0x14a928 lines for 0x20000 and the mask; iter_begin 0x1a1a48; runObjects 0x14b910 |
 | G7 | Player_dtor skips its global side effects while the copy is being torn down | Observed | 0x1a1be4 |
 | G8 | In Player_run, potion use and interact are guarded against the copy. The float at player record +0x4a5c is written without a guard, and nothing else reads it | Observed | 0x1b9cb8 first test; player_run.c line 689; 0x1a6200–0x1a629c, 0x1a8054–0x1a8084, 0x1bd904 |
@@ -192,7 +192,7 @@ the camera out for a rebuild.
 | MV3 | The contact normal of the terrain sweep is taken from a point one quarter of the travelled distance along the step. The same on every machine; a rebuild must copy it | Observed | 0x186088–0x1860c4 |
 | MV4 | A player's facing in a net game uses the 16-bit camera-yaw word of the input record including its bit 0, which is the "camera not following" flag. The camera itself is per machine; only the yaw each machine sends steers its character | Observed | 0x133464–0x133498, 0x13e0f8 |
 | MV5 | In a net game a player in action state 3, 4, 10 or 0xc is not passed to any move routine: no gravity, no push-out, no knock-back | Observed | `Player_run` switch 0x1a5e80; knock-back zeroed at 0x115ef4 |
-| MV6 | Player run speed is 180 × min(S·stick, S) along the facing with no acceleration, S = 0.861945 offline and 0.75 in a net game, times a record multiplier and the level's `runSpeed`, capped at 1.2; statistics and encumbrance do not change it | Observed | `Player_move` 0x1b4020 |
+| MV6 | Player run speed is 180 × min(S·stick, S) along the facing with no acceleration, S = 0.861945 offline and 0.75 in a net game, times a record multiplier (+0x4c20) and the level's `runSpeed`, capped at 1.2; statistics and encumbrance do not change it. The record multiplier is written by GiantGrowth and Resurrect, by character import and creation (1.0), and by the arena-mode set-up, which gives every player 1.25 in a net game and 1.75 offline | Observed | `Player_move` 0x1b4020; arena set-up 0x307c80 (store 0x307d04, from `arena_init` and `arena_startWave`); docs/issues/claims-audit.md |
 
 ## Floating point
 
@@ -273,6 +273,22 @@ rule quirks should be copied by a rebuild, not repaired.
 | SC6 | `Player_recalcDamage` raises a thrown weapon's maximum by fraction × the already-raised minimum; Battle Mage replaces the weapon range by a fraction that is 0 at rank 0 | Observed | 0x1b7478–0x1b7488; 0x314a78 with slot 10's level-0 rule |
 | SC7 | Disease Blade's two "is the old enchantment weaker" tests compare the old disease *value* with a frame count; with the aura's limit of 31 the ally buff is on for 31 frames in every 60 from rank 17 | Observed (code); effect Inferred | 0x318ca8, 0x318d4c; run 0x319068 |
 | SC8 | `SpellRaiseArmy`'s raise step reads `caster + 0x3c8` without an is-player test | Observed | 0x313d74 |
+
+## Audit of reader and writer lists
+
+`tools/gxref.py` under-reported until it was fixed (see "Tools added"). `docs/issues/claims-audit.md`
+re-checked every statement in this ledger and the documents that depends on a global's reader
+or writer list being complete: 99 claims, 76 stand, 21 stand with a longer list, 2 were wrong
+(G5's wording and the speed-multiplier writers in MV6, both corrected above). No row is
+overturned and no test patch loses its safety argument. Lists that grew, without changing
+the row's conclusion: G9 (mode flags are also written by the launch handshake, boot
+arguments, `arena_runTask` and session exit), D20 (`playGotItemSound` clamps the active
+player to slot 0 or 1), D13 (`Creature_pickTarget` and `Vehicle_collideObjects` save, set and
+restore the exclude mask around one box query), D7 and D24 (camera position is also written
+by `Camera_loadState`, the mode word by `Camera_updateFree`), K4 (an unreferenced HUD
+function also touches +0x4a74 / +0x4a78). Structure-field claims that rest on
+`tools/fieldxref.py` and `tools/flagxref.py` (D12–D15, G2, G12, D28 and others) were not
+re-checked; the audit lists what those two tools can miss.
 
 ## What "source" the disc contains
 
