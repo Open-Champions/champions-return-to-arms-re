@@ -131,8 +131,8 @@ the cell at the offset is taken as an opcode:
 
 - 0x100 or more (signed) → stop with error 6.
 - otherwise the cell is **overwritten** with the word at handler table 0x403150 + 4 × opcode,
-  and then, unless 1 ≤ opcode ≤ 0x82, the pass stops with error 6 [O] (so for 0, 0x83–0xff and
-  negative values the cell is replaced by whatever lies at that table position).
+  and then, unless 1 ≤ opcode ≤ 0x82, the pass stops with error 6 (so for 0, 0x83–0xff and
+  negative values the cell is replaced by whatever lies at that table position) [X D2].
 - then by operand class (jump table 0x530fd0, [X T2]):
 
 | Class | Opcodes | The pass does |
@@ -180,7 +180,7 @@ structure before each native call and never reads them back, so a native cannot 
 if (HEA <= a and a < STK) or a >= stp: error 5        # all three compares signed
 ```
 
-so every negative address passes [X B1]. No other opcode tests an address: LOAD/STOR and the
+so every negative address passes [X B3]. No other opcode tests an address: LOAD/STOR and the
 LREF/SREF, INC/DEC, ZERO, PUSH forms, INC.I/DEC.I, MOVS, CMPS and FILL read and write wherever
 the operand points, and pushes are never checked against the heap.
 
@@ -334,7 +334,7 @@ offset of the following instruction. Opcodes marked * occur in shipped scripts.
 | 7f | SRANGE a, b | machine dbgaddr, dbgparam = a, b |
 | 80 | JUMP.pri | jump to PRI |
 | 81 | SWITCH v | v is the offset of a CASETBL. Jump to the address of the first record whose value equals PRI; none or count ≤ 0: jump to the default |
-| 82 | CASETBL | the handler exists but only passes on to the next cell, the record count, as if it were an instruction: a crash [X C7] |
+| 82 | CASETBL | the handler exists but only passes on to the next cell, the record count, as if it were an instruction: a crash [X C8] |
 
 **Floored divide** (0x140160, 0x1401b8). With `rem(a, b)` and `quo(a, b)` the CPU's signed
 divide (quotient toward zero, remainder with the sign of a; −2³¹ / −1 gives quotient −2³¹,
@@ -367,7 +367,7 @@ drops size + 4 bytes with STACK afterwards. SYSREQ:
 The default callback `scr_callNative` 0x141050 clears machine error, calls
 `handler(machine, params)` where the handler address is the cell of native record `index`,
 stores the handler's return value in PRI and returns machine error. It checks neither the
-index nor that the record is bound: an unbound native is a jump to address 0 [X C6].
+index nor that the record is bound: an unbound native is a jump to address 0 [X C7].
 
 For the handler, `params[0]` is the argument size in bytes and `params[1]`… are the arguments
 in source order. The handler's return register becomes PRI, also for handlers written without
@@ -435,8 +435,8 @@ or 19 and index 0x7fffffff. On a table that is not sorted it misses names that a
 | 22 | entry: code not relocated |
 | any | HALT's operand; the error word set by a native |
 
-`script_runByName` drops the code: the caller sees −1 for an unknown name, otherwise the
-result word, which stays 0 unless the run stored one [O 0x1ed694].
+`script_runByName` 0x1ed694 drops the code: the caller sees −1 for an unknown name, otherwise
+the result word, which stays 0 unless the run stored one [X C6].
 
 The other library routines are modelled too: `scr_allot` 0x1414f8 grants cells at the saved
 heap top unless (stk − hea − size), **as an unsigned number**, is below 0x40 — so a request
@@ -464,8 +464,9 @@ What follows from sections 4 and 6:
   word **after the image** and adds it to the stack pointer [I from the code; X A6 with zero
   bytes after the image]. What that word is in the game is [U]; `script.scr` is the last file
   of its lump in the four lumps available here. If it is 0 the stack pointer creeps up 4 bytes
-  per such call and each run zeroes one more word behind the image; if it is large, every
-  later run of that level's scripts returns error 7 and does nothing.
+  per such call and each run zeroes one more word behind the image; if it is large and
+  positive, every later run of that level's scripts returns error 7 and does nothing; if it is
+  negative, the next run writes its entry cells far outside the image.
 
 A rebuild must decide what lies behind the block. The model raises `HostFault` at the read
 past the image; give it an image with extra bytes appended to say what the memory holds.
@@ -477,7 +478,7 @@ Proposed patch (one word; **untested on a console or in PCSX2**; executed only i
 |---|---|---|---|---|---|---|
 | SM1 | 0x0013fc24 | aef60018 | aeec0018 | RETN stores the run's entry stack pointer in machine +0x18 instead of the current one, so a run always leaves the saved stack pointer where it found it | the saved value is read only by natives and nested runs, after the native call has stored the current one again [O 0x140c54, 0x140cb8]; a script that depended on the drift would change (none of 1,828 entry points does, below) | no shared state is changed by the patch itself; each machine that applies it is protected |
 
-In the emulator, with the new word: 3,656 runs (every entry point, two result sequences) give
+In the emulator, with the new word (a one-off run, not part of `difftest_amx.py`): 3,656 runs (every entry point, two result sequences) give
 the same native trace, error, result and memory as without it; the saved stack pointer moved
 in 50 of them before and in none after; a chained pass over all 1,828 entry points ends every
 run with the stack pointer at the top.
@@ -530,37 +531,50 @@ the machine structure words and every byte of data, heap and stack.
 | A4 | `scr_findEntry` | 9,140 lookups |
 | A5 | every entry point from the freshly loaded state, 5 result sequences each (all natives 0, all 1, three random) | 1,828 entry points, 9,140 runs |
 | A6 | all entry points of a script in random order without reloading (256 zero bytes after the image on both sides) | 1,828 runs |
-| B1 | 60 directed programs per opcode 0x01–0x82, random operands | about 7,800 runs |
+| B1 | 60 directed programs per opcode 0x01–0x82 with random operands; a `HostFault` from the model counts as a failure unless the program was made to leave the machine | 7,783 compared, 17 skipped |
 | B2 | opcode 0 | 8 |
-| B3 | random straight-line programs with forward jumps | about 2,850 runs |
-| C1–C5 | arguments, initial registers, entry index, entry checks, nested runs and native errors | about 1,300 runs |
-| C6, C7 | unbound native and executed CASETBL crash as described | 2 |
-| D1–D4 | header checks, refused opcodes, compact images, compact expansion | about 1,300 images |
-| E1–E4 | string routines, `scr_getAddr`, `scr_allot`, `scr_release`, `scr_findEntry` on synthetic input | about 1,950 cases |
+| B3 | negative addresses pass the address check | 20 |
+| B4 | random straight-line programs with forward jumps | 2,806 compared, 194 skipped |
+| C1–C5 | arguments, initial registers, entry index, entry checks, nested runs and native errors | 1,301 runs, 27 skipped |
+| C6 | `script_runByName` against `Machine.call` | 80 images × 7 names |
+| C7, C8 | an unbound native and an executed CASETBL crash as described | 2 |
+| D1–D4 | header checks, refused opcodes, compact images, compact expansion | 1,290 images, 10 skipped |
+| E1–E4 | string routines, `scr_getAddr`, `scr_allot`, `scr_release`, `scr_findEntry` on synthetic input | 1,950 cases |
+
+All 29 properties pass. Half of the synthetic images have random words instead of zeroes in the
+heap and stack room, and 1,024 bytes of the same content on both sides follow them, so that
+writes at entry, the sentinel and stack pointers above the top are visible and comparable.
 
 Coverage of the shipped scripts: all 120 scripts and all 1,828 entry points ran to their end
-on both sides under every sequence; about 360,000 instructions, 34,000 native calls, 43,000
-string arguments, 1,900 nested runs through the original `callScript` handler. They execute
-51 opcodes. The synthetic programs execute all 131 (opcode 0 and CASETBL through C/B2 and
-C7). 12 shipped runs end with error 4, none with another error.
+on both sides under every sequence: 10,968 runs, 362,066 instructions, 33,831 native calls,
+43,158 string arguments, 1,909 nested runs through the original `callScript` handler. No
+entry point was left out. They execute 51 opcodes; the synthetic programs execute all 131
+(opcode 0 through B2, CASETBL through C8). 12 shipped runs end with error 4, none with another
+error.
 
 Not covered, and why:
 
-- Anything the model answers with `HostFault` (section 3 and 2.2): about 5 % of the random
-  programs and a few directed ones. There the emulator's result reflects its own memory.
+- Anything the model answers with `HostFault` (sections 2.2 and 3): the "skipped" cases above.
+  There the emulator's result reflects its own memory, not the machine. B3, C7 and C8 check
+  three of the claims behind `HostFault`; the others (jumps to cells that are not
+  instructions, unaligned accesses, addresses beyond the image) rest on reading the code [O].
 - The built-in handlers themselves (only `callScript` runs for real) and everything the game
   does around a run.
-- A console. The emulator executes the same machine code but is not hardware; the routines
-  involved use only integer instructions, plus the C library's `memcpy`, `memcmp`, `strcmp`
-  and `strcpy`, which the emulator runs as they are.
-- Programs with backward jumps other than the loops of shipped scripts; images with more than
-  one case table per switch target, public variables or libraries.
-- Opcodes marked unverified: none. Every opcode's handler was read and is exercised by B1.
+- A console. The emulator executes the same machine code but is not hardware. The routines
+  involved use only integer instructions, plus the C library's `memcpy`, `memcmp`, `strcmp`,
+  `strcpy` and `strlen`, which the emulator runs as they are.
+- Loops other than those of the shipped scripts (the synthetic programs only jump forward);
+  public variables, libraries and the user-data routines (0x1411c8, 0x141240), which the game
+  does not use and the model does not have.
+- Opcodes whose effect could not be verified: none. Every handler was read, and each of the
+  130 loadable opcodes is exercised by B1.
 
-A mutation check was run once against the test: 72 deliberate one-line changes to the model
-(wrong signedness, missing wrap, wrong restore, …). The changes it did not catch led to the
-strict mode and extra cases described in the test's source; see the final report of this work
-for the ones that remain undetectable by construction.
+How sharp the test is was checked once by hand with 72 one-line changes to the model (wrong
+signedness, missing wrap, wrong restore, wrong order and the like; the script is not in the
+repository). The first pass missed nine real ones; they are the reason for the strict mode,
+the non-zero memory, the bytes behind the image and properties B3 and C6. With those, 69
+changes are caught; two change nothing observable (ALIGN with operand 4 is an exclusive-or
+with 0; the relocator's return value is ignored by the loader) and one did not compile.
 
 ## 12. Corrections to `docs/script.md`
 

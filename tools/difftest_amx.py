@@ -1104,7 +1104,6 @@ def group_opcodes(orig, options):
         name = OPCODES[number][0]
         tally = Tally()
         for case in range(per_opcode):
-            before = profile.get(number, 0)
             program = directed(name, rng)
             outcome = run_program(orig, rng, program, tally, '%s #%d' % (name, case), profile,
                                   strict=not WILD[0])
@@ -1138,18 +1137,42 @@ def group_opcodes(orig, options):
         tally.add(problems + more + ([] if pair.model.error == 0 and outcome == 'ok' else [outcome]), 'NONE #%d' % case)
     tally.report('B2', 'opcode 0 (handler 0x13eea8, reachable only by putting its address into loaded '
                  'code): %(n)d runs return 6 and restore the stack pointer as the model does (%(bad)d differ)')
+    # the address check is signed: a negative address is not refused.  The value read comes
+    # from the script's own relocated code, so only the absence of error 5 is compared.
+    tally = Tally()
+    for name, operand in (('LOAD.I', None), ('LODB.I', 4), ('LODB.I', 1), ('LIDX', None), ('LIDX.B', 1)):
+        for address in (-4, -8, -16, -64):
+            body = [('CONST.alt', 0), ('CONST.pri', address >> 2 if name == 'LIDX' else
+                                       address >> 1 if name == 'LIDX.B' else address)]
+            program = [('PROC',)] + body + [(name,) if operand is None else (name, operand), ('HALT', 0)]
+            image, _ = synthetic_image(rng, program)
+            pair = SyntheticPair(orig, image)
+            problems = pair.load()
+            try:
+                pair.model.execute(0)
+                problems.append('the model does not raise HostFault')
+            except HostFault:
+                pass
+            error, _cell = orig.interpret(0, (), 0, 1)
+            if error != 0:
+                problems.append('the original returns %d' % error)
+            tally.add(problems, '%s at %d' % (name, address))
+    tally.report('B3', 'a negative address passes the address check of LOAD.I, LODB.I, LIDX and LIDX.B: '
+                 '%(n)d runs of the original go on to HALT instead of returning 5; the model raises '
+                 'HostFault (%(bad)d differ)')
     tally = Tally()
     for case in range(max(1, int(3000 * options['scale']))):
         program = fuzz(rng)
         outcome = run_program(orig, rng, program, tally, 'random program #%d' % case, profile)
         if VERBOSE and outcome == 'bad':
             note('program: %r' % (program,))
-    tally.report('B3', 'random straight-line programs with forward jumps (4 to 40 instructions): %(n)d '
+    tally.report('B4', 'random straight-line programs with forward jumps (4 to 40 instructions): %(n)d '
                  'compared runs agree (%(bad)d differ; %(host)d host faults, %(endless)d endless)')
     executed = sorted(profile)
     missing = [OPCODES[number][0] for number in range(len(OPCODES)) if number not in profile]
     print('      opcodes executed by the synthetic programs in compared or attempted runs: %d of %d%s'
-          % (len(executed), len(OPCODES), '' if not missing else '; never executed: ' + ' '.join(missing)))
+          % (len(executed), len(OPCODES), '' if not missing else '; not executed here: ' + ' '.join(missing)
+             + (' (C8 does)' if missing == ['CASETBL'] else '')))
     options['synthetic_profile'] = profile
 
 
@@ -1294,7 +1317,7 @@ def group_entry(orig, options):
                 problems.append('%r returns %d, model %d' % (name, a, b))
             problems += differences(orig, pair.model, len(image))
         tally.add(problems, 'script_runByName #%d' % case)
-    tally.report('C8', 'script_runByName 0x1ed694 against Machine.call: -1 for an unknown name, the result '
+    tally.report('C6', 'script_runByName 0x1ed694 against Machine.call: -1 for an unknown name, the result '
                  'of RETN or HALT, 0 after an error, the uninitialised PRI for a function that sets '
                  'none: %(n)d images, seven names each, agree (%(bad)d differ)')
     # the claim behind HostFault for an unbound native
@@ -1313,7 +1336,7 @@ def group_entry(orig, options):
         fault = False
     except HostFault:
         fault = True
-    check('C6', fault and stopped is not None and '0x00000000' in stopped,
+    check('C7', fault and stopped is not None and '0x00000000' in stopped,
           'a native that was never bound: the original jumps to address 0 (the emulator stops there), '
           'the model raises HostFault')
     # the claim behind HostFault for an executed case table
@@ -1332,7 +1355,7 @@ def group_entry(orig, options):
         fault = False
     except HostFault:
         fault = True
-    check('C7', fault and stopped is not None and '0x00000004' in stopped,
+    check('C8', fault and stopped is not None and '0x00000004' in stopped,
           'CASETBL reached by execution: its handler goes on to use the record count (here 4) as a '
           'handler address (the emulator stops at address 4), the model raises HostFault')
 

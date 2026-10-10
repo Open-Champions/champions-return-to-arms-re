@@ -179,3 +179,9 @@ patch=1,EE,00257AD4,word,0805BDD1
 patch=1,EE,00257AD8,word,00000000
 patch=1,EE,00257ADC,word,0805BDD4
 patch=1,EE,00257AE0,word,00000000
+
+[Net test: script return keeps the saved stack pointer]
+author=reverse engineering test patch, executed in the function-level interpreter, untested on a running game
+description=Some level scripts in the hub and three other levels (for example the store) call a built-in command with fewer arguments than they declare. Each time, the script machine's saved stack pointer ends 4 too high, and from the second time the amount is read from whatever memory follows the script file. This makes a script return store the stack pointer the run started with (script interpreter RETN, 0x13FC24), so nothing drifts. All 1,828 script entry points behave the same with it in the interpreter. FINDINGS SM1. Changes no shared state by itself; each machine that uses it is protected.
+// was: AEF60018 (sw s6,0x18(s7))
+patch=1,EE,0013FC24,word,AEEC0018

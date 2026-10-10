@@ -1124,6 +1124,7 @@ class Session:
         self.max_frames_in_packet = 0
         self.held = self.stalled = self.steps = self.messages_run = 0
         self.message_sizes = collections.Counter()
+        self.largest_frame_load = 0
         for i in range(players):
             self.models[i].modem = 1 if modem else 0
             if self.consoles[i] is not None:
@@ -1162,13 +1163,18 @@ class Session:
             sample, yaw, flag = sample
         if rng.random() < self.message_rate:
             for _ in range(rng.choice((1, 1, 1, 2, 3))):
-                size = rng.choice((0, 1, 2, 5, 16, 60, 120, 200, 255))
-                if model.peers[index].msg_write != model.msg_attached:
-                    size = min(size, 60)            # keep one frame's bytes under the 255 limit
-                waiting = (model.peers[index].msg_write - model.msg_attached) & 0x1FFF
-                if waiting + size + 2 > 255:
+                size = rng.choice((0, 1, 2, 5, 16, 60, 120, 200, 253))
+                # One frame's bytes must stay under 256 (one count byte on the wire).  The
+                # next attach goes to max(last_sent + 1, net_frame); at two steps per call
+                # two attaches in a row land on the same frame, so count what it has.
+                mine = model.peers[index]
+                target = max(model.last_sent + 1, model.net_frame)
+                held_already = mine.msg_count(target) if mine.record(target)[0] == target else 0
+                waiting = (mine.msg_write - model.msg_attached) & 0x1FFF
+                if held_already + waiting + size + 2 > 255:
                     break
                 self.queue(index, rng.randrange(8), bytes(rng.randrange(256) for _ in range(size)))
+                self.largest_frame_load = max(self.largest_frame_load, held_already + waiting + size + 2)
         render = self.calls[index] + self.render_offset[index]
         if console is not None:
             console.net_main(sample, yaw, flag, frame_step, no_sim, hold_arg, render, inbox)
@@ -1234,9 +1240,11 @@ class Session:
         frames = [m.net_frame for i, m in enumerate(self.models) if i not in self.dead]
         kinds = ', '.join('%d of type 0x%x' % (n, k) for k, n in sorted(self.datagrams.items()))
         return ('%d calls, simulation frame %s, %d datagrams (%s; %d lost, %d duplicated, %d overtaken; '
-                'up to %d frames in one), %d held and %d stalled calls'
+                'up to %d frames in one), %d game messages (up to %d bytes on one frame), %d held and %d '
+                'stalled calls'
                 % (sum(self.calls), '/'.join(str(f) for f in frames), self.wire.sent, kinds, self.wire.lost,
-                   self.wire.duplicated, self.wire.late, self.max_frames_in_packet, self.held, self.stalled))
+                   self.wire.duplicated, self.wire.late, self.max_frames_in_packet,
+                   sum(self.message_sizes.values()), self.largest_frame_load, self.held, self.stalled))
 
     def agreement(self):
         """Across participants: (frames compared, frames whose lockstep pads differ outside
@@ -1277,7 +1285,7 @@ class Session:
         call c + L - 1 + the number of calls without a tick in between, frames simulated in
         exactly call c + L - 1, smallest L seen)."""
         checked = exact = plain = 0
-        smallest = None
+        leads = collections.Counter()
         for log in self.delay_log:
             simulated_in = {}
             for position, (_call, _step, _held, _lead, _sampled, simulated) in enumerate(log):
@@ -1294,8 +1302,8 @@ class Session:
                 checked += 1
                 exact += end - position == lead - 1 + stalls
                 plain += end - position == lead - 1
-                smallest = lead if smallest is None else min(smallest, lead)
-        return checked, exact, plain, smallest
+                leads[lead if position else 0] += 1         # 0 = a machine's very first call
+        return checked, exact, plain, leads
 
 
 def session_report(name, session, text, extra_ok=True, extra_text=''):
@@ -1328,12 +1336,14 @@ def test_sessions(elf):
     session.run(rounds)
     session_report('session: 2 consoles', session, 'two emulated consoles, 3% loss, delay 1-3 calls',
                    all(not any(row) for row in session.flags('oos')), ' No machine flagged another out of sync')
-    checked, exact, plain, smallest = session.delay_rule()
-    report('input delay rule', checked - exact, checked,
+    checked, exact, plain, leads = session.delay_rule()
+    later = sorted(k for k in leads if k)
+    report('input delay rule', (checked - exact) + (later[0] < 2), checked,
            'same session: a pad sample stored in net_main call c, with lead L = g_localInputFrame - '
            'g_netFrame taken after the sample is stored and before the tick, is simulated in call '
            'c + L - 1 + (calls without a tick in between); %d of the %d frames had no such call and were '
-           'simulated in exactly call c + L - 1; smallest L seen %s' % (plain, checked, smallest))
+           'simulated in exactly call c + L - 1.  L ranged from %d to %d (it is 1 only in a machine\'s '
+           'first call, which cannot tick)' % (plain, checked, later[0], later[-1]))
 
     rng = random.Random(seed + 11)
     session = Session(elf, rng, 3, Wire(rng, loss=0.10, duplicate=0.05, delay=(1, 9)))
@@ -1559,6 +1569,59 @@ def test_tick_hash(elf):
            'the out-of-sync bytes (%d set) and all other netcode state' % flagged, tally.examples)
 
 
+def test_message_overflow(elf):
+    """More than 255 message bytes on one frame: what the original builds and what its
+    receiver then does."""
+    if not wanted('overflow'):
+        return
+    sender = R.Machine(2, 0)
+    gen = InputGen(random.Random(OPTIONS['seed'] + 23))
+    for _ in range(6):
+        sender.peers[0].set_record(sender.lif, gen.next(), start=0, count=0)
+        sender.lif += 1
+    # two attaches on one frame, as happens at two steps per call (no send in between)
+    sender.last_sent = 3
+    sender.queue_message(6, bytes([0xFF]) * 150)
+    first = sender.attach_messages()
+    sender.queue_message(6, bytes([0xFF]) * 150)
+    second = sender.attach_messages()
+    size = sender.peers[0].msg_count(first)
+    console = Console(elf)
+    console.load(sender)
+    console.mark_stack()
+    console.call(SEND_PACKET, 1, 1, 6, R.PKT_INPUT, 0, G_PEERS + PEER + 0x60, 0)
+    model = sender.build_packet(1, 1, 6, R.PKT_INPUT, 0, sender.peers[1].send_state)
+    built_same = len(console.sent) == 1 and packet_difference(console.sent[0][2], model) is None
+    data = console.sent[0][2] if console.sent else model.data
+    refused = False
+    try:
+        R.parse_packet(data)
+    except R.MalformedPacket:
+        refused = True
+    receiver = R.Machine(2, 1)
+    target = Console(elf)
+    target.load(receiver)
+    buffer = target.emu.alloc(len(data) + 16)
+    target.mem.write(buffer, data)
+    outcome, beyond = 'returned', 0
+    try:
+        target.call(RECEIVER, buffer, len(data), 0, steps=2000000)
+    except ee_emu.MemoryFault as fault:
+        outcome, beyond = 'memory fault', fault.addr - (buffer + len(data))
+    except EmuError as error:
+        outcome = type(error).__name__
+    ring = target.peer_image(0)
+    garbage = struct.unpack_from('<I', ring, 0x44AC)[0]
+    ok = first == second and size == 304 and built_same and refused and outcome == 'memory fault' and beyond > 0
+    report('messages over 255 bytes', 0 if ok else 1, 1,
+           'two attaches put %d message bytes on one frame.  The original builder writes the count byte '
+           '0x%02x and all %d bytes (same datagram as the model, %d bytes).  The original receiver takes '
+           'the first %d, reads the rest as further blocks, misses the end of the datagram and keeps '
+           'walking: stopped by the interpreter %d bytes past the datagram (%s) with %d bytes copied into '
+           'the peer\'s message ring.  The model refuses the packet'
+           % (size, size & 0xFF, size, len(data), size & 0xFF, beyond, outcome, garbage))
+
+
 def test_small_packets(elf):
     if not wanted('small'):
         return
@@ -1728,6 +1791,7 @@ def main(argv=None):
     test_receiver(elf)
     test_sessions(elf)
     test_tick_hash(elf)
+    test_message_overflow(elf)
     test_small_packets(elf)
     test_launch(elf)
     test_frame_step(elf)

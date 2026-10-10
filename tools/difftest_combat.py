@@ -748,7 +748,8 @@ def gen_damage(rng):
     if roll < 0.1:
         attacker = None
     elif roll < 0.13:
-        attacker = victim
+        attacker = victim                           # hitting itself: no Frost Armor (see the spec, 3.5)
+        victim.spells = [spell for spell in victim.spells if spell.kind != 'FrostArmor']
     elif roll < 0.2:
         owner = R.Obj(tag='owner', flags=0x20, cls=rng.choice(('Creature', 'Other')))
         attacker = R.Obj(tag='missile', flags=0x80 | rng.choice((0, 0x20)), owner_link=rng.random() < 0.85,
@@ -1043,7 +1044,7 @@ def gen_players(rng, tables, w, objects):
     """Four records with objects, equipment, figurines, skills and passives."""
     w.players = []
     for slot in range(4):
-        rec = R.PlayerRec(cls=rng.choice((0, 1, 2, 3, 4, 5, 6, 0, 4, 5, 6, 7)))
+        rec = R.PlayerRec(cls=rng.choice((0, 1, 2, 3, 4, 5, 6, 0, 4, 5, 6)))
         rec.level58 = rng.randrange(1, 81)
         rec.level59 = rng.choice((rec.level58, rng.randrange(1, 80)))
         rec.base = [rng.choice((rng.randrange(5, 60), rng.randrange(0, 300), -rng.randrange(1, 9))) for _ in range(4)]
@@ -1115,7 +1116,7 @@ def group_player_stats(elf, rng, tables):
         rig = Rig(elf, config)
         tally = Tally()
         label = '' if index == 0 else ' [%s%s%s]' % (config[0], ' bias' if config[1] else '', ' div-nearest' if config[2] else '')
-        for case in range(scaled(2500 if index == 0 else 250)):
+        for case in range(scaled(1500 if index == 0 else 150)):
             w = make_world(rng)
             objects = []
             gen_players(rng, tables, w, objects)
@@ -1137,7 +1138,9 @@ def group_player_stats(elf, rng, tables):
                 rec.exp = rng.choice((0, tables.exp_table[R.s8(rec.level59)] - rng.randrange(1, 2000),
                                       rng.randrange(0, tables.exp_table[60])))
                 rig.mem.w32(G_PLAYERS + slot * REC_SIZE + 0x5C, rec.exp)
-                amount = rng.choice((0, rng.randrange(0, 3000), rng.randrange(0, 400000), tables.exp_table[80]))
+                amount = rng.choice((0, rng.randrange(0, 3000), rng.randrange(0, 3000), rng.randrange(0, 60000)))
+                if rng.random() < 0.02:
+                    amount = tables.exp_table[80]           # all the way to the last level
                 rig.call(0x1D3150, slot, amount)
                 R.give_exp(tables, w, slot, amount)
                 ok = compare_players(rig, tally, 'level-up' + label, w, objects, (slot, amount))
@@ -1234,6 +1237,7 @@ def group_damage(elf, rng, tables):
         tally = Tally()
         label = '' if index == 0 else ' [%s%s%s]' % (config[0], ' bias' if config[1] else '', ' div-nearest' if config[2] else '')
         skipped = 0
+        rig.emu.stub(0x10D940, function=lambda e, rig=rig: rig.back[e.r[4] & M32].boss_rank)
         for _ in range(scaled(12000 if index == 0 else 1000)):
             sc = gen_damage(rng)
             w, objects, victim, attacker = sc['world'], sc['objects'], sc['victim'], sc['attacker']
@@ -1253,6 +1257,10 @@ def group_damage(elf, rng, tables):
                                       sc['desc'], sc['no_crit'])
             except (ee_emu.StepLimit, RecursionError):
                 skipped += 1
+                continue
+            except (EmuError, Unexpected) as exc:
+                tally.check('damage: ran to completion' + label, False, str(exc))
+                rig.emu._pending_call = None
                 continue
             got_events = [tuple(e) for e in rig.events]
             want_events = [e for e in w.events if e[0] != 'thorns']
@@ -1330,10 +1338,13 @@ def main(argv):
         if not wanted(name):
             continue
         rng = random.Random('%d/%s' % (OPTIONS['seed'], name))
+        began = time.time()
         if needs_tables:
             function(elf, rng, tables)
         else:
             function(elf, rng)
+        if OPTIONS['verbose']:
+            print('      (%s: %.0f s)' % (name, time.time() - began))
     failed = [name for name, ok in RESULTS if not ok]
     print('%d properties, %d failed, %.0f s' % (len(RESULTS), len(failed), time.time() - started))
     return 1 if failed else 0

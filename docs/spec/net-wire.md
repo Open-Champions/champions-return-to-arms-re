@@ -194,8 +194,10 @@ come to rest on an integer and then have a tiny negative velocity added
 (`docs/issues/dynamic-tests.md` 3.9). An implementation that must agree with real consoles
 therefore needs one fact this repository does not have: the last bit of a single-precision
 sum on hardware. An implementation that only talks to other copies of itself can use any
-of them, as long as every participant uses the same one. `pad_apply` (section 14) came out
-identical under all six settings on the inputs tried.
+of them, as long as every participant uses the same one. `pad_apply` (section 14) was
+compared under the same six settings and the model equals the original under each;
+whether its output differs *between* settings was measured by `tools/ee_tests.py` (b12: it
+did not, on 86 stick positions), not here.
 
 ## 6. Yaw
 
@@ -269,8 +271,13 @@ datagram; it has no other stop condition.
   `docs/issues/lag.md`); the sessions run here saw up to 39.
 - One frame's message bytes are counted in **one byte**. The sender writes the low byte of
   its 32-bit count and then copies the full count of bytes (0x1392c4–0x139310), so more
-  than 255 bytes on one frame produce a packet the receiver mis-parses. **Observed**; the
-  model refuses to parse such a packet rather than imitate the walk through memory.
+  than 255 bytes on one frame produce a packet the receiver mis-parses. **Executed**
+  (property "messages over 255 bytes"): with 304 bytes on a frame the original builder
+  wrote the count 0x30 and all 304 bytes; the original receiver took 48 of them, read the
+  rest as further blocks, missed the end of the datagram and walked on through memory,
+  copying what it found into the peer's message ring, until the interpreter stopped it at
+  unmapped memory. On a console there is more memory to walk through; where that ends
+  was not determined. The model refuses to parse such a packet.
 - The builder assembles the datagram in its stack frame without any length check. There
   are 5008 bytes between the start of the datagram ($fp+0x10) and the builder's own copy
   of the codec state ($fp+0x13a0). **Observed** 0x137d9c, 0x137ed8; **Executed** up to
@@ -375,8 +382,14 @@ Consequences worth spelling out:
   ring. The id is not range-checked against the 16-entry table, and a count that does not
   add up never terminates.
 - **Limits**: 255 bytes per message (length byte); 255 bytes per frame on the wire
-  (section 7.5), so an implementation must not let more than 255 bytes — including the
-  two header bytes of each message — collect between two attach opportunities.
+  (section 7.5), headers included. The budget is per **frame**, not per attach: with two
+  input frames per call (half display rate) the call without a send and the next call
+  both attach to the same frame, 0x4027a8 + 1, and their bytes add up. This is how the
+  test first ran into the limit: a session with one machine at two steps per call and
+  random messages of up to 255 bytes brought the original receiver down. The game itself
+  has no guard (`net_sendGameMsg` and the attach code do not look at the count);
+  whether its own message traffic can reach 256 bytes inside one such window — a long
+  text line is the largest message known (`docs/netcode.md`) — is **Unknown**.
 
 ## 11. Sync record and hash
 
@@ -540,7 +553,8 @@ simulated in call c + L − 1, and each call without a tick in between adds one.
 with that definition of L. `docs/issues/lag.md` measures its lead at the end of a call,
 one lower when a tick ran, and says "L calls later"; the two statements agree.
 **Executed** (property "input delay rule"): every frame of a two-console session obeyed
-c + L − 1 + (calls without a tick); the smallest L was 2.
+c + L − 1 + (calls without a tick). L was 1 only in each machine's very first call (frame
+1, when no tick is possible) and at least 2 afterwards.
 
 ## 15. Launch handshake packets
 

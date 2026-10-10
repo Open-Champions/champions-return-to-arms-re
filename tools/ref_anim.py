@@ -80,7 +80,7 @@ import os
 import struct
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))   # append: tools/dis.py must not shadow the library
 import ref_core as C                                    # noqa: E402
 
 add, sub, mul, div = C.add, C.sub, C.mul, C.div
@@ -617,7 +617,11 @@ class AnimSystem:
                      frame, count]
       group_limits   g_soundGroupLimit 0x4f8a28, one signed byte per group (game data: pass
                      the table from your executable; the default is all zero)
-      sound_log      (clip, first event, one past the last) for each animsound_fireRange"""
+      sound_log      (clip, first event, one past the last) for each animsound_fireRange
+      trace          None, or a list to which anim_build_pose appends ('base', values) and
+                     ('blended', values): per joint [qx, qy, qz, qw, px, py, pz] after the
+                     base track and after blending (what the differential test compares
+                     with the original's work area)"""
 
     def __init__(self, decoder_slots=DECODER_SLOTS, pose_buffers=POSE_BUFFERS,
                  group_limits=None):
@@ -630,6 +634,7 @@ class AnimSystem:
         self.cue_throttle = [[0, 0] for _ in range(256)]
         self.group_limits = list(group_limits) if group_limits is not None else [0] * 256
         self.sound_log = []
+        self.trace = None
 
 
 def _release_slot(track):
@@ -1551,6 +1556,8 @@ def anim_build_pose(system, state, for_draw=False):
             p[0] = p[1] = ZERO
         quats.append(q)
         poses.append(p)
+    if system.trace is not None:
+        system.trace.append(('base', [quats[j] + poses[j] for j in range(count)]))
 
     for i in range(base + 1, state.count):
         track = tracks[i]
@@ -1611,6 +1618,8 @@ def anim_build_pose(system, state, for_draw=False):
                 p2z = p2[2]
             p1[2] = add(mul(p1[2], rest), mul(p2z, w))
 
+    if system.trace is not None:
+        system.trace.append(('blended', [quats[j] + poses[j] for j in range(count)]))
     buf.joint_count = s16(count)
     buf.tag = (((count * 3 + 1) << 16) | 0x6D008000) & M32
     skeleton = tracks[state.count - 1].clip

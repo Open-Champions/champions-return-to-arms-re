@@ -37,7 +37,9 @@ import os
 import struct
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.append(_HERE)          # appended: tools/dis.py must not shadow the standard dis
 import world_info                                   # noqa: E402
 
 M32 = 0xFFFFFFFF
