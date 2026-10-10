@@ -158,7 +158,39 @@ class Rig:
         self.cells = emu.mem.u32(self.base + 0x38)
         self.buf = [emu.alloc(0x40) for _ in range(8)]
         self.big = emu.alloc(0x1000)
+        # world_collectObjectsInBox is replaced: it hands back the fake objects of `scene`
+        self.scene = []                 # [(address in the interpreter, the model's object)]
+        self.fake = [emu.alloc(0x60) for _ in range(6)]
+        emu.stub(A_COLLECT_OBJECTS, function=self._collect_objects)
+        emu.stub(A_UPDATE_GRID, ret=0)
+        self.mover = self._make_mover()
+        self.path = None
         self.set_fpu(FPU_CONFIGS[0])
+
+    def _collect_objects(self, emu):
+        out = emu.r[6] & M32
+        self.put(out, [addr for addr, _obj in self.scene] + [0])
+        return len(self.scene)
+
+    def _make_mover(self):
+        """A stand-in game object: flags +0xc, position +0x10, radius +0x1c, height +0x20,
+        vertical speed +0x30, and the grid link obj_moveWithCollision re-threads inline."""
+        emu = self.emu
+        obj, link, node, anchor = emu.alloc(0x400), emu.alloc(0x20), emu.alloc(0x10), emu.alloc(0x10)
+        emu.mem.w32(obj + 8, link)
+        emu.mem.w32(link + 8, node)
+        emu.mem.w32(node + 4, anchor)
+        return obj
+
+    def set_scene(self, circles):
+        """Write Circle objects as fake game objects; they are what the box query returns."""
+        self.scene = []
+        for addr, circle in zip(self.fake, circles):
+            self.put(addr, [0] * 0x18)
+            self.emu.mem.w32(addr + 0xC, circle.flags)
+            self.put(addr + 0x10, [circle.x, circle.y])
+            self.emu.mem.w32(addr + 0x1C, circle.radius)
+            self.scene.append((addr, circle))
 
     def set_fpu(self, config):
         model, bias, nearest = config
@@ -330,19 +362,51 @@ def prop_sweep(rig, level, rng, count):
     return count, fails, examples
 
 
+class Runaway(Exception):
+    """A slide whose steps grew past anything a level holds.  A sweep that starts inside
+    blocking samples returns a negative time, `remain` grows, and the next step is longer;
+    with a zero-length step the time is -0x7fffffff and the step after it astronomic.  The
+    original then walks billions of sample indices one by one, which the interpreter cannot
+    sit through, so such inputs are counted and left out."""
+
+
+def guarded_slide(level, radius, pos, delta, mask):
+    """The model's slide, refusing inputs on which the original would not come back."""
+    sweep = R.terrain_sweep_circle
+
+    def watched(lvl, r, p, d, m, want_normal=True):
+        if not (abs(R.to_float(d[0])) < 3000.0 and abs(R.to_float(d[1])) < 3000.0):
+            raise Runaway()
+        return sweep(lvl, r, p, d, m, want_normal)
+    R.terrain_sweep_circle = watched
+    try:
+        return R.world_slide_move(level, radius, pos, delta, mask)
+    finally:
+        R.terrain_sweep_circle = sweep
+
+
+SKIPPED = {'runaway': 0}
+
+
 def prop_slide(rig, level, rng, count):
     fails, examples = 0, []
+    done = 0
     for _ in range(count):
         radius = gen_radius(rng)
         pos = gen_pos(rng, level, radius)
         delta = gen_delta(rng)
         mask = rng.choice(MASKS)
+        try:
+            hit, new_pos, normal = guarded_slide(level, radius, pos, delta, mask)
+        except Runaway:
+            SKIPPED['runaway'] += 1
+            continue
+        done += 1
         rig.put(rig.buf[0], pos)
         rig.put(rig.buf[1], delta)
         got_hit, _f0 = rig.call(A_SLIDE, (rig.buf[0], rig.buf[1], mask, rig.buf[2]), (radius,))
         got_pos = rig.get(rig.buf[0], 3)
         got_n = rig.get(rig.buf[2], 3)
-        hit, new_pos, normal = R.world_slide_move(level, radius, pos, delta, mask)
         bad = got_hit != hit or got_pos != list(new_pos)
         if normal is not None and got_n != list(normal):
             bad = True                  # with no blocked sweep the original copies stack junk
@@ -351,7 +415,7 @@ def prop_slide(rig, level, rng, count):
             examples.append('r %s pos %s delta %s mask %d: original %d %s n %s, model %d %s n %s'
                             % (fl((radius,)), fl(pos), fl(delta), mask, got_hit, hx(got_pos), hx(got_n),
                                hit, hx(new_pos), hx(normal or ())))
-    return count, fails, examples
+    return done, fails, examples
 
 
 def prop_test_flag1(rig, level, rng, count):
@@ -433,6 +497,468 @@ def prop_libm(rig, level, rng, count):
     return count * 2, fails, examples
 
 
+
+def guarded(function, *args):
+    """Run a model function, refusing inputs on which the original would not come back
+    (see Runaway)."""
+    sweep = R.terrain_sweep_circle
+
+    def watched(lvl, r, p, d, m, want_normal=True):
+        if not (abs(R.to_float(d[0])) < 3000.0 and abs(R.to_float(d[1])) < 3000.0):
+            raise Runaway()
+        return sweep(lvl, r, p, d, m, want_normal)
+    R.terrain_sweep_circle = watched
+    try:
+        return function(*args)
+    finally:
+        R.terrain_sweep_circle = sweep
+
+
+def prop_object_move(rig, level, rng, count):
+    """obj_moveWithCollision on a stand-in object with no other object near."""
+    fails, examples, done = 0, [], 0
+    obj = rig.mover
+    rig.scene = []
+    for _ in range(count):
+        radius = gen_radius(rng)
+        pos = gen_pos(rng, level, radius)
+        delta = gen_delta(rng)
+        vel = [R.f32(R.to_float(c) * 60.0) for c in delta]
+        if rng.random() < 0.15:
+            vel[2] = R.f32(rng.choice((0.0, -540.0, 300.0, 0.03)))
+        vz = R.f32(rng.choice((0.0, 0.0, 9.0, -9.0, -200.0, 150.0, 8.999999)))
+        flags = rng.choice((0, 0x20, 0x40, 0x60, 0x10, 0x400, 0x20020, 0x840))
+        try:
+            new_pos, new_vz, bits = guarded(R.object_move, level, radius, pos, vel, vz, flags)
+        except Runaway:
+            SKIPPED['runaway'] += 1
+            continue
+        done += 1
+        rig.emu.mem.w32(obj + 0xC, flags)
+        rig.put(obj + 0x10, pos)
+        rig.emu.mem.w32(obj + 0x1C, radius)
+        rig.emu.mem.w32(obj + 0x20, R.f32(72.0))
+        rig.emu.mem.w32(obj + 0x30, vz)
+        rig.put(rig.buf[1], vel)
+        got_bits, _f0 = rig.call(A_OBJ_MOVE, (obj, rig.buf[1], 0, 0))
+        got_pos = rig.get(obj + 0x10, 3)
+        got_vz = rig.emu.mem.u32(obj + 0x30)
+        if got_bits != bits or got_pos != list(new_pos) or got_vz != new_vz:
+            fails += 1
+            examples.append('r %s pos %s vel %s vz %s flags %x: original %d %s vz %08x, model %d %s vz %08x'
+                            % (fl((radius,)), fl(pos), fl(vel), fl((vz,)), flags, got_bits, hx(got_pos),
+                               got_vz, bits, hx(new_pos), new_vz))
+    return done, fails, examples
+
+
+def prop_projectile(rig, level, rng, count):
+    """The terrain part of obj_moveAndCollide: run from its entry to the end of the back-off."""
+    fails, examples = 0, []
+    obj = rig.mover
+    emu = rig.emu
+    for _ in range(count):
+        radius = R.f32(12.0) if rng.random() < 0.6 else gen_radius(rng)
+        pos = gen_pos(rng, level, radius)
+        if rng.random() < 0.7:                          # mostly a little above the floor
+            pos[2] = R.fadd(pos[2], R.f32(rng.uniform(0.0, 30.0)))
+        speed = rng.choice((60.0, 300.0, 600.0, 1500.0))
+        angle = rng.uniform(0.0, 2 * math.pi)
+        vel = [R.f32(speed * math.cos(angle)), R.f32(speed * math.sin(angle)),
+               R.f32(rng.choice((0.0, -200.0, -900.0, 150.0, -3000.0)))]
+        rig.put(obj + 0x10, pos)
+        emu.mem.w32(obj + 0x1C, radius)
+        emu.mem.w8(obj + 0x50, 1)
+        rig.put(rig.buf[1], vel)
+        emu.r[29] = rig.sp
+        emu.r[4], emu.r[5], emu.r[31] = obj, rig.buf[1], EE.RETURN_ADDR
+        emu.run(start=A_PROJECTILE, until=(0x150BC8, 0x150C98), max_steps=40000000)
+        got_hit = 1 if emu.pc == 0x150BC8 else 0
+        got_pos = rig.get(obj + 0x10, 3)
+        new_pos, hit = R.projectile_step(level, radius, pos, vel)
+        if got_hit != hit or got_pos != list(new_pos):
+            fails += 1
+            examples.append('r %s pos %s vel %s: original %d %s, model %d %s'
+                            % (fl((radius,)), fl(pos), fl(vel), got_hit, hx(got_pos), hit, hx(new_pos)))
+    return count, fails, examples
+
+
+def gen_ray(rng, level):
+    radius = R.f32(12.0)
+    origin = gen_pos(rng, level, radius)
+    roll = rng.random()
+    if roll < 0.7:
+        origin[2] = R.fadd(origin[2], R.f32(rng.choice((0.0, 11.0, 13.0, 36.0, 60.0, 150.0))))
+    roll = rng.random()
+    if roll < 0.06:
+        direction = [0, 0, R.f32(rng.choice((-1.0, 1.0, -50.0, 0.0)))]
+        if rng.random() < 0.5:
+            direction[0] = R.f32(rng.choice((0.01, 0.03, 0.039, 0.041, -0.02)))
+    else:
+        length = rng.choice((1.0, 1.0, 20.0, 100.0, 300.0, 300.0, 700.0)) * rng.uniform(0.3, 1.0)
+        angle = rng.choice((0.0, 0.5, 1.0, 1.5)) * math.pi if roll < 0.2 else rng.uniform(0.0, 2 * math.pi)
+        dx, dy = length * math.cos(angle), length * math.sin(angle)
+        if roll < 0.2:
+            dx, dy = round(dx, 5) + 0.0, round(dy, 5) + 0.0
+        slope = rng.choice((0.0, 0.0, 0.0, -0.05, 0.05, -0.3, 0.3, -1.5, 1.0))
+        direction = [R.f32(dx), R.f32(dy), R.f32(slope * length)]
+    reach = math.hypot(R.to_float(direction[0]), R.to_float(direction[1]))
+    roll = rng.random()
+    if roll < 0.04:
+        max_t = R.f32(rng.choice((0.0, -1.0)))
+    elif reach > 0.05:                                  # a few very long rays only
+        max_t = R.f32(rng.choice((0.5, 1.0, 1.0, 1.1, 2.0, 400.0 / reach, 900.0 / reach)))
+        if roll > 0.97:
+            max_t = R.f32(1200.0)
+    else:
+        max_t = R.f32(rng.choice((1.0, 500.0)))
+    return origin, direction, max_t
+
+
+RAY_FLAGS = (0, 3, 0, 3, 0, 3, 1, 2, 4, 15)
+
+
+def prop_raycast(rig, level, rng, count):
+    fails, examples = 0, []
+    for _ in range(count):
+        origin, direction, max_t = gen_ray(rng, level)
+        flags = rng.choice(RAY_FLAGS)
+        rig.put(rig.buf[0], origin)
+        rig.put(rig.buf[1], direction)
+        _v0, got = rig.call(A_RAYCAST, (rig.base, rig.buf[0], rig.buf[1], flags), (max_t,),
+                            max_steps=400000000)
+        want = R.terrain_raycast(level, max_t, origin, direction, flags)
+        if got != want:
+            fails += 1
+            examples.append('maxT %s origin %s dir %s flags %d: original %08x (%g), model %08x (%g)'
+                            % (fl((max_t,)), fl(origin), fl(direction), flags, got, R.to_float(got),
+                               want, R.to_float(want)))
+    return count, fails, examples
+
+
+def prop_world_raycast(rig, level, rng, count):
+    """world_raycast with the box query replaced by a list of stand-in objects."""
+    fails, examples = 0, []
+    for _ in range(count):
+        origin, direction, max_t = gen_ray(rng, level)
+        flags = rng.choice(RAY_FLAGS)
+        circles = []
+        for _ in range(rng.choice((0, 0, 1, 2, 4))):
+            along = rng.uniform(-0.3, 1.3)
+            side = rng.uniform(-40.0, 40.0)
+            dx, dy = R.to_float(direction[0]), R.to_float(direction[1])
+            norm = math.hypot(dx, dy) or 1.0
+            cx = R.to_float(origin[0]) + dx * along - dy / norm * side
+            cy = R.to_float(origin[1]) + dy * along + dx / norm * side
+            circles.append(R.Circle(rng.choice((0, 0, 0x20, 0x40, 1, 4, 0x40000, 0x40001, 0x40004)),
+                                    R.f32(cx), R.f32(cy), R.f32(rng.choice((12.0, 24.0, 40.0, 0.0)))))
+        rig.set_scene(circles)
+        ignore = rng.randrange(len(circles)) if circles and rng.random() < 0.3 else None
+        include = rng.choice((0, 0, 1))
+        rig.put(rig.buf[0], origin)
+        rig.put(rig.buf[1], direction)
+        rig.put(rig.buf[2], [0x55555555])
+        out = rig.buf[2] if rng.random() < 0.8 else 0
+        _v0, got = rig.call(A_WORLD_RAYCAST, (rig.base, rig.buf[0], rig.buf[1],
+                                              rig.scene[ignore][0] if ignore is not None else 0,
+                                              out, flags, include), (max_t,), max_steps=400000000)
+        got_obj = rig.emu.mem.u32(rig.buf[2])
+        want, hit = R.world_raycast(level, max_t, origin, direction, flags,
+                                    lambda lo, hi: circles,
+                                    circles[ignore] if ignore is not None else None, bool(include))
+        want_obj = 0x55555555
+        if out and not R.fle(max_t, R.ZERO):
+            want_obj = 0 if hit is None else [a for a, c in rig.scene if c is hit][0]
+        if got != want or got_obj != want_obj:
+            fails += 1
+            examples.append('maxT %s origin %s dir %s flags %d, %d objects: original %08x obj %x, model %08x obj %x'
+                            % (fl((max_t,)), fl(origin), fl(direction), flags, len(circles), got, got_obj,
+                               want, want_obj))
+    rig.scene = []
+    return count, fails, examples
+
+
+# ---------------------------------------------------------------------------------------
+# Path finding
+# ---------------------------------------------------------------------------------------
+class Requester(R.Circle):
+    """The model's requester: a stand-in object the result is delivered to."""
+
+    def __init__(self, log, index):
+        R.Circle.__init__(self, 0x20, 0, 0, R.f32(24.0), 'requester %d' % index)
+        self.log, self.index = log, index
+
+    def __call__(self, result):
+        self.log.append((self.index, result))
+
+
+class PathRig:
+    """Path-finder state on both sides: the game's globals and queue, the model's PathFinder."""
+    OUT_PAIRS = 48
+
+    def __init__(self, rig, level):
+        emu = rig.emu
+        self.rig, self.level = rig, level
+        self.model_log, self.game_log = [], []
+        self.callback = emu.alloc(16)
+        emu.stub(self.callback, function=self._on_result)
+        vtable = emu.alloc(0x80)
+        emu.mem.w32(vtable + 0x3C, self.callback)       # slot 7: {s16 this-adjust, function}
+        self.objects, self.handles, self.requesters = [], {}, []
+        for index in range(4):
+            obj = emu.alloc(0x60)
+            emu.mem.w32(obj + 0x48, vtable)
+            emu.mem.w32(obj + 0xC, 0x20)
+            emu.mem.w32(obj + 0x1C, R.f32(24.0))
+            handle = emu.alloc(0x10)
+            emu.mem.w32(handle + 0xC, obj)
+            self.objects.append(obj)
+            self.handles[obj] = handle
+            self.requesters.append(Requester(self.model_log, index))
+        emu.stub(A_HANDLE_LINK, function=lambda e: e.mem.w32(e.r[4] & M32, self.handles[e.r[5] & M32]) or 0)
+        emu.stub(A_HANDLE_REMOVE, ret=0)
+        self.out = [emu.alloc(8 * self.OUT_PAIRS) for _ in range(4)]
+        emu.mem.map(T0_ADDR, 16)
+        self.timer_values = None
+        emu.hook(0x184324, self._feed_timer)            # T0 read in path_search
+        emu.hook(0x184DF0, self._feed_timer)            # T0 read in path_service
+        self.model_timer = None
+        self.finder = R.PathFinder(level, objects=lambda lo, hi: [c for _a, c in rig.scene])
+        for addr in (G_PATH_READ, G_PATH_WRITE, G_PATH_BUSY, G_PATH_PREV, G_PATH_ITER, G_PATH_ROUND):
+            emu.mem.w32(addr, 0)
+        emu.mem.w8(G_PATH_ENABLED, 1)
+        self.nodes = [i for i, cell in enumerate(level.path_cells) if cell & 0xFF]
+
+    def _on_result(self, emu):
+        self.game_log.append((self.objects.index(emu.r[4] & M32), emu.r[5] & M32))
+        return 0
+
+    def _feed_timer(self, emu):
+        emu.mem.w32(T0_ADDR, next(self.timer_values))
+
+    def set_timer(self, values):
+        """The same sequence of T0 readings for both sides."""
+        values = list(values)
+        self.timer_values = iter(values + [20000] * 100000)
+        model = iter(values + [20000] * 100000)
+        self.model_timer = lambda: next(model)
+
+    def node_point(self, rng, node, spread=11.0):
+        x, y = self.level.path_node_position(node)
+        return [R.f32(x + rng.uniform(-spread, spread)), R.f32(y + rng.uniform(-spread, spread)), R.f32(0.0)]
+
+    def request(self, kind, radius, start, goal, who, out_index, capacity):
+        rig = self.rig
+        rig.put(rig.buf[0], start)
+        rig.put(rig.buf[1], goal)
+        rig.put(self.out[out_index], [0xDEADBEEF] * (2 * self.OUT_PAIRS))
+        write = rig.emu.mem.u32(G_PATH_WRITE)
+        rig.call(A_PATH_REQUEST[kind], (rig.base, rig.buf[0], rig.buf[1], self.objects[who],
+                                         self.out[out_index], capacity), (radius,))
+        entry = self.finder.request(kind, radius, start, goal, self.requesters[who], capacity)
+        return entry, write
+
+    def state_matches(self):
+        """The search globals and the queue indexes on both sides; '' when equal."""
+        mem, finder = self.rig.emu.mem, self.finder
+        got = [mem.u32(G_PATH_READ), mem.u32(G_PATH_WRITE), mem.u32(G_PATH_BUSY), mem.u32(G_PATH_PREV),
+               mem.u32(G_PATH_ITER), mem.u32(G_PATH_ROUND)] + self.rig.get(G_PATH_COUNTS, 4)
+        want = [finder.read, finder.write, int(finder.busy), finder.prev_start, finder.iterations,
+                finder.round] + list(finder.counts)
+        if got != want:
+            return 'read/write/busy/prevStart/rounds/round/counts: original %s, model %s' % (got, want)
+        if self.game_log != self.model_log:
+            return 'results delivered: original %s, model %s' % (self.game_log[-4:], self.model_log[-4:])
+        return ''
+
+    def cells_match(self):
+        cells = self.level.path_cells
+        got = self.rig.get(self.rig.cells, len(cells))
+        if got != cells:
+            index = next(i for i in range(len(cells)) if got[i] != cells[i])
+            return 'path grid differs at node %d: original %08x, model %08x' % (index, got[index], cells[index])
+        return ''
+
+    def out_matches(self, out_index, entry):
+        got = self.rig.get(self.out[out_index], 2 * self.OUT_PAIRS)
+        want = [0xDEADBEEF] * (2 * self.OUT_PAIRS)
+        if entry is not None and entry.path is not None:
+            flat = [c & M32 for point in entry.path for c in point]
+            want[:len(flat)] = flat
+        if got != want:
+            pairs = [(R.s32(got[i]), R.s32(got[i + 1])) for i in range(0, 12, 2)]
+            return 'path buffer: original %s..., model %s' % (pairs, entry.path if entry else None)
+        return ''
+
+
+def path_rig(rig, level):
+    if rig.path is None:
+        rig.path = PathRig(rig, level)
+    return rig.path
+
+
+def gen_path_case(ctx, rng, kind):
+    level = ctx.level
+    start_node = rng.choice(ctx.nodes)
+    start = ctx.node_point(rng, start_node)
+    start[2] = R.f32(R.to_float(R.terrain_height(level, R.f32(12.0), start)) if rng.random() < 0.8 else 0.0)
+    if R.to_float(start[2]) < -99999.0:
+        start[2] = R.f32(0.0)
+    reach = rng.choice((3, 6, 12, 25, 45)) if kind == 0 else rng.choice((2, 4, 8))
+    col, row = start_node % level.pg_w, start_node // level.pg_w
+    for _ in range(30):
+        c2, r2 = col + rng.randrange(-reach, reach + 1), row + rng.randrange(-reach, reach + 1)
+        if 0 <= c2 < level.pg_w and 0 <= r2 < level.pg_h and (level.path_cells[r2 * level.pg_w + c2] & 0xFF
+                                                              or rng.random() < 0.1):
+            break
+    else:
+        c2, r2 = col, row
+    goal = ctx.node_point(rng, r2 * level.pg_w + c2, 30.0)
+    if kind == 0:
+        radius = R.f32(rng.choice((0.0, 0.0, 12.0, 24.0, 30.0, 60.0, 100.0)))
+    else:
+        radius = R.f32(rng.choice((36.0, 60.0, 100.0, 150.0, 600.0)))
+    return start, goal, radius
+
+
+def prop_path_search(kinds, timed):
+    def run(rig, level, rng, count):
+        if not level.pg_w or not level.path_cells:
+            return 0, 0, []
+        ctx = path_rig(rig, level)
+        if not ctx.nodes:
+            return 0, 0, []
+        fails, examples = 0, []
+        rig.scene = []
+        for case in range(count):
+            kind = rng.choice(kinds)
+            start, goal, radius = gen_path_case(ctx, rng, kind)
+            capacity = rng.choice((16, 16, 16, 16, 2, 5, 1, 40))
+            who = rng.randrange(4)
+            special = rng.random()
+            if special < 0.04:                           # a start off the grid
+                start[0] = R.f32(R.to_float(start[0]) + rng.choice((-1, 1)) * 24.0 * (level.pg_w + 3))
+            before = (list(level.path_cells), )
+            entry, slot = ctx.request(kind, radius, start, goal, who, 0, capacity)
+            if special > 0.97 and entry is not None:     # the requester is deleted while waiting
+                rig.emu.mem.w32(G_PATH_QUEUE + slot * 0x30 + 0x28, 0)
+                entry.requester = None
+            problem = ''
+            if timed:
+                # T0 climbs by a random amount per reading; a service call ends at 9000,
+                # a search suspends from 7513; the next call starts a new frame
+                for _frame in range(4000):
+                    base, step = rng.randrange(0, 7000), rng.choice((40, 150, 400, 900))
+                    ctx.set_timer([base + step * i for i in range(400)])
+                    rig.call(A_PATH_SERVICE, (0,), max_steps=400000000)
+                    ctx.finder.service(False, ctx.model_timer)
+                    problem = ctx.state_matches()
+                    if problem or not ctx.finder.busy and ctx.finder.read == ctx.finder.write:
+                        break
+            else:
+                rig.call(A_PATH_SERVICE, (1,), max_steps=2000000000)
+                ctx.finder.service(True)
+                problem = ctx.state_matches()
+            problem = problem or ctx.out_matches(0, entry)
+            if not problem and (len(level.path_cells) < 40000 or case % 8 == 0):
+                problem = ctx.cells_match()
+            if not problem and timed and entry is not None and entry.requester is not None:
+                # the same request answered in one blocking call, from the same grid state
+                twin_level = R.Level()
+                twin_level.pg_x0, twin_level.pg_y0 = level.pg_x0, level.pg_y0
+                twin_level.pg_w, twin_level.pg_h = level.pg_w, level.pg_h
+                twin_level.path_cells = [c & 0xFFFF00FF for c in before[0]]
+                twin = R.PathFinder(twin_level)
+                log = []
+                twin_entry = twin.request(kind, radius, start, goal, log.append, capacity)
+                twin.service(True)
+                if twin_entry.path != entry.path or twin_entry.result != entry.result:
+                    problem = 'suspended search gave %s, the same search in one call %s' % (entry.path,
+                                                                                         twin_entry.path)
+            if problem:
+                fails += 1
+                examples.append('type %d radius %s start %s goal %s capacity %d: %s'
+                                % (kind, fl((radius,)), fl(start), fl(goal), capacity, problem))
+                if 'original' in problem and ('grid' in problem or 'read/write' in problem):
+                    break                               # the two sides are out of step for good
+        return count, fails, examples
+    return run
+
+
+def prop_path_queue(rig, level, rng, count):
+    """Queue behaviour: many requests at once, a full queue, the disabled switch."""
+    if not level.pg_w or not level.path_cells:
+        return 0, 0, []
+    ctx = path_rig(rig, level)
+    if not ctx.nodes:
+        return 0, 0, []
+    fails, examples, cases = 0, [], 0
+    for batch in (5, 140, 3):
+        entries = []
+        for index in range(batch):
+            kind = 0
+            start, goal, radius = gen_path_case(ctx, rng, kind)
+            entry, slot = ctx.request(kind, radius, start, goal, index % 4, index % 4, 16)
+            got = rig.get(G_PATH_QUEUE + slot * 0x30, 12)
+            if entry is not None:
+                want = [rig.base] + list(entry.start) + list(entry.goal) + [entry.radius, ctx.out[index % 4], 16,
+                                                                           ctx.handles[ctx.objects[index % 4]], 0]
+                if got != want:
+                    fails += 1
+                    examples.append('queue entry %d: original %s, model %s' % (slot, hx(got), hx(want)))
+            entries.append(entry)
+            cases += 1
+        problem = ctx.state_matches()
+        if batch == 3:                                   # with the path finder switched off
+            rig.emu.mem.w8(G_PATH_ENABLED, 0)
+            ctx.finder.enabled = False
+        ctx.set_timer([20000] * 10)
+        rig.call(A_PATH_SERVICE, (0 if batch == 3 else 1,), max_steps=2000000000)
+        ctx.finder.service(batch != 3, ctx.model_timer)
+        rig.emu.mem.w8(G_PATH_ENABLED, 1)
+        ctx.finder.enabled = True
+        problem = problem or ctx.state_matches() or ctx.cells_match()
+        if problem:
+            fails += 1
+            examples.append('batch of %d: %s' % (batch, problem))
+            break
+    return cases, fails, examples
+
+
+def prop_path_block(rig, level, rng, count):
+    """The block counters: 0x18b6c0 and 0x18b584 over random rectangles."""
+    if not level.pg_w or not level.path_cells or level.pg_w < 16 or level.pg_h < 16:
+        return 0, 0, []
+    ctx = path_rig(rig, level)
+    fails, examples = 0, []
+    placed = []
+    for case in range(count):
+        if placed and rng.random() < 0.45:
+            radius, pos = placed.pop(rng.randrange(len(placed)))
+            addr, model = A_PATH_UNBLOCK, R.path_unblock_nodes
+        else:
+            radius = R.f32(rng.choice((12.0, 24.0, 24.0, 40.0, 5.0, 0.0)))
+            col = rng.randrange(6, level.pg_w - 6)
+            row = rng.randrange(6, level.pg_h - 6)
+            x, y = level.path_node_position(row * level.pg_w + col)
+            pos = [R.f32(x + rng.uniform(-12, 12)), R.f32(y + rng.uniform(-12, 12)), R.f32(0.0)]
+            if rng.random() < 0.2:
+                pos = [R.f32(float(x)), R.f32(float(y)), R.f32(0.0)]
+            addr, model = A_PATH_BLOCK, R.path_block_nodes
+            placed.append((radius, pos))
+            if rng.random() < 0.1:
+                placed.append((radius, pos))            # one that will be released twice
+        rig.put(rig.buf[0], pos)
+        rig.call(addr, (rig.base, rig.buf[0]), (radius,))
+        model(level, radius, pos)
+        if case % 4 == 3 or len(level.path_cells) < 40000:
+            problem = ctx.cells_match()
+            if problem:
+                fails += 1
+                examples.append('r %s pos %s: %s' % (fl((radius,)), fl(pos), problem))
+                break
+    return count, fails, examples
+
+
 PROPERTIES = [
     # name, function, sample size, what is compared, whether it is rerun under the other FPU models
     ('libm floorf/ceilf', prop_libm, 3000, 'result bit for bit', True),
@@ -445,6 +971,19 @@ PROPERTIES = [
     ('terrain_sweepCircle', prop_sweep, 5000, 'time and normal bit for bit; inputs untouched', True),
     ('world_slideMove', prop_slide, 3000, 'hit flag, end position and normal bit for bit', True),
     ('moving pieces', prop_pieces, 400, 'height and sweep after the game\'s own setters', False),
+    ('obj_moveWithCollision', prop_object_move, 2000,
+     'result bits, position and vertical speed, no other object near', True),
+    ('obj_moveAndCollide terrain part', prop_projectile, 1500, 'hit flag and position bit for bit', True),
+    ('terrain_raycast', prop_raycast, 2500, 'hit parameter bit for bit', True),
+    ('world_raycast', prop_world_raycast, 1500, 'hit parameter and hit object, stand-in objects', True),
+    ('path block counters', prop_path_block, 120, 'the whole node grid after each call', False),
+    ('path queue', prop_path_queue, 1, 'queue entries, a full queue, the disabled switch', False),
+    ('path search type 0', prop_path_search((0,), False), 400,
+     'result, path buffer, node marks, search globals', True),
+    ('path search suspended', prop_path_search((0,), True), 100,
+     'the same after every timed service call; equals the one-call search', False),
+    ('path search types 1-3', prop_path_search((1, 2, 3), False), 30,
+     'result, path buffer, node marks (ray goal tests)', False),
 ]
 
 

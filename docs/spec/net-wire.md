@@ -252,10 +252,11 @@ other u32 (the game writes 0xffffffff) meaning "no record". The receiver compare
 with 0xbd40 and skips 4 bytes otherwise.
 
 The bytes between the end of the stream and the sync word are padding. The sender stores
-some of them and not others: when the stream ends in the first half of a 4-byte group, up
-to two bytes are whatever its stack held. **Executed**: 43 % of the packets built in the
-function-level test contain such bytes; they still held the marker the test had filled
-the stack with. A receiver must ignore them, a sender may write anything.
+16-bit words up to one word beyond the last bit of the stream and nothing after that, so
+in about half of all packets the two bytes just before the sync word are whatever its
+stack held. **Executed**: 590 of the 1,200 packets built in the function-level test have
+two such bytes; wherever they could be checked they still held the marker the test had
+filled the stack with. A receiver must ignore them, a sender may write anything.
 
 ### 7.4 Message blocks
 
@@ -281,8 +282,8 @@ datagram; it has no other stop condition.
 - The builder assembles the datagram in its stack frame without any length check. There
   are 5008 bytes between the start of the datagram ($fp+0x10) and the builder's own copy
   of the codec state ($fp+0x13a0). **Observed** 0x137d9c, 0x137ed8; **Executed** up to
-  4,992 bytes; found because a 255-frame, message-heavy random packet overran it in the
-  interpreter. With the pacing cap in force a frame backlog cannot get there by itself;
+  3,572 bytes; found because a 255-frame, message-heavy random packet (8 kB) overran it
+  in the interpreter. With the pacing cap in force a frame backlog cannot get there by itself;
   about twenty frames each carrying 250 message bytes could. **Inferred**: not reachable
   in ordinary play, where messages are a few bytes.
 - The receive buffer is 1984 bytes. A sender that wants to be understood keeps its
@@ -418,13 +419,20 @@ mask, so its packets are ignored (row 4) and — because the mask is in every pa
 machine sends — this machine's packets are ignored by everybody whose mask still
 contains the peer.
 
-**Executed** (session "one machine diverges"): three machines, one corrupts its seed in
-one frame. The two others flag it within a few calls and keep accepting each other, but
-both stall as soon as the diverged machine's buffered input is used up, because it is
-still not dropped. The diverged machine flagged only one of the two: the other had
-already changed its mask, so its packet with the damning record was ignored by rule 1.
-`docs/netcode.md` ("both sides flag each other") describes the common case, not a
-guarantee.
+**A single flag splits the session.** **Executed** (session "one machine diverges"): three
+consoles, machine 1 corrupts its seed in one frame. Whichever machine compares first sets
+a flag; that changes its active mask; from then on the machines on the other side of the
+difference ignore its packets by rule 1 of section 9 — including the packets that carry the
+sync records which would have made them set a flag of their own. In the run reported in
+section 18 only machine 1 ever set a flag (for one of the two others); in two other runs
+of the same scenario with different message traffic the two healthy machines flagged
+machine 1 and it flagged one of them, and machine 1 flagged both while they flagged
+nobody. In every run machines 0 and 2 kept accepting each other, never flagged each
+other, and all three stalled within a few frames, the two healthy ones because they still
+required input from a peer whose packets they no longer took. To them that peer is simply
+silent: 900 calls later they started a kick (section 12), agreed on a drop frame and
+continued as a two-player game. `docs/netcode.md` ("both sides flag each other and each
+ends alone") describes one possible outcome, not the rule.
 
 ## 12. Dropping a peer: kick request, raw relay, kicked notice
 
@@ -480,17 +488,27 @@ it at; A runs on until it has used up B's input and stops too. Both keep exchang
 packets, so neither times the other out.
 
 **Executed** (session "kick request too late"): three consoles whose rendered-frame
-counters are in step, machine 0 kicks slot 2. Machine 0 drops the slot at frame 60;
-machine 1 is still negotiating 200 calls later at frame 60 with machine 0 stalled at 98.
-With the counters 15 apart (session "manual kick") both drop the slot at the same frame
-and continue. When a peer falls silent and the others time out within the same 30-call
-window, all of them are in state 1 before any request is sent and it works (session
-"silent peer is dropped", four consoles).
+counters are in step and whose datagrams take one round; machine 0 kicks slot 2. Machine 0
+asks machine 1, gets its relay, and 30 calls later sets the drop frame and — being
+already stalled at that frame — drops the slot in the same call. Machine 1's own request
+leaves in that same round, arrives one round later and is not answered. Machine 0 runs
+on from frame 60 to frame 98, where it has used up machine 1's input, and stops; 250
+calls later machine 1 is still at frame 60, still negotiating, and has sent eight
+requests.
+With the counters 15 apart (session "manual kick") machine 1's request arrives while
+machine 0 is still negotiating, both drop the slot at the same frame and continue. When
+a peer falls silent and the others time out within the same 30-call window, all of them
+are negotiating before any request is sent, and it works (session "silent peer is
+dropped", four consoles; also the two healthy machines of the divergence session).
 
-How often the bad order occurs depends on the relative phase of the two rendered-frame
-counters and on latency; section 19 has model figures. What the stuck machines then do —
-the HUD's stall counters end the game after about 1,800 calls according to
-`docs/netcode.md` — was not run.
+How often the bad order occurs depends on the phase of the two rendered-frame counters,
+on latency and on whether the first machine has to simulate a few more frames before it
+reaches the drop frame. **Model** (the model alone, random counter phases, 40 runs each):
+a survivor was left negotiating for good in 2 runs of a manual kick among three players
+with 1–2 calls of link delay, 3 with 3–5 calls, 1 of a manual kick among four, and 1 of a
+silent fourth player. Seven of 160 is a small sample; "a few percent of kicks" is all it
+supports. What the stuck machines then do — the HUD's stall counters end the game after
+about 1,800 calls according to `docs/netcode.md` — was not run.
 
 An implementation that wants to interoperate should answer a kick request with a relay
 even for a peer it has already dropped. That is a change of behaviour on the answering
@@ -627,7 +645,50 @@ or emulator to packets from strangers.
 runs about a tenth. Every line is a comparison of the original, executed in the
 interpreter, with the model.
 
-COVERAGE_TABLE
+| Property | Cases | Original code run | What must be equal |
+|---|---|---|---|
+| axis encode, six float settings | 2,750 calls, 138,968 samples | `netcodec_encodeAxis` 0x13c450 | stream words, bit position, step index, predictor; any start position in the stream, runs of 31 and of 7 |
+| axis decode, six float settings | 2,750 calls | `netcodec_decodeAxis` 0x13c970 | stick bytes, bits consumed, index, predictor, `value` and `velocity` patterns; 0 to n − 1 samples skipped |
+| fpu choices disagree | 20,000 frames | none (model only) | the four adder choices never differ by more than one count; how often they differ is reported |
+| pad_apply, six float settings | 7,000 calls | `pad_apply` 0x174410 with `pad_decodeStick` 0x174ce0 | all 0x58 pad bytes, the previous-state block, the start-block counter; mute and start-block globals varied |
+| build input packet | 1,200 packets, 59,384 frames | `net_sendInputPacket` 0x137d60 | every datagram byte the builder stores; 2–4 peers, any flags, 1–255 frames, frame numbers up to 2³¹, 615 with a sync record, 567 with message blocks, 598 through the builder's own catch-up pass, up to 3,572 bytes |
+| build: call arguments | 1,200 | same | address block, port, 1000 ms timeout, 0x4027cc afterwards, peer table untouched |
+| build: padding not stored | 305 | same | the bytes the model calls undefined still hold the stack marker (the 305 packets with such bytes and no catch-up pass) |
+| build raw relay | 300 | same, raw = 1 | every byte of the 0xbd42 datagram |
+| receive input packet | 3,262 packets | receiver 0x13b5d0 | the whole peer table (4 × 0x44e0 bytes) and the netcode globals after each packet. 2,197 brought new frames (28,527 stored), 559 nothing new, 97 started after a gap, 409 were ignored (other mask, own slot, dropped / kicked / out-of-sync sender); delivered in order, late and twice; sync records matching, differing and for other frames |
+| receive: pressure bytes | 1,561 packets | same | bytes +0xa, +0xb of every newly stored frame hold the stack marker |
+| session: 2 consoles | 1,400 calls, 700 datagrams, 691 frames | `net_main` 0x132e90 with everything it calls except the stubs listed below | every datagram; netcode state after every call; lockstep pads, kills and executed messages of every tick; no out-of-sync flag |
+| input delay rule | 1,383 frames | same session | section 14 |
+| session: 3 consoles, bad link | 1,398 calls, 699 datagrams | same | same; 10 % loss, 5 % duplicates, delay 1–9 calls |
+| session: 4 consoles | 1,400 calls, 700 datagrams | same | same; 561 game messages of 0–238 bytes, up to 240 bytes on one frame |
+| session: uneven machines | 1,243 calls, 622 datagrams | same | same; one machine at two input frames per call that misses every third call, held calls, no-simulation calls, input lock, a 35-round outage; packets of up to 37 frames |
+| session: modem send cycle | 466 calls, 156 datagrams | same | same; send cycle 3 |
+| session: model as a peer | 700 calls, 350 datagrams | same, on two consoles | same; the third participant is the model alone. The consoles simulated 341 frames with its input and their hashes kept matching its hashes |
+| session: one machine diverges | 1,560 calls, 784 datagrams | same | same; plus the outcome described in section 11 |
+| session: silent peer is dropped | 920 calls, 472 datagrams | same | same; plus: 6 kick requests, 6 raw relays, one drop frame on all three survivors, the dropped player killed in that tick, simulation continues |
+| session: manual kick | 720 calls, 376 datagrams | same, and `net_kickPeer` 0x131cb8 | same; plus: 12 kicked notices, flag set on the kicked machine, both others drop at the same frame |
+| session: kick request too late | 900 calls, 472 datagrams | same | same; plus the outcome described in section 12.3 |
+| tick: sync hash and compare | 600 ticks | `net_frameLoop` 0x139e88 whole | sync record, out-of-sync bytes (set 171 times) and all other netcode state; positions from edge patterns, random bit patterns, ordinary values, empty slots |
+| messages over 255 bytes | 1 | builder and receiver | section 7.5 |
+| small packet types | 400 | `net_sendMsgToPeers` 0x131b00, `net_pumpReceive` 0x13c078 | direct-message datagrams and handler calls; 0xbd43; ignored types |
+| launch DATA packet | 600 | `net_launchSendData` 0x1354f8 | datagram, length, returned argument word; chunks of 1–1300 bytes |
+| launch generic packet | 600 | `net_launchSendPacket` 0x13e2c8 | header and payload; the rest of the 0x200 bytes is the stack marker |
+| engine_frameStep | 50 | `engine_frameStep` 0x19e3a8 | return value for both display-rate modes |
+
+In the sessions the consoles ran `net_main`, `net_pumpReceive`, the receiver, the builder,
+`net_frameLoop`, the two codec functions, `pad_apply`, `net_sendGameMsg`, the "player left"
+sender 0x1de16c, `net_getLocalPlayerSlot`, `net_localIsFirstActive`, `engine_frameStep` and
+the C library's `memset` / `memcpy` as they are. Replaced by stubs: the two socket calls,
+the pad sampler 0x17421c and `Camera_getYaw` 0x207450 (test input), `tasks_run` (a toy
+simulation that turns the lockstep pads, camera words and executed messages into player
+positions and a seed, so that the sync hash depends on all of them), `path_service`,
+`game_isFrozen` (returns 1, which keeps the prediction copy out of the tick),
+`net_predictLocalPlayer`, `dbg_printf`, the two calls that kill a dropped player's
+character, and the message handlers. In all: 5,331 datagrams and the state after 10,707
+calls of `net_main`, no difference.
+
+The interpreter lacked nothing these tests needed; no work-around for `tools/ee_emu.py`
+was necessary.
 
 Not covered: see section 20.
 
@@ -640,12 +701,12 @@ Not edited into the other files.
 | W1 | `docs/netcode.md`, input packet: "The first frame of an input packet is the frame the addressee last acknowledged" | Correct, and worth stressing: the acknowledged frame itself is sent again in every packet (first = `acked`, not `acked` + 1); the receiver skips it | Executed |
 | W2 | `docs/netcode.md`, table: "aligned to 4 … 0xffffffff when this simulation frame's record was already sent" | The receiver does not test for 0xffffffff; any word other than 0xbd40 means no record. Up to two of the padding bytes before the word are uninitialised stack | Executed |
 | W3 | `docs/netcode.md`, "Sync records ride inside input packets: at most one per simulation frame for the whole machine" | Also: a raw relay consumes the relayer's record for that frame and carries an entry of the *relayed* peer's sync ring instead (the entry at index `net_frame` & 0xff, whatever frame it holds) | Observed 0x1391f8–0x139240, Executed |
-| W4 | `docs/netcode.md`, Sync check: "In a two-player game both sides flag each other" | Not guaranteed. The machine that flags first changes its active mask; if its record for the bad frame has not reached the other side by then, the other side ignores the packet that carries it and never sets its own flag. It stalls all the same | Executed (three consoles) |
+| W4 | `docs/netcode.md`, Sync check: "In a two-player game both sides flag each other" | Not guaranteed. The machine that flags first changes its active mask; the other side then ignores its packets (rule 1), sync records included, and may never set a flag. One flag on one machine is enough to stop the session; the machines without a flag see a silent peer and drop it after the 900-call timeout | Executed (three consoles, three runs with different outcomes) |
 | W5 | `docs/netcode.md`, Drop: "When all have answered, the drop frame … becomes newest received frame + 1" | Add: a machine answers a kick request only for a peer it has not already dropped (0x13c2f0). A request that arrives after the answering machine executed the drop is never answered and the requester never drops the peer (section 12.3) | Executed |
 | W6 | `docs/netcode.md`, receiver step 3 "A packet that starts later is discarded" | Its acknowledgement has been taken before that test (0x13b7c4 precedes 0x13b7f4) | Executed |
-| W7 | `docs/netcode.md`, "Limits … bytes attached to one frame are counted in one byte" | Add the two buffer sizes: 5008 bytes of stack for the datagram being built, no check; 1984 bytes for a received one | Observed, Executed (overrun reproduced in the interpreter by a random 255-frame packet) |
+| W7 | `docs/netcode.md`, "Limits … bytes attached to one frame are counted in one byte" and per-machine row 9 ("more than 255 bytes queued … between two send turns") | Now executed: the receiver walks out of the datagram (section 7.5). The window is per frame, not per send turn: at two input frames per call two attaches land on one frame. The game adds its own 4-byte "player left" message inside `net_main` on top of whatever is queued. Also add the two buffer sizes: 5008 bytes of stack for the datagram being built, no check; 1984 bytes for a received one | Executed (over-255 frame; overrun of the 5008 bytes reproduced by a synthetic 255-frame packet) |
 | W8 | `docs/netcode.md`, Launch | A launch datagram under 16 bytes is ignored, so a DATA chunk under 4 bytes could not be delivered; the receive-side checksum mask is 0x148f37, the send-side 0x8f37 (same low 16 bits) | Observed; sender Executed |
-| W9 | `docs/issues/lag.md` 2.4: `engine_frameStep` is "1 while `g_displayRateModeInv` 0x44fd40 is non-zero" | In that case it returns clamp(signed byte 0x44fd50 + 1, 1, 2): 1 while that byte is ≤ 0, 2 when it is ≥ 1. What writes the byte was not traced | Executed (0x19e3a8, 50 input combinations) |
+| W9 | `docs/issues/lag.md` 2.4: `engine_frameStep` is "1 while `g_displayRateModeInv` 0x44fd40 is non-zero" | Not wrong, only abbreviated: the code returns clamp(signed byte 0x44fd50 + 1, 1, 2) in that case, and `docs/mainloop.md` section 6 records that the byte has no writer, so the result is 1 | Executed (0x19e3a8, 50 input combinations) |
 | W10 | `docs/issues/lag.md` 2.2, step 6: "store the sample as record number lif, message count 0" | Also: the record's message-start word is an uninitialised stack word until bytes are attached (it is only read when the count is non-zero) | Executed |
 | W11 | `docs/issues/draw-sim-leaks.md`: "simulated in call c + L − 1" | Confirmed for L = `lif` − `net_frame` taken after the sample is stored and before the tick, one tick per call; add one per call without a tick | Executed |
 | W12 | `docs/issues/dynamic-tests.md` a11/a12 and FINDINGS L13, F5 | Consistent with them, with one refinement: over 20,000 frames the two console-style adders and IEEE round-to-nearest give the same stick bytes but for 1 frame; only plain truncation of the exact sum stands apart (11.4 %) | Model |
@@ -654,8 +715,8 @@ Proposed rows for `FINDINGS.md` (section "Lag" or "Desync"):
 
 | Proposed | Claim | Kind | Evidence |
 |---|---|---|---|
-| L7 (add) | A kick request is answered only for a peer the answering machine has not yet dropped. If one machine completes the negotiation and executes the drop before another machine's request reaches it, that other machine never drops the peer: its simulation stops at the drop frame and the first machine stalls behind it. KICK_MC | Executed (three interpreter instances); frequency Model | 0x13c2f0; `difftest_netwire.py` "session: kick request too late"; docs/spec/net-wire.md 12.3 |
-| D-new | An out-of-sync flag is not always mutual: the machine that flags first stops being heard by the other (active-mask test), which may then never flag it back | Executed | 0x13b6ec, 0x13bf30; "session: one machine diverges" |
+| L7 (add) | A kick request is answered only for a peer the answering machine has not yet dropped. If one machine completes the negotiation and executes the drop before another machine's request reaches it, that other machine never drops the peer: its simulation stops at the drop frame and the first machine stalls behind it. In model runs with random counter phases 7 of 160 kicks ended this way | Executed (three interpreter instances); frequency Model | 0x13c2f0; `difftest_netwire.py` "session: kick request too late"; docs/spec/net-wire.md 12.3 |
+| D-new | An out-of-sync flag is not always mutual, and one is enough: the machine that sets it changes its active mask and is from then on ignored by every machine whose mask differs, which may never set a flag itself. Those machines stall, time the peer out after 900 calls and continue without it | Executed | 0x13b6ec, 0x13bf30; "session: one machine diverges" |
 | L-new | The input packet builder has no length check: 5008 bytes of stack for the datagram, then its own locals. The receive buffer is 1984 bytes | Observed; overrun Executed with a synthetic 255-frame packet | 0x137d9c, 0x137ed8, 0x13c140 |
 | L-new | Two padding bytes of about four in ten input packets, the tail of every 0x200-byte launch packet and the two pressure bytes of every received input frame are uninitialised stack | Executed | docs/spec/net-wire.md 7.3, 9, 15 |
 
@@ -679,8 +740,8 @@ No patch is proposed.
   call can fail or block in ways that matter here (timeout argument 1000 ms).
 - The handlers behind game messages and direct messages are stubs here; payload formats
   are in `docs/netcode.md`.
-- Sessions used at most 4 machines, about 2,500 calls each at most, frame numbers below
-  1,000; the function-level tests used frame numbers up to 2³¹. Wrap-around of the 32-bit
+- Sessions used at most 4 machines, at most 1,560 calls of `net_main` in all, frame numbers
+  below 700; the function-level tests used frame numbers up to 2³¹. Wrap-around of the 32-bit
   frame number was not examined.
 - The pacing rules are in the model's `net_main` because the test needed them to stay in
   step with the original; they are the subject of `docs/issues/lag.md` and

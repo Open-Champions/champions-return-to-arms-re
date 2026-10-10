@@ -19,6 +19,7 @@ What is modelled
                         Armor 0x318264, thorns 0x2ddccc, critical-hit bonus 0x2e76c4,
                         stunning strike 0x308c10 / 0x308cb4, Retribution 0x314790
     boss_rank           0x10d940   0 / 1 (MiniBoss) / 2 (named boss)
+    level_scale         0x1e55c0   (0x1e5b70-0x1e5c94) the level's monster level per difficulty
     monster_stats       0x10a620   hit points, armour, damage, attack, experience value
     kill_experience     0x110d30   (0x111e3c-0x112248) experience for a kill and its split
     give_exp            0x1d3150   experience, level-ups, points
@@ -1620,6 +1621,24 @@ def boss_rank(tables, is_creature, type_name, name_prop, cflags):
     if name == tables.boss_last[0].lower() or name == tables.boss_last[1].lower():
         return 2
     return cflags & 1
+
+
+def level_scale(tables, level_byte, difficulty, pvp_b, level_name):
+    """The monster level of a level, g_levelMonsterLevel 0x4f714c, as game_loadLevel sets it
+    (0x1e5b70-0x1e5c94).  level_byte is the signed byte at +4 of the level's table row.
+    Difficulty 1: byte + 2; difficulties 2-5: (byte + 2) x 0.75 + 34, 61, 88, 115.  PvP
+    mode B makes it 3.0 - but the difficulty formula is applied after that store and from
+    the unchanged byte, so the 3.0 survives only on difficulty 1.  Two level names (compared
+    exactly, with case) then force 1.0 and 2.0."""
+    base = itof(s8(level_byte) + 2)
+    value = THREE if pvp_b else base
+    if difficulty in (2, 3, 4, 5):
+        value = fadd(fmul(base, 0x3F400000), (0x42080000, 0x42740000, 0x42B00000, 0x42E60000)[difficulty - 2])
+    if level_name == tables.fixed_levels[0]:
+        value = ONE
+    elif level_name == tables.fixed_levels[1]:
+        value = TWO
+    return value
 
 
 def monster_stats(tables, w, pct, rank, type_name, roll_hp, own_draw=0, dead=False):

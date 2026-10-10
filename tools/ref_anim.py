@@ -703,7 +703,8 @@ def anim_push_chained(state, clip, flags):
     """anim_pushChained 0x170938: append at weight 1 with time = (time of the track below
     - its clip length) + 2.0, normally negative: the track waits (anim_advance only counts
     a negative time up) and starts two ticks after the track below ends.  The sound cursor
-    of the cell is NOT reset.  Ignored when the state is full."""
+    of the cell is NOT reset: it keeps what an earlier track left in the cell.  Ignored
+    when the state is full."""
     if clip is None:
         return None
     if state.count < 1:
@@ -1039,15 +1040,31 @@ def _remove_track(state, index):
     state.count = s8(state.count - 1)
 
 
-def _sound_group(times, first):
-    """One past the run of events that share the tick of event `first`."""
-    end = first + 1
-    if times[end] == times[first]:
-        while True:
-            end += 1
-            if times[end] != times[first]:
-                break
-    return end
+class _EventTicks:
+    """The ticks of a clip's sound events as floats; an index outside the table (possible
+    only through a cursor left in the cell, see anim_push_chained) is a host fault."""
+
+    def __init__(self, times):
+        self.times = times
+
+    def raw(self, index):
+        if not 0 <= index < len(self.times):
+            raise HostFault('sound cursor %d outside the event table: the original reads '
+                            'the memory around it' % index)
+        return self.times[index]
+
+    def __getitem__(self, index):
+        return from_int(self.raw(index))
+
+    def run_end(self, first):
+        """One past the run of events that share the tick of event `first`."""
+        end = first + 1
+        if self.raw(end) == self.raw(first):
+            while True:
+                end += 1
+                if self.raw(end) != self.raw(first):
+                    break
+        return end
 
 
 def _step_sounds(system, state, track, old_time, flags):
@@ -1055,14 +1072,14 @@ def _step_sounds(system, state, track, old_time, flags):
     the caller passed a position.  The track's cursor (sound_idx) is the index of the next
     event; events whose tick is below the new time are fired in runs of equal tick."""
     clip = track.clip
-    times = clip.sound_times
+    ticks = _EventTicks(clip.sound_times)
     index = track.sound_idx
-    if index > 0 and le(old_time, from_int(times[index - 1])):
+    if index > 0 and le(old_time, ticks[index - 1]):
         track.sound_idx = index = 0             # time went back: start over
-    if lt(from_int(times[index]), old_time):    # time went forward without sounds: skip
+    if lt(ticks[index], old_time):              # time went forward without sounds: skip
         while True:
             index = s16(index + 1)
-            if not lt(from_int(times[index]), old_time):
+            if not lt(ticks[index], old_time):
                 break
         track.sound_idx = index
     muted = False
@@ -1078,8 +1095,8 @@ def _step_sounds(system, state, track, old_time, flags):
             cell[1] = (cell[1] + 1) & 0xFF
     time = track.time
     index = track.sound_idx
-    while lt(from_int(times[index]), time):
-        end = _sound_group(times, index)
+    while lt(ticks[index], time):
+        end = ticks.run_end(index)
         if not muted:
             system.sound_log.append((clip, index, end))
         track.sound_idx = index = s16(end)
@@ -1087,14 +1104,14 @@ def _step_sounds(system, state, track, old_time, flags):
     if le(length, time) and flags & LOOP:
         wrapped = sub(time, length)
         track.sound_idx = 0
-        if lt(from_int(times[0]), wrapped):
+        if lt(ticks[0], wrapped):
             while True:
                 first = track.sound_idx
-                end = _sound_group(times, first)
+                end = ticks.run_end(first)
                 if not muted:
                     system.sound_log.append((clip, first, end))
                 track.sound_idx = s16(end)
-                if not lt(from_int(times[track.sound_idx]), wrapped):
+                if not lt(ticks[track.sound_idx], wrapped):
                     break
 
 

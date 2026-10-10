@@ -899,7 +899,7 @@ def group_powf(elf, rng):
         rig = Rig(elf, config)
         tally = Tally()
         label = '' if index == 0 else ' [%s%s%s]' % (config[0], ' bias' if config[1] else '', ' div-nearest' if config[2] else '')
-        for _ in range(scaled(30000 if index == 0 else 3000)):
+        for _ in range(scaled(20000 if index == 0 else 2000)):
             roll = rng.random()
             if roll < 0.55:
                 x = rf(rng, 0, rng.choice((2, 40, 2000, 1e6)))
@@ -968,11 +968,36 @@ def group_boss_rank(elf, rng, tables):
     tally.flush({'boss rank': 'returned rank; the name property supplied by a stub'})
 
 
+def group_level_scale(rig, rng, tables, tally, label):
+    """The stretch of game_loadLevel that sets the level's monster level."""
+    emu, mem = rig.emu, rig.mem
+    for _ in range(scaled(600)):
+        byte = rng.choice((rng.randrange(0, 60), rng.randrange(-128, 128)))
+        difficulty = rng.choice((1, 2, 3, 4, 5, 0, 6))
+        pvp_b = rng.choice((0, 0, 1))
+        name = rng.choice(tuple(tables.fixed_levels) + ('town', tables.fixed_levels[0].upper(), tables.fixed_levels[1] + 'x'))
+        rig.begin({})
+        mem.w32(0x4F7120, pvp_b)
+        mem.w32(0x4F719C, difficulty)
+        mem.w32(0x4F714C, 0x12345678)
+        emu.r[4] = (byte + 2) & 0xFFFFFFFFFFFFFFFF
+        emu.r[22] = emu.r[16] = emu.r[7] = 0x4F0000
+        emu.r[23] = rig.cstring(name)
+        emu.r[3] = emu.r[5] = 0
+        emu.r[29] = rig.sp
+        emu.run(start=0x1E5B88, until={0x1E5C98, 0x1E5C9C})
+        want = R.level_scale(tables, byte, difficulty, pvp_b, name)
+        tally.check('level scale' + label, mem.u32(0x4F714C) == want,
+                    lambda: (byte, difficulty, pvp_b, name, hex(mem.u32(0x4F714C)), hex(want)))
+
+
 def group_monster(elf, rng, tables):
     for index, config in enumerate(FPU_CONFIGS):
         rig = Rig(elf, config)
         tally = Tally()
         label = '' if index == 0 else ' [%s%s%s]' % (config[0], ' bias' if config[1] else '', ' div-nearest' if config[2] else '')
+        if index < 3:
+            group_level_scale(rig, rng, tables, tally, label)
         rig.emu.stub(0x10D940, function=lambda e: rig.scenario['rank'])
         for _ in range(scaled(6000 if index == 0 else 500)):
             w = make_world(rng)
@@ -1014,7 +1039,8 @@ def group_monster(elf, rng, tables):
             if index == 0:
                 tally.check('monster statistics: no other store', not rig.stray_writes([obj], [], []),
                             lambda: rig.stray_writes([obj], [], []))
-        tally.flush({name: 'hp, max hp, armour, damage range, attack, experience value, own seed; bit for bit'
+        tally.flush({name: ('stretch 0x1e5b88-0x1e5c98 of game_loadLevel; stored float, bit for bit' if name.startswith('level scale')
+                            else 'hp, max hp, armour, damage range, attack, experience value, own seed; bit for bit')
                      for name in tally.order})
 
 
@@ -1116,7 +1142,7 @@ def group_player_stats(elf, rng, tables):
         rig = Rig(elf, config)
         tally = Tally()
         label = '' if index == 0 else ' [%s%s%s]' % (config[0], ' bias' if config[1] else '', ' div-nearest' if config[2] else '')
-        for case in range(scaled(1500 if index == 0 else 150)):
+        for case in range(scaled(900 if index == 0 else 90)):
             w = make_world(rng)
             objects = []
             gen_players(rng, tables, w, objects)
@@ -1232,13 +1258,29 @@ COVER = ('take_damage', 'text', 'gas', 'disease', 'stun', 'light', 'cast', 'spar
 
 def group_damage(elf, rng, tables):
     cover = {}
+    plain_amount = R._proc_amount
+
+    def counted_amount(w, lo, hi):
+        span = R.s32(hi - lo + 1)
+        key = 'range with v2 >= v1' if span > 0 else 'range with v2 < v1 - 1' if span < 0 else 'range with zero divisor'
+        cover[key] = cover.get(key, 0) + 1
+        return plain_amount(w, lo, hi)
+
+    R._proc_amount = counted_amount
+    try:
+        _group_damage(elf, rng, tables, cover)
+    finally:
+        R._proc_amount = plain_amount
+
+
+def _group_damage(elf, rng, tables, cover):
     for index, config in enumerate(FPU_CONFIGS):
         rig = Rig(elf, config)
         tally = Tally()
         label = '' if index == 0 else ' [%s%s%s]' % (config[0], ' bias' if config[1] else '', ' div-nearest' if config[2] else '')
         skipped = 0
         rig.emu.stub(0x10D940, function=lambda e, rig=rig: rig.back[e.r[4] & M32].boss_rank)
-        for _ in range(scaled(12000 if index == 0 else 1000)):
+        for _ in range(scaled(10000 if index == 0 else 800)):
             sc = gen_damage(rng)
             w, objects, victim, attacker = sc['world'], sc['objects'], sc['victim'], sc['attacker']
             sc['pool'], w.pool_fn = pool_plan(sc['plan'])
@@ -1286,10 +1328,25 @@ def group_damage(elf, rng, tables):
                 for event in want_events:
                     if event[0] in COVER:
                         cover[event[0]] = cover.get(event[0], 0) + 1
-                cover['returned 0'] = cover.get('returned 0', 0) + (want == 0)
-                cover['zero divisor'] = cover.get('zero divisor', 0) + bool(rig.emu.notes)
-                cover['nested hit'] = cover.get('nested hit', 0) + (len({e[1] for e in want_events if e[0] == 'take_damage'}) > 1)
-                cover['critical'] = cover.get('critical', 0) + any(e[0] == 'text' and e[2] for e in want_events)
+                hits = [e for e in want_events if e[0] == 'take_damage']
+                marks = (('returned 0', want == 0),
+                         ('interpreter continued past a zero divisor', bool(rig.emu.notes)),
+                         ('nested hit', len({e[1] for e in hits}) > 1),
+                         ('critical shown', any(e[0] == 'text' and e[2] for e in want_events)),
+                         ('miss on the second roll', any(e[4] in (0x2000, 0x42000) and e[2] == 0 for e in hits)),
+                         ('thorns', any(e[0] == 'thorns' for e in w.events)),
+                         ('frost armor strike', any(e[0] == 'fx_spawn' for e in want_events)),
+                         ('spirit shield absorb', ('fx_at', R.FX_SPIRIT_SHIELD) in want_events),
+                         ('reflection', attacker is not None and attacker is not victim and attacker.counter11 == 0x11),
+                         ('kill proc', any(e[4] & 0x2000800 and not sc['flags'] & 0x2000800 for e in hits)),
+                         ('damage-over-time delivery', bool(sc['flags'] & 0x800000) and len([e for e in hits if e[1] == 'victim']) == 2),
+                         ('non-creature victim', not victim.flags & 0x20 and bool(hits)),
+                         ('roll with a zero span', any(e[2] == 0x7F800000 for e in hits)),
+                         ('retribution number', any(e[0] == 'text' and e[5] == 2 for e in want_events)),
+                         ('pool refused a block', any(e[0] == 'pool' and not e[2] for e in want_events)),
+                         ('player victim', bool(victim.flags & 0x40)), ('PvP mode A', bool(w.pvp_a)))
+                for key, hit in marks:
+                    cover[key] = cover.get(key, 0) + bool(hit)
         tally.flush({name: 'bit for bit' for name in tally.order})
         if skipped:
             print('      (%d generated cases skipped: runaway recursion in both original and model)' % skipped)

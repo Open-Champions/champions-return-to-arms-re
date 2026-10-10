@@ -43,9 +43,16 @@ How a property is tested
     the player objects from the lockstep pads, camera words and executed game messages, so
     that the sync hash depends on every input every machine applied), path_service,
     game_isFrozen (returns 1, which keeps the prediction copy out), net_predictLocalPlayer,
-    dbg_printf and the two calls made when a kicked player's character is killed.  A model
-    Machine shadows each console.  Datagrams travel through a simulated link with delay,
-    loss, duplication and reordering.
+    dbg_printf, the two calls made when a kicked player's character is killed, and the
+    game-message and direct-message handlers (stubs that record what they are given).  A
+    model Machine shadows each console.  Datagrams travel through a simulated link with
+    delay, loss, duplication and reordering.  The random game messages are kept under 240
+    bytes per input frame; the property "messages over 255 bytes" shows what happens above
+    the one-byte limit.  A session property fails on any difference between original and
+    model, and also when the scenario did not end the way its line says (for instance when
+    a peer that should have been dropped was not).
+
+Run time: about eight minutes; --quick about one.
 
 Floating point
     The stick decoder and pad_apply are compared as 32-bit patterns under the
@@ -118,8 +125,9 @@ STATE_WORDS = collections.OrderedDict((
 STACK_MARK = 0xEE
 
 
-def wanted(name):
-    return OPTIONS['filter'] is None or OPTIONS['filter'].lower() in name.lower()
+def wanted(*names):
+    """True when -k was not given or its text occurs in one of the property names."""
+    return OPTIONS['filter'] is None or any(OPTIONS['filter'].lower() in name.lower() for name in names)
 
 
 def report(name, failures, count, text, examples=()):
@@ -479,7 +487,7 @@ def random_channel(rng, fpu=None):
 
 
 def test_axis(elf):
-    if not wanted('axis'):
+    if not wanted('axis encode', 'axis decode'):
         return
     rng = random.Random(OPTIONS['seed'] + 1)
     for config_index, config in enumerate(FPU_CONFIGS):
@@ -534,7 +542,7 @@ def test_axis(elf):
 
 
 def test_fpu_choices():
-    if not wanted('fpu'):
+    if not wanted('fpu choices disagree'):
         return
     rng = random.Random(OPTIONS['seed'] + 2)
     gen = InputGen(rng)
@@ -709,7 +717,8 @@ def run_builder(console, machine, dest, first, last, kind, owner, state_addr, ra
 
 
 def test_builder(elf):
-    if not wanted('build'):
+    if not wanted('build input packet', 'build: call arguments', 'build: padding not stored',
+                  'build raw relay'):
         return
     rng = random.Random(OPTIONS['seed'] + 4)
     console = Console(elf)
@@ -810,7 +819,7 @@ class Link:
 
 
 def test_receiver(elf):
-    if not wanted('receive'):
+    if not wanted('receive input packet', 'receive: pressure bytes'):
         return
     rng = random.Random(OPTIONS['seed'] + 5)
     console = Console(elf)
@@ -832,6 +841,11 @@ def test_receiver(elf):
             if rng.random() < 0.3:
                 link.message()
             data = link.packet()
+            gap_first = machine.peers[sender_slot].newest + rng.randrange(2, 6)
+            if rng.random() < 0.06 and gap_first <= link.sender.lif - 1:
+                # a packet that starts after a gap (no correct sender produces one)
+                data = link.sender.build_packet(receiver_slot, gap_first, link.sender.lif - 1, R.PKT_INPUT,
+                                                sender_slot, R.CodecState()).data
             roll = rng.random()
             if roll < 0.20:                         # lost
                 continue
@@ -1163,15 +1177,17 @@ class Session:
             sample, yaw, flag = sample
         if rng.random() < self.message_rate:
             for _ in range(rng.choice((1, 1, 1, 2, 3))):
-                size = rng.choice((0, 1, 2, 5, 16, 60, 120, 200, 253))
+                size = rng.choice((0, 1, 2, 5, 16, 60, 120, 200, 238))
                 # One frame's bytes must stay under 256 (one count byte on the wire).  The
                 # next attach goes to max(last_sent + 1, net_frame); at two steps per call
-                # two attaches in a row land on the same frame, so count what it has.
+                # two attaches in a row land on the same frame, so count what it has.  The
+                # limit used is 240: the game queues messages of its own inside net_main
+                # (the 4-byte "player left" message when a peer is dropped).
                 mine = model.peers[index]
                 target = max(model.last_sent + 1, model.net_frame)
                 held_already = mine.msg_count(target) if mine.record(target)[0] == target else 0
                 waiting = (mine.msg_write - model.msg_attached) & 0x1FFF
-                if held_already + waiting + size + 2 > 255:
+                if held_already + waiting + size + 2 > 240:
                     break
                 self.queue(index, rng.randrange(8), bytes(rng.randrange(256) for _ in range(size)))
                 self.largest_frame_load = max(self.largest_frame_load, held_already + waiting + size + 2)
@@ -1326,191 +1342,199 @@ def session_report(name, session, text, extra_ok=True, extra_text=''):
 
 
 def test_sessions(elf):
-    if not wanted('session'):
-        return
     seed = OPTIONS['seed']
     rounds = scaled(700, 70)
 
-    rng = random.Random(seed + 10)
-    session = Session(elf, rng, 2, Wire(rng, loss=0.03, duplicate=0.02, delay=(1, 3)))
-    session.run(rounds)
-    session_report('session: 2 consoles', session, 'two emulated consoles, 3% loss, delay 1-3 calls',
-                   all(not any(row) for row in session.flags('oos')), ' No machine flagged another out of sync')
-    checked, exact, plain, leads = session.delay_rule()
-    later = sorted(k for k in leads if k)
-    report('input delay rule', (checked - exact) + (later[0] < 2), checked,
-           'same session: a pad sample stored in net_main call c, with lead L = g_localInputFrame - '
-           'g_netFrame taken after the sample is stored and before the tick, is simulated in call '
-           'c + L - 1 + (calls without a tick in between); %d of the %d frames had no such call and were '
-           'simulated in exactly call c + L - 1.  L ranged from %d to %d (it is 1 only in a machine\'s '
-           'first call, which cannot tick)' % (plain, checked, later[0], later[-1]))
+    if wanted('session: 2 consoles', 'input delay rule'):
+        rng = random.Random(seed + 10)
+        session = Session(elf, rng, 2, Wire(rng, loss=0.03, duplicate=0.02, delay=(1, 3)))
+        session.run(rounds)
+        session_report('session: 2 consoles', session, 'two emulated consoles, 3% loss, delay 1-3 calls',
+                       all(not any(row) for row in session.flags('oos')), ' No machine flagged another out of sync')
+        checked, exact, plain, leads = session.delay_rule()
+        later = sorted(k for k in leads if k)
+        report('input delay rule', (checked - exact) + (later[0] < 2), checked,
+               'same session: a pad sample stored in net_main call c, with lead L = g_localInputFrame - '
+               'g_netFrame taken after the sample is stored and before the tick, is simulated in call '
+               'c + L - 1 + (calls without a tick in between); %d of the %d frames had no such call and were '
+               'simulated in exactly call c + L - 1.  L ranged from %d to %d (it is 1 only in a machine\'s '
+               'first call, which cannot tick)' % (plain, checked, later[0], later[-1]))
 
-    rng = random.Random(seed + 11)
-    session = Session(elf, rng, 3, Wire(rng, loss=0.10, duplicate=0.05, delay=(1, 9)))
-    session.run(rounds * 2 // 3)
-    session_report('session: 3 consoles, bad link', session,
-                   'three consoles, 10% loss, 5% duplicates, delay 1-9 calls (packets overtake each other)',
-                   all(not any(row) for row in session.flags('oos')), ' No machine flagged another out of sync')
+    if wanted('session: 3 consoles, bad link'):
+        rng = random.Random(seed + 11)
+        session = Session(elf, rng, 3, Wire(rng, loss=0.10, duplicate=0.05, delay=(1, 9)))
+        session.run(rounds * 2 // 3)
+        session_report('session: 3 consoles, bad link', session,
+                       'three consoles, 10% loss, 5% duplicates, delay 1-9 calls (packets overtake each other)',
+                       all(not any(row) for row in session.flags('oos')), ' No machine flagged another out of sync')
 
-    rng = random.Random(seed + 12)
-    session = Session(elf, rng, 4, Wire(rng, loss=0.05, duplicate=0.02, delay=(1, 5)))
-    session.message_rate = 0.3
-    session.run(rounds // 2)
-    session_report('session: 4 consoles', session, 'four consoles, 5%% loss, many game messages (sizes %s)'
-                   % ', '.join(str(k) for k in sorted(session.message_sizes)),
-                   all(not any(row) for row in session.flags('oos')), ' No machine flagged another out of sync')
+    if wanted('session: 4 consoles'):
+        rng = random.Random(seed + 12)
+        session = Session(elf, rng, 4, Wire(rng, loss=0.05, duplicate=0.02, delay=(1, 5)))
+        session.message_rate = 0.3
+        session.run(rounds // 2)
+        session_report('session: 4 consoles', session, 'four consoles, 5%% loss, many game messages (sizes %s)'
+                       % ', '.join(str(k) for k in sorted(session.message_sizes)),
+                       all(not any(row) for row in session.flags('oos')), ' No machine flagged another out of sync')
 
-    # uneven machines: two steps per call, skipped calls, held and no-simulation calls,
-    # the input lock, an outage
-    rng = random.Random(seed + 13)
-    wire = Wire(rng, loss=0.02, delay=(1, 4))
-    session = Session(elf, rng, 3, wire)
-    phase = {'round': 0}
+    if wanted('session: uneven machines'):
+        # uneven machines: two steps per call, skipped calls, held and no-simulation calls,
+        # the input lock, an outage
+        rng = random.Random(seed + 13)
+        wire = Wire(rng, loss=0.02, delay=(1, 4))
+        session = Session(elf, rng, 3, wire)
+        phase = {'round': 0}
 
-    def schedule(s, index):
-        if index == 0:
-            phase['round'] += 1
-        r = phase['round']
-        if index == 1 and r % 3 == 0:
-            return None                                     # machine 1 misses every third call
-        args = {'frame_step': 2 if (index == 1 or 200 < r < 260) else 1}
-        if index == 2 and r % 97 in (5, 6, 7, 8):
-            args['hold_arg'] = True
-        if index == 0 and r % 131 in (9, 10, 11):
-            args['no_sim'], args['hold_arg'] = True, True
-        if r % 150 == 40:
-            wire.blocked = {(0, 1), (1, 0)}
-        if r % 150 == 75:
-            wire.blocked = set()
-        if r % 60 == 30 and index == 2:
-            def lock(model, console):
-                if model is not None:
-                    model.input_lock[2] = [20, 0x00F0, r % 120 == 30]
-                else:
-                    console.mem.write(G_INPUT_LOCK + 24, struct.pack('<iIi', 20, 0x00F0, r % 120 == 30))
-            s.both(2, lock)
-        return args
-    session.run(rounds * 2 // 3, schedule)
-    session_report('session: uneven machines', session,
-                   'three consoles; one runs two input frames per call and misses every third call, with '
-                   'held calls, no-simulation calls, an input lock and a 35-round outage between two of them',
-                   all(not any(row) for row in session.flags('oos')), ' No machine flagged another out of sync')
+        def schedule(s, index):
+            if index == 0:
+                phase['round'] += 1
+            r = phase['round']
+            if index == 1 and r % 3 == 0:
+                return None                                     # machine 1 misses every third call
+            args = {'frame_step': 2 if (index == 1 or 200 < r < 260) else 1}
+            if index == 2 and r % 97 in (5, 6, 7, 8):
+                args['hold_arg'] = True
+            if index == 0 and r % 131 in (9, 10, 11):
+                args['no_sim'], args['hold_arg'] = True, True
+            if r % 150 == 40:
+                wire.blocked = {(0, 1), (1, 0)}
+            if r % 150 == 75:
+                wire.blocked = set()
+            if r % 60 == 30 and index == 2:
+                def lock(model, console):
+                    if model is not None:
+                        model.input_lock[2] = [20, 0x00F0, r % 120 == 30]
+                    else:
+                        console.mem.write(G_INPUT_LOCK + 24, struct.pack('<iIi', 20, 0x00F0, r % 120 == 30))
+                s.both(2, lock)
+            return args
+        session.run(rounds * 2 // 3, schedule)
+        session_report('session: uneven machines', session,
+                       'three consoles; one runs two input frames per call and misses every third call, with '
+                       'held calls, no-simulation calls, an input lock and a 35-round outage between two of them',
+                       all(not any(row) for row in session.flags('oos')), ' No machine flagged another out of sync')
 
-    rng = random.Random(seed + 14)
-    session = Session(elf, rng, 2, Wire(rng, loss=0.02, delay=(1, 3)), modem=True)
-    session.run(rounds // 3)
-    session_report('session: modem send cycle', session, 'two consoles with the UART-modem flag set (send cycle 3)',
-                   all(m.cycle == 3 for m in session.models), ' Cycle is 3 calls')
+    if wanted('session: modem send cycle'):
+        rng = random.Random(seed + 14)
+        session = Session(elf, rng, 2, Wire(rng, loss=0.02, delay=(1, 3)), modem=True)
+        session.run(rounds // 3)
+        session_report('session: modem send cycle', session, 'two consoles with the UART-modem flag set (send cycle 3)',
+                       all(m.cycle == 3 for m in session.models), ' Cycle is 3 calls')
 
-    # one participant is the model alone
-    rng = random.Random(seed + 15)
-    session = Session(elf, rng, 3, Wire(rng, loss=0.05, delay=(1, 4)), emulated=(0, 2))
-    session.run(rounds // 2)
-    progress = min(m.net_frame for m in session.models)
-    session_report('session: model as a peer', session,
-                   'two consoles and one participant that is the model alone (its packets are whatever the '
-                   'model builds, its state whatever the model decodes)',
-                   progress > rounds // 4 and all(not any(row) for row in session.flags('oos')),
-                   ' The consoles accepted its input, simulated %d frames with it and their sync hashes kept '
-                   'matching its hashes' % progress)
+    if wanted('session: model as a peer'):
+        # one participant is the model alone
+        rng = random.Random(seed + 15)
+        session = Session(elf, rng, 3, Wire(rng, loss=0.05, delay=(1, 4)), emulated=(0, 2))
+        session.run(rounds // 2)
+        progress = min(m.net_frame for m in session.models)
+        session_report('session: model as a peer', session,
+                       'two consoles and one participant that is the model alone (its packets are whatever the '
+                       'model builds, its state whatever the model decodes)',
+                       progress > rounds // 4 and all(not any(row) for row in session.flags('oos')),
+                       ' The consoles accepted its input, simulated %d frames with it and their sync hashes kept '
+                       'matching its hashes' % progress)
 
-    # divergence: one machine's simulation goes wrong in one frame
-    rng = random.Random(seed + 16)
-    session = Session(elf, rng, 3, Wire(rng, loss=0.02, delay=(1, 3)))
-    session.run(60)
-    bad_frame = session.models[1].net_frame + 6
-    session.models[1].toy.fault_frame = bad_frame
-    session.consoles[1].toy.fault_frame = bad_frame
-    session.run(scaled(260, 120))
-    oos = session.flags('oos')
-    frames = [m.net_frame for m in session.models]
-    stalled = [m.stall for m in session.models]
-    across = oos[0][1] + oos[2][1] + oos[1][0] + oos[1][2]
-    # 900 calls of silence later the two that agree kick the third; skip most of the wait
-    for index in (0, 2):
-        session.set_peer_field(index, 1, 'silence', 850 + 3 * index)
-    session.run(scaled(200, 200))
-    pair = [session.models[0], session.models[2]]
-    session_report('session: one machine diverges', session,
-                   'three consoles; machine 1 corrupts its seed in frame %d' % bad_frame,
-                   across >= 1 and not (oos[0][2] or oos[2][0]) and min(stalled) > 50
-                   and [m.peers[1].dropped for m in pair] == [1, 1]
-                   and len({m.peers[1].drop_frame for m in pair}) == 1
-                   and min(m.net_frame for m in pair) > max(frames) + 50,
-                   ' Out-of-sync flags after 260 rounds: %r (row = machine, column = peer).  Whoever compares '
-                   'first flags the other side, its active mask changes, and the other side then ignores its '
-                   'packets and may never set a flag of its own; machines 0 and 2 never flag each other.  All '
-                   'three stalled (frames %s).  With their silence counters for machine 1 then set to 850 and '
-                   '856, machines 0 and 2 timed it out, negotiated, dropped it at frame %d and went on (frames '
-                   '%s)' % (oos, '/'.join(str(f) for f in frames), pair[0].peers[1].drop_frame,
-                            '/'.join(str(m.net_frame) for m in pair)))
+    if wanted('session: one machine diverges'):
+        # divergence: one machine's simulation goes wrong in one frame
+        rng = random.Random(seed + 16)
+        session = Session(elf, rng, 3, Wire(rng, loss=0.02, delay=(1, 3)))
+        session.run(60)
+        bad_frame = session.models[1].net_frame + 6
+        session.models[1].toy.fault_frame = bad_frame
+        session.consoles[1].toy.fault_frame = bad_frame
+        session.run(scaled(260, 120))
+        oos = session.flags('oos')
+        frames = [m.net_frame for m in session.models]
+        stalled = [m.stall for m in session.models]
+        across = oos[0][1] + oos[2][1] + oos[1][0] + oos[1][2]
+        # 900 calls of silence later the two that agree kick the third; skip most of the wait
+        for index in (0, 2):
+            session.set_peer_field(index, 1, 'silence', 850 + 3 * index)
+        session.run(scaled(200, 200))
+        pair = [session.models[0], session.models[2]]
+        session_report('session: one machine diverges', session,
+                       'three consoles; machine 1 corrupts its seed in frame %d' % bad_frame,
+                       across >= 1 and not (oos[0][2] or oos[2][0]) and min(stalled) > 50
+                       and [m.peers[1].dropped for m in pair] == [1, 1]
+                       and len({m.peers[1].drop_frame for m in pair}) == 1
+                       and min(m.net_frame for m in pair) > max(frames) + 50,
+                       ' Out-of-sync flags after 260 rounds: %r (row = machine, column = peer).  Whoever compares '
+                       'first flags the other side, its active mask changes, and the other side then ignores its '
+                       'packets and may never set a flag of its own; machines 0 and 2 never flag each other.  All '
+                       'three stalled (frames %s).  With their silence counters for machine 1 then set to 850 and '
+                       '856, machines 0 and 2 timed it out, negotiated, dropped it at frame %d and went on (frames '
+                       '%s)' % (oos, '/'.join(str(f) for f in frames), pair[0].peers[1].drop_frame,
+                                '/'.join(str(m.net_frame) for m in pair)))
 
-    # a peer goes silent: timeout, negotiation by kick requests and raw relays, drop
-    rng = random.Random(seed + 17)
-    session = Session(elf, rng, 4, Wire(rng, loss=0.0, delay=(1, 3)))
-    session.run(80)
-    session.dead.add(3)
-    session.wire.flying = [item for item in session.wire.flying if item[2] != 3 or True]
-    # machine 0 has seen less of the dead peer than the others
-    session.wire.flying = [item for item in session.wire.flying if not (item[2] == 0)]
-    for index in range(3):
-        session.set_peer_field(index, 3, 'silence', 860 - 7 * index)
-    session.run(scaled(200, 200))
-    survivors = session.models[:3]
-    drop_frames = [m.peers[3].drop_frame for m in survivors]
-    dropped = [m.peers[3].dropped for m in survivors]
-    kills = [m.kills for m in survivors]
-    session_report('session: silent peer is dropped', session,
-                   'four consoles, the fourth stops; the others\' silence counters were set to 860, 853 and 846',
-                   dropped == [1, 1, 1] and len(set(drop_frames)) == 1 and kills == [[3], [3], [3]]
-                   and session.datagrams[R.PKT_KICK_REQUEST] > 0 and session.datagrams[R.PKT_RAW_RELAY] > 0
-                   and all(not any(row[:3]) for row in session.flags('oos')[:3])
-                   and min(m.net_frame for m in survivors) > drop_frames[0] + 20,
-                   ' All three agreed on drop frame %d, marked the peer dropped, killed its player in that '
-                   'tick and went on simulating (frames %s); kills %r' % (
-                       drop_frames[0], '/'.join(str(m.net_frame) for m in survivors), kills))
+    if wanted('session: silent peer is dropped'):
+        # a peer goes silent: timeout, negotiation by kick requests and raw relays, drop
+        rng = random.Random(seed + 17)
+        session = Session(elf, rng, 4, Wire(rng, loss=0.0, delay=(1, 3)))
+        session.run(80)
+        session.dead.add(3)
+        session.wire.flying = [item for item in session.wire.flying if item[2] != 3 or True]
+        # machine 0 has seen less of the dead peer than the others
+        session.wire.flying = [item for item in session.wire.flying if not (item[2] == 0)]
+        for index in range(3):
+            session.set_peer_field(index, 3, 'silence', 860 - 7 * index)
+        session.run(scaled(200, 200))
+        survivors = session.models[:3]
+        drop_frames = [m.peers[3].drop_frame for m in survivors]
+        dropped = [m.peers[3].dropped for m in survivors]
+        kills = [m.kills for m in survivors]
+        session_report('session: silent peer is dropped', session,
+                       'four consoles, the fourth stops; the others\' silence counters were set to 860, 853 and 846',
+                       dropped == [1, 1, 1] and len(set(drop_frames)) == 1 and kills == [[3], [3], [3]]
+                       and session.datagrams[R.PKT_KICK_REQUEST] > 0 and session.datagrams[R.PKT_RAW_RELAY] > 0
+                       and all(not any(row[:3]) for row in session.flags('oos')[:3])
+                       and min(m.net_frame for m in survivors) > drop_frames[0] + 20,
+                       ' All three agreed on drop frame %d, marked the peer dropped, killed its player in that '
+                       'tick and went on simulating (frames %s); kills %r' % (
+                           drop_frames[0], '/'.join(str(m.net_frame) for m in survivors), kills))
 
-    # manual kick.  The rendered-frame counters of machines 0 and 1 are 15 apart, so that
-    # machine 1's own kick request reaches machine 0 before machine 0 has finished.
-    rng = random.Random(seed + 18)
-    session = Session(elf, rng, 3, Wire(rng, loss=0.0, delay=(1, 2)))
-    session.render_offset[1] = 15
-    session.run(40)
-    session.models[0].kick_peer(2)
-    session.consoles[0].call(KICK_PEER, 2)
-    session.run(scaled(200, 200))
-    survivors = session.models[:2]
-    session_report('session: manual kick', session,
-                   'three consoles; machine 0 calls net_kickPeer(2)',
-                   session.datagrams[R.PKT_KICKED] == 12 and session.models[2].kicked == 1
-                   and [m.peers[2].dropped for m in survivors] == [1, 1]
-                   and len({m.peers[2].drop_frame for m in survivors}) == 1
-                   and min(m.net_frame for m in survivors) > survivors[0].peers[2].drop_frame + 20,
-                   ' 12 kicked notices (0xbd43) went to the kicked machine, which set its flag; machines 0 and '
-                   '1 exchanged kick requests and raw relays, dropped slot 2 at the same frame %d and went on '
-                   '(frames %s)' % (survivors[0].peers[2].drop_frame, '/'.join(str(m.net_frame) for m in survivors)))
+    if wanted('session: manual kick'):
+        # manual kick.  The rendered-frame counters of machines 0 and 1 are 15 apart, so that
+        # machine 1's own kick request reaches machine 0 before machine 0 has finished.
+        rng = random.Random(seed + 18)
+        session = Session(elf, rng, 3, Wire(rng, loss=0.0, delay=(1, 2)))
+        session.render_offset[1] = 15
+        session.run(40)
+        session.models[0].kick_peer(2)
+        session.consoles[0].call(KICK_PEER, 2)
+        session.run(scaled(200, 200))
+        survivors = session.models[:2]
+        session_report('session: manual kick', session,
+                       'three consoles; machine 0 calls net_kickPeer(2)',
+                       session.datagrams[R.PKT_KICKED] == 12 and session.models[2].kicked == 1
+                       and [m.peers[2].dropped for m in survivors] == [1, 1]
+                       and len({m.peers[2].drop_frame for m in survivors}) == 1
+                       and min(m.net_frame for m in survivors) > survivors[0].peers[2].drop_frame + 20,
+                       ' 12 kicked notices (0xbd43) went to the kicked machine, which set its flag; machines 0 and '
+                       '1 exchanged kick requests and raw relays, dropped slot 2 at the same frame %d and went on '
+                       '(frames %s)' % (survivors[0].peers[2].drop_frame, '/'.join(str(m.net_frame) for m in survivors)))
 
-    # the same with the two rendered-frame counters in step and every datagram taking one
-    # round: machine 1's own request leaves when machine 0 is finishing, arrives after
-    # machine 0 has dropped the peer, is never answered, and machine 1 never drops it
-    rng = random.Random(seed + 18)
-    session = Session(elf, rng, 3, Wire(rng, loss=0.0, delay=(3, 4)))
-    session.run(40)
-    session.models[0].kick_peer(2)
-    session.consoles[0].call(KICK_PEER, 2)
-    session.run(scaled(260, 260))
-    one, two = session.models[0], session.models[1]
-    session_report('session: kick request too late', session,
-                   'three consoles, rendered-frame counters in step, every datagram one round in flight; '
-                   'machine 0 calls net_kickPeer(2)',
-                   one.peers[2].dropped == 1 and two.peers[2].dropped == 0 and two.peers[2].kick == 1
-                   and two.kick_state == 1 and two.net_frame == one.peers[2].drop_frame
-                   and session.datagrams[R.PKT_RAW_RELAY] == 1 and session.datagrams[R.PKT_KICK_REQUEST] >= 4,
-                   ' Machine 0 dropped slot 2 at frame %d.  Machine 1 marked it on machine 0\'s request, sent '
-                   'its own requests (%d kick requests in all, 1 raw relay) after machine 0 had dropped the '
-                   'slot, got no answer - a machine answers only for a peer it has not dropped (0x13c2f0) - and '
-                   'is still negotiating at frame %d with machine 0 stalled at %d behind it'
-                   % (one.peers[2].drop_frame, session.datagrams[R.PKT_KICK_REQUEST], two.net_frame, one.net_frame))
+    if wanted('session: kick request too late'):
+        # the same with the two rendered-frame counters in step and every datagram taking one
+        # round: machine 1's own request leaves when machine 0 is finishing, arrives after
+        # machine 0 has dropped the peer, is never answered, and machine 1 never drops it
+        rng = random.Random(seed + 18)
+        session = Session(elf, rng, 3, Wire(rng, loss=0.0, delay=(3, 4)))
+        session.run(40)
+        session.models[0].kick_peer(2)
+        session.consoles[0].call(KICK_PEER, 2)
+        session.run(scaled(260, 260))
+        one, two = session.models[0], session.models[1]
+        session_report('session: kick request too late', session,
+                       'three consoles, rendered-frame counters in step, every datagram one round in flight; '
+                       'machine 0 calls net_kickPeer(2)',
+                       one.peers[2].dropped == 1 and two.peers[2].dropped == 0 and two.peers[2].kick == 1
+                       and two.kick_state == 1 and two.net_frame == one.peers[2].drop_frame
+                       and session.datagrams[R.PKT_RAW_RELAY] == 1 and session.datagrams[R.PKT_KICK_REQUEST] >= 4,
+                       ' Machine 0 dropped slot 2 at frame %d.  Machine 1 marked it on machine 0\'s request, sent '
+                       'its own requests (%d kick requests in all, 1 raw relay) after machine 0 had dropped the '
+                       'slot, got no answer - a machine answers only for a peer it has not dropped (0x13c2f0) - and '
+                       'is still negotiating at frame %d with machine 0 stalled at %d behind it'
+                       % (one.peers[2].drop_frame, session.datagrams[R.PKT_KICK_REQUEST], two.net_frame, one.net_frame))
 
 
 # ---------------------------------------------------------------------------------------
@@ -1523,7 +1547,7 @@ FLOAT_EDGES = (0x00000000, 0x80000000, 0x3F000000, 0xBF000000, 0x3F7FFFFF, 0xBF7
 
 
 def test_tick_hash(elf):
-    if not wanted('hash'):
+    if not wanted('tick: sync hash and compare'):
         return
     rng = random.Random(OPTIONS['seed'] + 20)
     console = SessionConsole(elf, 3)
@@ -1585,7 +1609,7 @@ def test_tick_hash(elf):
 def test_message_overflow(elf):
     """More than 255 message bytes on one frame: what the original builds and what its
     receiver then does."""
-    if not wanted('overflow'):
+    if not wanted('messages over 255 bytes'):
         return
     sender = R.Machine(2, 0)
     gen = InputGen(random.Random(OPTIONS['seed'] + 23))
@@ -1636,7 +1660,7 @@ def test_message_overflow(elf):
 
 
 def test_small_packets(elf):
-    if not wanted('small'):
+    if not wanted('small packet types'):
         return
     rng = random.Random(OPTIONS['seed'] + 21)
     console = SessionConsole(elf, 4)
@@ -1680,7 +1704,7 @@ def test_small_packets(elf):
 
 
 def test_launch(elf):
-    if not wanted('launch'):
+    if not wanted('launch DATA packet', 'launch generic packet'):
         return
     rng = random.Random(OPTIONS['seed'] + 22)
     console = Console(elf)
@@ -1740,7 +1764,7 @@ def test_launch(elf):
 
 
 def test_frame_step(elf):
-    if not wanted('frameStep'):
+    if not wanted('engine_frameStep'):
         return
     console = Console(elf)
     mem = console.mem
@@ -1758,8 +1782,9 @@ def test_frame_step(elf):
                 tally.check(got == want, 'mode %d fields %d byte %d: %d, expected %d' % (mode, fields, byte, got, want))
                 rows.append(got)
     report('engine_frameStep', tally.failures, tally.count,
-           'engine_frameStep 0x19e3a8: clamp(word 0x83d2c8, 1, 2) while word 0x44fd40 is zero; otherwise '
-           'clamp(signed byte 0x44fd50 + 1, 1, 2) - not a constant 1, as docs/issues/lag.md 2.4 has it',
+           'engine_frameStep 0x19e3a8 (how many input frames a call of net_main samples): clamp(word '
+           '0x83d2c8, 1, 2) while word 0x44fd40 is zero; otherwise clamp(signed byte 0x44fd50 + 1, 1, 2), '
+           'which is 1 as long as nothing writes that byte (docs/mainloop.md)',
            tally.examples)
 
 

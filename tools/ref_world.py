@@ -660,6 +660,13 @@ def _to_samples(e, c, s, px, py):
     return fmul(lx, QUARTER), fmul(ly, QUARTER)
 
 
+def _span(lo, hi, first, size):
+    """range(lo, hi + 1) cut down to the indices first .. first + size - 1.  The original
+    walks the whole range and skips what lies outside the field one by one; the result is
+    the same, and a step that went wild cannot make the model spin."""
+    return range(lo if lo > first else first, (hi if hi < first + size - 1 else first + size - 1) + 1)
+
+
 def _dir_to_samples(e, c, s, dx, dy):
     """A direction in the element's axes (no scaling)."""
     if e.flags & 1:
@@ -693,14 +700,11 @@ def _height_under_disc(level, radius, pos, step_limit):
         j0 = f2i(floorf(ly))
         samples, width, x0 = hf.samples, hf.w, hf.x0
         done = False
-        for j in range(j0 - reach, j0 + reach + 2):
+        columns = _span(i0 - reach, i0 + reach + 1, x0, width)
+        for j in _span(j0 - reach, j0 + reach + 1, hf.y0, hf.h):
             row = j - hf.y0
-            if row < 0 or not row < hf.h:
-                continue
-            for i in range(i0 - reach, i0 + reach + 2):
+            for i in columns:
                 col = i - x0
-                if col < 0 or not col < width:
-                    continue
                 h = (samples[row * width + col] >> 4) + e.z
                 if not best < h:
                     continue
@@ -798,14 +802,11 @@ def terrain_test_flag1(level, radius, pos):
         lx, ly = _to_samples(e, c, s, px, py)
         i0 = f2i(floorf(lx))
         j0 = f2i(floorf(ly))
-        for j in range(j0 - reach, j0 + reach + 2):
+        columns = _span(i0 - reach, i0 + reach + 1, hf.x0, hf.w)
+        for j in _span(j0 - reach, j0 + reach + 1, hf.y0, hf.h):
             row = j - hf.y0
-            if row < 0 or not row < hf.h:
-                continue
-            for i in range(i0 - reach, i0 + reach + 2):
+            for i in columns:
                 col = i - hf.x0
-                if col < 0 or not col < hf.w:
-                    continue
                 if not hf.samples[row * hf.w + col] & 1:
                     continue
                 a = fsub(i2f(i), lx)
@@ -867,15 +868,12 @@ def terrain_sweep_circle(level, radius, pos, delta, mask, want_normal=True):
         i_lo, i_hi = (i0, i1) if i0 < i1 else (i1, i0)
         j_lo, j_hi = (j0, j1) if j0 < j1 else (j1, j0)
         samples, width, x0, ez = hf.samples, hf.w, hf.x0, e.z
-        for j in range(j_lo - reach, j_hi + reach + 2):
+        columns = _span(i_lo - reach, i_hi + reach + 1, x0, width)
+        for j in _span(j_lo - reach, j_hi + reach + 1, hf.y0, hf.h):     # rows outer
             row = j - hf.y0
-            if row < 0 or not row < hf.h:
-                continue
             b = None
-            for i in range(i_lo - reach, i_hi + reach + 2):
+            for i in columns:
                 col = i - x0
-                if col < 0 or not col < width:
-                    continue
                 v = samples[row * width + col]
                 h = BLOCK_HEIGHT if v & mask else (v >> 4) + ez
                 if h < base:

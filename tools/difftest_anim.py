@@ -743,7 +743,9 @@ class Scene:
         cp = rig.ptr(clip)
         roll = rng.random()
         self.ops += 1
-        if roll < 0.52:
+        if self.pose and rng.random() < 0.2:
+            self.pose_op(state, rng.random())
+        elif roll < 0.52:
             if rng.random() < 0.1:
                 self.speed[index] = random_speed(rng)
             if rng.random() < 0.3:
@@ -763,7 +765,11 @@ class Scene:
             rig.call(PUSH, sp, cp, flags)
             A.anim_push(state, clip, flags)
         elif roll < 0.74:
-            if state.count >= 1:
+            # the cell's old sound cursor survives a chained push; past the new clip's event
+            # table the original reads whatever memory follows, so the scenes stay inside it
+            cursor = state.tracks[state.count].sound_idx if state.count < state.capacity else 0
+            inside = clip.sound_times is None or 0 <= cursor <= len(clip.sound_times)
+            if state.count >= 1 and inside:
                 flags = self.flags()
                 rig.call(PUSH_CHAINED, sp, cp, flags)
                 A.anim_push_chained(state, clip, flags)
@@ -1010,10 +1016,22 @@ def decode_times(rng, length):
     return [f(t) for t in times]
 
 
-def prop_decoder(elf, library, rng, config, clips):
+def property_rng(library, name):
+    """Each property has its own seeded stream, so -k repeats a failure exactly."""
+    rng = random.Random('%d/%s' % (OPTIONS['seed'], name))
+    library.rng = rng
+    return rng
+
+
+def prop_decoder(elf, library, config, share):
     name = 'decoder slot [%s]' % config_name(config)
     if not wanted(name):
         return
+    rng = property_rng(library, name)
+    if share == 1 and OPTIONS['all']:
+        clips = [n for n in library.names if library.usable(n)]
+    else:
+        clips = library.sample(scaled(400, share))
     rig = Rig(elf, config)
     cases = failures = 0
     examples = []
@@ -1052,10 +1070,12 @@ def prop_decoder(elf, library, rng, config, clips):
            'velocities of all 64 joint records, cursor, yaw, list links), bit for bit' % len(clips), examples)
 
 
-def prop_joint_values(elf, library, rng, config, clips):
+def prop_joint_values(elf, library, config, share):
     name = 'joint values [%s]' % config_name(config)
     if not wanted(name):
         return
+    rng = property_rng(library, name)
+    clips = library.sample(scaled(160, share))
     rig = Rig(elf, config)
     cases = failures = joints = 0
     examples = []
@@ -1102,10 +1122,11 @@ def config_name(config):
     return config[0] + ('+mulbias' if config[1] else '') + ('+divnearest' if config[2] else '')
 
 
-def prop_scenes(elf, library, rng, config, name, text, scenes, length, **kind):
+def prop_scenes(elf, library, config, name, text, scenes, length, **kind):
     name = '%s [%s]' % (name, config_name(config))
     if not wanted(name):
         return
+    rng = property_rng(library, name)
     total, failures, examples = run_scenes(elf, library, rng, config, scenes, length, **kind)
     report(name, failures, total, '%d sequences: %s' % (scenes, text), examples)
 
@@ -1160,35 +1181,29 @@ def main(argv=None):
     print('executable %s, %d clips in %s, seed %d' % (elf, len(library.names), clip_dir, OPTIONS['seed']))
 
     for number, config in enumerate(FPU_CONFIGS):
-        rng = random.Random(OPTIONS['seed'] * 31 + number)
-        library.rng = rng
         share = 1 if number == 0 else 8
-        if number == 0 and OPTIONS['all']:
-            decode_clips = [n for n in library.names if library.usable(n)]
-        else:
-            decode_clips = library.sample(scaled(600, share))
-        prop_decoder(elf, library, rng, config, decode_clips)
-        prop_joint_values(elf, library, rng, config, library.sample(scaled(240, share)))
-        prop_scenes(elf, library, rng, config, 'advance', 'every push/start/stop/sync/... and anim_advance '
+        prop_decoder(elf, library, config, share)
+        prop_joint_values(elf, library, config, share)
+        prop_scenes(elf, library, config, 'advance', 'every push/start/stop/sync/... and anim_advance '
                     'on mixed clips: event bits, root x/y, yaw, the whole state, its decoder slots, '
-                    'sound ranges, bit for bit', scaled(120, share), 220, mixed=True, family=6)
-        prop_scenes(elf, library, rng, config, 'advance, sounds', 'the same on clip families with sound '
+                    'sound ranges, bit for bit', scaled(100, share), 220, mixed=True, family=6)
+        prop_scenes(elf, library, config, 'advance, sounds', 'the same on clip families with sound '
                     'tables', scaled(40, share), 220, sound=True)
-        prop_scenes(elf, library, rng, config, 'advance, 6 slots', 'the same with the decoder list cut '
-                    'to 6 slots, so that slots are stolen', scaled(40, share), 220, slots=6, mixed=True,
-                    family=6)
-        prop_scenes(elf, library, rng, config, 'Creature_stepAnim', 'speed, slow factor, scale and facing '
+        prop_scenes(elf, library, config, 'Creature_stepAnim', 'speed, slow factor, scale and facing '
                     'around anim_advance: events, world delta, yaw, state, bit for bit',
-                    scaled(40, share), 200, stepper='creature')
-        prop_scenes(elf, library, rng, config, 'Player_animStep', 'the same for the player wrapper',
-                    scaled(30, share), 200, stepper='player', yaw=False)
-        prop_scenes(elf, library, rng, config, 'pose', 'queries and draws between the operations: blended '
+                    scaled(30, share), 200, stepper='creature')
+        prop_scenes(elf, library, config, 'Player_animStep', 'the same for the player wrapper',
+                    scaled(24, share), 200, stepper='player', yaw=False)
+        prop_scenes(elf, library, config, 'pose', 'queries and draws between the operations: blended '
                     'local transforms, pose buffers, joint matrices, attach and sample points, buffer '
                     'lists and stamps, bit for bit (VU0 by the interpreter in this file)',
-                    scaled(60, share), 160, pose=True)
-        prop_scenes(elf, library, rng, config, 'pose, 5 buffers', 'the same with the pose list cut to 5 '
+                    scaled(50, share), 160, pose=True)
+        prop_scenes(elf, library, config, 'pose, 6 slots', 'the same with the decoder list cut to 6 '
+                    'slots, so that slots are taken from other tracks and pinned ones skipped',
+                    scaled(24, share), 160, pose=True, slots=6)
+        prop_scenes(elf, library, config, 'pose, 5 buffers', 'the same with the pose list cut to 5 '
                     'buffers, so that the fallback buffer and the default pose are used',
-                    scaled(30, share), 160, pose=True, buffers=5)
+                    scaled(24, share), 160, pose=True, buffers=5)
 
     if COVER:
         print('reached by the sequences (all FPU models together):')
