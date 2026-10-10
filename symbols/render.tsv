@@ -1,0 +1,60 @@
+# Render pipeline: VU1 microprograms, light upload, projection, frame set-up. See docs/spec/render-pipeline.md
+# Only addresses that had no name. Address (hex, no 0x), name, note.
+# ---- microcode (data) ----
+003e5ec0	g_vu1ProgramPacket	.vutext: DMA end tag (0x3ab qwords), eight MPG blocks (1,868 instructions, load addresses 0x000-0x74b), BASE 0x100, OFFSET 0x17b, MSCAL 0; sent to VIF1 by gfx_uploadMicrocode
+00403af0	g_vu1DecalProgram	.data: 102 VU1 instructions loaded at micro address 0x79a by the floor-decal draw task every frame (entries 0x79a set-up, 0x79c one cell of decals)
+00404150	g_vu1TrailProgram	.data: 98 VU1 instructions loaded at micro address 0x79e by the trail drawer every frame (per-vertex colour trails); overlaps the decal program's load area
+# ---- microcode upload and VU1 memory written by the CPU ----
+0019be08	gfx_uploadMicrocode	sends 0x3e5ec0 to VIF1 and 0x3e5c40 to VIF0, then writes VU1 data memory directly (0x1100ff60 = empty GIF tag with EOP at qword 0x3f6; 0x1100ffb4/b8 = two tag words at qword 0x3fb); callers engine_init and 0x19d090
+00148728	light_writeVuConstants	per frame (callers gfx_beginFrame, mainloop_runSession): scales the level colours by 0x4039ac and writes VU1 qwords 0x3fc (2^23 + level brightness x3, 2^23 + 128) and 0x3fd (2^23 x4) through the 0x1100c000 mapping
+# ---- light upload ----
+00149268	light_emitModelLights	(dl, pos): VIF block for a model: 3 qwords of camera-space light directions (MSCAL 0x10), 5 qwords of s16 colours = two nearest point lights, fill, sun, ambient (MSCAL 0x24)
+00149778	light_emitModelAmbientOnly	(dl): same block with all four light colours zero and the current per-object ambient
+00149828	light_emitModelLightsVariant	(dl, pos): same block layout (0x6c03c000 / MSCAL 0x10 / 0x6d058000 / MSCAL 0x24); which terms it keeps was not read; caller world_drawModelChunk for lighting value 2
+001498d8	light_emitModelLightsNoPoint	(scale, dl, pos): same block with the two point-light slots zero; fill as usual, sun colour scaled by the argument
+00149ab8	light_emitWorldConstant	(dl, level): world-chunk light block (MSCAL 0x0e, MSCAL 0x04) with one light of colour (level, level, level, 0) that reaches everywhere and ignores normals
+00149b90	light_emitWorldLights	(dl, chunk) -> 0 when no light touches the chunk: the four light nodes nearest the chunk centre, positions rotated into chunk space and scaled by 0.25
+00147de0	light_collectInBox	(box, out[], max): as light_collectNear but for a bounding box; caller light_emitWorldLights
+00148578	light_pushLevelLight	(dir, sun rgba, ambient rgba, level): saves the level light record once (depth counter 0x4039a4) and installs a temporary one; 3 callers in menu code
+0014a3c8	light_popLevelLight	restores the record saved by light_pushLevelLight
+001489c0	light_init	default level light (direction, colours, level 0x80) and registers light_recalcSun as a task
+0014a150	light_setObjectSun	(dir, s16 rgba): per-object replacement of the sun colour 0x5db378 and camera-space direction 0x5d34b8; caller creature_drawPropLight
+0014a1d8	light_setObjectFill	(dir, s16 rgba): per-object replacement of the fill colour 0x5db380 and direction 0x5d34c8; caller creature_drawPropLight
+00148c98	light_pickShadowLights	(pos, out bytes): three nearest light nodes -> 0x5db398/0x5db39c/0x5db3a0, sets 0x4039b0 so the next light_emitModelLights reuses the first two; writes per-light shadow offsets for model_drawShadow
+# ---- light state (data) ----
+005d3448	g_sunDirWorld	Vec3, unit vector towards the level's directional light, world space
+005d3474	g_sunColorSet	4 bytes rgba as set for the level; 0x5d346c is the copy scaled by 0x4039ac that drawing uses
+005d3478	g_ambientColorSet	4 bytes rgba as set for the level; 0x5d3470 is the scaled copy
+005d347c	g_worldLightLevel	int, vertex colour every world vertex starts from (0x80, or 0x40 / 0x20 by level option bits); written to VU1 qword 0x3fc each frame
+005db370	g_objAmbient	s16 rgba, ambient for the model being drawn (light_resetObjectLight restores the level value)
+005db378	g_objSunColor	s16 rgba, sun colour for the model being drawn
+005db380	g_objFillColor	s16 rgba, fill colour for the model being drawn (0.8 x level ambient by default)
+004039ac	g_lightScale	float written by light_setScale; multiplies the level sun and ambient colours each frame
+0044fde0	g_markerAmbient	3 ints: position of the charAmbient_Light object x 0.5 = level ambient r, g, b
+0044fdec	g_markerSunColor	3 ints: position of the charDirectional_Light object x 0.5 = level sun r, g, b
+0044fdf8	g_markerSunDir	Vec3: position of the charDirectional_LightD object = direction towards the sun (not normalised)
+# ---- projection ----
+001659d0	mat4_setProjectionVu	as mat4_setProjection with the two depth terms multiplied by 2^50, for vertex programs that add 2^65 to z
+00165a70	mat4_setProjectionVu2	same body as mat4_setProjectionVu; used for the world-chunk matrix
+0044f108	g_projScale	float 477.5 / tan(fov / 2), pixels of the 1280-wide draw buffer per unit of x/z; written by camera_setProjection
+0044f140	g_viewProj	4x4 = camera matrix x mat4_setProjection: depth in 1..4095.94; used by CPU-side projection (glows, lines, haze)
+0044f180	g_viewProjWorld	4x4 = camera matrix scaled by 4 x mat4_setProjectionVu2: the matrix world chunks and floor decals are drawn with (their positions are world / 4)
+0044f1c0	g_viewProjModel	4x4 = camera matrix x mat4_setProjectionVu: model_draw multiplies the model matrix by it
+001863fc	camera_buildFrustum	(camera mat34): caller camera_setView; the planes frustum_testBox reads at 0x44f0a8 (body not read, role from the caller and the reader)
+# ---- frame ----
+0019c86c	gfx_emitFrameSetup	(clearColor, keepScissor, field): per-frame GS packet: FRAME_1 (1280 wide, 16-bit), ZBUF_1 (16-bit), scissors, XYOFFSET, DTHE, COLCLAMP, PRMODECONT, clear sprites
+0019c540	gfx_emitContext2Setup	init-time GS packet for drawing context 2: FRAME_2/ZBUF_2 as context 1, ALPHA_2 0x2a, TEST_2 0x50013, TEX0_2 = environment texture, TEX1_2 0x61, CLAMP_2 0
+0019bf04	gfx_buildPresentPacket	builds the packet that draws the 1280-wide buffer as a bilinear texture into the 640-wide display buffer
+0019cbb0	gfx_present	patches and sends the present packet: target buffer, colour multiplier (gfx_setColorOffset), FIX alpha (gfx_setScreenDarken)
+0019b6e4	gfx_vblankHandler	INTC 2: selects the display buffer to show (DISPFB / SMODE2), records the field
+0016c938	gfx_swapSortedLists	called by gfx_beginFrame: toggles the build buffer of sorted draw entries and starts gfx_dmaHandler on the finished one
+0044fd58	g_zbufWrite	GS ZBUF value with depth writes on (0x0200008c)
+0044fd60	g_zbufNoWrite	the same with ZMSK set; drawers that must not write depth load it
+# ---- effect drawers ----
+001907d0	glow_draw	(pass): draws the glow_add queue as GS sprites or rotated quads, one packet per texture and flag set
+001934c0	line_draw	draws the gfx_queueLine queue as GS lines, additive, layer 3
+00193ad0	trail_drawAll	rebuilds beam trails, then one VIF packet for all trails (MSCAL 0x28 per trail, 0x26 or 0x79e per chunk of points)
+00194888	particle_draw	body of the particle draw task: trails, glows, the particle packet (MSCAL 0x14, then lists by blend mode), lines, heat haze
+00194450	particle_emitLists	(dl, listSet): DMA references to the particle pages of one list set, grouped by blend mode; ends each list with MSCAL 0x17
+0018fe18	particle_drawHaze	mode-3 particles on the CPU: copies a piece of the draw buffer into a texture and draws it back as a fan
+0019f4e8	decal_drawTask	draw task "drawFloorSprites": uploads g_vu1DecalProgram and draws the visible decal cells

@@ -10,8 +10,8 @@ understood: see the area document in `docs/` for what has actually been read.
 | creatures | 109d68–131d88 | 320 | 296 | 97% | Creature base class, AI helpers, per-class clone functions |
 | netcode | 131d88–13ecf8 | 54 | 54 | 100% | lockstep loop, prediction, input codec, peers, game messages |
 | script | 13ecf8–147300 | 195 | 195 | 100% | level-script VM and its 191 built-in commands |
-| objects | 147300–160000 | 219 | 184 | 89% | GameObject, world grid and lists, memory pool, props |
-| engine | 160000–1a0000 | 546 | 324 | 61% | math, animation, lump files, pads, model drawing, text, terrain, pathfinding, camera, dialog, particles, cutscenes, tasks |
+| objects | 147300–160000 | 219 | 198 | 96% | GameObject, world grid and lists, memory pool, props |
+| engine | 160000–1a0000 | 546 | 341 | 69% | math, animation, lump files, pads, model drawing, text, terrain, pathfinding, camera, dialog, particles, cutscenes, tasks |
 | player | 1a0000–1c0000 | 122 | 110 | 97% | Player class, player record, inventory items, stats |
 | ui | 1c0000–1e8000 | 222 | 188 | 91% | inventory and menus, HUD, shop, game state |
 | gameplay | 1e8000–210000 | 276 | 240 | 88% | damage, triggers, effects, world camera, vehicles |
@@ -21,4 +21,4 @@ understood: see the area document in `docs/` for what has actually been read.
 | mainloop | 320000–323dcc | 39 | 39 | 100% | task scheduler and main loop |
 | netlib | 323dcc–3b0000 | 2066 | 399 | 33% | lobby client, SOE UdpLibrary, AES, Sony SDK libraries |
 | runtime | 3b0000–3e6000 | 1460 | 1137 | 68% | C and C++ runtime, type info, static constructors |
-| **all** | | 7732 | 5149 | 78% | |
+| **all** | | 7732 | 5180 | 79% | |
