@@ -165,7 +165,7 @@ patch=1,EE,0027DEF8,word,10000006
 [Net test: skeleton queries rebuild inside the tick]
 author=reverse engineering test patch, executed in the function-level interpreter, untested on a running game
 description=The game caches each skeleton's pose and lets drawing fill the cache, so game logic that asks for a bone position can get a pose from before the last animation change on a machine that drew the character and a fresh one on a machine that did not. With this, any such question asked during a simulation step throws the cached pose away and rebuilds it (anim_getJointMatrix, 0x16F73C, with a 12-word routine written over the unused function at 0x257AB4). Drawing and offline play are unchanged. Costs a pose build per question; expect a slow frame during large particle bursts. It also changes a few debris and effect positions for everyone, so EVERY player must use the same setting. No route from this cache to the arena desync was found; if the arena stays in sync only with this on, there is one. FINDINGS D34, D39, X5; docs/issues/pose-cache.md section 8.
-// was: 14400004 at 0x16F73C; 0x257AB4..0x257AE0 held the first 12 words of the unused function
+// was: 14400004 27BDFFB0 24020001 FFB00030 0080802D FFB10038 0000882D 14A2000F FFBF0040 8E020024 8E0500E8 0C05E554 8C44000C (the branch, then the first 12 words of the unused function, in address order)
 patch=1,EE,0016F73C,word,08095EAD
 patch=1,EE,00257AB4,word,10400007
 patch=1,EE,00257AB8,word,3C030040

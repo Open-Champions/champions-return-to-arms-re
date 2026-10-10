@@ -44,10 +44,13 @@ cannot see is in section 7. New names are in `symbols/staleptr.tsv`. `FINDINGS.m
 Counts: 478 virtual tables were scanned. 1,720 (class, offset) pairs hold a word that some
 member function loads and then uses as a base; merged across inheritance that is about 490
 distinct fields, of which about 173 are handles, 63 are `Skill` pointers (static objects),
-and 168 passed the "used as an object" tests. 61 of those were read in the decompile for
-this document (every field of the arena classes, every `Spell` field that is not owner or
-skill, and the object classes of section 6.3); the rest are listed with the scanner's
-verdict only and marked so.
+and 167 passed the "used as an object" tests (104 without the `Skill` pointers). For the
+arena classes every handle offset and every non-constant store into `this` was listed and
+the non-handle ones read (section 6.2). Beyond those, 35 fields were checked in the
+decompile or disassembly — every `Spell` field that is not owner or skill, the holder of
+every victim-attached spell, and the classes of section 6.4 that carry an address in the
+"Stored" or "Used" column. The other rows carry the scanner's verdict or an earlier
+document's and say so.
 
 ## 2. Pool facts the rest depends on
 
@@ -126,7 +129,7 @@ the replacement object.
 
 | Situation | Needs | Result |
 |---|---|---|
-| The body is re-made by another route during the channel: save-point revival (`Savepoint_run` 0x28d618), the leave-request raise (`hud_onMsg` 0x1d8f4c), the arena-mode respawn (0x305830) | a save point near a living player, a leaving player, or the PvP arena mode. None exists in `drunare` with two players | The new object is again at the old address, so the spell now animates and flashes a *living* player every frame and, at the end of the channel, destroys and re-creates him where he stands with stat-1 percent hit points. Same on every machine: a rule bug, not a desync |
+| The body is re-made by another route during the channel: save-point revival (`Savepoint_run` 0x28d618), the leave-request raise (`hud_onMsg` 0x1d8f4c), the arena-mode respawn (0x305830) | a save point near a living player, a leaving player, or the PvP arena mode. None exists in `drunare` with two players | The new object is again at the old address, so the spell now animates and flashes a *living* player every frame and, at the end of the channel, destroys and re-creates him where he stands with stat-1 percent hit points. Same on every machine: a rule bug, not a desync. Inferred from the run function's steps; not executed |
 | The caster dies during the channel | — | His spells stop running; the frozen spell stays on his object and dies with it at his own revival (`Creature_dtor` 0x117128). A dead caster is not in the alive list, so 0x31270c does not look at his spell |
 | A third route frees the body without re-making it (the player leaves the game) | a player leaving mid-channel | +0x18 points at a free block that keeps the old slot number; the run function keeps writing flash colours into it (+0x90…+0x9e, harmless: `pool_new` zero-fills) and calls `Player_animStep` on it. At the end `player_respawn` is called for a slot that has no player. Not traced further; same on every machine as long as the leave is processed on the same tick |
 
@@ -148,7 +151,7 @@ Where the copy's own address goes (all Observed):
 | Site | What is linked or passed | Outlives the call? | Reaches the simulation? |
 |---|---|---|---|
 | `sound_playOnObject` 0x214334 | a handle to the object in the sound table `g_soundObjHandles` 0x871a90 | yes, until the sound ends or the copy is destroyed (a handle, so it is emptied) | no: audio only |
-| `obj_runEveryFrame` from `Creature_run` 0x112ef0 | the copy on the active run list | yes | no: run walks skip it by mask (G6) |
+| `obj_runEveryFrame` from `Creature_run` 0x112ef0 | can put the copy on the active run list (E6 found it on none; the condition was not read) | yes | no: run walks skip it by mask (G6) |
 | `obj_moveWithCollision` 0x14d9d0, slot 6 of the touched object | the mover | — | suppressed for the copy (test at 0x14d9ac) |
 | `Player_run` 0x1a8f44, slot 12 of the target with kind 2 ("you are being swung at") | the player | — | **guarded**: the call sits inside the `flags & 0x20000 == 0` block. Matters because `Skeleton`, `Orc`, `Goblin`, both dark elves and `Marr` change AI state on kind 2 (0x2a7688, 0x2a2ec8, 0x26c9f4, 0x25aa30, 0x25cfc0, 0x28453c) |
 | `Player_run` 0x1aa5b8, slot 12 with kind 3 | the player | — | unguarded but latent: none of the 17 slot-12 bodies acts on kind 3 (the creature bodies test for kinds 0 and 2, the weapon bodies for kinds below 2 and for 2; each read) |
@@ -200,7 +203,7 @@ function treats as an object.
   counter, walks each cell's list **from the head, directly, without an iterator and without
   the exclude mask**, and destroys the first object with flag 0x1000 on the spot. The victim
   is decided by list position — link order, which is the order of movement calls — not by
-  pool position. Link order is lockstep state; the copy is never in grid B.
+  pool position. Link order is lockstep state; the copy is not in grid B (a `Player` does not carry flag 0x800; Inferred).
 - The only per-machine input is the trigger: `pool_countFree` counts the copy's block, so a
   machine without a copy is one block ahead (D21, objects.md O1). No new finding.
 - The reaper frees immediately, so an object reaped in step 3 of `runObjects` is a freed
@@ -243,7 +246,7 @@ the scanner, then read).
 | `Player` | +0x234, +0x238, +0x2e4, +0x360, +0x364, +0x3d8…+0x438 (step 0x18), +0x4b8, +0x588 | **+0x540** the vehicle the player rides: set by `Vehicle_board` 0x20903c; virtual call in action state 0xd (0x1a5ee8), also read by `Player_takeDamage` 0x1b5398, `Player_interact` 0x1b2674, two script built-ins and the camera | +0x544…+0x558 are resources (`res_find`). No vehicle in `drunare`. `Player_clone` copies +0x540 (0x11f12c / 0x11f140), so the copy can call through it for up to 30 ticks after the vehicle is gone; how a vehicle's destruction clears its riders was not read — vehicle levels only |
 | `Horsemen` (knights) | +0x234, +0x238, +0x2e4, +0x360, +0x364, +0x3c8 | none | +0x470 variant, +0x474 timer are numbers |
 | `Skelight` (summoned skeleton) | +0x234, +0x238, +0x2e4, +0x360, +0x364 | none | +0x460 is a float (saved and loaded as one, 0x2a9154) |
-| `Zek` (Rallos) | the same plus +0x460 | none | |
+| `Zek` (Rallos) | the same plus +0x460 (linked 0x2c2440, decompile line 455) | none | +0x464 is a moving-flag, +0x468 a heading, +0x46c…+0x474 a point (`Zek_run` tail, read) |
 | `Cazic` (avatar) | the same | none | +0x3d8…+0x3e0 are beam handles (5.4) |
 | `DiseaseBolt` | +0x4c owner, +0x54, +0x58 | none | +0x5c is the `Skill` |
 | `FireStorm`, `FireStormFlare` | +0x4c owner | none | remaining stores are numbers; no field is used as a base |
@@ -391,6 +394,10 @@ reads, no patch needed):
    respawn tick. Expected: unchanged.
 3. `g_handleFreeList` 0x864ea8 on both machines at the same tick. Expected: different. That
    is the per-machine ingredient of 6.5.
+4. For 6.5 itself, outside the arena: a player casts Blinding Light on a monster that
+   survives it, or drops ShadowStep fires at rank 5 or above, and then leaves the game. On
+   the machines that stay, watch the three free-list heads for a value inside the handle-node
+   array (0x847268–0x864ea3) within the next few seconds. Seeing one confirms steps 4–6.
 
 ### Test patches
 
@@ -423,6 +430,11 @@ place of the plain pointer, which is a rebuild matter.
 - "First free slot" searches in general (5.4), and what `Cazic_deathEffects` does with its
   three beam handles.
 - What follows `player_respawn` for a slot whose player has left (3.3, last row).
+- `Player_dtor` zeroes five words of the slot's record after the object pointer (record
+  +0x43dc…+0x43ec, store 0x1a1c64) even when the object destroyed is a display-only
+  stand-in such as the one of the `cazic` cutscene (the stand-in branch at +0x462 skips only
+  the object pointer). What those words hold, and who reads them, was not established; it
+  is the same on every machine.
 - Static holders not reached by the scanner's "used as an object" test. Those found:
 
 | Holder | Holds | How it is invalidated | Kind |
