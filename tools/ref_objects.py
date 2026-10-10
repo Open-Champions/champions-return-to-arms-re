@@ -1210,7 +1210,14 @@ class RecordBlob:
         self.records = records
         self.has_state = has_state
         self.relocated = False
-        self.size = 0
+        self._size = None
+
+    @property
+    def size(self):
+        """Bytes of header and records - what world_loadRecords returns."""
+        if self._size is None:
+            self.build()
+        return self._size
 
     def build(self):
         """-> bytes in the file layout above (for tests; a real blob comes from a level).
@@ -1242,6 +1249,6 @@ class RecordBlob:
                 rec += b'\0'
             struct.pack_into('<h', rec, 4, len(rec))
             body += rec
-        self.size = 8 + len(body)
-        header = struct.pack('<hHi', len(self.records), 1 if self.has_state else 0, self.size)
+        self._size = 8 + len(body)
+        header = struct.pack('<hHi', len(self.records), 1 if self.has_state else 0, self._size)
         return header + bytes(body) + bytes(strings)

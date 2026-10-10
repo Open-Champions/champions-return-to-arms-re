@@ -143,10 +143,12 @@ def main(argv):
     # which patch section removes each class (tried on the class's first pair)
     removed = {}
     if "--try-patches" in argv:
-        candidates = [s for s in patch_sections() if s.startswith("Net test") and s not in base]
+        # The lag sections change when input is sampled, so they can make a timing
+        # coincidence go away without touching its cause; they are not tried.
+        candidates = [s for s in patch_sections() if s.startswith("Net test") and "LAG" not in s and s not in base]
         for name, members in classes.items():
             job, result = members[0]
-            limit = result["frame_a"] + 900   # frames of this run: past the divergence, no further
+            limit = result["frame_a"] + 400   # frames of this run: past the divergence, no further
             with concurrent.futures.ThreadPoolExecutor(workers) as pool:
                 trials = list(pool.map(
                     lambda item: run_pair(config, job, base + [item[1]], "-p%d" % item[0], limit),
@@ -155,13 +157,14 @@ def main(argv):
                              if trial["ok"] and trial["first"] is None and trial["ticks"] > 0]
 
     with open(os.path.join(config["out"], "summary.tsv"), "w") as handle:
-        handle.write("seed\tlevel\tgroups\tbus\tticks\tfirst_tick\tcolumns\tclass\trepeats\tlevels_seen\n")
+        handle.write("seed\tlevel\tgroups\tbus\tticks\tfirst_tick\tcolumns\tclass\trepeats\tlevels_seen\tfirst_tick_of_each_column\n")
         for job, result in zip(jobs, results):
             handle.write("\t".join(str(v) for v in (
                 job["seed"], job["level"], job["groups"], job["bus"], result["ticks"],
                 result["first"] if result["first"] is not None else "", ",".join(result["columns_at_first"]),
                 class_of(result) if result["first"] is not None else "", result.get("repeats", ""),
-                ",".join(result["levels"]))) + "\n")
+                ",".join(result["levels"]),
+                " ".join("%s:%d" % item for item in sorted(result.get("first_by_column", {}).items(), key=lambda i: i[1])))) + "\n")
 
     total = sum(r["ticks"] for r in results)
     failed = [job for job, r in zip(jobs, results) if not r["ok"] or r["ticks"] == 0]

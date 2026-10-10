@@ -986,8 +986,9 @@ EDGE_COORDS = (0.0, -0.0, -0.5, -0.99, -1.0, -1.5, 0.5, 255.0, 255.99, 256.0, 25
 NAMES = (b'alpha', b'ALPHA', b'Alpha', b'beta', b'gamma', b'knight', b'door1', b'door2', b'x', b'',
          b'a longer name with spaces', b'Zz', b'zz', b'boss', b'k1', b'k2', b'k3', b'k4', b'k5', b'k6')
 PROP_LISTS = ([b'speed=3'], [b'name=alpha'], [b'name="beta"', b'hide=1'], [b'name=alpha', b'name=gamma', b'x=1'],
-              [b'hide=1'], [b'Name=upper', b'NAME=x'], [b'name=ALPHA'], [b'name="unterminated'], [b'names=x', b'name', b'name='],
-              [b'name=knight'], [b'name=knight', b'default=1'], [b'name="door1"', b'name="door2"'], [b'hide=0', b'name=Zz'],
+              [b'hide=1'], [b'Name=upper', b'NAME=x'], [b'name=ALPHA'], [b'name="unterminated'],
+              [b'names=x', b'name', b'name='], [b'name=knight'], [b'name=knight', b'default=1'],
+              [b'name="door1"', b'name="door2"'], [b'hide=0', b'name=Zz'],
               [b'name=zz', b'hide=7'], [b'name=boss'], [b'name=k1'], [b'name=k2'], [b'name=k3'], [b'name=k4'],
               [b'name=k5', b'name=k6', b'name=k1'], [b'name=""'], [b'name="a longer name with spaces" trailing'], [])
 
@@ -1027,7 +1028,8 @@ def rand_box(rng, around):
     return lo, hi
 
 
-HALF_SIZES = (0.0, 10.0, 24.0, 24.0, 48.0, 48.0, 96.0, 100.0, 100.0, 300.0, 300.0, 300.0, 700.0) * 5 + (1200.0,) * 6 + (6000.0, 40000.0)
+HALF_SIZES = ((0.0, 10.0, 24.0, 24.0, 48.0, 48.0, 96.0, 100.0, 100.0, 300.0, 300.0, 300.0, 700.0) * 5 +
+              (1200.0,) * 6 + (6000.0, 40000.0))
 LIMITS = (256, 256, 64, 16, 128, 512, 4, 2, 1, 0, 3)
 MASKS = (None, None, None, 0x20000, 0x200000, 8, 0x8009)
 
@@ -1379,9 +1381,11 @@ def scenario_run(rig, ticks=2000, cap=260, net=0):
             raise Diverged()
     stats = rig.stats
     inside = sum(v for k, v in stats.items() if k.startswith('in callback'))
-    return ('%d ticks on %d to %d live objects (mean %d), %d run calls and %d destructor calls in the same order; %d operations made inside them '
+    return ('%d ticks on %d to %d live objects (mean %d), %d run calls and %d destructor calls in the same order; '
+            '%d operations made inside them '
             '(%d creations, %d deferred deletes, %d direct destroys, %d moves, %d run-list changes, %d queries); '
-            'an object ran twice in one tick %d times; an address created during a tick ran in that tick %d times'
+            'one address was run twice in one tick %d times; an address that held no object when the tick began '
+            'was run in that tick %d times'
             % (stats.get('runobjects', 0), low, high, total // max(stats.get('runobjects', 0), 1),
                stats.get('run calls', 0), stats.get('destructor calls', 0), inside,
                stats.get('in callback: new', 0), stats.get('in callback: delete', 0), stats.get('in callback: destroy', 0),
@@ -1555,7 +1559,8 @@ def scenario_reaper(rig, net=0):
                 raise Diverged()
     return ('%d ticks with the pool between %d and 320 free blocks; %d destructor calls before the run walks '
             '(reaper victims, their cascades and the delete list); %d allocations refused by the full pool, %d '
-            'of them checked to leave the shared seed alone' % (rig.stats.get('runobjects', 0), low, reaped, rig.dumps, refused))
+            'of them checked to leave the shared seed alone'
+            % (rig.stats.get('runobjects', 0), low, reaped, rig.dumps, refused))
 
 
 def scenario_walkers(rig):
@@ -1893,7 +1898,8 @@ def scenario_marker(rig):
     state = {'p_blocked': 0.2, 'p_high': 0.2}
 
     def terrain_blocked(radius, pos):
-        return rig.m_call('blocked', (radius, tuple(pos)), 0 if rng.random() >= state['p_blocked'] else rng.choice((R.ONE, 0x80000000, 1)))
+        answer = 0 if rng.random() >= state['p_blocked'] else rng.choice((R.ONE, 0x80000000, 1))
+        return rig.m_call('blocked', (radius, tuple(pos)), answer)
 
     def terrain_height(radius, pos):
         centre_z = R.to_float(pos[2])
@@ -1961,7 +1967,8 @@ def scenario_marker(rig):
                    [mem.u16(O.G_SPAWN_FACING + 2 * i) for i in range(4)])
             want = (m.start_rank, [list(p) for p in m.spawn_pos], list(m.spawn_facing))
             if got_addr != addr or got != want:
-                rig.bad('Player1_ctor: rank %d spawn %s, model rank %d %s' % (got[0], rig.show(got[1][0]), want[0], rig.show(want[1][0])))
+                rig.bad('Player1_ctor: rank %d spawn %s, model rank %d %s'
+                        % (got[0], rig.show(got[1][0]), want[0], rig.show(want[1][0])))
             takes += 1 if want != before or m.start_rank != rank else 0
             driver.top(('destroy', addr) if rng.random() < 0.7 else ('move', addr) + tuple(obj.pos))
         if not rig.diverged and rig.pos != len(rig.log):
@@ -2029,7 +2036,8 @@ def main(argv=None):
     for fpu in ('ps2g1', 'chop', 'nearest'):
         run_scenario('query.' + fpu, 'the queries under adder model %s' % fpu,
                      lambda rig: scenario_query(rig), elf, 'query-' + fpu, fpu)
-        run_scenario('active.' + fpu, 'the activity test under adder model %s' % fpu, scenario_active, elf, 'active-' + fpu, fpu)
+        run_scenario('active.' + fpu, 'the activity test under adder model %s' % fpu, scenario_active, elf,
+                     'active-' + fpu, fpu)
         run_scenario('load.marker.' + fpu, 'the free-spot search under adder model %s' % fpu, scenario_marker, elf,
                      'marker-' + fpu, fpu)
     R.set_fpu('ps2')

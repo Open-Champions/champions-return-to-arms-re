@@ -79,8 +79,8 @@ The derived constructor decides what else happens, in this order of effect:
   grid B: the `Prop` family sets 0x1809, `docs/objects.md`);
 - it links the object to a run list by calling one of `obj_runEveryFrame` 0x14f248 (155
   call sites), `obj_runEvery60` 0x14f2b8 (76) or `obj_runEvery15` 0x14f330 (7: triggers,
-  shooters, floor switches) — or none (markers, lights). Each of these goes to the front
-  of its list (section 5.1);
+  shooters, floor switches among them) — or none (the `Player1` marker, for one). Each of
+  these goes to the front of its list (section 5.1);
 - any further constructor of the chain draws whatever it draws after the base draw.
 
 ### 2.3 When a new object first runs
@@ -289,7 +289,7 @@ cells.
 
 ### 4.8 `world_findFreeSpot` 0x14acf8 (out, centre, int spread, int radius, bool *ok, anyHeight)
 
-Shared-seed consumer; called at level load (section 7.3) and by 19 other sites.
+Shared-seed consumer; 20 call sites, one of them the level start marker (section 7.3).
 
 ```
 result = centre
@@ -351,7 +351,9 @@ word of their own). Callers: `Creature_updateActive` (74 call sites) and the run
 of `MissileWeapon`, `UserParamProp`, `CosmeticPropAnim`, `AutoProp`, `AutoEmitter`,
 `HateBridge`, `Catapult`, `JumpGate`, `Savepoint`, `PointSourceSound`, `LightningRod`,
 `SpiritAnchor`. A radius of 46341 or more overflows the square and nothing is ever inside
-it (executed; no caller passes one, 44000 is the largest).
+it (executed). The fixed radii read are far below that (480, 1600, 44000); the creature
+wrapper passes the largest of three 16-bit fields (+0x3c4, +0x3ac, +0x3ae), so a larger
+value is representable there — whether any creature has one was not checked.
 
 So an object's list follows activity like this: it is created on whatever list its
 constructor chose; the first time its own run calls `obj_updateActive` with a different
@@ -414,11 +416,13 @@ every-frame list:
   in tick T runs first in tick T+1, before its creator;
 - a monster that woke in tick T (5.2) runs in T+1 before everything that was active
   before it, the players included;
-- players are linked when their objects are constructed after the level's own objects
-  (`docs/issues/arena-entry.md` section 2: in slot order, so the highest slot runs first
-  and all players run before every level object that was already on the every-frame
-  list), and a player object that is re-made during play (respawn) goes to the front
-  again. Not re-read here: taken from that document and FINDINGS G17;
+- `Player_ctor` 0x1a1d28 calls `obj_runEveryFrame` (0x1a2340, Observed), so a player is
+  at the front from the moment its object is built. After a load the session code builds
+  the players in slot order after the level's own objects
+  (`docs/issues/arena-entry.md` section 2, not re-read here), so the highest slot runs
+  first and all players run before every level object that was on the every-frame list
+  already; a player object that is re-made during play goes to the front again
+  (FINDINGS G17);
 - an object that calls `obj_runEveryFrame` on itself or on another object each tick
   reshuffles the list each tick; the order is still a function of lockstep state.
 
@@ -572,10 +576,11 @@ The object list of a level file and a saved level state share one format
 
 The factory (`world_objectFactory` 0x159c94, table in `docs/objects.md`) is a chain of
 string tests on the class name, first match wins; a match is `pool_new` followed by one
-constructor. So **objects are constructed in record order, each constructor draws the
-shared seed at least once, and each lands at the front of its grid cell and of the run
-list it picks**: after a load, a cell holds its objects in reverse record order and so
-does each run list. The two slow-list cursors advance in record order.
+constructor. So **objects are constructed in record order, each draws the shared seed
+once in the base constructor (plus whatever its class draws), and each lands at the front
+of its grid cell and of the run list it picks**: after a load, a cell holds its objects
+in reverse record order and so does each run list. The two slow-list cursors advance in
+record order.
 `world_createObject` 0x14f6c8 (className, pos, angle, props) is the same factory call for
 code that creates by name during play; its fourth argument is passed through untouched.
 
@@ -604,9 +609,11 @@ for slot = 0 .. 3:
     g_spawnFacing[slot] = marker facing + (one more shared draw) % 4000 - 2000
 ```
 
-Markers are processed in record order like everything else, so with several markers of
-equal claim the last one in the file wins, and every taking marker advances the shared
-seed by four searches and four draws even though only the last result is used. What the
+Markers are processed in record order like everything else. Among several `default`
+markers, or several whose `from` matches, the **last** in the file wins (each takes
+again); among markers that reach rank 3 the **first** wins (the later ones stop at the
+first test). Every taking marker advances the shared seed by four searches and four
+draws, including the ones whose result is then overwritten. What the
 session code does with the slots afterwards (a second search for slots 1–3, the `Player`
 constructors in slot order) is in `docs/issues/arena-entry.md` section 2.
 
@@ -634,11 +641,17 @@ section 10).
 | pads' edge and held words | `tasks_run` | menu lock-out; nothing in the object system | per machine |
 | object addresses | handle targets, the name table's object column, `pool_free` | identity only; nothing here orders or hashes by address | `docs/objects.md` O8; executed: every address matched the model, which allocates from lockstep state only |
 | the task table | `tasks_call`; `task_isRunning` by simulation code | which run tasks exist | `docs/mainloop.md` P7 |
+| `g_prevLevelName` 0x41b7c2, `g_entranceName` 0x4f8468, byte 0x41b51e | `Player1_ctor` 0x158a20–0x158a98 | which marker takes the spawn slots, and so how many searches and shared draws a load makes | level-change state, written by the level loader, script `setEntrance` and `player_recallTick`; shared as far as those writers are (not checked here) |
 
 Not per machine but easy to get wrong in a rebuild, because they are **shared state that
 this code keeps outside the objects**: the two slow-list cursors, the order of every
-list, the name table's slot layout (its keys survive removals), the handle-node free
-list and the three pool free lists.
+list, and the name table's slot layout (its keys survive removals).
+
+Addresses are a different matter. Handle-node addresses are per machine in a net game
+(draw-side links and the prediction copy take nodes, `docs/issues/stale-pointers.md`
+5.4), and so is the free list of the pool class the copy's block comes from. Nothing in
+this code depends on them; a rebuild has to reproduce the free-list discipline only if it
+wants its memory to be comparable with the original's, as the differential test does.
 
 ## 9. What the differential test covers
 
@@ -657,7 +670,67 @@ filter, walker callbacks and tasks. What a stub does is decided by a seeded scri
 the model runs, and replayed through the original functions by nested calls inside the
 running original.
 
-RESULTS_PLACEHOLDER
+Last full run: **23 properties, 23 PASS, 0 FAIL** (seed 20973, about 10 minutes); the quick
+run also passes with seeds 7 and 314159. No mismatch is left unresolved.
+
+| Property | Steps compared | What it exercises |
+|---|---|---|
+| `create` | 1,680 | 981 constructions (29 more refused by a full size class: no object, seed untouched) and the destructions between them: every field, the seed draw, the grid list, the name table (quoted, repeated, empty and mixed-case names), class definitions across generation changes, unzeroed blocks with a stale property pointer |
+| `order.cases` | 41 | 19 hand-made cases of the ordering rules of sections 2.3, 3.1, 4.3 and 5 (last linked runs first; the three lists in order; first run next tick; first run in the same tick on a slow list; running twice in one tick; relinking moves to the front; deleted objects; flag 0x8000 and the mask; box-query order, in-place move and limit; the `hide` read; one draw per constructor) |
+| `run.offline` | 7,107 | 2,000 ticks of `runObjects` on 120–260 live objects: 25,929 virtual run calls and 2,825 destructor calls, all in the model's order, while the stubs made 26,406 operations from inside them (2,829 creations, 1,676 deferred deletes, 1,050 direct destroys with cascades from destructors, 7,277 moves, 4,147 run-list changes, 5,697 queries). One address was run twice in a tick 19 times; an address that held no object when the tick began was run in that tick 13 times |
+| `run.net` | 3,583 | the same with the network flag set: 1,000 ticks, 12,084 run calls, 1,337 destructor calls |
+| `query` | 4,406 | 2,473 box queries returning 9,667 objects in the same order (254 cut off by the limit; limits 0 to 512; masks 0, 0x8, 0x20000, 0x200000, 0x8009; boxes from a point to the whole grid, inverted, random bit patterns, wrapping), 399 sphere queries, 319 name lookups, on a world that moves between queries, with radii and heights changed on the way |
+| `grid` | 3,150 | moves across cells and within them, coordinates on and around every boundary (−1, 0, ±256, the grid edges, 1e20, random patterns), flag 0x800 and 0x2 toggles, off-grid, the always-draw helpers under different masks, 30 first links through `obj_linkToGrid` |
+| `active` | 3,310 | `obj_updateActive` with 0 to 4 centres or the camera, radii 0 to 2^20 and negative, flag 0x80000, every `wasActive` value; 1,089 calls changed the run list |
+| `reaper.offline`, `reaper.net` | 2,503 + 2,547 | 196 ticks each on a pool filled to between 320 and 0 free blocks: sampling on the 64th frame, both thresholds, the camera test offline and its absence in a net game, several expendable objects per cell, expendable objects in grid A and non-expendable ones in grid B, destructors that destroy other objects; 1,277 and 1,355 destructions before the run walks; refused allocations |
+| `walkers` | 3,568 | 16 rounds of: build about 140 objects, both `forEach` walkers with callbacks that move, create and destroy (4,036 callbacks), class lookups by four names and several limits, deletes and a flush, more deletes, `world_deleteAllObjects` under different masks — after which no object and no pool block is left |
+| `tasks` | 3,825 | 1,201 passes of the task table (`tasks_call` with eight mask pairs, `tasks_run` for −1 to 3 ticks, offline and net, frozen, warm-up, lock-out, pads): 12,112 task calls in the same order while running tasks made 3,241 additions and 3,070 removals; `runObjects` itself runs as a task in these passes |
+| `vis` | 13,876 | 3,000 random states of player table, dialog object, camera mode, cutscene flag and network flag through `gameSetObjectVis`, then `obj_updateActive`, `isNearView` (9,000 calls) and `game_rebuildAlivePlayers` under that state |
+| `load.records` | 522 | 158 loads of made-up record blobs (with and without state bytes, with and without the filter, loaded a second time): 2,796 factory calls in file order with the same arguments, slot-8 calls with the right state address, objects that delete themselves in the factory, then `world_createObject` |
+| `load.marker` | 2,556 | 896 free-spot searches with scripted terrain answers (25 ended without a spot) among real objects, and 604 `Player1` constructions over every rank, `from`, `name`, `default` and gate combination (340 took the spawn slots): positions, facings, rank, the seed |
+| `query.*`, `active.*`, `load.marker.*` | 7,751 | a fifth of the three scenarios again under each of the adder models `ps2g1`, `chop`, `nearest` |
+
+Coverage of the original as executed (basic blocks entered / basic blocks of the function;
+a block starts at the function entry, at every branch target and after every conditional
+branch):
+
+| Function | Blocks | | Function | Blocks |
+|---|---|---|---|---|
+| `GameObject_ctor` | 54 / 56 | | `objNames_add` | 13 / 13 |
+| `GameObject_dtor` | 34 / 35 | | `objNames_remove` | 8 / 8 |
+| `obj_linkToGrid` | 11 / 11 | | `world_findObjectsByName` | 10 / 10 |
+| `obj_updateGridCell` | 12 / 12 | | `world_findObjectsByClass` | 28 / 31 |
+| `obj_moveOffGrid` | 4 / 4 | | `world_init` | 7 / 7 |
+| `obj_isOffGrid` | 7 / 7 | | `world_deleteAllObjects` | 34 / 34 |
+| `obj_delete` | 3 / 3 | | `world_loadRecords` | 27 / 27 |
+| `obj_runEveryFrame` | 3 / 3 | | `world_createObject` | 3 / 3 |
+| `obj_stopRunning` | 3 / 3 | | `world_findFreeSpot` | 20 / 20 |
+| `obj_runEvery60` | 5 / 5 | | `Player1_ctor` | 23 / 23 |
+| `obj_runEvery15` | 5 / 5 | | `obj_getPropInt` | 15 / 15 |
+| `world_flushDeleteList` | 7 / 7 | | `obj_getPropStr` | 14 / 14 |
+| `obj_addToAlwaysDraw` | 1 / 1 | | `task_add` | 14 / 14 |
+| `obj_addToAlwaysDrawOnce` | 7 / 7 | | `task_isRunning` | 7 / 7 |
+| `world_clearAlwaysDraw` | 5 / 5 | | `task_remove` | 15 / 15 |
+| `world_collectObjectsInBox` | 23 / 23 | | `tasks_call` | 7 / 7 |
+| `world_collectInSphere` | 8 / 8 | | `tasks_run` | 31 / 31 |
+| `obj_updateActive` | 18 / 18 | | `gameSetObjectVis` | 11 / 11 |
+| `runObjects` | 44 / 44 | | `isNearView` | 17 / 17 |
+| `world_forEachGridObject` | 20 / 20 | | `game_rebuildAlivePlayers` | 10 / 10 |
+| `world_forEachRunObject` | 17 / 17 | | **all 41 functions** | **605 / 611** |
+
+The six blocks never entered cannot be: 0x14cc84 is the constructor's grid-B branch (the
+flags are zero there); 0x14cf44 and 0x14d194 are the "not found" exits of a property
+lookup that the compiler duplicated behind a lookup that has just succeeded; 0x14c148,
+0x14c1f8 and 0x14c2c0 raise the C++ "typeid of a null pointer" error for an object
+pointer the iterator never yields as null.
+
+As a check on the test itself, ten single errors were planted in the model, one at a time
+(slow lists walked in the other order; no relink when the cell is unchanged; query
+results by column first; the 60-list cursor stepped after use; `obj_delete` also leaving
+the grid; the destructor clearing the heads in the other order; the reaper one cell
+further; a task inserted in front of equal priorities; a name slot reused for any name;
+an activity radius off by one): each was reported as FAIL by the scenario that should
+see it.
 
 Limits of the comparison:
 
@@ -668,8 +741,9 @@ Limits of the comparison:
   `world_writeRecords`, `world_saveState`), `obj_runActionScripts`, `obj_removeProp`,
   `obj_getPropFloat`, `GameObject_clone` and `game_clearLevel` were not executed.
 - The terrain queries inside `world_findFreeSpot` are scripted answers, not terrain.
-- `game_isFrozen`, the end-of-tick calls of `tasks_run` other than
-  `game_rebuildAlivePlayers`, `dialog_objIfOpen` and `net_isLocalSlot` are stubs.
+- `game_isFrozen`, the three end-of-tick calls inside `tasks_run`
+  (`game_rebuildAlivePlayers` was run on its own), `dialog_objIfOpen` and
+  `net_isLocalSlot` are stubs.
 - Floating point: the box and sphere queries, the activity test and the free-spot search
   agree bit for bit under the interpreter's default model and under its three other adder
   models; the reaper's distance test and `isNearView` were run under the default model
@@ -691,9 +765,9 @@ Limits of the comparison:
 | `docs/spec/skills-35-68.md` section 1.4 | "The walks of the 15-frame and 60-frame lists come after the every-frame walk, so an object created from those is also first run on the next frame" | Correct for objects that join the every-frame list. Not covered there, and executed here: an object that joins **this frame's slow list** during an earlier walk runs in the same tick, and an object that leaves the every-frame list for this frame's 60-list runs twice in one tick (section 2.3, 5.2) |
 | `docs/OVERVIEW.md`, "Time and tasks" | "object visibility (-1)" | `gameSetObjectVis` is registered with priority 0 (0x322a8c), after `runwater` (also 0), as `docs/mainloop.md` has it |
 | `docs/mainloop.md` section 2 | "a task added at or before the cursor waits for the next pass" | True of the cursor; but the cursor has stepped back when the running task removed itself first, and then a task inserted at that task's old index is called in the same pass (section 6.1, executed) |
-| `names.tsv`, `world_createObject` | "(className, Vec3 *pos, angle)" | Four arguments: the property list in the fourth register is passed through to the factory (0x14f6c8–0x14f70c; all call sites read set it) |
+| `names.tsv`, `world_createObject` | "(className, Vec3 *pos, angle)" | Four arguments: the property list in the fourth register is passed through to the factory (0x14f6c8–0x14f70c; the five call sites read all set it) |
 | `names.tsv`, `world_findObjectsByClass` | "comparing the type-info name" | Yes; the name is the length-prefixed form (`10GameObject`, `7Player1` — executed), and only objects on a run list are found |
-| `docs/objects.md`, "Deleting" | `world_flushDeleteList` 0x14f3a8 as one of the places the list is flushed | No call to it was found (direct-call scan); the flushes that happen are the inline copies in `runObjects`, `world_loadRecords` and `world_deleteAllObjects` |
+| `docs/objects.md`, "Deleting" | `world_flushDeleteList` 0x14f3a8 as one of the places the list is flushed | No call to it and no stored pointer to it was found; the flushes that happen are the inline copies in `runObjects`, `world_loadRecords` and `world_deleteAllObjects` |
 
 Confirmed by execution, as written in the earlier documents: the box query's order, limit,
 96-unit pad and the two skip tests (`docs/objects.md`, FINDINGS G6); `obj_updateGridCell`

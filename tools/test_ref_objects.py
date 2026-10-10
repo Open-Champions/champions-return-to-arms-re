@@ -463,13 +463,14 @@ class Load(unittest.TestCase):
         w.init()
         records = [O.Record(b'Skeleton', 0x4000, at(10 * i, 0.0), [b'name=s%d' % i]) for i in range(4)]
         blob = O.RecordBlob(records)
-        self.assertEqual(len(blob.build()) % 1, 0)
+        data = blob.build()
+        self.assertEqual((data[:2], blob.size % 8, data[blob.size:blob.size + 1]), (b'\x04\x00', 0, b'\0'))
 
         def factory(class_name, pos, angle, props):
             obj = w.new_object(0x4C, pos, None, props)
             w.run_every_60(obj)
             return obj
-        w.load_records(blob, factory)
+        self.assertEqual(w.load_records(blob, factory), blob.size)
         made = sorted(w.objects.values(), key=lambda o: o.addr)
         self.assertEqual([o.class_name for o in made], [b'Skeleton'] * 4)
         self.assertEqual([w.names.find_first(b's%d' % i) for i in range(4)], made)

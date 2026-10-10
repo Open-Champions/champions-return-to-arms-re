@@ -2654,6 +2654,7 @@ private:
 					command.fuzzMask |= FUZZ_RSTICK;
 					known = true;
 				}
+				if(group == "idle") known = true; // no input at all
 				for(const auto& entry : g_fuzzButtons)
 				{
 					if(group == entry.group)
