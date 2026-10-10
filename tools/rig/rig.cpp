@@ -1077,6 +1077,7 @@ struct Options
 	std::vector<std::string> inlineCommands;
 	uint64 frames = 0;
 	uint32 logEvery = 1;
+	uint32 fpsEvery = 0;
 	bool logOnChange = false;
 	bool playLogs = false;
 	bool throttle = false;
@@ -1146,6 +1147,14 @@ public:
 		m_frame++;
 
 		if(m_options.pcHistogram) m_pcSamples[m_machine.state->nPC]++;
+		if(m_options.fpsEvery != 0 && (m_frame % m_options.fpsEvery) == 0)
+		{
+			auto now = std::chrono::steady_clock::now();
+			double seconds = std::chrono::duration<double>(now - m_fpsMark).count();
+			if(m_fpsMarkSet) printf("[frame %" PRIu64 "] %.1f frames per second over the last %u frames\n", m_frame, seconds > 0 ? m_options.fpsEvery / seconds : 0, m_options.fpsEvery);
+			m_fpsMark = now;
+			m_fpsMarkSet = true;
+		}
 
 		FlushCollected();
 		StepScript();
@@ -1961,6 +1970,8 @@ private:
 
 	uint64 m_frame = 0;
 	PadState m_pads[2];
+	std::chrono::steady_clock::time_point m_fpsMark;
+	bool m_fpsMarkSet = false;
 
 	std::vector<Watch> m_watches;
 	FILE* m_log = nullptr;
@@ -2029,6 +2040,7 @@ static void Usage()
 	    "                               val=NAME=EXPR:TYPE ret stop quiet limit=N\n"
 	    "  --break-log <file>     where break lines go (default: standard output)\n"
 	    "  --pc-histogram         sample the EE program counter at every vertical blank\n"
+	    "  --fps-every <n>        print the emulation speed every n frames\n"
 	    "  --play-logs            let Play! write its own logs under <data>/logs\n"
 	    "  --throttle             run at the console's speed instead of as fast as possible\n"
 	    "  --no-code-protect      do not write-protect host pages that hold translated code (see README)\n"
@@ -2102,6 +2114,8 @@ static int Run(int argc, char** argv)
 			options.logPath = value();
 		else if(arg == "--log-every")
 			options.logEvery = std::max<uint32>(1, static_cast<uint32>(strtoul(value().c_str(), nullptr, 0)));
+		else if(arg == "--fps-every")
+			options.fpsEvery = static_cast<uint32>(strtoul(value().c_str(), nullptr, 0));
 		else if(arg == "--log-on-change")
 			options.logOnChange = true;
 		else if(arg == "--break")

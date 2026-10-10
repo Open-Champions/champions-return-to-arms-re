@@ -78,7 +78,7 @@ from math import gcd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from textinput import text_lines
 
-VERSION = 8
+VERSION = 10
 MASK64 = (1 << 64) - 1
 
 LOADINFO = {  # op -> (bits, signed load, left half)
@@ -181,11 +181,18 @@ def _imm(s):
 
 def parse_listing(lines, word_at=None):
     """llvm-objdump lines -> [(addr, op, class, a, b, c, target)]."""
-    out = []
+    out = []; elided = False
     for l in lines:
         m = _LINE.match(l)
-        if not m: continue
+        if not m:
+            if l.strip() == '...': elided = True     # objdump skipped a run of zero words
+            continue
         a = int(m.group(1), 16); op = m.group(2)
+        if elided:
+            elided = False
+            if out and 4 < a - out[-1][0] <= 0x1000:
+                out.extend((z, 'nop', C_NOP, None, None, None, None)
+                           for z in range(out[-1][0] + 4, a, 4))
         p = [x.strip() for x in m.group(3).split('<')[0].split(',')] if m.group(3) else []
         p = [x for x in p if x]
         if op == '<unknown>':
@@ -283,6 +290,11 @@ def _plain(v):
     return v[2] == 0 and not v[4] and not v[5] and not v[6] and not v[8]
 
 
+def _narrow(v):
+    """A loaded value that has been masked or shifted down to part of its bits."""
+    return v[3] != (1 << abs(v[9])) - 1
+
+
 def _ptr(v, a):
     """The pointer view of a value used as a base register."""
     t = v[0]
@@ -361,7 +373,7 @@ def _rootstr(r):
     k = r[0]
     if k == 'E': return 'E' + r[1]
     if k == 'J': return 'J%x.%s' % (r[1], r[2])
-    if k == 'O': return 'O' + str(r[2])
+    if k == 'O': return 'O%x.%s' % (r[1], r[2])
     return '%s%x' % (k, r[1])
 
 
@@ -522,6 +534,14 @@ def step(x, st, ev, esc):
         elif ca: res = _bitop(a, op, vb, va[2], ev)
         else:
             f, m = (va, vb) if va[0] in (1, 3) else (vb, va)
+            if f[0] == 1 and m[0] == 1 and _narrow(f) and not _narrow(m): f, m = m, f
+            if f[0] == 1 and m[0] == 1 and _narrow(m) and not _narrow(f):
+                # the other operand is a loaded value already cut down to a few bits: only
+                # those bits can be tested, set or toggled
+                rv = (m[3] >> m[2]) if m[2] >= 0 else (m[3] << -m[2])
+                res = _bitop(a, op, f, rv & 0x7fffffffffffffff, ev)
+                if r1 != '$zero': st[r1] = res
+                return
             if ev is not None and f[0] in (1, 3):
                 if m[0] == 2:
                     ev[2].append((a, op + ('.varclear' if m[1] else '.varbit'), f[1], None, 0,
