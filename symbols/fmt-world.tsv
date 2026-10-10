@@ -1,0 +1,45 @@
+# .world level file: loader, chunk drawing, texture cells, automap grid. See docs/formats/world.md		
+# ---- load and set-up ----		
+00182360	world_prepare	(world) after load: lump_load of "<name>.lmp" for every flag-0x800 chunk, worldtex_loadAlwaysPages, then sizes and allocates the texture segment cache (world +0x60, +0x7c); caller game_loadLevel
+001822e8	world_texCellBlocks	(world, column, row) -> size of texture cell row*100+column in 128 KB blocks, 0 when outside the id range
+001826ec	world_disableUnclaimedPieces	(world): world_setPieceCollision(i, 0) for every moving piece whose claimed bit (+6 bit 0) is clear; caller game_loadLevel after the objects exist
+00182914	world_releasePiece	(world, piece): clears the claimed bit that world_findMovingPiece sets
+00182940	world_getPieceBounds	(world, piece, minOut, maxOut): union of the piece's chunk bounds with the 48-unit padding removed
+00182bf4	world_setPieceFlash	(world, piece, on): sets or clears chunk flag 0x100 on the piece's chunks
+001737d8	gob_loadAll	(name): reads the 0x800-byte GOB directory, then every lump in file order, running lump_fixup on each; caller game_loadLevel with "<level>.gob"
+# ---- drawing ----		
+001887b8	world_drawChunk	(world, chunk, clip): dispatches on chunk flags 0x80/0x800/0x4000/0x8000, otherwise builds the per-chunk VIF header (matrix, lights, STROW translation) and a DMA ref to the stored packet; returns early when chunk +0x34 is 0
+001876e0	world_drawWaterChunk	flag 0x80: allocates or refreshes the 32x32 simulation block and draws it with microprogram entry 0x36
+00187eac	world_drawModelChunk	flag 0x800: resolves "<lump>.lmp" / "<model>.vif|.tex|.anm" on first use, claims a scenery animation slot, draws the model
+0018b810	world_runEmitterChunk	flag 0x4000: runs the particle emitter type chunk+4 at translation * 0.25
+0018ba18	world_runLightChunk	flag 0x8000: flicker modes 0-4 from the light record, writes one of 16 light slots and links it; optional glow sprite
+0018b93c	world_claimLightSlot	(chunk) -> slot 0-15; least recently used slot is taken over, owner chunk's +4 cleared
+00189df0	world_touchTexturesInView	(world, view): same tree walk as world_draw but only requests textures; caller cut_evalCamera
+00187310	water_claimSimBlock	recycles the least recently used water simulation block
+00187374	water_initSimBlock	(world, waterRecord): starts the 32x32 heights from the four neighbour chunks named in the record
+001875d4	water_setup	(tex) level start: water constants and texture; with level option bit 8 fills every water chunk's 128-byte mask with 0xff
+# ---- level texture file ----		
+0017d680	worldtex_loadAlwaysPages	reads each listed texture cell of "<level>.tex" whole and relocates its textures
+0017d830	worldtex_stream	(cell or -1): keeps the 3x3 texture cells around g_cameraFocus loaded, 128 KB per call; cell = floor(pos / world+0x68) + 50
+00179f28	tex_relocateInCell	(world, texHeader, blockMap, base): as tex_relocate, but offsets are from the start of the cell and go through the 128 KB block map
+0017fc78	worldtex_requestUpload	(texHeader, cell): appends to a 64-entry ring of textures wanted this frame
+# ---- automap ----		
+00168894	automap_loadGrid	(world): copies the grid at world +0x80 (s16 x0, y0, w, h, then w*h cells) into g_automapGrid when world +0x6c and +0x80 are set and +0x70 is 0
+0016865c	automap_packExplored	(out): explored nibbles of every second cell in both directions, two per byte; caller save_writeLevelState
+001686c4	automap_unpackExplored	(in): inverse of automap_packExplored, averaging neighbours for the cells in between; caller level_loadScriptAndObjects
+# ---- globals ----		
+0041c1b8	g_texCellSlot	one byte per texture cell id: slot index into g_texCellBlob, -1 when not loaded
+00425df8	g_texCellBlob	pointer to the loaded cell data per slot; slots 0-8 streamed, 9 and up always-loaded pages
+007d2fd0	g_texStreamCells	cell id held by each of the 9 streaming slots, -1 when empty
+007d3560	g_texAlwaysPages	{cell id, pointer} pairs, count at 0x7d35a0
+007d35e8	g_worldEmitterTypes	up to 16 particle emitter records copied from flag-0x4000 chunks, 0x98 bytes each (0x48 from the file, generator state after); count g_worldEmitterTypeCount
+007d69a8	g_worldEmitterTypeCount	
+007d3f70	g_worldLightSlots	light node of the first of 16 records used by flag-0x8000 chunks; records are 0x44 bytes from 0x7d3f68: frame stamp, owner chunk, light node
+007d5d50	g_sceneryAnims	64 animation states of 0x30 bytes shared by model chunks using the same .anm
+004044f0	g_automapGrid	216 x 216 s16 cells; bits 12-15 of a cell are the explored level
+004044dc	g_automapWidth	
+004044e0	g_automapHeight	
+004044a8	g_automapOriginX	float; cell column = origin + x / 120
+004044ac	g_automapOriginY	
+0044fe18	g_levelTexName	base name used to open "<name>.tex" in world_fixup and worldtex_loadAlwaysPages
+0086aee8	g_levelBounds	min xyz, max xyz: union of all chunk bounds, built by game_loadLevel
