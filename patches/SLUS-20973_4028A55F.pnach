@@ -55,7 +55,7 @@ patch=1,EE,00196AA0,word,00001021
 
 [Arena diagnostic: never judge activity from the camera]
 author=reverse engineering test patch, untested on a running game
-description=Diagnostic only. In a net game object activity is always judged from player positions, never from the cutscene camera (gameSetObjectVis, 0x1E4DD4). Scenery far from the players stops animating during cutscenes. Tests FINDINGS D6. Every player must use the same setting.
+description=Diagnostic only. In a net game object activity is always judged from player positions, never from the cutscene camera (gameSetObjectVis, 0x1E4DD4). Scenery far from the players stops animating during cutscenes. Tests FINDINGS D6; also takes the camera out of the smoke and wave objects of D35 and the fire bombs of D29. Every player must use the same setting.
 // was: 8043FCD0 (lb v1,-0x330(v0))
 patch=1,EE,001E4DD4,word,00001821
 

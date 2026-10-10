@@ -1,0 +1,14 @@
+# area: rescan — addresses named while triaging the re-run of tools/localstate.py (docs/issues/rescan.md). Only addresses no other file names.
+0015fef4	WaveMaker_knockbackAndFoam	(wave, pos, basis, n) called from WaveMaker_run only behind g_waveDetail and isNearView(503); every 16th frame gives each solid creature more than 12 below the crest knockback speed 82 (+0x2e8, store 0x1600d0) and a knockback angle (+0x2e0) taken from two draws of the wave's own generator; the rest is particles and one water_disturb
+001605b8	WaveMaker_foamParticle	(wave, pos) four own-generator draws and one particle; no other effect
+001606f8	WaveMaker_splashParticles	(wave, pos, index) 28 or 56 particles, five own-generator draws each; no other effect
+0031cac8	SmokeGen_stepParticles	(obj) advances the generator's own particle ring (+0x438/+0x43a) with its own generator; called from SmokeGen_run (0x31c8d0, behind isNearView) and from SmokeGen_ctor (0x31d208)
+00231014	dialog_setFocusObj	(obj, word) stores both words at 0x4fdcc0/0x4fdcc4 unless dialog data is already loaded; called from dialog_onMsg (0x22f1b0, 0x22f1c4) with the object the dialog is with
+00403a08	g_activityCenterCount	s8: number of entries in g_activityCenters; written only by gameSetObjectVis (0x1e4d74, 0x1e4dec), read by obj_updateActive
+004f7130	g_waveDetail	s32: stored by script setWaveDetail (0x141780), set at level clear (0x1e4f68), read by WaveMaker_run (0x15f8f8); zero switches off the wave's knockback and foam part
+004f8694	g_scriptMissingStamp	s32: script_runByName stores g_drawFrame + 20 here when the named entry does not exist (0x1ed708); no reader anywhere in the program
+004fdcc0	g_dialogFocusObj	object the open dialog is with (set through dialog_setFocusObj, zeroed by dialog_free 0x22fa24); while dialog_isOpen it is the only activity centre gameSetObjectVis installs
+007b8340	g_poseLruTail	most recently used end of the pose-buffer list (100 buffers of 0x620 bytes at 0x791ec0, set up by anim_init); anim_buildPose and anim_emitPose move a buffer here when they take or draw it
+007b8344	g_poseLruHead	least recently used end of the pose-buffer list; anim_buildPose walks from here and takes the first buffer whose draw stamp (+0x61c) is older than g_drawFrame - 3
+007b8380	g_poseDefaultBuf	pose buffer used by anim_getJointMatrix (0x16f760) and anim_emitPose (0x16f934) when the state has no pose (no full-weight track, or no free buffer on the draw path)
+007b89c0	g_poseFallbackBuf	the one static pose buffer anim_buildPose uses for a non-draw caller when every pooled buffer was drawn in the last three frames (0x16ede0); anim_emitPose never draws from it (0x16f898)
