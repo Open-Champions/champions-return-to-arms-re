@@ -1,0 +1,10 @@
+003a5a80	libm_atan2f	(y, x): 20-byte wrapper that jumps to 0x3a7328; callers math_atan2_16 0x1667a0 and Vehicle_updateSteering 0x20ca2c, 0x20ca40. Identified by the kernel's constants, not by a symbol
+003a7328	libm_ieee754_atan2f	kernel of atan2f: pi 0x40490fda, pi/2 0x3fc90fda, low part 0x34222168; calls libm_fabsf and libm_atanf. Shape of newlib's single-precision routine (Inferred); pi is one unit in the last place below the nearest float
+003aa558	libm_atanf	(x): range tests against 0x3edfffff, 0x3f2fffff, 0x3f97ffff, 0x401bffff and the 'huge' constant 0x7149f2c9; called by 0x3a7328. Body not transcribed
+003aa7e8	libm_fabsf	(x): clears the sign bit through an integer register
+003a5710	libm_ceilf	(x): bit-manipulating ceiling, result still a float; callers convert with cvt.w.s. Used by terrain_heightBelow, terrain_height, terrain_testFlag1, terrain_sweepCircle for the sample radius
+003a57e8	libm_floorf	(x): bit-manipulating floor, result still a float; 10 call sites in the terrain and world code (cell and sample indices)
+003a5ac8	libm_powf	(x, y): 20-byte wrapper around 0x3a7930 (docs/runtime.md); Camera_followRotateInput calls it with exponents 0.95 and 2.0
+003a7930	libm_ieee754_powf	kernel of powf, 2 KB; identified from its wrapper's use and its constant table (0x3f763800, 0x3fb8aa00, 0x3eaaaaab ...). Body not read
+001e71b0	game_buildScreenEdgePlanes	(pos*): from the four frustum side planes at 0x44f0a8 builds four ground-plane normals at 0x4f8350 and points at 0x4f8380, the frustum footprint at pos.z moved 60 units inward; callers Player_clampToScreen 0x1b3e2c and 0x1be994. Offline use only as far as read
+00163658	math_rayPlaneDistance	(origin*, dir*, planePoint*, planeNormal*) -> distance along dir to the plane, or -1 when the ray points away or starts behind it; only caller Camera_updateFollow 0x204f28
