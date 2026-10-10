@@ -14,8 +14,10 @@ structure field. OFF is a hexadecimal byte offset, LO-HI an inclusive byte range
   --static BASE[,STRIDE[,COUNT]]   the structure also exists at a fixed address (COUNT instances
                           STRIDE apart): list absolute accesses to OFF of any instance
   --adjust N              also search OFF-N (a `this` shifted by N; see "cannot see" 6)
-  --blocks                also list calls that receive the object's own address together with
-                          a constant length that reaches OFF (possible block copy or fill)
+  --blocks                also list calls that receive a pointer at or below OFF together
+                          with a constant in a later argument register that reaches OFF
+                          (a possible block copy or fill; crude: any constant counts), and
+                          walks that start at the object's own address
   --roots                 print where each hit's base pointer came from
   --certain               drop the possible ('?') hits
   --walk-limit N          how far (bytes, hex) a walking pointer whose loop count is unknown
@@ -51,8 +53,10 @@ Output: one line per function, hits as ADDRESS:OP+OFFSET with marks
   &+300..100?     a pointer to +0x300 is passed with a constant length 0x100 that reaches OFF
   ?               possible, not certain: the base survived a call in a caller-saved register,
                   came back from the stack frame of a function that takes the address of a
-                  local, is in code outside every function, or the hit is a later element of
-                  a walking / indexed access
+                  local, is one of two offsets that meet outside a loop (an if / else that
+                  picks a member; printed like a walk), is in code outside every function, or
+                  the hit is a later element of an indexed access or of a walk of unknown
+                  length
 A hit without '?' is certain in this sense only: on every path the instruction touches that
 byte offset from the pointer the tool names. It is not a statement about the pointer's type.
 

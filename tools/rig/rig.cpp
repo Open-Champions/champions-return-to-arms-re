@@ -40,6 +40,8 @@
 #include <pthread.h>
 #include <signal.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 #include "PS2VM.h"
@@ -475,6 +477,7 @@ struct Expr
 		ADD,
 		SUB,
 		MUL,
+		AND,
 		DEREF,
 		REG,
 		PC,
@@ -518,6 +521,10 @@ struct Expr
 			case MUL:
 				sp--;
 				stack[sp - 1] *= stack[sp];
+				break;
+			case AND:
+				sp--;
+				stack[sp - 1] &= stack[sp];
 				break;
 			}
 		}
@@ -573,6 +580,11 @@ private:
 			{
 				ParseProduct(expr);
 				expr.code.push_back({Expr::SUB, 0});
+			}
+			else if(Accept('&'))
+			{
+				ParseProduct(expr);
+				expr.code.push_back({Expr::AND, 0});
 			}
 			else
 				break;
@@ -1067,6 +1079,7 @@ struct Command
 		UNBREAK,
 		SYNC,
 		NETSHIM,
+		FUZZ,
 		QUIT,
 	};
 	KIND kind = WAIT;
@@ -1088,6 +1101,203 @@ struct Command
 	bool started = false;
 	uint64 deadline = 0;
 	uint64 phaseStart = 0;
+	// fuzz
+	uint64 rng = 0;
+	uint32 fuzzMask = 0;
+	uint32 stickHold[2] = {};
+	uint32 buttonHold[PS2::CControllerInfo::MAX_BUTTONS] = {};
+};
+
+// Random input (script command fuzz). Which buttons may be pressed is chosen by name;
+// rates are presses started per thousand frames, holds are in frames.
+struct FuzzButton
+{
+	const char* group;
+	PS2::CControllerInfo::BUTTON button;
+	uint32 rate;
+	uint32 holdMin;
+	uint32 holdSpan;
+};
+
+static const FuzzButton g_fuzzButtons[] = {
+    {"fight", PS2::CControllerInfo::CROSS, 60, 2, 8},
+    {"fight", PS2::CControllerInfo::CIRCLE, 10, 2, 20},
+    {"fight", PS2::CControllerInfo::TRIANGLE, 10, 2, 20},
+    {"fight", PS2::CControllerInfo::R1, 10, 10, 40},
+    {"fight", PS2::CControllerInfo::L1, 4, 2, 4},
+    {"potion", PS2::CControllerInfo::R2, 8, 2, 4},
+    {"potion", PS2::CControllerInfo::L2, 8, 2, 4},
+    {"use", PS2::CControllerInfo::SQUARE, 15, 2, 6},
+    {"dpad", PS2::CControllerInfo::DPAD_UP, 6, 4, 30},
+    {"dpad", PS2::CControllerInfo::DPAD_DOWN, 6, 4, 30},
+    {"dpad", PS2::CControllerInfo::DPAD_LEFT, 6, 4, 30},
+    {"dpad", PS2::CControllerInfo::DPAD_RIGHT, 6, 4, 30},
+    {"select", PS2::CControllerInfo::SELECT, 4, 2, 3},
+    {"start", PS2::CControllerInfo::START, 3, 2, 3},
+    {"l3r3", PS2::CControllerInfo::L3, 2, 2, 3},
+    {"l3r3", PS2::CControllerInfo::R3, 2, 2, 3},
+};
+enum
+{
+	FUZZ_MOVE = 1u << 30,
+	FUZZ_RSTICK = 1u << 31,
+};
+
+// ---------------------------------------------------------------------------------
+// Two machines (phase 2). Two runner processes are joined by a local stream socket.
+// At every vertical blank each runner sends one message - its frame number and the
+// datagrams its game sent since the last one - and then waits for the other's message
+// with the same frame number. Neither machine can get ahead of the other, and what a
+// machine receives depends only on frame numbers, never on host timing, so a pair of
+// runs is as repeatable as a single one.
+// ---------------------------------------------------------------------------------
+
+struct WireDatagram
+{
+	uint64 deliverFrame = 0; // first frame of the receiver on which it may be received
+	uint8 source[4] = {};
+	uint32 sourcePort = 0;
+	uint8 destination[4] = {};
+	uint32 destinationPort = 0;
+	std::vector<uint8> data;
+};
+
+class CLink
+{
+public:
+	bool Active() const
+	{
+		return m_fd >= 0;
+	}
+
+	// "listen:<path>" or "connect:<path>" (a Unix-domain socket; keep the path short)
+	void Open(const std::string& spec)
+	{
+		auto colon = spec.find(':');
+		if(colon == std::string::npos) Die("--link wants listen:<path> or connect:<path>");
+		std::string mode = spec.substr(0, colon), path = spec.substr(colon + 1);
+		sockaddr_un address = {};
+		address.sun_family = AF_UNIX;
+		if(path.size() >= sizeof(address.sun_path)) Die("--link: path too long (%zu characters, limit %zu)", path.size(), sizeof(address.sun_path) - 1);
+		strcpy(address.sun_path, path.c_str());
+		int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+		if(fd < 0) Die("--link: cannot make a socket");
+		if(mode == "listen")
+		{
+			unlink(path.c_str());
+			if(bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0 || listen(fd, 1) != 0) Die("--link: cannot listen on %s", path.c_str());
+			m_fd = accept(fd, nullptr, nullptr);
+			close(fd);
+			unlink(path.c_str());
+			if(m_fd < 0) Die("--link: accept failed");
+		}
+		else if(mode == "connect")
+		{
+			for(int attempt = 0; attempt < 600; attempt++)
+			{
+				if(connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0)
+				{
+					m_fd = fd;
+					break;
+				}
+				usleep(100000);
+			}
+			if(m_fd < 0) Die("--link: nobody is listening on %s", path.c_str());
+		}
+		else
+			Die("--link wants listen:<path> or connect:<path>");
+	}
+
+	void Send(uint64 frame, bool bye, const std::vector<WireDatagram>& datagrams)
+	{
+		std::vector<uint8> message;
+		auto put32 = [&](uint32 value) { message.insert(message.end(), reinterpret_cast<uint8*>(&value), reinterpret_cast<uint8*>(&value) + 4); };
+		auto put64 = [&](uint64 value) { message.insert(message.end(), reinterpret_cast<uint8*>(&value), reinterpret_cast<uint8*>(&value) + 8); };
+		put32(MAGIC);
+		put32(bye ? 1 : 0);
+		put64(frame);
+		put32(static_cast<uint32>(datagrams.size()));
+		for(const auto& datagram : datagrams)
+		{
+			put64(datagram.deliverFrame);
+			message.insert(message.end(), datagram.source, datagram.source + 4);
+			put32(datagram.sourcePort);
+			message.insert(message.end(), datagram.destination, datagram.destination + 4);
+			put32(datagram.destinationPort);
+			put32(static_cast<uint32>(datagram.data.size()));
+			message.insert(message.end(), datagram.data.begin(), datagram.data.end());
+		}
+		WriteAll(message.data(), message.size());
+	}
+
+	// false when the connection is gone
+	bool Receive(uint64& frame, bool& bye, std::vector<WireDatagram>& datagrams)
+	{
+		uint32 magic = 0, flags = 0, count = 0;
+		if(!ReadAll(&magic, 4) || magic != MAGIC || !ReadAll(&flags, 4) || !ReadAll(&frame, 8) || !ReadAll(&count, 4)) return false;
+		bye = (flags & 1) != 0;
+		for(uint32 i = 0; i < count; i++)
+		{
+			WireDatagram datagram;
+			uint32 length = 0;
+			if(!ReadAll(&datagram.deliverFrame, 8) || !ReadAll(datagram.source, 4) || !ReadAll(&datagram.sourcePort, 4) || !ReadAll(datagram.destination, 4) || !ReadAll(&datagram.destinationPort, 4) || !ReadAll(&length, 4) || length > 0x10000) return false;
+			datagram.data.resize(length);
+			if(length && !ReadAll(datagram.data.data(), length)) return false;
+			datagrams.push_back(std::move(datagram));
+		}
+		return true;
+	}
+
+private:
+	enum : uint32
+	{
+		MAGIC = 0x52494731,
+	};
+
+	void WriteAll(const void* data, size_t size)
+	{
+		auto p = static_cast<const uint8*>(data);
+		while(size > 0)
+		{
+			ssize_t written = write(m_fd, p, size);
+			if(written <= 0) return; // the other side is gone; the next Receive reports it
+			p += written;
+			size -= static_cast<size_t>(written);
+		}
+	}
+
+	bool ReadAll(void* data, size_t size)
+	{
+		auto p = static_cast<uint8*>(data);
+		while(size > 0)
+		{
+			ssize_t got = read(m_fd, p, size);
+			if(got <= 0) return false;
+			p += got;
+			size -= static_cast<size_t>(got);
+		}
+		return true;
+	}
+
+	int m_fd = -1;
+};
+
+// What the bus between the two machines does to a datagram. All of it is drawn from a
+// generator seeded by --bus seed=N (and the machine letter), so it repeats.
+struct BusModel
+{
+	uint32 delay = 0;  // frames added to every datagram that crosses
+	uint32 jitter = 0; // up to this many more, drawn per datagram (this is what reorders)
+	uint32 lossPerMille = 0;
+	uint64 state = 0x9E3779B97F4A7C15ull;
+
+	uint64 Next()
+	{
+		state ^= state >> 12;
+		state ^= state << 25;
+		state ^= state >> 27;
+		return state * 0x2545F4914F6CDD1Dull;
+	}
 };
 
 // ---------------------------------------------------------------------------------
@@ -1179,6 +1389,42 @@ public:
 		m_log = log;
 	}
 
+	// joined to a second runner: datagrams for other addresses, and broadcasts, cross
+	void SetLinked(const BusModel& bus)
+	{
+		m_linked = true;
+		m_bus = bus;
+	}
+
+	std::vector<WireDatagram> TakeOutbox()
+	{
+		std::vector<WireDatagram> result;
+		result.swap(m_outbox);
+		return result;
+	}
+
+	// a datagram from the other machine
+	void Deliver(const WireDatagram& wire, uint64 frame)
+	{
+		bool broadcast = (wire.destination[0] == 0xff);
+		if(!broadcast && memcmp(wire.destination, m_ownAddress, 4) != 0)
+		{
+			Log(frame, "bus: datagram for %d.%d.%d.%d is not for this machine, dropped", wire.destination[3], wire.destination[2], wire.destination[1], wire.destination[0]);
+			return;
+		}
+		DATAGRAM datagram;
+		datagram.data = wire.data;
+		memcpy(datagram.address, wire.source, 4);
+		datagram.port = wire.sourcePort;
+		datagram.frame = wire.deliverFrame;
+		Socket(1); // after a state load the game's socket is not known yet
+		for(auto& socket : m_sockets)
+		{
+			if(socket.second.port != wire.destinationPort) continue;
+			Enqueue(socket.second, datagram);
+		}
+	}
+
 	uint64 Calls(int call) const
 	{
 		return m_calls[call];
@@ -1248,25 +1494,48 @@ public:
 			if(const uint8* p = m.Ptr(pointer, length)) datagram.data.assign(p, p + length);
 			uint8 destination[4] = {};
 			if(const uint8* p = m.Ptr(addressBlock, 8)) memcpy(destination, p + 4, 4);
-			auto socket = m_sockets.find(id);
+			SOCKET& sender = Socket(id);
 			memcpy(datagram.address, m_ownAddress, 4);
-			datagram.port = (socket != m_sockets.end()) ? socket->second.port : 0;
+			datagram.port = sender.port;
 			datagram.frame = frame + 1;
 			bool broadcast = (destination[0] == 0xff);
 			bool toSelf = (memcmp(destination, m_ownAddress, 4) == 0);
-			int delivered = 0;
+			const char* fate = "no receiver on the bus, dropped";
 			if(broadcast || toSelf)
 			{
 				for(auto& other : m_sockets)
 				{
 					if(other.second.port != port) continue;
-					other.second.queue.push_back(datagram);
-					delivered++;
+					Enqueue(other.second, datagram);
+					fate = "queued for this machine";
+				}
+			}
+			if(m_linked && (broadcast || !toSelf))
+			{
+				// the bus model: loss, then delay and jitter
+				bool lost = (m_bus.lossPerMille != 0) && (m_bus.Next() % 1000 < m_bus.lossPerMille);
+				uint32 extra = m_bus.jitter ? static_cast<uint32>(m_bus.Next() % (m_bus.jitter + 1)) : 0;
+				if(lost)
+				{
+					fate = broadcast ? "queued here, lost on the bus" : "lost on the bus";
+					m_lost++;
+				}
+				else
+				{
+					WireDatagram wire;
+					wire.deliverFrame = frame + 1 + m_bus.delay + extra;
+					memcpy(wire.source, m_ownAddress, 4);
+					wire.sourcePort = sender.port;
+					memcpy(wire.destination, destination, 4);
+					wire.destinationPort = port;
+					wire.data = datagram.data;
+					m_outbox.push_back(std::move(wire));
+					fate = broadcast ? "queued here and sent across" : "sent across";
 				}
 			}
 			m_sent++;
 			result = static_cast<int32>(length);
-			Log(frame, "sceInetSendTo(id=%d, len=%d, to %d.%d.%d.%d:%d) first=%s -> %s", id, length, destination[3], destination[2], destination[1], destination[0], port, Hex(datagram.data, 16).c_str(), delivered ? "queued for this machine" : "no receiver on the bus, dropped");
+			if(m_logDatagrams || length <= 8) Log(frame, "sceInetSendTo(id=%d, len=%d, to %d.%d.%d.%d:%d) first=%s -> %s", id, length, destination[3], destination[2], destination[1], destination[0], port, Hex(datagram.data, 16).c_str(), fate);
 		}
 		break;
 		case CALL_RECV_FROM:
@@ -1274,11 +1543,11 @@ public:
 			int32 id = static_cast<int32>(arg(2));
 			uint32 pointer = arg(3), length = arg(4), flagsPointer = arg(5), addressOut = arg(6), portOut = arg(7);
 			result = ERROR_NO_DATA;
-			auto socket = m_sockets.find(id);
-			if(socket != m_sockets.end() && !socket->second.queue.empty() && socket->second.queue.front().frame <= frame)
+			SOCKET& receiver = Socket(id);
+			if(!receiver.queue.empty() && receiver.queue.front().frame <= frame)
 			{
-				DATAGRAM datagram = std::move(socket->second.queue.front());
-				socket->second.queue.pop_front();
+				DATAGRAM datagram = std::move(receiver.queue.front());
+				receiver.queue.pop_front();
 				uint32 size = std::min<uint32>(length, static_cast<uint32>(datagram.data.size()));
 				if(uint8* p = m.Ptr(pointer, size)) memcpy(p, datagram.data.data(), size);
 				if(uint8* p = m.Ptr(addressOut, 16))
@@ -1290,7 +1559,7 @@ public:
 				if(flagsPointer) Write32(m, flagsPointer, 0);
 				result = static_cast<int32>(size);
 				m_received++;
-				Log(frame, "sceInetRecvFrom(id=%d) -> %d bytes from %d.%d.%d.%d:%d first=%s", id, size, datagram.address[3], datagram.address[2], datagram.address[1], datagram.address[0], datagram.port, Hex(datagram.data, 16).c_str());
+				if(m_logDatagrams || size <= 8) Log(frame, "sceInetRecvFrom(id=%d) -> %d bytes from %d.%d.%d.%d:%d first=%s", id, size, datagram.address[3], datagram.address[2], datagram.address[1], datagram.address[0], datagram.port, Hex(datagram.data, 16).c_str());
 			}
 		}
 		break;
@@ -1308,7 +1577,7 @@ public:
 
 	void Summary() const
 	{
-		printf("  net shim: %" PRIu64 " datagrams sent, %" PRIu64 " received; calls:", m_sent, m_received);
+		printf("  net shim: %" PRIu64 " datagrams sent, %" PRIu64 " received, %" PRIu64 " lost on the bus; calls:", m_sent, m_received, m_lost);
 		for(int i = 0; i < CALL_COUNT; i++) printf(" %s=%" PRIu64, Entries()[i].name, m_calls[i]);
 		printf("\n");
 	}
@@ -1331,6 +1600,27 @@ private:
 	static void Write32(const Machine& m, uint32 address, uint32 value)
 	{
 		if(uint8* p = m.Ptr(address, 4)) memcpy(p, &value, 4);
+	}
+
+	// A connection id the shim has not handed out (a state saved inside a net game was
+	// loaded) is taken to be the game's own socket, which is always on port 4000 on the
+	// developer LAN path.
+	SOCKET& Socket(int32 id)
+	{
+		auto found = m_sockets.find(id);
+		if(found != m_sockets.end()) return found->second;
+		SOCKET socket;
+		socket.port = 4000;
+		if(id >= m_nextId) m_nextId = id + 1;
+		return m_sockets[id] = socket;
+	}
+
+	// kept in order of the frame of delivery; equal frames stay in order of arrival
+	static void Enqueue(SOCKET& socket, const DATAGRAM& datagram)
+	{
+		auto position = socket.queue.end();
+		while(position != socket.queue.begin() && (position - 1)->frame > datagram.frame) --position;
+		socket.queue.insert(position, datagram);
 	}
 
 	static std::string Hex(const std::vector<uint8>& data, size_t limit)
@@ -1357,7 +1647,14 @@ private:
 	uint64 m_calls[CALL_COUNT] = {};
 	uint64 m_sent = 0;
 	uint64 m_received = 0;
+	uint64 m_lost = 0;
 	FILE* m_log = nullptr;
+	bool m_linked = false;
+	BusModel m_bus;
+	std::vector<WireDatagram> m_outbox;
+
+public:
+	bool m_logDatagrams = true; // every datagram, or only the short ones of the lobby
 };
 
 class CRigVM : public CPS2VM
@@ -1426,6 +1723,13 @@ struct Options
 	bool videoThread = false;
 	std::string netShimAddress;
 	std::string netLogPath;
+	char machine = 'A';
+	std::string linkSpec;
+	BusModel bus;
+	bool netLogAll = false;
+	std::string tickLogPath;
+	std::vector<std::string> tickWatchSpecs;
+	std::string tickAddress = "0x13aee8";
 };
 
 class CRig
@@ -1464,6 +1768,28 @@ public:
 			    [this](uint32 address, uint32) { return m_netShim.Dispatch(m_machine, m_frame, address); }, 0x40);
 			m_netShimReady = true;
 		}
+		if(!m_options.linkSpec.empty())
+		{
+			if(!m_netShimReady) Die("--link needs --net-shim <address>");
+			BusModel bus = m_options.bus;
+			if(m_options.machine == 'B') bus.state ^= 0xD6E8FEB86659FD93ull;
+			m_netShim.SetLinked(bus);
+			printf("waiting for the other machine (%s)\n", m_options.linkSpec.c_str());
+			fflush(stdout);
+			m_link.Open(m_options.linkSpec);
+			printf("joined; this is machine %c\n", m_options.machine);
+		}
+		m_netShim.m_logDatagrams = m_options.netLogAll;
+		for(const auto& spec : m_options.tickWatchSpecs) m_tickWatches.push_back(ParseWatch(spec));
+		if(!m_options.tickLogPath.empty())
+		{
+			m_tickLog = fopen(m_options.tickLogPath.c_str(), "w");
+			if(!m_tickLog) Die("cannot write %s", m_options.tickLogPath.c_str());
+			fprintf(m_tickLog, "frame");
+			for(const auto& watch : m_tickWatches) fprintf(m_tickLog, "\t%s", watch.name.c_str());
+			fprintf(m_tickLog, "\n");
+			m_needTickHook = true;
+		}
 		for(const auto& spec : m_options.watchSpecs) m_watches.push_back(ParseWatch(spec));
 		if(!m_options.logPath.empty())
 		{
@@ -1488,6 +1814,14 @@ public:
 		if(!m_options.scriptPath.empty()) LoadScript(m_options.scriptPath);
 		int line = 0;
 		for(const auto& text : m_options.inlineCommands) ParseScriptLine(text, --line);
+		if(m_needTickHook)
+		{
+#ifndef DEBUGGER_INCLUDED
+			Die("the tick log and 'ontick' need a build with break point support");
+#endif
+			m_tickAddress = ExprParser(m_options.tickAddress).Parse().Eval(m_machine) & 0x1FFFFFFF;
+			SetBreakpoint(m_tickAddress, true);
+		}
 	}
 
 
@@ -1507,6 +1841,7 @@ public:
 		}
 		m_frame++;
 		if(m_inlineGs) m_inlineGs->Drain();
+		if(m_link.Active() && !ExchangeWithPeer()) return;
 
 		if(m_options.pcHistogram) m_pcSamples[m_machine.state->nPC]++;
 		if(m_options.fpsEvery != 0 && (m_frame % m_options.fpsEvery) == 0)
@@ -1544,6 +1879,127 @@ public:
 		}
 	}
 
+	// One message each way per frame; see CLink. Returns false when the run is over.
+	bool ExchangeWithPeer()
+	{
+		m_link.Send(m_frame, false, m_netShim.TakeOutbox());
+		uint64 peerFrame = 0;
+		bool bye = false;
+		std::vector<WireDatagram> incoming;
+		if(!m_link.Receive(peerFrame, bye, incoming))
+		{
+			printf("[frame %" PRIu64 "] the other machine is gone\n", m_frame);
+			Finish(6);
+			return false;
+		}
+		if(bye)
+		{
+			printf("[frame %" PRIu64 "] the other machine ended its run\n", m_frame);
+			Finish(6);
+			return false;
+		}
+		if(peerFrame != m_frame)
+		{
+			printf("[frame %" PRIu64 "] the other machine is at frame %" PRIu64 ": the two are out of step\n", m_frame, peerFrame);
+			Finish(6);
+			return false;
+		}
+		for(const auto& datagram : incoming) m_netShim.Deliver(datagram, m_frame);
+		return true;
+	}
+
+	// A lockstep tick: the machine is stopped at the instruction after the tick's task
+	// pass (0x13aee8 in net_frameLoop). g_netFrame still holds the tick's number, and
+	// the shared seed and the positions are the ones the game is about to hash.
+	void OnTick()
+	{
+		m_ticks++;
+		uint32 tick = m_machine.Read32(0x4027ac); // g_netFrame
+		if(m_tickLog)
+		{
+			fprintf(m_tickLog, "%" PRIu64, m_frame);
+			for(const auto& watch : m_tickWatches)
+			{
+				uint32 address = watch.expr.Eval(m_machine);
+				fprintf(m_tickLog, "\t%s", FormatValue(ReadValue(m_machine, address, watch.type), watch.type).c_str());
+			}
+			fprintf(m_tickLog, "\n");
+		}
+		auto range = m_tickActions.equal_range(tick);
+		for(auto it = range.first; it != range.second; ++it)
+		{
+			Command& command = it->second;
+			try
+			{
+				switch(command.kind)
+				{
+				case Command::POKE:
+				{
+					uint32 address = command.target.expr.Eval(m_machine);
+					Poke(address, command.bytes.data(), static_cast<uint32>(command.bytes.size()));
+				}
+				break;
+				case Command::PNACH:
+					for(const auto& word : ReadPnachSection(command.text, command.text2))
+					{
+						uint32 before = m_machine.Read32(word.address);
+						Poke(word.address, &word.value, 4);
+						printf("[tick %u] patch [%s] %08x: %08x -> %08x\n", tick, command.text2.c_str(), word.address, before, word.value);
+					}
+					break;
+				case Command::DUMP:
+				{
+					uint32 address = command.target.expr.Eval(m_machine);
+					uint32 length = static_cast<uint32>(command.number);
+					const uint8* p = m_machine.Ptr(address, length);
+					FILE* file = p ? fopen(command.text.c_str(), "wb") : nullptr;
+					if(file)
+					{
+						fwrite(p, 1, length, file);
+						fclose(file);
+					}
+					printf("[tick %u] frame %" PRIu64 ": %s %s\n", tick, m_frame, file ? "dumped" : "DUMP FAILED", command.text.c_str());
+				}
+				break;
+				case Command::SHOW:
+				{
+					std::string line = StrFormat("[tick %u]", tick);
+					for(const auto& watch : command.watches)
+					{
+						uint32 address = watch.expr.Eval(m_machine);
+						line += StrFormat(" %s@%08x=%s", watch.name.c_str(), address, FormatValue(ReadValue(m_machine, address, watch.type), watch.type).c_str());
+					}
+					printf("%s\n", line.c_str());
+				}
+				break;
+				case Command::ECHO:
+					printf("[tick %u] frame %" PRIu64 ": %s\n", tick, m_frame, command.text.c_str());
+					break;
+				case Command::SAVE:
+					m_pendingSaves.push_back({command.text, m_vm.SaveState(command.text)});
+					break;
+				case Command::PRESS:
+					m_pads[command.port].buttons |= command.buttons;
+					break;
+				case Command::RELEASE:
+					m_pads[command.port].buttons &= ~command.buttons;
+					break;
+				case Command::QUIT:
+					Finish(0);
+					break;
+				default:
+					printf("[tick %u] ontick: this command cannot run inside a tick (line %d)\n", tick, command.line);
+					break;
+				}
+			}
+			catch(const RigError& error)
+			{
+				printf("[tick %u] %s\n", tick, error.what());
+			}
+		}
+		m_tickActions.erase(range.first, range.second);
+	}
+
 	// ---- break notification (machine thread) ---------------------------------------
 
 	void OnRunningStateChange()
@@ -1559,6 +2015,11 @@ public:
 #endif
 		uint32 pc = context.m_State.nPC;
 		bool keepRunning = true;
+		if(m_tickAddress != 0 && pc == m_tickAddress)
+		{
+			OnTick();
+			if(m_finished) return;
+		}
 
 		auto pendingReturn = m_returnBreaks.find(pc);
 		if(pendingReturn != m_returnBreaks.end() && !pendingReturn->second.empty())
@@ -1653,7 +2114,9 @@ public:
 				printf("    %8" PRIu64 "  %08x %s\n", sorted[i].first, sorted[i].second, Symbolize(sorted[i].second).c_str());
 			}
 		}
+		if(m_tickLog || m_ticks) printf("  lockstep ticks seen: %" PRIu64 "\n", m_ticks);
 		if(m_netShimReady) m_netShim.Summary();
+		if(m_tickLog) fclose(m_tickLog);
 		if(m_log) fclose(m_log);
 		if(m_breakLog) fclose(m_breakLog);
 		if(m_netLog) fclose(m_netLog);
@@ -1887,6 +2350,78 @@ private:
 	{
 		auto tokens = Tokenize(lineText);
 		if(tokens.empty()) return;
+
+		auto rejoin = [&](size_t first) {
+			std::string rest;
+			for(size_t k = first; k < tokens.size(); k++)
+			{
+				bool quote = tokens[k].find(' ') != std::string::npos || tokens[k].empty();
+				rest += (k > first ? " " : "") + (quote ? "\"" + tokens[k] + "\"" : tokens[k]);
+			}
+			return rest;
+		};
+
+		// "A: command" or "B: command": for one of two joined machines. The other machine
+		// lets the same number of frames pass, so the two scripts stay in step.
+		if(tokens[0] == "A:" || tokens[0] == "B:" || tokens[0] == "a:" || tokens[0] == "b:")
+		{
+			bool mine = (toupper(static_cast<unsigned char>(tokens[0][0])) == m_options.machine);
+			size_t before = m_commands.size();
+			ParseScriptLine(rejoin(1), lineNumber);
+			if(mine) return;
+			std::vector<Command> kept;
+			for(size_t k = before; k < m_commands.size(); k++)
+			{
+				Command other = m_commands[k];
+				switch(other.kind)
+				{
+				case Command::WAIT:
+				case Command::AT:
+				case Command::UNTIL:
+					kept.push_back(other);
+					break;
+				case Command::TAP:
+					other.kind = Command::WAIT;
+					other.number = other.number + other.number2;
+					kept.push_back(other);
+					break;
+				case Command::TAPUNTIL:
+					other.buttons = 0;
+					kept.push_back(other);
+					break;
+				case Command::FUZZ:
+					other.kind = Command::WAIT;
+					other.number = other.number2;
+					kept.push_back(other);
+					break;
+				case Command::SAVE:
+				case Command::LOAD:
+					other.kind = Command::WAIT;
+					other.number = 1;
+					kept.push_back(other);
+					break;
+				default:
+					break; // takes no frames
+				}
+			}
+			m_commands.resize(before);
+			m_commands.insert(m_commands.end(), kept.begin(), kept.end());
+			return;
+		}
+
+		// "ontick N command": run a command inside lockstep tick N (see OnTick)
+		if(Lower(tokens[0]) == "ontick")
+		{
+			int64_t tick = 0;
+			if(tokens.size() < 3 || !ParseNumber(tokens[1], tick)) Die("script line %d: ontick <tick> <command>", lineNumber);
+			size_t before = m_commands.size();
+			ParseScriptLine(rejoin(2), lineNumber);
+			for(size_t k = before; k < m_commands.size(); k++) m_tickActions.emplace(static_cast<uint32>(tick), m_commands[k]);
+			m_commands.resize(before);
+			m_needTickHook = true;
+			return;
+		}
+
 		Command command;
 		command.line = lineNumber;
 		size_t i = 0;
@@ -2077,6 +2612,38 @@ private:
 		else if(word == "netshim")
 		{
 			command.kind = Command::NETSHIM;
+		}
+		else if(word == "fuzz")
+		{
+			// fuzz <seed> <frames> <groups>: random input; groups are move, rstick and the
+			// button groups of g_fuzzButtons, joined by commas
+			need(3);
+			command.kind = Command::FUZZ;
+			command.number = number(tokens[i]);
+			command.number2 = number(tokens[i + 1]);
+			for(const auto& group : SplitChar(Lower(tokens[i + 2]), ','))
+			{
+				bool known = false;
+				if(group == "move")
+				{
+					command.fuzzMask |= FUZZ_MOVE;
+					known = true;
+				}
+				if(group == "rstick")
+				{
+					command.fuzzMask |= FUZZ_RSTICK;
+					known = true;
+				}
+				for(const auto& entry : g_fuzzButtons)
+				{
+					if(group == entry.group)
+					{
+						command.fuzzMask |= (1u << entry.button);
+						known = true;
+					}
+				}
+				if(!known) Die("script line %d: unknown fuzz group '%s'", lineNumber, group.c_str());
+			}
 		}
 		else if(word == "sync")
 		{
@@ -2305,6 +2872,72 @@ private:
 			case Command::NETSHIM:
 				InstallNetShim();
 				break;
+			case Command::FUZZ:
+			{
+				if(!command.started)
+				{
+					command.started = true;
+					command.deadline = m_frame + command.number2;
+					// the two machines draw different input from the same seed
+					command.rng = 0x9E3779B97F4A7C15ull ^ (static_cast<uint64>(command.number) * 0x100000001B3ull) ^ (m_options.machine == 'B' ? 0x5851F42D4C957F2Dull : 0);
+				}
+				auto next = [&command]() {
+					command.rng ^= command.rng >> 12;
+					command.rng ^= command.rng << 25;
+					command.rng ^= command.rng >> 27;
+					return static_cast<uint32>((command.rng * 0x2545F4914F6CDD1Dull) >> 32);
+				};
+				if(m_frame >= command.deadline)
+				{
+					for(const auto& entry : g_fuzzButtons)
+					{
+						if(command.fuzzMask & (1u << entry.button)) pad.buttons &= ~(1u << entry.button);
+					}
+					for(int k = 0; k < 4; k++) pad.axis[k] = 0x80;
+					break;
+				}
+				for(int stick = 0; stick < 2; stick++)
+				{
+					if(!(command.fuzzMask & (stick == 0 ? FUZZ_MOVE : FUZZ_RSTICK))) continue;
+					if(command.stickHold[stick] > 0)
+					{
+						command.stickHold[stick]--;
+						continue;
+					}
+					uint32 choice = next() % 8;
+					uint8 x = 0x80, y = 0x80;
+					if(choice >= 2 && choice <= 5)
+					{
+						static const uint8 full[8][2] = {{0x80, 0x00}, {0xff, 0x00}, {0xff, 0x80}, {0xff, 0xff}, {0x80, 0xff}, {0x00, 0xff}, {0x00, 0x80}, {0x00, 0x00}};
+						uint32 direction = next() % 8;
+						x = full[direction][0];
+						y = full[direction][1];
+					}
+					else if(choice >= 6)
+					{
+						x = static_cast<uint8>(next());
+						y = static_cast<uint8>(next());
+					}
+					pad.axis[stick * 2] = x;
+					pad.axis[stick * 2 + 1] = y;
+					command.stickHold[stick] = 5 + next() % 55;
+				}
+				for(const auto& entry : g_fuzzButtons)
+				{
+					if(!(command.fuzzMask & (1u << entry.button))) continue;
+					uint32& hold = command.buttonHold[entry.button];
+					if(hold > 0)
+					{
+						if(--hold == 0) pad.buttons &= ~(1u << entry.button);
+					}
+					else if(next() % 1000 < entry.rate)
+					{
+						pad.buttons |= (1u << entry.button);
+						hold = entry.holdMin + next() % entry.holdSpan;
+					}
+				}
+				return;
+			}
 			case Command::SYNC:
 				printf("[sync %s] frame=%" PRIu64 "\n", command.text.c_str(), m_frame);
 				FlushOutputs();
@@ -2324,6 +2957,7 @@ private:
 		if(m_log) fflush(m_log);
 		if(m_breakLog) fflush(m_breakLog);
 		if(m_netLog) fflush(m_netLog);
+		if(m_tickLog) fflush(m_tickLog);
 	}
 
 	// Writes the four-instruction host-call stub over each libnet entry point. The
@@ -2417,6 +3051,7 @@ private:
 	{
 		if(m_finished) return;
 		m_cpuSeconds = ThreadCpuSeconds() - m_cpuStart;
+		if(m_link.Active() && exitCode != 6) m_link.Send(m_frame, true, {});
 		m_exitCode = exitCode;
 		{
 			std::lock_guard<std::mutex> lock(m_doneMutex);
@@ -2459,6 +3094,15 @@ private:
 	CNetShim m_netShim;
 	bool m_netShimReady = false;
 	FILE* m_netLog = nullptr;
+	CLink m_link;
+
+	// lockstep ticks
+	std::vector<Watch> m_tickWatches;
+	FILE* m_tickLog = nullptr;
+	uint32 m_tickAddress = 0;
+	bool m_needTickHook = false;
+	std::multimap<uint32, Command> m_tickActions;
+	uint64 m_ticks = 0;
 
 	std::vector<Command> m_commands;
 	size_t m_scriptPosition = 0;
@@ -2519,7 +3163,14 @@ static void Usage()
 	    "  --video-thread         give the null video handler its own thread, as Play! normally does\n"
 	    "  --net-shim <a.b.c.d>   claim this address and be ready to replace the game's libnet entry\n"
 	    "                         points; the script command 'netshim' installs the replacements\n"
-	    "  --net-log <file>       log of the shim's calls and datagrams\n");
+	    "  --net-log <file>       log of the shim's calls and of the lobby's short datagrams\n"
+	    "  --net-log-all          ... and of every datagram\n"
+	    "  --machine A|B          which of two joined machines this is (script lines tagged A: or B:)\n"
+	    "  --link listen:<path> | connect:<path>   join a second runner; the two advance frame by frame\n"
+	    "  --bus delay=N,jitter=N,loss=N,seed=N   what the bus does to datagrams that cross (frames; loss per 1000)\n"
+	    "  --tick-log <file>      one row of the --tick-watch values per lockstep tick (needs break points)\n"
+	    "  --tick-watch <name=expr:type>   a value for the tick log; repeatable\n"
+	    "  --tick-at <addr>       where a tick is logged (default 0x13aee8, the return from the tick's tasks)\n");
 }
 
 static int Run(int argc, char** argv);
@@ -2615,6 +3266,43 @@ static int Run(int argc, char** argv)
 			options.netShimAddress = value();
 		else if(arg == "--net-log")
 			options.netLogPath = value();
+		else if(arg == "--net-log-all")
+			options.netLogAll = true;
+		else if(arg == "--machine")
+		{
+			std::string letter = value();
+			if(letter != "A" && letter != "B") Die("--machine A or B");
+			options.machine = letter[0];
+		}
+		else if(arg == "--link")
+			options.linkSpec = value();
+		else if(arg == "--bus")
+		{
+			// delay=N,jitter=N,loss=N (per thousand),seed=N
+			for(const auto& part : SplitChar(value(), ','))
+			{
+				auto equals = part.find('=');
+				int64_t number = 0;
+				if(equals == std::string::npos || !ParseNumber(part.substr(equals + 1), number) || number < 0) Die("--bus delay=N,jitter=N,loss=N,seed=N");
+				std::string key = part.substr(0, equals);
+				if(key == "delay")
+					options.bus.delay = static_cast<uint32>(number);
+				else if(key == "jitter")
+					options.bus.jitter = static_cast<uint32>(number);
+				else if(key == "loss")
+					options.bus.lossPerMille = static_cast<uint32>(number);
+				else if(key == "seed")
+					options.bus.state = 0x9E3779B97F4A7C15ull ^ (static_cast<uint64>(number) * 0x100000001B3ull);
+				else
+					Die("--bus: unknown key '%s'", key.c_str());
+			}
+		}
+		else if(arg == "--tick-log")
+			options.tickLogPath = value();
+		else if(arg == "--tick-watch")
+			options.tickWatchSpecs.push_back(value());
+		else if(arg == "--tick-at")
+			options.tickAddress = value();
 		else if(arg == "--help" || arg == "-h")
 		{
 			Usage();

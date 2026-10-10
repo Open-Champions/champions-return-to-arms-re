@@ -43,8 +43,10 @@ What it still cannot see
     structure with a word at FIELDOFF is searched; narrow with --class, --this, --func,
     --range and read the function.
  2. A flag value that reaches the test through memory other than the stack frame, through a
-    call (a getter that returns the word, a helper that takes the word by value), or that is
-    merged from two different loads at a join.
+    call (a getter that returns the word, a helper that takes the word by value), that is
+    merged at a join from loads of different fields, or that changes inside a loop (a word
+    shifted one bit per iteration). The same field loaded on two paths is kept; a loaded
+    word merged with a constant ("p ? p->flags : 0") is kept as possible.
  3. Masks that are neither constants in the function nor an argument passed as a constant
     one call up: masks read from a table, computed, or passed through two calls. They are
     listed as (reg)? at the instruction that applies them, for every bit.
