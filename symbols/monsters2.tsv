@@ -1,0 +1,149 @@
+# monsters area, second pass (0x232000-0x2c3cd4 and a few callees outside it): names for addresses no other file names.
+# Evidence is in the note and in docs/monsters-2.md. Proposed renames of existing Class_vslotN names are in that document, not here.
+0018fd18	gfx_queueLine	appends a 0x24-byte line record (two points, tag, 8 bytes of colour/alpha) to the table 0x7e0b00, count 0x82cc98, cap 128; 4 callers
+00232300	missionMenu_draw	draw task of the mission-select menu: missionMenu_open 0x231520 registers it with task_add(0x232300, 20, 'missionmenudraw', 1); draws msel.lmp frame, plane rows from table 0x4fe540, icons, pipes, title/description text and the host/client prompt. Not monster code. No call sites, only the four task add/remove references
+002331e8	menu_drawCosmicBackground	(lump, scrollA*, alphaA, scrollB*, alphaB, layer): tiles cosmiclines.tex and starfield.tex 2x2 over 640x448 with each scroll vector wrapped (0x3a5a38 used as fmod - inferred), then starsparkle.tex; callers missionMenu_draw 0x232300 and 0x223e30 (not read)
+002337a4	missionMenu_initStaticsEmpty	empty function (returns); only caller is the stub 0x2337ac with (1, 0xffff)
+002337ac	missionMenu_staticInit	static-initialiser stub in the constructor table (pointer at 0x3e99f4); calls 0x2337a4(1, 0xffff), which is empty - nothing is initialised
+002337cc	sjis_fromAsciiChar	(char) -> full-width Shift-JIS code: digits/upper/lower by offset from table 0x4fe878 (0x824f/'0', 0x8260/'A', 0x8281/'a'), punctuation ranges from table 0x4fe774 (space -> 0x8140), else 0; only caller 0x2338d0
+002338d0	sjis_fromAsciiString	(asciiStr, out): converts each byte with 0x2337cc, stores the code high byte first, zero-word terminated; only caller save_init 0x216fcc (call at 0x217338)
+00236b0c	Ant_loseBodyPart	(this, n 0..7): sets model-variant bit 2<<n in +0xe8, rebuilds the hide mask +0x220, creates one GutChunk (pool 0x268, GutChunk_ctorFromProp) with the texture name chosen by the colour byte +0x3c8 and adds 2.0 to its +0x1c4; only caller Ant_setState case 0x14 (0x236a28), one death in three
+00238150	AntQueen_pickFlyDest	(out Vec3, this): up to 10 own-generator tries for a point 300-600 from the target whose probe point 150 behind the queen's facing has terrain height within 12 of her z; falls back to her own position (also with no target); only caller AntQueen_setState case 0x17 (0x237b34)
+00238448	AntQueen_updateBank	banking spring from angular velocity +0x110 (fields +0x3dc, +0x3e0), writes the draw facing offset +0x3e4 and the weights of the walk_left/right and fly_left/right tracks; called by AntQueen_run in states 1, 3, 8, 0x17
+002385dc	AntQueen_fadeBankTracks	sets weight change -1/30 per frame on the four left/right walk and fly tracks; called by AntQueen_run in states 0, 6, 7, 9/10, 0x12, 0x14, 0x18, 0x19
+00238a8c	Ant_initParticleDefs	static-initialiser body (acts only for (1, 0xffff)): constructs particle definitions 0x8e2f18 (used by Ant_run corpse sinking, 0x236524) and 0x4febe0 (used by AntWave_draw, 0x2388c8)
+00238b98	Ant_staticInit	stub in the constructor table (pointer at 0x3e99f8); calls 0x238a8c(1, 0xffff). Covers the Ant / AntQueen / AntWave translation unit
+0023a100	propList_getInt	(list, key, nth): raw property-list version of obj_getPropInt - lower-cases the key in place, finds the nth 'key=' entry, returns atoi of the value or 0; callers 0x23a200, 0x23a2b4, AutoEmitter_ctor 0x240dc8, AutoPropLP_ctor 0x2416c4. Not Arenabeast code
+0023a200	propList_hasLightIndex	(list, n): true when ParticleEmitter<n>, DynamicLight<n> or Halo<n> is non-zero (keys built with sprintf); callers 0x23a2b4, AutoEmitter_ctor, AutoPropLP_ctor
+0023a2b4	propList_hasAnyLight	(list): true when ParticleEmitter, DynamicLight, Halo or any indexed form 0..3 is non-zero; called three times by the object factory 0x159c94 (0x15d6e4, 0x15d76c, 0x15d7f4) to pick the light/particle variant of a prop class
+0023d890	AutoProp_runStateActions	sets the current state's done mask 0x10 then script_runByName for every 'action<state>' property with g_scriptSelectedObj=this; callers AutoProp_run 0x23cbb0 and nextState 0x23d400
+0023fdc0	AddParticle_readEmitterProps	reads ParticleEmitter<n> and the 32 emitter keys psr..bfa into +0x64..+0x98, then builds the particle definition +0xac (0x18f118); called by both constructors
+0024045c	AddParticle_readLightProps	reads DynamicLight<n> (lsrad lerad lrc lrt lsr lsg lsb lsa -> +0x144..+0x160) and Halo<n> (hlr hlg hlb hla hls hlf -> +0x164..+0x178); sets +0x17c=100
+00240cf4	AddParticle_startEmitter	(helper, oneShot): +0x5c=1, +0x60=oneShot; a one-shot forces the record on and schedules its end at frame + 'bot'; 7 callers (AutoEmitter ctor, AutoChestLP_interact, AutoPropLP draw and run)
+00240d24	AddParticle_stopEmitter	+0x5c=0; callers AutoPropLP draw and run
+00240d2c	AddParticle_lightOn	+0xfc=1 and, when the helper has a DynamicLight, light_link2(+0x100)
+00240d6c	AddParticle_lightOff	+0xfc=0 and light_unlink(+0x100) when it has a DynamicLight
+00240db0	AddParticle_isBlinkingStub	two instructions, returns 0 (dis). Guards the flag-0x100 blink in the three LP draws and the marker sprite in AutoEmitter_draw, which are therefore dead; original purpose (selected / highlight query) is Inferred, so the name is literal
+00242794	AutoObject_initParticleDefs	static initialiser body (guarded by the usual (1, 0xffff) arguments): particleDef_ctor for 0x8e2f68, 0x8e2fb8 (fuse spark and smoke of AutoChest_run / AutoContainer_run) and 0x8e3008 (no user found in the range)
+002428ec	AutoObject_staticInit	32-byte stub calling 0x242794(1, 0xffff); referenced from the static-constructor table at 0x3e99fc
+00243ef8	HateGate_initParticleDefs	static initialiser body: particle definitions 0x8e3058 (used by HateInto_run) and 0x8e30a8 (used by HateGate_run)
+00243ff8	HateGate_staticInit	32-byte stub calling 0x243ef8; static-constructor table entry 0x3e9a00
+00247130	FireBeetle_loseBodyPart	(this, part 2..7): sets model-variant bit 1<<(part-1) in +0xe8, creates one GutChunk (pool 0x268) and adds 2.0 to its +0x1c4, rebuilds the hide mask; only caller FireBeetle_setState case 0x14, one death in three
+00247e9c	beetleProjectile_initParticleDefs	static initialiser body (runs only for arguments 1, 0xffff): constructs particle definitions 0x8e30f8 and 0x8e3148, whose only other references are in beetleProjectile_run 0x247980. Belongs to the code BEFORE Bubo, not to Bubo
+00247f90	beetleProjectile_staticInit	constructor-table entry (pointer at 0x3e9a04); calls 0x247e9c(1, 0xffff)
+0024a504	DiseaseProjectile_initParticleDefs	(1, 0xffff): particle definitions 0x8e3198, 0x8e31e8, 0x8e3238, all used by DiseaseProjectile_run 0x249c18; sits before Cazic_ctor but is not Cazic code
+0024a650	DiseaseProjectile_staticInit	32-byte stub: 0x24a504(1, 0xffff); pointer in the static-constructor table at 0x3e9a08
+0024d320	Cazic_initParticleDefs	(1, 0xffff): particle definitions 0x8e3288, 0x8e32d8, both used by Cazic_deathEffects 0x24c994; sits before Catapult_ctor but is not Catapult code
+0024d420	Cazic_staticInit	32-byte stub: 0x24d320(1, 0xffff)
+0024fd8c	Clockwork_shedParts	(creature, group 0..7, alt): builds a 0-terminated list of 64-bit part masks in scratch table 0x8e3378 (set chosen by byte +0x3c8 == 1), spawns one PhProp (PhProp_ctor2, launch flags 0x4116 if alt else 0x4107) per mask still present in +0x220 and clears those bits. 16 call sites, all inside Clockwork_run / Clockwork_setState. Not a CloudGiant function
+002530a8	CloudGiant_initParticleDef	static initialiser body: constructs particle definition 0x8e3418, referenced elsewhere only at 0x2511f4 inside CloudGiant_run 0x250714. Belongs to the code BEFORE Creep
+00253128	CloudGiant_staticInit	constructor-table entry (pointer at 0x3e9a10); calls 0x2530a8(1, 0xffff)
+00256024	Critter_applySpecies	(this, lowerCaseTypeName, lumpName): per-species setup called once from Critter_ctor; compares the name with bat, kitten*, pengo, shark, crab, raven, fish*, seagull, rat, bullfrog, catfish, bottomfish, fishdead (unreachable after fish*), drake, adrake, bflya, bflyb, orca, dblob, hangman and sets class flags +0x43c, timers, object flags, fidget clips; may call setState 0x18/0x19
+00257ab4	Cyclops_dropClub	(this, flag): with flag 1 clears variant bits 0x30 and, if the hide mask changed, creates a 0x248-byte prop with PhProp_ctor2, then refreshes +0x220. NO caller and no data reference found (xref): dead code; attributed to Cyclops by the variant bits it uses (Cyclops_ctor sets exactly 0x10 or 0x20)
+00257ba0	Cyclops_spawnDust	(this, Vec3 *pos): 50 particles of definition 0x8e3468 using GameObject_rand (at least 7 draws each); only caller Cyclops_run (footsteps and swings)
+002593d0	Cyclops_initDustParticleDef	static initialiser body: constructs particle definition 0x8e3468, used only by 0x257ba0. Sits after FatCyclops, before FemaleDarkElf
+0025945c	Cyclops_staticInit	constructor-table entry (pointer at 0x3e9a14); calls 0x2593d0(1, 0xffff)
+0025bab4	MaleDarkElf_applyVariantFlags	call sites 0x25b628 (ctor) and 0x25cf98 (loadState). Tint +0xa0 = 0; role 5 sets float +0x64 = 0.2; clears cflags 0x3600000000 and sets one of 0x1000000000 / 0x2000000000 / 0x400000000 / 0x200000000 from the hide-mask bits +0xe8. Second argument (0 / 1) is not used by the body
+0025dc00	MaleDarkElf_hasShield	Returns 1 when weapon-holder slot 15 (model entry of hand 2) is 0x2e, 0x30 or 0x32. Only caller is MaleDarkElf slot 12 (0x25cff8), which uses it to enter state 0x11 on a nearby event. "Shield" is Inferred from that use; provable part: hand2EntryIs2e_30_32. Not a Demon function
+0025f3fc	Demon_targetIsSoul	1 when the target's exact class (typeid) is Soul; callers 0x25e448 and 0x25eb0c inside Demon_run; lies in the RedDragon address range but is not used by RedDragon
+00261328	RedDragon_breathFx	(this, mouth, dir, flameOn, impactOn, mode): flame particles (own-generator), ground impact particles and the light at +0x3dc; no damage, no object creation; caller RedDragon_run states 0xb-0xf
+00261c58	RedDragon_initParticleDefs	(1, 0xffff): particle definitions 0x8e34b8, 0x8e3508, 0x8e3558, all used by the breath effect helper 0x261328; sits before FireBomb_ctor but is not FireBomb code
+00261d9c	RedDragon_staticInit	32-byte stub: 0x261c58(1, 0xffff)
+00262f7c	FireBomblet_onBounce	called from FireBomblet_run on ground contact: bounce count +0x9a, velocity x0.5 (x0.33 catapult), scorch decal and StaticFire creation by g_randSeed draws
+00263294	FireBomblet_clearLauncher	+0xac = 0 (the raw pointer to the launcher's counter byte); caller Catapult_takeDamage
+0026329c	FireBomblet_setHeld	(this, held): byte +0x9c; while set FireBomblet_run does not move the bomb; callers Catapult_run, Catapult_takeDamage
+00263b78	FireBombletJr_onBounce	bounce handler of FireBombletJr_run; may create a StaticFire of 120-240 frames by g_randSeed draws
+00263d70	FireBomblet_initParticleDef	NOT Froglock code. (1, 0xffff) -> particleDef_ctor(4, 6, -3.3, 0x8e35a8, 0x127, 0xc3, 0x6f, 0x95, 0xe2, 0xb, 0xe); the definition 0x8e35a8 is otherwise referenced only by FireBomblet_run at 0x262c64. Compiler-generated static-initialisation function at the end of the FireBomblet/FireBombletJr file
+00263dfc	FireBomblet_staticInit	unnamed 32-byte stub: calls 0x263d70(1, 0xffff); pointer to it at 0x3e9a1c (constructor list). Looked at what it initialises: particle definition 0x8e35a8
+00265754	Froglock_waterChanged	returns 1 when +0x460 == 0 and cflag 0x2000000000000000 is set (just entered water) or when +0x462 != 0 and +0x461 == 0 (water ahead just ended)
+00268f38	GnawSpawn_countFreeSlots	Returns 0 when +0xe8 == 7 (all three pods lost), else the number of empty handles among the six at +0x3c8. Callers: GnawSpawn_run (states 3, 5, 6) and GnawSpawn_setState (case 6)
+00268f80	GnawSpawn_addChild	Links an object into the first empty of the six handles at +0x3c8 (handle_link); caller GnawSpawn_run state 6 after world_createObject("gnaw")
+0026d7e4	Goblin_hasShieldUp	call sites 0x26b6a0 (Goblin_run state 3) and 0x26cab4 (slot 12). True when holder slot 15 (hand 2) returns part 7 (g_shield) and holder slot 14 (hand 2 bit) is non-zero
+0026dfec	SnowballSpell_initParticleDefs	(1, 0xffff): particleDef_ctor on 0x8e35f8, referenced by SnowballSpell_run 0x26da20. End of the SnowballSpell unit, not Gremlin
+0026e06c	SnowballSpell_staticInit	32-byte stub: calls 0x26dfec(1, 0xffff)
+0027094c	Hag_isImmuneForm	returns animation flag 0x20 of +0x11a; Hag_run sets creature flags 0x100050 while it is true; callers only Hag_run / Hag_setState
+0027095c	Hag_isGrownForm	returns animation flag 0x8000 of +0x11a; Hag_run grows scale +0xdc to 1.4 while it is true; callers only Hag_run / Hag_setState
+00271a6c	Nightmare_pickChargeTarget	first living player with no terrain within 360 units in 8 directions becomes the target (+0x234), returns 1; else 0
+00277110	Innoruuk_spawnDeathParticles	called once from Innoruuk_run at death time 3061: particles from the model sample points, positions from the object's own generator; no object creation
+00279188	HateProjectile_pickChain	(this, Vec3 *from): nearest live candidate (+0x50 list) within sqrt(+0x184) of the point that is not yet chosen is linked into +0x54; while +0x183 < +0x182 recurses from that object and again from the point
+002792cc	HateProjectile_isChosen	(this, obj): 1 when obj is in the chosen list +0x54
+00279c58	Innoruuk_initParticleDefs	(1, 0xffff): nine particle definitions 0x8e3648-0x8e38c8 used by Innoruuk_run, HateProjectile_run and 0x277110
+00279fec	Innoruuk_staticInit	32-byte stub: 0x279c58(1, 0xffff)
+0027dcd8	jumpgate_saveDestinationsDiscard	calls jumpgate_saveDestinations 0x27dcf4 into a 0x1010-byte stack buffer that is then dropped; 6 callers in the save code (0x2184cc, 0x218550, 0x21ed30, 0x221694, ...); purpose of the discarded copy Unknown
+0027ef4c	JumpGate_initParticleDefs	(1, 0xffff): particleDef_ctor on 0x8e3948, 0x8e3998, 0x8e39e8; those are referenced by JumpGate_run 0x27cb58 and jumpgate_travelEffect 0x27e770. End of the JumpGate unit, not Kobold
+0027f0a0	JumpGate_staticInit	32-byte stub: calls 0x27ef4c(1, 0xffff); pointer to it at 0x3e9a28 (static-constructor table)
+00283428	LavaMonster_initParticleDefs	(1, 0xffff): particle definitions 0x8e3c40, 0x8e3c90, 0x8e3ce0, used by 0x281630, 0x281b68 and LavaBomb_run 0x282954; sits after LavaBomb_onTouch
+00283580	LavaMonster_staticInit	32-byte stub: 0x283428(1, 0xffff)
+00284b68	Marr_deathEffects	(this, animEvents) from Marr_run state 0x14: stages +0x4a0 1-3 timed by +0x4a4; light, camera shake, particles from generator 0x404468, white screen rectangle, obj_delete
+002858ac	Marr_initParticleDefs	(1, 0xffff): particle definitions 0x8e3d30-0x8e3e70 used by Marr_deathEffects
+00285b10	Marr_staticInit	32-byte stub: 0x2858ac(1, 0xffff)
+00287940	creature_getAttachMatrix0	(creature, out mat34): 0x175330(scale +0xdc, model classDef+0xc, pos, facing, anim +0x114, attach index 0, out). Callers only Soul_draw 0x2a96a4, Soul_run 0x2aa748, Soul_setState 0x2ab0d8; located between Minion_setState and Tormentor_ctor, used by neither
+0028b91c	FallPlatform_findPathToGoal	(this, depth): marks +0x6a/+0x60, recurses through a random untriggered neighbour (156-unit box, own generator) until a `goal` platform is reached; +0x64 = frame on the path
+00296ddc	levelObjects_initParticleDefs	(1, 0xffff): particle definitions 0x5012e0-0x501750 and 0x8e3fc0-0x8e4420 used by FireTrail, Teleporter, Sparks, IceBall, SpiritAnchor and their neighbours
+00297768	levelObjects_staticInit	32-byte stub: 0x296ddc(1, 0xffff)
+002982cc	Mosquito_losePart	(this, part 1-7): ORs a bit into hidden-part word +0xe8 (1,2->0x10 3->0x40 4->2 5->1 6->4 7->8), rebuilds +0x220, always creates a GutChunk (0x268, GutChunk_ctorFromProp) and adds 2.0 to its +0x1c4. Only callers 0x29812c and 0x298250, both in Mosquito_setState (cases 0x12 and 0x14). Sits before Mummy_ctor but is not Mummy code
+0029c9f8	MummyKing_canSummonSnakes	clock > +0x47c and one of the first g_numPlayers snake handles +0x480 is empty
+0029ca5c	MummyKing_hasFreeMummySlot	one of the first g_numPlayers SpawnMummy handles +0x464 is empty, or all are used and the shaman handle +0x474 is empty
+0029d668	MummySnake_initParticleDef	(1, 0xffff): particle definition 0x501ab0 used by MummySnake_run
+0029d6ec	MummySnake_staticInit	32-byte stub: 0x29d668(1, 0xffff)
+0029fa24	NPC_initParticleDefs	(1, 0xffff): particleDef_ctor on 0x8e4470, referenced by NPC_run 0x29ea40. End of the NPC/Rondo unit, not Ogre
+0029fab0	NPC_staticInit	32-byte stub: calls 0x29fa24(1, 0xffff)
+002a14f8	Orc_pickHandParts	called once from Orc_ctor; by variant +0x478 and own draws sets the hand-1 part (and bow + arrow for the archer) through the weapon holder's table offset 0xc
+002a169c	Orc_applyVariantFlags	called from Orc_ctor and Orc_loadState; clears cflags 0xe00000000 and tint +0xa0, then sets one cflag per variant (leader1 also scale 1.3, radius 22; shaman tint 6)
+002a3de0	Orc_severPart	only caller Orc_setState case 0x14 (parts 1-5): hides a model part, creates a GutChunk at the bone; parts 6/7 (drop a hand part as PhProp) are never passed
+002a4240	Orc_hasShield	Returns true when weapon-holder slot 15 (model entry of hand 2) is in 0x0f..0x17. Callers: Orc slot 12 (0x2a2f88) and Orc_setState (0x2a36dc). "Shield" is Inferred (same use as MaleDarkElf_hasShield); provable part: hand2EntryIn0f_17. Not a SeaMonster function
+002a59f0	Scorpion_severPart	only caller Scorpion_setState 0x2a5908 (case 0x14): sets model-variant bit 1<<n and creates a GutChunk; sits in the Skeleton address range but is not a Skeleton function
+002a7da0	Skeleton_hasShield	true when the hand-2 part (holder offset 0x7c, hand 2) is 0x60 or 0x62; only caller Skeleton slot 12
+002a7ef0	Skeleton_shatter	(this, group) only caller Skeleton_setState case 0x14 with group 8: fills static mask list 0x8e44c0, creates one PhProp (0x1556c0) per mask present in +0x220 and clears those bits
+002a815c	Skeleton_findLeader	UNREFERENCED (no call, no data pointer): links this skeleton (+0x3c8) to the nearest other Skeleton within 120 that has no follower (+0x3cc); name describes the body only
+002a8378	Skeleton_followLeader	UNREFERENCED (no call, no data pointer): moves toward a point 48 behind/beside the skeleton linked at +0x3c8 at speed 50 and copies its facing; name describes the body only
+002a873c	Skeleton_chainReaches	only caller the unreferenced 0x2a815c: walks the +0x3c8 chain from one skeleton, 1 when it reaches the given one or a null
+002ab2b4	Soul_isDemonNear	only caller Soul_run: box +-300, true when it holds a living object whose dynamic type is exactly Demon (typeinfo 0x3ca81c); sits in the SmallSpider address range
+002ab39c	Soul_initParticleDef	(1, 0xffff) guard, then particleDef_ctor on 0x8e4600, the definition every Soul particle call uses; only caller 0x2ab430
+002ab430	Soul_staticInit	32-byte stub calling 0x2ab39c with (1, 0xffff); initialises the particle definition 0x8e4600 (looked at)
+002acfd8	BlackWidow_severPart	callers BlackWidow_run (0x14, legs 0-7) and BlackWidow_setState (0x14): kind 0 only, sets model-variant bit 1<<n, GutChunk for n 0-7
+002ad158	BlackWidow_getReach	36 for kind 1 (Drachnid), 24 for kind 0
+002ad180	BlackWidow_getLungeRange	120 for kind 1, 60 for kind 0
+002ad1a8	BlackWidow_getWebRange	returns the constant 500
+002af4c0	SpiderQueen_canGrabTarget	1 when +0x3cc is not 10/0xb, a target exists, it has object flag 0x20 and its knockback speed +0x2e8 == 0; gates states 8, 7, 10, 0xb in the chooser
+002af510	web_queueStrandLines	(width, from, alpha, to, alpha2, count, segments, victimObj, victimModel): queues fan-shaped sagging line segments through 0x18fd18; end points on the victim model via model_getSamplePoint with a local LCG seeded from the victim pointer; callers 0x2afe38 and WebTrap_draw
+002afc04	WebStrand_init	(sub, flightFrames, holdFrames): stores +0x30/+0x34, clears +8, +0x1c, +0x2c; called by SpiderQueen_ctor and BlackWidow_ctor
+002afc1c	WebStrand_arm	sets +0x2c = 1 (busy before launch); callers SpiderQueen_setState case 8 and BlackWidow_setState
+002afc28	WebStrand_launchAt	(speed, sub, from, victim, clock): links victim handle +0x1c, velocity = unit vector to victim (z + height/4) x speed, then 0x2afda4; first-pass doc called this "jump"
+002afda4	WebStrand_start	(sub, from, velocity, clock): tip = from, velocity, alpha +8 = 40, strand count +0 = 1, caught +0xc = 0, expiry +0x2c = +0x30 + clock, +0x38 = 0
+002afe38	WebStrand_queueLines	(sub, source): if alpha > 0 queues the source->midpoint line (0x18fd18) and the fan to the tip (0x2af510); called from RUN of SpiderQueen and BlackWidow
+002b0080	WebStrand_update	(sub, source, clock): flight in 3 sub-steps, makes a WebTrap (WebTrap_ctor2) on ground hit or non-creature victim, catch test, drag of the caught victim (knockback 160 toward source), struggle counter, expiry and fade
+002b04ac	WebStrand_release	zeroes a caught creature victim's knockback speed, expiry +0x2c = 0
+002b04ec	WebStrand_isBusy	returns +0x2c != 0
+002b1d5c	PoisonProjectile_initParticleDefs	(1, 0xffff): particle definitions 0x8e46a0 (used inside BlackWidow_run at 0x2aca58) and 0x8e46f0 (PoisonProjectile_run 0x2b1864)
+002b1e60	PoisonProjectile_staticInit	32-byte stub: 0x2b1d5c(1, 0xffff)
+002b3afc	lights_initParticleDefs	compiler static-init body (arg 1, 0xffff) constructing 7 particle definitions 0x8e4740-0x8e4920; their other references are Torch_run 0x2b2088, Candle_run 0x2b2dc4, Candle2_run 0x2b3164, Lamp_run 0x2b3858 (0x8e4790 has no user)
+002b3e10	lights_staticInit	32-byte stub calling 0x2b3afc(1, 0xffff); pointer in the static-constructor table at 0x3e9a48
+002b5370	UndeadKnight_setMount	(this, obj): clears and links handle +0x3c8, sets object flag 1; NO j/jal to it and no data word holding its address anywhere in the file (xref + raw scan), so the mounted paths of the class are unreachable
+002b53cc	UndeadKnight_initParticleDefs	static-init body constructing particle definitions 0x8e4970, 0x8e49c0, 0x8e4a10; 0x8e4970 is used by UndeadKnight_run state 0x17 (0x2b4a70), the other two have no user
+002b5518	UndeadKnight_staticInit	32-byte stub calling 0x2b53cc(1, 0xffff); pointer in the static-constructor table at 0x3e9a4c
+002b9be8	VampireLord_enterBatForm	+0x3cc = 1, starts bat_move.anm from bat.lmp, object flag 1, creature flag 0x100000; caller VampireLord_run states 0x10 / 0x14
+002b9c54	VampireLord_leaveBatForm	fx_ringBurst + sound, +0x3cc = 0, class idle animation, clears object flags 3 and creature flag 0x100000; callers VampireLord_run (0x10, 0x19) and setState tail
+002b9d90	VampireLord_canReachTarget	(minR, maxR, this, facing, arc): arc test, edge-to-edge range test, world_raycast (mode 3) to the target clear; used for every attack choice instead of Creature_canSeeTargetIn
+002b9f8c	VampireLord_initParticleDef	static-init body constructing particle definition 0x8e4a60, whose only other reference is VampireLord_run 0x2b7e8c
+002ba01c	VampireLord_staticInit	32-byte stub calling 0x2b9f8c(1, 0xffff); pointer in the static-constructor table at 0x3e9a50
+002bc7c8	Warrior_canBlock	only caller 0x2bb9f4 in Warrior_run state 5. kind byte +0x3c8: 0 (Samurai) -> 1; 1 (Gladiator) -> weapon holder table offset 0x74 with hand 2 (is the off hand on); else 0
+002bcc38	WoodElfSoldier_initVariantBits	called once by the ctor: sets +0xe8 from the variant +0x3cc (0 -> 0x80, 1 -> 0x100 and registers the archer via 0x2be7cc, 2 -> 0x200, 3 -> 0x4000)
+002be3fc	WoodElfSoldier_dropWeaponProps	(this, 1) from setState 0x14: sets the variant's weapon bit in +0xe8 and creates two PhProp (0x248 bytes, PhProp_ctor2) with part masks, then rebuilds the hide mask
+002be7cc	WoodElfSoldier_registerArcher	links the object into the first empty slot of the 10-handle static list 0x503370 (does nothing when full)
+002be81c	WoodElfSoldier_unregisterArcher	clears every slot of 0x503370 that points at the given object; no caller and no pointer reference found
+002be884	WoodElfSoldier_findFreeArcher	drops the caller's partner, then returns the nearest living list entry with an empty +0x3c8 within 600 units (squared distance < 360000) or 0; only caller is 0x2be970
+002be970	WoodElfSoldier_pairWithArcher	links caller and the found archer to each other through +0x3c8; returns whether one was found; NO j/jal to it and no data word holding its address anywhere in the file (xref + raw scan), so pairing never happens
+002be9cc	WoodElfSoldier_unpair	clears +0x3c8 on the partner and on this
+002bea1c	WoodElfSoldier_hasLivePartner	1 when +0x3c8 is linked and the partner's object flag 8 (dead) is clear
+002bea48	WoodElfSoldier_isAtLedge	four terrain_heightBelow probes 30 units around the object; true when one finds ground more than 100 below own z
+002becd8	WoodElfSoldier_faceLedge	same four probes; stores the probe point that found the drop in +0x104 and turns toward +0x104 (slot 26)
+002bf024	WoodElfSoldier_drawPracticeArrow	called from the draw function: when +0x3e4 is set draws the arrow model (pair at 0x3e9ce8/0x3e9cec) at +0x3d4 with heading +0x3e0; reads only
+002bf0e4	WoodElfSoldier_stepPracticeArrow	called from run every frame: advances +0x3d4 by 400 units/s along +0x3e0 and down by 400*sin(0x2000) per second; clears +0x3e4 when z < 0
+002bf1c8	WoodElfSoldier_initArcherList	compiler static init / destroy body for the 10 handles at 0x503370: (1, 0xffff) zeroes them, (0, 0xffff) handle_clear on each
+002bf26c	WoodElfSoldier_staticInit	32-byte stub calling 0x2bf1c8(1, 0xffff); pointer in the static-constructor table at 0x3e9a54 (sits in the Wraith address range but initialises the WoodElf archer list)
+002bf28c	WoodElfSoldier_staticDestroy	32-byte stub calling 0x2bf1c8(0, 0xffff); its address is stored as a data word at 0x3e9b94 (raw scan of the file; Inferred the static-destructor table)
+002c1d4c	Wraith_initStatics	(construct, 0xffff): with 1 zeroes the 60-handle lists 0x5033f8 (Wraith) and 0x503590 (WarWraith) and builds particle definitions 0x8e4b00 and 0x8e4b50; with 0 clears the handles. Sits before Zek_ctor but belongs to the Wraith unit (users 0x2bf2ac, 0x2c061c, 0x2c07a8, 0x2c1bc0)
+002c1f54	Wraith_staticInit	32-byte stub: 0x2c1d4c(1, 0xffff)
+002c1f74	Wraith_staticDestroy	32-byte stub: 0x2c1d4c(0, 0xffff)
+002c3c68	SkillShock_ctor	constructs the static SkillShock object (name string 'shock', table 0x518210); called from the start-up initialiser 0x16ac74 at 0x16b0b0

@@ -58,3 +58,15 @@ author=reverse engineering test patch, untested on a running game
 description=Diagnostic only. In a net game object activity is always judged from player positions, never from the cutscene camera (gameSetObjectVis, 0x1E4DD4). Scenery far from the players stops animating during cutscenes. Tests FINDINGS D6. Every player must use the same setting.
 // was: 8043FCD0 (lb v1,-0x330(v0))
 patch=1,EE,001E4DD4,word,00001821
+
+[Net test: CloudGiant king conjure test uses a shared flag]
+author=reverse engineering test patch, untested on a running game
+description=The CloudGiant king decides whether to conjure a new bolt by testing a visual beam handle, which can differ between machines (CloudGiant run, 0x250930). This makes it test the simulation's own "a thrown bolt is in flight" flag instead. In normal play the two agree. FINDINGS D28. Every player must use the same setting.
+// was: 8E420530 (lw v0,0x530(s2))
+patch=1,EE,00250930,word,8E420508
+
+[Diagnostic: fire bombs ignore the view test]
+author=reverse engineering test patch, untested on a running game
+description=Diagnostic only, changes gameplay. Bomb throwers launch on their timer whether or not anything is near the view (FireBomb_run, 0x261FD0), so the launch no longer depends on the camera during cutscenes. More objects alive in levels that have them. FINDINGS D29. Every player must use the same setting.
+// was: 0C079DF0 (jal isNearView)
+patch=1,EE,00261FD0,word,24020001
