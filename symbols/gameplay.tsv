@@ -65,8 +65,8 @@
 001edb18	GutChunk_run	vtable slot 4 of GutChunk (PhProp subclass 0x50f3b8): bounce, blood decals, deletes itself on first bounce when bit 0 of +0x248 is set
 001ee050	LightEffect_run	vtable slot 4: interpolates colour/radius, follows its owner handle, deletes itself at frame +0xb4
 001ee248	RecallEffect_ctor	creates a GlowingCylinder child
-001ee330	Projectile_run	vtable slot 4: obj_moveAndCollide; +0x60 bits 1 delete on any hit, 2 delete on world hit, 8 fire (leaves a fire patch), 0x10 cold
-001ee7b0	Projectile_onTouch	vtable slot 6: enemy test via slot 20 of the victim, builds a fire (0x15) or cold (0x16) descriptor and calls damage_apply
+001ee330	DummyDamager_run	vtable 0x50ea28 slot 4 (class DummyDamager, base Projectile; was named Projectile_run): obj_moveAndCollide; +0x60 bits 1 delete on any hit, 2 delete on world hit, 8 fire (leaves a fire patch), 0x10 cold
+001ee7b0	DummyDamager_onTouch	vtable 0x50ea28 slot 6 (was named Projectile_onTouch): enemy test via slot 20 of the victim, builds a fire (0x15) or cold (0x16) descriptor and calls damage_apply
 001ee990	WaterSpout_run	vtable slot 4: particles from its own generator, water ripple every 32 frames, leaves the run list 30 frames after it was last drawn
 001ef270	fx_spawn	(id 0..0x16, pos*): one-shot effects; every id except 5 returns early unless isNearCameraFocus480; id 5 draws g_randSeed and creates 3-4 Fire objects
 001f2cf0	GlowingCylinder_ctor
@@ -113,8 +113,8 @@
 00201bd8	LightEffect_ctor	(rgba start, rgba end, this, pos*, owner, ...): dynamic light that fades over a duration; 57 callers
 00201e68	RecallEffect_run	vtable slot 4: empty
 00201e70	RecallEffect_draw	vtable slot 5: empty
-00201e78	Projectile_ctor	velocity +0x54, flags +0x60, damage +0x68, life +0x6c; caller 0x2e9d10
-00201fa0	Projectile_draw	vtable slot 5: empty
+00201e78	DummyDamager_ctor	calls Projectile_ctor 0x150e48, then installs vtable 0x50ea28 (class DummyDamager; was named Projectile_ctor); velocity +0x54, flags +0x60, damage +0x68, life +0x6c; caller 0x2e9d10
+00201fa0	DummyDamager_draw	vtable 0x50ea28 slot 5 (was named Projectile_draw): empty
 00201fa8	WaterSpout_ctor
 002020a0	WaterSpout_draw	vtable slot 5: resets the not-drawn counter +0x59 and re-adds the object to the every-frame run list
 002020e0	Fire_ctor	0x50 bytes, life 100 frames

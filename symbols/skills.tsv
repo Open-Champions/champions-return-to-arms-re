@@ -462,10 +462,10 @@
 002f50a8	SkillRepulseUndead_manaCost	Skill slot 5: mana cost for a level (float)
 002f50d0	repulseUndead_staticInit	static initialiser, attributed by position to the SkillRepulseUndead source file; registers particle type descriptors through 0x18f3d0
 002f5228	repulseUndead_staticInitThunk	compiler-generated global constructor entry; calls the function above with (1, 0xffff)
-002f5248	DismissUndeadProjectile_ctor	sets the DismissUndeadProjectile virtual table; callers 2f645c
-002f57b0	DismissUndeadProjectile_run	GameObject slot 4: once per simulated frame
-002f5ddc	DismissUndeadProjectile_draw	GameObject slot 5
-002f5fb4	DismissUndeadProjectile_onHit	GameObject slot 6: called by obj_moveAndCollide when something is touched
+002f5248	HolyBolt_ctor	calls Projectile_ctor 0x150e48, then sets the HolyBolt virtual table 0x50e908 (was named DismissUndeadProjectile_ctor); callers 2f645c
+002f57b0	HolyBolt_run	vtable 0x50e908 slot 4 (was named DismissUndeadProjectile_run): once per simulated frame
+002f5ddc	HolyBolt_draw	vtable 0x50e908 slot 5 (was named DismissUndeadProjectile_draw)
+002f5fb4	HolyBolt_onHit	vtable 0x50e908 slot 6 (was named DismissUndeadProjectile_onHit): called by obj_moveAndCollide when something is touched
 002f6398	SkillDismissUndead_ctor	constructs the static Skill object; called from the start-up initialiser 0x16ac74
 002f6404	SkillDismissUndead_initStats	Skill slot 9: writes the per-level statistic tables
 002f645c	SkillDismissUndead_cast	Skill slot 2: (level, caster, pos*, angle) creates the spell/projectile; returns the Spell or 0

@@ -24,7 +24,7 @@ disc to analyze game files; basic tool checks and synthetic tests need no game d
   [docs/STATUS.md](docs/STATUS.md) breaks that down by area.
 - The local Ghidra pass produced 7,731 successful decompilations; one function at
   `001a3580` still fails with a normalization error. Indexed does not mean fully understood.
-- All 403 C++ class names are recovered and 399 are tied to their virtual tables.
+- All 403 C++ class names are recovered and 402 are tied to their virtual tables.
 - The level-script language is fully decoded: all 120 level scripts decompile to readable
   pseudo-code, and all 191 built-in script commands are located.
 - The online model is mapped: deterministic lockstep, the per-frame sync check, the input

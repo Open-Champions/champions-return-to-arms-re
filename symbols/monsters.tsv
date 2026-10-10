@@ -516,7 +516,7 @@
 0029288c	Chest_draw	vtable 0x5118d8 slot 5
 0029297c	Chest_interactPrompt	vtable 0x5118d8 slot 13
 00292a2c	Chest_interact	vtable 0x5118d8 slot 14
-00293228	LostSoul_ctor	constructor; installs vtable 0x50e7e8
+002931bc	LostSoul_ctor	constructor; installs vtable 0x50e7e8 (entry corrected from 0x293228, which is mid-function)
 002933f4	LostSoul_run	vtable 0x50e7e8 slot 4
 002936fc	LostSoul_draw	vtable 0x50e7e8 slot 5
 00293704	Root_ctor	constructor; installs vtable 0x50e758

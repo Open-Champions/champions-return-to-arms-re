@@ -40,8 +40,8 @@
 001b9520	Player_animStep	(speed, player) advances the animation set +0x114 and converts root motion +0xbc/+0xc0 to world axes; passes no position for the machine's own real player (flag 0x200000) so its sound cues are not played; returns event bits
 001b9658	Player_blockSparks	(player, silent) sound and spark particles between the hands when a hit is blocked
 001ba5f8	player_countPotions	(slot, kind) sums the quantity of the nine potion types of one kind in bag 2
-001ba730	Projectile_drawThrown	vslot 5 of the Projectile class with vtable 0x50e470
-001ba940	Projectile_runThrown	vslot 4 of the Projectile class with vtable 0x50e470 (thrown weapons and potions); not read in full
+001ba730	playerProjectile_draw	vslot 5 of playerProjectile (vtable 0x50e470, base MissileWeapon; was named Projectile_drawThrown)
+001ba940	playerProjectile_run	vslot 4 of playerProjectile (vtable 0x50e470; thrown weapons and potions; was named Projectile_runThrown); not read in full
 001bb3c8	Player_findTarget	(range, player) picks the nearest visible creature in a 60-degree cone ahead and links it at +0x234; clears +0x4b8
 001bb718	Player_weaponSwapInput	(player, pad, force) swap button 0x41ba30: toggles the weapon set +0x4a7c in state 2 and equips that set's weapons; call site in Player_run excludes the prediction copy
 001bba88	Player_pickAttackAnim	(player, weaponClass) chooses the next attack animation variant +0x461 from the model index and a hash of the frame counter; advances g_randSeed once
@@ -69,7 +69,7 @@
 001bedd0	player_raisePassiveLevel	(slot, mask, level) raises that level byte if lower
 001bee48	player_canBlock	(slot, state) false in state 0xb or with a bow; otherwise needs a main-hand, two-hand or shield item
 001beec8	Player_footstep	footstep effect at the player's position with the boot item's flags and the in-water bit
-001bef58	Projectile_ctorThrown	base projectile ctor 0x150ee4, then vtable 0x50e470, spin 2000 or -2000, kind byte +0x1ce, owner handle +0x1c8
+001bef58	playerProjectile_ctor	calls MissileWeapon_ctor 0x150ee4, then installs vtable 0x50e470 (class playerProjectile; was named Projectile_ctorThrown), spin 2000 or -2000, kind byte +0x1ce, owner handle +0x1c8
 001bf0a8	Player_pollAbilityCycle	(player, pad) sets record +0x4a64 to -1 or +1 from two buttons (0x41b9f0 / 0x41ba00) when ability button A is up and no cast is running
 001bf150	Player_tryBlockMove	(player, pad) while blocking (+0x47f): swap button pressed with block held -> state 0xb, movement lock 47 frames
 001bf230	Player_hasAnim	(player, anim) true when one of the active animation tracks plays that animation
