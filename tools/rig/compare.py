@@ -93,6 +93,29 @@ def read_ticks(path):
     return header, rows, order
 
 
+def tick_differences(path_a, path_b):
+    """The comparison as data: {'ticks', 'first', 'columns_at_first', 'first_by_column',
+    'frame_a', 'frame_b', 'levels', 'last_tick'}; 'first' is None when nothing differs."""
+    header_a, a, order_a = read_ticks(path_a)
+    header_b, b, order_b = read_ticks(path_b)
+    shared = [c for c in header_a if c in header_b and c not in ("frame", "net") and not c.startswith("l_")]
+    ticks = [t for t in order_a if t in b]
+    first_by_column = {}
+    for tick in ticks:
+        ra, rb = a[tick], b[tick]
+        for column in shared:
+            if column not in first_by_column and ra[column] != rb[column]:
+                first_by_column[column] = tick
+    result = {"ticks": len(ticks), "first": None, "columns_at_first": [], "first_by_column": first_by_column,
+              "frame_a": None, "frame_b": None, "last_tick": ticks[-1] if ticks else None,
+              "levels": sorted(set(a[t].get("level", "") for t in ticks))}
+    if first_by_column:
+        first = min(first_by_column.values())
+        result.update(first=first, frame_a=int(a[first]["frame"]), frame_b=int(b[first]["frame"]),
+                      columns_at_first=sorted(c for c, t in first_by_column.items() if t == first))
+    return result
+
+
 def compare_ticks(path_a, path_b, context=2):
     header_a, a, order_a = read_ticks(path_a)
     header_b, b, order_b = read_ticks(path_b)

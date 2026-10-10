@@ -22,16 +22,21 @@ What is compared
     the test is what a monster class's run function does with the base class, in the
     usual order: damage arrives through virtual slot 2, Creature_processDamage,
     Creature_run, Creature_updateActive, Creature_pickTarget, Creature_stepAnim, one
-    movement helper, and now and then the small helpers on their own.  Every one of those
-    calls is run through tools/ref_creature.py first, on a copy-on-write view of the same
-    memory, and for every call these must be equal:
+    movement helper (moveToTarget, moveToDest, moveTo, moveToDirect, moveBy, settle,
+    turnToward, fleeFrom, moveToAlly), and now and then the small helpers on their own
+    (ENTRIES below lists every entry point).  Every one of those calls is run through
+    tools/ref_creature.py first, on a copy-on-write view of the same memory, and for
+    every call these must be equal:
       calls    the sequence of calls to everything outside the model, with arguments
       writes   the set of bytes stored outside the stack, and their final values
       seed     the shared seed 0x404464, and that it advanced exactly as many times as the
                model says it drew
       result   the value returned (integer, float pattern or vector)
     Floats are compared as 32-bit patterns: "equal" means identical under the
-    interpreter's floating-point model ('ps2'), see docs/issues/dynamic-tests.md.
+    interpreter's floating-point model ('ps2', or the one given with --fpu), see
+    docs/issues/dynamic-tests.md.  A call in which the original reads or writes unmapped
+    memory is counted separately when the model stops the same way, and is a failure when
+    only one side stops.
 
 What runs for real and what is a stub
     Real: the functions in ref_creature.MODELLED, the three angle functions, the C
@@ -180,7 +185,6 @@ def rd(view, addr, size=4, signed=False):
 # ---------------------------------------------------------------------------------------
 RAY_ANSWERS = [f32(v) for v in (-1.0, -1.0, 0.25, 0.6, 0.999, 1.0, 1.0, 1.5, 3.0)]
 ROOTS = [f32(v) for v in (0.0, 0.0, 0.4, -0.3, 1.25, 2.0)]
-FRACTIONS = [f32(v) for v in (0.0, 0.25, 0.5, 0.75, 1.0)]
 
 
 class World:
@@ -1352,7 +1356,6 @@ def run(elf, name, seed, kind, hooks, machine, net, ticks, coverage, counts):
     if rig.unknown:
         bad['calls'].append('calls to addresses that are neither real nor known stubs: %s'
                             % {hex(a): n for a, n in rig.unknown.items()})
-    cases = sum(counts[k][0] for k in counts)
     text = '%s, %s, machine %s, %s' % (kind, 'subclass hooks' if hooks else 'base slots', 'B' if machine else 'A',
                                        'net game' if net else 'offline')
     count = serial[0]
@@ -1362,7 +1365,7 @@ def run(elf, name, seed, kind, hooks, machine, net, ticks, coverage, counts):
     report(name + ' result', len(bad['result']), count, 'returned values', bad['result'])
     report(name + ' faults', len(bad['fault']), count,
            'calls that stopped on one side only (%d stopped on both, the same way)' % sum(both.values()), bad['fault'])
-    return count, draws_by_entry, cases
+    return count, draws_by_entry
 
 
 RUNS = (('monster', 0, 0, 0), ('monster', 0, 1, 1), ('monster', 1, 0, 1), ('monster', 1, 1, 0),
@@ -1408,7 +1411,7 @@ def main(argv):
         name = '%s/%s/%s/%s' % (kind, 'hooks' if hooks else 'base', 'B' if machine else 'A', 'net' if net else 'off')
         if OPTIONS['filter'] and OPTIONS['filter'].lower() not in name.lower():
             continue
-        n, d, _cases = run(elf, name, OPTIONS['seed'] + index, kind, hooks, machine, net, ticks, coverage, counts)
+        n, d = run(elf, name, OPTIONS['seed'] + index, kind, hooks, machine, net, ticks, coverage, counts)
         total += n
         for key, value in d.items():
             draws[key] = draws.get(key, 0) + value

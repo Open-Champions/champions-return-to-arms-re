@@ -63,7 +63,7 @@ Every class constructor calls this first. In the order of its stores and calls:
 |---|---|---|
 | 1 | 0x14cb7c–0x14cbc0 | heads +0, +4, +8 = 0; vtable +0x48 = `GameObject`'s (0x5122a8); radius +0x1c = 24.0; height extent +0x20 = 72.0; flags +0xc = 0; draw bytes +0x28 = 25, +0x29 = 73; position +0x10..+0x18 = pos; +0x34 = 0; class definition +0x24 = classDef |
 | 2 | 0x14cbc4–0x14cc20 | if classDef is not null and its generation word (+4) differs from `g_lumpGeneration` 0x41bf78: for every (name, resolved) pair from +8 up to a null name, `resolved = res_find(classDef.lump, name)`; then the generation word takes the current value. A definition is therefore resolved once per level generation, by the first object that uses it |
-| 3 | 0x14cc24–0x14cce0 | the grid link, `handle_link(list, this + 8, this)` — at the **front** of the list. The code tests flags 0x2 and 0x800 here, but it zeroed the flags in step 1, so the list is always the grid-A cell of the position, or the off-grid list when a cell coordinate is outside 0..119 (section 4.1). The grid-B branch 0x14cc84 was never entered in any run |
+| 3 | 0x14cc24–0x14cce0 | the grid link, `handle_link(list, this + 8, this)` — at the **front** of the list. The code tests flags 0x2 and 0x800 here, but it zeroed the flags in step 1, so the list is always the grid-A cell of the position, or the off-grid list when a cell coordinate is outside 0..119 (section 4.1). The grid-B branch 0x14cc84 is unreachable and was never entered in any run |
 | 4 | 0x14cce4–0x14cd48 | `obj_getPropInt(this, "hide", 0)`; if non-zero the grid node moves to the front of the off-grid list. **This reads the property list through +0x2c before step 5 stores it.** For a block fresh from `pool_new` that word is 0, the lookup returns 0 and nothing happens (executed, with a `hide=1` list). Only a block that was not zeroed and still held a list pointer takes this branch (executed with a planted pointer). Hiding at load is done by the derived constructors instead: `Creature_ctor` has its own `hide` test at 0x109f10–0x109f3c (off-grid, flag 0x8000, bit 3 of +0x231) |
 | 5 | 0x14cd64 | property list +0x2c = props |
 | 6 | 0x14cd5c–0x14cd80 | **one draw from the shared seed**: `g_randSeed = g_randSeed * 0x19660d + 0x3c6ef35f`; the object's own generator state +0x44 = the new seed `>> 16` (a 16-bit number) |
@@ -116,9 +116,11 @@ level objects and monsters).
 ### 3.2 The destructor chain
 
 Slot 1 is the most-derived destructor (this, flags). The shape, read in `Player1_dtor`
-0x3c2a00 and the same in the other classes sampled: restore the class's own vtable, do
-the class's own clean-up, call the base destructor with flags 0, and at the end, if bit 0
-of the caller's flags is set, `pool_free(this)`. The chain ends in:
+0x3c2a00 and `Projectile_dtor` 0x3c2940 (the base destructor has 131 call sites, not all
+read): store the class's own vtable, do the class's own clean-up (`Projectile` clears its
+owner handle at +0x4c), call the base destructor with flags 0, and at the end, if bit 0
+of the caller's flags is set, `pool_free(this)`. So the block is freed by the outermost
+destructor, after the whole chain. The chain ends in:
 
 `GameObject_dtor` 0x14cf90 (this, flags), in this order:
 
@@ -128,8 +130,11 @@ of the caller's flags is set, `pool_free(this)`. The chain ends in:
 4. `handle_clear(this + 4)` — leaves its run list;
 5. `handle_clear(this + 0)` — every handle that pointed at the object now reads null, and
    the object leaves the delete list and the always-draw list;
-6. if `flags & 1`: `pool_free(this)`. The block is the head of its class's free list at
-   once, so the **next** `pool_new` of that size class gets this address.
+6. if `flags & 1`: `pool_free(this)` (the base class frees only when it is itself the
+   outermost destructor).
+
+Once freed, the block is the head of its class's free list, so the **next** `pool_new`
+of that size class gets this address (executed).
 
 The order of 3–5 decides the order in which handle nodes return to the node pool and so
 which node addresses later links get; a rebuild that wants identical addresses must keep
@@ -268,8 +273,19 @@ exactly, up to `limit − 1`. **Objects on no run list are not found.** One call
 `world_forEachGridObject` 0x14a610 (fn): the off-grid list, then grid A cell by cell in
 memory order (row 0 columns 0..119, row 1, …), then grid B. `world_forEachRunObject`
 0x14a7c8 (fn): the every-frame list, 15 lists, 60 lists. Both use iterators with the
-exclude mask, so the callback may move, create or destroy objects; an object the callback
-moves into a cell not yet reached is visited again there (executed).
+exclude mask, so the callback may move, create or destroy objects (executed with callbacks
+that do all three). By the iterator rules an object the callback moves into a list that
+is walked later is visited again there, and one moved into the list being walked, or an
+earlier one, is not.
+
+These are all the readers there are. A scan for references to the eight list globals
+finds only the functions of this document plus `world_drawObjects` 0x14b168,
+`world_writeRecords` 0x14e140 (saving) and `obj_moveWithCollision` 0x14d4b8, which
+carries two inline copies of `obj_updateGridCell` (0x14d5b8–0x14d6a0 before its own box
+query at 0x14d714, and one ending at 0x14d9a4 inside its loop over the objects it
+touched, taken when it is pushed out of one). A mover is therefore at the front of its
+cell when it queries. The box query is the only way simulation code looks into grid
+cells.
 
 ### 4.8 `world_findFreeSpot` 0x14acf8 (out, centre, int spread, int radius, bool *ok, anyHeight)
 
@@ -452,10 +468,14 @@ tasks) and is never tested. The full list of the program's 42 registrations is i
 | `task_isRunning` 0x19e5e8 (name) | 1 if a record has exactly this name |
 | `tasks_call` 0x19e798 (exclude, include) | cursor = 0; while the cursor is inside the table: call the record under it if `flags & exclude == 0` and (`include == −1` or `flags & include != 0`); cursor += 1. Count and cursor are read from memory after every call |
 
-So during a pass: a task that removes itself is followed by the right neighbour; a task
-added behind the cursor is called in the same pass; a task added at or before the cursor
-waits for the next pass; a task removed before it was reached is not called. All four
-were exercised with tasks that add and remove tasks while the pass runs.
+So during a pass, with the cursor at the running task's index: a task that removes itself
+is followed by the right neighbour; a task inserted behind the cursor is called in the
+same pass; a task inserted at or before the cursor waits for the next pass; a task removed
+before it was reached is not called. One case is easy to get wrong: after the running
+task has removed itself the cursor is one lower, so a task that is then inserted at the
+index the running task had (same priority, registered now) **is called in this pass**
+(executed as a fixed case; the rest with random tasks that add and remove tasks while the
+pass runs).
 
 ### 6.2 Run tasks against draw tasks
 
@@ -650,15 +670,53 @@ Limits of the comparison:
 - The terrain queries inside `world_findFreeSpot` are scripted answers, not terrain.
 - `game_isFrozen`, the end-of-tick calls of `tasks_run` other than
   `game_rebuildAlivePlayers`, `dialog_objIfOpen` and `net_isLocalSlot` are stubs.
-- Floating point: the box and sphere queries, the activity test, the reaper's distance
-  test, `isNearView` and the free-spot search agree bit for bit under the interpreter's
-  default model and under its three other adder models. That shows the model performs the
-  same operations in the same order; it does not show that either matches a console in
-  the last bit (`docs/issues/dynamic-tests.md`).
+- Floating point: the box and sphere queries, the activity test and the free-spot search
+  agree bit for bit under the interpreter's default model and under its three other adder
+  models; the reaper's distance test and `isNearView` were run under the default model
+  only. Agreement shows that the model performs the same operations in the same order; it
+  does not show that either matches a console in the last bit
+  (`docs/issues/dynamic-tests.md`).
 
 ## 10. Corrections to earlier documents, proposed ledger rows
 
-CORRECTIONS_PLACEHOLDER
+### 10.1 Earlier statements that execution or a second reading did not bear out
+
+| Where | Statement | What was found |
+|---|---|---|
+| `docs/objects.md`, "Properties", and flag row 0x8000 ("set by hide") | "A `hide` property moves the object to the off-grid list" (said of the base constructor) | Executed: the base constructor looks `hide` up **before** it stores the property list (lookup 0x14ccf0, store 0x14cd64), so for a pool block the test reads a null list and never fires. Hiding at load is done by derived constructors that test `hide` themselves: `Creature_ctor` 0x109f10–0x109f3c (off-grid, flag 0x8000, +0x231 bit 3), `Catapult_ctor` 0x24d598. A class that does not test it ignores the property |
+| `docs/objects.md`, grid table and flag row 0x2 | "new flag-2 objects" are linked to the off-grid list | Only `obj_linkToGrid` does that, and its single caller is the prediction-copy clone (0x13b58c). In `GameObject_ctor` the flags are zero when the link is made, so no constructed object starts off-grid because of a flag, and none starts in grid B (branch 0x14cc84 is unreachable): a constructor that sets 0x800 or 0x2 must relink |
+| `docs/objects.md`, `runObjects` step 1, and row O6 | "Destroy every object on `g_deleteList`"; the exclude mask is listed for the box query, run walks and grid walks | The delete-list flush is an iterator walk with `g_excludeMask` too (0x14b928–0x14b950; the same in `world_flushDeleteList`, `world_loadRecords`, and the first walk of teardown): a deleted object that carries a masked flag is skipped |
+| `docs/objects.md`, "Run lists" | "The slow lists are filled round-robin" | True, with a detail that fixes the frame numbers: the cursor is stepped **before** use, so after teardown the first slow object goes to list 1 |
+| `docs/objects.md`, movement helpers | `world_findFreeSpot` draws "three draws per try" and accepts points "clear of blocking objects" | Three draws per *sample*; a try repeats samples until one is inside the unit ball. "Clear" means `dx² + dy² > radius² + r²`, not `(radius + r)²`, and the height test is one-sided (`docs/issues/arena-entry.md` section 2 says "within 6") |
+| `docs/spec/skills-35-68.md` section 1.4 | "The walks of the 15-frame and 60-frame lists come after the every-frame walk, so an object created from those is also first run on the next frame" | Correct for objects that join the every-frame list. Not covered there, and executed here: an object that joins **this frame's slow list** during an earlier walk runs in the same tick, and an object that leaves the every-frame list for this frame's 60-list runs twice in one tick (section 2.3, 5.2) |
+| `docs/OVERVIEW.md`, "Time and tasks" | "object visibility (-1)" | `gameSetObjectVis` is registered with priority 0 (0x322a8c), after `runwater` (also 0), as `docs/mainloop.md` has it |
+| `docs/mainloop.md` section 2 | "a task added at or before the cursor waits for the next pass" | True of the cursor; but the cursor has stepped back when the running task removed itself first, and then a task inserted at that task's old index is called in the same pass (section 6.1, executed) |
+| `names.tsv`, `world_createObject` | "(className, Vec3 *pos, angle)" | Four arguments: the property list in the fourth register is passed through to the factory (0x14f6c8–0x14f70c; all call sites read set it) |
+| `names.tsv`, `world_findObjectsByClass` | "comparing the type-info name" | Yes; the name is the length-prefixed form (`10GameObject`, `7Player1` — executed), and only objects on a run list are found |
+| `docs/objects.md`, "Deleting" | `world_flushDeleteList` 0x14f3a8 as one of the places the list is flushed | No call to it was found (direct-call scan); the flushes that happen are the inline copies in `runObjects`, `world_loadRecords` and `world_deleteAllObjects` |
+
+Confirmed by execution, as written in the earlier documents: the box query's order, limit,
+96-unit pad and the two skip tests (`docs/objects.md`, FINDINGS G6); `obj_updateGridCell`
+relinking at the front even within one cell; the reaper's victim being decided by link
+order with no mask and the camera test being skipped in a net game
+(`docs/issues/stale-pointers.md` 5.3, ST5, O3); the pool sample on frames divisible by 64
+and the thresholds 300 and 200; the teardown order of `docs/issues/arena-entry.md` 1.4;
+the `Player1_ctor` rank rules and the four searches plus four draws of its section 2;
+`tasks_run` as in `docs/mainloop.md` section 3; `gameSetObjectVis` as in FINDINGS D6 and
+D38.
+
+### 10.2 Proposed ledger rows
+
+| # | Finding | Kind | Evidence |
+|---|---|---|---|
+| new | An object's run in a tick is not always "once": an object linked during the every-frame walk (or the 15-list walk) to the slow list that the same `runObjects` call walks later runs in the tick it was created or moved in, and an object that `obj_updateActive` moves off the every-frame list onto this frame's 60-list runs twice in that tick. Decided by `g_runList60Cursor`, `g_runList15Cursor` and `g_simFrame`, all lockstep state, so it is the same on every machine; a rebuild that runs each object once per tick, or keeps one list per object, diverges | Observed and executed | `runObjects` 0x14bb30–0x14bcb0; `obj_updateActive` 0x14dc60–0x14dcac; `tools/difftest_objects.py` properties `order.cases`, `run.*` |
+| new | The delete-list flush uses the exclude mask. While the mask is 0x20000 (every simulated tick of a net game) an object with that flag that was `obj_delete`d stays on the delete list, in the grid and in the name table until a flush runs with another mask or teardown reaches its cell. Whether anything calls `obj_delete` on a prediction copy is **Unknown** (not searched) | Observed (mechanism), executed | 0x14b928, 0x14f3b4, 0x14ea00, 0x14c468 |
+| refines D6 | The switch `g_cullByCamera` is `mode != 1` of **this machine's** camera object (`g_localCamera`→+0x34), kept in a net game only while a cutscene is active. So during a net cutscene not only the reference point but the choice between "camera" and "players" is per machine, if camera modes can differ between machines at that moment (Unknown) | Observed, executed with a stand-in camera | 0x1e4da8–0x1e4ddc |
+| refines D29, D35 | `isNearView(pos, reach)` is a square of half-side `reach` in x and y around the reference (height ignored), not a distance, and reads player objects from the player table rather than the activity centres, so an open dialog (D38) narrows `obj_updateActive` but not `isNearView` | Observed, executed | 0x1e77c0–0x1e78cc |
+| refines D21 / O1 | The reaper works from a sample: `g_poolFreeCount` changes only on frames divisible by 64 and is forced to 100000 by teardown, so the reaper is off from a level load until the next such frame and then acts on a count up to 63 ticks old | Observed, executed | 0x14b9ac–0x14b9c8, 0x14c4b4 |
+
+No patch is proposed: nothing found here is a defect that a one-word change would fix,
+and none of it was run on a console.
 
 ## 11. Not done
 

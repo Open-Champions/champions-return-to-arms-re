@@ -232,6 +232,8 @@ def tick_watches(local_slot):
         "seed=g_randSeed:x32",
         "level=g_levelName:str12",
         "nplayers=g_numPlayers:s32",
+        # the per-slot button maps 0x41b980..0x41ba3f (FINDINGS U1)
+        "btnmaps=0x41b980:crc192",
         # the sync record the game stored for the previous tick, from this machine's ring
         "prevhash=%s+0x18ac+((g_netFrame-1)&0xff)*12+8:x32" % peer(local_slot),
         "l_inp=g_localInputFrame:s32",
@@ -248,6 +250,11 @@ def tick_watches(local_slot):
             "p%dgold=%s+0xe4:s32" % (n, record(n)), "p%dexp=%s+0x5c:s32" % (n, record(n)),
             "p%dbag0=%s+0x130:crc4612" % (n, record(n)), "p%dbag1=%s+0x1338:crc4612" % (n, record(n)),
             "p%dbag2=%s+0x2540:crc4612" % (n, record(n)),
+            # level, experience, statistics, points, passives; equipment; ability records;
+            # skill ranks (docs/player.md has the offsets)
+            "p%dstats=%s+0x58:crc84" % (n, record(n)), "p%dpoints=%s+0xe4:crc59" % (n, record(n)),
+            "p%dequip=%s+0x43f0:crc80" % (n, record(n)), "p%dabil=%s+0x4440:crc1560" % (n, record(n)),
+            "p%dskills=%s+0x4b08:crc192" % (n, record(n)),
             # out-of-sync flag this machine holds for peer n; they are per machine but a
             # 1 anywhere is what the comparison is looking for, so they are compared too
             "oos%d=%s+0x44d7:u8" % (n, peer(n)),
@@ -285,13 +292,15 @@ def pair(argv):
         index += 1
     link_dir = os.environ.get("RTA_LINK_DIR", tempfile.gettempdir())
     link = os.path.join(link_dir, "rig-%d.sock" % os.getpid())
-    data_root = os.path.join(ROOT, "local", "rig-out")
+    # RTA_PAIR_DATA: where the two machines' data directories (a, b) are; several pairs
+    # running at once must not share memory cards
+    data_root = os.environ.get("RTA_PAIR_DATA", os.path.join(ROOT, "local", "rig-out", "pair-"))
     processes = []
     for letter in ("A", "B"):
         address, slot, mode = PAIR[letter]
         low = letter.lower()
         args = ["--machine", letter, "--net-shim", address, "--link", "%s:%s" % (mode, link),
-                "--data", os.path.join(data_root, "pair-" + low),
+                "--data", data_root + low,
                 "--net-log", os.path.join(out_dir, low + ".net.log"),
                 "--tick-log", os.path.join(out_dir, low + ".tick.tsv")]
         args += tick_watches(slot)

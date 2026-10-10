@@ -36,6 +36,7 @@
 #include <unordered_map>
 #include <vector>
 #include <dlfcn.h>
+#include <fenv.h>
 #include <execinfo.h>
 #include <pthread.h>
 #include <signal.h>
@@ -1300,6 +1301,8 @@ struct BusModel
 	uint32 delay = 0;  // frames added to every datagram that crosses
 	uint32 jitter = 0; // up to this many more, drawn per datagram (this is what reorders)
 	uint32 lossPerMille = 0;
+	uint64 stallAt = 0;     // an outage: nothing sent in frames stallAt .. stallAt + stallFrames - 1 crosses
+	uint64 stallFrames = 0;
 	uint64 state = 0x9E3779B97F4A7C15ull;
 
 	uint64 Next()
@@ -1525,6 +1528,7 @@ public:
 			{
 				// the bus model: loss, then delay and jitter
 				bool lost = (m_bus.lossPerMille != 0) && (m_bus.Next() % 1000 < m_bus.lossPerMille);
+				if(m_bus.stallFrames != 0 && frame >= m_bus.stallAt && frame < m_bus.stallAt + m_bus.stallFrames) lost = true;
 				uint32 extra = m_bus.jitter ? static_cast<uint32>(m_bus.Next() % (m_bus.jitter + 1)) : 0;
 				if(lost)
 				{
@@ -1741,6 +1745,7 @@ struct Options
 	std::string tickLogPath;
 	std::vector<std::string> tickWatchSpecs;
 	std::string tickAddress = "0x13aee8";
+	int fpRound = -1; // host rounding mode forced on the machine thread; -1: Play!'s own (toward zero)
 };
 
 class CRig
@@ -1851,6 +1856,10 @@ public:
 			}
 		}
 		m_frame++;
+		// Translated code does its arithmetic in the host's rounding mode, which Play!
+		// sets to toward-zero once; forcing another one here makes every single-precision
+		// result of this machine round differently from then on.
+		if(m_options.fpRound >= 0 && fegetround() != m_options.fpRound) fesetround(m_options.fpRound);
 		if(m_inlineGs) m_inlineGs->Drain();
 		if(m_link.Active() && !ExchangeWithPeer()) return;
 
@@ -3178,7 +3187,10 @@ static void Usage()
 	    "  --net-log-all          ... and of every datagram\n"
 	    "  --machine A|B          which of two joined machines this is (script lines tagged A: or B:)\n"
 	    "  --link listen:<path> | connect:<path>   join a second runner; the two advance frame by frame\n"
-	    "  --bus delay=N,jitter=N,loss=N,seed=N   what the bus does to datagrams that cross (frames; loss per 1000)\n"
+	    "  --bus delay=N,jitter=N,loss=N,seed=N,stallat=F,stall=N   what the bus does to datagrams that cross\n"
+	    "                         (frames; loss per 1000; stall: nothing crosses for N frames from frame F)\n"
+	    "  --fp-round nearest|up|down|zero   force a floating-point rounding mode on this machine's thread\n"
+	    "                         (Play! runs the EE with round-toward-zero); for float-mismatch experiments\n"
 	    "  --tick-log <file>      one row of the --tick-watch values per lockstep tick (needs break points)\n"
 	    "  --tick-watch <name=expr:type>   a value for the tick log; repeatable\n"
 	    "  --tick-at <addr>       where a tick is logged (default 0x13aee8, the return from the tick's tasks)\n");
@@ -3304,9 +3316,27 @@ static int Run(int argc, char** argv)
 					options.bus.lossPerMille = static_cast<uint32>(number);
 				else if(key == "seed")
 					options.bus.state = 0x9E3779B97F4A7C15ull ^ (static_cast<uint64>(number) * 0x100000001B3ull);
+				else if(key == "stallat")
+					options.bus.stallAt = static_cast<uint64>(number);
+				else if(key == "stall")
+					options.bus.stallFrames = static_cast<uint64>(number);
 				else
 					Die("--bus: unknown key '%s'", key.c_str());
 			}
+		}
+		else if(arg == "--fp-round")
+		{
+			std::string mode = value();
+			if(mode == "nearest")
+				options.fpRound = FE_TONEAREST;
+			else if(mode == "up")
+				options.fpRound = FE_UPWARD;
+			else if(mode == "down")
+				options.fpRound = FE_DOWNWARD;
+			else if(mode == "zero")
+				options.fpRound = FE_TOWARDZERO;
+			else
+				Die("--fp-round nearest|up|down|zero");
 		}
 		else if(arg == "--tick-log")
 			options.tickLogPath = value();

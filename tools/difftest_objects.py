@@ -1042,7 +1042,7 @@ class Driver:
         self.props = [rig.add_props(entries) for entries in PROP_LISTS]
         self.defs = [rig.add_def([b'model', b'tex'], 0), rig.add_def([], 0), rig.add_def([b'a', b'b', b'c'], 5)]
         self.p_new = 0.16
-        self.dtor_ops = 0.25
+        self.dtor_ops = 0.15
         rig.script_run = self.in_run
         rig.script_dtor = self.in_dtor
 
@@ -1063,7 +1063,7 @@ class Driver:
         return ('new', rng.choice(SIZES), rand_pos(rng, near.pos if near else None),
                 rng.choice(self.props) if rng.random() < 0.45 else 0,
                 rng.choice(self.defs) if rng.random() < 0.15 else 0,
-                rng.choice(('frame', 'frame', 'frame', 'r60', 'r60', 'r15', 'none')), flags,
+                rng.choice(('frame', 'frame', 'frame', 'frame', 'frame', 'r60', 'r60', 'r15', 'none')), flags,
                 rng.choice(self.props) if rng.random() < 0.04 else 0)
 
     def random_op(self, me=None, inside=False):
@@ -1073,7 +1073,8 @@ class Driver:
         roll = rng.random()
         other = self.pick()
         target = me if self.alive(me) and rng.random() < 0.6 else other
-        if target is None or (roll < self.p_new and len(m.objects) < self.cap):
+        p_new = self.p_new if len(m.objects) > self.cap // 2 else max(self.p_new, 0.42)
+        if target is None or (roll < p_new and len(m.objects) < self.cap):
             return self.new_op(target)
         roll = rng.random()
         addr = target.addr
@@ -1164,7 +1165,7 @@ class Driver:
             self.top(('set', 'cull', rng.choice((0, 0, 1))))
         if rng.random() < 0.15:
             self.top(('set', 'focus', rand_pos(rng)))
-        if rng.random() < 0.05:
+        if rig.frozen or rng.random() < 0.03:
             self.top(('set', 'frozen', rng.choice((0, 0, 1))))
         if rng.random() < 0.03:
             self.top(('set', 'generation', rng.choice((0, 5, 9))))
@@ -1349,8 +1350,12 @@ def scenario_run(rig, ticks=2000, cap=260, net=0):
     for _ in range(120):
         driver.top(driver.new_op(driver.pick() if rng.random() < 0.6 else None))
     twice = same_tick = 0
+    low, high, total = 1 << 30, 0, 0
     for _ in range(scaled(ticks)):
         driver.environment()
+        while len(rig.model.objects) < 70:
+            driver.top(driver.new_op(driver.pick() if rng.random() < 0.6 else None))
+        low, high, total = min(low, len(rig.model.objects)), max(high, len(rig.model.objects)), total + len(rig.model.objects)
         for _ in range(rng.choice((0, 0, 1, 2))):
             driver.top(driver.random_op())
         rig.steps += 1
@@ -1374,10 +1379,11 @@ def scenario_run(rig, ticks=2000, cap=260, net=0):
             raise Diverged()
     stats = rig.stats
     inside = sum(v for k, v in stats.items() if k.startswith('in callback'))
-    return ('%d ticks, %d run calls and %d destructor calls in the same order; %d operations made inside them '
+    return ('%d ticks on %d to %d live objects (mean %d), %d run calls and %d destructor calls in the same order; %d operations made inside them '
             '(%d creations, %d deferred deletes, %d direct destroys, %d moves, %d run-list changes, %d queries); '
             'an object ran twice in one tick %d times; an address created during a tick ran in that tick %d times'
-            % (stats.get('runobjects', 0), stats.get('run calls', 0), stats.get('destructor calls', 0), inside,
+            % (stats.get('runobjects', 0), low, high, total // max(stats.get('runobjects', 0), 1),
+               stats.get('run calls', 0), stats.get('destructor calls', 0), inside,
                stats.get('in callback: new', 0), stats.get('in callback: delete', 0), stats.get('in callback: destroy', 0),
                stats.get('in callback: move', 0),
                sum(stats.get('in callback: ' + k, 0) for k in ('frame', 'r15', 'r60', 'stop', 'active')),
@@ -1618,6 +1624,26 @@ def scenario_tasks(rig):
                 op = ('tremove', A['runObjects']) if rng.random() < 0.2 else ('trunning', b'runObjects')
             rig.do_model(op)
             rig.count('in callback: ' + op[0])
+    # a hand-made case first: the running task removes itself, something takes its place in
+    # the table, something else is added in front of the cursor
+    ta, tb, tc, slot, early = rig.STUB_TASKS[:5]
+    rig.do('tadd', ta, 0, b'ta', 0)
+    rig.do('tadd', tb, 0, b'tb', 0)
+    rig.do('tadd', tc, 20, b'tc', 0)
+    seen = []
+
+    def case(fn):
+        seen.append(fn)
+        if fn == tb:
+            rig.do_model(('tremove', tb))
+            rig.do_model(('tadd', slot, 0, b'slot', 0))
+            rig.do_model(('tadd', early, -5, b'early', 0))
+    rig.script_task = case
+    rig.do('tcall', 1, -1)
+    if seen != [ta, tb, slot, tc]:
+        rig.bad('the model does not show: a task that takes the place of the running task is called in the same pass')
+    for fn in (ta, tc, slot, early):
+        rig.do('tremove', fn)
     rig.script_task = in_task
     driver = Driver(rig, cap=80)
     for _ in range(40):
