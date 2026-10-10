@@ -497,8 +497,8 @@
 002f8e40	SkillLifeTap_manaCost	Skill slot 5: mana cost for a level (float)
 002f8e78	SkillLifeTap_getStat0Fraction	statistic 0 / 100; callers 0x110d30 and Player_processDamage
 002f8eec	SkillLifeTap_getStat1	statistic 1 at the given level; caller 0x2946f8
-002f8f48	PoisonRain_ctor	class PoisonRain (0x6c bytes), table at 0x51aa60; callers SkillPoisonRain_cast, Mummy run 0x298d18, Orc run 0x2a1848
-002f9254	PoisonRain_run	GameObject slot 4: once per simulated frame; class PoisonRain, table at 0x51aa60 (vtables.txt merges it into SkillLifeTap)
+002f8f48	PoisonRain_ctor	class PoisonRain (0x6c bytes), table at 0x51aa68 (an earlier note said 0x51aa60, the zero entry before it); callers SkillPoisonRain_cast, Mummy run 0x298d18, Orc run 0x2a1848
+002f9254	PoisonRain_run	GameObject slot 4: once per simulated frame; class PoisonRain, table at 0x51aa68 (an earlier note said 0x51aa60 and that vtables.txt merged it into SkillLifeTap; the regenerated list has it separately)
 002f9958	SkillPoisonRain_ctor	constructs the static Skill object; called from the start-up initialiser 0x16ac74
 002f99c4	SkillPoisonRain_initStats	Skill slot 9: writes the per-level statistic tables
 002f9a3c	SkillPoisonRain_cast	Skill slot 2: (level, caster, pos*, angle) creates the spell/projectile; returns the Spell or 0

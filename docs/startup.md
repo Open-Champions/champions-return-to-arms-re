@@ -95,7 +95,7 @@ at +0x20 match.
 | +0x0e, +0x10 | s16, s16 | damage min, max; non-zero on all 162 weapon rows and no others | `0x104100`, table |
 | +0x14 | s32 | fixed price; when ≥ 1 it replaces the value formula (set on ammunition, the thrown potions and 162 of the 209 category-2 rows) | `0x1024a8` first test |
 | +0x18 | s16 | armour value; non-zero on exactly the 236 armour rows | `0x103ec8`, table |
-| +0x1a | s16 | weapons only, near the mean damage; summed into player record +0xcc. Meaning Unknown | `0x103f88`, `0x1b721c` |
+| +0x1a | s16 | the weapon's attack rating (weapons only, near the mean damage): raised by modifier 0x23 (percent) and summed into player record +0xcc, the attack rating that melee passes to `damage_apply` (`docs/data-tables.md` §4.5). The earlier version gave the meaning as Unknown | `0x103f88`, `0x1b721c` |
 | +0x1c | u8 | equipment slot: 0 one hand, 2 two hands or ranged, 3 shield, 4 body, 5 ring, 7 neck, 8 ammunition, 9 gloves, 10 boots, 11 head, 12 legs, 14 ear, 16 none | Inferred from row names; used at `0x104c48`, `0x107edc` |
 | +0x1d | u8 | category: 0 weapon, 1 armour, 2 everything else | every generator |
 | +0x1e | u8 | weapon subtype: 0 one-handed, 1–3 two-handed families, 4 bow, 6 thrown (5 is excluded from the value formula) | `0x104c04`, `0x1024a8`, `0x108434` |
@@ -124,7 +124,7 @@ Definition / item flag bits (bit numbers of the u64):
 
 | Address | Rows × size | Contents |
 |---|---|---|
-| `0x3e9c18` | 10 × 3 floats | drop quality rows: chance of a poor (budget ×0.5) and of a normal drop; the rest is good (×3). Row 0 is 99 % poor, row 9 is always good. `loot_generateDrops` interpolates between rows |
+| `0x3e9c18` | 12 × 3 floats, 10 selectable | drop quality rows: chance of a poor (budget ×0.5) and of a normal drop; the rest is good (×3). Row 0 is 99 % poor, row 9 is always good. `loot_generateDrops` interpolates between rows; it clamps the row argument to 0…9 (`0x100e64–0x100e88`), so rows 10 and 11 (`0x3e9c90–0x3e9ca7`, word for word the same as row 9) only pad the blend. The earlier version counted 10 rows |
 | `0x3e9cb0` | 7 floats | value multiplier per weapon subtype |
 | `0x3e9cd0` | 16 bytes | draw-effect parameter block written by `0x1068d8` |
 | `0x3e9ce0` | 134 × 16 | model table: model file name, texture file name, and two pointers filled by `item_loadResources` |
@@ -184,7 +184,7 @@ first block; +0x0a is stamped with a marker once the chain is built (`0x1003cc`)
 |---|---|---|---|
 | Creature | +0x2f8 | u8 avoidance side: 0 none, 1 or 2 = steer to one side until all three probes are clear | `0x108a60` |
 | Gold object (0xc0 bytes, vtable `0x511a88`) | +0x80 | amount | `0x157668` called from `0x100974` |
-| Item prop (0x248 bytes, vtable `0x511ba8`) | +0x148 | embedded Item; +0xfc/+0x100 initial throw velocity | `0x155a0c`; stores at `0x101938`, `0x10194c` |
+| Item prop (0x248 bytes, vtable `0x511ba8`; the class is `PhProp` — a `PhProp` built with an item record. `ItemProp` is a different class, 0x190 bytes, table `0x511c38`) | +0x148 | embedded Item; +0xfc/+0x100 initial throw velocity | `PhProp_ctor` `0x155a0c`; stores at `0x101938`, `0x10194c` |
 | Player record (`g_players[i]`) | +0x50 | class id; id 4 steers armour drops toward cloth | `0x104ca4`, `0x104758` |
 | Shop stock list | +0x1200 | count of 0x48-byte items stored from +0 | `0x107d54` |
 
@@ -390,6 +390,8 @@ T0 twice per frame (`0x32321c`, `0x323274`) only to store a duration at `0x44fd4
    Search writers at item-relative offsets inside the inventory lists (record +0x130,
    stride 0x48).
 2. Definition +0x1a: what does player record +0xcc feed? That names the field.
+   (Answered since: +0xcc is the player's attack rating, so +0x1a is the weapon's attack
+   rating; see the definition table above.)
 3. Who sets item flag bit 33 (no definition has it)? It drives the draw effect and
    `item_getFlag33Level`.
 4. Per-machine item 1: can `hud.lmp`'s lump group be loaded on one net peer and not on

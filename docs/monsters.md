@@ -52,7 +52,7 @@ Slot numbers are `tools/vtab.py` numbers (slot n is at table offset n×8).
 | 16 | creature: returns the model handle used for drawing and effects | Inferred | result is passed where other classes pass `*(+0x24)+0xc` (compare Cazic_run 0x24aaf0 head with Horsemen_run 0x27236c head) |
 | 17–19 | AutoProp family only | Unknown | named `_vslot17..19` |
 | 20 | "is this object my enemy" | given | 4 overrides here |
-| 23 / 25 / 26 / 28 | creature base helpers called from every run function with small integer arguments (offsets 0xbc, 0xcc, 0xd4, 0xe4) | Unknown | not overridden in this area |
+| 23 / 25 / 26 / 28 | creature base helpers called from every run function with small integer arguments (table offsets 0xbc, 0xcc, 0xd4, 0xe4). `docs/creatures.md` names them: 23 pick target, 25 can see target, 26 turn toward a point, 28 on death | Observed there (this row said Unknown) | not overridden in this area |
 | 27 | **set AI state** (new state) | Observed | every run function ends by calling it with the next state; overridden by 71 of 73 creature classes; each override starts with the common filter `Creature_filterState` (0x10a9c0), picks the animation for the state and stores the state at +0x232 |
 | 35 | creature: returns the level value handed to a skill when the monster casts it | Inferred | its result is always the first argument of the skill's cast call (Horsemen_run state 0x17, Cazic_run states 7, 0xc, 0xd) |
 | 38 | creature: second model argument for `Creature_draw` | Inferred | Cazic_draw 0x24aa6c |
@@ -62,7 +62,10 @@ use it now" (one argument, the caster), offset 0x14 casts (level, caster, positi
 and returns the spell object, which the caller sometimes links with `creature_addSpell`.
 Offsets 0x44, 0x5c and 0x64 are parameter queries; 0x5c is the one monsters use to add an
 elemental rider to a melee hit. Observed at the call sites listed in section 6; the
-meaning of 0x44 and 0x64 is Unknown.
+meaning of 0x44 and 0x64 was left Unknown here. In the slot numbering of `docs/skills.md`
+these are slot 1 (0x0c, can use), slot 2 (0x14, cast), slot 8 (0x44, value range around a
+statistic), slot 11 (0x5c, statistic from the non-player tier) and slot 12 (0x64, statistic
+chosen by whether the caster is a player).
 
 ### 1.3 Shape of a monster run function
 
@@ -90,7 +93,7 @@ creatures symbol file's, the descriptions are what the monster code relies on):
 | `Creature_moveToDest` (0x119f38) | walk to the wander point +0x104, pick a new one when stuck | body read |
 | `Creature_isAwayFromHome` (0x10eed8) | "am I outside my leash" (home +0x3b4, radius +0x3c0) | body read |
 | `Creature_turnToTarget` (0x1187e0) | turn toward the target (calls table offset 0xd4) | body read |
-| `Creature_hitAllEnemiesInArc` (0x119b58) / `Creature_hitTargetInArc` (0x119938) | melee hit test in an arc with damage min/max/type from +0xd0/+0xd2/+0xd4 and a flag word; non-zero when something was hit | called on the hit-frame event bit |
+| `Creature_hitAllEnemiesInArc` (0x119b58) / `Creature_hitTargetInArc` (0x119938) | melee hit test in an arc with damage min/max and attack rating from +0xd0/+0xd2/+0xd4, then a flag word (8, 0x40001, …) that carries the damage class; non-zero when something was hit. The earlier version called +0xd4 the damage type | called on the hit-frame event bit; 0x119938 forwards the third value as `damage_apply`'s `attack` |
 | `Creature_isNotRooted` (0x1195e0) / `Creature_isAttackReady` (0x1195f0) / `Creature_isNotStunned` (0x119608) | test timers +0x314 / +0x318 / +0x31c for zero | bodies read |
 | `Creature_deadUpdate` (0x1108a0) | dead-body handler: blood decal, then sink into the ground and delete when creature flag 0x1000000 is set | body read |
 | `Creature_dropLoot` (0x10f2c8) | called once on entering state 0x14 (death); not read here | setState case 0x14 of Cazic and Horsemen |
@@ -118,10 +121,13 @@ The filter `Creature_filterState` (0x10a9c0) runs at the top of every setState o
 change when a PvP condition holds or when +0x231 is set and the request is state 1; it
 redirects requests to 5, 0x13 or 0x10 while timers A, C or B are running; a request for
 0x14 clears all four timers; a result of 0 also clears the target handle +0x234.
+Timers A, B and C are the root, attack-cooldown and stun timers of `docs/creatures.md`,
+whose list of state numbers describes the same states from the base class's side.
 
 Earlier project notes describe state 0x14 as "cutscene actor". In every class read here it
 is the death state; a defeated boss that then speaks in a cutscene is in it because he is
-dead. (Affects the wording of FINDINGS D19, not its conclusion.)
+dead. (Affects the wording of FINDINGS D19, not its conclusion; D19 has since been
+reworded.)
 
 ## 2. Data structures
 
@@ -135,11 +141,11 @@ Offsets into any creature-derived object. "How" names where the use was read.
 | +0x24 | ptr | per-class static block: model at +0xc, second model at +0x14, animation handles from +0x1c upward in 8-byte steps | every setState override indexes it |
 | +0x2c | ptr | zero-terminated list of `key=value` parameter strings from the level file (read with `obj_getPropStr` (0x14f4c0) string / `obj_getPropInt` (0x14c880) integer / `obj_getPropFloat` (0x14c9c0) float) | `obj_runActionScripts` (0x14dcc8) walks it |
 | +0x34 | ptr | type name; generators write it on what they spawn | Generator_run 0x265938 |
-| +0x50 | ptr | weapon helper sub-object (table 0x50cda0), embedded in armed monsters | Horsemen, Skelight, UndeadKnight ctors |
+| +0x50 | ptr | weapon helper sub-object, embedded in armed monsters. Its class is `WeaponShield` (table 0x50cda0, base `Weapon1`) in Horsemen and UndeadKnight and plain `Weapon1` (table 0x50cf40) in Skelight; other armed classes use one of these or `Weapon2` (0x50ce70). The earlier version gave table 0x50cda0 for all three and no class name | Horsemen, Skelight, UndeadKnight ctors (the last table address each loads for the helper: 0x271d94, 0x2a87e8, 0x2b3f64) |
 | +0xa8 | u64 | creature flags; here: 0x1000000 corpse sinks and is deleted, 0x4000000 MummyKing ignores damage, 0xc00000 and 0x8000000 select the leash rule, 0x20000000000 set on boss death | `Creature_deadUpdate` (0x1108a0), 0x29c544, `Creature_isAwayFromHome` (0x10eed8), 0x24c118 |
-| +0xd0, +0xd2, +0xd4 | s16 ×3 | melee damage low, high and type passed to the hit helpers | every attack state |
+| +0xd0, +0xd2, +0xd4 | s16 ×3 | melee damage low, high and attack rating passed to the hit helpers (the earlier version said "type"; the damage class is in the flag word passed after them) | every attack state; `Creature_setStats` 0x10a620 |
 | +0xe8 | u32 | bit mask of hidden model parts; +0x220 (u64) is the mask computed from it by `model_buildHideMask` (0x179550) | Horsemen ctor, SpiderQueen_takeDamage 0x2aed60 |
-| +0xec | s32 | frame number from which hits register (`+0xec <= g_frame` in 0x15153c and 0x1ba940); every constructor here stores the current frame counter 0x44fdcc | ctor of every monster |
+| +0xec | s32 | frame number from which hits register (`+0xec <= g_frame` in 0x15153c and 0x1ba940); every constructor here stores the current frame counter 0x44fdcc. Caution added later: 0x15153c and 0x1ba940 are `MissileWeapon_run` and `playerProjectile_run` and test the missile's own +0xec, so only the constructor store is established for creatures; `docs/creatures.md` lists creature +0xec as Unknown | ctor of every monster |
 | +0xf0 | s32 | start frame of a timed effect; read by `Creature_run` 0x113768 in the status-counter-7 branch | field search |
 | +0xf4 | s32 | class timer (Skelight: attack frames left; Horsemen: idle until age) | Skelight_run 0x2a8b84, Horsemen_run 0x27236c |
 | +0x104 | Vec3 | wander destination | `Creature_moveToDest` (0x119f38) |
@@ -149,7 +155,7 @@ Offsets into any creature-derived object. "How" names where the use was read.
 | +0x232 | s16 | AI state | given |
 | +0x234 | handle | current target (object at node+0xc) | `Creature_canSeeTargetIn` (0x118d40), `Creature_turnToTarget` (0x1187e0) |
 | +0x300 | s32 | age in simulated frames; compared against the class timers | Horsemen_run 0x27236c, Cazic_run 0x24aaf0 |
-| +0x314, +0x318, +0x31c, +0x31a | s16 | timers A, B, C (and a fourth) | `Creature_isNotRooted` (0x1195e0) … `Creature_filterState` (0x10a9c0) |
+| +0x314, +0x318, +0x31c, +0x31a | s16 | timers A, B, C (and a fourth); in `docs/creatures.md` the root, attack-cooldown and stun timers (and one paired with a speed-changing spell) | `Creature_isNotRooted` (0x1195e0) … `Creature_filterState` (0x10a9c0) |
 | +0x3b4 / +0x3c0 | Vec3 / float | home position / leash radius | `Creature_isAwayFromHome` (0x10eed8) |
 | +0x3c8 … | | first class-specific field | |
 
@@ -216,7 +222,9 @@ used to scale trap, explosion and summon strength (written by `arena_startWave` 
 replaced inside the Skelight constructor and 0x245568); 0x4dcec8 + i×0x4c30 is player i's
 object pointer; 0x44fe18 and 0x41b721 hold the current level name.
 
-**0x404468 is a fourth random generator** (same constants as the other three). In the whole
+**0x404468 is a fourth random generator** (same constants as the other three; it is the
+third global seed word, after 0x404460 and 0x404464 — "fourth" counts the per-object
+generators — and `docs/OVERVIEW.md` lists it as a further cosmetic one). In the whole
 program it is used by seven functions: the creature damage reaction `Creature_processDamage` (0x110d30) (blood),
 `Player_run` (which of four swing sounds; the branch at 0x1aa8ac runs for non-local players
 and for the prediction copy), Cazic_deathEffects 0x24c994, Marr's death effects 0x284b68 and
@@ -368,7 +376,7 @@ created by other code. All **Observed** by script; rows for the classes in secti
 | Lever | Lever | 0x50d918 | 0x54 | 0x28e394 | 0x28e748 | 0x28e64c | base | base |  |  |
 | LightningBolt |  | 0x5168e8 | ? | 0x295360, 0x295584 | 0x2957e4 | base | base | base |  |  |
 | LightningRod | LightningRod | 0x516858 | 0x5c | 0x2958a8 | 0x295954 | 0x29594c | base | base |  | LightningBolt |
-| LostSoul |  | 0x50e7e8 | ? | 0x293228 | 0x2933f4 | 0x2936fc | base | base |  |  |
+| LostSoul |  | 0x50e7e8 | ? | 0x2931bc (the earlier version gave 0x293228, an address inside the constructor) | 0x2933f4 | 0x2936fc | base | base |  |  |
 | MummySnake |  | 0x516c98 | ? | 0x29cfe4 | 0x29d0c0 | base | base | base | PoisonWeapons (26) |  |
 | OniBall |  | 0x50e878 | ? | 0x294014 | 0x2941e4 | 0x2946f0 | base | 0x2946f8 | LifeTap (59) |  |
 | PointSourceSound |  | 0x50d208 | ? | 0x28f370 | 0x28f4ac | base | base | base |  |  |
@@ -980,22 +988,25 @@ builds a matrix from the mount instead and writes nothing.
   make no per-machine read in their own run, setState, draw or helper functions. What they
   share with every monster is the creature base, the weapon helper object at +0x50 (its
   update is called from run at table offsets 0xac/0xb4 and its draw from draw at 0x94/0x9c;
-  class at table 0x50cda0, not in this area, **not read**) and the skills they cast.
+  class `WeaponShield` at table 0x50cda0 — `Weapon1` at 0x50cf40 for Skelight — not in
+  this area, **not read**) and the skills they cast.
 
 ## 8. Corrections to earlier notes
 
 - **Cazic's run function is 0x24aaf0, not 0x248598.** 0x248598 is `Bubo_run`. The
   "ruled out" paragraph of FINDINGS that says the function at 0x248598 reads no camera or
   local-player state was checking the wrong class. Having read the right one: the same
-  conclusion holds for 0x24aaf0 and its helpers (7.10).
+  conclusion holds for 0x24aaf0 and its helpers (7.10). (FINDINGS and `names.tsv` have
+  since been corrected to 0x24aaf0.)
 - The `names.tsv` note on `Cazic_ctor` ("casts FireStorm and SummonSkeleton") is true only
   of the `cazicthule` variant above half health; the `cazicavatar` variant casts neither
-  (section 4).
+  (section 4). (The note has since been rewritten to say this.)
 - Horsemen variant 3 does not wait for its skill timer: it casts SummonSkeleton whenever
   the skill's "can cast" test passes (0x2726a0–0x27271c); only variants 0–2 are gated by
   +0x474.
 - State 0x14 is the death state, not a cutscene state (1.4).
-- 13 tables that `vtables.txt` lists as `Projectile`, `WorldPart` or `FireBeetle` are
+- 13 tables that `vtables.txt` listed as `Projectile`, `WorldPart` or `FireBeetle` (it has
+  since been regenerated with the right names, see `docs/issues/vtable-labels.md`) are
   derived classes whose type-info function names the base first: 0x50de28 FallPlatform,
   0x50deb8 FloorSwitch, 0x50df48 Switch, 0x50dfd8 DoorSecret, 0x50e068 RollDoor, 0x50e100
   DoorSwing, 0x50e3d8 beetleProjectile, 0x50e638 IceBall, 0x50e758 Root, 0x50e7e8
@@ -1011,13 +1022,16 @@ builds a matrix from the mount instead and writes nothing.
    start frames differ.
 3. Savepoint message 5 (7.6): are object addresses identical on all machines at that
    point? Compare the address in the message with the local object in a two-machine run.
-4. The weapon helper class (table 0x50cda0): its per-frame update and its draw are called
+4. The weapon helper class (`WeaponShield`, table 0x50cda0; `Weapon1`, table 0x50cf40, in
+   Skelight): its per-frame update and its draw are called
    by Horsemen, Skelight, Skeleton, UndeadKnight and other armed monsters. Does its draw
    change anything its update reads?
 5. What exactly SummonSkeleton's "can cast" test (skill table offset 0x0c) counts — it is
    the only limit on knight variant 3's summoning.
-6. Meaning of creature table offsets 0xbc, 0xcc, 0xd4, 0xe4 and of slots 10, 12, 17–19, 21,
-   36 where classes override them (80 functions are named `Class_vslotN`).
+6. Meaning of slots 10, 12, 17–19, 21, 36 where classes override them (80 functions are
+   named `Class_vslotN`). (Table offsets 0xbc, 0xcc, 0xd4, 0xe4 were listed here as well;
+   they are slots 23, 25, 26, 28, and `docs/creatures.md` gives the base meaning of every
+   creature slot.)
 7. Where the Teleporter moves the player.
 8. The draw functions that store to position, facing or flag fields (7.9, last three
    rows) should be read to confirm the stores are undone.

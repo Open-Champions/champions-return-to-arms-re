@@ -787,10 +787,10 @@ Player record (`g_players[n]`, 0x4d8af0 + n × 0x4c30):
 |---|---|---|---|
 | +0x24 | 5 bytes | recall destination text | `clearRecall` |
 | +0x50 | i32 | class (1 and 4 are the caster classes tested) | `isClericOrWizard` |
-| +0x54 | i32 | race (0 tested) | `activePlayerIsDwarf` |
+| +0x54 | i32 | character model index 0–11 (0 tested). The earlier version said "race"; the record has no race field, and the model decides the class (`docs/player.md`) | `activePlayerIsDwarf` |
 | +0x78..+0x84 | 4 × i32 | the four stats raised by stat numbers 4..7 | `playerAdjustStat` via `inventory_onStatPoint` |
 | +0xac, +0xb0 | float | hit points, maximum | `healPlayer`, `giveFullHealth`, `planarSteel`, `getMaxPlayerHP` |
-| +0xc0, +0xc4 | i32 | mana, maximum | `zeroPlayerMana`, `refillPlayerMana` |
+| +0xc0, +0xc4 | float | mana, maximum (the earlier version gave the type as i32; `refillPlayerMana` copies the word with a float load and store, 0x1424c8, and `docs/player.md` has both as floats) | `zeroPlayerMana`, `refillPlayerMana` |
 | +0xe4 | i32 | gold | gold built-ins |
 | +0xe8 | i32 | skill points | `clearAllSkills`, stat number 8 |
 | +0x120, +0x124 | float | carried weight, capacity | give-item built-ins |
@@ -798,10 +798,10 @@ Player record (`g_players[n]`, 0x4d8af0 + n × 0x4c30):
 | +0x41d0, +0x43d0 | 8 × 0x40, i32 | quest list (title 0x20, text 0x20), count | `addQuest`, `removeQuest` |
 | +0x43d8 | ptr | the player's object | most player built-ins |
 | +0x4434.. | 3 × ptr | equipped-item pointers cleared with the weapons | `removeAllWeapons` |
-| +0x4460 + k × 0x68 | i16, +4 u8 | effect type of ability record k (set to -1) and the byte after it (set to 0); 15 records, see FINDINGS D16 | `clearAllSkills` |
+| +0x4460 + k × 0x68 | i16, +4 u8 | skill id of ability record k (set to -1, "empty") and the byte after it (set to 0); 15 records at +0x4440, this is their field +0x20; see FINDINGS D16. The earlier version called it the effect type; it indexes `g_skillTable` in the player cast helper 0x1a42b8 | `clearAllSkills` |
 | +0x4bca | i16 | newWorld cooldown, 600 frames | `newWorld_netGate` |
 | +0x4c0d + m | i8 | medal level for mission m | `mission_grantMedal`, `mission_getMedal` |
-| +0x4c1c | u32 | status; low 5 bits equal to 2 blocks `saveGame` | `saveGame` |
+| +0x4c1c | u32 | status; low 5 bits equal to 2 blocks `saveGame`. These are bits 32–36 of the u64 at +0x4c18: a character-kind value, 1 by default and 2 for a character created on the lobby branch of the character screen (`docs/player.md`); not the difficulty | `saveGame` |
 | +0x4c26 | u8 | set by `piercePlayerEar` | `piercePlayerEar` |
 | +0x4c28 | u8 | script-visible flag bits | `setPlayerFlag`, `getPlayerFlag` |
 
@@ -815,18 +815,18 @@ Objects and creatures:
 | +0x54, +0x58, +0x5a | | prop animation state, playing byte, status word (bit 7 = at end) | prop animation built-ins |
 | +0x50 | ptr | creature sub-object whose virtual slot 8 sets the weapon type | `setWeaponType` |
 | +0xa8 | u64 | creature flag word: bits 0, 23, 26, 27, 31, 43, 44 are used here | `setCFlag`, `followPlayer`, `friendly`, `followPath`, `showOnMap`, `increaseEnemyRank` |
-| +0xd0, +0xd2, +0xd4, +0xd8, +0xe4 | i16 ×3, float, i16 | creature stats scaled by the params built-ins | `Creature_scaleStats` |
+| +0xd0, +0xd2, +0xd4, +0xd8, +0xe4 | i16 ×3, float, i16 | creature stats scaled by the params built-ins: damage low and high, attack rating, experience value, armour (`docs/creatures.md`) | `Creature_scaleStats` |
 | +0x114, +0x11a | | creature animation state, status word (bit 7 = at end) | `startNPCAnim`, `NPCAnimAtEnd` |
 | +0x124 | u32 | container flags, bit 3 | `setContainerProps` |
 | +0x178 | i32 | auto-prop state | `autoPropGetState` |
 | +0x228, +0x22c | float | creature hit points, maximum | `getHitPoints`, `setHitPoints`, `killMonster` |
 | +0x231 | u8 | bit 3 set while hidden | `hideMonster`, `showMonster` |
-| +0x232 | i16 | AI state (0x14 is skipped by root / stop-path) | `rootMonster`, `stopFollowingPath` |
+| +0x232 | i16 | AI state (0x14, the death state, is skipped by root / stop-path) | `rootMonster`, `stopFollowingPath` |
 | +0x234 | handle | current target | `Creature_setCharm` |
 | +0x2e0, +0x2e8 | u16, float | push direction and speed on a player object | `hitPlayers` |
 | +0x310, +0x312 | u8, i16 | team, charm timer (-1 permanent) | `Creature_setCharm` |
 | +0x314 | i16 | -1 while rooted | `rootMonster`, `unRootMonster` |
-| +0x3ac, +0x3ae, +0x3b0, +0x3c4 | i16 | values 1, 2, 3 and 5 of `setMonsterVal` | `script_applyMonsterVal` |
+| +0x3ac, +0x3ae, +0x3b0, +0x3c4 | i16 | values 1, 2, 3 and 5 of `setMonsterVal`: point-blank range, visual range, visual arc and activity radius in `docs/creatures.md` | `script_applyMonsterVal` |
 | +0x3b4 | 3 floats | position stored when path following stops | `stopFollowingPath` |
 | +0x540 | ptr | vehicle a player object is in | vehicle built-ins, `net_closeLocalMenus` |
 
@@ -1090,7 +1090,7 @@ both modes because that function returns true for every slot offline.
   the relocation list". The 0x18 is the name-record size at header +0xa, and the loop expands
   the optional compact encoding (header flag bit 2), which no shipped script uses.
   `scr_findInTable38` (0x13ebd8) is the public-variable lookup; the table is empty in every
-  script.
+  script. (The `scr_load` note has since been corrected.)
 - `tools/scr.py` prints a string literal whose pool offset is below 8 as a number (hence
   listings such as `callScript(0)`), and it does not show arguments that were pushed with
   PUSH.pri / PUSH.alt. The true argument count is the PUSH.C just before each SYSREQ.C
@@ -1123,7 +1123,9 @@ both modes because that function returns true for every slot offline.
    `activateStore`.
 8. Meaning of the creature fields the monster built-ins set: +0x3ac / +0x3ae / +0x3b0 /
    +0x3c4, flag-word bits 0, 23, 26, 27, 43, 44, virtual slots 27 and 34, AI state 0x14, and
-   the 14 values of `setParticle`.
+   the 14 values of `setParticle`. (All but the last are answered in `docs/creatures.md`:
+   the four fields are named in the table of section 3, slot 27 sets the AI state, slot 34
+   sets HomeRange, state 0x14 is the death state, and its flag table covers the bits.)
 9. The byte at 0x4f8b58 that suppresses `preStart` and `start` (probably "loading a save").
 
 ## 9. Not done

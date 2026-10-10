@@ -76,7 +76,7 @@ statistic 0 is the main amount (damage, percentage) and statistic 4 is the mana 
 | 6 | describeExtra | (text buffer) → 1 if it wrote a description. Only SkillResurrect overrides (different text for one player) | 0x1d4660; 0x312500 |
 | 7 | getIcon | looks up "ic<name>.tex" in icons.lmp | 0x3c82c0, 0x3ccfb0 (all outside this range) |
 | 8 | getStatRange | (spread, stat, level, randomise, int* lo, int* hi): slot 10 value ∓ spread, each at least 1; with randomise set each bound advances the shared generator twice | base 0x3c82e4; used by describeRank with randomise 0, e.g. 0x2c3df8 |
-| 9 | initStats | fills the tables at +0x0e…+0x5f. Base version zeroes tier 1. Who calls it was not found (Unknown) | e.g. 0x2cb14c; base 0x3c85b0 |
+| 9 | initStats | fills the tables at +0x0e…+0x5f. Base version zeroes tier 1. Called once for every id by `skills_callVslot9All` 0x1ebca0, from `game_initCamera` 0x1e6b68 (call at 0x1e6bac), from `main` (call at 0x323e48); the earlier version said the caller was not found | e.g. 0x2cb14c; base 0x3c85b0 |
 | 10 | getStat | (stat, level) → int, tier 1 | base 0x3c85fc |
 | 11 | getStatTier2 | (stat, level, cap) → int; level is clamped to cap when cap > 0; tier 2 if present else tier 1 | base 0x3c8690 |
 | 12 | getStatFor | (stat, level, caster, cap): slot 10 if the caster has the is-player flag, else slot 11 | base 0x3c87f0 |
@@ -164,7 +164,8 @@ Passive skills are not cast; other code asks them for a number (see "helpers" be
 
 The monster's own state machine calls slot 2 directly on a fixed table entry:
 `cast(level, self, &pos, facing)` with level = Creature slot 35 (base 0x118c50: the global
-difficulty scale 0x4f714c × 0.3), then `creature_addSpell(target, result)`. There is no mana,
+difficulty scale 0x4f714c × 0.3 — the float other documents call the monster level,
+`g_levelMonsterLevel`), then `creature_addSpell(target, result)`. There is no mana,
 no recast counter and, except where a monster calls it explicitly (SummonSkeleton), no
 canUse. Many monsters skip the Skill altogether and call the effect's constructor (marked *
 in the table below), or only borrow a statistic through slot 11.
@@ -223,8 +224,8 @@ references to the table entries and to the constructors and may be incomplete.
 | 18 | coneoffire | SkillConeOfFire | 51a3e8 | 1 channelled | 30 | 0 | SpellConeOfFire (0x58) | 51 + 1 x (level-1) | Mummy* |
 | 19 | regeneration | SkillRegeneration | 51a4a0 | 3 passive | 30 | 0 | no object in cast | base (1.0) |  |
 | 20 | blindinglight | SkillBlindingLight | 51a670 | 0 active | 180 | 0 | BlindingLightEffect (0x54) | 45 + 7.001 x (level-1) |  |
-| 21 | repulseundead | SkillRepulseUndead | 51a728 | 0 active | 30 | 0 | Projectile@0x50e7e8 (0xb0) | 59 + 3 x (level-1) |  |
-| 22 | dismissundead | SkillDismissUndead | 51a7b0 | 0 active | 30 | 0 | DismissUndeadProjectile (0xc0) | 70 + 2.001 x (level-1) |  |
+| 21 | repulseundead | SkillRepulseUndead | 51a728 | 0 active | 30 | 0 | LostSoul (0xb0) | 59 + 3 x (level-1) |  |
+| 22 | dismissundead | SkillDismissUndead | 51a7b0 | 0 active | 30 | 0 | HolyBolt (0xc0) | 70 + 2.001 x (level-1) |  |
 | 23 | shockoffrost | SkillShockOfFrost | 51a958 | 0 active | 30 | 0 | ShockOfFrost (0xd0) | 7 + 3 x (level-1) | Goblin, Tormentor*, Ulthork*, Mummy* |
 | 24 | poisonrain | SkillPoisonRain | 51aaf8 | 0 active | 30 | 0 | PoisonRain (0x6c) | 222 + 12 x (level-1) | FemaleDarkElf, Mummy*, Orc* |
 | 25 | diseaseweapons | SkillDiseaseWeapons | 512560 | 0 active | 30 | 0 | nothing (base cast) | base (1.0) |  |
@@ -235,7 +236,7 @@ references to the table entries and to the constructors and may be incomplete.
 | 30 | hateeffect | SkillHateEffect | 5123c8 | 1 channelled | 30 | 0 | nothing (base cast) | base (1.0) |  |
 | 31 | clericroot | SkillRoot | 519ba0 | 0 active | 30 | 0 | SpellRoot (0x34) | stat4 |  |
 | 32 | rangerroot | SkillRoot | 519ba0 | 0 active | 30 | 0 | SpellRoot (0x34) | stat4 |  |
-| 33 | criticalhit | SkillCriticalHit | 519c58 | 0 active | 30 | 0 | SpellCriticalHit (0x5c) | stat4 |  |
+| 33 | rangercriticalhit | SkillCriticalHit | 519c58 | 0 active | 30 | 0 | SpellCriticalHit (0x5c) | stat4 |  |
 | 34 | shieldbash | SkillShieldBash | 51ada0 | 0 active | 30 | 0 | SpellShieldBash (0x28) | stat4 |  |
 | 35 | charge | SkillCharge | 518320 | 0 active | 30 | 0 | SpellCharge (0x88) | stat4 |  |
 | 36 | darkness | SkillDarkness | 5188a0 | 0 active | 30 | 0 | DarknessProjectile (0xb0) | stat4 |  |
@@ -248,18 +249,18 @@ references to the table entries and to the constructors and may be incomplete.
 | 43 | firearrow | SkillFireArrow | 518e70 | 8 weapon | 30 | 0 | FireArrowProjectile (0xb0) | stat4 | MaleDarkElf*, Goblin*, Gremlin*, Orc*, Skeleton* |
 | 44 | coldarrow | SkillColdArrow | 518f88 | 8 weapon | 30 | 0 | ColdArrowProjectile (0xb0) | stat4 | MaleDarkElf*, Froglock*, Goblin*, Gremlin*, Orc*, Skeleton* |
 | 45 | poisonarrow | SkillPoisonArrow | 5190a0 | 8 weapon | 30 | 0 | PoisonArrowProjectile (0xb0) | stat4 | MaleDarkElf*, Froglock* |
-| 46 | multifire | SkillMultiFire | 5191b8 | 8 weapon | 30 | 0 | Projectile@0x50e5a0 (0x1c8) | stat4 | MaleDarkElf* |
+| 46 | multifire | SkillMultiFire | 5191b8 | 8 weapon | 30 | 0 | MissileWeapon (0x1c8) | stat4 | MaleDarkElf* |
 | 47 | explodearrow | SkillExplodeArrow | 5192d0 | 8 weapon | 30 | 0 | ExplodeArrowProjectile (0x74) | stat4 | Goblin*, Gremlin*, Orc*, Skeleton* |
 | 48 | archery | SkillArchery | 519358 | 3 passive | 30 | 0 | nothing (base cast) | stat4 |  |
 | 49 | bash | SkillBash | 5195e0 | 0 active | 30 | 0 | SpellBash (0x28) | stat4 |  |
 | 50 | minorhealing | SkillMinorHealing | 519750 | 0 active | 30 | 0 | SpellMinorHealing (0x24) | stat4 |  |
 | 51 | ancestralcall | SkillAncestralCall | 519808 | 0 active | 30 | 1 | SpellAncestralCall (0x84) | stat4 |  |
 | 52 | root | SkillRoot | 519ba0 | 0 active | 30 | 0 | SpellRoot (0x34) | stat4 |  |
-| 53 | rangercriticalhit | SkillCriticalHit | 519c58 | 0 active | 30 | 0 | SpellCriticalHit (0x5c) | stat4 |  |
+| 53 | criticalhit | SkillCriticalHit | 519c58 | 0 active | 30 | 0 | SpellCriticalHit (0x5c) | stat4 |  |
 | 54 | holyshield | SkillHolyShield | 519d10 | 0 active | 30 | 0 | SpellHolyShield (0x28) | stat4 |  |
 | 55 | healing | SkillHealing | 519e50 | 0 active | 30 | 0 | SpellHealing (0x24) | stat4 | Bubo, FemaleDarkElf, Kobold, Orc |
 | 56 | coneoffrost | SkillConeOfFrost | 519f08 | 1 channelled | 30 | 0 | SpellConeOfFrost (0x58) | stat4 | Tormentor |
-| 57 | shockoffire | SkillShockOfFire | 51a190 | 0 active | 30 | 0 | Projectile@0x50e998 (0xb8) | stat4 | Goblin, Demon*, Mummy* |
+| 57 | shockoffire | SkillShockOfFire | 51a190 | 0 active | 30 | 0 | Sparks (0xb8) | stat4 | Goblin, Demon*, Mummy* |
 | 58 | froststorm | SkillFrostStorm | 51a218 | 0 active | 30 | 0 | FrostStormSpell (0xac) | stat4 | Cazic, Mummy, Goblin*, Minion*, Ulthork* |
 | 59 | lifetap | SkillLifeTap | 51a9e0 | 3 passive | 30 | 0 | no object in cast | 0 (passive) |  |
 | 60 | Blunt | SkillBlunt | 512808 | 3 passive | 30 | 0 | nothing (base cast) | base (1.0) |  |
@@ -300,8 +301,8 @@ references to the table entries and to the constructors and may be incomplete.
 | 95 | waveofflame | SkillWaveOfFlame | 51c2a8 | 0 active | 30 | 0 | SpellWaveOfFlame (0x2c) | stat4 | Cazic |
 | 96 | frostarmor | SkillFrostArmor | 51c360 | 0 active | 30 | 0 | SpellFrostArmor (0x1c) | stat4 | Cazic, Kobold |
 | 97 | diseaseblade | SkillDiseaseBlade | 51c418 | 0 active | 30 | 0 | SpellDiseaseBlade (0x24) | stat4 | Bubo |
-| 98 | fireaxe | SkillFireAxe | 51c4d0 | 8 weapon | 30 | 0 | Projectile@0x50e470 (0x1d0) | stat4 |  |
-| 99 | coldaxe | SkillColdAxe | 51c558 | 8 weapon | 30 | 0 | Projectile@0x50e470 (0x1d0) | stat4 |  |
+| 98 | fireaxe | SkillFireAxe | 51c4d0 | 8 weapon | 30 | 0 | playerProjectile (0x1d0) | stat4 |  |
+| 99 | coldaxe | SkillColdAxe | 51c558 | 8 weapon | 30 | 0 | playerProjectile (0x1d0) | stat4 |  |
 | 100 | lightningstrike | SkillLightningStrike | 51c670 | 0 active | 30 | 0 | LightningStrikeSpell (0xbc) | stat4 | Hag |
 | 101 | coneofshock | SkillConeOfShock | 51c728 | 1 channelled | 30 | 0 | SpellConeOfShock (0x58) | stat4 | Hag |
 
@@ -317,9 +318,20 @@ Notes on the table:
 - SummonSkeleton and SummonBadger allocate a full creature (`Skelight`, `CastBadger`) and
   store the caster's player index at creature+0x5a when the caster is a player; arena kill
   credit reads that byte (0x3056cc).
-- `PoisonRain` (run 0x2f9254, constructor 0x2f8f48) has its virtual table at 0x51aa60,
-  directly after `SkillLifeTap`'s; `vtables.txt` shows the two merged as a 34-entry
-  SkillLifeTap table.
+- `PoisonRain` (run 0x2f9254, constructor 0x2f8f48) has its virtual table at 0x51aa68,
+  directly after `SkillLifeTap`'s. (The earlier version gave 0x51aa60, which is the zero
+  entry that ends the `SkillLifeTap` table, and said `vtables.txt` showed the two merged
+  as a 34-entry SkillLifeTap table; the regenerated list has `PoisonRain` on its own
+  line.)
+- Ids 33 and 53: the earlier version had the two name strings the other way round.
+  `SkillCriticalHit_ctor` gives id 53 the string `criticalhit` and id 33
+  `rangercriticalhit` (0x2e72a0–0x2e72fc); the statistics rows below were already under
+  the right ids.
+- "Cast creates" for ids 21, 46, 57, 98 and 99 read `Projectile@0x50e7e8`,
+  `Projectile@0x50e5a0`, `Projectile@0x50e998` and `Projectile@0x50e470` in the earlier
+  version, and id 22 an invented `DismissUndeadProjectile`; the old `vtables.txt` labelled
+  all five tables `Projectile`. Their classes are `LostSoul`, `MissileWeapon`, `Sparks`,
+  `playerProjectile` and `HolyBolt` (table 0x50e908); see `docs/issues/vtable-labels.md`.
 
 ## Statistics set by slot 9
 
@@ -367,7 +379,7 @@ cell means those casters get tier 1.
 | 30 | hateeffect |  | s0: 2 +2/lv |
 | 31 | clericroot | s0: 1 +0.333/lv; s1: 5 +0.333/lv; s2: 50 +2/lv; s4: 55 +4/lv |  |
 | 32 | rangerroot | s0: 1 +0.333/lv; s1: 5 +0.333/lv; s2: 50 +2/lv; s4: 30 +3/lv |  |
-| 33 | criticalhit | s0: 10 +2/lv; s1: 6 +0.301/lv from lv 10; s2: 8 +0.251/lv; s4: 35 +4/lv |  |
+| 33 | rangercriticalhit | s0: 10 +2/lv; s1: 6 +0.301/lv from lv 10; s2: 8 +0.251/lv; s4: 35 +4/lv |  |
 | 34 | shieldbash | s0: 30 +5/lv; s1: 20 +2/lv; s2: 4 +0.5/lv; s3: 1 +0.25/lv; s4: 27 +4/lv |  |
 | 35 | charge | s0: 120 +10/lv; s1: 55 +3/lv from lv 10; s2: 3 +1.33/lv from lv 10; s3: 1 +0.333/lv from lv 8; s4: 35 +3/lv |  |
 | 36 | darkness | s0: 50 +2/lv; s1: 35 +3/lv; s2: 1 +0.333/lv; s3: 3 +0.251/lv; s4: 33 +4/lv |  |
@@ -387,7 +399,7 @@ cell means those casters get tier 1.
 | 50 | minorhealing | s0: 30 +3.5/lv; s4: 100 +8.5/lv |  |
 | 51 | ancestralcall | s0: 125 +5/lv; s1: 110 +2/lv; s2: 10 +0.501/lv; s3: 4 +0.507/lv; s4: 85 +4/lv |  |
 | 52 | root | s0: 1 +0.333/lv; s1: 5 +0.333/lv; s2: 50 +2/lv; s4: 88 +8/lv |  |
-| 53 | rangercriticalhit | s0: 10 +2/lv; s1: 6 +1/lv; s2: 8 +0.251/lv; s4: 25 +4/lv |  |
+| 53 | criticalhit | s0: 10 +2/lv; s1: 6 +1/lv; s2: 8 +0.251/lv; s4: 25 +4/lv |  |
 | 54 | holyshield | s0: 5 +3/lv; s1: 10 +0.25/lv; s4: 24 +6/lv |  |
 | 55 | healing | s0: 30 +3.5/lv; s1: 5 +0.334/lv; s2: 20 +4/lv; s4: 55 +6/lv | s0: 15 +5/lv; s1: 5 +0.4/lv; s2: 10 +4/lv |
 | 56 | coneoffrost | s0: 350 +11/lv; s1: 1 +4/lv; s2: 20 +1/lv; s4: 48 +1/lv |  |
@@ -460,7 +472,10 @@ Background facts used below (Observed unless marked):
 - `net_isLocalSlot` (0x13e150) and the helper 0x13e180 are per-machine by construction.
   0x13e180 takes an object and returns it unchanged, except that for a player object in a
   local slot of a net game it returns the prediction copy (`g_ghost`) when one exists.
-- There is a **fourth generator at 0x404468**, not mentioned in the overview. It has the same
+- There is a **fourth generator at 0x404468** (the third global seed word, after 0x404460
+  and 0x404464; "fourth" counts the per-object generators). This sentence used to say the
+  overview did not mention it; `docs/OVERVIEW.md` now lists it as a further cosmetic
+  generator. It has the same
   constants as the others and is used only for effects (particle spread, decals, the variant
   number in a sound name). Player_run draws from it at 0x1aa8ac–0x1aa9ac to pick a swing
   sound, with no test for the prediction copy in that block; since prediction restores only
@@ -471,7 +486,9 @@ Background facts used below (Observed unless marked):
   prediction advances it separately. So `counter % n` timing in spell run code is shared
   state, and the same expression in draw code is not.
 - **0x44fdc0 is a user option** (written by config_setDefaults 0x1e62f8 and the options
-  screen 0x222d5c; it gates decals and gut chunks, so presumably the gore level). Whether a
+  screen 0x222d5c — both addresses are the stores; the functions are `config_setDefaults`
+  0x1e6238 and `memcard_optionsScreen` 0x222b40, and other documents call the option
+  `g_decalDetail`; it gates decals and gut chunks, so presumably the gore level). Whether a
   net game forces it to the same value on every machine was not checked (Unknown). One
   function in this range reads it from simulation code — item 2 below. Outside the range
   Creature_processDamage (0x1113fc, 0x1116bc, 0x1116f8), Player_processDamage (0x1b31f4)
@@ -573,12 +590,19 @@ is harmless for sync: the copy is per-machine state already.
 - `0x248598` is the run function of **Bubo** (slot 4 of the table at 0x513fe0), not of Cazic.
   Cazic's run is **0x24aaf0** (table 0x514128). FINDINGS ("Ruled out": "Horsemen_run 0x27236c
   and 0x248598 read none…") and the Cazic line in names.tsv should be re-read with that in
-  mind: the Cazic function has not been checked by this pass either.
+  mind: the Cazic function has not been checked by this pass either. (Since done: both
+  now give 0x24aaf0, and `docs/monsters.md` §4 reads that function in full.)
 - Cazic casts more than FireStorm and SummonSkeleton: also FrostStorm (58), WaveOfFlame (95)
   and FrostArmor (96) through slot 2, and GroundPoundEffect directly (0x24b0c8).
+  `docs/monsters.md` §4 adds the condition: the states that make the slot-2 casts (0xc,
+  0xd, and 10/0xb for the two shock helpers) are entered only when
+  `Cazic_isNonAvatarAboveHalfHp` 0x24c564 is true, so the `cazicavatar` variant uses only
+  the ground pound, and for ids 7, 11, 58, 95 and 96 the "Monsters" column above means
+  the `cazicthule` variant.
 - `g_skillTable` is not filled at start-up; the objects it points at are constructed then.
-- A Skill table has 15 real slots and a Spell table 4; the counts 16 and 5 include the
-  terminating null entry.
+- A Skill table has 15 real slots and a Spell table 4; the counts 16 and 5 that the old
+  `vtables.txt` gave include the terminating null entry (the regenerated list gives 15
+  and 4).
 
 ## Open questions
 
@@ -587,6 +611,8 @@ is harmless for sync: the copy is per-machine state already.
    reachable. Needs the item tables.
 2. Who calls slot 9 (initStats)? No direct or virtual call site was found; the statistics are
    presumably filled once at start-up (an offset-0x48/0x4c call on each table entry).
+   (Answered since: exactly that call is in `skills_callVslot9All` 0x1ebca0, reached from
+   `main` through `game_initCamera`; see the slot table.)
 3. Is the table at 0x5d0bc0 (per-slot facing used by Cyclone and the player move function)
    part of the input record?
 4. Can the Player_run block at 0x1aa8ac run for the prediction copy, making generator

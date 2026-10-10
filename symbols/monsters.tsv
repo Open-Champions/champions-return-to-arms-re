@@ -17,7 +17,7 @@
 00236c70	AntQueen_ctor	constructor; installs vtable 0x511078; object size 0x3e8; factory type names: AntQueen
 00236f10	AntQueen_draw	vtable 0x511078 slot 5
 00236f78	AntQueen_run	vtable 0x511078 slot 4
-002378f4	AntQueen_vslot3	vtable 0x511078 slot 3; purpose not established
+002378f4	AntQueen_trigger	vtable 0x511078 slot 3; purpose not established (was AntQueen_vslot3)
 002378fc	AntQueen_takeDamage	vtable 0x511078 slot 2
 00237918	AntQueen_setState	vtable 0x511078 slot 27
 00238654	AntWave_ctor	constructor; installs vtable 0x50d298
@@ -27,10 +27,10 @@
 00238bb8	Arenabeast_ctor	constructor; installs vtable 0x512ee8; object size 0x3d8; factory type names: Arenabeast
 00238f18	Arenabeast_draw	vtable 0x512ee8 slot 5
 00238f5c	Arenabeast_run	vtable 0x512ee8 slot 4
-00239b9c	Arenabeast_vslot3	vtable 0x512ee8 slot 3; purpose not established
+00239b9c	Arenabeast_trigger	vtable 0x512ee8 slot 3; purpose not established (was Arenabeast_vslot3)
 00239ba4	Arenabeast_takeDamage	vtable 0x512ee8 slot 2
 00239bc0	Arenabeast_setState	vtable 0x512ee8 slot 27
-0023a028	Arenabeast_vslot11	vtable 0x512ee8 slot 11; purpose not established
+0023a028	Arenabeast_onTouchList	vtable 0x512ee8 slot 11; purpose not established (was Arenabeast_vslot11)
 0023a354	AutoObject_ctor	constructor; installs vtable 0x5134f8
 0023aa20	AutoObject_draw	vtable 0x5134f8 slot 5; also AutoContainer; also AutoProp; also AutoChest; also TormentBridge; also HackDoor; also HateBridge; also HateHole; also GothTrap; also HateGate; also HateInto; also AntTrap
 0023ad00	AutoObject_run	vtable 0x5134f8 slot 4
@@ -41,36 +41,36 @@
 0023b0b4	AutoChest_loadState	vtable 0x513468 slot 8; also AutoChestLP
 0023b170	AutoChest_run	vtable 0x513468 slot 4
 0023b6bc	AutoChest_interactPrompt	vtable 0x513468 slot 13; also AutoChestLP
-0023b854	AutoChest_vslot3	vtable 0x513468 slot 3; purpose not established; also AutoChestLP
+0023b854	AutoChest_trigger	vtable 0x513468 slot 3; purpose not established; also AutoChestLP (was AutoChest_vslot3)
 0023b894	AutoChest_interact	vtable 0x513468 slot 14
-0023ba3c	autoobject_dropLoot	shared by AutoChest_run, AutoProp_run and AutoPropLP_vslot17: drops what the object parameters item / potions / random / spawncreep ask for, else rolls from the object own generator
+0023ba3c	AutoChest_dropLoot	shared by AutoChest_run, AutoProp_run and AutoPropLP_vslot17: drops what the object parameters item / potions / random / spawncreep ask for, else rolls from the object own generator (was autoobject_dropLoot)
 0023c44c	AutoProp_ctor	constructor; installs vtable 0x5133c0
 0023cac8	AutoProp_dtor	vtable 0x5133c0 slot 1
 0023cb54	AutoProp_run	vtable 0x5133c0 slot 4; also HackDoor
-0023cea0	AutoPropLP_saveState	vtable 0x5130c0 slot 9; also AutoProp; also TormentBridge; also DiseasePort; also RingPortal; also HackDoor; also HateBridge; also HateHole; also GothTrap; also HateGate; also HateInto; also EggSack; also AntTrap
-0023ceb8	AutoPropLP_loadState	vtable 0x5130c0 slot 8; also AutoProp; also TormentBridge; also DiseasePort; also RingPortal; also HackDoor; also HateBridge; also HateHole; also GothTrap; also HateGate; also HateInto; also EggSack; also AntTrap
-0023cf0c	AutoPropLP_takeDamage	vtable 0x5130c0 slot 2; also AutoProp; also TormentBridge; also DiseasePort; also RingPortal; also HackDoor; also HateBridge; also HateHole; also GothTrap; also HateGate; also HateInto; also EggSack; also AntTrap
-0023d014	AutoPropLP_interactPrompt	vtable 0x5130c0 slot 13; also AutoProp; also TormentBridge; also DiseasePort; also RingPortal; also HackDoor; also HateBridge; also HateHole; also GothTrap; also HateGate; also HateInto; also EggSack; also AntTrap
-0023d1b0	AutoPropLP_interact	vtable 0x5130c0 slot 14; also AutoProp; also TormentBridge; also DiseasePort; also RingPortal; also HackDoor; also HateBridge; also HateHole; also GothTrap; also HateGate; also HateInto; also EggSack; also AntTrap
-0023d1fc	AutoPropLP_vslot3	vtable 0x5130c0 slot 3; purpose not established; also AutoProp; also TormentBridge; also DiseasePort; also RingPortal; also HackDoor; also HateBridge; also HateHole; also GothTrap; also HateGate; also HateInto; also EggSack; also AntTrap
-0023d2ec	AutoPropLP_vslot17	vtable 0x5130c0 slot 17; purpose not established; also AutoProp; also TormentBridge; also HackDoor; also HateBridge; also HateHole; also GothTrap; also HateGate; also HateInto; also EggSack; also AntTrap
-0023d680	AutoPropLP_vslot18	vtable 0x5130c0 slot 18; purpose not established; also AutoProp; also TormentBridge; also HackDoor; also HateBridge; also HateHole; also GothTrap; also HateGate; also HateInto; also EggSack; also AntTrap
-0023d7ac	AutoPropLP_vslot19	vtable 0x5130c0 slot 19; purpose not established; also AutoProp; also TormentBridge; also DiseasePort; also RingPortal; also HateGate; also HateInto; also EggSack; also AntTrap
+0023cea0	AutoProp_saveState	vtable 0x5130c0 slot 9; also AutoProp; also TormentBridge; also DiseasePort; also RingPortal; also HackDoor; also HateBridge; also HateHole; also GothTrap; also HateGate; also HateInto; also EggSack; also AntTrap (was AutoPropLP_saveState)
+0023ceb8	AutoProp_loadState	vtable 0x5130c0 slot 8; also AutoProp; also TormentBridge; also DiseasePort; also RingPortal; also HackDoor; also HateBridge; also HateHole; also GothTrap; also HateGate; also HateInto; also EggSack; also AntTrap (was AutoPropLP_loadState)
+0023cf0c	AutoProp_takeDamage	vtable 0x5130c0 slot 2; also AutoProp; also TormentBridge; also DiseasePort; also RingPortal; also HackDoor; also HateBridge; also HateHole; also GothTrap; also HateGate; also HateInto; also EggSack; also AntTrap (was AutoPropLP_takeDamage)
+0023d014	AutoProp_interactPrompt	vtable 0x5130c0 slot 13; also AutoProp; also TormentBridge; also DiseasePort; also RingPortal; also HackDoor; also HateBridge; also HateHole; also GothTrap; also HateGate; also HateInto; also EggSack; also AntTrap (was AutoPropLP_interactPrompt)
+0023d1b0	AutoProp_interact	vtable 0x5130c0 slot 14; also AutoProp; also TormentBridge; also DiseasePort; also RingPortal; also HackDoor; also HateBridge; also HateHole; also GothTrap; also HateGate; also HateInto; also EggSack; also AntTrap (was AutoPropLP_interact)
+0023d1fc	AutoProp_trigger	vtable 0x5130c0 slot 3; purpose not established; also AutoProp; also TormentBridge; also DiseasePort; also RingPortal; also HackDoor; also HateBridge; also HateHole; also GothTrap; also HateGate; also HateInto; also EggSack; also AntTrap (was AutoPropLP_vslot3)
+0023d2ec	AutoProp_nextState	vtable 0x5130c0 slot 17; purpose not established; also AutoProp; also TormentBridge; also HackDoor; also HateBridge; also HateHole; also GothTrap; also HateGate; also HateInto; also EggSack; also AntTrap (was AutoPropLP_vslot17)
+0023d680	AutoProp_setState	vtable 0x5130c0 slot 18; purpose not established; also AutoProp; also TormentBridge; also HackDoor; also HateBridge; also HateHole; also GothTrap; also HateGate; also HateInto; also EggSack; also AntTrap (was AutoPropLP_vslot18)
+0023d7ac	AutoProp_setPassable	vtable 0x5130c0 slot 19; purpose not established; also AutoProp; also TormentBridge; also DiseasePort; also RingPortal; also HateGate; also HateInto; also EggSack; also AntTrap (was AutoPropLP_vslot19)
 0023d93c	AutoContainer_ctor	constructor; installs vtable 0x513330
 0023e0e8	AutoContainer_dtor	vtable 0x513330 slot 1
 0023e1b8	AutoContainer_loadState	vtable 0x513330 slot 8; also AutoContainerLP
 0023e220	AutoContainer_saveState	vtable 0x513330 slot 9; also AutoContainerLP
 0023e238	AutoContainer_interactPrompt	vtable 0x513330 slot 13; also AutoContainerLP
 0023e280	AutoContainer_interact	vtable 0x513330 slot 14; also AutoContainerLP
-0023e2ec	AutoContainer_vslot3	vtable 0x513330 slot 3; purpose not established; also AutoContainerLP
+0023e2ec	AutoContainer_trigger	vtable 0x513330 slot 3; purpose not established; also AutoContainerLP (was AutoContainer_vslot3)
 0023e358	AutoContainer_onTouch	vtable 0x513330 slot 6; also AutoContainerLP
 0023e430	AutoContainer_run	vtable 0x513330 slot 4
 0023fa60	AutoContainer_takeDamage	vtable 0x513330 slot 2; also AutoContainerLP
 0023fae0	AddParticle_ctor	constructor; installs vtable 0x513288
 0023fc50	AddParticle_ctor2	constructor; installs vtable 0x513288
-00240800	AddParticle_vslot17	vtable 0x513288 slot 17; purpose not established
-00240b64	AddParticle_vslot18	vtable 0x513288 slot 18; purpose not established
-00240da8	AddParticle_vslot19	vtable 0x513288 slot 19; purpose not established
+00240800	AddParticle_updateLightAndHalo	vtable 0x513288 slot 17; purpose not established (was AddParticle_vslot17)
+00240b64	AddParticle_emit	vtable 0x513288 slot 18; purpose not established (was AddParticle_vslot18)
+00240da8	AddParticle_slot19Empty	vtable 0x513288 slot 19; purpose not established (was AddParticle_vslot19)
 00240dc8	AutoEmitter_ctor	constructor; installs vtable 0x5131f8
 002410f0	AutoEmitter_draw	vtable 0x5131f8 slot 5
 00241310	AutoEmitter_run	vtable 0x5131f8 slot 4
@@ -96,15 +96,15 @@
 00242edc	HateGate_run	vtable 0x513b68 slot 4
 00243088	GothTrap_ctor	constructor; installs vtable 0x513ac0; object size 0x1a0; factory type names: GothTrap
 002430fc	GothTrap_run	vtable 0x513ac0 slot 4
-00243104	GothTrap_vslot19	vtable 0x513ac0 slot 19; purpose not established
+00243104	GothTrap_setPassable	vtable 0x513ac0 slot 19; purpose not established (was GothTrap_vslot19)
 0024323c	HateHole_ctor	constructor; installs vtable 0x513a18; object size 0x1a0; factory type names: HateHole
 002432c0	HateHole_run	vtable 0x513a18 slot 4
-002432dc	HateHole_vslot19	vtable 0x513a18 slot 19; purpose not established
+002432dc	HateHole_setPassable	vtable 0x513a18 slot 19; purpose not established (was HateHole_vslot19)
 00243398	HateBridge_ctor	constructor; installs vtable 0x513970; object size 0x1a0; factory type names: HateBrdg
 00243414	HateBridge_run	vtable 0x513970 slot 4
-0024348c	HateBridge_vslot19	vtable 0x513970 slot 19; purpose not established
+0024348c	HateBridge_setPassable	vtable 0x513970 slot 19; purpose not established (was HateBridge_vslot19)
 00243594	HackDoor_ctor	constructor; installs vtable 0x5138c8; object size 0x198; factory type names: Arenadoor
-002435f4	HackDoor_vslot19	vtable 0x5138c8 slot 19; purpose not established
+002435f4	HackDoor_setPassable	vtable 0x5138c8 slot 19; purpose not established (was HackDoor_vslot19)
 00243624	CreatureContainer_ctor	constructor; installs vtable 0x513780
 00243770	CreatureContainer_dtor	vtable 0x513780 slot 1
 002437ec	CreatureContainer_run	vtable 0x513780 slot 4
@@ -113,22 +113,22 @@
 002439d4	RingPortal_dtor	vtable 0x5136d8 slot 1
 00243a44	RingPortal_draw	vtable 0x5136d8 slot 5
 00243b48	RingPortal_run	vtable 0x5136d8 slot 4
-00243c10	RingPortal_vslot17	vtable 0x5136d8 slot 17; purpose not established
-00243c70	RingPortal_vslot18	vtable 0x5136d8 slot 18; purpose not established
+00243c10	RingPortal_nextState	vtable 0x5136d8 slot 17; purpose not established (was RingPortal_vslot17)
+00243c70	RingPortal_setState	vtable 0x5136d8 slot 18; purpose not established (was RingPortal_vslot18)
 00243cd0	DiseasePort_ctor	constructor; installs vtable 0x513630; object size 0x448; factory type names: disportGOOD, disportEVIL
-00243d24	DiseasePort_vslot17	vtable 0x513630 slot 17; purpose not established
-00243e20	DiseasePort_vslot18	vtable 0x513630 slot 18; purpose not established
+00243d24	DiseasePort_nextState	vtable 0x513630 slot 17; purpose not established (was DiseasePort_vslot17)
+00243e20	DiseasePort_setState	vtable 0x513630 slot 18; purpose not established (was DiseasePort_vslot18)
 00243e3c	TormentBridge_ctor	constructor; installs vtable 0x513588; object size 0x198; factory type names: ptbridge
 00243ea0	TormentBridge_run	vtable 0x513588 slot 4
 00244018	Badger_ctor	constructor; installs vtable 0x510f30; object size 0x3d0; factory type names: SnoBadge, Badger*
 00244320	Badger_draw	vtable 0x510f30 slot 5
 00244380	Badger_run	vtable 0x510f30 slot 4
-00244a9c	Badger_vslot11	vtable 0x510f30 slot 11; purpose not established
+00244a9c	Badger_onTouchList	vtable 0x510f30 slot 11; purpose not established (was Badger_vslot11)
 00244aa4	Badger_setState	vtable 0x510f30 slot 27
 00244e4c	CastBadger_ctor	constructor; installs vtable 0x513e08; object size 0x3d0; factory type names: castbadger
 002450b0	CastBadger_draw	vtable 0x513e08 slot 5
 002450d8	CastBadger_run	vtable 0x513e08 slot 4
-00245518	CastBadger_vslot11	vtable 0x513e08 slot 11; purpose not established
+00245518	CastBadger_onTouchList	vtable 0x513e08 slot 11; purpose not established (was CastBadger_vslot11)
 00245520	CastBadger_saveState	vtable 0x513e08 slot 9
 00245568	CastBadger_loadState	vtable 0x513e08 slot 8
 00245660	CastBadger_setState	vtable 0x513e08 slot 27
@@ -136,7 +136,7 @@
 00245c8c	FireBeetle_draw	vtable 0x510a10 slot 5
 00245f54	FireBeetle_run	vtable 0x510a10 slot 4
 002469d0	FireBeetle_setState	vtable 0x510a10 slot 27
-00246fe8	FireBeetle_vslot11	vtable 0x510a10 slot 11; purpose not established
+00246fe8	FireBeetle_onTouchList	vtable 0x510a10 slot 11; purpose not established (was FireBeetle_vslot11)
 0024726c	FireFly_ctor	constructor; installs vtable 0x5108c8; object size 0x470; factory type names: FireFly
 0024742c	FireFly_draw	vtable 0x5108c8 slot 5
 00247670	FireFly_run	vtable 0x5108c8 slot 4
@@ -148,17 +148,17 @@
 00247fb0	Bubo_ctor	constructor; installs vtable 0x513fe0; object size 0x470; factory type names: Bubonian*
 002484c8	Bubo_draw	vtable 0x513fe0 slot 5
 00248598	Bubo_run	vtable 0x513fe0 slot 4
-00249404	Bubo_vslot12	vtable 0x513fe0 slot 12; purpose not established
+00249404	Bubo_onNearbyEvent	vtable 0x513fe0 slot 12; purpose not established (was Bubo_vslot12)
 002494c0	Bubo_setState	vtable 0x513fe0 slot 27
-00249a30	Bubo_vslot38	vtable 0x513fe0 slot 38; purpose not established
+00249a30	Bubo_getSecondModel	vtable 0x513fe0 slot 38; purpose not established (was Bubo_vslot38)
 00249a50	DiseaseProjectile_ctor	constructor; installs vtable 0x513f50
 00249b38	DiseaseProjectile_draw	vtable 0x513f50 slot 5
 00249c18	DiseaseProjectile_run	vtable 0x513f50 slot 4
 0024a3a8	DiseaseProjectile_onTouch	vtable 0x513f50 slot 6
 0024aa6c	Cazic_draw	vtable 0x514128 slot 5
 0024aaf0	Cazic_run	vtable 0x514128 slot 4
-0024c028	Cazic_vslot12	vtable 0x514128 slot 12; purpose not established
-0024c04c	Cazic_vslot11	vtable 0x514128 slot 11; purpose not established
+0024c028	Cazic_onNearbyEvent	vtable 0x514128 slot 12; purpose not established (was Cazic_vslot12)
+0024c04c	Cazic_onTouchList	vtable 0x514128 slot 11; purpose not established (was Cazic_vslot11)
 0024c118	Cazic_setState	vtable 0x514128 slot 27
 0024c564	Cazic_isNonAvatarAboveHalfHp	returns 1 only when +0x3c9 != 1 (not the cazicavatar variant) and hp +0x228 is above half of +0x22c; gates every spell branch of Cazic_run
 0024c5a4	Cazic_castShockOfFire	reads ShockOfFire (skill 57) parameters and creates a Sparks object through 0x28f880
@@ -166,7 +166,7 @@
 0024c994	Cazic_deathEffects	state 0x14 of the non-avatar variant: beams, particles from the second cosmetic generator 0x404468, screen flash; hides and deletes the object after 10 s
 0024d440	Catapult_ctor	constructor; installs vtable 0x514270; object size 0xfc; factory type names: catapult
 0024d7e0	Catapult_dtor	vtable 0x514270 slot 1
-0024d8e0	Catapult_vslot3	vtable 0x514270 slot 3; purpose not established
+0024d8e0	Catapult_trigger	vtable 0x514270 slot 3; purpose not established (was Catapult_vslot3)
 0024d92c	Catapult_saveState	vtable 0x514270 slot 9
 0024d948	Catapult_loadState	vtable 0x514270 slot 8
 0024d9c0	Catapult_run	vtable 0x514270 slot 4
@@ -181,7 +181,7 @@
 00250714	CloudGiant_run	vtable 0x514448 slot 4
 00252320	CloudGiant_saveState	vtable 0x514448 slot 9
 00252390	CloudGiant_loadState	vtable 0x514448 slot 8
-00252444	CloudGiant_vslot3	vtable 0x514448 slot 3; purpose not established
+00252444	CloudGiant_trigger	vtable 0x514448 slot 3; purpose not established (was CloudGiant_vslot3)
 0025246c	CloudGiant_takeDamage	vtable 0x514448 slot 2
 00252488	CloudGiant_setState	vtable 0x514448 slot 27
 00252a6c	BoltGoRound_ctor	constructor; installs vtable 0x514590
@@ -191,7 +191,7 @@
 002535c8	Creep_run	vtable 0x514620 slot 4
 002540e0	Creep_saveState	vtable 0x514620 slot 9
 00254198	Creep_loadState	vtable 0x514620 slot 8
-002542a0	Creep_vslot12	vtable 0x514620 slot 12; purpose not established
+002542a0	Creep_onNearbyEvent	vtable 0x514620 slot 12; purpose not established (was Creep_vslot12)
 002542c4	Creep_setState	vtable 0x514620 slot 27
 002547fc	Critter_ctor	constructor; installs vtable 0x510ca0; object size 0x448; factory type names: Orca
 00254f24	Critter_draw	vtable 0x510ca0 slot 5
@@ -215,14 +215,14 @@
 00259a98	FemaleDarkElf_run	vtable 0x5149f8 slot 4
 0025a84c	FemaleDarkElf_saveState	vtable 0x5149f8 slot 9
 0025a950	FemaleDarkElf_loadState	vtable 0x5149f8 slot 8
-0025aa30	FemaleDarkElf_vslot12	vtable 0x5149f8 slot 12; purpose not established
+0025aa30	FemaleDarkElf_onNearbyEvent	vtable 0x5149f8 slot 12; purpose not established (was FemaleDarkElf_vslot12)
 0025ab14	FemaleDarkElf_setState	vtable 0x5149f8 slot 27
 0025afd8	MaleDarkElf_ctor	constructor; installs vtable 0x5148b0; object size 0x4f8; factory type names: MaleDarkElf*
 0025bb80	MaleDarkElf_draw	vtable 0x5148b0 slot 5
 0025bbe4	MaleDarkElf_run	vtable 0x5148b0 slot 4
 0025cdd0	MaleDarkElf_saveState	vtable 0x5148b0 slot 9
 0025ced4	MaleDarkElf_loadState	vtable 0x5148b0 slot 8
-0025cfc0	MaleDarkElf_vslot12	vtable 0x5148b0 slot 12; purpose not established
+0025cfc0	MaleDarkElf_onNearbyEvent	vtable 0x5148b0 slot 12; purpose not established (was MaleDarkElf_vslot12)
 0025d084	MaleDarkElf_setState	vtable 0x5148b0 slot 27
 0025dc6c	Demon_ctor	constructor; installs vtable 0x514b40; object size 0x468; factory type names: Demon*
 0025e118	Demon_draw	vtable 0x514b40 slot 5
@@ -230,11 +230,11 @@
 0025eef8	Demon_saveState	vtable 0x514b40 slot 9
 0025ef68	Demon_loadState	vtable 0x514b40 slot 8
 0025efd0	Demon_setState	vtable 0x514b40 slot 27
-0025f378	Demon_vslot20	vtable 0x514b40 slot 20; purpose not established
+0025f378	Demon_isEnemy	vtable 0x514b40 slot 20; purpose not established (was Demon_vslot20)
 0025f470	RedDragon_ctor	constructor; installs vtable 0x514c88; object size 0x418; factory type names: RedDragon
 0025f93c	RedDragon_draw	vtable 0x514c88 slot 5
 0025f988	RedDragon_run	vtable 0x514c88 slot 4
-00260d50	RedDragon_vslot3	vtable 0x514c88 slot 3; purpose not established
+00260d50	RedDragon_trigger	vtable 0x514c88 slot 3; purpose not established (was RedDragon_vslot3)
 00260d58	RedDragon_takeDamage	vtable 0x514c88 slot 2
 00260d74	RedDragon_setState	vtable 0x514c88 slot 27
 00261dbc	FireBomb_ctor	constructor; installs vtable 0x50db58; object size 0x58; factory type names: kelethinBomb
@@ -255,7 +255,7 @@
 002657a0	Generator_ctor	constructor; installs vtable 0x510638; object size 0x3e8; factory type names: AntMaker
 00265930	Generator_draw	vtable 0x510638 slot 5
 00265938	Generator_run	vtable 0x510638 slot 4
-00265e08	Generator_vslot3	vtable 0x510638 slot 3; purpose not established
+00265e08	Generator_trigger	vtable 0x510638 slot 3; purpose not established (was Generator_vslot3)
 00265ea0	Generator_saveState	vtable 0x510638 slot 9
 00265ec4	Generator_loadState	vtable 0x510638 slot 8
 00265ee8	Generator_setState	vtable 0x510638 slot 27
@@ -264,7 +264,7 @@
 00266088	Ghoul_ctor	constructor; installs vtable 0x5104f0; object size 0x3d8; factory type names: Ghoul*, GhulBlue*
 002663f8	Ghoul_draw	vtable 0x5104f0 slot 5
 00266420	Ghoul_run	vtable 0x5104f0 slot 4
-00266bac	Ghoul_vslot12	vtable 0x5104f0 slot 12; purpose not established
+00266bac	Ghoul_onNearbyEvent	vtable 0x5104f0 slot 12; purpose not established (was Ghoul_vslot12)
 00266c68	Ghoul_setState	vtable 0x5104f0 slot 27
 0026741c	Gnaw_ctor	constructor; installs vtable 0x515038; object size 0x3c8; factory type names: Gnaw
 00267604	Gnaw_draw	vtable 0x515038 slot 5
@@ -279,7 +279,7 @@
 002691f0	Gnome_draw	vtable 0x5103a8 slot 5
 002693d0	Gnome_run	vtable 0x5103a8 slot 4
 0026998c	Gnome_onTouch	vtable 0x5103a8 slot 6
-00269ab8	Gnome_vslot11	vtable 0x5103a8 slot 11; purpose not established
+00269ab8	Gnome_onTouchList	vtable 0x5103a8 slot 11; purpose not established (was Gnome_vslot11)
 00269bb4	Gnome_setState	vtable 0x5103a8 slot 27
 00269eb8	GnomeNavigator_ctor	constructor; installs vtable 0x515180; object size 0x3c8; factory type names: GnomeNavigator
 0026a000	GnomeNavigator_draw	vtable 0x515180 slot 5
@@ -288,12 +288,12 @@
 0026a624	Goblin_ctor	constructor; installs vtable 0x510260; object size 0x498; factory type names: fgoblin*, Goblin*
 0026b1d0	Goblin_draw	vtable 0x510260 slot 5
 0026b27c	Goblin_run	vtable 0x510260 slot 4
-0026c9f4	Goblin_vslot12	vtable 0x510260 slot 12; purpose not established
+0026c9f4	Goblin_onNearbyEvent	vtable 0x510260 slot 12; purpose not established (was Goblin_vslot12)
 0026cb44	Goblin_saveState	vtable 0x510260 slot 9
 0026cc10	Goblin_loadState	vtable 0x510260 slot 8
 0026ccfc	Goblin_setState	vtable 0x510260 slot 27
-0026d690	Goblin_vslot10	vtable 0x510260 slot 10; purpose not established
-0026d6fc	Goblin_vslot11	vtable 0x510260 slot 11; purpose not established
+0026d690	Goblin_onHitTerrain	vtable 0x510260 slot 10; purpose not established (was Goblin_vslot10)
+0026d6fc	Goblin_onTouchList	vtable 0x510260 slot 11; purpose not established (was Goblin_vslot11)
 0026d884	SnowballSpell_ctor	constructor; installs vtable 0x5152c8
 0026d940	SnowballSpell_draw	vtable 0x5152c8 slot 5
 0026da20	SnowballSpell_run	vtable 0x5152c8 slot 4
@@ -306,12 +306,12 @@
 0026f494	Hag_draw	vtable 0x5154a0 slot 5
 0026f504	Hag_run	vtable 0x5154a0 slot 4
 00270264	Hag_setState	vtable 0x5154a0 slot 27
-0027090c	Hag_vslot16	vtable 0x5154a0 slot 16; purpose not established
-0027092c	Hag_vslot38	vtable 0x5154a0 slot 38; purpose not established
+0027090c	Hag_getModel	vtable 0x5154a0 slot 16; purpose not established (was Hag_vslot16)
+0027092c	Hag_getSecondModel	vtable 0x5154a0 slot 38; purpose not established (was Hag_vslot38)
 00270b4c	Nightmare_draw	vtable 0x5155e8 slot 5
 00270bbc	Nightmare_run	vtable 0x5155e8 slot 4
-0027142c	Nightmare_vslot10	vtable 0x5155e8 slot 10; purpose not established
-00271484	Nightmare_vslot11	vtable 0x5155e8 slot 11; purpose not established
+0027142c	Nightmare_onHitTerrain	vtable 0x5155e8 slot 10; purpose not established (was Nightmare_vslot10)
+00271484	Nightmare_onTouchList	vtable 0x5155e8 slot 11; purpose not established (was Nightmare_vslot11)
 0027155c	Nightmare_setState	vtable 0x5155e8 slot 27
 002719d4	Horsemen_mountSeatTransform	bone 10 transform of the mount object; used only when drawing a mounted rider
 002721f8	Horsemen_draw	vtable 0x515730 slot 5
@@ -319,7 +319,7 @@
 002735dc	Innoruuk_ctor	constructor; installs vtable 0x515a28; object size 0x4d0; factory type names: Innoruuk
 00273b20	Innoruuk_draw	vtable 0x515a28 slot 5
 00273bd0	Innoruuk_run	vtable 0x515a28 slot 4
-002769c0	Innoruuk_vslot3	vtable 0x515a28 slot 3; purpose not established
+002769c0	Innoruuk_trigger	vtable 0x515a28 slot 3; purpose not established (was Innoruuk_vslot3)
 00276a58	Innoruuk_takeDamage	vtable 0x515a28 slot 2
 00276a80	Innoruuk_setState	vtable 0x515a28 slot 27
 00277468	HateBeam_ctor	constructor; installs vtable 0x515908
@@ -330,7 +330,7 @@
 002783e8	HateProjectile_run	vtable 0x515878 slot 4
 00279048	HateProjectile_draw	vtable 0x515878 slot 5
 0027930c	SpellHateEffect_ctor	constructor; installs vtable 0x515b70
-00279420	SpellHateEffect_takeDamage	vtable 0x515b70 slot 2
+00279420	SpellHateEffect_update	vtable 0x515b70 slot 2 (was SpellHateEffect_takeDamage)
 00279640	HateSoul_ctor	constructor; installs vtable 0x515998
 00279850	HateSoul_run	vtable 0x515998 slot 4
 0027a00c	IronGuardian_ctor	constructor; installs vtable 0x515c60; object size 0x3e8; factory type names: IronGuardian
@@ -368,7 +368,7 @@
 0027f504	Kobold_draw	vtable 0x515ef0 slot 5
 0027f52c	Kobold_run	vtable 0x515ef0 slot 4
 0027ff6c	Kobold_setState	vtable 0x515ef0 slot 27
-00280434	Kobold_vslot21	vtable 0x515ef0 slot 21; purpose not established
+00280434	Kobold_isAlly	vtable 0x515ef0 slot 21; purpose not established (was Kobold_vslot21)
 0028048c	LavaMonster_ctor	constructor; installs vtable 0x510118; object size 0x430; factory type names: EarthElemental, LavaMonster
 00280a60	LavaMonster_draw	vtable 0x510118 slot 5
 00280b44	LavaMonster_run	vtable 0x510118 slot 4
@@ -376,18 +376,18 @@
 00282260	LavaMonster_saveState	vtable 0x510118 slot 9
 002822e8	LavaMonster_loadState	vtable 0x510118 slot 8
 00282460	LavaMonster_setState	vtable 0x510118 slot 27
-00282868	LavaMonster_vslot16	vtable 0x510118 slot 16; purpose not established
-00282888	LavaMonster_vslot38	vtable 0x510118 slot 38; purpose not established
+00282868	LavaMonster_getModel	vtable 0x510118 slot 16; purpose not established (was LavaMonster_vslot16)
+00282888	LavaMonster_getSecondModel	vtable 0x510118 slot 38; purpose not established (was LavaMonster_vslot38)
 002828a8	LavaBomb_draw	vtable 0x516038 slot 5
 00282954	LavaBomb_run	vtable 0x516038 slot 4
 00283214	LavaBomb_onTouch	vtable 0x516038 slot 6
 002835a0	Marr_ctor	constructor; installs vtable 0x5160d0; object size 0x4a8; factory type names: MattMarr
 002838ec	Marr_draw	vtable 0x5160d0 slot 5
 00283afc	Marr_run	vtable 0x5160d0 slot 4
-0028453c	Marr_vslot12	vtable 0x5160d0 slot 12; purpose not established
-002845e4	Marr_vslot11	vtable 0x5160d0 slot 11; purpose not established
+0028453c	Marr_onNearbyEvent	vtable 0x5160d0 slot 12; purpose not established (was Marr_vslot12)
+002845e4	Marr_onTouchList	vtable 0x5160d0 slot 11; purpose not established (was Marr_vslot11)
 0028468c	Marr_setState	vtable 0x5160d0 slot 27
-00284b50	Marr_vslot36	vtable 0x5160d0 slot 36; purpose not established
+00284b50	Marr_getDodgeLevel	vtable 0x5160d0 slot 36; purpose not established (was Marr_vslot36)
 00285b30	Mermaid_ctor	constructor; installs vtable 0x516218; object size 0x3c8; factory type names: Mermaid
 00285c30	Mermaid_draw	vtable 0x516218 slot 5
 00285c58	Mermaid_run	vtable 0x516218 slot 4
@@ -395,7 +395,7 @@
 00285f10	Minion_ctor	constructor; installs vtable 0x5164a8; object size 0x3e8; factory type names: Minion
 0028625c	Minion_draw	vtable 0x5164a8 slot 5
 002862c0	Minion_run	vtable 0x5164a8 slot 4
-00287430	Minion_vslot3	vtable 0x5164a8 slot 3; purpose not established
+00287430	Minion_trigger	vtable 0x5164a8 slot 3; purpose not established (was Minion_vslot3)
 00287438	Minion_takeDamage	vtable 0x5164a8 slot 2
 00287454	Minion_setState	vtable 0x5164a8 slot 27
 00287998	Tormentor_ctor	constructor; installs vtable 0x516360; object size 0x3d8; factory type names: SnowBeast, SnowBoss, Tormentor*
@@ -413,7 +413,7 @@
 0028a8f0	Switch_interact	vtable 0x50df48 slot 14
 0028a960	DoorSwing_ctor	constructor; installs vtable 0x50e100; object size 0x5c; factory type names: DoorSwing
 0028a9ec	DoorSwing_interactPrompt	vtable 0x50e100 slot 13
-0028aa48	DoorSwing_vslot3	vtable 0x50e100 slot 3; purpose not established
+0028aa48	DoorSwing_trigger	vtable 0x50e100 slot 3; purpose not established (was DoorSwing_vslot3)
 0028aa7c	DoorSwing_interact	vtable 0x50e100 slot 14
 0028ae34	DoorSwing_vslot17	vtable 0x50e100 slot 17; purpose not established
 0028ae3c	DoorSwing_saveState	vtable 0x50e100 slot 9
@@ -421,7 +421,7 @@
 0028af54	DoorSwing_run	vtable 0x50e100 slot 4
 0028b0a8	DoorSecret_ctor	constructor; installs vtable 0x50dfd8; object size 0x5c; factory type names: DoorSecret
 0028b120	DoorSecret_interactPrompt	vtable 0x50dfd8 slot 13
-0028b15c	DoorSecret_vslot3	vtable 0x50dfd8 slot 3; purpose not established
+0028b15c	DoorSecret_trigger	vtable 0x50dfd8 slot 3; purpose not established (was DoorSecret_vslot3)
 0028b1a0	DoorSecret_saveState	vtable 0x50dfd8 slot 9
 0028b1b8	DoorSecret_loadState	vtable 0x50dfd8 slot 8
 0028b268	DoorSecret_interact	vtable 0x50dfd8 slot 14
@@ -431,7 +431,7 @@
 0028b554	FloorSwitch_loadState	vtable 0x50deb8 slot 8
 0028b56c	FloorSwitch_run	vtable 0x50deb8 slot 4
 0028b88c	FallPlatform_ctor	constructor; installs vtable 0x50de28
-0028badc	FallPlatform_vslot3	vtable 0x50de28 slot 3; purpose not established
+0028badc	FallPlatform_trigger	vtable 0x50de28 slot 3; purpose not established (was FallPlatform_vslot3)
 0028bb2c	FallPlatform_saveState	vtable 0x50de28 slot 9
 0028bb44	FallPlatform_loadState	vtable 0x50de28 slot 8
 0028bb5c	FallPlatform_run	vtable 0x50de28 slot 4
@@ -455,7 +455,7 @@
 0028dee0	RollDoor_vslot17	vtable 0x50e068 slot 17; purpose not established
 0028dee8	RollDoor_saveState	vtable 0x50e068 slot 9
 0028df24	RollDoor_loadState	vtable 0x50e068 slot 8
-0028dfe8	RollDoor_vslot3	vtable 0x50e068 slot 3; purpose not established
+0028dfe8	RollDoor_trigger	vtable 0x50e068 slot 3; purpose not established (was RollDoor_vslot3)
 0028e01c	RollDoor_run	vtable 0x50e068 slot 4
 0028e110	RollDoor_draw	vtable 0x50e068 slot 5
 0028e1e4	PokeReflector_ctor	constructor; installs vtable 0x50d9a8; object size 0x4c; factory type names: PokeReflector
@@ -473,12 +473,12 @@
 0028ea8c	WeaponRack_interact	vtable 0x50d6d8 slot 14
 0028ea94	WeaponRack_draw	vtable 0x50d6d8 slot 5
 0028ec1c	Timer_ctor	constructor; installs vtable 0x50d7f8; object size 0x54; factory type names: Timer
-0028ec7c	Timer_vslot3	vtable 0x50d7f8 slot 3; purpose not established
+0028ec7c	Timer_trigger	vtable 0x50d7f8 slot 3; purpose not established (was Timer_vslot3)
 0028ecd4	Timer_run	vtable 0x50d7f8 slot 4
 0028ed14	Counter_ctor	constructor; installs vtable 0x50d888; object size 0x50; factory type names: Counter
 0028ed74	Counter_saveState	vtable 0x50d888 slot 9
 0028ed8c	Counter_loadState	vtable 0x50d888 slot 8
-0028eda4	Counter_vslot3	vtable 0x50d888 slot 3; purpose not established
+0028eda4	Counter_trigger	vtable 0x50d888 slot 3; purpose not established (was Counter_vslot3)
 0028ee80	Teleporter_ctor	constructor; installs vtable 0x50d590; object size 0x3c8; factory type names: Teleporter
 0028ef04	Teleporter_draw	vtable 0x50d590 slot 5
 0028ef0c	Teleporter_run	vtable 0x50d590 slot 4
@@ -560,11 +560,11 @@
 0029a53c	Mummy_saveState	vtable 0x516e48 slot 9
 0029a608	Mummy_loadState	vtable 0x516e48 slot 8
 0029a6f4	Mummy_setState	vtable 0x516e48 slot 27
-0029aeb8	Mummy_vslot17	vtable 0x516e48 slot 17; purpose not established
+0029aeb8	Mummy_updateSpells	vtable 0x516e48 slot 17; purpose not established (was Mummy_vslot17)
 0029afb4	MummyKing_ctor	constructor; installs vtable 0x516b50; object size 0x4a0; factory type names: MummyKing
 0029b2c4	MummyKing_draw	vtable 0x516b50 slot 5
 0029b360	MummyKing_run	vtable 0x516b50 slot 4
-0029c3b0	MummyKing_vslot3	vtable 0x516b50 slot 3; purpose not established
+0029c3b0	MummyKing_trigger	vtable 0x516b50 slot 3; purpose not established (was MummyKing_vslot3)
 0029c544	MummyKing_takeDamage	vtable 0x516b50 slot 2
 0029c574	MummyKing_setState	vtable 0x516b50 slot 27
 0029caa8	DustDevil_ctor	constructor; installs vtable 0x516db8
@@ -585,12 +585,12 @@
 0029e3ec	NPC_draw	vtable 0x50f590 slot 5
 0029ea40	NPC_run	vtable 0x50f590 slot 4
 0029eeb8	NPC_takeDamage	vtable 0x50f590 slot 2
-0029eed0	NPC_vslot3	vtable 0x50f590 slot 3; purpose not established
+0029eed0	NPC_trigger	vtable 0x50f590 slot 3; purpose not established (was NPC_vslot3)
 0029efcc	NPC_setState	vtable 0x50f590 slot 27
 0029f10c	Rondo_ctor	constructor; installs vtable 0x5170d8; object size 0x3d0; factory type names: Rondo
 0029f28c	Rondo_draw	vtable 0x5170d8 slot 5
 0029f46c	Rondo_run	vtable 0x5170d8 slot 4
-0029f720	Rondo_vslot3	vtable 0x5170d8 slot 3; purpose not established
+0029f720	Rondo_trigger	vtable 0x5170d8 slot 3; purpose not established (was Rondo_vslot3)
 0029f768	Rondo_setState	vtable 0x5170d8 slot 27
 0029fad0	Ogre_ctor	constructor; installs vtable 0x517220; object size 0x468; factory type names: Ogre
 0029fdb4	Ogre_draw	vtable 0x517220 slot 5
@@ -600,14 +600,14 @@
 002a1770	Orc_draw	vtable 0x50ffd0 slot 5
 002a1848	Orc_run	vtable 0x50ffd0 slot 4
 002a2eac	Orc_takeDamage	vtable 0x50ffd0 slot 2
-002a2ec8	Orc_vslot12	vtable 0x50ffd0 slot 12; purpose not established
+002a2ec8	Orc_onNearbyEvent	vtable 0x50ffd0 slot 12; purpose not established (was Orc_vslot12)
 002a3018	Orc_saveState	vtable 0x50ffd0 slot 9
 002a311c	Orc_loadState	vtable 0x50ffd0 slot 8
 002a323c	Orc_setState	vtable 0x50ffd0 slot 27
 002a428c	SeaMonster_ctor	constructor; installs vtable 0x517368; object size 0x3d0; factory type names: SeaMonster
 002a445c	SeaMonster_draw	vtable 0x517368 slot 5
 002a44a8	SeaMonster_run	vtable 0x517368 slot 4
-002a4a9c	SeaMonster_vslot11	vtable 0x517368 slot 11; purpose not established
+002a4a9c	SeaMonster_onTouchList	vtable 0x517368 slot 11; purpose not established (was SeaMonster_vslot11)
 002a4aa4	SeaMonster_setState	vtable 0x517368 slot 27
 002a4d68	Scorpion_ctor	constructor; installs vtable 0x50fe88; object size 0x3d0; factory type names: Scorpion
 002a5030	Scorpion_draw	vtable 0x50fe88 slot 5
@@ -618,10 +618,10 @@
 002a6864	Skeleton_run	vtable 0x5175f8 slot 4
 002a7508	Skeleton_saveState	vtable 0x5175f8 slot 9
 002a75d4	Skeleton_loadState	vtable 0x5175f8 slot 8
-002a7688	Skeleton_vslot12	vtable 0x5175f8 slot 12; purpose not established
+002a7688	Skeleton_onNearbyEvent	vtable 0x5175f8 slot 12; purpose not established (was Skeleton_vslot12)
 002a774c	Skeleton_takeDamage	vtable 0x5175f8 slot 2
 002a7768	Skeleton_setState	vtable 0x5175f8 slot 27
-002a7e04	Skeleton_vslot20	vtable 0x5175f8 slot 20; purpose not established
+002a7e04	Skeleton_isEnemy	vtable 0x5175f8 slot 20; purpose not established (was Skeleton_vslot20)
 002a8770	Skelight_ctor	constructor; installs vtable 0x5174b0; object size 0x468; factory type names: Skelight
 002a8a64	Skelight_draw	vtable 0x5174b0 slot 5
 002a8b84	Skelight_run	vtable 0x5174b0 slot 4
@@ -632,11 +632,11 @@
 002a9678	Soul_draw	vtable 0x517740 slot 5
 002a9870	Soul_run	vtable 0x517740 slot 4
 002aa908	Soul_takeDamage	vtable 0x517740 slot 2
-002aab60	Soul_vslot3	vtable 0x517740 slot 3; purpose not established
+002aab60	Soul_trigger	vtable 0x517740 slot 3; purpose not established (was Soul_vslot3)
 002aab68	Soul_saveState	vtable 0x517740 slot 9
 002aabd0	Soul_loadState	vtable 0x517740 slot 8
 002aac38	Soul_setState	vtable 0x517740 slot 27
-002ab298	Soul_vslot16	vtable 0x517740 slot 16; purpose not established
+002ab298	Soul_getModel	vtable 0x517740 slot 16; purpose not established (was Soul_vslot16)
 002ab450	SmallSpider_ctor	constructor; installs vtable 0x50fd40; object size 0x3c8; factory type names: SmallSpider
 002ab590	SmallSpider_draw	vtable 0x50fd40 slot 5
 002ab5d8	SmallSpider_run	vtable 0x50fd40 slot 4
@@ -646,7 +646,7 @@
 002abdb0	BlackWidow_draw	vtable 0x510de8 slot 5
 002abdd8	BlackWidow_run	vtable 0x510de8 slot 4
 002acb78	BlackWidow_setState	vtable 0x510de8 slot 27
-002ad1b8	SpiderQueen_vslot3	vtable 0x50fbf8 slot 3; purpose not established
+002ad1b8	SpiderQueen_trigger	vtable 0x50fbf8 slot 3; purpose not established (was SpiderQueen_vslot3)
 002ad1c0	SpiderQueen_ctor	constructor; installs vtable 0x50fbf8; object size 0x430; factory type names: SpiderQueen
 002ad5e4	SpiderQueen_draw	vtable 0x50fbf8 slot 5
 002ad630	SpiderQueen_run	vtable 0x50fbf8 slot 4
@@ -681,7 +681,7 @@
 002b3e30	UndeadKnight_ctor	constructor; installs vtable 0x517918; object size 0x478; factory type names: UndeadKnight
 002b421c	UndeadKnight_draw	vtable 0x517918 slot 5
 002b4370	UndeadKnight_run	vtable 0x517918 slot 4
-002b4cc0	UndeadKnight_vslot3	vtable 0x517918 slot 3; purpose not established
+002b4cc0	UndeadKnight_trigger	vtable 0x517918 slot 3; purpose not established (was UndeadKnight_vslot3)
 002b4cc8	UndeadKnight_takeDamage	vtable 0x517918 slot 2
 002b4ce4	UndeadKnight_setState	vtable 0x517918 slot 27
 002b5538	Ulthork_ctor	constructor; installs vtable 0x517a60; object size 0x468; factory type names: Ulthork*
@@ -699,12 +699,12 @@
 002b7be0	VampireLord_run	vtable 0x517ba8 slot 4
 002b93d8	VampireLord_takeDamage	vtable 0x517ba8 slot 2
 002b944c	VampireLord_setState	vtable 0x517ba8 slot 27
-002b9d10	VampireLord_vslot16	vtable 0x517ba8 slot 16; purpose not established
-002b9d50	VampireLord_vslot38	vtable 0x517ba8 slot 38; purpose not established
+002b9d10	VampireLord_getModel	vtable 0x517ba8 slot 16; purpose not established (was VampireLord_vslot16)
+002b9d50	VampireLord_getSecondModel	vtable 0x517ba8 slot 38; purpose not established (was VampireLord_vslot38)
 002ba03c	WarBoar_ctor	constructor; installs vtable 0x517cf0; object size 0x3d8; factory type names: WarBoar*
 002ba340	WarBoar_draw	vtable 0x517cf0 slot 5
 002ba3a0	WarBoar_run	vtable 0x517cf0 slot 4
-002bac58	WarBoar_vslot11	vtable 0x517cf0 slot 11; purpose not established
+002bac58	WarBoar_onTouchList	vtable 0x517cf0 slot 11; purpose not established (was WarBoar_vslot11)
 002bac60	WarBoar_setState	vtable 0x517cf0 slot 27
 002bafb4	Warrior_ctor	constructor; installs vtable 0x517e38; object size 0x480; factory type names: Samurai, Gladiator*
 002bb5a4	Warrior_draw	vtable 0x517e38 slot 5
@@ -714,23 +714,23 @@
 002bcc94	WoodElfSoldier_draw	vtable 0x50f820 slot 5
 002bccd0	WoodElfSoldier_takeDamage	vtable 0x50f820 slot 2
 002bccec	WoodElfSoldier_run	vtable 0x50f820 slot 4
-002bd968	WoodElfSoldier_vslot3	vtable 0x50f820 slot 3; purpose not established
+002bd968	WoodElfSoldier_trigger	vtable 0x50f820 slot 3; purpose not established (was WoodElfSoldier_vslot3)
 002bdb24	WoodElfSoldier_setState	vtable 0x50f820 slot 27
 002bf2ac	Wraith_ctor	constructor; installs vtable 0x50f6d8; object size 0x3d8; factory type names: Wraith
 002bf4e4	Wraith_draw	vtable 0x50f6d8 slot 5
 002bf538	Wraith_run	vtable 0x50f6d8 slot 4
 002c0270	Wraith_setState	vtable 0x50f6d8 slot 27
-002c061c	Wraith_vslot20	vtable 0x50f6d8 slot 20; purpose not established
+002c061c	Wraith_isEnemy	vtable 0x50f6d8 slot 20; purpose not established (was Wraith_vslot20)
 002c07a8	WarWraith_ctor	constructor; installs vtable 0x517f80; object size 0x468; factory type names: WarWraith
 002c0b70	WarWraith_draw	vtable 0x517f80 slot 5
 002c0c2c	WarWraith_run	vtable 0x517f80 slot 4
 002c1648	WarWraith_setState	vtable 0x517f80 slot 27
-002c1bc0	WarWraith_vslot20	vtable 0x517f80 slot 20; purpose not established
+002c1bc0	WarWraith_isEnemy	vtable 0x517f80 slot 20; purpose not established (was WarWraith_vslot20)
 002c1f94	Zek_ctor	constructor; installs vtable 0x5180c8; object size 0x480; factory type names: raloszek
 002c2378	Zek_draw	vtable 0x5180c8 slot 5
 002c34e4	Zek_takeDamage	vtable 0x5180c8 slot 2
 002c382c	Zek_setState	vtable 0x5180c8 slot 27
-002c3c54	Zek_vslot35	vtable 0x5180c8 slot 35; purpose not established
+002c3c54	Zek_getSkillLevel	vtable 0x5180c8 slot 35; purpose not established (was Zek_vslot35)
 00500ae8	g_jumpGateTravel	s32: 0 idle, 1 once a destination is confirmed, then counts frames to 180; read by script_gamePaused
 008e3a3a	g_jumpGateMenuState	s8 state of jumpgate_menuRun (0 init .. 7 done)
 008e3a3b	g_jumpGateMenuPlayer	s8 player index whose pad drives the jump-gate menu

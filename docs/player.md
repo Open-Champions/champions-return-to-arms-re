@@ -39,7 +39,7 @@ Offsets are from the start of the record. "init" = `player_initNewCharacter` 0x1
 | +0x44 | Vec3 | position to return to after a recall | Observed: 0x1b5fa0 |
 | +0x50 | s32 | class index 0–6, derived from the model index: models 0,1→0; 4,5→1; 8,9→2; 2,3→3; 6,7→4; 10→5; 11→6 | Observed: init. Class 0 loses mana while status counter 2 runs; classes 1 and 4 are the ones the script built-in `isClericOrWizard` accepts (0x1465cc) |
 | +0x54 | s32 | character model index 0–11 | Observed: init argument; indexes the model name table 0x4ebbb8 |
-| +0x58 | s8 | a second level-like byte, starts at 1, capped at 50 on import | Observed; exact meaning Unknown (read by menus) |
+| +0x58 | s8 | level the player has acknowledged in the level-up screen (`docs/ui.md`); starts at 1, capped at 50 on import. It, not +0x59, feeds the attack rating at +0xcc | Observed: set from an inventory message in `invmsg_dispatch` 0x1bfdb0, compared with +0x59 by the HUD (0x1d9cd4, 0x1db870), read at 0x1b71b8. The earlier version gave the meaning as Unknown |
 | +0x59 | s8 | character level used by the hp/mana formulas | Observed: stats |
 | +0x5c | s32 | experience; import clamps it to the limit at 0x41b620 | Observed: import |
 | +0x78 | s32[4] | base statistics. Index 0 feeds the load limit, 1 max mana, 3 max hp, so they are strength, intelligence, dexterity, stamina (order Inferred from those uses) | Observed: init fills from class table 0x4ef400 or from four bytes; stats reads them |
@@ -52,11 +52,11 @@ Offsets are from the start of the record. "init" = `player_initNewCharacter` 0x1
 | +0xc0 | float | mana | Known (G3) |
 | +0xc4 | float | maximum mana = (intelligence − a) × b + level × c, constants per class | Observed: stats |
 | +0xc8 | float | mana still to be delivered by a potion | Observed: 0x1b3900 |
-| +0xcc | s32 | damage type passed to the damage function (init 0xb) | Observed: `Player_meleeHit` 0x1b6a98 |
+| +0xcc | s32 | attack rating = level (+0x58) × 20 + strength / 4 (dexterity / 4 with a bow or thrown weapon) + the weapon's attack rating (item definition +0x1a); init 0xb. Melee passes it to the damage function as `attack`, where it is compared with the victim's armour (`docs/gameplay.md` §2.1). The earlier version of this row called it a damage type | Observed: `Player_recalcDamage` 0x1b71b8–0x1b7270, `Player_meleeHit` 0x1b6a98 |
 | +0xd0, +0xd4 | s32 | weapon damage minimum and maximum, rebuilt by `Player_recalcDamage` | Observed: 0x1b6a98 |
 | +0xdc | float | sum of item modifier 0x1e × 0.01; lowers the chance of being staggered | Observed: stats; `Player_processDamage` |
 | +0xe4 | s32 | gold (init 500) | Observed: init; script gold built-ins |
-| +0xec–0xee | s8 | counters read by the level-up menus (init 0, 0, 1) | Observed; meaning Unknown |
+| +0xec–0xee | s8 | +0xec stat points (3 per level gained); +0xed, +0xee level-up screen bookkeeping (`docs/ui.md`); init 0, 0, 1. The s32 before them, +0xe8, is the skill points | Observed: `player_giveExp` 0x1d3150. The earlier version gave the meaning as Unknown |
 | +0xef | s8[0x30] | levels of the 48 class passives, parallel to the class skill table | Observed: `player_getPassiveLevel` 0x1bed48 |
 | +0x120 | float | carried load (sum of item weights) | Observed: `player_recalcLoad` 0x1bec10 |
 | +0x124 | float | load limit = strength + 125 + 15 × passive 0x40, capped at 9999 | Observed: stats |
@@ -65,8 +65,8 @@ Offsets are from the start of the record. "init" = `player_initNewCharacter` 0x1
 | +0x1338 | item[64] | bag 1; count at +0x2538 | Observed: same loops (stride 0x1208) |
 | +0x2540 | item[64] | bag 2 (potions are counted here); count at +0x3740 | Observed: `player_countPotions` 0x1ba5f8 |
 | +0x3748 | 0xa88 bytes | block copied whole on import; same size as one class skill table | Observed size; contents Unknown |
-| +0x41d0 | 0x204 bytes | zeroed on import | Observed; Unknown |
-| +0x43d0 | s32 | read by prediction and menus | Unknown |
+| +0x41d0 | 0x204 bytes | quest list: 8 entries of 0x40 bytes (title[0x20], text[0x20]), then the count at +0x43d0; zeroed on import | Observed: `quest_add` 0x1d386c (`docs/ui.md`). The earlier version gave it as Unknown |
+| +0x43d0 | s32 | quest count (0–8); read by prediction and menus | Observed: 0x1d386c. Earlier: Unknown |
 | +0x43d4 | s32 | init −1 | Unknown |
 | +0x43d8 | ptr | the Player object (the prediction copy while predicting) | Known (G3) |
 | +0x43f0 | item*[17] | equipped items by equipment slot (item definition +0x1c). Slot 0 one-hand weapon, 2 two-hand or ranged weapon, 3 shield, 5 and 6 rings, 8 ammunition (+0x4410), 14 and 15 earrings | Observed: `inventory_equipItem` 0x1c27c0; the 17-entry loops in stats and the regen functions |
@@ -88,7 +88,7 @@ Offsets are from the start of the record. "init" = `player_initNewCharacter` 0x1
 | +0x4bca | s16 | level-change cooldown | Known (D20); decremented at 0x1ac6e8 |
 | +0x4bbf + d×13 + m | u8 | mission flags for difficulty d (1–5) and mission m (0–12): bit 0 available, bit 1 complete | Observed: 0x1bf698–0x1bf770 |
 | +0x4c0d | s8[13] | medal earned per mission | Observed: 0x1bf7e8, 0x1bf838, 0x1bdb80 |
-| +0x4c18 | u64 | bit field; bits 32–36 difficulty index, +0x4c1a evil bits, +0x4c1b decision bits | Observed: init; names.tsv |
+| +0x4c18 | u64 | bit field. Bits 32–36 (the low five bits of +0x4c1c) hold a character-kind value: init stores its ninth argument, or 1 when that is −1; the only caller that passes anything else is the character screen `playerSel_task`, which passes 2 on its lobby branch (0x228618); script `saveGame` and `net_allPlayersState2` test for 2. +0x4c1a evil bits and +0x4c1b decision bits, one bit per difficulty. The earlier version called bits 32–36 the difficulty index; that is the separate global `g_difficultyIdx` 0x4f719c | Observed: init 0x1b1de8–0x1b1e60, 0x146c34, 0x1ec62c; names.tsv |
 | +0x4c20 | float | movement speed multiplier, 1.0 | Observed: `player_speedScale` 0x1bea10 |
 | +0x4c24 | s8 | team (PvP) | Observed: `Player_isEnemy` 0x1b5ea8; Player vslot 37 |
 | +0x4c26 | s8 | second earring slot unlocked | Observed: 0x1c27c0; script `piercePlayerEar` |
@@ -269,7 +269,9 @@ ranged release time is halved (0x1a80e0 on). Movement speed is 0.75 instead of 0
    word (+4) has bit 0 set has its cast function called (0x1a4598, vslot 2) and the
    returned spell is destroyed straight away (0x1a45d0). Anything else the cast
    function changes stays changed. **Observed.** Which skills carry bit 0 is set by static
-   constructors and was not read — **Unknown**. Their "can use" functions (vslot 1) are
+   constructors and was not read — **Unknown** here; `docs/skills.md` has since read them:
+   only Cyclone (ids 41, 84; constructor 0x2d13ec) and AncestralCall (51; 0x2e0640) set
+   it. Their "can use" functions (vslot 1) are
    called for the copy from 0x1a4358, 0x1a5d54, 0x1a7088 and 0x1ab618 as well and must be
    free of side effects.
 4. **Older ability paths have no test for the copy.** They are taken only by ability
@@ -315,7 +317,8 @@ ranged release time is halved (0x1a80e0 on). Movement speed is 0.75 instead of 0
 - State 1 uses `net_isLocalSlot` (0x1aa6f4) only to choose the frames on which swing
   sounds play; those sounds draw from a third generator at 0x404468 (0x1aa990), which is
   therefore not synchronised. **Observed.** Other users of 0x404468 (0x110d30, 0x24c994,
-  0x284b68, 0x2c7808, 0x2eec08, 0x308578) were not read.
+  0x284b68, 0x2c7808, 0x2ee068, 0x308578) were not read. (The earlier version gave
+  0x2eec08, an address inside `HammerOfWrath_run` 0x2ee068.)
 - `Player_animStep` passes no position for the machine's own real player (object flag
   0x200000), which makes the animation code skip sound cues and not advance the cue
   cursor; the returned event bits do not depend on it. **Observed** (0x16d748).
@@ -350,7 +353,9 @@ Writes that the prediction loop restores and so need no guard: every `g_randSeed
 ## Not read
 
 `Creature_run` and everything under it, creature move/collide 0x1186d8, the damage function
-0x1e8230, the `net_closeLocalMenus` subtree, `Projectile_runThrown` 0x1ba940,
+0x1e8230, the `net_closeLocalMenus` subtree, `playerProjectile_run` 0x1ba940 (called
+`Projectile_runThrown` in the earlier version; it is slot 4 of table 0x50e470, class
+`playerProjectile`),
 `player_giveStartingItems` 0x1acc78 (20 KB of item grants), `Player_recalcDamage` beyond
 its interface, `Player_drawEquipped` 0x1a3580 (decompile failed), the equipment-cache
 functions in detail, and the menu list widget. Of ghostreach's 812 reachable functions I
@@ -361,13 +366,18 @@ engine, sound and library entries were judged by what they write, not read.
 
 - Which `Skill` objects have flag bit 0 (run for the copy)? Read the static constructors
   that fill the objects at 0x6e14d8 onward, or dump skill +4 from a memory snapshot.
+  (Answered in `docs/skills.md`: ids 41, 84 and 51.)
 - Does creature move/collide (0x1186d8) call the "touched" slot of other objects when the
-  mover is the copy? That would be shared state changed by the copy.
+  mover is the copy? That would be shared state changed by the copy. (Answered in
+  `docs/objects.md`: 0x1186d8 goes to `obj_moveWithCollision` 0x14d4b8, which tests the
+  mover's 0x20000 flag at 0x14d9ac and skips the other object's slot 6; the copy's own
+  slot 6 still runs.)
 - State 7: what sets it? No store of 7 to +0x58c exists as a constant; look for a computed
   store or a clone from another object.
 - State 0xd for the copy calls the vehicle's slot 17 with the player's position (0x1a5efc)
   and then 0x14f028 (0x1a5f04); whether the vehicle is changed by that is not established.
-- Record +0x58 versus +0x59, +0xe8–0xee, +0x128, +0x3748, +0x43d0: meanings.
+- Record +0x128 and +0x3748: meanings. (+0x58 versus +0x59, +0xe8–0xee and +0x43d0 were
+  listed here too; `docs/ui.md` answers them and the record table now says so.)
 - Which button is the health potion and which the mana potion (`g_btnPotionA/B`).
 - Whether `player_importCharacter` reads the previous game's save format (layout and the
   level cap of 50 suggest it — Inferred).

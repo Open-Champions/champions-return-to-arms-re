@@ -4,7 +4,7 @@
 00198fd0	cut_ungridHiddenCreature	per-object callback of cut_setup, second walk (call 0x19b3a4): a creature with inert bit 8 goes back off the grid and loses inert bit 2
 00199024	cut_freezeCreatureFlag8	per-object callback of cut_setup when header flag 8 is set (call 0x19b3c0): a creature whose inert byte +0x231 is 0 gets inert bit 4, object flags 0x88000 and is moved off the grid; players are not excluded
 00199074	cut_unfreezeCreatureFlag8	per-object callback of cut_end when header flag 8 is set (call 0x19a554): a creature whose inert byte is exactly 4 gets it cleared, loses flags 0x88000 and is re-linked to the grid
-002a946c	Skelight_clearStatic8e4560	stores 0 at 0x8e4560; only caller is Skelight_setState case 0x14
+002a946c	Skelight_shatter	stores 0 at 0x8e4560; only caller is Skelight_setState case 0x14 (was Skelight_clearStatic8e4560)
 00231050	dialog_objIfOpen	returns the word at 0x4fdcc0 while dialog_isOpen(), else 0; gameSetObjectVis uses a non-zero result as the only activity centre
 00402768	g_corpseScavengerKind	s32 read by Creature_spawnScavenger after its g_randSeed draw: 1 and 2 select which Critter is built, anything else none; zeroed by objects_levelReset, written by levelSettings_parse
 0044fcd2	g_cutSetupDone	byte: cut_runFrame calls cut_setup once while it is 0; cleared by cut_start

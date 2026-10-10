@@ -32,11 +32,11 @@ sites. Size 10,784 bytes; frame 0x250.
 | $f13 | max | highest base damage (float) |
 | $a0 | victim | any GameObject; must not be null in practice (dereferenced at 0x1e8328 before the null test) |
 | $a1 | attacker | GameObject or 0 |
-| $a2 | attack | integer attack rating compared with the victim's armor (+0xe4). The brief called this "range"; it is not a distance. 75 of 103 sites pass 100000 ("always hits"), melee passes the player's record value at 0x4d8bbc + slot stride, missiles pass the missile's own +0xe4 |
+| $a2 | attack | integer attack rating compared with the victim's armor (+0xe4). The brief called this "range"; it is not a distance. 75 of 103 sites pass 100000 ("always hits"), melee passes the player's record value at 0x4d8bbc + slot stride (record +0xcc, the attack rating built by `Player_recalcDamage`; monster melee passes creature +0xd4), missiles pass the missile's own +0xe4 |
 | $a3, $t0 | — | **not used**: both registers are overwritten (0x1e82d8, 0x1e88b8) before any read. Melee (0x1b6a98) and missiles (0x152a18) still pass values here |
 | $t1 | flags | bit set, table below; kept at sp+0x1a4 and modified while running |
 | $t2 | desc | damage descriptor, or 0 for an all-empty one built on the stack |
-| $t3 | noCrit | non-zero suppresses the critical-hit bonus and roll; only the thorns skill passes 1 |
+| $t3 | noCrit | non-zero suppresses the critical-hit bonus and roll; only the thorns skill passes 1 ("thorns" in this document is the helper 0x2ddccc of skills 9 and 0x52, which `docs/skills.md` names `Riposte`: `SkillRiposte_counterAttack`) |
 
 Return value: 0 when nothing landed (attacker is the prediction copy, invulnerable, blocked,
 shield, miss), 1 otherwise. Note that the "same class as the projectile's owner" early exit
@@ -78,7 +78,11 @@ Lookups always take the **first** slot whose type matches. Effect types handled:
 | 0x29 | skill index | chance % | level | chance to cast g_skillTable[v1] (Skill vtable slot 2) from the attacker's position | yes |
 
 Kind 0x10 is *Inferred* to be "undead": the 0x1c proc plays `spel_he_hstrike_hit.anm`, and
-the two undead-shield spells fire only for attackers of kind 0x10. Kind 0x12 is Unknown.
+the two undead-shield spells fire only for attackers of kind 0x10. Kind 0x12 is *Inferred*
+to be "bug" (insects): effect types 0x19 and 0x1a are the item tokens `bugzapper` and
+`bugexploder` (as 0x1b and 0x1c are `undeadbonus` and `undeaddestroy`, token table in
+`docs/startup.md`), and the ant, fire-beetle and small-spider constructors store 0x12 at
++0xb4 (0x235418, 0x24587c, 0x2ab450). The earlier version said kind 0x12 was Unknown.
 
 ### 2.3 Fields read and written on the victim and attacker
 
@@ -116,7 +120,7 @@ resistance floats only choose the colour class of the floating number (0 normal,
 
 | Bit | Meaning inside `damage_apply` |
 |---|---|
-| 0x1, 0x4, 0x8 | damage class (*Inferred* physical kinds). Any of them (mask 0xd) arms thorns and undead shields; 0x1/0x8 are refused by a victim with the absolute-immunity flag |
+| 0x1, 0x4, 0x8 | damage class (*Inferred* physical kinds). Any of them (mask 0xd) arms thorns and undead shields; 0x1/0x8 are refused by a victim with the absolute-immunity flag. Melee takes these bits from the weapon's item definition +0x20 (0x1b6a98; 1 when unarmed), for which `docs/startup.md` infers the names blunt, pierce, slash |
 | 0x40 | cannot be blocked, ignores Spirit Shield; also suppresses the PvP "blocked" text test |
 | 0x100 | lightning-typed for the colour class |
 | 0x200 | no floating number on victims with creature flag 0x100 |
@@ -280,7 +284,7 @@ All are GameObjects; the constructor of each draws once from the shared seed (th
 | LightEffect | 0x50e198 | 0x201bd8 | 0x1ee050 | – | fading dynamic light; +0x88 owner handle, +0xb4 end frame |
 | RecallEffect | 0x50ee18 | 0x1ee248 | empty | empty | owns a GlowingCylinder |
 | GlowingCylinder | 0x50ecf8 | 0x1f2cf0 | 0x1f3288 | 0x1f2ef0 | |
-| Projectile | 0x50ea28 | 0x201e78 | 0x1ee330 | empty | +0x54 velocity, +0x60 bits (1, 2 deletion rules; 8 fire; 0x10 cold), +0x68 damage, +0x6c life; slot 6 0x1ee7b0 calls `damage_apply` |
+| DummyDamager (base `Projectile`; the earlier version labelled this row `Projectile`, as the old `vtables.txt` did) | 0x50ea28 | 0x201e78 | 0x1ee330 | empty | +0x54 velocity, +0x60 bits (1, 2 deletion rules; 8 fire; 0x10 cold), +0x68 damage, +0x6c life; slot 6 0x1ee7b0 calls `damage_apply` |
 | WaterSpout | 0x50eab8 | 0x201fa8 | 0x1ee990 | 0x2020a0 | runs only while recently drawn, see §8 |
 | Fire | 0x50f208 | 0x2020e0 | 0x1f34e0 | – | 100 frames; created only by `fx_spawn(5)` |
 | FlyingText | 0x50f178 | 0x202158 | 0x2022a8 | 0x1f3830 | +0x4c text, +0x78/+0x7c drift from its own generator, +0x80 colour class, +0x84 crit, +0x8c kind, +0x96 life (30, or 180 for kind ≠ 0) |
@@ -490,7 +494,8 @@ Each item: what is read or written, kind of claim, address, and what it can do.
 
 - What the descriptor holds at +0x00..+0x23 and which structure it is embedded in (melee
   passes a pointer taken from the player's weapon data in 0x1b6a98).
-- Names of damage classes 0x1/0x4/0x8 and of creature kind 0x12.
+- Names of damage classes 0x1/0x4/0x8. (Creature kind 0x12 was listed here too; §2.2 now
+  gives the inference.)
 - Draws made inside the virtual calls `damage_apply` reaches: Skill slot 2 for a 0x29 proc,
   victim slot 30 for the skill 0x40 proc, and each class's take-damage.
 - Whether the thorns helper's "model has vertices" test (0x1799c8 on the victim's model)
@@ -498,7 +503,9 @@ Each item: what is read or written, kind of claim, address, and what it can do.
 - Whether an online game can have two players on one machine. Item 8 only bites then.
 - Who reads vehicle +0x190 and player-object flag 0x800000.
 - A third global generator at 0x404468 is drawn by code outside this range (0x110d30,
-  0x1a9678, several monsters). The sync hash uses 0x404464 only; what 0x404468 feeds was
+  `Player_run` 0x1a5030 — the earlier version gave 0x1a9678, an address inside it — two
+  boss death effects and three skill functions; the seven are listed in
+  `docs/monsters.md` §2.3). The sync hash uses 0x404464 only; what 0x404468 feeds was
   not followed.
 - `net_notify3278f0`: what the lobby-library call does.
 

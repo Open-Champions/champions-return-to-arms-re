@@ -17,7 +17,7 @@
 001024a8	item_getValue	(item): gold value. Fixed price (definition +0x14) times count when set, else a formula over damage or armour, raised to a power, plus a term per modifier, times 40 and count; used by the shop and as the budget test in the generators
 00103e08	item_getWeight	(item): definition +8 times count, compressed above 5 (armour) or 15, scaled by modifier 0x24 which the parser reads from the weightmodifier token; earlier draft name item_getScaledField08; caller player_itemWeight
 00103ec8	item_getArmorValue	(item): definition +0x18 (non-zero on exactly the 236 category-1 definitions) plus modifier 0x0d percent (armorbonus token); earlier draft name item_getModifiedField18
-00103f88	item_getModifiedField1a	(item): definition +0x1a (non-zero only on weapons, near the mean damage) plus modifier 0x23 percent; Player_recalcDamage adds it to player record +0xcc; meaning of the field not established
+00103f88	item_getModifiedField1a	(item): definition +0x1a (non-zero only on weapons, near the mean damage) plus modifier 0x23 percent; Player_recalcDamage adds it to player record +0xcc, the player's attack rating, so the field is the weapon's attack rating (an earlier note said the meaning was not established; docs/data-tables.md 4.5)
 0010404c	item_getBaseRangePlusField1a	adds item_getModifiedField1a to definition +0x0e/+0x10; no caller and no pointer to it
 00104100	item_getDamageRange	(item, int *min, int *max, withElemental): definition +0x0e/+0x10 scaled by modifier 0x23 percent, optionally plus the two values of modifiers 0x15-0x18 and 0x26; earlier draft name item_getModifiedRange
 001046b4	item_getUnitMultiplier	returns float 1.0; multiplied into the damage range

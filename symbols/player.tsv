@@ -21,7 +21,7 @@
 001a42b8	Player_castSkill	(player, abilityRecord) new-style skills only: canUse, cast (vslot 2), cooldown +0x4ae, mana cost; for the prediction copy only skills with flag bit 0 run and the returned spell is destroyed at once
 001ac7a8	classSkills_init	clears the seven class skill tables at 0x4ef530 (stride 0xa88, 48 entries of 0x38 bytes) and fills them
 001acc78	player_giveStartingItems	(slot) 20 KB of per-class inventory_giveItem / inventory_equipItem calls; called at the end of player_initNewCharacter; not read in full
-001b1d70	player_initNewCharacter	(slot, model 0-11, name, 4 appearance bytes, stats or 0, difficulty, team) zeroes the record, derives class +0x50 from the model, default stats from 0x4ef400, 500 gold, then recalcStats and starting items
+001b1d70	player_initNewCharacter	(slot, model 0-11, name, 4 appearance bytes, stats or 0, kind, team) kind is stored in bits 32-36 of record +0x4c18, -1 means 1, and only playerSel_task's lobby branch (0x228618) passes 2; an earlier note called this argument the difficulty, which is the separate global 0x4f719c. Zeroes the record, derives class +0x50 from the model, default stats from 0x4ef400, 500 gold, then recalcStats and starting items
 001b2470	player_resetIdleAnim	(slot) restarts the idle animation track for the current weapon class (+0x4a86); 12 callers
 001b3900	Player_regenMana	skips the prediction copy; mana += max*0.0001 scaled by passive 0x200, item modifier 0xc and two spells; then drains the pending potion amount +0xc8 at rate +0xbc
 001b3b90	Player_regenHealth	skips the prediction copy; hp += max*0.0001 scaled by passive 0x10 and item modifier 0xb; then drains the pending potion amount +0xb4 at rate +0xb8

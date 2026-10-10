@@ -265,20 +265,20 @@
 003c1b90	WeaponObject_slot23	only WeaponObject uses it (vtable 0x50d010 slot 23), 52 bytes; forwards the call to slot 23 of the object at this+4 when that pointer is set
 003c1bd8	WeaponObject_slot24	only WeaponObject uses it (vtable 0x50d010 slot 24), 52 bytes; forwards the call to slot 24 of the object at this+4 when that pointer is set
 003c1c20	Weapon1_typeinfo	type-info getter (vtable entry 0) for Weapon1, base WeaponInterface, WeaponCommon; descriptor at 0x908100
-003c1d08	Weapon1_slot2	only Weapon1 uses it (vtable 0x50cf40 slot 2), 44 bytes
+003c1d08	Weapon1_setFireWeapons	only Weapon1 uses it (vtable 0x50cf40 slot 2), 44 bytes (was Weapon1_slot2)
 003c1d38	Weapon1_slot3	only Weapon1 uses it (vtable 0x50cf40 slot 3), 44 bytes
 003c1d68	Weapon1_slot4	only Weapon1 uses it (vtable 0x50cf40 slot 4), 44 bytes
 003c1d98	Weapon1_slot5	only Weapon1 uses it (vtable 0x50cf40 slot 5), 44 bytes
 003c1dc8	Weapon1_slot6	only Weapon1 uses it (vtable 0x50cf40 slot 6), 44 bytes
 003c1df8	Weapon1_slot7	only Weapon1 uses it (vtable 0x50cf40 slot 7), 44 bytes
 003c1e28	Weapon2_typeinfo	type-info getter (vtable entry 0) for Weapon2, base Weapon1; descriptor at 0x908120; also initialises Weapon1 inline
-003c1fc8	Weapon2_slot2	only Weapon2 uses it (vtable 0x50ce70 slot 2), 100 bytes
+003c1fc8	Weapon2_setFireWeapons	only Weapon2 uses it (vtable 0x50ce70 slot 2), 100 bytes (was Weapon2_slot2)
 003c2030	Weapon2_slot3	only Weapon2 uses it (vtable 0x50ce70 slot 3), 100 bytes
 003c2098	Weapon2_slot4	only Weapon2 uses it (vtable 0x50ce70 slot 4), 100 bytes
 003c2100	Weapon2_slot5	only Weapon2 uses it (vtable 0x50ce70 slot 5), 100 bytes
-003c2168	Weapon2_slot6	only Weapon2 uses it (vtable 0x50ce70 slot 6), 100 bytes
+003c2168	Weapon2_setShockWeapons	only Weapon2 uses it (vtable 0x50ce70 slot 6), 100 bytes (was Weapon2_slot6)
 003c21d0	Weapon2_slot7	only Weapon2 uses it (vtable 0x50ce70 slot 7), 100 bytes
-003c2238	Weapon2_slot8	only Weapon2 uses it (vtable 0x50ce70 slot 8), 116 bytes
+003c2238	Weapon2_setElement	only Weapon2 uses it (vtable 0x50ce70 slot 8), 116 bytes (was Weapon2_slot8)
 003c22b0	WeaponShield_typeinfo	type-info getter (vtable entry 0) for WeaponShield, base Weapon1; descriptor at 0x9080f0; also initialises Weapon1 inline
 003c23e0	WeaponShield_slot2	only WeaponShield uses it (vtable 0x50cda0 slot 2), 44 bytes
 003c2410	WeaponShield_slot3	only WeaponShield uses it (vtable 0x50cda0 slot 3), 44 bytes
@@ -698,7 +698,7 @@
 003cb3c4	Droid_typeinfo	type-info getter (vtable entry 0) for Droid, base Creature; descriptor at 0x908c80
 003cb414	IronGuardian_dtor	inline destructor of IronGuardian (vtable 0x515c60 slot 1), 168 bytes
 003cb4bc	IronGuardian_typeinfo	type-info getter (vtable entry 0) for IronGuardian, base Creature; descriptor at 0x908c90
-003cb50c	IronGuardian_slot36	only IronGuardian uses it (vtable 0x515c60 slot 36), 8 bytes; returns 11
+003cb50c	IronGuardian_getDodgeLevel	only IronGuardian uses it (vtable 0x515c60 slot 36), 8 bytes; returns 11 (was IronGuardian_slot36)
 003cb514	JunkProjectile_dtor	inline destructor of JunkProjectile (vtable 0x515bd0 slot 1), 108 bytes
 003cb580	JunkProjectile_typeinfo	type-info getter (vtable entry 0) for JunkProjectile, base Projectile; descriptor at 0x908ca0
 003cb5d0	Kobold_dtor	inline destructor of Kobold (vtable 0x515ef0 slot 1), 96 bytes

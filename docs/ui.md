@@ -103,7 +103,7 @@ Its handler 0x1e01b0 is an empty function. `shop_close` sends on it in a net gam
 | Offset | Type | Meaning | How known |
 |---|---|---|---|
 | +0x00 | char[] | character name | printed by the HUD (0x1dbc48) and "player left" message |
-| +0x50 | s32 | class index (row of the skill table 0x4ef530, 0xa88 bytes per class) | 0x1d436c |
+| +0x50 | s32 | class index (row of the skill table 0x4ef530, 0xa88 bytes per class; this is the table `docs/data-tables.md` gives as `g_classPassiveTables` 0x4ef510 — 0x4ef530 is the part of each 0x38-byte row after its 0x20-byte name) | 0x1d436c |
 | +0x58 | s8 | level the player has acknowledged in the level-up screen | msg 9 handler; `hud_run` compares it with +0x59 |
 | +0x59 | s8 | level | `player_giveExp` 0x1d3150 |
 | +0x5c | s32 | experience; thresholds at 0x41b558, cap at 0x41b698 | same |
@@ -120,7 +120,7 @@ Its handler 0x1e01b0 is an empty function. `shop_close` sends on it in a net gam
 | +0x43d0 | s32 | quest count | same |
 | +0x43d8 | ptr | the player's object | everywhere |
 | +0x43f0 | ptr[17] | equipped items (addresses into the bags) | `save_snapshotPlayer` |
-| +0x4434, +0x4438, +0x443c | ptr | three more item pointers (ranged weapon / ammunition, *Inferred*) | `inventory_unrefItem` |
+| +0x4434, +0x4438, +0x443c | ptr | three more item pointers: +0x4434 and +0x4438 are the primary weapon of weapon set 0 and set 1, indexed by the active-set byte +0x4a7c, and +0x443c is the second weapon when dual wielding, as in `docs/player.md` (the earlier version inferred "ranged weapon / ammunition"; ammunition is equipment slot 8 at +0x4410) | `inventory_unrefItem`; `inventory_equipItem` 0x1c27c0, `Player_weaponSwapInput` 0x1bb718 |
 | +0x4440 | 0x68-byte records | abilities / quick-cast assignments | `hud_onAssignSpell` |
 | +0x4a58 | u32 | cleared when the inventory opens | `menu_openInventory` |
 | +0x4a84, +0x4a85 | u8 | quick-slot selection | `hud_onQuickSlot` |
@@ -380,6 +380,8 @@ that produces a false failure.
 - P2: can a notice box be open on one machine while a `postAction` name is pending?
 - Who clears object flag 0x400000 after a menu closes: the state-0 branch of message 2
   clears only 0x800000 (mask 0xff7fffff at 0x1d8dd4; 0x400000 is set at 0x1d8d88).
+  (Answered in `docs/player.md`: the tail of `Player_run` counts record +0x4bc8 down —
+  the 10 that state 0 stores — and clears 0x400000 when it reaches 0, 0x1ac6f0–0x1ac724.)
 - `script_playerAdjustStat` calls both `inventory_onStatPoint` and the message sender
   0x1c5780; in a net game every machine would send. Not followed.
 - `inventory_onJoinPanel` sends message 9 from inside a handler, so each machine sends one;

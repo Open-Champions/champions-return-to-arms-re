@@ -444,7 +444,7 @@ references (231 references); which class gets which is in the branches. **Observ
 
 ## 5. Difficulty
 
-`g_difficultyIdx` (0x4f719c) is 1–5; it is also bits 32–36 of record +0x4c18. There is no
+`g_difficultyIdx` (0x4f719c) is 1–5. (An earlier version said it is also stored in bits 32–36 of record +0x4c18; those bits hold a character-kind value set at creation — see docs/issues/doc-corrections.md, row 16.) There is no
 difficulty table. Every effect found is a constant in one of these functions (all
 Observed):
 

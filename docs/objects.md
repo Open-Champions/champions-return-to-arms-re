@@ -23,14 +23,25 @@ names a field: the grid link at object +8 was called `gridReference` (0x5321d8).
 
 ## Reading the virtual tables: 16 slots, not 17
 
-`tools/vtab.py` reports 17 entries for `GameObject` and 92 for `Creature`. **Observed**: the
-last entry of every table is a null terminator, and the scanner runs on past it when the next
-table's type-info function is too large for it to recognise. `GameObject` has **16** virtual
+`tools/vtab.py` reported 17 entries for `GameObject` and 92 for `Creature` when this was
+written; the tool and `vtables.txt` have since been corrected and give 16 and 39
+(`docs/issues/vtable-labels.md`). **Observed**: the
+last entry of every table is a null terminator, and the old scanner ran on past it when it
+did not recognise the next table's type-info function. `GameObject` has **16** virtual
 functions (table 0x5122a8, null at entry 17). `Creature` has **39** (table 0x50cc58, null at
 entry 40); "entries 41–65" and "67–91" are the separate tables of `WeaponShield` (0x50cda0)
 and `Weapon2` (0x50ce70), 24 functions each. Their type-info functions are 0x3c22b0 and
 0x3c1e28. Corrected class names for every table are easy to get: the class's own name is the
 last name string its type-info function references.
+
+The earlier version of this section said the scanner failed where the next type-info
+function was "too large". That was incomplete in two ways. The two functions are not
+large: each is 0x9c bytes, and the function table in `tools/ps2elf.py` *measures* them as
+0x130 and 0x1a0 (`docs/issues/vtable-labels.md` traces that to unreferenced code after
+them, which the table does not see as a function). And a
+third table was lost for a different reason: `PoisonRain` (0x51aa68) was hidden inside
+`SkillLifeTap` because its type-info function 0x3cffd4 was cut short by a false function
+start at 0x3d0000 in the same function table (that value occurs as a data word).
 
 ### GameObject virtual slots
 
@@ -124,7 +135,7 @@ from a pattern search over the decompiled C for the word at +0xc; they are not e
 | 0x80000 | activity radius forced to 44000 (cutscene actors) | Observed | 0x14db24; set 0x19904c |
 | 0x100000 | can be interacted with | Observed | `Creature_ctor`, `PhProp_ctor` for items |
 | 0x200000 | this machine's own player | (FINDINGS D13) | |
-| 0x400000, 0x800000 | set and cleared on player objects by a game-message handler; `Creature_updateActive` tests both, 0x1ec140 tests 0x800000 on every live player | Observed; meaning Unknown | 0x1d8d84–0x1d8dec, 0x10c174, function 0x1ec140 |
+| 0x400000, 0x800000 | set and cleared on player objects by a game-message handler; `Creature_updateActive` tests both, 0x1ec140 tests 0x800000 on every live player. They are the menu-state bits of game message 2 (`hudmsg_sendMenuState`, `docs/ui.md`): a non-zero state sets 0x400000, and 0x800000 as well when the state is above 1; state 0 clears 0x800000 and sets record +0x4bc8 to 10, the countdown after which `Player_run` clears 0x400000 (`docs/player.md`) | Observed; this row gave the meaning as Unknown | 0x1d8d84–0x1d8dec, 0x10c174, function 0x1ec140, 0x1ac6f8–0x1ac724 |
 | 0x1000000 | friendly to players (script `friendly`) | Observed | 0x145304 |
 | 0x2000000 | died burning; drawn darker | Observed | set 0x111510, test 0x10b178 |
 | 0x4000000 | prediction copy is catching up | (OVERVIEW) | 0x132bfc |
@@ -423,7 +434,8 @@ Not hazards, but easy to mistake for one: `world_findFreeSpot` and `Player1_ctor
   called from game setup 0x1e16a0. Settles O2.
 - How close do real scenes get to 300 free pool blocks, and can class 1 (512 blocks of
   0x500) be exhausted in a four-player fight? A memory snapshot of `g_poolClasses` answers it.
-- Flags 0x4, 0x10000, 0x40000, 0x400000, 0x800000: meanings.
+- Flags 0x4, 0x10000, 0x40000: meanings. (0x400000 and 0x800000 were listed here; they are
+  the menu-state bits, see the flag table.)
 - The lighting code (0x147a84–0x14a480) was only skimmed; names there are by shape.
 - `MissileWeapon` (0x150ee4–0x153314), `AnimatedMissile`, `Gold`, `ItemProp`,
   `UserParamProp`, `CosmeticProp*`, `PushPhysicsProp` (0x15dac0–0x15e244) and `WaveMaker`

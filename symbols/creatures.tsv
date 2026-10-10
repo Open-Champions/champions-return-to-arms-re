@@ -56,7 +56,7 @@
 00117d30	creature_dropHeldPartAsProp	(x, part, creature, def, flags): turns a held model part into a 0x248-byte PhProp; called from slot 11 of the three Weapon classes
 00117e88	damageDesc_getElement	maps the entry types of a damage descriptor to 1-4 or 6
 00117f08	creature_drawHeldPart	(x, part, creature): draws a model part at its bone; called from slot 20 of the Weapon classes
-00118058	Weapon2_slot21	vtable slot 21 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read
+00118058	Weapon2_update	vtable slot 21 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read (was Weapon2_slot21)
 00118378	creature_setDefEntryParams	(f0..f3, classDef, index, b0..b3): writes four float/byte pairs into resource entry 'index' of a class definition; 59 callers, all monster constructors
 00118410	Creature_slot18	empty; slot 18 is the 'set state' entry that script autoPropSetState calls on props
 00118418	Creature_getName	slot 19 (buf): 'mb_<class>' when usetypeidname is set, else the name property
@@ -127,15 +127,15 @@
 0011aa30	creature_leadPoint	(projSpeed, this, target, out): predicted position of target at mid height
 0011aaf8	Creature_leadTargetPoint	(projSpeed, this, out): creature_leadPoint on the target handle; 16 callers
 0011afb0	Weapon1_slot1	vtable slot 1 of Weapon1 (hand, on): hand 1 sets +8 and bit 0 of +4; hand 2 (Weapon2, WeaponShield only) sets +0x98 and bit 1. Not a destructor
-0011aff0	Weapon1_slot8	vtable slot 8 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read
-0011b020	Weapon1_slot9	vtable slot 9 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read
-0011b050	Weapon1_slot10	vtable slot 10 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read
+0011aff0	Weapon1_setElement	vtable slot 8 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read (was Weapon1_slot8)
+0011b020	Weapon1_setHandColour	vtable slot 9 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read (was Weapon1_slot9)
+0011b050	Weapon1_setHandColour2	vtable slot 10 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read (was Weapon1_slot10)
 0011b080	Weapon1_slot11	vtable slot 11 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read
 0011b0d0	Weapon1_slot12	vtable slot 12 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read
 0011b0f0	Weapon1_slot13	vtable slot 13 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read
 0011b110	Weapon1_slot14	vtable slot 14 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read
 0011b130	Weapon1_slot15	vtable slot 15 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read
-0011b148	Weapon1_slot16	vtable slot 16 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read
+0011b148	Weapon1_getElement	vtable slot 16 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read (was Weapon1_slot16)
 0011b180	Weapon1_slot17	vtable slot 17 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read
 0011b198	Weapon1_slot18	vtable slot 18 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read
 0011b208	Weapon1_slot19	vtable slot 19 of Weapon1 (shared with Weapon2, WeaponShield); weapon holder class (vtable at +0), not a GameObject; body not read
@@ -144,17 +144,17 @@
 0011b3e8	Weapon1_slot22	vtable slot 22 of Weapon1 (shared with Weapon2, WeaponShield); weapon holder class (vtable at +0), not a GameObject; body not read
 0011b510	Weapon1_slot23	vtable slot 23 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read
 0011b580	Weapon1_slot24	vtable slot 24 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read
-0011b5f0	Weapon2_slot1	vtable slot 1 of Weapon2 (hand, on): hand 1 sets +8 and bit 0 of +4; hand 2 (Weapon2, WeaponShield only) sets +0x98 and bit 1. Not a destructor
-0011b668	Weapon2_slot9	vtable slot 9 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read
+0011b5f0	Weapon2_setHandPart	vtable slot 1 of Weapon2 (hand, on): hand 1 sets +8 and bit 0 of +4; hand 2 (Weapon2, WeaponShield only) sets +0x98 and bit 1. Not a destructor (was Weapon2_slot1)
+0011b668	Weapon2_setHandColour	vtable slot 9 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read (was Weapon2_slot9)
 0011b6b8	Weapon2_slot10	vtable slot 10 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read
-0011b708	Weapon2_slot11	vtable slot 11 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read
+0011b708	Weapon2_dropPart	vtable slot 11 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read (was Weapon2_slot11)
 0011b7d8	Weapon2_slot12	vtable slot 12 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read
 0011b818	Weapon2_slot13	vtable slot 13 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read
-0011b858	Weapon2_slot14	vtable slot 14 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read
-0011b898	Weapon2_slot15	vtable slot 15 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read
-0011b8c8	Weapon2_slot16	vtable slot 16 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read
-0011b920	Weapon2_slot17	vtable slot 17 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read
-0011b948	Weapon2_slot18	vtable slot 18 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read
+0011b858	Weapon2_isHandFull	vtable slot 14 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read (was Weapon2_slot14)
+0011b898	Weapon2_getHandPart	vtable slot 15 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read (was Weapon2_slot15)
+0011b8c8	Weapon2_getElement	vtable slot 16 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read (was Weapon2_slot16)
+0011b920	Weapon2_getDescriptor	vtable slot 17 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read (was Weapon2_slot17)
+0011b948	Weapon2_draw	vtable slot 18 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read (was Weapon2_slot18)
 0011ba48	Weapon2_slot20	vtable slot 20 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read
 0011bac0	Weapon2_slot23	vtable slot 23 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read
 0011bb70	Weapon2_slot24	vtable slot 24 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read

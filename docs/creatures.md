@@ -29,7 +29,8 @@ and `Creature_draw` are ordinary functions (72 and 68 callers), not the virtual 
 
 ## Virtual slots: 39, not 92
 
-See `docs/objects.md` for why the tool's count is wrong. Slots 1–16 are the `GameObject`
+See `docs/objects.md` for why the tool's count was wrong (the corrected `tools/vtab.py`
+and `vtables.txt` now give 39). Slots 1–16 are the `GameObject`
 slots; the Creature bodies are listed here. Small bodies were emitted inline at
 0x3c2688–0x3c2758 (runtime area).
 
@@ -63,7 +64,7 @@ slots; the Creature bodies are listed here. Small bodies were emitted inline at
 | 31 | 0x118af8 | start the no-target timer +0x316 (frames) | Observed; gameplay name Unknown |
 | 32 | 0x10bfc8 | revive (with effect) | Observed |
 | 33 / 34 | 0x3c2700 / 0x3c2708 | get / set HomeRange +0x3c0 (script `setMonsterRange`) | Observed |
-| 35 | 0x118c50 | returns level scale × 0.3 as an int | Observed; purpose Unknown |
+| 35 | 0x118c50 | returns level scale × 0.3 as an int; monster code passes the result as the level of a skill it casts (`docs/monsters.md` §1.2, `docs/skills.md`) | Observed; purpose Inferred there (this row said Unknown) |
 | 36 | 0x118c78 | 0, 4 or 10 by boss rank | Observed; purpose Unknown |
 | 37 | 0x3c2730 | get team byte +0x310 | Observed |
 | 38 | 0x3c2748 | second resource of the class definition | Observed |
@@ -86,25 +87,25 @@ being copied are marked Unknown.
 | +0x54 | s32 | path follower: clock value after which a stuck follower is teleported | `Creature_run` |
 | +0x58 | s16 | path follower: current point index, −1 = find nearest | `Creature_run` |
 | +0x5a | s8 | player slot being followed, −1 none | `Creature_run` |
-| +0x5c | float[5] | per-kind resistances; [1] caps the slow amount from the chill timer, [4] the one from status counter 7; the rest Unknown | `Creature_run` 0x113680, 0x1137e4 |
+| +0x5c | float[5] | resistances, in the order fire, cold, poison, disease, lightning (as in `docs/gameplay.md` §2.3; the earlier version of this row named none and left three Unknown). [1] also caps the slow amount from the chill timer, [4] the one from status counter 7 | `Creature_run` 0x113680, 0x1137e4; `damage_apply` 0x1e8230 |
 | +0x70 | float[4] | colour bias added while any status counter runs | `Creature_draw` |
 | +0x80 | 4 words | Unknown | |
 | +0x90, +0x98 | s16[4] ×2 | two flash colour quads; every element moves 2 toward 0 each frame | head of `Creature_run`; set by stun, revive |
 | +0xa0 | u8 | tint preset 0–11 applied in draw | `Creature_applyTintPreset` |
 | +0xa8 | u64 | creature flags ("cflags"), table below | |
 | +0xb0 | float | turn rate; per-frame limit is value × 1092.27 angle units | slot 26 |
-| +0xb4, +0xb5 | u8 | Unknown | |
+| +0xb4, +0xb5 | u8 | +0xb4 creature kind, stored by each class constructor and tested by item effects in `damage_apply`: 0x10 undead, 0x12 insects (both names Inferred, `docs/gameplay.md` §2.2). +0xb5 Unknown. The earlier version gave both as Unknown | e.g. `Skeleton_ctor` 0x2a5af4 stores 0x10, `Ant_ctor` 0x235418 stores 0x12 |
 | +0xb8 | float | move speed, units per second | `Creature_moveTo` |
 | +0xbc, +0xc0 | float | root motion of the last animation step (world space) | `Creature_stepAnim`, consumed by `Creature_moveBy` |
 | +0xc4 | s16 | root rotation of the last animation step | same |
 | +0xc8 | float | **pending damage** accumulated since the last `Creature_processDamage` | slot 2 |
-| +0xcc | float | Unknown | |
+| +0xcc | float | damage accumulated by hits flagged 0x800000 (damage over time) and delivered every 32nd frame. Earlier: Unknown | `damage_apply` 0x1ea6f0–0x1ea790 (`docs/gameplay.md` §2.4) |
 | +0xd0, +0xd2 | s16 | damage range | `Creature_setStats` |
-| +0xd4 | s16 | scaled stat, Unknown | same |
+| +0xd4 | s16 | attack rating: the third value monster melee passes to the hit helpers, which hand it to the damage function as `attack`. The earlier version said "scaled stat, Unknown" | same; `Creature_hitTargetInArc` 0x119938 |
 | +0xd8 | float | value used for the experience award on death | `Creature_processDamage` (Inferred) |
 | +0xdc | float | scale (`Scale` property / 100) | ctor |
 | +0xe0 | float | forward offset of the drawn/attached position | `Creature_getVisualPos` |
-| +0xe4 | s16 | scaled stat, Unknown | `Creature_setStats` |
+| +0xe4 | s16 | armour: what an attacker's attack rating is compared with (`docs/gameplay.md` §2.5). The earlier version said "scaled stat, Unknown" | `Creature_setStats`; `damage_apply` 0x1e8230 |
 | +0xe8 | u32 | model variant bits (`change0`…`change31` properties) | `Creature_init` |
 | +0xec, +0xf4 | s32 | Unknown | |
 | +0xf0 | s32 | frame at which a status counter was last started | `Creature_run`, `Creature_draw` |
@@ -129,7 +130,7 @@ being copied are marked Unknown.
 | +0x2e4 | handle | last attacker (the owner, for hits by flag-0x80 objects) | slot 2 |
 | +0x2e8 | float | knockback speed, decays by 2 per call | `Creature_applyKnockback` |
 | +0x2ec | float[3] | steering point | `Creature_moveTo` |
-| +0x2f8 | s8 | Unknown | |
+| +0x2f8 | s8 | obstacle-avoidance side: 0 none, 1 or 2 = keep steering to that side (`docs/startup.md`). Earlier: Unknown | `Creature_computeAvoidanceOffset` 0x108a60 |
 | +0x2fa | s16 | facing at construction | ctor |
 | +0x2fc | s8 | **slow amount** 0–60; scales animation, turning and movement by (60 − n)/60 | `Creature_run`, `Creature_stepAnim` |
 | +0x300 | s32 | creature clock: +1 per `Creature_run` unless fully slowed | `Creature_run` 0x113178 |
@@ -145,8 +146,8 @@ being copied are marked Unknown.
 | +0x320 | 0x38 bytes | effect attachment state passed to effect code; has its own destructor 0x202500 | `Creature_dtor` |
 | +0x340 | float | burn seconds: fire visual; every 32nd frame fire damage to itself | `Creature_run` 0x113284–0x113534 |
 | +0x344 | float | chill seconds: becomes the slow amount; decays 1/15 per frame | `Creature_run` |
-| +0x348 | float | second visual-effect timer (drawn by 0x1f61c0) | `Creature_run` |
-| +0x34c, +0x350 | float | two damage-over-time timers; every 32nd frame damage of (+0x358, +0x35a) / 10 and (+0x35c, +0x35e) / 10 | `Creature_run` 0x1138b0, 0x113954 |
+| +0x348 | float | second visual-effect timer (drawn by 0x1f61c0); it is the shock status that lightning hits set (`docs/gameplay.md` §2.3) | `Creature_run`; `damage_apply` calls of 0x118950 with index 2 |
+| +0x34c, +0x350 | float | two damage-over-time timers; every 32nd frame damage of (+0x358, +0x35a) / 10 and (+0x35c, +0x35e) / 10. +0x34c is the poison status (`damage_apply` sets it, with +0x358/+0x35a, from an item's poison effect); who sets +0x350 was not traced | `Creature_run` 0x1138b0, 0x113954; 0x118950 index 3 |
 | +0x354 | float | glow seconds | `Creature_run` |
 | +0x360 | handle | source of the current timed effect; used as the attacker for hits flagged 0x10000000 | `Creature_setEffectTimer`, slot 2 |
 | +0x364 | handle list | **attached spells** | below |
@@ -197,6 +198,11 @@ by 0x1bea10; 5 held in place (what a rooted creature is forced into); 6–15 att
 **0x14 dead** (set on death, by script `killMonster`, by the `dead` property and by a dead
 save record). `Creature_filterState` 0x10a9c0 is the common filter derived `setState`
 bodies call. **Observed.** Other numbers belong to the individual classes.
+`docs/monsters.md` §1.4 describes the same numbers from the monster side, and the two
+lists are one: in the classes 1 is "walk to the destination +0x104", 3 is the chase and 5
+is the wait between attacks; its timers A, B and C are the root (+0x314), attack-cooldown
+(+0x318) and stun (+0x31c) timers of the layout above (`Creature_filterState` forces 5,
+0x10 and 0x13 while they run).
 
 ## Status effects
 
@@ -387,10 +393,12 @@ searches, the `players_*` pickers, `Creature_moveBy`, `Creature_moveTo`, `Creatu
 
 ## Open questions
 
-- Meaning of slots 35, 36 and 39, of +0xcc, +0xd4, +0xe4, +0xb4/+0xb5, +0x80, +0x2f8, and
-  of resistances [0], [2], [3].
-- Gameplay names of the +0x316 timer (slot 31), the +0x348 effect and the two
-  damage-over-time timers; the callers are in the skills area.
+- Meaning of slots 36 and 39, of +0xb5 and +0x80. (This item also listed slot 35, +0xcc,
+  +0xd4, +0xe4, +0xb4, +0x2f8 and resistances [0], [2], [3]; other documents answer those
+  and the tables above now carry the answers.)
+- Gameplay names of the +0x316 timer (slot 31) and of the second damage-over-time timer
+  +0x350; the callers are in the skills area. (+0x348 is shock and +0x34c poison, see the
+  layout.)
 - Who clears the dialog latch 0x4fe53c (C10).
 - Whether any spell's slot 3 writes shared state (C2). `tools/vtab.py` on the Spell tables
   plus a scan of slot 3 bodies for stores would settle it.
