@@ -23,3 +23,27 @@ author=reverse engineering test patch, untested on a running game
 description=The game stops sampling input once it is 38 frames (about 0.6 s) ahead of the slowest simulation; this lowers the cap to 14 frames. Trades long input lag for more visible pauses. FINDINGS L4.
 // was: 28420027 (slti v0,v0,39)
 patch=1,EE,00133554,word,2842000F
+
+[Arena diagnostic: knight never summons]
+author=reverse engineering test patch, untested on a running game
+description=Diagnostic only, changes the fight. The fourth knight of the Drundar arena never casts Summon Skeleton (Horsemen_run, 0x2726F4). If the arena still goes out of sync with this on every machine, the skeletons are not involved. Every player must use the same setting.
+// was: 1462000D (bne v1,v0,+13)
+patch=1,EE,002726F4,word,1000000D
+
+[Arena diagnostic: pool reaper off]
+author=reverse engineering test patch, untested on a running game
+description=Diagnostic only. The low-memory reaper never deletes expendable objects (runObjects, 0x14B9CC). If the object pool really runs low, new objects silently fail to appear. Tests FINDINGS D21. Every player must use the same setting.
+// was: 2842012C (slti v0,v0,300)
+patch=1,EE,0014B9CC,word,28420000
+
+[Arena diagnostic: generic talk animation in cutscenes]
+author=reverse engineering test patch, untested on a running game
+description=Diagnostic only. Cutscene speakers always use the generic talk loop instead of the per-line lip-sync animation, which also stops the audio-driven animation nudge (cut_execKey, 0x196AA0). Lips no longer follow the voice. Tests FINDINGS D8 and engine P6. Every player should use the same setting.
+// was: 0062102A (slt v0,v1,v0)
+patch=1,EE,00196AA0,word,00001021
+
+[Arena diagnostic: never judge activity from the camera]
+author=reverse engineering test patch, untested on a running game
+description=Diagnostic only. In a net game object activity is always judged from player positions, never from the cutscene camera (gameSetObjectVis, 0x1E4DD4). Scenery far from the players stops animating during cutscenes. Tests FINDINGS D6. Every player must use the same setting.
+// was: 8043FCD0 (lb v1,-0x330(v0))
+patch=1,EE,001E4DD4,word,00001821
