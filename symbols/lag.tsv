@@ -1,0 +1,8 @@
+0019dd48	gfx_setDisplayRateMode	(mode): writes 0x44fd44 = mode, 0x44fd40 = mode ^ 1, 0x44fdb4 = mode; does nothing while byte 0x44fd7c is set, 0x44fd88 < 0x80 or the mode is unchanged. gfx_endFrame calls it with 1 on the 32nd frame in a row that took its no-wait path and with 0 when 0x44fdac passes 0x7272. Mode 1 = half-rate display is the reading of docs/mainloop.md (Inferred)
+0044fd44	g_displayRateMode	0 or 1 (1 = half rate, Inferred, docs/mainloop.md); written only by 0x19dd48
+0044fd40	g_displayRateModeInv	inverse of 0x44fd44, initial value 1; while non-zero engine_frameStep returns clamp(0x44fd50 + 1, 1, 2) = 1, otherwise clamp(0x83d2c8, 1, 2)
+0044fdb0	g_lateFrameRun	gfx_endFrame: frames in a row that did not wait for the vertical blank; zeroed by a frame that waited; the 32nd asks for display rate mode 1
+0044fdac	g_spareFrameTime	gfx_endFrame, only while 0x44fd44 is 1: timer-0 counts left over by frames that used less than 0x2627 counts (one field); zeroed by a longer frame; above 0x7272 asks for display rate mode 0
+0083d2c8	g_lastFrameFields	(timer 0 + 0x1314) / 0x2626 taken at the end of gfx_endFrame just before the timer is reset: display fields the frame took, rounded; engine_frameStep uses it in rate mode 1
+0040279c	g_netLongStallCalls	net_main 0x134408-0x134448: +1 per call while g_netStallCalls > 300 and g_netSessionEnded is 0, otherwise 0; read by hud_netStatusDraw and by the wait after a level load (0x323054)
+005d1450	g_netKickState	s32: 0 none, 1 a kick is being negotiated (set when a peer's silence counter passes 900 calls, 0x133060-0x1330a8, and by net_kickPeer), 2 all answers in; 8 bytes are cleared together with g_netKickAcks

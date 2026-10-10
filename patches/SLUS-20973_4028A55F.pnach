@@ -11,18 +11,29 @@ description=Each machine predicts its own player on a throwaway copy. The copy i
 // was: E60000C8 (swc1 f0,0xc8(s0))  now: sw zero,0xc8(s0)
 patch=1,EE,0011EA8C,word,AE0000C8
 
-[Net test: input delay drains faster]
+[Net test: equalise at once (LAG-1)]
 author=reverse engineering test patch, untested on a running game
-description=After a stall the game keeps the extra input delay and gives it back one frame per 62 calls, or per 31 calls when this machine is well behind its peers (net_main, 0x133574 and 0x1335C0). This shortens both windows to 12 and 8 calls. Pacing is per machine and does not change what the simulation computes, but a machine that holds a call can make the others wait for its input. FINDINGS L4.
-// was: 2862001F (slti v0,v1,31) / 2863003D (slti v1,v1,61)
-patch=1,EE,00133574,word,28620008
-patch=1,EE,001335C0,word,2863000B
+description=net_main, 0x133574: skip sampling input whenever this machine's input is 5 or more frames further ahead of its simulation than the smallest such lead reported by the others, instead of only after 31 calls in a row. Keeps the extra input delay after an outage, a frozen peer or a slow peer to about 4 frames above the others. During a stall your own character stops too. Per machine. docs/issues/lag.md.
+// was: 2862001F (slti v0,v1,31)
+patch=1,EE,00133574,word,28620001
 
-[Net test: lower input delay cap]
+[Net test: trim leaves one spare frame (LAG-2)]
 author=reverse engineering test patch, untested on a running game
-description=The game stops sampling input once it is 38 frames (about 0.6 s) ahead of the slowest simulation; this lowers the cap to 14 frames. Trades long input lag for more visible pauses. FINDINGS L4.
-// was: 28420027 (slti v0,v0,39)
-patch=1,EE,00133554,word,2842000F
+description=net_main, 0x1335E4: the periodic input skip needs 4 ready frames instead of 3. Fewer one-frame world freezes after a lost packet, about 10 ms more input delay. Per machine. docs/issues/lag.md.
+// was: 28420003 (slti v0,v0,3)
+patch=1,EE,001335E4,word,28420004
+
+[Net test: 4-player send cycle 6 -> 4 (LAG-3)]
+author=reverse engineering test patch, untested on a running game
+description=Send-cycle table, 0x4027F4: with three remote peers each one is sent a packet every 4th call instead of every 6th. Do not use a value below 4: game messages need one call without a send. Per machine. docs/issues/lag.md.
+// was: 00000006
+patch=1,EE,004027F4,word,00000004
+
+[Net test: 3-player send cycle 4 -> 3 (LAG-4)]
+author=reverse engineering test patch, untested on a running game
+description=Send-cycle table, 0x4027F0: with two remote peers each one is sent a packet every 3rd call instead of every 4th. Do not use a value below 3. Per machine. docs/issues/lag.md.
+// was: 00000004
+patch=1,EE,004027F0,word,00000003
 
 [Arena diagnostic: knight never summons]
 author=reverse engineering test patch, untested on a running game
