@@ -1,8 +1,9 @@
 # A live rig: the game running headless on Play!'s core
 
-Status of this document: phase 1 done (sections 1–4c), the network question answered and
-the first piece of phase 2 running (4d). Phase 2 itself — two runners joined — is not
-built.
+Status of this document: phase 1 (sections 1–6) and phase 2 (section 7: two joined
+machines, the baseline, the arena). In short: two machines play one lockstep game here;
+random input found two real divergences, which are the ledger's K1 and K2, and the test
+patch for each removes it; the arena did **not** go out of sync in twelve runs.
 
 Every earlier statement in this project came from reading the executable or from running
 single functions in `tools/ee_emu.py`. This document is the first that reports what the
@@ -298,8 +299,9 @@ needed when the lobby is not used.
    - every 64 displayed frames it sends the four bytes 0xbd3d to 192.168.1.255, port 4000;
    - every datagram 0xbd3d or 0xbd3e from an address not yet in `g_peers` adds a peer (at
      most four), and the table is kept in order of the first stored address byte, the
-     last octet — a machine becomes a peer by hearing its own announcement, so the
-     network must deliver broadcasts to the sender;
+     last octet, highest first (with two machines, .134 was slot 0 and .132 slot 1) — a
+     machine becomes a peer by hearing its own announcement, so the network must
+     deliver broadcasts to the sender;
    - the confirm button sends 0xbd3e eight times; on receiving 0xbd3e a machine creates one
      placeholder character per peer and leaves the lobby, and the level loads.
    The broadcast address and the port are constants, so the machines must be 192.168.1.x.
@@ -475,3 +477,262 @@ copy, and the object flags 0x20000 and 0x200000.
   files belong in other repositories. `tools/rig/` is a C++ file and a CMake file, written
   here because this work's brief asked for them here; whether a research harness falls
   under that rule is for the maintainers to decide.
+
+## 7. Phase 2: two machines
+
+Everything in this section is **Ran** unless marked. The limits come first because every
+conclusion below depends on them:
+
+- The two machines are two copies of the same emulator build on the same host. They
+  cannot differ in floating point, in timing of the real hardware or in anything else that
+  two real consoles (or a console and an emulator) might differ in. **A divergence found
+  here is a logic difference; no divergence here says nothing about those other causes.**
+- The game is started through the developer LAN path (4d): no lobby, `g_lobbyLaunch` 0,
+  level-1 placeholder characters. Two runs set the lobby flag and the character kind by
+  hand; none used characters with skills.
+- Play!, not a PlayStation 2 and not PCSX2.
+
+### 7.1 How the two machines are joined
+
+Two runner processes, one machine each, connected by a local stream socket (`--link`).
+At every vertical blank each runner sends one message — its frame number and the
+datagrams its game sent since the last one — and waits for the other's message with the
+same frame number (`CLink`, `ExchangeWithPeer` in `rig.cpp`). Neither machine can get
+ahead, and what a machine receives depends on frame numbers only. A single process
+hosting both machines was not tried: Play!'s core keeps one translator and one executor
+in static variables.
+
+The libnet shim of 4d is unchanged except for where datagrams go: one for this machine's
+own address or a broadcast is queued locally as before; a broadcast or one for any other
+address also crosses to the other runner, after the **bus model** (`--bus
+delay=N,jitter=N,loss=N,seed=N`): `loss` per thousand are dropped, the rest become
+receivable `1 + delay + (0…jitter)` frames after they were sent. The draws come from a
+generator seeded by `seed` and the machine letter. The two "alone" patches of 4d are not
+used.
+
+`rig.py pair OUTDIR …` starts both (machine A: 192.168.1.132; machine B: 192.168.1.134;
+separate memory-card directories), with the same script; lines tagged `A:` or `B:` act
+on one machine while the other lets the same number of frames pass.
+
+`tools/rig/examples/pair-start.rig`, both machines from power-on with `--net`:
+
+| Frame (both) | Seen |
+|---|---|
+| 464 | network start, lobby |
+| 485–486 | both announce; each hears itself and the other: `g_numPeers` 2 |
+| 530 | machine A presses confirm; eight start datagrams each way |
+| 767 | player objects exist; level `strife`; `g_numPlayers` 2 |
+| 873 | `g_netFrame` 60 |
+| 1,473 | tick 659; states saved for everything below |
+
+Machine A's stick moves player 1 and machine B's player 0. Lead (`g_localInputFrame` −
+`g_netFrame` at the tick): 4–5 with no bus delay, about 10 with delay 3 and jitter 3,
+14–25 with delay 10 and jitter 6.
+
+A pair is as repeatable as a single machine: the run that diverged at tick 2033 (7.3)
+diverged at tick 2033 again, with the same values, in three later runs.
+
+Cost: with break point support (needed for the tick log) each machine runs about 33
+frames per cpu-second in a level; a pair of 6,000 frames takes four to five minutes.
+
+### 7.2 What is compared
+
+**The tick log.** A break point at 0x13aee8 — the return from `tasks_run(1, 2)` inside
+`net_frameLoop` (call at 0x13aee0) — stops the machine once per lockstep tick, after the
+tick's tasks and before the game adds one to `g_netFrame` and hashes. The runner writes
+one row there: `g_netFrame`, `g_randSeed`, the level name, and for players 0 and 1
+position (raw bits), facing, action state, object seed, hit points, mana, gold,
+experience and a checksum of each of the three bags; the sync record the game stored for
+the previous tick (this machine's ring, `g_peers` + slot × 0x44e0 + 0x18ac); the
+out-of-sync byte of both peers (+0x44d7); and per-machine columns (named `l_…`): the
+input frame, the cosmetic seed, the draw frame, the dropped byte. Runs add columns with
+`--tick-watch` (cutscene flag 0x44fcd0, selector words 0x41b818, the lockout word
+0x41b4fc, `g_localMenuOpen`, the lockstep pads, the pending level).
+
+`tools/rig/compare.py ticks A B` lines the two logs up by tick and reports the first tick
+at which a shared column differs and every column that ever does.
+
+**Memory.** `ontick N dump 0 0x2000000 file` writes all of EE memory inside tick N on
+both machines; `compare.py mem` diffs two dumps and groups the differences by symbol. Two
+machines whose tick logs agree differ in about 567,000 bytes in 1,600 runs: the pose
+buffers (124 KB — the per-machine pose cache of ledger row D34 is real), the render lists
+and texture bookkeeping, the peer table and sync rings (each machine keeps different
+things for the local and the remote peer), each machine's prediction copy, and heap
+blocks that the two machines allocated in a different order. The tool's ignore list
+(a table at the top of the file) names only the kernel area, the main stack and the
+prediction copy; for the rest it takes a baseline — a pair of dumps from an earlier tick
+at which the logs agreed — and leaves out every byte that already differed there. One
+tick apart, that leaves about 4,000 bytes of per-machine noise (render lists, rings).
+**It was not needed for the findings below**, which the tick log and break points
+settled; it has been run only on in-sync pairs. `g_cosmeticSeed` differs between the
+machines on nearly every tick, as designed.
+
+### 7.3 Baseline in `strife`: two real divergences
+
+From the tick-659 states, seeded random input on both controllers (`fuzz`: left stick,
+attack, abilities, block, weapon swap, potions, use; in some runs also right stick,
+D-pad, inventory button, stick buttons):
+
+| Run | Bus | Input groups | Ticks compared | Result |
+|---|---|---|---|---|
+| base1 | none | move, fight, potion, use | 4,149 | no shared column differs |
+| base2 | delay 3, jitter 3, loss 5% | same | 5,808 | none in seed, positions, bags (see note) |
+| base3 | delay 10, jitter 6, loss 10% | + dpad, select | 5,157 | **bag 2 of player 0 differs from tick 3894** (K2) |
+| base4 | none | + rstick, dpad, select, l3r3 | 1,653 | **level and seed differ from tick 2034** (K1) |
+| base5 | delay 25, jitter 10, loss 20% | move, fight, potion, use, dpad | 3,504 | no shared column differs |
+| disc | none | move | 4,604 | no shared column differs |
+
+Note: in base2 and base3 the `prevhash` column differed on most ticks. That was a mistake
+in the log, not in the game: those two runs read the remote peer's ring instead of the
+local one (the slot numbers of the two machines were the wrong way round in the launcher,
+since corrected), and a remote record arrives later than the tick.
+
+The plain runs exercised movement, melee, casting, blocking, potions (the bags changed)
+and picking up gold; nothing in `strife` damaged the players in base1.
+
+**K2 — potion, then inventory, inside the input delay. Confirmed; its patch removes it.**
+In base3 at tick 3894 the machine that does not own player 0 took a potion out of the bag
+and the owner's machine did not; later both changed again, to different contents. The
+scripted version (`examples/pair-k2.rig`, bus delay 10, lead 14): player 1's hit points
+are set to 10 on both machines in tick 700; machine A presses R2 and three frames later
+the inventory button.
+
+| Tick | Machine A (owner) | Machine B |
+|---|---|---|
+| 733 | `g_localMenuOpen` 0x41b69d becomes 1 — at once, from the raw pad, 11 ticks before the lockstep pad shows the potion press | 0 throughout |
+| 744 | lockstep pad of slot 1 shows 0x2; potion quantities stay 2, 2, 2 | quantities become 2, **1**, 2 |
+| 746 | lockstep pad shows 0x100 (inventory) | |
+| to the end, tick 1187 | 2, 2, 2 | 2, 1, 2 |
+
+Hit points agree throughout and no out-of-sync byte is ever set: the difference is
+silent, as K2 says. With "Net test: potions always leave the bag directly" applied on
+both machines (0x1b9fcc and 0x1ba3ac: 0x8043b69d → 0x00001821) both take the potion at
+tick 744 and no shared column differs.
+
+**K1 — use, then D-pad, inside the input delay. Confirmed; its patch removes it; the
+consequence can be worse than the ledger says.** base4, no bus delay (machine A's lead 5):
+
+| Tick | Machine A (owns player 1) | Machine B |
+|---|---|---|
+| 2028–2031 | `Player_interact` 0x1b2640 entered for slot 1 from `Player_run`+0xbf4 every tick | the same |
+| 2032 | `g_spellSelectorHeld[1]` 0x41b81c becomes 1 (A's D-pad, raw pad); the call from `Player_run` no longer happens | word stays 0; call happens |
+| 2033 | lockstep pad of slot 1 shows 0x80 (use), sampled five frames before the D-pad; no call | call happens; `script_newWorld` 0x143dd0 is entered from the level script (`scr_callNative`+0x44) and `g_pendingLevel` 0x41b6d0 reads `blood1` |
+| 2034 | still `strife`, seed 0xf146bbff | in `blood1`, seed 0x394f8527 |
+| 2036–2037 | each machine sets the other's out-of-sync byte; later each drops the other | |
+
+So the first shared address to differ is `g_pendingLevel`, written by `script_newWorld`
+on the machine that does not own the player, because on the owner's machine the gate at
+0x1a5c08–0x1a5c1c skipped `Player_interact`. The player was standing at a level exit: one
+machine changed level and the other did not. With "Net test: use button works with the
+spell selector open" on both machines both write the name in tick 2033, both are in
+`blood1` at tick 2034 with seed 0x394f8527, and no shared column differs (1,433 ticks).
+With "Net test: menu lockout never blocks weapon swap and use" instead, the divergence is
+unchanged: it is K1, not the lockout word. Reproduce with `examples/pair-k1.rig`.
+
+**D26 — dying with the inventory open. Not settled.** In the arena fight machine A opened
+its inventory and its player was killed (one scripted run, repeated with a break point):
+`g_localMenuOpen` went from 1 to 0 in
+the tick of the death (tick 2716), so the menu is closed by the death on that machine, as
+the row says. No divergence followed. A break point on `Player_takeDamage` 0x1b5330 on
+both machines logged the same 30 calls on each, and the lockout word 0x41b4fc was 0 at
+the entry of every one: no damage call fell into the rest of the death tick. The row
+needs a hit on the *other* player in that one tick; with two hits on that player in the
+whole fight it did not happen, and no way of forcing it was built. Neither confirmed nor
+refuted; its patch was therefore not tried.
+
+### 7.4 Getting to the arena
+
+The boot-argument code has no level argument (the strings are `--net`, `--stress`,
+`--splash`, `--pvp`, `--char`, `--female`). The route used: `ontick 700 poke
+g_pendingLevel:str16 drunare` on both machines — the name is written inside lockstep tick
+700 on both, which is the point at which the level script would write it — and the main
+loops change level together. Both machines were in `drunare` with two player objects
+about 120 frames after the write, the level's title on the HUD, players at (330.8,
+−203.2) and (317.9, −233.0); the states saved at tick 870 are the "arena entrance" states. The debug warp
+list (`g_debugCheats`) was not needed and not tried.
+
+Characters: the placeholder level-1 ones as they are ("weak"); the same with hit points
+and their maximum set to 3,000 in tick 880 on both machines (they still died: "strong"
+below was not strong); and with level 50, strength and stamina 3,000 and 30,000 hit
+points ("very strong": nobody died and experience was gained, so knights or their
+summons were killed).
+
+### 7.5 The arena: no desync in twelve runs
+
+Each run, from the entrance states: machine A's player walks west into the trigger strip;
+both machines sit through the opening cutscene without skipping it; then both fight on
+seeded random input for 4,000–4,500 frames.
+
+| Run | Bus | Characters | Input groups | Patches | Ticks compared | Shared difference |
+|---|---|---|---|---|---|---|
+| 1 | none | weak | move, fight, potion, use | — | 5,458 | none |
+| 2 | delay 3, jitter 3, loss 5% | weak | same | — | 5,723 | none |
+| 3 | delay 10, jitter 6, loss 10% | weak | same | — | 5,644 | none |
+| 4 | none | weak | + rstick, dpad, select | K1, K2 | 5,956 | none |
+| 5 | none | hp 3,000 | move, fight, potion, use | — | 5,954 | none |
+| 6 | delay 5, jitter 5, loss 5% | hp 3,000 | same | — | 5,709 | none |
+| 7 | none | hp 3,000 | + rstick, dpad, select | K1, K2 | 5,556 | none |
+| 8 | none | weak, lobby flag and kind | move, fight, potion, use | — | 5,958 | none |
+| 9 | delay 3, jitter 3, loss 5% | very strong, lobby flag and kind | same | — | 4,530 | none |
+| 10 | none | very strong | + rstick, dpad, select | K1, K2 | 6,150 | none |
+| 11 | delay 4, jitter 2 | weak | + rstick, dpad, select | — | 5,938 | none |
+| 12 | delay 3, jitter 3, loss 5% | weak | move, fight, potion, use | — | 6,105 | none |
+
+Run 12 is `examples/pair-arena.rig` as published: it starts in `strife` at tick 659, so
+it includes the level change. 68,685 ticks in all. Marks (the same in every run, as they must be from one pair of
+states): first tick in the level 870 (the state); the cutscene flag 0x44fcd0 goes up at
+tick **1022**, and 1022 mod 15 = 2, which is what `docs/issues/arena-entry.md` (E4)
+derives; it goes down 1,268 ticks later (the document says about 1,270).
+
+What the runs covered: the trigger and cutscene; the knights attacking; both players
+dying and being put back (one or two deaths each in the weak runs, after which the
+cutscene played a second time); in runs 9 and 10 no deaths, experience gained (81 / 95
+and 64 / 100) and a further 772 and 958 ticks with the cutscene flag up, so the fight
+went past its first stage. "Lobby flag and kind" means `g_lobbyLaunch` 0x4f7134 = 1 and
+the kind bits of both records (+0x4c1c) changed from 1 to 2 on both machines in tick 880.
+
+**Plainly: the arena desync was not reproduced.** Not with zero bus delay, not with
+delay, jitter and loss, not with the lobby flag set, not after deaths, not after kills.
+Since two identical machines stayed in step through the level's entry, its cutscene and
+the fight, the cause of a desync that real players see on every run is probably something
+this set-up does not contain:
+
+- a difference between the machines themselves (floating point, which two identical
+  emulators cannot show — ledger F rows);
+- the real launch path: lobby characters with skills and equipment, the transferred
+  records, and whatever the lobby game does that the developer start does not;
+- the real route into the level (from `drundar` through its door, with saved level
+  state), where this section wrote the level name directly;
+- real timing: frames that take two fields, calls that block, packet timing the bus
+  model does not imitate (the model delays, drops and reorders, but both machines still
+  run their frames in the same number of emulated cycles);
+- K1 or K2 happening in the arena to real players (a use press and the D-pad, a potion
+  and the inventory button): both are now confirmed, the first can end a session at
+  once, and the second is silent. Run 11 had those inputs unpatched and did not trip
+  either in the arena; base3 and base4 did in `strife`.
+
+### 7.6 For the ledger
+
+Proposed, for whoever edits `FINDINGS.md` (this document does not):
+
+| Row | What to record |
+|---|---|
+| new (V9) | Two machines joined through the developer LAN start play one lockstep game; a pair of runs repeats exactly from states, script and bus seed. Ran |
+| K1 | Ran: confirmed on two machines; the first shared address to differ was `g_pendingLevel`, written by `script_newWorld` on the non-owner's machine at a level exit — one machine changes level, both flag the other out of sync. The test patch removes it; the lockout patch does not |
+| K2 | Ran: confirmed, silent (no out-of-sync byte); the owner keeps a potion the other machine removed. The test patch removes it |
+| U4 | Ran, consistent: in the K2 run the owner's menu opened 11 ticks before its potion press reached the tick, at a lead of 14 |
+| D26 | Still not run to a divergence: the menu does close in the death tick on the owner's machine, but no damage call fell into the rest of that tick |
+| D34 | Ran: between two machines in sync the pose buffers differ in about 124 KB |
+| E4 | Ran: the opening cutscene started on tick 1022 (2 modulo 15) and lasted 1,268 ticks |
+| D25 | The arena did not desync in twelve runs on two identical machines (68,685 ticks, zero and non-zero bus delay, loss up to 10%, with and without the lobby flag, with deaths and with kills) |
+
+### 7.7 What was not done
+
+- D26 is open (7.3). The "Arena diagnostic" sections of the patch file were not used:
+  there was no arena divergence to bisect.
+- Characters with skills, stored or lobby characters, the launch handshake (path 3 of
+  4d), four machines, the entry from `drundar`, other levels, runs longer than about
+  6,000 ticks, the debug warp menu.
+- The memory diff has no per-object comparison (the two heaps are not laid out alike),
+  and its ignore list is mostly "whatever already differed at the baseline".
+- Nothing here is a console result.

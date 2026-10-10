@@ -19,3 +19,6 @@ A: tap cross 4          # the confirm button starts the game for everyone listed
 until g_players+0x43d8:u32 != 0 timeout 4000
 until g_netFrame:s32 >= 60 timeout 3000
 show g_levelName:str16 g_networkMode:u8 g_netFrame:s32 g_numPeers:s32 g_numPlayers:s32 g_players:str8 g_players+0x4c30:str8
+# let the level settle; with --save-at-end the two states are then at lockstep tick 659,
+# which is where the other pair-*.rig examples start
+wait 600

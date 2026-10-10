@@ -90,13 +90,13 @@ description=A debug.sht file on one player's memory card switches on developer c
 patch=1,EE,00217448,word,00000000
 
 [Net test: use button works with the spell selector open]
-author=reverse engineering test patch, untested on a running game
+author=reverse engineering test patch; confirmed to remove the desync on two linked Play! emulator instances (FINDINGS V10, V11); untested on PCSX2 or a console
 description=While you hold the D-pad (quick-spell selector), your own machine skips the "use" action for your character but the other machines do not. A use press that was already on its way when the D-pad went down then opens a chest or picks up an item on the other machines only. This removes the skip (Player_run, 0x1A5C0C), so every machine does the same. In a net game your new use presses are still filtered out while the selector is open. Offline, use now also works with the selector open. FINDINGS K1. Each machine fixes its own player; a mix is safe.
 // was: 54600006 (bnezl v1,0x1a5c28)
 patch=1,EE,001A5C0C,word,00000000
 
 [Net test: potions always leave the bag directly]
-author=reverse engineering test patch, untested on a running game
+author=reverse engineering test patch; confirmed to remove the desync on two linked Play! emulator instances (FINDINGS V10, V11); untested on PCSX2 or a console
 description=If your inventory screen is open when a potion press is simulated, your machine sends a "drop" message instead of removing the potion, while the other machines remove it and then obey the message too, so the potion counts differ from then on. This makes the potion always leave the bag directly (Player_usePotion, health branch 0x1B9FCC and mana branch 0x1BA3AC). Your open inventory screen may show the old count until reopened. FINDINGS K2. Each machine fixes its own player; a mix is safe.
 // was: 8043B69D (lb v1,-0x4963(v0)) at both addresses
 patch=1,EE,001B9FCC,word,00001821

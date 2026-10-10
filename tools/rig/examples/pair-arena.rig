@@ -1,0 +1,35 @@
+# Two machines into the arena level and through its opening.
+#
+#   python3 -I -B tools/rig/rig.py pair local/rig-out/arena --bus delay=3,jitter=3,loss=50,seed=1 \
+#       --a-load local/rig-out/run1/a.zip --b-load local/rig-out/run1/b.zip \
+#       --script tools/rig/examples/pair-arena.rig --tick-watch cut=0x44fcd0:u8
+#   python3 -I -B tools/rig/compare.py ticks local/rig-out/arena/a.tick.tsv local/rig-out/arena/b.tick.tsv
+#
+# (states from pair-start.rig, lockstep tick 659 in level strife)
+
+# both machines write the pending level name inside the same lockstep tick; the main
+# loops then change level together
+ontick 700 poke g_pendingLevel:str16 drunare
+wait 60
+until g_levelName:str8 == drunare timeout 3000
+until g_players+0x43d8:u32 != 0 timeout 3000
+wait 240
+
+# machine A's player walks west into the trigger strip (x below 183); the opening
+# cutscene starts on the next tick whose number is 2 modulo 15
+A: stick L 0 128
+wait 60
+A: stick L 128 128
+wait 20
+A: stick L 128 0
+wait 60
+A: stick L 128 128
+until 0x44fcd0:u8 != 0 timeout 600
+echo cutscene-start
+until 0x44fcd0:u8 == 0 timeout 4000
+echo cutscene-end
+wait 30
+
+# the fight, on seeded random input on both controllers
+fuzz 21 4500 move,fight,potion,use
+wait 200

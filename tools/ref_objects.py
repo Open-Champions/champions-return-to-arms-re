@@ -183,7 +183,7 @@ class GameObject:
         self.angle = 0                  # +0x38 u16
         self.seed = 0                   # +0x44: state of the object's own generator
         self.vtable = VT_GAMEOBJECT     # +0x48
-        self.type_name = 'GameObject'   # what the type-info function of the table answers
+        self.type_name = b'10GameObject'    # the name in the table's type-info object
         self.alive = True
         self.tag = None                 # free for the user of the model
 
@@ -462,7 +462,7 @@ class World:
         self.centres = []                           # g_activityCenters[0 .. count)
         self.pool_free_count = 100000               # g_poolFreeCount
         self.tearing_down = 0
-        self.lump_generation = 0
+        self.lump_generation = 1                    # g_lumpGeneration 0x41bf78: 1 in the executable
         self.names = NameTable()
         self.tasks = TaskList()
         self.objects = {}                           # address -> live object
@@ -487,8 +487,8 @@ class World:
         off-grid list and the name table.  The cells are zeroed, not cleared: nodes still
         linked there are simply forgotten.  The run lists, the delete list and the
         always-draw list are not touched."""
-        self.tasks.add(0x14B910, 10, 'runObjects', 0)
-        self.tasks.add(0x14B168, 21, 'drawObjects', 1)
+        self.tasks.add(0x14B910, 10, b'runObjects', 0)
+        self.tasks.add(0x14B168, 21, b'drawObjects', 1)
         for cell in self.grid:
             cell.next = None
         for cell in self.grid_b:
@@ -1108,7 +1108,7 @@ class World:
         obj = self.construct(addr, pos, None, props)
         obj.flags |= 3
         obj.vtable = VT_PLAYER1
-        obj.type_name = 'Player1'
+        obj.type_name = b'7Player1'
         obj.angle = angle & 0xFFFF
         rank = self.start_rank
         if rank == 3:
@@ -1173,6 +1173,19 @@ def _mod(value, divisor):
     return value % divisor
 
 
+def create_object(class_name, pos, angle, props, factory):
+    """world_createObject 0x14f6c8 (className, pos, angle, props): the installed factory is
+    called with a copy of the position, the angle as a signed 16-bit number and the
+    property list untouched (the fourth argument is simply left in its register); an
+    object that comes back gets its +0x34 set to the class name.  No factory: nothing."""
+    if factory is None:
+        return None
+    obj = factory(class_name, list(pos), s16(angle), props)
+    if obj is not None:
+        obj.class_name = class_name
+    return obj
+
+
 class Record:
     """One level-object record: class name, facing, position, properties, saved state."""
 
@@ -1218,7 +1231,8 @@ class RecordBlob:
             name = -1 if record.class_name is None else intern(record.class_name)
             rec = bytearray(struct.pack('<ihh3I', name, 0, record.angle, *[p & M32 for p in record.pos]))
             for text in record.props or []:
-                rec += struct.pack('<i', intern(text))
+                rec += struct.pack('<i', len(strings))  # one copy per record: names are edited in place
+                strings.extend(bytes(text) + b'\0')
             rec += struct.pack('<i', 0)
             if self.has_state:
                 while len(rec) % 8:

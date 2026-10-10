@@ -35,6 +35,9 @@ There is no single "creature tick" function
         move_to          Creature_moveTo 0x114510            path following, stuck recovery
         move_to_target   Creature_moveToTarget 0x1143e8
         move_to_dest     Creature_moveToDest 0x119f38
+        move_to_direct   Creature_moveToDirect 0x1155e0      straight line with the avoidance offset
+        flee_from        Creature_fleeFrom 0x115910          the retreat helper
+        filter_state     Creature_filterState 0x10a9c0       what derived set-states call first
         settle           Creature_settle 0x119e38
         take_damage      Creature_takeDamage 0x116638        virtual slot 2
         is_enemy         Creature_isEnemy 0x119328           virtual slot 20
@@ -177,6 +180,11 @@ MODELLED = {
     'Creature_slot6': 0x11A418, 'Creature_slot10': 0x11A3F0, 'Creature_slot11': 0x11A448,
     'Creature_default_slot27': 0x3C2688, 'Creature_stun': 0x118A58, 'Creature_slot31': 0x118AF8,
     'Creature_slot35': 0x118C50, 'Creature_slot36': 0x118C78, 'Creature_slot37': 0x3C2730,
+    'Creature_moveToDirect': 0x1155E0, 'Creature_computeAvoidanceOffset': 0x108A60,
+    'Creature_probeThreeMovementRays': 0x108FD8, 'Creature_computeAvoidanceTarget': 0x109280,
+    'Creature_fleeFrom': 0x115910, 'Creature_fleeFromTarget': 0x119F08, 'Creature_moveToAlly': 0x119E98,
+    'Creature_filterState': 0x10A9C0, 'Creature_isNotRooted': 0x1195E0, 'Creature_isAttackReady': 0x1195F0,
+    'Creature_isNotStunned': 0x119608,
     'GameObject_rand': 0x1509D0,
 }
 
@@ -191,7 +199,8 @@ class Ext:
         l pointer to a zero-terminated list of object pointers (passed as a tuple)
         s pointer to the text a libc_sprintf call produced (passed as ('buf', text))
         o pointer the callee fills with three floats      O the same, may be null (1 or 0 is passed)
-        w pointer the callee fills with one 32-bit word   b pointer the callee fills with one byte
+        w pointer the callee fills with one 32-bit word   W the same, may be null (1 or 0 is passed)
+        b pointer the callee fills with one byte
         n pointer to an object-pointer array the callee fills, zero terminated
         - not an argument of the model (scratch on the stack)
     Result kinds: i integer, f float, n nothing, s the text of libc_sprintf."""
@@ -250,7 +259,7 @@ EXTERNALS = {
     'sound_playOnObject': Ext(0x214230, 'pp', 1, 'i', '(entry, object; volume)'),
     # --- world queries (tools/ref_world.py)
     'terrain_raycast': Ext(0x18A5C0, 'pvvi', 1, 'f', '(world, origin, direction, mask; length factor) -> t, negative = no hit'),
-    'world_raycast': Ext(0x18AD94, 'pvvpiii', 1, 'f', '(world, origin, direction, ignore, 0, mask, 0; length) -> t'),
+    'world_raycast': Ext(0x18AD94, 'pvvpWii', 1, 'f', '(world, origin, direction, ignore, hit object out, mask, flag; length factor) -> t'),
     'terrain_heightBelow': Ext(0x1834A8, 'pv', 1, 'f', '(world, position; radius) -> ground height'),
     'world_collectObjectsInBox': Ext(0x14A928, 'vvni', 0, 'n', '(min, max, out array, capacity) -> objects'),
     'world_slideMove': Ext(0x14D238, 'pviO', 1, 'i', '(position in place, delta, mask, normal out; radius) -> hit'),
@@ -261,8 +270,6 @@ EXTERNALS = {
     'path_requestType1': Ext(0x184FC8, 'pvvppi', 1, 'n', '(world, from, to, creature, waypoints, 16; distance)'),
     'path_requestType2': Ext(0x185148, 'pvvppi', 1, 'n'),
     'path_requestType3': Ext(0x1852C8, 'pvvppi', 1, 'n'),
-    'Creature_probeThreeMovementRays': Ext(0x108FD8, 'pvi', 0, 'f', '(creature, direction, 0) -> clear fraction'),
-    'Creature_computeAvoidanceTarget': Ext(0x109280, 'opv', 0, 'n', '(out, creature, destination)'),
     # --- handle lists
     'handle_clear': Ext(0x1A1698, 'p', 0, 'n', '(list head)'),
     'handle_link': Ext(0x1A1738, 'ppp', 0, 'n', '(list head, back list, object)'),
@@ -299,14 +306,14 @@ def shape_result(name, args, ret=0, fret=0, outs=None):
     ext = EXTERNALS[name]
     values, position, given = [], 0, list(outs) if outs is not None else None
     for kind in ext.ints:
-        if kind in 'oOwbn':
+        if kind in 'oOwWbn':
             if given:
                 value = given.pop(0)
             else:
                 value = (0, 0, 0) if kind in 'oO' else ([] if kind == 'n' else 0)
-            if kind != 'O' or args[position]:
+            if kind not in 'OW' or args[position]:
                 values.append(value)
-        if kind in 'ipvelsO':
+        if kind in 'ipvelsOW':
             position += 1
     if ext.ret == 's':
         return ('buf', given[0] if given else b'')
@@ -868,7 +875,7 @@ class Model:
         the record's team byte +0x4c24 must match.  A later player at exactly the same
         distance replaces an earlier one (the test is `reach < distance` to reject)."""
         u32 = self.u32
-        best = -1
+        best, team = -1, s8(team)
         for slot in range(max(self.s32(G_NUM_PLAYERS), 0)):
             obj = self.player_obj(slot)
             if not obj or u32(obj + 0xC) & 8:
@@ -1712,18 +1719,7 @@ class Model:
                 aim = self._steer_without_path(c, dest, waypoint)
             else:
                 aim = self._steer_along_path(c, dest, waypoint)
-        off = s16(self.vcall(c, 26, 0, aim))                     # 0x114aa8: the common ending
-        speed = self._drowsy(c, u32(c + 0xB8))
-        if abs(off) >= 0x3E81:                                   # turning through more than 16000: half speed
-            w32(c + 0xBC, C.mul(u32(c + 0xBC), HALF))
-            w32(c + 0xC0, C.mul(u32(c + 0xC0), HALF))
-            speed = C.mul(u32(c + 0xB8), HALF)                   # (the Drowsy factor is lost here)
-        k = self.slow_factor(c)
-        if k is not None:
-            speed = C.mul(speed, k)
-        facing = self.s16(c + 0x38)
-        vx = C.mul(C.cos16(facing), speed)
-        self.move_by(c, (vx, C.mul(C.sin16(self.s16(c + 0x38)), speed), 0))
+        self._turn_and_step(c, aim)                              # 0x114aa8: the common ending
         # 0x114bb8: stuck recovery
         px = C.sub(u32(c + 0x10), u32(c + 0x2C8))
         py = C.sub(u32(c + 0x14), u32(c + 0x2CC))
@@ -1746,19 +1742,40 @@ class Model:
                 self.call('obj_updateGridCell', c)
         return 0
 
+    def _turn_and_step(self, c, aim):
+        """The ending Creature_moveTo (0x114aa8) and Creature_moveToDirect (0x1157dc) share:
+        turn toward the aim point through slot 26, then move ALONG THE FACING at the move
+        speed +0xb8 - times the Drowsy fraction, or halved (root motion too, and without
+        the Drowsy fraction) after a turn of more than 16000, times the slow factor."""
+        return self._step(c, s16(self.vcall(c, 26, 0, aim)))
+
+    def _step(self, c, off):
+        """The part of the common ending after the turn; `off` is what slot 26 returned."""
+        u32, w32 = self.u32, self.w32
+        speed = self._drowsy(c, u32(c + 0xB8))
+        if abs(off) >= 0x3E81:
+            w32(c + 0xBC, C.mul(u32(c + 0xBC), HALF))
+            w32(c + 0xC0, C.mul(u32(c + 0xC0), HALF))
+            speed = C.mul(u32(c + 0xB8), HALF)
+        k = self.slow_factor(c)
+        if k is not None:
+            speed = C.mul(speed, k)
+        vx = C.mul(C.cos16(self.s16(c + 0x38)), speed)
+        return self.move_by(c, (vx, C.mul(C.sin16(self.s16(c + 0x38)), speed), 0))
+
     def _steer_without_path(self, c, dest, waypoint):
         """0x1146c0-0x11488c: no current waypoint; returns the aim point."""
         u32 = self.u32
         frame, serial = u32(G_SIM_FRAME), self.s8(c + 0x230)
         if not (frame ^ serial) & 0x3F:                          # every 64th frame: is the straight line open?
             ray = (C.sub(dest[0], u32(c + 0x10)), C.sub(dest[1], u32(c + 0x14)), C.sub(dest[2], u32(c + 0x18)))
-            if C.lt(self.call('Creature_probeThreeMovementRays', c, ray, 0), ONE):
+            if C.lt(self.probe_three_rays(c, ray), ONE):
                 self.advance_waypoint(c, waypoint, dest, 0, u32(c + 0x1C), ZERO)
         off = C.atan2_16(C.sub(u32(c + 0x2F0), u32(c + 0x14)), C.sub(u32(c + 0x2EC), u32(c + 0x10))) \
             - self.s16(c + 0x38)
         if abs(off) < 1000:                                      # facing the steering point
             if not (u32(G_SIM_FRAME) ^ self.s8(c + 0x230)) & 7:
-                self.wvec(c + 0x2EC, self.call('Creature_computeAvoidanceTarget', c, dest))
+                self.wvec(c + 0x2EC, self.compute_avoidance_target(c, dest))
             else:
                 self.wvec(c + 0x2EC, dest)
         else:
@@ -1774,7 +1791,7 @@ class Model:
         """0x114890-0x114aa4: a current waypoint exists; returns the aim point."""
         u32 = self.u32
         ray = (C.sub(dest[0], u32(c + 0x10)), C.sub(dest[1], u32(c + 0x14)), C.sub(dest[2], u32(c + 0x18)))
-        if C.le(ONE, self.call('Creature_probeThreeMovementRays', c, ray, 0)):
+        if C.le(ONE, self.probe_three_rays(c, ray)):
             self.clear_path(c)                                   # the straight line is open: drop the path
             self.wvec(c + 0x2EC, dest)
             return self.vec(c + 0x2EC)
@@ -1826,6 +1843,256 @@ class Model:
         self.clear_path(c)
         self.wvec(c + 0x104, self.random_point_near_home(c, 300))
         return 0
+
+    # =====================================================================================
+    # Probes, the avoidance offset, Creature_moveToDirect 0x1155e0
+    # =====================================================================================
+    def probe_three_rays(self, c, direction, hit_out=0):
+        """Creature_probeThreeMovementRays 0x108fd8 (creature, direction, hit out) -> t.
+
+        Up to three world rays along `direction` (mask 3, length factor 1.1), 11 units
+        above the feet: from the centre, then from one radius to the left of the facing,
+        then to the right.  The first ray that hits inside the segment (0 <= t < 1) ends
+        the probe with its t.  Otherwise the result is the third ray's t, with a miss
+        (negative) turned into 1.0 - so it can exceed 1.  The third argument is handed
+        to world_raycast as its hit-object output; every caller found passes 0, and so
+        must a caller of this method."""
+        if hit_out:
+            raise ValueError('probe_three_rays: a hit-object output is not modelled')
+        u32 = self.u32
+        world = u32(G_WORLD)
+        t = ZERO
+        for side in (0, 0x4000, -0x4000):
+            x, y = C.add(u32(c + 0x10), ZERO) if not side else u32(c + 0x10), u32(c + 0x14)
+            if side:
+                ox = C.mul(C.cos16(self.s16(c + 0x38) + side), u32(c + 0x1C))
+                oy = C.mul(C.sin16(self.s16(c + 0x38) + side), u32(c + 0x1C))
+                x, y = C.add(u32(c + 0x10), ox), C.add(u32(c + 0x14), oy)
+            origin = (x, y, C.add(u32(c + 0x18), 0x41300000))
+            t = self.call('world_raycast', world, origin, direction, c, 0, 3, 1, 0x3F8CCCCC)
+            if not C.lt(t, ZERO) and not C.le(ONE, t):
+                return t
+        return ONE if C.lt(t, ZERO) else t
+
+    def compute_avoidance_target(self, c, dest):
+        """Creature_computeAvoidanceTarget 0x109280 (out, creature, destination) -> a point
+        1200 units away for Creature_moveTo to steer at.
+
+        Along the straight line when the three probes are clear, or when the obstacle is
+        not near (t x distance squared is not below (2 radius) squared - t, not t squared).
+        Otherwise two side rays of length 2 radius, 12 units up (the left one with length
+        factor 1.1, the right one with 1.0): left open -> facing + 0x2000; left blocked,
+        right open -> facing - 0x2000; both blocked -> straight along the facing when
+        tl squared < t x distance squared < tr squared, else toward the side whose ray
+        went farther (+0x2000 when tr < tl).  Heading results keep the creature's z."""
+        u32 = self.u32
+        px, py, pz = self.vec(c + 0x10)
+        d = (C.sub(dest[0], px), C.sub(dest[1], py), C.sub(dest[2], pz))
+        t = self.probe_three_rays(c, d)
+        straight = (C.add(px, C.mul(d[0], 0x44960000)), C.add(py, C.mul(d[1], 0x44960000)),
+                    C.add(pz, C.mul(d[2], 0x44960000)))
+        if C.le(ONE, t):
+            return straight
+        two_r = C.add(u32(c + 0x1C), u32(c + 0x1C))
+        near = C.mul(t, C.add(C.add(C.mul(d[0], d[0]), C.mul(d[1], d[1])), C.mul(d[2], d[2])))
+        if not C.lt(near, C.mul(two_r, two_r)):
+            return straight
+        world = u32(G_WORLD)
+        origin = (C.add(u32(c + 0x10), ZERO), u32(c + 0x14), C.add(u32(c + 0x18), 0x41400000))
+        side = (C.mul(C.cos16(self.s16(c + 0x38) + 0x4000), two_r), C.mul(C.sin16(self.s16(c + 0x38) + 0x4000), two_r), 0)
+        tl = self.call('world_raycast', world, origin, side, c, 0, 3, 1, 0x3F8CCCCC)
+        if not C.le(ZERO, tl) or not C.lt(tl, ONE):
+            turn = 0x2000
+        else:
+            side = (C.mul(C.cos16(self.s16(c + 0x38) - 0x4000), two_r),
+                    C.mul(C.sin16(self.s16(c + 0x38) - 0x4000), two_r), 0)
+            tr = self.call('world_raycast', world, origin, side, c, 0, 3, 1, ONE)
+            if not C.le(ZERO, tr) or not C.lt(tr, ONE):
+                turn = -0x2000
+            elif C.lt(C.mul(tl, tl), near) and C.lt(near, C.mul(tr, tr)):
+                turn = 0
+            else:
+                turn = 0x2000 if C.lt(tr, tl) else -0x2000
+        cs = C.cos16(self.s16(c + 0x38) + turn)
+        sn = C.sin16(self.s16(c + 0x38) + turn)
+        return (C.add(u32(c + 0x10), C.mul(cs, 0x44960000)), C.add(u32(c + 0x14), C.mul(sn, 0x44960000)), u32(c + 0x18))
+
+    def compute_avoidance_offset(self, c, ignore, length):
+        """Creature_computeAvoidanceOffset 0x108a60 (out, creature, ignore; length) -> an
+        offset from the creature's position, or (0, 0, 0).
+
+        Three forward world rays (mask 3, each reporting the object it hit), 13 units up,
+        from the centre and from one radius to the left and right; direction = facing x
+        length with the RADIUS as its z component.  A miss counts as 1.0.  All three clear
+        (not below 1.0): the side byte +0x2f8 becomes 0 and the offset is zero.  With a
+        side already chosen (1 or 2) it is kept.  Otherwise two side rays of length
+        radius + 5 choose one:
+          - with m = the smallest of the three forward results: if `ignore` is the object
+            a forward ray hit and that ray's result equals m, nothing is avoided (zero
+            offset, side stays 0);
+          - the left side ray hit `ignore` nearer than m -> side 2; the right one -> 1
+            (with ignore = 0 "hit ignore" means "hit no object");
+          - else right side ray blocked -> 2; left side ray blocked -> 1; else 1 when the
+            right forward ray is clear, 2 when it is not.
+        Side 1 gives an offset of 2 radius along facing - 12000, side 2 along facing +
+        12000.  No draws."""
+        u32 = self.u32
+        world = u32(G_WORLD)
+
+        def cast(origin, direction):
+            t, hit = self.call('world_raycast', world, origin, direction, c, 1, 3, 1, ONE)
+            return (ONE if C.lt(t, ZERO) else t), hit
+
+        def beside(turn, reach):
+            return (C.mul(C.cos16(self.s16(c + 0x38) + turn), reach), C.mul(C.sin16(self.s16(c + 0x38) + turn), reach))
+
+        forward = (C.mul(C.cos16(self.s16(c + 0x38)), length), C.mul(C.sin16(self.s16(c + 0x38)), length), u32(c + 0x1C))
+        centre = (u32(c + 0x10), u32(c + 0x14), C.add(u32(c + 0x18), 0x41500000))
+        tc, h0 = cast(centre, forward)
+        ox, oy = beside(0x4000, u32(c + 0x1C))
+        tl, h1 = cast((C.add(u32(c + 0x10), ox), C.add(u32(c + 0x14), oy), C.add(u32(c + 0x18), 0x41500000)), forward)
+        ox, oy = beside(-0x4000, u32(c + 0x1C))
+        tr, h2 = cast((C.add(u32(c + 0x10), ox), C.add(u32(c + 0x14), oy), C.add(u32(c + 0x18), 0x41500000)), forward)
+        if not (C.lt(tc, ONE) or C.lt(tl, ONE) or C.lt(tr, ONE)):
+            self.w8(c + 0x2F8, 0)
+            return (0, 0, 0)
+        side = self.s8(c + 0x2F8)
+        if side == 0:
+            nearest = C.fmin(C.fmin(tc, tl), tr)
+            centre = (u32(c + 0x10), u32(c + 0x14), C.add(u32(c + 0x18), 0x41500000))
+            sx, sy = beside(0x4000, C.add(u32(c + 0x1C), 0x40A00000))
+            tsl, h3 = cast(centre, (sx, sy, u32(c + 0x1C)))
+            sx, sy = beside(-0x4000, C.add(u32(c + 0x1C), 0x40A00000))
+            tsr, h4 = cast(centre, (sx, sy, u32(c + 0x1C)))
+            ignore &= M32
+            if ignore and ((h0 == ignore and C.eq(tc, nearest)) or (h1 == ignore and C.eq(tl, nearest))
+                           or (h2 == ignore and C.eq(tr, nearest))):
+                return (0, 0, 0)                                 # the nearest thing ahead is what I am walking to
+            blocked = C.lt(tc, ONE) or C.lt(tr, ONE) or C.lt(tl, ONE)
+            if h3 == ignore and C.lt(tsl, nearest):
+                side = 2
+            elif h4 == ignore and C.lt(tsr, nearest):
+                side = 1
+            elif blocked and C.lt(tsr, ONE):
+                side = 2
+            elif blocked and C.lt(tsl, ONE):
+                side = 1
+            else:
+                side = 2 if C.lt(tr, ONE) else 1
+            self.w8(c + 0x2F8, side)
+        if side not in (1, 2):
+            return (0, 0, 0)
+        turn = -0x2EE0 if side == 1 else 0x2EE0
+        ox = C.mul(C.cos16(self.s16(c + 0x38) + turn), u32(c + 0x1C))
+        oy = C.mul(C.sin16(self.s16(c + 0x38) + turn), u32(c + 0x1C))
+        return (C.add(ox, ox), C.add(oy, oy), 0)
+
+    def move_to_direct(self, c, dest):
+        """Creature_moveToDirect 0x1155e0 (creature, destination) -> 1 on arrival, else 0.
+
+        Arrival as in Creature_moveTo but on the 3-D distance itself (not its square).
+        Every 32nd frame (staggered by serial), unless inert, the steering offset +0x2ec
+        is recomputed by Creature_computeAvoidanceOffset with length min(distance,
+        radius + 10) and nothing to ignore.  The aim is the destination, or position +
+        offset when the offset's x AND y are both non-zero.  Then the common ending.  No
+        path, no stuck recovery."""
+        u32 = self.u32
+        dx = C.sub(dest[0], u32(c + 0x10))
+        dy = C.sub(dest[1], u32(c + 0x14))
+        dz = C.sub(dest[2], u32(c + 0x18))
+        dist = C.sqrt(C.add(C.add(C.mul(dx, dx), C.mul(dy, dy)), C.mul(dz, dz)))
+        radius = u32(c + 0x1C)
+        if C.lt(dist, radius):
+            return 1
+        serial = self.s8(c + 0x230)
+        if not (u32(G_SIM_FRAME) ^ serial) & 7 and C.lt(dist, C.add(radius, radius)):
+            if abs(C.atan2_16(dy, dx) - self.s16(c + 0x38)) >= 0x4001:
+                return 1
+        if self.s8(c + 0x231) == 0 and not (u32(G_SIM_FRAME) ^ serial) & 0x1F:
+            reach = C.fmin(dist, C.add(u32(c + 0x1C), 0x41200000))
+            self.wvec(c + 0x2EC, self.compute_avoidance_offset(c, 0, reach))
+        aim = dest
+        if not C.eq(u32(c + 0x2EC), ZERO) and not C.eq(u32(c + 0x2F0), ZERO):
+            aim = (C.add(u32(c + 0x2EC), u32(c + 0x10)), C.add(u32(c + 0x2F0), u32(c + 0x14)),
+                   C.add(u32(c + 0x2F4), u32(c + 0x18)))
+        self._turn_and_step(c, aim)
+        return 0
+
+    def flee_from(self, c, threat, kind):
+        """Creature_fleeFrom 0x115910 (creature, threat, kind).  Nothing without a threat.
+
+        The flee point +0xf8: when unset (x = y = -1) or reached (2-D distance below the
+        radius) it becomes Creature_randomPointNearHome(300); otherwise, when the creature
+        is farther from home than sqrt(HomeRange^2 - 400) (3-D), it becomes home.  Every
+        8th frame (staggered) the steering offset +0x2ec is recomputed by
+        Creature_computeAvoidanceOffset with length radius + 10.  With an offset (x and y
+        both non-zero) the aim is position + offset.  Otherwise the creature walks
+        waypoints of a path asked for FROM THE THREAT'S POSITION (request kind 1, or 2
+        when `kind` is non-zero; search distance 600): up to sixteen advances while the
+        current waypoint is missing, within one radius, or passed; the aim is the
+        waypoint, or the flee point when the list has run out - and the aim is then
+        WRITTEN BACK as the flee point.  Then the common ending."""
+        u32 = self.u32
+        if not threat:
+            return
+        fx, fy = u32(c + 0xF8), u32(c + 0xFC)
+        pick = C.eq(fx, MINUS_ONE) and C.eq(fy, MINUS_ONE)
+        if not pick:
+            dx, dy = C.sub(fx, u32(c + 0x10)), C.sub(fy, u32(c + 0x14))
+            pick = C.lt(C.sqrt(C.add(C.mul(dx, dx), C.mul(dy, dy))), u32(c + 0x1C))
+        if pick:
+            self.wvec(c + 0xF8, self.random_point_near_home(c, 300))
+        else:
+            hx = C.sub(u32(c + 0x10), u32(c + 0x3B4))
+            hy = C.sub(u32(c + 0x14), u32(c + 0x3B8))
+            hz = C.sub(u32(c + 0x18), u32(c + 0x3BC))
+            limit = C.sub(C.mul(u32(c + 0x3C0), u32(c + 0x3C0)), 0x43C80000)
+            if C.lt(limit, C.add(C.add(C.mul(hx, hx), C.mul(hy, hy)), C.mul(hz, hz))):
+                self.wvec(c + 0xF8, self.vec(c + 0x3B4))
+        if not (u32(G_SIM_FRAME) ^ self.s8(c + 0x230)) & 7:
+            self.wvec(c + 0x2EC, self.compute_avoidance_offset(c, 0, C.add(u32(c + 0x1C), 0x41200000)))
+        if not C.eq(u32(c + 0x2EC), ZERO) and not C.eq(u32(c + 0x2F0), ZERO):
+            aim = (C.add(u32(c + 0x2EC), u32(c + 0x10)), C.add(u32(c + 0x2F0), u32(c + 0x14)),
+                   C.add(u32(c + 0x2F4), u32(c + 0x18)))
+            off = s16(self.vcall(c, 26, 0, aim))
+        else:
+            waypoint = self.get_waypoint(c)
+            for _ in range(16):
+                nxt = self.get_waypoint(c, 1)
+                to_next = (C.sub(nxt[0], waypoint[0]), C.sub(nxt[1], waypoint[1]))
+                to_me = (C.sub(u32(c + 0x10), waypoint[0]), C.sub(u32(c + 0x14), waypoint[1]))
+                if not C.eq(waypoint[0], MINUS_ONE):
+                    wx = C.sub(waypoint[0], u32(c + 0x10))
+                    wy = C.sub(waypoint[1], u32(c + 0x14))
+                    if not C.lt(C.sqrt(C.add(C.mul(wx, wx), C.mul(wy, wy))), u32(c + 0x1C)):
+                        if C.eq(nxt[0], MINUS_ONE):
+                            break
+                        if not C.lt(ZERO, C.add(C.mul(to_next[0], to_me[0]), C.mul(to_next[1], to_me[1]))):
+                            break
+                _ok, waypoint = self.advance_waypoint(c, waypoint, self.vec(threat + 0x10), 2 if s8(kind) else 1,
+                                                      ZERO, 0x44160000)
+                if C.eq(waypoint[0], MINUS_ONE):
+                    break
+            if C.eq(waypoint[0], MINUS_ONE):
+                waypoint = self.vec(c + 0xF8)
+            off = s16(self.vcall(c, 26, 0, waypoint))
+            self.wvec(c + 0xF8, waypoint)
+        self._step(c, off)
+
+    def flee_from_target(self, c, kind):
+        """Creature_fleeFromTarget 0x119f08 (creature, kind): Creature_fleeFrom the target,
+        nothing without one."""
+        target = self.handle_obj(c + 0x234)
+        if self.u32(c + 0x234):
+            self.flee_from(c, target, s8(kind))
+
+    def move_to_ally(self, c):
+        """Creature_moveToAlly 0x119e98 -> Creature_moveTo to the ally's position; with no
+        ally (+0x238), set-state 0 and 0."""
+        if not self.u32(c + 0x238):
+            self.vcall(c, 27, 0)
+            return 0
+        return self.move_to(c, self.vec(self.handle_obj(c + 0x238) + 0x10))
 
     # =====================================================================================
     # Wander helpers
@@ -1941,6 +2208,43 @@ class Model:
         else.  No filter, no timers, no handle: those are in Creature_filterState, which
         only the derived set-states call."""
         self.w16(c + 0x232, state)
+
+    def filter_state(self, c, state):
+        """Creature_filterState 0x10a9c0 (creature, &state) -> (refused, state): what a
+        derived set-state runs on the requested state before acting on it.
+
+        refused = 1 (state untouched): in PvP mode B without mode A while the word
+        0x503890 is set and 0x503894 is clear; and for an inert creature (+0x231) asked
+        for state 1.  A request for 0x14 first zeroes the stun, cooldown, root and
+        spell-speed timers.  Then, in this order:
+          root timer running, request not 0, 5 or 6..15 -> 5 with a target, 0 without
+              (and nothing below is looked at);
+          stun timer running, request not 0x13          -> 0x13;
+          else cooldown running, request not 0x10       -> 0x10 (Creature_isAttackReady
+              first ZEROES the cooldown of a creature with no target).
+        A result of 0 clears the target handle."""
+        u32 = self.u32
+        state = s32(state)
+        if u32(0x4F7120) and not u32(0x4F711C) and u32(0x503890) and not u32(0x503894):
+            return 1, state
+        if self.s8(c + 0x231) and state == 1:
+            return 1, state
+        if state == 0x14:
+            for off in (0x31C, 0x318, 0x314, 0x31A):
+                self.w16(c + off, 0)
+        if self.s16(c + 0x314) and state not in (0, 5) and not 6 <= state <= 15:
+            state = 5 if u32(c + 0x234) else 0
+        elif self.s16(c + 0x31C) and state != 0x13:
+            state = 0x13
+        else:
+            if not u32(c + 0x234):
+                self.w16(c + 0x318, 0)
+            if self.s16(c + 0x318) and state != 0x10:
+                state = 0x10
+        if state == 0:
+            self.call('handle_clear', c + 0x234)
+            self.w32(c + 0x234, 0)
+        return 0, state
 
     def slot30_stun(self, c, frames, flash):
         """Slot 30, Creature_stun 0x118a58 (creature, frames, flash): nothing for a boss or

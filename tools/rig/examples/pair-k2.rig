@@ -1,0 +1,21 @@
+# FINDINGS K2 on two machines: a potion press followed, inside the input delay, by the
+# inventory button leaves the two machines one potion apart.
+#
+#   python3 -I -B tools/rig/rig.py pair local/rig-out/k2 --bus delay=10 \
+#       --a-load local/rig-out/run1/a.zip --b-load local/rig-out/run1/b.zip \
+#       --script tools/rig/examples/pair-k2.rig \
+#       --tick-watch p1q1=g_players+0x4c30+0x258c:s16 --tick-watch l_menu=g_localMenuOpen:u8
+#   python3 -I -B tools/rig/compare.py ticks local/rig-out/k2/a.tick.tsv local/rig-out/k2/b.tick.tsv
+#
+# (states from pair-start.rig). Seen: from tick 744 machine B holds one health potion fewer
+# for player 1 than machine A, the owner, for the rest of the run. With the next line
+# uncommented - the patch on both machines - the logs agree.
+
+# pnach patches/SLUS-20973_4028A55F.pnach "Net test: potions always leave the bag directly"
+
+# player 1 (machine A's) is hurt on both machines in the same tick, so the potion is used
+ontick 700 poke g_players+0x4c30+0xac:f32 10
+wait 80
+A: tap r2 3            # health potion
+A: tap select 3        # inventory, three frames later; it opens on A at once
+wait 300

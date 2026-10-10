@@ -1,0 +1,20 @@
+# FINDINGS K1 on two machines, found by random input: a use press already in the input
+# stream when the D-pad goes down interacts on the other machine only.
+#
+#   python3 -I -B tools/rig/rig.py pair local/rig-out/k1 --frames 1750 \
+#       --a-load local/rig-out/run1/a.zip --b-load local/rig-out/run1/b.zip \
+#       --script tools/rig/examples/pair-k1.rig \
+#       --tick-watch l_sel1=0x41b81c:s32 --tick-watch pad1=g_pads+0x58+8:x32 \
+#       --tick-watch pending=g_pendingLevel:str12
+#   python3 -I -B tools/rig/compare.py ticks local/rig-out/k1/a.tick.tsv local/rig-out/k1/b.tick.tsv
+#
+# (states from pair-start.rig, no bus delay). Seen: at tick 2033 machine B writes a
+# pending level for a use press of player 1 and changes level; machine A, whose selector
+# word went up one tick earlier, does not, and both then flag the other out of sync.
+# With the next line uncommented both change level in the same tick.
+
+# pnach patches/SLUS-20973_4028A55F.pnach "Net test: use button works with the spell selector open"
+
+wait 30
+fuzz 14 6000 move,rstick,fight,potion,use,dpad,select,l3r3
+wait 200

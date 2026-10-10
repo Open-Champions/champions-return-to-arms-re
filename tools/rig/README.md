@@ -17,6 +17,7 @@ in this directory; what the rig has shown so far is in `docs/issues/live-rig.md`
 | `examples/boot-to-hub.rig` | script: power-on to a controllable character in the first level, offline |
 | `examples/net-solo.rig` | script: power-on to a net game on one machine, through the game's developer LAN start |
 | `examples/pair-start.rig` | script: two joined machines, power-on to one lockstep net game |
+| `examples/pair-arena.rig`, `pair-k1.rig`, `pair-k2.rig` | scripts for a joined pair: into the arena and through its opening; the two divergences found so far |
 | `compare.py` | lines up the tick logs of two machines and finds the first difference; diffs two memory dumps |
 
 ## Build
