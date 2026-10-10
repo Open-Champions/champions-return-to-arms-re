@@ -166,6 +166,13 @@ class World:
         self.vt_creature = emu.alloc(8 * self.CREATURE_SLOTS)
         for slot in range(self.CREATURE_SLOTS):
             mem.w32(self.vt_creature + 8 * slot + 4, self.stub_for('Creature.v%d' % slot))
+        self.vt_holder = emu.alloc(8 * 24)             # a weapon holder: every slot a named stub
+        for slot in range(24):
+            mem.w32(self.vt_holder + 8 * slot + 4, self.stub_for('Holder.v%d' % slot))
+        self.holder = emu.alloc(0x80)
+        mem.w32(self.holder, self.vt_holder)
+        self.items = [emu.alloc(0x50) for _ in range(12)]
+        self.owner_node = emu.alloc(0x20)
         self.monsters = [emu.alloc(0x600) for _ in range(8)]
         self.players = [emu.alloc(0x600) for _ in range(4)]
         self.objects = self.monsters + self.players
@@ -1297,8 +1304,6 @@ World.on_obj_moveAndCollide = _on_move_and_collide
 
 def scenario_poisonbolt(t):
     rng, world, mem = t.rng, t.world, t.mem
-    if not hasattr(world, 'owner_node'):
-        world.owner_node = t.rig.emu.alloc(0x20)
     for index in range(t.reps(10)):
         skill, caster, level, pos, facing = cast_setup(t, 89)
         world.pool_fail = 0.0
@@ -1501,6 +1506,319 @@ def scenario_battlecry(t):
 
 SCENARIOS.append(('77 battlecry', 'cast, the three events, streamers, the cry with its stun rolls, the aura',
                   scenario_battlecry))
+
+
+# ---------------------------------------------------------------------------------------
+# The six passives: 71, 73, 74, 79, 92, 93
+# ---------------------------------------------------------------------------------------
+entry('SkillBerserkerRage_swingFactor', 0x2FE324, 0x2FE49C, 'iiii', 'f', 'berserkerrage_swing_factor', '71 berserkerrage')
+entry('SkillBerserkerRage_damageFactor', 0x2FE49C, 0x2FE598, 'iiii', 'f', 'berserkerrage_damage_factor',
+      '71 berserkerrage')
+entry('SkillAxeBandolier_getStat0Complement', 0x2FF2E4, 0x2FF374, 'ii', 'f', 'passive_complement', '73 axebandolier')
+entry('SkillLightQuiver_getStat0Complement', 0x2FF4B4, 0x2FF544, 'ii', 'f', 'passive_complement', '74 lightquiver')
+entry('SkillThrowing_getStat0Fraction', 0x304B54, 0x304BC8, 'ii', 'f', 'throwing_fraction', '79 throwing')
+entry('SkillBattleMage_getStat0Fraction', 0x314A78, 0x314AEC, 'ii', 'f', 'battlemage_fraction', '92 battlemage')
+entry('SkillPenetratingArrows_getStats01Fraction', 0x314C88, 0x314D40, 'iWWi', 'w2', 'penetratingarrows_fractions',
+      '93 penetratingarrows')
+
+
+def scenario_passives(t):
+    rng, world, mem = t.rng, t.world, t.mem
+    ranks = list(range(0, 41)) + [41, 60, 127]
+    for rank in ranks:
+        t.do('SkillAxeBandolier_getStat0Complement', t.skills[73], rank)
+        t.do('SkillLightQuiver_getStat0Complement', t.skills[74], rank)
+        t.do('SkillThrowing_getStat0Fraction', t.skills[79], rank)
+        t.do('SkillBattleMage_getStat0Fraction', t.skills[92], rank)
+        t.do('SkillPenetratingArrows_getStats01Fraction', t.skills[93], 0, 0, rank)
+        for _ in range(t.reps(12)):
+            slot = rng.randrange(4)
+            rec = G_PLAYERS + slot * REC_SIZE
+            mem.wf32(rec + 0xB0, rng.choice((120.0, 120.0, 1.0, 0.0)))
+            mem.wf32(rec + 0xAC, rng.choice((0.0, 1.0, 59.5, 60.0, 60.5, 120.0, -3.0)))
+            mem.w32(rec + REC_OBJ, rng.choice((world.players[slot], world.players[slot], 0)))
+            frames = rng.choice((0, 1, 7, 26, 27, 59, 60, 61, 500, -4))
+            t.do('SkillBerserkerRage_swingFactor', t.skills[71], rank, rec, frames)
+            t.do('SkillBerserkerRage_damageFactor', t.skills[71], rank, rec, frames)
+            mem.wf32(rec + 0xB0, 120.0)
+    restore_players(t)
+
+
+SCENARIOS.append(('71 berserkerrage', 'the passives\' helper functions at every rank', scenario_passives))
+for _group in ('73 axebandolier', '74 lightquiver', '79 throwing', '92 battlemage', '93 penetratingarrows'):
+    SCENARIOS.append((_group, 'see 71', lambda t: None))
+
+
+# ---------------------------------------------------------------------------------------
+# 97 Disease Blade
+# ---------------------------------------------------------------------------------------
+entry('SkillDiseaseBlade_canUse', 0x318730, 0x318764, 'ii', 'i', 'diseaseblade_can_use', '97 diseaseblade')
+entry('SkillDiseaseBlade_cast', 0x318764, 0x318804, 'iiivi', 'i', 'diseaseblade_cast', '97 diseaseblade')
+entry('SkillDiseaseBlade_manaCost', 0x318AA0, 0x318AD4, 'ii', 'f', 'skill_mana_cost', '97 diseaseblade')
+body('SpellDiseaseBlade_ctor', 0x318AD4, 0x319068, '97 diseaseblade')
+entry('SpellDiseaseBlade_run', 0x319068, 0x3195B0, 'ivi', 'n', 'diseaseblade_spell_run', '97 diseaseblade')
+MANA_KEYS[0x318AA0] = 'SkillDiseaseBlade_manaCost'
+
+
+def arm_players(t):
+    """Weapon item records for the four players: either weapon may be missing, thrown
+    (item flag bit 24), full of other modifiers, or already diseased."""
+    rng, mem, world = t.rng, t.mem, t.world
+    for index, item in enumerate(world.items):
+        for off in range(0, 0x50, 4):
+            mem.w32(item + off, 0)
+        mem.w64(item + 8, rng.choice((0, 0, 0, 0, 0x1000000, 0x40000000000)))
+        for k in range(4):
+            ident = rng.choice((0xFFFF, 0xFFFF, 0xFFFF, 0x15, 0x26, 0x0E))
+            mem.w16(item + 0x24 + 8 * k, ident)
+            if ident != 0xFFFF:
+                mem.w16(item + 0x26 + 8 * k, rng.choice((0, 5, 20, 30, 31, 34, 59, 300, 0xFFF0)))
+                mem.w16(item + 0x28 + 8 * k, rng.choice((0, 6, 36)))
+                mem.w16(item + 0x2A + 8 * k, rng.choice((0, 1, 31, 900)))
+    for slot in range(4):
+        rec = G_PLAYERS + slot * REC_SIZE
+        mem.w8(rec + 0x4A7C, rng.choice((0, 1)))
+        mem.w32(rec + 0x4434, rng.choice((0, world.items[3 * slot])))
+        mem.w32(rec + 0x4438, rng.choice((0, world.items[3 * slot + 1])))
+        mem.w32(rec + 0x443C, rng.choice((0, world.items[3 * slot + 2])))
+    for monster in world.monsters:                      # a monster may have a weapon holder
+        mem.w32(monster + 0x50, rng.choice((0, world.holder)))
+
+
+def scenario_diseaseblade(t):
+    rng, world, mem = t.rng, t.world, t.mem
+    for index in range(t.reps(40)):
+        # rank 17 and up: the aura's own modifier (statistic 3 >= 31) fails its "old < 31" test
+        skill, caster, level, pos, facing = cast_setup(t, 97, SK.TYPEINFO['DiseaseBlade'],
+                                                       (1, 2, 4, 5, 6, 10, 16, 17, 18, 20, 20, 30))
+        world.reset_objects(rng, spread=rng.choice((30, 80, 300)))
+        mem.w32(caster + 0xC, 0x60 if caster in world.players else 0x20)
+        arm_players(t)
+        mem.w32(SK.G_PVP_MODE_A, rng.choice((0, 0, 1)))
+        t.do('SkillDiseaseBlade_canUse', skill, caster)
+        t.do('SkillDiseaseBlade_manaCost', skill, level)
+        spell = t.do('SkillDiseaseBlade_cast', skill, level, caster, pos, facing)
+        if not spell:
+            continue
+        world.busy.add(spell)
+        frames = mem.s32(spell + 0x18) - mem.u32(RC.G_SIM_FRAME)
+        steps = rng.choice((1, 1, 7, 15))               # a tick is cheap: walk the frames in strides too
+        cut = rng.random() < 0.3
+        while True:
+            t.tick(steps if rng.random() < 0.8 else 30 - mem.u32(RC.G_SIM_FRAME) % 30)
+            churn(t, 0.05)
+            if rng.random() < 0.05:                     # the enchant timers of the players' items run down
+                for item in world.items:
+                    for k in range(4):
+                        if mem.u16(item + 0x24 + 8 * k) == 0x26 and rng.random() < 0.5:
+                            mem.w16(item + 0x24 + 8 * k, 0xFFFF)
+            t.do('SpellDiseaseBlade_run', spell, pos, facing)
+            if t.destroyed(spell) or (cut and rng.random() < 0.02):
+                break
+        world.busy.discard(spell)
+    mem.w32(SK.G_PVP_MODE_A, 0)
+
+
+SCENARIOS.append(('97 diseaseblade', 'cast by players and monsters, the aura every 30 frames, expiry',
+                  scenario_diseaseblade))
+
+
+# ---------------------------------------------------------------------------------------
+# 90 Summon Badger
+# ---------------------------------------------------------------------------------------
+entry('SkillSummonBadger_canUse', 0x310690, 0x3106F4, 'ii', 'i', 'summonbadger_can_use', '90 summonbadger')
+entry('SkillSummonBadger_cast', 0x3106F4, 0x310B5C, 'iiivi', 'i', 'summonbadger_cast', '90 summonbadger')
+entry('SkillSummonBadger_manaCost', 0x310C08, 0x310C3C, 'ii', 'f', 'skill_mana_cost', '90 summonbadger')
+body('SpellSummonBadger_ctor', 0x310C3C, 0x310CD0, '90 summonbadger')
+entry('SpellSummonBadger_run', 0x310CD0, 0x311034, 'ivi', 'n', 'summonbadger_spell_run', '90 summonbadger')
+MANA_KEYS[0x310C08] = 'SkillSummonBadger_manaCost'
+
+
+def _on_find_by_name(self, args, view, rng):
+    return Res(rng.choice((0, 0, self.monsters[7])))
+
+
+def _on_badger_ctor(self, args, view, rng):
+    """What a monster constructor leaves: a creature in the world at the spot."""
+    block, _name, pos, facing = args[0], args[1], args[2], args[3]
+    for i in range(3):
+        view.poke(block + 0x10 + 4 * i, 4, pos[i])
+    view.poke(block + 0x3C, 4, pos[2])
+    view.poke(block + 0x38, 2, facing & 0xFFFF)
+    view.poke(block + 0xC, 4, 0x20)
+    view.poke(block + 0x48, 4, self.vt_creature)
+    view.poke(block + 0xA8, 8, rng.choice((0, 0x40000, 0x100000000000)))
+    view.poke(block + 0xDC, 4, f32(1.0))
+    view.poke(block + 0x44, 4, rng.getrandbits(32))
+    return Res()
+
+
+def _on_find_free_spot(self, args, view, rng):
+    pos = args[0]
+    spot = (f32(fl(pos[0]) + rng.uniform(-60, 60)), f32(fl(pos[1]) + rng.uniform(-60, 60)), pos[2])
+    return Res(outs=[spot, rng.choice((0, 1, 1, 0xFF))])
+
+
+World.on_world_findObjectByName = _on_find_by_name
+World.on_CastBadger_ctor = _on_badger_ctor
+World.on_world_findFreeSpot = _on_find_free_spot
+
+
+def scenario_summonbadger(t):
+    rng, world, mem = t.rng, t.world, t.mem
+    for index in range(t.reps(24)):
+        skill, caster, level, pos, facing = cast_setup(t, 90)
+        if caster in world.players and rng.random() < 0.2:
+            mem.w32(caster + 0x3C8, rng.choice((4, 7, 0xFFFFFFFF)))    # a slot no badger name exists for
+        t.do('SkillSummonBadger_canUse', skill, caster)
+        t.do('SkillSummonBadger_manaCost', skill, level)
+        slot = mem.u32(caster + 0x3C8)
+        if caster in world.players:
+            mem.w32(caster + 0x3C8, world.players.index(caster) if rng.random() < 0.8 else slot)
+        world.pool_fail = rng.choice((0.0, 0.0, 0.25))
+        spell = t.do('SkillSummonBadger_cast', skill, level, caster, pos, rng.choice((facing, facing | 0xFFFF0000)))
+        world.pool_fail = 0.05
+        mem.w32(caster + 0x3C8, world.players.index(caster) if caster in world.players else 0)
+        if not spell:
+            continue
+        badgers = [b for b in t.state.get('taken', ()) if world.block_size.get(b) == 0x3D0]
+        world.busy.update([spell] + badgers)
+        cut = rng.random() < 0.3
+        for frame in range(200):
+            t.tick()
+            if cut and rng.random() < 0.02:             # the badger is destroyed: the handle empties
+                t.rig.emu.call(0x1A1698, spell + 0x18)
+            if rng.random() < 0.01 and mem.u32(spell + 0x18):
+                mem.w32(mem.u32(spell + 0x18) + 0xC, 0)  # a node that lost its object
+            t.do('SpellSummonBadger_run', spell, pos, facing)
+            if t.destroyed(spell):
+                break
+            if mem.u32(spell + 0x18) and not mem.u32(mem.u32(spell + 0x18) + 0xC):
+                mem.w32(mem.u32(spell + 0x18) + 0xC, badgers[0])
+        t.rig.emu.call(0x1A1698, spell + 0x18)
+        world.busy.difference_update([spell] + badgers)
+
+
+SCENARIOS.append(('90 summonbadger', 'can-use, cast by players and monsters, the fade-in spell', scenario_summonbadger))
+
+
+# ---------------------------------------------------------------------------------------
+# 91 Raise Army
+# ---------------------------------------------------------------------------------------
+entry('SkillRaiseArmy_canUse', 0x3134B0, 0x3134E4, 'ii', 'i', 'raisearmy_can_use', '91 raisearmy')
+entry('SkillRaiseArmy_cast', 0x3134E4, 0x31368C, 'iiivi', 'i', 'raisearmy_cast', '91 raisearmy')
+entry('SkillRaiseArmy_manaCost', 0x3137A4, 0x3137D8, 'ii', 'f', 'skill_mana_cost', '91 raisearmy')
+body('SpellRaiseArmy_ctor', 0x3137D8, 0x31399C, '91 raisearmy')
+entry('SpellRaiseArmy_run', 0x31399C, 0x313B38, 'ivi', 'n', 'raisearmy_spell_run', '91 raisearmy')
+entry('SpellRaiseArmy_isRaisable', 0x313B38, 0x313BD4, 'ii', 'i', 'raisearmy_is_raisable', '91 raisearmy')
+entry('SpellRaiseArmy_raiseInRing', 0x313BD4, 0x314144, 'if', 'n', 'raisearmy_raise_in_ring', '91 raisearmy')
+MANA_KEYS[0x3137A4] = 'SkillRaiseArmy_manaCost'
+
+
+def _on_create_object(self, args, view, rng):
+    """The factory: usually a fresh creature of the corpse's class, sometimes nothing,
+    sometimes an object that is not a creature."""
+    if rng.random() < 0.15:
+        return Res(0)
+    taken = view.state.setdefault('created', set())
+    for block in self.raised:
+        if block not in taken:
+            break
+    else:
+        return Res(0)
+    taken.add(block)
+    for off in range(0, 0x400, 4):
+        view.poke(block + off, 4, 0)
+    for i in range(3):
+        view.poke(block + 0x10 + 4 * i, 4, args[1][i])
+    view.poke(block + 0x38, 2, args[2] & 0xFFFF)
+    view.poke(block + 0xC, 4, rng.choice((0x20, 0x20, 0x20, 0x20, 0x10)))
+    view.poke(block + 0x34, 4, args[0])
+    view.poke(block + 0x48, 4, self.vt_creature)
+    view.poke(block + 0x50, 4, rng.choice((0, self.holder)))
+    view.poke(block + 0xA8, 8, rng.choice((0, 0x40000)))
+    view.poke(block + 0x118, 1, 1)
+    view.poke(block + 0xE8, 4, rng.getrandbits(8))
+    return Res(block)
+
+
+def _on_prefix(self, args, view, rng):
+    return Res(rng.choice((0, 1, 1, 0xFFFFFFFF)))
+
+
+def _on_hide_mask(self, args, view, rng):
+    return Res(rng.getrandbits(64))
+
+
+def _on_holder_value(self, args, view, rng):
+    return Res(rng.choice((0, 4, 0x15, 0x26)))
+
+
+World.on_world_createObject = _on_create_object
+World.on_str_prefixDiffers = _on_prefix
+World.on_model_buildHideMask = _on_hide_mask
+World.on_Holder_v15 = World.on_Holder_v16 = _on_holder_value
+
+
+def corpses(t):
+    """Bodies around the caster: most dead and lying still, some still falling, some
+    already sinking, a boss, a prop."""
+    rng, mem, world = t.rng, t.mem, t.world
+    names = [0x00D20000, 0x00D20010, 0]
+    for obj in world.monsters:
+        plain = rng.random() < 0.75                     # a body that can be raised
+        mem.w32(obj + 0xC, 0x28 if plain else rng.choice((0x20, 0x2A, 0x1000028, 0x08, 0x68)))
+        mem.w64(obj + 0xA8, rng.choice((0, 0x40000)) if plain else
+                rng.choice((0, 1, 0x800, 0x1000000, 0x4000000, 0x100000000)))
+        mem.w32(obj + 0x34, rng.choice(names))
+        mem.w32(obj + 0x50, rng.choice((0, world.holder)))
+        mem.w32(obj + 0xE8, rng.getrandbits(16))
+        mem.w32(obj + 0x3E0, rng.choice((0, 1, 2, 3)))
+        mem.wf32(obj + 0x22C, rng.choice((300.0, 40.0, 5.0, 0.0)))
+        for off in range(0xE0, 0x160, 4):               # the animation tracks the pose is copied from
+            mem.w32(obj + off, rng.getrandbits(32))
+        mem.w16(obj + 0x11A, 0x80 if plain or rng.random() < 0.5 else 0x08)
+        mem.w8(obj + 0x118, rng.choice((0, 1, 2, 0xFF)))
+
+
+def scenario_raisearmy(t):
+    rng, world, mem = t.rng, t.world, t.mem
+    if not hasattr(world, 'raised'):
+        world.raised = [t.rig.emu.alloc(0x400) for _ in range(8)]
+    for index in range(t.reps(12)):
+        skill, caster, level, pos, facing = cast_setup(t, 91, SK.TYPEINFO['RaiseArmy'], (1, 2, 4, 10, 16, 20, 40))
+        world.reset_objects(rng, spread=rng.choice((40, 120)))
+        caster = rng.choice(world.players)
+        mem.w32(caster + 0xC, 0x60)
+        corpses(t)
+        t.do('SkillRaiseArmy_canUse', skill, caster)
+        t.do('SkillRaiseArmy_manaCost', skill, level)
+        for obj in rng.sample(world.objects, 6):
+            t.do('SpellRaiseArmy_isRaisable', 0, rng.choice((obj, obj, obj, 0)))
+        world.query = rng.sample(world.objects, rng.randrange(5, 12))
+        spell = t.do('SkillRaiseArmy_cast', skill, level, caster, pos, facing)
+        world.query = None
+        if not spell:
+            continue
+        world.busy.add(spell)
+        cut = rng.random() < 0.25
+        for frame in range(120):
+            t.tick()
+            if rng.random() < 0.1:                      # a corpse sinks, is revived by someone else, moves
+                obj = rng.choice(world.monsters)
+                mem.w64(obj + 0xA8, mem.u64(obj + 0xA8) ^ rng.choice((0x1000000, 0x800)))
+            if rng.random() < 0.05:                     # the ring anywhere, on its own
+                t.do('SpellRaiseArmy_raiseInRing', spell, f32(rng.choice((0.0, 40.0, 2000.0))))
+            if rng.random() < 0.05 and mem.u32(spell + 0x18):
+                mem.w32(mem.u32(spell + 0x18) + 0xC, 0)  # a body that is gone
+            t.do('SpellRaiseArmy_run', spell, pos, facing)
+            if t.destroyed(spell) or (cut and rng.random() < 0.03):
+                break
+        t.rig.emu.call(0x1A1698, spell + 0x18)
+        world.busy.discard(spell)
+
+
+SCENARIOS.append(('91 raisearmy', 'can-use, cast among corpses, the wave raising up to its limit', scenario_raisearmy))
 
 
 # @@SECTIONS@@

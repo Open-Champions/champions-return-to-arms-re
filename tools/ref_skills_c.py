@@ -2333,8 +2333,562 @@ MODELLED.update({'SkillBattleCry_canUse': 0x301464, 'SkillBattleCry_cast': 0x301
                  'mat34_setPosRotZ': 0x163B30, 'mat34_transformPoint': 0x1660A0})
 
 
+class Passives:
+    """The six passives - 71 Berserker Rage, 73 Axe Bandolier, 74 Light Quiver, 79 Throwing,
+    92 Battle Mage, 93 Penetrating Arrows: kind 3, never cast (the default can-use, cast
+    and mana cost), no spell.  Each is a statistic table and one or two helpers that code
+    in the player and object areas calls with the player's rank.  All lookups are slot 10,
+    so rank 0 gives 0.  The callers - Player_run's swing speed, Player_recalcDamage (the
+    thrown-weapon maximum, the Battle Mage range), player_itemWeight, MissileWeapon_onTouch
+    - belong to tools/ref_player.py, tools/ref_combat.py and tools/ref_objects.py."""
+    REC_HP, REC_HP_MAX, REC_OBJECT = 0xAC, 0xB0, 0x43D8
+
+    def _rage(self, skill, rank, record, frames, stat, flash):
+        level = self.skill_call(skill, 14, rank, 0x14)
+        if not C.le(C.div(self.u32(record + self.REC_HP), self.u32(record + self.REC_HP_MAX)), HALF):
+            return ONE
+        ramp = C.mul(C.from_int(s32(frames)), DT)
+        if C.lt(ONE, ramp):
+            ramp = ONE
+        obj = self.u32(record + self.REC_OBJECT)
+        if flash and obj:
+            self.w16(obj + 0x9E, 0)
+            self.w16(obj + 0x92, 0)
+            self.w16(obj + 0x94, 0)
+            self.w16(obj + 0x98, C.to_int(C.mul(ramp, 0x42800000)))
+            self.w16(obj + 0x9C, C.to_int(C.mul(ramp, 0x41800000)))
+            self.w16(obj + 0x90, C.to_int(C.mul(ramp, 0x42C00000)))
+            self.w16(obj + 0x96, C.to_int(C.mul(ramp, 0x41700000)))
+            self.w16(obj + 0x9A, C.to_int(C.mul(ramp, 0x41800000)))
+        value = C.from_int(s32(self.skill_call(skill, 10, stat, level)))
+        return C.add(C.mul(C.mul(value, F_0_01), ramp), ONE)
+
+    def berserkerrage_swing_factor(self, skill, rank, record, frames):
+        """SkillBerserkerRage_swingFactor 0x2fe324 (skill, rank, player record, frames) ->
+        1.0 while record hp / max hp > 0.5; else 1 + slot 10 (0, rank) x 0.01 x t with t =
+        min(1, frames x (1/60)), and the record's player object (+0x43d8, if any) gets its
+        flash quads from t: +0x90 = t x 96, +0x96 = t x 15, +0x98 = t x 64, +0x9a = +0x9c =
+        t x 16 (truncated), +0x92 = +0x94 = +0x9e = 0."""
+        return self._rage(skill, rank, record, frames, 0, True)
+
+    def berserkerrage_damage_factor(self, skill, rank, record, frames):
+        """SkillBerserkerRage_damageFactor 0x2fe49c: the same with statistic 1, no flash."""
+        return self._rage(skill, rank, record, frames, 1, False)
+
+    def passive_complement(self, skill, rank):
+        """SkillAxeBandolier_getStat0Complement 0x2ff2e4 and SkillLightQuiver_... 0x2ff4b4
+        (skill, rank) -> max(0, 1 - slot 10 (0, rank) x 0.01): the weight factor of thrown
+        axes / of ammunition."""
+        level = self.skill_call(skill, 14, rank, 2)
+        left = C.sub(ONE, C.mul(C.from_int(s32(self.skill_call(skill, 10, 0, level))), F_0_01))
+        return ZERO if C.lt(left, ZERO) else left
+
+    def throwing_fraction(self, skill, rank):
+        """SkillThrowing_getStat0Fraction 0x304b54 (skill, rank) -> slot 10 (0, rank) x 0.01."""
+        level = self.skill_call(skill, 14, rank, 2)
+        return C.mul(C.from_int(s32(self.skill_call(skill, 10, 0, level))), F_0_01)
+
+    def battlemage_fraction(self, skill, rank):
+        """SkillBattleMage_getStat0Fraction 0x314a78 (skill, rank) -> slot 10 (0, rank) x 0.01;
+        0 at rank 0, and Player_recalcDamage REPLACES an eligible weapon's range by that
+        share of itself."""
+        level = self.skill_call(skill, 14, rank, 1)
+        return C.mul(C.from_int(s32(self.skill_call(skill, 10, 0, level))), F_0_01)
+
+    def penetratingarrows_fractions(self, skill, rank):
+        """SkillPenetratingArrows_getStats01Fraction 0x314c88 (skill, out 0, out 1, rank) ->
+        (slot 10 (0, rank) x 0.01, slot 10 (1, rank) x 0.01): the chances that an arrow
+        cannot be blocked and that it flies on."""
+        first = C.mul(C.from_int(s32(self.skill_call(skill, 10, 0, rank))), F_0_01)
+        second = C.mul(C.from_int(s32(self.skill_call(skill, 10, 1, rank))), F_0_01)
+        return first, second
+
+
+MODELLED.update({'SkillBerserkerRage_swingFactor': 0x2FE324, 'SkillBerserkerRage_damageFactor': 0x2FE49C,
+                 'SkillAxeBandolier_getStat0Complement': 0x2FF2E4, 'SkillLightQuiver_getStat0Complement': 0x2FF4B4,
+                 'SkillThrowing_getStat0Fraction': 0x304B54, 'SkillBattleMage_getStat0Fraction': 0x314A78,
+                 'SkillPenetratingArrows_getStats01Fraction': 0x314C88})
+
+
+class DiseaseBlade:
+    """97 - Disease Blade (`diseaseblade`, shadowknight; Bubo casts it on its allies): a
+    timed disease modifier on the caster's weapons, refreshed onto nearby players'
+    weapons from rank 5; on a monster a switch of the weapon holder's element."""
+    DB_VT = 0x51C4A0
+    DB_LUMP, DB_SOUND = 0x553120, 0x553128
+    REC_WEAPON_SETS, REC_SECOND_WEAPON, REC_ACTIVE_SET = 0x4434, 0x443C, 0x4A7C
+
+    def diseaseblade_can_use(self, skill, caster):
+        """SkillDiseaseBlade_canUse 0x318730: 1 unless the caster carries a SpellDiseaseBlade."""
+        return 0 if self.find_spell_by_type(caster, TYPEINFO['DiseaseBlade']) else 1
+
+    def diseaseblade_cast(self, skill, level, caster, pos, facing):
+        """SkillDiseaseBlade_cast 0x318764: level through slot 14 (level, 1); pool_new(0x24);
+        the constructor."""
+        level = self.skill_call(skill, 14, level, 1)
+        spell = self.call('pool_new', 0x24)
+        if spell:
+            self.diseaseblade_spell_ctor(spell, level, caster, skill)
+        return spell
+
+    def player_weapons(self, player):
+        """The two item records a weapon buff writes: the primary weapon of the active set
+        (record +0x4434 + 4 x the byte at +0x4a7c) and the second weapon (+0x443c)."""
+        rec = self.record(player)
+        return (self.u32(rec + self.REC_WEAPON_SETS + 4 * self.s8(rec + self.REC_ACTIVE_SET)),
+                self.u32(rec + self.REC_SECOND_WEAPON))
+
+    def write_disease(self, item, value, frames, limit):
+        """The block that appears four times in this class (0x318c70, 0x318de8 and twice in
+        the run): give an item record a disease modifier (code 0x26) of `value` for
+        `frames` frames.  Nothing for a null item or one with item flag bit 24.  With old =
+        the first 0x26 slot's FIRST VALUE (0 without one): nothing unless 0 <= old < limit
+        - the old VALUE compared with a frame count - and old <= value.  Then the first
+        slot that is empty or already 0x26 becomes (0x26, value, round(value + value x
+        0.19999999), frames)."""
+        value = s32(value)
+        if not item or self.u64(item + 8) & 0x1000000:
+            return
+        old = 0
+        for k in range(4):
+            if self.s16(item + 0x24 + 8 * k) == 0x26:
+                old = self.s16(item + 0x26 + 8 * k)
+                break
+        if not 0 <= old < limit or not old <= value:
+            return
+        top = self._round(C.add(C.from_int(value), C.mul(C.from_int(value), F_0_2)))
+        for k in range(4):
+            if self.s16(item + 0x24 + 8 * k) in (-1, 0x26):
+                self.w16(item + 0x24 + 8 * k, 0x26)
+                self.w16(item + 0x26 + 8 * k, value)
+                self.w16(item + 0x28 + 8 * k, top)
+                self.w16(item + 0x2A + 8 * k, frames)
+                break
+
+    def diseaseblade_spell_ctor(self, spell, level, caster, skill):
+        """SpellDiseaseBlade_ctor 0x318ad4.  The Spell base (ONE SHARED DRAW); expiry frame
+        +0x18 = frame + slot 12 (1, level, caster, cap 20) x 60; +0x1c = frame + 30 (never
+        read); aura radius +0x20 = slot 10 (2, level) x 12 (tier 1 for every caster).  value
+        = slot 12 (0, level, caster, 0), frames = slot 12 (1, ..., 20) x 60.  A caster that
+        is not a player: its weapon holder's slot 7 with hand 1, if it has a holder (that
+        builds a disease element: one shared draw inside the callee).  A player: both
+        weapons get write_disease(value, frames, limit = frames).  Then a LightEffect at
+        the caster, flash quad 2 = (0x80, 0x80, 0, 0x1e), a sound."""
+        u32, w32 = self.u32, self.w32
+        self.spell_base(spell, level, caster, skill, self.DB_VT)
+        seconds = s32(self.skill_call(skill, 12, 1, s8(level), caster, 0x14))
+        frame = u32(G_SIM_FRAME)
+        w32(spell + 0x18, frame + seconds * 0x3C)
+        w32(spell + 0x1C, frame + 0x1E)
+        w32(spell + 0x20, C.mul(C.from_int(s32(self.skill_call(u32(spell + 8), 10, 2, self.s8(spell)))), F_12))
+        value = s32(self.skill_call(u32(spell + 8), 12, 0, self.s8(spell), u32(spell + 0xC), 0))
+        frames = s32(self.skill_call(u32(spell + 8), 12, 1, self.s8(spell), u32(spell + 0xC), 0x14)) * 0x3C
+        owner = u32(spell + 0xC)
+        if not u32(owner + 0xC) & 0x40:
+            holder = u32(owner + 0x50)
+            if holder:
+                self.holder_call(holder, 7, 1)
+        else:
+            for item in self.player_weapons(owner):
+                self.write_disease(item, value, frames, frames)
+        block = self.call('pool_new', 0xBC)
+        if block:
+            half = 0x43000000
+            self.light_effect(block, self.vec(u32(spell + 0xC) + 0x10), 0, (half, half, ZERO, half),
+                              (0x42DC0000, ZERO, 0x3F199999, HALF), 0, (half, 0x42E00000, ZERO, half))
+        owner = u32(spell + 0xC)
+        self.w16(owner + 0x9E, 0x1E)
+        self.w16(owner + 0x9A, 0x80)
+        self.w16(owner + 0x98, 0x80)
+        self.w16(owner + 0x9C, 0)
+        self.sound_at(self.DB_LUMP, self.DB_SOUND, self.vec(u32(spell + 0xC) + 0x10))
+
+    def diseaseblade_spell_run(self, spell, pos, facing=0):
+        """SpellDiseaseBlade_run 0x319068 (spell, position), once per frame of the owner.
+
+        Before the expiry frame: with an aura radius that is not 0, a player owner and
+        frame % 30 == 0: world_collectObjectsInBox(pos -/+ R on three axes, capacity 64)
+        and, for every other player in it (in PvP mode A only one the owner's slot 22
+        accepts): v = slot 12 (3, level, owner, 0) and write_disease(v, 31, limit 31) on
+        both of its weapons.  From the expiry frame: an owner that is a creature and not a
+        player has its weapon holder's slot 8 called with (1, 0), and the spell destroys
+        itself.  The caster's own modifier just counts down in the item."""
+        u32 = self.u32
+        frame = s32(u32(G_SIM_FRAME))
+        if frame < self.s32(spell + 0x18):
+            reach = u32(spell + 0x20)
+            if not C.eq(reach, ZERO) and u32(u32(spell + 0xC) + 0xC) & 0x40 and c_rem(frame, 30) == 0:
+                found = self.call('world_collectObjectsInBox', tuple(C.sub(v, reach) for v in pos),
+                                  tuple(C.add(v, reach) for v in pos), 0x40)
+                owner = u32(spell + 0xC)
+                for other in found or ():
+                    if owner == other or not u32(other + 0xC) & 0x40:
+                        continue
+                    if self.s32(G_PVP_MODE_A) and not self.vcall(u32(spell + 0xC), 22, other):
+                        continue
+                    first, second = self.player_weapons(other)
+                    value = self.skill_call(u32(spell + 8), 12, 3, self.s8(spell), u32(spell + 0xC), 0)
+                    self.write_disease(first, value, 0x1F, 0x1F)
+                    self.write_disease(second, value, 0x1F, 0x1F)
+            return
+        owner = u32(spell + 0xC)
+        if u32(owner + 0xC) & 0x60 == 0x20 and u32(owner + 0x50):
+            self.holder_call(u32(owner + 0x50), 8, 1, 0)
+        if spell:
+            self.spell_destroy(spell)
+
+
+EXTERNALS.update({
+    'Holder.v7': Ext(0, 'pi', 0, 'n', '(hand): the hand\'s element becomes disease (creature_buildElementDamage; '
+                     'one shared draw inside)'),
+    'Holder.v8': Ext(0, 'pii', 0, 'n', '(hand, 0): the hand\'s element is cleared'),
+})
+SKILL_BODIES.update({0x318730: (1, 'diseaseblade_can_use'), 0x318764: (2, 'diseaseblade_cast'),
+                     0x318AA0: (5, 'skill_mana_cost')})
+SPELL_BODIES.update({0x319068: (2, 'diseaseblade_spell_run')})
+SPELL_TABLES.add(DiseaseBlade.DB_VT)
+MODELLED.update({'SkillDiseaseBlade_canUse': 0x318730, 'SkillDiseaseBlade_cast': 0x318764,
+                 'SkillDiseaseBlade_manaCost': 0x318AA0, 'SpellDiseaseBlade_ctor': 0x318AD4,
+                 'SpellDiseaseBlade_run': 0x319068})
+
+
+class SummonBadger:
+    """90 - Summon Badger (`summonbadger`, shaman): creates a CastBadger creature a little
+    ahead of the caster and a two-second spell on the caster that fades it in."""
+    SB_VT = 0x51BD18
+    SB_TYPE_NAME = 0x5527A8                     # "CastBadger"
+    SB_LUMP, SB_SOUND, SB_PARTICLE = 0x5527B8, 0x5527C0, 0x8E8468
+    SB_PLAYER_NAMES, SB_MONSTER_NAME = 0x5038F8, 0x503908      # pointers to the object names
+    SB_PLAYER_PROPS, SB_MONSTER_PROPS = 0x5038D0, 0x5038F0     # property lists (8 bytes each)
+
+    def summonbadger_can_use(self, skill, caster):
+        """SkillSummonBadger_canUse 0x310690: no object in the world may carry this caster's
+        badger name - one name per player slot 0-3 (a player in a higher slot is refused),
+        one shared by every non-player."""
+        name = self.u32(self.SB_MONSTER_NAME)
+        if self.u32(caster + 0xC) & 0x40:
+            slot = self.u32(caster + 0x3C8)
+            if slot > 3:
+                return 0
+            name = self.u32(self.SB_PLAYER_NAMES + 4 * slot)
+        return 0 if self.call('world_findObjectByName', name) else 1
+
+    def summonbadger_cast(self, skill, level, caster, pos, facing):
+        """SkillSummonBadger_cast 0x3106f4 -> the spell, or 0.
+
+        The spot is pos + facing x 5.999953 x 12 on the ground (terrain_height, radius 48);
+        when it is more than 24 above or below the caster (compared as doubles),
+        world_findFreeSpot(caster position, 71, 24, 0) replaces it if it finds one.  The
+        badger's level is slot 12 (0, level, caster, cap 10).  pool_new(0x3d0) - nothing
+        more without a block - and CastBadger_ctor(type name, spot, facing, property list,
+        level); object flags |= 0x4002, type name +0x34, creature flag 0x1000000.  For a
+        player caster: followed slot +0x5a, creature flag 0x400000, Creature_setCharm(-1,
+        the caster's slot 37), point-blank range +0x3ac = 400, home range (slot 34) 500.
+        Then the caster's flash, a LightEffect above the spot following the caster, a sound
+        at `pos`, pool_new(0x20) and the spell (level 1)."""
+        u32, w32 = self.u32, self.w32
+        facing_in = facing
+        level = self.skill_call(skill, 14, level, 2)
+        sx = C.add(pos[0], C.mul(C.mul(C.cos16(facing), 0x40BFFF9D), F_12))
+        sy = C.add(pos[1], C.mul(C.mul(C.sin16(facing), 0x40BFFF9D), F_12))
+        sz = self.call('terrain_height', u32(G_WORLD), (sx, sy, pos[2]), 0x42400000)
+        spot = (sx, sy, sz)
+        if abs(C.to_float(C.sub(sz, u32(caster + 0x18)))) > 24.0:
+            out, found = self.call('world_findFreeSpot', self.vec(caster + 0x10), 0x47, 0x18, 0)
+            if s8(found):
+                spot = tuple(out)
+        strength = self.skill_call(skill, 12, 0, level, caster, 10)
+        props = 0
+        if not u32(caster + 0xC) & 0x40:
+            props = self.SB_MONSTER_PROPS
+        elif u32(caster + 0x3C8) < 4:
+            props = self.SB_PLAYER_PROPS + 8 * u32(caster + 0x3C8)
+        badger = self.call('pool_new', 0x3D0)
+        if not badger:
+            return 0
+        self.call('CastBadger_ctor', badger, self.SB_TYPE_NAME, spot, s16(facing_in), props, strength)
+        flags = self.u64(badger + 0xA8)
+        w32(badger + 0xC, u32(badger + 0xC) | 0x4002)
+        w32(badger + 0x34, self.SB_TYPE_NAME)
+        self.w64(badger + 0xA8, flags | 0x1000000)
+        if u32(caster + 0xC) & 0x40:
+            self.w8(badger + 0x5A, self.u8(caster + 0x3C8))
+            self.w64(badger + 0xA8, flags | 0x1400000)
+            self.call('Creature_setCharm', badger, M32, self.vcall(caster, 37))
+            self.w16(badger + 0x3AC, 400)
+            self.vcall(badger, 34, 500)
+        self.flash(caster, 1, 0x54, 0xC0, 0x33, 0x41)
+        self.flash(caster, 2, 0x54, 0xC0, 0x33, 0x41)
+        block = self.call('pool_new', 0xBC)
+        if block:
+            self.light_effect(block, (C.add(spot[0], ZERO), spot[1], C.add(spot[2], F_36)), caster,
+                              (0x42A80000, 0x43400000, 0x424C0000, 0x42820000), (0x42F00000, 0x43340000, ZERO, ONE))
+        self.sound_at(self.SB_LUMP, self.SB_SOUND, pos)
+        spell = self.call('pool_new', 0x20)
+        if spell:
+            self.summonbadger_spell_ctor(spell, 1, caster, skill, badger)
+        return spell
+
+    def summonbadger_spell_ctor(self, spell, level, caster, skill, badger):
+        """SpellSummonBadger_ctor 0x310c3c: the Spell base (ONE SHARED DRAW), clock +0x1c =
+        0, a handle to the badger at +0x18."""
+        self.spell_base(spell, level, caster, skill, self.SB_VT)
+        self.w32(spell + 0x1C, 0)
+        self.w32(spell + 0x18, 0)
+        if badger:
+            self.handle_link(spell + 0x18, badger, badger)
+
+    def summonbadger_spell_run(self, spell, pos=None, facing=0):
+        """SpellSummonBadger_run 0x310cd0, once per frame of the caster.  An empty handle
+        destroys the spell (a handle whose node carries no object does nothing).  f = clock
+        up to 1.0 and 2.0 - clock after it; f < 0 destroys the spell.  clock +0x1c += 1/60;
+        nothing more while f <= 0; once the new clock is above 1.0 the badger's object flag
+        2 (not drawn) is cleared; then trunc(f x 38) particles on the badger's model sample
+        points 0, 8, 16, ... (modulo the point count), each with a ball point from the
+        spell's OWN generator."""
+        u32 = self.u32
+        node = u32(spell + 0x18)
+        if node:
+            badger = u32(node + 0xC)
+            if not badger:
+                return
+            clock = u32(spell + 0x1C)
+            share = clock
+            if not C.le(clock, ONE):
+                share = C.sub(ONE, C.sub(clock, ONE))
+            if C.le(clock, ONE) or C.le(ZERO, share):
+                clock = C.add(clock, DT)
+                self.w32(spell + 0x1C, clock)
+                if C.le(share, ZERO):
+                    return
+                if C.lt(ONE, clock):
+                    self.w32(badger + 0xC, u32(badger + 0xC) & ~2)
+                model = self.vcall(badger, 16)
+                points = s32(self.call('model_getSamplePointCount', model))
+                at = self.visual_pos(badger)
+                count = C.to_int(C.mul(share, 0x42180000))
+                index = 0
+                for _ in range(max(count, 0)):
+                    model = self.vcall(badger, 16)
+                    px, py, pz = self.model_sample(badger, model, at, index)
+                    x, y, z = self.spell_ball(spell)
+                    point = (C.sub(px, C.mul(x, 0x423EAF66)), C.sub(py, C.mul(y, 0x423EAF66)),
+                             C.sub(pz, C.mul(z, 0x423EAF66)))
+                    self.call('particle_spawn', self.SB_PARTICLE, point,
+                              (C.mul(x, 0x42092E61), C.mul(y, 0x42092E61), C.mul(z, 0x42092E61)), ZERO)
+                    index = c_rem(index + 8, points) if points else index + 8
+                return
+        if spell:
+            self.spell_destroy(spell)
+
+
+EXTERNALS.update({
+    'CastBadger_ctor': Ext(0x244E4C, 'ppvipi', 0, 'n', '(block, type name, position, facing, property list, level)'),
+})
+SKILL_BODIES.update({0x310690: (1, 'summonbadger_can_use'), 0x3106F4: (2, 'summonbadger_cast'),
+                     0x310C08: (5, 'skill_mana_cost')})
+SPELL_BODIES.update({0x310CD0: (2, 'summonbadger_spell_run')})
+SPELL_TABLES.add(SummonBadger.SB_VT)
+MODELLED.update({'SkillSummonBadger_canUse': 0x310690, 'SkillSummonBadger_cast': 0x3106F4,
+                 'SkillSummonBadger_manaCost': 0x310C08, 'SpellSummonBadger_ctor': 0x310C3C,
+                 'SpellSummonBadger_run': 0x310CD0})
+
+
+class RaiseArmy:
+    """91 - Raise Army (`raisearmy`, shadowknight): a wave that travels out from the caster
+    and re-creates the corpses it passes as charmed creatures."""
+    RA_VT = 0x51BF40
+    RA_LUMP, RA_SOUND, RA_RAISE_SOUND, RA_PARTICLE = 0x552A98, 0x552AA0, 0x552AF8, 0x8E85A8
+    RA_PREFIXES = (0x552AD8, 0x552AE0, 0x552AF0)       # two wood-elf type names, "ant"
+
+    def raisearmy_can_use(self, skill, caster):
+        """SkillRaiseArmy_canUse 0x3134b0: 1 unless the caster carries a SpellRaiseArmy."""
+        return 0 if self.find_spell_by_type(caster, TYPEINFO['RaiseArmy']) else 1
+
+    def raisearmy_cast(self, skill, level, caster, pos, facing):
+        """SkillRaiseArmy_cast 0x3134e4: level through slot 14 (level, 0x14); both caster
+        flash quads = (0x80, 0x32, 0, 0x32); a sound at `pos`; a LightEffect 36 above `pos`
+        following the caster; pool_new(0x34); the constructor."""
+        level = self.skill_call(skill, 14, level, 0x14)
+        self.flash(caster, 1, 0x80, 0x32, 0, 0x32)
+        self.flash(caster, 2, 0x80, 0x32, 0, 0x32)
+        self.sound_at(self.RA_LUMP, self.RA_SOUND, pos)
+        block = self.call('pool_new', 0xBC)
+        if block:
+            self.light_effect(block, (C.add(pos[0], ZERO), pos[1], C.add(pos[2], F_36)), caster,
+                              (0x43000000, 0x42480000, ZERO, 0x42480000), (0x42F00000, 0x43340000, ZERO, ONE))
+        spell = self.call('pool_new', 0x34)
+        if spell:
+            self.raisearmy_spell_ctor(spell, level, caster, skill)
+        return spell
+
+    def raisearmy_is_raisable(self, spell, c):
+        """SpellRaiseArmy_isRaisable 0x313b38 (spell, creature) -> 0 or 1: object flag 8
+        (dead) set, 0x40 and 2 clear; flag 0x80 in the animation state's flag word +0x11a
+        (the death clip has finished); creature flags 0x1, 0x800, 0x1000000, 0x4000000,
+        0x100000000 all clear; creature_bossRank 0; object flag 0x1000000 clear."""
+        if not c:
+            return 0
+        if self.u32(c + 0xC) & 0x4A != 0x08 or not self.u16(c + 0x11A) & 0x80:
+            return 0
+        if self.u64(c + 0xA8) & 0x105000801:
+            return 0
+        if self.call('creature_bossRank', c):
+            return 0
+        return 0 if self.u32(c + 0xC) & 0x1000000 else 1
+
+    def raisearmy_spell_ctor(self, spell, level, caster, skill):
+        """SpellRaiseArmy_ctor 0x3137d8.  The Spell base (ONE SHARED DRAW); clock +0x28 = 0,
+        count +0x30 (s16) = 0; R = slot 10 (0, level) x 12; duration +0x2c = R x 0.005907856
+        seconds; centre +0x1c = the caster's position; the candidate list +0x18 = every
+        raisable creature of world_collectObjectsInBox(centre -/+ R, capacity 256), linked
+        at the head (so the list is the box order reversed)."""
+        u32, w32 = self.u32, self.w32
+        self.spell_base(spell, level, caster, skill, self.RA_VT)
+        w32(spell + 0x18, 0)
+        w32(spell + 0x28, 0)
+        reach = C.mul(C.from_int(s32(self.skill_call(skill, 10, 0, self.s8(spell)))), F_12)
+        self.w16(spell + 0x30, 0)
+        w32(spell + 0x2C, C.mul(reach, 0x3BC196B0))
+        self.wvec(spell + 0x1C, self.vec(u32(spell + 0xC) + 0x10))
+        centre = self.vec(spell + 0x1C)
+        found = self.call('world_collectObjectsInBox', tuple(C.sub(v, reach) for v in centre),
+                          tuple(C.add(v, reach) for v in centre), 0x100)
+        for obj in found or ():
+            if u32(obj + 0xC) & 0x20 and self.raisearmy_is_raisable(spell, obj):
+                self.handle_link(spell + 0x18, obj, obj)
+
+    def raisearmy_spell_run(self, spell, pos=None, facing=0):
+        """SpellRaiseArmy_run 0x31399c, once per frame of the caster: f = 1 - (duration -
+        clock) / duration; f > 1 destroys the spell; else r = f x 12 x slot 10 (0, level),
+        206 ring particles (ONE OWN DRAW each; nothing else reads this generator), the
+        raise step with r, and clock +0x28 += 1/60."""
+        u32 = self.u32
+        share = C.sub(ONE, C.div(C.sub(u32(spell + 0x2C), u32(spell + 0x28)), u32(spell + 0x2C)))
+        if C.lt(ONE, share):
+            if spell:
+                self.spell_destroy(spell)
+            return
+        steps = C.from_int(s32(self.skill_call(u32(spell + 8), 10, 0, self.s8(spell))))
+        height = C.add(u32(spell + 0x24), 0x41C043AE)
+        ring = C.mul(C.mul(share, F_12), steps)
+        for _ in range(0xCE):
+            angle = self.spell_rand(spell)
+            point = (C.add(u32(spell + 0x1C), C.mul(C.cos16(angle), ring)),
+                     C.add(u32(spell + 0x20), C.mul(C.sin16(angle), ring)), height)
+            self.call('particle_spawn', self.RA_PARTICLE, point, (ZERO, ZERO, 0x3B8259E1), ZERO)
+        self.raisearmy_raise_in_ring(spell, ring)
+        self.w32(spell + 0x28, C.add(u32(spell + 0x28), DT))
+
+    def raisearmy_raise_in_ring(self, spell, ring):
+        """SpellRaiseArmy_raiseInRing 0x313bd4 (spell; radius): the candidate list in order.
+        Gone: dropped.  Reached (sqrt(dx*dx + dy*dy) - radius <= ring): a creature that is
+        no longer raisable is dropped; otherwise, if it has a type name (+0x34),
+        world_createObject(type name, its position, its facing, 0), and when that returns
+        a creature n:
+          - n's hit points +0x228 = slot 10 (2, level) x 0.01 x the corpse's maximum, at
+            least 1.0; obj_runEveryFrame(n); creature flags |= 0x8002000101400000;
+            followed slot +0x5a = the BYTE at caster +0x3c8 (no is-player test);
+            Creature_setCharm(n, 3600, the caster's slot 37)
+          - n takes the corpse's pose: its track count +0x118 = 0, flash, then
+            anim_pushWithWeights(n's animation state, the clip and the weights of the
+            corpse's top track), its field +0x134, and its slot 27 (set state) with 0
+          - n's weapon holder (if any) is given, for hand 1 and hand 2, what the corpse's
+            holder reports: slot 15 -> slot 1 and slot 16 -> slot 8 (0 without a holder)
+          - variant bits +0xe8 = the corpse's unless the type name starts with one of two
+            names; the hide mask +0x220 = model_buildHideMask(n's model, variant bits);
+            for a type name starting with the third: +0x3e0 copied and the tint preset
+            +0xa0 = 2 or 4 for the values 1 and 2
+          - the corpse: +0x2f4 = 0, creature flag 0x1000000 (it sinks; never raised again)
+        Then, whether or not anything was created: a sound at the corpse, the entry is
+        dropped, count +0x30 += 1, and when slot 10 (1, level) <= count the duration
+        becomes the clock (the spell ends on its next run) and the walk stops."""
+        u32, w32, w16 = self.u32, self.w32, self.w16
+        for node, corpse in self.handle_items(spell + 0x18):
+            if not corpse:
+                self.handle_remove(node)
+                continue
+            dy = C.sub(u32(spell + 0x20), u32(corpse + 0x14))
+            dx = C.sub(u32(spell + 0x1C), u32(corpse + 0x10))
+            if not C.le(C.sub(C.sqrt(C.add(C.mul(dx, dx), C.mul(dy, dy))), u32(corpse + 0x1C)), ring):
+                continue
+            if u32(corpse + 0xC) & 0x20 and not self.raisearmy_is_raisable(spell, corpse):
+                self.handle_remove(node)
+                continue
+            name = u32(corpse + 0x34)
+            if name:
+                n = self.call('world_createObject', name, self.vec(corpse + 0x10), self.s16(corpse + 0x38), 0)
+                if n and u32(n + 0xC) & 0x20:
+                    self._raisearmy_dress(spell, corpse, n)
+            self.sound_at(self.RA_LUMP, self.RA_RAISE_SOUND, self.vec(corpse + 0x10))
+            self.handle_remove(node)
+            count = s16(self.s16(spell + 0x30) + 1)
+            w16(spell + 0x30, count)
+            if s16(self.skill_call(u32(spell + 8), 10, 1, self.s8(spell))) <= count:
+                w32(spell + 0x2C, u32(spell + 0x28))
+                return
+
+    def _raisearmy_dress(self, spell, corpse, n):
+        u32, w32, w16 = self.u32, self.w32, self.w16
+        share = C.mul(C.from_int(s32(self.skill_call(u32(spell + 8), 10, 2, self.s8(spell)))), F_0_01)
+        hp = C.mul(share, u32(corpse + 0x22C))
+        w32(n + 0x228, hp)
+        if C.lt(hp, ONE):
+            w32(n + 0x228, ONE)
+        self.call('obj_runEveryFrame', n)
+        self.w64(n + 0xA8, self.u64(n + 0xA8) | 0x8002000101400000)
+        self.w8(n + 0x5A, self.u8(u32(spell + 0xC) + 0x3C8))
+        self.call('Creature_setCharm', n, 0xE10, self.vcall(u32(spell + 0xC), 37))
+        self.w8(n + 0x118, 0)
+        self.flash(n, 1, 0x80, 0x32, 0, 0x32)
+        self.flash(n, 2, 0x80, 0x32, 0, 0x32)
+        top = self.s8(corpse + 0x118) * 0x20
+        self.call('anim_pushWithWeights', n + 0x114, u32(corpse + 0xC + top + 0xF0), self.s16(corpse + top + 0x118),
+                  u32(corpse + 0x14 + top + 0x100), u32(corpse + 0x14 + top + 0xF0), u32(corpse + top + 0x108),
+                  u32(corpse + 0xC + top + 0x100), u32(corpse + 0x10 + top + 0x100))
+        w32(n + 0x134, u32(corpse + 0x14 + self.s8(corpse + 0x118) * 0x20 + 0x100))
+        self.vcall(n, 27, 0)
+        for hand in (1, 2):
+            for ask, give in ((15, 1), (16, 8)):
+                holder = u32(corpse + 0x50)
+                value = self.holder_call(holder, ask, hand) if holder else 0
+                holder = u32(n + 0x50)
+                if holder:
+                    self.holder_call(holder, give, hand, value)
+        if self.call('str_prefixDiffers', u32(n + 0x34), self.RA_PREFIXES[0]) \
+                and self.call('str_prefixDiffers', u32(n + 0x34), self.RA_PREFIXES[1]):
+            w32(n + 0xE8, u32(corpse + 0xE8))
+        mask = self.call('model_buildHideMask', self.vcall(n, 16), u32(n + 0xE8))
+        self.w64(n + 0x220, mask)
+        if not self.call('str_prefixDiffers', u32(n + 0x34), self.RA_PREFIXES[2]):
+            kind = u32(corpse + 0x3E0)
+            w32(n + 0x3E0, kind)
+            if kind in (1, 2):
+                self.w8(n + 0xA0, 2 if kind == 1 else 4)
+        flags = self.u64(corpse + 0xA8)
+        w32(corpse + 0x2F4, 0)
+        self.w64(corpse + 0xA8, flags | 0x1000000)
+
+
+EXTERNALS.update({
+    'world_createObject': Ext(0x14F6C8, 'pvii', 0, 'i', '(type name, position, facing, property list) -> object or 0'),
+    'anim_pushWithWeights': Ext(0x1708C0, 'ppi', 5, 'n', '(state, clip, flags; five floats of the source track)'),
+    'str_prefixDiffers': Ext(0x159C20, 'pp', 0, 'i', '(text, prefix) -> 0 when the text starts with the prefix'),
+    'Holder.v16': Ext(0, 'pi', 0, 'i', '(hand) -> the element of the hand'),
+    'Holder.v1': Ext(0, 'pii', 0, 'n', '(hand, model entry)'),
+    'Holder.v15': Ext(0, 'pi', 0, 'i', '(hand) -> model entry it holds'),
+})
+SKILL_BODIES.update({0x3134B0: (1, 'raisearmy_can_use'), 0x3134E4: (2, 'raisearmy_cast'),
+                     0x3137A4: (5, 'skill_mana_cost')})
+SPELL_BODIES.update({0x31399C: (2, 'raisearmy_spell_run')})
+SPELL_TABLES.add(RaiseArmy.RA_VT)
+MODELLED.update({'SkillRaiseArmy_canUse': 0x3134B0, 'SkillRaiseArmy_cast': 0x3134E4,
+                 'SkillRaiseArmy_manaCost': 0x3137A4, 'SpellRaiseArmy_ctor': 0x3137D8, 'SpellRaiseArmy_run': 0x31399C,
+                 'SpellRaiseArmy_isRaisable': 0x313B38, 'SpellRaiseArmy_raiseInRing': 0x313BD4})
+
+
 # @@SECTIONS@@
 
 
-class Model(BattleCry, Roar, PoisonBolt, Drowsy, ConeOfShock, Storms, UnspokenWord, WaveOfFlame, FrostArmor, SpiritShield, Retribution, Base):
+class Model(RaiseArmy, SummonBadger, DiseaseBlade, Passives, BattleCry, Roar, PoisonBolt, Drowsy, ConeOfShock, Storms, UnspokenWord, WaveOfFlame, FrostArmor, SpiritShield, Retribution, Base):
     """Skills 69-101 on a memory image.  See the module docstring."""

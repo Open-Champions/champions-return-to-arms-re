@@ -362,6 +362,21 @@ class World:
     def on_Creature_v39(self, args, view, rng):
         return Res(rng.choice((0, 1, 5, 12, 20)))
 
+    def on_SpellResurrect_typeinfo(self, args, view, rng):
+        return Res(0x909760)
+
+    def on_creature_findSpellByType(self, args, view, rng):
+        return Res(rng.choice((0, 0, 0, self.spells[0], self.spells[1])))
+
+    def on_player_respawn(self, args, view, rng):
+        """The slot gets a new Player object (here: another block made up as one)."""
+        slot = args[0]
+        fresh = self.props[1]
+        view.poke(fresh + 0xC, 4, 0x40)
+        view.poke(fresh + 0x3C8, 4, slot)
+        view.poke(RC.G_PLAYERS + (slot & 3) * RC.REC_SIZE + RC.REC_OBJ, 4, fresh)
+        return Res()
+
     def on_particleGroup_create(self, args, view, rng):
         return Res(rng.choice((0, 1, 5, 16)))
 
@@ -1258,6 +1273,119 @@ def section_healing(rig):
     rig.report('healing', 'ids 55 and 86; player and monster owners')
 
 
+def section_resurrect(rig):
+    """Skill 68: can-use, the target search, the cast and the spell in both modes (one
+    player: the self-revive roll; several: raising a dead player), the countdown at each
+    duration."""
+    rig.section = 'resurrect'
+    mem, world, rng = rig.emu.mem, rig.world, rig.rng
+    pos = world.scratch
+    skill = skill_obj(mem, 68)
+    rounds = 16 if OPTIONS['quick'] else 160
+    for round_ in range(rounds):
+        r = rng.random
+        world.place(rng)
+        timed = round_ % 8 == 0
+        players = rng.choice((1, 1, 2, 3, 4))
+        mem.w32(RC.G_NUM_PLAYERS, players)
+        mem.w32(SB.G_PVP_MODE_A, 0 if timed else rng.choice((0, 0, 0, 1)))
+        caster = rng.choice(world.players[:players] * 3 + world.monsters[:1])
+        if caster in world.players:
+            mem.w32(caster + 0xC, 0x40)
+        for slot in range(4):                           # the dead lie in front of the caster, or do not
+            mem.w16(SB.Model.G_DEAD_COUNTDOWN + 2 * slot, rng.choice((0, 0, 30, 60, 61, 240)))
+            obj = world.players[slot]
+            if r() < 0.1:
+                mem.w32(RC.G_PLAYERS + slot * RC.REC_SIZE + RC.REC_OBJ, 0)
+            elif r() < 0.7 or timed:
+                angle = mem.s16(caster + 0x38) * 3.14159265 * 2 / 65536
+                import math
+                ahead, side = rng.choice((-13.0, -11.0, 5.0, 60.0, 135.0, 137.0)), rng.choice((-80.0, 0.0, 55.0, 57.0))
+                if timed:
+                    ahead, side = 20.0 + slot, 0.0
+                    mem.w16(SB.Model.G_DEAD_COUNTDOWN + 2 * slot, 0)
+                put_vec(mem, obj + 0x10, (mem.f32(caster + 0x10) + ahead * math.cos(angle) - side * math.sin(angle),
+                                          mem.f32(caster + 0x14) + ahead * math.sin(angle) + side * math.cos(angle),
+                                          mem.f32(caster + 0x18)))
+        slots = rng.sample(range(4), rng.randrange(0, 5))
+        mem.w32(SB.G_ALIVE_COUNT, len(slots))
+        for i, slot in enumerate(slots):
+            mem.w32(SB.G_ALIVE_LIST + 4 * i, slot)
+        for sp in world.spells:                         # what a carried SpellResurrect points at
+            mem.w32(sp + 0x18, rng.choice(world.players))
+        rig.vskill(skill, 1, (caster,))
+        rig.do('SkillResurrect_findTarget', 'resurrect_find_target', (skill, caster), ret='i')
+        rig.do('SkillResurrect_isSlotBeingRaised', 'resurrect_is_being_raised', (skill, rng.randrange(4)), ret='i')
+        level = rng.choice((1, 2, 5, 10, 20, 40))
+        world.pool_fail = 0.0 if timed else 0.1
+        spell = rig.vskill(skill, 2, (level, caster, pos, 0))['ret'] & M32
+        if not spell:
+            continue
+        world.live.add(spell)
+        seconds = int(mem.f32(spell + 0x60))
+
+        def between(tick):
+            if timed:
+                return False
+            if r() < 0.02:
+                mem.w32(RC.G_NUM_PLAYERS, rng.choice((1, 2, 4)))    # a player joins or leaves under the spell
+            if r() < 0.05:
+                mem.wf32(spell + 0x60, rng.choice((0.3, 0.25, 0.24, 0.01)))
+            if r() < 0.05:
+                rig.do('SpellResurrect_onOwnerDeath', 'resurrect_on_owner_death', (spell,), ret='f')
+            return True
+        run_spell(rig, 'SpellResurrect_run', 'resurrect_run', spell, pos, 3000 if timed else rng.choice((5, 40, 200)), between,
+                  timer='resurrect: runs until the spell ends itself, %d s%s' % (seconds, ' (one player)' if players == 1 else ''))
+        world.live.discard(spell)
+        for slot in range(4):
+            mem.w32(RC.G_PLAYERS + slot * RC.REC_SIZE + RC.REC_OBJ, world.players[slot])
+    mem.w32(RC.G_NUM_PLAYERS, 4)
+    mem.w32(SB.G_PVP_MODE_A, 0)
+    mem.w32(SB.G_ALIVE_COUNT, 0)
+    world.pool_fail = 0.05
+    rig.report('resurrect', 'id 68; one player and several, player and monster casters')
+
+
+def section_bash(rig):
+    """Skill 49: can-use, cast, the wind-up, the strike (several victims, the stun roll,
+    the prop fallback) and the end by the animation's status bit."""
+    rig.section = 'bash'
+    mem, world, rng = rig.emu.mem, rig.world, rig.rng
+    pos = world.scratch
+    skill = skill_obj(mem, 49)
+    world.sample_counts = (1, 3, 7, 7, 12)
+    for round_ in range(10 if OPTIONS['quick'] else 150):
+        r = rng.random
+        world.place(rng)
+        caster = rng.choice(world.players * 3 + world.monsters[:1])
+        if caster in world.players:
+            rec = RC.G_PLAYERS + mem.u32(caster + 0x3C8) * RC.REC_SIZE
+            mem.w32(rec + 0x43FC, rng.choice((0, world.item, world.item)))
+        rig.vskill(skill, 1, (caster,))
+        level = rng.choice((1, 3, 5, 6, 10, 15, 16, 20, 40))
+        spell = rig.vskill(skill, 2, (level, caster, pos, 0))['ret'] & M32
+        if not spell:
+            continue
+        world.live.add(spell)
+        mem.w16(caster + 0x11A, 0x10)
+        world.anim_end = rng.choice((0.0, 0.02, 0.2))
+
+        def between(tick):
+            if r() < 0.03:
+                mem.w32(caster + 0x450, 1)
+            if r() < 0.2:                               # the victim's hit points before the stun roll
+                for obj in world.objects:
+                    mem.wf32(obj + 0x228, rng.choice((300.0, 300.0, 0.0, -5.0)))
+            if r() < 0.1:
+                mem.w32(spell + 0x18, 0)                # strike again
+            return False
+        run_spell(rig, 'SpellBash_run', 'bash_run', spell, pos, rng.choice((3, 30, 80)), between)
+        world.live.discard(spell)
+        clear_handles(rig)
+    world.sample_counts, world.anim_end = (0, 1, 3, 7, 7, 12), 0.25
+    rig.report('bash', 'id 49; player and monster casters')
+
+
 ANIM_ADVANCE = 0x16D748
 
 
@@ -1389,7 +1517,8 @@ SECTIONS = [('stats', section_stats), ('base', section_base), ('cyclone', sectio
             ('poisonarrow', arrow_section(45, 'poisonarrow', 'PoisonArrowProjectile', 0x68, 0x6C, 0xAC)),
             ('multifire', section_multifire), ('passives', section_passives),
             ('harmtouch', section_harmtouch), ('minorhealing', section_minorhealing),
-            ('holyshield', section_holyshield), ('healing', section_healing),
+            ('holyshield', section_holyshield), ('healing', section_healing), ('resurrect', section_resurrect),
+            ('bash', section_bash),
             ('explodearrow', arrow_section(47, 'explodearrow', 'ExplodeArrowProjectile', 0x68, 0x6C, 0x70,
                                            end_name='explode', end_method='explode'))]
 

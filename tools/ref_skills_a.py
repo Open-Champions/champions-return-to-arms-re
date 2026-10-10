@@ -25,7 +25,8 @@ Virtual calls are resolved through the table the object carries:
     object  table at +0x48   OBJECT_BODIES, then the creature bodies of the two imported
                              models, else 'Creature.v<slot>'
 
-Contents
+Contents (Model is built up section by section - each section is a `class Model(Model)` -
+so that a skill's constants, methods and table rows stay together)
     1. the shared machinery
          Skill slots 1, 2, 5, 8, 9-15 (base bodies 0x3c8218-0x3c88e4), mana cost
          Spell base: constructor part, Spell_rand, creature_addSpell 0x11a838,
@@ -33,12 +34,30 @@ Contents
                      (ref_creature.update_spells 0x11a868)
          GameObject_ctor 0x14cb10 (objects without properties), Projectile_ctor 0x150e48,
          obj_moveAndCollide 0x1509f8, the damage descriptor skills build on their stack
-    2. the skills, in id order (see the section comments)
+    2. the skills modelled end to end: can-use, cast, constructors, per-tick run, hit
+         4 Disease Bolt        7 Fire Storm (both constructors)      9 Riposte (and 82)
+         11 Summon Skeleton (imported)       12 / 14 / 26 Lightning, Cold, Poison Weapons
+         15 Undead Shield      16 Holy Strike      20 Blinding Light
+         21 Repulse Undead (with damage_radial 0x1ead58)      23 Shock Of Frost
+         24 Poison Rain        29 Disease Effect   31 / 32 Root (and 52, 85)
+         33 Critical Hit (and 53, 81)
+       the skills that are only numbers: 2 Dodge (and 83), 3, 19 Regeneration, 25, 27, 28, 30
+    3. NOT modelled beyond statistics, mana cost and can-use: 1 Wizard Beam, 5 Disease
+       Shield, 6 Disease Trail, 8 Fire Flares, 10 Blessed, 13 Fire Weapons, 17 Hammer Of
+       Wrath, 18 Cone Of Fire, 22 Dismiss Undead, 34 Shield Bash (can-use not either).
+
+Presentation is modelled too where a function is: every particle_spawn, light and sound
+call-out is made with its arguments, because the own generators that place particles also
+roll damage.
 
 Draws.  Model.draws counts the draws from the shared seed 0x404464 made by modelled code.
 Constructors that stay callbacks (LightEffect, GlowingShaft, LostSoul, FireStormFlare,
 PhProp, the skeleton) make one shared draw each inside GameObject_ctor; the docstrings
 say so and Model.hidden_draws counts them, in order of the calls.
+
+Integer division by zero follows what the R5900 is reported to leave (rem / quot below),
+as tools/ee_emu.py does with div_zero = 'r5900'; the console's own result is not
+established.
 """
 import os
 import sys

@@ -131,7 +131,7 @@ EXTERNALS.update({
     'net_isLocalSlot': Ext(0x13E150, 'i', 0, 'i', '(slot) -> this machine plays that slot (per machine)'),
     # --- player mechanics
     'Player_animStep': Ext(0x1B9520, 'p', 1, 'i', '(player; speed) -> event bits'),
-    'Player_move': Ext(0x1B4020, 'pipv', 0, 'i', '(player, mode, pad, external velocity) -> event bits'),
+    'Player_move': Ext(0x1B4020, 'pipV', 0, 'i', '(player, mode, pad, external velocity or 0) -> event bits'),
     'Player_meleeHit': Ext(0x1B6A98, 'ppii', 1, 'n', '(player, target, flag, flags; damage scale)'),
     # --- lights
     'light_link': Ext(0x148AF8, 'p', 0, 'n', '(light record)'),
@@ -156,6 +156,12 @@ EXTERNALS.update({
     'terrain_heightAtPoint': Ext(0x182F28, 'pv', 0, 'f', '(world, position) -> height'),
     'Creature.v21': Ext(0, 'pp', 0, 'i', 'is ally (other)'),
     'Creature.v22': Ext(0, 'pp', 0, 'i', 'is on my side (other player)'),
+    'SpellResurrect_typeinfo': Ext(0x3D162C, '', 0, 'i', 'type-info getter'),
+    'player_respawn': Ext(0x1BD040, 'iviii', 0, 'n', '(slot, position, facing, -1, -1): a new Player object for the slot'),
+    'player_resetIdleAnim': Ext(0x1B2470, 'i', 0, 'n', '(slot)'),
+    'arena_addLife': Ext(0x3058C0, 'i', 0, 'n', '(slot)'),
+    'fx_emitFromModelVerts': Ext(0x1EB1E8, 'piivV', 1, 'n', '(object, count, particle definition, direction, offset or 0; '
+                                 'speed): presentation generator only'),
     'GlowingShaft_ctor': Ext(0x202FF0, 'pviiii', 0, 'n', '(block, position, four integers): a rising shaft of light'),
     'poisonGasSpell_ctor': Ext(0x202DE8, 'pviiipi', 0, 'n', '(block, position, life in frames, radius, 0, owner, damage)'),
     # --- world
@@ -178,7 +184,8 @@ OBJECT_CTORS = ('GameObject_ctor', 'LightEffect_ctor', 'poisonGasSpell_ctor', 'M
 
 # functions other reference models own that the test runs for real beside this module's
 # (the model calls the other module's function): name -> address
-REAL_LIBRARY = {'vec3_hermite': 0x162310, 'mat34_setPosRotZ': 0x163B30, 'mat34_transformPoint': 0x1660A0}     # ref_core
+REAL_LIBRARY = {'vec3_hermite': 0x162310, 'mat34_setPosRotZ': 0x163B30, 'mat34_transformPoint': 0x1660A0,
+                'vec3_dotDelta': 0x1667D8}     # all of tools/ref_core.py
 
 # names the model answers itself, at memory level, wherever a tools/ref_creature.py method
 # would have made them a callback
@@ -453,6 +460,11 @@ class Model(RC.Model):
             out.append(self.u32(node + 0xC))
             node = self.u32(node)
         return out
+
+    def query_into(self, head, name, *args):
+        """A world query that adds to a list the caller already has."""
+        found = self.call(name, *args)
+        list_fill(self.mem.load, self.mem.poke, head, found or ())
 
     def query_list(self, name, *args):
         """A world query that fills a list: the callback returns the objects, and they are
@@ -2232,6 +2244,424 @@ class Model(RC.Model):
             self.spell_call(spell, 1, 3)
 
 
+    # =====================================================================================
+    # 68 resurrect: docs/spec/skills-35-68.md section 68
+    # =====================================================================================
+    VT_SPELL_RESURRECT = 0x51BE00
+    G_DEAD_COUNTDOWN = 0x4F84A8                 # s16 per player slot: 240 at a death, counted down while dead
+    S_RESURRECT_PVP, S_RESURRECT_NOBODY = 0x552978, 0x552988
+    S_RESURRECT_LUMP, S_RESURRECT_SOUND = 0x5529E8, 0x5529F0
+    PDEF_RESURRECT_CASTER, PDEF_RESURRECT_TARGET = 0x8E8508, 0x8E8558
+    D_RESURRECT_RATE = 0x3FC645BAE0000000       # the double at 0x552a08: animation seconds per revive
+
+    def resurrect_can_use(self, skill, caster):
+        """SkillResurrect_canUse 0x312168 (skill, caster) -> 1 or 0.  A player in PvP mode
+        A: a 90-frame message, 0.  With two or more players a target must exist
+        (findTarget), else a player gets a 180-frame message and anyone gets 0.  Then 1
+        exactly when the caster carries no SpellResurrect already."""
+        u32 = self.u32
+        if u32(G_PVP_MODE_A) and u32(caster + 0xC) & 0x40:
+            self.call('hud_showMessage', self.call('text_lookup', self.S_RESURRECT_PVP), 0x5A, u32(caster + 0x3C8), 0)
+            return 0
+        if self.s32(G_NUM_PLAYERS) >= 2 and s32(self.resurrect_find_target(skill, caster)) == -1:
+            if u32(caster + 0xC) & 0x40:
+                self.call('hud_showMessage', self.call('text_lookup', self.S_RESURRECT_NOBODY), 0xB4, u32(caster + 0x3C8), 0)
+            return 0
+        return 0 if self.call('creature_findSpellByType', caster, self.call('SpellResurrect_typeinfo')) else 1
+
+    def resurrect_find_target(self, skill, caster):
+        """SkillResurrect_findTarget 0x312240 (skill, caster) -> player slot or -1.
+
+        Of the slots below g_numPlayers whose dead countdown is below 61 (dead for 180
+        counted frames or more) and that have an object: forward distance along the
+        caster's facing strictly between -12 and 136, sideways offset (to one side:
+        facing + 0x4000) below 56, not already being raised; the smallest forward distance
+        wins (strict, so the lower slot on a tie)."""
+        u32 = self.u32
+        facing = self.s16(caster + 0x38)
+        ahead = (C.cos16(facing), C.sin16(facing), ZERO)
+        side = (C.cos16(facing + 0x4000), C.sin16(facing + 0x4000), ZERO)
+        best, best_d = -1, 0x4B18967F
+        slot = 0
+        while slot < self.s32(G_NUM_PLAYERS):
+            if self.s16(self.G_DEAD_COUNTDOWN + 2 * slot) < 0x3D:
+                obj = u32(G_PLAYERS + slot * REC_SIZE + REC_OBJ)
+                if obj:
+                    d = C.vec3_dot_delta(self.vec(caster + 0x10), ahead, self.vec(obj + 0x10))
+                    if C.lt(0xC1400000, d) and C.lt(d, 0x43080000):
+                        obj = u32(G_PLAYERS + slot * REC_SIZE + REC_OBJ)
+                        across = C.vec3_dot_delta(self.vec(caster + 0x10), side, self.vec(obj + 0x10))
+                        if C.lt(across, 0x42600000) and C.lt(d, best_d) and not self.resurrect_is_being_raised(skill, slot):
+                            best, best_d = slot, d
+            slot += 1
+        return best
+
+    def resurrect_is_being_raised(self, skill, slot):
+        """SkillResurrect_isSlotBeingRaised 0x31270c (skill, slot) -> 1 when a player of
+        g_alivePlayers carries a SpellResurrect whose target (+0x18, a plain pointer) has
+        that slot at +0x3c8."""
+        i = 0
+        while i < self.s32(G_ALIVE_COUNT):
+            info = self.call('SpellResurrect_typeinfo')
+            obj = self.u32((G_PLAYERS + self.s32(G_ALIVE_LIST + 4 * i) * REC_SIZE + REC_OBJ) & M32)
+            i += 1
+            spell = self.call('creature_findSpellByType', obj, info)
+            if spell and self.s32(self.u32(spell + 0x18) + 0x3C8) == s32(slot):
+                return 1
+        return 0
+
+    def resurrect_cast(self, skill, level, caster, pos=0, facing=0):
+        """SkillResurrect_cast 0x3123e4 -> the SpellResurrect or 0.  One player in the
+        game: the spell goes on the caster (a self-revive in waiting).  More: the target
+        of findTarget, or nothing without one.  The level goes through slot 14 (level,
+        1); pool_new(0x70)."""
+        level = self.skill_call(skill, 14, level, 1)
+        if self.s32(G_NUM_PLAYERS) < 2:
+            target = caster
+            spell = self.call('pool_new', 0x70)
+            if not spell:
+                return 0
+        else:
+            slot = s32(self.resurrect_find_target(skill, caster))
+            if slot == -1:
+                return 0
+            spell = self.call('pool_new', 0x70)
+            if not spell:
+                return 0
+            target = self.u32((G_PLAYERS + slot * REC_SIZE + REC_OBJ) & M32)
+        self.resurrect_spell_ctor(spell, level, target, skill, caster)
+        return spell
+
+    def resurrect_spell_ctor(self, spell, level, target, skill, caster):
+        """SpellResurrect_ctor 0x3127b4 (spell, level, target, skill, caster).
+
+        Spell base with the TARGET as owner (ONE SHARED DRAW); the light +0x24 one unit
+        above the target, linked; target pointer +0x18 (plain); time left +0x60 =
+        (float) statistic 2 in a one-player game, statistic 0 otherwise (slot 10: tier 1);
+        caster +0x68; revived flag +0x1c = 0; the target's animation speed +0x64 =
+        (float)((1.0 / time) x 0.1740...), computed in double precision; +0x20 = +0x6c =
+        0; the sound at the target.  With more than one player: a player caster's record
+        +0x4c20 (movement speed factor) = 0.5, and the revive animation (class definition
+        +0x44) is started on the target, flags 3, blend 0.1."""
+        u32, w32, w16 = self.u32, self.w32, self.w16
+        self.w8(spell, level)
+        x, y, z = self.vec(target + 0x10)
+        w32(spell + 0x14, VT_SPELL)
+        w32(spell + 8, skill)
+        w32(spell + 0xC, target)
+        w32(spell + 4, 0)
+        w32(spell + 0x10, self.draw())
+        w32(spell + 0x14, self.VT_SPELL_RESURRECT)
+        self.w8(spell + 0x2D, 0)
+        self.wvec(spell + 0x54, (C.add(x, ZERO), y, C.add(z, ONE)))
+        for off in (0x48, 0x40):
+            w32(spell + off, F_12)
+            w32(spell + off + 4, 0x3BE38E38)
+        w32(spell + 0x50, 0)
+        for off in (0x36, 0x2E):
+            w16(spell + off, 0x73)
+            w16(spell + off + 2, 0x56)
+        w16(spell + 0x32, 0x77)
+        w16(spell + 0x34, 0)
+        w16(spell + 0x3A, 0x77)
+        w16(spell + 0x3C, 0)
+        self.w8(spell + 0x2C, 0)
+        self.call('light_link', spell + 0x24)
+        w32(spell + 0x18, u32(spell + 0xC))
+        seconds = self.stat(u32(spell + 8), 2 if self.s32(G_NUM_PLAYERS) == 1 else 0, level)
+        w32(spell + 0x60, C.from_int(seconds))
+        w32(spell + 0x68, caster)
+        w32(spell + 0x1C, 0)
+        rate = C.dmul(C.ddiv(0x3FF0000000000000, C.f2d(u32(spell + 0x60))), self.D_RESURRECT_RATE)
+        w32(spell + 0x20, 0)
+        w32(spell + 0x64, C.d2f(rate))
+        w32(spell + 0x6C, 0)
+        self.call('sound_playAtPos', self.call('res_find', self.S_RESURRECT_LUMP, self.S_RESURRECT_SOUND),
+                  self.vec(u32(spell + 0xC) + 0x10), ONE)
+        if self.s32(G_NUM_PLAYERS) != 1:
+            caster = u32(spell + 0x68)
+            if u32(caster + 0xC) & 0x40:
+                w32(self.record(caster) + 0x4C20, HALF)
+            target = u32(spell + 0x18)
+            self.call('anim_start', target + 0x114, u32(u32(target + 0x24) + 0x44), 3, F_0_1)
+
+    RESURRECT_TINT = ((0x90, 0x62), (0x9A, 0x4B), (0x92, 0x4B), (0x9C, 0x2E), (0x94, 0x2E), (0x9E, 0x2E), (0x96, 0x2E))
+
+    def resurrect_run(self, spell, pos=0, facing=0):
+        """SpellResurrect_run 0x312b30, slot 2 - run by the creature the spell is attached
+        to, which is the CASTER (Player_castSkill attaches what cast returns to the
+        caster) while the spell's owner field is the target.
+
+        The light pulses with the frame counter; in a one-player game it follows the
+        owner.  The target is tinted.  With two or more players (g_numPlayers is read
+        again here): the caster is tinted; two particle streams (presentation generator);
+        once the time left is below 0.25 s, once: player_respawn(target's slot, its
+        position and facing, -1, -1), the idle animation, the arena life counter, target
+        = the slot's NEW object, and the slot's hit points = maximum x statistic 1 x
+        0.01; then every tick Player_animStep(target; the speed +0x64) and the
+        copy-rebuild byte 0x402797 = 1 ON EVERY MACHINE.
+        Time left -= 1/60; below zero the spell ends itself."""
+        u32, w32, w16 = self.u32, self.w32, self.w16
+        frame = s32(self.s32(G_SIM_FRAME) * 0xF3C)
+        low = frame - (((frame + 0xFFFF) if frame < 0 else frame) >> 16 << 16)
+        radius = C.add(C.mul(C.sin16(low), 0x40E00000), 0x42C20000)
+        w32(spell + 0x40, radius)
+        w32(spell + 0x48, radius)
+        inverse = C.div(ONE, C.mul(radius, radius))
+        w32(spell + 0x4C, inverse)
+        w32(spell + 0x44, inverse)
+        if self.s32(G_NUM_PLAYERS) == 1:
+            owner = u32(spell + 0xC)
+            x, y, z = self.vec(owner + 0x10)
+            self.wvec(spell + 0x54, (C.add(x, ZERO), y, C.add(z, 0x42400000)))
+            self.call('light_relink', spell + 0x24)
+        target = u32(spell + 0x18)
+        several = self.s32(G_NUM_PLAYERS) >= 2
+        for off, value in self.RESURRECT_TINT:
+            w16(target + off, value)
+        if several:
+            caster = u32(spell + 0x68)
+            for off, value in self.RESURRECT_TINT:
+                w16(caster + off, value)
+            d = [C.sub(u32(target + 0x10 + 4 * i), u32(caster + 0x10 + 4 * i)) for i in range(3)]
+            inverse = C.rsqrt(ONE, C.add(C.add(C.mul(d[0], d[0]), C.mul(d[1], d[1])), C.mul(d[2], d[2])))
+            d = tuple(C.mul(c, inverse) for c in d)
+            self.call('fx_emitFromModelVerts', caster, 0x12, self.PDEF_RESURRECT_CASTER, d, 0, 0x42240000)
+            back = tuple(C.mul(c, 0xC2280000) for c in d)
+            self.call('fx_emitFromModelVerts', u32(spell + 0x18), 0x26, self.PDEF_RESURRECT_TARGET, d, back, 0x421C0000)
+            if C.lt(u32(spell + 0x60), 0x3E800000) and not u32(spell + 0x1C):
+                target = u32(spell + 0x18)
+                slot = self.s32(target + 0x3C8)
+                self.call('player_respawn', slot, self.vec(target + 0x10), self.s16(target + 0x38), M32, M32)
+                self.call('player_resetIdleAnim', slot)
+                self.call('arena_addLife', slot)
+                w32(spell + 0x18, u32((G_PLAYERS + slot * REC_SIZE + REC_OBJ) & M32))
+                percent = C.from_int(self.stat(u32(spell + 8), 1, self.s8(spell)))
+                rec = self.record(u32(spell + 0x18))
+                w32(spell + 0x1C, 1)
+                w32(rec + 0xAC, C.mul(C.mul(u32(rec + 0xB0), percent), F_0_01))
+            self.call('Player_animStep', u32(spell + 0x18), u32(spell + 0x64))
+            self.w8(G_FORCE_GHOST_REBASE, 1)
+        left = C.sub(u32(spell + 0x60), DT)
+        w32(spell + 0x60, left)
+        if C.lt(left, ZERO):
+            self.spell_end(spell)
+
+    def resurrect_on_owner_death(self, spell):
+        """SpellResurrect_onOwnerDeath 0x3130f4 (spell) -> float hit points, called by
+        Player_processDamage in a one-player game when the player carrying the spell
+        dies.  ONE SHARED DRAW d; statistic 3 (slot 10) is the chance in percent.
+        d % 100 < chance: a StrongStancePhantom (pool_new(0x3d8); a creature: one more
+        shared draw inside its constructor) and a LightEffect 36 above the CASTER (ONE
+        SHARED DRAW unless the pool has no block); returns half of the target's maximum
+        hit points.  Otherwise failed flag +0x20 = 1, +0x6c = the frame, the light is
+        unlinked; returns 0.0."""
+        u32 = self.u32
+        draw = self.draw()
+        chance = self.stat(u32(spell + 8), 3, self.s8(spell))
+        if draw % 100 < chance:
+            phantom = self.call('pool_new', 0x3D8)
+            if phantom:
+                target = u32(spell + 0x18)
+                self.object_ctor('StrongStancePhantom_ctor', phantom, target, u32(u32(target + 0x24) + 8), 0, 1)
+            light = self.call('pool_new', 0xBC)
+            if light:
+                caster = u32(spell + 0x68)
+                spot = (C.add(u32(caster + 0x10), ZERO), u32(caster + 0x14), C.add(u32(caster + 0x18), 0x42100000))
+                self.light_effect(light, spot, 0x43090000, 0x42CC0000, 0x42B80000, 0x42F00000, 0x43340000, ZERO, 0x40800000,
+                                  rest=(0xC2C00000, 0, 0, 0, 0))
+            return C.mul(u32(self.record(u32(spell + 0x18)) + 0xB0), HALF)
+        self.w32(spell + 0x20, 1)
+        self.w32(spell + 0x6C, u32(G_SIM_FRAME))
+        self.call('light_unlink', spell + 0x24)
+        return ZERO
+
+
+    # =====================================================================================
+    # 49 bash: docs/spec/skills-35-68.md section 49
+    # =====================================================================================
+    VT_SPELL_BASH = 0x5195B0
+    S_BASH_WARN, S_BASH_LUMP, S_BASH_SOUND, S_BASH_CLIP = 0x54F988, 0x54F998, 0x54F9A0, 0x54F9D8
+    PDEF_BASH_WINDUP = 0x8E5B40
+
+    def bash_can_use(self, skill, caster):
+        """SkillBash_canUse 0x2de334: 1 for a caster without the player flag; a player
+        needs record +0x43fc non-zero and a weapon class (+0x4a86) other than 4, else the
+        warning for 180 frames and 0."""
+        if not self.u32(caster + 0xC) & 0x40:
+            return 1
+        rec = self.record(caster)
+        if self.u32(rec + 0x43FC) and self.s8(rec + 0x4A86) != 4:
+            return 1
+        self.call('hud_showMessage', self.call('text_lookup', self.S_BASH_WARN), 0xB4, self.u32(caster + 0x3C8), 0)
+        return 0
+
+    def bash_cast(self, skill, level, caster, pos=0, facing=0):
+        """SkillBash_cast 0x2de3bc -> the SpellBash or 0: slot 14 (level, 19), the sound
+        on the caster (also when the pool then has no block), pool_new(0x28)."""
+        level = self.skill_call(skill, 14, level, 0x13)
+        self.call('sound_playOnObject', self.call('res_find', self.S_BASH_LUMP, self.S_BASH_SOUND), caster, ONE)
+        spell = self.call('pool_new', 0x28)
+        if spell:
+            self.bash_spell_ctor(spell, level, caster, skill)
+        return spell
+
+    def bash_spell_ctor(self, spell, level, owner, skill):
+        """SpellBash_ctor 0x2de640 (spell, level, owner, skill).
+
+        Spell base (ONE SHARED DRAW); the owner's action state +0x58c = 6 WHATEVER the
+        owner is; the bash clip of the owner's class lump is started (flags 0x812, blend
+        0.1 in and out) and event slot 1 of that clip - a header shared by every object
+        of the class - is set to mask 2 at 0.592 s; hit-done +0x18, struck +0x1c, +0x20
+        = 0.  Target +0x24 (a PLAIN pointer): from world_collectObjectsInArc(owner
+        position, facing; 100, 90 degrees, 0) - the head when it lacks object flag
+        0x1000000; otherwise, when any later entry lacks it, STILL THE HEAD (the loop
+        stores the head's object, not the entry it found)."""
+        u32, w32 = self.u32, self.w32
+        self.w8(spell, level)
+        w32(spell + 8, skill)
+        w32(spell + 0x14, VT_SPELL)
+        w32(spell + 4, 0)
+        w32(spell + 0xC, owner)
+        w32(spell + 0x10, self.draw())
+        lump = u32(u32(owner + 0x24))
+        w32(owner + 0x58C, 6)
+        w32(spell + 0x14, self.VT_SPELL_BASH)
+        clip = self.call('res_find', lump, self.S_BASH_CLIP)
+        self.call('anim_startBlendInOut', owner + 0x114, clip, 0x812, F_0_1, F_0_1)
+        self.w8(clip + 0x20, 2)
+        w32(clip + 0x1C, 0x3F178D60)
+        w32(spell + 0x20, 0)
+        w32(spell + 0x1C, 0)
+        w32(spell + 0x18, 0)
+        w32(spell + 0x24, 0)
+        head = self.query_list('world_collectObjectsInArc', self.vec(owner + 0x10), self.s16(owner + 0x38), 0,
+                               0x42C80000, 0x42B40000, u32(spell + 0x20))
+        node = u32(head)
+        if node:
+            first = u32(node + 0xC)
+            if not u32(first + 0xC) & 0x1000000:
+                w32(spell + 0x24, first)
+            else:
+                node = u32(node)
+                while node:
+                    if not u32(u32(node + 0xC) + 0xC) & 0x1000000:
+                        w32(spell + 0x24, first)
+                        break
+                    node = u32(node)
+        self.handle_clear(head)
+
+    def bash_windup_fx(self, spell, unused=3):
+        """SpellBash_windupFx 0x2dedec (spell): 203 particles on sample points of the
+        "object or prediction copy" of the owner; FOUR OR MORE OWN (spell) DRAWS each.
+        Which object's points are used is per machine; the number of draws is not."""
+        anchor = self.call('net_objOrGhost', self.u32(spell + 0xC))
+        count = s32(self.call('model_getSamplePointCount', self.u32(anchor + 0x544)))
+        for _ in range(0xCB):
+            draw = self.spell_rand(spell)
+            point = self._sample_point(anchor, self.u32(anchor + 0x544), draw, count)
+            velocity = tuple(C.mul(c, 0x41500000) for c in self.spell_ball(spell))
+            self.call('particle_spawn', self.PDEF_BASH_WINDUP, point, velocity, ZERO)
+
+    def _bash_range(self, spell):
+        low, high = self.stat_range(self.u32(spell + 8), 0, self.s8(spell), 0, 0x3E4CCCCC)
+        return C.from_int(low), C.from_int(high)
+
+    def bash_run(self, spell, pos=0, facing=0):
+        """SpellBash_run 0x2de7dc, slot 2.
+
+          1. Player_animStep(owner; 1.0); Player_move(owner, mode 3, the slot's pad, no
+             external velocity); with a target the owner's slot 26 turns it toward the
+             target's position (mode 0).  Event bit 2 sets struck +0x1c.
+          2. Until the hit is done (+0x18): before the strike the wind-up particles;
+             on the strike: up to statistic 3 enemies of world_collectObjectsInArc(attach
+             point 1, facing; radius 41, any angle) in list order - not flag 0x1000000,
+             accepted by the owner's slot 20 - each take damage_apply(statistic 0 -/+ 20
+             % from slot 8 without randomising, attack 100000, flags 0x40 with the knock
+             bit by level: below 6 0x40000, 6-15 0x80000, 16 and above 0x200000, no
+             descriptor, no-crit 1); then, if it still has hit points, ONE SHARED DRAW d:
+             stunned for statistic 2 x 60 frames (slot 30, flash 1) unless statistic 1 <
+             d % 100 + 1; a dead or unstunned victim is tinted instead; the first victim
+             gets a LightEffect (ONE SHARED DRAW unless the pool has no block).  When
+             nobody was hit: the first object of world_collectInSphere(owner, 41) -
+             added to the SAME list - that has none of the flags 0x1000060 (not a
+             creature, not a player) is damaged the same way with no-crit 0.
+          3. Animation status bit 0x10 clear, or owner +0x450 set: owner state = 2 and
+             the spell ends itself.  Else net_isLocalSlot(owner's slot): the copy-rebuild
+             countdown 0x402797 = 60."""
+        u32, w32, w16 = self.u32, self.w32, self.w16
+        owner = u32(spell + 0xC)
+        head = self.alloca(4)
+        self.mem.poke(head, 4, 0)
+        events = self.call('Player_animStep', owner, ONE)
+        self.call('Player_move', owner, 3, (G_PADS + self.s32(owner + 0x3C8) * 0x58) & M32, 0)
+        target = u32(spell + 0x24)
+        if target:
+            self.vcall(owner, 26, 0, self.vec(target + 0x10))
+        if events & 2:
+            w32(spell + 0x1C, 1)
+        if not u32(spell + 0x18):
+            if not u32(spell + 0x1C):
+                self.bash_windup_fx(spell, 3)
+            else:
+                skill, level = u32(spell + 8), self.s8(spell)
+                most = self.stat(skill, 3, level)
+                chance = self.stat(u32(spell + 8), 1, level)
+                frames = self.stat(u32(spell + 8), 2, level) * 0x3C
+                flags = 0x200000 if level > 15 else 0x40000 if level < 6 else 0x80000
+                hand = self.call('model_getAttachPoint', u32(owner + 0x544), self.vec(owner + 0x10), self.s16(owner + 0x38),
+                                 owner + 0x114, 1, 0, ONE)
+                self.query_into(head, 'world_collectObjectsInArc', tuple(hand), self.s16(owner + 0x38), 0,
+                                0x42240000, 0xBF800000, ZERO)
+                hits = 0
+                node = u32(head)
+                if node and most >= 1:
+                    while True:
+                        other = u32(node + 0xC)
+                        if not u32(other + 0xC) & 0x1000000 and self.vcall(owner, 20, other):
+                            low, high = self._bash_range(spell)
+                            self.call('damage_apply', other, owner, 100000, 0, 0, flags | 0x40, 0, 1, low, high)
+                            if C.lt(ZERO, u32(other + 0x228)) and not chance < self.draw() % 100 + 1:
+                                self.vcall(other, 30, frames, 1)
+                            else:
+                                for off, value in ((0x92, 100), (0x96, 0x40), (0x98, 100), (0x90, 100), (0x9A, 100), (0x9C, 0x40),
+                                                   (0x94, 0x40)):
+                                    w16(other + off, value)
+                            if not u32(spell + 0x18):
+                                light = self.call('pool_new', 0xBC)
+                                if light:
+                                    spot = (C.add(u32(other + 0x10), ZERO), u32(other + 0x14), C.add(u32(other + 0x18), 0x42800000))
+                                    self.light_effect(light, spot, 0x43210000, 0x430A0000, 0x42800000, 0x43340000, 0x42700000,
+                                                      HALF, HALF)
+                            hits += 1
+                            w32(spell + 0x18, 1)
+                        node = u32(node)
+                        if not node or most <= hits:
+                            break
+                if not u32(spell + 0x18):
+                    self.query_into(head, 'world_collectInSphere', self.vec(owner + 0x10), self.s16(owner + 0x38), 0x42240000)
+                    node = u32(head)
+                    while node and u32(u32(node + 0xC) + 0xC) & 0x1000060:
+                        node = u32(node)
+                    if node:
+                        low, high = self._bash_range(spell)
+                        self.call('damage_apply', u32(node + 0xC), owner, 100000, 0, 0, flags | 0x40, 0, 0, low, high)
+                        w32(spell + 0x18, 1)
+                self._bash_done(spell, head)
+        if not self.u16(owner + 0x11A) & 0x10 or u32(owner + 0x450):
+            w32(owner + 0x58C, 2)
+            self.spell_end(spell)
+        elif self.call('net_isLocalSlot', u32(owner + 0x3C8)):
+            self.w8(G_FORCE_GHOST_REBASE, 0x3C)
+        self.handle_clear(head)
+
+    def _bash_done(self, spell, head):
+        """0x2ded38: the hit is done whether or not anything was struck - except on the
+        path where the sphere query found objects but none eligible, which jumps past the
+        store in the original only to land on the same store."""
+        self.w32(spell + 0x18, 1)
+
+
 # =========================================================================================
 # Registration helpers
 # =========================================================================================
@@ -2388,5 +2818,23 @@ _register(55, 'healing', {
     'SpellHealing_ctor': (0x2E8EC8, 0x2E90B8, '', 'healing_spell_ctor'),
     'SpellHealing_run': (0x2E90B8, 0x2E979C, 'spell', 'healing_run'),
 }, [(Model.VT_SPELL_HEALING, 'Spell', (1,))])
+
+_register(68, 'resurrect', {
+    'SkillResurrect_canUse': (0x312168, 0x312240, 'skill', 'resurrect_can_use'),
+    'SkillResurrect_findTarget': (0x312240, 0x3123E4, '', 'resurrect_find_target'),
+    'SkillResurrect_cast': (0x3123E4, 0x312500, 'skill', 'resurrect_cast'),
+    'SkillResurrect_isSlotBeingRaised': (0x31270C, 0x3127B4, '', 'resurrect_is_being_raised'),
+    'SpellResurrect_ctor': (0x3127B4, 0x312A70, '', 'resurrect_spell_ctor'),
+    'SpellResurrect_run': (0x312B30, 0x312F48, 'spell', 'resurrect_run'),
+    'SpellResurrect_onOwnerDeath': (0x3130F4, 0x3132C4, '', 'resurrect_on_owner_death'),
+}, [(Model.VT_SPELL_RESURRECT, 'Spell', (1,))])
+
+_register(49, 'bash', {
+    'SkillBash_canUse': (0x2DE334, 0x2DE3BC, 'skill', 'bash_can_use'),
+    'SkillBash_cast': (0x2DE3BC, 0x2DE484, 'skill', 'bash_cast'),
+    'SpellBash_ctor': (0x2DE640, 0x2DE7DC, '', 'bash_spell_ctor'),
+    'SpellBash_run': (0x2DE7DC, 0x2DEDEC, 'spell', 'bash_run'),
+    'SpellBash_windupFx': (0x2DEDEC, 0x2DEFCC, '', 'bash_windup_fx'),
+}, [(Model.VT_SPELL_BASH, 'Spell', (1,))])
 
 MODELLED = {name: start for name, (start, _end) in FUNCTIONS.items()}

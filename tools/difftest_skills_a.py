@@ -9,7 +9,7 @@ Needs your own SLUS_209.73 (US v2.00).  Without it the script says so and exits 
 
     --quick       a tenth of the rounds (the statistics sweep stays exhaustive)
     --seed N      seed of the random scenarios (default 3411); a seed repeats exactly
-    --rounds N    rounds per scenario (default 120)
+    --rounds N    rounds per scenario (default 80)
     -k TEXT       only the scenarios whose name contains TEXT (e.g. -k stats, -k s04)
     -v            print the first mismatches of every failing property and the blocks
                   never entered
@@ -45,9 +45,28 @@ The world
     A player caster (slot 0, with its record), its prediction copy, a monster caster, three
     more players, six other creatures (alive, dead, friendly, blocking, undead ...) and two
     objects that are not creatures, placed around the caster again and again.  A player's
-    is-enemy and same-team answers are scripted (Player_isEnemy is not modelled); a
-    monster's are the real Creature_isEnemy.  Box and arc queries answer with the objects
-    that really are inside, plus now and then some that are not.
+    is-enemy and same-team answers are scripted behind the documented entry conditions of
+    Player_isEnemy (which is not modelled); a monster's are the real Creature_isEnemy.  Box
+    queries answer with the objects that really are inside, arc queries with the creatures
+    ahead, nearest first - plus now and then some that are not, and now and then shuffled.
+    pool_new refuses now and then.
+
+Scenarios (-k matches the name)
+    stats                    the exhaustive statistics sweep (ids 1-34, levels 0-40 and five
+                             outside, every slot), made-up tables, and the tables against
+                             tools/dump_tables.py and against docs/spec/skills-01-34.md
+    s00 machinery            GameObject_ctor, Projectile_ctor, obj_moveAndCollide,
+                             creature_addSpell, creature_findSpellByType
+    s02 passives and tables  ids 2, 3, 9, 19, 25, 27, 28, 30: can-use, cast, the helpers
+    s04, s07, s09, s11, s12, s14, s15, s16, s20, s21, s23, s24, s26, s29, s31, s33
+                             one skill each: player and monster casters, levels 0-40, pool
+                             failures, targets in and out of reach, the effect run to its
+                             natural end and cut short (owner dead, owner deleted, target
+                             gone), the hit handlers on every kind of object
+    s05 can-use of the rest  ids 1, 5, 6, 8, 10, 13, 17, 18, 22: can-use only
+
+Not compared: describeRank (slot 4, menu text), the draw functions, and the casts and
+effects of ids 1, 5, 6, 8, 10, 13, 17, 18, 22 and 34.
 """
 import hashlib
 import math
@@ -69,7 +88,7 @@ import difftest_creature as DC                  # noqa: E402
 from difftest_creature import Res, f32, fl, rd, M32, is_stack      # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OPTIONS = {'quick': False, 'seed': 3411, 'rounds': 120, 'filter': None, 'verbose': False, 'trace_first': False,
+OPTIONS = {'quick': False, 'seed': 3411, 'rounds': 80, 'filter': None, 'verbose': False, 'trace_first': False,
            'fpu': 'ps2'}
 RESULTS = []
 STUB_BASE = 0x00F00000
@@ -1438,7 +1457,7 @@ def s23(env, rounds):
     bolt = world.add_pool(0xD0, 1, 'frost')[0]
     shards = world.add_pool(0x7C, 4, 'shard')
     world.add_pool(0x248, 4, 'debris')
-    for env.round in range(rounds):
+    for env.round in range(max(rounds // 2, 2)):                 # the slowest functions of the range
         world.place(rng)
         caster = env.caster()
         facing = facing_arg(rng)

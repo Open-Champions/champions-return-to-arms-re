@@ -1,0 +1,26 @@
+# Two joined machines, from power-on to one lockstep net game in level "strife",
+# through the game's developer LAN start. Run it on both with
+#
+#   python3 -I -B tools/rig/rig.py pair local/rig-out/run1 \
+#       --script tools/rig/examples/pair-start.rig --save-at-end local/rig-out/run1/%M.zip
+#
+# (the pair launcher adds --arg --net, the shim, the link and the tick log; %M in an
+# option is replaced by a or b). The timing below is for memory cards that already hold
+# the game's save data, as created by examples/boot-to-hub.rig.
+
+netshim
+# slot 0 of the developer lobby becomes a melee class: its model table (0x530338) says 7, a caster
+poke 0x530338:s32 0
+at 300
+# card screens; the taps end when the lobby has heard this machine's own announcement
+tapuntil cross 40 g_numPeers:s32 >= 1 timeout 6000
+# the other machine's announcement crosses the bus
+until g_numPeers:s32 >= 2 timeout 1200
+wait 30
+A: tap cross 4          # the confirm button starts the game for everyone listed
+until g_players+0x43d8:u32 != 0 timeout 4000
+until g_netFrame:s32 >= 60 timeout 3000
+show g_levelName:str16 g_networkMode:u8 g_netFrame:s32 g_numPeers:s32 g_numPlayers:s32 g_players:str8 g_players+0x4c30:str8
+# let the level settle; with --save-at-end the two states are then at lockstep tick 659,
+# which is where the other pair-*.rig examples start
+wait 600
