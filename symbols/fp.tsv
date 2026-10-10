@@ -1,0 +1,8 @@
+# ---- C math library pieces identified for docs/issues/float-divergence.md (addresses nobody had named) ----
+# Evidence is the constants each body uses and how the game calls it; none was run.
+# ceilf, floorf, atan2f, atanf, fabsf and powf at 0x3a5710-0x3aa7e8 are named in symbols/movement.tsv.
+003a5a38	libm_fmod	20-byte wrapper that jumps to 0x3a6208; takes two soft-float doubles; damage_apply uses it for the "random amount between min and max" roll
+003a5ab0	libm_fmodf	20-byte wrapper that jumps to 0x3a7760; anim_syncToSimFrame takes g_simFrame modulo a track length with it
+003a6208	libm_ieee754_fmod	double remainder done on the integer halves (masks 0x000fffff / 0x7ff00000); no FPU instruction decides the result
+003a7760	libm_ieee754_fmodf	single-precision remainder; a divisor whose bits are <= 0x007fffff (zero or denormal) returns (x*y)/(x*y), i.e. 0/0
+003aa810	libm_scalbnf	exponent adjust with mask 0x807fffff, tiny 0x0da2425f and huge 1e30 for the out-of-range returns

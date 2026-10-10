@@ -19,6 +19,6 @@ understood: see the area document in `docs/` for what has actually been read.
 | monsters | 232000–2c3cd4 | 885 | 882 | 100% | monster classes and level objects (chests, traps, gates, savepoints) |
 | skills | 2c3cd4–320000 | 982 | 865 | 89% | Skill and Spell classes |
 | mainloop | 320000–323dcc | 39 | 39 | 100% | task scheduler and main loop |
-| netlib | 323dcc–3b0000 | 2066 | 394 | 33% | lobby client, SOE UdpLibrary, AES, Sony SDK libraries |
+| netlib | 323dcc–3b0000 | 2066 | 399 | 33% | lobby client, SOE UdpLibrary, AES, Sony SDK libraries |
 | runtime | 3b0000–3e6000 | 1460 | 1137 | 68% | C and C++ runtime, type info, static constructors |
-| **all** | | 7732 | 5144 | 78% | |
+| **all** | | 7732 | 5149 | 78% | |

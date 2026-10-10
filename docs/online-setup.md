@@ -44,6 +44,32 @@ The network menu is a state machine (the function at 0x33ed70, state word at obj
    group of friends the simplest arrangement is a server on a public host, or everyone on
    one LAN or VPN.
 
+## Settings every player must match
+
+Play is deterministic lockstep: each machine runs the whole simulation itself and they only
+exchange controller input. Anything that makes one machine compute a different number puts
+it "OUT OF SYNC". From reading the code (nothing here has been tested on a running game):
+
+- **Same disc version.** Everything in this project is for SLUS-20973, version 2.00.
+- **Same emulator version, and the same arithmetic settings**: EE/FPU rounding, EE/FPU
+  division rounding and EE/FPU clamping, VU0 and VU1 rounding and clamping, the FPU and VU
+  game fixes, and both recompilers on. Leave them at the defaults. Even controller input is
+  decoded with float arithmetic, so a different rounding setting diverges within a second
+  of stick use (FINDINGS F5, F9; `docs/issues/float-divergence.md`).
+- **Same test patches.** Patches marked "every player must use the same setting" change
+  the simulation; a mix is itself a desync. Patches marked "a mix is safe" only make one
+  machine do what the others already do.
+- **A real console against an emulator** has not been shown to stay in sync and should be
+  expected to drift. The same goes for an ARM-native emulator build against an x86 one.
+  PCSX2 2.8.2 on an Apple-silicon Mac is the x86-64 build running under Apple's
+  translator; that is expected to match an x86 PC but has not been compared.
+- **No `debug.sht` on anyone's memory card**, and in a game with memory-card characters,
+  take turns at save points and never leave a save that ended in a card error unrepeated
+  (FINDINGS B9–B11).
+- **Habits that avoid two known per-machine branches** until the patches for them are
+  tested: do not press "use" and then the D-pad spell selector in quick succession, and do
+  not open the inventory right after pressing a potion button (FINDINGS K1, K2).
+
 ## Checked so far
 
 - The Champions Reborn server builds and runs on macOS, and a simulated pair of Return to
