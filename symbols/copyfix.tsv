@@ -1,0 +1,8 @@
+# Symbols added by the prediction-copy audit (docs/issues/prediction-copy.md).
+# Only addresses that had no name. Address (hex, no 0x), name, note.
+004f841c	g_localAliveFirst	lowest alive slot that is local to this machine, -1 if none; written only by game_rebuildAlivePlayers (0x1e7350); per machine
+004f8424	g_localAliveCount	number of alive players local to this machine; rebuilt with the alive list; read by Creature_run (0x11399c), Vehicle_run (0x207d28), camera and menus
+004f8428	g_localAliveCountPrev	previous g_localAliveCount, saved by game_rebuildAlivePlayers (0x1e7354); no reader found
+004f8430	g_localAlivePlayers	slots of the alive local players, g_localAliveCount entries; per machine
+007b8fe0	g_animCueThrottle	per sound class {u8 low byte of g_drawFrame, u8 count}; anim_advance (0x16d748) uses it to cap animation sound cues per rendered frame; gates sounds only
+00404468	g_unsyncedSeed2	third generator, next to g_cosmeticSeed and g_randSeed; drawn on frames chosen by net_isLocalSlot (0x1aa6f4 -> 0x1aa8ac), not in the sync hash, not restored after prediction; users read so far are effects (docs/skills.md)

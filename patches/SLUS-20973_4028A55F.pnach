@@ -5,11 +5,11 @@ author=reverse engineering test patch, untested on a running game
 description=Stops cutscenes from nudging the speaking character's animation clock toward the local audio stream position (cut_advance, 0x199448). Cosmetic effect: lip movement may drift from the voice line. Every player in a game must use the same setting.
 patch=1,EE,00199448,word,10000060
 
-[Net test: alive list only rebuilt at end of frame]
+[Net test: prediction copy starts without pending damage]
 author=reverse engineering test patch, untested on a running game
-description=Removes the immediate rebuild of the alive-player list when a player dies (Player_processDamage, 0x1B3504). The list is still rebuilt at the end of every simulated frame, so a death is noticed up to one frame later, identically on every machine. Tests whether the local prediction copy dying early is what puts co-op games out of sync around deaths (FINDINGS G11-G13). Every player in a game must use the same setting.
-// was: 0C079CBE (jal game_rebuildAlivePlayers)
-patch=1,EE,001B3504,word,00000000
+description=Each machine predicts its own player on a throwaway copy. The copy is cloned with any damage still waiting on the real player, can die from it during prediction, and its death rebuilds the alive-player list on that one machine (FINDINGS G11-G18). This makes the clone start with no pending damage (Player_clone, 0x11EA8C), so the copy never dies ahead of the real player. Real deaths are untouched. Per machine; does not need to match between players. Replaces an earlier test patch at 0x1B3504, withdrawn because it changed real deaths (G21).
+// was: E60000C8 (swc1 f0,0xc8(s0))  now: sw zero,0xc8(s0)
+patch=1,EE,0011EA8C,word,AE0000C8
 
 [Net test: input delay drains faster]
 author=reverse engineering test patch, untested on a running game
