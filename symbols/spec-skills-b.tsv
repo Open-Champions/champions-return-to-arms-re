@@ -1,0 +1,97 @@
+# spec-skills-b: addresses named while writing docs/spec/skills-35-68.md (skills with ids 35-68).
+# Only addresses no other file names. Functions first, then data. Evidence for each is in the section of that document that lists it under "Functions read".
+001d32e4	player_addSkillAbility	(skillId, slot): for a skill whose kind (+0x08) is not 3, takes a free ability record of the 15 at record +0x4440 unless one already carries this id, zeroes it, writes the marker name, the id (+0x20), usable byte (+0x24) = 1 and the skill kind (+0x25), then raises the rank to at least 1; the zeroed cooldown field is why Player_castSkill is not blocked on the cast frame; 10 call sites (9 in the function at 0x1b1534, 1 at 0x1b1d10)
+002c4fa8	ShockProjectile_buildChain	(bolt, Vec3 *from): recursive chain builder of skill 37; picks the nearest live candidate of list +0x50 within the squared range +0x18c that is not yet in list +0x54, links it, then recurses from the new victim and again from the same point until count +0x18b equals max +0x18a; called from ShockProjectile_run 0x2c46f4 and from itself
+002c50e4	ShockProjectile_isInChain	(bolt, obj) -> 1 when obj is in the chain list +0x54; only caller ShockProjectile_buildChain 0x2c505c
+002c95f4	SpellCharge_onContact	(spell, target or 0): first contact of a rush; damage to the creature run into (stat 0), box damage round the caster (stats 1 and 2), sets spell+0x48; callers Player_onTouch 0x1beb98 and Player_move 0x1b51bc; reads spell+0x48 without a null test
+002d21e0	SpellCyclone_updateFx	(spell, pos*): moves and pulses the light at spell+0x1c, 72-particle helix, three Spell_rand draws every third frame at level 9 and above; presentation only; only caller SpellCyclone_run 0x2d1f94
+002d2cbc	SpellHarmTouch_applyToHit	(spell, target, int *min, int *max): called by Player_meleeHit 0x1b7000; for a creature target replaces the hit's damage range with skill stat 0 (max up to 20 percent more from Spell_rand), creates a LightEffect, destroys the spell; 204 Spell_rand draws for particles first
+002d6bb8	FireArrowProjectile_end	(this, reason) once per object (guard +0x60): impact sound when reason != 0, obj_delete, ended flag; callers FireArrowProjectile_run (terrain 1, expiry 0) and FireArrowProjectile_onHit (2)
+002d7ecc	ColdArrowProjectile_end	(this, reason) once per object (guard +0x60): frost particles from the own generator (reason 1 adds a ground burst), impact sound, obj_delete, ended flag; callers ColdArrowProjectile_run and _onHit
+002d95c8	PoisonArrowProjectile_end	(this, reason) reason not tested: ring of 213 particles, creates a poisonGasSpell (life stat3*60 frames, radius stat2*12, damage 5) when the owner handle is set, sound, obj_delete, ended flag; callers PoisonArrowProjectile_run and _onHit
+002da928	MultiFireProjectile_end	(this, reason) once per object (guard +0x60): releases the trail, impact effect and one of four sounds (own generator) when reason != 0, obj_delete, ended flag; callers MultiFireProjectile_run and _onHit
+002db50c	ExplodeArrowProjectile_explode	(this, reason) once per object (guard +0x60): reason 0 only deletes; otherwise sounds, ring burst, LightEffect, camera shake, then box query of half edge stat 2 and two damage_apply calls per enemy or non-creature object (zero-damage knock-back call, then stat 0 .. 1.2 x stat 0 with flags 0x840); callers ExplodeArrowProjectile_run and _onHit
+002dedec	SpellBash_windupFx	(spell): 203 particles on model sample points of net_objOrGhost(owner), Spell_rand draws only; called by SpellBash_run 0x2ded40 every frame until animation event bit 2
+002e1470	SpellAncestralCall_queryFor	(spell, creature, float *outStat0, float *outStat1) -> 1 when creature is the owner or an ally within stat 3 x 12 units (2-D, same team in PvP mode A); writes statistic 0 and 1 x 0.01; callers Player_recalcDamage 0x1b7868 and Player_run state 1 0x1aa070
+002e15a0	SpellAncestralCall_tintAndGlow	(spell, creature): eight s16 tint writes at creature +0x90..+0x9e, then fx_modelParticlesNearCamera_1f61c0; called from SpellAncestralCall_run for the owner and for allies in range
+002e76c4	SkillCriticalHit_critBonusFor	(skill, attacker, ownRank) -> fraction added to the critical-hit chance: own rank if the attacker has a SpellCriticalHit, else the first allied player in g_alivePlayers with the spell and within stat 1 x 12 units; statistic 0 x 0.01; only callers damage_apply 0x1e8d5c, 0x1e8d7c, 0x1e8da4
+002e8534	SpellHolyShield_absorb	(spell) -> float: called only by Player_takeDamage (0x1b5658) when the player carries a SpellHolyShield and has mana; spawns 241 particles on model sample points (Spell_rand), creates a LightEffect when spell+0x1c <= 0 and then sets spell+0x1c = 0.263, returns slot 10 (stat 0, level) * 0.01 = the fraction of the hit paid from mana
+003058c0	arena_addLife	(slot): when g_pvpModeB is set and g_pvpModeA clear adds 1 to the slot's arena life counter (s16 at 0x50389a + 12 * slot); only caller SpellResurrect_run 0x312e54
+00309524	SpellGiantGrowth_stepScale	(spell, owner): moves owner scale +0xdc by 0.006 per call toward spell +0x1c, counts +0x20 down while equal, sets the end flag +0x24; writes player record +0x4c20 = max(1, scale * 0.75); only caller SpellGiantGrowth_run 0x30945c
+00309678	SpellGiantGrowth_emitParticles	(spell, owner): services 47 / 4 / 11 of the 50 particle slots at spell +0x30 (growing / holding / ending); Spell_rand only; only caller SpellGiantGrowth_run 0x30946c
+00312240	SkillResurrect_findTarget	(skill, caster) -> player slot or -1: dead for 180+ counted frames (0x4f84a8 < 61), forward distance in (-12, 136), sideways offset < 56 (one-sided), nearest forward wins, not already being raised; callers canUse 0x3121d0, cast 0x312458
+0031270c	SkillResurrect_isSlotBeingRaised	(skill, slot) -> 1 when a player in g_alivePlayers has a SpellResurrect whose target (+0x18) has that slot; callers 0x312384 and Player_startSpawnProtection 0x1b8fbc
+003130f4	SpellResurrect_onOwnerDeath	(spell) -> float hit points: one g_randSeed draw against stat 3 percent; success creates a StrongStancePhantom and a LightEffect and returns half of maximum hp, failure sets +0x20 / +0x6c and returns 0; only caller Player_processDamage 0x1b33b0 (one-player games)
+003c2690	Creature_isCharmed	inline accessor, out-of-line copy (3 instructions): returns charm timer +0x312 != 0; no direct caller found by xref
+003c26a8	Creature_setRootTimer	inline accessor, out-of-line copy (2 instructions): stores its 16-bit argument at root timer +0x314; no direct caller found by xref
+0040278c	g_followTeleportDist	float 500.0, read only by Creature_run at 0x113048: ray length and distance from the follow point at which an inactive creature that follows a player (cflags 0xc00000, charmed) is re-placed
+004ef3f4	g_lifeTapBlockParticleDefBuilt	non-zero once g_lifeTapBlockParticleDef has been constructed (tested and set at 0x1a6478-0x1a6544)
+004f84a8	g_playerDeadCountdown	s16[4] per player slot: 240 at level start and at every respawn (player_respawn 0x1bd0a4, arena_respawnPlayer, 0x1ec2b8); game_checkAllDead lowers it by 1 per frame while the slot's record hp is <= 0; Resurrect needs < 61, the save-point revival needs 0
+004f8760	g_dummyDamagerColdParticle	particle type descriptor referenced by fx_staticInitParticleTypes 0x200310; the 128-particle burst of DummyDamager_run when a cold projectile (bit 0x10) meets the terrain
+0054fc60	g_ancestralCallBeamFrames	s32[3] = 23, 47, 47: frames after the cast at which SpellAncestralCall_run creates its three beams
+006e21d8	g_skillRangerCriticalHit	static Skill object of id 33 (class SkillCriticalHit, +0x64 = 33); g_skillTable[33]
+006e28c0	g_skillMinorHealing	static Skill object of id 50; g_skillTable[50]
+006e2928	g_skillAncestralCall	static Skill object of id 51; g_skillTable[51]
+006e29f8	g_skillCriticalHit	static Skill object of id 53 (class SkillCriticalHit, +0x64 = 53); g_skillTable[53]
+006e2c68	g_skillLifeTap	static Skill object of id 59; g_skillTable[59]
+006e2cd0	g_skillBlunt	static Skill object of id 60, constructed inline at 0x16b2cc; g_skillTable[60]
+006e2d38	g_skillSlashing	static Skill object of id 61, constructed inline at 0x16b35c; g_skillTable[61]
+006e2da0	g_skillStrongStance	static Skill object of id 62; g_skillTable[62]
+006e2e08	g_skillNaturalResistance	static Skill object of id 63; g_skillTable[63]
+006e2e70	g_skillStunningStrike	static Skill object of id 64; g_skillTable[64]
+006e3558	g_skillBerserkerCriticalHit	static Skill object of id 81 (class SkillCriticalHit, +0x64 = 81); g_skillTable[81]
+00864eb0	g_lifeTapBlockParticleDef	particle definition of the block glow in Player_run state 8 (LifeTap rank > 0); built on first use at 0x1a6538
+00871128	g_frostStormSnowParticleA	particle type descriptor set up by fx_staticInitParticleTypes 0x200310; first snow loop of FrostStormSpell_run
+00871178	g_frostStormSnowParticleB	as 0x871128; second snow loop of FrostStormSpell_run
+008711c8	g_iceShardParticle	particle type descriptor set up by fx_staticInitParticleTypes 0x200310; trail and burst of FrostStormIceShard_run
+00871218	g_frostStormGroundParticle	particle type descriptor set up by fx_staticInitParticleTypes 0x200310; ground loop of FrostStormSpell_run
+008e4010	g_sparksParticleA	particle type descriptor set up by levelObjects_initParticleDefs 0x296ddc; 3 per flying frame from Sparks_run
+008e4060	g_sparksParticleB	as 0x8e4010; 5 per flying frame from Sparks_run
+008e4100	g_sparksBurstParticle	as 0x8e4010; 50 on the frame a Sparks object ends
+008e4150	g_sparksTrailParticle	as 0x8e4010; one behind the spark when an own-generator draw is odd
+008e4bf0	g_shockParticleA	particle type descriptor (0x50 bytes) set up by shock_staticInit 0x2c5124; emitted 42 times per frame by ShockProjectile_run
+008e4c40	g_shockParticleB	second descriptor of shock_staticInit; emitted by ShockProjectile_run when an own-generator draw has its low 5 bits clear
+008e4d80	g_groundPoundDustParticleDef	particle definition built by groundPound_staticInit 0x2c843c; dust ring of GroundPoundEffect_run (GameObject_rand draws)
+008e4dd0	g_groundPoundDebrisParticleDef	built by groundPound_staticInit; 23 per pound on land (generator 0x404468)
+008e4e20	g_groundPoundSparkParticleDef	built by groundPound_staticInit; one per run for the first four runs on land
+008e4e70	g_groundPoundSplashParticleDef	built by groundPound_staticInit; 46 per pound over water
+008e4ec0	g_groundPoundBurstParticleDefS	built by groundPound_staticInit; 60-particle burst when the radius is below 152
+008e4f10	g_groundPoundBurstParticleDefM	built by groundPound_staticInit; burst when the radius is below 232
+008e4f60	g_groundPoundBurstParticleDefL	built by groundPound_staticInit; burst for larger radii
+008e4fb0	g_chargeParticleDefA	particle definition built by charge_staticInit 0x2c9d20; 11 per frame in SpellCharge_run
+008e5000	g_chargeParticleDefB	particle definition built by charge_staticInit; 4 per frame in SpellCharge_run
+008e5050	g_chargeImpactParticleDef	particle definition built by charge_staticInit; impact ring of SpellCharge_onContact
+008e5410	g_darknessParticle	particle type descriptor set up by darkness_staticInit 0x2cfd8c; 8 per frame from DarknessProjectile_run
+008e5460	g_pdefConvertEnemySpiral	particle definition: the per-frame spiral particle of SpellConvertEnemy_run (0x2d07a4); constructed by convertEnemy_staticInit 0x2d0820
+008e54b0	g_pdefConvertUndeadSpiral	particle definition: the per-frame spiral particle of SpellConvertUndead_run (0x2d12c0); constructed by convertUndead_staticInit 0x2d133c
+008e5500	g_cycloneHelixParticleDef	particle definition built by cyclone_staticInit 0x2d272c; helix of SpellCyclone_updateFx
+008e5550	g_cycloneSparkParticleDef	particle definition built by cyclone_staticInit; extra sparks at level 9 and above
+008e55a0	g_harmTouchParticleDefA	particle definition built by harmTouch_staticInit 0x2d3060; SpellHarmTouch_applyToHit
+008e55f0	g_harmTouchParticleDefB	built by harmTouch_staticInit; second particle of each pair in SpellHarmTouch_applyToHit
+008e5730	g_coldArrowParticleA	particle type descriptor registered by coldArrow_staticInit 0x2d84cc; flight and impact particles of ColdArrowProjectile (0x2d73c8, 0x2d7ecc)
+008e5780	g_coldArrowParticleB	particle type descriptor registered by coldArrow_staticInit; second flight particle and impact burst of ColdArrowProjectile
+008e57d0	g_coldArrowParticleGround	particle type descriptor registered by coldArrow_staticInit; ground burst of ColdArrowProjectile_end on a terrain hit
+008e5820	g_poisonArrowParticleA	particle type descriptor registered by poisonArrow_staticInit 0x2d9764; odd-numbered flight particles of PoisonArrowProjectile_run
+008e5870	g_poisonArrowParticleB	particle type descriptor registered by poisonArrow_staticInit; even-numbered flight particles of PoisonArrowProjectile_run
+008e58c0	g_poisonArrowParticleRing	particle type descriptor registered by poisonArrow_staticInit; the 213-particle ring of PoisonArrowProjectile_end
+008e5910	g_multiFireParticle	particle type descriptor registered by multiFire_staticInit 0x2daa4c; flight particles of MultiFireProjectile_run
+008e5960	g_explodeArrowParticle	particle type descriptor registered by explodeArrow_staticInit 0x2dba94; flight particles of ExplodeArrowProjectile_run
+008e5b40	g_bashWindupParticleDef	particle definition built by bash_staticInit 0x2defd4; used by SpellBash_windupFx 0x2dedec
+008e5c30	g_ancestralCallRingParticleDef	particle definition built by ancestralCall_staticInit 0x2e1634; ring particles of SpellAncestralCall_run
+008e5eb0	g_pdefRootHold	particle definition: 22 per frame on model sample points while SpellRoot is in phase 1 (0x2e6f08); constructed by root_staticInit 0x2e70a8
+008e5f00	g_pdefRootPending	particle definition: 7 per frame around the target while SpellRoot is in phase 0 (0x2e6af0); constructed by root_staticInit 0x2e70a8
+008e5f50	g_pdefRootResistBurst	particle definition: the 100-particle burst when the SpellRoot roll fails (0x2e6d14); constructed by root_staticInit 0x2e70a8
+008e5fa0	g_criticalHitRingParticleDef	particle definition built by criticalHit_staticInit 0x2e7f7c; ring particles of SpellCriticalHit_run
+008e5ff0	g_pdefHolyShieldAbsorb	particle definition: the 241 particles of SpellHolyShield_absorb (0x2e86c8); constructed by holyShield_staticInit 0x2e886c
+008e6040	g_pdefHealingRing	particle definition: the ring particles of SpellHealing_run (0x2e96f4); constructed by healing_staticInit 0x2e979c
+008e6090	g_coneOfFrostParticleA	particle type descriptor set up by coneOfFrost_staticInit 0x2ea35c; 15 per frame from SpellConeOfFrost_run
+008e60e0	g_coneOfFrostParticleB	as 0x8e6090; 6 per frame
+008e6130	g_coneOfFrostParticleC	as 0x8e6090; 24 on frames where a spell-generator draw is a multiple of 5
+008e7368	g_strongStanceParticleDef	particle definition used by SkillStrongStance_trigger 0x308578 (25 particles per trigger)
+008e73b8	g_giantGrowthParticleDef	particle definition built by giantGrowth_staticInit 0x3098d4; used by 0x309678
+008e7408	g_planarWindParticleDefA	particle definition built by planarWind_staticInit 0x30a7f4; the rarer stream particle of SpellPlanarWind_run (draw & mask == 0)
+008e7458	g_planarWindParticleDefB	particle definition built by planarWind_staticInit; the common stream particle of SpellPlanarWind_run
+008e74a8	g_planarWindParticleDefHit	particle definition built by planarWind_staticInit; 72 per struck target in SpellPlanarWind_run
+008e84b8	g_shadowStepParticleDef	particle definition built by shadowStep_staticInit 0x311fc8; 86 emitted by SpellShadowStep_ctor
+008e8508	g_resurrectParticleDefCaster	particle definition built by resurrect_staticInit 0x3132c4; emitted from the caster in SpellResurrect_run
+008e8558	g_resurrectParticleDefTarget	particle definition built by resurrect_staticInit; emitted from the target in SpellResurrect_run
