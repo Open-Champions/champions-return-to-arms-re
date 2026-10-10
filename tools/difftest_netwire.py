@@ -1424,15 +1424,26 @@ def test_sessions(elf):
     session.run(scaled(260, 120))
     oos = session.flags('oos')
     frames = [m.net_frame for m in session.models]
+    stalled = [m.stall for m in session.models]
+    across = oos[0][1] + oos[2][1] + oos[1][0] + oos[1][2]
+    # 900 calls of silence later the two that agree kick the third; skip most of the wait
+    for index in (0, 2):
+        session.set_peer_field(index, 1, 'silence', 850 + 3 * index)
+    session.run(scaled(200, 200))
+    pair = [session.models[0], session.models[2]]
     session_report('session: one machine diverges', session,
                    'three consoles; machine 1 corrupts its seed in frame %d' % bad_frame,
-                   oos[0] == [0, 1, 0] and oos[2] == [0, 1, 0] and oos[1][1] == 0
-                   and all(m.stall > 50 for m in session.models),
-                   ' Out-of-sync flags end as %r (row = machine, column = peer): machines 0 and 2 flag machine 1 '
-                   'and from then on ignore its packets; whether machine 1 flags them depends on whether their '
-                   'record for the bad frame reached it before their active mask changed.  All three then '
-                   'stall (frames %s): 0 and 2 wait for input from 1 that they no longer accept'
-                   % (oos, '/'.join(str(f) for f in frames)))
+                   across >= 1 and not (oos[0][2] or oos[2][0]) and min(stalled) > 50
+                   and [m.peers[1].dropped for m in pair] == [1, 1]
+                   and len({m.peers[1].drop_frame for m in pair}) == 1
+                   and min(m.net_frame for m in pair) > max(frames) + 50,
+                   ' Out-of-sync flags after 260 rounds: %r (row = machine, column = peer).  Whoever compares '
+                   'first flags the other side, its active mask changes, and the other side then ignores its '
+                   'packets and may never set a flag of its own; machines 0 and 2 never flag each other.  All '
+                   'three stalled (frames %s).  With their silence counters for machine 1 then set to 850 and '
+                   '856, machines 0 and 2 timed it out, negotiated, dropped it at frame %d and went on (frames '
+                   '%s)' % (oos, '/'.join(str(f) for f in frames), pair[0].peers[1].drop_frame,
+                            '/'.join(str(m.net_frame) for m in pair)))
 
     # a peer goes silent: timeout, negotiation by kick requests and raw relays, drop
     rng = random.Random(seed + 17)
@@ -1479,17 +1490,19 @@ def test_sessions(elf):
                    '1 exchanged kick requests and raw relays, dropped slot 2 at the same frame %d and went on '
                    '(frames %s)' % (survivors[0].peers[2].drop_frame, '/'.join(str(m.net_frame) for m in survivors)))
 
-    # the same with the two rendered-frame counters in step: machine 1's request arrives
-    # after machine 0 has dropped the peer, is never answered, and machine 1 never drops it
+    # the same with the two rendered-frame counters in step and every datagram taking one
+    # round: machine 1's own request leaves when machine 0 is finishing, arrives after
+    # machine 0 has dropped the peer, is never answered, and machine 1 never drops it
     rng = random.Random(seed + 18)
-    session = Session(elf, rng, 3, Wire(rng, loss=0.0, delay=(1, 2)))
+    session = Session(elf, rng, 3, Wire(rng, loss=0.0, delay=(3, 4)))
     session.run(40)
     session.models[0].kick_peer(2)
     session.consoles[0].call(KICK_PEER, 2)
     session.run(scaled(260, 260))
     one, two = session.models[0], session.models[1]
     session_report('session: kick request too late', session,
-                   'three consoles, rendered-frame counters in step; machine 0 calls net_kickPeer(2)',
+                   'three consoles, rendered-frame counters in step, every datagram one round in flight; '
+                   'machine 0 calls net_kickPeer(2)',
                    one.peers[2].dropped == 1 and two.peers[2].dropped == 0 and two.peers[2].kick == 1
                    and two.kick_state == 1 and two.net_frame == one.peers[2].drop_frame
                    and session.datagrams[R.PKT_RAW_RELAY] == 1 and session.datagrams[R.PKT_KICK_REQUEST] >= 4,

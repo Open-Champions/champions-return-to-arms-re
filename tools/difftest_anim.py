@@ -854,7 +854,7 @@ class Scene:
             rig.advance(state, speed, sound=rng.random() < 0.9)
             return
         obj, mem = self.objects[index], rig.emu.mem
-        before = rig.before_step(state)
+        snapshot = rig.before_step(state)
         slow = rng.choice((0, 0, 0, 1, 10, 30, 59, 60, 61, 200))
         facing = rng.randrange(-0x8000, 0x8000)
         scale = f(rng.choice((1.0, 1.0, 0.5, 1.25, rng.uniform(0.3, 3.0))))
@@ -885,7 +885,7 @@ class Scene:
         if self.stepper == 'creature' and not active:
             cover('creature wrapper steps of an inactive creature')
         else:
-            rig.note_step(state, before, want[0], want[1], want[2], want[3] if len(want) > 3 else 0)
+            rig.note_step(state, snapshot, want[0], want[1], want[2], want[3] if len(want) > 3 else 0)
 
     def pose_op(self, state, roll):
         rig, rng, mem = self.rig, self.rng, self.rig.emu.mem
