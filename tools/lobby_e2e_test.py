@@ -14,11 +14,12 @@ Every step prints PASS or FAIL; the exit status is 0 only if nothing failed.
 --extended adds the flows the short run does not need: rules/statistics, character
 create/list/load/save/delete, friends, ignore, instant and room chat, cancelling a game,
 backing out of a join, a private game found by name, a list holding two public games,
-and checks that replies carry every field the game reads. Replies are parsed the way the
-game's own client parses them (see docs/lobby-protocol.md), so a reply the server builds
-differently from what the game expects is reported as a failure. Against Champions
-Reborn as of October 2026 the short run passes and several extended steps fail; the
-document lists the server defects behind each of them.
+checks that replies carry every field the game reads, and malformed, truncated and random
+messages on every port, after which the server must still answer. Replies are parsed the
+way the game's own client parses them (see docs/lobby-protocol.md), so a reply the server
+builds differently from what the game expects is reported as a failure. Unmodified
+Champions Reborn as of October 2026 passes the short run and fails several extended
+steps; server/FIXES.md lists the fixes this file checks.
 
 By default every connection goes to the host named on the command line and only the
 port numbers are taken from the server's replies. --follow-advertised connects to the
@@ -31,12 +32,21 @@ observes so the test can tell which field of a reply carries which address.
 
 Standard library only. Protocol notes are in docs/lobby-protocol.md.
 """
-import argparse
 import os
+import sys
+
+# This file sits next to tools/dis.py. Run as "python3 tools/lobby_e2e_test.py", Python
+# puts that directory first on the module path, and from 3.13 on argparse (through
+# inspect) imports the standard library's dis and gets the tool instead. Nothing here
+# needs a module from this directory, so take it off the path.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path[:] = [p for p in sys.path if os.path.abspath(p or os.curdir) != _HERE]
+
+import argparse
+import random
 import select
 import socket
 import struct
-import sys
 import time
 
 GAME_KEY = b"dlfk qs';r+t iqe4t9ueerjKDJ wdaj"   # symmetric key built into the game
@@ -320,6 +330,8 @@ class Console:
             self.rx += chunk
 
     def send(self, packet_id, body=b"", track=None):
+        if self.tcp is None:
+            raise Failed(f"{self.tag}: not connected")
         if track is None:
             self.track += 1
             track = self.track
@@ -346,6 +358,33 @@ class Console:
         """Send a request and return (reply code, Reader placed after the code)."""
         track = self.send(packet_id, body, track)
         return self.reply(packet_id, track)
+
+    def first_frame(self, track, timeout=IO_TIMEOUT):
+        """The next frame carrying this tracking number, whatever its message id: (id,
+        reply code, Reader), or None. This is how the game finds the reply to a request: by
+        tracking number alone, and it parses the frame as a reply to whatever request it
+        has pending under that number [game: 0x381f80]."""
+        deadline = time.monotonic() + timeout
+        while True:
+            frame = self._frame(deadline)
+            if frame is None:
+                return None
+            pid, trk = struct.unpack_from("<HI", frame, 0)
+            self.log(f"<- {pid:#04x} track {trk} body {frame[6:].hex()}")
+            if trk == track:
+                r = Reader(frame[6:])
+                return pid, r.u32(), r
+            self.notes.append((pid, frame[6:]))
+
+    def send_raw(self, data):
+        if self.tcp is None:
+            raise Failed(f"{self.tag}: not connected")
+        self.tcp.sendall(data)
+
+    def alive(self):
+        """True if the connection still gets an answer (0x24, touch session)."""
+        code, _ = self.call(0x24, enc_wstr(self.session))
+        return code == 0
 
     def notification(self, packet_id, timeout=2.0):
         """Take the oldest pending notification with this id, waiting for one if needed."""
@@ -453,7 +492,7 @@ def create_game_room(c, name):
     """Right after a create-game reply the game opens a chat room named after the game."""
     code, r = c.call(0x09, enc_wstr(c.session) + wstr(name))
     expect(code == 0, f"create game chat room reply code {code}")
-    c.room_reply = r.b[r.p:]
+    c.room_reply, c.room_name = r.b[r.p:], name
 
 
 def create_public_game(c, name, numbers=(1, 0, 0, 0, 0)):
@@ -662,7 +701,10 @@ def ext_reply_shapes(a, b):
     problems = []
     try:
         r = Reader(a.room_reply)
-        r.wstr(500), r.wstr(1000), r.array(lambda: r.wstr(15)), r.array(lambda: r.wstr(15))
+        name, _, members, _ = r.wstr(500), r.wstr(1000), r.array(lambda: r.wstr(15)), r.array(lambda: r.wstr(15))
+        if name != a.room_name or a.handle not in members:
+            problems.append(f"0x09 (create game chat room): reply describes room {name!r} with members "
+                            f"{members}, expected {a.room_name!r} with {a.handle!r} in it")
     except Failed:
         problems.append("0x09 (create game chat room): no room name, text, member list and "
                         "moderator list after the reply code")
@@ -677,18 +719,31 @@ def ext_reply_shapes(a, b):
 
 def ext_room_banner(a, b, loopback, suffix):
     """After its game chat room exists the game sends message 0x19 (session id, room name,
-    a line of text for the room) and waits for the reply."""
+    a line of text for the room) and waits for the reply [game: 0x32ef50]. A player who
+    then enters the room (0x0C, sent when joining the game) is shown that text."""
+    text = "This room belongs to an automated test."
     create_public_game(a, f"e2e banner {suffix}")
     try:
-        track = a.send(0x19, enc_wstr(a.session) + wstr(a.game_name)
-                       + wstr("This room belongs to an automated test."))
+        track = a.send(0x19, enc_wstr(a.session) + wstr(a.game_name) + wstr(text))
         try:
-            code, _ = a.reply(0x19, track, timeout=2.0)
+            code, r = a.reply(0x19, track, timeout=2.0)
         except Failed:
             raise Failed("the server does not answer message 0x19 (the game would wait out its "
                          "30 second timeout)")
-        expect(code == 0, f"reply code {code}")
-        return "answered"
+        expect(code == 0 and r.left() == 0, f"reply code {code}, {r.left()} bytes after it")
+        code, r = b.call(0x0C, enc_wstr(b.session) + wstr(a.game_name))
+        expect(code == 0, f"entering the game's chat room gave {code}")
+        name, banner = r.wstr(500), r.wstr(1000)
+        members, _ = r.array(lambda: r.wstr(15)), r.array(lambda: r.wstr(15))
+        expect(name == a.game_name and banner == text and {a.handle, b.handle} <= set(members),
+               f"room reply: name {name!r}, text {banner!r}, members {members}")
+        code, _ = b.call(0x19, enc_wstr(b.session) + wstr(a.game_name) + wstr("not mine to change"))
+        expect(code != 0, "a player who does not own the room could change its text")
+        cancel_game(b)                  # leaving a game also leaves its chat room
+        cancel_game(a)
+        code, _ = b.call(0x0C, enc_wstr(b.session) + wstr(a.game_name))
+        expect(code != 0, "the game's chat room outlived the game and its last member")
+        return "answered; the text reaches a player entering the room; the room goes with the game"
     finally:
         try:
             cancel_game(a)
@@ -703,10 +758,21 @@ def character_meta(level):
                           + u32(len(values)) + b"".join(wstr(v) for v in values))
 
 
-def character_blob(seed):
-    """Not a real character: four header bytes and a zero-run stream that expands past the
-    19,504 bytes the server insists on before it stores anything."""
-    return bytes([seed, 0xE2, 0xE0, 0x01]) + b"\x00\xff" * 77
+CHARACTER_SIZE = 19504        # bytes of one character once unpacked [game: 0x1bfa38]
+PIECE = 800                   # the game cuts an upload into pieces of this size [0x380888]
+
+
+def character_blob(seed, plain=0):
+    """Not a real character, but packed the way the game packs one: four header bytes, then
+    the 19,504 bytes with every zero byte followed by a count of further zeros. `plain`
+    non-zero bytes come first, so the size of the result can be chosen."""
+    body = bytes((seed + i) % 255 + 1 for i in range(plain))
+    left = CHARACTER_SIZE - plain
+    while left > 256:
+        body += b"\x00\xff"
+        left -= 256
+    body += bytes([0, left - 1])
+    return bytes([seed, 0xE2, 0xE0, 0x01]) + body
 
 
 def list_characters(c):
@@ -715,22 +781,54 @@ def list_characters(c):
     out = []
     for _ in range(r._count()):
         cid = r.u32()
-        out.append((cid, [(r.wstr(), r.wstr()) for _ in range(r._count())]))
+        out.append((cid, [(r.wstr(0x400), r.wstr(0x400)) for _ in range(r._count())]))
     return out
 
 
 def upload(c, packet_id, head, data):
-    """First piece inside the create/save request, the rest in 0x5D messages that reuse the
-    request's tracking number, the last one flagged."""
-    first, rest = data[:100], data[100:]
-    track = c.send(packet_id, head + blob(first) + u32(0))
-    code, r = c.reply(packet_id, track)
-    expect(code == 0, f"message {packet_id:#04x} reply code {code}")
-    if packet_id == 0x58:
-        c.create_reply_left = r.left()
-    c.send(0x5D, enc_wstr(c.session) + blob(rest) + u32(1), track=track)
-    code, _ = c.reply(0x5D, track)
-    expect(code == 0, f"append reply code {code}")
+    """Create (0x58) or save (0x5E) the way the game does [0x380888, 0x380f08, 0x37ca08]:
+    at most 800 bytes in the request, the rest in 0x5D messages that carry the request's
+    tracking number, the last one flagged. When everything fitted into the request the
+    game still sends one more piece, flagged and empty. It does not wait for anything
+    between pieces, and it takes the first frame that comes back with that tracking number
+    as the reply to the request it started with. Returns (reply code, Reader, pieces)."""
+    sent = min(PIECE, len(data))
+    track = c.send(packet_id, head + blob(data[:sent]) + u32(0))
+    early = c.first_frame(track, timeout=0.3)
+    expect(early is None,
+           f"the server answered {packet_id:#04x} before the upload was complete; the game takes "
+           "that for the result of the whole upload")
+    pieces = 1
+    while True:
+        rest = len(data) - sent
+        n, last = (rest, 1) if rest <= PIECE else (PIECE, 0)
+        c.send(0x5D, enc_wstr(c.session) + blob(data[sent:sent + n]) + u32(last), track=track)
+        sent += n
+        pieces += 1
+        if last:
+            break
+    got = c.first_frame(track)
+    expect(got is not None, f"no reply to {packet_id:#04x} after the last of {pieces} pieces")
+    pid, code, r = got
+    expect(pid == packet_id, f"the reply to {packet_id:#04x} came back as message {pid:#04x}")
+    extra = c.first_frame(track, timeout=0.3)
+    if extra is not None:
+        raise Failed(f"a second frame (message {extra[0]:#04x}) came back for one upload")
+    return code, r, pieces
+
+
+def create_character(c, meta, data):
+    code, r, pieces = upload(c, 0x58, enc_wstr(c.session) + u32(0) + u32(0) + meta, data)
+    c.create_reply_left = r.left()
+    expect(r.left() >= 4, "0x58 reply has no u32 (new character id) after the reply code")
+    return code, r.u32(), pieces
+
+
+def save_character(c, whose, cid, meta, data):
+    code, r, pieces = upload(c, 0x5E, enc_wstr(c.session) + enc_wstr(whose.session) + u32(cid)
+                             + u32(0) + u32(0) + meta, data)
+    expect(r.left() == 0, f"0x5E reply has {r.left()} bytes after the reply code; the game reads none")
+    return code, pieces
 
 
 def load_character(c, cid):
@@ -739,7 +837,9 @@ def load_character(c, cid):
     for _ in range(64):
         code, r = c.reply(0x5C, track)
         expect(code == 0, f"character data reply code {code}")
-        data += r.blob()
+        piece = r.blob()
+        expect(len(piece) <= 0x400, f"a piece of {len(piece)} bytes; the game accepts at most 1024")
+        data += piece
         if r.u32():
             return data
     raise Failed("character data never ended")
@@ -747,25 +847,47 @@ def load_character(c, cid):
 
 def ext_characters(a, b):
     expect(list_characters(a) == [], "a new account already has characters")
+    # create: small enough to fit into the request, as a fresh character does
     keys, values, meta = character_meta(1)
     data = character_blob(0x11)
-    upload(a, 0x58, enc_wstr(a.session) + u32(0) + u32(0) + meta, data)
+    code, cid, pieces = create_character(a, meta, data)
+    expect(code == 0, f"create reply code {code}")
     chars = list_characters(a)
     expect(len(chars) == 1, f"{len(chars)} characters listed after creating one")
-    cid, pairs = chars[0]
-    expect(pairs == list(zip(keys, values)), f"list returned {pairs}")
+    expect(chars[0][0] == cid and cid != 0,
+           f"the create reply names character {cid}, the list has {chars[0][0]}; the game saves "
+           "under the id from the create reply")
+    expect(chars[0][1] == list(zip(keys, values)), f"list returned {chars[0][1]}")
     got = load_character(a, cid)
     expect(len(got) % 1024 == 0 and got[:len(data)] == data and not any(got[len(data):]),
            "loaded character data differs from what was stored")
+    # save: three pieces
     keys, values, meta = character_meta(2)
-    data2 = character_blob(0x22)
-    upload(a, 0x5E, enc_wstr(a.session) + enc_wstr(a.session) + u32(cid) + u32(0) + u32(0) + meta, data2)
+    data2 = character_blob(0x22, plain=2000)
+    code, pieces2 = save_character(a, a, cid, meta, data2)
+    expect(code == 0, f"save reply code {code}")
     expect(load_character(a, cid)[:len(data2)] == data2, "saved character data did not replace the old data")
     expect(list_characters(a)[0][1][2] == ("level", "2"), "saved summary did not replace the old summary")
+    # save: exactly two full pieces, so the last piece is full and no empty one follows
+    data3 = character_blob(0x33, plain=1454)
+    expect(len(data3) == 2 * PIECE, f"test data is {len(data3)} bytes, meant to be {2 * PIECE}")
+    code, pieces3 = save_character(a, a, cid, character_meta(3)[2], data3)
+    expect(code == 0, f"second save reply code {code}")
+    expect(load_character(a, cid)[:len(data3)] == data3, "second save did not replace the data")
+    # a store that fails must say so: this data unpacks to far less than a character
+    code, bad_id, _ = create_character(a, character_meta(9)[2], bytes([9, 9, 9, 9]) + b"\x01" * 40)
+    expect(code != 0, "the server reported success for character data it cannot have stored")
+    expect(len(list_characters(a)) == 1, "the refused character is listed")
+    # a stray piece with no upload in progress: no reply, and no harm
+    track = a.send(0x5D, enc_wstr(a.session) + blob(b"stray") + u32(1))
+    expect(a.first_frame(track, timeout=0.5) is None, "a 0x5D piece outside an upload was answered")
+    expect(a.alive(), "connection dead after a stray 0x5D")
     code, _ = a.call(0x5A, enc_wstr(a.session) + u32(cid))
     expect(code == 0, f"delete reply code {code}")
     expect(list_characters(a) == [], "character still listed after delete")
-    return f"create, list, load ({len(got)} bytes in 1024-byte pieces), save, delete all round-trip (id {cid})"
+    return (f"create ({pieces} messages, {len(data)} bytes) answered once with id {cid}; list; load "
+            f"({len(got)} bytes in 1024-byte pieces); save in {pieces2} and {pieces3} messages; "
+            "a failed store is reported; delete")
 
 
 def ext_social(a, b):
@@ -774,11 +896,19 @@ def ext_social(a, b):
     expect(code == 0, f"add friend reply code {code}")
     code, _ = b.call(0x01, enc_wstr(b.session) + wstr(a.handle))
     expect(code == 21, f"adding the same friend twice gave {code}, expected 21")
+    # 0x61: friends, those of them who are online, ignored. The game hands the first two to
+    # the function that also takes the reply to 0x62, and the third to the one for 0x63
+    # [game: 0x32ee38, 0x328868, 0x328a10]. Every name is limited to 15 characters.
+    name = lambda r: r.wstr(15)
     code, r = b.call(0x61, enc_wstr(b.session))
-    friends, middle, ignores = r.array(r.wstr), r.array(r.wstr), r.array(r.wstr)
-    expect(code == 0 and friends == [a.handle] and ignores == [], f"initial lists: {friends} {middle} {ignores}")
+    friends, online, ignores = r.array(lambda: name(r)), r.array(lambda: name(r)), r.array(lambda: name(r))
+    expect(code == 0 and friends == [a.handle] and online == [a.handle] and ignores == [],
+           f"0x61 lists: friends {friends}, online {online}, ignored {ignores}; expected "
+           f"[{a.handle!r}], [{a.handle!r}], []")
     code, r = b.call(0x62, enc_wstr(b.session))
-    expect(code == 0 and r.array(r.wstr) == [a.handle] and r.array(r.wstr) == [], "list update differs")
+    friends, online = r.array(lambda: name(r)), r.array(lambda: name(r))
+    expect(code == 0 and friends == [a.handle] and online == [a.handle] and r.left() == 0,
+           f"0x62 (friend list): friends {friends}, online {online}, {r.left()} bytes left over")
     # instant message
     code, _ = b.call(0x21, enc_wstr(b.session) + wstr(a.handle) + wstr("hello from B"))
     expect(code == 0, f"instant message reply code {code}")
@@ -789,6 +919,15 @@ def ext_social(a, b):
     expect(code == 0, f"add ignore reply code {code}")
     code, _ = b.call(0x21, enc_wstr(b.session) + wstr(a.handle) + wstr("ignored?"))
     expect(code == 19, f"message to someone ignoring the sender gave {code}, expected 19")
+    # 0x63: the ignore list on its own; the game's ignore screen waits for this reply
+    track = a.send(0x63, enc_wstr(a.session))
+    try:
+        code, r = a.reply(0x63, track, timeout=2.0)
+    except Failed:
+        raise Failed("the server does not answer message 0x63 (ignore list); the game's ignore "
+                     "screen would wait out its 30 second timeout")
+    ignored = r.array(lambda: name(r))
+    expect(code == 0 and ignored == [b.handle] and r.left() == 0, f"0x63 (ignore list) returned {ignored}")
     code, _ = a.call(0x1D, enc_wstr(a.session) + wstr(b.handle))
     expect(code == 0, f"remove ignore reply code {code}")
     # public chat room
@@ -812,8 +951,8 @@ def ext_social(a, b):
         expect(code == 0, f"leave room reply code {code}")
     code, _ = b.call(0x1C, enc_wstr(b.session) + wstr(a.handle))
     expect(code == 0, f"remove friend reply code {code}")
-    return (f"friend add/list/remove, instant message, ignore, and room {room!r} "
-            f"(of {len(rooms)}) enter/talk/leave; middle list in 0x61 was {middle}")
+    return (f"friend add/list/remove with online state, instant message, ignore and its list, "
+            f"and room {room!r} (of {len(rooms)}) enter/talk/leave")
 
 
 def ext_cancel(a, b, loopback, suffix):
@@ -827,19 +966,27 @@ def ext_cancel(a, b, loopback, suffix):
     return "an open game disappears from the list when its host cancels"
 
 
+def game_listed(c, host):
+    games, _ = list_games(c)
+    return any(g["info"] == host.game_info for g in games)
+
+
 def ext_back_out(a, b, loopback, suffix):
     """B asks to join, then leaves before the peer handshake (the game sends its two cancel
-    messages whenever it leaves a game). The host's game must stay listed."""
+    messages whenever it leaves a game). The host's game must stay listed. Nor may B, who
+    is not the host, start the game."""
     create_public_game(a, f"e2e backout {suffix}")
     host_discovery(a, loopback)
     try:
         find_game(b, a)
         ask_to_join(b, b.target["id"])
+        code, _ = b.call(0x23, enc_wstr(b.session) + u8(0) + u16(0) + u32(0) + u32(0) + u32(0))
+        expect(code != 0 and game_listed(b, a),
+               "a player who had only asked to join could start (and so unlist) the host's game")
         cancel_game(b)
-        games, _ = list_games(b)
-        expect(any(g["info"] == a.game_info for g in games),
+        expect(game_listed(b, a),
                "the host's game vanished from the list when a player who had only asked to join cancelled")
-        return "the host's game is still listed"
+        return "the host's game is still listed, and only its host can start it"
     finally:
         try:
             cancel_game(a)
@@ -847,9 +994,55 @@ def ext_back_out(a, b, loopback, suffix):
             pass
 
 
+def ext_members(a, b, args, loopback, suffix):
+    """Places in a game. A member who leaves, or whose connection drops, gives its place
+    back; when the host leaves, the game goes."""
+    create_public_game(a, f"e2e members {suffix}")
+    host_discovery(a, loopback)
+    x = Console("X", a.host, a.verbose, a.follow)
+    x.user, x.handle, x.password = f"e2e_x_{suffix}", f"e2eX{suffix}", "e2e-" + os.urandom(4).hex()
+    try:
+        gateway(x, args.gateway_port)
+        create_account(x)
+        # Three connections join and drop without a word, one after the other. A game holds
+        # four players; if the dropped ones kept their places, the game would now be full.
+        for i in range(3):
+            login(x)
+            find_game(x, a)
+            ask_to_join(x, x.target["id"])
+            joiner_discovery(x, a, loopback)
+            join_success(x, a)
+            x.close()
+            time.sleep(0.3)
+        for i in range(2):                      # join, leave politely, join again
+            find_game(b, a)
+            ask_to_join(b, b.target["id"])
+            joiner_discovery(b, a, loopback)
+            join_success(b, a)
+            if i == 0:
+                cancel_game(b)
+                expect(game_listed(b, a), "the game vanished when a member (not the host) left")
+        cancel_game(a)                          # the host leaves with B still in the game
+        expect(not game_listed(b, a), "the game is still listed after its host left")
+        cancel_game(b)
+        return ("three members dropped and one left; their places were free again; "
+                "the game went when its host left")
+    finally:
+        x.close()
+        x.udp.close()
+        for c in (b, a):
+            try:
+                cancel_game(c)
+            except (Failed, OSError):
+                pass
+
+
 def ext_private(a, b, loopback, suffix):
     name = f"e2e private {suffix}"
     create_private_game(a, name)
+    # Until the host's discovery datagram has arrived the server has no address for it.
+    code, _ = b.call(0x57, enc_wstr(b.session) + wstr(name))
+    expect(code != 0, "a private game was handed out before the server knew its host's address")
     host_discovery(a, loopback)
     try:
         games, _ = list_games(b)
@@ -871,12 +1064,14 @@ def ext_private(a, b, loopback, suffix):
             problems.append(f"first pair (read by the game as internal) is {first[0]}:{first[1]}, "
                             f"the host reported {a.lan_addr}:{a.lan_port}")
         expect(not problems, "; ".join(problems))
-        return f"game id {game_id}, label {text!r}, internal {first}, external {second}"
+        join_success(b, a)
+        return f"game id {game_id}, label {text!r}, internal {first}, external {second}; joined"
     finally:
-        try:
-            cancel_game(a)
-        except (Failed, OSError):
-            pass
+        for c in (b, a):
+            try:
+                cancel_game(c)
+            except (Failed, OSError):
+                pass
 
 
 def ext_two_games(a, b, loopback, suffix):
@@ -897,6 +1092,293 @@ def ext_two_games(a, b, loopback, suffix):
                 cancel_game(c)
             except (Failed, OSError):
                 pass
+
+
+def ext_account_info(a, b):
+    """Message 0x64: user name and password, both encrypted, no session. The game sends it
+    from the login screen when a login came back with result 63 and fills its account
+    screen from the reply: twelve encrypted strings, of which it uses the first (e-mail
+    address) and the sixth (date of birth) [game: 0x339a20, 0x3841dc case 0x64, 0x32fd08]."""
+    x = Console("I", a.host, a.verbose, a.follow)
+    try:
+        x.connect(*a.lobby)
+        key_exchange(x)
+        track = x.send(0x64, enc_wstr(a.user) + enc_wstr(a.password))
+        try:
+            code, r = x.reply(0x64, track, timeout=2.0)
+        except Failed:
+            raise Failed("the server does not answer message 0x64")
+        fields = [r.enc_wstr() for _ in range(12)]
+        expect(code == 0 and r.left() == 0, f"reply code {code}, {r.left()} bytes left over")
+        expect(fields[0] == f"{a.user}@example.invalid" and fields[5] == "01/01/1990",
+               f"first and sixth string are {fields[0]!r} and {fields[5]!r}")
+        code, r = x.call(0x64, enc_wstr(a.user) + enc_wstr(a.password + "-wrong"))
+        fields = [r.enc_wstr() for _ in range(12)]
+        expect(code != 0 and not any(fields), "account details were handed out for a wrong password")
+        return "e-mail address and date of birth returned to the account's owner only"
+    finally:
+        x.close()
+        x.udp.close()
+
+
+def ext_keep_alive(a, b):
+    """A console with nothing to say sends a frame with no payload, four bytes, when it
+    has sent nothing else for more than ten seconds [game: 0x38b858, 0x38c53c; interval
+    set at 0x383594]. The server must take it without replying, and must not hold back a
+    request that arrives right behind it."""
+    a.track += 1
+    payload = u16(0x24) + u32(a.track) + u32(RTA_VERSION) + enc_wstr(a.session)
+    a.send_raw(struct.pack(">I", 4) + struct.pack(">I", len(payload) + 4) + payload)
+    try:
+        code, _ = a.reply(0x24, a.track, timeout=3.0)
+    except Failed:
+        raise Failed("a request sent in the same write as an empty keep-alive frame was not answered")
+    expect(code == 0, f"reply code {code}")
+    for _ in range(3):
+        a.send_raw(struct.pack(">I", 4))
+    expect(a.alive(), "connection dead after empty frames")
+    return "empty frames are accepted and the request behind one is answered"
+
+
+def frame(payload):
+    return struct.pack(">I", len(payload) + 4) + payload
+
+
+def head(packet_id, track=0x7F000001):
+    return u16(packet_id) + u32(track) + u32(RTA_VERSION)
+
+
+def ext_malformed(a, b):
+    """Messages that are cut short or whose length fields point past their end, sent on a
+    logged-in connection so that they reach the code behind the login. Each is to be
+    dropped; the connection and the server carry on."""
+    sid = enc_wstr(a.session)
+    cases = [
+        ("a single byte", b"\x16"),
+        ("a login that is all header", head(0x16)),
+        ("an encrypted string with length field 0", head(0x16) + u32(0) + u32(0)),
+        ("an encrypted string with length field 1", head(0x16) + u32(1) + u32(64)),
+        ("an encrypted string longer than the message", head(0x16) + u32(0x7FFFFFFF) + u32(32) + bytes(8)),
+        ("a wide string of 2^31 + 1 characters", head(0x56) + sid + u32(0x80000001) + b"ab"),
+        ("a wide string longer than the message", head(0x57) + sid + u32(500) + b"abcd"),
+        ("a new character with a cut-off key list", head(0x58) + sid + u32(0) + u32(0) + u32(4) + wstr("name")),
+        ("a new character with a 4 GB data piece", head(0x58) + sid + u32(0) * 4 + u32(0xFFFFFFF0) + b"xyz"),
+        ("a data piece of 2 GB", head(0x5D) + sid + u32(0x7FFFFFFF) + b"x"),
+        ("game data longer than the message", head(0x44) + sid + u32(100000) + b"x"),
+        ("a rules request without its terminator", head(0x42) + b"abc"),
+        ("a game search with 4 billion filters", head(0x18) + sid + u16(1) + u32(0) + u32(50) + u32(10) + u32(0xFFFFFFFF)),
+        ("an instant message cut inside its text", head(0x21) + sid + wstr(b.handle) + u32(40) + b"h\0i\0"),
+        ("a join report with half a session id", head(0x5F) + sid + sid[:11]),
+    ]
+    for what, payload in cases:
+        try:
+            a.send_raw(frame(payload))
+            ok = a.alive()
+        except (Failed, OSError) as e:
+            raise Failed(f"after {what}: {e}")
+        expect(ok, f"no answer after {what}")
+    return f"{len(cases)} malformed messages dropped, the connection kept answering"
+
+
+def spray(host, port, payloads, fresh=False):
+    """Send each payload to a TCP port, on one connection for as long as the server keeps
+    it open, or (fresh) on a connection of its own. Returns the number delivered; raises
+    OSError if the port stops accepting connections."""
+    def finish(sock):
+        try:                                    # let the server read everything first
+            sock.shutdown(socket.SHUT_WR)
+            sock.settimeout(0.3)
+            while sock.recv(65536):
+                pass
+        except OSError:
+            pass
+        sock.close()
+
+    sock, sent = None, 0
+    for payload in payloads:
+        for attempt in range(3):
+            try:
+                if sock is None:
+                    sock = socket.create_connection((host, port), timeout=IO_TIMEOUT)
+                sock.sendall(payload)
+                sent += 1
+                break
+            except OSError:
+                if sock is not None:
+                    sock.close()
+                sock = None
+                if attempt == 2:
+                    raise
+                time.sleep(0.05)
+        if fresh and sock is not None:
+            finish(sock)
+            sock = None
+    if sock is not None:
+        finish(sock)
+    return sent
+
+
+def ext_no_user(a, b, args):
+    """A connection to a gateway port has no user behind it. Every request must cope with
+    that, starting with the two list requests that used to dereference the missing user."""
+    x = Console("G", a.host, a.verbose, a.follow)
+    try:
+        x.connect(a.host, args.gateway_port)
+        for pid, lists in ((0x61, 3), (0x62, 2), (0x63, 1)):
+            code, r = x.call(pid, enc_wstr("0" * 16))
+            got = [r.array(lambda: r.wstr(15)) for _ in range(lists)]
+            expect(code == 0 and not any(got) and r.left() == 0, f"{pid:#04x} on a gateway port returned {got}")
+    finally:
+        x.close()
+        x.udp.close()
+    # every message id, with no body, with a session id nobody has, and with a little more.
+    # First where there is no user at all, then on the lobby port, where the connection
+    # has a user that never logged in.
+    sid = enc_wstr("0" * 16)
+    payloads = [frame(head(pid) + body) for pid in range(0x68)
+                for body in (b"", sid, sid + u32(0) + wstr("x") + wstr("y") + u32(0) + u32(0))]
+    sent = spray(a.host, args.gateway_port, payloads) + spray(a.host, a.lobby[1], payloads)
+    try:
+        ok = a.alive()
+    except (Failed, OSError) as e:
+        raise Failed(f"the server stopped answering: {e}")
+    expect(ok, "the server stopped answering")
+    return (f"0x61, 0x62 and 0x63 answered with empty lists; {sent} more requests from "
+            "connections without a login survived")
+
+
+def ext_garbage(a, b, args, suffix):
+    """Random bytes on every port. Reproducible: the generator is seeded with a constant."""
+    rnd = random.Random(20973)
+    blob_of = lambda n: bytes(rnd.getrandbits(8) for _ in range(n))
+    host = a.host
+    # the two lobby ports, as the gateways hand them out (Champions of Norrath's reply
+    # carries its address as a zero-terminated string)
+    ports = {"RTA lobby": a.lobby[1]}
+    try:
+        with socket.create_connection((host, 40800), timeout=IO_TIMEOUT) as g:
+            g.sendall(frame(u16(0x43) + u32(1) + u32(2)))
+            reply = g.recv(4096)
+        body = reply[4 + 10:]
+        ports["CON lobby"] = struct.unpack_from("<I", body, body.index(b"\0") + 1)[0]
+    except (OSError, ValueError, struct.error):
+        pass
+    for i in range(8):
+        ports[f"CON gateway {40800 + i}"] = 40800 + i
+        ports[f"RTA gateway {40810 + i}"] = 40810 + i
+    reached, total = 0, 0
+    for name, port in ports.items():
+        # noise behind a plausible length, and every message id with noise for a body
+        framed = [frame(blob_of(rnd.randrange(0, 300))) for _ in range(12)]
+        framed += [frame(u16(rnd.randrange(0, 0x70)) + u32(rnd.getrandbits(32)) + u32(RTA_VERSION)
+                         + blob_of(rnd.randrange(0, 200))) for _ in range(40)]
+        # noise with no framing at all, and length fields no frame can have, each on a
+        # connection of its own because the server hangs up on them
+        unframed = [blob_of(rnd.randrange(1, 400)) for _ in range(3)]
+        unframed += [struct.pack(">i", n) + blob_of(8) for n in (0, -1, 1, 3, 2049, 0x7FFFFFFF)]
+        try:
+            sent = spray(host, port, framed) + spray(host, port, unframed, fresh=True)
+        except OSError as e:
+            if name in ("RTA lobby", f"RTA gateway {args.gateway_port}"):
+                raise Failed(f"{name} (port {port}) stopped accepting connections: {e}")
+            continue                            # a server need not offer the other ports
+        reached, total = reached + 1, total + sent
+    # the same from a logged-in connection, so that the noise gets past the session check
+    x = Console("F", host, a.verbose, a.follow)
+    x.user, x.handle, x.password = f"e2e_f_{suffix}", f"e2eF{suffix}", "e2e-" + os.urandom(4).hex()
+    try:
+        gateway(x, args.gateway_port)
+        create_account(x)
+        fuzzed = 0
+        for round_no in range(6):
+            try:
+                login(x)
+            except (Failed, OSError) as e:
+                raise Failed(f"cannot log in after {fuzzed} random messages: {e}")
+            sid = enc_wstr(x.session)
+            try:
+                for pid in range(0x68):
+                    if pid == 0x17:             # a logout would only end the round early
+                        continue
+                    x.send_raw(frame(u16(pid) + u32(rnd.getrandbits(31) | 1) + u32(RTA_VERSION) + sid
+                                     + blob_of(rnd.randrange(0, 120))))
+                    fuzzed += 1
+            except OSError:
+                pass                            # the server may hang up on a fuzzed connection
+            x.close()
+    finally:
+        x.close()
+        x.udp.close()
+    # the discovery port: datagrams of every size, and ones that look right until decrypted
+    udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        target = (host, a.discovery[1])
+        datagrams = [blob_of(n) for n in (0, 1, 3, 4, 35, 36, 37, 100, 1024)]
+        datagrams += [u32(0x20) + blob_of(32) for _ in range(20)]
+        datagrams += [u32(0x20) + blob_of(n) for n in (0, 16, 31, 64)]
+        for d in datagrams:
+            udp.sendto(d, target)
+    finally:
+        udp.close()
+    time.sleep(0.3)
+    try:
+        ok = a.alive() and b.alive()
+    except (Failed, OSError) as e:
+        raise Failed(f"the server stopped answering the logged-in consoles: {e}")
+    expect(ok, "the server stopped answering the logged-in consoles")
+    probe = Console("P", host, a.verbose, a.follow)
+    try:
+        gateway(probe, args.gateway_port)
+    finally:
+        probe.close()
+        probe.udp.close()
+    return (f"{total} random messages to {reached} TCP ports, {fuzzed} more behind a login, "
+            f"{len(datagrams)} random datagrams; the server still answers")
+
+
+def ext_second_login(a, b, args):
+    """A console that was switched off leaves its connection half open, and the account
+    logged in. Logging in again must work, and ends the earlier session."""
+    expect(b.tcp is not None, "B is not connected")
+    old_tcp, old_rx, old_notes = b.tcp, b.rx, b.notes
+    b.tcp = None                                # keep the old connection open
+    switched = False
+    try:
+        b.connect(*b.lobby)
+        key_exchange(b)
+        code, r = b.call(0x16, enc_wstr(b.user) + enc_wstr(b.password))
+        expect(code == 0, f"second login for an account that is still connected gave {code}")
+        session = r.enc_wstr()
+        expect(len(session) == 16 and session != b.session, "no new session id")
+        b.session, switched = session, True
+        # the earlier connection is told (0x41) and closed
+        old_tcp.settimeout(3.0)
+        data = old_rx
+        try:
+            while True:
+                chunk = old_tcp.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+        except OSError:
+            raise Failed("the earlier connection was left open")
+        ids = []
+        while len(data) >= 6:
+            size = struct.unpack(">I", data[:4])[0]
+            ids.append(struct.unpack_from("<H", data, 4)[0])
+            data = data[max(size, 4):]
+        expect(0x41 in ids, f"the earlier connection was closed without notification 0x41 (got {ids})")
+        expect(b.alive() and a.alive(), "connections dead after the second login")
+        return "accepted; the earlier connection got notification 0x41 and was closed"
+    finally:
+        if switched:
+            try:
+                old_tcp.close()
+            except OSError:
+                pass
+        else:                                   # carry on with the session B had
+            b.close()
+            b.tcp, b.rx, b.notes = old_tcp, old_rx, old_notes
 
 
 # ----------------------------------------------------------------------------------------
@@ -989,16 +1471,24 @@ def main():
         run.step("login reply carries the account's chat handle", ext_login_handle, a, b)
         run.step("characters: create, list, load, save, delete", ext_characters, a, b)
         run.step("replies 0x09, 0x23 and 0x58 carry every field the game reads", ext_reply_shapes, a, b)
-        run.step("friends, ignore, instant message, chat room", ext_social, a, b)
+        run.step("friends and who is online, ignore list (0x63), instant message, chat room", ext_social, a, b)
         run.step("cancel an open game", ext_cancel, a, b, loopback, suffix)
         run.step("a player who asks to join and then backs out leaves the host's game alone",
                  ext_back_out, a, b, loopback, suffix)
+        run.step("members who leave or drop free their places; the game goes with its host",
+                 ext_members, a, b, args, loopback, suffix)
         run.step("private game found by name; address pairs in the order the game reads them",
                  ext_private, a, b, loopback, suffix)
         run.step("two public games open at once; list parsed as the game parses it",
                  ext_two_games, a, b, loopback, suffix)
-        run.step("message 0x19 (text for the game's chat room) is answered",
+        run.step("message 0x19 (text for the game's chat room) is answered and the text kept",
                  ext_room_banner, a, b, loopback, suffix)
+        run.step("message 0x64 (account details for the login screen) is answered", ext_account_info, a, b)
+        run.step("empty keep-alive frames", ext_keep_alive, a, b)
+        run.step("truncated and malformed messages are dropped", ext_malformed, a, b)
+        run.step("requests on a connection without a user (gateway port)", ext_no_user, a, b, args)
+        run.step("random garbage on every port does not stop the server", ext_garbage, a, b, args, suffix)
+        run.step("a second login replaces a session left behind", ext_second_login, a, b, args)
 
     if ok:
         run.step("B: log out", logout, b)

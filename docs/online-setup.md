@@ -50,7 +50,10 @@ The network menu is a state machine (the function at 0x33ed70, state word at obj
   Arms clients gets from account creation to a started game against it
   (`python3 tools/lobby_e2e_test.py`, 16 steps). That exercises the server, not the game.
 - Server defects that affect real sessions are listed in
-  [lobby-protocol.md](lobby-protocol.md), section 10.
+  [lobby-protocol.md](lobby-protocol.md), section 10, and are fixed in the fork
+  [TrustlessMike/Champions-Reborn-Server](https://github.com/TrustlessMike/Champions-Reborn-Server)
+  (33 of 33 extended test steps pass there). That fork also adds an optional setting for the
+  "player on the same home network as the server" case in step 5.
 
 ## Not checked
 

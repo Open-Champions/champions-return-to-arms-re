@@ -30,6 +30,26 @@ exchanged between the two reported addresses, join report, start, logout.
 rooms and cancelling work [T]. Six extended steps fail, each because of a server defect
 listed in section 10.
 
+## 1a. Update after the server fixes
+
+The defects listed in section 10 were fixed in a fork of the server,
+[TrustlessMike/Champions-Reborn-Server](https://github.com/TrustlessMike/Champions-Reborn-Server)
+(branch `macos-port`; its `FIXES.md` describes each fix and how the right behaviour was
+established from the game's own parser). Against that build `tools/lobby_e2e_test.py` passes
+16 of 16 core steps and 33 of 33 with `--extended`; the unfixed build fails 17 of the 33
+and stops on a malformed message. Still nothing has been run against the real game.
+
+That work also corrected four statements in this document; the text below has not been
+rewritten, so read it with these in mind:
+
+- The keep-alive is known: the game sends an empty frame after about 10 idle seconds in
+  the lobby (section 13 lists it as open).
+- The game parses a reply according to the type of the request it has pending, not by the
+  reply's own id.
+- 0x62 returns "friends, friends online", not "friends, ignored".
+- 0x5D (a piece of character data) has no reply of its own; the single 0x58/0x5E reply
+  comes after the last piece and carries the new character id.
+
 ## 2. Transport and framing
 
 - TCP, one request/reply stream per connection, plus one UDP datagram type (section 6).
