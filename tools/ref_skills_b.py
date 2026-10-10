@@ -691,7 +691,8 @@ class Model(RC.Model):
             if self.s8(obj + 0x50) == 0 and self.call('water_test', u32(G_WORLD), self.vec(obj + 0x10), 0, F_12):
                 self.w8(obj + 0x50, 1)
                 self.obj_rand(obj)
-                self.call('sound_playOnObject', self.call('res_find', RC.S_FX_LUMP, RC.S_SPLASH), obj, 0x3E4CCCCD)
+                name = self.call('libc_sprintf', 0x532458, 1)
+                self.call('sound_playOnObject', self.call('res_find', 0x532478, name), obj, 0x3E4CCCCC)
                 self.call('water_disturb', u32(G_WORLD), self.vec(obj + 0x10), 0x442F0000, F_24)
         radius, height = u32(obj + 0x1C), u32(obj + 0x20)
         x, y, z = self.vec(obj + 0x10)

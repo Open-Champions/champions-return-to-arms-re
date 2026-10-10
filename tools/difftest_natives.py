@@ -47,7 +47,9 @@ What runs for real and what is a stub
     Stubs: every entry of ref_natives.EXT and every virtual call (recording stubs; a
     seeded script decides what each returns and what it stores through its output
     pointers, the same script on both sides).  A call to an address that is neither real
-    nor a known stub is reported as a failure, so nothing is stubbed by accident.
+    nor a known stub is reported as a failure, so nothing is stubbed by accident.  Before
+    every call into the original all argument and scratch registers, integer and float,
+    are filled with junk, so an argument the handler does not set cannot agree by chance.
 
     Game state is constructed, not loaded: random player records, globals, quest
     variables, queue contents, and objects with random flags and fields that are entered

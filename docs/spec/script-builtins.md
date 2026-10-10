@@ -901,9 +901,9 @@ What the comparison does not show:
   `tools/difftest_objects.py` is the test.
 - **Argument registers of a call-out that the list in `EXT` does not name are not
   compared.** The lists were taken from the handlers and the callees' documented
-  signatures; a register the model leaves out would go unnoticed (a register the model
-  names wrongly is noticed, because the test fills unused registers with other values —
-  this is how `sound_playSample`'s three float arguments were found).
+  signatures; a register the model leaves out would go unnoticed. A register the model
+  names but the handler does not set is noticed: the test fills every argument and scratch
+  register, integer and float, with junk before each call into the original.
 - **States are random, not played.** The object fields the handlers read are random bits,
   not what the game's constructors produce. Combinations the game never reaches are
   therefore included, and combinations that need a played game (a real dialog in
