@@ -14,7 +14,8 @@ in this directory; what the rig has shown so far is in `docs/issues/live-rig.md`
 | `rig.cpp` | the runner (one file) |
 | `CMakeLists.txt` | builds it against a Play! checkout whose path you give |
 | `rig.py` | wrapper: finds the runner and the disc, loads the repository's symbol files, interactive sessions |
-| `examples/boot-to-hub.rig` | script: power-on to a controllable character in the first level |
+| `examples/boot-to-hub.rig` | script: power-on to a controllable character in the first level, offline |
+| `examples/net-solo.rig` | script: power-on to a net game on one machine, through the game's developer LAN start |
 
 ## Build
 
@@ -30,7 +31,8 @@ cmake --build local/rig-build --target rta_rig
 ```
 
 `local/` is ignored by the repository. Options: `-DRTA_RIG_BREAKPOINTS=OFF` builds the
-core without break point support (no `--break`, no `--screen-text`; somewhat faster);
+core without break point support (no `--break`, no `--screen-text`; about twice as fast
+inside a level — use a second build directory and point `RTA_RIG` at its `rta_rig`);
 `-DRTA_RIG_PLAY_LOGS=ON` compiles Play!'s own log calls in (slow, for looking at the
 emulator).
 
@@ -70,6 +72,7 @@ directory; keep that, and any logs and dumps, under `local/rig-out/`.
 | `--pc-histogram` | where the EE program counter is at each vertical blank |
 | `--fps-every <n>` | print the emulation speed every n frames |
 | `--profile` | sample the machine thread; print where the wall time went |
+| `--net-shim <a.b.c.d>`, `--net-log <file>` | the libnet shim (below) |
 | `--no-code-protect`, `--video-thread`, `--throttle`, `--play-logs` | emulator behaviour, see `--help` |
 
 A **frame** is one vertical blank of the emulated machine. Frame numbers count from the
@@ -116,6 +119,7 @@ One per line, run in order; `#` starts a comment.
 | `show <watch> …` | print values now |
 | `echo text`, `log on\|off`, `sync [token]` | print a line; switch the frame log; print a marker and flush |
 | `break <addr[,opts]>`, `unbreak <addr>` | add or remove a break point |
+| `netshim` | replace the game's libnet entry points (needs `--net-shim`) |
 | `quit` | end the run |
 
 Patches are applied when the script says so, which must be after the executable is in
@@ -148,6 +152,25 @@ does not, and is silently never reported.
 points (`text_drawWideImpl`, `text_drawWrapped`, `text_drawWrappedCentered`), which gives
 a running transcript of the text on the screen — the only way to see menus without video.
 The transcript is game text: keep it under `local/`, do not commit it.
+
+### The libnet shim
+
+`--net-shim <address>` gives the machine an IPv4 address and prepares replacements for the
+ten places where the game's netcode enters Sony's network library (`sceInetCreate`,
+`sceInetSendTo`, `sceInetRecvFrom` and seven more; the list with addresses is in
+`rig.cpp`, class `CNetShim`, and in `docs/issues/live-rig.md` 4d). The script command
+`netshim` installs them: each entry is overwritten by a four-instruction stub that stores
+to an address the rig has claimed (0x1e000000 + 4 × call number), and the rig does the
+call's work on the host. It works in both build flavours.
+
+At present the "network" is a bus inside the one process: a datagram sent to the machine's
+own address or to a broadcast address can be received from the next frame on, anything
+else is logged and dropped. That is enough for the game's developer LAN start to run a
+net game on one machine (`examples/net-solo.rig`); joining two runners is the next step.
+`--net-log` records every call and the first bytes of every datagram.
+
+A state saved inside a net game does not contain the shim's sockets. Loading it with
+`--net-shim` given again works for one machine (the stubs are in the saved memory).
 
 ### Interactive sessions
 

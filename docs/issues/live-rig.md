@@ -1,7 +1,8 @@
 # A live rig: the game running headless on Play!'s core
 
-Status of this document: **in progress** (phase 1). It is written as the work goes, so an
-interruption loses nothing; sections marked *pending* have not been done yet.
+Status of this document: phase 1 done (sections 1–4c), the network question answered and
+the first piece of phase 2 running (4d). Phase 2 itself — two runners joined — is not
+built.
 
 Every earlier statement in this project came from reading the executable or from running
 single functions in `tools/ee_emu.py`. This document is the first that reports what the
@@ -55,7 +56,9 @@ submodules) and switches the S3 disc-image code off. Notes for whoever repeats t
   break point (`Source/BasicBlock.cpp`, `CompileProlog`); other blocks are unaffected.
   The same switch makes Play! analyse the executable for subroutines at boot (a few
   seconds, printed as `CMIPSAnalysis` lines) and record extra data for every graphics
-  packet.
+  packet, which halves the speed of 3-D scenes (4a). `-DRTA_RIG_BREAKPOINTS=OFF` builds
+  the other flavour: no `--break`, no `--screen-text`, twice as fast in a level.
+  Everything else, the network shim included, works in both.
 
 ## 3. What the runner can do
 
@@ -71,13 +74,14 @@ list; in short:
 | Read EE memory | watches `name=expr:type`; expressions take symbol names, `0x` numbers, `+ - *`, `[x]` (the word at x) and `$reg`; types `u8 s8 u16 s16 u32 s32 x8 x16 x32 f32 strN hexN` |
 | Write EE memory | script command `poke <expr:type> <value>` (translated code on the touched pages is discarded first, so patched instructions take effect) |
 | PCSX2-style patches | script command `pnach <file> <section>`: applies the `patch=1,EE,<addr>,word,<value>` lines under `[section]` (`*` for all, `prefix*` for a prefix), printing old and new word |
-| Controller input from a script | `press`, `release`, `tap`, `stick L|R x y`, `pad`, or table lines `<frame> <buttons> [lx ly [rx ry]]`; two ports (`press2` …) |
+| Controller input from a script | `press`, `release`, `tap`, `tapuntil`, `stick L x y` / `stick R x y`, `pad`, or table lines `<frame> <buttons> [lx ly [rx ry]]`; two ports (`press2` …) |
 | Log named addresses | `--watch` (repeatable), `--log file.tsv`, `--log-every N`, `--log-on-change` |
 | Stop or log at an EE address | `--break <addr>[,opts]`: logs pc, ra (symbolised), a0–a3, t0–t3, v0, sp, f12–f15; options add a C string (`str=REG`), a 16-bit string (`wstr=REG`), memory (`mem=EXPR:LEN`), typed values (`val=`), the return value (`ret`), a stop (`stop`), a hit limit |
 | What is on the screen, without video | `--screen-text` (wrapper): break points on the three text-drawing entry points collect the strings of each frame and print them when the set changes |
 | Save and load states | `--load`, `--save-at-end`, script commands `save` / `load` (Play!'s own state files) |
 | Arguments for the game's `main` | `--arg` (repeatable) |
-| Step through menus without reloading | `rig.py session start|send|stop`: one runner kept alive, commands through a named pipe; the machine stands still between commands |
+| Step through menus without reloading | `rig.py session start`, `send`, `stop`: one runner kept alive, commands through a named pipe; the machine stands still between commands |
+| Replace functions of the game by host code | the host-call stub of section 4d; at present used for the ten network-library entries (`--net-shim`, script command `netshim`) |
 
 A "frame" in the rig is one vertical blank of the emulated machine (59.94 per emulated
 second). All memory access, input and break handling happens on Play!'s machine thread, at
@@ -108,10 +112,10 @@ card and no input:
 
 | Frame | What happens | Evidence |
 |---|---|---|
-| 1–224 | start-up; the game's console output shows the IOP being restarted from the replacement image on the disc and 24 IOP modules loaded from the disc | `ps2_stdout.txt` in the data directory |
+| 1–224 | start-up; the game's console output shows the IOP being restarted from the replacement image on the disc and 23 IOP modules loaded from the disc | `ps2_stdout.txt` in the data directory |
 | 225 | first text drawn: the memory-card check | screen-text log |
 | 297 | memory-card slot prompt (the boot card check, a modal loop; `g_drawFrame` 0x44fdd0 then advances by exactly 1 per frame, `g_simFrame` 0x44fdcc too) | log: `g_drawFrame` 1024, 1041, 1101, 1161 … at frames 180, 240, 300, 360 |
-| +63 after choosing a slot | "no save data, create it?" question; +250 frames later the data is created (the emulator's card directory then holds the game's save directory) | screen-text log; `vfs/mc0` |
+| about 65 after choosing a slot | the question whether to create save data, since the card is blank; about 60 frames after the answer the data exists (the emulator's card directory then holds the game's save directory) | screen-text log; `vfs/mc0` |
 | after the card screens | publisher logo and intro film, about 930 frames if not skipped; a button press skips them | scripted runs with and without presses |
 | `g_inFrontend` 0x41b510 = 1 | the front end; `g_levelName` 0x41b721 reads `intro`; the main menu takes input about 240 frames later | log |
 
@@ -136,15 +140,16 @@ doubles that cost because Play! then records extra data per graphics packet.
 
 Three things about speed cost real time to find and are fixed in the rig:
 
-- **Ran.** A build without `-O3` (see section 2) ran the front end at 17–25 frames per
-  cpu-second.
+- **Ran.** A build without `-O3` (see section 2) ran the front end at 22–26 frames per
+  cpu-second instead of 52–67.
 - **Ran.** Compiling Play!'s log calls in (`LOGGING_ENABLED`) makes its video thread format
   a line of text for every graphics register write even when nothing is printed; the
-  profile showed that formatting as the largest item on the video thread. It is off unless
-  `-DRTA_RIG_PLAY_LOGS=ON`.
-- **Ran.** With Play!'s usual separate video thread the machine thread spent a third of
-  its wall time waiting for it on the loaded host; the rig's default handler has no thread
-  (README, "What the rig changes"). Machine-thread CPU per frame is the same either way.
+  profile showed that formatting as the largest working item on the video thread. It is
+  off unless `-DRTA_RIG_PLAY_LOGS=ON`.
+- **Ran**, in that early build: with Play!'s usual separate video thread the machine
+  thread spent a third of its samples waiting for it on the loaded host. The rig's default
+  handler has no thread (README, "What the rig changes"); in the optimised build the two
+  arrangements cost the same machine-thread CPU per frame.
 
 Write-protection of translated code pages, which looked like a candidate (16 KB host pages
 on Apple silicon), is **not** a cost here: 3,500–17,000 protect requests in a run and no
@@ -154,7 +159,9 @@ more than 24 un-protect faults.
 pushes, movement across the level) produced identical per-frame logs and byte-identical EE
 memory (all 32 MB compared). Two cold boots produced the same seeds at the same frames
 (`g_randSeed` 0xa3d95fa8 from frame 60 until the front end; `g_cosmeticSeed` 0x002a3038,
-then 0x706e7198 from frame 180). This is the property phase 2 depends on.
+then 0x706e7198 from frame 180). The offline movement log was reproduced exactly after
+the runner was rebuilt, and the net-game stick log of 4d is identical between the two
+build flavours. This is the property phase 2 depends on.
 
 ### 4b. The symbol map against the running game
 
@@ -226,7 +233,206 @@ of `docs/player.md`.
 
 These are the fields and meanings `docs/player.md` gives for +0xb4, +0xb8, +0xbc, +0xc8.
 
-### 4d. The network question and the plan for phase 2 — *pending*
+### 4d. The network question and the plan for phase 2
+
+The aim of phase 2 is two runners in lockstep, exchanging the game's own datagrams, so
+that the arena desync can be reproduced and the two machines' memory compared tick by
+tick. This section establishes what stands in the way, and reports the first piece, which
+already runs: **a net game on one machine, started without lobby, sign-in or menus.**
+
+#### What the game loads, and what Play! does with it
+
+**Ran.** At boot — not when online play is chosen — the game loads eleven network modules
+from the disc among its 23: NETCNF, INET, INETCTL, MSIFRPC, LIBNET, DEV9, PPP, PPPOE,
+EZNETCTL, EZNETCNF, SMAP (`ps2_stdout.txt`). They run as real IOP code: their own start-up
+lines appear in the console output (INET 2.25.0 with 64 KB of memory, the DEV9 driver
+detecting its chip, SMAP 2.25.0, and the control module reporting that interface 1 has no
+configuration yet).
+
+**Observed** (Play! at the commit built). Play! substitutes its own implementation only for
+modules loaded by a `rom0:` path (`Source/iop/IopBios.cpp`, the `m_hleModules` table) and
+this game loads everything from the disc, so the network stack is the game's own. The
+hardware under it is two things: `Source/iop/Iop_Dev9.cpp`, a 48-line stub for the
+expansion-bay registers, and `Source/iop/Iop_Speed.cpp`, which emulates the adapter's
+Ethernet chip far enough for the SMAP driver to start, and offers a transmit callback
+(`CSpeed::SetEthernetFrameTxHandler`) and a receive call (`CSpeed::RxEthernetFrame`, one
+frame at a time). Nothing in Play! connects them to anything. So in Play! the game's
+`sceInet…` calls reach a live IOP stack with a dead wire.
+
+#### Where the game calls the network library
+
+**Observed**, from `symbols/netlib.tsv` and the call sites; arguments 1–8 are in `$a0`–`$a3`,
+`$t0`–`$t3`, the ninth is the first word on the stack; results in `$v0`.
+
+| Entry | Called from | Arguments the netcode uses | Result the netcode needs |
+|---|---|---|---|
+| `net_loadModules` 0x137a10 | `net_gameInit`, once, on the developer paths | none | an interface id (anything but −1000 and −100) |
+| `sceLibnetInitialize` 0x365ec0 | `net_gameInit` | (cd 0x5d1458, 0x800, 0x2000, 0x20) | ignored |
+| `sceInetGetInterfaceList` 0x365a08 | `net_gameInit`, only when no id is known | (cd, buf, list, 1) | 1, with an id stored in the list |
+| `sceInetInterfaceControl` 0x365a90 | `net_gameInit` | (cd, buf, id, 9, 0x5d1440, 16) | a 16-byte address block written at the pointer; this machine's IPv4 address is bytes 4–7, low byte first (d, c, b, a for a.b.c.d) |
+| `sceInetCreate` 0x3654a8 | launch code 0x134c60 (launch socket; game socket on the LAN path), end of launch | (cd, buf, block): word 0 of the block 0, word 1 the local port | a connection id greater than 0 |
+| `sceInetOpen` 0x365518 | after each create | (cd, buf, id, 1000) | ignored |
+| `sceInetClose` 0x365560 | `net_shutdown`, end of launch | (cd, buf, id, ms) | not checked; the shim returns 0 |
+| `sceInetSendTo` 0x365830 | `net_sendInputPacket` 0x137d60, `net_sendMsgToPeers` 0x131b00, `net_main`, launch code, LAN lobby | (cd, buf, id, data, length, flags pointer or 0, address block, port, ms) | not checked at every caller; the shim returns the length |
+| `sceInetRecvFrom` 0x365670 | `net_pumpReceive` 0x13c078, launch code, LAN lobby | (cd, buf, id, data, capacity 0x7c0, flags pointer, address block out, port out, 0) | length, with sender address block and port stored; **−500** when nothing is waiting (tested at 0x13c158; any other negative value is printed as an error) |
+| `net_linkCheck` 0x13e638 | HUD | none | non-zero ("link up") |
+
+The game netcode uses no other entry of the library; the lobby client and SOE's UdpLibrary
+use more (`sceInetName2Address`, `sceInetSend`, `sceInetRecv`, `sceInetPoll`), and are not
+needed when the lobby is not used.
+
+#### The developer paths that need no lobby
+
+**Observed** in `frontend_run` 0x1e08f0, `frontend_startNetGame` 0x1e21e0 and
+`mainloop_runSession`, and — for the first — **Ran**.
+
+1. **`--net` on the command line.** The main loop's level-change code opens the developer
+   LAN lobby when three things hold (0x322d38–0x322d5c): `g_networkMode` 0x402791 is set,
+   the byte at 0x402792 is set, and `g_netLaunchLatch` 0x5060a4 is clear. The byte at
+   0x402792 is **1 in the executable's data** (the word at 0x402790 is 0x00010000), and
+   `--net` sets `g_networkMode`. So the argument alone is enough; no debug flag is involved.
+   With it there is no front end at all: after the card check and splash screens the
+   pending level `strife` (set by `main`) triggers `net_gameInit(0)`, the launch
+   preparation 0x134c60 (which, on this path, opens the game socket on port 4000),
+   and then `net_debugLanLobby` 0x1345c0 as a modal loop:
+   - every 64 displayed frames it sends the four bytes 0xbd3d to 192.168.1.255, port 4000;
+   - every datagram 0xbd3d or 0xbd3e from an address not yet in `g_peers` adds a peer (at
+     most four), and the table is kept in order of the first stored address byte, the
+     last octet — a machine becomes a peer by hearing its own announcement, so the
+     network must deliver broadcasts to the sender;
+   - the confirm button sends 0xbd3e eight times; on receiving 0xbd3e a machine creates one
+     placeholder character per peer and leaves the lobby, and the level loads.
+   The broadcast address and the port are constants, so the machines must be 192.168.1.x.
+2. **The same lobby from the main menu.** `frontend_run`, state 0, compares the chosen
+   entry's key with a fifth key, the string at 0x53cfd8, after the four the retail menu
+   offers. No menu table holds that key, so it cannot be chosen; writing the address
+   0x53cfd8 over the first key pointer of the main-menu table (0x4f6b88) makes the first
+   entry take this branch (**Ran**). It sets `g_networkMode`, creates four placeholder
+   characters and asks for a level name the retail disc does not have (the console output
+   says the level file is not found and the loading screen never ends) — the pending
+   name must be replaced before the lobby is left.
+3. **A fixed address table.** In state 1 any key other than the two retail ones leads to
+   a host/client menu (state 6, table 0x4f6db8) and on to `frontend_startNetGame` with the
+   lobby state zero. That branch (0x1e2268 on) does not discover anything: it copies four
+   fixed addresses, 192.168.1.134, .132, .147 and .139 (table at 0x53d0e8), all on port
+   4000, finds this machine's own address among them and starts the same launch handshake
+   the retail lobby uses, with four expected machines. Not run. It is the path to take if
+   the launch handshake itself (character transfer) has to be exercised.
+
+Whether a console or PCSX2 can pass `--net` to the executable was not tried.
+
+#### What was run: one machine, a real net game
+
+The rig replaces the ten entries of the table above. `--net-shim <address>` claims an
+address and registers a small range of EE address space (0x1e000000) in Play!'s memory
+map; the script command `netshim` writes a four-instruction stub over each entry (load the
+range's base, store to word *n* of it, return). The store lands in the rig, which does
+the call's work on the host with the arguments still in the registers and sets `$v0`.
+This needs no break point support. Datagrams go to a bus inside the process: one sent to
+this machine's address or to a broadcast address is queued for the sockets bound to that
+port and can be received from the next frame on; anything else is logged and dropped.
+
+**Ran**, `tools/rig/examples/net-solo.rig`, booted with `--arg --net --net-shim
+192.168.1.134`:
+
+| Frame | Seen | Evidence (`--net-log`) |
+|---|---|---|
+| 300 | `g_pendingLevel` reads `strife`; `g_networkMode` still 0 | `show` |
+| 464 | network start: `net_loadModules`; `sceLibnetInitialize(cd=0x5d1458, 0x800, 0x2000, 0x20)`; `sceInetInterfaceControl(id=1, code=9, ptr=0x5d1440, len=16)`; `sceInetCreate(type=0, port=4000)` → 1; `sceInetOpen(id=1, ms=1000)` | five log lines, arguments as read in the code |
+| 465 | the lobby draws this machine's address | screen text |
+| 485 | 4-byte datagram, first word 0xbd3d, to 192.168.1.255:4000; received on the following frame; `g_numPeers` 0x4027c4 becomes 1. (Left in the lobby, as in the run through path 2, the announcement repeats every 64 frames: 189, 253, 317) | send and receive lines |
+| 530, the confirm press | eight datagrams 0xbd3e; the first received ends the lobby | eight send lines, one receive line at 531 |
+| 750 | player object exists; level `strife`; `g_networkMode` 1 | `show` |
+| 906 | `g_netFrame` 0x4027ac = 120 and rising by one per frame | `show` |
+
+Power-on to a running lockstep game: 906 frames, 10 s on the loaded host (7.8 s of
+machine-thread CPU, build without break point support).
+
+A net game with one machine ends itself about 100 frames after the level starts (a
+disconnection notice, then `g_sessionExitCode` 0x41b508 = 201). For this experiment the
+two functions that count active machines were patched in memory: `net_endIfAlone`
+0x13ddd8 to return at once and `net_fewerThanTwoActive` 0x13dd88 to answer "no". With
+two runners they are left alone. Patching `net_endIfAlone` alone changed nothing and a
+break point on it never fired; the game stayed up once `net_fewerThanTwoActive` (four
+callers: 0x1db904, 0x1dbe9c in `hud_netStatusDraw`, 0x1e3e10, 0x1e74c4) was patched.
+Which caller ends the game was not determined.
+
+What the single machine already shows — all **Ran**, in the hub level reached through
+path 2, 200 idle frames unless stated:
+
+| Statement in the documents | Seen |
+|---|---|
+| once per rendered frame the session calls `net_main` instead of `tasks_run` (`docs/netcode.md`) | 200 entries each of `net_main` 0x132e90, `net_pumpReceive` 0x13c078, `net_frameLoop` 0x139e88, `net_predictLocalPlayer` 0x131d88 and `tasks_run`; `pad_readAll` 0, `pad_readPort` 200 (one port, against four offline) |
+| `Player_run` also runs on the prediction copy | 400 entries: two per frame with one frame of lead (`g_localInputFrame` 0x4027a4 = `g_netFrame` + 1) |
+| the copy is re-made when `g_netFrame` − `g_ghostRebaseFrame` > 30 | `g_ghostRebaseFrame` 0x4027d4 took the values 394, 425, 456, 487, 518, 549, 580, 611, each at the tick of that number: steps of 31; `Player_clone` 0x11e870 entered 7 times |
+| object flags: 0x200000 own player, 0x20000 prediction copy | real player 0x00204060; the object at `g_ghost` 0x4027bc 0x00024060 |
+| a machine's own input passes through the stick codec (L6) | `netcodec_encodeAxis` 0x13c450 and `netcodec_decodeAxis` 0x13c970 each entered 8 times per frame, with no remote peer |
+| no input packet without a remote peer | `net_sendInputPacket` 0x137d60: 0 entries |
+| `g_randSeed` | did not change in 200 idle frames (offline, in the same level, it stepped on 78% of frames) |
+
+**Stick response in a net game (ledger L6). Ran.** Stick pushed fully from rest; the
+values are distance moved per tick, sampled once per frame:
+
+| Sample after the pad first shows the push | Prediction copy (what is drawn) | Real player |
+|---|---|---|
+| 1–4 | 0 | 0 |
+| 5 | 0.854 (0.38 of full) | 0 |
+| 6 | 1.526 (0.68) | 0.854 |
+| 7 | 1.837 (0.82) | 1.526 |
+| 8, 9, 10, 11 | 1.992, 2.069, 2.121, 2.147 | one frame behind |
+| settled, stick toward 0 | 2.25000 | 2.25000 |
+| settled, stick toward 255 | 2.12085 (0.9426 of 2.25) | 2.12085 |
+| after release | 2.224, 2.095, 1.862, 1.371, 0.363, 0 | one frame behind |
+
+This is L6 as written: four dead frames, 0.8 reached on the seventh, a ceiling of 0.943
+toward 255 and 1.000 toward 0 — and it is MV6's net-game speed, 180 × 0.75 / 60 = 2.25
+units per tick. The release takes five frames to die away, which the ledger does not
+mention. Offline the same push moves the player at once (4c). The caveat is the one
+above: one machine, the developer path, two tests patched; neither touches the input path.
+
+#### The plan for phase 2
+
+1. **Join two runners.** Replace the bus inside the shim by a connection between two
+   runner processes (a local socket). Each runner claims its own address (two of
+   192.168.1.x); broadcasts go to both; a datagram to the other address goes across.
+   Everything else in the shim stays. The ten stubs above are the whole EE-level surface.
+2. **Run the two machines in step.** At each vertical blank a runner sends "frame N done"
+   with the datagrams its game sent during the frame and waits for the other's; datagrams
+   become receivable a fixed number of frames later. Then a run is repeatable to the byte
+   (4a), and delay, loss and reordering can be added as a seeded model instead of being
+   left to the host.
+3. **Start through path 1** (`--arg --net` on both, one confirm press once both list two
+   peers). No menu, no character creation, no lobby server, no sign-in.
+4. **Compare.** Per tick, on both: the sync ring the game itself keeps (`g_peers` +0x18ac),
+   `g_randSeed`, the player records, and a hash of the object pool; full dumps at the
+   first tick that differs. The rig's `--log`, `dump` and conditions on `g_netFrame`
+   already allow most of this; what is missing is a tool that lines two logs up.
+5. **Get to the arena.** Open: the developer path starts in `strife` with level-1
+   placeholder characters. Reaching the arena needs either pad input through the hub's
+   menus on one machine (the lockstep carries it to the other) or the same memory writes
+   on both machines at the same tick; characters with skills need records written before
+   the level loads, or the game's own load path. This is where the work of phase 2 is.
+
+What phase 2 will not reproduce without more work:
+
+- **Lobby games.** On the developer paths `g_lobbyLaunch` 0x4f7134 is 0 and the
+  characters are not lobby characters, so the code that depends on them (ledger rows on
+  `net_allPlayersState2`) takes its other branch. Both can be written identically on the
+  two machines before the game starts.
+- **Timing.** The shim's calls return at once, where the real ones block for a round trip
+  to the IOP; and Play!'s frame times are not a console's (4c). Pacing behaviour (ledger
+  L3–L5) is therefore not what a console shows. Simulation results do not depend on
+  either, by the game's design — which is exactly what the comparison tests.
+- **Saved states** do not hold the shim's sockets and queues; a state taken inside a net
+  game can be resumed (sends are dropped, receives report nothing waiting — fine alone)
+  but for two runners the shim's state has to be saved with the machine's.
+
+A second design is possible and was not tried: leave the game's network library alone and
+join the two emulated adapters at the Ethernet level through the two `CSpeed` calls named
+above. It would exercise the whole IOP stack and the real blocking calls, but it needs a
+network configuration on the card and an interface brought up by the game's own code, and
+it rests on a receive path in Play! that holds one frame and has no user. It is the
+fidelity check to do after the EE-level version works, not the way to start.
 
 ## 5. Where the running game contradicted the documents
 
@@ -241,4 +447,31 @@ needs changing in the documents:
 | `docs/netcode.md`, input record +4 | button bit layout Inferred | eleven of the sixteen bits confirmed (the four face buttons and start were not pressed in isolation) |
 | the brief for this work | Play!'s network adapter is a stub | `Source/iop/Iop_Dev9.cpp` is, but `Source/iop/Iop_Speed.cpp` emulates the adapter's Ethernet chip far enough for the game's own driver to start, and has a transmit callback and a receive call that nothing in Play! uses yet (section 4d) |
 
-## 6. What blocked, what is not done — *pending*
+| `symbols/netcode.tsv`, `net_endIfAlone` ("no callers") | | consistent: it was never entered. A lone machine's game ended through a caller of `net_fewerThanTwoActive` instead (4d) |
+| `docs/mainloop.md` section 7 step 3, `symbols/netcode.tsv` `net_debugLanLobby` | the developer LAN launch runs "only when flag 0x402792 is set", read as a debug flag | the byte is 1 in the shipped data; what the retail game lacks is only `g_networkMode` at that point, which `--net` supplies (4d) |
+| `FINDINGS.md` L6 | (complete as far as it goes) | add: after release the movement takes five frames to die away |
+
+Confirmed on the running net game and worth marking so in the ledger: L6 (four dead
+frames, 0.8 on the seventh, 0.943 / 1.000 ceilings), MV6 (0.861945 offline, 0.75 in a net
+game, linear in the stick value, along the facing), the 31-tick re-clone of the prediction
+copy, and the object flags 0x20000 and 0x200000.
+
+## 6. What blocked, what is not done
+
+- **The host.** Unrelated jobs kept the machine at a load average of 300–600 throughout.
+  Wall-clock speeds are therefore pessimistic and noisy; the per-cpu-second figures are
+  the ones to trust. The host's own profilers (`sample`, `lldb`) could not be attached in
+  this environment, which is why the rig has a sampler of its own (`--profile`).
+- **Speed.** The first builds were unoptimised and had Play!'s logging compiled in, which
+  hid everything else for a while; both are fixed and explained in sections 2 and 4a.
+- **Not done:** two runners (phase 2); the fixed-address-table path; the Ethernet-level
+  design; the arena; anything about PCSX2 or a console; the five untested button bits; a
+  measurement on an idle host. The mismatch table lists what the documents should say
+  now; they have not been edited.
+- **Not checked:** how faithful Play! is to the console in floating point. The movement
+  distances in 4c agree with the documented constants to seven digits, which is a good
+  sign and no more than that.
+- **Repository rule.** `AGENTS.md` and `docs/REPOSITORIES.md` say native code and build
+  files belong in other repositories. `tools/rig/` is a C++ file and a CMake file, written
+  here because this work's brief asked for them here; whether a research harness falls
+  under that rule is for the maintainers to decide.

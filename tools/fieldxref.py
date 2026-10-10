@@ -85,7 +85,7 @@ from math import gcd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from textinput import text_lines
 
-VERSION = 17
+VERSION = 18
 MASK64 = (1 << 64) - 1
 
 LOADINFO = {  # op -> (bits, signed load, left half)
@@ -743,6 +743,11 @@ def _join_val(a, b, baddr, k, loop):
             db = b[1] if b[1].__class__ is tuple else (b[1],)
             u = tuple(sorted(set(da) | set(db)))
             if len(u) <= 6: return (1, u) + a[2:-1] + (a[-1] | b[-1],)
+    else:
+        # a loaded value on one path, a constant on the other ("flags = p ? p->flags : 0"):
+        # keep the loaded value, as possible
+        f, c = (a, b) if a[0] == 1 else (b, a)
+        if f[0] == 1 and _isconst(c): return f[:-1] + (1,)
     return (0, ('J', baddr, k), 0, 0, 0, 0)
 
 

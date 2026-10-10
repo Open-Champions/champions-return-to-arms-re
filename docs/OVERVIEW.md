@@ -2,8 +2,9 @@
 
 A map for people starting on this code. Every statement here comes from reading the
 executable; the evidence (addresses) is in `FINDINGS.md`, `names.tsv`, `symbols/` and the
-area documents in this folder. Nothing in this project has been confirmed on a running game
-yet.
+area documents in this folder. Most of it has only been read or executed function by function;
+what has been confirmed on the running game is listed in `FINDINGS.md`, "Run on the live game"
+(`docs/issues/live-rig.md`).
 
 Each part of the code has its own document; this page is the summary they were checked
 against: [startup](startup.md) (really the item system), [creatures](creatures.md),

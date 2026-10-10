@@ -126,6 +126,7 @@ def query_flag(db, mask, off=0xc, funcs=None, addr_range=None, static=None, stor
                     k = k.replace('reg', fx.ARGNAME[aux[1:]])
             elif kind == 'and':
                 keep = _tr(m, sh); before = _tr(aux, sh); gone = before & ~keep
+                if not gone: continue        # the mask keeps every bit: a width conversion
                 nk = bin(keep).count('1'); ng = bin(gone).count('1')
                 clearing = ng and nk >= 3 * ng
                 if keep & mask:
@@ -157,6 +158,7 @@ def query_flag(db, mask, off=0xc, funcs=None, addr_range=None, static=None, stor
                 for r, c in consts:
                     if r != reg: continue
                     c &= fx.MASK64
+                    if c & 0xffffffff == 0xffffffff: continue    # "all bits": not a flag mask
                     if op == 'and':
                         if c & mask: k = 'test'
                         elif bin(c & 0xffffffff).count('1') >= 24: k = 'clear'

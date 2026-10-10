@@ -41,6 +41,9 @@ the whole machine; the executing tool is the instruction interpreter `tools/ee_e
   `aimAt(point)` slot 17.
 - Button masks are per slot: attack 0x41b980, ability A 0x41b990, ability B 0x41b9a0,
   block 0x41b9d0, potion A 0x41ba10, potion B 0x41ba20, swap 0x41ba30.
+- Constants that only feed presentation callbacks (the colours of the `LightEffect` calls,
+  the particle definitions) are not repeated here; they are in `tools/ref_player.py` at
+  the same place.
 - A **shared draw** advances `g_randSeed` 0x404464 (`s = s × 0x19660d + 0x3c6ef35f`, value
   `s >> 16`). An **own draw** is `GameObject_rand` on `P+0x44`. The third generator
   0x404468 is per machine.
@@ -520,9 +523,9 @@ older-record cast branch, the aura globals, slot 12 of a melee target, `decal_ad
 | 2 | `Player_idleFidget` 0x1bc3d0 | four tracks, and stick at rest or no fidget | 1 |
 | 3 | `Player_processDamage` | callback; not modelled | ? |
 | 4 | state 0, throw 0x1a8420 | release tick, real player, no `P+0x484` | 2 |
-| 4 | state 0, bow 0x1a8c.. | release tick with ammunition | 4, or 5 with a target |
+| 4 | state 0, bow 0x1a8980– | release tick with ammunition | 3; 4 with a target; plus 1 with a bow item |
 | 4 | state 1 `Player_pickAttackAnim` | next swing of a combo | 1 |
-| 4 | state 4 0x1ab3.. | `since` = 180, not PvP mode A | 2 |
+| 4 | state 4 0x1ab3f0– | `since` = 180, not PvP mode A | 2 |
 | 4 | state 8 | `rank(0x3b) > 0`, every tick | 3 per try |
 | 5 | `Player_move` | callback; not modelled | ? |
 
@@ -542,50 +545,101 @@ interpreter's default FPU model; the tick's own float work is a few dozen multip
 no result of which is near a rounding boundary by construction, so agreement means "same
 operations in the same order", not "same as a console".
 
-Result of the run recorded when this was written (seed 20973): see the numbers in the
-final section of `tools/difftest_player.py`'s output; they are repeated in the commit
-message of this file's author rather than here, because they change with `--ticks`.
-Summary of that run: **no mismatch** in calls, stores or seed in any of the eight
-sequences; every action state 0–14 and the "no state" value 15 was entered.
+Result of `python3 tools/difftest_player.py` at seed 20973 (the default), 8 × 4,000 ticks:
+
+| Property | Result |
+|---|---|
+| calls, stores, seed — each of the eight sequences | PASS, 31,990 ticks compared, 0 mismatches |
+| ticks in which the original read unmapped memory | 10 (all at 0x1ab7c0, see below); the model faulted on the same ticks |
+| `Player_pickAttackAnim` on its own (2,500 calls) | PASS (9.10) |
+| action states entered | all of 0–14, and 15 (no handler) |
+
+Ticks per state at the start of the tick: 0: 2,238; 1: 3,201; 2: 15,866; 3: 1,901;
+4: 5,390; 5: 351; 6: 340; 7: 90; 8: 1,398; 9: 248; 10: 107; 0xb: 443; 0xc: 80; 0xd: 100;
+0xe: 181; 15: 56.
+
+Coverage of the original as executed in that run (counted from the interpreter's trace;
+a block starts at the function entry, at a branch or jump-table target and after a
+conditional branch's delay slot):
+
+| Function | Basic blocks | Instructions | Branch outcomes |
+|---|---|---|---|
+| `Player_run` | 978 of 1,045 (93.6%) | 7,053 of 7,646 (92.2%) | 1,061 of 1,194 (88.9%) |
+| `Player_usePotion` | 91 of 95 | 566 of 590 | 93 of 102 |
+| `Player_castSkill` | 26 of 27 | 248 of 258 | 27 of 30 |
+| `Player_weaponSwapInput` | 52 of 52 | 219 of 219 | 63 of 66 |
+| `Player_updateCast` | 21 of 21 | 209 of 209 | 26 of 26 |
+| `Player_regenHealth` / `Player_regenMana` | 25 of 25 / 31 of 31 | 123 of 126 / 160 of 163 | 24 of 26 / 30 of 32 |
+| `Player_tickEnchantTimers` | 35 of 37 | 119 of 126 | 33 of 38 |
+| `Player_idleFidget` | 24 of 24 | 146 of 150 | 26 of 26 |
+| `player_canBlock`, `Player_tryBlockMove`, `Player_hasAnim` | all | all | 23 of 24 |
+| `player_getSkillRank`, `player_getPassiveLevel` | 14 of 15 | 56 of 59 | 12 of 14 |
+
+The 67 blocks of `Player_run` that were never entered, and are therefore **not tested**
+in the model: the war-cry animation choice for weapon classes 5, 2 and 7 (0x1a70f0–);
+the kind bytes for older arrow ids 5, 6, 0x13, 0x12 (0x1a7530–) and everything their
+release does differently (kind 3 and the mana charge, 0x1a925c–0x1a949c, including the
+several-arrow loop 0x1a9354–0x1a9468, which is unreachable as written because its count is
+0 or negative); the thrown-weapon branches that depend on item flags and names
+(0x1a85f4–0x1a8800); the ammunition count of skill 0x2e (0x1a9014–0x1a9090); the next
+swing of the bow / thrown-weapon melee (0x1aad90–0x1aaf30) and its class-6 start
+(0x1a7a20); the combo window of class 7 (0x1aab18); the id 0x22 result in state 6
+(0x1a6be0); the older cast ids 0x1a / 0x1b in phase 0 and 0x19 / 0x1a in phase 2
+(0x1abcd0–0x1ac13c); a block flag in state 3 (0x1ab208); the no-ammunition voice in the
+bow branch (0x1a7de8); and two clamps of the aura globals (0x1a581c, 0x1a587c). `-v`
+prints the list.
+
+**An out-of-bounds read in the original** (found by the faults above). In state 5, phase
+1, the code compares the cast point with the +8 value of track
+`t = anim_findTrackByFlag(0x8000)` without testing `t` (0x1ab7b8–0x1ab7c4; skill kinds
+other than 6). When no track carries the flag the function's "not found" value
+−1,000,000,000 is used as the index: the float is read from `P + 0x124 + t × 0x20`, far
+outside the object. `Player_updateCast` tests the same index properly. Whether a cast
+animation track can vanish while the phase is still 1 was not established (Unknown; it
+needs `anim_advance` read for when a finished track is dropped). The model reproduces the
+address arithmetic.
 
 What stays scripted (not game data): animation events and flags, damage and death,
 landing, targets, skill and spell objects, inventory side effects, respawn; and states 6,
 7, 9, 0xd, 0xe, which the driver enters by writing the state as skill and vehicle code
-does. Stack-passed arguments beyond the eight integer and eight float registers
-(`LightEffect_ctor`, `particleDef_ctor`) are not compared.
-
-Never reached by the test, and therefore untested in the model: the loop at
-0x1a9354–0x1a9468 (several arrows from an older ability; unreachable as written, because
-its count is 0 or negative); whatever else the run's "blocks never entered" list (`-v`)
-shows.
+does (10 and 0xc are entered both ways). Stack-passed arguments beyond the eight integer
+and eight float registers (`LightEffect_ctor`, `particleDef_ctor`) are not compared. The
+callbacks' answers are random within plausible ranges, so combinations a real callee can
+never produce are tested too, and combinations only a real callee produces may be missed.
 
 ## 12. Where earlier documents turned out wrong or short when executed
 
-1. `docs/player.md` and `docs/spec/skills-35-68.md` say the net-game melee hit is "applied
-   on frame 1". Sharper: on frame 1 **only when `P+0x55c` is 0**, and `P+0x55c` is set to
-   16 on every tick spent in state 8 or 0xb, then counts down one per tick spent in state
-   1 — a swing started within 16 melee ticks of a block never hits.
-2. `docs/player.md` "Order of work" omits two early returns that skip the tail (and with
-   it `Player_updateCast` and the record countdowns): state 0xb while `g_recallCountdown`
-   ≠ 0 (0x1a6588), and `R+0x4a60` outside {0, 1} while the aura light is on (0x1ac4c0);
-   and the scripted-control exit (`P+0x231`, 0x1a55a4), which skips everything after the
-   rumble.
-3. `docs/spec/movement-camera.md` 4.4 gives state 1 as mode 3; it is mode 4 for the first
-   0.433 s (0.567 s for a heavy attack) and 3 after (0x1aa640–0x1aa6a8).
+1. `docs/player.md` ("Two net-game differences") says the net-game melee hit is applied
+   on frame 1 of the swing. Sharper, and executed: on frame 1 **only when `P+0x55c` is 0**
+   (the field table of the same document has the field, the sentence does not). `P+0x55c`
+   is 16 after any tick in state 8 or 0xb and counts down by one per tick spent in state 1
+   in a net game, and frame 1 is the only hit frame — so no swing lands until 16 melee
+   ticks have passed since the last block.
+2. `docs/player.md` "Order of work" omits three exits that skip the tail (and with it
+   `Player_updateCast` and the record countdowns): the scripted-control exit (`P+0x231`,
+   0x1a55a4), which also skips damage and regeneration; state 0xb while
+   `g_recallCountdown` ≠ 0 (0x1a6588); and `R+0x4a60` outside {0, 1} while the aura light
+   is on (0x1ac4c0).
+3. `docs/issues/dynamic-tests.md` 2.12 (m6) lists state 1 as move mode 3. That is the
+   blank-player case; a fresh swing gets mode 4 first, as `docs/spec/movement-camera.md`
+   4.4 says. No contradiction, but m6 did not show it.
 4. `docs/spec/movement-camera.md` 4.5 lists the zero-pad conditions without their order;
-   the order matters for which callbacks are made (section 2), and the hit-points test is
-   last.
-5. `docs/player.md` calls level-flag bit 0x10000000 nothing in particular and
-   `docs/spec/skills-35-68.md` S.2 lists it only as a veto of ability starts. Executed: it
-   also vetoes block, the block move and the weapon swap, but **not** the plain attack
-   (state 2 B.3).
-6. `docs/spec/skills-35-68.md` S.4 step 2 ("lead point … dead value") holds for the bow;
-   for the throw the same lead is used (state 0, step 2).
-7. Decompile-derived argument orders in several documents put a leading zero among the
-   integers; executed, `world_collectObjectsInArc` takes (position, facing, list, 0;
-   radius, arc, 0.0) and `particle_spawn` (definition, position, velocity; 0.0).
-8. The 16-bit facing is passed sign-extended to `GroundPoundEffect_ctor`, `Root_ctor`,
-   `model_getAttachPoint`, and the dead state's decal angle is `(s16)` of the draw.
+   the order decides which calls are made (section 2), and the hit-points test is last.
+5. Level-flag bit 0x10000000 is described in `docs/spec/skills-35-68.md` S.2 as a veto of
+   ability starts. Executed across the tick: it also vetoes block (0x1a5e58, 0x1a7ff0),
+   the block move and the weapon swap, but **not** the plain attack (state 2 B.3).
+6. `docs/spec/skills-35-68.md` S.4 step 2 calls the lead point a dead value. That holds
+   for the bow; the throw uses it (state 0, step 2).
+7. `docs/spec/skills-35-68.md` S.4 step 4 writes the arc query as `(340.0, 20.0, 0,
+   P.pos, P.facing, list, 0)`. Executed: the third value is a float (0.0 in f14); the
+   integer registers hold (position, facing, list, 0). Likewise the `?` in the symbol
+   notes of `world_collectObjectsInArc` and `particle_spawn` is a float argument.
+8. The 16-bit facing is passed sign-extended to `GroundPoundEffect_ctor`, `Root_ctor` and
+   `model_getAttachPoint`, and the dead state's decal angle is the draw as a signed 16-bit
+   number.
+9. New detail rather than a correction: `Player_usePotion` rewrites both per-tick
+   delivery rates `R+0xb8` and `R+0xbc` on every call, before any test other than "real
+   player, alive" — a potion button pressed at full health still stores them.
 
 ## 13. New per-machine reads found
 

@@ -82,6 +82,26 @@ own disc with the tools in this repository; they are not part of it.
 | G23 | All 17 call sites of the "real object or copy" helper are classified; apart from G22 and a contained BloodLust case none can change shared state | Observed | net_objOrGhost 0x13e180; docs/issues/prediction-copy.md 3.3 |
 | G24 | Fix for G11–G13 without touching real deaths: make Player_clone store zero instead of the copied pending-damage amount, so the copy never loses hit points in prediction. One instruction, per machine, need not match between players | Proposed, untested | 0x11ea8c; test patch "prediction copy starts without pending damage" in patches/ |
 
+## Run on the live game
+
+From `docs/issues/live-rig.md`. The game now runs here without a console BIOS: `tools/rig/`
+is a headless, scriptable runner built on the core of the Play! emulator (commit 83700b2c,
+which has its own high-level BIOS), booting the user's own disc image with no video or
+sound. "Ran" below means: ran in that emulator, which is neither a PlayStation 2 nor PCSX2.
+Runs are repeatable: the same save state and input script give identical logs and
+byte-identical memory.
+
+| ID | Claim | Kind | Evidence |
+|---|---|---|---|
+| V1 | The game boots to its main menu, and scripted input takes it from power-on with a blank memory card to a controllable character in `hub` in 2,829 frames | Ran | `tools/rig/examples/boot-to-hub.rig`; docs/issues/live-rig.md 4a, 4c |
+| V2 | The symbol map holds on the running game: no address or name that was tested is wrong. Tested: both seeds including the step of `g_randSeed`, `g_levelName`, `g_drawFrame`, the front-end state values, the player record fields, `g_pads` / `g_rawPads` and eleven button bits, the eight button maps, and the entry counts of about 20 named functions | Ran | docs/issues/live-rig.md 4b |
+| V3 | Player run speed is as MV6 says: 2.58583–2.58584 units per tick offline against 2.585835 computed, from the first tick; 2.25000 per tick in a net game | Ran | docs/issues/live-rig.md 4c, 4d |
+| V4 | The stick response of L6 is exact in a net game: four dead frames after a full push, 0.82 on the seventh, ceiling 0.9426 toward 255; movement takes five frames to die away after release. Offline there are no dead frames: the codec is not in the offline input path | Ran | docs/issues/live-rig.md 4c, 4d |
+| V5 | Potion buttons: R2 is health, L2 is mana; the bag quantity drops by one and the pending-heal fields behave as documented; nothing is consumed at full health | Ran | docs/issues/live-rig.md 4c |
+| V6 | The executable has a developer LAN start that needs no lobby and no sign-in: with the boot argument `--net` the first level change opens a small discovery lobby (`net_debugLanLobby` 0x1345c0), which announces itself by broadcast (packet 0xbd3d to 192.168.1.255 port 4000) and starts on the confirm button (0xbd3e). The byte that enables it, 0x402792, ships set. It starts in level `strife` with level-1 placeholder characters | Ran (one machine); Observed (code) | 0x322d38, 0x1345c0; `tools/rig/examples/net-solo.rig` |
+| V7 | With ten entry points of the game's network library replaced by calls into the rig and a loop-back bus, one machine runs a real lockstep net game: it reached lockstep frame 120 in `strife` 906 frames after power-on. In it the prediction copy is re-made every 31 ticks and carries flag 0x20000 while the real player carries 0x200000, as the G rows say. Two tests that end a game with fewer than two machines were patched out for this; two runners joined together have not been built yet | Ran (one machine) | docs/issues/live-rig.md 4d |
+| V8 | The emulator runs the game's eleven network modules as real code and emulates the Ethernet chip, with transmit and receive hooks that nothing uses yet | Observed (emulator source), Ran (modules load) | Play! `Iop_Speed.cpp`; docs/issues/live-rig.md 4d |
+
 ## Executed in isolation
 
 Nothing here has run on a console or a full emulator. These rows record what has been

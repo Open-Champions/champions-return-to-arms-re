@@ -2694,35 +2694,59 @@ static int Run(int argc, char** argv)
 	}
 	catch(const std::exception& exception)
 	{
-		Die("boot failed: %s", exception.what());
+		fprintf(stderr, "rta_rig: boot failed: %s\n", exception.what());
+		vm.DestroyPadHandler();
+		vm.DestroyGSHandler();
+		vm.Destroy();
+		return 2;
 	}
 	printf("booted %s\n", vm.m_ee->m_os->GetExecutableName());
 
 	if(!options.loadState.empty())
 	{
-		if(!vm.LoadState(options.loadState).get()) Die("cannot load state %s", options.loadState.c_str());
+		if(!vm.LoadState(options.loadState).get())
+		{
+			fprintf(stderr, "rta_rig: cannot load state %s\n", options.loadState.c_str());
+			vm.DestroyPadHandler();
+			vm.DestroyGSHandler();
+			vm.Destroy();
+			return 2;
+		}
 		printf("state loaded: %s\n", options.loadState.c_str());
 	}
 
-	rig.Prepare();
-	auto connection = vm.OnRunningStateChange.Connect([&]() { rig.OnRunningStateChange(); });
-
-	auto startTime = std::chrono::steady_clock::now();
-	vm.Resume();
-	rig.WaitFinished();
-	vm.Pause();
-	double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
-
-	rig.WaitPendingSaves();
-	int exitCode = rig.ExitCode();
-	if(!options.saveStateAtEnd.empty())
+	// From here on the machine thread exists, so an error must not unwind past the
+	// orderly shutdown at the end.
+	int exitCode = 0;
+	Framework::CSignal<void()>::Connection connection;
+	try
 	{
-		bool ok = vm.SaveState(options.saveStateAtEnd).get();
-		printf("state %s: %s\n", ok ? "saved" : "NOT saved", options.saveStateAtEnd.c_str());
-		if(!ok) exitCode = 5;
+		rig.Prepare();
+		connection = vm.OnRunningStateChange.Connect([&]() { rig.OnRunningStateChange(); });
+
+		auto startTime = std::chrono::steady_clock::now();
+		vm.Resume();
+		rig.WaitFinished();
+		vm.Pause();
+		double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
+
+		rig.WaitPendingSaves();
+		exitCode = rig.ExitCode();
+		if(!options.saveStateAtEnd.empty())
+		{
+			bool ok = vm.SaveState(options.saveStateAtEnd).get();
+			printf("state %s: %s\n", ok ? "saved" : "NOT saved", options.saveStateAtEnd.c_str());
+			if(!ok) exitCode = 5;
+		}
+		rig.Summary(seconds);
+		prof::Report();
 	}
-	rig.Summary(seconds);
-	prof::Report();
+	catch(const RigError& error)
+	{
+		fprintf(stderr, "rta_rig: %s\n", error.what());
+		exitCode = 2;
+		vm.Pause();
+	}
 
 	connection.reset();
 	vm.DestroyPadHandler();

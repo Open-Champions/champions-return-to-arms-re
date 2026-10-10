@@ -1393,6 +1393,7 @@ def run(elf, name, seed, net, copy, machine, ticks, coverage, states, external=(
     cov = coverage[0]
     bad = {'calls': [], 'writes': [], 'seed': [], 'exit': []}
     count = faults = 0
+    fault_pcs = set()
     world.place_creatures(rig.rng)
     for t in range(ticks):
         driver.pad()
@@ -1403,6 +1404,8 @@ def run(elf, name, seed, net, copy, machine, ticks, coverage, states, external=(
         row = states.setdefault(state, [0, 0])
         if result['fault']:
             faults += 1
+            if result['emu_error'] is not None:
+                fault_pcs.add(getattr(result['emu_error'], 'pc', 0))
             if (result['model_error'] is None) != (result['emu_error'] is None):
                 bad['exit'].append('tick %d state %d: model %r original %r'
                                    % (t, state, result['model_error'], result['emu_error']))
@@ -1457,7 +1460,8 @@ def run(elf, name, seed, net, copy, machine, ticks, coverage, states, external=(
     report(name + ' writes', len(bad['writes']), count, 'bytes stored and their final values', bad['writes'])
     report(name + ' seed', len(bad['seed']), count, 'shared seed and number of draws', bad['seed'])
     report(name + ' faults', len(bad['exit']), faults,
-           'ticks where the original read unmapped memory (model must fault too)', bad['exit'])
+           'ticks where the original read unmapped memory (model must fault too)%s'
+           % (' at ' + ', '.join('0x%x' % pc for pc in sorted(fault_pcs)) if fault_pcs else ''), bad['exit'])
     return count
 
 

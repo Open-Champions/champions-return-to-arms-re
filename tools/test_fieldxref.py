@@ -692,6 +692,27 @@ class FlagBits(unittest.TestCase):
             101c: nop''')
         self.assertEqual(flags(db, 0x20000), ['1014:test'])
 
+    def test_mask_that_keeps_every_bit_is_not_a_test(self):
+        db = scan('''
+            1000: lhu $2, 0xc($4)
+            1004: andi $2, $2, 0xffff
+            1008: jr $ra
+            100c: nop''')
+        self.assertEqual(flags(db, 0x100), [])
+
+    def test_loaded_word_or_a_constant(self):
+        # flags = p ? p->flags : 0 -- the test is real on one path only: possible
+        db = scan('''
+            1000: beqzl $4, 0x1010 <x>
+            1004: move $18, $zero
+            1008: lw $17, 0x8($4)
+            100c: lw $18, 0xc($4)
+            1010: andi $2, $18, 0x1
+            1014: jr $ra
+            1018: nop''')
+        self.assertEqual(flags(db, 0x1), ['1010:test?'])
+        self.assertEqual(flags(db, 0x1, certain=True), [])
+
     def test_flag_word_through_a_formed_pointer_and_at_a_fixed_address(self):
         db = scan('''
             1000: addiu $5, $4, 0xa0

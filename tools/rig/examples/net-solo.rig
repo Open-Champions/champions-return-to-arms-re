@@ -1,0 +1,34 @@
+# A net game on one machine, with no lobby, no sign-in and no menus.
+#
+# The executable has a developer LAN start: when it is given the argument --net, the
+# first level change opens a small discovery lobby (net_debugLanLobby, 0x1345c0) instead
+# of the front end. The rig's libnet shim stands in for the network library, so the
+# machine hears its own announcements and becomes the only peer.
+#
+#   python3 -I -B tools/rig/rig.py --arg --net --net-shim 192.168.1.134 \
+#       --net-log local/rig-out/net.log --script tools/rig/examples/net-solo.rig \
+#       --save-at-end local/rig-out/states/net-solo.zip
+#
+# Works with the card directory in any state (the taps answer the slot question; on a
+# blank card the lobby simply appears a little later).
+
+netshim
+
+# A net game with fewer than two machines ends itself. Two tests decide that; both are
+# made to answer "there are enough" so that one machine can be studied alone. Leave these
+# four lines out when two runners are joined.
+#   net_endIfAlone 0x13ddd8:          jr $ra / nop
+#   net_fewerThanTwoActive 0x13dd88:  jr $ra / move $v0, $zero
+poke 0x13ddd8:x32 03e00008
+poke 0x13dddc:x32 00000000
+poke 0x13dd88:x32 03e00008
+poke 0x13dd8c:x32 00001021
+
+# card screens, then the lobby: tap until this machine has heard itself
+at 300
+tapuntil cross 40 g_numPeers:s32 >= 1 timeout 6000
+wait 30
+tap cross 4            # in the lobby this button starts the game
+until g_players+0x43d8:u32 != 0 timeout 4000
+until g_netFrame:s32 >= 120 timeout 2000
+show g_levelName:str16 g_networkMode:u8 g_netFrame:s32 g_numPeers:s32 g_numPlayers:s32 g_ghost:x32
