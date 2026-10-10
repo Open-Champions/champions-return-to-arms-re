@@ -3,8 +3,16 @@
 Scope: every way the local-player prediction copy (object flag 0x20000, made by
 `Player_clone` 0x11e870, run by `net_predictLocalPlayer` 0x131d88) can change state that all
 machines are supposed to share. Everything here was read from the executable
-(SLUS_209.73, v2.00); **nothing was run, and every patch below is untested.** Each statement
-is **Observed** (read at the address given), **Inferred** or **Unknown**.
+(SLUS_209.73, v2.00); **nothing was run, and every patch below is untested.** Since then
+three basic facts about the copy have been seen on the live game — one machine in a net
+game in the Play! emulator, which is not a PlayStation 2 and not PCSX2
+(`docs/issues/live-rig.md` 4d; `FINDINGS.md`, "Run on the live game", row V7): `Player_run`
+is entered twice per frame, once for the copy; the copy is re-made every 31 ticks
+(`g_ghostRebaseFrame` stepped 394, 425, 456 … 611, `Player_clone` entered each time); and
+the copy carries object flag 0x20000 (flag word 0x00024060) while the real player carries
+0x200000 (0x00204060). Nothing else here was re-checked there: what the copy can change in
+shared state needs a second machine to show, and no test patch has been run on a live game.
+Each statement is **Observed** (read at the address given), **Inferred** or **Unknown**.
 
 New names used here are in `symbols/copyfix.tsv`. Proposed ledger rows and corrections to
 earlier documents are at the end; `FINDINGS.md` and `patches/` were not edited.
@@ -79,7 +87,7 @@ object. "Local" = per-machine presentation that no simulation code reads.
 | Record +0x120 (carried load) | Recomputed from the bags; same value whoever computes it | `player_recalcLoad` 0x1bec10, called 0x1a9578 |
 | Handle nodes, one object-pool block per transient spell, the copy's own grid link | Allocator state. Node *addresses* differ per machine already; block addresses do not, apart from the first-copy case — the copy is one 0x590 block in the 3000-byte class, re-made by free-then-allocate with nothing between, so it keeps its block, and the two smaller size classes are lockstep state (`docs/issues/stale-pointers.md` 5.1, ST1; the earlier version said node and block addresses both differ). No code orders by address (docs/runtime.md P7, docs/objects.md O8). A transient spell is freed before the cast helper returns, which puts the same block back on top of its free list | `handle_link`; 0x1a4598 → 0x1a45d0 |
 | Six object creations, one record store, one target notification and one script hook on the *older ability paths* | Leak **if reachable** — needs an ability record whose name is not the `Skill` marker (D16, Unknown) | section 5.4 |
-| Scavenger spawn at the end of `Creature_run` | Needs creature state 0x14 at +0x232 and creature flag bit 63. Inferred not reachable for a player: `Player` has its own state setter (slot 27, 0x1b5d68) and bit 63 is set only in the charm branch of `Creature_run` | 0x1125e0 |
+| Scavenger spawn at the end of `Creature_run` | Needs creature state 0x14 at +0x232 and creature flag bit 63. Inferred not reachable for a player: `Player` has its own state setter (slot 27, 0x1b5d68) and bit 63 is set only in the charm branch of `Creature_run`. The second reason is wrong (`docs/issues/field-claims-audit.md` 4.2, row 35): bit 63 is the "active" bit — `Creature_updateActive` sets it at 0x10c204 and clears it at 0x10c210, eight constructors set it, `Creature_stepAnim` tests it — so players have it set. The conclusion stands for another reason: the spawn (`Creature_spawnScavenger` 0x112660, which wants bit 63 set and bit 62 clear) also needs AI state 0x14 at +0x232, and in the Player table the only stores to +0x232 are `Creature_loadState` and the clone's copy | 0x1125e0 |
 | Scripted walk (`Creature_moveToDest` 0x1a5604: path requests, and `Creature_moveBy` 0x113c48 calling slot 6 of touched objects with no test for the copy at 0x114220) | Not reachable for the copy: needs inert bits at +0x231, which only cutscene stand-ins get; the freeze callback skips players. (Corrected by docs/issues/arena-entry.md: "skips players" holds for `creatures_freezeAll` only. With cutscene header flag 8 the real players get inert bit 4, and a copy cloned from them inherits it. The row's conclusion stands for a different reason: the walk also needs action state +0x58c = 1, 0x1a55ac–0x1a5604) | docs/engine.md (stand-ins made with `Player_ctor`); `creature_unfreezeOne` note (Inferred) |
 
 ### 3.2 Virtual calls made on or by the copy

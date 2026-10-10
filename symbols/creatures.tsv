@@ -43,7 +43,7 @@
 001155e0	Creature_moveToDirect	(this, Vec3 *dest): as Creature_moveTo without the path finder
 00115910	Creature_fleeFrom	(this, other, mode): keeps a flee destination at +0xf8 and moves along a path away from other
 00115eb8	Creature_applyKnockback	(scale, this): pushes along +0x2e0 with speed +0x2e8 (decays by 2); players get none in a net game; dust uses GameObject_rand; 67 callers
-001162b0	Creature_stepAnim	(rate, this): advances the animation at +0x114, converts root motion into +0xbc/+0xc0/+0xc4, scaled by slow amount and +0xdc; 69 callers
+001162b0	Creature_stepAnim	(rate, this): advances the animation at +0x114, converts root motion into +0xbc/+0xc0/+0xc4, scaled by slow amount and +0xdc - the displacement only: under a slow amount of 1..60 the yaw at +0xc4 is multiplied by the integer part of (60 - slow)/60, which is 0 (0x11648c; executed, docs/spec/animation.md 7.1); steps only while bit 63 of +0xa8 (active) is set; 69 callers
 001164c0	Creature_requestPath	(x, radius, this, dest, mode): queues one of four path searches into the waypoint buffer +0x23c and marks the path pending (+0x2bc = 16)
 00116638	Creature_takeDamage	slot 2 (amount, this, attacker, flags): hp -= amount, pending +0xc8 += amount, +0x2dc |= flags, hit angle +0x2e0, last attacker handle +0x2e4 (owner of a 0x80 object)
 00116780	Creature_saveState	slot 9 (buf): variant +0xe8, hp fraction, animation name when dead, flag bits, charm timer; returns the size

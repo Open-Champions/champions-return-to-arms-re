@@ -12,7 +12,11 @@ tagged with the one it rests on:
 - **[T]** exercised against a running Champions Reborn server (the local macOS port, built
   2026-10-09) on loopback with `tools/lobby_e2e_test.py`.
 
-Nothing here was confirmed with a real console or an emulator. "Observed" below means [S],
+Nothing here was confirmed with a real console or an emulator. That is still true: the
+game does run in an emulator in this project now (Play!, not a PlayStation 2 and not PCSX2;
+`docs/issues/live-rig.md`), but the one net game run there was started through the
+developer LAN path, which uses no lobby, so not a byte of this protocol was exchanged with
+the real client. "Observed" below means [S],
 [G] or [T]; "Inferred" and "Unknown" are marked.
 
 Names of messages are the server project's; the game has no names for them, only numbers.
@@ -37,7 +41,8 @@ The defects listed in section 10 were fixed in a fork of the server,
 (branch `macos-port`; its `FIXES.md` describes each fix and how the right behaviour was
 established from the game's own parser). Against that build `tools/lobby_e2e_test.py` passes
 16 of 16 core steps and 33 of 33 with `--extended`; the unfixed build fails 17 of the 33
-and stops on a malformed message. Still nothing has been run against the real game.
+and stops on a malformed message. Still nothing has been run against the real game — the
+real game's lobby client has not been started on the project's live rig either.
 
 That work also corrected four statements in this document; the text below has not been
 rewritten, so read it with these in mind:
@@ -588,4 +593,6 @@ Read in the server source only [S]; not tested.
 - Everything about the peer-to-peer messages after the connection is up (welcome, known
   peers, character info, start, eject); see the netlib notes in `symbols/netlib.tsv`.
 - None of this has been run against the real game. The quickest confirmation would be two
-  emulated consoles on separate networks with a packet capture at the server.
+  emulated consoles on separate networks with a packet capture at the server. (The live rig
+  of `docs/issues/live-rig.md` runs the real game but has no network path to a server yet:
+  its net game uses ten replaced library entries and a loop-back bus.)

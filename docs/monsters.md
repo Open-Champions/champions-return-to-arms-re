@@ -4,6 +4,9 @@
 helpers such as `Generator`, `Teleporter`, `CreatureContainer`, `AntWave`) and 75 plain
 `GameObject` classes (chests, containers, doors, switches, save points, jump gates, lights,
 traps, monster projectiles). Everything here was read from the executable; nothing was run.
+That still describes this document. The project has a live game now — the Play! emulator, which is not a PlayStation 2 and not PCSX2
+(`FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`) — but none of
+its runs looked at a monster class or a level object of this document. No test patch has been run on a live game.
 
 Claims are marked **Observed** (read at the address given), **Inferred** or **Unknown**.
 Where a paragraph gives an address and no mark, it is Observed.

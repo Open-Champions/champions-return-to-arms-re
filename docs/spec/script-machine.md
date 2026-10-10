@@ -471,8 +471,9 @@ What follows from sections 4 and 6:
 A rebuild must decide what lies behind the block. The model raises `HostFault` at the read
 past the image; give it an image with extra bytes appended to say what the memory holds.
 
-Proposed patch (one word; **untested on a console or in PCSX2**; executed only in
-`tools/ee_emu.py`):
+Proposed patch (one word; **untested on a console or in PCSX2**, and not run on the
+project's live game either — no test patch has been, `docs/issues/live-rig.md`; executed
+only in `tools/ee_emu.py`):
 
 | Id | Address | Original | New | What it changes | What could go wrong | Every player? |
 |---|---|---|---|---|---|---|
@@ -560,7 +561,9 @@ Not covered, and why:
   instructions, unaligned accesses, addresses beyond the image) rest on reading the code [O].
 - The built-in handlers themselves (only `callScript` runs for real) and everything the game
   does around a run.
-- A console. The emulator executes the same machine code but is not hardware. The routines
+- A console, or the running game: the project's live game (the Play! emulator,
+  `docs/issues/live-rig.md`) loads levels, but nothing about the script machine was logged
+  there. The emulator meant in this document is `tools/ee_emu.py`: it executes the same machine code but is not hardware. The routines
   involved use only integer instructions, plus the C library's `memcpy`, `memcmp`, `strcmp`,
   `strcpy` and `strlen`, which the emulator runs as they are.
 - Loops other than those of the shipped scripts (the synthetic programs only jump forward);

@@ -1,7 +1,13 @@
 # "startup" area: picture cache, items and loot, creature movement helpers
 
-Range `0x100000–0x109d68`, 53 functions, US `SLUS_209.73` v2.00. Static reading only;
-nothing here was checked on a running game. **Observed** = read at the address given,
+Range `0x100000–0x109d68`, 53 functions, US `SLUS_209.73` v2.00. Static reading only when
+it was written; nothing here was checked on a running game, and that is still so. Two
+things have changed around it: the item functions have been executed one at a time in
+`tools/ee_emu.py` (`docs/spec/items.md`; results folded in here are marked **executed**),
+and the project has a live game — the Play! emulator, which is not a PlayStation 2 and not PCSX2 —
+whose runs are listed in `FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`.
+None of them looked at an item being generated, priced or dropped. No test patch has been run on a live game.
+**Observed** = read at the address given,
 **Inferred** = follows from observations, **Unknown** = not established.
 
 ## What this range really is

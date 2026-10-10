@@ -11,7 +11,12 @@ File layouts are in `docs/formats/world.md` (level chunks) and
 
 ## 1. How this was established
 
-Static reading only. Nothing was run on a console or in an emulator.
+Static reading only. Nothing was run on a console or in an emulator. Still so: the
+emulator the project now runs the game in (Play!, not a PlayStation 2 and not PCSX2;
+`docs/issues/live-rig.md`) is used with a null video handler, so nothing of the pipeline's
+output was seen. Two of its measurements touch this document without checking it:
+`gfx_endFrame` is entered once per frame, and half of the emulator's time in a 3-D scene
+goes into graphics packets the game still sends.
 
 | Mark | Meaning |
 |---|---|

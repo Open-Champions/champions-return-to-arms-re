@@ -2,7 +2,13 @@
 
 Area `gameplay`, code range 0x1e8000–0x210000 (276 functions, 229 named in
 `symbols/gameplay.tsv`). Everything here was read from the decompile and the disassembly;
-nothing was run. Claims are **Observed** unless marked *Inferred* or *Unknown*.
+nothing was run when it was written. Since then the damage function has been executed in
+`tools/ee_emu.py` (`docs/spec/combat.md`; marked **executed** where folded in), and the
+project has a live game — the Play! emulator, which is not a PlayStation 2 and not PCSX2 — whose
+runs are listed in `FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`.
+Nothing in this document was re-checked there: none of the runs looked at a hit, a
+trigger, an effect or a vehicle. No test patch has been run on a live game.
+Claims are **Observed** unless marked *Inferred* or *Unknown*.
 
 ## 1. Layout of the range
 

@@ -4,7 +4,14 @@ Scope: FINDINGS L3–L7 and the section "Pacing and lag" of `docs/netcode.md`. T
 was re-read (`net_main` 0x132e90, receiver 0x13b5d0, sender 0x137d60, stick codec 0x13c450 /
 0x13c970) and turned into a simulation, `tools/pacing_sim.py`.
 
-**Nothing here was run on a game. Every patch below is untested.** Statements are marked
+**Nothing here was run on a game when it was written. Every patch below is untested.**
+Since then one part has been seen on the live game: the stick response of section 8, on one
+machine in a net game in the Play! emulator — not a PlayStation 2 and not PCSX2
+(`docs/issues/live-rig.md` 4d; `FINDINGS.md`, "Run on the live game", row V4). The pacing
+rules of sections 2–7 and the model's delay figures have not: they need two machines, the
+rig has one, and its network calls return at once, so pacing there is not a console's.
+Parts of sections 2.2 and 2.4 have been executed function by function in `tools/ee_emu.py`
+(`docs/spec/net-wire.md`). No test patch has been run on a live game. Statements are marked
 
 - **Observed** — read in the executable (SLUS_209.73 v2.00) at the address given;
 - **Inferred** — follows from observations;
@@ -105,6 +112,9 @@ from one game to the next, so their starting values are arbitrary.
     if lif < 3:     hold = false                                      0x1335f8-0x133608
  6  if not hold: engine_frameStep() times:                            0x133610-0x1336b8
         store the sample as record number lif, message count 0;  lif += 1
+        (the record's message-start word is not written here: it holds a
+         leftover stack word until bytes are attached, and is read only when
+         the count is non-zero - Executed, docs/spec/net-wire.md section 19, W10)
  7  if lastSent < lif - 1 and game-message bytes are queued:          0x1336c4-0x13375c
         attach them to frame max(lastSent + 1, nf)
  8  n = number of peers with local = dropped = kick = 0               0x133764-0x1337b4
@@ -174,7 +184,10 @@ lead before sampling when it takes one step per call, and one more than that at 
 ### 2.4 How many steps a call stands for
 
 `engine_frameStep` 0x19e3a8 (Observed): 1 while `g_displayRateModeInv` 0x44fd40 is non-zero;
-otherwise `g_lastFrameFields` 0x83d2c8 clamped to 1…2. `gfx_endFrame` 0x19da78 (Observed):
+otherwise `g_lastFrameFields` 0x83d2c8 clamped to 1…2. The first half is abbreviated, not
+wrong: in that case the code returns the signed byte at 0x44fd50 plus one, clamped to 1…2,
+and `docs/mainloop.md` section 6 records that the byte has no writer, so the result is 1
+(**Executed**, 50 input combinations, `docs/spec/net-wire.md` section 19, W9). `gfx_endFrame` 0x19da78 (Observed):
 `g_lateFrameRun` 0x44fdb0 counts frames in a row that did not wait for the vertical blank,
 and the 32nd calls `gfx_setDisplayRateMode(1)` 0x19dd48; in mode 1, frames that used less
 than one field (0x2627 timer counts) bank the remainder in `g_spareFrameTime` 0x44fdac and
@@ -513,6 +526,18 @@ button press or a game message lands on. That already differs per machine.
 
 **The mechanism is Observed; the numbers are Model** (`pacing_sim.py stick`, a
 re-implementation of the two functions from the description below, single precision).
+The main figures are **Ran** now (`docs/issues/live-rig.md` 4d: one machine in a net game,
+stick pushed fully from rest, distance moved per tick as a fraction of the settled speed).
+The prediction copy, which is what is drawn, did not move for four samples and then moved
+at 0.38, 0.68, 0.82, 0.89, 0.92, 0.94 of full speed; the real player followed one frame
+behind; the settled speed toward 255 was 0.9426 of the speed toward 0; after release the
+movement took five frames to die away. So: four dead frames, 0.8 passed on the seventh, the
+0.943 ceiling and the five-frame tail are confirmed. The logged ramp goes on past 0.943
+(0.954 on the eleventh sample), so it is the push toward 0, whose ceiling is 1.000, while
+the model's row below is the push toward 255: the two agree to a hundredth up to the
+seventh sample and are not the same row after it (*Inferred* from the numbers; the ramp
+toward 255 was not logged sample by sample). The flick, reversal and short-push rows were
+not run.
 
 - Encoder 0x13c450, per axis and frame: step = table[index] (4, 6, 8, 12, 16, 24, 32, 48,
   64; data 0x402860). If the sample is at least one step from the predictor, the predictor
@@ -654,12 +679,18 @@ second otherwise.
 | Four machines, any link | lead about 8 above the two-machine figure; LAG-3 on all four takes 3 off |
 | Stick: film the screen at 60 pictures per second, push fully, count pictures to first movement, online and offline | 4 more online |
 
+The last row has been done another way — not by filming, but by reading the position per
+frame on the live rig — and came out as the model says: no dead frames offline, four in a
+net game (**Ran**, `docs/issues/live-rig.md` 4c, 4d). The rows above it need two machines
+and have not been run.
+
 If the first two rows are off by more than a frame or two, the model is wrong in its
 basics and nothing in section 6 should be trusted.
 
 ## 12. Not done, not known
 
-- Nothing was run. The model's link (jitter and loss shapes) and its timing of a call are
+- Nothing was run (true of everything but the stick response of section 8, which has
+  since been seen on the live rig). The model's link (jitter and loss shapes) and its timing of a call are
   assumptions; real consoles and emulators may differ, for example in how many packets
   survive a freeze.
 - Which frames `gfx_endFrame` counts as late was taken from `docs/mainloop.md`, not

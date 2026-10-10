@@ -7,8 +7,9 @@ column of `symbols/*.tsv`. Later passes (`docs/data-tables.md`, `docs/issues/vta
 applied them, and then compared the documents with each other.
 
 A second pass, made after more reports had come in, is recorded at the end of this file
-under "Second pass", and a third under "Third pass"; sections 1 to 7 describe the first
-pass only.
+under "Second pass", a third under "Third pass" and a fourth under "Fourth pass"; sections
+1 to 7 describe the first pass only. The fourth pass is the first that applies results
+from the running game.
 
 Everything below was checked in the executable (SLUS_209.73, v2.00) before it was written
 into a document: the decompile, `tools/dis.py`, `tools/gxref.py`, the data words, and the
@@ -766,4 +767,300 @@ python3 -I -B tools/ps2elf.py SLUS_209.73 xref 2b5370             # no reference
 python3 -I -B tools/ps2elf.py SLUS_209.73 xref 26d884             # no reference: SnowballSpell constructor
 tail -20 decomp/all/001c4948.c                                    # requiredclass compared with class + 1
 sed -n 20,30p decomp/all/0016d1a0.c                               # T4: anim_stop with time 0 calls anim_releaseCaches
+```
+
+## Fourth pass
+
+Scope: the corrections reported after the third pass — `docs/spec/net-wire.md` section 19
+(W1–W12 and the open question on the two pressure fields), `docs/spec/animation.md`
+section 13, `docs/issues/live-rig.md` section 5, `docs/spec/player-tick.md` section 12 and
+`docs/issues/field-claims-audit.md` section 5 — and one sweep no earlier pass made: every
+document that said, at its head or in its "not done" list, that nothing in the project had
+been run on a game.
+
+Method as before: the smallest change, in place, keeping a clause that says what the
+earlier version said; an answered *Inferred* or open question keeps its wording and gets
+the answer beside it. Nothing was run in this pass.
+
+Three kinds of evidence now stand behind a corrected statement, and the last column of F2
+says which:
+
+- **running game** — the corrected statement is a **Ran** result of
+  `docs/issues/live-rig.md`: seen in a log of the game running in the Play! emulator (commit
+  83700b2c, high-level BIOS, one disc image, one machine). That is not a PlayStation 2 and
+  not PCSX2. These are the first corrections of that kind; where one contradicts an older
+  reading it wins, and the older *Inferred* or *Unknown* now reads **Ran** for exactly the
+  part that was seen;
+- **code** — the address given was read in this pass (`tools/dis.py`, the decompile, a data
+  word); a qualification says how far the check went. Where the reporting document also
+  executed it in `tools/ee_emu.py`, the row says **executed** and that result wins over an
+  earlier reading;
+- **report** — taken from the reporting document without an independent reading.
+
+`FINDINGS.md`, `names.tsv`, `patches/`, `tools/` and the documents still being written
+(`docs/issues/live-rig.md`, `docs/spec/world-queries.md`, `docs/spec/creature-tick.md`) were
+not edited; what they need is in F5.
+
+### F2. Corrections
+
+| # | Document, section | Said | Says now | Evidence | Checked |
+|---|---|---|---|---|---|
+| 1 | `netcode.md`, input packet | "The first frame of an input packet is the frame the addressee last acknowledged" | the same, with the point made explicit: it is the acknowledged frame itself, not the one after, so that frame is sent again in every packet and the receiver skips it (**executed**) | `spec/net-wire.md` section 8, W1 | report (a confirmation, not a changed statement) |
+| 2 | `netcode.md`, packet table, sync word | "0xbd40 followed by a 12-byte sync record, or 0xffffffff" | adds: the receiver compares with 0xbd40 only, any other word means no record; up to two padding bytes in front of the word are the sender's uninitialised stack (**executed**: 590 of 1,200 packets) | 0x13be68 (the constant 0xbd40 is the only compare); `spec/net-wire.md` 7.3, W2 | code (the compare); the padding from the report |
+| 3 | `netcode.md`, "How often packets go out" | sync records: "at most one per simulation frame for the whole machine (not per peer), never repeated" | adds: with more than one remote peer each record reaches one of them; a raw relay uses up the relayer's record for that frame and carries the entry at index `g_netFrame` & 0xff of the *relayed* peer's sync ring instead (**executed**) | 0x1391dc–0x139240 (the once-per-frame test, then an entry indexed by the low byte of `g_netFrame` in a ring chosen by the peer index); `spec/net-wire.md` 12.1, W3 | code (the index and the once-per-frame test); "the relayed peer's ring" from the report |
+| 4 | `netcode.md`, Sync check | "In a two-player game both sides flag each other and each ends alone. *Inferred* … not seen running" | one possible outcome, not the rule: the machine that flags first changes its active mask, the others then ignore its packets, sync records included, and may never flag back; one flag is enough to stop the session (**executed**, three interpreter instances, three runs with three outcomes). Still not seen on the live game | `spec/net-wire.md` section 11, W4; FINDINGS L7 | report |
+| 5 | `netcode.md`, Drop, "Negotiation" | "When all have answered, the drop frame … becomes newest received frame + 1" | adds: a machine answers only for a peer that is not local and that it has not already dropped, so a request that arrives after the answering machine executed the drop is never answered; the requester never drops the peer and both machines stop (**executed**; 7 of 160 kicks in a model run) | 0x13c2e4 and 0x13c2f0 (two byte tests, +0x44d4 local and +0x44d5 dropped, each skipping the answer); `spec/net-wire.md` 12.3, W5 | code (the two tests); the consequence from the report |
+| 6 | `netcode.md`, receiver step 3 and the paragraph after the list | "A packet that starts later is discarded"; and, added by the second pass, that such a packet's acknowledgement is not read either | its frames, sync record and messages are discarded, but its acknowledgement has been taken before the test. The second pass's sentence was right for a packet that brings no new frame and wrong for one that starts with a gap; both cases are now stated separately (**executed**) | 0x13b7c4–0x13b7f0 (the store to +0x44c0) comes before 0x13b7f4–0x13b804 (the gap test); the no-new-frame exit at 0x13b7a8 comes before both; W6 | code |
+| 7 | `netcode.md`, "Limits" under the message table, and per-machine row 9 | bytes of one frame "counted in one byte on the wire"; risk "Inferred": more than 255 bytes "between two send turns" | the mis-parse is **executed** (304 bytes: count byte 0x30, the receiver walks out of the datagram). The window is per input frame, not per send turn: at two input frames per call two attaches add up on one frame; the game adds its own 4-byte "player left" message on top. Two buffer sizes added: 5008 bytes of stack for the datagram being built, with no length check, and 1984 bytes for a received one | `spec/net-wire.md` 7.5 and section 10, W7; FINDINGS L15 | report (the 0x7c0 receive size was already in the constants table) |
+| 8 | `netcode.md`, Launch | packet table without size limits | a launch datagram under 16 bytes is ignored, so a DATA chunk under 4 bytes could not be delivered; the checksum loop masks with 0x8f37 when sending and 0x148f37 when receiving, the same in the low 16 bits (sender **executed**, receiver read) | `spec/net-wire.md` section 15, W8 | report |
+| 9 | `issues/lag.md`, 2.4 | `engine_frameStep` is "1 while `g_displayRateModeInv` is non-zero" | abbreviated, not wrong: on that branch the code returns the signed byte at 0x44fd50 plus one, clamped to 1…2, and the byte has no writer (**executed**, 50 input combinations) | 0x19e3b0 (branch on the mode word), 0x19e3f4–0x19e3fc (the byte at 0x44fd50 is loaded there); W9 | code (that the branch reads the byte); the clamp from the report |
+| 10 | `issues/lag.md`, 2.2 step 6 | "store the sample as record number lif, message count 0" | adds: the record's message-start word is a leftover stack word until bytes are attached; it is read only when the count is non-zero (**executed**) | `spec/net-wire.md`, W10 | report |
+| 11 | `issues/draw-sim-leaks.md`, "The real ones", input delay | "simulated in call c + L − 1 … **Inferred**" | confirmed by execution with two interpreter instances, with L defined as `g_localInputFrame − g_netFrame` after the sample is stored and before the tick, one tick per call, plus one per call without a tick | `spec/net-wire.md` section 14, W11 | report |
+| 12 | `issues/dynamic-tests.md`, row a12 | the two console-style adders agree on all 600 frames, both differ from the truncated sum on 30 | adds the refinement over 20,000 frames: the two console-style adders and round-to-nearest give the same stick bytes on all but one frame; only plain truncation of the exact sum stands apart (11.4 %). A **Model** figure, not executed | `spec/net-wire.md` 5.4, W12 | report. FINDINGS L13 already carries it |
+| 13 | `netcode.md`, per-machine row 1a and the open question on pad +0x38 / +0x50 | "No exhaustive search for other readers was made"; open question | a search has been made: 0x174d80 (`pad_buttonValue`) uses the button bits in a net game and no other reader was found; that the two fields differ on every machine in every frame is **executed**. The row stays "Inferred harmless": a search is not a proof | FINDINGS L16; `spec/net-wire.md` section 14 | report |
+| 14 | `engine.md`, "Root motion in a creature" | "multiplies delta and yaw by (60 − slow)/60" | the delta is; the yaw is multiplied by the integer part of that factor, which is 0 for every slow amount of 1…60 — a slowed creature gets no root yaw (**executed**) | 0x116478–0x116498: the factor is converted to an integer at 0x11648c, and that integer goes into the product stored to +0xc4 at 0x116498 (the multiply itself, at 0x116494, is an instruction `tools/dis.py` does not decode) | code |
+| 15 | `engine.md`, track flag 0x0040 and `anim_advance` step 2 | "advance exactly one tick" / "one tick with flag 0x40" | the step is 0.99999994, the same constant the speed is multiplied by, not 1.0 (**executed**) | 0x16d8cc–0x16d8d0 (constant 0x3f7fffff on the flag-0x40 side) | code |
+| 16 | `engine.md`, `anim_advance` step 1 | event window `time/60 ≤ s < (time+step)/60` | as computed: `time×(1/60) ≤ s < time×(1/60) + step×(1/60)`, with `step` also for paused and fixed-step tracks (**executed**) | 0x16d838–0x16d888; `spec/animation.md` sections 5, 7.3 | report |
+| 17 | `engine.md`, `anim_advance` step 5 | a 0x0002 track at full weight "removes the tracks under it" | and the loop over the tracks ends there: surviving lower tracks (0x1000) are not stepped on that tick, and stay frozen while the 0x0002 track sits above them at full weight (**executed**) | 0x16e0b8 (an unconditional branch out of the loop after the purge) | code (the branch); the freeze from the report |
+| 18 | `engine.md`, track table, `anim_start` and `anim_startBlendInOut` | "the first track of an empty state reaches full weight on the next tick"; `anim_startBlendInOut` "as `anim_start`" | the rule is for cell 0 in general (also a full state of capacity 1 whose only track is replaced); `anim_startBlendInOut` does not have it (**executed**) | `spec/animation.md` section 4 | report |
+| 19 | `engine.md`, `anim_advance` step 6 | root-motion change "times the track's effective weight" | two weights: before the weight update for the part up to the clip's end, after it for the rest; a track removed by the update gets no second part; the yaw is not weighted (**executed**) | `spec/animation.md` section 5, notes 3 and 5 | report |
+| 20 | `symbols/engine.tsv`, `anim_pushWithWeights` 0x1708c0 | "(w, dw, w2, dw2, state, anm, flags)" | the four values are f13…f16; f12 is set by callers and not read | 0x170920–0x17092c (the four stores are of f13, f14, f15, f16; no use of f12 in the function) | code |
+| 21 | `symbols/engine.tsv`, `AnimState_copy` 0x16ffe8 | "0x100 bytes" | 0x108 bytes; the slot's yaw baseline (+0x18) is not copied | 0x170024–0x1700cc (a loop over 0x100 bytes, then eight more); 0x170130–0x170154 (slot words +0, +4, +8, then from +0x1c) | code |
+| 22 | `symbols/engine.tsv`, `anim_start` 0x16cfe0 | the forced blend time "for the first track of an empty state" (third pass) | adds: the rule is for cell 0 in general, and `anim_startBlendInOut` does not have it | `spec/animation.md` section 4 | report |
+| 23 | `symbols/creatures.tsv`, `Creature_stepAnim` 0x1162b0 | root motion "scaled by slow amount and +0xdc" | the displacement only; the yaw is multiplied by int((60 − slow)/60) = 0; steps only while bit 63 of +0xa8 is set | as row 14; 0x116320–0x116324 (the 64-bit word tested for its sign) | code |
+| 24 | `formats/anim-audio.md`, 2.5; `engine.md`, "Pose" | "the VU0 microprogram that the executable carries at 0x3e5c40" | 0x3e5c40 is the DMA / VIF packet that loads it, the first instruction is at 0x3e5c50; bind offsets and depth list are those of the top track's clip | `spec/animation.md` 8.3 and section 13; `symbols/fmt-anim.tsv` 0x3e5c40 already described the packet | report |
+| 25 | `formats/anim-audio.md`, 2.6 | the displacement is added "times the track's weight" | two weights, as row 19 | `spec/animation.md` section 5, note 3 | report |
+| 26 | `player.md`, open questions | "Which button is the health potion and which the mana potion" | answered: potion A (mask 0x2, R2 by default) is health, potion B (mask 0x1, L2) is mana; nothing is consumed at full health. **Ran** | `issues/live-rig.md` 4c; FINDINGS V5 | running game |
+| 27 | `player.md`, record +0x78 | strength, intelligence, dexterity, stamina — "order Inferred from those uses" | the order is **Ran**: a new character read 46, 37, 24, 28, the creation screen's four rows in that order, and the load limit read 171 = 46 + 125 | `issues/live-rig.md` 4b | running game |
+| 28 | `netcode.md`, input record +0x04 | button bit layout "*Inferred* from the usual libpad layout" | **Ran** for eleven of the sixteen bits (L2, R2, L1, R1, select, L3, R3, four directions); the four face buttons and start were not pressed alone and stay *Inferred* | `issues/live-rig.md` 4b; FINDINGS V2 | running game |
+| 29 | `mainloop.md` §7 step 3; `netcode.md` function table; `spec/net-wire.md` sections 1 and 13; `symbols/netcode.tsv` `net_debugLanLobby` | developer LAN launch "only when flag 0x402792 is set", read as a debug flag that is off in the shipped game | the byte ships set; what the retail game lacks at that point is `g_networkMode`, which the boot argument `--net` supplies. **Ran** on one machine: the lobby announces by broadcast every 64 frames and starts on the confirm button | word at 0x402790 is 0x00010000; tests at 0x322d38 (`g_networkMode`), 0x322d44 (the byte), 0x322d54 (the latch); `issues/live-rig.md` 4d; FINDINGS V6 | running game, and code (the data word and the three tests) |
+| 30 | `netcode.md`, Drop, last bullet; `symbols/netcode.tsv` `net_endIfAlone` | `net_fewerThanTwoActive`, `net_endIfAlone`, `net_dropAllRemotes` "handle being the last one left"; `net_endIfAlone` "no callers" | consistent with "no callers": on a lone machine the function was never entered and patching it changed nothing; the game ended through a caller of `net_fewerThanTwoActive` (which of the four was not determined). **Ran** | `issues/live-rig.md` 4d | running game |
+| 31 | `netcode.md`, codec consequences; `issues/lag.md` section 8 and the last row of section 11 | stick response "*Inferred* (model), not measured" / "the numbers are Model" | the main figures are **Ran** on one machine in a net game: four dead frames, 0.38 / 0.68 / 0.82 of full speed on the 5th to 7th samples, a ceiling of 0.9426 toward 255, five frames to die away after release, no dead frames offline. The flick, reversal and short-push rows stay Model | `issues/live-rig.md` 4c, 4d; FINDINGS V4 | running game |
+| 32 | `netcode.md`, constants table and per-machine row 7; `objects.md`, flag table; `issues/prediction-copy.md`, head | re-clone "more than 30 frames"; flags 0x20000 on the copy and 0x200000 on the real local player — Observed | all three **Ran**: `g_ghostRebaseFrame` stepped by 31 eight times, the copy's flag word read 0x00024060 and the real player's 0x00204060 | `issues/live-rig.md` 4d; FINDINGS V7 | running game |
+| 33 | `player.md`, "Two net-game differences"; `spec/movement-camera.md`, head | movement speed 0.861945 offline, 0.75 in a net game — Observed | **Ran**: 2.585831–2.585844 units per tick offline against 2.585835 computed, from the first tick; 2.25000 in a net game; linear in the stick value | `issues/live-rig.md` 4c, 4d; FINDINGS V3 | running game |
+| 34 | `player.md`, record +0xb4 / +0xb8 / +0xbc / +0xc8 | pending potion healing and mana and their per-frame amounts — Observed | **Ran**: after a health potion +0xb4 read 22.698 and fell by +0xb8 per tick; after a mana potion +0xc8 read 30.82 and fell by +0xbc | `issues/live-rig.md` 4c | running game |
+| 35 | `symbols/player.tsv`, `g_btnPotionA` 0x41ba10, `g_btnPotionB` 0x41ba20 | "Player_usePotion kind 0" / "kind 1" | kind 0 is the health potion (default R2), kind 1 the mana potion (default L2). **Ran** | `issues/live-rig.md` 4c | running game |
+| 36 | `player.md`, "Two net-game differences" | "the melee hit is applied on frame 1 of the swing" | on frame 1 only when +0x55c is 0; that word is 16 after a tick in state 8 or 0xb and falls by one per melee tick in a net game, so nothing hits for 16 melee ticks after a block (**executed**) | 0x1aa6ec (the word loaded for the test), 0x1aa728–0x1aa738 (counted down while positive); `spec/player-tick.md` state 1 step 7 | code (the load and the countdown); the 16 from the report |
+| 37 | `player.md`, "Order of work in `Player_run`" | a list that ends with `Player_updateCast` and the record countdowns, with no early exit | three exits skip the tail: scripted control (+0x231 non-zero), which also skips regeneration, the kill plane and damage; state 0xb while `g_recallCountdown` is non-zero; record +0x4a60 outside {0, 1} while the aura light is on (**executed**) | 0x1a55a4, 0x1a6588, 0x1ac4c0 (a test stands at each); `spec/player-tick.md` sections 1, 6, 7 | code (that the three tests exist); what each skips from the report |
+| 38 | `issues/dynamic-tests.md`, row m6 | state 1: move mode 3 | the blank-player case only: a fresh swing gets mode 4 first and 3 after, as `movement-camera.md` 4.4 says | `spec/player-tick.md` section 12, item 3 | report |
+| 39 | `spec/movement-camera.md`, 4.5 | the zero-pad conditions as a list | the list is in test order and the tests short-circuit, which decides the calls made on a tick; the hit-points test is last (**executed**) | `spec/player-tick.md` section 2 | report |
+| 40 | `spec/skills-35-68.md`, S.2 step 3 | level-flag bit 0x10000000 as a veto of ability starts | also vetoes the block request, the block move and the weapon swap, but not the plain attack (**executed**) | 0x1a5e58, 0x1a7ff0 (the flag word tested in front of the block request); `spec/player-tick.md` section 12 | code (the two block tests); block move, swap and the plain attack from the report |
+| 41 | `spec/skills-35-68.md`, S.4 step 2 | the lead point is an "**Observed** dead value" | dead for the bow only; the throw uses it (**executed**) | `spec/player-tick.md` state 0 step 2 | report |
+| 42 | `spec/skills-35-68.md`, S.4 step 4; `symbols/engine.tsv` `world_collectObjectsInArc` 0x1614f0 and `particle_spawn` 0x18f3f8 | the arc query's third argument written as an integer 0; "?" in both symbol notes | a float in both: three floats (f12–f14) and four integer arguments for the arc query; f12 for `particle_spawn` (**executed** for the first) | 0x16152c (f14 saved), 0x18f420 (f12 saved) | code |
+| 43 | `player.md`, record +0xb4 row | (no statement) | adds: `Player_usePotion` rewrites both per-tick rates on every call, before any test but "real player, alive" (**executed**) | `spec/player-tick.md` section 12, item 9 | report (an addition, not a correction) |
+| 44 | `issues/sync-breakers.md`, §5, jump-gate row | creature +0xf0 "is read only in the counter-7 branch of `Creature_run`" | wrong: also read by `Creature_draw` and by `Player_run`, which in action state 0xc creates a `LightEffect` when +0xf0 is 30 frames old; one more consequence of D16, not a route of its own | 0x1a66ec–0x1a66f8 (+0xf0 compared with the frame counter minus 30); `field-claims-audit.md` 4.2 row 33 | code (the `Player_run` read); `Creature_draw` 0x10b76c from the report |
+| 45 | `issues/prediction-copy.md`, 3.2, scavenger row | bit 63 of the creature flag word "is set only in the charm branch of `Creature_run`" | wrong: it is the "active" bit, set and cleared by `Creature_updateActive`, so players have it; the conclusion stands because the spawn also needs AI state 0x14 at +0x232, which no Player code stores | 0x10c1fc–0x10c210 (bit 63 set on one side, cleared on the other), 0x116320–0x116324 (tested by `Creature_stepAnim`); `field-claims-audit.md` 4.2 row 35 | code (set, clear and one test); the +0x232 argument from the report |
+| 46 | `creatures.md`, "The 16 status counters" | "No code in this range writes any counter except through whole-object copies (clone)" | wrong as worded: `Creature_draw` 0x10b8d4 and `Creature_run` 0x113744 / 0x113758 write; what holds is that nothing in the range sets a counter to a non-zero value | `field-claims-audit.md` 4.2 row 7; the two bullets above the sentence already described both writes | report |
+| 47 | `objects.md`, flag table, 0x100 | "set 0x110de8" | also set by `Player_processDamage` 0x1b336c and the three `…LP_draw` functions; `net_frameLoop` moves it to the copy; still no simulation reader | 0x1b3364–0x1b336c (flag word OR 0x100); `field-claims-audit.md` 4.2 row 17 | code (the `Player_processDamage` store); the rest from the report |
+| 48 | `issues/pose-cache.md`, section 2 | direct stores into track fields: `Player_move`, `SpellRaiseArmy_raiseInRing`, `cut_advance` | adds `Player_run`, `Player_updateCast`, `Player_idleFidget`, `player_resetIdleAnim`, `AntQueen_fadeBankTracks`; the argument for the player is unaffected | `field-claims-audit.md` 4.2 row 30 | report |
+| 49 | `player.md`, "What was not done" | of `ghostreach`'s reachable functions "the player-record writers" were checked | that tool does not print indexed stores; the record writers it misses among functions the copy can reach are named, with what the audit did and did not re-read | `field-claims-audit.md` 6.3 | report |
+
+### F3. The sweep: statements that nothing was run on a game
+
+Until the live rig, every document could say that nothing in the project had been run on
+a game. That is no longer true of the project and is still true of most documents. Each
+statement of that kind was reworded to say three things: what the document's own content
+rests on (reading, or single functions executed in `tools/ee_emu.py`); that a live game now
+exists, in the Play! emulator and not on a PlayStation 2 or in PCSX2, with its runs listed
+in `FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`; and
+what, if anything, of that document was seen there. No document was upgraded beyond what
+`live-rig.md` reports for it, and every one that proposes patches still says they are
+untested — no test patch has been run on a live game.
+
+| Documents | What of them the live game touched, as now stated at their head |
+|---|---|
+| `netcode.md` | eleven button bits, the stick response, the 31-tick re-clone, the two object flags, the developer-lobby packets, how a lone machine's game ends — each marked **Ran** in place; everything else reading only, two machines never joined |
+| `player.md` | the record fields read back, the potion buttons, the pending-heal fields, the two run speeds |
+| `mainloop.md` | `tasks_run` once per simulated frame, the two frame counters, the developer LAN launch of §7 step 3; also the note under P1–P12, none of which was exercised |
+| `engine.md` | call rates of five pad and frame functions, two pad fields, the cosmetic seed following the frame counter under a cutscene |
+| `objects.md` | flags 0x20000 and 0x200000; `runObjects` once per simulated frame |
+| `creatures.md` | names and call counts only (`Creature_run`, `Player_clone`) |
+| `ui.md` | the front-end states 0–4 (also the open question that "needs a running game": one exists, with one machine, and the comparison was not made) |
+| `data-tables.md` | the load limit of a new character; no table compared |
+| `netlib.md` | the eleven network modules load and start; the ten entries the netcode calls were seen called, with the library replaced at those entries; lobby client, UdpLibrary and sign-in not run |
+| `audio-save.md` | the boot passes the card check and creates save data; no statement checked; no sound |
+| `startup.md`, `script.md` (two places), `skills.md`, `monsters.md`, `monsters-2.md`, `gameplay.md`, `runtime.md` | nothing |
+| `lobby-protocol.md` (three places) | nothing: the one net game run used the developer LAN path, which has no lobby |
+| `online-setup.md` (four places) | nothing on the page; the head now names the developer LAN start (V6) as the one live result that bears on it, and says it bypasses every step described |
+| `formats/world.md` (two places), `formats/model-texture.md`, `formats/anim-audio.md` | nothing: the rig has no video or sound |
+| `spec/net-wire.md` (three places) | the developer-lobby packets and the local pass through the codec; no input packet was sent, there being no remote peer |
+| `spec/player-tick.md` | `Player_run` entered once per frame offline and twice in a net game; the potion buttons |
+| `spec/animation.md` (two places) | `Player_animStep` once per simulated frame |
+| `spec/core.md` | the shared generator's step (one LCG step on 311 of 399 idle frames, none on the others) |
+| `spec/movement-camera.md` (two places) | the run speed of 4.1 |
+| `spec/render-pipeline.md` | nothing of its output (null video); `gfx_endFrame` once per frame |
+| `spec/skills-01-34.md`, `spec/skills-35-68.md`, `spec/skills-69-101.md`, `spec/items.md`, `spec/combat.md`, `spec/script-machine.md` (two places) | nothing |
+| `issues/lag.md` (three places) | the stick response of section 8; the pacing rules need two machines |
+| `issues/prediction-copy.md` | two entries of `Player_run` per frame, the 31-tick re-clone, the two flags |
+| `issues/kill-loot-xp.md` | offline, a potion button removes one potion and nothing at full health |
+| `issues/dynamic-tests.md` | bears out check b9 and the L6 figures; its first paragraph (no full emulator available) is now history |
+| `issues/float-divergence.md` | Play! is a third arithmetic implementation; its movement distances agree with the constants to seven digits, which settles none of the last-bit questions |
+| `issues/vtable-labels.md` | the Player table address 0x511308 |
+| `issues/draw-sim-leaks.md`, `issues/pose-cache.md` (two places), `issues/sync-breakers.md`, `issues/arena-desync.md`, `issues/arena-entry.md`, `issues/claims-audit.md`, `issues/field-claims-audit.md`, `issues/rescan.md`, `issues/stale-pointers.md` | nothing |
+
+49 documents. Not changed: `docs/OVERVIEW.md` (already reworded); `docs/FORMATS.md` (it has
+no such statement; its ".anm … not yet compared against the game on screen" is still
+true, the rig having no video); the statements further down in documents whose head now
+carries the pointer and which are still true as they stand (`data-tables.md` section 9,
+`skills-35-68.md` 4.1 and 4.4, `skills-69-101.md` "Proposed ledger rows", `arena-entry.md`
+and `sync-breakers.md` "Not done", `monsters.md` 7.x "Not confirmed on a running game").
+
+### F1. Summary
+
+| | Count |
+|---|---|
+| Rows in table F2 | 49 |
+| … corrections applied | 49 |
+| … from the running game (**Ran**, `live-rig.md`) | 10 (rows 26–35; row 29 was also read in the code) |
+| … re-checked against the code, wholly or for the part named | 18 (rows 2, 3, 5, 6, 9, 14, 15, 17, 20, 21, 23, 36, 37, 40, 42, 44, 45, 47) |
+| … taken from the reporting document | 21 |
+| … whose corrected statement is, wholly or in part, an executed result of the reporting document | 25 |
+| Documents whose "nothing was run" statement was reworded (F3) | 49 |
+| Reported corrections found wrong | 0 |
+| Reported corrections applied differently from the way they were reported (F4) | 5 |
+| Reported items not applied (F4) | 8 |
+| Symbols renamed / symbol notes changed | 0 / 10 |
+
+`python3 -I -B tools/symtab.py check` after the edits: 5817 symbols, 0 conflicts, 0
+malformed lines.
+
+Where each group of rows came from: wire format 1–13; animation 14–25; live rig 26–35;
+player tick 36–43; field and flag audit 44–49.
+
+Symbol notes changed (no rename): `symbols/engine.tsv` `world_collectObjectsInArc`,
+`anim_start`, `AnimState_copy`, `anim_pushWithWeights`, `particle_spawn`;
+`symbols/netcode.tsv` `net_endIfAlone`, `net_debugLanLobby`; `symbols/player.tsv`
+`g_btnPotionA`, `g_btnPotionB`; `symbols/creatures.tsv` `Creature_stepAnim`.
+
+### F4. Applied differently, not applied, and noticed while editing
+
+No reported correction was found to be wrong against the code. Five were applied in a
+different place or form than reported:
+
+1. **W6 (wire format).** Reported against receiver step 3. The sentence that actually
+   contradicted it was one the second pass of this file had added below the list ("reads
+   neither the acknowledgement, nor the sync record, nor the message blocks" for both the
+   no-new-frame case and the gap case). Both places were changed (row 6).
+2. **W1, W9, W11 (wire format).** Reported as "correct, and worth stressing", "not wrong,
+   only abbreviated" and "confirmed". Applied as additions that keep the original
+   sentence (rows 1, 9, 11).
+3. **"`FINDINGS.md` L6: add that the movement takes five frames to die away" (live rig).**
+   `issues/lag.md` section 8 already said so, as a Model figure ("Letting go, the
+   character keeps moving for 5 frames"); it is now marked **Ran** there (row 31). The
+   ledger row itself still lacks it (F5).
+4. **"`symbols/netcode.tsv`, `net_endIfAlone` ('no callers')" (live rig).** Reported as
+   consistent. The note was kept and the run added to it and to `netcode.md` (row 30).
+5. **"`docs/formats/anim-audio.md` 2.5: the VU0 program is at 0x3e5c40" (animation).**
+   `docs/engine.md` gave the same address in "Pose" and was changed with it;
+   `symbols/fmt-anim.tsv` already described 0x3e5c40 as the loading packet and was left
+   alone (row 24).
+
+Rows that go beyond the hand-over list but come from the same sections of the reporting
+documents: 19 and 25 (one statement in two documents), 23 (the symbol note that repeats
+row 14), 32–35 (the "confirmed and worth marking" paragraph of `live-rig.md` section 5,
+applied to the documents; the ledger is F5), 39, 43 and 49. They are marked "report" or
+"running game" as the rest.
+
+Not applied:
+
+- **`tools/ee_emu.py`: no catch-all stub hook; stub returns are not sign-extended;
+  stack-passed arguments are not recorded (player tick).** `tools/` is not edited by this
+  pass.
+- **`tools/ghostreach.py` under-reports record writers (field audit 6.3).** Same reason.
+  The one document that leaned on its list, `player.md`, now carries the caveat (row 49).
+- **Player tick, item 8: the 16-bit facing is passed sign-extended to
+  `GroundPoundEffect_ctor`, `Root_ctor` and `model_getAttachPoint`; the dead state's decal
+  angle is a signed 16-bit draw.** A new detail with no statement in an earlier document to
+  correct; `spec/player-tick.md` has it.
+- **Live rig, "the brief for this work: Play!'s network adapter is a stub".** Not a
+  repository document.
+- **Field audit 4.2, the rows marked "stands, list changed" whose lists live only in the
+  ledger (rows 2, 3, 4, 8, 15, 20, 21, 23).** Their documents either already carry the
+  longer list (rows 15 and 21: `creatures.md` C3, third pass row 15) or do not state the
+  list at all. For the ledger, F5.
+- **`docs/spec/world-queries.md`, lines saying nothing there was seen on a console or a
+  console emulator.** Still being written by its author; for its owner (F5).
+- **Every row of every reporting document that is addressed to `FINDINGS.md`.** F5.
+- **Proposed names for the four functions without a caller in `spec/animation.md` section
+  4** (0x170b08, 0x170e00, 0x170ee8, 0x170fc8). New symbols, not corrections; this pass has
+  no symbol file of its own.
+
+Noticed while editing, not reported by anyone:
+
+- `issues/lag.md` section 8: the ramp logged on the live game goes on past 0.943 (0.954 on
+  the eleventh sample), so it is the push toward 0, while the model's table row is the push
+  toward 255. The two agree to a hundredth up to the seventh sample, which is what L6
+  states; after it they are different rows. `live-rig.md` 4d does not say which direction
+  its ramp table is; the document now says so as an inference from the numbers.
+- `issues/draw-sim-leaks.md`: the live game showed `g_localInputFrame` = `g_netFrame` + 1 on
+  one machine alone. That agrees with W11's L ≥ 2 only if the reading was taken after the
+  call's tick; the rig's log does not say when. Stated as such, not as a confirmation.
+- `FINDINGS.md` L7 has the executed result in its text and "Inferred from the flag's uses"
+  in its kind column (F5).
+
+### F5. For the owners of files this pass does not edit
+
+`FINDINGS.md`:
+
+| Row | What it needs |
+|---|---|
+| L6 | Add: after release the movement takes five frames to die away. The kind column reads "Observed (code), Inferred (model numbers)"; the four dead frames, the 0.8 on the seventh frame and the 0.943 / 1.000 ceilings are **Ran** now (row V4), the flick figure is still Model |
+| L7 | Kind column still "Inferred from the flag's uses" although the text reports the executed sessions; should read "Executed (three interpreter instances); frequency Model". The evidence column does not name `docs/spec/net-wire.md` 11 and 12.3 |
+| MV6 | The two speeds are **Ran** (row V3); the row's kind is "Observed" |
+| G1 (and D13, G6 where they name the flags) | The 31-tick re-clone and the flags 0x20000 / 0x200000 are **Ran** (row V7) |
+| D15 | Setters it does not list (`field-claims-audit.md` 4.2 rows 3, 4): `Player_run` 0x1abda0 (counter 11 = 41), `OniBall_onTouch` 0x294800 (counter 8) and 0x294844 (counter 10); and the zero stores 0x1a5b0c (counter 2), 0x1ac068 (counter 12), 0x113744 / 0x113758 (counter 7). "Sets" in the row means "sets to a non-zero value" |
+| E11 | Says "nothing else reads the bit" and, in the next sentence, names another reader (the script helper 0x1445fc). Should read "its only other reader is the script creature-flag helper 0x1445fc, which resets the boss meter" |
+| G2 | Has the five handles at +0x3d8 + 0x18·n; still lacks the object's own list heads +4 and +8, which the clone also empties (0x11e8c0, 0x11e8cc) |
+| "Ruled out", the hit-flash flag 0x100 | The setter list behind it is longer: `Player_processDamage` 0x1b336c and the three `…LP_draw` functions also set it. The statement itself stands |
+| "Tools added" | `fieldxref.py` and `flagxref.py` are described as before their rewrite (`field-claims-audit.md` section 2); "the player-record writers in that set have been read" should carry the caveat of 6.3 there: `ghostreach.py` does not print indexed stores, and whether each copy test guards each of those stores was not re-read |
+| new rows proposed and not found on the ledger | `spec/net-wire.md` section 19, last proposed row: two padding bytes of about four in ten input packets and the tail of every 0x200-byte launch packet are uninitialised stack (the pressure bytes are L16, the builder's missing length check is L15). `spec/player-tick.md` section 12: three exits of `Player_run` skip `Player_updateCast` and the record countdowns (0x1a55a4, 0x1a6588, 0x1ac4c0); `Player_usePotion` rewrites both delivery rates on every call |
+
+Rows checked and found already amended: L13, L15, L16, D14, D16, K3, K6, R6, AN1–AN5, V1–V8.
+
+`names.tsv`:
+
+| Row | What it needs |
+|---|---|
+| 0x13dd88 `net_fewerThanTwoActive` | the note is empty. Worth saying: four callers (0x1db904, 0x1dbe9c in `hud_netStatusDraw`, 0x1e3e10, 0x1e74c4); **Ran**: a lone machine's net game ends through one of them about 100 frames after the level starts, not through `net_endIfAlone` (`docs/issues/live-rig.md` 4d) |
+| 0x1b9cb8 `Player_usePotion` | add: kind 0 is the health potion (default R2), kind 1 mana (default L2) — **Ran**; rewrites record +0xb8 and +0xbc on every call for a living real player (executed, `docs/spec/player-tick.md`) |
+| 0x10c0f0 `Creature_updateActive` | add: sets (0x10c204) and clears (0x10c210) bit 63 of the creature flag word at +0xa8, the "active" bit that `Creature_stepAnim` and the scavenger spawn test |
+| 0x1a5030 `Player_run` | optional: three exits skip the tail (0x1a55a4, 0x1a6588, 0x1ac4c0); reads creature +0xf0 at 0x1a66f0 (state 0xc) |
+| 0x132e90 `net_main` | "calls net_frameLoop" is thin; **Ran**: entered once per rendered frame in a net game and never offline |
+
+`docs/spec/world-queries.md` (its author): the head and the "not done" list say nothing was
+seen on a console or a console emulator; when the document is finished it should point to
+`FINDINGS.md` "Run on the live game" like the others, and say that none of it was checked
+there.
+
+`tools/`: the three `ee_emu.py` gaps of `spec/player-tick.md`; indexed stores in
+`ghostreach.py` (`field-claims-audit.md` 6.3).
+
+### F6. Re-checking
+
+```
+python3 -I -B tools/symtab.py check                               # 0 conflicts, 0 malformed
+python3 -I -B tools/dis.py SLUS_209.73 13be5c:13be78              # receiver: sync word compared with 0xbd40 only
+python3 -I -B tools/dis.py SLUS_209.73 1391bc:139260              # builder: once per frame; entry indexed by g_netFrame & 0xff
+python3 -I -B tools/dis.py SLUS_209.73 13c2d8:13c300              # kick request: no answer for a local or dropped peer
+python3 -I -B tools/dis.py SLUS_209.73 13b7a0:13b808              # receiver: acknowledgement stored before the gap test
+python3 -I -B tools/dis.py SLUS_209.73 19e3a8:19e400              # engine_frameStep: the byte 0x44fd50 on the mode branch
+python3 -I -B tools/dis.py SLUS_209.73 116470:1164a0              # stepAnim: factor converted to an integer before the yaw
+python3 -I -B tools/dis.py SLUS_209.73 116318:116330              # stepAnim: bit 63 of +0xa8
+python3 -I -B tools/dis.py SLUS_209.73 16d8c0:16d8d4              # flag 0x40: step 0x3f7fffff
+python3 -I -B tools/dis.py SLUS_209.73 16e0a8:16e0c4              # purge: branch out of the track loop
+python3 -I -B tools/dis.py SLUS_209.73 1708f4:170938 | grep swc1  # pushWithWeights stores f13..f16
+python3 -I -B tools/dis.py SLUS_209.73 170020:1700d0              # AnimState_copy: 0x100 in the loop, 8 after it
+python3 -I -B tools/dis.py SLUS_209.73 170118:170158              # slot copy skips +0x18
+python3 -I -B tools/dis.py SLUS_209.73 322d30:322d64              # developer LAN launch: three tests
+python3 -I -B -c "import sys; sys.path.insert(0,'tools'); from ps2elf import Elf; e=Elf('SLUS_209.73'); print('%08x' % e.u32(0x402790))"   # 00010000: byte 0x402792 is 1
+python3 -I -B tools/dis.py SLUS_209.73 1aa6ec:1aa740              # melee hit frame: +0x55c tested and counted down
+python3 -I -B tools/dis.py SLUS_209.73 1a5598:1a55b0              # scripted-control exit
+python3 -I -B tools/dis.py SLUS_209.73 1a6578:1a6590              # state 0xb and the recall countdown
+python3 -I -B tools/dis.py SLUS_209.73 1ac4b0:1ac4c8              # tail: early return on record +0x4a60
+python3 -I -B tools/dis.py SLUS_209.73 1a5e44:1a5e68              # block request: level flag 0x10000000
+python3 -I -B tools/dis.py SLUS_209.73 1614f0:161600 | grep f14   # arc query reads a third float
+python3 -I -B tools/dis.py SLUS_209.73 18f3f8:18f470 | grep f12   # particle_spawn reads f12
+python3 -I -B tools/dis.py SLUS_209.73 1a66e0:1a6700              # Player_run reads +0xf0
+python3 -I -B tools/dis.py SLUS_209.73 10c1fc:10c214              # Creature_updateActive: bit 63 set / cleared
+python3 -I -B tools/dis.py SLUS_209.73 1b3364:1b3370              # Player_processDamage sets flag 0x100
 ```

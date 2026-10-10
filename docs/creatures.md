@@ -2,7 +2,15 @@
 
 Area `creatures`, code 0x109d68–0x131d88 (320 functions). Symbols: `symbols/creatures.tsv`.
 Read `docs/objects.md` first: a `Creature` is a `GameObject` (0x4c bytes) with 0x37c more.
-Everything here was read from the executable; nothing was run. Claims are marked
+Everything here was read from the executable; nothing was run when it was written. Since
+then several functions of this range have been executed one at a time in `tools/ee_emu.py`
+(`docs/issues/dynamic-tests.md`, `docs/spec/combat.md`, `docs/spec/animation.md`; marked
+"executed" where folded in), and the project has a live game in the Play! emulator — not a
+PlayStation 2 and not PCSX2 (`FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`).
+Of this document it touched only names and call counts (`Creature_run` and `Player_clone`
+were seen entered; the prediction copy is re-cloned every 31 ticks); no statement about
+creature behaviour here was re-checked on the live game, and no test patch has been run on
+one. Claims are marked
 **Observed** (read at the address given), **Inferred** or **Unknown** where it is not obvious.
 
 ## What is in the range
@@ -233,6 +241,10 @@ does not. **Observed.**
   counter value above 30 and the counter itself only at 30 or below (0x113774–0x1137d8;
   executed, `dynamic-tests.md` z6; `docs/spec/movement-camera.md` 4.6).
 - No code in this range writes any counter except through whole-object copies (clone).
+  Wrong as worded, as the two bullets above already show (`docs/issues/field-claims-audit.md`
+  4.2, row 7): `Creature_draw` stores the decremented counter at 0x10b8d4 and `Creature_run`
+  stores zero to counter 7 at 0x113744 and 0x113758. What holds, and what the conclusion
+  needs, is that no code in this range sets a counter to a non-zero value.
 
 ## Pending damage
 

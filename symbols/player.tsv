@@ -106,6 +106,6 @@
 0041b9a0	g_btnAbilityB	u32[4] pad mask per slot: second ability button
 0041b9c0	g_btnUse	u32[4] pad mask per slot: interact; with raw bit 0x100 also recall
 0041b9d0	g_btnBlock	u32[4] pad mask per slot: block
-0041ba10	g_btnPotionA	u32[4] pad mask per slot: Player_usePotion kind 0
-0041ba20	g_btnPotionB	u32[4] pad mask per slot: Player_usePotion kind 1
+0041ba10	g_btnPotionA	u32[4] pad mask per slot: Player_usePotion kind 0, the health potion (Ran: default mask 0x2 = R2, docs/issues/live-rig.md 4c)
+0041ba20	g_btnPotionB	u32[4] pad mask per slot: Player_usePotion kind 1, the mana potion (Ran: default mask 0x1 = L2, docs/issues/live-rig.md 4c)
 0041ba30	g_btnWeaponSwap	u32[4] pad mask per slot: swap weapon set; with block held starts state 0xb

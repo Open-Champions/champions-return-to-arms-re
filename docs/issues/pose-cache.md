@@ -7,7 +7,10 @@ it for the Drundar arena classes first, then for everything else as far as the w
 Evidence labels: **Observed** (read at the address given), **Executed** (the game's own
 instructions run by `tools/posecache_test.py` on state the test built; see section 7 for
 what that does and does not show), **Inferred**, **Unknown**. Nothing here was seen on a
-running game. The patches in section 8 are **untested on a running game**. `FINDINGS.md`
+running game, and that has not changed: the project's live game (the Play! emulator, not a
+PlayStation 2 and not PCSX2; `FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`) runs without video, and
+nothing about the pose cache was looked at on it. The patches in section 8 are **untested on a running game**; no
+test patch of the project has been run on one yet. `FINDINGS.md`
 and `patches/` were not edited.
 
 ## 1. Verdict in short
@@ -51,7 +54,16 @@ Calls that change the pose at once and do not detach (**Observed**): `anim_push`
 `anim_randomizeTopTime`, `anim_dropNonPersistent`, `anim_stop` with a blend time (the zero-time branch calls `anim_releaseCaches` first, which detaches — corrected by the third documentation pass),
 `anim_start` / `anim_startBlendInOut` on an empty or full state, and direct stores into
 track fields (`Player_move` above; `SpellRaiseArmy_raiseInRing` 0x313e54 writes a track
-time; `cut_advance` nudges track times, D8). Calls that detach: `anim_advance`,
+time; `cut_advance` nudges track times, D8). That list of direct stores is short. The
+field audit (`docs/issues/field-claims-audit.md` 4.2, row 30) adds `Player_run` itself
+(0x1a6c08–0x1a6c1c; loops at 0x1a7298 / 0x1a72a0 and 0x1a7f08 / 0x1a7f10; indexed stores
+0x1ab1a8, 0x1ab82c), `Player_updateCast` (0x1a423c, 0x1a4240, after its two skeleton
+queries: it clamps a weight to 1 and sets a fade rate), `Player_idleFidget` (0x1bc388,
+0x1bc390, called from `Player_run` 0x1a576c), `player_resetIdleAnim` (which releases the
+caches) and `AntQueen_fadeBankTracks` 0x238638. The argument for the player in section 4
+is not affected: all of these run inside `Player_run` before the tail query, except the two
+stores of `Player_updateCast`, which do not change the blended pose until the next step
+(*Inferred* there from the clamp rule). Calls that detach: `anim_advance`,
 `anim_jumpTopToEnd`, `anim_snapTopToEnd`, `anim_releaseCaches`, `AnimState_dtor`.
 
 ## 3. When two machines can get different values
@@ -442,7 +454,9 @@ halves the number of models that can be drawn before the default pose appears.
 
 ## 9. Not done, not determined
 
-- **Nothing was run on a console or a full emulator.** The two-machine observation that
+- **Nothing was run on a console or a full emulator.** (A full emulator exists in the
+  project now, `docs/issues/live-rig.md`; nothing of this document was run on it, and it
+  has one machine.) The two-machine observation that
   would confirm or close this: on both machines, at the branch 0x16f73c, when the pointer
   is non-zero and `g_excludeMask` is 0x20000, build a second pose into scratch memory and
   compare with the attached one; log tick, state address and return address on a

@@ -8,7 +8,8 @@ statements have been seen on the live game — one machine in a net game started
 developer LAN path, in the Play! emulator, which is not a PlayStation 2 and not PCSX2
 (`FINDINGS.md`, "Run on the live game", rows V1–V8; `docs/issues/live-rig.md` 4b, 4d). Those
 are marked **Ran** where they stand: eleven button bits, the stick response, the 31-tick
-re-clone of the prediction copy, the two object flags, the call counts of `net_main`.
+re-clone of the prediction copy, the two object flags, the two developer-lobby packets and
+how a lone machine's game ends.
 Everything not so marked is still reading only; two machines have not been joined, and no
 test patch has been run on a live game. Names are in `symbols/netcode.tsv` (41 functions, 40 globals) and
 `names.tsv` (13 functions that were already named). Unless a line says *Inferred* or
@@ -70,7 +71,7 @@ step it may re-clone the ghost.
 | 0x131d88 | `net_predictLocalPlayer` | runs the ghost for input frames `g_simFrame … g_localInputFrame-1`; with no ghost it only updates the camera |
 | 0x132db0 | `net_flushBeforeLoad` | before a level load: no-sim, no-input `net_main` passes until all peers acked our input up to `g_netFrame` (max 121) |
 | 0x132e90 | `net_main` | (noSim, holdInput) the per-rendered-frame driver described above |
-| 0x1345c0 | `net_debugLanLobby` | developer LAN discovery, only when flag 0x402792 is set |
+| 0x1345c0 | `net_debugLanLobby` | developer LAN discovery, only when flag 0x402792 is set — which it is in the shipped data (the byte is 1); what keeps the retail game out is that `g_networkMode` is not yet set at the first level change. **Ran** with the boot argument `--net` (`docs/issues/live-rig.md` 4d; `docs/mainloop.md` section 7 step 3) |
 | 0x134c60 | `net_launchTransfer` | prepares the launch: buffer, launch socket, own launch record (the handshake itself is 0x135638) |
 | 0x1354f8 | `net_launchSendData` | launch DATA chunk with checksum |
 | 0x135638 | `net_launchUpdate` | launch handshake state machine; fills the peer table on success |

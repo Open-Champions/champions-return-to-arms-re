@@ -5,7 +5,12 @@ functions, about 200 KB. Nothing here is game logic written by hand for this gam
 almost every game class has a few functions here, so the area is the key to the class
 hierarchy and to what "the default behaviour" of a virtual slot is.
 
-Everything below was read from the executable. Nothing was run. Statements are **Observed**
+Everything below was read from the executable. Nothing was run when it was written. Since
+then the software floating-point routines have been executed in `tools/ee_emu.py`
+(`docs/spec/items.md`, `docs/spec/core.md`; marked **executed** in section 1), and the
+project has a live game — the Play! emulator, which is not a PlayStation 2 and not PCSX2 — whose
+runs are listed in `FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`.
+Nothing in this document was looked at there. Statements are **Observed**
 unless marked **Inferred** or **Unknown**. Names of functions outside the range are the
 ones other areas assigned (`pool_free`, `mem_malloc`, `res_find`, ...).
 

@@ -5,7 +5,10 @@ to Arms* (`SLUS_209.73`), and how their textures are stored. Written for someone
 native loader. `tools/model_info.py` reads both formats and is the executable form of this
 document.
 
-Nothing here was run on a console or an emulator. The layouts were read from the executable
+Nothing here was run on a console or an emulator. That is still true of these formats:
+the emulator the project now runs the game in (Play!, not a PlayStation 2 and not PCSX2;
+`FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`) is used with
+no video output, so nothing drawn was compared. The layouts were read from the executable
 and then checked against **every** model and texture on the US v2.00 disc with the tool.
 
 Status letters used in the tables:

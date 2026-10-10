@@ -5,7 +5,15 @@ in `SLUS_209.73`. Sections 2–6 are simulation code: in a net game every machin
 same bits out of them. Section 7 (the camera) is per machine; only two values cross from it
 into the simulation, and section 7.1 says which.
 
-Everything was read from the executable; nothing was run. Marks: **[O]** Observed at the
+Everything was read from the executable; nothing was run when it was written. Since then
+parts have been executed function by function in `tools/ee_emu.py`
+(`docs/issues/dynamic-tests.md` group m, `docs/spec/player-tick.md`), and the player's run
+speed of section 4.1 has been measured on the live game — in the Play! emulator, not on a
+PlayStation 2 and not in PCSX2 (`docs/issues/live-rig.md` 4c, 4d; `FINDINGS.md`, "Run on
+the live game", row V3): 2.585831–2.585844 units per tick offline against 180 × 0.861945 /
+60, from the first tick and along a facing that is still turning, 2.25000 per tick in a
+net game, and linear in the stick value. Collision, the monster movement helpers and the
+camera were not re-checked there. No test patch has been run on a live game. Marks: **[O]** Observed at the
 address given, **[I]** Inferred, **[U]** Unknown. A paragraph or table without a mark is
 [O] at the addresses in its section heading. Names are those of `names.tsv` and
 `symbols/*.tsv`; new ones are in `symbols/movement.tsv`.
@@ -414,7 +422,11 @@ known. [O] code, [U] reachability.
   ≠ 0; `g_recallCountdown`; `g_medalDialogTicks`; `net_getCamFlag(slot)` (the owner's camera
   is not in follow mode — carried in the input record, section 7.1); a run task named
   `jumpgate` or `missionmenurun` exists; `net_isSlotActive(slot)` is false; object flag
-  0x400000; word 0x503890 ≠ 0; byte 0x4f66c8 ≠ 0; hit points ≤ 0. *(dec)*
+  0x400000; word 0x503890 ≠ 0; byte 0x4f66c8 ≠ 0; hit points ≤ 0. *(dec)* The list is in
+  the order the code tests them, and the order matters: the tests short-circuit, so it
+  decides which of the calls (`dialog_isOpen`, `net_getCamFlag`, the two task look-ups,
+  `net_isSlotActive`) are made on a given tick; the hit-points test is the last
+  (**executed**, `docs/spec/player-tick.md` section 2).
 - Byte +0x481 and `dialog_isOpen()` again inside `Player_move`.
 - A mode with `V = 0` (table above), a state with no call.
 - The root timer and the slow amount do **not** stop a player the way they stop a monster:
@@ -1169,5 +1181,6 @@ repair without changing the simulation for every player.
   order anywhere in section 7.
 - The functions 0x260910 (a caller of `creature_moveSimple`), 0x2c95f4 (told when a rush hits
   something), 0x1857e4 and 0x185448 (terrain routines beside the sweep).
-- Nothing was run. In particular the hardware facts at the head of section 8 and the value in
+- Nothing was run (when this was written; the run speed has been measured on the live rig
+  since, see the head of the document). In particular the hardware facts at the head of section 8 and the value in
   F3 want one emulator or console trace each.

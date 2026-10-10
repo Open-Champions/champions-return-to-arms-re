@@ -6,7 +6,14 @@ disc, and the dialog files that tie voice lines to text. Tool: `tools/anim_audio
 
 Everything was read from `SLUS_209.73` (US v2.00), from the sound driver module
 `BG/0MOD/HELLO.IRX` on the same disc, and from the disc's own files. Nothing was run on a
-console or emulator. The tool was run over every file on the disc (section 7).
+console or emulator when this was written, and nothing in this document has been checked on
+a running game since. Two things have changed around it: the animation step and the pose
+have been executed function by function in `tools/ee_emu.py` (`docs/spec/animation.md`,
+which corrected sections 2.5 and 2.6 below), and the project now has a live game — in the
+Play! emulator, not a PlayStation 2 and not PCSX2; what was run there is listed in
+`FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`, and it
+has no sound or video output, so none of the formats here was exercised.
+The tool was run over every file on the disc (section 7).
 
 How to read the status marks:
 
@@ -187,7 +194,10 @@ rotation velocities.
 
 `anim_buildPose` (0x16ed40) blends the tracks into one quaternion and one position per joint
 (`docs/engine.md`, "Pose"), then calls two entry points of the VU0 microprogram that the
-executable carries at 0x3e5c40 (`.vutext`; 77 instructions loaded at micro address 0). Entry
+executable carries at 0x3e5c40 (`.vutext`; 77 instructions loaded at micro address 0). More
+exactly, 0x3e5c40 is the DMA / VIF packet that loads the program: the first instruction is
+at 0x3e5c50 (`docs/spec/animation.md` 8.3; the earlier wording put the program itself at
+0x3e5c40). Entry
 2 stores an identity matrix in slot 0 of a matrix stack. Entry 4, once per joint, does:
 
 ```
@@ -205,7 +215,9 @@ out[j].translation = W.rotation * bindOffset[j] + W.translation
 The result is written to the pose buffer as fixed point, 0x18 bytes per joint: three rows
 of `s16 r0, r1, r2` (× 4096) and `s16 t` (× 64). `anim_getJointMatrix` (0x16f720) converts a
 row set back to floats for game code. **O** (instruction-level reading of the microprogram
-and of 0x16f594–0x16f674).
+and of 0x16f594–0x16f674). The bind offsets and the depth list used for every joint are
+those of the top track's clip, whatever clips the other tracks play (0x16f57c;
+`docs/spec/animation.md` section 13).
 
 Consequences for a rebuild: joint matrices are in model space; translations are limited to
 ±512 units by the 16-bit format (a rebuild can keep floats); points given in bind-pose model
@@ -221,7 +233,10 @@ What the file contributes is joint 0's ordinary keys:
   initial x/y for such a track and lets the position keys accumulate from zero; every
   advance reads `pos + pvel × (t − ptick)` for x and y, adds it (times the track's weight)
   to the output and subtracts it from the stored base. Across a loop wrap the remainder up
-  to `length` is taken first. So the displacement per step is exactly the change of joint
+  to `length` is taken first. "The track's weight" is two weights, not one: the part up to
+  the clip's end is weighted with the track's blend weight before that step's weight
+  update, the rest with the weight after it; a track removed by the update gets no second
+  part (**executed**, `docs/spec/animation.md` section 5, note 3). So the displacement per step is exactly the change of joint
   0's x/y track; the clip's initial x/y is ignored. z stays in the pose. **O** (0x16e468,
   0x16d748; `animcache_alloc` 0x16e388 zeroes the base).
 - **Heading (track flag 0x4000).** The heading of joint 0's quaternion,

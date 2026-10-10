@@ -7,7 +7,11 @@ it bites, what players should avoid, what testers should try, and a one-word pat
 one exists.
 
 Everything was read from the executable (SLUS_209.73, v2.00) and from the files on the
-disc; **nothing was run, and every patch below is untested.** Each statement is
+disc; **nothing was run, and every patch below is untested.** That is still true of this
+document: one test has since been executed in the interpreter (`docs/issues/dynamic-tests.md`
+s4), and the project has a live game in the Play! emulator (not a PlayStation 2, not PCSX2;
+`FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`), but it has run one
+machine, and none of the eight items here was tried on it. Each statement is
 **Observed** (read at the address given), **Inferred** or **Unknown**. New names are in
 `symbols/syncbreakers.tsv`. `FINDINGS.md` and `patches/` were not edited; proposed ledger
 rows and corrections to earlier documents are at the end.
@@ -334,7 +338,7 @@ Address: not real. Prompt: real, low impact. Failed write: real, needs a card er
 | `JumpGate_draw` sets +0xd0; `JumpGate_run` clears it on every exit. For a gate already marked found (+0x4d = 1), run returns early when +0xd0 is 0 — before the automatic open | Observed | 0x27d634; test 0x27d1e4–0x27d1e8; open 0x27d318–0x27d400 |
 | For an interact gate (+0x4f = 0) the only things behind the +0xd0 test are draws from the gate's own generator, one particle and the idle animation step; the activation state +0x4e, which advances with that animation, is used for the glow and stored in the level save record | Observed | 0x27d1f0–0x27d30c; 0x27d974 |
 | All 38 gates on the disc are class `Portal`; none has `hurt` or `destination`; eight have a `script` predicate. The two factory names share one constructor | Observed (disc scan); factory 0x15cea0–0x15cf08 |
-| `jumpgate_travelEffect` (draw task) writes, when the travel count is 30, +0xf0 and +0x394 of every living player; +0x394 is status counter 10 and +0xf0 is read only in the counter-7 branch of `Creature_run`. Its cosmetic-seed tint writes are on the `destination` path, which no gate uses | Observed | 0x27e770; FINDINGS D12–D15 |
+| `jumpgate_travelEffect` (draw task) writes, when the travel count is 30, +0xf0 and +0x394 of every living player; +0x394 is status counter 10 and +0xf0 is read only in the counter-7 branch of `Creature_run`. That last clause is wrong (`docs/issues/field-claims-audit.md` 4.2, row 33): +0xf0 is also read by `Creature_draw` 0x10b76c and by `Player_run` at 0x1a66f0, which in action state 0xc compares it with the frame counter minus 30 and, when they are equal, allocates a block and constructs a `LightEffect`. Because this draw task writes +0xf0 on a per-machine frame, that object would be created on a per-machine frame. State 0xc is entered only by ability effect 0x0e (0x1a71c8), so it is one more consequence of FINDINGS D16 (can any character trigger the old effects), not a route of its own. Its cosmetic-seed tint writes are on the `destination` path, which no gate uses | Observed | 0x27e770; FINDINGS D12–D15 |
 | In menu state 2 the chooser's machine skips the pad test for a tick while its pause menu is open and locks its input for four calls | Observed | 0x27dee0 |
 | `JumpGate_interactPrompt` marks the gate found and adds the level to the destination list as a side effect, and is called from both `Player_run` and `Player_draw` (docs/script.md P1) | Observed | 0x27d81c–0x27d830 |
 

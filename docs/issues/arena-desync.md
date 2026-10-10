@@ -6,7 +6,11 @@ far as static reading allows and ranks them.
 
 Everything here was read from the executable and from the level's unpacked files; nothing
 was run. Claims are **Observed** (read at the address given), **Inferred** or **Unknown**.
-Patch proposals at the end are **untested**.
+Patch proposals at the end are **untested**. All of that still holds. The project can run
+the game now — in the Play! emulator, which is not a PlayStation 2 and not PCSX2,
+on one machine (`FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`)
+— but the arena has not been reached on it, a desync needs two machines, and no test patch
+has been run on a live game.
 
 ## Result in one table
 

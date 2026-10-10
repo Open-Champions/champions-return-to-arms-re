@@ -1,7 +1,13 @@
 # Objects: GameObject, the world lists, level records, the allocator, props, the factory
 
 Area `objects`, code 0x147300–0x160000 (219 functions). Symbols: `symbols/objects.tsv`.
-Everything here was read from the executable; nothing was run. Each claim is marked
+Everything here was read from the executable; nothing was run when it was written. Since
+then the allocator and the handle pool have been executed in `tools/ee_emu.py`
+(`docs/spec/core.md`), and the project has a live game in the Play! emulator — not a
+PlayStation 2 and not PCSX2 (`FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`).
+Of this document it confirmed object flags 0x20000 and 0x200000 (marked **Ran** in the
+flag table) and that `runObjects` is entered once per simulated frame. The rest
+was not re-checked on the live game, and no test patch has been run on one. Each claim is marked
 **Observed** (read at the address given), **Inferred** or **Unknown** where it is not obvious.
 
 ## What is in the range
@@ -121,7 +127,7 @@ from a pattern search over the decompiled C for the word at +0xc; they are not e
 | 0x20 | is a Creature (set only by `Creature_ctor`) | Observed | `Creature_ctor` 0x109d68 |
 | 0x40 | is a Player (set only at 0x1a1d28) | Observed | |
 | 0x80 | has an owner handle at +0x4c (projectiles); damage is credited to the owner | Observed | `Projectile_ctor` 0x150e48, 0x11670c |
-| 0x100 | hit flash, read and cleared by drawing | Observed | set 0x110de8, clear 0x10babc |
+| 0x100 | hit flash, read and cleared by drawing. Also set by `Player_processDamage` (0x1b336c), which the earlier list of setters lacked, and by the three `…LP_draw` functions; `net_frameLoop` tests it at 0x13af20 and moves it to the prediction copy (`docs/issues/field-claims-audit.md` 4.2, row 17). Still no simulation reader | Observed | set 0x110de8, 0x1b336c; clear 0x10babc |
 | 0x200 | touch-only: movers call slot 6 but are not pushed out; projectiles pass through | Observed | 0x11411c, 0x14d838, 0x150d1c |
 | 0x400 | on the mover: do not push me out of other objects | Observed | 0x114174, 0x14d844 |
 | 0x800 | lives in grid B (drawn, never returned by box queries) | Observed | 0x14cc78, 0x14f094 |
@@ -130,11 +136,11 @@ from a pattern search over the decompiled C for the word at +0xc; they are not e
 | 0x4000 | transient: never written to a save | Observed | 0x14e1dc; set by `Projectile_ctor`, `PhProp_ctor`, about 70 others |
 | 0x8000 | not run (slot 4 skipped) | Observed | tested before each slot-4 call in `runObjects`; set by hide |
 | 0x10000 | Unknown | — | set 0x2b1e80, 0x2b33f4 (torch/lantern constructors) |
-| 0x20000 | prediction copy | Observed | hard-coded skip at 0x14aa54 in the box query |
+| 0x20000 | prediction copy. **Ran**: on the live game the object at `g_ghost` had the flag word 0x00024060 (`docs/issues/live-rig.md` 4d) | Observed; Ran | hard-coded skip at 0x14aa54 in the box query |
 | 0x40000 | Unknown | — | set 0x243624, 0x2b1e80, 0x2cb4e8, 0x31d180; tested in the object sweep 0x18b014 |
 | 0x80000 | activity radius forced to 44000 (cutscene actors) | Observed | 0x14db24; set 0x19904c |
 | 0x100000 | can be interacted with | Observed | `Creature_ctor`, `PhProp_ctor` for items |
-| 0x200000 | this machine's own player | (FINDINGS D13) | |
+| 0x200000 | this machine's own player. **Ran**: in a net game the real local player's flag word read 0x00204060, offline 0x4060 (`docs/issues/live-rig.md` 4b, 4d) | (FINDINGS D13); Ran | |
 | 0x400000, 0x800000 | set and cleared on player objects by a game-message handler; `Creature_updateActive` tests both, 0x1ec140 tests 0x800000 on every live player. They are the menu-state bits of game message 2 (`hudmsg_sendMenuState`, `docs/ui.md`): a non-zero state sets 0x400000, and 0x800000 as well when the state is above 1; state 0 clears 0x800000 and sets record +0x4bc8 to 10, the countdown after which `Player_run` clears 0x400000 (`docs/player.md`) | Observed; this row gave the meaning as Unknown | 0x1d8d84–0x1d8dec, 0x10c174, function 0x1ec140, 0x1ac6f8–0x1ac724 |
 | 0x1000000 | friendly to players (script `friendly`) | Observed | 0x145304 |
 | 0x2000000 | died burning; drawn darker | Observed | set 0x111510, test 0x10b178 |

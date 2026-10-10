@@ -6,7 +6,9 @@ the arena's opening cutscene `knights`, on every machine of a net game.
 
 Everything here was read from the executable (SLUS_209.73, v2.00) and from the unpacked
 level files of `drundar` and `drunare`. **Nothing was run, and every patch below is
-untested.** Claims are **Observed** (read at the address given), **Inferred** or
+untested.** That still holds: the project's live game (the Play! emulator, not a
+PlayStation 2 and not PCSX2; `FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`)
+has not entered `drundar` or `drunare`, and no test patch has been run on it. Claims are **Observed** (read at the address given), **Inferred** or
 **Unknown**. New names are in `symbols/entry.tsv`.
 
 ## Result in short

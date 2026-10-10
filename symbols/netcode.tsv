@@ -14,7 +14,7 @@
 # ---- peer and slot queries ----
 0013d668	net_localIsFirstActive	true when the lowest-numbered non-dropped slot is this machine's slot; callers use it as the host test
 0013dd40	net_isSlotActive	(slot): offline always true; online slot < g_numPeers and peer not dropped (+0x44d5)
-0013ddd8	net_endIfAlone	no callers: if fewer than two peers remain, sets the session-ended flag, leaves network mode and closes local menus
+0013ddd8	net_endIfAlone	no callers: if fewer than two peers remain, sets the session-ended flag, leaves network mode and closes local menus. Ran (docs/issues/live-rig.md 4d): never entered when one machine was alone in a net game, and patching it changed nothing; that game ended through a caller of net_fewerThanTwoActive 0x13dd88 instead (which of its four callers was not determined)
 0013def8	net_dropAllRemotes	marks every non-local peer dropped and sets the session-ended flag; called by script saveEndConfig
 0013dfc0	net_clearHeardFlags	zeroes peer+0x44d0 for all peers; main loop calls it after a level load
 0013e008	net_allPeersHeard	1 when every remote peer that is neither dropped nor being kicked has sent an input packet since the last clear
@@ -38,7 +38,7 @@
 001354f8	net_launchSendData	(buf, len, seq, addr, port): launch packet type 4 with (16-bit checksum << 16 | seq); returns that word
 0013e2c8	net_launchSendPacket	(type, arg, addr, port, payload, len): generic 0x200-byte launch packet; no direct callers found
 0013ce68	net_launchDraw	draws the launch screen: one panel per player with state text and transfer percentage
-001345c0	net_debugLanLobby	developer LAN mode only (flag 0x402792): broadcasts 0xbd3d/0xbd3e to 192.168.1.255:4000, collects peers by address, starts with placeholder character names
+001345c0	net_debugLanLobby	developer LAN mode only (flag 0x402792; not a debug flag that is off in retail - the byte is 1 in the shipped data, and what the retail game lacks at that point is g_networkMode, which the boot argument --net sets; Ran on one machine, docs/issues/live-rig.md 4d): broadcasts 0xbd3d/0xbd3e to 192.168.1.255:4000, collects peers by address, starts with placeholder character names
 # ---- not netcode, but inside the range ----
 0013da90	ShockProjectile_clone	vtable 0x50e228 slot 15; returns 0
 0013e8f8	scr_load	(vm, image): checks magic 0xf1e0 (header +4) and name-record size 0x18 (header +0xa), expands the optional compact encoding (header flag bit 2; no shipped script uses it), installs default callbacks, calls scr_relocate. An earlier note called the 0x18 a version and the expansion loop "unpacks the relocation list"; see docs/script.md

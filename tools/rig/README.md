@@ -16,6 +16,8 @@ in this directory; what the rig has shown so far is in `docs/issues/live-rig.md`
 | `rig.py` | wrapper: finds the runner and the disc, loads the repository's symbol files, interactive sessions |
 | `examples/boot-to-hub.rig` | script: power-on to a controllable character in the first level, offline |
 | `examples/net-solo.rig` | script: power-on to a net game on one machine, through the game's developer LAN start |
+| `examples/pair-start.rig` | script: two joined machines, power-on to one lockstep net game |
+| `compare.py` | lines up the tick logs of two machines and finds the first difference; diffs two memory dumps |
 
 ## Build
 
@@ -72,7 +74,9 @@ directory; keep that, and any logs and dumps, under `local/rig-out/`.
 | `--pc-histogram` | where the EE program counter is at each vertical blank |
 | `--fps-every <n>` | print the emulation speed every n frames |
 | `--profile` | sample the machine thread; print where the wall time went |
-| `--net-shim <a.b.c.d>`, `--net-log <file>` | the libnet shim (below) |
+| `--net-shim <a.b.c.d>`, `--net-log <file>`, `--net-log-all` | the libnet shim (below) |
+| `--machine A\|B`, `--link listen:<path>\|connect:<path>`, `--bus delay=N,jitter=N,loss=N,seed=N` | two joined machines (below) |
+| `--tick-log <file>`, `--tick-watch <name=expr:type>`, `--tick-at <addr>` | one row per lockstep tick (below) |
 | `--no-code-protect`, `--video-thread`, `--throttle`, `--play-logs` | emulator behaviour, see `--help` |
 
 A **frame** is one vertical blank of the emulated machine. Frame numbers count from the
@@ -94,7 +98,8 @@ x=[g_players+0x43d8]+0x10:f32        # field 0x10 of the object the record point
 ```
 
 Types: `u8 s8 u16 s16 u32 s32` (decimal), `x8 x16 x32` (hex), `f32`, `strN` (text, at
-most N bytes), `hexN` (N bytes).
+most N bytes), `hexN` (N bytes), `crcN` (a 32-bit checksum of N bytes, for comparing a
+block between two machines). `&` is available in expressions as well.
 
 ### Script commands
 
@@ -120,6 +125,9 @@ One per line, run in order; `#` starts a comment.
 | `echo text`, `log on\|off`, `sync [token]` | print a line; switch the frame log; print a marker and flush |
 | `break <addr[,opts]>`, `unbreak <addr>` | add or remove a break point |
 | `netshim` | replace the game's libnet entry points (needs `--net-shim`) |
+| `fuzz <seed> <frames> <groups>` | seeded random input: `move`, `rstick`, `fight`, `potion`, `use`, `dpad`, `select`, `start`, `l3r3`, joined by commas |
+| `ontick <N> <command>` | run `poke`, `pnach`, `dump`, `show`, `echo`, `save`, `press`, `release` or `quit` inside lockstep tick N |
+| `A: <command>`, `B: <command>` | only on that one of two joined machines; the other lets the same number of frames pass |
 | `quit` | end the run |
 
 Patches are applied when the script says so, which must be after the executable is in
@@ -171,6 +179,56 @@ net game on one machine (`examples/net-solo.rig`); joining two runners is the ne
 
 A state saved inside a net game does not contain the shim's sockets. Loading it with
 `--net-shim` given again works for one machine (the stubs are in the saved memory).
+
+### Two machines
+
+Two runner processes can be joined into one net game. They are connected by a local
+socket (`--link listen:<path>` on one, `--link connect:<path>` on the other) and advance
+strictly together: at every vertical blank each sends the other its frame number and the
+datagrams its game sent since the last one, and waits for the other's message for the same
+frame. What a machine receives therefore depends on frame numbers only, and a pair of runs
+repeats exactly from the same states, scripts and `--bus` seed.
+
+`--bus delay=N,jitter=N,loss=N,seed=N` says what happens to a datagram that crosses:
+`delay` frames are added to every one, up to `jitter` more to each (which reorders them),
+and `loss` in a thousand are dropped; all of it is drawn from a generator seeded by `seed`.
+With no `--bus` a datagram sent in one frame can be received in the next.
+
+The launcher does the pairing:
+
+```
+python3 -I -B tools/rig/rig.py pair local/rig-out/run1 \
+    --script tools/rig/examples/pair-start.rig --save-at-end local/rig-out/run1/%M.zip
+python3 -I -B tools/rig/rig.py pair local/rig-out/run2 --bus delay=10,jitter=6,loss=100,seed=6 \
+    --a-load local/rig-out/run1/a.zip --b-load local/rig-out/run1/b.zip --script my.rig
+python3 -I -B tools/rig/compare.py ticks local/rig-out/run2/a.tick.tsv local/rig-out/run2/b.tick.tsv
+```
+
+Machine A is 192.168.1.132 and plays slot 1; machine B is 192.168.1.134 and plays slot 0
+(the game's lobby orders its peers that way). Each has its own data directory
+(`local/rig-out/pair-a`, `pair-b`). Without `--a-load` / `--b-load` both are booted with
+the argument `--net`. `--a-arg X` / `--b-arg X` give one machine an extra option; `%M`
+in an option becomes `a` or `b`. Both run the same script; lines tagged `A:` or `B:` act
+on one machine while the other waits the same number of frames. In the output directory
+each machine leaves `a.out` / `b.out`, the shim's log, and the **tick log**.
+
+The tick log (`--tick-log`, needs break point support) has one row per lockstep tick,
+written when the EE reaches 0x13aee8 — the instruction after the tick's task pass in
+`net_frameLoop`, where `g_netFrame` still holds the tick's number and the shared seed and
+the positions are the ones the game is about to hash. The launcher's default columns are
+the tick, the shared seed, the level, and for both players position, facing, action
+state, hit points, mana, gold, experience and a checksum of each bag, plus the sync record
+the game stored for the previous tick and the out-of-sync flags. Columns named `l_…` are
+per machine by design (`rig.py`, `tick_watches`). More are added with `--tick-watch`.
+
+`compare.py ticks` lines two tick logs up by tick and reports the first tick at which a
+shared column differs, and every column that ever differs. `compare.py mem` diffs two
+memory dumps taken in the same tick (`ontick N dump 0 0x2000000 file` on both machines)
+and groups the differences by symbol; its ignore list is a table at the top of the file,
+and `--baseline` leaves out every byte that already differed at an earlier tick when the
+tick logs still agreed. Two machines in sync differ in about half a megabyte (pose
+buffers, render lists, the peer table, the order of some heap blocks), so without a
+baseline the diff is mostly that.
 
 ### Interactive sessions
 

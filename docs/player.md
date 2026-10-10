@@ -1,7 +1,17 @@
 # Player: the Player class and the per-player record
 
 Address range 0x1a0000–0x1c0000 (122 functions). Symbols are in `symbols/player.tsv`.
-Everything here was read from the executable; nothing was run. Each statement is
+Everything here was read from the executable; nothing was run when it was written. Since
+then `Player_run` has been executed tick by tick in `tools/ee_emu.py`
+(`docs/spec/player-tick.md`), and part of this document has been seen on the live game —
+offline play from scripted input and one machine in a net game, in the Play! emulator,
+which is not a PlayStation 2 and not PCSX2 (`FINDINGS.md`, "Run on the live game", rows
+V1–V8; `docs/issues/live-rig.md` 4b–4d). What was seen there: the record fields that were
+read back (name, class, statistics and their order, hit points, mana, gold, load limit,
+speed multiplier, object pointer, bag 2), the potion buttons and the pending-heal fields,
+the run speed offline and in a net game. Where that settles something this document had as
+Inferred or open, the place is marked **Ran**. The rest was not re-checked on the live
+game, and no test patch has been run on one. Each statement is
 **Observed** (read at the address given), **Inferred** or **Unknown**.
 
 ## What the area does
@@ -42,12 +52,12 @@ Offsets are from the start of the record. "init" = `player_initNewCharacter` 0x1
 | +0x58 | s8 | level the player has acknowledged in the level-up screen (`docs/ui.md`); starts at 1, capped at 50 on import. It, not +0x59, feeds the attack rating at +0xcc | Observed: set from an inventory message in `invmsg_dispatch` 0x1bfdb0, compared with +0x59 by the HUD (0x1d9cd4, 0x1db870), read at 0x1b71b8. The earlier version gave the meaning as Unknown |
 | +0x59 | s8 | character level used by the hp/mana formulas | Observed: stats |
 | +0x5c | s32 | experience; import clamps it to the limit at 0x41b620 | Observed: import |
-| +0x78 | s32[4] | base statistics. Index 0 feeds the load limit, 1 max mana, 3 max hp, so they are strength, intelligence, dexterity, stamina (order Inferred from those uses) | Observed: init fills from class table 0x4ef400 or from four bytes; stats reads them |
+| +0x78 | s32[4] | base statistics. Index 0 feeds the load limit, 1 max mana, 3 max hp, so they are strength, intelligence, dexterity, stamina. The earlier version gave the order as Inferred from those uses; it is **Ran** now: a new character's four words read 46, 37, 24, 28, the values the creation screen showed for its four rows in that order, and the load limit read 171 = 46 + 125 (`docs/issues/live-rig.md` 4b) | Observed: init fills from class table 0x4ef400 or from four bytes; stats reads them. Order: Ran |
 | +0x90 | s32[4] | effective statistics = base + item modifiers 7, 8, 9, 10 | Observed: stats |
 | +0xa8, +0xe3, +0x4c29 | u8 | marker bytes set to 0xaa by init | Observed; purpose Unknown (integrity marker Inferred) |
 | +0xac | float | hit points | Known (G3); Observed throughout |
 | +0xb0 | float | maximum hit points = level × a + stamina × b − c, constants per class | Observed: stats |
-| +0xb4 | float | healing still to be delivered by a potion; +0xb8 is the amount per frame | Observed: `Player_regenHealth` 0x1b3b90 |
+| +0xb4 | float | healing still to be delivered by a potion; +0xb8 is the amount per frame. `Player_usePotion` rewrites both per-tick rates, +0xb8 and +0xbc, on every call before any test other than "real player, alive", so a potion button pressed at full health still stores them (**executed**, `docs/spec/player-tick.md` section 12) | Observed: `Player_regenHealth` 0x1b3b90. **Ran**: after a health potion +0xb4 read 22.698 and fell by +0xb8 = 0.0683 per tick; after a mana potion +0xc8 read 30.82 and fell by +0xbc = 0.0765 per tick (`docs/issues/live-rig.md` 4c) |
 | +0xbc | float | mana per frame delivered by a potion | Observed: `Player_regenMana` 0x1b3900 |
 | +0xc0 | float | mana | Known (G3) |
 | +0xc4 | float | maximum mana = (intelligence − a) × b + level × c, constants per class | Observed: stats |
@@ -216,9 +226,24 @@ controls are locked); aura light fade; potion buttons; ability button selection;
 mana regeneration and item timers; kill plane; `Player_processDamage`; weapon swap and
 interact; the state switch; aura light; `Player_updateCast`; record countdowns.
 
+That list reads as if every tick reached its end. Three exits skip the tail, and with it
+`Player_updateCast` and the record countdowns (**executed**, `docs/spec/player-tick.md`
+sections 1, 6, 7 and 12): the scripted-control exit, taken when object +0x231 is non-zero
+(test at 0x1a55a4), which also skips regeneration, the kill plane and
+`Player_processDamage`; state 0xb while `g_recallCountdown` is non-zero (0x1a6588); and
+record +0x4a60 holding anything other than 0 or 1 while the aura light is on (0x1ac4c0).
+
 Two net-game differences inside the state machine (**Observed**): the melee hit is applied
 on frame 1 of the swing instead of at 16 frames ÷ attack speed (0x1aa6ec–0x1aa738), and the
 ranged release time is halved (0x1a80e0 on). Movement speed is 0.75 instead of 0.861945.
+The first of these needs a condition the sentence left out, though the field table above
+has it: on frame 1 **only when +0x55c is 0** (the word is loaded at 0x1aa6ec and counted
+down at 0x1aa730). +0x55c is 16 after any tick in state 8 or 0xb and falls by one per tick
+spent in state 1 in a net game, and frame 1 is the only hit frame, so no swing lands until
+16 melee ticks have passed since the last block (**executed**, `docs/spec/player-tick.md`
+state 1 step 7 and section 12). The two speeds are **Ran** on the live game: 2.585831 to
+2.585844 units per tick offline against 180 × 0.861945 / 60 = 2.585835, from the first
+tick, and 2.25000 per tick in a net game (`docs/issues/live-rig.md` 4c, 4d; FINDINGS V3).
 
 ## Functions that matter
 
@@ -382,7 +407,14 @@ Writes that the prediction loop restores and so need no guard: every `g_randSeed
 its interface, `Player_drawEquipped` 0x1a3580 (decompile failed), the equipment-cache
 functions in detail, and the menu list widget. Of ghostreach's 812 reachable functions I
 checked the direct callees of `Player_run` and the player-record writers; the deeper
-engine, sound and library entries were judged by what they write, not read.
+engine, sound and library entries were judged by what they write, not read. "The
+player-record writers" means the ones that tool lists, and its list is short: it does not
+print indexed stores. The field audit names the record writers it misses among functions
+the copy can reach — `Player_regenHealth`, `Player_regenMana`, `Player_takeDamage`,
+`Player_usePotion`, `OniBall_onTouch`, `hud_addGoldFloater`, `inventory_giveItem`,
+`inventory_equipItem` and four stores of `Player_run` itself — and says which contain a
+test of the copy flag and which depend on their callers; whether each test guards each
+store was not re-read there (`docs/issues/field-claims-audit.md` 6.3).
 
 ## Open questions
 
@@ -404,6 +436,10 @@ engine, sound and library entries were judged by what they write, not read.
 - Record +0x128 and +0x3748: meanings. (+0x58 versus +0x59, +0xe8–0xee and +0x43d0 were
   listed here too; `docs/ui.md` answers them and the record table now says so.)
 - Which button is the health potion and which the mana potion (`g_btnPotionA/B`).
+  Answered on the live game (**Ran**, `docs/issues/live-rig.md` 4c; FINDINGS V5): potion A
+  (`g_btnPotionA`, mask 0x2, R2 by default) is the health potion and potion B
+  (`g_btnPotionB`, mask 0x1, L2 by default) the mana potion. R2 at full health consumes
+  nothing; below it the bag-2 quantity drops by one.
 - Whether `player_importCharacter` reads the previous game's save format (layout and the
   level cap of 50 suggest it — Inferred).
 - names.tsv calls 0x1309f0 `clone_50d590`; vtables.txt gives table 0x50d590 to class

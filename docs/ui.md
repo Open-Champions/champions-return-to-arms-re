@@ -1,7 +1,12 @@
 # ui — inventory, shop, character sheet, HUD, front end, game state (0x1c0000–0x1e8000)
 
 222 functions. Read from the decompile and the disassembly only; nothing here was seen on a
-running game. Names are in `symbols/ui.tsv`. Unless a line says *Inferred* or *Unknown*, a
+running game when it was written. Since then the project has a live game — the Play! emulator, which is not a PlayStation 2 and not PCSX2
+— and what was run on it is listed in `FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`.
+Of this document it touched one thing (4b there): the front-end states 0–4, which took
+exactly the documented values as scripted input walked the menus (in the order 0, 1, 2, 4,
+3). Inventory, shop, character sheet, HUD and the per-machine items below were not
+re-checked on the live game, which has run one machine only. No test patch has been run on a live game. Names are in `symbols/ui.tsv`. Unless a line says *Inferred* or *Unknown*, a
 statement is *Observed* at the address given.
 
 ## What is in the range
@@ -242,7 +247,8 @@ out pending gold (`hud_flushGold`), frees per-level data and clears `g_paused`.
   `drawWorld` in a wait loop whose length depends on local loading (0x322998, loop on
   0x506048), and `drawWorld` reaches cosmetic-seed users by direct calls (0x16d0b8,
   0x16d360, 0x1876e0, 0x18ba18, 0x195400). Whether any of them fires during that loop needs
-  a running game: compare 0x404460 on two machines at 0x3230c4.
+  a running game: compare 0x404460 on two machines at 0x3230c4. (A running game exists now,
+  `docs/issues/live-rig.md`, but with one machine; this comparison has not been made.)
 - Answered since, without a running game (`docs/issues/sync-breakers.md` section 2):
   `drawWorld` cannot reach its cosmetic-seed users during the load. From the level change
   until after stock generation world pieces are not drawn (`g_worldPiecesDrawn` 0x44f054 is

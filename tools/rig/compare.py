@@ -6,11 +6,16 @@
         first tick at which a shared column differs, and which columns ever differ.
         Columns whose name starts with "l_" are per machine by design and only counted.
 
-    compare.py mem A.ram B.ram [--all] [--top N] [--min BYTES]
+    compare.py mem A.ram B.ram [--baseline A0.ram B0.ram] [--all] [--top N] [--min BYTES]
         Diffs two dumps of EE memory taken at the same tick (script command
         "ontick N dump 0 0x2000000 file"), groups what differs by named symbol or, in
         the heap, by run of nearby bytes, and leaves out the regions listed in IGNORE
         below, which hold state that is per machine by design. --all shows those too.
+        --baseline names a pair of dumps from an earlier tick at which the tick logs
+        still agreed: every byte that already differed there is per machine by
+        observation and is left out as well (repeatable). Two machines in sync differ
+        in several hundred kilobytes (pose buffers, render lists, the peer table, the
+        order of some heap blocks), so a diff without a baseline is mostly that.
 
 Exit code 0: nothing shared differs; 1: something does; 2: bad input.
 Standard library only. Dumps and logs are game data: keep them under local/.
@@ -152,11 +157,25 @@ def differing_runs(a, b, gap=32):
     return runs
 
 
-def compare_memory(path_a, path_b, show_all=False, top=40, minimum=1):
+def compare_memory(path_a, path_b, show_all=False, top=40, minimum=1, baselines=()):
     with open(path_a, "rb") as handle:
         a = handle.read()
     with open(path_b, "rb") as handle:
         b = handle.read()
+    # bytes that already differed in a baseline pair are made equal before the diff
+    if baselines:
+        a = bytearray(a)
+        masked = 0
+        for base_a, base_b in baselines:
+            with open(base_a, "rb") as handle:
+                a0 = handle.read()
+            with open(base_b, "rb") as handle:
+                b0 = handle.read()
+            for start, end in differing_runs(a0, b0, gap=8):
+                a[start:end] = b[start:end]
+                masked += end - start
+        a = bytes(a)
+        print("baseline: %d bytes that already differed there are left out" % masked)
     if len(a) != len(b):
         print("dumps differ in size: %d and %d bytes" % (len(a), len(b)))
     table = load_symbols()
@@ -232,7 +251,8 @@ def main(argv):
         options = argv[3:]
         top = int(options[options.index("--top") + 1]) if "--top" in options else 40
         minimum = int(options[options.index("--min") + 1]) if "--min" in options else 1
-        return compare_memory(argv[1], argv[2], "--all" in options, top, minimum)
+        baselines = [(options[i + 1], options[i + 2]) for i, o in enumerate(options) if o == "--baseline"]
+        return compare_memory(argv[1], argv[2], "--all" in options, top, minimum, baselines)
     print(__doc__)
     return 2
 

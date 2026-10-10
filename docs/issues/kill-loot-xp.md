@@ -6,9 +6,15 @@ cutscenes and found nothing that bites every time. This document traces what was
 chain that follows a killing blow (damage with weapon and item effects, experience, level-up,
 loot, pick-up), on every machine, looking for anything that depends on which machine runs it.
 
-Everything here was read from the executable (decompile and disassembly); nothing was run.
-Claims are **Observed** (read at the address given), **Inferred** or **Unknown**. Patch
-proposals are **untested**.
+Everything here was read from the executable (decompile and disassembly); nothing was run
+when it was written. Since then parts of the chain have been executed in `tools/ee_emu.py`
+(`docs/issues/dynamic-tests.md` group k; marked **executed** where folded in), and one
+detail has been seen on the live game — the Play! emulator, which is not a PlayStation 2 and not PCSX2
+(`docs/issues/live-rig.md` 4c; `FINDINGS.md`, "Run on the live game", row V5): offline, a
+potion button removes one potion from the bag and nothing at full health. The per-machine
+branch of K2 is a net-game matter and was not exercised; no kill, drop or experience award
+was looked at. Claims are **Observed** (read at the address given), **Inferred** or **Unknown**. Patch
+proposals are **untested**; no test patch has been run on a live game.
 
 ## Result in one table
 

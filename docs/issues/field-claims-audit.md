@@ -8,7 +8,9 @@ comparable gaps and that the claims resting on them had not been re-checked. Thi
 fixes the two tools, measures the change and re-checks the claims.
 
 Everything here was read from the executable (SLUS_209.73, v2.00), its disassembly and its
-decompile; **nothing was run on a console or emulator.** Statements are **Observed** unless
+decompile; **nothing was run on a console or emulator.** (The project does run the game in
+an emulator — Play!, not a PlayStation 2 and not PCSX2, `docs/issues/live-rig.md` — but this
+audit used none of it.) Statements are **Observed** unless
 marked otherwise. `FINDINGS.md`, the other documents, `names.tsv` and `patches/` were not
 edited; corrections are listed in section 5 for whoever applies them. No patch is proposed
 and no symbol was added.

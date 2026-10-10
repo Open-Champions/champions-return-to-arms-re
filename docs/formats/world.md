@@ -11,7 +11,10 @@ file on the disc, `<LEVEL>.TEX`, which the world refers to by cell and offset.
 ## How this was established
 
 Everything was read from the executable `SLUS_209.73` and from level files unpacked from the
-disc; nothing was run. The 119 `.world` files on the disc (one per `.GOB` that has a level)
+disc; nothing was run. That still describes this document: the project's live game
+(the Play! emulator, which is not a PlayStation 2 and not PCSX2; `FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`)
+loads levels, but it runs with no video and no statement about the format was compared
+with it. The 119 `.world` files on the disc (one per `.GOB` that has a level)
 were all parsed. Each statement is marked:
 
 - **O** (Observed) — read in the code at the address given *and* seen to hold in the files;
@@ -533,7 +536,7 @@ appear to carry the baked light; the normals are there for the dynamic lights.
 - Which way the axes point relative to the screen and compass. (Answered for the screen in
   `docs/spec/render-pipeline.md` section 3: the world is right-handed with z up; camera
   space has x right, y down, z forward. The compass is still open.)
-- None of this was checked on a running game.
+- None of this was checked on a running game (still so; see "How this was established").
 
 ## Corrections to earlier documents
 

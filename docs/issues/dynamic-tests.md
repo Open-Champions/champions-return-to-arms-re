@@ -11,6 +11,13 @@ instructions were executed on a state the test built, with other calls stubbed. 
 stronger than *Observed* for the question "what does this code do with these inputs" and
 says nothing about "do these inputs occur in a real game". Nothing here was seen on a
 console or in a console emulator. No patch below has been tested on a running game.
+Both sentences still describe this document. What has changed is the first paragraph: the
+project now has a full emulator that needs no BIOS file, and what was run on it — the live
+game in the Play! emulator, not a PlayStation 2 and not PCSX2 — is in `FINDINGS.md`, "Run
+on the live game" (rows V1–V8) and `docs/issues/live-rig.md`. Of the checks below it
+bears out b9 (the stick ceilings: a settled speed of 0.9426 of full toward 255 in a net
+game, a pad value of 0.98851 offline) and the L6 figures on a running net game; no test
+patch has been run there.
 
 - `tools/ee_emu.py` — the interpreter (standard-library Python, no game data).
 - `tools/test_ee_emu.py` — 65 unit tests on hand-assembled instruction words; run by CI
@@ -133,7 +140,7 @@ packets. Neither calls anything; they read only the four small tables at 0x40286
 | a9 | A packet repeats unacknowledged frames; the decoder skips frames already held | 27 packets of 1–90 frames, decoded with 0–39 leading frames skipped, against frame-by-frame coding; includes runs longer than 31 | same bytes, same state, same bit count | supports `netcode.md` (receiver step 3) |
 | a10 | — | a1–a3 under all four adder models | identical | limit check |
 | a11 | The decoded byte depends on float arithmetic (`netcode.md` per-machine row 11) | the same 600 frames with sums truncated vs rounded to nearest | 30 of 600 bytes differ, always by 1 | supports row 11, now with a number |
-| a12 | — | console-style adders vs plain truncated sum; multiplier bias; square-root rounding | the two console-style adders agree on all 600 frames; both differ from the plain truncated sum on 30 frames, always by 1; multiplier bias and square-root rounding change nothing | **limit**: see 3.9 |
+| a12 | — | console-style adders vs plain truncated sum; multiplier bias; square-root rounding | the two console-style adders agree on all 600 frames; both differ from the plain truncated sum on 30 frames, always by 1; multiplier bias and square-root rounding change nothing. Refined by the wire-format model over 20,000 frames (`docs/spec/net-wire.md` 5.4 and section 19, W12; **Model**, not executed): the two console-style adders and IEEE round-to-nearest give the same stick bytes on all but one frame, and only plain truncation of the exact sum stands apart (11.4 %) | **limit**: see 3.9 |
 
 ### 2.2 `pad_apply` 0x174410 and the slew limit (G5, L6)
 
@@ -385,7 +392,7 @@ run time through its potion-name tables or by category; no item data is in the s
 | m3 | MV6: multipliers and cap | five (record multiplier, runSpeed) pairs | product, capped at 1.2 (216 units/s) | supports MV6 |
 | m4 | MV6: statistics and load | a record with extreme statistics, level and load against a plain one; read log | bit-identical velocities; the only record field loaded is +0x4c20 | supports MV6 |
 | m5 | MV2 | `Player_move` with the dialog word set; `Player_run` entered part-way at 0x1a5640 (pad choice) | stick fields zeroed and velocity 0; the all-zero pad is chosen — offline and in a net game alike. (The menu lockout swaps the pad only offline.) | supports MV2; the writer list is a search result |
-| m6 | MV5 | the **whole** of `Player_run` on a fake player, every callee stubbed, once per action state, net and offline | states 3, 4, 10, 0xc call no move routine. The others match the table in `movement-camera.md` 4.4 (0: mode 6 net / 1 offline; 1: 3; 2: 0; 6: 5; 7: 0; 8: 1; 9: 2; 0xb: 1; 0xe: none) | supports MV5. States 5 and 0xd not run (section 5) |
+| m6 | MV5 | the **whole** of `Player_run` on a fake player, every callee stubbed, once per action state, net and offline | states 3, 4, 10, 0xc call no move routine. The others match the table in `movement-camera.md` 4.4 (0: mode 6 net / 1 offline; 1: 3; 2: 0; 6: 5; 7: 0; 8: 1; 9: 2; 0xb: 1; 0xe: none) | supports MV5. States 5 and 0xd not run (section 5). "1: 3" is the blank-player case only: a fresh swing gets mode 4 first (while the time since the swing began is under 0.433 s, 0.567 s for a heavy attack) and mode 3 after, as `movement-camera.md` 4.4 says; the fake player of this check never showed mode 4 (`docs/spec/player-tick.md` section 12, item 3) |
 | m7 | MV5: knock-back | `Creature_applyKnockback` whole | player in a net game: amount zeroed, no move; offline: `Creature_moveBy` and 2 off the amount; offline PvP mode B: zeroed; monster in a net game: moved | supports MV5 |
 
 ### 2.13 Floating-point special cases — group z (F3, F4, F7)

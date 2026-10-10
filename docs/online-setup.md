@@ -1,8 +1,18 @@
 # Getting the game to a community server
 
 What stands between the game and a replacement lobby server, read from the executable.
-**Nothing here has been run on a console or an emulator yet**; each step says how it is
-known. The server side is in [lobby-protocol.md](lobby-protocol.md).
+**Nothing on this page has been run on a console or an emulator yet**; each step says how
+it is known. The server side is in [lobby-protocol.md](lobby-protocol.md).
+
+What has changed since that sentence was first written: the game itself now runs in this
+project, in the Play! emulator — not on a PlayStation 2 and not in PCSX2 — and what was run
+there is listed in `FINDINGS.md`, "Run on the live game" (rows V1–V8) and
+`docs/issues/live-rig.md`. One result bears on this page: the executable has a developer
+LAN start that needs no network menu, no sign-in check and no lobby (boot argument `--net`,
+row V6), and one machine was taken into a real lockstep net game that way. That path
+bypasses every step below, so none of them — network set-up, sign-in, the host name, the
+lobby, hole punching — has been exercised; whether a console or PCSX2 can pass that
+argument was not tried; and two machines have not been joined.
 
 ## What the game does when you choose online play
 
@@ -48,7 +58,9 @@ The network menu is a state machine (the function at 0x33ed70, state word at obj
 
 Play is deterministic lockstep: each machine runs the whole simulation itself and they only
 exchange controller input. Anything that makes one machine compute a different number puts
-it "OUT OF SYNC". From reading the code (nothing here has been tested on a running game):
+it "OUT OF SYNC". From reading the code (nothing in this list has been tested on a running
+game; the live game the project has run so far is a single machine, which cannot go out of
+sync with anybody):
 
 - **Same disc version.** Everything in this project is for SLUS-20973, version 2.00.
 - **Same emulator version, and the same arithmetic settings**: EE/FPU rounding, EE/FPU
@@ -77,7 +89,8 @@ it "OUT OF SYNC". From reading the code (nothing here has been tested on a runni
 
 ## Suggested patch set for a first online test
 
-All patches in `patches/SLUS-20973_4028A55F.pnach` are untested on a running game. These are
+All patches in `patches/SLUS-20973_4028A55F.pnach` are untested on a running game — that
+includes the project's own live rig: no test patch has been run on it yet. These are
 the ones written as fixes rather than diagnostics. Each only makes one machine do what the
 others already do, so a mix of patched and unpatched machines is safe, but the fix only
 holds for the machines that have it — enable them on every machine:
@@ -115,4 +128,6 @@ game's controls screen does not take effect.
 
 Everything on the game's side: that the emulator's DNS override is honoured, that the game
 gets past the sign-in step, that two real clients find each other, and that play then
-stays in sync ([VALIDATION.md](VALIDATION.md) describes how to test the last part).
+stays in sync ([VALIDATION.md](VALIDATION.md) describes how to test the last part). The
+live rig (`docs/issues/live-rig.md`) has shown only that one machine reaches and runs a
+lockstep net game through the developer LAN path; it checks none of these four.

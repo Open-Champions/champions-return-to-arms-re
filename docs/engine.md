@@ -4,7 +4,17 @@ The Snowblind engine code that the game classes sit on: math, animation, the lum
 loader, controllers, model and text drawing, the world (terrain, water, pathfinding, camera),
 particles, cutscenes, the task list and the frame loop helpers. 546 functions, 255 KB.
 
-Everything here was read from the decompile and disassembly of `SLUS_209.73`; nothing was run.
+Everything here was read from the decompile and disassembly of `SLUS_209.73`; nothing was run
+when it was written. Since then the math library, the animation step and pose, and the pad
+code have been executed function by function in `tools/ee_emu.py` (`docs/spec/core.md`,
+`docs/spec/animation.md`; results folded in here are marked **executed**), and the project
+has a live game: what was run on it is listed in `FINDINGS.md`, "Run on the live game" (rows
+V1–V8) and `docs/issues/live-rig.md` — in the Play! emulator, not on a PlayStation 2 and not
+in PCSX2. Of this document only the names and call rates of a few functions
+(`pad_readAll`, `pad_readPort`, `pad_apply`, `gfx_endFrame`, `engine_frameStep`), the held
+and stick fields of a pad, and the cosmetic seed following the frame counter while a
+cutscene runs were checked there; the rest was not re-checked on the live game. No test patch has
+been run on a live game.
 Each claim is **Observed** unless it says *Inferred* or *Unknown*. Names are the ones in
 `symbols/engine.tsv`, `names.tsv` and the other area files.
 
@@ -124,7 +134,7 @@ Track flags (all read in `anim_advance` or `anim_buildPose`):
 | 0x0002 | when this track is fully blended in, delete every track below it except those with 0x1000 |
 | 0x0004 | report the end: sets status 0x80 in state+6, and 0x400 as well if it is the top track |
 | 0x0020 | used by the cutscene to mark the speaker's talk track (`anim_findTrackByFlag(…, 0x20)`); the engine itself does not test it |
-| 0x0040 | ignore the speed argument (advance exactly one tick, weights too) |
+| 0x0040 | ignore the speed argument (weights too). The earlier version said "advance exactly one tick": the step is 0.99999994 (pattern 0x3f7fffff, 0x16d8cc), the same constant the speed is multiplied by, not 1.0 (**executed**, `docs/spec/animation.md` section 5) |
 | 0x0100 | ease the weight with smoothstep when blending the pose |
 | 0x0200 | keep the track after its life reached 0 |
 | 0x0800 | root motion: joint 0's x/y translation is removed from the pose and returned as a delta |
@@ -159,8 +169,8 @@ for those tracks the slot holds the root-motion base and is simulation state, no
 | Function | Effect |
 |---|---|
 | `anim_push` (0x170838) | append at weight 1, no blending; ignored when the state is full |
-| `anim_start` (0x16cfe0) | append with weight 0 rising by 1/(blendIn×60) per tick (the first track of an empty state reaches full weight on the next tick). When the state is full the top track is replaced |
-| `anim_startBlendInOut` (0x16ceb0) | as `anim_start`, and life = length × r falling by r = 1/(blendOut×60) per tick, so the track fades out over the last `blendOut` seconds and is gone exactly at its end |
+| `anim_start` (0x16cfe0) | append with weight 0 rising by 1/(blendIn×60) per tick (the first track of an empty state reaches full weight on the next tick). When the state is full the top track is replaced. The rule in brackets is wider than "empty state": the blend time is forced to 0 whenever the track goes into cell 0, which is also the case when a full state of capacity 1 has its only track replaced (**executed**, `docs/spec/animation.md` section 4) |
+| `anim_startBlendInOut` (0x16ceb0) | as `anim_start`, and life = length × r falling by r = 1/(blendOut×60) per tick, so the track fades out over the last `blendOut` seconds and is gone exactly at its end. "As `anim_start`" does not include the cell-0 rule: here the blend-in time is **not** forced to 0 in cell 0 (**executed**, same place) |
 | `anim_pushChained` (0x170938) | append at weight 1 with start time = previous track's time − previous length + 2 (negative: it waits) |
 | `anim_pushWithWeights` (0x1708c0) | append with explicit weight, rate, life, life rate |
 | `anim_stop` (0x16d1a0) | remove the tracks playing a given file: at once, or by giving them a negative weight rate |
@@ -181,14 +191,20 @@ drawn frame for world scenery by `world_draw` (0x189910).
 Per call, from the top track down:
 
 1. **Events.** For each of the four header slots, if `time/60 ≤ slot.seconds < (time+step)/60`
-   the slot's mask byte is OR-ed into the return value. Events of every track are merged, also
+   the slot's mask byte is OR-ed into the return value. As the code computes it the window is
+   `time×(1/60) ≤ slot.seconds < time×(1/60) + step×(1/60)` — two products and a sum, not one
+   sum and a division, which matters in the last bit — with `step` = `speed × 0.99999994`
+   also for a paused track and for a track with flag 0x40, although those do not advance by
+   `step` (0x16d838–0x16d888; **executed**, `docs/spec/animation.md` section 5 and 7.3).
+   Events of every track are merged, also
    those of tracks that are fading out. The engine attaches no meaning to the bits. The
    earlier version said "the animation file and the caller's state handler define them";
    the file defines none — its four slots are zero in every clip, and the constructors
    write the times and masks at run time (0x118378, 0x1183d0 and a few inline stores;
    `docs/formats/anim-audio.md` 2.7). What each bit means is still per class
    (`docs/monsters-2.md` gives them class by class).
-2. **Time.** Unless paused, time += `speed × 0.99999994` (or one tick with flag 0x40).
+2. **Time.** Unless paused, time += `speed × 0.99999994` (or one tick with flag 0x40 — "one
+   tick" there is 0.99999994 as well, not 1.0: 0x16d8cc loads the same constant).
 3. **Sounds** (only when `soundPos` is non-zero and only for the top track): sound events whose
    time was passed are played through `animsound_fireRange`. A per-group limiter keyed on the
    low byte of `g_drawFrame` skips them when too many started in the same rendered frame.
@@ -198,10 +214,19 @@ Per call, from the top track down:
    wrap). Non-looping tracks get life 0; with flag 0x0004 the status bits are raised.
 5. **Weights.** weight += rate, life += life rate (both × speed unless 0x40). A track whose
    life is ≤ 0 is removed unless it has 0x0200. A track with 0x0002 whose min(weight, life)
-   reached 1 removes the tracks under it.
+   reached 1 removes the tracks under it. That also ends the loop over the tracks (the
+   branch out at 0x16e0b8): the lower tracks that survive, those with 0x1000, are not
+   stepped on that tick — no time, no events, no weight change — and the test is made again
+   on every later tick, so they stay frozen for as long as the 0x0002 track sits above them
+   at full weight (**executed**, `docs/spec/animation.md` section 5, note 1).
 6. **Root motion.** For each track with 0x0800 the decoder gives joint 0's x/y at the new
    time; the change since the last call, times the track's effective weight, is added to
    `rootDelta[0..1]`. For 0x4000 the change of joint 0's yaw is added to `*yawDelta`.
+   "The track's effective weight" is two weights (**executed**, same section, note 3): the
+   part of the displacement up to the clip's end is weighted with the weight before the
+   update of step 5, the rest with the weight after it; a track removed in step 5 gets no
+   second part, so a non-looping root-motion track without 0x0004 loses the displacement of
+   its final step. The yaw is not weighted.
 
 Effective weight of a track = clamp(min(weight, life, what the tracks above left over), 0, 1).
 
@@ -210,7 +235,11 @@ Effective weight of a track = clamp(min(weight, life, what the tracks above left
 `Creature_stepAnim` passes creature+0xbc (two floats) and creature+0xc4 (s16) as the outputs.
 After the call it multiplies the delta by the creature's scale (+0xdc), rotates it by
 `facing − 0x4000` into world x/y, and multiplies delta and yaw by `(60 − slow)/60` when the
-slow amount at +0x2fc is 1…60 (the same factor already scaled `speed`). The code that adds
+slow amount at +0x2fc is 1…60 (the same factor already scaled `speed`). For the yaw that is
+not what the code does: the factor is converted to an integer first (0x11648c) and the yaw
+delta is multiplied by that integer, which is 0 for every slow amount of 1…60 — a slowed
+creature gets no root yaw at all. The delta is scaled by the fraction as said
+(0x116478–0x116498; **executed**, `docs/spec/animation.md` 7.1). The code that adds
 +0xbc/+0xc0 to the position is in the creatures area. So position depends on: track times,
 weights, the facing angle, scale and the slow amount.
 
@@ -227,7 +256,8 @@ buffer at 0x7b89c0 as last resort). The values do not depend on which buffer was
 
 Two things this section did not say. The per-joint matrix is not computed on the main
 processor: `anim_buildPose` hands each joint to a VU0 microprogram (`g_vu0PoseProgram`
-0x3e5c40 in `symbols/fmt-anim.tsv`; the two calls are at 0x16f594 and 0x16f5f4), which is
+0x3e5c40 in `symbols/fmt-anim.tsv` — that address is the DMA / VIF packet that loads the
+program, its first instruction is at 0x3e5c50; the two calls are at 0x16f594 and 0x16f5f4), which is
 why the vector unit's rounding and clamping settings matter to the simulation and not only
 to drawing (FINDINGS F6, `docs/issues/float-divergence.md`). And the pose is cached per
 animation state: `anim_getJointMatrix` rebuilds only when no pose is attached, so whether a

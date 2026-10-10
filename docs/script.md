@@ -7,7 +7,14 @@ the range, in `objects`; they are documented here because the built-in table is 
 Symbols: `symbols/script.tsv`.
 
 Everything below was read from the executable and from the 120 decompiled level scripts.
-Nothing was confirmed on a running game. Claims are **Observed** unless marked otherwise.
+Nothing was confirmed on a running game — true when written and still true of this
+document. Since then the interpreter has been executed opcode by opcode in
+`tools/ee_emu.py` (`docs/spec/script-machine.md`; results folded in here are marked
+**executed**), and the project has a live game — the Play! emulator, which is not a PlayStation 2 and not PCSX2
+— whose runs are listed in `FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`.
+Those runs loaded the levels `hub` and `strife`; nothing about a script was logged or
+compared in them. No test patch has been run on a live game.
+Claims are **Observed** unless marked otherwise.
 
 ## What this area is
 
@@ -1173,3 +1180,4 @@ both modes because that function returns true for every slot offline.
 - The vehicle built-ins and `setParticle` were only skimmed; no shipped script uses the
   former.
 - Nothing here was run. The hazards P1, P2 and P6 in particular need two running copies.
+  (The live rig of `docs/issues/live-rig.md` is one running copy; two have not been joined.)

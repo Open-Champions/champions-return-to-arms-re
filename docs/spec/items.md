@@ -10,7 +10,10 @@ The rules below are implemented in `tools/ref_items.py` (the reference model) an
 game's own functions in `tools/ee_emu.py` and compares results. Section 12 says exactly what
 was compared and on how many inputs; at the largest sample every property passed with no
 mismatch. That is stronger than reading, but it is still not a running game: one function at
-a time, on state the test builds, with the callees named in section 12 replaced.
+a time, on state the test builds, with the callees named in section 12 replaced. (The
+project has a running game since — the Play! emulator, which is not a PlayStation 2 and not PCSX2;
+`FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md` — but nothing in this
+document was checked on it.)
 
 Marks: **[O]** Observed at the address given, **[I]** Inferred, **[U]** Unknown. A rule
 without a mark is [O] in the function named in its heading *and* covered by the test of

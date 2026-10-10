@@ -5,7 +5,9 @@ Second-round document. `docs/skills.md` catalogues all 101 skills; this file spe
 every simulated frame, every damage call with its arguments, and every draw from a random
 generator in order. It was written from the decompile of each function listed, with the
 disassembly consulted wherever the decompile was ambiguous. Nothing here was run on a
-console or an emulator.
+console or an emulator. That still holds: the emulator the project now runs the game in
+(Play!, not a PlayStation 2 and not PCSX2; `FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`)
+has not been used to look at a skill, and no test patch has been run on a live game.
 
 Every statement is **Observed** (read at the address given) unless it is marked *Inferred*
 or *Unknown*. Pseudo-code is mine; it is not decompiler output. Numbers are decimal unless

@@ -10,7 +10,13 @@ read from the instructions at the address given and is **Observed**; the parts t
 `tools/difftest_player.py` also *executed* against the original and found equal are listed
 in section 11 with their coverage. Nothing here was run on a console or in an emulator of
 the whole machine; the executing tool is the instruction interpreter `tools/ee_emu.py`
-(`docs/issues/dynamic-tests.md`).
+(`docs/issues/dynamic-tests.md`). An emulator of the whole machine has been used by the
+project since (the Play! emulator, which is not a PlayStation 2 and not PCSX2;
+`FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`). What it shows
+of this function: it is entered once per simulated frame for a player offline and twice in
+a net game (the second time for the copy), and the potion buttons behave as section 3
+reads them (R2 health, L2 mana, nothing consumed at full health). The rest of the tick was
+not compared with the live game.
 
 ## 0. Conventions
 

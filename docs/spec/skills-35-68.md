@@ -3,7 +3,11 @@
 Status: second-round document. It specifies the skills with ids 35 to 68 closely enough to
 be reimplemented from the text. Everything was read from the executable (SLUS_209.73) through
 the decompile and the disassembly; **nothing was run**, so every number here is what the code
-computes, not what was seen on a screen. Claims are **Observed** (read at the address given)
+computes, not what was seen on a screen. That is still so for this document: the player
+tick has since been executed in `tools/ee_emu.py` (`docs/spec/player-tick.md`, which
+corrected S.2 and S.4 below), and the project has a live game in the Play! emulator
+(`FINDINGS.md`, "Run on the live game", rows V1–V8; `docs/issues/live-rig.md`), but no
+skill of this range was cast on it and no test patch has been run on a live game. Claims are **Observed** (read at the address given)
 unless marked *Inferred* or *Unknown*. The catalogue of all 101 skills, the `Skill` and
 `Spell` base layouts and the first-round per-machine audit are in `docs/skills.md`; this
 document does not repeat them except where a rebuild needs the exact rule.
@@ -540,7 +544,10 @@ Each frame in state 2, in this order:
 3. `start` becomes true when: R's kind byte (+0x25) is not 2, and (the ability button mask at
    record +0x4a80 is held in pad word +8, or +0x450 is set, or R was forced), and record mana
    (+0xc0) > 1.0, and the recast counter +0x4ae is 0, and level flag word 0x44fe08 bit
-   0x10000000 is clear. Offline only: cancelled when the word at 0x41b818[slot] is non-zero and
+   0x10000000 is clear. (That bit is more than a veto of ability starts. Executed across
+   the whole tick, `docs/spec/player-tick.md` section 12: it also vetoes the block request
+   (tests at 0x1a5e58 and 0x1a7ff0), the block move and the weapon swap — but not the plain
+   attack, which starts with the bit set.) Offline only: cancelled when the word at 0x41b818[slot] is non-zero and
    nothing is forced. Cancelled when R's skill id is -1, when record byte +0x4bc9 is non-zero,
    or when the global 0x4f7128 is non-zero (message instead).
 4. With `start` and R +0x24 non-zero and R being a skill-object record: rank = Player slot 39
@@ -611,9 +618,14 @@ animation flag clears.
 2. `Player_findTarget(300.0, P)`; if +0x234 is set the player's slot 26 turns it toward the
    target; a lead point is computed when passive mask 0x200000 has a level (the lead point is
    written to a local that the bow branch does not read afterwards; **Observed** dead value).
+   Dead for the bow only: the throw (+0x480 == 7) does use the lead point (**executed**,
+   `docs/spec/player-tick.md` state 0 step 2 and section 12).
 3. **Shared draw A**: spreadFacing = (s16 facing) + (draw % 500) - 250 (kept as an int).
 4. `world_collectObjectsInArc(340.0, 20.0, 0, P.pos, P.facing, list, 0)`; T = the first list
-   entry (head first) that P's slot 20 accepts, else none.
+   entry (head first) that P's slot 20 accepts, else none. The third value is a float, not
+   an integer: the call passes three floats (340.0, 20.0 and 0.0, in f12–f14) and the
+   integer registers hold (position, facing, list, 0) (**executed**,
+   `docs/spec/player-tick.md` section 12; the callee reads f14 at 0x16152c).
 5. **Shared draw B**: with T: a = `math_atan2_16(T.x - P.x, T.y - P.y)`, aim = (s16)((draw %
    500) - a + 0x40c8); without T: aim = (s16)(facing + (draw % 500) - 250).
 6. **Shared draw C**: dir = (cos(aim) x 1000, sin(aim) x 1000, (float)((draw % 60) - 30)).

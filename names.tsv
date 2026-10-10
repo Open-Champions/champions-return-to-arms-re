@@ -248,7 +248,7 @@
 001e7438	game_checkAllDead	all players dead -> countdown -> schedules deathTask (also in net games with 2+ players)
 001e75e8	deathTask	restart level with full HP, or save_load if the level has a checkpoint entry
 001ebd48	deathTask_schedule
-0013dd88	net_fewerThanTwoActive
+0013dd88	net_fewerThanTwoActive	four callers; ran on the live game: a lone machine's game ends through one of them, not through net_endIfAlone
 # ---- cutscenes (.cut: header {flags, keyOff, nKeys, actorOff, nActors}; 20-byte keys {float t, s16 actor, s16 type, 3 x i32}) ----
 0019b4dc	cut_start	sets g_cutsceneActive, registers cutRunFrame/cutDrawFrame tasks
 00199944	cut_runFrame	per lockstep frame in net games; any player's pad bit 0x800 skips
@@ -268,7 +268,7 @@
 00184798	path_service	time-sliced pathfinding queue (128 entries at 0x7d43a8); 1 request per call
 # ---- main loop / tasks ----
 0032316c	main_loop	per-frame loop inside the session function 0x322998 (not a function entry); net games tick only through net_main; draw tasks run every rendered frame
-00132e90	net_main	calls net_frameLoop
+00132e90	net_main	calls net_frameLoop; ran on the live game: called once per rendered frame in a net game, never offline
 003226e4	tasks_run	run-phase tasks once per simulated frame
 0019e4a0	task_add	(fn, priority, name, isDraw)
 0041bfd8	g_pads	4 x 0x58 per-player input; +0xc buttons
@@ -282,7 +282,7 @@
 # ---- activity, camera and cutscene audio sync (added after the second static pass) ----
 0014b910	runObjects	run task prio 10: active list every frame, others every 15th/60th frame
 0014db08	obj_updateActive	(obj, wasActive, radius): near any player, or near g_cameraFocus when g_cullByCamera
-0010c0f0	Creature_updateActive	wrapper; several creature classes skip their AI when it returns 0
+0010c0f0	Creature_updateActive	wrapper; several creature classes skip their AI when it returns 0; sets and clears bit 63 of creature +0xa8, the "active" bit
 001e77c0	isNearView	(pos, radius): camera focus when g_cullByCamera, else any player; 14 gameplay callers
 001ebd90	isNearCameraFocus480	camera only; all 7 callers are particle/effect code
 001e4d48	gameSetObjectVis	first run task: builds activity centers; net games clear g_cullByCamera only when no cutscene is active
@@ -319,7 +319,7 @@
 0011a788	creature_findSpell	(creature, skillId, caster)
 0011a710	creature_findSpellByType	(creature, typeinfo)
 001b2cc0	Player_processDamage	pending damage +0x2dc/+200 -> hp, stagger, death; runs for the ghost; PvP tail not ghost-guarded
-001b9cb8	Player_usePotion	ghost-guarded; menu path differs for the local player
+001b9cb8	Player_usePotion	ghost-guarded; menu path differs for the local player; kind 0 health (R2), kind 1 mana (L2) - ran on the live game; rewrites record +0xb8/+0xbc on every call; per-machine branch on the local inventory screen (FINDINGS K2)
 001b2640	Player_interact	(player, pad, displayOnly); sets g_scriptActivePlayer when used
 001b7158	Player_recalcDamage	x1.5 if status counter 2, x1.2 if counter 4
 001e72f8	game_rebuildAlivePlayers	fills g_alivePlayerCount / g_alivePlayers and the local-only lists

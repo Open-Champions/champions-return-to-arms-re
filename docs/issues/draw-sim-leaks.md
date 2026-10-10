@@ -7,8 +7,13 @@ systematic search for the rest of that kind: state that only drawing, HUD, menu 
 controller code writes, and that code inside the simulation tick reads.
 
 Everything here was read from the executable (decompile, disassembly, the tool described
-below); nothing was run on a console or emulator. Claims are **Observed** (read at the
-address given), **Inferred** or **Unknown**. Patch proposals are **untested**.
+below); nothing was run on a console or emulator. That still holds for what this document
+claims: the project's live game (the Play! emulator, not a PlayStation 2 and not PCSX2;
+`FINDINGS.md`, "Run on the live game", rows V1–V8; `docs/issues/live-rig.md`) has run one
+machine only, and none of the leaks below needs fewer than two. The input-delay rule has
+been executed with two interpreter instances (`docs/spec/net-wire.md` section 14). Claims are **Observed** (read at the
+address given), **Inferred** or **Unknown**. Patch proposals are **untested**; no test
+patch has been run on a live game.
 
 ## Result in short
 
@@ -255,6 +260,14 @@ where *L* is the lead (minimum 2; about 5 for two players at 30 ms; about 35 for
 after any half-second stall — FINDINGS L11). Local screens change at once. So a local change
 made in calls *c … c + L − 2* is in place when the sample of call *c* is simulated: the
 window is *L − 1* calls, 0.57 s at a lead of 35. **Inferred** from kill-loot-xp.md F2.
+Confirmed since by execution (`docs/spec/net-wire.md` section 14, property "input delay
+rule": every frame of a two-machine interpreter session obeyed it), with two things made
+exact: *L* is `g_localInputFrame − g_netFrame` taken after the sample is stored and before
+the tick, and *c + L − 1* assumes one tick per call — every call without a tick in between
+adds one. *L* was 1 only in each machine's very first call and at least 2 afterwards. On
+the live game one machine alone read `g_localInputFrame` = `g_netFrame` + 1 between frames
+(`docs/issues/live-rig.md` 4d); that is consistent with *L* = 2 by the definition above if
+the reading was taken after the call's tick, which the rig's log does not say.
 
 ### K1, K2 (known) — only what this pass adds
 

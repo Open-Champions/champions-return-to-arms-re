@@ -15,7 +15,11 @@ the same words (section 13 lists inputs and counts). That shows what the code do
 those inputs. It does not show that the interpreter's floating point equals a console's in
 the last bit: where a result is a float, "bit for bit" means "under the interpreter's
 floating-point model", and section 2 says how far that goes. Nothing here was run on a
-console or in a console emulator.
+console or in a console emulator. One fact below has since been seen on the project's live
+game (the Play! emulator, which is not a PlayStation 2 and not PCSX2;
+`docs/issues/live-rig.md` 4b): the shared generator `g_randSeed` moved by exactly one step
+of s × 1664525 + 1013904223 on 311 of 399 idle frames and by nothing on the others. The
+rest was not re-checked there.
 
 Addresses are for `SLUS_209.73` (US 2.00). Names are those of `symbols/engine.tsv`,
 `symbols/objects.tsv`, `symbols/player.tsv`, `symbols/fp.tsv` and `names.tsv`; a name in

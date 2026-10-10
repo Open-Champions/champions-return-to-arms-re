@@ -212,13 +212,15 @@ def session(argv):
 #     rig.py pair OUTDIR [--bus delay=2,seed=7] [--a-arg X] [--b-arg X] <runner options>
 #
 # starts two runners joined by a local socket (see --link in the README): machine A is
-# 192.168.1.132 and becomes player slot 0, machine B is 192.168.1.134 and slot 1. Both get
+# 192.168.1.132 and plays slot 1, machine B is 192.168.1.134 and plays slot 0. Both get
 # the same options and the same script; script lines tagged "A:" or "B:" act on one
 # machine. Each machine writes OUTDIR/a.* or b.*: the runner's output (.out), the shim's
 # log (.net.log) and one row per lockstep tick (.tick.tsv) with the columns below.
 # Columns whose name starts with "l_" are per machine by design; compare.py skips them.
 
-PAIR = {"A": ("192.168.1.132", 0, "listen"), "B": ("192.168.1.134", 1, "connect")}
+# The lobby lists peers by the last octet of their address, highest first (seen: the
+# stick of the .132 machine moves player 1).
+PAIR = {"A": ("192.168.1.132", 1, "listen"), "B": ("192.168.1.134", 0, "connect")}
 
 
 def tick_watches(local_slot):

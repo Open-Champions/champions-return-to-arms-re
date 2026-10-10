@@ -5,7 +5,9 @@ class in the range and read the Drundar arena set, Cazic, Savepoint, JumpGate, C
 Container by hand; 66 creature classes were summarised by script only and several object
 families were not read. Here every remaining class was read by hand from the decompile, with
 the disassembly used wherever the decompile dropped arguments or looked wrong. Nothing was run
-on a game.
+on a game — still true of this document. The project has a live game now, the Play! emulator, which is not a PlayStation 2 and not PCSX2
+(`FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`); no class
+described here was observed in it, and no test patch has been run on a live game.
 
 Read `docs/monsters.md` sections 1–2 and `docs/creatures.md` first; their conventions are
 used without repeating them. New symbols are in `symbols/monsters2.tsv` (147 addresses that

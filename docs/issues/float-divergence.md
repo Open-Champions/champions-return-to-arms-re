@@ -6,7 +6,13 @@ emulators that approximate it with selectable modes. This document asks two ques
 does simulation code perform an operation whose result depends on the non-IEEE behaviour, and
 can any of that explain the Drundar arena (`DRUNARE`) going out of sync.
 
-Everything about the game was read from the executable; nothing was run. Claims are
+Everything about the game was read from the executable; nothing was run. Since then the
+game has been run in the Play! emulator (`docs/issues/live-rig.md`; `FINDINGS.md`, "Run on
+the live game", rows V1–V8) — a third arithmetic implementation, neither a PlayStation 2
+nor PCSX2. Its movement distances agree with the documented constants to seven digits,
+which says nothing about the last-bit questions of this document: how faithful Play! is to
+the console in floating point was not checked, and no two machines or settings have been
+compared. Claims are
 **Observed** (read at the address given), **Inferred** or **Unknown**. Everything about how
 PCSX2 behaves is from general knowledge of that project, **not** from reading its source or
 running it here, and is marked as such. The patches at the end are **untested**.

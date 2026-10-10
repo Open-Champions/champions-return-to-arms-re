@@ -8,7 +8,9 @@ machine code under `tools/ee_emu.py` and compares it with that model.
 Evidence labels: **Executed** = the game's own instructions were run in the interpreter on
 constructed state and the model agreed (section 11 says for which inputs); **Observed** =
 read at the address given; **Inferred**; **Unknown**. "Executed" says what the code does
-with those inputs, not that the inputs occur in play; nothing here was seen on a console.
+with those inputs, not that the inputs occur in play; nothing here was seen on a console,
+nor on the project's live game (the Play! emulator, `docs/issues/live-rig.md`), where no
+combat has been looked at.
 Everything in sections 1–9 is Executed unless a sentence says otherwise.
 
 No table contents are reproduced. The model reads the experience curve, the per-class

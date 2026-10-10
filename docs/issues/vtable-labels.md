@@ -2,7 +2,9 @@
 
 Scope: `tools/vtab.py`, `vtables.txt`, and the symbol names that were derived from them.
 Everything below was read from the executable (SLUS_209.73); nothing was run on a console
-or emulator. Statements are **Observed** unless marked **Inferred** or **Unknown**.
+or emulator. (One table address has been seen on the live game since: the object a player
+record points to carries the table pointer 0x511308, the Player table —
+`docs/issues/live-rig.md` 4b. Nothing else here was checked there.) Statements are **Observed** unless marked **Inferred** or **Unknown**.
 No patch and no `FINDINGS.md` row is proposed: this is a correction of the project's own
 tables, not a finding about the game.
 

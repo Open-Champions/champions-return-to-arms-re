@@ -2,7 +2,14 @@
 
 Area `mainloop`, nominal range 0x320000–0x323dcc of `SLUS_209.73` (see
 [OVERVIEW.md](OVERVIEW.md)). Everything here was read from the executable; nothing was
-run. **Observed** = read at the address given, **Inferred** = follows from observations,
+run when it was written. Since then the project has a live game — in the Play! emulator,
+which is not a PlayStation 2 and not PCSX2 — and what was run on it is listed in
+`FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`. Of this
+document that touches: `tasks_run` entered once per simulated frame, the two frame
+counters (`g_drawFrame` up by one per rendered frame, `g_simFrame` reset at a level load),
+and the developer LAN launch of section 7 step 3 (marked **Ran** there). Everything else here is still reading
+only; no per-machine item below and no test patch has been run on a live game.
+**Observed** = read at the address given, **Inferred** = follows from observations,
 **Unknown** = not established. Names of functions outside this area are the ones other
 area files in `symbols/` use; where none exists the address is given.
 
@@ -366,7 +373,16 @@ top of the next pass:
 3. Developer LAN launch, at most once per boot (`g_netLaunchLatch`), only when flag
    0x402792 is set: `net_gameInit(0)`, `net_launchTransfer()`, modal loop with
    `net_debugLanLobby`, `net_startSync()` (0x322d38–0x322d90). The retail lobby path does
-   its launch in the front end instead.
+   its launch in the front end instead. "Only when flag 0x402792 is set" was read as a
+   debug flag that is off in the shipped game. It is not: the byte is 1 in the executable's
+   data (the word at 0x402790 is 0x00010000). The three tests are `g_networkMode` set
+   (0x322d38), that byte set (0x322d44) and the latch clear (0x322d54); what the retail
+   game lacks at this point is `g_networkMode`, because its lobby path sets it later, in
+   the front end. The boot argument `--net` sets it at start, and then this step runs.
+   **Ran** on one machine (`docs/issues/live-rig.md` 4d, FINDINGS V6): with `--net` there is
+   no front end at all, the pending level `strife` triggers this step, the lobby announces
+   itself by broadcast and the level loads on the confirm button. Whether a console or
+   PCSX2 can pass that argument was not tried.
 4. Unless positions are being restored (0x41b51c, 0x41b51e), `g_ambientCountdown = 60`.
 5. Display blanked; local camera reset (`Camera_reset`) unless flag 0x4f8f28 is set, or
    the memory-card state is 8 with flag 0x4f8f2b clear (0x322dc0–0x322e00). The second
@@ -502,7 +518,9 @@ simulation.
 | P11 | Offline only: both seeds come from the CPU cycle counter at session start. In a net game the session start does not touch `g_randSeed`; `net_startSync` zeroes it | Observed | 0x3229f0–0x322a04; 0x13dce0 |
 | P12 | In a net game `g_simFrame` equals `g_netFrame` only during a tick. Between ticks it holds a stale per-machine value, so draw code that uses it as a clock is per machine, and any draw code that stored it into shared state would be a problem. Not audited | Observed mechanism | `net_frameLoop` 0x13af98, 0x13b28c |
 
-P1 is new. P3 belongs to the audio-save document. None has been tested on a running game.
+P1 is new. P3 belongs to the audio-save document. None has been tested on a running game —
+still true of these twelve rows: the live game the project now has (`docs/issues/live-rig.md`)
+has run one machine only, and none of P1–P12 was exercised on it.
 
 ### Every run task: simulation or not
 

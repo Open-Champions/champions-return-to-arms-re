@@ -15,7 +15,11 @@ hit lands, root motion moves the creature, and cast points are read from the ske
 
 Evidence marks: **O** observed — read in the instructions at the address given;
 **X** executed — additionally compared by the differential test (bit for bit unless a
-tolerance is stated); **I** inferred; **U** unknown. Nothing was run on a console.
+tolerance is stated); **I** inferred; **U** unknown. Nothing was run on a console, nor on
+the project's live game (the Play! emulator, which is not a PlayStation 2 and not PCSX2;
+`FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`): what was run there
+confirms only that `Player_animStep` is entered once per simulated frame. **X** therefore
+means one function at a time in `tools/ee_emu.py`, not a running game.
 
 ## 1. Conventions
 
@@ -775,7 +779,8 @@ Not covered, and why:
 ## 14. Proposed ledger rows
 
 Proposals for `FINDINGS.md` (not edited). "Executed" means executed in isolation by the
-differential test, not seen on a running game. No patch is proposed.
+differential test, not seen on a running game — none of A1–A5 was looked for on the live
+rig. No patch is proposed.
 
 | # | Statement | Kind | Where |
 |---|---|---|---|

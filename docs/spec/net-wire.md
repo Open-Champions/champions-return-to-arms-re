@@ -13,7 +13,13 @@ the original code was run in the interpreter and its output compared with the mo
 for byte, for the inputs section 18 lists ("executed in isolation" in the sense of
 `docs/issues/dynamic-tests.md`: the game's instructions on a state the test built, no
 console, no timing); **Model** = a number produced by the model alone; **Inferred**;
-**Unknown**. Nothing here was seen on a console or between two real machines.
+**Unknown**. Nothing here was seen on a console or between two real machines. Since this
+was written one machine has run a real net game on the project's live rig — the Play! emulator, which is not a PlayStation 2 and not PCSX2
+(`docs/issues/live-rig.md` 4d; `FINDINGS.md`, "Run on the live game", rows V6, V7). That
+run confirms the developer-lobby packets of section 13 and the local pass through the
+codec of section 14 (the two codec functions are entered eight times a frame with no
+remote peer); it sent no input packet, having no remote peer, so the
+packet format, the receiver and the drop procedure rest on the interpreter as before.
 
 All multi-byte fields are little endian. Frame numbers are 32-bit and start at 1.
 
@@ -38,7 +44,7 @@ receive call returns −500 and dispatches on that word. **Observed.**
 | 0xbd42 | raw relay | variable | answer to a kick request | 12 |
 | 0xbd43 | kicked notice | 4 | `net_main` after a manual kick | 12 |
 | 0xbd44–0xbd47 | direct message, handler index = type − 0xbd44 | 4 + n | `net_sendMsgToPeers` 0x131b00 | 13 |
-| 0xbd3d, 0xbd3e | developer LAN lobby announce / start | 4 | 0x1345c0, only with flag 0x402792 | 13 |
+| 0xbd3d, 0xbd3e | developer LAN lobby announce / start | 4 | 0x1345c0, only with flag 0x402792 (set in the shipped data, section 13) | 13 |
 
 Any other type word is ignored (**Executed** for 0xbd3d, 0xbd40 and 0xbd48).
 
@@ -527,7 +533,11 @@ with no check. **Executed** up to 500 bytes. Only handler 0 is registered by the
 (voice, `docs/netcode.md`).
 
 **0xbd3d / 0xbd3e**: 4-byte announce and start of the developer LAN lobby, sent to
-192.168.1.255 port 4000 by 0x1345c0 when flag 0x402792 is set. **Observed** only.
+192.168.1.255 port 4000 by 0x1345c0 when flag 0x402792 is set. **Observed** only when this
+was written; **Ran** since on one machine (`docs/issues/live-rig.md` 4d): the announce goes
+out every 64 displayed frames, the start eight times on the confirm button, and the byte
+0x402792 is 1 in the shipped data — the lobby opens when `g_networkMode` is set at the
+first level change, which the boot argument `--net` does.
 
 ## 14. From record to simulation input
 
@@ -727,7 +737,8 @@ No patch is proposed.
 
 ## 20. Not done, not known
 
-- **Nothing was run on a console or against a real second machine.** "Executed" means the
+- **Nothing was run on a console or against a real second machine.** (Nor on the live rig
+  with a second machine: it has one.) "Executed" means the
   interpreter. In particular the last bit of float sums (section 5.4) is open.
 - `net_launchUpdate` 0x135638 (the launch state machine, including the receive side of the
   DATA checksum) and the developer lobby 0x1345c0 were read only. The launch model stops
