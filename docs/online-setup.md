@@ -89,16 +89,19 @@ sync with anybody):
 
 ## Suggested patch set for a first online test
 
-All patches in `patches/SLUS-20973_4028A55F.pnach` are untested on a running game — that
-includes the project's own live rig: no test patch has been run on it yet. These are
-the ones written as fixes rather than diagnostics. Each only makes one machine do what the
+Two of these are now confirmed on the running game: on two emulator instances joined
+together (the Play!-based rig, `docs/issues/live-rig.md`), random input reproduced the K1 and
+K2 desyncs and the K1 and K2 patches removed them. That was the Play! emulator, not PCSX2 or
+a console. The other patches in `patches/SLUS-20973_4028A55F.pnach` have been executed
+function by function but not on a running game. These are the ones written as fixes rather
+than diagnostics. Each only makes one machine do what the
 others already do, so a mix of patched and unpatched machines is safe, but the fix only
 holds for the machines that have it — enable them on every machine:
 
 | Patch section | Removes |
 |---|---|
-| use button works with the spell selector open | K1 |
-| potions always leave the bag directly | K2 |
+| use button works with the spell selector open | K1 — **confirmed live**: without it, one machine changes level and the other does not |
+| potions always leave the bag directly | K2 — **confirmed live**: without it, potion counts differ silently |
 | stats page does not rewrite stored weapon damage | K3 |
 | menu lockout never drops player damage / never blocks swap and use | D26, U3 |
 | closing a notice box does not run the pending script | E9 |
