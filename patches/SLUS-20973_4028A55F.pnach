@@ -70,3 +70,21 @@ author=reverse engineering test patch, untested on a running game
 description=Diagnostic only, changes gameplay. Bomb throwers launch on their timer whether or not anything is near the view (FireBomb_run, 0x261FD0), so the launch no longer depends on the camera during cutscenes. More objects alive in levels that have them. FINDINGS D29. Every player must use the same setting.
 // was: 0C079DF0 (jal isNearView)
 patch=1,EE,00261FD0,word,24020001
+
+[Net test: net launch clears a stuck memory-card latch]
+author=reverse engineering test patch, untested on a running game
+description=A save that ends in a memory-card error leaves a "card busy" latch set for the rest of the boot; a machine in that state skips the clean-up every other machine does when the party changes plane, and goes out of sync there. This makes the net launch code clear the latch (net launch, 0x1375DC). The byte it used to clear instead is never set by anything. FINDINGS B10, B11. Harmless when only some players use it.
+// was: A0408F2A (sb zero,-0x70d6(v0))
+patch=1,EE,001375DC,word,A0408F28
+
+[Net test: save-point prompt ignores this machine's card screen]
+author=reverse engineering test patch, untested on a running game
+description=While one machine has a memory-card screen open (usually its own save dialog), another player's use of a save point is not registered on that machine, so the "active player" used by level scripts can differ for a moment. This removes the card test from the prompt (Savepoint prompt, 0x28DA74); the save point's own second test still stops a second dialog. The prompt text can show while your own card screen is open. FINDINGS B9. Each machine fixes its own copy; use on every machine.
+// was: 54400069 (bnezl v0,0x28dc1c)
+patch=1,EE,0028DA74,word,00000000
+
+[Net test: ignore the debug file on the memory card]
+author=reverse engineering test patch, untested on a running game
+description=A debug.sht file on one player's memory card switches on developer cheats that reach the simulation, which breaks sync within minutes. This stops the game from ever setting that switch (config load, 0x217448). Only matters on a machine that has the file; removes the debug menu there. Sync-breakers document, section 7.
+// was: A2220000 (sb v0,0(s1))
+patch=1,EE,00217448,word,00000000
