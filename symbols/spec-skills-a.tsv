@@ -1,0 +1,15 @@
+# spec-skills-a: addresses named while writing docs/spec/skills-01-34.md (skills with ids 1-34).
+# Only addresses no other file named when this was written. Evidence is in the section of that document given in each note.
+002eb5b4	SpellSecondaryUndeadShield_damageAttacker	(spell, victim, attacker, incoming): flashes the victim, deals trunc(incoming x spell+0x1c percent) back through damage_apply with flag 0x40, spread from one Spell_rand draw; only caller damage_apply 0x1ea668; section 15
+002fb49c	SpellShieldBash_windupFx	(spell): 203 particles on model sample points of net_objOrGhost(owner), Spell_rand draws only; called by SpellShieldBash_run until animation event bit 2; section 34
+0016a98c	SkillDiseaseWeapons_ctor	constructs the static Skill object of id 25 (table 0x512560, kind 0); called from the start-up initialiser 0x16ac74; section 25
+0016a9f8	SkillDiseaseWeapons_initStats	Skill slot 9 of table 0x512560: tier 2 statistic 0 = 4 + 2.0 per level; section 25
+0016aa18	SkillHateBeam_ctor	constructs the static Skill object of id 27 (table 0x5124d8, kind 1); section 25
+0016aa8c	SkillHateBeam_initStats	Skill slot 9 of table 0x5124d8: tier 2 statistic 0 = 2 + 2.0 per level; section 25
+0016aaac	SkillBallOfHate_ctor	constructs the static Skill object of id 28 (table 0x512450, kind 1; its name string is the same as id 27's); section 25
+0016ab20	SkillBallOfHate_initStats	Skill slot 9 of table 0x512450: tier 2 statistic 0 = 2 + 2.0 per level; section 25
+0016ab40	SkillDiseaseEffect_ctor	constructs the static Skill object of id 29 (table 0x5125e8, kind 1); section 29
+0016abb4	SkillDiseaseEffect_initStats	Skill slot 9 of table 0x5125e8: statistic 0 tier 1 = 3 + 1.0 per level, tier 2 = 1 + 1.0 per level; section 29
+0016abe0	SkillHateEffect_ctor	constructs the static Skill object of id 30 (table 0x5123c8, kind 1); section 25
+0016ac54	SkillHateEffect_initStats	Skill slot 9 of table 0x5123c8: tier 2 statistic 0 = 2 + 2.0 per level; section 25
+0041b4f0	g_hammerOfWrathCount	u8: incremented by HammerOfWrath_ctor 0x2edd78, decremented (floor 0) by HammerOfWrath_dtor 0x2edfd0; no other reference found; section 17

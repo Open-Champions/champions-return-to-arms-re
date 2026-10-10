@@ -234,6 +234,29 @@ divergence is in.
 | E14 | After a load a machine waits for one packet from every peer for at most about 900 calls; a peer's silence counter keeps running meanwhile and starts a kick above 900. A much slower loader is dropped, not desynchronised | Observed (constants), Inferred (outcome) | 0x323014–0x32305c; 0x134408–0x134448; 0x133060 |
 | E15 | Every level entry applies a pending character selection (flag 0x4fbbd8) by re-creating that slot's character; whether a net launch can start with the flag set on one machine is not established | Observed (code), Unknown (reachability) | 0x321024; 0x2247ec |
 
+## Skills
+
+From the skill specifications `docs/spec/skills-01-34.md` (rows SA) and
+`docs/spec/skills-69-101.md` (rows SC), which write each skill out for a rebuild. No patch is
+proposed for any of these: SA1–SA3 need the stale-pointer condition reproduced first, and the
+rule quirks should be copied by a rebuild, not repaired.
+
+| ID | Claim | Kind | Evidence |
+|---|---|---|---|
+| SA1 | `SpellBlindingLight` keeps its caster as a plain pointer and passes it to `damage_apply` as the attacker every 30 frames for up to s2 seconds. If the caster's object is destroyed meanwhile (a player object is rebuilt on respawn and on a level change) the pointer is stale; what `damage_apply` then reads depends on what the pool put there, and pool contents are not identical between machines (the prediction copy and gore-dependent objects are per-machine allocations) | Observed pointer; consequence Inferred | store 0x2f4474 (+0x1c), use 0x2f4538 |
+| SA2 | `HolyBolt` (Dismiss Undead) keeps its homing target as a plain pointer and reads its position and flags every frame; it is cleared only when the target is flagged dead, not when the object is deleted | Observed; consequence Inferred | constructor 0x2f5248 (+0x64), run 0x2f57b0 |
+| SA3 | `SpellShieldBash` keeps the creature it turns the player toward as a plain pointer for the length of the bash (about a second) | Observed; consequence Inferred | constructor 0x2face4 (+0x24), run 0x2fae80 |
+| SA4 | The elemental entries of `damage_apply` take `draw rem (v2 − v1 + 1)` with a signed machine divide and no zero test. Cone of Fire passes v2 < v1 always, and v2 = v1 − 1 (divisor 0) when its statistic 0 is 4–7, which a monster caster gets at levels 2 and 3. The result of a divide by zero is processor-defined; a rebuild or another emulator that differs from the console here computes a different damage | Observed arithmetic; console result Inferred | 0x1e990c (`div`), caller 0x2f02fc |
+| SA5 | The Critical Hit aura walks the all-players alive list, so it inherits G11/G13: on a frame where one machine's list lacks its own player, the aura owner is skipped there, the chance differs, and the shared critical-hit draw is made on one machine and not the other | Inferred from G11 | `SkillCriticalHit_critBonusFor` 0x2e76c4 |
+| SC1 | Tagar's Insects, the skill the arena's third knight casts, reads nothing per-machine. Its outcome depends on the shared generator, on the spell's own generator (including the particle loops between two wander draws) and on a single-precision clock | Observed | 0x30c708–0x30dc30, section 87 |
+| SC2 | Five skills in ids 69–101 take a gameplay decision from the spell's own generator, in a stream shared with particle draws (ids 70, 77, 87, 88, 101); two more let an object's own generator decide how many shared draws follow (80, 100) | Observed | 0x2fddf0, 0x302adc (in 0x301a34), 0x30d0ac, 0x30e6f0, 0x31bcd0; 0x30b428, 0x31b25c |
+| SC3 | The decoration interval of Lightning Strike and Pus Storm is `20 − level / 2` and is used as a divisor with no zero test; it is 0 at skill level 40–41 and negative above. A monster's skill level is trunc(monster level × 0.3), which reaches 40 at monster level 134 | Observed (code); reachability Inferred from the monster-level range in `docs/data-tables.md` §5 | 0x31a920, 0x31b5ac, 0x30aaa8 |
+| SC4 | Frost Armor strikes back with `trunc(damage − factor)` cold damage, the factor being a number between 0 and 1: nearly the whole incoming hit, not the absorbed part | Observed | 0x318364 |
+| SC5 | Pus Storm takes its damage from the player table for every caster; the dark elf's storm hits with 85 + 5 per level | Observed | 0x30ab54–0x30ab74 (slot 8, called with no test of the caster) |
+| SC6 | `Player_recalcDamage` raises a thrown weapon's maximum by fraction × the already-raised minimum; Battle Mage replaces the weapon range by a fraction that is 0 at rank 0 | Observed | 0x1b7478–0x1b7488; 0x314a78 with slot 10's level-0 rule |
+| SC7 | Disease Blade's two "is the old enchantment weaker" tests compare the old disease *value* with a frame count; with the aura's limit of 31 the ally buff is on for 31 frames in every 60 from rank 17 | Observed (code); effect Inferred | 0x318ca8, 0x318d4c; run 0x319068 |
+| SC8 | `SpellRaiseArmy`'s raise step reads `caster + 0x3c8` without an is-player test | Observed | 0x313d74 |
+
 ## What "source" the disc contains
 
 | ID | Claim | Kind | Evidence |
