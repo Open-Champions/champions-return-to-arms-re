@@ -1,0 +1,38 @@
+# area: tables — rules data tables (see docs/data-tables.md). Only addresses no other file names.
+003e9c18	g_lootQualityRows	float[12][3]: chance of a poor, normal, good drop per quality row; loot_generateDrops clamps its row argument to 0..9 and blends row and row+1, rows 10-11 are padding
+003e9cb0	g_weaponValueMult	float[7] indexed by item definition +0x1e (weapon subtype); read by item_getValue
+003e9ce0	g_itemModels	134 x 0x10 + null row: model file name, texture file name, two pointers filled by item_loadResources
+003ea550	g_itemPresets	835 x 0x40 + null row: item definitions whose name is a whole descriptor; ends where g_itemDefs starts
+003f7650	g_itemDefs	607 x 0x40 + null row: item definitions; item_parseDescriptor matches the name with strcmp
+00400e50	g_itemPrefixes	73 x 0x28 + null row: text key, level, colour indices, three modifier strings, allowed-flags mask, damage-type mask
+004019e0	g_itemSuffixes	165 x 0x14 + null row: text key, level, three modifier strings (weapon, armour, other)
+004026d8	g_bodyTypeCodes	char*[12] indexed by player model 0-11; used in worn-armour picture names
+00402708	g_manaPotionNames	char*[9] + null, largest first; item_generateConsumable
+00402730	g_healPotionNames	char*[9] + null, largest first; item_generateConsumable
+0041b558	g_expTable	s32[81] indexed by character level: experience at which that level is left; entry 80 is the cap (player_giveExp clamps to it minus 1 through 0x41b698), entry 50 (0x41b620) is the import clamp
+004ebbe8	g_classPassives0	class 0 passive source list, 0x38-byte rows ended by the name END: name[0x20], +0x21 max rank, +0x22 point cost, +0x24 float, +0x28 u64 mask; copied by classSkills_init
+004ebec0	g_classPassives1	class 1 passive source list (same layout)
+004ec0b8	g_classPassives4	class 4 passive source list (same layout); classSkills_init copies it to 0x4f1f30
+004ec2b0	g_classPassives3	class 3 passive source list (same layout); copied to 0x4f14a8
+004ec400	g_classPassives2	class 2 passive source list (same layout); copied to 0x4f0a20
+004ec5c0	g_classPassives6	class 6 passive source list (same layout); copied to 0x4f3440
+004ec748	g_classPassives5	class 5 passive source list (same layout); copied to 0x4f29b8
+004ef400	g_classStartStats	s32[7][4]: starting strength, intelligence, dexterity, stamina per class; read by player_initNewCharacter when no stat bytes are passed
+004ef510	g_classPassiveTables	7 x 0xa88 run-time copies of the passive lists (48 rows of 0x38); row +0x20 is what other files call table 0x4ef530
+004f4898	g_skillTree0	class 0 skill tree, 0x28-byte rows ended by x == -1: +0 kind (1 skill id, 0 passive mask), +1 base level needed, +8 id or mask, +0x10 prerequisite kind, +0x18 prerequisite, +0x20 x, +0x24 y; skills_screen 0x1d4660
+004f4b68	g_skillTree2	class 2 skill tree (same layout)
+004f4e38	g_skillTree1	class 1 skill tree (same layout)
+004f5108	g_skillTree3	class 3 skill tree (same layout)
+004f53d8	g_skillTree4	class 4 skill tree (same layout)
+004f5720	g_skillTree5	class 5 skill tree (same layout)
+004f5a18	g_skillTree6	class 6 skill tree (same layout); also the fallback for any other class value
+004f5cc8	g_legacyAbilities	21 x 0x68 rows ended by the name END, same layout as a player ability record; player_rebuildAbilities 0x1d34ac copies the row whose mask (+0x48) matches
+004f714c	g_levelMonsterLevel	float: the level scale every monster statistic is multiplied by; set by game_loadLevel from the level table and the difficulty, by arena_startWave, and temporarily by two constructors
+004f7210	g_levelTable	90 x 0x30 + a default row with a null name: level name, +4 s8 monster level, +8 kill plane height, +0x14 pool size, +0x20 flags, sound settings; game_loadLevel 0x1e55c0
+004f83c0	g_missionMenuTextKeys	char*[13]: menu_mis0 .. menu_mis12; text_getMissionMenuString
+004fb5c4	g_balanceRecords	pointer to the first 12-byte record of monsters.bal (u16 name hash, five s16 percentages); set by balance_load
+004fb5c8	g_balanceCount	s32 number of records in monsters.bal; set by balance_load
+004fe540	g_missionTable	13 x 0x34 (the last row is empty): name keys, story / evil story / medal / bonus level names, pictures, three flags, map position; missionMenu_run 0x2316fc
+0053b5b8	g_skillTreePictures	char*[7] indexed by class: skill tree picture names in inventry.lmp; skills_screen
+00223914	balance_hashName	(name, length) -> 16-bit hash of the lower-cased name; only caller balance_lookup
+00223a4c	balance_lookup	(typeName, float *hp, *armour, *damage, *attack, *exp) -> 1 if monsters.bal has the name hash, outputs percent / 100; all 1.0 otherwise; callers Creature_ctor 0x10a1b0, CastBadger_ctor, CastBadger_loadState
