@@ -1,0 +1,10 @@
+# area: killpath — addresses named while working through docs/issues/kill-loot-xp.md. Only addresses no other file names.
+00154dbc	itemprop_tryPickup	(slot, item) shared by PhProp_interact and ItemProp_interact: refuses when the bag of the item's category holds 63 items or the load limit would be passed, else runs the *gotItemNotify hook, inventory_giveItem and player_recalcLoad; returns 1 when taken. Reads only the record; docs/issues/kill-loot-xp.md
+001bfbc8	inventory_pollResources	state machine on 0x4f3f4c that reads the inventory resource file asynchronously; on its first call with the disc idle it points g_itemListCells at buffer + 0x300000 and clears the cells; returns 1 when loaded; called from the inventory draw task, inventory_close, shop task
+0041b818	g_spellSelectorHeld	int[4] per slot: 1 while the quick-spell selector is held open (D-pad of the raw local pad), written only by hud_spellSelect, which returns for remote slots; read by Player_run (0x1a5c08, skips Player_interact, no network test; 0x1a6e04 offline only) and Player_draw
+0086a8d8	g_spellSelectorAlpha	int[4] 0..0x80 fade of the quick-spell selector; hud_spellSelect
+004f66b8	g_spellSelectorDir	int[4] D-pad direction index 0-7 last shown by hud_spellSelect, -1 none
+004ebbb0	g_itemListCells	pointer to the local item-list copy used by the inventory and shop screens (per slot 0x23988, per bag 0xbdd8, cells of 0x48 bytes); 0 while no menu has loaded it. Player_usePotion, inventory_dropItem and inventory_removeItem test it together with net_isLocalSlot
+004f85c8	g_manaPotionUseCount	s16 incremented once per mana-side potion taken in Player_usePotion; readers not traced
+004f85ca	g_healthPotionUseCount	s16 incremented once per health potion taken in Player_usePotion; readers not traced
+008667f0	g_zeroPad	all-zero pad record Player_run substitutes for the slot's lockstep pad while controls are locked (0x1a5644-0x1a5744)

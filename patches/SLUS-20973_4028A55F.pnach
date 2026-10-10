@@ -88,3 +88,22 @@ author=reverse engineering test patch, untested on a running game
 description=A debug.sht file on one player's memory card switches on developer cheats that reach the simulation, which breaks sync within minutes. This stops the game from ever setting that switch (config load, 0x217448). Only matters on a machine that has the file; removes the debug menu there. Sync-breakers document, section 7.
 // was: A2220000 (sb v0,0(s1))
 patch=1,EE,00217448,word,00000000
+
+[Net test: use button works with the spell selector open]
+author=reverse engineering test patch, untested on a running game
+description=While you hold the D-pad (quick-spell selector), your own machine skips the "use" action for your character but the other machines do not. A use press that was already on its way when the D-pad went down then opens a chest or picks up an item on the other machines only. This removes the skip (Player_run, 0x1A5C0C), so every machine does the same. In a net game your new use presses are still filtered out while the selector is open. Offline, use now also works with the selector open. FINDINGS K1. Each machine fixes its own player; a mix is safe.
+// was: 54600006 (bnezl v1,0x1a5c28)
+patch=1,EE,001A5C0C,word,00000000
+
+[Net test: potions always leave the bag directly]
+author=reverse engineering test patch, untested on a running game
+description=If your inventory screen is open when a potion press is simulated, your machine sends a "drop" message instead of removing the potion, while the other machines remove it and then obey the message too, so the potion counts differ from then on. This makes the potion always leave the bag directly (Player_usePotion, health branch 0x1B9FCC and mana branch 0x1BA3AC). Your open inventory screen may show the old count until reopened. FINDINGS K2. Each machine fixes its own player; a mix is safe.
+// was: 8043B69D (lb v1,-0x4963(v0)) at both addresses
+patch=1,EE,001B9FCC,word,00001821
+patch=1,EE,001BA3AC,word,00001821
+
+[Net test: stats page does not rewrite stored weapon damage]
+author=reverse engineering test patch, untested on a running game
+description=For a character with two weapons, the stats page recomputes damage for the off-hand weapon and leaves those numbers in the character record on that machine only until the next recompute. This skips that second call (stats page, 0x1D2D30). The second damage range printed on the stats page then repeats the first. FINDINGS K3. Each machine for itself; a mix is safe.
+// was: 0C06DC56 (jal Player_recalcDamage)
+patch=1,EE,001D2D30,word,00000000
