@@ -107,3 +107,27 @@ author=reverse engineering test patch, untested on a running game
 description=For a character with two weapons, the stats page recomputes damage for the off-hand weapon and leaves those numbers in the character record on that machine only until the next recompute. This skips that second call (stats page, 0x1D2D30). The second damage range printed on the stats page then repeats the first. FINDINGS K3. Each machine for itself; a mix is safe.
 // was: 0C06DC56 (jal Player_recalcDamage)
 patch=1,EE,001D2D30,word,00000000
+
+[Arena diagnostic: no prediction copy]
+author=reverse engineering test patch, untested on a running game
+description=Diagnostic only. This machine never makes the prediction copy of its own player (net_frameLoop, 0x13B21C), so your character is drawn from the real object and your own input looks late. Must be on before the first level of a session. If the arena still goes out of sync with this on, the prediction copy is not involved. FINDINGS E6. Touches nothing shared; for a clean test use it on every machine.
+// was: 106000DF (beqz v1,+0xdf)
+patch=1,EE,0013B21C,word,100000DF
+
+[Arena diagnostic: cutscenes end in the tick they start]
+author=reverse engineering test patch, untested on a running game
+description=Diagnostic only. Every in-level cutscene behaves as if skipped at once (cut_runFrame, 0x199DF8): no cutscene is seen and voice lines are cut. If the arena still goes out of sync with this on, the opening cutscene is not needed for it. FINDINGS E13. Every player must use the same setting; a mix desyncs at the first cutscene.
+// was: 10400004 (beqz v0,+4)
+patch=1,EE,00199DF8,word,00000000
+
+[Arena diagnostic: no autosave on entering a level]
+author=reverse engineering test patch, untested on a running game
+description=Diagnostic only. No checkpoint autosave is armed after a level load on this machine (save_armAutosave, 0x217F58). After a party wipe the reload then uses an older snapshot. Tests FINDINGS E8. For a clean test use it on every machine.
+// was: 24030001 (addiu v1,zero,1)
+patch=1,EE,00217F58,word,24030000
+
+[Net test: closing a notice box does not run the pending script]
+author=reverse engineering test patch, untested on a running game
+description=Closing one of the small per-player notice boxes runs the level's pending "post action" script from drawing code on that machine only; the full-screen help box already skips this in a net game. This removes the call (help task, 0x1DD1F0). Offline, a post action meant to follow a notice waits for the next cutscene, dialog or level load. FINDINGS E9. Each machine fixes itself; use on every machine.
+// was: 0C07B6B0 (jal script_runPostAction)
+patch=1,EE,001DD1F0,word,00000000

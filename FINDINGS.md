@@ -207,6 +207,33 @@ diverging site was found; between machines that do not, input decoding itself di
 | F9 | Two PCSX2 installations of the same version with the same EE and VU rounding, division rounding, clamping and FPU/VU fixes agree at every site read. A console against an emulator, different rounding or "full" clamping against the defaults, or an ARM-native build against an x86 one, should be expected to drift in any level, not just the arena | Inferred (emulator behaviour from general knowledge, nothing run) | docs/issues/float-divergence.md, "What an emulator does with this" |
 | F10 | Three one-word hardening changes that remove divides by zero (0x14d56c, 0x1a81b4, 0x1aa190) are described in the document and deliberately not in the patch file: they address no known cause and two of them change cast and swing timing for every slowed player, so a mix of patched and unpatched machines would itself desync | Inferred | docs/issues/float-divergence.md, "Patch proposals" |
 
+## Entering the arena
+
+From `docs/issues/arena-entry.md`: the level change into `drunare`, the load, the first
+frames and the opening cutscene `knights`, traced tick by tick. No per-machine route to
+shared state was found in an ordinary entry, so this phase does not explain the every-run
+desync either. The document gives the marks to record on two machines (first tick, cutscene
+start, cutscene end, first mismatch) and two bisecting patches that decide which phase the
+divergence is in.
+
+| ID | Claim | Kind | Evidence |
+|---|---|---|---|
+| E1 | A script level change stops every machine after the same frame: the name is written inside a tick, later steps test it first, and the first frame of the new level is the next frame number. No message is involved | Observed | 0x143dd0, 0x1472c4, 0x139fb4 |
+| E2 | Between that frame and the next, every shared-seed draw is made by object constructors, `Player1_ctor` and two free-spot loops; no input of those is per machine on a first visit | Inferred from Observed steps | 0x14cd54, 0x158928, 0x3212e0; section 1.4 |
+| E3 | `Player1_ctor` fills four spawn slots with a free spot within 36 units of the best start marker and a facing within ± 2000; the session code moves slots 1–3 again by up to 36 and creates the players in slot order | Observed | 0x158928; 0x321294–0x321414 |
+| E4 | In `drunare` no start can lie inside either trigger rectangle; the opening cutscene starts on a frame with remainder 2 modulo 15, after a player has walked at least 77 units | Observed (data), Inferred (remainder) | `objects.ob`; 0x1ecdf4, 0x14f330 |
+| E5 | `cut_start` restarts the per-machine frame warm-up counter inside a tick, and `cut_runFrame` does so again at the end; no reader of the counter inside a net tick changes shared state. `cut_evalCamera` keeps one latch and is otherwise a function of the clock | Observed | 0x19b514, 0x199f44; `gxref` 0x506048; 0x44fd00 |
+| E6 | After a level load the first prediction copy is made 1–31 ticks in, on a per-machine tick. The copy is on no run list, so a flag-8 cutscene neither freezes nor unfreezes it; clones made during the cutscene inherit the freeze and keep it up to 30 ticks after the end | Observed | 0x13dcd0, 0x13b1e8; 0x14a7c8; 0x1a55a0 |
+| E7 | In a net game players ignore damage for 30 of their own run ticks after every level load and 60 after every cutscene | Observed | 0x1e61c0, 0x1bfaf8, 0x1a5330, 0x1b5438 |
+| E8 | In this level a machine whose autosave gate is shut from the first tick to the cutscene start never takes the entry snapshot (the cutscene holds the camera mode and its post action sets the save inhibit) | Inferred from Observed pieces | 0x2188a8; scripts/DRUNARE.txt |
+| E9 | Closing a per-player notice box calls `script_runPostAction` from a draw task with no network test; the full-screen help box's path has the test | Observed | 0x1dd1f0; 0x1dcf58 |
+| E10 | The post-action name is not cleared by level teardown; `game_loadLevel` runs a left-over one in the new level's script | Observed | 0x1e60b8; writers of 0x86fa80 |
+| E11 | Bit 31 of the creature flag word and the boss-meter globals are set from the local alive list; nothing else reads the bit | Observed | 0x113960–0x113ad8 |
+| E12 | The main loop resets the local camera at every level change unless the card latch is set; in a net game the transition flag is cleared by the first camera update of the load warm-up loop | Observed | 0x322dfc; 0x204fb0; 0x2065e8–0x2065f4 |
+| E13 | In `knights` the sync hash cannot change between the tick after it starts and the tick it ends, apart from a stuck actor's teleport and the 1800-frame seed step of lobby games | Inferred | section 3.5 |
+| E14 | After a load a machine waits for one packet from every peer for at most about 900 calls; a peer's silence counter keeps running meanwhile and starts a kick above 900. A much slower loader is dropped, not desynchronised | Observed (constants), Inferred (outcome) | 0x323014–0x32305c; 0x134408–0x134448; 0x133060 |
+| E15 | Every level entry applies a pending character selection (flag 0x4fbbd8) by re-creating that slot's character; whether a net launch can start with the flag set on one machine is not established | Observed (code), Unknown (reachability) | 0x321024; 0x2247ec |
+
 ## What "source" the disc contains
 
 | ID | Claim | Kind | Evidence |

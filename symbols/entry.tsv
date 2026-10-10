@@ -1,0 +1,25 @@
+# area: entry — addresses named while tracing the level change into DRUNARE (docs/issues/arena-entry.md).
+# Only addresses no other file names. Address (hex, no 0x), name, note.
+002247ec	playerSel_applyPending	called at every level entry (0x321024): when g_playerSelPending is set, player_initNewCharacter for each slot with a stored class choice (byte at 0x4fdba0 + slot * 0x2c), then clears the flag. Reachability in a net game not established
+004fbbd8	g_playerSelPending	s32 set by playerSel_start (0x2246f8), cleared by playerSel_finish (0x22a408) and by playerSel_applyPending (0x2248c8)
+004f7108	g_playerStartRank	s8 rank of the best Player1 start marker seen during a level load: 0 none (level_loadScriptAndObjects 0x217ab0), 1 first or 'default', 2 'from' equals the previous level, 3 named entrance / gate / loaded from a save (0x217aac). Player1_ctor fills the spawn slots when it raises the rank and returns at once when it is already 3; mainloop_loadRequestedWorld skips its second free-spot search when it is 3 (0x321294)
+004f70d0	g_spawnPos	Vec3[4] spawn position per player slot: written by Player1_ctor (free spot within 36 of the marker) and save_load, adjusted and read by mainloop_loadRequestedWorld (0x32119c-0x3212a4)
+004f8410	g_spawnFacing	s16[4] spawn facing per slot: Player1_ctor 0x158b9c (marker angle +-2000 from one shared draw), JumpGate_ctor 0x27ca70, save_load 0x221eec; +8000 for slots 1-3 at 0x3212ec
+008e1ad6	g_loadedFromSave	u8 set by save_load (0x2220bc); level_loadScriptAndObjects turns it into start rank 3 and clears it (0x217a90)
+004f85c4	g_creatureSerialCounter	s8 source of creature +0x230 in Creature_ctor (0x109e14); zeroed by the main loop before every level load (0x322e20)
+004f8450	g_localCamera	pointer to this machine's game camera object: the argument of every Camera_update / Camera_reset / Camera_setMode call in the main loop, cut_start, cut_runFrame, net_main and the save daemon. Mode word at +0x34 (1 = follow), transition flag at +0x48
+004f85b0	g_gameLevelLoaded	s32: 0 while the front-end level intro is loaded, 1 for any other level (game_loadLevel); tested by the pending-level cancel (0x322c00 block), mainloop_loadRequestedWorld (0x321240) and the camera follow routine (0x204a28)
+004f8468	g_entranceName	char[]: script setEntrance copies a name here (0x142ab8); Player1_ctor compares it with a marker's name property (0x158a98); reset by game_resetState (0x1e6fc4)
+004f85cc	g_levelTimer	s32: zeroed by game_loadLevel (0x1e5dfc), +1 per tick in gameMiscSync while the game is not frozen (0x1e3e48); returned by script getLevelTimer (0x1421ac)
+004f8e48	g_actLevelTables	per act: pointer to rows {char *levelName; u16 stateBytes; u16 pad}; the size is what save_storeLevelState reserves for that level's saved state (0x21777c); searched by save_findAct and save_levelIndexInAct
+004f8e10	g_actLevelCounts	s32 per act: number of rows in the act's level table
+004f8e7c	g_actCount	s32 number of acts (save_findAct 0x217e08)
+0044fce4	g_cutHeader	pointer to the header of the running cutscene file, stored by cut_start; cut_runFrame reads the light scale at +0x70 and passes it to cut_setup
+0083d120	g_cutName	char[]: copy of the cutscene name given to cut_start (strcpy at 0x19b614); cut_setup looks for a level object of this name to anchor positions to
+0044fd00	g_cutLastCutTime	float: time of the last camera cut key for which cut_evalCamera raised a fade wait (0x1973d4, 0x197af8); zeroed by cut_start (0x19b570). The only state cut_evalCamera keeps between calls
+004f66a8	g_hudSuppressed	s8: 1 from cut_start to the end of the cutscene (0x19b5b4, 0x199f50), also written by the dialog, mission-menu and jump-gate code; HUD draw functions, the minimap call in drawWorld and hud_tickMessage skip their work while it is set
+004f66cc	g_helpCloseDelay	s32: set to 60 when the full-screen help box closes, counted down once per help_task call (a draw task); the box cannot be closed while it is non-zero
+0086aa90	g_noticeButtonReleased	u8[4]: per-slot latch in help_task: set once the confirm button is seen released, so that a held button does not close a new notice box; cleared by hud_showPlayerNotice, set by hud_resetNotices
+0041b6a0	g_bossMeterHp	s32: hit points of the creature whose boss meter is shown; written by the boss block of Creature_run for a local alive player in range (0x113960-0x113ad8), zeroed by script_applyCFlag and game_clearLevel; read by hud_drawBossMeter
+0041b6a4	g_bossMeterMaxHp	s32: maximum hit points for the same meter
+0041ba40	g_bossMeterName	char[]: name buffer filled through Creature_getName in the same block (0x113a4c); read by hud_drawBossMeter (0x1d9614)
