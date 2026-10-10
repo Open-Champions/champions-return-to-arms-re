@@ -11,7 +11,7 @@ Nothing was confirmed on a running game — true when written and still true of 
 document. Since then the interpreter has been executed opcode by opcode in
 `tools/ee_emu.py` (`docs/spec/script-machine.md`; results folded in here are marked
 **executed**), and the project has a live game — the Play! emulator, which is not a PlayStation 2 and not PCSX2
-— whose runs are listed in `FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`.
+— whose runs are listed in `FINDINGS.md`, "Run on the live game" (rows V1–V13) and `docs/issues/live-rig.md`.
 Those runs loaded the levels `hub` and `strife`; nothing about a script was logged or
 compared in them. No test patch has been run on a live game.
 Claims are **Observed** unless marked otherwise.

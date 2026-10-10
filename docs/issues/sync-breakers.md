@@ -10,7 +10,7 @@ Everything was read from the executable (SLUS_209.73, v2.00) and from the files 
 disc; **nothing was run, and every patch below is untested.** That is still true of this
 document: one test has since been executed in the interpreter (`docs/issues/dynamic-tests.md`
 s4), and the project has a live game in the Play! emulator (not a PlayStation 2, not PCSX2;
-`FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`), but it has run one
+`FINDINGS.md`, "Run on the live game" (rows V1–V13) and `docs/issues/live-rig.md`), but it has run one
 machine, and none of the eight items here was tried on it. Each statement is
 **Observed** (read at the address given), **Inferred** or **Unknown**. New names are in
 `symbols/syncbreakers.tsv`. `FINDINGS.md` and `patches/` were not edited; proposed ledger

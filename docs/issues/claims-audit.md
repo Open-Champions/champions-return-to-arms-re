@@ -7,7 +7,7 @@ after the fix (`arena-entry.md`, `rescan.md`) were only searched, not audited.
 
 Everything here was read from the executable (SLUS_209.73, v2.00) and its decompile;
 **nothing was run.** (Still so for this audit. What the project has run on a live game
-since is in `FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`.)
+since is in `FINDINGS.md`, "Run on the live game" (rows V1–V13) and `docs/issues/live-rig.md`.)
 Statements are **Observed** unless marked otherwise. No symbol file was
 added: nothing new needed a name. `FINDINGS.md`, the other documents, `names.tsv` and
 `patches/` were not edited; the corrections are listed for whoever applies them.

@@ -3,7 +3,7 @@
 2,066 functions of third-party and platform code plus the game's own lobby front end.
 Everything here was read from the executable; nothing was run when it was written. Since
 then the project has a live game — the Play! emulator, which is not a PlayStation 2 and not PCSX2 —
-and what was run on it is listed in `FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`.
+and what was run on it is listed in `FINDINGS.md`, "Run on the live game" (rows V1–V13) and `docs/issues/live-rig.md`.
 Two things in it bear on this document (4d there). The game loads its eleven network
 modules from the disc at boot and they start as real code; and the ten library entries the
 game's own netcode calls (`sceLibnetInitialize`, `sceInetInterfaceControl`, `sceInetCreate`,

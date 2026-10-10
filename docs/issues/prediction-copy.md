@@ -11,7 +11,7 @@ is entered twice per frame, once for the copy; the copy is re-made every 31 tick
 (`g_ghostRebaseFrame` stepped 394, 425, 456 … 611, `Player_clone` entered each time); and
 the copy carries object flag 0x20000 (flag word 0x00024060) while the real player carries
 0x200000 (0x00204060). Nothing else here was re-checked there: what the copy can change in
-shared state needs a second machine to show, and no test patch has been run on a live game.
+shared state needs a second machine to show, and the only test patches run on a live game are the two for K1 and K2 (FINDINGS V10, V11).
 Each statement is **Observed** (read at the address given), **Inferred** or **Unknown**.
 
 New names used here are in `symbols/copyfix.tsv`. Proposed ledger rows and corrections to

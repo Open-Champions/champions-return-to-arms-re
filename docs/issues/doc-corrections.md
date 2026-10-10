@@ -7,9 +7,10 @@ column of `symbols/*.tsv`. Later passes (`docs/data-tables.md`, `docs/issues/vta
 applied them, and then compared the documents with each other.
 
 A second pass, made after more reports had come in, is recorded at the end of this file
-under "Second pass", a third under "Third pass" and a fourth under "Fourth pass"; sections
-1 to 7 describe the first pass only. The fourth pass is the first that applies results
-from the running game.
+under "Second pass", a third under "Third pass", a fourth under "Fourth pass" and a fifth
+under "Fifth pass"; sections 1 to 7 describe the first pass only. The fourth pass is the
+first that applies results from the running game; the fifth is the first that applies
+results from two linked instances of it.
 
 Everything below was checked in the executable (SLUS_209.73, v2.00) before it was written
 into a document: the decompile, `tools/dis.py`, `tools/gxref.py`, the data words, and the
@@ -1063,4 +1064,299 @@ python3 -I -B tools/dis.py SLUS_209.73 18f3f8:18f470 | grep f12   # particle_spa
 python3 -I -B tools/dis.py SLUS_209.73 1a66e0:1a6700              # Player_run reads +0xf0
 python3 -I -B tools/dis.py SLUS_209.73 10c1fc:10c214              # Creature_updateActive: bit 63 set / cleared
 python3 -I -B tools/dis.py SLUS_209.73 1b3364:1b3370              # Player_processDamage sets flag 0x100
+```
+
+## Fifth pass
+
+Scope: the corrections reported after the fourth pass by three reference models —
+`docs/spec/world-queries.md` section 12, `docs/spec/creature-tick.md` section 16 (thirteen
+items; also the null read of its section 4.3) and `docs/spec/object-system.md` section
+10.1 — and what `docs/issues/live-rig.md` section 7 (phase 2: two linked instances of the
+running game) changes in five older documents: `docs/issues/kill-loot-xp.md`,
+`docs/issues/draw-sim-leaks.md`, `docs/issues/arena-desync.md`,
+`docs/issues/arena-entry.md` and `docs/online-setup.md`.
+
+Method as before: the smallest change, in place, keeping a clause that says what the
+earlier version said; an answered *Inferred*, *Unknown* or "not read" keeps its wording
+and gets the answer and a pointer beside it. Nothing was run in this pass.
+
+The last column of Q2 says which kind of evidence stands behind the corrected statement:
+
+- **running game** — a **Ran** result of `docs/issues/live-rig.md` section 7: two
+  instances of the game in the Play! emulator, joined through the developer LAN start and
+  compared tick by tick. They are two copies of one emulator build on one host — not a
+  PlayStation 2 and not PCSX2 — so a divergence seen there is a difference in the game's
+  logic, and the absence of one says nothing about machines that compute differently.
+  These are the first corrections that rest on two machines; where one contradicts an
+  older reading it wins;
+- **code** — the address given was read in this pass (`tools/dis.py`, `tools/vtab.py`,
+  `tools/ps2elf.py xref` / `ptrs`); a qualification says how far the check went. Where the
+  reporting document also ran the original instructions in `tools/ee_emu.py`, the row says
+  **executed**, and that result wins over an earlier reading;
+- **report** — taken from the reporting document without an independent reading.
+
+`FINDINGS.md`, `names.tsv`, `patches/`, `tools/`, the top-level documents of other
+contributors and the documents still being written (`docs/issues/live-rig.md`,
+`docs/spec/arena-monsters.md`, `docs/spec/script-builtins.md`) were not edited; what they
+need is in Q5. The three reporting documents were not edited either.
+
+### Q2. Corrections
+
+| # | Document, section | Said | Says now | Evidence | Checked |
+|---|---|---|---|---|---|
+| 1 | `engine.md`, Pathfinding | `path_search` is "a breadth-first wave … stopping when a cell passes the request's goal test or after 80 rounds" | not breadth-first: continuing straight costs 2 rounds and any other move 3; a round is finished after a hit and the **last** hit of the round is taken; five empty rounds also end the search; a node that finds its ring full is marked and lost (**executed**) | `spec/world-queries.md` 10.5; FINDINGS R10 | report |
+| 2 | `engine.md`, Pathfinding, cell word; `formats/world.md`, path grid bits 8–15 | "bits 8–15 = search mark (direction it was reached from)" | the direction plus one; the start node carries 15 (**executed**) | 0x184bec (the start node's word gets 0xf00); `spec/world-queries.md` 10.1 | code (the start mark); "plus one" from the report |
+| 3 | `engine.md`, cell word; `formats/world.md`, path grid bits 16–31 | "upper 16 bits non-zero = blocked"; "non-zero blocks the node at run time" | the effect, not the coding: a counter, 0–16, that 0x18b6c0 raises and 0x18b584 lowers over a rectangle of nodes, for torches and fires; a node with a non-zero counter is never entered | callers from `ps2elf.py xref`: 0x2b200c (`Torch_ctor`), 0x2c58e4 (`StaticFire_initCommon`), 0x2c57cc (`StaticFire_dtor`); `spec/world-queries.md` 10.1 | code (the three call sites); the range and the rectangle from the report |
+| 4 | `engine.md`, goal tests; `symbols/engine.tsv` `path_goalTestClearLine` 0x1844f0 | type 1: "within the radius and `world_raycast` to the goal is clear" | within the radius and the ray returns **more than 0.98**; a ray that hits nothing returns −1.0, so a completely clear line fails the test (**executed**) | 0x18452c (the radius test), 0x184594–0x1845a8 (0.98 compared below the ray's result) | code |
+| 5 | the same; `path_goalTestRanged` 0x1845bc | type 2: "within the radius, at least 120 away when the radius is larger than that, and `terrain_raycast` clear (ranged attackers)" | every node **outside** the radius passes; inside it, unless the radius is above 120 and the node nearer than 120, a node passes when the ray returns less than 0.98, hitting nothing included. Requested by `Creature_requestPath` mode 1, which `spec/movement-camera.md` 6.3 describes as fleeing (**executed**) | 0x1845f8–0x184600 (outside the radius: result 1), 0x184604–0x184620 (the pair of tests against 14400), 0x18467c–0x184690 | code (the three tests); the requester from the report |
+| 6 | the same; `path_goalTest3` 0x1846a4 | type 3: "not read"; "(body not read)" | as type 2 with `world_raycast` (requester ignored) and the limit 0.75 (**executed**) | 0x1846e0–0x184704, 0x18476c–0x184780 (the call, then a compare with 0x3f400000) | code |
+| 7 | `engine.md`, World table; `symbols/engine.tsv` `terrain_testFlag1` 0x183b48 | "… -> 1" | the result is the float 1.0 or 0.0 in `$f0`, which its callers compare with a float (**executed**) | 0x183db4 and 0x183e10 (the two values moved into `$f0`), 0x14aeec (a caller's float compare) | code |
+| 8 | `engine.md`, World table; `symbols/engine.tsv` `terrain_raycast` 0x18a5c0 | "first terrain hit along a ray, marching 240 units at a time" | elements are collected per 240-unit segment and each is marched one 4-unit sample at a time; the first segment with a hit decides; a vertical ray returns a distance; the height carried from one segment to the next is advanced four times too far; each flag bit in the mask adds 65536 to a sample's height (**executed**) | 0x18a5c4 (0.25), 0x18a738 (240.0), 0x18a714 (the 1001-step bound); `spec/world-queries.md` 9.1 | code (the three constants); the march and the height error from the report |
+| 9 | `formats/world.md`, "How the engine uses the samples", Ray | "marches 240 units at a time against the same samples" | as row 8; flags do not block the ray, they raise the sample (**executed**) | `spec/world-queries.md` 9.1 | report |
+| 10 | `engine.md`, World table; `symbols/engine.tsv` `world_movePiece` 0x182c98 | one of three functions that "change the terrain element of a moving piece"; "moves a piece and its terrain element" | it stores only into the piece's chunk record (+0x28, +0x2c, +0x30, +0x36, +0x38); the terrain element of a piece never moves or turns — only its flag 2 and its height offset change, through the other two functions. Observed, **not executed** | 0x182ea0–0x182ed8 (every store of the function that is not to the stack) | code |
+| 11 | `engine.md`, open question 6 and the address-range table | "Path request type 3 goal test (0x1846a4) and the two routines at 0x185448 and 0x1857e4"; "two unread routines" | answered: the goal test is row 6; 0x1857e4 is a straight-line walk probe and 0x185448 walks the path grid calling `terrain_height` and a particle routine; neither has a caller or a stored pointer, so neither runs | `ps2elf.py xref` and `ptrs` return nothing for both addresses; `spec/world-queries.md` section 12 | code (no caller, no pointer); what the two bodies do from the report |
+| 12 | `formats/world.md`, Path grid | "a position is snapped to the nearest node" | only the start of a search is; the goal is used as a point with a radius (**executed**) | `spec/world-queries.md` 10.3, 10.4; FINDINGS R10 | report |
+| 13 | `formats/world.md`, terrain element +0x10, flag 4 | with the flag "the 'everything here is lower' shortcut must not be taken" | adds: that is all the bit does — in the sweep always, in the ray only when the ray was given a flag mask (**executed**) | `spec/world-queries.md` sections 6, 9.1, 12 | report (a refinement) |
+| 14 | `spec/movement-camera.md`, section 5 | 5.2 and 5.10 marked *(dec)*; "The exact loop bounds of the back-off were read from the decompile only" | at the head of the section: 5.2, 5.3, 5.4, the ground and gravity lines of 5.5, 5.8 and the terrain part of 5.10 are **executed**, with no error found. Four additions in place: a zero-length sweep over a blocking sample returns −0x7fffffff and the slide then asks for a step of about 10^35 units (5.3); an unrotated element's cosine is 0x3f7fffff, not 1.0 (5.3); `normalOut` receives an uninitialised stack slot when no sweep was blocked (5.4, Observed); the back-off makes at most 20 tries (5.10) | `spec/world-queries.md` sections 4.1, 7, 8.3, 12; FINDINGS R8, R9 | report |
+| 15 | `spec/movement-camera.md`, section 10, "Not reached" | `Creature_run` beyond the slow amount, the avoidance offset's side selection, `creature_findClearHeading`, the wander helpers, the two ray casts, `world_findFreeSpot` and the path search, all listed as not reached | each bullet says where it was reached since: `spec/creature-tick.md` sections 4, 10, 11; `spec/world-queries.md` sections 9, 10; `spec/object-system.md` 4.8 | the three reporting documents | report (pointers, not corrections) |
+| 16 | `monsters.md`, 1.3 step 3 | "`Creature_run(this, model)`; a non-zero result ends the function" | the caller's test is there, but the exit is dead: `Creature_run` has one return and it loads 0. It has no entry test for dead, inert or inactive creatures either, and does no damage or target work (**executed**) | 0x113c10 (the result set to zero in front of the only return), 0x2a8bc8 (one caller's test); `spec/creature-tick.md` section 1; FINDINGS R13 | code |
+| 17 | `creatures.md`, "How the pieces fit" | "Its run calls `Creature_updateActive`, then usually `Creature_run` …, `Creature_processDamage`, a state switch …" | that is not the order of the calls: `Creature_processDamage`, `Creature_run`, `Creature_updateActive`, the weapon holder, `Creature_stepAnim`, `Creature_applyKnockback`, slot 23, then the state switch, as `monsters.md` 1.3 has it | `Skelight_run`: calls at 0x2a8bb0, 0x2a8bc0, 0x2a8bd4, 0x2a8c54, 0x2a8c6c | code (one class) |
+| 18 | `creatures.md`, helper catalogue, `Creature_pickTarget`; `symbols/creatures.tsv` 0x10ded0 | "Keeps the current target while it is alive and still an enemy. Every 32nd frame … or when forced: box query …" | between scans it keeps a target that is still an enemy; a scan **starts from nothing** and drops a target the query does not return; `force` with a current target takes any other candidate whatever its score; a dead target leads to set-state 0 and the base class does not clear the handle (**executed**) | `spec/creature-tick.md` section 6; FINDINGS R13 | report |
+| 19 | `creatures.md`, "Pending damage" | knock-back speed "(100 / 150 / 200 / 312.5)", given for the death sequence and for nothing else | those four are the death table only: a hit the creature survives stores 100 / 150 / 225 / 375 and a tick without pending damage 50 / 75 / 100 / 156.25. Also new there: a corpse's pending amount is cleared but its flags are kept; the burn test in the death branch can never hold (**executed**) | `spec/creature-tick.md` 3.1, 3.4 | report (a search of the function for the constants as immediates found none and was not taken further) |
+| 20 | `creatures.md`, creature flag table, 0x400000 / 0x800000 | "following a player, standing ahead / behind" | adds: the bits act only while the charm timer +0x312 is non-zero, and the tick the timer reaches 0 clears both (**executed**) | 0x112d68 (timer 0: the whole block is skipped), 0x112d88–0x112da0 (the clear), 0x112da8–0x112db0 (the bits tested inside the branch) | code |
+| 21 | `creatures.md`, "Second timers" | "float seconds, −1/60 per `Creature_run`" | not for the chill timer +0x344: it loses 1/15 per tick, and 1/30 more on a player (**executed**) | 0x113618–0x113624 (0x3d888888 subtracted); `spec/creature-tick.md` 4.7 | code (the 1/15); the player's extra 1/30 from the report |
+| 22 | `creatures.md`, C3 and flag 0x80000000; `issues/arena-entry.md`, E11 | the boss-meter bit is written from one per-machine input, the local alive list | from two: the block looks for a player only while the creature's active bit 63 is set, and that bit is written from `obj_updateActive` (**executed**) | 0x113980 (a sign test of the 64-bit flag word in front of the block) | code |
+| 23 | `spec/movement-camera.md`, 6.3, `Creature_moveToDirect` | "a non-zero offset replaces the aim point by position + offset" | only when the offset's x **and** y are both non-zero; the ray length is min(distance, radius + 10) (**executed**) | 0x115778–0x11577c and 0x115788–0x11578c (x, then y, compared with zero; either being zero skips the offset) | code (the two tests); the ray length from the report |
+| 24 | `spec/movement-camera.md`, 6.4 step 3; `symbols/startup.tsv` `Creature_computeAvoidanceTarget` 0x109280 | "a point 1200 units along the straight line when the probes are clear or the obstacle is more than two radii away" | `pos + (p − pos) × 1200` — 1200 times the vector; "more than two radii away" is the test `t × \|D\|² < (2 radius)²` failing, with `t` not squared (**executed**) | 0x109344–0x109380 (three components times 1200.0, added to the position), 0x1093b0–0x1093c8 | code |
+| 25 | `spec/movement-camera.md`, 6.4, `Creature_computeAvoidanceOffset` | side selection and exact length "[U] for the exact rule"; "the `PathName` follower and the `followPlayer` logic … were not read" | answered: the offset is 2 × radius long along facing ∓ 12000, the side chosen from three forward rays and two side rays by the rules of `spec/creature-tick.md` section 10; the follower and `followPlayer` are in 4.3 and 4.5 there (**executed**) | `spec/creature-tick.md` sections 4, 10 | report |
+| 26 | `spec/movement-camera.md`, 6.3, `Creature_fleeFrom` | (not stated) | adds: the avoidance offset is refreshed on every staggered 8th frame, and the aim is written back as the flee point (**executed**) | `spec/creature-tick.md` 9.4 | report (an addition) |
+| 27 | `spec/movement-camera.md`, 6.4 step 6 | "When a side-step ends with still no progress for 300 ticks: `world_findFreeSpot` … and teleport there" | "ends" is exact: the teleport can happen only on the one tick on which the clock equals the side-step deadline (**executed**) | `spec/creature-tick.md` 9.5 | report |
+| 28 | `monsters.md`, 1.3 helper table, `Creature_isAttackReady` 0x1195f0 | "test timers +0x314 / +0x318 / +0x31c for zero" | not only a test: for a creature without a target it first stores zero to the cooldown +0x318 (**executed**) | 0x1195f0–0x1195f8 | code |
+| 29 | `monsters.md`, 1.4, `Creature_filterState`; `symbols/creatures.tsv` 0x10a9c0 | "it redirects requests to 5, 0x13 or 0x10 while timers A, C or B are running" | one chain, not three tests: the root redirect applies to requests other than 0, 5 and 6–15, gives 5 only with a target (0 without), and then skips the stun and cooldown tests (**executed**) | `spec/creature-tick.md` 12.3 | report |
+| 30 | `symbols/creatures.tsv` `Creature_takeDamage` 0x116638; `creatures.md`, "Pending damage" | (the brief for the reporting work located slot 2 at 0x116740, and FINDINGS ST3 cites that address beside the function's name) | slot 2 is 0x116638; 0x116740 is the `handle_link` call inside it that records the attacker. Both files already had 0x116638; the note and the paragraph now say what 0x116740 is | `vtab.py show Creature`: slot 2 is 0x116638; 0x116740 is a call of `handle_link` inside that function's range | code |
+| 31 | `creatures.md`, C4 | the `PathName` follower's teleport, without its end-of-list case | adds: within 48 units of its point the follower fetches the next point of the list and copies from it without a null test — a read through a null pointer at the end of a list; whether a shipped path ends that way under a follower is Unknown | 0x112b58 (the fetch), 0x112b68 (the first load through the result, no test between); `spec/creature-tick.md` 4.3, where the original and the model both fault | code |
+| 32 | `objects.md`, "Properties", and flag 0x8000 | "A `hide` property moves the object to the off-grid list" (said of the base constructor); 0x8000 "set by hide" | the base constructor looks `hide` up before it has stored the property list, so for a pool block the test never fires; hiding at load is done by `Creature_ctor` and `Catapult_ctor`, and a class that does not test the property ignores it (**executed**) | 0x14ccf0 (the lookup) comes before 0x14cd64 (the store to +0x2c); 0x109f10–0x109f3c (`Creature_ctor`: off-grid, bit 3 of +0x231, flag 0x8000) | code (the order, and `Creature_ctor`); `Catapult_ctor` 0x24d598 from the report |
+| 33 | `objects.md`, grid table and flag 0x2; `symbols/objects.tsv` `obj_linkToGrid` 0x14f120 | "new flag-2 objects" are linked to the off-grid list | only in `obj_linkToGrid`, whose single caller is the prediction-copy clone; `GameObject_ctor` zeroes the flag word before it links, so no constructed object starts off-grid or in grid B because of a flag (**executed**) | `ps2elf.py xref`: one call, 0x13b58c; 0x14cb94 (flags zeroed) comes before 0x14cc34–0x14cc7c (the two flag tests) | code |
+| 34 | `objects.md`, `runObjects` step 1 and row O6 | "Destroy every object on `g_deleteList`"; the exclude mask listed for box queries, run walks and grid walks | the flush is an iterator walk that is given `g_excludeMask` too: a deleted object with a masked flag is skipped and stays on the list (**executed**) | 0x14b928 (the mask loaded), 0x14b94c–0x14b950 (`iter_begin` on the delete list); FINDINGS R15 | code |
+| 35 | `objects.md`, "Run lists" | "The slow lists are filled round-robin" | true; adds that the cursor is stepped before it is used, so after teardown the first slow object goes to list 1 (**executed**) | `spec/object-system.md` 5.1 | report (an addition) |
+| 36 | `objects.md`, movement helpers; `symbols/objects.tsv` `world_findFreeSpot` 0x14acf8; `issues/arena-entry.md`, section 2 | "three draws per try"; "clear of blocking objects"; the height "within 6 of the centre's" | three draws per *sample*, a try repeating samples until one is inside the unit ball; "clear" is `dx² + dy² > radius² + r²`, the sum of the squares; the height test is one-sided (**executed**) | 0x14ae58–0x14ae5c (the branch back to the draws), 0x14b094–0x14b0ac (the two squares added, then the compare); FINDINGS R14 | code (the loop and the sum); the one-sided height from the report |
+| 37 | `spec/skills-35-68.md`, 1.4 | an object created from a slow-list walk "is also first run on the next frame" | right for the every-frame list; two cases added: an object that joins this frame's slow list during an earlier walk runs in the same tick, and one that `obj_updateActive` moves onto this frame's 60-list runs twice in that tick (**executed**) | `spec/object-system.md` 2.3, 5.2; FINDINGS R14 | report |
+| 38 | `OVERVIEW.md`, "Time and tasks" | "object visibility (-1)" | priority 0, registered after the water task, which is also 0 — as `mainloop.md` already had it. Read, **not executed** | 0x322a8c (the priority argument is zero) | code |
+| 39 | `mainloop.md`, section 2 | "a task added at or before the cursor waits for the next pass" | adds the case that goes the other way: after the running task has removed itself the cursor is one lower, and a task inserted at its old index is called in the same pass (**executed**) | `spec/object-system.md` 6.1; FINDINGS R14 | report |
+| 40 | `symbols/objects.tsv` `world_createObject` 0x14f6c8 (reported against `names.tsv`, which has no such row) | "(className, Vec3 *pos, angle)" | four arguments: the property list in the fourth register goes through to the factory untouched | 0x14f6c8–0x14f70c (the fourth argument register is not written before the indirect call) | code |
+| 41 | `symbols/objects.tsv` `world_findObjectsByClass` 0x14c0b8 (reported against `names.tsv`, likewise) | "comparing the type-info name" | adds: in its length-prefixed form, and only objects on a run list are found (**executed**) | `spec/object-system.md` 4.6 | report (a confirmation with detail) |
+| 42 | `objects.md`, "Deleting"; `symbols/objects.tsv` `world_flushDeleteList` 0x14f3a8 | one of the places where the delete list is flushed | no call of it and no stored pointer to it exists; the flushes that happen are the inline copies in `runObjects`, `world_loadRecords` and `world_deleteAllObjects` | `ps2elf.py xref` and `ptrs` return nothing for 0x14f3a8 | code |
+| 43 | `issues/kill-loot-xp.md`, head, result table, section K1, ranked list | K1 "Observed"; in `drunare` "a silent bag difference rather than an immediate mismatch"; "no test patch has been run on a live game" | **Ran**: reproduced on two linked instances. At a level exit the machine that does not own the player ran the exit's script and changed level, the owner's did not, and each flagged the other out of sync within four ticks. P1 on both machines removes it; the lockout patch in its place does not. The ticks are tabulated in the section; "silent" is no longer assumed for the arena | `issues/live-rig.md` 7.3 (run base4, `pair-k1.rig`); FINDINGS V10, K1 | running game |
+| 44 | `issues/kill-loot-xp.md`, result table, section K2, ranked list | K2 "Observed"; the window "*Inferred* from F2"; a two-machine test described as still to be made | **Ran**: at a lead of 14 the owner's menu flag rose 11 ticks before the potion press reached the tick; the other machine removed the potion and the owner did not; hit points agreed and no out-of-sync byte was set to the end of the run. P2a with P2b on both machines removes it | `issues/live-rig.md` 7.3 (run base3, `pair-k2.rig`); FINDINGS V11, K2, U4 | running game |
+| 45 | `issues/kill-loot-xp.md`, "What to record on two machines"; "Patch proposals (all untested)" | a table of observations to make; four untested patches | a dated note says which rows were seen (the third and the fourth) and a row is added for K1 at an exit; heading and lead say that P1, P2a and P2b were run on the linked pair, P3 was not, and none in PCSX2 or on a console | `issues/live-rig.md` 7.3 | running game |
+| 46 | `issues/draw-sim-leaks.md`, head, result table, "K1, K2 (known)" | the live game "has run one machine only"; "no test patch has been run on a live game"; K1 and K2 "Both **silent**" | a dated result at the head; K1 and K2 are **Ran**; K1 at a level exit is not silent | `issues/live-rig.md` section 7; FINDINGS V9–V13 | running game |
+| 47 | `issues/draw-sim-leaks.md`, "Ranking" | 1 K2, 2 K1 ("Silent, usually repaired …"), 3 D26 | the order is kept — it is by likelihood in the fight, on which the runs gave nothing that changes it — and each of the three says what was run: K2 real and silent; K1 real, and by severity the first of the two, since an exit ends the session; D26 tried once and not settled. A paragraph gives the twelve arena runs, among them the one with K1's and K2's inputs unpatched | `issues/live-rig.md` 7.3, 7.5 | running game |
+| 48 | `issues/draw-sim-leaks.md`, "Ranking", last paragraph | "a large lead plus K2 … but nothing here proves it" | kept, and followed by where it stands: the mechanism is confirmed, the link to the arena is not. The arena stayed in sync with K1 and K2 available and with both patched out; no arena run combined a large lead with the inventory button; the rig cannot stall | `issues/live-rig.md` 7.3, 7.5 | running game |
+| 49 | `issues/draw-sim-leaks.md`, "Patch proposals (all untested)", proposed row U4, "Not done" | the first three proposals "are not in `patches/` yet"; U4 "Inferred"; the arena question "needs two running copies" | P1, P2a, P2b run on the linked pair and P5 once as a control; the three are in the patch file now; U4 has one **Ran** case; two running copies exist and the arena question is still open | `issues/live-rig.md` 7.3; the patch file (read, not edited) | running game |
+| 50 | `issues/arena-desync.md`, head | "the arena has not been reached on it, a desync needs two machines, and no test patch has been run on a live game" | a dated result: twelve arena runs between two linked instances stayed in sync, 68,685 ticks — what was varied, and what that does and does not say (identical machines, placeholder characters without skills, the level name written directly) | `issues/live-rig.md` 7.4–7.5; FINDINGS V12, D25 | running game |
+| 51 | `issues/arena-desync.md`, "What to record on two machines"; "Noticed on the way", the lockout bullet | a table of observations to make | a dated note: the message never appeared, so no row was observed, "knight fight, nobody has died" included; which phases the runs reached. The lockout bullet has the one D26 attempt: the menu closed in the death tick and no damage call fell into the rest of it | `issues/live-rig.md` 7.3, 7.5 | running game |
+| 52 | `issues/arena-entry.md`, head, timeline row 19, section 3.1, proposed row E4 | the live game "has not entered `drundar` or `drunare`"; the remainder 2 "**Inferred** from Observed pieces"; "E ≈ S + 1,270" | a dated result at the head; the opening cutscene started on tick 1022 (remainder 2 modulo 15) and lasted 1,268 ticks, in all twelve runs — **Ran**; and what was not exercised, the way in from `drundar` | `issues/live-rig.md` 7.4–7.5; FINDINGS E4, V12 | running game |
+| 53 | `issues/arena-entry.md`, "What to record on two machines"; "Not done" | a table of thirteen readings; "Nothing here was run" | the two readings that were taken are marked **Ran** in their rows (S and S mod 15; E − S); a dated note says that no run had a first mismatch at all and names the rows that were not read out | `issues/live-rig.md` 7.2, 7.5 | running game |
+| 54 | `online-setup.md`, head; "Settings every player must match" and its K1 / K2 item; "Not checked" | "rows V1–V8 … and two machines have not been joined"; "nothing in this list has been tested on a running game; the live game … is a single machine"; "until the patches for them are tested"; the rig "has shown only that one machine reaches and runs a lockstep net game" | brought into line with the paragraph of the same page that already reported the two confirmed patches: two instances have been joined (V9–V12), K1, K2 and their patches are confirmed on that pair, and the pair says nothing about machines that differ | `issues/live-rig.md` section 7 | running game |
+
+### Q1. Summary
+
+| | Count |
+|---|---|
+| Rows in table Q2 | 54 |
+| … corrections applied | 54 |
+| … from the running game (**Ran**, `live-rig.md` section 7) | 12 (rows 43–54) |
+| … re-checked against the code, wholly or for the part named | 26 (rows 2–8, 10, 11, 16, 17, 20–24, 28, 30–34, 36, 38, 40, 42) |
+| … taken from the reporting document | 16 (rows 1, 9, 12–15, 18, 19, 25–27, 29, 35, 37, 39, 41) |
+| … whose corrected statement is, wholly or in part, an executed result of the reporting document | 32 |
+| Reported corrections found wrong | 0 |
+| Reported corrections applied in a different place or form (Q4) | 8 |
+| Reported items not applied (Q4) | 6 |
+| Symbols renamed / symbol notes changed | 0 / 15 |
+
+`python3 -I -B tools/symtab.py check` after the edits: 5817 symbols, 0 conflicts, 0
+malformed lines.
+
+Where each group of rows came from: world queries 1–15; creature base 16–31; object system
+32–42; live rig, phase 2, 43–54.
+
+### Q3. Symbol files
+
+No address or name was changed. Notes changed, all to match a row of Q2:
+
+| File | Symbol | Row |
+|---|---|---|
+| `symbols/engine.tsv` | `path_goalTestClearLine` 0x1844f0, `path_goalTestRanged` 0x1845bc, `path_goalTest3` 0x1846a4 | 4, 5, 6 |
+| `symbols/engine.tsv` | `terrain_testFlag1` 0x183b48, `terrain_raycast` 0x18a5c0, `world_movePiece` 0x182c98 | 7, 8, 10 |
+| `symbols/creatures.tsv` | `Creature_pickTarget` 0x10ded0, `Creature_filterState` 0x10a9c0, `Creature_takeDamage` 0x116638 | 18, 29, 30 |
+| `symbols/startup.tsv` | `Creature_computeAvoidanceTarget` 0x109280 | 24 |
+| `symbols/objects.tsv` | `obj_linkToGrid` 0x14f120, `world_findFreeSpot` 0x14acf8, `world_createObject` 0x14f6c8, `world_findObjectsByClass` 0x14c0b8, `world_flushDeleteList` 0x14f3a8 | 33, 36, 40, 41, 42 |
+
+0x116740 was given no row of its own: it is a call site inside `Creature_takeDamage`, not
+an entry, and the note of 0x116638 now says so.
+
+### Q4. Applied differently, not applied, and noticed while editing
+
+No reported correction was found to be wrong against the code. Eight were applied in a
+different place or form than reported:
+
+1. **`names.tsv`, `world_createObject` and `world_findObjectsByClass` (object system).**
+   `names.tsv` has no row for either; both are rows of `symbols/objects.tsv`, which this
+   pass may edit, and were corrected there (rows 40, 41).
+2. **"Slot 2 is at 0x116638, not 0x116740" (creature base, item 13).** No document or
+   symbol file of the repository put slot 2 at 0x116740: `symbols/creatures.tsv` and
+   `creatures.md` name 0x116638, and `issues/stale-pointers.md` cites 0x116740 as the link
+   call, which it is. Applied as a note that says what 0x116740 is (row 30). The one place
+   that sets the address beside the function's name is the ledger (Q5).
+3. **Knock-back speeds (creature base, item 4).** `creatures.md` gave the four speeds
+   inside the death sequence, where they are right; the correction was applied as an
+   addition of the two tables it lacked (row 19).
+4. **Order of calls (creature base, item 2).** Reported as "not the order in the class
+   read here", which is one class. Applied with that qualification (row 17).
+5. **Boss-meter bit (creature base, item 6).** Reported against `creatures.md` C3 and
+   FINDINGS E11; `issues/arena-entry.md` carries the same statement in its own E11 and was
+   changed with it (row 22).
+6. **World queries.** The hand-over list had five statements of `engine.md` and one of
+   `formats/world.md`; section 12 of the reporting document has eleven and four, and all
+   were applied (rows 1–3, 9, 11 and 13 are the ones beyond the list). "Section 5 can be
+   marked Executed" was applied at the head of the section, for the sub-sections the
+   reporting document names and no further (row 14).
+7. **`world_findFreeSpot` (object system).** Reported against `objects.md`, with a remark
+   that `issues/arena-entry.md` section 2 says "within 6"; that sentence was corrected too
+   (row 36).
+8. **`draw-sim-leaks.md`, the ranking (live rig).** The order was not changed. The ranking
+   is by likelihood in an arena fight and the runs carry no evidence on that; what they
+   change is the severity of K1 and the status of all three, which is what the list now
+   says (row 47).
+
+Rows that go beyond the hand-over list but come from the same sections: 15 and 25
+(answered "not reached" and "not read" statements), 31 (the null read of
+`creature-tick.md` 4.3, listed in the hand-over without a target document), 35 and 41
+(additions to statements that were right), and in row 54 three sentences of
+`online-setup.md` — see the next paragraph.
+
+`online-setup.md` was to be changed only if it still said that no patch had been run on a
+live game. That sentence was gone: the "Suggested patch set" section had been brought up
+to date. But the same page still said in three other places that two machines had never
+been joined, that the live game was a single machine and that the K1 and K2 patches
+awaited testing, in contradiction with its own updated paragraph. Those sentences were
+changed (row 54) and nothing else on the page.
+
+Not applied:
+
+- **`tools/ee_emu.py`: an unaligned `sdl` / `sdr` / `swl` / `swr` is logged as a store of
+  the whole aligned word (creature base, section 17).** `tools/` is not edited by this
+  pass. It joins the three gaps listed in F4.
+- **The names proposed in `spec/world-queries.md` section 13** (`path_blockNodes`
+  0x18b6c0, `path_unblockNodes` 0x18b584, `path_goalTestRadius` 0x1844a4 and ten globals).
+  New symbols, not corrections; this pass has no symbol file of its own. The two functions
+  are named by address in rows 3 and 11.
+- **Every proposed ledger row** of the three reporting documents and of `live-rig.md` 7.6.
+  Q5.
+- **The "confirmed by execution" paragraph of `spec/object-system.md` 10.1** (the box
+  query, the reaper, the pool sample, teardown order, the start marker, `tasks_run`).
+  Confirmations of statements that stand; the documents were not marked up one by one.
+- **"The brief for this work located slot 2 at 0x116740" (creature base, item 13).** Not a
+  repository document.
+- **The sentence "no test patch has been run on a live game", and "rows V1–V8", at the
+  head of every other document.** The fourth pass put that wording into 49 documents
+  (F3). It is out of date for the project as a whole: two test patches have been run, on
+  two linked instances, and the live-game rows go to V13. This pass changed it only in
+  the five documents of its work list; 34 others still carry it (the search is the
+  first line of Q6; this file is the 35th hit), and `netcode.md` also still says in its
+  head that "two machines have not been joined". It is still true of each of those documents' *own*
+  patches, none of which has been run, so no statement about a document's own content is
+  wrong — but the sweep should be repeated.
+
+Noticed while editing, not reported by anyone:
+
+- `issues/kill-loot-xp.md`, K2: the verdict says the drop message "removes one of whatever
+  sits in the first cell" on every machine. In the scripted run the three logged
+  quantities changed only by the direct removal on the other machine (2, 2, 2 against
+  2, 1, 2 to the end), so the message removed nothing visible on either. That fits the
+  executed result on the ledger (the message's last byte is −1 and is used as a panel
+  index) better than the verdict's wording. Stated in the section as seen and not
+  followed.
+- `issues/kill-loot-xp.md`, K1: what the arena's own exit trigger does on a use press was
+  read by neither that document nor `draw-sim-leaks.md` ("one usable trigger whose
+  predicate only reads"). After the `strife` run it decides whether K1 in the arena is
+  silent or ends the session; both documents now say it is open.
+- `issues/draw-sim-leaks.md`: one `strife` run had a bus delay of 25 with jitter 10 and
+  K1's inputs and did not diverge; `live-rig.md` does not give its lead. The document
+  cites the run by its bus settings only.
+- `objects.md`, flag 0x800: the evidence column cites 0x14cc78, which is the constructor's
+  test that row 33 shows can never succeed. The row's statement stands on its other
+  address (0x14f094) and was left.
+- `symbols/engine.tsv` `terrain_raycast` says "23 callers"; `spec/world-queries.md` counts
+  28 call sites. Functions against sites, probably; not re-counted.
+
+### Q5. For the owners of files this pass does not edit
+
+`FINDINGS.md`:
+
+| Row | What it needs |
+|---|---|
+| ST3 | Names `Creature_takeDamage` and gives 0x116740 in its evidence column. 0x116740 is the `handle_link` call inside the function; the function, slot 2 of `Creature`, is 0x116638. Should read "0x116638 (the link is its call at 0x116740)" |
+| E11 | Add the second per-machine input: the boss-meter block runs only while the creature's active bit 63 is set (0x113980), and that bit comes from `obj_updateActive` (`spec/creature-tick.md` 4.10, 14) |
+| D26 | `live-rig.md` 7.6 proposes: still not run to a divergence — the menu does close in the death tick on the owner's machine, but no damage call fell into the rest of that tick. The row has nothing of it yet |
+| D5 (and engine P13) | `spec/world-queries.md` section 13: a search suspended on T0 and resumed gives the same result, path, marks and globals as one run in a single call (executed); between T0 = 7513 and 9000 a non-blocking `path_service` keeps calling `path_search`, one round per call (0x184830–0x184838, 0x184de4) |
+| D6 | `spec/object-system.md` 10.2: the switch `g_cullByCamera` is "mode is not 1" of this machine's camera object (0x1e4da8–0x1e4ddc), so during a net cutscene the choice between camera and players is itself per machine if camera modes can differ then (Unknown) |
+| D29, D35 | R15 carries the fact that `isNearView` is a square in x and y read from the player table; the two rows that depend on it still say "near the view" without it, and an open dialog (D38) narrows `obj_updateActive` but not `isNearView` |
+| D21 (and `objects.md` O1) | The reaper works from a sample: `g_poolFreeCount` changes only on frames divisible by 64 and teardown forces it to 100000, so the reaper is off from a level load to the next such frame (0x14b9ac–0x14b9c8, 0x14c4b4) |
+| R15 | Could add the consequence stated in `spec/object-system.md` 10.2: while the mask is 0x20000, an object with that flag that was `obj_delete`d stays on the delete list, in the grid and in the name table; whether anything deletes a prediction copy that way is Unknown |
+| new rows proposed and not found on the ledger | `spec/creature-tick.md` section 14: the `followPlayer` warp in `Creature_run` runs only while active bit 63 is clear, so a charmed follower can be moved to its leader on one machine and not another during a net cutscene — a position write in the D6 family (0x112f7c–0x113130). `spec/creature-tick.md` 4.3: the null read at 0x112b68 at the end of a `PathName` list, reachability Unknown. `spec/world-queries.md`: 0x185448 and 0x1857e4 have no caller |
+
+Rows checked and found already amended: K1, K2, E4, U4, D25, D34, V9–V13, R8–R10, R13–R15.
+
+`names.tsv`:
+
+| Row | What it needs |
+|---|---|
+| `world_createObject` | Nothing: the hand-over names `names.tsv`, but the file has no such row. The row is `symbols/objects.tsv` 0x14f6c8 and now has the four arguments |
+| 0x112948 `Creature_run` | "common creature run; … burn tick draws g_randSeed". Worth adding: returns 0 on every path and has no entry tests (R13); and the burn draw is made for a burning *player* only, on every 32nd frame, not for a monster (`spec/creature-tick.md` 4.8) |
+| 0x1e4d48 `gameSetObjectVis` | "first run task": it is the second of two run tasks with priority 0, registered after `runwater` (0x322a3c, 0x322a90) |
+| 0x14cb10 `GameObject_ctor` | optional: zeroes the flag word before the grid link, so its tests of 0x2 and 0x800 never succeed; looks `hide` up before the property list is stored |
+
+`tools/`: the fourth `ee_emu.py` gap (unaligned stores logged as whole words), with the
+three of F5.
+
+`docs/` as a whole: the head sentences of the fourth pass's sweep (last item of "Not
+applied" above).
+
+### Q6. Re-checking
+
+```
+grep -rln 'no test patch has been run\|V1–V8' docs/               # documents still carrying the fourth pass's head sentence
+python3 -I -B tools/symtab.py check                               # 0 conflicts, 0 malformed
+python3 -I -B tools/dis.py SLUS_209.73 184be4:184bf0              # path_service: the start node's mark 0xf00
+python3 -I -B tools/ps2elf.py SLUS_209.73 xref 18b6c0             # two callers (torch, fire); 18b584: one
+python3 -I -B tools/dis.py SLUS_209.73 1844f0:1845bc              # goal test 1: inside the radius, 0.98 < ray
+python3 -I -B tools/dis.py SLUS_209.73 1845bc:1846a4              # goal test 2: outside passes; ray < 0.98
+python3 -I -B tools/dis.py SLUS_209.73 1846a4:184798 | grep -E 'jal|3f40|c\.olt'   # goal test 3: world_raycast, 0.75
+python3 -I -B tools/dis.py SLUS_209.73 183da8:183e18 | grep mtc1  # terrain_testFlag1 returns a float
+python3 -I -B tools/dis.py SLUS_209.73 14aee4:14aef4              # a caller compares it as a float
+python3 -I -B tools/dis.py SLUS_209.73 18a5c0:18a740 | grep -E '3e80|4370|0x3e9'   # raycast: 0.25, 240.0, 1001
+python3 -I -B tools/dis.py SLUS_209.73 182e98:182ee0              # world_movePiece: stores into the chunk record only
+python3 -I -B tools/ps2elf.py SLUS_209.73 xref 185448             # nothing; the same for 1857e4 and for ptrs
+python3 -I -B tools/dis.py SLUS_209.73 113c08:113c48              # Creature_run: one return, result 0
+python3 -I -B tools/dis.py SLUS_209.73 2a8ba0:2a8c70 | grep jal   # Skelight_run: processDamage, run, updateActive, stepAnim, knockback
+python3 -I -B tools/dis.py SLUS_209.73 112d64:112db4              # charm timer 0 skips the follow block; bits cleared at expiry
+python3 -I -B tools/dis.py SLUS_209.73 113608:113630              # chill: 0x3d888888 per tick
+python3 -I -B tools/dis.py SLUS_209.73 113960:1139a4              # boss meter: sign test of the flag word (bit 63)
+python3 -I -B tools/dis.py SLUS_209.73 115770:115790              # moveToDirect: offset x and y each compared with zero
+python3 -I -B tools/dis.py SLUS_209.73 109340:1093cc              # avoidance target: D x 1200; t x |D|^2 against (2r)^2
+python3 -I -B tools/dis.py SLUS_209.73 1195f0:119608              # isAttackReady zeroes +0x318 without a target
+python3 -I -B tools/vtab.py SLUS_209.73 show Creature | head -3   # slot 2 = 0x116638
+python3 -I -B tools/dis.py SLUS_209.73 11673c:116748              # 0x116740: a call of handle_link
+python3 -I -B tools/dis.py SLUS_209.73 112b50:112b70              # follower: next point fetched and read, no null test
+python3 -I -B tools/dis.py SLUS_209.73 14cce4:14cd68              # GameObject_ctor: hide looked up before +0x2c is stored
+python3 -I -B tools/dis.py SLUS_209.73 109f10:109f40              # Creature_ctor: its own hide test
+python3 -I -B tools/dis.py SLUS_209.73 14cb90:14cb98              # GameObject_ctor zeroes the flag word
+python3 -I -B tools/ps2elf.py SLUS_209.73 xref 14f120             # obj_linkToGrid: one call, 0x13b58c
+python3 -I -B tools/dis.py SLUS_209.73 14b924:14b954              # runObjects: the flush is given g_excludeMask
+python3 -I -B tools/dis.py SLUS_209.73 14ae50:14ae60              # findFreeSpot: sample rejected, back to the draws
+python3 -I -B tools/dis.py SLUS_209.73 14b088:14b0b0              # findFreeSpot: radius^2 + r^2
+python3 -I -B tools/dis.py SLUS_209.73 322a84:322a98              # gameSetObjectVis registered with priority 0
+python3 -I -B tools/dis.py SLUS_209.73 14f6c8:14f720              # world_createObject: fourth argument untouched
+python3 -I -B tools/ps2elf.py SLUS_209.73 xref 14f3a8             # world_flushDeleteList: nothing; ptrs likewise
 ```

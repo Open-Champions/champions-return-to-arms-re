@@ -18,11 +18,11 @@
 0014a610	world_forEachGridObject	(fn): off-grid list, then every cell of grid A, then grid B; iterators use g_excludeMask
 0014a7c8	world_forEachRunObject	(fn): active list, the 15 slow lists, the 60 slowest lists
 0014ab80	world_collectInSphere	(radius, Vec3 *center, x, handleList): box query, keeps objects with flags & 0xd == 0 inside the sphere, appends them to a handle list
-0014acf8	world_findFreeSpot	(out, Vec3 *center, range, radius, bool *ok, anyHeight): up to 50 random points (3 g_randSeed draws per try) that are on terrain and clear of blocking objects; 17 callers
+0014acf8	world_findFreeSpot	(out, Vec3 *center, range, radius, bool *ok, anyHeight): up to 50 tries of a random point (3 g_randSeed draws per sample, samples repeated until one is inside the unit ball) that is on terrain and clear of blocking objects (dx^2 + dy^2 > radius^2 + r^2; height test one-sided); 17 callers
 0014bce0	objNames_add	(name, obj): strips quotes, inserts into the 512-slot name hash 0x5f76f8/0x5f7ef8
 0014be58	objNames_remove	(name, obj): clears the object's slot
 0014bf58	world_findObjectsByName	(name, out[], max): every object registered under name; 38 callers
-0014c0b8	world_findObjectsByClass	(className, out[], max): walks the three kinds of run list comparing the type-info name
+0014c0b8	world_findObjectsByClass	(className, out[], max): walks the three kinds of run list comparing the type-info name in its length-prefixed form (10GameObject, 7Player1); only objects on a run list are found
 0014c370	world_init	adds the runObjects run task (priority 10) and the drawObjects draw task (priority 21), clears grids and the name table
 0014c460	world_deleteAllObjects	level unload: deletes everything on the delete list, both grids and the off-grid list; g_worldTearingDown is 1 meanwhile
 0014c730	obj_removeProp	(obj, key): deletes the first 'key=' entry from the property list
@@ -44,13 +44,13 @@
 0014ef48	obj_moveOffGrid	moves the grid link to the off-grid list 0x5f76f0 (hidden objects)
 0014efa0	obj_isOffGrid	
 0014f028	obj_updateGridCell	relinks the grid node to the cell of the current position (grid B when flag 0x800); must follow every position change; 64 callers
-0014f120	obj_linkToGrid	first link; flag 0x2 objects go to the off-grid list
+0014f120	obj_linkToGrid	first link; flag 0x2 objects go to the off-grid list; only caller the prediction-copy clone (0x13b58c) - GameObject_ctor links inline with the flags already zeroed
 0014f200	obj_delete	deferred delete: leaves the run list, joins the delete list 0x5db4e0; destroyed at the start of the next runObjects; 50 callers
 0014f248	obj_runEveryFrame	moves the run link (+4) to the active list 0x5db3a8; 155 callers
 0014f290	obj_stopRunning	removes the run link; 26 callers
 0014f2b8	obj_runEvery60	moves the run link to the next of the 60 slowest lists (round robin 0x4039fc); 76 callers
 0014f330	obj_runEvery15	moves the run link to the next of the 15 slow lists (round robin 0x403a00); 7 callers
-0014f3a8	world_flushDeleteList	destroys every object on the delete list
+0014f3a8	world_flushDeleteList	destroys every object on the delete list (iterator with g_excludeMask); no caller and no stored pointer found - the flushes that run are inline copies in runObjects, world_loadRecords, world_deleteAllObjects
 0014f428	str_stripQuotes	
 0014f498	world_findObjectByName	first match of world_findObjectsByName; 30 callers
 0014f4c0	obj_getPropStr	(obj, key, nth): pointer to the value text or 0; 86 callers
@@ -58,7 +58,7 @@
 0014f688	loadStr_ptr	(offset): address inside the record string table 0x5f8704, 0 for a negative offset
 0014f6a8	world_setObjectFactory	writes g_objectFactory
 0014f6b8	world_setSaveFilter	writes g_saveFilter
-0014f6c8	world_createObject	(className, Vec3 *pos, angle): calls the factory and stores the class name at +0x34; 10 callers
+0014f6c8	world_createObject	(className, Vec3 *pos, angle, props): calls the factory, passing the property list in the fourth register through untouched, and stores the class name at +0x34; 10 callers
 0014f730	props_getInt	(char **list, key, nth): obj_getPropInt on a bare property list
 0014f850	props_getStr	(char **list, key, nth)
 0014f958	obj_assertGridLink	debug check of the grid link (object.cc asserts name the field gridReference)

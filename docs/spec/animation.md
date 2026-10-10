@@ -17,7 +17,7 @@ Evidence marks: **O** observed — read in the instructions at the address given
 **X** executed — additionally compared by the differential test (bit for bit unless a
 tolerance is stated); **I** inferred; **U** unknown. Nothing was run on a console, nor on
 the project's live game (the Play! emulator, which is not a PlayStation 2 and not PCSX2;
-`FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`): what was run there
+`FINDINGS.md`, "Run on the live game" (rows V1–V13) and `docs/issues/live-rig.md`): what was run there
 confirms only that `Player_animStep` is entered once per simulated frame. **X** therefore
 means one function at a time in `tools/ee_emu.py`, not a running game.
 

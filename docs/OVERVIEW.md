@@ -59,8 +59,9 @@ against: [startup](startup.md) (really the item system), [creatures](creatures.m
 ## Time and tasks
 
 `tasks_run` runs two kinds of task in priority order: *run* tasks, once per simulated frame,
-and *draw* tasks, once per displayed frame. Known run tasks: object visibility (-1), misc
-sync (1), `runObjects` (10), camera (11), death handling (20), HUD (50), arena (100),
+and *draw* tasks, once per displayed frame. Known run tasks: object visibility (0; the
+earlier version said −1 — it is registered with priority 0 at 0x322a8c, after the water
+task, also 0), misc sync (1), `runObjects` (10), camera (11), death handling (20), HUD (50), arena (100),
 scripts (125), cutscene (300), route plotting (1000). Known draw tasks: particles (15),
 world (30), inventory (50), cutscene (300).
 

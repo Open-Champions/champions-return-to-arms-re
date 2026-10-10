@@ -3,7 +3,7 @@
 00109d68	Creature_ctor	(maxHp, this, typeName, pos, angle, classDef, props): GameObject_ctor, sets flag 0x20, hp +0x228/+0x22c, home +0x3b4; reads wait/hide/ShowName/Dead/HomeRange/pointblankrange/visualrange/visualarc/Scale/MiniBoss/IgnoreDamage/light1/light2/ambient
 0010a230	Creature_init	post-constructor setup, 69 callers: height from model bounds, 'dead' and 'change%d' properties, weapon element properties, runs initScript unless a cutscene is active
 0010a620	Creature_setStats	(f0..f4, this, rollHp): f0 scales hit points +0x228/+0x22c (when rollHp), f1 -> +0xe4, f2 -> damage range +0xd0/+0xd2, f3 -> +0xd4, f4 -> +0xd8; uses the level scale 0x4f714c, player count, boss rank and difficulty; one GameObject_rand
-0010a9c0	Creature_filterState	(this, int *state): rewrites a requested AI state for rooted (5), stunned (0x13) and attack-cooldown (0x10) creatures; clears the target when the result is 0; 65 callers
+0010a9c0	Creature_filterState	(this, int *state): rewrites a requested AI state for rooted (5), stunned (0x13) and attack-cooldown (0x10) creatures; clears the target when the result is 0; while rooted a request other than 0, 5, 6-15 becomes 5 with a target and 0 without, and the stun and cooldown tests are skipped (docs/spec/creature-tick.md 12.3); 65 callers
 0010ab18	creature_drawPropLight	called only from Creature_draw with the parsed light1/light2 property values; body not read
 0010acc8	Creature_applyTintPreset	(this, preset 0-11): raises the two colour quads at +0x90/+0x98 to a preset; called from Creature_draw with +0xa0
 0010bb08	Creature_turnToward	slot 26 (mode, Vec3 *pos): turns facing +0x38 toward pos (mode 1 = away) with angular velocity +0x110 limited by turn rate +0xb0 and the slow amount; callers read a 16-bit result that was not identified
@@ -23,7 +23,7 @@
 0010d940	creature_bossRank	0 normal, 1 MiniBoss property (cflag bit 0), 2 for a fixed list of type names at +0x34 (AntQueen, Innoruuk, raloszek, ...)
 0010dbe0	creature_bossMusicName	type name +0x34 -> boss music stream name, or 0
 0010de10	Creature_isSameTeam	slot 22 (other): both have a team (player record +0x4c24, or charm team +0x310 while charmed) and they match; never true for the prediction copy
-0010ded0	Creature_pickTarget	slot 23 (force): target selection every 32nd frame staggered by serial +0x230; box query of HomeRange with the exclude mask forced to 8; score = slot 20 + last attacker + current target, nearest wins; leash to home +0x3b4
+0010ded0	Creature_pickTarget	slot 23 (force): target selection every 32nd frame staggered by serial +0x230; box query of HomeRange with the exclude mask forced to 8; score = slot 20 + last attacker + current target, nearest wins; leash to home +0x3b4; a scan starts from nothing (a target the query does not return is dropped), and force with a current target takes any other candidate whatever its score (docs/spec/creature-tick.md section 6)
 0010e2c0	Creature_pickAlly	slot 24: same scheme for the ally handle +0x238 using slot 21, box around home
 0010e658	Creature_canSeeTarget	slot 25 (force): target inside pointblankrange all round, or inside visualrange within visualarc
 0010eaa8	creature_findClearHeading	(dist, this, pos, heading, clockwise): rotates the heading in 0x800 steps (max 32) until three parallel sweeps are clear
@@ -45,7 +45,7 @@
 00115eb8	Creature_applyKnockback	(scale, this): pushes along +0x2e0 with speed +0x2e8 (decays by 2); players get none in a net game; dust uses GameObject_rand; 67 callers
 001162b0	Creature_stepAnim	(rate, this): advances the animation at +0x114, converts root motion into +0xbc/+0xc0/+0xc4, scaled by slow amount and +0xdc - the displacement only: under a slow amount of 1..60 the yaw at +0xc4 is multiplied by the integer part of (60 - slow)/60, which is 0 (0x11648c; executed, docs/spec/animation.md 7.1); steps only while bit 63 of +0xa8 (active) is set; 69 callers
 001164c0	Creature_requestPath	(x, radius, this, dest, mode): queues one of four path searches into the waypoint buffer +0x23c and marks the path pending (+0x2bc = 16)
-00116638	Creature_takeDamage	slot 2 (amount, this, attacker, flags): hp -= amount, pending +0xc8 += amount, +0x2dc |= flags, hit angle +0x2e0, last attacker handle +0x2e4 (owner of a 0x80 object)
+00116638	Creature_takeDamage	slot 2 (amount, this, attacker, flags): hp -= amount, pending +0xc8 += amount, +0x2dc |= flags, hit angle +0x2e0, last attacker handle +0x2e4 (owner of a 0x80 object), linked by the handle_link call at 0x116740, which is a call site inside this function and not the slot entry
 00116780	Creature_saveState	slot 9 (buf): variant +0xe8, hp fraction, animation name when dead, flag bits, charm timer; returns the size
 00116920	Creature_loadState	slot 8 (buf): inverse of Creature_saveState; a dead record puts the creature in state 0x14 with flags 0x2009
 00116bd8	Creature_interact	slot 14 (playerSlot): 'shop' opens the shop for a local slot, otherwise sets g_scriptActivePlayer and runs dialogScript when the player stands in front

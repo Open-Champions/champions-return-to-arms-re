@@ -6,13 +6,16 @@ it is known. The server side is in [lobby-protocol.md](lobby-protocol.md).
 
 What has changed since that sentence was first written: the game itself now runs in this
 project, in the Play! emulator — not on a PlayStation 2 and not in PCSX2 — and what was run
-there is listed in `FINDINGS.md`, "Run on the live game" (rows V1–V8) and
-`docs/issues/live-rig.md`. One result bears on this page: the executable has a developer
+there is listed in `FINDINGS.md`, "Run on the live game" (rows V1–V13) and
+`docs/issues/live-rig.md`. Two results bear on this page. The executable has a developer
 LAN start that needs no network menu, no sign-in check and no lobby (boot argument `--net`,
-row V6), and one machine was taken into a real lockstep net game that way. That path
-bypasses every step below, so none of them — network set-up, sign-in, the host name, the
-lobby, hole punching — has been exercised; whether a console or PCSX2 can pass that
-argument was not tried; and two machines have not been joined.
+row V6). And two instances of the emulator have been joined that way into one lockstep
+game (rows V9–V12, `live-rig.md` section 7): they stay in sync under ordinary play, the
+two per-machine branches K1 and K2 were reproduced, and the patch for each removes it.
+That path bypasses every step below, so none of them — network set-up, sign-in, the host
+name, the lobby, hole punching — has been exercised, and the two instances exchange their
+packets through the test rig, not through a network; whether a console or PCSX2 can pass
+that argument was not tried.
 
 ## What the game does when you choose online play
 
@@ -58,9 +61,11 @@ The network menu is a state machine (the function at 0x33ed70, state word at obj
 
 Play is deterministic lockstep: each machine runs the whole simulation itself and they only
 exchange controller input. Anything that makes one machine compute a different number puts
-it "OUT OF SYNC". From reading the code (nothing in this list has been tested on a running
-game; the live game the project has run so far is a single machine, which cannot go out of
-sync with anybody):
+it "OUT OF SYNC". From reading the code. Of this list only the K1 and K2 item has been
+seen on a running game: two linked emulator instances went out of step in exactly those
+two ways (`docs/issues/live-rig.md` section 7.3). Those instances are two copies of one
+build on one host, so they cannot show any of the version, arithmetic or hardware
+differences the other items are about:
 
 - **Same disc version.** Everything in this project is for SLUS-20973, version 2.00.
 - **Same emulator version, and the same arithmetic settings**: EE/FPU rounding, EE/FPU
@@ -78,9 +83,13 @@ sync with anybody):
 - **No `debug.sht` on anyone's memory card**, and in a game with memory-card characters,
   take turns at save points and never leave a save that ended in a card error unrepeated
   (FINDINGS B9–B11).
-- **Habits that avoid two known per-machine branches** until the patches for them are
-  tested: do not press "use" and then the D-pad spell selector in quick succession, and do
-  not open the inventory right after pressing a potion button (FINDINGS K1, K2).
+- **Habits that avoid two known per-machine branches** on any machine that does not have
+  the patches for them: do not press "use" and then the D-pad spell selector in quick
+  succession, and do not open the inventory right after pressing a potion button (FINDINGS
+  K1, K2). Both branches are confirmed on the running game, and so is the first one's
+  worst case — at a level exit one machine leaves and the other stays. The two patches
+  removed them on two linked Play! emulator instances; they have not been run in PCSX2 or
+  on a console (see the next section).
 - **Do not change anything in the pause menu's options during an online game** if any
   player has remapped buttons in the game's own controls screen; simplest is for everyone to
   keep the game's default controls and remap in the emulator instead (FINDINGS U1).
@@ -132,5 +141,9 @@ game's controls screen does not take effect.
 Everything on the game's side: that the emulator's DNS override is honoured, that the game
 gets past the sign-in step, that two real clients find each other, and that play then
 stays in sync ([VALIDATION.md](VALIDATION.md) describes how to test the last part). The
-live rig (`docs/issues/live-rig.md`) has shown only that one machine reaches and runs a
-lockstep net game through the developer LAN path; it checks none of these four.
+live rig (`docs/issues/live-rig.md`) checks none of the first three: its machines start
+through the developer LAN path and exchange packets inside the rig. On the fourth it has
+a partial answer (section 7 there): two copies of one emulator build stay in sync through
+thousands of ticks of random play and through twelve runs of the Drundar arena, and the
+only divergences found were K1 and K2. Whether two *different* machines — two PCs, a PC and
+a console — stay in sync is still unchecked.

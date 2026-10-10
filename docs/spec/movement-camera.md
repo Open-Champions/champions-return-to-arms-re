@@ -500,6 +500,16 @@ Functions: `terrain_collectElements` 0x183248, `terrain_sweepCircle` 0x185a40,
 `world_collectObjectsInBox` 0x14a928, `obj_updateGridCell` 0x14f028,
 `obj_moveWithCollision` 0x14d4b8, `Creature_moveBy` 0x113c48, `obj_moveAndCollide` 0x1509f8.
 
+**Executed since, with no error found** (`docs/spec/world-queries.md` section 12): 5.2
+(collecting elements), 5.3 (the sweep, operand for operand, including the quarter-distance
+normal), 5.4 (the slide), the ground and gravity lines of 5.5, 5.8 (`terrain_heightBelow`)
+and the terrain part of 5.10 were run in `tools/ee_emu.py` on real level files and agree
+bit for bit with that document's model. So the *(dec)* marks on 5.2 and 5.10 no longer
+mean an unchecked operand order for those parts. The object parts of 5.5, 5.9 and 5.10
+were not run there; `Creature_moveBy` (5.6) is executed in `docs/spec/creature-tick.md`
+section 8 and the box query in `docs/spec/object-system.md` 4.3. Four additions from that
+run are noted in place below (5.3 twice, 5.4, 5.10).
+
 ### 5.1 Shapes
 
 Every mover is an upright cylinder: radius +0x1c around (x, y), from height z to z + (+0x20).
@@ -594,7 +604,15 @@ Points a re-implementation is likely to get wrong:
 - With a purely vertical step `len` is 0 and `inv = 1.0 / 0`. The console's divide gives the
   largest finite float, not infinity (section 8). `Creature_moveBy` never gets there (5.6);
   `obj_moveWithCollision` can, for a player moved with a vertical velocity only. [O] tests;
-  [U] whether any skill does that.
+  [U] whether any skill does that. Executed since (`docs/spec/world-queries.md` section 7):
+  the case is worse than a wrong result. With a blocking sample under the circle the
+  returned time is −0x7fffffff, and the slide of 5.4, which has no bound on its step, then
+  asks for a step of the order of 10^35 units and walks the whole index range of every
+  element it collected.
+- For an element that is not rotated the cosine is not 1.0: `f32(32767) × 0x38000100` is
+  0x3f7fffff truncated (1.0 only if rounded to nearest), in 5.3–5.8 alike. A mover an exact
+  multiple of 4 units from an element's origin can therefore fall on a different sample
+  than exact arithmetic gives (`world-queries.md` section 4.1; executed under both rules).
 
 ### 5.4 Slide — `hit = world_slideMove(r, &pos, &delta, mask, &normalOut)`
 
@@ -614,7 +632,10 @@ pos = P;  normalOut = N (if wanted);  return hit
 ```
 
 Sliding along a wall is this loop: what is left of the step is re-aimed along the contact
-tangent and tried again, up to ten more times.
+tangent and tried again, up to ten more times. `N` keeps the value of the last blocked
+sweep; when no sweep was blocked, `normalOut` receives an uninitialised stack slot
+(Observed in `docs/spec/world-queries.md` section 7; `Creature_moveBy` uses the normal only
+after a reported hit, the other callers were not checked).
 
 ### 5.5 Players and plain objects — `bits = obj_moveWithCollision(obj, vel, ignore, skipCreatures)`
 
@@ -783,7 +804,10 @@ for each o: skip flags 0x201, flag 0x20000000, obj itself and obj's owner (+0x4c
 `Projectile_ctor` 0x150e48 sets radius 12. What each projectile class does with `bits`, its
 velocity and any gravity is in the class's run function (26 callers of this routine; only
 `MissileWeapon_run` 0x15153c was opened: it passes the stored velocity at +0x1b0 unchanged).
-The exact loop bounds of the back-off were read from the decompile only.
+The exact loop bounds of the back-off were read from the decompile only when this was
+written; executed since (`docs/spec/world-queries.md` 8.3): with the truncated 0.1 the loop
+makes at most 20 tries (k = 0.1 … 1.9999989), and the last try is kept also when none was
+clear.
 
 ## 6. Monster movement
 
@@ -857,11 +881,11 @@ A monster also moves **along its facing**, not toward the point. Turning through
 
 | Helper | Aim point and return |
 |---|---|
-| `Creature_moveToDirect(c, &p)` | returns 1 when within one radius of `p` (3-D). Every 8th frame (staggered by serial, `(frame ^ serial) & 7 == 0`), within two radii and facing more than a quarter turn away, also returns 1. Every 32nd frame, unless inert, the steering offset +0x2ec is recomputed by `Creature_computeAvoidanceOffset`; a non-zero offset replaces the aim point by position + offset |
+| `Creature_moveToDirect(c, &p)` | returns 1 when within one radius of `p` (3-D). Every 8th frame (staggered by serial, `(frame ^ serial) & 7 == 0`), within two radii and facing more than a quarter turn away, also returns 1. Every 32nd frame, unless inert, the steering offset +0x2ec is recomputed by `Creature_computeAvoidanceOffset`, with the ray length `min(distance, radius + 10)`; the offset replaces the aim point by position + offset only when its x **and** its y are both non-zero (two tests, 0x115778 and 0x115788; the earlier version said "a non-zero offset"; executed, `docs/spec/creature-tick.md` 9.4) |
 | `Creature_moveTo(c, &p)` | path following, 6.4. Returns 1 on arrival |
 | `Creature_moveToTarget(c)` | `moveTo` a point on the target's rim: target position + (cos, sin)(bearing from target to c) × (target radius + 5). With no target, sets AI state 0 |
 | `Creature_moveToDest(c)` | `moveTo` the destination +0x104; sets AI state 0 on arrival; after four failed path searches picks a random point near home |
-| `Creature_fleeFrom(c, threat, kind)` | keeps a flee point +0xf8 (a random point within 300 of home, or home itself when the creature is near the edge of its home range); steers by the avoidance offset when there is one, otherwise by waypoints of a path requested from the threat's position with search type 1 or 2 and radius 600 |
+| `Creature_fleeFrom(c, threat, kind)` | keeps a flee point +0xf8 (a random point within 300 of home, or home itself when the creature is near the edge of its home range); steers by the avoidance offset when there is one, otherwise by waypoints of a path requested from the threat's position with search type 1 or 2 and radius 600. Not stated in the earlier version and executed since (`docs/spec/creature-tick.md` 9.4): the avoidance offset is refreshed on every staggered 8th frame, and on the waypoint branch the aim that results is **written back as the flee point** |
 | `Creature_settle(c)` | `Creature_moveBy` with zero velocity and object flag 0x8000000: if anything is touched the old position is restored |
 
 ### 6.4 Following a path — `Creature_moveTo` *(dec)*
@@ -884,6 +908,11 @@ side-step deadline +0x2d8, creature clock +0x300.
    otherwise 1200 units along the facing turned by 0, +0x2000 or −0x2000 according to two
    side probes), and on other frames `p` itself; if it does not face it, the steering point
    is replaced by `p` only when `p` is the farther of the two.
+   Two details of that parenthesis are wrong, executed in `docs/spec/creature-tick.md`
+   section 10: the straight-line point is `pos + (p − pos) × 1200` — 1200 times the
+   vector, not 1200 units along it (0x109344–0x109380); and "more than two radii away" is
+   the test `t × |D|² < (2 × radius)²` failing, with the probe's fraction `t` not squared
+   (0x1093c0–0x1093c8). The turned headings are 1200 units along the facing, as written.
 4. **With a waypoint**: if the straight line to `p` is clear, drop the path and aim at `p`.
    Otherwise advance through waypoints (at most 16 per call) while the current one is within
    24 units (576 = 24²), or the creature has passed it (dot product of "to next" and "to
@@ -895,7 +924,9 @@ side-step deadline +0x2d8, creature clock +0x300.
    without progress and no side-step is running: side-step deadline = clock + 30 and the
    steering point becomes 1200 units along facing ± 0x6000, the sign from one draw of the
    creature's own generator. When a side-step ends with still no progress for 300 ticks:
-   `world_findFreeSpot` (shared seed) within 72 units and teleport there.
+   `world_findFreeSpot` (shared seed) within 72 units and teleport there. "Ends" is exact:
+   the test is that the clock **equals** the side-step deadline, so the teleport can happen
+   only on that one tick (executed, `docs/spec/creature-tick.md` 9.5).
 
 Waypoints are path-grid node positions (multiples of 24 units) written by `path_search`;
 `docs/engine.md` describes the search. The path result arrives through virtual slot 7, which
@@ -904,10 +935,15 @@ resets the index to 0 and counts failures at +0x2c4 (0x11a260).
 `Creature_computeAvoidanceOffset` 0x108a60 casts three forward rays (centre and both edges,
 13 units up), remembers a side in byte +0x2f8, and returns an offset along facing ∓ 12000
 units of angle scaled by the radius; its side-selection logic and the exact length were read
-only in outline. [U] for the exact rule.
+only in outline. [U] for the exact rule when this was written; answered and executed in
+`docs/spec/creature-tick.md` section 10: the offset is 2 × radius long, along facing − 12000
+for side 1 and facing + 12000 for side 2, and the side is chosen from the three forward
+rays and two side rays of length radius + 5 by the three rules listed there (a side once
+chosen is kept until all three forward rays are clear).
 
 The follower of a level path (`PathName`) and the `followPlayer` logic are in
-`Creature_run` and were not read.
+`Creature_run` and were not read here; both are specified and executed in
+`docs/spec/creature-tick.md` 4.3 and 4.5.
 
 ## 7. The camera
 
@@ -1163,15 +1199,19 @@ repair without changing the simulation for every player.
 ## 10. Not reached
 
 - `Creature_run` beyond the slow amount: the `PathName` follower, `followPlayer`, the
-  drawing-height smoothing at +0x3c.
+  drawing-height smoothing at +0x3c. (Reached since: `docs/spec/creature-tick.md` section 4.)
 - Per-class movement: each monster's run function (order of turn, animation and move; which
   helper; move speed +0xb8 and turn rate +0xb0 values), and each projectile class's velocity,
   gravity and reaction to `obj_moveAndCollide`.
 - `Creature_computeAvoidanceOffset` side selection; `creature_findClearHeading` 0x10eaa8;
-  `Creature_pickWanderDest` 0x119618; `Creature_randomPointNearHome` 0x110b58.
+  `Creature_pickWanderDest` 0x119618; `Creature_randomPointNearHome` 0x110b58. (Reached
+  since: `docs/spec/creature-tick.md` sections 10 and 11.)
 - `terrain_raycast` 0x18a5c0 and `world_raycast` 0x18ad94 (used by the probes and the
-  camera), `world_findFreeSpot` 0x14acf8, `water_test` / `water_disturb`.
-- The path search itself and `path_request*` (`docs/engine.md` has them).
+  camera), `world_findFreeSpot` 0x14acf8, `water_test` / `water_disturb`. (Reached since,
+  the water routines excepted: the two rays in `docs/spec/world-queries.md` section 9,
+  `world_findFreeSpot` in `docs/spec/object-system.md` 4.8.)
+- The path search itself and `path_request*` (`docs/engine.md` has them; specified and
+  executed in `docs/spec/world-queries.md` section 10, which corrects `engine.md`).
 - `anim_advance` — how the root delta is produced; `docs/formats/anim-audio.md` and
   `docs/engine.md` cover it. Root motion is taken here as an input.
 - The stick and yaw codecs (specified in `docs/netcode.md`; not re-derived).

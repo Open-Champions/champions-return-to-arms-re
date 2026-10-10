@@ -6,8 +6,8 @@ every simulated frame, every damage call with its arguments, and every draw from
 generator in order. It was written from the decompile of each function listed, with the
 disassembly consulted wherever the decompile was ambiguous. Nothing here was run on a
 console or an emulator. That still holds: the emulator the project now runs the game in
-(Play!, not a PlayStation 2 and not PCSX2; `FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`)
-has not been used to look at a skill, and no test patch has been run on a live game.
+(Play!, not a PlayStation 2 and not PCSX2; `FINDINGS.md`, "Run on the live game" (rows V1–V13) and `docs/issues/live-rig.md`)
+has not been used to look at a skill, and the only test patches run on a live game are the two for K1 and K2 (FINDINGS V10, V11).
 
 Every statement is **Observed** (read at the address given) unless it is marked *Inferred*
 or *Unknown*. Pseudo-code is mine; it is not decompiler output. Numbers are decimal unless

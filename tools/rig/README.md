@@ -19,6 +19,7 @@ in this directory; what the rig has shown so far is in `docs/issues/live-rig.md`
 | `examples/pair-start.rig` | script: two joined machines, power-on to one lockstep net game |
 | `examples/pair-arena.rig`, `pair-k1.rig`, `pair-k2.rig` | scripts for a joined pair: into the arena and through its opening; the two divergences found so far |
 | `compare.py` | lines up the tick logs of two machines and finds the first difference; diffs two memory dumps |
+| `fuzz.py` | runs many joined pairs unattended on seeded random input and groups the divergences |
 
 ## Build
 
@@ -78,6 +79,7 @@ directory; keep that, and any logs and dumps, under `local/rig-out/`.
 | `--net-shim <a.b.c.d>`, `--net-log <file>`, `--net-log-all` | the libnet shim (below) |
 | `--machine A\|B`, `--link listen:<path>\|connect:<path>`, `--bus delay=N,jitter=N,loss=N,seed=N` | two joined machines (below) |
 | `--tick-log <file>`, `--tick-watch <name=expr:type>`, `--tick-at <addr>` | one row per lockstep tick (below) |
+| `--fp-round nearest\|up\|down\|zero` | force a floating-point rounding mode on this machine (Play! runs the EE with round-toward-zero); for float-mismatch experiments |
 | `--no-code-protect`, `--video-thread`, `--throttle`, `--play-logs` | emulator behaviour, see `--help` |
 
 A **frame** is one vertical blank of the emulated machine. Frame numbers count from the
@@ -193,6 +195,7 @@ repeats exactly from the same states, scripts and `--bus` seed.
 `--bus delay=N,jitter=N,loss=N,seed=N` says what happens to a datagram that crosses:
 `delay` frames are added to every one, up to `jitter` more to each (which reorders them),
 and `loss` in a thousand are dropped; all of it is drawn from a generator seeded by `seed`.
+`stallat=F,stall=N` is an outage: nothing sent during the N frames from frame F crosses.
 With no `--bus` a datagram sent in one frame can be received in the next.
 
 The launcher does the pairing:
@@ -230,6 +233,37 @@ and `--baseline` leaves out every byte that already differed at an earlier tick 
 tick logs still agreed. Two machines in sync differ in about half a megabyte (pose
 buffers, render lists, the peer table, the order of some heap blocks), so without a
 baseline the diff is mostly that.
+
+### Fuzzing two machines
+
+```
+python3 -I -B tools/rig/fuzz.py --states local/rig-out/run1 --out local/rig-out/fz \
+    --seeds 200:36 --frames 12000 --jobs 5 --try-patches \
+    --levels strife,drunare,hub --groups "move,fight,potion,use,dpad,select,start" \
+    --bus "none;delay=3,jitter=3,loss=50"
+```
+
+runs one pair per seed from the two states (`a.zip`, `b.zip` in `--states`, as left by
+`examples/pair-start.rig`). Seed number *i* takes level *i* mod L, input mix *i* mod M and
+bus setting *i* mod B from the lists (lists are separated by `;`, except levels). A pair
+whose level is not the states' own is sent there by writing the pending level in one
+tick on both machines. Each pair gets fresh copies of the two memory-card directories,
+plays `fuzz <seed> <frames> <mix>` on both controllers, and is compared with
+`compare.py`. A pair that differs is run again to see that it repeats, and with
+`--try-patches` once more per "Net test" section of the patch file (the lag sections
+excepted: they move the timing, which hides a coincidence without fixing it) to see
+which section removes the difference.
+
+By default the sections for the two known causes, K1 and K2, are applied on both machines
+(`--patches none`, or `--patches "name;name"`, changes that). `--prelude FILE` puts script
+lines before the fuzz; `--extra "…"` passes options to `rig.py pair` (for example
+`--extra "--b-arg --fp-round --b-arg nearest"`); `--keep` keeps the logs of pairs that
+agreed too.
+
+The printed summary gives pairs, ticks, and per class of divergence — the shared columns
+that differ at the first differing tick, with player numbers folded together — the pairs
+in it and the sections that removed it. `OUT/summary.tsv` has one line per pair with the
+first tick of every differing column; the logs of divergent pairs stay under `OUT/`.
 
 ### Interactive sessions
 

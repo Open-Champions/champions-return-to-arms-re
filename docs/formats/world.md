@@ -12,7 +12,7 @@ file on the disc, `<LEVEL>.TEX`, which the world refers to by cell and offset.
 
 Everything was read from the executable `SLUS_209.73` and from level files unpacked from the
 disc; nothing was run. That still describes this document: the project's live game
-(the Play! emulator, which is not a PlayStation 2 and not PCSX2; `FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`)
+(the Play! emulator, which is not a PlayStation 2 and not PCSX2; `FINDINGS.md`, "Run on the live game" (rows V1–V13) and `docs/issues/live-rig.md`)
 loads levels, but it runs with no video and no statement about the format was compared
 with it. The 119 `.world` files on the disc (one per `.GOB` that has a level)
 were all parsed. Each statement is marked:
@@ -353,7 +353,7 @@ element indices ended by −1. D: an element is listed in every cell its rectang
 | 0x00 | s16 × 4 | rectangle in world units: min x, min y, max x, max y. D: contains every sample that has ground (all files; in three levels measured, with 4 to 12 units to spare) |
 | 0x08 | u32 | 0; run time visit stamp |
 | 0x0c | u32 | offset of the height field |
-| 0x10 | u32 | flags: 1 mirrored; 2 ignored (run time, set for an open door); 4 the field has flagged samples, so the "everything here is lower" shortcut must not be taken (D: bit 4 is set exactly when a sample has flag bits) |
+| 0x10 | u32 | flags: 1 mirrored; 2 ignored (run time, set for an open door); 4 the field has flagged samples, so the "everything here is lower" shortcut must not be taken (D: bit 4 is set exactly when a sample has flag bits). Executed (`docs/spec/world-queries.md` sections 6, 9.1): that is all the bit does — in the sweep it disables the shortcut always, in the ray only when the ray was given a flag mask |
 | 0x14 | s32 × 3 | position x, y and height offset z, world units |
 | 0x20 | s16 × 2 | cosine, sine × 32767 |
 
@@ -392,7 +392,11 @@ How the engine uses the samples — O, summarised:
   its grid position. It stops the circle when its ground height is at least 12 above the
   mover's base, or when one of its flags is in the mover's mask. So steps under 12 units
   are walked up, anything higher is a wall, and walls need no geometry of their own.
-- *Ray* (`terrain_raycast` 0x18a5c0): marches 240 units at a time against the same samples.
+- *Ray* (`terrain_raycast` 0x18a5c0): against the same samples. The earlier version said it
+  "marches 240 units at a time"; executed (`docs/spec/world-queries.md` 9.1), 240 units is
+  the segment for which elements are collected, and each element is then marched one
+  4-unit sample at a time. Flags do not block the ray: each flag bit that is in the
+  caller's mask adds 65536 to the sample's height, so a flagged sample is a very high wall.
 
 D: rasterising all elements of a level this way gives a clean floor plan (rooms, corridors,
 door lines, pillars) — `world_info.py --flags-pgm`.
@@ -400,13 +404,15 @@ door lines, pillars) — `world_info.py --flags-pgm`.
 ## Path grid
 
 O 0x183e40, 0x184798. One u32 per node, row by row. Node (i, j) is the world point
-((originX + i) × 24, (originY + j) × 24); a position is snapped to the nearest node.
+((originX + i) × 24, (originY + j) × 24). Only the **start** of a search is snapped to the
+nearest node; the goal is used as a point with a radius (the earlier version said "a
+position is snapped"; executed, `docs/spec/world-queries.md` 10.3, 10.4).
 
 | Bits | Meaning |
 |---|---|
 | 0–7 | which neighbours can be walked to, in the order (−1,−1), (0,−1), (+1,−1), (+1,0), (+1,+1), (0,+1), (−1,+1), (−1,0) |
-| 8–15 | 0 in the file; search mark at run time |
-| 16–31 | 0 in the file; non-zero blocks the node at run time |
+| 8–15 | 0 in the file; search mark at run time (link number + 1; 15 for the start node) |
+| 16–31 | 0 in the file; at run time a block counter, 0–16, raised and lowered by the torch and fire objects (0x18b6c0, 0x18b584); a node with a non-zero counter is never entered. The earlier version said "non-zero blocks the node", which is the effect but not the coding (`world-queries.md` 10.1) |
 
 D (6,250,065 nodes): only bits 0–7 are ever set in a file, no link leaves the grid, and
 1.7% of the 31 million links have no link back (one-way drops).

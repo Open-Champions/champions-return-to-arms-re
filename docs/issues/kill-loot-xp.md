@@ -11,17 +11,30 @@ when it was written. Since then parts of the chain have been executed in `tools/
 (`docs/issues/dynamic-tests.md` group k; marked **executed** where folded in), and one
 detail has been seen on the live game — the Play! emulator, which is not a PlayStation 2 and not PCSX2
 (`docs/issues/live-rig.md` 4c; `FINDINGS.md`, "Run on the live game", row V5): offline, a
-potion button removes one potion from the bag and nothing at full health. The per-machine
-branch of K2 is a net-game matter and was not exercised; no kill, drop or experience award
-was looked at. Claims are **Observed** (read at the address given), **Inferred** or **Unknown**. Patch
-proposals are **untested**; no test patch has been run on a live game.
+potion button removes one potion from the bag and nothing at full health.
+
+**Result of 2026-10-10, on the running game** (`docs/issues/live-rig.md` section 7.3;
+`FINDINGS.md` rows V10, V11): two instances of the game, linked through the developer LAN
+start, were fed seeded random input, and the two divergences that turned up by themselves
+are K1 and K2 of this document. Both are now **Ran**, and each has been reproduced from a
+short script. K1 showed a consequence this document did not foresee: at a level exit one
+machine changed level and the other did not, and both then flagged the other out of sync.
+K2 was silent, as written. The test patches P1 (K1) and P2a + P2b (K2) were applied on
+both machines and each removed its divergence. Limits: the two machines are two copies of
+the same Play! emulator build on one host — not a PlayStation 2, not PCSX2 — started with
+level-1 placeholder characters; no kill, drop or experience award was looked at for its
+own sake, and K3–K5 were not exercised.
+
+Claims are **Observed** (read at the address given), **Inferred** or **Unknown**, and
+**Ran** where the paragraph above applies. Of the patch proposals P1, P2a and P2b have
+been run on that pair and P3 is **untested**; none has been run on a console or in PCSX2.
 
 ## Result in one table
 
 | # | Finding | Kind | Needs | Rank |
 |---|---|---|---|---|
-| K1 | `Player_run` skips `Player_interact` while a per-slot flag at 0x41b818 is set. Only HUD draw code on the owning machine writes that flag (D-pad held = quick-spell selector open). The other machines always call it | Observed | a "use" press followed by the D-pad within the input delay, next to something interactable | 1 |
-| K2 | `Player_usePotion` does not take the potion out of the bag on the owner's machine when that machine's inventory is open; it sends a drop message instead. Every other machine takes it out directly, and then also runs the message | Observed | a potion button followed by the inventory button within the input delay | 2 |
+| K1 | `Player_run` skips `Player_interact` while a per-slot flag at 0x41b818 is set. Only HUD draw code on the owning machine writes that flag (D-pad held = quick-spell selector open). The other machines always call it | Observed; **Ran** (two linked machines: a one-sided level change at an exit, then out of sync on both) | a "use" press followed by the D-pad within the input delay, next to something interactable | 1 |
+| K2 | `Player_usePotion` does not take the potion out of the bag on the owner's machine when that machine's inventory is open; it sends a drop message instead. Every other machine takes it out directly, and then also runs the message | Observed; **Ran** (two linked machines: potion counts differ, no out-of-sync flag) | a potion button followed by the inventory button within the input delay | 2 |
 | K3 | The stats page (draw code, owner's machine) calls `Player_recalcDamage`, which writes the record's attack rating and weapon damage (+0xcc, +0xd0, +0xd4). For a dual wielder the last call is for the off-hand weapon | Observed; effect Inferred small | a reader of those fields before the next per-tick recompute | 4 |
 | K4 | The stats and skill pages call `player_recalcStats`, which recomputes derived fields of **every** player's record and object on that machine | Observed; found idempotent | a derived field that is stale in lockstep (none found) | 6 |
 | K5 | In-flight loot is deleted when 120 units below the first alive player; a failed `pool_new` silently drops a roll's object, and an item whose landing conversion fails is lost | Observed; already G19 and D21 | a wrong alive list, or a full pool | 3, 5 |
@@ -31,7 +44,10 @@ loot roll, the dropped objects' physics, gold pick-up and item pick-up are compu
 machine from shared state, in the same order. No step was found that differs between machines
 on every run. K1 and K2 are real per-machine branches inside the tick, but each needs two
 button presses within the input delay; neither explains "every time" on its own. See
-"Ranked list" and "What to record on two machines".
+"Ranked list" and "What to record on two machines". The running game agrees on both
+counts: random input tripped K1 once and K2 once in six `strife` runs, and neither in
+twelve arena runs, one of which had those inputs unpatched (`docs/issues/live-rig.md` 7.3,
+7.5).
 
 ## Facts the rest depends on
 
@@ -382,12 +398,38 @@ for any other object whose interact changes shared state. In `drunare` the only
 interactables are dropped items and the exit trigger, so there K1 produces a silent bag
 difference rather than an immediate mismatch. **Inferred** from the Observed gate.
 
+**Ran, 2026-10-10** (`docs/issues/live-rig.md` 7.3, run base4 and `examples/pair-k1.rig`;
+FINDINGS V10). The gate and the one-sided call are confirmed, and the exit case of the
+last paragraph is not the harmless one. Two linked machines in `strife`, no added delay,
+a lead of 5 on the owner's machine, the owner's player standing at a level exit:
+
+| Tick | Owner's machine | Other machine |
+|---|---|---|
+| 2028–2031 | `Player_interact` entered for the slot from `Player_run` every tick | the same |
+| 2032 | 0x41b81c (the slot's selector word) becomes 1 from the raw D-pad; the call stops | word stays 0; the call goes on |
+| 2033 | the lockstep pad shows the use press, sampled five frames before the D-pad; no call | the call is made; the level script reaches `script_newWorld` 0x143dd0 and `g_pendingLevel` 0x41b6d0 is written |
+| 2034 | still in `strife` | in the next level, with a different shared seed |
+| 2036–2037 | each machine sets the other's out-of-sync byte; later each drops the other | |
+
+So the first shared address to differ was `g_pendingLevel`: **one machine changed level
+and the other did not**, and the session ended for both. That is worse than "an item lies
+on one screen only" and it needs no chest: any exit that a use press triggers will do.
+Whether the arena's own exit trigger can do the same during the fight depends on what its
+script does when used, which was not read here; the run was in `strife`, so for `drunare`
+the "silent" of the paragraph above is no longer safe to assume. The pair diverged at the
+same tick with the same values in three repeat runs. With P1 on both machines both wrote
+the level name in tick 2033, both were in the next level at tick 2034 with the same seed,
+and no shared column differed in 1,433 ticks. With the lockout patch (P5 of
+`docs/issues/draw-sim-leaks.md`, 0x1a5ba8) in its place the divergence was unchanged: it
+is this gate, not the lockout word. The chest and dropped-item cases were not run.
+
 Two-machine test: add latency so the lead is large (0.3 s is enough), stand next to a chest,
 press use and then hold a D-pad direction within the delay. Expected unpatched: the chest
 opens on the other machine only and "OUT OF SYNC" follows at once. Same with an item on the
-ground: it disappears on the other screen only.
+ground: it disappears on the other screen only. (Run since at a level exit instead, with
+the result above; no added latency was needed at a lead of 5.)
 
-Patch: P1.
+Patch: P1 (run on the linked pair; it removes the divergence).
 
 ### K2. A potion drunk while the local inventory is open is paid for differently
 
@@ -427,7 +469,29 @@ Two-machine test: with added latency press a potion button and at once the inven
 compare the stack counts in bag 2 of that player's record (record +0x2540, 0x48 per item,
 count at +4) on both machines.
 
-Patches: P2a, P2b.
+**Ran, 2026-10-10** (`docs/issues/live-rig.md` 7.3, run base3 and `examples/pair-k2.rig`;
+FINDINGS V11). That test was made, first by random input (bag 2 of one player differed
+from tick 3894 on) and then from a script: bus delay 10, a lead of 14, the player's hit
+points set to 10 on both machines, the owner presses the health-potion button and three
+frames later the inventory button.
+
+| Tick | Owner's machine | Other machine |
+|---|---|---|
+| 733 | `g_localMenuOpen` 0x41b69d becomes 1 — at once, from the raw pad, 11 ticks before the lockstep pad shows the potion press | 0 throughout |
+| 744 | the lockstep pad shows the potion press; potion quantities stay 2, 2, 2 | quantities become 2, 1, 2 |
+| to the end of the run, tick 1187 | 2, 2, 2 | 2, 1, 2 |
+
+Hit points agreed throughout and no out-of-sync byte was ever set: the difference is
+**silent**, as the verdict says. The 11 ticks between the menu opening and the press
+reaching the tick, at a lead of 14, are the window of step 4 and of F2 seen directly. In
+the random-input run both bags changed again later, to different contents. With P2a and
+P2b on both machines both took the potion at tick 744 and no shared column differed.
+What the scripted run does not show is the message of step 3 removing anything: the three
+logged quantities changed only by the direct removal on the other machine. That fits the
+out-of-range index of the verdict's last sentence better than "removes one of whatever
+sits in the first cell", but it was not followed further.
+
+Patches: P2a, P2b (run together on the linked pair; they remove the divergence).
 
 ### K3. The stats page rewrites the record's stored damage
 
@@ -490,9 +554,11 @@ Nothing new in mechanism; listed because it sits on this chain.
 1. **K1** when a chest (or another object whose interact draws the shared seed) is in reach:
    immediate mismatch.
    With only dropped items in reach (the arena) a silent, usually self-repairing bag
-   difference. Needs use-then-D-pad inside the input delay.
+   difference. Needs use-then-D-pad inside the input delay. **Ran**: at a level exit it is
+   a level change on one machine only, out of sync on both within four ticks (section K1).
 2. **K2**: a potion count that differs for good. Needs potion-then-inventory inside the input
-   delay; a level-up invites exactly that inventory press.
+   delay; a level-up invites exactly that inventory press. **Ran**: silent, no out-of-sync
+   flag to the end of the run (section K2).
 3. **G11–G13 / G19** (not new): a wrong alive list for part of a tick; on this chain it can
    delete flying loot and changes the AncestralCall and critical-aura scans of a hit.
 4. **K3**: second-weapon player with the stats page open and a record-reading spell active.
@@ -516,11 +582,22 @@ a particular sequence of presses breaks it.
 | 0x41b818 + 4 × slot non-zero on the owner's machine at the mismatch | K1 |
 | Potion counts of one player differ between machines before the mismatch | K2 |
 | Mismatch with no pick-up, no potion and no menu for many seconds before it | not this chain |
+| One machine in the next level and the other not; the machine left behind is the one whose own player had the D-pad down | K1 at an exit (added after the run below) |
 
-## Patch proposals (all untested)
+Recorded on 2026-10-10 on two linked instances of the running game
+(`docs/issues/live-rig.md` 7.3): the third row was seen as written (0x41b81c was 1 on the
+owner's machine from tick 2032, one tick before the first shared difference), with the
+new last row as the consequence; the fourth row was seen with no mismatch following in
+the run. Rows 1, 2 and 5 were not seen.
+
+## Patch proposals (P1, P2a, P2b run on a linked pair; P3 untested)
 
 One change each. PCSX2 form: `patch=1,EE,<address>,word,<new>`. Original words were read from
-the executable.
+the executable. P1, and P2a with P2b, were applied on both of two linked Play! emulator
+instances and each removed the divergence it is for (`docs/issues/live-rig.md` 7.3; they
+are the sections "use button works with the spell selector open" and "potions always
+leave the bag directly" of the patch file). Neither has been run in PCSX2 or on a console,
+and the "what could go wrong" column was not looked at in those runs.
 
 | # | Address | Original | New | What it changes | What could go wrong | Every player? |
 |---|---|---|---|---|---|---|
@@ -534,8 +611,8 @@ the executable.
 | ID | Claim | Kind | Evidence |
 |---|---|---|---|
 | new | The kill chain is lockstep: experience uses only the player count, record levels, record hit points and the last-attacker handle (and, added after execution in `docs/issues/dynamic-tests.md` k19, the record's class, the level-step table and the killer's skill list — all lockstep); every loot roll draws the shared seed; gold is taken by touch and items by the use button inside the taker's own `Player_run`, with no message | Observed | 0x111e40–0x1121e8; 0x100d54; 0x157a9c; 0x1b2640, 0x154dbc |
-| new | `Player_run` skips `Player_interact` while 0x41b818[slot] is non-zero; only `hud_spellSelect`, HUD draw code that returns for remote slots, writes it (D-pad held). A use press already in the input stream therefore interacts on the other machines only | Observed (gate, writer); Inferred (window) | 0x1a5c08–0x1a5c1c; 0x1dd2bc, 0x1dd4b8, 0x1dd4ec, 0x1dd504, 0x1dd5e4; contrast 0x1a6de8 |
-| new | `Player_usePotion` leaves the bag untouched on the owner's machine when its inventory is open and sends a drop message instead; other machines decrement and then also run the message | Observed | 0x1b9fcc–0x1ba050, 0x1ba3ac–0x1ba430; 0x1c4310 |
+| new | `Player_run` skips `Player_interact` while 0x41b818[slot] is non-zero; only `hud_spellSelect`, HUD draw code that returns for remote slots, writes it (D-pad held). A use press already in the input stream therefore interacts on the other machines only | Observed (gate, writer); Inferred (window); Ran (now ledger row K1, V10) | 0x1a5c08–0x1a5c1c; 0x1dd2bc, 0x1dd4b8, 0x1dd4ec, 0x1dd504, 0x1dd5e4; contrast 0x1a6de8 |
+| new | `Player_usePotion` leaves the bag untouched on the owner's machine when its inventory is open and sends a drop message instead; other machines decrement and then also run the message | Observed; Ran (now ledger row K2, V11) | 0x1b9fcc–0x1ba050, 0x1ba3ac–0x1ba430; 0x1c4310 |
 | new | Menu draw code writes player records: `stats_screen` → `Player_recalcDamage` (+0xcc, +0xd0, +0xd4) and → `player_recalcStats` for all players; `skills_screen` and 0x1cdd28 → `player_recalcStats`; `hud_spellSelect` → +0x4a74, +0x4a78 | Observed | 0x1d2c38, 0x1d2d30, 0x1d2e7c, 0x1d5950, 0x1ce530, 0x1dd4f8 |
 | new | A level-up changes +0x59, both point pools, maxima and the refill at once on every machine; the attack-rating level +0x58 follows by inventory message 9, sent when the owner opens the level-up screen | Observed | 0x1d3150; 0x1db870; 0x1c1814; 0x1b7158 |
 | new | When knight variant 3 dies its set-state sends the summoned skeleton to the death state in the same tick | Observed | 0x273278, 0x2732ac |

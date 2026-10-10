@@ -5,11 +5,33 @@ one covers everything between the script command that leaves `drundar` and the l
 the arena's opening cutscene `knights`, on every machine of a net game.
 
 Everything here was read from the executable (SLUS_209.73, v2.00) and from the unpacked
-level files of `drundar` and `drunare`. **Nothing was run, and every patch below is
-untested.** That still holds: the project's live game (the Play! emulator, not a
-PlayStation 2 and not PCSX2; `FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`)
-has not entered `drundar` or `drunare`, and no test patch has been run on it. Claims are **Observed** (read at the address given), **Inferred** or
-**Unknown**. New names are in `symbols/entry.tsv`.
+level files of `drundar` and `drunare`. **Nothing was run when it was written, and every
+patch below is untested** — the second half still holds. Claims are **Observed** (read at
+the address given), **Inferred** or **Unknown**. New names are in `symbols/entry.tsv`.
+
+**Result of 2026-10-10, on the running game** (`docs/issues/live-rig.md` sections 7.4–7.5;
+`FINDINGS.md`, "Run on the live game", row V12, and row E4). Two linked instances of the
+game were put into `drunare` and run twelve times through the trigger and the unskipped
+opening cutscene into the fight; they stayed in sync in every run (68,685 ticks in all,
+with and without network delay and loss). Two predictions of this document were seen:
+
+- the opening cutscene started on tick **1022**, and 1022 mod 15 = 2, the remainder
+  section 3.1 derives (ledger row E4) — on both machines, the same in all twelve runs;
+- it lasted **1,268** ticks, against the "about 1,270" of the timeline and section 3.
+
+And the conclusion of "Result in short" — no route to shared state in an ordinary entry —
+held for the part that was run: no logged shared value (seed, level, player positions and
+state, bags, the sync record) differed from the first tick in the level to the end of the
+cutscene in any run, nor across the level change in the one run that included it.
+
+What was not exercised: the way in. The instances were sent to `drunare` by writing the
+level name into `g_pendingLevel` inside one lockstep tick of `strife` on both, which is
+the point at which a script would write it. So the `drundar` trigger or door and that
+level's saved state (timeline rows 1–5, and the revisit cases of section 4) were not run;
+the level change, the load and the cutscene that followed were, on machines that cannot
+differ from each other. The instances are two copies of one Play! emulator build — not a
+PlayStation 2, not PCSX2 — started through the developer LAN path with placeholder
+characters. X1–X4 were not used: there was no divergence to bisect.
 
 ## Result in short
 
@@ -49,7 +71,7 @@ unless marked.
 | 16 | tick **S** | The `incoming` trigger finds a player inside: script starts `knights`, sets the post action, sets `sawknights` | 0x1ed15c; scripts/DRUNARE.txt |
 | 17 | S, task 300 | `cut_setup`: actors bound, every creature with inert byte 0 frozen (players included) | 0x19a6cc; 0x199024 |
 | 18 | S+1 … E−1 | Only the four actors, the props and the tasks run. Players do not run | arena-desync.md F2 |
-| 19 | tick **E** ≈ S + 1,270 | Keys exhausted: `cut_end`, camera mode 1, post action `nosave`, 60 ticks of hit immunity | 0x199ef8–0x199f8c |
+| 19 | tick **E** ≈ S + 1,270 (**Ran**: S = 1022, E = S + 1,268) | Keys exhausted: `cut_end`, camera mode 1, post action `nosave`, 60 ticks of hit immunity | 0x199ef8–0x199f8c |
 
 ## 1. The level change in a net game
 
@@ -167,6 +189,11 @@ read line by line; `Zek_ctor` and the light and settings records were not scanne
   0x183b48 passes, the height is within 6 of the centre's and no collidable grid-A object
   overlaps (box query, so the exclude mask and the prediction-copy flag apply; neither
   exists during a load). The result is the last point that passed the terrain tests.
+  Two details are looser than written here, executed in `docs/spec/object-system.md` 4.8:
+  the height test is one-sided (the floor must be less than 6 *above* the centre; any
+  distance below passes), and "overlaps" is `dx² + dy² ≤ radius² + r²`, the sum of the
+  squares, not the square of the sum. "Three draws per attempt" is three per rejected or
+  accepted sample of the unit ball.
 - After `game_loadLevel` the session code gives every slot a terrain height, and for every
   slot but 0 (rank is not 3) a second `world_findFreeSpot(centre = its spot, range 36,
   radius 14)` and 8000 added to the facing. The call is made for every slot index below the
@@ -206,7 +233,9 @@ state. **Inferred** from the Observed steps.
   teardown and advanced before use, 0x14f330). The only other callers of that function are
   the `Shooter`, `FloorSwitch` and `FallPlatform` classes, none of which is in this
   level's file, so the exit rectangle gets list 1 and `incoming`, the next record, list 2:
-  it is tested on ticks with `g_netFrame` mod 15 = 2. **Inferred** from Observed pieces.
+  it is tested on ticks with `g_netFrame` mod 15 = 2. **Inferred** from Observed pieces;
+  **Ran** since: on two linked instances of the running game the cutscene flag went up on
+  tick 1022 = 15 × 68 + 2 in all twelve runs (`docs/issues/live-rig.md` 7.5).
 - The trigger is edge-driven: it runs its script when "somebody inside" changes, and the
   inside flag and delay are part of the level's saved state (slots 8 and 9, 5 bytes).
 
@@ -460,7 +489,10 @@ on a re-entry (section 4).
   bit 0) and inert byte 0, looks for a *local* alive player within +0x3c0
   (`g_localAliveCount`, `g_localAlivePlayers`) and sets or clears bit 31 of the creature
   flag word +0xa8 and the meter globals 0x41b6a0 / 0x41b6a4 (0x113960–0x113ad8).
-  `nosave` gives the avatar the boss bit.
+  `nosave` gives the avatar the boss bit. The block has a second input that is not
+  lockstep state by construction: it looks for a player only while the creature's active
+  bit 63 is set (0x113980), and that bit comes from `obj_updateActive` (FINDINGS D6;
+  executed in `docs/spec/creature-tick.md` 4.10).
 - Readers of bit 31: the same block and `script_applyCFlag` (search of every decompiled
   function for a test or store of that bit at +0xa8). The flag word is written into the
   level's saved state.
@@ -516,15 +548,26 @@ Marks: **P** = first frame on which 0x41b6d0 is non-empty in `drundar`; **F0** =
 | save-buffer level name and autosave countdown after F0 | 0x895580, 0x88d40c | `drunare`, 0 | E8 |
 | card state, card latch | 0x88d3a0, 0x4f8f28 | −1, 0 | E8; sync-breakers N1 |
 | `g_ghost`, rebase clock at S | 0x4027bc, 0x4027d4 | differ freely | E6 only if M follows within 30 ticks |
-| S and S mod 15 | 0x4027ac | equal, 2 | player positions already differed |
+| S and S mod 15 | 0x4027ac | equal, 2 — **Ran**: 1022 on both instances, remainder 2 | player positions already differed |
 | hash of every frame from S+1 to E | local sync ring, peer +0x18ac | **constant** | a seed draw or a moving player inside the cutscene; compare player positions and inert bytes (+0x231 = 4) |
 | post-action name during the cutscene | 0x86fa80 | `nosave` until E | E9 |
-| E − S | | equal, about 1,270 unless skipped | the key lists ran differently |
+| E − S | | equal, about 1,270 unless skipped — **Ran**: 1,268, not skipped | the key lists ran differently |
 | run-list cursors at E | 0x4039fc, 0x403a00 | equal | activity was judged from different centres during the cutscene (D6) |
 
 Reading of M: M ≤ F0 + 1 → the load. F0 < M < S → ordinary play, not this level. S < M ≤ E
 → inside the cutscene, where the hash should be constant. M > E → the fight
 (arena-desync.md).
+
+Recorded on 2026-10-10 on two linked instances of the running game
+(`docs/issues/live-rig.md` 7.5): **there was no M.** In twelve runs the out-of-sync byte
+was never set, before S, between S and E or in the 4,000–4,500 frames of fight after E.
+Of the table, the two rows marked **Ran** were read as such (the cutscene flag was a
+watched column), and `g_randSeed`, the player positions and the stored sync record agreed
+tick by tick as part of the rig's standing comparison. The other rows — the seed at the
+barrier, the spawn slots, the serial counter, the quest bytes, the save-buffer and card
+words, the post-action name, the run-list cursors, and whether the hash is *constant*
+from S + 1 to E — were not read out. P and F0 do not apply as defined: the level name was
+written by the rig, not by `drundar`'s script.
 
 ## Proposed ledger rows
 
@@ -533,7 +576,7 @@ Reading of M: M ≤ F0 + 1 → the load. F0 < M < S → ordinary play, not this 
 | E1 | A script level change stops every machine after the same frame: the name is written inside a tick, later steps test it first, and the first frame of the new level is the next frame number. No message is involved | Observed | 0x143dd0, 0x1472c4, 0x139fb4 |
 | E2 | Between that frame and the next, every shared-seed draw is made by object constructors, `Player1_ctor` and two free-spot loops; no input of those is per machine on a first visit | Inferred from Observed steps | 0x14cd54, 0x158928, 0x3212e0; section 1.4 |
 | E3 | `Player1_ctor` fills four spawn slots with a free spot within 36 units of the best start marker and a facing within ± 2000; the session code moves slots 1–3 again by up to 36 and creates the players in slot order | Observed | 0x158928; 0x321294–0x321414 |
-| E4 | In `drunare` no start can lie inside either trigger rectangle; the opening cutscene starts on a frame with remainder 2 modulo 15, after a player has walked at least 77 units | Observed (data), Inferred (remainder) | `objects.ob`; 0x1ecdf4, 0x14f330 |
+| E4 | In `drunare` no start can lie inside either trigger rectangle; the opening cutscene starts on a frame with remainder 2 modulo 15, after a player has walked at least 77 units. Ran: it started on tick 1022 (remainder 2) and lasted 1,268 ticks | Observed (data), Inferred (remainder); the remainder Ran | `objects.ob`; 0x1ecdf4, 0x14f330; `docs/issues/live-rig.md` 7.5 |
 | E5 | `cut_start` restarts the per-machine frame warm-up counter inside a tick, and `cut_runFrame` does so again at the end; no reader of the counter inside a net tick changes shared state. `cut_evalCamera` keeps one latch and is otherwise a function of the clock | Observed | 0x19b514, 0x199f44; `gxref` 0x506048; 0x44fd00 |
 | E6 | After a level load the first prediction copy is made 1–31 ticks in, on a per-machine tick. The copy is on no run list, so a flag-8 cutscene neither freezes nor unfreezes it; clones made during the cutscene inherit the freeze and keep it up to 30 ticks after the end | Observed | 0x13dcd0, 0x13b1e8; 0x14a7c8; 0x1a55a0 |
 | E7 | In a net game players ignore damage for 30 of their own run ticks after every level load and 60 after every cutscene | Observed | 0x1e61c0, 0x1bfaf8, 0x1a5330, 0x1b5438 |
@@ -602,6 +645,8 @@ camera-judged activity.
 - The party-wipe reload (`deathTask`, `save_reload`) was followed only as far as needed to
   say what the entry snapshot is for.
 - A re-entry of `drunare` with stored level state was reasoned about, not traced.
-- Nothing here was run. Floating-point behaviour of different hosts (docs/netcode.md
+- Nothing here was run when it was written; what has been run since is at the head of the
+  document. Floating-point behaviour of different hosts (docs/netcode.md
   row 11; docs/issues/float-divergence.md, written in parallel) is outside this trace and
-  is not excluded by it: every "equal" above assumes the machines compute the same bits.
+  is not excluded by it: every "equal" above assumes the machines compute the same bits —
+  and so do the twelve runs, which were made on two copies of one emulator build.

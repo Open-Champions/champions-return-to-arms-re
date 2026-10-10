@@ -6,8 +6,8 @@ the decompile and the disassembly; **nothing was run**, so every number here is 
 computes, not what was seen on a screen. That is still so for this document: the player
 tick has since been executed in `tools/ee_emu.py` (`docs/spec/player-tick.md`, which
 corrected S.2 and S.4 below), and the project has a live game in the Play! emulator
-(`FINDINGS.md`, "Run on the live game", rows V1–V8; `docs/issues/live-rig.md`), but no
-skill of this range was cast on it and no test patch has been run on a live game. Claims are **Observed** (read at the address given)
+(`FINDINGS.md`, "Run on the live game", rows V1–V13; `docs/issues/live-rig.md`), but no
+skill of this range was cast on it and the only test patches run on a live game are the two for K1 and K2 (FINDINGS V10, V11). Claims are **Observed** (read at the address given)
 unless marked *Inferred* or *Unknown*. The catalogue of all 101 skills, the `Skill` and
 `Spell` base layouts and the first-round per-machine audit are in `docs/skills.md`; this
 document does not repeat them except where a rebuild needs the exact rule.
@@ -200,6 +200,14 @@ Observed in the list iterator (`iter_begin` 0x1a1a48, `iter_next` 0x1a1b38), `ha
   (anything created by a player, monster, spell or projectile during its own run) gets its
   **first run on the next frame**. The walks of the 15-frame and 60-frame lists come after
   the every-frame walk, so an object created from those is also first run on the next frame.
+  That is right for objects that join the every-frame list. Two cases it does not cover,
+  executed in `docs/spec/object-system.md` 2.3 and 5.2: an object that joins **this
+  frame's slow list** during an earlier walk (the every-frame walk, or the 15-list walk for
+  the 60-list) runs in the same tick, because the slow lists are walked afterwards; and an
+  object that `obj_updateActive` moves off the every-frame list onto this frame's 60-list
+  during its own run runs a **second time in that tick**. Which slow list an object gets
+  is decided by the shared cursors and the frame number, so both cases are the same on
+  every machine.
 - A spell a player attaches to itself during the action-state switch is run **in the same
   frame**, because `Player_updateCast` comes later in the same `Player_run`. A spell a
   monster attaches to itself after its `Creature_run` call is first run on the next frame.

@@ -3,7 +3,7 @@
 293 functions. Read from the decompile and the disassembly only; nothing here was seen on a
 running game when it was written, and no statement here has been checked on one since. The
 project does have a live game now — the Play! emulator, which is not a PlayStation 2 and not PCSX2 — and
-what was run on it is listed in `FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`.
+what was run on it is listed in `FINDINGS.md`, "Run on the live game" (rows V1–V13) and `docs/issues/live-rig.md`.
 Its boot passes through the memory-card check and the create-save question, and save data
 appears on the blank card (4a there); that exercises card code without checking any
 statement made about it here. The rig has no sound output, and nothing about sound was

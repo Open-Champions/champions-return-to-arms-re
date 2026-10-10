@@ -4,7 +4,7 @@ Area `objects`, code 0x147300–0x160000 (219 functions). Symbols: `symbols/obje
 Everything here was read from the executable; nothing was run when it was written. Since
 then the allocator and the handle pool have been executed in `tools/ee_emu.py`
 (`docs/spec/core.md`), and the project has a live game in the Play! emulator — not a
-PlayStation 2 and not PCSX2 (`FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`).
+PlayStation 2 and not PCSX2 (`FINDINGS.md`, "Run on the live game" (rows V1–V13) and `docs/issues/live-rig.md`).
 Of this document it confirmed object flags 0x20000 and 0x200000 (marked **Ran** in the
 flag table) and that `runObjects` is entered once per simulated frame. The rest
 was not re-checked on the live game, and no test patch has been run on one. Each claim is marked
@@ -108,7 +108,14 @@ index, **not** a default; absent → 0). **Observed**: they lower-case the key s
 so key literals in `.data` change at run time. The constructor registers every `name=`
 value in a 512-slot hash (`objNames_add` 0x14bce0; keys 0x5f76f8, objects 0x5f7ef8), which
 is how scripts find objects (`world_findObjectsByName` 0x14bf58). A `hide` property moves
-the object to the off-grid list. `action=` properties name scripts run by
+the object to the off-grid list — but not in this constructor, as the earlier version had
+it. The base constructor does look `hide` up (0x14ccf0), but before it has stored the
+property list at +0x2c (0x14cd64); for a block fresh from `pool_new` that word is zero, the
+lookup returns 0 and the branch never fires (executed with a `hide=1` list,
+`docs/spec/object-system.md` 2.2 step 4). Hiding at load is done by derived constructors
+that test `hide` themselves: `Creature_ctor` 0x109f10–0x109f3c (off-grid, flag 0x8000,
+bit 3 of +0x231) and `Catapult_ctor` 0x24d598. A class that does not test it ignores the
+property. `action=` properties name scripts run by
 `obj_runActionScripts` 0x14dcc8, which points the "script self" global 0x4039f8 at the
 object while they run.
 
@@ -120,7 +127,7 @@ from a pattern search over the decompiled C for the word at +0xc; they are not e
 | Bit | Meaning | Kind | Evidence |
 |---|---|---|---|
 | 0x1 | not solid: movers do not push out of it, `world_findFreeSpot` ignores it | Observed | tests 0x1140a4 (`Creature_moveBy`), 0x14d75c (`obj_moveWithCollision`), `world_findFreeSpot`; set at death (0x2009) |
-| 0x2 | not drawn by the grid walk; set for members of the always-draw list; a new flag-2 object is linked off-grid | Observed | 0x14b3b4, 0x14b574; `obj_addToAlwaysDraw` 0x14edd8; `obj_linkToGrid` 0x14f120 |
+| 0x2 | not drawn by the grid walk; set for members of the always-draw list. "A new flag-2 object is linked off-grid" (earlier version) holds only in `obj_linkToGrid`, whose single caller is the prediction-copy clone (0x13b58c). `GameObject_ctor` zeroes the flag word (0x14cb94) before it makes the grid link, so its tests of 0x2 and 0x800 never succeed: no constructed object starts off-grid or in grid B because of a flag, and a constructor that sets either must relink (executed, `docs/spec/object-system.md` 2.2 step 3) | Observed | 0x14b3b4, 0x14b574; `obj_addToAlwaysDraw` 0x14edd8; `obj_linkToGrid` 0x14f120 |
 | 0x4 | excluded, together with 0x1 and 0x8, from `world_collectInSphere` (mask 0xd) | Observed test; meaning Unknown | `world_collectInSphere` 0x14ab80; about 20 setters in other areas |
 | 0x8 | dead | Observed | |
 | 0x10 | has a top that can be stood on: movers compare heights instead of pushing out | Observed | 0x114114, 0x14d7e4; set by `PushPhysicsProp_ctor` |
@@ -134,7 +141,7 @@ from a pattern search over the decompiled C for the word at +0xc; they are not e
 | 0x1000 | expendable: `runObjects` may delete it when the pool is nearly full; thinned from saves | Observed | 0x14ba74; `world_writeRecords` 0x14e140 |
 | 0x2000 | killed creature / corpse; thinned from saves at higher thinning levels | Observed | set 0x111dfc and in `Creature_loadState`; `world_writeRecords` |
 | 0x4000 | transient: never written to a save | Observed | 0x14e1dc; set by `Projectile_ctor`, `PhProp_ctor`, about 70 others |
-| 0x8000 | not run (slot 4 skipped) | Observed | tested before each slot-4 call in `runObjects`; set by hide |
+| 0x8000 | not run (slot 4 skipped) | Observed | tested before each slot-4 call in `runObjects`; set by hide — in `Creature_ctor` (0x109f38), not in the base constructor (see "Properties") |
 | 0x10000 | Unknown | — | set 0x2b1e80, 0x2b33f4 (torch/lantern constructors) |
 | 0x20000 | prediction copy. **Ran**: on the live game the object at `g_ghost` had the flag word 0x00024060 (`docs/issues/live-rig.md` 4d) | Observed; Ran | hard-coded skip at 0x14aa54 in the box query |
 | 0x40000 | Unknown | — | set 0x243624, 0x2b1e80, 0x2cb4e8, 0x31d180; tested in the object sweep 0x18b014 |
@@ -187,7 +194,7 @@ has not changed, so the order of a cell's list follows the order of movement cal
 |---|---|
 | `g_grid` 0x5db4f0 | 120 × 120 handle-list heads; cell index `((int)coord + 0x3c00) >> 8` on each axis, row = y |
 | `g_gridB` 0x5e95f0 | the same shape for objects with flag 0x800 |
-| `g_offGridList` 0x5f76f0 | objects outside the grid, hidden objects, new flag-2 objects |
+| `g_offGridList` 0x5f76f0 | objects outside the grid and hidden objects; of flag-2 objects only the prediction copy when it is cloned (flag table, 0x2) |
 | `g_alwaysDrawList` 0x5db4e8 | drawn every frame after the frustum walk |
 
 `world_collectObjectsInBox` (0x14a928) searches **only `g_grid`**, pads the cell range by
@@ -214,6 +221,9 @@ Three kinds of list, all linked through the object's +4 head:
 | `g_runLists60` 0x5db3f0 [60] | list `frame % 60` | `obj_runEvery60` 0x14f2b8 (76 callers), `obj_updateActive` when it turns inactive |
 
 The slow lists are filled round-robin (cursors 0x403a00 and 0x4039fc) so the load is spread.
+The cursor is stepped **before** it is used, and teardown sets both to 0, so the first slow
+object of a level goes to list 1 and list 0 is filled last; that fixes the frame numbers
+on which slow objects run (executed, `docs/spec/object-system.md` 5.1).
 `obj_stopRunning` 0x14f290 removes the link. An object is on at most one list because every
 setter unlinks first. **Observed.**
 
@@ -224,7 +234,12 @@ relinks only when the answer differs from `wasActive`. Flag 0x80000 replaces the
 
 `runObjects` (0x14b910, run task priority 10), in order — **Observed**:
 
-1. Destroy every object on `g_deleteList` (slot 1 with argument 3).
+1. Destroy every object on `g_deleteList` (slot 1 with argument 3). This flush is an
+   iterator walk that is given `g_excludeMask` like the run walks (0x14b928–0x14b950; the
+   same in `world_loadRecords` and the first walk of teardown), so a deleted object that
+   carries a masked flag is skipped and stays on the list, in the grid and in the name
+   table until a flush runs with another mask (executed, `docs/spec/object-system.md` 5.4
+   and 10.1; whether anything calls `obj_delete` on a prediction copy is Unknown).
 2. Every 64th frame refresh `g_poolFreeCount` = `pool_countFree()`.
 3. If that count is below 300: visit 16 cells of **grid B** (a cursor derived from the frame
    counter), and in each destroy the first object with flag 0x1000. Offline, while the count
@@ -241,7 +256,10 @@ relinks only when the answer differs from `wasActive`. Flag 0x80000 replaces the
 
 `obj_delete` 0x14f200 (50 callers) removes the object from its run list and links it to
 `g_deleteList` through head +0; it is destroyed in step 1 of the next `runObjects`, or by
-`world_flushDeleteList` 0x14f3a8 / `world_loadRecords`. Code also destroys objects directly
+`world_flushDeleteList` 0x14f3a8 / `world_loadRecords`. (No call of 0x14f3a8 and no stored
+pointer to it was found — `ps2elf.py xref` and `ptrs` give nothing; the flushes that happen
+are the inline copies in `runObjects`, `world_loadRecords` and `world_deleteAllObjects`:
+`docs/spec/object-system.md` 10.1.) Code also destroys objects directly
 through slot 1 (script `deleteMonster`, `reapEnemies`, the pool reaper).
 `world_deleteAllObjects` 0x14c460 empties everything at level unload.
 
@@ -305,7 +323,7 @@ bytes. `mem_freeGroup(bit)` 0x150510 frees every block allocated while a group b
 | 0x14d238 | `world_slideMove` | terrain-only sweep and slide |
 | 0x14d4b8 | `obj_moveWithCollision` | reached through `creature_moveSimple` 0x1186d8; the prediction copy does not call slot 6 of the objects it touches (test of 0x20000 at 0x14d9ac), though its own slot 6 runs |
 | 0x1509f8 | `obj_moveAndCollide` | projectile step: terrain, a water splash that consumes one `GameObject_rand`, then slot 6 on both sides for overlapping objects that are not 0x201, not 0x20000000 and not the owner |
-| 0x14acf8 | `world_findFreeSpot` | rejection-samples points with the **shared** seed (three draws per try, up to 50 tries) |
+| 0x14acf8 | `world_findFreeSpot` | rejection-samples points with the **shared** seed, up to 50 tries. Three draws per *sample*, not per try as the earlier version said: a try repeats samples until one lies inside the unit ball (0x14ae58 loops back), so the number of draws depends on the data, the same on every machine. "Clear of blocking objects" means `dx² + dy² > radius² + r²` — the sum of the squares, not `(radius + r)²` (0x14b0a0–0x14b0a8), so slightly overlapping spots are accepted; the height test is one-sided (a floor less than 6 above the centre, or any distance below it, passes). Executed, `docs/spec/object-system.md` 4.8 |
 
 ## Props
 
@@ -437,7 +455,7 @@ the prediction copy.
 | O3 | The camera test in the pool reaper is skipped in net games — deliberately safe | Observed | 0x14ba80–0x14ba8c |
 | O4 | `obj_updateActive` uses the camera focus when `g_cullByCamera` is set (FINDINGS D6). Everything that keys on activity inherits it: which run list an object is on, and for creatures whether AI runs at all | Observed | 0x14db28 onward |
 | O5 | `world_drawObjects` calls slot 5 of a per-machine set of objects (FINDINGS D13). Draw functions in this area were not audited individually; `Creature_draw` is covered in `docs/creatures.md` | Observed / not audited | 0x14b4f8–0x14b8b0 |
-| O6 | Box queries, run walks and grid walks honour `g_excludeMask`; `Creature_pickTarget` temporarily overwrites the mask with 8 around its query (0x20000 is still skipped by the hard-coded test). Harmless while simulating; it would expose the hidden real player if ever reached during prediction | Observed; reachability Inferred none | 0x10e004–0x10e050 |
+| O6 | Box queries, run walks and grid walks honour `g_excludeMask`, and so does the delete-list flush (0x14b928; `runObjects` step 1 above); `Creature_pickTarget` temporarily overwrites the mask with 8 around its query (0x20000 is still skipped by the hard-coded test). Harmless while simulating; it would expose the hidden real player if ever reached during prediction | Observed; reachability Inferred none | 0x10e004–0x10e050 |
 | O7 | `obj_moveWithCollision` suppresses the other object's slot 6 for the prediction copy, but still calls the copy's own slot 6 and still pushes the copy; `Creature_moveBy` has no such test (it is not used for players' own movement as far as read) | Observed | 0x14d9ac, 0x114208 |
 | O8 | Pointer values: object addresses are used only as identities (name hash values, handle targets, `pool_free` class lookup). No ordering or hashing by address was found in this area | Observed for the functions read | 0x14bce0, 0x150470 |
 

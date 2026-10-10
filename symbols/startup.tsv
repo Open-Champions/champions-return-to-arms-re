@@ -48,6 +48,6 @@
 00108970	world_countLivingNonplayerCreaturesInBox	(f halfSize, Vec3 *centre): world_collectObjectsInBox, counts objects with flags & 0x68 == 0x20
 00108a60	Creature_computeAvoidanceOffset	(f dist, Vec3 *out, creature, target): three forward rays (centre and both edges), keeps a side choice in creature +0x2f8 (0 none, 1, 2), returns a sideways offset of two radii
 00108fd8	Creature_probeThreeMovementRays	(creature, Vec3 *delta, hitOut): first blocked fraction among centre, left-edge and right-edge rays (0x18ad94); 1.0 when clear
-00109280	Creature_computeAvoidanceTarget	(Vec3 *out, creature, Vec3 *dest): a point 1200 units along the straight line when clear, else along facing or facing +-0x2000 depending on side probes; only caller Creature_moveTo
+00109280	Creature_computeAvoidanceTarget	(Vec3 *out, creature, Vec3 *dest): pos + (dest - pos) x 1200 (1200 times the vector, not 1200 units) when clear, else along facing or facing +-0x2000 depending on side probes; only caller Creature_moveTo
 001097f8	combat_applyAreaDamage	(f inner, f outer, attacker, Vec3 *centre, minDmg, maxDmg, flags, descriptor): box query; for creature attackers asks vtable slot 20 (is enemy); damage falls off linearly between the radii; calls damage_apply 0x1e8230
 00109a60	Creature_relocateAlongClearRay	(f dist, creature, Vec3 *lookAt or 0): one g_randSeed draw picks the sweep direction, up to 32 headings tested by ray and ground height, moves the creature to the best one, relinks it in the grid (0x14f028), optionally faces lookAt

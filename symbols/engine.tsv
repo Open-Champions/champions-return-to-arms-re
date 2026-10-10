@@ -181,15 +181,15 @@
 00182b00	world_setPieceCollision	(world, piece, on): clears or sets flag 2 (ignored) of the piece's terrain element
 00182b74	world_getPieceHeight	(world, piece) -> terrain element height offset
 00182bb4	world_setPieceHeight	(height, world, piece)
-00182c98	world_movePiece	(world, piece, pos, angle16): moves a piece and its terrain element
+00182c98	world_movePiece	(world, piece, pos, angle16): moves a piece; stores only into its chunk record (+0x28, +0x2c, +0x30, +0x36, +0x38), the terrain element is not touched (docs/spec/world-queries.md section 12; read, not executed)
 00182f28	terrain_heightAtPoint	(world, pos) -> highest sample exactly under the point, 0.0 when none
 00183248	terrain_collectElements	(minX, minY, maxX, maxY, world, out[], max): terrain elements whose bounds touch the box; uses g_terrainStamp to avoid duplicates
 001834a8	terrain_heightBelow	(radius, world, pos) like terrain_height but ignores samples more than 12 above pos.z; 10 callers
 00183820	terrain_height	(radius, world, pos) -> highest sample under a disc, -1000000 when none; 49 callers
-00183b48	terrain_testFlag1	(radius, world, pos) -> 1 if any sample under the disc has flag bit 0
-001844f0	path_goalTestClearLine	goal test for request type 1: inside the radius and world_raycast to the goal is clear
-001845bc	path_goalTestRanged	goal test for request type 2: inside the radius, not nearer than 120 when the radius is larger, terrain_raycast clear
-001846a4	path_goalTest3	goal test for request type 3 (body not read)
+00183b48	terrain_testFlag1	(radius, world, pos) -> float in $f0, 1.0 if any sample under the disc has flag bit 0, else 0.0; callers compare it with a float
+001844f0	path_goalTestClearLine	goal test for request type 1: inside the radius and world_raycast toward the goal returns more than 0.98; a ray that hits nothing returns -1.0 and fails (docs/spec/world-queries.md 10.4)
+001845bc	path_goalTestRanged	goal test for request type 2: every node outside the radius passes; inside it, unless the radius is above 120 and the node nearer than 120, passes when terrain_raycast returns less than 0.98 (hitting nothing included); requested by Creature_requestPath mode 1
+001846a4	path_goalTest3	goal test for request type 3: as type 2 with world_raycast (requester ignored) and the limit 0.75
 00184e2c	path_setEnabled	writes g_pathEnabled; net start passes 0, world_resetRuntime sets 1
 00184e38	path_requestToPoint	(radius, world, start, goal, requester, outBuf, maxPoints): queue entry of type 0
 00184fc8	path_requestType1	as path_requestToPoint with one more leading argument; goal test path_goalTestClearLine
@@ -204,7 +204,7 @@
 00189514	water_disturb	(strength, radius, world, pos) -> number of water chunks touched; adds a ripple to their 32x32 grids; returns 0 while g_cutSkip is set
 00189870	world_draw	caller drawWorld; also advances scenery animations with anim_advance
 0018a2b0	camera_setView	(pos, mat34) writes g_cameraPos and g_cameraMatrix and rebuilds the view; callers cut_runFrame, two menus, game camera 0x2035c8
-0018a5c0	terrain_raycast	(maxT, world, origin, dir, flags) -> hit parameter or -1; 23 callers
+0018a5c0	terrain_raycast	(maxT, world, origin, dir, flags) -> hit parameter or -1 (a vertical ray returns a distance); elements collected per 240-unit segment, each marched one 4-unit sample at a time; flag bits in the mask add 65536 to a sample height; 23 callers
 0018ad94	world_raycast	(maxT, world, origin, dir, ignoreObj, hitObjOut, terrainFlags, includeFlag40000): terrain_raycast plus object circles from world_collectObjectsInBox; 14 callers
 0018b1b8	world_resetRuntime	level start: empties the path queue, sets g_pathEnabled, clears scenery animation slots; caller 0x1e4e88
 # ---- pause menu and recall (0x18c230-0x18e627); this is not the NPC dialog, which lives at 0x22ee2c-0x2305ff ----

@@ -6,7 +6,7 @@ then `Player_run` has been executed tick by tick in `tools/ee_emu.py`
 (`docs/spec/player-tick.md`), and part of this document has been seen on the live game —
 offline play from scripted input and one machine in a net game, in the Play! emulator,
 which is not a PlayStation 2 and not PCSX2 (`FINDINGS.md`, "Run on the live game", rows
-V1–V8; `docs/issues/live-rig.md` 4b–4d). What was seen there: the record fields that were
+V1–V13; `docs/issues/live-rig.md` 4b–4d). What was seen there: the record fields that were
 read back (name, class, statistics and their order, hit points, mana, gold, load limit,
 speed multiplier, object pointer, bag 2), the potion buttons and the pending-heal fields,
 the run speed offline and in a net game. Where that settles something this document had as

@@ -263,7 +263,7 @@
 # ---- randomness ----
 001509d0	GameObject_rand	per-object LCG, state at object+0x44, seeded from g_randSeed in the constructor
 00404460	g_cosmeticSeed	second LCG for particles; NOT in the sync hash; cutscenes reseed it from the frame counter
-0014cb10	GameObject_ctor	draws one value from g_randSeed for the object's own seed
+0014cb10	GameObject_ctor	draws one value from g_randSeed for the object's own seed; zeroes the flags before the grid link; looks the hide property up before the property list is stored, so the test never fires for a pool block
 0014fdb8	pool_new	pooled allocator, zero-fills the block
 00184798	path_service	time-sliced pathfinding queue (128 entries at 0x7d43a8); 1 request per call
 # ---- main loop / tasks ----
@@ -285,7 +285,7 @@
 0010c0f0	Creature_updateActive	wrapper; several creature classes skip their AI when it returns 0; sets and clears bit 63 of creature +0xa8, the "active" bit
 001e77c0	isNearView	(pos, radius): camera focus when g_cullByCamera, else any player; 14 gameplay callers
 001ebd90	isNearCameraFocus480	camera only; all 7 callers are particle/effect code
-001e4d48	gameSetObjectVis	first run task: builds activity centers; net games clear g_cullByCamera only when no cutscene is active
+001e4d48	gameSetObjectVis	first run task: builds activity centers; net games clear g_cullByCamera only when no cutscene is active; the second of two priority-0 run tasks, after runwater
 0018a520	camera_updateFocus	g_cameraFocus = camera position + forward * 600; called by cut_runFrame and drawWorld
 001ebc18	drawWorld	draw task prio 30
 004039c1	g_cullByCamera	s8
@@ -297,7 +297,7 @@
 0083d18c	g_cutSpeaker	creature speaking the current dialog line; set in cut_execKey from the .dbin speaker name
 0044fd30	g_cutAudioCorrection	float, +0.1 / -0.1 / 0; added to every animation track time of g_cutSpeaker each frame
 0010b048	Creature_draw	draw slot 5 body shared by all creatures; 0x10b898-0x10b8d4 decrements the first non-zero status counter at +0x36c (never index 12) when not frozen
-00112948	Creature_run	common creature run; turns status counter 7 (+0x388) into slow amount +0x2fc; burn tick draws g_randSeed
+00112948	Creature_run	common creature run; turns status counter 7 (+0x388) into slow amount +0x2fc; burn tick draws g_randSeed; returns 0 on every path and has no entry tests; the burn tick draws g_randSeed only for a burning player, every 32nd frame (docs/spec/creature-tick.md)
 0011c298	Creature_clone	vtable slot 15; every handle list in the copy starts empty
 0011e870	Player_clone	vtable slot 15 of Player (0x590 bytes); used to make the prediction ghost
 001309f0	clone_50d590	slot 15 of the class with vtable 0x50d590 (0x3c8 bytes); not Player

@@ -9,7 +9,7 @@ when it was written. Since then the math library, the animation step and pose, a
 code have been executed function by function in `tools/ee_emu.py` (`docs/spec/core.md`,
 `docs/spec/animation.md`; results folded in here are marked **executed**), and the project
 has a live game: what was run on it is listed in `FINDINGS.md`, "Run on the live game" (rows
-V1–V8) and `docs/issues/live-rig.md` — in the Play! emulator, not on a PlayStation 2 and not
+V1–V13) and `docs/issues/live-rig.md` — in the Play! emulator, not on a PlayStation 2 and not
 in PCSX2. Of this document only the names and call rates of a few functions
 (`pad_readAll`, `pad_readPort`, `pad_apply`, `gfx_endFrame`, `engine_frameStep`), the held
 and stick fields of a pad, and the cosmetic seed following the frame counter while a
@@ -43,7 +43,7 @@ section "Not covered" lists what was not opened at all.
 | 0x181d30–0x182c97 | world file setup, moving world pieces | `world_movePiece`, `world_setPieceCollision` |
 | 0x182f28–0x183e3f | terrain height queries | `terrain_height`, `terrain_heightBelow` |
 | 0x183e40–0x185447 | pathfinder | `path_search`, `path_service`, `path_request*` |
-| 0x185448–0x18617b | terrain sweep test and two unread routines | `terrain_sweepCircle` |
+| 0x185448–0x18617b | terrain sweep test and two routines that nothing calls (0x185448, 0x1857e4; the earlier version said "unread" — open question 6) | `terrain_sweepCircle` |
 | 0x18617c–0x18a51f | camera projection, frustum, world and water drawing, water queries | `camera_setView`, `world_draw`, `water_disturb` |
 | 0x18a520–0x18b6ff | camera focus, ray casts, level-start reset | `camera_updateFocus`, `terrain_raycast`, `world_raycast` |
 | 0x18b810–0x18c22f | effects drawn with the world (not read; role *Inferred* from callers), static init | — |
@@ -366,11 +366,11 @@ height, +0x14 u16 samples: height = sample >> 4 (signed), low 4 bits are flags.
 | `terrain_height(radius, world, pos)` 0x183820 | highest ground under a disc; −1000000 when there is none. 49 callers |
 | `terrain_heightBelow` 0x1834a8 | same but ignores anything more than 12 above pos.z (walking under bridges) |
 | `terrain_heightAtPoint` 0x182f28 | single sample |
-| `terrain_testFlag1` 0x183b48 | is any sample under the disc flagged with bit 0 |
-| `terrain_raycast` 0x18a5c0 | first terrain hit along a ray, marching 240 units at a time |
+| `terrain_testFlag1` 0x183b48 | is any sample under the disc flagged with bit 0. The answer is a float in `$f0`, 1.0 or 0.0, which its two callers compare with a float (0x14aeec); not an integer 1 (executed, `docs/spec/world-queries.md` section 5) |
+| `terrain_raycast` 0x18a5c0 | first terrain hit along a ray. The earlier version said "marching 240 units at a time": 240 units is the length of the segment for which terrain elements are collected; inside it each element is marched one 4-unit sample at a time (at most 1001 steps), and the first segment in which any element is hit decides, with the smallest parameter among that segment's elements. A vertical ray returns a distance, not a parameter. The height carried from one segment to the next is advanced four times too far (the rise per sample step times 240, where a segment is 60 steps), so only a horizontal ray is exact beyond the first segment. Sample flags do not block as such: each flag bit in the caller's mask adds 65536 to the sample's height. Executed, `docs/spec/world-queries.md` 9.1 |
 | `world_raycast` 0x18ad94 | terrain plus object circles (objects from `world_collectObjectsInBox`) |
 | `terrain_sweepCircle` 0x185a40 | moving circle against the samples (physics props, projectiles) |
-| `world_setPieceCollision`, `world_movePiece`, `world_setPieceHeight` | doors, lifts and bridges: change the terrain element of a moving piece |
+| `world_setPieceCollision`, `world_movePiece`, `world_setPieceHeight` | doors, lifts and bridges. Only the first and the last change the terrain element of a moving piece (its flag 2 and its height offset). `world_movePiece` 0x182c98 does not, as the earlier version said: its stores go into the piece's chunk record only (+0x28, +0x2c, +0x30, +0x36, +0x38; 0x182ea0–0x182ed8), so the collision of a piece never moves or turns with its drawing. Observed, not executed (`docs/spec/world-queries.md` section 12) |
 | `water_test` 0x189438 | is the position inside a water chunk; optional water height |
 | `water_disturb` 0x189514 | add a ripple to the 32×32 grids of the water chunks around a position; returns how many chunks were found |
 
@@ -381,13 +381,31 @@ height, +0x14 u16 samples: height = sample >> 4 (signed), low 4 bits are flags.
   caller of the four `path_request*` functions; its output buffer is creature+0x23c, 16 points.
   When the queue is full the requester is told "no path" immediately.
 - `path_service(blocking)` (0x184798) takes the oldest request, clears the marks of the
-  previous search, and runs `path_search`: a breadth-first wave over the 8-connected cell grid
+  previous search, and runs `path_search`: a wave over the 8-connected cell grid
   with four ring buffers of 512 cells, stopping when a cell passes the request's goal test or
-  after 80 rounds. Cell word: low 8 bits = which neighbours can be entered, bits 8–15 = search
-  mark (direction it was reached from), upper 16 bits non-zero = blocked.
-- Goal tests by type: 0 within the radius of the goal point; 1 within the radius and
-  `world_raycast` to the goal is clear; 2 within the radius, at least 120 away when the radius
-  is larger than that, and `terrain_raycast` clear (ranged attackers); 3 not read.
+  after 80 rounds. The earlier version called the wave breadth-first; executed, it is not
+  (`docs/spec/world-queries.md` 10.5): going on in the same straight direction costs 2
+  rounds and every other move 3; a round is finished after a hit and the **last** node of
+  the round that passed the test is taken, not the first; five empty rounds in a row also
+  end the search; a node that finds its ring full is marked but lost. Cell word: low 8 bits
+  = which neighbours can be entered; bits 8–15 = search mark, which is the direction it was
+  reached from **plus one**, the start node carrying 15 (0x184bec); the upper 16 bits are
+  not a blocked flag but a counter, 0–16, that 0x18b6c0 raises and 0x18b584 lowers over a
+  rectangle of nodes (callers: `Torch_ctor` 0x2b200c and `StaticFire_initCommon` 0x2c58e4
+  block, `StaticFire_dtor` 0x2c57cc unblocks); a node with a non-zero counter is never
+  entered (`world-queries.md` 10.1).
+- Goal tests by type, corrected from the code and executed (`world-queries.md` 10.4; the
+  earlier version had type 1 the wrong way round ("the ray to the goal is clear"), type 2
+  as a test inside the radius only, and type 3 as "not read").
+  A ray that hits nothing returns −1.0. Type 0: within the radius of the goal point. Type 1
+  (0x1844f0): within the radius **and** `world_raycast` toward the goal returns more than
+  0.98 — so a completely clear line *fails* the test (0x18452c, 0x1845a0). Type 2
+  (0x1845bc): every node **outside** the radius passes (0x1845f8); inside it, unless the
+  radius is above 120 and the node nearer than 120, a node passes when `terrain_raycast`
+  returns less than 0.98, which includes hitting nothing (0x184688). It is requested by
+  `Creature_requestPath` mode 1, which `docs/spec/movement-camera.md` 6.3 describes as
+  fleeing, not by ranged attackers. Type 3 (0x1846a4): as type 2 with `world_raycast`
+  (requester ignored) and the limit 0.75 (0x184774).
 - The result is written as (x, y) integer pairs ending with (−1, −1), and delivered by calling
   the requester's virtual slot 7 with 1 or 0.
 - `g_pathEnabled` (0x44f090): while 0, `path_search` returns "no path" at once. It is cleared
@@ -641,6 +659,11 @@ Checked and found clean:
 5. Cutscene header flags 2 and 4 (the three extra keys) and what object key types 3/4 do in
    each class (virtual slot 3).
 6. Path request type 3 goal test (0x1846a4) and the two routines at 0x185448 and 0x1857e4.
+   (Answered by `docs/spec/world-queries.md` sections 10.4 and 12: the goal test is in
+   "Pathfinding" above. 0x1857e4 is a straight-line walk probe — the height below, then a
+   sweep, in steps of min(2 × radius, 24), with a 3-unit retry mode; 0x185448 walks the path
+   grid calling `terrain_height` and a particle routine. Neither has a caller or a stored
+   pointer anywhere in the executable, so neither runs.)
 7. Whether object key 10 really falls through into 11 and 12.
 8. The creature field +0x3c4 written for the cutscene speaker (44000 / 1150). (Answered by
    `docs/creatures.md`: the activity radius; see "Dialog lines and voice".)

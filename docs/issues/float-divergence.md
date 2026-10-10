@@ -8,7 +8,7 @@ can any of that explain the Drundar arena (`DRUNARE`) going out of sync.
 
 Everything about the game was read from the executable; nothing was run. Since then the
 game has been run in the Play! emulator (`docs/issues/live-rig.md`; `FINDINGS.md`, "Run on
-the live game", rows V1–V8) — a third arithmetic implementation, neither a PlayStation 2
+the live game", rows V1–V13) — a third arithmetic implementation, neither a PlayStation 2
 nor PCSX2. Its movement distances agree with the documented constants to seven digits,
 which says nothing about the last-bit questions of this document: how faithful Play! is to
 the console in floating point was not checked, and no two machines or settings have been

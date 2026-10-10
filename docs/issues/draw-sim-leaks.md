@@ -7,13 +7,23 @@ systematic search for the rest of that kind: state that only drawing, HUD, menu 
 controller code writes, and that code inside the simulation tick reads.
 
 Everything here was read from the executable (decompile, disassembly, the tool described
-below); nothing was run on a console or emulator. That still holds for what this document
-claims: the project's live game (the Play! emulator, not a PlayStation 2 and not PCSX2;
-`FINDINGS.md`, "Run on the live game", rows V1–V8; `docs/issues/live-rig.md`) has run one
-machine only, and none of the leaks below needs fewer than two. The input-delay rule has
-been executed with two interpreter instances (`docs/spec/net-wire.md` section 14). Claims are **Observed** (read at the
-address given), **Inferred** or **Unknown**. Patch proposals are **untested**; no test
-patch has been run on a live game.
+below); nothing was run on a console or emulator when it was written. The input-delay rule
+has since been executed with two interpreter instances (`docs/spec/net-wire.md` section 14).
+
+**Result of 2026-10-10, on the running game** (`docs/issues/live-rig.md` section 7;
+`FINDINGS.md`, "Run on the live game", rows V9–V13): two instances of the game — the
+Play! emulator, not a PlayStation 2 and not PCSX2, two copies of one build on one host —
+were linked and fed seeded random input. The two divergences that turned up are K1 and K2;
+both are **Ran**, both test patches (P1; P2a with P2b) remove their divergence, and K1 at a
+level exit is not silent: one machine changes level, the other does not, and both flag
+out of sync. D26 was tried once and is not settled. U1, U2, U3 and everything else below
+were not exercised. Twelve arena runs between the two instances stayed in sync, which
+bears on "Ranking".
+
+Claims are **Observed** (read at the address given), **Inferred** or **Unknown**, and
+**Ran** where that result applies. Of the patch proposals P1, P2a and P2b have been run
+on that pair and do what they are for; P5 was run once as a control for K1; the rest are
+**untested**, and none has been run in PCSX2 or on a console.
 
 ## Result in short
 
@@ -44,8 +54,8 @@ patch has been run on a live game.
 
 | # | State | Per-machine writer | Simulation reader | Kind | Rank in a DRUNARE boss fight |
 |---|---|---|---|---|---|
-| K2 | `g_localMenuOpen` 0x41b69d, `g_itemListCells` 0x4ebbb0 | `menu_openInventory` (from `hud_run`, raw pad), inventory resource poll (draw task) | `Player_usePotion` 0x1b9fcc, 0x1ba3ac | Observed; known | 1 |
-| K1 | `g_spellSelectorHeld` 0x41b818 | `hud_spellSelect` (HUD draw, raw D-pad) | `Player_run` 0x1a5c08 | Observed; known | 2 |
+| K2 | `g_localMenuOpen` 0x41b69d, `g_itemListCells` 0x4ebbb0 | `menu_openInventory` (from `hud_run`, raw pad), inventory resource poll (draw task) | `Player_usePotion` 0x1b9fcc, 0x1ba3ac | Observed; known; **Ran** | 1 |
+| K1 | `g_spellSelectorHeld` 0x41b818 | `hud_spellSelect` (HUD draw, raw D-pad) | `Player_run` 0x1a5c08 | Observed; known; **Ran** | 2 |
 | D26 / U3 | `g_menuInputLockout` 0x41b4fc | `inventory_close` 0x1c52dc, `shop_close` 0x1d0b48 when reached inside a tick on the one machine that has the menu open | `Player_takeDamage` 0x1b53d4, `Player_run` 0x1a5ba8 | Observed; known, routes extended | 3 |
 | U1 | button-mask tables 0x41b980…0x41ba30 | `config_commitOptions` 0x1e6650 (pause menu, draw task) | `Player_run`, `Player_interact`, `Player_weaponSwapInput`, `Player_tryBlockMove`, `OniBall_run` | Observed code; consequence Inferred; **new** | 4 |
 | D12–D16 | creature status counters +0x36c… | `Creature_draw` 0x10b8d4 | `Player_run`, `Creature_run`, `damage_apply` | Observed; known; reachability Unknown (D16) | 5 |
@@ -282,6 +292,14 @@ offline test) and `Player_draw`.
   the hash at once; DRUNARE has only dropped items). K2 — one potion more on the owner's
   machine for good. Both **silent**; the hash fails later, when a potion exists on one
   machine and not the other.
+- **Ran, 2026-10-10** (`docs/issues/live-rig.md` 7.3). Both triggers, the window and K2's
+  silence were seen on two linked instances: at a lead of 14 the owner's menu flag rose 11
+  ticks before the potion press reached the tick, and the bags then differed by one potion
+  with no out-of-sync flag to the end of the run. K1 is **not** always silent: with the
+  player at a level exit the other machine ran the exit's script and changed level, the
+  owner's did not, and each flagged the other within four ticks. That case is missing
+  from the line above, which knew only items and chests. P1 removed the K1 divergence and
+  P2a + P2b the K2 one; P5 in place of P1 did not, so K1 is this gate and not the lockout.
 
 ### D26 and U3 — the lockout inside a tick
 
@@ -378,12 +396,27 @@ die, get revived.
 
 1. **K2.** Potion, then inventory, inside the delay. Every level-up invites the inventory
    press. Silent; shows as a hash mismatch only when the missing or extra potion is used.
+   **Ran**: real and silent (the run ended 443 ticks later with no flag).
 2. **K1.** Use (the dropped potions), then the D-pad, inside the delay. Silent, usually
-   repaired by picking the item up again.
+   repaired by picking the item up again. **Ran**: real; silent only for an item. With an
+   exit in reach of the use press it ends the session at once, so by severity it is the
+   first of the two; by likelihood in this fight the order is unchanged, since the level's
+   one usable trigger was not looked at in a run.
 3. **D26.** A death with the inventory open and another player's use or swap press in that
-   tick. One tick wide.
+   tick. One tick wide. **Ran once, not settled**: in an arena run the menu did close in
+   the tick of its owner's death, as the row says, but none of the 30 damage calls of the
+   fight fell into the rest of that tick, so nothing diverged and the patch was not tried.
 4. **U1.** Only with remapped controls and an option changed during the fight.
 5. **D12–D16, G11–G13** as ranked in the earlier documents.
+
+The ranking is by how likely each is in this fight, and the running game has not changed
+the order: it confirmed that the first two exist and showed that neither is needed for,
+nor produced by, a fight as such. Twelve runs of the arena on two linked instances —
+trigger, unskipped opening cutscene, 4,000–4,500 frames of fight on random input, with
+deaths, respawns and kills, bus delay up to 10 with jitter and up to 10% loss — stayed in
+sync for 68,685 ticks; one of them (run 11, delay 4, jitter 2) had the D-pad and the
+inventory button in its unpatched input and tripped neither K1 nor K2, while two of six
+runs in `strife` did (`docs/issues/live-rig.md` 7.3, 7.5).
 
 **Inferred, and the main thing this pass adds to the arena question:** K1 and K2 are one
 sample wide at the minimum lead and half a second wide at a lead of 35. A boss fight is where
@@ -394,11 +427,33 @@ potion counts of one player (record +0x2540, 0x48 per item, count at +4) differi
 machines before the message appears, and `g_localInputFrame − g_netFrame` (0x4027a4, 0x4027ac)
 well above 5 during the fight.
 
-## Patch proposals (all untested)
+**Where that stands after the runs of 2026-10-10.** Half of it is no longer inference:
+K2 is real, silent, and was produced by random play at a lead of 14–25; K1 likewise at a
+lead of 5. The other half is still unproven and, if anything, weaker. "Every time" is not
+what two identical instances show: with the mechanism available and unpatched the arena
+stayed in sync, and with K1 and K2 patched out it stayed in sync as well, so no run needed
+them to explain anything. But the arena runs were not at a large lead where it counts:
+no arena run had a bus delay above 10 (a lead of 14–25 in `strife` at those settings),
+and the one arena run whose unpatched input contained the D-pad and the inventory button
+had delay 4 with jitter 2. The stall that leaves a lead of about 35 for 15–30 s cannot
+happen on the rig at all, because both instances run their frames in the same number of
+emulated cycles; a large lead can only be imitated there by bus delay, which one `strife`
+run did (delay 25, jitter 10, with K1's inputs, no divergence in 3,504 ticks) and no arena
+run did. So the rig neither supports nor rules out "a large lead plus K2" for real
+players; what it shows is that an arena fight between two machines that compute
+identically does not go out of sync by itself. The observation named above is still the
+one that would decide, and it now has a tool: the rig's tick log carries a checksum of
+each bag and both frame counters.
+
+## Patch proposals (P1, P2a, P2b run on a linked pair; the rest untested)
 
 One change each. PCSX2 form: `patch=1,EE,<address>,word,<new>`. Original words were read from
 the executable. The first three are the proposals of kill-loot-xp.md, repeated because they
-are the top of the ranking; they are not in `patches/` yet.
+are the top of the ranking; they were not in `patches/` when this was written and are
+there now. P1, and P2a with P2b, have been run on both of two linked Play! emulator
+instances and each removed its divergence; P5 was run once in place of P1 and, as
+expected, did not remove K1 (`docs/issues/live-rig.md` 7.3). That says nothing about P5's
+own purpose. None has been run in PCSX2 or on a console.
 
 | # | Address | Original | New | What it changes | What could go wrong | Every player? |
 |---|---|---|---|---|---|---|
@@ -422,7 +477,7 @@ stores are what keeps a closing press from acting.
 | U1 | `config_commitOptions` 0x1e6650, run when the pause menu's option list is left with any option changed (and when the pause menu closes), copies this machine's four saved controller rows into the per-slot button-mask tables with no network test; in a net game those tables hold each player's own map from the launch handshake. Any remapped button then reads differently on that machine | Observed (code); Inferred (consequence) | 0x1e6824 (offline-only compare), 0x1e6a60–0x1e6b0c (copy), callers 0x18d2c8, 0x18d2e0, 0x18e2f8; 0x13776c; `Player_run` readers |
 | U2 | `missionMenu_run` returns before its pad test on the chooser's machine while that machine's pause menu is open; the other machines act on the press | Observed; Inferred (window) | 0x231a4c–0x231a74; same lines in `jumpgate_menuRun` 0x27dee0–0x27df0c |
 | U3 | Routes by which the lockout is set inside a tick on one machine: local death (D26), the medal countdown in `gameMiscSync` (before objects run), an automatic jump gate. Not routes: `player_respawn` (no menu can be open), message handlers (the word is zeroed before the tasks), `cut_start` (stores 60 everywhere) | Observed | 0x1b351c, 0x1e3dcc, 0x27da8c; 0x1bd0a8–0x1bd0b8; 0x322710; 0x19b5ac |
-| U4 | The windows of K1, K2, U2 and the jump-gate menu are the lead minus one call: one sample at the minimum lead, about 0.57 s at a lead of 35 | Inferred | kill-loot-xp.md F2; FINDINGS L11 |
+| U4 | The windows of K1, K2, U2 and the jump-gate menu are the lead minus one call: one sample at the minimum lead, about 0.57 s at a lead of 35. Ran, consistent: in the K2 run the owner's menu opened 11 ticks before its potion press reached the tick, at a lead of 14 | Inferred; one case Ran | kill-loot-xp.md F2; FINDINGS L11; `docs/issues/live-rig.md` 7.3 |
 | U5 | `g_exitCountdown` 0x4f694a is lockstep: set by game message 8 and decremented unconditionally in `hud_run` | Observed | 0x1d907c, 0x1db8f0 |
 | U6 | The three `Spell` draw overrides only draw; `dialog_runTask`'s store to the script active player is offline-only; `g_helpMessageOpen` reaches scripts only through a built-in no script calls | Observed | 0x30ed24, 0x311034, 0x312f48; 0x2301b8; 0x1433bc |
 | U7 | A mechanical search (`tools/drawsim.py`) for globals stored by presentation-only code and loaded by simulation code gives 271; apart from K1, K2, D26, U1, U2 and rows already on the ledger, none reaches shared state in a net game. Its blind spots are pointer-reached fields and per-machine conditions inside simulation code | Observed list; Inferred completeness within the blind spots | this document |
@@ -479,4 +534,7 @@ stores are what keeps a closing press from acting.
   was not re-read; if it links a light it is one more D31 case.
 - Who calls `arena_init` 0x304df0 (no direct call or built address was found), and so
   whether the `arena` run task exists in DRUNARE.
-- Whether K2 at a large lead is the arena's "every time": needs two running copies.
+- Whether K2 at a large lead is the arena's "every time": needs two running copies. Two
+  now exist (`docs/issues/live-rig.md` section 7) and the question is still open: K2 is
+  confirmed, the arena stayed in sync in twelve runs, and no arena run combined a large
+  lead with the inventory button ("Ranking", last paragraph).

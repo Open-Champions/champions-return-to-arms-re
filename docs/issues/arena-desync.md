@@ -5,12 +5,34 @@ Level `drunare`, evil path. The ledger (`FINDINGS.md`) lists several candidate c
 far as static reading allows and ranks them.
 
 Everything here was read from the executable and from the level's unpacked files; nothing
-was run. Claims are **Observed** (read at the address given), **Inferred** or **Unknown**.
-Patch proposals at the end are **untested**. All of that still holds. The project can run
-the game now — in the Play! emulator, which is not a PlayStation 2 and not PCSX2,
-on one machine (`FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`)
-— but the arena has not been reached on it, a desync needs two machines, and no test patch
-has been run on a live game.
+was run when it was written. Claims are **Observed** (read at the address given),
+**Inferred** or **Unknown**. Patch proposals at the end are **untested**, and still are.
+
+**Result of 2026-10-10: the arena desync was not reproduced on the running game.**
+(`docs/issues/live-rig.md` sections 7.4–7.5; `FINDINGS.md`, "Run on the live game", row
+V12.) Two instances of the game, linked through the developer LAN start, were put into
+`drunare` in the same lockstep tick and run twelve times through the trigger, the
+unskipped opening cutscene and 4,000–4,500 frames of fight on seeded random input:
+68,685 ticks compared, no shared value differing in any run. Six runs had no network
+delay and six a bus delay of 3–10 frames with jitter and up to 10% loss; the characters
+were weak ones that died and were put back (after which the cutscene played again) and
+strong ones that killed and took the fight past its first stage; two runs set the lobby
+flag by hand. No candidate below produced a divergence in those runs, and nothing else
+did. How far each candidate's preconditions were met was not recorded; what is known is
+that no character had skills (so nobody could cast Resurrect, which the first candidate
+needs) and that the runs did not go past about 6,000 ticks.
+
+What that does and does not say. The two machines are two copies of one build of the
+Play! emulator on one host — not a PlayStation 2, not PCSX2. They cannot differ in
+floating point or in real timing, so the result is about the game's logic only: **an
+arena fight between two machines that compute identically stays in sync**, which agrees
+with "none of the five explains a desync that happens on every run" and moves the search
+to what the set-up did not contain — a difference between the machines themselves (the
+ledger's F rows), lobby characters with skills and equipment and the transferred records,
+the real way in from `drundar` with saved level state (the level name was written
+directly), real stalls and packet timing, and K1 or K2 (`docs/issues/kill-loot-xp.md`),
+which the same rig confirmed in another level. No patch of this document was run: there
+was no divergence to bisect. Not a console result.
 
 ## Result in one table
 
@@ -444,6 +466,17 @@ resurrected, and whether the last cutscene was skipped.
 | Last cutscene, after the first voice line, not when skipped | D8 |
 | 0x403a04 below 300 on either machine | D21 |
 
+Recorded on 2026-10-10 (`docs/issues/live-rig.md` 7.5), on two linked instances of the
+running game rather than on two consoles: twelve runs, and the message never appeared —
+not in the first cutscene, not in the knight fight with nobody dead (the first row), not
+after deaths, not after kills. So no row of the table was observed, and the one this
+document expected of an every-run desync ("knight fight, nobody has died → none of the
+five") did not happen between identical machines either. The phases reached were the
+first cutscene and the knight fight, in two runs a later stage of the fight; the last
+cutscene and the avatar fight are not reported as reached. The table stands as the thing
+to record when the desync is next seen, which now means: on machines that differ, or
+with real characters.
+
 ## Proposed ledger rows
 
 | ID | Claim | Kind | Evidence |
@@ -479,7 +512,11 @@ One change each. PCSX2 form: `patch=1,EE,<address>,word,<new>`.
   that has that menu open (0x1c52dc, 0x1d0b48), and they are reached inside a tick through
   `net_closeLocalMenus` when the local player dies (0x1b351c). For the rest of that tick
   the machine drops player damage. By F1 nothing that damages players runs after the
-  players here, so it should not matter in this level; elsewhere it may.
+  players here, so it should not matter in this level; elsewhere it may. (Tried once on
+  the running game, in this level, 2026-10-10: the inventory did close in the tick of its
+  owner's death, the lockout word was 0 at the entry of all 30 `Player_takeDamage` calls
+  of the fight on both machines, and nothing diverged — `docs/issues/live-rig.md` 7.3.
+  Consistent with this bullet; the ledger's D26 is neither confirmed nor refuted by it.)
 - Trap props whose lump name starts with `pipepistona`: their damage window is switched by
   animation event bits (0x23cc70–0x23ce10) of a loop whose start phase comes from the
   cosmetic seed (0x23c95c). This is engine.md P4 with a concrete consumer. Not in this

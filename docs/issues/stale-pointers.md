@@ -6,7 +6,7 @@ objects, and behaviour that depends on address values or allocation order.
 
 Everything here was read from the executable (SLUS_209.73, v2.00); **nothing was run, and
 every patch proposal is untested.** (Still so. What the project has since run on a live
-game, in the Play! emulator, is in `FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`;
+game, in the Play! emulator, is in `FINDINGS.md`, "Run on the live game" (rows V1–V13) and `docs/issues/live-rig.md`;
 none of it re-checks a finding here, and no test patch has been run there.) Each statement is **Observed** (read at the address
 given), **Inferred** or **Unknown**. The scanner is `tools/rawptr.py`; what it can and
 cannot see is in section 7. New names are in `symbols/staleptr.tsv`. `FINDINGS.md` and

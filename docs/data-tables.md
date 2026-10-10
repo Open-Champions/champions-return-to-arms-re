@@ -9,7 +9,7 @@ Static reading only when it was written; nothing here was checked on a running g
 Since then parts of sections 1, 3, 4, 5 and 8 have been executed function by function in
 `tools/ee_emu.py` (`docs/spec/items.md`, `docs/spec/combat.md`; marked **executed** where
 folded in), and the project has a live game — the Play! emulator, which is not a PlayStation 2 and not PCSX2
-— whose runs are listed in `FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`.
+— whose runs are listed in `FINDINGS.md`, "Run on the live game" (rows V1–V13) and `docs/issues/live-rig.md`.
 The only rule of this document seen there is the load limit of a new character (strength +
 125: 46 gave 171); no table was compared with the live game. No test patch has been run on a live game.
 **Observed** = read at

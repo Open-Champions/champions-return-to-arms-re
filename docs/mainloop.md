@@ -4,11 +4,11 @@ Area `mainloop`, nominal range 0x320000–0x323dcc of `SLUS_209.73` (see
 [OVERVIEW.md](OVERVIEW.md)). Everything here was read from the executable; nothing was
 run when it was written. Since then the project has a live game — in the Play! emulator,
 which is not a PlayStation 2 and not PCSX2 — and what was run on it is listed in
-`FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`. Of this
+`FINDINGS.md`, "Run on the live game" (rows V1–V13) and `docs/issues/live-rig.md`. Of this
 document that touches: `tasks_run` entered once per simulated frame, the two frame
 counters (`g_drawFrame` up by one per rendered frame, `g_simFrame` reset at a level load),
 and the developer LAN launch of section 7 step 3 (marked **Ran** there). Everything else here is still reading
-only; no per-machine item below and no test patch has been run on a live game.
+only; no per-machine item below and the only test patches run on a live game are the two for K1 and K2 (FINDINGS V10, V11).
 **Observed** = read at the address given, **Inferred** = follows from observations,
 **Unknown** = not established. Names of functions outside this area are the ones other
 area files in `symbols/` use; where none exists the address is given.
@@ -106,7 +106,10 @@ out.
 Consequences while a pass is running: a task may remove itself or any other task and the
 walk continues with the right neighbour; a task added behind the cursor is called in the
 same pass if its flags match; a task added at or before the cursor waits for the next
-pass. The cursor is one global, so passes cannot nest (none does).
+pass. One case goes the other way (executed, `docs/spec/object-system.md` 6.1): when the
+running task has removed itself, the cursor has stepped back by one, and a task that is
+then inserted at the index the running task had (same priority, registered now) is called
+in the same pass. The cursor is one global, so passes cannot nest (none does).
 
 Two passes exist: the **run pass** `tasks_call(1, −1)` inside `tasks_run` (flags 0 and
 2), and the **draw pass** `tasks_call(0, 1)` at 0x323284 (flags 1). Nothing passes a mask

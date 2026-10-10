@@ -5,7 +5,7 @@ helpers such as `Generator`, `Teleporter`, `CreatureContainer`, `AntWave`) and 7
 `GameObject` classes (chests, containers, doors, switches, save points, jump gates, lights,
 traps, monster projectiles). Everything here was read from the executable; nothing was run.
 That still describes this document. The project has a live game now — the Play! emulator, which is not a PlayStation 2 and not PCSX2
-(`FINDINGS.md`, "Run on the live game" (rows V1–V8) and `docs/issues/live-rig.md`) — but none of
+(`FINDINGS.md`, "Run on the live game" (rows V1–V13) and `docs/issues/live-rig.md`) — but none of
 its runs looked at a monster class or a level object of this document. No test patch has been run on a live game.
 
 Claims are marked **Observed** (read at the address given), **Inferred** or **Unknown**.
@@ -79,7 +79,11 @@ set in 68–72 of the 73.
 2. `Creature_processDamage` (0x110d30) with (this, model) — creature damage reaction (creatures area);
 3. `Creature_run(this, model)`; a non-zero result ends the function (not in every class:
    `NPC_run` 0x29ea40 ignores the result, and `NPC_run` and `GnomeNavigator_run` do not call
-   `Creature_processDamage` at all — `docs/monsters-2.md` 9.2);
+   `Creature_processDamage` at all — `docs/monsters-2.md` 9.2). The test is there, but the
+   exit is dead: `Creature_run` has one return and it loads 0 (0x113c10), so the result is 0
+   on every path (executed, `docs/spec/creature-tick.md` section 1). `Creature_run` has no
+   entry test for dead, inert or far-away creatures either, and does no damage or target
+   work; those are the separate calls of steps 2 and 4 and of slot 23;
 4. `Creature_updateActive(this)`; several classes return when it says "inactive";
 5. `Creature_stepAnim` (0x1162b0) with (speed, this) advances the animation and returns a bit mask of animation
    events for this frame (bit 0 is "the hit frame" in every attack state read; bits 1–3 are
@@ -102,7 +106,7 @@ creatures symbol file's, the descriptions are what the monster code relies on):
 | `Creature_isAwayFromHome` (0x10eed8) | "am I outside my leash" (home +0x3b4, radius +0x3c0) | body read |
 | `Creature_turnToTarget` (0x1187e0) | turn toward the target (calls table offset 0xd4) | body read |
 | `Creature_hitAllEnemiesInArc` (0x119b58) / `Creature_hitTargetInArc` (0x119938) | melee hit test in an arc with damage min/max and attack rating from +0xd0/+0xd2/+0xd4, then a flag word (8, 0x40001, …) that carries the damage class; non-zero when something was hit. The earlier version called +0xd4 the damage type | called on the hit-frame event bit; 0x119938 forwards the third value as `damage_apply`'s `attack` |
-| `Creature_isNotRooted` (0x1195e0) / `Creature_isAttackReady` (0x1195f0) / `Creature_isNotStunned` (0x119608) | test timers +0x314 / +0x318 / +0x31c for zero | bodies read |
+| `Creature_isNotRooted` (0x1195e0) / `Creature_isAttackReady` (0x1195f0) / `Creature_isNotStunned` (0x119608) | test timers +0x314 / +0x318 / +0x31c for zero. `Creature_isAttackReady` is not only a test: for a creature without a target it first stores zero to the cooldown +0x318 (0x1195f4–0x1195f8; executed, `docs/spec/creature-tick.md` section 16) | bodies read |
 | `Creature_deadUpdate` (0x1108a0) | dead-body handler: blood decal, then sink into the ground and delete when creature flag 0x1000000 is set | body read |
 | `Creature_dropLoot` (0x10f2c8) | called once on entering state 0x14 (death); not read here | setState case 0x14 of Cazic and Horsemen |
 | `model_getAttachPoint` (0x1754a0) | world position of a model bone / attachment point | used before every projectile or effect spawn |
@@ -129,6 +133,11 @@ The filter `Creature_filterState` (0x10a9c0) runs at the top of every setState o
 change when a PvP condition holds or when +0x231 is set and the request is state 1; it
 redirects requests to 5, 0x13 or 0x10 while timers A, C or B are running; a request for
 0x14 clears all four timers; a result of 0 also clears the target handle +0x234.
+More exactly, executed in `docs/spec/creature-tick.md` 12.3: the three redirects are one
+chain, not three independent tests. While timer A (root) runs, a request other than 0, 5
+and 6–15 becomes 5 only when there is a target and 0 when there is none, and the stun and
+cooldown tests are then skipped; otherwise timer C forces 0x13; otherwise, after the
+cooldown has been zeroed for a creature without a target, timer B forces 0x10.
 Timers A, B and C are the root, attack-cooldown and stun timers of `docs/creatures.md`,
 whose list of state numbers describes the same states from the base class's side.
 
