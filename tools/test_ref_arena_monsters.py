@@ -229,7 +229,7 @@ class Zek(unittest.TestCase):
         rig.mem.poke(C + 0x232, 2, 5)
         rig.model.zek_set_state(C, 0xF)
         self.assertEqual(rig.mem.load(C + 0x232, 2), 0)
-        self.assertEqual(rig.names(), ['handle_clear'] if rig.names() else [])
+        self.assertEqual(rig.names(), [])                          # not even the idle clip
 
     def test_nothing_runs_while_not_active(self):
         rig = Rig(AM.VT_ZEK)
@@ -319,6 +319,37 @@ class Skills(unittest.TestCase):
         self.assertAlmostEqual(y, 0.0, places=4)                   # the game's sine of 0 is not exactly 0
         self.assertEqual(rig.mem.load(SPELL + 0x80, 2), 0xFFFF)
         self.assertEqual(rig.mem.load(SPELL + 0x7C, 4), 0x4000101F)
+
+    def test_a_swarm_tick_without_a_target_only_wanders(self):
+        rig = Rig(answers={'pool_new': SPELL, 'Skill.v14': 4, 'Skill.v12': 3})
+        rig.mem.poke(SKILL + 0x60, 4, TABLES)
+        spell = rig.model.tagar_cast(SKILL, 9, C, (0, 0, 0), 0)
+        seed, draws = rig.mem.load(SPELL + 0x10, 4), rig.model.draws
+        rig.model.calls.clear()
+        rig.model.tagar_spell_run(spell)
+        self.assertEqual(rig.mem.load(SPELL + 0x78, 4), RC.DT)    # the clock: one sixtieth
+        self.assertEqual(rig.model.draws, draws)                   # no shared draw without an arrival
+        self.assertNotEqual(rig.mem.load(SPELL + 0x10, 4), seed)   # but the spell's own generator moved
+        names = rig.names()
+        self.assertEqual(names.count('particle_spawn'), 51)        # the cloud and its marker
+        self.assertEqual(names[0], 'Skill.v12')                    # the victim limit; nobody to tick first
+        self.assertIn('world_collectObjectsInArc', names)          # the first victim is looked for in an arc
+        self.assertNotIn('world_collectInSphere', names)
+        moved = fl(rig.mem.load(SPELL + 0x88, 4)) - 24.0, fl(rig.mem.load(SPELL + 0x8C, 4))
+        self.assertAlmostEqual((moved[0] ** 2 + moved[1] ** 2) ** 0.5, 203.05324 / 60, places=3)
+
+    def test_the_hunt_ends_and_the_spell_destroys_itself(self):
+        rig = Rig(answers={'pool_new': SPELL, 'Skill.v14': 4, 'Skill.v12': 3})
+        rig.mem.poke(SKILL + 0x60, 4, TABLES)
+        spell = rig.model.tagar_cast(SKILL, 9, C, (0, 0, 0), 0)
+        rig.mem.poke(SPELL + 0x14, 4, TABLES)                      # a spell table of unknown functions
+        ticks = 0
+        while 'Spell.v1' not in rig.names():
+            rig.model.tagar_spell_run(spell)
+            ticks += 1
+            self.assertLess(ticks, 200)
+        self.assertEqual(ticks, 121)                               # 2.0009 s of single-precision sixtieths
+        self.assertEqual(rig.names().count('particle_spawn'), 120 * 51)
 
 
 if __name__ == '__main__':

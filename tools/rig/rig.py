@@ -311,6 +311,19 @@ def pair(argv):
         command = runner_command(args + extra)
         out = open(os.path.join(out_dir, low + ".out"), "w")
         processes.append((letter, subprocess.Popen(command, stdout=out, stderr=subprocess.STDOUT), out))
+    # Once one machine has ended the other is told and ends within a frame; if it has not
+    # after RTA_PAIR_GRACE seconds (default 120) it is stuck, and is killed (exit code -9).
+    import time
+    grace = float(os.environ.get("RTA_PAIR_GRACE", "120"))
+    deadline = None
+    while any(process.poll() is None for _, process, _ in processes):
+        if deadline is None and any(process.poll() is not None for _, process, _ in processes):
+            deadline = time.time() + grace
+        if deadline is not None and time.time() > deadline:
+            for _, process, _ in processes:
+                if process.poll() is None:
+                    process.kill()
+        time.sleep(0.5)
     status = 0
     for letter, process, out in processes:
         code = process.wait()

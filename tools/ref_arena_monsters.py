@@ -24,16 +24,22 @@ class) and adds, as methods of Model:
         slot34_set_home_range 0x3c2708
         is_not_rooted 0x1195e0, is_attack_ready 0x1195f0, is_not_stunned 0x119608
     the two skills whose cast the knights' run function reaches and that touch the shared
-    seed in the caster's tick
+    seed in the caster's tick - Summon Skeleton with its spell, and Tagar's Insects with
+    its spell's per-tick run (which executes inside the casting knight's Creature_run)
         summon_can_use       0x2e2368      summon_cast          0x2e18a4
         summon_spell_ctor    0x2e16ec      summon_spell_run     0x2e177c
         tagar_cast           0x30c708      tagar_spell_ctor     0x30c95c
+        tagar_spell_run      0x30cbc8      tagar_tick_victims   0x30d558
+        tagar_pick_target    0x30d998      tagar_is_valid       0x30db9c
+        spell_rand           0x16a964
 
 Every method was written from the instructions at the address in its docstring and is
 compared with that code, executed under tools/ee_emu.py, by tools/difftest_arena_monsters.py.
 docs/spec/arena-monsters.md is the prose version and says what the comparison covers.
 Standard library only; no game data is embedded: strings, tables and class definitions are
-named by address and read through the memory the caller supplies.
+named by address and read through the memory the caller supplies.  (ArenaScript at the end
+is the one exception in kind: a model of the level's script, it carries that script's own
+entry and variable names and its three frame counts.)
 
 How it sees the game: exactly as tools/ref_creature.py does - a memory image (load/store),
 callbacks for everything outside the model (EXTERNALS below extends that module's list),
@@ -51,7 +57,8 @@ name table and the run lists (tools/ref_core.py, tools/ref_objects.py), terrain_
 world_findFreeSpot (tools/ref_world.py).
 
 Shared-seed draws made by this code itself (Model.draws counts them):
-    summon_cast 1 or 2, summon_spell_ctor 1, tagar_spell_ctor 1.
+    summon_cast 1 or 2, summon_spell_ctor 1, tagar_spell_ctor 1, tagar_spell_run 1 on
+    each arrival.
 No function of Horsemen, Skelight or Zek draws from the shared seed itself; they draw from
 the object's own generator (+0x44).  The cosmetic generator 0x404460 is drawn by
 summon_cast only (particles).
@@ -90,7 +97,7 @@ G_SKILL_GROUNDPOUND = 0x41B208                                        # skill 38
 VT_CREATURE, VT_CREATURE_SUB = 0x50CC58, 0x50D010
 VT_HORSEMEN, VT_SKELIGHT, VT_ZEK = 0x515730, 0x5174B0, 0x5180C8
 VT_HOLDER_BASE, VT_WEAPON1, VT_WEAPONSHIELD = 0x512148, 0x50CF40, 0x50CDA0
-VT_SPELL, VT_SPELL_SUMMON, VT_SPELL_TAGAR = 0x515BA0, 0x519918, 0x51BA60
+VT_SPELL, VT_SPELL_SUMMON, VT_SPELL_TAGAR, VT_SPELL_MARKER = 0x515BA0, 0x519918, 0x51BA60, 0x51BA90
 DEF_HORSEMEN, DEF_SKELIGHT, DEF_ZEK = 0x5006E8, 0x502728, 0x503688    # class definitions
 NIGHTMARE_DATA = 0x500848                       # 12 bytes per variant, handed to the mount
 
@@ -104,7 +111,7 @@ S_SKELE_LUMP, S_NIGHTMARE, S_SKELIGHTM = 0x547310, 0x547380, 0x547420
 S_BLOMEDAL, S_ZEK_LEVEL = 0x54C080, 0x54E5F8
 S_FX_LUMP_ZEK, S_ZEK_WAVE_SOUND, S_ZEK_CLANG = 0x54E558, 0x54E560, 0x54E5D8
 S_FX_LUMP_SUMMON, S_SUMMON_SOUND = 0x54FDD0, 0x54FDD8
-S_FX_LUMP_TAGAR, S_TAGAR_SOUND = 0x552428, 0x552430
+S_FX_LUMP_TAGAR, S_TAGAR_SOUND, S_TAGAR_HIT_SOUND = 0x552428, 0x552430, 0x552460
 
 # float patterns
 ZERO, HALF, ONE = RC.ZERO, RC.HALF, RC.ONE
@@ -128,6 +135,9 @@ MODELLED = {
     'SkillSummonSkeleton_canUse': 0x2E2368, 'SkillSummonSkeleton_cast': 0x2E18A4,
     'SpellSummonSkeleton_ctor': 0x2E16EC, 'SpellSummonSkeleton_run': 0x2E177C,
     'SkillTagarsInsects_cast': 0x30C708, 'SpellTagarsInsects_ctor': 0x30C95C,
+    'SpellTagarsInsects_run': 0x30CBC8, 'SpellTagarsInsects_tickVictims': 0x30D558,
+    'SpellTagarsInsects_pickTarget': 0x30D998, 'SpellTagarsInsects_isValidTarget': 0x30DB9C,
+    'Spell_rand': 0x16A964,
 }
 
 # virtual bodies of Creature-derived objects this module has: function -> (slot, method)
@@ -143,7 +153,7 @@ CLASS_BODIES = {
 SKILL_BODIES = {
     0x2E2368: (1, 'summon_can_use'), 0x2E18A4: (2, 'summon_cast'), 0x30C708: (2, 'tagar_cast'),
 }
-SPELL_BODIES = {0x2E177C: (2, 'summon_spell_run')}
+SPELL_BODIES = {0x2E177C: (2, 'summon_spell_run'), 0x30CBC8: (2, 'tagar_spell_run')}
 
 EXTERNALS = dict(RC.EXTERNALS)
 EXTERNALS.update({
@@ -214,6 +224,12 @@ EXTERNALS.update({
     'Skill.v12': Ext(0, 'piipi', 0, 'i', 'statistic (index, level, caster, cap)'),
     'Skill.v14': Ext(0, 'pii', 0, 'i', '(level, 0x14) -> level'),
     'Spell.v1': Ext(0, 'pi', 0, 'n', 'destroy (3)'),
+    # --- the insects spell
+    'creature_findSpell': Ext(0x11A788, 'pip', 0, 'i', '(creature, skill id, caster) -> the marker spell or 0'),
+    'world_collectInSphere': Ext(0x14AB80, 'viL', 1, 'n', '(centre, heading, list out; radius) -> objects'),
+    'world_collectObjectsInArc': Ext(0x1614F0, 'viLp', 3, 'n', '(centre, heading, list out, owner; radius, '
+                                     'arc in degrees, 0.0) -> objects, nearest first'),
+    'Skill.v8': Ext(0, 'piiiww', 1, 'n', '(statistic, level, 0; spread) -> low, high'),
 })
 EXTERNALS['LightEffect_ctor'].stack = 4
 EXTERNALS['particleDef_ctor'].stack = 5
@@ -221,15 +237,17 @@ EXTERNALS['particleDef_ctor'].stack = 5
 
 def shape_result(name, args, ret=0, fret=0, outs=None):
     """What a callback hands back, built from its EXTERNALS row (see ref_creature.shape_result;
-    this copy knows the rows added here, the kind 'S' and the 64-bit result kind 'q')."""
+    this copy knows the rows added here, the kind 'S', the kind 'L' - a list head the callee
+    fills with a chain of nodes, handed back as a list of objects - and the 64-bit result
+    kind 'q')."""
     ext = EXTERNALS[name]
     values, position, given = [], 0, list(outs) if outs is not None else None
     for kind in ext.ints:
-        if kind in 'oOwWbn':
+        if kind in 'oOwWbnL':
             if given:
                 value = given.pop(0)
             else:
-                value = (0, 0, 0) if kind in 'oO' else ([] if kind == 'n' else 0)
+                value = (0, 0, 0) if kind in 'oO' else ([] if kind in 'nL' else 0)
             if kind not in 'OW' or args[position]:
                 values.append(value)
         if kind in 'ipvelsSOW':
@@ -286,6 +304,22 @@ class Model(RC.Model):
         if body is not None and ('Skill.v%d' % slot) not in self.external:
             return getattr(self, body[1])(this, *args)
         return self.call('Skill.v%d' % slot, this, *args)
+
+    def table_call(self, cls, obj, table_offset, slot, *args):
+        """As ref_creature's, except that a spell body of SPELL_BODIES runs here (so a
+        spell attached to a creature runs inside that creature's Creature_run)."""
+        if cls == 'Spell':
+            table = self.u32(obj + table_offset)
+            body = SPELL_BODIES.get(self.u32(table + 8 * slot + 4))
+            if body is not None and ('Spell.v%d' % slot) not in self.external:
+                return getattr(self, body[1])((obj + self.s16(table + 8 * slot)) & M32, *args)
+        return RC.Model.table_call(self, cls, obj, table_offset, slot, *args)
+
+    def spell_rand(self, spell):
+        """Spell_rand 0x16a964: the spell's own generator at +0x10."""
+        seed = (self.u32(spell + 0x10) * 0x19660D + 0x3C6EF35F) & M32
+        self.w32(spell + 0x10, seed)
+        return seed >> 16
 
     def holder_call(self, holder, slot, *args):
         """A virtual call on a weapon holder (table pointer at +0): always a callback."""
@@ -1717,8 +1751,7 @@ class Model(RC.Model):
         The Spell base (ONE SHARED DRAW), eight empty victim handles +0x18, clock +0x78 =
         0, hunt end +0x7c = 0x4000101f (2.0009...), current slot +0x80 = -1, victims +0x82
         = 0, heading +0x84 = the owner's facing, wander +0x86 = 0, swarm position +0x88 =
-        the owner's position moved 24 units along its facing and 48 up.  The spell's run
-        (docs/spec/skills-69-101.md section 87) is not part of this model."""
+        the owner's position moved 24 units along its facing and 48 up."""
         w32, w16, u32 = self.w32, self.w16, self.u32
         self.spell_base_ctor(spell, level, owner, skill, VT_SPELL_TAGAR)
         for k in range(8):
@@ -1736,6 +1769,280 @@ class Model(RC.Model):
         y = C.add(u32(spell + 0x8C), C.mul(C.sin16(self.s16(spell + 0x84)), reach))
         w32(spell + 0x90, C.add(u32(spell + 0x90), F_48))
         w32(spell + 0x8C, y)
+
+
+    # =====================================================================================
+    # Skill 87: the spell's per-tick run (slot 2 of the spell, called from Creature_run of
+    # the creature it is attached to)
+    # =====================================================================================
+    TAGAR_SPEED = 0x434B0DA1                    # 203.05 units a second
+    TAGAR_TIME_PER_UNIT = 0x3BA1605B            # 1 / 203.05
+    TAGAR_CLOUD = (0x8E7598, 0x8E75E8, 0x8E7638, 0x8E7688)     # particle definitions
+
+    def _spell_ball(self, spell):
+        """A point of the unit ball from the spell's own generator: three draws per try,
+        retried while the squared length exceeds 1."""
+        while True:
+            x = self._unit(self.spell_rand(spell))
+            y = self._unit(self.spell_rand(spell))
+            z = self._unit(self.spell_rand(spell))
+            if not C.lt(ONE, C.add(C.add(C.mul(x, x), C.mul(y, y)), C.mul(z, z))):
+                return x, y, z
+
+    def tagar_is_valid(self, spell, obj, marker_test):
+        """SpellTagarsInsects_isValidTarget 0x30db9c (spell, object, marker test) -> 0 or 1:
+        the object exists, has neither object flag 1 nor 8, the owner's slot 20 calls it
+        an enemy, and - with the marker test - it carries no marker (skill id 0x57) of
+        this owner."""
+        if not obj or self.u32(obj + 0xC) & 9:
+            return 0
+        owner = self.u32(spell + 0xC)
+        if not self.vcall(owner, 20, obj):
+            return 0
+        if marker_test and self.call('creature_findSpell', obj, 0x57, self.u32(spell + 0xC)):
+            return 0
+        return 1
+
+    def tagar_pick_target(self, spell, later):
+        """SpellTagarsInsects_pickTarget 0x30d998 (spell, later) -> object or 0.
+
+        The first victim (later = 0): world_collectObjectsInArc(swarm position, heading,
+        owner; 120, 90 degrees, 0) and the FIRST entry of its list that is valid and not
+        marked.  Later victims: world_collectInSphere(swarm position; 120) and, among the
+        valid unmarked entries not already in one of the n victim slots, the one with the
+        smallest squared distance to the swarm in 3-D (strict; start value 1,000,000)."""
+        u32 = self.u32
+        swarm = self.vec(spell + 0x88)
+        heading = self.s16(spell + 0x84)
+        if later:
+            found = self.call('world_collectInSphere', swarm, heading, 0x42F00000)
+        else:
+            found = self.call('world_collectObjectsInArc', swarm, heading, u32(spell + 0xC),
+                              0x42F00000, 0x42B40000, ZERO)
+        best, best_d = 0, 0x49742400
+        for obj in found or ():
+            if not self.tagar_is_valid(spell, obj, 1):
+                continue
+            count = self.s16(spell + 0x82)
+            if any(u32(spell + 0x18 + 4 * k) and u32(u32(spell + 0x18 + 4 * k) + 0xC) == obj for k in range(max(count, 0))):
+                continue
+            if not later:
+                self.call('handle_clear', 'stack')
+                return obj
+            dx = C.sub(u32(spell + 0x88), u32(obj + 0x10))
+            dy = C.sub(u32(spell + 0x8C), u32(obj + 0x14))
+            dz = C.sub(u32(spell + 0x90), u32(obj + 0x18))
+            d = C.add(C.add(C.mul(dx, dx), C.mul(dy, dy)), C.mul(dz, dz))
+            if C.lt(d, best_d):
+                best, best_d = obj, d
+        self.call('handle_clear', 'stack')
+        return best
+
+    def tagar_tick_victims(self, spell):
+        """SpellTagarsInsects_tickVictims 0x30d558 (spell) -> 1 when any victim is still
+        infested.  For each of the n victim slots whose handle holds an object and whose
+        time +0x38 is not negative:
+
+          time <= clock, or the victim is no longer valid: its marker (if
+              creature_findSpell finds one) is destroyed and the time becomes -1.0;
+          else: the victim's second flash quad = (100, 0, 0, 4); when the slot's next-tick
+              time +0x58 <= clock: damage_apply(victim, owner, 100000, 0, 0, 0x4000000,
+              none, 0; low, high) and the next tick is 1.0 later.  low / high: a player
+              owner asks skill slot 8 (1, level, 0; 0.2); anyone else takes v = slot 12
+              (1, level, owner, 0) and uses int(v - v x 0.2), int(v + v x 0.2).  Then five
+              particles on the victim, each with a ball point from the SPELL'S OWN
+              generator (three draws per try) - they shift the wander draws of the run."""
+        u32, w16 = self.u32, self.w16
+        active = 0
+        i = 0
+        while i < self.s16(spell + 0x82):
+            node = u32(spell + 0x18 + 4 * i)
+            victim = u32(node + 0xC) if node else 0
+            slot = spell + 0x38 + 4 * i
+            if not victim or C.lt(u32(slot), ZERO):
+                i += 1
+                continue
+            if C.le(u32(slot), u32(spell + 0x78)) or not self.tagar_is_valid(spell, victim, 0):
+                marker = self.call('creature_findSpell', victim, 0x57, u32(spell + 0xC))
+                if marker:
+                    self.table_call('Spell', marker, 0x14, 1, 3)
+                self.w32(slot, 0xBF800000)
+                i += 1
+                continue
+            w16(victim + 0x98, 100)
+            w16(victim + 0x9E, 4)
+            w16(victim + 0x9A, 0)
+            w16(victim + 0x9C, 0)
+            active += 1
+            tick = spell + 0x58 + 4 * i
+            if C.le(u32(tick), u32(spell + 0x78)):
+                owner, level, skill = u32(spell + 0xC), self.s8(spell), u32(spell + 8)
+                if owner and u32(owner + 0xC) & 0x40:
+                    low, high = self.skill_call(skill, 8, 1, level, 0, F_0_2)
+                else:
+                    value = C.from_int(s32(self.skill_call(skill, 12, 1, level, owner, 0)))
+                    spread = C.mul(value, F_0_2)
+                    high = C.to_int(C.add(value, spread))
+                    low = C.to_int(C.sub(value, spread))
+                self.call('damage_apply', victim, u32(spell + 0xC), 100000, 0, 0, 0x4000000, 0, 0,
+                          C.from_int(s32(low)), C.from_int(s32(high)))
+                self.w32(tick, C.add(u32(tick), ONE))
+            for j in range(5):
+                frame = u32(G_SIM_FRAME)
+                sign = 0xBF800000 if j & 1 else ONE
+                ux, uy, uz = self._spell_ball(spell)
+                four = 0x40800000
+                velocity = (C.mul(ux, four), C.mul(uy, four), C.mul(uz, four))
+                swirl = ((frame + j * 0x2AAA) << 9) & M32
+                px = C.mul(C.mul(sign, u32(victim + 0x1C)), C.cos16(swirl))
+                py = C.mul(C.mul(sign, u32(victim + 0x1C)), C.sin16(swirl))
+                bob = C.sin16(((frame - j * 0x2AAA) << 10) & M32)
+                pz = C.mul(C.mul(sign, bob), C.mul(u32(victim + 0x20), 0x3E800000))
+                px = C.add(px, u32(victim + 0x10))
+                py = C.add(py, u32(victim + 0x14))
+                pz = C.add(C.add(pz, u32(victim + 0x18)), C.mul(u32(victim + 0x20), HALF))
+                self.call('particle_spawn', self.TAGAR_CLOUD[0], (px, py, pz), velocity, ZERO)
+            i += 1
+        return 1 if active > 0 else 0
+
+    def tagar_spell_run(self, spell, pos=None, facing=0):
+        """SpellTagarsInsects_run 0x30cbc8 (spell, position, facing): slot 2 of the spell,
+        once per tick of the creature it is attached to.  The two arguments are not used.
+
+          1. tickVictims (with the clock of the previous tick), then clock +0x78 += 1/60.
+          2. hunt end +0x7c <= clock: destroy the spell (its slot 1 with 3) when no victim
+             is active; return either way.
+          3. limit = min(8, skill slot 12 (0, level, owner, 10)); return when n >= limit.
+          4. the current slot +0x80: dropped (-1) when its handle is empty or its object
+             no longer valid; without one, pickTarget, and a new target takes slot n: its
+             handle is linked and its time = clock + distance x (1/203.05).
+          5. with a target: steer the heading (a reflection, not a wrap, beyond a quarter
+             turn; a fifth of the error per tick), shorten the slot's time to the direct
+             flight time, speed = distance / time left (a division by zero on the arrival
+             tick, overwritten below - FINDINGS F3), close a share of the height gap,
+             and on arrival (time <= clock + 1/30): n += 1, time = seconds statistic +
+             1/30, next damage tick = clock, a marker spell on the victim (ONE SHARED
+             DRAW for its unused generator; none if the pool has no block), a sound, the
+             hunt end + 0.501, current slot = -1.
+          6. wander: ONE OWN DRAW; below 0x4906 a second one sets the wander angle; the
+             swarm moves along heading + wander at the speed.
+          7. the cloud: 50 particles (per particle: a ball point, a second ball point, one
+             draw for the offset length, one for the kind - all OWN draws) and one marker
+             particle placed with the frame counter."""
+        u32, w32, w16 = self.u32, self.w32, self.w16
+        active = self.tagar_tick_victims(spell)
+        clock = C.add(u32(spell + 0x78), RC.DT)
+        w32(spell + 0x78, clock)
+        if C.le(u32(spell + 0x7C), clock):
+            if not active and spell:
+                self.table_call('Spell', spell, 0x14, 1, 3)
+            return
+        skill = u32(spell + 8)
+        limit = min(8, s32(self.skill_call(skill, 12, 0, self.s8(spell), u32(spell + 0xC), 10)))
+        if not self.s16(spell + 0x82) < limit:
+            return
+        target = 0
+        current = self.s16(spell + 0x80)
+        if current >= 0:
+            node = u32(spell + 0x18 + 4 * current)
+            if node:
+                target = u32(node + 0xC)
+            if not node or not self.tagar_is_valid(spell, target, 0):
+                w16(spell + 0x80, 0xFFFF)
+        if self.s16(spell + 0x80) < 0:
+            target = self.tagar_pick_target(spell, 1 if self.s16(spell + 0x82) > 0 else 0)
+            if target:
+                count = self.u16(spell + 0x82)
+                w16(spell + 0x80, count)
+                self.call('handle_link', spell + 0x18 + 4 * s16(count), target, target)
+                dy = C.sub(u32(target + 0x14), u32(spell + 0x8C))
+                dx = C.sub(u32(target + 0x10), u32(spell + 0x88))
+                dist = C.sqrt(C.add(C.mul(dx, dx), C.mul(dy, dy)))
+                w32(spell + 0x38 + 4 * self.s16(spell + 0x80),
+                    C.add(u32(spell + 0x78), C.mul(dist, self.TAGAR_TIME_PER_UNIT)))
+        speed = self.TAGAR_SPEED
+        if target:
+            dx = C.sub(u32(target + 0x10), u32(spell + 0x88))
+            dy = C.sub(u32(target + 0x14), u32(spell + 0x8C))
+            if C.lt(ONE, C.add(C.mul(dx, dx), C.mul(dy, dy))):
+                error = C.atan2_16(dy, dx) - self.s16(spell + 0x84)
+                if error >= 0x4000:
+                    error = 0x7FFF - error
+                elif error < -0x3FFF:
+                    error = -0x8000 - error
+                step = -((-error) // 5) if error < 0 else error // 5
+                w16(spell + 0x84, self.u16(spell + 0x84) + step)
+            dx = C.sub(u32(target + 0x10), u32(spell + 0x88))
+            dy = C.sub(u32(target + 0x14), u32(spell + 0x8C))
+            slot = spell + 0x38 + 4 * self.s16(spell + 0x80)
+            dist = C.sqrt(C.add(C.mul(dx, dx), C.mul(dy, dy)))
+            eta = C.add(u32(spell + 0x78), C.mul(dist, self.TAGAR_TIME_PER_UNIT))
+            if C.lt(eta, u32(slot)):
+                w32(slot, eta)
+            clock = u32(spell + 0x78)
+            left = C.sub(u32(slot), clock)
+            speed = C.div(dist, left)
+            if C.lt(RC.DT, left):
+                sz = u32(spell + 0x90)
+                gap = C.sub(C.add(u32(target + 0x18), F_48), sz)
+                w32(spell + 0x90, C.add(sz, C.div(gap, C.mul(left, 0x42700000))))
+            thirtieth = 0x3D088888
+            if C.le(u32(slot), C.add(clock, thirtieth)):          # arrival
+                w16(spell + 0x82, self.u16(spell + 0x82) + 1)
+                seconds = self.skill_call(u32(spell + 8), 12, 2, self.s8(spell), u32(spell + 0xC), 10)
+                current = self.s16(spell + 0x80)
+                w32(spell + 0x38 + 4 * current, C.add(C.from_int(s32(seconds)), thirtieth))
+                w32(spell + 0x58 + 4 * current, u32(spell + 0x78))
+                marker = self.call('pool_new', 0x20)
+                if marker:
+                    owner = u32(spell + 0xC)
+                    self.w8(marker, 1)
+                    w32(marker + 0x14, VT_SPELL)
+                    w32(marker + 4, 0)
+                    w32(marker + 0xC, target)
+                    w32(marker + 8, 0)
+                    w32(marker + 0x10, self.draw())
+                    w32(marker + 0x14, VT_SPELL_MARKER)
+                    w32(marker + 0x18, owner)
+                    w32(marker + 0x1C, 0x57)
+                self.call('creature_addSpell', target, marker)
+                speed = self.TAGAR_SPEED
+                self.call('sound_playAtPos', self.call('res_find', S_FX_LUMP_TAGAR, S_TAGAR_HIT_SOUND),
+                          self.vec(target + 0x10), ONE)
+                w16(spell + 0x80, 0xFFFF)
+                w32(spell + 0x7C, C.add(u32(spell + 0x7C), 0x3F0041AA))
+        if self.spell_rand(spell) < 0x4906:                       # 0x30d0ac wander
+            turn = C.sub(C.mul(C.from_int(self.spell_rand(spell)), F_2M16), HALF)
+            w16(spell + 0x86, C.to_int(C.mul(turn, 0x45F81000)))
+        angle = s16(self.u16(spell + 0x84) + self.u16(spell + 0x86))
+        w32(spell + 0x88, C.add(u32(spell + 0x88), C.mul(C.mul(C.cos16(angle), speed), RC.DT)))
+        sine = C.sin16(angle)
+        grow = C.mul(u32(spell + 0x78), 0x40226FA7)
+        w32(spell + 0x8C, C.add(u32(spell + 0x8C), C.mul(C.mul(sine, speed), RC.DT)))
+        if C.lt(ONE, grow):
+            grow = ONE
+        for _ in range(50):                                       # 0x30d18c the cloud
+            x, y, z = self._spell_ball(spell)
+            k = C.mul(C.mul(grow, 0x436D90B9), RC.DT)
+            velocity = (C.mul(x, k), C.mul(y, k), C.mul(z, k))
+            cx, cy, cz = self._spell_ball(spell)
+            inverse = C.rsqrt(ONE, C.add(C.add(C.mul(cx, cx), C.mul(cy, cy)), C.mul(cz, cz)))
+            cx, cy, cz = C.mul(cx, inverse), C.mul(cy, inverse), C.mul(cz, inverse)
+            reach = C.mul(C.mul(grow, 0x4151D268), C.mul(C.from_int(self.spell_rand(spell)), F_2M16))
+            point = (C.add(C.mul(cx, reach), u32(spell + 0x88)), C.add(C.mul(cy, reach), u32(spell + 0x8C)),
+                     C.add(C.mul(cz, reach), u32(spell + 0x90)))
+            kind = self.spell_rand(spell)
+            definition = self.TAGAR_CLOUD[0 if kind >= 0x7D01 else 1 if kind >= 0x3A99 else 2]
+            self.call('particle_spawn', definition, point, velocity, ZERO)
+        ring, lean = 0x4151D268, 0x3F0F56FB                       # 0x30d444 the marker particle
+        side = C.neg(C.sin16(self.s16(spell + 0x84)))
+        spin = (u32(G_SIM_FRAME) << 10) & M32
+        px = C.mul(C.mul(side, lean), C.mul(C.cos16(spin), ring))
+        ahead = C.mul(C.cos16(self.s16(spell + 0x84)), lean)
+        py = C.mul(ahead, C.mul(C.cos16((u32(G_SIM_FRAME) << 10) & M32), ring))
+        pz = C.mul(C.mul(C.sin16((u32(G_SIM_FRAME) << 10) & M32), ring), lean)
+        point = (C.add(px, u32(spell + 0x88)), C.add(py, u32(spell + 0x8C)), C.add(pz, u32(spell + 0x90)))
+        self.call('particle_spawn', self.TAGAR_CLOUD[3], point, (0, 0, 0), ZERO)
 
 
 # ---------------------------------------------------------------------------------------

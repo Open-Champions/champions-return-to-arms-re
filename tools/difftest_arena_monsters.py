@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """difftest_arena_monsters.py - compare tools/ref_arena_monsters.py with the game's own code
-for the monsters of the Drundar arena (Horsemen, Skelight, Zek) and the two skill casts
-their run functions reach.
+for the monsters of the Drundar arena (Horsemen, Skelight, Zek), the two skill casts their
+run functions reach, and the per-tick run of the Tagar's Insects spell.
 
 Needs your own SLUS_209.73 (US v2.00).  Without it the script says so and exits 0.
 
@@ -11,7 +11,8 @@ Needs your own SLUS_209.73 (US v2.00).  Without it the script says so and exits 
 
     --quick       a tenth of the ticks
     --seed N      seed of the random runs (default 4177); a seed repeats exactly
-    --ticks N     ticks per run (default 1500; there are 14 runs)
+    --ticks N     ticks per run (default 1500; there are 14 runs, and the two Zek runs,
+                  whose run function is the largest, play twice as many)
     -k TEXT       only the runs whose name contains TEXT
     -v            print the first mismatches of every failing property, and the blocks
                   never entered
@@ -55,7 +56,10 @@ Scenarios (the run names)
     skelight           the summoned skeleton, built by its constructor.
     zek                Rallos Zek.
     Each of them on machine A and machine B (see below); knight2 and knight3 run with
-    the real cast functions of skills 87 and 11 behind the skill tables part of the time.
+    the real cast functions of skills 87 and 11 behind the skill tables part of the time,
+    and in knight2 the insects spell a cast built is among the knight's attached spells,
+    so its run (SpellTagarsInsects_run) executes inside Horsemen_run as it does in the
+    game, as well as on its own.
 
 Per-machine inputs, set both ways (machine A / machine B of the run name)
     exactly those of tools/difftest_creature.py (activity by the camera, the local alive
@@ -99,6 +103,9 @@ BODIES = {
     'SkillSummonSkeleton_canUse': (0x2E2368, 0x2E23CC), 'SkillSummonSkeleton_cast': (0x2E18A4, 0x2E227C),
     'SpellSummonSkeleton_ctor': (0x2E16EC, 0x2E177C), 'SpellSummonSkeleton_run': (0x2E177C, 0x2E17D8),
     'SkillTagarsInsects_cast': (0x30C708, 0x30C7D0), 'SpellTagarsInsects_ctor': (0x30C95C, 0x30CAA4),
+    'SpellTagarsInsects_run': (0x30CBC8, 0x30D558), 'SpellTagarsInsects_tickVictims': (0x30D558, 0x30D998),
+    'SpellTagarsInsects_pickTarget': (0x30D998, 0x30DB9C), 'SpellTagarsInsects_isValidTarget': (0x30DB9C, 0x30DC30),
+    'Spell_rand': (0x16A964, 0x16A98C),
 }
 CLASS_FUNCTIONS = ('Horsemen_ctor', 'Horsemen_run', 'Horsemen_setState', 'Skelight_ctor', 'Skelight_run',
                    'Skelight_setState', 'Skelight_shatter', 'Zek_ctor', 'Zek_run', 'Zek_takeDamage', 'Zek_setState',
@@ -147,6 +154,10 @@ ENTRIES = {
     'SkillSummonSkeleton_cast': (0x2E18A4, 'iiivi', 'i', 'summon_cast'),
     'SpellSummonSkeleton_run': (0x2E177C, 'ivi', 'n', 'summon_spell_run'),
     'SkillTagarsInsects_cast': (0x30C708, 'iiivi', 'i', 'tagar_cast'),
+    'SpellTagarsInsects_run': (0x30CBC8, 'ivi', 'n', 'tagar_spell_run'),
+    'SpellTagarsInsects_tickVictims': (0x30D558, 'i', 'i', 'tagar_tick_victims'),
+    'SpellTagarsInsects_pickTarget': (0x30D998, 'ii', 'i', 'tagar_pick_target'),
+    'SpellTagarsInsects_isValidTarget': (0x30DB9C, 'iii', 'i', 'tagar_is_valid'),
 }
 
 
@@ -192,14 +203,14 @@ class World(DC.World):
             for slot in HOLDER_SLOTS:
                 fn = mem.u32(table + 8 * slot + 4)
                 assert self.addr_name.setdefault(fn, 'Holder.v%d' % slot) == 'Holder.v%d' % slot
-        for table, slots in ((AM.VT_SPELL_SUMMON, (1,)), (AM.VT_SPELL_TAGAR, (1,))):
+        for table, slots in ((AM.VT_SPELL_SUMMON, (1,)), (AM.VT_SPELL_TAGAR, (1,)), (AM.VT_SPELL_MARKER, (1,))):
             for slot in slots:
                 self.addr_name.setdefault(mem.u32(table + 8 * slot + 4), 'Spell.v%d' % slot)
         # skill objects: the static ones the run functions reach through pointers
         self.skill_tables = {}
         for name, real in (('stub', {}), ('summon', {1: 0x2E2368, 2: 0x2E18A4}), ('tagar', {2: 0x30C708})):
             table = emu.alloc(8 * 20)
-            for slot in (1, 2, 11, 12, 14):
+            for slot in (1, 2, 8, 11, 12, 14):
                 mem.w32(table + 8 * slot + 4, real.get(slot) or self.stub_for('Skill.v%d' % slot))
             self.skill_tables[name] = table
         for name, obj in SKILL_STATICS.items():
@@ -209,12 +220,18 @@ class World(DC.World):
         self.blocks = [emu.alloc(0x600) for _ in range(3)]
         self.mount = self.blocks[0]
         self.pool.update({0x3D8: [self.blocks[0]], 0x468: self.blocks[1:], 0x1C: [emu.alloc(0x20) for _ in range(2)],
-                          0x94: [emu.alloc(0xA0)], 0x9C: [emu.alloc(0xA0)], 0xBC: [emu.alloc(0xC0)]})
+                          0x94: [emu.alloc(0xA0)], 0x9C: [emu.alloc(0xA0)], 0xBC: [emu.alloc(0xC0)],
+                          0x20: [emu.alloc(0x20)]})
+        self.swarm = self.pool[0x94][0]         # the insects spell, once a cast has built it
+        self.swarm_alive = False
+        self.marker = emu.alloc(0x20)
+        mem.w32(self.marker + 0x14, AM.VT_SPELL_MARKER)
+        self.list_nodes = [emu.alloc(0x10) for _ in range(8)]
         self.pool_size = {}
         for size, blocks in self.pool.items():
             for b in blocks:
                 self.pool_size[b] = size
-        for obj in [self.pet] + self.blocks:
+        for obj in [self.pet] + self.blocks + [self.swarm]:
             node = emu.alloc(0x20)
             mem.w32(node + 0xC, obj)
             self.nodes[obj] = node
@@ -341,6 +358,29 @@ class World(DC.World):
         return Res(f=f32(fl(args[1][2]) + rng.choice((0.0, 0.0, 0.0, 0.0, 0.0, 3.0, -8.0, 2.5, 11.0, 11.5, -13.0, -13.5,
                                                       23.0, 24.0, -24.0, 26.0, -30.0, 60.0))))
 
+    def on_iter_begin(self, args, view, rng):
+        if not self.swarm_alive:
+            return DC.World.on_iter_begin(self, args, view, rng)
+        count = rng.choice((0, 1, 1, 2, 3))     # the knight's attached spells: the swarm first
+        view.iter_nodes = []
+        for node, spell in list(zip(self.spell_nodes, [self.swarm] + self.spells[1:]))[:count]:
+            view.poke(node + 0xC, 4, spell)
+            view.iter_nodes.append(node)
+        return self.on_iter_next(args, view, rng)
+
+    def _some_objects(self, args, view, rng):
+        pool = self.others + self.players
+        return Res(outs=[[rng.choice(pool) for _ in range(rng.choice((0, 1, 1, 2, 3, 5)))]])
+
+    on_world_collectInSphere = on_world_collectObjectsInArc = _some_objects
+
+    def on_creature_findSpell(self, args, view, rng):
+        return Res(rng.choice((0, 0, 0, self.marker)))
+
+    def on_Skill_v8(self, args, view, rng):
+        low = rng.choice((8, 16, 40))
+        return Res(outs=[low, low + rng.choice((0, 4, 12))])
+
     def on_Holder_v15(self, args, view, rng):
         return Res(rng.choice((4, 4, 0, 0x15, 0x1B, 0x23)))
 
@@ -453,7 +493,7 @@ class Rig(DC.Rig):
             elif kind in 'OW':
                 canon.append(1 if v else 0)
                 outs.append((kind, v))
-            elif kind in 'onwb':
+            elif kind in 'onwbL':
                 outs.append((kind, v))
         for j in range(ext.floats):
             canon.append(emu.f[12 + j])
@@ -481,8 +521,14 @@ class Rig(DC.Rig):
             res = self.world.respond(name, args, self.eview, self.script_rng)
             given = list(res.outs)
             for kind, ptr in outs:
-                value = given.pop(0) if given else ((0, 0, 0) if kind in 'oO' else ([] if kind == 'n' else 0))
-                if kind in 'oO':
+                value = given.pop(0) if given else ((0, 0, 0) if kind in 'oO' else ([] if kind in 'nL' else 0))
+                if kind == 'L':                         # a chain of list nodes: +0 next, +0xc the object
+                    nodes = self.world.list_nodes[:len(value)]
+                    for j, (node, obj) in enumerate(zip(nodes, value)):
+                        mem.w32(node, nodes[j + 1] if j + 1 < len(nodes) else 0)
+                        mem.w32(node + 0xC, obj)
+                    mem.w32(ptr, nodes[0] if nodes else 0)
+                elif kind in 'oO':
                     if ptr:
                         for j in range(3):
                             mem.w32(ptr + 4 * j, value[j])
@@ -707,6 +753,11 @@ class Driver(DC.Driver):
                 mem.w32(c + 0x47C, rng.choice((6, 7, 8, 8, 8, 0xC)))
             if r() < 0.01:
                 mem.w32(AM.G_ZEK_SPARK_READY, rng.choice((0, 1)))
+            if not mem.u32(c + 0x464) and r() < 0.03:           # a wave in flight (state 0xe starts few)
+                mem.w32(c + 0x464, 1)
+                for i in range(3):
+                    mem.wf32(c + 0x46C + 4 * i, mem.f32(c + 0x10 + 4 * i) + (rng.uniform(-200, 200) if i < 2 else 1.0))
+                mem.w16(c + 0x468, rng.randrange(0x10000))
             if mem.u32(c + 0x464) and r() < 0.3:               # the wave: far away, or its enemy near
                 which = rng.choice(('far', 'near', 'none', 'link'))
                 if which == 'far':
@@ -720,9 +771,11 @@ class Driver(DC.Driver):
                         enemy = mem.u32(node + 0xC)
                         mem.wf32(c + 0x46C, mem.f32(enemy + 0x10) + rng.choice((10.0, 30.0, 37.0)))
                         mem.wf32(c + 0x470, mem.f32(enemy + 0x14) + rng.choice((0.0, 20.0)))
-            if r() < (0.3 if 6 <= state <= 0xC else 0.01):
+            if 6 <= state <= 0xC and r() < 0.3:                 # a swing with and without a weapon holder
+                mem.w32(c + 0x50, rng.choice((0, c + 0x3C8)))
+            elif r() < 0.01:
                 mem.w32(c + 0x50, 0)
-            elif r() < 0.1 and not mem.u32(c + 0x50):
+            elif r() < 0.25 and not mem.u32(c + 0x50):
                 mem.w32(c + 0x50, c + 0x3C8)
         if kind == 'skelight':
             if r() < 0.01:
@@ -732,6 +785,50 @@ class Driver(DC.Driver):
 
 
 DEATHS = {}             # kind -> {AI state the creature was in when a tick killed it: count}
+
+def swarm_step(do, world, mem, rng):
+    """The insects spell between and beside the knight's ticks: the driver moves its clock,
+    its target and its times about, runs it on its own (it also runs inside Horsemen_run,
+    through Creature_run, whenever the scripted attached-spell list hands it out), and
+    calls its three helpers directly."""
+    spell, r = world.swarm, rng.random
+    owner = mem.u32(spell + 0xC)
+    current = mem.s16(spell + 0x80)
+    if r() < 0.04:
+        mem.w32(spell + 0x7C, f32(mem.f32(spell + 0x78) + rng.choice((0.0, 0.01, 0.5, 3.0))))    # the hunt's end
+    if r() < 0.05 and 0 <= current < 8:
+        slot = spell + 0x38 + 4 * current                       # arrival now, soon, or exactly on the limits
+        mem.w32(slot, f32(mem.f32(spell + 0x78) + rng.choice((0.0, 1 / 60, 1 / 30, 0.05, 0.4))))
+    if r() < 0.05 and 0 <= current < 8:
+        node = mem.u32(spell + 0x18 + 4 * current)
+        if node:                                                # the swarm on top of, or far from, its target
+            target = mem.u32(node + 0xC)
+            for i in range(3):
+                mem.wf32(spell + 0x88 + 4 * i, mem.f32(target + 0x10 + 4 * i) + rng.choice((0.0, 0.5, 30.0, -200.0)))
+    if r() < 0.03:
+        mem.w16(spell + 0x80, rng.choice((0xFFFF, 0, 1, 7)))
+    if r() < 0.02:
+        mem.w16(spell + 0x82, rng.choice((0, 1, 2, 8)))
+    if r() < 0.03:
+        n = mem.s16(spell + 0x82)
+        for i in range(max(n, 0)):                              # victims: gone, timed out, due for a tick
+            if r() < 0.5:
+                mem.w32(spell + 0x18 + 4 * i, rng.choice([0] + [world.nodes[o] for o in world.others[:4] + world.players]))
+            mem.w32(spell + 0x38 + 4 * i, f32(mem.f32(spell + 0x78) + rng.choice((-1.0, 0.0, 2.0, 2.0)))
+                    if r() < 0.8 else f32(-1.0))
+            mem.w32(spell + 0x58 + 4 * i, f32(mem.f32(spell + 0x78) + rng.choice((0.0, -0.5, 0.5))))
+    if r() < 0.02:
+        mem.w16(spell + 0x86, rng.randrange(0x10000))
+    if r() < 0.6:
+        do('SpellTagarsInsects_run', spell, (0, 0, 0), 0)
+    if r() < 0.05:
+        do('SpellTagarsInsects_tickVictims', spell)
+    if r() < 0.05:
+        do('SpellTagarsInsects_pickTarget', spell, rng.choice((0, 1, 1)))
+    if r() < 0.05:
+        do('SpellTagarsInsects_isValidTarget', spell, rng.choice(world.others + world.players + [0, owner]),
+           rng.choice((0, 1)))
+
 
 HORSEMEN_STATES = list(range(0, 0x24)) + [0x24, 0x30, 0x7FFF, 0xFFFFFFFB, 3, 5, 5, 6, 7, 8, 10, 0xB, 0x17, 0x17,
                                           0x14, 0x12, 0x12, 0x13, 0x10]
@@ -893,8 +990,12 @@ def run(elf, name, seed, kind, machine, net, ticks, coverage, counts):
                 do('SpellSummonSkeleton_run', spell, vector(5), 0)
         if kind in ('knight2', 'knight3') and r() < 0.04:
             mem.w32(SKILL_STATICS['tagar'] + 0x60, world.skill_tables['tagar'])
-            do('SkillTagarsInsects_cast', SKILL_STATICS['tagar'], rng.choice((1, 4, 9)), rng.choice([c] + world.players),
-               vector(5), rng.randrange(0x10000))
+            result = do('SkillTagarsInsects_cast', SKILL_STATICS['tagar'], rng.choice((1, 4, 9)),
+                        rng.choice([c, c, c] + world.players), vector(5), rng.randrange(0x10000))
+            if result.get('ret'):
+                world.swarm_alive = True                # from now on it is among the knight's attached spells
+        if kind == 'knight2' and world.swarm_alive:
+            swarm_step(do, world, mem, rng)
     if rig.unknown:
         bad['calls'].append('calls to addresses that are neither real nor known stubs: %s'
                             % {hex(a): n for a, n in rig.unknown.items()})
@@ -954,7 +1055,8 @@ def main(argv):
         name = '%s/%s/%s' % (kind, 'B' if machine else 'A', 'net' if net else 'off')
         if OPTIONS['filter'] and OPTIONS['filter'].lower() not in name.lower():
             continue
-        n, d = run(elf, name, OPTIONS['seed'] + index, kind, machine, net, ticks, coverage, counts)
+        n, d = run(elf, name, OPTIONS['seed'] + index, kind, machine, net, ticks * (2 if kind == 'zek' else 1),
+                   coverage, counts)
         total += n
         for key, value in d.items():
             draws[key] = draws.get(key, 0) + value

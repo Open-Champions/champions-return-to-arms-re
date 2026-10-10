@@ -38,8 +38,11 @@ How the model sees the game
 
 Floats are raw 32-bit patterns and go through tools/ref_core.py's R5900 arithmetic.
 
-Where the model stops: a built-in that would follow a null or uninitialised pointer (most
-do not check that a named object exists) raises ref_amx.HostFault instead of guessing.
+Where the model stops: a built-in that would follow a null pointer (most do not check that
+a named object exists) raises ref_amx.HostFault instead of guessing.  A string argument whose
+address scr_getAddr refuses is a special case, because a shipped script does it (TORMEDAL):
+the handler then uses the pointer left in its stack slot.  The model follows that as far as
+the slot's content is certain (STRING_SLOT, Args.address) and raises StackGarbage otherwise.
 """
 import os
 import sys
@@ -68,6 +71,10 @@ def s16(x):
 def s32(x):
     x &= M32
     return x - 0x100000000 if x & 0x80000000 else x
+
+
+class StackGarbage(HostFault):
+    """A handler goes on with a stack word nothing in the model accounts for."""
 
 
 def _tdiv(a, b):
@@ -124,7 +131,7 @@ G_MEDAL_MISSION = 0x4F713C
 G_MEDAL_ACK = 0x4F7140
 G_MEDAL_PLAYER = 0x4F7148           # u8
 G_REWARD_PLAYER = 0x4F7149          # u8
-G_RESPAWN_COUNTDOWN = 0x4F7194
+G_RESPAWN_COUNTDOWN = 0x4F7194        # s16
 G_LEVEL_LOADING = 0x4F7198
 G_HIDE_PLAYERS = 0x4F83F8           # u8
 G_LIGHT_SCALE = 0x4F83F4            # float
@@ -476,7 +483,7 @@ EXT = {
     'text_drawWrappedCentered': X(0x181530, 'iiiiiii', ret='i'),
     'automap_revealAll': X(0x16A760),
     # ---- audio, camera, effects -------------------------------------------------------------
-    'sound_playSample': X(0x2134E8, 'iii', floats=2),
+    'sound_playSample': X(0x2134E8, 'ii', floats=3, note='(pitch, volume, delay; sample, position or 0)'),
     'sound_playOnObject': X(0x214230, 'ii', floats=1, ret='i'),
     'sound_setPlaysWhileFrozen': X(0x216AD0, 'i'),
     'music_playLevel': X(0x215F48, 'si'),
@@ -610,14 +617,68 @@ class Host:
 # =======================================================================================
 # 5. The game state and the host side of the script machine
 # =======================================================================================
+# Where each handler keeps the pointer scr_getAddr gives it for a string (or cell) argument:
+# bytes below the stack pointer the handler is entered with.  A handler has one such slot
+# for all its string arguments (particleMorph has two).  Handlers entered from the same
+# interpreter run are entered with the same stack pointer, so equal numbers are the same
+# memory word: when scr_getAddr refuses an address, the handler reads what the last
+# successful call with that number left there.
+_SLOT_GROUPS = {
+    0x20: 'callScript print simpleNewWorld newWorld newWorldAlways newWorldPost stopPropAnim propAnimAtEnd '
+          'NPCAnimAtEnd onePlayerHasItem setInfo removeQuest startMusic startAudio getv setv addv setpv getpv '
+          'setNoCollide addDeferedCall postAction controlVehicle holdVehicle getVPosition setEntrance '
+          'closestPlayerDist setHitPoints preloadResource countQuestItems',
+    0x30: 'sound soundSequence playerHasItem removePlayerItem addHelpMessage addQuest putNPCInVehicle findDistance',
+    0x40: 'lightEffect startPropAnim addExpandingPool putPlayersInVehicle showBust selectDropItem',
+    0x50: 'addParticleOnObject showCompass',
+    0x60: 'hitPlayers dropItem',
+    0x70: 'entityRideVehicle runMedalSuccess',
+    0x80: 'startDialog',
+    0xA0: 'deleteObjects',
+    0xB0: 'giveOnePlayerItem',
+    0xC0: 'runMedalFail',
+    0xD0: 'givePlayerItem cutScene',
+    0x110: 'objInPlayerTrig',
+    0x1C0: 'autoPropSetState autoPropGetState showOnMap',
+    0x1D0: 'trigger',
+    0x220: 'countLiveObjects',
+    0x440: 'addHelpMessageF',
+    0x820: 'increaseEnemyRank unRootMonster stopFollowingPlayer friendly unFriendly getHitPoints',
+    0x830: 'charmMonster rootMonster setMonsterVal setCFlag killMonster deleteMonster hideMonster showMonster '
+           'followPlayer followPath stopFollowingPath setCreatureParams',
+    0x840: 'setOFlag setWeaponType setMonsterRange moveMonster monstersInTrigger setContainerProps',
+    0x850: 'startNPCAnim generateMonster',
+}
+STRING_SLOT = {name: {None: slot} for slot, names in _SLOT_GROUPS.items() for name in names.split()}
+STRING_SLOT['particleMorph'] = {0: 0x10F0, 1: 0x840}    # argument index -> slot
+
+
 class Args:
     """The argument cells of the built-in being called.  Handlers do not look at the
     argument count the script pushed: a[k] is the cell at params + 4 + 4 k whatever is
     there (a call that pushed too few reads the caller's stack)."""
 
-    def __init__(self, machine):
+    def __init__(self, machine, game=None, name=None):
         self.m = machine
         self.base = machine.params + 4
+        self.game = game
+        self.slot_of = STRING_SLOT.get(name, {})
+
+    def address(self, k):
+        """scr_getAddr 0x1414a8 on argument k, as the handlers use it: they ignore its
+        result.  An accepted address is stored in the handler's stack slot; a refused one
+        leaves the slot alone and the handler uses what is there."""
+        address = self[k]
+        slot = self.slot_of.get(k, self.slot_of.get(None))
+        slots = self.game._slots if self.game is not None else {}
+        if self.m.get_addr(address) == 0:
+            if slot is not None:
+                slots[slot] = address
+            return address
+        if slot not in slots:
+            raise StackGarbage('argument %d (0x%x) is refused by scr_getAddr: the handler goes on with the '
+                               'uninitialised word in its stack frame' % (k, address & M32))
+        return slots[slot]
 
     def __getitem__(self, k):
         return self.m.cell(self.base + 4 * k)
@@ -631,13 +692,8 @@ class Args:
 
     def s(self, k, room=160):
         """scr_getAddr 0x1414a8 then scr_getString 0x141650 into a stack buffer of room
-        bytes.  The handlers ignore scr_getAddr's result: a refused address leaves the
-        pointer uninitialised.  The copy has no length limit."""
-        address = self[k]
-        if self.m.get_addr(address) != 0:
-            raise HostFault('string argument %d (0x%x) is refused by scr_getAddr: the handler goes on '
-                            'with an uninitialised pointer' % (k, address & M32))
-        text = self.m.get_string(address)
+        bytes.  The copy has no length limit."""
+        text = self.m.get_string(self.address(k))
         if len(text) >= room:
             raise HostFault('string argument %d is %d bytes: it overruns the handler\'s %d-byte stack buffer'
                             % (k, len(text), room))
@@ -685,6 +741,7 @@ class GameState:
             self.host.game = self
         self.machine = None
         self.entry_pri = 0              # PRI at the start of a run: uninitialised in the original
+        self._slots = {}                # string-pointer stack slots of the current run (STRING_SLOT)
         self.draws = 0                  # shared-seed draws made by the built-ins themselves
         self._next_addr = 0x01000000
 
@@ -940,7 +997,11 @@ class GameState:
             if self.missing_stamp < self.draw_frame:
                 self.missing_stamp = self.draw_frame + 20
             return -1
-        error, result = machine.execute(index, pri=self.entry_pri)
+        outer, self._slots = self._slots, {}        # a run of its own stack depth: nothing known
+        try:
+            error, result = machine.execute(index, pri=self.entry_pri)
+        finally:
+            self._slots = outer
         return 0 if result is None else result
 
     # ---- level change ---------------------------------------------------------------------------
@@ -1165,7 +1226,7 @@ class GameState:
                 for offset, size in ((P_MEDALS, 8), (0x4C15, 4), (0x4C19, 1), (P_KEEP_78, 24), (P_OBJECT, 4))]
         copy = self.ext('save_playerCopy', slot) & M32
         self.mem.write(rec, self.mem.read(copy, REC_SIZE))
-        self.mem.w32(G_RESPAWN_COUNTDOWN, 240)
+        self.mem.w16(G_RESPAWN_COUNTDOWN, 240)
         for offset, data in kept:
             self.mem.write(rec + offset, data)
         for index in (3, 2, 1, 0):
@@ -1199,11 +1260,18 @@ class GameState:
         table = {}
         for name in NATIVE_NAMES:
             method = getattr(self, 'n_' + name, None)
-            if method is None:
-                table[name] = self._missing(name)
-            else:
-                table[name] = (lambda machine, _args, method=method: method(machine, Args(machine)))
+            table[name] = self._missing(name) if method is None else self._bind(name, method)
         return table
+
+    def _bind(self, name, method):
+        mine = set(STRING_SLOT.get(name, {}).values())
+
+        def native(machine, _args):
+            # a handler's frame overwrites the stack words of the handlers before it, except
+            # where it has the same pointer slot, which only scr_getAddr writes
+            self._slots = {slot: address for slot, address in self._slots.items() if slot in mine}
+            return method(machine, Args(machine, self, name))
+        return native
 
     @staticmethod
     def _missing(name):
@@ -1640,7 +1708,7 @@ class Game(GameState):
 
     def n_helpMessageActive(self, m, a):
         """0x1433bc."""
-        return self.mem.u8(G_HELP_OPEN)
+        return self.mem.s8(G_HELP_OPEN)
 
     def n_showCompass(self, m, a):
         """0x1427b4 (s object, s textKey): no null check on the object."""
@@ -1725,8 +1793,10 @@ class Game(GameState):
 
     def n_runMedalSuccess(self, m, a):
         """0x1417a4 (i mission, i oldMedal, s title, s line1, s line2, s line3): the medal
-        result screen, called every frame.  Line k (1..3) is drawn when oldMedal < k <=
-        the local player's medal for the mission."""
+        result screen, called every frame.  Line k (1..3) is shown when oldMedal < k <=
+        the local player's medal for the mission.  Every shown text is first measured (a
+        draw with a clip window of 100..100), then the title is drawn and under it the
+        lines in the order 3, 2, 1."""
         gate = self._medal_gate()
         if gate == 0:
             return 0
@@ -1746,7 +1816,7 @@ class Game(GameState):
             text = self.ext('text_lookup', keys[0]) & M32
             self.ext('text_drawWrappedCentered', 0x140, y & M32, text, 0x15E, -100 & M32, 0x244, 0x11)
             y = s32(y + heights[0])
-            for k in (1, 2, 3):
+            for k in (3, 2, 1):                 # sic: the third line is drawn first
                 if heights[k] != 0:
                     text = self.ext('text_lookup', keys[k]) & M32
                     self.ext('text_drawWrappedCentered', 0x140, y & M32, text, 0x15E, -100 & M32, 0x244, 0x11)
@@ -1796,7 +1866,7 @@ class Game(GameState):
     def n_checkPlayerAlive(self, m, a):
         """0x1470ac (i which)."""
         if a[0] != 0:
-            return 1 if self.mem.s32(G_RESPAWN_COUNTDOWN) > 0 else 0
+            return 1 if self.mem.s16(G_RESPAWN_COUNTDOWN) > 0 else 0
         return self.count_players_with_hp()
 
     def n_setBestActivePlayer(self, m, a):
@@ -1877,12 +1947,13 @@ class Game(GameState):
         """0x1424dc (s object, i radius, i damage, i push): every living player nearer than
         radius takes damage (virtual slot 2, no attacker) and is pushed away.  No null
         check on the object or on a living player's object."""
-        centre = self.need(self.find_first(a.s(0)), 'hitPlayers')
+        centre = self.find_first(a.s(0))
         index = 0
         while index < self.alive_count:
             slot = self.alive(index)
             index += 1
             player = self.need(self.player_obj(slot), 'hitPlayers: living player without an object')
+            self.need(centre, 'hitPlayers')
             distance, dx, dy = self._distance3(player.pos, centre.pos)
             if C.lt(distance, a.f(1)):
                 self.virtual(player, V_DAMAGE, 0, 0, a.f(2))
@@ -2059,11 +2130,11 @@ class Game(GameState):
 
     def n_getManaUsed(self, m, a):
         """0x1421fc."""
-        return self.mem.u16(G_MANA_USED)
+        return self.mem.s16(G_MANA_USED)
 
     def n_getHealthUsed(self, m, a):
         """0x142208."""
-        return self.mem.u16(G_HEALTH_USED)
+        return self.mem.s16(G_HEALTH_USED)
 
     def n_playGotItemSound(self, m, a):
         """0x1464e8: the active player is clamped to 0..1 AND STORED; the voice goes to the
@@ -2606,7 +2677,10 @@ class Game(GameState):
         obj = self.need(obj, 'startPropAnim')
 
         def resource():
-            lump = O.props_find(obj.props, self.mem.cstr(S_PROP_LUMP_KEY))
+            key = self.mem.cstr(S_PROP_LUMP_KEY)
+            if obj.props is not None:           # obj_getPropStr 0x14f4c0 lower-cases its key in place
+                self.mem.write(S_PROP_LUMP_KEY, key.lower())
+            lump = O.props_find(obj.props, key)
             if lump is None:
                 raise HostFault('startPropAnim: the object has no lump property; res_find gets a null name')
             return self.ext('res_find', bytes(lump), anim) & M32
@@ -2669,9 +2743,7 @@ class Game(GameState):
         """0x143720 (ref pos[3], i scale, i x10): a 0xbc-byte LightEffect at the position
         read from three script cells.  Values 2..9 go in the eight float registers; values
         10 and 11, the constant 1.0 and scale / 100 go on the stack."""
-        address = a[0]
-        if m.get_addr(address) != 0:
-            raise HostFault('lightEffect: position address refused by scr_getAddr')
+        address = a.address(0)
         pos = tuple(C.from_int(m.cell(address + 4 * k)) for k in range(3))
         block = self.ext('pool_new', 0xBC) & M32
         if block != 0:
@@ -2743,12 +2815,12 @@ class Game(GameState):
     # audio
     # ---------------------------------------------------------------------------------
     def n_sound(self, m, a):
-        """0x1435e0 (s lump, s name): sound_playSample(1.0, 1.0, 0, resource, 0) when the
+        """0x1435e0 (s lump, s name): sound_playSample(1.0, 1.0, 0.0; resource, 0) when the
         resource exists."""
         lump = a.s(0)
         sample = self.ext('res_find', lump, a.s(1)) & M32
         if sample != 0:
-            self.ext('sound_playSample', 0, sample, 0, F_1, F_1)
+            self.ext('sound_playSample', sample, 0, F_1, F_1, F_0)
         return 0
 
     def n_soundSequence(self, m, a):
