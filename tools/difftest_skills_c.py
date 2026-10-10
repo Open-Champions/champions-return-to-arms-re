@@ -40,12 +40,26 @@ What runs for real and what is a stub
     the inventory, creature virtual slots (is-enemy, stun, team).  A call to an address
     that is neither real nor a known stub is reported as a failure.
 
-Scenarios
-    Each skill is cast by players and by monsters at every relevant level, with targets in
-    and out of range, the pool sometimes empty, and its spell or object is then run tick
-    by tick to its natural end or until the driver ends it early (the owner's death).
-    The statistics getters are compared exhaustively: 33 ids x levels 0-40 x statistics
-    0-4 for slots 10, 11, 12, 13 and 8, and the mana cost.
+Scenarios (one per skill; the report has one PASS / FAIL line per original function and
+one coverage line per skill)
+    Each skill is cast by players and, where the code has a branch for them, by monsters,
+    at the levels where its behaviour changes (level 0, the ranks 1-20, the monster levels
+    above them, the levels where a clamp or a divisor bites), with the pool sometimes
+    empty and targets in and out of range; its spell or object is then run tick by tick
+    to its natural end, or the driver ends it early as the owner's death would.  Between
+    ticks the driver moves and kills bystanders, interrupts shouts, empties handles.
+    Per-machine inputs a skill reads are set both ways (the prediction copy standing
+    elsewhere, the decal option, the local-slot answer, the presentation generator).
+    The statistics getters are compared exhaustively: 33 ids x levels 0-40 (and a few
+    beyond and below) x statistics 0-4 for slots 10, 11, 12, 13 and 8, slots 14 and 15,
+    and each skill's mana-cost function; made-up tables add negative values.
+    Not run here: Tagar's Insects (87; tools/difftest_arena_monsters.py has it) and the
+    class code of Cyclone (84; the class of id 41, tools/difftest_skills_b.py).
+
+A call that reads the same unmapped address on both sides (a null pointer the original
+does not test) counts as agreement and is listed in a note; so is every division by zero
+the original went through - the interpreter continues with the values the R5900 is
+reported to leave, which is its rule and not an observation of a console.
 """
 import hashlib
 import os
@@ -172,6 +186,9 @@ class World:
         self.holder = emu.alloc(0x80)
         mem.w32(self.holder, self.vt_holder)
         self.items = [emu.alloc(0x50) for _ in range(12)]
+        self.item_defs = [emu.alloc(0x40) for _ in range(4)]
+        for index, definition in enumerate(self.item_defs):
+            mem.w8(definition + 0x1D, (0, 1, 2, 0xFF)[index])          # the bag an item of this kind goes to
         self.owner_node = emu.alloc(0x20)
         self.monsters = [emu.alloc(0x600) for _ in range(8)]
         self.players = [emu.alloc(0x600) for _ in range(4)]
@@ -346,9 +363,6 @@ class World:
     def on_net_isLocalSlot(self, args, view, rng):
         return Res(1 if rng.random() < 0.5 else 0)
 
-    def on_net_objOrGhost(self, args, view, rng):
-        return Res(args[0])
-
     def on_model_getSamplePointCount(self, args, view, rng):
         return Res(rng.choice((1, 3, 7, 7, 12)))
 
@@ -359,7 +373,7 @@ class World:
 
     def on_model_getAttachPoint(self, args, view, rng):
         pos = args[1]
-        point = tuple(f32(fl(pos[i]) + rng.uniform(-20, 20)) for i in range(3))
+        point = tuple(f32(fl(pos[i]) + rng.choice((1.0, 1.0, 1.0, 2.5, -7.0, 20.0))) for i in range(3))
         return Res(outs=[point, (f32(rng.uniform(-1, 1)), f32(rng.uniform(-1, 1)), f32(rng.uniform(-1, 1)))])
 
 
@@ -376,10 +390,11 @@ class Rig:
         self.world = World(emu, self.rng)
         self.calls, self.buffers, self.unknown = [], {}, {}
         self.eview = EmuView(emu)
-        self.script_rng = None
+        self.script_rng = random.Random(seed)           # answers stubs while the skill objects are built
         self.names = {}
         self.pcs = set()
         self.notes = {}
+        self.both_fault = {}
         mem = emu.mem
 
         def add(addr, name, ext):
@@ -486,6 +501,15 @@ class Rig:
             slots.append((ident,) if ident == 0xFFFF else tuple(mem.u16(v + 0x24 + 8 * k + 2 * j) for j in range(4)))
         return ('desc', bytes(mem.read(v + 0x10, 0x12)).hex()) + tuple(slots)
 
+    @classmethod
+    def decode_item(cls, mem, v):
+        """An item record on the stack: definition, quantity (a halfword at +4; the one at
+        +6 is not written by the skill code and holds whatever the stack held), header,
+        modifier slots."""
+        if v == 0 or not is_stack(v):
+            return v
+        return ('item', mem.u32(v), mem.u16(v + 4)) + cls.decode_desc(mem, v)[1:]
+
     def decode(self, name, ext, emu):
         mem, canon, outs = emu.mem, [], []
         for i, kind in enumerate(ext.ints):
@@ -500,6 +524,8 @@ class Rig:
                 canon.append(('buf', self.buffers[v]) if v in self.buffers else v)
             elif kind == 'd':
                 canon.append(self.decode_desc(mem, v))
+            elif kind == 'I':                           # an item record
+                canon.append(self.decode_item(mem, v))
             elif kind == 'T':                           # ten points
                 canon.append(tuple(mem.u32(v + 4 * j) for j in range(30)))
             elif kind in 'OW':
@@ -627,7 +653,13 @@ class Rig:
         out = {'key': key, 'fault': None, 'calls': None, 'writes': None, 'seed': None, 'result': None,
                'model_calls': model.calls, 'emu_calls': self.calls, 'ret': eret, 'state': self.eview.state}
         if model_error or emu_error:
-            out['fault'] = 'model %r / original %r' % (model_error, emu_error)
+            if isinstance(model_error, ee_emu.MemoryFault) and isinstance(emu_error, ee_emu.MemoryFault) \
+                    and model_error.addr == emu_error.addr:
+                # both sides read the same unmapped address: the original has no test there
+                where = '0x%x' % emu_error.pc
+                self.both_fault[where] = self.both_fault.get(where, 0) + 1
+            else:
+                out['fault'] = 'model %r / original %r' % (model_error, emu_error)
             return out
         if model.calls != self.calls:
             out['calls'] = DC.describe_calls(model.calls, self.calls)
@@ -704,6 +736,9 @@ def compact(rig, addresses):
     return names[:10] + (['...'] if len(names) > 10 else [])
 
 
+EXTRA_IDS = (33, 53)                            # the other two objects of the Critical Hit class (id 81's)
+
+
 def build_skills(emu):
     """Construct the 33 skill objects with the game's own code: the class constructor the
     static initialiser 0x16ac74 would call on the object, then statistics slot 9.  The
@@ -724,7 +759,7 @@ def build_skills(emu):
     skills = {}
     saved = emu.follow
     emu.follow = set()                                  # the constructors' own call-outs: all stubbed
-    for ident in SK.SKILL_IDS:
+    for ident in tuple(SK.SKILL_IDS) + EXTRA_IDS:
         obj = mem.u32(SK.G_SKILL_TABLE + 4 * ident)
         ctor, a1 = ctors[obj]
         emu.call(ctor, obj, a1 if a1 is not None else 0)
@@ -932,7 +967,7 @@ World.on_Creature_v16 = _on_creature_v16
 
 def scenario_spiritshield(t):
     rng, world = t.rng, t.world
-    for _ in range(t.reps(25)):
+    for _ in range(t.reps(16)):
         skill, caster, level, pos, facing = cast_setup(t, 94, SK.TYPEINFO['SpiritShield'])
         t.do('SkillSpiritShield_canUse', skill, caster)
         t.do('SkillSpiritShield_manaCost', skill, level)
@@ -1229,7 +1264,7 @@ World.on_creature_addSpell = _on_add_spell
 
 def scenario_drowsy(t):
     rng, world, mem = t.rng, t.world, t.mem
-    for index in range(t.reps(16)):
+    for index in range(t.reps(24)):
         skill, caster, level, pos, facing = cast_setup(t, 88)
         for obj in world.objects:                       # some already slowed, some friendly to players
             mem.w16(obj + 0x31A, rng.choice((0, 0, 0, 0, 1, 250, 0xFFFF)))
@@ -1458,10 +1493,11 @@ def alive_players(t):
         mem.w32(G_PLAYERS + rng.randrange(4) * REC_SIZE + REC_OBJ, 0)
 
 
-def restore_players(t):
+def restore_players(t, pvp=True):
     for slot in range(4):
         t.mem.w32(G_PLAYERS + slot * REC_SIZE + REC_OBJ, t.world.players[slot])
-    t.mem.w32(SK.G_PVP_MODE_A, 0)
+    if pvp:
+        t.mem.w32(SK.G_PVP_MODE_A, 0)
 
 
 def scenario_battlecry(t):
@@ -1522,31 +1558,38 @@ entry('SkillPenetratingArrows_getStats01Fraction', 0x314C88, 0x314D40, 'iWWi', '
       '93 penetratingarrows')
 
 
-def scenario_passives(t):
-    rng, world, mem = t.rng, t.world, t.mem
-    ranks = list(range(0, 41)) + [41, 60, 127]
-    for rank in ranks:
-        t.do('SkillAxeBandolier_getStat0Complement', t.skills[73], rank)
-        t.do('SkillLightQuiver_getStat0Complement', t.skills[74], rank)
-        t.do('SkillThrowing_getStat0Fraction', t.skills[79], rank)
-        t.do('SkillBattleMage_getStat0Fraction', t.skills[92], rank)
-        t.do('SkillPenetratingArrows_getStats01Fraction', t.skills[93], 0, 0, rank)
-        for _ in range(t.reps(12)):
-            slot = rng.randrange(4)
-            rec = G_PLAYERS + slot * REC_SIZE
-            mem.wf32(rec + 0xB0, rng.choice((120.0, 120.0, 1.0, 0.0)))
-            mem.wf32(rec + 0xAC, rng.choice((0.0, 1.0, 59.5, 60.0, 60.5, 120.0, -3.0)))
-            mem.w32(rec + REC_OBJ, rng.choice((world.players[slot], world.players[slot], 0)))
-            frames = rng.choice((0, 1, 7, 26, 27, 59, 60, 61, 500, -4))
-            t.do('SkillBerserkerRage_swingFactor', t.skills[71], rank, rec, frames)
-            t.do('SkillBerserkerRage_damageFactor', t.skills[71], rank, rec, frames)
-            mem.wf32(rec + 0xB0, 120.0)
-    restore_players(t)
+def scenario_passive(ident):
+    def scenario(t):
+        rng, world, mem = t.rng, t.world, t.mem
+        for rank in list(range(0, 41)) + [41, 60, 127]:
+            if ident == 73:
+                t.do('SkillAxeBandolier_getStat0Complement', t.skills[73], rank)
+            elif ident == 74:
+                t.do('SkillLightQuiver_getStat0Complement', t.skills[74], rank)
+            elif ident == 79:
+                t.do('SkillThrowing_getStat0Fraction', t.skills[79], rank)
+            elif ident == 92:
+                t.do('SkillBattleMage_getStat0Fraction', t.skills[92], rank)
+            elif ident == 93:
+                t.do('SkillPenetratingArrows_getStats01Fraction', t.skills[93], 0, 0, rank)
+            else:
+                for _ in range(t.reps(12)):
+                    slot = rng.randrange(4)
+                    rec = G_PLAYERS + slot * REC_SIZE
+                    mem.wf32(rec + 0xB0, rng.choice((120.0, 120.0, 1.0, 0.0)))
+                    mem.wf32(rec + 0xAC, rng.choice((0.0, 1.0, 59.5, 60.0, 60.5, 120.0, -3.0)))
+                    mem.w32(rec + REC_OBJ, rng.choice((world.players[slot], world.players[slot], 0)))
+                    frames = rng.choice((0, 1, 7, 26, 27, 59, 60, 61, 500, -4))
+                    t.do('SkillBerserkerRage_swingFactor', t.skills[71], rank, rec, frames)
+                    t.do('SkillBerserkerRage_damageFactor', t.skills[71], rank, rec, frames)
+                    mem.wf32(rec + 0xB0, 120.0)
+        restore_players(t)
+    return scenario
 
 
-SCENARIOS.append(('71 berserkerrage', 'the passives\' helper functions at every rank', scenario_passives))
-for _group in ('73 axebandolier', '74 lightquiver', '79 throwing', '92 battlemage', '93 penetratingarrows'):
-    SCENARIOS.append((_group, 'see 71', lambda t: None))
+for _ident, _group in ((71, '71 berserkerrage'), (73, '73 axebandolier'), (74, '74 lightquiver'), (79, '79 throwing'),
+                       (92, '92 battlemage'), (93, '93 penetratingarrows')):
+    SCENARIOS.append((_group, 'the helper functions at every rank', scenario_passive(_ident)))
 
 
 # ---------------------------------------------------------------------------------------
@@ -1743,7 +1786,7 @@ def _on_create_object(self, args, view, rng):
 
 
 def _on_prefix(self, args, view, rng):
-    return Res(rng.choice((0, 1, 1, 0xFFFFFFFF)))
+    return Res(rng.choice((0, 0, 1, 0xFFFFFFFF)))
 
 
 def _on_hide_mask(self, args, view, rng):
@@ -1821,7 +1864,389 @@ def scenario_raisearmy(t):
 SCENARIOS.append(('91 raisearmy', 'can-use, cast among corpses, the wave raising up to its limit', scenario_raisearmy))
 
 
-# @@SECTIONS@@
+# ---------------------------------------------------------------------------------------
+# 78 Blood Lust
+# ---------------------------------------------------------------------------------------
+entry('SkillBloodLust_canUse', 0x30300C, 0x303040, 'ii', 'i', 'bloodlust_can_use', '78 bloodlust')
+entry('SkillBloodLust_cast', 0x303040, 0x303108, 'iiivi', 'i', 'bloodlust_cast', '78 bloodlust')
+entry('SkillBloodLust_manaCost', 0x303220, 0x303254, 'ii', 'f', 'skill_mana_cost', '78 bloodlust')
+body('SpellBloodLust_ctor', 0x303254, 0x3034DC, '78 bloodlust')
+entry('SpellBloodLust_run', 0x3034DC, 0x3047B0, 'ivi', 'n', 'bloodlust_spell_run', '78 bloodlust')
+entry('SpellBloodLust_getStat2Complement', 0x3047B0, 0x30481C, 'i', 'f', 'bloodlust_complement', '78 bloodlust')
+entry('SpellBloodLust_getStat1Multiplier', 0x30481C, 0x304888, 'i', 'f', 'bloodlust_multiplier', '78 bloodlust')
+MANA_KEYS[0x303220] = 'SkillBloodLust_manaCost'
+
+
+def _on_ghost(self, args, view, rng):
+    """The object, or - on the owner's machine - the prediction copy standing elsewhere."""
+    return Res(self.ghost if self.ghost and rng.random() < 0.5 else args[0])
+
+
+World.on_net_objOrGhost = _on_ghost
+World.ghost = 0
+
+
+def scenario_bloodlust(t):
+    rng, world, mem = t.rng, t.world, t.mem
+    for index in range(t.reps(12)):
+        levels = (1,) if index == 0 else None
+        skill, caster, level, pos, facing = shout_setup(t, 78, SK.TYPEINFO['BloodLust'], levels)
+        world.ghost = rng.choice((0, world.monsters[6]))  # machine A: no copy; machine B: a copy
+        mem.w32(RC.G_DECAL_DETAIL, rng.choice((0, 1, 2)))  # the local option (per machine)
+        for word in SK.BloodLust.BL_GLOW_TEXTURES:
+            mem.w32(word, rng.getrandbits(24))
+        t.do('SkillBloodLust_canUse', skill, caster)
+        t.do('SkillBloodLust_manaCost', skill, level)
+        spell = t.do('SkillBloodLust_cast', skill, level, caster, pos, facing)
+        if not spell:
+            continue
+        world.busy.add(spell)
+        plan = index % 4                                # 0: to its natural end; 1, 3: cut short; 2: interrupted
+        active_at = rng.randrange(2, 30)
+        interrupt = rng.choice((0, active_at - 1)) if plan == 2 else None
+        last = 2000 if plan == 0 else rng.randrange(active_at + 2, active_at + 200)
+        for frame in range(last):
+            t.tick()
+            world.anim_event = 2 if frame == active_at else rng.choice((0, 0, 0, 0, 1, 6, 8))
+            world.anim_end = 0.1 if frame > active_at + 20 else 0.0
+            if frame == interrupt:
+                mem.w32(caster + 0x58C, rng.choice((2, 3, 5)))
+            elif not mem.u32(spell + 0x28) and rng.random() < 0.03:     # the player goes on: stands, swings, is hit
+                mem.w32(caster + 0x58C, rng.choice((0, 1, 1, 2, 3, 5)))
+            if rng.random() < 0.3:                      # the hands move
+                for obj in (caster, world.monsters[6]):
+                    mem.wf32(obj + 0x10, mem.f32(obj + 0x10) + rng.choice((0.0, 0.5, 3.0, 12.0)))
+            t.do('SpellBloodLust_run', spell, pos, facing)
+            if rng.random() < 0.05:                     # what the damage code asks
+                t.do('SpellBloodLust_getStat2Complement', spell)
+                t.do('SpellBloodLust_getStat1Multiplier', spell)
+            if t.destroyed(spell):
+                break
+        world.busy.discard(spell)
+    world.ghost = 0
+    world.anim_end, world.anim_event = 0.01, None
+    mem.w8(SK.G_NETWORK_MODE, 0)
+    mem.w32(RC.G_DECAL_DETAIL, 0)
+
+
+SCENARIOS.append(('78 bloodlust', 'cast, the shout, the active time with its per-machine particle inputs both ways',
+                  scenario_bloodlust))
+
+
+# ---------------------------------------------------------------------------------------
+# 72 Summon Axe and 75 Summon Arrows
+# ---------------------------------------------------------------------------------------
+entry('SkillSummonAxe_cast', 0x2FE644, 0x2FE7F0, 'iiivi', 'i', 'summonaxe_cast', '72 summonaxe')
+entry('SkillSummonAxe_manaCost', 0x2FE938, 0x2FE96C, 'ii', 'f', 'skill_mana_cost', '72 summonaxe')
+body('SkillSummonAxe_buildItem', 0x2FE96C, 0x2FEB88, '72 summonaxe')
+body('SpellSummonAxe_ctor', 0x2FEB88, 0x2FEDDC, '72 summonaxe')
+entry('SpellSummonAxe_run', 0x2FEDDC, 0x2FF0F4, 'ivi', 'n', 'summonaxe_spell_run', '72 summonaxe')
+entry('SkillSummonArrows_canUse', 0x2FF5EC, 0x2FF5F4, 'ii', 'i', 'summonarrows_can_use', '75 summonarrows')
+entry('SkillSummonArrows_cast', 0x2FF5F4, 0x2FF7A0, 'iiivi', 'i', 'summonarrows_cast', '75 summonarrows')
+entry('SkillSummonArrows_manaCost', 0x2FF848, 0x2FF87C, 'ii', 'f', 'skill_mana_cost', '75 summonarrows')
+body('SpellSummonArrows_ctor', 0x2FF87C, 0x2FFAD4, '75 summonarrows')
+entry('SpellSummonArrows_run', 0x2FFAD4, 0x2FFDEC, 'ivi', 'n', 'summonarrows_spell_run', '75 summonarrows')
+body('mat34_setTranslation', 0x166850, 0x1668B8, 'shared')
+MANA_KEYS[0x2FE938] = 'SkillSummonAxe_manaCost'
+MANA_KEYS[0x2FF848] = 'SkillSummonArrows_manaCost'
+
+
+def _on_parse_descriptor(self, args, view, rng):
+    """The parser leaves the item definition's address in the record."""
+    return Res(outs=[rng.choice(self.item_defs)])
+
+
+def _on_item_weight(self, args, view, rng):
+    return Res(f=f32(rng.choice((0.0, 1.5, 12.0, 80.0))))
+
+
+def _on_give_item(self, args, view, rng):
+    return Res(rng.choice((0, 1, 5, 39)))
+
+
+World.on_item_parseDescriptor = _on_parse_descriptor
+World.on_player_itemWeight = _on_item_weight
+World.on_inventory_giveItem = _on_give_item
+
+
+def scenario_summon_item(ident, name):
+    def scenario(t):
+        rng, world, mem = t.rng, t.world, t.mem
+        for index in range(t.reps(16)):
+            skill, caster, level, pos, facing = cast_setup(t, ident, None, (1, 2, 4, 5, 8, 9, 12, 13, 16, 17, 20, 40))
+            caster = rng.choice(world.players)
+            mem.w32(caster + 0xC, 0x60)
+            rec = G_PLAYERS + mem.u32(caster + 0x3C8) * REC_SIZE
+            mem.wf32(rec + 0x120, rng.choice((0.0, 40.0, 99.0)))
+            mem.wf32(rec + 0x124, rng.choice((100.0, 100.0, 45.0)))
+            mem.wf32(rec + 0xC0, rng.choice((0.0, 50.0, 119.0)))
+            if ident == 75:
+                t.do('SkillSummonArrows_canUse', skill, caster)
+            t.do('Skill%s_manaCost' % name, skill, level)
+            spell = t.do('Skill%s_cast' % name, skill, level, caster, pos, facing)
+            if not spell:
+                continue
+            world.busy.add(spell)
+            cut = rng.random() < 0.3
+            for frame in range(140):
+                t.tick(rng.choice((1, 1, 1, 3)))
+                t.do('Spell%s_run' % name, spell, pos, facing)
+                if t.destroyed(spell) or (cut and rng.random() < 0.03):
+                    break
+            world.busy.discard(spell)
+    return scenario
+
+
+SCENARIOS.append(('72 summonaxe', 'cast with room and without, the five axes, the particle spell',
+                  scenario_summon_item(72, 'SummonAxe')))
+SCENARIOS.append(('75 summonarrows', 'cast with room and without, the particle spell',
+                  scenario_summon_item(75, 'SummonArrows')))
+
+
+# ---------------------------------------------------------------------------------------
+# 98 Fire Axe and 99 Cold Axe
+# ---------------------------------------------------------------------------------------
+entry('SkillFireAxe_canUse', 0x319710, 0x31979C, 'ii', 'i', 'fireaxe_can_use', '98 fireaxe')
+entry('SkillFireAxe_cast', 0x31979C, 0x319DB0, 'iiivi', 'i', 'fireaxe_cast', '98 fireaxe')
+entry('SkillFireAxe_manaCost', 0x319EA0, 0x319ED4, 'ii', 'f', 'skill_mana_cost', '98 fireaxe')
+entry('SkillColdAxe_canUse', 0x31A04C, 0x31A0D8, 'ii', 'i', 'coldaxe_can_use', '99 coldaxe')
+entry('SkillColdAxe_cast', 0x31A0D8, 0x31A6E4, 'iiivi', 'i', 'coldaxe_cast', '99 coldaxe')
+entry('SkillColdAxe_manaCost', 0x31A7D4, 0x31A808, 'ii', 'f', 'skill_mana_cost', '99 coldaxe')
+MANA_KEYS[0x319EA0] = 'SkillFireAxe_manaCost'
+MANA_KEYS[0x31A7D4] = 'SkillColdAxe_manaCost'
+
+
+def _on_resource_index(self, args, view, rng):
+    return Res(rng.choice((0, 1, 2, 5)))
+
+
+def _on_copy_mutable(self, args, view, rng):
+    """The copy: the destination takes the source's count, flags and four modifier slots."""
+    to, source = args[0], args[1]
+    for off in range(4, 0x48, 4):
+        view.poke(to + off, 4, rd(view, source + off))
+    return Res()
+
+
+def _on_notices(self, args, view, rng):
+    return Res(rng.choice((0, 1, 3)))
+
+
+World.on_item_getResourceIndex = _on_resource_index
+World.on_item_copyMutableFields = _on_copy_mutable
+World.on_hud_countActiveNotices = _on_notices
+World.on_text_lookup = lambda self, args, view, rng: Res(0x00D30000)
+
+
+def scenario_thrown_axe(ident, name):
+    def scenario(t):
+        rng, world, mem = t.rng, t.world, t.mem
+        for index in range(t.reps(60)):
+            skill, caster, level, pos, facing = cast_setup(t, ident, None, (1, 2, 5, 10, 11, 20, 40))
+            arm_players(t)
+            rec = G_PLAYERS + (mem.u32(caster + 0x3C8) % 4) * REC_SIZE
+            stack = rng.choice((0, world.items[0], world.items[1], rec + 0x130 + rng.randrange(0x40) * 0x48))
+            mem.w32(rec + 0x43F8, stack)
+            if stack:
+                mem.w16(stack + 4, rng.choice((1, 1, 2, 20, 21, 80, 0)))
+                mem.w64(stack + 8, rng.choice((0x40000000000, 0x40000000000, 0, 0x1000000)))
+            t.do('Skill%s_canUse' % name, skill, caster)
+            t.do('Skill%s_manaCost' % name, skill, level)
+            if caster not in world.players or not stack:    # the cast itself assumes a player with an axe stack
+                continue
+            mem.w32(rec + 0xD0, rng.choice((1, 7, 40)))
+            mem.w32(rec + 0xD4, rng.choice((2, 19, 95)))
+            mem.w32(caster + 0xC, rng.choice((0x60, 0x60, 0x60, 0x20060)))       # now and then the prediction copy
+            target = rng.choice((0, 0, rng.choice(world.monsters)))
+            mem.w32(world.owner_node + 0xC, target)
+            mem.w32(caster + 0x234, world.owner_node if target else 0)
+            t.do('Skill%s_cast' % name, skill, level, caster, pos, facing)
+            mem.w32(caster + 0x234, 0)
+            mem.w32(rec + 0x43F8, 0)
+    return scenario
+
+
+SCENARIOS.append(('98 fireaxe', 'can-use, the throw with and without a target, the last axe of a stack',
+                  scenario_thrown_axe(98, 'FireAxe')))
+SCENARIOS.append(('99 coldaxe', 'can-use, the throw with and without a target, the last axe of a stack',
+                  scenario_thrown_axe(99, 'ColdAxe')))
+
+
+# ---------------------------------------------------------------------------------------
+# 82 Riposte, 83 Dodge, 86 Healing: the berserker and shaman objects of three shared classes
+# ---------------------------------------------------------------------------------------
+entry('SkillRiposte_cast', 0x2DDB90, 0x2DDBB8, 'iiivi', 'i', 'riposte_cast', '82 berserkerriposte')
+entry('SkillRiposte_counterAttack', 0x2DDCCC, 0x2DE138, 'iiii', 'n', 'riposte_counter_attack', '82 berserkerriposte')
+entry('SkillDodge_manaCost', 0x2E8A88, 0x2E8AC0, 'ii', 'f', 'dodge_mana_cost', '83 berserkerdodge')
+entry('SkillDodge_getStat0Fraction', 0x2E8AC0, 0x2E8B3C, 'ii', 'f', 'dodge_fraction', '83 berserkerdodge')
+entry('SkillHealing_cast', 0x2E8CF8, 0x2E8D98, 'iiivi', 'i', 'healing_cast', '86 shamanhealing')
+entry('SkillHealing_manaCost', 0x2E8E94, 0x2E8EC8, 'ii', 'f', 'skill_mana_cost', '86 shamanhealing')
+body('SpellHealing_ctor', 0x2E8EC8, 0x2E90B8, '86 shamanhealing')
+entry('SpellHealing_run', 0x2E90B8, 0x2E979C, 'ivi', 'n', 'healing_spell_run', '86 shamanhealing')
+MANA_KEYS[0x2E8A88] = 'SkillDodge_manaCost'
+MANA_KEYS[0x2E8E94] = 'SkillHealing_manaCost'
+
+
+def scenario_riposte(t):
+    rng, world, mem = t.rng, t.world, t.mem
+    skill = t.skills[82]
+    saved = World.on_model_getSamplePointCount
+    World.on_model_getSamplePointCount = lambda self, args, view, r: Res(r.choice((0, 1, 7, 12)))
+    for _ in range(t.reps(60)):
+        world.reset_objects(rng)
+        mem.w32(AM_COSMETIC_SEED, rng.getrandbits(32))  # the presentation generator: per machine
+        victim = rng.choice(world.players + world.monsters[:2])
+        attacker = rng.choice(world.objects)
+        rank = rng.choice((0, 1, 1, 3, 10, 11, 20, 40))
+        t.do('SkillRiposte_counterAttack', skill, victim, attacker, rank)
+    t.do('SkillRiposte_cast', skill, 3, world.players[0], t.vec(world.players[0] + 0x10), 0)
+    World.on_model_getSamplePointCount = saved
+
+
+def scenario_dodge(t):
+    for rank in list(range(0, 41)) + [41, 60, 127]:
+        t.do('SkillDodge_getStat0Fraction', t.skills[83], rank)
+        t.do('SkillDodge_manaCost', t.skills[83], rank)
+
+
+def scenario_healing(t):
+    rng, world, mem = t.rng, t.world, t.mem
+    for index in range(t.reps(30)):
+        skill, caster, level, pos, facing = cast_setup(t, 86, None, (0, 1, 2, 5, 10, 19, 20, 21, 30))
+        world.reset_objects(rng, spread=rng.choice((30, 80, 300)))
+        mem.w32(caster + 0xC, 0x60 if caster in world.players else rng.choice((0x20, 0x20, 0x20, 0x28)))
+        alive_players(t)
+        t.do('SkillHealing_manaCost', skill, level)
+        spell = t.do('SkillHealing_cast', skill, level, caster, pos, facing)
+        if not spell:
+            restore_players(t)
+            continue
+        world.busy.add(spell)
+        cut = rng.random() < 0.3
+        for frame in range(90):
+            t.tick()
+            churn(t, 0.05)
+            if rng.random() < 0.1:                      # someone is hurt, someone is at full health
+                rec = G_PLAYERS + rng.randrange(4) * REC_SIZE
+                mem.wf32(rec + 0xAC, rng.choice((0.0, 60.0, 119.0, 119.5, 120.0)))
+            t.do('SpellHealing_run', spell, pos, facing)
+            if t.destroyed(spell) or (cut and rng.random() < 0.03):
+                break
+        world.busy.discard(spell)
+        restore_players(t)
+
+
+AM_COSMETIC_SEED = 0x404460
+SCENARIOS.append(('82 berserkerriposte', 'the counter-attack at every rank, with and without model points',
+                  scenario_riposte))
+SCENARIOS.append(('83 berserkerdodge', 'the fraction at every rank', scenario_dodge))
+SCENARIOS.append(('86 shamanhealing', 'cast by players and monsters, the 68 frames of healing', scenario_healing))
+
+
+# ---------------------------------------------------------------------------------------
+# 81 Critical Hit: the berserker's object of the class shared with ids 33 and 53
+# ---------------------------------------------------------------------------------------
+entry('SkillCriticalHit_canUse', 0x2E7224, 0x2E7258, 'ii', 'i', 'criticalhit_can_use', '81 berserkercriticalhit')
+entry('SkillCriticalHit_cast', 0x2E74B0, 0x2E7534, 'iiivi', 'i', 'criticalhit_cast', '81 berserkercriticalhit')
+entry('SkillCriticalHit_manaCost', 0x2E7690, 0x2E76C4, 'ii', 'f', 'criticalhit_mana_cost', '81 berserkercriticalhit')
+entry('SkillCriticalHit_critBonusFor', 0x2E76C4, 0x2E7988, 'iii', 'f', 'criticalhit_bonus_for',
+      '81 berserkercriticalhit')
+body('SpellCriticalHit_ctor', 0x2E7988, 0x2E7ACC, '81 berserkercriticalhit')
+entry('SpellCriticalHit_run', 0x2E7ACC, 0x2E7F58, 'ivi', 'n', 'criticalhit_spell_run', '81 berserkercriticalhit')
+entry('SpellCriticalHit_setTint', 0x2E7F58, 0x2E7F7C, 'ii', 'n', 'criticalhit_set_tint', '81 berserkercriticalhit')
+MANA_KEYS[0x2E7690] = 'SkillCriticalHit_manaCost'
+
+
+def _on_skill_rank(self, args, view, rng):
+    return Res(rng.choice((0, 0, 1, 5, 12, 20, 0xFFFFFFFF)))
+
+
+World.on_player_getSkillRank = _on_skill_rank
+
+
+def scenario_criticalhit(t):
+    rng, world, mem = t.rng, t.world, t.mem
+    token = SK.TYPEINFO['CriticalHit']
+    for index in range(t.reps(12)):
+        skill, caster, level, pos, facing = cast_setup(t, 81, token, (1, 2, 4, 5, 6, 10, 15, 20, 40))
+        skill = t.skills[(81, 81, 33, 53)[index % 4]]   # the class's other two objects: only the particle count differs
+        world.reset_objects(rng, spread=rng.choice((30, 120, 600)))
+        caster = rng.choice(world.players)
+        mem.w32(caster + 0xC, 0x60)
+        alive_players(t)
+        if index % 8 != 5:                              # a slot without a player object: the class does not test it
+            restore_players(t, pvp=False)
+        for player in world.players:                    # who carries the spell, for the bonus query
+            if rng.random() < 0.5:
+                world.carried[(player, token)] = world.monsters[7] + 0x400
+        t.do('SkillCriticalHit_canUse', skill, caster)
+        t.do('SkillCriticalHit_manaCost', skill, level)
+        for _ in range(6):                              # what damage_apply asks for an attacking player
+            t.do('SkillCriticalHit_critBonusFor', skill, rng.choice(world.players), rng.choice((0, 0, 1, 7, 20)))
+        spell = t.do('SkillCriticalHit_cast', skill, level, caster, pos, facing)
+        if not spell:
+            restore_players(t)
+            continue
+        world.busy.add(spell)
+        cut = index % 4 != 0
+        for frame in range(900):
+            t.tick()
+            churn(t, 0.05)
+            t.do('SpellCriticalHit_run', spell, pos, facing)
+            if t.destroyed(spell) or (cut and rng.random() < 0.012):
+                break
+        t.do('SpellCriticalHit_setTint', spell, rng.choice(world.objects))
+        world.busy.discard(spell)
+        restore_players(t)
+
+
+SCENARIOS.append(('81 berserkercriticalhit', 'can-use, the bonus query, cast, run to the end with the aura',
+                  scenario_criticalhit))
+
+
+# ---------------------------------------------------------------------------------------
+# 85 Root: the shaman's object of the class shared with ids 31, 32 and 52
+# ---------------------------------------------------------------------------------------
+entry('SkillRoot_canUse', 0x2E6534, 0x2E6598, 'ii', 'i', 'root_can_use', '85 shamanroot')
+entry('SkillRoot_cast', 0x2E6598, 0x2E6790, 'iiivi', 'i', 'root_cast', '85 shamanroot')
+entry('SkillRoot_manaCost', 0x2E6894, 0x2E68C8, 'ii', 'f', 'skill_mana_cost', '85 shamanroot')
+body('SpellRoot_ctor', 0x2E68C8, 0x2E699C, '85 shamanroot')
+entry('SpellRoot_run', 0x2E699C, 0x2E7034, 'ivi', 'n', 'root_spell_run', '85 shamanroot')
+MANA_KEYS[0x2E6894] = 'SkillRoot_manaCost'
+
+
+def scenario_root(t):
+    rng, world, mem = t.rng, t.world, t.mem
+    for index in range(t.reps(16)):
+        skill, caster, level, pos, facing = cast_setup(t, 85)
+        mem.w32(SK.G_PVP_MODE_A, rng.choice((0, 0, 1)))
+        for obj in world.objects:                       # some already rooted, some friendly to players
+            mem.w16(obj + 0x314, rng.choice((0, 0, 0, 0, 1, 250, 0xFFFF)))
+            if rng.random() < 0.1:
+                mem.w32(obj + 0xC, mem.u32(obj + 0xC) | 0x1000000)
+        t.do('SkillRoot_canUse', skill, caster)
+        t.do('SkillRoot_manaCost', skill, level)
+        world.query = rng.sample(world.objects, rng.randrange(0, 8))
+        t.do('SkillRoot_cast', skill, level, caster, pos, rng.choice((facing, facing | 0xFFFF0000)))
+        world.query = None
+        victims = [(obj, spell) for obj, spell in t.state.get('added', ()) if spell]
+        for obj, spell in victims[:3]:
+            world.busy.add(spell)
+        for obj, spell in victims[:3]:
+            cut = rng.random() < 0.2
+            for frame in range(760):
+                t.tick()
+                if rng.random() < 0.1:                  # a rooted player drifts off its spot
+                    mem.wf32(obj + 0x10, mem.f32(obj + 0x10) + rng.uniform(-6, 6))
+                t.do('SpellRoot_run', spell, pos, facing)
+                if t.destroyed(spell) or (cut and rng.random() < 0.02):
+                    break
+            world.busy.discard(spell)
+    mem.w32(SK.G_PVP_MODE_A, 0)
+
+
+SCENARIOS.append(('85 shamanroot', 'can-use, cast on a crowd, each victim spell through the roll and the hold',
+                  scenario_root))
 
 
 # ---------------------------------------------------------------------------------------
@@ -1889,6 +2314,9 @@ def main(argv):
                                                                                    covered, total))
     for note, count in sorted(rig.notes.items()):
         print('      note: %s, %d times (the remainder left is the interpreter\'s rule, not a console\'s)' % (note, count))
+    for where, count in sorted(rig.both_fault.items()):
+        print('      note: %d calls read unmapped memory at %s in the original and in the model alike (a null '
+              'pointer the code does not test)' % (count, where))
     if rig.unknown:
         report('calls to unknown addresses', len(rig.unknown), sum(rig.unknown.values()),
                ' '.join('%x' % a for a in sorted(rig.unknown)))

@@ -1137,6 +1137,8 @@ static const FuzzButton g_fuzzButtons[] = {
     {"fight", PS2::CControllerInfo::TRIANGLE, 10, 2, 20},
     {"fight", PS2::CControllerInfo::R1, 10, 10, 40},
     {"fight", PS2::CControllerInfo::L1, 4, 2, 4},
+    {"cast", PS2::CControllerInfo::CIRCLE, 40, 2, 20},
+    {"cast", PS2::CControllerInfo::TRIANGLE, 40, 2, 20},
     {"potion", PS2::CControllerInfo::R2, 8, 2, 4},
     {"potion", PS2::CControllerInfo::L2, 8, 2, 4},
     {"use", PS2::CControllerInfo::SQUARE, 15, 2, 6},

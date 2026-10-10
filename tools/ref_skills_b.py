@@ -157,6 +157,7 @@ EXTERNALS.update({
     'Creature.v21': Ext(0, 'pp', 0, 'i', 'is ally (other)'),
     'Creature.v22': Ext(0, 'pp', 0, 'i', 'is on my side (other player)'),
     'SpellResurrect_typeinfo': Ext(0x3D162C, '', 0, 'i', 'type-info getter'),
+    'SpellCriticalHit_typeinfo': Ext(0x3CF000, '', 0, 'i', 'type-info getter'),
     'player_respawn': Ext(0x1BD040, 'iviii', 0, 'n', '(slot, position, facing, -1, -1): a new Player object for the slot'),
     'player_resetIdleAnim': Ext(0x1B2470, 'i', 0, 'n', '(slot)'),
     'arena_addLife': Ext(0x3058C0, 'i', 0, 'n', '(slot)'),
@@ -2662,6 +2663,170 @@ class Model(RC.Model):
         self.w32(spell + 0x18, 1)
 
 
+    # =====================================================================================
+    # 53 criticalhit (and 33, 81): docs/spec/skills-35-68.md section 53
+    # =====================================================================================
+    VT_SPELL_CRITICALHIT = 0x519C28
+    PDEF_CRIT_RING = 0x8E5FA0
+
+    def criticalhit_can_use(self, skill, caster):
+        """SkillCriticalHit_canUse 0x2e7224: 1 exactly when the caster carries no
+        SpellCriticalHit."""
+        return 0 if self.call('creature_findSpellByType', caster, self.call('SpellCriticalHit_typeinfo')) else 1
+
+    def criticalhit_cast(self, skill, level, caster, pos=0, facing=0):
+        """SkillCriticalHit_cast 0x2e74b0 -> the SpellCriticalHit or 0 (pool_new(0x5c))."""
+        spell = self.call('pool_new', 0x5C)
+        if spell:
+            self.criticalhit_spell_ctor(spell, level, caster, skill)
+        return spell
+
+    def criticalhit_spell_ctor(self, spell, level, owner, skill):
+        """SpellCriticalHit_ctor 0x2e7988: Spell base (ONE SHARED DRAW); a light at the
+        owner (+0x1c, radius 120), linked; time left +0x18 = (float) statistic 2 seconds
+        (slot 10); a particle group at +0x58."""
+        w32, w16 = self.w32, self.w16
+        self.spell_base_ctor(spell, level, owner, skill, self.VT_SPELL_CRITICALHIT)
+        self.w8(spell + 0x25, 0)
+        self.wvec(spell + 0x4C, self.vec(owner + 0x10))
+        for off in (0x40, 0x38):
+            w32(spell + off, 0x42F00000)
+            w32(spell + off + 4, 0x3891A2B3)
+        for off in (0x32, 0x28, 0x2A, 0x30):
+            w16(spell + off, 0x40)
+        w16(spell + 0x2E, 0xD7)
+        w16(spell + 0x26, 0xD7)
+        w32(spell + 0x48, 0)
+        w16(spell + 0x2C, 0)
+        w16(spell + 0x34, 0)
+        self.w8(spell + 0x24, 0)
+        self.call('light_link', spell + 0x1C)
+        w32(spell + 0x18, C.from_int(self.stat(self.u32(spell + 8), 2, self.s8(spell))))
+        w32(spell + 0x58, self.call('particleGroup_create'))
+
+    def criticalhit_set_tint(self, spell, creature):
+        """SpellCriticalHit_setTint 0x2e7f58 (spell, creature)."""
+        for off, value in ((0x90, 0x44), (0x96, 0x0F), (0x92, 0x0E), (0x94, 0x18)):
+            self.w16(creature + off, value)
+
+    def criticalhit_run(self, spell, pos=0, facing=0):
+        """SpellCriticalHit_run 0x2e7acc, slot 2.
+
+        Time left -= 1/60; below zero the spell ends itself.  Else the owner is tinted;
+        during the first two seconds the light follows the owner (fading in the second
+        one), after that it is unlinked - every tick; reach = statistic 1 x 12; when
+        positive, level - b + 14 ring particles (b = 1 for id 53, 10 for id 33, 5 for id
+        81), ONE OWN DRAW each, round the "object or prediction copy" of the owner; then
+        every other player of g_alivePlayers within the reach in the plane (in PvP mode A
+        only those the owner's slot 22 accepts) is tinted.  The aura itself is not applied
+        here: the damage function asks critBonusFor."""
+        u32, w32, w16 = self.u32, self.w32, self.w16
+        left = C.sub(u32(spell + 0x18), DT)
+        w32(spell + 0x18, left)
+        if C.lt(left, ZERO):
+            return self.spell_end(spell)
+        self.criticalhit_set_tint(spell, u32(spell + 0xC))
+        skill = u32(spell + 8)
+        age = C.sub(C.from_int(self.stat(skill, 2, self.s8(spell))), u32(spell + 0x18))
+        if C.le(age, F_2):
+            owner = u32(spell + 0xC)
+            x, y, z = self.vec(owner + 0x10)
+            self.wvec(spell + 0x4C, (C.add(x, ZERO), y, C.add(z, 0x42700000)))
+            self.call('light_relink', spell + 0x1C)
+            if C.lt(ONE, age):
+                dim = C.to_int(C.mul(C.sub(F_2, age), 0x42800000))
+                bright = C.to_int(C.mul(C.sub(F_2, age), 0x43570000))
+                w16(spell + 0x2A, dim)
+                w16(spell + 0x26, bright)
+                w16(spell + 0x2E, bright)
+                for off in (0x30, 0x28, 0x32):
+                    w16(spell + off, dim)
+        else:
+            self.call('light_unlink', spell + 0x1C)
+        skill = u32(spell + 8)
+        base = {0x35: 1, 0x21: 10, 0x51: 5}.get(self.s32(skill + 0x64), 1)
+        level = self.s8(spell)
+        reach = self.stat(skill, 1, level) * 0xC
+        anchor = self.call('net_objOrGhost', u32(spell + 0xC))
+        if reach > 0:
+            self.call('particleGroup_begin', u32(spell + 0x58))
+            matrix = C.mat34_set_pos_rot_z(list(self.vec(anchor + 0x10)), s16(self.s32(G_SIM_FRAME) * 0x76))
+            self.call('particleGroup_setMatrix', u32(spell + 0x58), tuple(matrix))
+            for _ in range(max(level - base + 0xE, 0)):
+                angle = s16(self.spell_rand(spell))
+                ring = [C.mul(C.cos16(angle), C.from_int(reach)), C.mul(C.sin16(angle), C.from_int(reach)), ZERO]
+                world = C.mat34_transform_point(matrix, ring)
+                height = C.sub(self.call('terrain_heightAtPoint', u32(G_WORLD), tuple(world)), u32(anchor + 0x18))
+                if C.lt(0x42900000, height) or C.lt(height, 0xC2900000):
+                    continue
+                self.call('particle_spawn', self.PDEF_CRIT_RING, (ring[0], ring[1], height), (0, 0, ONE), ZERO)
+            self.call('particleGroup_end', u32(spell + 0x58))
+        i = 0
+        while i < self.s32(G_ALIVE_COUNT):
+            owner = u32(spell + 0xC)
+            obj = u32((G_PLAYERS + self.s32(G_ALIVE_LIST + 4 * i) * REC_SIZE + REC_OBJ) & M32)
+            i += 1
+            if obj == owner:
+                continue
+            if u32(G_PVP_MODE_A) and not self.vcall(owner, 22, obj):
+                continue
+            owner = u32(spell + 0xC)
+            dy = C.sub(u32(owner + 0x14), u32(obj + 0x14))
+            dx = C.sub(u32(owner + 0x10), u32(obj + 0x10))
+            if C.lt(C.add(C.mul(dx, dx), C.mul(dy, dy)), C.from_int(s32(reach * reach))):
+                self.criticalhit_set_tint(spell, obj)
+
+    def criticalhit_bonus_for(self, skill, attacker, own_rank):
+        """SkillCriticalHit_critBonusFor 0x2e76c4 (skill, attacker, own rank) -> float:
+        what damage_apply adds to an attacking player's critical-hit chance.
+
+        With a rank of its own and a SpellCriticalHit on the attacker: that rank.
+        Otherwise the slots of g_alivePlayers (FINDINGS G19), in list order, other than
+        the attacker's: within 1000 of the attacker in 3-D, in PvP mode A accepted by
+        THAT player's slot 22, carrying a SpellCriticalHit, with r = the largest of its
+        ranks in skills 53, 81 and 33 non-zero, and within statistic 1 (r) x 12 of the
+        attacker in the plane - the first such player decides: rank = r.  None: rank 0.
+        Result: 0.0 for rank 0 (after slot 14), else statistic 0 (rank) x 0.01."""
+        u32 = self.u32
+        rank = s32(own_rank)
+        found = bool(rank) and bool(self.call('creature_findSpellByType', attacker, self.call('SpellCriticalHit_typeinfo')))
+        if not found:
+            rank = 0
+            i = 0
+            while i < self.s32(G_ALIVE_COUNT):
+                cell = G_ALIVE_LIST + 4 * i
+                i += 1
+                if self.s32(cell) == self.s32(attacker + 0x3C8):
+                    continue
+                obj = u32((G_PLAYERS + self.s32(cell) * REC_SIZE + REC_OBJ) & M32)
+                d = [C.sub(u32(obj + 0x10 + 4 * k), u32(attacker + 0x10 + 4 * k)) for k in range(3)]
+                if not C.lt(C.add(C.add(C.mul(d[0], d[0]), C.mul(d[1], d[1])), C.mul(d[2], d[2])), 0x49742400):
+                    continue
+                if u32(G_PVP_MODE_A) and not self.vcall(obj, 22, attacker):
+                    continue
+                info = self.call('SpellCriticalHit_typeinfo')
+                if not self.call('creature_findSpellByType', u32((G_PLAYERS + self.s32(cell) * REC_SIZE + REC_OBJ) & M32), info):
+                    continue
+                best = s32(self.call('player_getSkillRank', self.s32(cell), 0x35))
+                best = max(best, s32(self.call('player_getSkillRank', self.s32(cell), 0x51)))
+                best = max(best, s32(self.call('player_getSkillRank', self.s32(cell), 0x21)))
+                if not best:
+                    continue
+                reach = C.from_int(s32(self.stat(skill, 1, best) * 0xC))
+                obj = u32((G_PLAYERS + self.s32(cell) * REC_SIZE + REC_OBJ) & M32)
+                dy = C.sub(u32(obj + 0x14), u32(attacker + 0x14))
+                dx = C.sub(u32(obj + 0x10), u32(attacker + 0x10))
+                if not C.lt(C.add(C.mul(dx, dx), C.mul(dy, dy)), C.mul(reach, reach)):
+                    continue
+                if best > 0:
+                    rank = best
+                break
+        level = s32(self.skill_call(skill, 14, rank, 0x14))
+        if not level:
+            return ZERO
+        return C.mul(C.from_int(self.stat(skill, 0, level)), F_0_01)
+
+
 # =========================================================================================
 # Registration helpers
 # =========================================================================================
@@ -2836,5 +3001,14 @@ _register(49, 'bash', {
     'SpellBash_run': (0x2DE7DC, 0x2DEDEC, 'spell', 'bash_run'),
     'SpellBash_windupFx': (0x2DEDEC, 0x2DEFCC, '', 'bash_windup_fx'),
 }, [(Model.VT_SPELL_BASH, 'Spell', (1,))])
+
+_register(53, 'criticalhit', {
+    'SkillCriticalHit_canUse': (0x2E7224, 0x2E7258, 'skill', 'criticalhit_can_use'),
+    'SkillCriticalHit_cast': (0x2E74B0, 0x2E7534, 'skill', 'criticalhit_cast'),
+    'SkillCriticalHit_critBonusFor': (0x2E76C4, 0x2E7988, '', 'criticalhit_bonus_for'),
+    'SpellCriticalHit_ctor': (0x2E7988, 0x2E7ACC, '', 'criticalhit_spell_ctor'),
+    'SpellCriticalHit_run': (0x2E7ACC, 0x2E7F58, 'spell', 'criticalhit_run'),
+    'SpellCriticalHit_setTint': (0x2E7F58, 0x2E7F7C, '', 'criticalhit_set_tint'),
+}, [(Model.VT_SPELL_CRITICALHIT, 'Spell', (1,))])
 
 MODELLED = {name: start for name, (start, _end) in FUNCTIONS.items()}

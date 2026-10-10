@@ -86,9 +86,17 @@ class EmuView(DC.EmuView):
 
 
 class ModelView(DC.ModelView):
+    """The model's copy-on-write view.  A store to memory the interpreter has not mapped
+    stops the model as it stops the original (a null pointer the code does not test)."""
+
     def __init__(self, under):
         DC.ModelView.__init__(self, under)
         self.pool_cursor = 0
+
+    def store(self, addr, size, value):
+        if not self.under.is_mapped(addr & M32, size):
+            raise ee_emu.MemoryFault(0, addr & M32, size, 'write')
+        DC.ModelView.store(self, addr, size, value)
 
 
 # ---------------------------------------------------------------------------------------
@@ -364,6 +372,9 @@ class World:
 
     def on_SpellResurrect_typeinfo(self, args, view, rng):
         return Res(0x909760)
+
+    def on_SpellCriticalHit_typeinfo(self, args, view, rng):
+        return Res(0x909000)
 
     def on_creature_findSpellByType(self, args, view, rng):
         return Res(rng.choice((0, 0, 0, self.spells[0], self.spells[1])))
@@ -1386,6 +1397,148 @@ def section_bash(rig):
     rig.report('bash', 'id 49; player and monster casters')
 
 
+def section_criticalhit(rig):
+    """Skill 53 (and the same class as ids 33 and 81): can-use, cast, the aura's run to
+    its end, and the helper damage_apply asks for the bonus."""
+    rig.section = 'criticalhit'
+    mem, world, rng = rig.emu.mem, rig.world, rig.rng
+    pos = world.scratch
+    for round_ in range(10 if OPTIONS['quick'] else 100):
+        r = rng.random
+        world.place(rng)
+        skill = skill_obj(mem, rng.choice((53, 53, 33, 81)))
+        caster = rng.choice(world.players * 3 + world.monsters[:1])
+        mem.w32(SB.G_PVP_MODE_A, rng.choice((0, 0, 1)))
+        slots = rng.sample(range(4), rng.randrange(0, 5))
+        mem.w32(SB.G_ALIVE_COUNT, len(slots))
+        for i, slot in enumerate(slots):
+            mem.w32(SB.G_ALIVE_LIST + 4 * i, slot)
+        for obj in world.players:                       # the party stands close together, or does not
+            if r() < 0.7:
+                put_vec(mem, obj + 0x10, [mem.f32(caster + 0x10 + 4 * i) + rng.choice((0.0, 15.0, -40.0, 110.0, 400.0)) for i in range(3)])
+        rig.vskill(skill, 1, (caster,))
+        for _ in range(4):
+            rig.do('SkillCriticalHit_critBonusFor', 'criticalhit_bonus_for',
+                   (skill, rng.choice(world.players), rng.choice((0, 0, 1, 7, 20))), ret='f')
+        timed = round_ % 10 == 0
+        level = rng.choice((1, 5, 10, 20, 40))
+        world.pool_fail = 0.0 if timed else 0.05
+        spell = rig.vskill(skill, 2, (level, caster, pos, 0))['ret'] & M32
+        if not spell:
+            continue
+        world.live.add(spell)
+        seconds = int(mem.f32(spell + 0x18))
+
+        def between(tick):
+            if timed:
+                return False
+            if r() < 0.05:
+                mem.wf32(spell + 0x18, rng.choice((0.0, 0.01, 1.0, seconds - 1.5, seconds - 2.01)))
+            return True
+        run_spell(rig, 'SpellCriticalHit_run', 'criticalhit_run', spell, pos, 4000 if timed else rng.choice((5, 60)), between,
+                  timer='criticalhit: runs until the spell ends itself, %d s' % seconds)
+        world.live.discard(spell)
+    mem.w32(SB.G_PVP_MODE_A, 0)
+    mem.w32(SB.G_ALIVE_COUNT, 0)
+    world.pool_fail = 0.05
+    rig.report('criticalhit', 'ids 53, 33 and 81')
+
+
+SECTION_1_8 = {(37, 1, 15), (37, 1, 25), (46, 2, 6), (46, 2, 16), (46, 2, 26), (46, 2, 36), (57, 2, 15), (57, 2, 25),
+               (57, 2, 35), (58, 2, 11), (58, 2, 31)}
+
+
+def section_float(rig):
+    """docs/spec/skills-35-68.md section 1.8 by execution: the original statistics getters
+    under the interpreter's console arithmetic and under round-to-nearest.  Tier 1 (slot
+    10, levels 1-20) must not differ; tier 2 (slot 11, levels 1-40) must differ in exactly
+    the eleven places the specification lists, the console value one lower."""
+    emu, mem = rig.emu, rig.emu.mem
+
+    def original(fn, skill, stat, level, model):
+        emu.fpu_model = model
+        emu.reset_log()
+        emu.r[29] = emu.stack_hi - 0x100
+        value = ee_emu.s32(emu.call(fn, skill, stat, level, 0) & M32)
+        emu.fpu_model = OPTIONS['fpu']
+        return value
+    tier1, tier2, count = [], set(), 0
+    for sid in SB.SKILL_IDS:
+        skill = skill_obj(mem, sid)
+        for stat in range(5):
+            for level in range(1, 41):
+                count += 1
+                if level <= 20:
+                    a, b = (original(0x3C85FC, skill, stat, level, m) for m in ('ps2', 'nearest'))
+                    if a != b:
+                        tier1.append((sid, stat, level, a, b))
+                a, b = (original(0x3C8690, skill, stat, level, m) for m in ('ps2', 'nearest'))
+                if a != b:
+                    tier2.add((sid, stat, level))
+                    if b - a != 1:
+                        tier1.append((sid, stat, level, a, b))
+    DC.report('float tier 1', len(tier1), count, 'ranks 1-20 of every statistic of ids 35-68: the same integer under the '
+              'console arithmetic and under round-to-nearest', tier1)
+    wrong = sorted(tier2 ^ SECTION_1_8)
+    DC.report('float tier 2', len(wrong), count, 'levels 1-40: the two arithmetics differ in exactly the eleven places of '
+              'section 1.8 (id, statistic, level), the console value one lower', wrong)
+
+
+def section_timers(rig):
+    """The whole-second timers of the matched spells, settled by execution: the number of
+    run calls until the spell ends itself for every duration its statistics can give
+    (docs/spec/skills-35-68.md section 1.8 says the quoted counts shift by one frame under
+    the console's arithmetic)."""
+    rig.section = 'timers'
+    mem, world, rng = rig.emu.mem, rig.world, rig.rng
+    pos = world.scratch
+    world.pool_fail, world.sample_counts = 0.0, (3,)
+    spans = (1, 13) if OPTIONS['quick'] else range(1, 14)
+    for seconds in spans:                               # Resurrect, several players: total and the respawn call
+        world.place(rng)
+        mem.w32(RC.G_NUM_PLAYERS, 2)
+        mem.w32(SB.G_PVP_MODE_A, 0)
+        mem.w32(SB.G_ALIVE_COUNT, 0)
+        caster, body = world.players[0], world.players[1]
+        mem.w32(caster + 0xC, 0x40)
+        put_vec(mem, body + 0x10, (mem.f32(caster + 0x10), mem.f32(caster + 0x14), mem.f32(caster + 0x18)))
+        mem.w16(SB.Model.G_DEAD_COUNTDOWN + 2, 0)
+        mem.w16(SB.Model.G_DEAD_COUNTDOWN, 240)
+        mem.w16(caster + 0x38, 0)
+        put_vec(mem, body + 0x10, (mem.f32(caster + 0x10) + 20.0, mem.f32(caster + 0x14), mem.f32(caster + 0x18)))
+        spell = rig.vskill(skill_obj(mem, 68), 2, (1, caster, pos, 0))['ret'] & M32
+        assert spell
+        world.live.add(spell)
+        mem.wf32(spell + 0x60, float(seconds))
+        runs, respawn = 0, None
+        while runs < 2000:
+            runs += 1
+            result = rig.do('SpellResurrect_run', 'resurrect_run', (spell, pos, 0))
+            if respawn is None and any(name == 'player_respawn' for name, _args in result['emu_calls']):
+                respawn = runs
+            if ended(result, spell):
+                break
+        TIMERS.setdefault('resurrect, %2d s: run calls in total / the call that respawns the target' % seconds,
+                          set()).add('%d / %s' % (runs, respawn))
+        world.live.discard(spell)
+        mem.w32(RC.G_PLAYERS + RC.REC_SIZE + RC.REC_OBJ, world.players[1])
+    mem.w32(RC.G_NUM_PLAYERS, 4)
+    for sid, name, method, off, spans in ((54, 'SpellHolyShield_run', 'holyshield_run', 0x20, range(10, 21)),
+                                          (53, 'SpellCriticalHit_run', 'criticalhit_run', 0x18, range(8, 14))):
+        for seconds in ((spans[0], spans[-1]) if OPTIONS['quick'] else spans):
+            world.place(rng)
+            caster = world.players[0]
+            spell = rig.vskill(skill_obj(mem, sid), 2, (1, caster, pos, 0))['ret'] & M32
+            assert spell
+            world.live.add(spell)
+            mem.wf32(spell + off, float(seconds))
+            run_spell(rig, name, method, spell, pos, 4000,
+                      timer='%s, %2d s: run calls until the spell ends itself' % (SB.SKILL_NAMES[sid], seconds))
+            world.live.discard(spell)
+    world.pool_fail, world.sample_counts = 0.05, (0, 1, 3, 7, 7, 12)
+    rig.report('timers', 'Resurrect 1-13 s, HolyShield 10-20 s, CriticalHit 8-13 s')
+
+
 ANIM_ADVANCE = 0x16D748
 
 
@@ -1511,14 +1664,14 @@ def section_sb1(rig):
     rig.report('sb1', 'the calls made while establishing SB1')
 
 
-SECTIONS = [('stats', section_stats), ('base', section_base), ('cyclone', section_cyclone), ('sb1', section_sb1),
+SECTIONS = [('stats', section_stats), ('float', section_float), ('base', section_base), ('cyclone', section_cyclone), ('sb1', section_sb1),
             ('firearrow', arrow_section(43, 'firearrow', 'FireArrowProjectile', 0x6C, 0x68, 0xAC)),
             ('coldarrow', arrow_section(44, 'coldarrow', 'ColdArrowProjectile', 0x68, 0x6C, 0xAC)),
             ('poisonarrow', arrow_section(45, 'poisonarrow', 'PoisonArrowProjectile', 0x68, 0x6C, 0xAC)),
             ('multifire', section_multifire), ('passives', section_passives),
             ('harmtouch', section_harmtouch), ('minorhealing', section_minorhealing),
             ('holyshield', section_holyshield), ('healing', section_healing), ('resurrect', section_resurrect),
-            ('bash', section_bash),
+            ('bash', section_bash), ('criticalhit', section_criticalhit), ('timers', section_timers),
             ('explodearrow', arrow_section(47, 'explodearrow', 'ExplodeArrowProjectile', 0x68, 0x6C, 0x70,
                                            end_name='explode', end_method='explode'))]
 
@@ -1569,10 +1722,12 @@ def main(argv):
         print('  %-36s %7d / %d / %d' % ((name,) + tuple(rig.stats[name])))
     print('coverage of the original as executed here (basic blocks, instructions):')
     tb = tbt = ti = tit = 0
+    blocks = {}
     for name, (start, end) in sorted(SB.FUNCTIONS.items(), key=lambda kv: kv[1]):
         leaders, _sites = DC.analyse(rig.emu.mem, start, end)
         inside = {pc for pc in rig.cov if start <= pc < end}
         b, bt, i, it = len(leaders & inside), len(leaders), len(inside), (end - start) // 4
+        blocks[name] = (b, bt)
         if not inside and OPTIONS['filter']:
             continue
         tb, tbt, ti, tit = tb + b, tbt + bt, ti + i, tit + it
@@ -1583,10 +1738,20 @@ def main(argv):
     if tbt:
         print('  %-36s blocks %4d of %4d (%5.1f%%)  instructions %4d of %4d (%5.1f%%)'
               % ('all', tb, tbt, 100.0 * tb / tbt, ti, tit, 100.0 * ti / tit))
+    print('per skill: functions of its own executed / basic blocks covered of total / calls compared / with a mismatch')
+    for sid in SB.SKILL_IDS:
+        names = SB.SKILLS[sid]['functions']
+        ran = [n for n in names if blocks[n][0]]
+        if OPTIONS['filter'] and not ran:
+            continue
+        print('  %d %-18s %2d of %2d functions  blocks %4d of %4d  calls %6d  mismatches %d'
+              % (sid, SB.SKILLS[sid]['name'], len(ran), len(names), sum(blocks[n][0] for n in names),
+                 sum(blocks[n][1] for n in names), sum(rig.stats.get(n, [0])[0] for n in names),
+                 sum(rig.stats.get(n, [0, 0])[1] for n in names)))
     if TIMERS:
         print('frame counts settled by execution (fpu model %s):' % OPTIONS['fpu'])
         for what in sorted(TIMERS):
-            print('  %s: %s' % (what, ', '.join(str(v) for v in sorted(TIMERS[what]))))
+            print('  %s: %s' % (what, ', '.join(str(v) for v in sorted(TIMERS[what], key=str))))
     print('%d calls compared in %.0f s' % (sum(row[0] for row in rig.stats.values()), time.time() - started))
     return 0 if all(ok for _name, ok in DC.RESULTS) else 1
 
