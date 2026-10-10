@@ -18,7 +18,9 @@ structure field. OFF is a hexadecimal byte offset, LO-HI an inclusive byte range
                           a constant length that reaches OFF (possible block copy or fill)
   --roots                 print where each hit's base pointer came from
   --certain               drop the possible ('?') hits
-  --walk-limit N          how far (bytes, hex) a walking pointer is assumed to travel (200)
+  --walk-limit N          how far (bytes, hex) a walking pointer whose loop count is unknown
+                          is assumed to travel (default 100)
+  --no-follow             do not look inside callees that are handed object + K
   --no-cache              do not read or write disasm/text.fx.pickle
 
 How it works. Every function (bodies from ghidra_funcs.tsv; code no function contains is
@@ -36,11 +38,16 @@ Output: one line per function, hits as ADDRESS:OP+OFFSET with marks
   sd+40*          covering: the access starts below OFF and its width reaches it
   uld / usd / ulw / usw   an unaligned (left/right pair) 8- or 4-byte load or store
   sw+0{a0+36c}    derived: the base register holds a0 + 0x36c (displacement 0)
-  sw+0{a0+36c~4}  the base walks from there in steps of 4 (listed for every OFF it can reach
-                  within --walk-limit; only the first element is certain)
+  sw+0{a0+36c~4x16}  the base walks from there in steps of 4 (a negative step walks down),
+                  16 times: the trip count is known when the loop's exit test compares a
+                  constant-step counter or pointer with a constant. Without `xN` the count is
+                  unknown: the hit is listed as possible for every OFF within --walk-limit
   lw+36c[i]       an index register was added to the base: element i of an array at +0x36c
   lw@4dd54c       absolute access (with --static)
   &+364>NAME      the address of +0x364 is passed to NAME (or `&+364=` stored in memory)
+  sw+0<11eb70&+364   in the callee: an access through the pointer handed over at call site
+                  0x11eb70 as object + 0x364 (direct calls followed three deep; the line is
+                  the callee's, the filters apply to the call site)
   &+300..100?     a pointer to +0x300 is passed with a constant length 0x100 that reaches OFF
   ?               possible, not certain: the base survived a call in a caller-saved register,
                   came back from the stack frame of a function that takes the address of a
@@ -56,9 +63,9 @@ What it still cannot see
     method is that class; a base loaded from memory or returned by a call is the reader's
     job to identify, by reading the function.
  2. A base pointer whose constant part was added somewhere the pass does not follow: in
-    another function (a callee receives object + K and uses small displacements: only the
-    `&+K>callee` line shows it), in memory other than the stack frame, or folded into an
-    index register.
+    memory other than the stack frame, behind a virtual or indirect call, more than three
+    direct calls away, in a callee that keeps the pointer (`&+K=`), or folded into an index
+    register.
  3. Indexed access to an array element other than through --array, and the element a
     walking pointer finally reaches: both are listed as possible for the whole array.
  4. Whole-object copies, fills and comparisons made by a called routine starting at the
@@ -78,7 +85,7 @@ from math import gcd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from textinput import text_lines
 
-VERSION = 11
+VERSION = 17
 MASK64 = (1 << 64) - 1
 
 LOADINFO = {  # op -> (bits, signed load, left half)
@@ -121,6 +128,7 @@ ZERO = (0, 0, 0, 0, 0, 0)
 #        paths join with the same field loaded on each, the address is a tuple of loads
 #   (2, inverted, weak)                a one-bit mask whose bit number is not a constant
 #   (3, load address, weak)            a loaded value shifted right by a variable amount
+#   (4, count, weak)                   the result of comparing a stepped counter with a bound
 
 
 class _Defaults(dict):
@@ -495,15 +503,19 @@ def step(x, st, ev, esc):
             return
         if ca or cb:
             k, o = (va, vb) if ca else (vb, va)
+            p = _ptr(o, a)
             if 0x10000 <= (k[2] & 0xffffffff) < 0xf0000000:     # an address plus an index
-                st[r1] = (0, 0, k[2], 0, 1, wk)
+                # (the index may itself carry a constant: slot * size + field offset)
+                st[r1] = (0, 0, s32(k[2] + (p[2] if p[1] != 0 else 0)), 0, 1, wk)
             else:                                               # a pointer plus a small constant
-                p = _ptr(o, a)
                 st[r1] = (0, p[1], p[2] + k[2], p[3], p[4], wk)
             return
         pa = _ptr(va, a); pb = _ptr(vb, a)
-        base = pb if _score(pb) > _score(pa) else pa
-        st[r1] = (0, base[1], base[2], base[3], 1, wk)
+        base, other = (pb, pa) if _score(pb) > _score(pa) else (pa, pb)
+        if base[1] == 0:
+            st[r1] = (0, 0, s32(base[2] + other[2]), 0, 1, wk)
+        else:
+            st[r1] = (0, base[1], base[2] + other[2], base[3], 1, wk)
         return
     if c == C_LOGI:
         v = st.get(x[4])
@@ -588,7 +600,9 @@ def step(x, st, ev, esc):
             if v is not None and v[0] == 1 and op == 'sltu' and x[4] == '$zero' \
                     and v[8] and v[3] != (1 << abs(v[9])) - 1:
                 ev[2].append((a, 'zero', v[1], v[3], 0, v[-1]))
-        if r1 != '$zero': st[r1] = (0, ('U', a), 0, 0, 0, 0)
+        if r1 != '$zero':
+            cnt = _compare_count(x, st)
+            st[r1] = (4, cnt, 0) if cnt else (0, ('U', a), 0, 0, 0, 0)
         return
     if c == C_CMOV:
         if ev is not None:
@@ -620,19 +634,71 @@ def _branch_events(x, st, ev):
                 ev[2].append((x[0], 'zero', v[1], v[3], 0, v[-1]))
 
 
+def _compare_count(x, st):
+    """For `slt t, w, k` (or slti / sltu / sltiu, either operand order) where w moves by a
+    constant step and k is a constant or a fixed pointer from the same root: how many times
+    a loop that continues while t is set runs. 0 when the pattern does not apply."""
+    va = st.get(x[4])
+    if va is None: va = DEF[x[4]]
+    if x[5][0] == '$':
+        vb = st.get(x[5])
+        if vb is None: vb = DEF[x[5]]
+    else:
+        k = _imm(x[5])
+        if k is None: return 0
+        vb = (0, 0, k, 0, 0, 0)
+    if va[0] != 0 or vb[0] != 0 or va[1] != vb[1] or va[4] or vb[4]: return 0
+    if va[3] > 0 and not vb[3]:          # w < k, w rising
+        d = vb[2] - va[2]
+        return -(-d // va[3]) + 1 if 0 < d < 0x40000 else 0
+    if vb[3] < 0 and not va[3]:          # k < w, w falling
+        d = vb[2] - va[2]
+        return -(-d // -vb[3]) + 1 if 0 < d < 0x40000 else 0
+    return 0
+
+
+def _loop_count(x, st):
+    """Iterations of a loop closed by the backward branch x, when its exit test compares a
+    counter or pointer that moves by a constant step against a constant or a fixed end."""
+    op = x[1]
+    if op[-1] == 'l' and op != 'bal': op = op[:-1]
+    v1 = st.get(x[3]) if x[3] else None
+    if v1 is None and x[3]: v1 = DEF[x[3]]
+    if v1 is not None and v1[0] == 4 and op == 'bnez': return v1[1]
+    if v1 is None or v1[0] != 0: return 0
+    if op in ('bne', 'bnez'):
+        v2 = ZERO if op == 'bnez' else st.get(x[4]) if x[4] else None
+        if v2 is None and x[4]: v2 = DEF[x[4]]
+        if v2 is None or v2[0] != 0 or v1[1] != v2[1]: return 0
+        for w, k in ((v1, v2), (v2, v1)):
+            if w[3] and not w[4] and not k[3] and not k[4]:
+                d = k[2] - w[2]
+                if d % w[3] == 0 and 0 <= d // w[3] < 0x4000: return d // w[3] + 1
+        return 0
+    if v1[1] != 0 or v1[4] or not v1[3]: return 0
+    c = v1[2]; s = v1[3]
+    if op == 'bgez' and s < 0 <= c: return c // -s + 2
+    if op == 'bgtz' and s < 0 < c: return -(-c // -s) + 1
+    if op == 'bltz' and c < 0 < s: return -(c // s) + 1
+    if op == 'blez' and c <= 0 < s: return -c // s + 2
+    return 0
+
+
 def _after_call(x, st, ev):
     a = x[0]
     if ev is not None:
-        maxlen = 0; consts = []
-        for r in ARGREGS:
+        consts = []; lens = {}
+        for i, r in enumerate(ARGREGS):
             v = st.get(r)
-            if v is not None and _isconst(v):
-                if not v[5]: consts.append((r, v[2]))
-                if 0 < v[2] < 0x10000 and v[2] > maxlen: maxlen = v[2]
+            if v is not None and _isconst(v) and not v[5]:
+                consts.append((r, v[2]))
+                if 8 <= v[2] < 0x10000 and 1 <= i <= 3: lens[i] = v[2]
         if consts and x[6] is not None: ev[3].append((a, x[6], tuple(consts)))
-        for r in ARGREGS:
+        for i, r in enumerate(ARGREGS):
             v = st.get(r)
             if v is None: continue
+            # a constant in a later argument register may be the length of a block operation
+            maxlen = max([n for j, n in lens.items() if j > i] or [0])
             if v[0] == 0:
                 root = v[1]
                 if root == 0:
@@ -652,18 +718,22 @@ def _after_call(x, st, ev):
     st['$2'] = (0, ('R', a), 0, 0, 0, 0)
 
 
-def _join_val(a, b, baddr, k):
+def _join_val(a, b, baddr, k, loop):
     if a[0] == 0 and b[0] == 0 and a[1] == b[1]:
         d = b[2] - a[2]
-        if abs(d) <= 0x4000 and (a[1] != 0 or abs(a[2]) >= 0x10000 or d == 0):
+        if abs(d) <= 0x4000:
             # a pointer stepped in a loop: keep the value it entered with, the step and the
             # direction (step < 0: downward; both directions: an unknown index)
             g = gcd(gcd(abs(a[3]), abs(b[3])), abs(d))
             up = a[3] > 0 or b[3] > 0 or d > 0
             down = a[3] < 0 or b[3] < 0 or d < 0
             ix = a[4] | b[4]
-            if up and down: ix = 1
-            return (0, a[1], a[2], -g if (down and not up) else g, ix, a[5] | b[5])
+            if (up and down) or (a[3] and g != abs(a[3])) or (b[3] and g != abs(b[3])):
+                ix = 1          # stepped by differing amounts: a cursor, not an array walk
+            # two different offsets that meet outside a loop (an if / else that picks one of
+            # two members) are kept the same way, but every hit through them is possible
+            return (0, a[1], a[2], -g if (down and not up) else g, ix,
+                    a[5] | b[5] | (1 if (d and not loop) else 0))
     elif a[0] == b[0]:
         if a[:-1] == b[:-1]: return a[:-1] + (1,)
         if a[0] == 1 and a[2:-1] == b[2:-1]:
@@ -676,8 +746,9 @@ def _join_val(a, b, baddr, k):
     return (0, ('J', baddr, k), 0, 0, 0, 0)
 
 
-def _join_into(dst, src, baddr):
-    """Merge state src into dst in place; True when dst changed."""
+def _join_into(dst, src, baddr, loop=True):
+    """Merge state src into dst in place; True when dst changed. loop: src arrives along a
+    loop's back edge."""
     changed = False
     for k in list(dst):
         a = dst[k]; b = src.get(k)
@@ -687,14 +758,14 @@ def _join_into(dst, src, baddr):
                 del dst[k]; changed = True; continue
             b = DEF[k]
             if b == a: continue
-        nv = _join_val(a, b, baddr, k)
+        nv = _join_val(a, b, baddr, k, loop)
         if nv != a:
             dst[k] = nv; changed = True
     for k in src:
         if k in dst or k.__class__ is int: continue
         b = src[k]; a = DEF[k]
         if a == b: continue
-        nv = _join_val(a, b, baddr, k)
+        nv = _join_val(a, b, baddr, k, loop)
         if nv != a:
             dst[k] = nv; changed = True
     return changed
@@ -752,7 +823,11 @@ def analyze_function(ins, orphan=False):
                     return out, None
                 continue
             if c == C_BR:
-                if ev is not None: _branch_events(x, st, ev)
+                if ev is not None:
+                    _branch_events(x, st, ev)
+                    if x[6] is not None and x[6] <= x[0]:
+                        cnt = _loop_count(x, st)
+                        if 0 < cnt <= 0x4000: ev[4].append((x[6], x[0] + 4, cnt))
                 if d is None: taken = fall = st
                 elif x[5]:                       # likely: the delay slot runs only when taken
                     fall = st; taken = dict(st)
@@ -776,6 +851,49 @@ def analyze_function(ins, orphan=False):
         if end < n and (end - 1) not in gap: out.append((end, st))
         return out, None
 
+    # back edges of the block graph (depth-first): only there does a pointer that meets
+    # itself plus a constant mean a walk
+    def static_succ(k):
+        i = starts[k]; end = ends[k]; out = []
+        while i < end:
+            x = ins[i]; c = x[2]
+            if c < C_BR:
+                i += 1; continue
+            has_d = i + 1 < n and i not in gap
+            if c == C_CALL:
+                i += 2
+                if not (has_d and i - 1 < end):
+                    if has_d and i < n: out.append(i)
+                    return out
+                continue
+            if c == C_BR:
+                t = pos.get(x[6])
+                if t is not None: out.append(t)
+                if has_d and i + 2 < n and (i + 1) not in gap: out.append(i + 2)
+            elif c == C_J:
+                t = pos.get(x[6])
+                if t is not None: out.append(t)
+            elif x[3] != '$ra':
+                out.extend(heads)
+            return out
+        if end < n and (end - 1) not in gap: out.append(end)
+        return out
+
+    back = set(); colour = [0] * nb
+    for r0 in range(nb):
+        if colour[r0]: continue
+        colour[r0] = 1
+        stack = [(r0, iter(static_succ(r0)))]
+        while stack:
+            u, it = stack[-1]
+            for t in it:
+                v = bidx[t]
+                if colour[v] == 1: back.add((u, v))
+                elif colour[v] == 0:
+                    colour[v] = 1; stack.append((v, iter(static_succ(v)))); break
+            else:
+                colour[u] = 2; stack.pop()
+
     instate = [None] * nb
     if orphan:
         instate[0] = {r: (0, ('O', ins[0][0], r), 0, 0, 0, 1) for r in REGNAME[1:]}
@@ -788,23 +906,23 @@ def analyze_function(ins, orphan=False):
         if k not in queued:
             queued.add(k); heapq.heappush(work, k)
 
-    def merge(t, s):
+    def merge(t, s, loop):
         k = bidx[t]
         if instate[k] is None:
             instate[k] = dict(s); push(k)
-        elif _join_into(instate[k], s, ins[t][0]):
+        elif _join_into(instate[k], s, ins[t][0], loop):
             push(k)
 
     def flow():
         while work:
             k = heapq.heappop(work); queued.discard(k)
             out, jr = run(k, dict(instate[k]), None)
-            for t, s in out: merge(t, s)
+            for t, s in out: merge(t, s, (k, bidx[t]) in back)
             if jr is not None:
                 if jrout[0] is None: jrout[0] = dict(jr); ch = True
                 else: ch = _join_into(jrout[0], jr, ins[0][0] - 1)
                 if ch:
-                    for h in heads: merge(h, jrout[0])
+                    for h in heads: merge(h, jrout[0], True)
 
     flow()
     while True:
@@ -813,9 +931,19 @@ def analyze_function(ins, orphan=False):
         k = dead[0]; b = ins[starts[k]][0]
         instate[k] = {r: (0, ('O', b, r), 0, 0, 0, 1) for r in REGNAME[1:]}
         push(k); flow()
-    ev = [[], [], [], []]
+    ev = [[], [], [], [], []]
     for k in range(nb):
         run(k, dict(instate[k]), ev)
+    # give the accesses made through a stepped pointer the trip count of their loop
+    loops = sorted(ev[4], key=lambda l: l[1] - l[0], reverse=True)
+    acc = []
+    for e in ev[0]:
+        it = 0
+        if e[5]:
+            for lo, hi, cnt in loops:
+                if lo <= e[0] <= hi: it = cnt
+        acc.append(e + (it,))
+    ev[0] = acc
     return ev
 
 
@@ -935,8 +1063,11 @@ def _hit_text(h, db=None, names=None, roots=False):
         s = '%x:%s%s' % (h['addr'], op, _sx(h['disp']))
         if h['cover']: s += '*'
         if h['kind'] == 'derived':
-            s += '{%s%s%s}' % (root_label(h['root']), _sx(h['delta']),
-                               '~%s' % _sx(h['step']).lstrip('+') if h['step'] else '')
+            s += '{%s%s%s%s}' % (root_label(h['root']), _sx(h['delta']),
+                                 '~%s' % _sx(h['step']).lstrip('+') if h['step'] else '',
+                                 'x%d' % h['iters'] if h.get('iters') else '')
+        elif h['kind'] == 'via':
+            s += '<%x&%s' % (h['site'], _sx(h['k']))
     if h.get('ix'): s += '[i]'
     if roots and h['kind'] in ('raw', 'addr'):
         s += '/' + root_label(h['root'], db, names)
@@ -947,7 +1078,7 @@ def _hit_text(h, db=None, names=None, roots=False):
 
 def query_field(db, intervals, stores=False, loads=False, funcs=None, addr_range=None,
                 this=False, array=None, static=None, adjust=0, blocks=False, certain=False,
-                walk_limit=0x200):
+                walk_limit=0x100, follow=True):
     """Hits on the byte intervals [(lo, hi exclusive)]. Returns a list of dicts, in address
     order, with the two halves of an unaligned access merged into one hit."""
     q = list(intervals)
@@ -966,7 +1097,7 @@ def query_field(db, intervals, stores=False, loads=False, funcs=None, addr_range
             if s < hi and s + w > lo: return lo
         return None
 
-    for (a, fn, op, disp, root, delta, stp, ix, weak, sv) in db['acc']:
+    for (a, fn, op, disp, root, delta, stp, ix, weak, sv, iters) in db['acc']:
         if lo_all is not None and not (addr_range[0] <= a < addr_range[1]): continue
         if funcs is not None and fn not in funcs: continue
         st = op in STORE_W
@@ -984,16 +1115,19 @@ def query_field(db, intervals, stores=False, loads=False, funcs=None, addr_range
             lo = overlap(s2, w)
             if lo is not None:
                 h = dict(kind='derived', disp=s, cover=s2 < lo, certain=not wk)
-            elif stp and (delta or blocks):
+            elif stp and not ix and (delta or blocks):
                 g = abs(stp)
                 for qlo, qhi in q:
                     # the n nearest 0 with s2 + n*g inside (qlo - w, qhi)
                     n = -((s2 - (qlo - w + 1)) // g)             # ceil((qlo - w + 1 - s2) / g)
                     if s2 + n * g >= qhi: continue
                     if n < 0: n = min(-1, (qhi - 1 - s2) // g)   # the highest that still fits
-                    if abs(n * g) > walk_limit: continue
-                    if (n > 0 and stp < 0 and not ix) or (n < 0 and stp > 0 and not ix): continue
-                    h = dict(kind='derived', disp=s, cover=False, certain=False); break
+                    if (n > 0 and stp < 0) or (n < 0 and stp > 0): continue
+                    if iters:
+                        if abs(n) >= iters: continue             # the loop ends before it
+                    elif abs(n * g) > walk_limit: continue
+                    h = dict(kind='derived', disp=s, cover=False,
+                             certain=bool(iters) and not wk); break
         elif rk == 'A' and static:
             ab = (delta + s) & 0xffffffff
             if sbase <= ab < send or (ix and sbase - 0x8000 <= ab < send):
@@ -1013,7 +1147,7 @@ def query_field(db, intervals, stores=False, loads=False, funcs=None, addr_range
         if h is None: continue
         if certain and not h['certain']: continue
         h.update(addr=a, func=fn, op=op, root=root, delta=delta, step=stp, ix=ix, store=st,
-                 width=w)
+                 width=w, iters=iters)
         hits.append(h)
     if not loads:
         for (a, fn, how, root, delta, ix, weak, tgt, maxlen) in db['amp']:
@@ -1041,6 +1175,8 @@ def query_field(db, intervals, stores=False, loads=False, funcs=None, addr_range
             h.update(kind='addr', addr=a, func=fn, op='&', start=delta, root=root, how=how,
                      target=tgt, ix=ix, store=True, width=0)
             hits.append(h)
+    if follow:
+        hits.extend(_follow(db, q, overlap, stores, loads, funcs, addr_range, this, certain))
     hits.sort(key=lambda h: h['addr'])
     # merge the halves of an unaligned access
     out = []
@@ -1056,6 +1192,57 @@ def query_field(db, intervals, stores=False, loads=False, funcs=None, addr_range
     return out
 
 
+def _follow(db, q, overlap, stores, loads, funcs, addr_range, this, certain, depth=3):
+    """Accesses a callee makes through a pointer it was handed as object + K: the callee
+    uses a small displacement, which no search for the field's own offset can match.
+    Direct calls only, up to `depth` calls deep; the filters apply to the first call site."""
+    byfn = db.get('_acc_by_fn')
+    if byfn is None:
+        byfn = db['_acc_by_fn'] = {}; ampfn = db['_amp_by_fn'] = {}
+        for e in db['acc']:
+            if e[4][0] == 'E': byfn.setdefault(e[1], []).append(e)
+        for e in db['amp']:
+            if e[3][0] == 'E' and e[2] != 's' and e[7] is not None:
+                ampfn.setdefault(e[1], []).append(e)
+    ampfn = db['_amp_by_fn']
+    orph = db['orphans']
+    work = []
+    top = max(hi for lo, hi in q)
+    for (a, fn, how, root, delta, ix, weak, tgt, maxlen) in db['amp']:
+        if how == 's' or tgt is None or root == 'A' or delta == 0 or ix: continue
+        if addr_range and not (addr_range[0] <= a < addr_range[1]): continue
+        if funcs is not None and fn not in funcs: continue
+        if this and root != 'E$4': continue
+        if not (0 <= top - 1 - delta < 0x2000): continue
+        work.append((tgt, how, delta, a, bool(weak) or fn in orph, 1))
+    seen = set(); out = []; done = set()
+    while work:
+        callee, reg, K, site, wk, d = work.pop()
+        if (callee, reg, K) in seen: continue
+        seen.add((callee, reg, K))
+        for (a, fn, op, disp, root, delta, stp, ix, weak, sv, iters) in byfn.get(callee, ()):
+            if root != 'E' + reg or ix: continue
+            st = op in STORE_W
+            if (stores and not st) or (loads and st): continue
+            s, w = access_span(op, disp)
+            eff = K + delta + s
+            ok = overlap(eff, w) is not None
+            if not ok and stp and iters:
+                ok = any(overlap(eff + n * stp, w) is not None for n in range(1, min(iters, 4096)))
+            if not ok or a in done: continue
+            sure = not (wk or weak)
+            if certain and not sure: continue
+            done.add(a)
+            out.append(dict(kind='via', addr=a, func=fn, op=op, disp=s, cover=False, certain=sure,
+                            root=root, delta=delta, step=stp, ix=ix, store=st, width=w,
+                            iters=iters, site=site, k=K))
+        if d < depth:
+            for (a, fn, how, root, delta, ix, weak, tgt, maxlen) in ampfn.get(callee, ()):
+                if root == 'E' + reg and not ix:
+                    work.append((tgt, how, K + delta, site, wk or bool(weak), d + 1))
+    return out
+
+
 def format_hits(hits, db, names, roots=False, width=22):
     by = {}
     for h in hits: by.setdefault(h['func'], []).append(h)
@@ -1063,8 +1250,11 @@ def format_hits(hits, db, names, roots=False, width=22):
     for f in sorted(by):
         nm = names.get(f, '')
         if f in db['orphans']: nm = nm or '(outside any function)'
-        lines.append('%s %-*s %s' % (hex(f), width, nm,
-                                     ' '.join(_hit_text(h, db, names, roots) for h in by[f])))
+        texts = []
+        for h in by[f]:
+            t = _hit_text(h, db, names, roots)
+            if t not in texts: texts.append(t)       # two arguments with the same offset
+        lines.append('%s %-*s %s' % (hex(f), width, nm, ' '.join(texts)))
     return lines
 
 
@@ -1133,7 +1323,8 @@ def main(argv=None):
         array=ints(opts['--array']) if '--array' in opts else None,
         static=ints(opts['--static']) if '--static' in opts else None,
         adjust=int(opts.get('--adjust', '0'), 16), blocks='--blocks' in opts,
-        certain='--certain' in opts, walk_limit=int(opts.get('--walk-limit', '200'), 16))
+        certain='--certain' in opts, walk_limit=int(opts.get('--walk-limit', '100'), 16),
+        follow='--no-follow' not in opts)
     for l in format_hits(hits, db, names, roots='--roots' in opts): print(l)
     return 0
 

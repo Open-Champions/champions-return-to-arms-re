@@ -76,7 +76,7 @@ def _index(db):
 def _positions(e, off, static):
     """Byte offsets, relative to the flag word, at which this access may start.
     Yields (offset - FIELDOFF, how, certain)."""
-    a, fn, op, disp, root, delta, stp, ix, weak, sv = e
+    a, fn, op, disp, root, delta, stp, ix, weak, sv = e[:10]
     s, w = fx.access_span(op, disp)
     yield s - off, 'raw', True
     if root[0] != 'A' and root != 'E$sp' and delta and not stp:
@@ -169,7 +169,7 @@ def query_flag(db, mask, off=0xc, funcs=None, addr_range=None, static=None, stor
                                      certain=False, root='', load=None, how='call', via=tgt))
     hidden = 0
     for e in db['acc']:
-        a, fn, op, disp, root, delta, stp, ix, weak, sv = e
+        a, fn, op, disp, root, delta, stp, ix, weak, sv = e[:10]
         if op not in fx.STORE_W or not ok(a, fn): continue
         if this and root != 'E$4': continue
         w = fx.WIDTH[op]

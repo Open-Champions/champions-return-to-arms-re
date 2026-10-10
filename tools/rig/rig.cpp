@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <functional>
 #include <future>
@@ -1051,6 +1052,7 @@ struct Command
 		PRESS,
 		RELEASE,
 		TAP,
+		TAPUNTIL,
 		STICK,
 		PAD,
 		POKE,
@@ -1064,6 +1066,7 @@ struct Command
 		BREAK,
 		UNBREAK,
 		SYNC,
+		NETSHIM,
 		QUIT,
 	};
 	KIND kind = WAIT;
@@ -1084,6 +1087,277 @@ struct Command
 	// run-time
 	bool started = false;
 	uint64 deadline = 0;
+	uint64 phaseStart = 0;
+};
+
+// ---------------------------------------------------------------------------------
+// Host calls and the libnet shim (the first piece of phase 2; docs/issues/live-rig.md 4d)
+//
+// A function of the game is replaced by writing four instructions over its entry:
+//
+//     lui  $at, 0x1e00
+//     sw   $zero, 4*n($at)      ; a store to an address the rig has claimed
+//     jr   $ra
+//     nop
+//
+// Play! routes a store outside RAM through its memory map; the rig adds an entry for
+// 0x1e000000-0x1e000fff whose handler runs host code for call number n, with the
+// function's arguments still in $a0-$a3, $t0-$t3 and on the stack, and puts the result
+// in $v0. This needs no break point support and costs one host call.
+//
+// The shim replaces the entry points of Sony's libnet in the executable (the EE half of
+// the network library; addresses from symbols/netlib.tsv) so that the game's own netcode
+// can open datagram sockets and exchange datagrams without the IOP network stack or an
+// emulated adapter. In this first version the "network" is a bus inside one process: a
+// datagram sent to this machine's own address, or to a broadcast address, comes back on
+// the next frame; anything else is logged and dropped. Phase 2 replaces the bus by a
+// connection to a second runner.
+// ---------------------------------------------------------------------------------
+
+class CNetShim
+{
+public:
+	enum
+	{
+		PORT_BASE = 0x1E000000,
+		PORT_SIZE = 0x1000,
+		ERROR_NO_DATA = -500, // what sceInetRecvFrom returns when nothing is waiting (0x13c158)
+	};
+
+	enum CALL
+	{
+		CALL_LIBNET_INIT,
+		CALL_GET_INTERFACE_LIST,
+		CALL_INTERFACE_CONTROL,
+		CALL_CREATE,
+		CALL_OPEN,
+		CALL_CLOSE,
+		CALL_SEND_TO,
+		CALL_RECV_FROM,
+		CALL_LOAD_MODULES,
+		CALL_LINK_CHECK,
+		CALL_COUNT,
+	};
+
+	struct ENTRY
+	{
+		CALL call;
+		uint32 address;
+		const char* name;
+	};
+
+	static const ENTRY* Entries()
+	{
+		static const ENTRY entries[CALL_COUNT] = {
+		    {CALL_LIBNET_INIT, 0x365ec0, "sceLibnetInitialize"},
+		    {CALL_GET_INTERFACE_LIST, 0x365a08, "sceInetGetInterfaceList"},
+		    {CALL_INTERFACE_CONTROL, 0x365a90, "sceInetInterfaceControl"},
+		    {CALL_CREATE, 0x3654a8, "sceInetCreate"},
+		    {CALL_OPEN, 0x365518, "sceInetOpen"},
+		    {CALL_CLOSE, 0x365560, "sceInetClose"},
+		    {CALL_SEND_TO, 0x365830, "sceInetSendTo"},
+		    {CALL_RECV_FROM, 0x365670, "sceInetRecvFrom"},
+		    {CALL_LOAD_MODULES, 0x137a10, "net_loadModules"},
+		    {CALL_LINK_CHECK, 0x13e638, "net_linkCheck"},
+		};
+		return entries;
+	}
+
+	void SetAddress(const std::string& dotted)
+	{
+		unsigned int a = 0, b = 0, c = 0, d = 0;
+		if(sscanf(dotted.c_str(), "%u.%u.%u.%u", &a, &b, &c, &d) != 4 || a > 255 || b > 255 || c > 255 || d > 255) Die("--net-shim wants an address a.b.c.d, got '%s'", dotted.c_str());
+		// the game keeps addresses low byte first: d, c, b, a
+		m_ownAddress[0] = static_cast<uint8>(d);
+		m_ownAddress[1] = static_cast<uint8>(c);
+		m_ownAddress[2] = static_cast<uint8>(b);
+		m_ownAddress[3] = static_cast<uint8>(a);
+	}
+
+	void SetLog(FILE* log)
+	{
+		m_log = log;
+	}
+
+	uint64 Calls(int call) const
+	{
+		return m_calls[call];
+	}
+
+	// runs on the machine thread, from inside a store instruction of the stub
+	uint32 Dispatch(const Machine& m, uint64 frame, uint32 address)
+	{
+		uint32 call = (address - PORT_BASE) / 4;
+		if(call >= CALL_COUNT) return 0;
+		m_calls[call]++;
+		auto arg = [&](int index) -> uint32 {
+			// arguments 1-8 are in $a0-$a3, $t0-$t3; the ninth is the first stack word
+			if(index < 8) return m.Reg(CMIPS::A0 + index);
+			return m.Read32(m.Reg(CMIPS::SP) + (index - 8) * 8);
+		};
+		int32 result = 0;
+		switch(call)
+		{
+		case CALL_LIBNET_INIT:
+			Log(frame, "sceLibnetInitialize(cd=%08x, %x, %x, %x) -> 0", arg(0), arg(1), arg(2), arg(3));
+			break;
+		case CALL_GET_INTERFACE_LIST:
+			Write32(m, arg(2), 1);
+			result = 1;
+			Log(frame, "sceInetGetInterfaceList -> 1 interface, id 1");
+			break;
+		case CALL_INTERFACE_CONTROL:
+		{
+			// code 9 asks for the interface's address: a 16-byte block, address in bytes 4-7
+			uint32 code = arg(3), pointer = arg(4), length = arg(5);
+			if(code == 9 && length >= 8)
+			{
+				if(uint8* p = m.Ptr(pointer, length))
+				{
+					memset(p, 0, length);
+					memcpy(p + 4, m_ownAddress, 4);
+				}
+			}
+			Log(frame, "sceInetInterfaceControl(id=%d, code=%d, ptr=%08x, len=%d) -> 0", arg(2), code, pointer, length);
+		}
+		break;
+		case CALL_CREATE:
+		{
+			// parameter block: word 0 the type (0 for the datagram sockets the game opens), word 1 the local port
+			uint32 parameters = arg(2);
+			SOCKET socket;
+			socket.type = m.Read32(parameters);
+			socket.port = m.Read32(parameters + 4);
+			result = m_nextId++;
+			m_sockets[result] = socket;
+			Log(frame, "sceInetCreate(type=%d, port=%d) -> id %d", socket.type, socket.port, result);
+		}
+		break;
+		case CALL_OPEN:
+			Log(frame, "sceInetOpen(id=%d, ms=%d) -> 0", arg(2), arg(3));
+			break;
+		case CALL_CLOSE:
+			m_sockets.erase(static_cast<int32>(arg(2)));
+			Log(frame, "sceInetClose(id=%d) -> 0", arg(2));
+			break;
+		case CALL_SEND_TO:
+		{
+			int32 id = static_cast<int32>(arg(2));
+			uint32 pointer = arg(3), length = arg(4), addressBlock = arg(6), port = arg(7);
+			DATAGRAM datagram;
+			if(const uint8* p = m.Ptr(pointer, length)) datagram.data.assign(p, p + length);
+			uint8 destination[4] = {};
+			if(const uint8* p = m.Ptr(addressBlock, 8)) memcpy(destination, p + 4, 4);
+			auto socket = m_sockets.find(id);
+			memcpy(datagram.address, m_ownAddress, 4);
+			datagram.port = (socket != m_sockets.end()) ? socket->second.port : 0;
+			datagram.frame = frame + 1;
+			bool broadcast = (destination[0] == 0xff);
+			bool toSelf = (memcmp(destination, m_ownAddress, 4) == 0);
+			int delivered = 0;
+			if(broadcast || toSelf)
+			{
+				for(auto& other : m_sockets)
+				{
+					if(other.second.port != port) continue;
+					other.second.queue.push_back(datagram);
+					delivered++;
+				}
+			}
+			m_sent++;
+			result = static_cast<int32>(length);
+			Log(frame, "sceInetSendTo(id=%d, len=%d, to %d.%d.%d.%d:%d) first=%s -> %s", id, length, destination[3], destination[2], destination[1], destination[0], port, Hex(datagram.data, 16).c_str(), delivered ? "queued for this machine" : "no receiver on the bus, dropped");
+		}
+		break;
+		case CALL_RECV_FROM:
+		{
+			int32 id = static_cast<int32>(arg(2));
+			uint32 pointer = arg(3), length = arg(4), flagsPointer = arg(5), addressOut = arg(6), portOut = arg(7);
+			result = ERROR_NO_DATA;
+			auto socket = m_sockets.find(id);
+			if(socket != m_sockets.end() && !socket->second.queue.empty() && socket->second.queue.front().frame <= frame)
+			{
+				DATAGRAM datagram = std::move(socket->second.queue.front());
+				socket->second.queue.pop_front();
+				uint32 size = std::min<uint32>(length, static_cast<uint32>(datagram.data.size()));
+				if(uint8* p = m.Ptr(pointer, size)) memcpy(p, datagram.data.data(), size);
+				if(uint8* p = m.Ptr(addressOut, 16))
+				{
+					memset(p, 0, 16);
+					memcpy(p + 4, datagram.address, 4);
+				}
+				if(portOut) Write32(m, portOut, datagram.port);
+				if(flagsPointer) Write32(m, flagsPointer, 0);
+				result = static_cast<int32>(size);
+				m_received++;
+				Log(frame, "sceInetRecvFrom(id=%d) -> %d bytes from %d.%d.%d.%d:%d first=%s", id, size, datagram.address[3], datagram.address[2], datagram.address[1], datagram.address[0], datagram.port, Hex(datagram.data, 16).c_str());
+			}
+		}
+		break;
+		case CALL_LOAD_MODULES:
+			result = 1; // an interface id; the caller then asks for its address
+			Log(frame, "net_loadModules -> 1 (not run: the modules are not needed)");
+			break;
+		case CALL_LINK_CHECK:
+			result = 1;
+			break;
+		}
+		m.state->nGPR[CMIPS::V0].nD0 = static_cast<int64>(result);
+		return 0;
+	}
+
+	void Summary() const
+	{
+		printf("  net shim: %" PRIu64 " datagrams sent, %" PRIu64 " received; calls:", m_sent, m_received);
+		for(int i = 0; i < CALL_COUNT; i++) printf(" %s=%" PRIu64, Entries()[i].name, m_calls[i]);
+		printf("\n");
+	}
+
+private:
+	struct DATAGRAM
+	{
+		std::vector<uint8> data;
+		uint8 address[4] = {};
+		uint32 port = 0;
+		uint64 frame = 0; // first frame on which it may be received
+	};
+	struct SOCKET
+	{
+		uint32 type = 0;
+		uint32 port = 0;
+		std::deque<DATAGRAM> queue;
+	};
+
+	static void Write32(const Machine& m, uint32 address, uint32 value)
+	{
+		if(uint8* p = m.Ptr(address, 4)) memcpy(p, &value, 4);
+	}
+
+	static std::string Hex(const std::vector<uint8>& data, size_t limit)
+	{
+		std::string text;
+		for(size_t i = 0; i < data.size() && i < limit; i++) text += StrFormat("%02x", data[i]);
+		return text;
+	}
+
+	void Log(uint64 frame, const char* fmt, ...)
+	{
+		if(!m_log) return;
+		va_list args;
+		va_start(args, fmt);
+		fprintf(m_log, "frame=%" PRIu64 " ", frame);
+		vfprintf(m_log, fmt, args);
+		fprintf(m_log, "\n");
+		va_end(args);
+	}
+
+	uint8 m_ownAddress[4] = {134, 1, 168, 192};
+	std::map<int32, SOCKET> m_sockets;
+	int32 m_nextId = 1;
+	uint64 m_calls[CALL_COUNT] = {};
+	uint64 m_sent = 0;
+	uint64 m_received = 0;
+	FILE* m_log = nullptr;
 };
 
 class CRigVM : public CPS2VM
@@ -1150,6 +1424,8 @@ struct Options
 	bool profile = false;
 	bool interactive = false;
 	bool videoThread = false;
+	std::string netShimAddress;
+	std::string netLogPath;
 };
 
 class CRig
@@ -1172,6 +1448,22 @@ public:
 		m_machine.state = &m_vm.m_ee->m_EE.m_State;
 		m_pageSize = static_cast<uint32>(getpagesize());
 
+		if(!m_options.netShimAddress.empty())
+		{
+			m_netShim.SetAddress(m_options.netShimAddress);
+			if(!m_options.netLogPath.empty())
+			{
+				m_netLog = fopen(m_options.netLogPath.c_str(), "w");
+				if(!m_netLog) Die("cannot write %s", m_options.netLogPath.c_str());
+				m_netShim.SetLog(m_netLog);
+			}
+			// The memory map is searched in address order and this range lies above
+			// every range Play! registers for writes, so appending keeps it sorted.
+			m_vm.m_ee->m_EE.m_pMemoryMap->InsertWriteMap(
+			    CNetShim::PORT_BASE, CNetShim::PORT_BASE + CNetShim::PORT_SIZE - 1,
+			    [this](uint32 address, uint32) { return m_netShim.Dispatch(m_machine, m_frame, address); }, 0x40);
+			m_netShimReady = true;
+		}
 		for(const auto& spec : m_options.watchSpecs) m_watches.push_back(ParseWatch(spec));
 		if(!m_options.logPath.empty())
 		{
@@ -1361,8 +1653,10 @@ public:
 				printf("    %8" PRIu64 "  %08x %s\n", sorted[i].first, sorted[i].second, Symbolize(sorted[i].second).c_str());
 			}
 		}
+		if(m_netShimReady) m_netShim.Summary();
 		if(m_log) fclose(m_log);
 		if(m_breakLog) fclose(m_breakLog);
+		if(m_netLog) fclose(m_netLog);
 	}
 
 	int ExitCode() const
@@ -1663,6 +1957,18 @@ private:
 			command.number = (tokens.size() > i + 1) ? number(tokens[i + 1]) : 3;
 			command.number2 = (tokens.size() > i + 2) ? number(tokens[i + 2]) : 0;
 		}
+		else if(word == "tapuntil")
+		{
+			// tapuntil <buttons> <period> <expr:type> <op> <value> [timeout N]
+			need(4);
+			command.kind = Command::TAPUNTIL;
+			command.buttons = ParseButtons(tokens[i]);
+			command.number2 = std::max<int64_t>(8, number(tokens[i + 1]));
+			size_t next = 0;
+			command.condition = ParseCondition(tokens, i + 2, next);
+			command.number = 0;
+			if(next + 1 < tokens.size() && Lower(tokens[next]) == "timeout") command.number = number(tokens[next + 1]);
+		}
 		else if(word == "stick")
 		{
 			need(3);
@@ -1768,6 +2074,10 @@ private:
 			command.kind = Command::UNBREAK;
 			command.target.expr = ExprParser(tokens[i]).Parse();
 		}
+		else if(word == "netshim")
+		{
+			command.kind = Command::NETSHIM;
+		}
 		else if(word == "sync")
 		{
 			command.kind = Command::SYNC;
@@ -1870,6 +2180,42 @@ private:
 				pad.buttons &= ~command.buttons;
 				if(command.number2 > 0 && m_frame < command.deadline + command.number2) return;
 				break;
+			case Command::TAPUNTIL:
+			{
+				// one tap (4 frames held) per period until the condition holds; the
+				// condition is looked at only between taps, never while one is down
+				if(!command.started)
+				{
+					command.started = true;
+					command.deadline = command.number ? m_frame + command.number : 0;
+					command.phaseStart = m_frame;
+					if(command.condition.op == Condition::CHANGED)
+					{
+						command.condition.reference = ReadValue(m_machine, command.condition.watch.expr.Eval(m_machine), command.condition.watch.type);
+					}
+				}
+				uint64 phase = (m_frame - command.phaseStart) % static_cast<uint64>(command.number2);
+				if(phase == 0)
+				{
+					if(command.condition.Test(m_machine))
+					{
+						printf("[frame %" PRIu64 "] tapuntil %s\n", m_frame, command.condition.text.c_str());
+						break;
+					}
+					if(command.deadline && m_frame >= command.deadline)
+					{
+						printf("[frame %" PRIu64 "] TIMEOUT line %d: tapuntil %s\n", m_frame, command.line, command.condition.text.c_str());
+						Finish(3);
+						return;
+					}
+					pad.buttons |= command.buttons;
+				}
+				else if(phase == 4)
+				{
+					pad.buttons &= ~command.buttons;
+				}
+				return;
+			}
 			case Command::STICK:
 				for(int k = 0; k < command.axisCount; k++) pad.axis[command.axisFirst + k] = command.axis[k];
 				break;
@@ -1956,6 +2302,9 @@ private:
 				SetBreakpoint(address, false);
 			}
 			break;
+			case Command::NETSHIM:
+				InstallNetShim();
+				break;
 			case Command::SYNC:
 				printf("[sync %s] frame=%" PRIu64 "\n", command.text.c_str(), m_frame);
 				FlushOutputs();
@@ -1974,6 +2323,27 @@ private:
 		fflush(stdout);
 		if(m_log) fflush(m_log);
 		if(m_breakLog) fflush(m_breakLog);
+		if(m_netLog) fflush(m_netLog);
+	}
+
+	// Writes the four-instruction host-call stub over each libnet entry point. The
+	// words replaced are printed, so a log shows what the executable held there.
+	void InstallNetShim()
+	{
+		if(!m_netShimReady) Die("netshim: start the runner with --net-shim <address>");
+		for(int i = 0; i < CNetShim::CALL_COUNT; i++)
+		{
+			const auto& entry = CNetShim::Entries()[i];
+			uint32 stub[4] = {
+			    0x3C011E00,                               // lui $at, 0x1e00
+			    0xAC200000 | static_cast<uint32>(i * 4), // sw $zero, 4*i($at)
+			    0x03E00008,                               // jr $ra
+			    0x00000000,                               // nop
+			};
+			uint32 before = m_machine.Read32(entry.address);
+			Poke(entry.address, stub, sizeof(stub));
+			printf("[frame %" PRIu64 "] net shim: %s at %08x replaced (first word was %08x)\n", m_frame, entry.name, entry.address, before);
+		}
 	}
 
 	// Interactive sessions: when the script has run out, the machine thread waits here
@@ -2007,7 +2377,9 @@ private:
 	// transcript of what the game put on the screen.
 	void FlushCollected()
 	{
-		if(m_collected.empty() && m_lastCollected.empty()) return;
+		// A frame in which nothing was drawn (the game took two fields over one frame)
+		// is not a change of screen.
+		if(m_collected.empty()) return;
 		if(m_collected != m_lastCollected)
 		{
 			std::string line = StrFormat("frame=%" PRIu64 " screen:", m_frame);
@@ -2084,6 +2456,10 @@ private:
 	std::vector<std::string> m_collected;
 	std::vector<std::string> m_lastCollected;
 
+	CNetShim m_netShim;
+	bool m_netShimReady = false;
+	FILE* m_netLog = nullptr;
+
 	std::vector<Command> m_commands;
 	size_t m_scriptPosition = 0;
 	bool m_scriptDone = false;
@@ -2140,7 +2516,10 @@ static void Usage()
 	    "  --throttle             run at the console's speed instead of as fast as possible\n"
 	    "  --no-code-protect      do not write-protect host pages that hold translated code (see README)\n"
 	    "  --profile              sample the machine and video threads; print where wall time went\n"
-	    "  --video-thread         give the null video handler its own thread, as Play! normally does\n");
+	    "  --video-thread         give the null video handler its own thread, as Play! normally does\n"
+	    "  --net-shim <a.b.c.d>   claim this address and be ready to replace the game's libnet entry\n"
+	    "                         points; the script command 'netshim' installs the replacements\n"
+	    "  --net-log <file>       log of the shim's calls and datagrams\n");
 }
 
 static int Run(int argc, char** argv);
@@ -2232,6 +2611,10 @@ static int Run(int argc, char** argv)
 			options.interactive = true;
 		else if(arg == "--video-thread")
 			options.videoThread = true;
+		else if(arg == "--net-shim")
+			options.netShimAddress = value();
+		else if(arg == "--net-log")
+			options.netLogPath = value();
 		else if(arg == "--help" || arg == "-h")
 		{
 			Usage();

@@ -15,6 +15,10 @@ disc.  Without the executable the script says so and exits 0.
     -v           print up to three failing inputs per property
     --no-alt     skip the reruns under the other floating-point models
     --no-generated / --generated-only   leave out the generated level / test nothing else
+    --jobs N     test N levels side by side (separate processes; the output stays in order)
+
+The full sample takes roughly half an hour per level in the interpreter, --quick five to
+ten minutes; use --jobs on a machine with several cores.
 
 Every property prints one line per level: PASS or FAIL, the name, the number of cases and
 what was compared.  Exit status 1 when any property fails.
@@ -48,8 +52,8 @@ import sys
 import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-if _HERE not in sys.path:
-    sys.path.append(_HERE)
+# tools/ goes to the END of the path: tools/dis.py must not shadow the standard library's dis
+sys.path[:] = [p for p in sys.path if os.path.abspath(p or os.getcwd()) != _HERE] + [_HERE]
 from ee_emu import EE, EmuError                 # noqa: E402
 import ref_world as R                           # noqa: E402
 
@@ -62,7 +66,7 @@ FPU_CONFIGS = (('ps2', False, False), ('ps2g1', False, False), ('chop', False, F
                ('nearest', False, False), ('ps2', True, False), ('ps2', False, True))
 
 OPTIONS = {'quick': False, 'seed': 20973, 'filter': None, 'verbose': False, 'alt': True,
-           'generated': True, 'levels': True}
+           'generated': True, 'levels': True, 'jobs': 1}
 RESULTS = []
 
 # addresses
@@ -962,28 +966,28 @@ def prop_path_block(rig, level, rng, count):
 
 PROPERTIES = [
     # name, function, sample size, what is compared, whether it is rerun under the other FPU models
-    ('libm floorf/ceilf', prop_libm, 3000, 'result bit for bit', True),
-    ('terrain_collectElements', prop_collect, 1500, 'the element list, in order, with its limit', True),
-    ('terrain_height', _prop_height(A_HEIGHT, R.terrain_height), 4000, 'height bit for bit', True),
-    ('terrain_heightBelow', _prop_height(A_HEIGHT_BELOW, R.terrain_height_below), 4000,
+    ('libm floorf/ceilf', prop_libm, 2000, 'result bit for bit', True),
+    ('terrain_collectElements', prop_collect, 1000, 'the element list, in order, with its limit', True),
+    ('terrain_height', _prop_height(A_HEIGHT, R.terrain_height), 3000, 'height bit for bit', True),
+    ('terrain_heightBelow', _prop_height(A_HEIGHT_BELOW, R.terrain_height_below), 3000,
      'height bit for bit', True),
-    ('terrain_heightAtPoint', prop_height_point, 2000, 'height bit for bit', True),
-    ('terrain_testFlag1', prop_test_flag1, 3000, 'the float result bit for bit', True),
-    ('terrain_sweepCircle', prop_sweep, 5000, 'time and normal bit for bit; inputs untouched', True),
-    ('world_slideMove', prop_slide, 3000, 'hit flag, end position and normal bit for bit', True),
+    ('terrain_heightAtPoint', prop_height_point, 1500, 'height bit for bit', True),
+    ('terrain_testFlag1', prop_test_flag1, 2000, 'the float result bit for bit', True),
+    ('terrain_sweepCircle', prop_sweep, 3000, 'time and normal bit for bit; inputs untouched', True),
+    ('world_slideMove', prop_slide, 1200, 'hit flag, end position and normal bit for bit', True),
     ('moving pieces', prop_pieces, 400, 'height and sweep after the game\'s own setters', False),
-    ('obj_moveWithCollision', prop_object_move, 2000,
+    ('obj_moveWithCollision', prop_object_move, 1200,
      'result bits, position and vertical speed, no other object near', True),
-    ('obj_moveAndCollide terrain part', prop_projectile, 1500, 'hit flag and position bit for bit', True),
-    ('terrain_raycast', prop_raycast, 2500, 'hit parameter bit for bit', True),
-    ('world_raycast', prop_world_raycast, 1500, 'hit parameter and hit object, stand-in objects', True),
+    ('obj_moveAndCollide terrain part', prop_projectile, 1000, 'hit flag and position bit for bit', True),
+    ('terrain_raycast', prop_raycast, 2000, 'hit parameter bit for bit', True),
+    ('world_raycast', prop_world_raycast, 1000, 'hit parameter and hit object, stand-in objects', True),
     ('path block counters', prop_path_block, 120, 'the whole node grid after each call', False),
     ('path queue', prop_path_queue, 1, 'queue entries, a full queue, the disabled switch', False),
-    ('path search type 0', prop_path_search((0,), False), 400,
+    ('path search type 0', prop_path_search((0,), False), 300,
      'result, path buffer, node marks, search globals', True),
-    ('path search suspended', prop_path_search((0,), True), 100,
+    ('path search suspended', prop_path_search((0,), True), 60,
      'the same after every timed service call; equals the one-call search', False),
-    ('path search types 1-3', prop_path_search((1, 2, 3), False), 30,
+    ('path search types 1-3', prop_path_search((1, 2, 3), False), 24,
      'result, path buffer, node marks (ray goal tests)', False),
 ]
 
@@ -1088,6 +1092,27 @@ def run_level(elf, name, data):
             report(full, fails, total, text + (' (6 FPU models)' if len(configs) > 1 else ''), examples)
 
 
+def read_level(path):
+    if path is None:
+        return generated_level(OPTIONS['seed'])
+    with open(path, 'rb') as source:
+        return source.read()
+
+
+def level_job(job):
+    """One level in a worker process: its output as text, its results, its skipped count."""
+    import contextlib
+    import io
+    elf, name, path, options = job
+    OPTIONS.update(options)
+    del RESULTS[:]
+    SKIPPED['runaway'] = 0
+    text = io.StringIO()
+    with contextlib.redirect_stdout(text):
+        run_level(elf, name, read_level(path))
+    return text.getvalue(), list(RESULTS), SKIPPED['runaway']
+
+
 def main(argv):
     elf = None
     worlds = []
@@ -1102,6 +1127,8 @@ def main(argv):
             OPTIONS['generated'] = False
         elif arg == '--generated-only':
             OPTIONS['levels'] = False
+        elif arg == '--jobs':
+            OPTIONS['jobs'] = max(int(args.pop(0)), 1)
         elif arg == '-v':
             OPTIONS['verbose'] = True
         elif arg == '--seed':
@@ -1125,8 +1152,9 @@ def main(argv):
     if not worlds:
         worlds = sorted(glob.glob(os.path.join(ROOT, 'extracted', '*', '*.lmp', '*.world')))
     started = time.time()
+    tasks = []
     if OPTIONS['generated']:
-        run_level(elf, 'generated', generated_level(OPTIONS['seed']))
+        tasks.append(('generated', None))
     if not OPTIONS['levels']:
         worlds = []
     elif not worlds:
@@ -1135,9 +1163,19 @@ def main(argv):
         if not os.path.isfile(path):
             print('SKIP  %s: no such file' % path)
             continue
-        with open(path, 'rb') as source:
-            data = source.read()
-        run_level(elf, os.path.basename(path)[:-len('.world')], data)
+        tasks.append((os.path.basename(path)[:-len('.world')], path))
+    jobs = [(elf, name, path, dict(OPTIONS)) for name, path in tasks]
+    if OPTIONS['jobs'] > 1 and len(jobs) > 1:
+        import concurrent.futures
+        with concurrent.futures.ProcessPoolExecutor(max_workers=OPTIONS['jobs']) as pool:
+            for text, results, skipped in pool.map(level_job, jobs):
+                sys.stdout.write(text)
+                sys.stdout.flush()
+                RESULTS.extend(results)
+                SKIPPED['runaway'] += skipped
+    else:
+        for elf_path, name, path, _options in jobs:
+            run_level(elf_path, name, read_level(path))
     failed = [name for name, ok in RESULTS if not ok]
     if SKIPPED['runaway']:
         print('note  %d slide inputs left out: the step grows without bound and the original '

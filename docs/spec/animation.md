@@ -182,7 +182,12 @@ width (1…16 bits).
      (file order w, x, y, z); `rtick = keyTick`.
 
 There is no end-of-stream test: decoding stops because the next record's tick is beyond
-`T` (the exporter ends every stream with a delta of 255).
+`T` (the exporter ends every stream with a delta of 255). In a clip whose last key lies
+255 ticks or more before the track time that closing delta is taken for a record, and the
+original goes on to decode the padding and then whatever follows the clip in memory
+(**O**; `docs/formats/anim-audio.md` 2.3 names the two disc clips this can happen to). A
+reimplementation should stop at the closing delta; the model raises `HostFault` when a
+record would start beyond the end of the file.
 
 The value of a joint at the track time *t* — the float, not *T* — is formed by each reader:
 
@@ -653,26 +658,36 @@ divide-rounding switches, with the model switched the same way
 operations in the same order; it does not show what a console does in the last bit.
 
 <!-- results:begin -->
-Result of `python3 tools/difftest_anim.py <clips> --quick` (seed 20973) on the 4,510 lump
-clips of the US v2.00 disc: **61 properties, 0 failed**; no mismatch was left unresolved.
-The "cases" of the sequence properties are operations, each followed by the comparisons
-described.
+Two runs of the script as published (seed 20973) on the 4,510 lump clips of the US v2.00
+disc:
 
-| Property | What is compared, bit for bit | Cases, default FPU model | Cases, five other FPU settings | Result |
-|---|---|---|---|---|
-| decoder slot | `animtrack_decode` at 15 track times per clip (forward steps, seeks back, fractions, negative, past the end; plain, LOOP, ROOT and YAW tracks): the whole slot — key ticks, bases and velocities of all 64 joint records, cursor, yaw, list links — and the state | 450 (30 clips) | 225 | PASS |
-| joint values | position and quaternion of every joint at the track time, as `anim_buildPose` forms them (read from its work area at 0x16f0c0); the resulting one-track pose buffer and a joint matrix | 72 (4,020 joint samples, 12 clips) | 60 | PASS |
-| advance | sequences of 220 operations on 1–3 states that share the pools, six unrelated clips each: every function of section 4 and `anim_advance` with changing speeds. After each operation: returned event bits, root x/y patterns, yaw, every byte of every state (stale cells included), the decoder slots of its tracks, the sound ranges; every 40 operations all 165 slots, both lists, the cue table and the seed | 1,320 (6 sequences) | 2,200 | PASS |
-| advance, sounds | the same on clips of one lump that carry sound tables | 880 (4 sequences) | 2,200 | PASS |
-| Creature_stepAnim | 200-operation sequences stepped through `Creature_stepAnim`: slow amounts 0, 1…60 and above, random facing and scale, active and inactive: events, world delta, yaw, state | 800 (4 sequences) | 2,000 | PASS |
-| Player_animStep | the same through `Player_animStep` (no YAW tracks) | 800 (4 sequences) | 2,000 | PASS |
-| pose | 160-operation sequences on clips of one skeleton with queries and draws mixed in: the blended local transforms (work area at 0x16f53c), pose buffers, `anim_getJointMatrix`, `model_getAttachPoint`, `model_getSamplePoint`, `anim_emitPose`'s choice of buffer, owners, stamps and list order of all buffers, the VU0 matrix stack | 640 (4 sequences) | 1,600 | PASS |
-| pose, 6 slots | the same with the decoder list cut to 6 slots: slots are taken from other tracks, pinned slots are skipped | 640 (4 sequences) | 1,600 | PASS |
-| pose, 5 buffers | the same with the pose list cut to 5 buffers: the fallback buffer and the default pose are used | 640 (4 sequences) | 1,600 | PASS |
-| pose, synthetic clips | the same on made-up clips: joint masks, 64 joints, deep chains, several roots, 16-bit fields, non-unit quaternions | 640 (4 sequences) | 1,600 | PASS |
-| stale sound cursor | the hazard of section 6: the original reads tick words outside the event table, the model raises `HostFault` | 1 | — | PASS |
+- `--quick` (a tenth of the samples): **61 properties, 0 failed** - eleven under the
+  default FPU model, ten under each of the five other settings;
+- default sizes, default FPU model only: **all 11 properties PASS**. The first nine come
+  from one run that was stopped after them (the machine was shared with other work); it
+  predates the test's guard against decoding past the closing delta, which does not
+  change the cases those nine run (the `--quick` run lists identical case counts before
+  and after). The last two were run with `-k`, which repeats a property exactly. The five
+  other FPU settings were not run at default size.
 
-What the random sequences reached (all FPU settings together):
+No mismatch was left unresolved. The "cases" of the sequence properties are operations,
+each followed by the comparisons described.
+
+| Property | What is compared, bit for bit | Default sizes, default FPU model | `--quick`, default FPU model | `--quick`, five other FPU settings | Result |
+|---|---|---|---|---|---|
+| decoder slot | `animtrack_decode` at 15 track times per clip (forward steps, seeks back, fractions, negative, past the end; plain, LOOP, ROOT and YAW tracks): the whole slot — key ticks, bases and velocities of all 64 joint records, cursor, yaw, list links — and the state | 4,500 (300 clips) | 450 (30 clips) | 225 | PASS |
+| joint values | position and quaternion of every joint at the track time, as `anim_buildPose` forms them (read from its work area at 0x16f0c0); the resulting one-track pose buffer and a joint matrix | 720 (36,912 joint samples, 120 clips) | 72 (4,020 joint samples, 12 clips) | 60 | PASS |
+| advance | sequences of 220 operations on 1–3 states that share the pools, six unrelated clips each: every function of section 4 and `anim_advance` with changing speeds. After each operation: returned event bits, root x/y patterns, yaw, every byte of every state (stale cells included), the decoder slots of its tracks, the sound ranges; every 40 operations all 165 slots, both lists, the cue table and the seed | 13,200 (60 sequences) | 1,320 (6 sequences) | 2,200 | PASS |
+| advance, sounds | the same on clips of one lump that carry sound tables | 6,600 (30 sequences) | 880 (4 sequences) | 2,200 | PASS |
+| Creature_stepAnim | 200-operation sequences stepped through `Creature_stepAnim`: slow amounts 0, 1…60 and above, random facing and scale, active and inactive: events, world delta, yaw, state | 4,800 (24 sequences) | 800 (4 sequences) | 2,000 | PASS |
+| Player_animStep | the same through `Player_animStep` (no YAW tracks) | 3,200 (16 sequences) | 800 (4 sequences) | 2,000 | PASS |
+| pose | 160-operation sequences on clips of one skeleton with queries and draws mixed in: the blended local transforms (work area at 0x16f53c), pose buffers, `anim_getJointMatrix`, `model_getAttachPoint`, `model_getSamplePoint`, `anim_emitPose`'s choice of buffer, owners, stamps and list order of all buffers, the VU0 matrix stack | 6,400 (40 sequences) | 640 (4 sequences) | 1,600 | PASS |
+| pose, 6 slots | the same with the decoder list cut to 6 slots: slots are taken from other tracks, pinned slots are skipped | 3,200 (20 sequences) | 640 (4 sequences) | 1,600 | PASS |
+| pose, 5 buffers | the same with the pose list cut to 5 buffers: the fallback buffer and the default pose are used | 3,200 (20 sequences) | 640 (4 sequences) | 1,600 | PASS |
+| pose, synthetic clips | the same on made-up clips: joint masks, 64 joints, deep chains, several roots, 16-bit fields, non-unit quaternions | 6,400 (40 sequences) | 640 (4 sequences) | 1,600 | PASS |
+| stale sound cursor | the hazard of section 6: the original reads tick words outside the event table, the model raises `HostFault` | 1 | 1 | — | PASS |
+
+What the random sequences of the `--quick` run reached (all FPU settings together):
 
 | Reached | Times |
 |---|---|
@@ -734,6 +749,9 @@ Not covered, and why:
   Mixing clips of different joint counts in one pose is not tested (the model raises
   `HostFault` when the top clip has no skeleton entry for a joint).
 - Event slots are filled with random times and masks, not with the game's own tables.
+- **Decoding past the closing delta** (section 3): what the original then reads depends on
+  the memory after the clip. Such decodes (the two disc clips, at track times of 255 and
+  more) are left out; the same clips are compared at earlier times.
 - States with all decoder slots pinned, `anim_pushChained` on an empty state or onto a
   cell whose old sound cursor lies beyond the new clip's event table, root motion without
   an output pointer, clips of length 0 that loop: the original does not return, writes

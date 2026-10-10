@@ -30,18 +30,20 @@ What is outside the model
     32-bit, floats as patterns, a vector as a tuple of three patterns, in the order
     "integer registers, then float registers".  The model records every callback it makes.
 
-    tools/ref_combat.py models Player_recalcDamage and the damage function and
-    tools/ref_core.py the math, the generators and the handle lists; this module imports
-    ref_core for arithmetic and leaves the combat functions as callbacks so that a caller
-    can plug ref_combat in (see combat_callbacks()).
+    tools/ref_core.py models the math and the generators: this module imports it for
+    every float operation, the angle functions, powf and the software doubles.
+    tools/ref_combat.py models Player_recalcDamage and the damage function on its own
+    record classes; here they stay callbacks ('Player_recalcDamage', and the damage inside
+    'Player_meleeHit' and 'world_damageInRadius').  The two are not wired together.
 
 Modelled helpers (run for real by the differential test)
     Player_idleFidget 0x1bc2f8, player_canBlock 0x1bee48, Player_tryBlockMove 0x1bf150,
     Player_hasAnim 0x1bf230, player_getSkillRank 0x1bf330, player_getPassiveLevel 0x1bed48,
     Player_updateCast 0x1a3f70, Player_regenHealth 0x1b3b90, Player_regenMana 0x1b3900,
     Player_tickEnchantTimers 0x1bc560, Player_weaponSwapInput 0x1bb718,
-    Player_castSkill 0x1a42b8, GameObject_rand 0x1509d0.
-    Any of them can be turned back into a callback by naming it in Tick(..., external=...).
+    Player_castSkill 0x1a42b8, Player_usePotion 0x1b9cb8, GameObject_rand 0x1509d0.
+    Any of them except the last can be turned back into a callback by naming it in
+    Tick(..., external=...).
 
 Result
     Tick(mem, player, callbacks).run() returns an Outcome: .writes (every store, in order,
@@ -113,7 +115,11 @@ G_TIMED_MODIFIERS = 0x537C08            # s32 list of modifier ids, -1 ends it
 G_PARTICLE_BUILT_A, G_PARTICLE_DEF_A = 0x4EF3F4, 0x864EB0
 G_PARTICLE_BUILT_B, G_PARTICLE_DEF_B = 0x4EF3F8, 0x864F00
 G_MODEL_TABLE = 0x3E9CE0                # rows of 16 bytes; +8 and +0xc are read here
-A_DOUBLE_DEATH_FRAME = 0x5362A0         # a double constant the dead state compares with
+A_DOUBLE_DEATH_FRAME = 0x5362A0         # a double constant (180.0) the dead state compares with
+G_LOCAL_MENU_OPEN = 0x41B69D            # s8 (machine) K2
+G_ITEM_LIST_CELLS = 0x4EBBB0            # pointer (machine) K2: this machine's inventory screen list
+G_POTION_NAMES = (0x4EF478, 0x4EF4A0)   # nine name pointers each: health, mana; smallest first
+G_POTION_COUNTERS = (0x4F85CA, 0x4F85C8)
 
 # String constants the code passes around.  Only their addresses are named here.
 S_NEWSTYLE = 0x535E30                   # marks an ability record implemented by a Skill object
@@ -167,8 +173,8 @@ EXTERNALS = {
     'Player_meleeHit': Ext(0x1B6A98, 'ppii', 1, 'n', '(player, target, flag, 0; scale 0)'),
     'Player_recalcDamage': Ext(0x1B7158, 'ppi', 0, 'n', '(player, weapon item, 1)'),
     'world_damageInRadius': Ext(0x161270, 'pviiii', 2, 'n'),
-    'world_collectObjectsInBox': Ext(0x14A928, 'vvni', 0, 'i', '(min, max, out array, capacity)'),
-    'world_collectObjectsInArc': Ext(0x1614F0, 'ivihi', 2, 'n'),
+    'world_collectObjectsInBox': Ext(0x14A928, 'vvni', 0, 'n', '(min, max, out array, capacity) -> objects'),
+    'world_collectObjectsInArc': Ext(0x1614F0, 'vihi', 3, 'n', '(pos, facing, out list, 0; radius, arc, 0.0) -> objects'),
     'item_getModifiedField1a': Ext(0x103F88, 'p', 0, 'i'),
     'item_getDamageRange': Ext(0x104100, 'p--i', 0, 'n'),
     'item_getResourceIndex': Ext(0x1083F8, 'p', 0, 'i'),
@@ -193,8 +199,8 @@ EXTERNALS = {
     'Root_ctor': Ext(0x293704, 'pvipi', 1, 'n'),
     'UnholyAura_ctor': Ext(0x29486C, 'pvpi', 1, 'n'),
     'GroundPoundEffect_ctor': Ext(0x2C74AC, 'pvipip', 0, 'n'),
-    'particleDef_ctor': Ext(0x18F3D0, 'ipiiiiii', 2, 'n'),
-    'particle_spawn': Ext(0x18F3F8, 'ipvv', 0, 'n'),
+    'particleDef_ctor': Ext(0x18F3D0, 'piiiiiii', 3, 'n', '(def, seven integers ...; three floats)'),
+    'particle_spawn': Ext(0x18F3F8, 'pvv', 1, 'n', '(def, position, velocity; 0.0)'),
     'fx_spawn': Ext(0x1EF270, 'iv', 0, 'n', '(effect id, position)'),
     'decal_add': Ext(0x19F110, 'viii', 1, 'n'),
     'water_disturb': Ext(0x189514, 'pv', 2, 'i'),
@@ -202,8 +208,8 @@ EXTERNALS = {
     'handle_clear': Ext(0x1A1698, 'p', 0, 'n', '(list head)'),
     'handle_link': Ext(0x1A1738, 'ppp', 0, 'n', '(list head, back list, object)'),
     'handle_removeNode': Ext(0x1A1868, 'p', 0, 'i'),
-    'iter_begin': Ext(0x1A1A48, '-pi', 0, 'i', '(iterator, list head, mask) -> first node'),
-    'iter_next': Ext(0x1A1B38, '-', 0, 'i', '(iterator) -> next node'),
+    'iter_begin': Ext(0x1A1A48, '-pi', 0, 'i', '(iterator, list head, mask); the model gets the first node'),
+    'iter_next': Ext(0x1A1B38, '-', 0, 'i', '(iterator); the model gets the next node'),
     'iter_end': Ext(0x1A1AE8, '-i', 0, 'n'),
     # --- lights, sound, HUD, pad
     'light_relink': Ext(0x14A528, 'p', 0, 'n'),
@@ -224,6 +230,12 @@ EXTERNALS = {
     'inventory_removeItem': Ext(0x1C1CB0, 'iiii', 0, 'n'),
     'inventory_equipItem': Ext(0x1C27C0, 'ipi', 0, 'n'),
     'player_recalcLoad': Ext(0x1BEC10, 'i', 0, 'n'),
+    'player_countPotions': Ext(0x1BA5F8, 'ii', 0, 'i', '(slot, kind) -> potions of that kind in bag 2'),
+    'player_itemWeight': Ext(0x1B6338, 'ip', 0, 'f', '(slot, item) -> weight'),
+    'invmsg_sendDrop': Ext(0x1C59D0, 'iiiiiii', 0, 'n', 'queues inventory message 0'),
+    'vars_get': Ext(0x1ED778, 'p', 0, 'i', '(name) quest variable'),
+    'vars_set': Ext(0x1ED854, 'pi', 0, 'n'),
+    'hud_showPlayerNotice': Ext(0x1D9954, 'ippi', 0, 'n'),
     'script_runByName': Ext(0x1ED694, 'p', 0, 'n'),
     # --- state of the machine and of the session
     'net_getCamFlag': Ext(0x13E110, 'i', 0, 'i', '(slot): carried in the input record'),
@@ -234,6 +246,19 @@ EXTERNALS = {
     'dialog_isOpen': Ext(0x22FBC0, '', 0, 'i'),
     'dialog_22fbd0': Ext(0x22FBD0, 'p', 0, 'i', '(position) -> facing to turn to while a dialog is open'),
     'task_isRunning': Ext(0x19E5E8, 'p', 0, 'i', '(name)'),
+    # --- the modelled helpers, for callers who name them in Tick(external=...)
+    'Player_idleFidget': Ext(0x1BC2F8, 'pp', 0, 'n', '(player, pad)'),
+    'player_canBlock': Ext(0x1BEE48, 'ii', 0, 'i', '(slot, state)'),
+    'Player_tryBlockMove': Ext(0x1BF150, 'pp', 0, 'n', '(player, pad)'),
+    'Player_hasAnim': Ext(0x1BF230, 'pp', 0, 'i', '(player, entry name)'),
+    'player_getSkillRank': Ext(0x1BF330, 'ii', 0, 'i', '(slot, skill id)'),
+    'player_getPassiveLevel': Ext(0x1BED48, 'ii', 0, 'i', '(slot, mask)'),
+    'Player_updateCast': Ext(0x1A3F70, 'pp', 0, 'n', '(player, pad)'),
+    'Player_regenHealth': Ext(0x1B3B90, 'p', 0, 'n'),
+    'Player_regenMana': Ext(0x1B3900, 'p', 0, 'n'),
+    'Player_tickEnchantTimers': Ext(0x1BC560, 'p', 0, 'n'),
+    'Player_weaponSwapInput': Ext(0x1BB718, 'ppi', 0, 'i', '(player, pad, force)'),
+    'Player_castSkill': Ext(0x1A42B8, 'pp', 0, 'n', '(player, ability record)'),
     # --- virtual calls: (this, ...)
     'Player.v17': Ext(0, 'pv', 0, 'n', 'set aim point'),
     'Player.v20': Ext(0, 'pp', 0, 'i', 'isEnemy(other)'),
@@ -250,6 +275,32 @@ EXTERNALS = {
 }
 
 
+def shape_result(name, args, ret=0, fret=0, outs=None):
+    """What a callback hands back, built from its EXTERNALS row: the integer or float
+    result, with every output the callee fills appended (a vector as three patterns, an
+    object list as a Python list, a float as a pattern).  With outs=None everything is
+    zero - the answer of a callback nobody supplied."""
+    ext = EXTERNALS[name]
+    values, position, given = [], 0, list(outs) if outs is not None else None
+    for kind in ext.ints:
+        if kind in 'oOnhq':
+            if given is not None:
+                value = given.pop(0)
+            else:
+                value = (0, 0, 0) if kind in 'oO' else ([] if kind in 'nh' else 0)
+            if kind != 'O' or args[position]:
+                values.append(value)
+        if kind in 'ipvVsO':
+            position += 1
+    if ext.ret == 's':
+        return ('buf', given[0] if given else b'')
+    head = [] if ext.ret == 'n' else [fret if ext.ret == 'f' else ret]
+    result = head + values
+    if not result:
+        return None
+    return result[0] if len(result) == 1 else tuple(result)
+
+
 class Memory:
     """Sparse little-endian memory.  Unwritten bytes read from `under` (an object with
     load(addr, size)) or as zero.  Every store is appended to .log."""
@@ -258,10 +309,12 @@ class Memory:
         self.bytes, self.under, self.log = {}, under, []
 
     def load(self, addr, size):
-        value = 0
         get = self.bytes.get
-        for i in range(size):
-            b = get(addr + i)
+        parts = [get(addr + i) for i in range(size)]
+        if parts.count(None) == size:
+            return self.under.load(addr, size) if self.under is not None else 0
+        value = 0
+        for i, b in enumerate(parts):
             if b is None:
                 b = self.under.load(addr + i, 1) if self.under is not None else 0
             value |= b << (8 * i)
@@ -305,7 +358,7 @@ class Tick:
     HELPERS = ('Player_idleFidget', 'player_canBlock', 'Player_tryBlockMove', 'Player_hasAnim',
                'player_getSkillRank', 'player_getPassiveLevel', 'Player_updateCast',
                'Player_regenHealth', 'Player_regenMana', 'Player_tickEnchantTimers',
-               'Player_weaponSwapInput', 'Player_castSkill')
+               'Player_weaponSwapInput', 'Player_castSkill', 'Player_usePotion')
 
     def __init__(self, mem, player, callbacks=None, external=()):
         self.mem, self.P = mem, player
@@ -378,13 +431,7 @@ class Tick:
         function = self.cb.get(name)
         if function is not None:
             return function(*args)
-        kind = EXTERNALS[name.split(':')[0]].ret if name.split(':')[0] in EXTERNALS else 'i'
-        ints = EXTERNALS[name.split(':')[0]].ints if name.split(':')[0] in EXTERNALS else ''
-        zero3 = (0, 0, 0)
-        outs = [zero3 for k in ints if k in 'oO'] + [[] for k in ints if k in 'nh'] + [0 for k in ints if k == 'q']
-        if outs:
-            return outs[0] if len(outs) == 1 and kind == 'n' else tuple(([0] if kind != 'n' else []) + outs)
-        return 0
+        return shape_result(name, args)
 
     def vcall(self, cls, obj, table_offset, slot, *args):
         """A virtual call: table pointer at obj + table_offset, eight bytes per slot (a
@@ -415,8 +462,6 @@ class Tick:
     def obj_rand(self, obj=None):
         """GameObject_rand 0x1509d0: the object's own generator at +0x44."""
         obj = self.P if obj is None else obj
-        if 'GameObject_rand' in self.external:
-            return self.call('GameObject_rand', obj)
         seed = (self.u32(obj + 0x44) * 0x19660D + 0x3C6EF35F) & M32
         self.w32(obj + 0x44, seed)
         return seed >> 16
@@ -542,7 +587,7 @@ class Tick:
         # idle voice (0x1a53bc-0x1a54c0): one shared draw when it fires
         R = G_PLAYERS + s32_(P + 0x3C8) * REC_SIZE
         hp_rec = R                                    # $23: fixed for the rest of the tick
-        self.R0 = hp_rec
+        self.R0 = hp_rec                              # the states reach it through register $23
         if C.lt(ZERO, u32(hp_rec + 0xAC)):
             if self.call('net_getCamFlag', self.slot) or self.s8(G_CUTSCENE_ACTIVE) \
                     or self.call('game_isFrozen') or u32(G_PADS + self.slot * PAD_SIZE + 8):
@@ -748,7 +793,88 @@ class Tick:
             return
 
     def use_potion(self, kind):
-        return self.call('Player_usePotion', self.P, kind, 0, 0, M32)
+        return self.helper('Player_usePotion', self.use_potion_real, self.P, kind, 0, 0, M32)
+
+    def use_potion_real(self, P, kind, list_bag, list_cell, list_panel):
+        """Player_usePotion 0x1b9cb8, kinds 0 (health) and 1 (mana) as Player_run calls it.
+        Real players only.  Picks the potion size from what is missing, adds the amount to
+        the "still to deliver" field, and takes one potion out of bag 2 - directly, or, on
+        the owner's machine with its inventory screen open, by an inventory message (K2)."""
+        u32, w32 = self.u32, self.w32
+        if u32(P + 0xC) & 0x20000:
+            return
+        R = G_PLAYERS + self.s32(P + 0x3C8) * REC_SIZE
+        if C.le(u32(R + 0xAC), ZERO):
+            return
+        rate_hp = C.fmin(C.mul(u32(R + 0xB0), 0x3B088888), 0x3EFFFFFF)
+        rate_mana = C.fmin(C.mul(u32(R + 0xC4), 0x3B088888), 0x3EFFFFFF)
+        have = (C.add(u32(R + 0xAC), u32(R + 0xB4)), C.add(u32(R + 0xC0), u32(R + 0xC8)))[kind]
+        w32(R + 0xB8, rate_hp)
+        w32(R + 0xBC, rate_mana)
+        top_at, now_at, pending_at = ((0xB0, 0xAC, 0xB4), (0xC4, 0xC0, 0xC8))[kind]
+        if C.le(u32(R + top_at), have):
+            return
+        found = [-1] * 9
+        for size in range(9):
+            i = 0
+            while i < self.s32(R + 0x3740):
+                name = u32(u32(R + 0x2540 + i * 0x48))
+                if self.strcmp(name, u32(G_POTION_NAMES[kind] + 4 * size)) == 0:
+                    found[size] = i
+                i += 1
+        want = C.to_int(C.add(C.sub(u32(R + top_at), have), ONE)) // 60
+        if want > 8:
+            want = 8
+        if found[want] < 0:
+            if found[8] >= 0:
+                want = 8
+            else:
+                want = -1
+                for size in range(7, -1, -1):
+                    if found[size] >= 0:
+                        want = size
+                        break
+        if want == -1:
+            self.hud_notice((1, 2)[kind], 0x78)
+            return
+        pending = C.add(u32(R + pending_at), C.mul(C.from_int(want + 1), F_60))
+        now, top = u32(R + now_at), u32(R + top_at)
+        w32(R + pending_at, pending)
+        if C.lt(top, C.add(now, pending)):
+            w32(R + pending_at, C.sub(top, now))
+        slot = self.s32(P + 0x3C8)
+        if self.call('net_isLocalSlot', slot):
+            seq = self.call('res_find', S_SOUND_LUMP, (0x537AA0, 0x537B60)[kind])
+            self.call('sound_playOnObject', seq, u32(G_PLAYERS + self.s32(P + 0x3C8) * REC_SIZE + 0x43D8), ONE)
+        # K2: only the owner's machine, with its inventory screen open and its list loaded,
+        # asks for the removal by message; every other machine removes the potion now
+        if self.s8(G_LOCAL_MENU_OPEN) != 0 and self.call('net_isLocalSlot', self.s32(P + 0x3C8)) \
+                and u32(G_ITEM_LIST_CELLS) != 0:
+            slot = self.s32(P + 0x3C8)
+            cell = (slot * 0x23988 + u32(G_ITEM_LIST_CELLS) + 0x17BB0 + list_bag * 0x1518 + list_cell * 0x48) & M32
+            self.call('invmsg_sendDrop', slot, self.s16(cell + 0x22), self.s8(u32(cell) + 0x1D),
+                      list_bag, list_cell, list_panel, 2)
+        else:
+            index = found[want]
+            item = R + 0x2540 + index * 0x48
+            left = (self.u16(item + 4) - 1) & 0xFFFF
+            self.w16(item + 4, left)
+            if left == 0:
+                self.call('inventory_removeItem', self.s32(P + 0x3C8), index, 2, 0)
+        count = self.call('player_countPotions', self.s32(P + 0x3C8), kind)
+        if ((count - 1) & M32) < 5:
+            self.hud_notice((4, 5)[kind], 0xF0)
+        slot = self.s32(P + 0x3C8)
+        Rn = G_PLAYERS + slot * REC_SIZE
+        w32(Rn + 0x120, 0)                              # carried load, summed again
+        for bag in range(3):
+            i = 0
+            while i < self.s32(Rn + 0x1330 + bag * 0x1208):
+                weight = self.call('player_itemWeight', slot, Rn + 0x130 + bag * 0x1208 + i * 0x48)
+                w32(Rn + 0x120, C.add(u32(Rn + 0x120), weight))
+                i += 1
+        counter = G_POTION_COUNTERS[kind]
+        self.w16(counter, self.u16(counter) + 1)
 
     def tail(self):
         """0x1ac460-0x1ac7a4: aura light, Player_updateCast, record countdowns."""
@@ -1167,8 +1293,8 @@ class Tick:
             diff = C.dsub(0, diff)
         if C.dcmp(diff, 0x404D000000000000) > 0:
             z = C.add(base, 0x42680000)
-        found = self.call('world_collectObjectsInArc', 0, self.vec(P + 0x10), self.s16(P + 0x38), 0,
-                          0x43AA0000, 0x41A00000)
+        found = self.call('world_collectObjectsInArc', self.vec(P + 0x10), self.s16(P + 0x38), 0,
+                          0x43AA0000, 0x41A00000, ZERO)
         target = 0
         for obj in found:
             if self.vcall('Player', P, 0x48, 20, obj):
@@ -1287,7 +1413,7 @@ class Tick:
                 size = self.draw()
                 x = C.mul(C.add(a[0], b[0]), HALF)
                 y = C.mul(C.add(a[1], b[1]), HALF)
-                self.call('decal_add', (x, y, z), s32(angle), 0, 1, C.from_int(size % 10 + 0x19))
+                self.call('decal_add', (x, y, z), s16(angle), 0, 1, C.from_int(size % 10 + 0x19))
         if self.s16(G_DEAD_COUNTDOWN + self.slot * 2) > 1:
             self.anim_step()
 
@@ -1402,7 +1528,7 @@ class Tick:
             block = self.call('pool_new', 0x9C)
             if block:
                 rank = self.helper('player_getSkillRank', self.skill_rank, self.slot, 0x26)
-                self.call('GroundPoundEffect_ctor', block, self.vec(P + 0x10), self.u16(P + 0x38),
+                self.call('GroundPoundEffect_ctor', block, self.vec(P + 0x10), self.s16(P + 0x38),
                           self.u32(G_SKILL_TABLE + 4 * 0x26), rank, P)
         if not (self.u16(P + 0x11A) & 8):
             self.w32(P + 0x58C, 2)
@@ -1453,7 +1579,6 @@ class Tick:
     def state_block(self):
         P, pad = self.P, self.pad
         R0 = self.R0
-        table = self.u32(P + 0x24)
         row = self.s8(self.R + 0x4A86) * 0x68
         restart = False
         if not self.helper('Player_hasAnim', self.has_anim, P, self.u32(self.u32(P + 0x24) + row + 0xA0)):
@@ -1478,17 +1603,16 @@ class Tick:
                 self.w32(P + 0x58C, 8)
                 slot = self.slot
             self.w32(R0 + 0x4A5C, C.sub(self.u32(R0 + 0x4A5C), F_1_60))
-        del table
         if s32(self.helper('player_getSkillRank', self.skill_rank, slot, 0x3B)) > 0:
             a, b = self.hands_midpoint(P, False)
             mid = tuple(C.mul(C.add(a[k], b[k]), HALF) for k in range(3))
             v = self.unit_sphere_shared()
             velocity = tuple(C.mul(x, 0x41200000) for x in v)
             if self.u32(G_PARTICLE_BUILT_A) == 0:
-                self.call('particleDef_ctor', 0, G_PARTICLE_DEF_A, 0xF3, 0x11, 0xF0, 0xEA, 0xE5, 0x1B,
-                          0x41B5BE76, 0x4119DB22)
+                self.call('particleDef_ctor', G_PARTICLE_DEF_A, 0xF3, 0x11, 0xF0, 0xEA, 0xE5, 0x1B, 0xDC,
+                          0x41B5BE76, 0x4119DB22, ZERO)
                 self.w32(G_PARTICLE_BUILT_A, 1)
-            self.call('particle_spawn', 0, G_PARTICLE_DEF_A, mid, velocity)
+            self.call('particle_spawn', G_PARTICLE_DEF_A, mid, velocity, ZERO)
         self.move(1)
         self.helper('Player_tryBlockMove', self.try_block_move, P, pad)
 
@@ -2090,9 +2214,6 @@ class Tick:
         return u32(G_SIM_FRAME)
 
     # ---- state 5: casting (0x1ab4f8) ---------------------------------------------------------
-    def end_cast_glow(self, rate=0xBD4CCCCC):
-        self.w32(G_AURA_DIR + self.slot * 4, M32)
-
     def state_cast(self):
         P, pad, u32, w32 = self.P, self.pad, self.u32, self.w32
         ability = u32(P + 0x488)
@@ -2220,7 +2341,7 @@ class Tick:
                 if sid == 0x19:
                     block = self.call('pool_new', 0xC0)
                     if block:
-                        self.call('Root_ctor', block, mid, self.u16(P + 0x38), P, 0, 0x41F00000)
+                        self.call('Root_ctor', block, mid, self.s16(P + 0x38), P, 0, 0x41F00000)
                 elif sid == 0x15:
                     self.old_fire_nova(ability)
                 elif sid == 0x1A:
@@ -2243,15 +2364,15 @@ class Tick:
         """Older ability id 0x15 (0x1abf70-0x1ac408): a ring of particles and area damage."""
         P, u32 = self.P, self.u32
         if u32(G_PARTICLE_BUILT_B) == 0:
-            self.call('particleDef_ctor', 0, G_PARTICLE_DEF_B, 0x6E, 0x6B, 0x9A, 0x9F, 0x6F, 0x6B,
-                      0x4222978D, 0x42A19604)
+            self.call('particleDef_ctor', G_PARTICLE_DEF_B, 0x6E, 0x6B, 0x9A, 0x9F, 0x6F, 0x6B, 0xA1,
+                      0x4222978D, 0x42A19604, ZERO)
             self.w32(G_PARTICLE_BUILT_B, 1)
         angle = 0
         while True:
             vx = C.mul(C.cos16(angle), 0x42C80000)
             vy = C.mul(C.sin16(angle), 0x42C80000)
             pos = (C.add(u32(P + 0x10), ZERO), u32(P + 0x14), C.add(u32(P + 0x18), 0x42100000))
-            self.call('particle_spawn', 0, G_PARTICLE_DEF_B, pos, (vx, vy, 0))
+            self.call('particle_spawn', G_PARTICLE_DEF_B, pos, (vx, vy, 0), ZERO)
             angle += 300
             if angle >= 0x10000:
                 break
@@ -2385,8 +2506,8 @@ class Tick:
                           P + 0x114, 0, 0, ONE)
         self.aim_at_target(None)
         spread = self.s16(P + 0x38) + self.draw() % 500 - 0xFA
-        found = self.call('world_collectObjectsInArc', 0, self.vec(P + 0x10), self.s16(P + 0x38), 0,
-                          0x43AA0000, 0x41A00000)
+        found = self.call('world_collectObjectsInArc', self.vec(P + 0x10), self.s16(P + 0x38), 0,
+                          0x43AA0000, 0x41A00000, ZERO)
         target = 0
         for obj in found:
             if self.vcall('Player', P, 0x48, 20, obj):

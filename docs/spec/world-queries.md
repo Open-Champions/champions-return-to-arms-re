@@ -250,9 +250,11 @@ Confirmed by execution, and easy to get wrong:
   Lower samples never block.
 - **Negative times.** A circle that already overlaps a blocking sample gets `t < 0` (it is
   pushed back along its direction). See the hazard in section 7.
-- **A zero-length step** (`S.x = S.y = 0`): `len` is 0, `inv` is 0x7fffffff, `dir` is (0, 0).
-  The result is 1.0 unless a blocking sample is within `r4` behind or at the centre, in
-  which case `best` is negative and `best × inv` is −0x7fffffff.
+- **A zero-length step** (`S.x = S.y = 0`): `len` is 0, `inv` is 0x7fffffff, `dir` is (0, 0),
+  so `perp` and `along` are 0 for every sample. The result is 1.0 unless some blocking
+  sample lies in the scanned square around the centre (`reach` samples each way and one
+  more on the high side — inside the circle or not); then `best` is −`r4` and `best × inv`
+  is −0x7fffffff.
 - An element is skipped by height only when its flag 4 is clear; flag 4 does not otherwise
   change anything. An element with flagged samples and flag 4 clear (none in the shipped
   levels) is skipped when it is low, flags or not.
@@ -274,18 +276,30 @@ pos = P;  normalOut = N if wanted;  return hit
 ```
 
 `N` keeps the value of the last blocked sweep. When no sweep was blocked the function copies
-an uninitialised stack slot to `normalOut` [O]; callers only read it when `hit` is set.
+an uninitialised stack slot to `normalOut` [O]. `Creature_moveBy` uses the normal only when
+the slide reported a hit (`docs/spec/movement-camera.md` 5.6); the other callers were not
+checked for this.
 
 **Hazard [X for the arithmetic, I for the consequence].** `remain − t` grows when `t` is
 negative, and the next step is `D × remain`. A mover that starts inside blocking samples can
 therefore take steps many times longer than `delta` (156 times in one generated case). With
-a zero-length horizontal step that overlaps a blocking sample, `t` is −0x7fffffff, `remain`
-becomes 0x7fffffff and the following step is of the order of 10^35 units: the sweep then
-walks the whole 32-bit range of sample indices, one comparison at a time, which on a console
-is a hang. `obj_moveWithCollision` reaches the slide with a zero horizontal step whenever a
-velocity is purely vertical (its threshold uses all three components); `Creature_moveBy`
-cannot (two components). Whether a vertical-only velocity ever reaches a mover standing
-inside flagged samples is [U].
+a zero-length horizontal step and a blocking sample in the scanned square (section 6 — for a
+radius of 12 that is any flagged or 12-high sample within 12 to 16 units, i.e. any wall the
+mover stands next to), `t` is −0x7fffffff, `remain` becomes 0x7fffffff, the delta picks up
+`N × 0.001` and the following step is of the order of 10^35 units: the sweep then walks the
+whole 32-bit range of sample indices in every element it collected, one comparison at a
+time, which on a console is a hang. (The model, whose loops are cut down to the field,
+finishes and puts the mover some 10^36 units away.)
+
+`obj_moveWithCollision` reaches this with a velocity that is purely vertical and above
+about 1.9 units/s (its threshold uses all three components); `Creature_moveBy` cannot (two
+components). Executed once in the original: a player-flagged stand-in on the floor of a real
+level, 12 units in radius, with a flag-1 sample within 14 units and velocity (0, 0, −3) —
+the second call of `terrain_sweepCircle` was asked for a step of (−4.8 × 10^35,
+4.8 × 10^35, −3.4 × 10^37) and the run was stopped there. Since the shipped game does not hang beside walls, its callers evidently never
+pass such a velocity — vertical motion goes through the object's own vertical speed
+(section 8.1) [I]. A rebuild must either keep that property or guard the case; nothing in
+the function does.
 
 ## 8. Movers
 

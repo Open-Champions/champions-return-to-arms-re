@@ -1,0 +1,90 @@
+# From power-on to a controllable character in the first level, offline, one player.
+#
+# Run it with a data directory that has no save data yet (the script answers the
+# "no data on the memory card, initialise?" question that a fresh card produces):
+#
+#   python3 -I -B tools/rig/rig.py --data local/rig-out/fresh --screen-text \
+#       --script tools/rig/examples/boot-to-hub.rig
+#
+# Button names are the controller's; what each press selects is noted in my own words.
+# Waits that depend on loading use conditions on named addresses, not frame counts.
+
+# memory-card screens (boot card check, a modal loop before the front end)
+at 300
+tap cross 4            # slot 1
+wait 300               # card is checked; the "initialise?" question appears
+tap cross 4            # yes
+wait 200               # save data is created
+tap cross 4            # acknowledge
+wait 60
+
+# the publisher logo and the intro film follow; a button press skips each. Tapping until
+# the front end is running gets past both, and tapping on until the menu state changes
+# makes the first menu choice as soon as the main menu accepts input.
+tapuntil cross 40 g_inFrontend:u8 == 1 timeout 4000
+until g_levelName:str8 == intro timeout 3000
+
+# front end: g_frontendState 0 main menu, 1 game type, 2 players, 4 mode, 3 difficulty
+tapuntil cross 40 g_frontendState:u32 == 1 timeout 1500    # first entry: new game
+wait 30
+tapuntil cross 40 g_frontendState:u32 == 2 timeout 600     # first entry: offline game
+wait 30
+tapuntil cross 40 g_frontendState:u32 == 4 timeout 600     # one player
+wait 30
+tapuntil cross 40 g_frontendState:u32 == 3 timeout 600     # first entry: the mission game
+wait 30
+tap cross 4            # first difficulty
+
+# character creation (four screens: class, appearance, ability points, name)
+wait 200
+tap cross 4            # the class shown first
+wait 120
+tap cross 4            # default appearance
+wait 120
+# 20 ability points must be spent before the screen can be left; all go to the first row
+tap right 3 6
+tap right 3 6
+tap right 3 6
+tap right 3 6
+tap right 3 6
+tap right 3 6
+tap right 3 6
+tap right 3 6
+tap right 3 6
+tap right 3 6
+tap right 3 6
+tap right 3 6
+tap right 3 6
+tap right 3 6
+tap right 3 6
+tap right 3 6
+tap right 3 6
+tap right 3 6
+tap right 3 6
+tap right 3 6
+wait 20
+tap cross 4
+wait 120
+# name: the cursor starts on the first key of a 10-column grid; three presses type it
+# three times; the "done" key is six rows down and five columns right
+tap cross 3 8
+tap cross 3 8
+tap cross 3 8
+tap down 3 8
+tap down 3 8
+tap down 3 8
+tap down 3 8
+tap down 3 8
+tap down 3 8
+tap right 3 8
+tap right 3 8
+tap right 3 8
+tap right 3 8
+tap right 3 8
+tap cross 4
+
+# the first level loads
+until g_levelName:str8 == hub timeout 3000
+until g_players+0x43d8:u32 != 0 timeout 3000
+until g_simFrame:u32 >= 60 timeout 3000
+show g_levelName:str16 g_simFrame:u32 g_players:str16 g_players+0x50:s32 [g_players+0x43d8]+0x10:f32 [g_players+0x43d8]+0x14:f32 [g_players+0x43d8]+0x18:f32 [g_players+0x43d8]+0x58c:s32

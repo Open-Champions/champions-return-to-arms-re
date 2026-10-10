@@ -175,9 +175,11 @@ class Clip:
                    terminator, or None when the clip has no sound table
       sound_group  +0x3c   joint_mask +0x48 (u64; bit j set = joint j not driven)
 
-    The decoder has no end test of its own (it stops because the next key's tick lies
-    beyond the track time), so it can read past the stream; word() returns 0 for anything
-    beyond the end of the file, which is what the differential test puts there."""
+    The decoder has no end test of its own: it stops because the next key's tick lies
+    beyond the track time.  The exporter closes every stream with a tick delta of 255, so
+    in a clip whose last key lies 255 ticks or more before its end (two on the disc) the
+    original goes on to decode the padding and then whatever follows the clip in memory.
+    The model raises HostFault when a record starts beyond the end of the file."""
 
     HEADER = 0x70
 
@@ -408,6 +410,9 @@ def _field(clip, bit, width):
     if index + 1 < len(words):
         pair = (words[index] << 16) | words[index + 1]
     else:
+        if bit + width > 16 * len(words):
+            raise HostFault('the key stream ran out at bit %d: the original decodes the '
+                            'memory after the clip' % bit)
         pair = (clip.word(index) << 16) | clip.word(index + 1)
     return (pair << (bit & 15)) & M32
 

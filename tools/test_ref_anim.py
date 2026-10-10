@@ -91,6 +91,13 @@ class Decoder(unittest.TestCase):
         A.animtrack_decode(system, a)
         self.assertEqual(a.slot.tick, 2)
 
+    def test_stream_runs_out(self):
+        # no keys: the closing delta of 255 is the first record, taken for a key at tick 255
+        clip = A.Clip(A.encode_clip([((0, 0, 0), (4096, 0, 0, 0))], 300))
+        A.decode_clip(clip, F(254.9))
+        with self.assertRaises(A.HostFault):
+            A.decode_clip(clip, F(255.0))
+
     def test_root_track_skips_joint0_xy(self):
         clip = walker()
         system = A.AnimSystem(decoder_slots=3, pose_buffers=2)

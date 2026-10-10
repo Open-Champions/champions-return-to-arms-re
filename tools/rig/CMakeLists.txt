@@ -25,21 +25,28 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 	set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 
+project(rta_rig)
+
+# Play!'s platform and compiler settings. This must come after project(): the module
+# appends to CMAKE_CXX_FLAGS_RELEASE, and before project() that variable is still empty,
+# so the default optimisation level would be lost (everything would build at -O0).
 set(CMAKE_MODULE_PATH ${PLAY_SOURCE_DIR}/deps/Dependencies/cmake-modules ${CMAKE_MODULE_PATH})
 include(Header)
-
-project(rta_rig)
 
 # Core options.
 #  DEBUGGER_INCLUDED  compiles the breakpoint check into translated blocks that contain a
 #                     breakpoint (no cost for other blocks); the rig's --break needs it.
+#                     It also makes Play! analyse the executable at boot and keep extra
+#                     data for every graphics packet. -DRTA_RIG_BREAKPOINTS=OFF builds
+#                     without it: no break points, somewhat faster.
 #  ENABLE_AMAZON_S3   off: no remote disc images, and no need for the HTTP/S3 code.
 #  RTA_RIG_PLAY_LOGS  keeps Play!'s own log calls in a release build (written under
 #                     <data>/logs when the rig is run with --play-logs). Off by default:
 #                     with it on, the video thread formats a line of text for every
 #                     graphics register write whether or not it is printed, which
 #                     made the 3-D scenes of this game run about 20 times slower.
-set(DEBUGGER_INCLUDED ON CACHE BOOL "Core breakpoint support" FORCE)
+option(RTA_RIG_BREAKPOINTS "Build the core with break point support (needed by --break and --screen-text)" ON)
+set(DEBUGGER_INCLUDED ${RTA_RIG_BREAKPOINTS} CACHE BOOL "Core breakpoint support" FORCE)
 set(ENABLE_AMAZON_S3 OFF CACHE BOOL "Disc images from Amazon S3" FORCE)
 set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
 option(RTA_RIG_PLAY_LOGS "Compile Play!'s log calls in (slow; for diagnosing the emulator)" OFF)

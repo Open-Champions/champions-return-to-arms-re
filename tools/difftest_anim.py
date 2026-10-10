@@ -742,9 +742,25 @@ def synthetic_family(rng, size):
         if rng.random() < 0.5:
             sounds = sorted(rng.choice((rng.randrange(0, length + 6), rng.randrange(0, 4)))
                             for _ in range(rng.randrange(0, 9)))
+        if length - tick >= 200:                         # keep the closing delta of 255 beyond
+            keys.append((length - 100, 0, 'p', [0, 0, 0]))  # the clip's end (see runs_out)
         files.append(('synthetic %d' % number,
                       A.encode_clip(joints, length, keys, depth, bind, mask, sounds, rng.randrange(0, 5))))
     return files
+
+
+def runs_out(clip, raw_time=None):
+    """True when decoding the clip up to the given time (default: just past its end) leaves
+    the key stream: the last key lies 255 ticks or more before that time, so the original
+    takes the closing delta for a record and decodes the memory that follows the clip.
+    The model does not guess what is there; the test leaves such inputs out."""
+    if clip.length < 254 and raw_time is None:
+        return False
+    try:
+        A.decode_clip(clip, f(clip.length + 2.0) if raw_time is None else raw_time)
+    except A.HostFault:
+        return True
+    return False
 
 
 def random_events(rng, length):
@@ -1073,7 +1089,13 @@ def run_scenes(elf, library, rng, config, scenes, length, **kind):
         clips = []
         for name, data in files:
             length_ticks = struct.unpack_from('<i', data, 4)[0]
-            clips.append(rig.load_clip(data, name, random_events(rng, length_ticks)))
+            events = random_events(rng, length_ticks)
+            if runs_out(A.Clip(data)):
+                cover('clips left out of a sequence: key stream ends 255 ticks before the clip')
+                continue
+            clips.append(rig.load_clip(data, name, events))
+        if not clips:
+            continue
         cover('clips with a joint mask loaded', sum(1 for c in clips if c.joint_mask))
         scene = Scene(rig, rng, clips, states=rng.choice((1, 2, 3)), pose=kind.get('pose', False),
                       yaw=kind.get('yaw', True), stepper=kind.get('stepper', 'advance'))
@@ -1146,6 +1168,9 @@ def prop_decoder(elf, library, config, share):
             rig.call(PUSH, rig.ptr(state), rig.ptr(clip), flags)
             A.anim_push(state, clip, flags)
             for raw in decode_times(rng, clip.length):
+                if runs_out(clip, raw):
+                    cover('decodes left out: key stream ends 255 ticks before the track time')
+                    continue
                 rig.set_time(state, 0, raw)
                 rig.decode(state, 0)
                 cases += 1
@@ -1186,7 +1211,7 @@ def prop_joint_values(elf, library, config, share):
             rig.call(PUSH, rig.ptr(state), rig.ptr(clip), 0)
             A.anim_push(state, clip, 0)
             for raw in decode_times(rng, clip.length)[:6]:
-                if C.lt(raw, 0):
+                if C.lt(raw, 0) or runs_out(clip, raw):
                     continue
                 rig.set_time(state, 0, raw)
                 rig.call(RELEASE, rig.ptr(state))
