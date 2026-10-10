@@ -1,8 +1,17 @@
 # How the game is put together
 
 A map for people starting on this code. Every statement here comes from reading the
-executable; the evidence (addresses) is in `FINDINGS.md`, `names.tsv` and the area documents
-in this folder. Nothing in this project has been confirmed on a running game yet.
+executable; the evidence (addresses) is in `FINDINGS.md`, `names.tsv`, `symbols/` and the
+area documents in this folder. Nothing in this project has been confirmed on a running game
+yet.
+
+Each part of the code has its own document; this page is the summary they were checked
+against: [startup](startup.md) (really the item system), [creatures](creatures.md),
+[netcode](netcode.md), [script](script.md), [objects](objects.md), [engine](engine.md),
+[player](player.md), [ui](ui.md), [gameplay](gameplay.md), [audio-save](audio-save.md),
+[monsters](monsters.md), [skills](skills.md), [mainloop](mainloop.md), [netlib](netlib.md),
+[runtime](runtime.md). The lobby side is in [lobby-protocol](lobby-protocol.md) and
+[online-setup](online-setup.md).
 
 ## The executable
 
@@ -23,10 +32,11 @@ in this folder. Nothing in this project has been confirmed on a running game yet
   `addiu r, vtable, n*8; lh delta, 0(r); lw fn, 4(r); jalr fn` with `this + delta` in `$a0`.
 - The table pointer sits at `+0x48` in every `GameObject`, `+0x60` in a `Skill`, `+0x14` in
   a `Spell`.
-- Known `GameObject` slots: 1 destructor, 2 take damage (amount, attacker, flags), 4 run
-  (once per simulated frame), 5 draw, 6 "something touched me" (called on both objects by
-  `obj_moveAndCollide`), 13 interact prompt, 14 interact, 15 clone. `Creature` slot 20
-  answers "is this other object my enemy".
+- `GameObject` has 16 virtual slots and `Creature` 39; all are described in
+  [objects](objects.md) and [creatures](creatures.md). The ones met most often: 1
+  destructor, 2 take damage (amount, attacker, flags), 4 run (once per simulated frame),
+  5 draw, 6 "something touched me", 13 interact prompt, 14 interact, 15 clone; `Creature`
+  slot 20 answers "is this other object my enemy" and slot 27 sets the AI state.
 - 403 class names are in `rtti_classes.txt`; `vtables.txt` gives each class's table address.
 
 ## Objects
@@ -55,26 +65,32 @@ world (30), inventory (50), cutscene (300).
 
 ## Randomness
 
-There are three generators and it matters which one code uses:
+There are several generators and it matters which one code uses:
 
 | Generator | Where | Shared between machines |
 |---|---|---|
 | Global | `g_randSeed` 0x404464 | yes — part of the sync check |
 | Per object | object +0x44, seeded from the global one in the constructor; per spell at spell +0x10 | yes, as long as the object runs identically everywhere |
-| Cosmetic | `g_cosmeticSeed` 0x404460 | no — particles and sounds only |
+| Cosmetic | `g_cosmeticSeed` 0x404460 | no — seeded from the CPU cycle counter at boot; meant for particles and sounds |
+| A further cosmetic one | 0x404468 | no — effects and decals |
+| C library `rand` | 0x3b70f0 | no — seeded by the network library |
 
 Every object constructor draws from the global seed, so creating an object on one machine
 only is enough to break sync.
 
 ## Online play
 
-- The lobby (`con.soegames.net`, TCP) only matches players. Gameplay is peer to peer over
-  SOE's UdpLibrary.
+- The lobby (`con.soegames.net`, TCP) only matches players. Gameplay is peer to peer: the
+  game's own netcode sends plain UDP datagrams. SOE's UdpLibrary is used only for the
+  player-to-player handshake before a game starts.
 - The simulation is deterministic lockstep: every machine runs the same frame with the same
   inputs. `net_frameLoop` (0x139e88) applies each peer's input record for the frame,
   processes queued game messages, runs the run tasks, then stores a hash of the frame:
   `g_randSeed` plus the integer x, y, height of every player. A peer whose hash differs for
   the same frame is shown as "… IS OUT OF SYNC!".
+- Nothing is resent on a timer; every packet repeats the frames the other side has not
+  acknowledged. A stalled frame becomes a frame of input delay that drains slowly — see
+  [netcode](netcode.md), "Pacing and lag".
 - An input record is 24 bytes per frame. A machine's own input goes through the same lossy
   encode → decode as the copy sent over the wire before the simulation uses it.
 - To hide latency, each machine keeps a *prediction copy* of its own player (a clone with
@@ -90,7 +106,7 @@ only is enough to break sync.
 
 ## Level scripts and cutscenes
 
-- Each level has a `script.scr`: compiled bytecode for a small accumulator machine (51
+- Each level has a `script.scr`: compiled bytecode for the Small/AMX abstract machine (51
   opcodes in use) that calls 191 built-in commands by name. `tools/scr.py` decompiles it.
 - Scripts are started by trigger volumes, object death, interaction, deferred calls and
   cutscene end actions.
