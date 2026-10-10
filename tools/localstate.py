@@ -5,6 +5,7 @@ For each virtual function of the named classes, follow direct calls (jal) to a f
 and report every read of state that is not part of the lockstep simulation: the particle
 seed, the camera, the local player slot, audio hardware status, the hardware timer and
 render-loop counters. Virtual calls are not followed, so this under-reports.
+Function bodies come from ghidra_funcs.tsv when present.
 
   python3 localstate.py <elf> Class [Class ...]
 """
@@ -34,15 +35,29 @@ def main():
     names = symtab.load(os.path.dirname(os.path.abspath(sys.argv[1])))
     site2tgt = {s: t for t, ss in e.refs.items() for s in ss}
     callees, touches = {}, {}
+    # whole function bodies from Ghidra (entry -> [(first, last)]), so that the cases of a
+    # state switch are scanned too
+    bodies = {}
+    gf = os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])), "ghidra_funcs.tsv")
+    if os.path.exists(gf):
+        for line in open(gf):
+            ent, _, body = line.rstrip("\n").split("\t")
+            bodies[int(ent, 16)] = [tuple(int(x, 16) for x in r.split("-")) for r in body.split(",") if r]
 
     def scan(f):
         if f in callees:
             return
-        s, t = e.func_of(f)
         cs, ts = [], []
-        if s is None:
-            callees[f], touches[f] = cs, ts; return
-        for pc in range(s, min(t, s + 0x4000), 4):
+        if f in bodies:
+            pcs = [pc for lo, hi in bodies[f] for pc in range(lo, hi + 1, 4)]
+        else:
+            # not a known function entry: fall back to the heuristic boundaries, which stop
+            # at the first jump-table target and so can miss the cases of a switch
+            s, t = e.func_of(f)
+            if s is None:
+                callees[f], touches[f] = cs, ts; return
+            pcs = range(s, min(t, s + 0x4000), 4)
+        for pc in pcs:
             w = e.u32(pc)
             if w is None:
                 continue
