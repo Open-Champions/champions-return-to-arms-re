@@ -306,9 +306,17 @@ ranged release time is halved (0x1a80e0 on). Movement speed is 0.75 instead of 0
 8. **`Player_takeDamage` early-outs** (0x1b536c–0x1b53f4) on `g_recallCountdown`, the
    jump-gate state 0x500ae8 (through 0x27dd68), `g_menuInputLockout` 0x41b4fc and
    `g_exitCountdown` 0x4f694a. **Observed.** If any of these differs between machines for
-   one frame, damage is dropped on one machine only. Not established here whether they
-   can differ: 0x41b4fc is zeroed at the top of every net tick; 0x4f694a and the recall
-   countdown are set by game message handlers. **Unknown.**
+   one frame, damage is dropped on one machine only. The earlier version left "whether
+   they can differ" **Unknown**; two of the four are now answered:
+   - 0x4f694a cannot differ. It is set by game message 8 (0x1d907c) and `hud_run`, a run
+     task, subtracts one on every tick with no per-machine condition (0x1db8ec–0x1db8f0):
+     lockstep (`docs/issues/draw-sim-leaks.md` U5; `docs/issues/claims-audit.md` row 87).
+   - 0x41b4fc can differ inside a tick. It is zeroed at the top of every net tick, but
+     per-machine code can set it again before `Player_takeDamage` reads it — the local
+     player dying with a menu open, the medal countdown, an automatic jump gate (FINDINGS
+     D26; `draw-sim-leaks.md` U3).
+   - The recall countdown is set by a game message handler; the jump-gate state was not
+     followed here.
 
 ### Per-machine reads that only reach local presentation (checked)
 
@@ -335,7 +343,11 @@ ranged release time is halved (0x1a80e0 on). Movement speed is 0.75 instead of 0
   **Observed.**
 - The aura globals (0x4d8a40–0x4d8ab0, 0x8659a0) and the HUD message timers 0x41b840 /
   0x41b8c0 (0x1a75d0) are advanced by the copy too; their only readers are `Player_draw`,
-  `Player_run`'s own light code and the HUD. Floor decals added in state 4 (0x1ab4b4) and
+  `Player_run`'s own light code and the HUD. (More writers than this document lists:
+  `player_recallTick`, `Player_updateCast` and `player_resetAuraLights` for the aura
+  globals; `Player_usePotion`, `Player_weaponSwapInput` and the two axe skills for the
+  hint timers — `docs/issues/claims-audit.md` row 86. No simulation reader, so the
+  statement stands.) Floor decals added in state 4 (0x1ab4b4) and
   `hud_showMessage` calls (0x1a6ebc, 0x1a7af0, 0x1a8040, 0x1aafc4) are likewise
   unguarded and local. **Observed.**
 

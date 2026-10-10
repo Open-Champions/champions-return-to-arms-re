@@ -139,7 +139,7 @@ callee (`pad_decodeStick` 0x174ce0) ran for real.
 | b2 | G5: two globals could differ between machines | read and write log of one call | as shipped it stores nothing outside the pad and the previous-state block and reads exactly two globals, 0x41bfc0 and 0x41c138 (both 0 in the file) | supports G5 |
 | b3 | G5: no stale pad state | two pads with different old contents, the same 60 random records | byte-identical in the stored range after every call | supports G5 |
 | b4 | Record bytes +0xa/+0xb reach pad +0x38/+0x50 | one call | they do, as byte/255 | supports `netcode.md` per-machine row 1 |
-| b5 | G5: "never written anywhere in the program" | 0x41bfc0 forced to 2 | `pad_apply` itself decrements it (store at 0x174464) and drops button 0x800 | sharpens G5: the function is its own writer once the value is non-zero; it never becomes non-zero by itself |
+| b5 | G5: "never written anywhere in the program" | 0x41bfc0 forced to 2 | `pad_apply` itself decrements it (store at 0x174464) and drops button 0x800 | sharpens G5: the function is its own writer once the value is non-zero; it never becomes non-zero by itself. The other global, 0x41c138, has a writer too, outside this function: `pad_updateRumble` subtracts one on every tick and stores the result clamped at 0 (store at 0x174790, read from the code, not run; `docs/issues/claims-audit.md` row 12). Neither is ever set to a non-zero value |
 | b6 | — | 0x41c138 forced to 1 | sticks and analog fields zeroed, buttons masked with 0x41bfb8 \| 0x41bfbc | supports G5 (the global does gate the output) |
 | b7 | 0.8 threshold for digital directions | sweep of one axis | movement is 0 below byte 169; digital flag at 239 and above, and at 17 and below | supports `netcode.md` |
 | b8 | L6: 4 dead frames, 0.8 on the 7th | a2's sequence fed through the real `pad_apply` | no movement on frames 1–4; 0.368, 0.667 on frames 5, 6; digital direction from frame 7 (0.805) | supports L6; its "model numbers" are now executed |
@@ -438,6 +438,8 @@ lockout is set inside a tick) is a list of writers and was not run.
    anywhere in the program": `pad_apply` itself stores to 0x41bfc0 (decrement, at 0x174464)
    whenever it is non-zero (b5). Since it starts at 0 and the function only ever lowers it,
    the conclusion of G5 stands; the sentence should say "never set to a non-zero value".
+   The same holds for 0x41c138, which `pad_updateRumble` counts down and clamps at 0 on
+   every tick (0x174790; `docs/issues/claims-audit.md` row 12).
 3. **FINDINGS L4 — now agrees.** When this work started L4 read "capped at 38 frames" and
    "one frame per 62 calls, or per 31 calls when 5 or more above". Executed: a call is held
    from a difference of 39, so the lead peaks at 39 (d2, d7), and the two rules have
@@ -525,7 +527,7 @@ Not edited into `FINDINGS.md`; for the maintainers to place. Kind for all:
 
 | Proposed | Claim | Evidence |
 |---|---|---|
-| G5 (reword) | `pad_apply` stores every byte of pad +0x08…+0x57 except the word at +0x24, from the record and its 8-byte previous-state block; it reads two globals, 0x41bfc0 and 0x41c138, both 0 in the file. It decrements 0x41bfc0 itself while that is non-zero; nothing sets it | b1–b6; store at 0x174464 |
+| G5 (reword) | `pad_apply` stores every byte of pad +0x08…+0x57 except the word at +0x24, from the record and its 8-byte previous-state block; it reads two globals, 0x41bfc0 and 0x41c138, both 0 in the file. It decrements 0x41bfc0 itself while that is non-zero, and `pad_updateRumble` counts 0x41c138 down to 0 on every tick; nothing sets either to a non-zero value | b1–b6; stores at 0x174464 and 0x174790 (the second read, not run) |
 | L6 (kind) | Its model numbers — 4 dead frames, movement from the 5th, 0.8 on the 7th, at most 0.94, nothing for a push of 3 frames or fewer — are reproduced by executing the encoder, the decoder and `pad_apply`. *Executed in isolation* instead of *Inferred (model numbers)* | a2, b8–b10 |
 | L6 (add) | The limit is one-sided: a stick held toward 255 settles at byte 251 (0.943; 0.989 offline) while one held toward 0 reaches 0 (−1.000). Whether movement speed scales with the value is Unknown | a3, a4, b9 |
 | D12 (add) | While counter 12 is the first non-zero counter, counters 13–15 are not decremented either | i2 |

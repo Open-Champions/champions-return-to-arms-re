@@ -40,9 +40,10 @@ Floating point (the only approximation)
   tools/ee_emu.py; 'ps2' (six extra bits, the rest floored, operands 25 or more binades
   apart ignored) is the default.  Under each choice the model equals the original executed
   under that choice bit for bit, value and velocity included.  The choices themselves
-  disagree: 'ps2' and 'ps2g1' give the same stick bytes, 'chop' and 'nearest' each differ
-  from them by one count on a few percent of frames (see fpu_sensitivity()).  Which of them
-  a real console matches is not settled by anything in this repository.
+  disagree: over 20,000 frames of mixed input 'ps2', 'ps2g1' and 'nearest' gave the same
+  stick bytes on all but one frame, while 'chop' (the exact sum truncated) differed from
+  them on 11 % of frames, always by one count (see fpu_sensitivity()).  Which of them a
+  real console matches is not settled by anything in this repository.
 """
 import struct
 

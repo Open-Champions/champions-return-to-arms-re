@@ -181,9 +181,17 @@ if s16 +0x31a > 0 and the player carries a SpellDrowsy:  S = S × SpellDrowsy_ge
 ```
 
 `g_runSpeed` is 1.0 after `game_clearLevel` (0x1e4ff0) and is overwritten by a level's
-`runSpeed=` setting (`levelSettings_parse` 0x22eb9c). The record multiplier is written only by
-`SpellGiantGrowth` (0x3093c4, 0x30965c) and `SpellResurrect` (0x312a28, 0x312adc) code.
-[O] by reference search; those spell bodies were not read.
+`runSpeed=` setting (`levelSettings_parse` 0x22eb9c). The record multiplier is written by
+`SpellGiantGrowth` (0x3093c4, 0x30965c) and `SpellResurrect` (0x312a28, 0x312adc) code, and
+by three set-up paths: the arena set-up function 0x307c80 (store at 0x307d04; called from
+`arena_init` and `arena_startWave`) gives every player 1.25 in a net game and 1.75
+offline, and `player_importCharacter` (0x1bdb0c) and `player_initNewCharacter` store 1.0.
+So "normally 1.0" above holds for the campaign only: in the arena game mode the base is
+multiplied by 1.25 (or 1.75) before the 1.2 cap. An earlier version of this paragraph said
+"written only by" the two spells; the reference search behind it missed the arena store
+because part of the table's address is folded into the index register
+(`docs/issues/claims-audit.md` row 99 and 6.1). Set-up runs in lockstep, so this is not a
+sync matter. [O] the stores; the spell bodies were not read here.
 
 **(c) Magnitude and target angle.** (0x1b41c0–0x1b420c)
 

@@ -52,7 +52,7 @@ How a property is tested
     model, and also when the scenario did not end the way its line says (for instance when
     a peer that should have been dropped was not).
 
-Run time: about eight minutes; --quick about one.
+Run time: about eight minutes; --quick about two.
 
 Floating point
     The stick decoder and pad_apply are compared as 32-bit patterns under the

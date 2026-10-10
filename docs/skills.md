@@ -629,9 +629,17 @@ queries, the third was not read).
 
 All ten are spells that move the player, lock the player into an animation, or change the
 action state at +0x58c outside the player's own input handling, which the copy cannot
-predict. The byte is not a plain flag: two writers store 0x78 and 0x3c (120 and 60), so the
-reader probably treats it as a frame count (Inferred; the reader is in netcode). Writing it
-is harmless for sync: the copy is per-machine state already.
+predict. The table lists the spell stores only. Five more stores of 1 are outside this
+area: `Player_processDamage` (0x1b2ef4, 0x1b352c, 0x1b3824), `Player_move` (0x1b5098) and
+`player_respawn` (0x1bd1e8).
+
+The byte is not a plain flag: two writers store 0x78 and 0x3c (120 and 60). The earlier
+version inferred that the reader treats it as a frame count; the reader has since been
+read and that is nearly right — it is a count of forced re-clones. `net_frameLoop`
+subtracts one from the byte at each rebase while it is positive (0x13b25c–0x13b26c), so
+after the last store 0x78 and 0x3c force a re-clone on each of the next 120 and 60 ticks
+on which a rebase is allowed (`docs/issues/claims-audit.md` rows 45 and 79). Writing it is
+harmless for sync: the copy is per-machine state already.
 
 ## Corrections to earlier notes
 
@@ -665,7 +673,9 @@ is harmless for sync: the copy is per-machine state already.
    part of the input record?
 4. Can the Player_run block at 0x1aa8ac run for the prediction copy, making generator
    0x404468 per-machine as inferred above?
-5. The reader of 0x402797 and the meaning of the values 0x3c and 0x78.
+5. The reader of 0x402797 and the meaning of the values 0x3c and 0x78. (Answered since:
+   `net_frameLoop` counts the byte down by one per rebase, 0x13b26c; see (c) above and
+   `docs/issues/claims-audit.md` row 79.)
 6. What statistic indices 1–3 mean for the skills not read by hand (the describeRank
    functions format them and would settle each one).
 7. Slot 14's second argument (1, 2, 10, 20): dead in this build, purpose unknown.

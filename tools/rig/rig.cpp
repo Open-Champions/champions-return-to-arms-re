@@ -1248,8 +1248,14 @@ private:
 	{
 		if(spec.collect)
 		{
+			// repeated strings are kept once; so are the tails of a string that a
+			// word-wrapping caller passes again line by line
 			auto add = [this](const std::string& text) {
-				if(std::find(m_collected.begin(), m_collected.end(), text) == m_collected.end()) m_collected.push_back(text);
+				for(const auto& seen : m_collected)
+				{
+					if(seen.size() >= text.size() && seen.compare(seen.size() - text.size(), text.size(), text) == 0) return;
+				}
+				m_collected.push_back(text);
 			};
 			for(const auto& wide : spec.wideStrings) add(ReadWide(wide));
 			for(const auto& entry : spec.strings)

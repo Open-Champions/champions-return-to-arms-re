@@ -38,7 +38,7 @@ How a property is tested
 The vector unit
     anim_buildPose composes the joint matrices with a 77-instruction VU0 microprogram
     (0x3e5c50) reached through COP2 instructions, which ee_emu does not implement.  This
-    script supplies them: the seven COP2 instructions of anim_buildPose are hooked at their
+    script supplies them: the nine COP2 instructions of anim_buildPose are hooked at their
     addresses, and class Vu0 below interprets the microprogram's own instruction words,
     read from your executable (only the instruction forms that program uses).  Its adder
     and multiplier are the interpreter's FPU routines; whether the real vector unit rounds

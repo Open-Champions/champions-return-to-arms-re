@@ -402,7 +402,8 @@ byte at 0x4f8b58 is set; 81 scripts define `start`, 18 define `preStart`).
 ```
 if name == null or g_scriptMachine == null: return -1
 index = scr_findEntry(g_scriptMachine, name)
-if not found: return -1      // also stores render-frame counter + 20 at 0x4f8694, which nothing reads
+if not found: return -1      // also stores render-frame counter + 20 at 0x4f8694, but only when the
+                             // stamp already there has passed (compare at 0x1ed6f4); nothing else reads it
 result = 0
 scr_interpret(g_scriptMachine, &result, index, 0, null)     // error code ignored
 return result

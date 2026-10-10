@@ -424,10 +424,11 @@ consoles, machine 1 corrupts its seed in one frame. Whichever machine compares f
 a flag; that changes its active mask; from then on the machines on the other side of the
 difference ignore its packets by rule 1 of section 9 — including the packets that carry the
 sync records which would have made them set a flag of their own. In the run reported in
-section 18 only machine 1 ever set a flag (for one of the two others); in two other runs
-of the same scenario with different message traffic the two healthy machines flagged
-machine 1 and it flagged one of them, and machine 1 flagged both while they flagged
-nobody. In every run machines 0 and 2 kept accepting each other, never flagged each
+section 18 only machine 1 ever set a flag (for one of the two others). Two earlier runs
+of the scenario, made while the test was being written and with other random message
+traffic, ended differently: in one (three consoles) the two healthy machines flagged
+machine 1 and it flagged one of them; in the other (the model alone) machine 1 flagged
+both and they flagged nobody. In every run machines 0 and 2 kept accepting each other, never flagged each
 other, and all three stalled within a few frames, the two healthy ones because they still
 required input from a peer whose packets they no longer took. To them that peer is simply
 silent: 900 calls later they started a kick (section 12), agreed on a drop frame and
@@ -452,7 +453,7 @@ frame — and the relayed peer's message blocks. **Executed** (builder with raw 
 
 **Kicked notice** 0xbd43: 4 bytes. On receipt sets flag 0x4027a0, which the HUD shows.
 
-### 12.2 Procedure (**Executed** in three sessions)
+### 12.2 Procedure (**Executed** in four sessions)
 
 1. A machine starts a kick of peer k when k's `silence` passes 900 calls, or on
    `net_kickPeer(k)` 0x131cb8: `kick` = 1, `drop_frame` = −1, negotiation state 1, the
@@ -503,11 +504,12 @@ dropped", four consoles; also the two healthy machines of the divergence session
 
 How often the bad order occurs depends on the phase of the two rendered-frame counters,
 on latency and on whether the first machine has to simulate a few more frames before it
-reaches the drop frame. **Model** (the model alone, random counter phases, 40 runs each):
-a survivor was left negotiating for good in 2 runs of a manual kick among three players
-with 1–2 calls of link delay, 3 with 3–5 calls, 1 of a manual kick among four, and 1 of a
-silent fourth player. Seven of 160 is a small sample; "a few percent of kicks" is all it
-supports. What the stuck machines then do — the HUD's stall counters end the game after
+reaches the drop frame. **Model** (the model alone, random counter phases, 40 runs each;
+a run counts when a survivor had still not dropped the peer 150 rounds after a manual
+kick or 200 after the silence counters were set near 900): 2 runs of a manual kick among
+three players with datagrams under one round in flight, 3 with one to two rounds, 1 of a
+manual kick among four, and 1 of a silent fourth player. Seven of 160 is a small sample;
+"a few percent of kicks" is all it supports. What the stuck machines then do — the HUD's stall counters end the game after
 about 1,800 calls according to `docs/netcode.md` — was not run.
 
 An implementation that wants to interoperate should answer a kick request with a relay
@@ -634,6 +636,7 @@ or emulator to packets from strangers.
 | byte 8, low nibble | used as an index into the four-entry peer table without a range test (0x13b6f8); slots 4–15 address memory after the table |
 | byte 9 of a raw relay | index into the four answer flags, 0–255 (0x13b764–0x13b770) |
 | requester slot of a kick request | index of the peer the relay is sent to |
+| mask of a kick request | a bit for the receiving machine's own slot is taken like any other: it marks itself as being kicked (the loop at 0x13c250 has no test for the local entry) |
 | run lengths in the stream | a run that overshoots n is not detected: the button and flag loops never terminate, the stick and yaw loops write past their scratch arrays |
 | message blocks | the walk ends only when the pointer equals the end of the datagram |
 | message id, message lengths | handler table index; the per-frame count must add up exactly |

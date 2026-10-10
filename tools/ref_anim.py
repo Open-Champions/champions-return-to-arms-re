@@ -1148,7 +1148,9 @@ def anim_advance(system, speed, state, sound=True, want_root=True, want_yaw=True
       g. life <= 0 and not KEEP: the track is removed.
          Else, with PURGE_BELOW, min(weight, life) >= 1 and a track below: every track
          below without PERSISTENT is removed AND THE LOOP ENDS - surviving lower tracks
-         are not stepped in this tick and their flags do not join the union.
+         are not stepped in this tick and their flags do not join the union.  The test
+         is repeated on every tick, so they stay frozen while this track is above them
+         at full weight.
 
     Then state.flags = union, and two more passes over the tracks that are left:
 

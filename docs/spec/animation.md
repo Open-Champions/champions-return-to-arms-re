@@ -51,7 +51,7 @@ tolerance is stated); **I** inferred; **U** unknown. Nothing was run on a consol
 |---|---|---|---|
 | +0x00 | ptr | pose | the pose buffer that holds this state's pose, or 0 |
 | +0x04 | s8 | count | tracks in use; track 0 is the bottom layer |
-| +0x05 | s8 | capacity | creatures and players: 8 |
+| +0x05 | s8 | capacity | 8 for the states `AnimState_copy` handles (it copies eight cells), 1 for those of `AnimState_copySmall` (**I**) |
 | +0x06 | u16 | flags | union of the flags of the tracks **visited** by the last `anim_advance`, plus status 0x0080 (a track with flag 0x0004 reached its end) and 0x0400 (that track was the top one). Push and start functions OR the new track's flags in immediately |
 | +0x08 | track[capacity] | | 0x20 bytes each |
 
@@ -436,9 +436,25 @@ from the code. An event fires on the step where
 time × 1/60 ≤ seconds < time × 1/60 + (speed × 0.99999994) × 1/60
 ```
 
-with the pre-step time, so each event fires exactly once per pass when the step is
-constant, and can fire twice or not at all when the speed changes between two steps
-(the two intervals overlap or leave a gap) — the original has the same behaviour.
+with the pre-step time (**X**). What follows from that rule (**I**, from the arithmetic;
+the game's event tables were not searched for cases):
+
+- The window of a step is closed below and open above, so with a constant speed an event
+  is normally reported once per pass. The upper bound of one step, `time×K + step×K`, and
+  the lower bound of the next, `(time + step)×K`, are separate float computations and can
+  differ in the last bit; a seconds value exactly in that gap or overlap is skipped or
+  reported twice. A speed change between two steps has no such effect (the windows still
+  join at the new time); a seek (`anim_syncToSimFrame`, `anim_randomizeTopTime`, the
+  "to end" calls) skips or repeats whatever lies between.
+- After a loop wrap the time is `t − length`, usually a small positive fraction, and the
+  next window starts there: an event at second 0 (or within that fraction) is reported on
+  the first pass only. Likewise an event within one step *after* the clip's length is
+  reported by the step that wraps.
+- A waiting track (negative time) and a paused track are tested too; a paused track
+  reports an event inside its window on every tick.
+- A FIXED_STEP track moves by 0.99999994 per tick but is tested with the window of the
+  speed argument: at speed 2 the windows overlap and an event is reported on two ticks, at
+  speed 0.5 they leave gaps and events in the gaps are not reported.
 
 ## 8. The pose
 
@@ -579,15 +595,19 @@ source cell has none or the cell has neither ROOT nor YAW; otherwise a slot from
 `animcache_alloc` whose stream pointer, cursor, key tick and all 64 joint records are
 copied from the source's slot. **`yaw` at slot+0x18 is not copied** and the allocator does
 not reset it: the first root-yaw step of the copy measures from whatever the slot held
-before. (Whether any state that is copied holds a YAW track was not checked — **U**.)
+before. YAW is rare: among call sites that pass the flags as a constant it appears three
+times, all in boss code (`Cazic_run` 0x24be7c and 0x24beac with 0x4808,
+`Innoruuk_setState` 0x276cec with 0x4008), never in player code; flags passed in a
+register were not traced. Whether such a state is ever copied is not established (**U**).
 
 ## 10. Order within a frame
 
 For one animated object on one simulation tick (**O** for the calls, **I** for "typical"):
 
 1. The object's run function changes tracks (start, push, stop …) and calls its step
-   wrapper once (`Creature_stepAnim` / `Player_animStep`; scenery is stepped from draw
-   code with `anim_advanceUnitSpeed` 0x1709d8, speed 1). The step detaches the pose.
+   wrapper once (`Creature_stepAnim` / `Player_animStep`). The step detaches the pose.
+   (`anim_advanceUnitSpeed` 0x1709d8 is `anim_advance` with speed 1.0; `docs/engine.md`
+   has world scenery stepped from draw code, once per picture.)
 2. The returned event bits and `state.flags` (status 0x80 / 0x400) drive the state
    handler; the world-space delta at +0xbc/+0xc0 and the yaw at +0xc4 are applied by the
    creature movement code (`docs/engine.md`, `docs/spec/movement-camera.md`).
@@ -633,8 +653,8 @@ RESULTS_TABLE_PLACEHOLDER
 Not covered, and why:
 
 - **The vector unit itself.** `tools/ee_emu.py` has no COP2 and no VU. The test hooks the
-  seven COP2 instructions of `anim_buildPose` (two `lqc2`, `qmtc2`, `ctc2`, two `vcallms`
-  targets, three `qmfc2`) and interprets the microprogram's own words with the
+  nine COP2 instructions of `anim_buildPose` (two `lqc2`, `qmtc2`, `ctc2`, two `vcallms`,
+  three `qmfc2`) and interprets the microprogram's own words with the
   interpreter's FPU add and multiply. The pose properties therefore show that the model
   does what those instructions say, in their order. Whether the hardware's VU adder and
   multiplier round every case like the FPU model is not established here (**U**); after
@@ -674,7 +694,7 @@ Not covered, and why:
 
 - Whether the console's vector unit matches the FPU model in the last bit of the
   composition (section 12).
-- Whether any copied state (prediction copy) holds a YAW track, i.e. whether the uncopied
-  yaw baseline (section 9) is reachable.
+- Whether a state holding a YAW track (two boss classes, section 9) is ever copied, i.e.
+  whether the uncopied yaw baseline is reachable.
 - The meaning each class gives to event bits, and the event tables written by player code.
 - Callers of the four unnamed helpers in section 4, if they are reached through pointers.

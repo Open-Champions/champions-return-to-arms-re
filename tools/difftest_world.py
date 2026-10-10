@@ -14,6 +14,7 @@ disc.  Without the executable the script says so and exits 0.
     -k TEXT      run only the properties whose name contains TEXT
     -v           print up to three failing inputs per property
     --no-alt     skip the reruns under the other floating-point models
+    --no-generated / --generated-only   leave out the generated level / test nothing else
 
 Every property prints one line per level: PASS or FAIL, the name, the number of cases and
 what was compared.  Exit status 1 when any property fails.
@@ -60,7 +61,8 @@ M32 = 0xFFFFFFFF
 FPU_CONFIGS = (('ps2', False, False), ('ps2g1', False, False), ('chop', False, False),
                ('nearest', False, False), ('ps2', True, False), ('ps2', False, True))
 
-OPTIONS = {'quick': False, 'seed': 20973, 'filter': None, 'verbose': False, 'alt': True}
+OPTIONS = {'quick': False, 'seed': 20973, 'filter': None, 'verbose': False, 'alt': True,
+           'generated': True, 'levels': True}
 RESULTS = []
 
 # addresses
@@ -241,6 +243,16 @@ def gen_xy(rng, level):
         x = float(round(x / 160.0) * 160) + rng.choice((0.0, -0.001, 0.001))
     elif roll < 0.30:
         x, y = rng.uniform(-20000, 20000), rng.uniform(-20000, 20000)
+    elif roll < 0.36:
+        # exactly on the element's origin (or a whole number of units from it on one axis):
+        # the local position is then exact and samples lie exactly on the rim of a disc
+        # whose radius is a multiple of 4 - the only inputs that tell "<" from "<="
+        x, y = float(e.x), float(e.y)
+        if rng.random() < 0.5:
+            if rng.random() < 0.5:
+                x -= float(rng.randrange(0, 40))
+            else:
+                y -= float(rng.randrange(0, 40))
     return R.f32(x), R.f32(y)
 
 
@@ -370,21 +382,6 @@ class Runaway(Exception):
     sit through, so such inputs are counted and left out."""
 
 
-def guarded_slide(level, radius, pos, delta, mask):
-    """The model's slide, refusing inputs on which the original would not come back."""
-    sweep = R.terrain_sweep_circle
-
-    def watched(lvl, r, p, d, m, want_normal=True):
-        if not (abs(R.to_float(d[0])) < 3000.0 and abs(R.to_float(d[1])) < 3000.0):
-            raise Runaway()
-        return sweep(lvl, r, p, d, m, want_normal)
-    R.terrain_sweep_circle = watched
-    try:
-        return R.world_slide_move(level, radius, pos, delta, mask)
-    finally:
-        R.terrain_sweep_circle = sweep
-
-
 SKIPPED = {'runaway': 0}
 
 
@@ -397,7 +394,7 @@ def prop_slide(rig, level, rng, count):
         delta = gen_delta(rng)
         mask = rng.choice(MASKS)
         try:
-            hit, new_pos, normal = guarded_slide(level, radius, pos, delta, mask)
+            hit, new_pos, normal = guarded(R.world_slide_move, level, radius, pos, delta, mask)
         except Runaway:
             SKIPPED['runaway'] += 1
             continue
@@ -1097,6 +1094,10 @@ def main(argv):
             OPTIONS['quick'] = True
         elif arg == '--no-alt':
             OPTIONS['alt'] = False
+        elif arg == '--no-generated':
+            OPTIONS['generated'] = False
+        elif arg == '--generated-only':
+            OPTIONS['levels'] = False
         elif arg == '-v':
             OPTIONS['verbose'] = True
         elif arg == '--seed':
@@ -1120,8 +1121,11 @@ def main(argv):
     if not worlds:
         worlds = sorted(glob.glob(os.path.join(ROOT, 'extracted', '*', '*.lmp', '*.world')))
     started = time.time()
-    run_level(elf, 'generated', generated_level(OPTIONS['seed']))
-    if not worlds:
+    if OPTIONS['generated']:
+        run_level(elf, 'generated', generated_level(OPTIONS['seed']))
+    if not OPTIONS['levels']:
+        worlds = []
+    elif not worlds:
         print('SKIP  no level files (pass .world files unpacked from your own disc)')
     for path in worlds:
         if not os.path.isfile(path):
@@ -1131,6 +1135,9 @@ def main(argv):
             data = source.read()
         run_level(elf, os.path.basename(path)[:-len('.world')], data)
     failed = [name for name, ok in RESULTS if not ok]
+    if SKIPPED['runaway']:
+        print('note  %d slide inputs left out: the step grows without bound and the original '
+              'does not return (see Runaway)' % SKIPPED['runaway'])
     print('%d properties, %d failed, %.0f s' % (len(RESULTS), len(failed), time.time() - started))
     return 1 if failed else 0
 

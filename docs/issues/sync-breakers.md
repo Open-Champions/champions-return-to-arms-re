@@ -402,7 +402,7 @@ of each variable, from a search of every load of its address:
 | Entry | Variable | Readers outside menus and config code | Reaches shared state in a net game? |
 |---|---|---|---|
 | brightness, music, sfx, stereo | 0x44fd80, 0x4f8944, 0x4f8940, 0x4f8948 | display and audio code | no |
-| controls | per-slot tables 0x41b980…0x41ba30 | simulation | entry is disabled in a net game (0x18cc08, state 5); the tables are installed at launch from each owner's data |
+| controls | per-slot tables 0x41b980…0x41ba30 | simulation | entry is disabled in a net game (0x18cc08, state 5); the tables are installed at launch from each owner's data. **Not the whole story** (`docs/issues/draw-sim-leaks.md`, U1): `config_commitOptions` 0x1e6650, run when the pause menu's option list is left with *any* option changed, copies this machine's four saved controller rows over all four per-slot tables with no network test (0x1e6a60–0x1e6b0c), so in a net game a machine that changes an option replaces the other players' button maps with its own |
 | combat camera, reverse yaw | 0x4f845c, 0x4f8460 | `Camera_followRotateInput` | only through the camera yaw in the input record, which is by design |
 | vibration | 0x41bfb0 | pad code | no |
 | blood | 0x44fdc0 | see next table | no, for the values the menu can set |
@@ -456,8 +456,11 @@ options-menu value is in the block, and none is needed.
 
 ### Verdict and advice
 
-- **Players:** do not keep a `debug.sht` file on the memory card you play online with;
-  option settings do not matter.
+- **Players:** do not keep a `debug.sht` file on the memory card you play online with.
+  Which option settings a machine *has* does not matter; changing one during an online
+  game does if anyone has remapped buttons (FINDINGS U1; the earlier version said
+  "option settings do not matter"). Do not change options during an online game if anyone
+  has remapped buttons.
 - **Testers:** one machine with the file: have player 0 hold R1 and press down (pad bit
   names per docs/netcode.md, Inferred) and compare gold. Blood on against blood off through
   a long fight should stay in sync.
