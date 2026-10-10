@@ -769,16 +769,41 @@ With the K1 and K2 sections applied on both machines:
 | Batch | Pairs | Frames each | Start levels | Input mixes | Bus settings | Ticks compared | Divergent |
 |---|---|---|---|---|---|---|---|
 | 1 | 36 | 12,000 | `strife`, `drunare`, `hub`, `drundar`, `blood1`, `bastion1`, `citadel`, `valor`, `storm1`, `fire1`, `nit1`, `wat1` | everything (sticks, attack, abilities, block, weapon swap, both potions, use, D-pad, inventory button, pause button, stick buttons); the same without pause and stick buttons; the same without D-pad | none; delay 3, jitter 3, loss 5%; delay 10, jitter 6, loss 10% | 387,213 | **0** |
-| 2 | FZ2PAIRS | 20,000 | `hub2`, `islc1`, `torment0`, `swamp1`, `fay1`, `honor`, `shame1`, `inmine1`, `dis2`, `airarena`, `boar1`, `arachna1` | everything; without D-pad and stick buttons | none; delay 5, jitter 4, loss 5%; delay 2 | FZ2TICKS | FZ2DIV |
+| 2 | 24 | 20,000 | `hub2`, `islc1`, `torment0`, `swamp1`, `fay1`, `honor`, `shame1`, `inmine1`, `dis2`, `airarena`, `boar1`, `arachna1` | everything; without D-pad and stick buttons | none; delay 5, jitter 4, loss 5%; delay 2 | 401,461 | 1 — a kick, not a desync (below) |
 
 The pairs did not stay where they started: the level column shows level exits taken on
 both machines in the same tick (`strife` → `blood1`, `drundar` → `blood1`) and returns to
 `hub`, and the players died and were put back many times.
 
 What the random input reaches and what it does not, counted with break points on one
-machine of one pair (8,000 frames, the "everything" mix): COVERAGE
+machine of one pair (8,000 frames, the "everything" mix, 6,691 ticks, in sync):
 
-So the statement is: with K1 and K2 patched, random play of that kind over BOTHTICKS
+| Reached | Entries |
+|---|---|
+| pause menu opened / closed (`pauseMenu_open` 0x18e334, `pauseMenu_close`) | 11 / 23 |
+| inventory opened / closed (`menu_openInventory`, `inventory_close`) | 13 / 20 |
+| inventory messages applied (`invmsg_dispatch`); equip; drop | 38; 1; 1 |
+| shop opened (`shop_openOrStock`) | 4 |
+| potions (`Player_usePotion`), casts (`Player_castSkill`) | 196; 9 |
+| statistics recomputed (`player_recalcStats`, the K4 path) | 435 |
+| game messages queued (`net_sendGameMsg`) | 115 |
+| **not reached**: options committed (`config_commitOptions` 0x1e6650, U1) | 0 |
+| **not reached**: mission menu (`missionMenu_run`, U2) | 0 |
+
+In this one pair nobody was hit, died or left the level; other pairs did all three (the
+level columns above).
+
+The one divergent pair (`torment0`, seed 314) is the game's own **kick**. Machine B's
+random input opened its pause menu and chose the entry that removes the other player.
+On B the menu closes in tick 7758 and in tick 7759 `net_frameLoop` sets peer 1's dropped
+byte (+0x44d5) and calls `Player_takeDamage` for player 1 directly (return address
+0x13aeb8), which kills the character there; from then on B ignores machine A's input.
+Machine A plays on for some 240 ticks while B sends it the four-byte notice 0xbd43 every
+ten frames. It repeated exactly, and no patch section changes it, as it should not. The
+driver now recognises the case (a dropped byte set on either machine at the first
+differing tick) and reports it as a kick or leave, not as a desync.
+
+So the statement is: with K1 and K2 patched, random play of that kind over 788,674
 ticks in 24 levels produced no difference in the shared seed, positions, hit points, bags,
 statistics, equipment, skills or button maps. It is not a statement about paths the
 random input does not reach (above), nor about characters with skills.
@@ -793,7 +818,18 @@ difference ledger rows F5 and F9 consider between a console and an emulator sett
 Machine A is untouched. First tick at which a column differs; "sync flag" is the game's
 own out-of-sync byte (peer +0x44d7), after which the session ends:
 
-FPTABLE
+| Level, input | Rounding on B | Pairs | First raw difference | Sync flag | Ticks from first position difference to the flag |
+|---|---|---|---|---|---|
+| `strife`, none | nearest, up, down | 6 | none in 3,149 ticks | never | — |
+| `strife`, movement only | nearest, up, down | 6 | position, tick 697 (the first tick anybody moves) | ticks 728–782 | 31, 31, 31, 31, 43, 85 |
+| `strife`, movement and fighting | nearest, up, down | 6 | position, tick 697–698 | ticks 706–798 | 8, 62, 62, 65, 65, 101 |
+| `drunare`, at the entrance, none | nearest, up, down | 3 | hit points (and mana) raw bits from tick 701 with nearest and up; nothing with down | never in 3,240 ticks | — |
+| `drunare`, walk to the trigger, then nothing | nearest, up, down | 3 | position, tick 759 (the first step) | tick 872, 766, 872 | 113, 7, 113 |
+| `drunare`, walk to the trigger, then fight | nearest, up | 4 | position, tick 759 | tick 872 (nearest), 766 (up) | 113, 7 |
+
+(In the last two rows the flag came during or right after the walk; no mismatched pair
+was still in sync when the cutscene or the fight began, so those were never tested as
+such.)
 
 Reading:
 
@@ -801,7 +837,7 @@ Reading:
   `drunare` the raw bits of one player's hit points differ from the first tick — the
   regeneration sum rounds differently — which the game does not hash.)
 - **As soon as a player moves, the position's raw bits differ on that tick, and the
-  game's sync check trips within FPLO–FPHI ticks** (it hashes whole-number positions, so
+  game's sync check trips within 7–113 ticks** — a tenth of a second to two seconds — (it hashes whole-number positions, so
   it needs the difference to cross an integer). That is true in `strife` with movement
   alone, before any fight, and in `drunare` on the walk to the trigger: no pair with a
   rounding mismatch got as far as the arena's cutscene or fight in sync.

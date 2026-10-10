@@ -73,6 +73,8 @@ differences the other items are about:
   game fixes, and both recompilers on. Leave them at the defaults. Even controller input is
   decoded with float arithmetic, so a different rounding setting diverges within a second
   of stick use (FINDINGS F5, F9; `docs/issues/float-divergence.md`).
+  Confirmed on two linked emulator instances: with one machine's float rounding mode changed,
+  sync breaks within about two seconds of anyone moving, in every level (FINDINGS V15).
 - **Same test patches.** Patches marked "every player must use the same setting" change
   the simulation; a mix is itself a desync. Patches marked "a mix is safe" only make one
   machine do what the others already do.
@@ -100,7 +102,7 @@ differences the other items are about:
 
 Two of these are now confirmed on the running game: on two emulator instances joined
 together (the Play!-based rig, `docs/issues/live-rig.md`), random input reproduced the K1 and
-K2 desyncs and the K1 and K2 patches removed them. That was the Play! emulator, not PCSX2 or
+K2 desyncs and the K1 and K2 patches removed them; the LAG-1 patch was measured there too. With K1 and K2 fixed, 60 further pairs over 24 levels found no other desync. That was the Play! emulator, not PCSX2 or
 a console. The other patches in `patches/SLUS-20973_4028A55F.pnach` have been executed
 function by function but not on a running game. These are the ones written as fixes rather
 than diagnostics. Each only makes one machine do what the
@@ -118,7 +120,7 @@ holds for the machines that have it — enable them on every machine:
 | save-point prompt ignores this machine's card screen | B9 |
 | net launch clears a stuck memory-card latch | B10, B11 |
 | prediction copy starts without pending damage | G11–G13, G24 |
-| equalise at once (LAG-1) | input delay staying high for 15–30 s after a stall, which is also what widens K1 and K2 |
+| equalise at once (LAG-1) | input delay staying high after a stall, which is also what widens K1 and K2 — **confirmed live**: peak 11 frames instead of 34, cleared in 10 s instead of 35 |
 
 Leave the "Arena diagnostic" and "Diagnostic" sections off unless you are bisecting; several
 of them change the simulation and must then be identical on every machine. "Option commit

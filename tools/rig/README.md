@@ -260,6 +260,11 @@ lines before the fuzz; `--extra "…"` passes options to `rig.py pair` (for exam
 `--extra "--b-arg --fp-round --b-arg nearest"`); `--keep` keeps the logs of pairs that
 agreed too.
 
+A pair in which one machine dropped the other at the first differing tick (random input
+found the pause menu's kick entry, or left the game) is reported as a kick or leave, not
+as a desync. `rig.py pair` kills a machine that is still running two minutes after the
+other has ended (`RTA_PAIR_GRACE`).
+
 The printed summary gives pairs, ticks, and per class of divergence — the shared columns
 that differ at the first differing tick, with player numbers folded together — the pairs
 in it and the sections that removed it. `OUT/summary.tsv` has one line per pair with the

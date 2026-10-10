@@ -63,9 +63,9 @@ G_PLAYERS, REC_SIZE, REC_OBJ = RC.G_PLAYERS, RC.REC_SIZE, RC.REC_OBJ
 G_SKILL_TABLE = 0x41B170                        # g_skillTable[id], ids 1-101
 G_HANDLE_FREE = 0x864EA8                        # head of the free list of handle nodes
 G_FORCE_GHOST_REBASE = 0x402797                 # s8: rebuild the prediction copy (per machine)
-G_PADS = 0x41BFB8                               # 0x58 bytes per player slot
+G_PADS = 0x41BFD8                               # 0x58 bytes per player slot
 G_PVP_MODE_A, G_PVP_MODE_B = 0x4F711C, AM.G_PVP_MODE_B
-G_ALIVE_COUNT, G_ALIVE_LIST = RC.G_LOCAL_ALIVE_COUNT, RC.G_LOCAL_ALIVE_LIST
+G_ALIVE_COUNT, G_ALIVE_LIST = 0x4F8420, 0x4F8440    # g_alivePlayerCount, g_alivePlayers (slots; FINDINGS G19)
 
 VT_SKILL, VT_SPELL, VT_GAMEOBJECT, VT_PROJECTILE = 0x512670, 0x515BA0, 0x5122A8, 0x5120B8
 
@@ -85,20 +85,28 @@ F_12, F_24, F_72 = 0x41400000, 0x41C00000, 0x42900000
 
 SKILL_IDS = tuple(range(35, 69))
 
-# The original functions of the shared machinery (name -> address).  SKILLS at the end of
-# the file adds the per-skill ones; tools/difftest_skills_b.py runs exactly MODELLED for
-# real.
-MODELLED = {
-    'Skill_canUse_base': 0x3C8218, 'Skill_cast_base': 0x3C8220, 'Skill_manaCost_base': 0x3C82A8,
-    'Skill_getStatRange': 0x3C82E4, 'Skill_getStat': 0x3C85FC, 'Skill_getStatTier2': 0x3C8690,
-    'Skill_getStatFor': 0x3C87F0, 'Skill_getStatForHandle': 0x3C8864, 'Skill_adjustLevel': 0x3C88DC,
-    'Skill_manaFromStat4': 0x3C88E4,
-    'Spell_rand': 0x16A964, 'GameObject_rand': 0x1509D0,
-    'handle_link': 0x1A1738, 'handle_clear': 0x1A1698, 'handle_removeNode': 0x1A1868, 'list_push': 0x1A1980,
-    'iter_begin': 0x1A1A48, 'iter_next': 0x1A1B38, 'iter_end': 0x1A1AE8,
-    'creature_addSpell': 0x11A838, 'Creature_updateSpells': 0x11A868,
-    'Projectile_ctor': 0x150E48, 'obj_moveAndCollide': 0x1509F8,
+# The original functions the model implements: name -> (start, end).  The per-skill
+# sections below add theirs; tools/difftest_skills_b.py runs exactly these for real.
+FUNCTIONS = {
+    'Skill_canUse_base': (0x3C8218, 0x3C8220), 'Skill_cast_base': (0x3C8220, 0x3C8248),
+    'Skill_manaCost_base': (0x3C82A8, 0x3C82B8), 'Skill_getStatRange': (0x3C82E4, 0x3C85B0),
+    'Skill_getStat': (0x3C85FC, 0x3C8690), 'Skill_getStatTier2': (0x3C8690, 0x3C87F0),
+    'Skill_getStatFor': (0x3C87F0, 0x3C8864), 'Skill_getStatForHandle': (0x3C8864, 0x3C88DC),
+    'Skill_adjustLevel': (0x3C88DC, 0x3C88E4), 'Skill_manaFromStat4': (0x3C88E4, 0x3C8944),
+    'Spell_rand': (0x16A964, 0x16A98C), 'GameObject_rand': (0x1509D0, 0x1509F8),
+    'handle_clear': (0x1A1698, 0x1A1734), 'handle_link': (0x1A1738, 0x1A17CC),
+    'handle_removeNode': (0x1A1868, 0x1A18F0), 'list_push': (0x1A1980, 0x1A19D0),
+    'iter_begin': (0x1A1A48, 0x1A1AE8), 'iter_end': (0x1A1AE8, 0x1A1B34), 'iter_next': (0x1A1B38, 0x1A1BB0),
+    'creature_addSpell': (0x11A838, 0x11A868), 'Creature_updateSpells': (0x11A868, 0x11A91C),
+    'Projectile_ctor': (0x150E48, 0x150EE4), 'obj_moveAndCollide': (0x1509F8, 0x150E48),
 }
+
+# class tables whose slots the test must resolve: (table, 'Spell' or 'Creature', slots that
+# code of this module calls).  A slot whose function is not in FUNCTIONS is a call-out.
+CLASS_TABLES = [(VT_SPELL, 'Spell', (1,)), (VT_PROJECTILE, 'Creature', (1, 6)), (VT_GAMEOBJECT, 'Creature', (1, 6))]
+
+# per skill id: name, status and the names of its functions in FUNCTIONS (filled below)
+SKILLS = {}
 
 # virtual bodies: function address -> method name
 SKILL_BODIES = {
@@ -129,11 +137,31 @@ EXTERNALS.update({
     'light_link': Ext(0x148AF8, 'p', 0, 'n', '(light record)'),
     'light_relink': Ext(0x14A528, 'p', 0, 'n', '(light record)'),
     'light_unlink': Ext(0x14A4F0, 'p', 0, 'n', '(light record)'),
+    # --- damage, effects
+    'damage_apply': Ext(0x1E8230, 'ppiiiiDi', 2, 'i', '(victim, attacker, attack rating, -, -, flags, descriptor or 0, '
+                        'no-crit; min, max) -> 1 when the hit landed'),
+    'Creature_setEffectTimer': Ext(0x118950, 'pip', 1, 'n', '(creature, which, source; seconds)'),
+    'fx_impactPuffNearCamera': Ext(0x1FC150, 'vvi', 2, 'n', '(position, step, kind; radius, size): camera-gated puff'),
+    'camera_shake': Ext(0x1EBAE0, 'i', 1, 'n', '(0; strength)'),
+    'MissileWeapon_ctor': Ext(0x150EE4, 'piiivvip', 0, 'n', '(block, kind, model A, model B, position, velocity, facing, '
+                              'owner; on the stack: launch sample, impact sample, damage min, damage max, weapon '
+                              'rating, item flags, attack rating, damage flags, item)'),
+    'item_getModifiedField1a': Ext(0x103F88, 'p', 0, 'i', '(item) -> its attack rating with modifiers'),
+    'StrongStancePhantom_ctor': Ext(0x1618D4, 'ppiii', 0, 'n', '(block, player, the trigger\'s two arguments, 0)'),
+    'Creature.v30': Ext(0, 'pii', 0, 'n', 'stun (frames, flash)'),
+    'particleGroup_create': Ext(0x18E880, '', 0, 'i', '-> handle or 0'),
+    'particleGroup_begin': Ext(0x18E958, 'i', 0, 'n', '(handle): the particles spawned next join the group'),
+    'particleGroup_end': Ext(0x18E9A0, 'i', 0, 'n', '(handle)'),
+    'particleGroup_setMatrix': Ext(0x18E9E8, 'iM', 0, 'n', '(handle, 3x4 matrix)'),
+    'terrain_heightAtPoint': Ext(0x182F28, 'pv', 0, 'f', '(world, position) -> height'),
+    'Creature.v21': Ext(0, 'pp', 0, 'i', 'is ally (other)'),
+    'Creature.v22': Ext(0, 'pp', 0, 'i', 'is on my side (other player)'),
+    'GlowingShaft_ctor': Ext(0x202FF0, 'pviiii', 0, 'n', '(block, position, four integers): a rising shaft of light'),
+    'poisonGasSpell_ctor': Ext(0x202DE8, 'pviiipi', 0, 'n', '(block, position, life in frames, radius, 0, owner, damage)'),
     # --- world
     'world_collectInSphere': Ext(0x14AB80, 'viL', 1, 'n', '(centre, heading, list out; radius) -> objects'),
     'world_collectObjectsInArc': Ext(0x1614F0, 'viLp', 3, 'n', '(centre, heading, list out, filter; radius, '
                                      'arc in degrees, half width) -> objects, nearest first'),
-    'vec3_hermite': Ext(0x162310, 'ovvvv', 1, 'n', '(out, p0, p1, m0, m1; t)'),
     # --- virtual calls on creatures and other world objects: (this, ...)
     'Creature.v1': Ext(0, 'pi', 0, 'n', 'destroy (3)'),
     'Creature.v6': Ext(0, 'pp', 0, 'n', 'touched by (other)'),
@@ -142,6 +170,15 @@ EXTERNALS.update({
     'Spell.v4': Ext(0, 'p', 0, 'i', 'the value at spell +0x18'),
 })
 EXTERNALS['wstr_format'].stack = 2
+EXTERNALS['MissileWeapon_ctor'].stack = 9
+# callbacks that construct a GameObject: the real ones make ONE SHARED DRAW each (the seed of
+# the object's own generator); the model counts it where it makes the call
+OBJECT_CTORS = ('GameObject_ctor', 'LightEffect_ctor', 'poisonGasSpell_ctor', 'MissileWeapon_ctor',
+                'StrongStancePhantom_ctor', 'GlowingShaft_ctor')
+
+# functions other reference models own that the test runs for real beside this module's
+# (the model calls the other module's function): name -> address
+REAL_LIBRARY = {'vec3_hermite': 0x162310, 'mat34_setPosRotZ': 0x163B30, 'mat34_transformPoint': 0x1660A0}     # ref_core
 
 # names the model answers itself, at memory level, wherever a tools/ref_creature.py method
 # would have made them a callback
@@ -164,7 +201,7 @@ def shape_result(name, args, ret=0, fret=0, outs=None):
                 value = (0, 0, 0) if kind in 'oO' else ([] if kind in 'nL' else 0)
             if kind not in 'OW' or args[position]:
                 values.append(value)
-        if kind in 'ipvelsSOWVD':
+        if kind in 'ipvelsSOWVDM':
             position += 1
     if ext.ret == 's':
         return ('buf', given[0] if given else b'')
@@ -200,6 +237,8 @@ class Model(RC.Model):
     def __init__(self, mem, callbacks=None, external=()):
         RC.Model.__init__(self, mem, callbacks, external)
         self.sp = MODEL_STACK + MODEL_STACK_SIZE
+        self.addr_names = {}            # function address -> callback name, for class tables whose
+                                        # slot functions a caller has named itself
 
     # =====================================================================================
     # Plumbing
@@ -232,34 +271,30 @@ class Model(RC.Model):
             out.append(b)
         return bytes(out)
 
+    def _virtual(self, cls, bodies, obj, table, slot, args):
+        this = (obj + self.s16(table + 8 * slot)) & M32
+        function = self.u32(table + 8 * slot + 4)
+        name = '%s.v%d' % (cls, slot)
+        body = bodies.get(function)
+        if body is not None and name not in self.external:
+            return getattr(self, body)(this, *args)
+        if (cls, slot) in (('Spell', 2), ('Skill', 2)):     # a position goes to a callback by value
+            args = tuple(self.vec(a) if i == (0 if cls == 'Spell' else 2) else a for i, a in enumerate(args))
+        return self.call(self.addr_names.get(function) or name, this, *args)
+
     def vcall(self, obj, slot, *args):
         """A virtual call through object +0x48.  A body of OBJECT_BODIES (the effect
         objects of this module) runs here; anything else is the callback
         'Creature.v<slot>' - creatures, players and props alike."""
-        table = self.u32(obj + 0x48)
-        this = (obj + self.s16(table + 8 * slot)) & M32
-        body = OBJECT_BODIES.get(self.u32(table + 8 * slot + 4))
-        if body is not None and ('Creature.v%d' % slot) not in self.external:
-            return getattr(self, body)(this, *args)
-        return self.call('Creature.v%d' % slot, this, *args)
+        return self._virtual('Creature', OBJECT_BODIES, obj, self.u32(obj + 0x48), slot, args)
 
     def skill_call(self, skill, slot, *args):
         """A virtual call on a Skill (table pointer at +0x60)."""
-        table = self.u32(skill + 0x60)
-        this = (skill + self.s16(table + 8 * slot)) & M32
-        body = SKILL_BODIES.get(self.u32(table + 8 * slot + 4))
-        if body is not None and ('Skill.v%d' % slot) not in self.external:
-            return getattr(self, body)(this, *args)
-        return self.call('Skill.v%d' % slot, this, *args)
+        return self._virtual('Skill', SKILL_BODIES, skill, self.u32(skill + 0x60), slot, args)
 
     def spell_call(self, spell, slot, *args):
         """A virtual call on a Spell (table pointer at +0x14)."""
-        table = self.u32(spell + 0x14)
-        this = (spell + self.s16(table + 8 * slot)) & M32
-        body = SPELL_BODIES.get(self.u32(table + 8 * slot + 4))
-        if body is not None and ('Spell.v%d' % slot) not in self.external:
-            return getattr(self, body)(this, *args)
-        return self.call('Spell.v%d' % slot, this, *args)
+        return self._virtual('Spell', SPELL_BODIES, spell, self.u32(spell + 0x14), slot, args)
 
     def table_call(self, cls, obj, table_offset, slot, *args):
         if cls == 'Spell':
@@ -622,7 +657,7 @@ class Model(RC.Model):
         self.iter_begin(it, creature + 0x364, 0)
         while self.u32(it + 4):
             spell = self.u32(self.u32(it + 4) + 0xC)
-            self.spell_call(spell, 2, copy, self.u16(creature + 0x38))
+            self.spell_call(spell, 2, copy, self.s16(creature + 0x38))
             self.iter_next(it)
         self.iter_end(it, 2)
 
@@ -723,4 +758,1635 @@ class Model(RC.Model):
     # =====================================================================================
     @staticmethod
     def descriptor(*entries):
-        return ('desc', tuple(tuple(e) for e in entries))
+        """('desc', ((type, a, b, c), ...)): the four 16-bit fields of each entry in use."""
+        return ('desc', tuple(tuple(v & 0xFFFF for v in e) for e in entries))
+
+
+    # =====================================================================================
+    # 41 cyclone (and 84 berserkercyclone): docs/spec/skills-35-68.md section 41
+    # =====================================================================================
+    VT_SPELL_CYCLONE = 0x518A98
+    S_CYCLONE_WARN, S_CYCLONE_CLIP1, S_CYCLONE_CLIP2 = 0x54EF60, 0x54EF88, 0x54EFB8
+    S_CYCLONE_LUMP, S_CYCLONE_SOUND = 0x54EF98, 0x54EFA0
+    PDEF_CYCLONE_HELIX, PDEF_CYCLONE_SPARK = 0x8E5500, 0x8E5550
+
+    def cyclone_can_use(self, skill, caster):
+        """SkillCyclone_canUse 0x2d1484 (skill, caster) -> 1 or 0.  A caster without the
+        player flag: 1.  A player whose weapon class (record +0x4a86) is 4 (bow) or 6:
+        the warning text for 180 frames on that player's slot, and 0."""
+        if not self.u32(caster + 0xC) & 0x40:
+            return 1
+        if self.s8(self.record(caster) + 0x4A86) not in (4, 6):
+            return 1
+        self.call('hud_showMessage', self.call('text_lookup', self.S_CYCLONE_WARN), 0xB4, self.u32(caster + 0x3C8), 0)
+        return 0
+
+    def cyclone_cast(self, skill, level, caster, pos, facing=0):
+        """SkillCyclone_cast 0x2d161c (skill, level, caster, position, facing) -> the
+        SpellCyclone or 0: pool_new(0x7c) and the constructor.  Position and facing are
+        not used."""
+        spell = self.call('pool_new', 0x7C)
+        if spell:
+            self.cyclone_spell_ctor(spell, level, caster, skill)
+        return spell
+
+    def cyclone_spell_ctor(self, spell, level, owner, skill):
+        """SpellCyclone_ctor 0x2d17c8 (spell, level, owner, skill).
+
+        Spell base (ONE SHARED DRAW); the light record at +0x1c (radius 36) is linked; the
+        owner's action state +0x58c = 6 WHATEVER the owner is; the first spin clip is
+        looked up in the owner's class lump and kept at +0x78; spin time +0x68 = clip
+        length x (1/60) x statistic 1; then - STILL BEFORE THE PREDICTION-COPY TEST -
+        event slot 0 of that clip (a header every object playing the clip shares) is set to
+        mask 1 at 0.05 s (stores 0x2d1978, 0x2d197c) and the clip is pushed on the owner's
+        animation state with flags 0x23.  Two own draws seed the helix angles.  Only when
+        the owner is not the prediction copy (flag 0x20000): the voice line, the sound,
+        and every object within 480 of the owner (world_collectInSphere) is linked into
+        the candidate list +0x18, in the order of the query's list."""
+        u32, w32, w16, w8 = self.u32, self.w32, self.w16, self.w8
+        self.spell_base_ctor(spell, level, owner, skill, self.VT_SPELL_CYCLONE)
+        w32(spell + 0x18, 0)
+        self.wvec(spell + 0x4C, self.vec(owner + 0x10))
+        w8(spell + 0x25, 0)
+        w16(spell + 0x2E, 0x9E)
+        w16(spell + 0x26, 0x9E)
+        w32(spell + 0x40, 0x42100000)
+        w32(spell + 0x44, 0x3A4A4587)
+        w32(spell + 0x38, 0x42100000)
+        w32(spell + 0x3C, 0x3A4A4587)
+        w16(spell + 0x30, 0x6F)
+        w16(spell + 0x28, 0x6F)
+        w16(spell + 0x32, 0x43)
+        w16(spell + 0x2A, 0x43)
+        w32(spell + 0x48, 0)
+        w16(spell + 0x2C, 0)
+        w16(spell + 0x34, 0)
+        w8(spell + 0x24, 0)
+        self.call('light_link', spell + 0x1C)
+        w32(owner + 0x58C, 6)
+        w32(spell + 0x58, u32(G_SIM_FRAME))
+        clip = self.call('res_find', u32(u32(owner + 0x24)), self.S_CYCLONE_CLIP1)
+        w32(spell + 0x78, clip)
+        turns = self.stat(u32(spell + 8), 1, self.s8(spell))
+        clip = u32(spell + 0x78)
+        w32(spell + 0x68, C.mul(C.mul(C.from_int(self.s32(clip + 4)), DT), C.from_int(turns)))
+        w8(clip + 0x18, 1)                              # 0x2d1978: the shared clip header
+        w32(clip + 0x14, 0x3D4CCCCC)                    # 0x2d197c
+        self.call('anim_push', owner + 0x114, u32(spell + 0x78), 0x23)
+        w32(spell + 0x5C, 0)
+        w32(spell + 0x60, 0)
+        w16(spell + 0x64, self.spell_rand(spell))
+        w16(spell + 0x66, self.spell_rand(spell))
+        self.wvec(spell + 0x6C, self.vec(owner + 0x10))
+        if u32(u32(spell + 0xC) + 0xC) & 0x20000:       # 0x2d19c4: the prediction copy stops here
+            return
+        self.call('player_voice', u32(owner + 0x3C8), 10)
+        self.call('sound_playOnObject', self.call('res_find', self.S_CYCLONE_LUMP, self.S_CYCLONE_SOUND), owner, ONE)
+        head = self.query_list('world_collectInSphere', self.vec(owner + 0x10), self.s16(owner + 0x38), 0x43F00000)
+        for obj in self.list_objects(head):
+            self.handle_link(spell + 0x18, obj, obj)
+        self.handle_clear(head)
+
+    def cyclone_run(self, spell, pos, facing):
+        """SpellCyclone_run 0x2d1a94 (spell, position, facing): slot 2, once per tick of
+        the owner.
+
+          1. In a net game the "object or prediction copy" of the owner is fetched.
+          2. Player_animStep(owner; 1.0).  Event bit 1 (the clip's slot 0): spin time
+             +0x68 -= 0.05, and the slot's time IN THE SHARED CLIP HEADER += 0.05,
+             wrapped by the clip's length.  Event bit 4: +0x60 = 1 (the stop clip hit its
+             mark: no more hits).
+          3. hit tick = frame % 4 == 0 (% 5 on a level with flag 0x100).
+          4. Animation status bits 0x30 both clear: owner state = 2 and the spell ends.
+             Owner state not 6: the spell ends.
+          5. Spinning (+0x5c == 0): when the spin time is <= 0.072 the top track gets
+             life 1.0 and life rate -0.833, the stop clip is looked up, ITS event slot 2
+             is set to mask 4 at 0.167 s (shared header again), and it is started on the
+             owner - and once more on the "object or copy" when there is one - then +0x5c
+             = 1.  Then the move: speed = statistic 2 x 143.12 x 0.01 along the pad's two
+             stick values in the camera's frame, Player_move mode 5; the fx anchor +0x6c
+             follows 0.963 of the owner's displacement.
+             Stopping (+0x5c != 0): the light's radius shrinks by 0.916 a tick.
+          6. Unless stopping and past the mark: the fx (cyclone_update_fx), the weapon
+             tip = position + 28.58 along the horizontal direction to attach point 0, and
+             on a hit tick Player_meleeHit(owner, target, 0, 0x40000000; statistic 0 x
+             0.01) for every candidate of +0x18 the owner's slot 20 accepts whose centre
+             is within its radius + 23 of the tip, in list order.
+          7. net_isLocalSlot(owner's slot): the copy-rebuild countdown 0x402797 = 120."""
+        u32, w32 = self.u32, self.w32
+        facing = s16(facing)
+        here = self.vec(pos)
+        owner = u32(spell + 0xC)
+        ghost = self.call('net_objOrGhost', owner) if self.s8(G_NETWORK_MODE) else 0
+        events = self.call('Player_animStep', owner, ONE)
+        if events & 1:
+            clip = u32(spell + 0x78)
+            w32(spell + 0x68, C.sub(u32(spell + 0x68), 0x3D4CCCCC))
+            length = C.mul(C.from_int(self.s32(clip + 4)), DT)
+            when = C.add(u32(clip + 0x14), 0x3D4CCCCC)
+            w32(clip + 0x14, when)
+            if C.lt(length, when):
+                w32(clip + 0x14, C.sub(when, length))
+        if events & 4:
+            w32(spell + 0x60, 1)
+        period = C.to_int(0x40ABDE74 if u32(G_LEVEL_FLAGS) & 0x100 else 0x408F3962)
+        frame = self.s32(G_SIM_FRAME)
+        hit_tick = (abs(frame) % period) == 0
+        if not self.u16(owner + 0x11A) & 0x30:
+            w32(owner + 0x58C, 2)
+            return self.spell_end(spell)
+        if u32(owner + 0x58C) != 6:
+            return self.spell_end(spell)
+        if u32(spell + 0x5C):
+            radius = C.mul(u32(spell + 0x38), 0x3F6A7EF9)
+            w32(spell + 0x38, radius)
+            w32(spell + 0x40, radius)
+            inverse = C.div(ONE, C.mul(radius, radius))
+            w32(spell + 0x44, inverse)
+            w32(spell + 0x3C, inverse)
+        else:
+            if C.le(u32(spell + 0x68), 0x3D93708A):
+                w32(owner + self.s8(owner + 0x118) * 0x20 + 0x10C, ONE)
+                lump = u32(u32(owner + 0x24))
+                w32(owner + self.s8(owner + 0x118) * 0x20 + 0x110, 0xBF555554)
+                clip = self.call('res_find', lump, self.S_CYCLONE_CLIP2)
+                w32(spell + 0x78, clip)
+                self.w8(clip + 0x28, 4)
+                w32(clip + 0x24, 0x3E2B00BC)
+                self.call('anim_startBlendInOut', owner + 0x114, u32(spell + 0x78), 0x32, ZERO, 0x3E676C48)
+                if ghost:
+                    self.call('anim_startBlendInOut', ghost + 0x114, u32(spell + 0x78), 0x32, ZERO, 0x3E676C48)
+                w32(spell + 0x5C, 1)
+            speed = C.mul(C.mul(C.from_int(self.stat(u32(spell + 8), 2, self.s8(spell))), 0x430F1F71), F_0_01)
+            yaw = -s32(self.call('net_getCamYaw', u32(owner + 0x3C8)))
+            side = (C.neg(C.cos16(yaw - 0x4000)), C.neg(C.sin16(yaw - 0x4000)), ZERO)
+            ahead = (C.neg(C.cos16(yaw - 0x8000)), C.neg(C.sin16(yaw - 0x8000)), ZERO)
+            pad = (G_PADS + self.s32(owner + 0x3C8) * 0x58) & M32
+            along = C.mul(C.neg(speed), u32(pad + 0x18))
+            across = C.mul(speed, u32(pad + 0x14))
+            push = tuple(C.add(C.mul(side[i], along), C.mul(ahead[i], across)) for i in range(3))
+            before = self.vec(owner + 0x10)
+            self.call('Player_move', owner, 5, pad, push)
+            for i in range(3):
+                moved = C.mul(C.sub(u32(owner + 0x10 + 4 * i), before[i]), 0x3F7686D7)
+                w32(spell + 0x6C + 4 * i, C.add(u32(spell + 0x6C + 4 * i), moved))
+        if not u32(spell + 0x5C) or not u32(spell + 0x60):
+            self.cyclone_update_fx(spell, here)
+            hand = self.call('model_getAttachPoint', u32(owner + 0x544), here, facing, owner + 0x114, 0, 0, ONE)
+            dx, dy = C.sub(hand[0], here[0]), C.sub(hand[1], here[1])
+            inverse = C.rsqrt(ONE, C.add(C.mul(dx, dx), C.mul(dy, dy)))
+            reach = 0x41E4ACFD
+            tip = (C.add(here[0], C.mul(C.mul(dx, inverse), reach)), C.add(here[1], C.mul(C.mul(dy, inverse), reach)),
+                   C.add(here[2], C.mul(C.mul(ZERO, inverse), reach)))
+            if hit_tick:
+                scale = C.mul(C.from_int(self.stat(u32(spell + 8), 0, self.s8(spell))), F_0_01)
+                node = u32(spell + 0x18)
+                while node:
+                    obj = u32(node + 0xC)
+                    if obj and self.vcall(owner, 20, obj):
+                        ox, oy = C.sub(u32(obj + 0x10), tip[0]), C.sub(u32(obj + 0x14), tip[1])
+                        if C.lt(C.sqrt(C.add(C.mul(ox, ox), C.mul(oy, oy))), C.add(u32(obj + 0x1C), 0x41B80000)):
+                            self.call('Player_meleeHit', owner, obj, 0, 0x40000000, scale)
+                    node = u32(node)
+        if self.call('net_isLocalSlot', u32(owner + 0x3C8)):
+            self.w8(G_FORCE_GHOST_REBASE, 0x78)
+
+    def cyclone_update_fx(self, spell, here):
+        """SpellCyclone_updateFx 0x2d21e0 (spell, position): presentation, but with OWN
+        draws.  The light follows the position (17 up) and pulses with the frame counter;
+        the two helix angles +0x64 / +0x66 advance by 0x6f5 / 0x2e7; 72 particles along a
+        Hermite curve from the anchor +0x6c to 90 above it; at level 9 and above, on
+        frames divisible by 3, one spark with THREE OWN DRAWS."""
+        u32, w32 = self.u32, self.w32
+        if not isinstance(here, tuple):
+            here = self.vec(here)
+        self.wvec(spell + 0x4C, here)
+        w32(spell + 0x54, C.add(u32(spell + 0x54), 0x41880000))
+        self.call('light_relink', spell + 0x1C)
+        frame = self.s32(G_SIM_FRAME)
+        low = frame - (((frame + 0xFFFF) if frame < 0 else frame) >> 16 << 16)
+        pulse = C.mul(C.cos16(low), 0x42B40000)
+        self.w16(spell + 0x64, self.u16(spell + 0x64) + 0x6F5)
+        radius = C.add(pulse, 0x42100000)
+        w32(spell + 0x38, radius)
+        w32(spell + 0x40, radius)
+        inverse = C.div(ONE, C.mul(radius, radius))
+        w32(spell + 0x44, inverse)
+        w32(spell + 0x3C, inverse)
+        c1, s1 = C.cos16(self.s16(spell + 0x64)), C.sin16(self.s16(spell + 0x64))
+        anchor = self.vec(spell + 0x6C)
+        three, far, tangent = 0x40400000, 0x41F80000, 0x43280000
+        p0 = (C.add(C.mul(c1, three), anchor[0]), C.add(C.mul(s1, three), anchor[1]), C.add(ZERO, anchor[2]))
+        self.w16(spell + 0x66, self.u16(spell + 0x66) + 0x2E7)
+        c2, s2 = C.cos16(self.s16(spell + 0x66)), C.sin16(self.s16(spell + 0x66))
+        p1 = (C.add(C.mul(c2, far), anchor[0]), C.add(C.mul(s2, far), anchor[1]), C.add(0x42B40000, anchor[2]))
+        m0 = (C.mul(ZERO, tangent), C.mul(ZERO, tangent), C.mul(ONE, tangent))
+        m1 = (C.mul(c2, tangent), C.mul(s2, tangent), C.mul(ZERO, tangent))
+        previous = p0
+        t = ZERO
+        while True:
+            swirl = C.mul(C.mul(t, 0x46686400), 0x447A0000)
+            width = C.add(C.mul(t, 0x41E00000), three)
+            turn = s16(C.to_int(C.add(swirl, HALF) if C.le(ZERO, swirl) else C.sub(swirl, HALF)))
+            angle = self.s16(spell + 0x64) + turn
+            ox = C.mul(C.cos16(angle), width)
+            oy = C.mul(C.sin16(angle), width)
+            point = C.vec3_hermite(t, p0, p1, m0, m1)
+            point = (C.add(point[0], ox), C.add(point[1], oy), C.add(point[2], ZERO))
+            k = 0xBF065E67
+            velocity = tuple(C.mul(C.sub(previous[i], point[i]), k) for i in range(3))
+            self.call('particle_spawn', self.PDEF_CYCLONE_HELIX, point, velocity, ZERO)
+            t = C.add(t, 0x3C656041)
+            previous = point
+            if not C.le(t, ONE):
+                break
+        if self.s8(spell) >= 9 and abs(frame) % 3 == 0:
+            point = (u32(spell + 0x6C), u32(spell + 0x70), C.add(u32(spell + 0x74), 0x42840000))
+            vx = C.mul(C.sub(self.unit(self.spell_rand(spell)), HALF), 0x41F00000)
+            vy = C.mul(C.sub(self.unit(self.spell_rand(spell)), HALF), 0x41F00000)
+            vz = C.mul(self.unit(self.spell_rand(spell)), 0x421C0000)
+            self.call('particle_spawn', self.PDEF_CYCLONE_SPARK, point, (vx, vy, vz), ZERO)
+
+
+    # =====================================================================================
+    # Bow skills 43-47: what the skill arrows share (docs/spec/skills-35-68.md Part 2,
+    # "Bow skills: shared path", S.1 and S.9)
+    # =====================================================================================
+    def bow_can_use(self, caster, text_key):
+        """Slot 1 of the five bow skills (0x2d5fc4, 0x2d6d40, 0x2d877c, 0x2d9a18,
+        0x2dac30): 1 for a caster without the player flag and for a player whose weapon
+        class (record +0x4a86) is 4, a bow; otherwise the warning text for 180 frames on
+        that player's slot, and 0."""
+        if not self.u32(caster + 0xC) & 0x40 or self.s8(self.record(caster) + 0x4A86) == 4:
+            return 1
+        self.call('hud_showMessage', self.call('text_lookup', text_key), 0xB4, self.u32(caster + 0x3C8), 0)
+        return 0
+
+    def local_vec(self, values):
+        """A vector the original keeps in its frame, for a callee that takes its address."""
+        addr = self.alloca(12)
+        for i in range(3):
+            self.mem.poke(addr + 4 * i, 4, values[i] & M32)
+        return addr
+
+    def _arrow_light(self, obj, pos, radius, falloff, colour):
+        """The light record every skill arrow carries at +0x70 (position +0xa0)."""
+        w32, w16 = self.w32, self.w16
+        self.w8(obj + 0x79, 0)
+        self.wvec(obj + 0xA0, pos)
+        w32(obj + 0x94, radius)
+        w32(obj + 0x8C, radius)
+        w32(obj + 0x98, falloff)
+        w32(obj + 0x90, falloff)
+        for off in (0x7A, 0x82):
+            w16(obj + off, colour[0])
+            w16(obj + off + 2, colour[1])
+            w16(obj + off + 4, colour[2])
+        w32(obj + 0x9C, 0)
+        w16(obj + 0x80, 0)
+        w16(obj + 0x88, 0)
+        self.w8(obj + 0x78, 0)
+        self.call('light_link', obj + 0x70)
+
+    def _arrow_velocity_facing(self, obj, speed):
+        """Level flight along the facing at +0x64: velocity +0x54 = (cos, sin, 0) x speed."""
+        speed = C.from_int(s32(speed))
+        self.w32(obj + 0x54, C.mul(C.cos16(self.s16(obj + 0x64)), speed))
+        self.w32(obj + 0x58, C.mul(C.sin16(self.s16(obj + 0x64)), speed))
+        self.w32(obj + 0x5C, 0)
+
+    def _arrow_velocity_dir(self, obj, direction, speed):
+        """The second constructors: velocity +0x54 = the direction, normalised with a
+        reciprocal square root, times the speed (the vertical part is kept)."""
+        speed = C.from_int(s32(speed))
+        self.wvec(obj + 0x54, direction)
+        x, y, z = self.vec(obj + 0x54)
+        inverse = C.rsqrt(ONE, C.add(C.add(C.mul(x, x), C.mul(y, y)), C.mul(z, z)))
+        self.w32(obj + 0x5C, C.mul(C.mul(z, inverse), speed))
+        self.w32(obj + 0x54, C.mul(C.mul(x, inverse), speed))
+        self.w32(obj + 0x58, C.mul(C.mul(y, inverse), speed))
+
+    def _arrow_blocked_for_player(self, other):
+        """What a player's skill arrow passes through: objects with flag 0x1000000, and
+        creatures with creature flag 0x4000000."""
+        flags = self.u32(other + 0xC)
+        return bool(flags & 0x1000000 or (flags & 0x20 and self.u64(other + 0xA8) & 0x4000000))
+
+    # =====================================================================================
+    # 43 firearrow: docs/spec/skills-35-68.md section 43
+    # =====================================================================================
+    VT_FIRE_ARROW = 0x518DE0
+    S_FIREARROW_WARN, S_FIREARROW_LUMP, S_FIREARROW_SOUND, S_FIREARROW_HIT = 0x54F278, 0x54F2A0, 0x54F2A8, 0x54F2C0
+
+    def firearrow_can_use(self, skill, caster):
+        """SkillFireArrow_canUse 0x2d5fc4."""
+        return self.bow_can_use(caster, self.S_FIREARROW_WARN)
+
+    def firearrow_cast(self, skill, level, caster, pos, facing):
+        """SkillFireArrow_cast 0x2d603c (skill, level, caster, position, facing) -> 0.
+        pool_new(0xb0); with a block the level goes through slot 14 (level, 20) and the
+        arrow is built 12 below the cast position, flying along `facing`."""
+        start = (self.u32(pos), self.u32(pos + 4), C.sub(self.u32(pos + 8), F_12))
+        obj = self.call('pool_new', 0xB0)
+        if obj:
+            level = self.skill_call(skill, 14, level, 0x14)
+            self.firearrow_ctor(obj, self.local_vec(start), facing, caster, level, skill)
+        return 0
+
+    def _firearrow_common(self, obj, pos, owner, level, skill):
+        pos = self.vec(pos)
+        self.projectile_ctor(obj, self.local_vec(pos), owner, 0)
+        self.w32(obj + 0x48, self.VT_FIRE_ARROW)
+        self._arrow_light(obj, pos, 0x42C00000, 0x38E38E38, (0x6D, 100, 0x4C))
+        self.w32(obj + 0xAC, skill)
+
+    def _firearrow_stats(self, obj, owner):
+        """Radius +0x1c = statistic 2, and the speed = statistic 1, both through slot 12
+        with cap 10 (a monster's arrow: level limited to 10, tier 2 where there is one)."""
+        skill = self.u32(obj + 0xAC)
+        self.w32(obj + 0x1C, C.from_int(self.stat_for(skill, 2, self.u32(obj + 0x6C), owner, 10)))
+        return self.stat_for(self.u32(obj + 0xAC), 1, self.u32(obj + 0x6C), owner, 10)
+
+    def firearrow_ctor(self, obj, pos, facing, owner, level, skill):
+        """FireArrowProjectile_ctor 0x2d6238 (object, position, facing, owner, level,
+        skill).  Projectile base (ONE SHARED DRAW), light, skill +0xac, facing +0x64,
+        level +0x6c, radius and speed from the statistics, age +0x68 = 0, ended +0x60 =
+        0, on the every-frame run list, launch sound."""
+        self._firearrow_common(obj, pos, owner, level, skill)
+        self.w16(obj + 0x64, facing)
+        self.w32(obj + 0x6C, level)
+        speed = self._firearrow_stats(obj, owner)
+        self._arrow_velocity_facing(obj, speed)
+        self.w32(obj + 0x68, 0)
+        self.w32(obj + 0x60, 0)
+        self.call('obj_runEveryFrame', obj)
+        self.call('sound_playOnObject', self.call('res_find', self.S_FIREARROW_LUMP, self.S_FIREARROW_SOUND), obj, ONE)
+
+    def firearrow_ctor2(self, obj, pos, direction, owner, level, skill):
+        """FireArrowProjectile_ctor2 0x2d6440 (object, position, direction, owner, level,
+        skill): the monsters' constructor.  As the first, but the facing is
+        atan2_16(direction.y, direction.x) and the velocity is the normalised direction
+        times the speed."""
+        direction = self.vec(direction)
+        self._firearrow_common(obj, pos, owner, level, skill)
+        facing = C.atan2_16(direction[1], direction[0])
+        self.w32(obj + 0x6C, level)
+        self.w16(obj + 0x64, facing)
+        speed = self._firearrow_stats(obj, owner)
+        self._arrow_velocity_dir(obj, direction, speed)
+        self.w32(obj + 0x68, 0)
+        self.w32(obj + 0x60, 0)
+        self.call('obj_runEveryFrame', obj)
+        self.call('sound_playOnObject', self.call('res_find', self.S_FIREARROW_LUMP, self.S_FIREARROW_SOUND), obj, ONE)
+
+    def firearrow_run(self, obj):
+        """FireArrowProjectile_run 0x2d66ac, slot 4.  Nothing once ended.  Age +0x68 += 1;
+        obj_moveAndCollide with the velocity (the hit handler runs inside it); terrain:
+        end(1); age 601 or more: end(0); else a camera-gated puff and the light follows."""
+        u32 = self.u32
+        if u32(obj + 0x60):
+            return
+        self.w32(obj + 0x68, u32(obj + 0x68) + 1)
+        result = self.obj_move_and_collide(obj, self.local_vec(self.vec(obj + 0x54)))
+        if result & 1:
+            return self.firearrow_end(obj, result & 1)
+        if not self.s32(obj + 0x68) < 0x259:
+            return self.firearrow_end(obj, 0)
+        radius = u32(obj + 0x1C)
+        size = C.add(C.mul(C.mul(radius, radius), 0x3CB42246), 0x3E88B439)
+        step = tuple(C.mul(u32(obj + 0x54 + 4 * i), DT) for i in range(3))
+        self.call('fx_impactPuffNearCamera', self.vec(obj + 0x10), step, 1, radius, size)
+        self.wvec(obj + 0xA0, self.vec(obj + 0x10))
+        self.call('light_relink', obj + 0x70)
+
+    def firearrow_on_hit(self, obj, other):
+        """FireArrowProjectile_onHit 0x2d685c, slot 6 (arrow, object touched).
+
+        Nothing without an owner (the handle +0x4c is empty once the owner is destroyed).
+        s = statistic 0 through slot 13 (level, owner handle, cap 0); ONE OWN DRAW r.
+        Monster owner: its slot 20 must accept the object; damage_apply(s .. s + int(s x
+        0.2 x r/65536), attack 100000, flags 0x60, descriptor entry (0x15, s, s, 0)).
+        Player owner: not through objects with flag 0x1000000 or creatures with creature
+        flag 0x4000000; slot 20; damage = the owner record's weapon minimum and maximum
+        (+0xd0, +0xd4) READ NOW, flags 0x60 with the knock bits by level (6-10: 0x40000,
+        11-15: 0x80000, 16+: 0x200000), descriptor entry (0x1f, 100, s, s).
+        Then end(2).  There is no "already hit" test: every object overlapped in the same
+        frame is damaged."""
+        u32 = self.u32
+        if not u32(obj + 0x4C):
+            return
+        skill = u32(obj + 0xAC)
+        amount = s32(self.skill_call(skill, 13, 0, u32(obj + 0x6C), obj + 0x4C, 0))
+        draw = self.obj_rand(obj)
+        base = C.from_int(amount)
+        extra = C.to_int(C.mul(C.mul(base, 0x3E4CCCCC), self.unit(draw)))
+        owner = self.handle_obj(obj + 0x4C)
+        if not u32(owner + 0xC) & 0x40:
+            if not self.vcall(owner, 20, other):
+                return
+            desc = self.descriptor((0x15, amount & 0xFFFF, amount & 0xFFFF, 0))
+            self.call('damage_apply', other, self.handle_obj(obj + 0x4C), 100000, 0, 0, 0x60, desc, 0,
+                      base, C.from_int(amount + s32(extra)))
+        else:
+            if self._arrow_blocked_for_player(other) or not self.vcall(owner, 20, other):
+                return
+            level = self.s32(obj + 0x6C)
+            flags = 0x200060 if level >= 16 else 0x80060 if level > 10 else 0x40060 if level > 5 else 0x60
+            desc = self.descriptor((0x1F, 100, amount & 0xFFFF, amount & 0xFFFF))
+            owner = self.handle_obj(obj + 0x4C)
+            rec = self.record(owner)
+            self.call('damage_apply', other, owner, 100000, 0, 0, flags, desc, 0,
+                      C.from_int(self.s32(rec + 0xD0)), C.from_int(self.s32(rec + 0xD4)))
+        self.firearrow_end(obj, 2)
+
+    def firearrow_end(self, obj, reason):
+        """FireArrowProjectile_end 0x2d6bb8 (arrow, reason), once per arrow (guard +0x60):
+        the impact sound unless the reason is 0 (expiry), obj_delete, ended = 1."""
+        if self.u32(obj + 0x60):
+            return
+        if reason:
+            self.call('sound_playOnObject', self.call('res_find', self.S_FIREARROW_LUMP, self.S_FIREARROW_HIT), obj, ONE)
+        self.call('obj_delete', obj)
+        self.w32(obj + 0x60, 1)
+
+
+    def obj_ball(self, obj):
+        """A unit-ball sample from an object's own generator (three draws per try)."""
+        return self.ball(lambda: self.obj_rand(obj))
+
+    def spell_ball(self, spell):
+        """A unit-ball sample from a spell's own generator (three draws per try)."""
+        return self.ball(lambda: self.spell_rand(spell))
+
+    def _monster_spread(self, amount, draw):
+        """(low, high) of a monster-owned effect: amount .. amount + int(amount x 0.2 x
+        draw / 65536), as floats."""
+        base = C.from_int(amount)
+        extra = C.to_int(C.mul(C.mul(base, 0x3E4CCCCC), self.unit(draw)))
+        return base, C.from_int(amount + s32(extra))
+
+    def _arrow_flight(self, obj, end, particles, end_reason_terrain=1):
+        """The run every skill arrow but the fire one shares: nothing once ended (+0x60);
+        age +0x6c += 1; obj_moveAndCollide (the hit handler runs inside); terrain: end;
+        age 601 or more: end(0); else the flight particles."""
+        if self.u32(obj + 0x60):
+            return
+        self.w32(obj + 0x6C, self.u32(obj + 0x6C) + 1)
+        result = self.obj_move_and_collide(obj, self.local_vec(self.vec(obj + 0x54)))
+        if result & 1:
+            return end(obj, end_reason_terrain)
+        if not self.s32(obj + 0x6C) < 0x259:
+            return end(obj, 0)
+        particles(obj)
+
+    # =====================================================================================
+    # 44 coldarrow: docs/spec/skills-35-68.md section 44
+    # =====================================================================================
+    VT_COLD_ARROW = 0x518EF8
+    S_COLDARROW_WARN, S_COLDARROW_LUMP, S_COLDARROW_SOUND, S_COLDARROW_HIT = 0x54F360, 0x54F388, 0x54F390, 0x54F3A8
+    PDEF_COLD_A, PDEF_COLD_B, PDEF_COLD_GROUND = 0x8E5730, 0x8E5780, 0x8E57D0
+
+    def coldarrow_can_use(self, skill, caster):
+        """SkillColdArrow_canUse 0x2d6d40."""
+        return self.bow_can_use(caster, self.S_COLDARROW_WARN)
+
+    def coldarrow_cast(self, skill, level, caster, pos, facing):
+        """SkillColdArrow_cast 0x2d6db8 -> 0: as FireArrow's (block 0xb0, 12 below, slot
+        14 (level, 20))."""
+        start = (self.u32(pos), self.u32(pos + 4), C.sub(self.u32(pos + 8), F_12))
+        obj = self.call('pool_new', 0xB0)
+        if obj:
+            level = self.skill_call(skill, 14, level, 0x14)
+            self.coldarrow_ctor(obj, self.local_vec(start), facing, caster, level, skill)
+        return 0
+
+    def _coldarrow_common(self, obj, pos, owner, skill):
+        pos = self.vec(pos)
+        self.projectile_ctor(obj, self.local_vec(pos), owner, 0)
+        self.w32(obj + 0x48, self.VT_COLD_ARROW)
+        self._arrow_light(obj, pos, 0x431C0000, 0x382C598A, (0x59, 0x59, 0x82))
+        self.w32(obj + 0xAC, skill)
+
+    def _arrow_finish(self, obj, lump, sound):
+        self.w32(obj + 0x6C, 0)
+        self.w32(obj + 0x60, 0)
+        self.call('obj_runEveryFrame', obj)
+        self.call('sound_playOnObject', self.call('res_find', lump, sound), obj, ONE)
+
+    def coldarrow_ctor(self, obj, pos, facing, owner, level, skill):
+        """ColdArrowProjectile_ctor 0x2d6fb4 (object, position, facing, owner, level,
+        skill).  Projectile base (ONE SHARED DRAW), light, radius +0x1c = 7.0, level
+        +0x68, speed = statistic 1 through slot 12 (cap 10), age +0x6c = 0."""
+        self._coldarrow_common(obj, pos, owner, skill)
+        self.w16(obj + 0x64, facing)
+        self.w32(obj + 0x1C, 0x40E00000)
+        self.w32(obj + 0x68, level)
+        self._arrow_velocity_facing(obj, self.stat_for(skill, 1, level, owner, 10))
+        self._arrow_finish(obj, self.S_COLDARROW_LUMP, self.S_COLDARROW_SOUND)
+
+    def coldarrow_ctor2(self, obj, pos, direction, owner, level, skill):
+        """ColdArrowProjectile_ctor2 0x2d718c: the monsters' constructor (direction
+        instead of facing)."""
+        direction = self.vec(direction)
+        self._coldarrow_common(obj, pos, owner, skill)
+        facing = C.atan2_16(direction[1], direction[0])
+        self.w32(obj + 0x68, level)
+        self.w16(obj + 0x64, facing)
+        self.w32(obj + 0x1C, 0x40E00000)
+        speed = self.stat_for(self.u32(obj + 0xAC), 1, level, owner, 10)
+        self._arrow_velocity_dir(obj, direction, speed)
+        self._arrow_finish(obj, self.S_COLDARROW_LUMP, self.S_COLDARROW_SOUND)
+
+    def _flight_particle(self, obj, definition, speed, reach):
+        """One flight particle: velocity = a ball sample x speed, position = the arrow
+        + a second ball sample x radius x reach.  Six OWN draws or more."""
+        v = self.obj_ball(obj)
+        velocity = tuple(C.mul(c, speed) for c in v)
+        w = self.obj_ball(obj)
+        radius = self.u32(obj + 0x1C)
+        point = tuple(C.add(self.u32(obj + 0x10 + 4 * i), C.mul(C.mul(w[i], radius), reach)) for i in range(3))
+        self.call('particle_spawn', definition, point, velocity, ZERO)
+
+    def _coldarrow_particles(self, obj):
+        self.wvec(obj + 0xA0, self.vec(obj + 0x10))
+        self.call('light_relink', obj + 0x70)
+        for _ in range(7):
+            self._flight_particle(obj, self.PDEF_COLD_A, 0x41700000, 0x3E800000)
+        self._flight_particle(obj, self.PDEF_COLD_B, 0x41600000, 0x3E800000)
+
+    def coldarrow_run(self, obj):
+        """ColdArrowProjectile_run 0x2d73c8, slot 4: the shared flight; each flying frame
+        the light follows and 8 particles are made (7 + 1, two ball samples of OWN draws
+        each)."""
+        self._arrow_flight(obj, self.coldarrow_end, self._coldarrow_particles)
+
+    def coldarrow_on_hit(self, obj, other):
+        """ColdArrowProjectile_onHit 0x2d7aac, slot 6.
+
+        Nothing without an owner.  Player owner: not through flag 0x1000000 / creature
+        flag 0x4000000 objects; slot 20; effect 10; damage = the owner record's weapon
+        minimum and maximum read now, flags 0x40 (11-15: | 0x40000, 16+: | 0x80000),
+        descriptor entry (0x20, 100, statistic 2, statistic 2) through slot 13 (cap 0).
+        Monster owner: slot 20; effect 10; s = statistic 0 (slot 13, cap 0); ONE OWN DRAW;
+        damage s .. s + int(s x 0.2 x r/65536), flags 0x40, no descriptor.
+        A creature (flag 0x20) then gets its chill timer +0x344 raised by half of
+        statistic 3 (slot 13, cap 10; C division) through Creature_setEffectTimer(1).
+        Then end(2)."""
+        u32 = self.u32
+        if not u32(obj + 0x4C):
+            return
+        owner = self.handle_obj(obj + 0x4C)
+        skill = u32(obj + 0xAC)
+        if u32(owner + 0xC) & 0x40:
+            if self._arrow_blocked_for_player(other) or not self.vcall(owner, 20, other):
+                return
+            self.call('fx_spawn', 10, self.vec(obj + 0x10))
+            level = self.s32(obj + 0x68)
+            flags = 0x80040 if level >= 16 else 0x40040 if level > 10 else 0x40
+            a = self.skill_call(skill, 13, 2, level, obj + 0x4C, 0)
+            b = self.skill_call(u32(obj + 0xAC), 13, 2, u32(obj + 0x68), obj + 0x4C, 0)
+            owner = self.handle_obj(obj + 0x4C)
+            rec = self.record(owner)
+            self.call('damage_apply', other, owner, 100000, 0, 0, flags, self.descriptor((0x20, 100, a, b)), 0,
+                      C.from_int(self.s32(rec + 0xD0)), C.from_int(self.s32(rec + 0xD4)))
+        else:
+            if not self.vcall(owner, 20, other):
+                return
+            self.call('fx_spawn', 10, self.vec(obj + 0x10))
+            amount = s32(self.skill_call(skill, 13, 0, u32(obj + 0x68), obj + 0x4C, 0))
+            low, high = self._monster_spread(amount, self.obj_rand(obj))
+            self.call('damage_apply', other, self.handle_obj(obj + 0x4C), 100000, 0, 0, 0x40, 0, 0, low, high)
+        if u32(other + 0xC) & 0x20:
+            seconds = s32(self.skill_call(u32(obj + 0xAC), 13, 3, u32(obj + 0x68), obj + 0x4C, 10))
+            half = (seconds + (1 if seconds < 0 else 0)) >> 1
+            self.call('Creature_setEffectTimer', other, 1, self.handle_obj(obj + 0x4C),
+                      C.add(u32(other + 0x344), C.from_int(half)))
+        self.coldarrow_end(obj, 2)
+
+    def coldarrow_end(self, obj, reason):
+        """ColdArrowProjectile_end 0x2d7ecc (arrow, reason), once per arrow.
+
+        Reason 0 (expiry): only obj_delete.  Reason 1 (terrain) first makes a ground
+        burst of level x 10 + 27 particles round the point one radius ahead (each a ball
+        sample of OWN draws, mirrored in the plane when it points along the velocity).
+        Then, for any reason but 0, level x 10 burst pairs: two ball samples each (the
+        second is drawn and not used), a second, slower particle on every fourth; and the
+        impact sound."""
+        u32 = self.u32
+        if u32(obj + 0x60):
+            return
+        if reason:
+            if s32(reason) == 1:
+                radius = u32(obj + 0x1C)
+                bx = C.add(u32(obj + 0x10), C.mul(C.cos16(self.s16(obj + 0x64)), radius))
+                by = C.add(u32(obj + 0x14), C.mul(C.sin16(self.s16(obj + 0x64)), u32(obj + 0x1C)))
+                bz = u32(obj + 0x18)
+                count = 0
+                while count < self.s32(obj + 0x68) * 10 + 0x1B:
+                    v = self.obj_ball(obj)
+                    along = C.add(C.mul(v[0], u32(obj + 0x54)), C.mul(v[1], u32(obj + 0x58)))
+                    x, y = (C.neg(v[0]), C.neg(v[1])) if C.lt(0x3F34FDF3, along) else (v[0], v[1])
+                    level = self.s32(obj + 0x68)
+                    k = C.from_int(int(level / 3) + 2)
+                    point = (C.add(bx, C.mul(x, k)), C.add(by, C.mul(y, k)), C.add(bz, C.mul(v[2], k)))
+                    count += 1
+                    self.call('particle_spawn', self.PDEF_COLD_GROUND, point, (0, 0, 0), ZERO)
+            index = 0
+            while C.lt(C.from_int(index), C.mul(C.from_int(self.s32(obj + 0x68) * 0x14), HALF)):
+                v = self.obj_ball(obj)
+                velocity = [C.mul(c, 0x41F80000) for c in v]
+                if C.lt(0x3F34FDF3, C.add(C.mul(velocity[0], u32(obj + 0x54)), C.mul(velocity[1], u32(obj + 0x58)))):
+                    velocity[0], velocity[1] = C.neg(velocity[0]), C.neg(velocity[1])
+                self.obj_ball(obj)                      # a position is computed from it and never used
+                self.call('particle_spawn', self.PDEF_COLD_B, self.vec(obj + 0x10), tuple(velocity), ZERO)
+                if index & 3 == 0:
+                    velocity = [C.mul(c, 0x3F400000) for c in velocity]
+                    self.call('particle_spawn', self.PDEF_COLD_A, self.vec(obj + 0x10), tuple(velocity), ZERO)
+                index += 1
+            self.call('sound_playOnObject', self.call('res_find', self.S_COLDARROW_LUMP, self.S_COLDARROW_HIT), obj, ONE)
+        self.call('obj_delete', obj)
+        self.w32(obj + 0x60, 1)
+
+    # =====================================================================================
+    # 45 poisonarrow: docs/spec/skills-35-68.md section 45
+    # =====================================================================================
+    VT_POISON_ARROW = 0x519010
+    S_POISONARROW_WARN, S_POISONARROW_LUMP, S_POISONARROW_SOUND, S_POISONARROW_HIT = 0x54F448, 0x54F488, 0x54F490, 0x54F4A8
+    PDEF_POISON_A, PDEF_POISON_B, PDEF_POISON_RING = 0x8E5820, 0x8E5870, 0x8E58C0
+
+    def poisonarrow_can_use(self, skill, caster):
+        """SkillPoisonArrow_canUse 0x2d877c."""
+        return self.bow_can_use(caster, self.S_POISONARROW_WARN)
+
+    def poisonarrow_cast(self, skill, level, caster, pos, facing):
+        """SkillPoisonArrow_cast 0x2d87f4 -> 0 (block 0xb0, 12 below, slot 14 (level, 1))."""
+        start = (self.u32(pos), self.u32(pos + 4), C.sub(self.u32(pos + 8), F_12))
+        obj = self.call('pool_new', 0xB0)
+        if obj:
+            level = self.skill_call(skill, 14, level, 1)
+            self.poisonarrow_ctor(obj, self.local_vec(start), facing, caster, level, skill)
+        return 0
+
+    def _poisonarrow_common(self, obj, pos, owner, skill):
+        pos = self.vec(pos)
+        self.projectile_ctor(obj, self.local_vec(pos), owner, 0)
+        self.w32(obj + 0x48, self.VT_POISON_ARROW)
+        self._arrow_light(obj, pos, 0x42F00000, 0x3891A2B3, (0x3C, 0x84, 0x44))
+        self.w32(obj + 0xAC, skill)
+
+    def poisonarrow_ctor(self, obj, pos, facing, owner, level, skill):
+        """PoisonArrowProjectile_ctor 0x2d8a64: as ColdArrow's with radius 5.0."""
+        self._poisonarrow_common(obj, pos, owner, skill)
+        self.w16(obj + 0x64, facing)
+        self.w32(obj + 0x1C, 0x40A00000)
+        self.w32(obj + 0x68, level)
+        self._arrow_velocity_facing(obj, self.stat_for(skill, 1, level, owner, 10))
+        self._arrow_finish(obj, self.S_POISONARROW_LUMP, self.S_POISONARROW_SOUND)
+
+    def poisonarrow_ctor2(self, obj, pos, direction, owner, level, skill):
+        """PoisonArrowProjectile_ctor2 0x2d8c40: the monsters' constructor."""
+        direction = self.vec(direction)
+        self._poisonarrow_common(obj, pos, owner, skill)
+        facing = C.atan2_16(direction[1], direction[0])
+        self.w32(obj + 0x68, level)
+        self.w16(obj + 0x64, facing)
+        self.w32(obj + 0x1C, 0x40A00000)
+        speed = self.stat_for(self.u32(obj + 0xAC), 1, level, owner, 10)
+        self._arrow_velocity_dir(obj, direction, speed)
+        self._arrow_finish(obj, self.S_POISONARROW_LUMP, self.S_POISONARROW_SOUND)
+
+    def _poisonarrow_particles(self, obj):
+        self.wvec(obj + 0xA0, self.vec(obj + 0x10))
+        self.call('light_relink', obj + 0x70)
+        for index in range(0x2E):
+            self._flight_particle(obj, self.PDEF_POISON_A if index & 1 else self.PDEF_POISON_B, 0x41F00000, 0x3F020BF5)
+
+    def poisonarrow_run(self, obj):
+        """PoisonArrowProjectile_run 0x2d8e80, slot 4: the shared flight; 46 particles a
+        flying frame (two ball samples of OWN draws each)."""
+        self._arrow_flight(obj, self.poisonarrow_end, self._poisonarrow_particles)
+
+    def poisonarrow_on_hit(self, obj, other):
+        """PoisonArrowProjectile_onHit 0x2d932c, slot 6.
+
+        Nothing without an owner.  s = statistic 0 (slot 13, cap 0); ONE OWN DRAW (made
+        for either kind of owner).  Monster owner: slot 20; damage s .. s + int(s x 0.2 x
+        r/65536), flags 0x10040.  Player owner: the usual pass-through tests and slot 20;
+        damage = the record's weapon minimum + s .. maximum + s, flags 0x10040 (11-15: |
+        0x40000, 16+: | 0x80000).  No descriptor either way.  A creature then gets its
+        poison timer set to statistic 3 seconds (slot 12 with the owner, cap 10) through
+        Creature_setEffectTimer(3).  Then end(2)."""
+        u32 = self.u32
+        if not u32(obj + 0x4C):
+            return
+        skill = u32(obj + 0xAC)
+        amount = s32(self.skill_call(skill, 13, 0, u32(obj + 0x68), obj + 0x4C, 0))
+        draw = self.obj_rand(obj)
+        owner = self.handle_obj(obj + 0x4C)
+        if not u32(owner + 0xC) & 0x40:
+            if not self.vcall(owner, 20, other):
+                return
+            low, high = self._monster_spread(amount, draw)
+            self.call('damage_apply', other, self.handle_obj(obj + 0x4C), 100000, 0, 0, 0x10040, 0, 0, low, high)
+        else:
+            if self._arrow_blocked_for_player(other) or not self.vcall(owner, 20, other):
+                return
+            owner = self.handle_obj(obj + 0x4C)
+            level = self.s32(obj + 0x68)
+            flags = 0x90040 if level > 15 else 0x50040 if level > 10 else 0x10040
+            rec = self.record(owner)
+            self.call('damage_apply', other, owner, 100000, 0, 0, flags, 0, 0,
+                      C.from_int(self.s32(rec + 0xD0) + amount), C.from_int(self.s32(rec + 0xD4) + amount))
+        if u32(other + 0xC) & 0x20:
+            seconds = self.stat_for(u32(obj + 0xAC), 3, u32(obj + 0x68), self.handle_obj(obj + 0x4C), 10)
+            self.call('Creature_setEffectTimer', other, 3, self.handle_obj(obj + 0x4C), C.from_int(seconds))
+        self.poisonarrow_end(obj, 2)
+
+    def poisonarrow_end(self, obj, reason=0):
+        """PoisonArrowProjectile_end 0x2d95c8 (arrow), once per arrow; the reason is not
+        looked at, so an expired arrow leaves its cloud too.
+
+        A ring of 213 particles (every 0x135 angle units, speed 9).  With an owner:
+        pool_new(0x70) and a poisonGasSpell at the arrow (life = statistic 3 x 60 frames,
+        radius = statistic 2 x 12, both tier 1 through slot 10, damage 5) - a GameObject,
+        so ONE SHARED DRAW unless the pool had no block.  Sound, obj_delete."""
+        u32 = self.u32
+        if u32(obj + 0x60):
+            return
+        angle = 0
+        while angle < 0x10000:
+            velocity = (C.mul(C.cos16(angle), 0x41100000), C.mul(C.sin16(angle), 0x41100000), 0)
+            self.call('particle_spawn', self.PDEF_POISON_RING, self.vec(obj + 0x10), velocity, ZERO)
+            angle += 0x135
+        if u32(obj + 0x4C):
+            cloud = self.call('pool_new', 0x70)
+            if cloud:
+                radius = self.stat(u32(obj + 0xAC), 2, u32(obj + 0x68))
+                life = self.stat(u32(obj + 0xAC), 3, u32(obj + 0x68))
+                self.draws += 1
+                self.call('poisonGasSpell_ctor', cloud, self.vec(obj + 0x10), life * 0x3C, radius * 0xC, 0,
+                          self.handle_obj(obj + 0x4C), 5)
+        self.call('sound_playOnObject', self.call('res_find', self.S_POISONARROW_LUMP, self.S_POISONARROW_HIT), obj, ONE)
+        self.call('obj_delete', obj)
+        self.w32(obj + 0x60, 1)
+
+    # =====================================================================================
+    # 47 explodearrow: docs/spec/skills-35-68.md section 47
+    # =====================================================================================
+    VT_EXPLODE_ARROW = 0x519240
+    S_EXPLODEARROW_WARN, S_EXPLODEARROW_LUMP, S_EXPLODEARROW_SOUND = 0x54F648, 0x54F670, 0x54F678
+    S_EXPLODE_ICE, S_EXPLODE_STONE, S_EXPLODE_HIT = 0x54F690, 0x54F6A8, 0x54F6C0
+    PDEF_EXPLODE = 0x8E5960
+
+    def explodearrow_can_use(self, skill, caster):
+        """SkillExplodeArrow_canUse 0x2dac30."""
+        return self.bow_can_use(caster, self.S_EXPLODEARROW_WARN)
+
+    def explodearrow_cast(self, skill, level, caster, pos, facing):
+        """SkillExplodeArrow_cast 0x2daca8 -> 0: slot 14 (level, 9) first, then
+        pool_new(0x74) and the arrow 12 below the cast position."""
+        level = self.skill_call(skill, 14, level, 9)
+        start = (self.u32(pos), self.u32(pos + 4), C.sub(self.u32(pos + 8), F_12))
+        obj = self.call('pool_new', 0x74)
+        if obj:
+            self.explodearrow_ctor(obj, self.local_vec(start), facing, caster, level, skill)
+        return 0
+
+    def explodearrow_ctor(self, obj, pos, facing, owner, level, skill):
+        """ExplodeArrowProjectile_ctor 0x2daeb4 (object, position, facing, owner, level,
+        skill).  Projectile base (ONE SHARED DRAW); no light; radius 8.0; skill +0x70,
+        level +0x68; speed = statistic 1 through slot 12 with the owner READ BACK THROUGH
+        THE HANDLE +0x4c (no null test: an arrow built without an owner faults), cap 10."""
+        self.projectile_ctor(obj, self.local_vec(self.vec(pos)), owner, 0)
+        self.w16(obj + 0x64, facing)
+        self.w32(obj + 0x48, self.VT_EXPLODE_ARROW)
+        owner = self.u32(self.u32(obj + 0x4C) + 0xC)
+        self.w32(obj + 0x1C, 0x41000000)
+        self.w32(obj + 0x70, skill)
+        self.w32(obj + 0x68, level)
+        self._arrow_velocity_facing(obj, self.stat_for(skill, 1, level, owner, 10))
+        self._arrow_finish(obj, self.S_EXPLODEARROW_LUMP, self.S_EXPLODEARROW_SOUND)
+
+    def explodearrow_ctor2(self, obj, pos, direction, owner, level, skill):
+        """ExplodeArrowProjectile_ctor2 0x2dafe0: the monsters' constructor."""
+        direction = self.vec(direction)
+        self.projectile_ctor(obj, self.local_vec(self.vec(pos)), owner, 0)
+        self.w32(obj + 0x48, self.VT_EXPLODE_ARROW)
+        self.w32(obj + 0x70, skill)
+        facing = C.atan2_16(direction[1], direction[0])
+        self.w32(obj + 0x68, level)
+        self.w16(obj + 0x64, facing)
+        owner = self.u32(self.u32(obj + 0x4C) + 0xC)
+        self.w32(obj + 0x1C, 0x41000000)
+        speed = self.stat_for(self.u32(obj + 0x70), 1, level, owner, 10)
+        self._arrow_velocity_dir(obj, direction, speed)
+        self._arrow_finish(obj, self.S_EXPLODEARROW_LUMP, self.S_EXPLODEARROW_SOUND)
+
+    def _explodearrow_particles(self, obj):
+        u32 = self.u32
+        for _ in range(6):
+            v = self.obj_ball(obj)
+            velocity = tuple(C.mul(c, 0x40400000) for c in v)
+            step = tuple(C.mul(u32(obj + 0x54 + 4 * i), DT) for i in range(3))
+            along = self.unit(self.obj_rand(obj))
+            point = tuple(C.add(u32(obj + 0x10 + 4 * i), C.mul(step[i], along)) for i in range(3))
+            self.call('particle_spawn', self.PDEF_EXPLODE, point, velocity, ZERO)
+
+    def explodearrow_run(self, obj):
+        """ExplodeArrowProjectile_run 0x2db17c, slot 4: the shared flight; 6 particles a
+        flying frame (a ball sample and one more OWN draw each)."""
+        self._arrow_flight(obj, self.explodearrow_explode, self._explodearrow_particles)
+
+    def explodearrow_on_hit(self, obj, other=0):
+        """ExplodeArrowProjectile_onHit 0x2db4f0, slot 6: explode(2), whatever was
+        touched - there is no test of the object at all."""
+        self.explodearrow_explode(obj, 2)
+
+    def explodearrow_explode(self, obj, reason):
+        """ExplodeArrowProjectile_explode 0x2db50c (arrow, reason), once per arrow.
+
+        Reason 0 (expiry): only obj_delete.  Otherwise: ONE OWN DRAW picks one of four
+        impact sounds (ice on a level with flag 0x40000, else stone), an effect, the two
+        sounds, a ring burst of size max(1, level x 0.1), a LightEffect (a GameObject:
+        ONE SHARED DRAW unless the pool has no block), a camera shake of level / 2.
+        With an owner: half edge = statistic 2 and damage = statistic 0, both through
+        slot 12 with the owner (caps 10 and 0); the knock flag is 0 below level 6,
+        0x40000 for 6-11, 0x80000 from 12 - except that a monster's arrow of level 12 or
+        more makes ONE OWN DRAW and uses 0x40000 when it is odd.  Every object of the box
+        query (cube of that half edge, at most 127) in query order: the owner itself is
+        knocked (a zero-damage call with the arrow as attacker) when within half the
+        edge; a creature the owner's slot 20 rejects is skipped; every other object -
+        creature or not - costs ONE OWN DRAW and gets the zero-damage knock call and then
+        damage s .. s + int(s x 0.2 x r/65536) from the owner with flags 0x840."""
+        u32 = self.u32
+        if u32(obj + 0x60):
+            return
+        if reason:
+            here = self.vec(obj + 0x10)
+            pick = (self.obj_rand(obj) & 3) + 1
+            if u32(G_LEVEL_FLAGS) & 0x40000:
+                name = self.call('libc_sprintf', self.S_EXPLODE_ICE, pick)
+                self.call('fx_spawn', 8, here)
+            else:
+                name = self.call('libc_sprintf', self.S_EXPLODE_STONE, pick)
+                self.call('fx_spawn', 2, here)
+            self.call('sound_playOnObject', self.call('res_find', self.S_EXPLODEARROW_LUMP, name), obj, ONE)
+            self.call('sound_playOnObject', self.call('res_find', self.S_EXPLODEARROW_LUMP, self.S_EXPLODE_HIT), obj, ONE)
+            self.call('fx_ringBurst', here, C.fmax(ONE, C.mul(C.from_int(self.s32(obj + 0x68)), F_0_1)))
+            light = self.call('pool_new', 0xBC)
+            if light:
+                self.light_effect(light, here, 0x437F0000, 0x41200000, 0x41200000, 0x42F00000, 0x42700000, HALF, 0x3E800000)
+            level = self.s32(obj + 0x68)
+            self.call('camera_shake', 0, C.from_int((level + (1 if level < 0 else 0)) >> 1))
+            if u32(obj + 0x4C):
+                skill = u32(obj + 0x70)
+                edge = C.from_int(self.stat_for(skill, 2, u32(obj + 0x68), self.handle_obj(obj + 0x4C), 10))
+                level = self.s32(obj + 0x68)
+                knock = 0
+                if level >= 6:
+                    knock = 0x40000 if level < 12 else 0x80000
+                    if not u32(self.handle_obj(obj + 0x4C) + 0xC) & 0x40:
+                        if level >= 12 and self.obj_rand(obj) & 1:
+                            knock = 0x40000
+                        elif level < 12:
+                            knock = 0x40000
+                amount = self.stat_for(u32(obj + 0x70), 0, u32(obj + 0x68), self.handle_obj(obj + 0x4C), 0)
+                x, y, z = self.vec(obj + 0x10)
+                low = (C.sub(x, edge), C.sub(y, edge), C.sub(z, edge))
+                high = (C.add(x, edge), C.add(y, edge), C.add(z, edge))
+                for other in self.call('world_collectObjectsInBox', low, high, 0x80) or ():
+                    owner = self.handle_obj(obj + 0x4C)
+                    if other != owner:
+                        if u32(other + 0xC) & 0x20 and not self.vcall(owner, 20, other):
+                            continue
+                        low_f, high_f = self._monster_spread(amount, self.obj_rand(obj))
+                        self.call('damage_apply', other, obj, 100000, 0, 0, knock, 0, 0, ZERO, ZERO)
+                        self.call('damage_apply', other, self.handle_obj(obj + 0x4C), 100000, 0, 0, 0x840, 0, 0, low_f, high_f)
+                        continue
+                    dx = C.sub(u32(other + 0x10), u32(obj + 0x10))
+                    dy = C.sub(u32(other + 0x14), u32(obj + 0x14))
+                    dz = C.sub(u32(other + 0x18), u32(obj + 0x18))
+                    distance = C.sqrt(C.add(C.add(C.mul(dx, dx), C.mul(dy, dy)), C.mul(dz, dz)))
+                    if C.lt(distance, C.mul(edge, HALF)):
+                        self.call('damage_apply', other, obj, 100000, 0, 0, knock, 0, 0, ZERO, ZERO)
+        self.call('obj_delete', obj)
+        self.w32(obj + 0x60, 1)
+
+    def light_effect(self, block, pos, f12, f13, f14, s0, s1, s2, s3, a2=0, a3=0, rest=(0, 0, 0, 0, 0)):
+        """LightEffect_ctor 0x201bd8 as every site of this range calls it: (block,
+        position, a2, a3; eight floats in registers, four more on the stack).  The light
+        is a GameObject: ONE SHARED DRAW."""
+        self.draws += 1
+        self.call('LightEffect_ctor', block, pos, a2, a3, f12, f13, f14, *(tuple(rest) + (s0, s1, s2, s3)))
+
+
+    # =====================================================================================
+    # 46 multifire: docs/spec/skills-35-68.md section 46.  The arrows are plain
+    # MissileWeapon objects (docs/spec/skills-35-68.md S.8), which this module does not
+    # model: their constructor is a callback with all seventeen arguments.
+    # =====================================================================================
+    S_MULTIFIRE_WARN, S_MULTIFIRE_LUMP, S_MULTIFIRE_SOUND = 0x54F550, 0x54F560, 0x54F568
+    G_ITEM_MODELS = AM.G_ITEM_MODELS
+
+    def multifire_can_use(self, skill, caster):
+        """SkillMultiFire_canUse 0x2d9a18."""
+        return self.bow_can_use(caster, self.S_MULTIFIRE_WARN)
+
+    def multifire_cast(self, skill, level, caster, pos, facing):
+        """SkillMultiFire_cast 0x2d9a90 (skill, level, caster, position, facing) -> 0.
+
+          1. lv = slot 14 (level, 20).  pool_new(0xbc): a LightEffect 20 above the cast
+             position (a GameObject: ONE SHARED DRAW unless the pool has no block).
+          2. count = statistic 2, speed = statistic 1 (slot 12 with lv, cap 10).  The fan
+             starts at facing - int(count x 0.5 x 534.5) angle units.
+          3. Damage of each arrow.  Player: f = statistic 0 (slot 12 with the level as
+             given, cap 10) x 0.01 / count; min and max = the owner record's weapon
+             minimum and maximum (+0xd0, +0xd4) x f, each rounded half away from zero;
+             damage flags 0x40000; weapon rating and item flags from the bow of the active
+             set (record +0x4434 + 4 x set byte +0x4a7c; no null test).  Anyone else: min
+             = statistic 0; max = min + round(min x 0.2 x r/65536) with TWO DRAWS OF THE
+             PRESENTATION GENERATOR 0x404460 (the first only picks the rounding
+             direction) - FINDINGS SB7; flags 0, no weapon rating.
+          4. Per arrow: velocity = (cos, sin, 0) x speed at the fan angle; ONE SHARED
+             DRAW d; start height = cast height - d/65536 x 6 - 6; pool_new(0x1c8); with
+             a block MissileWeapon_ctor (kind 0, the two arrow models, start, velocity,
+             fan angle - 0x4000, owner; no samples, min, max, weapon rating, item flags,
+             attack rating 10000, damage flags, no item) - a GameObject: ONE MORE SHARED
+             DRAW; the fan angle advances by 0x42d.
+          5. The launch sound on the caster."""
+        u32 = self.u32
+        facing = s16(facing)
+        here = self.vec(pos)
+        lv = self.skill_call(skill, 14, level, 0x14)
+        light = self.call('pool_new', 0xBC)
+        if light:
+            spot = (C.add(here[0], ZERO), here[1], C.add(here[2], 0x41A00000))
+            self.light_effect(light, spot, 0x42F80000, 0x42E60000, 0x434C0000, 0x43021771, 0x42700000, HALF, ONE)
+        count = self.stat_for(skill, 2, lv, caster, 10)
+        fcount = C.from_int(count)
+        angle = s16(facing - s32(C.to_int(C.mul(C.mul(fcount, HALF), 0x4405A000))))
+        speed = C.from_int(self.stat_for(skill, 1, lv, caster, 10))
+        rating = flags = item_flags = 0
+        if u32(caster + 0xC) & 0x40:
+            rec = self.record(caster)
+            bow = u32(rec + 0x4434 + 4 * self.s8(rec + 0x4A7C))
+            share = C.div(C.mul(C.from_int(self.stat_for(skill, 0, level, caster, 10)), F_0_01), fcount)
+            rec = self.record(caster)
+            low = C.round_half_away(C.mul(C.from_int(self.s32(rec + 0xD0)), share))
+            high = C.round_half_away(C.mul(C.from_int(self.s32(rec + 0xD4)), share))
+            flags = 0x40000
+            rating = self.call('item_getModifiedField1a', bow)
+            item_flags = u32(bow + 8)
+        else:
+            low = self.stat_for(skill, 0, level, caster, 10)
+            spread = C.mul(C.from_int(low), 0x3E4CCCCC)
+            probe = C.mul(spread, self.unit(self.cosmetic_draw()))
+            extra = C.mul(spread, self.unit(self.cosmetic_draw()))
+            high = low + s32(C.to_int(C.add(extra, HALF) if C.le(ZERO, probe) else C.sub(extra, HALF)))
+        for _ in range(max(count, 0)):
+            velocity = (C.mul(C.cos16(angle), speed), C.mul(C.sin16(angle), speed), 0)
+            dip = C.mul(self.unit(self.draw()), 0x40C00000)
+            start = (here[0], here[1], C.add(C.sub(here[2], dip), 0xC0C00000))
+            arrow = self.call('pool_new', 0x1C8)
+            if arrow:
+                self.draws += 1
+                self.call('MissileWeapon_ctor', arrow, 0, u32(self.G_ITEM_MODELS + 8), u32(self.G_ITEM_MODELS + 0xC), start,
+                          velocity, angle - 0x4000, caster, 0, 0, low, high, rating, item_flags, 10000, flags, 0)
+            angle = s16(angle + 0x42D)
+        self.call('sound_playOnObject', self.call('res_find', self.S_MULTIFIRE_LUMP, self.S_MULTIFIRE_SOUND), caster, ONE)
+        return 0
+
+
+    # =====================================================================================
+    # The passives: 48 archery, 59 lifetap, 60 Blunt, 61 Slashing, 62 strongstance,
+    # 63 naturalresistance, 64 stunningstrike.  None has a spell; each is a statistic
+    # read by other code through a small helper, and two have an effect function.
+    # Blunt and Slashing have no function of their own at all: every slot is the base's.
+    # =====================================================================================
+    def _stat_via_slot14(self, skill, stat, level, n):
+        return self.stat(skill, stat, self.skill_call(skill, 14, level, n))
+
+    def archery_fraction(self, skill, level):
+        """SkillArchery_getStat0Fraction 0x2dbcac (skill, level) -> float: statistic 0
+        (slot 14 (level, 20), slot 10) x 0.01 - the share Player_recalcDamage adds to a
+        bow's damage."""
+        return C.mul(C.from_int(self._stat_via_slot14(skill, 0, level, 0x14)), F_0_01)
+
+    def lifetap_fraction(self, skill, level):
+        """SkillLifeTap_getStat0Fraction 0x2f8e78 (skill, level) -> float: statistic 0 x
+        0.01 (slot 14 (level, 1))."""
+        return C.mul(C.from_int(self._stat_via_slot14(skill, 0, level, 1)), F_0_01)
+
+    def lifetap_stat1(self, skill, level):
+        """SkillLifeTap_getStat1 0x2f8eec (skill, level) -> statistic 1."""
+        return self._stat_via_slot14(skill, 1, level, 1)
+
+    def strongstance_stat0(self, skill, level):
+        """SkillStrongStance_getStat0 0x30851c (skill, level) -> statistic 0."""
+        return self._stat_via_slot14(skill, 0, level, 0x14)
+
+    def naturalresistance_fraction(self, skill, level):
+        """SkillNaturalResistance_getStat0Fraction 0x308a7c (skill, level) -> float:
+        statistic 0 x 0.01."""
+        return C.mul(C.from_int(self._stat_via_slot14(skill, 0, level, 1)), F_0_01)
+
+    PDEF_STRONGSTANCE = 0x8E7368
+
+    def strongstance_trigger(self, skill, player, a2, a3):
+        """SkillStrongStance_trigger 0x308578 (skill, player, two values handed on).
+
+        A LightEffect 36 above the player (a GameObject: ONE SHARED DRAW unless the pool
+        has no block); 25 particles, each at a sample point of the player's model chosen
+        with ONE DRAW OF THE THIRD GENERATOR 0x404468 (% the sample-point count - a
+        division by zero for a model without sample points) and thrown along a
+        unit-ball sample from the PRESENTATION GENERATOR 0x404460, normalised, at speed
+        10; then pool_new(0x3d8) and the StrongStancePhantom (a creature: one more
+        shared draw inside its constructor, not executed here)."""
+        u32 = self.u32
+        count = s32(self.call('model_getSamplePointCount', u32(player + 0x544)))
+        light = self.call('pool_new', 0xBC)
+        if light:
+            spot = (C.add(u32(player + 0x10), ZERO), u32(player + 0x14), C.add(u32(player + 0x18), 0x42100000))
+            self.light_effect(light, spot, 0x43000000, 0x42C80000, 0x42C80000, 0x42F00000, 0x42100000, HALF, HALF)
+        for _ in range(0x19):
+            draw = self.seed3_draw()
+            index = draw - int(draw / count) * count
+            point, _second = self.call('model_getSamplePoint', u32(player + 0x544), player + 0x114,
+                                       self.vec(player + 0x10), self.s16(player + 0x38), index, 1, 0, ONE)
+            x, y, z = self.ball(self.cosmetic_draw)
+            inverse = C.rsqrt(ONE, C.add(C.add(C.mul(x, x), C.mul(y, y)), C.mul(z, z)))
+            velocity = tuple(C.mul(C.mul(c, inverse), 0x41200000) for c in (x, y, z))
+            self.call('particle_spawn', self.PDEF_STRONGSTANCE, tuple(point), velocity, ZERO)
+        phantom = self.call('pool_new', 0x3D8)
+        if phantom:
+            self.draws += 1
+            self.call('StrongStancePhantom_ctor', phantom, player, a2, a3, 0)
+
+    S_STUN_LUMP, S_STUN_SOUND = 0x5520F0, 0x5520F8
+
+    def stunningstrike_stat0_for(self, skill, target, level):
+        """SkillStunningStrike_getStat0ForTarget 0x308c10 (skill, target, level) -> the
+        stun chance in percent: 0 without a target, for a non-creature and in PvP mode A;
+        else statistic 0 (tier 1), but 0 against a boss by name (creature_bossRank 2 or
+        more) and at most 5 against a mini-boss (rank 1)."""
+        if not target or not self.u32(target + 0xC) & 0x20 or self.u32(G_PVP_MODE_A):
+            return 0
+        chance = self.stat(skill, 0, level)
+        rank = s32(self.call('creature_bossRank', target))
+        if rank >= 2:
+            return 0
+        if rank <= 0:
+            return chance
+        return 5 if chance >= 6 else chance
+
+    def stunningstrike_effect(self, skill, target):
+        """SkillStunningStrike_spawnEffect 0x308cb4 (skill, target): for a creature, the
+        sound at its position, a LightEffect 64 above it (ONE SHARED DRAW unless the
+        pool has no block), then ONE SHARED DRAW d and the target's slot 30 (stun) with
+        int((d/65536 + 1.5) x 60) frames - 90 to 149 - and flash 1."""
+        u32 = self.u32
+        if not target or not u32(target + 0xC) & 0x20:
+            return
+        self.call('sound_playAtPos', self.call('res_find', self.S_STUN_LUMP, self.S_STUN_SOUND), self.vec(target + 0x10), ONE)
+        light = self.call('pool_new', 0xBC)
+        if light:
+            spot = (C.add(u32(target + 0x10), ZERO), u32(target + 0x14), C.add(u32(target + 0x18), 0x42800000))
+            self.light_effect(light, spot, 0x43210000, 0x430A0000, 0x42800000, 0x43340000, 0x42700000, HALF, HALF)
+        frames = C.to_int(C.mul(C.add(self.unit(self.draw()), 0x3FC00000), 0x42700000))
+        self.vcall(target, 30, frames, 1)
+
+
+    def object_ctor(self, name, *args):
+        """A callback that constructs a GameObject: ONE SHARED DRAW inside it."""
+        self.draws += 1
+        return self.call(name, *args)
+
+    @staticmethod
+    def half_toward_zero(value):
+        value = s32(value)
+        return (value + (1 if value < 0 else 0)) >> 1
+
+    # =====================================================================================
+    # 42 harmtouch: docs/spec/skills-35-68.md section 42
+    # =====================================================================================
+    VT_SPELL_HARMTOUCH = 0x518B50
+    S_HARMTOUCH_WARN, S_HARMTOUCH_LUMP, S_HARMTOUCH_SOUND = 0x54F048, 0x54F070, 0x54F078
+    PDEF_HARMTOUCH_A, PDEF_HARMTOUCH_B = 0x8E55A0, 0x8E55F0
+
+    def harmtouch_can_use(self, skill, caster):
+        """SkillHarmTouch_canUse 0x2d2984: as Cyclone's - 0 with a warning for a player
+        whose weapon class is 4 or 6, else 1."""
+        if not self.u32(caster + 0xC) & 0x40 or self.s8(self.record(caster) + 0x4A86) not in (4, 6):
+            return 1
+        self.call('hud_showMessage', self.call('text_lookup', self.S_HARMTOUCH_WARN), 0xB4, self.u32(caster + 0x3C8), 0)
+        return 0
+
+    def harmtouch_cast(self, skill, level, caster, pos=0, facing=0):
+        """SkillHarmTouch_cast 0x2d2a04 -> the SpellHarmTouch or 0 (pool_new(0x1c))."""
+        spell = self.call('pool_new', 0x1C)
+        if spell:
+            self.harmtouch_spell_ctor(spell, level, caster, skill)
+        return spell
+
+    def harmtouch_spell_ctor(self, spell, level, owner, skill):
+        """SpellHarmTouch_ctor 0x2d2b5c: Spell base (ONE SHARED DRAW), time left +0x18 =
+        0.661 s (0x3f29372a), the sound on the owner."""
+        self.spell_base_ctor(spell, level, owner, skill, self.VT_SPELL_HARMTOUCH)
+        self.w32(spell + 0x18, 0x3F29372A)
+        self.call('sound_playOnObject', self.call('res_find', self.S_HARMTOUCH_LUMP, self.S_HARMTOUCH_SOUND), owner, ONE)
+
+    def _harmtouch_tint(self, spell, left):
+        owner = self.u32(spell + 0xC)
+        self.w16(owner + 0x96, 0x71)
+        shade = C.to_int(C.mul(C.fmin(left, ONE), 0x43000000))
+        self.w16(owner + 0x92, shade)
+        self.w16(owner + 0x9A, shade)
+
+    def harmtouch_run(self, spell, pos=0, facing=0):
+        """SpellHarmTouch_run 0x2d2c0c, slot 2: time left -= 1/60; below zero the spell
+        ends itself, else the owner's tint follows the time left."""
+        left = C.sub(self.u32(spell + 0x18), DT)
+        self.w32(spell + 0x18, left)
+        if C.lt(left, ZERO):
+            return self.spell_end(spell)
+        self._harmtouch_tint(spell, left)
+
+    def harmtouch_apply_to_hit(self, spell, target, low_out, high_out):
+        """SpellHarmTouch_applyToHit 0x2d2cbc (spell, target, int *min, int *max), called
+        by Player_meleeHit for a swing that lands while the spell is on the player.
+
+        The tint as in run.  Only for a creature (flag 0x20): 102 particle pairs on
+        sample points of the target's model - TWO OWN (spell) DRAWS per pair, 204 in all,
+        the first picks the sample point (% the point count: a division by zero for a
+        model without points), the second is not used; a LightEffect 73 above the target
+        (ONE SHARED DRAW unless the pool has no block); *min = statistic 0 through slot
+        12 (owner, cap 10); ONE MORE OWN DRAW r; *max = *min + int(min x 0.2 x r/65536);
+        the spell ends itself.  For any other target the range is left alone and the
+        spell stays."""
+        u32 = self.u32
+        self._harmtouch_tint(spell, u32(spell + 0x18))
+        if not u32(target + 0xC) & 0x20:
+            return
+        for _ in range(0x66):
+            draw = self.spell_rand(spell)
+            count = s32(self.call('model_getSamplePointCount', self.vcall(target, 16)))
+            index = draw - int(draw / count) * count
+            point, _second = self.call('model_getSamplePoint', self.vcall(target, 16), target + 0x114,
+                                       self.vec(target + 0x10), self.s16(target + 0x38), index, 1, 0, ONE)
+            owner = u32(spell + 0xC)
+            dx, dy = C.sub(point[0], u32(owner + 0x10)), C.sub(point[1], u32(owner + 0x14))
+            inverse = C.rsqrt(ONE, C.add(C.mul(dx, dx), C.mul(dy, dy)))
+            velocity = (C.mul(C.mul(dx, inverse), 0x4255BD8F), C.mul(C.mul(dy, inverse), 0x4255BD8F), ZERO)
+            self.spell_rand(spell)
+            self.call('particle_spawn', self.PDEF_HARMTOUCH_A, tuple(point), velocity, ZERO)
+            velocity = tuple(C.mul(c, 0x3E0C49BA) for c in velocity)
+            self.call('particle_spawn', self.PDEF_HARMTOUCH_B, tuple(point), velocity, ZERO)
+        light = self.call('pool_new', 0xBC)
+        if light:
+            spot = (C.add(u32(target + 0x10), ZERO), u32(target + 0x14), C.add(u32(target + 0x18), 0x42920000))
+            self.light_effect(light, spot, 0x42A60000, 0x435A0000, 0x42920000, 0x43580000, 0x42700000, HALF, 0x3EBB63B2)
+        amount = self.stat_for(u32(spell + 8), 0, self.s8(spell), u32(spell + 0xC), 10)
+        self.w32(low_out, amount)
+        extra = C.to_int(C.mul(C.mul(C.from_int(amount), 0x3E4CCCCC), self.unit(self.spell_rand(spell))))
+        self.w32(high_out, self.s32(low_out) + s32(extra))
+        self.spell_call(spell, 1, 3)
+
+    # =====================================================================================
+    # 50 minorhealing: docs/spec/skills-35-68.md section 50
+    # =====================================================================================
+    VT_SPELL_MINORHEALING = 0x519720
+    S_MINORHEALING_LUMP, S_MINORHEALING_SOUND = 0x54FB00, 0x54FB08
+
+    def minorhealing_cast(self, skill, level, caster, pos=0, facing=0):
+        """SkillMinorHealing_cast 0x2e022c -> the SpellMinorHealing or 0: slot 14 (level,
+        20), pool_new(0x24), the constructor."""
+        level = self.skill_call(skill, 14, level, 0x14)
+        spell = self.call('pool_new', 0x24)
+        if spell:
+            self.minorhealing_spell_ctor(spell, level, caster, skill)
+        return spell
+
+    def minorhealing_spell_ctor(self, spell, level, owner, skill):
+        """SpellMinorHealing_ctor 0x2e0388: Spell base (ONE SHARED DRAW); the sound on the
+        owner; the target +0x18 = the owner; pool_new(0x5c) and a GlowingShaft at the
+        owner (a GameObject: ONE SHARED DRAW unless the pool has no block); clock +0x1c =
+        0; healing per tick +0x20 = the maximum hit points of the record the owner's slot
+        (+0x3c8, NO player test) names x statistic 0 x 0.01 x (1/90)."""
+        u32 = self.u32
+        self.spell_base_ctor(spell, level, owner, skill, self.VT_SPELL_MINORHEALING)
+        self.call('sound_playOnObject', self.call('res_find', self.S_MINORHEALING_LUMP, self.S_MINORHEALING_SOUND),
+                  u32(spell + 0xC), ONE)
+        self.w32(spell + 0x18, owner)
+        shaft = self.call('pool_new', 0x5C)
+        if shaft:
+            self.object_ctor('GlowingShaft_ctor', shaft, self.vec(u32(spell + 0xC) + 0x10), 0x5A, 0xFA, 200, 100)
+        self.w32(spell + 0x1C, 0)
+        percent = C.from_int(self.stat(u32(spell + 8), 0, self.s8(spell)))
+        rec = self.record(u32(spell + 0x18))
+        self.w32(spell + 0x20, C.mul(C.mul(C.mul(u32(rec + 0xB0), percent), F_0_01), 0x3C360B81))
+
+    def minorhealing_run(self, spell, pos=0, facing=0):
+        """SpellMinorHealing_run 0x2e04f8, slot 2: clock += 1/60; while hit points + 1 <=
+        maximum the record's hit points rise by the per-tick amount (no clamp at the
+        maximum); the target is tinted for the first half second; the spell ends itself
+        once the clock is above 1.499996."""
+        u32 = self.u32
+        target = u32(spell + 0x18)
+        rec = self.record(target)
+        clock = C.add(u32(spell + 0x1C), DT)
+        self.w32(spell + 0x1C, clock)
+        if C.le(C.add(u32(rec + 0xAC), ONE), u32(rec + 0xB0)):
+            self.w32(rec + 0xAC, C.add(u32(rec + 0xAC), u32(spell + 0x20)))
+        clock = u32(spell + 0x1C)
+        if C.lt(clock, 0x3EFFFF78):
+            for off, value in ((0x96, 0x3F), (0x90, 0x68), (0x92, 0x6B), (0x94, 0x40), (0x98, 0x68), (0x9A, 0x6B), (0x9C, 0x40)):
+                self.w16(target + off, value)
+        if C.lt(0x3FBFFFDE, clock):
+            self.spell_end(spell)
+
+
+    def _sample_point(self, creature, model, draw, count):
+        """A sample point of a creature's model picked by a draw: index = draw % count
+        (C remainder; the original divides by zero for a model without sample points)."""
+        index = draw - int(draw / count) * count
+        point, _second = self.call('model_getSamplePoint', model, creature + 0x114, self.vec(creature + 0x10),
+                                   self.s16(creature + 0x38), index, 1, 0, ONE)
+        return tuple(point)
+
+    # =====================================================================================
+    # 54 holyshield: docs/spec/skills-35-68.md section 54
+    # =====================================================================================
+    VT_SPELL_HOLYSHIELD = 0x519CE0
+    S_HOLYSHIELD_LUMP, S_HOLYSHIELD_SOUND = 0x550350, 0x550358
+    PDEF_HOLYSHIELD = 0x8E5FF0
+
+    def holyshield_cast(self, skill, level, caster, pos=0, facing=0):
+        """SkillHolyShield_cast 0x2e80fc -> the SpellHolyShield or 0 (slot 14 (level, 20),
+        pool_new(0x28))."""
+        level = self.skill_call(skill, 14, level, 0x14)
+        spell = self.call('pool_new', 0x28)
+        if spell:
+            self.holyshield_spell_ctor(spell, level, caster, skill)
+        return spell
+
+    def holyshield_spell_ctor(self, spell, level, owner, skill):
+        """SpellHolyShield_ctor 0x2e82fc: Spell base (ONE SHARED DRAW); the sound; a
+        GlowingShaft at the owner (ONE SHARED DRAW unless the pool has no block); clock
+        +0x18 = 0, flash timer +0x1c = 0; duration +0x20 = (float) statistic 1 in seconds,
+        through slot 10 (tier 1 for any caster); a particle group at +0x24."""
+        u32 = self.u32
+        self.spell_base_ctor(spell, level, owner, skill, self.VT_SPELL_HOLYSHIELD)
+        self.call('sound_playOnObject', self.call('res_find', self.S_HOLYSHIELD_LUMP, self.S_HOLYSHIELD_SOUND),
+                  u32(spell + 0xC), ONE)
+        shaft = self.call('pool_new', 0x5C)
+        if shaft:
+            self.object_ctor('GlowingShaft_ctor', shaft, self.vec(u32(spell + 0xC) + 0x10), 0x5A, 0x56, 0x7E, 0xFA)
+        self.w32(spell + 0x1C, 0)
+        self.w32(spell + 0x18, 0)
+        self.w32(spell + 0x20, C.from_int(self.stat(u32(spell + 8), 1, self.s8(spell))))
+        self.w32(spell + 0x24, self.call('particleGroup_create'))
+
+    def holyshield_run(self, spell, pos=0, facing=0):
+        """SpellHolyShield_run 0x2e8428, slot 2: clock += 1/60, flash timer -= 1/60; once
+        the clock is above the duration the spell ends itself; else the particle group
+        follows the owner and the owner is tinted."""
+        u32 = self.u32
+        clock = C.add(u32(spell + 0x18), DT)
+        self.w32(spell + 0x18, clock)
+        self.w32(spell + 0x1C, C.sub(u32(spell + 0x1C), DT))
+        if C.lt(u32(spell + 0x20), clock):
+            return self.spell_end(spell)
+        owner = u32(spell + 0xC)
+        matrix = C.mat34_set_pos_rot_z(list(self.vec(owner + 0x10)), self.s16(owner + 0x38))
+        self.call('particleGroup_setMatrix', u32(spell + 0x24), tuple(matrix))
+        owner = u32(spell + 0xC)
+        for off, value in ((0x9E, 0x37), (0x90, 0x15), (0x92, 0x1C), (0x94, 0x73), (0x98, 0x15), (0x9A, 0x1C), (0x9C, 0x73),
+                           (0x96, 0x37)):
+            self.w16(owner + off, value)
+
+    def holyshield_absorb(self, spell):
+        """SpellHolyShield_absorb 0x2e8534 (spell) -> float, called by Player_takeDamage
+        for every hit taken while the shield is up and the player has mana.
+
+        241 particles on sample points of the owner's model: FOUR OR MORE OWN (spell)
+        DRAWS each (one for the point, a unit-ball sample for the velocity).  When the
+        flash timer +0x1c is not positive: a LightEffect 60 above the owner (ONE SHARED
+        DRAW unless the pool has no block) and the timer = 0.263 s - so at most one light
+        per 16 frames, and a shared draw inside the damage chain.  Returns statistic 0 x
+        0.01 (slot 10): the share of the hit paid from mana."""
+        u32 = self.u32
+        owner = u32(spell + 0xC)
+        count = s32(self.call('model_getSamplePointCount', self.vcall(owner, 16)))
+        model = self.vcall(u32(spell + 0xC), 16)
+        self.call('particleGroup_begin', u32(spell + 0x24))
+        for _ in range(0xF1):
+            draw = self.spell_rand(spell)
+            point = self._sample_point(u32(spell + 0xC), model, draw, count)
+            velocity = tuple(C.mul(c, 0x42140000) for c in self.spell_ball(spell))
+            self.call('particle_spawn', self.PDEF_HOLYSHIELD, point, velocity, ZERO)
+        self.call('particleGroup_end', u32(spell + 0x24))
+        if C.le(u32(spell + 0x1C), ZERO):
+            light = self.call('pool_new', 0xBC)
+            if light:
+                owner = u32(spell + 0xC)
+                spot = (C.add(u32(owner + 0x10), ZERO), u32(owner + 0x14), C.add(u32(owner + 0x18), 0x42700000))
+                self.light_effect(light, spot, 0x42800000, 0x42800000, 0x42FA0000, 0x42F00000, 0x42700000, HALF, 0x3E86A832)
+            self.w32(spell + 0x1C, 0x3E86A832)
+        return C.mul(C.from_int(self.stat(u32(spell + 8), 0, self.s8(spell))), F_0_01)
+
+    # =====================================================================================
+    # 55 healing (and 86): docs/spec/skills-35-68.md section 55
+    # =====================================================================================
+    VT_SPELL_HEALING = 0x519E20
+    S_HEALING_LUMP, S_HEALING_SOUND = 0x550488, 0x550490
+    PDEF_HEALING_RING = 0x8E6040
+    F_HEAL_RATE = 0x3C71AA2E                    # 0.01475: a share of maximum hit points per tick
+    HEAL_TINT = ((0x9E, 0x32), (0x90, 0x35), (0x92, 0x14), (0x94, 0x0D), (0x98, 0x35), (0x9A, 0x14), (0x9C, 0x0D), (0x96, 0x32))
+
+    def healing_cast(self, skill, level, caster, pos=0, facing=0):
+        """SkillHealing_cast 0x2e8cf8 -> the SpellHealing or 0 (slot 14 (level, 14),
+        pool_new(0x24)).  `caster` becomes the spell's owner: a monster that heals an
+        ally passes the ally."""
+        level = self.skill_call(skill, 14, level, 0xE)
+        spell = self.call('pool_new', 0x24)
+        if spell:
+            self.healing_spell_ctor(spell, level, caster, skill)
+        return spell
+
+    def healing_spell_ctor(self, spell, level, owner, skill):
+        """SpellHealing_ctor 0x2e8ec8: Spell base (ONE SHARED DRAW); sound; a GlowingShaft
+        (ONE SHARED DRAW unless the pool has no block); a particle group +0x20; clock
+        +0x18 = 0; the owner's own healing per tick +0x1c = maximum hit points x 0.01475 x
+        (statistic 0 x 0.01): a player's maximum from its record with slot 12 cap 10,
+        anyone else's from +0x22c with cap 20."""
+        u32 = self.u32
+        self.spell_base_ctor(spell, level, owner, skill, self.VT_SPELL_HEALING)
+        self.call('sound_playOnObject', self.call('res_find', self.S_HEALING_LUMP, self.S_HEALING_SOUND), u32(spell + 0xC), ONE)
+        shaft = self.call('pool_new', 0x5C)
+        if shaft:
+            self.object_ctor('GlowingShaft_ctor', shaft, self.vec(u32(spell + 0xC) + 0x10), 0x5A, 0xFA, 200, 100)
+        self.w32(spell + 0x20, self.call('particleGroup_create'))
+        owner = u32(spell + 0xC)
+        self.w32(spell + 0x18, 0)
+        if u32(owner + 0xC) & 0x40:
+            percent = self.stat_for(u32(spell + 8), 0, self.s8(spell), owner, 10)
+            most = u32(self.record(owner) + 0xB0)
+        else:
+            percent = self.stat_for(u32(spell + 8), 0, self.s8(spell), owner, 0x14)
+            most = u32(u32(spell + 0xC) + 0x22C)
+        self.w32(spell + 0x1C, C.mul(C.mul(most, self.F_HEAL_RATE), C.mul(C.from_int(percent), F_0_01)))
+
+    def _heal_share(self, spell, most):
+        """What a recipient other than the owner gets per tick: its own maximum x 0.01475
+        x (statistic 2 x 0.01), statistic 2 through slot 12 with the owner and cap 20."""
+        percent = self.stat_for(self.u32(spell + 8), 2, self.s8(spell), self.u32(spell + 0xC), 0x14)
+        return C.mul(C.mul(most, self.F_HEAL_RATE), C.mul(C.from_int(percent), F_0_01))
+
+    def healing_run(self, spell, pos=0, facing=0):
+        """SpellHealing_run 0x2e90b8, slot 2.
+
+        reach = statistic 1 x 12 (slot 12 with the owner, cap 20), an integer.
+        Owner without the player flag, a living creature (flags & 0x28 == 0x20): every
+        object of the box query round the owner (cube of the reach) that is the owner or
+        that the owner's slot 21 accepts, within the reach in the plane, has its hit
+        points +0x228 raised - the owner by +0x1c, others by their share - with no upper
+        limit, and is tinted during the first 0.13 s.
+        Player owner: the slots of g_alivePlayers (the per-machine list, FINDINGS G19), in
+        list order, whose object is within the reach in 3-D (in PvP mode A only those the
+        owner's slot 22 accepts): hit points rise in the RECORD, only while hit points + 1
+        <= maximum; tint as above.
+        Then, reach >= 1: level - (first level of statistic 1) + 5 ring particles, each
+        with ONE OWN DRAW for its angle, placed round the "object or prediction copy" of
+        the owner and kept only where the terrain is within 72 of that object's height.
+        Clock += 1/60; above 1.1299 the spell ends itself (no null test)."""
+        u32, w32 = self.u32, self.w32
+        skill = u32(spell + 8)
+        reach = self.stat_for(skill, 1, self.s8(spell), u32(spell + 0xC), 0x14) * 0xC
+        reach2 = C.from_int(s32(reach * reach))
+        owner = u32(spell + 0xC)
+        early = lambda: C.lt(u32(spell + 0x18), 0x3E050EF8)
+
+        def tint(obj):
+            for off, value in self.HEAL_TINT:
+                self.w16(obj + off, value)
+        if not u32(owner + 0xC) & 0x40:
+            if u32(owner + 0xC) & 0x28 == 0x20:
+                edge = C.from_int(reach)
+                x, y, z = self.vec(owner + 0x10)
+                low = (C.sub(x, edge), C.sub(y, edge), C.sub(z, edge))
+                high = (C.add(x, edge), C.add(y, edge), C.add(z, edge))
+                for other in self.call('world_collectObjectsInBox', low, high, 0x80) or ():
+                    owner = u32(spell + 0xC)
+                    if other != owner and not self.vcall(owner, 21, other):
+                        continue
+                    owner = u32(spell + 0xC)
+                    dy = C.sub(u32(owner + 0x14), u32(other + 0x14))
+                    dx = C.sub(u32(owner + 0x10), u32(other + 0x10))
+                    if not C.le(C.add(C.mul(dx, dx), C.mul(dy, dy)), reach2):
+                        continue
+                    add = u32(spell + 0x1C) if other == owner else self._heal_share(spell, u32(other + 0x22C))
+                    w32(other + 0x228, C.add(u32(other + 0x228), add))
+                    if early():
+                        tint(other)
+        else:
+            chosen = []
+            for i in range(max(self.s32(G_ALIVE_COUNT), 0)):
+                slot = self.s32(G_ALIVE_LIST + 4 * i)
+                obj = u32((G_PLAYERS + slot * REC_SIZE + REC_OBJ) & M32)
+                if u32(G_PVP_MODE_A) and not self.vcall(u32(spell + 0xC), 22, obj):
+                    continue
+                owner = u32(spell + 0xC)
+                obj = u32((G_PLAYERS + self.s32(G_ALIVE_LIST + 4 * i) * REC_SIZE + REC_OBJ) & M32)
+                dx = C.sub(u32(owner + 0x10), u32(obj + 0x10))
+                dy = C.sub(u32(owner + 0x14), u32(obj + 0x14))
+                dz = C.sub(u32(owner + 0x18), u32(obj + 0x18))
+                if C.le(C.add(C.add(C.mul(dx, dx), C.mul(dy, dy)), C.mul(dz, dz)), reach2):
+                    chosen.append(self.s32(G_ALIVE_LIST + 4 * i))
+            for slot in chosen:
+                rec = (G_PLAYERS + slot * REC_SIZE) & M32
+                if C.le(C.add(u32(rec + 0xAC), ONE), u32(rec + 0xB0)):
+                    if u32(rec + REC_OBJ) == u32(spell + 0xC):
+                        w32(rec + 0xAC, C.add(u32(rec + 0xAC), u32(spell + 0x1C)))
+                    else:
+                        w32(rec + 0xAC, C.add(u32(rec + 0xAC), self._heal_share(spell, u32(rec + 0xB0))))
+                if early():
+                    tint(u32(rec + REC_OBJ))
+        if reach >= 1:
+            level, first = self.s8(spell), self.s16(u32(spell + 8) + 0x10)
+            anchor = self.call('net_objOrGhost', u32(spell + 0xC))
+            self.call('particleGroup_begin', u32(spell + 0x20))
+            matrix = C.mat34_set_pos_rot_z(list(self.vec(anchor + 0x10)), s16(self.s32(G_SIM_FRAME) * 0x5F))
+            self.call('particleGroup_setMatrix', u32(spell + 0x20), tuple(matrix))
+            for _ in range(max(level - first + 5, 0)):
+                angle = s16(self.spell_rand(spell))
+                ring = [C.mul(C.cos16(angle), C.from_int(reach)), C.mul(C.sin16(angle), C.from_int(reach)), ZERO]
+                world = C.mat34_transform_point(matrix, ring)
+                height = C.sub(self.call('terrain_heightAtPoint', u32(G_WORLD), tuple(world)), u32(anchor + 0x18))
+                if C.lt(0x42900000, height) or C.lt(height, 0xC2900000):
+                    continue
+                self.call('particle_spawn', self.PDEF_HEALING_RING, (ring[0], ring[1], height), (0, 0, ONE), ZERO)
+            self.call('particleGroup_end', u32(spell + 0x20))
+        clock = C.add(u32(spell + 0x18), DT)
+        w32(spell + 0x18, clock)
+        if C.lt(0x3F90A1DF, clock):
+            self.spell_call(spell, 1, 3)
+
+
+# =========================================================================================
+# Registration helpers
+# =========================================================================================
+def _register(sid, name, functions, tables=()):
+    """Add a skill's functions: {name: (start, end, kind, method)} with kind 'skill',
+    'spell', 'object' (virtual bodies, resolved through the class tables) or '' (a plain
+    function)."""
+    row = SKILLS.setdefault(sid, {'name': name, 'functions': []})
+    for fname, (start, end, kind, method) in functions.items():
+        FUNCTIONS[fname] = (start, end)
+        row['functions'].append(fname)
+        if kind == 'skill':
+            SKILL_BODIES[start] = method
+        elif kind == 'spell':
+            SPELL_BODIES[start] = method
+        elif kind == 'object':
+            OBJECT_BODIES[start] = method
+    CLASS_TABLES.extend(tables)
+
+
+# Skill slot 5 (mana cost) of every id of the range that overrides it:
+# id -> (function, end, slot it forwards to, second argument).  Slot 15 gives
+# (float) statistic 4 at the level; the two that forward to slot 14 return 0.0 (LifeTap and
+# StrongStance cost nothing).  Slot 14 ignores its second argument, so the numbers below
+# have no effect in this build.  Ids 60, 61, 63, 64 keep the base slot (1.0).
+MANA_COST = {
+    35: (0x2C8C80, 0x2C8CB4, 15, 0x14), 36: (0x2CF42C, 0x2CF460, 15, 1), 37: (0x2C3F28, 0x2C3F5C, 15, 10),
+    38: (0x2C7478, 0x2C74AC, 15, 4), 39: (0x2D0120, 0x2D0154, 15, 4), 40: (0x2D0C8C, 0x2D0CC0, 15, 10),
+    41: (0x2D1794, 0x2D17C8, 15, 0x14), 42: (0x2D2950, 0x2D2984, 15, 0x12), 43: (0x2D6204, 0x2D6238, 15, 0x14),
+    44: (0x2D6F80, 0x2D6FB4, 15, 0x14), 45: (0x2D8A30, 0x2D8A64, 15, 1), 46: (0x2DA130, 0x2DA164, 15, 0x14),
+    47: (0x2DAE80, 0x2DAEB4, 15, 9), 48: (0x2DBC78, 0x2DBCAC, 15, 0x14), 49: (0x2DE60C, 0x2DE640, 15, 0x13),
+    50: (0x2E0354, 0x2E0388, 15, 0x14), 51: (0x2E0980, 0x2E09B4, 15, 10), 52: (0x2E6894, 0x2E68C8, 15, 0x14),
+    53: (0x2E7690, 0x2E76C4, 15, 0x14), 54: (0x2E82C8, 0x2E82FC, 15, 0x14), 55: (0x2E8E94, 0x2E8EC8, 15, 0xE),
+    56: (0x2E9AD4, 0x2E9B08, 15, 1), 57: (0x2ED80C, 0x2ED840, 15, 0x14), 58: (0x2EDD44, 0x2EDD78, 15, 0x14),
+    59: (0x2F8E40, 0x2F8E78, 14, 1), 62: (0x3084E4, 0x30851C, 14, 0x14), 65: (0x30909C, 0x3090D0, 15, 10),
+    66: (0x309CD8, 0x309D0C, 15, 0x14), 67: (0x311604, 0x311638, 15, 0x14), 68: (0x3126D8, 0x31270C, 15, 1),
+}
+SKILL_NAMES = {35: 'charge', 36: 'darkness', 37: 'shock', 38: 'groundpound', 39: 'convertenemy', 40: 'convertundead',
+               41: 'cyclone', 42: 'harmtouch', 43: 'firearrow', 44: 'coldarrow', 45: 'poisonarrow', 46: 'multifire',
+               47: 'explodearrow', 48: 'archery', 49: 'bash', 50: 'minorhealing', 51: 'ancestralcall', 52: 'root',
+               53: 'criticalhit', 54: 'holyshield', 55: 'healing', 56: 'coneoffrost', 57: 'shockoffire',
+               58: 'froststorm', 59: 'lifetap', 60: 'blunt', 61: 'slashing', 62: 'strongstance',
+               63: 'naturalresistance', 64: 'stunningstrike', 65: 'giantgrowth', 66: 'planarwind', 67: 'shadowstep',
+               68: 'resurrect'}
+
+
+def _mana_cost_method(slot, n):
+    def mana_cost(self, skill, level):
+        if slot == 15:
+            return self.skill_call(skill, 15, level, n)
+        self.skill_call(skill, 14, level, n)
+        return ZERO
+    mana_cost.__doc__ = 'Skill slot 5: forwards (level, %d) to slot %d%s.' % (n, slot, '' if slot == 15 else '; returns 0.0')
+    return mana_cost
+
+
+for _sid in SKILL_IDS:
+    SKILLS[_sid] = {'name': SKILL_NAMES[_sid], 'functions': []}
+for _sid, (_start, _end, _slot, _n) in MANA_COST.items():
+    setattr(Model, 'mana_cost_%d' % _sid, _mana_cost_method(_slot, _n))
+    _register(_sid, SKILL_NAMES[_sid], {'Skill%d_manaCost' % _sid: (_start, _end, 'skill', 'mana_cost_%d' % _sid)})
+
+_register(41, 'cyclone', {
+    'SkillCyclone_canUse': (0x2D1484, 0x2D1510, 'skill', 'cyclone_can_use'),
+    'SkillCyclone_cast': (0x2D161C, 0x2D16A0, 'skill', 'cyclone_cast'),
+    'SpellCyclone_ctor': (0x2D17C8, 0x2D1A94, '', 'cyclone_spell_ctor'),
+    'SpellCyclone_run': (0x2D1A94, 0x2D21E0, 'spell', 'cyclone_run'),
+    'SpellCyclone_updateFx': (0x2D21E0, 0x2D272C, '', 'cyclone_update_fx'),
+}, [(Model.VT_SPELL_CYCLONE, 'Spell', (1,))])
+
+_register(43, 'firearrow', {
+    'SkillFireArrow_canUse': (0x2D5FC4, 0x2D603C, 'skill', 'firearrow_can_use'),
+    'SkillFireArrow_cast': (0x2D603C, 0x2D6108, 'skill', 'firearrow_cast'),
+    'FireArrowProjectile_ctor': (0x2D6238, 0x2D6440, '', 'firearrow_ctor'),
+    'FireArrowProjectile_ctor2': (0x2D6440, 0x2D66AC, '', 'firearrow_ctor2'),
+    'FireArrowProjectile_run': (0x2D66AC, 0x2D67E8, 'object', 'firearrow_run'),
+    'FireArrowProjectile_onHit': (0x2D685C, 0x2D6BB8, 'object', 'firearrow_on_hit'),
+    'FireArrowProjectile_end': (0x2D6BB8, 0x2D6C20, '', 'firearrow_end'),
+})
+
+_register(44, 'coldarrow', {
+    'SkillColdArrow_canUse': (0x2D6D40, 0x2D6DB8, 'skill', 'coldarrow_can_use'),
+    'SkillColdArrow_cast': (0x2D6DB8, 0x2D6E84, 'skill', 'coldarrow_cast'),
+    'ColdArrowProjectile_ctor': (0x2D6FB4, 0x2D718C, '', 'coldarrow_ctor'),
+    'ColdArrowProjectile_ctor2': (0x2D718C, 0x2D73C8, '', 'coldarrow_ctor2'),
+    'ColdArrowProjectile_run': (0x2D73C8, 0x2D7980, 'object', 'coldarrow_run'),
+    'ColdArrowProjectile_onHit': (0x2D7AAC, 0x2D7ECC, 'object', 'coldarrow_on_hit'),
+    'ColdArrowProjectile_end': (0x2D7ECC, 0x2D84CC, '', 'coldarrow_end'),
+})
+_register(45, 'poisonarrow', {
+    'SkillPoisonArrow_canUse': (0x2D877C, 0x2D87F4, 'skill', 'poisonarrow_can_use'),
+    'SkillPoisonArrow_cast': (0x2D87F4, 0x2D88C0, 'skill', 'poisonarrow_cast'),
+    'PoisonArrowProjectile_ctor': (0x2D8A64, 0x2D8C40, '', 'poisonarrow_ctor'),
+    'PoisonArrowProjectile_ctor2': (0x2D8C40, 0x2D8E80, '', 'poisonarrow_ctor2'),
+    'PoisonArrowProjectile_run': (0x2D8E80, 0x2D91F8, 'object', 'poisonarrow_run'),
+    'PoisonArrowProjectile_onHit': (0x2D932C, 0x2D95C8, 'object', 'poisonarrow_on_hit'),
+    'PoisonArrowProjectile_end': (0x2D95C8, 0x2D9764, '', 'poisonarrow_end'),
+})
+_register(47, 'explodearrow', {
+    'SkillExplodeArrow_canUse': (0x2DAC30, 0x2DACA8, 'skill', 'explodearrow_can_use'),
+    'SkillExplodeArrow_cast': (0x2DACA8, 0x2DAD68, 'skill', 'explodearrow_cast'),
+    'ExplodeArrowProjectile_ctor': (0x2DAEB4, 0x2DAFE0, '', 'explodearrow_ctor'),
+    'ExplodeArrowProjectile_ctor2': (0x2DAFE0, 0x2DB17C, '', 'explodearrow_ctor2'),
+    'ExplodeArrowProjectile_run': (0x2DB17C, 0x2DB430, 'object', 'explodearrow_run'),
+    'ExplodeArrowProjectile_onHit': (0x2DB4F0, 0x2DB50C, 'object', 'explodearrow_on_hit'),
+    'ExplodeArrowProjectile_explode': (0x2DB50C, 0x2DBA94, '', 'explodearrow_explode'),
+})
+
+_register(46, 'multifire', {
+    'SkillMultiFire_canUse': (0x2D9A18, 0x2D9A90, 'skill', 'multifire_can_use'),
+    'SkillMultiFire_cast': (0x2D9A90, 0x2DA048, 'skill', 'multifire_cast'),
+})
+
+_register(48, 'archery', {'SkillArchery_getStat0Fraction': (0x2DBCAC, 0x2DBD20, '', 'archery_fraction')})
+_register(59, 'lifetap', {
+    'SkillLifeTap_cast': (0x2F8D54, 0x2F8D7C, 'skill', 'skill_cast_base'),
+    'SkillLifeTap_getStat0Fraction': (0x2F8E78, 0x2F8EEC, '', 'lifetap_fraction'),
+    'SkillLifeTap_getStat1': (0x2F8EEC, 0x2F8F48, '', 'lifetap_stat1'),
+})
+_register(62, 'strongstance', {
+    'SkillStrongStance_cast': (0x308434, 0x30845C, 'skill', 'skill_cast_base'),
+    'SkillStrongStance_getStat0': (0x30851C, 0x308578, '', 'strongstance_stat0'),
+    'SkillStrongStance_trigger': (0x308578, 0x3088B8, '', 'strongstance_trigger'),
+})
+_register(63, 'naturalresistance', {
+    'SkillNaturalResistance_getStat0Fraction': (0x308A7C, 0x308AF0, '', 'naturalresistance_fraction'),
+})
+_register(64, 'stunningstrike', {
+    'SkillStunningStrike_getStat0ForTarget': (0x308C10, 0x308CB4, '', 'stunningstrike_stat0_for'),
+    'SkillStunningStrike_spawnEffect': (0x308CB4, 0x308E64, '', 'stunningstrike_effect'),
+})
+
+_register(42, 'harmtouch', {
+    'SkillHarmTouch_canUse': (0x2D2984, 0x2D2A04, 'skill', 'harmtouch_can_use'),
+    'SkillHarmTouch_cast': (0x2D2A04, 0x2D2A88, 'skill', 'harmtouch_cast'),
+    'SpellHarmTouch_ctor': (0x2D2B5C, 0x2D2C0C, '', 'harmtouch_spell_ctor'),
+    'SpellHarmTouch_run': (0x2D2C0C, 0x2D2CBC, 'spell', 'harmtouch_run'),
+    'SpellHarmTouch_applyToHit': (0x2D2CBC, 0x2D3060, '', 'harmtouch_apply_to_hit'),
+}, [(Model.VT_SPELL_HARMTOUCH, 'Spell', (1,))])
+_register(50, 'minorhealing', {
+    'SkillMinorHealing_cast': (0x2E022C, 0x2E02CC, 'skill', 'minorhealing_cast'),
+    'SpellMinorHealing_ctor': (0x2E0388, 0x2E04F8, '', 'minorhealing_spell_ctor'),
+    'SpellMinorHealing_run': (0x2E04F8, 0x2E060C, 'spell', 'minorhealing_run'),
+}, [(Model.VT_SPELL_MINORHEALING, 'Spell', (1,))])
+
+_register(54, 'holyshield', {
+    'SkillHolyShield_cast': (0x2E80FC, 0x2E819C, 'skill', 'holyshield_cast'),
+    'SpellHolyShield_ctor': (0x2E82FC, 0x2E8428, '', 'holyshield_spell_ctor'),
+    'SpellHolyShield_run': (0x2E8428, 0x2E8534, 'spell', 'holyshield_run'),
+    'SpellHolyShield_absorb': (0x2E8534, 0x2E886C, '', 'holyshield_absorb'),
+}, [(Model.VT_SPELL_HOLYSHIELD, 'Spell', (1,))])
+_register(55, 'healing', {
+    'SkillHealing_cast': (0x2E8CF8, 0x2E8D98, 'skill', 'healing_cast'),
+    'SpellHealing_ctor': (0x2E8EC8, 0x2E90B8, '', 'healing_spell_ctor'),
+    'SpellHealing_run': (0x2E90B8, 0x2E979C, 'spell', 'healing_run'),
+}, [(Model.VT_SPELL_HEALING, 'Spell', (1,))])
+
+MODELLED = {name: start for name, (start, _end) in FUNCTIONS.items()}

@@ -113,6 +113,11 @@ def tick_differences(path_a, path_b):
         first = min(first_by_column.values())
         result.update(first=first, frame_a=int(a[first]["frame"]), frame_b=int(b[first]["frame"]),
                       columns_at_first=sorted(c for c, t in first_by_column.items() if t == first))
+        # A machine that has dropped a peer (a kick from the pause menu, a leave, a
+        # silence time-out) stops applying that peer's input: what follows is not a desync.
+        result["peer_dropped"] = any(
+            row.get(column) == "1"
+            for row in (a[first], b[first]) for column in row if column.startswith("l_dropped"))
     return result
 
 

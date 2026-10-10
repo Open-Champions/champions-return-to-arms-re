@@ -95,6 +95,8 @@ def run_pair(config, job, patches, tag, frames=None):
 
 def class_of(result):
     """Columns that differ at the first tick, player numbers folded: the class of a divergence."""
+    if result.get("peer_dropped"):
+        return "a peer was dropped at that tick (kick or leave): not a desync"
     return "+".join(sorted(set(re.sub(r"^p[0-3]", "pN", c) for c in result["columns_at_first"])))
 
 
@@ -148,6 +150,8 @@ def main(argv):
         candidates = [s for s in patch_sections() if s.startswith("Net test") and "LAG" not in s and s not in base]
         for name, members in classes.items():
             job, result = members[0]
+            if result.get("peer_dropped"):
+                continue
             limit = result["frame_a"] + 400   # frames of this run: past the divergence, no further
             with concurrent.futures.ThreadPoolExecutor(workers) as pool:
                 trials = list(pool.map(
@@ -174,8 +178,9 @@ def main(argv):
         entry[0] += 1
         entry[1] += result["ticks"]
         entry[2] += result["first"] is not None
-    print("pairs %d, ticks compared %d, divergent %d, without a usable log %d; patches on both: %s" % (
-        len(jobs), total, len(divergent), len(failed), "; ".join(base) or "none"))
+    print("pairs %d, ticks compared %d, divergent %d (%d of them a kick or leave), without a usable log %d; patches on both: %s" % (
+        len(jobs), total, len(divergent), sum(1 for _, r in divergent if r.get("peer_dropped")), len(failed),
+        "; ".join(base) or "none"))
     print("per level: " + ", ".join("%s %d pairs / %d ticks / %d divergent" % (level, n, t, d)
                                     for level, (n, t, d) in sorted(by_level.items())))
     if failed:

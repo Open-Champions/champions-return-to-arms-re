@@ -12,7 +12,7 @@ description=Each machine predicts its own player on a throwaway copy. The copy i
 patch=1,EE,0011EA8C,word,AE0000C8
 
 [Net test: equalise at once (LAG-1)]
-author=reverse engineering test patch, untested on a running game
+author=reverse engineering test patch; confirmed on two linked Play! emulator instances (FINDINGS V16: delay after a stall peaks at 11 frames instead of 34 and clears in 10 s instead of 35); untested on PCSX2 or a console
 description=net_main, 0x133574: skip sampling input whenever this machine's input is 5 or more frames further ahead of its simulation than the smallest such lead reported by the others, instead of only after 31 calls in a row. Keeps the extra input delay after an outage, a frozen peer or a slow peer to about 4 frames above the others. During a stall your own character stops too. Per machine. docs/issues/lag.md.
 // was: 2862001F (slti v0,v1,31)
 patch=1,EE,00133574,word,28620001
