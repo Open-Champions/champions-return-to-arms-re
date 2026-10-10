@@ -17,8 +17,8 @@ disc.  Without the executable the script says so and exits 0.
     --no-generated / --generated-only   leave out the generated level / test nothing else
     --jobs N     test N levels side by side (separate processes; the output stays in order)
 
-The full sample takes roughly half an hour per level in the interpreter, --quick five to
-ten minutes; use --jobs on a machine with several cores.
+The full sample takes half an hour to three quarters of an hour per level in the
+interpreter, --quick five to ten minutes; use --jobs on a machine with several cores.
 
 Every property prints one line per level: PASS or FAIL, the name, the number of cases and
 what was compared.  Exit status 1 when any property fails.

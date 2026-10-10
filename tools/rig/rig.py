@@ -12,6 +12,8 @@ other argument is passed to the runner unchanged.
                                        prints name=address:type pairs for the runner
     python3 -I -B tools/rig/rig.py session start|send|stop ...
                                        keep one runner alive and feed it commands
+    python3 -I -B tools/rig/rig.py pair OUTDIR ...
+                                       two joined machines playing one net game
 
 Environment:
     RTA_DISC   path of the disc image (or pass --disc)
@@ -205,7 +207,116 @@ def session(argv):
     raise SystemExit("session start|send|stop|status")
 
 
+# --- two machines -------------------------------------------------------------------
+#
+#     rig.py pair OUTDIR [--bus delay=2,seed=7] [--a-arg X] [--b-arg X] <runner options>
+#
+# starts two runners joined by a local socket (see --link in the README): machine A is
+# 192.168.1.132 and becomes player slot 0, machine B is 192.168.1.134 and slot 1. Both get
+# the same options and the same script; script lines tagged "A:" or "B:" act on one
+# machine. Each machine writes OUTDIR/a.* or b.*: the runner's output (.out), the shim's
+# log (.net.log) and one row per lockstep tick (.tick.tsv) with the columns below.
+# Columns whose name starts with "l_" are per machine by design; compare.py skips them.
+
+PAIR = {"A": ("192.168.1.132", 0, "listen"), "B": ("192.168.1.134", 1, "connect")}
+
+
+def tick_watches(local_slot):
+    """Default columns of the tick log, as --tick-watch arguments."""
+    record = lambda n: "g_players+%d" % (n * 0x4C30)
+    peer = lambda n: "g_peers+%d" % (n * 0x44E0)
+    specs = [
+        "net=g_netFrame:s32",
+        "seed=g_randSeed:x32",
+        "level=g_levelName:str12",
+        "nplayers=g_numPlayers:s32",
+        # the sync record the game stored for the previous tick, from this machine's ring
+        "prevhash=%s+0x18ac+((g_netFrame-1)&0xff)*12+8:x32" % peer(local_slot),
+        "l_inp=g_localInputFrame:s32",
+        "l_cosmetic=g_cosmeticSeed:x32",
+        "l_drawframe=g_drawFrame:u32",
+    ]
+    for n in (0, 1):
+        obj = "[%s+0x43d8]" % record(n)
+        specs += [
+            "p%dx=%s+0x10:x32" % (n, obj), "p%dy=%s+0x14:x32" % (n, obj), "p%dz=%s+0x18:x32" % (n, obj),
+            "p%dangle=%s+0x38:u16" % (n, obj), "p%dstate=%s+0x58c:s32" % (n, obj),
+            "p%dobjseed=%s+0x44:x32" % (n, obj),
+            "p%dhp=%s+0xac:x32" % (n, record(n)), "p%dmana=%s+0xc0:x32" % (n, record(n)),
+            "p%dgold=%s+0xe4:s32" % (n, record(n)), "p%dexp=%s+0x5c:s32" % (n, record(n)),
+            "p%dbag0=%s+0x130:crc4612" % (n, record(n)), "p%dbag1=%s+0x1338:crc4612" % (n, record(n)),
+            "p%dbag2=%s+0x2540:crc4612" % (n, record(n)),
+            # out-of-sync flag this machine holds for peer n; they are per machine but a
+            # 1 anywhere is what the comparison is looking for, so they are compared too
+            "oos%d=%s+0x44d7:u8" % (n, peer(n)),
+            "l_dropped%d=%s+0x44d5:u8" % (n, peer(n)),
+        ]
+    result = []
+    for spec in specs:
+        result += ["--tick-watch", spec]
+    return result
+
+
+def pair(argv):
+    import subprocess
+    import tempfile
+    if not argv:
+        raise SystemExit("pair OUTDIR [--bus spec] [--a-arg X] [--b-arg X] <runner options>")
+    out_dir = os.path.abspath(argv[0])
+    os.makedirs(out_dir, exist_ok=True)
+    rest = argv[1:]
+    own = {"A": [], "B": []}
+    common = []
+    index = 0
+    booted = True
+    while index < len(rest):
+        if rest[index] in ("--a-arg", "--b-arg"):
+            own[rest[index][2].upper()].append(rest[index + 1])
+            index += 2
+            continue
+        if rest[index] in ("--a-load", "--b-load"):
+            own[rest[index][2].upper()] += ["--load", rest[index + 1]]
+            booted = False
+            index += 2
+            continue
+        common.append(rest[index])
+        index += 1
+    link_dir = os.environ.get("RTA_LINK_DIR", tempfile.gettempdir())
+    link = os.path.join(link_dir, "rig-%d.sock" % os.getpid())
+    data_root = os.path.join(ROOT, "local", "rig-out")
+    processes = []
+    for letter in ("A", "B"):
+        address, slot, mode = PAIR[letter]
+        low = letter.lower()
+        args = ["--machine", letter, "--net-shim", address, "--link", "%s:%s" % (mode, link),
+                "--data", os.path.join(data_root, "pair-" + low),
+                "--net-log", os.path.join(out_dir, low + ".net.log"),
+                "--tick-log", os.path.join(out_dir, low + ".tick.tsv")]
+        args += tick_watches(slot)
+        if booted:
+            args += ["--arg", "--net"]
+        # %M in an option stands for the machine's letter in lower case
+        extra = [value.replace("%M", low) for value in common + own[letter]]
+        command = runner_command(args + extra)
+        out = open(os.path.join(out_dir, low + ".out"), "w")
+        processes.append((letter, subprocess.Popen(command, stdout=out, stderr=subprocess.STDOUT), out))
+    status = 0
+    for letter, process, out in processes:
+        code = process.wait()
+        out.close()
+        # 6 means "the other machine ended first", which is how a pair normally ends
+        if code not in (0, 6):
+            status = code
+        with open(out.name, errors="replace") as handle:
+            lines = [l for l in handle.read().splitlines() if "CMIPSAnalysis" not in l and " screen: " not in l]
+        print("== machine %s, exit code %d" % (letter, code))
+        print("\n".join(l[:300] for l in lines[-int(os.environ.get("RTA_PAIR_TAIL", "12")):]))
+    return status
+
+
 def main(argv):
+    if argv and argv[0] == "pair":
+        return pair(argv[1:])
     if argv and argv[0] == "watches":
         print(" ".join("--watch " + pair for pair in watch_pairs(argv[1:])))
         return 0

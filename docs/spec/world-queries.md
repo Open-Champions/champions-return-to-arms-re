@@ -597,7 +597,6 @@ five other floating-point settings of the interpreter.
 | path search suspended | the same with `blocking` 0 and T0 fed from a schedule | all of the above after every service call; and the model's one-call answer for the same request | T0 rising by 40–900 per reading from a random start |
 | path search types 1–3 | → 0x1844f0, 0x1845bc, 0x1846a4 → the two ray functions | as type 0 | goals 2–8 nodes away, radii 36–600 |
 
-<!-- counts:begin -->
 Counts of the last run (seed 20973; "full" is the default sample, "quick" a tenth of it; each
 number includes the reruns under the five other floating-point settings). "generated" is the
 level the test builds itself (rotated and mirrored elements, sample flags 1, 2, 4 and 8,
@@ -608,8 +607,8 @@ path grid.
 | Level | Sample | collect, heights, flag test | sweep | slide | movers, doors | rays | path searches | path queue, counters | Slide inputs left out | Result |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
 | drunare | full | 15750 | 4500 | 1683 | 3576 | 4500 | 534 | 268 | 241 | all PASS |
-| drunarm | full | 15750 | 4500 | 1654 | 3181 | 3000 | — | — | 0 | UNFINISHED |
-| drundar | full | 15750 | 4500 | 1666 | 3593 | 4500 | — | 268 | 0 | UNFINISHED |
+| drunarm | full | 15750 | 4500 | 1654 | 3181 | 4500 | 534 | 268 | 265 | all PASS |
+| drundar | full | 15750 | 4500 | 1666 | 3593 | 4500 | 534 | 268 | 241 | all PASS |
 | generated | full | 15750 | 4500 | 1682 | 3582 | 4500 | 534 | 268 | 236 | all PASS |
 | pvparena | full | 15750 | 4500 | 1688 | 3583 | 4500 | 534 | 268 | 229 | all PASS |
 | actintro | quick | 1575 | 450 | 171 | 365 | 450 | — | — | 14 | all PASS |
@@ -625,13 +624,13 @@ path grid.
 | torbonus | quick | 1575 | 450 | 171 | 360 | 450 | 84 | 160 | 19 | all PASS |
 | tormentb | quick | 1575 | 450 | 161 | 361 | 450 | 84 | 160 | 28 | all PASS |
 | wate2b | quick | 1575 | 450 | 166 | 357 | 450 | 84 | 160 | 27 | all PASS |
-| **total** | | **99225** | **28350** | **10554** | **21918** | **26850** | **2610** | **2992** | | |
+| **total** | | **99225** | **28350** | **10554** | **21918** | **28350** | **3678** | **3260** | | |
 
 Every property passed on every level: **no mismatch is left unresolved.** The only inputs
 not compared are the slide inputs of the last column, which the test recognises with the
-model and does not hand to the original (section 7); there are many on the generated level
-because almost a third of the samples in some of its fields are flagged.
-<!-- counts:end -->
+model and does not hand to the original (section 7): about one slide or object-move input
+in fifteen, because the random starts often lie inside walls (31 % of all samples in the
+shipped levels carry flag 1), where a step can grow past 150 units.
 
 What "tested" does **not** cover:
 

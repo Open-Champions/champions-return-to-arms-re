@@ -1,7 +1,16 @@
 # netcode — lockstep loop, prediction, input codec, peers, game messages (0x131d88–0x13ecf8)
 
-54 functions. Everything here was read from the decompile and the disassembly; nothing was
-seen on a running game. Names are in `symbols/netcode.tsv` (41 functions, 40 globals) and
+54 functions. Everything here was read from the decompile and the disassembly. The earlier
+version added "nothing was seen on a running game"; that is no longer true of the whole
+document. Parts of the wire format, the receiver and the drop procedure have since been
+executed function by function in `tools/ee_emu.py` (`docs/spec/net-wire.md`), and a few
+statements have been seen on the live game — one machine in a net game started through the
+developer LAN path, in the Play! emulator, which is not a PlayStation 2 and not PCSX2
+(`FINDINGS.md`, "Run on the live game", rows V1–V8; `docs/issues/live-rig.md` 4b, 4d). Those
+are marked **Ran** where they stand: eleven button bits, the stick response, the 31-tick
+re-clone of the prediction copy, the two object flags, the call counts of `net_main`.
+Everything not so marked is still reading only; two machines have not been joined, and no
+test patch has been run on a live game. Names are in `symbols/netcode.tsv` (41 functions, 40 globals) and
 `names.tsv` (13 functions that were already named). Unless a line says *Inferred* or
 *Unknown*, a statement is *Observed* at the address given.
 
@@ -126,7 +135,7 @@ the code always adds the local slot's offset to it.
 | Offset | Type | Meaning | Evidence |
 |---|---|---|---|
 | +0x00 | u32 | frame number; the ready scan compares it with the frame wanted, so a stale ring entry is never used | 0x134340 |
-| +0x04 | u16 | buttons: inverted pad bytes 2 and 3, byte 2 in the high half. *Inferred* from the usual libpad layout: 0x1 L2, 0x2 R2, 0x4 L1, 0x8 R1, 0x10 triangle, 0x20 circle, 0x40 cross, 0x80 square, 0x100 select, 0x200 L3, 0x400 R3, 0x800 start, 0x1000 up, 0x2000 right, 0x4000 down, 0x8000 left | sampler 0x17421c |
+| +0x04 | u16 | buttons: inverted pad bytes 2 and 3, byte 2 in the high half. 0x1 L2, 0x2 R2, 0x4 L1, 0x8 R1, 0x10 triangle, 0x20 circle, 0x40 cross, 0x80 square, 0x100 select, 0x200 L3, 0x400 R3, 0x800 start, 0x1000 up, 0x2000 right, 0x4000 down, 0x8000 left. The earlier version gave the whole layout as *Inferred* from the usual libpad layout. **Ran** for eleven of the sixteen bits (L2, R2, L1, R1, select, L3, R3 and the four directions: each held alone on the live game and read back from `g_pads` +8, `docs/issues/live-rig.md` 4b); the four face buttons and start were not pressed in isolation and stay *Inferred* | sampler 0x17421c |
 | +0x06, +0x07 | u8, u8 | stick pair that `pad_apply` turns into pad +0x14/+0x18 (movement); pad buffer bytes 6 and 7, the left stick in the usual layout | 0x174410 |
 | +0x08, +0x09 | u8, u8 | stick pair for pad +0x1c/+0x20; pad buffer bytes 4 and 5 (right stick) | same |
 | +0x0a, +0x0b | u8, u8 | pad buffer bytes 0x10 and 0x11 (L1 and R1 pressure). **Not transmitted** — see "Per-machine state" | 0x174410 writes pad +0x38 and +0x50 from them |
@@ -159,7 +168,7 @@ velocity}. Reset state is index 0, predictor 0, smoothed 128.0, velocity 0.
 
 | Word | Meaning | Sent from | Handled at |
 |---|---|---|---|
-| 0xbd3d, 0xbd3e | developer LAN lobby announce / start | 0x1345c0 | same |
+| 0xbd3d, 0xbd3e | developer LAN lobby announce / start (**Ran** on one machine: 0xbd3d to 192.168.1.255 port 4000 every 64 displayed frames, 0xbd3e eight times on the confirm button; `docs/issues/live-rig.md` 4d, FINDINGS V6) | 0x1345c0 | same |
 | 0xbd3f | input packet | `net_main` 0x1341a8 | `net_frameLoop2`, called at 0x13c3d4 |
 | 0xbd40 | marker of the sync record *inside* an input packet | 0x1391e4 | 0x13be68 |
 | 0xbd41 | kick request {requester slot, mask of peers being kicked} | `net_main` 0x133234, every 30 rendered frames | 0x13c194–0x13c3a8 |
@@ -178,11 +187,13 @@ velocity}. Reset state is index 0, predictor 0, smoothed 128.0, velocity 0.
 | 10 | u8 | number of frames |
 | 11 | s8 | acknowledgement: newest frame the sender has received from the addressee, minus the last frame of this packet |
 | 12 | … | frames: bit stream (input packet) or 12-byte copies of record +4…+0xf (raw relay) |
-| aligned to 4 | u32 | 0xbd40 followed by a 12-byte sync record, or 0xffffffff when this simulation frame's record was already sent (`g_netLastHashFrame` 0x4027cc) |
+| aligned to 4 | u32 | 0xbd40 followed by a 12-byte sync record, or 0xffffffff when this simulation frame's record was already sent (`g_netLastHashFrame` 0x4027cc). The receiver does not test for 0xffffffff: it compares the word with 0xbd40 only (0x13be68) and takes any other value as "no record". Up to two of the padding bytes in front of the word are uninitialised stack of the sender (**Executed**: 590 of 1,200 packets, `docs/spec/net-wire.md` 7.3) |
 | then | repeated | message blocks {u8 last frame − frame, u8 byte count, bytes} for every frame in the packet that has message bytes, to the end of the datagram |
 
 The first frame of an input packet is the frame the addressee last acknowledged (+0x44c0),
-the last is `g_localInputFrame − 1`. The receiver (0x13b5d0):
+the last is `g_localInputFrame − 1`. That is the acknowledged frame itself, not the one
+after it: the newest acknowledged frame is sent once more in every packet and the receiver
+skips it (**Executed**, `docs/spec/net-wire.md` section 8). The receiver (0x13b5d0):
 
 1. Ignores the whole packet if the sender's active mask differs from its own (0x13b6ec), if
    the slot is local or dropped, if it is flagged out of sync, or if it is being kicked and
@@ -192,17 +203,23 @@ the last is `g_localInputFrame − 1`. The receiver (0x13b5d0):
 3. If the packet ends after the newest frame already held and starts no later than that
    frame + 1, decodes it, skipping frames already held (the skip count is passed to the
    decoder so that state is only advanced for new frames), and stores the new records with
-   message count 0. A packet that starts later is discarded.
+   message count 0. A packet that starts later is discarded — its frames, sync record and
+   messages, that is; its acknowledgement has already been taken (the store to +0x44c0 at
+   0x13b7f0 comes before the test at 0x13b7f4; **Executed**, `docs/spec/net-wire.md`
+   section 9, row 6).
 4. Stores the sync record in the peer's sync ring and compares it with this machine's own
    record for that frame if it has one (see "Sync check").
 5. Copies each message block into the peer's message ring, once per frame (only while that
    record's count is still 0).
 
 Steps 3 to 5 stand or fall together, which the list above did not say: when the packet
-brings no new frame (it does not end after the newest frame held, 0x13b7a4–0x13b7a8) or
-starts later than newest + 1 (0x13b7f4–0x13b804), the receiver leaves at once and reads
-neither the acknowledgement, nor the sync record, nor the message blocks. From such a packet
-only the peer's simulation frame, its lead and the silence counter are taken. A machine that
+brings no new frame (it does not end after the newest frame held, 0x13b7a4–0x13b7a8) the
+receiver leaves at once and reads neither the acknowledgement, nor the sync record, nor the
+message blocks; from such a packet only the peer's simulation frame, its lead and the
+silence counter are taken. When it starts later than newest + 1 (0x13b7f4–0x13b804) the
+receiver leaves too, without the sync record and the message blocks, but in that case the
+acknowledgement has been taken first (0x13b7c4–0x13b7f0; the second pass of corrections
+said "neither the acknowledgement" for both cases, which is right only for the first). A machine that
 is not sampling (held by the cap, or called with the hold argument during a load) still
 sends packets, but its acknowledgements do not register and a sync record in one of them is
 lost, since a record is sent once (`docs/issues/lag.md` section 3, C2; the consequence is
@@ -261,11 +278,21 @@ Consequences, from a re-implementation of the two functions (scratch model, not 
   and the ghost is fed through the same codec. *Inferred* (model), not measured.
   (`docs/issues/lag.md` C7 puts the threshold on the 7th simulated frame, because 0.8 is
   tested after the radial dead zone of `pad_decodeStick` 0x174ce0, and the first movement
-  of any size on the 5th.)
+  of any size on the 5th.) Measured since, so no longer *Inferred* — **Ran**, one machine in
+  a net game (`docs/issues/live-rig.md` 4d; FINDINGS V4): after a full push the prediction
+  copy does not move for four samples, moves at 0.38 of full speed on the 5th, 0.68 on the
+  6th and 0.82 on the 7th, and the real player follows one frame behind — the C7 figures.
+  The two codec functions are entered eight times a frame with no remote peer. After
+  release the movement takes five frames to die away, which no earlier document said.
+  Offline the same push moves the player at once: the codec is not in the offline input
+  path.
 - The range is not symmetric: a stick held toward 255 settles at byte 251, which is 0.943
   after decoding (0.989 for the raw byte offline), while one held toward 0 reaches 0, which
   is −1.000 (`docs/issues/dynamic-tests.md`, executed in isolation). Movement speed scales
-  linearly with the stick value (`docs/spec/movement-camera.md` 4.1).
+  linearly with the stick value (`docs/spec/movement-camera.md` 4.1). **Ran** on the live
+  game: in a net game the settled speed toward 255 was 0.9426 of the speed toward 0, and
+  offline the pad read 0.98851 toward 255 and −0.99999994 toward 0 (`docs/issues/live-rig.md`
+  4c, 4d).
 - With the reset state a centred stick decodes as 77, 43, 34, 44, 78, 101 … and only settles
   near 127 after about 13 frames. It is the same on every machine.
 
@@ -352,6 +379,12 @@ even when it carries nothing new. It goes out through
 
 Sync records ride inside input packets: at most one per simulation frame for the whole
 machine (not per peer), never repeated. A lost one just means that frame is not compared.
+With more than one remote peer each record therefore reaches only one of them. A raw relay
+(packet 0xbd42) falls under the same once-per-frame rule and so uses up the relaying
+machine's record for that frame; what it carries in that place is not the relayer's own
+record but the entry at index `g_netFrame` & 0xff of the *relayed* peer's sync ring,
+whatever frame that entry holds (0x1391f8–0x139240, the ring is chosen by the peer index;
+**Executed**, `docs/spec/net-wire.md` 12.1).
 
 ### When a packet is lost
 
@@ -400,7 +433,7 @@ machine (not per peer), never repeated. A lost one just means that frame is not 
 | input cap | 38 frames | 0x133554 (compares with 39) |
 | equalise threshold / duration | 5 frames / 31 calls | 0x13354c / 0x133574 |
 | trim window / threshold | 62 calls / minimum ready > 2 | 0x1335c0 / 0x1335e4 |
-| ghost rebase interval | more than 30 frames | 0x13b1e8 |
+| ghost rebase interval | more than 30 frames (**Ran**: `g_ghostRebaseFrame` stepped by 31 eight times in a row on the live game, `docs/issues/live-rig.md` 4d) | 0x13b1e8 |
 | rebase frame at start | input frame − 10 | `net_startSync` 0x13dce0, `net_gameInit` 0x139d68 |
 | silence before kick | more than 900 calls | 0x133060 |
 | kick request repeat | rendered-frame counter multiple of 30 | 0x1330c4, 0x1332d4 |
@@ -422,7 +455,13 @@ peer's out-of-sync byte and prints the "out of SYNC" line. From then on that pee
 machine's active mask and its packets are ignored, so the simulation stops as soon as that
 peer's buffered input runs out; 900 calls later the silence timeout kicks it. In a
 two-player game both sides flag each other and each ends alone. *Inferred* from the flag's
-uses; not seen running.
+uses; not seen running. That sentence describes one possible outcome, not the rule
+(**Executed** with three interpreter instances, three runs with three different outcomes,
+`docs/spec/net-wire.md` section 11): the machine that flags first changes its active mask,
+the other side then ignores its packets — sync records included — and may never set a flag
+of its own. One flag on one machine is enough to stop the session; the machines without a
+flag see a silent peer and drop it after the 900-call timeout. Still not seen on the live
+game.
 
 ## Game messages
 
@@ -478,7 +517,13 @@ detail. Payload byte 0 is a sub-type except where noted.
 
 Limits: a message is at most 255 bytes (length byte); the bytes attached to one frame are
 counted in one byte on the wire (0x1392c4–0x1392c8) although the ring field is 32 bits; the id is not
-range-checked before the table call (0x13ad24).
+range-checked before the table call (0x13ad24). **Executed** since (`docs/spec/net-wire.md`
+7.5): with 304 bytes on one frame the builder wrote the count 0x30 and all 304 bytes, and
+the receiver took 48, read the rest as further blocks, missed the end of the datagram and
+walked on through memory. Two buffer sizes belong here as well: the builder assembles the
+datagram in 5008 bytes of its own stack frame with no length check (0x137d9c, 0x137ed8;
+overrun reproduced with a synthetic 255-frame packet, not reachable from a frame backlog
+under the pacing cap), and a received datagram has 1984 bytes (0x7c0, 0x13c140).
 
 ## Launch, drop and disconnect
 
@@ -487,7 +532,12 @@ range-checked before the table call (0x13ad24).
 `frontend_startNetGame` 0x1e21e0 calls `net_gameInit` and `net_launchTransfer`; the
 front-end task then calls `net_launchUpdate` every frame while flag 0x402793 is set
 (call at 0x1e0af4). The handshake runs on its own socket (`g_launchSocket`) with packets
-{sender's player id, type, argument, payload}, mostly 0x200 bytes long:
+{sender's player id, type, argument, payload}, mostly 0x200 bytes long. A launch datagram
+shorter than 16 bytes is ignored, so a DATA chunk under 4 bytes could not be delivered (with
+the sizes below the last chunk is never that short, *Inferred*). The DATA checksum is 16
+bits; the sending loop masks with 0x8f37 and the receiving loop with 0x148f37, which agree
+in the low 16 bits (`docs/spec/net-wire.md` section 15: the sender **Executed**, the
+receiver read only):
 
 | Type | Name in the executable's status strings | Argument / payload |
 |---|---|---|
@@ -545,12 +595,25 @@ is kicked by it. *Inferred* from the counters; not seen.
   being kicked too and answers with a raw relay of each named peer's last 41 frames. A raw
   relay both fills in frames the requester was missing and counts as the answer. When all
   have answered, the drop frame of every kicked peer becomes newest received frame + 1 and
-  the state goes to 2, then 0 (0x133278–0x133340).
+  the state goes to 2, then 0 (0x133278–0x133340). A machine answers only for a named peer
+  that is not local and that it has not already dropped (byte tests at 0x13c2e4 and
+  0x13c2f0). So a request that arrives after the answering machine has executed the drop is
+  never answered: the requester stays in the negotiation, never gets a drop frame and never
+  drops the peer; its simulation stops at the drop frame and the first machine stalls
+  behind it once it has used up the requester's input. Both keep exchanging packets, so
+  neither times the other out (**Executed** with three interpreter instances; in model runs
+  with random counter phases 7 of 160 kicks ended this way, `docs/spec/net-wire.md` 12.3;
+  FINDINGS L7).
 - **Execution.** When `g_netFrame` equals the drop frame the peer is marked dropped
   (0x13420c–0x134298) and, in that tick, its character is killed. The first active machine
   also sends 3/4.
 - `net_fewerThanTwoActive`, `net_endIfAlone`, `net_dropAllRemotes` handle being the last
-  one left.
+  one left. **Ran** (one machine alone in a net game, `docs/issues/live-rig.md` 4d): the
+  game ended itself about 100 frames after the level started, and not through
+  `net_endIfAlone` — that function was never entered and patching it changed nothing, which
+  agrees with its symbol note ("no callers"). The game stayed up only once
+  `net_fewerThanTwoActive` 0x13dd88 was made to answer "no"; which of its four callers
+  (0x1db904, 0x1dbe9c, 0x1e3e10, 0x1e74c4) ends the game was not determined.
 
 ## Per-machine state
 
@@ -560,15 +623,15 @@ differs between machines.
 | # | What | Kind | Where |
 |---|---|---|---|
 | 1 | **L1/R1 pressure bytes are not on the wire.** A received record's bytes +0xa/+0xb are whatever was on the receiver's stack (the decoder writes only buttons, four sticks and yaw into the 12-byte scratch records, which are then copied whole into the ring); the owner's own record keeps the real pad bytes. `pad_apply` turns them into lockstep pad +0x38 and +0x50, which therefore differ between machines. | Observed | store 0x13be2c–0x13be34; local path 0x13a29c–0x13ac84; `pad_apply` 0x174410 |
-| 1a | The only reader of those two pad fields found, 0x174d80, returns 0 or 1 from the button bits in a net game, so today this does not reach the simulation. No exhaustive search for other readers was made. | Inferred harmless | 0x174d80 |
+| 1a | The only reader of those two pad fields found, 0x174d80 (`pad_buttonValue`), returns 0 or 1 from the button bits in a net game, so today this does not reach the simulation. No exhaustive search for other readers was made. A search has been made since (FINDINGS L16): no other reader among the functions that touch the pad array or read the stick fields through the same pointer. That the two fields differ on every machine in every frame is **Executed** (`docs/spec/net-wire.md` section 14) | Inferred harmless ("no other reader" rests on a search, not on a proof) | 0x174d80 |
 | 2 | **The active mask gates all input.** A packet is discarded unless the sender's set of "not dropped, not kicked, not out of sync" peers equals the receiver's. Dropped and out-of-sync bytes change at a simulation frame or on receipt of a hash, i.e. at different real times on different machines. If machine A passes the frame that drops a third player before machine B has received A's input for that frame, B can never accept it afterwards and both wait until the 900-call timeout kicks the other. Needs own lead ≥ send cycle to be safe; three- and four-player games only. | Observed rule, Inferred consequence | 0x13b6ec; `net_disconnectPlayer` 0x13de68; flags 0x13b0ac, 0x13bf30 |
 | 3 | **Raw local pad edges inside the tick.** `net_frameLoop` leaves the pressed-edge words of all four raw pads (`g_rawPads` +0xc, +0x10) live for the first tick of a call, zeroes them for later ticks and restores them at the end. Run tasks that read the raw pads therefore act on a frame that depends on this machine's timing; what they do must go through a game message. | Observed | save 0x139f3c, clear 0x13b140, restore 0x13b184 |
 | 4 | **Message handlers run between pad updates.** Peer i's messages are executed before the pads and yaw of peers above i are set for the frame. At that moment the local slot's lockstep pad still holds the raw local pad (copied at the end of `net_main`) and `g_netCamYaw[local]` the predicted yaw; other machines see last frame's lockstep values there. A handler that reads another slot's pad or yaw would diverge. None was identified here; handlers were not audited for it. One handler that reads a pad has been identified since (`docs/issues/draw-sim-leaks.md`): `inventory_unequipItem` (inventory message 2) passes the message slot's lockstep pad to `Player_weaponSwapInput` (pointer formed at 0x1c2ffc). It is the sender's own slot, whose pad has already been applied for the frame, so the read is consistent; no handler reading *another* slot's pad is known | Observed order; impact: none found (one consistent pad read) | 0x13ac84 → 0x13ad24; 0x134454; 0x132b5c, 0x132b80; 0x1c2ffc |
 | 5 | `g_simFrame` (0x44fdcc) outside the tick is the prediction frame, which runs ahead of `g_netFrame` by this machine's lead. Draw-phase code that uses it to change shared state is per machine (compare D12). | Observed | 0x13af98, 0x13b28c, 0x132c94 |
 | 6 | `net_objOrGhost` 0x13e180 returns the ghost on its owner's machine and the real player elsewhere. 17 call sites, 16 of them in simulation code (two in `Creature_run`, fourteen in skill code) and one, 0x1e4c1c, in `minimap_draw` 0x1e42e0, which is draw code — the earlier version counted it as simulation code. Read: the two in `Creature_run` (0x113284, 0x113550) gate particle emitters that only write the cosmetic seed; 0x2c88e4 and 0x2c8fe0 mirror a field write (+0x58c) onto the ghost; 0x2dee18, 0x2e1144 and 0x2e1214 take a position from the result while the same function draws from the spell's own generator. Not classified here: 0x1e4c1c (fills the list of objects the minimap draws as blips), 0x2d1b04, 0x2e7cf8, 0x2e95cc, 0x2fb4c8, 0x2feed8, 0x2ffbd0, 0x302650, 0x303454, 0x3036e4. All 17 are classified in `docs/issues/prediction-copy.md` section 3.3: apart from 0x2d1b04 (`SpellCyclone_run`, FINDINGS G22) and a contained BloodLust case none can change shared state (G23). | Observed accessor, call sites partly checked | 0x13e180 |
-| 7 | Ghost rebase between ticks: deletes and clones an object, restoring only the shared seed; sets flag 0x200000 on the real local player and moves flag 0x100 to the ghost, so the real player's flag word differs per machine (G1, D13). | Observed | 0x13b1c8–0x13b5b0, 0x13af18–0x13af34 |
+| 7 | Ghost rebase between ticks: deletes and clones an object, restoring only the shared seed; sets flag 0x200000 on the real local player and moves flag 0x100 to the ghost, so the real player's flag word differs per machine (G1, D13). The two flags are **Ran** on the live game: the real player's flag word read 0x00204060 and the copy's 0x00024060 (`docs/issues/live-rig.md` 4d) | Observed; the two flags Ran | 0x13b1c8–0x13b5b0, 0x13af18–0x13af34 |
 | 8 | The drop frame of a silent peer comes from per-machine counters and is made equal by the raw-relay exchange. It works if no machine is more than 40 frames behind another in what it holds from the kicked peer; the 38-frame input cap is what keeps that true. | Inferred consistent | 0x133060, 0x13c370, 0x133554 |
-| 9 | Message bytes per frame are counted in one byte on the wire. More than 255 bytes queued by one machine between two send turns would be executed in full locally and mis-parsed remotely. | Observed encoding, Inferred risk (needs e.g. two long text lines at once) | count byte 0x1392c4–0x1392c8, copy loop 0x139300–0x139304 |
+| 9 | Message bytes per frame are counted in one byte on the wire. More than 255 bytes queued by one machine between two send turns would be executed in full locally and mis-parsed remotely. The mis-parse is **Executed** now (the receiver walks out of the datagram, `docs/spec/net-wire.md` 7.5). The window is per input frame, not per send turn: the count grows with every attach to the same frame, and at two input frames per call (half display rate) the call without a send and the next call both attach to one frame, so their bytes add up (`docs/spec/net-wire.md` section 10). The game also adds its own 4-byte "player left" message inside `net_main` on top of whatever is queued. | Observed encoding, Executed mis-parse, Inferred risk in play (needs e.g. two long text lines at once) | count byte 0x1392c4–0x1392c8, copy loop 0x139300–0x139304 |
 | 10 | Message 3/5 carries a heap object address; it is only right on other machines if their heaps match. The ghost is a per-machine allocation. (Message 7/0 carries an address inside a static table, which is the same everywhere.) | Observed, impact Unknown | senders 0x1de1a0, 0x1c5f78 (outside the range) |
 | 11 | The decoded stick byte depends on single-precision arithmetic and truncation. Identical on identical hardware; emulator instances with different floating-point settings could disagree in the input itself. | Inferred | 0x13cdb0–0x13cddc |
 | 12 | Game messages are sent from draw tasks and from local conditions (pad, menus, audio position). That is the intended funnel, but the frame they land on is per machine, and `net_sendGameMsg` acts at once offline and `lead` frames later online. | Observed | 0x13db78 |
@@ -599,7 +662,9 @@ it is timed in calls.
   freezing and dropping each other about 15 s later.
 - The lag figures: measure lead (`g_localInputFrame − g_netFrame`) over time on two
   machines after dropping packets for 0.1 s, 0.5 s and 2 s.
-- Whether any simulation code besides 0x174d80 reads lockstep pad +0x38 or +0x50.
+- Whether any simulation code besides 0x174d80 reads lockstep pad +0x38 or +0x50. Answered
+  as far as a search can: 0x174d80 (`pad_buttonValue`) uses the button bits in a net game,
+  and no other reader was found (FINDINGS L16, `docs/spec/net-wire.md` section 14).
 - The ten call sites of `net_objOrGhost` listed as not classified, and whether the number
   of generator draws in 0x2dedec and 0x2e0d10 can depend on the ghost's position.
 - Whether heap addresses agree between machines when message 3/5 is sent.

@@ -669,6 +669,7 @@ struct TypeSpec
 		FLOAT,
 		STR,
 		BYTES,
+		CRC, // a 32-bit checksum of 'size' bytes, shown in hex
 	};
 	KIND kind = HEXINT;
 	uint32 size = 4;
@@ -701,6 +702,7 @@ static TypeSpec ParseType(const std::string& text)
 	}
 	if(sized("str", TypeSpec::STR, 64)) return type;
 	if(sized("hex", TypeSpec::BYTES, 16)) return type;
+	if(sized("crc", TypeSpec::CRC, 16)) return type;
 	if(t.size() >= 2 && (t[0] == 'u' || t[0] == 's' || t[0] == 'x'))
 	{
 		int64_t bits = 0;
@@ -711,7 +713,7 @@ static TypeSpec ParseType(const std::string& text)
 			return type;
 		}
 	}
-	Die("unknown type '%s' (use u8 s8 u16 s16 u32 s32 x8 x16 x32 f32 strN hexN)", text.c_str());
+	Die("unknown type '%s' (use u8 s8 u16 s16 u32 s32 x8 x16 x32 f32 strN hexN crcN)", text.c_str());
 }
 
 struct Value
@@ -783,6 +785,15 @@ static Value ReadValue(const Machine& m, uint32 address, const TypeSpec& type)
 		value.isText = true;
 		for(uint32 i = 0; i < type.size; i++) value.text += StrFormat("%02x", p[i]);
 		break;
+	case TypeSpec::CRC:
+	{
+		// FNV-1a, 32 bits: enough to tell two blocks apart
+		uint32 hash = 0x811C9DC5;
+		for(uint32 i = 0; i < type.size; i++) hash = (hash ^ p[i]) * 0x01000193;
+		value.isText = true;
+		value.text = StrFormat("%08x", hash);
+	}
+	break;
 	}
 	return value;
 }
