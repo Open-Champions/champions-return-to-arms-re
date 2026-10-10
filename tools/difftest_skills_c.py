@@ -2174,8 +2174,10 @@ def scenario_criticalhit(t):
         caster = rng.choice(world.players)
         mem.w32(caster + 0xC, 0x60)
         alive_players(t)
-        if index % 8 != 5:                              # a slot without a player object: the class does not test it
-            restore_players(t, pvp=False)
+        restore_players(t, pvp=False)
+        if index % 8 == 5 and mem.u32(SK.G_ALIVE_COUNT):   # a listed slot without a player object: the class
+            slot = mem.u32(SK.G_ALIVE_LIST)                # reads it without a test
+            mem.w32(G_PLAYERS + slot * REC_SIZE + REC_OBJ, 0)
         for player in world.players:                    # who carries the spell, for the bonus query
             if rng.random() < 0.5:
                 world.carried[(player, token)] = world.monsters[7] + 0x400
@@ -2296,6 +2298,7 @@ def main(argv):
         function(test)
         if group not in ran:
             ran.append(group)
+    totals = [0, 0, 0, 0]
     for group in ran + [g for g in ('shared',) if ran]:
         names = GROUPS.get(group, [])
         covered = total = 0
@@ -2312,6 +2315,9 @@ def main(argv):
         executed = sum(1 for name in names if rig.coverage(name)[0])
         print('      %-12s functions executed %d/%d, basic blocks covered %d/%d' % (group, executed, len(names),
                                                                                    covered, total))
+        totals = [x + y for x, y in zip(totals, (executed, len(names), covered, total))]
+    print('      %-12s functions executed %d/%d, basic blocks covered %d/%d, %d calls compared'
+          % (('all',) + tuple(totals) + (sum(v[0] for v in tally.values()),)))
     for note, count in sorted(rig.notes.items()):
         print('      note: %s, %d times (the remainder left is the interpreter\'s rule, not a console\'s)' % (note, count))
     for where, count in sorted(rig.both_fault.items()):

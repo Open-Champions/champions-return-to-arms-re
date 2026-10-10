@@ -2006,6 +2006,11 @@ public:
 				case Command::RELEASE:
 					m_pads[command.port].buttons &= ~command.buttons;
 					break;
+				case Command::BREAK:
+					// break points switched on for a window of ticks: the way to ask
+					// "which functions ran differently on the two machines in tick N"
+					AddBreak(ParseBreak(command.text));
+					break;
 				case Command::QUIT:
 					Finish(0);
 					break;
