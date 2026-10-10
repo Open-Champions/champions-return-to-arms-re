@@ -1635,7 +1635,7 @@ def monster_stats(tables, w, pct, rank, type_name, roll_hp, own_draw=0, dead=Fal
     dead       the object has the Dead property
     Uses w.monster_level, w.num_players, w.medal_mission, w.difficulty, w.level_name.
 
-    Returns a dict: hp and max_hp (float patterns, or None when not rolled), armor,
+    Returns a dict: hp and max_hp (float patterns; None = left as they were), armor,
     dmg_low, dmg_high, attack (s16) and exp_value (float pattern)."""
     hp, armor, damage, attack, exp = pct
     level = w.monster_level
@@ -1675,7 +1675,7 @@ def monster_stats(tables, w, pct, rank, type_name, roll_hp, own_draw=0, dead=Fal
     out['dmg_high'] = high
     out['attack'] = s16(ftoi(fmul(fmul(level, 0x41600000), attack)))
     out['exp_value'] = itof(ftoi(fmul(powf(fmul(exp, level), 0x3FA9374B), 0x41000000)))
-    if dead and out['hp'] is not None:
+    if dead:                            # also when the hit points were not rolled
         out['hp'] = ZERO
     return out
 
