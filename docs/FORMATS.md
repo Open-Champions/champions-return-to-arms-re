@@ -14,7 +14,8 @@ little endian unless noted. "Unknown" means nobody has looked yet.
 | `*_dialog.bin` voice-stream directory, `.VAT` streams, `.vag` samples | understood: PS2 ADPCM throughout; directory gives offset, rate, stereo flag and language | `tools/anim_audio_info.py` (can decode to WAV) |
 | `.anm` animation | understood: bind offsets, joint hierarchy, velocity-coded key stream at 60 ticks per second; not yet compared against the game on screen | `tools/anim_audio_info.py` (can dump tracks to CSV) |
 | `.world` level geometry | understood: header, chunk tree, render batches (ready-made VIF packets), terrain heights and flags, path grid; a few fields still open — see [formats/world.md](formats/world.md) | `tools/world_info.py` |
-| models and textures (`.vif`, `.tex`) | in progress | none yet |
+| `.vif` models | understood: header, part and variant tables, attach points, meshes as VIF1 streams for the model vertex program (positions, normals, strips, texture coordinates, joint weights); the file holds no skeleton or texture name — see [formats/model-texture.md](formats/model-texture.md) | `tools/model_info.py` (can export OBJ) |
+| `.tex` textures | understood: 0x80-byte header plus one GS upload packet; 8-bit images in GS memory order, some 4-bit and 32-bit, no mipmaps | `tools/model_info.py` (can export PPM/PGM) |
 
 ## GOB
 

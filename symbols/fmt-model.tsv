@@ -1,0 +1,34 @@
+# .vif models and .tex textures: draw-side helpers and the texture block cache. See docs/formats/model-texture.md
+# Only addresses that had no name. Address (hex, no 0x), name, note.
+# ---- model drawing ----
+00174e78	model_emitShellPasses	(dl, model, flag, list, count) for models with flag 0x20: for each 8-byte list record {rgba, float} uploads it, MSCAL 0x2a, and re-emits the mesh refs; ends by switching the shell mode off
+00175330	model_getAttachWorldMatrix	(scale, model, pos, facing16, animState or 0, index, out mat34): joint matrix x attach matrix, scaled and placed in the world; 4 callers
+00175670	model_emitDrawSetup	(dl, viewMatrix, pos, model, fade): GS TEXFLUSH/TEX0_1 placeholder/ALPHA_1 from model+0x18 (or a FIX fade)/ALPHA_2 from model+0x20 when flag 0x10/TEST_1, then the 4x4 matrix, ITOP and MSCAL 2
+00175b80	model_evalFacingPoints	(model, animState, matrix): walks the 16-byte records of the flag-0x40 table at header byte +0x23; no file on the disc has the table
+00175fb8	model_emitPartSetup	(dl, part, parent, slotOverride): as model_emitDrawSetup for a part; when part+0x13 is not -1 uploads the parent's attach record (joint x 4, matrix) and runs MSCAL 0x1a
+001762e8	model_drawShadow	(model, layer, matrix, animState, flag): terrain_height at five points, then draws the sample-point packet (DMA ref, MSCAL 0x30) through engine.lmp/bigblank.tex; name Inferred from those three facts; 13 callers
+00178c28	model_drawPart	(part, tex, layer, parent, chain, showMask, slotOverride, table): draws a part model on a parent's skeleton or attach slot; 14 callers
+00179260	model_emitMeshRefs	(dl, model, showMask, table): one DMA ref per run of adjacent shown meshes
+001791a0	model_getEffectSegment	(model, aOut, bOut) -> bool: the two float vec3 at header byte +0x27, or (0,4.5,0) and (0,38,0) when absent; caller fx_modelStatusEffects
+00179320	model_getHullPoints	(model, mesh) -> eight s8 xyz points of that mesh from the table at header byte +0x25; caller PhProp_run
+00179358	model_getMeshJoint	(model, mesh) -> joint index byte of the 10-byte mesh record; caller PhProp_ctor2
+001796e0	model_getAttachLocal	(model, animState or 0, index, posOut, dirOut): attach point in model space, no scale or facing
+001797b8	model_setFade	(u8): stores 0x41c149; non-zero makes model_emitDrawSetup blend with FIX = 0x80 - value
+001797d8	model_setShellList	(ptr, count): stores 0x41c160/0x41c164, the list model_emitShellPasses walks
+001799e8	model_transformSamplePoint	(model, matrix, index, out, sizeOut): sample point through a caller matrix; 6 callers
+# ---- texture block cache and display-list streaming ----
+0016b998	gfx_dmaHandler	DMA interrupt handler for channels 0-2: sends texture upload packets on the GIF channel and draw packets on VIF1, patching BITBLTBUF and TEX0 with the block the texture was given
+00179b08	texcache_reset	empties the 16-slot ring of textures resident in GS memory and clears their block field (+0x18)
+00179bb0	texcache_alloc	(tex): gives the texture tex+4 blocks in the ring, evicting older unpinned entries; writes tex+0x18 (first block) and tex+0x1a (ring slot)
+0017a1d0	texcache_init	clears the ring and the world texture cell tables, creates the worker thread whose entry is 0x17ca58
+0017a3a0	texcache_setRange	(start, end): first block = (start + 0xff) >> 8, block count = (end - (start & 0xff)) >> 8; resets the cache and sets the limit 0x41c190 (count - 1) that gfx_addSortedPacket tests against tex+4
+0017fa68	texcache_unpin	(tex): decrements the pin count of the texture's ring slot
+0017fa98	texcache_pin	(tex): increments the pin count when the texture is resident
+# ---- 2D sprites (only what the texture format needed) ----
+0017ab50	ui_emitSpriteQuad	(dl, tex, x, y, u0, v0, u1, v1): the two UV/XYZ2 pairs of a sprite. With 0x44fdb4 set it draws the top and the bottom half of the texture over the same rectangle under SCANMSK; else with 0x44fdd4 set it adds half the texture height to V according to bit 0 of gfx_displayField; 4 callers
+0019d9e4	gfx_displayField	returns the word at 0x83d258; ui_emitSpriteQuad uses bit 0 to pick one of the two stacked fields of an interface texture. That it is the display field is Inferred
+# ---- globals ----
+0041c149	g_modelFade	u8 set by model_setFade
+0041c160	g_modelShellList	pointer to 8-byte shell records {rgba, float}; count at 0x41c164
+0041c168	g_modelDrawOptions	bit set tested by model_draw to wrap the mesh refs in extra GS register writes (0x01 ZBUF, 0x02 DIMX, 0x04 SCISSOR, 0x08/0x20 TEST, 0x10 PRMODECONT/PRMODE); 0x40 (extra light vector at 0x7cbc90) and 0x80 (mirrored attach matrix) are read by model_emitPartSetup
+0041c190	g_texBlockLimit	a texture needing this many blocks or more is treated as no texture by gfx_addSortedPacket
