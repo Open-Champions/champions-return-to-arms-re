@@ -319,7 +319,7 @@ These things change them on one machine only:
   `saveCheckPoint` call `save_game` in lockstep and do not have this problem.
 
 `save_game` itself changes nothing else that is shared: it fills the buffer, shows a HUD
-line and calls `net_notify3278f0(−1)`, which reads `g_randSeed` without writing it.
+line and calls `game_sendCharacterToLobby(−1)`, which reads `g_randSeed` without writing it.
 
 ### A2. Dialog progress depends on local audio and local text layout — Observed mechanism, Inferred consequence
 

@@ -14,7 +14,7 @@
 004f7140	g_medalDialogAck	s32: set by game message 12 (0x1d9224), cleared at the top of game_loadLevel (0x1e55f0); runMedalSuccess / runMedalFail wait for it
 004f7114	g_medalDialogTicks	s32: set to 2 on every call of runMedalSuccess / runMedalFail; counted down by gameMiscSync, which closes the local menus of the medal player's machine while it is positive
 004f7148	g_medalPlayerSlot	u8: slot used by script savePlayer / restorePlayer and whose lockstep pad answers the medal dialog; written by game_loadLevel 0x1e6208 and 0x232040. Name Inferred from those uses
-004f713c	g_medalMission	s32: set by levelSettings_parse 0x22ec64, cleared at the top of game_loadLevel 0x1e5638; switches off net_notify3278f0 and makes gameMiscSync open the mission menu when slot 0x4f7148 is inactive. Name Inferred
+004f713c	g_medalMission	s32: set by levelSettings_parse 0x22ec64, cleared at the top of game_loadLevel 0x1e5638; switches off game_sendCharacterToLobby and makes gameMiscSync open the mission menu when slot 0x4f7148 is inactive. Name Inferred
 004f7149	g_medalGrantSlot	u8: slot being processed by mission_grantMedal; script playerAdjustStat applies to it when its slot argument is -1
 0044f20c	g_debugInvulnerable	s32: toggled by the entry menu_invulnerability of the debug pause-menu table 0x44f458; read by Player_run 0x1a5b64 and Player_processDamage 0x1b31b0; zeroed by frontend_run at launch 0x1e0b68
 0044f054	g_worldPiecesDrawn	u8: 0 from the start of a level change (0x322e2c) until after shop stock generation (set to 1 at 0x323140); also switched by two small functions called from lobby screens (0x1e3c84 off, 0x1e3cc4 on); while 0 world_draw only requests textures and draws no piece (0x189cc8)

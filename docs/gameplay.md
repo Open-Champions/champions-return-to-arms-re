@@ -404,7 +404,7 @@ the `PathName` property.
 
 - 0x4f714c is a level-wide float (monster level); `level_getMonsterLevel`,
   `level_monsterLevelTimes0_4`, `level_monsterLevelTimesDifficulty` wrap it.
-- `net_notify3278f0` 0x1eb5c8 reads `g_randSeed` (does not write it) to pick which machine
+- `game_sendCharacterToLobby` 0x1eb5c8 reads `g_randSeed` (does not write it) to pick which machine
   makes a lobby-library call.
 - `game_isFrozen`, `drawWorld`, `deathTask_schedule`, `isNearCameraFocus480` are in
   names.tsv.
@@ -507,7 +507,7 @@ Each item: what is read or written, kind of claim, address, and what it can do.
   boss death effects and three skill functions; the seven are listed in
   `docs/monsters.md` §2.3). The sync hash uses 0x404464 only; what 0x404468 feeds was
   not followed.
-- `net_notify3278f0`: what the lobby-library call does.
+- `game_sendCharacterToLobby`: answered in docs/issues/sync-breakers.md — 0x3278f0 (`lobby_sendCharacter`) packs the record and passes it to the lobby library.
 
 ## 10. Not done
 

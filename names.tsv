@@ -244,7 +244,7 @@
 0021f144	save_clearBuffer	zeroes the in-memory save area 0x895580 (0x4bc78 bytes) on a fresh net launch
 00221914	save_build	4 player structs + quest variable records into the save buffer
 00221d60	save_load	restores players and quest variables from the save buffer
-00218128	save_game	called by Savepoint::run and script saveGame, in lockstep on every machine
+00218128	save_game	called by Savepoint::run, the save daemon and script saveCheckPoint (0x142a5c), in lockstep on every machine; script saveGame calls memcard_requestSave instead
 001e7438	game_checkAllDead	all players dead -> countdown -> schedules deathTask (also in net games with 2+ players)
 001e75e8	deathTask	restart level with full HP, or save_load if the level has a checkpoint entry
 001ebd48	deathTask_schedule

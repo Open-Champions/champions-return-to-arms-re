@@ -5,7 +5,7 @@
 001eb0f8	text_getClassName	class index 0..6 -> localized text keyed BarbarianWarrior/HighElfCleric/DarkElfShadowKnight/WoodElfBard/EruditeWizard/VahShirBerserker/IksarShaman
 001eb1e8	fx_emitFromModelVerts	(f speed, obj, count, particleType, dir*, offset*): particles from random model vertices; cosmetic seed only
 001eb4f0	game_openMissionMenu	closes local menus, opens the mission menu (0x231520) for the host/first slot, sets next world to hub or hub2
-001eb5c8	net_notify3278f0	picks one active slot from g_randSeed or the frame counter (read only) and calls netlib 0x3278f0 on that machine; purpose of 0x3278f0 not established
+001eb5c8	game_sendCharacterToLobby	picks one active slot from g_randSeed or the frame counter (read only) and calls lobby_sendCharacter 0x3278f0 on that machine, which packs the record and hands it to the lobby library (lobby games only). Was net_notify3278f0
 001eb6f8	game_restorePlayerRecord	script restorePlayer: copies the buffer from 0x21837c back over g_players[DAT_004f7148], keeping the object pointer and a few live fields
 001eb950	game_scanCm1Vars	(recompute): returns DAT_004f7110, or the index 0..9 of the first of the names m11cm1..m1cm1 for which 0x22289c is non-zero
 001eba38	fx_staticInitBlockSparks	static initializer: registers particle type 0x86af00 (the block sparks used by damage_apply)

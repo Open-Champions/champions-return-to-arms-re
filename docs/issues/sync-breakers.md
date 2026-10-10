@@ -365,7 +365,7 @@ one way found for that to happen is the stuck latch of section 4c.
 
 | Fact | Kind | Where |
 |---|---|---|
-| The step is inside the same condition as the checksum exchange: not in the front end, `net_allPlayersState2()` true; then every 1800th tick `g_randSeed` is advanced once, and when bit 16 of the result is 0 the machine hands one player's record to the lobby (`net_notify3278f0(−1)`) | Observed | 0x1e3e58, 0x1e3ec0–0x1e3f0c |
+| The step is inside the same condition as the checksum exchange: not in the front end, `net_allPlayersState2()` true; then every 1800th tick `g_randSeed` is advanced once, and when bit 16 of the result is 0 the machine hands one player's record to the lobby (`game_sendCharacterToLobby(−1)`) | Observed | 0x1e3e58, 0x1e3ec0–0x1e3f0c |
 | Inputs: the front-end flag (cleared by `frontend_stop` at launch on every machine, 0x1e21c8); `g_networkMode`; `g_lobbyLaunch` (set from the same test on every machine of a lobby game); `g_gameCompleteFlag` (written by a lockstep script and by `game_resetState`); the kind bits of the records, which are transferred at launch or assigned by the launch code from shared data | Observed | 0x1ec5d8; 0x1e2258; 0x146cb8; 0x137370–0x137434 |
 | The record each machine hands over is chosen as (shared seed + own slot) mod active players — different per machine on purpose; the call changes only this machine's saved copy of that record, which is refreshed before every other use, and the call is off in medal missions | Observed | 0x1eb5c8; 0x3278f0 |
 
@@ -600,7 +600,7 @@ How likely an ordinary co-operative session is to be hit, most likely first.
   state (B9).
 - **names.tsv `save_game`.** Its callers are script `saveCheckPoint` (0x142a5c), the save
   daemon and `Savepoint_run`; script `saveGame` calls `memcard_requestSave`.
-- **symbols/gameplay.tsv `net_notify3278f0`.** 0x3278f0 packs a record and passes it to
+- **symbols/gameplay.tsv `game_sendCharacterToLobby`.** 0x3278f0 packs a record and passes it to
   the lobby library (`lobby_sendCharacter`).
 - **FORMATS.md, `objects.ob`.** Layout used for the scans here: `u32 count; u32
   stringTable`; then per object `u32 className; u16 size; u16 angle; float x, y, z;` and
