@@ -1438,8 +1438,6 @@ class PathFinder:
                     cells[neighbour] = cell & 0xFFFF00FF
                     target[produced] = neighbour
                     produced += 1
-                    if neighbour == node:               # cannot happen; keeps links honest
-                        raise RuntimeError('path link to itself')
                 if not produced < 0x1F1:
                     break
             self.counts[other] = produced

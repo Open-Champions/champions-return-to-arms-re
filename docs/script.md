@@ -64,7 +64,7 @@ memory; the AMX header follows at file offset 0x60. `g_scriptMachine` (0x86b270)
 | +0x0c | i32 | cip | code offset saved before each built-in call | 0x140c48, 0x140c98 |
 | +0x10 | i32 | frm | frame pointer saved before each built-in call | 0x140c4c, 0x140cb0 |
 | +0x14 | i32 | hea | heap top (data-relative) | read 0x13eda4, saved 0x140c40 |
-| +0x18 | i32 | stk | stack pointer (data-relative); restored to its entry value on every exit | 0x13ed8c, 0x13fbc0 |
+| +0x18 | i32 | stk | stack pointer (data-relative). Not "restored to its entry value on every exit", as the earlier version said: RETN stores the *current* stack pointer here (0x13fc24, nested returns too); RET, HALT and the run-time errors store the entry value; the entry checks and the STACK and HEAP error returns store nothing. A balanced entry point leaves it where it was, an unbalanced one moves it for every later run (`docs/spec/script-machine.md` 4.3 and 9, executed) | 0x13ed8c, 0x13fbc0, 0x13fc24 |
 | +0x1c | i32 | stp | stack top = end of script memory | bounds tests, e.g. 0x13f0b0 |
 | +0x20 | u32 | flags | 0x2000 loaded, 0x8000 code relocated (required to run, else error 22), 0x4000 cleared on every run | 0x13ed5c–0x13ed74, `scr_relocate` |
 | +0x24, +0x28 | i32 | curline, curfile | written by the LINE opcode | 0x140d48, 0x140d68 |
@@ -111,7 +111,7 @@ and jumping to it.
 | STK | | `$s6` | data-relative stack pointer, grows down |
 | HEA | | `$s3` | data-relative heap top, grows up |
 | data base, code base | | `$s1`, `$t3` | header + data start, header + code start |
-| entry STK | | `$t4` | written back to machine +0x18 on every exit path |
+| entry STK | | `$t4` | written back to machine +0x18 on the RET, HALT and run-time error exits only; RETN writes the current STK instead and the entry, STACK and HEAP error returns write nothing (`docs/spec/script-machine.md` 4.3, executed; the earlier version said "on every exit path") |
 | machine | | `$s7` | |
 
 There are no other registers and no flags: comparisons leave 0 or 1 in PRI, or are fused with
@@ -133,9 +133,16 @@ One block of cells holds everything, addressed from the data start:
 - **The stack** holds arguments, return offsets, frame links and locals. Heap and stack share
   8192 bytes. The entry sequence and the STACK and HEAP opcodes fail with error 3 when fewer
   than 0x40 bytes separate the two, error 7 when STK passes the top, error 8 when HEA goes
-  negative. Plain pushes are not checked.
+  negative. Plain pushes are not checked. Two details from `docs/spec/script-machine.md`
+  4.1 (executed): at entry "the top" is the *header's* stack-top field (0x13ed90–0x13edac),
+  which is larger than the machine's by the data start, so a stack pointer up to that many
+  bytes above the real top is accepted; and the entry's error 3 is tested after the entry
+  cells have been written.
 - Indirect loads and stores check the address: it must be below HEA or at/above STK, and below
-  STP, otherwise error 5 (for example 0x13f098–0x13f0bc).
+  STP, otherwise error 5 (for example 0x13f098–0x13f0bc). The compares are signed, so every
+  negative address passes; and the check exists in six opcodes only (LOAD.I, LODB.I,
+  STOR.I, STRB.I, LIDX, LIDX.B) — every other opcode reads and writes wherever its operand
+  points (`docs/spec/script-machine.md` section 3, executed).
 
 A run that fails returns its error number to the host. `script_runByName` ignores it, so a
 failing script simply stops and its caller sees result 0.
@@ -146,7 +153,10 @@ failing script simply stops and its caller sees result 0.
 arguments are copied below the current STK, then the argument byte count, then a zero return
 offset. Execution starts at the entry point's code offset with FRM = 0. The only game-side
 caller (0x1ed70c) passes no arguments, so entry points never receive any. Entry index -1 means
-`main`, which no shipped script has (error 20).
+`main`, which no shipped script has (error 20). Indexes below −2 are refused, but −2 is
+not: the "record" two places before the table is read. PRI is not initialised at entry —
+it is whatever the interpreter's own stack frame held; compiled functions set it before
+they return (`docs/spec/script-machine.md` 4.1, executed).
 
 **Script to script** (CALL): pushes the return offset and jumps. The callee starts with PROC
 (push FRM, FRM = STK) and ends with RETN (pop FRM, pop the return offset, drop the argument
@@ -190,10 +200,13 @@ game. `scr_raiseError` (0x141498) exists but nothing references it.
 
 - A string argument is a data-relative address. Handlers convert it with `scr_getAddr`
   (0x1414a8, bounds check, result ignored by callers) and `scr_getString` (0x141650) into a
-  stack buffer of 128 or 160 bytes. There is no length limit on the copy.
+  stack buffer of 128 or 160 bytes. There is no length limit on the copy. The bounds
+  check is the signed one of 1.5, so `scr_getAddr` accepts negative addresses.
 - Script string literals are *packed*: four characters per cell, first character in the most
   significant byte. `scr_getString` recognises a packed string by its first cell being above
-  0xff; otherwise it reads one character per cell.
+  0xff; otherwise it reads one character per cell. That test is signed too: a packed
+  string whose first character is 0x80 or above has a negative first cell and is read as
+  unpacked (`docs/spec/script-machine.md` section 7, executed).
 - **Entry points** are found by `scr_findEntry` (0x13eac8): binary search with a case-sensitive
   compare over the sorted table. A name of 20 or more characters can never match.
 - **Built-ins** are bound at load: `scr_registerNatives` (0x141310) walks the script's import
@@ -280,7 +293,7 @@ the scripts, and in addition 0x00, 0x05–0x08, 0x1a, 0x1f, 0x20, 0x26, 0x2a, 0x
 | 0x1a | LIDX.B s | PRI = [ALT + (PRI shifted left by s)] | 0x13f5b0 |  |
 | 0x1b | IDXADDR | PRI = ALT + PRI*4 | 0x13f620 | yes |
 | 0x1c | IDXADDR.B s | PRI = ALT + (PRI shifted left by s) | 0x13f650 |  |
-| 0x1d | ALIGN.pri n | byte-order adjustment of PRI | 0x13f688 |  |
+| 0x1d | ALIGN.pri n | byte-order adjustment of PRI: for 0 ≤ n < 4 (unsigned), PRI ^= 4 − n | 0x13f688 |  |
 | 0x1e | ALIGN.alt n | same for ALT | 0x13f6e8 |  |
 | 0x1f | LCTRL i | PRI = control register i (0 COD, 1 DAT, 2 HEA, 3 STP, 4 STK, 5 FRM, 6 CIP) | 0x13f740 |  |
 | 0x20 | SCTRL i | control register i = PRI (2 HEA, 4 STK, 5 FRM, 6 CIP) | 0x13f7d8 |  |
@@ -326,7 +339,7 @@ the scripts, and in addition 0x00, 0x05–0x08, 0x1a, 0x1f, 0x20, 0x26, 0x2a, 0x
 | 0x48 | SMUL | PRI = ALT * PRI | 0x140130 | yes |
 | 0x49 | SDIV | PRI = PRI / ALT, ALT = remainder (floored, error 11 on zero) | 0x140160 |  |
 | 0x4a | SDIV.alt | PRI = ALT / PRI, ALT = remainder (floored, error 11 on zero) | 0x1401b8 | yes |
-| 0x4b | UMUL | unsigned multiply | 0x140208 |  |
+| 0x4b | UMUL | multiply; the same signed multiply instruction as SMUL (0x48), the low 32 bits of the product | 0x140208 |  |
 | 0x4c | UDIV | unsigned PRI / ALT | 0x140238 |  |
 | 0x4d | UDIV.alt | unsigned ALT / PRI | 0x140278 |  |
 | 0x4e | ADD | PRI = ALT + PRI | 0x1402c8 | yes |
@@ -344,8 +357,8 @@ the scripts, and in addition 0x00, 0x05–0x08, 0x1a, 0x1f, 0x20, 0x26, 0x2a, 0x
 | 0x5a | ZERO.alt | ALT = 0 | 0x140518 | yes |
 | 0x5b | ZERO a | [a] = 0 | 0x140548 | yes |
 | 0x5c | ZERO.S o | [FRM+o] = 0 | 0x140580 |  |
-| 0x5d | SIGN.pri | sign-extend the low byte of PRI | 0x1405b8 |  |
-| 0x5e | SIGN.alt | sign-extend the low byte of ALT | 0x140600 |  |
+| 0x5d | SIGN.pri | not a full sign extension: when bit 7 of PRI is set, bits 8–31 are set; otherwise nothing changes, so the upper bits are never cleared | 0x1405b8 |  |
+| 0x5e | SIGN.alt | same for ALT | 0x140600 |  |
 | 0x5f | EQ | PRI = (PRI == ALT) | 0x140640 | yes |
 | 0x60 | NEQ | PRI = (PRI != ALT) | 0x140670 |  |
 | 0x61 | LESS | PRI = (PRI below ALT), unsigned | 0x1406a0 |  |
@@ -381,7 +394,12 @@ the scripts, and in addition 0x00, 0x05–0x08, 0x1a, 0x1f, 0x20, 0x26, 0x2a, 0x
 | 0x7f | SRANGE a b | debug record (stores words at +0x30 / +0x34) | 0x140dc8 |  |
 | 0x80 | JUMP.pri | jump to PRI | 0x140e08 |  |
 | 0x81 | SWITCH addr | jump through the case table at addr | 0x140e30 |  |
-| 0x82 | CASETBL | case table data (count, default, value/address pairs) | 0x140eb8 |  |
+| 0x82 | CASETBL | case table data (count, default, value/address pairs). It has an executable handler, which passes on to the next cell — the record count — as if it were an instruction: executing one crashes | 0x140eb8 |  |
+
+The rows of ALIGN, UMUL, SIGN and CASETBL were corrected from `docs/spec/script-machine.md`
+section 5, which executed every handler against a reference model; the earlier version
+called UMUL "unsigned multiply", SIGN "sign-extend the low byte" and gave CASETBL no
+handler behaviour.
 
 ## 2. How the game drives the machine
 
@@ -454,7 +472,10 @@ Entry points take no arguments. Context is passed in two globals instead:
   when a player enters (0x1ed15c: the lowest-numbered player inside), by `Player_interact`
   when a player uses something (0x1b2b70), by `Creature_interact` before a `dialogScript`
   (0x116d28), by `dialog_free` at level teardown (0x22fa34, sets 0), and by the built-ins
-  `setBestActivePlayer` and `playGotItemSound`. It is not reset between scripts, so a deferred
+  `setBestActivePlayer` and `playGotItemSound`. One more writer exists outside play in a
+  net game: `dialog_runTask` 0x22ff48 flips the value between 0 and 1 (store at 0x2301b8),
+  on a path taken only when the game is not a net game (`docs/issues/claims-audit.md`
+  row 5; `docs/issues/draw-sim-leaks.md` U6). It is not reset between scripts, so a deferred
   call or a death script sees the value left by whatever ran last. All of these writers are
   simulation code, so the value is the same on every machine (Inferred; see P7 for the one
   odd writer). One of them is not unconditional, though: the `Player_interact` write
@@ -622,7 +643,7 @@ Conventions for the tables:
 | # | Name | Address | Arguments | What it does | Shared state written | Per-machine state read / network mode | Calls / levels |
 |---|---|---|---|---|---|---|---|
 | 10 | `activateMissionMenu` | 0x143fa8 | - | Does nothing if a dialog is open or the recall flag 0x41b51d is set. Otherwise `missionMenu_open` (0x231520) for the active player (offline) or for `net_firstActiveSlot()` (net). That function registers a run task and a draw task. | mission-menu state, task list | AP offline only. NET: slot chosen by peer state, not by the active player. Depends on `dialog_isOpen` (see dialogRunning). | 4 / 2 |
-| 11 | `activateStore` | 0x144010 | i store | Stores the store index (if < 21) at 0x4f7150. If a dialog is open it only sets the pending flag 0x4fdd30 (the dialog-end handler opens the store later). Otherwise: offline, `shop_openOrStock(activePlayer, 0, 1)`; net, for every living player **that is local to this machine**: `net_closeLocalMenus(0)` then `shop_openOrStock(slot, 0, 1)`. | 0x4f7150, 0x4fdd30; shop UI state; in a net game vehicle occupancy through `net_closeLocalMenus` | AP offline. NET + LOCAL SLOT: the shop opens only on machines with a living local player; `net_closeLocalMenus(0)` (which ejects every living player from a vehicle) is called only on those machines (P6). | 45 / 4 |
+| 11 | `activateStore` | 0x144010 | i store | (Some shipped scripts call it declaring 4 argument bytes without pushing the argument — `HUB.scr` code offsets 0xfbc–0xfd8; the handler then reads the caller's saved FRM as its argument, and the run leaves the machine's saved stack pointer 4 too high: `docs/spec/script-machine.md` section 9.) Stores the store index (if < 21) at 0x4f7150. If a dialog is open it only sets the pending flag 0x4fdd30 (the dialog-end handler opens the store later). Otherwise: offline, `shop_openOrStock(activePlayer, 0, 1)`; net, for every living player **that is local to this machine**: `net_closeLocalMenus(0)` then `shop_openOrStock(slot, 0, 1)`. | 0x4f7150, 0x4fdd30; shop UI state; in a net game vehicle occupancy through `net_closeLocalMenus` | AP offline. NET + LOCAL SLOT: the shop opens only on machines with a living local player; `net_closeLocalMenus(0)` (which ejects every living player from a vehicle) is called only on those machines (P6). | 45 / 4 |
 | 12 | `storeRunning` | 0x1440f8 | - | Returns `g_shopOpen` (0x41b50c). | - | MENU: per-machine UI state. No shipped script calls it. | 0 / 0 |
 | 62 | `setInfo` | 0x14318c | s textKey | `hud_showMessage(text_lookup(key), 180, -1, 0)` (0x1d92a0). | HUD message buffer (cosmetic) | Suppressed on a machine whose local menu is open. | 95 / 25 |
 | 63 | `addHelpMessage` | 0x1431d8 | s titleKey, s bodyKey | `hud_showHelpMessage(-1, title, body)` (0x1d9830). | help box state, `g_helpMessageOpen` | NET + LOCAL SLOT: in a net game the box appears only if this machine has a living local player; it then sends menu-state message 2 for that slot. | 65 / 47 |
@@ -691,7 +712,7 @@ Player records are `g_players[4]` (0x4d8af0, 0x4c30 bytes each). "All players" m
 | 52 | `removePlayerItem` | 0x14598c | i player, s text | `inventory_findItemBySubstring` (0x1c5a70: last item whose name occurs inside the text) then `inventory_removeItem` (0x1c1cb0). player -1 means every player. | bags, equipped pointers | `inventory_removeItem` refreshes the menu on the owner's machine when its menu is open. | 147 / 34 |
 | 179 | `removeAllItems` | 0x145758 | - | Empties all three bags of the medal player (0x4f7148). | bags | Acts on 0x4f7148. | 1 / 1 |
 | 190 | `removeAllWeapons` | 0x145828 | - | Empties bag 0 of the medal player and clears three equipped pointers (+0x4434..). | bags, equipped pointers | Acts on 0x4f7148. | 1 / 1 |
-| 53 | `givePlayerItem` | 0x145a88 | s descriptor, i equip, i variant | For every player (only the medal player when medal mode 0x4f713c is set): builds the item with `item_parseDescriptor` (0x1069b8); if it fits the weight limit (or weighs nothing) adds it with `inventory_giveItem` (0x1c1868), recomputes load and optionally equips it (`inventory_equipItem` 0x1c27c0); otherwise creates a ground item (0x190-byte object, `ItemProp_ctor2` 0x1590ec) at the player, or at the first living player if this one has no object. | bags, equipment, world objects, `g_randSeed` (item variant, object constructor) | NET: `inventory_giveItem` skips the offline-only recall tutorial (which sets a quest variable) in a net game. Equip sounds only for the local slot; equip runs the `*weaponEquipNotify` / `*bowEquipNotify` hooks. | 10 / 6 |
+| 53 | `givePlayerItem` | 0x145a88 | s descriptor, i equip, i variant | (Some shipped scripts declare 12 argument bytes and push two cells — `INNOVAT1.scr` 0x7e0–0x80c; same defect as `activateStore`, `docs/spec/script-machine.md` section 9.) For every player (only the medal player when medal mode 0x4f713c is set): builds the item with `item_parseDescriptor` (0x1069b8); if it fits the weight limit (or weighs nothing) adds it with `inventory_giveItem` (0x1c1868), recomputes load and optionally equips it (`inventory_equipItem` 0x1c27c0); otherwise creates a ground item (0x190-byte object, `ItemProp_ctor2` 0x1590ec) at the player, or at the first living player if this one has no object. | bags, equipment, world objects, `g_randSeed` (item variant, object constructor) | NET: `inventory_giveItem` skips the offline-only recall tutorial (which sets a quest variable) in a net game. Equip sounds only for the local slot; equip runs the `*weaponEquipNotify` / `*bowEquipNotify` hooks. | 10 / 6 |
 | 54 | `giveOnePlayerItem` | 0x145d20 | i player, s descriptor, i equip, i variant | Same for one living player (strict weight test). | as givePlayerItem | as givePlayerItem | 2 / 1 |
 | 55 | `givePlayerRandom` | 0x145f18 | - | For every player: draws from `g_randSeed`, in the level whose name contains "orccave1" gives a fixed sword chosen by `g_difficultyIdx`, then generates a random item (`item_generateWithAffixes` 0x104ca4, up to 10 tries) and gives or drops it. | bags, world objects, `g_randSeed` | No shipped script calls it. | 0 / 0 |
 | 173 | `dropItem` | 0x1477ac | s object, s descriptor | `loot_spawnNamedItem(position of the object, descriptor)` (0x100ba0). | world objects, `g_randSeed` | - | 6 / 6 |

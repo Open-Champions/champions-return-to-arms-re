@@ -72,7 +72,7 @@
 00118a58	Creature_stun	slot 30 (frames, flash): not for bosses or the dead: +0x31c = frames, state 0x13
 00118af8	Creature_setNoTargetTimer	slot 31 (frames): not in PvP mode A, not for bosses: +0x316 = frames and the target is dropped; pickTarget refuses targets while it runs
 00118c50	Creature_slot35	returns (int)(level scale 0x4f714c * 0.3)
-00118c78	Creature_slot36	returns 4 for boss rank 1, 10 for rank 2, else 0
+00118c78	Creature_slot36	returns 4 for boss rank 1, 10 for rank 2, else 0; purpose: the level MissileWeapon_onTouch passes to the Dodge skill (id 2) value query for a non-player creature hit by a missile (0x152eec-0x152f50); Marr and IronGuardian override it (docs/monsters-2.md 2.1)
 00118cb0	Creature_targetInArcRange	creature_objInArcRange on the target
 00118cf0	Creature_canSeeTargetEdge	creature_canSeeObjEdge on the target
 00118d40	Creature_canSeeTargetIn	(minR, maxR, lead, this, facing, arc, rayMode): creature_canSeeObj on the target; 58 callers

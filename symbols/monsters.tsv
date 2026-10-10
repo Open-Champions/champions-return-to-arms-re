@@ -53,9 +53,9 @@
 0023d014	AutoProp_interactPrompt	vtable 0x5130c0 slot 13; also AutoProp; also TormentBridge; also DiseasePort; also RingPortal; also HackDoor; also HateBridge; also HateHole; also GothTrap; also HateGate; also HateInto; also EggSack; also AntTrap (was AutoPropLP_interactPrompt)
 0023d1b0	AutoProp_interact	vtable 0x5130c0 slot 14; also AutoProp; also TormentBridge; also DiseasePort; also RingPortal; also HackDoor; also HateBridge; also HateHole; also GothTrap; also HateGate; also HateInto; also EggSack; also AntTrap (was AutoPropLP_interact)
 0023d1fc	AutoProp_trigger	vtable 0x5130c0 slot 3; purpose not established; also AutoProp; also TormentBridge; also DiseasePort; also RingPortal; also HackDoor; also HateBridge; also HateHole; also GothTrap; also HateGate; also HateInto; also EggSack; also AntTrap (was AutoPropLP_vslot3)
-0023d2ec	AutoProp_nextState	vtable 0x5130c0 slot 17; purpose not established; also AutoProp; also TormentBridge; also HackDoor; also HateBridge; also HateHole; also GothTrap; also HateGate; also HateInto; also EggSack; also AntTrap (was AutoPropLP_vslot17)
-0023d680	AutoProp_setState	vtable 0x5130c0 slot 18; purpose not established; also AutoProp; also TormentBridge; also HackDoor; also HateBridge; also HateHole; also GothTrap; also HateGate; also HateInto; also EggSack; also AntTrap (was AutoPropLP_vslot18)
-0023d7ac	AutoProp_setPassable	vtable 0x5130c0 slot 19; purpose not established; also AutoProp; also TormentBridge; also DiseasePort; also RingPortal; also HateGate; also HateInto; also EggSack; also AntTrap (was AutoPropLP_vslot19)
+0023d2ec	AutoProp_nextState	vtable 0x5130c0 slot 17; next state (docs/monsters-2.md section 6); also AutoProp; also TormentBridge; also HackDoor; also HateBridge; also HateHole; also GothTrap; also HateGate; also HateInto; also EggSack; also AntTrap (was AutoPropLP_vslot17)
+0023d680	AutoProp_setState	vtable 0x5130c0 slot 18; set state (docs/monsters-2.md section 6); also AutoProp; also TormentBridge; also HackDoor; also HateBridge; also HateHole; also GothTrap; also HateGate; also HateInto; also EggSack; also AntTrap (was AutoPropLP_vslot18)
+0023d7ac	AutoProp_setPassable	vtable 0x5130c0 slot 19; set passable (docs/monsters-2.md section 6); also AutoProp; also TormentBridge; also DiseasePort; also RingPortal; also HateGate; also HateInto; also EggSack; also AntTrap (was AutoPropLP_vslot19)
 0023d93c	AutoContainer_ctor	constructor; installs vtable 0x513330
 0023e0e8	AutoContainer_dtor	vtable 0x513330 slot 1
 0023e1b8	AutoContainer_loadState	vtable 0x513330 slot 8; also AutoContainerLP
@@ -68,9 +68,9 @@
 0023fa60	AutoContainer_takeDamage	vtable 0x513330 slot 2; also AutoContainerLP
 0023fae0	AddParticle_ctor	constructor; installs vtable 0x513288
 0023fc50	AddParticle_ctor2	constructor; installs vtable 0x513288
-00240800	AddParticle_updateLightAndHalo	vtable 0x513288 slot 17; purpose not established (was AddParticle_vslot17)
-00240b64	AddParticle_emit	vtable 0x513288 slot 18; purpose not established (was AddParticle_vslot18)
-00240da8	AddParticle_slot19Empty	vtable 0x513288 slot 19; purpose not established (was AddParticle_vslot19)
+00240800	AddParticle_updateLightAndHalo	vtable 0x513288 slot 17; places the light and halo (docs/monsters-2.md section 6) (was AddParticle_vslot17)
+00240b64	AddParticle_emit	vtable 0x513288 slot 18; emits (docs/monsters-2.md section 6) (was AddParticle_vslot18)
+00240da8	AddParticle_slot19Empty	vtable 0x513288 slot 19; empty (was AddParticle_vslot19)
 00240dc8	AutoEmitter_ctor	constructor; installs vtable 0x5131f8
 002410f0	AutoEmitter_draw	vtable 0x5131f8 slot 5
 00241310	AutoEmitter_run	vtable 0x5131f8 slot 4
@@ -140,7 +140,7 @@
 0024726c	FireFly_ctor	constructor; installs vtable 0x5108c8; object size 0x470; factory type names: FireFly
 0024742c	FireFly_draw	vtable 0x5108c8 slot 5
 00247670	FireFly_run	vtable 0x5108c8 slot 4
-0024787c	FireFly_setState	vtable 0x5108c8 slot 27
+0024787c	FireFly_setState	vtable 0x5108c8 slot 27; an empty function (a bare return), not a real set-state
 00247884	beetleProjectile_ctor	constructor; installs vtable 0x50e3d8
 00247978	beetleProjectile_draw	vtable 0x50e3d8 slot 5
 00247980	beetleProjectile_run	vtable 0x50e3d8 slot 4
@@ -294,7 +294,7 @@
 0026ccfc	Goblin_setState	vtable 0x510260 slot 27
 0026d690	Goblin_onHitTerrain	vtable 0x510260 slot 10; purpose not established (was Goblin_vslot10)
 0026d6fc	Goblin_onTouchList	vtable 0x510260 slot 11; purpose not established (was Goblin_vslot11)
-0026d884	SnowballSpell_ctor	constructor; installs vtable 0x5152c8
+0026d884	SnowballSpell_ctor	constructor; installs vtable 0x5152c8; no caller: the class is never instantiated (docs/monsters-2.md 9.2)
 0026d940	SnowballSpell_draw	vtable 0x5152c8 slot 5
 0026da20	SnowballSpell_run	vtable 0x5152c8 slot 4
 0026de54	SnowballSpell_onTouch	vtable 0x5152c8 slot 6
@@ -311,7 +311,7 @@
 00270b4c	Nightmare_draw	vtable 0x5155e8 slot 5
 00270bbc	Nightmare_run	vtable 0x5155e8 slot 4
 0027142c	Nightmare_onHitTerrain	vtable 0x5155e8 slot 10; purpose not established (was Nightmare_vslot10)
-00271484	Nightmare_onTouchList	vtable 0x5155e8 slot 11; purpose not established (was Nightmare_vslot11)
+00271484	Nightmare_onTouchList	vtable 0x5155e8 slot 11; the charge of state 7 does its damage here, not in the run function (docs/monsters-2.md 9.2) (was Nightmare_vslot11)
 0027155c	Nightmare_setState	vtable 0x5155e8 slot 27
 002719d4	Horsemen_mountSeatTransform	bone 10 transform of the mount object; used only when drawing a mounted rider
 002721f8	Horsemen_draw	vtable 0x515730 slot 5
@@ -704,7 +704,7 @@
 002ba03c	WarBoar_ctor	constructor; installs vtable 0x517cf0; object size 0x3d8; factory type names: WarBoar*
 002ba340	WarBoar_draw	vtable 0x517cf0 slot 5
 002ba3a0	WarBoar_run	vtable 0x517cf0 slot 4
-002bac58	WarBoar_onTouchList	vtable 0x517cf0 slot 11; purpose not established (was WarBoar_vslot11)
+002bac58	WarBoar_onTouchList	vtable 0x517cf0 slot 11; an empty body (a bare return) (was WarBoar_vslot11)
 002bac60	WarBoar_setState	vtable 0x517cf0 slot 27
 002bafb4	Warrior_ctor	constructor; installs vtable 0x517e38; object size 0x480; factory type names: Samurai, Gladiator*
 002bb5a4	Warrior_draw	vtable 0x517e38 slot 5

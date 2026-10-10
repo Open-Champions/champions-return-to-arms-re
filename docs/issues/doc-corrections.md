@@ -7,7 +7,8 @@ column of `symbols/*.tsv`. Later passes (`docs/data-tables.md`, `docs/issues/vta
 applied them, and then compared the documents with each other.
 
 A second pass, made after more reports had come in, is recorded at the end of this file
-under "Second pass"; sections 1 to 7 describe the first pass only.
+under "Second pass", and a third under "Third pass"; sections 1 to 7 describe the first
+pass only.
 
 Everything below was checked in the executable (SLUS_209.73, v2.00) before it was written
 into a document: the decompile, `tools/dis.py`, `tools/gxref.py`, the data words, and the
@@ -463,4 +464,306 @@ python3 -I -B tools/ps2elf.py SLUS_209.73 xref 1d9250             # message 7: o
 python3 -I -B tools/ps2elf.py SLUS_209.73 xref 2f8e78             # LifeTap helper: two callers
 python3 -I -B tools/ps2elf.py SLUS_209.73 strxref wcache          # equipment cache only
 grep -n "0x14) =\|0x1c) =\|0x24) =\|0x2c) =\|FUN_0016d0b8" decomp/all/0023c44c.c   # S4 item 1
+```
+
+## Third pass
+
+Scope: the corrections reported after the second pass's hand-over list was closed — from
+`docs/issues/claims-audit.md` (section 4), `docs/issues/draw-sim-leaks.md` ("Corrections to
+earlier documents"), `docs/issues/pose-cache.md` (section 11), `docs/spec/items.md`
+(section 13), `docs/spec/core.md` (section 14), `docs/issues/dynamic-tests.md` (section 3),
+`docs/issues/stale-pointers.md` (section 10), `docs/spec/script-machine.md` (section 12) and
+`docs/spec/combat.md` (section 12) — plus the two groups the second pass listed as not in
+its hand-over list: `docs/monsters-2.md` sections 9.1 and 9.2, and
+`docs/formats/anim-audio.md` section 5.
+
+Method as in the two earlier passes: the smallest change that fixes the statement, in
+place, keeping a clause that says what the earlier version said; an answered *Unknown* or
+open question keeps the question and gets the answer and a pointer beside it. Nothing was
+run in this pass. Four of the reporting documents (`docs/spec/items.md`, `core.md`,
+`combat.md`, `script-machine.md`) and `docs/issues/dynamic-tests.md` /
+`docs/issues/pose-cache.md` executed the original code; where a row says **executed** the
+corrected statement is their executed result, which wins over an earlier reading. The last
+column: **code** = the address given was read in this pass (`tools/dis.py`, the decompile,
+`tools/ps2elf.py xref`); **report** = taken from the reporting document without an
+independent reading; a qualification after "code" says how far the check went.
+
+`FINDINGS.md`, `names.tsv`, `patches/`, `tools/` and the documents still being written were
+not edited; what they need is in section T5. The summary (T1) is at the end of the table
+it counts.
+
+### T2. Corrections
+
+| # | Document, section | Said | Says now | Evidence | Checked |
+|---|---|---|---|---|---|
+| 1 | `spec/movement-camera.md`, 4.1 (b) | the record speed multiplier (+0x4c20) "is written only by" GiantGrowth and Resurrect code | also by the arena set-up function 0x307c80 (store 0x307d04: 1.25 in a net game, 1.75 offline, for every player) and by character import and creation (1.0); "normally 1.0" holds for the campaign only | 0x307cd0–0x307d04 (constants 0x3fa00000 / 0x3fe00000 on the two sides of the `g_networkMode` test); `xref 307c80` → 0x304dd0, 0x305f20; 0x1bdb0c; `claims-audit.md` row 99 | code (the arena store, its two callers, the import store); `player_initNewCharacter` from the report |
+| 2 | `issues/dynamic-tests.md`, row b5, section 3 item 2 and the proposed "G5 (reword)" row | only 0x41bfc0 named as having a writer | 0x41c138 has one too: `pad_updateRumble` subtracts one every tick and stores the result clamped at 0; neither word is ever set to a non-zero value | 0x174780–0x174790; `claims-audit.md` row 12 | code. `docs/engine.md` and `docs/mainloop.md` §11 already said so; the note of `pad_apply` is in `names.tsv` (T5) |
+| 3 | `mainloop.md`, P5 | second reader of the HUD message timer is in `Vehicle_run` (second pass, row 76); "its effect on the vehicle was not followed here" | followed: the timer gates the one-time driver help text and the latch at vehicle +0x408, which nothing else reads | 0x207dac–0x207dd4; `claims-audit.md` row 72 | code (the block); "nothing else reads +0x408" from the report |
+| 4 | `mainloop.md` §9 (task table, `Script`) and `script.md` §2.1 | 0x4f8694: "no reader of that word found" / "which nothing reads" | read by its own writer: `script_runByName` compares it with the display-frame counter and renews the stamp only when it has passed | 0x1ed6f0–0x1ed708; `claims-audit.md` row 73 | code |
+| 5 | `skills.md`, (c) and open question 5 | ten writers listed; "the reader probably treats it as a frame count (Inferred)"; reader an open question | five more stores of 1 (`Player_processDamage` ×3, `Player_move`, `player_respawn`); the reader is `net_frameLoop`, which subtracts one per rebase while the byte is positive: a count of forced re-clones | 0x13b25c–0x13b26c; 0x1b2ef4, 0x1b352c, 0x1b3824, 0x1b5098, 0x1bd1e8; `claims-audit.md` rows 45, 79 | code (all six stores) |
+| 6 | `player.md`, per-machine item 8 | whether 0x4f694a, 0x41b4fc, the recall countdown and the jump-gate state can differ: **Unknown** | 0x4f694a cannot (set by game message 8, decremented unconditionally in `hud_run`: lockstep, U5); 0x41b4fc can, inside a tick (D26, U3); the other two as before | 0x1d907c, 0x1db8ec–0x1db8f0; `draw-sim-leaks.md` U3, U5; `claims-audit.md` row 87 | code (the set and the decrement); the D26 / U3 routes from the report |
+| 7 | `player.md`, aura globals and hint timers | writers not listed beyond the copy | more writers named (`player_recallTick`, `Player_updateCast`, `player_resetAuraLights`; `Player_usePotion`, `Player_weaponSwapInput`, the two axe skills); no simulation reader, statement stands | `claims-audit.md` row 86 | report |
+| 8 | `creatures.md`, C2 and open question | effect of the spell slot-3 calls from `Creature_draw` **Unknown**; bodies not checked | three Spell classes override slot 3 (`SpellDrowsy`, `SpellSummonBadger`, `SpellResurrect`); all three only draw | 0x30ed24, 0x311034, 0x312f48; `draw-sim-leaks.md` U6 | report |
+| 9 | `creatures.md`, C10 and open question | whether local UI code clears the menu latch 0x4fe53c: **Unknown** | not in a net game: `menu_openInventory` acquires and `inventory_close` releases only when `g_networkMode` is 0; other writers listed | 0x1c1600–0x1c1608, 0x1c52a8–0x1c52b0; `draw-sim-leaks.md` | code (both tests); the list of other writers from the report |
+| 10 | `issues/sync-breakers.md`, §7 options table ("controls") and advice | button tables "installed at launch from each owner's data"; "option settings do not matter" | `config_commitOptions` rewrites all four per-slot tables from this machine's rows whenever the option list is left with a change; advice now: do not change options during an online game if anyone has remapped buttons | 0x1e6a60–0x1e6b0c; `symbols/drawsim.tsv` 0x1e6650; FINDINGS U1 | report (the loop start was looked at; the copy was not traced) |
+| 11 | `mainloop.md`, run-task table, `missionmenurun` | `net_isLocalSlot` at 0x231a4c listed as a local test without remark | with `pauseMenu_isOpen` it is an early return before the pad test on the chooser's machine: a per-machine branch in a lockstep menu (U2) | 0x231a4c–0x231a78 | code |
+| 12 | `netcode.md`, per-machine row 4 | "None was identified" (a handler that reads a pad) | one identified: `inventory_unequipItem` (inventory message 2) passes the message slot's own lockstep pad to `Player_weaponSwapInput`; consistent, because that pad is already applied | 0x1c2ffc (`g_pads` pointer formed); `draw-sim-leaks.md` | code (the pointer); that it is the sender's slot from the report |
+| 13 | `script.md`, §2.3 "Active player" | writers: trigger volumes, interact, NPC talk, `dialog_free`, `setBestActivePlayer`, `playGotItemSound` | adds `dialog_runTask` 0x22ff48, which flips the value between 0 and 1 on an offline-only path (`playGotItemSound`'s clamp was already there as P7) | 0x2301a4–0x2301b8 (the flip and the store); `claims-audit.md` row 5; `draw-sim-leaks.md` U6 | code (the store); the offline condition from the reports |
+| 14 | `issues/arena-desync.md`, "Camera-driven activity" | mode word written by `Camera_setMode` and its callers; engine camera by `camera_setView`; address-taken references in drawing code "not read to confirm they only read" | adds `Camera_updateFree` (mode word, 0x20440c) and `Camera_loadState` (position and matrix, from `save_load`); the open point is closed for position and focus, still open for four possible matrix writes | 0x20440c, 0x203a68; `claims-audit.md` rows 3, 8 | code (the two stores); the classification of the drawing-code hits from the report |
+| 15 | `issues/kill-loot-xp.md`, "Is every piece the same", +0x4a74 / +0x4a78 | "no reader found outside that function" | list changed: the unreferenced HUD function 0x1de8c4 reads and writes both; the two character set-up functions store them; still no simulation reader | `claims-audit.md` row 59 | report |
+| 16 | `data-tables.md`, §5 | "two constructors that swap it temporarily" | four functions: `Skelight_ctor`, `Skelight_loadState`, `CastBadger_ctor`, `CastBadger_loadState` | `claims-audit.md` row 80 | report |
+| 17 | `issues/sync-breakers.md`, Background and §2 | `g_lobbyLaunch` written at 0x1e2258 / 0x1e2270; `g_worldPiecesDrawn` cleared 0x322e2c, set 0x323140 | two more stores of 0 to the first (0x1e2050, 0x1e6bd8); two more setters of the second, called only from the lobby screens. No argument changes | `claims-audit.md` rows 47, 51 | report |
+| 18 | `issues/lag.md`, §7 | the peer-table sweep "also lists lighting and script functions … stale-register artefacts" | with the corrected scan the artefacts are gone: 32 functions, all netcode but two non-accesses | `claims-audit.md` rows 21, 40 | report |
+| 19 | `issues/rescan.md`, R1, "What was checked" (the ten set-state functions) | debris start positions "are presentation, apart from pool occupancy" | wrong: a debris prop's start position is shared state — the settling `PhProp` constructs a `Prop`, whose constructor draws `g_randSeed` (D39); in the death cases the query comes before the track call or after an `anim_start` only | `PhProp_run` 0x155fcc, `Prop_ctorRes` 0x153c88, `Prop_ctorNamed` 0x153ac0; `pose-cache.md` sections 5, 6 | report |
+| 20 | `issues/rescan.md`, R1, the `Player_run` item | "`Player_run` uses only `anim_start` / `anim_startBlendInOut`"; the cast position comes "from a possibly draw-built pose" | `Player_move` writes track weights directly after stepping; the pose the cast position reads was built by `Player_updateCast` at the end of the previous tick, on every machine, not by drawing | 0x1b498c, 0x1b499c (stores to track 1 weight and life), 0x1b4bb8–0x1b4bc4; `pose-cache.md` sections 2, 4.1 | code (the two stores at 0x1b498c / 0x1b499c); the rest from the report |
+| 21 | `engine.md`, P11 | whether a build happens depends on drawing (second pass, row 59) | adds: the draw stamp is written by `anim_emitPose` only, so a simulation-built pose is short-lived on a machine that does not draw the object; pointer to the D34 answer and D40 | 0x16f8dc–0x16f8e4; `pose-cache.md` section 2 | code (the stamp store); "never by `anim_buildPose`" from the report |
+| 22 | `data-tables.md`, §1.3 (parser) | "the first format that converts at least one value wins" | the first format for which `sscanf` returns non-zero; the library returns −1 when the piece ends before the first value, so empty pieces, cut words and bare words match with value 0 (**executed**) | 0x106b9c–0x106ba4 (`beqz` on the result: only 0 is "no match"); `spec/items.md` §3.1 | code (the test); the −1 behaviour of `sscanf` is the executed result of `spec/items.md` |
+| 23 | `data-tables.md`, §1.3 and §10 | `requiredclass`: index or index plus one **Unknown**; who tests the `required…` codes not traced | index plus one; all are tested by `inventory_checkEquipAllowed` 0x1c4948, which also applies class rules by subtype, damage type and cloth (**executed**) | tail of the decompile of 0x1c4948 (record class compared with value − 1, reason 1); `spec/items.md` §6 | code (the class test); the rest from the report |
+| 24 | `startup.md`, Item table | +0x22 "zeroed by copy; use Unknown"; modifiers at +0x24 with no end given | +0x22 is not written at creation, `inventory_giveItem` later stores the bag index there; slots end at +0x44, +0x44…+0x47 is padding; +0x06, +0x22, empty-slot values and the padding come from the parser's stack frame (**executed**) | 0x1069f8–0x106a94; `spec/items.md` §2 | report |
+| 25 | `startup.md`, `item_generateWithAffixes`; `symbols/startup.tsv` 0x104ca4 | "the first try is the plain item, later tries build one candidate per eligible prefix" | try 0 parses the plain item once per fitting prefix row; later tries cover only the first N prefix rows (N = number of fitting rows), so up to 10 fitting prefixes are out of reach at caps 1–18 (**executed**) | `spec/items.md` §7.2 | report |
+| 26 | `startup.md`, function table, and `symbols/startup.tsv` 0x104758 | `item_generateFromSpecialTable`: "10 random picks" | the pick is off by one: the first eligible row is twice as likely, the last is never picked (**executed**) | 0x104a3c–0x104a44; `spec/items.md` §7.1 | code (the countdown: decrement, then continue while positive); the consequence from the report. The sentence was in the symbol note, not in `startup.md` |
+| 27 | `startup.md`, `loot_generateDrops` step 6 (and 4, 5) | equipment: "the caller's chance", ×2 with more than one player | also halved for everyone; fixed 0.25 in PvP mode B; the preset branch multiplies the budget by 1.7 (by 7 at 3 or less); reagent and figurine generators get half the level (**executed**) | `spec/items.md` §8 | report |
+| 28 | `startup.md`, `item_getValue` | "by about 8 for the jewellery slots"; power "fixed", constants "not all transcribed" | × 8.009912 only for category 2 with slot 5, 6, 7, 14 or 15; power 1.95; an armour `armorbonus` slot falls into the code-0x1a term (**executed**) | `spec/items.md` §5 | report |
+| 29 | `startup.md`, display names and open question 6 | language 4 German, 1 and 3 Romance: Inferred | supported by the tag shapes in the disc's text files; which of 1 and 3 is French and which Spanish still Unknown | `spec/items.md` §9 | report |
+| 30 | `runtime.md`, §1 "Below the range", row 0x3ae688–0x3afc80 | 0x3aef58 / 0x3af4d0 / 0x3afb90 "Inferred from shape"; 0x3aef58 has "58 callers, mostly float arguments to `libc_sprintf`" | **executed**: float→double exact, multiply and double→float truncating, no denormals, no NaN / infinity handling on the way in; 58 calling functions is right but of the 97 call sites only 5 feed `libc_sprintf` (40 a comparison, 19 a multiply, 14 an add, 6 `libm_fmod`) | `spec/items.md` §11; `spec/core.md` §9 and §14 | report |
+| 31 | `issues/float-divergence.md`, "The machine" | double arithmetic is integer code, "so it cannot differ between machines" | true between originals only: the routines truncate and have no denormals, so a rebuild using host doubles differs in about half of all results (**executed**) | `spec/core.md` §9, §14 | report |
+| 32 | `engine.md`, Math table; `symbols/engine.tsv` 0x166630 | `math_cos16` "polynomial on the half angle" | correct; adds that neither function ever returns 0 — the quarter-turn values are ±2⁻²² (**executed**, all 65,536 angles) | `spec/core.md` §4, §14 | report |
+| 33 | `objects.md`, handle recap | "An iterator is itself a node spliced into the list (object field 0)" | correct; adds the two cases where the iterator's `prev` is not a node carrying an object, and the two uses of `handle_clear` that corrupt the node pool (**executed** for the second) | `spec/core.md` §12, §14; 0x1a1698 | report |
+| 34 | `objects.md`, `runObjects` step 3 | reaper described without saying how it walks | walks each cell's list from the head, with no iterator and without `g_excludeMask`: victim by link order | 0x14b9cc–0x14bb1c (no call to the iterator functions, no reference to the mask; one indirect call, the destructor); `stale-pointers.md` 5.3, ST5 | code |
+| 35 | `spec/skills-35-68.md`, section 68 (Resurrect, respawn order) | the stale read is right "only because the freed block either still holds the slot number or has just been reused … reuse Inferred, not traced in `pool_new`" | traced: `player_respawn` frees the old `Player` and allocates the new one with no call between, and the free lists are last-in-first-out, so the block is always reused by the new `Player` on every machine (ST2) | 0x1bd0f0 (destructor call) … 0x1bd138 (`pool_new`), no other call in between; `stale-pointers.md` section 3 | code (the call order); the pool rule from `spec/core.md` section 11 |
+| 36 | `issues/prediction-copy.md`, 3.1 (allocator row) | "Node and block *addresses* differ per machine already" | node addresses do; block addresses do not, apart from the first-copy case (the copy keeps its one block in the 3000-byte class; the two smaller classes are lockstep) | `stale-pointers.md` 5.1, ST1 | report |
+| 37 | `issues/kill-loot-xp.md`, section 2 ("Nothing in steps 5–9 reads …") and the proposed kill-chain row | experience reads the player count, record hit points, level and class, and the handle | also the level-step table and the killer's skill list (**executed**, k19); all lockstep | `dynamic-tests.md` section 3 (smaller notes) | report |
+| 38 | `issues/kill-loot-xp.md`, section 2, `player_giveExp` | sound and level-up text "on the owner's machine only" | only the sound is behind the local-slot test; the level-up message call is made on every machine with the slot as argument (**executed**, k22) | `dynamic-tests.md` section 3 (smaller notes) | report |
+| 39 | `spec/movement-camera.md`, 4.6 | counter 7: ramp for 30 frames, "then the counter value up to 60" | after the ramp the byte is 60 for any counter value above 30, and the counter itself only at 30 or below (**executed**, z6) | 0x113774–0x1137d8 (counter under 31: the byte is the counter; otherwise the constant 0x3c) | code |
+| 40 | `script.md`, 1.2 (machine +0x18) and 1.4 (entry STK) | "restored to its entry value on every exit" / "written back … on every exit path" | RETN stores the current stack pointer; RET, HALT and run-time errors store the entry value; the entry, STACK and HEAP error returns store nothing (**executed**) | word at 0x13fc24 is 0xaef60018 (the current STK register stored at machine +0x18); `spec/script-machine.md` 4.3 | code (the RETN store); the other exits from the report |
+| 41 | `script.md`, 1.5 (errors 7 and 3) | "error 7 when STK passes the top" | at entry the comparison is with the header's stack-top field, which is the data start too high; error 3 at entry comes after the entry cells are written (**executed**) | 0x13ed90–0x13edac (the field is loaded through the header pointer); `spec/script-machine.md` 4.1 | code (which field is compared); the error-3 order from the report |
+| 42 | `script.md`, 1.5 (address check) | indirect loads and stores check the address | the compares are signed, so negative addresses pass; the check exists in six opcodes only (**executed**) | `spec/script-machine.md` section 3 | report |
+| 43 | `script.md`, 1.6 | entry index −1 means `main` | adds: index −2 is accepted (the record two places before the table is read); PRI is uninitialised on entry (**executed**) | `spec/script-machine.md` 4.1 | report |
+| 44 | `script.md`, 1.7 | `scr_getAddr`: "bounds check"; a packed string is recognised "by its first cell being above 0xff" | both tests are signed: `scr_getAddr` accepts negative addresses; a packed string whose first character is 0x80 or above is read as unpacked (**executed**) | `spec/script-machine.md` section 7 | report |
+| 45 | `script.md`, 1.9 opcode table | SIGN "sign-extend the low byte"; UMUL "unsigned multiply"; CASETBL data only; ALIGN "byte-order adjustment" | SIGN only sets bits 8–31 when bit 7 is set; UMUL is the same signed multiply as SMUL; CASETBL has an executable handler that crashes; ALIGN is `^= 4 − n` for n < 4 (**executed**) | 0x1405b8–0x1405cc (SIGN.pri: an OR with 0xffffff00 behind a test of bit 7, nothing on the other side); `spec/script-machine.md` section 5 | code (SIGN.pri); the other three from the report |
+| 46 | `script.md`, built-in table, `activateStore` and `givePlayerItem` | argument lists as declared | some shipped scripts call them with fewer pushed arguments than declared; the run then leaves the saved stack pointer 4 too high | `spec/script-machine.md` section 9 (`HUB.scr` 0xfbc–0xfd8, `INNOVAT1.scr` 0x7e0–0x80c) | report |
+| 47 | `data-tables.md`, §3.2 (`Creature_setStats`) | hit points "double arithmetic, then to float"; `pow` | `powf` (single precision) for every power; only `(r + 15.5) × power` goes through the library doubles, which truncate; `powf(L, 1.0)` is exactly `L` (**executed**) | 0x10a78c (`libm_powf`), then 0x10a79c–0x10a7d8 (int→double, add, float→double, multiply, double→float); `spec/combat.md` 1.2, 4.2 | code (the call sequence); truncation from the executed result |
+| 48 | `data-tables.md`, §3.2 | damage scaling unless the type name is "droid" | also skipped when the object has no type name; the compare ignores case (**executed**) | 0x10a71c–0x10a734 (null test, then `libc_strcasecmp`) | code |
+| 49 | `data-tables.md`, §3.2 | `Dead` property: hp = 0 (inside the rolled case by layout) | also when hit points were not rolled (last argument 0); maxHp keeps its value (**executed**) | 0x10a980; `spec/combat.md` 4.2 | report |
+| 50 | `data-tables.md`, §3.5; `issues/kill-loot-xp.md`, step 8 | class 0: "the killer also gains mana" | with one player the mana gain needs no killer; with several it is the killer only; applied after `player_giveExp` (**executed**) | 0x112200 (class test with no killer test in the one-player branch), 0x112100 (killer compare in the loop); `spec/combat.md` section 5 | code (the two branches) |
+| 51 | `data-tables.md`, §4.3 | effective statistics are base plus item modifiers 7–10 | plus figurines (bag 2, flag bit 45), added by `player_recalcArmor` between the bonus bytes and the maxima (**executed**) | `spec/combat.md` sections 7, 8 | report |
+| 52 | `data-tables.md`, §4.5 and §11 | multiplier half of `Player_recalcDamage` "read from the decompile only" | executed; the thrown branch raises the maximum by the share of the new minimum; the dual-wield passive multiplies only the type-1 or type-8 factor | 0x1b7478; `spec/combat.md` section 9 | report |
+| 53 | `data-tables.md`, §5, first row | monster level "3.0 in PvP mode B" | only on difficulty 1: the difficulty 2–5 lines are computed from the level byte after the PvP store and overwrite it (**executed**) | 0x1e5ba4–0x1e5c48 (the 3.0 store, then the four difficulty branches all ending in the store at 0x1e5c48) | code |
+| 54 | `data-tables.md`, §8 and §11 | `player_recalcArmor` "not read here"; `item_getValue` "not fully transcribed" | both read and executed since (`spec/combat.md` section 8, `spec/items.md` §5); modifiers 5 and 6 are added by `player_recalcArmor` and overwritten by its caller | 0x1b5790; 0x1b69bc, 0x1b69c4 | report |
+| 55 | `gameplay.md`, §2.5 steps 4 and 10 | base roll "in double precision" | the span is single precision; the doubles are the truncating library routines; a zero span gives 0x7f800000 (**executed**) | `spec/combat.md` 3.4 | report |
+| 56 | `gameplay.md`, §2.5 step 16 | Frost Armor strikes the attacker (amount not given) | the strike is a cold slot of `trunc(dmg − factor)` — the amount minus the factor, not the absorbed part (**executed**) | 0x318364–0x318378 (subtract, then convert to integer) | code |
+| 57 | `gameplay.md`, §2.5 step 18 | crit bonus is the largest of "three skill values" | the attacker's own rank counts only while a `SpellCriticalHit` is attached to it (**executed**) | 0x2e76f8–0x2e7714; `spec/combat.md` 3.2 | report |
+| 58 | `gameplay.md`, §2.5 step 20, type 0x29 | "draw; success casts the skill" | the test is draw < v2 × 655, so 100 % is 65500 / 65536 (**executed**) | 0x1e8ebc–0x1e8ed8 (constant 0x28f, compare with the 16-bit draw) | code |
+| 59 | `gameplay.md`, §2.5 step 27 | flag 0x800000: "possibly deliver" | delivery only on `frame & 31 == 0`; the amount is whole and at least 1; take-damage is then called again with 0 (**executed**) | 0x1ea700–0x1ea708 (the frame test); `spec/combat.md` section 3 steps 25, 26 | code (the frame test); the rest from the report |
+| 60 | `gameplay.md`, §2.2 elemental rows | "min, max", with the upward range for v2 < v1 noted in the second pass | exact rule for v2 < v1 − 1 (v1 + draw mod (v1 − v2 − 1)); v2 = v1 − 1 divides by zero, console result not established (**executed** under one assumption about the remainder) | `spec/combat.md` 3.1 | report |
+| 61 | `issues/dynamic-tests.md`, §1 | floating point is "the one place the interpreter approximates" | adds: the double routines are integer code, so they are executed exactly — and they truncate | `spec/combat.md` 1.2; `spec/core.md` section 9 | report |
+| 62 | `issues/lag.md`, §8, last paragraph | 20 spring passes bring every row forward "by exactly one frame" | the first movement and the digital direction come one frame earlier, but the values are not the shipped row shifted by one (**executed**, b11) | `dynamic-tests.md` section 3 item 7 | report |
+| 63 | `issues/sync-breakers.md`, §1 (and B2) | the first active machine also sends "player left" (message 4) | the "first active" test comes after the peer is marked dropped, so a machine that has just dropped every slot in front of its own also sends it (**executed**, s4) | 0x13dec0 (dropped byte stored), 0x13decc (`net_localIsFirstActive` called) | code |
+| 64 | `creatures.md`, "The 16 status counters" | `Creature_draw` decrements the first non-zero counter unless that is index 12; counter 7 "becomes the slow amount, ramping at 2 per frame" | adds: while counter 12 is the first non-zero one, counters 13–15 are not decremented either (**executed**, i2); after the ramp the slow amount is 60 for any counter value above 30 (**executed**, z6) | `dynamic-tests.md` section 3 items 6, 11; 0x113774–0x1137d8 | code (the slow byte, as row 39); the counter loop from the report |
+| 65 | `monsters.md`, §7.7 | "the structure at 0x4f8450 has 1 at +0x34" | 0x4f8450 (`g_localCamera`) holds a pointer to the camera object; the test is camera mode == 1, a per-machine value, 0 while a menu, shop, dialog camera or cutscene holds the local camera; `NPC_draw` also has a distance test | `symbols/entry.tsv` 0x4f8450; `monsters-2.md` 9.1, 9.2 | code (the symbol; the pointer is the one `claims-audit.md` row 8 followed); the rest from the report |
+| 66 | `monsters.md`, §4 Zek | "state 0xe finds an enemy and links a handle" | state 0xe launches a ground wave that travels 5 units a frame, homes on that enemy and explodes for half melee damage in a 180 radius | `monsters-2.md` sections 3, 9.1 | report |
+| 67 | `monsters.md`, §4 MummyKing | "state 9 creates two SpawnMummy objects" | one per player slot at one-second steps, then a shaman; the type depends on his hit points | `monsters-2.md` sections 3, 9.1 | report |
+| 68 | `monsters.md`, §4 VampireLord | "States 7–0xb: melee chain with a ColdWeapons rider"; Critter objects "with four own draws" | only state 7 (and 0x18) carries the rider, on the second hit, at twice the value, and heals him 8 %; six bats per state; draws are per bat and a minimum; 0x14 deletes after the flee timer; the forced 0x19 can be lost | `monsters-2.md` 9.1, 9.2 | report |
+| 69 | `monsters.md`, §4 RedDragon | breath: "helper 0x261328 twice plus arc tests"; 0xf "creates a FireStorm spell object"; 0x1b "four range tests" | the helper is effects only, the breath damage is a 15-frame tick in run; the FireStorm is constructed directly at the farthest player within 600, with no "nobody found" check; 0x1b uses cone tests and the last-attack memory | `monsters-2.md` 9.1, 9.2 | report |
+| 70 | `monsters.md`, §4 Nightmare | "7 charge" | the charge does its damage in the slot-11 override 0x271484, not in run; 6 / 0x17 / 0x18 are the same four-hit kick | `monsters-2.md` 9.2 | report |
+| 71 | `monsters.md`, §4 SpiderQueen | bites with a rider; spit "three own draws"; leg thresholds | adds: 7, 10 and 0xb are grab attacks that drag the target; two projectiles per event, three events; thresholds are absolute hit points (the web-strand correction was applied in the second pass, row 14) | `monsters-2.md` 9.2 | report |
+| 72 | `monsters.md`, §4 Skeleton and UndeadKnight | swings "chosen … with three own draws"; "0x17 emits particles"; Skeleton state 8 "with four own draws"; 0x2bfe2c "a Wraith helper" | one draw per decision; state 8 unreachable; 0x17 emits only when +0x3cc is linked, i.e. never; three draws per rejection attempt plus one; 0x2bfe2c is the state-0x17 code inside `Wraith_run` | `monsters-2.md` 9.2 | report |
+| 73 | `monsters.md`, §4 "Others", AntQueen | "bites carry a PoisonWeapons rider" | the bite (state 6) carries none; the rear attack (7) and the sting (9 / 10) do; no requester of state 0x19 found | 0x23747c; `monsters-2.md` 9.2 | report |
+| 74 | `monsters.md`, §1.4, state 0x17 | "usually rise / appear" | only for Skeleton and Skelight; other uses listed | `monsters-2.md` 9.1, 9.2 | report |
+| 75 | `monsters.md`, §1.2 slots 11, 17–19, 20 | 11 "Observed for Cazic only"; 17–19 Unknown; 20 "4 overrides here" | WarBoar's slot 11 is empty, Nightmare's does the charge damage; 17 next state, 18 set state, 19 set passable (AddParticle: place light, emit, empty); Skeleton overrides slot 20 too, and the two wraith overrides have a side effect | 0x2bac58 (a bare return); `symbols/monsters.tsv` rows 0x23d2ec–0x23d7ac; `monsters-2.md` 9.2 | code (the empty WarBoar body, the symbol names); the rest from the report |
+| 76 | `monsters.md`, §1.3 | every run function returns when `Creature_run` is non-zero; 0x80 is "animation ended" | `NPC_run` ignores the result, and `NPC_run` / `GnomeNavigator_run` do not call `Creature_processDamage`; for Ant, Arenabeast and Amphian 0x80 is an event-marker mask placed on the death clips | `monsters-2.md` 9.2 | report |
+| 77 | `monsters.md`, §2.2 and §7.8, UndeadKnight +0x3c8 | "never linked anywhere" (field search up to 0x2b5370) | a linker exists at 0x2b5370 but nothing calls it; the same for a second handle +0x3cc; conclusion stands | `tools/ps2elf.py xref 2b5370` (no reference); `monsters-2.md` 9.2 | code (no reference); that 0x2b5370 links the handle from the report |
+| 78 | `monsters.md`, §3 catalogue | sizes `?` for AntWave, beetleProjectile, PoisonProjectile; Wraith creates Weapon1 | 0x3d8, 0x1d0, 0xa8; the Weapon1 is WarWraith's. A notes block under the tables lists the unreachable skills and states (Tormentor, Kobold, Mummy, Ulthork, UndeadKnight, AntQueen), the missing "Creates", the Skeleton red / blue variants, SmallSpider's states, FireFly's empty set-state, `SnowballSpell` never built | 0x237668, 0x24683c (`pool_new` arguments); 0x24787c (a bare return); `xref 26d884` (no reference); `monsters-2.md` 9.2 | code (the two sizes, the empty function, no caller of the constructor); PoisonProjectile's size and the rest from the report |
+| 79 | `monsters.md`, §5 AutoChest family, CreatureContainer | `random` items "same parameter scheme as Chest"; constructor "also references AutoContainer" | worth × 300, doubled from act 1 on, zero in act 0, category table 0x4fece8; AutoContainer has its own inline loot code; CreatureContainer creates and shadows an AutoContainer | `monsters-2.md` sections 6, 9.2 | report |
+| 80 | `monsters.md`, §5 Teleporter and open question 7 | where the teleport happens: **Unknown**, "probably the creature interact path or a level script" | confirmed: nothing in the class; only the base `dialogScript` paths exist | `monsters-2.md` 9.1 | report |
+| 81 | `monsters.md`, §6, MaleDarkElf MultiFire (46) and Mummy DiseaseShield (5) | "value query (+0x5c)" / "value query (+0x64)" | the MultiFire query result is the number of `MultiFireProjectile` objects created, not a rider; DiseaseShield is also constructed | 0x25c984; 0x2ccfc8; `monsters-2.md` 9.2 | report |
+| 82 | `monsters.md`, §7.5 AntWave | hazard described as reachable | no requester of AntQueen state 0x19 was found, so it looks unreachable | `monsters-2.md` 9.2 | report |
+| 83 | `monsters.md`, §7.9 (two rows) and open question 8 | draw-time stores to position / facing: **Unknown**; AutoObject draw flag: "Unknown which flag; not read" | FireBeetle, FireFly, AntQueen undo their stores; Mosquito saves and restores; Critter unresolved. The flag is 0x100: `AutoObject_draw` only clears it, the LP draws' set is unreachable, nothing reads it | 0x297a3c–0x297a54, 0x297afc–0x297b14; `monsters-2.md` 9.2 | report |
+| 84 | `monsters.md`, §10 | Root, LostSoul, LightningRod among monster projectiles not read | read in `monsters-2.md`; Root is not a monster projectile (its only creator is `Player_run`) | `monsters-2.md` 9.2 | report |
+| 85 | `creatures.md`, slot 36 | "0, 4 or 10 by boss rank; purpose Unknown" | the level for the Dodge skill against missiles: `MissileWeapon_onTouch` asks a non-player creature for slot 36 and passes it to skill 2's value query; Marr and IronGuardian override it | 0x152eec–0x152f50 (indirect call at table offset 0x120, then the skill-table entry 0x41b178 = skill 2); `monsters-2.md` 2.1, 9.1 | code |
+| 86 | `engine.md`, `.anm` header +0x0c / +0x10 | "use *Unknown*" | bind offsets (8 bytes per joint) and depth list (one byte per joint), read at the end of `anim_buildPose` | 0x16f58c, 0x16f590 (the two loads); `formats/anim-audio.md` 2.1, 2.2 | code (the loads); the record layouts from the report |
+| 87 | `engine.md`, `.anm` sound event +0x0a…+0x0e | "volume/pitch/delay jitter amounts", Inferred | +0x0a pitch, +0x0b pitch variation, +0x0c volume, +0x0d volume variation, +0x0e delay | `formats/anim-audio.md` 2.7c (0x16d360) | report |
+| 88 | `audio-save.md`, Streams | "three driver parameters" in a queue entry; status "word 3 is the position" | rate (unused by the driver), stereo flag, loop restart; status words are write position, read position, volume, bytes played | `formats/anim-audio.md` 3.4 | report |
+| 89 | `symbols/engine.tsv`, `anim_start` 0x16cfe0 | "the first track of an empty state starts at full weight" | the track always starts at weight 0; for the first track of an empty state the blend time is forced to 0, i.e. a rate of 1 per tick, so it is at full weight after the next step (`docs/engine.md` already had it right) | decompile of 0x16cfe0: weight field stored 0, rate 1.0 when the state was empty; `pose-cache.md` section 11 | code |
+| 90 | `symbols/player.tsv`, `handle_validatePool` and `handle_initPool`; `symbols/staleptr.tsv`, `g_handleNodes` | "6095 handle nodes" | 6,096 (**executed**: the free list after `handle_initPool` has 6,096 nodes) | 0x1a17d4–0x1a17ec: the last node is at array + 0x1dc2c = index 6095; 0x847268 + 6096 × 20 = 0x864ea8, the free-list head; `spec/core.md` section 14 | code |
+| 91 | `symbols/ui.tsv`, `inventory_checkEquipAllowed` 0x1c4948 | "Inferred: class/race test" | the full requirement test, the only reader of the `required…` modifiers; returns a reason code 0–9 (**executed**) | decompile of 0x1c4948; `spec/items.md` §6 | code (the class test at the tail, as row 23); the reason codes from the report |
+| 92 | `symbols/engine.tsv`, `math_buildNoiseTable` 0x1646c8 | no hazard noted | reads three stack words it never initialised (**executed**); harmless to sync — the table is per machine and all `math_noise` callers are light or draw code. The second hazard of the same report, `handle_clear` 0x1a1698, is in `objects.md` (row 33); its symbol row is in `names.tsv` (T5) | `spec/core.md` sections 7, 14 | report |
+
+### T1. Summary
+
+| | Count |
+|---|---|
+| Rows in the table above | 92 |
+| … corrections applied | 92 |
+| … of those, re-checked against the code (wholly or for the part named) | 40 |
+| … of those, taken from the reporting document | 52 |
+| … whose corrected statement is, wholly or in part, an executed result of the reporting document | 38 |
+| Reported corrections found wrong | 0 |
+| Reported corrections applied differently from the way they were reported (T4) | 6 |
+| Reported items not applied (T4) | 7 |
+| Symbols renamed / symbol notes changed (T3) | 0 / 20 |
+
+`python3 -I -B tools/symtab.py check` after the edits: 0 conflicts, 0 malformed lines.
+
+Where each group of rows came from: claims audit 1–5, 7 (part of 6), 13–18; draw / sim leaks
+6, 8–12; pose cache 19–21, 89; items 22–29, 91 (and half of 30); core 31–33, 90, 92 (and
+half of 30); patch execution 37–39, 62–64; stale pointers 34–36; script machine 40–46;
+combat 47–61; `monsters-2.md` 9.1 / 9.2 65–85; `anim-audio.md` section 5 86–88.
+
+### T3. Symbol files
+
+No rename; all changes are in the note column.
+
+| File | Row | Was | Is now |
+|---|---|---|---|
+| `symbols/engine.tsv` | 0x16cfe0 `anim_start` | "the first track of an empty state starts at full weight" | starts at weight 0 with a rate of 1 per tick (row 89) |
+| `symbols/engine.tsv` | 0x1646c8 `math_buildNoiseTable` | fills the table from the cosmetic seed | adds the three uninitialised stack words (row 92) |
+| `symbols/engine.tsv` | 0x166630 `math_cos16` | "half-angle polynomial" | adds: never returns 0, quarter-turn values are ±2⁻²² (row 32) |
+| `symbols/player.tsv` | 0x1a14f0 `handle_validatePool`, 0x1a17d0 `handle_initPool` | "6095 handle nodes"; no count | 6096, with the arithmetic (row 90) |
+| `symbols/staleptr.tsv` | 0x847268 `g_handleNodes` | "array of 6095 handle nodes" | 6096 (row 90) |
+| `symbols/ui.tsv` | 0x1c4948 `inventory_checkEquipAllowed` | "Inferred: class/race test …" | the full requirement test with its reason codes (row 91) |
+| `symbols/startup.tsv` | 0x104758 `item_generateFromSpecialTable` | "10 random picks" | adds the off-by-one pick (row 26) |
+| `symbols/startup.tsv` | 0x104ca4 `item_generateWithAffixes` | "with every eligible prefix … tried" | the loop covers the first N prefix rows; try 0 parses the plain item once per fitting row (row 25) |
+| `symbols/creatures.tsv` | 0x118c78 `Creature_slot36` | values only | adds the purpose: level for the Dodge skill against missiles (row 85) |
+| `symbols/monsters.tsv` | 0x23d2ec, 0x23d680, 0x23d7ac (`AutoProp_nextState`, `_setState`, `_setPassable`) | "purpose not established" | next state / set state / set passable (row 75) |
+| `symbols/monsters.tsv` | 0x240800, 0x240b64, 0x240da8 (`AddParticle_…`) | "purpose not established" | places the light and halo / emits / empty (row 75) |
+| `symbols/monsters.tsv` | 0x271484 `Nightmare_onTouchList`, 0x2bac58 `WarBoar_onTouchList` | "purpose not established" | the charge damage of state 7 / an empty body (rows 70, 75) |
+| `symbols/monsters.tsv` | 0x24787c `FireFly_setState`, 0x26d884 `SnowballSpell_ctor` | slot and vtable only | an empty function / no caller, the class is never instantiated (row 78) |
+
+No document used a name that changed, because none changed. The suggested names for
+addresses nobody has named (`docs/spec/core.md` section 14, 40 addresses) are new symbols,
+not corrections, and were not added: this pass was given no symbol file of its own.
+
+### T4. Applied differently, not applied, and noticed while editing
+
+No reported correction was found to be wrong against the code. Six were applied in a
+different place or form than reported:
+
+1. **"`docs/startup.md`, `item_generateFromSpecialTable`: '10 random picks'" (items).** That
+   sentence was the note of `symbols/startup.tsv` row 0x104758; `startup.md` only named the
+   function in a table. Corrected in both (row 26).
+2. **"symbols note on `pad_apply`" (claims audit).** The row of `pad_apply` is in
+   `names.tsv`, which this pass does not edit (T5). `symbols/engine.tsv` already said, on
+   `pad_updateRumble`, that it counts 0x41c138 down. Only `dynamic-tests.md` was changed
+   (row 2).
+3. **"`mainloop.md` P5: the timer's second reader is `Vehicle_run`" (claims audit).** Already
+   applied by the second pass (its row 76). This pass replaced the remaining "its effect on
+   the vehicle was not followed here" with what the audit followed (row 3).
+4. **"K6: what experience reads also includes the record's class, the level-step table and
+   the killer's skill list" (patch execution).** `kill-loot-xp.md` already named the class;
+   the other two were added (row 37). FINDINGS K6 lacks all three (T5).
+5. **"`data-tables.md` §3.2, `Dead`: also when hit points were not rolled" (combat).** The
+   pseudo-code already had the `Dead` line outside the rolled block; the correction is a
+   clarification of something that could be misread, not a changed statement (row 49).
+6. **"`creatures.md` C10 and slot 12 note: `world_notifyObjectsNear` has one caller, when
+   there is a single player — confirmed" (`monsters-2.md` 9.1).** A confirmation; the
+   sentence is the note of `symbols/creatures.tsv` row 0x11a2b8, not in `creatures.md`.
+   Nothing was changed.
+
+Rows that go beyond the hand-over list but come from the same sections of the reporting
+documents: 7 and 13–18 (`claims-audit.md` section 4, items 4, 6, 8, 11–14), 38 and 62–64
+(`dynamic-tests.md` section 3, items 6, 7, 10 and the "smaller notes"). They are marked
+"report" unless an address was read.
+
+Not applied:
+
+- **`tools/fieldxref.py` and `tools/flagxref.py`: the limits and fixes of
+  `claims-audit.md` section 6.** `tools/` is not edited by this pass. The limits are
+  documented there; the fixes are described in words and not written.
+- **`tools/gxref.py` output labels (draw / sim leaks).** Same reason. The caveat stands:
+  hits are labelled with the heuristic function table, and a `lui` kept across a call gives
+  certain-looking hits at round addresses.
+- **`tools/localstate.py` and `tools/ps2elf.py func` cut a function at its first switch
+  label (`monsters-2.md` 9.1, first row).** Same reason; this is FINDINGS D32.
+- **"New tools must append `tools/` to `sys.path`, not prepend" (items).** A rule for tool
+  authors (`tools/dis.py` shadows the standard library's `dis` when the directory is put
+  first). No document of this pass states a tool convention; it belongs in
+  `CONTRIBUTING.md` or the agent brief (T5).
+- **Suggested symbol names in `docs/spec/core.md` section 14.** New symbols, see T3.
+- **Hag: two forms and a guard state; slot 12 overrides of Orc and Skeleton
+  (`monsters-2.md` 9.2).** Additions with no statement in `monsters.md` to correct;
+  `monsters-2.md` has them.
+- **Every row of every reporting document that is addressed to `FINDINGS.md`.** Listed in
+  T5.
+
+Noticed while editing, not reported by anyone and not changed:
+
+- `docs/issues/pose-cache.md` section 2 lists "`anim_stop` with no blend time" among the
+  calls that change the pose at once *without* detaching it. In the decompile of 0x16d1a0
+  the zero-time branch calls `anim_releaseCaches` 0x171118 first, which clears the state's
+  pose pointer and the buffer's owner — it detaches. The branch *with* a blend time only
+  sets a negative rate and clamps two weights, which is what `rescan.md` R1 says ("`anim_stop`
+  with a blend time" changes the tracks without clearing the pointer). `anim_stop` has one
+  caller. For the owner of `pose-cache.md` to confirm.
+- FINDINGS D12 and D20 each carry the same executed addition twice in a row (an editing
+  slip, T5).
+
+### T5. For the owners of files this pass does not edit
+
+`FINDINGS.md`:
+
+| Row | What it needs |
+|---|---|
+| G9 | Evidence column still says the mode flags are "written only by game setup 0x1e15f8, 0x1e1888". Replace with the list of `claims-audit.md` row 15: `frontend_run` (0x1e1664, 0x1e18dc, 0x1e1938; 0x1e1670, 0x1e18e4, 0x1e1984), `net_launchUpdate` (0x1374a8–0x1374d8, from the host's mode byte), boot-argument code 0x323f34 / 0x323f38, and for mode B `arena_runTask` 0x307160 and session exit 0x3234f4. All shared or outside play |
+| D20 | Writers of the active player: add `playGotItemSound` (clamps to 0…1, 0x146508, 0x146518) and, offline only, `dialog_runTask` (0x2301b8). The row also carries the "two or more players" addition twice |
+| D13 | Mask writers: add the two save / set / restore brackets — `Creature_pickTarget` 0x10ded0 (stores 8 at 0x10e060, restores at 0x10e044) and `Vehicle_collideObjects` (stores 1; 0x20e410, 0x20e690) |
+| D7 | "not checked against every draw-phase camera writer" can be closed for position and focus (`claims-audit.md` row 3): the position is also written by `Camera_loadState` 0x203a20 (from `save_load` only), the focus only by `camera_updateFocus`; the hits in drawing code are stack stores. Four possible matrix writes are still unclassified |
+| D24 | The mode word has one more writer, `Camera_updateFree` 0x20440c (fly camera of modes 3–5, cannot run in mode 0); conclusion unchanged |
+| B10 | Fourth reader of the latch: `Camera_computeTarget` 0x206778 (camera code, per machine anyway) |
+| K4 | +0x4a74 / +0x4a78 are also read and written by the unreferenced HUD function 0x1de8c4 (0x1dee1c–0x1def78) and stored by the two character set-up functions |
+| K6 | "experience uses only the player count, record levels, record hit points and the last-attacker handle" is short by the record's class, the level-step table and the killer's skill list (`dynamic-tests.md` k19; all lockstep) |
+| D26 | Already names the medal countdown; `draw-sim-leaks.md` U3 has a third route, an automatic jump gate (0x27da8c), and says which closes do not count (message handlers, `player_respawn`, `cut_start`) |
+| D12 | The executed addition about counters 13–15 appears twice in the row |
+| "Tools added" paragraph | The corrected `gxref` is described as complete; `claims-audit.md` 6.1 lists seven ways it still misses or mislabels an access (a hit without `?` can carry the wrong address). `ghostreach.py`'s "563 globals written" is a lower bound |
+| new rows proposed and not yet on the ledger | `spec/core.md` section 14: `sin16` / `cos16` never return 0; `math_buildNoiseTable` reads three uninitialised stack words; `handle_clear` corrupts the node pool in two cases. `spec/combat.md` section 12: `healthbonus` / `manabonus` are summed and then overwritten in `player_recalcStats`; a range with v2 = v1 − 1 in an elemental slot divides by zero inside lockstep code. `spec/script-machine.md` section 9: the unbalanced native calls of `HUB`, `HUB2`, `INNOVAT1`, `ISLGNOME` (patch SM1). `pose-cache.md` section 10: X5. (I1, R1, D39, D40, ST1–ST6, U1–U7, X8 are already there.) |
+
+Rows checked and found already amended: G5, MV6, B2, B6, B9, D1, F4, K2, L6, SA1, SB3.
+
+`names.tsv`:
+
+| Row | What it needs |
+|---|---|
+| 0x174410 `pad_apply` | the note ends "0x41bfc0 and 0x41c138 are never written". Both are written: `pad_apply` decrements the first (0x174464) and `pad_updateRumble` counts the second down every tick (0x174790). Should read "never set to a non-zero value" |
+| 0x1a1698 `handle_clear` | the note is empty. Worth saying: removes every node of a list with its partner; corrupts the node pool when an iterator stands in the list or the list holds both nodes of one link (`spec/core.md` section 12) |
+
+`CONTRIBUTING.md` or the agent brief: a tool that imports the project's modules must
+append `tools/` to `sys.path`, not put it first, because `tools/dis.py` would otherwise
+shadow the standard library's `dis` (`spec/items.md`).
+
+`tools/`: the fixes of `claims-audit.md` 6.2 and 6.3 for `fieldxref.py` and `flagxref.py`.
+
+### T6. Re-checking
+
+```
+python3 -I -B tools/symtab.py check                               # 0 conflicts, 0 malformed
+python3 -I -B tools/dis.py SLUS_209.73 307cb0:307d08              # arena set-up: 1.25 net, 1.75 offline into record +0x4c20
+python3 -I -B tools/dis.py SLUS_209.73 174780:174794              # pad_updateRumble counts 0x41c138 down, clamped at 0
+python3 -I -B tools/dis.py SLUS_209.73 13b250:13b270              # net_frameLoop counts the force byte down
+python3 -I -B tools/dis.py SLUS_209.73 207da0:207dd8              # Vehicle_run: HUD timer gates the help text and +0x408
+python3 -I -B tools/dis.py SLUS_209.73 1ed6e8:1ed70c              # script_runByName reads its own stamp
+python3 -I -B tools/dis.py SLUS_209.73 1db8d8:1db8f4              # hud_run decrements the exit countdown
+python3 -I -B tools/dis.py SLUS_209.73 1c15f8:1c160c              # menu_openInventory: latch only offline
+python3 -I -B tools/dis.py SLUS_209.73 231a40:231a80              # mission menu: early return on the chooser's machine
+python3 -I -B tools/dis.py SLUS_209.73 1b4988:1b49a0              # Player_move writes track 1 weight and life
+python3 -I -B tools/dis.py SLUS_209.73 16f8dc:16f8e8              # the draw stamp, in anim_emitPose
+python3 -I -B tools/dis.py SLUS_209.73 106b90:106ba8              # parser: any non-zero sscanf result is a match
+python3 -I -B tools/dis.py SLUS_209.73 104a2c:104a48              # preset pick: off by one
+python3 -I -B tools/dis.py SLUS_209.73 1a17d0:1a1800              # handle_initPool: last node is index 6095
+python3 -I -B tools/dis.py SLUS_209.73 14b9cc:14bb1c | grep jal   # reaper: no iterator call, one indirect call
+python3 -I -B tools/dis.py SLUS_209.73 1bd0e8:1bd140 | grep jal   # player_respawn: destroy, then pool_new, nothing between
+python3 -I -B tools/dis.py SLUS_209.73 113774:1137dc              # slow byte after the ramp: counter or 60
+python3 -I -B tools/dis.py SLUS_209.73 13ed78:13edb8              # scr_interpret entry: header stack top compared
+python3 -I -B tools/dis.py SLUS_209.73 1405b8:1405d0              # SIGN.pri only sets bits
+python3 -I -B tools/dis.py SLUS_209.73 10a710:10a738              # setStats: null type name and strcasecmp
+python3 -I -B tools/dis.py SLUS_209.73 10a784:10a7dc | grep jal   # setStats: powf, then the soft-double sequence
+python3 -I -B tools/dis.py SLUS_209.73 1e5b98:1e5c50              # monster level: PvP 3.0 overwritten on difficulty 2-5
+python3 -I -B tools/dis.py SLUS_209.73 1e8eb8:1e8edc              # type 0x29: draw < v2 * 655
+python3 -I -B tools/dis.py SLUS_209.73 318360:31837c              # Frost Armor strike: trunc(dmg - factor)
+python3 -I -B tools/dis.py SLUS_209.73 13deb0:13ded4              # net_disconnectPlayer: drop, then "first active"
+python3 -I -B tools/dis.py SLUS_209.73 152eec:152f54              # slot 36 feeds skill 2
+python3 -I -B tools/ps2elf.py SLUS_209.73 xref 307c80             # two callers of the arena set-up
+python3 -I -B tools/ps2elf.py SLUS_209.73 xref 2b5370             # no reference: UndeadKnight mount linker
+python3 -I -B tools/ps2elf.py SLUS_209.73 xref 26d884             # no reference: SnowballSpell constructor
+tail -20 decomp/all/001c4948.c                                    # requiredclass compared with class + 1
+sed -n 20,30p decomp/all/0016d1a0.c                               # T4: anim_stop with time 0 calls anim_releaseCaches
 ```

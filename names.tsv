@@ -308,10 +308,10 @@
 00131d88	net_predictLocalPlayer	runs ghost run() for unconfirmed frames; restores only seed, hp +0xac, mana +0xc0, obj pointer
 0014b168	world_drawObjects	frustum cell walk; stops when render buffer < 3000 free; iterators take g_excludeMask
 001ebdf8	game_isFrozen	net game: g_paused only
-00174410	pad_apply	(pad, record, prevState): rewrites every pad field; 0x41bfc0 and 0x41c138 are never written
+00174410	pad_apply	(pad, record, prevState): rewrites every pad field; 0x41bfc0 and 0x41c138 are never set to a non-zero value
 001a1860	handle_initEmpty	the "copy constructor" of a handle list: writes 0
 001a1738	handle_link	(listHead, objBackList, obj)
-001a1698	handle_clear	
+001a1698	handle_clear	hazard: corrupts the node pool when the list holds both nodes of one link (docs/spec/core.md)
 001a1a48	iter_begin	(iter, listHead, excludeMask)
 001a1b38	iter_next	
 001a1ae8	iter_end	

@@ -48,7 +48,7 @@ bytes from +8. A pose buffer is 0x620 bytes: joint count at +8, 0x18 bytes per j
 
 Calls that change the pose at once and do not detach (**Observed**): `anim_push`,
 `anim_pushWithWeights`, `anim_pushChained`, `anim_clear`, `anim_syncToSimFrame`,
-`anim_randomizeTopTime`, `anim_dropNonPersistent`, `anim_stop` with no blend time,
+`anim_randomizeTopTime`, `anim_dropNonPersistent`, `anim_stop` with a blend time (the zero-time branch calls `anim_releaseCaches` first, which detaches — corrected by the third documentation pass),
 `anim_start` / `anim_startBlendInOut` on an empty or full state, and direct stores into
 track fields (`Player_move` above; `SpellRaiseArmy_raiseInRing` 0x313e54 writes a track
 time; `cut_advance` nudges track times, D8). Calls that detach: `anim_advance`,

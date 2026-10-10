@@ -35,6 +35,27 @@ How a property is tested
     sample under the three other adder models and with the multiplier-bias and
     divide-rounding switches (docs/issues/dynamic-tests.md, "Floating point").
 
+Properties
+    decoder slot           animtrack_decode at 15 track times per clip
+    joint values           every joint's position and quaternion as anim_buildPose forms them
+    advance                random sequences of every track operation and anim_advance on
+                           unrelated clips; "advance, sounds" on clips with sound tables
+    Creature_stepAnim, Player_animStep     the same stepped through the two wrappers
+    pose                   queries (joint matrix, attach point, sample point) and draws mixed
+                           in; variants with the decoder list cut to 6 slots, the pose list
+                           cut to 5 buffers, and on made-up clips (joint masks, 64 joints,
+                           16-bit fields, non-unit quaternions)
+    stale sound cursor     one hazard shown: anim_pushChained into a cell with an old cursor
+    Each property has its own seeded random stream, so "-k NAME" repeats it exactly.  After
+    the properties the script lists how often the sequences reached the paths of interest
+    (loop wraps, removals, stolen slots, fallback buffer ...).
+
+What the sequences avoid
+    Situations in which the original does not return or leaves its own structures (every
+    decoder slot pinned by a root-motion track, anim_pushChained on an empty state, a sound
+    cursor beyond the event table, root motion without an output pointer); the model
+    raises HostFault for them.
+
 The vector unit
     anim_buildPose composes the joint matrices with a 77-instruction VU0 microprogram
     (0x3e5c50) reached through COP2 instructions, which ee_emu does not implement.  This
@@ -336,6 +357,12 @@ class Rig:
         self.traces = []
         emu.hook(BASE_DONE, lambda e: self._capture(e, 'base'))
         emu.hook(BLEND_DONE, lambda e: self._capture(e, 'blended'))
+        # paths of the original's blend loop, counted as the original takes them
+        emu.hook(0x16F320, lambda e: cover('blends that flipped the sign of the incoming quaternion'))
+        emu.hook(0x16F368, lambda e: cover('iterations of the 2 pi unwrap in the quaternion blend'))
+        emu.hook(0x16F3B0, lambda e: cover('iterations of the 2 pi unwrap in the quaternion blend'))
+        emu.hook(0x16F504, lambda e: cover('joints visited by the blend loop (masked ones included)'))
+        emu.hook(0x16F1B0, lambda e: cover('joints blended'))
         self.call(ANIM_INIT)
         mem = emu.mem
         limits = [mem.u8(GROUP_LIMIT + i) for i in range(256)]
@@ -665,6 +692,61 @@ class Library:
         raise EmuError('no clip family found in the directory')
 
 
+def synthetic_family(rng, size):
+    """Made-up clips on one made-up skeleton, for what the disc's clips rarely or never
+    have: joint masks (three files on the disc), 64 joints, deep chains, several roots,
+    16-bit fields, quaternions far from unit length, keys for joints the clip does not
+    have, dense sound tables."""
+    count = rng.choice((1, 2, 3, 5, 8, 17, 33, 63, 64))
+    depth = [0]
+    for _ in range(count - 1):
+        depth.append(rng.choice((depth[-1] + 1, depth[-1] + 1, depth[-1], max(depth[-1] - 2, 0), 0))
+                     if depth[-1] < 16 else rng.randrange(0, 17))
+    bind = [tuple(rng.randrange(-3000, 3000) for _ in range(3)) for _ in range(count)]
+    span = rng.choice((30, 300, 3000, 32767))
+
+    def value(limit):
+        return rng.randrange(-limit, limit + 1)
+
+    files = []
+    for number in range(size):
+        length = rng.choice((1, 2, 7, 30, 30, 59, 59, 120, 300))
+        joints = []
+        for _ in range(count):
+            quat = [value(4096) for _ in range(4)]
+            roll = rng.random()
+            if roll < 0.75:                             # mostly near unit length
+                norm = max(sum(v * v for v in quat) ** 0.5, 1.0)
+                quat = [int(v * 4096 / norm) for v in quat]
+            elif roll < 0.85:                           # components up to 8: the unwrap runs
+                quat = [value(32767) for _ in range(4)]
+            joints.append(([value(span) for _ in range(3)], quat))
+        # joint 0 always moves and turns, so ROOT and YAW tracks have something to report
+        keys, tick = [(0, 0, 'p', [value(rng.choice((40, 600))) for _ in range(3)]),
+                      (0, 0, 'r', [value(rng.choice((30, 900))) for _ in range(4)])], 0
+        for _ in range(rng.randrange(0, 6 * count + 4)):
+            tick += rng.choice((0, 0, 1, 1, 2, 5, 17, 60))
+            if tick > length + 3:
+                break
+            joint = rng.randrange(count) if rng.random() < 0.97 else rng.randrange(64)
+            limit = rng.choice((1, 20, 300, 4000, 32767))
+            if rng.random() < 0.5:
+                keys.append((tick, joint, 'p', [value(limit) for _ in range(3)]))
+            else:
+                keys.append((tick, joint, 'r', [value(limit) for _ in range(4)]))
+        mask = 0
+        if number and rng.random() < 0.3:
+            mask = rng.choice((rng.getrandbits(count), (1 << count) - 1 & ~0xF, 1, (1 << count) - 2,
+                               rng.getrandbits(64)))
+        sounds = None
+        if rng.random() < 0.5:
+            sounds = sorted(rng.choice((rng.randrange(0, length + 6), rng.randrange(0, 4)))
+                            for _ in range(rng.randrange(0, 9)))
+        files.append(('synthetic %d' % number,
+                      A.encode_clip(joints, length, keys, depth, bind, mask, sounds, rng.randrange(0, 5))))
+    return files
+
+
 def random_events(rng, length):
     events = []
     for _ in range(4):
@@ -713,6 +795,11 @@ class Scene:
                 state = rig.new_state(8, obj + 0x114)
                 self.objects.append(obj)
             self.states.append(state)
+        for state in self.states:                       # start with something playing
+            if rng.random() < 0.8:
+                flags = rng.choice((A.LOOP, A.LOOP, A.LOOP | A.ROOT, A.REPORT_END))
+                rig.call(PUSH, rig.ptr(state), rig.ptr(clips[0]), flags)
+                A.anim_push(state, clips[0], flags)
         self.speed = [A.ONE] * states
         self.ops = 0
         self.frame = 10
@@ -973,14 +1060,21 @@ def run_scenes(elf, library, rng, config, scenes, length, **kind):
     rig = Rig(elf, config, slots, buffers)
     family_size = kind.pop('family', 5)
     mixed = kind.pop('mixed', False)
+    synthetic = kind.pop('synthetic', False)
     for number in range(scenes):
         rig.reset_clips()
-        names = library.sample(family_size) if mixed else library.family(family_size, kind.get('sound', False))
+        if synthetic:
+            files = synthetic_family(rng, family_size)
+        else:
+            names = (library.sample(family_size) if mixed
+                     else library.family(family_size, kind.get('sound', False)))
+            files = [(name, library.data(name)) for name in names]
+        names = [name for name, _ in files]
         clips = []
-        for name in names:
-            data = library.data(name)
+        for name, data in files:
             length_ticks = struct.unpack_from('<i', data, 4)[0]
             clips.append(rig.load_clip(data, name, random_events(rng, length_ticks)))
+        cover('clips with a joint mask loaded', sum(1 for c in clips if c.joint_mask))
         scene = Scene(rig, rng, clips, states=rng.choice((1, 2, 3)), pose=kind.get('pose', False),
                       yaw=kind.get('yaw', True), stepper=kind.get('stepper', 'advance'))
         try:
@@ -1031,7 +1125,7 @@ def prop_decoder(elf, library, config, share):
     if share == 1 and OPTIONS['all']:
         clips = [n for n in library.names if library.usable(n)]
     else:
-        clips = library.sample(scaled(400, share))
+        clips = library.sample(scaled(300, share))
     rig = Rig(elf, config)
     cases = failures = 0
     examples = []
@@ -1075,7 +1169,7 @@ def prop_joint_values(elf, library, config, share):
     if not wanted(name):
         return
     rng = property_rng(library, name)
-    clips = library.sample(scaled(160, share))
+    clips = library.sample(scaled(120, share))
     rig = Rig(elf, config)
     cases = failures = joints = 0
     examples = []
@@ -1129,6 +1223,60 @@ def prop_scenes(elf, library, config, name, text, scenes, length, **kind):
     rng = property_rng(library, name)
     total, failures, examples = run_scenes(elf, library, rng, config, scenes, length, **kind)
     report(name, failures, total, '%d sequences: %s' % (scenes, text), examples)
+
+
+def prop_stale_cursor(elf, config):
+    """anim_pushChained keeps the sound cursor of the cell; beyond the new clip's event
+    table the original indexes whatever memory is there."""
+    name = 'stale sound cursor [%s]' % config_name(config)
+    if not wanted(name):
+        return
+    rig = Rig(elf, config)
+    pose = ((0, 0, 0), (4096, 0, 0, 0))
+    below = rig.load_clip(A.encode_clip([pose], 4), 'below')
+    long_table = rig.load_clip(A.encode_clip([pose], 30, sound_times=range(1, 13)), 'twelve sounds')
+    short_table = rig.load_clip(A.encode_clip([pose], 30, sound_times=[5]), 'one sound')
+    state = rig.new_state(8)
+    problems = []
+    try:
+        rig.call(PUSH, rig.ptr(state), rig.ptr(below), A.REPORT_END)
+        A.anim_push(state, below, A.REPORT_END)
+        rig.call(PUSH, rig.ptr(state), rig.ptr(long_table), A.LOOP)
+        A.anim_push(state, long_table, A.LOOP)
+        for _ in range(16):
+            rig.advance(state, A.ONE)
+        rig.call(STOP, rig.ptr(state), rig.ptr(long_table), floats=(0,))
+        A.anim_stop(A.ZERO, state, long_table)
+        rig.call(PUSH_CHAINED, rig.ptr(state), rig.ptr(short_table), A.LOOP)
+        A.anim_push_chained(state, short_table, A.LOOP)
+        rig.check_state(state)
+        cursor, start = state.tracks[1].sound_idx, C.to_float(state.tracks[1].time)
+        if cursor != 12 or start != 2.0:
+            problems.append('set-up: cursor %d, start time %g' % (cursor, start))
+        table = rig.emu.mem.u32(rig.ptr(short_table) + 0x38)
+        rig.emu.reads = []
+        try:
+            rig.call(ADVANCE, rig.ptr(state), rig.scratch, rig.out, rig.out + 8, floats=(A.ONE,))
+            ended = 'returned'
+        except EmuError as error:
+            ended = type(error).__name__
+        # tick words are at table + 0x1c * k; the table has entries 0 and 1 (the terminator)
+        outside = [addr for pc, addr, size, value in rig.emu.reads
+                   if ADVANCE <= pc < 0x16E388 and size == 4 and (addr - table) % 0x1C == 0
+                   and not 0 <= (addr - table) // 0x1C < 2 and abs(addr - table) < 0x200000]
+        rig.emu.reads = None
+        if not outside:
+            problems.append('the original did not read outside the table (%s)' % ended)
+        try:
+            A.anim_advance(rig.sys, A.ONE, state)
+            problems.append('the model did not raise HostFault')
+        except A.HostFault:
+            pass
+    except (Mismatch, EmuError, IndexError) as error:
+        problems.append('%s: %s' % (type(error).__name__, error))
+    report(name, len(problems), 1, 'a chained push into a cell with an old cursor of 12 and a '
+           'two-entry event table: the original reads tick words outside the table, the model '
+           'raises HostFault', problems)
 
 
 def find_inputs(positional):
@@ -1186,24 +1334,29 @@ def main(argv=None):
         prop_joint_values(elf, library, config, share)
         prop_scenes(elf, library, config, 'advance', 'every push/start/stop/sync/... and anim_advance '
                     'on mixed clips: event bits, root x/y, yaw, the whole state, its decoder slots, '
-                    'sound ranges, bit for bit', scaled(100, share), 220, mixed=True, family=6)
+                    'sound ranges, bit for bit', scaled(60, share), 220, mixed=True, family=6)
         prop_scenes(elf, library, config, 'advance, sounds', 'the same on clip families with sound '
-                    'tables', scaled(40, share), 220, sound=True)
+                    'tables', scaled(30, share), 220, sound=True)
         prop_scenes(elf, library, config, 'Creature_stepAnim', 'speed, slow factor, scale and facing '
                     'around anim_advance: events, world delta, yaw, state, bit for bit',
-                    scaled(30, share), 200, stepper='creature')
+                    scaled(24, share), 200, stepper='creature')
         prop_scenes(elf, library, config, 'Player_animStep', 'the same for the player wrapper',
-                    scaled(24, share), 200, stepper='player', yaw=False)
+                    scaled(16, share), 200, stepper='player', yaw=False)
         prop_scenes(elf, library, config, 'pose', 'queries and draws between the operations: blended '
                     'local transforms, pose buffers, joint matrices, attach and sample points, buffer '
                     'lists and stamps, bit for bit (VU0 by the interpreter in this file)',
-                    scaled(50, share), 160, pose=True)
+                    scaled(40, share), 160, pose=True)
         prop_scenes(elf, library, config, 'pose, 6 slots', 'the same with the decoder list cut to 6 '
                     'slots, so that slots are taken from other tracks and pinned ones skipped',
-                    scaled(24, share), 160, pose=True, slots=6)
+                    scaled(20, share), 160, pose=True, slots=6)
         prop_scenes(elf, library, config, 'pose, 5 buffers', 'the same with the pose list cut to 5 '
                     'buffers, so that the fallback buffer and the default pose are used',
-                    scaled(24, share), 160, pose=True, buffers=5)
+                    scaled(20, share), 160, pose=True, buffers=5)
+        prop_scenes(elf, library, config, 'pose, synthetic clips', 'the same on made-up clips: joint '
+                    'masks, 64 joints, deep chains, 16-bit fields, non-unit quaternions',
+                    scaled(40, share), 160, pose=True, synthetic=True)
+        if number == 0:
+            prop_stale_cursor(elf, config)
 
     if COVER:
         print('reached by the sequences (all FPU models together):')

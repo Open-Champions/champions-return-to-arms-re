@@ -47,11 +47,11 @@ Slot numbers are `tools/vtab.py` numbers (slot n is at table offset n×8).
 | 6 | touched by another object | given | |
 | 8 | load saved state from a buffer, returns bytes read | Observed | Savepoint 0x28dcd0, JumpGate 0x27d998 |
 | 9 | save state to a buffer, returns bytes written | Observed | Savepoint 0x28dc9c (6 bytes), JumpGate 0x27d974 (2 bytes), Skeleton 0x2a7508 (calls the creature version 0x116780 first, then adds 12 bytes) |
-| 11 | creature only: called with a zero-terminated list of touched objects | Observed for Cazic 0x24c04c only | |
+| 11 | creature only: called with a zero-terminated list of touched objects | Observed for Cazic 0x24c04c only | two more overrides, from `docs/monsters-2.md` section 9.2: WarBoar's is an empty body (0x2bac58), and Nightmare's (0x271484) is where the charge of state 7 does its damage |
 | 13 / 14 | interact prompt / interact | given | Chest 0x29297c / 0x292a2c, Savepoint 0x28da58 / 0x28dc30, Lever 0x28e4c0 / 0x28e60c |
 | 16 | creature: returns the model handle used for drawing and effects | Inferred | result is passed where other classes pass `*(+0x24)+0xc` (compare Cazic_run 0x24aaf0 head with Horsemen_run 0x27236c head) |
-| 17–19 | AutoProp family only | Unknown | named `_vslot17..19` |
-| 20 | "is this object my enemy" | given | 4 overrides here |
+| 17–19 | AutoProp family only | Unknown here; read since (`docs/monsters-2.md` sections 6 and 9.2): 17 next state, 18 set state, 19 set passable for the AutoProp family; for `AddParticle` 17 places the light and halo, 18 emits, 19 is empty | named `_vslot17..19` when this was written; since renamed |
+| 20 | "is this object my enemy" | given | 4 overrides here; Skeleton overrides it too (the red / blue side byte +0x3d4), and the Wraith and WarWraith overrides have a side effect: they clear another wraith's target handle (`docs/monsters-2.md` 9.2) |
 | 23 / 25 / 26 / 28 | creature base helpers called from every run function with small integer arguments (table offsets 0xbc, 0xcc, 0xd4, 0xe4). `docs/creatures.md` names them: 23 pick target, 25 can see target, 26 turn toward a point, 28 on death | Observed there (this row said Unknown) | not overridden in this area |
 | 27 | **set AI state** (new state) | Observed | every run function ends by calling it with the next state; overridden by 71 of 73 creature classes; each override starts with the common filter `Creature_filterState` (0x10a9c0), picks the animation for the state and stores the state at +0x232 |
 | 35 | creature: returns the level value handed to a skill when the monster casts it. True for casts through skill slot 2; the arrow constructors of the bow-carrying monsters are given `(int)g_levelMonsterLevel` unscaled instead (0x25c7d8, 0x2a7274; `docs/spec/skills-35-68.md` section 4.6) | Inferred | its result is always the first argument of the skill's cast call (Horsemen_run state 0x17, Cazic_run states 7, 0xc, 0xd) |
@@ -74,11 +74,16 @@ set in 68–72 of the 73.
 
 1. optional: update the embedded weapon helper through its own table (object at +0x50);
 2. `Creature_processDamage` (0x110d30) with (this, model) — creature damage reaction (creatures area);
-3. `Creature_run(this, model)`; a non-zero result ends the function;
+3. `Creature_run(this, model)`; a non-zero result ends the function (not in every class:
+   `NPC_run` 0x29ea40 ignores the result, and `NPC_run` and `GnomeNavigator_run` do not call
+   `Creature_processDamage` at all — `docs/monsters-2.md` 9.2);
 4. `Creature_updateActive(this)`; several classes return when it says "inactive";
 5. `Creature_stepAnim` (0x1162b0) with (speed, this) advances the animation and returns a bit mask of animation
    events for this frame (bit 0 is "the hit frame" in every attack state read; bits 1–3 are
-   further event markers; 0x80 is "animation ended" in the death handler `Creature_deadUpdate` (0x1108a0));
+   further event markers; 0x80 is "animation ended" in the death handler `Creature_deadUpdate` (0x1108a0).
+   That reading of 0x80 does not hold for every class: for Ant, Arenabeast and Amphian it is
+   an event-marker mask their constructors place on the death clips (at 0.5 s, 2.0 s and
+   0.2 s), passed on to `Creature_deadUpdate` with the other event bits — `docs/monsters-2.md` 9.2);
 6. `Creature_applyKnockback` (0x115eb8) with (x, this) and the base call at table offset 0xbc;
 7. `switch (state at +0x232)`, then one call to slot 27 with the next state.
 
@@ -115,7 +120,7 @@ English names are **Inferred** from them.
 | 0x12 | wait until animation flag 0x10 clears (hit reaction) | Cazic, Horsemen |
 | 0x13 | forced while timer C (+0x31c) runs (held / stunned) | filter `Creature_filterState` (0x10a9c0) |
 | 0x14 | **dead**: the run function only calls the dead-body handler `Creature_deadUpdate` (0x1108a0); setState 0x14 calls `Creature_dropLoot` (0x10f2c8) and class death effects | Cazic_setState 0x24c118 case 0x14, Skelight_setState 0x2a91b8 |
-| 0x17 | usually "rise / appear" (skeletons rising from the ground, bosses' entrance) | Skelight ctor 0x2a8770 enters it; ScriptGenerator_spawn puts Skeletons in it |
+| 0x17 | "rise / appear" for Skeleton and Skelight only (the earlier version said "usually", bosses' entrance included). Other classes use the number for something of their own: Orc holds near the target, Scorpion's 0x17 / 0x18 are two display clips, BlackWidow's 0x17 reels in a webbed target (0x18 is the pit emerge), Soul's is a timed idle (`docs/monsters-2.md` 9.1, 9.2) | Skelight ctor 0x2a8770 enters it; ScriptGenerator_spawn puts Skeletons in it |
 
 The filter `Creature_filterState` (0x10a9c0) runs at the top of every setState override. It returns without a
 change when a PvP condition holds or when +0x231 is set and the request is state 1; it
@@ -175,7 +180,7 @@ Offsets into any creature-derived object. "How" names where the use was read.
 | | +0x3d8, +0x3dc, +0x3e0 | handles | three beam effects of the death sequence | 0x24c994 |
 | Skelight | +0x3c8 | object | embedded weapon helper | ctor 0x2a8770 |
 | | +0x460 | s32 | level supplied by whoever created it | ctor |
-| UndeadKnight | +0x3c8 | handle | mount; cleared by the ctor and never linked anywhere | ctor 0x2b3e30, field search |
+| UndeadKnight | +0x3c8 | handle | mount; cleared by the ctor and never linked anywhere. More exactly: a function that links it exists (0x2b5370) but nothing calls it, so the conclusion stands, now backed by a whole-file scan; the same holds for a second handle at +0x3cc (`docs/monsters-2.md` 9.2) | ctor 0x2b3e30, field search; no reference to 0x2b5370 |
 | | +0x470, +0x474 | u32, u8 | "mounted" argument and variant | ctor |
 | Generator | +0x3c8 | ptr | type name to spawn | run 0x265938 |
 | | +0x3d4, +0x3d8 | s32 | maximum and number spawned so far | run |
@@ -252,7 +257,7 @@ created by other code. All **Observed** by script; rows for the classes in secti
 | Amphian | Amphian | 0x512da0 | 0x3c8 | 0x234584 | 0x23483c | 0x2347cc | base | 0x2350d0 | 0 1 2 3 4 5 6 7 8 9 a b c d e f 10 11 12 13 14 15 16 17 |  | PoisonProjectile |
 | Ant | AntTough, AntBlocker, Ant* | 0x5111c0 | 0x3e8 | 0x235418 | 0x2359fc | 0x2359b0 | base | 0x236708 | 0 1 2 3 4 5 6 7 8 9 a b c d e f 10 11 12 13 14 | FireWeapons (13), PoisonWeapons (26) | PoisonProjectile |
 | AntQueen | AntQueen | 0x511078 | 0x3e8 | 0x236c70 | 0x236f78 | 0x236f10 | 0x2378fc | 0x237918 | 0 1 2 3 4 5 6 7 8 9 a b c d e f 10 11 12 13 14 15 16 17 18 19 | PoisonWeapons (26) | AntWave |
-| AntWave |  | 0x50d298 | ? | 0x238654 | 0x238938 | 0x2387d0 | base | base |  |  |  |
+| AntWave |  | 0x50d298 | 0x3d8 (`pool_new` at 0x237668) | 0x238654 | 0x238938 | 0x2387d0 | base | base |  |  |  |
 | Arenabeast | Arenabeast | 0x512ee8 | 0x3d8 | 0x238bb8 | 0x238f5c | 0x238f18 | 0x239ba4 | 0x239bc0 | 0 1 3 5 6 7 8 9 a b c d e f 10 12 13 14 17 18 |  |  |
 | Badger | SnoBadge, Badger* | 0x510f30 | 0x3d0 | 0x244018 | 0x244380 | 0x244320 | base | 0x244aa4 | 0 1 2 3 4 5 6 7 8 9 a b c d e f 10 11 12 13 14 |  |  |
 | BlackWidow | BlackWidow*, Drachnid | 0x510de8 | 0x420 | 0x2ab958 | 0x2abdd8 | 0x2abdb0 | base | 0x2acb78 | 0 1 3 5 6 7 8 9 a 10 12 13 14 17 18 |  |  |
@@ -319,7 +324,7 @@ created by other code. All **Observed** by script; rows for the classes in secti
 | Warrior | Samurai, Gladiator* | 0x517e38 | 0x480 | 0x2bafb4 | 0x2bb640 | 0x2bb5a4 | base | 0x2bc320 | 0 1 2 3 4 5 6 7 8 9 a b c d e f 10 11 12 13 14 15 16 17 |  |  |
 | WarWraith | WarWraith | 0x517f80 | 0x468 | 0x2c07a8 | 0x2c0c2c | 0x2c0b70 | base | 0x2c1648 | 0 1 2 3 4 5 6 7 8 9 a b c d e f 10 11 12 13 14 | ColdWeapons (14) |  |
 | WoodElfSoldier | WoodElf*, evilwoodelf* | 0x50f820 | 0x3e8 | 0x2bc820 | 0x2bccec | 0x2bcc94 | 0x2bccd0 | 0x2bdb24 | 0 1 2 3 4 5 6 7 8 9 a b c d e f 10 11 12 13 14 15 16 17 18 19 |  |  |
-| Wraith | Wraith | 0x50f6d8 | 0x3d8 | 0x2bf2ac | 0x2bf538 | 0x2bf4e4 | base | 0x2c0270 | 0 1 2 3 4 5 6 7 8 9 a b c d e f 10 11 12 13 14 15 16 17 | ColdWeapons (14) | Weapon1 |
+| Wraith | Wraith | 0x50f6d8 | 0x3d8 | 0x2bf2ac | 0x2bf538 | 0x2bf4e4 | base | 0x2c0270 | 0 1 2 3 4 5 6 7 8 9 a b c d e f 10 11 12 13 14 15 16 17 | ColdWeapons (14) | none (the earlier version listed Weapon1: the embedded Weapon1 is WarWraith's, built by its constructor 0x2c07a8) |
 | Zek | raloszek | 0x5180c8 | 0x480 | 0x2c1f94 | 0x2c2440 | 0x2c2378 | 0x2c34e4 | 0x2c382c | 0 1 2 3 4 5 6 7 8 9 a b c d e f 10 11 12 13 14 | GroundPound (38) | GroundPoundEffect, LightEffect |
 
 ### 3.2 Other objects
@@ -336,7 +341,7 @@ created by other code. All **Observed** by script; rows for the classes in secti
 | AutoObject |  | 0x5134f8 | ? | 0x23a354 | 0x23ad00 | 0x23aa20 | base | base |  |  |
 | AutoProp |  | 0x5133c0 | ? | 0x23c44c | 0x23cb54 | 0x23aa20 | 0x23cf0c | base |  |  |
 | AutoPropLP | Antlighta, Antlightb, Antlightc | 0x5130c0 | 0x448 | 0x2416c4 | 0x2421e0 | 0x241ee4 | 0x23cf0c | base |  |  |
-| beetleProjectile |  | 0x50e3d8 | ? | 0x247884 | 0x247980 | 0x247978 | base | 0x247e1c |  | LooseFire |
+| beetleProjectile |  | 0x50e3d8 | 0x1d0 (`pool_new` at 0x24683c) | 0x247884 | 0x247980 | 0x247978 | base | 0x247e1c |  | LooseFire |
 | BoltGoRound |  | 0x514590 | ? | 0x252a6c | 0x252cb4 | base | base | base |  |  |
 | Candle | Candle, Candle2 | 0x50f0e8 | 0x94 | 0x2b2c70 | 0x2b2dc4 | 0x2b30ac | base | base |  |  |
 | Candle2 | Candle3 | 0x50f058 | 0x50 | 0x2b30ec | 0x2b3164 | 0x2b33b4 | base | base |  |  |
@@ -380,7 +385,7 @@ created by other code. All **Observed** by script; rows for the classes in secti
 | MummySnake |  | 0x516c98 | ? | 0x29cfe4 | 0x29d0c0 | base | base | base | PoisonWeapons (26) |  |
 | OniBall |  | 0x50e878 | ? | 0x294014 | 0x2941e4 | 0x2946f0 | base | 0x2946f8 | LifeTap (59) |  |
 | PointSourceSound |  | 0x50d208 | ? | 0x28f370 | 0x28f4ac | base | base | base |  |  |
-| PoisonProjectile |  | 0x517888 | ? | 0x2b153c | 0x2b176c | 0x2b16a4 | base | 0x2b1c4c | PoisonWeapons (26) |  |
+| PoisonProjectile |  | 0x517888 | 0xa8 (all five `pool_new` sites) | 0x2b153c | 0x2b176c | 0x2b16a4 | base | 0x2b1c4c | PoisonWeapons (26) |  |
 | PokeReflector | PokeReflector | 0x50d9a8 | 0x4c | 0x28e1e4 | base | base | base | base |  |  |
 | RingPortal | apprings | 0x5136d8 | 0x498 | 0x24388c | 0x243b48 | 0x243a44 | 0x23cf0c | base |  |  |
 | RollDoor | RollDoor | 0x50e068 | 0x5c | 0x28dd94 | 0x28e01c | 0x28e110 | base | base |  |  |
@@ -401,6 +406,35 @@ created by other code. All **Observed** by script; rows for the classes in secti
 | WeaponRack | WeaponRack | 0x50d6d8 | 0x98 | 0x28e87c | base | 0x28ea94 | base | base |  |  |
 | WebTrap | WebTrap | 0x50e348 | 0xa0 | 0x2b04f8, 0x2b07c0 | 0x2b0c74 | 0x2b0954 | base | base |  |  |
 | WorldPart |  | 0x511de8 | ? | 0x28a6b0 | base | base | base | base |  |  |
+
+**Notes to the two tables**, from the class-by-class reading in `docs/monsters-2.md`
+(section 9.2). The tables above were generated by script and say what a class's functions
+*reference*; these are the places where that differs from what the class can do.
+
+- Referenced but not reachable: Tormentor's ConeOfFrost (56) is cast in state 8 and Kobold's
+  FrostArmor (96) in state 9, and nothing in either class requests that state; the same
+  for the Mummy's teleport state 0x17. Ulthork's ShockOfFrost and FrostStorm are used only
+  in state 7, which needs variant 2, which the constructor cannot assign. UndeadKnight's
+  state 8 cannot be chosen and its 0x17 is not requested. AntQueen's state 0x19 (the only
+  creator of `AntWave`) has no requester that was found.
+- "Creates" is short for several classes: Goblin, MaleDarkElf and Froglock also create
+  plain `MissileWeapon` objects (constructor 0x150ee4) when the weapon has no element;
+  Mummy also `PoisonRain` (0x6c bytes, constructor 0x2f8f48), `SpellDiseaseShield` (0x1b0)
+  and `SpellConeOfFire` (0x58); Orc also `MissileWeapon`, `PoisonRain` and `GutChunk`;
+  BlackWidow `GutChunk` and, through the strand controller, `WebTrap`; Skeleton
+  `MissileWeapon` and `PhProp` pieces; Scorpion `GutChunk`.
+- Skeleton, "red*, blue* variants": the factory's `red` / `blue` prefix tests
+  (0x15b50c–0x15b594) are applied to a name that has just matched `Skeleton` and cannot
+  succeed, so the class blocks `skelred.lmp` / `skelblue.lmp` are never selected there. The
+  red / blue distinction that works is the side byte +0x3d4, set in the constructor from
+  `skeleton…red` / `skeleton…blue` names and used by the is-enemy override.
+- SmallSpider's states are 0, 1 and 0x14 (the row shows none). FireFly's set-state
+  0x24787c is an empty function, not a real set-state.
+- `SnowballSpell` is never instantiated: its constructor 0x26d884 has no caller.
+- 0x2bfe2c, which the Skeleton paragraph of section 4 calls "a Wraith helper", is not a
+  function: it is the state-0x17 code inside `Wraith_run`.
+- The nine functions once named `AutoPropLP_…` at 0x23cea0–0x23d7ac belong to `AutoProp`
+  and are inherited by the LP class (since renamed in `symbols/monsters.tsv`).
 
 ## 4. Bosses
 
@@ -514,13 +548,20 @@ creates objects (**Observed**: test at 0x1ef2e0; shared-generator use only in ca
   0x2bfe2c (a Wraith helper).
 - UndeadKnight (0x2b3e30 / run 0x2b4370): states 7–0xb are melee swings chosen in state 3
   with three own draws; 0x17 emits particles. Its draw function has a latent bug, see 7.
+  Corrected by `docs/monsters-2.md` 9.2: it is one own draw per decision (three alternative sites),
+  not three; state 8 cannot be chosen; 0x17 emits particles only when the handle at +0x3cc
+  is linked, which never happens, and the class does not request 0x17 itself.
+- Skeleton again: the "four own draws" of state 8 are three per rejection attempt plus one
+  for the sound, so four at least.
 
 ### Zek (`raloszek`)
 
 Run 0x2c2440 (already named), takeDamage 0x2c34e4 (840 bytes, not read), setState
 0x2c382c. States 6–0xc: melee arcs. State 0xd: creates a `GroundPoundEffect` with
 skill 38. State 0xe: finds an enemy and links a handle. The function tail creates
-`LightEffect` objects and plays sounds on animation events.
+`LightEffect` objects and plays sounds on animation events. What state 0xe does with the
+handle, from `docs/monsters-2.md` (sections 3 and 9.1): it launches a ground wave that travels 5 units
+a frame, homes on that enemy and explodes for half melee damage in a radius of 180.
 
 ### Innoruuk
 
@@ -555,7 +596,9 @@ states. Draw 0x29d844 is 940 bytes (not read). **Observed.**
 Run 0x29b360, takeDamage 0x29c544 (ignored while creature flag 0x4000000 is set).
 State 7: melee with DiseaseWeapons (25) and PoisonWeapons (26) riders. State 8 creates a
 `MummySnake` (run 0x29d0c0, PoisonWeapons rider); state 9 creates two `SpawnMummy` objects
-(run 0x29cea8); state 0x17 creates a `DustDevil` (run 0x29cb98).
+(run 0x29cea8); state 0x17 creates a `DustDevil` (run 0x29cb98). State 9 is not "two":
+it creates one `SpawnMummy` per player slot at one-second steps and then a shaman, and the
+type created depends on his hit points (`docs/monsters-2.md` sections 3 and 9.1).
 
 ### SpiderQueen
 
@@ -565,30 +608,47 @@ earlier version said: 0x2afc28 launches a web strand at the target in state 8, a
 reels the caught victim in (`docs/monsters-2.md` sections 3 and 9.2).
 Helper 0x2b0080 creates `WebTrap` objects (second constructor 0x2b07c0). takeDamage calls
 the creature version and then, for each of six legs, hides the leg (bits in +0xe8) and
-spawns effect 3 once hit points fall to that leg's threshold.
+spawns effect 3 once hit points fall to that leg's threshold. More from `docs/monsters-2.md` 9.2:
+states 7, 10 and 0xb are grab attacks that drag the target with its knockback fields
+before biting; the spit makes two projectiles per event and the animation has three
+events; the leg thresholds are absolute hit points (140 … 40) and the effect is visual.
 
 ### VampireLord
 
 Run 0x2b7be0, takeDamage 0x2b93d8: after the creature version, the first time hit points
 drop below half it forces state 0x19 (+0x3ec remembers). States 7–0xb: melee chain with a
 ColdWeapons (14) rider; states 0x10 and 0x14 create `Critter` objects with four own draws
-(0x14 then deletes the lord).
+(0x14 then deletes the lord). Corrected by `docs/monsters-2.md` (sections 3, 9.1, 9.2): only state 7
+(and 0x18) carries the ColdWeapons rider, on the second hit, with twice the queried value,
+and it heals the lord by 8 % of his maximum when the bite does damage; states 8–0xb have
+no rider and belong to the second form. States 0x10 and 0x14 each make six `Critter` bats,
+and the "four own draws" are per bat and a minimum (three or more for the offset, one for
+the angle). State 0x14 deletes the lord only after the flee timer. The forced 0x19 goes
+through the state filter and can be lost.
 
 ### RedDragon
 
 Run 0x25f988. States 6, 7, 8, 0x1c, 0x1d: bites and claws; 9, 10: tail; 0xb–0xe: breath
 (helper 0x261328 twice plus arc tests); 0xf creates a `FireStorm` spell object; 0x1b picks
-one of 0xb–0xf from four range tests.
+one of 0xb–0xf from four range tests. Corrected by `docs/monsters-2.md` (9.1, 9.2): helper 0x261328 is
+effects only — the "arc tests" are the damage calls, a 15-frame tick of a quarter of the
+melee range plus an equal fire rider, made in the run function. State 0xf constructs the
+`FireStorm` object directly (no skill-table call) at the farthest player within 600, with
+no check for "nobody found". State 0x1b chooses among 0xb–0xf from cone tests on any enemy
+plus the memory of the last attack.
 
 ### Nightmare
 
 Run 0x270bbc: states 6, 0x17, 0x18 kicks; 7 charge. It is also the mount object of the
-mounted Horsemen.
+mounted Horsemen. From `docs/monsters-2.md` 9.2: 6, 0x17 and 0x18 are the same four-hit kick, and the
+charge does its damage in the slot-11 override 0x271484, not in the run function.
 
 ### Others with boss-like behaviour (script summary only)
 
 Agony (`AvatarAgony`): melee only. AntQueen: state 0x19 creates an `AntWave`; bites carry
-a PoisonWeapons rider. GnawSpawn: creates three `Prop` objects per spawn state. Minion:
+a PoisonWeapons rider (not the bite itself: state 6 passes no descriptor, hit call at
+0x23747c; the rear attack of state 7 and the sting of states 9 / 10 carry the rider. And
+no code was found that requests state 0x19 — `docs/monsters-2.md` 9.2). GnawSpawn: creates three `Prop` objects per spawn state. Minion:
 state 9 queries FrostStorm (58) four times and makes a `LightEffect`; 0x17 creates a
 `Soul`. IronGuardian: state 9 fires a projectile, 10 a `JunkProjectile`, and its tail
 creates a `Droid`.
@@ -643,7 +703,10 @@ the `…LP` variants and `EggSack`, `DiseasePort` share run 0x2421e0 and draw 0x
 `AutoChest_run` 0x23b170 at 0x23b674 — not AutoProp_run or 0x23d2ec as first written;
 AutoProp has no loot) follows the same parameter scheme as Chest — `spawncreep`, `item`, `potions`,
 `random` — and otherwise three `loot_generateDrops` calls plus one own draw: below 5000 →
-`arrows`, below 15000 → a consumable. AutoContainer_run (0x23e430, 5,680 bytes) repeats
+`arrows`, below 15000 → a consumable. Its `random` items are not priced by the Chest
+numbers: worth × 300, doubled from act 1 on and zero in act 0, with the category from the
+table at 0x4fece8; and AutoContainer has its own inline loot code with different odds
+(`docs/monsters-2.md` sections 6 and 9.2). AutoContainer_run (0x23e430, 5,680 bytes) repeats
 the Container logic with a `reduceCarnage` parameter; it was only skimmed.
 
 ### Generator (`AntMaker`) — run 0x265938
@@ -662,7 +725,8 @@ type it is given and puts a Skeleton into state 0x17.
 
 Follows the object in its handle +0x3c8 (copies its position and re-links the grid cell)
 and queues itself for deletion when the handle is empty; otherwise only the base creature
-calls. Its constructor 0x243624 also references `AutoContainer`.
+calls. Its constructor 0x243624 also references `AutoContainer`: it creates one and
+shadows it (`docs/monsters-2.md` 9.2).
 
 ### Savepoint (`SavePoint`) — run 0x28cdd0
 
@@ -702,7 +766,9 @@ calls. Its constructor 0x243624 also references `AutoContainer`.
 The run function only emits two particles per frame from the object's own generator. The
 class is creature-derived (0x3c8 bytes); whatever moves the player is not in its run,
 draw or setState (0x28f154 is an empty function). **Unknown** where the teleport happens —
-probably the creature interact path or a level script.
+probably the creature interact path or a level script. Confirmed by `docs/monsters-2.md` (9.1):
+nothing in the class moves a player; only the base `dialogScript` paths exist, so the
+teleport is a level script's doing.
 
 ### Trap (`Trap`) — run 0x29507c
 
@@ -808,12 +874,12 @@ Horsemen, Cazic and Trap rows were also read by hand.
 | MaleDarkElf | 43 | FireArrow | pointer passed to an object constructor or helper | 0x25bbe4 |
 | MaleDarkElf | 44 | ColdArrow | pointer passed to an object constructor or helper | 0x25bbe4 |
 | MaleDarkElf | 45 | PoisonArrow | pointer passed to an object constructor or helper | 0x25bbe4 |
-| MaleDarkElf | 46 | MultiFire | value query (+0x5c) | 0x25bbe4 |
+| MaleDarkElf | 46 | MultiFire | value query (+0x5c). The result is not a melee rider: it is the number of `MultiFireProjectile` objects to create (query call at 0x25c984; `docs/monsters-2.md` 9.2) | 0x25bbe4 |
 | Marr | 66 | PlanarWind | cast | 0x283afc |
 | Marr | 94 | SpiritShield | pointer passed to an object constructor or helper | 0x28468c |
 | Minion | 58 | FrostStorm | value query (+0x64) | 0x2862c0 |
 | Mummy | 4 | DiseaseBolt | pointer passed to an object constructor or helper | 0x298d18 |
-| Mummy | 5 | DiseaseShield | value query (+0x64) | 0x298d18 |
+| Mummy | 5 | DiseaseShield | value query (+0x64); the spell is also constructed (`SpellDiseaseShield_ctor` 0x2ccfc8; `docs/monsters-2.md` 9.2) | 0x298d18 |
 | Mummy | 7 | FireStorm | pointer passed to an object constructor or helper | 0x298d18 |
 | Mummy | 18 | ConeOfFire | pointer passed to an object constructor or helper | 0x298d18 |
 | Mummy | 23 | ShockOfFrost | pointer passed to an object constructor or helper | 0x298d18 |
@@ -933,7 +999,8 @@ generator to choose a turn direction when blocked (0x114510, call to `GameObject
 and every 60 frames damages the target when within its radius. **Inferred consequence:**
 on machines that drew the wave a different number of times, a blocked wave turns
 differently, so its position and the damage it does can diverge. AntWave objects are
-created only by AntQueen_run (state 0x19).
+created only by AntQueen_run (state 0x19). No code that requests state 0x19 was found
+(`docs/monsters-2.md` 9.2), so the hazard described here looks unreachable.
 
 ### 7.6 Savepoint — Observed
 
@@ -963,12 +1030,18 @@ created only by AntQueen_run (state 0x19).
 ### 7.7 Scripts run from draw code — Observed
 
 `NPC_draw` (0x29e3ec), `Gnome_draw` (0x2691f0), `GnomeNavigator_draw` (0x26a000) and
-`Rondo_draw` (0x29f28c): when the structure at 0x4f8450 has 1 at +0x34 and the object has
+`Rondo_draw` (0x29f28c): when the camera object that 0x4f8450 points to is in mode 1
+(follow; +0x34 of the object — the earlier version read 0x4f8450 as the structure itself;
+it is `g_localCamera`, a pointer) and the object has
 an `exclamation` parameter, the function runs that script through `script_runByName` on
 every drawn frame and draws a marker when it returns 1. The one such script found by name
 (`check1Exclam` / `check2Exclam` in INNOVAT1) only reads: getEvil, getv, playerHasItem.
 **Inferred:** harmless unless some level's exclamation script writes a variable or calls
-getRand; the other levels' scripts were not checked.
+getRand; the other levels' scripts were not checked. The gate is a per-machine value: the
+mode is written only by `Camera_setMode` 0x2072e8 and `Camera_updateFree` 0x20440c and is
+0 while a menu, shop, dialog camera or cutscene holds the local camera. `NPC_draw` also
+needs the NPC to be more than 240 units (300 in a cutscene) from the camera; the other
+three draws have no such test (`docs/monsters-2.md` 7.1 M6, 9.1, 9.2).
 
 ### 7.8 UndeadKnight_draw copies uninitialised stack into the position — Observed, unreachable
 
@@ -977,7 +1050,9 @@ function's own stack frame, which nothing has written (0x2b424c–0x2b426c), and
 the position; facing is set to 0; a bone offset is subtracted; nothing is restored. The
 handle is cleared by the constructor and no code links it (**Observed**: field search for
 +0x3c8 between 0x2b3e30 and 0x2b5370 finds only the clear and reads), so the path is
-**Inferred** dead. The mounted knights in the game are `Horsemen`, whose draw (0x2721f8)
+**Inferred** dead. (The search stopped one function short: 0x2b5370 itself links the
+handle, but nothing calls or references 0x2b5370, so the path is still dead — `docs/monsters-2.md` 9.2,
+whole-file scan.) The mounted knights in the game are `Horsemen`, whose draw (0x2721f8)
 builds a matrix from the mount instead and writes nothing.
 
 ### 7.9 Smaller items
@@ -992,8 +1067,8 @@ builds a matrix from the mount instead and writes nothing.
 | jumpgate_beginTravel 0x27e6a8 | copies the camera position into 0x8e3918 for the effect | Observed; cosmetic |
 | Container_run 0x290e78 | keeps a sound handle at +0x78 and stops it on explosion | Observed; audio only |
 | Catapult_draw 0x24dc40, NPC_draw 0x29e3ec | read the camera to orient what they draw | Observed; no store to shared state found |
-| Critter, FireBeetle, FireFly, Mosquito, AntQueen draw | store to position or facing fields; not read (expected to be a temporary offset restored after drawing) | Unknown |
-| AutoObject_draw 0x23aa20 and the LP draws | store to the object flag word +0xc; LP draws read the render frame counter 0x44fdd0 | Unknown which flag; not read |
+| Critter, FireBeetle, FireFly, Mosquito, AntQueen draw | store to position or facing fields; not read (expected to be a temporary offset restored after drawing). Read since for four of the five (`docs/monsters-2.md` 9.2): FireBeetle, FireFly and AntQueen undo their stores before returning; Mosquito saves the fields at entry and restores them after `Creature_draw` (0x297a3c–0x297a54, 0x297afc–0x297b14). Critter was not resolved | temporary, restored (four of five); Critter still Unknown |
+| AutoObject_draw 0x23aa20 and the LP draws | store to the object flag word +0xc; LP draws read the render frame counter 0x44fdd0. Read since (`docs/monsters-2.md` 9.2): the flag is 0x100. `AutoObject_draw` only clears it; the LP draws would set it, but that store is unreachable (the guard 0x240db0 returns 0). Nothing reads the flag | flag 0x100, no reader (was: Unknown which flag; not read) |
 | Creep_draw 0x253514 | stores to the creature flag word +0xa8 | Unknown; not read |
 
 ### 7.10 What was looked for and not found
@@ -1051,9 +1126,11 @@ builds a matrix from the mount instead and writes nothing.
    named `Class_vslotN`). (Table offsets 0xbc, 0xcc, 0xd4, 0xe4 were listed here as well;
    they are slots 23, 25, 26, 28, and `docs/creatures.md` gives the base meaning of every
    creature slot.)
-7. Where the Teleporter moves the player.
+7. Where the Teleporter moves the player. (Answered: not in the class; a level script
+   through the base `dialogScript` path — section 5.)
 8. The draw functions that store to position, facing or flag fields (7.9, last three
-   rows) should be read to confirm the stores are undone.
+   rows) should be read to confirm the stores are undone. (Done for all but `Critter_draw`
+   and `Creep_draw`: see the two rows.)
 9. `net_lockLocalInput` (0x13e4e8)(player, n) and `pauseMenu_isOpen` (0x18cbfc), used by the jump-gate menu for the local player.
 10. `Orca`, `lb_block` and a few other factory names could not be attributed with
     certainty.
@@ -1071,7 +1148,9 @@ builds a matrix from the mount instead and writes nothing.
   the door and switch classes, the monster projectiles (HateBeam, HateProjectile, LavaBomb,
   FireBomb family, IceBall, Root, LostSoul, Sparks, PoisonProjectile, DiseaseProjectile),
   SpiritAnchor, Catapult, WebTrap, LightningRod, NPC, the 32-byte static-initialiser pairs,
-  and the four functions before 0x233bdc.
+  and the four functions before 0x233bdc. (`docs/monsters-2.md` has since read these
+  classes. One correction to the list itself: `Root` is not a monster projectile — its
+  only creator is `Player_run`.)
 - 151 of the 885 functions are unnamed: private helpers called from one class, the
   static initialisers, and a few with no caller found. 81 of the named ones are
   `Class_vslotN` — known to be that class's override of slot N and nothing more.

@@ -22,7 +22,7 @@
 00163f98	mat4_invert	(out, in) Gauss-Jordan with pivoting; identity when singular
 00164288	mat34_invert	(out, in) through mat4_invert
 00164330	quat_fromMat3	(out, m)
-001646c8	math_buildNoiseTable	fills g_noiseTable (256 s16) from g_cosmeticSeed; run once from engine_init, after the seed was set from the CPU cycle counter
+001646c8	math_buildNoiseTable	fills g_noiseTable (256 s16) from g_cosmeticSeed; run once from engine_init, after the seed was set from the CPU cycle counter. Hazard for a rebuild: it reads three stack words it never initialised (it stores to sp+0 and sp+0x10 only; executed in docs/spec/core.md section 7); the table is per machine anyway and every math_noise caller is light or draw code
 00165428	color_scaleClamped	(factor, rgba) per-channel multiply with clamp to 0..255
 00165650	mat3_setIdentity	
 00165680	mat34_setIdentity	
@@ -46,7 +46,7 @@
 00166480	quat_mul	(out, a, b)
 00166550	quat_normalize	
 001665f0	math_log2Floor	
-00166630	math_cos16	cosine of a 16-bit angle (half-angle polynomial); script built-in cos1000 calls it
+00166630	math_cos16	cosine of a 16-bit angle (half-angle polynomial); never returns 0 - the quarter-turn values are +-2^-22 (docs/spec/core.md section 4, executed over all 65536 angles); script built-in cos1000 calls it
 001666e0	math_sin16	math_cos16(angle - 0x4000); script built-in sin1000 calls it
 00166798	math_atan2_16	atan2f(f12, f13) * 65536 / 2pi, returned as s16
 001667d8	vec3_dotDelta	(a, n, b) -> dot(n, b - a): signed distance of b from the plane through a
@@ -77,7 +77,7 @@
 0016cb50	anim_dropNonPersistent	(state) removes every track without flag 0x1000; caller cut_end
 0016cc38	anm_bindSounds	resolves the sound names of an .anm; names *bodyfall* and *blank* become ids -3 and -4
 0016ceb0	anim_startBlendInOut	(blendInSec, blendOutSec, state, anm, flags): pushes a track that fades in and fades out before its end; 88 callers
-0016cfe0	anim_start	(blendInSec, state, anm, flags): pushes a track that fades in; the first track of an empty state starts at full weight; 85 callers
+0016cfe0	anim_start	(blendInSec, state, anm, flags): pushes a track that fades in; the track always starts at weight 0 - for the first track of an empty state the blend time is forced to 0, which gives a rate of 1 per tick, so it reaches full weight at the next step (an earlier note said it starts at full weight); 85 callers
 0016d0b8	anim_randomizeTopTime	(state) sets the top track time to a g_cosmeticSeed fraction of its length and rebases root motion; 16 callers, most of them constructors
 0016d1a0	anim_stop	(blendOutSec, state, anm): removes the tracks playing anm, at once when the time is 0
 0016d360	animsound_play	one sound event: volume, pitch and delay jitter from g_cosmeticSeed, then sound_playSample

@@ -246,7 +246,9 @@ on stream 0 was not established here. `docs/formats/anim-audio.md` section 3.4 h
 found: ambience one-shots go to stream 2 as well, not to stream 0 as the symbol file had
 inferred, and stream 0 was seen only for the intro movie's soundtrack. Each stream has an
 8-entry queue at +0x40 (0x30 bytes per entry: file name, offset, length, three driver
-parameters, flags) with the count at +0x1c0. Entry flags seen: 2 stop marker, 8 hold until
+parameters, flags) with the count at +0x1c0. The three parameters are, per
+`docs/formats/anim-audio.md` 3.4: the sample rate (passed to the driver, which stores and
+never uses it), the stereo flag, and the loop restart position. Entry flags seen: 2 stop marker, 8 hold until
 released, 0x20 music, 0x40 tested by recall and level change before queuing a stop. The
 audio data is in `<level>.vat` (or `mouth.vat` for global entries) and the index is a
 `dialog.bin` table of 0x50-byte entries (name, s16 language at +0x4a, offset at +0x40; the
@@ -256,7 +258,8 @@ directory of the stream file, not dialog; dialog text and structure are in `.dbi
 
 The IOP driver is called through `sceSifCallRpc` with client data 0x877160: function 0x50
 returns a 0x40-byte status block at 0x8771c0 (four words per stream; word 3 is the
-position), 0x60 stops a stream, 0x80 sets volumes, 0x40 is issued by `stream_startHeld` (*Inferred*:
+position — more exactly, per `docs/formats/anim-audio.md` 3.4, the four words are write
+position, read position, current volume, and bytes played since the entry started), 0x60 stops a stream, 0x80 sets volumes, 0x40 is issued by `stream_startHeld` (*Inferred*:
 starts a held entry). Calls are
 made in blocking mode, so `audio_streamStatus` and `audio_streamPosition` cost a round trip
 to the IOP each time.

@@ -27,11 +27,18 @@
 #include <future>
 #include <map>
 #include <mutex>
+#include <iostream>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include <dlfcn.h>
+#include <execinfo.h>
+#include <pthread.h>
+#include <signal.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 #include "PS2VM.h"
@@ -55,18 +62,180 @@ fs::path CAppConfig::GetBasePath() const
 }
 
 // ---------------------------------------------------------------------------------
+// Play! write-protects every host page of EE memory that holds translated code, so that
+// a write to it can discard the translation. Host pages are 16 KB on Apple silicon; when
+// such a page also holds data the game writes every frame, each write costs a fault, a
+// round trip to Play!'s exception thread and a re-translation. The rig counts those
+// requests, and with --no-code-protect ignores them. That is safe for a program that
+// flushes the instruction cache after changing code (which a real console requires
+// too): Play! discards translations on the flush system call regardless.
+//
+// This definition replaces the C library's mprotect for the whole executable; every
+// call that is not a protect request for EE memory goes to the real one.
+// ---------------------------------------------------------------------------------
+
+static uint8* g_eeRamBase = nullptr;
+static bool g_noCodeProtect = false;
+static std::atomic<uint64> g_protectRequests{0};
+static std::atomic<uint64> g_unprotectRequests{0};
+
+extern "C" int mprotect(void* address, size_t length, int protection)
+{
+	typedef int (*MprotectFunction)(void*, size_t, int);
+	static MprotectFunction realFunction = reinterpret_cast<MprotectFunction>(dlsym(RTLD_NEXT, "mprotect"));
+	auto p = static_cast<uint8*>(address);
+	if(g_eeRamBase && p >= g_eeRamBase && p < g_eeRamBase + PS2::EE_RAM_SIZE)
+	{
+		if(protection == PROT_READ)
+		{
+			g_protectRequests++;
+			if(g_noCodeProtect) return 0;
+		}
+		else
+		{
+			g_unprotectRequests++;
+		}
+	}
+	return realFunction(address, length, protection);
+}
+
+// ---------------------------------------------------------------------------------
+// --profile: a wall-clock sampler for the machine thread and the video thread. A helper
+// thread signals each of them every few milliseconds and the handler records a short
+// stack. It answers "where does the time go" when the host's own profilers cannot be
+// attached. Stacks that pass through translated code stop there.
+// ---------------------------------------------------------------------------------
+
+namespace prof
+{
+	enum
+	{
+		MAX_SAMPLES = 1 << 17,
+		DEPTH = 10,
+		THREADS = 2,
+	};
+	static pthread_t g_threads[THREADS];
+	static std::atomic<bool> g_threadSet[THREADS];
+	static const char* g_threadNames[THREADS] = {"machine", "video"};
+	static void* g_frames[MAX_SAMPLES][DEPTH];
+	static uint8 g_depth[MAX_SAMPLES];
+	static uint8 g_owner[MAX_SAMPLES];
+	static std::atomic<uint32> g_count{0};
+	static std::atomic<bool> g_running{false};
+	static std::thread g_sampler;
+
+	static void Handler(int)
+	{
+		uint32 index = g_count.fetch_add(1);
+		if(index >= MAX_SAMPLES) return;
+		pthread_t self = pthread_self();
+		g_owner[index] = (g_threadSet[1] && pthread_equal(self, g_threads[1])) ? 1 : 0;
+		g_depth[index] = static_cast<uint8>(backtrace(g_frames[index], DEPTH));
+	}
+
+	static void Register(int slot)
+	{
+		g_threads[slot] = pthread_self();
+		g_threadSet[slot] = true;
+	}
+
+	static void Start()
+	{
+		struct sigaction action = {};
+		action.sa_handler = &Handler;
+		action.sa_flags = SA_RESTART;
+		sigaction(SIGUSR1, &action, nullptr);
+		g_running = true;
+		g_sampler = std::thread([]() {
+			while(g_running)
+			{
+				for(int i = 0; i < THREADS; i++)
+				{
+					if(g_threadSet[i]) pthread_kill(g_threads[i], SIGUSR1);
+				}
+				std::this_thread::sleep_for(std::chrono::milliseconds(2));
+			}
+		});
+	}
+
+	static void Report()
+	{
+		if(!g_running) return;
+		g_running = false;
+		g_sampler.join();
+		uint32 count = std::min<uint32>(g_count, MAX_SAMPLES);
+		for(int owner = 0; owner < THREADS; owner++)
+		{
+			std::map<std::string, uint32> stacks;
+			uint32 total = 0;
+			for(uint32 i = 0; i < count; i++)
+			{
+				if(g_owner[i] != owner) continue;
+				total++;
+				std::string key;
+				// frame 0 is the handler, 1 the signal trampoline
+				for(int f = 2; f < g_depth[i] && f < 8; f++)
+				{
+					Dl_info info = {};
+					if(dladdr(g_frames[i][f], &info) && info.dli_sname)
+					{
+						std::string name = info.dli_sname;
+						if(name.size() > 70) name.resize(70);
+						key += name;
+					}
+					else
+						key += "?";
+					key += " < ";
+				}
+				stacks[key]++;
+			}
+			std::vector<std::pair<uint32, std::string>> sorted;
+			for(const auto& stack : stacks) sorted.push_back({stack.second, stack.first});
+			std::sort(sorted.rbegin(), sorted.rend());
+			printf("profile, %s thread, %u samples:\n", g_threadNames[owner], total);
+			for(size_t i = 0; i < sorted.size() && i < 14; i++)
+			{
+				printf("  %5.1f%%  %s\n", total ? 100.0 * sorted[i].first / total : 0, sorted[i].second.c_str());
+			}
+		}
+	}
+}
+
+// A null video handler that reports which thread it runs on (for --profile).
+class CRigGsNull : public CGSH_Null
+{
+public:
+	static FactoryFunction GetFactoryFunction()
+	{
+		return []() { return new CRigGsNull(); };
+	}
+
+private:
+	void InitializeImpl() override
+	{
+		prof::Register(1);
+	}
+};
+
+// ---------------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------------
 
+// Errors in options and scripts. Caught in main() (message, exit code 2) and, in an
+// interactive session, by the command reader (message, the session goes on).
+struct RigError : public std::runtime_error
+{
+	using std::runtime_error::runtime_error;
+};
+
 [[noreturn]] static void Die(const char* fmt, ...)
 {
+	char buffer[1024];
 	va_list args;
 	va_start(args, fmt);
-	fprintf(stderr, "rta_rig: ");
-	vfprintf(stderr, fmt, args);
-	fprintf(stderr, "\n");
+	vsnprintf(buffer, sizeof(buffer), fmt, args);
 	va_end(args);
-	exit(2);
+	throw RigError(buffer);
 }
 
 static std::string StrFormat(const char* fmt, ...)
@@ -830,6 +999,7 @@ struct Command
 		LOG,
 		BREAK,
 		UNBREAK,
+		SYNC,
 		QUIT,
 	};
 	KIND kind = WAIT;
@@ -911,7 +1081,9 @@ struct Options
 	bool playLogs = false;
 	bool throttle = false;
 	bool pcHistogram = false;
-	bool noBoot = false;
+	bool noCodeProtect = false;
+	bool profile = false;
+	bool interactive = false;
 };
 
 class CRig
@@ -927,6 +1099,8 @@ public:
 
 	void Prepare()
 	{
+		g_eeRamBase = m_vm.m_ee->m_ram;
+		g_noCodeProtect = m_options.noCodeProtect;
 		m_machine.ram = m_vm.m_ee->m_ram;
 		m_machine.spr = m_vm.m_ee->m_spr;
 		m_machine.state = &m_vm.m_ee->m_EE.m_State;
@@ -964,6 +1138,11 @@ public:
 	void OnVBlank(CRigPad& pad, uint8* ram)
 	{
 		if(m_finished) return;
+		if(m_frame == 0 && m_options.profile)
+		{
+			prof::Register(0);
+			prof::Start();
+		}
 		m_frame++;
 
 		if(m_options.pcHistogram) m_pcSamples[m_machine.state->nPC]++;
@@ -1000,7 +1179,11 @@ public:
 		if(std::this_thread::get_id() == m_mainThread) return;
 		if(m_finished) return;
 		auto& context = m_vm.m_ee->m_EE;
+#ifdef DEBUGGER_INCLUDED
 		if(!context.m_executor->MustBreak()) return;
+#else
+		return; // the core was built without break point support
+#endif
 		uint32 pc = context.m_State.nPC;
 		bool keepRunning = true;
 
@@ -1074,6 +1257,7 @@ public:
 		printf("frames=%" PRIu64 " wall=%.2fs fps=%.1f (%.2fx real time at 59.94) pc=%08x %s\n",
 		       m_frame, seconds, seconds > 0 ? m_frame / seconds : 0, seconds > 0 ? (m_frame / seconds) / 59.94 : 0,
 		       m_machine.state->nPC, Symbolize(m_machine.state->nPC).c_str());
+		printf("  code-page protect requests=%" PRIu64 " unprotect=%" PRIu64 "%s\n", g_protectRequests.load(), g_unprotectRequests.load(), g_noCodeProtect ? " (protection off)" : "");
 		for(const auto& watch : m_watches)
 		{
 			uint32 address = watch.expr.Eval(m_machine);
@@ -1494,6 +1678,11 @@ private:
 			command.kind = Command::UNBREAK;
 			command.target.expr = ExprParser(tokens[i]).Parse();
 		}
+		else if(word == "sync")
+		{
+			command.kind = Command::SYNC;
+			command.text = (tokens.size() > i) ? tokens[i] : "";
+		}
 		else if(word == "quit")
 		{
 			command.kind = Command::QUIT;
@@ -1505,8 +1694,32 @@ private:
 
 	void StepScript()
 	{
-		while(!m_finished && m_scriptPosition < m_commands.size())
+		try
 		{
+			StepScriptInner();
+		}
+		catch(const RigError& error)
+		{
+			// a command that failed while running (bad break specification, missing file)
+			printf("[error] %s\n", error.what());
+			m_scriptPosition++;
+			if(!m_options.interactive) Finish(2);
+		}
+	}
+
+	void StepScriptInner()
+	{
+		while(!m_finished)
+		{
+			if(m_scriptPosition >= m_commands.size())
+			{
+				if(!m_options.interactive || m_inputClosed) break;
+				if(!ReadInteractiveCommand())
+				{
+					m_inputClosed = true;
+					break;
+				}
+			}
 			Command& command = m_commands[m_scriptPosition];
 			PadState& pad = m_pads[command.port];
 			switch(command.kind)
@@ -1653,6 +1866,10 @@ private:
 				SetBreakpoint(address, false);
 			}
 			break;
+			case Command::SYNC:
+				printf("[sync %s] frame=%" PRIu64 "\n", command.text.c_str(), m_frame);
+				FlushOutputs();
+				break;
 			case Command::QUIT:
 				Finish(0);
 				return;
@@ -1660,6 +1877,39 @@ private:
 			m_scriptPosition++;
 		}
 		if(m_scriptPosition >= m_commands.size()) m_scriptDone = true;
+	}
+
+	void FlushOutputs()
+	{
+		fflush(stdout);
+		if(m_log) fflush(m_log);
+		if(m_breakLog) fflush(m_breakLog);
+	}
+
+	// Interactive sessions: when the script has run out, the machine thread waits here
+	// for the next command line on standard input. The emulated machine does not
+	// advance meanwhile. Returns false at end of input.
+	bool ReadInteractiveCommand()
+	{
+		FlushOutputs();
+		std::string line;
+		while(std::getline(std::cin, line))
+		{
+			size_t before = m_commands.size();
+			try
+			{
+				ParseScriptLine(line, 0);
+			}
+			catch(const RigError& error)
+			{
+				printf("[error] %s\n", error.what());
+				m_commands.resize(before);
+				FlushOutputs();
+				continue;
+			}
+			if(m_commands.size() > before) return true;
+		}
+		return false;
 	}
 
 	// Strings gathered by 'collect' break points since the last vertical blank. They are
@@ -1731,6 +1981,7 @@ private:
 	std::vector<Command> m_commands;
 	size_t m_scriptPosition = 0;
 	bool m_scriptDone = false;
+	bool m_inputClosed = false;
 
 	Condition m_until;
 	bool m_hasUntil = false;
@@ -1764,6 +2015,8 @@ static void Usage()
 	    "  --frames <n>           stop after n frames (vertical blanks) of this run\n"
 	    "  --script <file>        commands, run in order (see README.md)\n"
 	    "  --do \"<command>\"       one script command; repeatable, run after --script\n"
+	    "  --interactive          then read further commands from standard input, one per line;\n"
+	    "                         the machine stands still while waiting\n"
 	    "  --until <expr:type> <op> <value>   stop when true (exit code 3 if --frames comes first)\n"
 	    "  --sym <file.tsv>       symbol file (hex address, name); repeatable\n"
 	    "  --watch <name=expr:type>           value to log; repeatable\n"
@@ -1777,10 +2030,27 @@ static void Usage()
 	    "  --break-log <file>     where break lines go (default: standard output)\n"
 	    "  --pc-histogram         sample the EE program counter at every vertical blank\n"
 	    "  --play-logs            let Play! write its own logs under <data>/logs\n"
-	    "  --throttle             run at the console's speed instead of as fast as possible\n");
+	    "  --throttle             run at the console's speed instead of as fast as possible\n"
+	    "  --no-code-protect      do not write-protect host pages that hold translated code (see README)\n"
+	    "  --profile              sample the machine and video threads; print where wall time went\n");
 }
 
+static int Run(int argc, char** argv);
+
 int main(int argc, char** argv)
+{
+	try
+	{
+		return Run(argc, argv);
+	}
+	catch(const RigError& error)
+	{
+		fprintf(stderr, "rta_rig: %s\n", error.what());
+		return 2;
+	}
+}
+
+static int Run(int argc, char** argv)
 {
 	Options options;
 	for(int i = 1; i < argc; i++)
@@ -1844,6 +2114,12 @@ int main(int argc, char** argv)
 			options.playLogs = true;
 		else if(arg == "--throttle")
 			options.throttle = true;
+		else if(arg == "--no-code-protect")
+			options.noCodeProtect = true;
+		else if(arg == "--profile")
+			options.profile = true;
+		else if(arg == "--interactive")
+			options.interactive = true;
 		else if(arg == "--help" || arg == "-h")
 		{
 			Usage();
@@ -1858,7 +2134,7 @@ int main(int argc, char** argv)
 		return 2;
 	}
 	if(!fs::exists(options.disc)) Die("disc image not found: %s", options.disc.c_str());
-	if(options.frames == 0 && options.scriptPath.empty() && options.inlineCommands.empty() && options.untilTokens.empty()) options.frames = 600;
+	if(options.frames == 0 && options.scriptPath.empty() && options.inlineCommands.empty() && options.untilTokens.empty() && !options.interactive) options.frames = 600;
 
 	setvbuf(stdout, nullptr, _IOLBF, 0);
 
@@ -1877,7 +2153,7 @@ int main(int argc, char** argv)
 	CRigPad* padHandler = nullptr;
 
 	vm.Initialize();
-	vm.CreateGSHandler(CGSH_Null::GetFactoryFunction());
+	vm.CreateGSHandler(CRigGsNull::GetFactoryFunction());
 	vm.CreatePadHandler([&]() {
 		padHandler = new CRigPad(rig);
 		return padHandler;
@@ -1943,6 +2219,7 @@ int main(int argc, char** argv)
 		if(!ok) exitCode = 5;
 	}
 	rig.Summary(seconds);
+	prof::Report();
 
 	connection.reset();
 	vm.DestroyPadHandler();

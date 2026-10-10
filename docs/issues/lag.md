@@ -479,7 +479,11 @@ more than 12 frames of delay for two players (16 for four), and it is gone in 4�
   finds only netcode functions (0x131b00–0x13e628); the accessors that simulation code
   calls return the dropped byte, the local byte, the out-of-sync byte, the camera yaw or
   the prediction copy, never a pacing field. (The sweep also lists lighting and script
-  functions; I checked three of them and they are stale-register artefacts of the search.)
+  functions; I checked three of them and they are stale-register artefacts of the search.
+  With the corrected `tools/gxref.py` the artefacts are gone: the sweep lists 32
+  functions, all in 0x131b00–0x13e633 except a colour constant at 0x1d9aa0 and a loop
+  counter at 0x1119d8, neither of them an access; `docs/issues/claims-audit.md` rows 21
+  and 40.)
 - `lif` is read by prediction, `nf` is the lockstep frame itself.
 - A packet says what it contains (first frame by count, last frame, acknowledgement); the
   receiver assumes nothing about how often packets come or how large the lead is.
@@ -552,7 +556,9 @@ bound from the code alone: **at least three frames of nothing.** With the spring
 
 No stick patch is proposed. The cheapest change, the spring's iteration count at 0x13cd34
 (original word 24060009; 24060013 would make it 20), brings every row above forward by
-exactly one frame in the model, and it changes the decoded input, so **every** player
+exactly one frame in the model (sharpened by execution, `docs/issues/dynamic-tests.md`
+b11: the first movement and the digital direction do each come one frame earlier, but
+the decoded values are not the shipped row shifted by one), and it changes the decoded input, so **every** player
 would need it or the game is out of sync on the first stick movement. Removing the other
 three frames means changing the step rule in both tables on every machine.
 

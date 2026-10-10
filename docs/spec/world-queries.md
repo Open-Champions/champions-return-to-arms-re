@@ -10,10 +10,9 @@ every machine must get the same bits out of them.
   `tools/ee_emu.py` on real level files and compares with the model.
 - `docs/formats/world.md` — the file; `docs/spec/movement-camera.md` section 5 — the callers.
 
-**Status of this document: work in progress.** Sections 1–8 (data, floor height, the blocked
-test, the swept circle and the slide) are executed and compared; section 10 (path finding)
-and section 9 (rays) are written from the instructions and their comparison is noted where
-done. Section 11 gives the counts.
+Every query in sections 3–10 was executed and compared; section 11 says on what, section 12
+what earlier documents had wrong, section 13 proposes ledger rows and names, section 14 says
+what was not done.
 
 ## 0. How this was established
 
@@ -44,7 +43,7 @@ was seen on a console or a console emulator.
 |---|---|---|
 | `Q` | 0x3e800000 | 0.25, world units → sample units |
 | `K160` | 0x3bcccccc | 1/160 truncated, world units → terrain grid cells |
-| `KROT` | 0x38000100 | s16 cosine/sine → float (a little above 1/32767) |
+| `KROT` | 0x38000100 | s16 cosine/sine → float: 1/32767 truncated, so 32767 × `KROT` is below 1 |
 | `K24` | 0x3d2aaaaa | 1/24 truncated, world units → path nodes |
 | `K240` | 0x3b888888 | 1/240 truncated |
 | 0.01 | 0x3c23d70a | |
@@ -70,7 +69,7 @@ Run-time state that the queries read or write:
 | State | Where | Written by |
 |---|---|---|
 | visit stamp of each terrain element (+0x08) and the counter `g_terrainStamp` 0x44f08c | element; global | every height, flag, sweep and ray query |
-| element flag 2 "ignored" (+0x10) | element | `world_setPieceCollision` 0x182b00: on → cleared, off → set |
+| element flag 2 "ignored" (+0x10) | element | `world_setPieceCollision` 0x182b00: on → cleared, off → set; cleared for every piece by the level-restart routine 0x18b270 [O] |
 | element height offset z (+0x1c) | element | `world_setPieceHeight` 0x182bb4: `z = int(height)` |
 | path node bits 8–15 (search mark) | path grid | `path_service`, `path_search` |
 | path node bits 16–31 (block counter) | path grid | 0x18b6c0 (+1, at most 16), 0x18b584 (−1, not below 0) |
@@ -114,6 +113,14 @@ lx = lx × Q;  ly = ly × Q                          sample units
 
 Sample (i, j) of the element is array entry `(j − hf.y0) × hf.w + (i − hf.x0)` when both
 differences are inside the field; it sits at local position (i, j).
+
+**A trap.** For an element that is not rotated the file holds cos = 32767, and
+`f32(32767) × KROT` is 1 − 2⁻³⁰, which the truncating multiplier turns into 0x3f7fffff
+(0.99999994), not 1.0. So a point exactly 12 units from the element's origin is at
+2.9999998 samples and `floorf` gives 2, and a ray marched through such an element advances
+0.99999994 samples per step and enters sample 10 on its 11th step. Do not special-case
+unrotated elements, and do not let the multiply round to nearest: with rounding the product
+is exactly 1.0 and other samples are chosen (section 13, proposed row W1).
 
 ### 4.2 `terrain_height(r, P)` 0x183820 and `terrain_heightBelow(r, P)` 0x1834a8
 
@@ -172,11 +179,12 @@ Who is stopped by which sample flag:
 | 1 | non-creature objects in `obj_moveWithCollision` 0x14d4b8; every push-out slide (0x14d8a0); `Prop_run`, `PhProp_run`, `PushPhysicsProp_run`, 0x15ea8c (direct sweeps); `Vehicle_collideObjects` | flag 1 |
 | 3 | `Creature_moveBy` 0x113c48 (both slides): monsters, knocked-back players | flags 1, 2 |
 | 5 | a player's own step in `obj_moveWithCollision` (object flag 0x40: `(mask | 4) & 5`) | flags 1, 4 |
-| ray flags 3 | 13 of the 28 `terrain_raycast` call sites and 19 of the 26 `world_raycast` call sites (the monster probes) | flags 1, 2 raise the sample by 65536 × flag |
-| ray flags 0 | the others, among them both path goal tests | heights only |
+| ray flags 3 | 12 of the 28 `terrain_raycast` call sites and 19 of the 26 `world_raycast` call sites (the creature movement probes in 0x108b00–0x119600, 0x27b308, 0x2b9f20) | flags 1, 2 raise the sample by 65536 × flag |
+| ray flags 0 | 15 `terrain_raycast` and 7 `world_raycast` call sites, among them the three path goal tests; one site passes its caller's value | heights only |
 
-[O] for the call sites (the constant loaded before each call). No sample in the 119 shipped
-levels has flag 4 or 8; 37 samples in each of 9 levels have flag 2.
+[O] for the call sites: the constant loaded nearest before each call, found by a scan, not by
+tracing each caller. No sample in the 119 shipped levels has flag 4 or 8; 37 samples in each
+of 9 levels have flag 2 (counted with `tools/world_info.py`).
 
 Projectiles do not use flags at all: `obj_moveAndCollide` compares `terrain_height` with the
 projectile's z (section 8.3).
@@ -321,6 +329,8 @@ if pos.z < terrain_height(r, pos):                          in the ground: resul
     while k < 2.0
     pos = try                                               also when no try was clear
 ```
+
+With the truncated 0.1 the loop makes at most 20 tries (k = 0.1 … 1.9999989).
 
 ## 9. Rays
 
@@ -546,8 +556,128 @@ trace back:
 
 ## 11. What the differential test covers
 
-(Filled in from the last run — see the end of this document.)
+`python3 tools/difftest_world.py [SLUS_209.73] [LEVEL.world ...]` — see its docstring. The
+level file is copied into the interpreter's memory, the game's own `world_fixup` is run on it
+(disc read, texture, light, emitter and automap callees stubbed), `g_world` is pointed at it,
+and each property calls the original function and the model with the same seeded random
+inputs. Floats are compared as 32-bit patterns. A tenth of each sample is repeated under the
+five other floating-point settings of the interpreter.
+
+| Property | Original code run | Compared | Inputs |
+|---|---|---|---|
+| libm floorf/ceilf | 0x3a57e8, 0x3a5710 | result | random patterns, halves, edge patterns |
+| terrain_collectElements | 0x183248 | the element list in order | boxes of 0–400 units, limits 2–256 |
+| terrain_height, terrain_heightBelow | 0x183820, 0x1834a8 | result | points on and around elements, heights around the floor (0, ±1, ±11, ±12, ±13, random), radii 0–72 |
+| terrain_heightAtPoint | 0x182f28 | result | the same points |
+| terrain_testFlag1 | 0x183b48 | result | the same |
+| terrain_sweepCircle | 0x185a40 | time, normal, inputs left alone | the same starts; steps of 0–300 units incl. zero and axis-aligned ones, vertical parts; masks 0, 1, 2, 3, 4, 5, 7, 8, 15; with and without a normal pointer |
+| world_slideMove | 0x14d238 → 0x185a40 | hit flag, end position, normal | the same; inputs whose steps grow past 150 units are left out (section 7) |
+| moving pieces | 0x182b00, 0x182bb4, 0x182b74, then 0x183820 and 0x185a40 | piece height, floor height, sweep time | each door switched off and on and moved in height |
+| obj_moveWithCollision | 0x14d4b8 whole, on a stand-in object, the object box query returning nothing | result bits, position, vertical speed | object flags 0, 0x20, 0x40, 0x60 and others; velocities up to 18000 units/s |
+| obj_moveAndCollide terrain part | 0x1509f8–0x150bc8 | hit flag, position | speeds 60–1500, falling and rising |
+| terrain_raycast | 0x18a5c0 | result | rays of 0.3–1400 units, slopes to ±1.5, vertical and near-vertical, `maxT` ≤ 0, flags 0, 1, 2, 3, 4, 15 |
+| world_raycast | 0x18ad94 → 0x18a5c0, the object box query returning 0–4 stand-in objects | result and hit object | object flags 0, 1, 4, 0x20, 0x40, 0x40000, 0x40001, 0x40004; ignore pointer; include flag |
+| path block counters | 0x18b6c0, 0x18b584 | the whole node grid | rectangles inside the grid, released in another order, some twice |
+| path queue | the four request functions, 0x184798 | queue entries, indexes, results delivered | 5, 140 (overflowing) and 3 requests; service with the path finder disabled |
+| path search type 0 | 0x184798 → 0x183e40 → 0x1844a4, blocking | result delivered, path buffer, node marks, search globals | starts at linked nodes ±11 units, goals 3–45 nodes away, radii 0–100, capacities 1–40; 4 % starts off the grid, 3 % requesters deleted |
+| path search suspended | the same with `blocking` 0 and T0 fed from a schedule | all of the above after every service call; and the model's one-call answer for the same request | T0 rising by 40–900 per reading from a random start |
+| path search types 1–3 | → 0x1844f0, 0x1845bc, 0x1846a4 → the two ray functions | as type 0 | goals 2–8 nodes away, radii 36–600 |
+
+<!-- COUNTS -->
+
+What "tested" does **not** cover:
+
+- The object loops of `obj_moveWithCollision` and all of `Creature_moveBy` (push-out, touch
+  calls, standing on objects, root motion, water): not run. Their terrain calls are the
+  functions above; their own arithmetic is as read in `docs/spec/movement-camera.md` 5.5–5.6.
+- `world_collectObjectsInBox` 0x14a928 was replaced by a list, so the order in which real
+  objects reach `world_raycast` is not tested.
+- Slide inputs whose steps run away (section 7): the model computes them, the original was
+  not waited for.
+- Path start nodes at grid index 0, grids with links that leave the grid, node coordinates
+  beyond ±32767, a requester deleted while its search is suspended: not generated.
+- The handle list (0x1a1738, 0x1a1868) was replaced by a stub that stores a pointer.
+- Levels: the 4 unpacked ones and 13 more from the disc; the other 102 were not run.
 
 ## 12. Where earlier documents turned out wrong or incomplete
 
-(Collected while testing — see the end of this document.)
+`docs/spec/movement-camera.md` section 5 — **no error found.** 5.2 (collecting elements),
+5.3 (the sweep, operand for operand, including the quarter-distance normal), 5.4 (the
+slide), the ground and gravity lines of 5.5, 5.8 (`terrain_heightBelow`) and the terrain part
+of 5.10 were executed and agree bit for bit. Additions:
+
+| Where | Addition |
+|---|---|
+| 5.3, last bullet | the zero-length case is worse than a wrong result: with a blocking sample under the circle the time is −0x7fffffff, and the slide's next step is astronomically long (section 7 here) |
+| 5.4 | when no sweep is blocked `normalOut` receives an uninitialised stack slot |
+| 5.10 | the back-off makes at most 20 tries, and its bounds are now executed |
+| 5.3–5.8 | for an unrotated element the cosine is 0x3f7fffff, not 1.0 (section 4.1 here) |
+
+`docs/engine.md`:
+
+| Statement | Executed |
+|---|---|
+| Pathfinding: "a breadth-first wave … stopping when a cell passes the request's goal test or after 80 rounds" | not breadth-first: continuing straight costs 2 rounds, any other move 3; a round is finished after a hit and the **last** hit of the round is taken; five empty rounds also end it; a node that finds its ring full is marked and lost |
+| "bits 8–15 = search mark (direction it was reached from)" | direction + 1; the start node carries 15 |
+| "upper 16 bits non-zero = blocked" | a counter, raised and lowered by two unnamed functions, 0x18b6c0 and 0x18b584, for torches and fires (section 10.1) |
+| goal test 1: "within the radius and `world_raycast` to the goal is clear" | within the radius and the ray **returns more than 0.98**: a ray that hits nothing returns −1.0 and fails the test |
+| goal test 2: "within the radius, at least 120 away when the radius is larger than that, and `terrain_raycast` clear (ranged attackers)" | every node **outside** the radius passes; inside, a node passes when the ray returns less than 0.98, which includes hitting nothing. Requested by `Creature_requestPath` mode 1, which `docs/spec/movement-camera.md` 6.3 describes as fleeing |
+| goal test 3: "not read" | as test 2 with `world_raycast` (requester ignored) and the limit 0.75 |
+| `terrain_testFlag1` … "-> 1" | the result is the float 1.0 or 0.0 in `$f0` |
+| `terrain_raycast`: "first terrain hit along a ray, marching 240 units at a time" | elements are collected per 240-unit segment and marched one 4-unit sample at a time; the first segment with a hit decides; a vertical ray returns a distance; the height carried from one segment to the next is advanced four times too far (section 9.1) |
+| World table: `world_movePiece` among the functions that "change the terrain element of a moving piece" | [O] 0x182c98 stores only into chunk records (+0x28, +0x2c, +0x30, +0x36, +0x38). The terrain element of a piece never moves or turns; only its flag 2 and its height offset change. Not executed |
+| Open question 6: "Path request type 3 goal test (0x1846a4) and the two routines at 0x185448 and 0x1857e4" | the goal test: above. 0x1857e4 is a straight-line walk probe (height below, then a sweep, in steps of min(2 × radius, 24), with a 3-unit retry mode); 0x185448 walks the path grid calling `terrain_height` and a particle routine. Neither has a caller or a pointer to it in the executable [O: `ps2elf.py xref`/`ptrs` find none]; not modelled |
+
+`docs/formats/world.md`:
+
+| Statement | Executed |
+|---|---|
+| "*Ray* (`terrain_raycast` 0x18a5c0): marches 240 units at a time against the same samples" | as above; and flags do not block the ray, they add 65536 × (flag bits in the mask) to the sample's height |
+| Path grid: "a position is snapped to the nearest node" | only the start of a search is; the goal is used as a point with a radius |
+| Path grid bits 16–31: "non-zero blocks the node at run time" | a counter 0–16 (section 10.1) |
+| Terrain element flag 4 | in the sweep it only disables the "all lower" skip; in the ray it does so only when the ray was given flags |
+
+## 13. Proposed ledger rows, symbols, patches
+
+Not edited into `FINDINGS.md`; for the maintainers to place. Kind for all: *executed in
+isolation* (interpreter, real level data, constructed inputs) unless marked.
+
+| Proposed | Claim | Evidence |
+|---|---|---|
+| W1 | Which terrain sample a position falls on depends on the multiplier truncating: an unrotated element's cosine is `f32(32767) × 0x38000100` = 0x3f7fffff truncated, 1.0 rounded to nearest. With rounding, a mover an exact multiple of 4 units from an element's origin reads a different sample, and every ray is marched one sample differently per element. Machines (or emulator settings) that differ in the EE's rounding mode would compute different floors, sweeps and paths. *Inferred* for the consequence; the arithmetic is executed under both rules | section 4.1; `tools/test_ref_world.py` `test_axis_aligned_cosine_is_not_one` |
+| W2 | `world_slideMove` has no bound on its step: a sweep that starts inside blocking samples returns a negative time, which lengthens the next step; a zero-length horizontal step over a blocking sample makes the next step about 10^35 units and the sweep loop then covers the whole index range. `obj_moveWithCollision` can pass a zero horizontal step (purely vertical velocity). Reachability *Unknown* | section 7; 0x14d334, 0x185b84, 0x14d570 |
+| D5 (add) | A search suspended on T0 and resumed gives the same result, path, marks and globals as the same search run in one call | "path search suspended", section 11 |
+| engine P13 (add) | between T0 = 7513 and 9000 a non-blocking `path_service` keeps calling `path_search`, which does one round per call | 0x184830–0x184838, 0x184de4 |
+
+Proposed names for addresses nobody has named (no symbol file was edited):
+
+| Address | Name | Note |
+|---|---|---|
+| 0x18b6c0 | `path_blockNodes` | (radius, world, pos): block counter +1 (max 16) over a node rectangle |
+| 0x18b584 | `path_unblockNodes` | the reverse |
+| 0x1844a4 | `path_goalTestRadius` | goal test of request type 0 |
+| 0x44f094 | `g_pathRounds` | rounds of the current search, limit 80 |
+| 0x44f098 | `g_pathPrevStart` | start node of the last search; its marks are cleared from here |
+| 0x7d89c0 | `g_pathRound` | ring index of the current round |
+| 0x7d89b0 | `g_pathRingCounts` | int[4] |
+| 0x7d69b0 | `g_pathRings` | 4 × 512 node indices |
+| 0x7d35e0 | `g_pathGoalTest` | function pointer |
+| 0x7d5ba8 / 0x7d89c4 | `g_pathGoalXY` / `g_pathGoalRadiusSq` | type 0 |
+| 0x7d5bb0, 0x7d89c8, 0x7d89cc, 0x7d89d0, 0x7d89d4 | `g_pathGoalPos`, `g_pathGoalRequester`, `g_pathGoalStartZ`, `g_pathGoalWorld`, `g_pathGoalRadiusSq2` | types 1–3 |
+
+No patch is proposed.
+
+## 14. Not done, not known
+
+- Nothing here was run on a console or a console emulator; the last bit of sums and
+  products on real hardware is the open question of `docs/issues/dynamic-tests.md`.
+- `Creature_moveBy`, the object part of `obj_moveWithCollision`, `world_collectObjectsInBox`,
+  `world_findFreeSpot` and the creature probe-ray helpers were not run.
+- `world_resetRuntime` 0x18b1b8 (queue indexes and `g_pathPrevStart` to 0, `g_pathEnabled`
+  to 1) and the level-restart routine 0x18b270 (every path node reduced to its low byte, i.e.
+  marks and block counters cleared; every piece's element flag 2 cleared) were read, not run
+  [O]. 0x18b1b8 does not clear `g_pathBusy`.
+- Whether any level or script makes a creature search from a start node whose links are all
+  clear, or from node index 0, was not looked into.
+- The meaning of request types 1–3 to the AI (which monster asks for which) is in the
+  creature code and was not read beyond `Creature_requestPath`.

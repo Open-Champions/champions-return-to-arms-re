@@ -431,7 +431,12 @@ Set in `Creature_run` (0x113614–0x1137e4) *(dec)*:
   above 0 once the value reaches 16). A **player** is capped at 30 and loses another
   0x3d088888 (1/30) of timer per frame.
 - Status counter 7 (+0x388) > 0 overrides it: `2 × (frame − +0xf0)` for the first 30 frames,
-  then the counter value up to 60; capped by `resist[4]` the same way.
+  then 60 for any counter value above 30 and the counter value itself only at 30 or below;
+  capped by `resist[4]` the same way. (The earlier version said "then the counter value
+  up to 60". Executed in `docs/issues/dynamic-tests.md`, check z6, and visible at
+  0x113774–0x1137d8: after the ramp the byte is the counter only when the counter is under
+  31, else the constant 60. So a player under counter 7 sits at exactly 60 — the
+  divide-by-zero value of FINDINGS F4 — for as long as the counter is above 30.)
 
 Users: `Player_move` (j), `Player_animStep`, and for monsters `Creature_stepAnim`,
 `Creature_turnToward` and the speed in the move helpers.

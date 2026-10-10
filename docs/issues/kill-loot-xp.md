@@ -93,7 +93,7 @@ in the same `Player_run` (0x1a5bf0). **Observed.**
 | +0xcc, +0xd0, +0xd4 | `stats_screen` 0x1d1db8 → `Player_recalcDamage` at 0x1d2c38 and 0x1d2d30 | yes — K3 |
 | +0x90…+0x9c, +0xb0, +0xc4, +0x124, +0xdc, hp/mana clamp; object +0x474…+0x477, +0xe4, +0x5c…+0x6c — for **all** players | `player_recalcStats` 0x1b6458 called from `stats_screen` (0x1d2e7c), `skills_screen` (0x1d5950) and item-list code 0x1cdd28 (0x1ce530) | yes — K4 |
 | bag item counts (potions) | `Player_usePotion` 0x1b9cb8, local-menu branch | yes — K2 |
-| +0x4a74, +0x4a78 | `hud_spellSelect` 0x1dd270 (stores 0x1dd4f8, 0x1dd500, 0x1dd524, 0x1dd55c) | no reader found outside that function |
+| +0x4a74, +0x4a78 | `hud_spellSelect` 0x1dd270 (stores 0x1dd4f8, 0x1dd500, 0x1dd524, 0x1dd55c) | no reader found outside that function. (List changed by `docs/issues/claims-audit.md` row 59: the HUD ability-bar function 0x1de8c4 also reads and writes both, 0x1dee1c–0x1def78, but nothing calls it; `player_initNewCharacter` and `player_importCharacter` store them. Still no simulation reader) |
 | +0xed, +0xee, +0x4a58, +0x4a5c | docs/ui.md P4, FINDINGS G8 | menu code only |
 
 - **Order of a message against a hit**: the same everywhere (F1). An equip, a stat point, a
@@ -138,18 +138,23 @@ the frame counter. **Observed.**
 | 5 | sum of the players' levels (+0x59, slots below `g_numPlayers`); `xp = int(int(pow(expValue / sum, 1.4)) × 0.75)` | 0x111e40–0x111ea0 |
 | 6 | killer slot: the object behind +0x2e4 compared with each record's object pointer; −1 when no player | 0x111ec4 onward |
 | 7 | if a player killed: rank of skill 0x3b → a fraction; one draw from the **creature's own** generator; on success `pool_new(0xb8)` and `OniBall_ctor` (which draws the shared seed once) | 0x111f30–0x111fcc |
-| 8 | one player: if alive, `player_giveExp(slot, min(xp, table[level+1] − table[level]))`; class 0 gains mana = monster max hit points / 30 | 0x1120e4 |
+| 8 | one player: if alive, `player_giveExp(slot, min(xp, table[level+1] − table[level]))`; class 0 gains mana = monster max hit points / 30 — in this one-player branch whoever or whatever made the kill; no killer is needed (`docs/spec/combat.md` section 5, executed) | 0x1120e4 |
 | 9 | several: share 0.6 for the killer, 0.4 for the others, 0.5 for all when nobody is the killer; halved for a player whose record hit points are ≤ 0; same cap; class-0 mana for the killer only | 0x1121e8 |
 
 Nothing in steps 5–9 reads the local slot, a camera, an option or the alive list: only
-`g_numPlayers`, record hit points, level and class, and the handle. **Observed** (every global
+`g_numPlayers`, record hit points, level and class, the level-step table behind the cap of
+steps 8 and 9, the killer's skill list (the rank of step 7), and the handle — the last
+three named after execution in `docs/issues/dynamic-tests.md` (k19), all lockstep state.
+**Observed** (every global
 the function reads was listed: `g_numPlayers`, `g_players`, `g_networkMode`, `g_decalDetail`,
 the third generator 0x404468 for decals only).
 
 `player_giveExp` 0x1d3150, per level gained: skill points (+0xe8) by level band, stat points
 (+0xec) += 3, level (+0x59) += 1, `player_recalcStats` (0x1d3224), hit points and mana
 refilled if alive. Then, on the owner's machine only, a sound (0x1d3250–0x1d327c) and the
-level-up text for 360 frames (0x1d3298). **Observed.**
+level-up text for 360 frames (0x1d3298). **Observed.** (Sharpened by execution,
+`docs/issues/dynamic-tests.md` k22: only the sound is behind the local-slot test; the
+level-up message call is made on every machine, with the slot as its argument.)
 
 **Immediate** on every machine: experience, +0x59, both point pools, maximum hit points and
 mana (they use +0x59), the refill. **Waits for the owner**: +0x58 (attack rating and skill
@@ -522,7 +527,7 @@ the executable.
 
 | ID | Claim | Kind | Evidence |
 |---|---|---|---|
-| new | The kill chain is lockstep: experience uses only the player count, record levels, record hit points and the last-attacker handle; every loot roll draws the shared seed; gold is taken by touch and items by the use button inside the taker's own `Player_run`, with no message | Observed | 0x111e40–0x1121e8; 0x100d54; 0x157a9c; 0x1b2640, 0x154dbc |
+| new | The kill chain is lockstep: experience uses only the player count, record levels, record hit points and the last-attacker handle (and, added after execution in `docs/issues/dynamic-tests.md` k19, the record's class, the level-step table and the killer's skill list — all lockstep); every loot roll draws the shared seed; gold is taken by touch and items by the use button inside the taker's own `Player_run`, with no message | Observed | 0x111e40–0x1121e8; 0x100d54; 0x157a9c; 0x1b2640, 0x154dbc |
 | new | `Player_run` skips `Player_interact` while 0x41b818[slot] is non-zero; only `hud_spellSelect`, HUD draw code that returns for remote slots, writes it (D-pad held). A use press already in the input stream therefore interacts on the other machines only | Observed (gate, writer); Inferred (window) | 0x1a5c08–0x1a5c1c; 0x1dd2bc, 0x1dd4b8, 0x1dd4ec, 0x1dd504, 0x1dd5e4; contrast 0x1a6de8 |
 | new | `Player_usePotion` leaves the bag untouched on the owner's machine when its inventory is open and sends a drop message instead; other machines decrement and then also run the message | Observed | 0x1b9fcc–0x1ba050, 0x1ba3ac–0x1ba430; 0x1c4310 |
 | new | Menu draw code writes player records: `stats_screen` → `Player_recalcDamage` (+0xcc, +0xd0, +0xd4) and → `player_recalcStats` for all players; `skills_screen` and 0x1cdd28 → `player_recalcStats`; `hud_spellSelect` → +0x4a74, +0x4a78 | Observed | 0x1d2c38, 0x1d2d30, 0x1d2e7c, 0x1d5950, 0x1ce530, 0x1dd4f8 |

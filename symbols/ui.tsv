@@ -16,7 +16,7 @@
 001c41d8	inventory_isEquipped	(recordOffset, item) 1 when the item address is in one of the record's equipped-item pointers
 001c42a0	inventory_resetPanels	zeroes the 4 panel structs at 0x4f4040 (0x74 bytes each)
 001c4310	inventory_dropItem	handler body of inventory msg 0 (slot, index, bag, count, ...): removes the item and creates the dropped object; also used by shop sell
-001c4948	inventory_checkEquipAllowed	Inferred: class/race test used before equipping and when drawing the grid; reads record +0x50
+001c4948	inventory_checkEquipAllowed	(slot, item) -> reason code 0..9, 0 = may equip: the full requirement test and the only reader of the required... modifiers. 1 class (rules by weapon subtype, damage bits and cloth from record +0x50; requiredclass holds class index + 1), 2 level (+0x58), 3..6 strength / intelligence / dexterity / stamina, 7 and 8 skill ranks 0x3c / 0x3d, 9 item flag bit 41; every test is made and a later one replaces an earlier reason. Used before equipping and when drawing the grid (docs/spec/items.md section 6, executed; was: Inferred class/race test)
 001c4e88	inventory_refreshPanelModel	(slot, panel, flag) restarts the stand animation for a panel
 001c4fa8	inventory_shareQuestItems	(slot) called by save_load: drops quest-flagged items from other players and copies this player's to them
 001c5100	inventory_close	(panel) removes both inventory tasks, sends menu-state msg 2 and weapon-class msg 5, clears g_paused and g_localMenuOpen

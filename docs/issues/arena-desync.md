@@ -354,7 +354,10 @@ dialog key, 13.4 s into the last cutscene, and never when the cutscene is skippe
   dialog, front end. `cut_start` calls `net_closeLocalMenus` first and then sets 0; `hud_run`
   refuses to open the inventory while a cutscene is active or the mode is not 1
   (0x1db870). So the mode is 0 on every machine for the whole cutscene. **Observed** for
-  the callers read; **Inferred** that no other path sets it.
+  the callers read; **Inferred** that no other path sets it. (One other store to the mode
+  word exists: `Camera_updateFree` 0x2043d8, the fly camera of modes 3–5, sets mode 1 on a
+  button of pad 0, at 0x20440c. It cannot run while the mode is 0, so the conclusion
+  stands; `docs/issues/claims-audit.md` row 8.)
 - The engine camera is written by `camera_setView` 0x18a2b0. During a cutscene the callers
   that can run are `cut_runFrame` (every tick) and `Camera_apply`. `Camera_update` reaches
   `Camera_apply` only in mode 1 or while the transition word +0x48 is non-zero; +0x48 is set
@@ -378,7 +381,15 @@ dialog key, 13.4 s into the last cutscene, and never when the cutscene is skippe
 
 **Answer:** D7 holds for every writer found. Left open: address-taken references to the
 camera position and matrix in drawing code (0x1762e8, 0x1887b8, 0x189df0 and others in the
-`gxref` output) were not read to confirm they only read.
+`gxref` output) were not read to confirm they only read. **Closed since for the position
+and the focus** (`docs/issues/claims-audit.md` row 3, with the corrected scan and the
+decompile): the position is stored by `camera_setView` and by `Camera_loadState` 0x203a20
+(0x203a68–0x203a88; called only from `save_load`, so it puts each machine's own saved
+camera back on a party-wipe reload, when no cutscene is running); the focus only by
+`camera_updateFocus` 0x18a520; the possible stores in drawing code are stack stores. The
+matrix is written by the same two functions; four possible writes of it (`line_draw`,
+`Camera_updateFree`, `Camera_updateFollow`, `DragonGoldPile_run`) were not classified one
+by one.
 
 - **If it were the cause:** the mismatch would start one tick after a cutscene begins, or
   later when an object on a shifted 60-frame list wakes; it would change with where each

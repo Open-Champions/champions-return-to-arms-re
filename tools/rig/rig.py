@@ -10,6 +10,8 @@ other argument is passed to the runner unchanged.
     python3 -I -B tools/rig/rig.py --screen-text --script my.rig
     python3 -I -B tools/rig/rig.py watches g_randSeed:x32 g_drawFrame:u32
                                        prints name=address:type pairs for the runner
+    python3 -I -B tools/rig/rig.py session start|send|stop ...
+                                       keep one runner alive and feed it commands
 
 Environment:
     RTA_DISC   path of the disc image (or pass --disc)
@@ -61,11 +63,7 @@ def watch_pairs(specs):
     return pairs
 
 
-def main(argv):
-    if argv and argv[0] == "watches":
-        print(" ".join("--watch " + pair for pair in watch_pairs(argv[1:])))
-        return 0
-
+def runner_command(argv):
     runner = os.environ.get("RTA_RIG", os.path.join(ROOT, "local", "rig-build", "rta_rig"))
     if not os.path.exists(runner):
         raise SystemExit("runner not built: %s (see tools/rig/README.md)" % runner)
@@ -91,7 +89,130 @@ def main(argv):
             command += ["--break", "%s,wstr=a2,collect" % name]
 
     command += passed
-    os.execv(runner, command)
+    return command
+
+
+# --- interactive sessions -----------------------------------------------------------
+#
+# One runner process is kept alive with its command input on a named pipe, so a state
+# is loaded (and its code re-translated) once, and menus can be explored a step at a
+# time:
+#
+#     rig.py session start --screen-text --load local/rig-out/states/x.zip
+#     rig.py session send "tap cross" "wait 60" "show g_levelName:str32"
+#     rig.py session stop
+#
+# 'send' prints everything the runner wrote while it carried the commands out.
+
+def session_paths(name):
+    base = os.path.join(ROOT, "local", "rig-out", "session-" + name)
+    return base, os.path.join(base, "in.fifo"), os.path.join(base, "out.log"), os.path.join(base, "pid")
+
+
+def session_alive(pid_path):
+    try:
+        with open(pid_path) as handle:
+            pid = int(handle.read().strip())
+        os.kill(pid, 0)
+        return pid
+    except (OSError, ValueError):
+        return 0
+
+
+def session_send(name, lines, timeout):
+    import time
+    base, fifo, log, pid_path = session_paths(name)
+    if not session_alive(pid_path):
+        raise SystemExit("no session '%s' is running" % name)
+    token = "%d" % time.time_ns()
+    offset = os.path.getsize(log)
+    fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+    try:
+        os.write(fd, ("\n".join(lines) + "\nsync %s\n" % token).encode())
+    finally:
+        os.close(fd)
+    marker = "[sync %s]" % token
+    deadline = time.time() + timeout
+    seen = ""
+    while True:
+        with open(log, errors="replace") as handle:
+            handle.seek(offset)
+            seen = handle.read()
+        if marker in seen or not session_alive(pid_path):
+            break
+        if time.time() > deadline:
+            sys.stdout.write(seen)
+            raise SystemExit("\n(timed out after %ds; the session is still running)" % timeout)
+        time.sleep(0.05)
+    sys.stdout.write(seen)
+    return 0
+
+
+def session(argv):
+    import subprocess
+    import time
+    name = "default"
+    timeout = 600
+    while argv and argv[0] in ("--name", "--timeout"):
+        if argv[0] == "--name":
+            name = argv[1]
+        else:
+            timeout = int(argv[1])
+        argv = argv[2:]
+    if not argv:
+        raise SystemExit("session start|send|stop|status")
+    action, rest = argv[0], argv[1:]
+    base, fifo, log, pid_path = session_paths(name)
+    if action == "start":
+        if session_alive(pid_path):
+            raise SystemExit("session '%s' is already running" % name)
+        os.makedirs(base, exist_ok=True)
+        if os.path.exists(fifo):
+            os.unlink(fifo)
+        os.mkfifo(fifo)
+        command = runner_command(rest + ["--interactive"])
+        # opened for reading and writing so the runner never sees end of input
+        stdin = os.open(fifo, os.O_RDWR)
+        with open(log, "w") as out:
+            process = subprocess.Popen(command, stdin=stdin, stdout=out, stderr=subprocess.STDOUT,
+                                       start_new_session=True)
+        os.close(stdin)
+        with open(pid_path, "w") as handle:
+            handle.write("%d\n" % process.pid)
+        return session_send(name, [], timeout)
+    if action == "send":
+        return session_send(name, rest, timeout)
+    if action == "status":
+        pid = session_alive(pid_path)
+        print("running, pid %d" % pid if pid else "not running")
+        return 0
+    if action == "stop":
+        pid = session_alive(pid_path)
+        if pid:
+            fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+            os.write(fd, b"quit\n")
+            os.close(fd)
+            for _ in range(200):
+                if not session_alive(pid_path):
+                    break
+                time.sleep(0.05)
+            if session_alive(pid_path):
+                os.kill(pid, 9)
+        with open(log, errors="replace") as handle:
+            tail = handle.read().splitlines()[-12:]
+        print("\n".join(tail))
+        return 0
+    raise SystemExit("session start|send|stop|status")
+
+
+def main(argv):
+    if argv and argv[0] == "watches":
+        print(" ".join("--watch " + pair for pair in watch_pairs(argv[1:])))
+        return 0
+    if argv and argv[0] == "session":
+        return session(argv[1:])
+    command = runner_command(argv)
+    os.execv(command[0], command)
 
 
 if __name__ == "__main__":

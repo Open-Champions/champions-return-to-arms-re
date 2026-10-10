@@ -5,8 +5,8 @@
 001a076c	menuList_setSelection	(entries, index) clamps index to the entry count and stores it in the terminator entry
 001a07c4	menuList_draw	Inferred: same callers as menuList_handleInput, callees are text drawing; not read
 001a1228	color_lerp	(t, rgbaA, rgbaB) per-channel interpolation of two packed colours
-001a14f0	handle_validatePool	debug walk of the 6095 handle nodes at 0x847268; prints and traps on a pointer outside the pool
-001a17d0	handle_initPool	threads the 20-byte handle nodes into the free list headed at 0x864ea8
+001a14f0	handle_validatePool	debug walk of the 6096 handle nodes at 0x847268 (index 0x17cf down to 0 inclusive; an earlier note said 6095); prints and traps on a pointer outside the pool
+001a17d0	handle_initPool	threads the 6096 20-byte handle nodes at 0x847268 into the free list headed at 0x864ea8, in ascending order (0x847268 + 6096 x 20 = 0x864ea8, the head sits directly behind the array)
 001a1868	handle_removeNode	(node) unlinks a node and its partner node, returns both to the free list, returns the object stored at node+0xc
 001a1980	handle_addNode	(listHead, obj) takes a free node and links it at the head
 001a19d0	handle_insertNode	(listHead, afterNode, obj) as handle_addNode but after a given node when one is passed

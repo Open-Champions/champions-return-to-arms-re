@@ -61,7 +61,7 @@ Lookups always take the **first** slot whose type matches. Effect types handled:
 
 | Type | v1 | v2 | v3 | Effect | Needs first hit roll |
 |---|---|---|---|---|---|
-| 0x15 | min | max | – | fire damage, reduced by fire resistance; sets the burn status (strength 2 − 2·res) unless flag 0x10000000. "min, max" here and in the other elemental rows means: amount = v1 + (draw rem (v2 − v1 + 1)), in integers and with no guard (0x1e98c8–0x1e9914; the same expression at the other six sites). Two skills pass v2 < v1, for which the amount ranges upward from v1 (`docs/spec/skills-01-34.md`) | no |
+| 0x15 | min | max | – | fire damage, reduced by fire resistance; sets the burn status (strength 2 − 2·res) unless flag 0x10000000. "min, max" here and in the other elemental rows means: amount = v1 + (draw rem (v2 − v1 + 1)), in integers and with no guard (0x1e98c8–0x1e9914; the same expression at the other six sites). Two skills pass v2 < v1, for which the amount ranges upward from v1 (`docs/spec/skills-01-34.md`). Executed in `docs/spec/combat.md` 3.1: with v2 < v1 − 1 the result is v1 + (draw mod (v1 − v2 − 1)) — values from v1 upward, never below it ((10, 5) gives 10…13); with v2 = v1 − 1 the divisor is zero, the CPU does not trap, and what a console leaves as the remainder is not established | no |
 | 0x16 | min | max | – | cold damage, reduced by cold resistance; cold status timer += 60·amount/hp, capped at 60 | no |
 | 0x17 | → victim +0x358 | → victim +0x35a | – | poison status, strength 5 − 5·poisonRes | no |
 | 0x18 | min | max | – | lightning damage, reduced by lightning resistance; shock status 2 − 2·res | no |
@@ -151,6 +151,12 @@ hit probability, `dmg` the running amount.
 3. Class `Innoruuk` with +0x3e0 set: return 0.
 4. **Victim is not a creature**: **draw 1** (always), dmg = min + fmod(r, max − min + 1) in
    double precision with r the 16-bit draw; call take-damage(dmg, attacker, flags); return 1.
+   ("In double precision" needs two qualifications, here and in step 10 —
+   `docs/spec/combat.md` 3.4, executed. The span `(max − min) + 1.0` is computed in single
+   precision; only the `fmod` and the sum go through the library's software doubles, and
+   those truncate instead of rounding, as does the conversion back. And a span of exactly
+   zero, possible only on this non-creature path with max = min − 1, makes `fmod` return a
+   not-a-number and dmg the pattern 0x7f800000, which this FPU treats as 2^128.)
 5. Refusals, each returning 0: creature flag 0x800; absolute immunity (0x100000 with 0x10 or
    0x40) against class 1/8; flag 0x8000000 against a non-0x10 kind.
 6. Friendly fire of projectiles: attacker has flag 0x80 and an owner link, victim is not a
@@ -175,17 +181,24 @@ hit probability, `dmg` the running amount.
     +0x398 = 0x11 and +0xf0 = frame counter.
 16. Frost Armor on the victim: 0x318264 multiplies dmg by 1 − value/100 and, when there is
     an attacker, makes **draw 5**; on success it strikes the attacker through a nested
-    `damage_apply` (flags 0x540, a 0x16 slot) and calls `fx_spawn(10)`.
+    `damage_apply` (flags 0x540, a 0x16 slot) and calls `fx_spawn(10)`. The strike's
+    amount, not given in the earlier version: both values of the cold slot are
+    `trunc(dmg − factor)` — the incoming amount minus the *factor* 1 − value/100, not the
+    absorbed part (0x318364–0x318378; `docs/spec/combat.md` section 3, step 15, executed).
 17. Rating scale: if AC > 0, dmg ×= min(attack / (AC/2), 1).
 18. Skill crit bonus (flag 0x40000000 clear, attacker is a player, noCrit 0): c += the
     largest of three skill values (skill indices 0x21, 0x35, 0x51 through 0x2e76c4, which
-    also honours an aura from nearby players).
+    also honours an aura from nearby players). The attacker's own rank counts only while
+    a `SpellCriticalHit` is attached to the attacker (0x2e76f8–0x2e7714); without one the
+    helper looks for the aura alone (`docs/spec/combat.md` 3.2, executed).
 19. **Draw 6 — crit roll**, only if c > 0 and `hit` and noCrit is 0: on success dmg ×= 3,
     `crit` = 1, and a player attacker gets a voice cue (0x1b7ba8, local slot only, cosmetic
     seed).
 20. Procs, only if `hit`:
     - 0x29: if the attacker is a creature and v2 ≠ 0, **draw**; success casts the skill
-      (a virtual call whose own draws were not traced).
+      (a virtual call whose own draws were not traced). The success test is
+      `draw < v2 × 655` (0x1e8ebc–0x1e8ed8), so a chance of 100 is 65500 in 65536, not a
+      certainty (`docs/spec/combat.md` section 3, step 19, executed).
     - 0x1f: **draw always**, even when the descriptor has no such slot; success: **draw**
       for the amount.
     - 0x20: **draw always**; success: **draw**.
@@ -211,7 +224,11 @@ hit probability, `dmg` the running amount.
     `damage_apply`; they use the per-spell generator, not the shared one.
 26. PvP mode A and player victim: dmg ×= 0.5.
 27. Flag 0x800000: accumulate (see table) and possibly deliver through take-damage; dmg
-    becomes 0 for what follows.
+    becomes 0 for what follows. "Possibly" is exactly this (`docs/spec/combat.md` section
+    3, step 25, executed): delivery happens only on a frame with `frame & 31 == 0`
+    (0x1ea700–0x1ea708; the other condition in the code, "hp > 0 and hp ≤ 0", can never
+    hold); the amount delivered is whole and at least 1; and step 28 then calls
+    take-damage a second time, with 0.
 28. Hit sound unless flag 0x4000; then **take-damage(dmg, attacker, flags)**.
 29. Attacker is a player: 0x308c10 gives a percent chance for skill 0x40 (0 in PvP mode A and
     for creatures that 0x10d940 rates 2, at most 5 for rating 1), **draw always**; on success 0x308cb4 creates a `LightEffect`

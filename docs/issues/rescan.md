@@ -331,7 +331,15 @@ What was checked:
   In each the query feeds particles or the start position of a debris prop (shed parts,
   shattered bones, a severed limb, dropped weapons). Debris props are non-solid and live in
   the grid that box queries do not see (`docs/objects.md`), so that is presentation, apart
-  from pool occupancy (D21). The search goes by address order inside a function, so it
+  from pool occupancy (D21). **That sentence is wrong** (`docs/issues/pose-cache.md`
+  section 5, FINDINGS D39): the start position of a debris prop is shared state. A `PhProp`
+  that comes to rest builds a resting `Prop`, whose constructor draws `g_randSeed`
+  (`PhProp_run` 0x155fcc, `Prop_ctorRes` 0x153c88, `Prop_ctorNamed` 0x153ac0), so the tick
+  on which the piece settles moves the shared seed, and where it starts decides when it
+  settles. What saves these ten functions is the order, not the kind of object: in the
+  death cases that create debris the query comes before the track call, or after an
+  `anim_start` only, which changes nothing until the next step (`pose-cache.md` section 6).
+  The search goes by address order inside a function, so it
   over-reports: in `Skeleton_setState`, for one, the death case (weapon drop, shatter at
   0x2a7cd8, loot, delete) changes no track at all; the push at 0x2a7828 belongs to the
   rise state.
@@ -344,6 +352,15 @@ What was checked:
   `Player_castSkill` takes from attachment points 0 and 1 (0x1a43ac, 0x1a43ec) is read in
   the neutral state before that tick's step (the call at 0x1a7048), so it does come from a
   possibly draw-built pose, but no full-weight change was found between the draw and it.
+  Two corrections from `docs/issues/pose-cache.md` (sections 2 and 4.1). First,
+  `Player_move`, which `Player_run` calls, does change tracks another way: after stepping
+  the animation it writes the weight and life of track 1 directly (0x1b498c, 0x1b499c) and
+  a second block zeroes tracks 1–3 (0x1b4bb8–0x1b4bc4); those stores change the pose and
+  do not detach it. Second, the cast position is read before the step, yes, but the pose
+  attached at that moment is not a draw-built one: `Player_updateCast` queries the
+  skeleton at the tail of `Player_run` on every tick of a living player, after the step
+  and after every track change of the tick, so the pose the next tick's cast reads was
+  built by the simulation at the end of the previous tick, on every machine.
 
 So: **mechanism Observed; no sequence found in which a position that matters reads a stale
 pose; not excluded.** Not done: sequences that cross functions (a state change in one

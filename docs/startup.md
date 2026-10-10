@@ -78,8 +78,16 @@ item text  --item_parseDescriptor-->  Item (0x48 bytes)  --embedded in-->  item 
 | +0x18 | s16[4] | zeroed on creation and copy; use Unknown | same |
 | +0x20 | u8 | prefix row index, 0xff = none | `0x101e48`, `0x104ca4` |
 | +0x21 | u8 | suffix row index, 0xff = none | same |
-| +0x22 | s16 | zeroed by copy; use Unknown | `0x107ca8` |
-| +0x24 | 4 × 8 bytes | modifiers: `s16 type` (0xffff = empty), `s16 v0, v1, v2` | `0x1069b8` tail `0x107b6c–0x107c40` |
+| +0x22 | s16 | zeroed by copy; use Unknown here. Since established: **not written at creation**; `inventory_giveItem` later stores the bag index here (`docs/issues/kill-loot-xp.md`, `docs/spec/items.md` §2) | `0x107ca8` |
+| +0x24 | 4 × 8 bytes | modifiers: `s16 type` (0xffff = empty), `s16 v0, v1, v2`. The slots end at +0x44 | `0x1069b8` tail `0x107b6c–0x107c40` |
+| +0x44 | 4 bytes | padding, never written | `docs/spec/items.md` §2 |
+
+Bytes the code that builds a record never writes (executed in `docs/spec/items.md` §2):
++0x06, +0x22, the three values of an empty modifier slot, and the padding +0x44…+0x47.
+The parser builds the record in its own stack frame and copies all 0x48 bytes out, so
+those bytes of a new item are whatever lay in that frame. Two records of the same item
+are therefore not byte-equal in general, and the word compared at +0x20 below includes
++0x22 (proposed ledger row I1 in `docs/spec/items.md` §13).
 
 Two items are "the same kind" for `0x108924` when definition, flags and the 32-bit word
 at +0x20 match.
@@ -199,7 +207,7 @@ reading first:
 | `0x1046e0` | `item_randomizeVariant` | the hidden `g_randSeed` draw inside the parser |
 | `0x100d54` | `loot_generateDrops` | the drop roll; order of seed draws below |
 | `0x104ca4` | `item_generateWithAffixes` | the random-equipment generator (also shop stock, the script built-in givePlayerRandom, level objects) |
-| `0x104758` | `item_generateFromSpecialTable` | preset ("named") items |
+| `0x104758` | `item_generateFromSpecialTable` | preset ("named") items: 10 picks among the eligible rows. The pick is off by one (`0x104a3c–0x104a44`: a draw of 0 and a draw of 1 both stop at the first eligible row), so the first eligible row is twice as likely as the others and the last is never picked (`docs/spec/items.md` §7.1, executed) |
 | `0x1024a8` | `item_getValue` | price; also the generators' budget test |
 | `0x101e48` | `itemName_buildLocalizedName` | display name |
 | `0x107edc` | `item_buildPictureFilename` | picture and equipment-texture names |
@@ -222,6 +230,12 @@ amount is ×2.4, the gold chance ×1.5 and the equipment chance ×2 (`0x100dd8�
    tripled 1 % of the time and doubled 4 %. Category by one or two draws. 3 % of the time, or
    when the caller forces it, a preset item; otherwise `item_generateWithAffixes`. The
    prop is thrown in a random direction within ±45° of the given angle.
+   Corrections from `docs/spec/items.md` §8 (executed): the caller's chance is not used
+   as it stands — after the ×2 for more than one player it is halved for everyone, and in
+   PvP mode B it is a fixed 0.25 whatever the caller passed; the preset branch multiplies
+   the budget by 1.7 (by 7 when the budget is 3 or less) before calling
+   `item_generateFromSpecialTable`. And for steps 4 and 5: the reagent and figurine
+   generators are given half the level, not the level.
 
 Steps 4 and 5 `return` from the whole function when their chance succeeds but no
 definition qualifies, skipping the later steps (branches at `0x101320`, `0x10134c`,
@@ -235,7 +249,12 @@ preferred. Rolls a weapon group (7 % thrown with a fifth of the budget, 5 % grou
 88 % the rest) or one of six armour slots. Then 10 tries (15 for weapons): pick a random
 eligible definition and a random suffix whose level fits; the first try is the plain
 item, later tries build one candidate per eligible prefix (category 2 takes a simpler
-path: one candidate per try, suffix only). Each candidate is parsed and
+path: one candidate per try, suffix only). That sentence is too kind to the code
+(`docs/spec/items.md` §7.2, executed): the first try parses the plain item once *per
+fitting prefix row*, variant draws included; and the prefix loop of the later tries runs
+over the first N rows of the prefix table, N being the *number* of rows that fit the
+level cap, not over the fitting rows — the table is not sorted by level, so at caps 1 to
+18 up to 10 fitting prefixes lie beyond row N and are never tried. Each candidate is parsed and
 priced; unless it is a potion it also receives a `requiredlevel` modifier computed from
 its value (capped at 80). The best candidate not above the budget wins and
 `item_randomizeVariant` finishes it.
@@ -249,7 +268,10 @@ per remaining modifier is added (a `costmodifier` scales the running total by a
 percentage), and the sum is multiplied by 40, by 0.004 for thrown stackables (name
 contains the spear stem, or definition flag bits 42–44), by about 8 for the jewellery
 slots, then by the count. The constants are in the function; they were not all
-transcribed.
+transcribed. They are now, in `docs/spec/items.md` §5 (executed): the power is 1.95
+(0x3ff99999); the jewellery factor is 8.009912 (0x41002899) and applies only to category 2
+with slot 5, 6, 7, 14 or 15; and for armour an `armorbonus` slot falls into the code-0x1a
+term instead of adding nothing.
 
 ### Display names (Observed, `0x101998–0x1024a7`)
 
@@ -261,7 +283,9 @@ that `itemName_stripGrammarSuffix` removes and turns into a form number, and
 `itemName_getAffixForm` picks that form from a bar-separated prefix text. Inferred:
 language 4 is German (one-letter tags, three genders plus plural), 1 and 3 are Romance
 languages (two-letter gender+number tags), everything else uses English order with the
-literal "of" key between noun and suffix.
+literal "of" key between noun and suffix. (Supported since by the disc's text files,
+`docs/spec/items.md` §9: the German file carries one-letter tags, the French and Spanish
+files two-letter tags. Which of 1 and 3 is French and which Spanish is still Unknown.)
 
 ## Start-up path, and when code in this range runs
 
@@ -403,6 +427,8 @@ T0 twice per frame (`0x32321c`, `0x323274`) only to store a duration at `0x44fd4
 5. Per-machine item 2: are the store stock calls at `0x3230c4`/`0x3230f0` reached with the same
    `g_randSeed` on every machine? It follows a wait loop that calls `net_main`.
 6. The meaning of language codes 1, 3 and 4, and whether the US disc can select them.
+   (Partly answered: 4 is German, 1 and 3 are French and Spanish in an order not
+   established — `docs/spec/items.md` §9. Whether the US disc can select them is open.)
 7. `0x101c0c` is inert in this build (its state word is never set). Was it live in the
    engine's earlier game?
 8. Can the prediction copy reach `Creature_computeAvoidanceOffset` through

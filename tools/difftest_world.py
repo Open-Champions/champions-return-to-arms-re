@@ -374,12 +374,16 @@ def prop_sweep(rig, level, rng, count):
     return count, fails, examples
 
 
+RUNAWAY_STEP = 150.0
+
+
 class Runaway(Exception):
-    """A slide whose steps grew past anything a level holds.  A sweep that starts inside
+    """A slide one of whose steps grew past RUNAWAY_STEP units.  A sweep that starts inside
     blocking samples returns a negative time, `remain` grows, and the next step is longer;
     with a zero-length step the time is -0x7fffffff and the step after it astronomic.  The
-    original then walks billions of sample indices one by one, which the interpreter cannot
-    sit through, so such inputs are counted and left out."""
+    original walks every sample index of the step's bounding box in every element near it
+    (billions of them in the worst case), which the interpreter cannot sit through, so such
+    inputs are counted and left out."""
 
 
 SKIPPED = {'runaway': 0}
@@ -501,7 +505,7 @@ def guarded(function, *args):
     sweep = R.terrain_sweep_circle
 
     def watched(lvl, r, p, d, m, want_normal=True):
-        if not (abs(R.to_float(d[0])) < 3000.0 and abs(R.to_float(d[1])) < 3000.0):
+        if not (abs(R.to_float(d[0])) < RUNAWAY_STEP and abs(R.to_float(d[1])) < RUNAWAY_STEP):
             raise Runaway()
         return sweep(lvl, r, p, d, m, want_normal)
     R.terrain_sweep_circle = watched

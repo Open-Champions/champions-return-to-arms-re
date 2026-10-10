@@ -161,7 +161,15 @@ A is pushed at the head of the list, B at the head of one of the object's three 
 `handle_clear(head)` removes every node on a list together with its partner, which is why
 destroying an object (three `handle_clear` calls) empties every handle to it, and why
 emptying a list frees the objects' back nodes. An iterator is itself a node spliced into the
-list (object field 0), so the list may change under it. Lists are LIFO: the most recently
+list (object field 0), so the list may change under it. Two cases where the iterator's
+`prev` is then not a node carrying an object (`docs/spec/core.md` section 12, executed):
+after the current node was removed, `prev` is the node before it or the list head cell;
+and while a second iterator stands behind the same node, the first one's `prev` is that
+second iterator, whose object field is 0. A loop body must not re-read the object through
+`prev` after either. Two uses of `handle_clear` 0x1a1698 corrupt the node pool: on a list
+an iterator stands in (the iterator is freed as a node), and on a list that holds both
+nodes of one link (the walk runs on through a freed node into the free list; executed,
+the free list is left circular). No caller was checked for either. Lists are LIFO: the most recently
 linked object comes first, and `obj_updateGridCell` relinks at the head even when the cell
 has not changed, so the order of a cell's list follows the order of movement calls.
 
@@ -215,7 +223,10 @@ relinks only when the answer differs from `wasActive`. Flag 0x80000 replaces the
 3. If that count is below 300: visit 16 cells of **grid B** (a cursor derived from the frame
    counter), and in each destroy the first object with flag 0x1000. Offline, while the count
    is still ≥ 200, objects within 480 units of the camera focus are spared; in a net game
-   that test is skipped (0x14ba80).
+   that test is skipped (0x14ba80). The reaper walks each cell's list directly from its
+   head, without an iterator and without `g_excludeMask` (0x14b9f0–0x14bb18), so the
+   victim in a cell is decided by link order alone (`docs/issues/stale-pointers.md` 5.3,
+   ST5).
 4. If `game_isFrozen()` is false: call slot 4 of every object on the active list, then on
    list `frame % 15`, then on list `frame % 60`, skipping flag 0x8000. All three walks use
    `g_excludeMask`.

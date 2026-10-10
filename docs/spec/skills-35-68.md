@@ -8808,6 +8808,12 @@ F + k - 1, F being the cast frame, provided the caster's hit points stay above 0
   still holds the slot number or has just been reused for the new `Player` (both blocks are
   0x590 bytes from the same pool; reuse Inferred, not traced in `pool_new`). Observed order
   0x1bd0d8-0x1bd0f4 (destroy) before the call of 0x1b8f28.
+  Traced since (`docs/issues/stale-pointers.md` section 3, FINDINGS ST2): `player_respawn`
+  frees the old `Player` (destructor call at 0x1bd0f0) and allocates the new one (`pool_new`
+  at 0x1bd138) with no call between, and the pool's free lists are last-in-first-out, so
+  the new object always gets the old block, on every machine. The read through the stale
+  target therefore always sees the new object's slot and 0x31270c returns 1; the "either
+  … or" above reduces to its second half.
 - **Hit points** are then overwritten: maximum * stat 1 / 100 (25 % at rank 1 to 96 % at
   rank 20).
 - **Mana**: not written by any function on this path (`SpellResurrect_run`,

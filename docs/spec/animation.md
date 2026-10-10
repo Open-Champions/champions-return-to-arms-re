@@ -333,8 +333,11 @@ Details that are easy to get wrong (**X** unless marked):
 3. **Two root-motion weights.** The part of the displacement up to the end of the clip is
    weighted with the weight *before* the update (step d); the part from the last step (or
    from tick 0 after a wrap) with the weight *after* it, and with a fresh `left`. A track
-   that is removed in step g contributes only its wrap part. A waiting track (time < 0)
-   is not skipped by the second pass.
+   that is removed in step g (or purged) gets no second pass: a non-looping root-motion
+   track loses the displacement of its final step, a looping one whose life runs out on
+   the tick it wraps contributes only the part up to the clip's end. A REPORT_END track
+   is held at `length` and keeps reporting a zero delta. A waiting track (time < 0) is
+   not skipped by the second pass.
 4. **`left`** is reduced only by clips whose joint mask is zero; partial-body clips do not
    use up weight. It is reduced by `max(raw, 0)`, not by the clamped `w`.
 5. **Yaw is not weighted** and is summed over all YAW tracks.
@@ -506,8 +509,9 @@ those indices whatever their own joint count; a slot keeps 64 records (2.3).
   `g_drawFrame` and moved to the newest end. With no pose the default pose is drawn.
 - Only drawing stamps. A buffer filled by a simulation query keeps its old stamp and is
   taken again as soon as the walk reaches it.
-- The values in a pose do not depend on which buffer holds it (**X**: runs with the list
-  cut to 5 buffers give the same matrices through the fallback buffer).
+- The values in a pose do not depend on which buffer holds it (**O**: one code path fills
+  any buffer; **X**: with the list cut to 5 buffers the contents of the fallback buffer
+  match the model, which computes a pose without knowing where it will be stored).
 
 ### 8.3 Composition: the VU0 microprogram at 0x3e5c50 (**O** instruction by instruction; **X** against an interpreter of the same instruction words, see section 12)
 
@@ -667,9 +671,14 @@ Not covered, and why:
 - **`anim_emitPose`'s display-list output**: only which buffer it sends, and the cache
   side.
 - **`AnimState_copySmall`**: read, not executed.
-- Clips are used as they are on the disc, plus random event slots; no synthetic stress of
-  16-bit field widths beyond what the disc contains (the unit tests exercise the model's
-  own encoder/decoder round trip, without the original).
+- **Data the game does not ship.** Joint masks occur in three files on the disc, and the
+  pose sequences on disc clips use clips of one lump and one joint count. The mask rules, 64-joint skeletons with deep chains and
+  several roots, 16-bit fields, far-from-unit quaternions (which make the ±2π "unwrap" of
+  8.1 run) and keys for joints a clip does not have are exercised on made-up clips
+  (property "pose, synthetic clips"): against the original code, but not on shipped data.
+  Mixing clips of different joint counts in one pose is not tested (the model raises
+  `HostFault` when the top clip has no skeleton entry for a joint).
+- Event slots are filled with random times and masks, not with the game's own tables.
 - States with all decoder slots pinned, `anim_pushChained` on an empty state or onto a
   cell whose old sound cursor lies beyond the new clip's event table, root motion without
   an output pointer, clips of length 0 that loop: the original does not return, writes
@@ -690,7 +699,20 @@ Not covered, and why:
 | `docs/formats/anim-audio.md` 2.5 | the VU0 program is at 0x3e5c40 | 0x3e5c40 is the DMA/VIF packet; instruction 0 is at 0x3e5c50. Bind offsets and depth list are those of the top track's clip (0x16f57c) |
 | `docs/formats/anim-audio.md` 2.6 | the displacement is added "times the track's weight" | two weights: before the weight update for the part up to the clip's end, after it for the rest (section 5, note 3) |
 
-## 14. Not established
+## 14. Proposed ledger rows
+
+Proposals for `FINDINGS.md` (not edited). "Executed" means executed in isolation by the
+differential test, not seen on a running game. No patch is proposed.
+
+| # | Statement | Kind | Where |
+|---|---|---|---|
+| A1 | A creature with a slow amount of 1…60 gets no root yaw at all: `Creature_stepAnim` multiplies the yaw delta by the integer part of (60 − slow)/60 | Executed; the same on every machine | 0x116478–0x116498 |
+| A2 | While a PURGE_BELOW (0x0002) track sits at full weight, `anim_advance` leaves its track loop at that track on every tick: PERSISTENT tracks below it get no time, no events and no weight change until it is gone | Executed; the same on every machine | 0x16dfa8–0x16e0bc |
+| A3 | A non-looping root-motion track without REPORT_END loses the displacement of its final step: it is removed before the root pass runs | Executed; the same on every machine | 0x16ded4, 0x16e0dc |
+| A4 | `AnimState_copy` gives a copied ROOT/YAW track a decoder slot of its own but copies neither the yaw baseline (slot+0x18) nor does the allocator reset it: the copy's first yaw delta is measured from what the slot held before. Which slot the pool hands out depends on its use order, which drawing changes — so the stale value is per machine. YAW is passed as a constant only by `Cazic_run` and `Innoruuk_setState` | mechanism Executed; whether such a state is ever copied Unknown | 0x170118–0x170154, 0x16e388; 0x24be7c, 0x24beac, 0x276cec |
+| A5 | `anim_pushChained` keeps the sound cursor of the cell it reuses; when that lies beyond the new clip's event table `anim_advance` reads tick values from foreign memory. Only the cursor and the sounds depend on it | Executed | 0x170938, 0x16d91c–0x16d9b8 |
+
+## 15. Not established
 
 - Whether the console's vector unit matches the FPU model in the last bit of the
   composition (section 12).

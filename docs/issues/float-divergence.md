@@ -30,7 +30,11 @@ library names used below are in `symbols/movement.tsv`).
 - Only single precision is used on the FPU. There is no double-format instruction;
   `double` arithmetic is done by integer library routines (for example the "random amount
   between minimum and maximum" roll in `damage_apply` goes through `libm_fmod`, 0x3a5a38),
-  so it cannot differ between machines.
+  so it cannot differ between machines. That holds between machines running the original
+  code, and only between those: the library routines truncate instead of rounding and
+  have no denormals (executed in `docs/spec/core.md` section 9), so a rebuild or port that
+  uses the host's `double` gets a different float in about half of all results. Game
+  code uses these routines for every `float × literal` written without an `f` suffix.
 - The compare instructions are the R5900's three: equal (264 sites), less than (1,994) and
   less or equal (483). There are no unordered compares.
 - The only float-to-integer instruction is `cvt.w.s` (1,462 sites). There is no separate

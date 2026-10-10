@@ -65,7 +65,7 @@ slots; the Creature bodies are listed here. Small bodies were emitted inline at
 | 32 | 0x10bfc8 | revive (with effect) | Observed |
 | 33 / 34 | 0x3c2700 / 0x3c2708 | get / set HomeRange +0x3c0 (script `setMonsterRange`) | Observed |
 | 35 | 0x118c50 | returns level scale × 0.3 as an int; monster code passes the result as the level of a skill it casts (`docs/monsters.md` §1.2, `docs/skills.md`) | Observed; purpose Inferred there (this row said Unknown) |
-| 36 | 0x118c78 | 0, 4 or 10 by boss rank | Observed; purpose Unknown |
+| 36 | 0x118c78 | 0, 4 or 10 by boss rank. Purpose, from `docs/monsters-2.md` (2.1, 9.1): the level used for the Dodge skill against missiles — `MissileWeapon_onTouch` asks a non-player creature for slot 36 and, when the result is non-zero, passes it to the value query of skill 2 (0x152eec–0x152f50). Overrides: Marr 20 while guarding, else 5; IronGuardian 11 | Observed; purpose answered (was Unknown) |
 | 37 | 0x3c2730 | get team byte +0x310 | Observed |
 | 38 | 0x3c2748 | second resource of the class definition | Observed |
 | 39 | 0x3c2758 | returns 0; `Player_run` and `Player_processDamage` call it | Observed; purpose Unknown |
@@ -224,10 +224,14 @@ does not. **Observed.**
 - `Creature_draw` chooses a coloured glow from them in this order of precedence (later
   wins): counter 1, 2, 5, 6, 8, 9, 10, 11, 13; counter 7 overrides all. It then decrements
   the **first non-zero counter in index order** unless that is index 12 or the game is
-  frozen (0x10b898–0x10b8d4). **Observed.**
+  frozen (0x10b898–0x10b8d4). **Observed.** The loop stops at the first non-zero counter
+  whichever it is, so while counter 12 is non-zero and counters 0–11 are zero, counters
+  13–15 are not decremented either (executed, `docs/issues/dynamic-tests.md` i2).
 - `Creature_run` reads only counter 7 (+0x388): it becomes the slow amount, ramping at 2
   per frame from the start frame +0xf0, capped by resistance [4] and zeroed on death
-  (0x113738–0x1137e4). **Observed.**
+  (0x113738–0x1137e4). **Observed.** After the 30-frame ramp the amount is 60 for any
+  counter value above 30 and the counter itself only at 30 or below (0x113774–0x1137d8;
+  executed, `dynamic-tests.md` z6; `docs/spec/movement-camera.md` 4.6).
 - No code in this range writes any counter except through whole-object copies (clone).
 
 ## Pending damage

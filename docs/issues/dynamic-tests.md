@@ -96,6 +96,13 @@ run under all of them (a10–a12, b12), and where the answer moves the table say
 other float code run here (the cutscene audio comparison, the truncation in the sync
 hash) has margins thousands of times larger than the bit in question.
 
+Double precision is not part of that approximation (added from `docs/spec/combat.md`
+1.2 and `docs/spec/core.md` section 9): the executable has no double-format instruction,
+its double routines are integer code in the library, and the interpreter therefore
+executes them exactly. What they compute is not IEEE either — add, multiply and the
+conversion back to single all truncate toward zero and there are no denormals — so
+"exactly" means exactly as the console does, not as a host `double` would.
+
 **How the interpreter itself was checked**
 
 | Check | What it shows |

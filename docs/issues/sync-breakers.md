@@ -59,7 +59,8 @@ once followed by an unusual script order; a memory-card error; and a cheat file.
   (0x4f7134) is set, `g_gameCompleteFlag` (0x4f85c5) is clear and **every** player's kind
   is 2. **Observed.** `g_lobbyLaunch` is written by `frontend_startNetGame`: 1 when the
   lobby state word 0x506160 is non-zero (0x1e2258), 0 on the developer LAN path
-  (0x1e2270). Below, "all-lobby-character game" means a game where this function is true.
+  (0x1e2270). (Two more stores exist, both of 0: `frontend_start` 0x1e2050 and
+  `game_initCamera` 0x1e6bd8; `docs/issues/claims-audit.md` row 47.) Below, "all-lobby-character game" means a game where this function is true.
 
 ---
 
@@ -76,7 +77,7 @@ once followed by an unusual script order; a memory-card error; and a cheat file.
 | Both addresses are fixed (the record table, and a fixed place in the save buffer), so the address term is the same on every machine | Observed for the table; Inferred for the buffer (its two leading sections have fixed sizes, docs/audio-save.md) | 0x2184a4 |
 | Message 10 stores the sender's pair and counts. When the count equals `g_numPlayers`, every slot's received pair is compared with this machine's own pair for that slot | Observed | 0x1d90a4–0x1d9130 |
 | On any difference for slot *j*: `g_checksumFailed` is set (the HUD then shows a checksum-failure line for the rest of the session: the flag is cleared only at session start); and if *j* is not this machine's slot, `net_disconnectPlayer(j, 1)` | Observed | 0x1d91c8–0x1d91d4; HUD 0x1dbcf8; clear 0x1e6f48 |
-| `net_disconnectPlayer` marks peer *j* dropped on this machine only. If this machine is the first active one it also sends message 4, which kills *j*'s character on every machine | Observed | 0x13de68; `hud_onMsg` case 4 |
+| `net_disconnectPlayer` marks peer *j* dropped on this machine only. If this machine is the first active one it also sends message 4, which kills *j*'s character on every machine. The "first active" question is asked *after* the peer has been marked dropped (store at 0x13dec0, call at 0x13decc), so a machine that has just dropped every slot in front of its own answers yes: in a two-machine game the machine in slot 1 that sees a checksum difference for slot 0 drops slot 0 and queues message 4 for it (executed, `docs/issues/dynamic-tests.md` s4) | Observed | 0x13de68; `hud_onMsg` case 4; 0x13dec0, 0x13decc |
 | `g_numPlayers` is not reduced when a player leaves. After any drop the count can no longer reach it, so no comparison is ever made again in that session | Inferred (the count needs one message per original player; the writers of 0x4d8ae0 are set-up code and `save_load`) | 0x1d90f4 |
 
 ### What a mismatch does
@@ -161,7 +162,7 @@ seconds, and it stops working after the first player leaves.
 | It runs once per load of `hub`, `hub2`, `islgnome`, `stobonus`, after the warm-up loop and the net ready-wait, outside any tick | Observed | 0x3230c4, 0x3230f0 |
 | The cosmetic seed is made equal to the shared seed during the same load | Observed | 0x1e59c4 |
 | `game_clearLevel` (start of every load) stops every sound sequence (through `lump_unloadUpToLevel` → `sound_unloadAbove`), zeroes camera shake, and empties the scenery-animation table | Observed | 0x1713e8 → 0x215418; 0x1e4f80; 0x1e5078 |
-| From the level change until after stock generation, world pieces are not drawn (`g_worldPiecesDrawn` 0x44f054 is 0), and scenery animations are only registered when a piece is drawn | Observed | cleared 0x322e2c, set again 0x323140; test 0x189cc8; registration 0x187fe0–0x188004, reached only from the piece-draw call 0x189d94 |
+| From the level change until after stock generation, world pieces are not drawn (`g_worldPiecesDrawn` 0x44f054 is 0), and scenery animations are only registered when a piece is drawn | Observed | cleared 0x322e2c, set again 0x323140; test 0x189cc8; registration 0x187fe0–0x188004, reached only from the piece-draw call 0x189d94. The word has two more setters, 0x1e3c84 and 0x1e3cc4, called only from the lobby screens (0x33f924, 0x340274), not during a load (`docs/issues/claims-audit.md` row 51) |
 
 ### Why the seeds are still equal at stock generation
 

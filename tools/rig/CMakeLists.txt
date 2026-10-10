@@ -33,13 +33,19 @@ project(rta_rig)
 # Core options.
 #  DEBUGGER_INCLUDED  compiles the breakpoint check into translated blocks that contain a
 #                     breakpoint (no cost for other blocks); the rig's --break needs it.
-#  LOGGING_ENABLED    keeps Play!'s own log calls in a release build; they stay silent
-#                     unless the rig is run with --play-logs.
 #  ENABLE_AMAZON_S3   off: no remote disc images, and no need for the HTTP/S3 code.
+#  RTA_RIG_PLAY_LOGS  keeps Play!'s own log calls in a release build (written under
+#                     <data>/logs when the rig is run with --play-logs). Off by default:
+#                     with it on, the video thread formats a line of text for every
+#                     graphics register write whether or not it is printed, which
+#                     made the 3-D scenes of this game run about 20 times slower.
 set(DEBUGGER_INCLUDED ON CACHE BOOL "Core breakpoint support" FORCE)
 set(ENABLE_AMAZON_S3 OFF CACHE BOOL "Disc images from Amazon S3" FORCE)
 set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
-add_compile_definitions(LOGGING_ENABLED=1)
+option(RTA_RIG_PLAY_LOGS "Compile Play!'s log calls in (slow; for diagnosing the emulator)" OFF)
+if(RTA_RIG_PLAY_LOGS)
+	add_compile_definitions(LOGGING_ENABLED=1)
+endif()
 
 add_subdirectory(${PLAY_SOURCE_DIR}/Source ${CMAKE_CURRENT_BINARY_DIR}/PlayCore)
 

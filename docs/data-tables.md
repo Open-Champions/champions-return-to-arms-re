@@ -108,7 +108,13 @@ token      := word int                e.g. one value
 - The text is copied to a 208-byte stack buffer and cut at each `+` (`strchr` at
   `0x106a9c` and `0x106b64`). The name is everything before the first `+`. **Observed.**
 - Each token is tried against 43 `sscanf` formats in a fixed order (`0x106b90–0x107bd0`);
-  the first format that converts at least one value wins. The formats are the strings at
+  the first format for which `sscanf` returns non-zero wins (the test at `0x106ba4` is
+  "not zero"; the earlier version said "converts at least one value"). The difference
+  matters, executed in `docs/spec/items.md` §3.1: the library's `sscanf` returns −1 when
+  the piece ends before the first value, so an empty piece, a cut word and a bare word
+  without a number all match — the first format whose word starts with the piece — and
+  store that code with value 0. A descriptor ending in `+` gains modifier 0x23 with value
+  0; four pieces of the executable's own preset table are matched this way. The formats are the strings at
   `0x520190–0x5204b8`: a lower-case word immediately followed by `%d`, `%d-%d`, `%d,%d` or
   `%d,%d-%d`. Values are decimal and may be negative (the prefix table uses negative
   percentages). **Observed.**
@@ -121,8 +127,12 @@ token      := word int                e.g. one value
   prints them with the number of values each takes.
 - After the last token, a variant argument of −1 makes the parser draw the visual variant
   from `g_randSeed` (`item_randomizeVariant` 0x1046e0). **Observed.**
-- `requiredclass` takes one integer. **Unknown** whether it is the class index or the
-  index plus one; who tests code 0x13 was not traced.
+- `requiredclass` takes one integer. The earlier version left **Unknown** whether it is
+  the class index or the index plus one, and who tests code 0x13. Answered
+  (`docs/spec/items.md` §6, executed): it is the class index **plus one**. The test is the
+  last one in `inventory_checkEquipAllowed` 0x1c4948 — a non-zero value that differs from
+  record class + 1 gives reason 1 — and that function is the only reader of all the
+  `required…` codes; it also applies class rules by weapon subtype, damage type and cloth.
 
 ### 1.4 Weapon and armour statistics
 
@@ -253,6 +263,21 @@ expValue (+0xd8, float) = float(int(pow(exp * L, 1.322) * 8))
 if the object has the Dead property:  hp = 0
 ```
 
+Four corrections to the block above from `docs/spec/combat.md` section 4.2, which
+executed the function against a reference model (the block is left as first written):
+
+- `pow` is `powf` — single precision (calls at 0x10a78c and for the other three powers).
+  In the hit-point line only `(r + 15.5) × power` goes through the library's software
+  doubles (0x10a79c–0x10a7d8), and those truncate instead of rounding. `powf(L, 1.0)` is
+  exactly `L`. A rebuild that uses a host `pow` or host doubles gets different hit points
+  in the last bit.
+- The player-count damage scaling is skipped not only for the type name "droid" but also
+  when the object has no type name at all (0x10a720), and the name compare ignores case
+  (0x10a72c).
+- `exp *= n` is computed as `exp × ((n − 1) + 1.0)`; same value.
+- The `Dead` property sets `hp = 0` whether or not hit points were rolled, i.e. also when
+  the last argument is 0 (0x10a980); `maxHp` keeps its value.
+
 - The float passed to `Creature_ctor` as "maximum hit points" by each class constructor
   is overwritten by this function whenever a type name is supplied, which is every
   factory-made creature. It only matters for creatures built without a type name.
@@ -313,6 +338,11 @@ several:      share = 0.6 for the killer, 0.4 for the others, 0.5 for all when n
 class 0 only: the killer also gains mana = monster maxHp / 30 (capped at max mana)
 ```
 
+The last line is right for several players only. With one player the class-0 mana gain
+needs no killer: it is applied whoever or whatever made the kill (0x112200); with several
+it goes to the killer alone (0x112100). The gain is applied after `player_giveExp`, so
+after a level-up refill (`docs/spec/combat.md` section 5, executed).
+
 Skipped for creatures with the `Dead` property or flag 0x100000000. **Observed.**
 
 ## 4. Characters
@@ -347,7 +377,10 @@ load limit = strength + 125 + 15 * rank of passive 0x40   (capped at 9999)
 ```
 
 `level` is record +0x59; the statistics are the effective ones (+0x90: base plus item
-modifiers 7–10). The six constants are float immediates chosen by a chain of class tests
+modifiers 7–10 — and plus figurines: `player_recalcArmor`, called between the bonus
+bytes and the maxima, adds 5 to 25 per figurine in bag 2 (definition flag bit 45) to one
+of the four statistics, so figurines raise maximum hit points, mana and the load limit
+but not the bonus bytes; `docs/spec/combat.md` sections 7 and 8, executed). The six constants are float immediates chosen by a chain of class tests
 at `0x1b6740–0x1b694c`: defaults first, then overrides for class 0, 2, 1, 4, 3, 5, 6 in
 that order. **Observed.** `--table class_formulas` evaluates the chain for each class.
 
@@ -378,7 +411,13 @@ then multipliers from skills 60 and 61 (`1.15 + 0.05 × rank`, applied by the we
 damage-type bit), the passive with mask 0x40000 (+2.5 % per rank when a second weapon is
 equipped), the archery and throwing skills, and status counters 2 and 4 (×1.5, ×1.2).
 **Observed** for the first three lines (`0x1b71b8–0x1b7270`); the multiplier section was
-read from the decompile only. Record +0xcc is what melee passes to `damage_apply` as
+read from the decompile only. It has since been executed against a reference model
+(`docs/spec/combat.md` section 9), which adds two things this summary gets wrong or
+leaves out: in the thrown-weapon branch the maximum is raised by the share of the *new*
+minimum, not of the maximum (0x1b7478); and the dual-wield passive multiplies only the
+factor of the weapon's own damage type (type 1 or type 8). The full order of the
+multipliers, including Ancestral Call and the class-5 and class-6 state bonuses, is in
+that section. Record +0xcc is what melee passes to `damage_apply` as
 `attack`, where it is compared with the victim's armour (`docs/gameplay.md` §2.1, §2.5).
 
 ### 4.6 Skill trees, passives, skills
@@ -450,7 +489,7 @@ Observed):
 
 | Function | Effect |
 |---|---|
-| `game_loadLevel` 0x1e55c0 (`0x1e5b98–0x1e5c94`) | `g_levelMonsterLevel` = level-table byte + 2 on difficulty 1; `(byte + 2) × 0.75 + {34, 61, 88, 115}` on difficulties 2–5; 3.0 in PvP mode B; then forced to 1.0 in `stomedal` and 2.0 in `innpit` |
+| `game_loadLevel` 0x1e55c0 (`0x1e5b98–0x1e5c94`) | `g_levelMonsterLevel` = level-table byte + 2 on difficulty 1; `(byte + 2) × 0.75 + {34, 61, 88, 115}` on difficulties 2–5; 3.0 in PvP mode B, but only on difficulty 1 — the difficulty 2–5 lines are computed from byte + 2 after the PvP store and overwrite it (0x1e5ba4–0x1e5c48; `docs/spec/combat.md` 4.1); then forced to 1.0 in `stomedal` and 2.0 in `innpit` |
 | `Creature_setStats` 0x10a620 | monster hit points ×1.5, ×2, ×2.5, ×3 on difficulties 2–5 (not in those two levels) |
 | `level_monsterLevelTimesDifficulty` 0x1ebf70 | monster level × {8, 9, 10, 11, 12}: budget for chests and script rewards |
 | `item_generateFlag35Entry` 0x106214, `item_generateFlag45Entry` 0x106658 | minimum definition level for reagent and figurine drops: none, 17, 27, 32, 38 |
@@ -462,8 +501,11 @@ Because everything a monster has is multiplied by `g_levelMonsterLevel` (3.2), t
 row is the main difficulty lever: the higher difficulties replace a level's 3–36 scale by
 roughly 36–142.
 
-Other writers of `g_levelMonsterLevel`: `arena_startWave` 0x305ed4, and two constructors
-that swap it temporarily (`Skelight_ctor` 0x2a8770, `CastBadger_loadState` 0x245568).
+Other writers of `g_levelMonsterLevel`: `arena_startWave` 0x305ed4, and four functions
+that swap it temporarily — save, set, restore around one call — (`Skelight_ctor` 0x2a8770,
+`Skelight_loadState` 0x2a90b0, `CastBadger_ctor` 0x244e4c, `CastBadger_loadState`
+0x245568; the earlier version listed two of the four, `docs/issues/claims-audit.md`
+row 80).
 Which difficulties a player may select is decided in the front end from flag bits at
 0x4f8f38 (`options_get4f8f38Level` 0x1ec448); **Unknown** what sets them. Mission
 availability is stored per difficulty (record +0x4bbf + difficulty × 13 + mission).
@@ -607,7 +649,7 @@ the function named unless stated.
 | Boss and mini-boss extra drops | `Creature_dropLoot` 0x10f2c8 | class tests |
 | Drop sequence and chances | `loot_generateDrops` 0x100d54 | `docs/startup.md` |
 | Random item generation, affix choice, required level | `item_generateWithAffixes` 0x104ca4, `item_generateFromSpecialTable` 0x104758, 0x106214, 0x106658, 0x108590 | |
-| Item value | `item_getValue` 0x1024a8 | not fully transcribed |
+| Item value | `item_getValue` 0x1024a8 | not fully transcribed here; transcribed and executed in `docs/spec/items.md` §5 |
 | Item weight compression | `item_getWeight` 0x103e08 | |
 | Descriptor token → modifier code | `item_parseDescriptor` 0x1069b8 | 1.3 |
 | Hit, miss, critical, mitigation, elemental procs | `damage_apply` 0x1e8230 | `docs/gameplay.md` §2 |
@@ -615,7 +657,7 @@ the function named unless stated.
 | Level-up rewards | `player_giveExp` 0x1d3150 | 4.4 |
 | Max hit points, mana, load limit per class | `player_recalcStats` 0x1b6458 | 4.3 |
 | Player damage and attack rating | `Player_recalcDamage` 0x1b7158 | 4.5 |
-| Player armour | `player_recalcArmor` 0x1b5790 | not read here |
+| Player armour | `player_recalcArmor` 0x1b5790 | not read here; read and executed since — `docs/spec/combat.md` section 8: resistances, figurines, armour from the 17 equipped items, and the `healthbonus` / `manabonus` modifiers (codes 5 and 6), which it adds to the maxima and its caller `player_recalcStats` then overwrites (0x1b69bc, 0x1b69c4) |
 | Regeneration | `Player_regenHealth` 0x1b3b90, `Player_regenMana` 0x1b3900 | `docs/player.md` |
 | Model → class | `player_initNewCharacter` 0x1b1d70 | 4.1 |
 | Starting gear | `player_giveStartingItems` 0x1acc78 | 4.7 |
@@ -697,13 +739,17 @@ No patches are proposed and no ledger rows: nothing here touches online play.
 ## 11. Not done, and open questions
 
 - `item_getValue`, the shop budget arithmetic and `player_recalcArmor` were not
-  transcribed; a rebuild needs all three.
+  transcribed; a rebuild needs all three. (Two of the three are done since, both executed
+  against the original: `item_getValue` in `docs/spec/items.md` §5, `player_recalcArmor` in
+  `docs/spec/combat.md` section 8. The shop budget arithmetic is still open.)
 - The boss branches of `Creature_dropLoot` (which class gets which extra calls) were read
   only as far as their shape.
 - The multiplier half of `Player_recalcDamage` was read from the decompile, not the
-  disassembly.
+  disassembly. (Executed since: `docs/spec/combat.md` section 9; see 4.5.)
 - Who tests modifier code 0x13 (`requiredclass`) and the other `required…` codes, and
-  whether the class value is 0- or 1-based.
+  whether the class value is 0- or 1-based. (Answered since: `inventory_checkEquipAllowed`
+  0x1c4948 tests all of them, and the class value is 1-based; §1.3 above and
+  `docs/spec/items.md` §6.)
 - Level table +0x05, +0x0c, +0x10, +0x14, +0x18, +0x1c, +0x2c and the bits of +0x20.
 - Word 0x4f713c (suppresses player-count scaling of monsters) and the flag bits at
   0x4f8f38 (difficulty unlock): writers not found.
