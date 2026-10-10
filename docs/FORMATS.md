@@ -10,9 +10,11 @@ little endian unless noted. "Unknown" means nobody has looked yet.
 | `script.scr` level script | understood, all 51 opcodes in use decoded | `tools/scr.py` |
 | `.cut` cutscene | header and key records understood; most camera key types unnamed | none yet |
 | `objects.ob` object placement | property strings readable; record layout not written down | none yet |
-| `.dbin`, `*_dialog.bin` dialog | unknown beyond "indexed by cutscene dialog keys" | none |
+| `.dbin` dialog trees | understood: 0x448-byte nodes with condition script, text key, voice name, speaker and choices — see [formats/anim-audio.md](formats/anim-audio.md) | `tools/anim_audio_info.py` |
+| `*_dialog.bin` voice-stream directory, `.VAT` streams, `.vag` samples | understood: PS2 ADPCM throughout; directory gives offset, rate, stereo flag and language | `tools/anim_audio_info.py` (can decode to WAV) |
+| `.anm` animation | understood: bind offsets, joint hierarchy, velocity-coded key stream at 60 ticks per second; not yet compared against the game on screen | `tools/anim_audio_info.py` (can dump tracks to CSV) |
 | `.world` level geometry | understood: header, chunk tree, render batches (ready-made VIF packets), terrain heights and flags, path grid; a few fields still open — see [formats/world.md](formats/world.md) | `tools/world_info.py` |
-| models, textures, animation (`.vif`, `.tex`, `.anm`), audio | unknown | none |
+| models and textures (`.vif`, `.tex`) | in progress | none yet |
 
 ## GOB
 

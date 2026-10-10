@@ -1,0 +1,24 @@
+# ---- animation and audio formats (docs/formats/anim-audio.md); only addresses nobody had named ----
+# functions
+001183d0	anm_setEventSlots	(t0..t3 seconds, -, resourceTable, index, m0..m3): writes the four {float seconds, u8 mask} event slots at +0x14..+0x33 of the .anm held by table entry index; same body as creature_setDefEntryParams but takes the table itself; 1 caller
+00170cd8	sound_groupVolumeAtten	(group, n) -> g_soundGroupVolume[group] * g_semitoneTable[64 - rand(0..2n)], clamped 0..1; g_cosmeticSeed; caller ambient_update
+00211190	stream_queueRandomByPrefix	(directory, fileName, stream, prefix, flags): counts directory records whose name starts with prefix and whose language is g_language, queues one of them at random (g_cosmeticSeed); 2 callers
+00211548	stream_startQueued	per stream: when the first queued entry is not held (8) and need not wait (4) it becomes the current entry; a stop marker (2) first fades the driver volume to 0 then stops; returns 1 if a stream changed; caller stream_serviceQueues
+002149d0	ambient_update	counts down every ambient.bin group and, when stream 2 has no music entry (0x20) active or queued, queues one not-yet-played name of the group on stream 2 with flag 0x80
+00214eb0	ambient_parse	(text or 0): lower-cases the text and fills g_ambientGroups from lines 'min-max', up to two numbers, then names containing .vag; caller game_loadLevel
+002160c0	stream_playGlobalRandom	(stream, prefix, flags): stream_queueRandomByPrefix on the mouth.vat directory; caller player_voice
+002169c8	sample_pitchFromRate	(sample record): big-endian rate at +0x10, times 4096, divided by 48000
+00216a68	bswap32	byte order swap; used on the big-endian fields of a sample header
+# data
+003e5c40	g_vu0PoseProgram	start of .vutext: DMA tag (QWC 0x27) and VIF MPG code loading 77 VU0 instructions at micro address 0; entry 2 stores an identity matrix, entry 4 builds one joint's matrix (the two VCALLMS in anim_buildPose)
+0041bac8	g_soundGroupVolume	float per sound group; index is the .anm byte +0x3c or the first number of an ambient.bin group; rewritten by animsound_updateGroupVolumes
+0044fddc	g_language	language index compared with the s16 at +0x4a of stream directory records; 0 on the NTSC disc's tables
+004f89e0	g_sampleCount	number of rows in g_sampleTable
+004f89f0	g_streamBufferSizes	three ints: bytes of IOP ring buffer per stream (0x19000, 0x1e000, 0x40000 in the file)
+004f8a28	g_soundGroupLimit	byte per sound group: cap on simultaneous sequences and on animation sound events per drawn frame
+004f8b54	g_ambientGroupCount	groups parsed from ambient.bin (at most 16)
+007b9238	g_semitoneTable	128 floats, 2^((i-64)/12); filled by anim_init; pitch and volume steps of animation sound events
+00872bf0	g_sampleTable	16 bytes per registered sample: name pointer, sample record, end address in SPU memory, 0; searched by sample_findByName
+008723e8	g_mouthDirRef	cached resource reference to dialog.bin of mouth.lmp (the directory of mouth.vat)
+00877160	g_soundRpcClient	SIF RPC client data for the sound driver (server id 0x163a5, bound in sound_init)
+00877250	g_ambientGroups	16 x 0x2a8: min s, max s, name count, countdown ticks, volume group, attenuation, then 16 x (40-char name + played byte)
