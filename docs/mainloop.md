@@ -248,7 +248,7 @@ is pending. Observed:
 | 5 | 0x323264 | `tasks_run(n, 0)` | n simulation ticks; no input is read between the ticks |
 | 6 | 0x323288 | timer 0 delta → `g_lastSimTimerDelta` | never read |
 | 7 | 0x323284 | `tasks_call(0, 1)` | the draw pass, once |
-| 8 | 0x32328c–0x32334c | fade wait / terrain-late test | if `g_fadeWaitFrames` ≠ 0: when terrain streaming is idle (0x17fe88) it counts down and darkens the screen (`gfx_setScreenDarken(0x40)`); forced to 0 after 1500 displayed frames; the frame's sorted draw packets are discarded (`gfx_resetSortedPackets`). Otherwise: if the terrain "late" flag 0x41c181 is set, `g_terrainLateFrames` counts up and above 21 asks for half-rate display (0x32333c) |
+| 8 | 0x32328c–0x32334c | fade wait / terrain-late test | if `g_fadeWaitFrames` ≠ 0: when terrain streaming is idle (0x17fe88) it counts down and calls `gfx_setScreenDarken(0x40)` (called "darkens the screen" in the earlier version; the value is the FIX alpha of the present pass, which mixes the new image with the previous one and does not darken by itself — `docs/spec/render-pipeline.md` section 8); forced to 0 after 1500 displayed frames; the frame's sorted draw packets are discarded (`gfx_resetSortedPackets`). Otherwise: if the terrain "late" flag 0x41c181 is set, `g_terrainLateFrames` counts up and above 21 asks for half-rate display (0x32333c) |
 | 9 | 0x323350 | `mainloop_pollAmbientAudio()` | |
 | 10 | 0x323358–0x323380 | `sound_update()`, `animsound_updateGroupVolumes()`, `lump_pollAsync()`, terrain streaming service 0x17d830(−1) (works from `g_cameraFocus`), `picCache_serviceRequests()`, wake the worker thread 0x17fce0 | per-machine services |
 | 11 | 0x3233bc–0x32343c | warm-up tail | if `g_warmupFrames` ≠ 0: reset to 10 while streaming is busy, else count down; forced to 0 after 1500 displayed frames; the frame's draw packets are discarded; when it reaches 0 the colour offset is set to black-fading-in and the display un-blanked |
@@ -342,6 +342,12 @@ Ticks = `engine_frameStep()`, capped at 2 again at 0x323234–0x323240. So:
 - So a machine can run at most as many ticks per displayed frame as its own display mode
   allows (1 or 2). It cannot burst to catch up after a stall. A machine that is short of
   input runs 0 ticks, keeps drawing, and keeps predicting.
+- Consequence for a slow machine (`docs/issues/lag.md` C5, FINDINGS L5): the rate below
+  which it holds the others back is 60 pictures per second, not 30, for as long as its
+  display is at full rate. There a call stands for one step however long the picture took,
+  so every missed field costs every other machine one frame of lead. Only after 32 late
+  pictures in a row, when the display has dropped to half rate and a call stands for two
+  steps, is 30 per second neutral.
 - While a level change is pending the ticks inside `net_frameLoop` do nothing, so every
   machine stops on the same lockstep frame.
 
@@ -363,13 +369,22 @@ top of the next pass:
    its launch in the front end instead.
 4. Unless positions are being restored (0x41b51c, 0x41b51e), `g_ambientCountdown = 60`.
 5. Display blanked; local camera reset (`Camera_reset`) unless flag 0x4f8f28 is set, or
-   the memory-card state is 8 with flag 0x4f8f2b clear (0x322dc0–0x322e00).
+   the memory-card state is 8 with flag 0x4f8f2b clear (0x322dc0–0x322e00). The second
+   condition is never true: no call of `memcard_setState` passes 8
+   (`docs/issues/arena-entry.md`, corrections).
 6. `mainloop_loadRequestedWorld()` 0x320edc:
    - if a level is current and no `deathTask` is running, its object state is stored into
-     the save buffer (`save_storeLevelState`);
+     the save buffer (`save_storeLevelState`). The caller tests the result and would
+     return at once on non-zero (0x320f44–0x320f4c), but the function returns 0 on every
+     path, so that return is dead (`docs/issues/arena-entry.md`);
    - if the act changed (tested only outside the front end, and skipped when flag
      0x4f8f28 is set or a `deathTask` is running): save buffer cleared, quests and quest
-     variables cleared, flagged items removed;
+     variables cleared, flagged items removed. Flag 0x4f8f28 is `g_cardXferLatch`, the
+     "card load or save in progress" latch: set when a slot is chosen in the load or save
+     screen, cleared when the loaded level has been entered or the "saved" box closes.
+     Transient in normal use, but a save that ends in the card-error state leaves it set,
+     and a machine with a stuck latch skips this block (and the camera reset of step 5) at
+     later act changes (`docs/issues/sync-breakers.md` section 4c, B10, B11);
    - the previous name is kept in `g_prevLevelName`; the request is split at `_` into
      `g_levelName` and `g_levelSubName`; `g_pendingLevel` is emptied;
    - `game_loadLevel(g_levelName)` — this starts the loading-screen thread first thing;
@@ -477,12 +492,12 @@ simulation.
 | P1 | The cancel of a pending level change (step C) runs once per displayed frame outside the lockstep and depends on `memcard_isBusy()`, this machine's memory-card state. If a level change is requested while every player is at 0 hit points, a machine whose card screen is idle cancels it and a machine whose card is busy loads the level | Observed code, Inferred consequence | 0x322c00–0x322ca8; the test at 0x322c3c; write at 0x322ca8 |
 | P2 | Thirteen of the 23 run tasks are not simulation, yet run inside every lockstep tick (table below). Their shared effects have to go through game messages; each one that does not is a desync source | Observed | section 2 table; `net_frameLoop` 0x13aee0 |
 | P3 | `save_daemonRun` (run task) counts the autosave countdown only when this machine's card is idle, no full-screen menu is open here and the local camera is in follow mode, then calls `save_game`. The snapshot frame can differ per machine. Already described in docs/audio-save.md | Observed | 0x2188d8, 0x218984, 0x2189cc |
-| P4 | `gameMiscSync` advances `g_randSeed` every 1800th tick, but only when `net_allPlayersState2()` holds (flag 0x4f7134, flag 0x4f85c5, a field of every player record). If those differ between machines the shared seed differs | Observed code; whether the inputs can differ is Unknown | 0x1e3e8c–0x1e3ee0; 0x1ec5d8 |
-| P5 | `hud_tickMessage`, called from the `HUD Run` task inside the tick, counts the HUD message timer 0x4f66e0 down only while this machine's `g_warmupFrames` is 0. Readers of the timer found: the boss-meter draw and one camera function — both per machine, so no shared effect found | Observed | 0x1d935c; readers 0x1d93b8, 0x207dc4 |
+| P4 | `gameMiscSync` advances `g_randSeed` every 1800th tick, but only when `net_allPlayersState2()` holds (flag 0x4f7134, flag 0x4f85c5, a field of every player record). If those differ between machines the shared seed differs. They cannot: the front-end flag is cleared at launch on every machine, `g_lobbyLaunch` 0x4f7134 comes from the same test on every machine of a lobby game, `g_gameCompleteFlag` 0x4f85c5 is written by a lockstep script and by `game_resetState`, and the record kind bits are transferred at launch (`docs/issues/sync-breakers.md` section 6a) | Observed code; the inputs cannot differ between machines of one retail game (was Unknown) | 0x1e3e8c–0x1e3ee0; 0x1ec5d8 |
+| P5 | `hud_tickMessage`, called from the `HUD Run` task inside the tick, counts the HUD message timer 0x4f66e0 down only while this machine's `g_warmupFrames` is 0. Readers of the timer found: the boss-meter draw and 0x207dc4, which the earlier version called a camera function; the address is a call inside `Vehicle_run` 0x207c3c (the driver help text, which also clears vehicle +0x408; `docs/issues/arena-desync.md`). The first is per machine; the second is simulation code, and its effect on the vehicle was not followed here | Observed | 0x1d935c; readers 0x1d93b8, 0x207dc4 |
 | P6 | The `warpMenu` run task returns early on this machine's display-list fill, `g_warmupFrames` and `g_localMenuOpen` before it looks at the pads. Its effects are the local pause menu and a menu-state message | Observed | 0x18e014–0x18e084, 0x18e2a4 |
 | P7 | The task list is itself state that simulation code reads by name: `Player_run` asks whether `jumpgate` or `missionmenurun` is running (0x1a56ac, 0x1a56c0); so do the recall-button poll 0x1bcf5c, `hud_run` 0x1dba44, `save_game` 0x2181d0 and `mainloop_loadRequestedWorld` (`deathTask`). Those tasks are opened from lockstep code, so this is shared as long as every opener is. The draw-pass names (`pauseMenu`, `playerSelection`, `missionmenudraw`) are per machine and are queried by `game_isFrozen` (offline branch only), `cut_runFrame` 0x199c98 and menu code | Observed list; Inferred that the run-task openers are all lockstep | call sites of 0x19e5e8 |
 | P8 | Level entry does shared work outside any tick: object construction, `world_findFreeSpot` draws from `g_randSeed`, the deferred script calls, shop stock. It is the same work at the same lockstep frame on every machine, provided the state going in is the same | Observed code, Inferred safety | 0x320edc, 0x322e6c, 0x3230c4 |
-| P9 | The load warm-up loop runs a per-machine number of passes of `Camera_update`, `drawWorld` and `cut_runFrame(1)`. `cut_setup` (creates and hides objects) runs in the first pass on every machine. Whether `cut_evalCamera` 0x19712c accumulates anything per call is Unknown | Observed | 0x322eb0–0x322fd0; guards 0x199bd8–0x199c10, 0x199d68 |
+| P9 | The load warm-up loop runs a per-machine number of passes of `Camera_update`, `drawWorld` and `cut_runFrame(1)`. `cut_setup` (creates and hides objects) runs in the first pass on every machine — that applies only to a cutscene started during the load (`preStart`, `start`, the load-time post action or the promoted deferred queue); a cutscene started from a trigger inside a tick is not touched by this loop. Whether `cut_evalCamera` 0x19712c accumulates anything per call was Unknown; answered in `docs/issues/arena-entry.md` section 3.2: it recomputes the camera from the clock on every call and keeps one latch, the time of the last camera cut for which it raised a fade wait (0x44fd00, zeroed by `cut_start`) | Observed | 0x322eb0–0x322fd0; guards 0x199bd8–0x199c10, 0x199d68 |
 | P10 | `engine_frameStep()` (pacing) is called inside the tick by `pad_updateRumble` only; it scales rumble timers of local slots. Not shared state | Observed | 0x1747f0, 0x174858, 0x1748f0 |
 | P11 | Offline only: both seeds come from the CPU cycle counter at session start. In a net game the session start does not touch `g_randSeed`; `net_startSync` zeroes it | Observed | 0x3229f0–0x322a04; 0x13dce0 |
 | P12 | In a net game `g_simFrame` equals `g_netFrame` only during a tick. Between ticks it holds a stale per-machine value, so draw code that uses it as a clock is per machine, and any draw code that stored it into shared state would be a problem. Not audited | Observed mechanism | `net_frameLoop` 0x13af98, 0x13b28c |
@@ -614,9 +629,12 @@ may run per displayed frame, which is by design.
   at 0 hit points in a net game (for example a trigger volume or timed script firing on
   the tick the last player dies)? Needs the script list and a two-machine test.
 - P4: can flag 0x4f7134, flag 0x4f85c5 or the record field tested by
-  `net_allPlayersState2` differ between machines?
+  `net_allPlayersState2` differ between machines? (Answered: no —
+  `docs/issues/sync-breakers.md` section 6a.)
 - P9: read `cut_evalCamera` 0x19712c for per-call accumulation (it calls
   `mainloop_startFadeWait` at 0x198e98, which is harmless, but was not read further).
+  (Answered in `docs/issues/arena-entry.md` section 3.2: one latch, otherwise a function
+  of the clock.)
 - Whether terrain streaming (which follows the local camera) can change the result of
   any simulation query.
 - The 32-record capacity of the task table against the worst simultaneous task count.

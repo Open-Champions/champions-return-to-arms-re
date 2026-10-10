@@ -2,9 +2,13 @@
 """Which gameplay functions can reach machine-local state?
 
 For each virtual function of the named classes, follow direct calls (jal) to a fixed depth
-and report every read of state that is not part of the lockstep simulation: the particle
-seed, the camera, the local player slot, audio hardware status, the hardware timer and
-render-loop counters. Virtual calls are not followed, so this under-reports.
+and report every read of state that is not part of the lockstep simulation: the cosmetic
+seed (g_cosmeticSeed), the camera, the local player slot, audio stream status, the disc
+busy test (cd_isBusy), the hardware timer and render-loop counters. Virtual calls are not
+followed, so this under-reports. It also over-reports: the address tracker never forgets a
+register that is overwritten, and every "hardware timer" line it has printed so far is a
+false positive (the constant 0x10000000 used as a flag bit or display-list tag; FINDINGS
+D33). The tracker's other limits are listed in docs/issues/rescan.md section 9.
 Function bodies come from ghidra_funcs.tsv when present.
 
   python3 localstate.py <elf> Class [Class ...]
@@ -16,13 +20,13 @@ import symtab
 from vtab import find_vtables
 
 LOCAL_DATA = {
-    0x404460: "particle seed", 0x44f048: "camera focus", 0x44f04c: "camera focus",
+    0x404460: "cosmetic seed", 0x44f048: "camera focus", 0x44f04c: "camera focus",
     0x44f038: "camera position", 0x506048: "render settle counter", 0x44fdd0: "render frame counter",
     0x10000000: "hardware timer",
 }
 LOCAL_CALLS = {
     0x13e1f0: "local player slot", 0x216480: "audio stream position", 0x211b20: "audio stream status",
-    0x172be8: "audio busy", 0x1ebd90: "near camera (480)",
+    0x172be8: "disc busy (cd_isBusy)", 0x1ebd90: "near camera (480)",
 }
 CONDITIONAL = {0x1e77c0: "isNearView (camera only during net cutscenes)",
                0x14db08: "obj_updateActive (camera only during net cutscenes)"}

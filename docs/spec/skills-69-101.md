@@ -2155,8 +2155,9 @@ Run (0x3151b4), every frame:
 6. Phase 3: particles (helper 0x315610); flag 0x2 is cleared once more than half done. When
    clock ≥ phase end: phase 0.
 
-Absorbing a hit — `SpellSpiritShield_playHitEffect` 0x315888 (the name in the symbol file
-undersells it: this is the roll). `damage_apply` calls it for a victim carrying the spell
+Absorbing a hit — `SpellSpiritShield_rollAbsorb` 0x315888 (named
+`SpellSpiritShield_playHitEffect` in the symbol file when this was written, which undersold
+it: this is the roll; renamed in the second correction pass). `damage_apply` calls it for a victim carrying the spell
 when the hit does not have flag 0x40 (`docs/gameplay.md` §2.5 step 12):
 
 ```
@@ -2856,7 +2857,8 @@ quirks a rebuild should reproduce, not repair, if it is to play like the origina
    byte load, which a scan for word loads at displacement 0x3c8 would miss).
 3. `symbols/skills.tsv`: `SpellSpiritShield_playHitEffect` (0x315888) is the absorb roll —
    it draws from the shared generator and returns whether the hit is absorbed; the sound is
-   incidental. The name is left as it is.
+   incidental. (Since renamed `SpellSpiritShield_rollAbsorb`; see
+   `docs/issues/doc-corrections.md`, second pass.)
 4. `docs/creatures.md`, "The attached-spell list": "caster at +0x18, skill id at +0x1c"
    describes the `SpellTag` marker only (`creature_findSpell` tests the type before reading
    them). Other Spell classes use +0x18 for whatever they like.

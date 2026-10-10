@@ -54,8 +54,8 @@ Slot numbers are `tools/vtab.py` numbers (slot n is at table offset n×8).
 | 20 | "is this object my enemy" | given | 4 overrides here |
 | 23 / 25 / 26 / 28 | creature base helpers called from every run function with small integer arguments (table offsets 0xbc, 0xcc, 0xd4, 0xe4). `docs/creatures.md` names them: 23 pick target, 25 can see target, 26 turn toward a point, 28 on death | Observed there (this row said Unknown) | not overridden in this area |
 | 27 | **set AI state** (new state) | Observed | every run function ends by calling it with the next state; overridden by 71 of 73 creature classes; each override starts with the common filter `Creature_filterState` (0x10a9c0), picks the animation for the state and stores the state at +0x232 |
-| 35 | creature: returns the level value handed to a skill when the monster casts it | Inferred | its result is always the first argument of the skill's cast call (Horsemen_run state 0x17, Cazic_run states 7, 0xc, 0xd) |
-| 38 | creature: second model argument for `Creature_draw` | Inferred | Cazic_draw 0x24aa6c |
+| 35 | creature: returns the level value handed to a skill when the monster casts it. True for casts through skill slot 2; the arrow constructors of the bow-carrying monsters are given `(int)g_levelMonsterLevel` unscaled instead (0x25c7d8, 0x2a7274; `docs/spec/skills-35-68.md` section 4.6) | Inferred | its result is always the first argument of the skill's cast call (Horsemen_run state 0x17, Cazic_run states 7, 0xc, 0xd) |
+| 38 | creature: the texture `Creature_draw` passes to `model_draw` with the model (class block +0x14 unless overridden). The earlier version called it a "second model"; the functions named `…_getSecondModel` in `symbols/monsters.tsv` are overrides of this slot and return a texture (`docs/formats/model-texture.md`) | Inferred | Cazic_draw 0x24aa6c |
 
 A skill is called through its own table at skill+0x60: offset 0x0c answers "can this caster
 use it now" (one argument, the caster), offset 0x14 casts (level, caster, position, facing)
@@ -138,13 +138,13 @@ Offsets into any creature-derived object. "How" names where the use was read.
 | Offset | Type | Meaning | How |
 |---|---|---|---|
 | +0x0c | u32 | object flags; in this area also 0x2 hidden, 0x8 dead, 0x400000 "busy" (tested by Savepoint), 0x4000 set by the dead-body handler, 0x8000000 set only around one move call | 0x28d6dc, `Creature_deadUpdate` (0x1108a0), 0x119e38 |
-| +0x24 | ptr | per-class static block: model at +0xc, second model at +0x14, animation handles from +0x1c upward in 8-byte steps | every setState override indexes it |
+| +0x24 | ptr | per-class static block: model at +0xc, the model's texture at +0x14 (the class tables list `x.vif` followed by `x.tex`; the earlier version called it a second model — `docs/formats/model-texture.md`), animation handles from +0x1c upward in 8-byte steps | every setState override indexes it |
 | +0x2c | ptr | zero-terminated list of `key=value` parameter strings from the level file (read with `obj_getPropStr` (0x14f4c0) string / `obj_getPropInt` (0x14c880) integer / `obj_getPropFloat` (0x14c9c0) float) | `obj_runActionScripts` (0x14dcc8) walks it |
 | +0x34 | ptr | type name; generators write it on what they spawn | Generator_run 0x265938 |
 | +0x50 | ptr | weapon helper sub-object, embedded in armed monsters. Its class is `WeaponShield` (table 0x50cda0, base `Weapon1`) in Horsemen and UndeadKnight and plain `Weapon1` (table 0x50cf40) in Skelight; other armed classes use one of these or `Weapon2` (0x50ce70). The earlier version gave table 0x50cda0 for all three and no class name | Horsemen, Skelight, UndeadKnight ctors (the last table address each loads for the helper: 0x271d94, 0x2a87e8, 0x2b3f64) |
 | +0xa8 | u64 | creature flags; here: 0x1000000 corpse sinks and is deleted, 0x4000000 MummyKing ignores damage, 0xc00000 and 0x8000000 select the leash rule, 0x20000000000 set on boss death | `Creature_deadUpdate` (0x1108a0), 0x29c544, `Creature_isAwayFromHome` (0x10eed8), 0x24c118 |
 | +0xd0, +0xd2, +0xd4 | s16 ×3 | melee damage low, high and attack rating passed to the hit helpers (the earlier version said "type"; the damage class is in the flag word passed after them) | every attack state; `Creature_setStats` 0x10a620 |
-| +0xe8 | u32 | bit mask of hidden model parts; +0x220 (u64) is the mask computed from it by `model_buildHideMask` (0x179550) | Horsemen ctor, SpiderQueen_takeDamage 0x2aed60 |
+| +0xe8 | u32 | model variant bits: each set bit applies one variant record of the model, which shows some meshes and hides others (the earlier version called it a mask of hidden parts). +0x220 (u64) is the mask computed from it by `model_buildHideMask` (0x179550); despite that name the result is a *show* mask — a set bit draws the mesh (`docs/formats/model-texture.md`) | Horsemen ctor, SpiderQueen_takeDamage 0x2aed60 |
 | +0xec | s32 | frame number from which hits register (`+0xec <= g_frame` in 0x15153c and 0x1ba940); every constructor here stores the current frame counter 0x44fdcc. Caution added later: 0x15153c and 0x1ba940 are `MissileWeapon_run` and `playerProjectile_run` and test the missile's own +0xec, so only the constructor store is established for creatures; `docs/creatures.md` lists creature +0xec as Unknown | ctor of every monster |
 | +0xf0 | s32 | start frame of a timed effect; read by `Creature_run` 0x113768 in the status-counter-7 branch | field search |
 | +0xf4 | s32 | class timer (Skelight: attack frames left; Horsemen: idle until age) | Skelight_run 0x2a8b84, Horsemen_run 0x27236c |
@@ -372,7 +372,7 @@ created by other code. All **Observed** by script; rows for the classes in secti
 | JunkProjectile |  | 0x515bd0 | ? | 0x27c2c8 | 0x27c4c0 | 0x27c3b8 | base | 0x27c5e8 |  |  |
 | Lamp | Lamp | 0x50ef38 | 0x8c | 0x2b3718 | 0x2b3858 | 0x2b3a64 | base | base |  |  |
 | Lantern | Lantern | 0x50efc8 | 0x98 | 0x2b33f4 | 0x2b3554 | 0x2b3638 | base | base |  |  |
-| LavaBomb |  | 0x516038 | ? | 0x281194 | 0x282954 | 0x2828a8 | base | 0x283214 |  |  |
+| LavaBomb |  | 0x516038 | 0x1d8 | none: built inline in `LavaMonster_run` at 0x2813c8–0x28149c (the earlier version gave 0x281194, which is the case label of state 8 in that function; `docs/monsters-2.md`) | 0x282954 | 0x2828a8 | base | 0x283214 |  |  |
 | Lever | Lever | 0x50d918 | 0x54 | 0x28e394 | 0x28e748 | 0x28e64c | base | base |  |  |
 | LightningBolt |  | 0x5168e8 | ? | 0x295360, 0x295584 | 0x2957e4 | base | base | base |  |  |
 | LightningRod | LightningRod | 0x516858 | 0x5c | 0x2958a8 | 0x295954 | 0x29594c | base | base |  | LightningBolt |
@@ -389,7 +389,7 @@ created by other code. All **Observed** by script; rows for the classes in secti
 | SnowballSpell |  | 0x5152c8 | ? | 0x26d884 | 0x26da20 | 0x26d940 | base | 0x26de54 |  |  |
 | Sparks |  | 0x50e998 | ? | 0x28f880 | 0x28fa3c | 0x2902e4 | base | 0x2900c8 |  | LightEffect |
 | SpawnMummy |  | 0x516d28 | ? | 0x29ce20 | 0x29cea8 | base | base | base |  | Weapon1 |
-| SpellHateEffect |  | 0x515b70 | ? | 0x27930c | base | - | 0x279420 | - |  |  |
+| SpellHateEffect |  | 0x515b70 | ? | 0x27930c | 0x279420 (slot 2 of a `Spell` table, the per-frame update, `SpellHateEffect_update`; the earlier version listed it under TakeDamage) | - | - | - |  |  |
 | SpiritAnchor | SpiritAnchorAct, SpiritAnchorExp | 0x516738 | 0x98 | 0x295ff4 | 0x2964a8 | 0x296204 | 0x296888 | base |  |  |
 | Switch | Switch | 0x50df48 | 0x50 | 0x28a850 | base | base | base | base |  |  |
 | Timer | Timer | 0x50d7f8 | 0x54 | 0x28ec1c | 0x28ecd4 | base | base | base |  |  |
@@ -434,7 +434,10 @@ variants (+0x470). `UndeadKnight1–4` are created without a mount; `Rider*` get
   skill 87 TagarsInsects on itself and links the spell; variant 3 casts skill 11
   SummonSkeleton at its own position. Then `+0x474 = age + 480 + own random mod 120`.
 - States 0x1f–0x22 are the mounted swings (arc turned 90° to the side); 0x1a counts +0x472
-  down; 0x23 is an animation hand-over; 0x14 dead.
+  down; 0x23 is an animation hand-over; 0x14 dead. Besides the usual death work, case
+  0x14 of the set-state looks up the summoned skeleton by name for variant 3 and, if it
+  is still in the world, sends it to state 0x14 in the same tick (0x273260–0x2732ac), and
+  drops both held weapon parts (FINDINGS K8, `docs/issues/kill-loot-xp.md`).
 - All randomness is the knight's own generator. No global, camera, pad, audio or timer
   read in run, setState or draw. Draw calls `Creature_draw` and then the weapon helper's
   draw (table offset 0x94), neither in this area.
@@ -526,8 +529,13 @@ State 3 picks the next attack with six own-generator draws. State 9 creates a `H
 object (skill 27 pointer); state 10 a `HateProjectile` (skill 28); 0xb, 0xc and 0xe are
 shock attacks with camera shake and a `LightEffect`; 0x12 creates a `Prop` and links it;
 0x17 is a particle sequence around two bones. Death (0x14) creates a `Prop` and four
-`HateSoul` objects, plays nine sounds and calls 0x277110. takeDamage ignores all damage
-while the handle at +0x3e0 is set. `HateBeam` (run 0x2775e8) and `HateProjectile` (run
+`HateSoul` objects, plays nine sounds and calls 0x277110. takeDamage (0x276a58) ignores all
+damage while the word at +0x3e0 is non-zero. That word is not a handle, as the earlier
+version said: the constructor sets it to 1 when the object has the `invulnerable` property
+and to 0 otherwise (0x2735dc, string reference at 0x2737a0), and nothing in the class
+clears it. `docs/monsters-2.md` section 3 has the whole fight; it also corrects the death
+sequence (a `HateSoul` at intervals for 12 seconds, not four) and identifies the `Prop` of
+state 0x12 as his dropped weapon. `HateBeam` (run 0x2775e8) and `HateProjectile` (run
 0x2783e8) apply skill 30 (HateEffect) through a `SpellHateEffect`.
 
 ### Marr (`MattMarr`)
@@ -552,7 +560,9 @@ State 7: melee with DiseaseWeapons (25) and PoisonWeapons (26) riders. State 8 c
 ### SpiderQueen
 
 Run 0x2ad630, takeDamage 0x2aed60. States 6, 7, 10, 0xb: bites with a PoisonWeapons rider.
-State 0xc: spits a `PoisonProjectile` (three own draws). States 8–9: jump (0x2afc28).
+State 0xc: spits a `PoisonProjectile` (three own draws). States 8–9 are not a jump, as the
+earlier version said: 0x2afc28 launches a web strand at the target in state 8, and state 9
+reels the caught victim in (`docs/monsters-2.md` sections 3 and 9.2).
 Helper 0x2b0080 creates `WebTrap` objects (second constructor 0x2b07c0). takeDamage calls
 the creature version and then, for each of six legs, hides the leg (bits in +0xe8) and
 spawns effect 3 once hit points fall to that leg's threshold.
@@ -629,8 +639,9 @@ A second interact while gold remains gives the gold (+0x4c) to that player. A tr
 
 `AutoObject` (constructor 0x23a354, draw 0x23aa20) is the base of 16 data-driven classes;
 the `…LP` variants and `EggSack`, `DiseasePort` share run 0x2421e0 and draw 0x241ee4.
-`autoobject_dropLoot` (0x23ba3c; called from AutoChest_run 0x23b170, AutoProp_run 0x23cb54
-and 0x23d2ec) follows the same parameter scheme as Chest — `spawncreep`, `item`, `potions`,
+`AutoChest_dropLoot` (0x23ba3c, `autoobject_dropLoot` in the earlier version; one caller,
+`AutoChest_run` 0x23b170 at 0x23b674 — not AutoProp_run or 0x23d2ec as first written;
+AutoProp has no loot) follows the same parameter scheme as Chest — `spawncreep`, `item`, `potions`,
 `random` — and otherwise three `loot_generateDrops` calls plus one own draw: below 5000 →
 `arrows`, below 15000 → a consumable. AutoContainer_run (0x23e430, 5,680 bytes) repeats
 the Container logic with a `reduceCarnage` parameter; it was only skimmed.
@@ -767,7 +778,7 @@ Horsemen, Cazic and Trap rows were also read by hand.
 | FireBeetle | 13 | FireWeapons | value query (+0x5c) | 0x24587c |
 | Froglock | 44 | ColdArrow | pointer passed to an object constructor or helper | 0x264314 |
 | Froglock | 45 | PoisonArrow | pointer passed to an object constructor or helper | 0x264314 |
-| Goblin | 7 | FireStorm | pointer passed to an object constructor or helper | 0x26b27c |
+| Goblin | 7 | FireStorm | cast (the earlier scan read it as a pointer passed on; the call is through table offset 0x14 with the level from slot 35, 0x26c4f4–0x26c53c) | 0x26b27c |
 | Goblin | 13 | FireWeapons | cast | 0x26b27c |
 | Goblin | 14 | ColdWeapons | cast | 0x26b27c |
 | Goblin | 23 | ShockOfFrost | cast | 0x26b27c |
@@ -776,7 +787,7 @@ Horsemen, Cazic and Trap rows were also read by hand.
 | Goblin | 44 | ColdArrow | pointer passed to an object constructor or helper | 0x26b27c |
 | Goblin | 47 | ExplodeArrow | pointer passed to an object constructor or helper | 0x26b27c |
 | Goblin | 57 | ShockOfFire | cast | 0x26b27c |
-| Goblin | 58 | FrostStorm | pointer passed to an object constructor or helper | 0x26b27c |
+| Goblin | 58 | FrostStorm | cast (same call as the FireStorm row, 0x26c514–0x26c53c) | 0x26b27c |
 | Gremlin | 43 | FireArrow | pointer passed to an object constructor or helper | 0x26e4c4 |
 | Gremlin | 44 | ColdArrow | pointer passed to an object constructor or helper | 0x26e4c4 |
 | Gremlin | 47 | ExplodeArrow | pointer passed to an object constructor or helper | 0x26e4c4 |
@@ -871,6 +882,11 @@ known hazards (FINDINGS D6, D12–D14) apply to all 73 creature classes.
   world name is written — can differ between machines. With a gate that has a
   `destination` parameter there is no menu input to re-align them: state 0 goes straight
   to the countdown. Not confirmed on a running game.
+- **Not reachable with the levels on the disc** (`docs/issues/sync-breakers.md` section 5,
+  B7): the automatic open is taken only by a gate whose `hurt` property is non-zero (the
+  constructor copies it to +0x4f, 0x27c848–0x27c860), and none of the 38 gates on the disc
+  has `hurt` or `destination`. For the gates that exist the drawn flag reaches only the
+  gate's own generator, its animation and a glow state.
 
 ### 7.2 Jump-gate travel effect writes player fields from a draw task — Observed
 
@@ -926,9 +942,12 @@ created only by AntQueen_run (state 0x19).
   it gates: +0x84, the light, and `0x14dcc8(this, 1)`, which **runs the save point's
   `action` scripts**. A machine whose card code is busy (for example the one already
   showing the save dialog) skips them. **Inferred:** matters only for save points that have
-  an `action` parameter and are used twice in quick succession.
+  an `action` parameter and are used twice in quick succession. No Savepoint on the disc
+  has an `action` (`docs/issues/sync-breakers.md` B7), so with the shipped levels nothing
+  is skipped.
 - `Savepoint_run` clears +0x84 from `memcard_getState()` and from the save-finished flag
-  0x4f8f29, both per machine. While +0x84 and +0xcc are set it draws from the point's own
+  0x4f8f29, both per machine. The card-state test clears it only when the state is 0, a
+  boot-time value, not when the card is idle (−1) (0x28ce40–0x28ce4c). While +0x84 and +0xcc are set it draws from the point's own
   generator and sets +0x80 (which is written to the level save record by slot 9).
 - The "saved" burst is started by game message type 5. `hudmsg_sendSavepoint` (0x1de1a0)
   puts the Savepoint's **address** into the message; the handler (`hud_onMsg` case 5, call

@@ -26,7 +26,7 @@
 00212f08	sound_init
 002130d0	sample_register	(name, sample, flag) assigns SPU memory and uploads; called by the lump loader
 002132f8	soundSeq_duration	(sequence) longest event time plus sample length, in seconds
-00213438	sound_release	(handle) lets a sequence or looping voice finish
+00213438	sound_release	(handle) sequence handle: sets slot +0x3c, clears flag 4 and sets flag 1 (loop) of the track flags at slot +0x24, writes 1.0 to +0x10 / +0x18 and 0 to +0x14 / +0x1c; soundSeq_updateAll then skips the end test and restarts the sequence when its time passes the clip duration, i.e. it makes the sequence repeat, it does not let it finish as an earlier note said. Voice handle: sets bit 0 of the voice flag word (not read). Six callers, not traced
 002134e8	sound_playSample	(pitchScale, volume, delaySeconds, sample, pos or 0) -> voice index or -1; pans from the local camera
 00213a78	voice_setVolume	(left, right, voice) scaled by the SFX volume option; mono option averages
 00213c50	sound_panAtten	(near, far, pos, outL, outR) distance and pan relative to the camera position 0x44f038 and right vector
@@ -183,7 +183,7 @@
 00872880	g_voices	43 x 0x14 voice records
 008723f8	g_delayedSamples	32 x 0x24
 00875c00	g_spuCmdBatch	512 x 8
-00876c10	g_streams	3 x 0x1c4: 0 ambience, 1 voice, 2 music (Inferred roles)
+00876c10	g_streams	3 x 0x1c4: 0 seen only for the intro movie soundtrack, 1 voice, 2 music and ambience one-shots (docs/formats/anim-audio.md 3.4; an earlier note inferred 0 = ambience)
 00879e38	g_saveHeaderCopy	0x70-byte copy of the save header made by save_load
 00879ec0	g_savedPlayers	PlayerData[4] snapshot with item indices instead of pointers
 0088d3a0	g_memcardState	-1 idle, 0/1 config, 3 save, 4 load, 5 config save, 6 end-game save, 9 import, 10 options

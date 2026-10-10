@@ -56,7 +56,7 @@ slots; the Creature bodies are listed here. Small bodies were emitted inline at
 | 23 | 0x10ded0 | pick target (force) | Observed |
 | 24 | 0x10e2c0 | pick ally | Observed |
 | 25 | 0x10e658 | can see target (force) | Observed |
-| 26 | 0x10bb08 | turn toward a point (mode 1 = away) | Observed |
+| 26 | 0x10bb08 | turn toward a point (mode 1 = away). Returns the signed 16-bit angle from the facing to the point as it was *before* the turn (0x10bb9c–0x10bbb4 leave it in the result register); the creature move helpers halve the move speed and the root motion of that step when its size exceeds 16000 (`docs/spec/movement-camera.md` section 6.3) | Observed |
 | 27 | 0x3c2688 | set AI state: the base body only stores +0x232; 241 call sites | Observed |
 | 28 | 0x10beb8 | on death | Observed |
 | 29 | 0x11a668 | refresh the model-variant handle +0x220 from +0xe8 | Observed |
@@ -171,8 +171,8 @@ being copied are marked Unknown.
 | 0x100000 | no water/dust ground effects | `Creature_moveBy`, `Creature_applyKnockback` |
 | 0x200000 | model not drawn by `Creature_draw` | 0x10b988 |
 | 0x400000, 0x800000 | following a player, standing ahead / behind (script `followPlayer` sets 0x800000) | `Creature_run` |
-| 0x1000000 | corpse sinks and is deleted once inactive | `Creature_deadUpdate`, tail of `Creature_run` |
-| 0x2000000 | animation root motion not applied to the position | `Creature_stepAnim` |
+| 0x1000000 | corpse sinks and is deleted once inactive. Only creatures that carry the bit follow this rule; its setters are `Creature_loadState`, the generator spawners (0x265938, 0x265e08, 0x265fc4), 0x29cea8 and 0x2bf538 (`docs/issues/arena-desync.md`) | `Creature_deadUpdate`, tail of `Creature_run` |
+| 0x2000000 | `Creature_stepAnim` passes no sound position to `anim_advance` (0x116330–0x116348), which mutes the animation's sound cues. Root motion is produced and applied whether the bit is set or not; the earlier version said "root motion not applied to the position" (`docs/spec/movement-camera.md` section 9) | `Creature_stepAnim` |
 | 0x4000000 | friendly (script `friendly`): picks no target, is nobody's enemy | slots 20, 23 |
 | 0x8000000 | following a `PathName` path (script `followPath`) | `Creature_run` |
 | 0x20000000 | no ice shatter, no gibs | `Creature_processDamage` |
@@ -246,8 +246,13 @@ the call. **Observed.** Players use `Player_processDamage` instead.
 
 ## The attached-spell list (+0x364)
 
-A handle list of `Spell` objects (spell: back-list head at +4, virtual table at +0x14,
-caster at +0x18, skill id at +0x1c). `creature_addSpell` links one; `creature_findSpell`
+A handle list of `Spell` objects (spell: back-list head at +4, the `Skill` that made it at
++0x08, the creature it is attached to at +0x0c, virtual table at +0x14; the fields from
++0x18 on belong to each class — layout in `docs/skills.md`). The earlier version gave
+"caster at +0x18, skill id at +0x1c" for every spell; that is the layout of the `SpellTag`
+marker only, and `creature_findSpell` 0x11a788 tests the class before it reads those two
+words (`docs/spec/skills-35-68.md` section 4.6, `docs/spec/skills-01-34.md` section C).
+`creature_addSpell` links one; `creature_findSpell`
 and `creature_findSpellByType` search it; `creature_removeSpellByType` 0x11a6d0 deletes
 one; the destructor deletes all. Three places walk it every frame: slot 17 (spell slot 2,
 from `Creature_run`), `Creature_draw` (spell slot 3, **from draw code**, 0x10b928–0x10b970)
@@ -376,7 +381,7 @@ for every class but `Player` these functions are never called.
 | C2 | `Creature_draw` calls virtual slot 3 of every attached spell. Any spell whose slot 3 changes shared state runs that change a per-machine number of times. The spell bodies are in the skills area and were not checked here | Observed call; effect Unknown | 0x10b928–0x10b970 |
 | C3 | The MiniBoss block of `Creature_run` walks the list of alive **local** players (count 0x4f8424, slots 0x4f8430, filled only for `net_isLocalSlot` players by `game_rebuildAlivePlayers`) and, when one is within HomeRange, sets cflag 0x80000000 on the creature; otherwise clears it. That bit is object state written from per-machine data. Its only readers are this block and the script `setCFlag` helper 0x1445fc (which uses it to reset the HUD bar), and `Creature_saveState` does not store it, so no route into simulation was found | Observed write; harmlessness Inferred | 0x11399c–0x113ab8 |
 | C4 | A path follower that has not reached its next point for 600 clock ticks is teleported there **if `isNearView(1000, pos)` is false**. `isNearView` uses the players except while `g_cullByCamera` is set, when it uses the camera focus (FINDINGS D6/D7) | Observed | call at 0x112c3c |
-| C5 | `Creature_updateActive` → `obj_updateActive` decides whether a creature's AI runs; same camera dependence as C4 during cutscenes. Besides the AI, `Creature_spawnScavenger` keys on the inactive→active transition of a finished corpse and then draws `g_randSeed` and constructs a raven or rat (itself another `g_randSeed` draw) | Observed | 0x10c168; `Creature_spawnScavenger` 0x1125e0, called at 0x113ae4 |
+| C5 | `Creature_updateActive` → `obj_updateActive` decides whether a creature's AI runs; same camera dependence as C4 during cutscenes. Besides the AI, `Creature_spawnScavenger` keys on the inactive→active transition of a finished corpse and then draws `g_randSeed` and constructs a raven or rat (itself another `g_randSeed` draw). The corpse rule in the flag table ("sinks and is deleted once inactive") is a separate matter and needs creature flag 0x1000000 (tail of `Creature_run`: the bit and state 0x14 are tested together); no arena class sets it, so arena corpses stay for the rest of the level (`docs/issues/arena-desync.md`) | Observed | 0x10c168; `Creature_spawnScavenger` 0x1125e0, called at 0x113ae4 |
 | C6 | `Creature_processDamage` reads the options value 0x44fdc0 (`g_decalDetail` in other areas) three times. Each read is arranged so that object creation and `GameObject_rand` calls do not depend on it in a net game: the hit-blood branch takes the option **or** network mode (0x1113fc–0x111410); the "gibs because of the option" branch requires network mode off (0x1116bc); inside the gib branch the option only gates decals and effects 1/3/9, which use the cosmetic seed and a separate seed at 0x404468. The gib objects it creates are the ones in `docs/objects.md` O2 | Observed | 0x1113fc, 0x1116bc, 0x1116f8 |
 | C7 | Burn and second-effect visuals are emitted from `Creature_run` only when the routine 0x13e180 (`net_objOrGhost` in the netcode symbols: for a local player it returns the prediction copy) returns the creature itself and flag 0x4000000 is clear. The two effect routines (0x1f5210, 0x1f61c0) use only `g_cosmeticSeed` | Observed; not a hazard | 0x113284–0x1132e8, 0x113550–0x1135b4 |
 | C8 | Timed damage in `Creature_run` is skipped for the prediction copy (flag 0x20000), including the `g_randSeed` draw of a burning player | Observed; a guard | 0x1132f8, 0x113834, 0x1138d8 |

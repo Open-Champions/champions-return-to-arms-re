@@ -158,7 +158,7 @@
 00204250	Camera_lookAt_204250	turns the camera toward a target over time and applies; callers 0x22ff48, 0x230000
 002043d8	Camera_updateFree	modes 3..5: fly camera driven directly by g_pads[0]
 00204938	Camera_updateFollow	mode 1: target from the local players, smoothing, user zoom/rotate, collision, two Camera_apply calls
-00204fe0	Camera_followCollide	keeps the view clear with world ray casts (0x18a5c0); uses the local alive-player list
+00204fe0	Camera_followCollide	keeps the followed players in view by raising the pitch (store at +0x6a) after fans of terrain_raycast 0x18a5c0 from each followed player; never shortens the distance; uses the local alive-player list (docs/spec/movement-camera.md 7.6)
 00205880	Camera_followZoomInput	zoom steps from the controlling pad's right stick; writes HUD hint timers 0x41b828/0x41b8a8
 00205db0	Camera_followRotateInput	yaw from the controlling pad's right stick; writes HUD hint timers
 00206400	Camera_followRecenter	button 0x200 with a still stick: start turning the camera behind the followed player

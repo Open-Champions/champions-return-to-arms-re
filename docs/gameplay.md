@@ -61,7 +61,7 @@ Lookups always take the **first** slot whose type matches. Effect types handled:
 
 | Type | v1 | v2 | v3 | Effect | Needs first hit roll |
 |---|---|---|---|---|---|
-| 0x15 | min | max | – | fire damage, reduced by fire resistance; sets the burn status (strength 2 − 2·res) unless flag 0x10000000 | no |
+| 0x15 | min | max | – | fire damage, reduced by fire resistance; sets the burn status (strength 2 − 2·res) unless flag 0x10000000. "min, max" here and in the other elemental rows means: amount = v1 + (draw rem (v2 − v1 + 1)), in integers and with no guard (0x1e98c8–0x1e9914; the same expression at the other six sites). Two skills pass v2 < v1, for which the amount ranges upward from v1 (`docs/spec/skills-01-34.md`) | no |
 | 0x16 | min | max | – | cold damage, reduced by cold resistance; cold status timer += 60·amount/hp, capped at 60 | no |
 | 0x17 | → victim +0x358 | → victim +0x35a | – | poison status, strength 5 − 5·poisonRes | no |
 | 0x18 | min | max | – | lightning damage, reduced by lightning resistance; shock status 2 − 2·res | no |
@@ -74,7 +74,7 @@ Lookups always take the **first** slot whose type matches. Effect types handled:
 | 0x20 | chance % | min | max | chance of cold: damage, cold timer as 0x16 but using the running total | yes |
 | 0x21 | chance % | strength | – | chance of poison: creates a `poisonGasSpell` object at the victim (life 300, radius 30·v2+30, damage 25·v2+25) | yes |
 | 0x22 | chance % | min | max | chance of lightning: shock status 2.0, plus damage | yes |
-| 0x26 | non-zero | – | – | disease: attaches a `SpellDiseaseEffect` (0x1b0 bytes, strength 5 − 5·diseaseRes) if the victim has none | no |
+| 0x26 | non-zero | – | – | disease: attaches a `SpellDiseaseEffect` (0x1b0 bytes, strength 5 − 5·diseaseRes) if the victim has none. `damage_apply` reads only v1, but v2 and v3 are not unused everywhere: `item_getDamageRange` (0x104100) adds v1 to the minimum and v2 to the maximum it returns when asked for elemental damage, and the weapon-buff spells write v2 = round(1.2 × v1) and v3 = frames left into the item's slot (`docs/spec/skills-69-101.md`) | no |
 | 0x29 | skill index | chance % | level | chance to cast g_skillTable[v1] (Skill vtable slot 2) from the attacker's position | yes |
 
 Kind 0x10 is *Inferred* to be "undead": the 0x1c proc plays `spel_he_hstrike_hit.anm`, and
@@ -488,12 +488,20 @@ Each item: what is read or written, kind of claim, address, and what it can do.
     the recall countdown it honours (0x41b51d) is set from a game-message handler
     (0x18c230, called from 0x1d8df4). Inferred shared.
 14. **Camera-gated emitters** (0x1f5210, 0x1f5890, 0x1f5c70, 0x1f5e18, 0x1f61c0, 0x1fc150)
-    — cosmetic seed and particles only by text scan. Observed at scan level.
+    — cosmetic seed and particles only by text scan. Observed at scan level. The three
+    that simulation code reaches (0x1f5210, 0x1f61c0, 0x1fc150) have since been checked by
+    callee list as well (`docs/issues/rescan.md` section 4.2): the lists hold only
+    `particle_spawn`, model sample points and a sine table, plus the beam table calls of
+    0x1f61c0 (FINDINGS D28); presentation only. Of the other three, 0x1f5890 is called
+    from draw code and 0x1f5c70 and 0x1f5e18 have no caller.
 
 ## 9. Open questions
 
 - What the descriptor holds at +0x00..+0x23 and which structure it is embedded in (melee
-  passes a pointer taken from the player's weapon data in 0x1b6a98).
+  passes a pointer taken from the player's weapon data in 0x1b6a98). Answered in
+  `docs/issues/kill-loot-xp.md`: for a melee hit the descriptor is the weapon's item
+  record itself (0x48 bytes, layout in `docs/player.md`), and the four effect slots at
+  +0x24 are the item's modifier slots.
 - Names of damage classes 0x1/0x4/0x8. (Creature kind 0x12 was listed here too; §2.2 now
   gives the inference.)
 - Draws made inside the virtual calls `damage_apply` reaches: Skill slot 2 for a 0x29 proc,
@@ -516,7 +524,10 @@ Each item: what is read or written, kind of claim, address, and what it can do.
 - `fx_modelStatusEffects` 0x1f6ac8 (17 KB) and the other model emitters: scanned, not read.
 - `fx_spawn` ids other than 0, 1, 5, 9, 10 were not described individually.
 - Camera functions 0x203bb8, 0x204250, 0x204fe0, 0x205880, 0x205db0, 0x206d18: read in
-  outline only.
+  outline only. (`docs/spec/movement-camera.md` section 7 has since specified the follow
+  camera. One point differs from the note this pass left in `symbols/gameplay.tsv`:
+  `Camera_followCollide` 0x204fe0 does not shorten the distance when terrain is in the
+  way; it raises the pitch until the followed players are visible.)
 - Class-specific take-damage and the Skill/Spell helpers called from `damage_apply` belong
   to other areas; only their seed draws were checked (0x315888, 0x318264, 0x2ddccc,
   0x308cb4, 0x2d5594).

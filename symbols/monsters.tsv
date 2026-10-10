@@ -43,7 +43,7 @@
 0023b6bc	AutoChest_interactPrompt	vtable 0x513468 slot 13; also AutoChestLP
 0023b854	AutoChest_trigger	vtable 0x513468 slot 3; purpose not established; also AutoChestLP (was AutoChest_vslot3)
 0023b894	AutoChest_interact	vtable 0x513468 slot 14
-0023ba3c	AutoChest_dropLoot	shared by AutoChest_run, AutoProp_run and AutoPropLP_vslot17: drops what the object parameters item / potions / random / spawncreep ask for, else rolls from the object own generator (was autoobject_dropLoot)
+0023ba3c	AutoChest_dropLoot	one caller, AutoChest_run 0x23b170 (call at 0x23b674); not called from AutoProp_run or AutoProp_nextState 0x23d2ec as an earlier note said: drops what the object parameters item / potions / random / spawncreep ask for, else rolls from the object own generator (was autoobject_dropLoot)
 0023c44c	AutoProp_ctor	constructor; installs vtable 0x5133c0
 0023cac8	AutoProp_dtor	vtable 0x5133c0 slot 1
 0023cb54	AutoProp_run	vtable 0x5133c0 slot 4; also HackDoor
@@ -330,7 +330,7 @@
 002783e8	HateProjectile_run	vtable 0x515878 slot 4
 00279048	HateProjectile_draw	vtable 0x515878 slot 5
 0027930c	SpellHateEffect_ctor	constructor; installs vtable 0x515b70
-00279420	SpellHateEffect_update	vtable 0x515b70 slot 2 (was SpellHateEffect_takeDamage)
+00279420	SpellHateEffect_update	vtable 0x515b70 slot 2 of a Spell table: the per-frame update, not a take-damage function (was SpellHateEffect_takeDamage)
 00279640	HateSoul_ctor	constructor; installs vtable 0x515998
 00279850	HateSoul_run	vtable 0x515998 slot 4
 0027a00c	IronGuardian_ctor	constructor; installs vtable 0x515c60; object size 0x3e8; factory type names: IronGuardian
@@ -372,7 +372,7 @@
 0028048c	LavaMonster_ctor	constructor; installs vtable 0x510118; object size 0x430; factory type names: EarthElemental, LavaMonster
 00280a60	LavaMonster_draw	vtable 0x510118 slot 5
 00280b44	LavaMonster_run	vtable 0x510118 slot 4
-00281194	LavaBomb_ctor	constructor; installs vtable 0x516038
+00281194	LavaBomb_ctor	NOT a function entry: case label of state 8 inside LavaMonster_run 0x280b44 (jump-table word at 0x548470); the LavaBomb is built inline at 0x2813c8-0x28149c (MissileWeapon_ctor, then vtable 0x516038). Name kept from the first pass; see docs/monsters-2.md
 00282260	LavaMonster_saveState	vtable 0x510118 slot 9
 002822e8	LavaMonster_loadState	vtable 0x510118 slot 8
 00282460	LavaMonster_setState	vtable 0x510118 slot 27

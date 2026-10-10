@@ -540,7 +540,12 @@ bound from the code alone: **at least three frames of nothing.** With the spring
   7th. L6's "4–6 frames" is right; it is the dead zone that turns a slow ramp into a pure
   delay.
 - The value never passes 0.94: the predictor stops within 3 counts of the target and the
-  byte is truncated. Whether movement speed scales with that value is Unknown.
+  byte is truncated. Whether movement speed scales with that value was Unknown here; it
+  does, linearly (`docs/spec/movement-camera.md` 4.1 c and g: the speed is the stick
+  magnitude times the top speed, capped at the top speed), so a full push through the
+  codec moves at about 94 % of top speed. The limit is one-sided: executed in isolation, a
+  stick held toward 255 settles at +0.943 and one held toward 0 at −1.000
+  (`docs/issues/dynamic-tests.md`, checks a3, a4, b9).
 - Letting go, the character keeps moving for 5 frames. A flick of 50 ms does nothing.
 - For the player's own character this is the whole added delay (prediction hides the
   lead). For everything else it comes on top of the lead.

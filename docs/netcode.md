@@ -198,6 +198,16 @@ the last is `g_localInputFrame − 1`. The receiver (0x13b5d0):
 5. Copies each message block into the peer's message ring, once per frame (only while that
    record's count is still 0).
 
+Steps 3 to 5 stand or fall together, which the list above did not say: when the packet
+brings no new frame (it does not end after the newest frame held, 0x13b7a4–0x13b7a8) or
+starts later than newest + 1 (0x13b7f4–0x13b804), the receiver leaves at once and reads
+neither the acknowledgement, nor the sync record, nor the message blocks. From such a packet
+only the peer's simulation frame, its lead and the silence counter are taken. A machine that
+is not sampling (held by the cap, or called with the hold argument during a load) still
+sends packets, but its acknowledgements do not register and a sync record in one of them is
+lost, since a record is sent once (`docs/issues/lag.md` section 3, C2; the consequence is
+Inferred there).
+
 ## The codec, bit by bit
 
 The stream is an array of 16-bit words in the machine's byte order; fields are written most
@@ -232,9 +242,16 @@ in this order:
 5. 16 bits 0xa5a5. Nothing checks it.
 
 The decoder (0x13c970) rebuilds the predictor and then runs ten steps of a spring toward it
-in single-precision floats (velocity = (velocity + (target − value) × 0.05) × 0.5528, value
-+= velocity); the truncated value is the stick byte. The local player's own input goes
-through the same encode and decode before the tick uses it (G4), so all machines agree.
+in single-precision floats. Each step is: value += velocity, then velocity = (velocity +
+(target − value) × 0.05) × 0.5528 with the *new* value (0x13cdb0–0x13cdd8; the earlier
+version wrote the two updates in the other order, though the sample numbers below were
+produced with the right one). The factor 0.5528 is 1 − √0.2, computed at run time (0x13cc6c,
+0x13cd24, 0x13cd64; `docs/issues/lag.md` C6). The truncated value is the stick byte. The
+local player's own input goes through the same encode and decode before the tick uses it
+(G4), so all machines agree — on the condition that the decoder's float spring gives the
+same bits on every machine; rounding to nearest instead of chopping changes about 12 % of
+the decoded bytes in a model (FINDINGS F5, `docs/issues/float-divergence.md`; item 11
+below).
 
 Consequences, from a re-implementation of the two functions (scratch model, not game code):
 
@@ -242,6 +259,13 @@ Consequences, from a re-implementation of the two functions (scratch model, not 
   following frames: about half deflection after 4 frames and the 0.8 threshold `pad_apply`
   uses for digital directions after 6. This is in every net game regardless of connection,
   and the ghost is fed through the same codec. *Inferred* (model), not measured.
+  (`docs/issues/lag.md` C7 puts the threshold on the 7th simulated frame, because 0.8 is
+  tested after the radial dead zone of `pad_decodeStick` 0x174ce0, and the first movement
+  of any size on the 5th.)
+- The range is not symmetric: a stick held toward 255 settles at byte 251, which is 0.943
+  after decoding (0.989 for the raw byte offline), while one held toward 0 reaches 0, which
+  is −1.000 (`docs/issues/dynamic-tests.md`, executed in isolation). Movement speed scales
+  linearly with the stick value (`docs/spec/movement-camera.md` 4.1).
 - With the reset state a centred stick decodes as 77, 43, 34, 44, 78, 101 … and only settles
   near 127 after about 13 frames. It is the same on every machine.
 
@@ -292,16 +316,18 @@ Input sampled in a call is stored at frame `g_localInputFrame` (0x4027a4), which
 advances by `engine_frameStep()`. The simulation may run at most up to
 `g_localInputFrame − 2` in that call (0x1342bc), and at most `engine_frameStep()` frames per
 call (0x1343a0–0x1343cc). The *lead* (`g_localInputFrame − g_netFrame`) is therefore at
-least 2 and otherwise whatever it has grown to: it grows by one for every tick the
+least 2 at the ready scan, just after sampling — measured at the end of a call its floor is
+1 (`docs/issues/lag.md` section 2.2 and C1; the earlier version gave 2 without saying
+where) — and otherwise whatever it has grown to: it grows by one for every tick the
 simulation could not run while input was still being sampled, and it shrinks only when a
 call is *held* (no sample taken). A call is held when any of these is true (0x13354c–
 0x133608):
 
 | Rule | Condition | Constant at |
 |---|---|---|
-| cap | `g_localInputFrame` − (lowest simulation frame of this machine and all active peers) > 38 | 0x133554 |
+| cap | `g_localInputFrame` − (lowest simulation frame of this machine and all active peers) > 38. The peers' frames are the ones last *reported* in their packets, so the lead the cap really allows is 38 minus how far the slowest report lags (31–36 on a 30 ms link in the model of `docs/issues/lag.md`, C3) | 0x133554 |
 | equalise | own lead ≥ 5 above the smallest lead (own and peers') for 31 calls in a row | 0x13354c, 0x133574 |
-| trim | every 62nd call, if the smallest ready count seen in the window was > 2 | 0x1335c0, 0x1335e4, reset value 100 at 0x1335d8 |
+| trim | every 62nd call, if the smallest ready count seen in the window was > 2 — that is, only if all 62 calls of the window had 3 or more frames ready. With packet loss many windows do not qualify, and it never fires on a machine whose ready count is limited by another machine's input, so two leads can stay up to 4 frames apart indefinitely (equalise needs 5) (`docs/issues/lag.md` C4) | 0x1335c0, 0x1335e4, reset value 100 at 0x1335d8 |
 | caller | second argument of `net_main` non-zero | 0x1335ac |
 | (never) | `g_localInputFrame` < 3 | 0x133600 |
 
@@ -351,7 +377,13 @@ machine (not per peer), never repeated. A lost one just means that frame is not 
   lead is 38 frames and takes tens of seconds to drain.
 - The same applies when one machine simply runs slowly: `engine_frameStep()` is capped at 2,
   so a machine rendering below 30 frames per second produces fewer than 60 input frames per
-  second and every other machine stalls behind it.
+  second and every other machine stalls behind it. The threshold is 60, not 30, until the
+  display has gone to half rate: at full display rate a call stands for one step however
+  long the picture took, so every missed field costs the other machines one frame of lead;
+  after 32 late pictures in a row the display drops to half rate, a call stands for two
+  steps, and only then is 30 per second neutral (0x19e3a8, 0x19da78; FINDINGS L5,
+  `docs/issues/lag.md` C5, `docs/mainloop.md` section 6). A machine that misses a field now
+  and then, without 32 in a row, costs the others one frame each time.
 - Long silences: after 300 stalled calls the HUD counter 0x40279c starts and the
   no-connection icon blinks; after 900 calls without an accepted packet from a peer the
   kick negotiation starts (below); the HUD shows the lost-connection text 1200 calls after
@@ -533,7 +565,7 @@ differs between machines.
 | 3 | **Raw local pad edges inside the tick.** `net_frameLoop` leaves the pressed-edge words of all four raw pads (`g_rawPads` +0xc, +0x10) live for the first tick of a call, zeroes them for later ticks and restores them at the end. Run tasks that read the raw pads therefore act on a frame that depends on this machine's timing; what they do must go through a game message. | Observed | save 0x139f3c, clear 0x13b140, restore 0x13b184 |
 | 4 | **Message handlers run between pad updates.** Peer i's messages are executed before the pads and yaw of peers above i are set for the frame. At that moment the local slot's lockstep pad still holds the raw local pad (copied at the end of `net_main`) and `g_netCamYaw[local]` the predicted yaw; other machines see last frame's lockstep values there. A handler that reads another slot's pad or yaw would diverge. None was identified; handlers were not audited for it. | Observed order, Unknown impact | 0x13ac84 → 0x13ad24; 0x134454; 0x132b5c, 0x132b80 |
 | 5 | `g_simFrame` (0x44fdcc) outside the tick is the prediction frame, which runs ahead of `g_netFrame` by this machine's lead. Draw-phase code that uses it to change shared state is per machine (compare D12). | Observed | 0x13af98, 0x13b28c, 0x132c94 |
-| 6 | `net_objOrGhost` 0x13e180 returns the ghost on its owner's machine and the real player elsewhere. 17 call sites in simulation code (two in `Creature_run`, one at 0x1e4c1c, fourteen in skill code). Read: the two in `Creature_run` (0x113284, 0x113550) gate particle emitters that only write the cosmetic seed; 0x2c88e4 and 0x2c8fe0 mirror a field write (+0x58c) onto the ghost; 0x2dee18, 0x2e1144 and 0x2e1214 take a position from the result while the same function draws from the spell's own generator. Not classified: 0x1e4c1c (fills a list of player objects), 0x2d1b04, 0x2e7cf8, 0x2e95cc, 0x2fb4c8, 0x2feed8, 0x2ffbd0, 0x302650, 0x303454, 0x3036e4. | Observed accessor, call sites partly checked | 0x13e180 |
+| 6 | `net_objOrGhost` 0x13e180 returns the ghost on its owner's machine and the real player elsewhere. 17 call sites, 16 of them in simulation code (two in `Creature_run`, fourteen in skill code) and one, 0x1e4c1c, in `minimap_draw` 0x1e42e0, which is draw code — the earlier version counted it as simulation code. Read: the two in `Creature_run` (0x113284, 0x113550) gate particle emitters that only write the cosmetic seed; 0x2c88e4 and 0x2c8fe0 mirror a field write (+0x58c) onto the ghost; 0x2dee18, 0x2e1144 and 0x2e1214 take a position from the result while the same function draws from the spell's own generator. Not classified here: 0x1e4c1c (fills the list of objects the minimap draws as blips), 0x2d1b04, 0x2e7cf8, 0x2e95cc, 0x2fb4c8, 0x2feed8, 0x2ffbd0, 0x302650, 0x303454, 0x3036e4. All 17 are classified in `docs/issues/prediction-copy.md` section 3.3: apart from 0x2d1b04 (`SpellCyclone_run`, FINDINGS G22) and a contained BloodLust case none can change shared state (G23). | Observed accessor, call sites partly checked | 0x13e180 |
 | 7 | Ghost rebase between ticks: deletes and clones an object, restoring only the shared seed; sets flag 0x200000 on the real local player and moves flag 0x100 to the ghost, so the real player's flag word differs per machine (G1, D13). | Observed | 0x13b1c8–0x13b5b0, 0x13af18–0x13af34 |
 | 8 | The drop frame of a silent peer comes from per-machine counters and is made equal by the raw-relay exchange. It works if no machine is more than 40 frames behind another in what it holds from the kicked peer; the 38-frame input cap is what keeps that true. | Inferred consistent | 0x133060, 0x13c370, 0x133554 |
 | 9 | Message bytes per frame are counted in one byte on the wire. More than 255 bytes queued by one machine between two send turns would be executed in full locally and mis-parsed remotely. | Observed encoding, Inferred risk (needs e.g. two long text lines at once) | count byte 0x1392c4–0x1392c8, copy loop 0x139300–0x139304 |

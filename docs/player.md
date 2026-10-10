@@ -117,7 +117,7 @@ four records, but the four records differ from each other.
 | +0x20 | s16 | skill id (−1 empty) | Observed |
 | +0x22 | s16 | cooldown in frames, copied to object +0x4ae | Observed |
 | +0x24 | u8 | non-zero: the ability may be started from state 2 | Observed |
-| +0x25 | u8 | kind: 0 one cast, 1 held (mana per frame), 2 timed, 7 instant (no animation), 8 toggle | Observed: state 2 and state 5 |
+| +0x25 | u8 | kind: 0 one cast, 1 held (mana per frame), 2 timed, 7 instant (no animation: state 2 calls `Player_castSkill` at once, 0x1a7048), 8 "fire through the ranged state": state 2 asks the skill's "can use" slot and keeps the record at object +0x484 (0x1a7058–0x1a709c), and the next ranged release casts it (0x1a837c, 0x1a9174). (The earlier version called 8 a toggle; `docs/spec/skills-35-68.md` section 4.6.) | Observed: state 2 and state 5 |
 | +0x28 | s16 | effect strength (older code) | Observed: argument of the call at 0x1ac400 |
 | +0x2c | float | mana cost (older code); 999 means "needs full mana" | Observed |
 | +0x30, +0x38, +0x40 | s16[3], s16[4], float | aura colours and fade rate | Observed: state 5 |
@@ -143,10 +143,10 @@ four records, but the four records differ from each other.
 | +0x47b | u8 | cast phase 0/1/2 | Observed: state 5 |
 | +0x47c–0x47e | u8 | flags of state 7 | Observed |
 | +0x47f | u8 | blocking | Observed: state 8 |
-| +0x480 | u8 | kind of ranged shot: 0 plain, 1/2/3/5/6 special arrows, 7 throw | Observed: states 0, 2 |
+| +0x480 | u8 | kind of ranged shot: 0 plain, 1/2/3/5/6 special arrows, 7 throw. The values 1–6 are stored only by the older inline ability ids (0x1a74f8–0x1a7544); the bow skills that are `Skill` objects go through +0x484 instead | Observed: states 0, 2 |
 | +0x481 | u8 | frames during which the stick is ignored | Observed: 0x1b4020 top |
 | +0x482 | u8 | set to 15 while on the ground, counts down otherwise | Observed: 0x1b4020 |
-| +0x484 | ptr | ability record of a running toggle ability | Observed |
+| +0x484 | ptr | ability record of a kind-8 ability waiting for the next ranged release (stored at 0x1a709c, cleared at 0x1a7094 when the skill refuses); "toggle" in the earlier version | Observed |
 | +0x488 | ptr | ability record forced from outside; cleared each frame unless casting | Observed |
 | +0x48c | float | minimum time between attacks | Observed |
 | +0x4a8 | s32 | handle of a looping sound, −1 none | Observed |
@@ -253,10 +253,14 @@ ranged release time is halved (0x1a80e0 on). Movement speed is 0.75 instead of 0
    frame. **Observed.** Consequence: after the copy dies in prediction, the next simulated
    frame on that machine runs with its own player missing from `g_alivePlayers` while the
    other machines still have it. About 50 functions read that list (monsters, scripts,
-   skills). **Inferred** to desynchronise. The copy can die ahead of the real player
-   through the kill plane, which is applied to the copy too (0x1a5b38–0x1a5b8c writes
-   1,000,000 pending damage, no guard) — **Observed** — or if it was cloned while damage
-   was pending — **Inferred**. This is G10 without the restriction to PvP. Also at
+   skills). **Inferred** to desynchronise. How the copy can die ahead of the real player:
+   the earlier version named the kill plane first, because its code is applied to the copy
+   too (0x1a5b38–0x1a5b8c writes 1,000,000 pending damage, no guard — **Observed**). That
+   route does not exist in this build: the plane is −100000 in all 90 rows of the level
+   table (0x4f7210 + n × 0x30 + 8), so no level enables it (G15,
+   `docs/issues/prediction-copy.md`; `docs/issues/arena-desync.md`). What remains is a copy
+   cloned while damage was pending — **Observed** there (G12, G14). This is G11–G13; G10,
+   which this item was first compared with, is withdrawn. Also at
    0x1b351c the copy's death calls `net_closeLocalMenus(1)` (local UI only).
 2. **`mission_getMedal` reads the local player's record.** 0x1bf838 calls
    `net_getLocalPlayerSlot` (0x1bf868) and reads that record's medal byte unless its third
@@ -283,7 +287,10 @@ ranged release time is halved (0x1a80e0 on). Movement speed is 0.75 instead of 0
      0x1ac02c creates a projectile-class object (0x293704); 0x1ac164 creates an
      `UnholyAura` (0x29486c). The object constructor's draw from `g_randSeed` is restored,
      the object itself stays in this machine's world;
-   - 0x1ac400 does area damage (0x161270).
+   - 0x1ac400 does area damage (`world_damageInRadius` 0x161270). Harmless for the copy:
+     the call ends in `damage_apply`, which returns before reading or drawing anything
+     when the attacker carries the copy flag 0x20000 (0x1e828c–0x1e82a4;
+     `docs/issues/prediction-copy.md` section 3.2). The object creations above remain.
    The status-counter stores on the same paths (0x1a71c4, 0x1abda0, 0x1abe90, 0x1ac068)
    go to the copy's own object while predicting and are not shared state.
    The matching code for the heavy attack (0x1a73e4) and for state 10 (0x1a6950,
@@ -334,7 +341,10 @@ ranged release time is halved (0x1a80e0 on). Movement speed is 0.75 instead of 0
 
 ### Checked and found guarded against the copy
 
-Potion use (0x1a5998, 0x1a59f0; G8). Weapon swap and interact (0x1a5bf0, 0x1a5c1c). Health
+Potion use (0x1a5998, 0x1a59f0; G8 — the guard against the copy holds, but for real
+players the removal of the potion from the bag has a per-machine branch on this machine's
+inventory screen, 0x1b9fcc and 0x1ba3ac in `Player_usePotion`: K2,
+`docs/issues/kill-loot-xp.md`). Weapon swap and interact (0x1a5bf0, 0x1a5c1c). Health
 and mana regeneration and item timers (tests inside 0x1b3b90, 0x1b3900, 0x1bc560). Hit
 immunity countdown (0x1a5368). Ability button selection (0x1a5a44–0x1a5aac). Thrown
 projectile creation, ammunition count and item removal (0x1a86f0, 0x1a881c, 0x1a8884,
@@ -371,11 +381,14 @@ engine, sound and library entries were judged by what they write, not read.
   mover is the copy? That would be shared state changed by the copy. (Answered in
   `docs/objects.md`: 0x1186d8 goes to `obj_moveWithCollision` 0x14d4b8, which tests the
   mover's 0x20000 flag at 0x14d9ac and skips the other object's slot 6; the copy's own
-  slot 6 still runs.)
+  slot 6 still runs. `docs/spec/movement-camera.md` read the same test, 0x14d9b0–0x14d9b8,
+  and agrees.)
 - State 7: what sets it? No store of 7 to +0x58c exists as a constant; look for a computed
   store or a clone from another object.
 - State 0xd for the copy calls the vehicle's slot 17 with the player's position (0x1a5efc)
-  and then 0x14f028 (0x1a5f04); whether the vehicle is changed by that is not established.
+  and then 0x14f028 (0x1a5f04); whether the vehicle is changed by that was not established.
+  (Answered in `docs/issues/prediction-copy.md` section 3.2: the slot is
+  `Vehicle_getRiderPose` 0x2088a0, a getter; the vehicle is not changed.)
 - Record +0x128 and +0x3748: meanings. (+0x58 versus +0x59, +0xe8–0xee and +0x43d0 were
   listed here too; `docs/ui.md` answers them and the record table now says so.)
 - Which button is the health potion and which the mana potion (`g_btnPotionA/B`).

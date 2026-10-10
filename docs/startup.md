@@ -313,8 +313,10 @@ do:
    a net launch it comes after the seed was zeroed (`0x322d8c`), so it is part of the
    starting state of the game. **Observed** (mechanism). **Inferred:** harmless when
    every machine reaches the first world from the front end, because then all of them
-   make the same 223 draws. **Unknown:** whether any flow lets one machine keep that lump
-   group loaded while another does not; if one exists the machines start 223 draws apart.
+   make the same 223 draws. Whether any flow lets one machine keep that lump group loaded
+   while another does not was **Unknown** here; `docs/issues/sync-breakers.md` section 6b
+   followed the lump keep-levels through the launch paths and found none: no flow leaves
+   `hud.lmp` loaded on one peer only.
 2. **The parser draws from `g_randSeed` whenever its variant argument is −1** — almost
    every call. **Observed.** Any caller that runs on one machine only, or from draw or
    menu code, would move the shared seed. Callers not classified here: the store stock
@@ -396,7 +398,8 @@ T0 twice per frame (`0x32321c`, `0x323274`) only to store a duration at `0x44fd4
    `item_getFlag33Level`.
 4. Per-machine item 1: can `hud.lmp`'s lump group be loaded on one net peer and not on
    another when the first world loads? Reading the lump priority code (`0x1713c0`,
-   `0x17128c`) and the net launch path in `frontend_run` would settle it.
+   `0x17128c`) and the net launch path in `frontend_run` would settle it. (Answered: no —
+   `docs/issues/sync-breakers.md` section 6b.)
 5. Per-machine item 2: are the store stock calls at `0x3230c4`/`0x3230f0` reached with the same
    `g_randSeed` on every machine? It follows a wait loop that calls `net_main`.
 6. The meaning of language codes 1, 3 and 4, and whether the US disc can select them.

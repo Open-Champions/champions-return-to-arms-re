@@ -33,8 +33,12 @@ All integers are little endian. "qword" means 16 bytes.
   in the executable or the level: creature class definitions (`{name, pointer}` pairs,
   `x.vif` then `x.tex`), the item model table `g_itemModels` 0x3e9ce0, prop properties, and
   the model chunks of a `.world` file (`docs/formats/world.md`). One model, one texture.
-- Level geometry and its textures (`<LEVEL>.TEX`, `WCACHE.DAT`) are a different container;
+- Level geometry and its textures (`<LEVEL>.TEX`) are a different container;
   see `docs/formats/world.md`. The texture *header* described below is the same one.
+  The earlier version named `WCACHE.DAT` beside `<LEVEL>.TEX`; it is not a level texture
+  container. The world code opens only `<level>.tex` (0x181d30, 0x17d680, 0x17d830), and
+  the strings `wcache.hdr` and `wcache.dat` are referenced only from the equipment cache
+  code (0x1a2680, 0x1a2d48) — Inferred there: the weapon model cache.
 - Fix-up after loading is by extension in `lump_fixupEntry` (0x17153c): `.vif` →
   `model_relocate` (0x179130), `.tex` → `tex_relocate` (0x179e10). `.etex` is recognised and
   left alone.
@@ -44,7 +48,9 @@ All integers are little endian. "qword" means 16 bytes.
 - Positions are signed 16-bit, 16 to a world unit (O: the vertex programs convert with a
   "divide by 16" instruction, 0x3e7668 and 0x3e7c10; the CPU-side readers multiply by 0.0625,
   0x178e18). Bounding boxes and hull points are whole world units in signed bytes.
-- Z is up. The samples looked at face −Y with their left and right along X (D: the exported
+- Z is up, in a right-handed world; camera space has x right, y down and z forward
+  (`docs/spec/render-pipeline.md` section 3, which settles what this section left open).
+  The samples looked at face −Y with their left and right along X (D: the exported
   player, skeleton and cyclops stand upright with the face towards −Y). A standing human
   player body is about 75 units tall.
 - Vertices are stored in the model's rest pose, in model space — not relative to their
@@ -191,7 +197,7 @@ enters at instruction *n*. Entries the model code uses:
 | 0x0c / 0x1e | CPU, per draw | build the joint matrices: transform × pose matrix for every joint, or the transform copied into 63 slots | O |
 | 0x1a | CPU, per part | joint matrix × attach matrix into slot 0 | O |
 | 0x2a | CPU, shell pass | switches the mesh programs to the shell path and stores a colour and a distance | O |
-| 0x30 | sample-point block | one screen-facing quad per sample point (shadow) | O for the data it reads |
+| 0x30 | sample-point block | one quad per sample point (shadow). It does not draw to the screen: it draws into an off-screen surface, through its own joint matrices at 0x100 loaded by entries 0x2c / 0x2e (`docs/spec/render-pipeline.md` section 4.9) | O for the data it reads |
 | 0x3a | CPU (`anim_emitPose` 0x16f880) | converts the uploaded pose (three s16 quadruples per joint: rotation ÷ 4096, translation ÷ 64) into matrices | O |
 | **0x42** | mesh data | one-pass packet, 3 qwords per strip vertex (0x3e7550) | O |
 | **0x44** | mesh data | two-pass packet, 4 qwords per strip vertex (0x3e7ac8) | O |
@@ -346,8 +352,9 @@ There are no material records. What a native renderer has to reproduce is spread
 - **Flag 0x10 and program 0x44.** Each strip is sent twice: first with the second tag (GS
   context 2, the second UV qword, which the program computes from the transformed normal),
   then with the first tag (context 1, the stored UVs) — order O at 0x3e7da8. Context 2
-  blends with `FIX` from +0x20. Which texture context 2 holds was not traced; a per-level
-  environment texture (`envtex.etex`) is the obvious candidate. I. With +0x18 = 9 the model
+  blends with `FIX` from +0x20. Which texture context 2 holds was not traced here; it is
+  the level's `envtex.etex`, as guessed (0x19c77c, 0x19e440; `docs/spec/render-pipeline.md`
+  section 13). With +0x18 = 9 the model
   texture's alpha then acts as "how much of the first pass shows through".
 - **Per-packet PRIM**: whether blending is on at all.
 - **The texture's own flags** (TEX0 fragment: `TFX` 3 = HIGHLIGHT2 in model textures).
@@ -470,7 +477,8 @@ portraits, map icons, effect sprites (halos, trails) and the two star-field back
 are not. Of 92 textures sampled without the flag, none is. D.
 
 **`.etex`.** Same header and packet; all 127 are 128 × 128, 32-bit, flags 0x0420. Who loads
-them was not traced. U.
+them was not traced here; the main loop does, through 0x19e440
+(`docs/spec/render-pipeline.md` section 13).
 
 ## What was checked
 
@@ -555,8 +563,12 @@ Keep extracted files and exports outside the repository.
   coordinates and the vertex colour (entries 0x02 and the lighting part of 0x42/0x44 were
   not read in detail).
 - Texture wrap and filter modes: the model code that was read writes neither `CLAMP` nor
-  `TEX1`, so both are inherited from state set elsewhere.
-- Program 0x46 in a model (one file), and where its row registers are set for it.
+  `TEX1`, so both are inherited from state set elsewhere. (`docs/spec/render-pipeline.md`
+  section 6 lists the GS state per kind of draw.)
+- Program 0x46 in a model (one file), and where its row registers are set for it. (Still
+  open, with one more fact: 0x175950, the function that would set that program up for a
+  model — entries 0x16 and 0x34 — has no caller. How the one sky dome that uses it is
+  drawn is Unknown; `docs/spec/render-pipeline.md` section 13.)
 - The mesh record's +8 count where it differs from the rebuilt triangle count.
 - `.etex` loading; the 2D sprite and font code (0x17a5a0–0x17c730) that draws the interface
   textures was not read.

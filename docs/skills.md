@@ -17,8 +17,11 @@ cast path and the per-machine questions. Nothing here was checked on a running g
 | 0x31c2a0–0x31d2a0 | `SmokeGen` level object |
 | 0x31d2a0–0x320000 | Not skills: USB keyboard support, a "CommBuffer" packet queue, a power-off handler and other platform code. Not examined beyond their strings |
 
-The `SkillShock` constructor (0x2c3c68), the constructors and statistics functions of eight
-skill classes (ids 3, 25, 27–30, 60, 61; 0x16a98c–0x16ac74) and every default slot function
+The `SkillShock` constructor (0x2c3c68), the constructors and statistics functions of five
+skill classes (ids 25 and 27–30; 0x16a98c–0x16ac74 — the earlier version counted eight and
+included ids 3, 60 and 61, which are constructed inline in the static initialiser 0x16ac74,
+Blunt at 0x16b2cc and Slashing at 0x16b35c, and use the base statistics function;
+`docs/spec/skills-35-68.md` section 4.6) and every default slot function
 (0x3c8218–0x3c8cb4) live outside this range; they are described here but not named in
 `symbols/skills.tsv`. The same goes for most destructors (0x3ccfd4–0x3d21c8).
 
@@ -47,7 +50,7 @@ skill classes (ids 3, 25, 27–30, 60, 61; 0x16a98c–0x16ac74) and every defaul
 |---|---|---|---|
 | +0x00 | char* | internal name ("diseasebolt"); text keys are built from it ("<name>_rankdesc") | every constructor, e.g. 0x2cb0e0; UI at 0x1d4660 |
 | +0x04 | u32 | flags. Bit 0: the prediction copy of the local player may cast this too. Set only by Cyclone (ids 41, 84) and AncestralCall (51) | constructors 0x2d13ec, 0x2e0640; test in the player cast helper 0x1a42b8 |
-| +0x08 | s32 | kind. 0 ordinary, 1 channelled (cost is per second, taken 1/60 per frame; the spell is also linked at player+0x588), 3 passive (never cast; menus test for 3), 7 set by HarmTouch only, 8 set by the five bow skills and the two axe skills. What tests 7 and 8 was not looked for; Player_run also compares the field with 6, which no constructor sets | constructors; 0x1a42b8; 0x1c2648, 0x1d32e4 |
+| +0x08 | s32 | kind. 0 ordinary, 1 channelled (cost is per second, taken 1/60 per frame; the spell is also linked at player+0x588), 3 passive (never cast; menus test for 3), 7 set by HarmTouch only, 8 set by the five bow skills and the two axe skills. The kind is copied into the ability record (+0x25) by `hud_onAssignSpell` 0x1de61c. Kind 7: `Player_run` calls `Player_castSkill` at once, with no cast animation (0x1a7048, 0x1aac60). Kind 8: tested at 0x1a7034–0x1a7058; the record is kept at player +0x484 (store at 0x1a709c) and consumed by the ranged release, whose two sites call `Player_castSkill` at 0x1a837c and 0x1a9174. (The earlier version said the tests of 7 and 8 were not looked for; `docs/spec/skills-35-68.md` section 4.6.) Player_run also compares the field with 6, which no constructor sets | constructors; 0x1a42b8; 0x1c2648, 0x1d32e4 |
 | +0x0c | s16 | recast delay in frames, copied to player+0x4ae after a cast. 30 by default; BlindingLight 180, ConvertUndead and HarmTouch 300, ConvertEnemy 600 | constructors; 0x1a42b8 |
 | +0x0e | s16[5] | tier 1: first level at which statistic *i* exists | base slot 10 at 0x3c85fc |
 | +0x18 | s16[5] | tier 1: value of statistic *i* at that level | same |
@@ -61,7 +64,10 @@ skill classes (ids 3, 25, 27–30, 60, 61; 0x16a98c–0x16ac74) and every defaul
 
 Statistic value = base + step × (level − first level), rounded to nearest; 0 when the level is
 0 or below the first level. Tier 1 is used for players, tier 2 for everything else (slot 12
-picks by the caster's is-player flag). Which statistic means what is per skill; by convention
+picks by the caster's is-player flag). That holds only where the code asks through slots
+11–13: Root, ConvertEnemy, ConvertUndead and HolyShield call slot 10, which is tier 1 for any
+caster, and ShockOfFire's direct damage calls slot 8 (`docs/spec/skills-35-68.md` section
+4.6). Which statistic means what is per skill; by convention
 statistic 0 is the main amount (damage, percentage) and statistic 4 is the mana cost.
 
 ### Skill virtual slots (tools/vtab.py numbering; slot n is at table offset n × 8)
@@ -76,7 +82,7 @@ statistic 0 is the main amount (damage, percentage) and statistic 4 is the mana 
 | 6 | describeExtra | (text buffer) → 1 if it wrote a description. Only SkillResurrect overrides (different text for one player) | 0x1d4660; 0x312500 |
 | 7 | getIcon | looks up "ic<name>.tex" in icons.lmp | 0x3c82c0, 0x3ccfb0 (all outside this range) |
 | 8 | getStatRange | (spread, stat, level, randomise, int* lo, int* hi): slot 10 value ∓ spread, each at least 1; with randomise set each bound advances the shared generator twice | base 0x3c82e4; used by describeRank with randomise 0, e.g. 0x2c3df8 |
-| 9 | initStats | fills the tables at +0x0e…+0x5f. Base version zeroes tier 1. Called once for every id by `skills_callVslot9All` 0x1ebca0, from `game_initCamera` 0x1e6b68 (call at 0x1e6bac), from `main` (call at 0x323e48); the earlier version said the caller was not found | e.g. 0x2cb14c; base 0x3c85b0 |
+| 9 | initStats | fills the tables at +0x0e…+0x5f. The base version writes first level 0, value 1 and step 2.0 for all five tier-1 statistics (0x3c85b0–0x3c85f0); the earlier version said it zeroes tier 1. Called once for every id by `skills_callVslot9All` 0x1ebca0, from `game_initCamera` 0x1e6b68 (call at 0x1e6bac), from `main` (call at 0x323e48); the earlier version said the caller was not found | e.g. 0x2cb14c; base 0x3c85b0 |
 | 10 | getStat | (stat, level) → int, tier 1 | base 0x3c85fc |
 | 11 | getStatTier2 | (stat, level, cap) → int; level is clamped to cap when cap > 0; tier 2 if present else tier 1 | base 0x3c8690 |
 | 12 | getStatFor | (stat, level, caster, cap): slot 10 if the caster has the is-player flag, else slot 11 | base 0x3c87f0 |
@@ -92,7 +98,7 @@ Slots 8 and 10–15 are never overridden; only 1, 2, 4, 5, 6, 7 and 9 are.
 |---|---|---|---|
 | +0x00 | u8 | level the skill was cast at | constructors, e.g. 0x2c8cb4; used as the level argument of every statistic lookup |
 | +0x04 | handle back-list | what `handle_link(creature+0x364, spell+4, spell)` hooks into; cleared by the destructor | creature_addSpell 0x11a838; base destructor 0x3cafc8 |
-| +0x08 | Skill* | the skill that made it | constructors |
+| +0x08 | Skill* | the skill that made it. Not universal: `SpellDiseaseEffect` and `SpellSecondaryUndeadShield` leave it null (0x2d5594, 0x2eb050); the former keeps its Skill at +0x1ac (`docs/spec/skills-01-34.md` section C) | constructors |
 | +0x0c | Creature* | owner: the creature the spell sits on (for buffs this is the caster) | constructors; run functions |
 | +0x10 | u32 | private generator state, seeded by one draw from the shared generator in the constructor; advanced by `Spell_rand` | every Spell constructor |
 | +0x14 | ptr | virtual table | |
@@ -104,13 +110,17 @@ draws once from the shared generator**, just as constructing a GameObject does.
 | Slot | Name | Called from | Notes |
 |---|---|---|---|
 | 1 | dtor | the spell itself when it ends (argument 3 = destroy and free), the player cast helper for the prediction copy, Creature_dtor | |
-| 2 | run | Creature slot 17 (0x11a868), which Creature_run and Player_run call once per simulated frame: (pos*, facing) | this is where all spell logic is |
+| 2 | run | Creature slot 17 (0x11a868), once per simulated frame: (pos*, facing). `Creature_run` makes the call for non-players only (is-player test at the top of 0x112948). A player's spells are run from `Player_updateCast` 0x1a3f70, called at 0x1ac6a8 after the action-state switch and only while hit points are above 0. (The earlier version said `Creature_run` and `Player_run` both call slot 17; `docs/spec/skills-35-68.md` section 4.6) | this is where all spell logic is |
 | 3 | draw | Creature_draw 0x10b928 loop | overridden only by SpellDrowsy 0x30ed24, SpellSummonBadger 0x311034, SpellResurrect 0x312f48 |
 | 4 | getField18 | Player_run, for Bash (id 49) and ShieldBash (34) only | returns spell+0x18; base returns 0 |
 
 ### Projectiles and area effects
 
-These are ordinary GameObjects (slot 4 run, 5 draw, 6 touched). They keep the owner as a
+These are ordinary GameObjects (slot 4 run, 5 draw, 6 touched) — in the `DiseaseBolt`
+pattern, which not every effect follows: `DarknessProjectile` (id 36) and `ShockProjectile`
+(id 37) call `GameObject_ctor` directly (0x2cf4d8, 0x2c4050) instead of `Projectile_ctor`,
+move themselves, do their own hit tests in run and have the empty base slot 6
+(`docs/spec/skills-35-68.md` section 4.6). They keep the owner as a
 handle, the Skill pointer and the level, and look statistics up through slot 12 or 13 so that
 a monster-owned projectile gets tier 2 numbers. Example, `DiseaseBolt` (0x7c bytes,
 constructor 0x2c9eb0): +0x38 facing, +0x54 owner handle, +0x58 homing target handle (first
@@ -130,17 +140,22 @@ layouts were not tabulated.
 | +0x43f8 | current thrown-weapon stack (item pointer; count at item+4) | SkillFireAxe_cast 0x31979c |
 | +0x4434 + 4 × n, +0x4a7c | item pointer array and the signed byte that indexes it (Inferred: weapon sets and the active set) | weapon-buff spell constructors, e.g. 0x2e24d8 |
 | +0x4a86 | weapon-style byte: selects the "ohw_", "nw_", "dha_", "dhs_" animation name prefixes; value 4 is required by the five bow skills and refused by Cyclone, HarmTouch and Bash, value 6 is also refused by Cyclone and HarmTouch | canUse functions 0x2d5fc4, 0x2d1484, 0x2d2984, 0x2de334; SpellRoar_ctor 0x30016c |
-| +0x4c20 | float written 1.0 / 0.75 × by GiantGrowth and Resurrect | 0x309524, 0x3127b4 |
+| +0x4c20 | float. GiantGrowth writes max(1, 0.75 × scale); Resurrect writes 0.5 (0x312a28); each overwrites the other's value. (The earlier version: "written 1.0 / 0.75 × by GiantGrowth and Resurrect"; `docs/spec/skills-35-68.md` section 4.6) | 0x309524, 0x3127b4, 0x312a28 |
 
 ## How a cast happens
 
 ### Player (Observed, 0x1a5c6c–0x1a5e28 and helper 0x1a42b8, both in the player area)
 
-1. The pressed ability slot is an ability record (0x68 bytes; type byte +0x25 = 7 for a
-   skill, skill id at +0x20).
+1. The pressed ability slot is an ability record (0x68 bytes; kind byte +0x25, a copy of
+   skill +0x08; skill id at +0x20). The earlier version read "+0x25 = 7 for a skill"; 7 is
+   the kind that casts with no animation (see the Skill table, +0x08).
 2. `canUse(player)`; if it refuses, the request is dropped.
 3. level = Player slot 39 (0x3c3b40) for that id; cost = `manaCost(level)`. If the record's
-   mana (+0xc0) is lower, the "not enough mana" notice is raised and nothing happens.
+   mana (+0xc0) is lower, the "not enough mana" notice is raised and nothing happens. A
+   kind-1 (channelled) skill needs only half its cost to start (0x1a6f84–0x1a6f90). For an
+   animated cast the helper of step 4 is called on the frame the cast animation's blend
+   weight reaches 1.0, or 0.5 in a net game (0x1ab6f4–0x1ab7dc;
+   `docs/spec/skills-35-68.md` section 4.6).
 4. The helper 0x1a42b8 returns at once while player+0x4ae (recast counter) is above 0, and
    when the player object is the prediction copy and the skill's flag bit 0 is clear.
 5. It works out the cast position (midpoint of model attachment points 0 and 1, height clamped to 58 above the feet) and a
@@ -150,13 +165,20 @@ layouts were not tabulated.
 7. If a Spell came back: for the prediction copy it is destroyed immediately (slot 1 with 3);
    otherwise `creature_addSpell(player, spell)`, and for kind 1 it is also linked at
    player+0x588.
-8. player+0x4ae = skill+0x0c; mana −= cost (cost / 60 for kind 1, i.e. per frame while held).
+8. player+0x4ae = skill+0x0c; mana −= cost (cost / 60 for kind 1). The helper makes this
+   charge once. The per-frame charge while a channelled skill is held is made by
+   `Player_run` in cast phase 2 and keys on the ability record's kind byte; the earlier
+   version read the helper's cost / 60 as that per-frame charge (`docs/spec/skills-01-34.md`
+   section C, where the row is filed under `docs/player.md`).
 
 Mana and the shared generator are two of the four things the prediction loop restores, so
 steps 6–8 on the copy leave no trace as long as cast and the Spell constructor change nothing
 else. For the three copy-castable ids that is what the code does: SpellCyclone_ctor
 (0x2d17c8) and SpellAncestralCall_ctor (0x2e09b4) both test the owner's 0x20000 flag before
-their notice, target gathering and light-effect allocation (Observed).
+their notice, target gathering and light-effect allocation (Observed). One exception found
+since: `SpellCyclone_ctor` writes event slot 0 of the shared spin clip's header (0x2d1978,
+0x2d197c) *before* its copy test at 0x2d19c4, so the copy's cast does leave a trace there
+(finding S1 in `docs/spec/skills-35-68.md` section 4).
 
 Passive skills are not cast; other code asks them for a number (see "helpers" below).
 
@@ -165,7 +187,13 @@ Passive skills are not cast; other code asks them for a number (see "helpers" be
 The monster's own state machine calls slot 2 directly on a fixed table entry:
 `cast(level, self, &pos, facing)` with level = Creature slot 35 (base 0x118c50: the global
 difficulty scale 0x4f714c × 0.3 — the float other documents call the monster level,
-`g_levelMonsterLevel`), then `creature_addSpell(target, result)`. There is no mana,
+`g_levelMonsterLevel`), then `creature_addSpell(target, result)`. Exceptions read since
+(`docs/spec/skills-35-68.md` section 4.6, `docs/spec/skills-69-101.md`): for Healing the
+monster passes the wounded ally as the *caster* argument, and Orc then attaches the spell to
+itself (0x2a2998); Bubo casts Disease Blade with one of its allies as the caster argument and
+attaches the result to that ally (0x249014); Cazic casts Frost Armor with the whole monster
+level, not slot 35 (0x24bbe8); and the arrow constructors of the bow-carrying monsters are
+given `(int)g_levelMonsterLevel` unscaled (0x25c7d8, 0x2a7274). There is no mana,
 no recast counter and, except where a monster calls it explicitly (SummonSkeleton), no
 canUse. Many monsters skip the Skill altogether and call the effect's constructor (marked *
 in the table below), or only borrow a statistic through slot 11.
@@ -186,8 +214,12 @@ Passive and reactive skills are implemented as small functions that the damage f
 (0x1e8230), Player_processDamage, Player_recalcDamage and the creature movement code call
 with a fixed table entry: Riposte counter-attack 0x2ddccc, CriticalHit aura query 0x2e76c4
 (only when the attacker is a player, test at the call site), UndeadShield reflection
-0x2eaec0 / 0x2eb5b4, Retribution heal 0x314790, SpiritShield 0x315888, FrostArmor 0x318264,
-StunningStrike 0x308c10 / 0x308cb4, StrongStance 0x30851c / 0x308578, LifeTap 0x2f8e78,
+0x2eaec0 / 0x2eb5b4, Retribution heal 0x314790, SpiritShield 0x315888 (the absorb roll,
+`SpellSpiritShield_rollAbsorb`: one shared-generator draw per qualifying hit, returns whether
+the hit is absorbed), FrostArmor 0x318264,
+StunningStrike 0x308c10 / 0x308cb4, StrongStance 0x30851c / 0x308578, LifeTap 0x2f8e78 (its
+two callers are the death branch of `Creature_processDamage`, 0x111f40, and, in PvP mode A,
+`Player_processDamage`, 0x1b3614; it is not called from melee code),
 BloodLust multipliers 0x3047b0 / 0x30481c, Drowsy slow factor 0x30ef08, and the percentage
 getters for Archery, Throwing, BattleMage, Dodge, NaturalResistance, AxeBandolier,
 LightQuiver, PenetratingArrows.
@@ -210,7 +242,7 @@ references to the table entries and to the constructors and may be incomplete.
 | 4 | diseasebolt | SkillDiseaseBolt | 518468 | 0 active | 30 | 0 | DiseaseBolt (0x7c) | 9 + 2 x (level-1) | Bubo, Horsemen, Mummy* |
 | 5 | diseaseshield | SkillDiseaseShield | 518638 | 0 active | 30 | 0 | SpellDiseaseShield (0x1b0) | 43 + 4 x (level-1) | Bubo, Mummy* |
 | 6 | diseasetrail | SkillDiseaseTrail | 518580 | 0 active | 30 | 0 | SpellDiseaseTrail (0x30) | 36 + 3.504 x (level-1) |  |
-| 7 | firestorm | SkillFireStorm | 518d28 | 0 active | 30 | 0 | FireStorm (0xb4) | 43 + 11 x (level-1) | Cazic, Horsemen, Goblin*, Demon*, Mummy*, RedDragon* |
+| 7 | firestorm | SkillFireStorm | 518d28 | 0 active | 30 | 0 | FireStorm (0xb4) | 43 + 11 x (level-1) | Cazic, Horsemen, Goblin, Demon*, Mummy*, RedDragon* |
 | 8 | fireflares | SkillFireFlares | 519470 | 0 active | 30 | 0 | SpellFireFlares (0x78) | 17 + 11 x (level-1) |  |
 | 9 | riposte | SkillRiposte | 519528 | 3 passive | 30 | 0 | no object in cast | base (1.0) |  |
 | 10 | blessed | SkillBlessed | 519668 | 0 active | 30 | 0 | SpellBlessed (0xfc) | stat4 |  |
@@ -261,7 +293,7 @@ references to the table entries and to the constructors and may be incomplete.
 | 55 | healing | SkillHealing | 519e50 | 0 active | 30 | 0 | SpellHealing (0x24) | stat4 | Bubo, FemaleDarkElf, Kobold, Orc |
 | 56 | coneoffrost | SkillConeOfFrost | 519f08 | 1 channelled | 30 | 0 | SpellConeOfFrost (0x58) | stat4 | Tormentor |
 | 57 | shockoffire | SkillShockOfFire | 51a190 | 0 active | 30 | 0 | Sparks (0xb8) | stat4 | Goblin, Demon*, Mummy* |
-| 58 | froststorm | SkillFrostStorm | 51a218 | 0 active | 30 | 0 | FrostStormSpell (0xac) | stat4 | Cazic, Mummy, Goblin*, Minion*, Ulthork* |
+| 58 | froststorm | SkillFrostStorm | 51a218 | 0 active | 30 | 0 | FrostStormSpell (0xac) | stat4 | Cazic, Mummy, Goblin, Minion*, Ulthork* |
 | 59 | lifetap | SkillLifeTap | 51a9e0 | 3 passive | 30 | 0 | no object in cast | 0 (passive) |  |
 | 60 | Blunt | SkillBlunt | 512808 | 3 passive | 30 | 0 | nothing (base cast) | base (1.0) |  |
 | 61 | Slashing | SkillSlashing | 512780 | 3 passive | 30 | 0 | nothing (base cast) | base (1.0) |  |
@@ -323,6 +355,19 @@ Notes on the table:
   entry that ends the `SkillLifeTap` table, and said `vtables.txt` showed the two merged
   as a 34-entry SkillLifeTap table; the regenerated list has `PoisonRain` on its own
   line.)
+- Ids 7 and 58, Goblin: the earlier version marked Goblin with * (statistics only) for both.
+  `Goblin_run` casts both through slot 2 with the level from its own slot 35
+  (0x26c4f4–0x26c53c; `docs/spec/skills-35-68.md` section 4.6).
+- Id 17: every statistic of the hammer is read at level + 1, and the `HammerOfWrath`
+  constructor makes one extra shared-generator draw for the item variant (0x2edefc, through
+  `item_randomizeVariant` 0x1046e0; `docs/spec/skills-01-34.md` section 17).
+- Id 21: the `LostSoul` objects are purely visual; the effect is the `damage_radial` call in
+  the cast function 0x2f4d34.
+- Id 46: the cast builds plain `MissileWeapon` objects (0x2d9fc4). `MultiFireProjectile` is
+  another class (table 0x519128, 0x78 bytes), built only by MaleDarkElf (0x25cab4).
+- Ids 96 and 97, "Monsters" column: Cazic casts Frost Armor with the whole monster level
+  rather than slot 35 (0x24bbe8); Bubo casts Disease Blade with an ally as the caster
+  argument and attaches the spell to that ally (0x249014) (`docs/spec/skills-69-101.md`).
 - Ids 33 and 53: the earlier version had the two name strings the other way round.
   `SkillCriticalHit_ctor` gives id 53 the string `criticalhit` and id 33
   `rangercriticalhit` (0x2e72a0–0x2e72fc); the statistics rows below were already under
@@ -339,8 +384,10 @@ Extracted by tracking constant stores in each initStats function (the six id-dep
 classes were transcribed by hand). `sN: a +b/lv from lv L` reads: statistic N is a at level L
 and grows by b per level; without "from" L is 1. Per-level steps are stored as floats that
 are slightly off round numbers (9.00891 for 9); they are shown rounded. The meaning of each
-index was only established for the skills read by hand: DiseaseBolt s0 damage (Inferred
-from the ±20 % range its description prints); Healing s0 percent of maximum hit points, s1
+index was only established for the skills read by hand: DiseaseBolt s0 damage (Observed in
+the hit handler 0x2caec8; the earlier version had it Inferred from the ±20 % range its
+description prints. The type-0x26 entry the bolt passes with it is not a damage: the disease
+it starts ticks for 1 unless Bubo started it, 0x2d5854 — `docs/spec/skills-01-34.md`); Healing s0 percent of maximum hit points, s1
 radius in 12-unit steps (0x2e8ec8, 0x2e90b8); Cyclone s0 attack damage percent, s1 number of
 spin-animation loops, s2 movement speed percent (0x2d17c8, 0x2d1a94); s4 is the mana cost
 wherever the Mana column says stat4. Tier 2 applies to non-player casters; an empty tier 2
@@ -520,7 +567,7 @@ each is a hazard only through the weapon-effect cast or a caller not yet read:
 
 | Address | Function | What it does with the index |
 |---|---|---|
-| 0x2d19d8 | SpellCyclone_ctor | posts a player notice |
+| 0x2d19d8 | SpellCyclone_ctor | passes it to `player_voice` (0x2d19dc; the earlier version said "posts a player notice") |
 | 0x2d1d94, 0x2d1dfc, 0x2d1efc, 0x2d2190 | SpellCyclone_run | reads the slot's analog stick from g_pads, the per-slot facing, calls the player move function, tests net_isLocalSlot |
 | 0x2de848, 0x2deda0 | SpellBash_run | passes g_pads[index] to the player move function; net_isLocalSlot |
 | 0x2faeec, 0x2fb450 | SpellShieldBash_run | same |
@@ -531,8 +578,9 @@ each is a hazard only through the weapon-effect cast or a caller not yet read:
 | 0x30023c, 0x30043c, 0x30048c | SpellRoar ctor / run | weapon-style byte; net_isLocalSlot; writes mana |
 | 0x3017d0, 0x301abc, 0x301b10 | SpellBattleCry ctor / run | same |
 | 0x303308, 0x303570, 0x3035b8 | SpellBloodLust ctor / run | same |
-| 0x3093a8, 0x309640 | SpellGiantGrowth dtor and helper 0x309524 | writes record +0x4c20 |
-| 0x312e10, 0x312ea4 | SpellResurrect_run | reads the object pointer of record[index], writes hit points |
+| 0x3093a8, 0x309640 | SpellGiantGrowth dtor and helper 0x309524 | writes record +0x4c20. Listed here by mistake: the guard is one level up, in the cast, which returns for a non-player before it allocates the spell (0x308fc0) |
+| 0x312e10, 0x312ea4 | SpellResurrect_run | reads the object pointer of record[index], writes hit points. The index read at both sites is the *target* player's, not the caster's (`docs/spec/skills-35-68.md` section 4.6) |
+| 0x313d74 | SpellRaiseArmy raise step (`SpellRaiseArmy_raiseInRing` 0x313bd4) | reads the caster's index with a byte load, which the scan for word loads at displacement 0x3c8 missed (`docs/spec/skills-69-101.md` SC8) |
 | 0x31992c … 0x319d50 | SkillFireAxe_cast | decrements the thrown-axe stack, removes the item, writes two per-slot HUD arrays (0x41b844, 0x41b8c4) |
 | 0x31a260 … 0x31a684 | SkillColdAxe_cast | same |
 
@@ -544,12 +592,12 @@ For the two axe skills canUse returns 1 for a non-player, so canUse would not st
 |---|---|---|---|
 | 1 | SkillMultiFire_cast 0x2d9e08–0x2d9ec8 | When the caster is **not** a player, the second damage figure handed to each projectile constructor (stack argument stored at 0x2d9fb4) is base + base × 0.2 × a value drawn from the **cosmetic** generator 0x404460 (two draws). The player branch uses the weapon record instead. If this branch ever runs, projectile damage differs between machines | Observed code; reachability Unknown. No monster was found calling this slot (MaleDarkElf builds MultiFireProjectile itself); the weapon-effect cast could |
 | 2 | SpellBloodLust_run 0x3034dc (0x13e180 call, then the test at 0x303e24) | The number of `Spell_rand` draws per frame (0–3 bursts of four or more per hand) depends on (i) how far the attachment points of the object returned by 0x13e180 moved — the prediction copy on the owner's machine, the real player elsewhere — and (ii) the user option 0x44fdc0 being above 0. The spell's private generator therefore diverges between machines. In this spell it feeds particles only (the function makes no damage call and no allocation, and no creature write uses a drawn value), so the divergence is contained | Observed |
-| 3 | 0x13e180 in SkillCharge_cast 0x2c8864, SpellCharge_run 0x2c8f2c, SpellCyclone_run 0x2d1a94 | Writes the action state (+0x58c) or starts an animation on the returned object as well as on the real player. The extra write lands on the copy only | Observed; harmless direction |
+| 3 | 0x13e180 in SkillCharge_cast 0x2c8864, SpellCharge_run 0x2c8f2c, SpellCyclone_run 0x2d1a94 | Writes the action state (+0x58c) or starts an animation on the returned object as well as on the real player. On the owner's machine the extra write lands on the copy only. For `SpellCyclone_run` that is not the whole of it: on a machine where the owner is remote, `net_objOrGhost` returns the real player, so there the animation is started on the real player a second time (0x2d1b04, 0x2d1d1c–0x2d1d38; FINDINGS G22, `docs/issues/prediction-copy.md` 3.3; the earlier version said "on the copy only" for all three) | Observed; harmless direction for the Charge pair; for Cyclone the effect of the doubled start on the simulation is Unknown |
 | 4 | 0x13e180 in 0x2dedec, 0x2fb49c, SpellAncestralCall_run 0x2e0d10, SpellCriticalHit_run 0x2e7acc, SpellHealing_run 0x2e90b8, SpellSummonAxe_run 0x2feddc, SpellSummonArrows_run 0x2ffad4, SpellBattleCry_run 0x301a34, SpellBloodLust_ctor 0x303254 | Particle and light positions follow the copy on the owner's machine. Loop counts and `Spell_rand` counts in these functions do not depend on the returned object (read for each). SpellBattleCry_run later uses `Spell_rand` for a gameplay roll (percent chance per creature in range, decomp line 534), so it matters that its earlier draws are position-independent — they are | Observed |
 | 5 | SkillRiposte_counterAttack 0x2ddccc, SkillSummonSkeleton_cast 0x2e18a4, SkillStrongStance_trigger 0x308578 | Cosmetic generator used for particle placement only; the damage roll in the riposte uses the shared generator | Observed |
 | 6 | GroundPoundEffect_run 0x2c7808, HammerOfWrath_run 0x2ee068 (0x2ef4c0, 0x2ef5e8), 0x308578 | Generator 0x404468 used for particles, decals (0x19f110) and water ripples (0x189514) only | Observed |
-| 7 | StaticFire_run 0x2c595c (test at decomp line 157) | Everything after `isNearView(940, pos)` — particle draws from the object's own generator, the 12-frame damage tick, a draw from the shared generator per player hit — is skipped when the fire is not "near view". In a net game that means near any player, except while a cutscene is active when it means near the camera focus (D6). Shared only as long as D7 holds | Observed; depends on D7 |
-| 8 | SmokeGen_run 0x31c898 | Also gated by isNearView; not read further | Unknown |
+| 7 | StaticFire_run 0x2c595c (test at decomp line 157) | Everything after `isNearView(941, pos)` (the constant is 941.0, word 0x446b4000; the earlier version said 940) — particle draws from the object's own generator, the 12-frame damage tick, a draw from the shared generator per player hit — is skipped when the fire is not "near view". In a net game that means near any player, except while a cutscene is active when it means near the camera focus (D6). Shared only as long as D7 holds | Observed; depends on D7 |
+| 8 | SmokeGen_run 0x31c898 | Also gated by isNearView, and since read (`docs/issues/rescan.md` R2, FINDINGS D35): the particle step and the damage tick — shared-generator draws, hit points, disease — run only when `isNearView(1000)` holds (0x31c8c0, 0x31ca8c). Same family as item 7 and D6. Which levels place a `SmokeGen` with damage is Unknown | Observed (was Unknown) |
 | 9 | arena_pickSpawnPoint 0x3050a4 | Reads the camera focus and the camera object, but only when g_networkMode is 0; the net branch draws from the shared generator | Observed; guarded |
 | 10 | arena_respawnPlayer 0x305784 | The screen effect 0x322954 is started only when the slot is the local one; shared → local only | Observed |
 | 11 | SpellShadowStep_run 0x311e3c | Calls 0x1b3d90 on the stepping creature only when g_networkMode is 0 — offline and online behave differently, but every machine in a net game takes the same branch | Observed |
@@ -622,7 +670,8 @@ is harmless for sync: the copy is per-machine state already.
    functions format them and would settle each one).
 7. Slot 14's second argument (1, 2, 10, 20): dead in this build, purpose unknown.
 8. `SpellArena` and the arena wave logic (0x305bbc, 0x305ed4, 0x3065fc, 0x306b78) were only
-   skimmed. `Boat` / `SkulBoat` slots 28–29, `SmokeGen`, and everything from 0x31d2a0 up
+   skimmed. `Boat` / `SkulBoat` slots 28–29 and everything from 0x31d2a0 up (`SmokeGen`,
+   listed here in the earlier version, is now read: `docs/issues/rescan.md` R2)
    were not read.
 9. Not read at all: most projectile run functions (ShockProjectile, HolyStrike,
    HammerOfWrath, FrostShard, ShockOfFrost, PusStorm, Pustule, PoisonBolt,

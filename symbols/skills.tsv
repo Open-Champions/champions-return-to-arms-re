@@ -785,7 +785,7 @@
 00314fd8	SkillSpiritShield_manaCost	Skill slot 5: mana cost for a level (float)
 0031500c	SpellSpiritShield_ctor	sets the SpellSpiritShield virtual table; callers 314e50
 003151b4	SpellSpiritShield_run	Spell slot 2: (pos*, angle) once per simulated frame from Creature slot 17
-00315888	SpellSpiritShield_playHitEffect	called by the damage function; plays spel_is_spirithit
+00315888	SpellSpiritShield_rollAbsorb	the absorb roll: called by damage_apply for a victim carrying the spell (hit without flag 0x40); while the clock is within the duration (stat 0) it draws g_randSeed once and returns 1 when draw % 100 < stat 1 (the hit is cancelled, or halved with flag 0x20000); starts the dissolve phase and plays spel_is_spirithit as a side effect (was SpellSpiritShield_playHitEffect)
 003159d8	spiritShield_staticInit	static initialiser, attributed by position to the SkillSpiritShield source file; registers particle type descriptors through 0x18f3d0
 00315a6c	spiritShield_staticInitThunk	compiler-generated global constructor entry; calls the function above with (1, 0xffff)
 00315a8c	SkillPoisonWeapons_ctor	constructs the static Skill object; called from the start-up initialiser 0x16ac74

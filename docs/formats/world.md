@@ -145,13 +145,13 @@ inside the stored bounds, the rotated one does not).
 | 0x100 | run time only: draw once with a constant light level of −230, then the bit clears itself (`world_setPieceFlash` 0x182bf4) | O |
 | 0x200 | no dynamic lights (constant light level 0) and sort key 4 instead of 0 when queued for drawing | O |
 | 0x400 | GS `TEST_1` = 0x582f5 (alpha test on) instead of 0x587f4; D: such packets have batches with blending off | O |
-| 0x200 or 0x400 | GS `ALPHA_1` = 1 instead of 2 | O |
+| 0x200 or 0x400 | GS `ALPHA_1` = 1 instead of 2. The default 2 is not a blend with the frame buffer: it is `src × (1 − As)` (`docs/spec/render-pipeline.md` sections 6 and 13) | O |
 | 0x800 | scenery model reference | O |
 | 0x1000 | water: use the second set of water drawing constants | O 0x1876e0 |
 | 0x2000 | no dynamic lights, constant light level 230 | O |
 | 0x4000 | particle emitter | O |
 | 0x8000 | light | O |
-| 0x10000 | GS `ALPHA_1` = 0x48 (I: additive); not set in any file | O, code only |
+| 0x10000 | GS `ALPHA_1` = 0x48, additive: `dst + src × As` (was Inferred; confirmed in `docs/spec/render-pipeline.md` section 13); not set in any file | O, code only |
 | 0x20000 | set on 48 chunks | U |
 
 Kinds in the 119 files: 168,630 geometry, 9,884 water, 6,969 model, 4,350 emitter, 1,090 light.
@@ -188,7 +188,9 @@ tag pointing at the stored packet (O 0x1887b8). The header carries what the pack
 - GS registers for the chunk's texture and blending;
 - the chunk's rotation combined with the camera matrix (4 rows, 6 with flag 0x10), and a
   call of VU1 microprogram entry 0x16;
-- the lights (entry 0x34);
+- the lights. The earlier version said "entry 0x34" here; the lights are loaded by entries
+  0x0e and 0x04, and entry 0x34 only stores a word that nothing reads
+  (`docs/spec/render-pipeline.md` section 4.6);
 - `STROW tx, ty, tz, 0` — the chunk translation goes into the VIF row registers, so that
   the packet's `STMOD 1` adds it to every position as it is unpacked.
 
@@ -520,14 +522,17 @@ appear to carry the baked light; the normals are there for the dynamic lights.
 ## Still unknown
 
 - The world VU1 microprograms (0x16, 0x34, 0x46, 0x48): what exactly they do with normals,
-  lights and the second texture coordinate.
+  lights and the second texture coordinate. (Since read: `docs/spec/render-pipeline.md`
+  section 4.6.)
 - The bit grid's layout and purpose; header +0x74; chunk flags 0x2, 0x4, 0x20000; chunk
   +0x3a; moving piece +0x1a; why some geometry chunks have texture cell 0.
 - The emitter description beyond its size; the automap cell and tile coding; the water
   mask's bit order.
 - Whether cell textures and the automap tile texture decode with the rules of
   `docs/formats/model-texture.md`; not tried.
-- Which way the axes point relative to the screen and compass.
+- Which way the axes point relative to the screen and compass. (Answered for the screen in
+  `docs/spec/render-pipeline.md` section 3: the world is right-handed with z up; camera
+  space has x right, y down, z forward. The compass is still open.)
 - None of this was checked on a running game.
 
 ## Corrections to earlier documents

@@ -148,13 +148,13 @@
 00178e18	model_getSamplePoint	(scale, model, animState, pos, facing16, index, out, ...): world position of a surface sample point; 68 callers
 00179130	model_relocate	fix-up of a .vif model after load; caller lump_fixupEntry
 00179400	model_getBounds	(model, hideMask, six outputs): bounds of the meshes not hidden
-00179550	model_buildHideMask	(model, variantBits) -> 64-bit mesh hide mask; 77 callers
+00179550	model_buildHideMask	(model, variantBits) -> 64-bit mesh SHOW mask (a set bit draws the mesh): the complement of the hidden-by-default set at model +0x08, with each selected variant record OR-ing in and clearing meshes; the name says hide mask, the result is the opposite (docs/formats/model-texture.md); 77 callers
 001795f8	model_getAttachMatrix	(scale, model, animState, index, out mat34)
 00179978	model_resetDrawState	restores the draw parameters at 0x41c149-0x41c170 to defaults; 37 callers
 001799c8	model_getSamplePointCount	
 00179e10	tex_relocate	fix-up of a .tex texture after load
-0017b590	ui_drawSpriteImpl	(tex, x, y, ?, color) 2D sprite; skipped when fewer than 3000 display-list units are free
-0017bd30	ui_drawRect	(x, y, w, h, color, ...) flat rectangle; 24 callers
+0017b590	ui_drawSpriteImpl	(tex, x, y, layer, color) 2D sprite; the fourth argument is the sort layer (0x17b888); skipped when fewer than 3000 display-list units are free
+0017bd30	ui_drawRect	(x0, y0, x1, y1, layer, color) flat rectangle given by two corners, not corner and size: all four coordinates get the screen origin added (0x17be38-0x17be74); then the sort layer and the colour (docs/spec/render-pipeline.md 13); 24 callers
 0017c118	ui_drawFrameImpl	window frame from the tile textures in interfac.lmp
 0017fb68	ui_drawSprite	thunk to ui_drawSpriteImpl; 28 callers
 0017fbb8	ui_drawFrame	thunk to ui_drawFrameImpl; 17 callers
@@ -246,7 +246,7 @@
 0019a6cc	cut_setup	first frame of a cutscene: binds or creates the actors, loads dialog, hides other objects
 0019b4b4	cut_registerNetMsg	registers handler 0x198f64 (counts g_cutVoiceDoneCount) and stores the message id in g_cutVoiceDoneMsg
 # ---- engine core, frame, tasks, wide strings, floor decals (0x19b674-0x19ffff) ----
-0019b694	gfx_setScreenDarken	(amount) keeps the darkest request of the frame in 0x44fd88
+0019b694	gfx_setScreenDarken	(amount) keeps the darkest request of the frame in 0x44fd88; the value is the FIX alpha of the present pass, which mixes the new image with the previous one - it does not darken by itself (docs/spec/render-pipeline.md 8)
 0019b6bc	gfx_setColorOffset	(r, g, b) signed offsets around 0x80; -0x80 is black
 0019ba98	iop_loadModules	reboots the IOP and loads the .irx drivers; caller engine_init
 0019d028	gfx_waitVsync	

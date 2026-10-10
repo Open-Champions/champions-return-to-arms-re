@@ -303,9 +303,12 @@ is a two-instruction stub. Groups worth knowing:
   slot of the object at this+4 when that pointer is non-null; `WeaponObject_slot25`
   (0x3c1658) sets that pointer. WeaponObject is a holder that delegates to a
   WeaponInterface implementation (Weapon1, Weapon2 or WeaponShield).
-- `Weapon1_slot2`–`7`, `Weapon2_slot2`–`8`, `WeaponShield_slot2`–`16` are small wrappers.
-  `Weapon1_slot2` calls `creature_buildElementDamage` on the block at this+0x50 when its
-  index argument is below 2; `Weapon2_slot2` does the same and repeats it for the block at
+- `Weapon1_slot2`–`7`, `Weapon2_slot2`–`8`, `WeaponShield_slot2`–`16` are small wrappers
+  (names of the first pass; `Weapon1_slot2`, `Weapon2_slot2`, `Weapon2_slot6` and
+  `Weapon2_slot8` have since been renamed `Weapon1_setFireWeapons`,
+  `Weapon2_setFireWeapons`, `Weapon2_setShockWeapons` and `Weapon2_setElement`).
+  `Weapon1_setFireWeapons` calls `creature_buildElementDamage` on the block at this+0x50 when its
+  index argument is below 2; `Weapon2_setFireWeapons` does the same and repeats it for the block at
   this+0xe0 when the index is 0 or 2. The other slots have the same sizes and were not
   read.
 - 71 `Skill<Name>_slot7` functions return that skill's icon from `icons.lmp`; the note

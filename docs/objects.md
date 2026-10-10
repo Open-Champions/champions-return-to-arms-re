@@ -416,7 +416,7 @@ the prediction copy.
 | # | What | Kind | Addresses |
 |---|---|---|---|
 | O1 | **Pool occupancy feeds the simulation.** `runObjects` samples `pool_countFree()` every 64th frame and below 300 destroys flag-0x1000 objects in grid B; `pool_new` returns 0 when no block is free and callers then skip the object, including the `g_randSeed` draw in `GameObject_ctor`. Pool occupancy is not shared state: it counts every block, including the prediction copy (a 3000-byte block per machine, re-made on its own schedule — FINDINGS G1) and objects whose lifetime depends on a local option (O2). Two machines can therefore cross the 300 threshold on different samples, and can disagree on whether a `pool_new` succeeds when a class is exhausted | Observed mechanism; that occupancy actually diverges is Inferred | sample 0x14b9b0–0x14b9cc, reaper 0x14b9cc–0x14bb18, `pool_new` failure path 0x14fe28–0x14fe34 |
-| O2 | **A local display option changes how long gib objects live.** The `GutChunk` constructors (gameplay area) copy "option 0x44fdc0 < 2" into bit 0 of the object's +0x248, and `GutChunk` run destroys the object at its first landing when that bit is set; otherwise it lives for further bounces. 0x44fdc0 is an options-menu value (reset to 0 by the options default routine 0x1e6238, loaded from the saved configuration at 0x222d5c); other areas call it `g_decalDetail`. Gibs are grid-B objects, so box queries never see them; the effect on shared state is through O1 | Observed (constructors 0x2019e0, 0x201a80, 0x201b3c; run 0x1edb18 tests the bit at 0x1eddf4 and destroys itself at 0x1ede18); whether a net game forces the option equal on all machines is Unknown | creators in this project: `Creature_processDamage` 0x110d30 |
+| O2 | **A local display option changes how long gib objects live.** The `GutChunk` constructors (gameplay area) copy "option 0x44fdc0 < 2" into bit 0 of the object's +0x248, and `GutChunk` run destroys the object at its first landing when that bit is set; otherwise it lives for further bounces. 0x44fdc0 is an options-menu value (reset to 0 by the options default routine 0x1e6238, loaded from the saved configuration at 0x222d5c); other areas call it `g_decalDetail`. Gibs are grid-B objects, so box queries never see them; the effect on shared state is through O1 | Observed (constructors 0x2019e0, 0x201a80, 0x201b3c; run 0x1edb18 tests the bit at 0x1eddf4 and destroys itself at 0x1ede18); whether a net game forces the option equal on all machines is Unknown. Narrowed twice since. (1) The test is "below 2" and the options menu stores only 0 or 1 (a toggle, list handler 0x1a01d0), so with any value the menu can produce the bit is set on every machine and gib lifetime does not follow the option; whether a configuration file can carry 2 or more was not checked (`docs/issues/sync-breakers.md` section 7, B8; FINDINGS D21 was amended to match). (2) The dependence on the option exists only for the chunks made by `Creature_processDamage`; the chunk made by `Player_processDamage` always has bit 0 set (`docs/issues/arena-desync.md`) | creators in this project: `Creature_processDamage` 0x110d30 |
 | O3 | The camera test in the pool reaper is skipped in net games — deliberately safe | Observed | 0x14ba80–0x14ba8c |
 | O4 | `obj_updateActive` uses the camera focus when `g_cullByCamera` is set (FINDINGS D6). Everything that keys on activity inherits it: which run list an object is on, and for creatures whether AI runs at all | Observed | 0x14db28 onward |
 | O5 | `world_drawObjects` calls slot 5 of a per-machine set of objects (FINDINGS D13). Draw functions in this area were not audited individually; `Creature_draw` is covered in `docs/creatures.md` | Observed / not audited | 0x14b4f8–0x14b8b0 |
@@ -431,7 +431,10 @@ Not hazards, but easy to mistake for one: `world_findFreeSpot` and `Player1_ctor
 
 - Does a net launch copy one machine's options to the others, or otherwise pin 0x44fdc0?
   Writers are 0x1e62f8, 0x1e65e8, 0x1e6ea8, 0x222d5c; 0x1e6428 saves the option block and is
-  called from game setup 0x1e16a0. Settles O2.
+  called from game setup 0x1e16a0. Settles O2. (Answered for O2 another way: the launch
+  handshake copies no options-menu value, B12 in `docs/issues/sync-breakers.md`, but the
+  menu can only store 0 or 1 and the gib test is "below 2", so the option does not reach
+  the gib lifetime.)
 - How close do real scenes get to 300 free pool blocks, and can class 1 (512 blocks of
   0x500) be exhausted in a four-player fight? A memory snapshot of `g_poolClasses` answers it.
 - Flags 0x4, 0x10000, 0x40000: meanings. (0x400000 and 0x800000 were listed here; they are
@@ -440,7 +443,12 @@ Not hazards, but easy to mistake for one: `world_findFreeSpot` and `Player1_ctor
 - `MissileWeapon` (0x150ee4–0x153314), `AnimatedMissile`, `Gold`, `ItemProp`,
   `UserParamProp`, `CosmeticProp*`, `PushPhysicsProp` (0x15dac0–0x15e244) and `WaveMaker`
   (0x15ecf8–0x16…): virtual functions are named from the tables, bodies were not read.
-  Their draw functions have not been checked for writes to shared state.
+  Their draw functions have not been checked for writes to shared state. (Read since in
+  `docs/issues/rescan.md` section 4 and R3, R4: `MissileWeapon_run`, `UserParamProp_run`,
+  `CosmeticPropAnim_run`, `PushPhysicsProp` — constructor, load and run in outline — and
+  `WaveMaker_run`. `WaveMaker_run` knocks creatures back and draws its own generator only
+  when `isNearView(503)` holds, FINDINGS D35; a metal crate keeps a start rotation from the
+  cosmetic seed, D36. `AnimatedMissile`, `Gold` and `ItemProp` are still unread here.)
 - Which objects, besides props, ever carry flag 0x1000 while in grid B. Only the Prop
   constructors, `Prop_launch`, `Prop_loadState` and 0x18c4e4 were seen setting or testing it.
 - `world_collectInSphere` third argument and the exact meaning of mask 0xd.

@@ -429,7 +429,7 @@ return result
 | `DoorSwing_interact`, `DoorSecret_interact` (slot 14) | 0x28aacc, 0x28b2b0 | `key` | simulation |
 | `AutoObject_ctor`, 0x23d890 | 0x23a9b0, 0x23d8fc | `initScript`, `action<n>` | simulation |
 | dialog system | 0x22f028, 0x22f4d4, 0x230eb8 | names stored in dialog data | dialog code (0x22ee84, 0x22f3d0, `dialog_showNode`); not classified further |
-| **interact prompts** (slot 13) | `PushTrigger_prompt` 0x1ecb98, `AutoChest_interactPrompt` 0x23b6e8, `AutoPropLP_interactPrompt` 0x23d068, `SpiritAnchor_interactPrompt` 0x296ba0 (all `key`), `JumpGate_interactPrompt` 0x27d80c (`script`) | predicate deciding whether the object can be used | **both** `Player_run` and `Player_draw`, see P1 |
+| **interact prompts** (slot 13) | `PushTrigger_prompt` 0x1ecb98, `AutoChest_interactPrompt` 0x23b6e8, `AutoProp_interactPrompt` 0x23d068, `SpiritAnchor_interactPrompt` 0x296ba0 (all `key`), `JumpGate_interactPrompt` 0x27d80c (`script`) | predicate deciding whether the object can be used | **both** `Player_run` and `Player_draw`, see P1 |
 | **draw functions** (slot 5) | `NPC_draw` 0x29e5f4, `Gnome_draw` 0x26926c, `GnomeNavigator_draw` 0x26a07c, `Rondo_draw` 0x29f308 | `exclamation` property | **draw**, see P1 |
 | **map drawing** | 0x1696c4 (in 0x168cac, called from `minimap_draw`) | per-marker script name | **draw**, see P1 |
 | engine hooks | 0x154fd4, 0x1a90f0, 0x1c0314, 0x1c2948, 0x1c2960, 0x1dbb30 | fixed names starting with `*` (`*gotItemNotify`, `*arrowShootNotify`, `*exitInventoryNotify`, `*weaponEquipNotify`, `*bowEquipNotify`, `*inventoryOnNotify`) | item pick-up, `Player_run`, inventory, `hud_run`. No shipped script defines any of them |
@@ -456,7 +456,12 @@ Entry points take no arguments. Context is passed in two globals instead:
   `setBestActivePlayer` and `playGotItemSound`. It is not reset between scripts, so a deferred
   call or a death script sees the value left by whatever ran last. All of these writers are
   simulation code, so the value is the same on every machine (Inferred; see P7 for the one
-  odd writer). Section 6 lists the readers.
+  odd writer). One of them is not unconditional, though: the `Player_interact` write
+  happens only when the object's prompt slot (slot 13) says it can be used, and the
+  Savepoint's slot 13 reads this machine's card state — `Savepoint_interactPrompt` returns
+  "nothing" while the local card is busy (0x28da6c), and then `Player_interact` neither
+  sets the active player nor calls the interact on that machine
+  (`docs/issues/sync-breakers.md` B9). Section 6 lists the readers.
 
 ### 2.4 Deferred calls
 
@@ -477,7 +482,9 @@ Consequences:
   a global variable and defers itself again. The shipped scripts call `addDeferedCall` 278
   times in 61 levels.
 - The queue is cleared by `script_clearDeferred` (0x1eda08) at level teardown, by
-  `game_resetState` and when a save is loaded (0x222074).
+  `game_resetState` and when a save is loaded (0x222074). The post action of 2.5 is not:
+  level teardown leaves the name in its buffer, and `game_loadLevel` runs a left-over one
+  in the new level's script (0x1e60b8; FINDINGS E10, `docs/issues/arena-entry.md`).
 
 ### 2.5 Post action
 
@@ -486,6 +493,13 @@ runs it once, with `g_scriptInPostAction` set, when the current cutscene ends, w
 ends, from two places in `help_task`, or at the end of a level load. Scripts use it as "do this
 when the cutscene I just started is over". Only one name is kept; a second `postAction`
 replaces the first.
+
+The two calls in `help_task` need more than that sentence gave them
+(`docs/issues/arena-entry.md` E9): `help_task` is a draw task. The call at 0x1dcf60, for
+the full-screen help box, is made only offline (test of `g_networkMode` at 0x1dcf58). The
+call at 0x1dd1f0, made when a per-player notice box is closed, has no network test, so in
+a net game it runs the pending post-action script in the draw pass of the machine that
+closed the box, and only there (FINDINGS E9).
 
 ### 2.6 When scripts run within a frame
 

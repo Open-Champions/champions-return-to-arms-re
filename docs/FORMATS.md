@@ -9,7 +9,7 @@ little endian unless noted. "Unknown" means nobody has looked yet.
 | `.LMP` lump | understood | `tools/gob.py` |
 | `script.scr` level script | understood, all 51 opcodes in use decoded | `tools/scr.py` |
 | `.cut` cutscene | header and key records understood; most camera key types unnamed | none yet |
-| `objects.ob` object placement | property strings readable; record layout not written down | none yet |
+| `objects.ob` object placement | property strings readable; record layout given below (from `docs/issues/sync-breakers.md`) | none yet |
 | `.dbin` dialog trees | understood: 0x448-byte nodes with condition script, text key, voice name, speaker and choices — see [formats/anim-audio.md](formats/anim-audio.md) | `tools/anim_audio_info.py` |
 | `*_dialog.bin` voice-stream directory, `.VAT` streams, `.vag` samples | understood: PS2 ADPCM throughout; directory gives offset, rate, stereo flag and language | `tools/anim_audio_info.py` (can decode to WAV) |
 | `.anm` animation | understood: bind offsets, joint hierarchy, velocity-coded key stream at 60 ticks per second; not yet compared against the game on screen | `tools/anim_audio_info.py` (can dump tracks to CSV) |
@@ -56,3 +56,9 @@ A header followed by object records whose properties are plain `key=value` strin
 (`name=`, `deathscript=`, `lumpname=`, trigger `w=`/`h=`/`t=` and so on). The class name of
 each object (for example `UndeadKnight1`, `Trigger`, `PushTrigger`) selects the C++ class
 through the factory around 0x15b804.
+
+Record layout, as used for the disc scans of `docs/issues/sync-breakers.md` (not checked
+against the loader here): `u32 count; u32 stringTable;` then per object `u32 className;
+u16 size; u16 angle; float x, y, z;` followed by `(size − 20) / 4` property-string
+offsets, a zero word ending the list. All string offsets are relative to the string
+table.

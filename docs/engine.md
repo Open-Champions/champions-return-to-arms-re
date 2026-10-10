@@ -140,7 +140,7 @@ Track flags (all read in `anim_advance` or `anim_buildPose`):
 | +0x04 | int | length in ticks | compared with track time everywhere |
 | +0x08 | ptr | bit-packed key stream (16-bit words) | `animtrack_decode` (0x16e468) |
 | +0x0c, +0x10 | ptr | relocated by `anm_relocate`; use *Unknown* | 0x1707b8 |
-| +0x14 … +0x33 | 4 × {float seconds; u8 mask; pad} | the four **event slots** | first loop of `anim_advance` |
+| +0x14 … +0x33 | 4 × {float seconds; u8 mask; pad} | the four **event slots**. They are zero in every clip on the disc; game code fills them after loading — `creature_setDefEntryParams` 0x118378 (59 callers, the monster constructors) and its twin `anm_setEventSlots` 0x1183d0 (`docs/formats/anim-audio.md` 2.7) | first loop of `anim_advance` |
 | +0x34 | ptr | sound name table: {name, sample} pairs ending with 0 | `anm_bindSounds` (0x16cc38) |
 | +0x38 | ptr | sound events, 0x1c bytes each, ended by time 0x7fffffff: +0 time in ticks, +4 s16 sound index (negative = special id), +8 group selector, +0xa…+0xe volume/pitch/delay jitter amounts | `animsound_fireRange`, `animsound_play`; the jitter field meanings are *Inferred* |
 | +0x3c | u8 | sound throttle group | `anim_advance` 0x16d9d8 |
@@ -182,9 +182,12 @@ Per call, from the top track down:
 
 1. **Events.** For each of the four header slots, if `time/60 ≤ slot.seconds < (time+step)/60`
    the slot's mask byte is OR-ed into the return value. Events of every track are merged, also
-   those of tracks that are fading out. The engine attaches no meaning to the bits; the
-   animation file and the caller's state handler define them (*Unknown* per class — reading
-   the creature handlers that receive the value would settle it).
+   those of tracks that are fading out. The engine attaches no meaning to the bits. The
+   earlier version said "the animation file and the caller's state handler define them";
+   the file defines none — its four slots are zero in every clip, and the constructors
+   write the times and masks at run time (0x118378, 0x1183d0; `docs/formats/anim-audio.md`
+   2.7). What each bit means is still per class (`docs/monsters-2.md` gives them class by
+   class).
 2. **Time.** Unless paused, time += `speed × 0.99999994` (or one tick with flag 0x40).
 3. **Sounds** (only when `soundPos` is non-zero and only for the top track): sound events whose
    time was passed are played through `animsound_fireRange`. A per-group limiter keyed on the
@@ -221,6 +224,15 @@ s16/64) in a pose buffer taken from a second LRU pool (0x7b8340/0x7b8344). Draw 
 no buffer and then draw a default pose; simulation callers (`anim_getJointMatrix` 0x16f720,
 used by `model_getAttachPoint` and `model_getSamplePoint`) always get one (a shared scratch
 buffer at 0x7b89c0 as last resort). The values do not depend on which buffer was used.
+
+Two things this section did not say. The per-joint matrix is not computed on the main
+processor: `anim_buildPose` hands each joint to a VU0 microprogram (`g_vu0PoseProgram`
+0x3e5c40 in `symbols/fmt-anim.tsv`; the two calls are at 0x16f594 and 0x16f5f4), which is
+why the vector unit's rounding and clamping settings matter to the simulation and not only
+to drawing (FINDINGS F6, `docs/issues/float-divergence.md`). And the pose is cached per
+animation state: `anim_getJointMatrix` rebuilds only when no pose is attached, so whether a
+simulation query gets a fresh build or one made earlier by drawing depends on what was
+drawn (P11 below; FINDINGS D34, `docs/issues/rescan.md` R1).
 
 ## Lumps and resources (0x1711e8–0x173e9f)
 
@@ -285,7 +297,10 @@ store can make the value non-zero and no other reference exists, so the finding 
   0x41c149–0x41c170 that callers set before and `model_resetDrawState` clears after.
 - Model queries usable from simulation code: `model_getAttachPoint` (attach records of 0x34
   bytes: joint index, local matrix), `model_getSamplePoint` / `model_getSamplePointCount`
-  (surface points as s16/16 with a joint index), `model_buildHideMask`, `model_getBounds`.
+  (surface points as s16/16 with a joint index), `model_buildHideMask` (despite the name it
+  returns a *show* mask: the complement of the model's hidden-by-default set, adjusted by
+  the variant records — a set bit draws the mesh; `docs/formats/model-texture.md`),
+  `model_getBounds`.
 - Every drawer first checks that `g_dlCapacity − used` leaves 3000 units and silently draws
   nothing otherwise (this is the "render buffer" test of finding D13).
 - Text: `text_begin(font, …)`, any number of `text_draw*`, `text_end()`. Strings are 16-bit.
@@ -308,7 +323,10 @@ store can make the value non-zero and no other reference exists, so the finding 
 | +0x50, +0x54 | moving pieces: count, array of 0x1c bytes (+0 chunk index, +0x14/+0x16 rotation, +0x18 terrain element index) | `world_movePiece` |
 
 Terrain element (0x24 bytes): +0 s16 bounds (minX, minY, maxX, maxY), +8 visit stamp, +0xc
-pointer to a height field, +0x10 flags (1 mirrored, 2 ignored, 4 tested by ray casts),
+pointer to a height field, +0x10 flags (1 mirrored, 2 ignored, 4 the height field has
+flagged samples, so a caller that passes a flag mask must test the element even when it
+lies below the query — 0x18a5c0, 0x185a40; the earlier version said "tested by ray casts";
+`docs/formats/world.md`),
 +0x14/+0x18/+0x1c position (ints), +0x20/+0x22 rotation cos/sin (s16/32767).
 Height field: +0 origin x, +4 origin y, +8 width, +0xc height (in samples), +0x12 s16 maximum
 height, +0x14 u16 samples: height = sample >> 4 (signed), low 4 bits are flags.
@@ -431,7 +449,7 @@ neighbouring keys:
 | 7 | fade through black centred on the key (colour offset from the distance in time, ±0.64 s) | `gfx_setColorOffset` call 0x198db8 |
 | 8 | roll in degrees (a × 182) | writes 0x44fcd8 |
 | 9 | field of view in degrees (default 50) | writes 0x44fcdc |
-| 10 | screen darken ramp around the key | `gfx_setScreenDarken` call 0x198e84 |
+| 10 | "screen darken" ramp around the key. The value `gfx_setScreenDarken` keeps is the FIX alpha of the present pass, which mixes the new image with the previous one; it does not darken by itself (`docs/spec/render-pipeline.md` section 8; the visible result is Inferred there) | `gfx_setScreenDarken` call 0x198e84 |
 
 Dialog keys (actor −99):
 
@@ -527,7 +545,10 @@ walked (`g_taskCursor` is adjusted).
 `gfx_beginFrame` / `gfx_endFrame` bracket a rendered frame; the second increments
 `g_drawFrame` (0x44fdd0). `g_simFrame` (0x44fdcc) counts ticks: `tasks_run` increments it
 offline, `net_frameLoop` sets it to `g_netFrame` around each tick. `engine_frameStep` returns
-1 or 2 depending on how many vertical blanks the last frame took.
+1 or 2 depending on how many vertical blanks the last frame took. Not stated before
+(`docs/spec/render-pipeline.md` sections 8 and 13): the packets queued during frame N are
+rasterised at `gfx_beginFrame` of frame N+1, so anything that reads "what was drawn" lags
+the draw tasks by a frame.
 
 `engine_init` (0x19d19c) is the boot sequence: stack check, IOP modules, GS, `engine.lmp`,
 fonts, then the `*_init` functions of this range.
@@ -541,15 +562,15 @@ shared game state. "Shared" means it can affect what the lockstep simulation com
 |---|---|---|---|
 | P1 | `g_cosmeticSeed` is seeded from the CPU cycle counter (COP0 Count) at boot. Anything derived from it differs per machine from the first frame | Observed | `engine_init` 0x19d1e0 (mfc0), store 0x19d1f8 |
 | P2 | `g_noiseTable` is built from that seed, so `math_noise` returns different values on every machine. Its simulation-side callers are `Torch` run 0x2b2088, `Lantern` run 0x2b3554 and `Lamp` run 0x2b3858, which also index it with their own object pointer; they write only light radius and light position fields (+0x68…+0x84) | Observed for the table and callers; that those fields are render-only is Inferred | `math_buildNoiseTable` 0x1646c8; `math_noise` 0x166b48 |
-| P3 | `anim_randomizeTopTime` sets a track's time from `g_cosmeticSeed`. The `Critter` constructor (0x2547fc; spawned by `VampireLord` run and by creature code 0x1125e0) calls it right after `anim_push(…, 0x801)`: a **looping root-motion** track. Its root-motion deltas, and so its position, start from a different phase on each machine | Observed for the calls and flags; the effect on position is Inferred | 0x254e2c–0x254e34; seed use 0x16d0d8 |
-| P4 | The same call follows a plain looping `anim_push(…, 1)` in the constructors of FireBeetle (0x24587c), FireFly (0x24726c; the earlier version listed it as a second FireBeetle constructor — the old `vtables.txt` labelled FireFly's table 0x5108c8 `FireBeetle`), Ghoul 0x266088, AutoProp 0x23c44c, SmallSpider 0x2ab450, SpiderQueen 0x2ad1c0, BlackWidow 0x2ab958, NPC 0x29dcc4 / 0x29df04 / 0x29e2a4, VampireLord 0x2b76e4, Vampire 0x2b69d0, UserParamProp 0x15711c and PoisonProjectile 0x2b153c. Idle phase, and therefore the tick on which that animation's event bits fire, differs per machine. Harmless only if those animations carry no events the class acts on | Observed for the calls; consequence Unknown — check each class's idle animation for event slots | call sites in the symbol note of `anim_randomizeTopTime` |
-| P5 | `rigidbody_init` draws the initial orientation of a physics body from `g_cosmeticSeed`. Callers: `PhProp_initPhysics` 0x155110 (reached from `loot_generateDrops`), `PushPhysicsProp` slot 8 0x15dbd4, 0x15dddc. If where a prop or dropped item comes to rest depends on its orientation, its position differs per machine | Observed for the draw; effect Inferred | 0x168350 |
+| P3 | `anim_randomizeTopTime` sets a track's time from `g_cosmeticSeed`. The `Critter` constructor (0x2547fc; spawned by `VampireLord` run and by creature code 0x1125e0) calls it right after `anim_push(…, 0x801)`: a **looping root-motion** track. Its root-motion deltas, and so its position, start from a different phase on each machine. Narrowed since (`docs/issues/sync-breakers.md` section 8): the branch is taken only when the object has a `path` property — 115 `Shark` and 4 `vulture` placements in level files. The critters spawned in play (corpse scavengers, VampireLord's bats) are built one-shot with no path and skip it | Observed for the calls and flags; the effect on position is Inferred | 0x254e2c–0x254e34; seed use 0x16d0d8 |
+| P4 | The same call follows a plain looping `anim_push(…, 1)` in the constructors of FireBeetle (0x24587c), FireFly (0x24726c; the earlier version listed it as a second FireBeetle constructor — the old `vtables.txt` labelled FireFly's table 0x5108c8 `FireBeetle`), Ghoul 0x266088, AutoProp 0x23c44c, SmallSpider 0x2ab450, SpiderQueen 0x2ad1c0, BlackWidow 0x2ab958, NPC 0x29dcc4 / 0x29df04 / 0x29e2a4, VampireLord 0x2b76e4, Vampire 0x2b69d0, UserParamProp 0x15711c and PoisonProjectile 0x2b153c. Idle phase, and therefore the tick on which that animation's event bits fire, differs per machine. Harmless only if those animations carry no events the class acts on — and they carry none: no animation file has events, the 59 monster constructors assign them through `creature_setDefEntryParams`, and none of the constructors that randomise a start time puts events on the randomised entry (`docs/issues/sync-breakers.md` B6) | Observed for the calls; consequence answered (was Unknown): no event timing depends on the random phase | call sites in the symbol note of `anim_randomizeTopTime` |
+| P5 | `rigidbody_init` draws the initial orientation of a physics body from `g_cosmeticSeed`. Callers: `PhProp_initPhysics` 0x155110 (reached from `loot_generateDrops`), `PushPhysicsProp` slot 8 0x15dbd4, 0x15dddc. If where a prop or dropped item comes to rest depends on its orientation, its position differs per machine. Read since, caller by caller: `PhProp_initPhysics` overwrites the drawn orientation from the prop's matrix (`quat_fromMat3` at 0x155310, then normalise), so for props and dropped items the start state is shared (`docs/issues/arena-desync.md`); `PushPhysicsProp` slot 8 (load from a level record) overwrites it too; only the crate constructor 0x15dddc keeps it, and no crate is created outside level load, when the cosmetic seed equals the shared one (FINDINGS D36, `docs/issues/rescan.md` R4) | Observed for the draw and the overwrites; the equality of the seeds at level load is Inferred | 0x168350 |
 | P6 | Cutscene lip-sync choice: whether the speaker gets the per-line lip-sync animation or the generic talk loop depends on whether a local asynchronous disc read has completed (`g_cutLipsyncReady`, slot state) by the time the dialog key runs, and the read cannot start while the local CD is busy. Different animation → different tracks, flags and end-status bits on the speaker | Observed for the dependency; that the read can actually be late is Inferred | read start 0x199a24, busy test 0x199a64, choice 0x196a9c |
 | P7 | Speaker track times are nudged toward the local audio stream position (finding D8) | Observed | `cut_advance` 0x199444–0x1995c8, `audio_streamPosition` call 0x199468 |
 | P8 | Wait key: the local stream status decides when this machine sends its "done" message; the cutscene clock resumes when the count is complete. Correct only if the message handler runs on the same tick everywhere | Observed here; delivery timing belongs to netcode (Unknown) | status 0x199398, handler 0x198f64 |
 | P9 | `cut_advance` and `cut_runFrame` overwrite `g_cosmeticSeed` with shared values (`g_cutFrame + i` before each actor's run, `g_simFrame` at the end of the tick, `i + 0x392fa` before creating actor *i*). This makes cosmetic draws inside actor `run` calls repeatable during cutscenes, but only there | Observed | 0x1992a8, 0x199f88, 0x19af20 |
 | P10 | `anim_advance` reads `g_drawFrame` to limit sounds, and skips sound bookkeeping when the caller passes no position (the real local player while its prediction copy exists). Only the sound cursor (track+0x1e) and sounds are affected; event bits, weights and root motion are not | Observed | 0x16d9d8; `Player_animStep` passes 0 for flag 0x200000 |
-| P11 | `anim_buildPose` reads `g_drawFrame` to choose a pose buffer. Values do not depend on the buffer | Observed | 0x16ed9c |
+| P11 | `anim_buildPose` reads `g_drawFrame` to choose a pose buffer. Values do not depend on the buffer — true of one build. Whether a build happens at all depends on drawing: the pose is cached per animation state, drawing attaches one, a least-recently-drawn rule keyed on the render frame counter detaches them, and several animation calls change the tracks without detaching, so a simulation query can read a pose that drawing computed earlier (FINDINGS D34, `docs/issues/rescan.md` R1; a route to shared state was not found there, and not excluded) | Observed | 0x16ed9c |
 | P12 | World scenery animations are advanced from draw code, once per rendered frame | Observed; nothing in this range reads them from simulation code (Inferred cosmetic) | `world_draw` 0x189910 |
 | P13 | Pathfinder reads hardware timer T0 (finding D5). The blocking call each tick makes the outcome the same; see Pathfinding for why a suspended search resumes identically | Observed | `path_service` 0x184de4–0x184df8, `path_search` 0x184324 |
 | P14 | `water_disturb` is called from simulation code and writes ripple grids for the water chunks that have one (which chunks get a grid was not traced; *Inferred* to be decided by drawing). Its return value counts chunks whether or not they have a grid, but it is forced to 0 while `g_cutSkip` is set | Observed except as marked | 0x189514 |

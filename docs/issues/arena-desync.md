@@ -157,7 +157,10 @@ and the death is processed when that list comes round.
 
 Other ways out of the world: `Cazic_setState` case 0x14 sends every object of that name to
 state 0x14 (docs/monsters.md); `reapEnemies` destroys dead non-player creatures directly.
-Neither happens while knight 3 is alive.
+Neither happens while knight 3 is alive. A third, found since
+(docs/issues/kill-loot-xp.md, FINDINGS K8): when knight 3 itself dies, case 0x14 of
+`Horsemen_setState` looks the skeleton up by name and sends it to state 0x14 in the same
+tick (0x273278, 0x2732ac), and drops both held weapon parts.
 
 ### Does any step read something that differs between machines?
 
@@ -184,7 +187,9 @@ every machine. **Observed** (0x272c70 drops the result; `SpellSummonSkeleton_run
 is reached only through an attached-spell list).
 
 - **Weakest link:** 0x1f6ac8 and the weapon helper's draw (slots 19, 20 of table 0x50cf40)
-  were not read line by line.
+  were not read line by line. (0x1f6ac8 and the weapon holder's per-frame update have
+  since been read in docs/issues/rescan.md section 6: presentation only — they write
+  nothing but a per-weapon effect block that only they read, FINDINGS D37.)
 - **If it were the cause:** the first mismatch would fall in the knight phase, while
   knight 3 is alive, within a couple of seconds of a skeleton dying, and the two seeds
   would differ by the handful of draws one cast makes.
@@ -333,6 +338,7 @@ Two more details:
 dialog key, 13.4 s into the last cutscene, and never when the cutscene is skipped early.
 
 - **Weakest link:** the weapon helper's effect routine 0x1f6ac8 (not read line by line).
+  (Read since: presentation only, FINDINGS D37, docs/issues/rescan.md section 6.)
 - **Test:** the audio section already in `patches/`, or patch T4, which removes both the
   nudge and the lip-sync choice with one word.
 
@@ -354,7 +360,12 @@ dialog key, 13.4 s into the last cutscene, and never when the cutscene is skippe
   `Camera_apply` only in mode 1 or while the transition word +0x48 is non-zero; +0x48 is set
   only by `Camera_reset`, whose callers are player respawn, loading a camera state, a
   spectator-slot change and session start. `drawWorld` only recomputes the focus from the
-  stored camera. **Observed.**
+  stored camera. **Observed.** (Caller list corrected by docs/issues/arena-entry.md: the
+  main loop also calls `Camera_reset` at every level change, 0x322dfc, and the "session
+  start" caller is `Camera_init`. The conclusion stands for a net game:
+  `Camera_computeTarget` can fail only offline, 0x2065e8–0x2065f4, so the first
+  `Camera_update` of the load warm-up loop reaches the end of the follow routine and
+  clears the word, 0x204fb0, before any tick.)
 - A spectator-slot change (`Camera_cycleSpectated` with step 0, called from the HUD draw for
   a dead local player, 0x1e01b8) resets the camera only when the spectated slot leaves the
   alive list. Players do not run during these cutscenes (F2), so the list does not change.
@@ -480,7 +491,9 @@ One change each. PCSX2 form: `patch=1,EE,<address>,word,<new>`.
 ## Not done
 
 - `fx_modelStatusEffects` 0x1f6ac8, the weapon helper draw, the experience award 0x1d3150
-  and `Creature_dropLoot` were not read.
+  and `Creature_dropLoot` were not read. (Since read elsewhere: `fx_modelStatusEffects`
+  and the weapon holder update in docs/issues/rescan.md section 6 — presentation only,
+  D37; the experience award and loot in docs/issues/kill-loot-xp.md.)
 - The avatar's own fight was taken from docs/monsters.md, not re-read.
 - Where a player's attached spells get their per-frame call was not located.
 - Whether `hideMonster` with a name shared by four objects hides all four.

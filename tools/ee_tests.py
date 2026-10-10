@@ -123,6 +123,33 @@ def s32(value):
     return ee_emu.s32(value)
 
 
+def run_log(emu):
+    """What the last run did, in a form two machines can be compared by: the calls
+    (site, target, first four integer arguments) and the stores outside the stack
+    (pc, address, size, value), each in order."""
+    return ([(c.site, c.target, tuple(a & M32 for a in c.args[:4])) for c in emu.calls],
+            list(emu.writes))
+
+
+def log_diff(one, other, with_args=True):
+    """Where two run logs differ, order ignored: the call targets whose calls are not the
+    same multiset in both, and the store addresses whose stores (address, size, value)
+    are not.  with_args compares the four argument registers of each call too; that is
+    only meaningful when both runs took the same path, because a function with fewer
+    arguments leaves whatever the path left in the others."""
+    from collections import Counter
+    calls = Counter((t, a if with_args else ()) for _site, t, a in one[0])
+    calls.subtract(Counter((t, a if with_args else ()) for _site, t, a in other[0]))
+    stores = Counter(w[1:] for w in one[1])
+    stores.subtract(Counter(w[1:] for w in other[1]))
+    return (sorted({t for (t, _a), n in calls.items() if n}),
+            sorted({w[0] for w, n in stores.items() if n}))
+
+
+def hexes(values):
+    return ', '.join('0x%x' % v for v in values) if values else 'none'
+
+
 # ---------------------------------------------------------------------------------------
 # a. The stick codec: netcodec_encodeAxis 0x13c450, netcodec_decodeAxis 0x13c970
 # ---------------------------------------------------------------------------------------
@@ -1994,6 +2021,2302 @@ def test_arena_patches(elf):
 
 
 # ---------------------------------------------------------------------------------------
+# k. Kill, experience, loot and pick-up (docs/issues/kill-loot-xp.md, FINDINGS K1-K8) and
+#    the three patch-file sections that belong to it (0x1a5c0c; 0x1b9fcc + 0x1ba3ac; 0x1d2d30)
+# ---------------------------------------------------------------------------------------
+INTERACT_GATE, INTERACT_GATE_END, K1_SITE = 0x1A5B98, 0x1A5C28, 0x1A5C0C
+PLAYER_INTERACT, WEAPON_SWAP_INPUT, DIALOG_IS_OPEN, NET_GET_CAM_FLAG = 0x1B2640, 0x1BB718, 0x22FBC0, 0x13E110
+COLLECT_IN_BOX, G_SELECTOR_HELD, G_MENU_LOCKOUT, G_BTN_USE = 0x14A928, 0x41B818, 0x41B4FC, 0x41B9C0
+G_DIALOG_DATA, G_NET_CAM_YAW, G_LOCAL_CAMERA = 0x8E2D60, 0x5D0BC0, 0x4F8450
+SELECTOR_SISTER_START, SELECTOR_SISTER_END = 0x1A6DE4, 0x1A6E18
+HUD_SPELL_SELECT, MASK_LOCAL_BUTTONS, MEMCARD_IS_BUSY, TASK_IS_RUNNING = 0x1DD270, 0x13E540, 0x217518, 0x19E5E8
+SPELL_SELECT_STORED, SPELL_SELECT_RETURNS = 0x1DD508, (0x1DE034, 0x1DE038)
+G_RAW_PAD_HELD, G_BTN_ABILITY_A, G_BTN_ABILITY_B, G_MEMCARD_STATE = 0x4028D8, 0x41B990, 0x41B9A0, 0x88D3A0
+FAKE_CODE = 0x00090000              # this script's own "return" routines, used as virtual-function targets
+RETURN_WORDS = [0x03E00008, 0]      # jr ra / nop
+
+
+def fake_function(emu, index, function=None, ret=0, name=None):
+    """A stub at an address of this script's own, for a virtual-table slot to point at."""
+    addr = FAKE_CODE + index * 8
+    emu.load_words(addr, RETURN_WORDS)
+    emu.stub(addr, ret=ret, function=function, name=name)
+    return addr
+
+
+def player_run_frame(emu, pad):
+    """Stack and frame slot for a stretch of Player_run entered part-way: its frame is
+    0xe90 bytes and it keeps the pad pointer at sp + 0xe40."""
+    sp = emu.stack_hi - 0x2000
+    emu.r[29] = sp
+    emu.mem.w32(sp + 0xE40, pad)
+    return sp
+
+
+class InteractRig:
+    """Player_run from the instruction after its Player_processDamage call (0x1a5b98) to
+    the instruction after its Player_interact call (0x1a5c28), entered part-way: $fp is
+    the player, $s0 the base register the code addresses the lockout word from, the pad
+    pointer is in Player_run's frame slot.  dialog_isOpen, net_getCamFlag and
+    Player_interact run for real; the box query hands back one fake interactable object
+    whose prompt (virtual slot 13) and interact (slot 14) are stubs of this script;
+    Player_weaponSwapInput and what Player_interact calls for text are stubbed."""
+    SLOT = 1
+
+    def __init__(self, elf, selector=0, patched=False, network=True, paused=0, lockout=0,
+                 dialog=0, cam_flag=0, copy=False, use_pressed=True):
+        world = self.world = World(elf, players=2, local_slot=self.SLOT, network=network)
+        emu, mem = self.emu, self.mem = world.emu, world.emu.mem
+        if patched and apply_section_at(emu, K1_SITE) is None:
+            raise LookupError('no patch-file section patches 0x%x' % K1_SITE)
+        self.player = world.objects[self.SLOT]
+        if copy:
+            mem.w32(self.player + 0x0C, 0x20060)
+        mem.w32(G_SELECTOR_HELD + 4 * self.SLOT, selector)
+        mem.w32(G_PAUSED, paused)
+        mem.w32(G_MENU_LOCKOUT, lockout)
+        mem.w32(G_DIALOG_DATA, dialog)
+        mem.w16(G_NET_CAM_YAW + 2 * self.SLOT, 0x1234 | cam_flag)     # bit 0 is the camera flag
+        camera = emu.alloc(0x100)
+        mem.w32(camera + 0x34, 2 if cam_flag else 1)                  # offline: mode 1 is "following"
+        mem.w32(G_LOCAL_CAMERA, camera)
+        self.pad = emu.alloc(0x58)
+        mem.w32(G_BTN_USE + 4 * self.SLOT, 0x40)
+        mem.w32(self.pad + 0x0C, 0x40 if use_pressed else 0)          # pressed-edge word of the lockstep pad
+        thing, vtable = emu.alloc(0x200), emu.alloc(0x100)
+        self.thing = thing
+        mem.w32(thing + 0x0C, 0x100000)                               # "interactable"
+        mem.wf32(thing + 0x10, 110.0)
+        mem.wf32(thing + 0x14, 200.0)
+        mem.w32(thing + 0x48, vtable)
+        self.seen = []
+
+        def prompt(e):
+            e.mem.w16(e.r[5] & M32, 0x55)                             # a one-character prompt text
+            e.mem.w16((e.r[5] & M32) + 2, 0)
+            self.seen.append(('prompt', e.r[4] & M32, e.r[6] & M32))
+            return 1
+        mem.w32(vtable + 0x04, fake_function(emu, 0, ret=0x1234, name='type info'))
+        mem.w32(vtable + 0x6C, fake_function(emu, 1, function=prompt, name='prompt (slot 13)'))
+        mem.w32(vtable + 0x74, fake_function(
+            emu, 2, function=lambda e: self.seen.append(('interact', e.r[4] & M32, e.r[5] & M32)) or 0,
+            name='interact (slot 14)'))
+
+        def collect(e):
+            out = e.r[6] & M32
+            e.mem.w32(out, thing)
+            e.mem.w32(out + 4, 0)
+            return 1
+        emu.stub(COLLECT_IN_BOX, function=collect, name='world_collectObjectsInBox')
+        mem.w32(G_SCRIPT_ACTIVE_PLAYER, 0xFFFFFFFF)
+
+    def run(self):
+        emu = self.emu
+        player_run_frame(emu, self.pad)
+        emu.r[30] = self.player
+        emu.r[16] = 0x420000
+        emu.follow = {PLAYER_INTERACT, DIALOG_IS_OPEN, NET_GET_CAM_FLAG}
+        emu.reset_log()
+        emu.run(start=INTERACT_GATE, until={INTERACT_GATE_END}, max_steps=20000)
+        emu.follow = None
+        return run_log(emu)
+
+    def active_player(self):
+        return self.mem.s32(G_SCRIPT_ACTIVE_PLAYER)
+
+
+def selector_sister_test(elf, network, selector, attack_word=0):
+    """Player_run 0x1a6de4-0x1a6e18, the other reader of the selector word: returns the
+    "act on the button" register ($s0, 1 on entry) afterwards and whether the word was
+    loaded at all."""
+    emu = EE(elf)
+    player = emu.alloc(0x600)
+    emu.mem.w32(player + 0x3C8, 1)
+    emu.mem.w32(player + 0x488, attack_word)
+    emu.mem.w8(G_NETWORK_MODE, network)
+    emu.mem.w32(G_SELECTOR_HELD + 4, selector)
+    emu.r[30] = player
+    emu.r[16] = 1
+    emu.reads = []
+    emu.run(start=SELECTOR_SISTER_START, until={SELECTOR_SISTER_END}, max_steps=50)
+    return emu.r[16] & M32, any(addr == G_SELECTOR_HELD + 4 for _pc, addr, _n, _v in emu.reads)
+
+
+def spell_select(elf, local, held, slot=1):
+    """hud_spellSelect from its entry to just after its store to the selector word
+    (0x1dd508) or to its early return.  held is the held-buttons word of the slot's RAW
+    pad.  Returns (reached the store, the selector word afterwards, the arguments of the
+    net_maskLocalButtons calls)."""
+    world = World(elf, players=2, local_slot=slot if local else 1 - slot, network=True)
+    emu, mem = world.emu, world.emu.mem
+    camera = emu.alloc(0x100)
+    mem.w32(camera + 0x34, 1)
+    mem.w32(G_LOCAL_CAMERA, camera)
+    mem.w32(G_MEMCARD_STATE, 0xFFFFFFFF)                # no card screen
+    mem.w32(G_RAW_PAD_HELD + slot * PAD_SIZE, held)
+    mem.w32(G_SELECTOR_HELD + 4 * slot, 0x77)
+    for table, bit in ((G_BTN_ABILITY_A, 0x10), (G_BTN_ABILITY_B, 0x20), (G_BTN_USE, 0x40)):
+        mem.w32(table + 4 * slot, bit)
+    emu.follow = {IS_LOCAL_SLOT, DIALOG_IS_OPEN, MEMCARD_IS_BUSY, MASK_LOCAL_BUTTONS}
+    emu.r[4], emu.r[5], emu.r[6], emu.r[7], emu.r[8] = slot, 0, 0, 0, 0
+    emu.r[29] = emu.stack_hi - 0x1000
+    emu.reset_log()
+    emu.run(start=HUD_SPELL_SELECT, until={SPELL_SELECT_STORED} | set(SPELL_SELECT_RETURNS), max_steps=2000)
+    masks = [tuple(a & M32 for a in c.args[:3]) for c in emu.calls if c.target == MASK_LOCAL_BUTTONS]
+    return emu.pc == SPELL_SELECT_STORED, mem.u32(G_SELECTOR_HELD + 4 * slot), masks
+
+
+def test_k1_interact(elf):
+    slot = InteractRig.SLOT
+    logs, seen, active = {}, {}, {}
+    for network in (True, False):
+        for selector in (0, 1):
+            rig = InteractRig(elf, selector=selector, network=network)
+            logs[network, selector] = rig.run()
+            seen[network, selector], active[network, selector] = rig.seen, rig.active_player()
+    targets = {key: [c[1] for c in log[0]] for key, log in logs.items()}
+    open_ok = all(PLAYER_INTERACT in targets[n, 0] and [kind for kind, _o, _s in seen[n, 0]] == ['prompt', 'interact']
+                  and active[n, 0] == slot for n in (True, False))
+    held_ok = all(targets[n, 1] == [DIALOG_IS_OPEN, NET_GET_CAM_FLAG, WEAPON_SWAP_INPUT] and not seen[n, 1]
+                  and active[n, 1] == -1 and not logs[n, 1][1] for n in (True, False))
+    check('k1', open_ok and held_ok,
+          'K1 in isolation (Player_run entered part-way at 0x1a5b98, run to 0x1a5c28, one '
+          'interactable object in reach and the use button pressed in the lockstep pad): with the '
+          'selector word 0x41b818[slot] at 0 the stretch calls Player_weaponSwapInput and '
+          'Player_interact, which asks the object for its prompt, stores the slot in '
+          'g_scriptActivePlayer (0x4d8ae4) and calls the object\'s interact; with the word at 1 '
+          'and nothing else changed it stops after Player_weaponSwapInput - no prompt, no store '
+          'at all, no interact.  Same result in a net game and offline: there is no network test')
+    calls_only, stores_only = log_diff(logs[True, 0], logs[True, 1])
+    table('K1: what the machine with the selector word set does not do (net game)',
+          ['calls: ' + hexes(calls_only), 'stores: ' + hexes(stores_only)])
+    check('k2', G_SCRIPT_ACTIVE_PLAYER in stores_only and PLAYER_INTERACT in calls_only
+          and FAKE_CODE + 16 in calls_only and logs[True, 1][0] == logs[True, 0][0][:3],
+          'the two runs of k1 compared call by call and store by store: up to and including '
+          'Player_weaponSwapInput they are identical; everything after is missing on the machine '
+          'whose selector word is set - %d calls (Player_interact, the box query, the object\'s '
+          'prompt and interact, the prompt text helpers) and %d stores, at %s (the prompt icon '
+          'and fade words of the slot, the prompt text buffer, g_scriptActivePlayer)'
+          % (len(logs[True, 0][0]) - 3, len(logs[True, 0][1]), hexes(stores_only)))
+    sister = [selector_sister_test(elf, n, s) for n in (0, 1) for s in (0, 1)]
+    check('k3', sister == [(1, True), (0, True), (1, False), (1, False)],
+          'the other reader of the same word in Player_run (0x1a6de8-0x1a6e14) does test the '
+          'network mode first: offline a set word cancels the action, in a net game the word is '
+          'not loaded at all (offline/net x word 0/1, action kept: %s) - the contrast K1 draws'
+          % [kept for kept, _read in sister])
+    remote = spell_select(elf, False, 0x1000)
+    held = [spell_select(elf, True, bit) for bit in (0x1000, 0x2000, 0x4000, 0x8000)]
+    idle = spell_select(elf, True, 0x0F0F)
+    check('k4', remote == (False, 0x77, []) and idle == (True, 0, [])
+          and all(h == (True, 1, [(slot, 3, 0x70)]) for h in held),
+          'the writer, hud_spellSelect 0x1dd270 (entered at its start, run to just after its '
+          'store at 0x1dd4ec/0x1dd504): for a slot that is not local it returns at once and '
+          'leaves the word alone; for the local slot with any of the four D-pad bits held in '
+          'the RAW pad it calls net_maskLocalButtons(slot, 3, abilityA | abilityB | use) and '
+          'stores 1; with none held it stores 0.  That it is the ONLY writer is a search result '
+          'and was not executed')
+    if pnach_section_at(K1_SITE) is None:
+        skip('k5', 'the patch file has no section for 0x1a5c0c; the patched runs were not made')
+        return
+    patched = {}
+    for selector in (0, 1):
+        rig = InteractRig(elf, selector=selector, patched=True)
+        patched[selector] = (rig.run(), rig.seen, rig.active_player())
+    check('k5', patched[0] == patched[1] and patched[1][0] == logs[True, 0] and patched[1][2] == slot,
+          'patch "use button works with the spell selector open" (0x1a5c0c := no-operation): '
+          'the machine with the selector word set now makes exactly the calls and stores of the '
+          'machine with it clear - the per-machine difference of k1/k2 is gone, and what the '
+          'patched stretch does is what an unpatched machine does for a remote player')
+    same = differ = 0
+    for bits in range(64):
+        state = dict(paused=bits & 1, lockout=(bits >> 1) & 1, dialog=(bits >> 2) & 1,
+                     cam_flag=(bits >> 3) & 1, copy=bool(bits & 16), network=bool(bits & 32))
+        shipped = InteractRig(elf, selector=0, **state).run()
+        for selector in (0, 1):
+            if InteractRig(elf, selector=selector, patched=True, **state).run() == shipped:
+                same += 1
+            else:
+                differ += 1
+    check('k6', differ == 0 and same == 128,
+          'nothing else in the stretch changes with the patch: over all 64 combinations of the '
+          'five tests in front of it (pause word, menu lockout, dialog open, camera flag of the '
+          'slot, prediction copy) offline and in a net game, the patched stretch with the '
+          'selector word 0 or 1 makes the same calls and stores as the shipped stretch with the '
+          'word 0 (%d of 128 runs)' % same)
+
+
+# K2: Player_usePotion 0x1b9cb8 and what the drop message then does (inventory_dropItem 0x1c4310)
+INVMSG_SEND_DROP, INVMSG_DISPATCH, INVENTORY_DROP_ITEM, INVENTORY_REMOVE_ITEM = 0x1C59D0, 0x1BFDB0, 0x1C4310, 0x1C1CB0
+ITEM_SAME_IDENTITY, PLAYER_COUNT_POTIONS, PLAYER_ITEM_WEIGHT, ITEM_GET_WEIGHT = 0x108924, 0x1BA5F8, 0x1B6338, 0x103E08
+PLAYER_RECALC_LOAD, PLAYER_RECALC_STATS, LIBC_STRSTR, SEND_CHARACTER_TO_LOBBY = 0x1BEC10, 0x1B6458, 0x3B96A8, 0x1EB5C8
+RES_FIND, SOUND_PLAY_ON_OBJECT = 0x17365C, 0x214230
+G_LOCAL_MENU_OPEN, G_ITEM_LIST_CELLS, G_ITEM_DEFS, ITEM_DEF_SIZE = 0x41B69D, 0x4EBBB0, 0x3F7650, 0x40
+G_HEAL_POTION_NAMES, G_MANA_POTION_NAMES, G_HUD_POTION_COUNT = 0x4EF478, 0x4EF4A0, 0x41B940
+BAG_BASE, BAG_STRIDE, BAG_COUNT, ITEM_SIZE = 0x130, 0x1208, 0x1200, 0x48
+CELLS_PER_SLOT, CELLS_PER_BAG = 0x23988, 0xBDD8
+K2_SITES = (0x1B9FCC, 0x1BA3AC)
+POTION_BUTTONS, POTION_BUTTONS_END, G_BTN_POTION_A, G_BTN_POTION_B = 0x1A5940, 0x1A59F8, 0x41BA10, 0x41BA20
+
+
+def item_defs(mem):
+    """The rows of the executable's own item-definition table (address of each)."""
+    row = G_ITEM_DEFS
+    while mem.u32(row):
+        yield row
+        row += ITEM_DEF_SIZE
+
+
+def find_item_def(mem, name):
+    for row in item_defs(mem):
+        if mem.cstr(mem.u32(row)) == name:
+            return row
+    raise LookupError('no item definition named as the potion table says')
+
+
+def put_item(mem, record, bag, index, definition, count=1):
+    """One 0x48-byte item record in a bag of a player record: definition pointer, stack
+    count at +4, its own bag index at +0x22.  Returns its address."""
+    item = record + BAG_BASE + bag * BAG_STRIDE + index * ITEM_SIZE
+    mem.w32(item, definition)
+    mem.w16(item + 4, count)
+    mem.w16(item + 0x22, index)
+    return item
+
+
+class PotionRig:
+    """One machine's copy of a two-player net game in which player slot 0 has 50 of 200
+    hit points, 20 of 200 mana and three stacks in bag 2: [0] three of the largest
+    healing potion, [1] five of the healing potion Player_usePotion picks for that
+    deficit, [2] four of the mana potion it picks.  The definitions are the executable's
+    own rows, found through its two potion-name tables.  local: slot 0 is this machine's
+    player.  menu_open / list_loaded: g_localMenuOpen and the item-list pointer 0x4ebbb0,
+    i.e. this machine's inventory screen is open and has been drawn once; the list copy
+    then shows the three stacks in the first three cells of the bag-2 block."""
+    COUNTS = (3, 5, 4)
+
+    def __init__(self, elf, local, menu_open=False, list_loaded=False, patched=False):
+        world = self.world = World(elf, players=2, local_slot=0 if local else 1, network=True)
+        emu, mem = self.emu, self.mem = world.emu, world.emu.mem
+        if patched:
+            for site in K2_SITES:
+                if apply_section_at(emu, site) is None:
+                    raise LookupError('no patch-file section patches 0x%x' % site)
+        record = self.record = G_PLAYERS
+        self.player = world.objects[0]
+        if local:
+            mem.w32(self.player + 0x0C, 0x200060)
+        for offset, value in ((0xAC, 50.0), (0xB0, 200.0), (0xC0, 20.0), (0xC4, 200.0)):
+            mem.wf32(record + offset, value)
+        heal = [mem.cstr(mem.u32(G_HEAL_POTION_NAMES + 4 * i)) for i in range(9)]
+        mana = [mem.cstr(mem.u32(G_MANA_POTION_NAMES + 4 * i)) for i in range(9)]
+        names = (heal[8], heal[(200 - 50 + 1) // 60], mana[(200 - 20 + 1) // 60])
+        self.items = [put_item(mem, record, 2, index, find_item_def(mem, name), count)
+                      for index, (name, count) in enumerate(zip(names, self.COUNTS))]
+        mem.w32(record + BAG_BASE + 2 * BAG_STRIDE + BAG_COUNT, len(self.items))
+        mem.w8(G_LOCAL_MENU_OPEN, 1 if menu_open else 0)
+        below = emu.alloc(CELLS_PER_SLOT * 5)                 # one slot block of room below the list
+        self.cells = below + CELLS_PER_SLOT
+        self.shown = [self.cells + 2 * CELLS_PER_BAG + column * ITEM_SIZE for column in range(3)]
+        if list_loaded:
+            mem.w32(G_ITEM_LIST_CELLS, self.cells)
+            for cell, item in zip(self.shown, self.items):
+                mem.write(cell, mem.read(item, ITEM_SIZE))
+        self.messages = []
+        emu.stub(SEND_GAME_MSG, function=lambda e: self.messages.append(
+            e.mem.read(e.r[5] & M32, e.r[6] & M32)) or 0, name='net_sendGameMsg')
+        emu.stub(SEND_CHARACTER_TO_LOBBY, name='game_sendCharacterToLobby')
+        self.below_reads = 0
+
+    def counts(self):
+        return [self.mem.u16(item + 4) for item in self.items]
+
+    def shown_counts(self):
+        return [self.mem.u16(cell + 4) for cell in self.shown]
+
+    def drink(self, kind):
+        """The potion-button stretch of Player_run, 0x1a5940-0x1a59f8, entered part-way
+        with the button of that kind pressed in the lockstep pad; Player_usePotion and
+        the helpers that count and weigh the bag run for real."""
+        emu, mem = self.emu, self.mem
+        pad = emu.alloc(PAD_SIZE)
+        mem.w32(G_BTN_POTION_A, 0x100)
+        mem.w32(G_BTN_POTION_B, 0x200)
+        mem.w32(pad + 0x0C, 0x100 << kind)
+        player_run_frame(emu, pad)
+        emu.r[30], emu.r[17] = self.player, 0
+        emu.follow = {USE_POTION, IS_LOCAL_SLOT, STRCMP, INVMSG_SEND_DROP, PLAYER_COUNT_POTIONS,
+                      PLAYER_ITEM_WEIGHT, ITEM_GET_WEIGHT}
+        emu.reset_log()
+        emu.run(start=POTION_BUTTONS, until={POTION_BUTTONS_END}, max_steps=200000)
+        emu.follow = None
+        self.potion_calls = [(c.args[1] & M32, c.args[2] & M32, c.args[3] & M32, s32(c.args[4]))
+                             for c in emu.calls if c.target == USE_POTION]
+        return run_log(emu)
+
+    def deliver(self, message):
+        """The inventory-message handler on this machine: invmsg_dispatch and, for real,
+        inventory_dropItem and the helpers it uses to find and count the item."""
+        emu = self.emu
+        buffer = emu.alloc(0x40)
+        self.mem.write(buffer, message)
+        emu.follow = {IS_LOCAL_SLOT, INVENTORY_DROP_ITEM, ITEM_SAME_IDENTITY, LIBC_STRSTR, PLAYER_RECALC_LOAD,
+                      PLAYER_ITEM_WEIGHT, ITEM_GET_WEIGHT}
+        emu.reads = []
+        emu.reset_log()
+        emu.call(INVMSG_DISPATCH, buffer)
+        emu.follow = None
+        compares = [addr for pc, addr, _n, _v in emu.reads
+                    if ITEM_SAME_IDENTITY <= pc < ITEM_SAME_IDENTITY + 0x44 and addr >= EE.HEAP_LO]
+        self.below_reads = (len(compares), min(compares) - self.cells, max(compares) - self.cells) if compares else None
+        emu.reads = None
+        return run_log(emu)
+
+
+def test_k2_potion(elf):
+    names = {0: 'health', 1: 'mana'}
+    picked = {0: 1, 1: 2}                                 # index of the stack each kind should take
+    results = {}
+    for kind in (0, 1):
+        owner_open, owner_closed, other = (PotionRig(elf, True, True, True), PotionRig(elf, True),
+                                           PotionRig(elf, False))
+        logs = [rig.drink(kind) for rig in (owner_open, owner_closed, other)]
+        want = list(PotionRig.COUNTS)
+        want[picked[kind]] -= 1
+        message = owner_open.messages[0] if owner_open.messages else b''
+        pending = [rig.mem.f32(rig.record + (0xB4 if kind == 0 else 0xC8)) for rig in (owner_open, owner_closed, other)]
+        calls_diff, stores_diff = log_diff(logs[0], logs[1], with_args=False)
+        sound_diff, no_store_diff = log_diff(logs[1], logs[2], with_args=False)
+        results[kind] = dict(rigs=(owner_open, owner_closed, other), logs=logs, message=message)
+        table('K2 %s potion: owner with inventory open against owner with it closed' % names[kind],
+              ['calls that differ: ' + hexes(calls_diff), 'stores that differ: ' + hexes(stores_diff),
+               'message: ' + message.hex()])
+        check('k%d' % (7 + 2 * kind),
+              owner_open.counts() == list(PotionRig.COUNTS) and owner_closed.counts() == want and other.counts() == want
+              and message == bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0xFF, 2])
+              and all(rig.potion_calls == [(kind, 0, 0, -1)] for rig in (owner_open, owner_closed, other))
+              and not owner_closed.messages and not other.messages and pending[0] == pending[1] == pending[2] > 0
+              and calls_diff == sorted([SEND_GAME_MSG, IS_LOCAL_SLOT, INVMSG_SEND_DROP])
+              and stores_diff == sorted([G_HUD_POTION_COUNT + 16 * kind, owner_open.record + 0x120,
+                                         owner_open.items[picked[kind]] + 4])
+              and sound_diff == [RES_FIND, SOUND_PLAY_ON_OBJECT] and not no_store_diff,
+              'K2 in isolation, %s potion (Player_run entered part-way at its potion-button test '
+              '0x1a5940, which calls Player_usePotion(player, kind, 0, 0, -1); three machines with '
+              'the same record): the owner\'s machine with its inventory open and '
+              'drawn once (g_localMenuOpen and the list pointer 0x4ebbb0 set) adds the same %.0f '
+              'points still to be delivered as the others but leaves the bag at %s and queues '
+              'inventory message 0 with mode 2 for bag 2, index 0 - the item in the FIRST cell of '
+              'its list, not the potion it used; the same machine with the inventory closed, and '
+              'a machine that does not own the player, take the potion out directly (%s) and '
+              'send nothing.  Apart from the message the only stores that differ are that stack\'s '
+              'count, the carried load the function re-sums at its end (record +0x120) and a HUD '
+              'potion counter of the slot; the owner-only sound is the one difference between the '
+              'last two' % (names[kind], pending[0], owner_open.counts(), other.counts()))
+        delivered = [rig.deliver(message) for rig in (owner_open, other)] if message else None
+        final = (owner_open.counts(), other.counts())
+        both = list(want)
+        both[0] -= 1
+        only_first = list(PotionRig.COUNTS)
+        only_first[0] -= 1
+        check('k%d' % (8 + 2 * kind), delivered is not None and final == (only_first, both)
+              and INVENTORY_REMOVE_ITEM not in [c[1] for log in delivered for c in log[0]],
+              'the same chain carried on: the queued message handed to invmsg_dispatch on the '
+              'owner\'s machine and on the other machine (inventory_dropItem and its item helpers '
+              'run for real; the transport in between is not executed).  Mode 2 makes no sound '
+              'and no dropped object and takes ONE item off the addressed stack on both.  Bag 2 '
+              'ends as %s on the owner\'s machine and %s on the other: the other machine has paid '
+              'for the %s potion twice (the potion and a first-cell item), the owner once (the '
+              'first-cell item) - the records disagree by one potion, as K2 says'
+              % (final[0], final[1], names[kind]))
+    owner_open = results[0]['rigs'][0]
+    count, low, high = owner_open.below_reads or (0, 0, 0)
+    check('k11', count == 2 * 675 and -CELLS_PER_BAG <= low and high < 0 and owner_open.shown_counts() == list(PotionRig.COUNTS),
+          'K2 adds (executed, not in the row): the message carries the -1 that Player_run '
+          'passed as the last argument, and inventory_dropItem uses it as the panel index of '
+          'this machine\'s list copy.  On the owner\'s machine it therefore compares the item '
+          'with 675 cells in the 0x%x bytes just BELOW the list buffer (offsets %s0x%x to %s0x%x '
+          'from its start) and with none inside it, so the open screen keeps showing %s.  What '
+          'lies below the buffer in a running game is Unknown; here it was zero and nothing '
+          'matched' % (CELLS_PER_BAG, '-' if low < 0 else '', abs(low), '-' if high < 0 else '', abs(high),
+                       owner_open.shown_counts()))
+    partial = []
+    for local, menu_open, list_loaded in ((True, True, False), (True, False, True), (False, True, True)):
+        rig = PotionRig(elf, local, menu_open, list_loaded)
+        rig.drink(0)
+        partial.append((rig.counts()[1], len(rig.messages)))
+    check('k12', partial == [(4, 0)] * 3,
+          'the message branch needs all three at once: menu open but list pointer still 0, list '
+          'loaded but menu closed, and menu open with a list on a machine that does not own the '
+          'slot each take the potion out directly and send nothing')
+    if any(pnach_section_at(site) is None for site in K2_SITES):
+        skip('k13', 'the patch file has no section for 0x1b9fcc / 0x1ba3ac; the patched runs were not made')
+        return
+    ok, finals = True, []
+    for kind in (0, 1):
+        shipped_logs = results[kind]['logs']
+        rigs = (PotionRig(elf, True, True, True, patched=True), PotionRig(elf, True, patched=True),
+                PotionRig(elf, False, patched=True))
+        logs = [rig.drink(kind) for rig in rigs]
+        ok &= logs[0] == shipped_logs[1] and logs[1] == shipped_logs[1] and logs[2] == shipped_logs[2]
+        ok &= not any(rig.messages for rig in rigs) and rigs[0].shown_counts() == list(PotionRig.COUNTS)
+        finals.append([rig.counts() for rig in rigs])
+    check('k13', ok and all(f[0] == f[1] == f[2] for f in finals),
+          'patch "potions always leave the bag directly" (both words): the owner\'s machine with '
+          'its inventory open now makes, call for call and store for store, the run of the shipped '
+          'function with the inventory closed - no message, bag 2 %s after the health potion and '
+          '%s after the mana potion on all three machines.  With the inventory closed, and on a '
+          'machine that does not own the player, the patched run is identical to the shipped '
+          'one.  The list copy on the open screen is not touched (it still shows %s), which is '
+          'the cosmetic cost the patch text states' % (finals[0][0], finals[1][0], list(PotionRig.COUNTS)))
+
+
+
+# K3: the damage lines of the stats page, stats_screen 0x1d1db8, stretch 0x1d2c20-0x1d2d80
+STATS_DAMAGE_START, STATS_DAMAGE_STOPS, K3_SITE = 0x1D2C20, (0x1D2D80, 0x1D2D84, 0x1D2D88), 0x1D2D30
+RECALC_DAMAGE, ITEM_DAMAGE_RANGE, ITEM_UNIT_MULT, ITEM_FIELD_1A, GET_SKILL_RANK = 0x1B7158, 0x104100, 0x1046B4, 0x103F88, 0x1BF330
+STATS_DRAW_HELPERS = (0x173C84, 0x1D19C8, 0x19EA78, 0x181BF8, 0x181C10, 0x181AF8)     # text look-up, measure, draw
+RECORD_ATTACK, RECORD_DAMAGE_MIN, RECORD_DAMAGE_MAX = 0xCC, 0xD0, 0xD4
+RECORD_HAND_A, RECORD_HAND_B, RECORD_SET_WEAPON, RECORD_SECOND_WEAPON, RECORD_ACTIVE_SET = 0x43F0, 0x43F4, 0x4434, 0x443C, 0x4A7C
+RECORD_SKILL_LIST = 0x4B08
+
+
+class StatsRig:
+    """A player record with two one-handed weapons whose damage ranges differ (the first
+    two such rows of the executable's item table), level 10, strength 40, dexterity 30
+    and no skills.  tick() is Player_weaponSwapInput, which ends in the per-tick
+    Player_recalcDamage; page() is the stretch of stats_screen that prints the attack and
+    damage lines, entered part-way with $s6 the record and the frame slot the function
+    keeps record + 4 in.  Player_recalcDamage, the item helpers under it and the C
+    library's sprintf/strcat run for real; the text look-up and draw helpers are stubs."""
+
+    def __init__(self, elf, second_weapon=True, active_set=0, patched=False):
+        world = self.world = World(elf, players=2, local_slot=0, network=True)
+        emu, mem = self.emu, self.mem = world.emu, world.emu.mem
+        if patched and apply_section_at(emu, K3_SITE) is None:
+            raise LookupError('no patch-file section patches 0x%x' % K3_SITE)
+        record = self.record = G_PLAYERS
+        self.player = world.objects[0]
+        plain = [row for row in item_defs(mem)
+                 if mem.u8(row + 0x1D) == 0 and mem.u8(row + 0x1E) == 0 and mem.u32(row + 0x20) == 1
+                 and mem.s16(row + 0x10) > 0]
+        first = plain[0]
+        other = next(row for row in plain if mem.read(row + 0x0E, 4) != mem.read(first + 0x0E, 4))
+        self.weapons = [put_item(mem, record, 0, index, row) for index, row in enumerate((first, other))]
+        mem.w32(record + BAG_BASE + BAG_COUNT, 2)
+        mem.w32(record + RECORD_SET_WEAPON, self.weapons[0])
+        mem.w32(record + RECORD_SET_WEAPON + 4, self.weapons[0])
+        mem.w32(record + RECORD_HAND_A, self.weapons[0])
+        if second_weapon:
+            mem.w32(record + RECORD_SECOND_WEAPON, self.weapons[1])
+            mem.w32(record + RECORD_HAND_B, self.weapons[1])
+        mem.w8(record + RECORD_ACTIVE_SET, active_set)
+        mem.w16(record + RECORD_SKILL_LIST, 0xFFFF)          # an empty (id, rank) list
+        mem.w8(record + 0x58, 10)
+        mem.w32(record + 0x90, 40)
+        mem.w32(record + 0x98, 30)
+        self.text = emu.alloc(0x100)
+        self.recalc_calls = []
+
+    def stored(self):
+        return tuple(self.mem.s32(self.record + offset) for offset in (RECORD_ATTACK, RECORD_DAMAGE_MIN, RECORD_DAMAGE_MAX))
+
+    def _note_calls(self):
+        self.recalc_calls = [(c.args[1] & M32, c.args[2] & M32) for c in self.emu.calls if c.target == RECALC_DAMAGE]
+
+    def tick(self):
+        emu = self.emu
+        emu.follow = {RECALC_DAMAGE, ITEM_DAMAGE_RANGE, ITEM_UNIT_MULT, ITEM_FIELD_1A, GET_SKILL_RANK}
+        emu.reset_log()
+        emu.call(WEAPON_SWAP_INPUT, self.player, emu.alloc(PAD_SIZE), 0)
+        emu.follow = None
+        self._note_calls()
+        return self.stored()
+
+    def page(self):
+        emu, mem = self.emu, self.mem
+        for helper in STATS_DRAW_HELPERS:
+            emu.stub(helper)
+        sp = emu.stack_hi - 0x1000
+        emu.r[29] = sp
+        mem.w32(sp + 0x228, self.record + 4)
+        emu.r[22], emu.r[21], emu.r[16], emu.r[17] = self.record, self.text, emu.alloc(0x200), emu.alloc(0x10)
+        emu.r[20], emu.r[23] = 100, 0
+        emu.follow = None
+        emu.reset_log()
+        emu.run(start=STATS_DAMAGE_START, until=set(STATS_DAMAGE_STOPS), max_steps=200000)
+        self._note_calls()
+        return run_log(emu), mem.cstr(self.text)
+
+
+def test_k3_stats(elf):
+    probe = StatsRig(elf)
+    primary, offhand = probe.weapons
+    values = {}
+    for item in probe.weapons:
+        probe.emu.call(RECALC_DAMAGE, probe.player, item, 1)
+        values[item] = probe.stored()
+    with_page, without_page = StatsRig(elf), StatsRig(elf)
+    ticked = (with_page.tick(), without_page.tick())
+    tick_calls = with_page.recalc_calls
+    shipped_log, text = with_page.page()
+    page_calls = with_page.recalc_calls
+    check('k14', values[primary] != values[offhand] and ticked == (values[primary], values[primary])
+          and tick_calls == [(primary, 1)] and page_calls == [(primary, 1), (offhand, 1)]
+          and with_page.stored() == values[offhand] and without_page.stored() == values[primary]
+          and text == '%d-%d/%d-%d' % (values[primary][1:] + values[offhand][1:]),
+          'K3 in isolation: after the per-tick recompute (Player_weaponSwapInput, which ends in '
+          'Player_recalcDamage(player, primary weapon, 1)) two machines hold the same attack '
+          'rating and damage range in the record, %s.  The machine that then draws the stats '
+          'page for a player with a second weapon and set 0 active (stats_screen entered '
+          'part-way at 0x1d2c20, run to 0x1d2d80) calls Player_recalcDamage twice - with the '
+          'tick\'s arguments, then with the second weapon - prints "%s" and is left with %s in '
+          'record +0xcc/+0xd0/+0xd4; the machine that does not draw the page still has %s'
+          % (list(ticked[0]), text, list(with_page.stored()), list(without_page.stored())))
+    no_second, set_one = StatsRig(elf, second_weapon=False), StatsRig(elf, active_set=1)
+    single = [(rig.page(), rig.recalc_calls, rig.stored()) for rig in (no_second, set_one)]
+    check('k15', all(calls == [(primary, 1)] and stored == values[primary] for _log, calls, stored in single),
+          'the second call is made only for a second weapon with set 0 active: with no second '
+          'weapon, or with set 1 active, the page makes the one call a tick makes and leaves '
+          'the tick\'s values in the record')
+    if pnach_section_at(K3_SITE) is None:
+        skip('k16', 'the patch file has no section for 0x1d2d30; the patched runs were not made')
+        return
+    patched = StatsRig(elf, patched=True)
+    patched.tick()
+    patched_log, patched_text = patched.page()
+    inner = len([c for c in shipped_log[0] if c[1] in (RECALC_DAMAGE, ITEM_DAMAGE_RANGE, ITEM_UNIT_MULT, ITEM_FIELD_1A, GET_SKILL_RANK)]) // 2
+    removed, changed = log_diff(shipped_log, patched_log, with_args=False)
+    text_only = all(patched.text <= addr < patched.text + 0x100
+                    or patched.record + RECORD_ATTACK <= addr <= patched.record + RECORD_DAMAGE_MAX for addr in changed)
+    unchanged = [(StatsRig(elf, second_weapon=False, patched=True).page(), single[0][0]),
+                 (StatsRig(elf, active_set=1, patched=True).page(), single[1][0])]
+    check('k16', patched.recalc_calls == [(primary, 1)] and patched.stored() == values[primary] == without_page.stored()
+          and patched_text == '%d-%d/%d-%d' % (values[primary][1:] * 2)
+          and removed == sorted([ITEM_DAMAGE_RANGE, ITEM_UNIT_MULT, ITEM_FIELD_1A, RECALC_DAMAGE, GET_SKILL_RANK])
+          and len(shipped_log[0]) - len(patched_log[0]) == inner and text_only
+          and all(got == want for got, want in unchanged),
+          'patch "stats page does not rewrite stored weapon damage" (0x1d2d30 := no-operation): '
+          'the same stretch makes one Player_recalcDamage call instead of two - the %d calls '
+          'that disappear are the second one and the item and skill look-ups inside it - leaves '
+          '%s in the record, which is what the machine without the page has, and prints "%s": '
+          'the second range repeats the first, as the patch text says.  The only stores that '
+          'change are the record\'s three fields and the printed text; for a player with no '
+          'second weapon or with set 1 active the patched run is identical to the shipped one'
+          % (inner, list(patched.stored()), patched_text))
+
+
+
+# K5-K8: the rows that are not about a patch
+LANDING_START, LANDING_END, FALLOUT_START, FALLOUT_STOPS = 0x156C0C, 0x156D08, 0x156D10, (0x156D74, 0x156D78)
+ITEMPROP_CTOR3, OBJ_DELETE = 0x1592BC, 0x14F200
+XP_START, XP_STOPS, GIVE_EXP, LIFETAP_FRACTION, LIBM_POWF = 0x111E3C, (0x112490, 0x112494), 0x1D3150, 0x2F8E78, 0x3A5AC8
+G_EXP_TABLE, G_LIFETAP_SKILL, RODATA_LO, RODATA_HI, LIBRARY_CODE_LO = 0x41B558, 0x41B25C, 0x520000, 0x564000, 0x3A0000
+LOOT_GENERATE, SOFT_DOUBLE = 0x100D54, (0x3AEF58, 0x3AF468, 0x3AF4D0, 0x3AF9B8, 0x3AFA08, 0x3AFB90)
+G_COSMETIC_SEED, G_FOURTH_SEED, G_PVP_MODE_A, G_PVP_MODE_B = 0x404460, 0x404468, 0x4F711C, 0x4F7120
+G_LEVEL_MONSTER_LEVEL, G_LOOT_QUALITY_ROWS = 0x4F714C, 0x3E9C18
+GOLD_ON_TOUCH, ADD_GOLD_FLOATER, MENU_OPEN_INVENTORY, HUD_SHOW_MESSAGE = 0x157A9C, 0x1DC268, 0x1C15C8, 0x1D92A0
+HORSEMEN_SET_STATE, FIND_OBJECT_BY_NAME, CREATURE_DROP_LOOT = 0x272F4C, 0x14F498, 0x10F2C8
+
+
+def landing_conversion(elf, pool_full, real_pool=False):
+    """PhProp_run 0x156c0c-0x156d08, the block that turns a flying item that has come to
+    rest into a resting prop; $s1 is the flying object.  Returns (the constructor was
+    called with the pool block, the objects passed to obj_delete)."""
+    emu = EE(elf)
+    prop = emu.alloc(0x300)
+    emu.mem.w8(prop + 0x238, 1)                         # it carries an item record
+    block = emu.alloc(0x200)
+    if real_pool:
+        emu.stub(POOL_PRINT_HEAP, name='pool_printHeap')
+        emu.call(POOL_INIT)
+        while pool_full and emu.call(POOL_NEW, 0x100):
+            pass
+    else:
+        emu.stub(POOL_NEW, ret=0 if pool_full else block, name='pool_new')
+    emu.r[17], emu.r[16] = prop, prop + 0x110
+    emu.r[29] = emu.stack_hi - 0x1000
+    emu.follow = {POOL_NEW} if real_pool else set()
+    emu.reset_log()
+    emu.run(start=LANDING_START, until={LANDING_END}, max_steps=5000)
+    built = [c.args[0] & M32 for c in emu.calls if c.target == ITEMPROP_CTOR3]
+    deleted = [c.args[0] & M32 for c in emu.calls if c.target == OBJ_DELETE]
+    asked = [c.args[0] & M32 for c in emu.calls if c.target == POOL_NEW]
+    return asked == [0x190], len(built), deleted == [prop]
+
+
+def fallout(elf, first_alive, heights, prop_height):
+    """PhProp_run 0x156d10 on: is the flying object deleted for being 120 below the
+    first listed alive player?"""
+    world = World(elf, players=len(heights), network=True)
+    emu, mem = world.emu, world.emu.mem
+    for slot, height in enumerate(heights):
+        mem.wf32(world.objects[slot] + 0x18, height)
+    mem.w32(G_ALIVE_COUNT, len(heights))
+    mem.w32(G_ALIVE_LIST, first_alive)
+    prop = emu.alloc(0x300)
+    mem.wf32(prop + 0x18, prop_height)
+    emu.r[17] = prop
+    emu.r[29] = emu.stack_hi - 0x1000
+    emu.follow = set()
+    emu.reset_log()
+    emu.run(start=FALLOUT_START, until=set(FALLOUT_STOPS), max_steps=200)
+    return any(c.target == OBJ_DELETE for c in emu.calls)
+
+
+def xp_model(exp_value, levels, hit_points, killer, table):
+    """The experience each player is given, as docs/issues/kill-loot-xp.md section 2
+    states it (steps 5, 8 and 9); this script's arithmetic, not the game's."""
+    base = int(int((exp_value / sum(levels)) ** 1.4) * 0.75)
+    out = []
+    for slot, level in enumerate(levels):
+        cap = table[level + 1] - table[level] if level < 0x50 else table[level]
+        if len(levels) == 1:
+            if hit_points[slot] > 0:
+                out.append((slot, min(base, cap)))
+            continue
+        share = 0.5 if killer is None else (0.6 if slot == killer else 0.4)
+        amount = int(base * share)
+        if hit_points[slot] <= 0:
+            amount = int(amount * 0.5)
+        out.append((slot, min(amount, cap)))
+    return out
+
+
+def xp_split(elf, levels, hit_points, classes, killer, exp_value=5000.0, local=0, extra=None):
+    """Creature_processDamage 0x111e3c to its exit: the experience block for a creature
+    whose last-attacker handle names player `killer` (None: nobody).  powf, the skill-rank
+    look-up and the creature's own generator run for real; player_giveExp is a stub that
+    records its arguments and the life-tap fraction is stubbed to 0 (no orb)."""
+    world = World(elf, players=len(levels), local_slot=local, network=True)
+    emu, mem = world.emu, world.emu.mem
+    for addr, value in (extra or {}).items():
+        mem.w32(addr, value)
+    mob = emu.alloc(0x600)
+    mem.wf32(mob + 0xD8, exp_value)
+    mem.wf32(mob + 0x22C, 900.0)                        # its maximum hit points
+    mem.w32(mob + 0x44, 0x1234)
+    for slot in range(len(levels)):
+        record = G_PLAYERS + slot * PLAYER_STRIDE
+        mem.w8(record + 0x59, levels[slot])
+        mem.wf32(record + PLAYER_HP, hit_points[slot])
+        mem.w32(record + 0x50, classes[slot])
+        mem.wf32(record + 0xC0, 10.0)
+        mem.wf32(record + 0xC4, 100.0)
+        mem.w16(record + RECORD_SKILL_LIST, 0xFFFF)
+    if killer is not None:
+        node = emu.alloc(0x20)
+        mem.w32(node + 0x0C, world.objects[killer])
+        mem.w32(mob + 0x2E4, node)
+    given = []
+    emu.stub(GIVE_EXP, function=lambda e: given.append((s32(e.r[4]), s32(e.r[5]))) or 0, name='player_giveExp')
+    emu.stub(LIFETAP_FRACTION, function=lambda e: e.fset(0, 0.0), ret=None, name='SkillLifeTap_getStat0Fraction')
+    emu.r[18] = mob
+    emu.r[29] = emu.stack_hi - 0x1000
+    emu.follow = None
+    emu.reads = []
+    emu.reset_log()
+    emu.run(start=XP_START, until=set(XP_STOPS), max_steps=100000)
+    globals_read = {addr for pc, addr, _n, _v in emu.reads
+                    if addr < EE.HEAP_LO and not RODATA_LO <= addr < RODATA_HI and pc < LIBRARY_CODE_LO}
+    table = [mem.s32(G_EXP_TABLE + 4 * i) for i in range(0x52)]
+    mana = [round(mem.f32(G_PLAYERS + slot * PLAYER_STRIDE + 0xC0), 3) for slot in range(len(levels))]
+    stores = sorted({addr for _pc, addr, _n, _v in emu.writes})
+    return given, mana, globals_read, table, stores
+
+
+def loot_rolls(elf, seed, local=0, extra=None):
+    """loot_generateDrops 0x100d54 with the arguments a knight's death passes, every
+    callee stubbed except the software double arithmetic (so no item or gold object is
+    built and the generators' own draws are not made).  Returns (stores to the shared
+    seed, other global stores, globals read, the two other seeds afterwards)."""
+    world = World(elf, players=2, local_slot=local, network=True)
+    emu, mem = world.emu, world.emu.mem
+    for addr, value in (extra or {}).items():
+        mem.w32(addr, value)
+    mem.w32(G_RAND_SEED, seed)
+    mem.w32(G_COSMETIC_SEED, 0x1111)
+    mem.w32(G_FOURTH_SEED, 0x2222)
+    emu.follow = set(SOFT_DOUBLE)
+    emu.reads = []
+    emu.reset_log()
+    emu.call(LOOT_GENERATE, emu.alloc(0x10), 0x1000, 0, 0, fargs=(36.0, 2.0, 1.8, 0.6, 2.0, 0.25))
+    draws = sum(1 for _pc, addr, _n, _v in emu.writes if addr == G_RAND_SEED)
+    others = sorted({addr for _pc, addr, _n, _v in emu.writes if addr != G_RAND_SEED})
+    read = {addr for pc, addr, _n, _v in emu.reads
+            if addr < EE.HEAP_LO and not RODATA_LO <= addr < RODATA_HI and pc < LIBRARY_CODE_LO}
+    return draws, others, read, (mem.u32(G_COSMETIC_SEED), mem.u32(G_FOURTH_SEED)), mem.u32(G_RAND_SEED)
+
+
+def gold_touch(elf, toucher_flags=0x60, countdown=0, amount=250, local=0):
+    world = World(elf, players=2, local_slot=local, network=True)
+    emu, mem = world.emu, world.emu.mem
+    gold = emu.alloc(0x100)
+    mem.w8(gold + 0x4C, countdown)
+    mem.w32(gold + 0x80, amount)
+    toucher = world.objects[1]
+    mem.w32(toucher + 0x0C, toucher_flags)
+    emu.follow = set()
+    emu.reset_log()
+    emu.call(GOLD_ON_TOUCH, gold, toucher)
+    floaters = [(c.args[0] & M32, c.args[2] & M32) for c in emu.calls if c.target == ADD_GOLD_FLOATER]
+    return ([c.target for c in emu.calls], floaters, mem.u32(gold + 0x80),
+            sorted({addr - gold for _pc, addr, _n, _v in emu.writes}))
+
+
+def level_up(elf, local, level=5):
+    """player_giveExp(0, 20) on a record 10 points short of its next level.  Returns the
+    record fields afterwards, the stores (address, size, value) and the calls."""
+    world = World(elf, players=2, local_slot=0 if local else 1, network=True)
+    emu, mem = world.emu, world.emu.mem
+    record = G_PLAYERS
+    mem.w8(record + 0x58, level)
+    mem.w8(record + 0x59, level)
+    mem.w32(record + 0x5C, mem.u32(G_EXP_TABLE + 4 * level) - 10)
+    mem.w32(record + 0xE8, 7)
+    mem.w8(record + 0xEC, 2)
+    for offset, value in ((PLAYER_HP, 40.0), (0xB0, 120.0), (0xC0, 5.0), (0xC4, 80.0)):
+        mem.wf32(record + offset, value)
+    emu.follow = {IS_LOCAL_SLOT}
+    emu.reset_log()
+    emu.call(GIVE_EXP, 0, 20)
+    emu.follow = None
+    fields = dict(ack=mem.u8(record + 0x58), level=mem.u8(record + 0x59), skill=mem.u32(record + 0xE8),
+                  stat=mem.u8(record + 0xEC), hp=mem.f32(record + PLAYER_HP), mana=mem.f32(record + 0xC0))
+    return world, fields, [w[1:] for w in emu.writes], [c.target for c in emu.calls]
+
+
+def open_level_up_screen(world):
+    """menu_openInventory(0, 1) on this machine; returns the inventory messages queued."""
+    emu = world.emu
+    sent = []
+    emu.stub(SEND_GAME_MSG, function=lambda e: sent.append(e.mem.read(e.r[5] & M32, e.r[6] & M32)) or 0,
+             name='net_sendGameMsg')
+    emu.follow = {IS_LOCAL_SLOT}
+    emu.reset_log()
+    emu.call(MENU_OPEN_INVENTORY, 0, 1)
+    emu.follow = None
+    return sent, len(emu.writes), emu.mem.u8(G_LOCAL_MENU_OPEN)
+
+
+def knight_dies(elf, variant, found_flags=0x20):
+    """Horsemen_setState(knight, 0x14) with every callee stubbed.  Returns what it did
+    with the skeleton look-up, the loot call and the two weapon-helper calls."""
+    emu = EE(elf)
+    mem = emu.mem
+    knight, helper, skeleton = emu.alloc(0x600), emu.alloc(0x40), emu.alloc(0x100)
+    tables = [emu.alloc(0x100) for _ in range(3)]
+    events = []
+    mem.w32(knight + 0x0C, 0x20)
+    mem.w8(knight + 0x470, variant)
+    mem.w32(knight + 0x24, emu.alloc(0x100))            # its animation table
+    mem.w32(knight + 0x48, tables[0])
+    mem.w32(knight + 0x50, helper)
+    mem.w32(helper, tables[1])
+    mem.w32(skeleton + 0x0C, found_flags)
+    mem.w32(skeleton + 0x48, tables[2])
+    mem.w32(tables[0] + 0xE4, fake_function(emu, 0, name='own slot 28', function=lambda e: events.append(
+        ('on death', e.r[4] & M32, e.r[5] & M32)) or 0))
+    mem.w32(tables[1] + 0x5C, fake_function(emu, 1, name='weapon helper slot 11', function=lambda e: events.append(
+        ('drop part', e.r[5] & M32, e.r[6] & M32)) or 0))
+    mem.w32(tables[2] + 0xDC, fake_function(emu, 2, name='skeleton slot 27', function=lambda e: events.append(
+        ('skeleton state', e.r[4] & M32, e.r[5] & M32)) or 0))
+    emu.stub(FIND_OBJECT_BY_NAME, name='world_findObjectByName', function=lambda e: events.append(
+        ('find', e.mem.cstr(e.r[4] & M32))) or skeleton)
+    emu.stub(CREATURE_DROP_LOOT, name='Creature_dropLoot', function=lambda e: events.append(
+        ('loot', e.r[4] & M32, tuple(round(e.fget(i), 2) for i in range(12, 18)))) or 0)
+    emu.follow = set()
+    emu.call(HORSEMEN_SET_STATE, knight, 0x14)
+    return events, knight, skeleton, bool(mem.u64(knight + 0xA8) & (1 << 41))
+
+
+def test_k5_to_k8(elf):
+    stub_full, stub_room, real_full = landing_conversion(elf, True), landing_conversion(elf, False), \
+        landing_conversion(elf, True, real_pool=True)
+    check('k17', stub_room == (True, 1, True) and stub_full == (True, 0, True) and real_full == (True, 0, True),
+          'K5 in isolation (PhProp_run entered part-way at 0x156c0c, the landing conversion of a '
+          'flying item): it asks pool_new for 0x190 bytes; with a block it calls ItemProp_ctor3 '
+          'and then obj_delete on the flying object; with no block - pool_new stubbed to 0, and '
+          'again with the real allocator after all 1056 blocks were taken - it skips the '
+          'constructor and still deletes the flying object.  A machine whose pool is full at '
+          'that moment loses the item; a machine with one block free keeps it')
+    drops = [fallout(elf, first, (0.0, 400.0), 250.0) for first in (0, 1)]
+    edge = [fallout(elf, 0, (0.0, 400.0), height) for height in (-119.0, -121.0)]
+    check('k18', drops == [False, True] and edge == [False, True],
+          'K5, second half (0x156d10 on): a flying object is deleted when its height + 120 is '
+          'below the height of the player in the FIRST alive-list slot (120.0 is the constant; '
+          '-119 stays, -121 goes).  With players at heights 0 and 400 and the object at 250, a '
+          'machine whose list starts with slot 0 keeps it and one whose list starts with slot 1 '
+          'deletes it: the list is the only per-machine input (G19)')
+
+    cases = (([10, 12], [50.0, 60.0], [1, 0], 0), ([10, 12], [50.0, 0.0], [1, 0], 1),
+             ([10, 12], [50.0, 60.0], [1, 0], None), ([10], [50.0], [0], 0), ([10], [0.0], [0], 0))
+    ok, rows, reads, stores = True, [], set(), set()
+    for levels, hit_points, classes, killer in cases:
+        given, mana, globals_read, levels_table, written = xp_split(elf, levels, hit_points, classes, killer)
+        want = xp_model(5000.0, levels, hit_points, killer, levels_table)
+        bonus = [round(10.0 + 900.0 * raw_to_float(0x3D088888), 3) if classes[slot] == 0 and (
+            (len(levels) == 1 and hit_points[slot] > 0) or (len(levels) > 1 and slot == killer)) else 10.0
+            for slot in range(len(levels))]
+        ok &= given == want and mana == bonus
+        reads |= globals_read
+        stores |= set(written)
+        rows.append('levels %s hp %s killer %s: given %s, mana %s' % (levels, hit_points, killer, given, mana))
+    capped, _m, _g, levels_table, _w = xp_split(elf, [1], [50.0], [1], 0, exp_value=500000.0)
+    table('experience block of Creature_processDamage', rows)
+    allowed = ({G_NUM_PLAYERS, G_LIFETAP_SKILL} | set(range(G_EXP_TABLE, G_EXP_TABLE + 0x148))
+               | set(range(G_PLAYERS, G_PLAYERS + 4 * PLAYER_STRIDE)))
+    record_offsets = sorted({(addr - G_PLAYERS) % PLAYER_STRIDE for addr in reads if G_PLAYERS <= addr})
+    elsewhere = xp_split(elf, [10, 12], [50.0, 60.0], [1, 0], 0, local=1,
+                         extra={G_ALIVE_COUNT: 1, G_ALIVE_LIST: 1, G_SELECTOR_HELD: 1, 0x44FDC0: 1, 0x44FCF8: 1})
+    here = xp_split(elf, [10, 12], [50.0, 60.0], [1, 0], 0)
+    check('k19', ok and capped == [(0, levels_table[2] - levels_table[1])] and reads <= allowed
+          and record_offsets == [0x50, 0x59, PLAYER_HP, 0xC0, 0xC4, PLAYER_OBJ, RECORD_SKILL_LIST]
+          and elsewhere[:2] == here[:2]
+          and {(addr - G_PLAYERS) % PLAYER_STRIDE for addr in stores if addr < EE.HEAP_LO} == {0xC0},
+          'K6, experience (Creature_processDamage entered part-way at 0x111e3c; powf and the '
+          'skill look-up real, player_giveExp recorded): the amounts are those of '
+          'kill-loot-xp.md section 2 in six cases - int(int(pow(expValue / sum of levels, 1.4)) '
+          'x 0.75), 0.6 / 0.4 / 0.5 shares, half for a player at 0 hit points, capped at the '
+          'level step, mana = monster max hp / 30 for a class-0 killer.  The stretch reads no '
+          'global but g_numPlayers, the level table, the life-tap skill pointer and record '
+          'fields +0x50 (class), +0x59 (level), +0xac (hit points), +0xc0/+0xc4 (mana), the '
+          'object pointer and the skill list, and its only store outside the creature is record '
+          'mana; a machine with another local slot, alive list, selector word and options gives '
+          'the same amounts')
+    draws, wrote, read, seeds = [], set(), set(), set()
+    quality_rows = set(range(G_LOOT_QUALITY_ROWS, G_LOOT_QUALITY_ROWS + 12 * 12))
+    for seed in range(1, 41):
+        count, others, globals_read, other_seeds, _after = loot_rolls(elf, seed * 0x9E3779B1 & M32)
+        draws.append(count)
+        wrote |= set(others)
+        read |= globals_read
+        seeds.add(other_seeds)
+    twin = [loot_rolls(elf, 0x51ED270B, local=local, extra=extra)[::4] for local, extra in (
+        (0, None), (1, {G_ALIVE_COUNT: 1, G_ALIVE_LIST: 1, G_SELECTOR_HELD: 1, 0x44FDC0: 1, 0x44FCF8: 1}))]
+    table('loot_generateDrops, 40 seeds', ['draws per call: %d to %d' % (min(draws), max(draws)),
+                                           'globals read: ' + hexes(sorted(read))])
+    check('k20', not wrote and seeds == {(0x1111, 0x2222)} and min(draws) >= 5 and len(set(draws)) > 1
+          and read <= {G_RAND_SEED, G_NUM_PLAYERS, G_PVP_MODE_A, G_PVP_MODE_B, G_LEVEL_MONSTER_LEVEL} | quality_rows
+          and twin[0] == twin[1],
+          'K6, loot rolls (loot_generateDrops called with a knight\'s arguments on 40 seeds; item '
+          'and gold constructors and the item generators are stubs, so only the roll logic of '
+          'this one function ran): every store to a global is to the shared seed 0x404464 (%d '
+          'to %d draws per call), the cosmetic seed and the fourth generator are not touched, '
+          'and the globals it reads are the shared seed, g_numPlayers, the two PvP flags, the '
+          'level\'s monster level 0x4f714c and the quality table 0x3e9c18.  A machine with another '
+          'local slot, alive list, selector word and options draws the same.  The generators it '
+          'calls, where the row says the remaining draws are, were NOT run'
+          % (min(draws), max(draws)))
+    plain, copy, early, empty = gold_touch(elf), gold_touch(elf, toucher_flags=0x20060), \
+        gold_touch(elf, countdown=5), gold_touch(elf, amount=0)
+    monster = gold_touch(elf, toucher_flags=0x20)
+    there = gold_touch(elf, local=1)
+    check('k21', plain[1] == [(1, 250)] and plain[2] == 0 and OBJ_DELETE in plain[0] and SEND_GAME_MSG not in plain[0]
+          and plain[3] == [0x80] and all(case[0] == [] and case[2] == 250 for case in (copy, early, monster))
+          and empty[0] == [] and there == plain,
+          'K6, gold (Gold_onTouch 0x157a9c): a real player touching gold whose countdown is 0 '
+          'gets hud_addGoldFloater(slot, position, amount), the amount is zeroed and the object '
+          'queued for deletion, with no game message; the prediction copy, a monster, a running '
+          'countdown or an amount of 0 do nothing.  Same calls and stores whichever slot is '
+          'local')
+
+    owner, other = level_up(elf, True), level_up(elf, False)
+    sound_only = sorted(set(owner[3]) - set(other[3]))
+    bands = [level_up(elf, False, level)[1]['skill'] - 7 for level in (5, 6, 15, 16, 25, 26, 35, 36)]
+    check('k22', owner[1] == other[1] == dict(ack=5, level=6, skill=8, stat=5, hp=120.0, mana=80.0)
+          and owner[2] == other[2] and sound_only == [RES_FIND, SOUND_PLAY_ON_OBJECT]
+          and PLAYER_RECALC_STATS in other[3] and HUD_SHOW_MESSAGE in other[3] and bands == [1, 2, 2, 3, 3, 4, 4, 5],
+          'K7 in isolation (player_giveExp on a record 10 points short of level 6): the level byte '
+          '+0x59 goes 5 -> 6, skill points +1 (by level band: %s for levels 5, 6, 15, 16, 25, 26, '
+          '35, 36), stat points +3, player_recalcStats is called and hit points and mana are '
+          'set to their maxima - the same stores on the owner\'s machine and on another; the '
+          'acknowledged level +0x58 stays 5.  The only difference is the sound, made on the '
+          'owner\'s machine alone' % bands)
+    sent, _stores, menu_flag = open_level_up_screen(owner[0])
+    not_sent, other_stores, other_flag = open_level_up_screen(other[0])
+    after = []
+    for world in (owner[0], other[0]):
+        buffer = world.emu.alloc(0x10)
+        world.emu.mem.write(buffer, (sent[-1] if sent else b'') + b'\0')
+        world.emu.follow = set()
+        if sent:
+            world.emu.call(INVMSG_DISPATCH, buffer)
+        after.append(world.emu.mem.u8(G_PLAYERS + 0x58))
+    check('k23', sent[-1:] == [bytes([9, 0, 6])] and menu_flag == 1 and not_sent == [] and other_stores == 0
+          and other_flag == 0 and after == [6, 6],
+          'K7, second half: menu_openInventory(slot, 1) on the owner\'s machine sets '
+          'g_localMenuOpen and queues inventory message 9 {slot, level byte}; on a machine that '
+          'does not own the slot it stores nothing and sends nothing.  The message handler '
+          '(invmsg_dispatch, case 9) then stores the level in +0x58 on both machines.  That '
+          'hud_run calls it when +0x58 < +0x59 (0x1db870) was not executed')
+
+    third, second, not_creature = knight_dies(elf, 3), knight_dies(elf, 2), knight_dies(elf, 3, found_flags=0)
+
+    def kinds(events):
+        return [event[0] for event in events]
+    events, knight, skeleton, flagged = third
+    loot = [event for event in events if event[0] == 'loot']
+    check('k24', kinds(events) == ['find', 'skeleton state', 'loot', 'drop part', 'drop part', 'on death']
+          and events[0][1] == 'skelightm' and events[1][1:] == (skeleton, 0x14) and flagged
+          and loot == [('loot', knight, (36.0, 2.0, 1.8, 0.6, 2.0, 0.25))]
+          and [event[1:] for event in events if event[0] == 'drop part'] == [(1, knight), (2, knight)]
+          and kinds(second[0]) == kinds(events)[2:] and kinds(not_creature[0]) == ['find'] + kinds(events)[2:],
+          'K8 in isolation (Horsemen_setState(knight, 0x14), callees stubbed): a knight whose '
+          'variant byte is 3 looks up the object named "skelightm" and, if it is a creature, '
+          'calls its set-state (slot 27) with 0x14 in the same call; every variant then calls '
+          'Creature_dropLoot(36, 2, 1.8, 0.6, 2, 0.25) once and the weapon helper\'s slot 11 for '
+          'hand 1 and hand 2, then its own slot 28.  Variant 2 makes no look-up')
+
+
+
+# ---------------------------------------------------------------------------------------
+# s. Sync breakers that do not depend on a level (docs/issues/sync-breakers.md, FINDINGS
+#    B1-B3, B8-B11) and the patch-file sections at 0x1375dc, 0x28da74 and 0x217448
+# ---------------------------------------------------------------------------------------
+ALL_PLAYERS_STATE2, G_LOBBY_LAUNCH, G_GAME_COMPLETE, RECORD_KIND = 0x1EC5D8, 0x4F7134, 0x4F85C5, 0x4C1C
+MISC_SYNC_START, MISC_SYNC_STOPS, G_IN_FRONTEND = 0x1E3E4C, (0x1E3EC0, 0x1E3F14, 0x1E3F18), 0x41B510
+HUD_ON_MSG, SAVE_PLAYER_BLOCK, SCRIPT_SAVE_GAME = 0x1D8CA0, 0x2184A4, 0x146C04
+G_CHECKSUM_PENDING, G_CHECKSUM_FAILED, PEER_DROPPED = 0x4F7138, 0x4F7144, 0x44D5
+SAVEPOINT_VTABLE, SAVEPOINT_PROMPT, SAVEPOINT_INTERACT, B9_SITE = 0x50DC78, 0x28DA58, 0x28DC30, 0x28DA74
+TEXT_LOOKUP, WSTR_COPY, MENU_MUTEX_HELD, MEMCARD_REQUEST_SAVE = 0x173C84, 0x19E854, 0x22FC2C, 0x2175B4
+LIGHT_LINK2, RUN_ACTION_SCRIPTS, G_PROMPT_TEXT, BUTTON_GLYPH = 0x148BC8, 0x14DCC8, 0x864F50, 0x1EACB8
+G_CARD_REQUESTS_OFF, G_CARD_OP_RESULT = 0x88D3C8, 0x88D3BC
+G_CARD_LATCH, G_SAVE_CLEAR_BLOCK, B10_SITE = 0x4F8F28, 0x4F8F2A, 0x1375DC
+LAUNCH_CLEAR_START, LAUNCH_CLEAR_END, SAVE_CLEAR_BUFFER, G_SAVE_BUFFER = 0x1375C4, 0x1375E0, 0x21F144, 0x895580
+ACT_CHANGE_START, ACT_CHANGE_END, SAVE_ACT_CHANGED = 0x320F8C, 0x321024, 0x217F70
+JUMPGATE_RESET, GET_HUB_NAME, G_JUMPGATE_COUNT, G_JUMPGATE_DESTS = 0x27DB00, 0x1EC300, 0x8E3C30, 0x8E3A50
+QUEST_CLEAR_ALL, REMOVE_FLAG39_ITEMS, VARS_CLEAR_ALL, SAVE_GET_ACT = 0x1D3ADC, 0x1BE1D8, 0x1ED728, 0x217EDC
+CAMERA_GATE_START, CAMERA_GATE_END, CAMERA_RESET, MEMCARD_GET_STATE = 0x322DC0, 0x322E08, 0x203210, 0x217550
+SAVE_SCREEN, SLOT_LIST = 0x218AFC, 0x21C3A4
+DEBUG_FILE_START, DEBUG_FILE_END, DEBUG_SITE, MC_QUEUE_OP, MC_WAIT = 0x2173C8, 0x21744C, 0x217448, 0x223470, 0x22342C
+G_CARD_FILE_FOUND, CHEAT_START, CHEAT_STOPS, G_PADS = 0x4F9550, 0x1DBB60, (0x1DBBEC, 0x1DBBF0), 0x41BFD8
+OPTION_LISTS, OPTION_LIST_INPUT, G_BLOOD_OPTION, G_DAMAGE_NUMBERS, G_PAD_CONFIRM = (0x44F218, 0x4F6E88), 0x1A01D0, 0x44FDC0, 0x44FCF8, 0x41BFBC
+GUTCHUNK_SLICES = ((0x2019D4, 0x2019F4), (0x201A74, 0x201A94), (0x201B2C, 0x201B50))
+FX_SPAWN = 0x1EF270
+
+
+def all_lobby(elf, network=1, lobby=1, complete=0, kinds=(2, 2)):
+    emu = EE(elf)
+    mem = emu.mem
+    mem.w8(G_NETWORK_MODE, network)
+    mem.w32(G_LOBBY_LAUNCH, lobby)
+    mem.w8(G_GAME_COMPLETE, complete)
+    mem.w32(G_NUM_PLAYERS, len(kinds))
+    for slot, kind in enumerate(kinds):
+        mem.w32(G_PLAYERS + slot * PLAYER_STRIDE + RECORD_KIND, kind)
+    return s32(emu.call(ALL_PLAYERS_STATE2))
+
+
+class ChecksumMachine:
+    """One machine of a two-player net game launched from the lobby with lobby-stored
+    characters (kind 2).  sync() is the stretch of gameMiscSync that runs the exchange
+    (0x1e3e4c on); deliver() is the game-message handler hud_onMsg.  Everything they call
+    runs for real - net_allPlayersState2, net_sendChecksums, player_checksum,
+    save_playerBlock, net_disconnectPlayer - except the message send, which is recorded,
+    and the debug print."""
+
+    def __init__(self, elf, local, kinds=(2, 2), lobby=1):
+        world = self.world = World(elf, players=2, local_slot=local, network=True)
+        emu, mem = self.emu, self.mem = world.emu, world.emu.mem
+        mem.w32(G_LOBBY_LAUNCH, lobby)
+        mem.w32(G_LOCAL_CAMERA, emu.alloc(0x400))          # save_playerBlock asks the camera for a size
+        for slot, kind in enumerate(kinds):
+            record = G_PLAYERS + slot * PLAYER_STRIDE
+            mem.w32(record + RECORD_KIND, kind)
+            mem.w32(record + 0xE4, 1000 + slot)             # gold
+            mem.w32(record + 0x5C, 5000 + slot)             # experience
+        self.sent = []
+        emu.stub(SEND_GAME_MSG, function=lambda e: self.sent.append(
+            e.mem.read(e.r[5] & M32, e.r[6] & M32)) or 0, name='net_sendGameMsg')
+        emu.stub(DBG_PRINTF, name='dbg_printf')
+
+    def record(self, slot):
+        return G_PLAYERS + slot * PLAYER_STRIDE
+
+    def saved_record(self, slot):
+        self.emu.follow = None
+        return self.emu.call(SAVE_PLAYER_BLOCK, slot) & M32
+
+    def sync(self, frame):
+        emu = self.emu
+        self.mem.w32(G_SIM_FRAME, frame)
+        emu.r[17] = 0x420000
+        emu.r[29] = emu.stack_hi - 0x1000
+        emu.follow = None
+        emu.reset_log()
+        emu.run(start=MISC_SYNC_START, until=set(MISC_SYNC_STOPS), max_steps=2000000)
+        return [c.target for c in emu.calls]
+
+    def deliver(self, message):
+        emu = self.emu
+        buffer = emu.alloc(0x40)
+        self.mem.write(buffer, message)
+        emu.follow = None
+        emu.call(HUD_ON_MSG, buffer)
+
+    def state(self):
+        return (self.mem.u32(G_CHECKSUM_FAILED),
+                [self.mem.u8(G_PEERS + slot * PEER_STRIDE + PEER_DROPPED) for slot in (0, 1)])
+
+
+def checksum_round(elf, tamper=None):
+    """A whole exchange on two machines: start message, both sends, both deliveries.
+    tamper(machine a, machine b) may change one machine's state first.  Returns the two
+    machines, the start messages, the two checksum messages and each machine's state."""
+    a, b = ChecksumMachine(elf, 0), ChecksumMachine(elf, 1)
+    if tamper:
+        tamper(a, b)
+    for machine in (a, b):
+        machine.sync(300)                                    # 300 = 240 + 60
+    start = a.sent + b.sent
+    for machine in (a, b):
+        for message in start:
+            machine.deliver(message)
+        del machine.sent[:]
+    pending = [machine.mem.u32(G_CHECKSUM_PENDING) for machine in (a, b)]
+    calls = [machine.sync(301) for machine in (a, b)]
+    sums = [list(machine.sent) for machine in (a, b)]
+    for machine in (a, b):
+        del machine.sent[:]
+        for message in sums[0] + sums[1]:
+            machine.deliver(message)
+    return a, b, start, sums, pending, calls
+
+
+class SavepointRig:
+    """One machine's simulation of player slot 1 pressing the use button next to a save
+    point: Player_interact 0x1b2640 called as Player_run calls it, with the game's own
+    Savepoint virtual table on a blank object, so its slot 13 (Savepoint_interactPrompt
+    0x28da58) and slot 14 (Savepoint_interact 0x28dc30) are reached through the table and
+    run for real, as do memcard_isBusy and net_allPlayersState2.  card_state is this
+    machine's card-screen state word (-1 idle).  The save request, the light, the action
+    scripts and the text helpers are stubs."""
+    SLOT = 1
+
+    def __init__(self, elf, card_state=-1, patched=False, kinds=(1, 1), lobby=0, network=True):
+        world = self.world = World(elf, players=2, local_slot=0, network=network)
+        emu, mem = self.emu, self.mem = world.emu, world.emu.mem
+        if patched and apply_section_at(emu, B9_SITE) is None:
+            raise LookupError('no patch-file section patches 0x%x' % B9_SITE)
+        mem.w32(G_LOBBY_LAUNCH, lobby)
+        for slot, kind in enumerate(kinds):
+            mem.w32(G_PLAYERS + slot * PLAYER_STRIDE + RECORD_KIND, kind)
+        mem.w32(G_MEMCARD_STATE, card_state & M32)
+        mem.w32(G_CARD_REQUESTS_OFF, 0)
+        mem.w32(G_CARD_OP_RESULT, 0)
+        self.player = world.objects[self.SLOT]
+        point = self.point = emu.alloc(0x200)
+        mem.w32(point + 0x0C, 0x100000)
+        mem.wf32(point + 0x10, 110.0)
+        mem.wf32(point + 0x14, 200.0)
+        mem.w32(point + 0x48, SAVEPOINT_VTABLE)
+        text = emu.alloc(0x10)
+        mem.w16(text, 0x53)
+        emu.stub(TEXT_LOOKUP, ret=text, name='text_lookup')
+        emu.stub(BUTTON_GLYPH, ret=0x21, name='pad_buttonMaskToGlyph')
+
+        def collect(e):
+            out = e.r[6] & M32
+            e.mem.w32(out, point)
+            e.mem.w32(out + 4, 0)
+            return 1
+        emu.stub(COLLECT_IN_BOX, function=collect, name='world_collectObjectsInBox')
+        self.pad = emu.alloc(PAD_SIZE)
+        mem.w32(G_BTN_USE + 4 * self.SLOT, 0x40)
+        mem.w32(self.pad + 0x0C, 0x40)
+        mem.w32(G_SCRIPT_ACTIVE_PLAYER, 0)                  # the last player who used something: slot 0
+
+    def run(self):
+        emu, mem = self.emu, self.mem
+        emu.follow = {SAVEPOINT_PROMPT, SAVEPOINT_INTERACT, MEMCARD_IS_BUSY, ALL_PLAYERS_STATE2, WSTR_COPY,
+                      MENU_MUTEX_HELD}
+        emu.reset_log()
+        emu.call(PLAYER_INTERACT, self.player, self.pad, 0)
+        emu.follow = None
+        targets = [c.target for c in emu.calls]
+        self.result = dict(
+            active=mem.s32(G_SCRIPT_ACTIVE_PLAYER), prompt=SAVEPOINT_PROMPT in targets,
+            interact=SAVEPOINT_INTERACT in targets,
+            request=[c.args[0] & M32 for c in emu.calls if c.target == MEMCARD_REQUEST_SAVE],
+            lit=LIGHT_LINK2 in targets, scripts=RUN_ACTION_SCRIPTS in targets,
+            used=mem.u32(self.point + 0x84), mark=mem.u8(self.point + 0xC4),
+            text=mem.u16(G_PROMPT_TEXT + 0x200 * self.SLOT) != 0)
+        return run_log(emu)
+
+
+def save_game_script(elf, kinds):
+    """The script built-in saveGame, 0x146c04: the slots it asks a save screen for."""
+    world = World(elf, players=len(kinds), local_slot=1, network=True)
+    for slot, kind in enumerate(kinds):
+        world.emu.mem.w32(G_PLAYERS + slot * PLAYER_STRIDE + RECORD_KIND, kind)
+    world.emu.follow = {0x13E1F0}                           # net_getLocalPlayerSlot
+    world.emu.call(SCRIPT_SAVE_GAME)
+    return [c.args[0] & M32 for c in world.emu.calls if c.target == MEMCARD_REQUEST_SAVE]
+
+
+def blood_toggle(elf, list_addr, start_value, button):
+    """The option-list input handler 0x1a01d0 on one of the game's two option lists with
+    the cursor on the blood entry.  button: 'left', 'right' or 'confirm'."""
+    emu = EE(elf)
+    mem = emu.mem
+    index, entry = 0, list_addr
+    while mem.u32(entry) and mem.u32(entry + 8) != G_BLOOD_OPTION:
+        index, entry = index + 1, entry + 16
+    kind = mem.u32(entry + 4)
+    end = entry
+    while mem.u32(end):
+        end += 16
+    mem.w32(end + 4, index)                                 # the cursor lives in the terminator row
+    mem.wf32(0x4D8A10, 1.0)                                 # the key-repeat timer has run out
+    mem.w32(G_BLOOD_OPTION, start_value)
+    pad = emu.alloc(PAD_SIZE)
+    mem.w32(pad + 0x10, {'left': 0x8000, 'right': 0x2000, 'confirm': mem.u32(G_PAD_CONFIRM)}[button])
+    emu.follow = set()
+    emu.call(OPTION_LIST_INPUT, list_addr, pad, 0, 0)
+    return kind, mem.u32(G_BLOOD_OPTION)
+
+
+def gutchunk_bit(elf, slice_, option):
+    start, end = slice_
+    emu = EE(elf)
+    chunk = emu.alloc(0x300)
+    emu.mem.w32(G_BLOOD_OPTION, option)
+    emu.r[16], emu.r[17], emu.r[3] = 0x40, chunk, 0x510000
+    emu.run(start=start, until={end}, max_steps=20)
+    return emu.mem.u32(chunk + 0x248) & 1
+
+
+def option_gate(elf, start, taken, skipped, option_addr, option, network):
+    """A stretch that tests an option and then the network flag; True when the gated
+    code is reached.  $s2 points at a blank object for the stretch that looks at one."""
+    emu = EE(elf)
+    emu.mem.w32(option_addr, option)
+    emu.mem.w8(G_NETWORK_MODE, network)
+    emu.r[18] = emu.alloc(0x100)
+    emu.run(start=start, until=set(taken) | {skipped}, max_steps=20)
+    return emu.pc != skipped
+
+
+def player_gib(elf, option, network, seed=0x1234):
+    """Player_processDamage 0x1b31dc-0x1b32d8: returns (the shared seed was drawn, the
+    blood effect was spawned)."""
+    world = World(elf, players=1, network=bool(network))
+    emu, mem = world.emu, world.emu.mem
+    mem.w32(G_BLOOD_OPTION, option)
+    mem.w32(G_RAND_SEED, seed)
+    emu.stub(POOL_NEW, ret=0, name='pool_new')
+    emu.r[16], emu.r[9] = world.objects[0], 1
+    emu.fset(1, 10.0)
+    emu.r[29] = emu.stack_hi - 0x1000
+    emu.follow = set()
+    emu.reset_log()
+    emu.run(start=0x1B31DC, until={0x1B32D8, 0x1B32DC, 0x1B32E4}, max_steps=200)
+    return mem.u32(G_RAND_SEED) != seed, any(c.target == FX_SPAWN for c in emu.calls)
+
+
+def save_screen(elf, sub_state, latch, slot_chosen=1, auto_slot=1, picker=0, card_error=0, pressed=0,
+                level_pending=0, fade=8, alpha=0):
+    """One call of memcard_saveScreen 0x218afc with every callee stubbed.  Returns the
+    latch afterwards, the sub-state afterwards and whether the latch was stored to."""
+    emu = EE(elf)
+    mem = emu.mem
+    mem.w8(G_NETWORK_MODE, 1)
+    mem.w32(0x88D3E4, 1)                                    # the card has been checked
+    mem.w32(0x88D3D8, slot_chosen)
+    mem.w8(0x8E1AD8, auto_slot)                             # "save to the slot loaded from"
+    mem.w32(0x88D3A8, sub_state)
+    mem.w32(G_CARD_OP_RESULT, card_error)
+    mem.w8(G_CARD_LATCH, latch)
+    mem.w32(0x8E11FC, fade & M32)
+    mem.w32(0x8E11F8, alpha)
+    mem.w8(0x41B6D0, level_pending)
+    mem.w32(0x4028DC, pressed)                              # pressed word of raw pad 0
+    mem.w32(0x41BFB8, 0x40)
+    mem.w32(G_PAD_CONFIRM, 0x40)
+    emu.follow = set()
+    emu.stub(SLOT_LIST, ret=picker, name='memcard_slotList')
+    emu.reset_log()
+    emu.call(SAVE_SCREEN)
+    return (mem.u8(G_CARD_LATCH), mem.u32(0x88D3A8),
+            [value for _pc, addr, _n, value in emu.writes if addr == G_CARD_LATCH],
+            any(c.target == MEMCARD_REQUEST_SAVE for c in emu.calls))
+
+
+class LatchMachine:
+    """One machine whose card latch 0x4f8f28 has the given value, taken through the three
+    stretches that concern it: the net launch code (0x1375c4-0x1375e0, with
+    save_clearBuffer running for real), the act-change block of the level change
+    (0x320f8c-0x321024, callees stubbed and recorded) and the camera reset test
+    (0x322dc0-0x322e08)."""
+
+    def __init__(self, elf, latch, patched=False, clear_block=0):
+        emu = self.emu = EE(elf)
+        mem = self.mem = emu.mem
+        if patched and apply_section_at(emu, B10_SITE) is None:
+            raise LookupError('no patch-file section patches 0x%x' % B10_SITE)
+        mem.w8(G_CARD_LATCH, latch)
+        mem.w8(G_SAVE_CLEAR_BLOCK, clear_block)
+        mem.w32(G_NUM_PLAYERS, 2)
+        mem.w32(G_MEMCARD_STATE, 0xFFFFFFFF)
+        mem.write(G_SAVE_BUFFER, b'\x5A' * 0x100)           # something for the launch to clear
+
+    def launch(self):
+        emu = self.emu
+        emu.r[29] = emu.stack_hi - 0x4000
+        emu.follow = {SAVE_CLEAR_BUFFER, MEMSET}
+        emu.reads = []
+        emu.reset_log()
+        emu.run(start=LAUNCH_CLEAR_START, until={LAUNCH_CLEAR_END}, max_steps=2000000)
+        emu.follow = None
+        byte_stores = [(addr, value) for pc, addr, size, value in emu.writes if pc == B10_SITE]
+        read_block = any(addr == G_SAVE_CLEAR_BLOCK for _pc, addr, _n, _v in emu.reads)
+        emu.reads = None
+        return byte_stores, read_block, self.mem.read(G_SAVE_BUFFER, 0x100) == bytes(0x100)
+
+    def act_change(self, changed=1, in_frontend=0):
+        emu = self.emu
+        self.mem.w32(G_IN_FRONTEND, in_frontend)
+        emu.stub(SAVE_ACT_CHANGED, ret=changed, name='save_actChanged')
+        emu.r[19] = 0x420000
+        emu.r[29] = emu.stack_hi - 0x1000
+        emu.follow = set()
+        emu.reset_log()
+        emu.run(start=ACT_CHANGE_START, until={ACT_CHANGE_END}, max_steps=500)
+        emu.unhook(SAVE_ACT_CHANGED)
+        return ([(c.target, c.args[0] & M32) for c in emu.calls if c.target not in (SAVE_ACT_CHANGED, TASK_IS_RUNNING)],
+                sorted({addr for _pc, addr, _n, _v in emu.writes}))
+
+    def camera_gate(self):
+        emu = self.emu
+        emu.follow = {MEMCARD_GET_STATE}
+        emu.reset_log()
+        emu.run(start=CAMERA_GATE_START, until={CAMERA_GATE_END}, max_steps=50)
+        return any(c.target == CAMERA_RESET for c in emu.calls)
+
+
+def jumpgate_reset(elf, latch):
+    emu = EE(elf)
+    mem = emu.mem
+    hub = emu.alloc(0x20)
+    mem.write(hub, b'hub\0')
+    mem.w8(G_CARD_LATCH, latch)
+    mem.w8(G_JUMPGATE_COUNT, 5)
+    mem.write(G_JUMPGATE_DESTS, b'elsewhere\0')
+    emu.stub(GET_HUB_NAME, ret=hub, name='game_getHubName')
+    emu.follow = None
+    emu.call(JUMPGATE_RESET, 0)
+    return mem.u8(G_JUMPGATE_COUNT), mem.cstr(G_JUMPGATE_DESTS)
+
+
+def debug_file(elf, on_card, patched=False):
+    """save_init 0x2173c8-0x21744c: the card is asked about one file; on_card is what the
+    card answers (the word the code reads after the file-info operation)."""
+    emu = EE(elf)
+    mem = emu.mem
+    if patched and apply_section_at(emu, DEBUG_SITE) is None:
+        raise LookupError('no patch-file section patches 0x%x' % DEBUG_SITE)
+    asked = []
+
+    def queue(e):
+        if e.r[4] & M32 == 6:                               # file information
+            asked.append(e.mem.cstr(e.r[5] & M32))
+            e.mem.w32(G_CARD_FILE_FOUND, 1 if on_card else 0)
+        return 0
+    emu.stub(MC_QUEUE_OP, function=queue, name='mc_queueOp')
+    emu.stub(MC_WAIT, name='mc_wait')
+    mem.w8(G_DEBUG_FLAG, 0x55)
+    emu.r[18] = emu.r[19] = 0x500000
+    emu.r[29] = emu.stack_hi - 0x1000
+    emu.reset_log()
+    emu.run(start=DEBUG_FILE_START, until={DEBUG_FILE_END}, max_steps=200)
+    return mem.u8(G_DEBUG_FLAG), asked, run_log(emu)
+
+
+def debug_cheat(elf, flag, pressed=0x4000, held=0x8, in_frontend=0):
+    """hud_run 0x1dbb60 on: what the debug flag does with slot 0's lockstep pad."""
+    world = World(elf, players=2, network=True)
+    emu, mem = world.emu, world.emu.mem
+    mem.w8(G_DEBUG_FLAG, flag)
+    mem.w32(G_IN_FRONTEND, in_frontend)
+    mem.w32(G_PADS + 0x0C, pressed)
+    mem.w32(G_PADS + 0x08, held)
+    mem.w32(G_PLAYERS + 0xE4, 77)
+    emu.follow = set()
+    emu.reset_log()
+    emu.run(start=CHEAT_START, until=set(CHEAT_STOPS), max_steps=200)
+    return mem.u32(G_PLAYERS + 0xE4), [(c.args[0] & M32, c.args[1] & M32) for c in emu.calls if c.target == GIVE_EXP]
+
+
+def test_sync_breakers(elf):
+    truth = [all_lobby(elf), all_lobby(elf, network=0), all_lobby(elf, lobby=0), all_lobby(elf, complete=1),
+             all_lobby(elf, kinds=(2, 1)), all_lobby(elf, kinds=(1, 2)), all_lobby(elf, kinds=(2, 2, 2, 2)),
+             all_lobby(elf, kinds=(2, 2, 2, 3)), all_lobby(elf, kinds=(0x22, 0xE2))]
+    check('s1', truth == [1, 0, 0, 0, 0, 0, 1, 0, 1],
+          'B1 in isolation (net_allPlayersState2 0x1ec5d8): true only in a net game with the '
+          'lobby-launch word 0x4f7134 set, the game-complete byte clear and the low five bits '
+          'of record +0x4c1c equal to 2 for EVERY player; one player of another kind makes it '
+          'false.  That only lobby character creation and the launch code write a 2 is a '
+          'search result and was not executed')
+    sends = {}
+    for frame in (59, 60, 61, 299, 300, 301, 540):
+        machines = ChecksumMachine(elf, 0), ChecksumMachine(elf, 1)
+        for machine in machines:
+            machine.sync(frame)
+        sends[frame] = [len(machine.sent) for machine in machines]
+    outsider = ChecksumMachine(elf, 0, kinds=(2, 1))
+    outsider.sync(300)
+    front = ChecksumMachine(elf, 0)
+    front.mem.w32(G_IN_FRONTEND, 1)
+    front_calls = front.sync(300)
+    check('s2', sends == {59: [0, 0], 60: [1, 0], 61: [0, 0], 299: [0, 0], 300: [1, 0], 301: [0, 0], 540: [1, 0]}
+          and not outsider.sent and not front.sent and ALL_PLAYERS_STATE2 not in front_calls,
+          'B1/B2, when the exchange starts (gameMiscSync entered part-way at 0x1e3e4c, on two '
+          'machines): game message 9 is queued on frames whose number mod 240 is 60 (60, 300, '
+          '540; not 59, 61, 299, 301), by the first active machine only; never when one '
+          'player is not kind 2, and in the front end the test is not even made')
+    a, b, start, sums, pending, calls = checksum_round(elf)
+    own_pair = [len(messages) == 1 and messages[0][:4] == bytes([10, slot, 0, 0]) and len(messages[0]) == 12
+                for slot, messages in enumerate(sums)]
+    check('s3', start == [bytes([9])] and pending == [1, 1] and all(0x1DE46C in c for c in calls)
+          and all(own_pair) and a.state() == b.state() == (0, [0, 0])
+          and [m.mem.u32(G_CHECKSUM_PENDING) for m in (a, b)] == [0, 0],
+          'B2, one whole round with identical records (two machines; hud_onMsg, '
+          'net_sendChecksums, player_checksum and save_playerBlock run for real): message 9 '
+          'sets the pending word on both, the next gameMiscSync on each calls '
+          'net_sendChecksums and clears it, each machine sends game message 10 with the two '
+          'values of its OWN slot only, and after both messages have been handled on both '
+          'machines no flag is set and nobody is dropped')
+
+    def gold(machine_index, slot):
+        def change(a, b):
+            machine = (a, b)[machine_index]
+            machine.mem.w32(machine.record(slot) + 0xE4, 999999)
+        return change
+    a, b, _start, _sums, _p, _c = checksum_round(elf, gold(1, 0))
+    first = (a.state(), b.state(), a.sent, b.sent)
+    a, b, _start, _sums, _p, _c = checksum_round(elf, gold(0, 1))
+    second = (a.state(), b.state(), a.sent, b.sent)
+    check('s4', first == ((0, [0, 0]), (1, [1, 0]), [], [bytes([4, 0])])
+          and second == ((1, [0, 1]), (0, [0, 0]), [bytes([4, 1])], []),
+          'B2, a mismatch: when slot 0\'s gold differs on machine B only, B sets the '
+          'checksum-failed word 0x4f7144 and marks peer 0 dropped (net_disconnectPlayer) while '
+          'A - whose own values B disagrees with - notices nothing: the drop is on the machine '
+          'that sees the difference only, as the row says.  Sharper than sync-breakers.md '
+          'section 1: net_disconnectPlayer asks "am I the first active machine" AFTER it has '
+          'marked the peer dropped, so B, which has just dropped the only slot in front of it, '
+          'answers yes and queues game message 4 for slot 0 as well.  With slot 1\'s gold '
+          'different on machine A, A flags, drops peer 1 and queues message 4 for slot 1')
+
+    def saved_gold(a, b):
+        b.mem.w8(b.saved_record(0) + 0xE4, 0x77)
+
+    def hit_points(a, b):
+        b.set_hp = b.world.set_hp(0, 1.0)
+    a, b, _start, _sums, _p, _c = checksum_round(elf, saved_gold)
+    buffer_half = (a.state(), b.state())
+    a, b, _start, _sums, _p, _c = checksum_round(elf, hit_points)
+    check('s5', buffer_half == ((0, [0, 0]), (1, [1, 0])) and a.state() == b.state() == (0, [0, 0]),
+          'B2, the two halves: a difference in the copy of slot 0 inside machine B\'s own save '
+          'buffer (the address save_playerBlock returns) drops slot 0 on B exactly as a '
+          'difference in the live record does; a difference in hit points, which the checksum '
+          'does not cover, is not noticed')
+    lobby_game = SavepointRig(elf, kinds=(2, 2), lobby=1)
+    lobby_game.run()
+    card_game = SavepointRig(elf)
+    card_game.run()
+    check('s6', lobby_game.result['prompt'] and not lobby_game.result['interact'] and lobby_game.result['active'] == 0
+          and not lobby_game.result['text'] and card_game.result['interact'] and card_game.result['request'] == [1]
+          and save_game_script(elf, (2, 2)) == [] and save_game_script(elf, (1, 2)) == []
+          and save_game_script(elf, (1, 1)) == [1],
+          'B3 in isolation: in a game where net_allPlayersState2 holds, Savepoint_interactPrompt '
+          '(reached through the Savepoint\'s own virtual table from Player_interact) returns '
+          '"nothing" with no text, so the use button neither sets the active player nor reaches '
+          'Savepoint_interact; with memory-card characters the same press asks for the save '
+          'screen.  The script built-in saveGame 0x146c04 asks for it only when no player is '
+          'kind 2')
+
+    toggles = {(start_value, button): [blood_toggle(elf, addr, start_value, button) for addr in OPTION_LISTS]
+               for start_value in (0, 1, 2, 7) for button in ('left', 'right', 'confirm')}
+    bits = [[gutchunk_bit(elf, slice_, option) for option in (0, 1, 2, 3)] for slice_ in GUTCHUNK_SLICES]
+    check('s7', all(result == [(3, 1 if start_value == 0 else 0)] * 2 for (start_value, _b), result in toggles.items())
+          and bits == [[1, 1, 0, 0]] * 3,
+          'B8, first half: in both option lists the blood entry is type 3, and the list handler '
+          '0x1a01d0 run on them turns the value into "was it 0" on left, right and confirm - 0 '
+          'and 1 are the only values it can store, whatever was there (0, 1, 2 and 7 tried).  '
+          'The three GutChunk constructors (0x2019d4, 0x201a74, 0x201b2c, entered part-way) '
+          'set the lifetime bit for option 0 and 1 alike and not for 2 or 3')
+    numbers = [option_gate(elf, 0x1EA994, (0x1EA9B4, 0x1EA9B8), 0x1EAC70, G_DAMAGE_NUMBERS, option, network)
+               for network in (0, 1) for option in (0, 1)]
+    gore = [option_gate(elf, 0x1113F8, (0x111418,), 0x111474, G_BLOOD_OPTION, option, network)
+            for network in (0, 1) for option in (0, 1)]
+    gibs = [player_gib(elf, option, network) for network in (0, 1) for option in (0, 1)]
+    check('s8', numbers == [False, True, True, True] and gore == [False, True, True, True]
+          and gibs == [(False, False), (True, True), (True, False), (True, True)],
+          'B8, second half (three stretches, offline/net x option 0/1): the damage-number test '
+          'in damage_apply (0x1ea994) and the gore test in Creature_processDamage (0x1113f8) '
+          'skip their code only for option 0 OFFLINE; in a net game they go on whatever the '
+          'option says (%s, %s).  Player_processDamage (0x1b31dc) likewise draws the shared '
+          'seed for the gib roll in a net game with the option 0 or 1; only the blood effect '
+          'itself follows the option, and that is per machine and cosmetic (seed drawn, effect '
+          'spawned: %s)' % (numbers, gore, gibs))
+
+    idle, busy = SavepointRig(elf, card_state=-1), SavepointRig(elf, card_state=3)
+    idle_log, busy_log = idle.run(), busy.run()
+    calls_diff, stores_diff = log_diff(idle_log, busy_log, with_args=False)
+    table('B9: machine with no card screen against machine with one open (shipped)',
+          ['idle: %s' % idle.result, 'busy: %s' % busy.result,
+           'calls that differ: ' + hexes(calls_diff), 'stores that differ: ' + hexes(stores_diff)])
+    check('s9', idle.result == dict(active=1, prompt=True, interact=True, request=[1], lit=True, scripts=True,
+                                    used=1, mark=1, text=True)
+          and busy.result == dict(active=0, prompt=True, interact=False, request=[], lit=False, scripts=False,
+                                  used=0, mark=0, text=False)
+          and G_SCRIPT_ACTIVE_PLAYER in stores_diff,
+          'B9 in isolation (the same press of the use button by player 1 at a save point, '
+          'simulated on two machines that differ in one word, the card-screen state 0x88d3a0): '
+          'on the machine with no card screen the prompt returns 1 with a text, Player_interact '
+          'stores 1 in g_scriptActivePlayer at 0x1b2b70 and calls Savepoint_interact, which '
+          'asks for the save screen, sets +0x84 and +0xc4, links the light and runs the action '
+          'scripts; on the machine with a card screen open the prompt returns 0 with no text '
+          'and none of that happens - the active player stays 0 there')
+    result_word = SavepointRig(elf)
+    result_word.mem.w32(G_CARD_OP_RESULT, 5)
+    result_word.run()
+    off = SavepointRig(elf, card_state=3)
+    off.mem.w32(G_CARD_REQUESTS_OFF, 1)
+    off.run()
+    check('s10', result_word.result['active'] == 0 and off.result['active'] == 1,
+          'memcard_isBusy 0x217518 as the prompt uses it: an idle screen with a non-zero card '
+          'result word also counts as busy (active player not set), and the "card requests off" '
+          'word 0x88d3c8 makes it report not busy even with a screen open')
+    if pnach_section_at(B9_SITE) is None:
+        skip('s11', 'the patch file has no section for 0x28da74; the patched runs were not made')
+    else:
+        p_idle, p_busy = SavepointRig(elf, card_state=-1, patched=True), SavepointRig(elf, card_state=3, patched=True)
+        p_idle_log, p_busy_log = p_idle.run(), p_busy.run()
+        left_calls, left_stores = log_diff(p_idle_log, p_busy_log, with_args=False)
+        table('B9 patched: what still differs between the two machines',
+              ['idle: %s' % p_idle.result, 'busy: %s' % p_busy.result,
+               'calls that differ: ' + hexes(left_calls), 'stores that differ: ' + hexes(left_stores)])
+        check('s11', p_idle.result['active'] == p_busy.result['active'] == 1 and p_busy.result['interact']
+              and p_busy.result['text'] and G_SCRIPT_ACTIVE_PLAYER not in left_stores
+              and p_busy.result['request'] == [] and p_busy.result['used'] == 0 and p_busy.result['mark'] == 0
+              and not p_busy.result['lit'] and not p_busy.result['scripts']
+              and left_stores == [busy.point + 0x84, busy.point + 0xC4]
+              and left_calls == sorted([RUN_ACTION_SCRIPTS, LIGHT_LINK2, MEMCARD_REQUEST_SAVE, MENU_MUTEX_HELD]),
+              'patch "save-point prompt ignores this machine\'s card screen" (0x28da74 := '
+              'no-operation): both machines now store 1 in g_scriptActivePlayer and both reach '
+              'Savepoint_interact, so the difference B9 names is gone.  On the busy machine the '
+              'prompt text is now set (the cost the patch text states) and Savepoint_interact '
+              'returns at its own card test, so that machine still does not ask for a save '
+              'screen - and still does not set the point\'s +0x84 and +0xc4, link its light or '
+              'run its action scripts.  That residue is what sync-breakers.md section 4b calls '
+              'the point\'s own effect state; the patch does not remove it')
+        check('s12', p_idle_log == idle_log and p_idle.result == idle.result
+              and SavepointRig(elf, kinds=(2, 2), lobby=1, patched=True).run() == lobby_game.run(),
+              'nothing else changes: on a machine with no card screen the patched Player_interact '
+              'makes the same calls with the same arguments and the same stores as the shipped '
+              'one (the delay-slot instruction that now always runs clears a register the next '
+              'call overwrites), and the all-lobby-character refusal of s6 is untouched')
+
+    chosen = [save_screen(elf, 0, 0, slot_chosen=0, auto_slot=1), save_screen(elf, 0, 0, slot_chosen=0, auto_slot=0, picker=1)]
+    backed_out = save_screen(elf, 0, 0, slot_chosen=0, auto_slot=0, picker=0)
+    clean = [save_screen(elf, 4, 1, fade=-16), save_screen(elf, 4, 1, level_pending=1)]
+    error = save_screen(elf, 2, 1, card_error=1)
+    error_exit = [save_screen(elf, 9, 1), save_screen(elf, 9, 1, pressed=0x40), save_screen(elf, 9, 1, level_pending=1)]
+    check('s13', all(c[0] == 1 and c[2] == [1] for c in chosen) and backed_out[0] == 0 and backed_out[2] == []
+          and all(c[0] == 0 and c[2] == [0] for c in clean)
+          and error[:3] == (1, 9, []) and all(e[0] == 1 and e[2] == [] for e in error_exit)
+          and [e[3] for e in error_exit] == [False, True, False],
+          'B10, the save screen (memcard_saveScreen 0x218afc, one call per case, callees '
+          'stubbed): choosing a slot - either way of choosing - stores 1 in the latch 0x4f8f28; '
+          'the sub-state reached after a clean write (4) stores 0 when the "saved" box closes or '
+          'a level change is pending; a non-zero card result sends the screen to sub-state 9, '
+          'and neither that step nor the exit from sub-state 9 (button pressed, or level change '
+          'pending) stores to the latch at all - it stays 1.  With the button the exit asks for '
+          'the save screen again')
+    readers = {}
+    for latch in (0, 1):
+        machine = LatchMachine(elf, latch)
+        readers[latch] = (machine.act_change(), machine.camera_gate(), jumpgate_reset(elf, latch))
+    block = [SAVE_CLEAR_BUFFER, SAVE_GET_ACT, JUMPGATE_RESET, QUEST_CLEAR_ALL, REMOVE_FLAG39_ITEMS,
+             REMOVE_FLAG39_ITEMS, VARS_CLEAR_ALL]
+    no_change = LatchMachine(elf, 0).act_change(changed=0)
+    check('s14', [target for target, _a in readers[0][0][0]] == block and readers[0][0][0][0][1] == 0
+          and [arg for target, arg in readers[0][0][0] if target == REMOVE_FLAG39_ITEMS] == [0, 1]
+          and readers[0][0][1] == [0x4F7118] and readers[1][0] == ([], []) and no_change == ([], [])
+          and (readers[0][1], readers[1][1]) == (True, False)
+          and readers[0][2] == (1, 'hub') and readers[1][2] == (5, 'elsewhere'),
+          'B10, the three readers, each with the latch 0 and 1: at an act change the level '
+          'change (0x320f8c-0x321024) calls save_clearBuffer(0), save_getAct, '
+          'jumpgate_resetDestinations, quest_clearAll, player_removeFlag39Items for each player '
+          'and vars_clearAll and stores 1 at 0x4f7118 - with the latch set it calls none of them '
+          'and stores nothing; jumpgate_resetDestinations 0x27db00 resets the list to the hub '
+          'name or, with the latch set, leaves count and names alone; the stretch at 0x322dc0 '
+          'calls Camera_reset or skips it')
+    stuck, fresh = LatchMachine(elf, 1), LatchMachine(elf, 0)
+    launched = [machine.launch() for machine in (stuck, fresh)]
+    after = [(machine.mem.u8(G_CARD_LATCH), machine.act_change()[0] != [], machine.camera_gate()) for machine in (stuck, fresh)]
+    blocked = LatchMachine(elf, 0, clear_block=1).launch()
+    check('s15', launched[0] == launched[1] == ([(G_SAVE_CLEAR_BLOCK, 0)], True, True)
+          and after == [(1, False, False), (0, True, True)] and blocked[2] is False,
+          'B10/B11 chain: the net launch stretch (0x1375c4-0x1375e0, save_clearBuffer(1) real) '
+          'zeroes the save buffer and then stores 0 to the byte 0x4f8f2a on both machines - it '
+          'does not touch the latch.  A machine that came into the launch with the latch stuck '
+          'at 1 therefore still has it at 1 and at the next act change makes none of the seven '
+          'clean-up calls and no camera reset, while a machine whose latch was 0 makes them '
+          'all: the difference B11 infers the desync from.  (save_clearBuffer reads 0x4f8f2a '
+          'on entry and skips the clear when it is non-zero; it is 0 in the executable)')
+    if pnach_section_at(B10_SITE) is None:
+        skip('s16', 'the patch file has no section for 0x1375dc; the patched runs were not made')
+    else:
+        p_stuck, p_fresh = LatchMachine(elf, 1, patched=True), LatchMachine(elf, 0, patched=True)
+        p_launched = [machine.launch() for machine in (p_stuck, p_fresh)]
+        p_after = [(machine.mem.u8(G_CARD_LATCH), machine.act_change(), machine.camera_gate()) for machine in (p_stuck, p_fresh)]
+        shipped_logs, patched_logs = [], []
+        for latch in (0, 1):
+            for patched in (False, True):
+                machine = LatchMachine(elf, latch, patched=patched)
+                machine.launch()
+                (patched_logs if patched else shipped_logs).append(run_log(machine.emu))
+        only_address = all(s_log[0] == p_log[0] and len(s_log[1]) == len(p_log[1])
+                           and [(x, y) for x, y in zip(s_log[1], p_log[1]) if x != y]
+                           == [((B10_SITE, G_SAVE_CLEAR_BLOCK, 1, 0), (B10_SITE, G_CARD_LATCH, 1, 0))]
+                           for s_log, p_log in zip(shipped_logs, patched_logs))
+        check('s16', p_launched[0] == p_launched[1] == ([(G_CARD_LATCH, 0)], True, True)
+              and p_after[0] == p_after[1] and p_after[0][0] == 0 and p_after[0][1] == readers[0][0]
+              and p_after[0][2] is True and only_address,
+              'patch "net launch clears a stuck memory-card latch" (0x1375dc): the same stretch '
+              'now stores its 0 to the latch 0x4f8f28, so the machine that was stuck and the '
+              'machine that was not come out equal and make the same act-change calls and the '
+              'same camera reset afterwards.  Against the shipped stretch the calls are the '
+              'same and exactly one store differs, its address; the byte 0x4f8f2a is no longer '
+              'written (that nothing else ever sets it is a search result, not executed - if '
+              'something did, a patched machine would skip the buffer clear at the next launch)')
+
+    with_file, without = debug_file(elf, True), debug_file(elf, False)
+    calls_diff, stores_diff = log_diff(with_file[2], without[2])
+    check('s17', with_file[:2] == (1, ['debug.sht']) and without[:2] == (0, ['debug.sht'])
+          and calls_diff == [] and stores_diff == [G_DEBUG_FLAG],
+          'sync-breakers.md section 7 in isolation (save_init entered part-way at 0x2173c8): the '
+          'code clears g_debugCheats 0x4f8ee0, asks the card about a file named "debug.sht" and '
+          'stores 1 in it when the card says the file exists.  Two machines that differ only in '
+          'that answer make the same calls and differ in that one store')
+    cheat = debug_cheat(elf, 1)
+    quiet = [debug_cheat(elf, 0), debug_cheat(elf, 1, pressed=0), debug_cheat(elf, 1, held=0),
+             debug_cheat(elf, 1, in_frontend=1)]
+    check('s18', cheat == (1500000, [(0, 20000), (1, 20000)]) and quiet == [(77, [])] * 4,
+          'what the flag then does (hud_run entered part-way at 0x1dbb60, the same lockstep pad '
+          'of slot 0 on both machines): with the flag set, pressed bit 0x4000 and held bit 0x8 '
+          'give slot 0 gold 1,500,000 and call player_giveExp(slot, 20000) for every player; '
+          'with the flag clear, or without both buttons, or in the front end, nothing - so the '
+          'machine with the file and the machine without diverge on that press')
+    if pnach_section_at(DEBUG_SITE) is None:
+        skip('s19', 'the patch file has no section for 0x217448; the patched runs were not made')
+    else:
+        p_with, p_without = debug_file(elf, True, patched=True), debug_file(elf, False, patched=True)
+        check('s19', p_with[0] == p_without[0] == 0 and p_with[2] == p_without[2] == without[2]
+              and p_with[1] == ['debug.sht'],
+              'patch "ignore the debug file on the memory card" (0x217448 := no-operation): with '
+              'or without the file the flag ends 0, and the patched stretch makes the calls and '
+              'stores of the shipped stretch on a card without the file - the card is still '
+              'asked, only the store of 1 is gone')
+
+
+# ---------------------------------------------------------------------------------------
+# m. Player movement (docs/spec/movement-camera.md section 4, FINDINGS MV2, MV5, MV6)
+# ---------------------------------------------------------------------------------------
+PLAYER_MOVE, PLAYER_RUN, CREATURE_MOVE_SIMPLE, CREATURE_MOVE_BY, OBJ_MOVE_COLLIDE = 0x1B4020, 0x1A5030, 0x1186D8, 0x113C48, 0x14D4B8
+APPLY_KNOCKBACK, MATH_COS16, MATH_SIN16, ANGLE_APPROACH, NET_GET_CAM_YAW = 0x115EB8, 0x166630, 0x1666E0, 0x166C18, 0x13E0C8
+ATAN2_INNER = (0x3A5A80, 0x3A7328, 0x3AA558, 0x3AA7E8)      # the C library's atan2f and what it calls
+G_RUN_SPEED, G_LEVEL_NAME, G_PVP_B_SUBMODE, RECORD_SPEED_MUL = 0x4F8418, 0x41B721, 0x4F7124, 0x4C20
+PAD_CHOICE_START, PAD_CHOICE_END, G_ZERO_PAD, NET_IS_SLOT_ACTIVE = 0x1A5640, 0x1A5768, 0x8667F0, 0x13DD40
+SPEED_OFFLINE, SPEED_NET, SPEED_CAP = 0x3F5CA86D, 0x3F400000, 0x3F999999
+MOVE_ROUTINES = {PLAYER_MOVE: 'Player_move', CREATURE_MOVE_SIMPLE: 'creature_moveSimple',
+                 OBJ_MOVE_COLLIDE: 'obj_moveWithCollision', CREATURE_MOVE_BY: 'Creature_moveBy'}
+
+
+class MoveRig:
+    """Player_move 0x1b4020 called with mode 0 on a fake player, as Player_run calls it in
+    the neutral state.  The trigonometry, the angle approach, the camera-yaw and dialog
+    look-ups and the software double arithmetic run for real; the animation step, the
+    water test and the move itself (creature_moveSimple, which wraps
+    obj_moveWithCollision) are stubs - the vector handed to the move is recorded."""
+
+    def __init__(self, elf, network=True, speed_mul=1.0, run_speed=1.0, yaw=0x2000, facing=0, dialog=0,
+                 level=b'hub', pvp_b=0, pvp_b_sub=0, record_words=None):
+        world = self.world = World(elf, players=1, local_slot=0, network=network)
+        emu, mem = self.emu, self.mem = world.emu, world.emu.mem
+        self.player, self.record = world.objects[0], G_PLAYERS
+        mem.wf32(self.record + RECORD_SPEED_MUL, speed_mul)
+        mem.wf32(G_RUN_SPEED, run_speed)
+        mem.write(G_LEVEL_NAME, level + b'\0')
+        mem.w32(G_PVP_MODE_B, pvp_b)
+        mem.w32(G_PVP_B_SUBMODE, pvp_b_sub)
+        mem.w16(G_NET_CAM_YAW, yaw)
+        camera = emu.alloc(0x400)
+        mem.w16(camera + 0x68, yaw)
+        mem.w32(camera + 0x34, 1)
+        mem.w32(G_LOCAL_CAMERA, camera)
+        mem.w16(self.player + 0x38, facing)
+        mem.w32(G_DIALOG_DATA, dialog)
+        for offset, value in (record_words or {}).items():
+            mem.w32(self.record + offset, value)
+        self.pad = emu.alloc(PAD_SIZE)
+        self.moved = []
+
+        def note(e):
+            vector = e.r[5] & M32
+            self.moved.append(tuple(e.mem.u32(vector + 4 * i) for i in range(3)))
+            return 4                                            # "on the ground"
+        emu.stub(CREATURE_MOVE_SIMPLE, function=note, name='creature_moveSimple')
+        self.record_reads = set()
+
+    def move(self, lx, ly, mode=0):
+        """One call.  Returns (speed, direction of the velocity in 1/65536 turns, facing
+        afterwards, raw velocity words, stick left in the pad)."""
+        import math
+        emu, mem = self.emu, self.mem
+        mem.wf32(self.pad + 0x14, lx)
+        mem.wf32(self.pad + 0x18, ly)
+        emu.follow = {MATH_COS16, MATH_SIN16, ATAN2_16, ANGLE_APPROACH, NET_GET_CAM_YAW, DIALOG_IS_OPEN, STRCMP,
+                      IS_LOCAL_SLOT, NET_GET_CAM_FLAG} | set(ATAN2_INNER) | set(SOFT_DOUBLE)
+        emu.reads = []
+        emu.reset_log()
+        emu.call(PLAYER_MOVE, self.player, mode, self.pad, 0)
+        emu.follow = None
+        self.record_reads |= {addr - self.record for _pc, addr, _n, _v in emu.reads
+                              if self.record <= addr < self.record + PLAYER_STRIDE}
+        emu.reads = None
+        vx, vy = mem.f32(self.player + 0x4BC), mem.f32(self.player + 0x4C0)
+        direction = math.atan2(vy, vx) * 65536 / (2 * math.pi) if (vx or vy) else None
+        return (math.hypot(vx, vy), direction, mem.s16(self.player + 0x38),
+                (mem.u32(self.player + 0x4BC), mem.u32(self.player + 0x4C0)),
+                (mem.f32(self.pad + 0x14), mem.f32(self.pad + 0x18)))
+
+
+def angle_gap(a, b):
+    return abs((a - b + 32768) % 65536 - 32768)
+
+
+def pad_choice(elf, network, dialog=0, lockout=0, hit_points=100.0):
+    """Player_run 0x1a5640-0x1a5768: which pad the rest of the function is given."""
+    world = World(elf, players=2, local_slot=0, network=network)
+    emu, mem = world.emu, world.emu.mem
+    mem.w32(G_DIALOG_DATA, dialog)
+    mem.w32(G_MENU_LOCKOUT, lockout)
+    world.set_hp(1, hit_points)
+    camera = emu.alloc(0x100)
+    mem.w32(camera + 0x34, 1)
+    mem.w32(G_LOCAL_CAMERA, camera)
+    sp = player_run_frame(emu, 0)
+    emu.r[30] = world.objects[1]
+    emu.follow = {DIALOG_IS_OPEN, NET_GET_CAM_FLAG, NET_IS_SLOT_ACTIVE}
+    emu.run(start=PAD_CHOICE_START, until={PAD_CHOICE_END}, max_steps=300)
+    chosen = mem.u32(sp + 0xE40)
+    return {G_ZERO_PAD: 'zero pad', G_PADS + PAD_SIZE: 'own pad'}.get(chosen, hex(chosen))
+
+
+def player_run_moves(elf, state, network):
+    """The whole of Player_run 0x1a5030 on a fake player in the given action state, every
+    callee stubbed.  Returns the move routines it called (with the mode argument) and
+    how often it called Creature_applyKnockback."""
+    world = World(elf, players=2, local_slot=0, network=network)
+    emu, mem = world.emu, world.emu.mem
+    player = world.objects[1]
+    mem.w32(player + 0x58C, state)
+    camera = emu.alloc(0x400)
+    mem.w32(camera + 0x34, 1)
+    mem.w32(G_LOCAL_CAMERA, camera)
+    mem.w16(G_PLAYERS + PLAYER_STRIDE + RECORD_SKILL_LIST, 0xFFFF)
+    emu.follow = set()
+    emu.reset_log()
+    emu.call(PLAYER_RUN, player, max_steps=200000)
+    return ([(MOVE_ROUTINES[c.target], c.args[1] & M32) for c in emu.calls if c.target in MOVE_ROUTINES],
+            sum(1 for c in emu.calls if c.target == APPLY_KNOCKBACK))
+
+
+def knockback(elf, network, flags=0x60, pvp_b=0):
+    """Creature_applyKnockback(1.0, creature) with 30 units of knock-back pending."""
+    emu = EE(elf)
+    mem = emu.mem
+    mem.w8(G_NETWORK_MODE, network)
+    mem.w32(G_PVP_MODE_B, pvp_b)
+    creature = emu.alloc(0x600)
+    mem.w32(creature + 0x0C, flags)
+    mem.wf32(creature + 0x2E8, 30.0)
+    emu.follow = {MATH_COS16, MATH_SIN16}
+    emu.stub(CREATURE_MOVE_BY, ret=3, name='Creature_moveBy')      # "hit something": ends the function early
+    emu.reset_log()
+    emu.call(APPLY_KNOCKBACK, creature, fargs=(1.0,))
+    return any(c.target == CREATURE_MOVE_BY for c in emu.calls), mem.f32(creature + 0x2E8)
+
+
+def test_movement(elf):
+    offline, net = raw_to_float(SPEED_OFFLINE), raw_to_float(SPEED_NET)
+    cases = (('offline', dict(network=False), offline), ('net game', dict(), net),
+             ('net, PvP mode B, word 0x4f7124 clear', dict(pvp_b=1), offline),
+             ('net, PvP mode B, word 0x4f7124 set', dict(pvp_b=1, pvp_b_sub=1), net),
+             ('net, level "watmedal"', dict(level=b'watmedal'), offline))
+    rows, ok = [], True
+    for label, options, scale in cases:
+        speed = MoveRig(elf, **options).move(0.0, -1.0)[0]
+        ok &= abs(speed - 180.0 * scale) < 0.001
+        rows.append('%-40s %.4f' % (label, speed))
+    table('speed of a full push, units per second', rows)
+    check('m1', ok,
+          'MV6 in isolation (Player_move called with mode 0 and a full stick push; the velocity '
+          'it stores at +0x4bc/+0x4c0 measured): %.3f offline and %.3f in a net game, i.e. 180 '
+          'x 0.861945 and 180 x 0.75; a net game in PvP mode B with the word 0x4f7124 clear, or '
+          'in the level "watmedal", uses the offline value' % (180 * offline, 180 * net))
+    sticks = ((0.0, -1.0), (0.0, -0.5), (0.6, 0.8), (1.0, 1.0), (0.3, 0.0), (-0.2, 0.1))
+    ok, rows = True, []
+    for lx, ly in sticks:
+        rig = MoveRig(elf)
+        first = rig.move(lx, ly)
+        previous, later = [rig.move(lx, ly) for _ in range(30)][-2:]
+        want = 180.0 * min(net * (lx * lx + ly * ly) ** 0.5, net)
+        ok &= abs(first[0] - want) < 0.001 and abs(later[0] - want) < 0.001
+        ok &= angle_gap(first[1], first[2]) < 2 and angle_gap(later[1], later[2]) < 2
+        ok &= first[2] != later[2] and previous[2] == later[2]
+        ok &= rig.moved[0][:2] == first[3]
+        rows.append('stick (%4.1f, %4.1f): speed %8.4f on the first call, %8.4f on the 31st; facing %6d then %6d'
+                    % (lx, ly, first[0], later[0], first[2], later[2]))
+    table('net game, six stick positions', rows)
+    check('m2', ok,
+          'MV6: for six stick positions the speed is 180 x min(S x stick length, S) with S = '
+          '0.75, already on the first call from rest - there is no acceleration - and the '
+          'velocity points along the character\'s facing (within 2/65536 of a turn), not along '
+          'the stick; what lags is the facing, which is still turning on the first call and '
+          'has stopped by the 31st.  The vector handed to the move routine is that velocity')
+    scaled = [MoveRig(elf, speed_mul=mul, run_speed=run).move(0.0, -1.0)[0]
+              for mul, run in ((1.5, 1.0), (1.0, 1.2), (0.5, 1.0), (1.5, 2.0), (4.0, 4.0))]
+    cap = 180.0 * raw_to_float(SPEED_CAP)
+    check('m3', all(abs(got - want) < 0.001 for got, want in zip(scaled, (202.5, 162.0, 67.5, cap, cap))),
+          'MV6: S is multiplied by the record multiplier +0x4c20 and by the level\'s runSpeed '
+          '0x4f8418 and then capped at 1.2 (bit pattern 0x3f999999): %s units per second for '
+          '(1.5, 1), (1, 1.2), (0.5, 1), (1.5, 2), (4, 4)' % ['%.2f' % v for v in scaled])
+    plain = MoveRig(elf)
+    loaded = MoveRig(elf, record_words={0x78: 500, 0x7C: 500, 0x80: 500, 0x84: 500, 0x90: 400, 0x94: 400,
+                                        0x98: 400, 0x9C: 400, 0x120: float_to_raw(9000.0),
+                                        0x124: float_to_raw(10.0), 0x58: 80, 0x59: 80})
+    same = all(plain.move(lx, ly)[3] == loaded.move(lx, ly)[3] for lx, ly in sticks)
+    check('m4', same and plain.record_reads == {RECORD_SPEED_MUL} and loaded.record_reads == {RECORD_SPEED_MUL},
+          'MV6: a record with base and effective statistics of 400-500, level 80 and a carried '
+          'load of 9000 against a limit of 10 gives bit-identical velocities for all six stick '
+          'positions; the only field of the player record Player_move loads is the multiplier '
+          '+0x4c20 (read log)')
+    talking = [MoveRig(elf, network=network, dialog=0x01234567).move(0.0, -1.0) for network in (True, False)]
+    pads = [pad_choice(elf, network, dialog=dialog) for network in (True, False) for dialog in (0, 1)]
+    lockout = [pad_choice(elf, network, lockout=1) for network in (True, False)]
+    check('m5', all(result[0] == 0.0 and result[4] == (0.0, 0.0) for result in talking)
+          and pads == ['own pad', 'zero pad', 'own pad', 'zero pad'] and lockout == ['own pad', 'zero pad']
+          and pad_choice(elf, True, hit_points=0.0) == 'zero pad',
+          'MV2 in isolation: with the dialog word 0x8e2d60 non-zero Player_move stores 0 in both '
+          'stick fields of the pad it was given and the velocity is 0, and the pad choice at the '
+          'top of Player_run (0x1a5640-0x1a5768, entered part-way) hands on the all-zero pad '
+          '0x8667f0 - in a net game and offline alike, no network test on either.  (The menu '
+          'lockout word, by contrast, swaps the pad only offline.)  That the word is written '
+          'only by lockstep code is a search result and was not executed')
+    states = (0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 14)
+    by_state = {state: [player_run_moves(elf, state, network) for network in (True, False)] for state in states}
+    table('Player_run whole, callees stubbed: move routine called (name, mode) net / offline',
+          ['state %2d: %s / %s' % (state, by_state[state][0][0], by_state[state][1][0]) for state in states])
+    still = all(by_state[state] == [([], 1), ([], 1)] for state in (3, 4, 10, 12))
+    modes = {state: [m[0][0][1] if m[0] else None for m in by_state[state]] for state in states}
+    listed = {0: [6, 1], 1: [3, 3], 2: [0, 0], 6: [5, 5], 7: [0, 0], 8: [1, 1], 9: [2, 2], 11: [1, 1],
+              14: [None, None]}
+    check('m6', still and all(modes[state] == want for state, want in listed.items())
+          and all(by_state[state][0][1] == 1 for state in states),
+          'MV5 in isolation (the whole of Player_run 0x1a5030 on a fake player, every callee '
+          'stubbed, once per action state): in states 3, 4, 10 and 0xc it calls none of '
+          'Player_move, creature_moveSimple, obj_moveWithCollision and Creature_moveBy - in a '
+          'net game and offline - while state 2 calls Player_move with mode 0, state 0 with '
+          'mode 6 in a net game and 1 offline, and the other states as the table in '
+          'movement-camera.md 4.4 lists (%s).  States 5 and 0xd were NOT run: on a blank player '
+          'they load through a pointer the test did not build (0x1ab604, 0x1a5ee8)'
+          % ', '.join('%d: %s' % (state, modes[state][0]) for state in states))
+    kb = [knockback(elf, 1), knockback(elf, 0), knockback(elf, 0, pvp_b=1), knockback(elf, 1, flags=0x20)]
+    check('m7', kb == [(False, 0.0), (True, 28.0), (False, 0.0), (True, 28.0)],
+          'MV5, the knock-back half (Creature_applyKnockback 0x115eb8 with 30 units pending): '
+          'for a player in a net game it stores 0 at +0x2e8 and returns without a move call; '
+          'offline it calls Creature_moveBy and takes 2 off the amount; offline in PvP mode B it '
+          'zeroes it like a net game; a monster in a net game is moved as offline')
+
+
+# ---------------------------------------------------------------------------------------
+# z. Floating-point special cases (docs/issues/float-divergence.md, FINDINGS F3, F4, F7)
+# ---------------------------------------------------------------------------------------
+TURN_DAMP_START, TURN_DAMP_END, TURN_SQRT_DONE = 0x10BB74, 0x10BC28, 0x10BBCC
+TURN_SIBLINGS = ((0x10BCA8, 0x10BCC8), (0x10BDB0, 0x10BDD0))    # (function, instruction after its sqrt.s)
+DECODER_SQRT_DONE = 0x13CD28
+ROOT_CHOPPED, ROOT_NEAREST = 0x3EE4F92D, 0x3EE4F92E
+FIRESTORM_RUN, FIRESTORM_LIGHT_STORED, FIRESTORM_CTOR, FIRESTORM_CTOR2 = 0x2D470C, 0x2D48B4, 0x2D41F8, 0x2D4048
+INSECTS_START, INSECTS_QUOTIENT_DONE, INSECTS_FIRST_USE, INSECTS_END = 0x30CDC0, 0x30CEEC, 0x30D130, 0x30D134
+INSECT_SPEED = 0x434B0DA1                                        # the constant reloaded on arrival, 203.05
+CAST_SLOW_START, CAST_SLOW_END, MELEE_SLOW_START, MELEE_SLOW_END = 0x1A81A0, 0x1A8200, 0x1AA178, 0x1AA23C
+SLOW_BYTE_START, SLOW_BYTE_END = 0x113604, 0x113818
+FP_MAX, FLAG_DIVIDE, FLAG_INVALID = 0x7FFFFFFF, 0x20, 0x40      # sticky bits of the control register
+
+
+def turn_damping(elf, velocity, nearest, model='ps2'):
+    """Creature_turnToward 0x10bb74-0x10bc28 with the wanted angle equal to the facing,
+    so the stored angular velocity is v - int(v * sqrt(0.2)).  Returns (new velocity,
+    the square root as the instruction produced it)."""
+    emu = EE(elf, fpu_model=model)
+    emu.fpu_div_nearest = nearest
+    creature = emu.alloc(0x400)
+    emu.mem.w16(creature + 0x110, velocity & 0xFFFF)
+    emu.mem.w16(creature + 0x38, 1000)
+    roots = []
+    emu.hook(TURN_SQRT_DONE, lambda e: roots.append(e.f[1]))
+    emu.r[2], emu.r[16], emu.r[17], emu.r[18] = 1000, 0, creature, 32767
+    emu.run(start=TURN_DAMP_START, until={TURN_DAMP_END}, max_steps=100)
+    return emu.mem.s16(creature + 0x110), roots
+
+
+def sibling_root(elf, function, after, nearest, model='ps2'):
+    emu = EE(elf, fpu_model=model)
+    emu.fpu_div_nearest = nearest
+    creature = emu.alloc(0x400)
+    emu.mem.w16(creature + 0x110, 500)
+    emu.mem.wf32(creature + 0xB0, 2.0)
+    roots = []
+    emu.hook(after, lambda e: roots.append(e.f[2]))
+    emu.follow = set()
+    emu.call(function, creature)
+    return roots
+
+
+def decoder_root(elf, nearest, model='ps2'):
+    codec = AxisCodec(elf, fpu_model=model, div_nearest=nearest)
+    roots = []
+    codec.emu.hook(DECODER_SQRT_DONE, lambda e: roots.append(e.f[0]))
+    codec.frame(128)
+    return roots
+
+
+def damping_model(velocity, root):
+    """v - int(v * root) in the interpreter's arithmetic, wrapped to 16 bits."""
+    product = ee_emu.fp_mul(root, ee_emu.fp_from_int(velocity & M32))
+    return ee_emu.sx16((velocity - s32(ee_emu.fp_to_int(product))) & 0xFFFF)
+
+
+def sticky(emu):
+    return emu.fcr31 & (FLAG_DIVIDE | FLAG_INVALID)
+
+
+def firestorm_light(elf, frames_since_start, lifetime=600, grown=0.0, radius=120):
+    """FireStorm_run from its entry to the instruction after the light record is stored.
+    Returns (stores made, as offsets into the object -> raw value; sticky divide/invalid
+    flags; grown radius afterwards)."""
+    emu = EE(elf)
+    mem = emu.mem
+    storm, frame = emu.alloc(0x400), 5000
+    mem.w32(G_SIM_FRAME, frame)
+    mem.w32(storm + 0x98, frame - 100)
+    mem.w32(storm + 0x94, lifetime)
+    mem.w32(storm + 0x90, frame - frames_since_start + lifetime)     # the frame it ends on
+    mem.w32(storm + 0x4C, 1)
+    mem.w32(storm + 0x9C, radius)
+    mem.wf32(storm + 0xA0, grown)
+    emu.r[4] = storm
+    emu.r[29] = emu.stack_hi - 0x1000
+    emu.follow = {MATH_SIN16, MATH_COS16}
+    emu.fcr31 &= ~(FLAG_DIVIDE | FLAG_INVALID)
+    emu.reset_log()
+    emu.run(start=FIRESTORM_RUN, until={FIRESTORM_LIGHT_STORED}, max_steps=5000)
+    return {addr - storm: value for _pc, addr, _n, value in emu.writes}, sticky(emu), mem.f32(storm + 0xA0)
+
+
+def firestorm_ctor(elf, second):
+    """A FireStorm constructor with every callee stubbed: the stores of the largest float
+    it makes into the object, and the sticky flags."""
+    emu = EE(elf)
+    storm, position, owner = emu.alloc(0x400), emu.alloc(0x10), emu.alloc(0x100)
+    skill, vtable = emu.alloc(0x100), emu.alloc(0x100)
+    emu.mem.w32(skill + 0x60, vtable)
+    emu.mem.w32(vtable + 0x6C, fake_function(emu, 0, ret=10, name='skill statistic'))
+    emu.follow = set()
+    emu.fcr31 &= ~(FLAG_DIVIDE | FLAG_INVALID)
+    emu.reset_log()
+    if second:
+        emu.call(FIRESTORM_CTOR2, storm, 5, position, owner, 0, 0, 0, fargs=(1.0,))
+    else:
+        emu.call(FIRESTORM_CTOR, storm, 5, owner, position, skill)
+    return sorted(addr - storm for _pc, addr, _n, value in emu.writes if value == FP_MAX and addr >= storm), sticky(emu)
+
+
+def insects_step(elf, swarm, victim, now, arrival):
+    """SpellTagarsInsects_run 0x30cdc0-0x30d134: the speed quotient and its first use."""
+    emu = EE(elf)
+    mem = emu.mem
+    spell, target, skill, vtable = emu.alloc(0x200), emu.alloc(0x200), emu.alloc(0x100), emu.alloc(0x100)
+    for index, value in enumerate(swarm):
+        mem.wf32(spell + 0x88 + 4 * index, value)
+    for index, value in enumerate(victim):
+        mem.wf32(target + 0x10 + 4 * index, value)
+    mem.wf32(spell + 0x78, now)
+    mem.wf32(spell + 0x38, arrival)                         # arrival time of victim 0
+    mem.w32(spell + 8, skill)
+    mem.w32(skill + 0x60, vtable)
+    mem.w32(vtable + 0x64, fake_function(emu, 0, ret=2, name='skill statistic'))
+    seen = {}
+    emu.hook(INSECTS_QUOTIENT_DONE, lambda e: seen.setdefault('quotient', (e.f[21], sticky(e))))
+    emu.hook(INSECTS_FIRST_USE, lambda e: seen.setdefault('used', e.f[21]))
+    emu.stub(POOL_NEW, ret=0, name='pool_new')
+    emu.r[17], emu.r[19] = spell, target
+    emu.r[29] = emu.stack_hi - 0x1000
+    emu.follow = {ATAN2_16, MATH_COS16, MATH_SIN16} | set(ATAN2_INNER)
+    emu.fcr31 &= ~(FLAG_DIVIDE | FLAG_INVALID)
+    emu.run(start=INSECTS_START, until={INSECTS_END}, max_steps=20000)
+    return seen['quotient'][0], seen['quotient'][1], seen['used'], mem.s16(spell + 0x80)
+
+
+def cast_release(elf, slow, release_frame=20):
+    """Player_run 0x1a81a0-0x1a8200 (cast state): the release frame after the slow scale."""
+    emu = EE(elf)
+    player = emu.alloc(0x600)
+    emu.mem.w8(player + 0x2FC, slow)
+    emu.r[30], emu.r[16] = player, release_frame
+    emu.fset(20, 1.0)
+    emu.fcr31 &= ~(FLAG_DIVIDE | FLAG_INVALID)
+    emu.run(start=CAST_SLOW_START, until={CAST_SLOW_END}, max_steps=50)
+    return s32(emu.r[16]), emu.f[20], sticky(emu)
+
+
+def melee_thresholds(elf, slow):
+    """Player_run 0x1aa178-0x1aa23c (melee state): three float and five integer frame
+    thresholds after the slow scale."""
+    emu = EE(elf)
+    mem = emu.mem
+    player = emu.alloc(0x600)
+    mem.w8(player + 0x2FC, slow)
+    sp = player_run_frame(emu, 0)
+    mem.w32(sp + 0xE64, 3)
+    for index in range(3):
+        mem.wf32(sp + 0x450 + 4 * index, 10.0 * (index + 1))
+    for index in range(5):
+        mem.w32(sp + 0x480 + 4 * index, 5 * (index + 1))
+    emu.r[30] = player
+    emu.fset(24, 1.0)
+    emu.fcr31 &= ~(FLAG_DIVIDE | FLAG_INVALID)
+    emu.run(start=MELEE_SLOW_START, until={MELEE_SLOW_END}, max_steps=500)
+    return ([mem.u32(sp + 0x450 + 4 * index) for index in range(3)],
+            [mem.s32(sp + 0x480 + 4 * index) for index in range(5)], sticky(emu))
+
+
+def slow_byte(elf, counter=0, frames=0, chill=0.0, flags=0x60):
+    """Creature_run 0x113604-0x113818: the slow byte +0x2fc from the chill timer +0x344
+    and status counter 7 (+0x388, started `frames` ago)."""
+    emu = EE(elf)
+    mem = emu.mem
+    creature = emu.alloc(0x600)
+    mem.w32(creature + 0x0C, flags)
+    mem.w32(G_SIM_FRAME, 1000)
+    mem.w32(creature + 0xF0, 1000 - frames)
+    mem.w32(creature + 0x388, counter)
+    mem.wf32(creature + 0x344, chill)
+    emu.r[17] = creature
+    emu.follow = set()
+    emu.run(start=SLOW_BYTE_START, until={SLOW_BYTE_END}, max_steps=200)
+    return mem.u8(creature + 0x2FC)
+
+
+def test_float_cases(elf):
+    models = ('ps2', 'ps2g1', 'chop', 'nearest')
+    sites = {}
+    for nearest in (False, True):
+        sites[nearest] = [turn_damping(elf, 500, nearest)[1], decoder_root(elf, nearest)] + \
+            [sibling_root(elf, function, after, nearest) for function, after in TURN_SIBLINGS]
+    by_adder = {model: turn_damping(elf, 500, False, model)[1] for model in models}
+    check('z1', all(len(r) >= 1 and set(r) == {ROOT_CHOPPED} for r in sites[False])
+          and all(set(r) == {ROOT_NEAREST} for r in sites[True])
+          and all(by_adder[m] == [ROOT_CHOPPED] for m in ('ps2', 'ps2g1', 'chop')) and by_adder['nearest'] == [ROOT_NEAREST],
+          'F7 in isolation: the sqrt.s of the constant 0x3e4ccccc is really executed at run time '
+          'at all four sites (0x10bbc8 in Creature_turnToward, 0x10bcc4 and 0x10bdcc in its two '
+          'siblings, 0x13cd24 in the stick decoder - each reached by running the function, the '
+          'result read from the register on the next instruction).  With the interpreter\'s '
+          'square root truncated the result is 0x3ee4f92d at every site, with it rounded to '
+          'nearest 0x3ee4f92e; the three truncating adder models do not change it.  Which of the '
+          'two a console produces is not something this interpreter can tell')
+    chopped, nearest_root = ROOT_CHOPPED, ROOT_NEAREST
+    differing = [v for v in range(-32768, 32768) if damping_model(v, chopped) != damping_model(v, nearest_root)]
+    rng = random.Random(7)
+    sample = differing + [rng.randrange(-32768, 32768) for _ in range(300)]
+    agree = all(turn_damping(elf, v, False)[0] == damping_model(v, chopped)
+                and turn_damping(elf, v, True)[0] == damping_model(v, nearest_root) for v in sample)
+    smallest = min(abs(v) for v in differing) if differing else 0
+    check('z2', len(differing) == 34 and smallest == 2889 and agree,
+          'what the last bit of that root changes (MV1): the damping step of Creature_turnToward, '
+          'v - int(v x root), computed in the interpreter\'s arithmetic for all 65,536 angular '
+          'velocities gives a different result for %d of them, the smallest +-%d - the 34 and '
+          '2889 of float-divergence.md - and the game\'s own stretch 0x10bb74-0x10bc28, executed '
+          'under both square-root roundings for those %d velocities and 300 others, stores '
+          'exactly the model\'s value every time' % (len(differing), smallest, len(differing)))
+
+    young, grown_up, fading_small, fading = (firestorm_light(elf, 10), firestorm_light(elf, 31),
+                                             firestorm_light(elf, 5, lifetime=20), firestorm_light(elf, 560, grown=50.0))
+    ctors = [firestorm_ctor(elf, False), firestorm_ctor(elf, True)]
+    light_only = all(set(stores) <= {0x6C, 0x70, 0x74, 0x78, 0xA0} for stores, _f, _g in (young, grown_up, fading_small, fading))
+    check('z3', ctors == [([0x70, 0x78], FLAG_DIVIDE)] * 2
+          and young[0] == {0x6C: 0, 0x74: 0, 0x70: FP_MAX, 0x78: FP_MAX} and young[1] == FLAG_DIVIDE
+          and grown_up[1] == 0 and grown_up[2] == 1.0 and FP_MAX not in grown_up[0].values()
+          and fading_small[0].get(0x70) == FP_MAX and fading_small[1] == FLAG_DIVIDE and fading[1] == 0 and light_only,
+          'F3, FireStorm (both constructors with callees stubbed; FireStorm_run from its entry '
+          'to the store of the light record): each constructor divides 1.0 by 0.0 and stores '
+          'the result, the largest float 0x7fffffff, at object +0x70 and +0x78; FireStorm_run '
+          'in the first 30 frames of a storm computes 1 / (0 x 0) at 0x2d4854 and stores the '
+          'same value there with a radius of 0 at +0x6c/+0x74; from frame 31 the radius grows '
+          'and the quotient is finite.  The fade-out branch (0x2d48a8) divides by zero only '
+          'for a storm still at radius 0 in its last second (one whose whole life is under 31 '
+          'frames).  The stretch stores nowhere but those four light fields and the grown '
+          'radius; who reads the two fields afterwards was not executed')
+    arriving, on_top, travelling, overdue = (
+        insects_step(elf, (100.0, 100.0, 0.0), (160.0, 180.0, 0.0), 10.0, 10.0),
+        insects_step(elf, (100.0, 100.0, 0.0), (100.0, 100.0, 0.0), 10.0, 10.0),
+        insects_step(elf, (100.0, 100.0, 0.0), (160.0, 180.0, 0.0), 10.0, 12.0),
+        insects_step(elf, (100.0, 100.0, 0.0), (160.0, 180.0, 0.0), 10.0, 9.99))
+    check('z4', arriving[:3] == (FP_MAX, FLAG_DIVIDE, INSECT_SPEED) and on_top[:3] == (FP_MAX, FLAG_INVALID, INSECT_SPEED)
+          and overdue[2] == INSECT_SPEED and overdue[1] == 0 and raw_to_float(overdue[0]) < 0
+          and travelling[1] == 0 and travelling[2] == travelling[0] and abs(raw_to_float(travelling[0]) - 203.05) < 0.01
+          and (arriving[3], on_top[3], travelling[3], overdue[3]) == (-1, -1, 0, -1),
+          'F3, Tagar\'s Insects (SpellTagarsInsects_run entered part-way at 0x30cdc0): on the '
+          'frame the stored arrival time equals "now" the speed quotient at 0x30cee8 is distance '
+          '/ 0 = 0x7fffffff (0 / 0, also 0x7fffffff, with the swarm exactly on the victim); on '
+          'that frame the arrival test passes, the victim index is cleared and the register is '
+          'reloaded with the constant 203.05 before the instruction that first uses it '
+          '(0x30d130).  A negative divisor (arrival already past) is replaced the same way.  '
+          'While the swarm is still travelling the quotient is finite (%.2f) and is what is '
+          'used.  So the divide by zero does not reach the position, as the row says'
+          % raw_to_float(travelling[0]))
+    cast = {slow: cast_release(elf, slow) for slow in (0, 1, 30, 59, 60, 61)}
+    melee = {slow: melee_thresholds(elf, slow) for slow in (0, 30, 59, 60)}
+    check('z5', [cast[slow][0] for slow in (0, 1, 30, 59, 61)] == [20, 20, 40, 1200, 20]
+          and cast[60] == (0x7FFFFFFF, 0, FLAG_DIVIDE) and all(cast[slow][2] == 0 for slow in (0, 1, 30, 59, 61))
+          and melee[0] == ([float_to_raw(v) for v in (10.0, 20.0, 30.0)], [5, 10, 15, 20, 25], 0)
+          and melee[59][1] == [300, 600, 900, 1200, 1500] and melee[59][2] == 0
+          and melee[60] == ([FP_MAX] * 3, [0x7FFFFFFF] * 5, FLAG_DIVIDE),
+          'F4 in isolation (the two stretches of Player_run that scale by the slow byte +0x2fc, '
+          'entered part-way): the cast state divides the release frame by speed x (60 - slow) x '
+          '1/60 - frame 20 becomes 20, 40, 1200 for slow 1, 30, 59 - and for slow 60 the divisor '
+          'is 0, the quotient the largest float and the converted frame 2147483647: the cast '
+          'is never released.  The melee state divides three float and five integer thresholds '
+          'by the same factor and at slow 60 all eight are the maximum.  A byte of 61 or more '
+          'is outside the scaled range and leaves the values alone')
+    ramp = [slow_byte(elf, counter=100, frames=f) for f in (0, 1, 10, 29, 30, 31, 100)]
+    after_ramp = [slow_byte(elf, counter=c, frames=40) for c in (20, 30, 31, 40, 60, 200)]
+    chilled = [slow_byte(elf, chill=c) for c in (5.0, 29.5, 45.0, 59.0, 70.0, 500.0)]
+    check('z6', ramp == [0, 2, 20, 58, 60, 60, 60] and after_ramp == [20, 30, 60, 60, 60, 60]
+          and chilled == [4, 29, 30, 30, 30, 30],
+          'F4, how the byte reaches 60 (Creature_run entered part-way at 0x113604, a player): '
+          'from the chill timer alone it is capped at 30 however large the timer (%s for 5 to '
+          '500); with status counter 7 set it is twice the frames since the counter started for '
+          '30 frames (%s at 0, 1, 10, 29, 30, 31, 100 frames) and then 60.  Sharper than '
+          'movement-camera.md 4.6, which says "then the counter value up to 60": after the ramp '
+          'the byte is 60 for any counter of 31 or more and the counter itself only below that '
+          '(%s for counters 20, 30, 31, 40, 60, 200).  Whether anything sets counter 7 stays '
+          'Unknown (D16)' % (chilled, ramp, after_ramp))
+
+
+# ---------------------------------------------------------------------------------------
+# n. The four arena-entry sections of the patch file (docs/issues/arena-entry.md, FINDINGS
+#    E6, E8, E9, E13): 0x13b21c, 0x199df8, 0x217f58, 0x1dd1f0.  One check each.
+# ---------------------------------------------------------------------------------------
+REBASE_TEST_START, REBASE_SKIPPED, REBASE_GOES_ON, X1_SITE = 0x13B1C4, 0x13B59C, 0x13B224, 0x13B21C
+G_GHOST_REBASE_FRAME, G_EXCLUDE_MASK = 0x4027D4, 0x4039B8
+CUT_SKIP_START, CUT_SKIPPED, CUT_NOT_SKIPPED, X2_SITE, G_LEVEL_TEX_NAME = 0x199D90, 0x199E34, 0x199EE0, 0x199DF8, 0x44FE18
+SAVE_ARM_AUTOSAVE, SAVE_DAEMON_RUN, SAVE_GAME, X3_SITE = 0x217F14, 0x2188A8, 0x218128, 0x217F58
+G_AUTOSAVE_COUNTDOWN, G_MENU_OPEN_FLAG = 0x88D40C, 0x41B4F8
+NOTICE_START, NOTICE_END, X4_SITE, RUN_POST_ACTION, RUN_SCRIPT_BY_NAME, LIBC_STRCPY = 0x1DD008, 0x1DD1F8, 0x1DD1F0, 0x1EDAC0, 0x1ED694, 0x3B868C
+G_NOTICE_OPEN, G_POST_ACTION, HELP_BOX_START, HELP_BOX_STOPS = 0x41B518, 0x86FA80, 0x1DCF30, (0x1DCF68, 0x1DCFD8)
+
+
+def rebase_test(elf, frames_since_rebase, force=0, has_object=True, patched=False):
+    """net_frameLoop 0x13b1c4 on: is the prediction copy re-made on this call?  Returns
+    (the code goes on to the rebase at 0x13b224, the stores it made on the way)."""
+    world = World(elf, players=2, local_slot=0, network=True)
+    emu, mem = world.emu, world.emu.mem
+    if patched and apply_section_at(emu, X1_SITE) is None:
+        raise LookupError('no patch-file section patches 0x%x' % X1_SITE)
+    if not has_object:
+        world.set_table(0, 0)
+    mem.w32(G_NET_FRAME, 5000)
+    mem.w32(G_GHOST_REBASE_FRAME, 5000 - frames_since_rebase)
+    mem.w8(G_FORCE_REBASE, force)
+    frame = emu.alloc(0x400)
+    mem.w32(frame + 0x37C, 0)                               # the local slot, as net_frameLoop keeps it
+    emu.r[30] = frame
+    emu.reset_log()
+    emu.run(start=REBASE_TEST_START, until={REBASE_SKIPPED, REBASE_GOES_ON}, max_steps=50)
+    return emu.pc == REBASE_GOES_ON, [w[1:] for w in emu.writes]
+
+
+def cutscene_skip(elf, pressed, patched=False, level=b'drunare', cut_frame=10):
+    """cut_runFrame 0x199d90 on: is the cutscene ended on this call?  pressed: the
+    pressed-button word of each slot's lockstep pad."""
+    emu = EE(elf)
+    mem = emu.mem
+    if patched and apply_section_at(emu, X2_SITE) is None:
+        raise LookupError('no patch-file section patches 0x%x' % X2_SITE)
+    mem.write(G_LEVEL_TEX_NAME, level + b'\0')
+    mem.w32(G_NUM_PLAYERS, len(pressed))
+    mem.w32(G_CUT_FRAME, cut_frame)
+    for slot, word in enumerate(pressed):
+        mem.w32(G_PADS + slot * PAD_SIZE + 0x0C, word)
+    emu.r[18] = 0x450000
+    emu.follow = {STRCMP}
+    emu.run(start=CUT_SKIP_START, until={CUT_SKIPPED, CUT_NOT_SKIPPED}, max_steps=2000)
+    return emu.pc == CUT_SKIPPED
+
+
+def entry_autosave(elf, gate_open, patched=False):
+    """save_armAutosave (the call a level load ends with) and then one save_daemonRun on
+    a machine whose autosave gate is open, or shut by a full-screen menu.  Returns (the
+    armed word after the load, save_game calls made by the daemon, the word afterwards,
+    the arming function's calls and stores)."""
+    emu = EE(elf)
+    mem = emu.mem
+    if patched and apply_section_at(emu, X3_SITE) is None:
+        raise LookupError('no patch-file section patches 0x%x' % X3_SITE)
+    camera = emu.alloc(0x100)
+    mem.w32(camera + 0x34, 1)
+    mem.w32(G_LOCAL_CAMERA, camera)
+    mem.w32(G_MEMCARD_STATE, 0xFFFFFFFF)
+    mem.w32(G_MENU_OPEN_FLAG, 0 if gate_open else 1)
+    mem.w8(G_NETWORK_MODE, 1)
+    emu.follow = {MEMCARD_GET_STATE}
+    emu.reset_log()
+    emu.call(SAVE_ARM_AUTOSAVE)
+    arm_log = run_log(emu)
+    armed = mem.s32(G_AUTOSAVE_COUNTDOWN)
+    emu.follow = set()
+    emu.reset_log()
+    emu.call(SAVE_DAEMON_RUN)
+    saves = [(c.args[0] & M32, c.args[1] & M32) for c in emu.calls if c.target == SAVE_GAME]
+    return armed, saves, mem.s32(G_AUTOSAVE_COUNTDOWN), arm_log
+
+
+def notice_close(elf, notice_open, patched=False, slot=1):
+    """help_task 0x1dd008-0x1dd1f8, the notice box of one slot, run twice: once with the
+    confirm button up, once with it pressed in that slot's pad.  A post action named
+    "after" is pending.  Returns (scripts run, the pending name afterwards, the notice
+    flag and lockout word afterwards)."""
+    emu = EE(elf)
+    mem = emu.mem
+    if patched and apply_section_at(emu, X4_SITE) is None:
+        raise LookupError('no patch-file section patches 0x%x' % X4_SITE)
+    mem.w8(G_NETWORK_MODE, 1)
+    mem.w8(G_NOTICE_OPEN + slot, 1 if notice_open else 0)
+    mem.write(G_POST_ACTION, b'after\0')
+    mem.w32(G_PAD_CONFIRM, 0x40)
+    ran = []
+    emu.stub(RUN_SCRIPT_BY_NAME, function=lambda e: ran.append(e.mem.cstr(e.r[4] & M32)) or 0, name='script_runByName')
+    for pressed in (0, 0x40):
+        mem.w32(G_PADS + slot * PAD_SIZE + 0x08, pressed)
+        mem.w32(G_PADS + slot * PAD_SIZE + 0x0C, pressed)
+        emu.r[22], emu.r[23] = slot, slot * PAD_SIZE
+        emu.r[29] = emu.stack_hi - 0x1000
+        emu.follow = {RUN_POST_ACTION, LIBC_STRCPY}
+        emu.run(start=NOTICE_START, until={NOTICE_END}, max_steps=5000)
+    return ran, mem.cstr(G_POST_ACTION), mem.u8(G_NOTICE_OPEN + slot), mem.u32(G_MENU_LOCKOUT)
+
+
+def help_box_close(elf, network):
+    """The sibling path, 0x1dcf30 on: the full-screen help box closed by the confirm
+    button.  Returns whether script_runPostAction was called."""
+    emu = EE(elf)
+    mem = emu.mem
+    mem.w8(G_NETWORK_MODE, network)
+    mem.w32(G_PAD_CONFIRM, 0x40)
+    mem.w32(0x4028DC, 0x40)                                 # pressed word of raw pad 0
+    emu.r[2], emu.r[18], emu.r[23], emu.r[30], emu.r[22] = 0x420000, 0, 0x400000, 0x420000, 0x4F0000
+    emu.follow = set()
+    emu.reset_log()
+    emu.run(start=HELP_BOX_START, until=set(HELP_BOX_STOPS), max_steps=50)
+    return any(c.target == RUN_POST_ACTION for c in emu.calls)
+
+
+def test_arena_entry(elf):
+    if pnach_section_at(X1_SITE) is None:
+        skip('n1', 'the patch file has no section for 0x13b21c')
+    else:
+        shipped = {(frames, force, obj): rebase_test(elf, frames, force, obj)
+                   for frames in (0, 30, 31, 100) for force in (0, 1) for obj in (True, False)}
+        patched = {key: rebase_test(elf, *key, patched=True) for key in shipped}
+        due = {key for key, (goes_on, _stores) in shipped.items() if goes_on}
+        check('n1', due == {key for key in shipped if key[2] and (key[0] >= 31 or key[1])}
+              and not any(goes_on for goes_on, _stores in patched.values())
+              and all(stores == [(G_EXCLUDE_MASK, 4, 0x200000)] for _g, stores in list(shipped.values()) + list(patched.values())),
+              'patch "no prediction copy" (0x13b21c) and E6 (net_frameLoop entered part-way at '
+              '0x13b1c4): shipped, the code goes on to re-make the copy when 31 or more frames '
+              'have passed since this machine\'s last rebase frame 0x4027d4, or the force flag is '
+              'set, and the local player has an object - so two machines at the same net frame '
+              'whose rebase frames are 30 and 31 behind differ, one re-clones on that call and the '
+              'other does not.  Patched, no combination of the three inputs reaches the rebase '
+              'code; the one store on the way (the exclude mask) is unchanged.  The rebase itself '
+              '(0x13b224 on) was not run here; Player_clone is run in group e')
+    if pnach_section_at(X2_SITE) is None:
+        skip('n2', 'the patch file has no section for 0x199df8')
+    else:
+        pads = ((0, 0), (0x800, 0), (0, 0x800), (0x7FF, 0xF7FF))
+        shipped = [cutscene_skip(elf, pressed) for pressed in pads]
+        patched = [cutscene_skip(elf, pressed, patched=True) for pressed in pads]
+        ending = [cutscene_skip(elf, (0x800, 0), patched=flag, level=b'endgood', cut_frame=frame)
+                  for flag in (False, True) for frame in (300, 301)]
+        check('n2', shipped == [False, True, True, False] and patched == [True] * 4
+              and ending == [False, True, False, True] and not cutscene_skip(elf, (), patched=True),
+              'patch "cutscenes end in the tick they start" (0x199df8), cut_runFrame entered '
+              'part-way at 0x199d90: shipped, a cutscene is ended on the call in which any '
+              'slot\'s LOCKSTEP pad has pressed bit 0x800, and not otherwise - the same on every '
+              'machine, there is no per-machine input here; patched, it is ended on the first '
+              'call whatever the pads say.  In the levels "endgood" and "endbad" both versions '
+              'leave the skip test out until cutscene frame 301.  A patched and an unpatched '
+              'machine given the same pads take different exits, which is the mix the patch '
+              'text warns about.  What the skip path then does was not run')
+    if pnach_section_at(X3_SITE) is None:
+        skip('n3', 'the patch file has no section for 0x217f58')
+    else:
+        open_s, shut_s = entry_autosave(elf, True), entry_autosave(elf, False)
+        open_p, shut_p = entry_autosave(elf, True, patched=True), entry_autosave(elf, False, patched=True)
+        same_calls = open_s[3][0] == open_p[3][0]
+        store_pairs = list(zip(open_s[3][1], open_p[3][1]))
+        check('n3', open_s[:3] == (1, [(0, 1)], 0) and shut_s[:3] == (1, [], 1)
+              and open_p[:3] == (0, [], 0) and shut_p[:3] == (0, [], 0) and same_calls
+              and [(a[1:], b[1:]) for a, b in store_pairs] == [((G_AUTOSAVE_COUNTDOWN, 4, 1), (G_AUTOSAVE_COUNTDOWN, 4, 0))],
+              'patch "no autosave on entering a level" (0x217f58) and E8: shipped, '
+              'save_armAutosave stores 1 in 0x88d40c, and the next save_daemonRun on a machine '
+              'whose gate is open (card idle, no full-screen menu, camera following) calls '
+              'save_game(0, 1) and disarms, while on a machine with a full-screen menu open it '
+              'saves nothing and stays armed - the snapshot is taken on a per-machine tick.  '
+              'Patched, the function makes the same calls and its one store is 0 instead of 1: '
+              'neither machine saves and both words end 0.  save_game itself was a stub')
+    if pnach_section_at(X4_SITE) is None:
+        skip('n4', 'the patch file has no section for 0x1dd1f0')
+    else:
+        owner, other = notice_close(elf, True), notice_close(elf, False)
+        p_owner, p_other = notice_close(elf, True, patched=True), notice_close(elf, False, patched=True)
+        check('n4', owner == (['after'], '', 0, 60) and other == ([], 'after', 0, 0)
+              and p_owner == ([], 'after', 0, 60) and p_other == other
+              and (help_box_close(elf, 1), help_box_close(elf, 0)) == (False, True),
+              'patch "closing a notice box does not run the pending script" (0x1dd1f0) and E9, '
+              'help_task entered part-way at 0x1dd008 in a net game with a post action pending: '
+              'shipped, on the machine where the slot\'s notice flag is set, releasing and then '
+              'pressing the confirm button runs the pending script (script_runPostAction real, '
+              'the script itself a stub) and empties the pending name, while a machine without '
+              'the flag does nothing and keeps the name - one machine has run the script and '
+              'the other has not.  Patched, the name stays pending on both and no script runs; '
+              'what still differs is the menu lockout word, set to 60 on the closing machine '
+              'only (per machine by nature, FINDINGS D26).  The sibling path for the full-screen '
+              'help box (0x1dcf30) calls script_runPostAction offline and not in a net game')
+
+
+def test_kill(elf):
+    test_k1_interact(elf)
+    test_k2_potion(elf)
+    test_k3_stats(elf)
+    test_k5_to_k8(elf)
+
+
+# ---------------------------------------------------------------------------------------
 # p. The patch file itself; x. the interpreter against routines whose results are known
 # ---------------------------------------------------------------------------------------
 def test_patch_file(elf):
@@ -2011,6 +4334,8 @@ def test_patch_file(elf):
                   '[%s] patches %s, inside the code; its text quotes no original word to compare' % (title, where))
         else:
             actual = [emu.mem.u32(addr) for addr, _ in words]
+            if len(was) == 1 and len(actual) > 1:           # one word quoted "at both addresses"
+                was = was * len(actual)
             check('p%d' % number, actual == was,
                   '[%s] the "was" word(s) quoted for %s are what the executable holds' % (title, where))
 
@@ -2127,6 +4452,11 @@ GROUPS = [
     ('h', 'signin', 'network sign-in state machine 0x33ed70, state 5', test_signin),
     ('i', 'other', 'other ledger rows', test_other_rows),
     ('j', 'arena', 'diagnostic patches (0x2726f4, 0x14b9cc, 0x196aa0, 0x1e4dd4, 0x250930, 0x261fd0)', test_arena_patches),
+    ('k', 'kill', 'kill, experience, loot and pick-up: Player_run 0x1a5b98-0x1a5c28, Player_usePotion 0x1b9cb8, the stats page 0x1d2c20-0x1d2d80, and the patches at 0x1a5c0c, 0x1b9fcc, 0x1ba3ac, 0x1d2d30', test_kill),
+    ('s', 'breakers', 'sync breakers: checksum exchange 0x1e3e4c / 0x1d8ca0, Savepoint prompt 0x28da58, card latch 0x4f8f28, debug file 0x2173c8, and the patches at 0x1375dc, 0x28da74, 0x217448', test_sync_breakers),
+    ('m', 'movement', 'player movement: Player_move 0x1b4020, Player_run 0x1a5030, Creature_applyKnockback 0x115eb8', test_movement),
+    ('z', 'float', 'float special cases: sqrt.s sites 0x10bbc8/0x10bcc4/0x10bdcc/0x13cd24, FireStorm 0x2d470c, Tagar\'s Insects 0x30cdc0, slow-byte divides 0x1a81a0 and 0x1aa178', test_float_cases),
+    ('n', 'entry', 'arena-entry patches: net_frameLoop 0x13b1c4, cut_runFrame 0x199d90, save_armAutosave 0x217f14, help_task 0x1dd008', test_arena_entry),
     ('p', 'patchfile', 'patch file: quoted original words', test_patch_file),
     ('x', 'crosscheck', 'interpreter cross-check on library routines with known results', test_cross_check),
 ]

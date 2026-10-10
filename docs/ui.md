@@ -55,13 +55,13 @@ tick. First byte = message type. Four channels belong to this area.
 | 0 | slot, u16, item index u32, u16, bag, 2 bytes | `inventory_dropItem` 0x1c4310 | drop to the ground |
 | 1 | flag, slot u16, item address u32 | `inventory_equipItem` 0x1c27c0 | equip |
 | 2 | 0, slot u16, item address u32 | `inventory_unequipItem` 0x1c2f20 | unequip |
-| 4 | panel, slot, levelUp | `inventory_onJoinPanel` 0x1c0360 | a player takes an inventory panel |
+| 4 | panel, slot, levelUp | `inventory_onJoinPanel` 0x1c0360 | a player takes an inventory panel. Sent only when a second local player takes an idle panel (0x1c01f4, 0x1c021c; `docs/issues/kill-loot-xp.md`) |
 | 5 | slot, weapon class | inline | sets record +0x4a86, recalculates |
 | 6 | slot, stat u16 | `inventory_onStatPoint` 0x1c2548 | spend a stat point (0–3), free raise (4–7), add a skill point (8) |
 | 7 | slot, a, 0, value u32 | `inventory_onSkillPoint` 0x1c2648 | spend skill points |
 | 8 | slot, 3 × u32 | `inventory_combineGems` 0x1ceeb8 | workshop combine |
 | 9 | slot, level | inline | record +0x58 = level acknowledged |
-| 10 | slot, 4 × u16 | `Player_usePotion` | potion |
+| 10 | slot, 4 × u16 | `Player_usePotion` | potion. Has no sender: the only function that builds it, 0x1c55e0, is unreferenced (`docs/issues/kill-loot-xp.md` K2) |
 
 "Item address" is the address of a 0x48-byte item record inside `g_players[slot]`. The table
 is static, so the address is the same on every machine as long as the inventories are.
@@ -84,10 +84,10 @@ is static, so the address is the same on every machine as long as the inventorie
 | 4 | `hudmsg_sendPlayerLeft` 0x1de16c | "player left" message; kills that player's object |
 | 5 | `hudmsg_sendSavepoint` 0x1de1a0 | passes the 32-bit value in the message to `Savepoint_startSavedEffect` 0x28cdc4 as an object address (see P8) |
 | 6 | `hudmsg_sendDisconnectRequest` 0x1de1e0 | remote player asks to leave; revive someone if he was the only one alive; `net_disconnectPlayer` |
-| 7 | `hudmsg_sendNewWorld` 0x1d9250 | pending level name ← string; closes the pause menu; `g_paused = 0` |
+| 7 | `hudmsg_sendNewWorld` 0x1d9250 | pending level name ← string; closes the pause menu; `g_paused = 0`. Sent only from the pause menu's level-warp list (call at 0x18dd5c), whose menu entry is hidden unless `g_debugCheats` is set (`docs/issues/sync-breakers.md` section 7) |
 | 8 | `hudmsg_sendExitCountdown` 0x1de25c | exit countdown 0x4f694a = 240 (1 offline) |
 | 9, 10 | 0x1de430, `net_sendChecksums` | character checksum exchange |
-| 11 | `hudmsg_sendLoadLevel` 0x1de598 | 0x18cb80: pending level ← string, `g_paused = 0` |
+| 11 | `hudmsg_sendLoadLevel` 0x1de598 | 0x18cb80: pending level ← string, `g_paused = 0`. Same single sender as message 7, the level-warp list (call at 0x18dd70). The normal pause menu (table 0x44f3b8) has no save entry; its comparison with `menu_savegame` at 0x18d92c can never match |
 | 12 | `hudmsg_sendMedalAck` 0x1de5ec | sets 0x4f7140 |
 | 13 | `hudmsg_sendQuickCastWarn` 0x1de0a4 | HUD text |
 
@@ -243,6 +243,12 @@ out pending gold (`hud_flushGold`), frees per-level data and clears `g_paused`.
   0x506048), and `drawWorld` reaches cosmetic-seed users by direct calls (0x16d0b8,
   0x16d360, 0x1876e0, 0x18ba18, 0x195400). Whether any of them fires during that loop needs
   a running game: compare 0x404460 on two machines at 0x3230c4.
+- Answered since, without a running game (`docs/issues/sync-breakers.md` section 2):
+  `drawWorld` cannot reach its cosmetic-seed users during the load. From the level change
+  until after stock generation world pieces are not drawn (`g_worldPiecesDrawn` 0x44f054 is
+  0: cleared at 0x322e2c, set again at 0x323140), and scenery animations are registered
+  only when a piece is drawn, so the scenery table is empty. The seeds are therefore equal
+  at stock generation and the consequence above does not arise from this route.
 
 ### P2. A deferred script can run from draw code on one machine — Observed
 
@@ -302,10 +308,16 @@ value it already has.
 - The same bytes are also written in lockstep by `inventory_onJoinPanel` and
   `inventory_onStatPoint`. They therefore differ between machines. Only menu code reads
   them (0x1cd208, 0x1cb098, 0x1d1db8, 0x1d1bc0 and character creation), but they are inside
-  the 0x4c30 bytes that are saved and that the character checksum may cover (*Unknown*:
-  check `player_checksum` 0x1bdc98 for +0xed, +0xee, +0x4a58).
+  the 0x4c30 bytes that are saved and that the character checksum may cover (that was
+  *Unknown*; `player_checksum` 0x1bdc98 does not cover +0xed, +0xee or +0x4a58 —
+  `docs/issues/sync-breakers.md` section 1 lists what it mixes).
 - Everything else the item, stat and skill screens change goes through the message tables
-  above (checked by scanning every assignment into 0x4d8af0–0x4ebbb0 in the range).
+  above (checked by scanning every assignment into 0x4d8af0–0x4ebbb0 in the range). That
+  scan looked for direct stores, not calls, and missed two: `stats_screen` 0x1d1db8 and
+  `skills_screen` 0x1d4660 call `player_recalcStats` (0x1d2e7c, 0x1d5950), which rewrites
+  derived fields of the records and objects of all players, and `stats_screen` calls
+  `Player_recalcDamage` (0x1d2c38, 0x1d2d30). Both run from a draw task on the machine
+  showing the page (FINDINGS K3, K4; `docs/issues/kill-loot-xp.md`).
 - `itemList_drawGold` 0x1c7218 clamps record +0xe4 (gold) to 99,999,999 with a store at
   0x1c72dc. It is draw code and runs only where the panel is on screen. Every gold credit
   read in this range clamps to the same limit already, so the store should never change
@@ -357,6 +369,13 @@ that player's record inside the local save buffer (0x1de4d0). The handler (case 
 temporarily rewritten on per-machine timing; see docs/audio-save.md A1 for the cases where
 that produces a false failure.
 
+Narrowed since (`docs/issues/sync-breakers.md` section 1): the exchange is not always on.
+It runs only while `net_allPlayersState2()` holds — a lobby-launched net game in which every
+character is of kind 2, the lobby-stored kind (the "type value of 2" of audio-save.md).
+While it is on, three of the four cases in A1 (a card save, a failed write, a reload during
+the window) cannot occur, because the memory-card save paths refuse such characters. The
+checkpoint autosave after a level load remains, gated by per-machine state.
+
 ### P10. Things that are per machine by design
 
 - `g_minimapMode` (0x4f8400) is cycled from raw pads inside `minimap_draw` and is written
@@ -376,14 +395,16 @@ that produces a false failure.
 ## Open questions
 
 - P1: are the cosmetic seeds equal at 0x3230c4 in a net game? One memory snapshot per
-  machine settles it.
+  machine settles it. (Answered from the code: yes — see the last bullet of P1.)
 - P2: can a notice box be open on one machine while a `postAction` name is pending?
 - Who clears object flag 0x400000 after a menu closes: the state-0 branch of message 2
   clears only 0x800000 (mask 0xff7fffff at 0x1d8dd4; 0x400000 is set at 0x1d8d88).
   (Answered in `docs/player.md`: the tail of `Player_run` counts record +0x4bc8 down —
   the 10 that state 0 stores — and clears 0x400000 when it reaches 0, 0x1ac6f0–0x1ac724.)
 - `script_playerAdjustStat` calls both `inventory_onStatPoint` and the message sender
-  0x1c5780; in a net game every machine would send. Not followed.
+  0x1c5780; in a net game every machine would send. Not followed. (Answered in
+  `docs/issues/sync-breakers.md` section 3: all 27 script calls pass slot −1, which is the
+  direct path; the message path is never used by a script.)
 - `inventory_onJoinPanel` sends message 9 from inside a handler, so each machine sends one;
   the handler is idempotent.
 - 0x1c8d38 (item description, 8.9 KB), 0x1d59f0 (skill tree lines, 7.3 KB), most of

@@ -143,7 +143,10 @@ Callers: `memcard_loadScreen` (draw task, front end or pause menu) and `save_rel
   the HUD, then `save_build(arg, 0)`. It fills the buffer only; nothing is written to the
   card.
 - `save_daemonRun` (run task) counts play time and runs the autosave: `save_armAutosave`
-  0x217f14 sets the countdown to 1 after a level load, and the daemon calls
+  0x217f14 sets the countdown to 1 after a level load (its test for card state 8 is never
+  true — no call of `memcard_setState` passes 8 — and the same goes for the tests of that
+  value at 0x322ddc in the level-change code and in `game_loadPlayerLumps`;
+  `docs/issues/arena-entry.md`), and the daemon calls
   `save_game(0, 1)` when the card state is idle, not in the front end, not PvP, no
   full-screen menu, camera mode 1 and the game not paused.
 - `memcard_requestSave(slot)` 0x2175b4 (script `saveGame`, pause menu, savepoint) opens the
@@ -173,7 +176,7 @@ The import screen (0x21fa2c) lists saves under both `BASLUS-20973` and `BASLUS-2
 | `sound_playOnObject` 0x214230 (180 callers) | float volume, sequence, object or 0 | handle or −1 |
 | `sound_playAtPos` 0x214428 (61 callers) | float volume, sequence, position | handle or −1 |
 | `sound_stop` 0x213ea0 | handle | — |
-| `sound_release` 0x213438 | handle: let it play out | — |
+| `sound_release` 0x213438 | handle. For a sequence handle it does not let the sequence play out, as the earlier version said: it sets slot +0x3c, clears flag 4 and sets flag 1 (loop) of the track flags at slot +0x24, and writes 1.0 to +0x10 and +0x18 and 0 to +0x14 and +0x1c; `soundSeq_updateAll` then skips the end test for that slot and sets its time back to 0 whenever it passes the clip's duration, so the sequence repeats until `sound_stop`. For a voice handle it sets bit 0 of the voice's flag word (meaning not read). The six callers were not traced (`docs/formats/anim-audio.md` section 5) | — |
 | `sound_setVolume` 0x214650 | float volume, sequence handle | — |
 | `sound_setPlaysWhileFrozen` 0x216ad0 | sequence handle | — |
 | `sound_playSample` 0x2134e8 | float pitch scale, float volume, float delay in seconds, sample, position or 0 | voice index or −1 |
@@ -202,7 +205,7 @@ an animation whose events start samples. A handle with bit 15 set is `slot | gen
 | +0x38 | u16 | generation, from a 7-bit counter (0x4f8950) |
 | +0x3a | u8 | 1 = no position: plays at the camera |
 | +0x3b | u8 | 1 = keeps playing while the game is frozen; initialised from `game_isFrozen()` at start |
-| +0x3c | u8 | release requested |
+| +0x3c | u8 | set by `sound_release`: the update skips the end-of-sequence test and restarts the sequence when its time passes the clip duration ("release requested" in the earlier version) |
 | +0x40 | float | volume |
 | +0x44, +0x48 | float | near 360 and far 840 attenuation distances |
 
@@ -239,13 +242,17 @@ camera's right vector (0x44f110, 0x44f11c, 0x44f128).
 ### Streams (`g_streams` 0x876c10, 3 × 0x1c4)
 
 Stream 2 is music (every music call uses it) and stream 1 is speech (dialog); what plays
-on stream 0 was not established. Each stream has an
+on stream 0 was not established here. `docs/formats/anim-audio.md` section 3.4 has since
+found: ambience one-shots go to stream 2 as well, not to stream 0 as the symbol file had
+inferred, and stream 0 was seen only for the intro movie's soundtrack. Each stream has an
 8-entry queue at +0x40 (0x30 bytes per entry: file name, offset, length, three driver
 parameters, flags) with the count at +0x1c0. Entry flags seen: 2 stop marker, 8 hold until
 released, 0x20 music, 0x40 tested by recall and level change before queuing a stop. The
 audio data is in `<level>.vat` (or `mouth.vat` for global entries) and the index is a
 `dialog.bin` table of 0x50-byte entries (name, s16 language at +0x4a, offset at +0x40; the
-length is the next entry's offset minus this one).
+length is the next entry's offset minus this one). Despite its name that file is the
+directory of the stream file, not dialog; dialog text and structure are in `.dbin`
+(`docs/formats/anim-audio.md` sections 3.4 and 4.2).
 
 The IOP driver is called through `sceSifCallRpc` with client data 0x877160: function 0x50
 returns a 0x40-byte status block at 0x8771c0 (four words per stream; word 3 is the
@@ -304,14 +311,20 @@ These things change them on one machine only:
   0's received value with the checksum of the local player's record: a false "bad
   checksum" for player 0 on that machine. *Unknown*: how long the write takes relative to
   the 240-frame round, and how often `net_allPlayersState2` holds (it needs flag 0x4f7134
-  and a type value of 2 in every record's +0x4c1c).
-- **A failed card write.** The only call to `save_unpackLocalPlayer` is in sub-state 3 of
+  and a type value of 2 in every record's +0x4c1c). Answered in
+  `docs/issues/sync-breakers.md` section 1: 0x4f7134 is `g_lobbyLaunch` and the type value
+  2 is the lobby-stored character kind, so the exchange is on only in a lobby-launched
+  game whose characters are all lobby-stored — and in exactly that case this bullet and
+  the next two cannot occur: script `saveGame` returns when any player is kind 2
+  (0x146c04) and `Savepoint_interactPrompt` refuses while `net_allPlayersState2()` holds
+  (0x28da7c), so the save screen is never opened (B1, B3 there).
+- **A failed card write** (cannot occur while the exchange is on, see above). The only call to `save_unpackLocalPlayer` is in sub-state 3 of
   the save screen. A card error (result word 0x88d3bc non-zero) sends the screen to
   sub-state 9 instead (test before the sub-state switch in 0x218afc), so the buffer stays
   packed on that machine until the next `save_build`.
-- **A reload during the same window.** `save_load` (from `deathTask` → `save_reload`)
+- **A reload during the same window** (likewise). `save_load` (from `deathTask` → `save_reload`)
   would read a player count of 1 and the local player as player 0 on that machine only.
-- **Checkpoint autosave.** `save_daemonRun` is a run task, but its test (0x218924,
+- **Checkpoint autosave** (this one stands). `save_daemonRun` is a run task, but its test (0x218924,
   0x218978 and the lines between) reads the memory-card state, the local full-screen-menu
   flag 0x41b4f8 and the local camera mode before calling `save_game(0, 1)` at 0x2189cc. If
   one machine is held back by one of those, it snapshots the players on a later frame than
@@ -393,7 +406,8 @@ the load screen run before the simulation starts.
 - Header byte +0x6d: `save_game`'s first argument; callers pass a savepoint-related value
   that was not traced.
 - What plays on stream 0, and the exact meaning of entry
-  flags 0x20 / 0x40 and of the three driver parameters in a queue entry.
+  flags 0x20 / 0x40 and of the three driver parameters in a queue entry. (Stream 0 and
+  the queue-entry parameters: `docs/formats/anim-audio.md` section 3.4.)
 - Not read beyond their strings and callers: `memcard_browser` 0x219b90 (10 KB),
   `memcard_slotList` 0x21c3a4 (8.7 KB), `memcard_importScreen` 0x21fa2c (7 KB),
   `playerSel_task` 0x225478 (18.7 KB) and its helpers 0x22a524–0x22e6a4, the credits, the
