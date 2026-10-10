@@ -2,7 +2,7 @@
 
 Part of [Open Champions](https://github.com/Open-Champions), an independent community preservation project.
 
-# Champions: Return to Arms — source reconstruction
+# Champions: Return to Arms — research
 
 An open effort to understand, document and eventually rebuild the code of *Champions:
 Return to Arms* (PS2, US release SLUS-20973, v2.00), the Snowblind-engine action RPG whose
@@ -15,7 +15,7 @@ a readable C++ reconstruction of the original PS2 executable, verified one funct
 at a time, alongside a native Mac and Windows client built with Godot.
 
 **This repository distributes no original game binaries or assets.** Independently
-authored reconstructions are kept separate from private reference files. You need your own copy of the
+authored source reconstruction now lives in its dedicated repository. You need your own copy of the
 disc to analyze game files; basic tool checks and synthetic tests need no game data. See [What may not be committed](CONTRIBUTING.md#what-may-not-be-committed).
 
 ## Where it stands
@@ -35,27 +35,18 @@ disc to analyze game files; basic tool checks and synthetic tests need no game d
   ledger; every claim there is marked observed, inferred or unknown, with addresses.
   Use the [two-client test procedure](docs/VALIDATION.md) to record reproducible results.
 
-## Rebuilding from source
+## Open Champions repositories
 
-We are adapting [Open-BFME 1's measured reconstruction approach](https://github.com/Open-BFME/Open-BFME-1):
-claim a function, write C++, compile it, compare every byte, and bank only verified work.
-Champions uses PS2 MIPS code, so its compiler and verifier need different machinery.
-The [rebuild guide](docs/REBUILD.md) explains the supported subset and current limits.
+| Repository | Active responsibility |
+|---|---|
+| [champions-return-to-arms-re](https://github.com/Open-Champions/champions-return-to-arms-re) (this repository) | Research, symbols, formats, Python analysis tools and online-bug evidence |
+| [champions-return-to-arms](https://github.com/Open-Champions/champions-return-to-arms) | Return to Arms PS2 source reconstruction, byte verifier and progress |
+| [champions-of-norrath](https://github.com/Open-Champions/champions-of-norrath) | Separate Norrath source target; its baseline is not established yet |
+| [open-champions-godot](https://github.com/Open-Champions/open-champions-godot) | Shared native C++/Godot client work for both games |
 
-![Recorded C++ reconstruction progress](docs/rebuild-progress.svg)
-
-The bar measures recorded, byte-exact C++ function bodies against the original `.text`
-section. Names, raw decompilations and native archive tools do not increase it. A saved
-receipt is historical evidence; a fresh private-disc comparison is required to verify it
-again. Neither individual function matches nor this bar prove a fully linked PS2 game
-or a playable native client. [Ledger](targets/SLUS-20973/rebuild.json).
-
-For an AI contributor:
-
-> Read AGENTS.md and docs/REBUILD.md. Check current agent ownership, claim one candidate,
-> reconstruct and verify its entire function, commit each verified body with its evidence,
-> and report the measured byte gain before releasing the claim. Preserve blocked attempts
-> without counting them as progress. Keep the native Godot work separate.
+The source reconstruction and native inspector have moved to their active homes.
+Their history remains here; new changes belong in the corresponding repository.
+[Repository map](docs/REPOSITORIES.md).
 
 ## What is here
 
@@ -76,7 +67,7 @@ The research tools run natively in Python; they do not need a PS2 emulator. A
 playable native game client does not exist yet. See the [platform setup guide](docs/COMPATIBILITY.md)
 and [native client roadmap](docs/NATIVE_PORT.md) for the distinction and next milestones.
 The recommended game-client direction is Godot 4 with a portable C++ core; the
-archive reader is implemented, while Godot asset display and gameplay are still ahead.
+archive reader is implemented in the [Godot repository](https://github.com/Open-Champions/open-champions-godot), while Godot asset display and gameplay are still ahead.
 
 Run `python3 tools/doctor.py` on macOS or `py -3 tools/doctor.py` in Windows PowerShell
 for a read-only setup check. Basic checks work without any game files. The optional

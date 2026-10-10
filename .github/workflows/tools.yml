@@ -1,4 +1,4 @@
-name: Native tool compatibility
+name: Research tool compatibility
 on:
   push:
   pull_request:
@@ -42,47 +42,7 @@ jobs:
         run: python -m unittest discover -s tools -p 'test_*.py'
       - name: Validate symbol contributions
         run: python tools/symtab.py check
-      - name: Validate reconstruction records (no private disc in CI)
-        run: |
-          python tools/rebuild.py check
-          python tools/rebuild.py progress --svg docs/rebuild-progress.svg
-          git diff --exit-code -- docs/rebuild-progress.svg
       - name: Verify published coverage is current
         run: |
           python tools/coverage.py --write
           git diff --exit-code -- docs/STATUS.md
-      - name: Configure native inspector (Unix)
-        if: runner.os != 'Windows'
-        run: cmake -S native -B build/native -DCMAKE_BUILD_TYPE=Release
-      - name: Configure native inspector (Windows)
-        if: runner.os == 'Windows'
-        run: cmake -S native -B build/native -A ${{ matrix.arch == 'arm64' && 'ARM64' || 'x64' }}
-      - name: Build native inspector
-        run: cmake --build build/native --config Release
-      - name: Test native inspector without game files
-        run: ctest --test-dir build/native -C Release --output-on-failure
-      - name: Package native inspector
-        if: matrix.python == '3.13'
-        env:
-          TARGET_OS: ${{ runner.os }}
-          TARGET_ARCH: ${{ matrix.arch }}
-        run: |
-          python - <<'PYTHON'
-          import hashlib, json, os, pathlib, shutil
-          source = pathlib.Path('build/native/Release/champions-data.exe' if os.environ['TARGET_OS'] == 'Windows' else 'build/native/champions-data')
-          output = pathlib.Path('build/package')
-          output.mkdir(parents=True, exist_ok=True)
-          shutil.copy2(source, output / source.name)
-          shutil.copy2('LICENSE', output / 'LICENSE')
-          manifest = {'source_commit': os.environ['GITHUB_SHA'], 'os': os.environ['TARGET_OS'], 'architecture': os.environ['TARGET_ARCH'], 'file': source.name, 'sha256': hashlib.sha256(source.read_bytes()).hexdigest(), 'scope': 'Archive metadata inspector; not a playable game'}
-          (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
-          shutil.make_archive('build/champions-data', 'zip' if os.environ['TARGET_OS'] == 'Windows' else 'gztar', root_dir=output)
-          PYTHON
-      - name: Upload tested native inspector
-        if: matrix.python == '3.13'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: champions-data-${{ matrix.os }}-${{ matrix.arch }}
-          path: build/champions-data.*
-          if-no-files-found: error
-          retention-days: 14

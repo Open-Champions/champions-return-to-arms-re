@@ -79,40 +79,18 @@ The explicit extension path is a placeholder for your installed extension direct
 These are setup instructions, not proof a full Ghidra analysis has passed on Windows.
 The current function at `001a3580` has a separately tracked decompiler limitation.
 
-## Native archive inspector
+## Native archive inspector and Godot client
 
-The `native/` project provides an authored C++17 archive reader and `champions-data`
-command. It needs CMake 3.21 or newer and a native C++ compiler, with no third-party libraries.
-It lists GOB/LMP metadata, including nested LMP entries, and never extracts files.
-Script execution, rendering and gameplay are outside this milestone.
+The C++ archive inspector has moved to
+[open-champions-godot/native](https://github.com/Open-Champions/open-champions-godot/tree/main/native).
+Build commands, native platform checks and downloadable inspector packages now belong
+there. Run that repository's commands from its checkout; this research repository
+only runs Python analysis checks.
 
-```sh
-cmake -S native -B work/native-build
-cmake --build work/native-build --config Release
-ctest --test-dir work/native-build -C Release --output-on-failure
-```
+The inspector lists metadata from private Return to Arms GOB/LMP archives. It is not
+a playable game. The shared client targets both games, while Norrath's asset and
+behavior compatibility still require independent verification. See the
+[native roadmap](https://github.com/Open-Champions/open-champions-godot/blob/main/docs/ROADMAP.md).
 
-On Visual Studio, add `-A x64` or `-A ARM64` to the configure command to match the
-intended Windows processor. Use separate build directories when changing architecture.
-The executable is `work/native-build/champions-data` for a single-configuration build,
-or typically `work/native-build/Release/champions-data.exe` with Visual Studio:
-
-```sh
-work/native-build/champions-data list /path/to/your/LEVEL.GOB
-```
-
-In PowerShell with a Visual Studio build:
-
-```powershell
-& .\work\native-build\Release\champions-data.exe list "C:\path\to\your\LEVEL.GOB"
-```
-
-Successful CI jobs also attach a native inspector package for each tested platform.
-Each contains the executable, MIT license and a manifest with source revision and
-SHA-256. These packages are data tools, not game downloads. Normal compiler/platform
-runtime requirements still apply. Unix packages use tar archives to retain executable
-permissions; Windows packages use zip archives.
-
-Synthetic tests contain no game data. Keep all private comparison archives, outputs,
-and generated game-derived analysis under ignored locations. CI is headless; it
-cannot establish visual quality, controller behavior or native gameplay support.
+Keep private archives and generated analysis in ignored locations. Headless checks
+do not establish visual quality, controller behavior or native gameplay.

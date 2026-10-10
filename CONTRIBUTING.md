@@ -17,11 +17,12 @@ pseudo-code you wrote yourself, and short identifiers the game exposes (class na
 command names, file names). The `.gitignore` is a whitelist to make mistakes hard; do not
 weaken it.
 
-Independently authored C++ reconstructions are also welcome under `reconstructed/`,
-with the evidence and byte verification described in [REBUILD.md](docs/REBUILD.md).
-This does not permit copying raw decompiler output, embedded instruction bytes, game
-assets, or proprietary compiler files. The original executable stays local. Consult
-[AGENTS.md](AGENTS.md) for ownership claims and the function-by-function workflow.
+Independently authored C++ reconstructions belong in the dedicated
+[Return to Arms source repository](https://github.com/Open-Champions/champions-return-to-arms).
+Native C++ and Godot work for both games belongs in
+[open-champions-godot](https://github.com/Open-Champions/open-champions-godot).
+Keep research, symbol maps and original-file analysis tools here. See
+[the repository map](docs/REPOSITORIES.md) before starting work.
 
 ## The one rule about claims
 

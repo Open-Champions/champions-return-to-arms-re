@@ -34,23 +34,3 @@ __pycache__/
 !/.github/ISSUE_TEMPLATE/research.md
 !/.github/ISSUE_TEMPLATE/runtime-bug.md
 
-# Authored native sources; build outputs and game-derived data remain ignored.
-!/native/
-/native/*
-!/native/CMakeLists.txt
-!/native/README.md
-!/native/include/
-!/native/src/
-!/native/tests/
-
-# Authored reconstruction sources and metadata only; no retail or compiler binaries.
-!/reconstructed/
-/reconstructed/*
-!/reconstructed/*.cpp
-!/reconstructed/*.h
-!/targets/
-/targets/*
-!/targets/SLUS-20973/
-/targets/SLUS-20973/*
-!/targets/SLUS-20973/rebuild.json
-!/targets/SLUS-20973/verification.json
