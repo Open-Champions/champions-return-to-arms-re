@@ -1,7 +1,8 @@
 # A live rig: the game running headless on Play!'s core
 
-Status of this document: phase 1 (sections 1–6) and phase 2 (section 7: two joined
-machines, the baseline, the arena). In short: two machines play one lockstep game here;
+Status of this document: phase 1 (sections 1–6), phase 2 (section 7: two joined
+machines, the baseline, the arena) and phase 3 (section 8: fuzzing at scale, a float
+mismatch between the machines, the lag sections). In short: two machines play one lockstep game here;
 random input found two real divergences, which are the ledger's K1 and K2, and the test
 patch for each removes it; the arena did **not** go out of sync in twelve runs.
 
@@ -736,3 +737,120 @@ Proposed, for whoever edits `FINDINGS.md` (this document does not):
 - The memory diff has no per-object comparison (the two heaps are not laid out alike),
   and its ignore list is mostly "whatever already differed at the baseline".
 - Nothing here is a console result.
+
+## 8. Phase 3: fuzzing at scale, a float mismatch, lag
+
+The limits of section 7 apply unchanged: two copies of one emulator build, the developer
+LAN start, level-1 placeholder characters without skills, Play! and not a console.
+Everything is **Ran** unless marked.
+
+### 8.1 The driver
+
+`tools/rig/fuzz.py` runs pairs unattended (README, "Fuzzing two machines"): a list of
+levels, input mixes and bus settings; one pair per seed; fresh memory-card copies per
+pair; the two tick logs compared; a pair that differs run again to see that it repeats;
+with `--try-patches`, one more run per "Net test" section of the patch file to see which
+removes the difference; divergences grouped by the shared columns that differ at the
+first differing tick. Levels other than the states' own are entered by writing the
+pending level in one tick on both machines (7.4). The tick log gained columns for this:
+checksums of each player's statistics block, points, equipment pointers, ability
+records and skill ranks, and of the per-slot button maps 0x41b980–0x41ba3f.
+
+Check of the driver on a known case, with no patches: the seed of 7.3's K1 run came out
+as one class, repeated exactly, and "use button works with the spell selector open" was
+reported as removing it. So was the lag section "trim leaves one spare frame (LAG-2)":
+a section that changes when input is sampled moves the coincidence away without touching
+its cause. The lag sections are therefore left out of the trials.
+
+### 8.2 The next desync: none found
+
+With the K1 and K2 sections applied on both machines:
+
+| Batch | Pairs | Frames each | Start levels | Input mixes | Bus settings | Ticks compared | Divergent |
+|---|---|---|---|---|---|---|---|
+| 1 | 36 | 12,000 | `strife`, `drunare`, `hub`, `drundar`, `blood1`, `bastion1`, `citadel`, `valor`, `storm1`, `fire1`, `nit1`, `wat1` | everything (sticks, attack, abilities, block, weapon swap, both potions, use, D-pad, inventory button, pause button, stick buttons); the same without pause and stick buttons; the same without D-pad | none; delay 3, jitter 3, loss 5%; delay 10, jitter 6, loss 10% | 387,213 | **0** |
+| 2 | FZ2PAIRS | 20,000 | `hub2`, `islc1`, `torment0`, `swamp1`, `fay1`, `honor`, `shame1`, `inmine1`, `dis2`, `airarena`, `boar1`, `arachna1` | everything; without D-pad and stick buttons | none; delay 5, jitter 4, loss 5%; delay 2 | FZ2TICKS | FZ2DIV |
+
+The pairs did not stay where they started: the level column shows level exits taken on
+both machines in the same tick (`strife` → `blood1`, `drundar` → `blood1`) and returns to
+`hub`, and the players died and were put back many times.
+
+What the random input reaches and what it does not, counted with break points on one
+machine of one pair (8,000 frames, the "everything" mix): COVERAGE
+
+So the statement is: with K1 and K2 patched, random play of that kind over BOTHTICKS
+ticks in 24 levels produced no difference in the shared seed, positions, hit points, bags,
+statistics, equipment, skills or button maps. It is not a statement about paths the
+random input does not reach (above), nor about characters with skills.
+
+### 8.3 A float mismatch between the machines
+
+`--fp-round` forces a host rounding mode on one machine's thread. Play! runs the EE with
+round-toward-zero and its translated code does single-precision arithmetic in the host's
+mode, so machine B with `--fp-round nearest` (or `up`, `down`) rounds every add,
+subtract, multiply, divide and square root differently from machine A — the kind of
+difference ledger rows F5 and F9 consider between a console and an emulator setting.
+Machine A is untouched. First tick at which a column differs; "sync flag" is the game's
+own out-of-sync byte (peer +0x44d7), after which the session ends:
+
+FPTABLE
+
+Reading:
+
+- **With no input nothing shared differs**, for thousands of ticks, in either level. (In
+  `drunare` the raw bits of one player's hit points differ from the first tick — the
+  regeneration sum rounds differently — which the game does not hash.)
+- **As soon as a player moves, the position's raw bits differ on that tick, and the
+  game's sync check trips within FPLO–FPHI ticks** (it hashes whole-number positions, so
+  it needs the difference to cross an integer). That is true in `strife` with movement
+  alone, before any fight, and in `drunare` on the walk to the trigger: no pair with a
+  rounding mismatch got as far as the arena's cutscene or fight in sync.
+
+So a machine-wide rounding mismatch cannot be why players see the desync at the arena in
+particular: it would end every session within a second or two of the first step, in the
+first level. If floating point is involved in the arena, it has to be something much
+narrower than the rounding rule — an operation whose result differs between machines only
+for unusual operands (the divisions by zero and the square root of F3, F4, F7 and MV1 are
+the candidates the ledger already names). This experiment does not test that; it would
+need the difference injected into those operations alone.
+
+One of the mismatched pairs left machine B making no progress after it had gone out of
+sync (no CPU use; killed by hand after 49 minutes). The pair launcher now kills a machine
+that is still running two minutes after the other has ended. Not investigated.
+
+### 8.4 The lag sections
+
+A pair in `strife`, bus delay 2 frames each way, movement input; from frame 300 nothing
+crosses the bus for 30 frames (half a second). Lead is `g_localInputFrame` − `g_netFrame`
+at each tick, averaged over 5-second stretches after the outage; the two machines gave
+the same numbers:
+
+| | before | 0–5 s | 5–10 s | 10–15 s | 15–20 s | 20–25 s | 25–30 s | 30–35 s | peak |
+|---|---|---|---|---|---|---|---|---|---|
+| no patch | 6 | 34 | 32 | 27 | 23 | 18 | 13 | 8 | 34 |
+| "equalise at once (LAG-1)" on both | 6 | 11 | 9 | 6 | 6 | 6 | 6 | 6 | 11 |
+
+Ledger L11 predicts 35 frames after a half-second stall, lasting about 30 s after an
+outage; L12 predicts about 12 with this section. Both are what the running game does
+(34 for about 35 s; 11 for under 10 s). The pair stayed in sync in both runs. The other
+lag sections were not run.
+
+### 8.5 Fix sections: which are confirmed live now
+
+| Section | Status |
+|---|---|
+| use button works with the spell selector open (K1) | confirmed (7.3; again by the driver, 8.1) |
+| potions always leave the bag directly (K2) | confirmed (7.3) |
+| equalise at once (LAG-1) | confirmed against L11 / L12 (8.4) |
+| menu lockout never drops player damage (D26) | not exercised: forcing the case needs a damage call on the other player inside the tick of the death, which means calling game code from the rig at a chosen point; that was not built |
+| notice box does not run the pending script (E9), save-point prompt (B9), option commit and the button maps (U1), mission and jump-gate menus (U2), stats page (K3) | not exercised: each needs a menu walked by script (options list, save point, mission menu), and B9 also memory-card characters, which the developer start does not provide. The random input did not produce a divergence that would point at them (8.2) |
+| the remaining "Net test" and "Arena diagnostic" sections | not run |
+
+### 8.6 Not done in this phase
+
+- The realistic arena run (characters with levels, skills and items; the entry from
+  `drundar` through its door with the quest state; the fight to the boss and the closing
+  cutscene; four machines). The fuzz started three pairs in `drundar` and three in
+  `drunare` with the placeholder characters; that is all.
+- A per-object memory comparison in `compare.py`.
+- Float differences confined to particular operations (8.3).

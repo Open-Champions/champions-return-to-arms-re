@@ -33,6 +33,8 @@ What is compared
       script   the machine structure and the script's data, heap and stack (nested runs)
       faults   a case in which the original leaves mapped memory (it follows a null
                pointer) must be one in which the model raises HostFault, and vice versa
+    A run in which the model raises StackGarbage (the original goes on with a stack word
+    the model cannot know, see ref_natives.Args.address) is counted and not compared.
     Floats are compared as patterns: "equal" means identical under the interpreter's
     floating-point model ('ps2'), see docs/issues/dynamic-tests.md.
 
@@ -50,6 +52,23 @@ What runs for real and what is a stub
     Game state is constructed, not loaded: random player records, globals, quest
     variables, queue contents, and objects with random flags and fields that are entered
     in the real name table (several objects per name, removed entries, mixed case).
+
+The three groups
+    machinery  the host functions called directly: the deferred queue and its task, the
+               post action, script_runByName, quest variables, the campaign state
+               functions, entry points that pass a refused string address, name lookup
+    builtins   every one of the 191 table entries through the dispatcher, --cases random
+               states and argument lists each, on a small synthetic script whose entry
+               points call built-ins themselves (for the nested runs)
+    scripts    every entry point of every shipped script, run whole through the real
+               script_runByName with the original built-ins and through the model's; a
+               dry run of the model first tells which names the entry point looks up, and
+               the compared state has objects and variables under those names.  Then each
+               script over time: preStart, start and 60 ticks of the Script task (the
+               post action every tenth tick) with nothing reset in between, compared
+               after every step
+
+The full run takes about four minutes; --quick under one.
 """
 import hashlib
 import os
@@ -103,6 +122,8 @@ REAL_OTHER = {0x14BF58, 0x14F498, 0x14F4C0, 0x166630, 0x1666E0, 0x166798} | {sta
 A = {name: start for name, start, _end in MACHINERY}
 TYPEINFO = {b'10GameObject': 0x3C7E10, N.TYPE_SCRIPT_GENERATOR: 0x3C7CD0, N.TYPE_MONSTER_TRIGGER: 0x3C8E40,
             N.TYPE_AUTO_CONTAINER: 0x3C9558, N.TYPE_TRIGGER: 0x3C3840}
+# objects that claim one of the pointer types reapEnemies tests for (no real object does)
+TYPEINFO.update(zip(N.POINTER_TYPE_NAMES, N.POINTER_TYPES))
 STACK_LO, STACK_HI = EE.STACK_LO, EE.STACK_HI
 SP = STACK_HI - 0x8000
 VSLOTS = 40
@@ -197,6 +218,10 @@ class Responder:
             return scene.item_defs + 0x40 * rng.randrange(3)
         if name == 'player_itemWeight':
             return 0 if rng.random() < 0.3 else f32(rng.choice((0.5, 3.0, 12.0, 40.0, 500.0)))
+        if name == 'level_monsterLevelTimesDifficulty':
+            return f32(rng.choice((0.0, 8.0, 99.0, 360.0)))
+        if name == 'item_generateWithAffixes':
+            return 1 if rng.random() < 0.3 else 0
         if name == 'pool_new':
             if rng.random() < 0.2 or self.blocks >= 8:
                 return 0
@@ -244,13 +269,14 @@ class Rig:
     def __init__(self, elf):
         emu = self.emu = EE(elf)
         mem = emu.mem
+        self.junk = random.Random(0x7EA5E)
         self.slot = emu.alloc(0x40000, align=16)            # the script image
         self.cells = emu.alloc(0x400, align=16)             # result cells
         self.obj_base = emu.alloc(0x1000 * 200, align=16)   # objects
         self.aux_base = emu.alloc(0x100 * 64, align=16)     # weapon objects and vehicle paths
         self.strings = emu.alloc(0x20000, align=16)         # name keys, property strings, C strings
         self.tables = emu.alloc(0x8000, align=16)           # property pointer arrays
-        self.vtables = emu.alloc(0x200 * 8, align=16)
+        self.vtables = emu.alloc(0x200 * 12, align=16)
         self.vstub = emu.alloc(8 * VSLOTS, align=8)
         self.pool_base = emu.alloc(0x200 * 8, align=16)
         self.copy_buf = emu.alloc(N.REC_SIZE + 0x10, align=16)
@@ -290,13 +316,13 @@ class Rig:
             info = self.call(getter)                        # also builds the type-info object now
             assert mem.cstr(mem.u32(info)).encode('latin-1') == type_name, type_name
             self.vtable_of[type_name] = table
-        for getter in N.POINTER_TYPES + (0x3C3788,):
-            self.call(getter)
+        self.call(0x3C3788)
         self.weapon_vtable = self.vtables + 0x200 * len(TYPEINFO)
         for slot in range(VSLOTS):
             mem.w32(self.weapon_vtable + 8 * slot, 0)
             mem.w32(self.weapon_vtable + 8 * slot + 4, self.vstub + 8 * slot)
         self.unknown = {}
+        self.world = O.World()
         self.pcs = set()
         self.base = self.slot
         self.image_size = 0
@@ -308,6 +334,13 @@ class Rig:
         emu = self.emu
         emu._pending_call = emu._fresh_call = None
         emu.r[29] = SP
+        # every register a callee may use for an argument or as scratch starts with junk, so
+        # that an argument the code under test does not set cannot match the model by chance
+        junk = self.junk
+        for reg in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 24, 25):
+            emu.r[reg] = junk.getrandbits(64)
+        for reg in range(32):
+            emu.f[reg] = junk.getrandbits(32)
         return emu.call(address, *args, max_steps=max_steps)
 
     def nested(self, address, *args):
@@ -372,7 +405,8 @@ class Rig:
             elif kind == 'p':
                 out.append('stack' if STACK_LO <= value < STACK_HI else value)
             elif kind == 'T':
-                out.append((mem.read(value + 0x10, 0x12),) + tuple(mem.u16(value + o) for o in (0x24, 0x2C, 0x34, 0x3C)))
+                out.append((mem.read(value + 0x10, 0x12),)
+                           + tuple(mem.u16(value + o) for o in (0x24, 0x2C, 0x34, 0x3C)))
             elif kind == 'B':
                 out.append(mem.read(value, emu.r[reg] & M32))
                 reg += 1
@@ -456,7 +490,7 @@ def rand_float(rng, spread=400.0):
 
 
 class Scene:
-    def __init__(self, rig, rng, names=None, variables=None, entries=None, objects=None):
+    def __init__(self, rig, rng, names=None, variables=None, entries=None, objects=None, every_name=0):
         self.rig, self.rng = rig, rng
         self.names = list(names if names is not None else NAME_POOL)
         self.variables = list(variables if variables is not None else VAR_POOL)
@@ -471,6 +505,7 @@ class Scene:
         self.copy_skew = rng.choice((0, 0, 4))      # an unaligned copy buffer takes the other copy loop
         self.prefer = None
         self.table = O.NameTable()
+        self.every_name = every_name            # the first so many names each get an object
         self.build(objects)
 
     # ---- helpers --------------------------------------------------------------------------
@@ -502,6 +537,8 @@ class Scene:
                                'trigger', 'autoprop', 'vehicle'))
         type_name = {'generator': N.TYPE_SCRIPT_GENERATOR, 'mtrigger': N.TYPE_MONSTER_TRIGGER,
                      'container': N.TYPE_AUTO_CONTAINER, 'trigger': N.TYPE_TRIGGER}.get(kind, b'10GameObject')
+        if kind == 'plain' and rng.random() < 0.6:
+            type_name = rng.choice(N.POINTER_TYPE_NAMES)
         blob = bytearray(rng.randbytes(0x940))
         flags = rng.getrandbits(32) & ~0x10000068
         if kind in ('creature', 'player') or rng.random() < 0.15:
@@ -560,7 +597,11 @@ class Scene:
         for entry in self.objects:
             for _ in range(rng.choice((0, 1, 1, 1, 2))):
                 self.table.add(self.vary_case(rng.choice(self.names)), entry)
-        for _ in range(rng.randrange(3)):                   # removed entries: the key stays behind
+        for name in self.names[:self.every_name]:
+            if not any(key is not None and key.lower() == name.lower() and entry is not None
+                       for key, entry in zip(self.table.keys, self.table.objs)):
+                self.table.add(name, rng.choice(self.objects))
+        for _ in range(0 if self.every_name else rng.randrange(3)):     # removed entries: the key stays behind
             held = [(i, o) for i, o in enumerate(self.table.objs) if o is not None]
             if held:
                 slot, entry = rng.choice(held)
@@ -583,7 +624,8 @@ class Scene:
             struct.pack_into('<2I', blob, N.P_HP, rng.choice((0, 0x80000000, f32(-3.0), f32(1.0), f32(77.25), hp_max)),
                              hp_max)
             struct.pack_into('<2I', blob, N.P_MANA, rand_float(rng, 300.0), f32(rng.uniform(0, 500)))
-            struct.pack_into('<i', blob, N.P_GOLD, rng.choice((0, 5, 1234, 99999990, 99999999, -7, rng.randrange(10 ** 8))))
+            struct.pack_into('<i', blob, N.P_GOLD,
+                             rng.choice((0, 5, 1234, 99999990, 99999999, -7, rng.randrange(10 ** 8))))
             struct.pack_into('<2i', blob, N.P_CLASS, rng.randrange(6), rng.randrange(3))
             struct.pack_into('<2I', blob, N.P_WEIGHT, f32(rng.uniform(0, 60)), f32(rng.uniform(20, 80)))
             for bag in range(3):
@@ -603,7 +645,7 @@ class Scene:
             rig.poke(rec, bytes(blob))
         living = [slot for slot in range(self.num_players)
                   if players[slot] and not mem.u32(players[slot] + N.O_FLAGS) & N.OF_DEAD]
-        if rng.random() < 0.15:
+        if rng.random() < (0.03 if self.every_name else 0.15):
             living = [rng.randrange(4) for _ in range(rng.randrange(5))]
         w(N.G_ALIVE_COUNT, 4, len(living))
         for index in range(4):
@@ -628,7 +670,10 @@ class Scene:
         active = rng.randrange(max(self.num_players, 1)) if roll < 0.8 else rng.choice((-1, 2, 3, 0))
         w(N.G_ACTIVE_PLAYER, 4, active)
         with_selected = [o for o in self.objects]
-        w(N.G_SELECTED_OBJ, 4, rng.choice(with_selected)['addr'] if with_selected and rng.random() < 0.8 else 0)
+        if self.every_name:                     # as when a trigger or a creature starts the script
+            with_selected = [o for o in self.objects if o['props'] is not None] or with_selected
+        w(N.G_SELECTED_OBJ, 4, rng.choice(with_selected)['addr']
+          if with_selected and rng.random() < (0.97 if self.every_name else 0.8) else 0)
         w(N.G_RAND_SEED, 4, rng.getrandbits(32))
         w(N.G_DIFFICULTY, 4, rng.randrange(5))
         w(N.G_PAUSED, 4, rng.choice((0, 0, 0, 1)))
@@ -650,6 +695,7 @@ class Scene:
         w(N.G_RESPAWN_COUNTDOWN, 4, rng.choice((0, -1, 5, 240)))
         w(N.G_LEVEL_LOADING, 4, rng.choice((0, 1)))
         w(N.G_LIGHT_SCALE, 4, rand_float(rng, 3.0))
+        w(N.G_LEVEL_MONSTER_LEVEL, 4, f32(rng.choice((1.0, 12.0, 30.5))))
         w(N.G_LEVEL_TIMER, 4, rng.choice((0, 59, 60, 3600, 0x7FFFFFFF, 0x80000001, 0xFFFFFFFF, rng.getrandbits(32))))
         w(N.G_MANA_USED, 2, rng.getrandbits(16))
         w(N.G_HEALTH_USED, 2, rng.getrandbits(16))
@@ -699,7 +745,8 @@ class Scene:
     # ---- the model's side of the same state ---------------------------------------------------
     def model(self, responder):
         mem = N.Mem(Under(self.rig.emu.mem))
-        world = O.World()
+        world = self.rig.world          # one World for all cases: only its name table and registry are used
+        world.names, world.objects = O.NameTable(), {}
         objs = {}
         for entry in self.objects:
             obj = N.Obj(mem, entry['addr'], entry['type'])
@@ -771,7 +818,8 @@ def compare(rig, machine, game, host, model_run, emu_run, check_script=True):
     if emu_result != model_result:
         out.problems.append('result %r, model %r' % (emu_result, model_result))
     if rig.calls != host.log:
-        at = next((i for i, (a, b) in enumerate(zip(rig.calls, host.log)) if a != b), min(len(rig.calls), len(host.log)))
+        at = next((i for i, (a, b) in enumerate(zip(rig.calls, host.log)) if a != b),
+                  min(len(rig.calls), len(host.log)))
         out.problems.append('call-out #%d of %d/%d: original %r, model %r' % (
             at, len(rig.calls), len(host.log), rig.calls[at] if at < len(rig.calls) else None,
             host.log[at] if at < len(host.log) else None))
@@ -790,7 +838,8 @@ def compare(rig, machine, game, host, model_run, emu_run, check_script=True):
     if not (ebytes <= mbytes and mbytes <= ebytes | maybe):
         only_e, only_m = sorted(ebytes - mbytes), sorted(mbytes - ebytes - maybe)
         out.problems.append('bytes written: only the original %s, only the model %s' % (
-            ['0x%x' % a for a in only_e[:6]] + ['(%d)' % len(only_e)], ['0x%x' % a for a in only_m[:6]] + ['(%d)' % len(only_m)]))
+            ['0x%x' % a for a in only_e[:6]] + ['(%d)' % len(only_e)],
+            ['0x%x' % a for a in only_m[:6]] + ['(%d)' % len(only_m)]))
     under = game.mem
     diff = [(addr, mem.load(addr, 1), under.load(addr, 1)) for addr in sorted(ebytes | mbytes | maybe)
             if mem.load(addr, 1) != under.load(addr, 1)]
@@ -843,6 +892,7 @@ class Tally:
 # ---------------------------------------------------------------------------------------
 # The synthetic script used for the per-built-in cases
 # ---------------------------------------------------------------------------------------
+CHAIN_TICKS = 60                # ticks of the Script task in "shipped scripts over time"
 STRING_CELLS = 0x400            # room for the string arguments of a case
 BAD_ADDRESS = 0x7FFF0000
 STALE_ENTRIES = ('staleA', 'staleB', 'staleC', 'staleD', 'staleE', 'staleF')
@@ -973,11 +1023,13 @@ def make_args(spec, scene, case, rng):
         elif kind == 'b':
             args.append(rng.choice((0, 0, 1, 1, 2, -1)))
         elif kind == 'm':
-            args.append(rng.choice(list(range(13)) + [13, 14, 100, 0, 1, 2]))
+            args.append(rng.choice(list(range(13)) + [13, 14, 100, 0, 1, 2, -1, -3]))
         elif kind == 'p':
             args.append(rng.choice((-1, -1, 0, 0, 1, 2, 3, 4, 7)))
         elif kind == 'p0':
             args.append(rng.randrange(4))
+        elif kind == 'medal':
+            args.append(rng.choice((-1, 0, 0, 1, 1, 2, 2, 3)))
         elif kind == 'small':
             args.append(rng.choice((0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 33, -1)))
         elif kind == 'stat':
@@ -990,6 +1042,8 @@ def make_args(spec, scene, case, rng):
             args.append(rng.choice((14, 14, 0, 13)))
         elif kind == 'slot3':
             args.append(rng.randrange(3))
+        elif kind == 'one':
+            args.append(rng.choice((1, 1, 1, 0, 2)))
         elif kind == 'slotm':
             args.append(rng.randrange(-1, 3))
         elif kind == 'mode':
@@ -1027,7 +1081,7 @@ SPEC = {
     'activateMissionMenu': '', 'activateStore': 'store', 'storeRunning': '', 'setInfo': 'key',
     'addHelpMessage': 'key key', 'addHelpMessageF': 'key i key i', 'helpMessageActive': '', 'showCompass': 'obj key',
     'showBust': 'key key i i', 'hudResetFadeScreen': 'i', 'hudFadeScreen': 'i', 'revealMap': '', 'showOnMap': 'obj b',
-    'runMedalSuccess': 'm small key key key key', 'runMedalFail': 'key', 'setupPlayerSel': '', 'startPlayerSel': '',
+    'runMedalSuccess': 'm medal key key key key', 'runMedalFail': 'key', 'setupPlayerSel': '', 'startPlayerSel': '',
     'playerSelRunning': '',
     'getNumPlayers': '', 'countPlayersAlive': '', 'checkPlayerAlive': 'b', 'setBestActivePlayer': '',
     'activePlayerIsDwarf': '', 'activePlayerIsElf': '', 'isClericOrWizard': 'p', 'getMaxPlayerHP': 'p',
@@ -1039,7 +1093,7 @@ SPEC = {
     'planarSteel': '', 'getManaUsed': '', 'getHealthUsed': '', 'playGotItemSound': '', 'explodePotionsOnly': '',
     'playerHasItem': 'key', 'onePlayerHasItem': 'p key', 'countQuestItems': 'key', 'removePlayerItem': 'p key',
     'removeAllItems': '', 'removeAllWeapons': '', 'givePlayerItem': 'key b i', 'giveOnePlayerItem': 'p key b i',
-    'dropItem': 'obj key', 'selectDropItem': 'key',
+    'givePlayerRandom': '', 'dropItem': 'obj key', 'selectDropItem': 'key',
     'increaseEnemyRank': 'obj', 'charmMonster': 'obj', 'rootMonster': 'obj', 'unRootMonster': 'obj',
     'selectSetMonsterVal': 'which i', 'setMonsterVal': 'obj which i', 'selectSetCFlag': 'bit b',
     'setCFlag': 'obj bit b', 'selectSetOFlag': 'of b', 'setOFlag': 'obj of b', 'setWeaponType': 'obj i',
@@ -1052,7 +1106,7 @@ SPEC = {
     'countLiveObjects': 'obj',
     'trigger': 'obj i', 'autoPropSetState': 'obj i', 'autoPropGetState': 'obj', 'startPropAnim': 'obj key mode',
     'stopPropAnim': 'obj', 'propAnimAtEnd': 'obj', 'deleteObjects': 'obj', 'setNoCollide': 'obj b',
-    'objInPlayerTrig': 'obj', 'findDistance': 'obj obj', 'setContainerProps': 'obj slot3 b',
+    'objInPlayerTrig': 'obj', 'findDistance': 'obj obj', 'setContainerProps': 'obj one b',
     'lightEffect': 'ref i i i i i i i i i i i', 'addExpandingPool': 'obj i i', 'particleMorph': 'obj obj',
     'setParticle': 'slot3 i i i i i i i i i i i i i i', 'addParticleOnObject': 'slotm obj i i i i i i',
     'shakeCamera': 'i', 'setFarClip': 'i', 'setWaveDetail': 'b',
@@ -1182,7 +1236,8 @@ def group_builtins(rig, coverage, stats):
 
             def emu_run():
                 rig.w32(rig.cells, 0x55555555)
-                error = s32(rig.call(SCR_CALL_NATIVE, rig.base, index, rig.cells, rig.base + machine.data_offset + params))
+                error = s32(rig.call(SCR_CALL_NATIVE, rig.base, index, rig.cells,
+                                     rig.base + machine.data_offset + params))
                 return error, rig.emu.mem.s32(rig.cells)
 
             outcome = compare(rig, machine, game, host, model_run, emu_run)
@@ -1381,8 +1436,9 @@ def group_machinery(rig, coverage, stats):
         steps = []
         for _ in range(rng.randrange(1, 8)):
             kind = rng.choice(('avail', 'complete', 'medal', 'evil', 'decision', 'flag', 'hp'))
-            steps.append((kind, rng.randrange(5), rng.choice(list(range(13)) + [13, 40]), rng.choice((-1, 0, 1, 2, 3)),
-                          rng.choice((0, 1)), rng.choice((-1, 0, 1, 2, 3)), rng.randrange(8)))
+            steps.append((kind, rng.randrange(5), rng.choice(list(range(13)) + [13, 40, -1]),
+                          rng.choice((-1, 0, 1, 2, 3)), rng.choice((0, 1)), rng.choice((-1, 0, 1, 2, 3)),
+                          rng.randrange(8)))
 
         def model_run():
             out = []
@@ -1438,6 +1494,22 @@ def group_machinery(rig, coverage, stats):
     report('campaign state functions', tally.bad, tally.cases, 'mission available / complete, medals, evil, decision, '
            'player flags called directly with arguments the built-ins never pass', tally.examples)
 
+    def no_gate_body(scene, game, rng):
+        case = Case(rig, machine, rng)
+        params = case.commit([case.string(rng.choice(LEVEL_POOL))])
+
+        def model_run():
+            machine.params = params
+            return game.new_world_no_gate(machine, N.Args(machine, game, 'newWorld'))
+
+        def emu_run():
+            return s32(rig.call(HELPERS['script_newWorldNoGate'], rig.base, rig.base + machine.data_offset + params))
+        return model_run, emu_run
+
+    tally = run('nogate', 60, no_gate_body)
+    report('script_newWorldNoGate', tally.bad, tally.cases, 'the unreferenced copy of the newWorld handler at '
+           '0x143e30, called directly', tally.examples)
+
     # which object a name means: the real lookup against ref_objects.NameTable on the same table
     tally = Tally()
     for _ in range(scaled(400)):
@@ -1485,13 +1557,16 @@ def script_strings(machine):
     return sorted(set(found))
 
 
-def dry_run(rig, machine, saved, entry, names, seed):
+def dry_run(rig, machine, saved, entry, names, seed, asked):
     """Names the model asks the name table and the variable table for when it runs an entry
-    point on a throw-away state."""
+    point on a throw-away state in which the names in asked already have objects; new
+    names are appended to asked.  Returns how many were new."""
     rng = random.Random(seed ^ 0xD27)
-    scene = Scene(rig, rng, names=rng.sample(names, min(len(names), 12)), objects=4)
+    rig.restore()
+    machine.restore(saved)
+    scene = Scene(rig, rng, names=asked + rng.sample(names, min(len(names), 12)), objects=6, every_name=len(asked))
     game, _host = setup_model(scene, seed, machine)
-    asked = []
+    before = len(asked)
     find, find_first, var_get = game.find, game.find_first, game.var_get
 
     def note(function):
@@ -1507,7 +1582,7 @@ def dry_run(rig, machine, saved, entry, names, seed):
     except (ref_amx.HostFault, ref_amx.Limit, O.ObjectError):
         pass
     machine.budget = None
-    return asked
+    return len(asked) - before
 
 
 def group_scripts(rig, coverage, stats):
@@ -1521,8 +1596,9 @@ def group_scripts(rig, coverage, stats):
         files = files[::4]
     master = random.Random(OPTIONS['seed'] ^ 0xC0DE)
     seeds = 1 if OPTIONS['quick'] else OPTIONS['seeds']
-    tally = Tally()
-    entries = finished = scripts = 0
+    tally, chain = Tally(), Tally()
+    entries = finished = scripts = chain_levels = chain_stops = 0
+    unfinished = []
     calls_by_native = {}
     started = time.time()
     for filename in files:
@@ -1545,19 +1621,25 @@ def group_scripts(rig, coverage, stats):
         for name in publics:
             entries += 1
             done = False
-            for _ in range(seeds):
+            for attempt in range(seeds + 3):
+                if attempt >= seeds and done:   # up to three more states for an entry point that
+                    break                       # has only stopped at a null object so far
                 seed = master.getrandbits(32)
                 rng = random.Random(seed)
                 rig.restore()
                 machine.restore(saved)
                 # a dry run of the model tells which names this entry point looks up; the
                 # compared run then gets objects and variables under those names
-                used = dry_run(rig, machine, saved, name, names, seed)
+                used = []
+                for _ in range(4):              # a run that stops at a missing object is repeated with it
+                    if not dry_run(rig, machine, saved, name, names, seed, used):
+                        break
                 rig.restore()
                 machine.restore(saved)
                 pool = (used + rng.sample(names, min(len(names), 8)))[:40]
                 scene = Scene(rig, rng, names=pool, variables=pool + rng.sample(names, min(len(names), 20)),
-                              entries=[p for p in publics[:6]] + [b''], objects=rng.randrange(8, 30))
+                              entries=[p for p in publics[:6]] + [b''], objects=rng.randrange(8, 30),
+                              every_name=len(used))
                 scene.bias = {'dialog_isOpen': 0.2, 'memcard_isBusy': 0.2}
                 game, host = setup_model(scene, seed, machine)
                 machine.budget = 300000
@@ -1578,6 +1660,59 @@ def group_scripts(rig, coverage, stats):
                     for called, _args in host.log:
                         calls_by_native[called] = calls_by_native.get(called, 0) + 1
             finished += done
+            if not done:
+                unfinished.append('%s %s' % (filename[:-4], name.decode('latin-1')))
+        # ---- the same script over time
+        chain_levels += 1
+        for _state in range(1 if OPTIONS['quick'] else 2):
+            seed = master.getrandbits(32)
+            rng = random.Random(seed)
+            used = []
+            for entry in (b'start', b'preStart') + tuple(publics[:12]):
+                dry_run(rig, machine, saved, entry, names, seed, used)
+            rig.restore()
+            machine.restore(saved)
+            pool = (used + rng.sample(names, min(len(names), 8)))[:60]
+            scene = Scene(rig, rng, names=pool, variables=pool, entries=[b''], objects=rng.randrange(12, 30),
+                          every_name=len(used))
+            scene.bias = {'dialog_isOpen': 0.1, 'memcard_isBusy': 0.1}
+            for addr, size in ((N.G_PAUSED, 4), (N.G_CUTSCENE_ACTIVE, 1), (N.G_JUMPGATE_TRAVEL, 4),
+                               (N.G_DEFER_COUNT, 4), (N.G_DEFER_QUEUED, 4), (N.G_POST_ACTION, 1),
+                               (N.G_IN_POST_ACTION, 1)):
+                scene.w(addr, size, 0)              # as at the start of a level
+            game, host = setup_model(scene, seed, machine)
+            rig.responder = Responder(seed, scene)
+            pointers = {entry: scene.cstring(entry) for entry in (b'preStart', b'start')}
+            steps = [('run', b'preStart'), ('run', b'start')]
+            for tick in range(CHAIN_TICKS):
+                steps.append(('tick', None))
+                if tick % 10 == 9:
+                    steps.append(('post', None))
+            for position, (kind, entry) in enumerate(steps):
+                game.mem.writes, host.log, game.draws = [], [], 0
+                machine.budget = 300000
+                long = 40000000
+                if kind == 'run':
+                    outcome = compare(rig, machine, game, host, lambda: game.run_script(entry),
+                                      lambda: s32(rig.call(A['script_runByName'], pointers[entry], max_steps=long)))
+                elif kind == 'tick':
+                    outcome = compare(rig, machine, game, host, lambda: game.run_deferred(),
+                                      lambda: (rig.call(A['script_runDeferred'], max_steps=long), None)[1])
+                else:
+                    outcome = compare(rig, machine, game, host, lambda: game.run_post_action(),
+                                      lambda: (rig.call(A['script_runPostAction'], max_steps=long), None)[1])
+                machine.budget = None
+                chain.add(outcome, '%s step %d (%s %s) seed %d' % (filename, position, kind, entry, seed))
+                if outcome.fault is not None or outcome.problems:
+                    chain_stops += outcome.fault == 'both'
+                    break
+    stats['unfinished'] = unfinished
+    stats['chain'] = (chain.cases, chain_levels, chain_stops)
+    report('shipped scripts over time', chain.bad, chain.cases,
+           'a level\'s script driven as the game drives it - preStart, start, then %d ticks of the Script task with '
+           'the post action run every tenth tick - without resetting anything in between, compared after every '
+           'step; %d scripts, %d call-outs; %d sequences ended early where both sides stop at a null object'
+           % (CHAIN_TICKS, chain_levels, chain.calls, chain_stops), chain.examples)
     report('shipped entry points', tally.bad, tally.cases,
            'whole entry points of %d scripts with the original built-ins against the model\'s: result, call-outs, '
            'bytes written, seed, script memory; %d call-outs, %d runs in which both sides stop at a null object, '
@@ -1654,6 +1789,9 @@ def main(argv=None):
     total = sum(coverage.numbers(rig.pcs, n)[1] for n in coverage.functions)
     full = sum(1 for n in coverage.functions if coverage.numbers(rig.pcs, n)[0] == coverage.numbers(rig.pcs, n)[1])
     print('--- coverage')
+    if stats['cases']:
+        print('      per-built-in cases compared: %d, of which %d are cases where both sides stop at a null object'
+              % (stats['cases'], stats['faults']))
     print('      built-in handlers entered: %d of %d distinct (%d table names); not modelled: %s'
           % (len(entered), len(names), len(N.NATIVE_NAMES), ', '.join(N.NOT_MODELLED) or 'none'))
     print('      basic blocks executed: %d of %d in %d functions (handlers, helpers, host machinery); '
@@ -1673,6 +1811,9 @@ def main(argv=None):
               + ', '.join('0x%x x%d' % item for item in sorted(rig.unknown.items())))
     if 'entries' in stats:
         print('      shipped entry points run end to end: %d of %d' % stats['entries'])
+        if stats.get('unfinished'):
+            print('      never to the end (both sides stop at a null object in every state tried): '
+                  + ', '.join(stats['unfinished']))
     passed = sum(1 for _, ok in RESULTS if ok)
     print('%d properties: %d PASS, %d FAIL' % (len(RESULTS), passed, len(RESULTS) - passed))
     return 0 if passed == len(RESULTS) else 1

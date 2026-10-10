@@ -140,6 +140,7 @@ G_SOLO_SAVED = 0x4F85C0
 G_GAME_COMPLETE = 0x4F85C5          # u8
 G_MANA_USED, G_HEALTH_USED = 0x4F85C8, 0x4F85CA     # u16
 G_LEVEL_TIMER = 0x4F85CC
+G_LEVEL_MONSTER_LEVEL = 0x4F714C      # float
 G_SAVED_CONFIG = 0x4F8F38
 G_PROFILE_VARS = 0x4F9030
 G_MENU_OPEN_FLAG = 0x41B4F8
@@ -213,12 +214,14 @@ TYPE_SCRIPT_GENERATOR = b'15ScriptGenerator'
 TYPE_MONSTER_TRIGGER = b'14MonsterTrigger'
 TYPE_AUTO_CONTAINER = b'13AutoContainer'
 TYPE_TRIGGER = b'7Trigger'
+POINTER_TYPE_NAMES = (b'P6PhProp', b'P4Prop', b'P8ItemProp')     # what reapEnemies compares classes with
 
 # float patterns
 F_0, F_1 = 0x00000000, 0x3F800000
 F_60, F_1_60 = 0x42700000, 0x3C888888
 F_1000, F_128 = 0x447A0000, 0x43000000
 F_0_01, F_0_001 = 0x3C23D70A, 0x3A83126E
+F_0_015 = 0x3C75C28F
 F_0_3 = 0x3E999999
 F_100000 = 0x47C35000
 F_BOX = 0x476A6000                  # 60000.0, reapEnemies
@@ -512,6 +515,9 @@ EXT = {
                               note='(text, item, -1, variant); returns the definition pointer the callee '
                                    'stores at item +0'),
     'player_itemWeight': X(0x1B6338, 'ix', ret='f'),
+    'item_generateWithAffixes': X(0x104CA4, 'xiiii', ret='i',
+                                  note='(item, budget, category, -1, level) -> 0 when nothing was made'),
+    'level_monsterLevelTimesDifficulty': X(0x1EBF70, '', ret='f'),
     'player_recalcLoad': X(0x1BEC10, 'i'),
     'player_resetIdleAnim': X(0x1B2470, 'i'),
     'player_giveExp': X(0x1D3150, 'ii'),
@@ -773,13 +779,11 @@ class GameState:
         return self.mem.s32(G_ALIVE_LIST + 4 * index)
 
     def rebuild_alive_players(self):
-        """game_rebuildAlivePlayers 0x1e72f8, the two shared words only (the default
-        answer of that call-out): slots whose object exists and is not dead, in order."""
-        living = []
-        for slot in range(self.num_players):
-            obj = self.player_obj(slot)
-            if obj is not None and not obj.flags & OF_DEAD:
-                living.append(slot)
+        """The default answer of the call-out game_rebuildAlivePlayers 0x1e72f8: the list
+        ref_objects.World.alive_players gives, stored in the two shared globals.  (The
+        original also keeps per-machine lists of local players; not stored here.)"""
+        players = [self.player_obj(slot) for slot in range(max(self.num_players, 0))]
+        living = O.World.alive_players(players, lambda slot: True)[0]
         for index, slot in enumerate(living):
             self.mem.w32(G_ALIVE_LIST + 4 * index, slot)
         self.alive_count = len(living)
@@ -1015,7 +1019,7 @@ class GameState:
             cooldown = self.rec(slot) + P_NEWWORLD_COOLDOWN
             if self.mem.u16(cooldown) != 0 and not self.alive_count < 2:
                 if self.ext('net_isLocalSlot', slot & M32) != 0:
-                    text = self.ext('text_lookup', b'noZone3')
+                    text = self.ext('text_lookup', self.mem.cstr(S_NO_ZONE))
                     local = self.ext('net_getLocalPlayerSlot', 0)
                     self.ext('hud_showMessage', text & M32, 180, local & M32, 0)
                 return 1
@@ -1027,7 +1031,11 @@ class GameState:
         orientation byte is atoi of the selected object's 'orientation=' property (every
         such entry is applied, so the last one wins), or 0xff when there is no selected
         object or no such property.  The comparison is a case-sensitive strncmp of 12
-        characters."""
+        characters.  The function also keeps a copy of the name in a 0x70-byte local
+        buffer and, when no orientation was found, appends 17 characters of debug text to
+        it; a name too long for that overruns the saved registers (not modelled)."""
+        if len(name) >= 0x70:
+            raise HostFault('level name of %d bytes overruns script_setNextWorld\'s buffer' % len(name))
         self.mem.strcpy(G_PENDING_LEVEL, name)
         found = False
         selected = self.obj_at(self.selected_obj)
@@ -1039,6 +1047,9 @@ class GameState:
                     found = True
                     self.pending_orientation = O.atoi(entry[12:])
         if not found:
+            if len(name) + 17 >= 0x70:
+                raise HostFault('level name of %d bytes: the debug text appended to the local copy overruns '
+                                'script_setNextWorld\'s buffer' % len(name))
             self.pending_orientation = 0xFF
 
     # ---- state functions of the gameplay area the built-ins wrap ----------------------------------
@@ -1292,8 +1303,8 @@ S_SAVE_DEBUG = 0x531250             # debug text of saveCheckPoint
 S_HEAL_LUMP, S_HEAL_SOUND = 0x531398, 0x5313A0
 S_MEDAL_PROMPT, S_MEDAL_WON, S_MEDAL_FAIL = 0x531230, 0x531220, 0x531240
 S_PROP_LUMP_KEY = 0x531278          # property key startPropAnim asks for
-S_ORC_CAVE = 0x5312A8               # level-name fragment givePlayerRandom looks for
-S_ORC_SWORDS = {1: (0x5312B8, 0x12, 0x33), 2: (0x531308, 0x33, 0x34), 3: (0x531358, 0x24, 0x35)}
+S_SPECIAL_LEVEL = 0x5312A8          # level-name fragment givePlayerRandom looks for
+S_SPECIAL_ITEMS = {1: 0x5312B8, 2: 0x531308, 3: 0x531358}       # one fixed descriptor per difficulty
 POINTER_TYPES = (0x3C7D20, 0x3C7D70, 0x3C7DC0)      # type-info getters reapEnemies compares with
 
 
@@ -1472,12 +1483,19 @@ class Game(GameState):
         name = a.s(0)
         if self.in_post_action != 0 or self.net_gate() == 0:
             self.ext('net_closeLocalMenus', 0)
-            if len(name) >= 0x70:
-                raise HostFault('level name of %d bytes overruns script_setNextWorld\'s buffer' % len(name))
             self.set_next_world(name)
         return 0
 
     n_newWorldAlways = n_newWorld
+
+    def new_world_no_gate(self, m, a):
+        """0x143e30: a copy of the handler without the gate.  It is not in the table and
+        nothing refers to it; `newWorldAlways`, whose name it fits, is bound to the gated
+        handler."""
+        name = a.s(0)
+        self.ext('net_closeLocalMenus', 0)
+        self.set_next_world(name)
+        return 0
 
     def n_simpleNewWorld(self, m, a):
         """0x143e70 (s level): the same gate; orientation 0xff without looking at the
@@ -2274,6 +2292,41 @@ class Game(GameState):
                     self._drop_at(lambda: self.player_obj(slot))
         return 0
 
+    def _give_or_drop(self, slot):
+        rec = self.rec(slot)
+        weight = self.ext('player_itemWeight', slot) & M32
+        if C.lt(C.add(self.mem.u32(rec + P_WEIGHT), weight), self.mem.u32(rec + P_CAPACITY)):
+            self.ext('inventory_giveItem', slot, 1)
+            self.ext('player_recalcLoad', slot)
+        else:
+            self._drop_at(lambda: self.need(self.player_obj(slot), 'givePlayerRandom: player without an object'))
+
+    def n_givePlayerRandom(self, m, a):
+        """0x145f18: for every player, in order: ONE shared-seed draw d; budget =
+        (int)((float)d * level_monsterLevelTimesDifficulty() * 0.015).  In a level whose
+        name contains the fragment at 0x5312a8: the fixed item of the difficulty (1..3;
+        other difficulties keep the blank record) is given, or dropped at the player when
+        it does not fit.  Then up to ten times: one draw, item_generateWithAffixes(item,
+        budget, draw & 1, -1, (int)level monster level) until it reports success; whatever
+        the record then holds is given or dropped.  So 2 to 11 draws per player."""
+        slot = 0
+        while slot < self.num_players:
+            draw = self.rand()
+            scale = self.ext('level_monsterLevelTimesDifficulty') & M32
+            budget = C.to_int(C.mul(C.mul(C.from_int(draw), scale), F_0_015))
+            if self.mem.cstr(S_SPECIAL_LEVEL) in self.mem.cstr(G_LEVEL_NAME):
+                fixed = S_SPECIAL_ITEMS.get(self.difficulty)
+                if fixed is not None:
+                    self.ext('item_parseDescriptor', self.mem.cstr(fixed), ITEM_BLANK, 0, 0)
+                self._give_or_drop(slot)
+            level = C.to_int(self.mem.u32(G_LEVEL_MONSTER_LEVEL)) & M32
+            for _ in range(10):
+                if self.ext('item_generateWithAffixes', budget & M32, self.rand() & 1, M32, level) != 0:
+                    break
+            self._give_or_drop(slot)
+            slot += 1
+        return 0
+
     def n_dropItem(self, m, a):
         """0x1477ac (s object, s descriptor): loot_spawnNamedItem at the object, nothing
         when there is none."""
@@ -2539,11 +2592,13 @@ class Game(GameState):
     def n_reapEnemies(self, m, a):
         """0x1453e4: every dead creature that is not a player, among up to 511 objects of
         a box of +-60000, is destroyed.  For the others the class is compared with three
-        POINTER types, which no object has, so nothing else is ever destroyed."""
+        POINTER types (POINTER_TYPE_NAMES), which no object has, so nothing else is ever
+        destroyed (FINDINGS D11)."""
         box = (F_BOX | 0x80000000,) * 3
         for obj in self.ext('world_collectObjectsInBox', box, (F_BOX,) * 3, 0x200):
-            if obj.flags & (OF_CREATURE | OF_DEAD) == OF_CREATURE | OF_DEAD and not obj.flags & OF_PLAYER:
-                self.virtual(obj, V_DESTROY, 3)
+            if obj.flags & (OF_CREATURE | OF_DEAD) == OF_CREATURE | OF_DEAD or obj.type_name in POINTER_TYPE_NAMES:
+                if not obj.flags & OF_PLAYER:
+                    self.virtual(obj, V_DESTROY, 3)
         return 0
 
     def n_checkMonstersLeft(self, m, a):
@@ -2927,16 +2982,16 @@ class Game(GameState):
         return C.to_int(C.mul(vehicle.u(0x90C, 4), F_128)) if vehicle is not None else 0
 
     def n_getPlayerVDir(self, m, a):
-        """0x142fc8: for the first living player in a vehicle faster than 2.0 (+0x348)
-        whose direction dot product decides: 1 when it is above 0, -1 when below 0.707;
-        else the next player; 0 at the end."""
+        """0x142fc8: the first entry of the alive list with a living object in a vehicle
+        whose +0x348 is above 2.0 decides: with dot = the negated vector at vehicle +0x468
+        times the vector at (pointer at vehicle +0x910) +0xc, 1 when dot is above 0, else
+        -1 when it is below 0.707 - which it then always is.  0 when no entry qualifies."""
         index = 0
         while index < self.alive_count:
             vehicle = self._vehicle_of(self.alive(index))
             index += 1
             if vehicle != 0 and C.lt(F_2, self.mem.u32(vehicle + 0x348)):
                 path = self.mem.u32(vehicle + 0x910)
-                dot = F_0
                 terms = [C.mul(self.mem.u32(vehicle + 0x468 + 4 * k) ^ 0x80000000, self.mem.u32(path + 0xC + 4 * k))
                          for k in range(3)]
                 dot = C.add(C.add(terms[0], terms[1]), terms[2])
