@@ -1046,7 +1046,7 @@ def stun_effect(w, victim):
     w.log('fx_at', FX_STUN)
     if w.pool(0xBC):
         w.seed.draw()
-        w.log('light', victim.tag)
+        w.log('light')
     frames = ftoi(fmul(fadd(fmul(itof(w.seed.draw()), K_1_65536), 0x3FC00000), SIXTY))
     w.log('stun', victim.tag, frames)
 

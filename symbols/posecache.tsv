@@ -1,0 +1,3 @@
+# Pose cache follow-up (docs/issues/pose-cache.md). Only addresses nobody had named.
+00791ec0	g_poseBuffers	100 pose buffers of 0x620 bytes (joint count +8, 0x18 bytes per joint from +0x10, owner state +0x610, list links +0x614/+0x618, draw stamp +0x61c); set up by anim_init 0x16fa48-0x16faac; the list ends are g_poseLruHead / g_poseLruTail
+00536260	g_playerStateJumpTable	15 code addresses indexed by the player action state +0x58c; read at 0x1a5e9c in Player_run

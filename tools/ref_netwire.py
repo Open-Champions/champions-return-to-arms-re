@@ -264,7 +264,7 @@ class BitWriter:
 
     def start(self, first_word):
         """The encoder's preamble: word 0 = the first frame's buttons, word 1 = 0, position
-        16 (0x13894c-0x138960)."""
+        16 (0x138998-0x1389d0)."""
         self.words = [first_word & 0xFFFF, 0]
         self.pos = 16
 
@@ -286,9 +286,8 @@ class BitWriter:
 
 
 class BitReader:
-    """Reads the same stream.  A read looks at two consecutive words (0x13c9d0 and every
-    inlined copy), so a well-formed stream is always followed by at least one more word;
-    words beyond the data read as 0 here."""
+    """Reads the same stream.  Every read in the original loads two consecutive words, so
+    it may touch one word past the bits it needs; words beyond the data read as 0 here."""
 
     def __init__(self, data, pos=0):
         if len(data) & 1:
@@ -343,8 +342,8 @@ class Channel:
 
 
 def axis_symbols(chan, samples):
-    """First half of netcodec_encodeAxis 0x13c450 (0x13c4a0-0x13c5c4): reduce each sample to
-    (move, direction) and advance the channel's step index and predictor.
+    """First loop of netcodec_encodeAxis 0x13c450: reduce each sample to (move,
+    direction) and advance the channel's step index and predictor.
 
     quotient = (sample - predictor) / step, truncated toward zero; move = min(|quotient|, 1);
     direction = 1 when the quotient is negative.  The predictor moves by move * step and is
@@ -367,7 +366,7 @@ def axis_symbols(chan, samples):
 
 
 def write_axis_symbols(writer, symbols):
-    """Second half of 0x13c450 (0x13c5c8-0x13c95c): pack the (move, direction) pairs.
+    """Second and third loops of 0x13c450: pack the (move, direction) pairs.
 
     Move bits: alternately a 5-bit count of zeros (31 = "31 zeros and another count
     follows"; less than 31 implies a following 1, unless the samples are exhausted) and
@@ -418,7 +417,7 @@ def encode_axis(writer, chan, samples):
 
 
 def read_axis_symbols(reader, total):
-    """First half of netcodec_decodeAxis 0x13c970 (0x13c9b8-0x13cc50): the (move,
+    """First half of netcodec_decodeAxis 0x13c970 (up to 0x13cc50): the (move,
     direction) pairs of `total` samples.  Raises MalformedPacket where a run overshoots
     the sample count (the original then writes past its scratch array)."""
     moves = []
@@ -509,7 +508,8 @@ def rec12_fields(record):
 
 
 WIRE_ORDER = (2, 3, 0, 1)   # stream order is record bytes +6, +7, +8, +9; they use state
-                            # channels +0x20, +0x30, +0x00, +0x10 (0x138a10-0x138b3c)
+                            # channels +0x20, +0x30, +0x00, +0x10 (the four calls at
+                            # 0x138bc8, 0x138c20, 0x138c78, 0x138cd0)
 CHANNEL_OF_BYTE = {6: 2, 7: 3, 8: 0, 9: 1}
 
 
@@ -573,9 +573,10 @@ def _abs32(x):
 
 
 def encode_frames(state, records):
-    """The frame encoder that is inlined in net_sendInputPacket (advance pass 0x138000 and
-    main pass 0x138938), in net_main (0x1338c0) and in the tick (0x13a0d0).  Advances
-    `state` over the records and returns the BitWriter.
+    """The frame encoder.  It exists five times, inlined: in net_sendInputPacket (catch-up
+    pass 0x137fd0-0x1388cc and main pass 0x138998-0x1391b0), in net_main (0x13385c-0x134160),
+    in the tick (before 0x13a764) and in prediction (before 0x132614).  Advances `state`
+    over the records and returns the BitWriter.
 
     Stream: 16 bits first frame's buttons; button runs; four stick channels; yaw; yaw
     flag; 16 bits 0xa5a5."""
@@ -588,7 +589,7 @@ def encode_frames(state, records):
     writer.start(fields[0][0])
     state.count = s32(state.count + count)
 
-    # buttons (0x138964-0x138a04): 5-bit runs; after a run under 31 a 4-bit number names
+    # buttons (from 0x1389d4): 5-bit runs; after a run under 31 a 4-bit number names
     # the lowest bit that differs and that bit is toggled; several changed bits cost a
     # zero-length run each
     current, run = fields[0][0], 0
@@ -614,7 +615,7 @@ def encode_frames(state, records):
     for position, channel in enumerate(WIRE_ORDER):
         encode_axis(writer, state.ch[channel], [f[1][position] for f in fields])
 
-    # yaw (0x138b40-0x138dc0)
+    # yaw (after the fourth stick call, 0x138cd0)
     run = 0
     for _buttons, _sticks, _pressure, word in fields:
         raw = s32(word & 0xFFFFFFFE)
@@ -649,7 +650,7 @@ def encode_frames(state, records):
     if run:
         writer.put(run, 5)
 
-    # yaw flag (0x138dc4-0x138e80)
+    # yaw flag, then the trailer (0x139170)
     current, run = fields[0][3] & 1, 0
     writer.put(current, 1)
     for _buttons, _sticks, _pressure, word in fields:
@@ -680,7 +681,7 @@ class FrameSymbols:
 
 
 def read_frames(data, count):
-    """The parsing half of the receiver's inlined decoder (0x13b868-0x13bdd4), for a stream
+    """The parsing half of the receiver's inlined decoder (0x13b868-0x13bddc), for a stream
     that starts at data[0].  Stateless: the stream is self-delimiting given the frame
     count.  The 0xa5a5 trailer is skipped, not checked (nothing checks it)."""
     if count < 1:
@@ -764,11 +765,11 @@ def decode_frames(state, data, count, skip=0, fpu=DEFAULT_FPU):
 
 
 def local_roundtrip(record, encoder, decoder, fpu=DEFAULT_FPU):
-    """What the tick does to the local player's own record before using it
-    (0x13a0a0-0x13ab70): encode the one frame with g_simEncState 0x5bf798 and decode it
-    with g_simDecState 0x5bf7e8, so the local machine sees the values every other machine
-    decodes.  Prediction does the same with 0x5bf6f8 / 0x5bf748.  The two pressure bytes
-    keep their sampled values."""
+    """What the tick does to the local player's own record before using it (encoder calls
+    0x13a29c-0x13a328, decoder calls 0x13a84c-0x13a99c, pad_apply at 0x13ac84): encode the
+    one frame with g_simEncState 0x5bf798 and decode it with g_simDecState 0x5bf7e8, so the
+    local machine sees the values every other machine decodes.  Prediction does the same
+    with 0x5bf6f8 / 0x5bf748.  The two pressure bytes keep their sampled values."""
     writer = encode_frames(encoder, [record])
     decoded, _bits = decode_frames(decoder, writer.tobytes(), 1, 0, fpu)
     return decoded[0][:6] + bytes(record[6:8]) + decoded[0][8:]
@@ -891,12 +892,12 @@ def parse_packet(data):
 
 def kick_request(requester_slot, kick_mask):
     """0xbd41, 12 bytes: {type, requester's slot, bit mask of the peers whose kick state is
-    1 on the requester} (net_main 0x1330f0-0x133234)."""
+    1 on the requester} (net_main 0x133148-0x133234)."""
     return struct.pack('<III', PKT_KICK_REQUEST, requester_slot & M32, kick_mask & M32)
 
 
 def kicked_notice():
-    """0xbd43, 4 bytes (net_main 0x132f58-0x132fdc)."""
+    """0xbd43, 4 bytes (net_main 0x132f54-0x132fdc)."""
     return struct.pack('<I', PKT_KICKED)
 
 
@@ -1117,7 +1118,7 @@ class Machine:
 
     def active_mask(self):
         """Bit per peer that is not dropped, not being kicked and not out of sync
-        (0x137de0-0x137e18; the same loop at 0x13b6b0)."""
+        (0x137df0-0x137e18; the same loop at 0x13b6c4-0x13b6e8)."""
         mask = 0
         for index in range(self.num_peers):
             if not self.peers[index].inactive:
@@ -1249,7 +1250,7 @@ class Machine:
         return sent
 
     def send_input(self, dest):
-        """net_main 0x133860-0x1341c0 for one peer: advance the persistent send state over
+        """net_main 0x13385c-0x1341c0 for one peer: advance the persistent send state over
         the frames the peer has acknowledged since last time (they are encoded into a
         scratch stream that is thrown away), then send frames acked .. lif - 1."""
         peer = self.peers[dest]
@@ -1417,7 +1418,7 @@ class Machine:
             for slot in range(self.num_peers):
                 peer = self.peers[slot]
                 if not peer.local and not peer.dropped and (mask >> slot) & 1:
-                    # the answer: the kicked peer's last 41 frames, verbatim (0x13c300-0x13c3a8)
+                    # the answer: the kicked peer's last 41 frames, verbatim (0x13c2e4-0x13c3a8)
                     self.build_packet(requester, max(peer.newest - RAW_RELAY_DEPTH, 0), peer.newest,
                                       PKT_RAW_RELAY, slot, None, raw=True)
             return None
@@ -1447,7 +1448,7 @@ class Machine:
         for data in inbox:
             self.dispatch(data)
 
-        # kicked notices: every 10th call for 120 calls after a manual kick (0x132f00)
+        # kicked notices: every 10th call for 120 calls after a manual kick (0x132f24-0x132fdc)
         if not no_sim:
             for slot in range(self.num_peers):
                 peer = self.peers[slot]
@@ -1459,7 +1460,7 @@ class Machine:
                     if counter % 10 == 0:
                         self.outbox.append(Sent(slot, peer.ip, peer.port, kicked_notice()))
 
-        # silence: a remote, live peer not heard for more than 900 calls is kicked (0x133000)
+        # silence: a remote, live peer not heard for more than 900 calls is kicked (0x133060-0x1330a8)
         for slot in range(self.num_peers):
             peer = self.peers[slot]
             if not (peer.local or peer.dropped or peer.kick):
@@ -1471,7 +1472,7 @@ class Machine:
                     self.kick_acks = [0, 0, 0, 0]
                     self.kick_state = 1
 
-        # kick negotiation (0x1330b0-0x133340)
+        # kick negotiation (0x1330c4-0x133340)
         if self.kick_state == 1 and render_frame % 30 == 0:
             everyone = True
             for slot in range(self.num_peers):
@@ -1505,7 +1506,7 @@ class Machine:
                 min_sim = min(min_sim, peer.sim)
         excess = (self.lif - self.net_frame) - min_lead
 
-        # the sample, the camera word and the input lock (0x133428-0x13353c)
+        # the sample, the camera word and the input lock (0x133420-0x13353c)
         buttons, s6, s7, s8, s9, p10, p11 = struct.unpack('<H6B', bytes(sample[:8]))
         word = (s16(yaw & 0xFFFE) & M32) | (1 if camera_flag else 0)
         lock = self.input_lock[local]
@@ -1765,12 +1766,13 @@ LAUNCH_TYPES = {0: 'SHAKE', 1: 'SHAKE ACK', 2: 'SIZE', 3: 'SIZE ACK', 4: 'DATA',
                 6: 'KEEP ALIVE', 7: 'KEEP ALIVE ACK', 8: 'HOST FORCE LAUNCH'}
 LAUNCH_SIZE = 0x200             # every launch packet except DATA is sent with this length
 LAUNCH_INFO = 0xD0              # the info block carried by types 0, 1 and 7
-LAUNCH_MIN = 16                 # shorter datagrams are ignored (0x135890)
+LAUNCH_MIN = 16                 # shorter datagrams are ignored (length test after the
+                                # recvfrom call in net_launchUpdate 0x135638)
 
 
 def launch_checksum(chunk):
-    """The 16-bit checksum of a DATA chunk (sender 0x135530-0x1355a0, receiver
-    0x135eb0-0x135f20).  Bytes are taken as signed.  Starting from 0x217, for byte i:
+    """The 16-bit checksum of a DATA chunk (sender: net_launchSendData 0x1354f8; receiver:
+    the DATA case of net_launchUpdate 0x135638).  Bytes are taken as signed.  Starting from 0x217, for byte i:
         even i:  subtract (byte & 0x8f37) * (i & 7)
         odd i:   add (byte * 3) ^ 0x30e15f
     and in both cases add the chunk's first byte.  Only the low 16 bits are used.  (The

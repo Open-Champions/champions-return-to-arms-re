@@ -1,0 +1,5 @@
+001a1850	pool_noteLastBlock	(block): stores its argument in g_poolLastBlock; called by pool_new on every allocation (0x14fdb8); no other caller
+004d8a24	g_poolLastBlock	address of the block pool_new returned last; written at 0x1a1858, no reader found (tools/gxref.py)
+00864ea8	g_handleFreeList	head of the free list of 20-byte handle nodes: handle_link, handle_addNode and handle_insertNode pop it, handle_clear and handle_removeNode push; its order is per machine (draw-side links, the prediction copy's links)
+00847268	g_handleNodes	array of 6095 handle nodes (20 bytes each) threaded by handle_initPool 0x1a17d0 and checked by handle_validatePool 0x1a14f0; referenced by nothing else
+00871a90	g_soundObjHandles	handle heads, indexed, that sound_playOnObject links to the object a sound follows (handle_link at 0x214334); index meaning Inferred to be the sound slot

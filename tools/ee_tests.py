@@ -23,7 +23,8 @@ death path / Player_clone and their patches, f cut_advance and its patch, g sync
 h sign-in state machine, i other ledger rows, j diagnostic patches, k kill / loot /
 pick-up rows K1-K8 and their three patches, s sync breakers B1-B11 and their three
 patches, m player movement MV2/MV5/MV6, z float special cases F3/F4/F7, n the four
-arena-entry patches, p patch file, x cross-check of the interpreter on library routines.
+arena-entry patches, u the five sections for D26 and U1-U2, p patch file, x cross-check
+of the interpreter on library routines.
 
 Where a check compares "two machines" it builds the same state twice, changes the one
 word that is per-machine state, runs the same code on both and compares every call and
@@ -2073,8 +2074,10 @@ class InteractRig:
                  dialog=0, cam_flag=0, copy=False, use_pressed=True):
         world = self.world = World(elf, players=2, local_slot=self.SLOT, network=network)
         emu, mem = self.emu, self.mem = world.emu, world.emu.mem
-        if patched and apply_section_at(emu, K1_SITE) is None:
-            raise LookupError('no patch-file section patches 0x%x' % K1_SITE)
+        if patched:                                     # True: the K1 section; an address: that section
+            site = K1_SITE if patched is True else patched
+            if apply_section_at(emu, site) is None:
+                raise LookupError('no patch-file section patches 0x%x' % site)
         self.player = world.objects[self.SLOT]
         if copy:
             mem.w32(self.player + 0x0C, 0x20060)
@@ -4315,6 +4318,152 @@ def test_arena_entry(elf):
               'help box (0x1dcf30) calls script_runPostAction offline and not in a net game')
 
 
+# ---------------------------------------------------------------------------------------
+# u. The five sections that arrived last (FINDINGS D26, U1-U3): 0x1b53d4, 0x1a5ba8,
+#    0x1e6a60, 0x231a64, 0x27def8.  One check each.
+# ---------------------------------------------------------------------------------------
+PLAYER_TAKE_DAMAGE, U_DAMAGE_SITE, U_GATE_SITE = 0x1B5330, 0x1B53D4, 0x1A5BA8
+CONFIG_COMMIT, U_COMMIT_SITE, G_SAVED_CONFIG, G_SFX_VOLUME = 0x1E6650, 0x1E6A60, 0x4F8F38, 0x4F8940
+BUTTON_TABLES = (0x41B980, 0x41B990, 0x41B9A0, 0x41B9C0, 0x41B9E0, 0x41B9D0, 0x41BA10, 0x41BA20, 0x41BA30)
+G_PAUSE_MENU_OPEN, LOCK_LOCAL_INPUT = 0x44F208, 0x13E4E8
+MENU_GATES = {0x231A64: ('missionMenu_run', 0x231A44, 0x231A80, 0x2322DC, 0x4FE7EC),
+              0x27DEF8: ('jumpgate_menuRun', 0x27DED8, 0x27DF14, 0x27E2B0, 0x8E3A3B)}
+
+
+def take_damage(elf, lockout, patched=False):
+    """Player_takeDamage(25.0, player, no attacker, no flags) whole in a net game.
+    Returns the pending damage afterwards and the run log."""
+    world = World(elf, players=2, local_slot=0, network=True)
+    emu, mem = world.emu, world.emu.mem
+    if patched and apply_section_at(emu, U_DAMAGE_SITE) is None:
+        raise LookupError('no patch-file section patches 0x%x' % U_DAMAGE_SITE)
+    mem.w32(G_MENU_LOCKOUT, lockout)
+    mem.write(G_LEVEL_NAME, b'hub\0')
+    player = world.objects[1]
+    emu.follow = {STRCMP, IS_LOCAL_SLOT}
+    emu.reset_log()
+    emu.call(PLAYER_TAKE_DAMAGE, player, 0, 0, fargs=(25.0,))
+    return mem.f32(player + 0xC8), run_log(emu)
+
+
+def commit_options(elf, saved_rows, patched=False):
+    """config_commitOptions(0, 0, 0) whole in a net game, twice: once with an option
+    changed, once more with nothing changed.  The per-slot button tables start with the
+    same values on every machine (what the launch handshake installs); saved_rows is
+    this machine's own four saved controller rows.  Returns the tables after the first
+    call, the first call's stores outside the tables and its calls, and how many table
+    stores the second call made."""
+    emu = EE(elf)
+    mem = emu.mem
+    if patched and apply_section_at(emu, U_COMMIT_SITE) is None:
+        raise LookupError('no patch-file section patches 0x%x' % U_COMMIT_SITE)
+    mem.w8(G_NETWORK_MODE, 1)
+    for index, table in enumerate(BUTTON_TABLES):
+        for slot in range(4):
+            mem.w32(table + 4 * slot, 0x1000 * (slot + 1) + index)
+    for slot in range(4):
+        for word in range(9):
+            mem.w32(G_SAVED_CONFIG + 0x34 + slot * 0x24 + 4 * word, saved_rows + 0x100 * slot + word)
+    mem.wf32(G_SFX_VOLUME, 0.5)                             # one option differs from the saved set
+
+    def in_tables(addr):
+        return BUTTON_TABLES[0] <= addr < BUTTON_TABLES[-1] + 16
+    emu.follow = set()
+    emu.reset_log()
+    emu.call(CONFIG_COMMIT, 0, 0, 0)
+    tables = [[mem.u32(table + 4 * slot) for table in BUTTON_TABLES] for slot in range(4)]
+    others = [w[1:] for w in emu.writes if not in_tables(w[1])]
+    calls = [c.target for c in emu.calls]
+    emu.reset_log()
+    emu.call(CONFIG_COMMIT, 0, 0, 0)
+    return tables, others, calls, sum(1 for w in emu.writes if in_tables(w[1]))
+
+
+def menu_pause_gate(elf, site, chooser_local, pause_open, patched=False):
+    """The top of a shared menu's run function: does this machine go on to read the
+    chooser's pad, and did it lock its own input instead?"""
+    _name, start, goes_on, returns, chooser = MENU_GATES[site]
+    world = World(elf, players=2, local_slot=0 if chooser_local else 1, network=True)
+    emu, mem = world.emu, world.emu.mem
+    if patched and apply_section_at(emu, site) is None:
+        raise LookupError('no patch-file section patches 0x%x' % site)
+    mem.w8(chooser, 0)                                      # slot 0 is choosing
+    mem.w8(G_PAUSE_MENU_OPEN, 1 if pause_open else 0)
+    emu.follow = {IS_LOCAL_SLOT, 0x18CBFC}                   # pauseMenu_isOpen
+    emu.r[19] = 0x500000
+    emu.reset_log()
+    emu.run(start=start, until={goes_on, returns}, max_steps=100)
+    return emu.pc == goes_on, [(c.args[0] & M32, c.args[1] & M32) for c in emu.calls if c.target == LOCK_LOCAL_INPUT]
+
+
+def test_late_sections(elf):
+    if pnach_section_at(U_DAMAGE_SITE) is None:
+        skip('u1', 'the patch file has no section for 0x1b53d4')
+    else:
+        clear, locked = take_damage(elf, 0), take_damage(elf, 60)
+        p_clear, p_locked = take_damage(elf, 0, patched=True), take_damage(elf, 60, patched=True)
+        check('u1', clear[0] == 25.0 and locked[0] == 0.0 and locked[1][1] == [] and len(locked[1][0]) < len(clear[1][0])
+              and p_locked[1] == p_clear[1] == clear[1] and p_locked[0] == 25.0,
+              'patch "menu lockout never drops player damage" (0x1b53d4) and D26 '
+              '(Player_takeDamage whole, 25 damage to a player in a net game): shipped, a '
+              'machine whose lockout word 0x41b4fc is 0 adds the 25 to the pending damage at '
+              '+0xc8, a machine where it is 60 returns before that and stores nothing at all; '
+              'patched, both make the calls and stores of the shipped run with the word 0')
+    if pnach_section_at(U_GATE_SITE) is None:
+        skip('u2', 'the patch file has no section for 0x1a5ba8')
+    else:
+        clear, locked = InteractRig(elf).run(), InteractRig(elf, lockout=60).run()
+        same = total = 0
+        for bits in range(64):
+            state = dict(paused=bits & 1, selector=(bits >> 1) & 1, dialog=(bits >> 2) & 1,
+                         cam_flag=(bits >> 3) & 1, copy=bool(bits & 16), network=bool(bits & 32))
+            shipped = InteractRig(elf, **state).run()
+            for lockout in (0, 60):
+                total += 1
+                same += InteractRig(elf, lockout=lockout, patched=U_GATE_SITE, **state).run() == shipped
+        check('u2', locked == ([], []) and [c[1] for c in clear[0][:4]] == [DIALOG_IS_OPEN, NET_GET_CAM_FLAG,
+                                                                           WEAPON_SWAP_INPUT, PLAYER_INTERACT]
+              and same == total == 128,
+              'patch "menu lockout never blocks weapon swap and use" (0x1a5ba8), the stretch of '
+              'k1 (Player_run 0x1a5b98-0x1a5c28): shipped, the machine with the lockout word at '
+              '60 makes no call and no store in the stretch - no Player_weaponSwapInput, no '
+              'Player_interact - while the machine with it at 0 makes them all; patched, over '
+              'all 64 combinations of the other five tests, offline and net, the run with the '
+              'word 0 or 60 equals the shipped run with the word 0 (%d of %d)' % (same, total))
+    if pnach_section_at(U_COMMIT_SITE) is None:
+        skip('u3', 'the patch file has no section for 0x1e6a60')
+    else:
+        a, b = commit_options(elf, 0xA0000), commit_options(elf, 0xB0000)
+        p_a, p_b = commit_options(elf, 0xA0000, patched=True), commit_options(elf, 0xB0000, patched=True)
+        handshake = [[0x1000 * (slot + 1) + index for index in range(9)] for slot in range(4)]
+        own_rows = all(sorted(a[0][slot]) == [0xA0000 + 0x100 * slot + word for word in range(9)] for slot in range(4))
+        check('u3', a[0] != b[0] and own_rows and a[0] != handshake and p_a[0] == p_b[0] == handshake
+              and p_a[1:3] == a[1:3] and p_b[1:3] == b[1:3] and a[3] == 0 and p_a[3] == 0,
+              'patch "option commit leaves the button maps alone" (0x1e6a60) and U1 '
+              '(config_commitOptions whole, net game, one option changed; two machines whose '
+              'button tables hold the same handshake values and whose saved controller rows '
+              'differ): shipped, each machine overwrites all 36 words of the nine per-slot '
+              'tables with its OWN saved rows, so the two machines then read the same pad '
+              'through different maps; patched, the tables keep the handshake values on both, '
+              'and every other store (the saved option set) and call of the function is '
+              'unchanged.  A second call with nothing changed copies nothing even unpatched')
+    for ident, site in (('u4', 0x231A64), ('u5', 0x27DEF8)):
+        name = MENU_GATES[site][0]
+        if pnach_section_at(site) is None:
+            skip(ident, 'the patch file has no section for 0x%x' % site)
+            continue
+        cases = ((True, True), (True, False), (False, True), (False, False))
+        shipped = [menu_pause_gate(elf, site, local, pause) for local, pause in cases]
+        patched = [menu_pause_gate(elf, site, local, pause, patched=True) for local, pause in cases]
+        check(ident, shipped == [(False, [(0, 4)]), (True, []), (True, []), (True, [])] and patched == [(True, [])] * 4,
+              'patch at 0x%x and U2 (%s entered part-way at 0x%x): shipped, the machine that '
+              'owns the choosing slot and has its pause menu open calls '
+              'net_lockLocalInput(slot, 4) and returns before the pad test, while the same '
+              'machine with the pause menu closed, and a machine that does not own the slot '
+              '(pause menu open or not), go on to read the chooser\'s lockstep pad; patched, '
+              'all four go on and nobody locks input' % (site, name, MENU_GATES[site][1]))
+
+
 def test_kill(elf):
     test_k1_interact(elf)
     test_k2_potion(elf)
@@ -4463,6 +4612,7 @@ GROUPS = [
     ('m', 'movement', 'player movement: Player_move 0x1b4020, Player_run 0x1a5030, Creature_applyKnockback 0x115eb8', test_movement),
     ('z', 'float', 'float special cases: sqrt.s sites 0x10bbc8/0x10bcc4/0x10bdcc/0x13cd24, FireStorm 0x2d470c, Tagar\'s Insects 0x30cdc0, slow-byte divides 0x1a81a0 and 0x1aa178', test_float_cases),
     ('n', 'entry', 'arena-entry patches: net_frameLoop 0x13b1c4, cut_runFrame 0x199d90, save_armAutosave 0x217f14, help_task 0x1dd008', test_arena_entry),
+    ('u', 'late', 'the last five sections: Player_takeDamage 0x1b5330, Player_run 0x1a5ba8, config_commitOptions 0x1e6650, missionMenu_run 0x231a44, jumpgate_menuRun 0x27ded8', test_late_sections),
     ('p', 'patchfile', 'patch file: quoted original words', test_patch_file),
     ('x', 'crosscheck', 'interpreter cross-check on library routines with known results', test_cross_check),
 ]

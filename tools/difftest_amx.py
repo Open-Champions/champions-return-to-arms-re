@@ -283,9 +283,11 @@ def differences(orig, model, image_size):
     return out
 
 
-def expected_code(orig, model):
+def expected_code(orig, model, decoded=None, below=None):
     """The code block the original must hold after scr_load if the model's reading of the
-    relocator is right: handler addresses for opcodes, machine addresses for code operands."""
+    relocator is right: handler addresses for opcodes, machine addresses for code operands.
+    decoded / below: only the instructions of that map that start below that offset (for a
+    pass that stopped early)."""
     start = 0x60 + model.cod
     code = bytearray(model.image[start:0x60 + model.dat])
     code_base = orig.base + start
@@ -293,7 +295,9 @@ def expected_code(orig, model):
     def add_base(offset):
         struct.pack_into('<I', code, offset, (struct.unpack_from('<I', code, offset)[0] + code_base) & M32)
 
-    for offset, (op, operand, _next) in model._decoded.items():
+    for offset, (op, operand, _next) in (model._decoded if decoded is None else decoded).items():
+        if below is not None and offset >= below:
+            continue
         struct.pack_into('<I', code, offset, orig.handlers[op])
         kind = OPCODES[op][1]
         if kind == ref_amx.C:
@@ -389,6 +393,10 @@ class ScriptPair:
                 b = model.register({name: f for name, f in natives.items() if name != names[missing]})
                 if (a, b) != (19, 19):
                     problems.append('registration without %r returns %d, model %d' % (names[missing], a, b))
+                for slot, name in enumerate(names):      # every other record is bound all the same
+                    bound = mem.u32(orig.base + 0x60 + model.natives_off + 24 * slot) != 0
+                    if bound != (name != names[missing]) or bound != (model._natives()[slot] is not None):
+                        problems.append('after it, record %r bound: %s' % (name, bound))
         shuffled = table[:]
         rng.shuffle(shuffled)
         a, b = orig.register(shuffled), model.register(natives)
@@ -551,8 +559,8 @@ def group_scripts(orig, options):
                 'top and the whole data/heap/stack block equal the model\'s (%(bad)d differ)')
     reloc.report('A2', 'relocated code block of %(n)d scripts is byte for byte what the model predicts '
                  '(handler address per opcode, code base added to code operands) (%(bad)d differ)')
-    bind.report('A3', 'scr_registerNatives on %(n)d scripts: 19 with one name missing, 0 with all, every '
-                'record bound to the listed address (%(bad)d differ)')
+    bind.report('A3', 'scr_registerNatives on %(n)d scripts: 19 with one name missing (all other records bound), 0 '
+                'with all, every record bound to the listed address (%(bad)d differ)')
     find.report('A4', 'scr_findEntry: %(n)d lookups (every entry-point name and four near misses of '
                 'each) give the model\'s error and index (%(bad)d differ)')
     fresh.report('A5', 'scr_interpret from the freshly loaded state: %(n)d runs of ' + str(entries) +
@@ -604,6 +612,10 @@ NATIVES = (b'trace', b'fail', b'nest')
 DATA_END = 4 * DATA_CELLS                     # first heap address
 STP = DATA_END + 4 * STACK_CELLS - 4          # stack top after loading
 FRAME = STP - 12                              # FRM after the PROC of an entry point without arguments
+SLACK = 1024                                  # bytes after the image, the same on both sides: what
+#                                               lies behind the script in memory (more than `dat`,
+#                                               so the header's stack top can be reached inside it)
+WILD = [False]                                # set by a generator that knowingly leaves the machine
 INTERESTING = (0, 1, -1, 2, 3, 4, 5, 7, 8, 31, 32, 33, 0x7F, 0x80, 0xFF, 0x100, 0x7FFF, 0x8000, 0xFFFF,
                0x10000, 0x7FFFFFFF, -0x80000000, 0x40000000, -0x40000000, 0x55555555, -0x55555556, -2, -128)
 
@@ -633,6 +645,7 @@ def checked_address(rng):
         return rng.randrange(DATA_END, FRAME - 64, 4)            # free gap
     if roll < 0.95:
         return rng.choice((STP, STP + 4, STP + 64, 0x7FFFFFFC, DATA_END - 4, DATA_END))
+    WILD[0] = True
     return rng.choice((-4, -64, -0x80000000))
 
 
@@ -651,12 +664,17 @@ def registers(rng):
 def directed(name, rng):
     """A program that exercises opcode name with random operands.  Returns the item list for
     ref_amx.assemble; every program starts at offset 0 with PROC."""
-    op = OP[name]
-    kind = OPCODES[op][1]
+    WILD[0] = False
     head = [('PROC',), ('PUSH.C', value(rng)), ('PUSH.C', data_address(rng)), ('PUSH.C', value(rng)),
             ('PUSH.C', data_address(rng))]
+    stack = FRAME - 16                                  # STK after the head
     if rng.random() < 0.3:
         head.append(('HEAP', rng.choice((4, 8, 16, 64))))
+    if name in ('STACK', 'HEAP') and rng.random() < 0.5:
+        # a native call first, left on the stack: the saved stack pointer now differs from the
+        # entry value, which shows whether an error exit restores it
+        head += [('PUSH.C', 0), ('SYSREQ.C', 0)]
+        stack -= 4
     simple_none = ('MOVE.pri MOVE.alt XCHG SHL SHR SSHR SMUL SDIV SDIV.alt UMUL UDIV UDIV.alt ADD SUB SUB.alt '
                    'AND OR XOR NOT NEG INVERT ZERO.pri ZERO.alt SIGN.pri SIGN.alt EQ NEQ LESS LEQ GRTR GEQ '
                    'SLESS SLEQ SGRTR SGEQ INC.pri INC.alt DEC.pri DEC.alt IDXADDR PUSH.pri PUSH.alt POP.pri '
@@ -716,6 +734,8 @@ def directed(name, rng):
         shift = 2 if name == 'LIDX' else rng.choice((0, 1, 2, 3, 34, 2, 2))
         base, target = data_address(rng), checked_address(rng)
         index = (target - base) >> (shift & 31)
+        if base + (index << (shift & 31)) < 0:
+            WILD[0] = True
         if rng.random() < 0.25:                           # an index whose shifted value wraps
             index = s32(index + (1 << (32 - (shift & 31))) * rng.randint(1, 3))
         body = [('CONST.pri', index), ('CONST.alt', base)]
@@ -739,7 +759,12 @@ def directed(name, rng):
         return head + registers(rng) + [(name, rng.choice((0, 1, 2, 3, 6)))] + dump(1)
     if name == 'STACK':
         amount = rng.choice((0, 4, 8, 12, 16, -4, -8, -64, -200, -280, -284, -288, -292, -400, 0x1000,
-                             0x10000, 0x7FFFFFF0, -0x80000000))
+                             0x10000, 0x7FFFFFF0, -0x80000000, 'stp', 'stp', 'top', 'top', 'top'))
+        if isinstance(amount, str):
+            # to the stack top of the machine (stp) or of the header (stp + dat), give or take
+            size = 4 * len(assemble(head + registers(rng) + [(name, 0)] + dump(1))[0])
+            dat = 0x40 + 24 * (1 + len(NATIVES)) + size
+            amount = (STP if amount == 'stp' else STP + dat) - stack + rng.choice((-4, 0, 4, 8))
         return head + registers(rng) + [(name, amount)] + dump(1)
     if name == 'HEAP':
         amount = rng.choice((0, 4, 8, 64, 200, 240, 244, 248, 252, 256, 400, -4, -DATA_END, -DATA_END - 4,
@@ -922,8 +947,13 @@ class SyntheticPair:
         """Loads and binds on both sides.  Returns the list of problems (the model may raise
         HostFault)."""
         orig, model = self.orig, self.model
-        b = model.load()
         a = orig.load()
+        try:
+            b = model.load()
+        except HostFault as fault:
+            if a != 0:
+                return ['scr_load returns %d, the model raises HostFault: %s' % (a, fault)]
+            raise
         problems = ['scr_load returns %d, model %d' % (a, b)] if a != b else []
         problems += differences(orig, model, len(self.image))
         if model._parsed and not problems:
@@ -1014,18 +1044,33 @@ class SyntheticPair:
 
 
 def synthetic_image(rng, program, extra_publics=(), **keywords):
+    """The image of a program with entry point main, followed by SLACK bytes.  Half of the
+    images have random words in the heap and stack room and in the slack (the file has
+    zeroes there, but nothing in the machine relies on that), except for a zero tail that
+    ends any string read."""
     cells, labels = assemble(program)
     publics = [('main', 0)] + [(name, labels[label]) for name, label in extra_publics]
-    return build_image(cells, synthetic_data(rng), publics, NATIVES, STACK_CELLS, **keywords), labels
+    image = bytearray(build_image(cells, synthetic_data(rng), publics, NATIVES, STACK_CELLS, **keywords))
+    room = len(image) - 4 * STACK_CELLS
+    image += bytes(SLACK)
+    if rng.random() < 0.5:
+        image[room:len(image) - 16] = bytes(rng.getrandbits(8) for _ in range(len(image) - 16 - room))
+    return bytes(image), labels
 
 
-def run_program(orig, rng, program, tally, label, profile=None, runs=None, shift=None, **keywords):
-    """Assembles, loads and runs a synthetic program on both sides; adds the outcome to tally."""
+def run_program(orig, rng, program, tally, label, profile=None, runs=None, shift=None, strict=False,
+                **keywords):
+    """Assembles, loads and runs a synthetic program on both sides; adds the outcome to tally.
+    strict: the program stays inside the machine by construction, so a HostFault from the
+    model is a failure and not a skipped case."""
     image, _labels = synthetic_image(rng, program, **keywords)
     pair = SyntheticPair(orig, image, rng.choice((0, 4, 8, 12)) if shift is None else shift)
     try:
         problems = pair.load()
-    except HostFault:
+    except HostFault as fault:
+        if strict:
+            tally.add(['the model raises HostFault at load: %s' % fault], label)
+            return 'bad'
         tally.host += 1
         return 'host'
     if problems:
@@ -1035,6 +1080,9 @@ def run_program(orig, rng, program, tally, label, profile=None, runs=None, shift
     outcome = 'ok'
     for index, params in (runs or [(0, ())]):
         outcome, problems = pair.run(index, params, value(rng), rng.getrandbits(32))
+        if outcome == 'host' and strict:
+            tally.add(['the model raises HostFault: %s' % problems[0]], label)
+            return 'bad'
         if outcome == 'host':
             tally.host += 1
             break
@@ -1058,7 +1106,8 @@ def group_opcodes(orig, options):
         for case in range(per_opcode):
             before = profile.get(number, 0)
             program = directed(name, rng)
-            outcome = run_program(orig, rng, program, tally, '%s #%d' % (name, case), profile)
+            outcome = run_program(orig, rng, program, tally, '%s #%d' % (name, case), profile,
+                                  strict=not WILD[0])
             if VERBOSE and outcome == 'bad':
                 note('program: %r' % (program,))
         total.cases += tally.cases
@@ -1070,7 +1119,8 @@ def group_opcodes(orig, options):
             weak.append('%s (%d of %d)' % (name, tally.cases, per_opcode))
     total.report('B1', 'directed programs, ' + str(per_opcode) + ' per opcode for the 130 opcodes 0x01-0x82 '
                  'with random operands: %(n)d compared runs agree in trace, error, result, machine '
-                 'structure and memory (%(bad)d differ; %(host)d host faults, %(endless)d endless)')
+                 'structure and memory (%(bad)d differ; %(host)d host faults, all in programs made to '
+                 'leave the machine; %(endless)d endless)')
     if weak:
         note('opcodes with fewer than a third of their programs compared: ' + ', '.join(weak))
     # opcode 0 cannot be loaded; put its handler into a relocated cell by hand
@@ -1187,15 +1237,16 @@ def group_entry(orig, options):
                               STP - 0x40 - 12, STP, 0x7FFFFFC0))
             mem.w32(base + 0x14, new & M32)
             model.hea = new
-        outcome, more = pair.run(0, (), value(rng), case)
+        params = tuple(value(rng) for _ in range(rng.randint(0, 2)))
+        outcome, more = pair.run(0, params, value(rng), case)
         if outcome == 'host':
             tally.host += 1
             continue
         tally.add(problems + more, 'changed %s #%d' % (what, case))
     tally.report('C4', 'entry checks with changed machine words (no callback: 9; not relocated: 22; stack '
                  'pointer above the header\'s stack top: 7; heap top negative: 8; less than 0x40 bytes '
-                 'free: 3 after the two entry cells were written): %(n)d runs agree (%(bad)d differ, '
-                 '%(host)d host faults)')
+                 'free: 3 after the arguments and the two entry cells were written), in memory that is '
+                 'not zero: %(n)d runs agree (%(bad)d differ, %(host)d host faults)')
     # nested runs and errors raised by natives
     tally = Tally()
     for case in range(max(1, int(250 * scale))):
@@ -1221,6 +1272,31 @@ def group_entry(orig, options):
     tally.report('C5', 'natives that start a nested run on the same machine (down to ' + str(MAX_DEPTH) +
                  ' levels) or set the error word: %(n)d runs agree, including the words the nested run '
                  'leaves in the machine structure (%(bad)d differ, %(host)d host faults, %(endless)d endless)')
+    # the game's way in
+    tally = Tally()
+    for case in range(max(1, int(80 * scale))):
+        program = [('PROC',), ('CONST.pri', value(rng)), ('RETN',),
+                   'halt:', ('PROC',), ('CONST.pri', value(rng)), ('HALT', rng.choice((0, 4, 27, -1))),
+                   'fail:', ('PROC',), ('CONST.pri', value(rng)), ('ZERO.alt',), ('SDIV',), ('RETN',),
+                   'keep:', ('PROC',), ('RETN',)]
+        image, _ = synthetic_image(rng, program, extra_publics=[('halt', 'halt'), ('fail', 'fail'),
+                                                               ('keep', 'keep')])
+        pair = SyntheticPair(orig, image)
+        problems = pair.load()
+        mem = orig.emu.mem
+        for name in (b'main', b'halt', b'fail', b'keep', b'nobody', b'Main', b''):
+            pri = value(rng)
+            mem.write(orig.buffer, name + bytes(32))
+            mem.w32(orig.SP - 0x20 - 0x80 + 4, pri & M32)     # PRI slot of the frame below script_runByName's
+            a = orig.call(SCRIPT_RUN_BY_NAME, orig.buffer)
+            b = pair.model.call(name, pri=pri)
+            if a != b:
+                problems.append('%r returns %d, model %d' % (name, a, b))
+            problems += differences(orig, pair.model, len(image))
+        tally.add(problems, 'script_runByName #%d' % case)
+    tally.report('C8', 'script_runByName 0x1ed694 against Machine.call: -1 for an unknown name, the result '
+                 'of RETN or HALT, 0 after an error, the uninitialised PRI for a function that sets '
+                 'none: %(n)d images, seven names each, agree (%(bad)d differ)')
     # the claim behind HostFault for an unbound native
     program = [('PROC',), ('PUSH.C', 0), ('SYSREQ.C', 0), ('RETN',)]
     cells, _ = assemble(program)
@@ -1273,6 +1349,8 @@ def group_loader(orig, options):
     tally = Tally()
     for case in range(max(1, int(300 * scale))):
         image = bytearray(build_image(program_cells(), synthetic_data(rng), [('main', 0)], NATIVES, STACK_CELLS))
+        if rng.random() < 0.5:                            # heap and stack room not zero in the file
+            image[-4 * STACK_CELLS:] = bytes(rng.getrandbits(8) for _ in range(4 * STACK_CELLS))
         field = rng.choice(('magic', 'record', 'version', 'file version', 'stp', 'flags', 'none', 'struct'))
         if field == 'magic':
             struct.pack_into('<H', image, 0x64, rng.choice((0xF1E1, 0xE0F1, 0, 0xF1E0)))
@@ -1321,14 +1399,23 @@ def group_loader(orig, options):
         except HostFault:
             tally.host += 1
             continue
-        relocated = bool(orig.emu.mem.u32(orig.base + 0x20) & 0x8000)
+        mem = orig.emu.mem
+        relocated = bool(mem.u32(orig.base + 0x20) & 0x8000)
+        # the code block: relocated up to the bad cell, which holds the word found at its
+        # place in the handler table when it is below 0x100, and is untouched otherwise
+        expected = bytearray(expected_code(orig, pair.model, model._decoded, 4 * victim))
+        if cells[victim] < 0x100:
+            struct.pack_into('<I', expected, 4 * victim, mem.u32((HANDLER_TABLE + 4 * cells[victim]) & M32))
+        if mem.read(orig.base + 0x60 + pair.model.cod, len(expected)) != bytes(expected):
+            problems.append('code block after the refused pass is not as described')
         outcome, more = pair.run(0, (), value(rng), case)
         tally.add(problems + more + ([] if not relocated and pair.model.flags & 0x8000 == 0 else ['relocated']),
                   'bad opcode %d #%d' % (cells[victim], case))
     tally.report('D2', 'a cell that is not an opcode 1..0x82 where the relocator expects one: scr_load '
-                 'still returns 0, the code is not marked relocated, the debug words keep what the pass '
-                 'had stored, and scr_interpret returns 22: %(n)d images agree (%(bad)d differ, %(host)d '
-                 'host faults)')
+                 'still returns 0, the code is not marked relocated, the cells before it are relocated, '
+                 'the cell itself holds a handler-table word if it was below 0x100, the debug words '
+                 'keep what the pass had stored, and scr_interpret returns 22: %(n)d images agree '
+                 '(%(bad)d differ, %(host)d host faults)')
     # compact encoding
     tally = Tally()
     for case in range(max(1, int(300 * scale))):

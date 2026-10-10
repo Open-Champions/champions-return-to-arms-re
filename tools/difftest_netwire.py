@@ -1113,6 +1113,8 @@ class Session:
         self.models = [session_model(players, i, self.consoles[i]) for i in range(players)]
         self.gens = [InputGen(random.Random(rng.randrange(1 << 30))) for _ in range(players)]
         self.calls = [0] * players
+        self.render_offset = [0] * players  # the rendered-frame counters need not be in step
+        self.delay_log = [[] for _ in range(players)]
         self.now = 0
         self.dead = set()
         self.message_rate = 0.15
@@ -1167,7 +1169,7 @@ class Session:
                 if waiting + size + 2 > 255:
                     break
                 self.queue(index, rng.randrange(8), bytes(rng.randrange(256) for _ in range(size)))
-        render = self.calls[index]
+        render = self.calls[index] + self.render_offset[index]
         if console is not None:
             console.net_main(sample, yaw, flag, frame_step, no_sim, hold_arg, render, inbox)
         before_trace = len(model.toy.trace)
@@ -1179,6 +1181,12 @@ class Session:
         self.held += held
         self.steps += steps
         self.stalled += steps == 0
+        # for the input-delay rule: lead after sampling and before the tick, frames
+        # sampled and frames simulated in this call
+        before_tick = model.net_frame - (0 if model.level_pending else steps)
+        self.delay_log[index].append((self.calls[index], frame_step, held, model.lif - before_tick,
+                                      [] if held else list(range(model.lif - frame_step, model.lif)),
+                                      list(range(before_tick, before_tick + steps))))
         if console is not None:
             ok = len(console.sent) == len(sent)
             difference = None if ok else 'console sent %d datagrams, model %d' % (len(console.sent), len(sent))
@@ -1262,6 +1270,33 @@ class Session:
     def flags(self, name):
         return [[getattr(m.peers[s], name) for s in range(self.players)] for m in self.models]
 
+    def delay_rule(self):
+        """For every frame sampled in a one-step call c with lead L (g_localInputFrame -
+        g_netFrame after the sample is stored, before the tick) and simulated later while
+        the machine kept taking one step per call: (frames checked, frames simulated in
+        call c + L - 1 + the number of calls without a tick in between, frames simulated in
+        exactly call c + L - 1, smallest L seen)."""
+        checked = exact = plain = 0
+        smallest = None
+        for log in self.delay_log:
+            simulated_in = {}
+            for position, (_call, _step, _held, _lead, _sampled, simulated) in enumerate(log):
+                for frame in simulated:
+                    simulated_in[frame] = position
+            for position, (_call, step, held, lead, sampled, _simulated) in enumerate(log):
+                if held or step != 1 or sampled[0] not in simulated_in:
+                    continue
+                end = simulated_in[sampled[0]]
+                window = log[position:end + 1]
+                if any(entry[1] != 1 for entry in window):
+                    continue
+                stalls = sum(1 for entry in window if not entry[5])
+                checked += 1
+                exact += end - position == lead - 1 + stalls
+                plain += end - position == lead - 1
+                smallest = lead if smallest is None else min(smallest, lead)
+        return checked, exact, plain, smallest
+
 
 def session_report(name, session, text, extra_ok=True, extra_text=''):
     compared, different, pressure = session.agreement()
@@ -1293,6 +1328,12 @@ def test_sessions(elf):
     session.run(rounds)
     session_report('session: 2 consoles', session, 'two emulated consoles, 3% loss, delay 1-3 calls',
                    all(not any(row) for row in session.flags('oos')), ' No machine flagged another out of sync')
+    checked, exact, plain, smallest = session.delay_rule()
+    report('input delay rule', checked - exact, checked,
+           'same session: a pad sample stored in net_main call c, with lead L = g_localInputFrame - '
+           'g_netFrame taken after the sample is stored and before the tick, is simulated in call '
+           'c + L - 1 + (calls without a tick in between); %d of the %d frames had no such call and were '
+           'simulated in exactly call c + L - 1; smallest L seen %s' % (plain, checked, smallest))
 
     rng = random.Random(seed + 11)
     session = Session(elf, rng, 3, Wire(rng, loss=0.10, duplicate=0.05, delay=(1, 9)))
@@ -1305,7 +1346,7 @@ def test_sessions(elf):
     session = Session(elf, rng, 4, Wire(rng, loss=0.05, duplicate=0.02, delay=(1, 5)))
     session.message_rate = 0.3
     session.run(rounds // 2)
-    session_report('session: 4 consoles', session, 'four consoles, 5% loss, many game messages (sizes %s)'
+    session_report('session: 4 consoles', session, 'four consoles, 5%% loss, many game messages (sizes %s)'
                    % ', '.join(str(k) for k in sorted(session.message_sizes)),
                    all(not any(row) for row in session.flags('oos')), ' No machine flagged another out of sync')
 
@@ -1372,15 +1413,16 @@ def test_sessions(elf):
     session.consoles[1].toy.fault_frame = bad_frame
     session.run(scaled(260, 120))
     oos = session.flags('oos')
-    expected = [[0, 1, 0], [1, 0, 1], [0, 1, 0]]
     frames = [m.net_frame for m in session.models]
     session_report('session: one machine diverges', session,
                    'three consoles; machine 1 corrupts its seed in frame %d' % bad_frame,
-                   oos == expected and session.models[1].stall > 50,
-                   ' Out-of-sync flags end as %r (row = machine, column = peer): the others flag machine 1 and '
-                   'drop its packets, it flags them; machine 1 stops at frame %d because nobody\'s input is '
-                   'accepted any more, machines 0 and 2 stop at %d and %d waiting for its input'
-                   % (oos, frames[1], frames[0], frames[2]))
+                   oos[0] == [0, 1, 0] and oos[2] == [0, 1, 0] and oos[1][1] == 0
+                   and all(m.stall > 50 for m in session.models),
+                   ' Out-of-sync flags end as %r (row = machine, column = peer): machines 0 and 2 flag machine 1 '
+                   'and from then on ignore its packets; whether machine 1 flags them depends on whether their '
+                   'record for the bad frame reached it before their active mask changed.  All three then '
+                   'stall (frames %s): 0 and 2 wait for input from 1 that they no longer accept'
+                   % (oos, '/'.join(str(f) for f in frames)))
 
     # a peer goes silent: timeout, negotiation by kick requests and raw relays, drop
     rng = random.Random(seed + 17)
@@ -1407,20 +1449,242 @@ def test_sessions(elf):
                    'tick and went on simulating (frames %s); kills %r' % (
                        drop_frames[0], '/'.join(str(m.net_frame) for m in survivors), kills))
 
-    # manual kick
+    # manual kick.  The rendered-frame counters of machines 0 and 1 are 15 apart, so that
+    # machine 1's own kick request reaches machine 0 before machine 0 has finished.
+    rng = random.Random(seed + 18)
+    session = Session(elf, rng, 3, Wire(rng, loss=0.0, delay=(1, 2)))
+    session.render_offset[1] = 15
+    session.run(40)
+    session.models[0].kick_peer(2)
+    session.consoles[0].call(KICK_PEER, 2)
+    session.run(scaled(200, 200))
+    survivors = session.models[:2]
+    session_report('session: manual kick', session,
+                   'three consoles; machine 0 calls net_kickPeer(2)',
+                   session.datagrams[R.PKT_KICKED] == 12 and session.models[2].kicked == 1
+                   and [m.peers[2].dropped for m in survivors] == [1, 1]
+                   and len({m.peers[2].drop_frame for m in survivors}) == 1
+                   and min(m.net_frame for m in survivors) > survivors[0].peers[2].drop_frame + 20,
+                   ' 12 kicked notices (0xbd43) went to the kicked machine, which set its flag; machines 0 and '
+                   '1 exchanged kick requests and raw relays, dropped slot 2 at the same frame %d and went on '
+                   '(frames %s)' % (survivors[0].peers[2].drop_frame, '/'.join(str(m.net_frame) for m in survivors)))
+
+    # the same with the two rendered-frame counters in step: machine 1's request arrives
+    # after machine 0 has dropped the peer, is never answered, and machine 1 never drops it
     rng = random.Random(seed + 18)
     session = Session(elf, rng, 3, Wire(rng, loss=0.0, delay=(1, 2)))
     session.run(40)
     session.models[0].kick_peer(2)
     session.consoles[0].call(KICK_PEER, 2)
-    session.run(scaled(200, 200))
-    session_report('session: manual kick', session,
-                   'three consoles; machine 0 calls net_kickPeer(2)',
-                   session.datagrams[R.PKT_KICKED] == 12 and session.models[2].kicked == 1
-                   and [m.peers[2].dropped for m in session.models[:2]] == [1, 1]
-                   and len({m.peers[2].drop_frame for m in session.models[:2]}) == 1,
-                   ' 12 kicked notices (0xbd43) went to the kicked machine, which set its flag; machines 0 and '
-                   '1 dropped slot 2 at the same frame %d' % session.models[0].peers[2].drop_frame)
+    session.run(scaled(260, 260))
+    one, two = session.models[0], session.models[1]
+    session_report('session: kick request too late', session,
+                   'three consoles, rendered-frame counters in step; machine 0 calls net_kickPeer(2)',
+                   one.peers[2].dropped == 1 and two.peers[2].dropped == 0 and two.peers[2].kick == 1
+                   and two.kick_state == 1 and two.net_frame == one.peers[2].drop_frame
+                   and session.datagrams[R.PKT_RAW_RELAY] == 1 and session.datagrams[R.PKT_KICK_REQUEST] >= 4,
+                   ' Machine 0 dropped slot 2 at frame %d.  Machine 1 marked it on machine 0\'s request, sent '
+                   'its own requests (%d kick requests in all, 1 raw relay) after machine 0 had dropped the '
+                   'slot, got no answer - a machine answers only for a peer it has not dropped (0x13c2f0) - and '
+                   'is still negotiating at frame %d with machine 0 stalled at %d behind it'
+                   % (one.peers[2].drop_frame, session.datagrams[R.PKT_KICK_REQUEST], two.net_frame, one.net_frame))
+
+
+# ---------------------------------------------------------------------------------------
+# 6. The tick's hash on arbitrary floats, the small packet types, the launch packets
+# ---------------------------------------------------------------------------------------
+FLOAT_EDGES = (0x00000000, 0x80000000, 0x3F000000, 0xBF000000, 0x3F7FFFFF, 0xBF7FFFFF, 0x3F800000,
+               0xBF800000, 0x4B7FFFFF, 0xCB7FFFFF, 0x4EFFFFFF, 0xCEFFFFFF, 0x4F000000, 0xCF000000,
+               0x7F7FFFFF, 0xFF7FFFFF, 0x7F800000, 0xFF800000, 0x7FFFFFFF, 0xFFFFFFFF, 0x00000001,
+               0x007FFFFF, 0x447A0000, 0xC47A0000, 0x461C4000)
+
+
+def test_tick_hash(elf):
+    if not wanted('hash'):
+        return
+    rng = random.Random(OPTIONS['seed'] + 20)
+    console = SessionConsole(elf, 3)
+    machine = session_model(3, 1, console)
+    machine.run_tasks = None
+    console.emu.stub(TASKS_RUN, name='tasks_run')
+    gen = InputGen(rng)
+    for frame in range(1, 256):
+        for slot in range(3):
+            machine.peers[slot].set_record(frame, gen.next(), start=0, count=0)
+    console.load(machine)
+    tally = Tally()
+    flagged = 0
+    for _ in range(scaled(600, 60)):
+        positions = []
+        for slot in range(3):
+            if rng.random() < 0.15:
+                positions.append(None)
+            else:
+                positions.append(tuple(rng.choice(FLOAT_EDGES) if rng.random() < 0.3 else
+                                       (rng.randrange(1 << 32) if rng.random() < 0.3 else
+                                        R.f32(rng.uniform(-70000.0, 70000.0))) for _ in range(3)))
+            pointer = 0 if positions[slot] is None else console.objects[slot]
+            console.mem.w32(G_PLAYERS + slot * PLAYER_STRIDE + PLAYER_OBJ, pointer)
+            for index, raw in enumerate(positions[slot] or ()):
+                console.mem.w32(console.objects[slot] + 0x10 + 4 * index, raw)
+        machine.positions = positions + [None]
+        machine.rand_seed, machine.sync_acc = rng.randrange(1 << 32), rng.choice((0, 0, rng.randrange(1 << 32)))
+        machine.sim_frame = rng.randrange(1 << 32)
+        console.mem.w32(0x404464, machine.rand_seed)
+        console.mem.w32(0x4027C0, machine.sync_acc)
+        console.mem.w32(0x44FDCC, machine.sim_frame)
+        # a record another peer sent for the frame about to be hashed: equal, different or stale
+        expected = R.sync_hash(machine.rand_seed, machine.sync_acc, positions)
+        other = rng.choice((0, 2))
+        roll = rng.random()
+        if roll < 0.6:
+            frame, value = machine.net_frame + 1, expected if roll < 0.3 else expected ^ rng.choice((1, 0x80000000))
+            if rng.random() < 0.15:
+                frame += 256
+            machine.peers[other].set_sync(frame, 0, value)
+            console.mem.write(G_PEERS + other * PEER + 0x18AC + (frame & 0xFF) * 12,
+                              struct.pack('<III', frame & M32, 0, value))
+        console.mark_stack()
+        console.call(FRAME_LOOP, 1)
+        machine.tick(1)
+        difference = state_difference(console, machine)
+        tally.check(difference is None, lambda: difference)
+        flagged += sum(machine.peers[s].oos for s in (0, 2))
+        for slot in (0, 2):
+            machine.peers[slot].oos = 0
+            console.mem.w8(G_PEERS + slot * PEER + 0x44D7, 0)
+    report('tick: sync hash and compare', tally.failures, tally.count,
+           'net_frameLoop 0x139e88 run whole for one step with player positions from edge patterns, random '
+           'bit patterns and ordinary values, empty slots, random seed and g_syncAcc: the stored sync record, '
+           'the out-of-sync bytes (%d set) and all other netcode state' % flagged, tally.examples)
+
+
+def test_small_packets(elf):
+    if not wanted('small'):
+        return
+    rng = random.Random(OPTIONS['seed'] + 21)
+    console = SessionConsole(elf, 4)
+    tally = Tally()
+    scratch = console.emu.alloc(0x400)
+    for _ in range(scaled(200, 40)):
+        players = rng.randrange(2, 5)
+        local = rng.randrange(players)
+        machine = session_model(players, local, console)
+        for slot in range(players):
+            if slot != local and rng.random() < 0.2:
+                machine.peers[slot].dropped = 1
+        console.load(machine)
+        console.sent, console.directs = [], []
+        index, mask = rng.randrange(4), rng.randrange(16)
+        payload = bytes(rng.randrange(256) for _ in range(rng.choice((0, 1, 4, 0x86, 300, 500))))
+        console.mem.write(scratch, payload + b'\0')
+        console.call(SEND_TO_PEERS, index, mask, scratch, len(payload))
+        machine.outbox = []
+        machine.send_direct(index, mask, payload)
+        tally.check([(o[0], o[1], o[2]) for o in console.sent] == [(m.ip, m.port, m.data) for m in machine.outbox]
+                    and console.directs == machine.directs,
+                    lambda: 'direct message %d to mask %x: %d / %d datagrams' % (
+                        index, mask, len(console.sent), len(machine.outbox)))
+        # and through the receiving side, with a kicked notice and an unknown type
+        console.directs, machine.directs = [], []
+        batch = [R.direct_message(index, payload), R.kicked_notice(), struct.pack('<II', 0xBD48, 5),
+                 R.lan_packet(), struct.pack('<I', R.SYNC_MARKER)]
+        rng.shuffle(batch)
+        console.inbox.extend(batch)
+        console.call(PUMP_RECEIVE)
+        for data in batch:
+            machine.dispatch(data)
+        difference = state_difference(console, machine)
+        tally.check(difference is None and console.directs == machine.directs and machine.kicked == 1
+                    and not console.inbox, lambda: difference or 'handler calls differ')
+    report('small packet types', tally.failures, tally.count,
+           'net_sendMsgToPeers 0x131b00 (0xbd44-0xbd47: one datagram per remote live peer in the mask, the '
+           'local handler for the own slot) and net_pumpReceive 0x13c078 fed direct messages, a kicked '
+           'notice 0xbd43 and types it ignores', tally.examples)
+
+
+def test_launch(elf):
+    if not wanted('launch'):
+        return
+    rng = random.Random(OPTIONS['seed'] + 22)
+    console = Console(elf)
+    mem = console.mem
+    chunk_addr, target = console.emu.alloc(0x800), console.emu.alloc(0x20)
+    data_tally, generic = Tally(), Tally()
+    for _ in range(scaled(600, 60)):
+        local = rng.randrange(4)
+        ident = rng.randrange(1 << 32)
+        mem.w8(G_LAUNCH_LOCAL, local)
+        mem.w32(G_LAUNCH_IDS + local * 0x144, ident)
+        mem.w32(G_LAUNCH_A, 0x11)
+        mem.w32(G_LAUNCH_B, 0x22)
+        size = rng.choice((1, 2, 3, 8, 9, 0x2C, 512, 1300, rng.randrange(1, 1301)))
+        kind = rng.randrange(4)
+        if kind == 0:
+            chunk = bytes(rng.randrange(256) for _ in range(size))
+        elif kind == 1:
+            chunk = bytes(rng.choice((0x80, 0xFF, 0x7F, 0x00)) for _ in range(size))
+        elif kind == 2:
+            chunk = bytes([rng.randrange(256)]) * size
+        else:
+            chunk = bytes(rng.randrange(128, 256) for _ in range(size))
+        sequence = rng.choice((0, 1, 2, 0x7FFF, 0xFFFF, rng.randrange(1 << 16)))
+        port = rng.randrange(65536)
+        mem.write(chunk_addr, chunk)
+        console.sent = []
+        value = console.call(LAUNCH_SEND_DATA, chunk_addr, len(chunk), sequence, target, port) & M32
+        packet, argument = R.launch_data_packet(ident, sequence, chunk)
+        ok = len(console.sent) == 1 and console.sent[0][2] == packet and value == argument \
+            and console.sent[0][1] == port
+        parsed = R.parse_launch_packet(packet)
+        # a chunk under 4 bytes makes a datagram under 16, which the handshake ignores
+        expected = (ident, 4, argument, chunk) if len(chunk) >= 4 else None
+        data_tally.check(ok and parsed == expected and R.launch_data_ok(argument, chunk),
+                         lambda: 'chunk of %d, sequence %d: argument %08x / %08x' % (len(chunk), sequence, value, argument))
+        # the generic 0x200-byte packet
+        payload = bytes(rng.randrange(256) for _ in range(rng.choice((0, 4, 0xD0, 500))))
+        kind, argument = rng.randrange(9), rng.randrange(1 << 32)
+        mem.write(chunk_addr, payload + b'\0')
+        console.sent = []
+        console.mark_stack()
+        console.call(LAUNCH_SEND_PACKET, kind, argument, target, port, chunk_addr if payload else 0, len(payload))
+        model = R.launch_packet(ident, kind, argument, payload)
+        got = console.sent[0][2] if console.sent else b''
+        used = 12 + len(payload)
+        generic.check(len(got) == R.LAUNCH_SIZE and got[:used] == model[:used]
+                      and all(b == STACK_MARK for b in got[used:]) and console.sent[0][1] == port,
+                      lambda: 'type %d payload %d: %s / %s' % (kind, len(payload), got[:16].hex(), model[:16].hex()))
+    report('launch DATA packet', data_tally.failures, data_tally.count,
+           'net_launchSendData 0x1354f8: the datagram {player id, 4, checksum << 16 | sequence, chunk}, its '
+           'length 12 + chunk and the returned argument word, for chunks of 1..1300 bytes including bytes '
+           'above 0x7f; the receiver\'s own checksum loop (in net_launchUpdate 0x135638) was read, not run', data_tally.examples)
+    report('launch generic packet', generic.failures, generic.count,
+           'net_launchSendPacket 0x13e2c8: 0x200 bytes {player id, type, argument, payload}; everything '
+           'after the payload still holds the stack marker, i.e. is not written', generic.examples)
+
+
+def test_frame_step(elf):
+    if not wanted('frameStep'):
+        return
+    console = Console(elf)
+    mem = console.mem
+    tally = Tally()
+    rows = []
+    for mode in (0, 1):
+        for fields in (0, 1, 2, 3, 10):
+            for byte in (0xFF, 0, 1, 2, 5):
+                mem.w32(G_DISPLAY_RATE_MODE_INV, mode)
+                mem.w32(G_LAST_FRAME_FIELDS, fields)
+                mem.w8(G_DISPLAY_RATE_BYTE, byte)
+                got = console.call(ENGINE_FRAME_STEP) & M32
+                signed = byte - 256 if byte & 0x80 else byte
+                want = max(1, min(2, fields)) if mode == 0 else max(1, min(2, signed + 1))
+                tally.check(got == want, 'mode %d fields %d byte %d: %d, expected %d' % (mode, fields, byte, got, want))
+                rows.append(got)
+    report('engine_frameStep', tally.failures, tally.count,
+           'engine_frameStep 0x19e3a8: clamp(word 0x83d2c8, 1, 2) while word 0x44fd40 is zero; otherwise '
+           'clamp(signed byte 0x44fd50 + 1, 1, 2) - not a constant 1, as docs/issues/lag.md 2.4 has it',
+           tally.examples)
 
 
 def find_elf(argv):
@@ -1463,6 +1727,10 @@ def main(argv=None):
     test_builder(elf)
     test_receiver(elf)
     test_sessions(elf)
+    test_tick_hash(elf)
+    test_small_packets(elf)
+    test_launch(elf)
+    test_frame_step(elf)
     failed = [name for name, ok in RESULTS if not ok]
     for note in NOTES:
         print('NOTE  ' + note)

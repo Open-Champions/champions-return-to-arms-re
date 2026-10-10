@@ -10,9 +10,6 @@ what that does and does not show), **Inferred**, **Unknown**. Nothing here was s
 running game. The patches in section 8 are **untested on a running game**. `FINDINGS.md`
 and `patches/` were not edited.
 
-**This revision is a working draft: sections 7 (executed demonstration) and 8 (patch) are
-filled in as that work is done; section 9 lists what is not done.**
-
 ## 1. Verdict in short
 
 | Question | Answer | Kind |
@@ -20,9 +17,9 @@ filled in as that work is done; section 9 lists what is not done.**
 | Is the mechanism real? | Yes: a simulation query returns whatever pose is attached, and drawing attaches poses | Observed (section 2) |
 | Does a skeleton position reach shared state? | Yes, in more places than R1 allowed. Beyond the obvious ones (cast position, thrown-weapon release, monster projectile origins) every debris prop does: a `PhProp` that comes to rest builds a resting `Prop`, whose constructor draws `g_randSeed`. The tick on which it comes to rest depends on where it started, and it starts at a joint. R1 called debris "presentation"; that is wrong | Observed (section 5) |
 | Can the pose differ between machines at such a query? | Only in this pattern: the pose was built by drawing (or by an earlier query), the tracks were then changed by a call that does not detach, and the query follows with no animation step between (section 3) | Observed rules, Inferred completeness |
-| Does that pattern occur for Player, Horsemen, Skelight, Zek or the weapon holders in the arena fight? | **Not found.** Players: `Player_updateCast` queries the skeleton at the end of every `Player_run`, after the step and after every track change of the tick, so a pose built by the simulation is attached on every machine when the tick ends and drawing never builds one for a real player. Knights and Zek: the one shared-state query (weapons dropped at death) runs before the step but before any track change of that tick. Skelight: particles only. Buffer exhaustion needs about 25 distinct animated models drawn; the fight has about a dozen | Observed steps; "not found" is Inferred |
+| Does that pattern occur for Player, Horsemen, Skelight, Zek or the weapon holders in the arena fight? | **Not found.** Players: `Player_updateCast` queries the skeleton at the tail of `Player_run` on every tick of a living player, after the step and after every track change of the tick, so a pose built by the simulation is attached on every machine when the tick ends and drawing never builds one for a real player. Knights and Zek: the one shared-state query (weapons dropped at death) runs before the step but before any track change of that tick. Skelight: particles only. Buffer exhaustion needs about 25 distinct animated models drawn; the fight has about a dozen | Observed steps; "not found" is Inferred |
 | So is D34 the every-run arena desync? | **No route found; the lead is not supported for the arena.** It stays a real hazard for other classes (section 6) and under buffer exhaustion | Inferred |
-| Fix | Section 8: make the simulation query rebuild instead of trusting the cache | proposal |
+| Fix | Section 8: inside the lockstep tick, make the query detach and rebuild instead of trusting the cache (13 words, executed under the interpreter). It is hardening and a diagnostic, not a known cure | proposal, untested on a running game |
 
 ## 2. The mechanism, with the facts R1 did not have
 
@@ -46,7 +43,7 @@ bytes from +8. A pose buffer is 0x620 bytes: joint count at +8, 0x18 bytes per j
 | `AnimState_copy` zeroes the copy's pointer, so the prediction copy never shares a buffer with the real player | 0x16ffe8 (store after the block copy) | Observed |
 | `Creature_stepAnim` calls `anim_advance` only when bit 63 of the creature flags (+0xa8, "is active") is set. An inactive creature keeps whatever pose is attached for as long as it is inactive | 0x116324 | Observed |
 | `Player_move` steps the animation itself (0x1b48e8 / 0x1b48f8) and afterwards writes the weight and life of track 1 directly (0x1b498c, 0x1b499c; a second block zeroes tracks 1–3 at 0x1b4bb8–0x1b4bc4). Those writes change the pose and do not detach | `Player_move` 0x1b4020 | Observed |
-| `Player_updateCast` reads attach points 0 and 1 unconditionally, every tick, at the end of `Player_run`, and hands their midpoint to the player's slot 17, which passes it to every attached spell | 0x1a3f70 (calls 0x1a3fe8, 0x1a402c) | Observed |
+| `Player_updateCast` reads attach points 0 and 1 on every call, whether or not a spell is attached, and hands their midpoint to the player's slot 17, which passes it to every attached spell. `Player_run` calls it at the common tail of the state switch on every tick on which the float at 0x4d8b9c + slot × 0x4c30 (record +0xac, hit points) is above 0 | 0x1a3f70 (calls 0x1a3fe8, 0x1a402c); test and call at the label 0x1ac680 | Observed |
 | The VU0 program that turns the blended joints into matrices is straight-line code with no state of its own between calls except the parent matrices it stores per depth | 0x3e5c50, 77 instructions | Observed |
 
 Calls that change the pose at once and do not detach (**Observed**): `anim_push`,
@@ -94,15 +91,15 @@ call addresses:
 
 | State | Step | Queries after the step | Queries before the step |
 |---|---|---|---|
-| 0 ranged | 0x1a8198 | `Player_castSkill` 0x1a837c, 0x1a9174; thrown release 0x1a83ec (spawn position and aim of the projectile, then two `g_randSeed` draws); 0x1a8a18 | none |
+| 0 ranged | 0x1a8198 | `Player_castSkill` 0x1a837c, 0x1a9174; thrown release 0x1a83ec and bow release 0x1a8a18 (attach point 0 is the spawn position of the projectile and the point the aim is taken from) | none |
 | 1 melee | 0x1aa170 | `Player_castSkill` 0x1aac60 | none |
 | 2 neutral | inside `Player_move` (0x1a8094, or 0x1a7ca8 followed by 0x1a7cb8) | none | **`Player_castSkill` 0x1a7048** (abilities of record kind 7, cast straight from neutral) |
 | 3 staggered | 0x1ab2ac | none | none |
 | 4 dead | 0x1ab4e4, only while a per-slot counter is above 1 | none | 0x1ab3cc, 0x1ab410: midpoint of the hands for a blood decal (two `g_randSeed` draws are made whatever the position is) |
-| 5 casting | 0x1ab584 | `Player_castSkill` 0x1ab7dc; 0x1ab880, 0x1ab8c4 | none |
-| 8 blocking | 0x1a6150 | 0x1a6338, 0x1a637c | none |
+| 5 casting | 0x1ab584, then `Player_move` 0x1ab5a4 / 0x1ab5c0 | `Player_castSkill` 0x1ab7dc; 0x1ab880, 0x1ab8c4 (hand midpoint; use not read to the end) | none |
+| 8 blocking | 0x1a6150 | 0x1a6338, 0x1a637c (a random point between the hands; the two `g_randSeed` draws that follow are made whatever the positions are; use not read to the end) | none |
 | 6, 9–0xe | first call of the case | none | none |
-| every state | — | **`Player_updateCast` at the end** (0x1a3fe8, 0x1a402c) | — |
+| every state, at the common tail | — | **`Player_updateCast`** (0x1a3fe8, 0x1a402c) while the record's hit points are above 0. Two paths return from inside the switch and skip it (one in state 10, one in state 0xd) | — |
 
 What the positions are used for: `Player_castSkill` (0x1a42b8) takes the midpoint of
 attach points 0 and 1, clamps its height to at most 58 above the feet and passes it to the
@@ -116,10 +113,10 @@ Why no machine-dependent value was found:
 1. In every state but 2 and 4 the step comes first, so the first query of the tick is a
    fresh build on every machine, and later queries of the same tick reuse it on every
    machine.
-2. `Player_updateCast` runs at the end of every `Player_run` that reaches the switch. It
-   runs after the step and after `Player_move`'s direct weight writes. So when the tick
-   ends, a pose built by the simulation from the final tracks of that tick is attached on
-   every machine. A machine that draws the player re-stamps that buffer and builds
+2. `Player_updateCast` runs at the tail of `Player_run` on every tick of a living
+   player (two return paths in states 10 and 0xd excepted). It runs after the step and
+   after `Player_move`'s direct weight writes. So when the tick ends, a pose built by the
+   simulation from the final tracks of that tick is attached on every machine. A machine that draws the player re-stamps that buffer and builds
    nothing. The owner's machine, which never draws its real player, has the same pose
    attached, or — if the unstamped buffer was taken — builds an equal one at the next
    query, because:
@@ -197,8 +194,8 @@ snapshot of the list at 0x7b8344 would settle it).
 
 R1 treated the start position of debris (dropped weapons, shed parts, shattered bones,
 ice chunks) as presentation because debris props are not solid and sit in the grid that
-box queries do not see. **Observed** in `PhProp_run` (0x155fcc), which every `PhProp`,
-`LooseIceChunk` and (through its own run) `GutChunk` executes:
+box queries do not see. **Observed** in `PhProp_run` (0x155fcc), which is slot 4 of `PhProp` and
+`LooseIceChunk` and is called by `GutChunk_run` (0x1edb18):
 
 - when the prop has come to rest (its timer at +0x10e has run out and all six velocity
   components are under 0.2), or the timer is below −220, it creates its replacement — a
@@ -206,8 +203,8 @@ box queries do not see. **Observed** in `PhProp_run` (0x155fcc), which every `Ph
   and deletes itself;
 - both `Prop` constructors call `GameObject_ctor`, which draws one value from
   `g_randSeed`;
-- a prop launched with the burning flag (+0x23a = 1) also creates a `StaticFire` when it
-  first slows down (0x2c5240), another constructor.
+- a prop whose byte +0x23a is 1 also creates a `StaticFire` (0x2c5240) the first time it
+  is near the ground with every velocity component under 0.8: another constructor.
 
 So the tick on which a piece of debris comes to rest is a tick on which the shared seed
 advances. The sync hash is the seed plus the players' positions, so two machines on which
@@ -243,40 +240,262 @@ functions of the last row were not read here** (list in section 9); `docs/monste
 1.3 states that monster projectiles are spawned from attach points inside the state
 switch, which is after the step.
 
+Two mechanical checks over all simulation-side sites (address order inside a function, so
+they over-report rather than under-report):
+
+- In every function that contains its own animation step (`Creature_stepAnim`,
+  `Player_animStep`, `Player_move`, `anim_advance`), 96 query sites lie after the first
+  step and two before it: `JumpGate_run` 0x27cc50 and `Savepoint_run` 0x28d020, props that
+  advance their own animation.
+- In none of those functions does a call to `anim_push`, `anim_pushWithWeights`,
+  `anim_pushChained`, `anim_clear`, `anim_syncToSimFrame`, `anim_stop`,
+  `anim_dropNonPersistent` or `anim_randomizeTopTime` lie between a step and a later query
+  site.
+
+The other 78 functions with query sites contain no step: helpers, spell code, set-state and
+drop functions. For those the caller decides. The death cases of the set-state functions
+that create debris were read for the order of track change and query:
+
+| Function, case 0x14 | Order | Track call before the debris query |
+|---|---|---|
+| `Horsemen_setState` 0x272f4c | drop parts 1 and 2, then `anim_start` | none |
+| `Zek_setState` 0x2c382c | drop part 1, then `anim_start` | none |
+| `Clockwork_setState` 0x24f90c | `Clockwork_shedParts` × 8, then `anim_start` | none |
+| `Orc_setState` 0x2a323c | drop parts, `Orc_severPart`, then `anim_start` | none |
+| `Skeleton_setState` 0x2a7768 | drop parts, `Skeleton_shatter`; no track call | none |
+| `WoodElfSoldier_setState` 0x2bdb24 | `WoodElfSoldier_dropWeaponProps`, then `anim_start` | none |
+| `Mummy_setState` 0x29a6f4 | `anim_start`, then drop part 1 | `anim_start` only: weight 0, no pose change unless the state is full |
+
+So the pattern R1 feared for debris — full-weight change, then query, in one set-state —
+does not occur in the death cases; the full-weight calls of those functions (`anim_push`,
+`anim_syncToSimFrame`) sit in other cases.
+
 Sites where the pattern of section 3 exists or cannot be excluded:
 
 | Site | Why | State |
 |---|---|---|
-| the set-state functions R1 lists (`Clockwork_setState`, `Mummy_setState`, `Orc_setState`, `Soul_setState`, `WoodElfSoldier_setState`; `Skeleton_setState` only if a track change precedes the shatter, which R1 says it does not) | a set-state called from `Creature_processDamage` runs before the step; where it changes tracks at full weight and then creates debris at a joint, a machine that drew the creature starts the debris at the old pose and one that did not at the new pose, and section 5 turns that into a seed difference | **open: each case needs the order of track change and query read**; none of these classes is in the arena |
+| debris dropped at death by any class, with a full track list (8 live tracks) | the `anim_start` that precedes or follows then replaces the top track at once | not excluded; needs eight starts within a blend time |
+| a creature hit while its attack cooldown runs: `Creature_filterState` turns the reaction into state 0x10, whose set-state calls `anim_syncToSimFrame` before the step of that tick | every query on that creature between there and its step sees old track times on a machine that drew it | the queries found in that window are effect code and spells handed the body centre; **no shared-state query found, not every spell read** |
+| `Soul_setState` (0x2ab0c0, 0x2ab0fc), `Skelight_ctor`, `Soul_ctor`, `Savepoint_run` from R1's list | query after a track change in one function | callee lists show effect helpers only (Inferred presentation); not read line by line |
 | `Player_castSkill` from neutral with a full track list | 4.1 item 4 | not excluded |
 | any creature that is not stepping (inactive, frozen) and is damaged | the pose a drawing machine holds can be many ticks old; any track change since then shows | not traced |
 
 ## 7. Executed demonstration
 
-*Pending in this revision.*
+`python3 -I -B tools/posecache_test.py` — 38 checks, all passing at the time of writing;
+prints `SKIP` and exits 0 without the executable.
+
+What runs: the game's own `anim_init`, `anim_push`, `anim_clear`, `anim_syncToSimFrame`,
+`anim_advance`, `animtrack_decode`, `anim_buildPose`, `anim_getJointMatrix`,
+`anim_emitPose`, `anim_releaseCaches` and `model_getAttachPoint`, under
+`tools/ee_emu.py`, on animation states the test builds. The two clips are synthetic
+(three joints, written in the documented `.anm` layout). **The vector unit is not
+executed by the interpreter.** `anim_buildPose` contains nine COP2 instructions and two
+calls into the 77-instruction VU0 program at 0x3e5c50; the test reads that program's
+words from the executable and interprets them with a small model that knows only the forms
+the program uses, with the interpreter's FPU arithmetic standing in for the vector unit's.
+Check a5 compares the result with the joint position worked out by hand from the clip
+definition (agreement to the 1/64-unit step of the output), so the model is right to that
+precision; its last bits are not established. Every other comparison is exact equality
+between two runs of the same arithmetic, or a difference of several units.
+
+"Drawn machine" and "undrawn machine" are two runs that differ only in whether
+`anim_emitPose` was called. Nothing here shows that a sequence occurs in a real game.
+
+| Id | Claim | Result |
+|---|---|---|
+| a1–a4 | a query after a step is a fresh build; a second query builds nothing | after `anim_advance` the pointer is 0; the first query calls `anim_buildPose` once and leaves the buffer attached, **unstamped**, owned, at the recent end of the list; the second query makes no call and returns the same matrix |
+| a5 | the chain decoder → blend → VU0 model is right | joint 2 at time 30: (10.203, 11.703, 45.000) executed, (10.205, 11.714, 45.000) by hand |
+| a6 | the decoder slot's history does not show | the same track time reached by 30 steps or written directly gives bit-identical matrices |
+| b1–b2 | draw, then `anim_clear` + `anim_push` of another clip, then query with no step | the drawn machine makes no build and returns the matrix from before the change; the undrawn machine builds. Joint matrix differs by up to 22.19; attach point (984.9, 1994.0, 75.0) against (1011.3, 1987.3, 69.0) |
+| b4–b5 | the same with `anim_syncToSimFrame` | matrix differs by up to 8.22; attach point (984.9, 1994.0, 75.0) against (981.7, 2006.3, 75.0) |
+| b3, b6 | control: a step between the change and the query | both machines equal |
+| b7 | a pose attached by a simulation query is what the draw uses | `anim_emitPose` sends and stamps that buffer and builds nothing |
+| c1 | all 100 buffers stamped recent | the query builds into 0x7b89c0; values equal to a pooled build |
+| c2–c3 | a second state queried in the same tick | it takes the static buffer; **the first state's pointer is zeroed before the buffer is overwritten**, and a later query on the first state rebuilds and returns its own pose. The static buffer never serves one object another's pose |
+| c4 | drawing and the static buffer | `anim_emitPose` detaches it and, with nothing free, sends the default pose |
+| c5 | what exhaustion changes | query X, change X's tracks, query Y, query X: with buffers free X gets the old pose (no build); with the pool exhausted Y took the static buffer and X is rebuilt. Matrix differs by 22.19 |
+| c6–c7 | life of an undrawn pose built by a query | taken by the 100th later build with no buffer stamped recent, by the 40th with 60 stamped recent: 100 minus the number of recently drawn buffers |
+| c8 | the same pose on a machine that draws the object | still attached after 150 pictures and 150 other builds |
+
+So for 1(c) of the task: the second build does overwrite the static buffer, but only after
+detaching the first state from it; no state is left pointing at another object's pose.
+What exhaustion does change is *which* queries are rebuilt, and with it the result of any
+query that follows a track change (c5).
 
 ## 8. Patch proposal
 
-*Pending in this revision.*
+Both variants are **untested on a running game**. Both were executed under the
+interpreter (checks e0–e6, f0–f6); the original words were read from the executable and
+are checked by the test (e0, f0).
+
+Why not the two fixes R1 names. Rebuilding always by changing the branch alone leaves the
+old buffer's owner field pointing at a state that no longer uses it (R1's objection,
+correct). Detaching at the end of `anim_emitPose` is safe for the simulation but a model is
+sent by more than one draw pass per picture (`model_draw`, `model_drawShadow` and four
+more callers of `anim_emitPose`), and each pass would then build and reserve its own
+buffer: two or three times the buffers per drawn model, exhaustion at about ten models
+instead of 25, and the default pose drawn for the rest. The proposal below leaves the
+draw side alone and makes the *query* stop trusting the cache.
+
+### PC-A (proposed): inside the lockstep tick a query always detaches and rebuilds
+
+The branch at 0x16f73c ("something is attached: use it") becomes a jump to a 12-word
+routine. The routine: nothing attached → the original build; `g_excludeMask` (0x4039b8)
+not 0x20000 → the original "use it" path; otherwise clear the buffer's owner and the
+state's pointer, then the original build. `g_excludeMask` is 0x20000 from the start of a
+tick (0x139f4c) to its end (0x13b1f0, where it becomes 0x200000 for prediction and
+drawing; `net_predictLocalPlayer` sets 0x200000 as well, 0x131e38); its value in the file
+is 0. Draw code, the prediction copy and offline play therefore keep the original
+behaviour.
+
+The routine is written over `Cyclops_dropClub` (0x257ab4–0x257b9f, 59 words). That
+function is dead: no call, jump or branch anywhere in the code segment leads into it and
+no word of any loaded segment holds an address inside it (check d0 scans all three
+segments; `symbols/monsters2.tsv` already recorded "no caller and no data reference").
+
+| Address | Original | New | Instruction |
+|---|---|---|---|
+| 0x0016f73c | 14400004 | 08095ead | `j 0x257ab4` (the delay slot 0x16f740 still saves the output pointer) |
+| 0x00257ab4 | 27bdffb0 | 10400007 | `beqz v0, +7` — nothing attached: build |
+| 0x00257ab8 | 24020001 | 3c030040 | `lui v1, 0x40` |
+| 0x00257abc | ffb00030 | 8c6339b8 | `lw v1, 0x39b8(v1)` — `g_excludeMask` |
+| 0x00257ac0 | 0080802d | 3c010002 | `lui at, 2` |
+| 0x00257ac4 | ffb10038 | 14610005 | `bne v1, at, +5` — not the tick: use the attached pose |
+| 0x00257ac8 | 0000882d | 00000000 | `nop` |
+| 0x00257acc | 14a2000f | ac400610 | `sw zero, 0x610(v0)` — buffer owner |
+| 0x00257ad0 | ffbf0040 | ae000000 | `sw zero, 0(s0)` — state pointer |
+| 0x00257ad4 | 8e020024 | 0805bdd1 | `j 0x16f744` — the original build call |
+| 0x00257ad8 | 8e0500e8 | 00000000 | `nop` |
+| 0x00257adc | 0c05e554 | 0805bdd4 | `j 0x16f750` — the original "use it" path |
+| 0x00257ae0 | 8c44000c | 00000000 | `nop` |
+
+```
+[Net test: skeleton queries rebuild inside the tick (pose cache, D34)]
+patch=1,EE,0016F73C,word,08095EAD
+patch=1,EE,00257AB4,word,10400007
+patch=1,EE,00257AB8,word,3C030040
+patch=1,EE,00257ABC,word,8C6339B8
+patch=1,EE,00257AC0,word,3C010002
+patch=1,EE,00257AC4,word,14610005
+patch=1,EE,00257AC8,word,00000000
+patch=1,EE,00257ACC,word,AC400610
+patch=1,EE,00257AD0,word,AE000000
+patch=1,EE,00257AD4,word,0805BDD1
+patch=1,EE,00257AD8,word,00000000
+patch=1,EE,00257ADC,word,0805BDD4
+patch=1,EE,00257AE0,word,00000000
+```
+
+- **What it changes.** Every skeleton position read inside a tick is computed from the
+  tracks as they are at that moment. It no longer depends on what was drawn, on how many
+  pictures lay between two ticks, or on which buffers the least-recently-drawn rule handed
+  out.
+- **Executed** (e1–e6): drawn and undrawn machine return the same matrix and attach point
+  for both track changes of section 7, equal to the unpatched fresh build; the draw-built
+  buffer is left unowned and stamped, and keeps its contents; the draw before and the draw
+  after a patched query each send an attached, stamped buffer (drawing still gets a pose);
+  120 further builds recycle the pool with every owner field consistent; the exhaustion
+  sequence c5 gives one result whether or not the pool is exhausted; five queries in a row
+  build five times inside the tick, never in the draw phase, never with the mask at 0.
+- **What could go wrong.**
+  1. It changes results where the original is stale *identically* on every machine (query,
+     track change, query, in one tick): the second query now sees the change. Debris and
+     effect positions in those cases move. That is a rule change, small, but it means
+     **patched and unpatched machines disagree there**.
+  2. Cost. Every query inside the tick is a full pose build. Steady load is small (two per
+     player per tick from `Player_updateCast`, a few per creature with a status effect),
+     but effect bursts that sample many points in one call (`Creature_emitLinkParticles`:
+     100 particles, two queries each; the disintegrate and vertex emitters) become 100–200
+     builds in one tick. Expect a slow frame on those.
+  3. A drawn model whose skeleton is also queried in the tick uses one buffer per picture
+     even when it does not step (dead player, frozen creature); stepping models already do.
+  4. `Creature_pickTarget` (0x10e044) and `Vehicle_collideObjects` (0x20e410) change the
+     mask for the length of a box query; a skeleton query inside such a window would take
+     the old path. None was found.
+  5. If something outside this project's knowledge calls `Cyclops_dropClub`, it now runs
+     the routine with a wrong register set. The scan found no route to it.
+- **Who must apply it.** Every player (point 1).
+- **What a result means.** If the arena desync disappears with PC-A on all machines, the
+  pose cache was in the chain after all and section 4 missed a route. If it stays, D34 is
+  closed for the arena.
+
+### PC-B (alternative, not proposed): every query rebuilds, six words in place
+
+No routine: 0x16f73c–0x16f750 are rewritten so that the owner of an attached buffer is
+cleared with a branch-likely and the build is always called.
+
+| Address | Original | New | Instruction |
+|---|---|---|---|
+| 0x0016f73c | 14400004 | 54400001 | `bnezl v0, +1` |
+| 0x0016f740 | 00c0882d | ac400610 | `sw zero, 0x610(v0)` (runs only when something is attached) |
+| 0x0016f744 | 0c05bb50 | 00c0882d | `move s1, a2` |
+| 0x0016f748 | 0000282d | 0c05bb50 | `jal anim_buildPose` |
+| 0x0016f74c | 8e020000 | 0000282d | `move a1, zero` |
+| 0x0016f750 | 0040402d | 8e080000 | `lw t0, 0(s0)` |
+
+Executed with the same results (f1–f5). It is not proposed because it also applies to the
+queries draw code makes (`creature_drawHeldPart`, `Player_draw`, `Horsemen_draw` and 15
+more draw functions), to the prediction copy and to offline play (f6): a model whose draw
+function queries between two draw passes then reserves two buffers per picture, which
+halves the number of models that can be drawn before the default pose appears.
 
 ## 9. Not done, not determined
 
-- The 58 simulation-side functions that both query the skeleton and create objects or deal
-  damage were not all read: the monster run functions (Amphian, Bubo, Cazic, Clockwork,
-  CloudGiant, Cyclops, FatCyclops, MaleDarkElf, RedDragon, GnawSpawn, Goblin, Gremlin,
-  Innoruuk, IronGuardian, Droid, LavaMonster, Minion, SpiderQueen, VampireLord, Wraith,
-  Soul, UndeadKnight), the chest and container run functions, `MissileWeapon`, and the
-  player spells (`SpellCharge`, `SpellCyclone`, `SpellBash`, `SpellShieldBash`,
-  `SpellRoar`, `SpellBattleCry`, `SpellWizardBeam`, `SpellPlanarWind`,
-  `SpellShadowStep`, `SpellUndeadShield`, `SkillFireAxe`, `SkillColdAxe`,
-  `SkillStrongStance`, `SpellHarmTouch`, `SkillRiposte`, `SpellHolyShield`). For player
-  spells the query runs from `Player_updateCast`, after the step; for monsters the shape of
-  `docs/monsters.md` 1.3 puts it after the step. Neither was re-checked per function.
-- Which skills use the cast position they are handed (`docs/spec/skills-*.md` say per
-  skill; not collated here).
-- The order of track change and debris query in each set-state function of section 6.
-- Non-stepping creatures.
-- Whether `animtrack_decode` gives the same joint values whatever the history of its
-  decoder slot (the format description says decoding restarts from the initial pose when
-  time goes back, and velocities are applied per key, which makes it a function of time
-  only; **Inferred**, the test compares one case).
+- **Nothing was run on a console or a full emulator.** The two-machine observation that
+  would confirm or close this: on both machines, at the branch 0x16f73c, when the pointer
+  is non-zero and `g_excludeMask` is 0x20000, build a second pose into scratch memory and
+  compare with the attached one; log tick, state address and return address on a
+  mismatch. A mismatch on one machine only, followed by an out-of-sync message, confirms
+  a route. With stock tools: apply PC-A on every machine and see whether the arena
+  desync changes (protocol in `docs/VALIDATION.md`).
+- Of the 58 simulation-side functions that both query the skeleton and create objects or
+  deal damage, these were read site by site: `Player_run`, `Player_castSkill`,
+  `Creature_processDamage`, `creature_dropHeldPartAsProp`. The others were covered only
+  by the two mechanical checks of section 6 (monster run functions: every site after the
+  step, no full-weight track call between) or not at all (spell code without a step of its
+  own: `SpellCharge`, `SpellCyclone`, `SpellBash`, `SpellShieldBash`, `SpellRoar`,
+  `SpellBattleCry`, `SpellWizardBeam`, `SpellPlanarWind`, `SpellShadowStep`,
+  `SpellUndeadShield`, `SkillFireAxe`, `SkillColdAxe`, `SkillStrongStance`,
+  `SpellHarmTouch`, `SkillRiposte`, `SpellHolyShield`, `HateBeam_run`, `MissileWeapon`,
+  the chest and container run functions). For player spells the query runs from
+  `Player_updateCast`'s slot-17 call, after the step and after its own query.
+- What each of those sites uses the position for was not tabulated site by site; the
+  counts of section 6 are by callee list.
+- Which skills use the cast position they are handed (`docs/spec/skills-*.md` say so per
+  skill; not collated).
+- The 76 sites classed as presentation by callee list were not read; a virtual call can
+  hide a shared use, as it does in `Player_updateCast`.
+- Creatures that do not step (inactive, frozen) and are damaged; whether one can be drawn
+  on one machine while inactive.
+- G22 was not followed up.
+- The last bits of the VU0 arithmetic.
+
+## 10. Proposed ledger rows
+
+| ID | Claim | Kind | Evidence |
+|---|---|---|---|
+| D34 (answer) | For Player, Horsemen, Skelight, Zek and the weapon holders no sequence was found in which a draw-built or left-over pose differs from a fresh one at a query that feeds shared state. Players: `Player_updateCast` queries at the tail of `Player_run` on every tick of a living player, after the step and every track change, so a simulation-built pose is attached on every machine and the cast position of the next tick reads it or an equal one. Knights and Zek: the weapon drop at death reads the skeleton before the step but before any track change of the tick. Skelight: particles. Exhaustion needs about 25 drawn models. The lead is not supported as the every-run arena cause | Inferred from Observed steps | docs/issues/pose-cache.md sections 3, 4 |
+| D39 | The start position of every debris prop is shared state: a `PhProp` that comes to rest constructs a resting `Prop`, and the constructor draws `g_randSeed`, so the settling tick moves the shared seed. Debris starts at a joint position | Observed | `PhProp_run` 0x155fcc (rest test and constructor calls), `Prop_ctorRes` 0x153c88, `Prop_ctorNamed` 0x153ac0, `GameObject_ctor` 0x14cb10 |
+| D40 | A pose built by a simulation query is not stamped; on a machine that does not draw the object it is taken by the (100 − recently drawn)th later build, on a machine that draws it it stays for ever. With the pool exhausted, simulation queries share one static buffer, each taking it from the previous owner, so a query that follows a track change is stale on a machine with free buffers and fresh on an exhausted one | Executed in isolation | checks a3, c1–c8 |
+| X5 | The pose cache behaves as D34 says when executed: draw, track change without a step, query returns the pose from before the change on the machine that drew and the new one on the machine that did not (joint matrix differs by 22 units for a clip change, 8 for `anim_syncToSimFrame`); with a step in between both agree. Patch PC-A removes the difference and drawing still gets a pose | Executed in isolation (VU0 program interpreted by a model) | `tools/posecache_test.py`, 38 checks |
+
+## 11. Corrections to earlier documents (reported, not edited)
+
+- **rescan.md R1, "Debris props are non-solid … so that is presentation, apart from pool
+  occupancy".** Wrong: section 5.
+- **rescan.md R1, "`Player_run` uses only `anim_start` / `anim_startBlendInOut`".**
+  `Player_move`, called from it, writes track weights directly after stepping
+  (0x1b498c–0x1b499c, 0x1b4bb8–0x1b4bc4).
+- **rescan.md R1, the cast position "is read … before that tick's step … from a possibly
+  draw-built pose".** Before the step, yes (0x1a7048); but the attached pose is the one
+  `Player_updateCast` built at the end of the previous tick, on every machine, not a
+  draw-built one.
+- **rescan.md R1, the ten set-state functions.** In the death cases that create debris the
+  query comes before the track call, or after an `anim_start` only (section 6).
+- **symbols note of `anim_start` ("the first track of an empty state starts at full
+  weight").** It starts at weight 0 with a rate of 1 per tick (0x16cfe0); `docs/engine.md`
+  has it right.
+- **engine.md P11.** As rescan says; in addition the stamp is written by `anim_emitPose`
+  only, which is what makes simulation-built poses short-lived on machines that do not
+  draw the object.

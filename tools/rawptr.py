@@ -20,10 +20,11 @@ is then read through it depends on what the pool put there. See docs/issues/stal
   python3 -I -B tools/rawptr.py SLUS_209.73 globals          globals loaded and then used as
                                                              an object (virtual call, flags,
                                                              position)
-  python3 -I -B tools/rawptr.py SLUS_209.73 ptrmath          ordering compares, shifts, masks
-                                                             and divisions applied to a value
-                                                             that the same function also
-                                                             dereferences as an object
+  python3 -I -B tools/rawptr.py SLUS_209.73 ptrmath          ordering compares and differences
+                                                             of two values the function also
+                                                             uses as bases; shifts, masks,
+                                                             multiplies and divisions of a
+                                                             value it treats as an object
   python3 -I -B tools/rawptr.py SLUS_209.73 keeps <hexentry> stores of an argument or of a
                                                              call result into memory that
                                                              outlives the call, in everything
@@ -351,7 +352,6 @@ def tier_of(offs):
 class Scan:
     def __init__(self, elf_path):
         self.e = Elf(elf_path)
-        self.e.analyze()
         self.root = os.path.dirname(os.path.abspath(elf_path))
         if not os.path.exists(os.path.join(self.root, 'ghidra_funcs.tsv')):
             self.root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -519,6 +519,8 @@ class Scan:
                     continue
                 if off in (0x48, 0x14, 0x60, 0x0, 0x4, 0x8) and not stores.get(off):
                     continue
+                if off == 0xc and len(self.vts[vt][1]) >= 16:
+                    continue                              # the flag word of a GameObject
                 if off == 0x24 and any(self.names.get(f) == 'GameObject_ctor' for f, _pc, _v in stores.get(off, [])):
                     continue                              # the class-definition pointer
                 rows.append((cname, vt, off, stores.get(off, []), uses[off], sorted(plain), tier))

@@ -28,8 +28,8 @@ Floats are raw 32-bit patterns
 Angles are 16-bit: 0x10000 is a full turn; arguments are reduced with s16() as the code does.
 
 Sections: 1 arithmetic, 2 angles, 3 scalars and colours, 4 vectors and boxes, 5 matrices,
-6 quaternions, 7 noise, 8 C-library routines, 9 random generators, 10 object pool,
-11 handle lists.
+6 quaternions, 7 noise, 8 C-library routines, 8b software double precision, 9 random
+generators, 10 object pool, 11 handle lists.
 """
 import struct
 from fractions import Fraction
@@ -2100,7 +2100,7 @@ class Pool:
             for n in range(count):
                 self.link[address + n * size] = address + (n + 1) * size if n + 1 < count else 0
             address += size * count
-        self.end = address              # 0x6e0000
+        self.end = address              # 0x6dffc0
 
     def new(self, size):
         """pool_new(size) -> address, or 0 when no class that is big enough has a free block

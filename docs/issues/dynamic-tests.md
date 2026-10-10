@@ -17,9 +17,9 @@ console or in a console emulator. No patch below has been tested on a running ga
   without any game file.
 - `tools/ee_tests.py` — the checks below; needs your own `SLUS_209.73`, otherwise prints
   `SKIP` and exits 0. `python3 tools/ee_tests.py -v` prints the tables; `-k codec` runs one
-  group. At the time of writing: **198 checks, 198 PASS** (the count follows the patch
-  file: one `p` check per section). The first pass ended at 128; sections 2.10–2.14 are the
-  70 added since (60 in five new groups, 10 for new patch sections).
+  group. At the time of writing: **208 checks, 208 PASS** (the count follows the patch
+  file: one `p` check per section). The first pass ended at 128; sections 2.10–2.15 are the
+  80 added since (65 in six new groups, 15 for new patch sections).
 
 The patch file and the ledger changed several times while this was being written: the
 alive-list patch at 0x1b3504 and the two pacing patches were withdrawn, rows G14–G24,
@@ -30,10 +30,12 @@ runs whatever is there, reads proposal tables out of `docs/issues/prediction-cop
 stays on record. Row wordings quoted below are those of `FINDINGS.md` as it stood at the
 last run (2026-10-10).
 
-A second pass covered what arrived after that: ten more patch sections (0x1375dc, 0x28da74,
-0x217448, 0x1a5c0c, 0x1b9fcc + 0x1ba3ac, 0x1d2d30, 0x13b21c, 0x199df8, 0x217f58, 0x1dd1f0)
-and the ledger rows B1–B3, B8–B11, K1–K3, K5–K8, MV2, MV5, MV6, F3, F4 and F7, which had
-been written from reading only. **All 22 sections now in the patch file are executed**, and
+A second pass covered what arrived after that: fifteen more patch sections (0x1375dc,
+0x28da74, 0x217448, 0x1a5c0c, 0x1b9fcc + 0x1ba3ac, 0x1d2d30, 0x13b21c, 0x199df8, 0x217f58,
+0x1dd1f0, 0x1b53d4, 0x1a5ba8, 0x1e6a60, 0x231a64, 0x27def8 — the last five were added
+while this pass was running) and the ledger rows B1–B3, B8–B11, K1–K3, K5–K8, MV2, MV5,
+MV6, F3, F4 and F7, which had been written from reading only. **All 27 sections in the
+patch file at the last run are executed; none was left out**, and
 each of those rows is reproduced, sharpened, or listed in section 5 with the reason it
 could not be run. No ledger row and no patch description was contradicted; four statements
 were sharpened (section 3, items 10–13).
@@ -41,11 +43,13 @@ were sharpened (section 3, items 10–13).
 **Two machines.** The interpreter has one machine. Where a row or a patch is about a
 difference between machines, the check builds the same state twice, changes the one word
 that is per-machine state (a selector word, a menu flag, a card-screen state, a latch),
-runs the same code on both and compares every call (target and arguments) and every store
-outside the stack. "The patch removes the difference" means the two patched runs are
-identical; "nothing else changed" means the patched run equals, call for call and store
-for store, the shipped run with the per-machine word clear. Large functions were entered
-part-way with registers and frame prepared, as the pacing checks do; each row says where.
+runs the same code on both and compares every call and every store outside the stack
+(call arguments too, where both runs take the same path). "The patch removes the difference" means the two patched runs no longer
+differ in what the row names; "nothing else changed" means the patched run was compared
+call for call and store for store with the shipped run and differs only in the one thing
+the patch text names (in most cases it simply equals the shipped run with the per-machine
+word clear). Large functions were entered part-way with registers and frame prepared, as
+the pacing checks do; each row says where.
 
 ## 1. What the interpreter is, and is not
 
@@ -314,7 +318,7 @@ Diagnostic patches in the file:
 | j9 | "never judge activity from the camera", 0x1e4dd4 | in a net game the byte is 0 with or without a cutscene; offline unchanged |
 | j10, j11 | D28 and "CloudGiant king conjure test uses a shared flag", 0x250930 | stretch from 0x250930: shipped, the conjure exit is taken when the word at object +0x530 is 0, whatever +0x508 holds; patched, it follows +0x508 and ignores +0x530 |
 | j12, j13 | D29 and "fire bombs ignore the view test", 0x261fd0 | stretch 0x261fc4 onward: shipped, `isNearView(position, 960)` is asked; on "no" the shared seed is untouched, on "yes" one value is drawn from it. Patched, the test is not called and the seed is drawn every time |
-| p1–p22 | every section | the "was" word quoted in the file is the word in the executable (the cutscene section quotes none; the potion section quotes one word for its two addresses, and both hold it) |
+| p1–p27 | every section | the "was" word quoted in the file is the word in the executable (the cutscene section quotes none; the potion section quotes one word for its two addresses, and both hold it) |
 
 ### 2.10 Kill, loot and pick-up — group k (K1–K8; patches at 0x1a5c0c, 0x1b9fcc + 0x1ba3ac, 0x1d2d30)
 
@@ -369,7 +373,7 @@ run time through its potion-name tables or by category; no item data is in the s
 
 | Id | Row | How run | Result | Ledger |
 |---|---|---|---|---|
-| m1 | MV6: S | `Player_move` whole, mode 0, full push; trigonometry, angle approach, yaw and dialog look-ups real; animation step and the move itself stubbed (the vector handed to the move is recorded) | 155.150 units/s offline, 135.000 in a net game; PvP mode B with word 0x4f7124 clear, or the level named in the row's document, use the offline value in a net game | supports MV6 |
+| m1 | MV6: S | `Player_move` whole, mode 0, full push; trigonometry, angle approach, yaw and dialog look-ups real; animation step and the move itself stubbed (the vector handed to the move is recorded) | 155.150 units/s offline, 135.000 in a net game; a net game in PvP mode B with word 0x4f7124 clear, or in the level `watmedal`, uses the offline value | supports MV6 |
 | m2 | MV6: formula, no acceleration | six stick positions, 31 calls each | speed = 180 × min(S × stick length, S) on the first call already; velocity along the facing (within 2/65536 turn); the facing is what lags | supports MV6 |
 | m3 | MV6: multipliers and cap | five (record multiplier, runSpeed) pairs | product, capped at 1.2 (216 units/s) | supports MV6 |
 | m4 | MV6: statistics and load | a record with extreme statistics, level and load against a plain one; read log | bit-identical velocities; the only record field loaded is +0x4c20 | supports MV6 |
@@ -406,6 +410,21 @@ One check per section, as these arrived last.
 E13 itself (the hash cannot change during that cutscene) and the level-specific halves of
 E6 and E8 are inferences about a level's whole course and were not run.
 
+### 2.15 The five sections added last — group u (D26, U1, U2)
+
+One check per section.
+
+| Id | Patch | How run | Result |
+|---|---|---|---|
+| u1 | "menu lockout never drops player damage", 0x1b53d4 (D26) | `Player_takeDamage` whole, 25 damage to a player in a net game, lockout word 0 and 60 | shipped: with the word 0 the 25 is added to the pending damage at +0xc8; with 60 the function returns before that and stores nothing. Patched: both runs equal the shipped run with the word 0 |
+| u2 | "menu lockout never blocks weapon swap and use", 0x1a5ba8 (D26) | the stretch of k1, lockout word 0 and 60; then all 64 combinations of the other five tests | shipped: with 60 the stretch makes no call and no store; with 0 it makes them all. Patched: 128 of 128 runs equal the shipped run with the word 0 |
+| u3 | "option commit leaves the button maps alone", 0x1e6a60 (U1) | `config_commitOptions` whole in a net game with one option changed, on two machines whose button tables are equal and whose saved controller rows differ | shipped: each machine overwrites all 36 words of the nine per-slot tables with its own saved rows, so the tables then differ between the machines. Patched: the tables are untouched on both; the function's other stores (the saved option set) and its call are unchanged. With nothing changed no copy is made even unpatched |
+| u4 | "mission menu ignores the chooser's pause menu", 0x231a64 (U2) | `missionMenu_run` entered part-way at 0x231a44, four machines (owns the choosing slot or not × pause menu open or not) | shipped: only the chooser's machine with its pause menu open calls `net_lockLocalInput(slot, 4)` and returns before the pad test; the other three go on. Patched: all four go on, nobody locks input |
+| u5 | "jump-gate menu ignores the chooser's pause menu", 0x27def8 (U2) | `jumpgate_menuRun` entered part-way at 0x27ded8, the same four | the same result |
+
+The pad test and the menus' actions after it were not run; U3 (the routes by which the
+lockout is set inside a tick) is a list of writers and was not run.
+
 ## 3. Where a run contradicts or sharpens a document
 
 1. **`netcode.md`, "The codec, bit by bit" — order of the spring step.** Printed: velocity
@@ -440,7 +459,10 @@ E6 and E8 are inferences about a level's whole course and were not run.
 8. **Not contradicted, now executed:** the sequences and the 7th-frame threshold of
    `netcode.md` / `lag.md` C7 / L6 (a1, a2, b8, b10); D1, D6, D8, D18, D21, D22, D28, D29
    (the read or the gate, not the divergence); the G3-based chain G11–G14; L3, L4, L5;
-   engine P6; the sign-in shortcut.
+   engine P6; the sign-in shortcut. From the second pass: B1–B3, B8, B9, B10 and the
+   mechanism of B11; K1–K3, K5–K8; MV2, MV5, MV6; F3, F4, F7; the timing rule of E6, the
+   gate of E8, E9; both readers of D26; the copy of U1; the two early returns of U2. In
+   every case it is the mechanism that was executed, not the desync a row infers from it.
 9. **A limit that is also a finding.** A stick value that comes to rest from above lands
    exactly on an integer and then has a tiny negative velocity added to it. Whether the
    result is that integer or the float just below it depends on the last bit of the
@@ -452,6 +474,49 @@ E6 and E8 are inferences about a level's whole course and were not run.
    `netcode.md` per-machine row 11 is a practical hazard for mixed setups (console with
    emulator, or emulators with different floating-point settings), not only a theoretical
    one. Identical machines are unaffected.
+
+### Second pass: no contradiction, four sharpenings
+
+Nothing run in sections 2.10–2.15 contradicts a ledger row or the stated effect of a patch.
+Four statements came out sharper than written:
+
+10. **`sync-breakers.md` section 1 (and B2) — who sends "player left".** The document says
+    `net_disconnectPlayer` marks the peer dropped on this machine only and that the first
+    active machine also sends game message 4. Executed (s4): the function asks "am I the
+    first active machine" *after* it has marked the peer dropped. A machine that has just
+    dropped every slot in front of its own therefore answers yes. In a two-machine game the
+    machine in slot 1 that sees a checksum difference for slot 0 drops slot 0 **and** queues
+    message 4 for slot 0. The drop itself is still local, as B2 says. What the other
+    machines do with a packet from that machine afterwards was not run.
+11. **`movement-camera.md` 4.6 (and the reachability note under F4) — the slow byte after
+    the ramp.** Written: twice the frames since counter 7 started for 30 frames, "then the
+    counter value up to 60". Executed (z6): after the ramp the byte is 60 for any counter
+    of 31 or more, and equals the counter only when the counter is 30 or less. So a player
+    under counter 7 sits at exactly 60 — the divide-by-zero value of F4 — for as long as the
+    counter is above 30, not only when the counter happens to be 60.
+12. **K2 — a detail the row does not have.** The drop message carries the −1 that
+    `Player_run` passes as the last argument of `Player_usePotion`, and
+    `inventory_dropItem` uses it as the panel index of the machine's local item-list copy
+    (k11). On the owner's machine it compares the item with 675 cells in the 0xbdd8 bytes
+    immediately below the list buffer and with no cell inside it. In the test that memory
+    was zero and nothing matched; in a running game its contents are Unknown, and a match
+    would decrement a 16-bit count there. This is local memory, not shared state, and it
+    explains why the open screen keeps showing the old counts.
+13. **Patch at 0x28da74 — what it leaves.** The patch does what its text says: both
+    machines set the active player (s11). It does not make the two machines equal. On the
+    machine whose card screen is open `Savepoint_interact` still returns at its own card
+    test, so the save point's +0x84 and +0xc4, its light and its `action` scripts still
+    differ from the other machines. `sync-breakers.md` 4b already lists those fields as
+    read only by the point's own effect code and the level save record, and B7 says no
+    save point on the disc has `action`; a custom level that gave one an `action` would
+    still run it on some machines only.
+
+Smaller notes, none of them a contradiction: K6's list of what experience reads is short by
+the record's class, the level-step table and the killer's skill list (k19; all lockstep
+state). The level-up message call in `player_giveExp` is made on every machine with the
+slot as argument; only the sound is behind the local-slot test (k22;
+`kill-loot-xp.md` section 2 words both as owner-only). The patch at 0x199df8 has no
+per-machine difference to remove: it is a switch every machine must share (n2).
 
 ## 4. Proposed ledger rows
 
@@ -467,6 +532,20 @@ Not edited into `FINDINGS.md`; for the maintainers to place. Kind for all:
 | D20 (add) | The gate refuses only with two or more players in the alive list | i5; 0x143d4c–0x143d58 |
 | netcode per-machine 11 (add) | Two models of single-precision addition that differ only in the last bit give different decoded stick bytes on 5 % of frames of mixed input, and persistently for a held stick. Settle on hardware or by comparing two emulator settings | a11, a12 |
 | D1 (add) | The hash is a plain sum of truncated coordinates: divergence below one unit, and opposite one-unit moves of two players, do not change it | g5, g6 |
+| B2 (add) | `net_disconnectPlayer` tests "first active machine" after marking the peer dropped, so a machine that drops every slot in front of its own also queues game message 4 for the dropped slot | s4; 0x13dec0, 0x13decc |
+| F4 (add) | After its 30-frame ramp the slow byte is 60 for any value of status counter 7 above 30, and the counter itself only at 30 or below; from the chill timer alone a player's byte never passes 30 | z6; 0x113774–0x1137d8 |
+| K2 (add) | The drop message's last byte is the −1 `Player_run` passes; `inventory_dropItem` uses it as a panel index and, on the owner's machine with the list loaded, compares 675 cells in the 0xbdd8 bytes below the list buffer (local memory; contents Unknown) | k11; 0x1a599c, 0x1c46ec |
+| B9 (add) | With the prompt's card test removed the active player is set on every machine, but the save point's +0x84, +0xc4, light and `action` scripts still follow each machine's own card state through the second test in `Savepoint_interact` | s11; 0x28dc44 |
+
+### Proposed replacements for rows X1–X4
+
+| ID | Claim | Kind | Evidence |
+|---|---|---|---|
+| X1 | The interpreter runs the executable's own C library correctly (string and memory functions, sprintf, qsort, the multiply-based generator), which is the basis for trusting it on game functions; 65 unit tests on hand-assembled words cover each instruction class | Executed | `python3 tools/ee_tests.py SLUS_209.73`, checks x1–x5; `tools/test_ee_emu.py` |
+| X2 | These ledger rows reproduce when the functions are executed: D1 (sync hash), D6, D8, D12, D18, D21 (pool spill and failure), D22, D28, D29, G8, G9, G11–G14 (clone carries pending damage; the copy's death rebuilds the alive list), L3–L5 (pacing rules), L6 (stick: 4 dead frames after a full push); B1–B3 (when the checksum exchange runs; a mismatch flags and drops on the machine that sees it), B8, B9, B10 and the skipped clean-up B11 starts from; K1, K2, K3 (each as a difference between two machines that differ in one word), K5–K8; MV2, MV5, MV6 (run speed 180 × min(S·stick, S), S 0.861945 / 0.75, cap 1.2); F3, F4 (the divides by zero and where their results go), F7 (both root values; which one a console gives is not decided); the rebase rule of E6, the autosave gate of E8, E9; both readers of the lockout word in D26, the button-map copy of U1, the two early returns of U2. It is the mechanism that is executed, never the desync a row infers from it | Executed in isolation | 208 checks, all passing; docs/issues/dynamic-tests.md sections 2.1–2.15 |
+| X3 | Every one of the 27 sections in `patches/SLUS-20973_4028A55F.pnach` changes what its description says when the patched function is executed. Where a description names a difference between machines (0x1375dc, 0x28da74, 0x217448, 0x1a5c0c, 0x1b9fcc + 0x1ba3ac, 0x1d2d30, 0x13b21c, 0x217f58, 0x1dd1f0, 0x1b53d4, 0x1a5ba8, 0x1e6a60, 0x231a64, 0x27def8), two unpatched runs that differ in the one per-machine word differ as described, the two patched runs do not, and nothing else in the patched function's calls and stores changes. Two limits: 0x28da74 removes the active-player difference but not the save point's own effect state; 0x199df8 has no per-machine difference, it is a switch all machines must share. So do the withdrawn patches and several proposals not in the file | Executed in isolation | docs/issues/dynamic-tests.md sections 2.4–2.6, 2.9–2.15 |
+| X4 | The network sign-in step returns "wait" as shipped and "network ready" through the developer shortcut (debug flag plus held button) | Executed in isolation | state 5 of 0x33ed70; docs/online-setup.md (unchanged) |
+| X5 (new) | Execution sharpened four statements without contradicting any row: the "player left" message is also sent by a machine that has just dropped the slots in front of it (B2); the slow byte is 60 for any counter 7 above 30 (F4); the potion drop message indexes below the local list buffer (K2); the save-point patch leaves the point's own state per machine (B9) | Executed in isolation | s4, z6, k11, s11; docs/issues/dynamic-tests.md section 3, items 10–13 |
 
 No patch is proposed by this document.
 
@@ -474,9 +553,35 @@ No patch is proposed by this document.
 
 - The packet-level codec (buttons, yaw, flag bits) is inlined in `net_main`,
   `net_frameLoop` and the receiver; only the per-axis functions were run.
-- `Player_run`, `net_frameLoop`, `net_predictLocalPlayer` and the receiver 0x13b5d0 were
-  not run as wholes. What prediction does around the copy's run (swap the table pointer,
-  restore hp) is done by the test script from G3's description.
+- `net_frameLoop`, `net_predictLocalPlayer` and the receiver 0x13b5d0 were not run as
+  wholes. What prediction does around the copy's run (swap the table pointer, restore hp)
+  is done by the test script from G3's description. `Player_run` was run whole only with
+  every callee stubbed (m6); its real paths were run as stretches.
+- **Not runnable, with the reason** (second pass):
+  - Every "only writer", "never set", "no other reader" statement (K1's writer of
+    0x41b818, MV2's writers of 0x8e2d60, B1's writers of kind 2, the byte 0x4f8f2a of the
+    0x1375dc patch, the reader list of the FireStorm light fields in F3). These are search
+    results over the whole program; an interpreter that runs one function can show what a
+    named writer does, not that there is no other.
+  - K6 as a whole ("nothing else in the chain depends on the machine"): a universal
+    statement. Run: the experience block, the roll logic of `loot_generateDrops`, the gold
+    touch. Not run: the item generators and object constructors under the loot roll,
+    `itemprop_tryPickup`, the dropped objects' physics.
+  - The consequences B11, K1 (chest loot built on some machines only), E6, E8 and E13
+    infer: each needs a level, objects and many ticks. Only the first differing step was
+    run.
+  - `Player_run` in action states 5 and 0xd on a blank player: both load through a pointer
+    the test did not build (the cast's skill object at 0x1ab604, an object at 0x1a5ee8).
+    They are not part of MV5.
+  - What the input sampler does with the mask `net_maskLocalButtons` records (K1 patch
+    text, "new use presses are still filtered"); what `hud_run` does to open the level-up
+    screen (K7); the transport between `net_sendGameMsg` and the handlers (messages were
+    carried by the test); `save_game`, the cutscene skip path after the test, and the
+    rebase after 0x13b224 (stubs or stops in n1–n3); the pad test and the menu actions
+    behind the early returns of u4 and u5.
+  - Which of the two square roots of F7 a console produces, and whether its divide by zero
+    really gives the signed maximum: the interpreter implements the published description.
+  - K4 was not in scope and was not run.
 - Proposals P3a/P3b (`SpellCyclone_run`) and the O1–O6 call sites in place were not run.
 - The last bit of floating-point sums and products on the real console (3.9). A handful
   of known results from hardware, or from an emulator's software-float mode, would let one
