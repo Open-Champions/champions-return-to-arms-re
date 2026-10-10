@@ -314,6 +314,17 @@ def fabs(a):
     return a & FMAX
 
 
+def fmax(a, b):
+    """max.s: the first operand unless the second compares greater (so max(+0, -0) is the
+    first one given)."""
+    return a & M32 if Fpu.compare(a, b) >= 0 else b & M32
+
+
+def fmin(a, b):
+    """min.s: the first operand unless the second compares smaller."""
+    return a & M32 if Fpu.compare(a, b) <= 0 else b & M32
+
+
 def from_int(value):
     return _fpu.from_int(value)
 
@@ -1941,6 +1952,24 @@ def fmod(x, y):
     if iy >= -1022:
         return ((sx << 32) | (wide_x - (1 << 52)) | ((iy + 1023) << 52)) & M64
     return (sx << 32) | (wide_x >> (-1022 - iy))
+
+
+# Constants of the engine's own code, with the address of the instruction pair (lui, ori)
+# that loads each: difftest_core.py reads them back from the executable (property
+# "code.constants"), which checks the ones too small to show in any result.
+CODE_CONSTANTS = [
+    (0x166668, K_PI_65536, 'cos16 pi/65536'), (0x166674, K_SIN3, 'cos16 s3'),
+    (0x166680, K_SIN5, 'cos16 s5'), (0x16668C, K_SIN7, 'cos16 s7'),
+    (0x16671C, K_PI_65536, 'sin16 pi/65536'), (0x166728, K_SIN3, 'sin16 s3'),
+    (0x166734, K_SIN5, 'sin16 s5'), (0x166740, K_SIN7, 'sin16 s7'),
+    (0x1667A8, K_RAD_TO_ANGLE, 'atan2_16 scale'), (0x161618, K_DEG_TO_ANGLE, 'degrees to angle'),
+    (0x164038, K_SINGULAR, 'mat4_invert limit'), (0x164764, K_40000, 'noise table scale'),
+    (0x166B5C, K_1_16, 'noise 1/16'), (0x166BA8, K_1_32768, 'noise 1/32768'),
+    (0x1636F0, K_0_001, 'ray/plane limit'), (0x163770, K_1000, 'ray/plane 1000.00006'),
+    (0x163858, K_0_01, 'segment divisor limit'), (0x166EC0, K_BIG, 'empty box'),
+    (0x164F70, K_255, 'colour 255'), (0x3A738C, K_PI, 'atan2f pi'), (0x3A73F4, K_PI_2, 'atan2f pi/2'),
+    (0x3A74B0, K_PI_LO, 'atan2f pi_lo'), (0x3AA5E4, K_HUGE, 'atanf huge'),
+]
 
 
 # =======================================================================================

@@ -18,8 +18,10 @@ address given), **Inferred** or **Unknown**. Patch proposals are **untested**.
 - All 271 were triaged: 162 by group (the reader is rendering, audio, card or transport
   plumbing), 109 one by one (47 topics). All 62 field sites were read.
 - **Real, already on the ledger:** K1, K2, D26, D12–D16 (status counters), D31 and the water
-  spout (run-list membership decided by drawing), the jump-gate drawn flag, card state read
-  by the save point, scripts run from draw code, dialog state, the debug file.
+  spout (run-list membership decided by drawing), D34 (the pose cache filled by drawing —
+  being traced elsewhere, only noted here), E9 (a notice box closed in a draw task runs the
+  pending post-action script), the jump-gate drawn flag, card state read by the save point
+  (B9–B11), scripts run from draw code, dialog state, the debug file.
 - **Real, new:**
   - **U1** — leaving the pause menu's option list with any option changed rewrites the
     button maps of all four player slots from this machine's own saved configuration, with
@@ -67,6 +69,9 @@ short:
 4. **`--fields`**: fields a draw slot stores through `this` (including `this` plus a
    constant or an index, and through the functions it hands `this` to), matched against
    loads through `this` in the simulation slots of the same class.
+5. **`--calls`**: simulation functions that change state and are called directly by
+   presentation-only code (94). This is the complement of the global list: E9 and K3/K4
+   are calls, not stores.
 
 Other modes: `--check` (exit 1 unless the three known cases are listed), `--roots`,
 `--why <function>`, `--global <address>`, `--vcalls`, `--stats`, `--loose`, `--prediction`.
@@ -116,7 +121,7 @@ disc, so drawing state shows up.
 
 | Group (reader lies in) | Count | Examples | Verdict |
 |---|---|---|---|
-| rendering: lights, model draw state, sorted packets, display list, glow / trail / decal counters, texture streaming | 88 | 0x5d3448… (level light), 0x41c149 `g_modelFade`, 0x44fe10 display-list cursor, 0x82cc94 glow count, 0x840314 decal count | output only. The glow, line and decal adders return nothing the callers branch on, with one known exception: the beam table of FINDINGS D28 |
+| rendering: lights, model draw state, sorted packets, display list, glow / trail / decal counters, texture streaming | 88 | 0x5d3448… (level light), 0x41c149 `g_modelFade`, 0x44fe10 display-list cursor, 0x82cc94 glow count, 0x840314 decal count | output only; the pool counts (glow, line, decal, trail) are per machine. Whether a simulation caller branches on an adder's result was not checked one by one; the known case is the beam table of FINDINGS D28 |
 | memory card and save screens | 31 | 0x895580 save buffer, 0x88d3bc `g_cardOpResult`, 0x4f8f28 `g_cardXferLatch` | per machine by nature; the routes into shared state are FINDINGS B9–B11 and docs/script.md P2, P4 |
 | audio | 19 | 0x4f8954 `g_soundFrame`, 0x876c10 streams, 0x41bac8 group volumes | sound return values and stream status are per machine (docs/audio-save.md A3; FINDINGS D8, D18); no new reader |
 | camera functions | 6 | 0x44f110 camera matrix, 0x4f8460 reverse-yaw option | the camera is per machine by design; its yaw travels in the input record |
@@ -157,7 +162,7 @@ disc, so drawing state shows up.
 | 0x4f4074, 0x4f4078, 0x4f4240 | item panels | `menu_openInventory`, `itemList_draw` | equip, combine and join-panel handlers | equip and combine use the panel owner only for a notice flag; the join-panel message is never sent with one player per machine (kill-loot-xp.md) |
 | 0x4dd6fd, 0x4f719c | medal byte, difficulty | `debug_missionEditor` | medal and item code | debug file only |
 | 0x41b6d0, 0x404464, 0x44fdc8, 0x44fdcc, 0x4f7120, 0x4f85c4, 0x41b510, 0x402791 | pending level, seed, world, frame counter, PvP flag, creature serial, front-end flag, network flag | session function, `frontend_stop`, HUD exit path | most of the simulation | session start, level change and leaving the game. One live case: the pending-level cancel, docs/mainloop.md P1 |
-| 0x4d8af0…0x4dd714 (47) | player-record fields | `player_importCharacter`, `memcard_importScreen` | everything | character import in the front end; records are sent whole at launch |
+| 0x4d8af0…0x4dd714 (44) | player-record fields | `player_importCharacter`, `memcard_importScreen` | everything | character import in the front end; records are sent whole at launch |
 | 0x404460, 0x44fdd0, 0x44fe10, 0x41bac8, 0x403a54, 0x41c1b8, 0x425df8, 0x4ef3ec, 0x503968 | cosmetic seed, displayed-frame counter, display-list cursor, volumes, heap flag, texture cells, equipment cache, talk bits | draw and service code | `anim_advance`, `anim_buildPose`, `rigidbody_init`, … | cosmetic by design. `anim_advance` uses the displayed-frame counter only for its per-group sound limiter (0x16d9e4) |
 
 ### The loose tier (542 more)
@@ -166,10 +171,10 @@ disc, so drawing state shows up.
 
 | Evidence | Count | What they are |
 |---|---|---|
-| address taken on both sides | 254 | structures and strings passed by pointer |
-| address taken by presentation code, loaded by simulation code | 117 | almost always a presentation *read* of simulation state (experience table, alive list, cutscene key index, grid). Read: `cut_drawFrame` (reads the key index and dialog lines), `missionMenu_draw` and `jumpgate_menuDraw` (pass state to drawing routines; `menuList_draw` 0x1a07c4 does not store through its table argument), `Skeleton_draw`, `Player_draw` |
+| address taken on both sides | 263 | structures and strings passed by pointer |
+| address taken by presentation code, loaded by simulation code | 108 | almost always a presentation *read* of simulation state (experience table, alive list, cutscene key index, grid). Read: `cut_drawFrame` (reads the key index and dialog lines), `missionMenu_draw` and `jumpgate_menuDraw` (pass state to drawing routines; `menuList_draw` 0x1a07c4 does not store through its table argument), `Skeleton_draw`, `Player_draw` |
 | stored by presentation code, address taken by simulation code | 40 | read by name; nothing beyond the strict list |
-| unconfirmed on one side | 131 | mostly false: a `lui` constant followed by an unrelated use of the same register |
+| unconfirmed on one or both sides | 131 | mostly false: a `lui` constant followed by an unrelated use of the same register |
 
 Not read one by one. A presentation function that stores through a pointer it received is
 invisible here as everywhere else.
@@ -210,6 +215,38 @@ A search of the decompile of all 860 presentation-only functions for assignments
 four player records, or through a record's object pointer, finds only these, the character
 import, and `hud_tickGold`. Stores through a pointer handed in as an argument are not
 covered by that search.
+
+### Presentation code that calls simulation code (`--calls`, 94 callees)
+
+Most of the 94 are drawing, sound, disc and card helpers that simulation code also uses.
+The ones that change shared state:
+
+| Callee | Presentation-only caller | Verdict |
+|---|---|---|
+| `script_runPostAction` 0x1edac0 | `help_task` 0x1dcf60 (network-tested), 0x1dd1f0 (not) | **real — FINDINGS E9**. The lockout it stores there (0x1dd1ec) is erased before the next tick |
+| `script_runByName` 0x1ed694 | map routine 0x1696c4, `inventory_runPanel` 0x1c0314, `hud_run` 0x1dbb30, `NPC_draw`, `Gnome_draw`, `GnomeNavigator_draw`, `Rondo_draw` | known: docs/script.md P1, docs/ui.md P6 (the two inventory hooks exist in no script) |
+| `obj_runEveryFrame` 0x14f248 | `WaterSpout_draw`, `Torch_draw`, `Candle_draw`, `Candle2_draw`, `Lantern_draw`, `Lamp_draw` | real mechanism: D31, gameplay §8 |
+| `player_recalcStats`, `Player_recalcDamage` | `stats_screen`, `skills_screen`, `itemList_input` | known: K3, K4 |
+| `player_giveExp` 0x1d3150 | `stats_screen` 0x1d1e94 with amount 0, when the level-up page closes; `hud_run` cheat | amount 0 adds nothing and a level is raised at the award, so no change is expected (**Inferred**; the function was not re-read for a zero amount) |
+| `GameObject_rand` 0x1509d0 | `Gold_draw` 0x157e10, `AntWave_draw` 0x238808 | the object's own generator is advanced by drawing. No simulation function of either class draws from it (the only other caller on a `Gold` is its constructor). Cosmetic |
+| `Player_interact` 0x1b2640 | `Player_draw` | display mode; the prompts are in the table above |
+| `anim_emitPose` 0x16f880 | draw functions | **FINDINGS D34** (pose cache); not traced here |
+| mission, evil and decision setters; `inventory_removeItem`; `shop_openOrStock` | `debug_missionEditor`, the debug sweep, the debug pause menu | debug file only |
+| `cut_end`, `net_closeLocalMenus`, `save_load`, `save_build` | HUD exit path, card screens | leaving the game; docs/audio-save.md A1 |
+
+No presentation-only function calls `pool_new`, an object constructor, `obj_delete`,
+`handle_link`, `damage_apply`, `world_findFreeSpot`, `player_respawn` or
+`inventory_giveItem` directly. So no object is created or deleted from draw code by a
+direct call; the unresolved indirect calls are the reservation.
+
+Virtual calls from presentation-only code into simulation-side slots (`--vcalls -v`): the
+debug sweep (take-damage, run, touch, interact); and slot 17 of objects held in a child
+array, called by `AutoEmitter_draw` (0x241138…0x2411f8), `AutoChestLP_draw` 0x2415ac,
+`AutoPropLP_draw` 0x242084 / 0x242100 and `AutoContainerLP_draw` 0x2426d0 with a position.
+The children are `AddParticle` helpers, whose slot 17 (0x240800) recomputes the helper's
+light and halo (docs/monsters-2.md, slot table and the LP section); for the `AutoProp`
+classes themselves slot 17 is "next state", but the draw functions do not call it on
+`this`. Drawing only; the body of 0x240800 was taken from that document, not re-read.
 
 ## The real ones
 
@@ -266,7 +303,7 @@ the local slot, close the pause menu, `inventory_close`, reset notices, `shop_cl
    (0x13776c–0x1377a4; FINDINGS B12).
 2. `config_commitOptions(force, queryOnly, noCardSave)` 0x1e6650 counts the options that
    differ between the live globals and the saved block `g_savedConfig` 0x4f8f38. The
-   button maps are part of the count only offline (network test at 0x1e6888).
+   button maps are part of the count only offline (network test at 0x1e6824).
 3. If it is not a query and the count is non-zero, it copies the live options into the block
    and then copies **all four rows** of `g_savedButtonMaps` 0x4f8f6c — this machine's own
    controller configuration per local port — into the per-slot tables (loop
@@ -369,7 +406,7 @@ stores are what keeps a closing press from acting.
 
 | ID | Claim | Kind | Evidence |
 |---|---|---|---|
-| U1 | `config_commitOptions` 0x1e6650, run when the pause menu's option list is left with any option changed (and when the pause menu closes), copies this machine's four saved controller rows into the per-slot button-mask tables with no network test; in a net game those tables hold each player's own map from the launch handshake. Any remapped button then reads differently on that machine | Observed (code); Inferred (consequence) | 0x1e6888 (offline-only compare), 0x1e6a60–0x1e6b0c (copy), callers 0x18d2c8, 0x18d2e0, 0x18e2f8; 0x13776c; `Player_run` readers |
+| U1 | `config_commitOptions` 0x1e6650, run when the pause menu's option list is left with any option changed (and when the pause menu closes), copies this machine's four saved controller rows into the per-slot button-mask tables with no network test; in a net game those tables hold each player's own map from the launch handshake. Any remapped button then reads differently on that machine | Observed (code); Inferred (consequence) | 0x1e6824 (offline-only compare), 0x1e6a60–0x1e6b0c (copy), callers 0x18d2c8, 0x18d2e0, 0x18e2f8; 0x13776c; `Player_run` readers |
 | U2 | `missionMenu_run` returns before its pad test on the chooser's machine while that machine's pause menu is open; the other machines act on the press | Observed; Inferred (window) | 0x231a4c–0x231a74; same lines in `jumpgate_menuRun` 0x27dee0–0x27df0c |
 | U3 | Routes by which the lockout is set inside a tick on one machine: local death (D26), the medal countdown in `gameMiscSync` (before objects run), an automatic jump gate. Not routes: `player_respawn` (no menu can be open), message handlers (the word is zeroed before the tasks), `cut_start` (stores 60 everywhere) | Observed | 0x1b351c, 0x1e3dcc, 0x27da8c; 0x1bd0a8–0x1bd0b8; 0x322710; 0x19b5ac |
 | U4 | The windows of K1, K2, U2 and the jump-gate menu are the lead minus one call: one sample at the minimum lead, about 0.57 s at a lead of 35 | Inferred | kill-loot-xp.md F2; FINDINGS L11 |
@@ -393,6 +430,11 @@ stores are what keeps a closing press from acting.
 - **docs/player.md**, item 8: 0x4f694a cannot differ between machines (U5); 0x41b4fc can,
   inside a tick (D26).
 - **docs/creatures.md C2** ("spell draw bodies not checked"): checked, drawing only.
+- **docs/creatures.md C10** asks whether local UI code touches the menu latch 0x4fe53c. Not
+  in a net game: `menu_openInventory` skips the acquire when the network flag is set
+  (test in front of the call at 0x1c1608) and `inventory_close` releases only offline
+  (0x1c52b0). Its other writers are `Creature_interact`, `Creature_trigger`, `dialog_onMsg`,
+  `dialog_free` and one script built-in.
 - **docs/netcode.md**, per-machine item 4 ("no handler was identified that reads a pad"):
   `inventory_unequipItem` (inventory message 2) passes the message slot's lockstep pad to
   `Player_weaponSwapInput` (0x1c2ffc). It is the sender's own slot, whose pad has been
@@ -420,6 +462,8 @@ stores are what keeps a closing press from acting.
   config load during play can also call `config_commitOptions`.
 - The weapon-holder draw slots (table pointer at +0 of the holder; slots 18 and 19 are
   called only from draw functions) were not covered by `--fields`.
+- `AddParticle_updateLightAndHalo` 0x240800 (called from the four `Auto…LP` draw functions)
+  was not re-read; if it links a light it is one more D31 case.
 - Who calls `arena_init` 0x304df0 (no direct call or built address was found), and so
   whether the `arena` run task exists in DRUNARE.
 - Whether K2 at a large lead is the arena's "every time": needs two running copies.

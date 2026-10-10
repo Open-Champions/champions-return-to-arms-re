@@ -593,7 +593,21 @@ def test_fpu_primitives():
                     failures += 1
                     if len(examples) < 3:
                         examples.append('%s %s(%08x, %08x): model %x, interpreter %x' % (model, op, a, b, mine, theirs))
-    report(name, failures, total, 'add sub mul div sqrt rsqrt to_int from_int compare equal to '
+    # max.s and min.s have no helper in the interpreter: run the two instructions themselves
+    emu = EE()
+    emu.load_words(0x00200000, [0x460D6028, 0x03E00008, 0, 0x460D6029, 0x03E00008, 0])
+    for index in range(scaled(4000)):
+        a = rng.choice(EDGE) if index % 5 == 0 else rng.getrandbits(32)
+        b = rng.choice((a, a ^ 0x80000000, rng.choice(EDGE), rng.getrandbits(32)))
+        for addr, mine in ((0x00200000, R.fmax(a, b)), (0x0020000C, R.fmin(a, b))):
+            emu.f[12], emu.f[13] = a, b
+            emu.call(addr)
+            total += 1
+            if emu.f[0] != mine:
+                failures += 1
+                if len(examples) < 3:
+                    examples.append('max/min(%08x, %08x): model %x, interpreter %x' % (a, b, mine, emu.f[0]))
+    report(name, failures, total, 'add sub mul div sqrt rsqrt to_int from_int compare max min equal to '
            'tools/ee_emu.py under all six FPU settings', examples)
 
 
@@ -1855,6 +1869,20 @@ def test_libm_extra(elf):
                 examples.append('%s at 0x%x: executable %s, model %08x' % (name, address, got, value))
         report(label, failures, len(R.LIBM_IMMEDIATES), 'float constants loaded by the C library\'s code equal '
                'the published decimal constants TRUNCATED to 24 bits', examples)
+
+    label = 'code.constants'
+    if wanted(label):
+        emu = EE(elf)
+        failures, examples = 0, []
+        table = list(R.CODE_CONSTANTS) + [(0x1509D4, R.Lcg.MULTIPLIER, 'generator multiplier'),
+                                          (0x1509E0, R.Lcg.INCREMENT, 'generator increment')]
+        for address, value, name in table:
+            got = decode_immediate(emu, address)
+            if got != value:
+                failures += 1
+                examples.append('%s at 0x%x: executable %s, model %08x' % (name, address, got, value))
+        report(label, failures, len(table), 'constants of the engine code read back from the instruction '
+               'pairs that load them (including those too small to change any tested result)', examples)
 
     def sweep(label, addr, model, generator, count, text, ints=False):
         if not wanted(label):

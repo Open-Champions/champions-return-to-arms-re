@@ -20,8 +20,14 @@ group and maps it to the ledger.
 
 Groups: a codec, b pad_apply, c object pool, d pacing block and patches, e alive list /
 death path / Player_clone and their patches, f cut_advance and its patch, g sync record,
-h sign-in state machine, i other ledger rows, j diagnostic patches, p patch file,
-x cross-check of the interpreter on library routines.
+h sign-in state machine, i other ledger rows, j diagnostic patches, k kill / loot /
+pick-up rows K1-K8 and their three patches, s sync breakers B1-B11 and their three
+patches, m player movement MV2/MV5/MV6, z float special cases F3/F4/F7, n the four
+arena-entry patches, p patch file, x cross-check of the interpreter on library routines.
+
+Where a check compares "two machines" it builds the same state twice, changes the one
+word that is per-machine state, runs the same code on both and compares every call and
+every store outside the stack (run_log / log_diff below).
 """
 import hashlib
 import os
@@ -2608,7 +2614,7 @@ def test_k3_stats(elf):
 # K5-K8: the rows that are not about a patch
 LANDING_START, LANDING_END, FALLOUT_START, FALLOUT_STOPS = 0x156C0C, 0x156D08, 0x156D10, (0x156D74, 0x156D78)
 ITEMPROP_CTOR3, OBJ_DELETE = 0x1592BC, 0x14F200
-XP_START, XP_STOPS, GIVE_EXP, LIFETAP_FRACTION, LIBM_POWF = 0x111E3C, (0x112490, 0x112494), 0x1D3150, 0x2F8E78, 0x3A5AC8
+XP_START, XP_STOPS, GIVE_EXP, LIFETAP_FRACTION = 0x111E3C, (0x112490, 0x112494), 0x1D3150, 0x2F8E78
 G_EXP_TABLE, G_LIFETAP_SKILL, RODATA_LO, RODATA_HI, LIBRARY_CODE_LO = 0x41B558, 0x41B25C, 0x520000, 0x564000, 0x3A0000
 LOOT_GENERATE, SOFT_DOUBLE = 0x100D54, (0x3AEF58, 0x3AF468, 0x3AF4D0, 0x3AF9B8, 0x3AFA08, 0x3AFB90)
 G_COSMETIC_SEED, G_FOURTH_SEED, G_PVP_MODE_A, G_PVP_MODE_B = 0x404460, 0x404468, 0x4F711C, 0x4F7120
@@ -3410,7 +3416,7 @@ def test_sync_breakers(elf):
         b.mem.w8(b.saved_record(0) + 0xE4, 0x77)
 
     def hit_points(a, b):
-        b.set_hp = b.world.set_hp(0, 1.0)
+        b.world.set_hp(0, 1.0)
     a, b, _start, _sums, _p, _c = checksum_round(elf, saved_gold)
     buffer_half = (a.state(), b.state())
     a, b, _start, _sums, _p, _c = checksum_round(elf, hit_points)

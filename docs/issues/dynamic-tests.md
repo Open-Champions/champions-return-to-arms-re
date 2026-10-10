@@ -17,7 +17,9 @@ console or in a console emulator. No patch below has been tested on a running ga
   without any game file.
 - `tools/ee_tests.py` — the checks below; needs your own `SLUS_209.73`, otherwise prints
   `SKIP` and exits 0. `python3 tools/ee_tests.py -v` prints the tables; `-k codec` runs one
-  group. At the time of writing: 128 checks, 128 PASS (the count follows the patch file).
+  group. At the time of writing: **198 checks, 198 PASS** (the count follows the patch
+  file: one `p` check per section). The first pass ended at 128; sections 2.10–2.14 are the
+  70 added since (60 in five new groups, 10 for new patch sections).
 
 The patch file and the ledger changed several times while this was being written: the
 alive-list patch at 0x1b3504 and the two pacing patches were withdrawn, rows G14–G24,
@@ -26,7 +28,24 @@ sections to twelve. The script therefore finds patch sections by the address the
 runs whatever is there, reads proposal tables out of `docs/issues/prediction-copy.md` and
 `docs/issues/lag.md`, and keeps the withdrawn patches as explicit words so their result
 stays on record. Row wordings quoted below are those of `FINDINGS.md` as it stood at the
-last run (2026-10-10); all twelve sections then in the patch file were executed.
+last run (2026-10-10).
+
+A second pass covered what arrived after that: ten more patch sections (0x1375dc, 0x28da74,
+0x217448, 0x1a5c0c, 0x1b9fcc + 0x1ba3ac, 0x1d2d30, 0x13b21c, 0x199df8, 0x217f58, 0x1dd1f0)
+and the ledger rows B1–B3, B8–B11, K1–K3, K5–K8, MV2, MV5, MV6, F3, F4 and F7, which had
+been written from reading only. **All 22 sections now in the patch file are executed**, and
+each of those rows is reproduced, sharpened, or listed in section 5 with the reason it
+could not be run. No ledger row and no patch description was contradicted; four statements
+were sharpened (section 3, items 10–13).
+
+**Two machines.** The interpreter has one machine. Where a row or a patch is about a
+difference between machines, the check builds the same state twice, changes the one word
+that is per-machine state (a selector word, a menu flag, a card-screen state, a latch),
+runs the same code on both and compares every call (target and arguments) and every store
+outside the stack. "The patch removes the difference" means the two patched runs are
+identical; "nothing else changed" means the patched run equals, call for call and store
+for store, the shipped run with the per-machine word clear. Large functions were entered
+part-way with registers and frame prepared, as the pacing checks do; each row says where.
 
 ## 1. What the interpreter is, and is not
 

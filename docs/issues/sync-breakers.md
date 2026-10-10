@@ -492,7 +492,7 @@ options-menu value is in the block, and none is needed.
 | Vampire | 0x2b6ae0 | entry 15 (`idle1`), loop | sets 3, 4, 5 | no | placed |
 | VampireLord | 0x2b7874 | entry 5 (`idle1`), loop | sets 4, 8, 9, 0xc–0xf, 0x12, 0x14 | no | placed |
 | NPC | 0x29de74, 0x29e194, 0x29e3a0 | idle animation named by a property, loop | none (no NPC function calls 0x118378) | no | placed, restored from level state, or cutscene actors (the cutscene code reseeds before each actor, 0x19af20) |
-| AutoProp / AutoDoor | 0x23c95c | prop animation, loop | none | no | placed |
+| AutoProp / AutoDoor | 0x23c95c | prop animation, loop | none — except a prop whose type starts with `pipepistona`: `AutoProp_ctor` 0x23c44c then writes four event slots into this same animation with inline stores (0.25 s and 1.85 s mask 1, 1.0 s and 2.6 s mask 2), and its run function switches the damage window on them (FINDINGS D27, D30; `docs/monsters-2.md` M5). Added in the second correction pass; the scan behind this table followed only callers of `creature_setDefEntryParams` | no | placed |
 | UserParamProp | 0x157388 | prop animation, loop | none | no | placed |
 | PoisonProjectile | 0x2b1620 | projectile animation, loop | none | no | yes, always; its run function discards the result of the animation step and asks for no root motion (0x2b176c) |
 | world scenery | 0x188004 | scenery animation | — | — | draw code, per machine by nature |
@@ -556,7 +556,7 @@ How likely an ordinary co-operative session is to be hit, most likely first.
 | B3 | In such a game the memory-card save screen cannot be opened (script `saveGame` and the Savepoint prompt both refuse), so the save-buffer rewrite of audio-save.md A1 cannot coincide with a comparison | Observed | 0x146c04, 0x28da7c |
 | B4 | The comparison needs one message per original player; after any player has left it is never made again | Inferred | 0x1d90f4; writers of 0x4d8ae0 (set-up code and `save_load`) |
 | B5 | Shop stock is generated with the cosmetic seed equal to the shared seed: nothing that runs a per-machine number of times between 0x1e59c4 and 0x3230c4 draws from it | Inferred from Observed call paths | section 2 |
-| B6 | Animation event bits are assigned only by 59 monster constructors (`creature_setDefEntryParams`); no animation file carries any. None of the constructors that randomise a start time puts events on the randomised entry | Observed | 0x118378; disc scan |
+| B6 | Animation event bits are assigned only by 59 monster constructors (`creature_setDefEntryParams`); no animation file carries any. None of the constructors that randomise a start time puts events on the randomised entry. **Corrected in the second correction pass:** a few classes also write event slots with inline stores (`docs/formats/anim-audio.md` 2.7), and one of them, `AutoProp_ctor` for `pipepistona` props, does put events on the loop it randomises (0x23c44c; FINDINGS D27, D30) | Observed | 0x118378; disc scan |
 | B7 | No jump gate on the disc has `hurt` or `destination`; no Savepoint has `action` | Observed | disc scan; 0x27c848, 0x14dcc8 |
 | B8 | The blood option can only be 0 or 1 from the menu and the gib lifetime bit is set for any value below 2; damage numbers and gib creation ignore their options in a net game | Observed | 0x1a01d0, 0x2019e0, 0x1ea998, 0x1113fc, 0x1b31f4 |
 | B9 | `Savepoint_interactPrompt` returns "nothing" while this machine's card is busy, so `Player_interact` neither sets the script active player nor calls the interact there | Observed | 0x28da6c, 0x1b2b70 |

@@ -69,6 +69,36 @@ it "OUT OF SYNC". From reading the code (nothing here has been tested on a runni
 - **Habits that avoid two known per-machine branches** until the patches for them are
   tested: do not press "use" and then the D-pad spell selector in quick succession, and do
   not open the inventory right after pressing a potion button (FINDINGS K1, K2).
+- **Do not change anything in the pause menu's options during an online game** if any
+  player has remapped buttons in the game's own controls screen; simplest is for everyone to
+  keep the game's default controls and remap in the emulator instead (FINDINGS U1).
+- **Do not die with the inventory open**, and do not open the pause menu while a mission
+  or jump-gate menu is up (FINDINGS D26, U2).
+
+## Suggested patch set for a first online test
+
+All patches in `patches/SLUS-20973_4028A55F.pnach` are untested on a running game. These are
+the ones written as fixes rather than diagnostics. Each only makes one machine do what the
+others already do, so a mix of patched and unpatched machines is safe, but the fix only
+holds for the machines that have it — enable them on every machine:
+
+| Patch section | Removes |
+|---|---|
+| use button works with the spell selector open | K1 |
+| potions always leave the bag directly | K2 |
+| stats page does not rewrite stored weapon damage | K3 |
+| menu lockout never drops player damage / never blocks swap and use | D26, U3 |
+| closing a notice box does not run the pending script | E9 |
+| mission menu / jump-gate menu ignore the chooser's pause menu | U2 |
+| save-point prompt ignores this machine's card screen | B9 |
+| net launch clears a stuck memory-card latch | B10, B11 |
+| prediction copy starts without pending damage | G11–G13, G24 |
+| equalise at once (LAG-1) | input delay staying high for 15–30 s after a stall, which is also what widens K1 and K2 |
+
+Leave the "Arena diagnostic" and "Diagnostic" sections off unless you are bisecting; several
+of them change the simulation and must then be identical on every machine. "Option commit
+leaves the button maps alone" (U1) is for test sessions only: with it, a change made in the
+game's controls screen does not take effect.
 
 ## Checked so far
 

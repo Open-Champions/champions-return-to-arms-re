@@ -408,7 +408,7 @@ the same four draws.
 **SpellHateEffect** (Spell table 0x515b70; 0x30 bytes): ctor 0x27930c, slot 2 0x279420. The
 constructor draws `g_randSeed` once for the spell's own generator; expiry = frame + seconds ×
 60. Slot 2 is the per-frame update that `Creature_updateSpells` calls (the existing name
-`SpellHateEffect_takeDamage` is wrong): until expiry it tints the victim and, on every 30th
+`SpellHateEffect_takeDamage` was wrong; it is now `SpellHateEffect_update`): until expiry it tints the victim and, on every 30th
 simulation frame, takes v = the skill 30 value query (skill table offset 0x5c) at the stored
 level, one draw from the spell's generator, and calls `damage_apply(v × 0.5, (v + 20 % × draw)
 × 0.5, victim, attacker 0, rating 100000, flags 0x40)`. After expiry it deletes itself.
@@ -7241,7 +7241,7 @@ State machine:
   gold = 0 (the gold goes to the player slot passed in; with the trigger path that is slot 0).
   Note the flag 0x100000 is not cleared on this path.
 - run, not trapped: advances the animation; in state 1 once frame > +0xe8: state 2,
-  obj_runActionScripts(this, 1), autoobject_dropLoot; leaves the run list when the animation
+  obj_runActionScripts(this, 1), AutoChest_dropLoot; leaves the run list when the animation
   status has bit 0x80.
 - run, trapped: once frame > +0xe8, two fuse particles per frame (velocity from six own draws
   each, rejection-sampled), and once frame - +0xe0 > 90: explosion sound, fx_ringBurst,
@@ -7249,7 +7249,7 @@ State machine:
   (g_levelMonsterLevel - 2) x 20 + 15, type 0x40840), a floor decal (angle from an own draw), a
   LightEffect (0xbc), obj_delete. A trapped chest never drops loot and never runs its actions.
 
-autoobject_dropLoot 0x23ba3c (xref: ONE caller, AutoChest_run 0x23b674 - the first pass listed
+AutoChest_dropLoot 0x23ba3c (`autoobject_dropLoot` until the rename; xref: ONE caller, AutoChest_run 0x23b674 - the first pass listed
 AutoProp_run and 0x23d2ec as callers; they are not):
 - `spawncreep`, every `item` (item_parseDescriptor -> a 0x248-byte item prop given horizontal
   velocity 24 in the direction facing +- 0x2000, the offset from an own draw);

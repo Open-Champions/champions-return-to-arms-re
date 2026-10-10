@@ -131,3 +131,33 @@ author=reverse engineering test patch, untested on a running game
 description=Closing one of the small per-player notice boxes runs the level's pending "post action" script from drawing code on that machine only; the full-screen help box already skips this in a net game. This removes the call (help task, 0x1DD1F0). Offline, a post action meant to follow a notice waits for the next cutscene, dialog or level load. FINDINGS E9. Each machine fixes itself; use on every machine.
 // was: 0C07B6B0 (jal script_runPostAction)
 patch=1,EE,001DD1F0,word,00000000
+
+[Net test: menu lockout never drops player damage]
+author=reverse engineering test patch, untested on a running game
+description=When your character dies with the inventory or shop open, closing that menu makes your machine alone ignore all damage to players for the rest of that tick. This makes the damage code read the lockout as off (Player_takeDamage, 0x1B53D4). Offline, players can be hurt in the second after a menu closes. FINDINGS D26, U3. Each machine for itself; a mix is safe.
+// was: 8C43B4FC (lw v1,-0x4b04(v0))
+patch=1,EE,001B53D4,word,00001821
+
+[Net test: menu lockout never blocks weapon swap and use]
+author=reverse engineering test patch, untested on a running game
+description=Companion to the patch above: the same lockout also made one machine skip weapon swap and "use" for players that run later in that tick (Player_run, 0x1A5BA8). Offline, the press that closed a menu can also swap weapons or interact. FINDINGS D26, U3. Each machine for itself; a mix is safe.
+// was: 8E02B4FC (lw v0,-0x4b04(s0))
+patch=1,EE,001A5BA8,word,00001021
+
+[Net test: option commit leaves the button maps alone]
+author=reverse engineering test patch, untested on a running game
+description=For online test sessions only. Leaving the pause menu's option list after changing any option copies this machine's own saved controller layouts over every player's button map, so a player with remapped buttons is then read wrongly on that machine. This jumps over that copy (config_commitOptions, 0x1E6A60). Side effect in every mode: a change made in the game's controls screen no longer takes effect when you leave the options. FINDINGS U1. Each machine for itself; a mix is safe.
+// was: 3C060042 (lui a2,0x42); now j 0x1e6b10
+patch=1,EE,001E6A60,word,08079AC4
+
+[Net test: mission menu ignores the chooser's pause menu]
+author=reverse engineering test patch, untested on a running game
+description=While the player choosing a mission has the pause menu open, that machine alone ignores the chooser's button presses in the mission menu. This makes it read them like every other machine (missionMenu_run, 0x231A64). Presses made in the pause menu then also reach the mission menu underneath, on every machine alike. FINDINGS U2. A mix is safe.
+// was: 10400006 (beqz v0,+6)
+patch=1,EE,00231A64,word,10000006
+
+[Net test: jump-gate menu ignores the chooser's pause menu]
+author=reverse engineering test patch, untested on a running game
+description=The same as the mission-menu patch, for the jump-gate destination menu (jumpgate_menuRun, 0x27DEF8). FINDINGS U2. A mix is safe.
+// was: 50400006 (beqzl v0,+6)
+patch=1,EE,0027DEF8,word,10000006

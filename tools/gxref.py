@@ -5,10 +5,11 @@
 Each register's upper half is tracked from its lui to the end of the function (bodies from
 ghidra_funcs.tsv), with addiu/ori/move followed, so an access any distance from its lui is
 found. A hit ends in '?' when something else wrote the base register between the lui and the
-access in listing order: the listing is not execution order, so those are possible, not
-certain. Not followed: addresses built through a call, a load from memory or register
+access in listing order, or a call came between them and the register is one a call may
+destroy: the listing is not execution order, so those are possible, not certain (most are
+stale). Hits are attributed to the Ghidra function that contains them. Not followed: addresses built through a call, a load from memory or register
 arithmetic (array bases indexed with addu are reported at the addiu as '&' only)."""
-import sys, re, os, collections
+import sys, re, os, collections, bisect
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ps2elf import Elf
 import symtab
@@ -20,6 +21,7 @@ STORES = {'sw', 'sh', 'sb', 'swc1', 'sd', 'sq', 'swl', 'swr', 'sdl', 'sdr'}
 NOWRITE = STORES | {'mtc1', 'dmtc1', 'ctc1', 'ctc2', 'qmtc2', 'mtc0', 'mthi', 'mtlo', 'mthi1',
                     'mtlo1', 'mtsa', 'jr', 'j', 'jal', 'teq', 'tge', 'tlt', 'tne', 'cache',
                     'pref', 'syscall', 'break', 'nop', 'sync'}
+CALLER_SAVED = {'$%d' % i for i in list(range(1, 16)) + [24, 25, 31]} | {'$at', '$ra'}
 TWO_OP_HILO = {'mult', 'multu', 'div', 'divu', 'dmult', 'dmultu', 'ddiv', 'ddivu', 'mult1',
                'multu1', 'div1', 'divu1'}
 
@@ -40,12 +42,20 @@ def scan(lines, targets, starts):
     mem = re.compile(r'^(\$\w+), (-?0x[0-9a-f]+|-?\d+)\((\$\w+)\)$')
     sure = {}    # register -> value, dropped when anything else writes the register
     loose = {}   # register -> value from the last lui-derived write in this function
+    after_call = None   # counts down over a call's delay slot, then caller-saved registers go
     for l in lines:
         m = pat.match(l)
         if not m: continue
         a = int(m.group(1), 16); op = m.group(2); args = m.group(3).split('<')[0].strip()
         if a in starts:
-            sure.clear(); loose.clear()
+            sure.clear(); loose.clear(); after_call = None
+        if after_call == 0:
+            for r in CALLER_SAVED: sure.pop(r, None)
+            after_call = None
+        elif after_call is not None:
+            after_call -= 1
+        if op in ('jal', 'jalr'):
+            after_call = 1
         p = [x.strip() for x in args.split(',')] if args else []
         if op == 'lui' and len(p) == 2:
             try: v = (int(p[1], 0) << 16) & 0xffffffff
@@ -78,8 +88,6 @@ def scan(lines, targets, starts):
         if p and p[0].startswith('$') and not p[0].startswith('$f') and op not in NOWRITE \
                 and not op.startswith('b') and not (op in TWO_OP_HILO and len(p) == 2):
             sure.pop(p[0], None)
-        if op == 'jalr':
-            sure.pop('$ra', None); sure.pop('$31', None)
 
 
 def main():
@@ -88,8 +96,12 @@ def main():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     names = symtab.load(root)
     hits = collections.defaultdict(list)
-    for v, a, kind in scan(text_lines(os.path.join(root, 'disasm/text.asm')), targets, func_starts(root)):
-        f = e.func_of(a); f = f[0] if isinstance(f, tuple) else f
+    starts = func_starts(root); order = sorted(starts)
+    for v, a, kind in scan(text_lines(os.path.join(root, 'disasm/text.asm')), targets, starts):
+        if order and order[0] <= a:
+            f = order[bisect.bisect_right(order, a) - 1]
+        else:
+            f = e.func_of(a); f = f[0] if isinstance(f, tuple) else f
         hits[(v, f)].append('%x:%s' % (a, kind))
     for (v, f) in sorted(hits, key=lambda k: (k[0], k[1] or 0)):
         print('%08x %s %-26s %s' % (v, hex(f) if f else '?', names.get(f, ''), ' '.join(hits[(v, f)])))
