@@ -652,7 +652,62 @@ divide-rounding switches, with the model switched the same way
 (`docs/issues/dynamic-tests.md`, "Floating point"). Agreement under all six shows the same
 operations in the same order; it does not show what a console does in the last bit.
 
-RESULTS_TABLE_PLACEHOLDER
+<!-- results:begin -->
+Result of `python3 tools/difftest_anim.py <clips> --quick` (seed 20973) on the 4,510 lump
+clips of the US v2.00 disc: **61 properties, 0 failed**; no mismatch was left unresolved.
+The "cases" of the sequence properties are operations, each followed by the comparisons
+described.
+
+| Property | What is compared, bit for bit | Cases, default FPU model | Cases, five other FPU settings | Result |
+|---|---|---|---|---|
+| decoder slot | `animtrack_decode` at 15 track times per clip (forward steps, seeks back, fractions, negative, past the end; plain, LOOP, ROOT and YAW tracks): the whole slot — key ticks, bases and velocities of all 64 joint records, cursor, yaw, list links — and the state | 450 (30 clips) | 225 | PASS |
+| joint values | position and quaternion of every joint at the track time, as `anim_buildPose` forms them (read from its work area at 0x16f0c0); the resulting one-track pose buffer and a joint matrix | 72 (4,020 joint samples, 12 clips) | 60 | PASS |
+| advance | sequences of 220 operations on 1–3 states that share the pools, six unrelated clips each: every function of section 4 and `anim_advance` with changing speeds. After each operation: returned event bits, root x/y patterns, yaw, every byte of every state (stale cells included), the decoder slots of its tracks, the sound ranges; every 40 operations all 165 slots, both lists, the cue table and the seed | 1,320 (6 sequences) | 2,200 | PASS |
+| advance, sounds | the same on clips of one lump that carry sound tables | 880 (4 sequences) | 2,200 | PASS |
+| Creature_stepAnim | 200-operation sequences stepped through `Creature_stepAnim`: slow amounts 0, 1…60 and above, random facing and scale, active and inactive: events, world delta, yaw, state | 800 (4 sequences) | 2,000 | PASS |
+| Player_animStep | the same through `Player_animStep` (no YAW tracks) | 800 (4 sequences) | 2,000 | PASS |
+| pose | 160-operation sequences on clips of one skeleton with queries and draws mixed in: the blended local transforms (work area at 0x16f53c), pose buffers, `anim_getJointMatrix`, `model_getAttachPoint`, `model_getSamplePoint`, `anim_emitPose`'s choice of buffer, owners, stamps and list order of all buffers, the VU0 matrix stack | 640 (4 sequences) | 1,600 | PASS |
+| pose, 6 slots | the same with the decoder list cut to 6 slots: slots are taken from other tracks, pinned slots are skipped | 640 (4 sequences) | 1,600 | PASS |
+| pose, 5 buffers | the same with the pose list cut to 5 buffers: the fallback buffer and the default pose are used | 640 (4 sequences) | 1,600 | PASS |
+| pose, synthetic clips | the same on made-up clips: joint masks, 64 joints, deep chains, several roots, 16-bit fields, non-unit quaternions | 640 (4 sequences) | 1,600 | PASS |
+| stale sound cursor | the hazard of section 6: the original reads tick words outside the event table, the model raises `HostFault` | 1 | — | PASS |
+
+What the random sequences reached (all FPU settings together):
+
+| Reached | Times |
+|---|---|
+| allocations that skipped a root-motion slot | 24 |
+| animation steps | 11,097 |
+| attach point queries | 611 |
+| blends that flipped the sign of the incoming quaternion | 1,778 |
+| clips with a joint mask loaded | 18 |
+| creature wrapper steps | 1,655 |
+| creature wrapper steps of an inactive creature | 135 |
+| creature wrapper steps with a slow amount 1..60 | 846 |
+| decoder slots taken from another track | 74 |
+| draws (anim_emitPose) | 641 |
+| draws of the default pose | 224 |
+| iterations of the 2 pi unwrap in the quaternion blend | 337 |
+| joint matrix queries | 870 |
+| joints blended | 22,633 |
+| joints visited by the blend loop (masked ones included) | 23,572 |
+| loop wraps | 322 |
+| loop wraps of a root-motion track | 97 |
+| loop wraps of a root-yaw track | 34 |
+| player wrapper steps | 1,719 |
+| player wrapper steps with a slow amount 1..60 | 847 |
+| pose builds | 1,108 |
+| pose builds that blended two or more tracks | 300 |
+| queries answered from the default pose | 241 |
+| queries answered from the fallback buffer | 28 |
+| sample point queries | 503 |
+| sound event ranges fired | 437 |
+| steps that removed tracks | 465 |
+| steps that reported an end (status 0x80) | 547 |
+| steps that returned event bits | 1,058 |
+| steps with a root-motion delta | 2,495 |
+| steps with a yaw delta | 1,282 |
+<!-- results:end -->
 
 Not covered, and why:
 

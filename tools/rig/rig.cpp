@@ -46,6 +46,7 @@
 #include "AppConfig.h"
 #include "Ps2Const.h"
 #include "gs/GSH_Null.h"
+#include "gs/GSHandler.h"
 #include "ee/PS2OS.h"
 #include "iop/IopBios.h"
 
@@ -201,7 +202,8 @@ namespace prof
 	}
 }
 
-// A null video handler that reports which thread it runs on (for --profile).
+// A null video handler that reports which thread it runs on (for --profile). Used with
+// --video-thread: Play!'s usual arrangement, a video thread fed through a mail box.
 class CRigGsNull : public CGSH_Null
 {
 public:
@@ -215,6 +217,68 @@ private:
 	{
 		prof::Register(1);
 	}
+};
+
+// The rig's default video handler: null, and without a thread of its own. Play!'s video
+// handler takes every register write and image transfer as a queued call. With no video
+// thread the calls simply accumulate, and the machine thread empties the queue once per
+// frame (Drain, called from the rig's vertical-blank work). Nothing is drawn either way;
+// what this buys is that the machine no longer hands work to, and waits for, a second
+// thread several thousand times a frame, which on a busy host costs far more than the
+// work itself.
+//
+// The queue can only be emptied through CGSHandler::ProcessSingleFrame, which runs
+// queued calls until a flip has happened. Drain therefore queues a marker and then a
+// forced flip; flips that arrive before the marker (the machine's own, one per vertical
+// blank) are ignored, so the call returns exactly when the queue is empty.
+class CRigGsInline : public CGSHandler
+{
+public:
+	CRigGsInline()
+	    : CGSHandler(false)
+	{
+	}
+
+	static FactoryFunction GetFactoryFunction()
+	{
+		return []() { return new CRigGsInline(); };
+	}
+
+	void Drain()
+	{
+		SendGSCall([this]() { m_drainMarkerReached = true; });
+		Flip(FLIP_FLAG_FORCE);
+		ProcessSingleFrame();
+	}
+
+	void ProcessHostToLocalTransfer() override
+	{
+	}
+	void ProcessLocalToHostTransfer() override
+	{
+	}
+	void ProcessLocalToLocalTransfer() override
+	{
+	}
+	void ProcessClutTransfer(uint32, uint32) override
+	{
+	}
+
+private:
+	void InitializeImpl() override
+	{
+	}
+	void ReleaseImpl() override
+	{
+	}
+	void FlipImpl(const DISPLAY_INFO& displayInfo) override
+	{
+		if(!m_drainMarkerReached) return;
+		m_drainMarkerReached = false;
+		CGSHandler::FlipImpl(displayInfo);
+	}
+
+	bool m_drainMarkerReached = false;
 };
 
 // ---------------------------------------------------------------------------------
@@ -1085,6 +1149,7 @@ struct Options
 	bool noCodeProtect = false;
 	bool profile = false;
 	bool interactive = false;
+	bool videoThread = false;
 };
 
 class CRig
@@ -1139,20 +1204,27 @@ public:
 	void OnVBlank(CRigPad& pad, uint8* ram)
 	{
 		if(m_finished) return;
-		if(m_frame == 0 && m_options.profile)
+		if(m_frame == 0)
 		{
-			prof::Register(0);
-			prof::Start();
+			m_cpuStart = ThreadCpuSeconds();
+			if(m_options.profile)
+			{
+				prof::Register(0);
+				prof::Start();
+			}
 		}
 		m_frame++;
+		if(m_inlineGs) m_inlineGs->Drain();
 
 		if(m_options.pcHistogram) m_pcSamples[m_machine.state->nPC]++;
 		if(m_options.fpsEvery != 0 && (m_frame % m_options.fpsEvery) == 0)
 		{
 			auto now = std::chrono::steady_clock::now();
 			double seconds = std::chrono::duration<double>(now - m_fpsMark).count();
-			if(m_fpsMarkSet) printf("[frame %" PRIu64 "] %.1f frames per second over the last %u frames\n", m_frame, seconds > 0 ? m_options.fpsEvery / seconds : 0, m_options.fpsEvery);
+			double cpu = ThreadCpuSeconds();
+			if(m_fpsMarkSet) printf("[frame %" PRIu64 "] last %u frames: %.1f per second, %.1f per cpu-second of the machine thread\n", m_frame, m_options.fpsEvery, seconds > 0 ? m_options.fpsEvery / seconds : 0, (cpu - m_fpsCpuMark) > 0 ? m_options.fpsEvery / (cpu - m_fpsCpuMark) : 0);
 			m_fpsMark = now;
+			m_fpsCpuMark = cpu;
 			m_fpsMarkSet = true;
 		}
 
@@ -1266,6 +1338,8 @@ public:
 		printf("frames=%" PRIu64 " wall=%.2fs fps=%.1f (%.2fx real time at 59.94) pc=%08x %s\n",
 		       m_frame, seconds, seconds > 0 ? m_frame / seconds : 0, seconds > 0 ? (m_frame / seconds) / 59.94 : 0,
 		       m_machine.state->nPC, Symbolize(m_machine.state->nPC).c_str());
+		printf("  machine thread cpu=%.2fs: %.1f frames per cpu-second (%.2fx real time)\n",
+		       m_cpuSeconds, m_cpuSeconds > 0 ? m_frame / m_cpuSeconds : 0, m_cpuSeconds > 0 ? (m_frame / m_cpuSeconds) / 59.94 : 0);
 		printf("  code-page protect requests=%" PRIu64 " unprotect=%" PRIu64 "%s\n", g_protectRequests.load(), g_unprotectRequests.load(), g_noCodeProtect ? " (protection off)" : "");
 		for(const auto& watch : m_watches)
 		{
@@ -1322,6 +1396,13 @@ private:
 		return true;
 	}
 
+public:
+	void SetInlineGs(CRigGsInline* gs)
+	{
+		m_inlineGs = gs;
+	}
+
+private:
 	void SetBreakpoint(uint32 address, bool enable)
 	{
 		auto& context = m_vm.m_ee->m_EE;
@@ -1951,9 +2032,19 @@ private:
 		fprintf(m_log, "%" PRIu64 "%s\n", m_frame, row.c_str());
 	}
 
+	// CPU time used by the calling thread. Emulation speed is reported against this as
+	// well as against the wall clock, because the wall clock says little on a busy host.
+	static double ThreadCpuSeconds()
+	{
+		struct timespec time = {};
+		clock_gettime(CLOCK_THREAD_CPUTIME_ID, &time);
+		return time.tv_sec + time.tv_nsec * 1e-9;
+	}
+
 	void Finish(int exitCode)
 	{
 		if(m_finished) return;
+		m_cpuSeconds = ThreadCpuSeconds() - m_cpuStart;
 		m_exitCode = exitCode;
 		{
 			std::lock_guard<std::mutex> lock(m_doneMutex);
@@ -1971,7 +2062,11 @@ private:
 	uint64 m_frame = 0;
 	PadState m_pads[2];
 	std::chrono::steady_clock::time_point m_fpsMark;
+	double m_fpsCpuMark = 0;
 	bool m_fpsMarkSet = false;
+	double m_cpuStart = 0;
+	double m_cpuSeconds = 0;
+	CRigGsInline* m_inlineGs = nullptr;
 
 	std::vector<Watch> m_watches;
 	FILE* m_log = nullptr;
@@ -2044,7 +2139,8 @@ static void Usage()
 	    "  --play-logs            let Play! write its own logs under <data>/logs\n"
 	    "  --throttle             run at the console's speed instead of as fast as possible\n"
 	    "  --no-code-protect      do not write-protect host pages that hold translated code (see README)\n"
-	    "  --profile              sample the machine and video threads; print where wall time went\n");
+	    "  --profile              sample the machine and video threads; print where wall time went\n"
+	    "  --video-thread         give the null video handler its own thread, as Play! normally does\n");
 }
 
 static int Run(int argc, char** argv);
@@ -2134,6 +2230,8 @@ static int Run(int argc, char** argv)
 			options.profile = true;
 		else if(arg == "--interactive")
 			options.interactive = true;
+		else if(arg == "--video-thread")
+			options.videoThread = true;
 		else if(arg == "--help" || arg == "-h")
 		{
 			Usage();
@@ -2167,7 +2265,15 @@ static int Run(int argc, char** argv)
 	CRigPad* padHandler = nullptr;
 
 	vm.Initialize();
-	vm.CreateGSHandler(CRigGsNull::GetFactoryFunction());
+	if(options.videoThread)
+	{
+		vm.CreateGSHandler(CRigGsNull::GetFactoryFunction());
+	}
+	else
+	{
+		vm.CreateGSHandler(CRigGsInline::GetFactoryFunction());
+		rig.SetInlineGs(static_cast<CRigGsInline*>(vm.GetGSHandler()));
+	}
 	vm.CreatePadHandler([&]() {
 		padHandler = new CRigPad(rig);
 		return padHandler;

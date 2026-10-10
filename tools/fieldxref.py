@@ -78,7 +78,7 @@ from math import gcd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from textinput import text_lines
 
-VERSION = 10
+VERSION = 11
 MASK64 = (1 << 64) - 1
 
 LOADINFO = {  # op -> (bits, signed load, left half)
@@ -117,7 +117,8 @@ ZERO = (0, 0, 0, 0, 0, 0)
 #        root 0 is "absolute": delta is then a constant or a fixed address
 #   (1, load address, sh, valid, set, cleared, toggled, sign bit, shifted, bits, weak)
 #        a value loaded from memory, possibly shifted and masked: register bit j is bit
-#        j + sh of the loaded quantity; masks are in loaded-quantity bit numbers
+#        j + sh of the loaded quantity; masks are in loaded-quantity bit numbers. Where
+#        paths join with the same field loaded on each, the address is a tuple of loads
 #   (2, inverted, weak)                a one-bit mask whose bit number is not a constant
 #   (3, load address, weak)            a loaded value shifted right by a variable amount
 
@@ -374,6 +375,7 @@ def _rootstr(r):
     if k == 'E': return 'E' + r[1]
     if k == 'J': return 'J%x.%s' % (r[1], r[2])
     if k == 'O': return 'O%x.%s' % (r[1], r[2])
+    if r[1].__class__ is tuple: return k + '/'.join('%x' % v for v in r[1])
     return '%s%x' % (k, r[1])
 
 
@@ -642,7 +644,7 @@ def _after_call(x, st, ev):
                 if v[8] and bin(v[3]).count('1') <= 8:
                     ev[2].append((a, 'zero', v[1], v[3], 0, v[-1]))
                 elif maxlen >= 0x40 and _plain(v):
-                    ev[1].append((a, r, 'L%x' % v[1], 0, 0, v[-1], x[6], maxlen))
+                    ev[1].append((a, r, _rootstr(('L', v[1])), 0, 0, v[-1], x[6], maxlen))
     for r in CALLER_SAVED:
         v = st.get(r)
         if v is None: st[r] = DEF[r][:-1] + (1,)
@@ -662,8 +664,15 @@ def _join_val(a, b, baddr, k):
             ix = a[4] | b[4]
             if up and down: ix = 1
             return (0, a[1], a[2], -g if (down and not up) else g, ix, a[5] | b[5])
-    elif a[0] == b[0] and a[:-1] == b[:-1]:
-        return a[:-1] + (1,)
+    elif a[0] == b[0]:
+        if a[:-1] == b[:-1]: return a[:-1] + (1,)
+        if a[0] == 1 and a[2:-1] == b[2:-1]:
+            # the same field loaded on two paths (a load copied into a delay slot is the
+            # usual case): keep both load addresses
+            da = a[1] if a[1].__class__ is tuple else (a[1],)
+            db = b[1] if b[1].__class__ is tuple else (b[1],)
+            u = tuple(sorted(set(da) | set(db)))
+            if len(u) <= 6: return (1, u) + a[2:-1] + (a[-1] | b[-1],)
     return (0, ('J', baddr, k), 0, 0, 0, 0)
 
 
@@ -975,7 +984,7 @@ def query_field(db, intervals, stores=False, loads=False, funcs=None, addr_range
             lo = overlap(s2, w)
             if lo is not None:
                 h = dict(kind='derived', disp=s, cover=s2 < lo, certain=not wk)
-            elif stp:
+            elif stp and (delta or blocks):
                 g = abs(stp)
                 for qlo, qhi in q:
                     # the n nearest 0 with s2 + n*g inside (qlo - w, qhi)

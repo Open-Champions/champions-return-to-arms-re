@@ -104,7 +104,11 @@ def query_flag(db, mask, off=0xc, funcs=None, addr_range=None, static=None, stor
         if addr_range and not (addr_range[0] <= a < addr_range[1]): return False
         return funcs is None or fn in funcs
 
-    for (a, fn, kind, da, m, aux, weak) in db['flg']:
+    flg = []
+    for ev in db['flg']:                 # one entry per load a value may have come from
+        if ev[3].__class__ is tuple: flg.extend(ev[:3] + (d,) + ev[4:] for d in ev[3])
+        else: flg.append(ev)
+    for (a, fn, kind, da, m, aux, weak) in flg:
         if not ok(a, fn): continue
         la = idx.get(da)
         if la is None: continue
@@ -177,15 +181,16 @@ def query_flag(db, mask, off=0xc, funcs=None, addr_range=None, static=None, stor
             elif sv[0] == 'C':
                 k = 'store=%x' % (_tr(sv[1] & ((1 << (8 * w)) - 1), sh)); sure = sure
             else:
-                la = idx.get(sv[1])
-                if la is None: k = 'store'
-                else:
+                s, _ = fx.access_span(op, disp)
+                k = None
+                for d in (sv[1] if sv[1].__class__ is tuple else (sv[1],)):
+                    la = idx.get(d)
+                    if la is None: k = 'store'; continue
                     ls, lw = fx.access_span(la[2], la[3])
-                    s, _ = fx.access_span(op, disp)
-                    if la[4] == root and la[5] + ls == delta + s and sv[2] == 0 \
-                            and root[0] not in 'JU':
-                        break                      # the same word written back
-                    k = 'copy<%s' % fx._sx(la[5] + ls)
+                    if not (la[4] == root and la[5] + ls == delta + s and sv[2] == 0
+                            and root[0] not in 'JU'):
+                        k = 'copy<%s' % fx._sx(la[5] + ls)
+                if k is None: break                # the same word written back
             if stores:
                 sure = sure and not weak and fn not in orph
                 if not (certain and not sure):
