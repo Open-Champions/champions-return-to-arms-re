@@ -20,7 +20,8 @@ in this directory; what the rig has shown so far is in `docs/issues/live-rig.md`
 | `examples/pair-arena.rig`, `pair-k1.rig`, `pair-k2.rig` | scripts for a joined pair: into the arena and through its opening; the two divergences found first |
 | `examples/pair-chars-start.rig`, `pair-chars.rig`, `pair-chars-same.rig` | a pair whose slot 0 is a melee class; characters with level 25 and skills written in one tick on both machines; the same-class spin case |
 | `compare.py` | lines up the tick logs of two machines and finds the first difference; diffs two memory dumps |
-| `fuzz.py` | runs many joined pairs unattended on seeded random input and groups the divergences |
+| `fuzz.py` | runs many joined pairs unattended on seeded random input and groups the divergences (`--patches FIXES`: every fix section) |
+| `sweep.py` | one pair per class skill, both players the same class with that skill; `--predict-audit <file>` on the runner lists what each prediction call left changed |
 
 ## Build
 

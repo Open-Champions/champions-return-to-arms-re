@@ -5,7 +5,8 @@ machines, the baseline, the arena) phase 3 (section 8: fuzzing at scale, a float
 mismatch between the machines, the lag sections) phase 4 (section 9: the arena with
 characters that have levels and skills — which does diverge — and a tested patch
 proposal for the spin skill, SB1) and phase 5 (section 10: the pet and the item bytes
-traced, and the arena with every section on). In short: two machines play one lockstep game here;
+traced, and the arena with every section on) and phase 6 (section 11: every class skill
+swept, other levels, and an audit of what a prediction call leaves changed). In short: two machines play one lockstep game here;
 random input found two real divergences, which are the ledger's K1 and K2, and the test
 patch for each removes it; the arena did **not** go out of sync in twelve runs.
 
@@ -1096,3 +1097,86 @@ which are the same seeds, states and script.
 The caller of `Creature_moveBy` in the copy's path; a static list of the classes
 reachable from 0x114220; the real source of the item value; the touch section on pair
 406 without the spin section.
+
+## 11. Phase 6: every skill, other levels, and what the prediction leaves behind
+
+Limits as in section 7. "All fix sections" is the list `FIXES` in `tools/rig/fuzz.py`: the
+K1, K2 and K3 sections, the two lockout sections, the notice-box section, LAG-1, the spin
+section, the touch section and the script-return section. **Ran** unless marked.
+
+### 11.1 The skill sweep: no skill broke sync
+
+The skills each class owns were read from the executable's skill-tree tables
+(`g_skillTree0` 0x4f4898 and the six after it; rows of kind 1): 13, 16, 15, 15, 17, 15 and
+13 ids for classes 0–6, 104 class–skill pairs in all. For each pair one run
+(`tools/rig/sweep.py`): both machines' players that class (both lobby models set, states
+`run6-<model>`), level 25, the one skill at rank 10 on the first ability button, mana
+refilled every 150 ticks, level `strife`, 3,500 frames of seeded movement, attacks and
+ability presses, bus delay 8 or 12 with jitter 4, all fix sections on. Seven more pairs,
+one per class, with every passive at level 5.
+
+| Class | Pairs | Ticks | Casts (machine A / B) | Skill ids with no cast | Diverged |
+|---|---|---|---|---|---|
+| 0 | 14 | 48,323 | 403 / 467 | 49, 38 | 0 |
+| 1 | 17 | 60,042 | 684 / 758 | 34, 68 | 0 |
+| 2 | 16 | 55,975 | 537 / 510 | 49, 40 | 0 |
+| 3 | 16 | 56,079 | 937 / 830 | — | 0 |
+| 4 | 18 | 63,615 | 944 / 980 | — | 0 |
+| 5 | 16 | 55,346 | 963 / 1,178 | — | 0 |
+| 6 | 14 | 49,362 | 654 / 641 | — | 0 |
+
+**111 pairs, 388,742 ticks, casts on both machines in 101 pairs, no shared difference in
+any.** The per-skill rows are in `sweep.tsv` (local). So with the fix sections on, no
+skill breaks sync by itself the way the spin skill did — within what this run does: one
+seed and about a minute per skill, the same class on both machines, level-25 characters
+with starting items, the monsters of `strife`, and six skills that were never cast (they
+are in the table). The sweep was not repeated with the sections off.
+
+### 11.2 The two real-character builds in other levels
+
+The builds of 9.1, all fix sections on, 12 pairs of 12,000 frames, one each starting in
+`hub`, `blood1`, `bastion1`, `citadel`, `valor`, `storm1`, `fire1`, `nit1`, `wat1`,
+`hub2`, `islc1`, `torment0`; half with bus delay 4, jitter 3, loss 5%; the full input mix
+of 9.2: **135,555 ticks, no pair diverged.** Which of these levels have chests, shops or
+save points was not checked.
+
+### 11.3 What a prediction call leaves behind
+
+`--predict-audit` copies EE memory from the start of the data sections up (0x3e9c00 to
+0x2000000) at every entry of `net_predictLocalPlayer` 0x131d88 and compares at its
+return. Ignored (`AuditIgnored` in `rig.cpp`): the main stack (above 0x1f00000), the
+copy's own 0x590-byte block, the two prediction codec states (0x5bf6f8–0x5bf797), the
+prediction pad history (0x5d14f0), `g_pads` and `g_netCamYaw`. Run on both machines of
+arena pair 402 (real characters; K1, K2, LAG-1 on): 15,452 calls on machine A, and words
+changed in 64 groups (60 on B). Grouped by symbol, or by 64 KB of heap; "calls" is the
+largest number of calls in which one word of the group changed:
+
+| Group | Words | Calls | Reading |
+|---|---|---|---|
+| `g_simFrame` | 1 | 15,314 | left one higher than at entry in nearly every call |
+| camera and view (`g_cameraPos`, `g_cameraMatrix`, `g_viewProj…`, `g_terrainStamp`, and the words labelled `g_pathBusy`) | ~100 | 6,300–13,900 | the camera update the function is documented to do |
+| pose cache (`g_poseLruHead` / `Tail`, `g_poseBuffers`, `g_animCacheLruHead`, heap 0x6f0000–0x7b0000) | ~150,000 | up to 13,267 | the pose cache of D34, rewritten by the copy's animation |
+| particles, sound, HUD (`g_lifeTapBlockParticleDef` region, `g_goldPending`, `g_soundObjHandles`, `g_soundRpcClient`, `g_musicVolume`, `g_hudMessageFrames`, `g_cameraShake`, `g_padRumble`, `g_movie`, heap 0x800000–0x820000, 0x1300000–0x1480000) | several thousand | up to 7,818 | presentation, by the look of the symbols; not checked one by one |
+| `g_cosmeticSeed`, 0x404468 | 2 | 294, 130 | the two unsynchronised generators |
+| player record +0x4a40…+0x4ac0 | 16 | 2,827 | the weapon-trail and ability-button fields `docs/player.md` lists as written by the copy |
+| **`g_pathQueue`** | 24 | 6,484 | route-plotting queue; floats moving in the last digits. To review |
+| **`g_handleNodes`, `g_handleFreeList`** | 287 | 2,223 | the handle-node pool: the copy links and unlinks handles. To review |
+| **`g_grid`, `g_offGridList`** | 12 | 1,256 | the world grid's cell lists. To review |
+| **`g_scriptPostAction`** | 4 | 209 | the pending post-action of scripts (ledger E9's variable). To review |
+| **heap 0x620000–0x630000, 0x6c0000** | 25 | 73 | the object pool: the pet of 9.2 sat at 0x630fc0, the players' objects at 0x6c88c0 — other objects changed by the copy. To review |
+| `g_poolMemory` | 3 | 2 | pool allocation inside a prediction call |
+| `g_receivedChecksums`, `g_zeroPad`, `g_streams`, `g_lobbyState`, `g_pauseMenuDebugTable`, `g_worldEmitterTypeCount`, `g_mouthDirRef` | 51 | ≤ 209 | not looked at |
+
+This is a list of where to look, not a list of bugs: nothing here was traced to its
+writing instruction, the symbol attached to an address is only the nearest one below it,
+and whether the tick's simulation reads each group was not determined. The rows in bold
+are the ones that are not obviously presentation. Of the known cases: the spin's clip
+header and the pet's flag are instances of the object-pool row (both now patched); the
+item bytes of 10.2 do not show up as a site of their own, so the audit does not name
+their source.
+
+### 11.4 Not done
+
+The store log on the item's +0x2c–0x2f (step 3); the writing instructions for the audit's
+top sites; the audit over the skill sweep and over more than one pair; per-object
+resolution of heap addresses.

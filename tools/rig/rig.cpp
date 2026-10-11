@@ -1748,6 +1748,7 @@ struct Options
 	std::vector<std::string> tickWatchSpecs;
 	std::string tickAddress = "0x13aee8";
 	int fpRound = -1; // host rounding mode forced on the machine thread; -1: Play!'s own (toward zero)
+	std::string predictAuditPath;
 };
 
 class CRig
@@ -1832,6 +1833,14 @@ public:
 		if(!m_options.scriptPath.empty()) LoadScript(m_options.scriptPath);
 		int line = 0;
 		for(const auto& text : m_options.inlineCommands) ParseScriptLine(text, --line);
+		if(!m_options.predictAuditPath.empty())
+		{
+#ifndef DEBUGGER_INCLUDED
+			Die("--predict-audit needs a build with break point support");
+#endif
+			m_auditSnapshot.resize(AUDIT_HI - AUDIT_LO);
+			SetBreakpoint(AUDIT_ENTRY, true);
+		}
 		if(m_needTickHook)
 		{
 #ifndef DEBUGGER_INCLUDED
@@ -1928,6 +1937,63 @@ public:
 		}
 		for(const auto& datagram : incoming) m_netShim.Deliver(datagram, m_frame);
 		return true;
+	}
+
+	// --predict-audit. What may differ after a prediction call without being a leak; the
+	// list is deliberately short (docs/issues/live-rig.md, section 11.3):
+	bool AuditIgnored(uint32 address, uint32 ghostNow) const
+	{
+		if(address >= 0x01F00000) return true;                                           // the main stack
+		if(m_auditGhost && address >= m_auditGhost && address < m_auditGhost + 0x590) return true; // the copy
+		if(ghostNow && address >= ghostNow && address < ghostNow + 0x590) return true;
+		if(address >= 0x005BF6F8 && address < 0x005BF798) return true;                   // prediction codec states
+		if(address >= 0x005D14F0 && address < 0x005D14F8) return true;                   // prediction pad history
+		if(address >= 0x0041BFD8 && address < 0x0041BFD8 + 4 * 0x58) return true;        // g_pads
+		if(address >= 0x005D0BC0 && address < 0x005D0BC8) return true;                   // g_netCamYaw
+		return false;
+	}
+
+	void AuditLeave()
+	{
+		m_auditCalls++;
+		uint32 ghostNow = m_machine.Read32(0x4027bc) & 0x1FFFFFFF;
+		uint32 tick = m_machine.Read32(0x4027ac);
+		const uint8* before = m_auditSnapshot.data();
+		const uint8* after = m_machine.ram + AUDIT_LO;
+		for(uint32 page = 0; page < AUDIT_HI - AUDIT_LO; page += 4096)
+		{
+			uint32 length = std::min<uint32>(4096, AUDIT_HI - AUDIT_LO - page);
+			if(memcmp(before + page, after + page, length) == 0) continue;
+			for(uint32 offset = page; offset + 4 <= page + length; offset += 4)
+			{
+				uint32 oldWord, newWord;
+				memcpy(&oldWord, before + offset, 4);
+				memcpy(&newWord, after + offset, 4);
+				if(oldWord == newWord) continue;
+				uint32 address = AUDIT_LO + offset;
+				if(AuditIgnored(address, ghostNow)) continue;
+				auto& site = m_auditSites[address];
+				if(site.count++ == 0)
+				{
+					site.tick = tick;
+					site.oldWord = oldWord;
+					site.newWord = newWord;
+				}
+			}
+		}
+	}
+
+	void AuditReport()
+	{
+		FILE* file = fopen(m_options.predictAuditPath.c_str(), "w");
+		if(!file) return;
+		fprintf(file, "# prediction calls audited: %" PRIu64 "\naddress\tsymbol\tcalls\tfirst_tick\told\tnew\n", m_auditCalls);
+		for(const auto& entry : m_auditSites)
+		{
+			fprintf(file, "%08x\t%s\t%" PRIu64 "\t%u\t%08x\t%08x\n", entry.first, Symbolize(entry.first).c_str(), entry.second.count, entry.second.tick, entry.second.oldWord, entry.second.newWord);
+		}
+		fclose(file);
+		printf("  prediction audit: %" PRIu64 " calls, %zu words changed outside the ignore list -> %s\n", m_auditCalls, m_auditSites.size(), m_options.predictAuditPath.c_str());
 	}
 
 	// A lockstep tick: the machine is stopped at the instruction after the tick's task
@@ -2047,6 +2113,26 @@ public:
 			OnTick();
 			if(m_finished) return;
 		}
+		if(!m_auditSnapshot.empty())
+		{
+			if(pc == AUDIT_ENTRY)
+			{
+				uint32 ra = m_machine.Reg(CMIPS::RA) & 0x1FFFFFFF;
+				if(m_auditReturn != ra)
+				{
+					m_auditReturn = ra;
+					SetBreakpoint(ra, true);
+				}
+				memcpy(m_auditSnapshot.data(), m_machine.ram + AUDIT_LO, AUDIT_HI - AUDIT_LO);
+				m_auditGhost = m_machine.Read32(0x4027bc) & 0x1FFFFFFF;
+				m_auditArmed = true;
+			}
+			else if(pc == m_auditReturn && m_auditArmed)
+			{
+				m_auditArmed = false;
+				AuditLeave();
+			}
+		}
 
 		auto pendingReturn = m_returnBreaks.find(pc);
 		if(pendingReturn != m_returnBreaks.end() && !pendingReturn->second.empty())
@@ -2142,6 +2228,7 @@ public:
 			}
 		}
 		if(m_tickLog || m_ticks) printf("  lockstep ticks seen: %" PRIu64 "\n", m_ticks);
+		if(!m_auditSnapshot.empty()) AuditReport();
 		if(m_netShimReady) m_netShim.Summary();
 		if(m_tickLog) fclose(m_tickLog);
 		if(m_log) fclose(m_log);
@@ -3119,6 +3206,23 @@ private:
 	std::vector<std::string> m_collected;
 	std::vector<std::string> m_lastCollected;
 
+	enum : uint32
+	{
+		AUDIT_ENTRY = 0x00131D88, // net_predictLocalPlayer
+		AUDIT_LO = 0x003E9C00,    // start of the data sections
+		AUDIT_HI = 0x02000000,
+	};
+	struct AUDIT_SITE
+	{
+		uint64 count = 0;
+		uint32 tick = 0, oldWord = 0, newWord = 0;
+	};
+	std::vector<uint8> m_auditSnapshot;
+	std::map<uint32, AUDIT_SITE> m_auditSites;
+	uint32 m_auditReturn = 0, m_auditGhost = 0;
+	bool m_auditArmed = false;
+	uint64 m_auditCalls = 0;
+
 	CNetShim m_netShim;
 	bool m_netShimReady = false;
 	FILE* m_netLog = nullptr;
@@ -3197,6 +3301,8 @@ static void Usage()
 	    "  --link listen:<path> | connect:<path>   join a second runner; the two advance frame by frame\n"
 	    "  --bus delay=N,jitter=N,loss=N,seed=N,stallat=F,stall=N   what the bus does to datagrams that cross\n"
 	    "                         (frames; loss per 1000; stall: nothing crosses for N frames from frame F)\n"
+	    "  --predict-audit <file> snapshot memory around every call of net_predictLocalPlayer (0x131d88) and\n"
+	    "                         list what it left changed, outside an ignore list (needs break points)\n"
 	    "  --fp-round nearest|up|down|zero   force a floating-point rounding mode on this machine's thread\n"
 	    "                         (Play! runs the EE with round-toward-zero); for float-mismatch experiments\n"
 	    "  --tick-log <file>      one row of the --tick-watch values per lockstep tick (needs break points)\n"
@@ -3346,6 +3452,8 @@ static int Run(int argc, char** argv)
 			else
 				Die("--fp-round nearest|up|down|zero");
 		}
+		else if(arg == "--predict-audit")
+			options.predictAuditPath = value();
 		else if(arg == "--tick-log")
 			options.tickLogPath = value();
 		else if(arg == "--tick-watch")
