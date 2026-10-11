@@ -249,7 +249,7 @@ description=Hardening for a rare corner case. Before each route search the game 
 patch=1,EE,00184A08,word,00000000
 
 [Net test: menu screens do not recompute player statistics]
-author=reverse engineering test patch; executed in the function-level interpreter; not yet run on the live rig, PCSX2 or a console
+author=reverse engineering test patch; confirmed on two linked Play! emulator instances (FINDINGS V47); untested on PCSX2 or a console
 description=The stats page, the skills page and the item list each recompute every player's statistics while they are drawn, on the machine that has the menu open only. That recompute also trims hit points and mana to their maximum, so after a heal that briefly overshoots, the machine with a menu open trims early and the others do not: hit points differ, and later a death happens on one machine only. In a five-million-tick soak this was the one cause left, in 7 of 27 pairs that had a healing skill. This removes the three drawing-side calls (0x1D2E7C, 0x1D5950, 0x1CE530); the simulation's own recompute, which every machine runs at the same moment, is untouched. A menu left open may show slightly stale numbers until it is closed. FINDINGS K4, V46. Each machine fixes itself; use on every machine.
 // was: 0C06D916 (jal player_recalcStats) at all three addresses
 patch=1,EE,001D2E7C,word,00000000
@@ -257,7 +257,7 @@ patch=1,EE,001D5950,word,00000000
 patch=1,EE,001CE530,word,00000000
 
 [Net test: stats page does not recompute the main weapon's damage either]
-author=reverse engineering test patch; executed in the function-level interpreter; not yet run on the live rig, PCSX2 or a console
+author=reverse engineering test patch; confirmed on two linked Play! emulator instances (FINDINGS V47); untested on PCSX2 or a console
 description=Companion to "stats page does not rewrite stored weapon damage", which removed the off-hand recompute. The page's other recompute, for the main weapon (0x1D2C38), still writes the stored attack rating on the owner's machine only - seen in the soak after changing equipment with the menu open. This removes it as well. The stats page then shows the attack rating and damage from before the equipment change until the menu is closed. FINDINGS K3, V46. Each machine fixes itself; use on every machine.
 // was: 0C06DC56 (jal Player_recalcDamage)
 patch=1,EE,001D2C38,word,00000000

@@ -20,7 +20,11 @@ reproductions with and without their sections for D26 — both halves —, E9, U
 the one-sided route-grid test) and phase 12 (section 17: a soak of 120 long real-character
 pairs, 5.1 million ticks, with thirteen fix sections on; one class of divergence left — a
 heal that passes the maximum, clamped on one machine by the stats page — and the stored
-weapon damage still differing with the K3 section on). In short: two machines play one lockstep game here;
+weapon damage still differing with the K3 section on) and phase 13 (section 18: the two
+menu sections that answer phase 12 run on the pair — the seven divergent pairs agree with
+them and repeat their divergence without them, the stored attack rating agrees, one
+scripted pair checks for side effects, and the 27 pairs with a healing skill were soaked
+again, 1.2 million ticks, with no difference in anything phase 12 compared). In short: two machines play one lockstep game here;
 random input found two real divergences, which are the ledger's K1 and K2, and the test
 patch for each removes it; the arena did **not** go out of sync in twelve runs.
 
@@ -2274,3 +2278,568 @@ Not done:
   they picked up or bought.
 - Three or four machines; anything on a console or PCSX2. Two identical Play! instances
   show logic differences only.
+
+## 18. Phase 13: the two menu sections on the rig
+
+The developer LAN pair again; limits as in section 7: two copies of one Play! build — not a
+PlayStation 2 and not PCSX2 — so only logic differences can show; characters built by
+writes, seeded random input. **Ran** unless marked. Phase 12 left one cause of divergence
+(17.3: a heal passes the maximum, and `player_recalcStats`, called from menu code on the
+machine with a menu open, trims the hit points there only) and one difference that had done
+no harm (17.4: the stored attack rating at record +0xcc). Two sections were added to the
+patch file after it and had been run in the function-level interpreter only:
+
+| Section | Words made no-ops |
+|---|---|
+| "menu screens do not recompute player statistics" | the three calls of `player_recalcStats` 0x1b6458 outside the simulation: 0x1d2e7c (`stats_screen`), 0x1d5950 (`skills_screen`), 0x1ce530 (`itemList_input`) |
+| "stats page does not recompute the main weapon's damage either" | the stats page's remaining call of `Player_recalcDamage` 0x1b7158, at 0x1d2c38 |
+
+The rig printed the old and the new word of each when it applied them: 0x0c06d916 → 0 three
+times and 0x0c06dc56 → 0, as the patch file says.
+
+### 18.1 What was run
+
+A local wrapper (`local/rig-out/soak13.py`, not in the repository) takes the job list of the
+Phase 12 wrapper as it is — pair number, seed, start states, character writes, script,
+input mix, length and bus setting — and runs chosen pairs with that phase's thirteen
+sections, or with those and the two new ones, on both machines. A pair repeats exactly
+from the same states, script and bus seed (section 7), so a pair run again today with the
+thirteen sections is the Phase 12 pair, and the same pair with fifteen differs from it by
+the two sections alone.
+
+The tick log got more shared columns than in Phase 12, compared at every tick like the
+rest: for both players the maximum hit points and mana (record +0xb0, +0xc4), the potion
+words (+0xb4 to +0xbf, +0xc8), +0xdc, the load and the load limit (+0x120, +0x124), and
+the player object's armour (+0xe4) and the five words from object +0x5c that
+`player_recalcArmor` rebuilds. The stored attack rating and damage (+0xcc, 12 bytes) are
+counted on their own, as in 17.4. Every run also counted, per machine, the ticks in which a
+player's hit points or mana were above the stored maximum.
+
+| Part | Pairs | Sections | Ticks compared |
+|---|---|---|---|
+| 18.2 the seven pairs of 17.3 | 7 | fifteen | 346,998 |
+| 18.2 the same seven, same day | 7 | thirteen | 346,361 |
+| 18.3 six pairs of 17.4 | 6 | fifteen | 278,188 |
+| 18.4 one scripted pair, four runs | 1 | fifteen and thirteen | 2,347 each |
+| 18.5 the 27 pairs with a healing skill | 27 | fifteen | 1,212,349 |
+
+Shorter control runs with thirteen sections are named where they are used (18.3, 18.5).
+The first three parts ran eight pairs at a time in 47 minutes.
+
+### 18.2 The seven pairs that diverged on hit points
+
+Addresses: hit points are record +0xac, 0x4d8b9c for slot 0 and 0x4dd7cc for slot 1.
+
+| Pair | Build, start level | Thirteen sections, today: first tick, column, machine A / B | Ticks differing, last | Then | Fifteen sections |
+|---|---|---|---|---|---|
+| 107 | c6+c6, arena | 4505, slot 0, 711.745 / 709.0 | 1,602, 6106 | equal again | no difference in 46,098 ticks |
+| 044 | c1+c4, arena | 9433, slot 0, 775.675 / 770.0 | 768, 10544 | equal again | no difference in 59,283 ticks |
+| 032 | c1+c4, arena | 13910, slot 0, 770.0 / 773.813 | 581, 17069 | equal again | no difference in 60,709 ticks |
+| 035 | c6+c6, arena | 32437, slot 0, 713.713 / 709.0 | 765, 33201 | equal again | no difference in 59,869 ticks |
+| 038 | c1+c4, `strife` (then `blood1`) | 33182, slot 0, 775.042 / 770.0 | 2, 33183 | equal again | no difference in 41,119 ticks |
+| 033 | c3+c5, arena | 38127, slot 0, 776.171 / 772.5 | 6,928, 45054 | seed, position and action state at 45050; out-of-sync flag at 45052; machine B drops its peer at 45054 (44,395 ticks) | no difference in 45,032 ticks, to the planned end at tick 45691; no flag, no drop |
+| 101 | c6+c6, `arachna1` | 30869, slot 1, 709.0 / 713.247 | 4,679, 35547 | still differing at the end | no difference in 34,888 ticks |
+
+**Thirteen sections, today.** Every one of the seven repeated its Phase 12 row in every
+number kept there: ticks compared, first differing tick, column, both values, the count of
+differing ticks and the last of them, and for pair 033 the flag and the drop. Pairs 033,
+038 and 101 had not been run a second time in Phase 12; they repeat too.
+
+**Fifteen sections.** No shared column differs at any tick of any of the seven, the new
+columns included, and the stored attack rating and damage agree at every tick as well
+(pairs 101 and 107 differed there in 32 and 13 ticks with thirteen sections, today as in
+Phase 12). Pair 033 plays to the end of its input.
+
+The heals still pass the maximum; nothing outside the simulation trims them now. On both
+machines alike the healed player's hit points were above the stored maximum in 1,681 ticks
+of pair 107, 843 of 044, 1,020 of 032, 1,860 of 035 (and 184 for its other player), 587 of
+038, 1,051 of 033 and 4,818 of 101 — there from the heal to the end of the pair — by at
+most 6.04 points. With thirteen sections the machine that trimmed counted fewer (pair 101,
+machine A: 139 ticks; the other machine 4,818).
+
+Six of the seven took, with fifteen sections, the course their Phase 12 run took: the same
+number of ticks, the same last tick, the same sequence of levels, deaths and entry counts
+(17.2). In those the early trim on one machine had changed nothing else. Pair 033 is the
+one whose course differs, from the death at tick 45050 on.
+
+### 18.3 The stored attack rating: gone in the pairs tried
+
+Six of the 39 pairs of 17.4, one or two of every build, chosen among those with the most
+differing ticks and outside the 27 pairs of 18.5:
+
+| Pair | Build, start level | Ticks compared | Ticks with +0xcc differing: Phase 12 (thirteen sections) | Fifteen sections |
+|---|---|---|---|---|
+| 015 | c3+c5, arena | 29,317 | 46 | 0 |
+| 016 | c2+c2, arena | 45,500 | 75 | 0 |
+| 020 | c1+c4, `fire1` | 57,683 | 104 | 0 |
+| 042 | c0+c6, arena | 31,241 | 32 | 0 |
+| 059 | c6+c6, `shame1` | 57,191 | 255 | 0 |
+| 119 | c6+c6, `torment0` | 57,256 | 215 | 0 |
+
+No shared column differs in any of them. The 27 pairs of 18.5 hold eight more of the 39
+(101 and 107 of 18.2 among them): 1,078 differing ticks in Phase 12, none now. That is
+fourteen of the 39 pairs run again, 1,805 ticks of difference with thirteen sections and
+none with fifteen. The price is what 18.4 shows: the stored values wait for the menu to
+close.
+
+**A pair may take another course with the sections on, and that is not a statistic being
+read.** Five of the six took their Phase 12 course (ticks, last tick, levels, deaths, entry
+counts); pair 059 did not (57,191 ticks against 57,179), and neither did pair 116 in 18.5.
+Pair 059 was run both ways again with the logs kept and the lockstep pad words of both
+players (the first 32 bytes of each `g_pads` record) added. On both machines the two runs are equal in
+every compared column, tick for tick and frame for frame, up to tick 12389 — the stored
+damage apart, which is what the sections change (the thirteen-section run has it differing
+between its machines from tick 5371 on, in 255 ticks). What parts first is the input of
+machine A's player: its pad words differ between the runs at tick 10332 without consequence,
+and at tick 12390 a press of the cross button is in the tick's input in the fifteen-section
+run and one tick later, 12391, in the other; the shared seed differs from 12390 and the
+player's position from 12391. Machine A's cosmetic seed had been one draw apart between the
+runs for two ticks at 12275. So the patched machine took one of its own button presses into
+the lockstep input a tick earlier — the input side, which both machines then share.
+**Inferred:** drawing a menu page without the recompute calls is less work, which moves the
+point inside a frame at which that machine samples its pad. Pair 116's course was not
+traced.
+
+### 18.4 Side effects: one pair with a menu open for a long stretch
+
+**The question.** The simulation has its own calls of `player_recalcStats`, the same on
+every machine: fourteen call sites in all (**Observed**, every `jal` to 0x1b6458), three of
+them the patched ones, the rest in `Player_ctor` (0x1a2458), `player_initNewCharacter`
+(0x1b23f8), `inventory_giveItem` (0x1c1a88, 0x1c1c60), `inventory_removeItem` (0x1c20e8),
+`inventory_onStatPoint` (0x1c262c), `inventory_equipItem` (0x1c2ef0),
+`inventory_unequipItem` (0x1c3314), `inventory_dropItem` (0x1c4910), `player_giveExp`
+(0x1d3224) and one in a function at 0x1c2120 that nothing calls directly. None is in the
+per-tick player code, and `inventory_onSkillPoint` 0x1c2648 has none. Did anything rely on
+the calls made while drawing?
+
+**The pair.** Build c6+c6 of the soak (states `run6-11`; slot 1 with skill 86 on its first
+ability button), level 25, every passive byte 5, level load into `strife` at tick 700, no
+bus delay. Machine A is slot 1's; everything below is about slot 1. Two writes besides the
+soak's, both on both machines at tick 880: the experience of both players to 10,000 short
+of the next level, and `g_debugCheats` 0x4f8ee0 to 1 — with it, `hud_run` gives every
+player 20,000 experience through `player_giveExp` in the tick in which player 0's lockstep
+pad has D-pad down pressed with R1 held (**Observed**, 0x1dbb64–0x1dbbe8; the same code
+gives player 0 gold, which was not looked at), which machine B then does once. The pages of the inventory panel, by the page word at panel +0x50 and by
+which function is entered: 0, 1, 2 the item lists of the three bags, 3 the stats page, 4
+the quest list, 5 the skill tree; R1 and L1 change page, and the panel opens on the page it
+was closed on.
+
+Two scripts with every event in the same frame (generated and compared by
+`local/rig-out/p13/side.py`, not in the repository). **S**: the menu is open on machine A from
+tick 948 to 1709, again from 1778 to 2419 (the level-up page needs the inventory opened
+anew) and from 2518 to 2869, 1,756 ticks. **C**: the same events with the menu open only
+where an event needs it (948–1087 to unequip, 1118–1229 to equip, 1778–2249 for the
+level-up page, 2518–2869), 1,076 ticks. Each was run with fifteen and with thirteen
+sections; in all four runs a tick's number is its frame's number plus 417.
+
+| Tick | Event | How |
+|---|---|---|
+| 905–923 | healed over the maximum: 712.513 of 709.0 | hit points written to 600, then the player's own healing skill (`Player_castSkill` once) |
+| 948 | inventory opened (in S it stays open); page 1 from 1019 | |
+| 1073 | unequip the armour piece of bag 1 | cross in the item list: inventory message 2, `inventory_unequipItem` |
+| 1107 | hit points 716 | a write, both machines |
+| 1213 | equip it again | message 1, `inventory_equipItem` |
+| 1269 | S: the stats page | |
+| 1297 | hit points 716, mana 815 (maximum 799.9) | writes |
+| 1365 | a level gained | `player_giveExp` for both players, on both machines |
+| 1427 | hit points 726 (maximum now 719.6) | a write |
+| 1479, 1504 | S: the quest list, the skill tree | |
+| 1547 | hit points 726 | a write |
+| 1609, 1634 | S: the quest list, the stats page | |
+| 1710 | S: closed | |
+| 1778 | opened again: the level-up page; the level acknowledged at 1783 (message 9) | |
+| 1853, 1919, 2009 | a point each into strength, intelligence, stamina | message 6, `inventory_onStatPoint` |
+| 2179 | a skill point into the carrying passive (mask 0x40) | free cursor moved onto its node by the stick, cross: message 7, `inventory_onSkillPoint` |
+| 2250 | C: closed | |
+| 2274 | S: the stats page | |
+| 2347 | hit points 730 (maximum 721.5) | a write |
+| 2420 | S: closed | |
+| 2518–2870 | opened once more; unequip at 2763, equip at 2823 | |
+
+**Results.**
+
+| Question | Answer |
+|---|---|
+| S with fifteen sections: do the two machines agree? | In every shared column at every one of 2,347 ticks — hit points, mana, both maxima, attack rating, damage, armour, load limit, statistics, points, equipment, bags — except the two bytes at record +0xed and +0xee (below) |
+| S with thirteen sections | hit points differ in 846 ticks (1298–1364, 1428–1547, 1609–1852, 2348–2762), mana in 67 (1298–1364), the stored attack rating in 150 (2274–2423: 577 on machine A, 557 on B) |
+| S against C, fifteen sections, machine A, tick by tick | maximum hit points and mana, damage, armour, load, load limit, hit points, mana, base and effective statistics, points and equipment are equal at every tick. One column differs: the stored attack rating in ticks 2254–2423, 557 in S and 577 in C |
+| S with fifteen sections against machine B of S with thirteen | equal at every tick in hit points, mana, both maxima, attack rating, damage, armour and load limit: the patched pair holds on both machines what the machine *without* the menu held before |
+| C with thirteen sections | hit points differ in 195 ticks (1832–1852 and 2589–2762): even a menu opened only to level up or to change armour trims on its own machine |
+
+What recomputed, by caller (break point on `player_recalcStats`, return address and tick
+logged, from tick 880):
+
+| Caller | Thirteen sections | Fifteen sections |
+|---|---|---|
+| `inventory_unequipItem`, `inventory_equipItem` | ticks 1073, 2763 and 1213, 2823, both machines | the same |
+| `player_giveExp` | tick 1365, twice (two players), both machines | the same |
+| `inventory_onStatPoint` | ticks 1853, 1919, 2009, both machines | the same |
+| `stats_screen` (0x1d2e7c) | machine A only, 702 calls in ticks 1269–2588: once per frame while page 3, page 4 or the level-up page is drawn | none |
+| `skills_screen` (0x1d5950) | machine A only, once, tick 2174: at the press that spends the skill point, five ticks before the message is applied | none |
+| `itemList_input` (0x1ce530) | none | none |
+| `Player_recalcDamage` from the stats page (0x1d2c38) | machine A only, 449 calls | none |
+| `Player_recalcDamage` from `Player_weaponSwapInput` | 2,486 calls on each machine | the same |
+
+So each event that changes a derived statistic brings its own recompute in the tick, on
+both machines: armour 89 → 82 → 89 at 1073 and 1213; maximum hit points and mana 709.0 and
+799.9 → 719.6 and 805.4 at 1365; load limit 400 → 401 at 1853; maximum mana → 807.8 at
+1919; maximum hit points → 721.5 at 2009. The skill point is the one event whose handler
+does not call `player_recalcStats`, and it did not need to: the load limit went from 401 to
+416 in tick 2179 on both machines, because `player_rebuildAbilities` 0x1d34ac, which the
+handler calls, adds 15 to record +0x124 itself for this passive (**Observed**). Nothing
+relied on the calls made while drawing.
+
+Three things to know about the patched game, none of them a difference between machines:
+
+- **Hit points and mana above the maximum stay there until the simulation recomputes.**
+  Nothing in the tick trims them: 730 of 721.5 lasted 415 ticks, menu open and menu closed
+  alike, until the unequip at 2763 trimmed it on both machines in one tick. This is what
+  the machine without a menu already did (machine B in the thirteen-section runs). The
+  trimming calls are the simulation's callers listed above: an item picked up, removed,
+  dropped, equipped or unequipped, a stat point, a level (**Observed** call sites; equip,
+  unequip, stat point and level were run here).
+- **The stored attack rating waits for the menu to close.** It is level × 20 from the
+  *acknowledged* level (+0x58), which the level-up page raises at 1783, and the per-tick
+  recompute is not run for a player whose menu is open (16.4). With fifteen sections both
+  machines hold 557 until the menu closes at 2420 and 577 from tick 2424; with thirteen,
+  machine A's stats page wrote 577 at 2274. That is 17.4's difference, turned into the
+  same delay everywhere.
+- **Record +0xed and +0xee differ between the machines from tick 1778 to the end** (01 00
+  on machine A, 00 01 on machine B), in all four runs: the level-up page's own bookkeeping
+  bytes, written by menu code on the owner's machine. The launcher's "points" checksum
+  covers them, so that column differs too. Not from the sections; menu code is their only
+  reader named in `docs/ui.md`, and a reader in the simulation was not looked for.
+
+**What the open menu shows** (machine A's screen text, fifteen against thirteen sections):
+the stats page prints the record, so maximum hit points and mana, armour, the statistics
+and the load limit are current — they are written in the tick. It now also shows hit
+points or mana above the maximum as they are (716 of 708, 815 of 799, 726 of 719, 730 of
+721) where the unpatched page showed them for one frame and then trimmed its own machine;
+and it shows the old attack rating (557 where the unpatched page showed 577) until the
+menu has been closed. Damage did not change in this pair.
+
+Not exercised here: a weapon changed with the menu open (bag 0's page listed nothing for
+this character, also with a second weapon written into the bag; the equipment change was
+an armour piece, which moves armour only) — for that case 17.4's trace and 18.3's pairs are
+the evidence, and by 17.4 the stats page then shows the old attack rating *and* damage until
+the menu closes (**Inferred** for the screen; the record was seen). And the item list's call
+at 0x1ce530: it sits on the shop's sell path, after the sell message is queued
+(**Observed**, 0x1ce4d0–0x1ce534), and no shop was opened in this pair.
+
+### 18.5 The confirmation soak: the 27 pairs with a healing skill
+
+The 27 pairs of Phase 12 with skill 50, 55 or 86 in a build — eight c1+c4, eight c3+c5,
+eleven c6+c6; thirteen starting in the arena and fourteen in ten other levels; 30,000 to
+60,000 frames; no bus delay in ten, delay 4, jitter 3, loss 5% in eleven (one with its
+120-frame outage), delay 10, jitter 6, loss 10% in six — each with its Phase 12 seed,
+script and bus setting and fifteen sections on both machines, eight pairs at a time.
+
+| | |
+|---|---|
+| Pairs run / planned | 27 / 27; no time-out, no stuck machine |
+| Frames of random input planned | 1,260,000 |
+| Ticks compared | **1,212,349** (the same pairs in Phase 12: 1,211,563) |
+| Pairs differing in a column Phase 12 compared | **0** (Phase 12: 7, all in hit points) |
+| Pairs with the game's out-of-sync flag; with a dropped peer | 0; 0 |
+| Pairs with the stored attack rating or damage differing | 0 (Phase 12: 8 of these, 1,078 ticks) |
+| Pairs differing in one of the new columns | 7, all in one column: the carried load, record +0x120 (below) |
+| Hit points above the stored maximum, machine A's log | slot 0 in 10 pairs, 7,755 ticks, by at most 6.04; slot 1 in 6 pairs, 7,709 ticks, by at most 5.46. Mana: never |
+| Same course as in Phase 12 | 25 of 27; not pair 033 (18.2) and not pair 116 (57,797 ticks against 57,648; 18.3) |
+| Per build: pairs / ticks | c1+c4 8 / 407,945; c3+c5 8 / 279,288; c6+c6 11 / 525,116 |
+| Entries, both machines together | `Player_castSkill` 16,944; `Player_usePotion` 83,470; inventory opened 5,511; `stats_screen` 58,320; inventory messages 18,018; equips 1,062; `shop_openOrStock` 223; pause menu 3,331; `game_loadLevel` 612; `save_game` 524 |
+| Deaths, slot 0 / slot 1; level changes after the first entry; ticks with the cutscene flag | 45 / 104; 179; 42,904 |
+
+The seven pairs of 18.2 are among the 27 and so ran twice with fifteen sections; the two
+runs of each give the same row, field for field.
+
+**The carried load: seven pairs, and not from the sections.** The one new column that
+differs is the first of the two words logged at record +0x120 — the load, 0x4d8c10 for
+slot 0 and 0x4dd840 for slot 1 — never the limit beside it:
+
+| Pair | Build | First tick, slot, machine A / B | Ticks differing (slot 0; slot 1) | Longest stretch |
+|---|---|---|---|---|
+| 105 | c3+c5 | 2186, slot 0, 32.346 / 29.196 | 20; 0 | 19 |
+| 063 | c3+c5 | 2256, slot 1, 30.146 / 34.846 | 14; 161 | 106 |
+| 111 | c3+c5 | 2996, slot 1, 26.596 / 27.596 | 3,352; 1 | 3,352 |
+| 069 | c3+c5 | 3435, slot 1, 34.596 / 34.846 | 0; 41 | 9 |
+| 027 | c3+c5 | 5408, slot 1, 24.689 / 22.689 | 2,940; 4 | 2,940 |
+| 021 | c3+c5 | 8936, slot 1, 12.150 / 12.282 | 0; 1 | 1 |
+| 080 | c1+c4 | 22150, slot 1, 17.154 / 19.154 | 0; 21,405 | 21,405, to the end of the pair |
+
+All seven were run again with thirteen sections, each to past its first differing tick (pair
+080 to 65 ticks past it, pair 069 to tick 6946): each differs at the same tick with the same
+two values, and pair 069 in the same 41 ticks. So this is older than the two sections and
+was not seen before only because the column is new. In 27,935 of the 27,939 differing ticks
+the machine that owns the player holds the lower value. A break point on `player_recalcLoad`
+0x1bec10 in pair 069 (thirteen sections; return address and tick logged, 6,287 ticks): on
+each machine every call but seven comes from `Player_run`, call at 0x1a9578; for slot 1 that
+is 13,428 calls on machine A, whose player it is, and 1,509 on machine B; for slot 0, 782 on
+machine B and 342 on machine A. The owner's extra calls are its prediction copy running
+`Player_run` outside the tick: the write is the one `docs/issues/prediction-copy.md` lists
+for +0x120 as harmless because the value is the same whoever computes it. The value is; the
+tick is not — the other machine keeps the old sum until its own `Player_run` reaches that
+call, up to 21,405 ticks here. No other column followed in any of the seven, and the loads
+were far below the limits (325 to 400). What reads the load between the two recomputes was
+not looked at.
+
+Wall time 1.7 hours, where 50 minutes were expected: for the first hour two more pairs of
+mine and another job's two runners ran beside the eight pairs, 22 runner processes on 18
+cores, and the pairs fell to between a quarter and a half of their speed (the first eight,
+60,000 frames each, took 2,400 to 4,500 seconds instead of about 1,300). Nothing timed out.
+Rule for later rig work: count every runner on the machine, and stay at or below the number
+of cores.
+
+### 18.6 For the ledger, and what is not done
+
+Proposed rows and changes, for whoever edits `FINDINGS.md` (this document does not):
+
+| Row | What to record |
+|---|---|
+| V46, K4 | The section "menu screens do not recompute player statistics" **ran**: the seven pairs of V46 with it (and its companion) show no difference in any shared column, the maxima, load limit and armour included; the same seven without it, same day, repeat their Phase 12 rows exactly, pair 033 with its out-of-sync flag at tick 45052. Then the 27 pairs with a healing skill, 1,212,349 ticks: no difference in hit points or in any column the first soak compared, no flag. Play!, two identical instances: logic only |
+| K3 | The companion section **ran**: the stored attack rating and damage agree at every tick in fourteen of the 39 pairs that had differed (1,805 ticks with thirteen sections, none with fifteen). With both sections the stored values of a player whose menu is open stay as they were until the menu closes, on every machine alike |
+| K4 | Where the drawing-side calls were made: the stats page, the quest list and the level-up page once per frame (0x1d2e7c); the skill tree once per spending press (0x1d5950); the item list on the shop's sell path (0x1ce530). The simulation's own callers recompute in the tick of every event tried (equip, unequip, level, stat point); the skill point's load-limit change is made by `player_rebuildAbilities` 0x1d34ac. With the section, hit points above the maximum last until one of those calls, on every machine alike |
+| new | Record +0xed and +0xee (level-up bookkeeping) differ between the machines after a level-up page was opened; no reader in the simulation known |
+| prediction copy, +0x120 | The carried load is recomputed by `player_recalcLoad` from `Player_run` (0x1a9578), which the owner's prediction copy runs outside the tick: the two machines hold different loads for a while — 7 of 27 pairs, up to 21,405 ticks, with thirteen sections as with fifteen. No other difference followed; readers not examined |
+| menu machine, input timing | With the menu sections on, a machine may take one of its own button presses into the lockstep input a tick earlier (pair 059, tick 12390), so a pair can take another course than without them. Both machines share that input; it is not a divergence |
+| V46 | Its split by healing skill does not add up from the Phase 12 table: see below |
+
+**A number in 17.3 that the Phase 12 table does not give.** By `pairs.tsv` of Phase 12 the
+27 pairs with skill 50, 55 or 86 in a build compared 1,211,563 ticks and the other 93 pairs
+3,897,775; 17.3, 17.6 and row V46 say 1,282,920 and 3,826,418. The total, 5,109,338, and
+the pair counts agree. The statement that matters — no shared difference in the 93 —
+stands either way.
+
+Not done:
+
+- A weapon changed with the menu open, in a scripted pair (above); a sale in a shop with
+  the hit points over the maximum (the third patched call).
+- The six stretches of 17.4 "with neither menu open" were not traced; they are gone with
+  the others.
+- Only the pairs named were run with fifteen sections: 33 of the 120. The 87 others were
+  not, and no pair was longer than 60,000 frames.
+- Why pair 116 took another course; what reads the carried load (+0x120) in the simulation,
+  and whether a load near the limit can make the two machines decide a pick-up differently.
+- `SpellMinorHealing_run`'s code, other effects that could pass a maximum, and whether
+  hit points left above the maximum for long matter to anything (a heal that tests
+  "hit points + 1.0 ≤ maximum" simply does not start).
+- The U2 menu sections, the save-point section and "skeleton queries rebuild inside the
+  tick" were not on, as in Phase 12.
+- Three or four machines; anything on a console or PCSX2. Two identical Play! instances
+  show logic differences only: these runs say the two sections remove the difference
+  between machines here, not that the patched game behaves on a PlayStation 2.
+
+## 19. Phase 14: through the lobby with the real client
+
+Section 13 stopped at the lobby server's first screen. This phase goes on from there: the
+server's terms screen accepted, two throw-away test accounts made on the local server, log
+in, a character made through the game's own lobby screens, a game hosted and joined. The
+user allowed the first two explicitly; both stay on the test machine (the server is the
+user's own process on the same host, and the rig's network relays to that host only).
+**Ran** unless marked; limits as in section 13: Play!, not a PlayStation 2 and not PCSX2;
+two copies of one emulator build; host sockets, so real time matters and no run repeats
+exactly. *This section is written as the work proceeds; 19.12 says where it stands.*
+
+(Section 18 is left for phase 13, which another run of the rig was writing at the same
+time.)
+
+### 19.1 How it is run
+
+- One runner per machine, each a **live session**: `rig.py session --name N start
+  --interactive-live --screen-text --eth-net server=<host address>,guest=<10.0.2.x>
+  --eth-pcap <file> --script tools/rig/examples/online-lobby.rig`. With the new
+  `--interactive-live` the machine keeps running while the session waits for commands. A
+  plain session stands still between commands, which is fatal here: the server drops a
+  connection it has not heard from for its `client_timeout` (120 s).
+- The runner for this phase was built into `local/rig-build-online` so that the runner
+  other work was using stayed as it was.
+- The test accounts' names and passwords are random and exist only in a local file
+  outside the repository, `local/rig-out/online-accounts.txt` (lines `a.user=…`,
+  `a.password=…`, `a.email=…`, `a.birth=…`, `a.handle=…`, and the same for `b`). Scripts
+  take them from there (`tools/rig/osk.py … --file F --key a.user`); nothing in the
+  repository holds them, and the tools print a password's length only.
+- `tools/rig/osk.py` types on the game's two on-screen keyboards and checks each key
+  (19.3). `tools/rig/lobbycap.py <capture>` turns a `--eth-pcap` file into one line per
+  lobby message: direction, number, tracking number, version or result, and the body field
+  by field, with the encrypted strings decrypted by the connection's key — the tables
+  below come from it.
+
+### 19.2 What had to change in the runner
+
+| Change (`rig.cpp`) | Why |
+|---|---|
+| `--interactive-live`: commands are taken from standard input without waiting, at each vertical blank | see 19.1 |
+| `SIGPIPE` ignored; a relayed TCP connection whose host side has gone answers the machine's next segment with a reset | the server closed a connection, the game then sent on it, and the runner died silently on the signal. Now the game sees what it would see on a real network |
+| the closing segment of a relayed TCP connection is not repeated once acknowledged | it was sent again every two seconds for ever |
+| `--eth-net … ,udp=<port>+<port>`: UDP to the server's address goes to the server only on these ports (default 10101, the discovery port); to any other port it goes to `127.0.0.1`, and a datagram arriving from `127.0.0.1` is shown to the machine as coming from the server's address | the path between two runners, 19.8 |
+| a line in the log when the machine stood still for more than 20 s of real time | 19.9: nothing else shows that the host slept |
+
+### 19.3 The screens, and typing
+
+Seen by pressing: in the hint lines of the lobby screens the four glyphs the transcript
+prints as `~`, `{`, `|`, `}` are cross, circle, triangle, square; `\u0083`/`\u0085` are
+L1/R1 and `\u0084`/`\u0086` L2/R2. Circle on the login screen leaves the lobby (the
+connection is closed properly and the game returns to the front end; "Internet Game" can
+be entered again in the same run, and the terms screen is then not shown a second time —
+no second 0x42 is sent).
+
+The lobby keyboard is a grid of 14 columns: digits, three letter rows, a row of accented
+letters; R2 held shows the shifted set; cross types, square deletes, triangle is a space,
+L2 accepts the field and moves the focus to the next one, circle closes the keyboard. Its
+cursor is the word at +0x5e0 of the keyboard window (static pointer 0x5061f4, class
+vtable 0x51ce28): row × 14 + column. The cursor stays where it was when the keyboard is
+opened again. The character-name screen has its own keyboard: 10 columns, cursor in the
+word at 0x8e2ba0 (row × 10 + column; −2 and −1 are its SPACE and DONE keys).
+
+**The game drops a key press now and then.** A press held for four frames with eight
+frames before the next was lost about once in 30 keys while the machine ran freely (two
+of nine in the first name typed that way; none in 60 presses of one key in a row). The
+cause was not established — Inferred: the main thread is held up in a network call for
+longer than the press. `osk.py` therefore reads the field back from the drawn text after
+every key and presses again when the field did not grow; with that, every field of every
+form matched what was typed.
+
+### 19.4 Terms, account, log in
+
+| Step | What the game sent | Reply | Screen |
+|---|---|---|---|
+| terms | (0x42 with `en`, `us`, as in 13.4) | the server's text | cross accepts; no message is sent for it |
+| account form | — | — | six fields: login, password, password again, e-mail, date of birth, chat handle |
+| submit | 0x06, 230 bytes: five encrypted strings (name, password, e-mail, date, handle) | result 0, encrypted session id (16 characters) | success notice, then the game list and chat |
+| straight after | 0x0E, 0x61 | six room names with their filler; three empty lists | |
+| | 0x5B (`u32` 0) | count 0 | |
+| | 0x0C with the first room's name | name, empty text, one member (own handle), no moderators | "joined" line in the chat pane |
+| | 0x55 (27 bytes after the session id), 0x0E again | eight empty arrays; rooms | "no games" line |
+| every 610 lobby calls | 0x55 | | list refresh |
+| idle | empty frame (`00 00 00 04`) about every 760 frames | none | |
+| log in (second run, machine A) | 0x16: name, password | result 0, session id, the account's chat handle | as after 0x06 |
+
+Both accounts were made with 0x06 (one per machine) and machine A later logged in with
+0x16; both paths end in the same lobby screen. **No disagreement between the game and the
+server in this part**: every reply was accepted (the game's console prints the result of
+each), and each body has the layout `docs/lobby-protocol.md` gives, with these additions:
+
+- An encrypted string whose text is a multiple of 16 bytes carries **one more block**:
+  the 16-character session id (32 bytes) travels as 48 bytes of ciphertext, so a request
+  with nothing but a session id is 70 bytes on the wire. `docs/netlib.md` has this rule
+  ("rounded down to 16, plus 16"); `docs/lobby-protocol.md` section 3 says "padded to a
+  multiple of 16", which is what the test client sends and the server also accepts.
+- The discovery datagram is therefore **52 bytes** from the real game (the `u32` 0x20 and
+  48 bytes), not 36 (19.6). The server takes anything of 36 bytes or more.
+- 0x0E and 0x61 go out one frame apart and are answered in order; 0x5B, 0x0C, 0x55 and
+  0x0E likewise. The game has several requests pending at once.
+
+### 19.5 A character made in the lobby
+
+"Host game" (triangle on the game list, then cross) with no character on the server opens
+the character screens at once (lobby state 0xb): class and sex (seven classes, each male
+then female; triangle there would import one from the memory card instead), appearance,
+20 ability points, name. On DONE the game says it is saving to the server, and sends:
+
+| | Sent | Reply |
+|---|---|---|
+| 0x15 (on "host game") | the public room's name | result 0 |
+| 0x58, tracking number *n*, 1026 bytes | `u32` 0, `u32` 0, keys `name`, `raceandclass`, `level`, `ability`, their four values, a first piece of 800 bytes, `u32` 0 | none yet |
+| 0x5D, tracking number *n* again, 387 bytes | a piece of 309 bytes, last-piece flag 1 | **one** reply, numbered 0x58, tracking number *n*, result 0, `u32` character id |
+
+The game took the reply (its console shows type 88, result 0) and went on to the
+create-game form: the single reply after the last piece, with the id, is what the game
+wants, as `server/upstream/FIXES.md` section 5 worked out from the parser. A new level-1
+character packs to 1,109 bytes. The values sent for a male Barbarian warrior with the 20
+points put into strength and stamina were `0 0`, `1` and six numbers of which the last
+two are 0.
+
+### 19.6 Hosting
+
+The create-game form has a name, public or private, difficulty (one choice for a level-1
+character), game type (missions, and two arena modes) and mission. R1/L1 move between
+its rows and the two chat panes; left and right change a row. Submit:
+
+| Sent | Reply or effect |
+|---|---|
+| 0x54: `u16` 1, `u32` 0, 50, 10, game info `01,00,00,00,01\|<name>`, an empty attribute list, an empty blob, own address `10.0.2.15` (the machine's address behind the rig), own UDP port **4001**, an empty string, `u32` 0 | result 0, the discovery address and port |
+| 0x09 with the game's name | result 0 and the four room fields; **the game then sends 0x19** with the room name and its fixed line, answered with result 0 |
+| 0x15 and 0x0C for the public room | result 0 each |
+| UDP, from port 4001 to the discovery port: `u32` 0x20 and 48 bytes | notification 0x3E with the address and port the server saw (this host, the rig's host socket for port 4001) |
+
+The game room then lists the host's character with class and level, and offers "start".
+So the UDP port is 4001 here, inside the 4000–4004 that `docs/lobby-protocol.md` 9.1
+inferred, and 0x19 does follow a well-formed 0x09 reply (section 7 of
+`server/upstream/FIXES.md`).
+
+### 19.7 Joining: the first attempt
+
+The other machine's list showed the game after its next 0x55 (one game: info string, an
+empty second string, id, one empty blob, the host's address `10.0.2.15` and port 4001,
+and the address and port the server saw). Cross on it:
+
+| Machine | Sent or received |
+|---|---|
+| joiner | 0x66: game id, own address `10.0.2.16`, own UDP port 4001 → result 0, discovery address and port |
+| joiner | UDP: the 52-byte discovery datagram, once; then a one-byte datagram (01) to the host's observed address every 200 frames or so |
+| joiner | ← 0x40: its own observed address and port |
+| host | ← 0x65: the joiner's two address pairs |
+| host | UDP: a 14-byte UdpLibrary connect request to the joiner's observed pair **and** another to its own-network pair (`10.0.2.16:4001`), each repeated about every 125 frames; one-byte datagrams to the observed pair |
+
+Nothing arrived on either side and after eight of its one-byte datagrams the joiner said
+it could not connect to the host. Everything the lobby server has to do had been done
+correctly; the datagrams were lost on the host: **the test machine's firewall drops UDP
+between two local programs when it is addressed to the machine's outside address** (two
+plain sockets show the same; through 127.0.0.1 they talk). The server's own UDP port is
+not affected. See 19.8.
+
+### 19.8 The path between two runners
+
+The lobby server sees both runners at the host's address with different ports — the rig
+is, in effect, one router with both consoles behind it, and the server tells each to find
+the other at that one address. A real router has to send such traffic back in ("hairpin");
+here the rig does: a datagram for the server's address on a port that is not the server's
+goes to 127.0.0.1 on that port, where the other runner's host socket for its machine's
+game port is listening, and that runner presents it to its machine as coming from the
+shared address (`rig.cpp`, `EtherUdpOut`, `EtherPoll`). The machines' own addresses
+(10.0.2.15, 10.0.2.16) are not bridged: the host's second connection attempt, to the
+joiner's own-network pair, goes nowhere, as between two houses.
+
+### 19.9 The host went to sleep: what the game does when the server drops it
+
+Not planned. The test machine was put to sleep several times during this phase (its power
+log shows it), each time for longer than the server's 120 s. On waking, the server dropped
+every client in the same instant (**server**, `LobbyServer::Run`: `CheckSocketProblem` runs
+before the sockets are read, and its clock, `std::chrono::steady_clock`, had moved on
+through the sleep — so clients whose data was waiting in the socket were timed out
+unread. A server on a machine that sleeps is not the usual case, but the order is worth
+knowing). What the game then did, on both machines:
+
+- its transport noticed the closed connection on its next send, and **connected again by
+  itself**: gateway (0x43), lobby (0x27) — and then went on with its periodic 0x55 under
+  the old session id, without logging in;
+- the server answered that 0x55 from a connection that is not logged in with result 0 and
+  an empty list, **and** sent notification 0x41 and closed; the game connected again; and
+  so on, about every 650 frames, for as long as it was left alone (seven rounds seen);
+- on the screen a notice that the connection was lost sat over the game list all that
+  time; accepting it takes the game back to the network menu, from where the lobby is
+  entered and logged into again normally.
+
+A machine that was in the middle of the account form when this happened was not
+disturbed: its transport reconnected, and its 0x06 went out on the new connection.
+
+### 19.10 Where the game and the server disagree (kept up to date)
+
+| # | What | On the wire | Where |
+|---|---|---|---|
+| S1 | A request under a session id from a connection that never logged in is answered as if it were valid (0x55: result 0, empty list) and the connection is then closed with 0x41. The game, which reconnects on its own after a drop and does not log in again, loops (19.9) | reply `55 00`, tracking number, result 0, eight zero counts; then `41 00 00 00 00 00 00 00 00 00` | Inferred from the capture: the request handlers do not refuse a connection without a user, and `UserManager::Disconnect` sends 0x41. A result that tells the game its session is gone would let it show the login screen at once; which result the game takes that way was not looked for |
+| S2 | 0x41 carries a `u32`; the game reads a `u16` (`docs/lobby-protocol.md`) | `41 00`, `u32` 0, `u32` 0 | `NotifyForcedLogout::Serialize`. No effect was seen: the game's handler ran either way |
+
+### 19.11 Corrections to earlier documents
+
+- `docs/lobby-protocol.md` 3 and 6: the padding of encrypted strings and the size of the
+  discovery datagram, as in 19.4.
+- `docs/lobby-protocol.md` 9.1: the UDP port is in 4000–4004 (4001 on both machines here).
+- `docs/lobby-protocol.md` "nothing here was confirmed with a real console or an
+  emulator", and the same sentence in `server/upstream/FIXES.md`: sections 19.4–19.7 are
+  the first exchange of this protocol with the real client (in Play!).
+
+### 19.12 Where this stands
+
+Written so far: both machines logged in, machine A's character made and its game hosted,
+machine B's join attempt understood and the rig's path between the runners added. Next:
+the join with that path, B's character, the launch, a level, the arena.

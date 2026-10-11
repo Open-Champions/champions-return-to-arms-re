@@ -139,6 +139,7 @@ holds for the machines that have it — enable them on every machine:
 | predicted spin cast leaves the shared animation alone | two players of the same class using the spin skill — **confirmed live**: 6 of 6 pairs diverged without it, 0 of 6 with it |
 | creatures ignore being touched by the prediction copy | a pet or monster reacting early on its owner's machine — **confirmed live**: the pet pair that diverged stays in step with it |
 | item records start from zero, not from stack leftovers | dropped items carrying different unused bytes on different machines — **confirmed live**: with it, all twelve arena fights agree completely |
+| menu screens do not recompute player statistics; stats page does not recompute the main weapon's damage either | a heal that overshoots being trimmed early on the machine with a menu open, which ends in a death on one machine only — **confirmed live**: the one cause left after a five-million-tick soak, gone with these two |
 | prediction copy starts without pending damage | G11–G13, G24 |
 | equalise at once (LAG-1) | input delay staying high after a stall, which is also what widens K1 and K2 — **confirmed live**: peak 11 frames instead of 34, cleared in 10 s instead of 35 |
 
