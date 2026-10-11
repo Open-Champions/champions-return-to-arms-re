@@ -312,8 +312,8 @@ excepted: they move the timing, which hides a coincidence without fixing it) to 
 which section removes the difference.
 
 By default the sections for the two known causes, K1 and K2, are applied on both machines
-(`--patches none`, `--patches FIXES` for every fix section, or `--patches "name;name"`,
-changes that). `--no-rerun` skips the second run of a pair that differed. `--prelude FILE` puts script
+(`--patches none`, `--patches FIXES` for every fix section, `--patches "FIXES+name;name"`
+for those and more, or `--patches "name;name"`, changes that). `--no-rerun` skips the second run of a pair that differed. `--prelude FILE` puts script
 lines before the fuzz; `--extra "…"` passes options to `rig.py pair` (for example
 `--extra "--b-arg --fp-round --b-arg nearest"`); `--keep` keeps the logs of pairs that
 agreed too.

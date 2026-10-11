@@ -145,7 +145,7 @@ description=Companion to the patch above: the same lockout also made one machine
 patch=1,EE,001A5BA8,word,00001021
 
 [Net test: option commit leaves the button maps alone]
-author=reverse engineering test patch, untested on a running game
+author=reverse engineering test patch; confirmed on two linked Play! emulator instances (FINDINGS V35); untested on PCSX2 or a console
 description=For online test sessions only. Leaving the pause menu's option list after changing any option copies this machine's own saved controller layouts over every player's button map, so a player with remapped buttons is then read wrongly on that machine. This jumps over that copy (config_commitOptions, 0x1E6A60). Side effect in every mode: a change made in the game's controls screen no longer takes effect when you leave the options. FINDINGS U1. Each machine for itself; a mix is safe.
 // was: 3C060042 (lui a2,0x42); now j 0x1e6b10
 patch=1,EE,001E6A60,word,08079AC4

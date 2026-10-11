@@ -1,0 +1,38 @@
+# FINDINGS U1 on two joined machines (docs/issues/live-rig.md 14.1). From the states of pair-start.rig:
+#   python3 -I -B tools/rig/rig.py pair local/rig-out/u1 --bus delay=0 --a-load local/rig-out/run1/a.zip \
+#       --b-load local/rig-out/run1/b.zip --script tools/rig/examples/pair-u1.rig --frames 900
+# Add as first line, to see the fix:
+#   pnach patches/SLUS-20973_4028A55F.pnach "Net test: option commit leaves the button maps alone"
+# U1: slot 1 (machine A's player) has attack and block exchanged in its button map on both machines, as the
+# launch handshake would deliver a remapped controller; then machine B changes an option in its pause menu
+ontick 680 poke g_btnAttack+4:x32 00000008
+ontick 680 poke g_btnBlock+4:x32 00000040
+wait 40
+show atk0=g_btnAttack:hex16 blk0=g_btnBlock:hex16
+B: tap start 4
+wait 60
+B: tap down 4
+wait 30
+B: tap down 4
+wait 30
+B: tap cross 4
+wait 80
+B: tap down 4
+wait 40
+B: tap right 4
+wait 40
+B: tap circle 4
+wait 80
+B: tap circle 4
+wait 80
+B: tap circle 4
+wait 80
+show atk=g_btnAttack:hex16 blk=g_btnBlock:hex16
+# the remapped player presses the button that is "attack" by default and "block" in its own map
+A: tap cross 6 20
+A: tap cross 6 20
+A: tap cross 6 20
+A: press cross
+wait 60
+A: release cross
+wait 120

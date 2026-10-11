@@ -12,7 +12,9 @@ the writing code, the six follow-up questions, and the source of the item bytes 
 21-word fix) and phase 8 (section 13: the real online path — the game's own network stack
 on a network behind the emulated Ethernet chip, a network configuration made with the
 disc's own program, the sign-in step, and two machines connected to the lobby server; it
-stops at the server's terms screen). In short: two machines play one lockstep game here;
+stops at the server's terms screen) and phase 9 (section 14: U1 confirmed on the pair with
+its section, the route grid compared between machines, pair 410 with and without the
+item-record section). In short: two machines play one lockstep game here;
 random input found two real divergences, which are the ledger's K1 and K2, and the test
 patch for each removes it; the arena did **not** go out of sync in twelve runs.
 
@@ -1541,3 +1543,80 @@ datagram on, the capture files show what the UDP relay and the peer handshake do
   enough for a lobby; whether it is enough for game traffic is **Unknown**.
 - Play!'s OpenGL handler was used for pictures only; nothing was checked about its
   correctness, and runs with `--video` are slower.
+
+## 14. Phase 9: sections not yet exercised, the route grid, pair 410
+
+The developer LAN pair of sections 7–12 again. Limits as in section 7. **Ran** unless marked.
+
+### 14.1 U1, the option commit and the button maps: reproduced, and the section removes it
+
+Script `tools/rig/examples/pair-u1.rig`, placeholder characters in `strife`, no bus delay.
+In tick 680 the button map of slot 1 (machine A's player) gets attack and block exchanged
+on both machines (`g_btnAttack`+4 = 0x08, `g_btnBlock`+4 = 0x40) — what the launch
+handshake would deliver for a player who remapped them. Machine B then opens its pause
+menu, the option list, changes the music volume, leaves the list and answers the save
+question with no. Then A's player presses the button that is attack by default.
+
+| | Without the section | With "option commit leaves the button maps alone" on both |
+|---|---|---|
+| B's tables after leaving the option list | all four slots back to B's own layout (slot 1: attack 0x40, block 0x08); A's unchanged | unchanged on both |
+| first difference | tick 1089, the button-map checksum, the tick in which B's commit ran | none in 898 ticks |
+| the press | tick 1259: the player's action state differs (it blocks on A and attacks on B); position from tick 1260 | the same on both |
+| the game's own flags | out-of-sync set for both players at tick 1270; the lockstep stops at tick 1272 | never set |
+
+U1 is confirmed on the running game, and so is its section.
+
+### 14.2 D26: not reproduced in eight forced trials
+
+From the arena-entrance states with placeholder characters: both players in the crowd, A's
+inventory open, both players' hit points raised to 5,000 at tick 900 and A's player set to
+1 at tick T on both machines (T = 1800 … 3900 in steps of 300; `local/rig-out/p9-d26.sh`).
+None of the eight pairs showed a shared difference in 3,598 ticks. That is not a result
+about D26: the difference needs a damage call on the other player in the rest of the tick
+in which the owner dies, and whether that happened in any trial was not established (the
+attempt to read it from the tick logs failed and was not repaired). D26 and its companion
+section stay unexercised.
+
+### 14.3 E9, U2, K3: not attempted
+
+Each needs a scripted situation of its own (a pending post action with a notice box open;
+the mission or jump-gate menu with another player's pause menu; a dual-wielding character
+with the stats page open and a projectile in flight). None was built.
+
+### 14.4 The route grid after the copy's requests (V29)
+
+Pair 406 with every fix section and the item-record one. All four request functions were
+logged on both machines, and every 150 ticks from 11000 to 14600 the route grid (65 × 55
+nodes at world +0x38), the request queue with the search rings and goal variables
+(0x7d35e0–0x7d89e0) and the search globals (0x44f090–0x44f0a7) were dumped inside the
+tick hook.
+
+- Requests: 38 inside a tick on each machine, in the same ticks (2372 … 10326). Outside
+  a tick — the copy's — 45 on A (ticks 11078 … 13766) and 49 on B (7042 … 13762), at
+  different ticks on the two machines.
+- **At all 25 sample ticks the two machines' route grids (links, marks and block counters
+  of all 3,575 nodes), queues, rings and globals were byte for byte the same.** Up to 515
+  marked nodes were present at a sample, the same ones on both.
+
+So in this pair nothing that differs between the machines was left in the path-finding
+memory by the copies' searches. Two reservations. The samples show the same
+previous-start node on both machines every time, so the two copies' searches may have been
+the same search here (both players walking the same way); a pair in which only one
+machine's copy walks would be the stronger test. And the queue's write index is not
+monotonic over the samples (65, then 64; 74, then 71): something sets it back, which was
+not looked into. Whether a search's marks can survive the next search's clearing was not
+tested directly either.
+
+### 14.5 Pair 410, same day
+
+| Sections on both machines | Result |
+|---|---|
+| every fix section of section 11 | first difference at tick 6920, the second bag checksum of player 1 (as in 10.3) |
+| the same plus "item records start from zero, not from stack leftovers" | 15,324 ticks, no shared difference |
+
+Both pairs that differed in two item bytes now have a with and a without result from one
+day each (402 in section 12, 410 here).
+
+### 14.6 Not done
+
+D26 (inconclusive), E9, U2, K3; a one-sided test for 14.4; the non-monotonic write index.

@@ -103,6 +103,9 @@ hardware differences the other items are about:
 - **Do not change anything in the pause menu's options during an online game** if any
   player has remapped buttons in the game's own controls screen; simplest is for everyone to
   keep the game's default controls and remap in the emulator instead (FINDINGS U1).
+  Confirmed on two linked emulator instances: changing the music volume on one machine made
+  it misread the other player's remapped button and the game stopped with the out-of-sync
+  message (FINDINGS V35).
 - **Do not die with the inventory open**, and do not open the pause menu while a mission
   or jump-gate menu is up (FINDINGS D26, U2).
 
