@@ -7,6 +7,8 @@
 # The sign-in step needs the local sign-in patch (not in the repository); without it the
 # game stops with a network error when it cannot find Sony's server. The patch must be
 # applied before "Internet Game" is chosen. The script ends at the server's terms screen.
+# To go on from there (accounts, characters, a game on two machines) start the runner as a
+# live session with --interactive-live: docs/issues/live-rig.md section 19, tools/rig/osk.py.
 at 300
 tapuntil cross 40 g_inFrontend:u8 == 1 timeout 6000
 until g_levelName:str8 == intro timeout 3000

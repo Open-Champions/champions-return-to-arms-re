@@ -24,7 +24,11 @@ weapon damage still differing with the K3 section on) and phase 13 (section 18: 
 menu sections that answer phase 12 run on the pair — the seven divergent pairs agree with
 them and repeat their divergence without them, the stored attack rating agrees, one
 scripted pair checks for side effects, and the 27 pairs with a healing skill were soaked
-again, 1.2 million ticks, with no difference in anything phase 12 compared). In short: two machines play one lockstep game here;
+again, 1.2 million ticks, with no difference in anything phase 12 compared) and phase 14
+(section 19: the real online path to its end — accounts and characters on the replacement
+lobby server, a game hosted and joined, the peer handshake over real sockets, a
+lobby-launched lockstep game with the character checksum exchange running, through a
+level and an arena fight without a difference). In short: two machines play one lockstep game here;
 random input found two real divergences, which are the ledger's K1 and K2, and the test
 patch for each removes it; the arena did **not** go out of sync in twelve runs.
 
@@ -2632,15 +2636,19 @@ Not done:
 
 Section 13 stopped at the lobby server's first screen. This phase goes on from there: the
 server's terms screen accepted, two throw-away test accounts made on the local server, log
-in, a character made through the game's own lobby screens, a game hosted and joined. The
-user allowed the first two explicitly; both stay on the test machine (the server is the
-user's own process on the same host, and the rig's network relays to that host only).
-**Ran** unless marked; limits as in section 13: Play!, not a PlayStation 2 and not PCSX2;
-two copies of one emulator build; host sockets, so real time matters and no run repeats
-exactly. *This section is written as the work proceeds; 19.12 says where it stands.*
+in, a character made through the game's own lobby screens on each machine, a game hosted
+on one and joined from the other, the launch, a level in lockstep, and the arena level
+with the per-tick comparison running. The user allowed the first two steps explicitly;
+both stay on the test machine (the server is the user's own process on the same host, and
+the rig's network relays to that host only). **Ran** unless marked; limits as in section
+13: Play!, not a PlayStation 2 and not PCSX2; two copies of one emulator build; host
+sockets, so real time matters and no run repeats exactly.
 
-(Section 18 is left for phase 13, which another run of the rig was writing at the same
-time.)
+**In short:** the whole online path works with the replacement server — account, log in,
+character create / list / load / save, host, list, join, the peer-to-peer handshake over
+real sockets, start, launch — and the game the lobby launches stays in step through a
+level and an arena fight here (19.10). No reply of the server was refused or misread by
+the game on that path; what was found is in 19.12.
 
 ### 19.1 How it is run
 
@@ -2690,13 +2698,17 @@ vtable 0x51ce28): row × 14 + column. The cursor stays where it was when the key
 opened again. The character-name screen has its own keyboard: 10 columns, cursor in the
 word at 0x8e2ba0 (row × 10 + column; −2 and −1 are its SPACE and DONE keys).
 
-**The game drops a key press now and then.** A press held for four frames with eight
-frames before the next was lost about once in 30 keys while the machine ran freely (two
-of nine in the first name typed that way; none in 60 presses of one key in a row). The
-cause was not established — Inferred: the main thread is held up in a network call for
-longer than the press. `osk.py` therefore reads the field back from the drawn text after
-every key and presses again when the field did not grow; with that, every field of every
-form matched what was typed.
+**The game misses short button presses on these screens.** A press held for four frames
+was lost now and then on the login and account screens (two of nine keys in the first
+name typed that way; none in 60 presses of one key in a row), and nearly always on the
+joiner's character screens, where a hold of ten frames was needed. The game draws about
+one frame for every two fields on these screens (its draw counter rose by 56 in 120
+fields); what makes a particular frame long enough to swallow a press was not
+established — Inferred: a network call on the main thread. `osk.py` therefore holds a key
+for eight frames, reads the field back from the drawn text after every key and presses
+again when the field did not grow; with that, every field of every form matched what was
+typed. Menu presses were made the same way: hold eight to ten frames, look for the next
+screen, press again if it has not come.
 
 ### 19.4 Terms, account, log in
 
@@ -2709,7 +2721,7 @@ form matched what was typed.
 | | 0x5B (`u32` 0) | count 0 | |
 | | 0x0C with the first room's name | name, empty text, one member (own handle), no moderators | "joined" line in the chat pane |
 | | 0x55 (27 bytes after the session id), 0x0E again | eight empty arrays; rooms | "no games" line |
-| every 610 lobby calls | 0x55 | | list refresh |
+| about every 710 frames while the list is shown | 0x55 | | list refresh |
 | idle | empty frame (`00 00 00 04`) about every 760 frames | none | |
 | log in (second run, machine A) | 0x16: name, password | result 0, session id, the account's chat handle | as after 0x06 |
 
@@ -2787,7 +2799,7 @@ between two local programs when it is addressed to the machine's outside address
 plain sockets show the same; through 127.0.0.1 they talk). The server's own UDP port is
 not affected. See 19.8.
 
-### 19.8 The path between two runners
+### 19.8 The path between two runners, and the join
 
 The lobby server sees both runners at the host's address with different ports — the rig
 is, in effect, one router with both consoles behind it, and the server tells each to find
@@ -2798,6 +2810,37 @@ game port is listening, and that runner presents it to its machine as coming fro
 shared address (`rig.cpp`, `EtherUdpOut`, `EtherPoll`). The machines' own addresses
 (10.0.2.15, 10.0.2.16) are not bridged: the host's second connection attempt, to the
 joiner's own-network pair, goes nowhere, as between two houses.
+
+With that the join goes through. What crosses between the two game sockets (each
+machine's UDP port is one of 4000–4004, chosen anew in each run; counts from one whole
+run; the reading of the bytes beyond size and first two is Inferred from
+`docs/netlib.md`):
+
+| Stage | Datagrams (first two bytes, size) | Who |
+|---|---|---|
+| seek | `01`, 1 byte | joiner → host, until the host's request arrives (2) |
+| connect | `00 01`, 14 bytes: protocol version 2, a connection code, maximum size 512 | host → joiner's observed pair (and, unanswered, to its own-network pair) |
+| | `00 02`, 21 bytes: the code back, a second code, the options | joiner → host |
+| welcome | `00 09`, 234 bytes, reliable, sequence 0: two messages in one datagram — the welcome (0x1d: the joiner's ident 1, the game record, the peer list) and the peer list (0x19) | host → joiner |
+| | `00 15`, 4 bytes: acknowledgement | joiner → host |
+| in the room | `00 06`, 2 bytes, each way about every 380 frames | keep-alive |
+| character chosen | `00 09`, 79 bytes: the joiner's record (0x1b); the host answers with the new peer list (`00 09`, 40 bytes) | |
+| start | `00 09`, 8 bytes: message 0x1a; then `00 05`, 8 bytes, each way | host; both close the connection |
+| launch | 11 datagrams one way and 13 the other, 512 bytes each but for one of about 1,200, within 210 frames | the netcode's own handshake, on the same sockets |
+| play | about 0.42 datagrams per frame each way, first bytes `3f bd`, 40 bytes mostly (28–56) | lockstep input |
+
+On receiving the welcome the joiner sends 0x5F (its session id and the host's), gets result
+0, enters the game's chat room with 0x0C (the reply now carries the line the host set
+with 0x19, and both members) and leaves the public one; the server also sends 0x3D to the
+room when somebody enters. Only then does the joiner get its character screens (lobby
+state 0xa). After that both machines list both characters in the game room.
+
+A character already on the server is not offered first: "host" or "join" always opens the
+new-character screens, and the stored ones are behind triangle there ("import"), in one
+list with the memory card's, marked as network characters. Choosing one sends 0x5C with
+its id; the reply here was one frame, 1,024 bytes, last-piece flag 1 (the server keeps
+only as much of an upload as expands to a full record, so 1,109 uploaded bytes came back
+as less than 1,024, padded). The game showed the character's sheet from it.
 
 ### 19.9 The host went to sleep: what the game does when the server drops it
 
@@ -2822,24 +2865,171 @@ knowing). What the game then did, on both machines:
 A machine that was in the middle of the account form when this happened was not
 disturbed: its transport reconnected, and its 0x06 went out on the new connection.
 
-### 19.10 Where the game and the server disagree (kept up to date)
+### 19.10 Launch, a level, the arena
+
+"Start" on the host:
+
+| Machine | Sent | Reply |
+|---|---|---|
+| host | 0x23: session id, `u8` 0, `u16` 0, three empty lists (15 zero bytes) | result 0 and a `u32` 0 — taken by the game |
+| both | 0x15 for the public room | result 0 |
+| both | the peer start message and the launch datagrams of 19.8 | |
+
+About 600 frames later both machines are in the level `hub` with two players,
+`g_lobbyLaunch` 1, both records of kind 2 (+0x4c1c), the host's character in slot 0 and
+the joiner's in slot 1, and `g_netFrame` counting: **a lockstep game launched through the
+lobby, with characters kept by the lobby server, between two machines that found each
+other through it.** The lobby connection stays open during play (lobby state 0xc) and
+carries the saves of 19.11.
+
+The measured runs (`local/rig-out/p14`; the driver scripts there are local because they
+find their way by the text on the screen; the whole path from power-on takes under three
+minutes of real time). Run 4: both machines get the thirteen fix sections of
+section 17 in the front end, before "Internet Game"; the tick log has the launcher's
+columns plus the lobby flag, the two kinds, names and levels, the pending level, the
+cutscene flag and the checksum tables of 19.11.
+
+| Stage | Ticks | Seen on both machines |
+|---|---|---|
+| `hub`, seeded random input (move, fight, potion) for 1,800 frames | 400–2,080 | same seed and positions throughout |
+| pending level written as `drunare` in tick 2,688 on both | | both in the arena level about 180 ticks later, same positions |
+| the host's player walks west | | cutscene flag up at tick 3,032 — 2 modulo 15, as section 7.5 found — and down about 1,270 ticks later |
+| the fight: seeded random input (move, fight, potion, use) for 4,500 frames | 4,320–7,950 | the host's level-1 warrior killed; no out-of-sync flag, no checksum failure |
+
+`compare.py ticks`: **7,948 ticks compared, no shared column differs on any tick.** Run
+3, the same path before it, stayed in `hub` (16,000 ticks, 3,000 frames of random input
+with "use", the rest standing): no shared column differs either. That run is also where a
+mistake of method showed: random "use" had started a conversation with the hub's trader,
+the level was then changed under it by the pending-level write, and both players stood
+frozen in the arena level with no HUD for the rest of the run. Before forcing a level,
+see that nobody is in a conversation.
+
+**With levels and skills.** The same path, with the build of `examples/pair-chars.rig`
+(section 9.1: level 25, 900 hit points, four or five skills at rank 10) written into both
+records in one lockstep tick in `hub` on both machines, random input that also casts, and
+a fight of 6,000 frames. The game saves these characters to the server like any others,
+so from the second run on they arrive at level 25 from the server and the write only
+repeats what is there.
+
+| Run | Slot 0 / slot 1 | Fix sections | Ticks compared | Result |
+|---|---|---|---|---|
+| 5 | warrior (class 0) / a new shaman (class 6), the pair of 9.1 | thirteen | 9,923 | no shared column differs |
+| 6 | warrior / berserker carrying the same written build | **none** | 11,138 | **bag 0 of slot 0 differs from tick 7,783 to the end**: an item arrives in the bag in that tick on both machines and its bytes are not the same. No out-of-sync flag, no checksum failure |
+| 7 | as 6 | thirteen | 9,919 | no shared column differs |
+
+Run 6 is the item-record class of section 10 (ledger V22), now in a lobby-launched game;
+runs 6 and 7 are not a replay of one another (real time decides the input delay), so
+"removed by the sections" rests on section 12, not on this pair. One run each.
+
+What this does and does not show: two identical emulator instances; three fights with
+the sections on, one without. It shows that the lobby launch path, the transferred lobby
+characters and the checksum exchange do not by themselves put the arena out of step, and
+that what the developer-start pairs found carries over unchanged.
+
+### 19.11 The checksum exchange, and who saves whom
+
+With both kinds 2 and the lobby flag set the exchange of ledger rows B1–B2 runs, and it
+does what `docs/issues/sync-breakers.md` section 1 read:
+
+- every 240 ticks, on ticks that are 60 modulo 240, the host (the first active machine)
+  calls `hudmsg_sendChecksumStart` (0x1de430); only the host does;
+- seven or eight ticks later — the input delay — **both machines call `net_sendChecksums`
+  (0x1de46c) in the same tick**, and each receives the two pairs in the same two ticks
+  (three or four and about eight ticks after that): `netmsg_0a_checksum_handler`
+  (0x1d90a4) runs twice per round on each;
+- the two tables (`g_expectedChecksums`, `g_receivedChecksums`) were equal on both
+  machines in every round of every run: 33 rounds in the first arena run, 66 in the hub
+  run, about 40 in each of runs 5 to 7. The values changed only when a character changed
+  (twice in the hub run), on both machines in the same tick. `g_checksumFailed` stayed 0;
+- **it does not see everything.** In run 6 one bag differed between the machines for
+  3,355 ticks, fourteen rounds, and every round passed: the item bytes that differed are
+  not among what `player_checksum` mixes.
+
+**A difference made on purpose** (the gold of slot 0 raised by one on the joiner's machine
+only, in tick 14,590 of a quiet game):
+
+| Tick | Joiner's machine (holds the wrong value) | Host's machine (owns slot 0) |
+|---|---|---|
+| 14,704 | its own value for slot 0 differs from before | — |
+| 14,712 | the comparison fails: `g_checksumFailed` 1, `net_disconnectPlayer(0, 1)` from the handler (return address 0x1d91dc); slot 0 marked dropped | comparison passes; nothing |
+| 14,718 | plays on alone | stops: no more input from the other. About 930 frames later it marks the other dropped and goes on alone |
+| +239 ticks, each from its own drop | **back in the lobby's game list**: front end, lobby state 5, still logged in | the same |
+
+So a covered value that differs on one machine ends the session for both players within
+some twenty seconds, without either seeing the out-of-sync notice: the machine with the
+difference throws the other out, the other waits out the silence, and each then returns
+to the lobby. Why a machine left alone returns to the lobby after 239 ticks was not
+traced (Inferred: the exit countdown of game message 8). This is B2 and B13 run for the
+first time; with a real difference (a desync in a covered field) the same would follow at
+the next round.
+
+**Saves.** About every 2,100–2,400 frames in play a machine sends 0x5E — session id, the
+session id of the player being saved, that character's id, the four keys and values, a
+first piece of 800 bytes — and a last 0x5D piece under the same tracking number; the
+server answers once, result 0, numbered 0x5E. In one run each machine saved only the
+*other* player's character; in another each saved both in turn. (Which machine saves
+which slot is drawn from the shared seed, `game_sendCharacterToLobby` 0x1eb5c8.) The
+character loaded at the next log in carried what the earlier game had given it. This is
+the server's "anyone can overwrite another's character" from `FIXES.md` seen from the
+game's side: it is how the game saves.
+
+### 19.12 Where the game and the server disagree
+
+In the path that was run — terms, account, log in, character create / list / load / save,
+create public game, room and its text, game list, join, discovery, the two address
+notifications, join report, start — **every reply was accepted by the game and nothing
+the server sent was misread.** What was found is at the edges:
 
 | # | What | On the wire | Where |
 |---|---|---|---|
-| S1 | A request under a session id from a connection that never logged in is answered as if it were valid (0x55: result 0, empty list) and the connection is then closed with 0x41. The game, which reconnects on its own after a drop and does not log in again, loops (19.9) | reply `55 00`, tracking number, result 0, eight zero counts; then `41 00 00 00 00 00 00 00 00 00` | Inferred from the capture: the request handlers do not refuse a connection without a user, and `UserManager::Disconnect` sends 0x41. A result that tells the game its session is gone would let it show the login screen at once; which result the game takes that way was not looked for |
-| S2 | 0x41 carries a `u32`; the game reads a `u16` (`docs/lobby-protocol.md`) | `41 00`, `u32` 0, `u32` 0 | `NotifyForcedLogout::Serialize`. No effect was seen: the game's handler ran either way |
+| S1 | A request under a session id from a connection that never logged in is answered as if it were valid (0x55: result 0, empty list) and the connection is then closed with 0x41. The game, which reconnects on its own after a drop and does not log in again, loops (19.9) | reply `55 00`, tracking number, result 0, eight zero counts; then `41 00 00 00 00 00 00 00 00 00` | Observed in the source: `RequestMatchGame_RTA::ProcessRequest` (`Source/Network/Event/RequestMatchGame_RTA.cpp`, the `!user->m_isLoggedIn` branch) calls `UserManager::Disconnect`, which sends 0x41 and marks the socket to be closed, and then returns an ordinary result with an empty list. The game's handler for 0x41 did not take it back to the login screen here (the notice already on the screen was the one for the lost connection). A failure result in the reply, or simply closing without a reply, would at least not look like success; which result the game treats as "log in again" was not looked for |
+| S2 | 0x41 carries a `u32`; the game reads a `u16` (`docs/lobby-protocol.md`) | `41 00`, `u32` 0, `u32` 0 | `NotifyForcedLogout::Serialize`. No effect was seen |
+| S3 | After a sleep of the server's host every client is timed out unread (19.9) | — | `LobbyServer::Run` calls `CheckSocketProblem` before `ReadSocket` |
+| S4 | The first column of the game list shows the game id plus one (18 to 21 for ids 17 to 20). What that column is meant to hold was not found; the game takes the id from array 3 and sends the same number back in 0x66, so the id itself is used correctly | 0x55 reply, array 3 | **Unknown** whether this is a server matter at all: needs the list's drawing code |
+| S5 | Array 2 of the list (the short text per game) is empty; the game keeps 14 characters of it per game | 0x55 reply, array 2 | as `FIXES.md` "not fixed" says; nothing visibly missing on the list screen |
 
-### 19.11 Corrections to earlier documents
+Not exercised: private games (0x56, 0x57), a second public game in the list, friends,
+ignore, messages, room chat typed by a player, cancelling (0x05, 0x60), deleting a
+character, a third and fourth machine, and everything after a player leaves a running
+game.
+
+### 19.13 Corrections to earlier documents
 
 - `docs/lobby-protocol.md` 3 and 6: the padding of encrypted strings and the size of the
   discovery datagram, as in 19.4.
-- `docs/lobby-protocol.md` 9.1: the UDP port is in 4000–4004 (4001 on both machines here).
+- `docs/lobby-protocol.md` 9.1: the UDP port is in 4000–4004 (4001 and 4004 seen), and
+  both of the host's connection attempts (observed pair and own-network pair) are made.
+- `docs/lobby-protocol.md` 8.3: the stored characters are reached through "import" on the
+  new-character screen; 0x5B is sent after log in and again when that list is opened.
 - `docs/lobby-protocol.md` "nothing here was confirmed with a real console or an
-  emulator", and the same sentence in `server/upstream/FIXES.md`: sections 19.4–19.7 are
-  the first exchange of this protocol with the real client (in Play!).
+  emulator", and the same in `server/upstream/FIXES.md`: this section is the first
+  exchange of the protocol with the real client (in Play!). The fixes of `FIXES.md`
+  sections 3, 5, 6 and 7 (chat handle at log in, one reply per character upload with the
+  id, the `u32` after 0x23, the room reply and 0x19) are each seen working with it.
+- `docs/netlib.md`, lobby state table: state 0xa is the joiner's character menu after the
+  host's welcome, 0xb the host's before the game exists; 5 is the game list, 6 the game
+  room.
 
-### 19.12 Where this stands
+### 19.14 For the ledger
 
-Written so far: both machines logged in, machine A's character made and its game hosted,
-machine B's join attempt understood and the rig's path between the runners added. Next:
-the join with that path, B's character, the launch, a level, the arena.
+Proposed, for whoever edits `FINDINGS.md` (this document does not):
+
+| Row | What to record |
+|---|---|
+| new (V) | The real online path ran end to end on two Play! instances against the replacement lobby server: account, log in, lobby characters, host, join, peer handshake over real sockets, launch; the launched game (lobby flag set, both characters kind 2) stayed in step through `hub` and the arena, three fights with the thirteen sections on. Ran |
+| new (V) | Without the sections one lobby-launched fight left a bag different between the machines from the tick an item arrived, silently — the item-record class (V22) on the lobby path. Ran, one run |
+| B1, B2 | Ran: the exchange runs every 240 ticks from tick 60 in a lobby game with two kind-2 characters; both machines compute in the same tick; no false mismatch in about 230 rounds |
+| B2, B13 | Ran: a covered value changed on one machine makes that machine drop the owner at the next round; the owner freezes for about 930 frames and then drops the other; each returns to the lobby 239 ticks after its drop. Neither sees the out-of-sync notice |
+| B13 | Ran: a difference in a bag's item bytes is not seen by the exchange (fourteen rounds passed over it) |
+| new (L) | Lobby protocol with the real client: no reply refused on the main path; the encrypted-string padding and the 52-byte discovery datagram; UDP port in 4000–4004; the game reconnects by itself after a drop and does not log in again (S1) |
+
+### 19.15 Not done
+
+- More than one run of each kind: 19.10 is four fights and one run in the hub. The soak
+  of sections 17 and 18 was not repeated through the lobby.
+- Characters that earned their levels, bought their equipment and learnt their skills in
+  play; here the levels and skills are written.
+- The door from `drundar`: the arena level was entered by the pending-level write.
+- More than two machines; a joiner's own-network path; packet loss or delay on the
+  runners' path (it is the host's loopback interface: nothing is lost or late).
+- Anything on a console or in PCSX2. Two copies of one Play! build show logic only.

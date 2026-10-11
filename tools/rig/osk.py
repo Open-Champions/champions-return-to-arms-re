@@ -22,11 +22,11 @@ back from the text the game draws.
     osk.py --session N cursor                 where the cursor is
     osk.py --session N fields                 what the screen's fields show
     osk.py --session N type --text hello      type a literal text
-    osk.py --session N type --file F --key a.user --label "login:"
+    osk.py --session N type --file F --key a.user --label "<the field's label>"
                                               type the value of 'a.user=...' from file F;
                                               with --label every key is checked on the screen
     osk.py --session N type --env NAME        type the value of an environment variable
-    osk.py --session N --keyboard name type --text bob --label "Character Name:"
+    osk.py --session N --keyboard name type --text bob --label "<the label over the name>"
     osk.py --session N --keyboard name done   move to DONE and press it
 
 Account names and passwords for the rig's test accounts are kept in a local file outside
@@ -153,10 +153,11 @@ class Session:
 
     def field_text(self, label):
         """What the field with this label shows; the draw log misses a frame now and then."""
-        for _ in range(4):
+        for _ in range(12):
             shown = self.fields().get(label)
             if shown is not None:
                 return shown
+            self.send("wait 5")
         raise SystemExit("no field labelled %r on the screen" % label)
 
     def type_text(self, text, secret=False, label=None):

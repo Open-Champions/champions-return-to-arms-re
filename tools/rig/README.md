@@ -22,6 +22,8 @@ in this directory; what the rig has shown so far is in `docs/issues/live-rig.md`
 | `compare.py` | lines up the tick logs of two machines and finds the first difference; diffs two memory dumps |
 | `fuzz.py` | runs many joined pairs unattended on seeded random input and groups the divergences (`--patches FIXES`: every fix section) |
 | `sweep.py` | one pair per class skill, both players the same class with that skill; `--predict-audit <file>` on the runner lists what each prediction call left changed |
+| `osk.py` | types on the game's two on-screen keyboards in a live session, reading the cursor and the field back after every key; takes secret texts from a local file or the environment |
+| `lobbycap.py` | lists the lobby messages in a `--eth-pcap` capture, one line each, fields decoded and encrypted strings decrypted (passwords never shown) |
 
 ## Build
 
@@ -70,6 +72,7 @@ directory; keep that, and any logs and dumps, under `local/rig-out/`.
 | `--frames <n>` | stop after n frames of this run |
 | `--script <file>`, `--do "<command>"` | script commands (below); `--do` commands run after the file |
 | `--interactive` | then read commands from standard input; the machine stands still while waiting |
+| `--interactive-live` | the same, but the machine keeps running between commands; for runs that hold connections through host sockets (a server times out a machine that stands still) |
 | `--until <expr:type> <op> <value>` | stop when true; exit code 3 if `--frames` comes first |
 | `--sym <file.tsv>` | symbol file: hex address, tab, name |
 | `--watch <name=expr:type>` | a value to log; `--watch-file` takes one per line |
@@ -85,7 +88,7 @@ directory; keep that, and any logs and dumps, under `local/rig-out/`.
 | `--predict-trace <file>`, `--trace-range <addr:length[:stride][,all][,name=N]>`, `--trace-ticks <lo:hi>`, `--trace-raw <n>` | which code writes the watched words: writers gathered by site, writing block and call chain (below) |
 | `--video` | Play!'s OpenGL video handler on a context without a window, so that the script command `shot <file.bmp>` can write a picture of the screen (macOS; off with `-DRTA_RIG_VIDEO=OFF`). Slower; for programs whose text the transcript cannot show |
 | `--eth-pcap <file>` | every Ethernet frame the emulated chip sends or is given, as a capture file (`tcpdump -nn -r <file>`) |
-| `--eth-net server=<address>[,name=<host>][,guest=<address>]` | a small network behind the emulated chip, for the game's own network stack (below) |
+| `--eth-net server=<address>[,name=<host>][,guest=<address>][,udp=<port>+<port>]` | a small network behind the emulated chip, for the game's own network stack (below) |
 | `--fp-round nearest\|up\|down\|zero` | force a floating-point rounding mode on this machine (Play! runs the EE with round-toward-zero); for float-mismatch experiments |
 | `--no-code-protect`, `--video-thread`, `--throttle`, `--play-logs` | emulator behaviour, see `--help` |
 
@@ -209,6 +212,20 @@ runner; the machine only opens connections). Nothing else is relayed: the machin
 reach the Internet. Use the host's own LAN address for `server=`, not 127.0.0.1 — the
 lobby server tells machines each other's addresses as it sees them.
 
+Two runners on one host can reach each other as well. The lobby server sees both at the
+host's address with different ports and tells each to find the other there, so a datagram
+for the server's address on a port that is not the server's own (`udp=`, default 10101,
+the lobby's discovery port) is meant for another runner: it is sent to 127.0.0.1 on that
+port, and a datagram that arrives from 127.0.0.1 is shown to the machine as coming from
+the server's address. The runners are then two consoles behind one router that sends
+their traffic for each other back in. (The loopback interface is used because a host
+firewall may drop datagrams between two local programs on the outside address.) Give each
+runner its own `guest=` address; the machines' own addresses are not bridged.
+
+A TCP connection the server has closed is reset when the machine next sends on it. A line
+in the output says when the machine stood still for more than 20 seconds of real time (a
+held session, a host that slept): the server will have dropped it.
+
 The game also wants a network configuration on the memory card. `examples/online-netcnf.rig`
 makes one with the configuration program on the disc, and `examples/online-lobby.rig` goes
 from power-on to the lobby server's first screen. Things to know:
@@ -220,6 +237,25 @@ from power-on to the lobby server's first screen. Things to know:
 - two things in Play!'s chip emulation are corrected from the runner (`EtherDeliver`),
   for which `Iop_Speed.h` is included with its private members reachable;
 - the script command `iopdump <file>` writes the IOP's memory.
+
+From the server's first screen on, the lobby is a matter of menus and of typing on the
+game's on-screen keyboard, with a server waiting in real time. Use a live session per
+machine (`rig.py session --name a start --interactive-live --screen-text --eth-net … --eth-pcap …
+--script examples/online-lobby.rig`; add `--tick-log` and the tick watches for the game
+that follows) and `osk.py` for the text:
+
+```
+python3 -I -B tools/rig/rig.py session --name a send "tap square 8" "wait 40"     # open the keyboard on a field
+python3 -I -B tools/rig/osk.py --session a type --file local/rig-out/online-accounts.txt --key a.user --label "<the field's label>"
+python3 -I -B tools/rig/rig.py session --name a send "tap l2 8" "wait 40"         # accept the field
+python3 -I -B tools/rig/lobbycap.py local/rig-out/a.pcap --udp                    # what was said on the wire
+```
+
+Keep account names and passwords in a local file outside the repository (`key=value`
+lines) and let `osk.py` read them; it prints a secret's length only. Hold a button for 8
+frames or more on these screens and check that the screen changed: the game misses
+shorter presses now and then. `docs/issues/live-rig.md` section 19 has the whole path,
+screen by screen, to a lobby-launched game on two machines.
 
 ### The libnet shim
 

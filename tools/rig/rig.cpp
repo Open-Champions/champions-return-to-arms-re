@@ -1894,6 +1894,7 @@ struct Options
 	bool noCodeProtect = false;
 	bool profile = false;
 	bool interactive = false;
+	bool interactiveLive = false; // the machine keeps running while a session waits for commands
 	bool videoThread = false;
 	bool video = false;
 	std::string ethPcapPath;
@@ -1945,7 +1946,7 @@ public:
 		}
 		if(!m_options.ethNetSpec.empty())
 		{
-			// server=a.b.c.d[,name=host][,guest=a.b.c.d]
+			// server=a.b.c.d[,name=host][,guest=a.b.c.d][,udp=port+port]
 			for(const auto& part : SplitChar(m_options.ethNetSpec, ','))
 			{
 				auto eq = part.find('=');
@@ -1956,6 +1957,12 @@ public:
 					m_ethGuestIp = ntohl(inet_addr(text.c_str()));
 				else if(key == "name")
 					m_ethName = text;
+				else if(key == "udp")
+				{
+					// the server's own UDP ports (default: the lobby's discovery port)
+					m_ethServerUdpPorts.clear();
+					for(const auto& port : SplitChar(text, '+')) m_ethServerUdpPorts.insert(static_cast<uint16>(strtoul(port.c_str(), nullptr, 0)));
+				}
 				else
 					Die("--eth-net: unknown setting %s", part.c_str());
 			}
@@ -2085,7 +2092,18 @@ public:
 			}
 		}
 		m_frame++;
-		if(m_ethNet) EtherPoll();
+		if(m_ethNet)
+		{
+			// A run with host sockets depends on real time: a server drops a machine it has
+			// not heard from. Say so when this one stood still (a held session, a host that
+			// slept), because nothing else in the log would show it.
+			auto wall = std::chrono::system_clock::now();
+			double gap = m_ethLastBlankSet ? std::chrono::duration<double>(wall - m_ethLastBlank).count() : 0;
+			if(gap > 20) printf("[frame %" PRIu64 "] the machine stood still for %.0f seconds of real time\n", m_frame, gap);
+			m_ethLastBlank = wall;
+			m_ethLastBlankSet = true;
+			EtherPoll();
+		}
 		// Translated code does its arithmetic in the host's rounding mode, which Play!
 		// sets to toward-zero once; forcing another one here makes every single-precision
 		// result of this machine round differently from then on.
@@ -2621,12 +2639,25 @@ public:
 			printf("[frame %" PRIu64 "] ethernet: UDP port %u of the machine is host port %u\n", m_frame, sourcePort, ntohs(any.sin_port));
 			found = m_ethUdp.emplace(sourcePort, fd).first;
 		}
+		// The server's address is also where the lobby server saw every other runner on
+		// this host, and so where it tells this machine to find them: all the runners sit
+		// behind one address, as consoles behind one router do. A datagram for a port that
+		// is not one of the server's own is for such a runner. It goes to that runner's
+		// host socket through the loopback interface (a host firewall may drop datagrams
+		// between two local programs on the outside address), and the runner that gets it
+		// shows it to its machine as coming from the shared address (EtherPoll).
+		bool toServer = m_ethServerUdpPorts.count(destPort) != 0;
 		sockaddr_in to = {};
 		to.sin_family = AF_INET;
-		to.sin_addr.s_addr = htonl(destIp);
+		to.sin_addr.s_addr = htonl(toServer ? destIp : INADDR_LOOPBACK);
 		to.sin_port = htons(destPort);
 		sendto(found->second, data, length, 0, reinterpret_cast<sockaddr*>(&to), sizeof(to));
-		m_ethUdpOut++;
+		if(toServer)
+			m_ethUdpOut++;
+		else
+		{
+			if(m_ethPeerOut++ == 0) printf("[frame %" PRIu64 "] ethernet: first datagram for another runner: port %u -> %s:%u (through the loopback interface)\n", m_frame, sourcePort, IpText(destIp).c_str(), destPort);
+		}
 	}
 
 	// TCP, ended here: the guest's connection is answered by the rig and its bytes go
@@ -2759,6 +2790,16 @@ public:
 					else
 						break;
 				}
+				if(sent < dataLength)
+				{
+					// the host side of the connection is gone (the server closed it): the
+					// machine is told with a reset, as it would be on a real network
+					printf("[frame %" PRIu64 "] ethernet: TCP %u -> %s:%u reset, the host side is gone (%" PRIu64 " bytes out, %" PRIu64 " in)\n", m_frame, c.guestPort, IpText(c.destIp).c_str(), c.destPort, c.bytesToHost, c.bytesToGuest);
+					EtherTcpSegment(c, 0x14, c.sendNext, nullptr, 0);
+					close(c.fd);
+					m_ethTcp.erase(found);
+					return;
+				}
 				c.receiveNext += dataLength;
 				c.bytesToHost += dataLength;
 			}
@@ -2792,8 +2833,16 @@ public:
 				socklen_t fromLength = sizeof(from);
 				ssize_t n = recvfrom(entry.second, buffer, sizeof(buffer), 0, reinterpret_cast<sockaddr*>(&from), &fromLength);
 				if(n < 0) break;
-				m_ethUdpIn++;
-				EtherSendUdp(ntohl(from.sin_addr.s_addr), ntohs(from.sin_port), m_ethGuestIp, entry.first, buffer, static_cast<size_t>(n));
+				uint32 fromIp = ntohl(from.sin_addr.s_addr);
+				if(fromIp == INADDR_LOOPBACK)
+				{
+					// another runner on this host: its machine is known by the shared address
+					fromIp = m_ethServerIp;
+					if(m_ethPeerIn++ == 0) printf("[frame %" PRIu64 "] ethernet: first datagram from another runner: %s:%u -> port %u\n", m_frame, IpText(fromIp).c_str(), ntohs(from.sin_port), entry.first);
+				}
+				else
+					m_ethUdpIn++;
+				EtherSendUdp(fromIp, ntohs(from.sin_port), m_ethGuestIp, entry.first, buffer, static_cast<size_t>(n));
 			}
 		}
 		for(auto it = m_ethTcp.begin(); it != m_ethTcp.end();)
@@ -2808,7 +2857,7 @@ public:
 					c.hostClosed = true;
 			}
 			// nothing acknowledged for two seconds: send again from the oldest byte
-			if(c.sendNext != c.sendBase && m_frame - c.lastProgress > 120)
+			if(c.sendNext != c.sendBase && !c.finAcked && m_frame - c.lastProgress > 120)
 			{
 				c.sendNext = c.sendBase;
 				c.finSent = false;
@@ -3296,7 +3345,7 @@ public:
 		if(m_traceOn) TraceReport();
 		if(m_ethPcap || m_ethNet)
 		{
-			printf("  ethernet: %" PRIu64 " frames sent by the machine, %" PRIu64 " delivered to it; UDP datagrams relayed out %" PRIu64 ", in %" PRIu64 "\n", m_ethTxFrames, m_ethRxFrames, m_ethUdpOut, m_ethUdpIn);
+			printf("  ethernet: %" PRIu64 " frames sent by the machine, %" PRIu64 " delivered to it; UDP datagrams to the server %" PRIu64 ", from it %" PRIu64 "; to other runners %" PRIu64 ", from them %" PRIu64 "\n", m_ethTxFrames, m_ethRxFrames, m_ethUdpOut, m_ethUdpIn, m_ethPeerOut, m_ethPeerIn);
 			if(m_ethPcap) fclose(m_ethPcap);
 		}
 		if(m_netShimReady) m_netShim.Summary();
@@ -3888,7 +3937,13 @@ private:
 			if(m_scriptPosition >= m_commands.size())
 			{
 				if(!m_options.interactive || m_inputClosed) break;
-				if(!ReadInteractiveCommand())
+				if(m_options.interactiveLive)
+				{
+					// nothing waiting: this frame runs, and the input is looked at again
+					// at the next vertical blank
+					if(!PollInteractiveCommand()) return;
+				}
+				else if(!ReadInteractiveCommand())
 				{
 					m_inputClosed = true;
 					break;
@@ -4233,6 +4288,52 @@ private:
 		return false;
 	}
 
+	// The same for a live session (--interactive-live): the machine is not held. Whatever
+	// has arrived on standard input is taken without waiting; returns true when at least
+	// one complete command line was added. A machine that talks to a server through host
+	// sockets must not stand still between commands: the server would time it out.
+	bool PollInteractiveCommand()
+	{
+		bool added = false;
+		char buffer[4096];
+		if(!m_liveInputReady)
+		{
+			// read() must come back at once when nothing is waiting
+			fcntl(0, F_SETFL, fcntl(0, F_GETFL, 0) | O_NONBLOCK);
+			m_liveInputReady = true;
+		}
+		for(;;)
+		{
+			ssize_t n = read(0, buffer, sizeof(buffer));
+			if(n > 0)
+			{
+				m_liveInput.append(buffer, static_cast<size_t>(n));
+				continue;
+			}
+			if(n == 0) m_inputClosed = true; // end of input: the run ends when the commands have
+			break;
+		}
+		size_t end;
+		while((end = m_liveInput.find('\n')) != std::string::npos)
+		{
+			std::string line = m_liveInput.substr(0, end);
+			m_liveInput.erase(0, end + 1);
+			size_t before = m_commands.size();
+			try
+			{
+				ParseScriptLine(line, 0);
+			}
+			catch(const RigError& error)
+			{
+				printf("[error] %s\n", error.what());
+				m_commands.resize(before);
+			}
+			if(m_commands.size() > before) added = true;
+		}
+		if(!added && (m_frame % 30) == 0) FlushOutputs();
+		return added;
+	}
+
 	// Strings gathered by 'collect' break points since the last vertical blank. They are
 	// printed only when the set differs from the previous frame's, which gives a
 	// transcript of what the game put on the screen.
@@ -4363,7 +4464,10 @@ private:
 	void* m_traceExecutor = nullptr;
 #endif
 	FILE* m_ethPcap = nullptr;
-	uint64 m_ethTxFrames = 0, m_ethRxFrames = 0, m_ethUdpOut = 0, m_ethUdpIn = 0;
+	uint64 m_ethTxFrames = 0, m_ethRxFrames = 0, m_ethUdpOut = 0, m_ethUdpIn = 0, m_ethPeerOut = 0, m_ethPeerIn = 0;
+	std::set<uint16> m_ethServerUdpPorts = {10101};
+	std::chrono::system_clock::time_point m_ethLastBlank;
+	bool m_ethLastBlankSet = false;
 	enum : uint32
 	{
 		ETH_GATEWAY_IP = 0x0A000202, // 10.0.2.2
@@ -4409,6 +4513,8 @@ private:
 	size_t m_scriptPosition = 0;
 	bool m_scriptDone = false;
 	bool m_inputClosed = false;
+	std::string m_liveInput;
+	bool m_liveInputReady = false;
 
 	Condition m_until;
 	bool m_hasUntil = false;
@@ -4444,6 +4550,8 @@ static void Usage()
 	    "  --do \"<command>\"       one script command; repeatable, run after --script\n"
 	    "  --interactive          then read further commands from standard input, one per line;\n"
 	    "                         the machine stands still while waiting\n"
+	    "  --interactive-live     the same, but the machine keeps running between commands (for runs\n"
+	    "                         that hold connections to a server through host sockets)\n"
 	    "  --until <expr:type> <op> <value>   stop when true (exit code 3 if --frames comes first)\n"
 	    "  --sym <file.tsv>       symbol file (hex address, name); repeatable\n"
 	    "  --watch <name=expr:type>           value to log; repeatable\n"
@@ -4462,6 +4570,12 @@ static void Usage()
 	    "  --no-code-protect      do not write-protect host pages that hold translated code (see README)\n"
 	    "  --profile              sample the machine and video threads; print where wall time went\n"
 	    "  --video-thread         give the null video handler its own thread, as Play! normally does\n"
+	    "  --eth-pcap <file>      every Ethernet frame of the emulated network adaptor, as a capture file\n"
+	    "  --eth-net server=<a.b.c.d>[,guest=<a.b.c.d>][,name=<host>][,udp=<port>+<port>]\n"
+	    "                         a small network behind the adaptor for the game's own network stack: DHCP,\n"
+	    "                         DNS for one name, TCP and UDP relayed to the server's address only; UDP for\n"
+	    "                         that address on other ports than the server's goes to another runner on\n"
+	    "                         this host through 127.0.0.1 (see README.md)\n"
 	    "  --net-shim <a.b.c.d>   claim this address and be ready to replace the game's libnet entry\n"
 	    "                         points; the script command 'netshim' installs the replacements\n"
 	    "  --net-log <file>       log of the shim's calls and of the lobby's short datagrams\n"
@@ -4571,6 +4685,8 @@ static int Run(int argc, char** argv)
 			options.profile = true;
 		else if(arg == "--interactive")
 			options.interactive = true;
+		else if(arg == "--interactive-live")
+			options.interactive = options.interactiveLive = true;
 		else if(arg == "--video-thread")
 			options.videoThread = true;
 		else if(arg == "--video")
@@ -4665,6 +4781,8 @@ static int Run(int argc, char** argv)
 	if(options.frames == 0 && options.scriptPath.empty() && options.inlineCommands.empty() && options.untilTokens.empty() && !options.interactive) options.frames = 600;
 
 	setvbuf(stdout, nullptr, _IOLBF, 0);
+	// a relayed connection that the other side has closed must give an error, not end the run
+	signal(SIGPIPE, SIG_IGN);
 
 	g_basePath = fs::absolute(options.data);
 	fs::create_directories(g_basePath);
