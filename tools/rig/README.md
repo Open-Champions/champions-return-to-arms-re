@@ -88,7 +88,7 @@ directory; keep that, and any logs and dumps, under `local/rig-out/`.
 | `--predict-trace <file>`, `--trace-range <addr:length[:stride][,all][,name=N]>`, `--trace-ticks <lo:hi>`, `--trace-raw <n>` | which code writes the watched words: writers gathered by site, writing block and call chain (below) |
 | `--video` | Play!'s OpenGL video handler on a context without a window, so that the script command `shot <file.bmp>` can write a picture of the screen (macOS; off with `-DRTA_RIG_VIDEO=OFF`). Slower; for programs whose text the transcript cannot show |
 | `--eth-pcap <file>` | every Ethernet frame the emulated chip sends or is given, as a capture file (`tcpdump -nn -r <file>`) |
-| `--eth-net server=<address>[,name=<host>][,guest=<address>][,udp=<port>+<port>]` | a small network behind the emulated chip, for the game's own network stack (below) |
+| `--eth-net server=<address>[,name=<host>][,guest=<address>][,udp=<port>+<port>][,peerdelay=N][,peerjitter=N][,peerloss=N][,peerseed=N]` | a small network behind the emulated chip, for the game's own network stack (below) |
 | `--fp-round nearest\|up\|down\|zero` | force a floating-point rounding mode on this machine (Play! runs the EE with round-toward-zero); for float-mismatch experiments |
 | `--no-code-protect`, `--video-thread`, `--throttle`, `--play-logs` | emulator behaviour, see `--help` |
 
@@ -138,6 +138,7 @@ One per line, run in order; `#` starts a comment.
 | `echo text`, `log on\|off`, `sync [token]` | print a line; switch the frame log; print a marker and flush |
 | `break <addr[,opts]>`, `unbreak <addr>` | add or remove a break point |
 | `netshim` | replace the game's libnet entry points (needs `--net-shim`) |
+| `ethdrop [seconds]` | drop the relayed TCP connections of `--eth-net` on the host side; refuse new ones for that long |
 | `fuzz <seed> <frames> <groups>` | seeded random input: `move`, `rstick`, `fight`, `cast`, `potion`, `use`, `dpad`, `select`, `start`, `l3r3`, `idle`, joined by commas |
 | `ontick <N> <command>` | run `poke`, `pnach`, `dump`, `show`, `echo`, `save`, `press`, `release`, `break` or `quit` inside lockstep tick N. `ontick N break <addr>,val=tick=g_netFrame:s32` for many functions, on both machines, followed by `ontick N+2 quit`, logs which functions ran in those ticks; the difference between the two logs is the code that ran on one machine only |
 | `A: <command>`, `B: <command>` | only on that one of two joined machines; the other lets the same number of frames pass |
@@ -221,6 +222,16 @@ the server's address. The runners are then two consoles behind one router that s
 their traffic for each other back in. (The loopback interface is used because a host
 firewall may drop datagrams between two local programs on the outside address.) Give each
 runner its own `guest=` address; the machines' own addresses are not bridged.
+
+`peerdelay=` and `peerjitter=` (frames of the sending machine) and `peerloss=` (per
+thousand, drawn from `peerseed=` and the machine letter) are a path model for the
+datagrams between runners only: each runner delays, reorders and drops what it sends.
+Unlike `--bus` this is not repeatable: the two runners are not held in step.
+
+The script command `ethdrop [seconds]` takes the machine's relayed TCP connections down
+on the host side — the server sees the connection end, the machine gets a reset when it
+next sends — and with a number refuses new connections for that many seconds of real
+time, to keep a machine away for longer than a server's time-out.
 
 A TCP connection the server has closed is reset when the machine next sends on it. A line
 in the output says when the machine stood still for more than 20 seconds of real time (a

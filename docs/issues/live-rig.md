@@ -28,7 +28,10 @@ again, 1.2 million ticks, with no difference in anything phase 12 compared) and 
 (section 19: the real online path to its end — accounts and characters on the replacement
 lobby server, a game hosted and joined, the peer handshake over real sockets, a
 lobby-launched lockstep game with the character checksum exchange running, through a
-level and an arena fight without a difference). In short: two machines play one lockstep game here;
+level and an arena fight without a difference) and phase 15 (section 20: the server's
+three fixes met by the real game, nine lobby-launched pairs with fifteen sections and a
+delay and loss model between the runners — 181,073 ticks without a difference —, and the
+arena entered by `drundar`'s own exit script and fought to its end and `hub2`). In short: two machines play one lockstep game here;
 random input found two real divergences, which are the ledger's K1 and K2, and the test
 patch for each removes it; the arena did **not** go out of sync in twelve runs.
 
@@ -3033,3 +3036,166 @@ Proposed, for whoever edits `FINDINGS.md` (this document does not):
 - More than two machines; a joiner's own-network path; packet loss or delay on the
   runners' path (it is the host's loopback interface: nothing is lost or late).
 - Anything on a console or in PCSX2. Two copies of one Play! build show logic only.
+
+## 20. Phase 15: the server fixes with the real game, a lobby soak, the arena's own door
+
+The path of section 19 again, against the server rebuilt with the three fixes that
+section's findings led to (`server/upstream/FIXES.md` sections 16–18). Limits as in
+section 19: Play!, not a PlayStation 2 and not PCSX2; two copies of one emulator build;
+host sockets and real time. The two test accounts of section 19 are used; none was added.
+**Ran** unless marked.
+
+### 20.1 The server fixes, as the game meets them
+
+Two additions to the runner made the cases reachable: the script command `ethdrop
+[seconds]` shuts the host side of the machine's relayed TCP connections (and, with a
+number, refuses new ones for that long), which is a lost line as the server and the game
+see it; and the server process was held with a stop signal for 140 s and then continued,
+which is the server's side of a sleeping host without sleeping it.
+
+| Case | What the server did | What the game did |
+|---|---|---|
+| Connection lost on the game list, the game back within the time-out (S1, fix 16) | gateway and key exchange as always; the first 0x55 under the old session id: **result 0** and the list, on a connection that stays open. No 0x41 | reconnected by itself about 20 frames after its next send was reset; went on asking every 725 frames, on the one connection: **the loop is gone**. But its own notice of the lost connection was already on the screen, over the list, and the only way out of that notice is to leave the lobby: on cross it sent 0x15 for the public room (**result 1** — the session that was picked up is not in the room it was in) and went to the network menu, then the login screen. Logging in again there worked (0x16, a new session id) |
+| The same, kept away for 150 s — longer than the time-out | every 0x55 after the return: **result 7**, eight empty arrays, connection left open | tried the gateway 723 times while it was refused (its tracking numbers ran up to 769); then one connection, 0x55 every 725 frames, each answered 7. Nothing new on the screen: the same notice. After cross, as above |
+| A second log in to the same account from the other machine (0x41, fix 17) | to the first connection: `41 00`, `u32` 0, `u16` 0 — **12 bytes** with the length — and closed it | the handler ran: the logged-in bit of the client's flag word (+0x64, 0x2) went from set to clear, which a plain lost connection does not do. Then as a lost connection: reconnect, the notice, 0x55 under the old id, result 7 each time |
+| The server held for 140 s with both machines connected and asking (S3, fix 18) | on continuing: one log line that it had stood still for 140 seconds, **no client timed out**; the requests that had waited were answered | noticed nothing: the same connection, result 0, the list refreshed |
+
+So each fix does on the wire what `FIXES.md` says. What they change for a player is
+less than hoped in one respect: **a session picked up on the game list cannot be used
+from there**, because the game has already decided for itself that the connection is
+lost and offers only the way out. The gain on the list is the end of the reconnect
+loop and of the forced log outs. Where picking up can matter is during play, when the
+next request is a character save; 20.2 has that case.
+
+New, small: after picking a session up the server does not put the user back into its
+chat room, so the game's 0x15 on leaving gets result 1 (`ResumeSession`,
+`Source/Game/RealmUserManager.cpp`; reply `15 00`, tracking number, result 1). The game
+ignores it.
+
+### 20.2 A soak of lobby-launched pairs with fifteen sections
+
+Each pair is the whole path of section 19 from power-on — log in, host, join, launch —
+with **fifteen** fix sections applied in the front end on both machines (the thirteen of
+section 17 and the two of section 18), then: the build written into both records in one
+lockstep tick in `hub` (level 25, 900 hit points, skills at rank 10, mana written back
+to 500 every 300 ticks), the pending level written in one tick, and seeded random input
+(move, fight, cast, potion, use, D-pad, inventory button) on both controllers for the
+frames given. Slot 0 is always the host's warrior (class 0) with the build of
+`examples/pair-chars.rig`, the spin skill (41) on its first ability button. Slot 1 is one
+of three characters kept by the server for the joiner's account. The tick log is that of
+19.10. A local driver ran the pairs one after another (`local/rig-out/p15/soak.py`; the
+accounts are two, so two pairs cannot run at once).
+
+The path model is new in the runner: `--eth-net …,peerdelay=N,peerjitter=N,peerloss=N`
+delays (frames of the sender), reorders and drops (per thousand) the datagrams between
+runners, each runner doing it to what it sends. It is not the repeatable `--bus` of
+section 7: these runners are not held in step.
+
+| Pair | Slot 1 | Level asked for (and where random "use" took them) | Frames | Path model | Ticks compared | Shared difference | Checksum rounds |
+|---|---|---|---|---|---|---|---|
+| 01 | berserker (class 5), carrying a shaman's skill list | `drunare`; **fight won, `hub2`** | 20,000 | none | 17,104 | none | 71 |
+| 02 | the same | `drunare` | 30,000 | delay 3, jitter 3, loss 5% | 24,124 | none | 100 |
+| 03 | a second warrior (class 0), made in the lobby for this pair: the same-class spin case of 9.4 | `strife` (`blood1`, `hub`) | 20,000 | none | 15,521 | none | 64 |
+| 04 | the same | `drunare` | 30,000 | delay 8, jitter 5, loss 10% | 22,591 | none | 94 |
+| 05 | shaman (class 6), healing skill 86 on its second ability button | `blood1` (`hub` and back, twice) | 30,000 | none | 22,727 | none | 94 |
+| 06 | berserker, five skills of its own tree | `citadel` (`hub` and back, four times) | 20,000 | delay 3, jitter 3, loss 5% | 14,346 | none | 59 |
+| 07 | shaman with the healing skill | `fire1` | 30,000 | delay 8, jitter 5, loss 10% | 23,861 | none | 99 |
+| 09 | shaman with the healing skill | `valor` | 20,000 | none | 17,208 | none | 71 |
+| 10 | berserker, five skills of its own tree | `drunare` | 30,000 | delay 3, jitter 3, loss 5% | 23,591 | none | 98 |
+
+**Nine pairs, 230,000 frames, 181,073 ticks compared: no shared column differs on any
+tick in any pair.** No out-of-sync flag, no checksum failure in 750 rounds, no player
+dropped, nobody returned to the lobby. Five of the nine had the path model on. Every
+character save during play was answered with result 0 (25 to 51 per machine and pair).
+Number 08 was not run; 01 and 02 were meant for the shaman and got the berserker (the
+driver took the first character of the import list), so their slot 1 carried skills of
+another class — a pair like run 6 of 19.10, not a healing pair.
+
+What was and was not exercised: the casts are there (the shaman spent mana in one tick 69
+to 97 times a pair, the warriors 16 to 54 times), with the healing skill on one of the
+shaman's two buttons; how many of those were heals, and how often hit points passed the
+maximum (the case of 17.3), was not counted. Levels were entered by the pending-level
+write; random "use" then took several pairs through level exits and back, which is the
+K1 situation with its section on.
+
+**The lobby connection lost during play** (pair 02, the host, half way: `ethdrop`). The
+game reconnected about 600 frames later (gateway, key exchange) and its next message was a
+character save, 0x5E under the old session id: **result 0** — the server had picked the
+session up — and the saves went on as before. Nothing on the screen,
+no effect on the lockstep game (it does not use the lobby connection). This is the case
+the session pick-up of `FIXES.md` 16 serves, and with the real game it works.
+
+### 20.3 The arena through drundar's own exit, and the fight to its end
+
+One pair (warrior and shaman, fifteen sections, no path model). What a finished
+`drundar` leaves in the quest variables — the three `drun_…` flags and `pillar1on` to
+`pillar8on`, all 1 — was appended to `g_questVars` on both machines in one tick in `hub`
+(eleven name, NUL, value entries after the five the list had; the list was the same on
+both). In `drundar` the list then had sixteen entries, none double, ours all 1: the
+level's `start` found them by name.
+
+`drundar`'s object file has four arena doors, each with a push trigger whose key is the
+script's test "eight switches on", and a trigger zone behind each door; door and zone
+both call the script's `exitzone`, which outside the demo is one call, `newWorld`
+of the arena level.
+
+| Tick (machine A) | What |
+|---|---|
+| 1,988 | in `drundar` (pending-level write from `hub`), slot 0 at the start marker |
+| 2,691 | slot 0's position written, on both machines, to a point 90 units south of the south door. **It did not walk from there**: no stick direction moved it in 10,900 ticks (action state 2 throughout). Not explained — Inferred: a position written into the object leaves it outside what the movement code uses; the players were not tried on foot before the write |
+| 13,606 | position written to a point behind the door, 46 units short of the zone's listed corner |
+| 13,608 | **the level changes to the arena, by the exit zone's script**, on both machines in the same tick |
+| 14,027 | opening cutscene (2 modulo 15), 1,268 ticks |
+| 19,191 | second cutscene, 958 ticks |
+| 25,022 | the opening again, after both players had been put back |
+| 29,979 | the second cutscene again |
+| 33,695 | **closing cutscene, 3,301 ticks** |
+| 36,997 | **`hub2`**, the automatic change, on both machines in the same tick |
+
+42,144 ticks compared to the end of the log: **no shared column differs**; no
+out-of-sync flag, no checksum failure, 99 saves answered 0. So the arena was entered by
+the game's own script from `drundar` with the quest state in place, and fought to the
+boss's death, the closing cutscene and `hub2`, in step — as it was in pair 01 of 20.2
+from the pending-level write. What is not shown is the walk: the level change came from
+the zone, but the player was put at it by a write, not walked through an open door.
+
+### 20.4 A machine that stops in mid-game
+
+In `hub2` after 20.3 the joiner's runner was held with a stop signal (a pulled plug: no
+datagrams, no lobby traffic) for 150 s and then continued.
+
+- **The other machine** stopped advancing when its buffered input ran out, dropped the
+  silent player after the silence time-out, played on alone, and 239 ticks after the drop
+  was **back at the lobby's game list**, logged in, its 0x55 answered — within ten
+  seconds of real time at this speed. No notice on its screen.
+- **The server** timed the silent connection out after its 120 s and kept the session as
+  lost. It took no other part: a started game is no longer known to it.
+- **The stopped machine**, continued, went the same way on its own side (drop, alone,
+  game list), found its lobby connection gone, reconnected, and its first request picked
+  the session up (the server's log says so): result 0 on the list. Its screen had the
+  lost-connection notice over the list, as in 20.1.
+
+Not done: leaving through the pause menu, and a third machine. A third runner needs a
+third account, and the accounts allowed for this work are two.
+
+### 20.5 What the server gets wrong, new in this phase
+
+| # | What | On the wire | Where |
+|---|---|---|---|
+| S6 | A session that is picked up is not put back into its chat room; the game's 0x15 on leaving the lobby is refused | reply `15 00`, tracking number, result 1 | `ResumeSession`, `Source/Game/RealmUserManager.cpp`. The game ignores the result |
+
+Nothing else: in nine soak pairs, the door pair and the tests of 20.1 every reply was
+taken by the game. Not a server matter but worth knowing when reading its fixes: the
+game's own notice makes a picked-up session useless on the game list (20.1), and useful
+in play (20.2).
+
+### 20.6 Not done
+
+- The walk through an open arena door; why a player whose position was written did not
+  move in `drundar`.
+- Counting heals and over-maximum hit points in the soak; more pairs; pairs longer than
+  40,000 frames; pair 08.
+- Leaving through the pause menu; a third machine (needs a third account).
+- Result 7 on its own, without a lost connection before it: the game showed nothing new
+  for it here because its lost-connection notice was already up.
+- Anything on a console or in PCSX2.

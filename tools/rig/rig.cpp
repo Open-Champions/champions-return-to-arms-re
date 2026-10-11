@@ -1209,6 +1209,7 @@ struct Command
 		LOAD,
 		SHOT,
 		IOPDUMP,
+		ETHDROP,
 		DUMP,
 		SHOW,
 		ECHO,
@@ -1947,6 +1948,7 @@ public:
 		if(!m_options.ethNetSpec.empty())
 		{
 			// server=a.b.c.d[,name=host][,guest=a.b.c.d][,udp=port+port]
+			// [,peerdelay=frames][,peerjitter=frames][,peerloss=per thousand][,peerseed=n]
 			for(const auto& part : SplitChar(m_options.ethNetSpec, ','))
 			{
 				auto eq = part.find('=');
@@ -1957,6 +1959,14 @@ public:
 					m_ethGuestIp = ntohl(inet_addr(text.c_str()));
 				else if(key == "name")
 					m_ethName = text;
+				else if(key == "peerdelay")
+					m_ethPeerDelay = static_cast<uint32>(strtoul(text.c_str(), nullptr, 0));
+				else if(key == "peerjitter")
+					m_ethPeerJitter = static_cast<uint32>(strtoul(text.c_str(), nullptr, 0));
+				else if(key == "peerloss")
+					m_ethPeerLoss = static_cast<uint32>(strtoul(text.c_str(), nullptr, 0));
+				else if(key == "peerseed")
+					m_ethPeerRng = 0x9E3779B97F4A7C15ull ^ (strtoull(text.c_str(), nullptr, 0) * 0x100000001B3ull) ^ (m_options.machine == 'B' ? 0x5851F42D4C957F2Dull : 0);
 				else if(key == "udp")
 				{
 					// the server's own UDP ports (default: the lobby's discovery port)
@@ -2647,6 +2657,33 @@ public:
 		// between two local programs on the outside address), and the runner that gets it
 		// shows it to its machine as coming from the shared address (EtherPoll).
 		bool toServer = m_ethServerUdpPorts.count(destPort) != 0;
+		if(!toServer && (m_ethPeerDelay || m_ethPeerJitter || m_ethPeerLoss))
+		{
+			// the path model for datagrams between runners (peerdelay, peerjitter in frames
+			// of this machine, peerloss per thousand): each sender delays and drops its own
+			auto next = [this]() {
+				m_ethPeerRng ^= m_ethPeerRng >> 12;
+				m_ethPeerRng ^= m_ethPeerRng << 25;
+				m_ethPeerRng ^= m_ethPeerRng >> 27;
+				return static_cast<uint32>((m_ethPeerRng * 0x2545F4914F6CDD1Dull) >> 32);
+			};
+			if(m_ethPeerOut++ == 0) printf("[frame %" PRIu64 "] ethernet: first datagram for another runner: port %u -> %s:%u (through the loopback interface, path model on)\n", m_frame, sourcePort, IpText(destIp).c_str(), destPort);
+			if(m_ethPeerLoss && next() % 1000 < m_ethPeerLoss)
+			{
+				m_ethPeerLost++;
+				return;
+			}
+			ETH_HELD held;
+			held.release = m_frame + m_ethPeerDelay + (m_ethPeerJitter ? next() % (m_ethPeerJitter + 1) : 0);
+			held.fd = found->second;
+			held.destPort = destPort;
+			held.data.assign(data, data + length);
+			// kept in order of release: jitter reorders
+			auto at = m_ethPeerQueue.end();
+			while(at != m_ethPeerQueue.begin() && std::prev(at)->release > held.release) --at;
+			m_ethPeerQueue.insert(at, std::move(held));
+			return;
+		}
 		sockaddr_in to = {};
 		to.sin_family = AF_INET;
 		to.sin_addr.s_addr = htonl(toServer ? destIp : INADDR_LOOPBACK);
@@ -2736,7 +2773,8 @@ public:
 			c.sendNext = c.sendBase;
 			c.lastProgress = m_frame;
 			bool connected = false;
-			if(destIp == m_ethServerIp)
+			bool blocked = std::chrono::system_clock::now() < m_ethBlockedUntil;
+			if(destIp == m_ethServerIp && !blocked)
 			{
 				c.fd = socket(AF_INET, SOCK_STREAM, 0);
 				sockaddr_in to = {};
@@ -2746,7 +2784,7 @@ public:
 				connected = c.fd >= 0 && connect(c.fd, reinterpret_cast<sockaddr*>(&to), sizeof(to)) == 0;
 			}
 			printf("[frame %" PRIu64 "] ethernet: TCP %u -> %s:%u %s\n", m_frame, sourcePort, IpText(destIp).c_str(), destPort,
-			       connected ? "connected" : (destIp == m_ethServerIp ? "REFUSED by the host" : "not relayed (only the server's address is)"));
+			       connected ? "connected" : (blocked ? "refused (ethdrop)" : (destIp == m_ethServerIp ? "REFUSED by the host" : "not relayed (only the server's address is)")));
 			if(!connected)
 			{
 				if(c.fd >= 0) close(c.fd);
@@ -2821,9 +2859,36 @@ public:
 		}
 	}
 
+	// 'ethdrop': the server loses this machine, as when a line goes down. The host side of
+	// every relayed TCP connection is shut; the machine is told when it next sends (a
+	// reset). For 'seconds' of real time new connections are refused too, so the machine
+	// can be kept away for longer than a server's time-out.
+	void EtherDrop(double seconds)
+	{
+		int count = 0;
+		for(auto& entry : m_ethTcp)
+		{
+			shutdown(entry.second.fd, SHUT_RDWR);
+			count++;
+		}
+		if(seconds > 0) m_ethBlockedUntil = std::chrono::system_clock::now() + std::chrono::milliseconds(static_cast<int64_t>(seconds * 1000));
+		printf("[frame %" PRIu64 "] ethernet: %d relayed TCP connection(s) dropped on the host side%s\n", m_frame, count, seconds > 0 ? StrFormat("; new ones refused for %.0f s", seconds).c_str() : "");
+	}
+
 	// every vertical blank: bytes and datagrams from the host side become frames
 	void EtherPoll()
 	{
+		// datagrams for another runner that the path model held back
+		while(!m_ethPeerQueue.empty() && m_ethPeerQueue.front().release <= m_frame)
+		{
+			const auto& held = m_ethPeerQueue.front();
+			sockaddr_in to = {};
+			to.sin_family = AF_INET;
+			to.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+			to.sin_port = htons(held.destPort);
+			sendto(held.fd, held.data.data(), held.data.size(), 0, reinterpret_cast<sockaddr*>(&to), sizeof(to));
+			m_ethPeerQueue.pop_front();
+		}
 		uint8 buffer[2048];
 		for(auto& entry : m_ethUdp)
 		{
@@ -3345,7 +3410,7 @@ public:
 		if(m_traceOn) TraceReport();
 		if(m_ethPcap || m_ethNet)
 		{
-			printf("  ethernet: %" PRIu64 " frames sent by the machine, %" PRIu64 " delivered to it; UDP datagrams to the server %" PRIu64 ", from it %" PRIu64 "; to other runners %" PRIu64 ", from them %" PRIu64 "\n", m_ethTxFrames, m_ethRxFrames, m_ethUdpOut, m_ethUdpIn, m_ethPeerOut, m_ethPeerIn);
+			printf("  ethernet: %" PRIu64 " frames sent by the machine, %" PRIu64 " delivered to it; UDP datagrams to the server %" PRIu64 ", from it %" PRIu64 "; to other runners %" PRIu64 " (%" PRIu64 " dropped by the path model), from them %" PRIu64 "\n", m_ethTxFrames, m_ethRxFrames, m_ethUdpOut, m_ethUdpIn, m_ethPeerOut, m_ethPeerLost, m_ethPeerIn);
 			if(m_ethPcap) fclose(m_ethPcap);
 		}
 		if(m_netShimReady) m_netShim.Summary();
@@ -3827,6 +3892,13 @@ private:
 			command.kind = (word == "shot") ? Command::SHOT : Command::IOPDUMP;
 			command.text = tokens[i];
 		}
+		else if(word == "ethdrop")
+		{
+			// ethdrop [seconds]: the relayed TCP connections lose their host side now; with a
+			// number, new connections are refused for that many seconds of real time as well
+			command.kind = Command::ETHDROP;
+			command.number = (tokens.size() > i) ? strtoll(tokens[i].c_str(), nullptr, 0) : 0;
+		}
 		else if(word == "dump")
 		{
 			need(3);
@@ -4089,6 +4161,9 @@ private:
 				printf("[frame %" PRIu64 "] %s %s\n", m_frame, ok ? "picture" : "NO PICTURE (needs --video)", command.text.c_str());
 			}
 			break;
+			case Command::ETHDROP:
+				EtherDrop(static_cast<double>(command.number));
+				break;
 			case Command::IOPDUMP:
 			{
 				FILE* file = fopen(command.text.c_str(), "wb");
@@ -4466,6 +4541,17 @@ private:
 	FILE* m_ethPcap = nullptr;
 	uint64 m_ethTxFrames = 0, m_ethRxFrames = 0, m_ethUdpOut = 0, m_ethUdpIn = 0, m_ethPeerOut = 0, m_ethPeerIn = 0;
 	std::set<uint16> m_ethServerUdpPorts = {10101};
+	struct ETH_HELD
+	{
+		uint64 release = 0;
+		int fd = -1;
+		uint16 destPort = 0;
+		std::vector<uint8> data;
+	};
+	std::deque<ETH_HELD> m_ethPeerQueue;
+	uint32 m_ethPeerDelay = 0, m_ethPeerJitter = 0, m_ethPeerLoss = 0;
+	uint64 m_ethPeerRng = 0x9E3779B97F4A7C15ull, m_ethPeerLost = 0;
+	std::chrono::system_clock::time_point m_ethBlockedUntil;
 	std::chrono::system_clock::time_point m_ethLastBlank;
 	bool m_ethLastBlankSet = false;
 	enum : uint32
@@ -4575,7 +4661,8 @@ static void Usage()
 	    "                         a small network behind the adaptor for the game's own network stack: DHCP,\n"
 	    "                         DNS for one name, TCP and UDP relayed to the server's address only; UDP for\n"
 	    "                         that address on other ports than the server's goes to another runner on\n"
-	    "                         this host through 127.0.0.1 (see README.md)\n"
+	    "                         this host through 127.0.0.1 (see README.md); for those datagrams also\n"
+	    "                         ,peerdelay=<frames>,peerjitter=<frames>,peerloss=<per 1000>,peerseed=<n>\n"
 	    "  --net-shim <a.b.c.d>   claim this address and be ready to replace the game's libnet entry\n"
 	    "                         points; the script command 'netshim' installs the replacements\n"
 	    "  --net-log <file>       log of the shim's calls and of the lobby's short datagrams\n"

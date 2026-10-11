@@ -136,7 +136,7 @@ class Session:
     def move(self, row, column):
         """Walk the cursor to a key, looking where it ended up after every leg."""
         safe = self.keyboard["safe"]
-        for _ in range(8):
+        for _ in range(24):
             at_row, at_column = self.cursor()
             if (at_row, at_column) == (row, column):
                 return
@@ -203,7 +203,7 @@ class Session:
 
 
 def taps(direction, count):
-    return ["tap %s 4 6" % direction] * count
+    return ["tap %s 6 6" % direction] * count
 
 
 def shows(shown, text):
