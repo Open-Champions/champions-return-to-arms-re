@@ -79,7 +79,7 @@ Offsets are from the start of the record. "init" = `player_initNewCharacter` 0x1
 | +0x43d0 | s32 | quest count (0–8); read by prediction and menus | Observed: 0x1d386c. Earlier: Unknown |
 | +0x43d4 | s32 | init −1 | Unknown |
 | +0x43d8 | ptr | the Player object (the prediction copy while predicting) | Known (G3) |
-| +0x43f0 | item*[17] | equipped items by equipment slot (item definition +0x1c). Slot 0 one-hand weapon, 2 two-hand or ranged weapon, 3 shield, 5 and 6 rings, 8 ammunition (+0x4410), 14 and 15 earrings | Observed: `inventory_equipItem` 0x1c27c0; the 17-entry loops in stats and the regen functions |
+| +0x43f0 | item*[17] | equipped items by equipment slot (item definition +0x1c). Slot 0 one-hand weapon, 2 two-hand or ranged weapon, 3 shield, 5 and 6 rings, 8 ammunition (+0x4410), 14 and 15 earrings. Two slots were missing from this list (`docs/spec/game-messages.md` 2, 5.3): slot 1 is the second weapon's slot when dual wielding (executed in equip), and slot 7 is a single slot of item category 2 (Observed in unequip only) | Observed: `inventory_equipItem` 0x1c27c0; the 17-entry loops in stats and the regen functions |
 | +0x4434 | item*[2] | primary weapon of weapon set 0 and set 1 | Observed: 0x1c27c0, `Player_weaponSwapInput` 0x1bb718 |
 | +0x443c | item* | second weapon when dual wielding | Observed: 0x1b6a98 |
 | +0x4440 | ability[15] | ability records, 0x68 bytes each (layout below) | Observed: init loop of 15; import copies 0x618 bytes |

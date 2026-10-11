@@ -1196,7 +1196,12 @@ Class behaviour (0x2e7224, 0x2e74b0, 0x2e7988, 0x2e7acc, 0x2e76c4, all read):
   (flash quad 1 = {0x44, 0x0e, 0x18, 0x0f}) and every other player in `g_alivePlayers`
   within getStat(1, level) × 12 units in 2-D (same team only in PvP mode A); ground
   particles, one own draw each, `level − first + 14` of them where `first` is 1, 10 or 5 for
-  ids 53, 33, 81 — the level at which that id's statistic 1 starts.
+  ids 53, 33, 81 — the level at which that id's statistic 1 starts. Executed, confirmed as
+  written with one addition: the run unlinks its light on every frame once the spell is
+  older than 2.0 s (0x2e7c78) and fades it during the second before. Both the run
+  (0x2e7ecc) and the bonus query below (0x2e7788) read the player object of every
+  alive-list slot without a null test; whether a listed slot can lack an object in the
+  running game is Unknown (proposed ledger row SC11).
 - The bonus is fetched by `damage_apply` (step 18) for a player attacker: for each of the
   ids 33, 53, 81 it calls 0x2e76c4 (unnamed; called `bonusFor` below)
   with that id's Skill object and the attacker's rank in it, and adds the largest result to

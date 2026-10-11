@@ -506,9 +506,9 @@ detail. Payload byte 0 is a sub-type except where noted.
 | 3 / 8 | none | 0x1de25c | starts the mission-exit countdown |
 | 3 / 9 | none | 0x1de430, host only | resets the checksum count |
 | 3 / 10 | slot, two filler bytes, two 32-bit checksums | `net_sendChecksums` 0x1de46c | when all have arrived, a mismatch sets `g_checksumFailed` and drops that slot |
-| 3 / 11 | three filler bytes, level name | 0x1de598 | like 7, also clears the pause-menu flag |
+| 3 / 11 | three filler bytes — the level name is **not** part of the message: it is sent with length 4 (0x1de5cc) and the handler reads the name past the end. Its only caller runs offline; 3 / 7 is the net form (executed, `docs/spec/game-messages.md` section 3, FINDINGS M5) | 0x1de598 | like 7, also clears the pause-menu flag |
 | 3 / 12 | none | 0x1de5ec from the medal scripts | sets 0x4f7140 |
-| 3 / 13 | slot, a | 0x1de0a4 | quick-cast warning |
+| 3 / 13 | slot, a (the ability index) | 0x1de0a4 | quick-cast warning for an ability of kind 1; for any other kind the handler queues the cast — object +0x488 = the ability record — when the action state is 2 (0x1de340; executed, `docs/spec/game-messages.md` section 3) |
 | 4 / 0, 1 | none; slot | 0x1e0108 (unreferenced), 0x1e0134 | nothing — the handler is empty |
 | 5 / 0–10 | see `symbols/ui.tsv` (`invmsg_send*`) | inventory screens | drop, equip, unequip, join panel, weapon class, stat point, skill point, combine, level byte, use potion |
 | 6 | no sub-type: the text-entry buffer at 0x8e8a40, which starts with its own length byte (length + 5 bytes are sent) | 0x31da74 | appends a line to an 8-line log at 0x8e8ac8; text chat, *Inferred* |

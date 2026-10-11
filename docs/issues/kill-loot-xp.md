@@ -25,6 +25,21 @@ the same Play! emulator build on one host — not a PlayStation 2, not PCSX2 —
 level-1 placeholder characters; no kill, drop or experience award was looked at for its
 own sake, and K3–K5 were not exercised.
 
+**Later the same day, with real characters** (`docs/issues/live-rig.md` section 9;
+`FINDINGS.md` rows V17, V20, M1). Two level-25 characters with skills fought the arena
+twelve times with the K1, K2 and LAG-1 patch sections off and twelve times with them on.
+Off, seven of twelve fights diverged, and five of the seven were bag differences of the
+K1 / K2 kind — an item or a potion in one machine's copy of a bag and not in the other's;
+four were still silent when the run ended and one became a seed difference and the game's
+out-of-sync message 96 ticks later. On, those five were gone and three fights still
+diverged, from causes outside this document's chain or at its edge: a summoned pet
+touched by its owner's prediction copy (G25), and **an item that both machines pick up
+in the same tick whose two records differ in one unwritten field** (V20; section 4). So
+"neither explains 'every time' on its own" still holds, but K1 and K2 are not rare in
+this fight: 5 of 12 unpatched (42 %). What the stray K2 drop message removes is settled
+by execution (M1; section K2). The sections include LAG-1, which changes timing, so
+"removed" is shown for the class, not for each pair separately.
+
 Claims are **Observed** (read at the address given), **Inferred** or **Unknown**, and
 **Ran** where the paragraph above applies. Of the patch proposals P1, P2a and P2b have
 been run on that pair and P3 is **untested**; none has been run on a console or in PCSX2.
@@ -47,7 +62,11 @@ button presses within the input delay; neither explains "every time" on its own.
 "Ranked list" and "What to record on two machines". The running game agrees on both
 counts: random input tripped K1 once and K2 once in six `strife` runs, and neither in
 twelve arena runs, one of which had those inputs unpatched (`docs/issues/live-rig.md` 7.3,
-7.5).
+7.5). That was with placeholder characters. With real characters and the two branches
+unpatched, bag differences of the K1 / K2 kind appeared in 5 of 12 arena fights
+(`docs/issues/live-rig.md` 9.3, FINDINGS V17) — not every run, but far from rare. And
+"computed by every machine from shared state" has one exception seen live: the *bytes* of
+a picked-up item's record can differ in a field nothing writes (V20, section 4).
 
 ## Facts the rest depends on
 
@@ -315,7 +334,10 @@ the button the prompt asked for (the slot's use button, or pad bit 0x10),
 slot 14 (0x155020, 0x159b38) calls the helper 0x154dbc (`itemprop_tryPickup` in
 `symbols/killpath.tsv`):
 
-- bag for the item's category already holds 63 items → refuse (sound);
+- bag for the item's category already holds 63 items → refuse (sound). That 63 is the
+  pick-up's own limit; `inventory_giveItem` itself fills a bag to 64 (executed,
+  `docs/spec/game-messages.md` 5.1), which is what a shop purchase or a script gift
+  meets;
 - load limit +0x124 < load +0x120 + item weight → refuse (voice line);
 - else sound, the script hook `*gotItemNotify` (no level defines it), `inventory_giveItem`
   0x1c1868, `player_recalcLoad`; the object then destroys itself directly through slot 1.
@@ -324,6 +346,18 @@ An item whose flag bit 39 is set is given to every player. `inventory_giveItem` 
 an equal item when the stackable flag is set, else appends and stamps the bag index into
 item +0x22, then `player_recalcStats`. Its only network-mode test turns the first-recall help
 box off. **Observed.**
+
+**Ran, 2026-10-10: the same item, different bytes** (`docs/issues/live-rig.md` 9.2, pairs
+402 and 410; FINDINGS V20, I1). In two arena fights with real characters both machines
+added the same item (the same definition, quantity 1) to the same cell of the same bag in
+the same tick, through this path, and the two 0x48-byte records differed in one 16-bit
+field: +0x2e, the value of the second modifier slot, whose id is −1 — unused. One machine
+had 0 there and the other 0x3f80. Silent: no out-of-sync flag to the end of either run.
+Where the dropped item got the differing bytes was not traced (**Inferred**: a field of
+an unused slot that nothing initialises when the loot is made — the unwritten bytes of
+ledger row I1); whether anything later reads the value of an unused slot is **Unknown**
+(the shop's duplicate test and the character checksum are the candidates). It repeats
+exactly, and it is not K1 or K2: it appears with both patched.
 
 **Two players, same item, same frame.** Players run one after the other in run-list order,
 which is shared state. The first to run takes the item and the object is destroyed on the
@@ -397,6 +431,11 @@ stackable potion exactly); a chest opens on the other machines only, and `Chest_
 for any other object whose interact changes shared state. In `drunare` the only
 interactables are dropped items and the exit trigger, so there K1 produces a silent bag
 difference rather than an immediate mismatch. **Inferred** from the Observed gate.
+(**Ran** since for the arena, `docs/issues/live-rig.md` 9.3: with real characters and no
+patches, five of twelve fights showed a bag difference of this kind or K2's. Four stayed
+silent to the end of the run; in the fifth the bags differed at tick 7283, the shared seed
+at 7372 and the out-of-sync flag was set at 7379. So "silent" is the usual case in the
+arena and not a safe one.)
 
 **Ran, 2026-10-10** (`docs/issues/live-rig.md` 7.3, run base4 and `examples/pair-k1.rig`;
 FINDINGS V10). The gate and the one-sided call are confirmed, and the exit case of the
@@ -462,6 +501,20 @@ as the potion button or up to *L − 2* frames after it (*Inferred* from F2). Th
 last byte is the −1 passed in step 1; in `inventory_dropItem` it indexes the owner's local
 item-list arrays (*Inferred* out of range, local memory only).
 
+Settled by execution (`docs/spec/game-messages.md` section 10; FINDINGS M1, K2), which
+corrects step 2 and this verdict in one point each. The cell that step 2 reads is cell
+(0, 0) of the bag-2 grid **of the panel whose number is the owner's slot** (0x1ba3c8), not
+simply "the local item-list copy". For the player in slot 0 that grid is built, and
+"removes one of whatever sits in the first cell of its potion list" holds — on every
+machine, and not necessarily a potion. For slots 1–3 in a net game it does not: a net game
+draws its single panel as panel 0 whatever the local slot, so the other panels' grids are
+never built, and the message names its bag and index through a null pointer — a byte from
+low memory and a stale stamp. With zeroes there the message is {bag 0, record 0}: the
+potions are not touched by it and the first record of bag 0 loses one on every machine.
+The "*Inferred* out of range" is confirmed: the panel byte is −1 and addresses the memory
+in front of the grids, on the owner's machine only. **Unknown**: the low-memory byte on a
+console and on the live rig.
+
 A potion count that differs changes which potion a later press picks, or whether one exists,
 and from there hit points.
 
@@ -489,7 +542,12 @@ P2b on both machines both took the potion at tick 744 and no shared column diffe
 What the scripted run does not show is the message of step 3 removing anything: the three
 logged quantities changed only by the direct removal on the other machine. That fits the
 out-of-range index of the verdict's last sentence better than "removes one of whatever
-sits in the first cell", but it was not followed further.
+sits in the first cell", but it was not followed further. Followed since, and both
+readings were right, each for one slot (the paragraph above the test, M1): the scripted
+run's owner was in slot 1, where the message does not reach the potion bag at all — so
+the potions stayed 2, 2, 2 against 2, 1, 2, as logged — and takes one from the first
+record of bag 0 on both machines if the low-memory byte is zero, which the run did not
+log.
 
 Patches: P2a, P2b (run together on the linked pair; they remove the divergence).
 
@@ -573,6 +631,16 @@ None of these happens on every run. For the arena, the kill → experience → l
 chain can be taken off the list of every-run suspects, with K1 and K2 as the two places where
 a particular sequence of presses breaks it.
 
+**Ran since** (`docs/issues/live-rig.md` section 9; FINDINGS V17, D25): "a particular
+sequence of presses" is common enough in a real fight. With level-25 characters, skills
+and random but plausible input, K1 / K2 caused a divergence in 5 of 12 arena fights of
+about four minutes when unpatched, one of them visible as the out-of-sync message; with
+K1, K2 and LAG-1 patched 3 of 12 still diverged, from other causes (the pet of G25, and
+the stale item bytes of V20, which belong to this chain's pick-up step). Items 1 and 2 of
+the list stay first and second; an eighth item is added below them: **V20**, the same
+picked-up item with different unwritten bytes on two machines — silent, source and
+consequence not traced.
+
 ## What to record on two machines
 
 | Observation | Points to |
@@ -588,7 +656,10 @@ Recorded on 2026-10-10 on two linked instances of the running game
 (`docs/issues/live-rig.md` 7.3): the third row was seen as written (0x41b81c was 1 on the
 owner's machine from tick 2032, one tick before the first shared difference), with the
 new last row as the consequence; the fourth row was seen with no mismatch following in
-the run. Rows 1, 2 and 5 were not seen.
+the run. Rows 1, 2 and 5 were not seen. In the arena runs with real characters
+(`live-rig.md` 9.3) the fourth row — and its sibling for any bag, not only potions — was
+the first difference in five unpatched fights, and in one of them a mismatch did follow,
+96 ticks later.
 
 ## Patch proposals (P1, P2a, P2b run on a linked pair; P3 untested)
 

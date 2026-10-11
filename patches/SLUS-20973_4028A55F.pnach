@@ -204,7 +204,7 @@ patch=1,EE,00257B04,word,080B4660
 patch=1,EE,00257B08,word,00000000
 
 [Net test: creatures ignore being touched by the prediction copy]
-author=reverse engineering test patch; executed in the function-level interpreter; not yet run on the live rig, PCSX2 or a console
+author=reverse engineering test patch; confirmed on two linked Play! emulator instances (FINDINGS V22: the pet pair that diverged stays in step with it); untested on PCSX2 or a console
 description=When a player touches a creature, the creature is flagged and reacts on its next step. The game also does this when the thing touching is your own machine's prediction copy of your character, which runs a few steps ahead and exists on your machine only - so your pet (always next to you), or a monster you bump into, reacts earlier on your machine than on anyone else's. On the live rig this put a summoned pet out of sync in the arena. With this, a creature is flagged only by a real player (Creature touch handler, rewritten in place, 0x11A41C-0x11A440). FINDINGS G25, V18. Changes nothing shared by itself; each machine that uses it is protected, so use it on every machine.
 // was: 30420040 10400006 00000000 DC8200A8 00031B3C 00431025 FC8200A8 03E00008 00000000
 patch=1,EE,0011A41C,word,00021182

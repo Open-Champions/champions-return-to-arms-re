@@ -100,6 +100,11 @@ differences the other items are about:
 
 ## Suggested patch set for a first online test
 
+**Result on the two-machine rig with this whole set on:** none of twelve real-character arena
+fights reached the out-of-sync message, against 7 of 12 with no patches (FINDINGS V21). That
+was the Play! emulator with two character builds; PCSX2, consoles, lobby characters and the
+other classes are untested.
+
 Two of these are now confirmed on the running game: on two emulator instances joined
 together (the Play!-based rig, `docs/issues/live-rig.md`), random input reproduced the K1 and
 K2 desyncs and the K1 and K2 patches removed them; the LAG-1 patch was measured there too. With K1 and K2 fixed, 60 further pairs over 24 levels found no other desync. That was the Play! emulator, not PCSX2 or
@@ -120,7 +125,7 @@ holds for the machines that have it — enable them on every machine:
 | save-point prompt ignores this machine's card screen | B9 |
 | net launch clears a stuck memory-card latch | B10, B11 |
 | predicted spin cast leaves the shared animation alone | two players of the same class using the spin skill — **confirmed live**: 6 of 6 pairs diverged without it, 0 of 6 with it |
-| creatures ignore being touched by the prediction copy | a pet or monster reacting early on its owner's machine (seen live on a summoned pet); the patch itself has only been executed in the interpreter so far |
+| creatures ignore being touched by the prediction copy | a pet or monster reacting early on its owner's machine — **confirmed live**: the pet pair that diverged stays in step with it |
 | prediction copy starts without pending damage | G11–G13, G24 |
 | equalise at once (LAG-1) | input delay staying high after a stall, which is also what widens K1 and K2 — **confirmed live**: peak 11 frames instead of 34, cleared in 10 s instead of 35 |
 

@@ -2,9 +2,10 @@
 
 Status of this document: phase 1 (sections 1–6), phase 2 (section 7: two joined
 machines, the baseline, the arena) phase 3 (section 8: fuzzing at scale, a float
-mismatch between the machines, the lag sections) and phase 4 (section 9: the arena with
+mismatch between the machines, the lag sections) phase 4 (section 9: the arena with
 characters that have levels and skills — which does diverge — and a tested patch
-proposal for the spin skill, SB1). In short: two machines play one lockstep game here;
+proposal for the spin skill, SB1) and phase 5 (section 10: the pet and the item bytes
+traced, and the arena with every section on). In short: two machines play one lockstep game here;
 random input found two real divergences, which are the ledger's K1 and K2, and the test
 patch for each removes it; the arena did **not** go out of sync in twelve runs.
 
@@ -1034,3 +1035,64 @@ twelve words the pose-cache section already uses.
   trial did not run (a mistake in how it was started), and only "no prediction copy" was
   tried by hand, on the pet case.
 - The instruction that first writes each of those two differences.
+
+## 10. Phase 5: the pet, the item bytes, everything on
+
+Same limits as section 7; same twelve real-character pairs as section 9 (seeds 400–411).
+**Ran** unless marked.
+
+### 10.1 The pet (pair 406)
+
+1. **With "creatures ignore being touched by the prediction copy" on both machines the
+   divergence is gone.** It was run inside the all-on set of 10.3 (so the spin section was
+   on as well, which this pair does not use): pair 406 stays in step to the end of the run
+   and wins the fight.
+2. **Who calls the handler with the copy as toucher: `Creature_moveBy` 0x113c48.** On the
+   shipped code (K1, K2, LAG-1 on), a break point at `Creature_onTouch` 0x11a418 logging
+   the toucher's flags (`$a1` +0xc): on machine A, which owns the pet's master, 3,271
+   entries, **164 with flag 0x20000**, every one with return address 0x114228
+   (`Creature_moveBy`+0x5e0, so the call is at 0x114220); the first in tick 7132. On
+   machine B 3,107 entries and none with the flag. This is not the path guarded at
+   0x14d9b0 in `obj_moveWithCollision`. (The caller of `Creature_moveBy` was not
+   captured.) In pair 402 the same break point saw 1,483 entries on each machine and none
+   with the flag: the copy does not always get there.
+3. **Other touch handlers.** Logged the same way in pair 402: `Player_onTouch` 0x1beaf0
+   (4,186 and 4,983 entries) and the gold pick-up touch 0x157a9c (679 on each machine) —
+   none with the copy as toucher; the container, damager and fire handlers were never
+   entered. In pair 406 only `Creature_onTouch` was logged. So the only handler seen firing
+   for the copy is `Creature_onTouch`. Which classes the call at 0x114220 can reach was
+   not worked out from the code; it hands the mover to whatever it touched, so in
+   principle any (**Inferred**).
+
+### 10.2 The item bytes (pairs 402 and 410)
+
+| Question | Answer |
+|---|---|
+| The copy into the bag | `inventory_giveItem` 0x1c1868, called from `itemprop_tryPickup` 0x154dbc (+0x230) in tick 4932. The source record already differs at +0x2e: 0x0000 on machine A, 0x3f80 on B |
+| Where the dropped item was made | the last item parse before it: tick 4741, `item_parseDescriptor` 0x1069b8 called from `loot_spawnNamedItem` 0x100ba0 (+0xa0) |
+| Do the machines' buffers differ there | yes, in general: of 15,952 parser calls made identically on both machines, 3,868 found different bytes already at out +0x2c–0x2f |
+| Is the prediction copy behind it | with "Arena diagnostic: no prediction copy" pair 402 has no shared difference in 13,970 ticks: yes, in the sense that without the copy the leftovers agree |
+| Does zeroing the record first fix it | **no.** A test patch (jump at 0x1069b8 to twelve words at 0x257b0c that clear the 0x48 bytes at `$a1`, run the two displaced instructions and return) on both machines left pairs 402 and 410 diverging in the same ticks. So the differing value is not a leftover of the output record; the parser or its caller writes it from somewhere else that is uninitialised. Not traced further, and **no patch is proposed** |
+| Who reads the bytes | nothing seen. `item_sameIdentityFields` 0x108924 ran 83,823 times in the pair but compares definition, flags and the word at +0x20 (its symbol note). `player_checksum` 0x1bdc98 was never entered, and its decompile reads record offsets 0x20–0x23, 0x58, 0x59, 0x5c, 0x90, 0xc0, 0xc4, 0xe4, 0xe8, 0x3748 and 0x43f0 — not the bags. Neither pair ever raised the out-of-sync flag, in any run |
+
+### 10.3 The arena with every section on
+
+The same twelve pairs, 14,000 frames each:
+
+| Sections on both machines | Ticks compared | Fights won | Diverged | Which |
+|---|---|---|---|---|
+| none (the run of 9.3; not repeated) | 165,225 | 4 | **7** | 402, 403, 404, 405, 406, 409, 410 |
+| K1, K2, LAG-1 (the run of 9.2) | 172,496 | 5 | **3** | 402, 410 (item bytes); 406 (the pet) |
+| K1, K2, LAG-1, spin, touch | 180,701 | 6 | **2** | 402, 410 (item bytes, silent) |
+| the same plus the record-zeroing test of 10.2 | 180,689 | 6 | **2** | 402, 410, unchanged |
+
+With every published section on, no pair reaches the game's out-of-sync flag; the two
+that still differ do so only in the two bytes of 10.2, which nothing was seen to read.
+The baseline asked for (six pairs with everything off) was taken from the twelve of 9.3,
+which are the same seeds, states and script.
+
+### 10.4 Not done
+
+The caller of `Creature_moveBy` in the copy's path; a static list of the classes
+reachable from 0x114220; the real source of the item value; the touch section on pair
+406 without the spin section.

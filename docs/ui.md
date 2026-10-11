@@ -57,14 +57,14 @@ tick. First byte = message type. Four channels belong to this area.
 
 | Type | Bytes after the type | Handler | Meaning |
 |---|---|---|---|
-| 0 | slot, u16, item index u32, u16, bag, 2 bytes | `inventory_dropItem` 0x1c4310 | drop to the ground |
+| 0 | slot, s16 column, u32 item index, s16 row, bag, panel, mode — 13 bytes with the type (executed, `docs/spec/game-messages.md` section 2; the earlier version had "slot, u16, item index u32, u16, bag, 2 bytes" without names: the two 16-bit fields are the grid column and row of the sender's screen, the two last bytes the panel and the mode) | `inventory_dropItem` 0x1c4310 | drop to the ground (mode 0), sold (1, the shop handler's tail) or silent (2 and up: the used gem, and the K2 potion) |
 | 1 | flag, slot u16, item address u32 | `inventory_equipItem` 0x1c27c0 | equip |
 | 2 | 0, slot u16, item address u32 | `inventory_unequipItem` 0x1c2f20 | unequip |
 | 4 | panel, slot, levelUp | `inventory_onJoinPanel` 0x1c0360 | a player takes an inventory panel. Sent only when a second local player takes an idle panel (0x1c01f4, 0x1c021c; `docs/issues/kill-loot-xp.md`) |
 | 5 | slot, weapon class | inline | sets record +0x4a86, recalculates |
 | 6 | slot, stat u16 | `inventory_onStatPoint` 0x1c2548 | spend a stat point (0–3), free raise (4–7), add a skill point (8) |
 | 7 | slot, a, 0, value u32 | `inventory_onSkillPoint` 0x1c2648 | spend skill points |
-| 8 | slot, 3 × u32 | `inventory_combineGems` 0x1ceeb8 | workshop combine |
+| 8 | slot, 3 × u32: bag, descriptor address, item address (executed) | `inventory_combineGems` 0x1ceeb8 | workshop combine |
 | 9 | slot, level | inline | record +0x58 = level acknowledged |
 | 10 | slot, 4 × u16 | `Player_usePotion` | potion. Has no sender: the only function that builds it, 0x1c55e0, is unreferenced (`docs/issues/kill-loot-xp.md` K2) |
 
@@ -75,8 +75,8 @@ is static, so the address is the same on every machine as long as the inventorie
 
 | Type | Bytes | Meaning |
 |---|---|---|
-| 0 | slot, 0 u16, **address of a record in the sender's stock table** | buy → `shop_buy` 0x1d1240 |
-| 1 | slot, u16, item index u32, u16, bag, 2 bytes | sell: adds a value computed from the item price and stack count to gold (0 for some item kinds), then `inventory_dropItem` with the same arguments as inventory message 0 |
+| 0 | slot, 0 u16, **address of a record in the sender's stock table** — the *last* record of the three stock lists that is the same item as the chosen grid copy; nothing is sent when the copy matches none (executed, `docs/spec/game-messages.md` section 4) | buy → `shop_buy` 0x1d1240 |
+| 1 | slot, s16 column, u32 item index, s16 row, bag, panel, mode (as inventory message 0, with mode 1) | sell: adds a value computed from the item price and stack count to gold (0 for some item kinds), then `inventory_dropItem` with the same arguments as inventory message 0 |
 
 ### Game ("HUD") channel (id at `g_netGameConn` 0x86ac40, handler `hud_onMsg` 0x1d8ca0)
 
@@ -89,12 +89,12 @@ is static, so the address is the same on every machine as long as the inventorie
 | 4 | `hudmsg_sendPlayerLeft` 0x1de16c | "player left" message; kills that player's object |
 | 5 | `hudmsg_sendSavepoint` 0x1de1a0 | passes the 32-bit value in the message to `Savepoint_startSavedEffect` 0x28cdc4 as an object address (see P8) |
 | 6 | `hudmsg_sendDisconnectRequest` 0x1de1e0 | remote player asks to leave; revive someone if he was the only one alive; `net_disconnectPlayer` |
-| 7 | `hudmsg_sendNewWorld` 0x1d9250 | pending level name ← string; closes the pause menu; `g_paused = 0`. Sent only from the pause menu's level-warp list (call at 0x18dd5c), whose menu entry is hidden unless `g_debugCheats` is set (`docs/issues/sync-breakers.md` section 7) |
+| 7 | `hudmsg_sendNewWorld` 0x1d9250 | pending level name ← string; closes the pause menu; `g_paused = 0`. Sent only from the pause menu's level-warp list (call at 0x18dd5c), whose menu entry is hidden unless `g_debugCheats` is set (`docs/issues/sync-breakers.md` section 7). It is the net-game form of the pair: the list calls this sender only in a net game and the sender of message 11 only offline (0x18dd4c, 0x18dd6c; executed) |
 | 8 | `hudmsg_sendExitCountdown` 0x1de25c | exit countdown 0x4f694a = 240 (1 offline) |
 | 9, 10 | 0x1de430, `net_sendChecksums` | character checksum exchange |
-| 11 | `hudmsg_sendLoadLevel` 0x1de598 | 0x18cb80: pending level ← string, `g_paused = 0`. Same single sender as message 7, the level-warp list (call at 0x18dd70). The normal pause menu (table 0x44f3b8) has no save entry; its comparison with `menu_savegame` at 0x18d92c can never match |
+| 11 | `hudmsg_sendLoadLevel` 0x1de598 | 0x18cb80: pending level ← string, `g_paused = 0`. Same single sender as message 7, the level-warp list (call at 0x18dd70). Executed (`docs/spec/game-messages.md` section 3, FINDINGS M5): the message is sent with **length 4** — the type and three zero bytes; the sender copies the name into its buffer behind them but leaves it out of the length (0x1de5c0–0x1de5d4), so the name is not on the wire and the handler reads it past the message. That works because the only call is made offline, where the handler runs on the sender's own buffer; in a net game the handler would read whatever earlier messages left in the tick's buffer, and the game never sends it there. The normal pause menu (table 0x44f3b8) has no save entry; its comparison with `menu_savegame` at 0x18d92c can never match |
 | 12 | `hudmsg_sendMedalAck` 0x1de5ec | sets 0x4f7140 |
-| 13 | `hudmsg_sendQuickCastWarn` 0x1de0a4 | HUD text |
+| 13 | `hudmsg_sendQuickCastWarn` 0x1de0a4 | HUD text — for an ability of kind 1 only. Executed (handler 0x1de340): with no cast queued (object +0x488 = 0), kind 1 shows the warning text to the owner; any other kind is **queued**, object +0x488 = the address of the ability record, when the object's action state +0x58c is 2 (0x1de39c–0x1de3d8). So the message is how a quick-cast reaches the simulation, not just a warning; there is no test for a null object |
 
 ### Null channel (id at 0x86aa60)
 
@@ -183,7 +183,11 @@ list by price. Price level comes from the quest variable `storeLevel` and the di
 Buying: `itemList_input` → `shopmsg_sendBuy` sends the stock record's address;
 `shop_onMsg` → `shop_buy` reads the record at that address, charges price × 0.6 (0.45 for
 one item class, 1.0 for flagged items) if the player has the gold, and calls
-`inventory_giveItem`.
+`inventory_giveItem`. The gold is taken whether or not the item is received (executed,
+FINDINGS M3): the new gold is stored in the delay slot of the call and the call's result
+is not looked at (0x1d1308–0x1d130c), so with a full bag — a bag holds 64 records — or
+with one of the two single-copy items already held, the price is paid and nothing
+arrives. The same on every machine.
 
 ### Character sheet
 

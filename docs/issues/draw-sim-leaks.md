@@ -20,6 +20,20 @@ out of sync. D26 was tried once and is not settled. U1, U2, U3 and everything el
 were not exercised. Twelve arena runs between the two instances stayed in sync, which
 bears on "Ranking".
 
+**Later the same day** (`docs/issues/live-rig.md` sections 8 and 9; `FINDINGS.md` rows
+V14–V20). Those twelve arena runs used placeholder characters without skills. With two
+level-25 characters with skills, **K1 / K2 produced a divergence in 5 of 12 arena fights
+when unpatched** — bag differences, four still silent at the end of the run and one
+followed 96 ticks later by the out-of-sync message — and none of those five with the K1,
+K2 and LAG-1 sections on. Three of twelve diverged even then, from two causes that are
+not of this document's kind (a creature touched by the prediction copy, G25; unwritten
+bytes of a picked-up item, V20). With K1 and K2 patched, 60 pairs of random play over 24
+levels with placeholder characters found nothing else (V14); that input reached the pause
+menu, inventory, shop, potions and casts but never the options commit (U1) or the mission
+menu (U2). The lag that widens the windows was measured: after a 30-frame outage the lead
+went from 6 to 34 and took about 35 s to drain (V16). And what the K2 drop message removes
+is settled by execution (M1). "Ranking" has the details.
+
 Claims are **Observed** (read at the address given), **Inferred** or **Unknown**, and
 **Ran** where that result applies. Of the patch proposals P1, P2a and P2b have been run
 on that pair and do what they are for; P5 was run once as a control for K1; the rest are
@@ -300,6 +314,16 @@ offline test) and `Player_draw`.
   owner's did not, and each flagged the other within four ticks. That case is missing
   from the line above, which knew only items and chests. P1 removed the K1 divergence and
   P2a + P2b the K2 one; P5 in place of P1 did not, so K1 is this gate and not the lockout.
+- **Ran in the arena with real characters** (`docs/issues/live-rig.md` 9.3): unpatched,
+  five of twelve fights had a bag difference of this kind as their first difference; in
+  one the shared seed differed 89 ticks later and the out-of-sync flag was set 96 ticks
+  after the bags. So in DRUNARE the "silent" of the line above is the usual course, not
+  the only one.
+- **What the K2 message itself removes** is settled by execution (FINDINGS M1,
+  `docs/spec/game-messages.md` section 10): for the player in slot 0, one of whatever is
+  in the first cell of the potion bag, on every machine; for slots 1–3 in a net game the
+  message is built from a grid that was never set up and does not touch the potions.
+  Either way the machines end one potion apart.
 
 ### D26 and U3 — the lockout inside a tick
 
@@ -418,6 +442,19 @@ sync for 68,685 ticks; one of them (run 11, delay 4, jitter 2) had the D-pad and
 inventory button in its unpatched input and tripped neither K1 nor K2, while two of six
 runs in `strife` did (`docs/issues/live-rig.md` 7.3, 7.5).
 
+That paragraph is about placeholder characters, and its "neither is needed for, nor
+produced by, a fight as such" did not survive real ones (`docs/issues/live-rig.md` 9.2,
+9.3; FINDINGS V17). Twenty-four more arena fights, between two level-25 characters with
+skills: with the K1, K2 and LAG-1 sections off, 7 of 12 diverged, 5 of them by a bag
+difference of the K1 / K2 kind; with the sections on, 3 of 12, none of them of that kind.
+So items 1 and 2 of the list are produced by an ordinary skilled fight about four times
+in ten, and the order of the list is confirmed in the sense that nothing else on it was
+seen at all. (The sections include LAG-1, which moves when input is sampled, so "removed"
+is established for the class and not for each pair.) The three that remain belong to no
+item of this list: the summoned pet reacting to its owner's prediction copy (FINDINGS
+G25, V18) and the unwritten bytes of a picked-up item (V20, twice) — the first is the
+prediction copy reaching a shared object, the second is neither screen code nor input.
+
 **Inferred, and the main thing this pass adds to the arena question:** K1 and K2 are one
 sample wide at the minimum lead and half a second wide at a lead of 35. A boss fight is where
 a stall is most likely, and a stall leaves the lead high for 15–30 s. A run that goes out of
@@ -444,6 +481,24 @@ players; what it shows is that an arena fight between two machines that compute
 identically does not go out of sync by itself. The observation named above is still the
 one that would decide, and it now has a tool: the rig's tick log carries a checksum of
 each bag and both frame counters.
+
+**Corrected by the later runs of the same day** (`docs/issues/live-rig.md` 8.4, 9.2, 9.3).
+Three statements of the paragraph above no longer hold. (1) "With the mechanism available
+and unpatched the arena stayed in sync … no run needed them to explain anything" was true
+of placeholder characters only: with real characters five of twelve unpatched fights
+diverged by K1 / K2, and the observation asked for — bags of one player differing before
+the message — is what the log shows, in one case with the message following. (2) "An
+arena fight between two machines that compute identically does not go out of sync by
+itself": it does, in 3 of 12 fights with K1 and K2 patched, by the pet and by the stale
+item bytes. (3) "The stall … cannot happen on the rig at all": an outage can be imposed on
+the bus. With nothing crossing for 30 frames at bus delay 2, the lead went from 6 to a
+peak of 34 and was still 8 after 30–35 s; with LAG-1 on both machines it peaked at 11 and
+was back to 6 within 10 s (FINDINGS V16, the L11 and L12 predictions). What is still not
+run is the combination itself — an arena fight *during* such a high-lead stretch — and
+no pair of those runs had a bus delay above 4 (six had none, six had delay 4 with jitter
+3 and 5 % loss), so K1 and K2 did not need the 35-frame lead of a stall to occur 5 times
+in 12 (the lead itself was not reported per pair). "A large lead plus K2" is therefore not required to explain
+frequent arena desyncs; a large lead can only make K1 and K2 more frequent still.
 
 ## Patch proposals (P1, P2a, P2b run on a linked pair; the rest untested)
 
@@ -537,4 +592,11 @@ stores are what keeps a closing press from acting.
 - Whether K2 at a large lead is the arena's "every time": needs two running copies. Two
   now exist (`docs/issues/live-rig.md` section 7) and the question is still open: K2 is
   confirmed, the arena stayed in sync in twelve runs, and no arena run combined a large
-  lead with the inventory button ("Ranking", last paragraph).
+  lead with the inventory button ("Ranking", last paragraph). Changed by the runs with
+  real characters (`live-rig.md` section 9): K1 / K2 broke 5 of 12 unpatched arena fights
+  at bus delays of 0 and 4, and three other fights broke without K1 or K2, so the answer to
+  "every time" is several causes that each bite some of the time (FINDINGS D25), not one
+  cause at a large lead. Still not run: a fight during a high-lead stretch.
+- U1 and U2 on the running game: the random input of the unattended runs never reached
+  the options commit or the mission menu (`live-rig.md` 8.2), and D26, E9, B9 and K3 need
+  a menu walked by script (8.5).
