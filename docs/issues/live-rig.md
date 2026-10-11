@@ -17,7 +17,10 @@ its section, the route grid compared between machines, pair 410 with and without
 item-record section) and phase 10 (section 15: D26's mechanism shown in the death tick, and
 its weapon-swap section; no shared difference produced) and phase 11 (section 16: live
 reproductions with and without their sections for D26 — both halves —, E9, U2 and K3, and
-the one-sided route-grid test). In short: two machines play one lockstep game here;
+the one-sided route-grid test) and phase 12 (section 17: a soak of 120 long real-character
+pairs, 5.1 million ticks, with thirteen fix sections on; one class of divergence left — a
+heal that passes the maximum, clamped on one machine by the stats page — and the stored
+weapon damage still differing with the K3 section on). In short: two machines play one lockstep game here;
 random input found two real divergences, which are the ledger's K1 and K2, and the test
 patch for each removes it; the arena did **not** go out of sync in twelve runs.
 
@@ -1987,3 +1990,287 @@ Not done in this phase:
 - The route grid: a real search whose result is changed by a copy's marks.
 - Nothing here is a console or PCSX2 result; two identical Play! instances show logic
   differences only.
+
+## 17. Phase 12: a long soak with every section on
+
+The developer LAN pair again; limits as in section 7: two copies of one Play! build — not a
+PlayStation 2 and not PCSX2 — so only logic differences can show; characters built by
+writes, seeded random input. **Ran** unless marked. The question was what still diverges
+when every fix section is on and the pairs are long: ten to twenty minutes of play each
+instead of one to four.
+
+### 17.1 What was run
+
+**Sections on both machines, thirteen:** the ten of `FIXES` in `tools/rig/fuzz.py` (K1, K2,
+K3, the two lockout sections, the notice box, LAG-1, the spin, the touch, the script
+return) plus "item records start from zero, not from stack leftovers", "option commit
+leaves the button maps alone" and "route search always clears the previous search's
+marks". `FIXES` itself was not edited. Not on: the two U2 menu sections, the save-point
+section, "skeleton queries rebuild inside the tick" and the other "Net test" sections.
+
+**Driver.** A local wrapper around `rig.py pair` in the manner of `fuzz.py`
+(`local/rig-out/soak12.py`, not in the repository): one pair per job, the two tick logs
+compared as a stream, a divergent pair run again to its first difference, per class one
+run per remaining "Net test" section and one with "Arena diagnostic: no prediction copy",
+and a memory diff at the first differing tick. A machine that has dropped the other ends
+the pair. Besides the launcher's columns the tick log compared the cutscene flag, the
+pending level, a checksum of the first 512 bytes of the quest variables, the pending
+post-action name, each player's weapon set (+0x4a7c), the jump-gate travel counter and
+menu state and the mission-menu state; and, counted on their own (17.4), each player's
+stored attack rating and weapon damage (+0xcc, 12 bytes).
+
+**Builds, six, 20 pairs each.** All level 25 with the statistics of 9.1.
+
+| Build | States | Slot 0 / slot 1 | Skills at rank 10 (first two on the ability buttons) |
+|---|---|---|---|
+| c0+c6 | `run4` | class 0 / class 6 | `examples/pair-chars.rig` (9.1): 41, 76, 77, 78 / 89, 87, 88, 90, 94 |
+| c0+c0 | `run5` | class 0 / class 0 | `examples/pair-chars-same.rig` (9.4): the spin on both |
+| c1+c4 | new, lobby models 4 and 6 | class 1 / class 4 | five per player, taken in rotation from the class's skill-tree rows (section 11); a different five in each pair |
+| c3+c5 | new, lobby models 2 and 10 | class 3 / class 5 | the same way |
+| c2+c2 | `run6-8` | class 2 / class 2 | the same way |
+| c6+c6 | `run6-11` | class 6 / class 6 (two pets) | the same way |
+
+The two new start states were made as in 9.1 (both words of the model table written
+before the confirm). In half the pairs mana was set to 500 on both machines every 300
+ticks; in two thirds both players got 50,000 gold at tick 680; in half the pairs of the
+four new builds every passive byte was 5 (as in section 11). Every pair enters its level
+through a level load at tick 700, before any input: the load is where the game recomputes
+maximum hit points and mana from the written statistics, on both machines in one tick
+(seen: 900 written at tick 680, the class's own values from tick 701).
+
+**Levels, lengths, input, bus.** 48 pairs start in the arena (`drunare`, walk into the
+trigger, unskipped opening); 72 start in 23 other levels, two to four pairs each
+(`strife`, `hub`, `hub2`, `drundar`, `blood1`, `bastion1`, `citadel`, `valor`, `storm1`,
+`fire1`, `nit1`, `wat1`, `islc1`, `torment0`, `swamp1`, `fay1`, `honor`, `shame1`,
+`inmine1`, `dis2`, `airarena`, `boar1`, `arachna1`). 40 pairs each of 30,000, 45,000 and
+60,000 frames of random input. Three input mixes, 40 pairs each: everything (sticks,
+attack, abilities, block, weapon swap, both potions, use, D-pad, inventory button, pause
+button, stick buttons); the same without the right stick and the stick buttons; the same
+without the pause button. Bus: none in 57 pairs; delay 4, jitter 3, loss 5% in 29; delay
+10, jitter 6, loss 10% in 28; and six pairs with one outage of 60, 90 or 120 frames in
+the middle (two of each), on delay 2 or on delay 4, jitter 3, loss 5%.
+
+### 17.2 Totals
+
+| | |
+|---|---|
+| Pairs run / planned | 120 / 120, 4.2 hours of wall time, seven pairs at a time |
+| Frames of random input planned | 5,400,000 |
+| Ticks compared | **5,109,338** |
+| Pairs with a shared difference | 9: **7 in one class (17.3)**; 2 are the pause menu's kick |
+| Pairs in which the game set its own out-of-sync flag | 1 (pair 033, 17.3) |
+| Pairs with no usable log, a time-out or a stuck machine | 0 |
+
+| Build | Pairs | Ticks | Divergent |
+|---|---|---|---|
+| c0+c6 | 20 | 867,369 | 0 |
+| c0+c0 (spin) | 20 | 760,159 | 0 |
+| c1+c4 | 20 | 941,940 | 3 |
+| c3+c5 | 20 | 784,661 | 1 |
+| c2+c2 | 20 | 804,293 | 0 |
+| c6+c6 | 20 | 950,916 | 3 |
+
+| Split | Pairs / ticks / divergent |
+|---|---|
+| start in the arena; elsewhere | 48 / 2,049,832 / 5; 72 / 3,059,506 / 2 |
+| 30,000; 45,000; 60,000 frames | 40 / 1,147,663 / 0; 40 / 1,712,091 / 4; 40 / 2,249,584 / 3 |
+| bus none; delay 4, jitter 3, loss 5%; delay 10, jitter 6, loss 10%; the six outage pairs | 57 / 2,358,999 / 2; 29 / 1,285,519 / 3; 28 / 1,199,266 / 1; 6 / 265,554 / 1 |
+| input mix 1; 2; 3 | 40 / 1,676,074 / 3; 40 / 1,740,978 / 2; 40 / 1,692,286 / 2 |
+
+What the pairs did (machine A's log, and entries counted by quiet break points on both
+machines together):
+
+| | |
+|---|---|
+| levels seen | 27: the 24 above and `valor2`, `fay3`, `inmine2`, reached by the players |
+| level changes after the first entry | 810, every one in the same tick on both machines |
+| ticks in `drunare`; `hub`; `hub2` | 1,443,933; 845,607; 585,224 |
+| arena entries; arena left for `hub2` (fight won) | 126 (48 at the start of a pair, 78 later, without any write by the rig); 18 |
+| ticks with the cutscene flag up | 161,640 |
+| deaths (hit points to zero), slot 0; slot 1 | 223; 254 |
+| `Player_castSkill`; `Player_usePotion` | 71,638; 401,330 |
+| pause menu opened; `config_commitOptions` entered | 13,725 in the 80 pairs whose mix has the button; 2,312 in 77 pairs |
+| inventory opened; inventory messages applied; equips | 23,531; 77,648; 3,988 |
+| stats or skill page drawn (`stats_screen`) | 227,786 entries, in all 120 pairs |
+| `shop_openOrStock` | 1,016, in 113 pairs |
+| `game_loadLevel`; `save_game` | 2,435; 2,486 |
+| mission menu task; jump-gate menu opened | 620 entries in 3 pairs; 6 in 1 pair |
+
+No pair differed in the quest variables, the pending post action, the pending level, the
+weapon set, the button maps, the bags, the statistics, the equipment, the ability records
+or the mission-menu and jump-gate columns. All six outage pairs came through their outage
+in step.
+
+**What stopped a pair early.** Two kicks: machine B's random input chose the pause menu's
+kick entry (pair 012 at tick 55113, pair 073 at tick 27789; B's pause menu open in the
+ticks before, as in 8.2). One leave: machine A left through its pause menu (pair 093,
+dropped by B at tick 32166, twelve ticks after A's pause menu closed; no difference
+before it). One real desync (pair 033, below). Five more pairs compared fewer than 85% of
+their frames as ticks with no drop and no difference: by their level columns the players
+went back and forth between two neighbouring levels many times, and no ticks pass while
+a level loads (**Inferred**; the longest gap between two ticks was 413 frames).
+
+### 17.3 The class that is left: a heal passes the maximum, and one machine's stats page clamps it
+
+All seven divergent pairs are one class: the first shared column to differ is a player's
+hit points (record +0xac; 0x4d8b9c for slot 0, 0x4dd7cc for slot 1), nothing else in that
+tick. The four that were run again repeated at the same tick.
+
+| Pair | Build, start level | First tick | Column | Machine A / B at that tick | Maximum | Ticks differing | Then |
+|---|---|---|---|---|---|---|---|
+| 107 | c6+c6, arena | 4505 | slot 0 | 711.745 / **709.0** | 709.0 | 1,602 | equal again |
+| 044 | c1+c4, arena | 9433 | slot 0 | 775.675 / **770.0** | 770.0 | 768 | equal again |
+| 032 | c1+c4, arena | 13910 | slot 0 | **770.0** / 773.813 | 770.0 | 581 | equal again at tick 17070, when both had regenerated to the maximum |
+| 035 | c6+c6, arena | 32437 | slot 0 | 713.713 / **709.0** | 709.0 | 765 | equal again |
+| 038 | c1+c4, `strife` (then in `blood1`) | 33182 | slot 0 | 775.042 / **770.0** | 770.0 | 2 | equal again |
+| 033 | c3+c5, arena | 38127 | slot 0 | 776.171 / **772.5** | 772.5 | 6,928, to the end | **seed, position and action state at tick 45050; the game's out-of-sync flag at 45052; the pair ends at 45054** |
+| 101 | c6+c6, `arachna1` | 30869 | slot 1 | **709.0** / 713.247 | 709.0 | 4,679, to the end of the pair | still differing when the pair ended |
+
+In every case one machine holds exactly the player's maximum and the other a value a few
+points above it.
+
+**What writes the two values** (`--predict-trace` on the hit-point and maximum words,
+watched everywhere, pairs 032 and 033, both machines):
+
+1. *In the tick, on both machines alike,* a healing effect takes the hit points over the
+   maximum. Pair 032: `SpellHealing_run` 0x2e90b8 (writing block 0x2e92bc, from
+   `Creature_updateSpells` ← `Player_updateCast` ← `Player_run`), five writes in ticks
+   13905–13909, the last to 773.813 against a maximum of 770.0. Pair 033:
+   `SpellMinorHealing_run` (writing block 0x2e0578), four writes in ticks 38118–38121, the
+   last to 776.171 against 772.5. The code of the first (**Observed**, 0x2e9294–0x2e92c8):
+   it tests "hit points + 1.0 ≤ maximum" before the step and then adds a per-tick amount
+   (read from +0x1c of the object it holds in `$s1`) with no upper bound, so a step may
+   end up to the amount less one above the maximum (the amounts here were about 7.0 and
+   5.4). The second function's code was not read.
+2. *Outside the players' run, on one machine only,* `player_recalcStats` 0x1b6458 (writing
+   block 0x1b6a38) sets the hit points to the maximum: 773.813 → 770.0 on machine A in
+   tick 13910 (pair 032), 776.171 → 772.5 on machine B in tick 38127 (pair 033). Its call
+   chain both times is `stats_screen` ← `itemList_draw` ← `itemList_update` ←
+   `inventory_runPanel` ← `inventory_runTask`: the stats or skill page of the machine
+   whose inventory is open. The other machine has no such write. The recompute is for
+   every player on that machine, so it need not be the healed player's own machine (pair
+   032: slot 0 healed, machine A — slot 1's — clamped).
+
+This is ledger row K4's path. K4 calls the recompute idempotent (**Inferred** there); it
+is not while a player's hit points are above the maximum, and a healing skill puts them
+there in ordinary play. The healing skills are ids 55 and 86 (`SpellHealing`) and 50
+(`SpellMinorHealing`); 27 of the 120 pairs had one of them in a build, and the seven
+divergent pairs are among those 27 (1,282,920 ticks). **The 93 pairs without a healing
+skill: 3,826,418 ticks, no shared difference.** Potions, of which there were 401,330
+presses, never produced the case.
+
+**From silent to out of sync (pair 033).** Hit points are not in the game's hash, so the
+difference is silent. It lasted 6,923 ticks, between 1.1 and 4.2 points. In tick 45050 a
+hit left slot 0 with 2.394 hit points on machine A and none on machine B, where the
+player died (action state 4 against 2); the shared seed differed in that tick, both
+machines raised the out-of-sync flag at tick 45052, and machine B dropped its peer at
+45054. That is a complete route from this class to the game's out-of-sync message, in the
+arena, with every section on.
+
+**The section trial.** On pair 107, run to 400 frames past its first difference once per
+remaining "Net test" section (lag sections excepted) and once without the prediction copy:
+only "skeleton queries rebuild inside the tick" left the pair without a difference, and
+"no prediction copy" did not. That section moves the coincidence, it does not remove the
+cause: with it on for whole pairs, pairs 107 (46,086 ticks) and 032 (60,769 ticks) show
+nothing, and pair 044 shows the same thing at another tick — slot 0 at 775.818 on both
+machines for the ticks up to 9959, and 734.457 against 728.638 in tick 9960, a hit taken
+from the unclamped value on one machine and from 770.0 on the other. No section in the
+patch file is aimed at this class.
+
+### 17.4 The stored weapon damage still differs with the K3 section on
+
+The three words K3 is about (record +0xcc, +0xd0, +0xd4; 0x4d8bbc for slot 0) differed
+between the machines in **39 of the 120 pairs: 2,872 ticks in 81 stretches, the longest
+695 ticks**, always equal again afterwards. Of the 2,872 ticks, 1,855 fell while the
+player's own machine had its inventory or pause menu open, 225 while only the other
+machine had one open, and 792 with neither — the tail after closing. No other shared
+column followed from it in any pair, and no out-of-sync flag.
+
+Traced on one pair (a 10,000-frame test pair of the c0+c6 build, both machines):
+
+| Tick | What happened to slot 0 (machine B's player) |
+|---|---|
+| 3448 | machine B opens its inventory |
+| 3522 | an equipment change is applied in the tick, on both machines alike (the equipment checksum changes on both); the stored values stay 559 / 58 / 62 on both, because the per-tick recompute at the end of `Player_weaponSwapInput` is not run for a player whose menu is open (16.4) |
+| 3549–3561 | machine B is on the stats page: `Player_recalcDamage` 0x1b7158, called from `stats_screen`, writes 550 / 51 / 52 — on machine B only, 13 times |
+| 3562 | machine B closes the menu |
+| 3572 | `Player_recalcDamage` from `Player_weaponSwapInput` ← `Player_run` writes 550 / 51 / 52 on both machines |
+
+So the section "stats page does not rewrite stored weapon damage" removes the stats
+page's off-hand call (0x1d2d30) and leaves its first call (0x1d2c38, 16.4), and that call
+still writes the record on the owner's machine alone. The two machines agree only as long
+as nothing has changed the right value since the menu was opened; an equipment change made
+in that same menu does. That is the one case traced; whether the other stretches are
+equipment changes too, or a timed effect starting or ending while the menu is open, was
+not looked at. The largest differences seen were an attack rating of 963 against 557
+(pair 059) and a damage range of 156–180 against 68–74 (pair 116). The readers are the
+ones K3 lists (a projectile or thrown-weapon skill of that player still in flight); none
+was seen to turn this into another difference in these pairs.
+
+### 17.5 Three things found on the way that were the rig's doing
+
+They are recorded because each shows a real mechanism and a rule for later rig work.
+
+- **Mana written above the maximum.** A first version refilled mana to 900 every 300
+  ticks, above every class's maximum. In two of six test pairs the two machines then
+  differed in mana: the machine with its inventory open clamped to the maximum (in the
+  tick of a refill in one pair, 290 ticks after one in the other), the other kept 900
+  until the next recompute inside a tick. This is the same K4 clamp as
+  17.3, reached by a write instead of a heal. The soak refilled to 500, below every
+  class's maximum (580.5 is the lowest).
+- **A pending-level write with a menu open.** A first version sent pairs on to further
+  levels by writing the pending level mid-run. One of six test pairs then lost a machine:
+  machine B dropped A at tick 9573, six ticks after a level change that took machine A
+  3,561 frames and machine B 1,171 (about 250 is usual). Traced with break points on the
+  lump functions: machine A's inventory was open across an earlier level change made by
+  the write; after it a resource lookup loaded a second copy of the inventory's interface
+  lump at another address (`res_find` → `lump_load`) — the level's clearing had taken
+  the panel's own copy out of the lump list (**Inferred**); from then on each open
+  registered the panel's copy
+  (`inventory_pollResources` → `lump_register`) while each close unloaded whichever copy
+  `lump_load` found first, and one registration was left behind; at the next level
+  change `lump_unloadUpToLevel` (from `game_clearLevel`) released it from memory that had
+  been reused, `lump_releaseEntry` handed `libc_strrchr` pointers such as 0x08000000, and
+  the machine spent 2,389 frames in that scan (PC histogram) — on a console more likely
+  a crash than a wait (**Inferred**). Machine B came out of the level change 2,390 frames
+  earlier, ran six ticks and dropped A; A dropped B eight ticks after it came back. It
+  repeated exactly. This is taken to be the rig's doing: the script built-ins that change
+  level — `script_newWorld` 0x143dd0, `script_simpleNewWorld`, `script_newWorldParameter`
+  — and `game_openMissionMenu` are all among the callers of `net_closeLocalMenus`
+  0x1eb000 (**Observed**; the order inside them was not read), and the write skips them.
+  Whether any game path changes level without closing local menus was not looked for.
+  It does show, live, what `docs/netcode.md` gives as inferred: a machine whose level
+  load is more than about 900 frames slower than the other's is dropped. Rule: write the
+  pending level only before input starts (tick 700 here).
+- **Statistics written without a level load after them.** Maximum hit points and mana
+  written at tick 680 stay as written until the next recompute; the level load at tick
+  700 is what makes them the game's own on both machines in one tick. A pair that stayed
+  in `strife` would not get that, so every pair here loads its level, `strife` included.
+
+### 17.6 For the ledger, and what is not done
+
+Proposed rows and changes, for whoever edits `FINDINGS.md` (this document does not):
+
+| Row | What to record |
+|---|---|
+| new | Soak with thirteen sections on: 120 real-character pairs of 30,000–60,000 frames, six builds, 27 levels, 5,109,338 ticks; the only shared divergence left is the K4 clamp after a heal (7 of the 27 pairs with a healing skill; none in the 93 others, 3,826,418 ticks) |
+| K4 | Not idempotent: `SpellHealing_run` and `SpellMinorHealing_run` leave hit points above the maximum (test before the step, no bound after it, 0x2e9294–0x2e92c8), and the stats page's `player_recalcStats` then sets them to the maximum on the machine whose inventory is open, for every player on that machine (writing block 0x1b6a38). Silent until it decides a death: pair 033 went from the clamp at tick 38127 to the game's out-of-sync flag at tick 45052. Ran, traced on two pairs |
+| K3 | The section removes one of the stats page's two calls. The other (0x1d2c38) still writes the stored attack rating and damage on the owner's machine only, and differs from the other machine's after an equipment change made with the menu open: 39 of 120 pairs, 2,872 ticks. No reader seen |
+| netcode, level change | The drop of a machine that loads about 900 frames slower than the other: seen (with a cause made by the rig) |
+
+Not done:
+
+- The code of `SpellMinorHealing_run`; other effects that add to hit points or mana
+  without a bound (only the two that the soak ran into were traced); whether mana can pass
+  its maximum the same way.
+- Which page of the inventory makes the recompute (a machine with its inventory open did
+  not always clamp at once), and K4's other callers.
+- A reader for the differing stored damage.
+- The U2 menu sections, the save-point section and "skeleton queries rebuild inside the
+  tick" were not on. The mission menu ran in 3 pairs and the jump-gate menu opened in 1,
+  without a difference.
+- Levels were entered by the pending-level write; the door from `drundar` with its quest
+  state was not used. Characters have written levels and skills, starting items and what
+  they picked up or bought.
+- Three or four machines; anything on a console or PCSX2. Two identical Play! instances
+  show logic differences only.
