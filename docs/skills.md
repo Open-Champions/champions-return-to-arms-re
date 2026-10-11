@@ -59,7 +59,7 @@ Blunt at 0x16b2cc and Slashing at 0x16b35c, and use the base statistics function
 | +0x0e | s16[5] | tier 1: first level at which statistic *i* exists | base slot 10 at 0x3c85fc |
 | +0x18 | s16[5] | tier 1: value of statistic *i* at that level | same |
 | +0x24 | float[5] | tier 1: increase per further level | same |
-| +0x38 | s16[5] | tier 2: first level; 0xffff means "no tier 2 for this statistic, use tier 1" | constructors write 0xffff; base slot 11 at 0x3c8690 |
+| +0x38 | s16[5] | tier 2: first level; 0xffff means "no tier 2 for this statistic, use tier 1". Executed: the test is the sign — any negative first level means "use tier 1" (`bltz` at 0x3c86d8); the constructors store −1, so nothing changes for the shipped tables | constructors write 0xffff; base slot 11 at 0x3c8690 |
 | +0x42 | s16[5] | tier 2: value at that level | same |
 | +0x4c | float[5] | tier 2: increase per level | same |
 | +0x60 | ptr | virtual table | |
@@ -82,10 +82,10 @@ statistic 0 is the main amount (damage, percentage) and statistic 4 is the mana 
 | 2 | cast | (level, caster, pos*, facing) → Spell* or 0 | 0x1a42b8; monster run functions; e.g. 0x2cb1c0 |
 | 3 | — | base returns 0; no class overrides it; no caller found | 0x3c8248 |
 | 4 | describeRank | (text buffer, level): formats "<name>_rankdesc" with statistic values; the skill menu calls it for the current and the next level | 0x1d4660; e.g. 0x2cb264 |
-| 5 | manaCost | (level) → float. Either a literal a + b × (level − 1), or slot 15, or 0 for passives | 0x1a42b8; e.g. 0x2cb33c, 0x2c3f28 |
+| 5 | manaCost | (level) → float. Either a literal a + b × (level − 1), or slot 15, or 0 for passives. Executed: "0 for passives" holds for Dodge's own function only (0x2e8a88); the default 0x3c82a8, which the other passives and Riposte use, returns **1.0** — as the id table's "base (1.0)" has it. Nothing asks a passive for its cost | 0x1a42b8; e.g. 0x2cb33c, 0x2c3f28 |
 | 6 | describeExtra | (text buffer) → 1 if it wrote a description. Only SkillResurrect overrides (different text for one player) | 0x1d4660; 0x312500 |
 | 7 | getIcon | looks up "ic<name>.tex" in icons.lmp | 0x3c82c0, 0x3ccfb0 (all outside this range) |
-| 8 | getStatRange | (spread, stat, level, randomise, int* lo, int* hi): slot 10 value ∓ spread, each at least 1; with randomise set each bound advances the shared generator twice | base 0x3c82e4; used by describeRank with randomise 0, e.g. 0x2c3df8 |
+| 8 | getStatRange | (spread, stat, level, randomise, int* lo, int* hi): slot 10 value ∓ spread, each at least 1; with randomise set each bound advances the shared generator twice — executed: only the second draw of each pair sets the bound; the first only chooses the direction of the rounding, through the sign of the value it would give (0x3c8354–0x3c840c) | base 0x3c82e4; used by describeRank with randomise 0, e.g. 0x2c3df8 |
 | 9 | initStats | fills the tables at +0x0e…+0x5f. The base version writes first level 0, value 1 and step 2.0 for all five tier-1 statistics (0x3c85b0–0x3c85f0); the earlier version said it zeroes tier 1. Called once for every id by `skills_callVslot9All` 0x1ebca0, from `game_initCamera` 0x1e6b68 (call at 0x1e6bac), from `main` (call at 0x323e48); the earlier version said the caller was not found | e.g. 0x2cb14c; base 0x3c85b0 |
 | 10 | getStat | (stat, level) → int, tier 1 | base 0x3c85fc |
 | 11 | getStatTier2 | (stat, level, cap) → int; level is clamped to cap when cap > 0; tier 2 if present else tier 1 | base 0x3c8690 |
@@ -110,6 +110,13 @@ Slots 8 and 10–15 are never overridden; only 1, 2, 4, 5, 6, 7 and 9 are.
 
 The base constructor is inlined in every subclass constructor, so **constructing any Spell
 draws once from the shared generator**, just as constructing a GameObject does.
+
+One thing the per-class part hides (executed, `docs/spec/skills-01-34-executed.md` section
+3, row 10): the light fields that the constructors of `FireStorm` (+0x70, +0x78; 0x2d41f8
+and 0x2d4048) and `SpellUndeadShield` (+0x40, +0x48; 0x2ea4d8) leave behind hold
+0x7fffffff. They are computed at run time as 1 / (0 × 0), which this FPU answers with its
+largest number; the decompile shows the IEEE infinity 0x7f800000 as a constant there, and a
+rebuild that copies that constant differs in those four words. Presentation only.
 
 | Slot | Name | Called from | Notes |
 |---|---|---|---|
@@ -182,7 +189,10 @@ else. For the three copy-castable ids that is what the code does: SpellCyclone_c
 their notice, target gathering and light-effect allocation (Observed). One exception found
 since: `SpellCyclone_ctor` writes event slot 0 of the shared spin clip's header (0x2d1978,
 0x2d197c) *before* its copy test at 0x2d19c4, so the copy's cast does leave a trace there
-(finding S1 in `docs/spec/skills-35-68.md` section 4).
+(finding S1 in `docs/spec/skills-35-68.md` section 4). Executed, and seen on the running
+game: two players of the same class who both use the spin go out of sync (6 of 6 linked
+pairs), and moving the two stores behind a copy test removes it (0 of 6) — FINDINGS SB1,
+V19; `docs/issues/live-rig.md` 9.4.
 
 Passive skills are not cast; other code asks them for a number (see "helpers" below).
 

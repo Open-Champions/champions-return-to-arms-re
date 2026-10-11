@@ -75,7 +75,11 @@ chosen by whether the caster is a player).
 Observed in every one of the 14 run functions read by hand; the script found the same call
 set in 68–72 of the 73.
 
-1. optional: update the embedded weapon helper through its own table (object at +0x50);
+1. optional: update the embedded weapon helper through its own table (object at +0x50).
+   It is the first step only in some classes: `Horsemen_run` does it first (holder slot 21),
+   `Zek_run` after the activity test of step 4, and `Skelight_run` after step 4 as well and
+   through a different slot (22, with an item model) — executed,
+   `docs/spec/arena-monsters.md` 3.3, 4.3, 5.3;
 2. `Creature_processDamage` (0x110d30) with (this, model) — creature damage reaction (creatures area);
 3. `Creature_run(this, model)`; a non-zero result ends the function (not in every class:
    `NPC_run` 0x29ea40 ignores the result, and `NPC_run` and `GnomeNavigator_run` do not call
@@ -119,7 +123,7 @@ English names are **Inferred** from them.
 | State | Behaviour seen | Evidence |
 |---|---|---|
 | 0 | idle; look for a target (base call at offset 0xcc); leave to 3 with a target, to 1 when outside the leash | Cazic 0x24aaf0, Horsemen 0x27236c, Skelight 0x2a8b84 |
-| 1 | walk back / wander (0x119f38) | same |
+| 1 | walk back / wander (0x119f38). Leaving it on sight of the target is per class: the skeleton and Zek go to 3, a knight (`Horsemen`) goes to **0** and starts the chase a tick later (0x27236c case 1; executed, `docs/spec/arena-monsters.md` 3.3) | same |
 | 3 | chase; chooses an attack state when in range | same |
 | 5 | between attacks: waits for timer A (+0x314), chooses the next attack | same |
 | 6 … 0xf, 0x15 … | class-specific attacks and casts | see catalogue and section 4 |
@@ -164,7 +168,7 @@ Offsets into any creature-derived object. "How" names where the use was read.
 | +0xe8 | u32 | model variant bits: each set bit applies one variant record of the model, which shows some meshes and hides others (the earlier version called it a mask of hidden parts). +0x220 (u64) is the mask computed from it by `model_buildHideMask` (0x179550); despite that name the result is a *show* mask — a set bit draws the mesh (`docs/formats/model-texture.md`) | Horsemen ctor, SpiderQueen_takeDamage 0x2aed60 |
 | +0xec | s32 | frame number from which hits register (`+0xec <= g_frame` in 0x15153c and 0x1ba940); every constructor here stores the current frame counter 0x44fdcc. Caution added later: 0x15153c and 0x1ba940 are `MissileWeapon_run` and `playerProjectile_run` and test the missile's own +0xec, so only the constructor store is established for creatures; `docs/creatures.md` lists creature +0xec as Unknown | ctor of every monster |
 | +0xf0 | s32 | start frame of a timed effect; read by `Creature_run` 0x113768 in the status-counter-7 branch | field search |
-| +0xf4 | s32 | class timer (Skelight: attack frames left; Horsemen: idle until age) | Skelight_run 0x2a8b84, Horsemen_run 0x27236c |
+| +0xf4 | s32 | class timer (Skelight: attack frames left — in fact the constant 1, taken off once the swing clip has stopped, `docs/spec/arena-monsters.md` 4.3; Horsemen: idle until age) | Skelight_run 0x2a8b84, Horsemen_run 0x27236c |
 | +0x104 | Vec3 | wander destination | `Creature_moveToDest` (0x119f38) |
 | +0x114 | struct | animation controller; byte +0x118 is the number of queued animations, u16 +0x11a flags: 0x8 "still playing", 0x10, 0x80 "ended" | tests after every attack state |
 | +0x228 / +0x22c | float | hit points / maximum | 0x24c564, 0x2b93d8 |
@@ -465,16 +469,28 @@ variants (+0x470). `UndeadKnight1–4` are created without a mount; `Rider*` get
   mount's position and facing every frame, re-links itself in the world grid (0x14f028),
   and takes over the mount's target (0x2723c4–0x272490).
 - State 3 (chase): target within 36 units → 5; a second 36-unit test with a 6000 arc and
-  `Creature_isTargetCharging` (0x118f90) true → 8; target within 400 units and `Creature_countAlliesNearTarget` (0x119258) (36 units) positive → 5. Then
+  `Creature_isTargetCharging` (0x118f90) true → 8 (as coded that helper is true for a target
+  moving faster than 100 whose facing agrees with the bearing from the knight **to** it — a
+  target facing away, not one running at the knight; 0x118fb0–0x118fe8, executed,
+  `docs/spec/arena-monsters.md` 2.3); target within 400 units and `Creature_countAlliesNearTarget` (0x119258) (36 units) positive → 5. Then
   the skill: variants 0–2, once `age > +0x474`, go to state 0x17 when an enemy is within
   400 units in a 6000 arc; **variant 3 goes to 0x17 whenever SummonSkeleton's "can cast"
   test passes, without looking at +0x474** (0x2726a0–0x27271c). Otherwise keep chasing.
 - State 5: while timer A runs, a target within 36 units → 6. With timer A clear and the target within 36 units, two draws from the knight's
   own generator choose between states 10, 7 and 6; with the target within 72 units in a
   narrow arc → 0xb; otherwise one own-generator draw in 60 per frame returns to chase.
+  Executed (`docs/spec/arena-monsters.md` 3.3): the choice is "first draw odd **and**
+  `creature_isBlockedBy` true → 10; otherwise a second draw, odd → 6, even → 7" (so one or
+  two draws, not always two); and the "one in 60" return to chase also needs
+  `Creature_countAlliesNearTarget(36)` to be zero — with an ally near the target the knight
+  stays.
 - States 6, 7, 10, 0xb: melee swing; on the hit event a full-damage arc test (flag 8 plus
   the weapon helper's value), on event bit 1 a second test with a third of the damage.
-  State 8: single heavy swing (flags 0x40008).
+  The two are alternatives on one tick, not a pair (executed, `docs/spec/arena-monsters.md`
+  3.3, 14): the constructor's event table gives bit 1 to exactly one clip, state 10's, and
+  that clip has no bit-0 event. So state 10 is the one-third hit — flags 0x100001, no
+  weapon descriptor, the divisions truncating — and nothing else, and 6, 7 and 0xb are
+  two, three and three full hits. State 8: single heavy swing (flags 0x40008).
 - **State 0x17 (cast)** on the hit event: variant 0 casts skill 4 DiseaseBolt from chest
   height; variant 1 casts skill 7 FireStorm at the target's position; variant 2 casts
   skill 87 TagarsInsects on itself and links the spell; variant 3 casts skill 11
@@ -484,6 +500,15 @@ variants (+0x470). `UndeadKnight1–4` are created without a mount; `Rider*` get
   0x14 of the set-state looks up the summoned skeleton by name for variant 3 and, if it
   is still in the world, sends it to state 0x14 in the same tick (0x273260–0x2732ac), and
   drops both held weapon parts (FINDINGS K8, `docs/issues/kill-loot-xp.md`).
+- Two properties of `Horsemen_setState` that no earlier document had (executed,
+  `docs/spec/arena-monsters.md` 3.4). A **mounted** knight (mount handle +0x3c8 set)
+  returns for every request below 0x19 — 0x14 included, so the set-state cannot kill it
+  while it rides — after `Creature_filterState` has run and creature flag 0x200 has been
+  cleared (0x272f4c head). And a request for a state the class has no case for (2, 4, 9,
+  0xc–0xf, 0x15, 0x16, 0x24 and up) runs a nested set-state 3 and then stores the
+  **requested** number as the state; the next run turns it into set-state 0.
+  `Skelight_setState` and `Zek_setState` store 0 for such a request (Zek's without
+  touching the animation).
 - All randomness is the knight's own generator. No global, camera, pad, audio or timer
   read in run, setState or draw. Draw calls `Creature_draw` and then the weapon helper's
   draw (table offset 0x94), neither in this area.
@@ -546,6 +571,15 @@ enters state 0x17. State 0x17 calls `fx_spawn(7, position)` every frame until th
 animation ends. State 3 chases; 6 is the only attack (48-unit arc, flag 8, +0xf4 counts the
 swing down). setState 0x14 clears the static 0x8e4560, spawns an effect and queues the
 object for deletion. No per-machine read in run, setState or draw.
+
+Executed since (`docs/spec/arena-monsters.md` 4.3, 4.4, 14), and differing from the shared
+table of 1.4 in four places: state 0x13 leaves to **0**, not 3; a set-state 0x12 is ignored
+(the skeleton has no hit reaction, the state stays what it was); states 2, 4, 7–0xf, 0x11,
+0x15 and 0x16 have no case in the run function — a skeleton put in one stays there — and
+the set-state turns a request for any of them into state 0; and "+0xf4 counts the swing
+down" is one step, not a count of frames: set-state 6 stores 1, and the decrement happens
+only on a tick on which the clip is no longer playing, so the state ends on the first such
+tick.
 
 `fx_spawn` (0x1ef270, gameplay area) returns early when the position is not near the local
 camera, except for effect type 5 — the only type that draws from the shared generator and

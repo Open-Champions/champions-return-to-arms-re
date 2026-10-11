@@ -54,7 +54,7 @@ slots; the Creature bodies are listed here. Small bodies were emitted inline at
 | 2 | 0x116638 | take damage (amount, attacker, flags) | Observed |
 | 3 | 0x11a5f0 | trigger: named creature runs its `dialogScript` | Observed |
 | 4, 5 | stubs | run, draw (overridden by every real class) | Observed |
-| 6 | 0x11a418 | touched: a player touching sets cflag bit 59 | Observed |
+| 6 | 0x11a418 | touched: a player touching sets cflag bit 59. The only test is the toucher's player flag 0x40, which the prediction copy carries too, so a creature touched by a machine's own copy is flagged on that machine only (FINDINGS G25; seen on the running game on a summoned pet, V18) | Observed; the divergence Ran |
 | 7 | 0x11a260 | path search finished (found) | Observed |
 | 8 / 9 | 0x116920 / 0x116780 | load / save state in a level record | Observed |
 | 10, 11, 12 | empty | hit terrain / touched objects / nearby event | Observed |
@@ -318,7 +318,12 @@ wrappers on the target (0x118cb0–0x118d90), slot 25. All are arc + range + one
 ray (0x18a5c0).
 
 **Predicates on the target**: attacking me 0x118e90, blocking 0x118f08, charging 0x118f90,
-running away 0x119038, knocked down 0x1190e8, allies near it 0x119258.
+running away 0x119038, knocked down 0x1190e8, allies near it 0x119258. "Charging" as coded
+(`Creature_isTargetCharging`; executed, `docs/spec/arena-monsters.md` 2.3) is: the target's
+last move velocity (+0x308, +0x30c) is above 100, and the target's facing lies within
+±0x3ffe of the bearing from the creature **to** the target (0x118fb0–0x118fe8) — which is a
+fast target facing *away* from the creature, not one running at it. The classes that use
+it answer a true result with a heavier swing.
 
 **Moving**: `Creature_moveBy` 0x113c48 (the collision step), `Creature_moveTo` 0x114510
 (path following with stuck recovery), `Creature_moveToDirect` 0x1155e0,

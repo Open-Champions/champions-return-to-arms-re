@@ -340,7 +340,9 @@ Statistic values were compared under both arithmetics for this document, for eve
 statistic of ids 35–68 and of the ids that share their classes (31, 32, 33, 81, 84, 85, 86):
 **tier 1 (player casters, ranks 1–20) gives the same integers either way.** Tier 2 (other
 casters, levels 1–40) differs in eleven places, all where a step of 0.1 or 0.35 lands on a
-half; the truncating result is one lower:
+half; the truncating result is one lower. (Executed since, `docs/spec/skills-35-68-executed.md`
+section 3: the original code run under the console arithmetic gives exactly these eleven,
+and both rows of the timer table above hold for every N tried.)
 
 | Id | Statistic (tier 2) | Levels | Round to nearest | Round toward zero |
 |---|---|---|---|---|
@@ -530,7 +532,7 @@ Two corrections to the working notes this section was started from, both **Obser
 | kind (skill +0x08) | 8 | constructors 0x2d5ec0, 0x2d6c20, 0x2d865c, 0x2d98e8, 0x2daafc |
 | flags (skill +0x04) | 0, so the prediction copy never casts | same; test at 0x1a4320-0x1a4340 |
 | recast (skill +0x0c) | 30, but never effective for a player (S.4 step 13) | constructors; 0x1a917c |
-| canUse (slot 1) | caster without object flag 0x40: 1. Player: 1 when record +0x4a86 (weapon animation class) is 4 (bow); otherwise a HUD message for 180 frames on that player's slot and 0 | 0x2d5fc4, 0x2d6d40, 0x2d877c, 0x2d9a18, 0x2dac30 (identical bodies apart from the text key) |
+| canUse (slot 1) | caster without object flag 0x40: 1. Player: 1 when record +0x4a86 (weapon animation class) is 4 (bow); otherwise a HUD message for 180 frames on that player's slot and 0 | 0x2d5fc4, 0x2d6d40, 0x2d877c, 0x2d9a18, 0x2dac30 (identical bodies apart from the text key — executed: the keys handed to `text_lookup` are 0x54f278, 0x54f360, 0x54f448, 0x54f550, 0x54f648 for ids 43–47, and nothing else differs between the five) |
 | manaCost (slot 5) | forwards to slot 15 with (level, 20): `(float) getStat(4, level)` (tier 1, statistic 4) | 0x2d6204, 0x2d6f80, 0x2da130 identical; 0x2d8a30 and 0x2dae80 see their sections |
 | cast (slot 2) return value | always 0 (no Spell); the effect is a free-standing projectile object | 0x2d60e8, and the same tail in each cast |
 | slot 14 `adjustLevel` | base implementation 0x3c88dc (returns the level unchanged) in all six classes; the second argument each cast passes (20, 20, 1, 20, 9 for ids 43-47) therefore has no effect | virtual tables 0x518e70, 0x518f88, 0x5190a0, 0x5191b8, 0x5192d0 |
@@ -2716,7 +2718,10 @@ else:                                                  # spinning
     if spell.remaining <= 0.071992 (0x3d93708a):        # start the wind-down
         top track of P: life = 1.0, life rate = -0.8333333 (0xbf555554)
         clip2 = res_find(P's animation table, "cyclone2.anm");  spell.clip = clip2
-        clip2.event1.mask (clip2+0x28) = 4;  clip2.event1.time (clip2+0x24) = 0.166995 s (0x3e2b00bc)
+        clip2.event2.mask (clip2+0x28) = 4;  clip2.event2.time (clip2+0x24) = 0.166995 s (0x3e2b00bc)
+                                                       # executed: the offsets were right, the name was not - slot k is
+                                                       # at +0x14 + 8k, so +0x24 / +0x28 is event slot 2 (the earlier
+                                                       # version wrote event1); stores 0x2d1d04, 0x2d1d0c
         anim_startBlendInOut(0.0, 0.225999 (0x3e676c48), P anim state, clip2, flags 0x32)
         same call on ghost's animation state when ghost != 0
         spell.phase = 1
@@ -2864,6 +2869,14 @@ the two animation clips; the HUD notice from canUse.
   can come up to one clip length late, so the spin ends on a different frame than on the
   other machines. **Observed** stores; the shared-clip condition is **Inferred** (two
   players with the same character model resolve the same resource); not tested.
+  Tested since, twice. **Executed** (`docs/spec/skills-35-68-executed.md` section 4,
+  FINDINGS SB1): the two stores run for a copy caster before the test at 0x2d19d0, the
+  reader is `anim_advance` (0x16d874, 0x16d898), and a copy's cast in between moved the
+  end of another same-class player's spin in 9 of 9 cases. **Ran**
+  (`docs/issues/live-rig.md` 9.4, FINDINGS V19): two linked machines with two players of
+  one class who both spin diverged in 6 of 6 pairs, within about 100–500 ticks; with a
+  twelve-word patch that puts the two stores behind a copy test of their own, 0 of 6
+  over 36,761 ticks.
 - Even without prediction, two spinning players who share the clip push the same event slot;
   that interaction is the same on every machine.
 - The other constructor writes that reach the copy (state 6, the pushed track, the light) are
@@ -3051,7 +3064,11 @@ Inside `SpellHarmTouch_applyToHit`:
    and the spell stays armed (but the caller has still added flag 0x200000 to that hit).
 3. Otherwise:
    - 102 times: one private draw (model sample point of the target, modulo the point count),
-     one more private draw whose value is discarded, two particles. 204 draws.
+     one more private draw whose value is discarded, two particles. 204 draws. Executed:
+     the point count is not tested before the division, so a model without sample points
+     is a divide by zero (the pattern of 0x3086b8 in section 62; the R5900 does not trap
+     and the index is then undefined). Whether any model has no sample points is disc
+     data, not examined.
    - A `LightEffect` (0xbc bytes) at the target position + (0, 0, 73), first three colour
      arguments (83, 218, 73): a GameObject, so one shared draw in its constructor (skipped if the allocation fails).
    - d = `getStatFor(0, L, owner, 10)`.
@@ -3220,12 +3237,16 @@ reciprocal-square-root instruction (0x2d6638) and the two multiplications in tha
 age (+0x68) += 1
 r = obj_moveAndCollide(this, velocity)          # may call onHit, S.7
 if r & 1:            end(this, 1)               # terrain
-elif age >= 601:     end(this, 0)               # lifetime 600 moving frames
+elif age >= 601:     end(this, 0)               # lifetime: executed - the test follows the move (move 0x2d66f8,
+                                                # test 0x2d6724), so an arrow that meets nothing has moved 601
+                                                # times when run 601 ends it (the earlier version said 600)
 else:                smoke puff (presentation); light position = pos; light_relink
 ```
 
 An overlap that onHit rejects (bit 1 of r) does not stop the arrow. Range on flat ground
 without a hit: 600 x speed / 60 = 10 x speed: 3950 units at rank 1, 8210 at rank 20.
+Executed: the range is 601 steps, one sixtieth of the speed more than these figures; the
+same holds for the arrows of sections 44, 45 and 47, whose runs have the same order.
 
 **onHit** 0x2d685c (this, other), called from inside `obj_moveAndCollide` for every
 overlapping object (**Observed**):
@@ -3392,7 +3413,8 @@ effective recast.
 **Run** 0x2d73c8 while +0x60 == 0: age += 1; `obj_moveAndCollide`; terrain: end(1); age >=
 601: end(0); otherwise the light follows and 8 particles are emitted (7 + 1), each using two
 points in the unit ball by rejection from the **own** generator (3 own draws per attempt).
-Range 10 x speed: 4980 units at rank 1, 6040 at rank 20.
+Range 10 x speed: 4980 units at rank 1, 6040 at rank 20 (executed: 601 moves, so one step
+more — see section 43).
 
 **onHit** 0x2d7aac (this, other), **Observed**:
 
@@ -3538,7 +3560,8 @@ above. One shared draw (`Projectile_ctor`).
 
 **Run** 0x2d8e80 while +0x60 == 0: age += 1; `obj_moveAndCollide`; terrain: end(1); age >=
 601: end(0); otherwise light follows and 46 particles (two unit-ball rejections from the own
-generator each). Range 10 x speed: 3660 units at rank 1, 9500 at rank 20.
+generator each). Range 10 x speed: 3660 units at rank 1, 9500 at rank 20 (executed: 601
+moves, so one step more — see section 43).
 
 **onHit** 0x2d932c (this, other), **Observed**:
 
@@ -3999,7 +4022,8 @@ Properties that follow, **Observed**:
   made on them; `damage_apply` handles a non-creature victim by one shared draw and a direct
   take-damage call. The arrow itself is not excluded from the loop.
 - A silent expiry (600 frames) does not explode. Range: 10 x speed = 4170 units at rank 1,
-  6610 at rank 20.
+  6610 at rank 20. Executed: the arrow has moved 601 times when run 601 removes it, so the
+  expiry is after 601 moving frames and the range one step more (see section 43).
 
 Field layout of `ExplodeArrowProjectile` (0x74 bytes):
 
@@ -4363,7 +4387,9 @@ Shared generator:
 
 Private generator (presentation only): every run before the swing event calls
 `SpellBash_windupFx`: 203 × (one draw for a model sample point, then three draws repeated
-until the vector lies inside the unit sphere).
+until the vector lies inside the unit sphere). Executed: the sample-point index is the draw
+modulo the model's point count with no test of the count — a divide by zero for a model
+without sample points (see section 62).
 
 #### Presentation only
 
@@ -5255,7 +5281,9 @@ state switch that performed the cast, and the countdown stands still while the o
    itself (slot 1 with argument 3) and returns. With the truncating single-precision
    arithmetic of the console's floating-point unit (Inferred: hardware property, not read from
    this executable) a duration of D seconds ends in run call number 60 x D for every D from 8
-   to 13; with round-to-nearest arithmetic the counts are 480, 540, 600, 660, 721, 781. The
+   to 13; with round-to-nearest arithmetic the counts are 480, 540, 600, 660, 721, 781.
+   Executed (0x2e7acc): the truncating variant is the one the code gives — 480, 540, 600,
+   660, **720, 780** for 8 to 13 s. The
    destructor 0x3cef88 destroys the light node and clears the handle list; it does not release
    the particle group.
 2. Tint the owner (presentation, but it is a write to a creature): owner s16 +0x90 = 68,
@@ -5518,7 +5546,9 @@ else:
 
 Lifetime in run calls (single-precision accumulation, simulated): the destroying call is the
 600th for 10 s, 660th for 11 s, 721st for 12 s, 781st for 13 s, 841st for 14 s, 901st for
-15 s. The shield works for every hit taken before that call.
+15 s. The shield works for every hit taken before that call. Executed (0x2e8428): the first
+two are the round-to-nearest figures; the code gives the **601st and 661st**, that is
+60 N + 1 for every N from 10 to 20 (601, 661, 721 … 1201), as section 1.8 already had it.
 
 **What the shield does to incoming hits.** The only reader of the spell from outside is
 `Player_takeDamage` (Player slot 2, 0x1b5330; amount in f12, this, attacker, flags), which
@@ -5541,7 +5571,8 @@ pending damage (+0xc8) += amount;  pending flags (+0x2dc) |= flags;  ...
 `SpellHolyShield_absorb(S)` 0x2e8534 (proposed name), in order (Observed):
 
 1. 241 particles on random sample points of the owner's model (private generator; see
-   Random draws).
+   Random draws). Executed: the index divides by the model's point count without testing
+   it (see section 62).
 2. If S+0x1c ≤ 0.0: allocate 0xbc and construct a `LightEffect` at owner position + (0, 0,
    60.0) with float arguments 64.0, 64.0, 125.0 and (on the stack) 120.0, 60.0, 0.5,
    0.263001978 — **one shared draw** in `GameObject_ctor` (none if the allocation fails).
@@ -7248,7 +7279,12 @@ skipped entirely in action states 6 and 10. Observed.
    radius 120 falling to 36, duration 0.5 s. **One shared draw.**
 3. 25 particles (definition 0x8e7368): each takes one draw of the third generator 0x404468
    (index = draw mod n of a model sample point) and three cosmetic draws per attempt of a
-   rejection loop for a direction (speed 10).
+   rejection loop for a direction (speed 10). Executed: n, from step 1, is not tested —
+   for a model without sample points the `div` at 0x3086b8 has a zero divisor. The R5900
+   does not trap; the index is then undefined. The same pattern is in
+   `SpellHarmTouch_applyToHit` (section 42), `SpellHolyShield_absorb` (54) and
+   `SpellBash_windupFx` (49). Whether any player model has no sample points is disc data,
+   not examined.
 4. Allocate 0x3d8 bytes; when that succeeded `StrongStancePhantom_ctor(obj, player, animName,
    force, 0)`. **One shared draw** (the GameObject constructor inside `Creature_ctor`; the
    Creature constructor and its statistics helper draw nothing).
@@ -8779,10 +8815,10 @@ F + k - 1, F being the cast frame, provided the caster's hit points stay above 0
 
 | Seconds at cast | Run calls in total | Run call that performs the respawn (mode B) |
 |---|---|---|
-| 1 | 61 | 47 |
-| 2 | 121 | 107 |
-| 3 | 181 | 167 |
-| 4 | 241 | 227 |
+| 1 | 60 | 46 |
+| 2 | 120 | 106 |
+| 3 | 180 | 166 |
+| 4 | 240 | 226 |
 | 5 | 300 | 286 |
 | 6 | 360 | 346 |
 | 7 | 420 | 406 |
@@ -8790,7 +8826,13 @@ F + k - 1, F being the cast frame, provided the caster's hit points stay above 0
 | 9 | 540 | 526 |
 | 10 | 600 | 586 |
 | 11 | 660 | (mode A only) |
-| 12 | 721 | (mode A only) |
+| 12 | 720 | (mode A only) |
+
+Executed (`docs/spec/skills-35-68-executed.md` section 3; countdown at 0x312ee0–0x312f00,
+respawn test at 0x312ddc): 60 N calls in total for every N (13 s: 780) and the respawn on
+call 60 N − 14. The earlier version of this table had 61, 121, 181, 241 and 721 in the
+first column and 47, 107, 167, 227 in the second — the round-to-nearest figures, which the
+console's arithmetic does not give.
 
 ##### Mode B in words (two or more players)
 
@@ -9022,6 +9064,10 @@ writes nothing but locals and the glow queue (`glow_add`). Observed.
   +0x44 of the animation table is (taken by analogy with `player_resetIdleAnim`).
 - The allocation-failure path of `player_respawn` (old object destroyed, no new one): the
   run function then dereferences the record's object pointer unchecked (0x312e70-0x312ea4).
+  Seen from the spell's side by execution: the run stores the tint through the target
+  pointer (spell +0x18) with no null test, from 0x312c88 on; after the respawn the pointer
+  is re-read from the slot's record (0x312e70), and a record without an object leaves it
+  null.
 - `Player_ctor` and `Player_startSpawnProtection` were not read beyond what is quoted;
   their shared draws are counted from the construction rule only.
 - Reachability of the weapon-effect path and of the player-count change mid-spell.

@@ -71,7 +71,9 @@ slot10 getStat(stat, level)                      # 0x3c85fc, tier 1
 slot11 getStatTier2(stat, level, cap)            # 0x3c8690
     if level == 0: return 0
     if cap > 0: level = min(level, cap)
-    if first2[stat] is 0xffff (unset):           # no tier 2 for this statistic
+    if first2[stat] < 0 (unset):                 # no tier 2 for this statistic. Executed: the test is the
+                                                 # sign (bltz, 0x3c86d8), not a compare with 0xffff; the
+                                                 # constructors store -1, so the shipped tables behave alike
         if level < first1[stat]: return 0
         return round(base1[stat] + step1[stat] * (level - first1[stat]))
     if level < first2[stat]: return 0
@@ -226,7 +228,9 @@ if terrain_height(radius, world, pos) > pos.z:                   # went into the
     back the position off along this frame's step in tenths (0.1, 0.2 … 1.9 of the step)
     until the terrain height there is <= z; keep that position
     once per object (byte +0x50): if the spot is water, one draw from the object's own
-    generator (splash sound variant) and a ripple
+    generator and a ripple. Executed (0x150c14-0x150c2c): the draw is made and thrown
+    away - it is not the splash's sound variant; the clip number given to the name
+    format is the constant 1
 for each o in the box pos ± (radius, radius, height), box order, at most 255:
     skip if o.flags & 0x201, or o.flags & 0x20000000, or o is obj, or o is the owner (+0x4c)
     if the z ranges overlap and 2-D distance² < (obj.radius + o.radius)²:
@@ -763,7 +767,10 @@ per target object ×1 then `damage_apply`'s draws.
 57. Monsters: Cazic and Horsemen call the cast slot; Goblin, Demon, Mummy and RedDragon
 construct `FireStorm` themselves (`docs/skills.md`). A second constructor, 0x2d4048, takes
 radius, damage, duration, flare period and flare scale as arguments and sets the variant
-field to 1; its one caller is the monster function 0x25f988.
+field to 1; its one caller is the monster function 0x25f988. Executed: the full order is
+`FireStorm_ctor2(object, owner, position, radius, damage, duration in frames, flare
+period; flare scale)`, matched together with the one behaviour the variant word selects
+(straight flares, no looping sound).
 
 **Statistics.**
 
@@ -1169,7 +1176,11 @@ reads tier 2 of skill 13, 14 or 12 at the current monster level.
 `Skelight_ctor` 0x2a8770 (monsters area) stores the strength at +0x460 and sets the level
 scale `g_levelMonsterLevel` to it while it calls `Creature_setStats(1.33, 1.2, 1.2, 1.0, …,
 rollHp = 1)`, then restores the scale; creature kind 0x10 (undead). The skeleton's own
-behaviour belongs to `docs/monsters.md`.
+behaviour belongs to `docs/monsters.md`. Executed (`docs/spec/arena-monsters.md` 4.2, 14):
+the cast, the constructor and the summon chain hold as written here; the fifth factor,
+elided above, is the experience factor — 1.0 everywhere except the level `blomedal`,
+where it is 0.0 and a skeleton is worth no experience — and the call makes one own draw
+(the hit-point roll).
 
 `SpellSummonSkeleton` (table 0x519918; constructor 0x2e16ec, run 0x2e177c) only holds a
 handle to the skeleton at +0x18 and deletes itself when the handle empties. It does not
@@ -1242,7 +1253,10 @@ carries a spell of the same class. The four do not exclude each other.
 **Constructor** (0x2e24d8, 0x2e34e0, 0x2e4f94, 0x315f54):
 
 ```
-end(+0x18) = frame + slot12(1, L, caster, cap) * 60
+end(+0x18) = frame + slot12(1, L, caster, cap) * 60 # executed: this first read alone uses the level argument
+                                                    # as passed (a full register, 0x2e258c); every later read
+                                                    # uses the signed level byte stored in the spell (0x2e25ac).
+                                                    # They differ only above level 127
 radius     = slot12(2, L, caster, cap 10) * 12      # ids 12, 13, 14: s32 at +0x1c
            = (float) slot10(2, L) * 12.0            # id 26: float at +0x20
 fxEnd      = id 12: trunc(frame + 29.999878) at +0x20;   id 14: trunc(frame + 22.499683) at +0x20
@@ -1403,6 +1417,11 @@ if frame % 15 == 0:
             if o carries neither SpellUndeadShield nor SpellSecondaryUndeadShield:
                 attach new SpellSecondaryUndeadShield(0x24 bytes)(0.5 s, percent = slot10(2, L), o)   # shared ×1
 ```
+
+Executed (0x2eadb8–0x2eade8): "carries neither" is not a short-circuit. Both look-ups are
+always made, the secondary one even when the first found a shield — two type-info calls
+and two list walks for every player in the box. The result is the same; the call order
+matters to a rebuild that logs virtual calls.
 
 `SpellSecondaryUndeadShield` (table 0x51a018; constructor 0x2eb050, run 0x2eb170): level
 byte and Skill pointer are 0, percent at +0x1c, end (+0x18) = trunc(frame + 0.5 × 60.0). Its
@@ -1899,7 +1918,9 @@ Reads are `slot10`. describeRank prints s0 and s1.
 ```
 step = 0x10000 / (L + 4)                                   # integer division
 for a = 0; a < 0x10000; a += step:
-    new LostSoul(0xb0 bytes)(pos + (0, 0, 36), velocity (cos16(a), sin16(a), 50.0), a, owner none, mode 1, no light)   # shared ×1 each
+    new LostSoul(0xb0 bytes)(pos + (0, 0, 36), velocity (cos16(a) * 450, sin16(a) * 450, 50.0), a, owner none, mode 1, no light)   # shared ×1 each
+                                                           # executed, 0x2f4d8c-0x2f4dd8: the horizontal parts are scaled
+                                                           # by 450 (0x43e10000); the earlier version had them unscaled
 new LightEffect at pos + (0, 0, 36)                        # shared ×1
 dmg = slot10(0, L);   r = slot10(1, L)
 damage_radial(inner r*12, outer r*24, caster, pos, dmg, flags 0xa100900, minimum 0, skip 0x40)
@@ -2222,7 +2243,11 @@ new PoisonRain(0x6c bytes)(L, caster, centre, skill, no sound)       # returns 0
 | +0x64 | handle | owner (linked without a null test) | |
 | +0x68 | s32 | −1 or a sound handle | |
 
-Flags |= 0x421b. A `LightEffect` is created (shared ×1). For a **player** owner the start
+Flags |= 0x421b. A `LightEffect` is created (shared ×1). Executed (0x2f914c): the
+constructor makes **four** statistic reads, not the three of the table — the duration
+statistic is read a second time, after `pool_new` for the light has succeeded, for the
+light's last number (`duration + 0.675`). No draw is involved; the order matters to a
+rebuild that logs virtual calls. For a **player** owner the start
 is 0 and the end is therefore the absolute frame number `duration × 60`, not a time from
 now — the rain would end at once in any game older than a few seconds. With tier-1
 statistics all 0 this path has no effect anyway.
@@ -2462,6 +2487,11 @@ for o in list, in list order, while count < n:
 return 0
 ```
 
+Executed (0x2e6700–0x2e6728): "attach" and "count" do not depend on the allocation. When
+`pool_new` gives nothing, `creature_addSpell` is still called (with 0) and the count still
+rises, so a failed allocation uses up one of the `n` targets. The level handed to the
+constructor first goes through slot 14 (level, 20).
+
 `pos` is the cast position (for a player the hand midpoint), `facing` the auto-aimed one.
 
 **`SpellRoot`** (table 0x519b70; constructor 0x2e68c8): owner = the victim; elapsed seconds
@@ -2571,6 +2601,11 @@ chanceFor(skill, attacker, rank):                           # SkillCriticalHit_c
                     level = r;  break
     return level ? skill.slot10(0, level) * 0.01 : 0
 ```
+
+Executed (0x2e7910; 0x2e7818–0x2e7840): the level chosen goes through slot 14 (level, 20)
+before the statistic is read — no effect in this build, where slot 14 returns its
+argument — and the aura owner's ranks are asked in the order 53, 81, 33, three
+`player_getSkillRank` calls for every candidate that carries the spell.
 
 and then, if `c > 0` and the first hit roll succeeded, one shared draw decides the critical
 hit (`draw < c × 65536` → damage × 3). Consequences to copy:
@@ -2782,11 +2817,11 @@ out above; what remains unknown lies in a callee owned by another area.
 | 4 | diseasebolt | full | — |
 | 5 | diseaseshield | full | `DiseaseCorpse` 0x2ce3f8 / 0x2ce4a4 and `DiseaseCloud` 0x2ce610 / 0x2ce6e0 (monster-only objects in the same file) not reached; describeRank not read |
 | 6 | diseasetrail | full | — |
-| 7 | firestorm | full | argument order of the second constructor 0x2d4048 only as far as the stored fields |
+| 7 | firestorm | full | argument order of the second constructor 0x2d4048 only as far as the stored fields — settled by execution, see section 7 (`docs/spec/skills-01-34-executed.md` section 3, row 4) |
 | 8 | fireflares | full | run order of flare objects against the caster's spell update |
 | 9 | riposte | full | — |
 | 10 | blessed | full | — |
-| 11 | summonskeleton | partly | the cast is complete; the draws inside `Creature_ctor` / `Creature_setStats` / `Creature_init`, the `Skelight` class and the property lists were not read |
+| 11 | summonskeleton | partly | the cast is complete; the draws inside `Creature_ctor` / `Creature_setStats` / `Creature_init`, the `Skelight` class and the property lists were not read — read and executed since in `docs/spec/arena-monsters.md` sections 2, 4 and 6 |
 | 12 | lightningweapons | full | weapon-holder slot bodies (creatures area) |
 | 13 | fireweapons | full, by comparison with 12 | same; describeRank not read |
 | 14 | coldweapons | full, by comparison with 12 | same |

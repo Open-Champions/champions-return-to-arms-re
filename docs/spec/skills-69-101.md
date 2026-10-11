@@ -105,7 +105,9 @@ Consequences used throughout:
   own spread for non-player casters it **truncates** (`trunc(v ± v × 0.19999999)`) instead
   of rounding and has no floor of 1.
 - With "randomise" set, slot 8 makes two shared draws per bound; no caller in this range
-  sets it.
+  sets it. Executed (0x3c8354–0x3c840c): of the two draws the first only decides the
+  direction of the rounding, through the sign of the value it would give; the bound itself
+  uses the second.
 
 The tables in each section list the stored step (decimal, and bits where it is not a short
 binary fraction) and the values for ranks 1–20, computed with single-precision arithmetic
@@ -446,6 +448,11 @@ drop
 Stun rolls on ages 16–29 come after that frame's particle draws; the particle count and the
 rejection loop therefore have to be reproduced.
 
+Executed: the particle step is `0x10000 / (getStat(1) × 6)`, a `div` with no zero test
+(0x2fd9b8). At level 0 the divisor is 0; the quotient is then not used, because the loop
+runs zero times, so this is harmless — but it is a second divide-by-zero site in this
+range beside the storms' decoration interval (FINDINGS SC3).
+
 ### Presentation only
 
 Sound, light, the two spiralling trails (their length and colour fade over the second half),
@@ -651,7 +658,14 @@ Because `Player_castSkill` subtracts the cost after the cast returns, the refund
 nets to zero unless it was clipped at maximum mana.
 
 That the quantity written in step 3 survives the parser is Inferred (the parser was not
-checked for a later store to +4; nothing else uses statistic 0).
+checked for a later store to +4; nothing else uses statistic 0). Executed for the
+constructors' side (0x2feb88, 0x2ff87c; the parser is a stub in that test, so the Inferred
+stands): the quantity is a **halfword** at record +4, and the halfword at +6 is never
+written by the constructor — it holds whatever the stack held when the record is handed
+to `item_parseDescriptor`, `player_itemWeight` and `inventory_giveItem`, and differed
+between two runs of the test. Whether the parser or the inventory code reads +6 was not
+established there (proposed ledger row SC12; compare FINDINGS I1 and V20, unwritten item
+bytes seen to differ between two running machines).
 
 Run (0x2feddc / 0x2ffad4): if the start frame is −1, free the particle group and destroy the
 spell. Otherwise emit particles for the first 30 frames
@@ -792,6 +806,8 @@ ev == 2:
     camera_shake(level * 0.5 + 3.5)
     centre = owner model attach point 7
     groundHeight = terrain_height(6.0, world, centre) ; inWater = water_test(8.0, world, centre)
+                                                 # executed (0x300600-0x300640): water_test is asked at the centre with
+                                                 # the ground height just found as z, not at the attach point's height
     candidates = every object with flags & 0xd == 0 from
                  world_collectInSphere(getStat(0) * 12 * 1.5, centre)      # box order
 ev == 4: shouting = 0
@@ -821,7 +837,10 @@ enemy of the owner: drop; otherwise
 Non-creature objects in the list are hit without any test.
 
 The wave grows for half a second to stat 0 × 12 units. The spell ends when the animation
-ends; an interrupted spell lingers 0.5 s.
+ends; an interrupted spell lingers 0.5 s. Executed (the branch at 0x3009f0): while it
+lingers, each frame makes one own-generator draw and, when that is below 0.170987, a
+second one for a mouth particle — draws the listing above and the draw table do not have.
+Presentation.
 
 ### 77 Battle Cry — the effect
 
@@ -855,6 +874,15 @@ if cryTime == clock:                                   # the frame of the cry
 ```
 
 "Run position" is what `Player_updateCast` hands to slot 17: the midpoint of the hands.
+
+Executed, two things the listing lacks. An **interrupted** spell (the branch at 0x3020b4)
+lays ten pairs of streamer particles of a second kind every frame until it ends — two
+ball points and two more own draws per pair — and the interruption also clears the
+"streamers on" flag (+0x34); presentation, since no stun roll can follow: the cry never
+comes. And for the ground particles the one own draw is made per particle whether or not
+it is spawned; a particle is *spawned* only where the ground under it is within 72 of the
+copy's height (0x302750–0x302768), so the draw count is as given and the particle count
+is not.
 
 The lasting effect is read by `Player_run` in the melee-swing state (0x1aa018–0x1aa0ec):
 for every player in `g_alivePlayers` who carries a `SpellAncestralCall`, or failing that a
@@ -897,6 +925,8 @@ Two other functions read the `active` flag:
 | 76 | while shouting / during the wave | own | particles only: 1–4 per frame at the mouth; 277 (370 from level 10) + 9 (12) × (1 + 3 per try) on the ring |
 | 77 | the cry | shared | 1 (`LightEffect`) |
 | 77 | while streamers are on, every frame | own | 10 × (3 per try + 3 per try + 2) |
+| 77 | after an interruption, every frame until the spell ends (executed, 0x3020b4) | own | 10 pairs of a second kind of streamer: two ball points and two more draws per pair |
+| 76 | after an interruption, every frame of the 0.5 s (executed, 0x3009f0) | own | 1, and a second one when the first is below 0.170987 |
 | 77 | every frame after the cry | own | level + 13 (four times that during the first half second), 1 each |
 | 77 | the cry, per enemy in range | own | 1 — **the stun roll**, after that frame's particle draws |
 | 78 | every frame while active | own | particles; **the count depends on per-machine inputs** (below) |
@@ -1021,7 +1051,7 @@ step, so a null caster would fault there.
 | +0x6c | s32 | next decoration frame, −1 = not yet set | −1 |
 | +0x70, +0x74 | s32 | lo, hi | |
 | +0x78 | float | radius | s0 × 12.0 |
-| +0x7c | handle (100) / float (80) | 100: owner handle. 80: fall time 48.990772 frames [0x4243f68d] | |
+| +0x7c | handle (100) / float (80) | 100: owner handle. 80: fall time 48.990772 frames [0x4243f68d]. Executed: not a stored constant — the constructor takes the square root of 2400.096 [0x45160189] at run time (`sqrt.s` at 0x30b14c); truncated or rounded to nearest the result is this value | |
 | +0x80 | (80) handle | owner handle (id 100 has its light record here) | |
 
 Constructor (0x31ae48 / 0x30af6c): `GameObject_ctor` — one shared draw; object flags
@@ -1296,6 +1326,10 @@ Class behaviour (0x2e6534, 0x2e6598, 0x2e68c8 read; 0x2e699c read for its gamepl
   knock-back speed (+0x2e8) to 4 × its distance from where it stood and the knock-back
   angle (+0x2e0) back toward that spot. The spell ends when clock − 0.518994 exceeds the
   duration.
+- Executed, confirmed as written with two details: the cast clears two local lists before
+  it walks the arc, and the hold phase draws a ball point per particle that it then does
+  not use (0x2e6e3c–0x2e6ec8) — own-generator draws a rebuild has to make. (The cast also
+  counts a target whose `pool_new` failed: `docs/spec/skills-01-34.md` section 31.)
 
 ### 86 — `shamanhealing` (class `SkillHealing`, table 0x519e50, object 0x6e3760)
 
@@ -1329,6 +1363,9 @@ Class behaviour (0x2e8cf8, 0x2e8ec8, 0x2e90b8 read):
   "below maximum" test at all.
   68 × 0.014750047 = 1.003, so the whole heal is the printed percentage.
 - `g_alivePlayers` is the list of FINDINGS G11–G13 and G21.
+- Executed, confirmed as written with one detail: the amount is associated as
+  `(max hp × 0.014750047) × (percent × 0.01)` (0x2e9094–0x2e909c). The player branch of
+  the run reads the player object of every listed slot without a null test (in 0x2e90b8).
 
 ### Functions read for this section
 
@@ -1379,7 +1416,9 @@ seconds 2 2 2 3 3 3 3 4 4 4 (then constant).
 
 ### Cast — `SkillTagarsInsects_cast` 0x30c708 (level, caster, pos, facing)
 
-1. Level through slot 14 (no-op).
+1. Level through slot 14 (no-op). More exactly (executed, `docs/spec/arena-monsters.md`
+   7.1, 14): the level stored in the spell is slot 14's *result*, so "no-op" holds only
+   because the base slot returns its argument.
 2. Sound `spel_is_tagar_cast.anm` at `pos` (presentation).
 3. `pool_new(0x94)`; when it fails return 0 (the sound has played; a player caster still
    pays mana and recast in `Player_castSkill`).
@@ -1958,6 +1997,12 @@ if f <= 0: return
 if clock > 1.0: badger.flags &= ~2            # becomes visible after one second
 trunc(f * 38) particles on the badger's model sample points (own generator)
 ```
+
+Executed (0x310cd0), two corrections to the listing. The sample points are not drawn: the
+particles sit on points 0, 8, 16, … modulo the point count, a fixed sequence, and the own
+generator supplies only the ball point (3 draws per try). And "handle empty" is exact: the
+spell is destroyed when its handle is empty, while a handle whose node carries no object
+makes the run return without doing anything.
 
 The spell lives two seconds and does nothing else. `SpellSummonBadger_draw` (0x311034, Spell
 slot 3) adds glows and writes nothing.

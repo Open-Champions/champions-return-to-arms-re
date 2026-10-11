@@ -255,7 +255,11 @@ Tail of run, every frame while +0x464 is set (it runs in any state, including wh
 something else): the wave moves 5 units along its heading; its height is the terrain height
 + 1, and a step of more than 12 units ends it at the previous position. With an enemy linked,
 the heading turns toward it at up to about 140 angle units per frame (**Inferred** from the
-arithmetic: 0.43 % of the angle to the reverse bearing is subtracted each frame) and the wave
+arithmetic: 0.43 % of the angle to the reverse bearing is subtracted each frame; executed
+since, `docs/spec/arena-monsters.md` 5.4: the size is right, the direction is *away* from
+the point where that angle is zero — the wave pointing straight away from the enemy — and
+so toward the enemy's bearing, and once there the heading does not settle but alternates
+by ±140 units a tick) and the wave
 ends within 36 units of it. It also
 ends more than 800 units from Zek. At the end: `fx_ringBurst`, an explosion sound,
 `combat_applyAreaDamage(40, 180, Zek, position, half of +0xd0, half of +0xd2, flags 0x80840)`,
@@ -276,6 +280,14 @@ refused.
 
 Phases: none by hit points. The ground pound can recur every 600 frames, the wave only 780
 frames after the last special. Script-driven: nothing class-specific.
+
+Three things this section did not state, executed in `docs/spec/arena-monsters.md` 5.3–5.6:
+set-state 5 synchronises its clip to the frame counter (`anim_syncToSimFrame`), as 1, 3 and
+0x10 do; "returns when inactive" in the run head covers everything after it — the animation
+step, the target pick, the state switch with its own draws, **and the ground wave of the
+tail**, which therefore stands still while Zek is inactive ("in any state" above holds
+only while he is active); and a set-state request the class has no case for stores state 0 and starts no
+clip.
 
 Per-machine: (a) none found: run calls `fx_spawn`, `fx_ringBurst`, `decal_add` and sounds,
 all sinks; every decision uses the own generator, the clock and world queries. (b) draw is
@@ -6490,7 +6502,9 @@ States:
 - 1: no visible target -> `Creature_moveToDest`. Otherwise turn toward the target and, once
   it is within the creature's `visualrange` (+0x3ae) in arc 8000 -> 3.
 - 3 chase: no target -> 0. Target within 12, arc 8000 -> 5. If the target is not "charging"
-  (`Creature_isTargetCharging`: faces me and moves faster than 100/s) and is within 36, arc
+  (`Creature_isTargetCharging`: moves faster than 100/s and — as coded, executed in
+  `docs/spec/arena-monsters.md` 2.3 — faces *away* from me: its facing is compared with the
+  bearing from me to it, 0x118fb0–0x118fe8; the earlier version said "faces me") and is within 36, arc
   8000 -> 5; not charging and within 36 at any angle -> turn only. Target within 120, arc
   8000 **and at least one ally already near the target** (`Creature_countAlliesNearTarget(36)`
   >= 1) -> pickTarget(1) (forced re-pick) and -> 5: it stands off instead of crowding in.
