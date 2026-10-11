@@ -31,7 +31,11 @@ lobby-launched lockstep game with the character checksum exchange running, throu
 level and an arena fight without a difference) and phase 15 (section 20: the server's
 three fixes met by the real game, nine lobby-launched pairs with fifteen sections and a
 delay and loss model between the runners — 181,073 ticks without a difference —, and the
-arena entered by `drundar`'s own exit script and fought to its end and `hub2`). In short: two machines play one lockstep game here;
+arena entered by `drundar`'s own exit script and fought to its end and `hub2`) and phase 16
+(section 21: the carried load in the player record shown to decide a pick-up differently on
+the two machines, with a two-part fix; the two level-up bytes; a player leaving through
+the pause menu on the lobby path; and why a player placed at `drundar`'s arena door did
+not walk — a help box). In short: two machines play one lockstep game here;
 random input found two real divergences, which are the ledger's K1 and K2, and the test
 patch for each removes it; the arena did **not** go out of sync in twelve runs.
 
@@ -3199,3 +3203,452 @@ in play (20.2).
 - Result 7 on its own, without a lost connection before it: the game showed nothing new
   for it here because its lost-connection notice was already up.
 - Anything on a console or in PCSX2.
+
+## 21. Phase 16: the carried load, the level-up bytes, leaving a game, the walk in drundar
+
+Four questions left by sections 18 and 20. The first two and the last are developer-LAN
+pair work (limits as in section 7: two copies of one Play! build, so logic differences
+only); the third is the lobby path of section 19 (real sockets, real time, not
+repeatable). Play! is not a PlayStation 2 and not PCSX2; nothing here is a console result.
+**Ran** unless marked. Local wrappers and logs are under `local/rig-out/p16` (not in the
+repository). The runner was not changed.
+
+**In short.** The carried load is not harmless: it is a stored sum that several bag
+changes leave stale on every machine, and that the owner's machine alone brings up to date
+outside the tick — through its prediction copy and through four menu calls. A pick-up
+decided between the two moments is accepted on one machine and refused on the other: one
+soak pair, with nothing changed but the load limit written down on both machines three
+ticks before a pick-up the pair makes anyway, went from a bag difference to the game's
+out-of-sync flag (21.4). Fourteen words remove it (21.5). The two level-up bytes are read
+by nothing that runs outside the owner's own menu (21.6). A player who leaves through the
+pause menu ends the game for the other player of a two-player game as well, and nothing is
+saved at that moment (21.7). The player that "would not walk" in `drundar` was standing
+behind an open help box (21.8).
+
+### 21.1 The carried load: who writes it, and when
+
+Record +0x120 (0x4d8c10 for slot 0, 0x4dd840 for slot 1) is written by
+`player_recalcLoad(slot)` 0x1bec10 — zero, then the sum of `player_itemWeight` 0x1b6338
+over the three bags — and by the same loop inlined twice in `Player_usePotion`
+(0x1ba118, 0x1ba4fc); `player_initNewCharacter`, `player_importCharacter` (0x1bd6dc) and
+the launch code set it once. An item's weight depends on the record alone: the
+definition's weight and the count (`item_getWeight` 0x103e08), the level of the class
+passive with mask 0x10000 and the ranks of skills 0x49 and 0x4a. So whoever recomputes
+gets the same number from the same record (**Observed**) — the difference between
+machines is only *when* the stored number is brought up to date.
+
+**The call in `Player_run` is the tail of the ranged-attack state, and it has no copy
+test** (**Observed**). 0x1a9578 is not a bow-shot event: it is where every pass through
+the handler of action state 0 (entry 0 of `g_playerStateJumpTable`, 0x1a80e0–0x1a9677)
+ends — the seven branches at 0x1a8354, 0x1a8368, 0x1a8390, 0x1a890c, 0x1a8974, 0x1a898c
+and 0x1a89ac go straight to it, and the ammunition code falls into it through
+0x1a956c. The prediction copy's branch at 0x1a94bc skips only the ammunition count
+(0x1a94c4–0x1a9564) and rejoins at 0x1a956c. The slot comes from the object's +0x3c8,
+which the copy shares with the real player: **the copy recomputes the real record's
+load**, once per predicted frame in state 0.
+
+Break point on `player_recalcLoad` on both machines (return address, the caller's object
+flags, `g_netFrame`, `g_excludeMask` 0x4039b8 — 0x20000 inside a tick —, and the load
+before the call), pair 027 of the soak (builds c3+c5: a bow class in slot 0, a throwing
+class in slot 1; 30,000 frames, fifteen sections):
+
+| Caller | Slot 0 (machine B's player): A / B | Slot 1 (machine A's player): A / B | Inside a tick |
+|---|---|---|---|
+| `Player_run` 0x1a9578, real player | 363 / 363 | 1,892 / 1,892 | yes |
+| `Player_run` 0x1a9578, prediction copy (flag 0x20000) | 0 / 405 | 4,773 / 0 | no |
+| `itemprop_tryPickup`, `inventory_dropItem`, `inventory_giveItem` | 17 / 17 | 4 / 4 | yes |
+| `itemList_input` 0x1ce1b4 (the shop's buy press) | — | 1 / 0 | no |
+| `skills_screen` 0x1d5978 (a press on the skill page) | 0 / 1 | — | no |
+
+The calls inside ticks are the same on both machines; every call outside a tick is on the
+owner's machine only. Pairs 111 (42,035 ticks) and 080 (22,830 ticks) give the same
+picture: 16,577 copy calls for slot 1 on its owner's machine in pair 111 and none on the
+other; in pair 080 (builds c1+c4, no ranged attack) no call from `Player_run` at all and
+one from `skills_screen`.
+
+So section 18.5 was half right. The short differences traced here are the copy's — pair
+027 ticks 5408–5411, pair 111 tick 2996, pair 105 ticks 2186–2204 (the first and the last
+are gone with the copy's call patched alone, 21.5): the copy enters state 0 ahead of the
+real player by the input delay, and the other machine follows when the real player gets
+there. The three long ones are not: pair 080's 21,405 ticks, pair 027's 2,940 and pair
+111's 3,352 each begin at a `skills_screen` call on the owner's machine (`g_netFrame`
+22150, 24138, 12616) and end, if at all, at the next recompute inside a tick.
+
+### 21.2 Why the stored load is stale to begin with
+
+A recompute that changes nothing cannot make machines differ; of the 4,773 copy calls for
+slot 1 in pair 027 one changed the value. The stored load is wrong only after something
+changed a bag or a weight factor without recomputing, identically on both machines. What
+did that in the traced pairs:
+
+| What left the load stale | Seen | By how much |
+|---|---|---|
+| `recall_execute` 0x18c230 uses a recall potion (count −1, or `inventory_removeItem` at 0x18c388) and never recomputes | pair 080 ticks 8659 and 9488 (slot 1); pair 027 tick 21532 (slot 0); pair 111 ticks 2935 (slot 1) and 7246 (slot 0) | 1.0 too high per potion |
+| `shop_buy` 0x1d1240 gives the bought item with `inventory_giveItem` (0x1d1308), which recomputes only when the item joins an existing stack (0x1c1a68) | pair 027 tick 4789 (slot 1; the buy press's own recompute, 0x1ce1b4, had run 13 ticks earlier, before the item arrived) | 2.0 too low |
+| the rig's own character writes at tick 680: ranks of skills 0x49 and 0x4a, which scale the weight of throwing axes and arrows | pairs 105, 063 (32.346 → 29.196, 34.846 → 30.146 at the first recompute) | 3.15, 4.70 too high |
+
+The third is the rig's doing, but the game does the same: `inventory_onSkillPoint`
+0x1c2648 has no recompute either (**Observed**, section 18.4), so a point spent on one of
+those two skills leaves the same staleness. Other places that change a bag with no
+recompute after them (**Observed**: every caller of `inventory_removeItem` 0x1c1cb0 and
+`inventory_giveItem` 0x1c1868 with no later `player_recalcLoad` in the function; none of
+these ran in the traced pairs): `script_removePlayerItem` (0x145a14, 0x145a64),
+`script_removeAllItems`, `script_removeAllWeapons`, `player_removeFlag39Items` 0x1be32c,
+`player_removeAllItems`, `inventory_shareQuestItems` (0x1c5050, 0x1c50a0),
+`SkillFireAxe_cast` 0x319d5c and `SkillColdAxe_cast` 0x31a690 (an axe taken by the cast),
+and a function at 0x1cbbe8 (0x1cc0c4).
+
+What brings it up to date again, inside a tick and so on every machine: a pick-up that
+succeeds, a drop, a sale (through `inventory_dropItem`), a stacking purchase, a potion
+drunk, a tick of the real player in state 0. Outside the tick, on the owner's machine
+only: the copy in state 0 (0x1a9578), and four menu calls — the shop's buy press
+(0x1ce1b4, after the buy message is queued), its sell press (0x1ce528, whether or not the
+message went out), a press on a node of the skill page (0x1d5978 — reached after a point
+is sent and after a refused press alike, 0x1d58e4 and 0x1d58ec–0x1d594c) and the
+workshop's press (0x1d0fc4) (**Observed**; the first and third **Ran**; in pair 027 no
+skill-point message followed the press, so that one was a refused press).
+
+The whole of pair 080's 21,405 ticks, then: two recall potions (ticks 8659, 9488), 12,662
+ticks in which both machines held 19.154 where the bags weighed 17.154, one press on the
+skill page of machine A — and from then to the end 17.154 on A and 19.154 on B, because
+that class has no ranged attack and no recompute inside a tick came for that slot again.
+
+### 21.3 What reads it
+
+Every access of +0x120 through the record (`tools/fieldxref.py` with the record's fixed
+base, indexed forms included; **Observed**):
+
+| Reader | Where | What it decides |
+|---|---|---|
+| `itemprop_tryPickup` 0x154dbc | 0x154e5c | a pick-up (`PhProp_interact`, `ItemProp_interact`): refused when limit +0x124 < load + the item's weight; otherwise the item goes into the bag and the object destroys itself |
+| `script_givePlayerItem` 0x145a88, `script_giveOnePlayerItem` 0x145d20, `script_givePlayerRandom` 0x145f18 | 0x145b90, 0x145e28, 0x1460c0, 0x1461c4 | a script's gift goes into the bag when load + weight < limit (or the weight is 0); otherwise it is made as an object on the floor |
+| `SpellSummonAxe_ctor` 0x2feb88, `SpellSummonArrows_ctor` 0x2ff87c | 0x2fecd8, 0x2ff9d0 | the two conjuring skills give and equip their item when load + weight ≤ limit; otherwise they refuse and return the mana |
+| `itemList_input` | 0x1ce158 | the shop's buy press on the owner's machine: the buy message is sent only when load + weight ≤ limit |
+| `itemList_drawWeight` 0x1c7350 | 0x1c7394, 0x1c7408 | the figure on the item page |
+
+The first three rows are simulation, run on every machine in the tick. Nothing else reads
+it: no access in `Player_run`, `Player_move` or the creature movement code (the load does
+not slow a player), and `player_checksum` 0x1bdc98 does not mix it, so the lobby game's
+checksum exchange cannot see a difference in it.
+
+So a differing load can change a pick-up, a script's gift or a conjured item — each of
+them a bag on one machine and not the other, and for the first two an object in the world
+as well — whenever the limit lies between the two machines' sums. With loads of 12 to 35
+under limits of 325 to 400, as in the soak, it never did.
+
+### 21.4 The divergence
+
+Pair 027 of the soak, as it is: fifteen sections, its seed, its bus setting (delay 4,
+jitter 3, loss 5%). By itself it does this to slot 0, machine B's bow character:
+
+| Tick | Machine A | Machine B (owner) |
+|---|---|---|
+| 21532 | `recall_execute` takes the last recall potion: both hold 24.000, the bags weigh 23.000 | the same |
+| 24138 | — | a press on the skill page: `skills_screen` 0x1d5978 recomputes outside the tick: 23.000 |
+| 27078 | `itemprop_tryPickup` for an item of weight 2.0, from 24.000 | the same call, from 23.000 |
+
+The one change: `ontick 27075 poke g_players+0x124:f32 25.5` on both machines — the load
+limit of slot 0 written down from 325 to 25.5, in the same tick on both, which stands for
+a character carrying nearly all it can. Nothing recomputes the limit in the next three
+ticks.
+
+| Tick | Machine A | Machine B |
+|---|---|---|
+| 27076–27077 | load 24.000, limit 25.5 | load 23.000, limit 25.5 |
+| 27078 | `itemprop_tryPickup` returns 0: 24.000 + 2.0 is over the limit. Bag unchanged | picks the item up: 23.000 + 2.0 is not. Bag 0 changes; the limit is 325 again (the pick-up's own recompute of the statistics) |
+| 27078 to the end | **bag 0 of slot 0 differs**; for 1,106 ticks only it and the load do, and no flag is set | |
+| 28184 | | the equipment words differ as well |
+| 28316 | | bag and equipment change again here only; **the shared seed and slot 0's position differ** from this tick |
+| 28321, 28324 | at 28324 flags machine B out of sync | at 28321 flags machine A out of sync |
+
+The same pair with the fourteen words of 21.5 on both machines, same write: both machines
+hold 24.000 at tick 27078, **both refuse** (`itemprop_tryPickup` returns 0 on each), and no
+shared column differs at any of 28,526 ticks — the load columns included, which with
+fifteen sections alone differ in 2,944 ticks of this pair. Every one of the 2,274 calls
+of `player_recalcLoad` on each machine was inside a tick; none came from a copy. Up to
+tick 27078 the two runs are the same pair: machine A's log agrees between them in every
+compared column at every tick, slot 1's load in ticks 5408–5411 apart.
+
+What the write stands for, and what it does not show: a real player gets near the limit by
+carrying loot, not by a write; no pair here did that by itself. The window is real in
+length and cause — 2,940 ticks made by a recall potion and a press on the skill page, both ordinary —
+and so is the pick-up inside it. How often a real pick-up falls within one potion's weight
+of the limit while the two machines disagree was not measured.
+
+### 21.5 A fix (proposal): the load is written inside ticks only
+
+Two proposals, one change each. Neither makes the stored load *right* — it stays stale
+after a recall potion or a purchase exactly as now — they make it the same on every
+machine, by removing the writes made outside the tick. Original words read from the
+executable.
+
+**A. The prediction copy does not recompute the load.** The call at 0x1a9578 goes through
+nine words in the unused function `Cyclops_dropClub` (0x257ab4–0x257b9f), after the 22
+words the pose-cache and spin sections already use there:
+
+| Address | Original | New | Meaning of the new word |
+|---|---|---|---|
+| 0x1A9578 | 0C06FB04 | 08095EC3 | `j 0x257b0c` (was `jal player_recalcLoad`); the delay slot 0x1a957c, `move a0, s1`, stays |
+| 0x257B0C | 5220001B | 8FC1000C | `lw at, 0xc(fp)` — the flags of the player object `Player_run` is running |
+| 0x257B10 | 8E020024 | 00010C42 | `srl at, at, 17` |
+| 0x257B14 | 0C053F6E | 30210001 | `andi at, at, 1` — the prediction-copy bit 0x20000 |
+| 0x257B18 | 24040248 | 14200003 | `bnez at, 0x257b28` — a copy skips the call |
+| 0x257B1C | 10400016 | 00000000 | `nop` |
+| 0x257B20 | 0040202D | 0C06FB04 | `jal player_recalcLoad` (the slot is already in `a0`) |
+| 0x257B24 | 27A50020 | 00000000 | `nop` |
+| 0x257B28 | 8E020024 | 0806A560 | `j 0x1a9580` — back into `Player_run` |
+| 0x257B2C | 86060038 | 00000000 | `nop` |
+
+- What it changes: the real player's ticks in state 0 recompute as before; the copy's
+  frames do not.
+- What could go wrong: `$at` is scratch here — a call follows, so no caller-saved register
+  is live; `$fp` holds the player object at every way into 0x1a9578 (each of them loads
+  the slot from `0x3c8($fp)` in the instruction before). A copy whose own logic read the
+  load would now see the tick's value instead of a fresh one: the readers of 21.3 are
+  reached from ticks only in these runs (`itemprop_tryPickup` and the two conjuring
+  constructors never ran for a copy). If `Cyclops_dropClub` is called after all, the game
+  runs this code instead of it.
+- Every machine should apply it; a machine without it still moves its own players' loads
+  early, and the others then disagree with it.
+
+**B. Menu code does not recompute the load.** Four calls of `player_recalcLoad` made from
+drawing-side menu code become no-ops, the shape of the section "menu screens do not
+recompute player statistics":
+
+| Address | Original | New | Where |
+|---|---|---|---|
+| 0x1CE1B4 | 0C06FB04 | 00000000 | `itemList_input`, after the shop's buy message is queued |
+| 0x1CE528 | 0C06FB04 | 00000000 | `itemList_input`, the shop's sell press |
+| 0x1D5978 | 0C06FB04 | 00000000 | `skills_screen`, a press on a skill node, whether the point is sent or refused |
+| 0x1D0FC4 | 0C06FB04 | 00000000 | `workshop_input`, after its message is queued |
+
+- What it changes: nothing in the tick. Each of these calls ran at the press, before the
+  message it had just queued was applied, so it never accounted for that press's own
+  effect; it only cleared older staleness, on one machine.
+- What could go wrong: on the owner's machine the stored load now stays stale as long as
+  it already does everywhere else — until a pick-up, drop, sale, stacking purchase, potion
+  or ranged attack. The shop's own test before a buy message (0x1ce158) reads it: after
+  buying items that each took a new cell, further purchases are tested against a load
+  that does not count them, so one visit to a shop can take a character further over its
+  limit than before (before, each buy press brought the load up to the purchase before
+  last). The item page shows the same stale figure. Nothing in the simulation acts on a
+  load above the limit except the tests of 21.3. The sell press and the workshop press
+  were not exercised here.
+- Every machine should apply it.
+
+`patch=1,EE,<address>,word,<new word>` for the ten and the four rows. **Tested on the rig
+only** (Play!, two identical instances, developer start; not PCSX2, not a console), applied
+with `poke` on both machines at the first frame:
+
+| Pair | Words | Result |
+|---|---|---|
+| 027, the limit write of 21.4, full length | none | diverges: bag at tick 27078, seed at 28316, out-of-sync flags at 28321 and 28324 |
+| the same | A and B | no shared column differs in 28,526 ticks; load equal at every tick; both machines refuse the pick-up |
+| the same | A only | the copy's difference at ticks 5408–5411 is gone; the skill page's is not, and the divergence is as without the words: load from tick 24138, bag at 27078, seed at 28316, flags at 28321 and 28324 |
+| the same | B only | no divergence in 28,526 ticks; one column differs, slot 1's load in ticks 5408–5411 (the copy's) |
+| 105 (first 7,000 frames; the copy's 19-tick difference at tick 2186) | A only | no shared column differs in 6,784 ticks |
+| the seven pairs of 18.5 that differed in the load (021, 027, 063, 069, 080, 105, 111), full length, no other change | A and B | **no shared column differs in any: 248,654 ticks**, the load included (with fifteen sections alone: 27,939 ticks of difference). Each compares exactly as many ticks as in 18.5, so by that measure none took another course |
+
+A fuller repair would recompute in the tick where the bag changes (`recall_execute`,
+`shop_buy`, the script removals, the two axe skills, `inventory_onSkillPoint`); that is
+more code and was not written.
+
+### 21.6 The two level-up bytes
+
+Record +0xed and +0xee (0x4dd80d, 0x4dd80e for slot 1). Every access, by
+`tools/fieldxref.py` with the record's fixed base (**Observed**), and the writers seen by
+`--predict-trace` with the word at +0xec watched everywhere on both machines of the
+scripted pair of 18.4 (script S, fifteen sections; **Ran**):
+
+| | Where | Runs on | Seen in the pair |
+|---|---|---|---|
+| write +0xed = own slot, +0xee = 0 | `menu_openInventory` 0x1c183c, 0x1c1840, when the inventory opens with a level-up pending | the owner's machine, drawing side | tick 1778, machine A only |
+| write +0xee = 1 | `inventory_onStatPoint` 0x1c2628, when the last stat point is spent | every machine, in the tick | tick 2009 on A (on B the byte was 1 already) |
+| write both | `player_initNewCharacter` (0, 1), `player_importCharacter` 0x1bd698, 0x1bd6a0 (copied from the stored character), `inventory_onJoinPanel` 0x1c0490, `stats_screen` 0x1d1e98 (+0xed = −1, only when the panel's state word is 2) and 0x1d25c8, `stats_open` | set-up; the last three not reached | — |
+| read +0xee | `itemList_draw` 0x1cd5c0, `itemList_drawButtonHelp` 0x1cb444, `stats_screen` 0x1d1ee4: which of the level-up page's two halves is shown — stat points while it is 0, skills once it is 1 — and its button legend | the machine whose menu is open | — |
+| read +0xed | `stats_task` 0x1d1bc0 and `stats_open` 0x1d2eb8 only | never: `stats_open` has no caller and no pointer to it, and it alone starts `stats_task` | — |
+
+So for slot 1 in that pair: 00 01 on both machines until the level-up page opens; 01 00
+on its owner's machine from tick 1778; **01 01 from tick 2009** (section 18.4 says 01 00
+to the end: it is 01 00 only until the last stat point is spent); 00 01 on the other
+machine throughout. From tick 2009 on only +0xed differs, and for slot 0 it would not
+differ at all (its slot number is the byte's initial value).
+
+Can they matter? Not to the simulation: no code that runs in a tick reads either byte;
++0xed has no reader that can run at all, and +0xee is read only while drawing the owner's
+own level-up page, on the machine whose menu wrote it. `player_checksum` does not mix
+them. They do travel with the character: `player_importCharacter` takes both from the
+stored character, and in a lobby game either machine may be the one that saves a
+character (19.11) — so the stored copy holds the bytes of whichever machine saved last. A
+copy saved by the other machine holds 00 01, the state of a character with no level-up
+page open; a copy saved by the owner in the middle of the stat-point half holds +0xee 0,
+which the next `menu_openInventory` with a level-up pending writes anyway. What a
+character loaded with +0xee 0 and no stat points left shows on its skill page was not run
+(**Unknown**; it is the single-machine case and not a difference between machines).
+
+In passing (**Observed**, not run): `stats_screen` calls `player_giveExp(slot, 0)` at
+0x1d1e94, from drawing code, in the same branch as its write of +0xed. With 0 experience
+the function's loop does nothing unless the experience already passes the next level's
+threshold, which its own calls inside ticks never leave true.
+
+### 21.7 Leaving through the pause menu (lobby path)
+
+The path of section 19 with fifteen sections: both runners from power-on, log in, the
+host's warrior and the joiner's shaman from the server, launch, `hub`. Two leaves, one by
+each side; the same two test accounts, none added. The joiner's gold was written on both
+machines in one tick twice as a marker: 111111 at tick 4159, 222222 at tick 7603.
+
+The pause menu (start) has five entries: back to the game, use a gate scroll, load a
+game, options, exit. Cross on the last opens a yes/no prompt with the cursor on *no*; left
+then cross confirms.
+
+**Game 1: the joiner (slot 1) leaves.**
+
+| Tick | The leaver's machine | The other machine (host) |
+|---|---|---|
+| — | the prompt confirmed: the screen says it is disconnecting and telling the other players | |
+| 8655 | | `net_disconnectPlayer(1, 1)` from the handler of game message 6 (return address 0x1d8ffc), called twice in the tick; peer 1 marked dropped. A HUD line names the leaver; a notice says this machine has been disconnected and is going to the main menu |
+| 8660 | its last tick; then the front end | |
+| 8662 | | the leaver's character is dead: hit points 0, action state 4 (game message 4's damage call) |
+| 8894 | | its last tick, 239 after the drop; then the front end |
+| after | lobby state 5, the game list, still logged in, about 235 frames after its last tick | the same, about 215 frames after its last tick |
+
+**Game 2: the host (slot 0) leaves** — the mirror image: the joiner drops peer 0 at tick
+1123, the host's character is dead at 1132, the host's last tick is 1130 and the joiner's
+1362 (1123 + 239); both end at the game list.
+
+So **the player who stays does not carry on alone**; it is returned to the lobby four
+seconds later. This is the game's own rule, not the leave: `hud_run` tests
+`net_fewerThanTwoActive` 0x13dd88 every tick of a net game and, unless the game-complete
+flag is set, starts `g_netExitCountdown` 0x4f6948 at 240 (0x1db8f8–0x1db93c,
+**Observed**). It is the "239 ticks" of 19.11 and 20.4, which had guessed at game message
+8. The leaver's side (**Observed**): the menu's confirmed exit sets the same countdown to
+30 (0x18d108–0x18d110); while it runs, `hud_netStatusDraw` sends a disconnect request
+every frame (`hudmsg_sendDisconnectRequest`, 0x1dbe14) and at 1 closes the menus, ends a
+cutscene, restores the button configuration, clears `g_networkMode` and sets the session's
+exit code (0x1dbe44–0x1dbe80). With three or four machines the rule would let the others
+play on (**Inferred** from the test; not run: the accounts are two).
+
+**What the server receives: nothing about the leave.** From the leaver, after the last
+keep-alive: the three requests of a machine arriving at the game list — 0x0C for the
+public room (result 0), 0x55, 0x0E — about 235 frames after its last tick, then 0x55 every
+720 frames. From the other machine the same three when it arrived. No save, no message
+about the game, in either leave; the server had not known the game since its start
+(20.4), and the list both machines got was empty.
+
+**What the leaver's character save contains: the last periodic save, nothing newer.**
+Nothing in the leave path calls `game_sendCharacterToLobby` 0x1eb5c8 (**Observed**: its
+callers are the periodic one at 0x1e3f0c, `save_game` 0x2182b0, `inventory_close`
+0x1c531c and a script command, 0x146c88). The periodic one runs on ticks that are
+multiples of 1,800 when bit 16 of a fresh draw from the shared seed is 0; each machine
+then sends the active slot numbered (seed + its own slot) modulo the active count
+(0x1e3ec0–0x1e3f10, 0x1eb5c8) — with two machines, both characters, one from each
+machine. In game 1 the joiner's character was last saved at tick 5400 (by the joiner's own
+machine that time; the two before by the host's), 3,255 ticks before the leave. Joined
+again with the same stored character: **gold 111111**, the first marker; the second,
+written 1,052 ticks before the leave, was not on the server. A dropped slot is not
+"active", so the machine that stays cannot save the leaver's dead character in its last
+239 ticks (**Observed**; no save was sent in that window in either game).
+
+Not run: leaving in the middle of a fight or a cutscene, with a menu open on the other
+machine, or from a level other than `hub`; a save through `inventory_close` just before
+leaving; three or four machines.
+
+### 21.8 drundar: the walk, the help box, and the door on foot
+
+Section 20.3 wrote slot 0's position near the south arena door and then found that no
+stick direction moved it. The developer-LAN pair settles it (states `run4`: warrior in
+slot 0, machine B's; fifteen sections; the builds; `hub` at tick 700; the eleven names of
+20.3 appended to the quest table's thirteen entries in one tick; `drundar` by the
+pending-level write).
+
+| Run | What | Result |
+|---|---|---|
+| w2 | the quest-table write, then the stick: up, right, down, left, 40 frames each | slot 0 walks: 80 to 85 units each time, from (−169.8, −1953.5). Slot 1 likewise |
+| w3 | the same without the write | the same positions to the last digit: the write changes nothing about walking |
+| w4 | w2, then slot 0's position written to (−122, 960) at tick 1700 on both machines | no movement in eight pushes over 870 ticks. The lockstep pad carries the stick; action state 2; lockout word 0; object +0x231 0; cutscene flag 0. Two things changed: the quest table at tick 1701 and bit 0x400000 of the player object's flags at tick 1704, on both machines |
+| w5 | w4 with break points, then cross on the owner's pad | below |
+| w6 | w5 with break points in `Player_run`'s pad tests | below |
+
+**It is a help box.** In the tick after the write the level script's `arenaMessage`
+routine ran: `hud_showHelpMessage` 0x1d9830 opened a modal help box on the owner's machine
+(the one about the eight switches that lock the arena doors) and sent game message 2 with
+state 1 (`hudmsg_sendMenuState` from 0x1d98bc, tick 1701, machine B only); the message's
+handler set flag 0x400000 on slot 0's object on both machines at tick 1704. `Player_run`
+picks the pad at 0x1a5644–0x1a5744 and takes `g_zeroPad` 0x8667f0 when that flag is set
+(0x1a56e0–0x1a56e8). Counted on both machines for the real slot-0 object: in each of the
+161 ticks 1710–1870 the test was reached with the flag set and the code after it
+(0x1a56f0) was not; in the 201 ticks before the box and the 101 after it the flag was
+clear and the test passed; `dialog_isOpen` returned 0 in every one of them, so it is this
+test and not the dialog test. Cross on the owner's pad closed the box (`help_task` sent
+state 0 at tick 1874) and the player walked at once.
+
+**Why the box came up: the name was written with a capital letter.** The script reads and
+sets `drun_arenaMess`, and section 20.3 wrote that spelling. But the quest table is keyed
+by lower-cased names (`vars_get` 0x1ed778, `docs/script.md`): the entry written was never
+found, the script took the variable as unset, showed its first-visit box and stored its
+own entry — the table then had 25 entries, the written `drun_arenaMess` and a new
+`drun_arenamess`, both 1. The other ten names are lower-case already. A write that stands
+for a finished `drundar` must use `drun_arenamess`.
+
+**The same box is in the phase-15 lobby run's own screen log**: on the host's screen from
+the tick after the position write (frame 14,617 of that session, tick 2692), with its
+one-button prompt, until the position was written the second time (frame 25,351). Nobody
+pressed cross. So V54's "would not move,
+for a reason not found" is this, and 20.3's "Inferred: a position written into the object
+leaves it outside what the movement code uses" is wrong.
+
+**The door on foot.** In w5, after the box: from (−122, 960) the stick took slot 0 to
+(−181.8, 1020.0), (−124.9, 1076.9) — past the door line at y 1049 that 20.3 could not
+cross — and on to (−128.3, 1115.6), where at tick 2177 the exit zone's script wrote the
+arena's name into the pending level **on both machines in the same tick**. No shared
+column differs up to there (1,518 ticks; the object flag word added as a column for this
+run holds one per-machine bit, 0x200000, and is left out). So with the eight switch variables set the south
+door is open and a player walks through it into the zone; what 20.6 listed as not done is
+done on the developer-LAN pair, with the approach to the door still made by a write. It
+was not repeated through the lobby.
+
+### 21.9 Corrections to earlier sections and documents
+
+- 18.5 and FINDINGS V48: the call at 0x1a9578 is the tail of every pass through action
+  state 0, not a bow-shot event; the long differences are the skill page's call
+  (0x1d5978), not the copy's; "no other column followed" is true of those pairs and not of
+  the mechanism (21.4).
+- `docs/issues/prediction-copy.md`, the row for record +0x120: "same value whoever
+  computes it" is true and beside the point; the write is not harmless.
+- 18.4: +0xed, +0xee are 01 00 on the owner's machine only until the last stat point; then
+  01 01.
+- `docs/ui.md` P4: `stats_screen`'s write of +0xed needs the panel state 2 and did not
+  happen in the net level-up flow run here; `stats_open` and with it `stats_task` cannot
+  run.
+- 19.11, 20.4, FINDINGS V51 and V56: the return to the lobby 239 ticks after a drop is
+  `hud_run`'s own countdown (0x1db934 loads 240), not game message 8.
+- 20.3, 20.6, FINDINGS V54: the quest name is `drun_arenamess`; the player did not walk
+  because a help box was open.
+- `symbols/killpath.tsv`, `itemprop_tryPickup`: "reads only the record" stands, but the
+  record's load is one of the things a machine can hold differently.
+
+### 21.10 For the ledger
+
+Proposed, for whoever edits `FINDINGS.md` (this document does not):
+
+| Row | What to record |
+|---|---|
+| V48, carried load | **Not harmless.** The load is a stored sum. Recall potions, shop purchases into a new cell, script removals, the two axe skills and a point in skills 0x49 / 0x4a change the bags or the weights with no recompute; the owner's machine alone recomputes outside the tick — its prediction copy in action state 0 (0x1a9578) and four menu calls (0x1ce1b4, 0x1ce528, 0x1d5978, 0x1d0fc4). Readers in the tick: the pick-up test, three script gift commands, the two conjuring skills. Ran: soak pair 027 with the load limit written to 25.5 on both machines three ticks before a pick-up it makes anyway — one machine picks up, the other refuses; bag from tick 27078, seed at 28316, out-of-sync flags at 28321 / 28324. Play!, two identical instances |
+| new patch (two sections) | "prediction copy does not recompute the carried load" (ten words, 21.5 A) and "menu code does not recompute the carried load" (four words, 21.5 B). Ran on the rig: pair 027 with both has no difference in 28,526 ticks and both machines refuse the pick-up; the seven pairs that differed in the load have no difference in 248,654 ticks; results of each alone in 21.5. Untested on PCSX2 or a console |
+| V48, level-up bytes | Written by `menu_openInventory` on the owner's machine and by `inventory_onStatPoint` in the tick; +0xee is read only by the owner's level-up page, +0xed by nothing that can run. No reader in the simulation; not in the checksum; they are part of the stored character |
+| new | A player leaving through the pause menu: the other machine drops it in the tick the disconnect request arrives, kills its character, and — in a two-player game — is itself returned to the lobby's game list 239 ticks later by `hud_run`'s fewer-than-two-machines countdown (0x1db8f8). The lobby server is sent nothing at the leave; the leaver's stored character is the last periodic save (every 1,800 ticks at most), here 3,255 ticks old. Ran, lobby path, both directions |
+| V54 | The player did not walk because the level's help box about the arena doors was open on its machine: the quest name written was `drun_arenaMess`, the table holds lower-cased names. With the box closed it walks, through the open south door into the exit zone, and the level changes on both machines in the same tick (developer-LAN pair) |
+
+### 21.11 Not done
+
+- The two patch proposals on anything but the seven pairs of 18.5; a wider soak with
+  them; the sell and workshop presses; a conjured item or a script's gift decided differently (only the
+  pick-up was reproduced); how often real play comes within a potion's weight of the
+  limit.
+- The staleness itself: recomputing in the tick at each place of 21.2.
+- A character loaded with +0xee 0 and no stat points.
+- A leave with three or four machines, in a fight, or with a menu open elsewhere.
+- The door from `drundar` on foot through the lobby, and the walk to it without a
+  position write.
+- Anything on a console or in PCSX2: two copies of one Play! build show logic only.

@@ -261,3 +261,22 @@ author=reverse engineering test patch; confirmed on two linked Play! emulator in
 description=Companion to "stats page does not rewrite stored weapon damage", which removed the off-hand recompute. The page's other recompute, for the main weapon (0x1D2C38), still writes the stored attack rating on the owner's machine only - seen in the soak after changing equipment with the menu open. This removes it as well. The stats page then shows the attack rating and damage from before the equipment change until the menu is closed. FINDINGS K3, V46. Each machine fixes itself; use on every machine.
 // was: 0C06DC56 (jal Player_recalcDamage)
 patch=1,EE,001D2C38,word,00000000
+
+[Net test: carried weight is recomputed only inside the simulation]
+author=reverse engineering test patch; confirmed on two linked Play! emulator instances (FINDINGS V57: the pair that diverged agrees with it, and seven pairs that differed in this figure show no difference in 248,654 ticks); untested on PCSX2 or a console
+description=A character's carried weight is stored in its record and decides whether an item can be picked up. Some changes to the bags (a recall potion, a shop purchase into a new slot, items removed by a script or a skill) do not update it - but the owner's machine updates it anyway, outside the simulation, through its prediction of its own character and through four menu screens. The owner's machine can then allow or refuse a pick-up that the other machines decide differently, and the game goes out of sync. This makes the predicted character skip that update (0x1A9578, with a nine-word routine in the unused function at 0x257B0C, after the words other sections use) and removes the four menu-side updates. The weight shown in a menu can lag until the simulation next updates it, which also makes the shop's "too heavy to buy" test looser. FINDINGS V57. Every player should use the same setting.
+// was: 0C06FB04 5220001B 8E020024 0C053F6E 24040248 10400016 0040202D 27A50020 8E020024 86060038 0C06FB04 0C06FB04 0C06FB04 0C06FB04
+patch=1,EE,001A9578,word,08095EC3
+patch=1,EE,00257B0C,word,8FC1000C
+patch=1,EE,00257B10,word,00010C42
+patch=1,EE,00257B14,word,30210001
+patch=1,EE,00257B18,word,14200003
+patch=1,EE,00257B1C,word,00000000
+patch=1,EE,00257B20,word,0C06FB04
+patch=1,EE,00257B24,word,00000000
+patch=1,EE,00257B28,word,0806A560
+patch=1,EE,00257B2C,word,00000000
+patch=1,EE,001CE1B4,word,00000000
+patch=1,EE,001CE528,word,00000000
+patch=1,EE,001D5978,word,00000000
+patch=1,EE,001D0FC4,word,00000000
