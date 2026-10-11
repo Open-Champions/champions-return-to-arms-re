@@ -119,6 +119,8 @@ holds for the machines that have it — enable them on every machine:
 | mission menu / jump-gate menu ignore the chooser's pause menu | U2 |
 | save-point prompt ignores this machine's card screen | B9 |
 | net launch clears a stuck memory-card latch | B10, B11 |
+| predicted spin cast leaves the shared animation alone | two players of the same class using the spin skill — **confirmed live**: 6 of 6 pairs diverged without it, 0 of 6 with it |
+| creatures ignore being touched by the prediction copy | a pet or monster reacting early on its owner's machine (seen live on a summoned pet); the patch itself has only been executed in the interpreter so far |
 | prediction copy starts without pending damage | G11–G13, G24 |
 | equalise at once (LAG-1) | input delay staying high after a stall, which is also what widens K1 and K2 — **confirmed live**: peak 11 frames instead of 34, cleared in 10 s instead of 35 |
 

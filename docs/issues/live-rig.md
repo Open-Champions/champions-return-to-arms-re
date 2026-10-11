@@ -1,8 +1,10 @@
 # A live rig: the game running headless on Play!'s core
 
 Status of this document: phase 1 (sections 1–6), phase 2 (section 7: two joined
-machines, the baseline, the arena) and phase 3 (section 8: fuzzing at scale, a float
-mismatch between the machines, the lag sections). In short: two machines play one lockstep game here;
+machines, the baseline, the arena) phase 3 (section 8: fuzzing at scale, a float
+mismatch between the machines, the lag sections) and phase 4 (section 9: the arena with
+characters that have levels and skills — which does diverge — and a tested patch
+proposal for the spin skill, SB1). In short: two machines play one lockstep game here;
 random input found two real divergences, which are the ledger's K1 and K2, and the test
 patch for each removes it; the arena did **not** go out of sync in twelve runs.
 
@@ -890,3 +892,145 @@ lag sections were not run.
   `drunare` with the placeholder characters; that is all.
 - A per-object memory comparison in `compare.py`.
 - Float differences confined to particular operations (8.3).
+
+## 9. Phase 4: the arena with real characters
+
+Limits as in section 7 (two copies of one Play! build; the developer LAN start). What is
+new is the characters; they have levels, statistics and skills but still only their
+starting items. **Ran** unless marked.
+
+### 9.1 The characters
+
+The developer lobby creates its characters itself when the game starts (4d), so there is
+no record to prepare before the confirm. Two things are done instead:
+
+- **Class.** The lobby takes each slot's character model from a table at 0x530338 (four
+  words: 7, 11, 8, 10). Writing 0 to the first word before the confirm makes slot 0 a
+  melee class; slot 1 stays the lobby's caster with a summoned pet (model 11). The
+  characters are then built by the game's own `player_initNewCharacter`.
+  (`examples/pair-chars-start.rig`.)
+- **Level, statistics, skills.** In lockstep tick 680, identically on both machines
+  (`examples/pair-chars.rig`, 53 `ontick` writes): level 25 (+0x58, +0x59); base and
+  effective statistics 200 / 300 / 150 / 250; the skill-rank list (+0x4b08) rewritten
+  with rank 10 for four skills (slot 0: ids 41, 76, 77, 78 — the spin and three shouts)
+  or five (slot 1: 89, 87, 88, 90, 94 — a bolt, two area effects, a summon, a shield);
+  one ability record per skill in the form the game's own starting skill has (the name
+  that marks a `Skill` object, the id at +0x20, the bytes 01 00 at +0x24); the first two
+  on the two ability buttons (+0x4a84). No healing skill was included (its id was not
+  looked up), and no items.
+
+The game's own recompute then gave maximum hit points 897.5 and 709.0 and maximum mana
+580.5. **Equal on both machines:** the tick log's checksums of the statistics block,
+points, equipment, ability records and skill ranks agreed on every tick of every pair
+below until a divergence, and in the pairs without one to the end. The skills work: in the
+first probe pair `Player_castSkill` was entered 30 times on one machine, the spin's update
+372 times, the melee player spent 511 ticks in action state 6, and the pair took 236
+damage calls and gained experience.
+
+The random input gained a group `cast` (both ability buttons at four times the rate).
+
+### 9.2 The arena, sections K1, K2 and LAG-1 on
+
+Twelve pairs (`fuzz.py`, seeds 400–411, 14,000 frames; mix: movement, attack, block,
+weapon swap, abilities, both potions, use, D-pad selector, inventory button; six with no
+bus delay, six with delay 4, jitter 3, loss 5%): into `drunare` by the pending-level
+write, the walk into the trigger, the unskipped opening cutscene, the fight.
+
+**172,496 ticks; 770 casts and 6,905 spin updates on machine A alone; 13 deaths; in five
+pairs the fight was won** — the level column goes `strife` → `drunare` → `hub2` and the
+cutscene flag was up for about 5,670 ticks (the opening's 1,268 plus the later ones), so
+the boss, the closing cutscene and the automatic level change all ran, in sync. In the
+others the party died and came back through `hub`.
+
+**Three of the twelve diverged, each repeating exactly:**
+
+| Pair | First difference | What it is |
+|---|---|---|
+| 402, tick 4932; 410, tick 6920 (no bus delay) | bag 2 of player 1 | **Stale bytes in a picked-up item.** Both machines add the same item to the same cell in the same tick (definition 0x3fc3d0, quantity 1); the 0x48-byte records differ in one 16-bit field, +0x2e: the value of the second modifier slot, whose id is −1 (unused). Machine A has 0, machine B 0x3f80. Address in pair 402: 0x4dfcd6. The item arrives through `Player_interact` on an `ItemProp`; where the dropped item got the differing bytes was not traced (**Inferred**: an unused field never initialised when the loot was made). Silent: no out-of-sync flag by the end of the run. Whether any reader looks at the value of an unused slot is not known |
+| 406, tick 7541 (no bus delay) | the shared seed, then the out-of-sync flag at 7543 | **The summoned pet, through the prediction copy.** Machine B drew seven values that machine A did not. Break points on every named function for ticks 7540–7541 on both machines show why: in tick 7541 `CastBadger_run` (the pet of player 1's summon skill) took its attack branch on B (`GameObject_rand` from +0x2cc, `Creature_hitTargetInArc` from +0x314, then `damage_apply`) and its turn-toward-target branch on A (+0x360, +0x370). The pet object (0x630fc0 on both machines), logged every tick: creature flag word +0xac differs from tick 7481 (bit 0x8000000 set on A, the owner's machine); the animation fields from 7523; position and facing from 7524. With "Arena diagnostic: no prediction copy" added the pair is in step past tick 7961. So the pet's state was changed on its owner's machine by something the prediction copy did. Which instruction set the flag was not found |
+
+### 9.3 The same twelve with the sections off
+
+165,225 ticks; four fights won; **seven of twelve diverged**, all repeating:
+
+| Pair | First difference | Follows |
+|---|---|---|
+| 402 | bag 2 of player 1, tick 4932 | as with the sections on (stale bytes) |
+| 406 | seed, tick 7541 | as with the sections on (the pet) |
+| 403 | bag 1 of player 0, tick 6253 | — |
+| 404 | bag 0 of player 0, tick 8748 | — |
+| 405 | bag 1 of player 0, tick 5306 | bag 2 of player 1 at 5308, hit points at 5373 |
+| 409 | bag 2 of player 0, tick 7283 | **seed at 7372, out-of-sync flag at 7379** |
+| 410 | bag 1 of player 0, tick 3663 | bag 2 of player 1 at 6920 |
+
+The five that the sections remove are bag differences — an item or a potion in one
+machine's copy of a bag and not the other's, which is what K1 (a pickup on the other
+machine only) and K2 predict for the arena. (The sections include LAG-1, which changes
+timing, so "removed" is not proof for each pair separately; the classes are K1's and
+K2's.) One of the five became a seed difference and the game's out-of-sync message 96
+ticks later; the other four were still silent when the run ended.
+
+So in an ordinary skilled two-player fight of about four minutes, with these characters
+and random but plausible input: K1 / K2 caused a divergence in 5 of 12 fights (42%), one
+of them visible; with K1, K2 and LAG-1 patched, 3 of 12 still diverged, one visibly.
+That is often, but it is not "every run" — and neither number includes the case below.
+
+### 9.4 Two players of the same class with the spin skill (SB1): every pair, and a fix
+
+States with both lobby models set to 0 (0x530338 and 0x53033c), both characters built
+as the melee one above (`examples/pair-chars-same.rig`: the spin, id 41, on the first
+ability button; mana refilled on both machines every 200 ticks), level `strife`, input
+movement and the two ability buttons, bus delay 8, or 12 with jitter 4; K1, K2 and LAG-1
+on.
+
+| | Pairs | Ticks compared | Casts / spin updates (machine A) | Diverged |
+|---|---|---|---|---|
+| as shipped | 6 | 3,571 | 423 / 5,156 | **6 of 6**, first at ticks 786–1161 (within about 100–500 ticks of the input starting); positions first in five, seed and action state in one; in those five the out-of-sync flag followed 10–55 ticks later |
+| with the patch below on both | 6 | 36,761 | 576 / 12,124 | **0** |
+
+This is ledger row SB1 on the running game: `SpellCyclone_ctor` stores into event slot 0
+of the spin animation clip, which all characters of the class share, at 0x2d1978 (mask
+byte, clip +0x18) and 0x2d197c (time, clip +0x14), before its prediction-copy test at
+0x2d19d0. The patch that was tested moves the two stores behind a copy test of their own:
+
+| Address | Original word | New word | Meaning of the new word |
+|---|---|---|---|
+| 0x2D1978 | A0620018 | 08095EB9 | `j 0x257ae4` (was `sb $v0, 0x18($v1)`) |
+| 0x2D197C | E4630014 | 00000000 | `nop` in the delay slot (was `swc1 $f3, 0x14($v1)`) |
+| 0x257AE4 | 8E0300E8 | 8E01000C | `lw $at, 0xc($s0)` — the spell's caster |
+| 0x257AE8 | 0040882D | 8C21000C | `lw $at, 0xc($at)` — the caster's flags |
+| 0x257AEC | 2402FFCF | 00010C42 | `srl $at, $at, 17` |
+| 0x257AF0 | 8E040024 | 30210001 | `andi $at, $at, 1` — the prediction-copy bit 0x20000 |
+| 0x257AF4 | 00621824 | 14200003 | `bnez $at, 0x257b04` — a copy skips the stores |
+| 0x257AF8 | AE0300E8 | 00000000 | `nop` |
+| 0x257AFC | 0060282D | A0620018 | `sb $v0, 0x18($v1)` — the first original store |
+| 0x257B00 | 0C05E554 | E4630014 | `swc1 $f3, 0x14($v1)` — the second |
+| 0x257B04 | 8C84000C | 080B4660 | `j 0x2d1980` — back to the constructor |
+| 0x257B08 | 02228826 | 00000000 | `nop` |
+
+As patch-file lines: `patch=1,EE,<address>,word,<new word>` for the twelve rows. The ten
+words at 0x257ae4–0x257b0b are inside the unused function `Cyclops_dropClub`, after the
+twelve words the pose-cache section already uses.
+
+- What it changes: a prediction copy's cast no longer writes the shared clip; the real
+  cast, in the tick, still does.
+- What could go wrong: `$at` is used as scratch — it is dead at that point (last used at
+  0x2d1960 to load a constant); the caster pointer at spell +0xc is assumed set before
+  0x2d1978, which the constructor's own unconditional read at 0x2d19c4 supports but which
+  was not checked instruction by instruction; a copy's own spin, started ahead of the real
+  one, runs without the event slot having been set by its own cast, so the owner may see
+  the predicted spin end differently for a few frames (cosmetic, not looked at); and if
+  `Cyclops_dropClub` is called after all, the game runs this code instead of it.
+- Every machine with a same-class partner should apply it; a machine without it still
+  shifts the other player's spin locally.
+- Tested: the six pairs above, in an emulator, on the developer start. Not tested on a
+  console, with the class's other spin id (84), or in the arena.
+
+### 9.5 Not done
+
+- The door from `drundar` with the quest state (step 4): not started.
+- Items and a healing skill for the characters; lobby characters; more than one build.
+- Which patch sections, if any, remove the stale-bytes and pet divergences: the automatic
+  trial did not run (a mistake in how it was started), and only "no prediction copy" was
+  tried by hand, on the pet case.
+- The instruction that first writes each of those two differences.

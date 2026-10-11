@@ -185,3 +185,34 @@ author=reverse engineering test patch, executed in the function-level interprete
 description=Some level scripts in the hub and three other levels (for example the store) call a built-in command with fewer arguments than they declare. Each time, the script machine's saved stack pointer ends 4 too high, and from the second time the amount is read from whatever memory follows the script file. This makes a script return store the stack pointer the run started with (script interpreter RETN, 0x13FC24), so nothing drifts. All 1,828 script entry points behave the same with it in the interpreter. FINDINGS SM1. Changes no shared state by itself; each machine that uses it is protected.
 // was: AEF60018 (sw s6,0x18(s7))
 patch=1,EE,0013FC24,word,AEEC0018
+
+[Net test: predicted spin cast leaves the shared animation alone]
+author=reverse engineering test patch; confirmed on two linked Play! emulator instances (FINDINGS V19: 6 of 6 same-class pairs diverged without it, 0 of 6 with it); untested on PCSX2 or a console
+description=When a character casts the spin skill, the game writes a timing value into an animation that every character of that class shares - even when the cast is only your own machine's early prediction of your character. Two players of the same class who both spin then go out of sync. With this, a predicted cast skips those two writes; the real cast still makes them (SpellCyclone constructor, 0x2D1978, with a 10-word routine in the unused function at 0x257AE4, after the words the pose-cache section uses). FINDINGS SB1. Changes nothing shared by itself; each machine that uses it is protected, so use it on every machine.
+// was: A0620018 E4630014 8E0300E8 0040882D 2402FFCF 8E040024 00621824 AE0300E8 0060282D 0C05E554 8C84000C 02228826 (the two stores, then ten words of the unused function, in address order)
+patch=1,EE,002D1978,word,08095EB9
+patch=1,EE,002D197C,word,00000000
+patch=1,EE,00257AE4,word,8E01000C
+patch=1,EE,00257AE8,word,8C21000C
+patch=1,EE,00257AEC,word,00010C42
+patch=1,EE,00257AF0,word,30210001
+patch=1,EE,00257AF4,word,14200003
+patch=1,EE,00257AF8,word,00000000
+patch=1,EE,00257AFC,word,A0620018
+patch=1,EE,00257B00,word,E4630014
+patch=1,EE,00257B04,word,080B4660
+patch=1,EE,00257B08,word,00000000
+
+[Net test: creatures ignore being touched by the prediction copy]
+author=reverse engineering test patch; executed in the function-level interpreter; not yet run on the live rig, PCSX2 or a console
+description=When a player touches a creature, the creature is flagged and reacts on its next step. The game also does this when the thing touching is your own machine's prediction copy of your character, which runs a few steps ahead and exists on your machine only - so your pet (always next to you), or a monster you bump into, reacts earlier on your machine than on anyone else's. On the live rig this put a summoned pet out of sync in the arena. With this, a creature is flagged only by a real player (Creature touch handler, rewritten in place, 0x11A41C-0x11A440). FINDINGS G25, V18. Changes nothing shared by itself; each machine that uses it is protected, so use it on every machine.
+// was: 30420040 10400006 00000000 DC8200A8 00031B3C 00431025 FC8200A8 03E00008 00000000
+patch=1,EE,0011A41C,word,00021182
+patch=1,EE,0011A420,word,30420801
+patch=1,EE,0011A424,word,2442FFFF
+patch=1,EE,0011A428,word,14400005
+patch=1,EE,0011A430,word,DC8200A8
+patch=1,EE,0011A434,word,00031B3C
+patch=1,EE,0011A438,word,00431025
+patch=1,EE,0011A43C,word,FC8200A8
+patch=1,EE,0011A440,word,03E00008

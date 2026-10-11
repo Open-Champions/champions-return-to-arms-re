@@ -17,7 +17,8 @@ in this directory; what the rig has shown so far is in `docs/issues/live-rig.md`
 | `examples/boot-to-hub.rig` | script: power-on to a controllable character in the first level, offline |
 | `examples/net-solo.rig` | script: power-on to a net game on one machine, through the game's developer LAN start |
 | `examples/pair-start.rig` | script: two joined machines, power-on to one lockstep net game |
-| `examples/pair-arena.rig`, `pair-k1.rig`, `pair-k2.rig` | scripts for a joined pair: into the arena and through its opening; the two divergences found so far |
+| `examples/pair-arena.rig`, `pair-k1.rig`, `pair-k2.rig` | scripts for a joined pair: into the arena and through its opening; the two divergences found first |
+| `examples/pair-chars-start.rig`, `pair-chars.rig`, `pair-chars-same.rig` | a pair whose slot 0 is a melee class; characters with level 25 and skills written in one tick on both machines; the same-class spin case |
 | `compare.py` | lines up the tick logs of two machines and finds the first difference; diffs two memory dumps |
 | `fuzz.py` | runs many joined pairs unattended on seeded random input and groups the divergences |
 
@@ -128,8 +129,8 @@ One per line, run in order; `#` starts a comment.
 | `echo text`, `log on\|off`, `sync [token]` | print a line; switch the frame log; print a marker and flush |
 | `break <addr[,opts]>`, `unbreak <addr>` | add or remove a break point |
 | `netshim` | replace the game's libnet entry points (needs `--net-shim`) |
-| `fuzz <seed> <frames> <groups>` | seeded random input: `move`, `rstick`, `fight`, `potion`, `use`, `dpad`, `select`, `start`, `l3r3`, joined by commas |
-| `ontick <N> <command>` | run `poke`, `pnach`, `dump`, `show`, `echo`, `save`, `press`, `release` or `quit` inside lockstep tick N |
+| `fuzz <seed> <frames> <groups>` | seeded random input: `move`, `rstick`, `fight`, `cast`, `potion`, `use`, `dpad`, `select`, `start`, `l3r3`, `idle`, joined by commas |
+| `ontick <N> <command>` | run `poke`, `pnach`, `dump`, `show`, `echo`, `save`, `press`, `release`, `break` or `quit` inside lockstep tick N. `ontick N break <addr>,val=tick=g_netFrame:s32` for many functions, on both machines, followed by `ontick N+2 quit`, logs which functions ran in those ticks; the difference between the two logs is the code that ran on one machine only |
 | `A: <command>`, `B: <command>` | only on that one of two joined machines; the other lets the same number of frames pass |
 | `quit` | end the run |
 
