@@ -1,0 +1,1217 @@
+// See Rta.h. Everything here that touches the emulated machine runs on the machine's own
+// thread: at the start of a vertical blank (from the pad handler, where the application
+// reads its input), from the Ethernet chip's poll and transmit hooks, or while the
+// machine is stopped for loading an executable.
+#include "Rta.h"
+#include "RtaNet.h"
+
+#include <QCommandLineParser>
+#include <QCoreApplication>
+#include <QStringList>
+
+#include <atomic>
+#include <chrono>
+#include <cstdarg>
+#include <cstdlib>
+#include <cstring>
+#include <deque>
+#include <fstream>
+#include <mutex>
+#include <random>
+#include <set>
+#include <sstream>
+
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <ifaddrs.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <signal.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
+#include <unistd.h>
+
+#include "AppConfig.h"
+#include "PS2VM.h"
+#include "PS2VM_Preferences.h"
+#include "PathUtils.h"
+#include "PreferenceDefs.h"
+#include "ee/PS2OS.h"
+#include "input/PH_GenericInput.h"
+#include "GSH_OpenGLQt.h"
+
+#define PREF_RTA_GUEST_ADDRESS "rta.net.guestaddress"
+
+namespace
+{
+	// The executable these patches are for, and the checksum PCSX2 names its patch files
+	// by (every 32-bit word of the file exclusive-ored together).
+	const char* GAME_EXECUTABLE = "SLUS_209.73";
+	const uint32 GAME_CRC = 0x4028A55F;
+
+	struct Options
+	{
+		std::string dataDir;
+		bool net = true;
+		std::string server;       // host name or address; empty: this computer
+		std::string serverPublic; // the server's public address, when on the server's own network
+		std::string guest;        // the emulated machine's address
+		std::string loopback = "auto";
+		std::string lobbyName = "con.soegames.net";
+		bool bindGamePorts = true;
+		std::string patchFile;
+		std::string patchSections; // "name;name", "@file", "*" or empty
+		std::vector<std::string> extraPatches;
+		bool netcnf = true;
+		std::string controlPath;
+		std::string pcapPath;
+	};
+
+	struct PatchWord
+	{
+		uint32 address = 0;
+		uint32 value = 0;
+	};
+
+	std::string Trim(std::string s)
+	{
+		while(!s.empty() && (s.back() == '\r' || s.back() == '\n' || s.back() == ' ' || s.back() == '\t')) s.pop_back();
+		size_t start = 0;
+		while(start < s.size() && (s[start] == ' ' || s[start] == '\t')) start++;
+		return s.substr(start);
+	}
+
+	std::vector<std::string> Split(const std::string& s, char separator)
+	{
+		std::vector<std::string> parts;
+		std::string part;
+		std::istringstream stream(s);
+		while(std::getline(stream, part, separator)) parts.push_back(part);
+		return parts;
+	}
+
+	std::string Format(const char* format, ...)
+	{
+		char text[1024];
+		va_list args;
+		va_start(args, format);
+		vsnprintf(text, sizeof(text), format, args);
+		va_end(args);
+		return text;
+	}
+
+	// PCSX2-style patch file: [section] headers and  patch=1,EE,<addr>,word,<value>  lines.
+	// Returns the words of the wanted sections ("*": all) and the names that were found.
+	bool ReadPatchFile(const std::string& path, const std::set<std::string>& wanted, bool all, std::vector<PatchWord>& words, std::set<std::string>& found, std::string& error)
+	{
+		std::ifstream file(path);
+		if(!file)
+		{
+			error = "cannot read " + path;
+			return false;
+		}
+		std::string line, section;
+		while(std::getline(file, line))
+		{
+			line = Trim(line);
+			if(line.size() >= 2 && line.front() == '[' && line.back() == ']')
+			{
+				section = line.substr(1, line.size() - 2);
+				continue;
+			}
+			if(line.compare(0, 6, "patch=") != 0) continue;
+			if(!all && wanted.count(section) == 0) continue;
+			auto fields = Split(line.substr(6), ',');
+			std::string type = fields.size() == 5 ? fields[3] : "";
+			std::string cpu = fields.size() == 5 ? fields[1] : "";
+			for(auto& c : type) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+			for(auto& c : cpu) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+			if(type != "word" || cpu != "ee")
+			{
+				error = path + ": only EE word patches are supported: " + line;
+				return false;
+			}
+			PatchWord word;
+			word.address = static_cast<uint32>(strtoul(fields[2].c_str(), nullptr, 16)) & 0x1FFFFFFF;
+			word.value = static_cast<uint32>(strtoul(fields[4].c_str(), nullptr, 16));
+			if(word.address >= PS2::EE_RAM_SIZE - 4 || (word.address & 3))
+			{
+				error = path + ": address outside main memory: " + line;
+				return false;
+			}
+			words.push_back(word);
+			found.insert(section);
+		}
+		return true;
+	}
+
+	// ---- the network setting on the memory card ---------------------------------------
+	// The game will not go online without a network setting saved on a memory card, and
+	// offers to restart into Sony's set-up program to make one. What that program saves
+	// for "Ethernet adaptor, automatic address, automatic DNS" is four small files, and
+	// they are written here directly instead. Two of them are text scrambled by Sony's
+	// module with a key taken from the console's identification number; Play! gives every
+	// emulated console the same number, so the key is a constant here: each 16-bit word
+	// is rotated left by 6, 3, 3, 6, 3, 3, ... bits and inverted (an odd last byte the
+	// same way in 8 bits). The files this writes are byte for byte what the set-up
+	// program saved on Play! (docs/issues/live-rig.md section 13.2), without its icon.
+	std::vector<uint8> NetcnfScramble(const std::string& text)
+	{
+		static const unsigned int key[3] = {6, 3, 3};
+		std::vector<uint8> out;
+		size_t index = 0;
+		for(size_t i = 0; i + 1 < text.size(); i += 2, index++)
+		{
+			unsigned int word = static_cast<uint8>(text[i]) | (static_cast<uint8>(text[i + 1]) << 8);
+			unsigned int shift = key[index % 3];
+			word = ((word << shift) | (word >> (16 - shift))) & 0xFFFF;
+			word ^= 0xFFFF;
+			out.push_back(static_cast<uint8>(word));
+			out.push_back(static_cast<uint8>(word >> 8));
+		}
+		if(text.size() & 1)
+		{
+			unsigned int byte = static_cast<uint8>(text.back());
+			unsigned int shift = key[index % 3];
+			byte = ((byte << shift) | (byte >> (8 - shift))) & 0xFF;
+			out.push_back(static_cast<uint8>(byte ^ 0xFF));
+		}
+		return out;
+	}
+
+	bool WriteFile(const fs::path& path, const void* data, size_t size)
+	{
+		FILE* file = fopen(path.string().c_str(), "wb");
+		if(!file) return false;
+		bool ok = fwrite(data, 1, size, file) == size;
+		fclose(file);
+		return ok;
+	}
+
+	// 0: there already; 1: written; -1: could not
+	int WriteNetcnf(const fs::path& cardDirectory)
+	{
+		auto directory = cardDirectory / "BWNETCNF";
+		std::error_code error;
+		if(fs::exists(directory / "BWNETCNF", error)) return 0;
+		fs::create_directories(directory, error);
+		const std::string header = "# <Sony Computer Entertainment Inc.>\n\n";
+		const std::string index =
+		    "0,1,net000.cnf,Combination1\n"
+		    "1,1,ifc000.dat,Setting 1\n"
+		    "2,1,dev000.dat,SCE/Ethernet (Network Adaptor)\n";
+		const std::string combination = header + "interface \"ifc000.dat + dev000.dat\" \"ifc000.dat\" \"dev000.dat\"\n";
+		auto interface = NetcnfScramble(header + "type nic\ndhcp\n");
+		auto device = NetcnfScramble(header + "type nic\nvendor \"SCE\"\nproduct \"Ethernet (Network Adaptor)\"\nphy_config auto\n");
+		bool ok = WriteFile(directory / "net000.cnf", combination.data(), combination.size());
+		ok = ok && WriteFile(directory / "ifc000.dat", interface.data(), interface.size());
+		ok = ok && WriteFile(directory / "dev000.dat", device.data(), device.size());
+		// the index last: it is what says a setting exists
+		ok = ok && WriteFile(directory / "BWNETCNF", index.data(), index.size());
+		return ok ? 1 : -1;
+	}
+
+	// ---- addresses of this computer -----------------------------------------------------
+
+	// the address this computer uses toward the outside (no packet is sent)
+	uint32 PrimaryAddress()
+	{
+		int fd = socket(AF_INET, SOCK_DGRAM, 0);
+		if(fd < 0) return 0;
+		sockaddr_in to = {};
+		to.sin_family = AF_INET;
+		to.sin_addr.s_addr = htonl(0x08080808);
+		to.sin_port = htons(53);
+		uint32 result = 0;
+		if(connect(fd, reinterpret_cast<sockaddr*>(&to), sizeof(to)) == 0)
+		{
+			sockaddr_in local = {};
+			socklen_t length = sizeof(local);
+			if(getsockname(fd, reinterpret_cast<sockaddr*>(&local), &length) == 0) result = ntohl(local.sin_addr.s_addr);
+		}
+		close(fd);
+		if(result == 0 || Rta::CNet::IsLoopback(result))
+		{
+			// no route to the outside: any address of a running interface will do
+			result = 0;
+			ifaddrs* list = nullptr;
+			if(getifaddrs(&list) == 0)
+			{
+				for(auto* entry = list; entry; entry = entry->ifa_next)
+				{
+					if(!entry->ifa_addr || entry->ifa_addr->sa_family != AF_INET) continue;
+					uint32 address = ntohl(reinterpret_cast<sockaddr_in*>(entry->ifa_addr)->sin_addr.s_addr);
+					if(Rta::CNet::IsLoopback(address) || (address >> 16) == 0xA9FE) continue;
+					result = address;
+					break;
+				}
+				freeifaddrs(list);
+			}
+		}
+		return result;
+	}
+
+	bool IsOwnAddress(uint32 address)
+	{
+		if(Rta::CNet::IsLoopback(address)) return true;
+		bool own = false;
+		ifaddrs* list = nullptr;
+		if(getifaddrs(&list) == 0)
+		{
+			for(auto* entry = list; entry; entry = entry->ifa_next)
+			{
+				if(!entry->ifa_addr || entry->ifa_addr->sa_family != AF_INET) continue;
+				if(ntohl(reinterpret_cast<sockaddr_in*>(entry->ifa_addr)->sin_addr.s_addr) == address) own = true;
+			}
+			freeifaddrs(list);
+		}
+		return own;
+	}
+
+	bool ResolveHost(const std::string& name, uint32& address)
+	{
+		if(Rta::CNet::ParseIp(name, address)) return true;
+		addrinfo hints = {};
+		hints.ai_family = AF_INET;
+		hints.ai_socktype = SOCK_STREAM;
+		addrinfo* list = nullptr;
+		if(getaddrinfo(name.c_str(), nullptr, &hints, &list) != 0 || !list) return false;
+		address = ntohl(reinterpret_cast<sockaddr_in*>(list->ai_addr)->sin_addr.s_addr);
+		freeaddrinfo(list);
+		return true;
+	}
+
+	// ---- buttons, for the control socket ------------------------------------------------
+
+	using Button = PS2::CControllerInfo::BUTTON;
+
+	bool ParseButtons(const std::string& text, uint32& mask)
+	{
+		static const std::pair<const char*, Button> names[] = {
+		    {"up", Button::DPAD_UP}, {"down", Button::DPAD_DOWN}, {"left", Button::DPAD_LEFT}, {"right", Button::DPAD_RIGHT},
+		    {"select", Button::SELECT}, {"start", Button::START}, {"square", Button::SQUARE}, {"triangle", Button::TRIANGLE},
+		    {"circle", Button::CIRCLE}, {"cross", Button::CROSS}, {"l1", Button::L1}, {"l2", Button::L2}, {"l3", Button::L3},
+		    {"r1", Button::R1}, {"r2", Button::R2}, {"r3", Button::R3}};
+		mask = 0;
+		for(const auto& part : Split(text, '+'))
+		{
+			bool known = false;
+			for(const auto& name : names)
+			{
+				if(part == name.first)
+				{
+					mask |= 1u << name.second;
+					known = true;
+				}
+			}
+			if(!known) return false;
+		}
+		return true;
+	}
+
+	// ---- the state ----------------------------------------------------------------------
+
+	class CPadHandlerRta;
+
+	class CState
+	{
+	public:
+		Options options;
+
+		void Log(const std::string& line)
+		{
+			std::lock_guard<std::mutex> lock(m_logMutex);
+			auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+			char stamp[32];
+			strftime(stamp, sizeof(stamp), "%H:%M:%S", localtime(&now));
+			fprintf(stderr, "[rta %s] %s\n", stamp, line.c_str());
+			if(m_logFile)
+			{
+				fprintf(m_logFile, "%s frame %llu  %s\n", stamp, static_cast<unsigned long long>(m_frame.load()), line.c_str());
+				fflush(m_logFile);
+			}
+		}
+
+		void Attach(CPS2VM* vm)
+		{
+			m_vm = vm;
+			auto base = CAppConfig::GetInstance().GetBasePath();
+			m_logFile = fopen((base / "rta.log").string().c_str(), "a");
+			Log("---- start; data directory " + base.string());
+
+			if(!options.dataDir.empty())
+			{
+				// Play! keeps these as absolute paths in its settings file, so a copied
+				// data directory would go on using the memory cards of the original.
+				auto& config = CAppConfig::GetInstance();
+				const std::pair<const char*, const char*> directories[] = {
+				    {PREF_PS2_MC0_DIRECTORY, "mc0"}, {PREF_PS2_MC1_DIRECTORY, "mc1"}, {PREF_PS2_HOST_DIRECTORY, "host"}, {PREF_PS2_ROM0_DIRECTORY, "rom0"}};
+				for(const auto& directory : directories)
+				{
+					auto path = base / "vfs" / directory.second;
+					Framework::PathUtils::EnsurePathExists(path);
+					config.SetPreferencePath(directory.first, path);
+				}
+			}
+
+			if(options.netcnf)
+			{
+				auto card = CAppConfig::GetInstance().GetPreferencePath(PREF_PS2_MC0_DIRECTORY);
+				int result = WriteNetcnf(card);
+				if(result > 0) Log("network setting written to the memory card in slot 1 (" + card.string() + ")");
+				if(result < 0) Log("COULD NOT write the network setting to " + card.string());
+			}
+
+			LoadPatches();
+			if(options.net) StartNet();
+
+			m_executableChange = m_vm->m_ee->m_os->OnExecutableChange.Connect([this]() { OnExecutableChange(); });
+			if(!options.controlPath.empty()) StartControl();
+			Rta::KeepAwake();
+		}
+
+		void Detach()
+		{
+			m_executableChange.reset();
+			if(m_vm && m_net)
+			{
+				auto& speed = m_vm->m_iop->m_speed;
+				speed.SetEthernetFrameTxHandler(Iop::CSpeed::EthernetFrameTxHandler());
+				speed.SetEthernetPollHandler(Iop::CSpeed::EthernetPollHandler(), 0);
+			}
+			m_net.reset();
+			if(m_listenFd >= 0)
+			{
+				close(m_listenFd);
+				unlink(options.controlPath.c_str());
+			}
+			if(m_clientFd >= 0) close(m_clientFd);
+			m_listenFd = m_clientFd = -1;
+			m_vm = nullptr;
+		}
+
+		std::string StatusText()
+		{
+			std::lock_guard<std::mutex> lock(m_logMutex);
+			return m_status;
+		}
+
+		// ---- the network ----------------------------------------------------------------
+
+		void StartNet()
+		{
+			Rta::NetConfig config;
+			bool own = false;
+			std::string where;
+			if(options.server.empty() || options.server == "localhost")
+				own = true;
+			else if(!ResolveHost(options.server, config.serverIp))
+			{
+				Log("CANNOT find the lobby server '" + options.server + "': the game will not get online");
+				m_netNote = "server not found";
+			}
+			else if(Rta::CNet::IsLoopback(config.serverIp))
+				own = true;
+			if(own)
+			{
+				// A server on this computer is reached at the computer's outside address,
+				// as the rig does: the emulated machine cannot be told a loop-back address,
+				// and the lobby server must see the address other players can use.
+				config.serverIp = PrimaryAddress();
+				if(config.serverIp == 0)
+				{
+					config.serverIp = INADDR_LOOPBACK;
+					config.guestServerIp = 0xC6120002; // 198.18.0.2, a name for it inside the made-up network
+					where = "this computer, which has no network address: only one emulator can play";
+				}
+				else
+					where = "this computer (" + Rta::CNet::IpText(config.serverIp) + ")";
+			}
+			else if(config.serverIp != 0)
+				where = options.server + (Rta::CNet::IpText(config.serverIp) == options.server ? "" : " (" + Rta::CNet::IpText(config.serverIp) + ")");
+
+			if(!options.serverPublic.empty())
+			{
+				uint32 address = 0;
+				if(ResolveHost(options.serverPublic, address))
+					config.serverAliases.insert(address);
+				else
+					Log("cannot make sense of the server's public address '" + options.serverPublic + "'");
+			}
+
+			// The emulated machine's own address. The game reports it to the lobby server as
+			// its "own-network" address and other players' games try it, so it should differ
+			// from player to player: a random one from the range set aside for test networks,
+			// kept in the settings.
+			auto& appConfig = CAppConfig::GetInstance();
+			appConfig.RegisterPreferenceString(PREF_RTA_GUEST_ADDRESS, "");
+			std::string guest = options.guest.empty() ? appConfig.GetPreferenceString(PREF_RTA_GUEST_ADDRESS) : options.guest;
+			uint32 guestIp = 0;
+			if(!Rta::CNet::ParseIp(guest, guestIp) || (guestIp & config.netmask) != (config.gatewayIp & config.netmask) || (guestIp & 0xFF) == 0 || (guestIp & 0xFF) == 255 || (guestIp >> 8) == (config.gatewayIp >> 8))
+			{
+				if(!guest.empty()) Log("the machine's address '" + guest + "' is not usable (it has to be 198.19.x.y); a new one is made");
+				std::random_device random;
+				guestIp = 0xC6130000 | ((random() % 256) << 8) | (2 + random() % 250); // 198.19.x.y
+				if(options.guest.empty()) appConfig.SetPreferenceString(PREF_RTA_GUEST_ADDRESS, Rta::CNet::IpText(guestIp).c_str());
+			}
+			config.guestIp = guestIp;
+
+			bool serverIsHere = IsOwnAddress(config.serverIp);
+			config.loopbackPeers = (options.loopback == "on") || (options.loopback != "off" && serverIsHere);
+			config.bindGamePorts = options.bindGamePorts;
+			config.lobbyName = options.lobbyName;
+			config.pcapPath = options.pcapPath;
+			config.log = [this](const std::string& line) { Log("net: " + line); };
+			m_net = std::make_unique<Rta::CNet>(config);
+
+			auto& speed = m_vm->m_iop->m_speed;
+			speed.SetEthernetFrameTxHandler([this](const uint8* frame, uint32 size) {
+				m_net->GuestSent(frame, size);
+				PumpNet();
+			});
+			// about once per millisecond of the machine's time (the IOP runs at 36.864 MHz)
+			speed.SetEthernetPollHandler([this]() {
+				m_net->Poll();
+				PumpNet();
+			},
+			                             36864);
+			Log("network: lobby server " + where + "; the machine is " + Rta::CNet::IpText(config.guestIp) + "; " + config.lobbyName + " is answered with " +
+			    Rta::CNet::IpText(config.guestServerIp ? config.guestServerIp : config.serverIp) + (config.loopbackPeers ? "; other emulators on this computer are reached through the loop-back interface" : ""));
+			m_serverText = where;
+		}
+
+		// the chip takes one frame at a time
+		void PumpNet()
+		{
+			auto& speed = m_vm->m_iop->m_speed;
+			if(m_net->HasFrame() && speed.IsEthernetRxReady())
+			{
+				auto frame = m_net->TakeFrame();
+				speed.RxEthernetFrame(frame.data(), static_cast<uint32>(frame.size()));
+			}
+		}
+
+		// ---- patches --------------------------------------------------------------------
+
+		void LoadPatches()
+		{
+			std::string error;
+			if(!options.patchFile.empty() && !options.patchSections.empty())
+			{
+				std::set<std::string> wanted, found;
+				bool all = options.patchSections == "*";
+				if(!all && options.patchSections[0] == '@')
+				{
+					std::ifstream list(options.patchSections.substr(1));
+					if(!list) Log("CANNOT read the list of patch sections " + options.patchSections.substr(1));
+					std::string line;
+					while(std::getline(list, line))
+					{
+						line = Trim(line);
+						if(!line.empty() && line[0] != '#') wanted.insert(line);
+					}
+				}
+				else if(!all)
+				{
+					for(const auto& name : Split(options.patchSections, ';'))
+					{
+						if(!Trim(name).empty()) wanted.insert(Trim(name));
+					}
+				}
+				if(!ReadPatchFile(options.patchFile, wanted, all, m_patches, found, error))
+				{
+					Log("PATCHES NOT LOADED: " + error);
+					m_patches.clear();
+				}
+				for(const auto& name : wanted)
+				{
+					if(found.count(name) == 0) Log("patch section not in the file: [" + name + "]");
+				}
+				// what every player has to have the same: a short figure to compare
+				uint32 hash = 2166136261u;
+				auto sorted = m_patches;
+				std::sort(sorted.begin(), sorted.end(), [](const PatchWord& a, const PatchWord& b) { return a.address < b.address; });
+				for(const auto& word : sorted)
+				{
+					for(uint32 v : {word.address, word.value})
+					{
+						for(int i = 0; i < 4; i++) hash = (hash ^ ((v >> (i * 8)) & 0xFF)) * 16777619u;
+					}
+				}
+				m_patchSet = Format("%zu sections, %zu words, set %08x", found.size(), m_patches.size(), hash);
+				Log("patches: " + m_patchSet + " from " + options.patchFile);
+				for(const auto& name : found) Log("  [" + name + "]");
+			}
+			for(const auto& path : options.extraPatches)
+			{
+				std::set<std::string> found;
+				size_t before = m_patches.size();
+				if(!ReadPatchFile(path, {}, true, m_patches, found, error))
+					Log("PATCH FILE NOT LOADED: " + error);
+				else
+					Log(Format("patches: %zu more words from %s", m_patches.size() - before, path.c_str()));
+			}
+		}
+
+		// The machine is stopped here: either the application is booting it (its thread
+		// waits) or its own thread is inside the "load another program" call.
+		void OnExecutableChange()
+		{
+			auto os = m_vm->m_ee->m_os;
+			std::string name = os->GetExecutableName();
+			m_isGame = false;
+			if(name.compare(0, strlen(GAME_EXECUTABLE), GAME_EXECUTABLE) == 0)
+			{
+				uint32 crc = 0;
+				if(auto elf = os->GetELF())
+				{
+					const auto& header = elf->GetHeader();
+					uint64 size = static_cast<uint64>(header.nSectHeaderStart) + static_cast<uint64>(header.nSectHeaderCount) * header.nSectHeaderEntrySize;
+					for(unsigned int i = 0; i < header.nProgHeaderCount; i++)
+					{
+						if(auto program = elf->GetProgram(i)) size = std::max<uint64>(size, static_cast<uint64>(program->nOffset) + program->nFileSize);
+					}
+					const uint8* content = elf->GetContent();
+					for(uint64 i = 0; i + 4 <= size; i += 4)
+					{
+						uint32 word;
+						memcpy(&word, content + i, 4);
+						crc ^= word;
+					}
+				}
+				m_isGame = (crc == GAME_CRC);
+				if(!m_isGame && !m_patches.empty())
+					Log(Format("this is %s but not the version the patches are for (checksum %08X, wanted %08X): NO PATCH IS APPLIED", name.c_str(), crc, GAME_CRC));
+			}
+			Log("executable: " + name + (m_isGame ? Format(" (the game, version checked); %zu patch words", m_patches.size()) : ""));
+			if(m_isGame)
+			{
+				// nothing has been translated yet: the words can simply be written
+				uint8* ram = m_vm->m_ee->m_ram;
+				for(const auto& word : m_patches) memcpy(ram + word.address, &word.value, 4);
+			}
+			m_patchRewrites = 0;
+		}
+
+		// As PCSX2 does with its "every frame" patches: a word that is not what the patch
+		// says is written again. Translated code on the page is thrown away first.
+		void CheckPatches(uint8* ram)
+		{
+			if(!m_isGame) return;
+			static const uint32 pageSize = static_cast<uint32>(getpagesize());
+			unsigned int rewritten = 0;
+			for(const auto& word : m_patches)
+			{
+				uint32 now;
+				memcpy(&now, ram + word.address, 4);
+				if(now == word.value) continue;
+				uint32 start = word.address & ~(pageSize - 1);
+				m_vm->m_ee->m_EE.m_executor->ClearActiveBlocksInRange(start, start + pageSize, false);
+				memcpy(ram + word.address, &word.value, 4);
+				rewritten++;
+			}
+			if(rewritten && m_patchRewrites++ < 5) Log(Format("%u patch word(s) had been overwritten and were written again", rewritten));
+		}
+
+		// ---- every vertical blank (machine thread) --------------------------------------
+
+		void OnVBlank(CPadHandlerRta& pad, uint8* ram);
+
+		// ---- the control socket ---------------------------------------------------------
+		// A test script connects to a UNIX socket and sends one command per line; every
+		// command is answered with one line ("ok ..." or "err ...") when it is done.
+		//   press <buttons>   release <buttons>|all   tap <buttons> [hold [after]]
+		//   stick <l|r> <x> <y>   (0..255, 128 is the middle)      wait <frames>
+		//   peek <expression> <type>   shot <file.bmp>   info   throttle <0|1>
+		//   ethdrop   quit
+		// Buttons are joined with '+': up down left right cross circle square triangle
+		// l1 l2 l3 r1 r2 r3 start select. Expressions: numbers, '+', '-', and [x] for the
+		// 32-bit word at x. Types: u8 u16 u32 s32 x32 f32 strN wstrN hexN.
+
+		struct Step
+		{
+			enum Kind
+			{
+				PRESS,
+				RELEASE,
+				STICK,
+				WAIT,
+				REPLY,
+				SHOT,
+				SHOTWAIT,
+			} kind = WAIT;
+			uint32 value = 0, value2 = 0, value3 = 0;
+			std::string text;
+		};
+
+		void StartControl()
+		{
+			m_listenFd = socket(AF_UNIX, SOCK_STREAM, 0);
+			sockaddr_un address = {};
+			address.sun_family = AF_UNIX;
+			if(m_listenFd < 0 || options.controlPath.size() >= sizeof(address.sun_path))
+			{
+				Log("control socket: cannot use " + options.controlPath);
+				return;
+			}
+			strcpy(address.sun_path, options.controlPath.c_str());
+			unlink(options.controlPath.c_str());
+			if(bind(m_listenFd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0 || listen(m_listenFd, 4) != 0)
+			{
+				Log("control socket: cannot listen on " + options.controlPath);
+				close(m_listenFd);
+				m_listenFd = -1;
+				return;
+			}
+			fcntl(m_listenFd, F_SETFL, fcntl(m_listenFd, F_GETFL, 0) | O_NONBLOCK);
+			signal(SIGPIPE, SIG_IGN);
+			Log("control socket: " + options.controlPath);
+		}
+
+		void Reply(const std::string& line)
+		{
+			if(m_clientFd < 0) return;
+			std::string out = line + "\n";
+			if(write(m_clientFd, out.data(), out.size()) < 0)
+			{
+				close(m_clientFd);
+				m_clientFd = -1;
+			}
+		}
+
+		bool Evaluate(const char*& p, uint8* ram, uint32& value)
+		{
+			auto skip = [&]() { while(*p == ' ') p++; };
+			auto term = [&](uint32& out) -> bool {
+				skip();
+				if(*p == '[')
+				{
+					p++;
+					uint32 address = 0;
+					if(!Evaluate(p, ram, address)) return false;
+					skip();
+					if(*p != ']') return false;
+					p++;
+					address &= 0x1FFFFFFF;
+					if(address > PS2::EE_RAM_SIZE - 4) return false;
+					memcpy(&out, ram + address, 4);
+					return true;
+				}
+				char* end = nullptr;
+				out = static_cast<uint32>(strtoul(p, &end, 0));
+				if(end == p) return false;
+				p = end;
+				return true;
+			};
+			if(!term(value)) return false;
+			for(;;)
+			{
+				skip();
+				if(*p != '+' && *p != '-') return true;
+				char op = *p++;
+				uint32 right = 0;
+				if(!term(right)) return false;
+				value = (op == '+') ? value + right : value - right;
+			}
+		}
+
+		std::string Peek(const std::string& expression, const std::string& type, uint8* ram)
+		{
+			const char* p = expression.c_str();
+			uint32 address = 0;
+			if(!Evaluate(p, ram, address) || *p != 0) return "err bad expression";
+			address &= 0x1FFFFFFF;
+			uint32 length = 4;
+			std::string kind = type;
+			size_t digits = kind.find_first_of("0123456789");
+			if(kind.compare(0, 3, "str") == 0 || kind.compare(0, 4, "wstr") == 0 || kind.compare(0, 3, "hex") == 0)
+			{
+				length = static_cast<uint32>(strtoul(kind.c_str() + digits, nullptr, 10));
+				kind = kind.substr(0, digits);
+				if(kind == "wstr") length *= 2;
+			}
+			if(length == 0 || length > 4096 || address > PS2::EE_RAM_SIZE - length) return "err address outside main memory";
+			const uint8* at = ram + address;
+			uint32 word = 0;
+			memcpy(&word, at, 4);
+			if(kind == "u8") return Format("ok %u", at[0]);
+			if(kind == "u16") return Format("ok %u", word & 0xFFFF);
+			if(kind == "u32") return Format("ok %u", word);
+			if(kind == "s32") return Format("ok %d", static_cast<int32>(word));
+			if(kind == "x32") return Format("ok %08x", word);
+			if(kind == "f32")
+			{
+				float f;
+				memcpy(&f, at, 4);
+				return Format("ok %g", f);
+			}
+			std::string out = "ok ";
+			if(kind == "hex")
+			{
+				for(uint32 i = 0; i < length; i++) out += Format("%02x", at[i]);
+				return out;
+			}
+			if(kind == "str" || kind == "wstr")
+			{
+				uint32 step = (kind == "wstr") ? 2 : 1;
+				for(uint32 i = 0; i < length; i += step)
+				{
+					unsigned int c = at[i] | (step == 2 ? (at[i + 1] << 8) : 0);
+					if(c == 0) break;
+					out += (c >= 32 && c < 127) ? static_cast<char>(c) : '?';
+				}
+				return out;
+			}
+			return "err unknown type";
+		}
+
+		void Command(const std::string& line, uint8* ram)
+		{
+			std::istringstream stream(line);
+			std::vector<std::string> words;
+			std::string word;
+			while(stream >> word) words.push_back(word);
+			if(words.empty()) return;
+			auto number = [&](size_t index, uint32 fallback) { return index < words.size() ? static_cast<uint32>(strtoul(words[index].c_str(), nullptr, 0)) : fallback; };
+			auto push = [&](Step::Kind kind, uint32 value = 0, const std::string& text = "") {
+				Step step;
+				step.kind = kind;
+				step.value = value;
+				step.text = text;
+				m_steps.push_back(step);
+			};
+			const std::string& name = words[0];
+			uint32 mask = 0;
+			if(name == "press" || name == "release" || name == "tap")
+			{
+				if(words.size() < 2 || (words[1] == "all" ? (mask = 0xFFFFFFFF, false) : !ParseButtons(words[1], mask)))
+				{
+					push(Step::REPLY, 0, "err unknown button");
+					return;
+				}
+				if(name == "press") push(Step::PRESS, mask);
+				if(name == "release") push(Step::RELEASE, mask);
+				if(name == "tap")
+				{
+					push(Step::PRESS, mask);
+					push(Step::WAIT, number(2, 8));
+					push(Step::RELEASE, mask);
+					push(Step::WAIT, number(3, 8));
+				}
+				push(Step::REPLY, 0, "ok");
+			}
+			else if(name == "stick" && words.size() == 4)
+			{
+				Step step;
+				step.kind = Step::STICK;
+				step.value = (words[1] == "r") ? 1 : 0;
+				step.value2 = number(2, 128) & 0xFF;
+				step.value3 = number(3, 128) & 0xFF;
+				m_steps.push_back(step);
+				push(Step::REPLY, 0, "ok");
+			}
+			else if(name == "wait")
+			{
+				push(Step::WAIT, number(1, 1));
+				push(Step::REPLY, 0, "ok");
+			}
+			else if(name == "peek" && words.size() >= 3)
+			{
+				std::string expression;
+				for(size_t i = 1; i + 1 < words.size(); i++) expression += words[i];
+				push(Step::REPLY, 1, expression + " " + words.back());
+			}
+			else if(name == "shot" && words.size() >= 2)
+			{
+				push(Step::SHOT, 0, line.substr(line.find(words[1])));
+				push(Step::SHOTWAIT, 600);
+			}
+			else if(name == "info")
+				push(Step::REPLY, 2);
+			else if(name == "gs")
+				push(Step::REPLY, 3);
+			else if(name == "burst" && words.size() >= 3)
+			{
+				Step step;
+				step.kind = Step::SHOT;
+				step.text = words[1];
+				step.value = std::max<uint32>(1, std::min<uint32>(number(2, 2), 16));
+				m_steps.push_back(step);
+				push(Step::SHOTWAIT, 600);
+			}
+			else if(name == "throttle")
+			{
+				CAppConfig::GetInstance().SetPreferenceBoolean(PREF_PS2_LIMIT_FRAMERATE, number(1, 1) != 0);
+				m_vm->ReloadFrameRateLimit();
+				push(Step::REPLY, 0, "ok");
+			}
+			else if(name == "ethdrop")
+			{
+				if(m_net) m_net->DropTcp();
+				push(Step::REPLY, 0, "ok");
+			}
+			else if(name == "quit")
+			{
+				Reply("ok");
+				QMetaObject::invokeMethod(QCoreApplication::instance(), []() { QCoreApplication::exit(0); }, Qt::QueuedConnection);
+			}
+			else
+				push(Step::REPLY, 0, "err unknown command");
+		}
+
+		void ControlVBlank(uint8* ram)
+		{
+			if(m_listenFd < 0) return;
+			if(m_clientFd < 0)
+			{
+				m_clientFd = accept(m_listenFd, nullptr, nullptr);
+				if(m_clientFd >= 0)
+				{
+					fcntl(m_clientFd, F_SETFL, fcntl(m_clientFd, F_GETFL, 0) | O_NONBLOCK);
+					m_input.clear();
+				}
+			}
+			if(m_clientFd >= 0)
+			{
+				char buffer[4096];
+				for(;;)
+				{
+					ssize_t n = read(m_clientFd, buffer, sizeof(buffer));
+					if(n > 0)
+						m_input.append(buffer, n);
+					else
+					{
+						if(n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
+						{
+							close(m_clientFd);
+							m_clientFd = -1;
+						}
+						break;
+					}
+				}
+				size_t end;
+				while((end = m_input.find('\n')) != std::string::npos)
+				{
+					std::string line = Trim(m_input.substr(0, end));
+					m_input.erase(0, end + 1);
+					if(!line.empty()) Command(line, ram);
+				}
+			}
+			while(!m_steps.empty())
+			{
+				Step& step = m_steps.front();
+				if(step.kind == Step::WAIT)
+				{
+					if(step.value > 0)
+					{
+						step.value--;
+						break;
+					}
+				}
+				else if(step.kind == Step::PRESS)
+					m_buttons |= step.value;
+				else if(step.kind == Step::RELEASE)
+					m_buttons &= ~step.value;
+				else if(step.kind == Step::STICK)
+				{
+					m_stick[step.value][0] = static_cast<uint8>(step.value2);
+					m_stick[step.value][1] = static_cast<uint8>(step.value3);
+					m_stickSet[step.value] = !(step.value2 == 128 && step.value3 == 128);
+				}
+				else if(step.kind == Step::REPLY)
+				{
+					if(step.value == 1)
+					{
+						auto space = step.text.rfind(' ');
+						Reply(Peek(step.text.substr(0, space), step.text.substr(space + 1), ram));
+					}
+					else if(step.value == 2)
+					{
+						auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+						std::string net = "off";
+						if(m_net)
+						{
+							const auto& s = m_net->Stats();
+							net = Format("frames_out=%llu frames_in=%llu tcp=%llu tcp_out=%llu tcp_in=%llu udp_server=%llu udp_peers_out=%llu udp_peers_in=%llu dhcp=%d dns=%d",
+							             (unsigned long long)s.framesFromGuest, (unsigned long long)s.framesToGuest, (unsigned long long)s.tcpConnections, (unsigned long long)s.tcpBytesOut, (unsigned long long)s.tcpBytesIn,
+							             (unsigned long long)s.udpToServer, (unsigned long long)s.udpToPeers, (unsigned long long)s.udpFromPeers, s.dhcpDone ? 1 : 0, s.dnsAnswered ? 1 : 0);
+						}
+						Reply(Format("ok frame=%llu ms=%lld exe=%s game=%d %s", static_cast<unsigned long long>(m_frame.load()), static_cast<long long>(ms), m_vm->m_ee->m_os->GetExecutableName(), m_isGame ? 1 : 0, net.c_str()));
+					}
+					else if(step.value == 3)
+					{
+						// the picture the machine is sending to the screen right now
+						auto gs = m_vm->GetGSHandler();
+						if(!gs)
+							Reply("err no video");
+						else
+						{
+							auto info = gs->GetCurrentDisplayInfo();
+							const auto& layer = info.layers[0];
+							const auto& layer2 = info.layers[1];
+							Reply(Format("ok smode2=%llx interlaced=%d framemode=%d field=%u crt=%ux%u display=%ux%u layer0=%d:%ux%u+%u+%u@%x/w%u/psm%u layer1=%d:%ux%u+%u+%u@%x/w%u/psm%u",
+							             (unsigned long long)gs->GetSMODE2(), gs->GetCrtIsInterlaced() ? 1 : 0, gs->GetCrtIsFrameMode() ? 1 : 0, (gs->ReadPrivRegister(CGSHandler::GS_CSR) >> 13) & 1,
+							             640u, gs->GetCrtHeight(), info.width, info.height,
+							             layer.enabled ? 1 : 0, layer.width, layer.height, layer.offsetX, layer.offsetY, layer.bufPtr, layer.bufWidth, layer.psm,
+							             layer2.enabled ? 1 : 0, layer2.width, layer2.height, layer2.offsetX, layer2.offsetY, layer2.bufPtr, layer2.bufWidth, layer2.psm));
+						}
+					}
+					else
+						Reply(step.text);
+				}
+				else if(step.kind == Step::SHOT)
+				{
+					m_shotDone = 0;
+					auto gs = dynamic_cast<CGSH_OpenGLQt*>(m_vm->GetGSHandler());
+					if(!gs)
+						m_shotDone = -1;
+					else
+					{
+						m_burstLeft = step.value;
+						m_burstIndex = 0;
+						std::string name = step.text;
+						m_capture = [this, gs, name](const uint8* rgba, unsigned int width, unsigned int height) {
+							// 24-bit BMP; the rows come bottom-up, as the file wants them
+							std::string path = name;
+							if(m_burstLeft > 0)
+							{
+								// several consecutive pictures: <name>-0.bmp, <name>-1.bmp, ...
+								path = Format("%s-%u.bmp", name.c_str(), m_burstIndex++);
+								if(--m_burstLeft > 0) gs->RequestCapture(m_capture);
+							}
+							FILE* file = fopen(path.c_str(), "wb");
+							if(!file || width == 0 || height == 0)
+							{
+								if(file) fclose(file);
+								m_shotDone = -1;
+								return;
+							}
+							uint32 rowSize = (width * 3 + 3) & ~3u, dataSize = rowSize * height;
+							uint8 header[54] = {'B', 'M'};
+							auto put32 = [&](int at, uint32 value) { memcpy(header + at, &value, 4); };
+							put32(2, 54 + dataSize);
+							put32(10, 54);
+							put32(14, 40);
+							put32(18, width);
+							put32(22, height);
+							header[26] = 1;
+							header[28] = 24;
+							put32(34, dataSize);
+							fwrite(header, 1, sizeof(header), file);
+							std::vector<uint8> row(rowSize, 0);
+							for(unsigned int y = 0; y < height; y++)
+							{
+								for(unsigned int x = 0; x < width; x++)
+								{
+									const uint8* pixel = rgba + (static_cast<size_t>(y) * width + x) * 4;
+									row[x * 3 + 0] = pixel[2];
+									row[x * 3 + 1] = pixel[1];
+									row[x * 3 + 2] = pixel[0];
+								}
+								fwrite(row.data(), 1, row.size(), file);
+							}
+							fclose(file);
+							if(m_burstLeft == 0) m_shotDone = 1;
+						};
+						gs->RequestCapture(m_capture);
+					}
+				}
+				else if(step.kind == Step::SHOTWAIT)
+				{
+					if(m_shotDone == 0 && step.value > 0)
+					{
+						step.value--;
+						break;
+					}
+					Reply(m_shotDone > 0 ? "ok" : "err no picture");
+				}
+				m_steps.pop_front();
+			}
+		}
+
+		void UpdateStatus()
+		{
+			std::string text;
+			if(m_net)
+			{
+				const auto& s = m_net->Stats();
+				text = "Online: server " + m_serverText;
+				if(!m_netNote.empty())
+					text += " - " + m_netNote;
+				else if(s.tcpBytesIn > 0)
+					text += Format(" - connected (%llu bytes in); other players: %llu datagrams out, %llu in", (unsigned long long)s.tcpBytesIn, (unsigned long long)s.udpToPeers, (unsigned long long)s.udpFromPeers);
+				else if(s.dhcpDone)
+					text += " - network up";
+				else
+					text += " - waiting for the game to start its network";
+			}
+			if(!m_patchSet.empty()) text += (text.empty() ? "" : " | ") + ("patches: " + m_patchSet) + (m_isGame ? "" : " (not applied)");
+			std::lock_guard<std::mutex> lock(m_logMutex);
+			m_status = text;
+		}
+
+		uint32 Buttons() const
+		{
+			return m_buttons;
+		}
+		bool StickSet(int which) const
+		{
+			return m_stickSet[which];
+		}
+		uint8 Stick(int which, int axis) const
+		{
+			return m_stick[which][axis];
+		}
+
+	private:
+		CPS2VM* m_vm = nullptr;
+		std::unique_ptr<Rta::CNet> m_net;
+		std::string m_serverText, m_netNote, m_patchSet;
+		std::vector<PatchWord> m_patches;
+		bool m_isGame = false;
+		unsigned int m_patchRewrites = 0;
+		Framework::CSignal<void()>::Connection m_executableChange;
+		std::atomic<uint64> m_frame{0};
+
+		std::mutex m_logMutex;
+		FILE* m_logFile = nullptr;
+		std::string m_status;
+
+		int m_listenFd = -1, m_clientFd = -1;
+		std::string m_input;
+		std::deque<Step> m_steps;
+		uint32 m_buttons = 0;
+		uint8 m_stick[2][2] = {{128, 128}, {128, 128}};
+		bool m_stickSet[2] = {false, false};
+		std::atomic<int> m_shotDone{0};
+		CGSH_OpenGLQt::CaptureHandler m_capture;
+		unsigned int m_burstLeft = 0, m_burstIndex = 0;
+
+		friend class CPadHandlerRta;
+	};
+
+	CState g_state;
+
+	// The application's pad handler, with the control socket's buttons on top of the
+	// keyboard's and the controller's for port 1.
+	class CPadHandlerRta : public CPH_GenericInput
+	{
+	public:
+		void Update(uint8* ram) override
+		{
+			CPH_GenericInput::Update(ram);
+			g_state.OnVBlank(*this, ram);
+		}
+
+		void Override(uint8* ram)
+		{
+			uint32 buttons = g_state.Buttons();
+			if(buttons == 0 && !g_state.StickSet(0) && !g_state.StickSet(1)) return;
+			for(auto* listener : m_interfaces)
+			{
+				for(unsigned int i = 0; i < Button::MAX_BUTTONS; i++)
+				{
+					auto button = static_cast<Button>(i);
+					if(PS2::CControllerInfo::IsAxis(button))
+					{
+						int which = (button == Button::ANALOG_LEFT_X || button == Button::ANALOG_LEFT_Y) ? 0 : 1;
+						int axis = (button == Button::ANALOG_LEFT_X || button == Button::ANALOG_RIGHT_X) ? 0 : 1;
+						if(g_state.StickSet(which)) listener->SetAxisState(0, button, g_state.Stick(which, axis), ram);
+					}
+					else if(buttons & (1u << i))
+						listener->SetButtonState(0, button, true, ram);
+				}
+			}
+		}
+	};
+
+	void CState::OnVBlank(CPadHandlerRta& pad, uint8* ram)
+	{
+		if(!m_vm) return;
+		uint64 frame = ++m_frame;
+		CheckPatches(ram);
+		ControlVBlank(ram);
+		pad.Override(ram);
+		if((frame % 30) == 0) UpdateStatus();
+	}
+}
+
+// ---- what the application calls ---------------------------------------------------------
+
+void Rta::EarlyInit(int argc, char** argv)
+{
+	for(int i = 1; i + 1 < argc; i++)
+	{
+		if(!strcmp(argv[i], "--rta-data")) setenv("RTA_DATA_DIR", argv[i + 1], 1);
+	}
+	for(int i = 1; i < argc; i++)
+	{
+		if(!strncmp(argv[i], "--rta-data=", 11)) setenv("RTA_DATA_DIR", argv[i] + 11, 1);
+	}
+}
+
+void Rta::AddCommandLineOptions(QCommandLineParser& parser)
+{
+	parser.addOption(QCommandLineOption("rta-data", "Directory for settings, memory cards and logs (default: Play!'s own).", "dir"));
+	parser.addOption(QCommandLineOption("rta-server", "Lobby server: host name or IPv4 address (default: this computer).", "address"));
+	parser.addOption(QCommandLineOption("rta-server-public", "The server's public address, when you are on the server's own network and it hands that address out.", "address"));
+	parser.addOption(QCommandLineOption("rta-guest", "The emulated machine's own address, 198.19.x.y (default: a random one, kept).", "address"));
+	parser.addOption(QCommandLineOption("rta-loopback", "Reach other emulators on this computer through the loop-back interface: auto (when the server is on this computer), on, off.", "mode", "auto"));
+	parser.addOption(QCommandLineOption("rta-lobby-name", "The host name the game looks up.", "name", "con.soegames.net"));
+	parser.addOption(QCommandLineOption("rta-any-port", "Do not try to give the host's UDP sockets the game's own port numbers (4000-4004)."));
+	parser.addOption(QCommandLineOption("rta-no-net", "No network behind the emulated Ethernet adaptor."));
+	parser.addOption(QCommandLineOption("rta-patch-file", "PCSX2-style patch file for the game.", "file"));
+	parser.addOption(QCommandLineOption("rta-patch-sections", "Sections of the patch file to apply: names separated by ';', '@file' (one name per line) or '*'.", "sections"));
+	parser.addOption(QCommandLineOption("rta-extra-patch", "A further patch file, applied whole. May be given more than once.", "file"));
+	parser.addOption(QCommandLineOption("rta-no-netcnf", "Do not write the network setting to the memory card."));
+	parser.addOption(QCommandLineOption("rta-control", "UNIX socket for a test script (see tools/play-net/ctl.py).", "path"));
+	parser.addOption(QCommandLineOption("rta-pcap", "Write every Ethernet frame of the emulated adaptor to this capture file.", "file"));
+}
+
+void Rta::ReadCommandLine(const QCommandLineParser& parser)
+{
+	auto& o = g_state.options;
+	if(const char* dir = getenv("RTA_DATA_DIR")) o.dataDir = dir;
+	o.server = parser.value("rta-server").toStdString();
+	o.serverPublic = parser.value("rta-server-public").toStdString();
+	o.guest = parser.value("rta-guest").toStdString();
+	o.loopback = parser.value("rta-loopback").toStdString();
+	o.lobbyName = parser.value("rta-lobby-name").toStdString();
+	o.bindGamePorts = !parser.isSet("rta-any-port");
+	o.net = !parser.isSet("rta-no-net");
+	o.patchFile = parser.value("rta-patch-file").toStdString();
+	o.patchSections = parser.value("rta-patch-sections").toStdString();
+	for(const auto& path : parser.values("rta-extra-patch")) o.extraPatches.push_back(path.toStdString());
+	o.netcnf = !parser.isSet("rta-no-netcnf");
+	o.controlPath = parser.value("rta-control").toStdString();
+	o.pcapPath = parser.value("rta-pcap").toStdString();
+}
+
+void Rta::OverridePreferences()
+{
+	// A machine that stops when its window is not in front loses the lobby server after
+	// two minutes and stalls every other player at once.
+	CAppConfig::GetInstance().SetPreferenceBoolean(PREF_UI_PAUSEWHENFOCUSLOST, false);
+	if(!g_state.options.controlPath.empty()) CAppConfig::GetInstance().SetPreferenceBoolean(PREF_UI_SHOWEXITCONFIRMATION, false);
+}
+
+CPadHandler::FactoryFunction Rta::GetPadHandlerFactory()
+{
+	return []() { return new CPadHandlerRta(); };
+}
+
+void Rta::Attach(CPS2VM* vm)
+{
+	g_state.Attach(vm);
+}
+
+void Rta::Detach()
+{
+	g_state.Detach();
+}
+
+std::string Rta::StatusText()
+{
+	return g_state.StatusText();
+}

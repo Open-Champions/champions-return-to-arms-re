@@ -1,0 +1,23 @@
+# The sections of patches/SLUS-20973_4028A55F.pnach that play.sh applies by default:
+# the "suggested patch set for a first online test" of docs/online-setup.md.
+# One section name per line, exactly as between the brackets in the patch file.
+# EVERY PLAYER IN A GAME MUST USE THE SAME LIST. The application prints a figure for the
+# set ("set xxxxxxxx") in its status bar and in rta.log; compare it with your friends'.
+Net test: use button works with the spell selector open
+Net test: potions always leave the bag directly
+Net test: stats page does not rewrite stored weapon damage
+Net test: menu lockout never drops player damage
+Net test: menu lockout never blocks weapon swap and use
+Net test: closing a notice box does not run the pending script
+Net test: mission menu ignores the chooser's pause menu
+Net test: jump-gate menu ignores the chooser's pause menu
+Net test: save-point prompt ignores this machine's card screen
+Net test: net launch clears a stuck memory-card latch
+Net test: predicted spin cast leaves the shared animation alone
+Net test: creatures ignore being touched by the prediction copy
+Net test: item records start from zero, not from stack leftovers
+Net test: menu screens do not recompute player statistics
+Net test: stats page does not recompute the main weapon's damage either
+Net test: carried weight is recomputed only inside the simulation
+Net test: prediction copy starts without pending damage
+Net test: equalise at once (LAG-1)
