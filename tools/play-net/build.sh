@@ -9,9 +9,13 @@
 #   local/play-playable          the Play! checkout, patched
 #   local/play-playable-build    the build; the application is
 #                                local/play-playable-build/Source/ui_qt/Play.app
-# Run again after changing src/ or the patch: it copies src/ in and rebuilds. To start
-# from a clean checkout remove local/play-playable and local/play-playable-build first.
+# Run again after changing src/: it copies src/ in and rebuilds. After the patch itself
+# has changed (a newer version of this repository):
+#   tools/play-net/build.sh --reset        # puts Play!'s own files back, applies the patch anew
+# (--reset discards any change of your own under local/play-playable/Source).
 set -e
+RESET=""
+[ "$1" = "--reset" ] && RESET=1
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 COMMIT=83700b2c31e593bc94e845b4b31b797be84dda59
@@ -44,9 +48,13 @@ if git -C "$SRC" apply --check "$HERE/play-net.patch" 2>/dev/null; then
 	echo "build.sh: play-net.patch applied"
 elif git -C "$SRC" apply --check --reverse "$HERE/play-net.patch" 2>/dev/null; then
 	echo "build.sh: play-net.patch is in already"
+elif [ -n "$RESET" ]; then
+	git -C "$SRC" checkout -- Source
+	git -C "$SRC" apply "$HERE/play-net.patch"
+	echo "build.sh: Play!'s files put back and play-net.patch applied"
 else
-	echo "build.sh: play-net.patch does not fit $SRC (changed since it was applied?)." >&2
-	echo "          git -C \"$SRC\" checkout -- Source   puts the checkout back; then run this again." >&2
+	echo "build.sh: play-net.patch does not fit $SRC: another version of it is applied there." >&2
+	echo "          Run  tools/play-net/build.sh --reset  (it discards changes under $SRC/Source)." >&2
 	exit 1
 fi
 mkdir -p "$SRC/Source/ui_qt/rta"

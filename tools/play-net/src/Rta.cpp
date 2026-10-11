@@ -7,6 +7,8 @@
 
 #include <QCommandLineParser>
 #include <QCoreApplication>
+#include <QDir>
+#include <QImage>
 #include <QStringList>
 
 #include <atomic>
@@ -76,6 +78,8 @@ namespace
 		std::vector<std::string> extraPatches;
 		bool steadyPicture = true;
 		bool displayClock = true;
+		bool textureDump = false;
+		std::string textureDir; // dump/ and replace/ below it; empty: <data>/textures
 		bool netcnf = true;
 		std::string controlPath;
 		std::string pcapPath;
@@ -447,6 +451,7 @@ namespace
 			if(options.net) StartNet();
 
 			m_executableChange = m_vm->m_ee->m_os->OnExecutableChange.Connect([this]() { OnExecutableChange(); });
+			StartTextures(base);
 			if(!options.controlPath.empty()) StartControl();
 			Rta::KeepAwake();
 			if(options.displayClock)
@@ -461,6 +466,8 @@ namespace
 		void Detach()
 		{
 			m_executableChange.reset();
+			CGSH_OpenGL::g_textureDump = CGSH_OpenGL::TextureDumpFunction();
+			CGSH_OpenGL::g_textureLoad = CGSH_OpenGL::TextureLoadFunction();
 			CFrameLimiter::SetExternalWait(CFrameLimiter::ExternalWaitFunction());
 			CGSHandler::g_presentClock = CGSHandler::PresentClock();
 			if(m_vm && m_net)
@@ -484,6 +491,64 @@ namespace
 		{
 			std::lock_guard<std::mutex> lock(m_logMutex);
 			return m_status;
+		}
+
+		// ---- texture files --------------------------------------------------------------
+		// Textures are known to the renderer by a figure of their contents (and of their
+		// palette). With --rta-texture-dump each one is written once as
+		//   <textures>/dump/<texels>-<palette>-p<format>-<width>x<height>.png
+		// and a file of the same name in <textures>/replace/ - of any size - is drawn in
+		// its place. That is how redrawn or enlarged art gets in. The files are RGBA with
+		// the console's alpha: 128 is opaque (a viewer shows them half transparent); keep
+		// the alpha channel as it is when working on them. Dumps are the game's art: they
+		// stay out of the repository.
+		static std::string TextureName(const CGSH_OpenGL::TEXTURE_PICTURE_KEY& key)
+		{
+			return Format("%016llx-%016llx-p%u-%ux%u.png", static_cast<unsigned long long>(key.hash), static_cast<unsigned long long>(key.clutHash), key.psm, key.width, key.height);
+		}
+
+		void StartTextures(const fs::path& base)
+		{
+			fs::path directory = options.textureDir.empty() ? (base / "textures") : fs::path(options.textureDir);
+			auto dumpDirectory = directory / "dump";
+			auto replaceDirectory = directory / "replace";
+			std::error_code error;
+			if(options.textureDump)
+			{
+				fs::create_directories(dumpDirectory, error);
+				fs::create_directories(replaceDirectory, error);
+				CGSH_OpenGL::g_textureDump = [this, dumpDirectory](const CGSH_OpenGL::TEXTURE_PICTURE_KEY& key, const uint32* rgba) {
+					auto path = dumpDirectory / TextureName(key);
+					std::error_code exists;
+					if(fs::exists(path, exists)) return;
+					QImage image(reinterpret_cast<const uchar*>(rgba), static_cast<int>(key.width), static_cast<int>(key.height), static_cast<int>(key.width * 4), QImage::Format_RGBA8888);
+					if(image.save(QString::fromStdString(path.string()), "PNG")) m_texturesDumped++;
+				};
+				Log("textures: every new one is written to " + dumpDirectory.string());
+			}
+			// the names that have a replacement, read once
+			auto names = std::make_shared<std::set<std::string>>();
+			if(fs::is_directory(replaceDirectory, error))
+			{
+				for(const auto& entry : fs::directory_iterator(replaceDirectory, error)) names->insert(entry.path().filename().string());
+			}
+			if(!names->empty())
+			{
+				CGSH_OpenGL::g_textureLoad = [this, replaceDirectory, names](const CGSH_OpenGL::TEXTURE_PICTURE_KEY& key, std::vector<uint32>& picture, uint32& width, uint32& height) {
+					auto name = TextureName(key);
+					if(names->count(name) == 0) return false;
+					QImage image(QString::fromStdString((replaceDirectory / name).string()));
+					if(image.isNull()) return false;
+					image = image.convertToFormat(QImage::Format_RGBA8888);
+					width = static_cast<uint32>(image.width());
+					height = static_cast<uint32>(image.height());
+					picture.resize(static_cast<size_t>(width) * height);
+					for(uint32 y = 0; y < height; y++) memcpy(picture.data() + (static_cast<size_t>(y) * width), image.constScanLine(static_cast<int>(y)), static_cast<size_t>(width) * 4);
+					m_texturesReplaced++;
+					return true;
+				};
+				Log(Format("textures: %zu replacement file(s) in %s", names->size(), replaceDirectory.string().c_str()));
+			}
 		}
 
 		// ---- the network ----------------------------------------------------------------
@@ -733,7 +798,7 @@ namespace
 		//   press <buttons>   release <buttons>|all   tap <buttons> [hold [after]]
 		//   stick <l|r> <x> <y>   (0..255, 128 is the middle)      wait <frames>
 		//   peek <expression> <type>   shot <file.bmp>   burst <name> <n>   info   gs
-		//   probe <file> <n> <x> <y> <w> <h>   bench
+		//   probe <file> <n> <x> <y> <w> <h>   bench   poke <expression> u8|u32|str <value>
 		//   throttle <0|1>   pref int|bool <setting> <value>   ethdrop   quit
 		// Buttons are joined with '+': up down left right cross circle square triangle
 		// l1 l2 l3 r1 r2 r3 start select. Expressions: numbers, '+', '-', and [x] for the
@@ -993,6 +1058,36 @@ namespace
 				if(auto gs = m_vm->GetGSHandler()) gs->NotifyPreferencesChanged();
 				push(Step::REPLY, 0, ok ? "ok" : "err no such setting");
 			}
+			else if(name == "poke" && words.size() >= 4)
+			{
+				// poke <expression> u8|u32|str <value>: writes the game's memory (for tests:
+				// asking for another level as the rig does). Translated code on the page is
+				// thrown away first.
+				const char* p = words[1].c_str();
+				uint32 address = 0;
+				std::string kind = words[2];
+				std::string text = line.substr(line.find(words[2], line.find(words[1]) + words[1].size()) + words[2].size());
+				text = Trim(text);
+				uint32 length = (kind == "u8") ? 1 : ((kind == "u32") ? 4 : static_cast<uint32>(text.size() + 1));
+				if(!Evaluate(p, ram, address) || (*p != 0) || ((kind != "u8") && (kind != "u32") && (kind != "str")))
+					push(Step::REPLY, 0, "err bad expression or type");
+				else if(((address &= 0x1FFFFFFF) > (PS2::EE_RAM_SIZE - length)) || (length > 256))
+					push(Step::REPLY, 0, "err address outside main memory");
+				else
+				{
+					static const uint32 pageSize = static_cast<uint32>(getpagesize());
+					uint32 start = address & ~(pageSize - 1);
+					m_vm->m_ee->m_EE.m_executor->ClearActiveBlocksInRange(start, ((address + length + pageSize - 1) & ~(pageSize - 1)), false);
+					if(kind == "str")
+						memcpy(ram + address, text.c_str(), length);
+					else
+					{
+						uint32 value = static_cast<uint32>(strtoul(text.c_str(), nullptr, 0));
+						memcpy(ram + address, &value, length);
+					}
+					push(Step::REPLY, 0, "ok");
+				}
+			}
 			else if(name == "bench")
 			{
 				// how fast is the processor core each of the two threads is on? (a loop of
@@ -1107,8 +1202,8 @@ namespace
 							             (unsigned long long)s.framesFromGuest, (unsigned long long)s.framesToGuest, (unsigned long long)s.tcpConnections, (unsigned long long)s.tcpBytesOut, (unsigned long long)s.tcpBytesIn,
 							             (unsigned long long)s.udpToServer, (unsigned long long)s.udpToPeers, (unsigned long long)s.udpFromPeers, s.dhcpDone ? 1 : 0, s.dnsAnswered ? 1 : 0);
 						}
-						Reply(Format("ok frame=%llu ms=%lld us=%llu cpu_us=%llu video_cpu_us=%llu display_hz=%.2f refreshes_per_frame=%d exe=%s game=%d %s", static_cast<unsigned long long>(m_frame.load()), static_cast<long long>(ms), static_cast<unsigned long long>(us),
-						             static_cast<unsigned long long>(m_cpuMicroseconds.load()), static_cast<unsigned long long>(m_gsCpuMicroseconds.load()), Rta::DisplayRefreshRate(), Rta::DisplayRefreshesPerFrame(), m_vm->m_ee->m_os->GetExecutableName(), m_isGame ? 1 : 0, net.c_str()));
+						Reply(Format("ok frame=%llu ms=%lld us=%llu cpu_us=%llu video_cpu_us=%llu display_hz=%.2f refreshes_per_frame=%d textures_dumped=%llu textures_replaced=%llu exe=%s game=%d %s", static_cast<unsigned long long>(m_frame.load()), static_cast<long long>(ms), static_cast<unsigned long long>(us),
+						             static_cast<unsigned long long>(m_cpuMicroseconds.load()), static_cast<unsigned long long>(m_gsCpuMicroseconds.load()), Rta::DisplayRefreshRate(), Rta::DisplayRefreshesPerFrame(), static_cast<unsigned long long>(m_texturesDumped.load()), static_cast<unsigned long long>(m_texturesReplaced.load()), m_vm->m_ee->m_os->GetExecutableName(), m_isGame ? 1 : 0, net.c_str()));
 					}
 					else if(step.value == 3)
 					{
@@ -1278,6 +1373,7 @@ namespace
 		Framework::CSignal<void()>::Connection m_executableChange;
 		std::atomic<uint64> m_frame{0};
 		std::atomic<uint64> m_cpuMicroseconds{0}, m_gsCpuMicroseconds{0};
+		std::atomic<uint64> m_texturesDumped{0}, m_texturesReplaced{0};
 
 		std::mutex m_logMutex;
 		FILE* m_logFile = nullptr;
@@ -1382,6 +1478,8 @@ void Rta::AddCommandLineOptions(QCommandLineParser& parser)
 	parser.addOption(QCommandLineOption("rta-patch-sections", "Sections of the patch file to apply: names separated by ';', '@file' (one name per line) or '*'.", "sections"));
 	parser.addOption(QCommandLineOption("rta-extra-patch", "A further patch file, applied whole. May be given more than once.", "file"));
 	parser.addOption(QCommandLineOption("rta-interlaced", "Leave the game's half-line shift between television fields alone (the picture then jumps up and down; for comparing)."));
+	parser.addOption(QCommandLineOption("rta-texture-dump", "Write every texture the game draws with, once, as a PNG file into <textures>/dump."));
+	parser.addOption(QCommandLineOption("rta-textures", "Directory for texture files: dump/ and replace/ below it (default: textures in the data directory).", "dir"));
 	parser.addOption(QCommandLineOption("rta-timer", "Time frames by a timer instead of by the display's refreshes."));
 	parser.addOption(QCommandLineOption("rta-no-netcnf", "Do not write the network setting to the memory card."));
 	parser.addOption(QCommandLineOption("rta-control", "UNIX socket for a test script (see tools/play-net/ctl.py).", "path"));
@@ -1404,6 +1502,8 @@ void Rta::ReadCommandLine(const QCommandLineParser& parser)
 	for(const auto& path : parser.values("rta-extra-patch")) o.extraPatches.push_back(path.toStdString());
 	o.steadyPicture = !parser.isSet("rta-interlaced");
 	o.displayClock = !parser.isSet("rta-timer");
+	o.textureDump = parser.isSet("rta-texture-dump");
+	o.textureDir = parser.value("rta-textures").toStdString();
 	o.netcnf = !parser.isSet("rta-no-netcnf");
 	o.controlPath = parser.value("rta-control").toStdString();
 	o.pcapPath = parser.value("rta-pcap").toStdString();

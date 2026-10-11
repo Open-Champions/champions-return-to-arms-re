@@ -242,19 +242,21 @@ index 0f89436d..49a60112 100644
 +target_include_directories(gsh_opengl PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../../deps/Dependencies/xxHash)
  target_compile_options(gsh_opengl PRIVATE ${GSH_OPENGL_COMPILE_OPTIONS})
 diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp
-index 7eb9460f..13a9f483 100644
+index 7eb9460f..8fcd2d44 100644
 --- a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp
 +++ b/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp
-@@ -112,6 +112,8 @@ void CGSH_OpenGL::ResetImpl()
+@@ -112,6 +112,10 @@ void CGSH_OpenGL::ResetImpl()
  {
  	LoadPreferences();
  	m_textureCache.Flush();
 +	m_contentTextures.clear();
++	m_textureReplacements.clear();
++	m_lastContentTexture = nullptr;
 +	m_uploadExtents.clear();
  	PalCache_Flush();
  	m_framebuffers.clear();
  	m_depthbuffers.clear();
-@@ -217,6 +219,20 @@ void CGSH_OpenGL::FlipImpl(const DISPLAY_INFO& dispInfo)
+@@ -217,6 +221,20 @@ void CGSH_OpenGL::FlipImpl(const DISPLAY_INFO& dispInfo)
  		assert(m_presentTexCoordScaleUniform != -1);
  		glUniform2f(m_presentTexCoordScaleUniform, u1, v1);
  
@@ -275,7 +277,7 @@ index 7eb9460f..13a9f483 100644
  		glBindBuffer(GL_ARRAY_BUFFER, m_presentVertexBuffer);
  		glBindVertexArray(m_presentVertexArray);
  
-@@ -240,6 +256,15 @@ void CGSH_OpenGL::FlipImpl(const DISPLAY_INFO& dispInfo)
+@@ -240,6 +258,15 @@ void CGSH_OpenGL::FlipImpl(const DISPLAY_INFO& dispInfo)
  		glBindTexture(GL_TEXTURE_2D, 0);
  	}
  
@@ -291,16 +293,18 @@ index 7eb9460f..13a9f483 100644
  	PresentBackbuffer();
  	CGSHandler::FlipImpl(dispInfo);
  }
-@@ -264,6 +289,8 @@ void CGSH_OpenGL::NotifyPreferencesChangedImpl()
+@@ -264,6 +291,10 @@ void CGSH_OpenGL::NotifyPreferencesChangedImpl()
  {
  	LoadPreferences();
  	m_textureCache.Flush();
 +	m_contentTextures.clear();
++	m_textureReplacements.clear();
++	m_lastContentTexture = nullptr;
 +	m_uploadExtents.clear();
  	PalCache_Flush();
  	m_framebuffers.clear();
  	m_depthbuffers.clear();
-@@ -290,6 +317,7 @@ void CGSH_OpenGL::InitializeRC()
+@@ -290,6 +321,7 @@ void CGSH_OpenGL::InitializeRC()
  	m_presentVertexArray = GeneratePresentVertexArray();
  	m_presentTextureUniform = glGetUniformLocation(*m_presentProgram, "g_texture");
  	m_presentTexCoordScaleUniform = glGetUniformLocation(*m_presentProgram, "g_texCoordScale");
@@ -308,10 +312,19 @@ index 7eb9460f..13a9f483 100644
  
  	m_copyToFbProgram = GenerateCopyToFbProgram();
  	m_copyToFbTexture = Framework::OpenGl::CTexture::Create();
-@@ -573,13 +601,22 @@ void CGSH_OpenGL::SetRenderingContext(uint64 primReg)
+@@ -573,13 +605,31 @@ void CGSH_OpenGL::SetRenderingContext(uint64 primReg)
  		shaderCaps.texSourceMode = TEXTURE_SOURCE_MODE_NONE;
  	}
  
++	//RTA: a picture from outside is bound for this very texture state (SetupTexture):
++	//it is a plain RGBA texture, whatever the format of the game's own
++	if(m_renderState.isValid && m_renderState.isTextureStateValid && m_renderState.texture0Replaced && prim.nTexture &&
++	   (m_renderState.tex0Reg == tex0Reg) && (m_renderState.tex1Reg == tex1Reg) && (m_renderState.texAReg == texAReg) && (m_renderState.clampReg == clampReg))
++	{
++		shaderCaps.texSourceMode = TEXTURE_SOURCE_MODE_STD;
++		shaderCaps.texBilinearFilter = 0;
++	}
++
 +	//RTA: The scanline mask: drawing only to every other line of the picture. A game uses
 +	//it to put the two fields of an interlaced picture into one frame; this one draws
 +	//its interface art that way when it is told to (see tools/play-net). It was not
@@ -332,7 +345,7 @@ index 7eb9460f..13a9f483 100644
  		   (m_renderState.primReg == primReg) &&
  		   (m_renderState.alphaReg == alphaReg) &&
  		   (m_renderState.testReg == testReg) &&
-@@ -605,7 +642,7 @@ void CGSH_OpenGL::SetRenderingContext(uint64 primReg)
+@@ -605,7 +655,7 @@ void CGSH_OpenGL::SetRenderingContext(uint64 primReg)
  	//--------------------------------------------------------
  	uint64 prevPrimValue = m_renderState.isValid ? m_renderState.primReg : 0;
  	auto prevPrim = make_convertible<PRMODE>(prevPrimValue);
@@ -341,7 +354,7 @@ index 7eb9460f..13a9f483 100644
  	bool primChanged = !m_renderState.isValid || (m_renderState.primReg != primReg);
  	bool blendEnableChanged = primChanged && !m_hasFramebufferFetchExtension && ((!m_renderState.isValid) || (prevPrim.nAlpha != prim.nAlpha));
  	bool alphaChanged = !m_renderState.isValid || (m_renderState.alphaReg != alphaReg);
-@@ -631,6 +668,11 @@ void CGSH_OpenGL::SetRenderingContext(uint64 primReg)
+@@ -631,6 +681,11 @@ void CGSH_OpenGL::SetRenderingContext(uint64 primReg)
  	if(shaderChanged)
  	{
  		m_renderState.shaderCaps = shaderCaps;
@@ -353,7 +366,19 @@ index 7eb9460f..13a9f483 100644
  	}
  
  	if(blendEnableChanged)
-@@ -698,6 +740,7 @@ void CGSH_OpenGL::SetRenderingContext(uint64 primReg)
+@@ -670,6 +725,11 @@ void CGSH_OpenGL::SetRenderingContext(uint64 primReg)
+ 	{
+ 		SetupTexture(primReg, tex0Reg, tex1Reg, texAReg, clampReg);
+ 		CHECKGLERROR();
++		if(m_renderState.texture0Replaced && prim.nTexture)
++		{
++			m_renderState.shaderCaps.texSourceMode = TEXTURE_SOURCE_MODE_STD;
++			m_renderState.shaderCaps.texBilinearFilter = 0;
++		}
+ 	}
+ 
+ 	if(fogColorChanged)
+@@ -698,6 +758,7 @@ void CGSH_OpenGL::SetRenderingContext(uint64 primReg)
  	m_renderState.texAReg = texAReg;
  	m_renderState.clampReg = clampReg;
  	m_renderState.fogColReg = fogColReg;
@@ -361,7 +386,7 @@ index 7eb9460f..13a9f483 100644
  }
  
  void CGSH_OpenGL::SetupBlendingFunction(uint64 alphaReg)
-@@ -1032,10 +1075,32 @@ void CGSH_OpenGL::SetupFramebuffer(uint64 frameReg, uint64 zbufReg, uint64 sciss
+@@ -1032,10 +1093,32 @@ void CGSH_OpenGL::SetupFramebuffer(uint64 frameReg, uint64 zbufReg, uint64 sciss
  
  	assert(framebuffer->m_width == depthbuffer->m_width);
  
@@ -397,7 +422,7 @@ index 7eb9460f..13a9f483 100644
  
  	assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
  
-@@ -1046,12 +1111,6 @@ void CGSH_OpenGL::SetupFramebuffer(uint64 frameReg, uint64 zbufReg, uint64 sciss
+@@ -1046,12 +1129,6 @@ void CGSH_OpenGL::SetupFramebuffer(uint64 frameReg, uint64 zbufReg, uint64 sciss
  	//to resolve samples at some point if multisampling is enabled
  	framebuffer->m_resolveNeeded = true;
  
@@ -410,7 +435,7 @@ index 7eb9460f..13a9f483 100644
  	m_renderState.viewportWidth = framebuffer->m_width;
  	m_renderState.viewportHeight = framebuffer->m_height;
  	m_validGlState &= ~GLSTATE_VIEWPORT;
-@@ -1257,7 +1316,10 @@ void CGSH_OpenGL::SetupTexture(uint64 primReg, uint64 tex0Reg, uint64 tex1Reg, u
+@@ -1257,10 +1334,25 @@ void CGSH_OpenGL::SetupTexture(uint64 primReg, uint64 tex0Reg, uint64 tex1Reg, u
  	m_nTexWidth = tex0.GetWidth();
  	m_nTexHeight = tex0.GetHeight();
  
@@ -421,7 +446,40 @@ index 7eb9460f..13a9f483 100644
  	m_renderState.texture0Handle = texInfo.textureHandle;
  	m_renderState.texture0AlphaAsIndex = texInfo.alphaAsIndex;
  
-@@ -1358,10 +1420,11 @@ void CGSH_OpenGL::SetupTexture(uint64 primReg, uint64 tex0Reg, uint64 tex1Reg, u
++	//RTA: a picture from outside in place of the game's (see TEXTURE_PICTURE_KEY)
++	m_renderState.texture0Replaced = false;
++	if(g_textureDump || g_textureLoad)
++	{
++		GLuint replacement = FindTextureReplacement(tex0);
++		if(replacement != 0)
++		{
++			m_renderState.texture0Handle = replacement;
++			m_renderState.texture0Replaced = true;
++		}
++	}
++
+ 	//Setup sampling modes
+ 	switch(tex1.nMagFilter)
+ 	{
+@@ -1337,7 +1429,7 @@ void CGSH_OpenGL::SetupTexture(uint64 primReg, uint64 tex0Reg, uint64 tex1Reg, u
+ 		}
+ 	}
+ 
+-	if(CGsPixelFormats::IsPsmIDTEX(tex0.nPsm) &&
++	if(CGsPixelFormats::IsPsmIDTEX(tex0.nPsm) && !m_renderState.texture0Replaced &&
+ 	   (m_renderState.texture0MinFilter != GL_NEAREST || m_renderState.texture0MagFilter != GL_NEAREST))
+ 	{
+ 		//We'll need to filter the texture manually
+@@ -1345,7 +1437,7 @@ void CGSH_OpenGL::SetupTexture(uint64 primReg, uint64 tex0Reg, uint64 tex1Reg, u
+ 		m_renderState.texture0MagFilter = GL_NEAREST;
+ 	}
+ 
+-	if(CGsPixelFormats::IsPsmIDTEX(tex0.nPsm))
++	if(CGsPixelFormats::IsPsmIDTEX(tex0.nPsm) && !m_renderState.texture0Replaced)
+ 	{
+ 		m_renderState.texture1Handle = PreparePalette(tex0);
+ 	}
+@@ -1358,10 +1450,11 @@ void CGSH_OpenGL::SetupTexture(uint64 primReg, uint64 tex0Reg, uint64 tex1Reg, u
  	m_vertexParams.texMatrix[3 + (3 * 4)] = 1;
  	m_validGlState &= ~GLSTATE_VERTEX_PARAMS;
  
@@ -437,7 +495,7 @@ index 7eb9460f..13a9f483 100644
  	m_fragmentParams.clampMin[0] = static_cast<float>(clampMin[0]);
  	m_fragmentParams.clampMin[1] = static_cast<float>(clampMin[1]);
  	m_fragmentParams.clampMax[0] = static_cast<float>(clampMax[0]);
-@@ -1874,6 +1937,11 @@ void CGSH_OpenGL::DrawToDepth(unsigned int primitiveType, uint64 primReg)
+@@ -1874,6 +1967,11 @@ void CGSH_OpenGL::DrawToDepth(unsigned int primitiveType, uint64 primReg)
  
  	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthbuffer->m_depthBuffer);
  	CHECKGLERROR();
@@ -449,7 +507,7 @@ index 7eb9460f..13a9f483 100644
  
  	assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
  
-@@ -2052,6 +2120,7 @@ void CGSH_OpenGL::VertexKick(uint8 nRegister, uint64 nValue)
+@@ -2052,6 +2150,7 @@ void CGSH_OpenGL::VertexKick(uint8 nRegister, uint64 nValue)
  				   m_renderState.texAReg == texAReg &&
  				   m_renderState.clampReg == clampReg &&
  				   m_renderState.fogColReg == fogColReg &&
@@ -457,7 +515,7 @@ index 7eb9460f..13a9f483 100644
  				   m_renderState.scissorReg == scissorReg)
  				{
  					needCtx = false; // fully same state; skip call
-@@ -2119,6 +2188,21 @@ void CGSH_OpenGL::ProcessHostToLocalTransfer()
+@@ -2119,6 +2218,35 @@ void CGSH_OpenGL::ProcessHostToLocalTransfer()
  
  		m_textureCache.InvalidateRange(transferAddress, transferSize);
  
@@ -468,18 +526,32 @@ index 7eb9460f..13a9f483 100644
 +			auto& uploadExtent = m_uploadExtents[basePtr];
 +			if((trxPos.nDSAX == 0) && (trxPos.nDSAY == 0))
 +			{
-+				uploadExtent = extent;
++				uploadExtent.extent = extent;
++				uploadExtent.psm = bltBuf.nDstPsm;
++				uploadExtent.width = trxReg.nRRW;
++				uploadExtent.height = trxReg.nRRH;
 +			}
 +			else
 +			{
-+				uploadExtent = std::max(uploadExtent, extent);
++				//A further piece of the same picture
++				uploadExtent.extent = std::max(uploadExtent.extent, extent);
++				if(uploadExtent.psm == bltBuf.nDstPsm)
++				{
++					uploadExtent.width = std::max<uint32>(uploadExtent.width, trxPos.nDSAX + trxReg.nRRW);
++					uploadExtent.height = std::max<uint32>(uploadExtent.height, trxPos.nDSAY + trxReg.nRRH);
++				}
++				else
++				{
++					uploadExtent.width = 0;
++					uploadExtent.height = 0;
++				}
 +			}
 +		}
 +
  		bool isUpperByteTransfer = (bltBuf.nDstPsm == PSMT8H) || (bltBuf.nDstPsm == PSMT4HL) || (bltBuf.nDstPsm == PSMT4HH);
  		for(const auto& framebuffer : m_framebuffers)
  		{
-@@ -2525,10 +2609,7 @@ void CGSH_OpenGL::CommitFramebufferDirtyPages(const FramebufferPtr& framebuffer,
+@@ -2525,10 +2653,7 @@ void CGSH_OpenGL::CommitFramebufferDirtyPages(const FramebufferPtr& framebuffer,
  	public:
  		void EnableCopyToFb(const FramebufferPtr& framebuffer, GLuint copyToFbTexture)
  		{
@@ -491,7 +563,7 @@ index 7eb9460f..13a9f483 100644
  			glActiveTexture(GL_TEXTURE0);
  			glBindTexture(GL_TEXTURE_2D, copyToFbTexture);
  			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, framebuffer->m_width, framebuffer->m_height,
-@@ -2538,6 +2619,10 @@ void CGSH_OpenGL::CommitFramebufferDirtyPages(const FramebufferPtr& framebuffer,
+@@ -2538,6 +2663,10 @@ void CGSH_OpenGL::CommitFramebufferDirtyPages(const FramebufferPtr& framebuffer,
  			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
  			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
  
@@ -502,7 +574,7 @@ index 7eb9460f..13a9f483 100644
  			glBindFramebuffer(GL_FRAMEBUFFER, framebuffer->m_framebuffer);
  
  			m_copyToFbEnabled = true;
-@@ -2581,8 +2666,22 @@ void CGSH_OpenGL::CommitFramebufferDirtyPages(const FramebufferPtr& framebuffer,
+@@ -2581,8 +2710,22 @@ void CGSH_OpenGL::CommitFramebufferDirtyPages(const FramebufferPtr& framebuffer,
  		{
  			texHeight = framebuffer->m_height - texY;
  		}
@@ -526,10 +598,18 @@ index 7eb9460f..13a9f483 100644
  
  		((this)->*(m_textureUpdater[framebuffer->m_psm]))(framebuffer->m_basePtr, framebuffer->m_width / 64,
 diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.h b/Source/gs/GSH_OpenGL/GSH_OpenGL.h
-index 290deb70..518dfd73 100644
+index 290deb70..cd87f60f 100644
 --- a/Source/gs/GSH_OpenGL/GSH_OpenGL.h
 +++ b/Source/gs/GSH_OpenGL/GSH_OpenGL.h
-@@ -99,6 +99,9 @@ private:
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ #include <list>
++#include <functional>
+ #include <unordered_map>
+ #include "../GSHandler.h"
+ #include "../GsDebuggerInterface.h"
+@@ -99,6 +100,9 @@ private:
  		unsigned int alphaTestDepthTest_DepthFetch : 1;
  		unsigned int alphaTestDepthTestEqual_DepthFetch : 1;
  
@@ -539,15 +619,16 @@ index 290deb70..518dfd73 100644
  		bool isIndexedTextureSource() const
  		{
  			return texSourceMode == TEXTURE_SOURCE_MODE_IDX4 || texSourceMode == TEXTURE_SOURCE_MODE_IDX8;
-@@ -124,6 +127,7 @@ private:
+@@ -124,6 +128,8 @@ private:
  		uint64 texAReg;
  		uint64 clampReg;
  		uint64 fogColReg;
 +		uint64 scanMskReg; //RTA
++		bool texture0Replaced; //RTA: a picture from outside is bound in place of the game's
  
  		//Intermediate State
  		SHADERCAPS shaderCaps;
-@@ -172,7 +176,8 @@ private:
+@@ -172,7 +178,8 @@ private:
  		uint32 alphaRef;
  		float alphaFix;
  		float fogColor[3];
@@ -557,7 +638,7 @@ index 290deb70..518dfd73 100644
  	};
  	static_assert(sizeof(FRAGMENTPARAMS) == 0x40, "Size of FRAGMENTPARAMS must be 64 bytes.");
  
-@@ -242,6 +247,9 @@ private:
+@@ -242,6 +249,9 @@ private:
  		Framework::OpenGl::CFramebuffer m_framebuffer;
  		Framework::OpenGl::CTexture m_texture;
  
@@ -567,7 +648,7 @@ index 290deb70..518dfd73 100644
  		Framework::OpenGl::CFramebuffer m_resolveFramebuffer;
  		bool m_resolveNeeded = false;
  		Framework::OpenGl::CRenderbuffer m_colorBufferMs;
-@@ -273,7 +281,37 @@ private:
+@@ -273,8 +283,73 @@ private:
  		float scaleRatioX = 1;
  		float scaleRatioY = 1;
  		bool alphaAsIndex = false;
@@ -600,12 +681,48 @@ index 290deb70..518dfd73 100644
 +	{
 +		Framework::OpenGl::CTexture handle;
 +		uint32 lastUsedFrame = 0;
++		//The texels as uploaded (one byte each for indexed formats, RGBA otherwise);
++		//only kept when textures are dumped or replaced
++		std::vector<uint8> pixels;
  	};
-+	typedef std::unordered_map<CONTENT_TEXTURE_KEY, CONTENT_TEXTURE, CONTENT_TEXTURE_KEY_HASHER> ContentTextureMap;
  
++public:
++	//RTA: Texture dump and replacement. A texture is known by the figure of its texels
++	//and, for an indexed one, the figure of the palette it is drawn with (the same
++	//texels with another palette are another picture). The front end may set two
++	//functions: 'dump' is given each new picture once, as RGBA; 'load' may hand back a
++	//picture of any size to be drawn in its place. Alpha is the console's: 128 is opaque.
++	struct TEXTURE_PICTURE_KEY
++	{
++		uint32 psm = 0;
++		uint32 width = 0;
++		uint32 height = 0;
++		uint64 hash = 0;
++		uint64 clutHash = 0;
++		bool operator==(const TEXTURE_PICTURE_KEY& rhs) const
++		{
++			return (psm == rhs.psm) && (width == rhs.width) && (height == rhs.height) && (hash == rhs.hash) && (clutHash == rhs.clutHash);
++		}
++	};
++	struct TEXTURE_PICTURE_KEY_HASHER
++	{
++		size_t operator()(const TEXTURE_PICTURE_KEY& key) const
++		{
++			return static_cast<size_t>(key.hash ^ (key.clutHash * 0x9E3779B97F4A7C15ULL) ^ (static_cast<uint64>(key.psm) << 56) ^ (static_cast<uint64>(key.width) << 40) ^ (static_cast<uint64>(key.height) << 24));
++		}
++	};
++	typedef std::function<void(const TEXTURE_PICTURE_KEY&, const uint32*)> TextureDumpFunction;
++	typedef std::function<bool(const TEXTURE_PICTURE_KEY&, std::vector<uint32>&, uint32&, uint32&)> TextureLoadFunction;
++	static TextureDumpFunction g_textureDump;
++	static TextureLoadFunction g_textureLoad;
++
++private:
++	typedef std::unordered_map<CONTENT_TEXTURE_KEY, CONTENT_TEXTURE, CONTENT_TEXTURE_KEY_HASHER> ContentTextureMap;
++
  	struct TEXTUREFORMAT_INFO
  	{
-@@ -420,6 +458,19 @@ private:
+ 		GLenum internalFormat;
+@@ -420,6 +495,33 @@ private:
  	Framework::OpenGl::CVertexArray m_presentVertexArray;
  	GLint m_presentTextureUniform = -1;
  	GLint m_presentTexCoordScaleUniform = -1;
@@ -615,9 +732,23 @@ index 290deb70..518dfd73 100644
 +	TEXTURE_INFO PrepareTextureByContent(const TEX0&, uint32, uint32);
 +	std::pair<uint32, uint32> GetUsedTextureSize(const TEX0&) const;
 +	//Where the game last sent picture data to, by the address it gave: how many bytes
-+	std::unordered_map<uint32, uint32> m_uploadExtents;
++	//(from that address to the end of the last page touched), and the rectangle in the
++	//format it was sent in
++	struct UPLOAD_EXTENT
++	{
++		uint32 extent = 0;
++		uint32 psm = 0;
++		uint32 width = 0;
++		uint32 height = 0;
++	};
++	std::unordered_map<uint32, UPLOAD_EXTENT> m_uploadExtents;
 +	//Set while a texture is prepared for a draw that repeats it plainly (see SetupTexture)
 +	bool m_texAllowReducedSize = false;
++	//The texture PrepareTextureByContent gave last (nullptr: none), for FindTextureReplacement
++	const CONTENT_TEXTURE* m_lastContentTexture = nullptr;
++	CONTENT_TEXTURE_KEY m_lastContentKey;
++	GLuint FindTextureReplacement(const TEX0&);
++	std::unordered_map<TEXTURE_PICTURE_KEY, Framework::OpenGl::CTexture, TEXTURE_PICTURE_KEY_HASHER> m_textureReplacements;
 +	void ContentTextures_EndFrame();
 +	ContentTextureMap m_contentTextures;
 +	uint32 m_contentTextureFrame = 0;
@@ -665,7 +796,7 @@ index 3f37572a..3886266b 100644
  		shaderBuilder << "}" << std::endl;
  
 diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp
-index 01a12176..fb7f64f1 100644
+index 01a12176..411f331e 100644
 --- a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp
 +++ b/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp
 @@ -1,3 +1,5 @@
@@ -674,7 +805,19 @@ index 01a12176..fb7f64f1 100644
  #include <assert.h>
  #include <cstring>
  #include <sys/stat.h>
-@@ -191,6 +193,17 @@ CGSH_OpenGL::TEXTURE_INFO CGSH_OpenGL::PrepareTexture(const TEX0& tex0)
+@@ -183,14 +185,29 @@ CGSH_OpenGL::TEXTURE_INFO CGSH_OpenGL::SearchTextureFramebuffer(const TEX0& tex0
+ 	}
+ }
+ 
++CGSH_OpenGL::TextureDumpFunction CGSH_OpenGL::g_textureDump;
++CGSH_OpenGL::TextureLoadFunction CGSH_OpenGL::g_textureLoad;
++
+ CGSH_OpenGL::TEXTURE_INFO CGSH_OpenGL::PrepareTexture(const TEX0& tex0)
+ {
++	m_lastContentTexture = nullptr;
+ 	auto texInfo = SearchTextureFramebuffer(tex0);
+ 	if(texInfo.textureHandle != 0)
+ 	{
  		return texInfo;
  	}
  
@@ -692,7 +835,7 @@ index 01a12176..fb7f64f1 100644
  	auto texture = m_textureCache.Search(tex0);
  	if(!texture)
  	{
-@@ -252,6 +265,191 @@ CGSH_OpenGL::TEXTURE_INFO CGSH_OpenGL::PrepareTexture(const TEX0& tex0)
+@@ -252,6 +269,285 @@ CGSH_OpenGL::TEXTURE_INFO CGSH_OpenGL::PrepareTexture(const TEX0& tex0)
  	return texInfo;
  }
  
@@ -722,8 +865,33 @@ index 01a12176..fb7f64f1 100644
 +	uint32 bufWidth = tex0.GetBufWidth();
 +	if(bufWidth == 0) return std::make_pair(texWidth, texHeight);
 +
++	//The rectangle that was sent, in the texture's own terms. Games send 8-bit textures
++	//as 32-bit pictures of half the width and height (the two formats share the order of
++	//blocks in memory; a block is 8 x 8 pixels of the one and 16 x 16 texels of the other,
++	//a column 8 x 2 and 16 x 4), and 4-bit textures as 16-bit ones the same way.
++	{
++		const auto& upload = uploadExtentIterator->second;
++		uint32 sentWidth = 0, sentHeight = 0;
++		if(upload.psm == tex0.nPsm)
++		{
++			sentWidth = upload.width;
++			sentHeight = upload.height;
++		}
++		else if((((tex0.nPsm == PSMT8) && (upload.psm == PSMCT32)) || ((tex0.nPsm == PSMT4) && ((upload.psm == PSMCT16) || (upload.psm == PSMCT16S)))) &&
++		        ((upload.width % 8) == 0) && ((upload.height % 2) == 0))
++		{
++			sentWidth = upload.width * 2;
++			sentHeight = upload.height * 2;
++		}
++		if((sentWidth != 0) && (sentHeight != 0))
++		{
++			return std::make_pair(std::min(texWidth, sentWidth), std::min(texHeight, sentHeight));
++		}
++	}
++
++	//Otherwise, to the page
 +	auto pageSize = CGsPixelFormats::GetPsmPageSize(tex0.nPsm);
-+	uint32 pageCount = (uploadExtentIterator->second + CGsPixelFormats::PAGESIZE - 1) / CGsPixelFormats::PAGESIZE;
++	uint32 pageCount = (uploadExtentIterator->second.extent + CGsPixelFormats::PAGESIZE - 1) / CGsPixelFormats::PAGESIZE;
 +	uint32 pagesPerRow = bufWidth / pageSize.first;
 +	uint32 pageRows = (pagesPerRow == 0) ? 1 : ((pageCount + pagesPerRow - 1) / pagesPerRow);
 +	uint32 usedHeight = pageRows * pageSize.second;
@@ -777,6 +945,8 @@ index 01a12176..fb7f64f1 100644
 +		{
 +			contentTextureIterator->second.lastUsedFrame = m_contentTextureFrame;
 +			texInfo.textureHandle = contentTextureIterator->second.handle;
++			m_lastContentTexture = &contentTextureIterator->second;
++			m_lastContentKey = key;
 +			return texInfo;
 +		}
 +	}
@@ -853,11 +1023,77 @@ index 01a12176..fb7f64f1 100644
 +		glTexStorage2D(GL_TEXTURE_2D, 1, texFormat.internalFormat, texWidth, texHeight);
 +		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, texWidth, texHeight, texFormat.format, texFormat.type, m_pCvtBuffer);
 +		CHECKGLERROR();
++		if(g_textureDump || g_textureLoad)
++		{
++			size_t pixelSize = CGsPixelFormats::IsPsmIDTEX(tex0.nPsm) ? 1 : (((tex0.nPsm == PSMCT16) || (tex0.nPsm == PSMCT16S)) ? 2 : 4);
++			contentTexture.pixels.assign(m_pCvtBuffer, m_pCvtBuffer + (static_cast<size_t>(texWidth) * texHeight * pixelSize));
++		}
 +		contentTextureIterator = m_contentTextures.emplace(key, std::move(contentTexture)).first;
 +	}
 +	contentTextureIterator->second.lastUsedFrame = m_contentTextureFrame;
 +	texInfo.textureHandle = contentTextureIterator->second.handle;
++	m_lastContentTexture = &contentTextureIterator->second;
++	m_lastContentKey = key;
 +	return texInfo;
++}
++
++//RTA: see TEXTURE_PICTURE_KEY. Returns the texture to draw with in place of the one
++//PrepareTextureByContent gave, or 0. Indexed textures and 32-bit ones only.
++GLuint CGSH_OpenGL::FindTextureReplacement(const TEX0& tex0)
++{
++	if(!m_lastContentTexture || m_lastContentTexture->pixels.empty()) return 0;
++	bool indexed = CGsPixelFormats::IsPsmIDTEX(tex0.nPsm);
++	if(!indexed && (tex0.nPsm != PSMCT32)) return 0;
++
++	TEXTURE_PICTURE_KEY key;
++	key.psm = m_lastContentKey.psm;
++	key.width = m_lastContentKey.width;
++	key.height = m_lastContentKey.height;
++	key.hash = m_lastContentKey.hash;
++
++	std::array<uint32, 256> clut;
++	if(indexed)
++	{
++		MakeLinearCLUT(tex0, clut);
++		key.clutHash = XXH3_64bits(clut.data(), (CGsPixelFormats::IsPsmIDTEX4(tex0.nPsm) ? 16 : 256) * sizeof(uint32));
++	}
++
++	auto replacementIterator = m_textureReplacements.find(key);
++	if(replacementIterator == std::end(m_textureReplacements))
++	{
++		Framework::OpenGl::CTexture replacement;
++		if(g_textureDump)
++		{
++			size_t pixelCount = static_cast<size_t>(key.width) * key.height;
++			std::vector<uint32> picture(pixelCount);
++			const auto& pixels = m_lastContentTexture->pixels;
++			if(indexed)
++			{
++				uint32 mask = CGsPixelFormats::IsPsmIDTEX4(tex0.nPsm) ? 0x0F : 0xFF;
++				for(size_t i = 0; i < pixelCount; i++) picture[i] = clut[pixels[i] & mask];
++			}
++			else
++			{
++				memcpy(picture.data(), pixels.data(), pixelCount * sizeof(uint32));
++			}
++			g_textureDump(key, picture.data());
++		}
++		if(g_textureLoad)
++		{
++			std::vector<uint32> picture;
++			uint32 width = 0, height = 0;
++			if(g_textureLoad(key, picture, width, height) && (width != 0) && (height != 0) && (picture.size() >= (static_cast<size_t>(width) * height)))
++			{
++				replacement = Framework::OpenGl::CTexture::Create();
++				glBindTexture(GL_TEXTURE_2D, replacement);
++				glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, width, height);
++				glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, picture.data());
++				CHECKGLERROR();
++			}
++		}
++		replacementIterator = m_textureReplacements.emplace(key, std::move(replacement)).first;
++	}
++	return replacementIterator->second;
 +}
 +
 +//Once a frame, when nothing is waiting to be drawn: forget textures not used for a while
@@ -872,6 +1108,7 @@ index 01a12176..fb7f64f1 100644
 +	{
 +		if((m_contentTextureFrame - contentTextureIterator->second.lastUsedFrame) > g_maxAge)
 +		{
++			if(m_lastContentTexture == &contentTextureIterator->second) m_lastContentTexture = nullptr;
 +			contentTextureIterator = m_contentTextures.erase(contentTextureIterator);
 +		}
 +		else
@@ -884,7 +1121,7 @@ index 01a12176..fb7f64f1 100644
  GLuint CGSH_OpenGL::PreparePalette(const TEX0& tex0)
  {
  	GLuint textureHandle = PalCache_Search(tex0);
-@@ -319,7 +517,7 @@ void CGSH_OpenGL::TexUpdater_Psm32(uint32 bufPtr, uint32 bufWidth, unsigned int
+@@ -319,7 +615,7 @@ void CGSH_OpenGL::TexUpdater_Psm32(uint32 bufPtr, uint32 bufWidth, unsigned int
  		dst += texWidth;
  	}
  
@@ -893,7 +1130,7 @@ index 01a12176..fb7f64f1 100644
  	CHECKGLERROR();
  }
  
-@@ -345,7 +543,7 @@ void CGSH_OpenGL::TexUpdater_Psm16(uint32 bufPtr, uint32 bufWidth, unsigned int
+@@ -345,7 +641,7 @@ void CGSH_OpenGL::TexUpdater_Psm16(uint32 bufPtr, uint32 bufWidth, unsigned int
  		dst += texWidth;
  	}
  
@@ -902,7 +1139,7 @@ index 01a12176..fb7f64f1 100644
  	CHECKGLERROR();
  }
  
-@@ -590,7 +788,7 @@ void CGSH_OpenGL::TexUpdater_Psm8(uint32 bufPtr, uint32 bufWidth, unsigned int t
+@@ -590,7 +886,7 @@ void CGSH_OpenGL::TexUpdater_Psm8(uint32 bufPtr, uint32 bufWidth, unsigned int t
  		dst += texWidth * 16;
  	}
  
@@ -911,7 +1148,7 @@ index 01a12176..fb7f64f1 100644
  	CHECKGLERROR();
  }
  
-@@ -631,7 +829,7 @@ void CGSH_OpenGL::TexUpdater_Psm4(unsigned int bufPtr, unsigned int bufWidth, un
+@@ -631,7 +927,7 @@ void CGSH_OpenGL::TexUpdater_Psm4(unsigned int bufPtr, unsigned int bufWidth, un
  
  		dst += texWidth * 16;
  	}
@@ -920,7 +1157,7 @@ index 01a12176..fb7f64f1 100644
  	CHECKGLERROR();
  }
  
-@@ -652,7 +850,7 @@ void CGSH_OpenGL::TexUpdater_Psm48(uint32 bufPtr, uint32 bufWidth, unsigned int
+@@ -652,7 +948,7 @@ void CGSH_OpenGL::TexUpdater_Psm48(uint32 bufPtr, uint32 bufWidth, unsigned int
  		dst += texWidth;
  	}
  
@@ -929,7 +1166,7 @@ index 01a12176..fb7f64f1 100644
  	CHECKGLERROR();
  }
  
-@@ -674,7 +872,7 @@ void CGSH_OpenGL::TexUpdater_Psm48H(uint32 bufPtr, uint32 bufWidth, unsigned int
+@@ -674,7 +970,7 @@ void CGSH_OpenGL::TexUpdater_Psm48H(uint32 bufPtr, uint32 bufWidth, unsigned int
  		dst += texWidth;
  	}
  

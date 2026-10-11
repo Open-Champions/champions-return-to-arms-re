@@ -22,7 +22,16 @@ square triangle l1 l2 l3 r1 r2 r3 start select):
     peek <expression> <type> read the game's memory: numbers, + and -, [x] for the word
                              at x; types u8 u16 u32 s32 x32 f32 strN wstrN hexN
     shot <file.bmp>          a picture of the window's contents
-    info                     frame number, clock in ms, executable, network counters
+    burst <name> <n>         n consecutive presented pictures, <name>-0.bmp ..., with
+                             the clock of each in <name>-times.txt
+    probe <file> <n> <x> <y> <w> <h>   a rectangle of n consecutive presented pictures,
+                             raw, and "<index> <clock> <w> <h>" lines in <file>.txt
+    info                     frame number, clocks, thread processor times, the display's
+                             rate, executable, network and texture counters
+    gs                       the display state: interlace, field, the buffer shown
+    pref int|bool <setting> <value>   one of the application's settings, taken up at once
+    poke <expression> u8|u32|str <value>   write the game's memory (tests only)
+    bench                    how fast the cores are that the two main threads run on
     throttle <0|1>           0: run as fast as the computer can (for measuring)
     ethdrop                  cut the connections to the lobby server (a lost line)
     quit
