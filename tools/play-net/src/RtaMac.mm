@@ -1,5 +1,6 @@
 // See Rta.h.
 #import <Foundation/Foundation.h>
+#import <AppKit/AppKit.h>
 #import <CoreVideo/CoreVideo.h>
 #include <atomic>
 #include <chrono>
@@ -21,6 +22,21 @@ void Rta::KeepAwake()
 #if !__has_feature(objc_arc)
 	[activity retain];
 #endif
+}
+
+void Rta::MakeBackgroundApplication()
+{
+	[NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+}
+
+void Rta::SendWindowBack(void* nsView)
+{
+#if __has_feature(objc_arc)
+	NSView* view = (__bridge NSView*)nsView;
+#else
+	NSView* view = (NSView*)nsView;
+#endif
+	[[view window] orderBack:nil];
 }
 
 // ---- the display's clock ---------------------------------------------------------------

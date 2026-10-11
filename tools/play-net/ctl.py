@@ -22,6 +22,8 @@ square triangle l1 l2 l3 r1 r2 r3 start select):
     peek <expression> <type> read the game's memory: numbers, + and -, [x] for the word
                              at x; types u8 u16 u32 s32 x32 f32 strN wstrN hexN
     shot <file.bmp>          a picture of the window's contents
+    shotfb <file.bmp>        the picture as the machine drew it: the console's 640 x 448
+                             times the resolution factor, whatever the window's size
     burst <name> <n>         n consecutive presented pictures, <name>-0.bmp ..., with
                              the clock of each in <name>-times.txt
     probe <file> <n> <x> <y> <w> <h>   a rectangle of n consecutive presented pictures,

@@ -16,6 +16,7 @@
 
 class CPS2VM;
 class QCommandLineParser;
+class QWidget;
 
 namespace Rta
 {
@@ -34,6 +35,18 @@ namespace Rta
 	void Detach();
 	// One line for the status bar; empty when there is nothing to say.
 	std::string StatusText();
+	// Around the main window's first show(), and for every title it is given. With
+	// --rta-test the window says in its title that it is a test and what is switched
+	// off in it, is small, and neither comes to the front nor takes the keyboard.
+	void BeforeShow(QWidget*);
+	void AfterShow(QWidget*);
+	std::string WindowTitle(const std::string&);
+	void LogLine(const std::string&);
+
+	// RtaMac.mm: an application without a Dock icon that is never made the active one,
+	// and its window behind every other.
+	void MakeBackgroundApplication();
+	void SendWindowBack(void* nsView);
 
 	// RtaMac.mm: keeps macOS from slowing the application down when its window is
 	// covered or in the background (the other players wait for every frame of ours).

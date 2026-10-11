@@ -10,7 +10,10 @@
 #include <QDir>
 #include <QImage>
 #include <QStringList>
+#include <QTimer>
+#include <QWidget>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdarg>
@@ -83,6 +86,7 @@ namespace
 		bool netcnf = true;
 		std::string controlPath;
 		std::string pcapPath;
+		std::string testLabel; // --rta-test: a test run, and what the window's title says about it
 	};
 
 	struct PatchWord
@@ -504,7 +508,9 @@ namespace
 		// stay out of the repository.
 		static std::string TextureName(const CGSH_OpenGL::TEXTURE_PICTURE_KEY& key)
 		{
-			return Format("%016llx-%016llx-p%u-%ux%u.png", static_cast<unsigned long long>(key.hash), static_cast<unsigned long long>(key.clutHash), key.psm, key.width, key.height);
+			// "mem-": a texture known only by what was found in GS memory, not by what the
+			// game sent; such a name may not come back in another run
+			return Format("%s%016llx-%016llx-p%u-%ux%u.png", (key.kind == 1) ? "" : "mem-", static_cast<unsigned long long>(key.hash), static_cast<unsigned long long>(key.clutHash), key.psm, key.width, key.height);
 		}
 
 		void StartTextures(const fs::path& base)
@@ -797,7 +803,7 @@ namespace
 		// command is answered with one line ("ok ..." or "err ...") when it is done.
 		//   press <buttons>   release <buttons>|all   tap <buttons> [hold [after]]
 		//   stick <l|r> <x> <y>   (0..255, 128 is the middle)      wait <frames>
-		//   peek <expression> <type>   shot <file.bmp>   burst <name> <n>   info   gs
+		//   peek <expression> <type>   shot <file.bmp>   shotfb <file.bmp>   burst <name> <n>   info   gs
 		//   probe <file> <n> <x> <y> <w> <h>   bench   poke <expression> u8|u32|str <value>
 		//   throttle <0|1>   pref int|bool <setting> <value>   ethdrop   quit
 		// Buttons are joined with '+': up down left right cross circle square triangle
@@ -1009,9 +1015,14 @@ namespace
 				for(size_t i = 1; i + 1 < words.size(); i++) expression += words[i];
 				push(Step::REPLY, 1, expression + " " + words.back());
 			}
-			else if(name == "shot" && words.size() >= 2)
+			else if((name == "shot" || name == "shotfb") && words.size() >= 2)
 			{
-				push(Step::SHOT, 0, line.substr(line.find(words[1])));
+				// shotfb: the picture as drawn (see RequestFramebufferCapture)
+				Step step;
+				step.kind = Step::SHOT;
+				step.value3 = (name == "shotfb") ? 1 : 0;
+				step.text = line.substr(line.find(words[1], name.size()));
+				m_steps.push_back(step);
 				push(Step::SHOTWAIT, 600);
 			}
 			else if(name == "info")
@@ -1110,6 +1121,34 @@ namespace
 				if(auto gs = m_vm->GetGSHandler()) gs->SendGSCall([&]() { video = work(); }, true);
 				push(Step::REPLY, 0, Format("ok machine_thread clock_us=%llu cpu_us=%llu video_thread clock_us=%llu cpu_us=%llu", (unsigned long long)machine.first, (unsigned long long)machine.second, (unsigned long long)video.first, (unsigned long long)video.second));
 			}
+			else if(name == "texmode" && words.size() == 2)
+			{
+				// 0: textures by what the game sent; 1: by the texels in GS memory; 2: by
+				// address, as Play! itself does (for comparing)
+				CGSH_OpenGL::g_textureMode = static_cast<int>(number(1, 0));
+				push(Step::REPLY, 0, "ok");
+			}
+			else if(name == "displaypatch" && words.size() == 3)
+			{
+				// displaypatch all|<index> 0|1: a display patch off or on while the game runs
+				bool on = number(2, 1) != 0;
+				unsigned int count = 0;
+				for(size_t i = 0; i < (sizeof(g_displayPatches) / sizeof(g_displayPatches[0])); i++)
+				{
+					if(words[1] != "all" && number(1, 0) != i) continue;
+					const auto& patch = g_displayPatches[i];
+					auto same = [&](const PatchWord& word) { return word.address == patch.address; };
+					m_activePatches.erase(std::remove_if(m_activePatches.begin(), m_activePatches.end(), same), m_activePatches.end());
+					PatchWord word;
+					word.address = patch.address;
+					word.value = on ? patch.value : patch.original;
+					// kept in the list either way, so that the word is written and the
+					// translated code on its page thrown away at the next vertical blank
+					m_activePatches.push_back(word);
+					count++;
+				}
+				push(Step::REPLY, 0, Format("ok %u display patch(es) %s", count, on ? "on" : "off"));
+			}
 			else if(name == "ethdrop")
 			{
 				if(m_net) m_net->DropTcp();
@@ -1202,8 +1241,13 @@ namespace
 							             (unsigned long long)s.framesFromGuest, (unsigned long long)s.framesToGuest, (unsigned long long)s.tcpConnections, (unsigned long long)s.tcpBytesOut, (unsigned long long)s.tcpBytesIn,
 							             (unsigned long long)s.udpToServer, (unsigned long long)s.udpToPeers, (unsigned long long)s.udpFromPeers, s.dhcpDone ? 1 : 0, s.dnsAnswered ? 1 : 0);
 						}
-						Reply(Format("ok frame=%llu ms=%lld us=%llu cpu_us=%llu video_cpu_us=%llu display_hz=%.2f refreshes_per_frame=%d textures_dumped=%llu textures_replaced=%llu exe=%s game=%d %s", static_cast<unsigned long long>(m_frame.load()), static_cast<long long>(ms), static_cast<unsigned long long>(us),
-						             static_cast<unsigned long long>(m_cpuMicroseconds.load()), static_cast<unsigned long long>(m_gsCpuMicroseconds.load()), Rta::DisplayRefreshRate(), Rta::DisplayRefreshesPerFrame(), static_cast<unsigned long long>(m_texturesDumped.load()), static_cast<unsigned long long>(m_texturesReplaced.load()), m_vm->m_ee->m_os->GetExecutableName(), m_isGame ? 1 : 0, net.c_str()));
+						const auto& tc = CGSH_OpenGL::g_textureCounters;
+						std::string textures = Format("textures_dumped=%llu textures_replaced=%llu tex_made=%llu tex_held=%llu tex_by_upload=%llu tex_by_memory=%llu tex_memory_read=%llu tex_in_place=%llu tex_short_lived=%llu uploads=%llu",
+						                              static_cast<unsigned long long>(m_texturesDumped.load()), static_cast<unsigned long long>(m_texturesReplaced.load()), static_cast<unsigned long long>(tc.created.load()), static_cast<unsigned long long>(tc.alive.load()),
+						                              static_cast<unsigned long long>(tc.byUpload.load()), static_cast<unsigned long long>(tc.byMemory.load()), static_cast<unsigned long long>(tc.memoryHashed.load()), static_cast<unsigned long long>(tc.inPlace.load()),
+						                              static_cast<unsigned long long>(tc.shortLived.load()), static_cast<unsigned long long>(tc.uploads.load()));
+						Reply(Format("ok frame=%llu ms=%lld us=%llu cpu_us=%llu video_cpu_us=%llu display_hz=%.2f refreshes_per_frame=%d %s exe=%s game=%d %s", static_cast<unsigned long long>(m_frame.load()), static_cast<long long>(ms), static_cast<unsigned long long>(us),
+						             static_cast<unsigned long long>(m_cpuMicroseconds.load()), static_cast<unsigned long long>(m_gsCpuMicroseconds.load()), Rta::DisplayRefreshRate(), Rta::DisplayRefreshesPerFrame(), textures.c_str(), m_vm->m_ee->m_os->GetExecutableName(), m_isGame ? 1 : 0, net.c_str()));
 					}
 					else if(step.value == 3)
 					{
@@ -1263,8 +1307,10 @@ namespace
 						m_burstLeft = step.value;
 						m_burstIndex = 0;
 						std::string name = step.text;
-						m_capture = [this, gs, name](const uint8* rgba, unsigned int width, unsigned int height) {
-							// 24-bit BMP; the rows come bottom-up, as the file wants them
+						bool topFirst = (step.value3 == 1);
+						m_capture = [this, gs, name, topFirst](const uint8* rgba, unsigned int width, unsigned int height) {
+							// 24-bit BMP; the rows of the window's picture come bottom-up, as
+							// the file wants them, those of the machine's own top first
 							std::string path = name;
 							if(m_burstLeft > 0)
 							{
@@ -1302,7 +1348,7 @@ namespace
 							{
 								for(unsigned int x = 0; x < width; x++)
 								{
-									const uint8* pixel = rgba + (static_cast<size_t>(y) * width + x) * 4;
+									const uint8* pixel = rgba + (static_cast<size_t>(topFirst ? (height - 1 - y) : y) * width + x) * 4;
 									row[x * 3 + 0] = pixel[2];
 									row[x * 3 + 1] = pixel[1];
 									row[x * 3 + 2] = pixel[0];
@@ -1312,7 +1358,10 @@ namespace
 							fclose(file);
 							if(m_burstLeft == 0) m_shotDone = 1;
 						};
-						gs->RequestCapture(m_capture);
+						if(topFirst)
+							gs->RequestFramebufferCapture(m_capture);
+						else
+							gs->RequestCapture(m_capture);
 					}
 				}
 				else if(step.kind == Step::SHOTWAIT)
@@ -1484,6 +1533,7 @@ void Rta::AddCommandLineOptions(QCommandLineParser& parser)
 	parser.addOption(QCommandLineOption("rta-no-netcnf", "Do not write the network setting to the memory card."));
 	parser.addOption(QCommandLineOption("rta-control", "UNIX socket for a test script (see tools/play-net/ctl.py).", "path"));
 	parser.addOption(QCommandLineOption("rta-pcap", "Write every Ethernet frame of the emulated adaptor to this capture file.", "file"));
+	parser.addOption(QCommandLineOption("rta-test", "A test run: the window says so in its title with this text (name what is switched off), is small, stays behind the other windows and does not take the keyboard.", "text"));
 }
 
 void Rta::ReadCommandLine(const QCommandLineParser& parser)
@@ -1507,6 +1557,46 @@ void Rta::ReadCommandLine(const QCommandLineParser& parser)
 	o.netcnf = !parser.isSet("rta-no-netcnf");
 	o.controlPath = parser.value("rta-control").toStdString();
 	o.pcapPath = parser.value("rta-pcap").toStdString();
+	o.testLabel = parser.value("rta-test").toStdString();
+	if(parser.isSet("rta-test") && o.testLabel.empty()) o.testLabel = "ignore";
+	if(!o.testLabel.empty()) Rta::MakeBackgroundApplication();
+}
+
+void Rta::BeforeShow(QWidget* window)
+{
+	if(g_state.options.testLabel.empty()) return;
+	window->setAttribute(Qt::WA_ShowWithoutActivating, true);
+	window->setWindowTitle(QString::fromStdString(Rta::WindowTitle("Play!")));
+	window->resize(400, 340);
+}
+
+void Rta::AfterShow(QWidget* window)
+{
+	if(g_state.options.testLabel.empty()) return;
+	// now, and again when the picture's own window has been made
+	auto back = [window]() { Rta::SendWindowBack(reinterpret_cast<void*>(window->winId())); };
+	auto small = [window]() {
+		window->setMinimumSize(0, 0);
+		window->resize(400, 340);
+	};
+	back();
+	small();
+	QTimer::singleShot(500, window, [back, small]() {
+		small();
+		back();
+	});
+	QTimer::singleShot(3000, window, back);
+}
+
+std::string Rta::WindowTitle(const std::string& title)
+{
+	if(g_state.options.testLabel.empty()) return title;
+	return "AGENT TEST - " + g_state.options.testLabel + " - " + title;
+}
+
+void Rta::LogLine(const std::string& line)
+{
+	g_state.Log(line);
 }
 
 void Rta::OverridePreferences()

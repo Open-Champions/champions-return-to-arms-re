@@ -1,5 +1,4 @@
 diff --git a/Source/FrameLimiter.cpp b/Source/FrameLimiter.cpp
-index 0d050fa3..542a6007 100644
 --- a/Source/FrameLimiter.cpp
 +++ b/Source/FrameLimiter.cpp
 @@ -2,87 +2,82 @@
@@ -40,52 +39,52 @@ index 0d050fa3..542a6007 100644
  {
  	assert(m_frameStarted);
 +	m_frameStarted = false;
-+
-+	if(m_frameDuration.count() == 0)
-+	{
-+		m_hasDeadline = false;
-+		return;
-+	}
-+
-+	if(m_externalWait && m_externalWait(m_frameRate))
-+	{
-+		//Paced from outside; the timer starts afresh if it is needed again
-+		m_hasDeadline = false;
-+		return;
-+	}
  
 -	//Add current frame time to array
-+	auto now = Clock::now();
-+	if(!m_hasDeadline)
++	if(m_frameDuration.count() == 0)
  	{
 -		auto currentFrameTime = std::chrono::high_resolution_clock::now();
 -		auto frameDuration = std::chrono::duration_cast<std::chrono::microseconds>(currentFrameTime - m_lastFrameTime);
 -		m_frameTimes[m_frameTimeIndex++] = frameDuration;
 -		m_frameTimeIndex %= MAX_FRAMETIMES;
-+		m_deadline = now;
-+		m_hasDeadline = true;
++		m_hasDeadline = false;
++		return;
  	}
-+	m_deadline += m_frameDuration;
  
 -	//Compute average frame time
 -	std::chrono::microseconds averageFrameTime = std::chrono::microseconds(0);
 -	for(uint32 i = 0; i < MAX_FRAMETIMES; i++)
-+	//More than three frames late (the machine was paused, or the computer cannot keep
-+	//up): start again from here instead of running fast for a long time.
-+	if(now > (m_deadline + (3 * m_frameDuration)))
++	if(m_externalWait && m_externalWait(m_frameRate))
  	{
 -		averageFrameTime += m_frameTimes[i];
-+		m_deadline = now;
++		//Paced from outside; the timer starts afresh if it is needed again
++		m_hasDeadline = false;
 +		return;
  	}
 -	averageFrameTime /= MAX_FRAMETIMES;
  
 -	if(averageFrameTime < m_minFrameDuration)
-+	//Sleep most of the way and yield through the last stretch: a sleep may end late.
-+	while(now < m_deadline)
++	auto now = Clock::now();
++	if(!m_hasDeadline)
  	{
 -		auto delay = m_minFrameDuration - averageFrameTime;
 -#ifdef _WIN32
++		m_deadline = now;
++		m_hasDeadline = true;
++	}
++	m_deadline += m_frameDuration;
++
++	//More than three frames late (the machine was paused, or the computer cannot keep
++	//up): start again from here instead of running fast for a long time.
++	if(now > (m_deadline + (3 * m_frameDuration)))
++	{
++		m_deadline = now;
++		return;
++	}
++
++	//Sleep most of the way and yield through the last stretch: a sleep may end late.
++	while(now < m_deadline)
++	{
 +		auto left = m_deadline - now;
 +		if(left > std::chrono::microseconds(1500))
  		{
@@ -133,7 +132,6 @@ index 0d050fa3..542a6007 100644
  	}
  }
 diff --git a/Source/FrameLimiter.h b/Source/FrameLimiter.h
-index 36e8b935..3f87ccdd 100644
 --- a/Source/FrameLimiter.h
 +++ b/Source/FrameLimiter.h
 @@ -1,39 +1,43 @@
@@ -168,27 +166,27 @@ index 36e8b935..3f87ccdd 100644
  
  	void SetFrameRate(uint32);
  
--private:
--	typedef std::chrono::high_resolution_clock::time_point TimePoint;
 +	//A clock from outside, which the front end may provide: the display's own. Called
 +	//with the frame rate where the wait would be; it waits for the moment the next
 +	//frame should start and returns true, or returns false at once when it cannot give
 +	//that rate (the timer below is used then).
 +	typedef std::function<bool(uint32)> ExternalWaitFunction;
 +	static void SetExternalWait(const ExternalWaitFunction&);
++
+ private:
+-	typedef std::chrono::high_resolution_clock::time_point TimePoint;
++	static ExternalWaitFunction m_externalWait;
++	uint32 m_frameRate = 0;
  
 -	enum
 -	{
 -		MAX_FRAMETIMES = 4,
 -	};
-+private:
-+	static ExternalWaitFunction m_externalWait;
-+	uint32 m_frameRate = 0;
++	typedef std::chrono::steady_clock Clock;
  
 -	std::chrono::microseconds m_frameTimes[MAX_FRAMETIMES];
 -	uint32 m_frameTimeIndex = 0;
-+	typedef std::chrono::steady_clock Clock;
- 
+-
 -	std::chrono::microseconds m_minFrameDuration = std::chrono::microseconds(0);
 +	std::chrono::nanoseconds m_frameDuration = std::chrono::nanoseconds(0);
  	bool m_frameStarted = false;
@@ -201,13 +199,13 @@ index 36e8b935..3f87ccdd 100644
 +	Clock::time_point m_deadline;
  };
 diff --git a/Source/PS2VM.cpp b/Source/PS2VM.cpp
-index 5c8ded91..afcd9581 100644
 --- a/Source/PS2VM.cpp
 +++ b/Source/PS2VM.cpp
-@@ -956,6 +956,16 @@ void CPS2VM::EmuThread()
+@@ -955,6 +955,16 @@
+ #endif
  							m_ee->m_gs->SetVBlank();
  						}
- 
++
 +						//RTA: the wait that holds the machine to its frame rate is here, after
 +						//the finished picture has been sent to the screen and immediately
 +						//before the controller is read, instead of at the end of the vertical
@@ -217,11 +215,10 @@ index 5c8ded91..afcd9581 100644
 +						//the time the frame takes to compute, not a full frame time.
 +						m_frameLimiter.EndFrame();
 +						m_frameLimiter.BeginFrame();
-+
+ 
  						if(m_pad != NULL)
  						{
- 							m_pad->Update(m_ee->m_ram);
-@@ -979,8 +989,6 @@ void CPS2VM::EmuThread()
+@@ -979,8 +989,6 @@
  						{
  							m_ee->m_gs->ResetVBlank();
  						}
@@ -231,10 +228,9 @@ index 5c8ded91..afcd9581 100644
  				}
  
 diff --git a/Source/gs/GSH_OpenGL/CMakeLists.txt b/Source/gs/GSH_OpenGL/CMakeLists.txt
-index 0f89436d..49a60112 100644
 --- a/Source/gs/GSH_OpenGL/CMakeLists.txt
 +++ b/Source/gs/GSH_OpenGL/CMakeLists.txt
-@@ -34,4 +34,6 @@ add_library(gsh_opengl STATIC
+@@ -34,4 +34,6 @@
  )
  target_link_libraries(gsh_opengl Framework_OpenGl ${GSH_OPENGL_PROJECT_LIBS})
  target_include_directories(gsh_opengl PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/Source/gs/GSH_OpenGL/)
@@ -242,21 +238,20 @@ index 0f89436d..49a60112 100644
 +target_include_directories(gsh_opengl PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../../deps/Dependencies/xxHash)
  target_compile_options(gsh_opengl PRIVATE ${GSH_OPENGL_COMPILE_OPTIONS})
 diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp
-index 7eb9460f..8fcd2d44 100644
 --- a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp
 +++ b/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp
-@@ -112,6 +112,10 @@ void CGSH_OpenGL::ResetImpl()
+@@ -112,6 +112,10 @@
  {
  	LoadPreferences();
  	m_textureCache.Flush();
 +	m_contentTextures.clear();
 +	m_textureReplacements.clear();
 +	m_lastContentTexture = nullptr;
-+	m_uploadExtents.clear();
++	ForgetUploads();
  	PalCache_Flush();
  	m_framebuffers.clear();
  	m_depthbuffers.clear();
-@@ -217,6 +221,20 @@ void CGSH_OpenGL::FlipImpl(const DISPLAY_INFO& dispInfo)
+@@ -217,6 +221,20 @@
  		assert(m_presentTexCoordScaleUniform != -1);
  		glUniform2f(m_presentTexCoordScaleUniform, u1, v1);
  
@@ -277,12 +272,23 @@ index 7eb9460f..8fcd2d44 100644
  		glBindBuffer(GL_ARRAY_BUFFER, m_presentVertexBuffer);
  		glBindVertexArray(m_presentVertexArray);
  
-@@ -240,6 +258,15 @@ void CGSH_OpenGL::FlipImpl(const DISPLAY_INFO& dispInfo)
+@@ -238,8 +256,26 @@
+ 			DumpTexture(framebuffer->m_width * m_fbScale, framebuffer->m_height * m_fbScale, framebuffer->m_basePtr);
+ 		}
  		glBindTexture(GL_TEXTURE_2D, 0);
- 	}
- 
++	}
++
 +	ContentTextures_EndFrame();
 +
++	//RTA: for CGSH_OpenGLQt::RequestCapture
++	m_displayFramebuffer = 0;
++	if(framebuffer)
++	{
++		m_displayFramebuffer = m_multisampleEnabled ? framebuffer->m_resolveFramebuffer : framebuffer->m_framebuffer;
++		m_displayPixelWidth = std::min<uint32>(dispLayer.width, framebuffer->m_width) * m_fbScale;
++		m_displayPixelHeight = std::min<uint32>(dispLayer.height, framebuffer->m_height) * m_fbScale;
+ 	}
+ 
 +	//RTA: see CGSHandler::PresentClock
 +	if(g_presentClock.wait && (dispInfo.presentAfter != 0))
 +	{
@@ -293,18 +299,18 @@ index 7eb9460f..8fcd2d44 100644
  	PresentBackbuffer();
  	CGSHandler::FlipImpl(dispInfo);
  }
-@@ -264,6 +291,10 @@ void CGSH_OpenGL::NotifyPreferencesChangedImpl()
+@@ -264,6 +300,10 @@
  {
  	LoadPreferences();
  	m_textureCache.Flush();
 +	m_contentTextures.clear();
 +	m_textureReplacements.clear();
 +	m_lastContentTexture = nullptr;
-+	m_uploadExtents.clear();
++	ForgetUploads();
  	PalCache_Flush();
  	m_framebuffers.clear();
  	m_depthbuffers.clear();
-@@ -290,6 +321,7 @@ void CGSH_OpenGL::InitializeRC()
+@@ -290,6 +330,7 @@
  	m_presentVertexArray = GeneratePresentVertexArray();
  	m_presentTextureUniform = glGetUniformLocation(*m_presentProgram, "g_texture");
  	m_presentTexCoordScaleUniform = glGetUniformLocation(*m_presentProgram, "g_texCoordScale");
@@ -312,10 +318,12 @@ index 7eb9460f..8fcd2d44 100644
  
  	m_copyToFbProgram = GenerateCopyToFbProgram();
  	m_copyToFbTexture = Framework::OpenGl::CTexture::Create();
-@@ -573,13 +605,31 @@ void CGSH_OpenGL::SetRenderingContext(uint64 primReg)
+@@ -571,15 +612,33 @@
+ 	if(!prim.nTexture)
+ 	{
  		shaderCaps.texSourceMode = TEXTURE_SOURCE_MODE_NONE;
- 	}
- 
++	}
++
 +	//RTA: a picture from outside is bound for this very texture state (SetupTexture):
 +	//it is a plain RGBA texture, whatever the format of the game's own
 +	if(m_renderState.isValid && m_renderState.isTextureStateValid && m_renderState.texture0Replaced && prim.nTexture &&
@@ -323,8 +331,8 @@ index 7eb9460f..8fcd2d44 100644
 +	{
 +		shaderCaps.texSourceMode = TEXTURE_SOURCE_MODE_STD;
 +		shaderCaps.texBilinearFilter = 0;
-+	}
-+
+ 	}
+ 
 +	//RTA: The scanline mask: drawing only to every other line of the picture. A game uses
 +	//it to put the two fields of an interlaced picture into one frame; this one draws
 +	//its interface art that way when it is told to (see tools/play-net). It was not
@@ -345,7 +353,7 @@ index 7eb9460f..8fcd2d44 100644
  		   (m_renderState.primReg == primReg) &&
  		   (m_renderState.alphaReg == alphaReg) &&
  		   (m_renderState.testReg == testReg) &&
-@@ -605,7 +655,7 @@ void CGSH_OpenGL::SetRenderingContext(uint64 primReg)
+@@ -605,7 +664,7 @@
  	//--------------------------------------------------------
  	uint64 prevPrimValue = m_renderState.isValid ? m_renderState.primReg : 0;
  	auto prevPrim = make_convertible<PRMODE>(prevPrimValue);
@@ -354,7 +362,7 @@ index 7eb9460f..8fcd2d44 100644
  	bool primChanged = !m_renderState.isValid || (m_renderState.primReg != primReg);
  	bool blendEnableChanged = primChanged && !m_hasFramebufferFetchExtension && ((!m_renderState.isValid) || (prevPrim.nAlpha != prim.nAlpha));
  	bool alphaChanged = !m_renderState.isValid || (m_renderState.alphaReg != alphaReg);
-@@ -631,6 +681,11 @@ void CGSH_OpenGL::SetRenderingContext(uint64 primReg)
+@@ -631,6 +690,11 @@
  	if(shaderChanged)
  	{
  		m_renderState.shaderCaps = shaderCaps;
@@ -366,7 +374,7 @@ index 7eb9460f..8fcd2d44 100644
  	}
  
  	if(blendEnableChanged)
-@@ -670,6 +725,11 @@ void CGSH_OpenGL::SetRenderingContext(uint64 primReg)
+@@ -670,6 +734,11 @@
  	{
  		SetupTexture(primReg, tex0Reg, tex1Reg, texAReg, clampReg);
  		CHECKGLERROR();
@@ -378,7 +386,7 @@ index 7eb9460f..8fcd2d44 100644
  	}
  
  	if(fogColorChanged)
-@@ -698,6 +758,7 @@ void CGSH_OpenGL::SetRenderingContext(uint64 primReg)
+@@ -698,6 +767,7 @@
  	m_renderState.texAReg = texAReg;
  	m_renderState.clampReg = clampReg;
  	m_renderState.fogColReg = fogColReg;
@@ -386,7 +394,7 @@ index 7eb9460f..8fcd2d44 100644
  }
  
  void CGSH_OpenGL::SetupBlendingFunction(uint64 alphaReg)
-@@ -1032,10 +1093,32 @@ void CGSH_OpenGL::SetupFramebuffer(uint64 frameReg, uint64 zbufReg, uint64 sciss
+@@ -1032,11 +1102,33 @@
  
  	assert(framebuffer->m_width == depthbuffer->m_width);
  
@@ -414,15 +422,16 @@ index 7eb9460f..8fcd2d44 100644
 +		glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthbuffer->m_depthBuffer);
 +		CHECKGLERROR();
 +		framebuffer->m_attachedDepthBuffer = depthbuffer->m_depthBuffer;
-+
+ 
 +		GLenum drawBufferId = GL_COLOR_ATTACHMENT0;
 +		glDrawBuffers(1, &drawBufferId);
 +		CHECKGLERROR();
 +	}
- 
++
  	assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
  
-@@ -1046,12 +1129,6 @@ void CGSH_OpenGL::SetupFramebuffer(uint64 frameReg, uint64 zbufReg, uint64 sciss
+ 	m_renderState.framebufferHandle = framebuffer->m_framebuffer;
+@@ -1046,12 +1138,6 @@
  	//to resolve samples at some point if multisampling is enabled
  	framebuffer->m_resolveNeeded = true;
  
@@ -435,7 +444,7 @@ index 7eb9460f..8fcd2d44 100644
  	m_renderState.viewportWidth = framebuffer->m_width;
  	m_renderState.viewportHeight = framebuffer->m_height;
  	m_validGlState &= ~GLSTATE_VIEWPORT;
-@@ -1257,10 +1334,25 @@ void CGSH_OpenGL::SetupTexture(uint64 primReg, uint64 tex0Reg, uint64 tex1Reg, u
+@@ -1257,10 +1343,25 @@
  	m_nTexWidth = tex0.GetWidth();
  	m_nTexHeight = tex0.GetHeight();
  
@@ -461,7 +470,7 @@ index 7eb9460f..8fcd2d44 100644
  	//Setup sampling modes
  	switch(tex1.nMagFilter)
  	{
-@@ -1337,7 +1429,7 @@ void CGSH_OpenGL::SetupTexture(uint64 primReg, uint64 tex0Reg, uint64 tex1Reg, u
+@@ -1337,7 +1438,7 @@
  		}
  	}
  
@@ -470,7 +479,7 @@ index 7eb9460f..8fcd2d44 100644
  	   (m_renderState.texture0MinFilter != GL_NEAREST || m_renderState.texture0MagFilter != GL_NEAREST))
  	{
  		//We'll need to filter the texture manually
-@@ -1345,7 +1437,7 @@ void CGSH_OpenGL::SetupTexture(uint64 primReg, uint64 tex0Reg, uint64 tex1Reg, u
+@@ -1345,7 +1446,7 @@
  		m_renderState.texture0MagFilter = GL_NEAREST;
  	}
  
@@ -479,7 +488,7 @@ index 7eb9460f..8fcd2d44 100644
  	{
  		m_renderState.texture1Handle = PreparePalette(tex0);
  	}
-@@ -1358,10 +1450,11 @@ void CGSH_OpenGL::SetupTexture(uint64 primReg, uint64 tex0Reg, uint64 tex1Reg, u
+@@ -1358,10 +1459,11 @@
  	m_vertexParams.texMatrix[3 + (3 * 4)] = 1;
  	m_validGlState &= ~GLSTATE_VERTEX_PARAMS;
  
@@ -495,7 +504,7 @@ index 7eb9460f..8fcd2d44 100644
  	m_fragmentParams.clampMin[0] = static_cast<float>(clampMin[0]);
  	m_fragmentParams.clampMin[1] = static_cast<float>(clampMin[1]);
  	m_fragmentParams.clampMax[0] = static_cast<float>(clampMax[0]);
-@@ -1874,6 +1967,11 @@ void CGSH_OpenGL::DrawToDepth(unsigned int primitiveType, uint64 primReg)
+@@ -1874,6 +1976,11 @@
  
  	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthbuffer->m_depthBuffer);
  	CHECKGLERROR();
@@ -507,7 +516,7 @@ index 7eb9460f..8fcd2d44 100644
  
  	assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
  
-@@ -2052,6 +2150,7 @@ void CGSH_OpenGL::VertexKick(uint8 nRegister, uint64 nValue)
+@@ -2052,6 +2159,7 @@
  				   m_renderState.texAReg == texAReg &&
  				   m_renderState.clampReg == clampReg &&
  				   m_renderState.fogColReg == fogColReg &&
@@ -515,43 +524,32 @@ index 7eb9460f..8fcd2d44 100644
  				   m_renderState.scissorReg == scissorReg)
  				{
  					needCtx = false; // fully same state; skip call
-@@ -2119,6 +2218,35 @@ void CGSH_OpenGL::ProcessHostToLocalTransfer()
+@@ -2105,6 +2213,16 @@
  
- 		m_textureCache.InvalidateRange(transferAddress, transferSize);
- 
-+		//RTA: remember how much was sent to this address (see GetUsedTextureSize)
-+		{
-+			uint32 basePtr = bltBuf.GetDstPtr();
-+			uint32 extent = (transferAddress + transferSize) - basePtr;
-+			auto& uploadExtent = m_uploadExtents[basePtr];
-+			if((trxPos.nDSAX == 0) && (trxPos.nDSAY == 0))
-+			{
-+				uploadExtent.extent = extent;
-+				uploadExtent.psm = bltBuf.nDstPsm;
-+				uploadExtent.width = trxReg.nRRW;
-+				uploadExtent.height = trxReg.nRRH;
-+			}
-+			else
-+			{
-+				//A further piece of the same picture
-+				uploadExtent.extent = std::max(uploadExtent.extent, extent);
-+				if(uploadExtent.psm == bltBuf.nDstPsm)
-+				{
-+					uploadExtent.width = std::max<uint32>(uploadExtent.width, trxPos.nDSAX + trxReg.nRRW);
-+					uploadExtent.height = std::max<uint32>(uploadExtent.height, trxPos.nDSAY + trxReg.nRRH);
-+				}
-+				else
-+				{
-+					uploadExtent.width = 0;
-+					uploadExtent.height = 0;
-+				}
-+			}
-+		}
+ void CGSH_OpenGL::ProcessHostToLocalTransfer()
+ {
++	//RTA: what was sent where is remembered whether it changed GS memory or not (see
++	//UPLOAD_RECORD)
++	{
++		auto bltBuf = make_convertible<BITBLTBUF>(m_nReg[GS_REG_BITBLTBUF]);
++		auto trxReg = make_convertible<TRXREG>(m_nReg[GS_REG_TRXREG]);
++		auto trxPos = make_convertible<TRXPOS>(m_nReg[GS_REG_TRXPOS]);
++		auto [transferAddress, transferSize] = GsTransfer::GetDstRange(bltBuf, trxReg, trxPos);
++		RecordUpload(bltBuf, trxReg, trxPos, transferAddress, transferSize);
++	}
 +
- 		bool isUpperByteTransfer = (bltBuf.nDstPsm == PSMT8H) || (bltBuf.nDstPsm == PSMT4HL) || (bltBuf.nDstPsm == PSMT4HH);
- 		for(const auto& framebuffer : m_framebuffers)
+ 	if(m_trxCtx.nDirty)
+ 	{
+ 		FlushVertexBuffer();
+@@ -2231,6 +2349,7 @@
+ 
+ 		auto [transferAddress, transferSize] = GsTransfer::GetDstRange(bltBuf, trxReg, trxPos);
+ 		m_textureCache.InvalidateRange(transferAddress, transferSize);
++		ForgetUploadsInRange(transferAddress, transferSize); //RTA
+ 
+ 		//Write back to RAM
  		{
-@@ -2525,10 +2653,7 @@ void CGSH_OpenGL::CommitFramebufferDirtyPages(const FramebufferPtr& framebuffer,
+@@ -2525,10 +2644,7 @@
  	public:
  		void EnableCopyToFb(const FramebufferPtr& framebuffer, GLuint copyToFbTexture)
  		{
@@ -563,7 +561,7 @@ index 7eb9460f..8fcd2d44 100644
  			glActiveTexture(GL_TEXTURE0);
  			glBindTexture(GL_TEXTURE_2D, copyToFbTexture);
  			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, framebuffer->m_width, framebuffer->m_height,
-@@ -2538,6 +2663,10 @@ void CGSH_OpenGL::CommitFramebufferDirtyPages(const FramebufferPtr& framebuffer,
+@@ -2538,6 +2654,10 @@
  			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
  			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
  
@@ -574,7 +572,7 @@ index 7eb9460f..8fcd2d44 100644
  			glBindFramebuffer(GL_FRAMEBUFFER, framebuffer->m_framebuffer);
  
  			m_copyToFbEnabled = true;
-@@ -2581,8 +2710,22 @@ void CGSH_OpenGL::CommitFramebufferDirtyPages(const FramebufferPtr& framebuffer,
+@@ -2581,8 +2701,22 @@
  		{
  			texHeight = framebuffer->m_height - texY;
  		}
@@ -598,28 +596,41 @@ index 7eb9460f..8fcd2d44 100644
  
  		((this)->*(m_textureUpdater[framebuffer->m_psm]))(framebuffer->m_basePtr, framebuffer->m_width / 64,
 diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.h b/Source/gs/GSH_OpenGL/GSH_OpenGL.h
-index 290deb70..cd87f60f 100644
 --- a/Source/gs/GSH_OpenGL/GSH_OpenGL.h
 +++ b/Source/gs/GSH_OpenGL/GSH_OpenGL.h
-@@ -1,6 +1,7 @@
+@@ -1,6 +1,9 @@
  #pragma once
  
++#include <atomic>
  #include <list>
++#include <vector>
 +#include <functional>
  #include <unordered_map>
  #include "../GSHandler.h"
  #include "../GsDebuggerInterface.h"
-@@ -99,6 +100,9 @@ private:
+@@ -65,6 +68,11 @@
+ 	void FlipImpl(const DISPLAY_INFO&) override;
+ 
+ 	GLuint m_presentFramebuffer = 0;
++	//RTA: the framebuffer the last picture was presented from and the part of it that is
++	//the picture, in its own pixels (the console's times the resolution factor)
++	GLuint m_displayFramebuffer = 0;
++	uint32 m_displayPixelWidth = 0;
++	uint32 m_displayPixelHeight = 0;
+ 
+ private:
+ 	typedef CGsTextureCache<Framework::OpenGl::CTexture> TextureCache;
+@@ -98,6 +106,9 @@
+ 		unsigned int alphaFailMethod : 2;
  		unsigned int alphaTestDepthTest_DepthFetch : 1;
  		unsigned int alphaTestDepthTestEqual_DepthFetch : 1;
- 
++
 +		//RTA: SCANMSK (0: none, 2: lines with an even number are not drawn, 3: odd)
 +		unsigned int scanMask : 2;
-+
+ 
  		bool isIndexedTextureSource() const
  		{
- 			return texSourceMode == TEXTURE_SOURCE_MODE_IDX4 || texSourceMode == TEXTURE_SOURCE_MODE_IDX8;
-@@ -124,6 +128,8 @@ private:
+@@ -124,6 +135,8 @@
  		uint64 texAReg;
  		uint64 clampReg;
  		uint64 fogColReg;
@@ -628,7 +639,7 @@ index 290deb70..cd87f60f 100644
  
  		//Intermediate State
  		SHADERCAPS shaderCaps;
-@@ -172,7 +178,8 @@ private:
+@@ -172,7 +185,8 @@
  		uint32 alphaRef;
  		float alphaFix;
  		float fogColor[3];
@@ -638,7 +649,7 @@ index 290deb70..cd87f60f 100644
  	};
  	static_assert(sizeof(FRAGMENTPARAMS) == 0x40, "Size of FRAGMENTPARAMS must be 64 bytes.");
  
-@@ -242,6 +249,9 @@ private:
+@@ -242,6 +256,9 @@
  		Framework::OpenGl::CFramebuffer m_framebuffer;
  		Framework::OpenGl::CTexture m_texture;
  
@@ -648,15 +659,15 @@ index 290deb70..cd87f60f 100644
  		Framework::OpenGl::CFramebuffer m_resolveFramebuffer;
  		bool m_resolveNeeded = false;
  		Framework::OpenGl::CRenderbuffer m_colorBufferMs;
-@@ -273,8 +283,73 @@ private:
+@@ -273,8 +290,101 @@
  		float scaleRatioX = 1;
  		float scaleRatioY = 1;
  		bool alphaAsIndex = false;
 +		//RTA: size of the texture that was made, as a fraction of the size TEX0 names
 +		float sizeScaleX = 1;
 +		float sizeScaleY = 1;
-+	};
-+
+ 	};
+ 
 +	//RTA: indexed textures kept by what is in them rather than by where they are in GS
 +	//memory (GSH_OpenGL_Texture.cpp, PrepareIndexedTexture)
 +	struct CONTENT_TEXTURE_KEY
@@ -664,17 +675,20 @@ index 290deb70..cd87f60f 100644
 +		uint32 psm = 0;
 +		uint32 width = 0;
 +		uint32 height = 0;
++		//0: 'hash' is of the texels found in GS memory; 1: of what the game sent
++		//(see UPLOAD_RECORD)
++		uint32 kind = 0;
 +		uint64 hash = 0;
 +		bool operator==(const CONTENT_TEXTURE_KEY& rhs) const
 +		{
-+			return (psm == rhs.psm) && (width == rhs.width) && (height == rhs.height) && (hash == rhs.hash);
++			return (psm == rhs.psm) && (width == rhs.width) && (height == rhs.height) && (kind == rhs.kind) && (hash == rhs.hash);
 +		}
 +	};
 +	struct CONTENT_TEXTURE_KEY_HASHER
 +	{
 +		size_t operator()(const CONTENT_TEXTURE_KEY& key) const
 +		{
-+			return static_cast<size_t>(key.hash ^ (static_cast<uint64>(key.psm) << 56) ^ (static_cast<uint64>(key.width) << 40) ^ (static_cast<uint64>(key.height) << 24));
++			return static_cast<size_t>(key.hash ^ (static_cast<uint64>(key.psm) << 56) ^ (static_cast<uint64>(key.width) << 40) ^ (static_cast<uint64>(key.height) << 24) ^ key.kind);
 +		}
 +	};
 +	struct CONTENT_TEXTURE
@@ -684,8 +698,11 @@ index 290deb70..cd87f60f 100644
 +		//The texels as uploaded (one byte each for indexed formats, RGBA otherwise);
 +		//only kept when textures are dumped or replaced
 +		std::vector<uint8> pixels;
- 	};
- 
++		//One byte per texel, 0 where the game sent nothing (empty: it sent all of it);
++		//kept with 'pixels'
++		std::vector<uint8> coverage;
++	};
++
 +public:
 +	//RTA: Texture dump and replacement. A texture is known by the figure of its texels
 +	//and, for an indexed one, the figure of the palette it is drawn with (the same
@@ -697,24 +714,46 @@ index 290deb70..cd87f60f 100644
 +		uint32 psm = 0;
 +		uint32 width = 0;
 +		uint32 height = 0;
++		//1: 'hash' is of what the game sent (the same in every run); 0: of what was found
++		//in GS memory, for a texture whose upload is not known (may hold leftovers)
++		uint32 kind = 0;
 +		uint64 hash = 0;
 +		uint64 clutHash = 0;
 +		bool operator==(const TEXTURE_PICTURE_KEY& rhs) const
 +		{
-+			return (psm == rhs.psm) && (width == rhs.width) && (height == rhs.height) && (hash == rhs.hash) && (clutHash == rhs.clutHash);
++			return (psm == rhs.psm) && (width == rhs.width) && (height == rhs.height) && (kind == rhs.kind) && (hash == rhs.hash) && (clutHash == rhs.clutHash);
 +		}
 +	};
 +	struct TEXTURE_PICTURE_KEY_HASHER
 +	{
 +		size_t operator()(const TEXTURE_PICTURE_KEY& key) const
 +		{
-+			return static_cast<size_t>(key.hash ^ (key.clutHash * 0x9E3779B97F4A7C15ULL) ^ (static_cast<uint64>(key.psm) << 56) ^ (static_cast<uint64>(key.width) << 40) ^ (static_cast<uint64>(key.height) << 24));
++			return static_cast<size_t>(key.hash ^ (key.clutHash * 0x9E3779B97F4A7C15ULL) ^ (static_cast<uint64>(key.psm) << 56) ^ (static_cast<uint64>(key.width) << 40) ^ (static_cast<uint64>(key.height) << 24) ^ key.kind);
 +		}
 +	};
 +	typedef std::function<void(const TEXTURE_PICTURE_KEY&, const uint32*)> TextureDumpFunction;
 +	typedef std::function<bool(const TEXTURE_PICTURE_KEY&, std::vector<uint32>&, uint32&, uint32&)> TextureLoadFunction;
 +	static TextureDumpFunction g_textureDump;
 +	static TextureLoadFunction g_textureLoad;
++	//Counted on the video thread, read by anyone
++	struct TEXTURE_COUNTERS
++	{
++		std::atomic<uint64> created{0};      //textures made (a picture not seen before, or forgotten)
++		std::atomic<uint64> byUpload{0};     //draws that found their texture by what was sent
++		std::atomic<uint64> byMemory{0};     //draws that found it by the texels in GS memory
++		std::atomic<uint64> memoryHashed{0}; //times GS memory was read through to know a texture
++		std::atomic<uint64> inPlace{0};      //draws with a large direct-colour picture, updated in place
++		std::atomic<uint64> uploads{0};      //transfers from the game
++		std::atomic<uint64> shortLived{0};   //pictures drawn for less than g_textureDumpAge frames so far (film frames)
++		std::atomic<uint64> alive{0};        //textures held
++	};
++	static TEXTURE_COUNTERS g_textureCounters;
++	//For comparing (tests): 0 textures are known by what the game sent, 1 by the texels
++	//found in GS memory, 2 by their address as in Play! itself
++	static std::atomic<int> g_textureMode;
++	//A picture is written out when it is still drawn this many frames after it was first
++	//drawn: frames of films and other pictures made anew every frame are not.
++	static uint32 g_textureDumpAge;
 +
 +private:
 +	typedef std::unordered_map<CONTENT_TEXTURE_KEY, CONTENT_TEXTURE, CONTENT_TEXTURE_KEY_HASHER> ContentTextureMap;
@@ -722,45 +761,89 @@ index 290deb70..cd87f60f 100644
  	struct TEXTUREFORMAT_INFO
  	{
  		GLenum internalFormat;
-@@ -420,6 +495,33 @@ private:
+@@ -420,7 +530,78 @@
  	Framework::OpenGl::CVertexArray m_presentVertexArray;
  	GLint m_presentTextureUniform = -1;
  	GLint m_presentTexCoordScaleUniform = -1;
 +	GLint m_presentTexCoordOffsetUniform = -1;
-+
+ 
 +	//RTA
 +	TEXTURE_INFO PrepareTextureByContent(const TEX0&, uint32, uint32);
 +	std::pair<uint32, uint32> GetUsedTextureSize(const TEX0&) const;
-+	//Where the game last sent picture data to, by the address it gave: how many bytes
-+	//(from that address to the end of the last page touched), and the rectangle in the
-+	//format it was sent in
-+	struct UPLOAD_EXTENT
++	//What the game last sent to an address of GS memory: the pieces (rectangles in the
++	//format they were sent in), a figure of their bytes, and - as before - how many bytes
++	//from that address to the end of the last page touched and the pieces' bounding box.
++	//
++	//This is what a texture IS. The game does not send whole rectangles: an 8-bit texture
++	//arrives as one or more rectangles of 32-bit pixels that cover only the parts its
++	//triangles use (an L shape, say), and the rest of the rectangle TEX0 names keeps
++	//whatever other texture lay there before. Read back from GS memory, the same texture
++	//is a different picture every time it is sent to another place.
++	struct UPLOAD_PIECE
++	{
++		uint32 x = 0, y = 0, width = 0, height = 0;
++	};
++	struct UPLOAD_RECORD
 +	{
 +		uint32 extent = 0;
 +		uint32 psm = 0;
++		uint32 bufWidth = 0; //as in BITBLTBUF (units of 64 pixels)
 +		uint32 width = 0;
 +		uint32 height = 0;
++		uint32 serial = 0; //what m_blockOwner holds for the blocks written; 0: nothing known
++		uint64 hash = 0;
++		std::vector<UPLOAD_PIECE> pieces;
++		//the answer of IsUploadIntact, as long as no transfer has happened since
++		uint32 checkedAt = 0;
++		bool intact = false;
 +	};
-+	std::unordered_map<uint32, UPLOAD_EXTENT> m_uploadExtents;
++	std::unordered_map<uint32, UPLOAD_RECORD> m_uploads;
++	//For each 256-byte block of GS memory: the serial of the upload that wrote it last
++	std::vector<uint32> m_blockOwner;
++	uint32 m_uploadSerial = 0;
++	uint32 m_transferCounter = 0;
++	void* m_uploadHashState = nullptr;
++	void BeginTransferWrite() override;
++	void TransferWrite(const uint8*, uint32) override;
++	void RecordUpload(const BITBLTBUF&, const TRXREG&, const TRXPOS&, uint32, uint32);
++	void ForgetUploads();
++	void ForgetUploadsInRange(uint32, uint32);
++	void MarkUploadBlocks(const UPLOAD_RECORD&, uint32, const UPLOAD_PIECE&);
++	bool IsUploadIntact(UPLOAD_RECORD&, uint32);
++	UPLOAD_RECORD* FindUpload(const TEX0&);
++	bool PrepareTextureByUpload(const TEX0&, UPLOAD_RECORD&, TEXTURE_INFO&);
++	bool GetUploadCoverage(const TEX0&, const UPLOAD_RECORD&, std::vector<uint8>&, uint32&, uint32&, uint32&, uint32&);
++	//A second GS memory, all zero but while GetUploadCoverage works
++	std::vector<uint8> m_uploadShadow;
++	//The rectangle that holds what an upload wrote, by the upload's figure and the texture's format
++	std::unordered_map<uint64, std::pair<uint32, uint32>> m_uploadBoxes;
++	void FinishContentTexture(const TEX0&, const CONTENT_TEXTURE_KEY&, uint32, uint32, const std::vector<uint8>*, TEXTURE_INFO&);
 +	//Set while a texture is prepared for a draw that repeats it plainly (see SetupTexture)
 +	bool m_texAllowReducedSize = false;
 +	//The texture PrepareTextureByContent gave last (nullptr: none), for FindTextureReplacement
 +	const CONTENT_TEXTURE* m_lastContentTexture = nullptr;
 +	CONTENT_TEXTURE_KEY m_lastContentKey;
 +	GLuint FindTextureReplacement(const TEX0&);
-+	std::unordered_map<TEXTURE_PICTURE_KEY, Framework::OpenGl::CTexture, TEXTURE_PICTURE_KEY_HASHER> m_textureReplacements;
++	struct TEXTURE_PICTURE
++	{
++		Framework::OpenGl::CTexture replacement;
++		uint32 firstUsedFrame = 0;
++		bool dumped = false;
++	};
++	std::unordered_map<TEXTURE_PICTURE_KEY, TEXTURE_PICTURE, TEXTURE_PICTURE_KEY_HASHER> m_textureReplacements;
 +	void ContentTextures_EndFrame();
 +	ContentTextureMap m_contentTextures;
 +	uint32 m_contentTextureFrame = 0;
 +	bool m_texConvertOnly = false;
- 
++	void ConvertTexture(const TEX0&, uint32, uint32);
++
  	Framework::OpenGl::ProgramPtr m_copyToFbProgram;
  	Framework::OpenGl::CTexture m_copyToFbTexture;
+ 	Framework::OpenGl::CBuffer m_copyToFbVertexBuffer;
 diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Shader.cpp b/Source/gs/GSH_OpenGL/GSH_OpenGL_Shader.cpp
-index 3f37572a..3886266b 100644
 --- a/Source/gs/GSH_OpenGL/GSH_OpenGL_Shader.cpp
 +++ b/Source/gs/GSH_OpenGL/GSH_OpenGL_Shader.cpp
-@@ -188,6 +188,7 @@ Framework::OpenGl::CShader CGSH_OpenGL::GenerateFragmentShader(const SHADERCAPS&
+@@ -188,6 +188,7 @@
  	shaderBuilder << "	uint g_alphaRef;" << std::endl;
  	shaderBuilder << "	float g_alphaFix;" << std::endl;
  	shaderBuilder << "	vec3 g_fogColor;" << std::endl;
@@ -768,10 +851,11 @@ index 3f37572a..3886266b 100644
  	shaderBuilder << "};" << std::endl;
  
  	if(caps.texClampS == TEXTURE_CLAMP_MODE_REGION_REPEAT || caps.texClampT == TEXTURE_CLAMP_MODE_REGION_REPEAT)
-@@ -225,6 +226,14 @@ Framework::OpenGl::CShader CGSH_OpenGL::GenerateFragmentShader(const SHADERCAPS&
+@@ -224,6 +225,14 @@
+ 
  	shaderBuilder << "void main()" << std::endl;
  	shaderBuilder << "{" << std::endl;
- 
++
 +	//RTA: SCANMSK. Line 0 of the console's picture is at the bottom of the framebuffer
 +	//here (the projection does not turn it over), and one of its lines is g_fbScale
 +	//pixels high.
@@ -779,11 +863,10 @@ index 3f37572a..3886266b 100644
 +	{
 +		shaderBuilder << "	if((int(gl_FragCoord.y / g_fbScale) & 1) == " << ((caps.scanMask == 2) ? 0 : 1) << ") discard;" << std::endl;
 +	}
-+
+ 
  	if(useFramebufferFetch && caps.hasDestAlphaTest)
  	{
- 		switch(caps.destAlphaTestRef)
-@@ -662,9 +671,10 @@ Framework::OpenGl::ProgramPtr CGSH_OpenGL::GeneratePresentProgram()
+@@ -662,9 +671,10 @@
  		shaderBuilder << "in vec2 a_texCoord;" << std::endl;
  		shaderBuilder << "out vec2 v_texCoord;" << std::endl;
  		shaderBuilder << "uniform vec2 g_texCoordScale;" << std::endl;
@@ -796,7 +879,6 @@ index 3f37572a..3886266b 100644
  		shaderBuilder << "}" << std::endl;
  
 diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp
-index 01a12176..411f331e 100644
 --- a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp
 +++ b/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp
 @@ -1,3 +1,5 @@
@@ -805,10 +887,23 @@ index 01a12176..411f331e 100644
  #include <assert.h>
  #include <cstring>
  #include <sys/stat.h>
-@@ -183,14 +185,29 @@ CGSH_OpenGL::TEXTURE_INFO CGSH_OpenGL::SearchTextureFramebuffer(const TEX0& tex0
+@@ -183,14 +185,52 @@
  	}
  }
  
++namespace
++{
++	//For tests: with RTA_TEXLOG=<file> in the environment every texture made is noted
++	FILE* TextureLog()
++	{
++		static FILE* file = []() -> FILE* {
++			const char* path = getenv("RTA_TEXLOG");
++			return (path && path[0]) ? fopen(path, "w") : nullptr;
++		}();
++		return file;
++	}
++}
++
 +CGSH_OpenGL::TextureDumpFunction CGSH_OpenGL::g_textureDump;
 +CGSH_OpenGL::TextureLoadFunction CGSH_OpenGL::g_textureLoad;
 +
@@ -821,24 +916,36 @@ index 01a12176..411f331e 100644
  		return texInfo;
  	}
  
-+	//RTA: textures kept by their contents (see PrepareTextureByContent). Large pictures
-+	//in direct colour (film frames, pictures that change in part) stay on the path below,
-+	//which updates one texture in place.
++	//RTA: textures kept by what the game sent (see UPLOAD_RECORD, PrepareTextureByUpload)
++	//or, when that is not known, by the texels found in GS memory
++	//(PrepareTextureByContent). Large pictures in direct colour (film frames, pictures
++	//that change in part) stay on the path below, which updates one texture in place.
++	int textureMode = g_textureMode;
++	if(textureMode != 2)
 +	{
++		if(auto upload = (textureMode == 0) ? FindUpload(tex0) : nullptr)
++		{
++			TEXTURE_INFO uploadTexInfo;
++			if(PrepareTextureByUpload(tex0, *upload, uploadTexInfo)) return uploadTexInfo;
++		}
 +		auto usedSize = GetUsedTextureSize(tex0);
 +		if(CGsPixelFormats::IsPsmIDTEX(tex0.nPsm) || ((usedSize.first * usedSize.second) <= (512 * 512)))
 +		{
++			g_textureCounters.byMemory++;
 +			return PrepareTextureByContent(tex0, usedSize.first, usedSize.second);
 +		}
++		g_textureCounters.inPlace++;
 +	}
 +
  	auto texture = m_textureCache.Search(tex0);
  	if(!texture)
  	{
-@@ -252,6 +269,285 @@ CGSH_OpenGL::TEXTURE_INFO CGSH_OpenGL::PrepareTexture(const TEX0& tex0)
- 	return texInfo;
- }
+@@ -250,8 +290,815 @@
+ 	cachedArea.ClearDirtyPages();
  
+ 	return texInfo;
++}
++
 +//RTA: The part of a texture that holds a picture.
 +//
 +//TEX0 gives a texture's width and height only as powers of two, and nothing obliges a
@@ -859,8 +966,8 @@ index 01a12176..411f331e 100644
 +	uint32 texHeight = std::min<uint32>(tex0.GetHeight(), TEX0_MAX_TEXTURE_SIZE);
 +	if(!m_texAllowReducedSize) return std::make_pair(texWidth, texHeight);
 +
-+	auto uploadExtentIterator = m_uploadExtents.find(tex0.GetBufPtr());
-+	if(uploadExtentIterator == std::end(m_uploadExtents)) return std::make_pair(texWidth, texHeight);
++	auto uploadExtentIterator = m_uploads.find(tex0.GetBufPtr());
++	if((uploadExtentIterator == std::end(m_uploads)) || (uploadExtentIterator->second.serial == 0)) return std::make_pair(texWidth, texHeight);
 +
 +	uint32 bufWidth = tex0.GetBufWidth();
 +	if(bufWidth == 0) return std::make_pair(texWidth, texHeight);
@@ -900,6 +1007,33 @@ index 01a12176..411f331e 100644
 +	return std::make_pair(std::min(texWidth, usedWidth), std::min(texHeight, usedHeight));
 +}
 +
++//RTA: Puts the texels of a texture of any size into m_pCvtBuffer, row after row, without
++//uploading anything.
++//
++//The updaters for 4-bit and 8-bit textures copy whole blocks (32 or 16 texels across)
++//and take the width to be a multiple of that, as the powers of two TEX0 names are; the
++//bar that shows a character's health is a 4-bit texture 104 texels wide, and converted
++//at that width every row spilled its last 24 texels over the start of the next. So the
++//conversion is done at the next multiple and the rows are moved together afterwards.
++void CGSH_OpenGL::ConvertTexture(const TEX0& tex0, uint32 texWidth, uint32 texHeight)
++{
++	uint32 blockWidth = 1;
++	if((tex0.nPsm == PSMT4) && (texWidth > 16)) blockWidth = 32;
++	if((tex0.nPsm == PSMT8) && (texWidth >= 16)) blockWidth = 16;
++	uint32 convertWidth = ((texWidth + blockWidth - 1) / blockWidth) * blockWidth;
++	m_texConvertOnly = true;
++	((this)->*(m_textureUpdater[tex0.nPsm]))(tex0.GetBufPtr(), tex0.nBufWidth, 0, 0, convertWidth, texHeight);
++	m_texConvertOnly = false;
++	if(convertWidth != texWidth)
++	{
++		//indexed formats only: a byte per texel
++		for(uint32 y = 1; y < texHeight; y++)
++		{
++			memmove(m_pCvtBuffer + (static_cast<size_t>(y) * texWidth), m_pCvtBuffer + (static_cast<size_t>(y) * convertWidth), texWidth);
++		}
++	}
+ }
+ 
 +//RTA: Textures kept by their contents.
 +//
 +//A PlayStation 2 has 4 MB of video memory, so a game keeps only the textures it is about
@@ -993,14 +1127,13 @@ index 01a12176..411f331e 100644
 +	else
 +	{
 +		//Convert the whole texture into m_pCvtBuffer without uploading
-+		m_texConvertOnly = true;
-+		((this)->*(m_textureUpdater[tex0.nPsm]))(tex0.GetBufPtr(), tex0.nBufWidth, 0, 0, texWidth, texHeight);
-+		m_texConvertOnly = false;
++		ConvertTexture(tex0, texWidth, texHeight);
 +		converted = true;
 +		size_t texelSize = CGsPixelFormats::IsPsmIDTEX(tex0.nPsm) ? 1 : (((tex0.nPsm == PSMCT16) || (tex0.nPsm == PSMCT16S)) ? 2 : 4);
 +		byteCount = static_cast<size_t>(texWidth) * texHeight * texelSize;
 +	}
 +	key.hash = XXH3_64bits(m_pCvtBuffer, byteCount);
++	g_textureCounters.memoryHashed++;
 +	texture->m_cachedArea.ClearDirtyPages();
 +	texture->m_contentHash = key.hash;
 +	texture->m_contentWidth = texWidth;
@@ -1012,23 +1145,24 @@ index 01a12176..411f331e 100644
 +	{
 +		if(!converted)
 +		{
-+			m_texConvertOnly = true;
-+			((this)->*(m_textureUpdater[tex0.nPsm]))(tex0.GetBufPtr(), tex0.nBufWidth, 0, 0, texWidth, texHeight);
-+			m_texConvertOnly = false;
++			ConvertTexture(tex0, texWidth, texHeight);
 +		}
-+		auto texFormat = GetTextureFormatInfo(tex0.nPsm);
-+		CONTENT_TEXTURE contentTexture;
-+		contentTexture.handle = Framework::OpenGl::CTexture::Create();
-+		glBindTexture(GL_TEXTURE_2D, contentTexture.handle);
-+		glTexStorage2D(GL_TEXTURE_2D, 1, texFormat.internalFormat, texWidth, texHeight);
-+		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, texWidth, texHeight, texFormat.format, texFormat.type, m_pCvtBuffer);
-+		CHECKGLERROR();
-+		if(g_textureDump || g_textureLoad)
++		if(auto log = TextureLog())
 +		{
-+			size_t pixelSize = CGsPixelFormats::IsPsmIDTEX(tex0.nPsm) ? 1 : (((tex0.nPsm == PSMCT16) || (tex0.nPsm == PSMCT16S)) ? 2 : 4);
-+			contentTexture.pixels.assign(m_pCvtBuffer, m_pCvtBuffer + (static_cast<size_t>(texWidth) * texHeight * pixelSize));
++			auto uploadIterator = m_uploads.find(tex0.GetBufPtr());
++			bool known = (uploadIterator != std::end(m_uploads)) && (uploadIterator->second.serial != 0);
++			fprintf(log, "%u memory %016llx p%u %ux%u named %ux%u at %06x bufwidth %u upload %s p%u bufwidth %u pieces %zu intact %d\n", m_contentTextureFrame, static_cast<unsigned long long>(key.hash), tex0.nPsm, texWidth, texHeight,
++			        static_cast<unsigned int>(tex0.GetWidth()), static_cast<unsigned int>(tex0.GetHeight()), tex0.GetBufPtr(), static_cast<unsigned int>(tex0.nBufWidth), known ? "known" : "unknown",
++			        known ? uploadIterator->second.psm : 0, known ? uploadIterator->second.bufWidth : 0, known ? uploadIterator->second.pieces.size() : size_t(0), known ? (IsUploadIntact(uploadIterator->second, tex0.GetBufPtr()) ? 1 : 0) : 0);
++			if(known)
++			{
++				fprintf(log, "   pieces");
++				for(const auto& piece : uploadIterator->second.pieces) fprintf(log, " %u,%u+%ux%u", piece.x, piece.y, piece.width, piece.height);
++				fprintf(log, "\n");
++			}
 +		}
-+		contentTextureIterator = m_contentTextures.emplace(key, std::move(contentTexture)).first;
++		FinishContentTexture(tex0, key, texWidth, texHeight, nullptr, texInfo);
++		return texInfo;
 +	}
 +	contentTextureIterator->second.lastUsedFrame = m_contentTextureFrame;
 +	texInfo.textureHandle = contentTextureIterator->second.handle;
@@ -1037,8 +1171,487 @@ index 01a12176..411f331e 100644
 +	return texInfo;
 +}
 +
++//RTA: makes the texture for 'key' from the texels in m_pCvtBuffer (as the updaters leave
++//them) and gives it to the draw. 'coverage', when given, has a byte per texel: 0 where
++//the game sent nothing; those texels are made 0.
++void CGSH_OpenGL::FinishContentTexture(const TEX0& tex0, const CONTENT_TEXTURE_KEY& key, uint32 texWidth, uint32 texHeight, const std::vector<uint8>* coverage, TEXTURE_INFO& texInfo)
++{
++	size_t pixelSize = CGsPixelFormats::IsPsmIDTEX(tex0.nPsm) ? 1 : (((tex0.nPsm == PSMCT16) || (tex0.nPsm == PSMCT16S)) ? 2 : 4);
++	size_t pixelCount = static_cast<size_t>(texWidth) * texHeight;
++	if(coverage)
++	{
++		uint8* texels = m_pCvtBuffer;
++		for(size_t i = 0; i < pixelCount; i++)
++		{
++			if((*coverage)[i] == 0) memset(texels + (i * pixelSize), 0, pixelSize);
++		}
++	}
++	auto texFormat = GetTextureFormatInfo(tex0.nPsm);
++	CONTENT_TEXTURE contentTexture;
++	contentTexture.handle = Framework::OpenGl::CTexture::Create();
++	glBindTexture(GL_TEXTURE_2D, contentTexture.handle);
++	glTexStorage2D(GL_TEXTURE_2D, 1, texFormat.internalFormat, texWidth, texHeight);
++	glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, texWidth, texHeight, texFormat.format, texFormat.type, m_pCvtBuffer);
++	CHECKGLERROR();
++	if(g_textureDump || g_textureLoad)
++	{
++		contentTexture.pixels.assign(m_pCvtBuffer, m_pCvtBuffer + (pixelCount * pixelSize));
++		if(coverage) contentTexture.coverage = *coverage;
++	}
++	contentTexture.lastUsedFrame = m_contentTextureFrame;
++	auto contentTextureIterator = m_contentTextures.emplace(key, std::move(contentTexture)).first;
++	g_textureCounters.created++;
++	g_textureCounters.alive = m_contentTextures.size();
++	texInfo.textureHandle = contentTextureIterator->second.handle;
++	m_lastContentTexture = &contentTextureIterator->second;
++	m_lastContentKey = key;
++}
++
++//RTA: What the game sends, remembered (see UPLOAD_RECORD).
++
++CGSH_OpenGL::TEXTURE_COUNTERS CGSH_OpenGL::g_textureCounters;
++std::atomic<int> CGSH_OpenGL::g_textureMode{0};
++uint32 CGSH_OpenGL::g_textureDumpAge = 30;
++
++namespace
++{
++
++	//Calls f(block) for every 256-byte block of GS memory that the rectangle touches, in
++	//the given storage format
++	template <typename Storage, typename Function>
++	void ForEachBlock(uint32 basePtr, uint32 bufWidth, uint32 x, uint32 y, uint32 width, uint32 height, const Function& f)
++	{
++		if((width == 0) || (height == 0)) return;
++		uint32 pagesPerRow = (bufWidth * 64) / Storage::PAGEWIDTH;
++		for(uint32 by = (y / Storage::BLOCKHEIGHT); by <= ((y + height - 1) / Storage::BLOCKHEIGHT); by++)
++		{
++			for(uint32 bx = (x / Storage::BLOCKWIDTH); bx <= ((x + width - 1) / Storage::BLOCKWIDTH); bx++)
++			{
++				uint32 px = bx * Storage::BLOCKWIDTH;
++				uint32 py = by * Storage::BLOCKHEIGHT;
++				uint32 page = (px / Storage::PAGEWIDTH) + ((py / Storage::PAGEHEIGHT) * pagesPerRow);
++				uint32 block = Storage::m_nBlockSwizzleTable[(py % Storage::PAGEHEIGHT) / Storage::BLOCKHEIGHT][(px % Storage::PAGEWIDTH) / Storage::BLOCKWIDTH];
++				uint32 address = (basePtr + (page * CGsPixelFormats::PAGESIZE) + (block * CGsPixelFormats::BLOCKSIZE)) & (CGSHandler::RAMSIZE - 1);
++				f(address / CGsPixelFormats::BLOCKSIZE);
++			}
++		}
++	}
++
++	template <typename Function>
++	bool ForEachBlockOfPsm(uint32 psm, uint32 basePtr, uint32 bufWidth, uint32 x, uint32 y, uint32 width, uint32 height, const Function& f)
++	{
++		switch(psm)
++		{
++		case CGSHandler::PSMCT32:
++		case CGSHandler::PSMCT24:
++		case CGSHandler::PSMT8H:
++		case CGSHandler::PSMT4HL:
++		case CGSHandler::PSMT4HH:
++			ForEachBlock<CGsPixelFormats::STORAGEPSMCT32>(basePtr, bufWidth, x, y, width, height, f);
++			return true;
++		case CGSHandler::PSMCT16:
++			ForEachBlock<CGsPixelFormats::STORAGEPSMCT16>(basePtr, bufWidth, x, y, width, height, f);
++			return true;
++		case CGSHandler::PSMCT16S:
++			ForEachBlock<CGsPixelFormats::STORAGEPSMCT16S>(basePtr, bufWidth, x, y, width, height, f);
++			return true;
++		case CGSHandler::PSMT8:
++			ForEachBlock<CGsPixelFormats::STORAGEPSMT8>(basePtr, bufWidth, x, y, width, height, f);
++			return true;
++		case CGSHandler::PSMT4:
++			ForEachBlock<CGsPixelFormats::STORAGEPSMT4>(basePtr, bufWidth, x, y, width, height, f);
++			return true;
++		default:
++			return false;
++		}
++	}
++}
++
++void CGSH_OpenGL::BeginTransferWrite()
++{
++	CGSHandler::BeginTransferWrite();
++	if(!m_uploadHashState) m_uploadHashState = XXH3_createState();
++	XXH3_64bits_reset(static_cast<XXH3_state_t*>(m_uploadHashState));
++}
++
++void CGSH_OpenGL::TransferWrite(const uint8* imageData, uint32 length)
++{
++	if(m_uploadHashState) XXH3_64bits_update(static_cast<XXH3_state_t*>(m_uploadHashState), imageData, length);
++	CGSHandler::TransferWrite(imageData, length);
++}
++
++void CGSH_OpenGL::ForgetUploads()
++{
++	if(m_uploadHashState)
++	{
++		XXH3_freeState(static_cast<XXH3_state_t*>(m_uploadHashState));
++		m_uploadHashState = nullptr;
++	}
++	m_uploads.clear();
++	m_blockOwner.assign(RAMSIZE / CGsPixelFormats::BLOCKSIZE, 0);
++	m_transferCounter++;
++}
++
++//Something else than an upload wrote here
++void CGSH_OpenGL::ForgetUploadsInRange(uint32 address, uint32 size)
++{
++	if(m_blockOwner.empty()) return;
++	m_transferCounter++;
++	uint32 first = address / CGsPixelFormats::BLOCKSIZE;
++	uint32 last = (address + size + CGsPixelFormats::BLOCKSIZE - 1) / CGsPixelFormats::BLOCKSIZE;
++	for(uint32 block = first; block < last; block++) m_blockOwner[block % m_blockOwner.size()] = 0;
++}
++
++void CGSH_OpenGL::MarkUploadBlocks(const UPLOAD_RECORD& record, uint32 basePtr, const UPLOAD_PIECE& piece)
++{
++	uint32 serial = record.serial;
++	ForEachBlockOfPsm(record.psm, basePtr, record.bufWidth, piece.x, piece.y, piece.width, piece.height, [&](uint32 block) { m_blockOwner[block] = serial; });
++}
++
++//True while every block the upload wrote is as it left it
++bool CGSH_OpenGL::IsUploadIntact(UPLOAD_RECORD& record, uint32 basePtr)
++{
++	if(record.checkedAt == m_transferCounter) return record.intact;
++	bool intact = (record.serial != 0);
++	for(const auto& piece : record.pieces)
++	{
++		if(!intact) break;
++		intact = ForEachBlockOfPsm(record.psm, basePtr, record.bufWidth, piece.x, piece.y, piece.width, piece.height, [&](uint32 block) { intact = intact && (m_blockOwner[block] == record.serial); }) && intact;
++	}
++	record.checkedAt = m_transferCounter;
++	record.intact = intact;
++	return intact;
++}
++
++//At the end of every transfer from the game, whether it changed GS memory or not
++void CGSH_OpenGL::RecordUpload(const BITBLTBUF& bltBuf, const TRXREG& trxReg, const TRXPOS& trxPos, uint32 transferAddress, uint32 transferSize)
++{
++	if(m_blockOwner.empty()) m_blockOwner.assign(RAMSIZE / CGsPixelFormats::BLOCKSIZE, 0);
++	g_textureCounters.uploads++;
++	uint64 digest = m_uploadHashState ? XXH3_64bits_digest(static_cast<XXH3_state_t*>(m_uploadHashState)) : 0;
++
++	uint32 basePtr = bltBuf.GetDstPtr();
++	auto& record = m_uploads[basePtr];
++	UPLOAD_PIECE piece;
++	piece.x = trxPos.nDSAX;
++	piece.y = trxPos.nDSAY;
++	piece.width = trxReg.nRRW;
++	piece.height = trxReg.nRRH;
++
++	//A further piece of the picture that is there, or another picture? Another one when
++	//it writes over a piece already sent (a picture sent again starts with its first
++	//piece), when the format differs, or when something else has written there since.
++	bool further = (record.serial != 0) && (record.psm == bltBuf.nDstPsm) && (record.bufWidth == bltBuf.nDstWidth) && (record.pieces.size() < 256);
++	if(further)
++	{
++		for(const auto& other : record.pieces)
++		{
++			bool apart = ((piece.x + piece.width) <= other.x) || ((other.x + other.width) <= piece.x) || ((piece.y + piece.height) <= other.y) || ((other.y + other.height) <= piece.y);
++			if(!apart)
++			{
++				further = false;
++				break;
++			}
++		}
++	}
++	if(further) further = IsUploadIntact(record, basePtr);
++	if(!further)
++	{
++		record = UPLOAD_RECORD();
++		record.serial = ++m_uploadSerial;
++		record.psm = bltBuf.nDstPsm;
++		record.bufWidth = bltBuf.nDstWidth;
++	}
++	m_transferCounter++;
++
++	record.pieces.push_back(piece);
++	uint64 words[5] = {record.hash, (static_cast<uint64>(piece.y) << 32) | piece.x, (static_cast<uint64>(piece.height) << 32) | piece.width, digest, (static_cast<uint64>(record.bufWidth) << 32) | record.psm};
++	record.hash = XXH3_64bits(words, sizeof(words));
++	record.extent = std::max(record.extent, (transferAddress + transferSize) - basePtr);
++	record.width = std::max<uint32>(record.width, piece.x + piece.width);
++	record.height = std::max<uint32>(record.height, piece.y + piece.height);
++	record.checkedAt = 0;
++	MarkUploadBlocks(record, basePtr, piece);
++}
++
++//The upload the texture of a draw is made of, when it is known and still whole
++CGSH_OpenGL::UPLOAD_RECORD* CGSH_OpenGL::FindUpload(const TEX0& tex0)
++{
++	auto uploadIterator = m_uploads.find(tex0.GetBufPtr());
++	if(uploadIterator == std::end(m_uploads)) return nullptr;
++	auto& record = uploadIterator->second;
++	if((record.serial == 0) || record.pieces.empty()) return nullptr;
++	if(!IsUploadIntact(record, tex0.GetBufPtr())) return nullptr;
++	return &record;
++}
++
++namespace
++{
++	//Writes 'value' (all ones or zero) to every pixel of a rectangle in a format
++	template <typename Storage>
++	void FillPixels(uint8* memory, uint32 basePtr, uint32 bufWidth, uint32 x0, uint32 y0, uint32 width, uint32 height, bool set)
++	{
++		CGsPixelFormats::CPixelIndexor<Storage> indexor(memory, basePtr, bufWidth);
++		auto value = static_cast<typename Storage::Unit>(set ? ~static_cast<typename Storage::Unit>(0) : 0);
++		for(uint32 y = y0; y < (y0 + height); y++)
++		{
++			for(uint32 x = x0; x < (x0 + width); x++) indexor.SetPixel(x, y, value);
++		}
++	}
++
++	bool FillPixelsOfPsm(uint32 psm, uint8* memory, uint32 basePtr, uint32 bufWidth, uint32 x, uint32 y, uint32 width, uint32 height, bool set)
++	{
++		switch(psm)
++		{
++		case CGSHandler::PSMCT32:
++		case CGSHandler::PSMCT24:
++		case CGSHandler::PSMT8H:
++		case CGSHandler::PSMT4HL:
++		case CGSHandler::PSMT4HH:
++			FillPixels<CGsPixelFormats::STORAGEPSMCT32>(memory, basePtr, bufWidth, x, y, width, height, set);
++			return true;
++		case CGSHandler::PSMCT16:
++			FillPixels<CGsPixelFormats::STORAGEPSMCT16>(memory, basePtr, bufWidth, x, y, width, height, set);
++			return true;
++		case CGSHandler::PSMCT16S:
++			FillPixels<CGsPixelFormats::STORAGEPSMCT16S>(memory, basePtr, bufWidth, x, y, width, height, set);
++			return true;
++		case CGSHandler::PSMT8:
++			FillPixels<CGsPixelFormats::STORAGEPSMT8>(memory, basePtr, bufWidth, x, y, width, height, set);
++			return true;
++		case CGSHandler::PSMT4:
++			FillPixels<CGsPixelFormats::STORAGEPSMT4>(memory, basePtr, bufWidth, x, y, width, height, set);
++			return true;
++		default:
++			return false;
++		}
++	}
++
++	//Reads a rectangle of a texture: 1 for every texel that is not zero. Also gives the
++	//size of the smallest rectangle from the corner that holds all of those.
++	template <typename Storage>
++	void ReadCoverage(uint8* memory, uint32 basePtr, uint32 bufWidth, uint32 width, uint32 height, uint8* coverage, uint32& usedWidth, uint32& usedHeight)
++	{
++		CGsPixelFormats::CPixelIndexor<Storage> indexor(memory, basePtr, bufWidth);
++		usedWidth = usedHeight = 0;
++		for(uint32 y = 0; y < height; y++)
++		{
++			for(uint32 x = 0; x < width; x++)
++			{
++				bool covered = (indexor.GetPixel(x, y) != 0);
++				coverage[(static_cast<size_t>(y) * width) + x] = covered ? 1 : 0;
++				if(covered)
++				{
++					usedWidth = std::max(usedWidth, x + 1);
++					usedHeight = y + 1;
++				}
++			}
++		}
++	}
++
++	bool ReadCoverageOfPsm(uint32 psm, uint8* memory, uint32 basePtr, uint32 bufWidth, uint32 width, uint32 height, uint8* coverage, uint32& usedWidth, uint32& usedHeight)
++	{
++		switch(psm)
++		{
++		case CGSHandler::PSMCT32:
++		case CGSHandler::PSMCT24:
++		case CGSHandler::PSMT8H:
++		case CGSHandler::PSMT4HL:
++		case CGSHandler::PSMT4HH:
++			ReadCoverage<CGsPixelFormats::STORAGEPSMCT32>(memory, basePtr, bufWidth, width, height, coverage, usedWidth, usedHeight);
++			return true;
++		case CGSHandler::PSMCT16:
++			ReadCoverage<CGsPixelFormats::STORAGEPSMCT16>(memory, basePtr, bufWidth, width, height, coverage, usedWidth, usedHeight);
++			return true;
++		case CGSHandler::PSMCT16S:
++			ReadCoverage<CGsPixelFormats::STORAGEPSMCT16S>(memory, basePtr, bufWidth, width, height, coverage, usedWidth, usedHeight);
++			return true;
++		case CGSHandler::PSMT8:
++			ReadCoverage<CGsPixelFormats::STORAGEPSMT8>(memory, basePtr, bufWidth, width, height, coverage, usedWidth, usedHeight);
++			return true;
++		case CGSHandler::PSMT4:
++			ReadCoverage<CGsPixelFormats::STORAGEPSMT4>(memory, basePtr, bufWidth, width, height, coverage, usedWidth, usedHeight);
++			return true;
++		default:
++			return false;
++		}
++	}
++}
++
++//Which texels of a texture the pieces of an upload wrote: a byte per texel of the
++//rectangle looked at (the size TEX0 names, or less when the blocks beyond are not the
++//upload's), and the smallest rectangle from the corner that holds them all.
++//
++//The game sends 8-bit textures as 32-bit pixels, in rectangles of any height: a line of
++//32-bit pixels is two lines of 8-bit texels that are not next to each other. So this is
++//not worked out but done: the pieces are written, all ones, into a second GS memory in
++//the format they were sent in, and read back in the texture's format - with the same
++//code that reads the texture itself.
++bool CGSH_OpenGL::GetUploadCoverage(const TEX0& tex0, const UPLOAD_RECORD& record, std::vector<uint8>& coverage, uint32& lookedWidth, uint32& lookedHeight, uint32& usedWidth, uint32& usedHeight)
++{
++	uint32 basePtr = tex0.GetBufPtr();
++	uint32 texWidth = std::min<uint32>(tex0.GetWidth(), TEX0_MAX_TEXTURE_SIZE);
++	uint32 texHeight = std::min<uint32>(tex0.GetHeight(), TEX0_MAX_TEXTURE_SIZE);
++
++	//how far the upload's blocks reach in the texture
++	uint32 blockWidth = 0, blockHeight = 0;
++	switch(tex0.nPsm)
++	{
++	case PSMT8:
++		blockWidth = CGsPixelFormats::STORAGEPSMT8::BLOCKWIDTH, blockHeight = CGsPixelFormats::STORAGEPSMT8::BLOCKHEIGHT;
++		break;
++	case PSMT4:
++		blockWidth = CGsPixelFormats::STORAGEPSMT4::BLOCKWIDTH, blockHeight = CGsPixelFormats::STORAGEPSMT4::BLOCKHEIGHT;
++		break;
++	case PSMCT16:
++	case PSMCT16S:
++		blockWidth = CGsPixelFormats::STORAGEPSMCT16::BLOCKWIDTH, blockHeight = CGsPixelFormats::STORAGEPSMCT16::BLOCKHEIGHT;
++		break;
++	default:
++		blockWidth = CGsPixelFormats::STORAGEPSMCT32::BLOCKWIDTH, blockHeight = CGsPixelFormats::STORAGEPSMCT32::BLOCKHEIGHT;
++		break;
++	}
++	lookedWidth = lookedHeight = 0;
++	for(uint32 y = 0; y < texHeight; y += blockHeight)
++	{
++		for(uint32 x = 0; x < texWidth; x += blockWidth)
++		{
++			bool own = false;
++			if(!ForEachBlockOfPsm(tex0.nPsm, basePtr, tex0.nBufWidth, x, y, 1, 1, [&](uint32 block) { own = (m_blockOwner[block] == record.serial); })) return false;
++			if(own)
++			{
++				lookedWidth = std::max(lookedWidth, std::min(x + blockWidth, texWidth));
++				lookedHeight = std::min(y + blockHeight, texHeight);
++			}
++		}
++	}
++	if((lookedWidth == 0) || (lookedHeight == 0)) return false;
++
++	if(m_uploadShadow.empty()) m_uploadShadow.assign(RAMSIZE, 0);
++	for(const auto& piece : record.pieces)
++	{
++		if(!FillPixelsOfPsm(record.psm, m_uploadShadow.data(), basePtr, record.bufWidth, piece.x, piece.y, piece.width, piece.height, true)) return false;
++	}
++	coverage.resize(static_cast<size_t>(lookedWidth) * lookedHeight);
++	bool read = ReadCoverageOfPsm(tex0.nPsm, m_uploadShadow.data(), basePtr, tex0.nBufWidth, lookedWidth, lookedHeight, coverage.data(), usedWidth, usedHeight);
++	for(const auto& piece : record.pieces)
++	{
++		FillPixelsOfPsm(record.psm, m_uploadShadow.data(), basePtr, record.bufWidth, piece.x, piece.y, piece.width, piece.height, false);
++	}
++	return read && (usedWidth != 0) && (usedHeight != 0);
++}
++
++//RTA: Textures kept by what the game sent.
++//
++//The figure that names the texture is the one of the bytes sent (and where each piece
++//went), taken while they arrived: nothing is read or converted when a texture that was
++//sent again is drawn with, and the name is the same wherever in GS memory the game puts
++//the texture and in every run. Texels the game did not send are 0 in the texture made
++//(they are whatever lay there before on a console; no triangle is meant to use them).
++bool CGSH_OpenGL::PrepareTextureByUpload(const TEX0& tex0, UPLOAD_RECORD& record, TEXTURE_INFO& texInfo)
++{
++	uint32 namedWidth = std::min<uint32>(tex0.GetWidth(), TEX0_MAX_TEXTURE_SIZE);
++	uint32 namedHeight = std::min<uint32>(tex0.GetHeight(), TEX0_MAX_TEXTURE_SIZE);
++
++	//The rectangle that holds what was sent. One piece from the corner in the texture's
++	//own format is that rectangle; anything else is looked up, or worked out once.
++	bool plain = (record.pieces.size() == 1) && (record.psm == tex0.nPsm) && (record.bufWidth == tex0.nBufWidth) && (record.pieces[0].x == 0) && (record.pieces[0].y == 0);
++	uint32 usedWidth = 0, usedHeight = 0;
++	uint64 hash = record.hash;
++	std::vector<uint8> coverage;
++	uint32 lookedWidth = 0, lookedHeight = 0;
++	if(plain)
++	{
++		usedWidth = std::min<uint32>(record.pieces[0].width, namedWidth);
++		usedHeight = std::min<uint32>(record.pieces[0].height, namedHeight);
++	}
++	else
++	{
++		//the same bytes read as another format are another picture
++		uint64 words[2] = {record.hash, (static_cast<uint64>(tex0.nBufWidth) << 32) | tex0.nPsm};
++		bool natural = ((record.psm == tex0.nPsm) && (record.bufWidth == tex0.nBufWidth)) || ((tex0.nPsm == PSMT8) && (record.psm == PSMCT32) && ((record.bufWidth * 2) == tex0.nBufWidth));
++		if(!natural) hash = XXH3_64bits(words, sizeof(words));
++		uint64 boxKey = natural ? XXH3_64bits(words, sizeof(words)) : hash;
++		auto boxIterator = m_uploadBoxes.find(boxKey);
++		if(boxIterator == std::end(m_uploadBoxes))
++		{
++			if(!GetUploadCoverage(tex0, record, coverage, lookedWidth, lookedHeight, usedWidth, usedHeight)) return false;
++			if(m_uploadBoxes.size() > 65536) m_uploadBoxes.clear();
++			m_uploadBoxes.emplace(boxKey, std::make_pair(usedWidth, usedHeight));
++		}
++		else
++		{
++			usedWidth = boxIterator->second.first;
++			usedHeight = boxIterator->second.second;
++		}
++	}
++
++	uint32 texWidth = m_texAllowReducedSize ? usedWidth : namedWidth;
++	uint32 texHeight = m_texAllowReducedSize ? usedHeight : namedHeight;
++	//large pictures in direct colour are left to the path that updates in place
++	if(!CGsPixelFormats::IsPsmIDTEX(tex0.nPsm) && ((texWidth * texHeight) > (512 * 512))) return false;
++
++	texInfo.sizeScaleX = static_cast<float>(texWidth) / static_cast<float>(tex0.GetWidth());
++	texInfo.sizeScaleY = static_cast<float>(texHeight) / static_cast<float>(tex0.GetHeight());
++	texInfo.scaleRatioX = 1.0f / texInfo.sizeScaleX;
++	texInfo.scaleRatioY = 1.0f / texInfo.sizeScaleY;
++
++	CONTENT_TEXTURE_KEY key;
++	key.psm = tex0.nPsm;
++	key.width = texWidth;
++	key.height = texHeight;
++	key.kind = 1;
++	key.hash = hash;
++	g_textureCounters.byUpload++;
++
++	auto contentTextureIterator = m_contentTextures.find(key);
++	if(contentTextureIterator != std::end(m_contentTextures))
++	{
++		contentTextureIterator->second.lastUsedFrame = m_contentTextureFrame;
++		texInfo.textureHandle = contentTextureIterator->second.handle;
++		m_lastContentTexture = &contentTextureIterator->second;
++		m_lastContentKey = key;
++		return true;
++	}
++
++	//Not seen before (or forgotten): which texels were sent
++	std::vector<uint8> texCoverage;
++	bool whole = plain;
++	if(!plain)
++	{
++		if(coverage.empty() && !GetUploadCoverage(tex0, record, coverage, lookedWidth, lookedHeight, usedWidth, usedHeight))
++		{
++			g_textureCounters.byUpload--;
++			return false;
++		}
++		texCoverage.assign(static_cast<size_t>(texWidth) * texHeight, 0);
++		size_t covered = 0;
++		uint32 copyWidth = std::min(texWidth, lookedWidth);
++		for(uint32 y = 0; y < std::min(texHeight, lookedHeight); y++)
++		{
++			const uint8* src = coverage.data() + (static_cast<size_t>(y) * lookedWidth);
++			uint8* dst = texCoverage.data() + (static_cast<size_t>(y) * texWidth);
++			memcpy(dst, src, copyWidth);
++			for(uint32 x = 0; x < copyWidth; x++) covered += src[x];
++		}
++		whole = (covered == texCoverage.size());
++	}
++
++	//the texels are taken from GS memory, where the upload put them
++	ConvertTexture(tex0, texWidth, texHeight);
++
++	if(auto log = TextureLog())
++	{
++		fprintf(log, "%u sent %016llx p%u %ux%u named %ux%u at %06x pieces %zu sent-as p%u whole %d\n", m_contentTextureFrame, static_cast<unsigned long long>(key.hash), tex0.nPsm, texWidth, texHeight,
++		        static_cast<unsigned int>(tex0.GetWidth()), static_cast<unsigned int>(tex0.GetHeight()), tex0.GetBufPtr(), record.pieces.size(), record.psm, whole ? 1 : 0);
++	}
++	FinishContentTexture(tex0, key, texWidth, texHeight, whole ? nullptr : &texCoverage, texInfo);
++	return true;
++}
++
 +//RTA: see TEXTURE_PICTURE_KEY. Returns the texture to draw with in place of the one
-+//PrepareTextureByContent gave, or 0. Indexed textures and 32-bit ones only.
++//PrepareTextureByUpload or PrepareTextureByContent gave, or 0. Indexed textures and
++//32-bit ones only.
 +GLuint CGSH_OpenGL::FindTextureReplacement(const TEX0& tex0)
 +{
 +	if(!m_lastContentTexture || m_lastContentTexture->pixels.empty()) return 0;
@@ -1049,6 +1662,7 @@ index 01a12176..411f331e 100644
 +	key.psm = m_lastContentKey.psm;
 +	key.width = m_lastContentKey.width;
 +	key.height = m_lastContentKey.height;
++	key.kind = m_lastContentKey.kind;
 +	key.hash = m_lastContentKey.hash;
 +
 +	std::array<uint32, 256> clut;
@@ -1061,7 +1675,31 @@ index 01a12176..411f331e 100644
 +	auto replacementIterator = m_textureReplacements.find(key);
 +	if(replacementIterator == std::end(m_textureReplacements))
 +	{
-+		Framework::OpenGl::CTexture replacement;
++		TEXTURE_PICTURE texturePicture;
++		texturePicture.firstUsedFrame = m_contentTextureFrame;
++		if(g_textureLoad)
++		{
++			std::vector<uint32> picture;
++			uint32 width = 0, height = 0;
++			if(g_textureLoad(key, picture, width, height) && (width != 0) && (height != 0) && (picture.size() >= (static_cast<size_t>(width) * height)))
++			{
++				texturePicture.replacement = Framework::OpenGl::CTexture::Create();
++				glBindTexture(GL_TEXTURE_2D, texturePicture.replacement);
++				glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, width, height);
++				glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, picture.data());
++				CHECKGLERROR();
++			}
++		}
++		replacementIterator = m_textureReplacements.emplace(key, std::move(texturePicture)).first;
++		g_textureCounters.shortLived++;
++	}
++	auto& texturePicture = replacementIterator->second;
++	//Written out once it has been in use for a while: a film is thousands of pictures
++	//that are each drawn for a frame or two, and nobody wants those.
++	if(!texturePicture.dumped && ((m_contentTextureFrame - texturePicture.firstUsedFrame) >= g_textureDumpAge))
++	{
++		texturePicture.dumped = true;
++		g_textureCounters.shortLived--;
 +		if(g_textureDump)
 +		{
 +			size_t pixelCount = static_cast<size_t>(key.width) * key.height;
@@ -1076,24 +1714,20 @@ index 01a12176..411f331e 100644
 +			{
 +				memcpy(picture.data(), pixels.data(), pixelCount * sizeof(uint32));
 +			}
++			//texels the game did not send: nothing at all (alpha 0 alone is a colour
++			//the game uses, see the README)
++			const auto& coverage = m_lastContentTexture->coverage;
++			if(coverage.size() == pixelCount)
++			{
++				for(size_t i = 0; i < pixelCount; i++)
++				{
++					if(coverage[i] == 0) picture[i] = 0;
++				}
++			}
 +			g_textureDump(key, picture.data());
 +		}
-+		if(g_textureLoad)
-+		{
-+			std::vector<uint32> picture;
-+			uint32 width = 0, height = 0;
-+			if(g_textureLoad(key, picture, width, height) && (width != 0) && (height != 0) && (picture.size() >= (static_cast<size_t>(width) * height)))
-+			{
-+				replacement = Framework::OpenGl::CTexture::Create();
-+				glBindTexture(GL_TEXTURE_2D, replacement);
-+				glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, width, height);
-+				glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, picture.data());
-+				CHECKGLERROR();
-+			}
-+		}
-+		replacementIterator = m_textureReplacements.emplace(key, std::move(replacement)).first;
 +	}
-+	return replacementIterator->second;
++	return texturePicture.replacement;
 +}
 +
 +//Once a frame, when nothing is waiting to be drawn: forget textures not used for a while
@@ -1116,12 +1750,13 @@ index 01a12176..411f331e 100644
 +			contentTextureIterator++;
 +		}
 +	}
++	g_textureCounters.alive = m_contentTextures.size();
 +}
 +
  GLuint CGSH_OpenGL::PreparePalette(const TEX0& tex0)
  {
  	GLuint textureHandle = PalCache_Search(tex0);
-@@ -319,7 +615,7 @@ void CGSH_OpenGL::TexUpdater_Psm32(uint32 bufPtr, uint32 bufWidth, unsigned int
+@@ -319,7 +1166,7 @@
  		dst += texWidth;
  	}
  
@@ -1130,7 +1765,7 @@ index 01a12176..411f331e 100644
  	CHECKGLERROR();
  }
  
-@@ -345,7 +641,7 @@ void CGSH_OpenGL::TexUpdater_Psm16(uint32 bufPtr, uint32 bufWidth, unsigned int
+@@ -345,7 +1192,7 @@
  		dst += texWidth;
  	}
  
@@ -1139,7 +1774,7 @@ index 01a12176..411f331e 100644
  	CHECKGLERROR();
  }
  
-@@ -590,7 +886,7 @@ void CGSH_OpenGL::TexUpdater_Psm8(uint32 bufPtr, uint32 bufWidth, unsigned int t
+@@ -590,7 +1437,7 @@
  		dst += texWidth * 16;
  	}
  
@@ -1148,7 +1783,7 @@ index 01a12176..411f331e 100644
  	CHECKGLERROR();
  }
  
-@@ -631,7 +927,7 @@ void CGSH_OpenGL::TexUpdater_Psm4(unsigned int bufPtr, unsigned int bufWidth, un
+@@ -631,7 +1478,7 @@
  
  		dst += texWidth * 16;
  	}
@@ -1157,7 +1792,7 @@ index 01a12176..411f331e 100644
  	CHECKGLERROR();
  }
  
-@@ -652,7 +948,7 @@ void CGSH_OpenGL::TexUpdater_Psm48(uint32 bufPtr, uint32 bufWidth, unsigned int
+@@ -652,7 +1499,7 @@
  		dst += texWidth;
  	}
  
@@ -1166,7 +1801,7 @@ index 01a12176..411f331e 100644
  	CHECKGLERROR();
  }
  
-@@ -674,7 +970,7 @@ void CGSH_OpenGL::TexUpdater_Psm48H(uint32 bufPtr, uint32 bufWidth, unsigned int
+@@ -674,7 +1521,7 @@
  		dst += texWidth;
  	}
  
@@ -1176,10 +1811,9 @@ index 01a12176..411f331e 100644
  }
  
 diff --git a/Source/gs/GSHandler.cpp b/Source/gs/GSHandler.cpp
-index 57e58ba9..9f2058d7 100644
 --- a/Source/gs/GSHandler.cpp
 +++ b/Source/gs/GSHandler.cpp
-@@ -129,6 +129,7 @@ void CGSHandler::RegisterPreferences()
+@@ -129,6 +129,7 @@
  	CAppConfig::GetInstance().RegisterPreferenceInteger(PREF_CGSHANDLER_PRESENTATION_MODE, CGSHandler::PRESENTATION_MODE_FIT);
  	CAppConfig::GetInstance().RegisterPreferenceBoolean(PREF_CGSHANDLER_GS_RAM_READS_ENABLED, true);
  	CAppConfig::GetInstance().RegisterPreferenceBoolean(PREF_CGSHANDLER_WIDESCREEN, false);
@@ -1187,7 +1821,7 @@ index 57e58ba9..9f2058d7 100644
  }
  
  void CGSHandler::NotifyPreferencesChanged()
-@@ -212,6 +213,13 @@ CGSHandler::PRESENTATION_VIEWPORT CGSHandler::GetPresentationViewport() const
+@@ -212,6 +213,13 @@
  		break;
  	case PRESENTATION_MODE_FIT:
  	{
@@ -1201,12 +1835,13 @@ index 57e58ba9..9f2058d7 100644
  		int viewportWidth[2];
  		int viewportHeight[2];
  		{
-@@ -561,12 +569,30 @@ void CGSHandler::Finish(bool forceWait)
+@@ -560,13 +568,31 @@
+ 	    },
  	    wait, wait);
  }
- 
-+CGSHandler::PresentClock CGSHandler::g_presentClock;
 +
++CGSHandler::PresentClock CGSHandler::g_presentClock;
+ 
  void CGSHandler::Flip(uint32 flags)
  {
  	bool waitForCompletion = (flags & FLIP_FLAG_WAIT) != 0;
@@ -1234,10 +1869,9 @@ index 57e58ba9..9f2058d7 100644
  		    {
  			    FlipImpl(displayInfo);
 diff --git a/Source/gs/GSHandler.h b/Source/gs/GSHandler.h
-index 66bfe59a..11769275 100644
 --- a/Source/gs/GSHandler.h
 +++ b/Source/gs/GSHandler.h
-@@ -22,6 +22,8 @@ class CINTC;
+@@ -22,6 +22,8 @@
  #define PREF_CGSHANDLER_PRESENTATION_MODE "renderer.presentationmode"
  #define PREF_CGSHANDLER_GS_RAM_READS_ENABLED "renderer.ramreads.enabled"
  #define PREF_CGSHANDLER_WIDESCREEN "renderer.widescreen"
@@ -1246,7 +1880,7 @@ index 66bfe59a..11769275 100644
  
  enum GS_REGS
  {
-@@ -181,7 +183,26 @@ public:
+@@ -181,8 +183,27 @@
  
  		uint32 width = 0;
  		uint32 height = 0;
@@ -1258,8 +1892,8 @@ index 66bfe59a..11769275 100644
 +		//RTA: a mark from the front end's display clock: not to be shown before it
 +		//(0: no mark). See CGSHandler::PresentClock.
 +		uint64 presentAfter = 0;
-+	};
-+
+ 	};
+ 
 +	//RTA: The front end may pace pictures by the display (tools/play-net). 'stamp' is
 +	//called on the machine's thread when a finished picture is sent off and gives the
 +	//mark that goes with it; 'wait' is called on the video thread just before the
@@ -1268,16 +1902,16 @@ index 66bfe59a..11769275 100644
 +	{
 +		std::function<uint64()> stamp;
 +		std::function<void(uint64)> wait;
- 	};
++	};
 +	static PresentClock g_presentClock;
- 
++
  	enum FLIP_FLAGS
  	{
+ 		FLIP_FLAG_WAIT = 0x01,  //Wait for flip operation to be complete
 diff --git a/Source/gs/GsTextureCache.h b/Source/gs/GsTextureCache.h
-index 67b0882e..31bb1c70 100644
 --- a/Source/gs/GsTextureCache.h
 +++ b/Source/gs/GsTextureCache.h
-@@ -18,10 +18,17 @@ public:
+@@ -18,10 +18,17 @@
  			m_live = false;
  			m_textureHandle = TextureHandleType();
  			m_cachedArea.ClearDirtyPages();
@@ -1296,7 +1930,6 @@ index 67b0882e..31bb1c70 100644
  
  		//Platform specific
 diff --git a/Source/iop/Iop_Speed.cpp b/Source/iop/Iop_Speed.cpp
-index 4986ae7e..24d0bd55 100644
 --- a/Source/iop/Iop_Speed.cpp
 +++ b/Source/iop/Iop_Speed.cpp
 @@ -2,6 +2,7 @@
@@ -1307,7 +1940,7 @@ index 4986ae7e..24d0bd55 100644
  #include <cassert>
  #include <cstring>
  
-@@ -48,13 +49,33 @@ void CSpeed::SetEthernetFrameTxHandler(const EthernetFrameTxHandler& ethernetFra
+@@ -48,13 +49,33 @@
  	m_ethernetFrameTxHandler = ethernetFrameTxHandler;
  }
  
@@ -1343,7 +1976,7 @@ index 4986ae7e..24d0bd55 100644
  	auto& bdRx = reinterpret_cast<SMAP_BD*>(m_smapBdRx)[m_rxIndex];
  	assert((bdRx.ctrlStat & SMAP_BD_RX_EMPTY) != 0);
  	bdRx.ctrlStat &= ~SMAP_BD_RX_EMPTY;
-@@ -62,7 +83,7 @@ void CSpeed::RxEthernetFrame(const uint8* frameData, uint32 frameSize)
+@@ -62,7 +83,7 @@
  	bdRx.pointer = 0;
  
  	m_rxIndex++;
@@ -1352,7 +1985,7 @@ index 4986ae7e..24d0bd55 100644
  
  	m_pendingRx = true;
  	m_rxDelay = 100000;
-@@ -191,11 +212,15 @@ uint32 CSpeed::ReadRegister(uint32 address)
+@@ -191,11 +212,15 @@
  		break;
  	case REG_SMAP_RXFIFO_DATA:
  	{
@@ -1373,7 +2006,7 @@ index 4986ae7e..24d0bd55 100644
  		m_rxFifoPtr += 4;
  	}
  	break;
-@@ -275,6 +300,10 @@ void CSpeed::WriteRegister(uint32 address, uint32 value)
+@@ -275,6 +300,10 @@
  		break;
  	case REG_SMAP_EMAC3_ADDR_LO:
  		m_smapEmac3AddressLo = value;
@@ -1384,7 +2017,7 @@ index 4986ae7e..24d0bd55 100644
  		break;
  	case REG_SMAP_EMAC3_STA_CTRL_HI:
  		m_smapEmac3StaCtrl.h1 = static_cast<uint16>(value);
-@@ -308,7 +337,11 @@ uint32 CSpeed::ReceiveDma(uint8* buffer, uint32 blockSize, uint32 blockAmount, u
+@@ -308,7 +337,11 @@
  	if(direction == Iop::Dmac::CChannel::CHCR_DR_TO)
  	{
  		uint32 size = blockSize * blockAmount;
@@ -1397,7 +2030,7 @@ index 4986ae7e..24d0bd55 100644
  		m_rxFifoPtr += size;
  	}
  	else
-@@ -320,6 +353,15 @@ uint32 CSpeed::ReceiveDma(uint8* buffer, uint32 blockSize, uint32 blockAmount, u
+@@ -320,6 +353,15 @@
  
  void CSpeed::CountTicks(uint32 ticks)
  {
@@ -1414,10 +2047,9 @@ index 4986ae7e..24d0bd55 100644
  	{
  		m_rxDelay -= ticks;
 diff --git a/Source/iop/Iop_Speed.h b/Source/iop/Iop_Speed.h
-index 0aa1c176..c501e510 100644
 --- a/Source/iop/Iop_Speed.h
 +++ b/Source/iop/Iop_Speed.h
-@@ -22,6 +22,14 @@ namespace Iop
+@@ -22,6 +22,14 @@
  		void SetEthernetFrameTxHandler(const EthernetFrameTxHandler&);
  		void RxEthernetFrame(const uint8*, uint32);
  
@@ -1432,7 +2064,7 @@ index 0aa1c176..c501e510 100644
  		uint32 ReadRegister(uint32);
  		void WriteRegister(uint32, uint32);
  
-@@ -127,6 +135,9 @@ namespace Iop
+@@ -127,6 +135,9 @@
  		void LogBdWrite(const char*, uint32, uint32, uint32);
  
  		EthernetFrameTxHandler m_ethernetFrameTxHandler;
@@ -1443,10 +2075,9 @@ index 0aa1c176..c501e510 100644
  		CIntc& m_intc;
  
 diff --git a/Source/ui_qt/CMakeLists.txt b/Source/ui_qt/CMakeLists.txt
-index ce76ed4d..98685eaf 100644
 --- a/Source/ui_qt/CMakeLists.txt
 +++ b/Source/ui_qt/CMakeLists.txt
-@@ -279,6 +279,11 @@ if(TARGET_PLATFORM_MACOS)
+@@ -279,6 +279,11 @@
  		macos/InputProviderMacOsHid.h
  		macos/LayerFromView.mm
  		macos/LayerFromView.h
@@ -1458,7 +2089,7 @@ index ce76ed4d..98685eaf 100644
  	)
  	FILE(GLOB ARCADE_DEFS ${CMAKE_CURRENT_SOURCE_DIR}/../../arcadedefs/*.arcadedef)
  	set(OSX_RES
-@@ -313,7 +318,8 @@ if(TARGET_PLATFORM_MACOS)
+@@ -313,7 +318,8 @@
  		RESOURCE "${OSX_RES}"
  	)
  	SET_SOURCE_FILES_PROPERTIES(${ARCADE_DEFS} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources/arcadedefs")
@@ -1469,7 +2100,6 @@ index ce76ed4d..98685eaf 100644
  	set(QT_SOURCES
  		${QT_SOURCES}
 diff --git a/Source/ui_qt/GSH_OpenGLQt.cpp b/Source/ui_qt/GSH_OpenGLQt.cpp
-index 2d7f088b..4a80bc17 100644
 --- a/Source/ui_qt/GSH_OpenGLQt.cpp
 +++ b/Source/ui_qt/GSH_OpenGLQt.cpp
 @@ -2,6 +2,7 @@
@@ -1480,7 +2110,7 @@ index 2d7f088b..4a80bc17 100644
  #include <QSurface>
  #include <QWindow>
  #include <QOpenGLContext>
-@@ -57,8 +58,51 @@ void CGSH_OpenGLQt::ReleaseImpl()
+@@ -57,8 +58,78 @@
  	delete m_context;
  }
  
@@ -1499,6 +2129,14 @@ index 2d7f088b..4a80bc17 100644
 +	m_captureRect[3] = height;
 +}
 +
++void CGSH_OpenGLQt::RequestFramebufferCapture(const CaptureHandler& captureHandler)
++{
++	std::lock_guard<std::mutex> lock(m_captureMutex);
++	m_captureHandler = captureHandler;
++	m_captureRect[2] = m_captureRect[3] = 0;
++	m_captureFramebuffer = true;
++}
++
  void CGSH_OpenGLQt::PresentBackbuffer()
  {
 +	{
@@ -1506,9 +2144,12 @@ index 2d7f088b..4a80bc17 100644
 +		unsigned int x = 0, y = 0;
 +		unsigned int width = m_presentationParams.windowWidth;
 +		unsigned int height = m_presentationParams.windowHeight;
++		bool fromFramebuffer = false;
 +		{
 +			std::lock_guard<std::mutex> lock(m_captureMutex);
 +			captureHandler.swap(m_captureHandler);
++			fromFramebuffer = m_captureFramebuffer;
++			m_captureFramebuffer = false;
 +			if((m_captureRect[2] != 0) && (m_captureRect[3] != 0))
 +			{
 +				x = std::min(m_captureRect[0], width - 1);
@@ -1517,7 +2158,23 @@ index 2d7f088b..4a80bc17 100644
 +				height = std::min(m_captureRect[3], height - y);
 +			}
 +		}
-+		if(captureHandler)
++		if(captureHandler && fromFramebuffer)
++		{
++			width = (m_displayFramebuffer != 0) ? m_displayPixelWidth : 0;
++			height = (m_displayFramebuffer != 0) ? m_displayPixelHeight : 0;
++			std::vector<uint8> pixels(static_cast<size_t>(width) * height * 4);
++			if(!pixels.empty())
++			{
++				glBindFramebuffer(GL_READ_FRAMEBUFFER, m_displayFramebuffer);
++				glPixelStorei(GL_PACK_ALIGNMENT, 1);
++				glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
++				glBindFramebuffer(GL_READ_FRAMEBUFFER, m_presentFramebuffer);
++				//the console's alpha is not for looking at
++				for(size_t i = 3; i < pixels.size(); i += 4) pixels[i] = 0xFF;
++			}
++			captureHandler(pixels.data(), width, height);
++		}
++		else if(captureHandler)
 +		{
 +			std::vector<uint8> pixels(static_cast<size_t>(width) * height * 4);
 +			if(!pixels.empty())
@@ -1533,7 +2190,6 @@ index 2d7f088b..4a80bc17 100644
  	if(m_renderSurface->surfaceClass() == QSurface::Window)
  	{
 diff --git a/Source/ui_qt/GSH_OpenGLQt.h b/Source/ui_qt/GSH_OpenGLQt.h
-index ad49fb9f..ebc85368 100644
 --- a/Source/ui_qt/GSH_OpenGLQt.h
 +++ b/Source/ui_qt/GSH_OpenGLQt.h
 @@ -1,6 +1,8 @@
@@ -1545,7 +2201,7 @@ index ad49fb9f..ebc85368 100644
  
  class QSurface;
  class QOpenGLContext;
-@@ -17,7 +19,19 @@ public:
+@@ -17,7 +19,23 @@
  	void ReleaseImpl() override;
  	void PresentBackbuffer() override;
  
@@ -1556,17 +2212,20 @@ index ad49fb9f..ebc85368 100644
 +	//The same for a part of the picture (in pixels from the bottom left corner), which
 +	//costs next to nothing and so does not disturb what is being timed.
 +	void RequestCapture(const CaptureHandler&, unsigned int, unsigned int, unsigned int, unsigned int);
++	//The picture as the machine drew it, in the pixels it was drawn with (the console's
++	//640 x 448 times the resolution factor), whatever the size of the window. Top row first.
++	void RequestFramebufferCapture(const CaptureHandler&);
 +
  private:
 +	std::mutex m_captureMutex;
 +	CaptureHandler m_captureHandler;
 +	unsigned int m_captureRect[4] = {0, 0, 0, 0};
++	bool m_captureFramebuffer = false;
 +
  	QSurface* m_renderSurface = nullptr;
  	QOpenGLContext* m_context = nullptr;
  };
 diff --git a/Source/ui_qt/main.cpp b/Source/ui_qt/main.cpp
-index eb663815..758b2e3f 100644
 --- a/Source/ui_qt/main.cpp
 +++ b/Source/ui_qt/main.cpp
 @@ -4,11 +4,13 @@
@@ -1583,7 +2242,7 @@ index eb663815..758b2e3f 100644
  #if QT_VERSION >= QT_VERSION_CHECK(5, 6, 0)
  	QApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
  #endif
-@@ -49,7 +51,10 @@ int main(int argc, char* argv[])
+@@ -49,10 +51,15 @@
  	QCommandLineOption load_state_option("state", "Load state at index", "state_index");
  	parser.addOption(load_state_option);
  
@@ -1593,8 +2252,13 @@ index eb663815..758b2e3f 100644
 +	Rta::ReadCommandLine(parser);
  
  	MainWindow w;
++	Rta::BeforeShow(&w);
  	w.show();
-@@ -112,7 +117,13 @@ fs::path CAppConfig::GetBasePath() const
++	Rta::AfterShow(&w);
+ 
+ 	if(parser.isSet(cdrom_image_option))
+ 	{
+@@ -112,8 +119,14 @@
  	static const auto basePath =
  	    []() {
  		    fs::path result;
@@ -1602,15 +2266,15 @@ index eb663815..758b2e3f 100644
 +		    //RTA: a data directory of its own (--rta-data), so that this build never
 +		    //touches the settings and memory cards of an ordinary Play! installation
 +		    if(const char* dataDir = getenv("RTA_DATA_DIR"))
-+		    {
+ 		    {
 +			    result = dataDir;
 +		    }
 +		    else if(fs::exists("portable.txt"))
- 		    {
++		    {
  			    result = BASE_DATA_PATH;
  		    }
+ 		    else
 diff --git a/Source/ui_qt/mainwindow.cpp b/Source/ui_qt/mainwindow.cpp
-index c0665d9f..20d84115 100644
 --- a/Source/ui_qt/mainwindow.cpp
 +++ b/Source/ui_qt/mainwindow.cpp
 @@ -60,6 +60,7 @@
@@ -1621,7 +2285,7 @@ index c0665d9f..20d84115 100644
  
  #ifdef __APPLE__
  #include "macos/InputProviderMacOsHid.h"
-@@ -82,6 +83,7 @@ MainWindow::MainWindow(QWidget* parent)
+@@ -82,6 +83,7 @@
  	buildResizeWindowMenu();
  
  	RegisterPreferences();
@@ -1629,7 +2293,7 @@ index c0665d9f..20d84115 100644
  
  	m_continuationChecker = new CContinuationChecker(this);
  
-@@ -131,6 +133,9 @@ MainWindow::MainWindow(QWidget* parent)
+@@ -131,6 +133,9 @@
  		if(m_virtualMachine->GetStatus() == CVirtualMachine::RUNNING)
  			ui->stackedWidget->setCurrentIndex(1);
  	});
@@ -1639,7 +2303,7 @@ index c0665d9f..20d84115 100644
  }
  
  MainWindow::~MainWindow()
-@@ -143,6 +148,7 @@ MainWindow::~MainWindow()
+@@ -143,6 +148,7 @@
  	if(m_virtualMachine != nullptr)
  	{
  		m_virtualMachine->Pause();
@@ -1647,7 +2311,7 @@ index c0665d9f..20d84115 100644
  		m_qtKeyInputProvider.reset();
  		m_qtMouseInputProvider.reset();
  		m_virtualMachine->DestroyPadHandler();
-@@ -169,7 +175,8 @@ void MainWindow::InitVirtualMachine()
+@@ -169,7 +175,8 @@
  	SetupSoundHandler();
  
  	{
@@ -1657,7 +2321,7 @@ index c0665d9f..20d84115 100644
  		auto padHandler = static_cast<CPH_GenericInput*>(m_virtualMachine->GetPadHandler());
  		auto profile = CAppConfig::GetInstance().GetPreferenceString(PREF_INPUT_PAD1_PROFILE);
  
-@@ -200,6 +207,8 @@ void MainWindow::InitVirtualMachine()
+@@ -200,6 +207,8 @@
  	//OnExecutableChange might be called from another thread, we need to wrap it around a Qt signal
  	m_OnExecutableChangeConnection = m_virtualMachine->m_ee->m_os->OnExecutableChange.Connect(std::bind(&MainWindow::EmitOnExecutableChange, this));
  	connect(this, SIGNAL(onExecutableChange()), this, SLOT(HandleOnExecutableChange()));
@@ -1666,7 +2330,7 @@ index c0665d9f..20d84115 100644
  }
  
  void MainWindow::SetOutputWindowSize()
-@@ -606,6 +615,12 @@ void MainWindow::updateStats()
+@@ -606,6 +615,12 @@
  	m_cpuUsageLabel->setText(QString("EE CPU: %1%").arg(static_cast<int>(eeUsageRatio)));
  
  	CStatsManager::GetInstance().ClearStats();
@@ -1679,3 +2343,12 @@ index c0665d9f..20d84115 100644
  }
  
  void MainWindow::on_actionSettings_triggered()
+@@ -839,7 +854,7 @@
+ {
+ 	UpdateUI();
+ 	auto titleString = QString("Play! - [ %1 ] - %2").arg(m_virtualMachine->m_ee->m_os->GetExecutableName(), QString(PLAY_VERSION));
+-	setWindowTitle(titleString);
++	setWindowTitle(QString::fromStdString(Rta::WindowTitle(titleString.toStdString())));
+ 	ui->bootablesView->AsyncResetModel(true);
+ }
+ 
