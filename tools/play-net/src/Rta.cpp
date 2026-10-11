@@ -55,6 +55,8 @@
 
 #define PREF_RTA_GUEST_ADDRESS "rta.net.guestaddress"
 #define PREF_RTA_DEFAULTS "rta.defaults"
+#define PREF_RTA_KEYS "rta.keys"
+#define RTA_KEYS 2 // 2: W A S D for the left stick, I J K L for the face buttons
 #define RTA_DEFAULTS 2
 #define RTA_RESOLUTION_FACTOR 4
 #define RTA_SPU_BLOCKS 30
@@ -87,6 +89,7 @@ namespace
 		std::string controlPath;
 		std::string pcapPath;
 		std::string testLabel; // --rta-test: a test run, and what the window's title says about it
+		bool testBackground = false; // --rta-test (not --rta-title): small, behind, never active
 	};
 
 	struct PatchWord
@@ -457,6 +460,7 @@ namespace
 			m_executableChange = m_vm->m_ee->m_os->OnExecutableChange.Connect([this]() { OnExecutableChange(); });
 			StartTextures(base);
 			if(!options.controlPath.empty()) StartControl();
+			Rta::StartGamePads();
 			Rta::KeepAwake();
 			if(options.displayClock)
 			{
@@ -1121,6 +1125,24 @@ namespace
 				if(auto gs = m_vm->GetGSHandler()) gs->SendGSCall([&]() { video = work(); }, true);
 				push(Step::REPLY, 0, Format("ok machine_thread clock_us=%llu cpu_us=%llu video_thread clock_us=%llu cpu_us=%llu", (unsigned long long)machine.first, (unsigned long long)machine.second, (unsigned long long)video.first, (unsigned long long)video.second));
 			}
+			else if(name == "gcpad" && words.size() >= 2)
+			{
+				// gcpad connect | disconnect | set <buttons|none> [lx ly rx ry [l2 r2]]
+				// a controller made by the program (RtaPad.mm): sticks -1 .. 1 with up
+				// and right positive, triggers 0 .. 1
+				float values[6] = {0, 0, 0, 0, 0, 0};
+				uint32 padButtons = 0;
+				bool known = (words[1] == "connect" || words[1] == "disconnect");
+				if(words[1] == "set" && words.size() >= 3 && (words[2] == "none" || ParseButtons(words[2], padButtons)))
+				{
+					for(size_t i = 3; i < words.size() && i < 9; i++) values[i - 3] = static_cast<float>(atof(words[i].c_str()));
+					known = true;
+				}
+				if(known) Rta::GamePadTest(words[1], padButtons, values);
+				push(Step::REPLY, 0, known ? "ok" : "err gcpad connect|disconnect|set <buttons|none> [lx ly rx ry [l2 r2]]");
+			}
+			else if(name == "pads")
+				push(Step::REPLY, 4);
 			else if(name == "texmode" && words.size() == 2)
 			{
 				// 0: textures by what the game sent; 1: by the texels in GS memory; 2: by
@@ -1249,6 +1271,8 @@ namespace
 						Reply(Format("ok frame=%llu ms=%lld us=%llu cpu_us=%llu video_cpu_us=%llu display_hz=%.2f refreshes_per_frame=%d %s exe=%s game=%d %s", static_cast<unsigned long long>(m_frame.load()), static_cast<long long>(ms), static_cast<unsigned long long>(us),
 						             static_cast<unsigned long long>(m_cpuMicroseconds.load()), static_cast<unsigned long long>(m_gsCpuMicroseconds.load()), Rta::DisplayRefreshRate(), Rta::DisplayRefreshesPerFrame(), textures.c_str(), m_vm->m_ee->m_os->GetExecutableName(), m_isGame ? 1 : 0, net.c_str()));
 					}
+					else if(step.value == 4)
+						Reply("ok " + PadText());
 					else if(step.value == 3)
 					{
 						// the picture the machine is sending to the screen right now
@@ -1394,6 +1418,10 @@ namespace
 					text += " - waiting for the game to start its network";
 			}
 			if(!m_patchSet.empty()) text += (text.empty() ? "" : " | ") + ("patches: " + m_patchSet) + (m_isGame ? "" : " (not applied)");
+			{
+				auto name = Rta::GamePadName();
+				if(!name.empty()) text += (text.empty() ? "" : " | ") + ("controller: " + name);
+			}
 			std::lock_guard<std::mutex> lock(m_logMutex);
 			m_status = text;
 		}
@@ -1401,6 +1429,60 @@ namespace
 		uint32 Buttons() const
 		{
 			return m_buttons;
+		}
+
+		// machine thread, every frame: the log gets the first press of each button of a
+		// controller (so that a person can see that every one arrives, and as what)
+		void NotePad(const Rta::PadState& pad)
+		{
+			m_pad = pad;
+			if(pad.generation != m_padGeneration)
+			{
+				m_padGeneration = pad.generation;
+				m_padSeen = 0;
+				m_padSticksSeen = 0;
+			}
+			uint32 fresh = pad.buttons & ~m_padSeen;
+			if(fresh != 0)
+			{
+				m_padSeen |= fresh;
+				for(unsigned int i = 0; i < Button::MAX_BUTTONS; i++)
+				{
+					if(fresh & (1u << i)) Log(std::string("controller: first press of ") + ButtonName(i));
+				}
+			}
+			for(int which = 0; which < 2; which++)
+			{
+				if(!pad.stickSet[which]) continue;
+				// the four ways of each stick, once each
+				int dx = static_cast<int>(pad.stick[which][0]) - 128, dy = static_cast<int>(pad.stick[which][1]) - 128;
+				int way = (abs(dx) > abs(dy)) ? ((dx < 0) ? 0 : 1) : ((dy < 0) ? 2 : 3);
+				uint32 bit = 1u << ((which * 4) + way);
+				if((abs(dx) > 90 || abs(dy) > 90) && !(m_padSticksSeen & bit))
+				{
+					m_padSticksSeen |= bit;
+					static const char* ways[] = {"left", "right", "up", "down"};
+					Log(Format("controller: %s stick pushed %s (%u, %u)", which ? "right" : "left", ways[way], pad.stick[which][0], pad.stick[which][1]));
+				}
+			}
+		}
+
+		static const char* ButtonName(unsigned int button)
+		{
+			static const char* names[Button::MAX_BUTTONS] = {"left stick x", "left stick y", "right stick x", "right stick y", "up", "down", "left", "right", "select", "start", "square", "triangle", "circle", "cross", "l1", "l2", "l3", "r1", "r2", "r3"};
+			return (button < Button::MAX_BUTTONS) ? names[button] : "?";
+		}
+
+		std::string PadText() const
+		{
+			std::string text;
+			for(unsigned int i = 0; i < Button::MAX_BUTTONS; i++)
+			{
+				if(m_pad.buttons & (1u << i)) text += std::string(text.empty() ? "" : "+") + ButtonName(i);
+			}
+			if(text.empty()) text = "none";
+			return Format("attached=%d name=%s buttons=%s left=%u,%u%s right=%u,%u%s", m_pad.attached ? 1 : 0, m_pad.attached ? Rta::GamePadName().c_str() : "-", text.c_str(),
+			              m_pad.stick[0][0], m_pad.stick[0][1], m_pad.stickSet[0] ? "" : "(rest)", m_pad.stick[1][0], m_pad.stick[1][1], m_pad.stickSet[1] ? "" : "(rest)");
 		}
 		bool StickSet(int which) const
 		{
@@ -1434,6 +1516,8 @@ namespace
 		uint32 m_buttons = 0;
 		uint8 m_stick[2][2] = {{128, 128}, {128, 128}};
 		bool m_stickSet[2] = {false, false};
+		Rta::PadState m_pad;
+		uint32 m_padGeneration = 0, m_padSeen = 0, m_padSticksSeen = 0;
 		std::atomic<int> m_shotDone{0};
 		CGSH_OpenGLQt::CaptureHandler m_capture;
 		unsigned int m_burstLeft = 0, m_burstIndex = 0;
@@ -1457,8 +1541,21 @@ namespace
 
 		void Override(uint8* ram)
 		{
-			uint32 buttons = g_state.Buttons();
-			if(buttons == 0 && !g_state.StickSet(0) && !g_state.StickSet(1)) return;
+			// the game controller, read here and now (see RtaPad.mm), and the control
+			// socket's buttons; either on top of what the keyboard and Play!'s own
+			// bindings gave
+			auto pad = Rta::GamePadState();
+			g_state.NotePad(pad);
+			uint32 buttons = g_state.Buttons() | pad.buttons;
+			bool stickSet[2];
+			uint8 stick[2][2];
+			for(int which = 0; which < 2; which++)
+			{
+				bool fromControl = g_state.StickSet(which);
+				stickSet[which] = fromControl || pad.stickSet[which];
+				for(int axis = 0; axis < 2; axis++) stick[which][axis] = fromControl ? g_state.Stick(which, axis) : pad.stick[which][axis];
+			}
+			if(buttons == 0 && !stickSet[0] && !stickSet[1]) return;
 			for(auto* listener : m_interfaces)
 			{
 				for(unsigned int i = 0; i < Button::MAX_BUTTONS; i++)
@@ -1468,7 +1565,7 @@ namespace
 					{
 						int which = (button == Button::ANALOG_LEFT_X || button == Button::ANALOG_LEFT_Y) ? 0 : 1;
 						int axis = (button == Button::ANALOG_LEFT_X || button == Button::ANALOG_RIGHT_X) ? 0 : 1;
-						if(g_state.StickSet(which)) listener->SetAxisState(0, button, g_state.Stick(which, axis), ram);
+						if(stickSet[which]) listener->SetAxisState(0, button, stick[which][axis], ram);
 					}
 					else if(buttons & (1u << i))
 						listener->SetButtonState(0, button, true, ram);
@@ -1534,6 +1631,7 @@ void Rta::AddCommandLineOptions(QCommandLineParser& parser)
 	parser.addOption(QCommandLineOption("rta-control", "UNIX socket for a test script (see tools/play-net/ctl.py).", "path"));
 	parser.addOption(QCommandLineOption("rta-pcap", "Write every Ethernet frame of the emulated adaptor to this capture file.", "file"));
 	parser.addOption(QCommandLineOption("rta-test", "A test run: the window says so in its title with this text (name what is switched off), is small, stays behind the other windows and does not take the keyboard.", "text"));
+	parser.addOption(QCommandLineOption("rta-title", "A test run that a person takes part in: the window says so in its title with this text, and is otherwise an ordinary window.", "text"));
 }
 
 void Rta::ReadCommandLine(const QCommandLineParser& parser)
@@ -1559,20 +1657,24 @@ void Rta::ReadCommandLine(const QCommandLineParser& parser)
 	o.pcapPath = parser.value("rta-pcap").toStdString();
 	o.testLabel = parser.value("rta-test").toStdString();
 	if(parser.isSet("rta-test") && o.testLabel.empty()) o.testLabel = "ignore";
-	if(!o.testLabel.empty()) Rta::MakeBackgroundApplication();
+	o.testBackground = !o.testLabel.empty();
+	if(parser.isSet("rta-title")) o.testLabel = parser.value("rta-title").toStdString();
+	if(o.testBackground) Rta::MakeBackgroundApplication();
 }
 
 void Rta::BeforeShow(QWidget* window)
 {
+	Rta::SetupWindow(window);
 	if(g_state.options.testLabel.empty()) return;
-	window->setAttribute(Qt::WA_ShowWithoutActivating, true);
 	window->setWindowTitle(QString::fromStdString(Rta::WindowTitle("Play!")));
+	if(!g_state.options.testBackground) return;
+	window->setAttribute(Qt::WA_ShowWithoutActivating, true);
 	window->resize(400, 340);
 }
 
 void Rta::AfterShow(QWidget* window)
 {
-	if(g_state.options.testLabel.empty()) return;
+	if(!g_state.options.testBackground) return;
 	// now, and again when the picture's own window has been made
 	auto back = [window]() { Rta::SendWindowBack(reinterpret_cast<void*>(window->winId())); };
 	auto small = [window]() {
@@ -1626,6 +1728,20 @@ void Rta::OverridePreferences()
 		config.SetPreferenceInteger(PREF_RTA_DEFAULTS, RTA_DEFAULTS);
 	}
 	if(!g_state.options.controlPath.empty()) CAppConfig::GetInstance().SetPreferenceBoolean(PREF_UI_SHOWEXITCONFIRMATION, false);
+}
+
+bool Rta::TakeKeyboardDefaults()
+{
+	auto& config = CAppConfig::GetInstance();
+	config.RegisterPreferenceInteger(PREF_RTA_KEYS, 0);
+	if(config.GetPreferenceInteger(PREF_RTA_KEYS) >= RTA_KEYS) return false;
+	config.SetPreferenceInteger(PREF_RTA_KEYS, RTA_KEYS);
+	return true;
+}
+
+bool Rta::IsTestRun()
+{
+	return !g_state.options.testLabel.empty() || !g_state.options.controlPath.empty();
 }
 
 CPadHandler::FactoryFunction Rta::GetPadHandlerFactory()

@@ -42,6 +42,35 @@ namespace Rta
 	void AfterShow(QWidget*);
 	std::string WindowTitle(const std::string&);
 	void LogLine(const std::string&);
+	// menus and the first-run note
+	void SetupWindow(QWidget*);
+	// started with --rta-test, --rta-title or a control socket
+	bool IsTestRun();
+
+	// RtaPad.mm: the first game controller macOS knows (DualSense, DualShock 4, Xbox,
+	// Switch Pro ...) as the pad in port 1, with nothing to bind. Buttons are bits by
+	// PS2::CControllerInfo::BUTTON; a stick is two bytes, 128 128 in the middle.
+	struct PadState
+	{
+		bool attached = false;
+		uint32_t generation = 0; // changes when a controller is attached or detached
+		uint32_t buttons = 0;
+		uint8_t stick[2][2] = {{128, 128}, {128, 128}};
+		bool stickSet[2] = {false, false}; // false: at rest (the keyboard has the stick)
+	};
+	void StartGamePads();
+	PadState GamePadState();
+	std::string GamePadName();
+	// tests: "connect" / "disconnect" a controller made by the program, "set" its buttons
+	// (bits as above), sticks (four values -1 .. 1, up and right positive) and triggers
+	// (two values 0 .. 1)
+	void GamePadTest(const std::string& command, uint32_t buttons, const float values[6]);
+
+	// RtaUi.cpp: the keys and the controller's buttons, as a window (Help menu)
+	void ShowControls(QWidget* parent);
+	// true once per data directory when this build's keyboard layout is newer than the
+	// one stored there
+	bool TakeKeyboardDefaults();
 
 	// RtaMac.mm: an application without a Dock icon that is never made the active one,
 	// and its window behind every other.

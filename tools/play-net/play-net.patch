@@ -2077,7 +2077,7 @@ diff --git a/Source/iop/Iop_Speed.h b/Source/iop/Iop_Speed.h
 diff --git a/Source/ui_qt/CMakeLists.txt b/Source/ui_qt/CMakeLists.txt
 --- a/Source/ui_qt/CMakeLists.txt
 +++ b/Source/ui_qt/CMakeLists.txt
-@@ -279,6 +279,11 @@
+@@ -279,6 +279,13 @@
  		macos/InputProviderMacOsHid.h
  		macos/LayerFromView.mm
  		macos/LayerFromView.h
@@ -2086,19 +2086,88 @@ diff --git a/Source/ui_qt/CMakeLists.txt b/Source/ui_qt/CMakeLists.txt
 +		rta/RtaMac.mm
 +		rta/RtaNet.cpp
 +		rta/RtaNet.h
++		rta/RtaPad.mm
++		rta/RtaUi.cpp
  	)
  	FILE(GLOB ARCADE_DEFS ${CMAKE_CURRENT_SOURCE_DIR}/../../arcadedefs/*.arcadedef)
  	set(OSX_RES
-@@ -313,7 +318,8 @@
+@@ -313,7 +320,8 @@
  		RESOURCE "${OSX_RES}"
  	)
  	SET_SOURCE_FILES_PROPERTIES(${ARCADE_DEFS} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources/arcadedefs")
 -	list(APPEND UI_QT_PROJECT_LIBS "-framework IOKit -framework CoreFoundation")
 +	#RTA: LayerFromView.mm needs QuartzCore whether or not Vulkan is used
-+	list(APPEND UI_QT_PROJECT_LIBS "-framework IOKit -framework CoreFoundation -framework QuartzCore -framework Foundation -framework CoreVideo")
++	list(APPEND UI_QT_PROJECT_LIBS "-framework IOKit -framework CoreFoundation -framework QuartzCore -framework Foundation -framework CoreVideo -framework AppKit -framework GameController")
  elseif(TARGET_PLATFORM_WIN32)
  	set(QT_SOURCES
  		${QT_SOURCES}
+diff --git a/Source/ui_qt/ControllerConfig/controllerconfigdialog.cpp b/Source/ui_qt/ControllerConfig/controllerconfigdialog.cpp
+--- a/Source/ui_qt/ControllerConfig/controllerconfigdialog.cpp
++++ b/Source/ui_qt/ControllerConfig/controllerconfigdialog.cpp
+@@ -220,36 +220,34 @@
+ 
+ void ControllerConfigDialog::AutoConfigureKeyboard(uint32 padIndex, CInputBindingManager* bindingManager)
+ {
+-	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::START, CInputProviderQtKey::MakeBindingTarget(Qt::Key_Return));
+-	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::SELECT, CInputProviderQtKey::MakeBindingTarget(Qt::Key_Backspace));
+-	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::DPAD_LEFT, CInputProviderQtKey::MakeBindingTarget(Qt::Key_Left));
+-	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::DPAD_RIGHT, CInputProviderQtKey::MakeBindingTarget(Qt::Key_Right));
+-	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::DPAD_UP, CInputProviderQtKey::MakeBindingTarget(Qt::Key_Up));
+-	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::DPAD_DOWN, CInputProviderQtKey::MakeBindingTarget(Qt::Key_Down));
+-	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::SQUARE, CInputProviderQtKey::MakeBindingTarget(Qt::Key_A));
+-	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::CROSS, CInputProviderQtKey::MakeBindingTarget(Qt::Key_Z));
+-	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::TRIANGLE, CInputProviderQtKey::MakeBindingTarget(Qt::Key_S));
+-	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::CIRCLE, CInputProviderQtKey::MakeBindingTarget(Qt::Key_X));
+-	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::L1, CInputProviderQtKey::MakeBindingTarget(Qt::Key_1));
+-	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::L2, CInputProviderQtKey::MakeBindingTarget(Qt::Key_2));
+-	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::L3, CInputProviderQtKey::MakeBindingTarget(Qt::Key_3));
+-	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::R1, CInputProviderQtKey::MakeBindingTarget(Qt::Key_8));
+-	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::R2, CInputProviderQtKey::MakeBindingTarget(Qt::Key_9));
+-	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::R3, CInputProviderQtKey::MakeBindingTarget(Qt::Key_0));
+-
+-	bindingManager->SetSimulatedAxisBinding(padIndex, PS2::CControllerInfo::ANALOG_LEFT_X,
+-	                                        CInputProviderQtKey::MakeBindingTarget(Qt::Key_F),
+-	                                        CInputProviderQtKey::MakeBindingTarget(Qt::Key_H));
+-	bindingManager->SetSimulatedAxisBinding(padIndex, PS2::CControllerInfo::ANALOG_LEFT_Y,
+-	                                        CInputProviderQtKey::MakeBindingTarget(Qt::Key_T),
+-	                                        CInputProviderQtKey::MakeBindingTarget(Qt::Key_G));
++	//RTA: keys for a game that is steered with the left stick. W A S D is the stick, the
++	//arrow keys are the direction pad (menus), the four face buttons lie on I J K L as
++	//they lie on the pad (I on top, J left, K below, L right), the shoulders are beside
++	//and above W. Rta::ShowControls (Help menu) and docs/play-online.md print this map:
++	//keep them in step.
++	auto key = [](int qtKey) { return CInputProviderQtKey::MakeBindingTarget(qtKey); };
++	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::START, key(Qt::Key_Return));
++	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::SELECT, key(Qt::Key_Backspace));
++	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::DPAD_LEFT, key(Qt::Key_Left));
++	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::DPAD_RIGHT, key(Qt::Key_Right));
++	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::DPAD_UP, key(Qt::Key_Up));
++	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::DPAD_DOWN, key(Qt::Key_Down));
++	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::SQUARE, key(Qt::Key_J));
++	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::CROSS, key(Qt::Key_K));
++	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::TRIANGLE, key(Qt::Key_I));
++	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::CIRCLE, key(Qt::Key_L));
++	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::L1, key(Qt::Key_Q));
++	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::L2, key(Qt::Key_1));
++	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::L3, key(Qt::Key_X));
++	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::R1, key(Qt::Key_E));
++	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::R2, key(Qt::Key_3));
++	bindingManager->SetSimpleBinding(padIndex, PS2::CControllerInfo::R3, key(Qt::Key_C));
+ 
+-	bindingManager->SetSimulatedAxisBinding(padIndex, PS2::CControllerInfo::ANALOG_RIGHT_X,
+-	                                        CInputProviderQtKey::MakeBindingTarget(Qt::Key_J),
+-	                                        CInputProviderQtKey::MakeBindingTarget(Qt::Key_L));
+-	bindingManager->SetSimulatedAxisBinding(padIndex, PS2::CControllerInfo::ANALOG_RIGHT_Y,
+-	                                        CInputProviderQtKey::MakeBindingTarget(Qt::Key_I),
+-	                                        CInputProviderQtKey::MakeBindingTarget(Qt::Key_K));
++	bindingManager->SetSimulatedAxisBinding(padIndex, PS2::CControllerInfo::ANALOG_LEFT_X, key(Qt::Key_A), key(Qt::Key_D));
++	bindingManager->SetSimulatedAxisBinding(padIndex, PS2::CControllerInfo::ANALOG_LEFT_Y, key(Qt::Key_W), key(Qt::Key_S));
++
++	bindingManager->SetSimulatedAxisBinding(padIndex, PS2::CControllerInfo::ANALOG_RIGHT_X, key(Qt::Key_F), key(Qt::Key_H));
++	bindingManager->SetSimulatedAxisBinding(padIndex, PS2::CControllerInfo::ANALOG_RIGHT_Y, key(Qt::Key_T), key(Qt::Key_G));
+ }
+ 
+ int ControllerConfigDialog::OpenBindConfigDialog(uint32 padIndex, uint32 buttonIndex)
 diff --git a/Source/ui_qt/GSH_OpenGLQt.cpp b/Source/ui_qt/GSH_OpenGLQt.cpp
 --- a/Source/ui_qt/GSH_OpenGLQt.cpp
 +++ b/Source/ui_qt/GSH_OpenGLQt.cpp
@@ -2321,7 +2390,20 @@ diff --git a/Source/ui_qt/mainwindow.cpp b/Source/ui_qt/mainwindow.cpp
  		auto padHandler = static_cast<CPH_GenericInput*>(m_virtualMachine->GetPadHandler());
  		auto profile = CAppConfig::GetInstance().GetPreferenceString(PREF_INPUT_PAD1_PROFILE);
  
-@@ -200,6 +207,8 @@
+@@ -191,15 +198,20 @@
+ 		bindingManager.RegisterInputProvider(std::make_shared<CInputProviderDirectInput>());
+ 		bindingManager.RegisterInputProvider(std::make_shared<CInputProviderXInput>());
+ #endif
+-		if(!bindingManager.HasBindings())
++		//RTA: also once when this build's keyboard layout is newer than the stored one
++		bool newKeyboardLayout = Rta::TakeKeyboardDefaults();
++		if(!bindingManager.HasBindings() || newKeyboardLayout)
+ 		{
+ 			ControllerConfigDialog::AutoConfigureKeyboard(0, &bindingManager);
++			if(newKeyboardLayout) bindingManager.Save();
+ 		}
+ 	}
+ 
  	//OnExecutableChange might be called from another thread, we need to wrap it around a Qt signal
  	m_OnExecutableChangeConnection = m_virtualMachine->m_ee->m_os->OnExecutableChange.Connect(std::bind(&MainWindow::EmitOnExecutableChange, this));
  	connect(this, SIGNAL(onExecutableChange()), this, SLOT(HandleOnExecutableChange()));
@@ -2330,7 +2412,7 @@ diff --git a/Source/ui_qt/mainwindow.cpp b/Source/ui_qt/mainwindow.cpp
  }
  
  void MainWindow::SetOutputWindowSize()
-@@ -606,6 +615,12 @@
+@@ -606,6 +618,12 @@
  	m_cpuUsageLabel->setText(QString("EE CPU: %1%").arg(static_cast<int>(eeUsageRatio)));
  
  	CStatsManager::GetInstance().ClearStats();
@@ -2343,7 +2425,7 @@ diff --git a/Source/ui_qt/mainwindow.cpp b/Source/ui_qt/mainwindow.cpp
  }
  
  void MainWindow::on_actionSettings_triggered()
-@@ -839,7 +854,7 @@
+@@ -839,7 +857,7 @@
  {
  	UpdateUI();
  	auto titleString = QString("Play! - [ %1 ] - %2").arg(m_virtualMachine->m_ee->m_os->GetExecutableName(), QString(PLAY_VERSION));
