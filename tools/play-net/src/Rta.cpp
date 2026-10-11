@@ -26,11 +26,16 @@
 #include <ifaddrs.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <pthread.h>
 #include <signal.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <pthread/qos.h>
+#endif
 
 #include "AppConfig.h"
 #include "PS2VM.h"
@@ -40,8 +45,13 @@
 #include "ee/PS2OS.h"
 #include "input/PH_GenericInput.h"
 #include "GSH_OpenGLQt.h"
+#include "gs/GSH_OpenGL/GSH_OpenGL.h"
 
 #define PREF_RTA_GUEST_ADDRESS "rta.net.guestaddress"
+#define PREF_RTA_DEFAULTS "rta.defaults"
+#define RTA_DEFAULTS 1
+#define RTA_RESOLUTION_FACTOR 4
+#define RTA_SPU_BLOCKS 30
 
 namespace
 {
@@ -280,6 +290,31 @@ namespace
 		address = ntohl(reinterpret_cast<sockaddr_in*>(list->ai_addr)->sin_addr.s_addr);
 		freeaddrinfo(list);
 		return true;
+	}
+
+	// ---- the two threads that make the picture ------------------------------------------
+
+	// The machine's thread needs almost a whole processor core for this game in a level,
+	// and the video thread must keep up with it. Without this, macOS treats them like
+	// any background work: on a busy computer they are put on the slow cores or made to
+	// wait, and the game runs slow, with late pictures and broken sound.
+	void RaiseThreadPriority()
+	{
+#ifdef __APPLE__
+		pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
+	}
+
+	uint64 ThreadCpuMicroseconds()
+	{
+		timespec t = {};
+		clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t);
+		return static_cast<uint64>(t.tv_sec) * 1000000 + t.tv_nsec / 1000;
+	}
+
+	uint64 ClockMicroseconds()
+	{
+		return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 	}
 
 	// ---- buttons, for the control socket ------------------------------------------------
@@ -623,8 +658,8 @@ namespace
 		// command is answered with one line ("ok ..." or "err ...") when it is done.
 		//   press <buttons>   release <buttons>|all   tap <buttons> [hold [after]]
 		//   stick <l|r> <x> <y>   (0..255, 128 is the middle)      wait <frames>
-		//   peek <expression> <type>   shot <file.bmp>   info   throttle <0|1>
-		//   ethdrop   quit
+		//   peek <expression> <type>   shot <file.bmp>   burst <name> <n>   info   gs
+		//   throttle <0|1>   pref int|bool <setting> <value>   ethdrop   quit
 		// Buttons are joined with '+': up down left right cross circle square triangle
 		// l1 l2 l3 r1 r2 r3 start select. Expressions: numbers, '+', '-', and [x] for the
 		// 32-bit word at x. Types: u8 u16 u32 s32 x32 f32 strN wstrN hexN.
@@ -836,7 +871,7 @@ namespace
 				Step step;
 				step.kind = Step::SHOT;
 				step.text = words[1];
-				step.value = std::max<uint32>(1, std::min<uint32>(number(2, 2), 16));
+				step.value = std::max<uint32>(1, std::min<uint32>(number(2, 2), 40));
 				m_steps.push_back(step);
 				push(Step::SHOTWAIT, 600);
 			}
@@ -845,6 +880,14 @@ namespace
 				CAppConfig::GetInstance().SetPreferenceBoolean(PREF_PS2_LIMIT_FRAMERATE, number(1, 1) != 0);
 				m_vm->ReloadFrameRateLimit();
 				push(Step::REPLY, 0, "ok");
+			}
+			else if(name == "pref" && words.size() == 4)
+			{
+				// pref int|bool <name> <value>: one of the application's settings, taken up at once
+				auto& config = CAppConfig::GetInstance();
+				bool ok = (words[1] == "int") ? config.SetPreferenceInteger(words[2].c_str(), static_cast<int>(number(3, 0))) : config.SetPreferenceBoolean(words[2].c_str(), number(3, 0) != 0);
+				if(auto gs = m_vm->GetGSHandler()) gs->NotifyPreferencesChanged();
+				push(Step::REPLY, 0, ok ? "ok" : "err no such setting");
 			}
 			else if(name == "ethdrop")
 			{
@@ -928,7 +971,8 @@ namespace
 					}
 					else if(step.value == 2)
 					{
-						auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+						uint64 us = ClockMicroseconds();
+						auto ms = us / 1000;
 						std::string net = "off";
 						if(m_net)
 						{
@@ -937,7 +981,8 @@ namespace
 							             (unsigned long long)s.framesFromGuest, (unsigned long long)s.framesToGuest, (unsigned long long)s.tcpConnections, (unsigned long long)s.tcpBytesOut, (unsigned long long)s.tcpBytesIn,
 							             (unsigned long long)s.udpToServer, (unsigned long long)s.udpToPeers, (unsigned long long)s.udpFromPeers, s.dhcpDone ? 1 : 0, s.dnsAnswered ? 1 : 0);
 						}
-						Reply(Format("ok frame=%llu ms=%lld exe=%s game=%d %s", static_cast<unsigned long long>(m_frame.load()), static_cast<long long>(ms), m_vm->m_ee->m_os->GetExecutableName(), m_isGame ? 1 : 0, net.c_str()));
+						Reply(Format("ok frame=%llu ms=%lld us=%llu cpu_us=%llu video_cpu_us=%llu exe=%s game=%d %s", static_cast<unsigned long long>(m_frame.load()), static_cast<long long>(ms), static_cast<unsigned long long>(us),
+						             static_cast<unsigned long long>(m_cpuMicroseconds.load()), static_cast<unsigned long long>(m_gsCpuMicroseconds.load()), m_vm->m_ee->m_os->GetExecutableName(), m_isGame ? 1 : 0, net.c_str()));
 					}
 					else if(step.value == 3)
 					{
@@ -977,6 +1022,12 @@ namespace
 							if(m_burstLeft > 0)
 							{
 								// several consecutive pictures: <name>-0.bmp, <name>-1.bmp, ...
+								// with the clock ('us' of the info command) at which each was presented
+								if(FILE* times = fopen((name + "-times.txt").c_str(), m_burstIndex == 0 ? "w" : "a"))
+								{
+									fprintf(times, "%u %llu\n", m_burstIndex, static_cast<unsigned long long>(ClockMicroseconds()));
+									fclose(times);
+								}
 								path = Format("%s-%u.bmp", name.c_str(), m_burstIndex++);
 								if(--m_burstLeft > 0) gs->RequestCapture(m_capture);
 							}
@@ -1073,6 +1124,7 @@ namespace
 		unsigned int m_patchRewrites = 0;
 		Framework::CSignal<void()>::Connection m_executableChange;
 		std::atomic<uint64> m_frame{0};
+		std::atomic<uint64> m_cpuMicroseconds{0}, m_gsCpuMicroseconds{0};
 
 		std::mutex m_logMutex;
 		FILE* m_logFile = nullptr;
@@ -1130,6 +1182,17 @@ namespace
 	{
 		if(!m_vm) return;
 		uint64 frame = ++m_frame;
+		if(frame == 1 || (frame % 600) == 0)
+		{
+			// again now and then: the video thread is made anew when the renderer changes
+			RaiseThreadPriority();
+			if(auto gs = m_vm->GetGSHandler()) gs->SendGSCall([]() { RaiseThreadPriority(); });
+		}
+		m_cpuMicroseconds = ThreadCpuMicroseconds();
+		if((frame % 20) == 0)
+		{
+			if(auto gs = m_vm->GetGSHandler()) gs->SendGSCall([this]() { m_gsCpuMicroseconds = ThreadCpuMicroseconds(); });
+		}
 		CheckPatches(ram);
 		ControlVBlank(ram);
 		pad.Override(ram);
@@ -1193,6 +1256,23 @@ void Rta::OverridePreferences()
 	// A machine that stops when its window is not in front loses the lobby server after
 	// two minutes and stalls every other player at once.
 	CAppConfig::GetInstance().SetPreferenceBoolean(PREF_UI_PAUSEWHENFOCUSLOST, false);
+	// Settings for this game, put in place once per data directory (what the player
+	// changes in the settings afterwards is kept; raising RTA_DEFAULTS puts them back):
+	//  - the picture is computed at 4 times the console's resolution in each direction.
+	//    At the console's own (640 x 224 per field) every edge is a staircase when it is
+	//    stretched over a window;
+	//  - sound is handed over in pieces of 30 ms instead of 100 ms, which is how far
+	//    behind the picture it plays.
+	auto& config = CAppConfig::GetInstance();
+	config.RegisterPreferenceInteger(PREF_RTA_DEFAULTS, 0);
+	config.RegisterPreferenceInteger(PREF_CGSH_OPENGL_RESOLUTION_FACTOR, RTA_RESOLUTION_FACTOR);
+	config.RegisterPreferenceInteger(PREF_AUDIO_SPUBLOCKCOUNT, RTA_SPU_BLOCKS);
+	if(config.GetPreferenceInteger(PREF_RTA_DEFAULTS) < RTA_DEFAULTS)
+	{
+		config.SetPreferenceInteger(PREF_CGSH_OPENGL_RESOLUTION_FACTOR, RTA_RESOLUTION_FACTOR);
+		config.SetPreferenceInteger(PREF_AUDIO_SPUBLOCKCOUNT, RTA_SPU_BLOCKS);
+		config.SetPreferenceInteger(PREF_RTA_DEFAULTS, RTA_DEFAULTS);
+	}
 	if(!g_state.options.controlPath.empty()) CAppConfig::GetInstance().SetPreferenceBoolean(PREF_UI_SHOWEXITCONFIRMATION, false);
 }
 

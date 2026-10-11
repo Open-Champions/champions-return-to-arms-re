@@ -280,3 +280,17 @@ patch=1,EE,001CE1B4,word,00000000
 patch=1,EE,001CE528,word,00000000
 patch=1,EE,001D5978,word,00000000
 patch=1,EE,001D0FC4,word,00000000
+
+[Net test: no touch handler runs for a prediction copy that walks into something]
+author=reverse engineering test patch; confirmed on two linked Play! emulator instances (FINDINGS V61: a small spider killed on one machine only stays alive on both with it; two arena pairs equal tick for tick with and without it); untested on PCSX2 or a console
+description=Every object has a "something touched me" routine, and 33 of the 38 versions of it never check whether the thing touching is your own machine's prediction copy of your character, which exists on your machine only; 30 of those change the shared game (a small spider dies when a player steps on it, containers and props are shoved, creatures are flagged). One place in the game can hand them the copy: the creature walk routine, which a player's copy runs while the player is under scripted control, for instance frozen by a cutscene. With this, that one call is skipped when the mover is a prediction copy (call at 0x114220 routed through eight words in unused code at 0x257B30-0x257B4C); real players and monsters reach the routines exactly as before. It makes the older section "creatures ignore being touched by the prediction copy" redundant, and the two can be on together. FINDINGS G25, G26, V61; docs/issues/touch-handlers.md. Changes nothing shared by itself; each machine that uses it is protected, so use it on every machine.
+// was: 0060F809 26080114 6A030017 6E030010 8E070018 B0A30007 B4A30000 ACA70008 3C013F80
+patch=1,EE,00114220,word,0C095ECC
+patch=1,EE,00257B30,word,8CA1000C
+patch=1,EE,00257B34,word,00010B80
+patch=1,EE,00257B38,word,04200003
+patch=1,EE,00257B3C,word,00000000
+patch=1,EE,00257B40,word,00600008
+patch=1,EE,00257B44,word,00000000
+patch=1,EE,00257B48,word,03E00008
+patch=1,EE,00257B4C,word,00000000

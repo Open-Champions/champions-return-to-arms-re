@@ -15,8 +15,8 @@ data is embedded or read from the disc.
 
 What it shows.
   s  the survey: every object class's "touched" function (virtual slot 6) is one of the
-     38 listed in docs/issues/touch-handlers.md, and the executable has nine call sites
-     of that slot.
+     38 listed in docs/issues/touch-handlers.md, the game's code calls that slot at nine
+     places, and one of the two move routines has a test for the prediction copy.
   p  the patch words: the originals are what the executable holds, the eight new words
      lie in the unused function Cyclops_dropClub, nothing in the image leads there, and
      no section of the patch file (when present) uses the same words.
@@ -44,23 +44,21 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # ---- addresses (names.tsv / symbols) ---------------------------------------------------
 CREATURE_MOVE_BY = 0x113C48
-MOVE_BY_END = 0x1143E0
-CREATURE_ON_TOUCH, CREATURE_ON_TOUCH_END = 0x11A418, 0x11A444
-SPIDER_ON_TOUCH, SPIDER_ON_TOUCH_END = 0x2AB8E0, 0x2AB958
-SPIDER_SET_STATE = 0x2AB704
+CREATURE_ON_TOUCH = 0x11A418        # slot 6 of Creature and 71 other classes
+SPIDER_ON_TOUCH = 0x2AB8E0          # slot 6 of SmallSpider
+SPIDER_SET_STATE = 0x2AB704         # slot 27 of SmallSpider; state 0x14 is its death
 WORLD_COLLECT = 0x14A928            # world_collectObjectsInBox(min, max, out, max count)
 CREATURE_SLOT11 = 0x11A448          # "these are the objects I bumped into" (empty body)
 VT_CREATURE, VT_SPIDER, VT_PLAYER = 0x50CC58, 0x50FD40, 0x511308
 CALL_SITE = 0x114220                # jalr v1: touched->slot6(touched, mover)
-RETURN_SITE = 0x114228
 
 # object fields used here (docs/OVERVIEW.md, docs/creatures.md)
 O_FLAGS, O_X, O_Y, O_Z, O_RADIUS, O_HEIGHT, O_VTABLE = 0x0C, 0x10, 0x14, 0x18, 0x1C, 0x20, 0x48
-C_FLAGS64, C_STATE = 0xA8, 0x232
+C_FLAGS64 = 0xA8
 TOUCHED_BIT = 1 << 59               # "touched by a player" (G25)
 DEAD_STATE = 0x14
 
-F_CREATURE, F_PLAYER, F_COPY, F_OWN, F_CATCHUP = 0x20, 0x40, 0x20000, 0x200000, 0x4000000
+F_CREATURE, F_PLAYER, F_COPY = 0x20, 0x40, 0x20000
 
 # ---- the patch (docs/issues/touch-handlers.md section 4) ---------------------------------
 CAVE_FN, CAVE_FN_END = 0x257AB4, 0x257BA0       # Cyclops_dropClub
@@ -115,9 +113,10 @@ class Run:
         self.handler_pcs = set()        # handler entry points whose first instruction ran
         self.set_state = []             # (object, state) of each recorded set-state call
         self.bumped = None              # the list handed to the mover's slot 11
-        self.stores = []                # (address - base of its object, size, value)
-        self.calls = []                 # (target, a0 as an object number, a1)
+        self.stores = []                # (object, offset in it, size, value), stack excluded
+        self.calls = []                 # (call site, target, object in a0); not the dispatch
         self.touched_flags = {}         # object name -> +0xa8 afterwards
+        self.stub_ran = False           # the first word of the patch's stub was executed
 
 
 def make_object(emu, vtable, flags, x, radius):
@@ -188,13 +187,13 @@ def move_by(elf, mover_flags, patched):
     return run
 
 
-MOVERS = (                          # label, object flags, is a prediction copy
-    ('a prediction copy (flag word 0x00024060)', 0x24060, True),
-    ('a prediction copy as logged in a fight (0x000ac060)', 0xAC060, True),
-    ('a prediction copy that is catching up (0x040ac060)', 0x40AC060, True),
-    ("this machine's real player (0x00204060)", 0x204060, False),
-    ("another machine's real player (0x00004060)", 0x4060, False),
-    ('a monster (0x00000020)', 0x20, False),
+MOVERS = (                          # label, object flags (all seen on the rig)
+    ('a prediction copy (flag word 0x00024060)', 0x24060),
+    ('a prediction copy as logged in a fight (0x000ac060)', 0xAC060),
+    ('a prediction copy that is catching up (0x040ac060)', 0x40AC060),
+    ("this machine's real player (0x00204060)", 0x204060),
+    ("another machine's real player (0x00004060)", 0x4060),
+    ('a monster (0x00000020)', 0x20),
 )
 
 
@@ -343,7 +342,7 @@ def group_p(elf):
 
 def group_u(elf):
     """(u) as shipped, the prediction copy as mover reaches both handlers."""
-    for index, (label, flags, is_copy) in enumerate(MOVERS):
+    for index, (label, flags) in enumerate(MOVERS):
         run = move_by(elf, flags, patched=False)
         player = bool(flags & F_PLAYER)
         ok = (run.handler_pcs == {CREATURE_ON_TOUCH, SPIDER_ON_TOUCH}
@@ -360,11 +359,11 @@ def group_u(elf):
 
 def group_f(elf):
     """(f) with the patch no handler runs for a copy; nothing else changes."""
-    for index, (label, flags, is_copy) in enumerate(MOVERS):
+    for index, (label, flags) in enumerate(MOVERS):
         before = move_by(elf, flags, patched=False)
         after = move_by(elf, flags, patched=True)
         ident = 'f%d' % (index + 1)
-        if is_copy:
+        if flags & F_COPY:
             mover_stores = [s for s in after.stores if s[0] == 'mover']
             ok = (after.stub_ran and not after.handler_pcs and not after.set_state
                   and not after.touched_flags['creature'] and not after.touched_flags['spider']

@@ -15,6 +15,7 @@ Net test: save-point prompt ignores this machine's card screen
 Net test: net launch clears a stuck memory-card latch
 Net test: predicted spin cast leaves the shared animation alone
 Net test: creatures ignore being touched by the prediction copy
+Net test: no touch handler runs for a prediction copy that walks into something
 Net test: item records start from zero, not from stack leftovers
 Net test: menu screens do not recompute player statistics
 Net test: stats page does not recompute the main weapon's damage either
