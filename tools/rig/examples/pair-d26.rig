@@ -1,0 +1,106 @@
+# FINDINGS D26 on two joined machines (docs/issues/live-rig.md, Phase 11). The states are those of
+# pair-chars-start.rig (lockstep tick 659, slot 0 a melee class); the character lines of pair-chars.rig go first:
+#
+#   cat tools/rig/examples/pair-chars.rig tools/rig/examples/pair-d26.rig > local/rig-out/d26.rig
+#   python3 -I -B tools/rig/rig.py pair local/rig-out/d26 --bus delay=0 --a-load local/rig-out/run4/a.zip \
+#       --b-load local/rig-out/run4/b.zip --script local/rig-out/d26.rig --frames 3100 \
+#       --tick-watch p0wset=g_players+0x4a7c:x16 --tick-watch p0dmg=g_players+0xcc:hex12 \
+#       --tick-watch pad0p=g_pads+0xc:x32 --tick-watch l_lock=0x41b4fc:s32 --tick-watch l_menu=g_localMenuOpen:u8
+#   python3 -I -B tools/rig/compare.py ticks local/rig-out/d26/a.tick.tsv local/rig-out/d26/b.tick.tsv
+#
+# What it sets up: machine A's own player (slot 1, which runs before slot 0 in a tick) dies in lockstep tick 2400
+# with A's inventory open; in that same tick slot 0 has a weapon-swap press and a poison hit. Seen without
+# patches: in tick 2400 the weapon set of slot 0 (record +0x4a7c) is 0 on A and 1 on B, its hit points are 2.0
+# apart and the shared seed differs; the game flags out-of-sync two ticks later. Each of the two sections
+# below removes its half; with both, no shared column differs.
+#
+# pnach patches/SLUS-20973_4028A55F.pnach "Net test: menu lockout never blocks weapon swap and use"
+# pnach patches/SLUS-20973_4028A55F.pnach "Net test: menu lockout never drops player damage"
+
+# a second weapon set for slot 0, so that the swap changes something: a short bow (the first row of
+# g_itemDefs) in the second cell of bag 0, entered as the primary weapon of set 1 (record +0x4438)
+ontick 685 poke g_players+0x178:hex72 50763f0001000000000080400000000000000000000000000000000000000000ffff0000ffff000000000000ffff000000000000ffff000000000000ffff00000000000000000000
+ontick 685 poke g_players+0x1330:s32 2
+ontick 685 poke g_players+0x4438:x32 004d8c68
+# into the arena and through its opening cutscene, as in pair-arena.rig
+ontick 700 poke g_pendingLevel:str16 drunare
+wait 60
+until g_levelName:str16 == drunare timeout 5000
+until g_players+0x43d8:u32 != 0 timeout 5000
+wait 120
+A: stick L 0 128
+wait 60
+A: stick L 128 128
+wait 20
+A: stick L 128 0
+wait 60
+A: stick L 128 128
+until 0x44fcd0:u8 != 0 timeout 900
+until 0x44fcd0:u8 == 0 timeout 4000
+wait 60
+B: stick L 0 128
+wait 70
+B: stick L 128 128
+wait 11
+# both players kept alive until the chosen tick (the same writes on both machines)
+ontick 2290 poke g_players+0xac:f32 800
+ontick 2290 poke g_players+0x4c30+0xac:f32 600
+ontick 2320 poke g_players+0xac:f32 800
+ontick 2320 poke g_players+0x4c30+0xac:f32 600
+ontick 2350 poke g_players+0xac:f32 800
+ontick 2350 poke g_players+0x4c30+0xac:f32 600
+ontick 2380 poke g_players+0xac:f32 800
+ontick 2380 poke g_players+0x4c30+0xac:f32 600
+# slot 0 is poisoned: object +0x34c seconds left, +0x358 / +0x35a tenths of damage. Creature_run then calls
+# damage_apply on it in every tick whose number is a multiple of 32 (0x113884-0x1138b0); 2400 is one
+ontick 2350 poke [g_players+0x43d8]+0x34c:f32 30
+ontick 2350 poke [g_players+0x43d8]+0x358:s16 50
+ontick 2350 poke [g_players+0x43d8]+0x35a:s16 50
+# slot 1's object gets more pending damage than it has hit points at the end of tick 2399: it dies in its own
+# run of tick 2400, which is where net_closeLocalMenus sets the lockout word on the machine with the menu open
+ontick 2399 poke [g_players+0x4c30+0x43d8]+0xc8:f32 99999
+A: tap select 3
+wait 71
+# machine B presses weapon swap (L1) every other frame, so every other tick has a press; one must be tick 2400
+# (column pad0p shows 00000004 in the ticks that have one; add or remove one "wait 1" here if 2400 has none)
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+B: tap l1 1 1
+wait 600

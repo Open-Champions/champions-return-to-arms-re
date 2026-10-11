@@ -1,0 +1,41 @@
+# FINDINGS U2 on two joined machines, the mission menu (docs/issues/live-rig.md, Phase 11). From the states of
+# pair-chars-start.rig or pair-start.rig (lockstep tick 659, level strife):
+#
+#   python3 -I -B tools/rig/rig.py pair local/rig-out/u2 --bus delay=10 --a-load local/rig-out/run4/a.zip \
+#       --b-load local/rig-out/run4/b.zip --script tools/rig/examples/pair-u2.rig --frames 700 \
+#       --tick-watch mmstate=0x8e2efc:u8 --tick-watch pending=g_pendingLevel:str12 \
+#       --tick-watch l_pause=0x44f208:u8 --tick-watch pad0p=g_pads+0xc:x32
+#   python3 -I -B tools/rig/compare.py ticks local/rig-out/u2/a.tick.tsv local/rig-out/u2/b.tick.tsv
+#
+# The mission menu's chooser is the first active slot: slot 0, machine B's player. The pause button cannot put
+# B's pause menu over the mission menu (opening the mission menu closes it, and the pause poll refuses at
+# 0x18e138-0x18e154 while the menu's task runs: both Ran). So this script FORCES the condition U2 needs: it
+# sets g_pauseMenuOpen on machine B only, which is what pauseMenu_open would leave there if it ran (its other
+# caller, the controller-removed notice at 0x1db678, has no such test), three frames after B pressed confirm:
+# with a bus delay of 10 the press is then still about ten ticks from being simulated. Seen without the patch:
+# machine A's menu takes the press and loads the mission's level, machine B's does not. With the next line
+# uncommented both take it.
+#
+# pnach patches/SLUS-20973_4028A55F.pnach "Net test: mission menu ignores the chooser's pause menu"
+
+ontick 700 poke g_pendingLevel:str16 hub
+wait 60
+until g_levelName:str16 == hub timeout 5000
+until g_players+0x43d8:u32 != 0 timeout 5000
+wait 160
+show g_netFrame:s32 deferred=g_scriptDeferCount:s32 queued=g_scriptDeferQueued:s32
+# The mission menu is opened on both machines in tick 801 by putting the name of the hub script's entry point
+# for it (what the mission gateway's trigger calls) into the list of deferred script calls: the half of
+# g_scriptDeferNames that the next tick runs, and its count (0 here before the write).
+ontick 800 poke g_scriptDeferNames+([g_scriptDeferFlip]&1)*5120+[g_scriptDeferCount]*80:str16 warnDetect
+ontick 800 poke g_scriptDeferCount:s32 1
+until 0x8e2efc:u8 == 2 timeout 600
+wait 100
+show g_netFrame:s32 menu=0x8e2efc:u8 chooser=0x4fe7ec:s8 pause=g_pauseMenuOpen:u8 lead=g_localInputFrame:s32
+# confirm, and three frames later - before the press has been simulated - the pause menu flag
+B: tap cross 2 1
+B: poke g_pauseMenuOpen:u8 1
+wait 60
+show g_netFrame:s32 menu=0x8e2efc:u8 pause=g_pauseMenuOpen:u8 pending=g_pendingLevel:str12 level=g_levelName:str12
+wait 200
+show g_netFrame:s32 menu=0x8e2efc:u8 pause=g_pauseMenuOpen:u8 pending=g_pendingLevel:str12 level=g_levelName:str12

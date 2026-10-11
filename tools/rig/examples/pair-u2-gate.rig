@@ -1,0 +1,60 @@
+# FINDINGS U2 on two joined machines, the jump-gate menu (docs/issues/live-rig.md, Phase 11). From the states
+# of pair-chars-start.rig or pair-start.rig (lockstep tick 659, level strife). No bus delay: the walk to the
+# gate was worked out for that timing, and the input lead of 4 to 5 frames is window enough:
+#
+#   python3 -I -B tools/rig/rig.py pair local/rig-out/u2g --bus delay=0 --a-load local/rig-out/run4/a.zip \
+#       --b-load local/rig-out/run4/b.zip --script tools/rig/examples/pair-u2-gate.rig --frames 1300 \
+#       --tick-watch jgstate=g_jumpGateMenuState:s8 --tick-watch jgtravel=g_jumpGateTravel:s32 \
+#       --tick-watch pending=g_pendingLevel:str12 --tick-watch l_pause=g_pauseMenuOpen:u8 \
+#       --tick-watch pad1p=g_pads+0x58+0xc:x32
+#   python3 -I -B tools/rig/compare.py ticks local/rig-out/u2g/a.tick.tsv local/rig-out/u2g/b.tick.tsv
+#
+# U2: machine A's player (slot 1) opens the jump-gate menu of level hub2, then presses the pause button and,
+# in the next frame, confirm (one frame each). The pause menu opens on machine A in the tick that simulates the pause press;
+# the confirm press is by then already in the input stream. Seen without the patch: machine B's menu takes the
+# confirm and starts the journey, machine A's does not. With the next line uncommented both take it.
+#
+# pnach patches/SLUS-20973_4028A55F.pnach "Net test: jump-gate menu ignores the chooser's pause menu"
+
+ontick 700 poke g_pendingLevel:str16 hub2
+wait 60
+until g_levelName:str16 == hub2 timeout 5000
+until g_players+0x43d8:u32 != 0 timeout 5000
+wait 60
+# both players walk to the gate at (-421, 119): the gate wants every living player within 96 units
+stick L 0 128
+wait 100
+stick L 128 128
+wait 20
+stick L 128 0
+wait 60
+stick L 128 128
+wait 20
+stick L 81 10
+until [g_players+0x4c30+0x43d8]+0x10:f32 < -385 timeout 230 continue
+stick L 128 128
+wait 20
+B: stick L 81 10
+wait 18
+B: stick L 128 128
+wait 20
+# A gate refuses to work while the destination list has one entry, and on the developer start the list never
+# gets a second one in this level (hub2 is dropped again as a hub that is not the current act's). So the
+# list is given one, on both machines in one tick: as if the gate of blood1 had been found earlier.
+ontick 1040 poke g_jumpGateDests+32:str16 blood1
+ontick 1040 poke 0x8e3c30:u8 2
+show g_netFrame:s32 x0=[g_players+0x43d8]+0x10:f32 y0=[g_players+0x43d8]+0x14:f32 x1=[g_players+0x4c30+0x43d8]+0x10:f32 y1=[g_players+0x4c30+0x43d8]+0x14:f32
+until g_netFrame:s32 >= 1045 timeout 600
+wait 10
+# machine A's player uses the gate (square): the menu opens on both machines, driven by slot 1's pad
+A: tap square 3
+until g_jumpGateMenuState:s8 == 2 timeout 300
+wait 60
+show g_netFrame:s32 menu=g_jumpGateMenuState:s8 who=g_jumpGateMenuPlayer:s8 sel=0x8e3a38:s8 pause=g_pauseMenuOpen:u8
+# the chooser's machine: pause, then confirm inside the input delay
+A: tap start 1 0
+A: tap cross 1 1
+wait 60
+show g_netFrame:s32 menu=g_jumpGateMenuState:s8 travel=g_jumpGateTravel:s32 pause=g_pauseMenuOpen:u8
+wait 300
+show g_netFrame:s32 menu=g_jumpGateMenuState:s8 travel=g_jumpGateTravel:s32 pause=g_pauseMenuOpen:u8 level=g_levelName:str12

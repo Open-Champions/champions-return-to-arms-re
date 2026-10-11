@@ -1,0 +1,42 @@
+# FINDINGS E9 on two joined machines (docs/issues/live-rig.md, Phase 11). From the states of pair-chars-start.rig
+# (lockstep tick 659, level strife, slot 0 a melee class of level 1):
+#
+#   python3 -I -B tools/rig/rig.py pair local/rig-out/e9 --bus delay=0 --a-load local/rig-out/run4/a.zip \
+#       --b-load local/rig-out/run4/b.zip --script tools/rig/examples/pair-e9.rig --frames 400 \
+#       --tick-watch postact=g_scriptPostAction:str16 --tick-watch qvars=g_questVars:crc512 \
+#       --tick-watch qv=g_questVars+202:u8 --tick-watch l_notice=0x41b518:hex4 \
+#       --break "script_runPostAction,val=tick=g_netFrame:s32" --break "vars_set,str=a0,val=tick=g_netFrame:s32" \
+#       --break-log local/rig-out/e9/%M.bp.log
+#   python3 -I -B tools/rig/compare.py ticks local/rig-out/e9/a.tick.tsv local/rig-out/e9/b.tick.tsv
+#
+# E9: a post action is pending on both machines; machine B's player gets a notice box (an item it cannot wield)
+# and closes it; help_task, a draw task, then runs the pending script on machine B only. Seen without the
+# patch: from tick 805 the pending name is gone on B and still there on A, and the quest variable the script
+# sets (the tenth of the table, value byte at g_questVars+202) is 1 on B and absent on A. With the next line
+# uncommented nothing differs.
+#
+# pnach patches/SLUS-20973_4028A55F.pnach "Net test: closing a notice box does not run the pending script"
+
+# slot 0 gets a second weapon set it cannot wield: a short bow record (first row of g_itemDefs) whose first
+# modifier is id 0xe, required level, value 60, in the second cell of bag 0 and as primary weapon of set 1
+ontick 685 poke g_players+0x178:hex72 50763f0001000000000080400000000000000000000000000000000000000000ffff00000e003c0000000000ffff000000000000ffff000000000000ffff00000000000000000000
+ontick 685 poke g_players+0x1330:s32 2
+ontick 685 poke g_players+0x4438:x32 004d8c68
+# a post action is pending on both machines, as the script built-in postAction would leave it: the name of an
+# entry point of this level's script that sets one quest variable, lowers a bridge and removes a quest line
+ontick 690 poke g_scriptPostAction:str16 setv70e6
+wait 60
+# weapon swap on machine B: the equip code refuses the bow and raises the notice for slot 0, on its owner's
+# machine only (hud_showPlayerNotice 0x1d9954 tests net_isLocalSlot)
+B: tap l1 2
+wait 40
+# and back to set 0. (While the unusable set is the active one the swap code tries the equip again in every
+# tick the player stands idle, which raises the notice again and clears its "button was released" latch.)
+B: tap l1 2
+wait 40
+show notice=0x41b518:hex4 postact=g_scriptPostAction:str16
+# machine B's player confirms the box
+B: tap cross 4
+wait 60
+show notice=0x41b518:hex4 postact=g_scriptPostAction:str16 qv=g_questVars+178:str24 value=g_questVars+202:u8
+wait 150

@@ -1,0 +1,40 @@
+# FINDINGS K3 on two joined machines (docs/issues/live-rig.md, Phase 11). From the states of
+# pair-chars-start.rig (lockstep tick 659, level strife, slot 0 a melee class whose passive list has dual wield):
+#
+#   python3 -I -B tools/rig/rig.py pair local/rig-out/k3 --bus delay=0 --a-load local/rig-out/run4/a.zip \
+#       --b-load local/rig-out/run4/b.zip --script tools/rig/examples/pair-k3.rig --frames 600 \
+#       --tick-watch p0dmg=g_players+0xcc:hex12 --tick-watch l_menu=g_localMenuOpen:u8
+#   python3 -I -B tools/rig/compare.py ticks local/rig-out/k3/a.tick.tsv local/rig-out/k3/b.tick.tsv
+#
+# K3: slot 0 (machine B's player) wields two weapons; machine B opens its inventory and goes to the stats page.
+# Seen without the patch: from the first tick after the page is drawn, the stored attack rating and weapon
+# damage of slot 0 (record +0xcc, +0xd0, +0xd4) are the off-hand weapon's on machine B and the main weapon's
+# on machine A, for as long as the page stays open. With the next line uncommented they agree.
+#
+# pnach patches/SLUS-20973_4028A55F.pnach "Net test: stats page does not rewrite stored weapon damage"
+
+# a second one-hand weapon for slot 0 (a cleaver, item definition 0x3f7e50, as the second cell of bag 0, with
+# its index byte +0x22 = 1), the dual-wield passive (entry 5 of class 0's passive table: record +0xef+5) and
+# the second-weapon pointer +0x443c; the game's own swap code then equips it into equipment slot 1
+ontick 685 poke g_players+0x178:hex72 507e3f0001000000000004800000000000000000000000000000000000000000ffff0100ffff000000000000ffff000000000000ffff000000000000ffff00000000000000000000
+ontick 685 poke g_players+0x1330:s32 2
+ontick 685 poke g_players+0xf4:s8 1
+ontick 685 poke g_players+0x443c:x32 004d8c68
+wait 60
+show g_netFrame:s32 equip=g_players+0x43f0:hex8 second=g_players+0x443c:x32 dmg=g_players+0xcc:hex12
+# machine B: inventory, then four pages to the right: the stats page
+B: tap select 3
+wait 40
+B: tap r1 3
+wait 30
+B: tap r1 3
+wait 30
+B: tap r1 3
+wait 30
+B: tap r1 3
+wait 150
+show g_netFrame:s32 dmg=g_players+0xcc:hex12 menu=g_localMenuOpen:u8
+# and out again
+B: tap select 3
+wait 120
+show g_netFrame:s32 dmg=g_players+0xcc:hex12 menu=g_localMenuOpen:u8

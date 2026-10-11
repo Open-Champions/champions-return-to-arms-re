@@ -103,7 +103,7 @@ patch=1,EE,001B9FCC,word,00001821
 patch=1,EE,001BA3AC,word,00001821
 
 [Net test: stats page does not rewrite stored weapon damage]
-author=reverse engineering test patch, untested on a running game
+author=reverse engineering test patch; confirmed on two linked Play! emulator instances (FINDINGS V42 (the record difference; a hit that reads it was not run)); untested on PCSX2 or a console
 description=For a character with two weapons, the stats page recomputes damage for the off-hand weapon and leaves those numbers in the character record on that machine only until the next recompute. This skips that second call (stats page, 0x1D2D30). The second damage range printed on the stats page then repeats the first. FINDINGS K3. Each machine for itself; a mix is safe.
 // was: 0C06DC56 (jal Player_recalcDamage)
 patch=1,EE,001D2D30,word,00000000
@@ -127,19 +127,19 @@ description=Diagnostic only. No checkpoint autosave is armed after a level load 
 patch=1,EE,00217F58,word,24030000
 
 [Net test: closing a notice box does not run the pending script]
-author=reverse engineering test patch, untested on a running game
+author=reverse engineering test patch; confirmed on two linked Play! emulator instances (FINDINGS V40); untested on PCSX2 or a console
 description=Closing one of the small per-player notice boxes runs the level's pending "post action" script from drawing code on that machine only; the full-screen help box already skips this in a net game. This removes the call (help task, 0x1DD1F0). Offline, a post action meant to follow a notice waits for the next cutscene, dialog or level load. FINDINGS E9. Each machine fixes itself; use on every machine.
 // was: 0C07B6B0 (jal script_runPostAction)
 patch=1,EE,001DD1F0,word,00000000
 
 [Net test: menu lockout never drops player damage]
-author=reverse engineering test patch, untested on a running game
+author=reverse engineering test patch; confirmed on two linked Play! emulator instances (FINDINGS V39); untested on PCSX2 or a console
 description=When your character dies with the inventory or shop open, closing that menu makes your machine alone ignore all damage to players for the rest of that tick. This makes the damage code read the lockout as off (Player_takeDamage, 0x1B53D4). Offline, players can be hurt in the second after a menu closes. FINDINGS D26, U3. Each machine for itself; a mix is safe.
 // was: 8C43B4FC (lw v1,-0x4b04(v0))
 patch=1,EE,001B53D4,word,00001821
 
 [Net test: menu lockout never blocks weapon swap and use]
-author=reverse engineering test patch, untested on a running game
+author=reverse engineering test patch; confirmed on two linked Play! emulator instances (FINDINGS V39); untested on PCSX2 or a console
 description=Companion to the patch above: the same lockout also made one machine skip weapon swap and "use" for players that run later in that tick (Player_run, 0x1A5BA8). Offline, the press that closed a menu can also swap weapons or interact. FINDINGS D26, U3. Each machine for itself; a mix is safe.
 // was: 8E02B4FC (lw v0,-0x4b04(s0))
 patch=1,EE,001A5BA8,word,00001021
@@ -157,7 +157,7 @@ description=While the player choosing a mission has the pause menu open, that ma
 patch=1,EE,00231A64,word,10000006
 
 [Net test: jump-gate menu ignores the chooser's pause menu]
-author=reverse engineering test patch, untested on a running game
+author=reverse engineering test patch; confirmed on two linked Play! emulator instances (FINDINGS V41); untested on PCSX2 or a console
 description=The same as the mission-menu patch, for the jump-gate destination menu (jumpgate_menuRun, 0x27DEF8). FINDINGS U2. A mix is safe.
 // was: 50400006 (beqzl v0,+6)
 patch=1,EE,0027DEF8,word,10000006

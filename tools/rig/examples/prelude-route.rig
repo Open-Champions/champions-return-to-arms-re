@@ -1,0 +1,28 @@
+# The one-sided route-grid test (docs/issues/live-rig.md, Phase 11): arena pair 406 with the prediction copy
+# switched off on machine B only, so that machine A's copy alone asks for routes when the closing cutscene
+# walks the players. A prelude for fuzz.py, after the character lines of pair-chars.rig:
+#
+#   cat tools/rig/examples/pair-chars.rig tools/rig/examples/prelude-route.rig > local/rig-out/route.rig
+#   python3 -I -B tools/rig/fuzz.py --states local/rig-out/run4 --out local/rig-out/route --seeds 406:1 \
+#       --frames 14000 --levels drunare --groups move,fight,cast,potion,use,dpad,select --no-rerun --keep \
+#       --bus "none;delay=4,jitter=3,loss=50" --prelude local/rig-out/route.rig \
+#       --patches "FIXES+Net test: item records start from zero, not from stack leftovers" \
+#       --extra "--tick-watch pqw=g_pathQueueWrite:s32 --tick-watch pqr=g_pathQueueRead:s32 \
+#                --tick-watch pqueue=g_pathQueue:crc6144 --tick-watch pgrid=[[g_world]+0x38]:crc14300"
+#
+# pgrid is the route grid of this level, one word per node, 65 x 55 nodes. Seen: from tick 11718, machine A's
+# copy's first request, the grid differs between the machines in the search marks of 418 nodes until the
+# level ends; the queue indexes differ from the same tick. Without the next line both copies ask, at
+# different ticks, and the columns differ as well.
+B: pnach patches/SLUS-20973_4028A55F.pnach "Arena diagnostic: no prediction copy"
+
+# machine A's player walks into the trigger strip; the opening cutscene; then fuzz.py's random input
+A: stick L 0 128
+wait 60
+A: stick L 128 128
+wait 20
+A: stick L 128 0
+wait 60
+A: stick L 128 128
+until 0x44fcd0:u8 != 0 timeout 900
+until 0x44fcd0:u8 == 0 timeout 4000

@@ -15,7 +15,9 @@ disc's own program, the sign-in step, and two machines connected to the lobby se
 stops at the server's terms screen) and phase 9 (section 14: U1 confirmed on the pair with
 its section, the route grid compared between machines, pair 410 with and without the
 item-record section) and phase 10 (section 15: D26's mechanism shown in the death tick, and
-its weapon-swap section; no shared difference produced). In short: two machines play one lockstep game here;
+its weapon-swap section; no shared difference produced) and phase 11 (section 16: live
+reproductions with and without their sections for D26 — both halves —, E9, U2 and K3, and
+the one-sided route-grid test). In short: two machines play one lockstep game here;
 random input found two real divergences, which are the ledger's K1 and K2, and the test
 patch for each removes it; the arena did **not** go out of sync in twelve runs.
 
@@ -1675,3 +1677,313 @@ E9, U2, K3 and the one-sided route-grid test were not started: the D26 work used
 this session had left. For D26 the next step is the same script from the real-character
 states (`run4`) with a second weapon set written into slot 0's record, or a monster made
 to hit slot 0 in the death tick.
+
+## 16. Phase 11: live reproductions for the sections not yet exercised
+
+The developer LAN pair again; limits as in section 7 (two copies of one Play! build — not
+a PlayStation 2 and not PCSX2 — so only logic differences can show). Each part gives one
+run without the section (first differing tick and value) and one with it. **Ran** unless
+marked. Scripts: `tools/rig/examples/pair-d26.rig` and the others named below.
+
+### 16.1 D26, both halves: reproduced, and each section removes its half
+
+**Set-up.** The real-character states (`run4`: slot 0 a melee class, slot 1 the lobby's
+caster; level 25 by `pair-chars.rig`), into the arena as before. Three things are written
+identically on both machines, each in one lockstep tick:
+
+- *A second weapon set for slot 0.* The weapon set is not a free choice: the equip code
+  (0x1c27c0) files a weapon under set 1 when its animation class (definition +0x1e) is 4
+  (bow) or 6 (thrown) and under set 0 otherwise, and `Player_weaponSwapInput` only moves
+  to a set whose primary weapon pointer (record +0x4434, +0x4438) is not null
+  (**Observed**). A copy of the character's own sword as "set 1" is therefore refiled as
+  set 0 at the first swap (**Ran**: the set word stayed 0). What works is a bow: a record
+  for the first row of `g_itemDefs` (a short bow) in the second cell of bag 0, the bag's
+  count 2, and its address in +0x4438. Each swap press in state 2 then toggles the set
+  word +0x4a7c between 0 and 1, equips the other weapon and changes the stored attack
+  rating and damage (+0xcc, +0xd0, +0xd4: 559 / 58 / 62 with the sword, 547 / 45 / 49 with
+  the bow) — the same on both machines.
+- *The death, in a chosen tick.* Slot 1's object gets 99,999 pending damage (+0xc8) at the
+  end of tick 2399, so it dies in its own run of tick 2400, with machine A's inventory
+  open. Until then both players' hit points are topped up every 30 ticks.
+- *A damage call on slot 0 in that tick.* In a reference run of 1,198 ticks there were 61
+  damage calls on the real players, all on slot 1: 51 before either player reached the
+  gate at 0x1a5ba8 and 10 between slot 1's gate and slot 0's (one every 30 ticks, a
+  lasting effect on slot 1); none after slot 0's gate. The arena's monsters run before
+  the players in a tick, so a monster's swing cannot fall into the rest of the death tick
+  here. A damage-over-time status can: slot 0's object is given the poison status
+  (+0x34c = 30 s, +0x358 / +0x35a = 50), for which `Creature_run` calls `damage_apply` on
+  the object itself in every tick whose number is a multiple of 32 (0x113884–0x1138b0).
+  Tick 2400 is one, and the two calls it makes there fall between slot 1's gate and slot
+  0's.
+
+Machine B presses weapon swap every other frame; the script's phase puts a press into
+tick 2400 (column `pad0p`).
+
+**Tick 2400, no section** (break points on `net_closeLocalMenus`, the gate, the swap
+function and `Player_takeDamage`, both machines):
+
+| | Machine A (owner of the dead player, inventory open) | Machine B |
+|---|---|---|
+| `net_closeLocalMenus` | entered once, from slot 1's death | not entered |
+| lockout word 0x41b4fc from then on | 60 | 0 |
+| `Player_takeDamage` for slot 0 (two calls, the poison's) | entered with the word at 60 (the test at 0x1b53d4 then leaves) | entered with 0: damage taken |
+| `Player_weaponSwapInput` for slot 0 | not called | called |
+| slot 0's hit points at the end of the tick | 801.794 | **799.794** |
+| shared seed at the end of the tick | 0x1654a488 | **0x29917e47** (one draw ahead) |
+| slot 0's weapon set (+0x4a7c); attack rating / damage | 0; 559 / 58 / 62 | **1**; 547 / 45 / 49 |
+
+Seven pairs from one pair of post-cutscene states, 1,200 frames each
+(first differing tick, columns; then what followed):
+
+| Poison on slot 0 | Sections on both machines | Result |
+|---|---|---|
+| no | none | tick 2400: weapon set, equipment, stored damage. The players then hold different weapons; seed and action state differ at 2934, out-of-sync flag at 2936 |
+| no | weapon swap and use | **no shared column differs** (1,198 ticks) |
+| no | player damage | as with none (the section does not concern the swap) |
+| yes | none | tick 2400: seed, slot 0's hit points, weapon set, equipment, stored damage; out-of-sync flag at 2402 (B for peer 1) and 2404 (A for peer 0); the lockstep stops |
+| yes | weapon swap and use | tick 2400: seed and hit points only; out-of-sync flag at 2402 |
+| yes | player damage | tick 2400: weapon set, equipment, stored damage only; seed at 3175, flag at 3177 |
+| yes | both | **no shared column differs** (1,198 ticks) |
+
+So both halves of D26 are real on the running game, each of the two sections removes
+exactly its own half, and the damage half is not silent: the dropped call also skips a
+draw from the shared generator, and the game's own check trips two ticks later.
+`examples/pair-d26.rig` is the whole thing in one script from the `run4` states; run as
+published it gave the same four results (none / swap / damage / both: tick 2400, tick
+2400 seed and hit points, tick 2400 weapon set, nothing in 2,902 ticks).
+
+What this does not show: a monster's hit falling into the window (in this level the
+monsters run first), the interact half of the swap section's gate, and the two other
+routes to a non-zero lockout word that D26 names (the medal countdown; the jump gate).
+
+### 16.2 E9, the notice box and the pending script: reproduced, and the section removes it
+
+Script `tools/rig/examples/pair-e9.rig`, level `strife`, the `run4` states as they are
+(level-1 characters), no bus delay.
+
+- *A pending post action.* In tick 690 the name of an entry point of the level's script is
+  written into `g_scriptPostAction` 0x86fa80 on both machines — what the script built-in
+  `postAction` leaves there. The entry chosen sets one quest variable (the fourth scout's
+  "talked to" flag), lowers a bridge and removes a quest line.
+- *A notice on one machine.* Slot 0 (machine B's player) gets a second weapon set it
+  cannot wield: the bow record of 16.1 with a required-level modifier (id 0xe) of 60. B's
+  weapon-swap press then reaches `inventory_equipItem`, whose wield check refuses the item
+  and calls `hud_showPlayerNotice` (return address 0x1c2900) — on both machines, in tick
+  724; the function sets the notice flag `g_playerNoticeOpen` 0x41b518 only where the slot
+  is local, so the flag is 1 on B and 0 on A.
+- A property of this fixture: while the unusable set is the active one,
+  `Player_weaponSwapInput` tries the equip again in every tick the player is idle (41
+  calls in 41 ticks), which raises the notice again and clears its "button was released"
+  latch 0x86aa90, so the box cannot be confirmed. A second swap press (back to set 0) ends
+  that. The box itself reads `g_pads` of the slot and the confirm mask 0x41bfbc (0x40),
+  as `help_task` 0x1dd194–0x1dd1e0 says.
+- *The confirm press* on machine B.
+
+| | Without the section | With "closing a notice box does not run the pending script" on both |
+|---|---|---|
+| `script_runPostAction` | B: entered once, from `help_task` (return address 0x1dd1f8), outside the tick (`g_inSimTick` 0x402794 = 0); A: never | never on either |
+| `vars_set` | B: once, from the script's `setv`, for that quest variable, value 1; A: never | never |
+| first difference | **tick 805**: the pending name (A: still set, B: empty), the quest-variable table (checksum of its first 512 bytes: A 0x3348cf3c, B 0xf9fa7b84), the variable itself (A: not in the table, B: 1) | none in 398 ticks; B's box closes, the name stays pending on both |
+| the game's own flags | none set in the 253 ticks that followed: quest variables are not in the sync record | — |
+
+E9 is confirmed on the running game and so is its section. Not shown: the potion route
+to a notice (`Player_usePotion`, call 0x1b9dd8 — it needs a potion kind of 2 or more,
+which the two potion buttons do not pass), what machine A does when it later runs the
+name it still holds (E10), and a level script whose post action changes the level.
+
+### 16.3 U2, the mission menu and the jump-gate menu
+
+Both menus are run tasks driven by one player's lockstep pad, and both return before their
+pad test when that player is local and `pauseMenu_isOpen()` (0x231a4c–0x231a74,
+0x27dee0–0x27df0c). Three things about the pause menu were seen first, because they decide
+what can be reproduced:
+
+- **The pause button is taken from the lockstep pad, inside the tick.** `pauseMenu_open`
+  was entered with `g_inSimTick` = 1 in the tick whose pad row shows the start bit 0x800
+  for that slot, on that slot's own machine only (the poll at 0x18e208 tests
+  `net_isLocalSlot`). So the pause menu opens `lead` frames after the press, and whatever
+  the player presses in those frames is already in the input stream when it opens. That
+  is U2's window, and its order is *pause first, then confirm*.
+- **Once it is open the early return also locks the local pad:** it calls
+  `net_lockLocalInput(slot, 4)` in every tick of the condition (entered from 0x231a78 and
+  0x27df0c), which by its symbol note clears the buttons of the next four samples
+  (**Observed**; not tested separately here).
+- **The mission menu guards itself twice against the pause button.** `missionMenu_open`
+  calls `net_closeLocalMenus` (a pause menu open on the chooser's machine was closed in
+  the tick the mission menu came up), and while the task `missionmenurun` exists the pause
+  poll refuses to open the pause menu on the first active machine, which is the chooser's
+  (0x18e138–0x18e154: with the mission menu up, the chooser's start press never reached
+  `pauseMenu_open`). The jump-gate menu has neither guard. `pauseMenu_open` has one more
+  caller with no such test, the controller-removed notice (0x1db678); the rig cannot pull
+  a controller.
+
+**Jump-gate menu: reproduced as U2 describes; the section removes it.** Script
+`tools/rig/examples/pair-u2-gate.rig`, no bus delay. Of 18 levels tried, eight build a
+`JumpGate` when entered by the pending-level write (`blood1`, `storm1`, `nit1`, `swamp1`,
+`hub2`, `wat1`, `dis2`, `honor`); only in `hub2` is it within a short walk of the start
+(about 430 units). Both players walk there. The gate refuses to work while the
+destination list has one entry, and on this start it keeps one (`hub2` is added and at
+once removed again as a hub that is not the current one, 0x27db60), so a second entry is
+written on both machines in one tick. Machine A's player uses the gate (tick 1072: menu
+on both machines, chooser slot 1), then presses pause and, one frame later, confirm.
+
+| Tick | Machine A (the chooser's) | Machine B |
+|---|---|---|
+| 1152 | slot 1's pad shows pause; `pauseMenu_open` runs; `g_pauseMenuOpen` 1 | same pad; nothing (not its slot) |
+| 1153 | slot 1's pad shows confirm; the menu returns early (`net_lockLocalInput` from 0x27df0c); state 2, travel 0 | menu state **3**, `g_jumpGateTravel` **1** |
+| 1343–1344 | still in `hub2`, menu and pause menu up | pending level `hub`, then in `hub` |
+
+First difference: **tick 1153**, the menu state and the travel counter; the level, seed and
+positions from tick 1344. With "jump-gate menu ignores the chooser's pause menu" on both
+machines both take the confirm in tick 1153 and both are in `hub` at tick 1344: no shared
+column differs in 891 ticks.
+
+**Mission menu: the test and its section exercised with the flag forced; no natural route
+found.** Script `tools/rig/examples/pair-u2.rig`, bus delay 10. The menu is opened on both
+machines in one tick by writing the name of the hub script's entry point for it into the
+list of deferred script calls (`g_scriptDeferNames`, count at 0x86da78) — a way to call a
+level-script entry inside a chosen tick that needs no walking. Chooser: slot 0, machine
+B's. B presses confirm and three frames later `g_pauseMenuOpen` is set to 1 on machine B
+alone, which stands in for a pause menu opened by something other than the button.
+
+| | Without the section | With "mission menu ignores the chooser's pause menu" on both |
+|---|---|---|
+| tick 934, slot 0's pad shows confirm | A: menu state 5 (mission chosen); B: early return (`net_lockLocalInput` from 0x231a78), state 2 | both: state 5 |
+| tick 969 | A: pending level `blood1`; B: none | both: `blood1` |
+| first difference | **tick 934**, the menu state | none in 310 ticks |
+
+So the code path of U2 and the patch behave as the ledger says in both menus. For the
+mission menu the condition was forced: with the pause button alone it did not arise in
+either order (confirm then pause: the pause menu did not open and both machines took the
+confirm; pause then menu: the menu closed the pause menu). One thing seen and not looked
+into: a confirm press made about 30 frames after the mission menu reached state 2 did not
+appear in the lockstep pad of either machine, with the flag or without; one made 100
+frames after it did.
+
+**E10 on the way.** A post-action name written in `strife` and left pending was run by
+`game_loadLevel` (return address 0x1e60c0) in the next level's script, in the first tick
+of `hub` (701), on both machines alike; with the name of the hub's mission-menu entry it
+opened the mission menu there.
+
+### 16.4 K3, the stats page and the stored weapon damage: the record differs; no reader run
+
+Script `tools/rig/examples/pair-k3.rig`, level `strife`, the `run4` states as they are, no
+bus delay. Slot 0 (machine B's player, class 0) is made a dual wielder on both machines in
+one tick: a second one-hand weapon in the second cell of bag 0, level 1 in the class's
+dual-wield passive (entry 5 of the class's passive table, mask 0x40000) and the
+second-weapon pointer +0x443c; the game's own swap code then equips it into equipment
+slot 1 (`inventory_equipItem` from 0x1bba38, once). Machine B opens its inventory and
+presses the page button four times, which is the stats page (`stats_screen` 0x1d1db8 is
+entered from then on).
+
+| | Without the section | With "stats page does not rewrite stored weapon damage" on both |
+|---|---|---|
+| `Player_recalcDamage` from the stats page, machine B, outside the tick | from 0x1d2c38 and from 0x1d2d30, 154 times each | from 0x1d2c38 only |
+| slot 0's record +0xcc / +0xd0 / +0xd4 at the end of each tick | A: 37 / 20 / 25 (the main weapon); B: **34 / 15 / 20** (the off-hand one) | 37 / 20 / 25 on both |
+| first difference | **tick 863**, the first tick after the page was drawn; on every tick to 1019, when B left the inventory (157 ticks); equal again from 1020 | none in 598 ticks |
+
+Two things to add to the ledger's reading of K3:
+
+- **The difference lasts as long as the page is open, not one tick.** While machine B's
+  inventory was open, `Player_weaponSwapInput` — whose tail is the per-tick recompute —
+  was not called for slot 0 on *either* machine (303 calls in 598 ticks, none in ticks
+  725 to 1019 on both; slot 1: 598). The gate in `Player_run` skips it for a player whose menu is
+  open, and does so alike everywhere (**Inferred**: the `net_getCamFlag` test at
+  0x1a5bc4, the one test of that gate that travels with the input). So nothing repairs the
+  record until the menu closes.
+- **Nothing read the fields in these runs.** A reader has to be a projectile of that
+  player still in flight while the page is open (the readers K3 and SB2 list; the player
+  cannot act with the menu up), and the page only makes its second call with the melee
+  set active. No such shot was set up, so no difference beyond the three record words was
+  produced, and no out-of-sync flag.
+
+A by-product, from a first version of the fixture whose new bag cell had the wrong index
+byte: opening the inventory on the owner's machine rewrote byte +0x22 of that cell there
+(0 to 1, the cell's position in the bag), and the bag checksum then differed between the
+machines for the rest of the run. The item list renumbers the owner's bag cells on the
+owner's machine only. Whether play can leave a cell with a stale index is **Unknown**.
+
+### 16.5 The route grid when only one machine's copy asks for routes: it differs
+
+**A correction first: the comparison of 14.4 (ledger V36) was not a comparison.** Its
+dumps were written by script lines of the form `A: ontick N dump …` and `B: ontick N dump
+…`. In the runner the machine prefix dropped the other machine's *commands*, but an
+`ontick` line registers a tick action, and those stayed: both machines ran both lines, so
+every `a-` and `b-` file was written by both and holds whichever wrote last
+(**Observed** in `rig.cpp`, `ParseScriptLine`; **Ran**: before the fix a file named for
+machine A held a write index that machine A's own tick log contradicts). "Byte for byte
+the same at all 25 samples" compared a machine with itself, and the write index that
+"went back" (65, then 64; 74, then 71) was the two machines' different indexes showing in
+turn. The prefix is fixed in `rig.cpp` (the runner was rebuilt; a three-line script
+confirms `A: ontick` now runs on A only, and the E9 pair gave tick 805 again). No other
+script kept from the earlier phases has a prefixed `ontick` line. From here on the path-finding memory is
+compared on every tick, as tick-log columns: the queue indexes 0x44f09c and 0x44f0a0, a
+checksum of the queue array (`g_pathQueue`, 6,144 bytes) and a checksum of the route grid
+itself (65 × 55 nodes of one word, 14,300 bytes at world +0x38).
+
+**The one-sided pair.** Arena pair 406, every fix section and the item-record one, with
+"Arena diagnostic: no prediction copy" on machine B only (`examples/prelude-route.rig`):
+B makes no copy after the level is entered (`Player_clone`: 3 entries on B, 639 on A).
+
+| | Machine A | Machine B |
+|---|---|---|
+| route requests inside a tick | 31, ticks 2372 … 9797 | the same 31 |
+| route requests outside a tick (the copy's) | **49**, ticks 11718 … 15046, one every 64 ticks | 0 |
+| `Creature_onPathResult`, all inside a tick | 80: the 31, and 49 for the copy | 31 |
+| queue write and read index | 32 from tick 11718, 80 at the end | 31 throughout |
+| route grid | from tick 11718: **418 nodes differ from machine B's, all in the search-mark bits (8–15)**; 433 marked nodes against 54 | one checksum from tick 11000 to the end of the level |
+
+First difference: **tick 11718**, in all four path-finding columns, and on every tick from
+there to the end of the level (3,369 ticks). So the search for a copy's request does run
+inside the real tick of that machine alone, and it leaves its marks in the shared route
+grid: the question 12.3 d and V29 left open is answered, and the answer is the opposite
+of V36. No other shared column differed in 15,295 ticks — no monster asked for a route
+after tick 9797 in this pair, so nothing read the marks.
+
+**The ordinary pair, both copies on** (the same pair without the diagnostic): the two
+copies ask at different ticks (B 49 from tick 7042, A 45 from tick 11078), and the route
+grid differs between the machines on 5,651 ticks, in two stretches (7042–9993 and
+11074–13772); the queue indexes differ from tick 7042 to the end of the level. In tick
+9994 a real request was made and answered on both machines — on grids that differed
+going in — and the grids were identical again after it, as were all later results; the
+14 real requests after it started from equal grids. No other shared column differed in
+15,330 ticks.
+
+What this establishes and what it does not: the prediction copy's route searches put
+per-machine state into memory that tick code reads (the marks; the queue indexes, which
+decide the slot a request lands in). In the one case where a real search started from
+differing grids, its clearing pass removed the difference. Whether a copy's marks can
+survive a real search's clearing and change its result (`docs/spec/world-queries.md`
+10.3 describes marks the clearing flood does not reach) is still **Unknown**; it now has
+a concrete starting state to test from.
+
+### 16.6 For the ledger, and what is not done
+
+Proposed rows and corrections, for whoever edits `FINDINGS.md` (this document does not):
+
+| Row | What to record |
+|---|---|
+| D26, V38 | Ran, both halves, with a shared difference: weapon set 0 / 1 in the death tick (tick 2400), and with a damage-over-time hit in that tick 2.0 hit points and one draw of the shared seed, the game's flag two ticks later. Each section removes its half; both together leave nothing (16.1). The natural damage in the window is a status effect on the later-running player; monsters run before the players |
+| E9 | Ran: the box closed on one machine ran the pending script there, outside the tick; pending name and one quest variable differ from tick 805; silent. The section removes it (16.2) |
+| E10 | Ran: a left-over name was run by `game_loadLevel` in the next level's script, on both machines alike (16.3) |
+| U2 | Ran for the jump-gate menu as described (pause, then confirm inside the lead): menu state and travel counter differ at tick 1153, one machine changes level 190 ticks later; the section removes it. Mission menu: the test and its section work, shown with the pause flag forced; with the pause button it did not arise, because `missionMenu_open` closes local menus and the pause poll refuses while the menu's task exists (0x18e138–0x18e154). Add: the pause button is read from the lockstep pad inside the tick; `pauseMenu_open` has a second caller without those guards (controller removed, 0x1db678), not run |
+| K3 | Ran: with the stats page open on the owner's machine the record's +0xcc / +0xd0 / +0xd4 differ between machines on every tick until the menu is closed (157 ticks here), not for one tick: the per-tick recompute is skipped on every machine for a player whose menu is open. The section removes it. No reader was run (16.4) |
+| V36 | Withdraw: the dumps it rests on were written by both machines (16.5) |
+| V29 | Answer: a copy's search does leave marks in the route grid of its machine (418 nodes in the one-sided pair; the ordinary pair's grids differ on 5,651 ticks). One real search from differing grids left them equal again. Effect on a search result: Unknown |
+| new | `A:` / `B:` did not apply to `ontick` lines in the runner until this phase (fixed) |
+| new | The item list rewrites the index byte +0x22 of the owner's bag cells on the owner's machine (seen with a poked cell whose index was wrong); reachability Unknown |
+
+Not done in this phase:
+
+- D26: a monster's hit in the window; the interact half of the gate; the other two routes
+  to a non-zero lockout word.
+- E9: the potion route to a notice; a post action that changes the level; what the other
+  machine does when it later runs the name it kept.
+- U2: a mission-menu case without the forced flag (it needs the controller-removed path);
+  cancel instead of confirm; the jump-gate fixture gives the destination list its second
+  entry by a write.
+- K3: a projectile hit that reads the record while the page is open, and therefore any
+  difference beyond the record itself.
+- The route grid: a real search whose result is changed by a copy's marks.
+- Nothing here is a console or PCSX2 result; two identical Play! instances show logic
+  differences only.

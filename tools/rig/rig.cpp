@@ -3563,8 +3563,12 @@ private:
 		{
 			bool mine = (toupper(static_cast<unsigned char>(tokens[0][0])) == m_options.machine);
 			size_t before = m_commands.size();
+			// "A: ontick N ..." registers a tick action, not a command: without this copy the
+			// action stayed on the other machine too (both machines then ran it)
+			auto tickActionsBefore = m_tickActions;
 			ParseScriptLine(rejoin(1), lineNumber);
 			if(mine) return;
+			m_tickActions = tickActionsBefore;
 			std::vector<Command> kept;
 			for(size_t k = before; k < m_commands.size(); k++)
 			{
