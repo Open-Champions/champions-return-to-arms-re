@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Unit tests for tools/ref_skills_b.py that need no game files: the Skill base on a made-up
-Skill object, the handle lists, the spell walk and the projectile step.  The comparison with
+Skill object, the handle lists, the spell walk and the projectile step, and for the second pass the Shock
+chain, the Charge contact, AncestralCall's constructor for the prediction copy and its query.
+The comparison with
 the game's own code is tools/difftest_skills_b.py."""
 import os
 import sys
@@ -193,6 +195,105 @@ class Registry(unittest.TestCase):
         set_stat(mem, 4, 1, 35, 3.0)
         self.assertEqual(model.mana_cost_35(SKILL, 2), C.f32(38.0))    # slot 15: statistic 4 as a float
         self.assertEqual(model.mana_cost_59(SKILL, 2), C.f32(0.0))     # LifeTap costs nothing
+
+
+class SecondPass(unittest.TestCase):
+    """The casts and effects added by the second pass, on made-up memory."""
+
+    def creature(self, mem, addr, x, y, flags=0x20):
+        mem.poke(addr + 0xC, 4, flags)
+        mem.poke(addr + 0x10, 4, C.f32(x))
+        mem.poke(addr + 0x14, 4, C.f32(y))
+        return addr
+
+    def test_helpers(self):
+        self.assertEqual(SB.from_uint(46), C.f32(46.0))
+        self.assertTrue(C.lt(C.f32(4.0e9), SB.from_uint(0xFFFFFFFF)))       # a clock behind the cast: a huge difference
+        self.assertEqual(SB.c_rem(-7, 3), -1)
+        self.assertEqual(SB.c_rem(7, 0), 7)
+
+    def test_shock_chain_is_depth_first_nearest_first(self):
+        model, mem = make()
+        bolt = OBJ
+        a, b, c, far = (self.creature(mem, 0x7000 + 0x400 * i, x, 0.0) for i, x in enumerate((0.0, 100.0, 190.0, 500.0)))
+        for obj in (far, c, b, a):                          # a ends up at the head, as the target does
+            model.handle_link(bolt + 0x50, obj, obj)
+        mem.poke(bolt + 0x18C, 4, 0x472DE900)               # 211 squared
+        mem.poke(bolt + 0x18A, 1, 3)
+        model.shock_build_chain(bolt, a + 0x10)
+        self.assertEqual(model.list_objects(bolt + 0x54), [c, b, a])       # newest first; `far` is out of range of all
+        self.assertEqual(model.u8(bolt + 0x18B), 3)
+        self.assertEqual(model.shock_in_chain(bolt, b), 1)
+        self.assertEqual(model.shock_in_chain(bolt, far), 0)
+        # the limit is a count of links
+        model.handle_clear(bolt + 0x54)
+        mem.poke(bolt + 0x18B, 1, 0)
+        mem.poke(bolt + 0x18A, 1, 2)
+        model.shock_build_chain(bolt, a + 0x10)
+        self.assertEqual(model.list_objects(bolt + 0x54), [b, a])
+
+    def test_charge_contact_happens_once(self):
+        calls = []
+
+        class Callbacks:
+            def get(self, name):
+                def answer(*args):
+                    calls.append((name, args))
+                    return {'Creature.v20': 1}.get(name, 0)
+                return answer
+        model, mem = make(Callbacks())
+        set_stat(mem, 0, 1, 120, 10.0)
+        spell, owner, target = OBJ, 0x7000, 0x7400
+        self.creature(mem, owner, 0.0, 0.0, 0x60)
+        self.creature(mem, target, 10.0, 0.0)
+        mem.poke(spell, 1, 1)
+        mem.poke(spell + 8, 4, SKILL)
+        mem.poke(spell + 0xC, 4, owner)
+        mem.poke(spell + 0x10, 4, 0x1234)
+        model.charge_on_contact(spell, target)
+        hits = [args for name, args in calls if name == 'damage_apply']
+        self.assertEqual(len(hits), 1)
+        self.assertEqual((hits[0][0], hits[0][1], hits[0][5], hits[0][8]), (target, owner, 0x8C040, C.f32(120.0)))
+        self.assertEqual(model.u32(spell + 0x48), 1)
+        model.charge_on_contact(spell, target)               # the second contact does nothing
+        self.assertEqual(len([1 for name, _a in calls if name == 'damage_apply']), 1)
+
+    def test_ancestral_call_copy_stops_before_the_state_change(self):
+        calls = []
+
+        class Callbacks:
+            def get(self, name):
+                def answer(*args):
+                    calls.append(name)
+                    return ('buf', b'clip') if name == 'libc_sprintf' else 0
+                return answer
+        model, mem = make(Callbacks())
+        spell, copy, class_def = OBJ, 0x7000, 0x7800
+        mem.poke(copy + 0xC, 4, 0x20060)                    # the prediction copy
+        mem.poke(copy + 0x24, 4, class_def)
+        mem.poke(copy + 0x58C, 4, 2)
+        model.ancestralcall_spell_ctor(spell, 5, copy, SKILL)
+        self.assertEqual(model.u32(copy + 0x58C), 2)        # not put into the casting state
+        self.assertEqual(calls, ['res_find', 'sound_playOnObject', 'libc_sprintf', 'res_find', 'anim_startBlendInOut'])
+        self.assertEqual(model.draws, 1)                    # the spell's seed, which prediction restores
+
+    def test_query_for_is_inclusive_and_owner_is_always_in(self):
+        model, mem = make()
+        set_stat(mem, 3, 1, 5, 0.0)                         # radius 5 x 12 = 60
+        set_stat(mem, 0, 1, 125, 0.0)
+        spell, owner, other = OBJ, 0x7000, 0x7400
+        self.creature(mem, owner, 0.0, 0.0, 0x60)
+        self.creature(mem, other, 60.0, 0.0, 0x60)
+        mem.poke(spell, 1, 1)
+        mem.poke(spell + 8, 4, SKILL)
+        mem.poke(spell + 0xC, 4, owner)
+        out = 0x7C00
+        self.assertEqual(model.ancestralcall_query_for(spell, other, out, 0), 1)       # exactly at the radius
+        self.assertEqual(mem.load(out, 4), C.mul(C.f32(125.0), 0x3C23D70A))            # 1.2499999 under truncation
+        mem.poke(other + 0x10, 4, C.f32(60.5))
+        self.assertEqual(model.ancestralcall_query_for(spell, other, 0, 0), 0)
+        self.assertEqual(model.ancestralcall_query_for(spell, owner, 0, 0), 1)
+        self.assertEqual(model.ancestralcall_query_for(spell, 0, 0, 0), 0)
 
 
 if __name__ == '__main__':

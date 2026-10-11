@@ -44,9 +44,18 @@
 #include <signal.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <netinet/in.h>
 #include <sys/un.h>
 #include <unistd.h>
 
+// The Ethernet chip emulation is used with one private member reachable: its receive
+// descriptor index wraps at the wrong number (512 instead of 64), and the rig puts that
+// right from outside rather than changing Play! (CRig::EtherDeliver).
+#define private public
+#include "iop/Iop_Speed.h"
+#undef private
 #include "PS2VM.h"
 #include "PS2VM_Preferences.h"
 #include "AppConfig.h"
@@ -56,6 +65,12 @@
 #include "ee/PS2OS.h"
 #include "ee/EeExecutor.h"
 #include "iop/IopBios.h"
+#if defined(RTA_RIG_VIDEO) && defined(__APPLE__)
+#define GL_SILENCE_DEPRECATION
+#include <OpenGL/OpenGL.h>
+#include <OpenGL/gl3.h>
+#include "GSH_OpenGL.h"
+#endif
 
 // ---------------------------------------------------------------------------------
 // Play! asks the application where its data directory is. Ours is given with --data
@@ -211,6 +226,112 @@ namespace prof
 
 // A null video handler that reports which thread it runs on (for --profile). Used with
 // --video-thread: Play!'s usual arrangement, a video thread fed through a mail box.
+#if defined(RTA_RIG_VIDEO) && defined(__APPLE__)
+// --video: Play!'s OpenGL video handler on a context that has no window, presenting into
+// a frame buffer of its own, so that 'shot' can write a picture of the screen. For
+// programs whose text the rig cannot read from the game's draw calls (the network
+// configuration program on the disc).
+class CRigGsOpenGL : public CGSH_OpenGL
+{
+public:
+	enum
+	{
+		WIDTH = 640,
+		HEIGHT = 448,
+	};
+	static FactoryFunction GetFactoryFunction()
+	{
+		return []() { return new CRigGsOpenGL(); };
+	}
+	// 24-bit BMP of what was presented last; the pixels are read on the video thread
+	bool Screenshot(const std::string& path)
+	{
+		std::vector<uint8> pixels(WIDTH * HEIGHT * 4);
+		SendGSCall([&]() {
+			glBindFramebuffer(GL_READ_FRAMEBUFFER, m_shotFramebuffer);
+			glReadPixels(0, 0, WIDTH, HEIGHT, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+			glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+		},
+		           true);
+		FILE* file = fopen(path.c_str(), "wb");
+		if(!file) return false;
+		uint32 dataSize = WIDTH * HEIGHT * 3;
+		uint8 header[54] = {'B', 'M'};
+		auto put32 = [&](int at, uint32 value) { memcpy(header + at, &value, 4); };
+		put32(2, 54 + dataSize);
+		put32(10, 54);
+		put32(14, 40);
+		put32(18, WIDTH);
+		put32(22, HEIGHT);
+		header[26] = 1;
+		header[28] = 24;
+		put32(34, dataSize);
+		fwrite(header, 1, sizeof(header), file);
+		std::vector<uint8> row(WIDTH * 3);
+		for(uint32 y = 0; y < HEIGHT; y++)
+		{
+			for(uint32 x = 0; x < WIDTH; x++)
+			{
+				const uint8* pixel = &pixels[(y * WIDTH + x) * 4];
+				row[x * 3 + 0] = pixel[2];
+				row[x * 3 + 1] = pixel[1];
+				row[x * 3 + 2] = pixel[0];
+			}
+			fwrite(row.data(), 1, row.size(), file);
+		}
+		fclose(file);
+		return true;
+	}
+
+private:
+	void InitializeImpl() override
+	{
+		CGLPixelFormatAttribute attributes[] = {
+		    kCGLPFAOpenGLProfile, static_cast<CGLPixelFormatAttribute>(kCGLOGLPVersion_3_2_Core),
+		    kCGLPFAColorSize, static_cast<CGLPixelFormatAttribute>(24),
+		    kCGLPFAAlphaSize, static_cast<CGLPixelFormatAttribute>(8),
+		    static_cast<CGLPixelFormatAttribute>(0)};
+		CGLPixelFormatObj format = nullptr;
+		GLint count = 0;
+		CGLChoosePixelFormat(attributes, &format, &count);
+		if(!format || CGLCreateContext(format, nullptr, &m_context) != kCGLNoError)
+		{
+			fprintf(stderr, "rta_rig: no OpenGL context for --video\n");
+			abort();
+		}
+		CGLDestroyPixelFormat(format);
+		CGLSetCurrentContext(m_context);
+		glGenFramebuffers(1, &m_shotFramebuffer);
+		glGenRenderbuffers(1, &m_shotColor);
+		glBindRenderbuffer(GL_RENDERBUFFER, m_shotColor);
+		glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, WIDTH, HEIGHT);
+		glBindFramebuffer(GL_FRAMEBUFFER, m_shotFramebuffer);
+		glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, m_shotColor);
+		glBindFramebuffer(GL_FRAMEBUFFER, 0);
+		m_presentFramebuffer = m_shotFramebuffer;
+		CGSH_OpenGL::InitializeImpl();
+		PRESENTATION_PARAMS params;
+		params.windowWidth = WIDTH;
+		params.windowHeight = HEIGHT;
+		params.mode = PRESENTATION_MODE_FILL;
+		SetPresentationParams(params);
+	}
+	void ReleaseImpl() override
+	{
+		CGSH_OpenGL::ReleaseImpl();
+		CGLSetCurrentContext(nullptr);
+		CGLDestroyContext(m_context);
+	}
+	void PresentBackbuffer() override
+	{
+		glFlush();
+	}
+
+	CGLContextObj m_context = nullptr;
+	GLuint m_shotFramebuffer = 0, m_shotColor = 0;
+};
+#endif
+
 class CRigGsNull : public CGSH_Null
 {
 public:
@@ -1086,6 +1207,8 @@ struct Command
 		PNACH,
 		SAVE,
 		LOAD,
+		SHOT,
+		IOPDUMP,
 		DUMP,
 		SHOW,
 		ECHO,
@@ -1772,6 +1895,9 @@ struct Options
 	bool profile = false;
 	bool interactive = false;
 	bool videoThread = false;
+	bool video = false;
+	std::string ethPcapPath;
+	std::string ethNetSpec;
 	std::string netShimAddress;
 	std::string netLogPath;
 	char machine = 'A';
@@ -1808,6 +1934,38 @@ public:
 		m_machine.spr = m_vm.m_ee->m_spr;
 		m_machine.state = &m_vm.m_ee->m_EE.m_State;
 		m_pageSize = static_cast<uint32>(getpagesize());
+
+		if(!m_options.ethPcapPath.empty())
+		{
+			m_ethPcap = fopen(m_options.ethPcapPath.c_str(), "wb");
+			if(!m_ethPcap) Die("cannot write %s", m_options.ethPcapPath.c_str());
+			const uint32 header[6] = {0xa1b2c3d4, 0x00040002, 0, 0, 65535, 1};
+			fwrite(header, 1, sizeof(header), m_ethPcap);
+			fflush(m_ethPcap);
+		}
+		if(!m_options.ethNetSpec.empty())
+		{
+			// server=a.b.c.d[,name=host][,guest=a.b.c.d]
+			for(const auto& part : SplitChar(m_options.ethNetSpec, ','))
+			{
+				auto eq = part.find('=');
+				std::string key = part.substr(0, eq), text = (eq == std::string::npos) ? "" : part.substr(eq + 1);
+				if(key == "server")
+					m_ethServerIp = ntohl(inet_addr(text.c_str()));
+				else if(key == "guest")
+					m_ethGuestIp = ntohl(inet_addr(text.c_str()));
+				else if(key == "name")
+					m_ethName = text;
+				else
+					Die("--eth-net: unknown setting %s", part.c_str());
+			}
+			if(m_ethServerIp == 0 || m_ethServerIp == 0xFFFFFFFF) Die("--eth-net needs server=<IPv4 address of this host>");
+			m_ethNet = true;
+		}
+		if(m_ethPcap || m_ethNet)
+		{
+			m_vm.m_iop->m_speed.SetEthernetFrameTxHandler([this](const uint8* frame, uint32 size) { EtherTx(frame, size); });
+		}
 
 		if(!m_options.netShimAddress.empty())
 		{
@@ -1927,6 +2085,7 @@ public:
 			}
 		}
 		m_frame++;
+		if(m_ethNet) EtherPoll();
 		// Translated code does its arithmetic in the host's rounding mode, which Play!
 		// sets to toward-zero once; forcing another one here makes every single-precision
 		// result of this machine round differently from then on.
@@ -2176,6 +2335,543 @@ public:
 		fclose(file);
 		printf("  prediction audit: real objects of a grid cell or of the off-grid list reordered in %" PRIu64 " calls, replaced in %" PRIu64 "\n", m_auditOrderCalls, m_auditMemberCalls);
 		printf("  prediction audit: %" PRIu64 " calls, %zu words changed outside the ignore list -> %s\n", m_auditCalls, m_auditSites.size(), m_options.predictAuditPath.c_str());
+	}
+
+	// ---- the emulated Ethernet chip (Play!'s Iop::CSpeed) ---------------------------
+	// Frames the game's network stack transmits arrive in EtherTx (machine thread, from
+	// inside the chip emulation); every frame in either direction goes to the capture file.
+	void EtherCapture(const uint8* frame, uint32 size)
+	{
+		if(!m_ethPcap) return;
+		const uint32 header[4] = {static_cast<uint32>(m_frame / 60), static_cast<uint32>((m_frame % 60) * 16666), size, size};
+		fwrite(header, 1, sizeof(header), m_ethPcap);
+		fwrite(frame, 1, size, m_ethPcap);
+		fflush(m_ethPcap);
+	}
+
+	void EtherTx(const uint8* frame, uint32 size)
+	{
+		m_ethTxFrames++;
+		EtherCapture(frame, size);
+		if(!m_ethNet || size < 14) return;
+		try
+		{
+			EtherInput(frame, size);
+		}
+		catch(const std::exception& error)
+		{
+			printf("[frame %" PRIu64 "] ethernet: %s\n", m_frame, error.what());
+		}
+		EtherDeliver();
+	}
+
+	// ---- --eth-net: a small network behind the chip ---------------------------------
+	// One guest on 10.0.2.0/24. The rig is the gateway 10.0.2.2: it answers ARP for every
+	// other address, DHCP, ping, and DNS (one name, which gets the server's address;
+	// everything else does not exist). UDP and TCP to the server's address are relayed
+	// through host sockets; TCP is ended here (the guest only ever opens connections).
+	// Nothing is relayed to any other address: this network does not reach the Internet.
+	static uint16 Get16(const uint8* p)
+	{
+		return static_cast<uint16>((p[0] << 8) | p[1]);
+	}
+	static uint32 Get32(const uint8* p)
+	{
+		return (static_cast<uint32>(p[0]) << 24) | (p[1] << 16) | (p[2] << 8) | p[3];
+	}
+	static void Put16(uint8* p, uint16 v)
+	{
+		p[0] = static_cast<uint8>(v >> 8);
+		p[1] = static_cast<uint8>(v);
+	}
+	static void Put32(uint8* p, uint32 v)
+	{
+		p[0] = static_cast<uint8>(v >> 24);
+		p[1] = static_cast<uint8>(v >> 16);
+		p[2] = static_cast<uint8>(v >> 8);
+		p[3] = static_cast<uint8>(v);
+	}
+	static uint32 SumWords(const uint8* data, size_t length, uint32 sum = 0)
+	{
+		for(size_t i = 0; i + 1 < length; i += 2) sum += (data[i] << 8) | data[i + 1];
+		if(length & 1) sum += data[length - 1] << 8;
+		return sum;
+	}
+	static uint16 FoldSum(uint32 sum)
+	{
+		while(sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
+		return static_cast<uint16>(~sum);
+	}
+	static std::string IpText(uint32 ip)
+	{
+		return StrFormat("%u.%u.%u.%u", ip >> 24, (ip >> 16) & 255, (ip >> 8) & 255, ip & 255);
+	}
+
+	// an Ethernet + IPv4 frame to the guest; payload is the transport header and data,
+	// whose checksum field (at checksumAt, or none) is filled in here
+	void EtherSendIp(uint8 protocol, uint32 sourceIp, uint32 destIp, std::vector<uint8> payload, int checksumAt, bool broadcast = false)
+	{
+		if(checksumAt >= 0)
+		{
+			uint8 pseudo[12];
+			Put32(pseudo, sourceIp);
+			Put32(pseudo + 4, destIp);
+			pseudo[8] = 0;
+			pseudo[9] = protocol;
+			Put16(pseudo + 10, static_cast<uint16>(payload.size()));
+			Put16(&payload[checksumAt], 0);
+			uint16 sum = FoldSum(SumWords(payload.data(), payload.size(), SumWords(pseudo, 12)));
+			if(protocol == 17 && sum == 0) sum = 0xFFFF;
+			Put16(&payload[checksumAt], sum);
+		}
+		std::vector<uint8> frame(14 + 20 + payload.size());
+		memcpy(&frame[0], broadcast ? ETH_BROADCAST : m_ethGuestMac, 6);
+		memcpy(&frame[6], ETH_GATEWAY_MAC, 6);
+		Put16(&frame[12], 0x0800);
+		uint8* ip = &frame[14];
+		ip[0] = 0x45;
+		Put16(ip + 2, static_cast<uint16>(20 + payload.size()));
+		Put16(ip + 4, m_ethIpId++);
+		ip[8] = 64;
+		ip[9] = protocol;
+		Put32(ip + 12, sourceIp);
+		Put32(ip + 16, destIp);
+		Put16(ip + 10, FoldSum(SumWords(ip, 20)));
+		memcpy(&frame[34], payload.data(), payload.size());
+		m_ethRxQueue.push_back(std::move(frame));
+	}
+
+	void EtherSendUdp(uint32 sourceIp, uint16 sourcePort, uint32 destIp, uint16 destPort, const uint8* data, size_t length, bool broadcast = false)
+	{
+		std::vector<uint8> payload(8 + length);
+		Put16(&payload[0], sourcePort);
+		Put16(&payload[2], destPort);
+		Put16(&payload[4], static_cast<uint16>(8 + length));
+		if(length) memcpy(&payload[8], data, length);
+		EtherSendIp(17, sourceIp, destIp, std::move(payload), 6, broadcast);
+	}
+
+	void EtherInput(const uint8* frame, uint32 size)
+	{
+		memcpy(m_ethGuestMac, frame + 6, 6);
+		uint16 type = Get16(frame + 12);
+		if(type == 0x0806 && size >= 42)
+		{
+			const uint8* arp = frame + 14;
+			uint32 senderIp = Get32(arp + 14), targetIp = Get32(arp + 24);
+			// a request for another address than the guest's own (its duplicate-address
+			// probe must stay unanswered)
+			if(Get16(arp + 6) != 1 || targetIp == senderIp || targetIp == m_ethGuestIp || (senderIp == 0 && targetIp == m_ethGuestIp)) return;
+			std::vector<uint8> reply(60, 0);
+			memcpy(&reply[0], frame + 6, 6);
+			memcpy(&reply[6], ETH_GATEWAY_MAC, 6);
+			Put16(&reply[12], 0x0806);
+			Put16(&reply[14], 1);
+			Put16(&reply[16], 0x0800);
+			reply[18] = 6;
+			reply[19] = 4;
+			Put16(&reply[20], 2);
+			memcpy(&reply[22], ETH_GATEWAY_MAC, 6);
+			Put32(&reply[28], targetIp);
+			memcpy(&reply[32], arp + 8, 6);
+			Put32(&reply[38], senderIp);
+			m_ethRxQueue.push_back(std::move(reply));
+			return;
+		}
+		if(type != 0x0800 || size < 34) return;
+		const uint8* ip = frame + 14;
+		uint32 headerLength = (ip[0] & 15) * 4, totalLength = Get16(ip + 2);
+		if(headerLength < 20 || 14 + totalLength > size || totalLength < headerLength) return;
+		if(Get16(ip + 6) & 0x3FFF) return; // a fragment: not handled
+		uint32 sourceIp = Get32(ip + 12), destIp = Get32(ip + 16);
+		const uint8* l4 = ip + headerLength;
+		uint32 l4Length = totalLength - headerLength;
+		if(ip[9] == 1 && l4Length >= 8 && l4[0] == 8)
+		{
+			std::vector<uint8> echo(l4, l4 + l4Length);
+			echo[0] = 0;
+			Put16(&echo[2], 0);
+			Put16(&echo[2], FoldSum(SumWords(echo.data(), echo.size())));
+			EtherSendIp(1, destIp, sourceIp, std::move(echo), -1);
+		}
+		else if(ip[9] == 17 && l4Length >= 8)
+		{
+			uint16 sourcePort = Get16(l4), destPort = Get16(l4 + 2);
+			const uint8* data = l4 + 8;
+			uint32 length = std::min<uint32>(Get16(l4 + 4), l4Length) - 8;
+			if(destPort == 67)
+				EtherDhcp(data, length);
+			else if(destPort == 53)
+				EtherDns(sourceIp, sourcePort, destIp, data, length);
+			else
+				EtherUdpOut(sourcePort, destIp, destPort, data, length);
+		}
+		else if(ip[9] == 6 && l4Length >= 20)
+		{
+			EtherTcpIn(sourceIp, destIp, l4, l4Length);
+		}
+	}
+
+	void EtherDhcp(const uint8* data, uint32 length)
+	{
+		if(length < 240 || data[0] != 1) return;
+		uint8 messageType = 0;
+		for(uint32 at = 240; at + 1 < length && data[at] != 255;)
+		{
+			if(data[at] == 0)
+			{
+				at++;
+				continue;
+			}
+			if(data[at] == 53 && data[at + 1] >= 1) messageType = data[at + 2];
+			at += 2 + data[at + 1];
+		}
+		if(messageType != 1 && messageType != 3) return;
+		std::vector<uint8> reply(300, 0);
+		reply[0] = 2;
+		reply[1] = 1;
+		reply[2] = 6;
+		memcpy(&reply[4], data + 4, 4); // transaction id
+		memcpy(&reply[10], data + 10, 2); // flags
+		Put32(&reply[16], m_ethGuestIp);
+		Put32(&reply[20], ETH_GATEWAY_IP);
+		memcpy(&reply[28], data + 28, 16);
+		Put32(&reply[236], 0x63825363);
+		uint8* option = &reply[240];
+		auto put = [&](uint8 code, uint32 value) {
+			*option++ = code;
+			*option++ = 4;
+			Put32(option, value);
+			option += 4;
+		};
+		*option++ = 53;
+		*option++ = 1;
+		*option++ = (messageType == 1) ? 2 : 5;
+		put(54, ETH_GATEWAY_IP);
+		put(51, 86400);
+		put(1, 0xFFFFFF00);
+		put(3, ETH_GATEWAY_IP);
+		put(6, ETH_GATEWAY_IP);
+		*option++ = 255;
+		printf("[frame %" PRIu64 "] ethernet: DHCP %s -> %s %s\n", m_frame, messageType == 1 ? "discover" : "request", messageType == 1 ? "offer" : "acknowledge", IpText(m_ethGuestIp).c_str());
+		EtherSendUdp(ETH_GATEWAY_IP, 67, 0xFFFFFFFF, 68, reply.data(), reply.size(), true);
+	}
+
+	void EtherDns(uint32 sourceIp, uint16 sourcePort, uint32 destIp, const uint8* data, uint32 length)
+	{
+		if(length < 17) return;
+		std::string name;
+		uint32 at = 12;
+		while(at < length && data[at] != 0 && data[at] < 64)
+		{
+			if(!name.empty()) name += '.';
+			name.append(reinterpret_cast<const char*>(data + at + 1), std::min<uint32>(data[at], length - at - 1));
+			at += 1 + data[at];
+		}
+		if(at + 5 > length) return;
+		uint16 queryType = Get16(data + at + 1);
+		uint32 questionEnd = at + 5;
+		std::string lower = name;
+		for(auto& c : lower) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+		bool known = (queryType == 1) && (lower == m_ethName);
+		std::vector<uint8> reply(data, data + questionEnd);
+		reply[2] = 0x81;
+		reply[3] = known ? 0x80 : 0x83;
+		Put16(&reply[4], 1);
+		Put16(&reply[6], known ? 1 : 0);
+		Put16(&reply[8], 0);
+		Put16(&reply[10], 0);
+		if(known)
+		{
+			const uint8 answer[12] = {0xC0, 0x0C, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4};
+			reply.insert(reply.end(), answer, answer + 12);
+			uint8 address[4];
+			Put32(address, m_ethServerIp);
+			reply.insert(reply.end(), address, address + 4);
+		}
+		printf("[frame %" PRIu64 "] ethernet: DNS type %u for %s -> %s\n", m_frame, queryType, name.c_str(), known ? IpText(m_ethServerIp).c_str() : "no such name");
+		EtherSendUdp(destIp, 53, sourceIp, sourcePort, reply.data(), reply.size());
+	}
+
+	static void SetNonBlocking(int fd)
+	{
+		fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+	}
+
+	// UDP: one host socket per guest port; whatever arrives on it goes to that port
+	void EtherUdpOut(uint16 sourcePort, uint32 destIp, uint16 destPort, const uint8* data, uint32 length)
+	{
+		if(destIp != m_ethServerIp)
+		{
+			if(m_ethRefused.insert((static_cast<uint64>(destIp) << 16) | destPort).second)
+				printf("[frame %" PRIu64 "] ethernet: UDP to %s:%u not relayed (only the server's address is)\n", m_frame, IpText(destIp).c_str(), destPort);
+			return;
+		}
+		auto found = m_ethUdp.find(sourcePort);
+		if(found == m_ethUdp.end())
+		{
+			int fd = socket(AF_INET, SOCK_DGRAM, 0);
+			if(fd < 0) return;
+			sockaddr_in any = {};
+			any.sin_family = AF_INET;
+			bind(fd, reinterpret_cast<sockaddr*>(&any), sizeof(any));
+			SetNonBlocking(fd);
+			socklen_t anyLength = sizeof(any);
+			getsockname(fd, reinterpret_cast<sockaddr*>(&any), &anyLength);
+			printf("[frame %" PRIu64 "] ethernet: UDP port %u of the machine is host port %u\n", m_frame, sourcePort, ntohs(any.sin_port));
+			found = m_ethUdp.emplace(sourcePort, fd).first;
+		}
+		sockaddr_in to = {};
+		to.sin_family = AF_INET;
+		to.sin_addr.s_addr = htonl(destIp);
+		to.sin_port = htons(destPort);
+		sendto(found->second, data, length, 0, reinterpret_cast<sockaddr*>(&to), sizeof(to));
+		m_ethUdpOut++;
+	}
+
+	// TCP, ended here: the guest's connection is answered by the rig and its bytes go
+	// through a host socket connected to the same address and port
+	struct ETH_TCP
+	{
+		int fd = -1;
+		uint16 guestPort = 0, destPort = 0;
+		uint32 destIp = 0;
+		uint32 receiveNext = 0;       // next sequence number expected from the guest
+		uint32 sendBase = 0;          // sequence number of sendBuffer[0]
+		uint32 sendNext = 0;          // next sequence number to send
+		uint32 guestWindow = 0;
+		std::deque<uint8> sendBuffer; // bytes from the host not yet acknowledged
+		bool synAcked = false, hostClosed = false, finSent = false, finAcked = false, guestClosed = false;
+		uint64 lastProgress = 0;
+		uint64 bytesToHost = 0, bytesToGuest = 0;
+	};
+
+	void EtherTcpSegment(ETH_TCP& c, uint8 flags, uint32 sequence, const uint8* data, size_t length, bool withMss = false)
+	{
+		std::vector<uint8> segment((withMss ? 24 : 20) + length);
+		Put16(&segment[0], c.destPort);
+		Put16(&segment[2], c.guestPort);
+		Put32(&segment[4], sequence);
+		Put32(&segment[8], c.receiveNext);
+		segment[12] = withMss ? 0x60 : 0x50;
+		segment[13] = flags;
+		Put16(&segment[14], 0x4000);
+		if(withMss)
+		{
+			segment[20] = 2;
+			segment[21] = 4;
+			Put16(&segment[22], ETH_TCP_MSS);
+		}
+		if(length) memcpy(&segment[withMss ? 24 : 20], data, length);
+		EtherSendIp(6, c.destIp, m_ethGuestIp, std::move(segment), 16);
+	}
+
+	void EtherTcpIn(uint32 sourceIp, uint32 destIp, const uint8* tcp, uint32 length)
+	{
+		uint16 sourcePort = Get16(tcp), destPort = Get16(tcp + 2);
+		uint32 sequence = Get32(tcp + 4), acknowledge = Get32(tcp + 8);
+		uint32 dataOffset = (tcp[12] >> 4) * 4;
+		uint8 flags = tcp[13];
+		if(dataOffset < 20 || dataOffset > length) return;
+		const uint8* data = tcp + dataOffset;
+		uint32 dataLength = length - dataOffset;
+		uint64 key = (static_cast<uint64>(sourcePort) << 48) | (static_cast<uint64>(destIp) << 16) | destPort;
+		auto found = m_ethTcp.find(key);
+		if(flags & 0x04) // reset
+		{
+			if(found != m_ethTcp.end())
+			{
+				printf("[frame %" PRIu64 "] ethernet: TCP %u -> %s:%u reset by the machine\n", m_frame, sourcePort, IpText(destIp).c_str(), destPort);
+				close(found->second.fd);
+				m_ethTcp.erase(found);
+			}
+			return;
+		}
+		if((flags & 0x12) == 0x02) // a connection request
+		{
+			if(found != m_ethTcp.end())
+			{
+				// the request again: answer again
+				EtherTcpSegment(found->second, 0x12, found->second.sendBase - 1, nullptr, 0, true);
+				return;
+			}
+			ETH_TCP c;
+			c.guestPort = sourcePort;
+			c.destPort = destPort;
+			c.destIp = destIp;
+			c.receiveNext = sequence + 1;
+			c.guestWindow = Get16(tcp + 14);
+			c.sendBase = 0x52494700 + 0x10000 * static_cast<uint32>(m_ethTcpCount++) + 1;
+			c.sendNext = c.sendBase;
+			c.lastProgress = m_frame;
+			bool connected = false;
+			if(destIp == m_ethServerIp)
+			{
+				c.fd = socket(AF_INET, SOCK_STREAM, 0);
+				sockaddr_in to = {};
+				to.sin_family = AF_INET;
+				to.sin_addr.s_addr = htonl(destIp);
+				to.sin_port = htons(destPort);
+				connected = c.fd >= 0 && connect(c.fd, reinterpret_cast<sockaddr*>(&to), sizeof(to)) == 0;
+			}
+			printf("[frame %" PRIu64 "] ethernet: TCP %u -> %s:%u %s\n", m_frame, sourcePort, IpText(destIp).c_str(), destPort,
+			       connected ? "connected" : (destIp == m_ethServerIp ? "REFUSED by the host" : "not relayed (only the server's address is)"));
+			if(!connected)
+			{
+				if(c.fd >= 0) close(c.fd);
+				EtherTcpSegment(c, 0x14, 0, nullptr, 0); // reset, acknowledging the request
+				return;
+			}
+			SetNonBlocking(c.fd);
+			EtherTcpSegment(c, 0x12, c.sendBase - 1, nullptr, 0, true);
+			m_ethTcp.emplace(key, std::move(c));
+			return;
+		}
+		if(found == m_ethTcp.end()) return;
+		ETH_TCP& c = found->second;
+		c.guestWindow = Get16(tcp + 14);
+		if(flags & 0x10)
+		{
+			c.synAcked = true;
+			uint32 acked = acknowledge - c.sendBase; // bytes of the buffer the guest has
+			if(acked != 0 && acked <= c.sendNext - c.sendBase)
+			{
+				uint32 fromBuffer = std::min<uint32>(acked, static_cast<uint32>(c.sendBuffer.size()));
+				c.sendBuffer.erase(c.sendBuffer.begin(), c.sendBuffer.begin() + fromBuffer);
+				c.sendBase += fromBuffer;
+				if(c.finSent && acknowledge == c.sendNext) c.finAcked = true;
+				c.lastProgress = m_frame;
+			}
+		}
+		bool reply = false;
+		if(dataLength)
+		{
+			if(sequence == c.receiveNext)
+			{
+				size_t sent = 0;
+				while(sent < dataLength)
+				{
+					ssize_t n = send(c.fd, data + sent, dataLength - sent, 0);
+					if(n > 0)
+						sent += n;
+					else if(n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+						usleep(200);
+					else
+						break;
+				}
+				c.receiveNext += dataLength;
+				c.bytesToHost += dataLength;
+			}
+			reply = true;
+		}
+		if((flags & 0x01) && sequence + dataLength == c.receiveNext && !c.guestClosed)
+		{
+			c.receiveNext += 1;
+			c.guestClosed = true;
+			shutdown(c.fd, SHUT_WR);
+			reply = true;
+			printf("[frame %" PRIu64 "] ethernet: TCP %u -> %s:%u closed by the machine (%" PRIu64 " bytes out, %" PRIu64 " in)\n", m_frame, c.guestPort, IpText(c.destIp).c_str(), c.destPort, c.bytesToHost, c.bytesToGuest);
+		}
+		if(reply) EtherTcpSegment(c, 0x10, c.sendNext, nullptr, 0);
+		if(c.guestClosed && c.finAcked)
+		{
+			close(c.fd);
+			m_ethTcp.erase(found);
+		}
+	}
+
+	// every vertical blank: bytes and datagrams from the host side become frames
+	void EtherPoll()
+	{
+		uint8 buffer[2048];
+		for(auto& entry : m_ethUdp)
+		{
+			for(int i = 0; i < 16; i++)
+			{
+				sockaddr_in from = {};
+				socklen_t fromLength = sizeof(from);
+				ssize_t n = recvfrom(entry.second, buffer, sizeof(buffer), 0, reinterpret_cast<sockaddr*>(&from), &fromLength);
+				if(n < 0) break;
+				m_ethUdpIn++;
+				EtherSendUdp(ntohl(from.sin_addr.s_addr), ntohs(from.sin_port), m_ethGuestIp, entry.first, buffer, static_cast<size_t>(n));
+			}
+		}
+		for(auto it = m_ethTcp.begin(); it != m_ethTcp.end();)
+		{
+			ETH_TCP& c = it->second;
+			if(c.synAcked && !c.hostClosed && c.sendBuffer.size() < 16384)
+			{
+				ssize_t n = recv(c.fd, buffer, sizeof(buffer), 0);
+				if(n > 0)
+					c.sendBuffer.insert(c.sendBuffer.end(), buffer, buffer + n);
+				else if(n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK))
+					c.hostClosed = true;
+			}
+			// nothing acknowledged for two seconds: send again from the oldest byte
+			if(c.sendNext != c.sendBase && m_frame - c.lastProgress > 120)
+			{
+				c.sendNext = c.sendBase;
+				c.finSent = false;
+				c.lastProgress = m_frame;
+			}
+			uint32 window = std::min<uint32>(c.guestWindow, 4 * ETH_TCP_MSS);
+			for(int i = 0; i < 2 && c.synAcked; i++)
+			{
+				uint32 offset = c.sendNext - c.sendBase;
+				if(offset >= c.sendBuffer.size() || offset >= window) break;
+				uint32 n = std::min<uint32>({static_cast<uint32>(c.sendBuffer.size()) - offset, static_cast<uint32>(ETH_TCP_MSS), window - offset});
+				std::vector<uint8> piece(c.sendBuffer.begin() + offset, c.sendBuffer.begin() + offset + n);
+				EtherTcpSegment(c, 0x18, c.sendNext, piece.data(), n);
+				c.sendNext += n;
+				c.bytesToGuest += n;
+			}
+			if(c.hostClosed && !c.finSent && c.sendNext - c.sendBase == c.sendBuffer.size())
+			{
+				EtherTcpSegment(c, 0x11, c.sendNext, nullptr, 0);
+				c.sendNext += 1;
+				c.finSent = true;
+				printf("[frame %" PRIu64 "] ethernet: TCP %u -> %s:%u closed by the host (%" PRIu64 " bytes out, %" PRIu64 " in)\n", m_frame, c.guestPort, IpText(c.destIp).c_str(), c.destPort, c.bytesToHost, c.bytesToGuest);
+			}
+			if(c.guestClosed && c.finAcked)
+			{
+				close(c.fd);
+				it = m_ethTcp.erase(it);
+			}
+			else
+				++it;
+		}
+		EtherDeliver();
+	}
+
+	// Hand the chip the next waiting frame if the driver has taken the one before. Play!'s
+	// chip holds one frame at a time. Its descriptor index wraps at 512 where the ring has
+	// 64 entries, and it is not reset when the driver starts again (after the machine
+	// restarts into another program): both are put right here.
+	void EtherDeliver()
+	{
+		auto& speed = m_vm.m_iop->m_speed;
+		// the driver writes the station address when it starts: a start is seen by the
+		// marker the rig leaves in that register being gone
+		if(speed.m_smapEmac3AddressLo != ETH_MARKER)
+		{
+			speed.m_smapEmac3AddressLo = ETH_MARKER;
+			speed.m_rxIndex = 0;
+		}
+		if(m_ethRxQueue.empty()) return;
+		if(speed.m_pendingRx || speed.m_rxFrameCount != 0) return;
+		speed.m_rxIndex %= 64;
+		auto* descriptor = reinterpret_cast<Iop::CSpeed::SMAP_BD*>(speed.m_smapBdRx) + speed.m_rxIndex;
+		if(!(descriptor->ctrlStat & 0x8000)) return; // not handed back by the driver yet
+		std::vector<uint8> frame = std::move(m_ethRxQueue.front());
+		m_ethRxQueue.pop_front();
+		EtherCapture(frame.data(), static_cast<uint32>(frame.size()));
+		// the length the driver is given includes four bytes of frame check, and it reads
+		// in blocks: leave room after the frame
+		uint32 length = static_cast<uint32>((std::max<size_t>(frame.size(), 60) + 4 + 3) & ~3u);
+		frame.resize(length, 0);
+		speed.RxEthernetFrame(frame.data(), length);
+		speed.m_rxBuffer.resize(length + 256, 0);
+		m_ethRxFrames++;
 	}
 
 	// --predict-trace: which instruction writes a watched word. Every translated block
@@ -2598,6 +3294,11 @@ public:
 		if(m_tickLog || m_ticks) printf("  lockstep ticks seen: %" PRIu64 "\n", m_ticks);
 		if(!m_auditSnapshot.empty()) AuditReport();
 		if(m_traceOn) TraceReport();
+		if(m_ethPcap || m_ethNet)
+		{
+			printf("  ethernet: %" PRIu64 " frames sent by the machine, %" PRIu64 " delivered to it; UDP datagrams relayed out %" PRIu64 ", in %" PRIu64 "\n", m_ethTxFrames, m_ethRxFrames, m_ethUdpOut, m_ethUdpIn);
+			if(m_ethPcap) fclose(m_ethPcap);
+		}
 		if(m_netShimReady) m_netShim.Summary();
 		if(m_tickLog) fclose(m_tickLog);
 		if(m_log) fclose(m_log);
@@ -2641,6 +3342,13 @@ public:
 	{
 		m_inlineGs = gs;
 	}
+#if defined(RTA_RIG_VIDEO) && defined(__APPLE__)
+	void SetGlGs(CRigGsOpenGL* gs)
+	{
+		m_glGs = gs;
+	}
+	CRigGsOpenGL* m_glGs = nullptr;
+#endif
 
 private:
 	void SetBreakpoint(uint32 address, bool enable)
@@ -3060,6 +3768,12 @@ private:
 			command.kind = (word == "save") ? Command::SAVE : Command::LOAD;
 			command.text = tokens[i];
 		}
+		else if(word == "shot" || word == "iopdump")
+		{
+			need(1);
+			command.kind = (word == "shot") ? Command::SHOT : Command::IOPDUMP;
+			command.text = tokens[i];
+		}
 		else if(word == "dump")
 		{
 			need(3);
@@ -3307,6 +4021,26 @@ private:
 					return; // written by the machine thread before the next frame
 				}
 				break;
+			case Command::SHOT:
+			{
+				bool ok = false;
+#if defined(RTA_RIG_VIDEO) && defined(__APPLE__)
+				if(m_glGs) ok = m_glGs->Screenshot(command.text);
+#endif
+				printf("[frame %" PRIu64 "] %s %s\n", m_frame, ok ? "picture" : "NO PICTURE (needs --video)", command.text.c_str());
+			}
+			break;
+			case Command::IOPDUMP:
+			{
+				FILE* file = fopen(command.text.c_str(), "wb");
+				if(file)
+				{
+					fwrite(m_vm.m_iop->m_ram, 1, PS2::IOP_RAM_SIZE, file);
+					fclose(file);
+				}
+				printf("[frame %" PRIu64 "] %s %s\n", m_frame, file ? "IOP memory dumped" : "DUMP FAILED", command.text.c_str());
+			}
+			break;
 			case Command::LOAD:
 				if(!command.started)
 				{
@@ -3624,6 +4358,26 @@ private:
 #else
 	void* m_traceExecutor = nullptr;
 #endif
+	FILE* m_ethPcap = nullptr;
+	uint64 m_ethTxFrames = 0, m_ethRxFrames = 0, m_ethUdpOut = 0, m_ethUdpIn = 0;
+	enum : uint32
+	{
+		ETH_GATEWAY_IP = 0x0A000202, // 10.0.2.2
+		ETH_MARKER = 0x52494721,
+		ETH_TCP_MSS = 1340,
+	};
+	static constexpr uint8 ETH_GATEWAY_MAC[6] = {0x02, 0x52, 0x49, 0x47, 0x00, 0x01};
+	static constexpr uint8 ETH_BROADCAST[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+	bool m_ethNet = false;
+	uint32 m_ethGuestIp = 0x0A00020F, m_ethServerIp = 0; // 10.0.2.15
+	std::string m_ethName = "con.soegames.net";
+	uint8 m_ethGuestMac[6] = {};
+	uint16 m_ethIpId = 1;
+	int m_ethTcpCount = 0;
+	std::deque<std::vector<uint8>> m_ethRxQueue;
+	std::map<uint16, int> m_ethUdp;
+	std::map<uint64, ETH_TCP> m_ethTcp;
+	std::set<uint64> m_ethRefused;
 	FILE* m_traceRawFile = nullptr;
 	uint64 m_traceRawCount = 0, m_traceCalls = 0, m_traceBlocks = 0;
 	uint32 m_traceTickLo = 0, m_traceTickHi = 0xFFFFFFFF, m_tracePrevPc = 0, m_tracePrevEnd = 0;
@@ -3815,6 +4569,12 @@ static int Run(int argc, char** argv)
 			options.interactive = true;
 		else if(arg == "--video-thread")
 			options.videoThread = true;
+		else if(arg == "--video")
+			options.video = true;
+		else if(arg == "--eth-pcap")
+			options.ethPcapPath = value();
+		else if(arg == "--eth-net")
+			options.ethNetSpec = value();
 		else if(arg == "--net-shim")
 			options.netShimAddress = value();
 		else if(arg == "--net-log")
@@ -3909,15 +4669,35 @@ static int Run(int argc, char** argv)
 	CAppConfig::GetInstance().RegisterPreferenceBoolean("log.showprints", false);
 	CAppConfig::GetInstance().SetPreferenceBoolean("log.showprints", options.playLogs);
 
+#if defined(RTA_RIG_VIDEO) && defined(__APPLE__)
+	CGSH_OpenGL::RegisterPreferences();
+#endif
 	CRigVM vm;
 	CAppConfig::GetInstance().SetPreferencePath(PREF_PS2_CDROM0_PATH, fs::absolute(options.disc));
+	// The memory cards are directories under the data directory. Play! stores their paths
+	// in the data directory's config.xml as absolute paths, so a copied data directory
+	// would go on using the cards of the one it was copied from: set them every time.
+	CAppConfig::GetInstance().SetPreferencePath(PREF_PS2_MC0_DIRECTORY, g_basePath / "vfs" / "mc0");
+	CAppConfig::GetInstance().SetPreferencePath(PREF_PS2_MC1_DIRECTORY, g_basePath / "vfs" / "mc1");
+	CAppConfig::GetInstance().SetPreferencePath(PREF_PS2_HOST_DIRECTORY, g_basePath / "vfs" / "host");
+	CAppConfig::GetInstance().SetPreferencePath(PREF_PS2_ROM0_DIRECTORY, g_basePath / "vfs" / "rom0");
 	CAppConfig::GetInstance().SetPreferenceBoolean(PREF_PS2_LIMIT_FRAMERATE, options.throttle);
 
 	CRig rig(vm, options);
 	CRigPad* padHandler = nullptr;
 
 	vm.Initialize();
-	if(options.videoThread)
+	if(options.video)
+	{
+#if defined(RTA_RIG_VIDEO) && defined(__APPLE__)
+		vm.CreateGSHandler(CRigGsOpenGL::GetFactoryFunction());
+		rig.SetGlGs(static_cast<CRigGsOpenGL*>(vm.GetGSHandler()));
+#else
+		fprintf(stderr, "rta_rig: built without --video\n");
+		return 2;
+#endif
+	}
+	else if(options.videoThread)
 	{
 		vm.CreateGSHandler(CRigGsNull::GetFactoryFunction());
 	}

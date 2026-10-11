@@ -9,7 +9,10 @@ traced, and the arena with every section on) and phase 6 (section 11: every clas
 swept, other levels, and an audit of what a prediction call leaves changed) and phase 7
 (section 12: the audit with every fix on and resolved to objects, a block trace that finds
 the writing code, the six follow-up questions, and the source of the item bytes with a
-21-word fix). In short: two machines play one lockstep game here;
+21-word fix) and phase 8 (section 13: the real online path — the game's own network stack
+on a network behind the emulated Ethernet chip, a network configuration made with the
+disc's own program, the sign-in step, and two machines connected to the lobby server; it
+stops at the server's terms screen). In short: two machines play one lockstep game here;
 random input found two real divergences, which are the ledger's K1 and K2, and the test
 patch for each removes it; the arena did **not** go out of sync in twelve runs.
 
@@ -1402,3 +1405,139 @@ apply it: a patched and an unpatched machine agree no better than two unpatched 
 - The heap block attributed to `frustum_testBox`, and the two counters written from
   outside game code.
 - The trace on machine B, and the audit over the skill sweep.
+
+## 13. Phase 8: the real online path
+
+Goal: the game's own network stack — the eleven IOP modules of 4d, with no hook at the EE
+level — reaching the replacement lobby server on this machine, signing in, and launching a
+game through the lobby. Limits as in section 7; in addition, host sockets make these runs
+depend on real time, so they do not repeat exactly. **Where it got:** two machines connected to the lobby server
+over the game's own stack, at the server's terms screen (13.5 says why it stops there).
+
+### 13.1 What the game asks for first: a network configuration (**Ran**)
+
+"Internet Game" in the front end starts the network menu. With no network configuration
+on the memory card it stops there and offers to configure one, which restarts the machine
+into the network configuration program on the disc (`NTGUI2.ELF`, Sony's). That program
+draws its own text, so the rig's text transcript shows nothing of it. Two additions to the
+runner made it usable:
+
+- `--video` runs Play!'s OpenGL video handler on a context without a window, and the
+  script command `shot <file.bmp>` writes a picture of the screen (macOS; built in unless
+  `-DRTA_RIG_VIDEO=OFF`). Pictures are game output: they stay under `local/`.
+- `--eth-pcap <file>` records every Ethernet frame the emulated chip sends or is given, in
+  the capture format `tcpdump -r` reads.
+
+With pictures, scripted input walks the configuration program: add a setting, memory card
+slot 1, the Ethernet adaptor (it is found), no PPPoE, automatic address, automatic DNS.
+It then tests the connection, and **the game's own stack transmits**: DHCP requests from
+22:11:22:11:66:44 (the address in Play!'s chip emulation) to the broadcast address, one
+every four seconds. That is the first traffic on the emulated wire.
+
+### 13.2 A network behind the chip, and the configuration saved (**Ran**)
+
+`--eth-net server=<address of this host>` puts a small network behind the emulated chip
+(`rig.cpp`, the `Ether…` functions; nothing in Play! is changed). The machine is alone on
+10.0.2.0/24 with the rig as gateway 10.0.2.2. The rig answers ARP for every address but
+the machine's own, DHCP (the machine gets 10.0.2.15), ping, and DNS: `con.soegames.net`
+gets the server's address and every other name "does not exist". UDP and TCP to the
+server's address are relayed through host sockets — one host UDP socket per port of the
+machine, and TCP ended in the rig (the machine only opens connections) and carried on a
+host TCP connection. Nothing is relayed to any other address, so this network cannot
+reach the Internet. Two runners each have their own; they meet through the host's sockets,
+which is also where the server sees them.
+
+Two defects of Play!'s chip emulation are worked around from the rig, by reaching one
+private member of `Iop::CSpeed` (the header is included with `private` redefined — a
+wart, but the alternative is a patched Play!): its receive ring index wraps at 512 where
+the ring has 64 entries, and it is not reset when the driver starts again after the
+machine restarts into another program. The chip holds one received frame at a time; the
+rig queues frames and hands over the next when the driver has taken the last.
+
+Result: the configuration program's connection test succeeds — discover, offer, request,
+acknowledge, the machine's address probe and its ARP for the gateway are all in the
+capture — and the program saves the setting. The files are the real thing, written by
+Sony's module (`BWNETCNF` with an index, one combination file and two encoded setting
+files, and the icon), in the memory card directory. Back in the game, "Internet Game" now
+lists the setting ("ezNetCnfGetCount> returned 1" on the console output).
+
+A trap found on the way: Play! stores the memory card directories in the data
+directory's `config.xml` as absolute paths, so a *copied* data directory went on using the
+cards of the one it was copied from. The runner now sets these paths from `--data` on
+every start. (Earlier phases are not affected in their results — pairs start from saved
+states and never read the card — but their "fresh copies" of the card directories were
+not separate cards.)
+
+Saved states cannot be used on this path: the chip's state is not part of a Play! state,
+so after loading one the driver and the chip disagree. Every run here starts from
+power-on (about 1,500 frames to the network menu).
+
+### 13.3 The sign-in step, as shipped and with the local sign-in patch (**Ran**)
+
+Accepting the setting in the network menu brings the interface up (DHCP as above). Then:
+
+**As shipped.** The game loads its three sign-in modules, reports the check initialised,
+and the stack sends a DNS query for Sony's authentication host. The rig's DNS answers
+that the name does not exist; the game shows network error −611. So the sign-in code
+runs on Play! as far as it can without Sony's servers. One more thing was seen:
+cancelling that error makes the game unload the modules, the unloader reports a failure
+on the console output, and the network menu no longer reacts to input. Whether that
+happens on a console is **Unknown**; on the rig a failed sign-in ends the run.
+
+**With the local sign-in patch**, applied in the front end before "Internet Game" is
+chosen: no sign-in screen appears. About 40 frames after the address is acknowledged the
+game says it is connecting, and the lobby client starts. The flag the real check sets on
+success (0x507270) stays 0, and the lobby client does not mind. This is the first run of
+that patch on a running game: it does what X4 found by executing the function alone.
+
+### 13.4 Gateway and lobby: connected (**Ran**)
+
+Machine A, then A and B at once (two runners, each with its own card and its own network
+behind the chip, both relayed to the server on this host):
+
+| Step | On the wire (the game's stack, through the rig) | Result |
+|---|---|---|
+| name lookup | DNS query for `con.soegames.net`, answered with this host's address | — |
+| gateway, TCP 40810 | request 0x43, tracking number 1, version 6, body `u32` 12 (18 bytes with the length word) | reply 35 bytes: result 0, the server's address as text, the lobby port. The game closes the connection (and sends a reset after its close) |
+| lobby, TCP 40910 | request 0x27, tracking number 2: a string of 32 hexadecimal digits, then `u32` 12 | reply 54 bytes: result 0, length words, 32 bytes of key. Accepted |
+| | request 0x42, tracking number 3: the strings `en` and `us` | reply 492 bytes: the server's welcome text, which the game shows as its terms screen |
+
+Every message is as `docs/lobby-protocol.md` sections 2, 4 and 5 describe; the game's
+console output reports result 0 for all three. **No disagreement between client and
+server so far.** Three details the protocol notes did not have:
+
+- the string in 0x27 (its meaning is an open question there) is 32 hexadecimal digits,
+  and it was the same on both runners — so it is derived from something the two identical
+  machines share, not random per connection;
+- the two strings of 0x42 are `en` and `us`: language and region;
+- the game sends each message as two TCP segments, the length word first.
+
+With both runners at the terms screen the server holds two established connections on
+port 40910, one from each runner process.
+
+### 13.5 Where this stops, and why
+
+At the server's terms screen, on both machines. The next two actions are accepting those
+terms and then creating an account (a name and a password) on the lobby server. Both are
+things this assistant does only on the user's own say-so, and this phase's instructions
+came from the coordinating agent. Technically nothing stands in the way: the server is
+this host's own process, the account would be a throw-away one, and the screens are the
+game's own text, which the transcript shows. The continuation is:
+`tools/rig/examples/online-lobby.rig`, then cross on the terms screen, the account
+screens, a character, a game on A, the same on B with "join" — and from the first UDP
+datagram on, the capture files show what the UDP relay and the peer handshake do.
+
+### 13.6 Not done, and what is untested in what was built
+
+- Everything after the terms screen: accounts, characters, creating and joining a game,
+  the launch handshake, play, and the arena with lobby characters (steps 3 and 4).
+- **The UDP relay has carried no datagram yet** (the game sends none before log-in), and
+  the path between two runners through host UDP sockets is therefore untested. The
+  server will see both runners at this host's address with different ports; whether the
+  game's peer handshake works through that is the first thing the next run shows.
+- The TCP relay has carried a few hundred bytes each way. Loss cannot happen on this
+  wire, so its retransmission code has not run.
+- The chip delivers one frame per hand-over, at most a few per displayed frame. That is
+  enough for a lobby; whether it is enough for game traffic is **Unknown**.
+- Play!'s OpenGL handler was used for pictures only; nothing was checked about its
+  correctness, and runs with `--video` are slower.

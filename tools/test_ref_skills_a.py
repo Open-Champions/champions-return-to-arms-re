@@ -5,7 +5,7 @@ They exercise the model's own logic on made-up memory: the statistics slots on i
 tables, the mana-cost reader on hand-assembled instructions, the weapon-entry rule, the
 damage descriptor, the divide rule, attached-spell lookup, the radial damage, and - for the
 second pass - Cone of Fire's descriptor, Dismiss Undead's target loop, Shield Bash's turn
-target, the Hammer of Wrath's level and the Fire Weapons light.  Whether
+target, the Hammer of Wrath's level, the Fire Weapons light and the Wizard Beam's chain.  Whether
 the model matches the game is tools/difftest_skills_a.py's business (it needs the
 executable)."""
 import os
@@ -306,6 +306,36 @@ class SecondPass(Fixture):
         del self.calls[:]
         m.fireweapons_run(self.SPELL, (0, 0, 0), 0)
         self.assertEqual([name for name, _args in self.calls], ['Spell.v1'])
+
+    def test_wizard_beam_chain(self):
+        m, mem = self.model, self.mem
+        self.tier(1, 0, 1, 135, 11.0)
+        self.tier(1, 1, 1, 8, 0.333)
+        owner, target = self.creature(self.OWNER, 0.0, 0.0, kind=0, flags=0x60), self.creature(0xC000, 70.0, 0.0, kind=0)
+        mem.poke(target + 0x20, 4, f32(72.0))
+        spell = self.SPELL
+        mem.poke(spell, 1, 1)
+        mem.poke(spell + 8, 4, SKILL)
+        mem.poke(spell + 0xC, 4, owner)
+        mem.poke(spell + 0x348, 4, f32(16.0))               # what the constructor stores: 2 x statistic 1
+        mem.poke(spell + 0x34C, 4, f32(16.0))
+        mem.poke(RC.G_SIM_FRAME, 4, 1001)
+        self.answers.update({'world_collectObjectsInBox': [], 'res_find': 0})
+        m.wizardbeam_run(spell, (0, 0, 0), 0)                # no target: a straight chain of five 16-unit segments
+        for i in range(6):
+            self.assertAlmostEqual(C.to_float(m.u32(spell + 0x28 + 12 * i)), 16.0 * i, places=3)
+            self.assertAlmostEqual(C.to_float(m.u32(spell + 0x2C + 12 * i)), 0.0, places=3)
+        self.assertFalse(any(name == 'damage_apply' for name, _args in self.calls))
+        # a target near the tip (and nearer than 5 segments from the caster, strictly) on a damage frame: a third of statistic 0, flags 0x100, and the chain is pulled up to it
+        mem.poke(RC.G_SIM_FRAME, 4, 1020)
+        self.answers.update({'world_collectObjectsInBox': [target], 'Creature.v20': 1, 'model_getSamplePointCount': 0})
+        m.wizardbeam_run(spell, (0, 0, 0), 0)
+        hits = [args for name, args in self.calls if name == 'damage_apply']
+        self.assertEqual(len(hits), 1)
+        # 135 x 0.3333333 (the constant is below a third) truncates to 44, not 45
+        self.assertEqual((hits[0][0], hits[0][1], hits[0][5], hits[0][8]), (target, owner, 0x100, f32(44.0)))
+        self.assertGreater(C.to_float(m.u32(spell + 0x30 + 12 * 5)), 20.0)      # the tip rose toward the target's middle
+        self.assertEqual(m.s16(target + 0x96), 0x10)        # the tint
 
 
 if __name__ == '__main__':

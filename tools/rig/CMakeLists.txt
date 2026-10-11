@@ -58,6 +58,13 @@ add_subdirectory(${PLAY_SOURCE_DIR}/Source ${CMAKE_CURRENT_BINARY_DIR}/PlayCore)
 
 add_executable(rta_rig rig.cpp)
 target_link_libraries(rta_rig PlayCore)
+option(RTA_RIG_VIDEO "Build Play!'s OpenGL video handler in, for --video and the 'shot' command (macOS)" ON)
+if(RTA_RIG_VIDEO AND APPLE)
+	add_subdirectory(${PLAY_SOURCE_DIR}/Source/gs/GSH_OpenGL ${CMAKE_CURRENT_BINARY_DIR}/GSH_OpenGL)
+	target_link_libraries(rta_rig gsh_opengl)
+	target_include_directories(rta_rig PRIVATE ${PLAY_SOURCE_DIR}/Source/gs/GSH_OpenGL)
+	target_compile_definitions(rta_rig PRIVATE RTA_RIG_VIDEO=1)
+endif()
 target_include_directories(rta_rig PRIVATE
 	${PLAY_SOURCE_DIR}/deps/Framework/include
 	${PLAY_SOURCE_DIR}/deps/CodeGen/include

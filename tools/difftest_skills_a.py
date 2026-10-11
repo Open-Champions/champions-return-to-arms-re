@@ -63,10 +63,23 @@ Scenarios (-k matches the name)
                              failures, targets in and out of reach, the effect run to its
                              natural end and cut short (owner dead, owner deleted, target
                              gone), the hit handlers on every kind of object
-    s05 can-use of the rest  ids 1, 5, 6, 8, 10, 13, 17, 18, 22: can-use only
+    s05 can-use of the rest  ids 1, 5, 6, 8, 10, 13, 17, 18, 22: can-use only, the prediction
+                             copy among the casters
+    second pass (appended, so that the scenarios above keep their random cases):
+    s13 fireweapons          the fourth weapon buff, with its light
+    s18 coneoffire           cast, the Mummy's constructor call, the run; the SA4 property:
+                             the descriptor handed to damage_apply
+    s17 hammerofwrath        cast, the hammer in states 0, 3, 4, its spell; item_parseDescriptor
+                             runs for real (the bytes it leaves undefined are masked)
+    s34 shieldbash           can-use, cast, run; the SA3 property (the raw turn target)
+    s22 dismissundead        cast, flight, hit; the SA2 property and the target-loop order
+    s01 wizardbeam           cast and the held channel (the point arrays handed to the trail
+                             functions are stack data and are not compared)
+    After the coverage the test prints, per skill, the stores a cast made outside its own
+    new objects, in order (the prediction-copy table of the companion document).
 
-Not compared: describeRank (slot 4, menu text), the draw functions, and the casts and
-effects of ids 1, 5, 6, 8, 10, 13, 17, 18, 22 and 34.
+Not compared: describeRank (slot 4, menu text), the draw functions, the casts and effects
+of ids 5, 6, 8 and 10, and states 1 and 2 of HammerOfWrath_run.
 """
 import hashlib
 import math
@@ -561,6 +574,10 @@ class World:
 
     def on_text_lookup(self, args, view, rng):
         return Res(0x00D10000 + (args[0] & 0xFF0))
+
+    def on_Creature_getVisualPos(self, args, view, rng):
+        obj = args[0]
+        return Res(outs=[tuple(f32(fl(rd(view, obj + 0x10 + 4 * i)) + rng.uniform(-3, 3)) for i in range(3))])
 
     def on_model_transformSamplePoint(self, args, view, rng):
         matrix = args[1]
@@ -2741,6 +2758,56 @@ def s22(env, rounds):
            'runs after the target was overwritten: the aim was still read through +0x64; no handle is linked for it')
     report('s22 dismissundead target order', order[0] - order[1], order[0],
            'all undead in front: the target is the LAST of them in box order (not the nearest in %d)' % order[2])
+
+
+# ---- skill 1 ---------------------------------------------------------------------------
+add_skill(1, 'wizardbeam', {
+    'SkillWizardBeam_cast': (0x2F3B0C, 0x2F3B90), 'SpellWizardBeam_ctor': (0x2F1528, 0x2F1A44),
+    'SpellWizardBeam_run': (0x2F1A44, 0x2F3928),
+}, {
+    'SkillWizardBeam_cast': (0x2F3B0C, 'iiivi', 'i', 'wizardbeam_cast'),
+    'SpellWizardBeam_run': (0x2F1A44, 'ivi', 'n', 'wizardbeam_run'),
+}, spell_tables=[0x51A5B0])
+
+
+@scenario('s01 wizardbeam', 1)
+def s01(env, rounds):
+    """Cast, then the channel held for a number of frames: no target, a target coming into
+    reach of the chain's tip, side targets, the damage frames (every twentieth), targets
+    dying, the facing swinging round."""
+    world, mem, rng = env.world, env.mem, env.rng
+    skill = env.skill(1)
+    spell = world.add_pool(0x380, 1, 'beam')[0]
+    for env.round in range(rounds):
+        world.place(rng, spread=90.0)
+        caster = env.caster(('player', 'player', 'player', 'monster'))
+        facing = facing_arg(rng) & 0xFFFF
+        mem.w32(spell + 0x14, 0)
+        world.fail_alloc = 0.05
+        env.do('SkillWizardBeam_cast', skill, rng.choice((0, 1, 3, 5, 6, 8, 12, 20, 30, 40)), caster, env.pos_of(caster), facing)
+        note_stores(env, 1, 'cast')
+        world.fail_alloc = 0.0
+        if not mem.u32(spell + 0x14):
+            continue
+        crowd = rng.random() < 0.7
+        for n in range(22):
+            frame = mem.u32(RC.G_SIM_FRAME)
+            pick = rng.random()
+            frame += 20 - frame % 20 if pick < 0.3 else 8 - frame % 8 if pick < 0.5 else rng.choice((1, 1, 3))
+            mem.w32(RC.G_SIM_FRAME, frame & M32)
+            if crowd and n in (3, 9, 15):               # enemies near where the chain's tip is
+                reach = mem.f32(spell + 0x348) * rng.choice((3.0, 5.0, 5.0, 7.0))
+                line_up(env, caster, facing, world.mobs[:5] + [world.players[1]], reach * 0.6, reach * 1.3)
+                for mob in rng.sample(world.mobs, 4):
+                    world.enemy(mob)
+                world.enemy_bias = rng.choice((0.5, 0.9, 1.0))
+            if rng.random() < 0.1:
+                victim = rng.choice(world.mobs)
+                mem.w32(victim + 0xC, mem.u32(victim + 0xC) | 8)
+            if rng.random() < 0.15:
+                facing = (facing + rng.choice((500, -900, 0x2000))) & 0xFFFF
+            env.do('SpellWizardBeam_run', spell, env.pos_of(caster, 0.0, 36.0), facing)
+    world.enemy_bias = 0.7
 
 
 def main(argv):

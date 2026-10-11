@@ -42,9 +42,14 @@ so that a skill's constants, methods and table rows stay together)
          24 Poison Rain        29 Disease Effect   31 / 32 Root (and 52, 85)
          33 Critical Hit (and 53, 81)
        the skills that are only numbers: 2 Dodge (and 83), 3, 19 Regeneration, 25, 27, 28, 30
-    3. NOT modelled beyond statistics, mana cost and can-use: 1 Wizard Beam, 5 Disease
-       Shield, 6 Disease Trail, 8 Fire Flares, 10 Blessed, 13 Fire Weapons, 17 Hammer Of
-       Wrath, 18 Cone Of Fire, 22 Dismiss Undead, 34 Shield Bash (can-use not either).
+       added by the second pass, at the end of the file:
+         13 Fire Weapons       18 Cone Of Fire       17 Hammer Of Wrath (the hammer object,
+         its spell; item_parseDescriptor through tools/ref_items.py)
+         34 Shield Bash        22 Dismiss Undead (HolyBolt)        1 Wizard Beam (without
+         the point arrays it hands to the trail functions)
+    3. NOT modelled beyond statistics, mana cost and can-use: 5 Disease Shield, 6 Disease
+       Trail, 8 Fire Flares, 10 Blessed.  (Also not: states 1 and 2 of HammerOfWrath_run,
+       which nothing stores.)
 
 Presentation is modelled too where a function is: every particle_spawn, light and sound
 call-out is made with its arguments, because the own generators that place particles also
@@ -2790,8 +2795,9 @@ def carries_getter(mem_u32, function):
 
 class Model(Model):                             # noqa: F811
     # =====================================================================================
-    # Can-use of the skills whose cast and effect are NOT modelled here (ids 5, 6, 8, 10,
-    # 13, 17; 18 answers 1; 1 and 22 use the base): the generic "carries" shape.
+    # Can-use of the skills whose cast and effect are NOT modelled here (ids 5, 6, 8, 10):
+    # the generic "carries" shape.  (Ids 1, 13, 17, 18 and 22 were in this group until the
+    # second pass; their own sections follow.)
     # =====================================================================================
     def skill_call(self, skill, slot, *args):
         if slot == 1:
@@ -3879,3 +3885,313 @@ SKILL_BODIES.update({0x2F645C: 'dismissundead_cast'})
 OBJECT_BODIES.update({0x2F57B0: 'holybolt_run', 0x2F5FB4: 'holybolt_hit'})
 MODELLED.update({'SkillDismissUndead_cast': 0x2F645C, 'HolyBolt_ctor': 0x2F5248, 'HolyBolt_run': 0x2F57B0,
                  'HolyBolt_onHit': 0x2F5FB4})
+
+
+EXTERNALS.update({
+    'trail_setPoints_1918a0': Ext(0x1918A0, 'ipii', 2, 'n', '(trail handle, point array in the caller\'s frame, count, 0x78; 0, '
+                                  '1.0): presentation - the points themselves are not part of the model'),
+    'trail_clear_191e58': Ext(0x191E58, 'i', 0, 'n', '(trail handle)'),
+    'curve_sample_1911e8': Ext(0x1911E8, 'pipp', 1, 'n', '(point array, count, point out, direction out; t)'),
+    'ring_draw_1920e0': Ext(0x1920E0, 'ippi', 1, 'n', '(trail handle, point, direction, 0x20; size)'),
+    'Creature_getVisualPos': Ext(0x118738, 'op', 0, 'n', '(out, creature)'),
+})
+MATH.update({'color_fromHsv_164f10': 0x164F10, 'color_scaleClamped': 0x165428})
+
+
+class Model(Model):                             # noqa: F811
+    # =====================================================================================
+    # Skill 1, Wizard Beam: SkillWizardBeam (table 0x51a528, channelled; can-use is the
+    # base) and SpellWizardBeam (0x380 bytes, table 0x51a5b0).
+    #
+    #   +0x19, +0x1a bytes: chain / side chains laid out     +0x1c, +0x20, +0x24 trails
+    #   +0x28 six chain nodes N (relative to the run position)     +0x70 their velocities V
+    #   +0xb8 number of side beams (at most 6)     +0xbc, +0xd4 their trails
+    #   +0xec + 0x30 k: four nodes of side chain k (relative to the target); +0x20c their
+    #   velocities     +0x32c + 4 k side segment length     +0x344 its rest value
+    #   +0x348 segment length     +0x34c its maximum     +0x350 + 8 i a ring trail, +0x354
+    #   + 8 i the frame the ring started     +0x378 colour     +0x37c the target's trail
+    #
+    # The point arrays handed to the trail functions live in the caller's frame; they are
+    # presentation and are NOT built here (the calls are made, with their handles and
+    # counts).  Everything stored in the spell and on the targets is.
+    # =====================================================================================
+    VT_SPELL_WIZARDBEAM = 0x51A5B0
+    BEAM_K, BEAM_DAMP = 0x3D778FEE, 0x3F5AE147
+
+    def wizardbeam_cast(self, skill, level, caster, pos=None, facing=0):
+        """SkillWizardBeam_cast 0x2f3b0c -> the spell: pool_new(0x380) and the constructor."""
+        spell = self.call('pool_new', 0x380)
+        if spell:
+            self.wizardbeam_ctor(spell, level, caster, skill)
+        return spell
+
+    def wizardbeam_ctor(self, spell, level, owner, skill):
+        """SpellWizardBeam_ctor 0x2f1528 (spell, level, owner, skill).
+
+        The Spell base (ONE SHARED DRAW).  ONE OWN DRAW d: hue = d / 65536; colour =
+        hsv(hue, 0.8, 1); two more colours hsv(fmod(hue + 0.5, 1), 0.9 / 0.6, 1).  Trails
+        +0x1c, +0x20, +0x24; five ring trails with their start frames = -100000; segment
+        length and maximum +0x348, +0x34c = 2 x slot 10 (1, level); side rest length +0x344
+        = 3 x slot 10 (3, level), copied to the six side lengths; the colour +0x378; the
+        target trail +0x37c; side beams +0xb8 = min(slot 10 (2, level), 6) with two trails
+        each; the sound at the owner's position."""
+        u32, w32 = self.u32, self.w32
+        w32(spell + 4, 0)
+        self.w8(spell, level)
+        w32(spell + 0xC, owner)
+        w32(spell + 8, skill)
+        w32(spell + 0x10, self.draw())
+        w32(spell + 0x14, self.VT_SPELL_WIZARDBEAM)
+        hue = C.mul(C.from_int(self.spell_rand(spell)), F_2M16)
+        colour = C.color_from_hsv(hue, 0x3F4CCCCC, ONE)
+        rgb = (colour & 0xFF, (colour >> 8) & 0xFF, (colour >> 16) & 0xFF)
+        w32(spell + 0x1C, self.call('trail_create', 1, 200, 5, rgb[0], rgb[1], rgb[2], 0x80, TWO))
+        other = C.add(hue, HALF)
+        second = C.color_from_hsv(C.fmodf(other, ONE), 0x3F666666, ONE)
+        third = C.color_from_hsv(C.fmodf(other, ONE), 0x3F199999, ONE)
+        rgb2 = (second & 0xFF, (second >> 8) & 0xFF, (second >> 16) & 0xFF)
+        w32(spell + 0x20, self.call('trail_create', 1, 100, 5, rgb2[0], rgb2[1], rgb2[2], 0x80, TWO))
+        w32(spell + 0x24, self.call('trail_create', 1, 100, 5, third & 0xFF, (third >> 8) & 0xFF, (third >> 16) & 0xFF, 0x80,
+                                    TWO))
+        self.w8(spell + 0x19, 0)
+        self.w8(spell + 0x1A, 0)
+        for i in range(5):
+            w32(spell + 0x354 + 8 * i, 0xFFFE7960)
+            w32(spell + 0x350 + 8 * i, self.call('trail_create', 6, 100, 5, rgb[0], rgb[1], rgb[2], 0x80, TWO))
+        reach = s32(self.skill_call(u32(spell + 8), 10, 1, self.s8(spell)))
+        w32(spell + 0x348, C.from_int(s32(reach << 1)))
+        w32(spell + 0x34C, C.from_int(s32(reach << 1)))
+        side = s32(self.skill_call(u32(spell + 8), 10, 3, self.s8(spell)))
+        w32(spell + 0x344, C.from_int(s32(side * 3)))
+        for k in range(6):
+            w32(spell + 0x32C + 4 * k, u32(spell + 0x344))
+        w32(spell + 0x378, colour)
+        w32(spell + 0x37C, self.call('trail_create', 1, 300, 5, rgb[0], rgb[1], rgb[2], 0x80, TWO))
+        beams = s32(self.skill_call(u32(spell + 8), 10, 2, self.s8(spell)))
+        w32(spell + 0xB8, beams)
+        if beams > 6:
+            w32(spell + 0xB8, 6)
+        for k in range(max(self.s32(spell + 0xB8), 0)):
+            w32(spell + 0xBC + 4 * k, self.call('trail_create', 1, 100, 5, rgb[0], rgb[1], rgb[2], 0x80, TWO))
+            w32(spell + 0xD4 + 4 * k, self.call('trail_create', 1, 100, 5, rgb2[0], rgb2[1], rgb2[2], 0x80, TWO))
+        self.call('sound_playAtPos', self.call('res_find', 0x550C68, 0x550C70), self.vec(u32(spell + 0xC) + 0x10), ONE)
+
+    def _beam_flash(self, spell, target):
+        """The colour pulse on a target: first quad = colour x ((sin16(frame << 13) + 1) x
+        0.25 + 0.8), second quad = colour x (sin16(frame << 13) + 1.8), fourth word 0x10."""
+        w16 = self.w16
+        wave = C.sin16(s16(self.frame() << 13))
+        col = C.color_scale_clamped(C.add(C.mul(C.add(wave, ONE), 0x3E800000), 0x3F4CCCCC), self.u32(spell + 0x378))
+        return col, C.color_scale_clamped(C.add(C.sin16(s16(self.frame() << 13)), 0x3FE66666), self.u32(spell + 0x378))
+
+    def _beam_chain(self, base, vel, count, direction, length_at):
+        """The chain step shared by the main chain and the side chains: for node i = 1 ..
+        count - 1: N[i] += V[i]; want = N[i-1] + prev, blended with the neighbours ((want x 3
+        + (N[i+1] + N[i-1]) x 0.5) x 0.25) for every node but the last; V[i] = (V[i] +
+        (want - N[i]) x 0.06044) x 0.855; then N[i] = N[i-1] + unit(N[i] - N[i-1]) x the
+        segment length, and that vector is `prev` for the next node."""
+        u32, w32 = self.u32, self.w32
+        length = u32(length_at)
+        prev = [C.mul(direction[i], length) for i in range(3)]
+        for i in range(1, count):
+            node, before, speed = base + 12 * i, base + 12 * (i - 1), vel + 12 * i
+            want = [C.add(u32(before + 4 * a), prev[a]) for a in range(3)]
+            for a in range(3):
+                w32(node + 4 * a, C.add(u32(node + 4 * a), u32(speed + 4 * a)))
+            if i < count - 1:
+                after = node + 12
+                want = [C.mul(C.add(C.mul(want[a], 0x40400000), C.mul(C.add(u32(after + 4 * a), u32(before + 4 * a)), HALF)),
+                              0x3E800000) for a in range(3)]
+            seg = [C.sub(u32(node + 4 * a), u32(before + 4 * a)) for a in range(3)]
+            for a in range(3):
+                w32(speed + 4 * a, C.mul(C.add(u32(speed + 4 * a), C.mul(C.sub(want[a], u32(node + 4 * a)), self.BEAM_K)),
+                                         self.BEAM_DAMP))
+            inverse = C.rsqrt(ONE, C.add(C.add(C.mul(seg[0], seg[0]), C.mul(seg[1], seg[1])), C.mul(seg[2], seg[2])))
+            length = u32(length_at)
+            prev = [C.mul(C.mul(seg[a], inverse), length) for a in range(3)]
+            for a in range(3):
+                w32(node + 4 * a, C.add(u32(before + 4 * a), prev[a]))
+
+    def wizardbeam_run(self, spell, pos, facing=0):
+        """SpellWizardBeam_run 0x2f1a44 (spell, position, facing), every frame the channel
+        is held.
+
+          1. first run: the six chain nodes N[i] = (cos, sin of the facing, 0) x i x the
+             segment length, velocities 0.
+          2. R1 = slot 10 (1, level) x 12, R3 = slot 10 (3, level) x 12; tip = position +
+             N[5].  The primary target: of world_collectObjectsInBox(tip -/+ (R1, R1,
+             100000), capacity 64), in the order returned, the entry the owner's slot 20
+             accepts with the smallest 3-D distance^2 to the tip below R1^2 (strict) whose
+             distance in the plane from the RUN POSITION is below 5 x the maximum segment
+             length.
+          3. no target: the segment length relaxes toward its maximum (x 0.05) and the
+             target and side trails are cleared.
+          4. a target: the sound; on the first such frame the side chains are laid out (four
+             nodes each, along directions spread round the target's facing + frame x 600).
+             Side targets: of the box tip -/+ (R3, R3, 100), every creature the owner's
+             slot 20 accepts that is not the owner or the target, within R3 of the tip
+             (3-D), up to the number of side beams, in the order returned.  The chain nodes
+             1..5 are pulled toward the target's middle by (i x 0.2)^3 (the library powf);
+             the segment length goes toward min(5 x maximum, 1.1 x plane distance) x 0.2;
+             the target is tinted; with a model that has sample points TEN OWN DRAWS place
+             the target's trail.  Each side chain is pulled toward its side target the same
+             way ((j / 3)^3), its length toward min(3 x rest, 1.1 x its distance) / 3, the
+             side target tinted; unused side chains relax toward the rest length.
+             On frames divisible by 20: damage_apply(target, owner, 100000, flags 0x100, no
+             descriptor, 0; d, d + d x r/65536 x 0.2) with d = (float)(int)(slot 10 (0,
+             level) x (1/3)) and ONE OWN DRAW r; then the same for every side target with d
+             = (float)(int)(slot 10 (0, level) x 0.25 x (1/3)), a draw each.
+             Then the side chains' physics.
+          5. always: the three beam trails, the five rings (a new one every eighth frame),
+             and the main chain's physics."""
+        u32, w32, w16 = self.u32, self.w32, self.w16
+        facing = s16(facing)
+        direction = (C.cos16(facing), C.sin16(facing), ZERO)
+        if not self.u8(spell + 0x19):
+            self.w8(spell + 0x19, 1)
+            for i in range(6):
+                f = C.from_int(i)
+                length = u32(spell + 0x348)
+                self.wvec(spell + 0x28 + 12 * i, (C.mul(C.mul(direction[0], f), length), C.mul(C.mul(direction[1], f), length),
+                                                  C.mul(C.mul(f, ZERO), length)))
+                self.wvec(spell + 0x70 + 12 * i, (0, 0, 0))
+        reach = s32(s32(self.skill_call(u32(spell + 8), 10, 1, self.s8(spell))) * 12)
+        side_reach = s32(s32(self.skill_call(u32(spell + 8), 10, 3, self.s8(spell))) * 12)
+        tip = tuple(C.add(pos[a], u32(spell + 0x64 + 4 * a)) for a in range(3))
+        wide = (C.from_int(reach), C.from_int(reach), 0x47C35000)
+        found = self.call('world_collectObjectsInBox', tuple(C.sub(tip[a], wide[a]) for a in range(3)),
+                          tuple(C.add(tip[a], wide[a]) for a in range(3)), 0x40) or ()
+        best, best_d, best_far = 0, C.from_int(s32(reach * reach)), ZERO
+        for other in found:
+            if not self.vcall(u32(spell + 0xC), 20, other):
+                continue
+            d = [C.sub(u32(other + 0x10 + 4 * a), tip[a]) for a in range(3)]
+            ex, ey = C.sub(u32(other + 0x10), pos[0]), C.sub(u32(other + 0x14), pos[1])
+            dist = C.add(C.add(C.mul(d[0], d[0]), C.mul(d[1], d[1])), C.mul(d[2], d[2]))
+            far = C.sqrt(C.add(C.mul(ex, ex), C.mul(ey, ey)))
+            if C.lt(dist, best_d) and not C.le(C.mul(u32(spell + 0x34C), 0x40A00000), far):
+                best, best_d, best_far = other, dist, far
+        beams = self.s32(spell + 0xB8)
+        if not best:
+            w32(spell + 0x348, C.add(u32(spell + 0x348), C.mul(C.sub(u32(spell + 0x34C), u32(spell + 0x348)), 0x3D4CCCCC)))
+            self.call('trail_clear_191e58', u32(spell + 0x37C))
+            for k in range(max(self.s32(spell + 0xB8), 0)):
+                self.call('trail_clear_191e58', u32(spell + 0xBC + 4 * k))
+                self.call('trail_clear_191e58', u32(spell + 0xD4 + 4 * k))
+        else:
+            self.call('sound_playAtPos', self.call('res_find', 0x550C68, 0x550C88), self.vec(u32(spell + 0xC) + 0x10), ONE)
+            spokes, offset = [], 0
+            for k in range(max(beams, 0)):
+                turn = s16(self.frame() * 600 + offset + self.s16(best + 0x38))
+                spokes.append((C.cos16(turn), C.sin16(s16(self.frame() * 600 + offset + self.s16(best + 0x38))), ZERO))
+                offset += s16(quot(0xFFFE, beams))
+            if not self.u8(spell + 0x1A):
+                self.w8(spell + 0x1A, 1)
+                for k in range(max(self.s32(spell + 0xB8), 0)):
+                    for j in range(4):
+                        f = C.from_int(j)
+                        length = u32(spell + 0x348)
+                        self.wvec(spell + 0xEC + 0x30 * k + 12 * j, tuple(C.mul(C.mul(spokes[k][a], f), length) for a in range(3)))
+                        self.wvec(spell + 0x20C + 0x30 * k + 12 * j, (0, 0, 0))
+            narrow = (C.from_int(side_reach), C.from_int(side_reach), 0x42C80000)
+            found = self.call('world_collectObjectsInBox', tuple(C.sub(tip[a], narrow[a]) for a in range(3)),
+                              tuple(C.add(tip[a], narrow[a]) for a in range(3)), 0x40) or ()
+            sides, side_far = [], []
+            for other in found:
+                owner = u32(spell + 0xC)
+                if other == owner or other == best or not u32(other + 0xC) & 0x20:
+                    continue
+                if not self.vcall(owner, 20, other):
+                    continue
+                d = [C.sub(u32(other + 0x10 + 4 * a), tip[a]) for a in range(3)]
+                flat = C.add(C.mul(d[0], d[0]), C.mul(d[1], d[1]))
+                if C.lt(C.add(flat, C.mul(d[2], d[2])), C.from_int(s32(side_reach * side_reach))) \
+                        and len(sides) < self.s32(spell + 0xB8):
+                    sides.append(other)
+                    side_far.append(C.sqrt(flat))
+            middle = (C.add(u32(best + 0x10), ZERO), u32(best + 0x14), C.add(u32(best + 0x18), C.mul(u32(best + 0x20), HALF)))
+            for i in range(1, 6):
+                node = spell + 0x28 + 12 * i
+                delta = [C.sub(middle[a], C.add(u32(node + 4 * a), pos[a])) for a in range(3)]
+                weight = C.powf(C.mul(C.from_int(i), F_0_2), 0x40400000)
+                for a in (1, 2, 0):
+                    w32(node + 4 * a, C.add(u32(node + 4 * a), C.mul(delta[a], weight)))
+            goal = C.fmin(C.mul(u32(spell + 0x34C), 0x40A00000), C.mul(best_far, 0x3F8CCCCC))
+            w32(spell + 0x348, C.add(u32(spell + 0x348), C.mul(C.sub(C.mul(goal, F_0_2), u32(spell + 0x348)), 0x3D4CCCCC)))
+            first, second = self._beam_flash(spell, best)
+            w16(best + 0x96, 0x10)
+            w16(best + 0x92, (first >> 8) & 0xFF)
+            w16(best + 0x94, (first >> 16) & 0xFF)
+            w16(best + 0x90, first & 0xFF)
+            w16(best + 0x9E, 0x10)
+            w16(best + 0x98, second & 0xFF)
+            w16(best + 0x9C, (second >> 16) & 0xFF)
+            w16(best + 0x9A, (second >> 8) & 0xFF)
+            model = self.vcall(best, 16)
+            count = self.call('model_getSamplePointCount', model)
+            if count:
+                centre = self.call('Creature_getVisualPos', best)
+                for _ in range(10):
+                    index = rem(self.spell_rand(spell), count)
+                    self.call('model_getSamplePoint', model, best + 0x114, tuple(centre), self.s16(best + 0x38), index, 1, 0,
+                              u32(best + 0xDC))
+                self.call('trail_setPoints_1918a0', u32(spell + 0x37C), 'stack', 10, 0x78, ZERO, ONE)
+            for k, other in enumerate(sides):
+                aim = (C.add(u32(other + 0x10), ZERO), u32(other + 0x14), C.add(u32(other + 0x18), C.mul(u32(other + 0x20), HALF)))
+                for j in range(1, 4):
+                    node = spell + 0xEC + 0x30 * k + 12 * j
+                    world = (C.add(C.add(u32(node), u32(best + 0x10)), ZERO), C.add(u32(node + 4), u32(best + 0x14)),
+                             C.add(C.add(u32(node + 8), u32(best + 0x18)), C.mul(u32(best + 0x20), HALF)))
+                    delta = [C.sub(aim[a], world[a]) for a in range(3)]
+                    weight = C.powf(C.mul(C.from_int(j), 0x3EAAAAAA), 0x40400000)
+                    for a in (1, 2, 0):
+                        w32(node + 4 * a, C.add(u32(node + 4 * a), C.mul(delta[a], weight)))
+                goal = C.fmin(C.mul(u32(spell + 0x344), 0x40400000), C.mul(side_far[k], 0x3F8CCCCC))
+                length = u32(spell + 0x32C + 4 * k)
+                w32(spell + 0x32C + 4 * k, C.add(length, C.mul(C.sub(C.mul(goal, 0x3EAAAAAA), length), 0x3D4CCCCC)))
+                first, second = self._beam_flash(spell, other)
+                w16(other + 0x92, (first >> 8) & 0xFF)
+                w16(other + 0x94, (first >> 16) & 0xFF)
+                w16(other + 0x90, first & 0xFF)
+                w16(other + 0x96, 0x10)
+                w16(other + 0x9E, 0x10)
+                w16(other + 0x98, second & 0xFF)
+                w16(other + 0x9A, (second >> 8) & 0xFF)
+                w16(other + 0x9C, (second >> 16) & 0xFF)
+            for k in range(len(sides), max(self.s32(spell + 0xB8), 0)):
+                length = u32(spell + 0x32C + 4 * k)
+                w32(spell + 0x32C + 4 * k, C.add(length, C.mul(C.sub(u32(spell + 0x344), length), 0x3D4CCCCC)))
+            for k in range(max(self.s32(spell + 0xB8), 0)):
+                self.call('trail_setPoints_1918a0', u32(spell + 0xBC + 4 * k), 'stack', 4, 0x78, ZERO, ONE)
+                self.call('trail_setPoints_1918a0', u32(spell + 0xD4 + 4 * k), 'stack', 4, 0x78, ZERO, ONE)
+            if rem(self.frame(), 20) == 0:
+                amount = C.from_int(s32(C.to_int(C.mul(C.from_int(s32(self.skill_call(u32(spell + 8), 10, 0, self.s8(spell)))),
+                                                       0x3EAAAAAA))))
+                high = spread_max(amount, self.spell_rand(spell))
+                self.call('damage_apply', best, u32(spell + 0xC), 100000, 0, 0, 0x100, 0, 0, amount, high)
+            for other in sides:
+                if rem(self.frame(), 20) == 0:
+                    whole = C.from_int(s32(self.skill_call(u32(spell + 8), 10, 0, self.s8(spell))))
+                    amount = C.from_int(s32(C.to_int(C.mul(C.mul(whole, 0x3E800000), 0x3EAAAAAA))))
+                    high = spread_max(amount, self.spell_rand(spell))
+                    self.call('damage_apply', other, u32(spell + 0xC), 100000, 0, 0, 0x100, 0, 0, amount, high)
+            for k in range(max(self.s32(spell + 0xB8), 0)):
+                self._beam_chain(spell + 0xEC + 0x30 * k, spell + 0x20C + 0x30 * k, 4, spokes[k], spell + 0x32C + 4 * k)
+        for trail in (0x1C, 0x20, 0x24):
+            self.call('trail_setPoints_1918a0', u32(spell + trail), 'stack', 6, 0x78, ZERO, ONE)
+        for i in range(5):
+            age = s32(self.frame() - self.s32(spell + 0x354 + 8 * i))
+            if age < 0x1E:
+                self.call('curve_sample_1911e8', 'stack', 6, 'stack', 'stack', C.mul(C.from_int(age), 0x3D088888))
+                self.call('ring_draw_1920e0', u32(spell + 0x350 + 8 * i), 'stack', 'stack', 0x20,
+                          C.fmin(0x41200000, C.mul(C.from_int(s32(0x1E - age)), HALF)))
+            else:
+                self.call('trail_clear_191e58', u32(spell + 0x350 + 8 * i))
+        if self.frame() & 7 == 0:
+            w32(spell + 0x354 + 8 * rem(self.frame() >> 3, 5), self.frame())
+        self._beam_chain(spell + 0x28, spell + 0x70, 6, direction, spell + 0x348)
+
+
+SKILL_BODIES.update({0x2F3B0C: 'wizardbeam_cast'})
+SPELL_BODIES.update({0x2F1A44: 'wizardbeam_run'})
+MODELLED.update({'SkillWizardBeam_cast': 0x2F3B0C, 'SpellWizardBeam_ctor': 0x2F1528, 'SpellWizardBeam_run': 0x2F1A44})

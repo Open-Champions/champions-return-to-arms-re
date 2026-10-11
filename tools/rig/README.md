@@ -83,6 +83,9 @@ directory; keep that, and any logs and dumps, under `local/rig-out/`.
 | `--tick-log <file>`, `--tick-watch <name=expr:type>`, `--tick-at <addr>` | one row per lockstep tick (below) |
 | `--predict-audit <file>` | what each call of `net_predictLocalPlayer` 0x131d88 left changed, outside a short ignore list (`AuditIgnored`): address, symbol, calls, first tick, old and new word, and the object class and field (pool) or allocating function (heap); also whether any grid cell or the off-grid list changed the order or the set of its real objects |
 | `--predict-trace <file>`, `--trace-range <addr:length[:stride][,all][,name=N]>`, `--trace-ticks <lo:hi>`, `--trace-raw <n>` | which code writes the watched words: writers gathered by site, writing block and call chain (below) |
+| `--video` | Play!'s OpenGL video handler on a context without a window, so that the script command `shot <file.bmp>` can write a picture of the screen (macOS; off with `-DRTA_RIG_VIDEO=OFF`). Slower; for programs whose text the transcript cannot show |
+| `--eth-pcap <file>` | every Ethernet frame the emulated chip sends or is given, as a capture file (`tcpdump -nn -r <file>`) |
+| `--eth-net server=<address>[,name=<host>][,guest=<address>]` | a small network behind the emulated chip, for the game's own network stack (below) |
 | `--fp-round nearest\|up\|down\|zero` | force a floating-point rounding mode on this machine (Play! runs the EE with round-toward-zero); for float-mismatch experiments |
 | `--no-code-protect`, `--video-thread`, `--throttle`, `--play-logs` | emulator behaviour, see `--help` |
 
@@ -192,6 +195,31 @@ block with a check costs about a minute per machine at the start.
 python3 -I -B tools/rig/fuzz.py --states local/rig-out/run4 --seeds 402:1 --patches FIXES --no-rerun \
     --extra "--predict-trace local/rig-out/t-%M.tsv --trace-range 0x631134:4,all --trace-ticks 4741:4933 --trace-raw 4000" ...
 ```
+
+### The game's own network stack
+
+Without `--net-shim` the game's eleven network modules run as IOP code on Play!'s
+emulation of the adapter's Ethernet chip, which has a transmit hook and a receive call
+and nothing behind them. `--eth-net` puts a network there, inside the runner: the machine
+is alone on 10.0.2.0/24 and the runner is the gateway 10.0.2.2. It answers ARP, DHCP
+(the machine becomes 10.0.2.15), ping and DNS — the one name given by `name=` (default
+`con.soegames.net`) gets the address given by `server=`, every other name does not exist.
+UDP and TCP to the server's address are relayed through host sockets (TCP is ended in the
+runner; the machine only opens connections). Nothing else is relayed: the machine cannot
+reach the Internet. Use the host's own LAN address for `server=`, not 127.0.0.1 — the
+lobby server tells machines each other's addresses as it sees them.
+
+The game also wants a network configuration on the memory card. `examples/online-netcnf.rig`
+makes one with the configuration program on the disc, and `examples/online-lobby.rig` goes
+from power-on to the lobby server's first screen. Things to know:
+
+- the chip's state is not in a saved state, so this path always starts from power-on;
+- the memory cards are `vfs/mc0` and `vfs/mc1` under `--data`. The runner sets these paths
+  on every start, because Play! records them in `config.xml` as absolute paths and a
+  copied data directory would otherwise use the cards of the original;
+- two things in Play!'s chip emulation are corrected from the runner (`EtherDeliver`),
+  for which `Iop_Speed.h` is included with its private members reachable;
+- the script command `iopdump <file>` writes the IOP's memory.
 
 ### The libnet shim
 

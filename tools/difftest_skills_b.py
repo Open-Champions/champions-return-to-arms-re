@@ -42,6 +42,14 @@ What runs for real and what is a stub
     animation, object construction (GameObject_ctor: its stub makes the shared draw the
     real one makes), the pool, particles, lights, sound, text.  A call to an address that
     is neither real nor a known stub is reported as a failure.
+
+Second pass (sections appended after the first pass's, so that those keep their random
+cases): charge, darkness, shock, groundpound, convertenemy, convertundead, ancestralcall
+(with the prediction copy as a caster), shadowstep, canuse (slot 1 of every id of the
+pass for a player, a monster and the copy) and sb3 - the ORIGINAL StaticFire constructor
+and run function executed as they are, without a model, to see what they do with their
+owner argument.  After the frame counts the test prints, per skill, the stores a cast made
+outside its own new objects (the prediction-copy table of the companion document).
 """
 import hashlib
 import os
@@ -404,6 +412,30 @@ class World:
 
     def on_player_getSkillRank(self, args, view, rng):
         return Res(rng.choice((0, 0, 1, 7, 20)))
+
+    # ---- answers used by the second pass only ------------------------------------------------
+    def on_trail_create(self, args, view, rng):
+        return Res(rng.choice((0, 3, 17, 40)))
+
+    def on_beam_create(self, args, view, rng):
+        return Res(rng.choice((0, 2, 9)))
+
+    def on_Player_clampToScreen(self, args, view, rng):
+        if rng.random() < 0.3:
+            return Res(outs=[(0, 0, 0)])
+        return Res(outs=[(f32(rng.uniform(-370, 370)), f32(rng.uniform(-370, 370)), 0)])
+
+    def on_obj_moveWithCollision(self, args, view, rng):
+        obj, velocity = args[0], args[1]
+        for i in range(3):
+            view.poke(obj + 0x10 + 4 * i, 4, f32(fl(rd(view, obj + 0x10 + 4 * i)) + fl(velocity[i]) / 64.0))
+        return Res(rng.choice((0, 0, 2, 4, 6, 0x10)))
+
+    def on_isNearView(self, args, view, rng):
+        return Res(1)
+
+    def on_SpellAncestralCall_typeinfo(self, args, view, rng):
+        return Res(0x909E90)
 
 
 # ---------------------------------------------------------------------------------------
@@ -1676,6 +1708,517 @@ SECTIONS = [('stats', section_stats), ('float', section_float), ('base', section
                                            end_name='explode', end_method='explode'))]
 
 
+# =========================================================================================
+# The second pass: the casts and effects of ids 35-40, 51, 52, 56-58 and 65-67.  The
+# sections are appended to SECTIONS, after the ones of the first pass, so that those draw
+# the same random scenarios as before.
+# =========================================================================================
+COPY_ROWS = {}                  # skill id -> {what: [(pc, where), ...]}: the prediction-copy table
+
+
+def note_stores(rig, sid, what):
+    """After a call: the stores the original made outside the stack that are not into a
+    block pool_new had just handed it and not the shared seed - what a cast leaves behind
+    that destroying its spell would not undo.  The first one of every call is kept, and
+    every distinct place, in order of first appearance."""
+    world = rig.world
+    row = COPY_ROWS.setdefault(sid, {}).setdefault(what, {'first': set(), 'all': []})
+    first = None
+    for pc, addr, _size, _value in rig.emu.writes:
+        if RC.G_RAND_SEED <= addr < RC.G_RAND_SEED + 4 or any(b <= addr < b + 0x400 for b in world.allocated):
+            continue
+        if world.node_lo <= addr < world.node_hi or addr == SB.G_HANDLE_FREE:
+            continue                                    # list nodes: freed with the spell
+        entry = (pc, rig.where(addr))
+        if first is None:
+            first = entry
+        if entry not in row['all']:
+            row['all'].append(entry)
+    row['first'].add(first)
+
+
+def section_charge(rig):
+    """Skill 35: cast (player, monster), the rush frame by frame, the contact handler with
+    a creature, a prop, a wall and nothing in reach, the end by time and by contact."""
+    rig.section = 'charge'
+    mem, world, rng = rig.emu.mem, rig.world, rig.rng
+    pos = world.scratch
+    skill = skill_obj(mem, 35)
+    world.sample_counts = (1, 3, 7, 7, 12)
+    for round_ in range(8 if OPTIONS['quick'] else 90):
+        world.place(rng)
+        caster = rng.choice(world.players * 3 + world.monsters[:1])
+        rig.vskill(skill, 1, (caster,))
+        level = rng.choice((1, 5, 8, 9, 10, 12, 20, 40))
+        spell = rig.vskill(skill, 2, (level, caster, pos, 0))['ret'] & M32
+        note_stores(rig, 35, 'cast')
+        if not spell:
+            continue
+        world.live.add(spell)
+        rig.do('SpellCharge_getStat3Scaled', 'charge_stat3_scaled', (spell,), ret='f')
+        for tick in range(rng.choice((3, 20, 50))):
+            mem.w32(RC.G_SIM_FRAME, (mem.u32(RC.G_SIM_FRAME) + 1) & M32)
+            if rng.random() < 0.02:                     # the clock behind the cast: the difference is unsigned
+                mem.w32(RC.G_SIM_FRAME, (mem.u32(spell + 0x44) - 1) & M32)
+            if rng.random() < 0.1:
+                rig.do('SpellCharge_onContact', 'charge_on_contact', (spell, rng.choice([0, 0] + world.objects)))
+            if ended(rig.do('SpellCharge_run', 'charge_run', (spell, pos, 0)), spell):
+                break
+        world.live.discard(spell)
+    world.sample_counts = (0, 1, 3, 7, 7, 12)
+    rig.report('charge', 'id 35; player and monster casters')
+
+
+SECTIONS.append(('charge', section_charge))
+
+
+def run_object(rig, name, method, obj, limit, between=None):
+    """Run an every-frame object until it deletes itself (obj_delete or its slot 1) or
+    `limit` runs passed.  Returns the number of runs."""
+    mem = rig.emu.mem
+    for tick in range(limit):
+        mem.w32(RC.G_SIM_FRAME, (mem.u32(RC.G_SIM_FRAME) + 1) & M32)
+        if between is not None:
+            between(tick)
+        result = rig.do(name, method, (obj,))
+        calls = result['emu_calls']
+        if ('obj_delete', (obj,)) in calls or ('Creature.v1', (obj, 3)) in calls or result['fault'] \
+                or result['both_fault'] is not None:
+            return tick + 1
+    return limit
+
+
+def section_darkness(rig):
+    """Skill 36: cast, and the cloud from its flight to its end: stopped by terrain,
+    attaching to the first enemy in its box with the damage call for each, the blind roll
+    every 30 frames, the caster gone."""
+    rig.section = 'darkness'
+    mem, world, rng = rig.emu.mem, rig.world, rig.rng
+    pos = world.scratch
+    skill = skill_obj(mem, 36)
+    for round_ in range(6 if OPTIONS['quick'] else 70):
+        world.place(rng)
+        caster = rng.choice(world.players * 2 + world.monsters)
+        for i in range(4):
+            mem.w8(SB.Model.G_AMBIENT_BYTES + i, rng.randrange(256))
+        rig.vskill(skill, 1, (caster,))
+        rig.vskill(skill, 2, (rng.choice((1, 2, 5, 10, 20, 40)), caster, pos, rng.randrange(0x10000)))
+        note_stores(rig, 36, 'cast')
+        if not world.allocated:
+            continue
+        cloud = world.allocated[0]
+        world.live.add(cloud)
+        world.box_counts = rng.choice(((0, 0, 0, 0, 0, 1, 2), (0, 1, 2, 3, 5)))
+        world.ground_up = rng.choice((0.0, 0.05, 0.4))
+        quiet = rng.random() < 0.3
+
+        def between(tick):
+            if tick < 3 and quiet:
+                world.box_counts = (0,)
+            elif quiet:
+                world.box_counts = (0, 1, 2, 3, 5)
+            if rng.random() < 0.5:                      # the blind roll happens on frames divisible by 30
+                frame = mem.u32(RC.G_SIM_FRAME)
+                mem.w32(RC.G_SIM_FRAME, frame + 30 - frame % 30)
+            if rng.random() < 0.1:
+                for obj in world.objects:
+                    mem.wf32(obj + 0x228, rng.choice((300.0, 300.0, 0.0, -5.0)))
+                    mem.w16(obj + 0x316, rng.choice((0, 0, 0, 40)))
+            if rng.random() < 0.03 and mem.u32(cloud + 0xA8):
+                rig.do('handle_clear', 'handle_clear', (cloud + 0xA8,))      # the caster is deleted
+            if tick == 40 and rng.random() < 0.5:
+                mem.w32(cloud + 0x94, rng.choice((0, 1, 2)))                 # the last frames
+        run_object(rig, 'DarknessProjectile_run', 'darkness_run', cloud, 130, between)
+        world.live.discard(cloud)
+        clear_handles(rig)
+    world.box_counts, world.ground_up = (0, 0, 1, 2, 3, 5, 8), 0.4
+    rig.report('darkness', 'id 36; player and monster casters')
+
+
+SECTIONS.append(('darkness', section_darkness))
+
+
+def section_shock(rig):
+    """Skill 37: cast (player, monster, no caster), the bolt's flight, the terrain stop,
+    the hit test on every eighth frame with the chain it builds and the damage calls, the
+    beams of the struck state, the caster deleted in flight, the end."""
+    rig.section = 'shock'
+    mem, world, rng = rig.emu.mem, rig.world, rig.rng
+    pos = world.scratch
+    skill = skill_obj(mem, 37)
+    for round_ in range(5 if OPTIONS['quick'] else 60):
+        world.place(rng)
+        caster = rng.choice(world.players * 2 + world.monsters + [0])
+        near = rng.choice(world.objects)
+        put_vec(mem, pos, (mem.f32(near + 0x10) + rng.uniform(-60, 60), mem.f32(near + 0x14) + rng.uniform(-60, 60),
+                           mem.f32(near + 0x18) + 30.0))
+        if caster:
+            rig.vskill(skill, 1, (caster,))
+        rig.vskill(skill, 2, (rng.choice((1, 2, 5, 9, 10, 11, 20, 40)), caster, pos, rng.randrange(0x10000)))
+        note_stores(rig, 37, 'cast')
+        if not world.allocated:
+            continue
+        bolt = world.allocated[0]
+        world.live.add(bolt)
+        world.box_counts = rng.choice(((0, 1, 2, 3), (2, 3, 5, 8), (0, 0, 0, 1)))
+        world.ground_up = rng.choice((0.0, 0.0, 0.03))
+        ending = rng.random() < 0.3
+
+        def between(tick):
+            frame = mem.u32(RC.G_SIM_FRAME)
+            if rng.random() < 0.5:
+                mem.w32(RC.G_SIM_FRAME, frame + 8 - frame % 8)       # the hit test runs on every eighth frame
+            if rng.random() < 0.3 and mem.u8(bolt + 0x189) == 0:     # the bolt reaches something
+                victim = rng.choice(world.objects)
+                put_vec(mem, bolt + 0x10, (mem.f32(victim + 0x10) + rng.uniform(-20, 20),
+                                           mem.f32(victim + 0x14) + rng.uniform(-20, 20), mem.f32(bolt + 0x18)))
+            if rng.random() < 0.04 and mem.u32(bolt + 0x194):
+                rig.do('handle_clear', 'handle_clear', (bolt + 0x194,))      # the caster is deleted
+            if rng.random() < 0.05:
+                victim = rng.choice(world.objects)
+                mem.w32(victim + 0xC, mem.u32(victim + 0xC) | 8)             # somebody dies
+            if ending and tick == 12:
+                mem.w32(bolt + 0x58, (mem.u32(RC.G_SIM_FRAME) - rng.choice((262, 268, 297, 298))) & M32)
+        run_object(rig, 'ShockProjectile_run', 'shock_run', bolt, 44, between)
+        for off in (0x50, 0x54, 0x194):
+            rig.do('handle_clear', 'handle_clear', (bolt + off,))
+        world.live.discard(bolt)
+        clear_handles(rig)
+    world.box_counts, world.ground_up = (0, 0, 1, 2, 3, 5, 8), 0.4
+    rig.report('shock', 'id 37; player, monster and absent casters')
+
+
+SECTIONS.append(('shock', section_shock))
+
+
+def section_shadowstep(rig):
+    """Skill 67: cast at every rank (no fire, the centre fire, the ring), the enemies that
+    lose their target and are pulled, and the 25 frames of the step, offline and in a net
+    game."""
+    rig.section = 'shadowstep'
+    mem, world, rng = rig.emu.mem, rig.world, rig.rng
+    pos = world.scratch
+    skill = skill_obj(mem, 67)
+    world.sample_counts = (1, 3, 7, 7, 12)
+    kept = mem.u8(RC.G_NETWORK_MODE)
+    for round_ in range(6 if OPTIONS['quick'] else 70):
+        world.place(rng)
+        caster = rng.choice(world.players * 3 + world.monsters[:1])
+        mem.w8(RC.G_NETWORK_MODE, rng.choice((0, 1)))
+        for obj in world.monsters:                      # some creatures are after the caster
+            target = rng.choice((caster, caster, world.players[1], 0))
+            if target:
+                rig.do('handle_link', 'handle_link', (obj + 0x234, target, target), ret='i')
+        rig.vskill(skill, 1, (caster,))
+        spell = rig.vskill(skill, 2, (rng.choice((1, 2, 4, 5, 6, 7, 12, 20, 40)), caster, pos, 0))['ret'] & M32
+        note_stores(rig, 67, 'cast')
+        if spell:
+            world.live.add(spell)
+            runs = run_spell(rig, 'SpellShadowStep_run', 'shadowstep_run', spell, pos, 40,
+                             timer='shadowstep: runs until the spell ends itself')
+            world.live.discard(spell)
+        for obj in world.monsters:
+            rig.do('handle_clear', 'handle_clear', (obj + 0x234,))
+        clear_handles(rig)
+    mem.w8(RC.G_NETWORK_MODE, kept)
+    world.sample_counts = (0, 1, 3, 7, 7, 12)
+    rig.report('shadowstep', 'id 67; player and monster casters; offline and net game')
+
+
+STATIC_FIRE = {'ctor': 0x2C5240, 'initCommon': 0x2C5814, 'run': 0x2C595C}
+
+
+def section_sb3(rig):
+    """FINDINGS SB3: the ORIGINAL StaticFire constructor and run function, executed as they
+    are (no model beside them; everything they call that this file does not run is a stub
+    returning 0), to see what they do with the owner argument."""
+    rig.section = 'sb3'
+    emu, mem, world, rng = rig.emu, rig.emu.mem, rig.world, rig.rng
+    hooks = {addr: emu.hooks.pop(addr) for addr in STATIC_FIRE.values() if addr in emu.hooks}
+    rig.real.addresses.update(STATIC_FIRE.values())
+    rounds = 6 if OPTIONS['quick'] else 40
+    stored = linked = fresh = stale_creature = stale_other = faults = 0
+    for round_ in range(rounds):
+        world.place(rng)
+        owner, victim = world.players[0], world.monsters[0]
+        mem.w32(owner + 0xC, 0x60)                      # a player object carries the creature flag too
+        mem.w32(victim + 0xC, 0x20)
+        fire = world.blocks[0]
+        for off in range(0, 0x400, 4):
+            mem.w32(fire + off, 0)
+        put_vec(mem, world.scratch, (mem.f32(victim + 0x10), mem.f32(victim + 0x14), mem.f32(victim + 0x18)))
+        rig.calls, rig.buffers = [], {}
+        rig.script_rng = random.Random(OPTIONS['seed'] + round_)
+        rig.eview.pool_cursor = 1
+        emu.reset_log()
+        emu.r[29] = emu.stack_hi - 0x100
+        emu.f[12], emu.f[13] = f32(120.0), f32(1.0)
+        try:
+            emu.call(STATIC_FIRE['ctor'], fire, world.scratch, 360, owner, round_ & 1, max_steps=6000000)
+        except EmuError:
+            faults += 1
+            continue
+        stored += any(addr == fire + 0x4A8 and value == owner for _pc, addr, _size, value in emu.writes)
+        linked += any(c.target == SB.FUNCTIONS['handle_link'][0] and (c.args[0] & M32) == fire + 0x4A8 for c in emu.calls)
+        mem.w32(fire + 0x7C, 300)                       # still burning
+        mem.wf32(fire + 0x64, 1.0)
+        for case in ('alive', 'reused as a creature', 'reused as something else'):
+            if case == 'reused as a creature':          # the player object was destroyed, its memory handed out again
+                for off in range(0, 0x600, 4):
+                    mem.w32(owner + off, 0)
+                mem.w32(owner + 0xC, 0x20)
+                mem.w32(owner + 0x48, world.vt_obj)
+            elif case == 'reused as something else':
+                mem.w32(owner + 0xC, 0x4001)
+            frame = mem.u32(RC.G_SIM_FRAME)
+            mem.w32(RC.G_SIM_FRAME, frame + 12 - frame % 12)
+            world.box_counts = (1,)
+            rig.calls = []
+            rig.script_rng = random.Random(OPTIONS['seed'] + 7 * round_)
+            forced = world.on_world_collectObjectsInBox
+            world.on_world_collectObjectsInBox = lambda args, view, rng_: Res(outs=[[victim]])
+            emu.reset_log()
+            emu.r[29] = emu.stack_hi - 0x100
+            try:
+                emu.call(STATIC_FIRE['run'], fire, max_steps=6000000)
+            except EmuError:
+                faults += 1
+            world.on_world_collectObjectsInBox = forced
+            asked = [args for name, args in rig.calls if name == 'Creature.v20']
+            hits = [args for name, args in rig.calls if name == 'damage_apply']
+            through = any(a[0] == owner and a[1] == victim for a in asked)
+            if case == 'alive':
+                fresh += through
+            elif case == 'reused as a creature':
+                stale_creature += through and all(h[1] == owner for h in hits)
+            else:
+                stale_other += not asked and bool(hits) and all(h[1] == fire for h in hits)
+    world.box_counts = (0, 0, 1, 2, 3, 5, 8)
+    rig.real.addresses.difference_update(STATIC_FIRE.values())
+    emu.hooks.update(hooks)
+    DC.report('sb3 the owner is a plain word', rounds - stored + linked + faults, rounds,
+              'StaticFire_ctor stores its owner argument at +0x4a8 (%d of %d) and links no handle for it (%d linked)'
+              % (stored, rounds, linked))
+    DC.report('sb3 the fire uses it unchecked', (rounds - fresh) + (rounds - stale_creature) + (rounds - stale_other), 3 * rounds,
+              'StaticFire_run on a damage frame: is-enemy asked through +0x4a8 with the owner alive (%d), with its memory '
+              'reused by another creature (%d: slot 20 of whatever is there, which is then the attacker); reused by a '
+              'non-creature the fire itself attacks every creature (%d)' % (fresh, stale_creature, stale_other))
+
+
+SECTIONS.append(('shadowstep', section_shadowstep))
+SECTIONS.append(('sb3', section_sb3))
+
+
+def section_ancestralcall(rig):
+    """Skill 51, the one id of this pass the prediction copy may cast: can-use, cast and
+    constructor for a player, a monster and the copy (what the copy's cast leaves behind is
+    collected for the prediction-copy table), the run through the cast animation and the
+    aura to its end, and the query the damage and swing-speed code asks."""
+    rig.section = 'ancestralcall'
+    mem, world, rng = rig.emu.mem, rig.world, rig.rng
+    pos, out = world.scratch, world.scratch + 0x40
+    skill = skill_obj(mem, 51)
+    copy_calls, copy_casts = set(), 0
+    # a sound handle for this section only (the sections of the first pass keep their answers)
+    world.on_sound_playOnObject = lambda args, view, rng_: Res(rng_.choice((0xFFFFFFFF, 3, 0x41)))
+    for round_ in range(8 if OPTIONS['quick'] else 110):
+        world.place(rng)
+        caster = rng.choice(world.players * 3 + world.monsters[:1] + [world.ghost] * 2)
+        mem.w32(SB.G_PVP_MODE_A, rng.choice((0, 0, 1)))
+        count = rng.choice((0, 1, 2, 4))
+        mem.w32(SB.G_ALIVE_COUNT, count)
+        for i, slot in enumerate(rng.sample(range(4), 4)):
+            mem.w32(SB.G_ALIVE_LIST + 4 * i, slot)
+        if rng.random() < 0.15:
+            mem.w32(RC.G_PLAYERS + 3 * RC.REC_SIZE + RC.REC_OBJ, 0)      # a slot without an object
+        put_vec(mem, pos, (mem.f32(caster + 0x10), mem.f32(caster + 0x14), mem.f32(caster + 0x18) + 40.0))
+        mem.w32(caster + 0x4A8, rng.choice((0xFFFFFFFF, 0xFFFFFFFF, 5)))
+        if caster in world.players:
+            mem.w8(RC.G_PLAYERS + mem.u32(caster + 0x3C8) * RC.REC_SIZE + 0x4A86, rng.choice((0, 1, 2, 3, 4, 5, 7)))
+        rig.vskill(skill, 1, (caster,))
+        result = rig.vskill(skill, 2, (rng.choice((1, 2, 5, 9, 10, 11, 20, 40)), caster, pos, 0))
+        spell = result['ret'] & M32
+        if caster == world.ghost:
+            note_stores(rig, 51, 'cast, prediction copy')
+            if spell:
+                copy_casts += 1
+                copy_calls.update(name for name, _args in result['emu_calls'])
+            continue                                    # Player_castSkill destroys the copy's spell at once
+        note_stores(rig, 51, 'cast')
+        if not spell:
+            continue
+        world.live.add(spell)
+        mem.w16(caster + 0x11A, 0x20)
+        world.anim_end = rng.choice((0.0, 0.05, 0.3))
+        mode = rng.random()
+
+        def between(tick):
+            if tick == 2 and mode < 0.5:                # the beams appear 23 and 47 frames after the cast
+                mem.w32(RC.G_SIM_FRAME, (mem.u32(spell + 0x28) + rng.choice((22, 22, 46))) & M32)
+            if tick == 12 and mode < 0.5:
+                mem.w32(RC.G_SIM_FRAME, (mem.u32(spell + 0x28) + 46) & M32)
+            if tick == 30:
+                mem.w16(caster + 0x11A, 0)              # the cast clip is over
+            if tick == 36:
+                mem.wf32(spell + 0x1C, mem.f32(spell + 0x20) - rng.choice((0.02, 0.04, 0.1)))
+            if rng.random() < 0.3:
+                target = rng.choice(world.objects + [0, caster])
+                mem.w32(out, 0xAAAA)
+                mem.w32(out + 4, 0xBBBB)
+                rig.do('SpellAncestralCall_queryFor', 'ancestralcall_query_for',
+                       (spell, target, rng.choice((0, out)), rng.choice((0, out + 4))), ret='i')
+            return True
+        run_spell(rig, 'SpellAncestralCall_run', 'ancestralcall_run', spell, pos, 44, between)
+        world.live.discard(spell)
+    mem.w32(SB.G_PVP_MODE_A, 0)
+    mem.w32(SB.G_ALIVE_COUNT, 0)
+    world.anim_end = 0.25
+    del world.on_sound_playOnObject
+    rig.report('ancestralcall', 'id 51; player, monster and prediction-copy casters')
+    allowed = {'Skill.v14', 'pool_new', 'res_find', 'sound_playOnObject', 'libc_sprintf', 'anim_startBlendInOut'}
+    DC.report('ancestralcall prediction copy', len(copy_calls - allowed), copy_casts,
+              'the copy\'s cast calls only %s; no light, no state change, no statistic read' % ', '.join(sorted(copy_calls)),
+              sorted(copy_calls - allowed))
+
+
+SECTIONS.append(('ancestralcall', section_ancestralcall))
+
+
+def section_canuse(rig):
+    """Can-use (slot 1) of every id of this pass, for a player, a monster and the
+    prediction copy.  The cast-start code asks can-use for the copy as well, so whatever a
+    can-use stores would be a store the copy makes: the stores are collected for the
+    prediction-copy table (there are none) together with the call-outs."""
+    rig.section = 'canuse'
+    mem, world, rng = rig.emu.mem, rig.world, rig.rng
+    callouts = {}
+    world.on_SpellGiantGrowth_typeinfo = lambda args, view, rng_: Res(0x90A0B0)
+    ids = [sid for sid in (35, 36, 37, 38, 39, 40, 51, 56, 57, 58, 65, 66, 67)
+           if mem.u32(mem.u32(skill_obj(mem, sid) + 0x60) + 12) in FUNCTION_AT]
+    for round_ in range(4 if OPTIONS['quick'] else 40):
+        world.place(rng)
+        mem.w32(SB.G_PVP_MODE_A, rng.choice((0, 0, 1)))
+        mem.w32(world.item, world.item_def)
+        mem.w32(world.item_def + 0x20, rng.choice((1, 1, 0, 2)))
+        for slot in range(4):
+            rec = RC.G_PLAYERS + slot * RC.REC_SIZE
+            mem.w8(rec + 0x4A86, rng.choice((2, 2, 0, 4)))
+            mem.w8(rec + 0x4A7C, rng.choice((0, 1)))
+            for which in range(2):
+                mem.w32(rec + 0x4434 + 4 * which, rng.choice((0, world.item)))
+        for obj in world.monsters:
+            mem.w8(obj + 0xB4, rng.choice((0, 0x10, 0x10, 3)))
+        for sid in ids:
+            for caster in (rng.choice(world.players), world.monsters[0], world.ghost):
+                result = rig.vskill(skill_obj(mem, sid), 1, (caster,))
+                if caster == world.ghost:
+                    note_stores(rig, sid, 'can-use, prediction copy')
+                    callouts.setdefault(sid, set()).update(name for name, _a in result['emu_calls'] if '.' not in name)
+    mem.w32(SB.G_PVP_MODE_A, 0)
+    del world.on_SpellGiantGrowth_typeinfo
+    rig.report('canuse', 'ids %s; player, monster, prediction copy' % ', '.join(str(i) for i in ids))
+    stores = sum(len(COPY_ROWS[sid]['can-use, prediction copy']['all']) for sid in ids)
+    DC.report('canuse prediction copy', stores, len(ids), 'no can-use of this pass stores anything for the copy; call-outs: '
+              + '; '.join('%d %s' % (sid, ', '.join(sorted(names)) or 'none') for sid, names in sorted(callouts.items())))
+
+
+SECTIONS.append(('canuse', section_canuse))
+
+
+def convert_section(sid, name, cls):
+    def section(rig):
+        rig.section = name
+        mem, world, rng = rig.emu.mem, rig.world, rig.rng
+        pos = world.scratch
+        skill = skill_obj(mem, sid)
+        world.on_creature_bossRank = lambda args, view, rng_: Res(rng_.choice((0, 0, 0, 0, 1)))
+        for round_ in range(6 if OPTIONS['quick'] else 80):
+            world.place(rng)
+            caster = rng.choice(world.players * 2 + world.monsters[:1])
+            for obj in world.objects:
+                mem.w8(obj + 0xB4, rng.choice((0, 0x10, 0x10, 3)))
+                mem.w16(obj + 0x312, rng.choice((0, 0, 0, 0, 200, 0xFFFF)))
+                mem.wf32(obj + 0x354, rng.choice((0.0, 0.0, 0.0, 0.0, 3.5, -1.0)))
+                mem.wf32(obj + 0x1C, rng.choice((8.0, 16.0, 20.0, 24.0, 30.0)))
+            mem.w32(SB.G_PVP_MODE_A, rng.choice((0, 0, 1)))
+            mem.w8(RC.G_PLAYERS + (mem.u32(caster + 0x3C8) & 3) * RC.REC_SIZE + 0x4C24, rng.choice((0, 1, 0xFF)))
+            rig.vskill(skill, 1, (caster,))
+            spell = rig.vskill(skill, 2, (rng.choice((1, 2, 5, 10, 20, 40)), caster, pos, 0))['ret'] & M32
+            note_stores(rig, sid, 'cast')
+            if spell:
+                world.live.add(spell)
+
+                def between(tick):
+                    if rng.random() < 0.05:             # a target is deleted: its node stays, without an object
+                        victim = rng.choice(world.monsters)
+                        rig.do('handle_clear', 'handle_clear', (victim,))
+                    return False
+                run_spell(rig, 'Spell%s_run' % cls, name + '_run', spell, pos, 60, between,
+                          timer='%s: runs until the spell rolls and ends itself' % name)
+                rig.do('handle_clear', 'handle_clear', (spell + 0x18,))
+                world.live.discard(spell)
+            clear_handles(rig)
+        mem.w32(SB.G_PVP_MODE_A, 0)
+        del world.on_creature_bossRank
+        rig.report(name, 'id %d; player and monster casters' % sid)
+    section.__doc__ = 'Skill %d: can-use, cast with its target choice, the spiral, the roll for every target, the end.' % sid
+    return section
+
+
+SECTIONS.append(('convertenemy', convert_section(39, 'convertenemy', 'ConvertEnemy')))
+SECTIONS.append(('convertundead', convert_section(40, 'convertundead', 'ConvertUndead')))
+
+
+def section_groundpound(rig):
+    """Skill 38: can-use, the cast (which only starts the clip and writes its event slots),
+    and the effect object as Player_run and the monsters build it: constructor on dry
+    ground, over water and at a ledge; the first run with its damage and stun rolls; the
+    30 runs after it."""
+    rig.section = 'groundpound'
+    mem, world, rng = rig.emu.mem, rig.world, rig.rng
+    pos = world.scratch
+    skill = skill_obj(mem, 38)
+    for round_ in range(6 if OPTIONS['quick'] else 70):
+        world.place(rng)
+        caster = rng.choice(world.players * 2 + world.monsters[:1] + [0])
+        if caster:
+            rig.vskill(skill, 1, (caster,))
+            rig.vskill(skill, 2, (rng.choice((1, 5, 10, 20)), caster, pos, 0))
+            note_stores(rig, 38, 'cast')
+        effect = world.blocks[0]
+        for off in range(0, 0x400, 4):
+            mem.w32(effect + off, 0)
+        origin = caster or world.players[0]
+        put_vec(mem, pos, (mem.f32(origin + 0x10), mem.f32(origin + 0x14), mem.f32(origin + 0x18)))
+        world.ground_up = rng.choice((0.0, 0.4, 1.0))
+        world.on_terrain_height = lambda args, view, rng_: Res(f=f32(fl(args[1][2]) + rng_.choice((0.0, -3.0, 20.0, 143.9, 144.0, -200.0))))
+        world.live.add(effect)
+        rig.do('GroundPoundEffect_ctor', 'groundpound_effect_ctor',
+               (effect, pos, rng.randrange(0x10000), skill, rng.choice((0, 1, 5, 9, 10, 15, 20, 40)), caster))
+        del world.on_terrain_height
+        world.box_counts = rng.choice(((0, 1, 2, 3), (3, 5, 8)))
+        for obj in world.objects:                       # victims round the centre, some far
+            if rng.random() < 0.7:
+                put_vec(mem, obj + 0x10, (mem.f32(effect + 0x10) + rng.uniform(-150, 150),
+                                          mem.f32(effect + 0x14) + rng.uniform(-150, 150), mem.f32(effect + 0x18)))
+            mem.wf32(obj + 0x228, rng.choice((300.0, 300.0, 0.0, -5.0)))
+        gone = rng.random() < 0.15
+
+        def between(tick):
+            if tick == 0 and gone and mem.u32(effect + 0x98):
+                rig.do('handle_clear', 'handle_clear', (effect + 0x98,))     # the owner is deleted before the first run
+        runs = run_object(rig, 'GroundPoundEffect_run', 'groundpound_effect_run', effect, 40, between)
+        TIMERS.setdefault('groundpound: runs of the effect object', set()).add(runs)
+        rig.do('handle_clear', 'handle_clear', (effect + 0x98,))
+        world.live.discard(effect)
+        clear_handles(rig)
+    world.box_counts, world.ground_up = (0, 0, 1, 2, 3, 5, 8), 0.4
+    rig.report('groundpound', 'id 38; player and monster owners, and none')
+
+
+SECTIONS.append(('groundpound', section_groundpound))
+
+
 def main(argv):
     args = list(argv)
     elf = None
@@ -1752,6 +2295,13 @@ def main(argv):
         print('frame counts settled by execution (fpu model %s):' % OPTIONS['fpu'])
         for what in sorted(TIMERS):
             print('  %s: %s' % (what, ', '.join(str(v) for v in sorted(TIMERS[what], key=str))))
+    if COPY_ROWS:
+        print('stores outside the stack, the new objects, list nodes and the shared seed (pc -> where), per skill and call:')
+        for sid in sorted(COPY_ROWS):
+            for what, row in sorted(COPY_ROWS[sid].items()):
+                text = ', '.join('%06x -> %s' % entry for entry in row['all'][:8]) or 'none'
+                print('  %d %-14s %-22s %s%s' % (sid, SB.SKILLS[sid]['name'], what, text,
+                                               '  (calls without any: yes)' if None in row['first'] and row['all'] else ''))
     print('%d calls compared in %.0f s' % (sum(row[0] for row in rig.stats.values()), time.time() - started))
     return 0 if all(ok for _name, ok in DC.RESULTS) else 1
 

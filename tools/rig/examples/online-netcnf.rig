@@ -1,0 +1,56 @@
+# Creating the network configuration the game asks for, on the emulated memory card, with
+# Sony's configuration program from the disc (the game restarts the machine into it).
+#
+# Start from power-on with examples/online-lobby.rig's first part (or by hand) until the
+# game says that no network configuration is available, then run this. The program draws
+# its own text: use --video and 'shot' to look. Needs --eth-net: the program tests the
+# connection (DHCP) before it lets the setting be saved.
+#
+#   triangle            configure (in the game's notice)
+#   cross               add a setting          cross   memory card slot 1
+#   right               past the introduction  cross, right   the Ethernet adaptor
+#   cross, right        no PPPoE               cross, right   automatic address
+#   cross, right        automatic DNS          cross   start the connection test
+# then, after the test: cross (continue), right (keep the name), cross (save), cross
+# (back to the menu), circle and left + cross (quit); the game starts again.
+wait 30
+tap triangle 4
+wait 900
+tap cross 4
+wait 240
+tap cross 4
+wait 300
+tap right 4
+wait 200
+tap cross 4
+wait 200
+tap right 4
+wait 200
+tap cross 4
+wait 120
+tap right 4
+wait 200
+tap cross 4
+wait 120
+tap right 4
+wait 200
+tap cross 4
+wait 120
+tap right 4
+wait 200
+tap cross 4
+wait 600
+tap cross 4
+wait 300
+tap right 4
+wait 300
+tap cross 4
+wait 600
+tap cross 4
+wait 400
+tap circle 4
+wait 300
+tap left 4
+wait 30
+tap cross 4
+wait 600

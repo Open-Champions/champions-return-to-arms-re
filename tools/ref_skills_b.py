@@ -27,7 +27,13 @@ What is inside the model
                    iterator, at memory level (the node pool's free list is at 0x864ea8)
     projectiles    Projectile_ctor and obj_moveAndCollide
     the skills     see SKILLS at the end of the file: one entry per id with the functions
-                   modelled for it
+                   modelled for it.  The first pass modelled ids 41-50, 53-55, 59-64 and
+                   68; the second pass (from "The second pass" on, where Model is built
+                   up section by section) added 35 Charge, 36 Darkness, 37 Shock, 38
+                   Ground Pound, 39 / 40 Convert Enemy / Undead, 51 AncestralCall, 67
+                   ShadowStep and the can-use of 65.  Not modelled beyond statistics, mana
+                   cost and can-use: 56, 57, 58, 66 and the cast of 65.  Id 52 (Root) is
+                   the class of ids 31 / 32, modelled in tools/ref_skills_a.py.
 
 Virtual calls
     Skill (table at +0x60), Spell (table at +0x14) and effect objects (table at +0x48)
@@ -3010,5 +3016,1450 @@ _register(53, 'criticalhit', {
     'SpellCriticalHit_run': (0x2E7ACC, 0x2E7F58, 'spell', 'criticalhit_run'),
     'SpellCriticalHit_setTint': (0x2E7F58, 0x2E7F7C, '', 'criticalhit_set_tint'),
 }, [(Model.VT_SPELL_CRITICALHIT, 'Spell', (1,))])
+
+
+# =========================================================================================
+# The second pass: the casts and effects of ids 35-40, 51, 52, 56-58 and 65-67
+# =========================================================================================
+EXTERNALS.update({
+    'trail_create': Ext(0x190FF8, 'iiiiiii', 1, 'i', '(seven integers; width) -> trail handle or 0'),
+    'trail_addPoint': Ext(0x192550, 'iv', 0, 'n', '(trail handle, position)'),
+})
+
+
+def from_uint(value):
+    """The compiler's unsigned -> float idiom (e.g. 0x2c8f90): a plain cvt.s.w below 2^31,
+    otherwise ((value >> 1) | (value & 1)) converted and doubled."""
+    value &= M32
+    if value < 0x80000000:
+        return C.from_int(value)
+    half = C.from_int((value >> 1) | (value & 1))
+    return C.add(half, half)
+
+
+def c_rem(a, b):
+    """The remainder of the machine's signed divide (truncating); with a zero divisor the
+    dividend, as the R5900 is reported to leave it."""
+    a, b = s32(a), s32(b)
+    if b == 0:
+        return a
+    q = abs(a) // abs(b)
+    return a - (-q if (a < 0) != (b < 0) else q) * b
+
+
+class Model(Model):                             # noqa: F811 - built up section by section from here on
+    # =====================================================================================
+    # 35 charge: docs/spec/skills-35-68.md section 35.  SkillCharge (table 0x518320; can-use
+    # is the base) and SpellCharge (0x88 bytes, table 0x5183a8).
+    #
+    #   +0x1c ten trail handles   +0x44 the frame of the cast   +0x48 contact made
+    #   +0x4c..+0x84 a light record (position +0x7c)
+    # =====================================================================================
+    VT_SPELL_CHARGE = 0x5183A8
+    PDEF_CHARGE_A, PDEF_CHARGE_B, PDEF_CHARGE_RING = 0x8E4FB0, 0x8E5000, 0x8E5050
+
+    def charge_cast(self, skill, level, caster, pos=0, facing=0):
+        """SkillCharge_cast 0x2c8864 -> the SpellCharge or 0: pool_new(0x88), the
+        constructor; then a caster with the player flag gets action state +0x58c = 9, and
+        so does net_objOrGhost(caster) when that is not null (on the owner's machine the
+        prediction copy - a per-machine store)."""
+        spell = self.call('pool_new', 0x88)
+        if spell:
+            self.charge_spell_ctor(spell, level, caster, skill)
+            if self.u32(caster + 0xC) & 0x40:
+                self.w32(caster + 0x58C, 9)
+                ghost = self.call('net_objOrGhost', caster)
+                if ghost:
+                    self.w32(ghost + 0x58C, 9)
+        return spell
+
+    def _charge_trail_point(self, owner, ahead, index):
+        rise = C.add(C.mul(C.from_int(index), 0x40BFFFFF), F_12)
+        return (C.add(self.u32(owner + 0x10), ahead[0]), C.add(self.u32(owner + 0x14), ahead[1]),
+                C.add(self.u32(owner + 0x18), rise))
+
+    def charge_spell_ctor(self, spell, level, owner, skill):
+        """SpellCharge_ctor 0x2c8cb4: Spell base (ONE SHARED DRAW); the light record at
+        +0x4c (position = the owner's), linked; the sound on the owner; start frame +0x44,
+        contact +0x48 = 0; ten trails (+0x1c..), each with a first point 10 ahead of the
+        owner and 12 + 6 i up.  No own draw."""
+        u32, w32, w16 = self.u32, self.w32, self.w16
+        self.spell_base_ctor(spell, level, owner, skill, self.VT_SPELL_CHARGE)
+        self.w8(spell + 0x55, 0)
+        self.wvec(spell + 0x7C, self.vec(owner + 0x10))
+        for off, value in ((0x70, 0x42CE0000), (0x68, 0x42CE0000), (0x74, 0x38C5AD3B), (0x6C, 0x38C5AD3B), (0x78, 0)):
+            w32(spell + off, value)
+        for off, value in ((0x5E, 0x6C), (0x60, 0x66), (0x56, 0x6C), (0x58, 0x66), (0x62, 0xD0), (0x5A, 0xD0), (0x5C, 0),
+                           (0x64, 0)):
+            w16(spell + off, value)
+        self.w8(spell + 0x54, 0)
+        self.call('light_link', spell + 0x4C)
+        self.call('sound_playOnObject', self.call('res_find', 0x54E8E8, 0x54E8F0), u32(spell + 0xC), ONE)
+        w32(spell + 0x44, u32(G_SIM_FRAME))
+        facing = self.s16(u32(spell + 0xC) + 0x38)
+        w32(spell + 0x48, 0)
+        ahead = (C.mul(C.cos16(facing), 0x41200000), C.mul(C.sin16(self.s16(u32(spell + 0xC) + 0x38)), 0x41200000))
+        for i in range(10):
+            trail = self.call('trail_create', 1, 800, 4, 0x40, 0x40, 0x80, 0x20, 0x3F4CCCCC)
+            w32(spell + 0x1C + 4 * i, trail)
+            self.call('trail_addPoint', trail, self._charge_trail_point(u32(spell + 0xC), ahead, i))
+
+    def charge_run(self, spell, pos=0, facing=0):
+        """SpellCharge_run 0x2c8f2c, slot 2.
+
+        Contact made, or more than 45 frames since the cast (the difference taken as
+        UNSIGNED): for an owner with the player flag, net_objOrGhost(owner) and - without
+        contact - state 2 on both; with contact state 3 on both, the owner's track-3 life
+        rate +0x190 = -0.058333, voice line 12, the stagger clip of the owner's weapon
+        class (class definition + class x 0x68 + 0x7c; anim_startBlendInOut, flags 10, 0.1
+        in and out) and damage_apply(owner, owner, 100000, flags 0x4000c040, no
+        descriptor, 0; 10, 10).  Then the copy-rebuild byte 0x402797 = 1 and the spell
+        ends itself.
+        Otherwise: the ten trails get a point each (as in the constructor); 4 + 11
+        particles on sample points of the owner's model - per particle ONE OWN DRAW for the
+        point (modulo the point count, not tested for 0) and an OWN ball x 13 / x 10; the
+        light follows the owner 60 up; 0x402797 = 1."""
+        u32, w32 = self.u32, self.w32
+        owner = u32(spell + 0xC)
+        if u32(spell + 0x48) or C.lt(0x42340000, from_uint(u32(G_SIM_FRAME) - u32(spell + 0x44))):
+            if u32(owner + 0xC) & 0x40:
+                ghost = self.call('net_objOrGhost', owner)
+                if not u32(spell + 0x48):
+                    w32(ghost + 0x58C, 2)
+                    w32(owner + 0x58C, 2)
+                else:
+                    w32(ghost + 0x58C, 3)
+                    w32(owner + 0x58C, 3)
+                    w32(owner + 0x190, 0xBD6EEEEE)
+                    self.call('player_voice', u32(owner + 0x3C8), 0xC)
+                    weapon_class = self.s8(self.record(owner) + 0x4A86)
+                    clip = u32((u32(owner + 0x24) + weapon_class * 0x68 + 0x7C) & M32)
+                    self.call('anim_startBlendInOut', owner + 0x114, clip, 10, F_0_1, F_0_1)
+                    self.call('damage_apply', owner, owner, 100000, 0, 0, 0x4000C040, 0, 0, 0x41200000, 0x41200000)
+            self.w8(G_FORCE_GHOST_REBASE, 1)
+            self.spell_end(spell)
+            return
+        ahead = (C.mul(C.cos16(self.s16(owner + 0x38)), 0x41200000),
+                 C.mul(C.sin16(self.s16(u32(spell + 0xC) + 0x38)), 0x41200000))
+        for i in range(10):
+            self.call('trail_addPoint', u32(spell + 0x1C + 4 * i), self._charge_trail_point(u32(spell + 0xC), ahead, i))
+        owner = u32(spell + 0xC)
+        model = self.vcall(owner, 16)
+        count = s32(self.call('model_getSamplePointCount', model))
+        for definition, number, speed in ((self.PDEF_CHARGE_B, 4, 0x41500000), (self.PDEF_CHARGE_A, 11, 0x41200000)):
+            for _ in range(number):
+                point = self._sample_point(u32(spell + 0xC), model, self.spell_rand(spell), count)
+                velocity = tuple(C.mul(c, speed) for c in self.spell_ball(spell))
+                self.call('particle_spawn', definition, point, velocity, ZERO)
+        owner = u32(spell + 0xC)
+        self.wvec(spell + 0x7C, (C.add(u32(owner + 0x10), ZERO), u32(owner + 0x14), C.add(u32(owner + 0x18), 0x42700000)))
+        self.call('light_relink', spell + 0x4C)
+        self.w8(G_FORCE_GHOST_REBASE, 1)
+
+    def charge_stat3_scaled(self, spell):
+        """SpellCharge_getStat3Scaled 0x2c95a4 -> (float) slot 10 (3, level) x 0.016: the
+        fraction of the remaining angle Player_move turns per frame of the rush."""
+        return C.mul(C.from_int(self.stat(self.u32(spell + 8), 3, self.s8(spell))), 0x3C83126E)
+
+    def charge_on_contact(self, spell, target):
+        """SpellCharge_onContact 0x2c95f4 (spell, target or 0), called by Player_onTouch and
+        Player_move for a player in state 9.
+
+        Nothing once contact is made (+0x48), or for a target with flag 8 (dead).  Else:
+        the sound on the owner, camera_shake(10).
+        No target (a wall): eight fx_spawn(2) puffs, THREE OWN DRAWS each (x - 6 + d % 12,
+        y - 6 + d % 12, z + d % 72).
+        A target: d0 = slot 10 (0, level); unless it is a creature the owner's slot 20
+        rejects: ONE OWN DRAW r and damage_apply(target, owner, 100000, flags 0x8c040, no
+        descriptor, 0; d0, d0 + d0 x r/65536 x 0.2).
+        Then R = slot 10 (2, level) x 12; with R != 0: world_collectObjectsInBox(owner -/+
+        R on all axes, capacity 128), d1 = slot 10 (1, level), and every entry that is not
+        the owner, not the target, not dead and not a creature the owner's slot 20 rejects
+        costs ONE OWN DRAW and is damaged the same way with d1; then a ring of 132 particle
+        pairs (an OWN ball and ONE OWN DRAW per pair).  Contact +0x48 = 1."""
+        u32 = self.u32
+        if u32(spell + 0x48) or (target and u32(target + 0xC) & 8):
+            return
+        level = self.s8(spell)
+        self.call('sound_playOnObject', self.call('res_find', 0x54E8E8, 0x54E908), u32(spell + 0xC), ONE)
+        self.call('camera_shake', 0, 0x41200000)
+        if not target:
+            for _ in range(8):
+                x = C.add(C.sub(u32(u32(spell + 0xC) + 0x10), 0x40C00000), C.from_int(self.spell_rand(spell) % 12))
+                y = C.add(C.sub(u32(u32(spell + 0xC) + 0x14), 0x40C00000), C.from_int(self.spell_rand(spell) % 12))
+                z = C.add(C.sub(C.add(u32(u32(spell + 0xC) + 0x18), 0x42100000), 0x42100000),
+                          C.from_int(self.spell_rand(spell) % 0x48))
+                self.call('fx_spawn', 2, (x, y, z))
+        else:
+            amount = C.from_int(self.stat(u32(spell + 8), 0, level))
+            if not u32(target + 0xC) & 0x20 or self.vcall(u32(spell + 0xC), 20, target):
+                high = C.add(amount, C.mul(C.mul(amount, self.unit(self.spell_rand(spell))), 0x3E4CCCCC))
+                self.call('damage_apply', target, u32(spell + 0xC), 100000, 0, 0, 0x8C040, 0, 0, amount, high)
+        reach = s32(self.stat(u32(spell + 8), 2, level) * 12)
+        if reach:
+            owner = u32(spell + 0xC)
+            half = C.from_int(reach)
+            found = self.call('world_collectObjectsInBox', tuple(C.sub(u32(owner + 0x10 + 4 * i), half) for i in range(3)),
+                              tuple(C.add(u32(owner + 0x10 + 4 * i), half) for i in range(3)), 0x80) or ()
+            amount = C.from_int(self.stat(u32(spell + 8), 1, level))
+            for other in found:
+                owner = u32(spell + 0xC)
+                if other == owner or other == target or u32(other + 0xC) & 8:
+                    continue
+                if u32(other + 0xC) & 0x20 and not self.vcall(owner, 20, other):
+                    continue
+                high = C.add(amount, C.mul(C.mul(amount, self.unit(self.spell_rand(spell))), 0x3E4CCCCC))
+                self.call('damage_apply', other, u32(spell + 0xC), 100000, 0, 0, 0x8C040, 0, 0, amount, high)
+            for angle in range(0, 0x10000, 500):
+                owner = u32(spell + 0xC)
+                out = (C.mul(C.cos16(s16(angle)), half), C.mul(C.sin16(s16(angle)), half))
+                point = (C.add(u32(owner + 0x10), out[0]), C.add(u32(owner + 0x14), out[1]), C.add(u32(owner + 0x18), 0x40A00000))
+                b = self.spell_ball(spell)
+                rise = C.add(C.mul(self.unit(self.spell_rand(spell)), 0x40A00000), 0x41200000)
+                velocity = (C.mul(b[0], 0x41200000), C.mul(b[1], 0x41200000), rise)
+                self.call('particle_spawn', self.PDEF_CHARGE_RING, point, velocity, ZERO)
+                point = (C.add(u32(owner + 0x10), C.mul(out[0], HALF)), C.add(u32(owner + 0x14), C.mul(out[1], HALF)), point[2])
+                self.call('particle_spawn', self.PDEF_CHARGE_RING, point, velocity, ZERO)
+        self.w32(spell + 0x48, 1)
+
+
+_register(35, 'charge', {
+    'SkillCharge_cast': (0x2C8864, 0x2C8914, 'skill', 'charge_cast'),
+    'SpellCharge_ctor': (0x2C8CB4, 0x2C8F2C, '', 'charge_spell_ctor'),
+    'SpellCharge_run': (0x2C8F2C, 0x2C95A4, 'spell', 'charge_run'),
+    'SpellCharge_getStat3Scaled': (0x2C95A4, 0x2C95F4, '', 'charge_stat3_scaled'),
+    'SpellCharge_onContact': (0x2C95F4, 0x2C9C54, '', 'charge_on_contact'),
+}, [(Model.VT_SPELL_CHARGE, 'Spell', (1,))])
+
+
+
+class Model(Model):                             # noqa: F811
+    # =====================================================================================
+    # 36 darkness: docs/spec/skills-35-68.md section 36.  SkillDarkness (table 0x5188a0;
+    # can-use is the base) and the object DarknessProjectile (0xb0 bytes, table 0x518810,
+    # a GameObject, not a Projectile).
+    #
+    #   +0x4c step per frame   +0x58..+0x90 a light record (position +0x88)   +0x94 life
+    #   +0x98 level   +0x9c still moving   +0xa0 attached (byte)   +0xa8 caster handle
+    #   +0xac Skill
+    # =====================================================================================
+    VT_DARKNESS = 0x518810
+    PDEF_DARKNESS = 0x8E5410
+    G_AMBIENT_BYTES = 0x5D3478                  # four bytes the light's colour is taken from (presentation)
+
+    def darkness_cast(self, skill, level, caster, pos=0, facing=0):
+        """SkillDarkness_cast 0x2cf1e0 -> 0: velocity = (cos, sin of the facing, 0) x 373;
+        pool_new(0xb0) and the constructor at the caster's position, 36 up (the position
+        argument is not used; the caster is not tested for null)."""
+        facing = s16(facing)
+        velocity = (C.mul(C.cos16(facing), 0x43BA8000), C.mul(C.sin16(facing), 0x43BA8000), C.mul(ZERO, 0x43BA8000))
+        obj = self.call('pool_new', 0xB0)
+        if obj:
+            start = (C.add(self.u32(caster + 0x10), ZERO), self.u32(caster + 0x14), C.add(self.u32(caster + 0x18), 0x42100000))
+            self.darkness_ctor(obj, self.local_vec(start), self.local_vec(velocity), skill, level, caster)
+        return 0
+
+    def ambient_bytes(self):
+        """0x14a028: the four bytes at 0x5d3478 as four halfwords in the caller's frame."""
+        return [self.u8(self.G_AMBIENT_BYTES + i) for i in range(4)]
+
+    def darkness_ctor(self, obj, pos, velocity, skill, level, caster):
+        """DarknessProjectile_ctor 0x2cf460 (object, position, velocity, skill, level,
+        caster): GameObject_ctor (ONE SHARED DRAW); the light record at +0x58, linked;
+        flags |= 0x4001; step +0x4c = velocity x (1/60); life +0x94 = 108; Skill, level;
+        not attached, moving; the sound on the caster; the caster handle +0xa8 (with a
+        caster); the light's colour = 1 - three of the bytes at 0x5d3478; the every-frame
+        run list."""
+        u32, w32, w16 = self.u32, self.w32, self.w16
+        start, velocity = self.vec(pos), self.vec(velocity)
+        self.game_object_ctor(obj, pos, 0, 0)
+        w32(obj + 0x48, self.VT_DARKNESS)
+        self.w8(obj + 0x61, 0)
+        self.wvec(obj + 0x88, start)
+        for off, value in ((0x7C, 0x43280000), (0x80, 0x38149B92), (0x74, 0x43280000), (0x78, 0x38149B92), (0x84, 0)):
+            w32(obj + off, value)
+        for off in (0x6E, 0x62, 0x64, 0x66, 0x6A, 0x6C):
+            w16(obj + off, 0xFF82)
+        w16(obj + 0x68, 0)
+        w16(obj + 0x70, 0)
+        self.w8(obj + 0x60, 0)
+        self.call('light_link', obj + 0x58)
+        w32(obj + 0xA4, 0)
+        w32(obj + 0xA8, 0)
+        w32(obj + 0xC, u32(obj + 0xC) | 0x4001)
+        self.wvec(obj + 0x4C, tuple(C.mul(v, DT) for v in velocity))
+        w32(obj + 0x94, 0x6C)
+        w32(obj + 0xAC, skill)
+        w32(obj + 0x98, level)
+        self.w8(obj + 0xA0, 0)
+        w32(obj + 0x9C, 1)
+        self.call('sound_playOnObject', self.call('res_find', 0x54ECD0, 0x54ECD8), caster, ONE)
+        if caster:
+            self.handle_link(obj + 0xA8, caster, caster)
+        colour = self.ambient_bytes()
+        for i in range(3):
+            w16(obj + 0x62 + 2 * i, 1 - colour[i])
+        self.call('obj_runEveryFrame', obj)
+
+    def _darkness_box(self, obj):
+        here = self.vec(obj + 0x10)
+        return self.call('world_collectObjectsInBox', tuple(C.sub(v, F_24) for v in here), tuple(C.add(v, F_24) for v in here),
+                         0x80) or ()
+
+    def darkness_run(self, obj):
+        """DarknessProjectile_run 0x2cf690, slot 4, once a frame.
+
+        Attached (+0xa0 == 1): on frames divisible by 30, with a caster: every entry of
+        world_collectObjectsInBox(position -/+ 24, capacity 128) the caster's slot 20
+        accepts, that has hit points above 0 and no-target timer +0x316 == 0: T = slot 10
+        (0, level); ONE OWN DRAW r; with r % 100 + 1 < T its slot 31 gets slot 10 (3,
+        level) x 60 frames - (frames >> 1) + 1 for a creature of non-zero boss rank.
+        Not attached: while moving, position += step and terrain_height(world, position;
+        24) above z stops it; with a caster the box, and every entry the caster's slot 20
+        accepts: the FIRST one attaches the cloud (life = slot 10 (2, level) x 60, position
+        = the entry's, 36 up), and each is asked a second time and then takes damage_apply
+        (entry, caster, 100000, flags 0x40, no descriptor, 0; low, high of slot 8 (1,
+        level, no randomising; 0.2)).
+        Then: the light follows; 8 particles (an OWN ball each); life -= 1 and at -1
+        obj_delete and the light is unlinked."""
+        u32, w32 = self.u32, self.w32
+        level = u32(obj + 0x98)
+        if self.s8(obj + 0xA0) == 1:
+            if c_rem(self.s32(G_SIM_FRAME), 30) == 0:
+                if u32(obj + 0xA8):
+                    for other in self._darkness_box(obj):
+                        owner = u32(u32(obj + 0xA8) + 0xC)
+                        if not self.vcall(owner, 20, other):
+                            continue
+                        if not C.lt(ZERO, u32(other + 0x228)) or self.s16(other + 0x316):
+                            continue
+                        chance = self.stat(u32(obj + 0xAC), 0, level)
+                        if self.obj_rand(obj) % 100 + 1 < chance:
+                            frames = s32(self.stat(u32(obj + 0xAC), 3, level) * 60)
+                            if self.call('creature_bossRank', other):
+                                frames = (frames >> 1) + 1
+                            self.vcall(other, 31, frames)
+        else:
+            if u32(obj + 0x9C):
+                for i in range(3):
+                    w32(obj + 0x10 + 4 * i, C.add(u32(obj + 0x10 + 4 * i), u32(obj + 0x4C + 4 * i)))
+                ground = self.call('terrain_height', u32(G_WORLD), self.vec(obj + 0x10), F_24)
+                if C.lt(u32(obj + 0x18), ground):
+                    w32(obj + 0x9C, 0)
+            if u32(obj + 0xA8):
+                for other in self._darkness_box(obj):
+                    if not self.vcall(u32(u32(obj + 0xA8) + 0xC), 20, other):
+                        continue
+                    if self.s8(obj + 0xA0) == 0:
+                        life = self.stat(u32(obj + 0xAC), 2, level)
+                        self.w8(obj + 0xA0, 1)
+                        w32(obj + 0x94, s32(life * 60))
+                        self.wvec(obj + 0x10, (C.add(u32(other + 0x10), ZERO), u32(other + 0x14),
+                                               C.add(u32(other + 0x18), 0x42100000)))
+                    if self.vcall(u32(u32(obj + 0xA8) + 0xC), 20, other):
+                        low, high = self.stat_range(u32(obj + 0xAC), 1, level, 0, 0x3E4CCCCC)
+                        self.call('damage_apply', other, u32(u32(obj + 0xA8) + 0xC), 100000, 0, 0, 0x40, 0, 0,
+                                  C.from_int(low), C.from_int(high))
+        self.wvec(obj + 0x88, self.vec(obj + 0x10))
+        self.call('light_relink', obj + 0x58)
+        for _ in range(8):
+            b = self.obj_ball(obj)
+            velocity = tuple(C.add(u32(obj + 0x4C + 4 * i), C.mul(b[i], 0xBEA22221)) for i in range(3))
+            point = tuple(C.add(C.mul(C.add(b[i], b[i]), F_12), u32(obj + 0x10 + 4 * i)) for i in range(3))
+            self.call('particle_spawn', self.PDEF_DARKNESS, point, velocity, ZERO)
+        w32(obj + 0x94, u32(obj + 0x94) - 1)
+        if self.s32(obj + 0x94) == -1:
+            self.call('obj_delete', obj)
+            self.call('light_unlink', obj + 0x58)
+
+
+_register(36, 'darkness', {
+    'SkillDarkness_cast': (0x2CF1E0, 0x2CF320, 'skill', 'darkness_cast'),
+    'DarknessProjectile_ctor': (0x2CF460, 0x2CF690, '', 'darkness_ctor'),
+    'DarknessProjectile_run': (0x2CF690, 0x2CFD8C, 'object', 'darkness_run'),
+    'ambientBytes_14a028': (0x14A028, 0x14A054, '', 'ambient_bytes'),
+}, [(Model.VT_DARKNESS, 'Creature', (1,))])
+
+
+
+EXTERNALS.update({
+    'sound_setVolume': Ext(0x214650, 'i', 1, 'n', '(sound handle; volume)'),
+    'beam_create': Ext(0x193088, 'vviii', 2, 'i', '(from, to, 0x104, 4, colour; two widths) -> beam handle or 0'),
+    'beam_update': Ext(0x1933C8, 'ivvii', 0, 'n', '(beam handle, from, to, alpha, -1)'),
+})
+
+
+class Model(Model):                             # noqa: F811
+    # =====================================================================================
+    # 37 shock: docs/spec/skills-35-68.md section 37.  SkillShock (table 0x518210; can-use
+    # is the base) and the object ShockProjectile (0x198 bytes, table 0x50e228, a
+    # GameObject).
+    #
+    #   +0x38 s16 facing   +0x4c Skill   +0x50 candidates (list)   +0x54 chained victims
+    #   (list, newest first)   +0x58 birth frame   +0x120 step per frame   +0x12c eight beam
+    #   handles   +0x14c..+0x184 a light record (position +0x17c)   +0x188 level   +0x189
+    #   state (0 flying, 1 struck, 2 stopped)   +0x18a most victims   +0x18b victims
+    #   +0x18c chain range squared   +0x190 speed   +0x194 caster handle
+    # =====================================================================================
+    VT_SHOCK = 0x50E228
+    PDEF_SHOCK_A, PDEF_SHOCK_B = 0x8E4BF0, 0x8E4C40
+
+    def shock_cast(self, skill, level, caster, pos, facing):
+        """SkillShock_cast 0x2c3d68 -> 0: pool_new(0x198) and the constructor at the cast
+        position."""
+        obj = self.call('pool_new', 0x198)
+        if obj:
+            self.shock_ctor(obj, self.local_vec(self.vec(pos)), s16(facing), caster, skill, level)
+        return 0
+
+    def shock_ctor(self, obj, pos, facing, caster, skill, level):
+        """ShockProjectile_ctor 0x2c3fe4 (object, position, facing, caster, skill, level).
+
+        GameObject_ctor (ONE SHARED DRAW); both lists empty; the light record at +0x14c,
+        linked; a sound on the caster; facing; flags |= 1; Skill; birth = frame; level
+        byte; radius 12; the caster handle +0x194 (with a caster); state 0; speed 341;
+        step = (cos, sin of the facing) x (1 / sqrt(cos^2 + sin^2)) x (341 x (1/60)), z 0;
+        most victims +0x18a = slot 13 (1, level, the caster handle, cap 10) + 1 (a byte);
+        the every-frame run list; the same sound on the object."""
+        u32, w32, w16, w8 = self.u32, self.w32, self.w16, self.w8
+        start = self.vec(pos)
+        self.game_object_ctor(obj, pos, 0, 0)
+        w32(obj + 0x50, 0)
+        w32(obj + 0x54, 0)
+        w32(obj + 0x48, self.VT_SHOCK)
+        w8(obj + 0x155, 0)
+        self.wvec(obj + 0x17C, start)
+        for off, value in ((0x174, 0x382C598A), (0x16C, 0x382C598A), (0x170, 0x431C0000), (0x168, 0x431C0000), (0x178, 0)):
+            w32(obj + off, value)
+        for off, value in ((0x160, 0xE1), (0x164, 0xFFE0), (0x158, 0xE1), (0x15C, 0xFFE0), (0x162, 0x140), (0x15A, 0x140),
+                           (0x156, 0), (0x15E, 0)):
+            w16(obj + off, value)
+        w8(obj + 0x154, 0)
+        self.call('light_link', obj + 0x14C)
+        w32(obj + 0x194, 0)
+        self.call('sound_playOnObject', self.call('res_find', 0x54E6A0, 0x54E6A8), caster, ONE)
+        w16(obj + 0x38, facing)
+        w32(obj + 0xC, u32(obj + 0xC) | 1)
+        w32(obj + 0x4C, skill)
+        w32(obj + 0x58, u32(G_SIM_FRAME))
+        w8(obj + 0x188, level)
+        w32(obj + 0x1C, F_12)
+        if caster:
+            self.handle_link(obj + 0x194, caster, caster)
+        w8(obj + 0x189, 0)
+        w32(obj + 0x190, 0x43AA8000)
+        cos, sin = C.cos16(self.s16(obj + 0x38)), C.sin16(self.s16(obj + 0x38))
+        w32(obj + 0x128, 0)
+        inverse = C.rsqrt(ONE, C.add(C.mul(cos, cos), C.mul(sin, sin)))
+        w32(obj + 0x124, C.mul(sin, inverse))
+        w32(obj + 0x120, C.mul(C.mul(cos, inverse), C.mul(u32(obj + 0x190), DT)))
+        w32(obj + 0x124, C.mul(u32(obj + 0x124), C.mul(u32(obj + 0x190), DT)))
+        most = self.skill_call(u32(obj + 0x4C), 13, 1, self.s8(obj + 0x188), obj + 0x194, 10)
+        w8(obj + 0x18A, most + 1)
+        self.call('obj_runEveryFrame', obj)
+        self.call('sound_playOnObject', self.call('res_find', 0x54E6A0, 0x54E6A8), obj, ONE)
+
+    def shock_in_chain(self, obj, other):
+        """ShockProjectile_inChain 0x2c50e4 -> 1 when `other` is in the victims list."""
+        return 1 if other in self.list_objects(obj + 0x54) else 0
+
+    def shock_build_chain(self, obj, origin):
+        """ShockProjectile_buildChain 0x2c4fa8 (object, address of a point), recursive.
+
+        Nothing once victims == most.  The candidate (list +0x50, from the head) that is
+        there, not dead (flag 8), nearer in the plane than the range (+0x18c, squared) and
+        than every earlier one (strict, so the first of equals wins), and not in the chain
+        yet, is linked at the HEAD of the victims list +0x54; then, when most != 0, the
+        count rises and the chain goes on from the new victim's position, and after that
+        again from the same point."""
+        u32 = self.u32
+        if self.s8(obj + 0x18B) == self.s8(obj + 0x18A):
+            return
+        best, best_d = 0, 0x4CBEB25C
+        for other in self.list_objects(obj + 0x50):
+            if not other or u32(other + 0xC) & 8:
+                continue
+            dy = C.sub(u32(other + 0x14), u32(origin + 4))
+            dx = C.sub(u32(other + 0x10), u32(origin))
+            dist = C.add(C.mul(dx, dx), C.mul(dy, dy))
+            if C.lt(dist, u32(obj + 0x18C)) and C.lt(dist, best_d) and not self.shock_in_chain(obj, other):
+                best, best_d = other, dist
+        if best:
+            self.handle_link(obj + 0x54, best, best)
+            if self.s8(obj + 0x18A):
+                self.w8(obj + 0x18B, self.u8(obj + 0x18B) + 1)
+                self.shock_build_chain(obj, best + 0x10)
+                self.shock_build_chain(obj, origin)
+
+    def _shock_wants(self, obj, other, target=0):
+        """The filter of both box walks: with a caster its slot 20; without one a creature
+        (flag 0x20) with none of the flags 0xd that is not the bolt (nor the target)."""
+        node = self.u32(obj + 0x194)
+        if node:
+            return bool(self.vcall(self.u32(node + 0xC), 20, other))
+        flags = self.u32(other + 0xC)
+        return bool(flags & 0x20) and not flags & 0xD and other != obj and (not target or other != target)
+
+    def shock_run(self, obj):
+        """ShockProjectile_run 0x2c42e4, slot 4, once a frame.
+
+        remaining = birth + 300 - frame (taken first).  sound_setVolume(+0x5c; 1.0);
+        x, y += step; the grid cell.
+        Flying (state 0): with a speed, terrain_height(world, position; 6) above z stops
+        the bolt (state 2, speed and step 0, birth = frame - 270, a sound).  Otherwise, on
+        frames with (frame & 7) == 0, the hit test: the first entry of
+        world_collectObjectsInBox(position -/+ 18, capacity 512) that passes the filter
+        and is nearer in the plane than its radius + 18 is the target T.  With a target:
+        every entry of the box T -/+ 1200 that passes the filter is linked into the
+        candidates +0x50, then T itself; victims = 0, range^2 = 44521; the chain is built
+        from T; D = slot 13 (0, level, the caster handle, cap 10); ONE SHARED DRAW r;
+        descriptor slot 0 = (0x18, D, D + (int)(D x 0.2 x r/65536), 0); every chained
+        victim, newest first, takes damage_apply(victim, the caster or - without one - the
+        bolt, 100000, flags 0x40, the descriptor, 0; 0, 0); speed and step 0, state 1,
+        birth = frame - 270, the beam handles of the victims = -1.
+        In state 0 the light then follows and pulses (dimming over the last 30 frames).
+        Struck (state 1): a beam between each chained victim and the next (created once,
+        then refreshed).
+        Always: 42 particle groups from the OWN generator (a ball for the offset, a ball
+        for the velocity, ONE DRAW for a second particle 1 time in 32); at remaining < 1
+        the object deletes itself."""
+        u32, w32, w8 = self.u32, self.w32, self.w8
+        remaining = s32(u32(obj + 0x58) - u32(G_SIM_FRAME) + 300)
+        self.call('sound_setVolume', u32(obj + 0x5C), ONE)
+        w32(obj + 0x10, C.add(u32(obj + 0x10), u32(obj + 0x120)))
+        w32(obj + 0x14, C.add(u32(obj + 0x14), u32(obj + 0x124)))
+        self.call('obj_updateGridCell', obj)
+        if self.s8(obj + 0x189) == 0:
+            stopped = False
+            if not C.eq(u32(obj + 0x190), ZERO):
+                ground = self.call('terrain_height', u32(G_WORLD), self.vec(obj + 0x10), 0x40C00000)
+                if not C.le(ground, u32(obj + 0x18)):
+                    stopped = True
+                    w32(obj + 0x124, 0)
+                    w8(obj + 0x189, 2)
+                    w32(obj + 0x190, 0)
+                    w32(obj + 0x120, 0)
+                    w32(obj + 0x58, u32(G_SIM_FRAME) - 0x10E)
+                    self.call('sound_playOnObject', self.call('res_find', 0x54E6A0, 0x54E6C0), obj, ONE)
+            if not stopped and u32(G_SIM_FRAME) & 7 == 0:
+                here = self.vec(obj + 0x10)
+                found = self.call('world_collectObjectsInBox', tuple(C.sub(v, 0x41900000) for v in here),
+                                  tuple(C.add(v, 0x41900000) for v in here), 0x200) or ()
+                target = 0
+                for other in found:
+                    if self._shock_wants(obj, other):
+                        dy = C.sub(u32(obj + 0x14), u32(other + 0x14))
+                        dx = C.sub(u32(obj + 0x10), u32(other + 0x10))
+                        if C.lt(C.sqrt(C.add(C.mul(dx, dx), C.mul(dy, dy))), C.add(u32(other + 0x1C), 0x41900000)):
+                            target = other
+                            break
+                if target:
+                    spot = self.vec(target + 0x10)
+                    found = self.call('world_collectObjectsInBox', tuple(C.sub(v, 0x44960000) for v in spot),
+                                      tuple(C.add(v, 0x44960000) for v in spot), 0x200) or ()
+                    for other in found:
+                        if self._shock_wants(obj, other, target):
+                            self.handle_link(obj + 0x50, other, other)
+                    self.handle_link(obj + 0x50, target, target)
+                    w8(obj + 0x18B, 0)
+                    w32(obj + 0x18C, 0x472DE900)
+                    self.shock_build_chain(obj, target + 0x10)
+                    amount = s32(self.skill_call(u32(obj + 0x4C), 13, 0, self.s8(obj + 0x188), obj + 0x194, 10))
+                    extra = C.to_int(C.mul(C.mul(C.from_int(amount), 0x3E4CCCCC), self.unit(self.draw())))
+                    desc = self.descriptor((0x18, amount, amount + s32(extra), 0))
+                    for victim in self.list_objects(obj + 0x54):
+                        if victim:
+                            attacker = u32(u32(obj + 0x194) + 0xC) if u32(obj + 0x194) else obj
+                            self.call('damage_apply', victim, attacker, 100000, 0, 0, 0x40, desc, 0, ZERO, ZERO)
+                    w32(obj + 0x190, 0)
+                    w8(obj + 0x189, 1)
+                    w32(obj + 0x120, 0)
+                    w32(obj + 0x124, 0)
+                    w32(obj + 0x58, u32(G_SIM_FRAME) - 0x10E)
+                    for k in range(max(self.s8(obj + 0x18B), 0)):
+                        w32(obj + 0x12C + 4 * k, M32)
+            fade = 0
+            if C.le(C.from_int(remaining), 0x41F00000):
+                fade = s32(0xB4 - remaining * 6)
+            self.wvec(obj + 0x17C, self.vec(obj + 0x10))
+            reach = C.from_int(s32(s32(C.to_int(C.mul(C.sin16(s16(u32(G_SIM_FRAME) * 6000)), 0x41200000))) - fade + 0x60))
+            w32(obj + 0x168, reach)
+            w32(obj + 0x170, reach)
+            inverse = C.div(ONE, C.mul(reach, reach))
+            w32(obj + 0x174, inverse)
+            w32(obj + 0x16C, inverse)
+            self.call('light_relink', obj + 0x14C)
+        if self.s8(obj + 0x189) == 1:
+            node, k = u32(obj + 0x54), 0
+            while node and u32(node):
+                victim, after = u32(node + 0xC), u32(u32(node) + 0xC)
+                if victim and after:
+                    slot = obj + 0x12C + 4 * k
+                    a = (C.add(u32(victim + 0x10), ZERO), u32(victim + 0x14), C.add(u32(victim + 0x18), 0x42100000))
+                    b = (C.add(u32(after + 0x10), ZERO), u32(after + 0x14), C.add(u32(after + 0x18), 0x42100000))
+                    if u32(slot) == M32:
+                        w32(slot, self.call('beam_create', a, b, 0x104, 4, 0x5E808080, 0x41800000, 0x41080000))
+                    else:
+                        self.call('beam_update', u32(slot), a, b, 0x80, M32)
+                node = u32(node)
+                k += 1
+        for _ in range(0x2A):
+            b = self.obj_ball(obj)
+            inverse = C.rsqrt(ONE, C.add(C.add(C.mul(b[0], b[0]), C.mul(b[1], b[1])), C.mul(b[2], b[2])))
+            offset = tuple(C.mul(C.mul(c, inverse), 0x41880000) for c in b)
+            point = tuple(C.add(u32(obj + 0x10 + 4 * i), offset[i]) for i in range(3))
+            velocity = self.obj_ball(obj)
+            self.call('particle_spawn', self.PDEF_SHOCK_A, point, tuple(velocity), ZERO)
+            if self.obj_rand(obj) & 0x1F == 0:
+                self.call('particle_spawn', self.PDEF_SHOCK_B, point, tuple(velocity), ZERO)
+        if remaining < 1:
+            self.vcall(obj, 1, 3)
+
+
+_register(37, 'shock', {
+    'SkillShock_cast': (0x2C3D68, 0x2C3DF8, 'skill', 'shock_cast'),
+    'ShockProjectile_ctor': (0x2C3FE4, 0x2C42E4, '', 'shock_ctor'),
+    'ShockProjectile_run': (0x2C42E4, 0x2C4E64, 'object', 'shock_run'),
+    'ShockProjectile_buildChain': (0x2C4FA8, 0x2C50E4, '', 'shock_build_chain'),
+    'ShockProjectile_inChain': (0x2C50E4, 0x2C5124, '', 'shock_in_chain'),
+}, [(Model.VT_SHOCK, 'Creature', (1,))])
+
+
+
+EXTERNALS.update({
+    'StaticFire_ctor': Ext(0x2C5240, 'pvipi', 2, 'n', '(block, position, life in frames, owner, secondary; radius, scale): a '
+                           'fire that burns what its owner calls an enemy; keeps the owner as a PLAIN POINTER at +0x4a8'),
+    'Player_clampToScreen': Ext(0x1B3D90, 'po-', 0, 'n', '(player, velocity in place, mask out): offline only; the callback '
+                                'hands back the corrected velocity'),
+    'obj_moveWithCollision': Ext(0x14D4B8, 'pvii', 0, 'i', '(object, velocity per second, ignored object, ignore creatures) '
+                                 '-> bits'),
+    'isNearView': Ext(0x1E77C0, 'v', 1, 'i', '(position; radius) -> near a player (net game) or the camera focus'),
+})
+OBJECT_CTORS = OBJECT_CTORS + ('StaticFire_ctor',)
+
+
+class Model(Model):                             # noqa: F811
+    # =====================================================================================
+    # 67 shadowstep: docs/spec/skills-35-68.md section 67.  SkillShadowStep (table
+    # 0x51bd78; can-use is the base) and SpellShadowStep (0x34 bytes, table 0x51bd48).
+    #
+    #   +0x18 progress t   +0x1c speed 370   +0x20 velocity   +0x2c the creature moved
+    #   +0x30 s16 the facing set in the second half
+    # =====================================================================================
+    VT_SPELL_SHADOWSTEP = 0x51BD48
+    PDEF_SHADOWSTEP = 0x8E84B8
+
+    def shadowstep_cast(self, skill, level, caster, pos=0, facing=0):
+        """SkillShadowStep_cast 0x311340 -> the SpellShadowStep or 0: slot 14 (level, 20),
+        pool_new(0x34), the constructor.  Position and facing are not used."""
+        level = self.skill_call(skill, 14, level, 0x14)
+        spell = self.call('pool_new', 0x34)
+        if spell:
+            self.shadowstep_spell_ctor(spell, level, caster, skill)
+        return spell
+
+    def shadowstep_spell_ctor(self, spell, level, owner, skill):
+        """SpellShadowStep_ctor 0x311638 (spell, level, owner, skill).
+
+        Spell base (ONE SHARED DRAW); speed 370, t = 0; the owner's action state +0x58c =
+        0xe and object flags |= 5, WHATEVER the owner is; the end facing = facing - 0x8000;
+        velocity = (cos, sin of the facing, 0) normalised x 370; the sound.
+        s0 = slot 10 (0, level), s1 = slot 10 (1, level).  With s1 != 0: pool_new(0x4ac)
+        and a StaticFire at the owner (360 frames; ONE SHARED DRAW inside), and for n = s1
+        - 1 further ones on a ring of radius 75 starting at the facing, 0xffff / n apart
+        (each: terrain_heightAtPoint, kept when within 72 of the owner's z; 240 frames,
+        secondary).  Every fire is handed the owner as a plain pointer.
+        Every entry of world_collectObjectsInBox(owner -/+ (97, 97, 1000), capacity 64)
+        that is a creature, that the owner's slot 20 accepts and whose target handle +0x234
+        holds the owner: its slot 31 (s0), and with n != 0 a knock-back of 151 at angle
+        atan2_16(entry - owner) - 0x8000.
+        86 particles on the owner's model (an OWN ball and ONE OWN DRAW each).  With n == 0
+        a LightEffect 36 above the owner (ONE SHARED DRAW)."""
+        u32, w32 = self.u32, self.w32
+        self.spell_base_ctor(spell, level, owner, skill, self.VT_SPELL_SHADOWSTEP)
+        w32(spell + 0x1C, 0x43B90000)
+        w32(spell + 0x18, 0)
+        w32(spell + 0x20, C.cos16(self.s16(owner + 0x38)))
+        w32(spell + 0x24, C.sin16(self.s16(u32(spell + 0xC) + 0x38)))
+        w32(spell + 0x28, 0)
+        v = self.vec(spell + 0x20)
+        facing = self.s16(u32(spell + 0xC) + 0x38)
+        flags = u32(owner + 0xC)
+        w32(owner + 0x58C, 0xE)
+        self.w16(spell + 0x30, facing - 0x8000)
+        w32(owner + 0xC, flags | 5)
+        w32(spell + 0x2C, owner)
+        inverse = C.rsqrt(ONE, C.add(C.add(C.mul(v[0], v[0]), C.mul(v[1], v[1])), C.mul(v[2], v[2])))
+        self.wvec(spell + 0x20, tuple(C.mul(C.mul(c, inverse), u32(spell + 0x1C)) for c in v))
+        self.call('sound_playAtPos', self.call('res_find', 0x5528C8, 0x5528D0), self.vec(u32(spell + 0xC) + 0x10), ONE)
+        mover = u32(spell + 0x2C)
+        reach = (0x42C20000, 0x42C20000, 0x447A0000)
+        low = tuple(C.sub(u32(mover + 0x10 + 4 * i), reach[i]) for i in range(3))
+        high = tuple(C.add(u32(mover + 0x10 + 4 * i), reach[i]) for i in range(3))
+        calm = self.skill_call(u32(spell + 8), 10, 0, self.s8(spell))
+        fires = s32(self.skill_call(u32(spell + 8), 10, 1, self.s8(spell)))
+        ring = 0
+        if fires:
+            block = self.call('pool_new', 0x4AC)
+            if block:
+                mover = u32(spell + 0x2C)
+                self.object_ctor('StaticFire_ctor', block, self.vec(mover + 0x10), 0x168, mover, 0, 0x42F00000, ONE)
+            ring = fires - 1
+            if ring:
+                angle = self.s16(u32(spell + 0x2C) + 0x38)
+                step = 0xFFFF // ring if ring > 0 else 0
+                height = ZERO
+                for _ in range(max(ring, 0)):
+                    x = C.add(u32(u32(spell + 0x2C) + 0x10), C.mul(C.sin16(s16(angle)), 0x42960000))
+                    y = C.add(u32(u32(spell + 0x2C) + 0x14), C.mul(C.cos16(s16(angle)), 0x42960000))
+                    height = self.call('terrain_heightAtPoint', u32(G_WORLD), (x, y, height))
+                    if not C.lt(0x42900000, C.fabs(C.sub(u32(u32(spell + 0xC) + 0x18), height))):
+                        block = self.call('pool_new', 0x4AC)
+                        if block:
+                            self.object_ctor('StaticFire_ctor', block, (x, y, height), 0xF0, u32(spell + 0x2C), 1,
+                                             0x42F00000, ONE)
+                    angle = s32(angle + step)
+        for other in self.call('world_collectObjectsInBox', low, high, 0x40) or ():
+            if not u32(other + 0xC) & 0x20 or not self.vcall(u32(spell + 0x2C), 20, other):
+                continue
+            if not u32(other + 0x234) or u32(u32(other + 0x234) + 0xC) != u32(spell + 0x2C):
+                continue
+            self.vcall(other, 31, calm)
+            if ring:
+                w32(other + 0x2E8, 0x43170000)
+                mover = u32(spell + 0x2C)
+                self.w16(other + 0x2E0, C.atan2_16(C.sub(u32(other + 0x14), u32(mover + 0x14)),
+                                                   C.sub(u32(other + 0x10), u32(mover + 0x10))) - 0x8000)
+        mover = u32(spell + 0x2C)
+        model = self.vcall(mover, 16)
+        count = s32(self.call('model_getSamplePointCount', model))
+        for _ in range(0x56):
+            velocity = tuple(C.mul(c, 0x40400000) for c in self.spell_ball(spell))
+            point = self._sample_point(u32(spell + 0x2C), model, self.spell_rand(spell), count)
+            self.call('particle_spawn', self.PDEF_SHADOWSTEP, point, velocity, ZERO)
+        if not ring:
+            light = self.call('pool_new', 0xBC)
+            if light:
+                mover = u32(spell + 0x2C)
+                spot = (C.add(u32(mover + 0x10), ZERO), u32(mover + 0x14), C.add(u32(mover + 0x18), 0x42100000))
+                self.light_effect(light, spot, 0x43000000, 0x429E0000, 0x42540000, 0x42F00000, 0x43340000, ZERO, ONE,
+                                  rest=(0xC2C00000, 0, 0, 0, 0))
+
+    def shadowstep_run(self, spell, pos=0, facing=0):
+        """SpellShadowStep_run 0x311e3c, slot 2.
+
+        s = 2 (t - 0.5); v = the velocity; offline (g_networkMode == 0) Player_clampToScreen
+        corrects it; v x 0.5; the mover's scale +0xdc = s^3; obj_moveWithCollision(mover,
+        v, 0, ignore creatures 1) TWICE; the copy-rebuild byte 0x402797 = 1; with the scale
+        below 0.5 creature flag 0x200000 (not drawn); t += 0.04088309; t > 0.5: the
+        OWNER's facing = the end facing; t > 1: the spell ends itself (the 25th call)."""
+        u32, w32 = self.u32, self.w32
+        half = C.sub(u32(spell + 0x18), HALF)
+        half = C.add(half, half)
+        velocity = self.vec(spell + 0x20)
+        if not self.u8(G_NETWORK_MODE):
+            velocity = self.call('Player_clampToScreen', u32(spell + 0x2C))
+        mover = u32(spell + 0x2C)
+        velocity = tuple(C.mul(c, HALF) for c in velocity)
+        w32(mover + 0xDC, C.mul(C.mul(half, half), half))
+        self.call('obj_moveWithCollision', mover, velocity, 0, 1)
+        self.call('obj_moveWithCollision', u32(spell + 0x2C), velocity, 0, 1)
+        self.w8(G_FORCE_GHOST_REBASE, 1)
+        mover = u32(spell + 0x2C)
+        if C.lt(u32(mover + 0xDC), HALF):
+            self.w64(mover + 0xA8, self.u64(mover + 0xA8) | 0x200000)
+        w32(spell + 0x18, C.add(u32(spell + 0x18), 0x3D277507))
+        if C.lt(HALF, u32(spell + 0x18)):
+            self.w16(u32(spell + 0xC) + 0x38, self.u16(spell + 0x30))
+        if C.lt(ONE, u32(spell + 0x18)):
+            self.spell_end(spell)
+
+
+_register(67, 'shadowstep', {
+    'SkillShadowStep_cast': (0x311340, 0x3113E0, 'skill', 'shadowstep_cast'),
+    'SpellShadowStep_ctor': (0x311638, 0x311DA0, '', 'shadowstep_spell_ctor'),
+    'SpellShadowStep_run': (0x311E3C, 0x311FC8, 'spell', 'shadowstep_run'),
+}, [(Model.VT_SPELL_SHADOWSTEP, 'Spell', (1,))])
+
+
+
+EXTERNALS.update({
+    'SpellAncestralCall_typeinfo': Ext(0x3CE9BC, '', 0, 'i', 'type-info getter'),
+    'sound_stop': Ext(0x213EA0, 'i', 0, 'n', '(sound handle)'),
+    'sound_release': Ext(0x213438, 'i', 0, 'n', '(sound handle): let a looping sound repeat'),
+})
+
+
+class Model(Model):                             # noqa: F811
+    # =====================================================================================
+    # 51 ancestralcall: docs/spec/skills-35-68.md section 51.  SkillAncestralCall (table
+    # 0x519808; flag bit 0 set: THE PREDICTION COPY MAY CAST IT) and SpellAncestralCall
+    # (0x84 bytes, table 0x5197d8).
+    #
+    #   +0x18 the caster again   +0x1c seconds elapsed   +0x20 duration   +0x24 radius
+    #   +0x28 frame of the cast   +0x2c three beam handles   +0x7c cast animation over
+    #   +0x80 particle group
+    # =====================================================================================
+    VT_SPELL_ANCESTRALCALL = 0x5197D8
+    PDEF_ANCESTRAL_RING = 0x8E5C30
+    ANCESTRAL_CLIPS = {0: 0x54FC00, 5: 0x54FC10, 2: 0x54FC20, 1: 0x54FC30, 3: 0x54FC40, 7: 0x54FC50}    # else 0x54fc10
+    ANCESTRAL_BEAM_FRAMES = 0x54FC60            # three frame offsets (data)
+
+    def ancestralcall_can_use(self, skill, caster):
+        """SkillAncestralCall_canUse 0x2e060c -> 1 unless the caster carries a
+        SpellAncestralCall."""
+        return 0 if self.call('creature_findSpellByType', caster, self.call('SpellAncestralCall_typeinfo')) else 1
+
+    def ancestralcall_cast(self, skill, level, caster, pos=0, facing=0):
+        """SkillAncestralCall_cast 0x2e0750 -> the spell or 0: slot 14 (level, 10),
+        pool_new(0x84), the constructor."""
+        level = self.skill_call(skill, 14, level, 10)
+        spell = self.call('pool_new', 0x84)
+        if spell:
+            self.ancestralcall_spell_ctor(spell, level, caster, skill)
+        return spell
+
+    def ancestralcall_spell_ctor(self, spell, level, owner, skill):
+        """SpellAncestralCall_ctor 0x2e09b4 (spell, level, owner, skill).
+
+        For EVERY caster, the prediction copy included: Spell base (ONE SHARED DRAW);
+        +0x18 = owner, clock +0x1c = 0; a sound on the owner; the cast clip of the owner's
+        weapon class (record byte +0x4a86 picks the name; res_find in the class lump) is
+        started on the OWNER'S OWN animation state (anim_startBlendInOut, flags 0x22, 0.1 s
+        in and out) - no store into the clip.
+        Then the copy test (owner flag 0x20000, 0x2e0b80).  Only for a real caster: a
+        LightEffect 36 above the owner (ONE SHARED DRAW); the owner's action state +0x58c
+        = 6; +0x7c = 0; +0x28 = frame; the three beam handles = 0; duration +0x20 = slot
+        10 (2, level), radius +0x24 = slot 10 (3, level) x 12 (floats); a particle group."""
+        u32, w32 = self.u32, self.w32
+        self.spell_base_ctor(spell, level, owner, skill, self.VT_SPELL_ANCESTRALCALL)
+        w32(spell + 0x18, owner)
+        w32(spell + 0x1C, 0)
+        self.call('sound_playOnObject', self.call('res_find', 0x54FBE0, 0x54FBE8), owner, ONE)
+        weapon_class = self.s8(self.record(u32(spell + 0x18)) + 0x4A86)
+        name = self.call('libc_sprintf', self.ANCESTRAL_CLIPS.get(weapon_class, 0x54FC10), None)
+        player = u32(spell + 0x18)
+        clip = self.call('res_find', u32(u32(player + 0x24)), name)
+        self.call('anim_startBlendInOut', u32(spell + 0x18) + 0x114, clip, 0x22, F_0_1, F_0_1)
+        if u32(u32(spell + 0xC) + 0xC) & 0x20000:
+            return
+        light = self.call('pool_new', 0xBC)
+        if light:
+            player = u32(spell + 0x18)
+            spot = (C.add(u32(player + 0x10), ZERO), u32(player + 0x14), C.add(u32(player + 0x18), 0x42100000))
+            self.light_effect(light, spot, ZERO, 0x431B0000, 0x437F0000, 0x43340000, 0x43100000, ZERO, 0x40A00000,
+                              a2=player, rest=(0xC2C00000, 0, 0, 0, 0))
+        w32(u32(spell + 0x18) + 0x58C, 6)
+        w32(spell + 0x7C, 0)
+        w32(spell + 0x28, u32(G_SIM_FRAME))
+        for k in range(3):
+            w32(spell + 0x2C + 4 * k, 0)
+        w32(spell + 0x20, C.from_int(self.stat(u32(spell + 8), 2, self.s8(spell))))
+        w32(spell + 0x24, C.from_int(s32(self.stat(u32(spell + 8), 3, self.s8(spell)) * 12)))
+        w32(spell + 0x80, self.call('particleGroup_create'))
+
+    def ancestralcall_tint_and_glow(self, spell, obj):
+        """SpellAncestralCall_tintAndGlow 0x2e15a0 (spell, object): both flash quads =
+        (0x2c, 0x30, 0xbe, 0x29) and the model shock effect."""
+        for off, value in ((0x92, 0x30), (0x94, 0xBE), (0x9A, 0x30), (0x9C, 0xBE), (0x90, 0x2C), (0x9E, 0x29), (0x98, 0x2C),
+                           (0x96, 0x29)):
+            self.w16(obj + off, value)
+        self.call('fx_shockModel', self.u32(obj + 0x544), obj + 0x114, self.vec(obj + 0x10), self.s16(obj + 0x38),
+                  obj + 0x320, 0x5E808080, ONE, ONE, ZERO)
+
+    def ancestralcall_run(self, spell, pos, facing=0):
+        """SpellAncestralCall_run 0x2e0d10 (spell, position, facing), slot 2.
+
+          1. clock += 1/60.
+          2. While the cast animation plays (+0x7c == 0): Player_animStep(caster; 1.0).
+             Animation status +0x11a without bit 0x20: the beam handles = 0, the looping
+             sound at caster +0x4a8 stopped and that word = -1, the caster's action state
+             = 2, +0x7c = 1.  Otherwise the three beams (from 360 above the run position
+             to the run position and the two hands), each created when frame - cast frame
+             equals its entry of the table at 0x54fc60 and refreshed while it exists, with
+             the sounds of the first two.
+          3. The caster is tinted; a ring of level + 14 particles (ONE OWN DRAW each) of
+             radius slot 10 (3, level) x 12 round net_objOrGhost(owner) - asked again for
+             every particle; every other player of the alive list inside the radius in
+             the plane (same team only in PvP mode A, the caster's slot 22) is tinted.
+          4. duration < clock: the spell ends itself."""
+        u32, w32 = self.u32, self.w32
+        here = self.vec(pos)
+        w32(spell + 0x1C, C.add(u32(spell + 0x1C), DT))
+        if not u32(spell + 0x7C):
+            self.call('Player_animStep', u32(spell + 0x18), ONE)
+            player = u32(spell + 0x18)
+            if not self.u16(player + 0x11A) & 0x20:
+                for k in range(3):
+                    w32(spell + 0x2C + 4 * k, 0)
+                if u32(player + 0x4A8) != M32:
+                    self.call('sound_stop', u32(player + 0x4A8))
+                    w32(u32(spell + 0x18) + 0x4A8, M32)
+                w32(u32(spell + 0x18) + 0x58C, 2)
+                w32(spell + 0x7C, 1)
+            else:
+                first = self.call('model_getAttachPoint', u32(player + 0x544), self.vec(player + 0x10),
+                                  self.s16(player + 0x38), player + 0x114, 0, 0, ONE)
+                player = u32(spell + 0x18)
+                second = self.call('model_getAttachPoint', u32(player + 0x544), self.vec(player + 0x10),
+                                   self.s16(player + 0x38), player + 0x114, 1, 0, ONE)
+                ends = ((C.add(here[0], ZERO), here[1], here[2]), tuple(first), tuple(second))
+                top = (C.add(here[0], ZERO), here[1], C.add(here[2], 0x43B40000))
+                for k in range(3):
+                    slot = spell + 0x2C + 4 * k
+                    if s32(u32(G_SIM_FRAME) - u32(spell + 0x28)) == self.s32(self.ANCESTRAL_BEAM_FRAMES + 4 * k):
+                        player = u32(spell + 0x18)
+                        if u32(player + 0x4A8) == M32 and k == 0:
+                            self.call('sound_playOnObject', self.call('res_find', 0x54FBE0, 0x54FC70), u32(spell + 0x18), ONE)
+                            handle = self.call('sound_playOnObject', self.call('res_find', 0x54FBE0, 0x54FC88),
+                                               u32(spell + 0x18), ONE)
+                            w32(u32(spell + 0x18) + 0x4A8, handle)
+                            self.call('sound_release', handle)
+                        if k == 1:
+                            self.call('sound_playOnObject', self.call('res_find', 0x54FBE0, 0x54FC70), u32(spell + 0x18), ONE)
+                        if not u32(slot):
+                            w32(slot, self.call('beam_create', top, ends[k], 0x168, 5, 0x5E808080, 0x417E6666, 0x41080000))
+                            if not u32(slot):
+                                continue
+                        self.call('beam_update', u32(slot), top, ends[k], 0x80, 0x168)
+                    elif u32(slot):
+                        self.call('beam_update', u32(slot), top, ends[k], 0x80, 0x168)
+        self.ancestralcall_tint_and_glow(spell, u32(spell + 0x18))
+        level = self.s8(spell)
+        reach = s32(self.stat(u32(spell + 8), 3, level) * 12)
+        self.call('particleGroup_begin', u32(spell + 0x80))
+        anchor = self.call('net_objOrGhost', u32(spell + 0xC))
+        matrix = C.mat34_set_pos_rot_z(list(self.vec(anchor + 0x10)), s16(u32(G_SIM_FRAME) * 0x43))
+        self.call('particleGroup_setMatrix', u32(spell + 0x80), tuple(matrix))
+        for _ in range(max(level + 0xE, 0)):
+            angle = s16(self.spell_rand(spell))
+            ring = [C.mul(C.cos16(angle), C.from_int(reach)), C.mul(C.sin16(angle), C.from_int(reach)), ZERO]
+            world = C.mat34_transform_point(matrix, ring)
+            ground = self.call('terrain_heightAtPoint', u32(G_WORLD), tuple(world))
+            anchor = self.call('net_objOrGhost', u32(spell + 0xC))
+            height = C.sub(ground, u32(anchor + 0x18))
+            if C.le(height, 0x42900000) and C.le(0xC2900000, height):
+                self.call('particle_spawn', self.PDEF_ANCESTRAL_RING, (ring[0], ring[1], height), (0, 0, 0), ZERO)
+        self.call('particleGroup_end', u32(spell + 0x80))
+        i = 0
+        while i < self.s32(G_ALIVE_COUNT):
+            obj = u32((G_PLAYERS + self.s32(G_ALIVE_LIST + 4 * i) * REC_SIZE + REC_OBJ) & M32)
+            i += 1
+            caster = u32(spell + 0x18)
+            if not obj or obj == caster:
+                continue
+            if u32(G_PVP_MODE_A) and not self.vcall(caster, 22, obj):
+                continue
+            caster = u32(spell + 0x18)
+            dy = C.sub(u32(caster + 0x14), u32(obj + 0x14))
+            dx = C.sub(u32(caster + 0x10), u32(obj + 0x10))
+            if C.lt(C.add(C.mul(dx, dx), C.mul(dy, dy)), C.from_int(s32(reach * reach))):
+                self.ancestralcall_tint_and_glow(spell, obj)
+        if C.lt(u32(spell + 0x20), u32(spell + 0x1C)):
+            self.spell_end(spell)
+
+    def ancestralcall_stat0_fraction(self, spell):
+        """0x2e13d0 -> (float) slot 10 (0, level) x 0.01: the damage and attack factor."""
+        return C.mul(C.from_int(self.stat(self.u32(spell + 8), 0, self.s8(spell))), F_0_01)
+
+    def ancestralcall_stat1_fraction(self, spell):
+        """0x2e1420 -> (float) slot 10 (1, level) x 0.01: the swing-speed factor."""
+        return C.mul(C.from_int(self.stat(self.u32(spell + 8), 1, self.s8(spell))), F_0_01)
+
+    def ancestralcall_query_for(self, spell, creature, out0, out1):
+        """SpellAncestralCall_queryFor 0x2e1470 (spell, creature, float *damage factor or
+        0, float *speed factor or 0) -> 1 when the creature is under this aura: the owner
+        itself, or - on the same team in PvP mode A (the OWNER's slot 22) - within slot 10
+        (3, level) x 12 of the owner in the plane (inclusive).  0 for no creature.  The
+        two outputs are written first, whatever the answer."""
+        u32 = self.u32
+        reach = self.stat(u32(spell + 8), 3, self.s8(spell))
+        if out0:
+            self.w32(out0, self.ancestralcall_stat0_fraction(spell))
+        if out1:
+            self.w32(out1, self.ancestralcall_stat1_fraction(spell))
+        if not creature:
+            return 0
+        owner = u32(spell + 0xC)
+        if creature == owner:
+            return 1
+        if u32(G_PVP_MODE_A):
+            if not self.vcall(owner, 22, creature):
+                return 0
+            owner = u32(spell + 0xC)
+        dx = C.sub(u32(creature + 0x10), u32(owner + 0x10))
+        dy = C.sub(u32(creature + 0x14), u32(owner + 0x14))
+        limit = C.from_int(s32(reach * 12 * reach * 12))
+        return 0 if C.lt(limit, C.add(C.mul(dx, dx), C.mul(dy, dy))) else 1
+
+
+_register(51, 'ancestralcall', {
+    'SkillAncestralCall_canUse': (0x2E060C, 0x2E0640, 'skill', 'ancestralcall_can_use'),
+    'SkillAncestralCall_cast': (0x2E0750, 0x2E07F0, 'skill', 'ancestralcall_cast'),
+    'SpellAncestralCall_ctor': (0x2E09B4, 0x2E0D10, '', 'ancestralcall_spell_ctor'),
+    'SpellAncestralCall_run': (0x2E0D10, 0x2E13D0, 'spell', 'ancestralcall_run'),
+    'SpellAncestralCall_getStat0Fraction': (0x2E13D0, 0x2E1420, '', 'ancestralcall_stat0_fraction'),
+    'SpellAncestralCall_getStat1Fraction': (0x2E1420, 0x2E1470, '', 'ancestralcall_stat1_fraction'),
+    'SpellAncestralCall_queryFor': (0x2E1470, 0x2E15A0, '', 'ancestralcall_query_for'),
+    'SpellAncestralCall_tintAndGlow': (0x2E15A0, 0x2E1634, '', 'ancestralcall_tint_and_glow'),
+}, [(Model.VT_SPELL_ANCESTRALCALL, 'Spell', (1,))])
+
+
+
+EXTERNALS.update({
+    'SpellGiantGrowth_typeinfo': Ext(0x3D0DA8, '', 0, 'i', 'type-info getter'),
+})
+
+
+class Model(Model):                             # noqa: F811
+    # =====================================================================================
+    # Can-use (slot 1) of ids 38, 39, 40 and 65 - the four ids of the range whose casts
+    # are not modelled here but which have a can-use of their own.  Each is run for the
+    # prediction copy too (the cast-start code of Player_run asks before Player_castSkill
+    # turns the copy away): none of them stores anything; three can raise a HUD message.
+    # =====================================================================================
+    def groundpound_can_use(self, skill, caster):
+        """SkillGroundPound_canUse 0x2c7140 -> 1 for a caster without the player flag; a
+        player needs weapon class 2 (record byte +0x4a86) and, when the active weapon set
+        holds an item, one whose definition word +0x20 is 1; else a HUD message for 180
+        frames and 0."""
+        if not self.u32(caster + 0xC) & 0x40:
+            return 1
+        rec = self.record(caster)
+        allowed = self.s8(rec + 0x4A86) == 2
+        item = self.u32((rec + 0x4434 + 4 * self.s8(rec + 0x4A7C)) & M32)
+        if item and self.u32(self.u32(item) + 0x20) != 1:
+            allowed = False
+        if not allowed:
+            self.call('hud_showMessage', self.call('text_lookup', 0x54E7A0), 0xB4, self.u32(caster + 0x3C8), 0)
+        return 1 if allowed else 0
+
+    def convertenemy_can_use(self, skill, caster):
+        """SkillConvertEnemy_canUse 0x2cffb8 -> 1, or 0 with a HUD message (90 frames) for a
+        player in PvP mode A."""
+        if self.u32(G_PVP_MODE_A) and self.u32(caster + 0xC) & 0x40:
+            self.call('hud_showMessage', self.call('text_lookup', 0x54ED70), 0x5A, self.u32(caster + 0x3C8), 0)
+            return 0
+        return 1
+
+    def convertundead_can_use(self, skill, caster):
+        """SkillConvertUndead_canUse 0x2d0a58 -> 0 with a HUD message (90 frames) for a
+        player in PvP mode A; otherwise 1 as soon as an entry of world_collectObjectsInBox
+        (caster -/+ 329 on all axes, capacity 512) is something the caster's slot 20
+        accepts with kind byte +0xb4 == 0x10 (undead); none: a HUD message (180 frames)
+        and 0 - the slot word +0x3c8 is read whatever the caster is."""
+        u32 = self.u32
+        if u32(G_PVP_MODE_A) and u32(caster + 0xC) & 0x40:
+            self.call('hud_showMessage', self.call('text_lookup', 0x54EE58), 0x5A, u32(caster + 0x3C8), 0)
+            return 0
+        here = self.vec(caster + 0x10)
+        found = self.call('world_collectObjectsInBox', tuple(C.sub(v, 0x43A48000) for v in here),
+                          tuple(C.add(v, 0x43A48000) for v in here), 0x200) or ()
+        for other in found:
+            if self.vcall(caster, 20, other) and self.s8(other + 0xB4) == 0x10:
+                return 1
+        self.call('hud_showMessage', self.call('text_lookup', 0x54EE68), 0xB4, u32(caster + 0x3C8), 0)
+        return 0
+
+    def giantgrowth_can_use(self, skill, caster):
+        """SkillGiantGrowth_canUse 0x308f2c -> 1 unless the caster carries a
+        SpellGiantGrowth."""
+        return 0 if self.call('creature_findSpellByType', caster, self.call('SpellGiantGrowth_typeinfo')) else 1
+
+
+_register(38, 'groundpound', {'SkillGroundPound_canUse': (0x2C7140, 0x2C71EC, 'skill', 'groundpound_can_use')})
+_register(39, 'convertenemy', {'SkillConvertEnemy_canUse': (0x2CFFB8, 0x2D001C, 'skill', 'convertenemy_can_use')})
+_register(40, 'convertundead', {'SkillConvertUndead_canUse': (0x2D0A58, 0x2D0B88, 'skill', 'convertundead_can_use')})
+_register(65, 'giantgrowth', {'SkillGiantGrowth_canUse': (0x308F2C, 0x308F60, 'skill', 'giantgrowth_can_use')})
+
+
+
+EXTERNALS.update({
+    'FlyingText_ctor': Ext(0x202158, 'pviiiiip', 0, 'n', '(block, position, 0, 0, 0, 0, 0, wide text): a floating word; a '
+                           'GameObject (ONE SHARED DRAW inside)'),
+})
+OBJECT_CTORS = OBJECT_CTORS + ('FlyingText_ctor',)
+
+
+class Model(Model):                             # noqa: F811
+    # =====================================================================================
+    # 39 convertenemy and 40 convertundead: docs/spec/skills-35-68.md sections 39, 40.  Two
+    # classes from one template: Skill (tables 0x518928 / 0x5189e0) and Spell (0x78 bytes,
+    # tables 0x5189b0 / 0x518a68), which sits on the CASTER and holds its targets in a list.
+    #
+    #   +0x18 targets (handle list, last found first)   +0x70 u16 spiral angle   +0x74
+    #   clock (float; the roll comes when it passes 4.0)   particle groups, one per target:
+    #   +0x20.. (id 39) / +0x1c.. (id 40)   the frame of the cast: +0x1c (39) / +0x6c (40)
+    # =====================================================================================
+    CONVERT = {
+        39: dict(table=0x5189B0, frame=0x1C, groups=0x20, sound=(0x54ED98, 0x54EDA0), radius=0x43A68000, arc=0x430B0000,
+                 turn=0x172D, tick=0x3DF9A5CA, speed=0x40DB3332, pdef=0x8E5460, resist=0x54EDC0, immune=0x54EDB8),
+        40: dict(table=0x518A68, frame=0x6C, groups=0x1C, sound=(0x54EE98, 0x54EEA0), radius=0x43A48000, arc=0x42F00000,
+                 turn=0x10BB, tick=0x3E0519EA, speed=0x419FBBBB, pdef=0x8E54B0, resist=0x54EEB8, immune=None),
+    }
+
+    def convert_cast(self, sid, skill, level, caster):
+        """SkillConvertEnemy_cast 0x2cff1c / SkillConvertUndead_cast 0x2d09bc -> the spell
+        or 0: pool_new(0x78) and the constructor (an empty list head in the frame is
+        cleared afterwards)."""
+        head = self.alloca(4)
+        self.mem.poke(head, 4, 0)
+        spell = self.call('pool_new', 0x78)
+        if spell:
+            self.convert_spell_ctor(sid, spell, level, caster, skill)
+        self.handle_clear(head)
+        return spell
+
+    def convert_spell_ctor(self, sid, spell, level, owner, skill):
+        """SpellConvertEnemy_ctor 0x2d0154 / SpellConvertUndead_ctor 0x2d0cc0 (spell,
+        level, owner, skill).
+
+        Spell base (ONE SHARED DRAW); the target list empty; the frame; n = slot 10 (0,
+        level); angle and clock 0; the sound on the owner.  world_collectObjectsInArc(owner
+        position, facing, no filter; 333 and 139 degrees for id 39, 329 and 120 for id
+        40; 0), walked in order until n targets are linked: an entry qualifies without
+        object flag 0x1000000, without the player flag, with charm timer +0x312 == 0, boss
+        rank 0 and charm seconds +0x354 <= 0 - and for id 40 only with kind byte +0xb4 ==
+        0x10 (undead; id 40 asks the boss rank BEFORE the charm timer, id 39 after).
+        Each: handle_link(spell + 0x18, target) and a particle group."""
+        p = self.CONVERT[sid]
+        u32, w32 = self.u32, self.w32
+        self.spell_base_ctor(spell, level, owner, skill, p['table'])
+        w32(spell + 0x18, 0)
+        w32(spell + p['frame'], u32(G_SIM_FRAME))
+        most = self.stat(skill, 0, self.s8(spell))
+        self.w16(spell + 0x70, 0)
+        w32(spell + 0x74, 0)
+        self.call('sound_playOnObject', self.call('res_find', *p['sound']), u32(spell + 0xC), ONE)
+        caster = u32(spell + 0xC)
+        head = self.query_list('world_collectObjectsInArc', self.vec(caster + 0x10), self.s16(caster + 0x38), 0,
+                               p['radius'], p['arc'], ZERO)
+        linked = 0
+        if most > 0:
+            for other in self.list_objects(head):
+                flags = u32(other + 0xC)
+                if not flags & 0x1000000 and not flags & 0x40:
+                    if sid == 39:
+                        fits = self.s16(other + 0x312) == 0 and not self.call('creature_bossRank', other)
+                    else:
+                        fits = not self.call('creature_bossRank', other) and self.s16(other + 0x312) == 0 \
+                            and self.s8(other + 0xB4) == 0x10
+                    if fits and C.le(u32(other + 0x354), ZERO):
+                        self.handle_link(spell + 0x18, other, other)
+                        w32(spell + p['groups'] + 4 * linked, self.call('particleGroup_create'))
+                        linked += 1
+                if not linked < most:
+                    break
+        self.handle_clear(head)
+
+    def convert_run(self, sid, spell):
+        """SpellConvertEnemy_run 0x2d0354 / SpellConvertUndead_run 0x2d0edc, slot 2.
+
+        seconds = slot 10 (1, level); the angle +0x70 and the clock +0x74 advance.
+        Clock <= 4.0: for every target still there, one spiral particle in its own group
+        (the group index counts the targets that are still there).
+        Clock > 4.0, once: chance = slot 10 (2, level); for every target still there, in
+        list order: (id 39 only) an undead - kind byte 0x10 - gets the "immune" word
+        (pool_new 0x98, text_lookup, FlyingText: ONE SHARED DRAW) and no roll.  Otherwise
+        a target wider than 20 (radius +0x1c) halves the chance (rounded half away from
+        zero); ONE SHARED DRAW d: with d % 100 + 1 < chance the target is converted -
+        creature flag 0x400000, charm seconds +0x354 = seconds, Creature_setCharm(target,
+        seconds x 60, the caster's team byte (record +0x4c24, signed) or -1 for a caster
+        that is not a player); else only a wide target gets the "resist" word.  The spell then
+        ends itself."""
+        p = self.CONVERT[sid]
+        u32, w32 = self.u32, self.w32
+        seconds = self.stat(u32(spell + 8), 1, self.s8(spell))
+        angle = (self.u16(spell + 0x70) + p['turn']) & 0xFFFF
+        self.w16(spell + 0x70, angle)
+        w32(spell + 0x74, C.add(u32(spell + 0x74), p['tick']))
+        spiral = (C.mul(C.cos16(s16(angle)), HALF), C.mul(C.sin16(self.s16(spell + 0x70)), HALF), ZERO)
+        waiting = C.le(u32(spell + 0x74), 0x40800000)
+        chance = 0 if waiting else self.stat(u32(spell + 8), 2, self.s8(spell))
+        index = 0
+        for target in self.list_objects(spell + 0x18):
+            if not target:
+                continue
+            if waiting:
+                group = u32(spell + p['groups'] + 4 * index)
+                matrix = C.mat34_set_pos_rot_z(list(self.vec(target + 0x10)), self.s16(target + 0x38))
+                self.call('particleGroup_setMatrix', group, tuple(matrix))
+                reach = u32(target + 0x1C)
+                point = (C.mul(spiral[0], reach), C.mul(spiral[1], reach), C.mul(u32(spell + 0x74), u32(target + 0x1C)))
+                velocity = tuple(C.mul(c, p['speed']) for c in spiral)
+                self.call('particleGroup_begin', group)
+                self.call('particle_spawn', p['pdef'], point, velocity, ZERO)
+                self.call('particleGroup_end', group)
+            elif p['immune'] and self.s8(target + 0xB4) == 0x10:
+                self._convert_word(target, p['immune'])
+                continue
+            else:
+                wide = C.lt(0x41A00000, u32(target + 0x1C))
+                need = C.round_half_away(C.mul(C.from_int(chance), HALF)) if wide else chance
+                if self.draw() % 100 + 1 < s32(need):
+                    team = M32
+                    caster = u32(spell + 0xC)
+                    if u32(caster + 0xC) & 0x40:
+                        team = self.s8(self.record(caster) + 0x4C24) & M32
+                    self.w64(target + 0xA8, self.u64(target + 0xA8) | 0x400000)
+                    frames = C.from_int(s32(seconds * 60))
+                    w32(target + 0x354, C.mul(frames, DT))
+                    self.call('Creature_setCharm', target, C.to_int(frames), team)
+                elif wide:
+                    self._convert_word(target, p['resist'])
+            index += 1
+        if not waiting:
+            self.spell_end(spell)
+
+    def _convert_word(self, target, key):
+        block = self.call('pool_new', 0x98)
+        if block:
+            text = self.call('text_lookup', key)
+            self.object_ctor('FlyingText_ctor', block, self.vec(target + 0x10), 0, 0, 0, 0, 0, text)
+
+    def convertenemy_cast(self, skill, level, caster, pos=0, facing=0):
+        return self.convert_cast(39, skill, level, caster)
+
+    def convertenemy_run(self, spell, pos=0, facing=0):
+        return self.convert_run(39, spell)
+
+    def convertundead_cast(self, skill, level, caster, pos=0, facing=0):
+        return self.convert_cast(40, skill, level, caster)
+
+    def convertundead_run(self, spell, pos=0, facing=0):
+        return self.convert_run(40, spell)
+
+    def convertenemy_spell_ctor(self, spell, level, owner, skill):
+        return self.convert_spell_ctor(39, spell, level, owner, skill)
+
+    def convertundead_spell_ctor(self, spell, level, owner, skill):
+        return self.convert_spell_ctor(40, spell, level, owner, skill)
+
+
+_register(39, 'convertenemy', {
+    'SkillConvertEnemy_cast': (0x2CFF1C, 0x2CFFB8, 'skill', 'convertenemy_cast'),
+    'SpellConvertEnemy_ctor': (0x2D0154, 0x2D0354, '', 'convertenemy_spell_ctor'),
+    'SpellConvertEnemy_run': (0x2D0354, 0x2D0820, 'spell', 'convertenemy_run'),
+}, [(0x5189B0, 'Spell', (1,))])
+_register(40, 'convertundead', {
+    'SkillConvertUndead_cast': (0x2D09BC, 0x2D0A58, 'skill', 'convertundead_cast'),
+    'SpellConvertUndead_ctor': (0x2D0CC0, 0x2D0EDC, '', 'convertundead_spell_ctor'),
+    'SpellConvertUndead_run': (0x2D0EDC, 0x2D133C, 'spell', 'convertundead_run'),
+}, [(0x518A68, 'Spell', (1,))])
+
+
+
+# the third argument of water_test is a pointer (0, or scratch in the caller's frame)
+EXTERNALS['water_test'] = Ext(0x189438, 'pvp', 1, 'i', '(world, position, out or 0; radius)')
+del EXTERNALS['GroundPoundEffect_ctor']         # modelled below
+
+
+class Model(Model):                             # noqa: F811
+    # =====================================================================================
+    # 38 groundpound: docs/spec/skills-35-68.md section 38.  SkillGroundPound (table
+    # 0x518298; can-use above) and the object GroundPoundEffect (0x9c bytes, table
+    # 0x512218), which Player_run creates on the clip's fourth event - and which the
+    # monsters Cazic and Zek build themselves.
+    #
+    #   +0x38 s16 facing   +0x4c run counter (byte)   +0x4d level (byte)   +0x4f over water
+    #   +0x50 the ground is 144 or more away   +0x54 light radius   +0x58 Skill
+    #   +0x5c..+0x94 a light record (position +0x8c)   +0x98 owner handle
+    # =====================================================================================
+    VT_GROUNDPOUND = 0x512218
+
+    def groundpound_cast(self, skill, level, caster, pos=0, facing=0):
+        """SkillGroundPound_cast 0x2c71ec -> 0.  Only for a caster with the player flag:
+        action state +0x58c = 10; the pound clip of the caster's class lump gets its FOUR
+        EVENT SLOTS WRITTEN INTO THE CLIP ITSELF (times 0.25, 0.5, 0.75, 1.4779719 s; masks
+        1, 2, 4, 8) - a header shared by every object of the class; the clip is started
+        (flags 10, 0.1 s in and out); a sound.  Nothing is created and the level is not
+        kept."""
+        u32, w32, w8 = self.u32, self.w32, self.w8
+        if u32(caster + 0xC) & 0x40:
+            w32(caster + 0x58C, 10)
+            clip = self.call('res_find', u32(u32(caster + 0x24)), 0x54E7B8)
+            w8(clip + 0x20, 2)
+            w32(clip + 0x14, 0x3E800000)
+            w8(clip + 0x18, 1)
+            w32(clip + 0x1C, 0x3F000000)
+            w32(clip + 0x24, 0x3F400000)
+            w8(clip + 0x28, 4)
+            w32(clip + 0x2C, 0x3FBD2E2F)
+            w8(clip + 0x30, 8)
+            self.call('anim_startBlendInOut', caster + 0x114, clip, 10, F_0_1, F_0_1)
+            self.call('sound_playOnObject', self.call('res_find', 0x54E7C8, 0x54E7D0), caster, ONE)
+        return 0
+
+    def groundpound_effect_ctor(self, obj, pos, facing, skill, level, owner):
+        """GroundPoundEffect_ctor 0x2c74ac (object, position, facing, skill, level, owner).
+
+        GameObject_ctor (ONE SHARED DRAW); the light record at +0x5c (radius 108), linked;
+        radius +0x1c = 0; facing, Skill, level byte; a sound on the owner; the owner handle
+        +0x98 (with an owner); light radius +0x54 = 108, counter 0; the every-frame run
+        list.  The centre: 30 ahead of the position along the facing, on the ground
+        (terrain_height, radius 6); +0x50 = the ground is 144 or more from the given
+        height; +0x4f = water_test(8.0) there.  Over water +0x50 is cleared and the light
+        unlinked; on dry ground with +0x50 the light is unlinked too.  The light is placed
+        36 above the centre."""
+        u32, w32, w16, w8 = self.u32, self.w32, self.w16, self.w8
+        start = self.vec(pos)
+        self.game_object_ctor(obj, pos, 0, 0)
+        w32(obj + 0x48, self.VT_GROUNDPOUND)
+        w8(obj + 0x65, 0)
+        self.wvec(obj + 0x8C, start)
+        for off, value in ((0x84, 0x38B3CC07), (0x7C, 0x38B3CC07), (0x78, 0x42D80000), (0x80, 0x42D80000), (0x88, 0)):
+            w32(obj + off, value)
+        for base in (0x6E, 0x66):
+            for i, value in enumerate((0xC1, 0x75, 0x39, 0xFFE0)):
+                w16(obj + base + 2 * i, value)
+        w8(obj + 0x64, 0)
+        self.call('light_link', obj + 0x5C)
+        w32(obj + 0x98, 0)
+        w32(obj + 0x1C, 0)
+        w16(obj + 0x38, facing)
+        w32(obj + 0x58, skill)
+        w8(obj + 0x4D, level)
+        self.call('sound_playOnObject', self.call('res_find', 0x54E7C8, 0x54E818), owner, ONE)
+        if owner:
+            self.handle_link(obj + 0x98, owner, owner)
+        w32(obj + 0x54, 0x42D80000)
+        w8(obj + 0x4C, 0)
+        self.call('obj_runEveryFrame', obj)
+        w32(obj + 0x10, C.add(start[0], C.mul(C.cos16(self.s16(obj + 0x38)), 0x41F00000)))
+        w32(obj + 0x14, C.add(start[1], C.mul(C.sin16(self.s16(obj + 0x38)), 0x41F00000)))
+        ground = self.call('terrain_height', u32(G_WORLD), self.vec(obj + 0x10), 0x40C00000)
+        w8(obj + 0x50, 0 if C.lt(C.fabs(C.sub(ground, u32(obj + 0x18))), 0x43100000) else 1)
+        w32(obj + 0x18, ground)
+        water = self.call('water_test', u32(G_WORLD), self.vec(obj + 0x10), 'stack', 0x41000000)
+        w8(obj + 0x4F, water)
+        if self.s8(obj + 0x4F):
+            w8(obj + 0x50, 0)
+            self.call('light_unlink', obj + 0x5C)
+        elif self.s8(obj + 0x50):
+            self.call('light_unlink', obj + 0x5C)
+        self.wvec(obj + 0x8C, (C.add(u32(obj + 0x10), ZERO), u32(obj + 0x14), C.add(u32(obj + 0x18), 0x42100000)))
+        self.call('light_relink', obj + 0x5C)
+
+    def _groundpound_stat(self, obj, stat, cap):
+        """Statistics 0 and 1: slot 10 without an owner, slot 12 (owner, cap) with one."""
+        skill, level = self.u32(obj + 0x58), self.s8(obj + 0x4D)
+        if not self.u32(obj + 0x98):
+            return self.stat(skill, stat, level)
+        return self.stat_for(skill, stat, level, self.u32(self.u32(obj + 0x98) + 0xC), cap)
+
+    def groundpound_effect_run(self, obj):
+        """GroundPoundEffect_run 0x2c7808, slot 4.
+
+        First run (counter 0): R = statistic 1 x 12 (slot 12 with the owner and cap 10; slot
+        10 without an owner), or 24 when +0x50 is set.  A dust ring of 164 particles, THREE
+        OWN DRAWS each; a LightEffect 24 ahead (ONE SHARED DRAW inside); 60 burst particles
+        and, without +0x50, 23 (46 over water) debris particles, a decal or a water
+        disturbance and camera_shake(level x 0.715 + 5) - all from the PER-MACHINE generator
+        0x404468.  Then the damage: every entry of world_collectObjectsInBox(centre -/+ R,
+        capacity 512) - only while the owner handle holds something - that the owner's slot
+        20 accepts and that is nearer in the plane than R + its radius: d = statistic 0
+        (slot 12, cap 0); damage_apply(entry, owner, 100000, flags 0x80100, no descriptor,
+        0; max(1, round(0.8 d)), max(1, round(1.2 d))); a creature left with hit points >=
+        0 costs ONE OWN DRAW r and is stunned (slot 30, slot 10 (3) x 60 frames, 1) when
+        100 - slot 10 (2) < r % 100 + 1.
+        Counter 30: obj_delete.
+        Every run: a spark while the counter is below 4 (dry ground, no +0x50) or a ripple
+        over water (0x404468 again); the light's radius = +0x54, which loses 3.8957684 a
+        run down to 0; counter += 1."""
+        u32, w32, w8 = self.u32, self.w32, self.w8
+        here = lambda: self.vec(obj + 0x10)
+        unit3 = lambda: self.unit(self.seed3_draw())
+        counter = self.s8(obj + 0x4C)
+        if counter == 0:
+            reach = C.from_int(s32(self._groundpound_stat(obj, 1, 10) * 12))
+            if self.s8(obj + 0x50):
+                reach = F_24
+            for angle in range(0, 0x10000, 400):
+                x = C.add(u32(obj + 0x10), C.mul(C.cos16(s16(angle)), reach))
+                point = (x, C.add(u32(obj + 0x14), C.mul(C.sin16(s16(angle)), reach)), C.add(u32(obj + 0x18), F_12))
+                vx = C.mul(C.mul(C.sub(self.unit(self.obj_rand(obj)), HALF), F_12), 0x3E5CF548)
+                vy = C.mul(C.mul(C.sub(self.unit(self.obj_rand(obj)), HALF), F_12), 0x3E5CF548)
+                vz = C.mul(C.mul(self.unit(self.obj_rand(obj)), F_12), 0x401F9F81)
+                self.call('particle_spawn', 0x8E4D80, point, (vx, vy, vz), ZERO)
+            front = (C.add(C.mul(C.cos16(self.s16(obj + 0x38)), F_24), u32(obj + 0x10)),
+                     C.add(C.mul(C.sin16(self.s16(obj + 0x38)), F_24), u32(obj + 0x14)), C.add(u32(obj + 0x18), ZERO))
+            light = self.call('pool_new', 0xBC)
+            if light:
+                self.light_effect(light, front, 0x43410000, 0x42EA0000, 0x42640000, 0x41100000, ZERO, 0x3F4CCCCC, 0x3E999999,
+                                  rest=(0xC2000000, 0x43410000, 0x42EA0000, 0x42640000, 0xC2000000))
+            angle = 0
+            definition = 0x8E4EC0 if C.lt(reach, 0x43180000) else 0x8E4F10 if C.lt(reach, 0x43680000) else 0x8E4F60
+            for _ in range(0x3C):
+                velocity = (C.mul(C.cos16(angle), 0x42C80000), C.mul(C.sin16(angle), 0x42C80000), C.mul(unit3(), 0x41A00000))
+                self.call('particle_spawn', definition, front, velocity, F_0_1)
+                angle = s16(angle + 0x444)
+            if not self.s8(obj + 0x50):
+                wet = self.s8(obj + 0x4F)
+                for _ in range(0x2E if wet else 0x17):
+                    vx = C.mul(C.mul(C.sub(unit3(), HALF), F_12), 0x3F9DDDDD)
+                    vy = C.mul(C.mul(C.sub(unit3(), HALF), F_12), 0x3F9DDDDD)
+                    vz = C.mul(C.mul(unit3(), F_12), 0x40733332)
+                    self.call('particle_spawn', 0x8E4E70 if self.s8(obj + 0x4F) else 0x8E4DD0, here(), (vx, vy, vz), ZERO)
+            shake = False
+            if not self.s8(obj + 0x4F):
+                if not self.s8(obj + 0x50):
+                    self.seed3_draw()
+                    self.call('decal_add', here(), s32(u32(G_SEED3)) >> 16, 9, 0, F_12)
+                    shake = not self.s8(obj + 0x50)
+            else:
+                self.call('water_disturb', u32(G_WORLD), here(), 0x455F5000, 0x42100000)
+                shake = not self.s8(obj + 0x50)
+            if shake:
+                self.call('camera_shake', 0, C.add(C.mul(C.from_int(self.s8(obj + 0x4D)), 0x3F3709C7), 0x40A00000))
+            centre = here()
+            found = self.call('world_collectObjectsInBox', tuple(C.sub(v, reach) for v in centre),
+                              tuple(C.add(v, reach) for v in centre), 0x200) or ()
+            for other in found:
+                node = u32(obj + 0x98)
+                if not node or not self.vcall(u32(node + 0xC), 20, other):
+                    continue
+                dy = C.sub(u32(obj + 0x14), u32(other + 0x14))
+                dx = C.sub(u32(obj + 0x10), u32(other + 0x10))
+                if not C.lt(C.sqrt(C.add(C.mul(dx, dx), C.mul(dy, dy))), C.add(reach, u32(other + 0x1C))):
+                    continue
+                amount = C.from_int(self._groundpound_stat(obj, 0, 0))
+                low = max(s32(C.round_half_away(C.sub(amount, C.mul(amount, 0x3E4CCCCC)))), 1)
+                high = max(s32(C.round_half_away(C.add(amount, C.mul(amount, 0x3E4CCCCC)))), 1)
+                self.call('damage_apply', other, u32(u32(obj + 0x98) + 0xC), 100000, 0, 0, 0x80100, 0, 0,
+                          C.from_int(low), C.from_int(high))
+                if u32(other + 0xC) & 0x20 and C.le(ZERO, u32(other + 0x228)):
+                    roll = self.obj_rand(obj)
+                    chance = self.stat(u32(obj + 0x58), 2, self.s8(obj + 0x4D))
+                    if 100 - chance < roll % 100 + 1:
+                        frames = self.stat(u32(obj + 0x58), 3, self.s8(obj + 0x4D))
+                        self.vcall(other, 30, s32(frames * 60), 1)
+        elif counter == 0x1E:
+            self.call('obj_delete', obj)
+        if not self.s8(obj + 0x4F):
+            if not self.s8(obj + 0x50) and self.s8(obj + 0x4C) < 4:
+                b = self.ball(self.seed3_draw)
+                self.call('particle_spawn', 0x8E4E20, here(), tuple(C.mul(c, 0x40400000) for c in b), ZERO)
+        if self.s8(obj + 0x4F):
+            x = C.add(u32(obj + 0x10), C.mul(C.sub(unit3(), HALF), 0x42480000))
+            y = C.add(u32(obj + 0x14), C.mul(C.sub(unit3(), HALF), 0x42480000))
+            self.call('water_disturb', u32(G_WORLD), (x, y, C.sub(u32(obj + 0x18), 0x42100000)), 0x455BC000, 0x40A00000)
+        radius = u32(obj + 0x54)
+        w32(obj + 0x78, radius)
+        w32(obj + 0x80, radius)
+        inverse = C.div(ONE, C.mul(radius, radius))
+        w32(obj + 0x84, inverse)
+        w32(obj + 0x7C, inverse)
+        radius = C.sub(u32(obj + 0x54), 0x40795445)
+        w32(obj + 0x54, radius)
+        if C.lt(radius, ZERO):
+            w32(obj + 0x54, 0)
+        w8(obj + 0x4C, self.u8(obj + 0x4C) + 1)
+
+
+_register(38, 'groundpound', {
+    'SkillGroundPound_cast': (0x2C71EC, 0x2C72EC, 'skill', 'groundpound_cast'),
+    'GroundPoundEffect_ctor': (0x2C74AC, 0x2C7808, '', 'groundpound_effect_ctor'),
+    'GroundPoundEffect_run': (0x2C7808, 0x2C843C, 'object', 'groundpound_effect_run'),
+}, [(Model.VT_GROUNDPOUND, 'Creature', (1,))])
 
 MODELLED = {name: start for name, (start, _end) in FUNCTIONS.items()}

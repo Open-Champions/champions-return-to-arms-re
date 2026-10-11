@@ -1,0 +1,22 @@
+# Power-on to the lobby server's first screen, over the game's own network stack.
+#
+#   python3 -I -B tools/rig/rig.py --screen-text --data <dir with save data and a network
+#       configuration, see online-netcnf.rig> --eth-net server=<this host's address> \
+#       --eth-pcap local/rig-out/a.pcap --script tools/rig/examples/online-lobby.rig
+#
+# The sign-in step needs the local sign-in patch (not in the repository); without it the
+# game stops with a network error when it cannot find Sony's server. The patch must be
+# applied before "Internet Game" is chosen. The script ends at the server's terms screen.
+at 300
+tapuntil cross 40 g_inFrontend:u8 == 1 timeout 6000
+until g_levelName:str8 == intro timeout 3000
+wait 320
+pnach local/SLUS-20973_4028A55F_signin.pnach *
+tap cross 4            # start a new game
+wait 90
+tap down 4
+wait 20
+tap cross 4            # the Internet entry: the network menu lists the saved setting
+wait 600
+tap cross 4            # accept the setting: DHCP, then the gateway and the lobby
+wait 900
