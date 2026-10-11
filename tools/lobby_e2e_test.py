@@ -21,11 +21,22 @@ builds differently from what the game expects is reported as a failure. Unmodifi
 Champions Reborn as of October 2026 passes the short run and fails several extended
 steps; server/FIXES.md lists the fixes this file checks.
 
+The last seven extended steps come after the two logouts, on consoles of their own, so
+that the steps before them keep their numbers. They are about a console that has lost
+its connection: the real game then connects again by itself and carries on under the
+session id it had, without logging in (docs/issues/live-rig.md 19.9 and 20.1). Six check
+which session ids are picked up and what the others are told; the seventh, that a
+session which is picked up is back in its chat room.
+
 By default every connection goes to the host named on the command line and only the
 port numbers are taken from the server's replies. --follow-advertised connects to the
-addresses the server hands out instead, as a console would.
+addresses the server hands out instead, as a console would. --gateway-port N is the
+Return to Arms gateway (40810 unless given). The server's other gateway ports are taken
+from it: Return to Arms N to N+7, Champions of Norrath N-10 to N-3. Nothing is sent to
+a port other than these and the ones the server hands out.
 
-The accounts are throwaway: e2e_a_<random> and e2e_b_<random>. The "LAN address" each
+The accounts are throwaway: e2e_a_<random> and e2e_b_<random>, and with --extended a
+few more of the same form, one for each further console. The "LAN address" each
 client reports is an artificial label from 192.0.2.0/24 (a documentation-only range);
 nothing ever connects to it. It is deliberately different from the address the server
 observes so the test can tell which field of a reply carries which address.
@@ -52,6 +63,8 @@ import time
 GAME_KEY = b"dlfk qs';r+t iqe4t9ueerjKDJ wdaj"   # symmetric key built into the game
 RTA_VERSION = 6                                  # third header field sent by Return to Arms
 RTA_GATEWAY_PORT = 40810
+GATEWAYS_PER_GAME = 8                            # the server listens on this many ports per game,
+CON_GATEWAY_BELOW = 10                           # Champions of Norrath's starting ten below RTA's
 IO_TIMEOUT = 5.0
 
 
@@ -1248,24 +1261,29 @@ def ext_no_user(a, b, args):
 
 
 def ext_garbage(a, b, args, suffix):
-    """Random bytes on every port. Reproducible: the generator is seeded with a constant."""
+    """Random bytes on every port. Reproducible: the generator is seeded with a constant.
+    The sixteen gateway ports are counted from --gateway-port: the server listens for
+    Return to Arms on eight ports from there (40810 to 40817 as shipped) and for Champions
+    of Norrath on the eight that start ten below (40800 to 40807)."""
     rnd = random.Random(20973)
     blob_of = lambda n: bytes(rnd.getrandbits(8) for _ in range(n))
     host = a.host
+    rta_gateway, con_gateway = args.gateway_port, args.gateway_port - CON_GATEWAY_BELOW
     # the two lobby ports, as the gateways hand them out (Champions of Norrath's reply
     # carries its address as a zero-terminated string)
     ports = {"RTA lobby": a.lobby[1]}
     try:
-        with socket.create_connection((host, 40800), timeout=IO_TIMEOUT) as g:
+        with socket.create_connection((host, con_gateway), timeout=IO_TIMEOUT) as g:
             g.sendall(frame(u16(0x43) + u32(1) + u32(2)))
             reply = g.recv(4096)
         body = reply[4 + 10:]
         ports["CON lobby"] = struct.unpack_from("<I", body, body.index(b"\0") + 1)[0]
-    except (OSError, ValueError, struct.error):
+    except (OSError, ValueError, struct.error, OverflowError):
         pass
-    for i in range(8):
-        ports[f"CON gateway {40800 + i}"] = 40800 + i
-        ports[f"RTA gateway {40810 + i}"] = 40810 + i
+    for i in range(GATEWAYS_PER_GAME):
+        if con_gateway + i > 0:
+            ports[f"CON gateway {con_gateway + i}"] = con_gateway + i
+        ports[f"RTA gateway {rta_gateway + i}"] = rta_gateway + i
     reached, total = 0, 0
     for name, port in ports.items():
         # noise behind a plausible length, and every message id with noise for a body
@@ -1336,9 +1354,15 @@ def ext_garbage(a, b, args, suffix):
             f"{len(datagrams)} random datagrams; the server still answers")
 
 
+# Notification 0x41 (forced logout) as it has to be on the wire: length word 12, u16 id,
+# u32 0, u16 0.
+FORCED_LOGOUT_FRAME = bytes.fromhex("0000000c" "4100" "00000000" "0000")
+
+
 def ext_second_login(a, b, args):
     """A console that was switched off leaves its connection half open, and the account
-    logged in. Logging in again must work, and ends the earlier session."""
+    logged in. Logging in again must work, and ends the earlier session: its connection
+    is sent notification 0x41, exactly as the game reads it, and closed."""
     expect(b.tcp is not None, "B is not connected")
     old_tcp, old_rx, old_notes = b.tcp, b.rx, b.notes
     b.tcp = None                                # keep the old connection open
@@ -1362,14 +1386,29 @@ def ext_second_login(a, b, args):
                 data += chunk
         except OSError:
             raise Failed("the earlier connection was left open")
-        ids = []
+        # Everything the earlier connection was sent before it was closed, frame by frame.
+        # Other notifications may have been waiting on it; the 0x41 comes last.
+        frames = []
         while len(data) >= 6:
             size = struct.unpack(">I", data[:4])[0]
-            ids.append(struct.unpack_from("<H", data, 4)[0])
-            data = data[max(size, 4):]
+            if size < 6 or size > len(data):
+                break
+            frames.append(data[:size])
+            data = data[size:]
+        ids = [struct.unpack_from("<H", f, 4)[0] for f in frames]
         expect(0x41 in ids, f"the earlier connection was closed without notification 0x41 (got {ids})")
+        # The game reads 0x41 as u16 id, u32 0 and one more u16 [game: 0x387388, case at
+        # 0x388654]: twelve bytes with the length word, and nothing behind them.
+        want = FORCED_LOGOUT_FRAME
+        got = frames[ids.index(0x41)]
+        expect(got == want, f"0x41 on the wire is {got.hex(' ')} ({len(got)} bytes); the game reads "
+                            f"{want.hex(' ')} ({len(want)} bytes)")
+        expect(ids.count(0x41) == 1 and frames[-1] == want and not data,
+               f"0x41 was not the one last thing sent before the close: frames {ids}, "
+               f"{len(data)} bytes left over")
         expect(b.alive() and a.alive(), "connections dead after the second login")
-        return "accepted; the earlier connection got notification 0x41 and was closed"
+        return (f"accepted; the earlier connection got notification 0x41 as the {len(want)} bytes "
+                f"{want.hex(' ')} and was closed")
     finally:
         if switched:
             try:
@@ -1379,6 +1418,308 @@ def ext_second_login(a, b, args):
         else:                                   # carry on with the session B had
             b.close()
             b.tcp, b.rx, b.notes = old_tcp, old_rx, old_notes
+
+
+# ----------------------------------------------------------------------------------------
+# A console that lost its connection
+#
+# The real game, when its connection is gone, connects again by itself (gateway, key
+# exchange) and carries on under the session id it had; it does not log in again
+# [docs/issues/live-rig.md 19.9, 20.1]. S1 and S6 are that document's numbers for what the
+# server got wrong there. Each step here has consoles and accounts of its own.
+# ----------------------------------------------------------------------------------------
+NOBODYS_SESSION = "0123456789ABCDEF"          # well-formed, and no session of anybody
+
+
+def fresh_console(tag, args, suffix):
+    """A console with an account of its own, logged in."""
+    c = Console(tag, args.host, args.verbose, args.follow_advertised)
+    c.user, c.handle, c.password = f"e2e_{tag.lower()}_{suffix}", f"e2e{tag}{suffix}", "e2e-" + os.urandom(4).hex()
+    try:
+        gateway(c, args.gateway_port)
+        create_account(c)
+        login(c)
+    except BaseException:
+        discard(c)
+        raise
+    return c
+
+
+def discard(*consoles):
+    """End what is left of a step's consoles: their games, sessions and sockets."""
+    for c in consoles:
+        if c is None:
+            continue
+        if c.tcp is not None and c.session:
+            try:
+                for pid in (0x05, 0x60, 0x17):               # leave any game, then log out
+                    c.call(pid, enc_wstr(c.session))
+            except (Failed, OSError, struct.error):
+                pass                                         # the connection is dead already
+        c.close()
+        c.udp.close()
+
+
+def reconnect(c, gateway_port):
+    """What the game does by itself when its connection is gone: gateway (0x43), lobby,
+    key exchange (0x27). It does not log in."""
+    gateway(c, gateway_port)
+    c.connect(*c.lobby)
+    key_exchange(c)
+
+
+def enc_wstr_game(s):
+    """An encrypted string as the real game writes it: text that is a multiple of 16 bytes
+    still gets one more block, so a session id travels as 48 bytes [live-rig.md 19.4].
+    (enc_wstr pads to the next multiple only; the server takes both.)"""
+    raw = s.encode("utf-16-le")
+    cipher = CRYPT.encrypt(raw + b"\0" * (len(raw) // 16 * 16 + 16 - len(raw)))
+    return u32((len(cipher) + 4) // 2) + u32(len(raw)) + cipher
+
+
+def ask_list(c, session):
+    """The game-list request 0x55 under a session id, byte for byte as the game sends it
+    (97 bytes with the length). Returns (result, games, bytes left) with the reply read
+    the way the game reads it: eight arrays, whatever the result."""
+    body = enc_wstr_game(session) + u16(1) + u32(0) + u32(50) + u32(10) + u32(0) + u8(0) + u32(0) + u32(0)
+    expect(4 + 10 + len(body) == 97, f"the test's own 0x55 request is {4 + 10 + len(body)} bytes, not 97")
+    track = c.send(0x55, body)
+    code, r = c.reply(0x55, track)
+    games = parse_game_list(r, True)
+    return code, games, r.left()
+
+
+def what_follows(c, wait=1.5):
+    """What else the server does on this connection: (length of a 0x41 frame it sent,
+    before or after the reply, or None; True if it closed the connection)."""
+    frame41, closed = None, False
+    try:
+        n = c.notification(0x41, timeout=wait)
+        if n is not None:
+            frame41 = 4 + 2 + 4 + len(n.b)
+            c.notification(0xFFFF, timeout=wait)        # nothing has this id; waits for the close
+    except (Failed, OSError):
+        closed = True
+    return frame41, closed
+
+
+def describe(code, games, follows):
+    frame41, closed = follows
+    return (f"result {code}, {len(games)} game(s)"
+            + (f", a 0x41 ({frame41} bytes)" if frame41 else ", no 0x41")
+            + (", connection closed" if closed else ", connection left open"))
+
+
+def refused(c, session, what):
+    """The answer a connection without a usable session must get: result 7, which is the
+    one result the game takes as "this session is over" (its text says the session id is
+    invalid), with the eight arrays the game reads whatever the result, and nothing
+    else: no 0x41, and the connection stays open (closing it made the game connect and
+    ask again without end)."""
+    code, games, left = ask_list(c, session)
+    follows = what_follows(c)
+    seen = describe(code, games, follows)
+    expect(code == 7 and games == [] and left == 0,
+           f"{what}: wanted result 7 (invalid session) with eight empty arrays, got {seen}")
+    expect(follows == (None, False), f"{what}: the server did not leave it at the reply: {seen}")
+    expect(c.call(0x0F)[0] == 0, f"{what}: the connection does not answer afterwards")
+    return seen
+
+
+def game_in(games, host):
+    return any(g["info"] == host.game_info for g in games)
+
+
+def s1_resume(args, loopback, suffix):
+    """Log in, drop the TCP connection, come back as the game does and ask for the game
+    list under the old session id. The session is picked up: the list is the real one, and
+    the connection is the account's again, with its character, for the discovery service
+    as well."""
+    host, c = fresh_console("H", args, suffix), None
+    try:
+        create_public_game(host, f"e2e resume {suffix}")
+        host_discovery(host, loopback)
+        c = fresh_console("R", args, suffix)
+        code, cid, _ = create_character(c, character_meta(1)[2], character_blob(0x41))
+        expect(code == 0 and cid, f"could not create a character before the drop (code {code})")
+        code, games, _ = ask_list(c, c.session)
+        expect(code == 0 and game_in(games, host),
+               f"before the drop the list was: result {code}, {len(games)} game(s), the host's not among them")
+        old = c.session
+
+        c.close()                                            # the connection is gone
+        time.sleep(0.3)
+        reconnect(c, args.gateway_port)
+        code, games, left = ask_list(c, old)
+        follows = what_follows(c)
+        seen = describe(code, games, follows)
+        expect(code == 0 and game_in(games, host) and left == 0,
+               f"the list under the old session id: {seen}")
+        expect(follows == (None, False), f"after the list: {seen}")
+        # logged in again as the same account, with the character a save goes to
+        chars = list_characters(c)
+        expect([x[0] for x in chars] == [cid], f"character list after coming back: {chars}")
+        data = character_blob(0x42, plain=900)
+        code, _ = save_character(c, c, cid, character_meta(2)[2], data)
+        expect(code == 0, f"a save after coming back gave result {code}")
+        expect(load_character(c, cid)[:len(data)] == data, "the save after coming back was not stored")
+        code, _ = c.call(0x62, enc_wstr(old))
+        expect(code == 0, f"friend list after coming back: result {code}")
+        # the discovery service knows the session on its new connection: host a game
+        create_public_game(c, f"e2e back {suffix}")
+        host_discovery(c, loopback)
+        code, games, _ = ask_list(host, host.session)
+        expect(code == 0 and game_in(games, host) and game_in(games, c),
+               f"the game hosted after coming back is not listed ({len(games)} game(s))")
+        code, _ = c.call(0x5A, enc_wstr(old) + u32(cid))
+        expect(code == 0, f"deleting the character after coming back gave result {code}")
+        return (f"{seen}; the account's character is listed, saved to and loaded again, "
+                "and a game hosted on the new connection is opened and listed")
+    finally:
+        discard(c, host)
+
+
+def s1_save_first(args, suffix):
+    """During play the first request after coming back is not 0x55 but a character save
+    (0x5E and its 0x5D pieces) [live-rig.md 20.2]. It must find the session and the
+    character too."""
+    c = fresh_console("S", args, suffix)
+    try:
+        code, cid, _ = create_character(c, character_meta(1)[2], character_blob(0x51))
+        expect(code == 0 and cid, f"could not create a character before the drop (code {code})")
+        c.close()
+        time.sleep(0.3)
+        reconnect(c, args.gateway_port)
+        data = character_blob(0x52, plain=1700)
+        code, pieces = save_character(c, c, cid, character_meta(7)[2], data)
+        expect(code == 0, f"save as the first request after coming back gave result {code}")
+        expect(load_character(c, cid)[:len(data)] == data, "that save was not stored")
+        expect(list_characters(c)[0][1][2] == ("level", "7"), "that save did not replace the summary")
+        c.call(0x5A, enc_wstr(c.session) + u32(cid))
+        return f"save in {pieces} messages answered with result {code} and stored"
+    finally:
+        discard(c)
+
+
+def s1_unknown(args, suffix):
+    """An id nobody has, on a connection that never logged in, and on a gateway port."""
+    x = Console("U", args.host, args.verbose, args.follow_advertised)
+    try:
+        gateway(x, args.gateway_port)
+        x.connect(*x.lobby)
+        key_exchange(x)
+        seen = refused(x, NOBODYS_SESSION, "unknown id on the lobby port")
+        refused(x, NOBODYS_SESSION, "the same again on the same connection")
+        x.connect(x.host, args.gateway_port)
+        refused(x, NOBODYS_SESSION, "unknown id on a gateway port")
+        return f"lobby port and gateway port: {seen}"
+    finally:
+        discard(x)
+
+
+def s1_logged_out(args, suffix):
+    """A session that ended with a logout is over."""
+    c = fresh_console("L", args, suffix)
+    try:
+        old = c.session
+        logout(c)
+        c.session = ""
+        reconnect(c, args.gateway_port)
+        return "after a logout: " + refused(c, old, "id of a session that logged out")
+    finally:
+        discard(c)
+
+
+def s1_replaced(args, suffix):
+    """A session whose account has logged in again since is over, and the new one is not
+    disturbed."""
+    c = fresh_console("N", args, suffix)
+    x = Console("U", args.host, args.verbose, args.follow_advertised)
+    try:
+        old = c.session
+        c.close()
+        time.sleep(0.3)
+        login(c)                                             # the account logs in anew
+        expect(c.session != old, "the second login returned the old session id")
+        x.lobby = c.lobby
+        x.connect(*x.lobby)
+        key_exchange(x)
+        seen = refused(x, old, "id of a session replaced by a newer login")
+        expect(c.alive(), "the newer session's connection died")
+        return "after the account logged in again: " + seen
+    finally:
+        discard(x, c)
+
+
+def s1_still_held(args, suffix):
+    """Only a session whose connection is gone can be picked up. While a connection holds
+    it, the id gets nobody else in, from the same address either, and the holder is not
+    disturbed."""
+    c = fresh_console("T", args, suffix)
+    x = Console("U", args.host, args.verbose, args.follow_advertised)
+    try:
+        x.lobby = c.lobby
+        x.connect(*x.lobby)
+        key_exchange(x)
+        seen = refused(x, c.session, "id of a session another connection holds")
+        expect(what_follows(c, 0.5) == (None, False) and c.alive(),
+               "the connection that holds the session was disturbed")
+        code, _, _ = ask_list(c, c.session)
+        expect(code == 0, f"the holder's own list request gave {code}")
+        return f"second connection: {seen}; the first keeps working"
+    finally:
+        discard(x, c)
+
+
+def s6_room(args, suffix):
+    """A session that is picked up is back in the public chat room it was in. The game
+    does not know it was gone: it still shows the room, never asks to enter it again
+    (0x0C), and when it moves on it asks to leave it (0x15), which the real game was
+    answered with result 1 [live-rig.md 20.1, 20.5 S6]."""
+    c, d = fresh_console("C", args, suffix), None
+    try:
+        d = fresh_console("D", args, suffix)                 # stays connected, in the same room
+        code, r = c.call(0x0E, enc_wstr(c.session))
+        rooms = r.array(r.wstr)
+        expect(code == 0 and rooms, "no public rooms")
+        room = rooms[0]                                      # the game enters the first one
+        for x in (c, d):
+            code, _ = x.call(0x0C, enc_wstr(x.session) + wstr(room))
+            expect(code == 0, f"{x.tag}: enter room reply code {code}")
+
+        c.close()                                            # the connection is gone
+        time.sleep(0.3)
+        reconnect(c, args.gateway_port)
+        code, _, _ = ask_list(c, c.session)                  # the game's next request
+        expect(code == 0, f"the session was not picked up (game list result {code})")
+
+        problems = []
+        d.drop_notifications(0x3D)
+        code, _ = d.call(0x22, enc_wstr(d.session) + wstr(room) + wstr("anyone back?"))
+        expect(code == 0, f"{d.tag}: room message reply code {code}")
+        n = c.notification(0x3D)
+        if n is None or (n.wstr(), n.wstr(), n.wstr()) != (room, d.handle, "anyone back?"):
+            problems.append("a line said in the room does not reach it")
+        code, _ = c.call(0x22, enc_wstr(c.session) + wstr(room) + wstr("back"))
+        if code != 0:
+            problems.append(f"its own line in the room (0x22) gets result {code}")
+        # what a player entering now is shown: D goes out and comes in again
+        code, _ = d.call(0x15, enc_wstr(d.session) + wstr(room))
+        expect(code == 0, f"{d.tag}: leave room reply code {code}")
+        code, r = d.call(0x0C, enc_wstr(d.session) + wstr(room))
+        expect(code == 0, f"{d.tag}: enter room reply code {code}")
+        r.wstr(), r.wstr()
+        members = r.array(lambda: r.wstr(15))
+        if c.handle not in members:
+            problems.append(f"it is not among the members a player entering is shown ({members})")
+        code, _ = c.call(0x15, enc_wstr(c.session) + wstr(room))
+        if code != 0:
+            problems.append(f"leaving the room (0x15), as the game does when it moves on, gets result {code}")
+        expect(not problems, f"picked up, but not back in room {room!r}: " + "; ".join(problems))
+        return (f"back in room {room!r}: it hears the room, may speak, is shown to a player "
+                "entering, and its 0x15 is answered with result 0")
+    finally:
+        discard(c, d)
 
 
 # ----------------------------------------------------------------------------------------
@@ -1493,6 +1834,22 @@ def main():
     if ok:
         run.step("B: log out", logout, b)
         run.step("A: log out", logout, a)
+
+    if ok and args.extended:
+        # After the logouts, so that every step above keeps the number it had. These use
+        # consoles and accounts of their own.
+        print("-- extended: a console that lost its connection --")
+        run.step("it comes back and asks for the game list under its old session id; the session is picked up",
+                 s1_resume, args, loopback, suffix)
+        run.step("the first request after coming back is a character save", s1_save_first, args, suffix)
+        run.step("a session id nobody has gets result 7, no 0x41, and keeps its connection",
+                 s1_unknown, args, suffix)
+        run.step("the id of a session that logged out is not picked up", s1_logged_out, args, suffix)
+        run.step("the id of a session replaced by a newer login is not picked up", s1_replaced, args, suffix)
+        run.step("the id of a session another connection still holds is not picked up",
+                 s1_still_held, args, suffix)
+        run.step("a session that is picked up is back in its chat room (0x15 answered with 0)",
+                 s6_room, args, suffix)
     for c in (a, b):
         c.close()
         c.udp.close()
