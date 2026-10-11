@@ -241,3 +241,9 @@ patch=1,EE,00106A3C,word,00000000
 patch=1,EE,00106A40,word,00000000
 patch=1,EE,00106A44,word,00000000
 patch=1,EE,00106A48,word,00000000
+
+[Net test: route search always clears the previous search's marks]
+author=reverse engineering test patch; executed in the function-level interpreter on ten levels; not run on a live game
+description=Hardening for a rare corner case. Before each route search the game wipes the marks the previous search left on the path grid - except when that previous search started on the very first node of the grid, which it mistakes for "no previous search". Your machine's prediction of your own character can make route searches the other machines do not, so in that one case leftover marks could send a monster a different way on your machine. This removes the exception (path_service, 0x184A08). Only five levels have walkable floor on that corner node, and the arena is not one of them. FINDINGS V43, V45. Every player must use the same setting.
+// was: 10400060 (beqz v0,+0x60)
+patch=1,EE,00184A08,word,00000000

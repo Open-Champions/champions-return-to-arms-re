@@ -265,7 +265,7 @@
 00404460	g_cosmeticSeed	second LCG for particles; NOT in the sync hash; cutscenes reseed it from the frame counter
 0014cb10	GameObject_ctor	draws one value from g_randSeed for the object's own seed; zeroes the flags before the grid link; looks the hide property up before the property list is stored, so the test never fires for a pool block
 0014fdb8	pool_new	pooled allocator, zero-fills the block
-00184798	path_service	time-sliced pathfinding queue (128 entries at 0x7d43a8); 1 request per call
+00184798	path_service	time-sliced pathfinding queue (128 entries at 0x7d43a8); loops until the queue is empty; wipes the previous search's marks before each search
 # ---- main loop / tasks ----
 0032316c	main_loop	per-frame loop inside the session function 0x322998 (not a function entry); net games tick only through net_main; draw tasks run every rendered frame
 00132e90	net_main	calls net_frameLoop; ran on the live game: called once per rendered frame in a net game, never offline
