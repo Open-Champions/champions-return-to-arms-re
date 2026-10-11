@@ -14,7 +14,8 @@ on a network behind the emulated Ethernet chip, a network configuration made wit
 disc's own program, the sign-in step, and two machines connected to the lobby server; it
 stops at the server's terms screen) and phase 9 (section 14: U1 confirmed on the pair with
 its section, the route grid compared between machines, pair 410 with and without the
-item-record section). In short: two machines play one lockstep game here;
+item-record section) and phase 10 (section 15: D26's mechanism shown in the death tick, and
+its weapon-swap section; no shared difference produced). In short: two machines play one lockstep game here;
 random input found two real divergences, which are the ledger's K1 and K2, and the test
 patch for each removes it; the arena did **not** go out of sync in twelve runs.
 
@@ -1620,3 +1621,57 @@ day each (402 in section 12, 410 here).
 ### 14.6 Not done
 
 D26 (inconclusive), E9, U2, K3; a one-sided test for 14.4; the non-monotonic write index.
+
+## 15. Phase 10: D26 on the running game
+
+Limits as in section 7. Developer LAN pair, placeholder characters, the arena-entrance
+states, no bus delay. **Ran** unless marked.
+
+### 15.1 What was set up
+
+Break points at the gate in `Player_run` (0x1a5ba8, a block start) on both machines show,
+for every tick, which player objects reach it and in what order: the machine's prediction
+copy before the tick, then **slot 1, then slot 0**. So the player that has to die is
+slot 1 — machine A's own — with A's inventory open, and the player that runs after it is
+slot 0, machine B's. Script (`local/rig-out/p10-d26.sh`): both players into the crowd,
+A opens its inventory, both players' hit points set to 5,000 at tick 900 and slot 1's to
+1 at tick 2400 on both machines; B's pad presses weapon swap (L1, mask 0x04 in
+`g_btnWeaponSwap`) every other frame from then on, in two runs with the presses one frame
+apart so that one of them has a press in any given tick.
+
+### 15.2 What happened in the death tick
+
+Slot 1 died in tick 3001 in every run; `net_closeLocalMenus` ran on A in that tick and
+not on B.
+
+| In tick 3001 | Without the sections | With the two lockout sections on both |
+|---|---|---|
+| lockout word 0x41b4fc when slot 0 reaches the gate | A: 60, B: 0 | A: 60, B: 0 (the section stops the code reading it) |
+| `Player_weaponSwapInput` called for slot 0 | **A: no, B: yes** | A: yes, B: yes |
+| ticks before and after | word 0 on both, the call made on both | the same |
+
+So the mechanism of D26 is confirmed on the running game: for the rest of the tick in
+which the local player dies with its inventory open, that machine alone skips weapon swap
+(and, behind the same test, interact) for the player that runs after it; and "menu
+lockout never blocks weapon swap and use" removes that difference. Both press phases gave
+the same picture.
+
+### 15.3 What was not shown
+
+**No shared value differed** — the tick logs of all four runs agree in every column. The
+swap that machine A skipped would have changed nothing: in 600 ticks of presses the
+weapon-set word (record +0x4a7c) of the placeholder character never changed on either
+machine, so for this character the swap is empty (`Player_weaponSwapInput` toggles the set
+"in state 2", per its symbol note; which condition failed was not looked at). A visible
+divergence needs one of: a character for whom the swap does something (a second weapon
+set), something to interact with in reach of slot 0 in that tick, or a damage call on
+slot 0 after slot 1's death in the same tick — which is the other half of D26
+(`Player_takeDamage`, test at 0x1b53d4) and did not occur in tick 3001. The damage section
+"menu lockout never drops player damage" was on in the patched runs but was not exercised.
+
+### 15.4 Not done
+
+E9, U2, K3 and the one-sided route-grid test were not started: the D26 work used what
+this session had left. For D26 the next step is the same script from the real-character
+states (`run4`) with a second weapon set written into slot 0's record, or a monster made
+to hit slot 0 in the death tick.
