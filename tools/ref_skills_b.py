@@ -4159,13 +4159,13 @@ class Model(Model):                             # noqa: F811
         Clock <= 4.0: for every target still there, one spiral particle in its own group
         (the group index counts the targets that are still there).
         Clock > 4.0, once: chance = slot 10 (2, level); for every target still there, in
-        list order: (id 39 only) an undead - kind byte 0x10 - gets the "immune" word
+        list order: (id 39 only) an undead - kind byte 0x10 - gets the immunity notice
         (pool_new 0x98, text_lookup, FlyingText: ONE SHARED DRAW) and no roll.  Otherwise
         a target wider than 20 (radius +0x1c) halves the chance (rounded half away from
         zero); ONE SHARED DRAW d: with d % 100 + 1 < chance the target is converted -
         creature flag 0x400000, charm seconds +0x354 = seconds, Creature_setCharm(target,
         seconds x 60, the caster's team byte (record +0x4c24, signed) or -1 for a caster
-        that is not a player); else only a wide target gets the "resist" word.  The spell then
+        that is not a player); else only a wide target gets the resistance notice.  The spell then
         ends itself."""
         p = self.CONVERT[sid]
         u32, w32 = self.u32, self.w32

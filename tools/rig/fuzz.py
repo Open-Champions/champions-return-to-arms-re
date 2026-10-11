@@ -126,7 +126,11 @@ def main(argv):
         "prelude": open(prelude).read().splitlines() if prelude else [],
         "keep": "--keep" in argv,
     }
-    base = [] if patches == "none" else list(FIXES) if patches == "FIXES" else [KNOWN.get(p, p) for p in patches.split(";")]
+    # FIXES+a;b adds sections to the list (for example the item-record section)
+    if patches.startswith("FIXES"):
+        base = list(FIXES) + [KNOWN.get(p, p) for p in patches[5:].lstrip("+").split(";") if p]
+    else:
+        base = [] if patches == "none" else [KNOWN.get(p, p) for p in patches.split(";")]
     levels = option(argv, "--levels", "strife").split(",")
     mixes = option(argv, "--groups", "move,rstick,fight,potion,use,dpad,select,start,l3r3").split(";")
     buses = option(argv, "--bus", "none").split(";")

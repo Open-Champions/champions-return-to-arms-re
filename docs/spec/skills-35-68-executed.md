@@ -35,7 +35,7 @@ python3 tools/test_ref_skills_b.py            # the model's own logic, no game f
 | 36 | darkness | **matched** (second pass) | cast, `DarknessProjectile_ctor`, `_run`: flight, the terrain stop, attaching with a damage call per enemy of the box, the blind roll on frames divisible by 30, the caster deleted, the end |
 | 37 | shock | **matched** (second pass) | cast (player, monster, no caster), `ShockProjectile_ctor`, `_run` (terrain stop, the hit test on every eighth frame, the candidate list, the damage calls, the beams, the fade and the end), `_buildChain`, `_inChain` |
 | 38 | groundpound | **matched** (second pass) | can-use, cast (the clip's four event slots), `GroundPoundEffect_ctor` (dry ground, water, a ledge), `_run` (the first run with its damage and stun rolls, the 30 after it). The shoves and the creation of the effect are in `Player_run` state 10, outside this range |
-| 39 | convertenemy | **matched** (second pass) | can-use, cast, constructor with its target choice, run: the spiral, the roll for every target, the "immune" and "resist" words, the end |
+| 39 | convertenemy | **matched** (second pass) | can-use, cast, constructor with its target choice, run: the spiral, the roll for every target, the immunity and resistance notices, the end |
 | 40 | convertundead | **matched** (second pass) | as 39, with its own target rule; can-use with its box query |
 | 41 | cyclone (and 84) | **matched** | can-use, cast, `SpellCyclone_ctor`, `_run`, `_updateFx`; player, prediction-copy and monster casters; offline and net game; the spin ended by the status bits, by the action state and through the stop clip |
 | 42 | harmtouch | **matched** | can-use, cast, constructor, the countdown, `SpellHarmTouch_applyToHit` |
