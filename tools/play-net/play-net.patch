@@ -1,0 +1,1247 @@
+diff --git a/Source/FrameLimiter.cpp b/Source/FrameLimiter.cpp
+index 0d050fa3..26d27e0d 100644
+--- a/Source/FrameLimiter.cpp
++++ b/Source/FrameLimiter.cpp
+@@ -2,87 +2,67 @@
+ #include <cassert>
+ #include <thread>
+ 
+-CFrameLimiter::CFrameLimiter()
+-{
+-#ifdef _WIN32
+-	timeBeginPeriod(1);
+-	m_timer = CreateWaitableTimer(NULL, TRUE, NULL);
+-#endif
+-	for(uint32 i = 0; i < MAX_FRAMETIMES; i++)
+-	{
+-		m_frameTimes[i] = std::chrono::microseconds(0);
+-	}
+-}
+-
+-CFrameLimiter::~CFrameLimiter()
+-{
+-#ifdef _WIN32
+-	CloseHandle(m_timer);
+-	timeEndPeriod(1);
+-#endif
+-}
+-
+ void CFrameLimiter::BeginFrame()
+ {
+ 	assert(!m_frameStarted);
+-	m_lastFrameTime = std::chrono::high_resolution_clock::now();
+ 	m_frameStarted = true;
+ }
+ 
+ void CFrameLimiter::EndFrame()
+ {
+ 	assert(m_frameStarted);
++	m_frameStarted = false;
++
++	if(m_frameDuration.count() == 0)
++	{
++		m_hasDeadline = false;
++		return;
++	}
+ 
+-	//Add current frame time to array
++	auto now = Clock::now();
++	if(!m_hasDeadline)
+ 	{
+-		auto currentFrameTime = std::chrono::high_resolution_clock::now();
+-		auto frameDuration = std::chrono::duration_cast<std::chrono::microseconds>(currentFrameTime - m_lastFrameTime);
+-		m_frameTimes[m_frameTimeIndex++] = frameDuration;
+-		m_frameTimeIndex %= MAX_FRAMETIMES;
++		m_deadline = now;
++		m_hasDeadline = true;
+ 	}
++	m_deadline += m_frameDuration;
+ 
+-	//Compute average frame time
+-	std::chrono::microseconds averageFrameTime = std::chrono::microseconds(0);
+-	for(uint32 i = 0; i < MAX_FRAMETIMES; i++)
++	//More than three frames late (the machine was paused, or the computer cannot keep
++	//up): start again from here instead of running fast for a long time.
++	if(now > (m_deadline + (3 * m_frameDuration)))
+ 	{
+-		averageFrameTime += m_frameTimes[i];
++		m_deadline = now;
++		return;
+ 	}
+-	averageFrameTime /= MAX_FRAMETIMES;
+ 
+-	if(averageFrameTime < m_minFrameDuration)
++	//Sleep most of the way and yield through the last stretch: a sleep may end late.
++	while(now < m_deadline)
+ 	{
+-		auto delay = m_minFrameDuration - averageFrameTime;
+-#ifdef _WIN32
++		auto left = m_deadline - now;
++		if(left > std::chrono::microseconds(1500))
+ 		{
+-			LARGE_INTEGER ft = {};
+-			ft.QuadPart = -static_cast<int64>(delay.count() * 10);
+-			SetWaitableTimer(m_timer, &ft, 0, NULL, NULL, 0);
+-			WaitForSingleObject(m_timer, INFINITE);
++			std::this_thread::sleep_for(left - std::chrono::microseconds(1000));
+ 		}
+-#elif defined(__APPLE__) || defined(__EMSCRIPTEN__)
+-		//Sleeping for the whole delay on some platforms doesn't provide a good enough resolution
+-		auto currentTime = std::chrono::high_resolution_clock::now();
+-		auto targetTime = currentTime + delay;
+-		while(currentTime < targetTime)
++		else if(left > std::chrono::microseconds(200))
+ 		{
+-			std::this_thread::sleep_for(std::chrono::microseconds(250));
+-			currentTime = std::chrono::high_resolution_clock::now();
++			std::this_thread::sleep_for(std::chrono::microseconds(100));
+ 		}
+-#else
+-		std::this_thread::sleep_for(delay);
+-#endif
++		else
++		{
++			std::this_thread::yield();
++		}
++		now = Clock::now();
+ 	}
+-	m_frameStarted = false;
+ }
+ 
+ void CFrameLimiter::SetFrameRate(uint32 fps)
+ {
+ 	if(fps == 0)
+ 	{
+-		m_minFrameDuration = std::chrono::microseconds(0);
++		m_frameDuration = std::chrono::nanoseconds(0);
+ 	}
+ 	else
+ 	{
+-		m_minFrameDuration = std::chrono::microseconds(1000000 / fps);
++		m_frameDuration = std::chrono::nanoseconds(1000000000ULL / fps);
+ 	}
+ }
+diff --git a/Source/FrameLimiter.h b/Source/FrameLimiter.h
+index 36e8b935..7bfffaae 100644
+--- a/Source/FrameLimiter.h
++++ b/Source/FrameLimiter.h
+@@ -3,15 +3,19 @@
+ #include <chrono>
+ #include "Types.h"
+ 
+-#ifdef _WIN32
+-#include <Windows.h>
+-#endif
+-
++//RTA: rewritten. The original measured how long the last four frames took to compute and
++//slept for the rest of the frame time in steps of 250 microseconds. Every step that
++//overslept made the frame longer and nothing made up for it, so the machine ran a little
++//slow all the time (57.6 instead of 60 frames a second on a busy computer, measured), and
++//sound, which is played at its real rate, ran dry again and again. This one keeps a
++//deadline for every frame, one frame time after the last deadline: a frame that is late
++//is followed by shorter waits until the machine has caught up, so the average rate is
++//exact as long as the computer is fast enough.
+ class CFrameLimiter
+ {
+ public:
+-	CFrameLimiter();
+-	~CFrameLimiter();
++	CFrameLimiter() = default;
++	~CFrameLimiter() = default;
+ 
+ 	void BeginFrame();
+ 	void EndFrame();
+@@ -19,21 +23,10 @@ public:
+ 	void SetFrameRate(uint32);
+ 
+ private:
+-	typedef std::chrono::high_resolution_clock::time_point TimePoint;
+-
+-	enum
+-	{
+-		MAX_FRAMETIMES = 4,
+-	};
++	typedef std::chrono::steady_clock Clock;
+ 
+-	std::chrono::microseconds m_frameTimes[MAX_FRAMETIMES];
+-	uint32 m_frameTimeIndex = 0;
+-
+-	std::chrono::microseconds m_minFrameDuration = std::chrono::microseconds(0);
++	std::chrono::nanoseconds m_frameDuration = std::chrono::nanoseconds(0);
+ 	bool m_frameStarted = false;
+-	TimePoint m_lastFrameTime;
+-
+-#ifdef _WIN32
+-	HANDLE m_timer = 0;
+-#endif
++	bool m_hasDeadline = false;
++	Clock::time_point m_deadline;
+ };
+diff --git a/Source/PS2VM.cpp b/Source/PS2VM.cpp
+index 5c8ded91..afcd9581 100644
+--- a/Source/PS2VM.cpp
++++ b/Source/PS2VM.cpp
+@@ -956,6 +956,16 @@ void CPS2VM::EmuThread()
+ 							m_ee->m_gs->SetVBlank();
+ 						}
+ 
++						//RTA: the wait that holds the machine to its frame rate is here, after
++						//the finished picture has been sent to the screen and immediately
++						//before the controller is read, instead of at the end of the vertical
++						//blank. What the game then reads is as fresh as it can be, and the
++						//picture it makes from it is computed and shown without a wait in
++						//between: from the press being read to the picture being sent out is
++						//the time the frame takes to compute, not a full frame time.
++						m_frameLimiter.EndFrame();
++						m_frameLimiter.BeginFrame();
++
+ 						if(m_pad != NULL)
+ 						{
+ 							m_pad->Update(m_ee->m_ram);
+@@ -979,8 +989,6 @@ void CPS2VM::EmuThread()
+ 						{
+ 							m_ee->m_gs->ResetVBlank();
+ 						}
+-						m_frameLimiter.EndFrame();
+-						m_frameLimiter.BeginFrame();
+ 					}
+ 				}
+ 
+diff --git a/Source/gs/GSH_OpenGL/CMakeLists.txt b/Source/gs/GSH_OpenGL/CMakeLists.txt
+index 0f89436d..49a60112 100644
+--- a/Source/gs/GSH_OpenGL/CMakeLists.txt
++++ b/Source/gs/GSH_OpenGL/CMakeLists.txt
+@@ -34,4 +34,6 @@ add_library(gsh_opengl STATIC
+ )
+ target_link_libraries(gsh_opengl Framework_OpenGl ${GSH_OPENGL_PROJECT_LIBS})
+ target_include_directories(gsh_opengl PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/Source/gs/GSH_OpenGL/)
++#RTA: the texture cache by contents uses xxHash (header only)
++target_include_directories(gsh_opengl PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../../deps/Dependencies/xxHash)
+ target_compile_options(gsh_opengl PRIVATE ${GSH_OPENGL_COMPILE_OPTIONS})
+diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp
+index 7eb9460f..d6c0b5d6 100644
+--- a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp
++++ b/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp
+@@ -112,6 +112,8 @@ void CGSH_OpenGL::ResetImpl()
+ {
+ 	LoadPreferences();
+ 	m_textureCache.Flush();
++	m_contentTextures.clear();
++	m_uploadExtents.clear();
+ 	PalCache_Flush();
+ 	m_framebuffers.clear();
+ 	m_depthbuffers.clear();
+@@ -217,6 +219,20 @@ void CGSH_OpenGL::FlipImpl(const DISPLAY_INFO& dispInfo)
+ 		assert(m_presentTexCoordScaleUniform != -1);
+ 		glUniform2f(m_presentTexCoordScaleUniform, u1, v1);
+ 
++		//RTA: the two fields of an interlaced picture belong half a line apart (see
++		//CGSHandler::Flip): each is moved a quarter of a line, in opposite directions.
++		//The texture coordinate grows downward on the screen, so adding moves the
++		//picture up. Which field goes which way was measured on Champions: Return to
++		//Arms: with this sign two consecutive pictures of a still scene are 0.01 window
++		//rows apart, with the other sign 5.3, with no offset 2.7.
++		float fieldOffset = 0;
++		if(dispInfo.field >= 0)
++		{
++			float quarterLine = 0.25f / static_cast<float>(framebuffer->m_height);
++			fieldOffset = (dispInfo.field == 0) ? -quarterLine : quarterLine;
++		}
++		glUniform2f(m_presentTexCoordOffsetUniform, 0, fieldOffset);
++
+ 		glBindBuffer(GL_ARRAY_BUFFER, m_presentVertexBuffer);
+ 		glBindVertexArray(m_presentVertexArray);
+ 
+@@ -240,6 +256,8 @@ void CGSH_OpenGL::FlipImpl(const DISPLAY_INFO& dispInfo)
+ 		glBindTexture(GL_TEXTURE_2D, 0);
+ 	}
+ 
++	ContentTextures_EndFrame();
++
+ 	PresentBackbuffer();
+ 	CGSHandler::FlipImpl(dispInfo);
+ }
+@@ -264,6 +282,8 @@ void CGSH_OpenGL::NotifyPreferencesChangedImpl()
+ {
+ 	LoadPreferences();
+ 	m_textureCache.Flush();
++	m_contentTextures.clear();
++	m_uploadExtents.clear();
+ 	PalCache_Flush();
+ 	m_framebuffers.clear();
+ 	m_depthbuffers.clear();
+@@ -290,6 +310,7 @@ void CGSH_OpenGL::InitializeRC()
+ 	m_presentVertexArray = GeneratePresentVertexArray();
+ 	m_presentTextureUniform = glGetUniformLocation(*m_presentProgram, "g_texture");
+ 	m_presentTexCoordScaleUniform = glGetUniformLocation(*m_presentProgram, "g_texCoordScale");
++	m_presentTexCoordOffsetUniform = glGetUniformLocation(*m_presentProgram, "g_texCoordOffset");
+ 
+ 	m_copyToFbProgram = GenerateCopyToFbProgram();
+ 	m_copyToFbTexture = Framework::OpenGl::CTexture::Create();
+@@ -1032,10 +1053,32 @@ void CGSH_OpenGL::SetupFramebuffer(uint64 frameReg, uint64 zbufReg, uint64 sciss
+ 
+ 	assert(framebuffer->m_width == depthbuffer->m_width);
+ 
+-	glBindFramebuffer(GL_FRAMEBUFFER, framebuffer->m_framebuffer);
++	//RTA: This function runs again after every texture the game sends (several hundred
++	//times a frame for this game), nearly always for the framebuffer that is bound
++	//already. It used to bind it, attach the depth buffer and set the draw buffer each
++	//time. To a driver that is "the framebuffer has changed": on macOS (OpenGL on top of
++	//Metal, on a graphics processor that works in tiles) every such change closes the
++	//render pass, writes the whole colour and depth buffers out and reads them back in
++	//for the next one - about 800 times a frame. Only what really changes is done now.
++	{
++		GLint boundFramebuffer = 0;
++		glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &boundFramebuffer);
++		if(static_cast<GLuint>(boundFramebuffer) != static_cast<GLuint>(framebuffer->m_framebuffer))
++		{
++			glBindFramebuffer(GL_FRAMEBUFFER, framebuffer->m_framebuffer);
++		}
++	}
+ 
+-	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthbuffer->m_depthBuffer);
+-	CHECKGLERROR();
++	if(framebuffer->m_attachedDepthBuffer != static_cast<GLuint>(depthbuffer->m_depthBuffer))
++	{
++		glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthbuffer->m_depthBuffer);
++		CHECKGLERROR();
++		framebuffer->m_attachedDepthBuffer = depthbuffer->m_depthBuffer;
++
++		GLenum drawBufferId = GL_COLOR_ATTACHMENT0;
++		glDrawBuffers(1, &drawBufferId);
++		CHECKGLERROR();
++	}
+ 
+ 	assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+ 
+@@ -1046,12 +1089,6 @@ void CGSH_OpenGL::SetupFramebuffer(uint64 frameReg, uint64 zbufReg, uint64 sciss
+ 	//to resolve samples at some point if multisampling is enabled
+ 	framebuffer->m_resolveNeeded = true;
+ 
+-	{
+-		GLenum drawBufferId = GL_COLOR_ATTACHMENT0;
+-		glDrawBuffers(1, &drawBufferId);
+-		CHECKGLERROR();
+-	}
+-
+ 	m_renderState.viewportWidth = framebuffer->m_width;
+ 	m_renderState.viewportHeight = framebuffer->m_height;
+ 	m_validGlState &= ~GLSTATE_VIEWPORT;
+@@ -1257,7 +1294,10 @@ void CGSH_OpenGL::SetupTexture(uint64 primReg, uint64 tex0Reg, uint64 tex1Reg, u
+ 	m_nTexWidth = tex0.GetWidth();
+ 	m_nTexHeight = tex0.GetHeight();
+ 
++	//RTA: see GetUsedTextureSize
++	m_texAllowReducedSize = (clamp.nWMS == CLAMP_MODE_REPEAT) && (clamp.nWMT == CLAMP_MODE_REPEAT);
+ 	auto texInfo = PrepareTexture(tex0);
++	m_texAllowReducedSize = false;
+ 	m_renderState.texture0Handle = texInfo.textureHandle;
+ 	m_renderState.texture0AlphaAsIndex = texInfo.alphaAsIndex;
+ 
+@@ -1358,10 +1398,11 @@ void CGSH_OpenGL::SetupTexture(uint64 primReg, uint64 tex0Reg, uint64 tex1Reg, u
+ 	m_vertexParams.texMatrix[3 + (3 * 4)] = 1;
+ 	m_validGlState &= ~GLSTATE_VERTEX_PARAMS;
+ 
+-	m_fragmentParams.textureSize[0] = static_cast<float>(tex0.GetWidth());
+-	m_fragmentParams.textureSize[1] = static_cast<float>(tex0.GetHeight());
+-	m_fragmentParams.texelSize[0] = 1.0f / static_cast<float>(tex0.GetWidth());
+-	m_fragmentParams.texelSize[1] = 1.0f / static_cast<float>(tex0.GetHeight());
++	//RTA: the size of the texture that is bound, which may be smaller than TEX0 says
++	m_fragmentParams.textureSize[0] = static_cast<float>(tex0.GetWidth()) * texInfo.sizeScaleX;
++	m_fragmentParams.textureSize[1] = static_cast<float>(tex0.GetHeight()) * texInfo.sizeScaleY;
++	m_fragmentParams.texelSize[0] = 1.0f / m_fragmentParams.textureSize[0];
++	m_fragmentParams.texelSize[1] = 1.0f / m_fragmentParams.textureSize[1];
+ 	m_fragmentParams.clampMin[0] = static_cast<float>(clampMin[0]);
+ 	m_fragmentParams.clampMin[1] = static_cast<float>(clampMin[1]);
+ 	m_fragmentParams.clampMax[0] = static_cast<float>(clampMax[0]);
+@@ -1874,6 +1915,11 @@ void CGSH_OpenGL::DrawToDepth(unsigned int primitiveType, uint64 primReg)
+ 
+ 	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthbuffer->m_depthBuffer);
+ 	CHECKGLERROR();
++	//RTA: whichever framebuffer is bound has another depth buffer now
++	for(const auto& framebuffer : m_framebuffers)
++	{
++		framebuffer->m_attachedDepthBuffer = 0;
++	}
+ 
+ 	assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+ 
+@@ -2119,6 +2165,21 @@ void CGSH_OpenGL::ProcessHostToLocalTransfer()
+ 
+ 		m_textureCache.InvalidateRange(transferAddress, transferSize);
+ 
++		//RTA: remember how much was sent to this address (see GetUsedTextureSize)
++		{
++			uint32 basePtr = bltBuf.GetDstPtr();
++			uint32 extent = (transferAddress + transferSize) - basePtr;
++			auto& uploadExtent = m_uploadExtents[basePtr];
++			if((trxPos.nDSAX == 0) && (trxPos.nDSAY == 0))
++			{
++				uploadExtent = extent;
++			}
++			else
++			{
++				uploadExtent = std::max(uploadExtent, extent);
++			}
++		}
++
+ 		bool isUpperByteTransfer = (bltBuf.nDstPsm == PSMT8H) || (bltBuf.nDstPsm == PSMT4HL) || (bltBuf.nDstPsm == PSMT4HH);
+ 		for(const auto& framebuffer : m_framebuffers)
+ 		{
+@@ -2525,10 +2586,7 @@ void CGSH_OpenGL::CommitFramebufferDirtyPages(const FramebufferPtr& framebuffer,
+ 	public:
+ 		void EnableCopyToFb(const FramebufferPtr& framebuffer, GLuint copyToFbTexture)
+ 		{
+-			if(m_copyToFbEnabled) return;
+-
+-			glDisable(GL_SCISSOR_TEST);
+-
++			//RTA: the texture is a new one each time (see below)
+ 			glActiveTexture(GL_TEXTURE0);
+ 			glBindTexture(GL_TEXTURE_2D, copyToFbTexture);
+ 			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, framebuffer->m_width, framebuffer->m_height,
+@@ -2538,6 +2596,10 @@ void CGSH_OpenGL::CommitFramebufferDirtyPages(const FramebufferPtr& framebuffer,
+ 			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+ 			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+ 
++			if(m_copyToFbEnabled) return;
++
++			glDisable(GL_SCISSOR_TEST);
++
+ 			glBindFramebuffer(GL_FRAMEBUFFER, framebuffer->m_framebuffer);
+ 
+ 			m_copyToFbEnabled = true;
+@@ -2581,8 +2643,22 @@ void CGSH_OpenGL::CommitFramebufferDirtyPages(const FramebufferPtr& framebuffer,
+ 		{
+ 			texHeight = framebuffer->m_height - texY;
+ 		}
++		//RTA: Nothing below the lines that are about to be drawn to is wanted (what lies
++		//beyond them is dropped at the end of this function in any case). Every
++		//framebuffer is taken to be 1024 lines high here; for the small picture this
++		//game renders its shadows into, which lives among its textures, that meant
++		//converting and uploading 704 lines of other textures for 128 lines of use.
++		if((texY + texHeight) > (maxY + 1))
++		{
++			texHeight = (maxY + 1) - texY;
++		}
+ 
+ 		m_validGlState &= ~(GLSTATE_SCISSOR | GLSTATE_FRAMEBUFFER | GLSTATE_TEXTURE);
++		//RTA: a texture of its own for every upload. Writing into the one texture that
++		//the previous copy has just been drawn from makes the driver wait until the
++		//graphics processor has finished everything sent so far (seen in a profile:
++		//a fifth of the video thread's time, asleep).
++		m_copyToFbTexture = Framework::OpenGl::CTexture::Create();
+ 		copyToFbEnabler.EnableCopyToFb(framebuffer, m_copyToFbTexture);
+ 
+ 		((this)->*(m_textureUpdater[framebuffer->m_psm]))(framebuffer->m_basePtr, framebuffer->m_width / 64,
+diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.h b/Source/gs/GSH_OpenGL/GSH_OpenGL.h
+index 290deb70..5134b4ef 100644
+--- a/Source/gs/GSH_OpenGL/GSH_OpenGL.h
++++ b/Source/gs/GSH_OpenGL/GSH_OpenGL.h
+@@ -242,6 +242,9 @@ private:
+ 		Framework::OpenGl::CFramebuffer m_framebuffer;
+ 		Framework::OpenGl::CTexture m_texture;
+ 
++		//RTA: the depth buffer attached at the moment (see SetupFramebuffer)
++		GLuint m_attachedDepthBuffer = 0;
++
+ 		Framework::OpenGl::CFramebuffer m_resolveFramebuffer;
+ 		bool m_resolveNeeded = false;
+ 		Framework::OpenGl::CRenderbuffer m_colorBufferMs;
+@@ -273,7 +276,37 @@ private:
+ 		float scaleRatioX = 1;
+ 		float scaleRatioY = 1;
+ 		bool alphaAsIndex = false;
++		//RTA: size of the texture that was made, as a fraction of the size TEX0 names
++		float sizeScaleX = 1;
++		float sizeScaleY = 1;
++	};
++
++	//RTA: indexed textures kept by what is in them rather than by where they are in GS
++	//memory (GSH_OpenGL_Texture.cpp, PrepareIndexedTexture)
++	struct CONTENT_TEXTURE_KEY
++	{
++		uint32 psm = 0;
++		uint32 width = 0;
++		uint32 height = 0;
++		uint64 hash = 0;
++		bool operator==(const CONTENT_TEXTURE_KEY& rhs) const
++		{
++			return (psm == rhs.psm) && (width == rhs.width) && (height == rhs.height) && (hash == rhs.hash);
++		}
++	};
++	struct CONTENT_TEXTURE_KEY_HASHER
++	{
++		size_t operator()(const CONTENT_TEXTURE_KEY& key) const
++		{
++			return static_cast<size_t>(key.hash ^ (static_cast<uint64>(key.psm) << 56) ^ (static_cast<uint64>(key.width) << 40) ^ (static_cast<uint64>(key.height) << 24));
++		}
++	};
++	struct CONTENT_TEXTURE
++	{
++		Framework::OpenGl::CTexture handle;
++		uint32 lastUsedFrame = 0;
+ 	};
++	typedef std::unordered_map<CONTENT_TEXTURE_KEY, CONTENT_TEXTURE, CONTENT_TEXTURE_KEY_HASHER> ContentTextureMap;
+ 
+ 	struct TEXTUREFORMAT_INFO
+ 	{
+@@ -420,6 +453,19 @@ private:
+ 	Framework::OpenGl::CVertexArray m_presentVertexArray;
+ 	GLint m_presentTextureUniform = -1;
+ 	GLint m_presentTexCoordScaleUniform = -1;
++	GLint m_presentTexCoordOffsetUniform = -1;
++
++	//RTA
++	TEXTURE_INFO PrepareTextureByContent(const TEX0&, uint32, uint32);
++	std::pair<uint32, uint32> GetUsedTextureSize(const TEX0&) const;
++	//Where the game last sent picture data to, by the address it gave: how many bytes
++	std::unordered_map<uint32, uint32> m_uploadExtents;
++	//Set while a texture is prepared for a draw that repeats it plainly (see SetupTexture)
++	bool m_texAllowReducedSize = false;
++	void ContentTextures_EndFrame();
++	ContentTextureMap m_contentTextures;
++	uint32 m_contentTextureFrame = 0;
++	bool m_texConvertOnly = false;
+ 
+ 	Framework::OpenGl::ProgramPtr m_copyToFbProgram;
+ 	Framework::OpenGl::CTexture m_copyToFbTexture;
+diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Shader.cpp b/Source/gs/GSH_OpenGL/GSH_OpenGL_Shader.cpp
+index 3f37572a..dc3444a7 100644
+--- a/Source/gs/GSH_OpenGL/GSH_OpenGL_Shader.cpp
++++ b/Source/gs/GSH_OpenGL/GSH_OpenGL_Shader.cpp
+@@ -662,9 +662,10 @@ Framework::OpenGl::ProgramPtr CGSH_OpenGL::GeneratePresentProgram()
+ 		shaderBuilder << "in vec2 a_texCoord;" << std::endl;
+ 		shaderBuilder << "out vec2 v_texCoord;" << std::endl;
+ 		shaderBuilder << "uniform vec2 g_texCoordScale;" << std::endl;
++		shaderBuilder << "uniform vec2 g_texCoordOffset;" << std::endl;
+ 		shaderBuilder << "void main()" << std::endl;
+ 		shaderBuilder << "{" << std::endl;
+-		shaderBuilder << "	v_texCoord = a_texCoord * g_texCoordScale;" << std::endl;
++		shaderBuilder << "	v_texCoord = (a_texCoord * g_texCoordScale) + g_texCoordOffset;" << std::endl;
+ 		shaderBuilder << "	gl_Position = vec4(a_position, 0, 1);" << std::endl;
+ 		shaderBuilder << "}" << std::endl;
+ 
+diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp
+index 01a12176..fb7f64f1 100644
+--- a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp
++++ b/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp
+@@ -1,3 +1,5 @@
++#define XXH_INLINE_ALL
++#include "xxhash.h"
+ #include <assert.h>
+ #include <cstring>
+ #include <sys/stat.h>
+@@ -191,6 +193,17 @@ CGSH_OpenGL::TEXTURE_INFO CGSH_OpenGL::PrepareTexture(const TEX0& tex0)
+ 		return texInfo;
+ 	}
+ 
++	//RTA: textures kept by their contents (see PrepareTextureByContent). Large pictures
++	//in direct colour (film frames, pictures that change in part) stay on the path below,
++	//which updates one texture in place.
++	{
++		auto usedSize = GetUsedTextureSize(tex0);
++		if(CGsPixelFormats::IsPsmIDTEX(tex0.nPsm) || ((usedSize.first * usedSize.second) <= (512 * 512)))
++		{
++			return PrepareTextureByContent(tex0, usedSize.first, usedSize.second);
++		}
++	}
++
+ 	auto texture = m_textureCache.Search(tex0);
+ 	if(!texture)
+ 	{
+@@ -252,6 +265,191 @@ CGSH_OpenGL::TEXTURE_INFO CGSH_OpenGL::PrepareTexture(const TEX0& tex0)
+ 	return texInfo;
+ }
+ 
++//RTA: The part of a texture that holds a picture.
++//
++//TEX0 gives a texture's width and height only as powers of two, and nothing obliges a
++//game to make them fit: this one names a size of 1024 x 1024 for most of what its
++//interface draws, whatever the picture's real size, because it addresses those by texel
++//and the size only says where coordinates wrap. Taken at its word such a texture is a
++//megabyte of video memory - its own picture and whatever lies behind it - and it changes
++//whenever anything behind it does.
++//
++//What the game sent to the texture's address is the picture: the bytes of the last
++//transfer there, laid out in the texture's own format and buffer width, bound the height;
++//the buffer width bounds the width. Only done for textures that are repeated plainly
++//(CLAMP 0), where a smaller texture differs from the named size only in what lies outside
++//the picture, and only when the transfer to that very address is known.
++std::pair<uint32, uint32> CGSH_OpenGL::GetUsedTextureSize(const TEX0& tex0) const
++{
++	uint32 texWidth = std::min<uint32>(tex0.GetWidth(), TEX0_MAX_TEXTURE_SIZE);
++	uint32 texHeight = std::min<uint32>(tex0.GetHeight(), TEX0_MAX_TEXTURE_SIZE);
++	if(!m_texAllowReducedSize) return std::make_pair(texWidth, texHeight);
++
++	auto uploadExtentIterator = m_uploadExtents.find(tex0.GetBufPtr());
++	if(uploadExtentIterator == std::end(m_uploadExtents)) return std::make_pair(texWidth, texHeight);
++
++	uint32 bufWidth = tex0.GetBufWidth();
++	if(bufWidth == 0) return std::make_pair(texWidth, texHeight);
++
++	auto pageSize = CGsPixelFormats::GetPsmPageSize(tex0.nPsm);
++	uint32 pageCount = (uploadExtentIterator->second + CGsPixelFormats::PAGESIZE - 1) / CGsPixelFormats::PAGESIZE;
++	uint32 pagesPerRow = bufWidth / pageSize.first;
++	uint32 pageRows = (pagesPerRow == 0) ? 1 : ((pageCount + pagesPerRow - 1) / pagesPerRow);
++	uint32 usedHeight = pageRows * pageSize.second;
++	uint32 usedWidth = std::max<uint32>(bufWidth, 16);
++
++	return std::make_pair(std::min(texWidth, usedWidth), std::min(texHeight, usedHeight));
++}
++
++//RTA: Textures kept by their contents.
++//
++//A PlayStation 2 has 4 MB of video memory, so a game keeps only the textures it is about
++//to draw with in it and sends them again and again: Champions: Return to Arms keeps a
++//ring of sixteen and re-sends about 340 textures and palettes in every frame of a level.
++//The cache used here until now knew a texture by its address in that memory. Every
++//re-send made the address "dirty", and the texture was converted and handed to the
++//graphics driver again (glTexSubImage2D) in the middle of drawing - together with the
++//megabyte behind it, see GetUsedTextureSize. On macOS, where OpenGL runs on top of Metal,
++//each such upload also ends the current render pass and waits for the graphics processor.
++//
++//Here a re-sent texture is not uploaded. A 64-bit figure is computed from its texels,
++//and a texture already made from the same texels is used again; after the first frames
++//of a scene nothing is uploaded any more.
++CGSH_OpenGL::TEXTURE_INFO CGSH_OpenGL::PrepareTextureByContent(const TEX0& tex0, uint32 texWidth, uint32 texHeight)
++{
++	TEXTURE_INFO texInfo;
++	texInfo.sizeScaleX = static_cast<float>(texWidth) / static_cast<float>(tex0.GetWidth());
++	texInfo.sizeScaleY = static_cast<float>(texHeight) / static_cast<float>(tex0.GetHeight());
++	texInfo.scaleRatioX = 1.0f / texInfo.sizeScaleX;
++	texInfo.scaleRatioY = 1.0f / texInfo.sizeScaleY;
++
++	auto texture = m_textureCache.Search(tex0);
++	if(!texture)
++	{
++		//The entry only watches the memory; the textures themselves are in m_contentTextures
++		m_textureCache.Insert(tex0, Framework::OpenGl::CTexture());
++		texture = m_textureCache.Search(tex0);
++		texture->m_cachedArea.Invalidate(0, RAMSIZE);
++	}
++
++	CONTENT_TEXTURE_KEY key;
++	key.psm = tex0.nPsm;
++	key.width = texWidth;
++	key.height = texHeight;
++
++	if(texture->m_hasContentHash && !texture->m_cachedArea.HasDirtyPages() && (texture->m_contentWidth == texWidth) && (texture->m_contentHeight == texHeight))
++	{
++		//Nothing was written here since the last look
++		key.hash = texture->m_contentHash;
++		auto contentTextureIterator = m_contentTextures.find(key);
++		if(contentTextureIterator != std::end(m_contentTextures))
++		{
++			contentTextureIterator->second.lastUsedFrame = m_contentTextureFrame;
++			texInfo.textureHandle = contentTextureIterator->second.handle;
++			return texInfo;
++		}
++	}
++
++	//The figure for the contents. GS memory is made of blocks of 256 bytes, each holding
++	//16 x 16 texels of an 8-bit texture or 32 x 16 of a 4-bit one, in an order of their
++	//own. For textures made of whole blocks the blocks are gathered as they are, which
++	//costs less than putting the texels in order; other textures are converted first.
++	//(The two ways give different figures for the same picture, but a texture of a given
++	//format and size always goes the same way.)
++	bool converted = false;
++	size_t byteCount = 0;
++	if((tex0.nPsm == PSMT8) && ((texWidth % 16) == 0) && ((texHeight % 16) == 0))
++	{
++		CGsPixelFormats::CPixelIndexorPSMT8 indexor(m_pRAM, tex0.GetBufPtr(), tex0.nBufWidth);
++		uint8* dst = m_pCvtBuffer;
++		for(unsigned int y = 0; y < texHeight; y += 16)
++		{
++			for(unsigned int x = 0; x < texWidth; x += 16)
++			{
++				memcpy(dst, indexor.GetPixelAddress(x, y), 256);
++				dst += 256;
++			}
++		}
++		byteCount = dst - m_pCvtBuffer;
++	}
++	else if((tex0.nPsm == PSMT4) && ((texWidth % 32) == 0) && ((texHeight % 16) == 0))
++	{
++		CGsPixelFormats::CPixelIndexorPSMT4 indexor(m_pRAM, tex0.GetBufPtr(), tex0.nBufWidth);
++		uint8* dst = m_pCvtBuffer;
++		for(unsigned int y = 0; y < texHeight; y += 16)
++		{
++			for(unsigned int x = 0; x < texWidth; x += 32)
++			{
++				//GetColumnAddress changes its arguments
++				unsigned int nx = x;
++				unsigned int ny = y;
++				memcpy(dst, m_pRAM + indexor.GetColumnAddress(nx, ny), 256);
++				dst += 256;
++			}
++		}
++		byteCount = dst - m_pCvtBuffer;
++	}
++	else
++	{
++		//Convert the whole texture into m_pCvtBuffer without uploading
++		m_texConvertOnly = true;
++		((this)->*(m_textureUpdater[tex0.nPsm]))(tex0.GetBufPtr(), tex0.nBufWidth, 0, 0, texWidth, texHeight);
++		m_texConvertOnly = false;
++		converted = true;
++		size_t texelSize = CGsPixelFormats::IsPsmIDTEX(tex0.nPsm) ? 1 : (((tex0.nPsm == PSMCT16) || (tex0.nPsm == PSMCT16S)) ? 2 : 4);
++		byteCount = static_cast<size_t>(texWidth) * texHeight * texelSize;
++	}
++	key.hash = XXH3_64bits(m_pCvtBuffer, byteCount);
++	texture->m_cachedArea.ClearDirtyPages();
++	texture->m_contentHash = key.hash;
++	texture->m_contentWidth = texWidth;
++	texture->m_contentHeight = texHeight;
++	texture->m_hasContentHash = true;
++
++	auto contentTextureIterator = m_contentTextures.find(key);
++	if(contentTextureIterator == std::end(m_contentTextures))
++	{
++		if(!converted)
++		{
++			m_texConvertOnly = true;
++			((this)->*(m_textureUpdater[tex0.nPsm]))(tex0.GetBufPtr(), tex0.nBufWidth, 0, 0, texWidth, texHeight);
++			m_texConvertOnly = false;
++		}
++		auto texFormat = GetTextureFormatInfo(tex0.nPsm);
++		CONTENT_TEXTURE contentTexture;
++		contentTexture.handle = Framework::OpenGl::CTexture::Create();
++		glBindTexture(GL_TEXTURE_2D, contentTexture.handle);
++		glTexStorage2D(GL_TEXTURE_2D, 1, texFormat.internalFormat, texWidth, texHeight);
++		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, texWidth, texHeight, texFormat.format, texFormat.type, m_pCvtBuffer);
++		CHECKGLERROR();
++		contentTextureIterator = m_contentTextures.emplace(key, std::move(contentTexture)).first;
++	}
++	contentTextureIterator->second.lastUsedFrame = m_contentTextureFrame;
++	texInfo.textureHandle = contentTextureIterator->second.handle;
++	return texInfo;
++}
++
++//Once a frame, when nothing is waiting to be drawn: forget textures not used for a while
++void CGSH_OpenGL::ContentTextures_EndFrame()
++{
++	m_contentTextureFrame++;
++	static const uint32 g_sweepInterval = 300;
++	static const uint32 g_maxAge = 1800;
++	static const size_t g_keepCount = 512;
++	if(((m_contentTextureFrame % g_sweepInterval) != 0) || (m_contentTextures.size() <= g_keepCount)) return;
++	for(auto contentTextureIterator = std::begin(m_contentTextures); contentTextureIterator != std::end(m_contentTextures);)
++	{
++		if((m_contentTextureFrame - contentTextureIterator->second.lastUsedFrame) > g_maxAge)
++		{
++			contentTextureIterator = m_contentTextures.erase(contentTextureIterator);
++		}
++		else
++		{
++			contentTextureIterator++;
++		}
++	}
++}
++
+ GLuint CGSH_OpenGL::PreparePalette(const TEX0& tex0)
+ {
+ 	GLuint textureHandle = PalCache_Search(tex0);
+@@ -319,7 +517,7 @@ void CGSH_OpenGL::TexUpdater_Psm32(uint32 bufPtr, uint32 bufWidth, unsigned int
+ 		dst += texWidth;
+ 	}
+ 
+-	glTexSubImage2D(GL_TEXTURE_2D, 0, texX, texY, texWidth, texHeight, GL_RGBA, GL_UNSIGNED_BYTE, m_pCvtBuffer);
++	if(!m_texConvertOnly) glTexSubImage2D(GL_TEXTURE_2D, 0, texX, texY, texWidth, texHeight, GL_RGBA, GL_UNSIGNED_BYTE, m_pCvtBuffer);
+ 	CHECKGLERROR();
+ }
+ 
+@@ -345,7 +543,7 @@ void CGSH_OpenGL::TexUpdater_Psm16(uint32 bufPtr, uint32 bufWidth, unsigned int
+ 		dst += texWidth;
+ 	}
+ 
+-	glTexSubImage2D(GL_TEXTURE_2D, 0, texX, texY, texWidth, texHeight, GL_RGBA, GL_UNSIGNED_SHORT_5_5_5_1, m_pCvtBuffer);
++	if(!m_texConvertOnly) glTexSubImage2D(GL_TEXTURE_2D, 0, texX, texY, texWidth, texHeight, GL_RGBA, GL_UNSIGNED_SHORT_5_5_5_1, m_pCvtBuffer);
+ 	CHECKGLERROR();
+ }
+ 
+@@ -590,7 +788,7 @@ void CGSH_OpenGL::TexUpdater_Psm8(uint32 bufPtr, uint32 bufWidth, unsigned int t
+ 		dst += texWidth * 16;
+ 	}
+ 
+-	glTexSubImage2D(GL_TEXTURE_2D, 0, texX, texY, texWidth, texHeight, GL_RED, GL_UNSIGNED_BYTE, m_pCvtBuffer);
++	if(!m_texConvertOnly) glTexSubImage2D(GL_TEXTURE_2D, 0, texX, texY, texWidth, texHeight, GL_RED, GL_UNSIGNED_BYTE, m_pCvtBuffer);
+ 	CHECKGLERROR();
+ }
+ 
+@@ -631,7 +829,7 @@ void CGSH_OpenGL::TexUpdater_Psm4(unsigned int bufPtr, unsigned int bufWidth, un
+ 
+ 		dst += texWidth * 16;
+ 	}
+-	glTexSubImage2D(GL_TEXTURE_2D, 0, texX, texY, texWidth, texHeight, GL_RED, GL_UNSIGNED_BYTE, m_pCvtBuffer);
++	if(!m_texConvertOnly) glTexSubImage2D(GL_TEXTURE_2D, 0, texX, texY, texWidth, texHeight, GL_RED, GL_UNSIGNED_BYTE, m_pCvtBuffer);
+ 	CHECKGLERROR();
+ }
+ 
+@@ -652,7 +850,7 @@ void CGSH_OpenGL::TexUpdater_Psm48(uint32 bufPtr, uint32 bufWidth, unsigned int
+ 		dst += texWidth;
+ 	}
+ 
+-	glTexSubImage2D(GL_TEXTURE_2D, 0, texX, texY, texWidth, texHeight, GL_RED, GL_UNSIGNED_BYTE, m_pCvtBuffer);
++	if(!m_texConvertOnly) glTexSubImage2D(GL_TEXTURE_2D, 0, texX, texY, texWidth, texHeight, GL_RED, GL_UNSIGNED_BYTE, m_pCvtBuffer);
+ 	CHECKGLERROR();
+ }
+ 
+@@ -674,7 +872,7 @@ void CGSH_OpenGL::TexUpdater_Psm48H(uint32 bufPtr, uint32 bufWidth, unsigned int
+ 		dst += texWidth;
+ 	}
+ 
+-	glTexSubImage2D(GL_TEXTURE_2D, 0, texX, texY, texWidth, texHeight, GL_RED, GL_UNSIGNED_BYTE, m_pCvtBuffer);
++	if(!m_texConvertOnly) glTexSubImage2D(GL_TEXTURE_2D, 0, texX, texY, texWidth, texHeight, GL_RED, GL_UNSIGNED_BYTE, m_pCvtBuffer);
+ 	CHECKGLERROR();
+ }
+ 
+diff --git a/Source/gs/GSHandler.cpp b/Source/gs/GSHandler.cpp
+index 57e58ba9..1e145635 100644
+--- a/Source/gs/GSHandler.cpp
++++ b/Source/gs/GSHandler.cpp
+@@ -129,6 +129,7 @@ void CGSHandler::RegisterPreferences()
+ 	CAppConfig::GetInstance().RegisterPreferenceInteger(PREF_CGSHANDLER_PRESENTATION_MODE, CGSHandler::PRESENTATION_MODE_FIT);
+ 	CAppConfig::GetInstance().RegisterPreferenceBoolean(PREF_CGSHANDLER_GS_RAM_READS_ENABLED, true);
+ 	CAppConfig::GetInstance().RegisterPreferenceBoolean(PREF_CGSHANDLER_WIDESCREEN, false);
++	CAppConfig::GetInstance().RegisterPreferenceBoolean(PREF_CGSHANDLER_FIELD_OFFSET, true);
+ }
+ 
+ void CGSHandler::NotifyPreferencesChanged()
+@@ -212,6 +213,13 @@ CGSHandler::PRESENTATION_VIEWPORT CGSHandler::GetPresentationViewport() const
+ 		break;
+ 	case PRESENTATION_MODE_FIT:
+ 	{
++		//RTA: a television picture fills a 4:3 screen whatever its number of pixels
++		//(640 x 448 for NTSC, which is 10:7 when its pixels are taken as square: the
++		//picture was 7% too wide).
++		if(!CAppConfig::GetInstance().GetPreferenceBoolean(PREF_CGSHANDLER_WIDESCREEN))
++		{
++			sourceSize = std::make_pair(4u, 3u);
++		}
+ 		int viewportWidth[2];
+ 		int viewportHeight[2];
+ 		{
+@@ -565,8 +573,20 @@ void CGSHandler::Flip(uint32 flags)
+ {
+ 	bool waitForCompletion = (flags & FLIP_FLAG_WAIT) != 0;
+ 	bool force = (flags & FLIP_FLAG_FORCE) != 0;
++	auto displayInfo = GetCurrentDisplayInfo();
++	//RTA: In interlaced "frame mode" a game hands over one picture per field, each with
++	//half the lines of the screen, and a television draws the second field half a line
++	//below the first. A game that draws its fields for that (this one moves its picture
++	//by that half line every field) looks steady there. Shown one after the other at the
++	//same place, as was done here, the picture jumps up and down by half a line sixty
++	//times a second. The field is noted so that the picture can be put where it belongs.
++	if(GetCrtIsInterlaced() && GetCrtIsFrameMode() && CAppConfig::GetInstance().GetPreferenceBoolean(PREF_CGSHANDLER_FIELD_OFFSET))
++	{
++		std::lock_guard registerMutexLock(m_registerMutex);
++		displayInfo.field = (m_nCSR & CSR_FIELD) ? 1 : 0;
++	}
+ 	SendGSCall(
+-	    [this, displayInfo = GetCurrentDisplayInfo(), force]() {
++	    [this, displayInfo, force]() {
+ 		    if(force || m_regsDirty)
+ 		    {
+ 			    FlipImpl(displayInfo);
+diff --git a/Source/gs/GSHandler.h b/Source/gs/GSHandler.h
+index 66bfe59a..b52cd5c4 100644
+--- a/Source/gs/GSHandler.h
++++ b/Source/gs/GSHandler.h
+@@ -22,6 +22,8 @@ class CINTC;
+ #define PREF_CGSHANDLER_PRESENTATION_MODE "renderer.presentationmode"
+ #define PREF_CGSHANDLER_GS_RAM_READS_ENABLED "renderer.ramreads.enabled"
+ #define PREF_CGSHANDLER_WIDESCREEN "renderer.widescreen"
++//RTA: show the two fields of an interlaced picture half a line apart (see GSHandler.cpp, Flip)
++#define PREF_CGSHANDLER_FIELD_OFFSET "renderer.fieldoffset"
+ 
+ enum GS_REGS
+ {
+@@ -181,6 +183,10 @@ public:
+ 
+ 		uint32 width = 0;
+ 		uint32 height = 0;
++
++		//RTA: which field of an interlaced picture this is (0 or 1), when each field is
++		//a picture of its own (interlaced "frame mode"); -1 otherwise.
++		int32 field = -1;
+ 	};
+ 
+ 	enum FLIP_FLAGS
+diff --git a/Source/gs/GsTextureCache.h b/Source/gs/GsTextureCache.h
+index 67b0882e..31bb1c70 100644
+--- a/Source/gs/GsTextureCache.h
++++ b/Source/gs/GsTextureCache.h
+@@ -18,10 +18,17 @@ public:
+ 			m_live = false;
+ 			m_textureHandle = TextureHandleType();
+ 			m_cachedArea.ClearDirtyPages();
++			m_hasContentHash = false;
+ 		}
+ 
+ 		uint64 m_tex0 = 0;
+ 		bool m_live = false;
++		//RTA: a figure for the texels this place in GS memory held when last looked at
++		//(see CGSH_OpenGL::PrepareTextureByContent)
++		bool m_hasContentHash = false;
++		uint64 m_contentHash = 0;
++		uint32 m_contentWidth = 0;
++		uint32 m_contentHeight = 0;
+ 		CGsCachedArea m_cachedArea;
+ 
+ 		//Platform specific
+diff --git a/Source/iop/Iop_Speed.cpp b/Source/iop/Iop_Speed.cpp
+index 4986ae7e..24d0bd55 100644
+--- a/Source/iop/Iop_Speed.cpp
++++ b/Source/iop/Iop_Speed.cpp
+@@ -2,6 +2,7 @@
+ #include "Iop_Intc.h"
+ #include "Iop_DmacChannel.h"
+ #include "Log.h"
++#include <algorithm>
+ #include <cassert>
+ #include <cstring>
+ 
+@@ -48,13 +49,33 @@ void CSpeed::SetEthernetFrameTxHandler(const EthernetFrameTxHandler& ethernetFra
+ 	m_ethernetFrameTxHandler = ethernetFrameTxHandler;
+ }
+ 
++void CSpeed::SetEthernetPollHandler(const EthernetPollHandler& ethernetPollHandler, uint32 interval)
++{
++	m_ethernetPollHandler = ethernetPollHandler;
++	m_ethernetPollInterval = interval;
++	m_ethernetPollTicks = interval;
++}
++
++bool CSpeed::IsEthernetRxReady() const
++{
++	if(m_pendingRx || (m_rxFrameCount != 0)) return false;
++	const auto& bdRx = reinterpret_cast<const SMAP_BD*>(m_smapBdRx)[m_rxIndex % SMAP_BD_COUNT];
++	return (bdRx.ctrlStat & SMAP_BD_RX_EMPTY) != 0;
++}
++
+ void CSpeed::RxEthernetFrame(const uint8* frameData, uint32 frameSize)
+ {
+ 	assert(!m_pendingRx);
+ 
+-	m_rxBuffer.resize(frameSize);
+-	memcpy(m_rxBuffer.data(), frameData, frameSize);
++	//RTA: the driver reads the frame in blocks (register reads of 4 bytes, DMA of whole
++	//blocks) and may read past its end: keep room after the frame.
++	m_rxBuffer.assign(frameData, frameData + frameSize);
++	m_rxBuffer.resize(((frameSize + 3) & ~3U) + 0x100, 0);
+ 
++	//RTA: the ring has SMAP_BD_COUNT (64) descriptors; the index used to wrap at
++	//SMAP_BD_SIZE (512, the size of the ring in bytes) and ran off the end of the
++	//descriptor array after 64 received frames.
++	m_rxIndex %= SMAP_BD_COUNT;
+ 	auto& bdRx = reinterpret_cast<SMAP_BD*>(m_smapBdRx)[m_rxIndex];
+ 	assert((bdRx.ctrlStat & SMAP_BD_RX_EMPTY) != 0);
+ 	bdRx.ctrlStat &= ~SMAP_BD_RX_EMPTY;
+@@ -62,7 +83,7 @@ void CSpeed::RxEthernetFrame(const uint8* frameData, uint32 frameSize)
+ 	bdRx.pointer = 0;
+ 
+ 	m_rxIndex++;
+-	m_rxIndex %= SMAP_BD_SIZE;
++	m_rxIndex %= SMAP_BD_COUNT;
+ 
+ 	m_pendingRx = true;
+ 	m_rxDelay = 100000;
+@@ -191,11 +212,15 @@ uint32 CSpeed::ReadRegister(uint32 address)
+ 		break;
+ 	case REG_SMAP_RXFIFO_DATA:
+ 	{
+-		result =
+-		    (m_rxBuffer[m_rxFifoPtr + 0] << 0) |
+-		    (m_rxBuffer[m_rxFifoPtr + 1] << 8) |
+-		    (m_rxBuffer[m_rxFifoPtr + 2] << 16) |
+-		    (m_rxBuffer[m_rxFifoPtr + 3] << 24);
++		//RTA: never read outside the buffer
++		if((m_rxFifoPtr + 4) <= m_rxBuffer.size())
++		{
++			result =
++			    (m_rxBuffer[m_rxFifoPtr + 0] << 0) |
++			    (m_rxBuffer[m_rxFifoPtr + 1] << 8) |
++			    (m_rxBuffer[m_rxFifoPtr + 2] << 16) |
++			    (m_rxBuffer[m_rxFifoPtr + 3] << 24);
++		}
+ 		m_rxFifoPtr += 4;
+ 	}
+ 	break;
+@@ -275,6 +300,10 @@ void CSpeed::WriteRegister(uint32 address, uint32 value)
+ 		break;
+ 	case REG_SMAP_EMAC3_ADDR_LO:
+ 		m_smapEmac3AddressLo = value;
++		//RTA: the driver writes the station address when it starts, and it starts again
++		//(with a fresh descriptor ring) when the machine restarts into another program
++		//without the chip being reset. The receive index has to start again with it.
++		m_rxIndex = 0;
+ 		break;
+ 	case REG_SMAP_EMAC3_STA_CTRL_HI:
+ 		m_smapEmac3StaCtrl.h1 = static_cast<uint16>(value);
+@@ -308,7 +337,11 @@ uint32 CSpeed::ReceiveDma(uint8* buffer, uint32 blockSize, uint32 blockAmount, u
+ 	if(direction == Iop::Dmac::CChannel::CHCR_DR_TO)
+ 	{
+ 		uint32 size = blockSize * blockAmount;
+-		memcpy(buffer, m_rxBuffer.data() + m_rxFifoPtr, size);
++		//RTA: never read outside the buffer
++		uint32 available = (m_rxFifoPtr < m_rxBuffer.size()) ? static_cast<uint32>(m_rxBuffer.size() - m_rxFifoPtr) : 0;
++		uint32 copySize = std::min(size, available);
++		if(copySize != 0) memcpy(buffer, m_rxBuffer.data() + m_rxFifoPtr, copySize);
++		if(copySize != size) memset(buffer + copySize, 0, size - copySize);
+ 		m_rxFifoPtr += size;
+ 	}
+ 	else
+@@ -320,6 +353,15 @@ uint32 CSpeed::ReceiveDma(uint8* buffer, uint32 blockSize, uint32 blockAmount, u
+ 
+ void CSpeed::CountTicks(uint32 ticks)
+ {
++	if(m_ethernetPollHandler)
++	{
++		m_ethernetPollTicks -= ticks;
++		if(m_ethernetPollTicks <= 0)
++		{
++			m_ethernetPollTicks = m_ethernetPollInterval;
++			m_ethernetPollHandler();
++		}
++	}
+ 	if(m_pendingRx)
+ 	{
+ 		m_rxDelay -= ticks;
+diff --git a/Source/iop/Iop_Speed.h b/Source/iop/Iop_Speed.h
+index 0aa1c176..c501e510 100644
+--- a/Source/iop/Iop_Speed.h
++++ b/Source/iop/Iop_Speed.h
+@@ -22,6 +22,14 @@ namespace Iop
+ 		void SetEthernetFrameTxHandler(const EthernetFrameTxHandler&);
+ 		void RxEthernetFrame(const uint8*, uint32);
+ 
++		//RTA: the chip holds one received frame at a time. True when the driver has
++		//taken the last one and has handed back the descriptor the next one goes into.
++		bool IsEthernetRxReady() const;
++		//RTA: called every 'interval' ticks from CountTicks, on the machine's thread,
++		//so that whatever feeds the chip can look at its sockets and hand over frames.
++		typedef std::function<void()> EthernetPollHandler;
++		void SetEthernetPollHandler(const EthernetPollHandler&, uint32);
++
+ 		uint32 ReadRegister(uint32);
+ 		void WriteRegister(uint32, uint32);
+ 
+@@ -127,6 +135,9 @@ namespace Iop
+ 		void LogBdWrite(const char*, uint32, uint32, uint32);
+ 
+ 		EthernetFrameTxHandler m_ethernetFrameTxHandler;
++		EthernetPollHandler m_ethernetPollHandler;
++		uint32 m_ethernetPollInterval = 0;
++		int32 m_ethernetPollTicks = 0;
+ 
+ 		CIntc& m_intc;
+ 
+diff --git a/Source/ui_qt/CMakeLists.txt b/Source/ui_qt/CMakeLists.txt
+index ce76ed4d..92581ae8 100644
+--- a/Source/ui_qt/CMakeLists.txt
++++ b/Source/ui_qt/CMakeLists.txt
+@@ -279,6 +279,11 @@ if(TARGET_PLATFORM_MACOS)
+ 		macos/InputProviderMacOsHid.h
+ 		macos/LayerFromView.mm
+ 		macos/LayerFromView.h
++		rta/Rta.cpp
++		rta/Rta.h
++		rta/RtaMac.mm
++		rta/RtaNet.cpp
++		rta/RtaNet.h
+ 	)
+ 	FILE(GLOB ARCADE_DEFS ${CMAKE_CURRENT_SOURCE_DIR}/../../arcadedefs/*.arcadedef)
+ 	set(OSX_RES
+@@ -313,7 +318,8 @@ if(TARGET_PLATFORM_MACOS)
+ 		RESOURCE "${OSX_RES}"
+ 	)
+ 	SET_SOURCE_FILES_PROPERTIES(${ARCADE_DEFS} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources/arcadedefs")
+-	list(APPEND UI_QT_PROJECT_LIBS "-framework IOKit -framework CoreFoundation")
++	#RTA: LayerFromView.mm needs QuartzCore whether or not Vulkan is used
++	list(APPEND UI_QT_PROJECT_LIBS "-framework IOKit -framework CoreFoundation -framework QuartzCore -framework Foundation")
+ elseif(TARGET_PLATFORM_WIN32)
+ 	set(QT_SOURCES
+ 		${QT_SOURCES}
+diff --git a/Source/ui_qt/GSH_OpenGLQt.cpp b/Source/ui_qt/GSH_OpenGLQt.cpp
+index 2d7f088b..0c49804c 100644
+--- a/Source/ui_qt/GSH_OpenGLQt.cpp
++++ b/Source/ui_qt/GSH_OpenGLQt.cpp
+@@ -57,8 +57,34 @@ void CGSH_OpenGLQt::ReleaseImpl()
+ 	delete m_context;
+ }
+ 
++void CGSH_OpenGLQt::RequestCapture(const CaptureHandler& captureHandler)
++{
++	std::lock_guard<std::mutex> lock(m_captureMutex);
++	m_captureHandler = captureHandler;
++}
++
+ void CGSH_OpenGLQt::PresentBackbuffer()
+ {
++	{
++		CaptureHandler captureHandler;
++		{
++			std::lock_guard<std::mutex> lock(m_captureMutex);
++			captureHandler.swap(m_captureHandler);
++		}
++		if(captureHandler)
++		{
++			unsigned int width = m_presentationParams.windowWidth;
++			unsigned int height = m_presentationParams.windowHeight;
++			std::vector<uint8> pixels(static_cast<size_t>(width) * height * 4);
++			if(!pixels.empty())
++			{
++				glBindFramebuffer(GL_READ_FRAMEBUFFER, m_presentFramebuffer);
++				glPixelStorei(GL_PACK_ALIGNMENT, 1);
++				glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
++			}
++			captureHandler(pixels.data(), width, height);
++		}
++	}
+ 	bool swapBuffer = true;
+ 	if(m_renderSurface->surfaceClass() == QSurface::Window)
+ 	{
+diff --git a/Source/ui_qt/GSH_OpenGLQt.h b/Source/ui_qt/GSH_OpenGLQt.h
+index ad49fb9f..099c56d8 100644
+--- a/Source/ui_qt/GSH_OpenGLQt.h
++++ b/Source/ui_qt/GSH_OpenGLQt.h
+@@ -1,6 +1,8 @@
+ #pragma once
+ 
+ #include "gs/GSH_OpenGL/GSH_OpenGL.h"
++#include <functional>
++#include <mutex>
+ 
+ class QSurface;
+ class QOpenGLContext;
+@@ -17,7 +19,15 @@ public:
+ 	void ReleaseImpl() override;
+ 	void PresentBackbuffer() override;
+ 
++	//RTA: the next presented picture is handed to this function (RGBA, bottom row first),
++	//on the video thread. Play!'s own screenshot function is empty in the OpenGL handler.
++	typedef std::function<void(const uint8*, unsigned int, unsigned int)> CaptureHandler;
++	void RequestCapture(const CaptureHandler&);
++
+ private:
++	std::mutex m_captureMutex;
++	CaptureHandler m_captureHandler;
++
+ 	QSurface* m_renderSurface = nullptr;
+ 	QOpenGLContext* m_context = nullptr;
+ };
+diff --git a/Source/ui_qt/main.cpp b/Source/ui_qt/main.cpp
+index eb663815..758b2e3f 100644
+--- a/Source/ui_qt/main.cpp
++++ b/Source/ui_qt/main.cpp
+@@ -4,11 +4,13 @@
+ #include "mainwindow.h"
+ #include "PathUtils.h"
+ #include "QStringUtils.h"
++#include "rta/Rta.h"
+ 
+ Q_DECLARE_METATYPE(std::string)
+ 
+ int main(int argc, char* argv[])
+ {
++	Rta::EarlyInit(argc, argv);
+ #if QT_VERSION >= QT_VERSION_CHECK(5, 6, 0)
+ 	QApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
+ #endif
+@@ -49,7 +51,10 @@ int main(int argc, char* argv[])
+ 	QCommandLineOption load_state_option("state", "Load state at index", "state_index");
+ 	parser.addOption(load_state_option);
+ 
++	Rta::AddCommandLineOptions(parser);
++
+ 	parser.process(a);
++	Rta::ReadCommandLine(parser);
+ 
+ 	MainWindow w;
+ 	w.show();
+@@ -112,7 +117,13 @@ fs::path CAppConfig::GetBasePath() const
+ 	static const auto basePath =
+ 	    []() {
+ 		    fs::path result;
+-		    if(fs::exists("portable.txt"))
++		    //RTA: a data directory of its own (--rta-data), so that this build never
++		    //touches the settings and memory cards of an ordinary Play! installation
++		    if(const char* dataDir = getenv("RTA_DATA_DIR"))
++		    {
++			    result = dataDir;
++		    }
++		    else if(fs::exists("portable.txt"))
+ 		    {
+ 			    result = BASE_DATA_PATH;
+ 		    }
+diff --git a/Source/ui_qt/mainwindow.cpp b/Source/ui_qt/mainwindow.cpp
+index c0665d9f..20d84115 100644
+--- a/Source/ui_qt/mainwindow.cpp
++++ b/Source/ui_qt/mainwindow.cpp
+@@ -60,6 +60,7 @@
+ #include "vfsmanagerdialog.h"
+ #include "ControllerConfig/controllerconfigdialog.h"
+ #include "QBootablesView.h"
++#include "rta/Rta.h"
+ 
+ #ifdef __APPLE__
+ #include "macos/InputProviderMacOsHid.h"
+@@ -82,6 +83,7 @@ MainWindow::MainWindow(QWidget* parent)
+ 	buildResizeWindowMenu();
+ 
+ 	RegisterPreferences();
++	Rta::OverridePreferences();
+ 
+ 	m_continuationChecker = new CContinuationChecker(this);
+ 
+@@ -131,6 +133,9 @@ MainWindow::MainWindow(QWidget* parent)
+ 		if(m_virtualMachine->GetStatus() == CVirtualMachine::RUNNING)
+ 			ui->stackedWidget->setCurrentIndex(1);
+ 	});
++
++	//RTA: a window whose picture area is 4:3, as the game's picture is
++	resizeWindow(1120, 840);
+ }
+ 
+ MainWindow::~MainWindow()
+@@ -143,6 +148,7 @@ MainWindow::~MainWindow()
+ 	if(m_virtualMachine != nullptr)
+ 	{
+ 		m_virtualMachine->Pause();
++		Rta::Detach();
+ 		m_qtKeyInputProvider.reset();
+ 		m_qtMouseInputProvider.reset();
+ 		m_virtualMachine->DestroyPadHandler();
+@@ -169,7 +175,8 @@ void MainWindow::InitVirtualMachine()
+ 	SetupSoundHandler();
+ 
+ 	{
+-		m_virtualMachine->CreatePadHandler(CPH_GenericInput::GetFactoryFunction());
++		//RTA: the same handler with a hook at every vertical blank
++		m_virtualMachine->CreatePadHandler(Rta::GetPadHandlerFactory());
+ 		auto padHandler = static_cast<CPH_GenericInput*>(m_virtualMachine->GetPadHandler());
+ 		auto profile = CAppConfig::GetInstance().GetPreferenceString(PREF_INPUT_PAD1_PROFILE);
+ 
+@@ -200,6 +207,8 @@ void MainWindow::InitVirtualMachine()
+ 	//OnExecutableChange might be called from another thread, we need to wrap it around a Qt signal
+ 	m_OnExecutableChangeConnection = m_virtualMachine->m_ee->m_os->OnExecutableChange.Connect(std::bind(&MainWindow::EmitOnExecutableChange, this));
+ 	connect(this, SIGNAL(onExecutableChange()), this, SLOT(HandleOnExecutableChange()));
++
++	Rta::Attach(m_virtualMachine);
+ }
+ 
+ void MainWindow::SetOutputWindowSize()
+@@ -606,6 +615,12 @@ void MainWindow::updateStats()
+ 	m_cpuUsageLabel->setText(QString("EE CPU: %1%").arg(static_cast<int>(eeUsageRatio)));
+ 
+ 	CStatsManager::GetInstance().ClearStats();
++
++	auto rtaStatus = Rta::StatusText();
++	if(!rtaStatus.empty())
++	{
++		m_msgLabel->setText(QString::fromStdString(rtaStatus));
++	}
+ }
+ 
+ void MainWindow::on_actionSettings_triggered()

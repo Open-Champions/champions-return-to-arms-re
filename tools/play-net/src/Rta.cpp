@@ -49,7 +49,7 @@
 
 #define PREF_RTA_GUEST_ADDRESS "rta.net.guestaddress"
 #define PREF_RTA_DEFAULTS "rta.defaults"
-#define RTA_DEFAULTS 1
+#define RTA_DEFAULTS 2
 #define RTA_RESOLUTION_FACTOR 4
 #define RTA_SPU_BLOCKS 30
 
@@ -73,6 +73,7 @@ namespace
 		std::string patchFile;
 		std::string patchSections; // "name;name", "@file", "*" or empty
 		std::vector<std::string> extraPatches;
+		bool steadyPicture = true;
 		bool netcnf = true;
 		std::string controlPath;
 		std::string pcapPath;
@@ -82,6 +83,35 @@ namespace
 	{
 		uint32 address = 0;
 		uint32 value = 0;
+	};
+
+	// Changes to how the game draws, made by the application itself and only when the
+	// word found is the one expected. They touch the picture and nothing else, so they
+	// are not part of the patch set that every player has to share and do not count in
+	// its figure.
+	struct DisplayPatch
+	{
+		uint32 address;
+		uint32 original;
+		uint32 value;
+		const char* what;
+	};
+	const DisplayPatch g_displayPatches[] = {
+	    // gfx_emitFrameSetup (0x19c86c) sets the vertical drawing offset (XYOFFSET) for the
+	    // next frame to 1824.0 or 1824.5 by the television field: every other picture is
+	    // drawn half a line lower, which a television's interlace turns into finer detail
+	    // and a window that shows whole pictures turns into a picture that jumps up and
+	    // down. The constant for the odd field is made the same as the even one.
+	    {0x0019C904, 0x240A7208, 0x240A7200, "the picture is drawn at the same height on both television fields"},
+	    // gfx_displayField (0x19d9e4) tells the interface drawers (sprites, text) which
+	    // field is on the screen. Interface pictures are stored as two half-height
+	    // pictures, one for each field, and the drawers take the one for the field and
+	    // put it a line higher or lower. Shown as whole pictures one after the other, the
+	    // two halves make everything flat on the screen (menus, text, the bars) tremble.
+	    // The function is made to say "first field" always (its load of the field word
+	    // becomes "move v0, zero"): the interface is then drawn from one half only - what
+	    // each field showed anyway - and stands still.
+	    {0x0019D9EC, 0x8C420008, 0x00001021, "the interface is drawn the same on both television fields"},
 	};
 
 	std::string Trim(std::string s)
@@ -620,11 +650,31 @@ namespace
 					Log(Format("this is %s but not the version the patches are for (checksum %08X, wanted %08X): NO PATCH IS APPLIED", name.c_str(), crc, GAME_CRC));
 			}
 			Log("executable: " + name + (m_isGame ? Format(" (the game, version checked); %zu patch words", m_patches.size()) : ""));
+			m_activePatches.clear();
 			if(m_isGame)
 			{
 				// nothing has been translated yet: the words can simply be written
 				uint8* ram = m_vm->m_ee->m_ram;
-				for(const auto& word : m_patches) memcpy(ram + word.address, &word.value, 4);
+				m_activePatches = m_patches;
+				if(options.steadyPicture)
+				{
+					for(const auto& patch : g_displayPatches)
+					{
+						uint32 now = 0;
+						memcpy(&now, ram + patch.address, 4);
+						if(now != patch.original)
+						{
+							Log(Format("display patch at %08x not applied: found %08x where %08x was expected", patch.address, now, patch.original));
+							continue;
+						}
+						PatchWord word;
+						word.address = patch.address;
+						word.value = patch.value;
+						m_activePatches.push_back(word);
+						Log(std::string("display patch: ") + patch.what);
+					}
+				}
+				for(const auto& word : m_activePatches) memcpy(ram + word.address, &word.value, 4);
 			}
 			m_patchRewrites = 0;
 		}
@@ -636,7 +686,7 @@ namespace
 			if(!m_isGame) return;
 			static const uint32 pageSize = static_cast<uint32>(getpagesize());
 			unsigned int rewritten = 0;
-			for(const auto& word : m_patches)
+			for(const auto& word : m_activePatches)
 			{
 				uint32 now;
 				memcpy(&now, ram + word.address, 4);
@@ -659,6 +709,7 @@ namespace
 		//   press <buttons>   release <buttons>|all   tap <buttons> [hold [after]]
 		//   stick <l|r> <x> <y>   (0..255, 128 is the middle)      wait <frames>
 		//   peek <expression> <type>   shot <file.bmp>   burst <name> <n>   info   gs
+		//   probe <file> <n> <x> <y> <w> <h>   bench
 		//   throttle <0|1>   pref int|bool <setting> <value>   ethdrop   quit
 		// Buttons are joined with '+': up down left right cross circle square triangle
 		// l1 l2 l3 r1 r2 r3 start select. Expressions: numbers, '+', '-', and [x] for the
@@ -866,6 +917,23 @@ namespace
 				push(Step::REPLY, 2);
 			else if(name == "gs")
 				push(Step::REPLY, 3);
+			else if(name == "probe" && words.size() >= 7)
+			{
+				// probe <file> <n> <x> <y> <w> <h>: a rectangle of the window (pixels from the
+				// bottom left) from n consecutive presented pictures, raw RGBA one after the
+				// other in <file>, and "<index> <clock> <w> <h>" lines in <file>.txt
+				Step step;
+				step.kind = Step::SHOT;
+				step.text = words[1];
+				step.value = std::max<uint32>(1, std::min<uint32>(number(2, 2), 240));
+				step.value2 = 1;
+				m_probeRect[0] = number(3, 0);
+				m_probeRect[1] = number(4, 0);
+				m_probeRect[2] = std::max<uint32>(1, number(5, 1));
+				m_probeRect[3] = std::max<uint32>(1, number(6, 1));
+				m_steps.push_back(step);
+				push(Step::SHOTWAIT, 1200);
+			}
 			else if(name == "burst" && words.size() >= 3)
 			{
 				Step step;
@@ -888,6 +956,28 @@ namespace
 				bool ok = (words[1] == "int") ? config.SetPreferenceInteger(words[2].c_str(), static_cast<int>(number(3, 0))) : config.SetPreferenceBoolean(words[2].c_str(), number(3, 0) != 0);
 				if(auto gs = m_vm->GetGSHandler()) gs->NotifyPreferencesChanged();
 				push(Step::REPLY, 0, ok ? "ok" : "err no such setting");
+			}
+			else if(name == "bench")
+			{
+				// how fast is the processor core each of the two threads is on? (a loop of
+				// plain arithmetic, timed by the clock and by the thread's processor time)
+				auto work = []() {
+					uint64 t0 = ClockMicroseconds(), c0 = ThreadCpuMicroseconds();
+					volatile uint64 x = 88172645463325252ull;
+					for(int i = 0; i < 40000000; i++)
+					{
+						uint64 y = x;
+						y ^= y << 13;
+						y ^= y >> 7;
+						y ^= y << 17;
+						x = y;
+					}
+					return std::make_pair(ClockMicroseconds() - t0, ThreadCpuMicroseconds() - c0);
+				};
+				auto machine = work();
+				std::pair<uint64, uint64> video(0, 0);
+				if(auto gs = m_vm->GetGSHandler()) gs->SendGSCall([&]() { video = work(); }, true);
+				push(Step::REPLY, 0, Format("ok machine_thread clock_us=%llu cpu_us=%llu video_thread clock_us=%llu cpu_us=%llu", (unsigned long long)machine.first, (unsigned long long)machine.second, (unsigned long long)video.first, (unsigned long long)video.second));
 			}
 			else if(name == "ethdrop")
 			{
@@ -1011,6 +1101,32 @@ namespace
 					auto gs = dynamic_cast<CGSH_OpenGLQt*>(m_vm->GetGSHandler());
 					if(!gs)
 						m_shotDone = -1;
+					else if(step.value2 == 1)
+					{
+						// probe
+						m_burstLeft = step.value;
+						m_burstIndex = 0;
+						std::string name = step.text;
+						if(FILE* file = fopen(name.c_str(), "wb")) fclose(file);
+						if(FILE* file = fopen((name + ".txt").c_str(), "w")) fclose(file);
+						m_capture = [this, gs, name](const uint8* rgba, unsigned int width, unsigned int height) {
+							uint64 clock = ClockMicroseconds();
+							if(--m_burstLeft > 0) gs->RequestCapture(m_capture, m_probeRect[0], m_probeRect[1], m_probeRect[2], m_probeRect[3]);
+							if(FILE* file = fopen(name.c_str(), "ab"))
+							{
+								fwrite(rgba, 1, static_cast<size_t>(width) * height * 4, file);
+								fclose(file);
+							}
+							if(FILE* file = fopen((name + ".txt").c_str(), "a"))
+							{
+								fprintf(file, "%u %llu %u %u\n", m_burstIndex, static_cast<unsigned long long>(clock), width, height);
+								fclose(file);
+							}
+							m_burstIndex++;
+							if(m_burstLeft == 0) m_shotDone = 1;
+						};
+						gs->RequestCapture(m_capture, m_probeRect[0], m_probeRect[1], m_probeRect[2], m_probeRect[3]);
+					}
 					else
 					{
 						m_burstLeft = step.value;
@@ -1119,7 +1235,8 @@ namespace
 		CPS2VM* m_vm = nullptr;
 		std::unique_ptr<Rta::CNet> m_net;
 		std::string m_serverText, m_netNote, m_patchSet;
-		std::vector<PatchWord> m_patches;
+		std::vector<PatchWord> m_patches;       // from the patch files
+		std::vector<PatchWord> m_activePatches; // those and the display patches, while the game is loaded
 		bool m_isGame = false;
 		unsigned int m_patchRewrites = 0;
 		Framework::CSignal<void()>::Connection m_executableChange;
@@ -1139,6 +1256,7 @@ namespace
 		std::atomic<int> m_shotDone{0};
 		CGSH_OpenGLQt::CaptureHandler m_capture;
 		unsigned int m_burstLeft = 0, m_burstIndex = 0;
+		unsigned int m_probeRect[4] = {0, 0, 1, 1};
 
 		friend class CPadHandlerRta;
 	};
@@ -1227,6 +1345,7 @@ void Rta::AddCommandLineOptions(QCommandLineParser& parser)
 	parser.addOption(QCommandLineOption("rta-patch-file", "PCSX2-style patch file for the game.", "file"));
 	parser.addOption(QCommandLineOption("rta-patch-sections", "Sections of the patch file to apply: names separated by ';', '@file' (one name per line) or '*'.", "sections"));
 	parser.addOption(QCommandLineOption("rta-extra-patch", "A further patch file, applied whole. May be given more than once.", "file"));
+	parser.addOption(QCommandLineOption("rta-interlaced", "Leave the game's half-line shift between television fields alone (the picture then jumps up and down; for comparing)."));
 	parser.addOption(QCommandLineOption("rta-no-netcnf", "Do not write the network setting to the memory card."));
 	parser.addOption(QCommandLineOption("rta-control", "UNIX socket for a test script (see tools/play-net/ctl.py).", "path"));
 	parser.addOption(QCommandLineOption("rta-pcap", "Write every Ethernet frame of the emulated adaptor to this capture file.", "file"));
@@ -1246,6 +1365,7 @@ void Rta::ReadCommandLine(const QCommandLineParser& parser)
 	o.patchFile = parser.value("rta-patch-file").toStdString();
 	o.patchSections = parser.value("rta-patch-sections").toStdString();
 	for(const auto& path : parser.values("rta-extra-patch")) o.extraPatches.push_back(path.toStdString());
+	o.steadyPicture = !parser.isSet("rta-interlaced");
 	o.netcnf = !parser.isSet("rta-no-netcnf");
 	o.controlPath = parser.value("rta-control").toStdString();
 	o.pcapPath = parser.value("rta-pcap").toStdString();
@@ -1267,6 +1387,10 @@ void Rta::OverridePreferences()
 	config.RegisterPreferenceInteger(PREF_RTA_DEFAULTS, 0);
 	config.RegisterPreferenceInteger(PREF_CGSH_OPENGL_RESOLUTION_FACTOR, RTA_RESOLUTION_FACTOR);
 	config.RegisterPreferenceInteger(PREF_AUDIO_SPUBLOCKCOUNT, RTA_SPU_BLOCKS);
+	// With the game drawing both fields at the same height (the display patch) the
+	// pictures must be shown at the same place; without it, half a line apart.
+	config.RegisterPreferenceBoolean(PREF_CGSHANDLER_FIELD_OFFSET, true);
+	config.SetPreferenceBoolean(PREF_CGSHANDLER_FIELD_OFFSET, !g_state.options.steadyPicture);
 	if(config.GetPreferenceInteger(PREF_RTA_DEFAULTS) < RTA_DEFAULTS)
 	{
 		config.SetPreferenceInteger(PREF_CGSH_OPENGL_RESOLUTION_FACTOR, RTA_RESOLUTION_FACTOR);
