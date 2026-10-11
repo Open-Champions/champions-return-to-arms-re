@@ -38,6 +38,7 @@
 #endif
 
 #include "AppConfig.h"
+#include "FrameLimiter.h"
 #include "PS2VM.h"
 #include "PS2VM_Preferences.h"
 #include "PathUtils.h"
@@ -74,6 +75,7 @@ namespace
 		std::string patchSections; // "name;name", "@file", "*" or empty
 		std::vector<std::string> extraPatches;
 		bool steadyPicture = true;
+		bool displayClock = true;
 		bool netcnf = true;
 		std::string controlPath;
 		std::string pcapPath;
@@ -112,6 +114,19 @@ namespace
 	    // becomes "move v0, zero"): the interface is then drawn from one half only - what
 	    // each field showed anyway - and stands still.
 	    {0x0019D9EC, 0x8C420008, 0x00001021, "the interface is drawn the same on both television fields"},
+	    // Interface art at its full height. The game has a second way of drawing it, which
+	    // it uses when it runs at half rate (one whole 448-line frame instead of a picture
+	    // per field): both half pictures are drawn over the same place, one to the even
+	    // lines and one to the odd ones, with the GS scanline mask. The four drawers that
+	    // have this second way (sprites 0x17ab50 and 0x17b8b0, text 0x1809c0 and 0x180f80)
+	    // choose by the word at 0x44fdb4; here each is made to read "1" instead of loading
+	    // it ("lw v1, -0x24c(v0)" becomes "addiu v1, zero, 1"). Nothing else that reads the
+	    // word is touched: the game itself stays at full rate. Needs the scanline mask in
+	    // the renderer, which play-net.patch adds.
+	    {0x0017AB58, 0x8C43FDB4, 0x24030001, "interface sprites are drawn from both field pictures"},
+	    {0x0017BAE4, 0x8C43FDB4, 0x24030001, "interface sprites (second drawer) are drawn from both field pictures"},
+	    {0x00180D2C, 0x8C43FDB4, 0x24030001, "text is drawn from both field pictures"},
+	    {0x00180FEC, 0x8C43FDB4, 0x24030001, "text is drawn in two passes, one per field picture"},
 	};
 
 	std::string Trim(std::string s)
@@ -434,11 +449,20 @@ namespace
 			m_executableChange = m_vm->m_ee->m_os->OnExecutableChange.Connect([this]() { OnExecutableChange(); });
 			if(!options.controlPath.empty()) StartControl();
 			Rta::KeepAwake();
+			if(options.displayClock)
+			{
+				Rta::StartDisplayClock();
+				CFrameLimiter::SetExternalWait([](uint32 framesPerSecond) { return Rta::WaitForFrameStart(framesPerSecond); });
+				CGSHandler::g_presentClock.stamp = []() { return Rta::PresentMark(); };
+				CGSHandler::g_presentClock.wait = [](uint64 mark) { Rta::WaitForPresentMark(mark); };
+			}
 		}
 
 		void Detach()
 		{
 			m_executableChange.reset();
+			CFrameLimiter::SetExternalWait(CFrameLimiter::ExternalWaitFunction());
+			CGSHandler::g_presentClock = CGSHandler::PresentClock();
 			if(m_vm && m_net)
 			{
 				auto& speed = m_vm->m_iop->m_speed;
@@ -758,8 +782,20 @@ namespace
 		void Reply(const std::string& line)
 		{
 			if(m_clientFd < 0) return;
+			// the socket does not block: a long answer may take several writes
 			std::string out = line + "\n";
-			if(write(m_clientFd, out.data(), out.size()) < 0)
+			size_t done = 0;
+			for(int tries = 0; (done < out.size()) && (tries < 2000); tries++)
+			{
+				ssize_t n = write(m_clientFd, out.data() + done, out.size() - done);
+				if(n > 0)
+					done += n;
+				else if((n < 0) && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
+					usleep(500);
+				else
+					break;
+			}
+			if(done < out.size())
 			{
 				close(m_clientFd);
 				m_clientFd = -1;
@@ -1071,8 +1107,8 @@ namespace
 							             (unsigned long long)s.framesFromGuest, (unsigned long long)s.framesToGuest, (unsigned long long)s.tcpConnections, (unsigned long long)s.tcpBytesOut, (unsigned long long)s.tcpBytesIn,
 							             (unsigned long long)s.udpToServer, (unsigned long long)s.udpToPeers, (unsigned long long)s.udpFromPeers, s.dhcpDone ? 1 : 0, s.dnsAnswered ? 1 : 0);
 						}
-						Reply(Format("ok frame=%llu ms=%lld us=%llu cpu_us=%llu video_cpu_us=%llu exe=%s game=%d %s", static_cast<unsigned long long>(m_frame.load()), static_cast<long long>(ms), static_cast<unsigned long long>(us),
-						             static_cast<unsigned long long>(m_cpuMicroseconds.load()), static_cast<unsigned long long>(m_gsCpuMicroseconds.load()), m_vm->m_ee->m_os->GetExecutableName(), m_isGame ? 1 : 0, net.c_str()));
+						Reply(Format("ok frame=%llu ms=%lld us=%llu cpu_us=%llu video_cpu_us=%llu display_hz=%.2f refreshes_per_frame=%d exe=%s game=%d %s", static_cast<unsigned long long>(m_frame.load()), static_cast<long long>(ms), static_cast<unsigned long long>(us),
+						             static_cast<unsigned long long>(m_cpuMicroseconds.load()), static_cast<unsigned long long>(m_gsCpuMicroseconds.load()), Rta::DisplayRefreshRate(), Rta::DisplayRefreshesPerFrame(), m_vm->m_ee->m_os->GetExecutableName(), m_isGame ? 1 : 0, net.c_str()));
 					}
 					else if(step.value == 3)
 					{
@@ -1346,6 +1382,7 @@ void Rta::AddCommandLineOptions(QCommandLineParser& parser)
 	parser.addOption(QCommandLineOption("rta-patch-sections", "Sections of the patch file to apply: names separated by ';', '@file' (one name per line) or '*'.", "sections"));
 	parser.addOption(QCommandLineOption("rta-extra-patch", "A further patch file, applied whole. May be given more than once.", "file"));
 	parser.addOption(QCommandLineOption("rta-interlaced", "Leave the game's half-line shift between television fields alone (the picture then jumps up and down; for comparing)."));
+	parser.addOption(QCommandLineOption("rta-timer", "Time frames by a timer instead of by the display's refreshes."));
 	parser.addOption(QCommandLineOption("rta-no-netcnf", "Do not write the network setting to the memory card."));
 	parser.addOption(QCommandLineOption("rta-control", "UNIX socket for a test script (see tools/play-net/ctl.py).", "path"));
 	parser.addOption(QCommandLineOption("rta-pcap", "Write every Ethernet frame of the emulated adaptor to this capture file.", "file"));
@@ -1366,6 +1403,7 @@ void Rta::ReadCommandLine(const QCommandLineParser& parser)
 	o.patchSections = parser.value("rta-patch-sections").toStdString();
 	for(const auto& path : parser.values("rta-extra-patch")) o.extraPatches.push_back(path.toStdString());
 	o.steadyPicture = !parser.isSet("rta-interlaced");
+	o.displayClock = !parser.isSet("rta-timer");
 	o.netcnf = !parser.isSet("rta-no-netcnf");
 	o.controlPath = parser.value("rta-control").toStdString();
 	o.pcapPath = parser.value("rta-pcap").toStdString();

@@ -10,6 +10,7 @@
 // The application calls the functions below at five places (see play-net.patch).
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include "PadHandler.h"
 
@@ -37,4 +38,11 @@ namespace Rta
 	// RtaMac.mm: keeps macOS from slowing the application down when its window is
 	// covered or in the background (the other players wait for every frame of ours).
 	void KeepAwake();
+	// RtaMac.mm: the display's refreshes as the clock for frames and pictures.
+	void StartDisplayClock();
+	double DisplayRefreshRate();
+	int DisplayRefreshesPerFrame();
+	bool WaitForFrameStart(uint32_t framesPerSecond);
+	uint64_t PresentMark();
+	void WaitForPresentMark(uint64_t mark);
 }

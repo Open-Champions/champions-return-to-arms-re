@@ -463,7 +463,10 @@ void CNet::OnUdp(uint16_t sourcePort, uint32_t destIp, uint16_t destPort, const 
 	to.sin_port = htons(destPort);
 	sendto(found->second.fd, data, length, 0, reinterpret_cast<sockaddr*>(&to), sizeof(to));
 	if(realIp != destIp)
+	{
 		m_udpSeenAs[UdpKey(realIp, destPort)] = destIp;
+		m_udpSeenAsAny[realIp] = destIp;
+	}
 	else
 		m_udpSeenAs.erase(UdpKey(realIp, destPort));
 	if(serverPort)
@@ -495,8 +498,11 @@ void CNet::PollUdp()
 			// Shown to the machine as coming from the address it knows the sender by.
 			uint32_t shownIp = fromIp;
 			auto seen = m_udpSeenAs.find(UdpKey(fromIp, fromPort));
+			auto seenAny = m_udpSeenAsAny.find(fromIp);
 			if(seen != m_udpSeenAs.end())
 				shownIp = seen->second;
+			else if(seenAny != m_udpSeenAsAny.end())
+				shownIp = seenAny->second; // the same host from another port (its router changed it)
 			else if(IsLoopback(fromIp) || fromIp == m_config.serverIp)
 				shownIp = m_config.guestServerIp; // another emulator on the server's host
 			if(fromIp == m_config.serverIp && m_config.serverUdpPorts.count(fromPort))

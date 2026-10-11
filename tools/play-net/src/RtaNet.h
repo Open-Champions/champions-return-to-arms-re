@@ -174,6 +174,7 @@ namespace Rta
 		// real (address, port) a datagram was sent to -> the address the machine used for
 		// it, so that the answer can be shown as coming from there
 		std::map<uint64_t, uint32_t> m_udpSeenAs;
+		std::map<uint32_t, uint32_t> m_udpSeenAsAny; // the same by address alone, the latest
 		std::set<uint64_t> m_noted;
 		uint64_t m_peerOut = 0, m_peerIn = 0;
 	};
