@@ -505,6 +505,21 @@ script.
 | N7 | `activateStore` in a net game calls `net_closeLocalMenus(0)` — which also empties vehicles — only on machines that own a living player | Executed (the calls), Inferred (the vehicle consequence) | 0x144010; `docs/script.md` P6 |
 | N8 | `playGotItemSound` stores the active player clamped to 0..1 but plays the voice for the unclamped slot | Executed | 0x1464e8 |
 
+## Lobby server
+
+Found by running the real game against the replacement lobby server on the rig
+(docs/issues/live-rig.md section 19). Fixes are in the user's fork of the server, branch
+`macos-port`; its `FIXES.md` sections 16–18 describe them. `tools/lobby_fix_checks.py` exercises
+the three fixes against a test instance (11 checks; the end-to-end test still passes 33 of 33).
+The running server on this machine has to be rebuilt and restarted to pick them up.
+
+| ID | Claim | Kind | Evidence |
+|---|---|---|---|
+| LS1 | After the server drops a connection, the game reconnects by itself and carries on with the game-list request under its old session id without logging in again; the server answers with an empty list, then sends a forced-logout notice and closes, and the game repeats this about every 650 frames until the player dismisses the lost-connection notice. **Fixed in the fork (commit 6a909ed):** a session whose connection was lost can be resumed once, from the same address, within the client time-out; a request that is still not logged in gets the game's own "invalid session" result with the connection left open. Tested with a script client, not yet with the real game | Ran (rig) | `RequestMatchGame_RTA::ProcessRequest`, the not-logged-in branch; docs/issues/live-rig.md section 19, S1 |
+| LS2 | The server's forced-logout notice (0x41) carries a 32-bit field where the game reads a 16-bit one; no visible effect. **Fixed in the fork (6a909ed):** the notice is now 12 bytes | Ran (rig) | `NotifyForcedLogout::Serialize`; docs/issues/live-rig.md section 19, S2 |
+| LS3 | The server checks for timed-out connections before it reads its sockets, so after the host computer has slept for more than 120 seconds every client is dropped with its waiting data unread. **Fixed in the fork (6a909ed):** sockets are read first, and time during which the server itself did not run is not counted | Ran (rig) | `LobbyServer::Run`, `CheckSocketProblem`; docs/issues/live-rig.md section 19, S3 |
+| LS4 | Smaller points: the game list's first column shows the game id plus one (not understood; may not be a server matter); the second array of the game-list reply is empty with nothing visibly missing | Ran (rig) | docs/issues/live-rig.md section 19, S4–S5 |
+
 ## What "source" the disc contains
 
 | ID | Claim | Kind | Evidence |
@@ -514,7 +529,3 @@ script.
 | S3 | The engine survives only as traces in the ELF: 8 engine file names (lump.cc, sound.cc, particle.cc, object.cc, mem.cc, game.cc, engine.cc, core.cc), 403 class names, 191 built-in names | Observed | strings_all.txt, rtti_classes.txt, table 0x403370 |
 | S4 | Two third-party components are identifiable by file name and assertion text: SOE UdpLibrary (5 .cpp, 2 .h) and LibTomCrypt AES (aes.c, aes_tab.c) | Observed | strings_all.txt |
 | S5 | STRIFE.GOB carries a stray build file reading "include /usr/local/bin/makeworld.mak" | Observed | STRIFE.GOB/makefile.uni |
-| S6 | After the server drops a connection, the game reconnects by itself and carries on with the game-list request under its old session id without logging in again; the server answers with an empty list, then sends a forced-logout notice and closes, and the game repeats this about every 650 frames until the player dismisses the lost-connection notice | Ran (rig) | `RequestMatchGame_RTA::ProcessRequest`, the not-logged-in branch; docs/issues/live-rig.md section 19, S1 |
-| S7 | The server's forced-logout notice (0x41) carries a 32-bit field where the game reads a 16-bit one; no visible effect | Ran (rig) | `NotifyForcedLogout::Serialize`; docs/issues/live-rig.md section 19, S2 |
-| S8 | The server checks for timed-out connections before it reads its sockets, so after the host computer has slept for more than 120 seconds every client is dropped with its waiting data unread | Ran (rig) | `LobbyServer::Run`, `CheckSocketProblem`; docs/issues/live-rig.md section 19, S3 |
-| S9 | Smaller points: the game list's first column shows the game id plus one (not understood; may not be a server matter); the second array of the game-list reply is empty with nothing visibly missing | Ran (rig) | docs/issues/live-rig.md section 19, S4–S5 |
