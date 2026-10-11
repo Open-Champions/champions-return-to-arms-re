@@ -11,8 +11,25 @@ is entered twice per frame, once for the copy; the copy is re-made every 31 tick
 (`g_ghostRebaseFrame` stepped 394, 425, 456 … 611, `Player_clone` entered each time); and
 the copy carries object flag 0x20000 (flag word 0x00024060) while the real player carries
 0x200000 (0x00204060). Nothing else here was re-checked there: what the copy can change in
-shared state needs a second machine to show, and the only test patches run on a live game are the two for K1 and K2 (FINDINGS V10, V11).
+shared state needs a second machine to show, and the test patches run on a live game so far are the five marked confirmed in the patch file (FINDINGS V10, V11, V16, V19, V22).
 Each statement is **Observed** (read at the address given), **Inferred** or **Unknown**.
+
+**Result of 2026-10-10, two linked machines, real characters** (`docs/issues/live-rig.md`
+section 9; `FINDINGS.md` rows V17–V19, G25, SB1). A second machine has shown it, and the
+inventory of section 3 was not complete: **the copy reaches shared state by two routes
+this audit did not have.** (1) `Creature_onTouch` 0x11a418 sets a creature's "touched by a
+player" bit for any toucher with the player flag, the copy included; a summoned pet was
+flagged on its owner's machine only, acted on it, and the pair went out of sync (G25,
+V18). (2) `SpellCyclone_ctor` writes two fields of an animation clip header that every
+character of the class shares, before its copy test; two same-class players who both
+used the spin diverged in 6 of 6 pairs (SB1, V19). Both are in section 3.5, with the
+statements of sections 1, 3.1 and 3.2 that they overturn marked in place; both have test
+patches now (section 5.6), and both patches have been run on the linked pair and remove
+their divergence (V19, V22). A third trace of the copy was found in the same runs and has
+no patch: the unwritten bytes of an item made as loot differ between the machines, and do
+not with the copy switched off (V20, V23; section 3.5). The confirmed leak of section 4,
+the alive list, was not seen in any of those runs. The machines are two
+copies of one Play! emulator build — not a PlayStation 2, not PCSX2.
 
 New names used here are in `symbols/copyfix.tsv`. Proposed ledger rows and corrections to
 earlier documents are at the end; `FINDINGS.md` and `patches/` were not edited.
@@ -37,7 +54,11 @@ earlier documents are at the end; `FINDINGS.md` and `patches/` were not edited.
   (**P3**, optional).
 - The virtual calls `Player_run` makes on the copy were followed: animation step,
   move/collide, all 50 "can use" functions, the two copy-castable skill casts, the damage
-  function. None changes shared state (section 3.2).
+  function. None changes shared state (section 3.2). **Overturned in two places** by
+  execution and by the running game (section 3.5): the Cyclone cast does change shared
+  state — its constructor writes a shared clip header before the copy test — and a
+  creature's touch handler is reached with the copy as the toucher, through
+  `Creature_moveBy`, which this audit had judged the copy could not reach.
 - G9/G10 (PvP mana gift and orb from the copy's death) are not reachable for the copy
   (section 4.4). The "old and new copies overlap" part of D21 is not what the code does
   (section 2).
@@ -88,7 +109,7 @@ object. "Local" = per-machine presentation that no simulation code reads.
 | Handle nodes, one object-pool block per transient spell, the copy's own grid link | Allocator state. Node *addresses* differ per machine already; block addresses do not, apart from the first-copy case — the copy is one 0x590 block in the 3000-byte class, re-made by free-then-allocate with nothing between, so it keeps its block, and the two smaller size classes are lockstep state (`docs/issues/stale-pointers.md` 5.1, ST1; the earlier version said node and block addresses both differ). No code orders by address (docs/runtime.md P7, docs/objects.md O8). A transient spell is freed before the cast helper returns, which puts the same block back on top of its free list | `handle_link`; 0x1a4598 → 0x1a45d0 |
 | Six object creations, one record store, one target notification and one script hook on the *older ability paths* | Leak **if reachable** — needs an ability record whose name is not the `Skill` marker (D16, Unknown) | section 5.4 |
 | Scavenger spawn at the end of `Creature_run` | Needs creature state 0x14 at +0x232 and creature flag bit 63. Inferred not reachable for a player: `Player` has its own state setter (slot 27, 0x1b5d68) and bit 63 is set only in the charm branch of `Creature_run`. The second reason is wrong (`docs/issues/field-claims-audit.md` 4.2, row 35): bit 63 is the "active" bit — `Creature_updateActive` sets it at 0x10c204 and clears it at 0x10c210, eight constructors set it, `Creature_stepAnim` tests it — so players have it set. The conclusion stands for another reason: the spawn (`Creature_spawnScavenger` 0x112660, which wants bit 63 set and bit 62 clear) also needs AI state 0x14 at +0x232, and in the Player table the only stores to +0x232 are `Creature_loadState` and the clone's copy | 0x1125e0 |
-| Scripted walk (`Creature_moveToDest` 0x1a5604: path requests, and `Creature_moveBy` 0x113c48 calling slot 6 of touched objects with no test for the copy at 0x114220) | Not reachable for the copy: needs inert bits at +0x231, which only cutscene stand-ins get; the freeze callback skips players. (Corrected by docs/issues/arena-entry.md: "skips players" holds for `creatures_freezeAll` only. With cutscene header flag 8 the real players get inert bit 4, and a copy cloned from them inherits it. The row's conclusion stands for a different reason: the walk also needs action state +0x58c = 1, 0x1a55ac–0x1a5604) | docs/engine.md (stand-ins made with `Player_ctor`); `creature_unfreezeOne` note (Inferred) |
+| Scripted walk (`Creature_moveToDest` 0x1a5604: path requests, and `Creature_moveBy` 0x113c48 calling slot 6 of touched objects with no test for the copy at 0x114220) | Not reachable for the copy: needs inert bits at +0x231, which only cutscene stand-ins get; the freeze callback skips players. (Corrected by docs/issues/arena-entry.md: "skips players" holds for `creatures_freezeAll` only. With cutscene header flag 8 the real players get inert bit 4, and a copy cloned from them inherits it. The row's conclusion stands for a different reason: the walk also needs action state +0x58c = 1, 0x1a55ac–0x1a5604.) **Overturned for `Creature_moveBy` by the running game** (FINDINGS V22, section 3.5): on the owner's machine a pet's touch handler was entered 164 times with the copy as the toucher, every time from the call at 0x114220. So the copy does go through `Creature_moveBy` in ordinary play; by which caller was not captured — the scripted walk of this row may still be unreachable, but it is not the only way in | docs/engine.md (stand-ins made with `Player_ctor`); `creature_unfreezeOne` note (Inferred); `docs/issues/live-rig.md` 10.1 (Ran) |
 
 ### 3.2 Virtual calls made on or by the copy
 
@@ -99,13 +120,13 @@ object. "Local" = per-machine presentation that no simulation code reads.
 | Call | Target for the copy | Result |
 |---|---|---|
 | Animation step: `Player_animStep` 0x1b9520 → `anim_advance` 0x16d748 | writes the copy's own layer stack and root motion; `g_animCueThrottle` 0x7b8fe0 (sound cap per rendered frame); the decode cache | No shared state. The cache holds accumulated root motion only for layers with flags 0x4800, and `animcache_alloc` never evicts those (0x16e3a0–0x16e3a8); every other entry is a pure cache |
-| Move: `Player_move` 0x1b4020 → `creature_moveSimple` 0x1186d8 → `obj_moveWithCollision` 0x14d4b8 | moves and pushes only the mover; relinks the copy's grid node | The other object's slot 6 is skipped for the copy (0x14d9ac–0x14d9b0); the copy's own slot 6 is `Player_onTouch`, guarded. Other objects' moves cannot see the copy (box query skips 0x20000) |
-| Knock-back: `Creature_applyKnockback` 0x115eb8 | returns at once for any player in a net game | so `Creature_moveBy` is not used for players online |
+| Move: `Player_move` 0x1b4020 → `creature_moveSimple` 0x1186d8 → `obj_moveWithCollision` 0x14d4b8 | moves and pushes only the mover; relinks the copy's grid node | The other object's slot 6 is skipped for the copy (0x14d9ac–0x14d9b0); the copy's own slot 6 is `Player_onTouch`, guarded. Other objects' moves cannot see the copy (box query skips 0x20000). The guard is sound for this function — the register it tests holds the mover's flag word on every path into it, reloaded after the slide at 0x14d938 / 0x14d984 — but it is not the whole story: on the running game a creature's slot 6 **was** entered with the copy as the toucher (section 3.5, G25) — through `Creature_moveBy`, whose slot-6 call at 0x114220 has no such guard (V22) |
+| Knock-back: `Creature_applyKnockback` 0x115eb8 | returns at once for any player in a net game | so `Creature_moveBy` is not used for players online — **wrong as a conclusion** (the early return was not re-read): the running game entered `Creature_moveBy` with the copy as the mover (V22, section 3.5) |
 | Deadly water in `Player_move` (0x1b4490), timed damage in `Creature_run`, area damage of the older paths (`world_damageInRadius` 0x161270, called 0x1a6950 and 0x1ac400), melee | all go through `damage_apply` 0x1e8230 with the copy as attacker | `damage_apply` returns 0 before reading or drawing anything when the attacker has flag 0x20000 (0x1e828c–0x1e82a4). `Player_meleeHit` 0x1b6a98 also returns at its first test. So nothing the copy does can damage anything, itself included |
 | Take damage (slot 2) on the copy | never called: nothing obtains the copy as a victim (box queries, run walks and handle iterators skip it; none of the 17 `net_objOrGhost` sites passes its result to a damage call) | Inferred from the sites read |
 | Skill "can use" (slot 1), called 0x1a4358, 0x1a5d54, 0x1a7088, 0x1ab618 | 50 distinct functions serve the 101 ids | Scanned every one for calls and stores: they call only spell-list lookups, `player_getSkillRank`, box and name queries, trigonometry, `terrain_height`, and `text_lookup` + `hud_showMessage` (local HUD text). No store outside the stack frame. For the copy the "already active" tests always pass because its spell list is empty; that only affects the copy |
 | Skill rank (Player slot 39), mana cost (Skill slot 5) | getters | — |
-| Skill cast (slot 2) for the copy: only ids 41, 84 (Cyclone) and 51 (AncestralCall) (flag bit 0; docs/skills.md, not re-read) | `SkillCyclone_cast` 0x2d161c, `SkillAncestralCall_cast` 0x2e0750 → constructors 0x2d17c8, 0x2e09b4 | Each tests the owner's 0x20000 (0x2d19cc, 0x2e0b80) and for the copy skips the voice line, target gathering, handle links and object creation. Before the test Cyclone links the spell's light and starts an animation on the owner; AncestralCall plays a sound and starts an animation. The spell is destroyed at 0x1a45d0; destructors 0x3cd964 and 0x3ce95c only unlink |
+| Skill cast (slot 2) for the copy: only ids 41, 84 (Cyclone) and 51 (AncestralCall) (flag bit 0; docs/skills.md, not re-read) | `SkillCyclone_cast` 0x2d161c, `SkillAncestralCall_cast` 0x2e0750 → constructors 0x2d17c8, 0x2e09b4 | Each tests the owner's 0x20000 (0x2d19cc, 0x2e0b80) and for the copy skips the voice line, target gathering, handle links and object creation. Before the test Cyclone links the spell's light and starts an animation on the owner; AncestralCall plays a sound and starts an animation. The spell is destroyed at 0x1a45d0; destructors 0x3cd964 and 0x3ce95c only unlink. **Missed here:** before that test `SpellCyclone_ctor` also stores into event slot 0 of the spin clip's header (0x2d1978 the mask byte at clip +0x18, 0x2d197c the time at clip +0x14), and the header is not the copy's — every object playing the clip shares it, and destroying the spell does not undo the stores (section 3.5, SB1) |
 | Spells of the copy (Creature slot 17 from `Player_updateCast`) | the copy's spell list is empty (G2) and the cast helper never attaches one | nothing runs |
 | Turn toward a point (slot 26), "is enemy" (slot 20) | called on the copy itself | own state / pure |
 | Vehicle seat pose in state 0xd (0x1a5efc) | `Vehicle_getRiderPose` 0x2088a0, a getter | closes the open question in player.md |
@@ -154,6 +175,65 @@ is slowed (slow amount +0x2fc, or Drowsy). Whether that reaches a position is **
   size classes (32 blocks of 3000 bytes). Each machine holds one, so counts match except
   when one machine has no copy (pause menu, section 2). D21 otherwise stands.
 - Drawing (D12, D13) was not revisited.
+
+### 3.5 Two routes this inventory did not have (2026-10-10)
+
+Both were found by running two linked machines with real characters
+(`docs/issues/live-rig.md` section 9), not by reading; the code was read afterwards.
+
+**A creature touched by the copy (FINDINGS G25; Ran as V18).**
+
+| Step | What | Where | Kind |
+|---|---|---|---|
+| Setter | `Creature_onTouch`, virtual slot 6 of every creature: when the toucher's object flags have 0x40 (is a player) it sets bit 59 of the creature flag word at +0xa8. It does not look at 0x20000, and the copy carries 0x40 as well (flag word 0x00024060) | 0x11a418–0x11a43c | Observed (re-read for this note) |
+| Reader | `Creature_run`: for a creature in state 0 or 5 whose charm timer +0x312 is non-zero, a set bit calls set-state 1 (unless the state is 0x14), and the bit is cleared. Other creatures keep the bit, unread | 0x113b48–0x113bc0 | Observed (re-read for this note) |
+| Who that is | a creature with a running charm timer in state 0 or 5: a player's summoned pet, which stands beside its owner — and so beside the owner's copy — or a charmed monster | — | Inferred from the reader's two tests |
+| Seen | pair 406 of the arena runs: the pet's flag word differed from tick 7481 (bit set on the owner's machine only), its animation from 7523, its position from 7524; at 7541 the pet attacked on one machine and turned on the other, seven shared-seed draws apart; out-of-sync flag at 7543. Repeats exactly, with and without the K1 / K2 / LAG-1 sections | `docs/issues/live-rig.md` 9.2 | Ran |
+| Control | the same pair with "Arena diagnostic: no prediction copy" (0x13b21c): in step past tick 7961 | same | Ran |
+| Caller | `Creature_moveBy` 0x113c48: its call of the touched object's slot 6 at 0x114220 has no test for the copy. A break point on the handler logging the toucher's flags: on the owner's machine 3,271 entries, 164 of them with 0x20000, every one returning to 0x114228, the first in tick 7132; on the other machine 3,107 entries and none. Not the path guarded at 0x14d9b0 in `obj_moveWithCollision`, which is sound for its own function. In another pair, without a pet beside the copy, no entry had the flag | 0x114220; `docs/issues/live-rig.md` 10.1; FINDINGS V22 | Ran; the call site Observed |
+| Fix | with "creatures ignore being touched by the prediction copy" on both machines the pair stays in step to the end and wins the fight | same | Ran |
+| Not known | which caller takes the copy into `Creature_moveBy` — 3.1 and 3.2 had ruled the two known ones out; and which classes' slot 6 the call at 0x114220 can reach besides `Creature_onTouch` (in the runs logged, the player and gold touch handlers were never entered with the copy; container, damager and fire handlers were not entered at all) | `docs/issues/live-rig.md` 10.1, 10.4 | Unknown |
+
+Class in the terms of 3.1: **Leak**. The write lands on another object, is not one of the
+four things the prediction loop restores, and stays until that creature's own run reads
+it. What it costs: one set-state on one machine, from which a pet's whole behaviour
+departs.
+
+**A predicted spin cast writes a shared animation resource (FINDINGS SB1; executed as
+X21; Ran as V19).** Cyclone (ids 41, 84) is one of the two copy-castable skills.
+`SpellCyclone_ctor` 0x2d17c8 stores the mask (1) and the time (0.05 s) of event slot 0
+into the header of `cyclone1.anm` at 0x2d1978 and 0x2d197c, and only then tests the
+owner's 0x20000 (0x2d19c4–0x2d19d0). The clip is what `res_find` returns for the class's
+animation table, so the real player, its copy and every other player of the same class
+get the same header. `SpellCyclone_run` counts the spin down by moving that slot's time
+on in the header each time the event fires (reader `anim_advance` 0x16d874, 0x16d898). On
+the owner's machine the copy's cast resets the slot some frames before the real cast
+does; a real spin of another same-class player that is running at that moment then ends
+on a different frame on that machine only. Executed in isolation: a copy's cast in
+between moved the end of another character's spin in 9 of 9 cases. On the running game:
+two players of one class, both using the spin, diverged in **6 of 6** pairs, first at
+ticks 786–1161, positions first in five of them, the out-of-sync flag 10–55 ticks later.
+
+Class in the terms of 3.1: **Leak**, into a resource rather than an object — which is why
+a scan for stores to objects and records did not show it. It needs two players with the
+same character model.
+
+**A third trace, not understood: unwritten bytes of loot items (FINDINGS V20, V23, I1;
+Ran).** In two of twelve arena fights an item made as loot carried, in the value field of
+an unused modifier slot (+0x2e), 0 on one machine and 0x3f80 on the other; both machines
+later picked it up in the same tick and their bags differed in those two bytes from then
+on. The difference is there when the item is made (`item_parseDescriptor` 0x1069b8 called
+from `loot_spawnNamedItem` 0x100ba0), and of 15,952 parser calls made identically on both
+machines 3,868 found different bytes already in that part of the output record. With "no
+prediction copy" the pair shows no shared difference in 13,970 ticks, so the copy is
+behind it — in the sense that without it the leftovers agree. But clearing the output
+record before the parser fills it does not remove the difference, so the value comes
+from some other uninitialised place that the copy's activity leaves different; which one
+is **Unknown**. No reader of the two bytes was found (the shop's duplicate test compares
+the definition, the flags and the word at +0x20; the character checksum does not read
+the bags) and neither pair ever raised the out-of-sync flag. Class in the terms of 3.1:
+the row "Allocator state" comes closest — memory contents that differ per machine because
+the copy ran — except that here they end up inside a shared record. Silent so far.
 
 ## 4. The confirmed leak: the alive list
 
@@ -369,6 +449,30 @@ patch=1,EE,001B3504,word,0C0C85C0
 The routine words are listed before the call word so that the call never points at
 unpatched code.
 
+### 5.6 Test patches for the two routes of section 3.5
+
+Both are in the patch file already (read there, not edited by this document); neither is
+a proposal of this document.
+
+| Patch-file section | What it changes | Status | Every player? |
+|---|---|---|---|
+| "predicted spin cast leaves the shared animation alone" | twelve words: the two stores at 0x2d1978 / 0x2d197c are replaced by a jump to ten words placed in the unused `Cyclops_dropClub` (0x257ae4–0x257b0b), which test the caster's 0x20000 and make the two stores only for a real caster. Words and the "what could go wrong" list: `docs/issues/live-rig.md` 9.4 | **Ran** on the linked pair: 6 of 6 pairs diverged without it, 0 of 6 over 36,761 ticks with it (V19). Not run in the arena, with spin id 84, in PCSX2 or on a console | each machine with a same-class partner; a machine without it still shifts the other player's spin locally |
+| "creatures ignore being touched by the prediction copy" | `Creature_onTouch` rewritten in place (nine words, 0x11a41c–0x11a440): the creature is flagged only when the toucher has 0x40 and not 0x20000 | **Executed** in the function-level interpreter (shipped and patched handler, six cases — G25) and **Ran** on the linked pair: the pet pair that diverged stays in step to the end with it (V22; run with the spin section on as well, which that pair does not use). Not run in PCSX2 or on a console | each machine protects itself; use on every machine |
+
+The first shares `Cyclops_dropClub` with the pose-cache section of the patch file and
+sits after its twelve words. If either unused function turns out to be called, the game
+runs patch code in its place.
+
+The diagnostic that removes both routes at once, together with every other effect of the
+copy, is X1 of `docs/issues/arena-entry.md` ("no prediction copy"); it was used twice, as
+the control for the pet and for the item bytes in section 3.5.
+
+With both sections on, together with K1, K2 and LAG-1, the twelve real-character arena
+pairs gave 2 divergent pairs of 12 — the item bytes, silent — and none that reached the
+out-of-sync flag, against 3 without the two sections and 7 with nothing on
+(`docs/issues/live-rig.md` 10.3, FINDINGS V21). There is no patch for the item bytes: the
+one tried, clearing the parser's output record, changed nothing.
+
 ## 6. The existing test patch (0x1B3504 → nop)
 
 It removes the rebuild for the copy *and* for real players, so a real death is only noticed
@@ -406,6 +510,9 @@ exactly as shipped.
 | 4 | BloodLust private generator (3.3) | Every BloodLust cast | Contained in particles |
 | 5 | Older ability paths (5.4) | Only with a non-`Skill` ability record | Yes if reachable |
 | 6 | Kind-3 target notification, arrow-shot script hook, record +0x4a5c | Latent | No handler, no script, no reader |
+| added 2026-10-10 | A predicted spin cast writes the shared clip header (3.5, SB1) | Every spin cast by a player who has a same-class partner in the game | **Yes — Ran**: 6 of 6 pairs out of sync within 100–500 ticks of both players spinning. For such a party this ranks first |
+| added 2026-10-10 | A creature flagged as touched by the copy (3.5, G25) | Whenever the copy touches a creature with a running charm timer in state 0 or 5 — in practice a caster's pet, which stays next to its owner | **Yes — Ran**: 1 of 12 arena fights with a pet-owning character; gone with its patch (V22). For a party with a pet this ranks above the alive list, which was not seen in those fights at all |
+| added 2026-10-10 | Unwritten bytes of a loot item differ while a copy exists (3.5, V20, V23) | 2 of 12 arena fights | The bags differ in two bytes; no reader found, no out-of-sync flag in any run. Ranked last of the three until a reader is found |
 
 What a two-machine test should try first: the alive list, and first as a *measurement*, not
 as a hunt for the out-of-sync message.
@@ -437,6 +544,14 @@ Proposed rows (prediction section):
 | G21 | Removing the rebuild at 0x1b3504 for real players lets a same-tick party heal give a corpse hit points, after which save-point revival skips it | Inferred from Observed code | 0x2e9158 on; 0x28d564–0x28d590 |
 | G22 | `SpellCyclone_run` starts its animation twice on the real player on every machine but the owner's | Observed; effect on the simulation Unknown | 0x2d1b04, 0x2d1d1c–0x2d1d38, 0x16ceb0 |
 | G23 | All 17 `net_objOrGhost` call sites are classified; apart from G22 and the contained BloodLust case none can change shared state | Observed | section 3.3 |
+
+Added to the ledger since, from the running game rather than from this document: **G25**
+(`Creature_onTouch` flags a creature touched by the copy) and **SB1** (`SpellCyclone_ctor`
+writes a shared clip header before its copy test), with V18, V19 and V22 as their live
+rows; V20 and V23 are the item bytes.
+G16 and G23 above stand as worded — neither route damages the copy or goes through
+`net_objOrGhost` — but "none can change shared state" must no longer be read as a
+statement about the copy as a whole.
 
 Corrections to earlier documents:
 
@@ -476,3 +591,14 @@ Corrections to earlier documents:
   construction, with or without the copy; they were not followed.
 - Drawing of the copy and the status counters (D12–D16), exhaustion of the handle-node
   pool, and the grid and run-list presence of the copy were not re-examined.
+- How the copy comes to run `Creature_moveBy` (3.5): the call that hands
+  `Creature_onTouch` the copy is at 0x114220, but its caller in the copy's path was not
+  captured. And the other slot-6 handlers that call can reach: it hands the mover to
+  whatever it touched, so in principle any class (Inferred). `Gold_onTouch` and
+  `OniBall_onTouch` test the toucher's 0x20000 themselves (`docs/issues/kill-loot-xp.md`
+  section 4, `docs/monsters.md` 7); the rest were not listed.
+- Where the differing item value comes from (3.5, V23), and whether anything can read it.
+- Shared resources other than the spin clip that a constructor or run function reached by
+  the copy writes: animation clip headers set by the other copy-castable cast
+  (AncestralCall) and by anything `Player_run` starts for the copy were not scanned. The
+  audit of section 3 looked at objects, records and globals.

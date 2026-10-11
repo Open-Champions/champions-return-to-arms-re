@@ -13,7 +13,7 @@ document. Since then the interpreter has been executed opcode by opcode in
 **executed**), so have all 190 built-in handlers (`docs/spec/script-builtins.md`, FINDINGS
 X19; its section 9 corrections are folded into 1.7 and the built-in tables, marked
 "Executed"), and the project has a live game — the Play! emulator, which is not a PlayStation 2 and not PCSX2
-— whose runs are listed in `FINDINGS.md`, "Run on the live game" (rows V1–V13) and `docs/issues/live-rig.md`.
+— whose runs are listed in `FINDINGS.md`, "Run on the live game" (rows V1–V23) and `docs/issues/live-rig.md`.
 Those runs loaded the levels `hub` and `strife`; nothing about a script was logged or
 compared in them. No test patch has been run on a live game.
 Claims are **Observed** unless marked otherwise.

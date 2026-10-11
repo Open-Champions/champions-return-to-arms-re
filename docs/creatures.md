@@ -6,7 +6,7 @@ Everything here was read from the executable; nothing was run when it was writte
 then several functions of this range have been executed one at a time in `tools/ee_emu.py`
 (`docs/issues/dynamic-tests.md`, `docs/spec/combat.md`, `docs/spec/animation.md`; marked
 "executed" where folded in), and the project has a live game in the Play! emulator — not a
-PlayStation 2 and not PCSX2 (`FINDINGS.md`, "Run on the live game" (rows V1–V13) and `docs/issues/live-rig.md`).
+PlayStation 2 and not PCSX2 (`FINDINGS.md`, "Run on the live game" (rows V1–V23) and `docs/issues/live-rig.md`).
 Of this document it touched only names and call counts (`Creature_run` and `Player_clone`
 were seen entered; the prediction copy is re-cloned every 31 ticks); no statement about
 creature behaviour here was re-checked on the live game, and no test patch has been run on
@@ -54,7 +54,7 @@ slots; the Creature bodies are listed here. Small bodies were emitted inline at
 | 2 | 0x116638 | take damage (amount, attacker, flags) | Observed |
 | 3 | 0x11a5f0 | trigger: named creature runs its `dialogScript` | Observed |
 | 4, 5 | stubs | run, draw (overridden by every real class) | Observed |
-| 6 | 0x11a418 | touched: a player touching sets cflag bit 59. The only test is the toucher's player flag 0x40, which the prediction copy carries too, so a creature touched by a machine's own copy is flagged on that machine only (FINDINGS G25; seen on the running game on a summoned pet, V18) | Observed; the divergence Ran |
+| 6 | 0x11a418 | touched: a player touching sets cflag bit 59. The only test is the toucher's player flag 0x40, which the prediction copy carries too, so a creature touched by a machine's own copy is flagged on that machine only (FINDINGS G25; seen on the running game on a summoned pet, V18; the calls with the copy as toucher come from `Creature_moveBy`, 0x114220, V22) | Observed; the divergence Ran |
 | 7 | 0x11a260 | path search finished (found) | Observed |
 | 8 / 9 | 0x116920 / 0x116780 | load / save state in a level record | Observed |
 | 10, 11, 12 | empty | hit terrain / touched objects / nearby event | Observed |

@@ -35,6 +35,14 @@ import compare  # noqa: E402
 PNACH = os.path.join(ROOT, "patches", "SLUS-20973_4028A55F.pnach")
 KNOWN = {"K1": "Net test: use button works with the spell selector open",
          "K2": "Net test: potions always leave the bag directly"}
+# --patches FIXES: every fix section confirmed or proposed so far (the lag ones other than
+# LAG-1 and the sections for menus the developer start cannot reach are left out)
+FIXES = ["Net test: " + name for name in (
+    "use button works with the spell selector open", "potions always leave the bag directly",
+    "stats page does not rewrite stored weapon damage", "menu lockout never drops player damage",
+    "menu lockout never blocks weapon swap and use", "closing a notice box does not run the pending script",
+    "equalise at once (LAG-1)", "predicted spin cast leaves the shared animation alone",
+    "creatures ignore being touched by the prediction copy", "script return keeps the saved stack pointer")]
 
 
 def option(argv, name, default=None):
@@ -118,7 +126,7 @@ def main(argv):
         "prelude": open(prelude).read().splitlines() if prelude else [],
         "keep": "--keep" in argv,
     }
-    base = [] if patches == "none" else [KNOWN.get(p, p) for p in patches.split(";")]
+    base = [] if patches == "none" else list(FIXES) if patches == "FIXES" else [KNOWN.get(p, p) for p in patches.split(";")]
     levels = option(argv, "--levels", "strife").split(",")
     mixes = option(argv, "--groups", "move,rstick,fight,potion,use,dpad,select,start,l3r3").split(";")
     buses = option(argv, "--bus", "none").split(";")

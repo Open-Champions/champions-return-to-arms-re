@@ -12,7 +12,7 @@ file on the disc, `<LEVEL>.TEX`, which the world refers to by cell and offset.
 
 Everything was read from the executable `SLUS_209.73` and from level files unpacked from the
 disc; nothing was run. That still describes this document: the project's live game
-(the Play! emulator, which is not a PlayStation 2 and not PCSX2; `FINDINGS.md`, "Run on the live game" (rows V1–V13) and `docs/issues/live-rig.md`)
+(the Play! emulator, which is not a PlayStation 2 and not PCSX2; `FINDINGS.md`, "Run on the live game" (rows V1–V23) and `docs/issues/live-rig.md`)
 loads levels, but it runs with no video and no statement about the format was compared
 with it. The 119 `.world` files on the disc (one per `.GOB` that has a level)
 were all parsed. Each statement is marked:

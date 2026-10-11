@@ -112,7 +112,7 @@
 002d161c	SkillCyclone_cast	Skill slot 2: (level, caster, pos*, angle) creates the spell/projectile; returns the Spell or 0
 002d16a0	SkillCyclone_describeRank	Skill slot 4: builds the per-rank description text
 002d1794	SkillCyclone_manaCost	Skill slot 5: mana cost for a level (float)
-002d17c8	SpellCyclone_ctor	sets the SpellCyclone virtual table; callers 2d161c
+002d17c8	SpellCyclone_ctor	sets the SpellCyclone virtual table; callers 2d161c. Writes event slot 0 of the shared spin clip header (mask byte clip+0x18 at 0x2d1978, time clip+0x14 at 0x2d197c) BEFORE its prediction-copy test at 0x2d19c4-0x2d19d0, so a predicted cast changes a resource every character of the class shares - FINDINGS SB1, executed (X21) and seen live (V19: 6 of 6 same-class pairs out of sync); test patch "predicted spin cast leaves the shared animation alone"
 002d1a94	SpellCyclone_run	Spell slot 2: (pos*, angle) once per simulated frame from Creature slot 17
 002d272c	cyclone_staticInit	static initialiser, attributed by position to the SkillCyclone source file; registers particle type descriptors through 0x18f3d0
 002d2830	cyclone_staticInitThunk	compiler-generated global constructor entry; calls the function above with (1, 0xffff)
@@ -128,7 +128,7 @@
 002d3164	harmTouch_staticInitThunk	compiler-generated global constructor entry; calls the function above with (1, 0xffff)
 002d3184	FireStormFlare_ctor	sets the FireStormFlare virtual table; callers 2d470c
 002d3290	FireStormFlare_draw	GameObject slot 5
-002d4048	FireStorm_ctor2	sets the FireStorm virtual table; callers 25f988
+002d4048	FireStorm_ctor2	sets the FireStorm virtual table; callers 25f988. (object, owner, position, radius, damage, duration in frames, flare period; flare scale) and variant word 1: straight flares, no looping sound (executed, docs/spec/skills-01-34-executed.md section 3)
 002d41f8	FireStorm_ctor	sets the FireStorm virtual table; callers 25e17c,298d18,2d4f7c
 002d4480	FireStorm_initCommon	body shared by both FireStorm constructors: light effect, looping sound
 002d4664	FireStorm_dtor	GameObject slot 1

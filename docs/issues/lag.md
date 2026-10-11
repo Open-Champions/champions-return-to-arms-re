@@ -11,13 +11,36 @@ machine in a net game in the Play! emulator — not a PlayStation 2 and not PCSX
 rules of sections 2–7 and the model's delay figures have not: they need two machines, the
 rig has one, and its network calls return at once, so pacing there is not a console's.
 Parts of sections 2.2 and 2.4 have been executed function by function in `tools/ee_emu.py`
-(`docs/spec/net-wire.md`). No test patch has been run on a live game. Statements are marked
+(`docs/spec/net-wire.md`). No test patch has been run on a live game.
+
+**Out of date since 2026-10-10** (`docs/issues/live-rig.md` 8.4; `FINDINGS.md` row V16,
+and L11, L12): the rig has two machines now, the outage case of section 5.2 and LAG-1
+have been **measured** on them, and both came out as the model says. A pair in `strife`
+at bus delay 2 each way, movement input, nothing crossing the bus for 30 frames; the lead
+(`g_localInputFrame − g_netFrame`), averaged over 5-second stretches after the outage,
+the same on both machines:
+
+| | before | 0–5 s | 5–10 s | 10–15 s | 15–20 s | 20–25 s | 25–30 s | 30–35 s | peak |
+|---|---|---|---|---|---|---|---|---|---|
+| no patch | 6 | 34 | 32 | 27 | 23 | 18 | 13 | 8 | 34 |
+| LAG-1 on both machines | 6 | 11 | 9 | 6 | 6 | 6 | 6 | 6 | 11 |
+
+The model's figures for the same event are a peak of 35 lasting 28–30 s (section 5.2) and,
+with equalise duration 1, a peak of about 12 gone in about 10 s (sections 1 and 6.2). The pair
+stayed in sync in both runs. So of this document's numbers the half-second outage and its
+LAG-1 row are **Ran**; the steady-link figures, the freeze and slow-peer cases, the stall
+counts and LAG-1b…LAG-5 are still Model only. Limits: two copies of one Play! build on
+one host, whose frames take the same number of emulated cycles — an outage is imposed on
+the bus between them, a slow machine cannot be imitated — and the developer LAN start.
+LAG-2 was run once for another purpose and showed only that it moves when input is
+sampled (`live-rig.md` 8.1). Statements are marked
 
 - **Observed** — read in the executable (SLUS_209.73 v2.00) at the address given;
 - **Inferred** — follows from observations;
 - **Model** — a number printed by `tools/pacing_sim.py`. The model is built from the
   Observed rules plus the assumptions listed in section 4. It has not been compared with a
-  running game, so a Model statement is a prediction, never a measurement;
+  running game, so a Model statement is a prediction, never a measurement (one case has
+  been compared since and agreed: the outage with and without LAG-1, above);
 - **Unknown** — not established.
 
 New names are in `symbols/lag.tsv`. `FINDINGS.md`, `patches/` and the other documents were
@@ -323,6 +346,12 @@ one-second outage (`run --loss 1 --outage 20:1 --duration 70 --series --bucket 5
 | mean lead, original | 6.0 | 28.3 | 25.3 | 20.5 | 15.7 | 10.8 | 6.2 | 7.3 |
 | mean lead, equalise duration 1 | 5.8 | 11.1 | 7.8 | 7.0 | 6.7 | 6.0 | 6.4 | 6.0 |
 
+**Ran** (`docs/issues/live-rig.md` 8.4, FINDINGS V16), for a half-second outage on two
+linked machines at bus delay 2: lead 6 before; 34, 32, 27, 23, 18, 13, 8 in the seven
+5-second stretches after it, unpatched (peak 34, about 35 s to drain); 11, 9, 6, 6, 6, 6,
+6 with LAG-1 on both (peak 11, normal within 10 s). The shape and the sizes are the
+model's; the live drain is a few seconds slower than the 28 s of the table above.
+
 ### 5.3 One slow machine, original constants
 
 Machine B is the slow one; the table is about the other machine, A.
@@ -589,7 +618,11 @@ three frames means changing the step rule in both tables on every machine.
 
 ## 9. Patch proposals
 
-**All untested.** Words are 32-bit, as PCSX2 `word` patches take them; each original was
+**All untested** — when written. LAG-1 has since been run on both of two linked Play!
+emulator instances and did what its row says for an outage (peak 34 → 11, about 35 s →
+under 10 s; `docs/issues/live-rig.md` 8.4); the sync of the pair was not affected. Its
+other rows (freeze, slow peer, stall counts) and LAG-1b…LAG-5 are untested, and nothing
+has been run in PCSX2 or on a console. Words are 32-bit, as PCSX2 `word` patches take them; each original was
 read from the executable. One change per row. "Model" gives before → after from sections
 5–6. None of LAG-1…LAG-5 has to match between players (section 7).
 
@@ -660,6 +693,10 @@ For `FINDINGS.md`, section "Lag". Not applied.
 | L11 | Predicted input delay with the original constants: about 5 frames each for two players at 30 ms one way, 9 for three, 13 for four (send cycle 2, 4, 6 calls); 35 frames after any stall of half a second, lasting about 15 s after a one-sided event and 30 s after an outage; 36 frames for as long as a peer runs 10 % slow | Inferred (unvalidated model) | `tools/pacing_sim.py cases --brief`; docs/issues/lag.md section 5 |
 | L12 | Predicted effect of the test patches: trim window 12 multiplies steady stalls by 3–6; cap 14 slows three- and four-player games and two-player games beyond about 60 ms; equalise duration 1 bounds the delay after every kind of stall at about 12 frames without slowing any modelled case | Inferred (unvalidated model) | docs/issues/lag.md section 6 |
 
+L11 and L12 are no longer wholly unvalidated: the ledger rows now carry the live outage
+measurement (V16) — 6 → 34 and about 35 s unpatched, 6 → 11 and under 10 s with LAG-1.
+Their other figures are still the model's.
+
 ## 11. How to check the model on two running copies
 
 Follow `docs/VALIDATION.md` for the setup. The lead is `g_localInputFrame` (0x4027a4) minus
@@ -682,7 +719,13 @@ second otherwise.
 The last row has been done another way — not by filming, but by reading the position per
 frame on the live rig — and came out as the model says: no dead frames offline, four in a
 net game (**Ran**, `docs/issues/live-rig.md` 4c, 4d). The rows above it need two machines
-and have not been run.
+and have not been run. Two of them have been run since on two linked instances (**Ran**,
+`live-rig.md` 8.4), with the outage half a second long instead of one: "block all
+traffic" gave leads of 34 on both at once, then about one frame less per second for 35 s;
+"with LAG-1" gave a peak of 11 and normal within 10 s. Both inside the model's ranges.
+The first two rows were not reported as such (the pair ran at a lead of 6 at bus delay 2
+before the outage); the pause, slow-emulator and four-machine rows cannot be run on that
+rig or were not.
 
 If the first two rows are off by more than a frame or two, the model is wrong in its
 basics and nothing in section 6 should be trusted.
@@ -690,7 +733,8 @@ basics and nothing in section 6 should be trusted.
 ## 12. Not done, not known
 
 - Nothing was run (true of everything but the stick response of section 8, which has
-  since been seen on the live rig). The model's link (jitter and loss shapes) and its timing of a call are
+  since been seen on the live rig, and the outage case with and without LAG-1, measured
+  on two linked instances). The model's link (jitter and loss shapes) and its timing of a call are
   assumptions; real consoles and emulators may differ, for example in how many packets
   survive a freeze.
 - Which frames `gfx_endFrame` counts as late was taken from `docs/mainloop.md`, not

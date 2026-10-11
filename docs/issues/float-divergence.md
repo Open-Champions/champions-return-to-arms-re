@@ -8,14 +8,50 @@ can any of that explain the Drundar arena (`DRUNARE`) going out of sync.
 
 Everything about the game was read from the executable; nothing was run. Since then the
 game has been run in the Play! emulator (`docs/issues/live-rig.md`; `FINDINGS.md`, "Run on
-the live game", rows V1–V13) — a third arithmetic implementation, neither a PlayStation 2
+the live game", rows V1–V20) — a third arithmetic implementation, neither a PlayStation 2
 nor PCSX2. Its movement distances agree with the documented constants to seven digits,
 which says nothing about the last-bit questions of this document: how faithful Play! is to
 the console in floating point was not checked, and no two machines or settings have been
-compared. Claims are
+compared. (The last clause is no longer true: two linked instances were compared with one
+of them forced to a different rounding mode — the next paragraph.) Claims are
 **Observed** (read at the address given), **Inferred** or **Unknown**. Everything about how
 PCSX2 behaves is from general knowledge of that project, **not** from reading its source or
 running it here, and is marked as such. The patches at the end are **untested**.
+
+**Result of 2026-10-10, two linked machines with a float mismatch between them**
+(`docs/issues/live-rig.md` 8.3; `FINDINGS.md` row V15; **Ran**). One of two linked Play!
+instances had its host rounding mode forced to nearest, up or down for every
+single-precision add, subtract, multiply, divide and square root, the other left at the
+emulator's round-toward-zero — the kind of difference this document considers between a
+console and an emulator setting. 28 pairs:
+
+| Level, input | First difference | Game's out-of-sync flag |
+|---|---|---|
+| `strife`, no input (6 pairs) | none in 3,149 ticks | never |
+| `strife`, movement only (6) | position, tick 697 — the first tick anybody moves | 31–85 ticks later |
+| `strife`, movement and fighting (6) | position, tick 697–698 | 8–101 ticks later |
+| `drunare`, standing at the entrance (3) | raw bits of hit points and mana from tick 701 (nearest, up); nothing with down | never in 3,240 ticks |
+| `drunare`, walk to the trigger (7, with and without a fight after) | position, tick 759 — the first step | 7 or 113 ticks later |
+
+Three statements of this document are settled by it. (1) "Different rounding settings:
+immediate" and "within a second of stick use" (the table of sites, the stick decoder
+section) are **confirmed**: the raw position differs on the very tick a player first
+moves, and the flag follows in a tenth of a second to two seconds, once the difference
+crosses a whole unit — the hash's blindness below one unit, as "The sync hash" says.
+With no input nothing shared differs for thousands of ticks; the hit-point bits that do
+differ in `drunare` (the regeneration sum) are not hashed. (2) "Then the game would
+normally drift in every level" is confirmed, and more sharply than written: it does not
+drift toward the arena, it fails **in the first level**, and no mismatched pair was still
+in sync when the arena's cutscene or fight began. (3) So "the arena, being long and full
+of seed draws gated by float compares, is where it would show" is **not** what a
+machine-wide mismatch does, and such a mismatch cannot be why players see the desync at
+the arena in particular. A float cause of an arena-only desync would have to be confined
+to operations whose results differ only for unusual operands — the divides by zero and
+the square root of this document's site lists; that was not tested, since it needs the
+difference injected into those operations alone. Limits: one emulator, a forced rounding
+mode rather than a real console or PCSX2 setting, and Play!'s own arithmetic is not the
+console's. The arena desyncs since reproduced on two *identical* machines
+(`docs/issues/arena-desync.md`, head) have other causes.
 
 The scan is `tools/fp_hazards.py`; names added are in `symbols/fp.tsv` (the other math
 library names used below are in `symbols/movement.tsv`).
@@ -26,7 +62,7 @@ library names used below are in `symbols/movement.tsv`).
 |---|---|---|
 | Is there a divide, root or conversion in the arena fight whose *special-case* result (divide by zero, root of a negative, out-of-range conversion, overflow) reaches shared state? | No. Three places really do divide by zero during the fight; one result is thrown away, the others go to a light record. A fourth group needs a status effect nobody has shown to be reachable | Observed per site; completeness Inferred |
 | Is the simulation exposed to *ordinary* rounding? | Completely. About 26,000 add, subtract and multiply instructions and 368 divides have no protection, and four of the quickest routes from a last-bit difference to shared state are the stick decoder, the cast origin (which goes through a VU0 microprogram), the monsters' turn damping and Tagar's Insects' arrival test | Observed (the code); Inferred (the consequence) |
-| Can floats explain "the arena, every time, for one pair of players"? | Only if the two machines do not compute identically at all (a console against an emulator, two emulator builds, or different rounding or clamping settings). Then the game would normally drift in every level, and the arena, being long and full of seed draws gated by float compares, is where it would show. Two PCSX2 copies of the same version with the same settings on x86 hosts should agree on every site found | Inferred; the PCSX2 part is general knowledge |
+| Can floats explain "the arena, every time, for one pair of players"? | Only if the two machines do not compute identically at all (a console against an emulator, two emulator builds, or different rounding or clamping settings). Then the game would normally drift in every level, and the arena, being long and full of seed draws gated by float compares, is where it would show. Two PCSX2 copies of the same version with the same settings on x86 hosts should agree on every site found. **Ran (V15):** with a forced rounding mismatch the session ends within two seconds of the first step in the first level, so a machine-wide mismatch does not "show at the arena" — it never gets there | Inferred; the PCSX2 part is general knowledge; the mismatch case Ran |
 | Is the sync hash's float-to-integer conversion well defined? | Yes: `cvt.w.s`, which always truncates on this CPU. It also makes the hash blind to anything smaller than one world unit | Observed (instruction); Inferred (emulator) |
 
 ## The machine, as far as this executable uses it
@@ -237,7 +273,9 @@ console's multiplier) gives:
   give the same `damp`, 0x3f0d8369, once the subtraction is truncated.
 
 **Inferred:** two machines whose add or multiply rounding differs disagree about player
-input almost at once, in any level. `docs/netcode.md` says of this decoder that "all
+input almost at once, in any level. (**Ran**, V15: positions differed on the first tick of
+movement in every mismatched pair. The run does not separate the decoder from the
+movement arithmetic behind it — both were under the changed rounding.) `docs/netcode.md` says of this decoder that "all
 machines agree"; that holds only between machines with identical float arithmetic.
 
 ### The pose goes through VU0, and the cast origin comes from the pose
@@ -366,12 +404,17 @@ Reading the table:
   agrees. **Inferred.** Floats do not explain a desync between two such machines.
 - **(a) against (b) or (c):** not one of the special cases above matters, but the ordinary
   rounding of every result does. A console and an emulator should be expected to drift
-  apart in any level; how quickly is **Unknown** and can only be measured.
+  apart in any level; how quickly is **Unknown** and can only be measured. (Measured since
+  for one kind of difference — a rounding mode that differs for every operation, on two
+  linked emulator instances: 7–113 ticks from the first movement to the game's
+  out-of-sync flag, V15. A console against an emulator differs less uniformly; that pair
+  was not measured.)
 - **(b) against (c):** by the description above, "none" and "extra" give the same bits as
   "normal" at every site read here as long as both use chop rounding, because nothing on
   these paths overflows a division or loads an out-of-range bit pattern. "Full" must be
   assumed different. **Inferred.**
-- **Different rounding settings:** immediate, through the stick decoder.
+- **Different rounding settings:** immediate, through the stick decoder. **Ran** (V15):
+  out of sync 7–113 ticks after the first movement, in both levels tried.
 - **x86 against ARM:** this installation is x86-64 code under translation; the basic
   operations should translate exactly, the corner cases where translators differ (NaN
   propagation, denormals) are not produced on the paths read. **Unknown** until two such
@@ -404,7 +447,9 @@ least identical: EE/FPU rounding, EE/FPU division rounding and EE/FPU clamping, 
 and VU1 rounding and clamping, the FPU and VU game fixes, and the EE and VU recompilers
 (on). A real console against an emulator, or an ARM-native build against an x86 one, has
 not been shown to stay in sync and should be expected to drift. If the arena still goes
-out of sync with all of that equal, the cause is not floating point.
+out of sync with all of that equal, the cause is not floating point. (And if a session
+survives the first minute of the first level, a machine-wide float mismatch is not what
+breaks it later at the arena either — V15.)
 
 ### Patch proposals (all untested)
 
@@ -431,7 +476,7 @@ light of radius zero and goes nowhere else) or for the insects (the quotient is 
 | new | Skeleton poses are computed by a VU0 microprogram, and `Player_castSkill` places a cast at a point taken from the pose | Observed | 0x16f594, 0x16f5f4, 0x3e5c40; 0x1a42b8 |
 | new | `sqrt.s` of the constant 0x3e4ccccc is evaluated at run time in four functions; its correctly rounded value is 0x3ee4f92d or 0x3ee4f92e depending on the rounding rule | Observed (sites), computed (values) | 0x10bbc8, 0x10bcc4, 0x10bdcc, 0x13cd24 |
 | new | The sync hash converts player coordinates with `cvt.w.s`, which truncates and has no mode | Observed | 0x13afe0, 0x13afec, 0x13aff8 |
-| D25 (add) | Floating-point special cases are not a cause of the arena desync either; a float cause requires machines that do not compute identically, and would not be specific to the arena | Inferred | this document |
+| D25 (add) | Floating-point special cases are not a cause of the arena desync either; a float cause requires machines that do not compute identically, and would not be specific to the arena | Inferred; "not specific to the arena" Ran for a machine-wide rounding mismatch (V15) | this document; `docs/issues/live-rig.md` 8.3 |
 
 ## Notes on earlier documents
 
@@ -460,6 +505,9 @@ light of radius zero and goes nowhere else) or for the insects (the quotient is 
 - The melee divides at 0x1aaf94 and 0x1aafac were not followed to their use.
 - The attack-rating argument of `damage_apply` was resolved at 37 of its 103 call sites
   only (30 constants, 7 creature statistics).
+- A float difference confined to particular operations (the divides by zero, the square
+  root of 0x3e4ccccc): the live comparison changed every operation at once
+  (`docs/issues/live-rig.md` 8.3, 8.6).
 - How the console itself rounds any particular operation: everything said about it is from
   descriptions, and one measurement (the root of 0x3e4ccccc, or the stick decoder's output
   for a known input) would replace a good deal of inference.

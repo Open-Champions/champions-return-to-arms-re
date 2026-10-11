@@ -14,7 +14,7 @@ console or in a console emulator. No patch below has been tested on a running ga
 Both sentences still describe this document. What has changed is the first paragraph: the
 project now has a full emulator that needs no BIOS file, and what was run on it — the live
 game in the Play! emulator, not a PlayStation 2 and not PCSX2 — is in `FINDINGS.md`, "Run
-on the live game" (rows V1–V13) and `docs/issues/live-rig.md`. Of the checks below it
+on the live game" (rows V1–V23) and `docs/issues/live-rig.md`. Of the checks below it
 bears out b9 (the stick ceilings: a settled speed of 0.9426 of full toward 255 in a net
 game, a pad value of 0.98851 offline) and the L6 figures on a running net game; no test
 patch has been run there.

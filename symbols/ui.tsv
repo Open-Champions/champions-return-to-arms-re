@@ -15,7 +15,7 @@
 001c3f08	inventory_selectIdleAnim	(slot, animState, flag) picks the inventory idle animation from the race lump and weapon class
 001c41d8	inventory_isEquipped	(recordOffset, item) 1 when the item address is in one of the record's equipped-item pointers
 001c42a0	inventory_resetPanels	zeroes the 4 panel structs at 0x4f4040 (0x74 bytes each)
-001c4310	inventory_dropItem	handler body of inventory msg 0 (slot, index, bag, count, ...): removes the item and creates the dropped object; also used by shop sell
+001c4310	inventory_dropItem	handler body of inventory msg 0 (slot, index, bag, column, row, panel, mode): removes the item and, for mode 0, creates the dropped object; mode 1 = sold (shop sell), 2 and up = silent (used gem, the K2 potion message). The earlier note had "count" for the fourth argument; column and row are the sender's grid cell, used only for this machine's screen copies (executed, docs/spec/game-messages.md section 2)
 001c4948	inventory_checkEquipAllowed	(slot, item) -> reason code 0..9, 0 = may equip: the full requirement test and the only reader of the required... modifiers. 1 class (rules by weapon subtype, damage bits and cloth from record +0x50; requiredclass holds class index + 1), 2 level (+0x58), 3..6 strength / intelligence / dexterity / stamina, 7 and 8 skill ranks 0x3c / 0x3d, 9 item flag bit 41; every test is made and a later one replaces an earlier reason. Used before equipping and when drawing the grid (docs/spec/items.md section 6, executed; was: Inferred class/race test)
 001c4e88	inventory_refreshPanelModel	(slot, panel, flag) restarts the stand animation for a panel
 001c4fa8	inventory_shareQuestItems	(slot) called by save_load: drops quest-flagged items from other players and copies this player's to them
@@ -62,11 +62,11 @@
 001cd208	itemList_draw	(slot, mode, panel, panelStruct) draws one player's item panel
 001cd988	itemList_input	(slot, mode, panel, panelStruct) reads the raw pad of a local slot and sends equip/unequip/drop/buy/sell/combine messages
 001cec68	itemList_analogCursor	moves the free cursor of a panel with the raw local analogue stick
-001ceeb8	inventory_combineGems	handler of inventory msg 8: workshop combine of gems into an item
+001ceeb8	inventory_combineGems	handler of inventory msg 8 (slot, bag, descriptor address, item address): workshop combine of gems into an item
 001d0ab8	shop_close	clears shop flags, removes the task; net game sends close msg, offline clears g_paused
 001d0b90	workshop_input	combine screen input for a local slot; sends inventory msg 8
 001d10b0	shop_staticInitDestroy
-001d1240	shop_buy	(slot, stockRecord) takes gold (price x 0.6, 0.45 or 1.0) and gives the item; runs on every machine from shop msg 0
+001d1240	shop_buy	(slot, stockRecord) takes gold (price x 0.6, 0.45 or 1.0) and gives the item; runs on every machine from shop msg 0. The gold is stored in the delay slot of the inventory_giveItem call and the call's result is ignored (0x1d1308): with a full bag or a held single-copy item the price is paid and nothing arrives (executed, FINDINGS M3)
 001d1330	shopmsg_sendSell	unreferenced copy of the shop msg 1 sender (itemList_input builds it inline)
 001d13a0	shop_registerMsgHandler	registers shop_onMsg, channel id at 0x86a6a0
 001d13c8	ShopDaemon_ctor	no caller and no pointer to it: the class is never created
@@ -81,8 +81,8 @@
 001d2eb8	stats_open	unreferenced; would set g_paused with no network test
 001d3150	player_giveExp	(slot, amount) level-ups add stat and skill points, refill hp and mana; called from simulation and from the hud_run cheat
 001d34ac	player_rebuildAbilities	recomputes max hp/mana and the ability records from skill ranks
-001d386c	quest_add	script addQuest: appends (title, text) to every player's quest list (record +0x41d0, count +0x43d0)
-001d3968	quest_remove	script removeQuest
+001d386c	quest_add	script addQuest: appends (title, text) to the quest lists of the players in slot order (record +0x41d0, count +0x43d0) and STOPS at the first player whose list is full (8) or already has the title - later players get nothing (0x1d38c4, 0x1d38e8; executed, FINDINGS N2). The earlier note said "every player's quest list"
+001d3968	quest_remove	script removeQuest: every matching entry is overwritten with a placeholder, but only the entries behind the last match move up and the count drops by one (executed, FINDINGS N3)
 001d3adc	quest_clearAll
 001d3b78	skills_drawDescription
 001d436c	skills_nextRankCost	Inferred: cost from the class skill table 0x4ef530 and the current rank
@@ -99,7 +99,7 @@
 001d8b78	weather_staticInitDestroy
 001d8c80	weather_staticInit
 # ---- HUD (translation unit 0x1d8ca0-0x1e08f0) ----
-001d8ca0	hud_onMsg	handler of the game channel (0x86ac40): 0 quick-slot, 1 assign spell, 2 menu state, 3 recall, 4 player left, 5 savepoint, 6 disconnect request, 7 new world, 8 start exit countdown, 9/10 checksums, 11 load level, 12 medal ack, 13 quick-cast warning
+001d8ca0	hud_onMsg	handler of the game channel (0x86ac40): 0 quick-slot, 1 assign spell, 2 menu state, 3 recall, 4 player left, 5 savepoint, 6 disconnect request, 7 new world, 8 start exit countdown, 9/10 checksums, 11 load level (offline only; the name is read past the 4-byte message), 12 medal ack, 13 quick-cast: warning text for an ability of kind 1, otherwise queues the cast at object +0x488
 001d9250	hudmsg_sendNewWorld	sends game msg 7 (level name)
 001d92a0	hud_showMessage	(text, frames, slot or -1, force) one-line HUD message; only on the machine that owns slot
 001d9330	hud_clearMessage
@@ -122,7 +122,7 @@
 001dd240	help_addTask
 001dd270	hud_spellSelect	quick-cast selector drawn and run from hud draw; sends game msgs 0, 1, 13
 001de06c	hudmsg_sendQuickSlot	game msg 0 (slot, a, b)
-001de0a4	hudmsg_sendQuickCastWarn	game msg 13 (slot, a)
+001de0a4	hudmsg_sendQuickCastWarn	game msg 13 (slot, ability index)
 001de0dc	hudmsg_sendMenuState	game msg 2 (slot, state, flag); only in a net game
 001de138	hudmsg_sendRecall	game msg 3 (slot)
 001de16c	hudmsg_sendPlayerLeft	game msg 4 (slot)
@@ -130,10 +130,10 @@
 001de1e0	hudmsg_sendDisconnectRequest	game msg 6 (first local slot)
 001de25c	hudmsg_sendExitCountdown	game msg 8
 001de28c	hud_onQuickSlot	handler of game msg 0: writes record +0x4a84/+0x4a85
-001de340	hud_onQuickCastWarn	handler of game msg 13
+001de340	hud_onQuickCastWarn	handler of game msg 13 - more than a warning: with no cast queued (object +0x488 == 0) an ability of kind 1 (+0x25) shows the quickcast_warn text to the owner; any other kind stores the ability record at object +0x488 (the queued cast) when the action state +0x58c is 2 (0x1de39c-0x1de3d8); no null-object test (executed, docs/spec/game-messages.md section 3)
 001de3ec	hudmsg_sendAssignSpell	game msg 1 (slot, b, 32-bit, 64-bit)
 001de430	hudmsg_sendChecksumStart	game msg 9, host only
-001de598	hudmsg_sendLoadLevel	game msg 11 (name)
+001de598	hudmsg_sendLoadLevel	game msg 11: sent with length 4 (type and three zero bytes) - the name is copied into the buffer behind them but is not part of the message (0x1de5c0-0x1de5d4); only caller is the offline branch of the level-warp list (0x18dd70; msg 7 is the net form). FINDINGS M5
 001de5ec	hudmsg_sendMedalAck	game msg 12
 001de61c	hud_onAssignSpell	handler of game msg 1: writes the ability records at record +0x4440
 001df248	hud_drawMessageBox	(title, body, ...) centred box used by HUD, front end and memory-card screens

@@ -8,7 +8,7 @@ the re-run over every class and the triage of what it reports.
 
 Everything was read from the executable (SLUS_209.73, v2.00); **nothing was run, and the
 patches at the end are untested.** (Still so. What the project has since run on a live
-game, in the Play! emulator, is in `FINDINGS.md`, "Run on the live game" (rows V1–V13) and `docs/issues/live-rig.md`;
+game, in the Play! emulator, is in `FINDINGS.md`, "Run on the live game" (rows V1–V23) and `docs/issues/live-rig.md`;
 none of it re-checks a finding here, and no test patch has been run there.) Statements are **Observed** (read at the address given)
 unless marked **Inferred** or **Unknown**. New names are in `symbols/rescan.tsv`.
 `FINDINGS.md` and `patches/` were not edited.

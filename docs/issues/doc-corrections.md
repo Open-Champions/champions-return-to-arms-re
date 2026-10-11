@@ -7,10 +7,12 @@ column of `symbols/*.tsv`. Later passes (`docs/data-tables.md`, `docs/issues/vta
 applied them, and then compared the documents with each other.
 
 A second pass, made after more reports had come in, is recorded at the end of this file
-under "Second pass", a third under "Third pass", a fourth under "Fourth pass" and a fifth
-under "Fifth pass"; sections 1 to 7 describe the first pass only. The fourth pass is the
-first that applies results from the running game; the fifth is the first that applies
-results from two linked instances of it.
+under "Second pass", a third under "Third pass", a fourth under "Fourth pass", a fifth
+under "Fifth pass" and a sixth under "Sixth pass"; sections 1 to 7 describe the first pass
+only. The fourth pass is the first that applies results from the running game; the fifth
+is the first that applies results from two linked instances of it; the sixth is the first
+in which a result from two linked instances overturns one from an earlier run (the arena
+with real characters against the arena with placeholder ones).
 
 Everything below was checked in the executable (SLUS_209.73, v2.00) before it was written
 into a document: the decompile, `tools/dis.py`, `tools/gxref.py`, the data words, and the
@@ -1359,4 +1361,386 @@ python3 -I -B tools/dis.py SLUS_209.73 14b088:14b0b0              # findFreeSpot
 python3 -I -B tools/dis.py SLUS_209.73 322a84:322a98              # gameSetObjectVis registered with priority 0
 python3 -I -B tools/dis.py SLUS_209.73 14f6c8:14f720              # world_createObject: fourth argument untouched
 python3 -I -B tools/ps2elf.py SLUS_209.73 xref 14f3a8             # world_flushDeleteList: nothing; ptrs likewise
+```
+
+## Sixth pass
+
+Scope: the corrections reported after the fifth pass by six reference models that ran the
+original code — `docs/spec/arena-monsters.md` section 14, `docs/spec/game-messages.md`
+section 12, `docs/spec/script-builtins.md` section 9, and the three executed skill
+companions `docs/spec/skills-01-34-executed.md` section 3,
+`docs/spec/skills-35-68-executed.md` section 5 and `docs/spec/skills-69-101-executed.md`
+("Corrections to …") — and what `docs/issues/live-rig.md` sections 8 and 9 (phases 3 and
+4: unattended fuzzing, a float mismatch, a measured outage, and the arena with real
+characters) change in eight older documents. While the pass was being made, section 10 of
+that document (phase 5) and ledger rows V21–V23 arrived; they name the caller of the
+touch handler, confirm its patch, trace the item bytes to loot creation and to the
+prediction copy, and give the result with every published section on. They were folded
+in wherever they overtook a sentence this pass had just written ("not known", "not yet
+run", "not traced") and nowhere else. The eight documents: `docs/issues/arena-desync.md`,
+`docs/issues/arena-entry.md`, `docs/issues/prediction-copy.md`,
+`docs/issues/float-divergence.md`, `docs/issues/lag.md`, `docs/issues/kill-loot-xp.md`,
+`docs/issues/draw-sim-leaks.md` and `docs/online-setup.md`.
+
+Method as before: the smallest change, in place, keeping a clause that says what the
+earlier version said; an overturned paragraph of an issue document is kept and followed by
+what overturned it, and each of `arena-desync.md` and `arena-entry.md` has a dated part
+"What the live rig showed" in front of its earlier result. A corrected statement that
+rests on a run of the original instructions says **executed**; one that rests on the
+running game says **Ran**. Nothing was run in this pass.
+
+The last column of X2 says which kind of evidence stands behind the corrected statement:
+
+- **running game** — a **Ran** result of `docs/issues/live-rig.md` sections 8, 9 and 10: two
+  instances of the game in the Play! emulator, joined through the developer LAN start and
+  compared tick by tick, in section 9 with level-25 characters that have skills. Two
+  copies of one emulator build on one host — not a PlayStation 2, not PCSX2. Where such a
+  result contradicts an earlier reading or an earlier run with placeholder characters, it
+  wins;
+- **code** — the address given was read in this pass (`tools/dis.py`, a word read from
+  the executable, or `decomp/all/<entry>.c` where the row says "decompile"); a
+  qualification says how far the check went. Where the reporting document ran the
+  original instructions in `tools/ee_emu.py` the corrected text says **executed**, and
+  that result wins over the earlier reading;
+- **report** — taken from the reporting document without an independent reading.
+
+`FINDINGS.md`, `names.tsv`, `patches/`, `tools/`, the top-level documents of other
+contributors and `docs/issues/live-rig.md` were not edited; what they need is in X5. The
+six reporting documents were not edited either. `patches/` was read for the two sections
+named in rows 80 and 81.
+
+### X2. Corrections
+
+| # | Document, section | Said | Says now | Evidence | Checked |
+|---|---|---|---|---|---|
+| 1 | `monsters.md`, Horsemen, states 6, 7, 10, 0xb | "on the hit event a full-damage arc test …, on event bit 1 a second test with a third of the damage", for all four states | the two are alternatives on one tick: only state 10's clip has a bit-1 event and it has no bit-0 event, so state 10 is the one-third hit (flags 0x100001, no descriptor) and nothing else; 6, 7 and 0xb are two, three and three full hits (**executed**) | `spec/arena-monsters.md` 3.3, 14 item 2 | report |
+| 2 | `monsters.md`, Horsemen, state 5 | "two draws … choose between states 10, 7 and 6"; "otherwise one own-generator draw in 60 per frame returns to chase" | first draw odd **and** blocked → 10, otherwise a second draw, odd → 6, even → 7; the return to chase also needs no ally near the target (**executed**) | decompile of 0x27236c, case 5: the `& 1` test with `Creature_isBlockedByTarget`, the remainder by 60, then `Creature_countAlliesNearTarget` | code (decompile) |
+| 3 | `monsters.md`, 1.4, state 1 | "walk back / wander" in a table whose state 0 leaves "to 3 with a target" | leaving state 1 is per class: the skeleton and Zek go to 3, a knight goes to **0** and chases a tick later (**executed**) | decompile of 0x27236c, case 1: the seen branch ends in set-state 0 | code (decompile) |
+| 4 | `monsters.md`, Horsemen (new bullet); `symbols/monsters.tsv` `Horsemen_setState` 0x272f4c | (not stated anywhere) | a mounted knight returns for every request below 0x19, death 0x14 included, after the filter and the clearing of flag 0x200; a request without a case runs a nested set-state 3 and then stores the **requested** number; `Skelight_setState` and `Zek_setState` store 0 (**executed**) | decompile of 0x272f4c: the mount-handle test in front of the switch; the default case and the store behind it | code (decompile) for `Horsemen`; the other two classes from the report |
+| 5 | `monsters.md`, 1.3 step 1 | "optional: update the embedded weapon helper", as the first step | first only in `Horsemen_run`; `Zek_run` does it after the activity test, `Skelight_run` after it and through slot 22 with an item model (**executed**) | `spec/arena-monsters.md` 3.3, 4.3, 5.3 | report |
+| 6 | `monsters.md`, Skelight, and the layout row +0xf4 | "+0xf4 counts the swing down"; "Skelight: attack frames left"; states as in the shared table of 1.4 | state 0x13 leaves to 0; set-state 0x12 is ignored; states 2, 4, 7–0xf, 0x11, 0x15, 0x16 have no case in the run and a request for them becomes state 0; +0xf4 is the constant 1, taken off once the clip has stopped (**executed**) | `spec/arena-monsters.md` 4.3, 4.4, 14 item 7 | report |
+| 7 | `monsters-2.md`, Zek, the ground wave | "0.43 % of the angle to the reverse bearing is subtracted each frame" (**Inferred**) | the size is right; the direction is away from the point where that angle is zero, toward the enemy's bearing, and there the heading alternates by ±140 units a tick (**executed**) | `spec/arena-monsters.md` 5.4 | report |
+| 8 | `monsters-2.md`, Zek | (not stated); the tail "runs in any state" | set-state 5 synchronises its clip to the frame counter; an inactive Zek runs nothing after the activity test, the ground wave included; an unknown set-state stores 0 and starts no clip (**executed**) | `spec/arena-monsters.md` 5.3–5.6 | report |
+| 9 | `creatures.md`, "Predicates on the target"; `symbols/creatures.tsv` `Creature_isTargetCharging` 0x118f90; `monsters.md`, Horsemen state 3; `monsters-2.md` (the one place that defined it) | "target faces this creature and moves faster than 100 units/s"; "faces me and moves faster than 100/s" | as coded: faster than 100, and the target's facing within ±0x3ffe of the bearing from the creature **to** the target — a fast target facing away (**executed**) | 0x118fb0–0x118fc4 (the bearing: target minus creature), 0x118fd4–0x118fe4 (compared with the target's own facing), 0x119004–0x119018 (100.0) | code |
+| 10 | `spec/skills-01-34.md`, section 11, and its row in the status table | `Creature_setStats(1.33, 1.2, 1.2, 1.0, …, rollHp = 1)`; the draws inside "not traced here"; "the `Skelight` class … not read" | the fifth factor is the experience factor (0.0 in one level, else 1.0); one own draw; the cast and the summon chain confirmed as written (**executed**) | `spec/arena-monsters.md` 4.2, 14 item 9 | report |
+| 11 | `spec/skills-69-101.md`, section 87, cast step 1 | "Level through slot 14 (no-op)" | the level stored in the spell is slot 14's result; a no-op only because the base slot returns its argument (**executed**) | `spec/arena-monsters.md` 7.1, 14 item 10 | report |
+| 12 | `issues/arena-desync.md`, "The level in facts" and the row "Second deferred counter"; `issues/arena-entry.md`, head part | "counts 300 un-paused frames"; "at 250 it plays a sound"; "about 875 frames after the avatar dies" | `getScaledTime(n)` is n − 1 for every count reached, so: the 302nd counted frame after the fourth knight's death tick; count 252; 877 frames after the avatar's | 0x14412c–0x144154: count × 60.0 × 0x3c888888, truncated — the multiplier is just under 1/60 | code (the formula); the three counts from the report, whose script part was read, not executed |
+| 13 | `issues/arena-desync.md`, "The level in facts", the summon table's "Decision" row and the head part; `issues/arena-entry.md`, head part | four `UndeadKnight1`…`4` — neither document said "three" or "mounted", the brief of the reporting work did; "knight 3" used without saying it is a variant number | made explicit: four knights on foot, the mounted form is not in the level; "knight 3" is variant 3, object type `UndeadKnight4`; `UndeadKnight3` casts the insects (**executed**) | `spec/arena-monsters.md` section 1, 14 item 1; FINDINGS D3, D22 | report |
+| 14 | `ui.md`, game messages 11 and 7; `netcode.md`, message 3 / 11; `symbols/ui.tsv` `hudmsg_sendLoadLevel` 0x1de598, `hud_onMsg` 0x1d8ca0 | "pending level ← string"; "three filler bytes, level name" | the message is sent with length 4: the name is copied behind the header but left out of the length, so it is not on the wire; its only caller is the offline branch of the level-warp list, message 7 being the net form (**executed**) | 0x1de5ac–0x1de5d4 (type 0xb, three zero bytes, name copied to +4, length = 4); 0x18dd4c–0x18dd70 (the network-mode branch between the two senders) | code |
+| 15 | `ui.md`, game message 13; `netcode.md`, message 3 / 13; `symbols/ui.tsv` `hud_onQuickCastWarn` 0x1de340, `hudmsg_sendQuickCastWarn` 0x1de0a4, `hud_onMsg` | "HUD text"; "quick-cast warning" | a warning only for an ability of kind 1; any other kind is queued — object +0x488 = the ability record — when the action state is 2 and no cast is queued (**executed**) | 0x1de388–0x1de38c (+0x488 already set: return), 0x1de394–0x1de3ac (kind 1: the text), 0x1de3d0–0x1de3d8 (state 2: the store) | code |
+| 16 | `ui.md`, inventory message 0 and shop message 1; `symbols/ui.tsv` `inventory_dropItem` 0x1c4310 | "slot, u16, item index u32, u16, bag, 2 bytes"; "(slot, index, bag, count, ...)" | slot, column, index, row, bag, panel, mode; mode 0 ground, 1 sold, 2 and up silent (**executed**) | `spec/game-messages.md` section 2 | report |
+| 17 | `ui.md`, inventory message 8; `symbols/ui.tsv` `inventory_combineGems` 0x1ceeb8 | "slot, 3 × u32" | bag, descriptor address, item address (**executed**) | `spec/game-messages.md` section 2 | report |
+| 18 | `ui.md`, "Shop", buying; `symbols/ui.tsv` `shop_buy` 0x1d1240 | "charges price × 0.6 … if the player has the gold, and calls `inventory_giveItem`" | the gold is taken whether or not the item is received: the store is in the delay slot of the call and the result is not tested; a bag holds 64 (**executed**) | 0x1d1300–0x1d1310 | code |
+| 19 | `ui.md`, shop message 0 | "address of a record in the sender's stock table" | adds: the last record of the three lists that is the same item as the chosen grid copy; nothing is sent when it matches none (**executed**) | `spec/game-messages.md` section 4 | report |
+| 20 | `issues/kill-loot-xp.md`, section 4 | "bag for the item's category already holds 63 items → refuse" | kept, with: that is the pick-up's own limit; `inventory_giveItem` fills a bag to 64 (**executed**) | `spec/game-messages.md` 5.1, section 12 | report |
+| 21 | `issues/kill-loot-xp.md`, K2 verdict and the end of its **Ran** paragraph; `issues/draw-sim-leaks.md`, "K1, K2" | the message "removes one of whatever sits in the first cell of its potion list"; the last byte "*Inferred* out of range"; "not followed further" | settled: the cell is that of the panel numbered like the owner's slot; the wording holds for slot 0; for slots 1–3 in a net game the grid was never built and the message does not touch the potions; the panel byte −1 addresses memory in front of the grids (**executed**) | `spec/game-messages.md` section 10; FINDINGS M1, K2 | report |
+| 22 | `player.md`, layout row +0x43f0 | slots 0, 2, 3, 5, 6, 8, 14, 15 | adds slot 1 (the second weapon; executed in equip) and slot 7 (a single category-2 slot; Observed in unequip) | `spec/game-messages.md` 5.3, section 12 | report |
+| 23 | `script.md`, 1.7; `symbols/script.tsv` `scr_getAddr` 0x1414a8 | "bounds check, result ignored by callers" | adds the consequence: on a refusal the pointer is not written, so the handler converts the string its stack slot still points at; a shipped script relies on it (**executed**) | 0x1414d8–0x1414dc (the refusal returns 5 with no store), 0x1414e0–0x1414f0 (the store is on the other path only); FINDINGS N1 | code |
+| 24 | `script.md`, `addQuest`; `symbols/ui.tsv` `quest_add` 0x1d386c | "appends the pair to every player's quest list unless already present (max 8)" | the loop over the players ends at the first player whose list is full or has the title (**executed**) | 0x1d38c0–0x1d38c4 and 0x1d38e8 (both tests branch into the function's epilogue at 0x1d3940 / 0x1d3944, not to the next player) | code |
+| 25 | `script.md`, `removeQuest`; `symbols/ui.tsv` `quest_remove` 0x1d3968 | "Wraps `quest_remove`" | every match becomes a placeholder; only the entries behind the last match move up; the count drops by one (**executed**) | `spec/script-builtins.md` section 9; FINDINGS N3 | report |
+| 26 | `script.md`, `playGotItemSound` | "switches to the other of 0/1 if that player has no hit points, and calls `player_voice(slot, 9)`" | the stored active player is clamped, but the voice is played for the unclamped slot and the hit-point test indexes with it (**executed**) | `spec/script-builtins.md` section 9; FINDINGS N8 | report |
+| 27 | `script.md`, `runMedalSuccess` | "Draws the result box and the reward lines directly" | adds: lines in the order 3, 2, 1; every text drawn twice (a measuring pass first); offline also returns 0 while the card is busy (**executed**) | `spec/script-builtins.md` section 9 | report |
+| 28 | `script.md`, `lightEffect` | "ref pos[3], i unused, i x8" | the second argument is used (× 0.01) and ten values follow: twelve arguments (**executed**) | `spec/script-builtins.md` section 9 | report |
+| 29 | `script.md`, `sound` | `sound_playSample(1.0, 1.0, 0, res, 0)` | three floats (1.0, 1.0, 0.0) and two integers (**executed**) | `spec/script-builtins.md` section 9 | report |
+| 30 | `script.md`, `clearAllSkills` | "three fields at +0x4a80.." cleared | +0x4a80 and +0x4a84 are cleared; the byte +0x4a85 is set to 1 (**executed**) | 0x145950–0x145960 (a register stored to +0x4a85, zero to the other two) | code (the three stores); the value 1 from the report |
+| 31 | `script.md`, `getManaUsed`, `getHealthUsed`, `helpMessageActive` | "Returns the 16-bit counter"; "Returns `g_helpMessageOpen`" | sign-extended loads (**executed**) | 0x142204, 0x142210 (`lh`); 0x1433c4 (`lb`) | code |
+| 32 | `script.md`, `checkPlayerAlive`, `restorePlayer` | "the countdown 0x4f7194" | a 16-bit value, read and written as such (**executed**) | `spec/script-builtins.md` section 9 | report |
+| 33 | `script.md`, `getPlayerVPosition` | "returns a vehicle float × 128" | compares vehicle +0x90c but keeps vehicle +0x34c (**executed**) | `spec/script-builtins.md` section 9 | report |
+| 34 | `script.md`, `getPlayerVDir` | "Returns 1, −1 or 0" | 1 or −1 for the first qualifying vehicle; the 0.707 test never passes the scan on (**executed**) | `spec/script-builtins.md` section 9 | report |
+| 35 | `script.md`, `hornOmen`, `planarSteel` | allocate and link | `creature_addSpell` is also called with a null spell when the allocation failed (**executed**) | `spec/script-builtins.md` section 9 | report |
+| 36 | `script.md`, `startDialog` | "Preloads the level lump, clears 0x4fdce8, then calls `dialog_start`" | the clear is inside `dialog_start`, after a `Camera_update` on the local camera; a name is formatted into a buffer nothing reads (**executed**) | `spec/script-builtins.md` section 9 | report |
+| 37 | `script.md`, `setPlayerFlag` | "bit of record +0x4c28" | bit number mod 32, one byte: bits 8–31 change nothing (**executed**) | `spec/script-builtins.md` section 9 | report |
+| 38 | `script.md`, `saveEndConfig` | "sets the completion bit for the difficulty" | 0x08–0x40 for difficulty 1–4; difficulty 0 sets none (**executed**) | `spec/script-builtins.md` section 9 | report |
+| 39 | `script.md`, `removeAllItems`, `removeAllWeapons` | "Empties" the bags | as many remove calls for index 0 as the bag's count at the start, each only if the first entry is then non-zero (**executed**) | `spec/script-builtins.md` section 9 | report |
+| 40 | `script.md`, `generateMonster` | "Interns the class name in a table of 24-byte names" | the call-out gets a pointer into the table; the count is raised before the copy; neither has a limit (**executed**) | `spec/script-builtins.md` section 9 | report |
+| 41 | `script.md`, head | the interpreter "has been executed opcode by opcode" | adds that all 190 built-in handlers have been too, and where their corrections went | `spec/script-builtins.md`; FINDINGS X19 | report (a pointer) |
+| 42 | `spec/skills-01-34.md`, section 21, Repulse Undead | soul velocity `(cos16(a), sin16(a), 50.0)` | `(cos16(a) × 450, sin16(a) × 450, 50.0)` (**executed**) | 0x2f4d8c (0x43e10000 = 450.0), 0x2f4da0 and 0x2f4db8 (both products) | code |
+| 43 | `spec/skills-01-34.md`, 0.6, projectile step | a water impact makes "one draw from the object's own generator (splash sound variant)" | the draw is made and thrown away; the clip number is the constant 1 (**executed**) | 0x150c14 (the draw), 0x150c24 (the constant 1 as the format argument) | code |
+| 44 | `spec/skills-01-34.md`, 0.2; `skills.md`, Skill layout +0x38; `symbols/runtime.tsv` `Skill_default_slot11` 0x3c8690 | tier 2 absent when its first level "is 0xffff" | the test is the sign: any negative first level means "use tier 1"; the constructors store −1 (**executed**) | 0x3c86d4–0x3c86d8 (a signed halfword load, then `bltz`) | code |
+| 45 | `spec/skills-01-34.md`, section 7 and the status table; `symbols/skills.tsv` `FireStorm_ctor2` 0x2d4048 | "argument order of the second constructor only as far as the stored fields" | (object, owner, position, radius, damage, duration in frames, flare period; flare scale); variant word 1 = straight flares, no looping sound (**executed**) | `spec/skills-01-34-executed.md` section 3, row 4 | report |
+| 46 | `spec/skills-01-34.md`, section 24, Poison Rain | three statistic reads in the constructor | four: the duration is read again for the light's last number (**executed**) | `spec/skills-01-34-executed.md` section 3, row 5 | report |
+| 47 | `spec/skills-01-34.md`, section 31, Root cast | "attach new SpellRoot …; count += 1" | when `pool_new` gives nothing, `creature_addSpell` is still called with 0 and the count still rises; the level goes through slot 14 first (**executed**) | 0x2e6700–0x2e672c (the null test skips only the constructor) | code (the call order); slot 14 and the count from the report |
+| 48 | `spec/skills-01-34.md`, section 33, Critical Hit | `return level ? slot10(0, level) × 0.01 : 0` | the level goes through slot 14 (level, 20) first; ranks asked in the order 53, 81, 33 (**executed**) | `spec/skills-01-34-executed.md` section 3, row 7 | report |
+| 49 | `spec/skills-01-34.md`, section 12, weapon buffs | one level for all constructor reads | the first duration read uses the level argument as passed, every later one the signed level byte of the spell; they differ above level 127 (**executed**) | `spec/skills-01-34-executed.md` section 3, row 8 | report |
+| 50 | `spec/skills-01-34.md`, section 15, Undead Shield | "if o carries neither …" | both look-ups are always made (**executed**) | 0x2eadb8–0x2eade8 (two type-info calls and two list walks before either branch) | code |
+| 51 | `skills.md`, Spell layout | (not stated) | the light fields left by `FireStorm` (+0x70, +0x78) and `SpellUndeadShield` (+0x40, +0x48) hold 0x7fffffff, computed as 1 / (0 × 0); the decompile shows the IEEE infinity as a constant (**executed**) | `spec/skills-01-34-executed.md` section 3, row 10 | report |
+| 52 | `spec/skills-35-68.md`, section 68, timing table | run calls 61, 121, 181, 241 for 1–4 s and 721 for 12 s; respawn call 47, 107, 167, 227 | 60 N for every N; respawn on call 60 N − 14; the old figures were the round-to-nearest ones (**executed**) | `spec/skills-35-68-executed.md` sections 3 and 5 | report |
+| 53 | `spec/skills-35-68.md`, section 54, lifetime | "600th for 10 s, 660th for 11 s" | 601st and 661st: 60 N + 1 for N from 10 to 20 (**executed**) | `spec/skills-35-68-executed.md` sections 3 and 5 | report |
+| 54 | `spec/skills-35-68.md`, section 53, duration | both variants given | the truncating one: 720 and 780 for 12 and 13 s (**executed**) | `spec/skills-35-68-executed.md` sections 3 and 5 | report |
+| 55 | `spec/skills-35-68.md`, sections 43, 44, 45, 47 | "lifetime 600 moving frames"; range "600 x speed / 60" | the age test follows the move, so an arrow that meets nothing has moved 601 times: range 601 steps (**executed**) | 0x2d66f8 (the move), 0x2d6724 (the compare with 601 behind it) | code (FireArrow); the other three from the report |
+| 56 | `spec/skills-35-68.md`, section 41, wind-down | "clip2.event1.mask (clip2+0x28) …; clip2.event1.time (clip2+0x24)" | the offsets are right, the name is not: that is event slot 2 (**executed**) | 0x2d1d04, 0x2d1d0c (the two stores) | code (the stores); the slot numbering from the report |
+| 57 | `spec/skills-35-68.md`, sections 42, 49, 54, 62 | the sample point is "draw mod n" | n is the model's point count and is not tested: a divide by zero for a model without sample points (**executed**) | 0x3086b8 (a `div` whose divisor is the count) | code (that one divide); the missing test and the other three sites from the report |
+| 58 | `spec/skills-35-68.md`, section 68, "not determined" | the allocation-failure path of `player_respawn` | adds the spell's side: the run stores the tint through the target pointer with no null test, and re-reads the pointer after the respawn (**executed**) | `spec/skills-35-68-executed.md` section 5 | report |
+| 59 | `spec/skills-35-68.md`, S.1 | "identical bodies apart from the text key" | the five keys given; nothing else differs (**executed**) | `spec/skills-35-68-executed.md` section 5 | report |
+| 60 | `spec/skills-35-68.md`, 1.8 | the two timer rules and eleven tier-2 differences, computed | confirmed exactly by execution | `spec/skills-35-68-executed.md` section 3 | report (a confirmation) |
+| 61 | `spec/skills-35-68.md`, section 41, "Per-machine state"; `skills.md`, cast path | "the shared-clip condition is **Inferred** …; not tested" | executed (9 of 9 cases) and **Ran**: 6 of 6 same-class pairs diverged, 0 of 6 with the patch | `spec/skills-35-68-executed.md` section 4; `issues/live-rig.md` 9.4; FINDINGS SB1, V19 | running game |
+| 62 | `spec/skills-69-101.md`, sections 72 / 75 | "quantity (+4)"; that it survives the parser Inferred | the quantity is a halfword; the halfword at +6 is never written by the constructor; the Inferred stands (**executed**) | `spec/skills-69-101-executed.md`, correction 1 | report |
+| 63 | `spec/skills-69-101.md`, section 76, event 2 | `water_test(8.0, world, centre)` | asked with the ground height just found as z (**executed**) | `spec/skills-69-101-executed.md`, correction 2 | report |
+| 64 | `spec/skills-69-101.md`, section 76 and the draw table | no draws while an interrupted spell lingers | one own draw a frame and a second below 0.170987 (**executed**) | `spec/skills-69-101-executed.md`, correction 3 | report |
+| 65 | `spec/skills-69-101.md`, section 77 and the draw table | (not listed) | an interrupted spell lays ten pairs of a second kind of streamer every frame and clears the streamer flag; a ground particle is drawn for always and spawned only within 72 of the copy's height (**executed**) | `spec/skills-69-101-executed.md`, corrections 4 and 5 | report |
+| 66 | `spec/skills-69-101.md`, storm layout, +0x7c | "fall time 48.990772 frames [0x4243f68d]" as a stored constant | computed at run time as the square root of 2400.096 (**executed**) | 0x30b14c (the word 0x46040104, `sqrt.s`) | code |
+| 67 | `spec/skills-69-101.md`, section 90, `SpellSummonBadger` run | "particles on the badger's model sample points (own generator)" | the points are the fixed sequence 0, 8, 16, …; the generator supplies only the ball point; an empty handle destroys the spell, a handle without an object only returns (**executed**) | `spec/skills-69-101-executed.md`, correction 7 | report |
+| 68 | `spec/skills-69-101.md`, statistic lookup; `skills.md`, slot 8; `symbols/runtime.tsv` `Skill_default_slot8` 0x3c82e4 | "two shared draws per bound"; "each bound advances the shared generator twice" | adds: the first only chooses the direction of the rounding, the second sets the value (**executed**) | `spec/skills-69-101-executed.md`, correction 8 | report |
+| 69 | `spec/skills-69-101.md`, section 70 | (not stated) | the particle step is a division with no zero test; at level 0 the divisor is 0 and the quotient unused (**executed**) | 0x2fd9b8 (the `div`) | code (the divide); the missing test from the report |
+| 70 | `spec/skills-69-101.md`, sections 81, 85, 86 | class behaviour | confirmed, with additions: Critical Hit's light unlinked after 2.0 s, and two reads of alive-list players without a null test; Healing's association; Root's two cleared lists and unused draws (**executed**) | `spec/skills-69-101-executed.md`, correction 10 and "Per-machine state" | report |
+| 71 | `skills.md`, slot 5 | "or 0 for passives" | only Dodge's own function returns 0; the default, which the other passives and Riposte use, returns 1.0 (**executed**) | 0x3c82a8–0x3c82b0 (the constant 0x3f800000 returned) | code |
+| 72 | `issues/arena-desync.md`, head | "**Result of 2026-10-10: the arena desync was not reproduced on the running game**" as the document's live result | a new dated part in front of it, "What the live rig showed": with real characters the arena does diverge — 3 of 12 fights with K1, K2 and LAG-1 on, 7 of 12 without — with the causes seen (K1 / K2; a pet touched by its owner's prediction copy; stale bytes in a picked-up item; the spin skill for two same-class players), the float result and the knights; and 2 of 12, both silent, none flagged, with the spin and touch sections on as well | `issues/live-rig.md` 9.2–9.4, 8.3, 10.3; FINDINGS V15, V17–V23, G25, SB1, D25 | running game |
+| 73 | `issues/arena-desync.md`, the earlier result | "an arena fight between two machines that compute identically stays in sync"; the search "moves … to what the set-up did not contain" | kept under "Earlier result: placeholder characters" and followed by what overturned it and which of the missing things have been run since | `issues/live-rig.md` section 9 | running game |
+| 74 | `issues/arena-desync.md`, "Result in one table" and "Ranked list" | "If the arena goes out of sync with no player death, no resurrection … the cause is not on this list" | that is what happened; a paragraph ranks what was seen above the five candidates, none of which was seen | `issues/live-rig.md` 9.2, 9.3 | running game |
+| 75 | `issues/arena-desync.md`, summon table, "Prediction copy"; `creatures.md`, slot 6 row; `symbols/creatures.tsv` `Creature_onTouch` 0x11a418 | "Monsters do not run during prediction; box queries skip the copy"; "a player touching sets cflag bit 59" | adds the route missed: the touch handler flags a creature for any toucher with the player flag, the copy included, the call coming from `Creature_moveBy`; `Creature_run` acts on it only for a creature in state 0 or 5 with a non-zero charm timer — a pet or a charmed monster, not the knights or their skeleton | 0x11a418–0x11a43c (only 0x40 is tested); 0x113b48–0x113b64 (state 0 or 5, charm timer), 0x113b74–0x113bc0 (set-state 1, the bit cleared); 0x114220 (the unguarded call); `issues/live-rig.md` 9.2, 10.1; FINDINGS G25, V18, V22 | running game; the setter, the reader and the call site also code |
+| 76 | `issues/arena-desync.md`, "What to record on two machines", "Test patches", "Not done" | "the message never appeared"; the last cutscene and the avatar fight "not reported as reached" | a later note: ten divergent pairs in 24 fights, all "none of the five"; nine fights won; T1 and T3–T5 still not run; `hideMonster` does hide all four | `issues/live-rig.md` 9.2, 9.3, 8.5 | running game |
+| 77 | `issues/arena-entry.md`, head, "Result in short", the recording note | the twelve runs with placeholder characters as the live result; "there was no M" | a new dated part: the arena does diverge with real characters, every time after E by the tick numbers (Inferred from them); the float mismatch fails before S; the level's knights and later timing | `issues/live-rig.md` 9.2, 9.3, 8.3 | running game |
+| 78 | `issues/arena-entry.md`, E6, X1 and "Test patches (all untested)" | the copy "cannot reach shared state" resting on the G-series audit; "X1–X4 were not used" | the audit is incomplete in two places (rows 79–81); what that means during the cutscene (Inferred); X1 has been used once, on the pet pair, and removed the divergence | `issues/live-rig.md` 9.2; FINDINGS V18 | running game; the cutscene reasoning is this pass's and Inferred |
+| 79 | `issues/prediction-copy.md`, head and section 1 | "what the copy can change in shared state needs a second machine to show"; the virtual calls: "None changes shared state" | a dated result: the copy reaches shared state by two routes the audit did not have; the bullet says where it is overturned | `issues/live-rig.md` section 9; FINDINGS G25, SB1, V18, V19 | running game |
+| 80 | `issues/prediction-copy.md`, 3.2 (the move row, the skill-cast row) and a new 3.5 | "The other object's slot 6 is skipped for the copy"; Cyclone's constructor "tests the owner's 0x20000 … and for the copy skips …" | 3.5 has both routes step by step — setter, reader, who is affected, what was seen, the control, the caller, the fix, what is not known — and a third trace, the item bytes; the two rows say what they missed, and two more rows (the scripted walk of 3.1, the knock-back of 3.2), which had concluded that the copy does not go through `Creature_moveBy`, are marked overturned: the running game entered the touch handler from its call at 0x114220 with the copy as toucher 164 times. The guard of the move row is sound for its own function | 0x11a418–0x11a43c; 0x113b48–0x113bc0; 0x2d1978, 0x2d197c in front of 0x2d19c4–0x2d19d0; 0x14d7dc, 0x14d938, 0x14d984 (the register the guard at 0x14d9b0 tests is the mover's flag word on every path); 0x114200–0x114224 (`Creature_moveBy`: the touched object's slot 6 called with the mover, no test); `issues/live-rig.md` 9.2, 9.4, 10.1, 10.2; FINDINGS V22, V23 | running game; the five code sites also code |
+| 81 | `issues/prediction-copy.md`, new 5.6, the ranking of section 7, sections 8 and 9; `symbols/skills.tsv` `SpellCyclone_ctor` 0x2d17c8 | six ranked leaks; "every patch below is untested" | the two test patches that exist for the routes and their status (both **Ran** on the linked pair and remove their divergence; with them and K1, K2, LAG-1 on, 2 of 12 arena pairs differ, silently, and none is flagged); three rows added to the ranking; "not done" items for the caller of `Creature_moveBy` and the source of the item value | the patch file (read, not edited): sections "predicted spin cast leaves the shared animation alone" and "creatures ignore being touched by the prediction copy"; `issues/live-rig.md` 9.4, 10.1, 10.3; FINDINGS V19, V21, V22 | running game; the patch words read |
+| 82 | `issues/float-divergence.md`, head, result table, stick decoder, "Reading the table", advice, proposed row D25, "Not done" | "no two machines or settings have been compared"; a mismatch "would normally drift in every level, and the arena … is where it would show"; "how quickly is **Unknown**" | a dated result with its table: positions differ on the first tick of movement and the out-of-sync flag follows in 7–113 ticks, in the first level; with no input nothing shared differs; so a machine-wide mismatch is not an arena cause, and a float cause would have to be confined to particular operations (not tested) | `issues/live-rig.md` 8.3; FINDINGS V15, F9 | running game |
+| 83 | `issues/lag.md`, head, the Model marker, 5.2, sections 9, 10, 11, 12 | "The pacing rules … have not [been seen]: they need two machines, the rig has one"; "No test patch has been run on a live game"; "**All untested**" | the outage case and LAG-1 measured on two linked machines: lead 6 → 34 and about 35 s to drain; with LAG-1 a peak of 11 and normal within 10 s — the model's figures; what is still Model only | `issues/live-rig.md` 8.4; FINDINGS V16, L11, L12 | running game |
+| 84 | `issues/kill-loot-xp.md`, head, the paragraph under the result table, K1 verdict, ranked list, the recording note | K1 and K2 tripped "neither in twelve arena runs"; in `drunare` K1 "a silent bag difference" (Inferred); "None of these happens on every run" | with real characters and no patches, bag differences of the K1 / K2 kind in 5 of 12 arena fights, one followed 96 ticks later by the out-of-sync flag; none with the sections on | `issues/live-rig.md` 9.3; FINDINGS V17 | running game |
+| 85 | `issues/kill-loot-xp.md`, section 4 and item 8 of the ranked list | "computed by every machine from shared state" | adds what was seen: the same item picked up in the same tick with one unwritten 16-bit field differing between the machines; silent. Traced since: made at loot creation, 191 ticks before the pick-up; gone without the prediction copy; not a leftover of the parser's output record; no reader found — the two candidates the first note named are out | `issues/live-rig.md` 9.2, 10.2 (pairs 402, 410); FINDINGS V20, V23, I1 | running game |
+| 86 | `issues/draw-sim-leaks.md`, head, "K1, K2", "Ranking", "Not done" | "neither is needed for, nor produced by, a fight as such"; "with the mechanism available and unpatched the arena stayed in sync"; the stall "cannot happen on the rig at all" | each kept and followed by what overturned it: 5 of 12 unpatched fights; 3 of 12 patched, from causes that are not of this document's kind; an outage imposed on the bus gave a lead of 34; what the unattended runs reached and did not (U1, U2); with every section on, only the silent item bytes remain | `issues/live-rig.md` 8.2, 8.4, 9.2, 9.3, 10.3; FINDINGS V14, V16, V17, V21 | running game |
+| 87 | `online-setup.md`, head, "Settings every player must match", "Not checked" | "they stay in sync under ordinary play"; "Of this list only the K1 and K2 item has been seen on a running game"; "the only divergences found were K1 and K2"; rows "V1–V13" | four sentences made true: with real characters the arena diverges even with the K1 and K2 patches; the arithmetic item has been seen too (forced rounding mode); with the whole patch set on, no fight is flagged and two keep a silent two-byte difference; rows V1–V23. (Another contributor updated the patch table of the same page for V21 and V22 while this pass was running; those lines were left as found) | `issues/live-rig.md` sections 8–10 | running game |
+
+### X1. Summary
+
+| | Count |
+|---|---|
+| Rows in table X2 | 87 |
+| … corrections applied | 87 |
+| … from the running game (**Ran**, `live-rig.md` sections 8 and 9) | 17 (rows 61, 72–87); rows 75 and 80 were also read in the code |
+| … re-checked against the code, wholly or for the part named | 23 (rows 2–4, 9, 12, 14, 15, 18, 23, 24, 30, 31, 42–44, 47, 50, 55–57, 66, 69, 71) |
+| … taken from the reporting document | 47 (rows 1, 5–8, 10, 11, 13, 16, 17, 19–22, 25–29, 32–41, 45, 46, 48, 49, 51–54, 58–60, 62–65, 67, 68, 70) |
+| … whose corrected statement is, wholly or in part, an executed result of the reporting document | 70 (rows 1–71 except 41) |
+| Reported corrections found wrong | 0 |
+| Reported corrections applied in a different place or form (X4) | 7 |
+| Reported items not applied (X4) | 8 |
+| Symbols renamed / symbol notes changed | 0 / 18 |
+
+`python3 -I -B tools/symtab.py check` after the edits: 5817 symbols, 0 conflicts, 0
+malformed lines.
+
+Where each group of rows came from: arena monsters 1–13; game messages 14–22; script
+built-ins 23–41; skills 1–34, 42–51; skills 35–68, 52–61; skills 69–101, 62–71; live rig,
+phases 3 and 4, 72–87.
+
+### X3. Symbol files
+
+No address or name was changed. Notes changed, all to match a row of X2:
+
+| File | Symbol | Row |
+|---|---|---|
+| `symbols/monsters.tsv` | `Horsemen_setState` 0x272f4c | 4 |
+| `symbols/creatures.tsv` | `Creature_isTargetCharging` 0x118f90, `Creature_onTouch` 0x11a418, `Creature_moveBy` 0x113c48 | 9, 75, 80 |
+| `symbols/ui.tsv` | `hudmsg_sendLoadLevel` 0x1de598, `hud_onMsg` 0x1d8ca0, `hud_onQuickCastWarn` 0x1de340, `hudmsg_sendQuickCastWarn` 0x1de0a4 | 14, 15 |
+| `symbols/ui.tsv` | `inventory_dropItem` 0x1c4310, `inventory_combineGems` 0x1ceeb8, `shop_buy` 0x1d1240 | 16, 17, 18 |
+| `symbols/ui.tsv` | `quest_add` 0x1d386c, `quest_remove` 0x1d3968 | 24, 25 |
+| `symbols/script.tsv` | `scr_getAddr` 0x1414a8 | 23 |
+| `symbols/runtime.tsv` | `Skill_default_slot11` 0x3c8690, `Skill_default_slot8` 0x3c82e4 | 44, 68 |
+| `symbols/skills.tsv` | `FireStorm_ctor2` 0x2d4048, `SpellCyclone_ctor` 0x2d17c8 | 45, 81 |
+
+Two notes were wrong rather than short: `Creature_isTargetCharging` ("target faces this
+creature") and `quest_add` ("every player's quest list"); `inventory_dropItem` named its
+fourth argument "count". `Skill_default_slot5` 0x3c82a8 already said "returns the float
+1.0" and was left.
+
+### X4. Applied differently, not applied, and noticed while editing
+
+No reported correction was found to be wrong against the code. Seven were applied in a
+different place or form than reported:
+
+1. **"Three mounted knights" (arena monsters, item 1; the hand-over names
+   `issues/arena-desync.md` and `issues/arena-entry.md`).** Neither document, and no other
+   document of the repository, says three or mounted — the reporting document says so
+   itself: the phrase is from the brief of that work. `arena-desync.md` already had four
+   `UndeadKnight1`…`4`. Applied as two clarifications (row 13): "on foot", and that the
+   document's "knight 3" is the variant number, object type `UndeadKnight4`.
+2. **`Creature_isTargetCharging` (arena monsters, item 11; the hand-over names
+   `creatures.md`).** `creatures.md` only listed the address. The wrong definitions were in
+   `symbols/creatures.tsv` and at one place in `monsters-2.md`; all three, and the
+   Horsemen paragraph of `monsters.md`, now carry the coded rule (row 9). The other thirty
+   uses of the word "charging" in `monsters-2.md` describe what each class does with the
+   answer and were left.
+3. **State 1 "leave to 3 with a target" (arena monsters, item 4).** `monsters.md` 1.4 has
+   that phrase in the row of state 0, not of state 1, whose row gave no exit. Applied in
+   the row of state 1 (row 3).
+4. **Game message 11 and 13 (game messages).** Reported against `ui.md`; `netcode.md` has
+   its own message table with the same two entries, and both were corrected (rows 14, 15).
+5. **Inventory message 0 (game messages).** Shop message 1 in `ui.md` repeats the layout
+   and was corrected with it (row 16).
+6. **Script built-ins.** The hand-over list had seven of them; section 9 of the reporting
+   document has eighteen rows with content, and all were applied (rows 23–40).
+7. **Skills, "mark each corrected statement executed".** Where the statement sits inside
+   a block of the specification's own pseudo-code, the correction is a comment in that
+   block beside the line it corrects, and the line itself was changed only where it was
+   wrong (the soul velocity, the tier-2 test, the event-slot name, the timing table of
+   section 68, whose old figures are kept in the paragraph under it).
+
+Rows that go beyond the hand-over list but come from the same sections: 5–8 (arena
+monsters items 6–8 and the unstated Zek facts), 19 (shop message 0), 41 (a pointer at the
+head of `script.md`), 59 and 60 (a confirmation and the five text keys), 70 (the class
+sections 81, 85, 86), and in rows 61, 75 and 81 the notes in `skills.md`,
+`spec/skills-35-68.md`, `creatures.md` and two symbol files that say what the running
+game showed for SB1 and G25, so that the statement and its live result are found
+together.
+
+Not applied:
+
+- **`docs/issues/live-rig.md` 7.3 (game messages).** The reporting document asks for the
+  same correction there as in `kill-loot-xp.md` K2 — what the stray drop message removes
+  depends on the owner's slot. `live-rig.md` is another agent's document and was not
+  edited. X5.
+- **Every proposed ledger row** and every amendment of an existing one. X5. (M1–M5,
+  N1–N8, X17–X22, V14–V20, G25 and SB1 were found on the ledger already.)
+- **Proposed names for unnamed addresses**: `particle_define` 0x18f118 and
+  `profile_append` 0x222a44 (`spec/script-builtins.md` section 11), the grid builder
+  0x1cbbe8 (`itemGrid_build`), the load-level handler body 0x18cb80 and the empty shop
+  helper 0x1bf5a0 (`spec/game-messages.md` section 12). New symbols, not corrections; this
+  pass has no symbol file of its own.
+- **The lists of "confirmed as written"** in the three skill companions and in
+  `spec/arena-monsters.md` section 14 items 9 and 10. Confirmations of statements that
+  stand; the specifications were not marked up sentence by sentence. Rows 10, 60 and 70
+  are the exceptions, where the confirmation answers a "not traced" or comes with an
+  addition.
+- **`docs/skills.md` from the skills 35–68 companion.** It reports "no new correction".
+- **The shared state table of `monsters.md` 1.4 for states 0x12 and 0x13.** The executed
+  classes differ from it (a knight leaves 0x13 to 3, the skeleton to 0 and ignores 0x12);
+  the table says "State numbers are per class", so the differences are recorded in the
+  class sections (rows 3, 6) and the table's other rows were left.
+- **The sentence "no test patch has been run on a live game" and "rows V1–V8" / "V1–V13"
+  at the head of other documents.** Still the item the fifth pass left open, and further
+  out of date now: four test sections have been run on the linked pair (K1, K2, LAG-1 and
+  the spin patch) and one diagnostic (no prediction copy), and the live rows go to V20.
+  This pass changed it in the eight documents of its live work list only; `script.md`,
+  whose head was touched for another reason (row 41), still has it. 33 documents still
+  carry one of those phrases (the search is the first line of X6; this file and `lag.md`,
+  where the phrase is now followed by its correction, are the 34th and 35th hits).
+- **Patch words for the two prediction-copy routes.** `prediction-copy.md` 5.6 describes
+  the two patch-file sections and points at `live-rig.md` 9.4 for the words; it does not
+  repeat them as a proposal table, because they are not proposals of that document and
+  `patches/` is not this pass's to restate.
+
+Noticed while editing, not reported by anyone:
+
+- **The reader of the touched bit has two conditions the ledger row does not give.**
+  FINDINGS G25 says `Creature_run` "calls set-state 1 unless the creature is dead" and
+  clears the bit. The block is entered only in state 0 or 5 and only with a non-zero charm
+  timer +0x312 (0x113b48–0x113b64); otherwise it is skipped whole, the clearing included
+  (`spec/creature-tick.md` 4.13 has the two conditions). That is why the divergence showed
+  on a pet and why the arena's knights are not exposed; and it means a creature without a
+  charm timer keeps the bit, set on one machine only, with no reader found. The edited
+  documents state it; the ledger row should (X5).
+- **The guard in `obj_moveWithCollision` is sound.** G25 says the guard at 0x14d9b0 "does
+  not cover" the route. Read here: the register it tests is the mover's flag word on every
+  path into it (loaded at 0x14d7dc, reloaded after the slide at 0x14d938 or 0x14d984), so
+  that function does not call another object's slot 6 for a copy. The caller that does is
+  `Creature_moveBy`, whose slot-6 call at 0x114220 has no test — read here as the nearest
+  candidate and confirmed by the running game while this pass was being written (V22).
+  That overturns two rows of `prediction-copy.md` which had concluded that the copy never
+  runs `Creature_moveBy` (the scripted walk "not reachable", the knock-back "returns at
+  once for any player in a net game"); both are marked. How the copy gets there is still
+  open: one of those two readings is wrong, or there is a third caller.
+- **Two wordings about the pet pair differ.** FINDINGS V18 has the bit "set 60 ticks
+  before anything else differed"; `live-rig.md` 9.2 has the flag word differing from tick
+  7481, the pet's animation from 7523, its position from 7524 and the shared seed at 7541.
+  So 60 ticks is to the first *shared* value; the pet's own animation differed after 42.
+  The documents edited here say "before the first logged shared value differed".
+- **`issues/arena-entry.md`, E6.** With the two new routes the question "can an un-frozen
+  copy reach shared state during the cutscene" is open again in one place: a copy that
+  casts the spin within its 30 ticks after S resets the shared clip slot while another
+  same-class player is frozen in mid-spin. Written there as Inferred; not run.
+- **`issues/lag.md` and `draw-sim-leaks.md` described the outage as something the rig
+  cannot do.** It cannot stall a machine, but the bus between the machines can drop
+  everything for a chosen number of frames, which is how V16 was measured. Both documents
+  now say so.
+- **`issues/kill-loot-xp.md`, "The chain itself is lockstep".** V20 is the first observed
+  exception inside the chain, and it is not a branch: the same item, the same tick, the
+  same cell, different bytes. V23 moves it from the pick-up step to the loot step and
+  ties it to the prediction copy; the first note written in this pass had guessed "an
+  unused field never initialised when the loot is made", which the record-clearing test
+  shows is not the whole of it. The unwritten halfword at +6 of the summoned axe and arrow
+  records (row 62, proposed row SC12) is the same kind of thing found by execution; the
+  two are cross-referenced in `spec/skills-69-101.md`.
+- `spec/arena-monsters.md` writes the event of state 10's clip as "bit 1" in section 14
+  and as "bit 2" in the table of 3.3; the test is `ev & 2` in both. Row 1 uses "event
+  bit 1", as `monsters.md` did.
+
+### X5. For the owners of files this pass does not edit
+
+`FINDINGS.md`:
+
+| Row | What it needs |
+|---|---|
+| G25 | The reader's conditions: `Creature_run` acts on the bit only in state 0 or 5 with a non-zero charm timer +0x312 (0x113b48–0x113b64), and skips the clearing otherwise — so the creatures exposed are pets and charmed monsters, and any other creature keeps a per-machine bit that nothing reads. The row was amended with V22 while this pass ran and now names `Creature_moveBy`; it still carries, in front of that, "has not been identified" and "the guard … does not cover it" — the guard itself is sound (the mover's flag word on every path: 0x14d7dc, 0x14d938, 0x14d984) |
+| G16 and `prediction-copy.md` rows it rests on | "nothing calls its take-damage slot" stands, but the audit behind the G rows had the copy never running `Creature_moveBy`; V22 shows it does. Worth a row of its own: by which caller, and which other slot-6 handlers that call can reach with the copy as the mover (`live-rig.md` 10.4) |
+| V18 | "set 60 ticks before anything else differed": before the first shared value (the seed, tick 7541); the pet's animation differed from tick 7523 and its position from 7524 (`live-rig.md` 9.2) |
+| D17 | "300 frames after the fourth knight … a message at 250 and the ending at a count of 1500 — reached after about 875 frames": exactly the 302nd counted frame, count 252, and 877 frames, because `getScaledTime(n)` is `int((n × 60.0) × 0x3c888888)` = n − 1 (0x14412c); "multiplies by 60 × 1/60" hides the truncation that makes it so |
+| F9 | The status column still reads "Inferred (emulator behaviour from general knowledge, nothing run)" while the text now cites the run of V15; the mismatch case is **Ran** |
+| K8 | Could add from `spec/arena-monsters.md` 3.4: the lookup of the skeleton is by name only, so it returns whatever object holds that name whoever summoned it; and a mounted knight ignores set-state 0x14 altogether |
+| E6 | The copy "is on no run list, so a flag-8 cutscene neither freezes nor unfreezes it": with G25 and SB1 the un-frozen copy has two routes to shared state; during the cutscene the first looks closed (frozen creatures are off the grid), the second is not (`arena-entry.md` E6, Inferred). X1 was run once (V18) |
+| G16, G23 | Both end in "none can change shared state" / "nothing can damage the copy"; true as worded, but written before G25 and SB1 — a cross-reference would keep them from being read as "the copy is contained" |
+| I1 | The Summon Axe / Summon Arrows constructors hand the inventory an item record whose halfword at +6 they never write (0x2feb88, 0x2ff87c; `spec/skills-69-101-executed.md`, proposed SC12, not on the ledger). I1 has +0x06 as a byte "the parser never writes"; this is the same field seen from the caller, with a value that differed between two runs of the test |
+| K1, K2, D25, V17 | Checked, nothing needed: they carry the 5-of-12 figure and M1 |
+| proposed rows, and reported facts, that have no ledger row | `spec/skills-69-101-executed.md`: SC12 (above). SC11 is covered by the sentence added to SA5, and SC10 by X22. `spec/skills-35-68-executed.md`: the unchecked divide by the sample-point count at 0x3086b8 and three sibling sites (a divide by zero for a model without sample points; whether such a model exists is disc data) has no row. `spec/skills-01-34-executed.md` row 6: a failed `pool_new` in the Root cast still uses up a target (0x2e6700–0x2e6728) — a D21-family consequence with no row. `spec/arena-monsters.md` 3.4: `Horsemen_setState` stores an unknown state number after a nested set-state 3 |
+
+Rows checked and found already amended: D22 (four knights on foot), D25, D41 (Zek), SA5,
+SB1, I1 (V20, V23), K2 (M1), L11, L12, E4, V13–V23, M1–M5, N1–N8, X17–X22.
+
+`names.tsv` — no line is wrong; these are short and could carry what was learned:
+
+| Row | What it could add |
+|---|---|
+| 0x14412c `script_getScaledTime` | returns `int((n × 60.0) × 0x3c888888)`: n − 1 for the counts scripts reach |
+| 0x1464e8 `script_playGotItemSound` | stores the active player clamped to 0..1 but plays the voice for the unclamped slot (N8) |
+| 0x143720 `script_lightEffect` | twelve arguments; the second is used (× 0.01) |
+| 0x1458e0 `script_clearAllSkills` | sets record +0x4a85 to 1 while clearing +0x4a80 and +0x4a84 |
+| 0x1433c8 `script_addQuest` | `quest_add` stops at the first player whose list is full or has the title (N2) |
+| 0x112948 `Creature_run` | acts on the "touched by a player" bit 59 for a creature in state 0 or 5 with a non-zero charm timer (0x113b48) — the reader of G25 |
+| 0x27236c `Horsemen_run` | state 1 leaves to 0 on sight; state 10 is the one-third hit only |
+| 0x2c2440 `Zek_run` | returns right after the activity test when inactive, the ground wave included (D41) |
+
+`docs/issues/live-rig.md` (another agent's): 7.3 should say, as `kill-loot-xp.md` K2 now
+does, that what the stray drop message removes depends on the owner's slot (M1) — in the
+scripted run the owner was in slot 1, so the potions were not touched by it.
+
+`docs/` as a whole: the head sentences of the fourth pass's sweep (the item of "Not
+applied" above).
+
+### X6. Re-checking
+
+```
+grep -rln 'o test patch has been run\|V1–V8\|V1–V13' docs/        # documents still carrying a head sentence of the fourth pass
+python3 -I -B tools/symtab.py check                               # 0 conflicts, 0 malformed
+python3 -I -B tools/dis.py SLUS_209.73 118f90:119038              # isTargetCharging: bearing creature -> target against the target's facing; 100.0
+grep -n 'case 1:' -A 9 decomp/all/0027236c.c                      # Horsemen_run state 1: seen -> LAB_00272eec, which sets state 0
+grep -n '0x3c\|FUN_00119258\|FUN_00118f08' decomp/all/0027236c.c  # state 5: blocked test, remainder by 60, allies near the target
+sed -n '18,28p' decomp/all/00272f4c.c; tail -9 decomp/all/00272f4c.c   # Horsemen_setState: mounted return; default stores the requested state
+python3 -I -B tools/dis.py SLUS_209.73 14412c:144160              # getScaledTime: n x 60.0 x 0x3c888888, truncated
+python3 -I -B tools/dis.py SLUS_209.73 1de5a0:1de5dc              # message 11: length 4, the name left out
+python3 -I -B tools/dis.py SLUS_209.73 18dd4c:18dd78              # net game -> sendNewWorld, offline -> sendLoadLevel
+python3 -I -B tools/dis.py SLUS_209.73 1de340:1de3ec              # message 13: +0x488 queued for a kind other than 1
+python3 -I -B tools/dis.py SLUS_209.73 1d12f8:1d1314              # shop_buy: gold stored in the delay slot of the give call
+python3 -I -B tools/dis.py SLUS_209.73 1414a8:1414f4              # scr_getAddr: no store on the error-5 path
+python3 -I -B tools/dis.py SLUS_209.73 1d38bc:1d3968              # quest_add: both tests leave the function
+python3 -I -B tools/dis.py SLUS_209.73 145948:145964              # clearAllSkills: +0x4a85 stored from a register, +0x4a80 / +0x4a84 zeroed
+python3 -I -B tools/dis.py SLUS_209.73 1421fc:142214              # getManaUsed / getHealthUsed: lh
+python3 -I -B tools/dis.py SLUS_209.73 1433bc:1433c8              # helpMessageActive: lb
+python3 -I -B tools/dis.py SLUS_209.73 2f4d8c:2f4ddc              # Repulse Undead: 0x43e10000 times cos and sin
+python3 -I -B tools/dis.py SLUS_209.73 150c10:150c30              # water splash: a draw, then the constant 1 into the name format
+python3 -I -B tools/dis.py SLUS_209.73 3c86d0:3c86dc              # slot 11: lh, bltz
+python3 -I -B tools/dis.py SLUS_209.73 3c82a8:3c82b8              # default slot 5 returns 1.0
+python3 -I -B tools/dis.py SLUS_209.73 2e6700:2e6730              # Root cast: null block skips only the constructor
+python3 -I -B tools/dis.py SLUS_209.73 2eadb0:2eadf0 | grep jal   # Undead Shield: both look-ups before either branch
+python3 -I -B tools/dis.py SLUS_209.73 2d66f0:2d6730              # FireArrow run: move, then age against 601
+python3 -I -B tools/dis.py SLUS_209.73 2d1cfc:2d1d10              # Cyclone wind-down: stores at clip +0x28 and +0x24
+python3 -I -B tools/dis.py SLUS_209.73 3086a8:3086c0              # StrongStance trigger: div by the sample-point count
+python3 -I -B tools/dis.py SLUS_209.73 2fd9a8:2fd9c0              # Unspoken Word: div for the particle step
+python3 -I -B -c "import sys; sys.path.insert(0,'tools'); from ps2elf import Elf; e=Elf('SLUS_209.73'); print('%08x' % e.u32(0x30b14c))"   # 46040104 = sqrt.s
+python3 -I -B tools/dis.py SLUS_209.73 11a418:11a444              # Creature_onTouch: only 0x40 tested; bit 59 set
+python3 -I -B tools/dis.py SLUS_209.73 113b48:113bc8              # Creature_run: state 0 or 5, charm timer, bit 59 -> set-state 1, bit cleared
+python3 -I -B tools/dis.py SLUS_209.73 2d1970:2d1984              # SpellCyclone_ctor: the two clip-header stores
+python3 -I -B tools/dis.py SLUS_209.73 2d19c0:2d19d8              # … and the copy test that comes after them
+python3 -I -B tools/dis.py SLUS_209.73 14d7d8:14d7f0              # obj_moveWithCollision: $6 = the mover's flag word
+python3 -I -B tools/dis.py SLUS_209.73 14d930:14d9f4              # … reloaded after the slide; guard at 0x14d9b0; the two slot-6 calls
+python3 -I -B tools/dis.py SLUS_209.73 114200:114228              # Creature_moveBy: touched.slot6(mover) with no test (the caller of V22)
+grep -n 'predicted spin cast\|touched by the prediction copy\|no prediction copy' patches/*.pnach   # the three patch-file sections named in rows 78, 80, 81
 ```

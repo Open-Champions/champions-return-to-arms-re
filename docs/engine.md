@@ -9,7 +9,7 @@ when it was written. Since then the math library, the animation step and pose, a
 code have been executed function by function in `tools/ee_emu.py` (`docs/spec/core.md`,
 `docs/spec/animation.md`; results folded in here are marked **executed**), and the project
 has a live game: what was run on it is listed in `FINDINGS.md`, "Run on the live game" (rows
-V1–V13) and `docs/issues/live-rig.md` — in the Play! emulator, not on a PlayStation 2 and not
+V1–V23) and `docs/issues/live-rig.md` — in the Play! emulator, not on a PlayStation 2 and not
 in PCSX2. Of this document only the names and call rates of a few functions
 (`pad_readAll`, `pad_readPort`, `pad_apply`, `gfx_endFrame`, `engine_frameStep`), the held
 and stick fields of a pad, and the cosmetic seed following the frame counter while a

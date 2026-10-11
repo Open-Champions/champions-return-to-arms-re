@@ -9,7 +9,7 @@ damage function), `docs/creatures.md`, `docs/player.md`, `docs/engine.md`,
 Everything was read from the executable — the decompile, checked against the disassembly
 wherever a branch, an argument register or a constant mattered. **Nothing was run.** That
 still holds for this document: the project's live game (the Play! emulator, which is not a PlayStation 2 and not PCSX2;
-`FINDINGS.md`, "Run on the live game" (rows V1–V13) and `docs/issues/live-rig.md`) has not been used
+`FINDINGS.md`, "Run on the live game" (rows V1–V23) and `docs/issues/live-rig.md`) has not been used
 to look at a skill, and no test patch has been run on it.
 A statement without a marker is **Observed** at the address given for the function it sits
 under; **Inferred** and **Unknown** are marked. Numbers in formulas are the stored

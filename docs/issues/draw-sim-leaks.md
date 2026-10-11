@@ -27,7 +27,9 @@ when unpatched** — bag differences, four still silent at the end of the run an
 followed 96 ticks later by the out-of-sync message — and none of those five with the K1,
 K2 and LAG-1 sections on. Three of twelve diverged even then, from two causes that are
 not of this document's kind (a creature touched by the prediction copy, G25; unwritten
-bytes of a picked-up item, V20). With K1 and K2 patched, 60 pairs of random play over 24
+bytes of a picked-up item, V20) — both traced to the prediction copy since (V22, V23),
+and with the touch and spin sections on as well only the silent item bytes remain, in 2
+of 12, with no fight reaching the out-of-sync flag (V21). With K1 and K2 patched, 60 pairs of random play over 24
 levels with placeholder characters found nothing else (V14); that input reached the pause
 menu, inventory, shop, potions and casts but never the options commit (U1) or the mission
 menu (U2). The lag that widens the windows was measured: after a 30-frame outage the lead
@@ -453,7 +455,9 @@ seen at all. (The sections include LAG-1, which moves when input is sampled, so 
 is established for the class and not for each pair.) The three that remain belong to no
 item of this list: the summoned pet reacting to its owner's prediction copy (FINDINGS
 G25, V18) and the unwritten bytes of a picked-up item (V20, twice) — the first is the
-prediction copy reaching a shared object, the second is neither screen code nor input.
+prediction copy reaching a shared object, the second is neither screen code nor input
+(it too goes away without the prediction copy, V23; how the copy causes it is not
+known).
 
 **Inferred, and the main thing this pass adds to the arena question:** K1 and K2 are one
 sample wide at the minimum lead and half a second wide at a lead of 35. A boss fight is where

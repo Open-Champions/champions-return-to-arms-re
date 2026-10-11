@@ -7,7 +7,7 @@ decompile. About 60 of the 982 functions were read by hand, chosen for the base 
 cast path and the per-machine questions. Nothing here was checked on a running game, and
 that is still so: the three skill specifications (`docs/spec/skills-*.md`) are readings too,
 and the live game the project now has — the Play! emulator, which is not a PlayStation 2 and not PCSX2;
-`FINDINGS.md`, "Run on the live game" (rows V1–V13) and `docs/issues/live-rig.md` — has
+`FINDINGS.md`, "Run on the live game" (rows V1–V23) and `docs/issues/live-rig.md` — has
 not been used to look at a skill. No test patch has been run on a live game.
 "Observed" means read at the address given; "Inferred" and "Unknown" are marked.
 

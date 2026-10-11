@@ -315,7 +315,7 @@
 0027155c	Nightmare_setState	vtable 0x5155e8 slot 27
 002719d4	Horsemen_mountSeatTransform	bone 10 transform of the mount object; used only when drawing a mounted rider
 002721f8	Horsemen_draw	vtable 0x515730 slot 5
-00272f4c	Horsemen_setState	vtable 0x515730 slot 27
+00272f4c	Horsemen_setState	vtable 0x515730 slot 27; a mounted knight (handle +0x3c8 set) ignores every request below 0x19, death 0x14 included; a request with no case of its own runs a nested set-state 3 and then stores the requested number (executed, docs/spec/arena-monsters.md 3.4)
 002735dc	Innoruuk_ctor	constructor; installs vtable 0x515a28; object size 0x4d0; factory type names: Innoruuk
 00273b20	Innoruuk_draw	vtable 0x515a28 slot 5
 00273bd0	Innoruuk_run	vtable 0x515a28 slot 4

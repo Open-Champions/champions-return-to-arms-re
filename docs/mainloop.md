@@ -4,11 +4,11 @@ Area `mainloop`, nominal range 0x320000–0x323dcc of `SLUS_209.73` (see
 [OVERVIEW.md](OVERVIEW.md)). Everything here was read from the executable; nothing was
 run when it was written. Since then the project has a live game — in the Play! emulator,
 which is not a PlayStation 2 and not PCSX2 — and what was run on it is listed in
-`FINDINGS.md`, "Run on the live game" (rows V1–V13) and `docs/issues/live-rig.md`. Of this
+`FINDINGS.md`, "Run on the live game" (rows V1–V23) and `docs/issues/live-rig.md`. Of this
 document that touches: `tasks_run` entered once per simulated frame, the two frame
 counters (`g_drawFrame` up by one per rendered frame, `g_simFrame` reset at a level load),
 and the developer LAN launch of section 7 step 3 (marked **Ran** there). Everything else here is still reading
-only; no per-machine item below and the only test patches run on a live game are the two for K1 and K2 (FINDINGS V10, V11).
+only; no per-machine item below and the test patches run on a live game so far are the five marked confirmed in the patch file (FINDINGS V10, V11, V16, V19, V22).
 **Observed** = read at the address given, **Inferred** = follows from observations,
 **Unknown** = not established. Names of functions outside this area are the ones other
 area files in `symbols/` use; where none exists the address is given.

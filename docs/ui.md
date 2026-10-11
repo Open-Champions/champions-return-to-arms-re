@@ -2,7 +2,7 @@
 
 222 functions. Read from the decompile and the disassembly only; nothing here was seen on a
 running game when it was written. Since then the project has a live game — the Play! emulator, which is not a PlayStation 2 and not PCSX2
-— and what was run on it is listed in `FINDINGS.md`, "Run on the live game" (rows V1–V13) and `docs/issues/live-rig.md`.
+— and what was run on it is listed in `FINDINGS.md`, "Run on the live game" (rows V1–V23) and `docs/issues/live-rig.md`.
 Of this document it touched one thing (4b there): the front-end states 0–4, which took
 exactly the documented values as scripted input walked the menus (in the order 0, 1, 2, 4,
 3). Inventory, shop, character sheet, HUD and the per-machine items below were not

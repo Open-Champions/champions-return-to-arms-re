@@ -8,7 +8,7 @@ Evidence labels: **Observed** (read at the address given), **Executed** (the gam
 instructions run by `tools/posecache_test.py` on state the test built; see section 7 for
 what that does and does not show), **Inferred**, **Unknown**. Nothing here was seen on a
 running game, and that has not changed: the project's live game (the Play! emulator, not a
-PlayStation 2 and not PCSX2; `FINDINGS.md`, "Run on the live game" (rows V1–V13) and `docs/issues/live-rig.md`) runs without video, and
+PlayStation 2 and not PCSX2; `FINDINGS.md`, "Run on the live game" (rows V1–V23) and `docs/issues/live-rig.md`) runs without video, and
 nothing about the pose cache was looked at on it. The patches in section 8 are **untested on a running game**; no
 test patch of the project has been run on one yet. `FINDINGS.md`
 and `patches/` were not edited.

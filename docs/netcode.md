@@ -6,11 +6,11 @@ document. Parts of the wire format, the receiver and the drop procedure have sin
 executed function by function in `tools/ee_emu.py` (`docs/spec/net-wire.md`), and a few
 statements have been seen on the live game — one machine in a net game started through the
 developer LAN path, in the Play! emulator, which is not a PlayStation 2 and not PCSX2
-(`FINDINGS.md`, "Run on the live game", rows V1–V13; `docs/issues/live-rig.md` 4b, 4d). Those
+(`FINDINGS.md`, "Run on the live game", rows V1–V23; `docs/issues/live-rig.md` 4b, 4d). Those
 are marked **Ran** where they stand: eleven button bits, the stick response, the 31-tick
 re-clone of the prediction copy, the two object flags, the two developer-lobby packets and
 how a lone machine's game ends.
-Everything not so marked is still reading only; two machines have since been joined on that rig (FINDINGS V9–V13), and the only test patches run on a live game are the two for K1 and K2. Names are in `symbols/netcode.tsv` (41 functions, 40 globals) and
+Everything not so marked is still reading only; two machines have since been joined on that rig (FINDINGS V9–V13), and the test patches run on a live game so far are the five marked confirmed in the patch file. Names are in `symbols/netcode.tsv` (41 functions, 40 globals) and
 `names.tsv` (13 functions that were already named). Unless a line says *Inferred* or
 *Unknown*, a statement is *Observed* at the address given.
 

@@ -4,7 +4,7 @@ Area `objects`, code 0x147300–0x160000 (219 functions). Symbols: `symbols/obje
 Everything here was read from the executable; nothing was run when it was written. Since
 then the allocator and the handle pool have been executed in `tools/ee_emu.py`
 (`docs/spec/core.md`), and the project has a live game in the Play! emulator — not a
-PlayStation 2 and not PCSX2 (`FINDINGS.md`, "Run on the live game" (rows V1–V13) and `docs/issues/live-rig.md`).
+PlayStation 2 and not PCSX2 (`FINDINGS.md`, "Run on the live game" (rows V1–V23) and `docs/issues/live-rig.md`).
 Of this document it confirmed object flags 0x20000 and 0x200000 (marked **Ran** in the
 flag table) and that `runObjects` is entered once per simulated frame. The rest
 was not re-checked on the live game, and no test patch has been run on one. Each claim is marked

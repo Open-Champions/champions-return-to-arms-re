@@ -37,7 +37,7 @@
 00110d30	Creature_processDamage	(this, model): consumes pending damage +0xc8/+0x2dc: hit effects, gibs (0x268-byte GutChunk), death -> state 0x14, flags 0x2009, xp and loot; 66 callers
 001124e0	players_findNearestOnTeam	(maxDist, pos, team): slot of the nearest live player whose record team byte matches (-1 = any), else 0xff
 001125e0	Creature_spawnScavenger	called every frame from Creature_run: a finished corpse that has just become active draws g_randSeed and creates a raven/rat Critter (0x402768 selects which)
-00113c48	Creature_moveBy	(this, Vec3 *vel): adds root motion, terrain slide, object push-out and slot 6 calls, gravity; result bits 1 wall (slot 10), 2 objects (slot 11), 4 landed; 39 callers
+00113c48	Creature_moveBy	(this, Vec3 *vel): adds root motion, terrain slide, object push-out and slot 6 calls, gravity; result bits 1 wall (slot 10), 2 objects (slot 11), 4 landed; 39 callers. The slot 6 call (touched.slot6(mover), 0x114220) has no test for the prediction copy as mover - unlike obj_moveWithCollision 0x14d9b0 - and on the running game it handed the copy to Creature_onTouch (FINDINGS G25, V22); which caller brings the copy here is not known
 001143e8	Creature_moveToTarget	moves to a point just outside the target's radius; state 0 when there is no target
 00114510	Creature_moveTo	(this, Vec3 *dest): path following, steering point +0x2ec, speed +0xb8, stuck detection (+0x2c8/+0x2d4/+0x2d8) with a random side step and a free-spot teleport; returns 1 on arrival
 001155e0	Creature_moveToDirect	(this, Vec3 *dest): as Creature_moveTo without the path finder
@@ -79,7 +79,7 @@
 00118d90	Creature_canSeeAllyIn	creature_canSeeObj on the ally handle +0x238
 00118e90	Creature_isTargetAttackingMe	target is in an attack state (monster states 6-15, player +0x58c < 2) and its own target is this creature
 00118f08	Creature_isBlockedByTarget	creature_isBlockedBy on the target
-00118f90	Creature_isTargetCharging	target faces this creature and moves faster than 100 units/s
+00118f90	Creature_isTargetCharging	true when the target moved faster than 100 (last move velocity +0x308, +0x30c) and its facing lies within +/-0x3ffe of the bearing from this creature TO it (0x118fb0-0x118fe8) - as coded a fast target facing AWAY, not one running at the creature; the earlier note said "faces this creature" (executed, docs/spec/arena-monsters.md 2.3)
 00119038	Creature_isTargetRunningAway	target faces away and moves faster than 100 units/s
 001190e8	Creature_isTargetKnockedDown	player target playing a knockdown clip
 00119258	Creature_countAlliesNearTarget	creature_countAlliesNear at the target position
@@ -111,7 +111,7 @@
 0011a290	Creature_slot12	empty; slot 12 is the 'something happened near you' entry called by world_notifyObjectsNear
 0011a2b8	world_notifyObjectsNear	(radius, a, Vec3 *pos, b): calls slot 12 of every object in a box; one caller, Creature_processDamage when there is a single player
 0011a3f0	Creature_slot10	empty; slot 10 is called by Creature_moveBy after hitting terrain
-0011a418	Creature_onTouch	slot 6 (other): a touching player sets cflag 0x800000000000000
+0011a418	Creature_onTouch	slot 6 (other): a touching player sets cflag 0x800000000000000 (bit 59). The only test is the toucher's object flag 0x40, which the prediction copy carries too, so a creature touched by a machine's own copy is flagged on that machine only; Creature_run 0x113b48 acts on the bit for a creature in state 0 or 5 with a non-zero charm timer (set-state 1) - FINDINGS G25, seen live on a summoned pet (V18); the calls with the copy as toucher come from Creature_moveBy 0x114220 (V22); test patch "creatures ignore being touched by the prediction copy", which removes the pet divergence on the live pair
 0011a448	Creature_slot11	empty; slot 11 receives the list of objects touched in Creature_moveBy
 0011a450	creatures_freezeAll	world_forEachRunObject(creature_freezeOne); called when a cutscene or the mission menu starts
 0011a470	creatures_unfreezeAll	world_forEachRunObject(0x11c150)

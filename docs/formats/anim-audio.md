@@ -11,7 +11,7 @@ a running game since. Two things have changed around it: the animation step and 
 have been executed function by function in `tools/ee_emu.py` (`docs/spec/animation.md`,
 which corrected sections 2.5 and 2.6 below), and the project now has a live game — in the
 Play! emulator, not a PlayStation 2 and not PCSX2; what was run there is listed in
-`FINDINGS.md`, "Run on the live game" (rows V1–V13) and `docs/issues/live-rig.md`, and it
+`FINDINGS.md`, "Run on the live game" (rows V1–V23) and `docs/issues/live-rig.md`, and it
 has no sound or video output, so none of the formats here was exercised.
 The tool was run over every file on the disc (section 7).
 

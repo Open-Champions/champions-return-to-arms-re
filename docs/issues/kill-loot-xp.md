@@ -25,8 +25,8 @@ the same Play! emulator build on one host — not a PlayStation 2, not PCSX2 —
 level-1 placeholder characters; no kill, drop or experience award was looked at for its
 own sake, and K3–K5 were not exercised.
 
-**Later the same day, with real characters** (`docs/issues/live-rig.md` section 9;
-`FINDINGS.md` rows V17, V20, M1). Two level-25 characters with skills fought the arena
+**Later the same day, with real characters** (`docs/issues/live-rig.md` sections 9 and
+10; `FINDINGS.md` rows V17, V20, V21, V23, M1). Two level-25 characters with skills fought the arena
 twelve times with the K1, K2 and LAG-1 patch sections off and twelve times with them on.
 Off, seven of twelve fights diverged, and five of the seven were bag differences of the
 K1 / K2 kind — an item or a potion in one machine's copy of a bag and not in the other's;
@@ -36,7 +36,9 @@ diverged, from causes outside this document's chain or at its edge: a summoned p
 touched by its owner's prediction copy (G25), and **an item that both machines pick up
 in the same tick whose two records differ in one unwritten field** (V20; section 4). So
 "neither explains 'every time' on its own" still holds, but K1 and K2 are not rare in
-this fight: 5 of 12 unpatched (42 %). What the stray K2 drop message removes is settled
+this fight: 5 of 12 unpatched (42 %). The item-byte difference was traced further in a
+later run (V23): it is made when the loot item is made, is tied to the prediction copy,
+and no reader of the bytes was found. What the stray K2 drop message removes is settled
 by execution (M1; section K2). The sections include LAG-1, which changes timing, so
 "removed" is shown for the class, not for each pair separately.
 
@@ -359,6 +361,23 @@ ledger row I1); whether anything later reads the value of an unused slot is **Un
 (the shop's duplicate test and the character checksum are the candidates). It repeats
 exactly, and it is not K1 or K2: it appears with both patched.
 
+Traced further the same day (`docs/issues/live-rig.md` 10.2; FINDINGS V23), which settles
+part of that paragraph. **Where:** the record handed to `inventory_giveItem` by
+`itemprop_tryPickup` already differs; the difference is made 191 ticks earlier, when the
+item is created by the loot code of section 3 (`item_parseDescriptor` 0x1069b8 called
+from `loot_spawnNamedItem` 0x100ba0) — so it belongs to "Loot", not to "Pick-up", and the
+pick-up only copies it into the bag. **Why the machines differ:** with the diagnostic "no
+prediction copy" the pair has no shared difference in 13,970 ticks, so the prediction
+copy is behind it; but clearing the 0x48-byte output record before the parser fills it
+left both pairs diverging in the same ticks, so the value is not a leftover of that
+record — it is written from some other uninitialised place, not found. The Inferred of
+the paragraph above is therefore half right: unwritten, yes; of the output record, no.
+**Who reads it:** nothing seen. The shop's duplicate test ran 83,823 times in the pair and
+compares only the definition, the flags and the word at +0x20; the character checksum was
+never entered and by its decompile does not read the bags; neither pair raised the
+out-of-sync flag in any run. Both candidates of the paragraph above are out. No patch
+exists for it.
+
 **Two players, same item, same frame.** Players run one after the other in run-list order,
 which is shared state. The first to run takes the item and the object is destroyed on the
 spot, so the second player's box query does not return it. For gold the amount is zeroed
@@ -638,8 +657,11 @@ about four minutes when unpatched, one of them visible as the out-of-sync messag
 K1, K2 and LAG-1 patched 3 of 12 still diverged, from other causes (the pet of G25, and
 the stale item bytes of V20, which belong to this chain's pick-up step). Items 1 and 2 of
 the list stay first and second; an eighth item is added below them: **V20**, the same
-picked-up item with different unwritten bytes on two machines — silent, source and
-consequence not traced.
+picked-up item with different unwritten bytes on two machines — silent; made at loot
+creation and tied to the prediction copy, its exact source not found and no reader seen
+(V23). With the sections for K1, K2, the lag, the spin and the touch all on, it is the
+only difference left in the twelve fights (2 of 12), and no fight reached the
+out-of-sync flag (V21).
 
 ## What to record on two machines
 

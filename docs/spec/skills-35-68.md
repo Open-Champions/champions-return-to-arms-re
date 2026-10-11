@@ -6,8 +6,8 @@ the decompile and the disassembly; **nothing was run**, so every number here is 
 computes, not what was seen on a screen. That is still so for this document: the player
 tick has since been executed in `tools/ee_emu.py` (`docs/spec/player-tick.md`, which
 corrected S.2 and S.4 below), and the project has a live game in the Play! emulator
-(`FINDINGS.md`, "Run on the live game", rows V1–V13; `docs/issues/live-rig.md`), but no
-skill of this range was cast on it and the only test patches run on a live game are the two for K1 and K2 (FINDINGS V10, V11). Claims are **Observed** (read at the address given)
+(`FINDINGS.md`, "Run on the live game", rows V1–V23; `docs/issues/live-rig.md`), but no
+skill of this range was cast on it and the test patches run on a live game so far are the five marked confirmed in the patch file (FINDINGS V10, V11, V16, V19, V22). Claims are **Observed** (read at the address given)
 unless marked *Inferred* or *Unknown*. The catalogue of all 101 skills, the `Skill` and
 `Spell` base layouts and the first-round per-machine audit are in `docs/skills.md`; this
 document does not repeat them except where a rebuild needs the exact rule.

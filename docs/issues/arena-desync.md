@@ -8,7 +8,65 @@ Everything here was read from the executable and from the level's unpacked files
 was run when it was written. Claims are **Observed** (read at the address given),
 **Inferred** or **Unknown**. Patch proposals at the end are **untested**, and still are.
 
-**Result of 2026-10-10: the arena desync was not reproduced on the running game.**
+## What the live rig showed (2026-10-10, later runs)
+
+`docs/issues/live-rig.md` sections 8, 9 and 10; `FINDINGS.md` rows V14–V23, G25, SB1, D25.
+**Ran** on two linked instances of the game — two copies of one Play! emulator build on
+one host, the developer LAN start; not a PlayStation 2, not PCSX2. This part supersedes
+the result paragraphs that follow it wherever they disagree; those are kept as written
+and say where they were overturned.
+
+**With real characters the arena does go out of sync.** Two characters at level 25 with
+skills bound and cast constantly — a melee class with the spin and three shouts, a caster
+with a summoned pet, a bolt, two area effects and a shield — were built by identical
+writes on both machines and fought the arena 24 times, and the same twelve pairs a third
+time with more patch sections on: entry, the walk into the trigger, the unskipped opening
+cutscene, the fight. Every divergent pair repeats exactly.
+
+| Patch sections | Fights | Diverged | Ticks compared | Fights won (boss, closing cutscene, automatic level change) |
+|---|---|---|---|---|
+| off | 12 | **7** | 165,225 | 4 |
+| K1, K2 and LAG-1 on, both machines | 12 | **3** | 172,496 | 5, all in sync to the level change |
+| those, and the spin and touch sections | the same 12 | **2**, both silent (the item bytes); **none reached the out-of-sync flag** | 180,701 | 6, in sync |
+
+The causes seen, none of which is one of the five candidates of this document:
+
+| Cause | Seen in | What it is | Ledger |
+|---|---|---|---|
+| K1 / K2 | 5 of the 12 unpatched fights; none with the sections on | an item or a potion in one machine's copy of a bag and not the other's (`docs/issues/kill-loot-xp.md`). Four were still silent at the end of the run; one became a seed difference and the out-of-sync flag 96 ticks after the bags differed | K1, K2, V17 |
+| A summoned pet touched by its owner's prediction copy | 1 of 12, with or without the K1 / K2 / LAG-1 sections; gone with the touch section | on the owner's machine the pet's "touched by a player" bit (bit 59 of its creature flag word) was set 60 ticks before the first logged shared value differed; the pet then turned where the other machine's pet attacked, seven extra shared-seed draws followed, and the out-of-sync flag two ticks later. With the diagnostic "no prediction copy" (X1 of `docs/issues/arena-entry.md`) the pair stays in step. The bit's one setter, `Creature_onTouch` 0x11a418, tests only that the toucher is a player, and the copy is one; it was entered with the copy as toucher 164 times on the owner's machine, each time from `Creature_moveBy` (0x114220). With the section "creatures ignore being touched by the prediction copy" on both machines the pair stays in step and wins the fight | G25, V18, V22 |
+| Stale bytes in a picked-up item | 2 of 12, with every set of sections tried | both machines add the same item to the same cell in the same tick; the two records differ in one 16-bit field (+0x2e, the value of an unused modifier slot). Silent to the end of every run. The difference is there when the item is made as loot, not when it is picked up; it is gone with "no prediction copy"; clearing the parser's output record first does not remove it, so its source is not known; no reader of the two bytes was found | V20, V23, I1 |
+| The spin skill, two players of the same class | 6 of 6 pairs in `strife` (not run in the arena) | a predicted cast writes the animation clip header that all characters of the class share (`SpellCyclone_ctor`, 0x2d1978 and 0x2d197c, before its copy test); the other player's spin then ends on a different frame on that machine. A twelve-word patch brought it to 0 of 6 | SB1, V19 |
+
+Not a cause of an *arena* desync: **a float mismatch across the whole machine.** With one
+machine's rounding mode changed, positions differ on the first tick anyone moves and the
+game's out-of-sync flag follows 7–113 ticks later, in `strife` as on the walk to the
+arena's trigger; no mismatched pair was still in sync when the cutscene or the fight
+began (V15). Such a difference ends every session in the first level and cannot be why
+the arena in particular breaks; a float cause would have to be confined to particular
+operations, which was not tested.
+
+The level itself, executed since (`docs/spec/arena-monsters.md`; FINDINGS X17, D22): the
+knights are **four, on foot** — not three and not mounted, as the brief for that work had
+it; "The level in facts" below was right. `UndeadKnight3` (variant 2) casts Tagar's
+Insects and `UndeadKnight4` (variant 3) is the summoner — the one this document calls
+"knight 3", by its variant number. The classes were run block by block against a model
+with the per-machine inputs set both ways and no per-machine read was found in them that
+this document does not already have.
+
+What this changes below: the head result ("not reproduced", "stays in sync"); the reading
+of "none of the five explains a desync that happens on every run", which stands, with the
+addition that the desyncs now seen come from outside the five; the prediction-copy row of
+the summon table; the ranked list; and the recording note. Still not run: the entry from
+`drundar` through its door, lobby characters, items and a healing skill, four machines,
+two different builds, and patches T1–T5 of this document (X1 was used twice, as the
+control for the pet and for the item bytes).
+
+## Earlier result: placeholder characters
+
+**Result of 2026-10-10: the arena desync was not reproduced on the running game** — with
+level-1 placeholder characters without skills; overturned for real characters by the part
+above.
 (`docs/issues/live-rig.md` sections 7.4–7.5; `FINDINGS.md`, "Run on the live game", row
 V12.) Two instances of the game, linked through the developer LAN start, were put into
 `drunare` in the same lockstep tick and run twelve times through the trigger, the
@@ -34,6 +92,15 @@ directly), real stalls and packet timing, and K1 or K2 (`docs/issues/kill-loot-x
 which the same rig confirmed in another level. No patch of this document was run: there
 was no divergence to bisect. Not a console result.
 
+Overturned in part by the later runs (the part at the head). "An arena fight between two
+machines that compute identically stays in sync" held for characters that cannot cast:
+with skills, a pet and loot in play, two identical machines diverged in 3 of 12 fights
+with K1 and K2 patched and 7 of 12 without. Of the things this paragraph says the set-up
+lacked, three have been run since: characters with skills (they are what diverges), a
+difference between the machines in floating point (it fails everywhere, V15), and K1 / K2
+in the arena (5 of 12 fights). The lobby launch with transferred records, the way in from
+`drundar` and real packet timing are still not run.
+
 ## Result in one table
 
 | Candidate | Ledger rows | Static answer | Rank |
@@ -48,12 +115,17 @@ was no divergence to bisect. Not a console result.
 needs a specific, uncommon event. If the arena goes out of sync with no player death, no
 resurrection and before the last cutscene's first voice line, the cause is not on this list.
 "What to record on two machines" at the end says which observation separates the cases.
+(**Ran since:** that is what happened. The arena did go out of sync with real characters,
+in the fight, with no resurrection, and every cause identified is off this list — the
+part at the head of the document.)
 
 ## The level in facts
 
 **Observed** from `objects.ob`, `script.scr` and the three `.cut` files of `drunare.lmp`.
 
-- 39 object records: four `UndeadKnight1`…`4` (class `Horsemen`, variants 0–3, each with
+- 39 object records: four `UndeadKnight1`…`4` (class `Horsemen`, variants 0–3, on foot —
+  the mounted form of the class, the `Rider…` types on a `Nightmare`, is not in this
+  level — each with
   `wait`, a `deathscript` and a `dropitem` property, all named `knight`), one `CazicAvatar`
   (named `avatar`, `wait`, `deathscript`), one `RalosZek` (named `rallos`, `wait`), four
   `arenadoor`, fourteen animated flag props (`autoprop`), two `Trigger`, one `PushTrigger`,
@@ -62,9 +134,16 @@ resurrection and before the last cutscene's first voice line, the cause is not o
 - A trigger volume runs `incoming`: the first time it starts the cutscene `knights` (post
   action sets the save inhibit and the avatar's MiniBoss bit).
 - Each knight's death script sets a variable; when all four are set a deferred call counts
-  300 un-paused frames and starts the cutscene `cazic`.
+  300 un-paused frames and starts the cutscene `cazic`. Exactly: the test is
+  `getScaledTime(count) > 300`, and `getScaledTime(n)` is `int((n × 60.0) × 0x3c888888)`
+  (0x14412c), which is n − 1 for every count reached here — the multiplier is just under
+  1/60 — so the cutscene starts on the **302nd** counted frame after the fourth knight's
+  death tick (`docs/spec/arena-monsters.md` section 10).
 - The avatar's death script starts a second deferred counter; at 250 it plays a sound, later
   it starts the cutscene `bossdefeated` with post action `levelChange`, then `reapEnemies`.
+  By the same rule the sound comes at count 252 and the cutscene at count 1502, which the
+  doubled counter of "Other things checked" reaches **877** un-paused frames after the
+  avatar's death tick.
 - All three cutscenes have header flag 8. `knights`: four bound knight actors that walk.
   `cazic`: a bound door, the bound avatar, and a created `Player` stand-in. `bossdefeated`:
   a bound door and bound Rallos; three dialog lines, three wait keys.
@@ -163,7 +242,7 @@ All **Observed** unless marked.
 
 | Step | What happens | Where |
 |---|---|---|
-| Decision | `Horsemen_run` state 3, variant byte +0x470 = 3: after the three melee tests fail (target within 36; target within 36 and charging; target within 400 with allies near it) it calls slot 1 of skill 11 and, if true, enters state 0x17. The timer +0x474 is not consulted for this variant | 0x2726f0–0x27271c |
+| Decision | `Horsemen_run` state 3, variant byte +0x470 = 3 (object type `UndeadKnight4`, the fourth knight; "knight 3" in this document is the variant number): after the three melee tests fail (target within 36; target within 36 and charging; target within 400 with allies near it) it calls slot 1 of skill 11 and, if true, enters state 0x17. The timer +0x474 is not consulted for this variant | 0x2726f0–0x27271c |
 | Can use | For a caster without the player flag: true when no object is registered under the monster skeleton name (pointer at 0x503788) | 0x2e2368 → 0x14f498 |
 | Cast | State 0x17, on animation event bit 0 and only with a target handle: slot 2 of skill 11 at the knight's own position. Nothing re-tests "can use" here. The returned spell is dropped (variant 2 links its spell, variant 3 does not) | 0x272c70; compare 0x272bfc |
 | Inside the cast | Tint on the caster; particles from the cosmetic seed; spawn point 72 units ahead at terrain height, replaced by `world_findFreeSpot` (shared seed) only when the height differs by more than 24; one `g_randSeed` draw; `pool_new(0x468)`; on success `Skelight_ctor` with the property list at 0x503770 and object flag 0x4000; a second shared draw picks a weapon element when the first draw is under a skill statistic; a sound; `pool_new(0x1c)` and `SpellSummonSkeleton_ctor` (one more shared draw, a handle to the skeleton) | 0x2e18a4: 0x2e1f80, 0x2e2020, 0x2e2040, 0x2e221c, 0x2e223c |
@@ -200,7 +279,7 @@ tick (0x273278, 0x2732ac), and drops both held weapon parts.
 | Pool exhaustion | A failed `pool_new(0x468)` skips the constructor's draw and leaves "can use" true. See the pool section for why that does not happen | Observed mechanism |
 | Local option | None on this path in a net game | Observed |
 | Cosmetic seed | Particles in the cast only | Observed 0x2e194c–0x2e1e40 |
-| Prediction copy | Monsters do not run during prediction; box queries skip the copy | G6 |
+| Prediction copy | Monsters do not run during prediction; box queries skip the copy. One route from the copy to a creature was missed here (FINDINGS G25, **Ran** as V18 and V22): a creature's touch handler, `Creature_onTouch` 0x11a418, sets the creature's "touched by a player" bit for any toucher with the player flag, the copy included; the call comes from `Creature_moveBy` (0x114220). `Creature_run` acts on the bit only for a creature in state 0 or 5 whose charm timer +0x312 is non-zero (0x113b48–0x113b64) — a player's summoned pet, or a charmed monster — so it does not reach the knights or their skeleton unless a player's skill has charmed one; it did reach a player's pet in this level | G6; G25 |
 | Alive-player list | Not read by `Horsemen`, `Skelight` or the skill. The experience loop in `Creature_processDamage` uses `g_numPlayers` and hit points | Observed |
 
 **Answer to D23:** given the same damage input, the frame on which the skeleton's object
@@ -426,7 +505,7 @@ by one.
 
 | Item | Finding | Kind |
 |---|---|---|
-| Second deferred counter | On the frame the counter passes 250 the entry queues itself (source line 98) and then falls through to the second test and queues itself again (line 103). Two copies run from then on and the counter rises by 2 per frame. The last cutscene therefore starts about 875 frames after the avatar dies, not 1500. Same on every machine | Observed: no jump opcode between the two statements in `script.scr` |
+| Second deferred counter | On the frame the counter passes 250 the entry queues itself (source line 98) and then falls through to the second test and queues itself again (line 103). Two copies run from then on and the counter rises by 2 per frame. The last cutscene therefore starts about 875 frames after the avatar dies, not 1500 — 877 exactly, counting that `getScaledTime(n)` is n − 1 (252 frames to the 250 mark, then 625 at double rate to a count of 1502; `docs/spec/arena-monsters.md` section 10). Same on every machine | Observed: no jump opcode between the two statements in `script.scr` |
 | `cazic` stand-in | Created only if slot 0's hit points are above 0. An inert player object only steps its animation in `Player_run` (0x1a5030, inert test), so it stays where the actor record put it | Observed |
 | End of `cazic` | Slot 0 is moved to the stand-in; each other living player is placed by `world_findFreeSpot` (three shared draws per try) around it. All inputs are shared | Observed 0x19a0dc |
 | Stand-in side effects | `Player_ctor` recomputes slot 0's statistics and clears that record's two weapon-trail blocks and one countdown byte; `Player_dtor` zeroes five record words at +0x43dc. Both run inside a tick on every machine | Observed 0x1a1d28, 0x1a1bb8 |
@@ -449,6 +528,19 @@ by one.
    is one block.
 4. **D22/D23.** Fully traced; no per-machine input. Keep D22 as an amplifier.
 5. **D8/D10/D19.** Fully traced; no route.
+
+**After the runs with real characters** the five keep their order among themselves, and
+none of them was seen: no divergent pair began with the alive list, the camera, the pool,
+the skeleton or the speaker. What was seen ranks above all five, in this order by how
+often it bit in twelve fights: K1 / K2 (5, unpatched only), stale bytes in a picked-up
+item (2), the summoned pet touched by the prediction copy (1), and — for a party with two
+characters of one class — the spin skill (every pair, in another level). The prediction
+copy is involved in three of the four (the pet, the spin, and — by the control run — the
+item bytes), though not through the alive list of candidate 1. With the sections for K1,
+K2, the lag, the spin and the touch all on, the same twelve fights gave two silent
+item-byte differences and no out-of-sync flag (V21). FINDINGS D25 draws the conclusion: several ordinary things players
+do in a long boss fight each break sync some of the time, which together fits a report of
+"every run" better than any single cause.
 
 ## What to record on two machines
 
@@ -477,6 +569,17 @@ cutscene and the avatar fight are not reported as reached. The table stands as t
 to record when the desync is next seen, which now means: on machines that differ, or
 with real characters.
 
+Recorded later the same day with real characters (`docs/issues/live-rig.md` 9.2, 9.3):
+ten divergent pairs in 24 fights, and the first row is the one that applies to all of
+them — the fight, nobody resurrected, "none of the five". In three the game's own
+out-of-sync flag followed (the pet pair in both sets: seed at tick 7541, flag at 7543;
+one bag pair: bags at 7283, flag at 7379); the others were silent differences in a bag to
+the end of the run, one of them followed by a hit-point difference. Nine fights were won,
+the five of the patched set in sync through the closing cutscene and the level change,
+so the avatar fight and the last cutscene have now been reached. What separates the causes now seen is not in the
+table: bags of one player differing (K1, K2; or, with the same item in both, the item's
+bytes — V20), and a creature flag word differing for a pet (G25).
+
 ## Proposed ledger rows
 
 | ID | Claim | Kind | Evidence |
@@ -495,7 +598,9 @@ with real characters.
 
 ## Test patches (all untested)
 
-One change each. PCSX2 form: `patch=1,EE,<address>,word,<new>`.
+One change each. PCSX2 form: `patch=1,EE,<address>,word,<new>`. Still untested: the
+sections for T1 and T3–T5 in the patch file were not among those run on the linked pair
+(`docs/issues/live-rig.md` 8.5), and no divergence seen there points at them.
 
 | # | Address | Original | New | What it changes | What could go wrong | Every player? |
 |---|---|---|---|---|---|---|
@@ -548,6 +653,8 @@ One change each. PCSX2 form: `patch=1,EE,<address>,word,<new>`.
   D37; the experience award and loot in docs/issues/kill-loot-xp.md.)
 - The avatar's own fight was taken from docs/monsters.md, not re-read.
 - Where a player's attached spells get their per-frame call was not located.
-- Whether `hideMonster` with a name shared by four objects hides all four.
+- Whether `hideMonster` with a name shared by four objects hides all four. (It does:
+  the name lookup returns every match, `docs/issues/arena-entry.md` section 1.4; and in
+  every live run the four knights appeared only with the cutscene.)
 - DiseaseBolt's exact lifetime; pool use of player skills.
 - Whether a party can cast Resurrect in this level in practice.

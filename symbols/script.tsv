@@ -20,7 +20,7 @@
 00141478	scr_setCallback	(vm, fn): writes vm+4; AMX amx_SetCallback; no references found
 00141488	scr_setDebugHook	(vm, fn): writes vm+8; AMX amx_SetDebugHook; no references found
 00141498	scr_raiseError	(vm, code): writes vm+0x5c, the value scr_callNative returns; AMX amx_RaiseError; no references found, so no built-in can abort a script
-001414a8	scr_getAddr	(vm, cellAddr, void **out): data-relative address to host pointer; error 5 unless (addr < heap top or addr >= stack pointer) and addr < stack top; AMX amx_GetAddr; every string argument of a built-in goes through it
+001414a8	scr_getAddr	(vm, cellAddr, void **out): data-relative address to host pointer; error 5 unless (addr < heap top or addr >= stack pointer) and addr < stack top; AMX amx_GetAddr; every string argument of a built-in goes through it. On a refusal *out is NOT written (0x1414d8) and the callers ignore the result, so the handler uses whatever its stack slot still held - the string of an earlier built-in call; shipped TORMEDAL start relies on it (executed, FINDINGS N1)
 001414f8	scr_allot	(vm, cells, cell *addr, void **ptr): reserves cells on the script heap, error 16 when fewer than 0x40 bytes would remain below the stack; AMX amx_Allot; no references found
 00141550	scr_release	(vm, addr): lowers the heap top back to addr; AMX amx_Release; no references found
 00141568	scr_strLen	(cells, int *out): length of a packed or unpacked script string; AMX amx_StrLen; no references found

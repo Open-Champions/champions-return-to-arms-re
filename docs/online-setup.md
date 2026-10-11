@@ -6,12 +6,18 @@ it is known. The server side is in [lobby-protocol.md](lobby-protocol.md).
 
 What has changed since that sentence was first written: the game itself now runs in this
 project, in the Play! emulator — not on a PlayStation 2 and not in PCSX2 — and what was run
-there is listed in `FINDINGS.md`, "Run on the live game" (rows V1–V13) and
+there is listed in `FINDINGS.md`, "Run on the live game" (rows V1–V23) and
 `docs/issues/live-rig.md`. Two results bear on this page. The executable has a developer
 LAN start that needs no network menu, no sign-in check and no lobby (boot argument `--net`,
 row V6). And two instances of the emulator have been joined that way into one lockstep
-game (rows V9–V12, `live-rig.md` section 7): they stay in sync under ordinary play, the
-two per-machine branches K1 and K2 were reproduced, and the patch for each removes it.
+game (rows V9–V23, `live-rig.md` sections 7–10): with placeholder characters they stay in
+sync under ordinary play once the two per-machine branches K1 and K2, which were
+reproduced, are patched; with real characters that cast skills they do not always — the
+Drundar arena went out of sync in 3 of 12 fights even with those patches, from a summoned
+pet, from stale bytes in a picked-up item and, for two players of one class, from the
+spin skill (rows V17–V20). The pet and the spin have patches too, and with the whole set
+on no fight of twelve reached the out-of-sync message; two still differed, silently, in
+two bytes of an item that nothing was seen to read (rows V21–V23).
 That path bypasses every step below, so none of them — network set-up, sign-in, the host
 name, the lobby, hole punching — has been exercised, and the two instances exchange their
 packets through the test rig, not through a network; whether a console or PCSX2 can pass
@@ -61,11 +67,13 @@ The network menu is a state machine (the function at 0x33ed70, state word at obj
 
 Play is deterministic lockstep: each machine runs the whole simulation itself and they only
 exchange controller input. Anything that makes one machine compute a different number puts
-it "OUT OF SYNC". From reading the code. Of this list only the K1 and K2 item has been
-seen on a running game: two linked emulator instances went out of step in exactly those
-two ways (`docs/issues/live-rig.md` section 7.3). Those instances are two copies of one
-build on one host, so they cannot show any of the version, arithmetic or hardware
-differences the other items are about:
+it "OUT OF SYNC". From reading the code. Of this list two items have been
+seen on a running game: two linked emulator instances went out of step in the two ways
+of the K1 and K2 item (`docs/issues/live-rig.md` section 7.3), and, with the float
+rounding mode of one of them changed by the test rig, in the way of the arithmetic item
+(section 8.3 there). Those instances are two copies of one build on one host, so apart
+from that forced rounding mode they cannot show any of the version, arithmetic or
+hardware differences the other items are about:
 
 - **Same disc version.** Everything in this project is for SLUS-20973, version 2.00.
 - **Same emulator version, and the same arithmetic settings**: EE/FPU rounding, EE/FPU
@@ -152,7 +160,12 @@ gets past the sign-in step, that two real clients find each other, and that play
 stays in sync ([VALIDATION.md](VALIDATION.md) describes how to test the last part). The
 live rig (`docs/issues/live-rig.md`) checks none of the first three: its machines start
 through the developer LAN path and exchange packets inside the rig. On the fourth it has
-a partial answer (section 7 there): two copies of one emulator build stay in sync through
-thousands of ticks of random play and through twelve runs of the Drundar arena, and the
-only divergences found were K1 and K2. Whether two *different* machines — two PCs, a PC and
+a partial answer (sections 7–10 there): two copies of one emulator build, with placeholder
+characters and the K1 and K2 patches, stay in sync through hundreds of thousands of ticks
+of random play in 24 levels. With real characters that cast skills they do not: the
+Drundar arena diverged in 7 of 12 fights unpatched and 3 of 12 with the K1, K2 and LAG-1
+patches, the remaining causes being a summoned pet, stale bytes in a picked-up item and
+— for two players of the same class — the spin skill, of which the first and the last
+have patches in the table above; with those on as well, none of twelve fights reached the
+out-of-sync message and two kept a silent two-byte difference in an item record. Whether two *different* machines — two PCs, a PC and
 a console — stay in sync is still unchecked.

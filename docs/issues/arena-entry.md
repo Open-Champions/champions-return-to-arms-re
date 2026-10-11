@@ -6,8 +6,60 @@ the arena's opening cutscene `knights`, on every machine of a net game.
 
 Everything here was read from the executable (SLUS_209.73, v2.00) and from the unpacked
 level files of `drundar` and `drunare`. **Nothing was run when it was written, and every
-patch below is untested** — the second half still holds. Claims are **Observed** (read at
+patch below is untested** — the second half still holds for X2–X4; X1 has been used on
+a linked pair. Claims are **Observed** (read at
 the address given), **Inferred** or **Unknown**. New names are in `symbols/entry.tsv`.
+
+## What the live rig showed (2026-10-10, later runs)
+
+`docs/issues/live-rig.md` sections 8, 9 and 10; `FINDINGS.md` rows V14–V23, G25, SB1, D25.
+**Ran** on two linked copies of one Play! emulator build, started through the developer
+LAN path — not a PlayStation 2, not PCSX2.
+
+- **With real characters the arena does go out of sync, but not in the phase this
+  document covers.** Two level-25 characters with skills went through the entry, the
+  trigger and the unskipped opening cutscene into the fight 24 times; 3 of 12 pairs
+  diverged with the K1, K2 and LAG-1 patch sections on and 7 of 12 with them off. The
+  earliest first difference of any pair was at tick 3663; the others lie between 4932 and
+  8748. The opening cutscene again lasted 1,268 ticks, and in the earlier runs it ended at
+  tick 2290, so every divergence falls after E, in the fight (M > E in the reading at the
+  end of this document; S and E are not reported pair by pair for these runs, so that is
+  **Inferred** from the tick numbers). No shared value differed before or during the
+  cutscene in any of the 24, which is one more confirmation of "Result in short".
+- **The causes seen in the fight**, for which `docs/issues/arena-desync.md` has the table:
+  K1 / K2 (5 of the 12 unpatched fights); a summoned pet touched by its owner's prediction
+  copy (FINDINGS G25, V18, V22); stale bytes in a picked-up item (V20, V23); and, for two
+  players of one class, the spin skill (SB1, V19, seen in another level). With the patch
+  sections for all but the item bytes on, the same twelve fights gave two silent item-byte
+  differences and no out-of-sync flag (V21).
+- **Three of them go through the prediction copy** — the item bytes too, by the control
+  run, though how is not known — which bears on E6 below: the copy can
+  reach shared state by two routes the G-series audit did not have — `Creature_onTouch`
+  0x11a418, which flags a creature touched by the copy, and `SpellCyclone_ctor`, which
+  writes a shared animation clip header before its copy test. Neither was seen during the
+  entry or the cutscene, where a frozen player's pet is frozen with it; both are what X1
+  is a diagnostic for, and **X1 has now been used twice**: on the pet pair and on an
+  item-bytes pair, with "no prediction copy" on, the two machines showed no shared
+  difference past the tick at which they had diverged.
+- **A float mismatch across the whole machine is not an arena cause** (V15): with one
+  machine's rounding mode changed, the out-of-sync flag came 7–113 ticks after the first
+  step — in this level during or right after the walk from the start to the trigger
+  (first position difference at tick 759, flag at 766 or 872). No mismatched pair was
+  still in sync when the cutscene began. In the reading at the end that is "F0 < M < S:
+  ordinary play, not this level", and it is the caveat of the last paragraph of "Not
+  done" seen at work.
+- **The level:** the four bound actors of `knights` are four knights **on foot**
+  (`UndeadKnight1`–`4`, class `Horsemen` without a mount; executed in
+  `docs/spec/arena-monsters.md`) — not three, and not mounted, as the brief for that work
+  had it. The later timing, outside this document's phase, is exact there too: the second
+  cutscene starts on the 302nd counted frame after the fourth knight's death tick and the
+  last one 877 frames after the avatar's, because the script's `getScaledTime(n)` is
+  n − 1 (0x14412c).
+
+Still not run: the way in from `drundar` through its door with the quest state, lobby
+characters, four machines. X2–X4 were not used.
+
+## Earlier result: placeholder characters
 
 **Result of 2026-10-10, on the running game** (`docs/issues/live-rig.md` sections 7.4–7.5;
 `FINDINGS.md`, "Run on the live game", row V12, and row E4). Two linked instances of the
@@ -31,7 +83,8 @@ level's saved state (timeline rows 1–5, and the revisit cases of section 4) we
 the level change, the load and the cutscene that followed were, on machines that cannot
 differ from each other. The instances are two copies of one Play! emulator build — not a
 PlayStation 2, not PCSX2 — started through the developer LAN path with placeholder
-characters. X1–X4 were not used: there was no divergence to bisect.
+characters. X1–X4 were not used: there was no divergence to bisect. (With real characters
+there was, and X1 has been used since: the part above.)
 
 ## Result in short
 
@@ -44,7 +97,8 @@ characters. X1–X4 were not used: there was no divergence to bisect.
 
 So this phase does not explain an every-run desync either. What it adds is a precise list of
 what must be equal at each mark, so that one two-machine run can say which side of the
-opening cutscene the divergence is on.
+opening cutscene the divergence is on. (**Ran** since, 24 times with real characters:
+every divergence was on the far side, in the fight.)
 
 ## Timeline
 
@@ -438,11 +492,22 @@ on a re-entry (section 4).
 - **Chain:** sections 2 and 3.4. **Observed** mechanism.
 - **Weakest link:** the claim that the un-frozen copy cannot reach shared state rests on
   the G-series audit of `Player_run` for the copy; it was not repeated with a cutscene
-  active.
+  active. That audit has since been shown incomplete in two places
+  (`docs/issues/prediction-copy.md` section 3.5; FINDINGS G25, SB1): the copy can flag a
+  creature it touches, and a predicted spin cast writes a shared clip header. For this
+  phase (**Inferred**, not run): the first looks closed, because during a flag-8 cutscene
+  every creature with inert byte 0 — a pet included — is off the grid (arena-desync.md
+  F2) and the un-frozen copy has nothing to touch. The second is not closed by the
+  freeze: a copy running from local input for up to 30 ticks after S can cast the spin,
+  and if another player of the same class was frozen in mid-spin, the reset clip slot is
+  what that player's spin resumes with at E, on this machine only. Neither was seen in
+  24 runs.
 - **If it were the cause:** the mismatch would come within 30 ticks after S or after E, on
   one machine, and would change with X1.
 - **Two-machine test:** note `g_ghost` (0x4027bc) and 0x4027d4 on both machines at S.
-- **Patch:** X1 removes the copy altogether.
+- **Patch:** X1 removes the copy altogether. (Run on the linked pair for the pet
+  divergence and for the item-byte divergence of the fight: with it each pair stays in
+  step — `docs/issues/live-rig.md` 9.2, 10.2.)
 
 ### E9. A notice box runs the pending post-action script from the draw pass
 
@@ -569,6 +634,13 @@ words, the post-action name, the run-list cursors, and whether the hash is *cons
 from S + 1 to E — were not read out. P and F0 do not apply as defined: the level name was
 written by the rig, not by `drundar`'s script.
 
+Recorded later the same day with real characters (`docs/issues/live-rig.md` 9.2, 9.3):
+there **was** an M, in 10 of 24 pairs, each time in the fight by the tick numbers (first
+difference at ticks 3663–8748; M itself — the out-of-sync byte — at 7543 and 7379 in the
+three pairs where it was set). The rows of the table were again not read out one by one;
+the rig's standing comparison (seed, positions, bags, statistics, equipment, skills)
+showed no difference before those ticks.
+
 ## Proposed ledger rows
 
 | ID | Claim | Kind | Evidence |
@@ -589,10 +661,13 @@ written by the rig, not by `drundar`'s script.
 | E14 | After a load a machine waits for one packet from every peer for at most about 900 calls; a peer's silence counter keeps running meanwhile and starts a kick above 900. A much slower loader is dropped, not desynchronised | Observed (constants), Inferred (outcome) | 0x323014–0x32305c; 0x134408–0x134448; 0x133060 |
 | E15 | Every level entry applies a pending character selection (flag 0x4fbbd8) by re-creating that slot's character; whether a net launch can start with the flag set on one machine is not established | Observed (code), Unknown (reachability) | 0x321024; 0x2247ec |
 
-## Test patches (all untested)
+## Test patches (X1 run on a linked pair; the rest untested)
 
 One change each. PCSX2 form: `patch=1,EE,<address>,word,<new>`. Original words were read
-from the executable.
+from the executable. X1 is the patch-file section "Arena diagnostic: no prediction copy";
+it was applied on two linked Play! emulator instances and removed the pet divergence
+and the item-byte divergence of the fight (`docs/issues/live-rig.md` 9.2, 10.2). Its "what could go wrong" column was not
+looked at there, and none of the four has been run in PCSX2 or on a console.
 
 | # | Address | Original | New | What it changes | What could go wrong | Every player? |
 |---|---|---|---|---|---|---|
@@ -604,7 +679,8 @@ from the executable.
 How to use them: X2 first. If the arena still goes out of sync with X2 on both machines,
 the opening cutscene's 1,270 ticks are not needed for it, and M relative to E says whether
 the fight or the load is. Then X1: if the result does not change, the prediction copy is
-not involved in any way. T5 of arena-desync.md (0x001e4dd4) remains the test for
+not involved in any way. (X1 was the one tried, on two divergent pairs of the fight: the
+result did change, so for those pairs the copy is involved — FINDINGS V18, V23.) T5 of arena-desync.md (0x001e4dd4) remains the test for
 camera-judged activity.
 
 ## Corrections to earlier documents
