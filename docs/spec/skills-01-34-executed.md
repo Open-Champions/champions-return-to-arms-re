@@ -28,19 +28,25 @@ What runs for real besides the functions of the table: the Skill base slots, `Sp
 creature base functions a call reaches (`Creature_isEnemy` and slots 30, 31, 35, 36, 37 for
 monsters), the angle and matrix functions and the C library. For the Hammer of Wrath also
 `item_parseDescriptor` (with `item_randomizeVariant`) and `item_getResourceIndex`; their
-model side is `tools/ref_items.py`, reading the item tables from the memory image. A player's is-enemy and
+model side is `tools/ref_items.py`, reading the item tables from the memory image. For Fire
+Flares and Blessed the spell's own destructor (slot 1) runs for real too, so their end is
+compared down to `pool_free`; every other self-delete is a recorded call. A player's is-enemy and
 same-team answers are scripted (`Player_isEnemy` is not modelled); `damage_apply`, the
 world queries, terrain, `pool_new` and the handle lists are scripted stubs, so what a
 skill's damage *does* is `tools/ref_combat.py`'s business, not this test's.
 
 Run of record: `python3 -I -B tools/difftest_skills_a.py` at its defaults (seed 3411, 80
-rounds per scenario) — 140 properties PASS, 0 FAIL; 168,450 comparisons, of which 133,993
-are statistic-getter calls and 34,457 are calls of can-use, cast, constructor, run, hit and
-helper functions - every one equal in calls, bytes, seed and result, and none stopped on one
-side only (121 s). The first pass ended at 105 properties and 157,593 comparisons; its
-scenarios draw the same random cases as before (their 105 lines are unchanged), and the
-second pass added six scenarios (s13, s18, s17, s34, s22, s01) and the store tables after
-them.
+rounds per scenario) — 165 properties PASS, 0 FAIL; 172,485 comparisons, of which 133,993
+are statistic-getter calls and 38,492 are calls of can-use, cast, constructor, destructor,
+run, hit and helper functions - every one equal in calls, bytes, seed and result, and none
+stopped on one side only (307 s on a machine that was heavily loaded by other jobs; the
+140 properties of the second pass alone took 143 s there shortly before, and the four new
+scenarios take about 40 s run by themselves). The first pass ended at 105 properties and 157,593
+comparisons, the second at 140 and 168,450; their scenarios draw the same random cases as
+before (their 140 lines are unchanged). The third pass added four scenarios after them
+(s05 diseaseshield, s06 diseasetrail, s08 fireflares, s10 blessed): 25 properties and 4,035
+comparisons. The four new scenarios also pass with seeds 1 and 77 and, at a tenth of the
+rounds, with the `nearest` adder model on both sides.
 
 ## 1. Status per skill
 
@@ -73,11 +79,14 @@ them.
 | 18 | coneoffire | **matched** (second pass) | can-use, cast, the constructor (also as the Mummy calls it), the run with its 28 particles and the damage tick; player and monster owners, levels 0-40 |
 | 22 | dismissundead | **matched** (second pass) | cast, `HolyBolt_ctor` with its target loop, run (homing, vertical speed, terrain bounce with its ten probes, expiry), the hit handler on every kind of object |
 | 34 | shieldbash | **matched** (second pass) | can-use (shield, weapon class, monster, prediction copy), cast, constructor, run (wind-up, blow, stun roll, prop fallback, end), `SpellShieldBash_windupFx`, slot 4. `Player_animStep` and `Player_move` are recorded call-outs with scripted answers |
-| 5, 6, 8, 10 | diseaseshield, diseasetrail, fireflares, blessed | matched in part | statistics, mana cost, can-use ("carries a spell of its class", also for the prediction copy). **Cast and effect not run**: not reached in the second pass either; each has a long presentation-heavy run function (0x2cd318, 0x2cb65c, 0x2dbf10, 0x2df4bc) |
+| 5 | diseaseshield | **matched** (third pass) | can-use, cast (the flash, a pool failure), the constructor (also as the Mummy calls it, 0x299ee8, with levels above 127), the run at every stage of the radius: both particle clouds with their counts, the swarm, the drift when the owner walks, the tick with its halved maximum, the hit sound, the end |
+| 6 | diseasetrail | **matched** (third pass) | can-use, cast, `SpellDiseaseTrail_ctor` with and without a block for the first segment, `SpellDiseaseTrail_run` (the four particles, both drop distances from either side, a failed allocation, the end), `DiseaseTrail_ctor` (also without an owner), `DiseaseTrail_run`: particles, the 15-frame tick on every kind of object with and without an owner, the one-shot end, the expiry |
+| 8 | fireflares | **matched** (third pass) | can-use, cast, `SpellFireFlares_ctor` (0 to 16 flares, pool failures, both divisions by zero), `FireFlare_ctor`, `SpellFireFlares_run` (the orbit opening, the light, the flares moved, the empty ring, the end), `SpellFireFlares_dtor` (run for real, on its own and from the run's end), `FireFlare_run`: the 17 particles, the hit on frames divisible by 10, the explosion from level 7, the burst and both endings. Of the burst frames (110 rounds of a loop each) 40 are run in full; later ones are taken straight to the burst's last frame |
+| 10 | blessed | **matched** (third pass) | can-use, cast (refused for a caster that carries the spell; the flash; a pool failure), constructor, run (light, tint, 0 to 6 sparkles with every clamp, the glow and the ten particles of each), `SpellBlessed_dtor` (for real, on its own and from the run's end), `SpellBlessed_getStat0` |
 | 1 | wizardbeam | **matched** (second pass) | cast, constructor (the colours, the trails, the side-beam count), run: the chain laid out, the primary target search, no target / a target / side targets, the pull of the main chain and of each side chain, both segment-length rules, the tint, the ten trail draws, the damage frames (every twentieth), the rings, both chain integrations. **One exclusion:** the point arrays handed to the trail functions (6, 4 and 10 points) are built in the caller's frame and are not compared - the calls, handles and counts are, and so is every word stored in the spell and on the targets |
 
-30 of the 34 ids are matched end to end; the other four are matched as far as their numbers.
-Not compared for any id: `describeRank` (slot 4, menu text) and the draw functions (slot 5
+All 34 ids are matched end to end (30 since the second pass, ids 5, 6, 8 and 10 since the
+third). Not compared for any id: `describeRank` (slot 4, menu text) and the draw functions (slot 5
 of the objects).
 
 ## 2. Coverage
@@ -92,8 +101,12 @@ listed by the test's own report; `-v` prints the blocks never entered):
 | 2 dodge | 2 | 4 | 4 | 100.0 |
 | 3 resistpoison | 3 | 3 | 3 | 100.0 |
 | 4 diseasebolt | 4 | 82 | 84 | 97.6 |
+| 5 diseaseshield | 4 | 55 | 57 | 96.5 |
+| 6 diseasetrail | 6 | 80 | 82 | 97.6 |
 | 7 firestorm | 6 | 66 | 68 | 97.1 |
+| 8 fireflares | 7 | 93 | 97 | 95.9 |
 | 9 riposte | 2 | 17 | 17 | 100.0 |
+| 10 blessed | 6 | 51 | 51 | 100.0 |
 | 11 summonskeleton | 4 | 59 | 64 | 92.2 |
 | 12 lightningweapons | 4 | 121 | 125 | 96.8 |
 | 13 fireweapons | 4 | 144 | 148 | 97.3 |
@@ -113,13 +126,19 @@ listed by the test's own report; `-v` prints the blocks never entered):
 | 31 clericroot (and 32 rangerroot) | 4 | 43 | 44 | 97.7 |
 | 33 rangercriticalhit | 6 | 56 | 60 | 93.3 |
 | 34 shieldbash | 6 | 67 | 67 | 100.0 |
-| ids 5, 6, 8, 10 (can-use only) | 1 each | 1 each | 1 | 100.0 |
-| **all** | | **1805** | **1889** | **95.6** |
+| **all** | | **2080** | **2172** | **95.8** |
 
 The six skills of the second pass: 573 of 587 blocks (97.6 %). Their fourteen blocks never
 entered: the "slot is neither empty nor of this type" arms (Fire Weapons four, Cone of Fire
 two); in `HammerOfWrath_run` the six blocks of states 1 and 2 and the two of state 4's
 "no owner handle" arm, which follows a return for exactly that case.
+
+The four skills of the third pass: 279 of 287 blocks (97.2 %); every function of ids 5, 6, 8
+and 10 named in the specification is entered, describeRank and the draw functions apart.
+Their eight blocks never entered are all of one kind, the "slot is neither empty nor of this
+type" arm of the inlined descriptor fill: two each in `SpellDiseaseShield_run` (0x2cdd88,
+0x2cddb4) and `DiseaseTrail_run` (0x2cbf20, 0x2cbf4c), four in `FireFlare_run`, which fills
+two descriptors (0x2dc6f4, 0x2dc720, 0x2dc990, 0x2dc9bc).
 
 Blocks never entered are of four kinds: the "slot is neither empty nor of this type" arm of
 the inlined descriptor fill, which cannot be taken on a fresh record (one or two blocks in
@@ -154,6 +173,15 @@ settles something the specification left open.
 | 17 | spec §34, the prop fallback | "first entry of `world_collectInSphere`" | the sphere query is handed the SAME list head as the arc query before it (0x2fb3a4), so it adds to that list, as section 49 of `docs/spec/skills-35-68.md` says of Bash; the walk that follows covers both. (The callee's linking is a stub here; the head being shared is executed.) | 0x2fb380–0x2fb3e0 |
 | 18 | spec §1, Wizard Beam, damage | "d = (float) trunc(slot10(0, L) × 0.3333333)" | as written - and worth a number, because the constant is below a third and the product truncates: rank 1 (s0 = 135) deals 44 a tick, not 45; the side beams (135 × 0.25 × 0.3333333) 11 | 0x2f2b70 (call 0x2f2bec); 0x2f2c50 (call 0x2f2cd0) |
 | 19 | spec §1, "(side-chain geometry and trails — presentation)" | not given | now executed. Side chain k has four nodes relative to the PRIMARY target; nodes 1-3 are pulled toward side target k's middle by (j × 0.3333333)³, measured from the primary target's position plus half its height; its segment length goes toward min(3 × rest, 1.1 × the side target's plane distance from the tip) × 0.3333333 at rate 0.05, an unused chain's toward the rest length; each side target is tinted like the primary one. The side chains then take the same integration step as the main chain, with their own lengths and spoke directions (cos, sin of frame × 600 + k × (0xfffe / n) + the target's facing) | pull 0x2f25d8–0x2f27bc (`powf` at 0x2f265c); integration 0x2f2cd8–0x2f3120 |
+| 20 | spec §5, constructor table, "+0x1ac float 0 current radius" | the constructor stores 0 | `SpellDiseaseShield_ctor` has no store to +0x1ac at all; the word is 0 only because `pool_new` clears every block it hands out (0x14fe5c). The first store is the run's `radius += 0.5`. Same result for the shipped callers, both of which allocate from the pool (0x2ce048, 0x299ec0); a rebuild that constructs the spell in other memory must clear it | constructor 0x2ccfc8–0x2cd314; first store 0x2cd424 |
+| 21 | spec §5, run, "particles and swarm from the spell's generator (counts grow with radius² — presentation)" | not given | now executed. Low cloud: n = (int)((r × 0.000833) × (r × 3.14159)) particles, the count read again after each; each takes ONE own ball (three draws a try), flattened to 0.4 in z, × (r × 0.75), placed at the run position less a quarter of the owner's height, with velocity = the same vector, z made positive, × 0.4, plus a drift of (owner position − owner position at the last run) × 6 in x and y. Motes: (int)((r × 0.000417) × (r × 3.14159)), each TWO own balls (place × r × 0.33; velocity with z × 0.3 made positive, × 14, plus the drift). So neither cloud spawns anything until r passes 19.5 (the first 39 frames of a shield), and a full-size player shield (r = 144) makes 54 + 27 a frame. Then the sixteen swarm points exactly as §29's, with r in place of the victim's radius, drawn at the OWNER's position (not the run position) raised by ¾ of its height. Own draws a frame: at least 3 n₁ + 6 n₂ + 48 | counts 0x2cd428–0x2cd458 and 0x2cd670–0x2cd6a0; drift 0x2cd384–0x2cd414; swarm 0x2cd918–0x2cdbdc |
+| 22 | spec §6, "The constructor creates the first segment … and plays a sound. Draws: shared ×1 (spell seed), shared ×1 (segment's `GameObject_ctor`)" | always | only when `pool_new(0x68)` gives a block: without one there is no segment, no handle and NO sound, and the second shared draw is not made (the spell still exists and runs). In the run a failed allocation still moves the drop point to the run position, so that stretch of trail is simply missing | 0x2cc184 (and 0x2cc1d4); run 0x2cca40 → 0x2cca90 |
+| 23 | spec §6, "4 particles from the spell's generator (1 draw + (S, S) each)" and the segment's "4 × (1 draw, S, S)" | recipe not given | now executed, the same in both functions: ONE own draw t; point = near × t + far × (1 − t) plus an own ball × 10, with (near, far) = (run position, last drop point) for the spell and (the segment's position, its other end) for a segment; velocity = a second own ball × 6 for the first two kinds, × 12 for the third (two of it) | spell 0x2cc2b0–0x2cc99c; segment 0x2cb6a8–0x2cbd94 |
+| 24 | spec §8, state 1, "burst += 7; 110 burst particles" | 110 particles | 110 rounds, TWO `particle_spawn` calls each (the first and the second kind, same point, same velocity): 220 a frame. A round: ONE own draw a for the ring angle, an own ball × 6.78 added to (cos16(a), sin16(a)) × burst and to the victim's remembered position, a second own ball as the velocity. At least 7 own draws a round, 770 a burst frame, for eleven frames | 0x2dca6c–0x2dcce4 (calls 0x2dccbc, 0x2dccd8) |
+| 25 | spec §8, "+0x2c…+0x64, +0x74 light, sound handle (presentation)" and the orbiting particles | not given | now executed. Constructor: 1 / range² of the light is 1.0 / 0.0 as the machine divides it (as correction 10); the light's z is the cast position's + 0.000022; every flare is built AT the cast position, because the orbit radius is still 0. Run: range = (float)(radius to reach + radius now + (int)((sin16(frame × 3000) + sin16(frame × 1500)) × 12)). Orbiting flare: 6 + 7 + 4 particles, each an own ball × 8.835896 + the position and a second own ball × the kind's speed (the second kind's z × 1.09898 more) | constructor 0x2dcdb4, 0x2dcf1c; run 0x2dd224–0x2dd2a0; flare 0x2dbf48–0x2dc528 |
+| 26 | spec §10, run, "light, a pulsing tint on the owner and min(slot10(2, L), 6) sparkles with their particles" | not given | now executed. w = sin16(frame × 1000). BOTH flash quads of the owner are rewritten every frame of the 30 seconds: ((int)(w × 49 + 75) twice, (int)(w × 49 + 200), (int)(w × 5 + 15)). Light range (float)(level + 66) + w × 10. A sparkle is (angle, distance from the owner's edge, height) with three rates: rates = (rates + own ball × 0.12) × 0.85, the angle's rate then +160 for odd and −160 for even sparkles (16-bit angle units a frame, added after the damping every frame); distance kept in [0, 2 × radius], height in [h/2, h]; point = the owner's position + (cos16, sin16 of (int) angle) × ((distance + radius) × 0.99975), z + height; one glow and 6 + 4 particles, each TWO own balls, the velocity's first. The run's position argument is copied and never used: everything is placed on the owner's own position. Own draws a frame: at least 63 a sparkle | tint 0x2df598–0x2df634; sparkle 0x2df66c–0x2dfd50 |
+| 27 | spec §10, "**Functions read.** … 0x2df42c, … 0x2dfdb8" (what they are is not said) | — | 0x2df42c is `SpellBlessed_dtor` (slot 1): unlinks and destroys the light at +0xc0, clears the handle word, frees the block when bit 0 of its argument is set. 0x2dfdb8 is `SpellBlessed_getStat0` (spell) = slot 10 (0, the spell's level byte): the percentage `Player_regenMana` adds (call 0x1b3aa0). Both executed. The constructor also keeps the owner's position at the cast at +0xa8, which nothing in the class reads, and leaves the light's two 1 / range² words as 1.0 / 0.0 as the machine divides it (as correction 10) until the first run | 0x2df42c, 0x2dfdb8, 0x2df3d4–0x2df3f0, 0x2df1a0 |
+| 28 | spec §5, §6 and §10, cast order ("caster flash …; allocate …") | as written | confirmed, and worth stating because it is what a failed cast leaves behind: the flash halfwords are stored BEFORE `pool_new` is asked (the last of them in the delay slot of the call), so a cast that gets no block has still flashed the caster. In §10 the "already carries one" question comes before the flash and stores nothing (19 refused casts in the run of record: nothing allocated, nothing stored) | 0x2ce03c–0x2ce04c; 0x2ccbe4–0x2ccbf4; 0x2dfef0–0x2dff40 |
 
 Confirmed as written, among the points the specification flags as surprising: the dodge
 fraction (§2); Holy Strike's maximum being one higher than the usual rounding (§16); the
@@ -163,6 +191,17 @@ the arc (§20); the contagion and the 1-point tick of a level-0 disease (§29); 
 resist roll `(d mod 100) + 1` against statistic 2 and the push-back of a player victim
 (§31); `damage_radial` going straight to slot 2 (§21); the Critical Hit aura (§33); the
 `SpellSecondaryUndeadShield` and `SpellDiseaseEffect` leaving their Skill word null (§C).
+Third pass: the Disease Shield's maximum being half of the rolled value and so below its
+minimum - 447 of 447 damage calls with d > 0 in the run of record (§5); every Disease Shield
+read going through slot 12 and every Disease Trail, Fire Flares and Blessed read through
+slot 10, so a monster owner gets tier-1 numbers from the last three (§6, §8, §10); the
+segment being a one-shot trap that hits every living creature, with no attacker, once its
+owner handle is empty (§6); the angle step 0xfffe / n being divided before n is tested, a
+division by zero at level 0 whose result is never used (§8); a flare damaging only the FIRST
+enemy of its box, and the explosion's box containing that victim again - in 112 of the 142
+explosions of the run of record the first victim was hit a second time (§8); the flare
+lingering eleven burst frames with an explosion statistic and going on the frame after its
+hit without one (§8).
 
 ## 4. Hazard rows SA1–SA5 of `FINDINGS.md`
 
@@ -174,14 +213,15 @@ resist roll `(d mod 100) + 1` against statistic 2 and the push-back of a player 
 | SA4 | **The descriptor is confirmed.** `SpellConeOfFire_run` builds one fire entry (0x15, v1, v2, 0) with v1 = (int)(s0 × 0.25) and v2 = (int)(((float)v1 + (float)v1 × r/65536 × 0.2) × 0.25) - the second 0.25 at 0x2f0e5c - and passes it with minimum and maximum 0 and flags 0x40. In 69 distinct descriptors of the run of record v2 < v1 whenever v1 > 0; for a monster owner at levels 2 and 3 (tier-2 s0 = 4 and 6) the entry is exactly (0x15, 1, 0, 0), i.e. v2 − v1 + 1 = 0, the divisor of `damage_apply`'s remainder at 0x1e990c. A level-1 player gives v1 = 95 and v2 = 23…28. What the console's divide leaves there is still X10's open point |
 | SA5 | **Mechanism confirmed.** `SkillCriticalHit_critBonusFor` walks count 0x4f8420 / slots 0x4f8440 in order and skips only the attacker's own slot; the test ran it with lists that lack a player, repeat one, or are empty, and the result follows the list |
 
-## 4a. The prediction copy and these ten skills
+## 4a. The prediction copy and the skills of the second and third pass
 
 The pattern looked for is SB1's: a cast or constructor that the local player's prediction
 copy (object flag 0x20000) can reach and that stores into shared state before it tests for
 the copy. Three things were executed for it:
 
 - **The flag word.** Bit 0 of Skill +4 ("the copy may cast") is clear in all ten Skill
-  objects as the game's own initialiser builds them (read from the executed objects).
+  objects as the game's own initialiser builds them (read from the executed objects; for
+  ids 5, 6, 8 and 10 it is a property of its own in the test).
 - **The gate.** In `Player_castSkill` the test "flag bit 0 clear and caster has 0x20000 →
   return" is at 0x1a4320–0x1a433c, before that function's own can-use call (0x1a4358) and
   before the cast. (Read, not executed: `Player_castSkill` is outside this model.) The
@@ -193,16 +233,37 @@ the copy. Three things were executed for it:
 The casts were run for real casters, and the stores of the original outside the stack, the
 blocks `pool_new` had just handed out and the shared seed were collected in order (the
 test prints them). "Call-outs" are stubs here, so stores inside them are not in the column.
+For ids 5, 6, 8 and 10 the cast was run with the prediction copy itself as the caster as
+well (about twenty times each) - something the game never does - to see whether the cast
+has a test of its own: it has none. Each did for the copy exactly what it does for a player
+(the same stores into the caster object, the same allocations, constructors and shared
+draws). None of the cast, constructor, run and destructor functions of these four ids holds
+the constant 0x20000 or reads the caster's flag word (as read; the statistic getter of slot
+12, which the Disease Shield uses, reads bit 0x40 of it).
 
 | Id | Skill | Copy may cast (flag bit 0) | First store of cast or constructor outside its own objects | Copy test | Order |
 |---|---|---|---|---|---|
 | 1 | wizardbeam | no | none (call-outs: eight to twenty `trail_create`, a sound) | none in the class; gate 0x1a4320 | gate first: not reachable |
-| 5, 6, 8, 10 | diseaseshield, diseasetrail, fireflares, blessed | no | not executed (casts not modelled) | none found in the casts as read; gate 0x1a4320 | gate first: not reachable |
+| 5 | diseaseshield | no | the caster's second flash quad: −100 to +0x9c (0x2ce03c), +0x98 (0x2ce040), +0x9a (0x2ce044), 0 to +0x9e (0x2ce04c, in the delay slot of the `pool_new` call). The constructor stores nothing outside the spell (call-outs: the sound); it makes one shared draw (seed stored at 0x2cd048) | none in cast, constructor or run; gate 0x1a4320 | gate first: not reachable |
+| 6 | diseasetrail | no | the same four halfwords (0x2ccbe4, 0x2ccbe8, 0x2ccbec, 0x2ccbf4), before `pool_new`. The constructors store nothing outside the spell and its first segment; call-outs: `pool_new` for the segment, the grid link of its `GameObject_ctor`, `handle_link` of the owner (0x2cb590), `obj_updateGridCell`, `obj_runEveryFrame`, the spell's `handle_link`, the sound; two shared draws (seed stored at 0x2cc118, and the segment's) | none; gate | gate first |
+| 8 | fireflares | no | none: the cast stores nothing in the caster. Call-outs of the constructor: `light_link`, `light_relink`, and per flare `pool_new`, the grid link, `obj_updateGridCell`, `obj_runEveryFrame`, `handle_link` into the spell's list; the looping sound; 1 + n shared draws (seed stored at 0x2dce34) | none; gate | gate first |
+| 10 | blessed | no | both flash quads of the caster, eight halfwords (75, 75, 200, 15) at 0x2dff20–0x2dff40, after the cast's own "already carries one" question (which only reads) and before `pool_new` (0x2dff3c). The constructor stores nothing outside the spell (call-out: `light_link`); one shared draw (seed stored at 0x2df110). The run rewrites the owner's two quads every frame (0x2df618–0x2df634) | none; gate | gate first |
 | 13 | fireweapons | no | the caster's two weapon items, entry slots (first store 0x2e3890; a monster: holder slot 2). Before it: `light_link` | none; gate | gate first |
 | 17 | hammerofwrath | no | the caster's flash quads +0x90…+0x9e (0x2efb74–0x2efb94), first thing in the cast | none; gate | gate first |
 | 18 | coneoffire | no | none (call-outs: `light_link`, the looping sound) | none; gate | gate first |
 | 22 | dismissundead | no | none (call-outs: `light_link`, `handle_link` of the owner, `obj_runEveryFrame`, trail, voice) | none; gate | gate first |
 | 34 | shieldbash | no | caster action state +0x58c = 6 (0x2fad68); then the bash clip's event slot 1 **in the shared clip header**: mask byte +0x20 (0x2fadac), time +0x1c (0x2fadb4) | none; gate | gate first |
+
+**Ids 5, 6, 8 and 10, plainly: none is an SB1-type pattern.** None of the four has a copy
+test of its own, so there is no "store before the copy test" inside them; the one test is the
+generic gate, it comes before the cast is called, and the flag bit that would open it is
+clear for all four. What their casts store directly is only the caster's own flash colour
+(5, 6, 10) - a field of the object that casts, which the specification lists as
+presentation, not a structure shared between objects. None touches an animation clip header
+or any other shared record, which is what made Cyclone visible. What would go wrong if flag bit 0 were ever set on one of them is
+of a different kind: the copy's cast would take a shared-seed draw in the spell's constructor
+(and one per segment or flare), take pool blocks, and for 6 and 8 put objects on the grid and
+the run list - on the owner's machine only.
 
 So none of the ten is an SB1: the copy cannot reach any of these casts. Shield Bash is the
 one that writes a shared animation header (as Bash, id 49, does), on every real cast and on
@@ -218,7 +279,7 @@ no copy test at all.
 | SA2 | Mechanism confirmed by execution (second pass of X20): `HolyBolt_ctor` stores the target as a plain word and links no handle; `HolyBolt_run` read position and flags through it on 279 of 279 runs made after the target's memory had been overwritten. The constructor's loop keeps the last qualifying undead in box order (33 of 33 staged casts; not the nearest in 28) |
 | SA3 | Mechanism confirmed by execution: `SpellShieldBash_run` handed the three words at (+0x24) + 0x10 to the owner's slot 26 on 308 of 308 runs after the target's memory had been overwritten |
 | SA4 | Executed for Cone of Fire itself: the entry is (0x15, v1, v2, 0) with v2 scaled by 0.25 a second time (0x2f0e5c), v2 < v1 for every v1 > 0, and exactly (0x15, 1, 0, 0) for a monster owner at levels 2 and 3. "Scaled by 0.25 twice" is no longer a reading. The console's remainder for the zero divisor stays open (X10) |
-| SB1 (note) | Ids 1, 5, 6, 8, 10, 13, 17, 18, 22 and 34 checked for the same pattern: flag bit 0 is clear for all ten, so `Player_castSkill` turns the copy away before the cast (0x1a4320–0x1a433c); no can-use of the ten stores anything (the casts of 5, 6, 8 and 10 were not executed). Id 34 writes event slot 1 of the shared bash clip in its constructor (0x2fadac, 0x2fadb4) with no copy test of its own - harmless only because of that gate |
+| SB1 (note) | Ids 1, 5, 6, 8, 10, 13, 17, 18, 22 and 34 checked for the same pattern: flag bit 0 is clear for all ten, so `Player_castSkill` turns the copy away before the cast (0x1a4320–0x1a433c); no can-use of the ten stores anything. The casts of 5, 6, 8 and 10 are executed since the third pass, also with the copy as caster: none has a copy test of its own, and none stores outside its own objects except the caster's own flash colour (5, 6, 10: 0x2ce03c, 0x2ccbe4, 0x2dff20) - not an SB1 pattern. Id 34 writes event slot 1 of the shared bash clip in its constructor (0x2fadac, 0x2fadb4) with no copy test of its own - harmless only because of that gate |
 
 No new row and no patch is proposed.
 
@@ -243,6 +304,16 @@ write outside lockstep state, all of it already in the specification or the area
   `net_objOrGhost(owner)` with a fixed number of own draws; it reads the pad record of the
   owner's slot (`g_pads`, lockstep input). Cone of Fire, Fire Weapons and Dismiss Undead read
   nothing per-machine. Nothing new for the ledger.
+- Third pass. `SpellDiseaseShield_run` and `SpellBlessed_run` hand the word at 0x4f8498 (the
+  glow texture, a load-time pointer used for drawing only, as `SpellDiseaseEffect_run` does)
+  to `glow_add`: sixteen times a frame and once per sparkle. Nothing else: the functions of
+  ids 5, 6, 8 and 10 read the frame counter, the shared seed (once per constructor) and their
+  own objects, and call neither `net_objOrGhost` nor `net_isLocalSlot`. Every particle is
+  placed with the spell's or object's own generator, which the constructor seeds from the
+  shared seed; none draws from 0x404460 or 0x404468. The number of own draws a frame depends
+  only on lockstep state (the shield's radius, the number of sparkles, the flare's state), so
+  the generators that also roll damage (the segment's and the flare's maximum; the shield's
+  discarded roll) stay in step. Nothing new for the ledger.
 
 One thing the test's own world brought out, not a per-machine read: `BlindingLightEffect_ctor`
 calls slot 31 on every object its caster's is-enemy accepts (0x2f4190). That is safe only
@@ -270,3 +341,16 @@ object's table and into unrelated code.
   leaves undefined (correction 14). The Wizard Beam's trail point arrays are not compared
   (they are stack data handed to presentation functions; the code that fills them is
   executed and counted in the coverage, the model does not build them).
+- Third pass. Run order between `SpellFireFlares_run`, which moves the flares, and the
+  flares' own `FireFlare_run` is still not settled by a function-level test (the
+  specification's open point); the test alternates them. A flare that deletes itself is
+  taken out of the spell's list by the test, standing in for the handle clearing of
+  `GameObject_dtor`, which is not executed. The flare's caster is a plain word (+0x4c): the
+  test confirms that `FireFlare_run` calls that object's slot 20 and hands it to
+  `damage_apply` on every hit without a test, and that `SpellFireFlares_dtor` deletes every
+  flare still listed; whether a spell is always destroyed with its owner is outside it. The
+  Disease Shield's current radius was set by hand to values across its range between runs
+  (it grows by half a unit a frame; the constructor does not store it, correction 20).
+  `Player_regenMana`, which is what Blessed is for, is not part of this model: only the
+  statistic it asks the spell for is. The casts by the prediction copy are staged; the game
+  never makes them.

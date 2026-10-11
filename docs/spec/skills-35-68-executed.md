@@ -21,8 +21,9 @@ about the inputs the test covers and nothing more; section 2 says what those are
 Reproduce (needs your own SLUS_209.73; exits 0 without it):
 
 ```
-python3 tools/difftest_skills_b.py            # everything, about 5 to 12 minutes
-python3 tools/difftest_skills_b.py --quick    # a tenth of the scenarios, about 3 minutes
+python3 tools/difftest_skills_b.py            # everything, about 8 to 14 minutes
+python3 tools/difftest_skills_b.py --quick    # a tenth of the scenarios, about 4 minutes
+python3 tools/difftest_skills_b.py -k froststorm -v   # one skill of the third pass, under a minute
 python3 tools/difftest_skills_b.py -k cyclone -v
 python3 tools/test_ref_skills_b.py            # the model's own logic, no game files
 ```
@@ -52,25 +53,27 @@ python3 tools/test_ref_skills_b.py            # the model's own logic, no game f
 | 53 | criticalhit (and 33, 81) | **matched** | can-use, cast, constructor, run, `SkillCriticalHit_critBonusFor` |
 | 54 | holyshield | **matched** | cast, constructor, run, `SpellHolyShield_absorb` |
 | 55 | healing (and 86) | **matched** | cast, constructor, run for player and non-player owners, PvP mode A on and off |
-| 56 | coneoffrost | not run | statistics, mana cost and can-use (the base) only |
-| 57 | shockoffire | not run | statistics, mana cost and can-use (the base) only |
-| 58 | froststorm | not run | statistics, mana cost and can-use (the base) only |
+| 56 | coneoffrost | **matched** (third pass) | cast, `SpellConeOfFrost_ctor`, `_run` (the three particle fans, the projectile of every eighth frame, the light) for player and monster owners; the object that carries the damage - `DummyDamager_ctor`, `_run` (its 45 frames, the terrain, the burst), `_onTouch` (the victim's is-enemy answer, the one delivery, a touch without an owner) - also built directly with every combination of its behaviour bits, as the monsters use it |
+| 57 | shockoffire | **matched** (third pass) | cast (player and monster; with and without splash), `Sparks_ctor`, `Sparks_run` (flight with its particles, terrain, the time limit, the burst with `world_damageInRadius`, owner deleted), `Sparks_onTouch` (the first enemy only; the light with the pool refusing) |
+| 58 | froststorm | **matched** (third pass) | cast (player: moved ahead; monster: the wait and the warning light built in line), `FrostStormSpell_ctor`, `FrostStormSpell_run` (snow, shards with their shared draws, ground particles, the tick with and without a caster, the shrinking end), `FrostStormIceShard_run` (fall, landing, time-out) |
 | 59 | lifetap | **matched** | cast (returns nothing), `SkillLifeTap_getStat0Fraction`, `_getStat1`. The pending-pool logic lives in the damage and player code and is outside this range |
 | 60 | Blunt | **matched** | no function of its own: every slot is the base's |
 | 61 | Slashing | **matched** | as 60 |
 | 62 | strongstance | **matched** | cast, `SkillStrongStance_getStat0`, `SkillStrongStance_trigger` (the phantom it creates is a call-out) |
 | 63 | naturalresistance | **matched** | `SkillNaturalResistance_getStat0Fraction` |
 | 64 | stunningstrike | **matched** | `SkillStunningStrike_getStat0ForTarget`, `_spawnEffect` |
-| 65 | giantgrowth | matched in part | statistics, mana cost and can-use ("carries a SpellGiantGrowth"). Cast and effect not run |
-| 66 | planarwind | not run | statistics, mana cost and can-use (the base) only |
+| 65 | giantgrowth | **matched** (third pass) | can-use, cast (a player; a monster is refused), `SpellGiantGrowth_ctor`, `_run`, `_stepScale` (grow, hold, shrink, the thirty frames after; a scale changed from outside), `_emitParticles` (47 / 4 / 11 slots), `_getOwnerField0dc`; the owner deleted. The destructor (which puts the scale and the speed factor back) is not modelled, as for every spell |
+| 66 | planarwind | **matched** (third pass) | cast, `SpellPlanarWind_ctor` with its one target query, `_run` to its end: the strike of every target the front has passed (both statistic paths, the PvP roll, the burn roll, hit particles with and without a model), targets deleted before the front arrives, the stream particles, terrain, the 54th run |
 | 67 | shadowstep | **matched** (second pass) | cast at every rank (no fire, the centre fire, the ring), the enemies that lose their target and are pulled, `SpellShadowStep_run` for its 25 calls offline and in a net game. `StaticFire_ctor` is a call-out; the fire itself is not modelled (section 4a executes it as it is) |
 | 68 | resurrect | **matched** | can-use, target search, `_isSlotBeingRaised`, cast, constructor, run in both modes, `SpellResurrect_onOwnerDeath` |
 
-Twenty-nine of the 34 ids are matched (46 only in part, as before; 52 in the other test),
-and 65 as far as its can-use. The first pass ended at twenty. The five left - 56 coneoffrost, 57 shockoffire, 58 froststorm, 66
-planarwind and the cast of 65 giantgrowth - were not reached in the second pass either;
-nothing was found that prevents them. For them only the statistic getters, the mana-cost
-slot and can-use were executed.
+Thirty-three of the 34 ids are now matched end to end (52 in the other test) and one, 46,
+in part as before - its arrows are plain `MissileWeapon` objects, compared as constructor
+arguments. The first
+pass ended at twenty, the second at twenty-nine; the third added the five that were left -
+56 coneoffrost, 57 shockoffire, 58 froststorm, 65 giantgrowth and 66 planarwind - each with
+its cast, constructors and every per-frame function, and with the two effect classes that
+live outside the skills area (`DummyDamager`, `Sparks`) and the Frost Storm's objects.
 
 Not modelled for any id: `describeRank` (slot 4, menu text), the icon slot, the static
 initialisers that build particle definitions, the draw slots, and the destructors (a spell
@@ -120,8 +123,32 @@ Ground Pound effect). New stubs with scripted answers: trails, beams, `StaticFir
 the first pass: which objects a box holds is not executed, what the code does with each
 kind of object is.
 
+**Third pass** - the same kind of scenario for ids 56, 57, 58, 65 and 66, appended after
+everything else, so that the 144 result lines of the first two passes are unchanged (they
+were compared line by line with a run made before the pass). Casters: the four players and
+the monsters; a monster's Giant Growth is refused by the cast, which is executed too. The
+objects a skill makes are run as well: every `DummyDamager` a Cone of Frost channel
+creates, to its end; the spark; the storm and up to five of its shards at a time. The
+`DummyDamager` is also built directly with the behaviour bits other creators use (fire,
+"delete on any contact", the flag bit), because the class is shared with the monsters. New
+stubs with scripted answers: `voice_setPosition`, `world_damageInRadius`; `sound_playAtPos`
+now hands back a handle (the Cone keeps it) and `model_getSamplePoint` can hand back the
+3×3 matrix Giant Growth asks for. Run for real besides the functions of the table:
+`mat3_rotateAxis` and `mat3_setRotZ` (model side: `tools/ref_core.py`) and the C library's
+double-precision helpers through which the storm takes −|z|. `GameObject_ctor` is still the
+stub that makes the shared draw, so the storm, its warning light and its shards are compared
+from that call on; `StaticFire_ctor` and `LightEffect_ctor` likewise. Not staged: a model
+without sample points (the test stops on a division by zero, section 5), a null caster,
+and levels above 40.
+
+A check of the comparison itself, made once by hand and not part of the test: four
+deliberate errors in the model of the third pass - the sign of the snow's fall, the Planar
+Wind's particle mask, Giant Growth's hold test one frame off, one discarded draw of the
+spark left out - each turned its section to FAIL (calls, and bytes where a generator or a
+field is involved).
+
 Coverage of the original as executed (basic blocks entered / basic blocks of the function
-bodies; full run, seed 3568):
+bodies; full run, seed 3568, after the third pass):
 
 | Part | Functions | Basic blocks | Instructions |
 |---|---|---|---|
@@ -152,11 +179,25 @@ bodies; full run, seed 3568):
 | 40 convertundead | 5 | 55 of 56 | 536 of 543 |
 | 51 ancestralcall | 9 | 81 of 81 | all |
 | 67 shadowstep | 4 | 46 of 46 | all |
-| 65 giantgrowth (can-use) and the mana-cost slot of the five ids not run | 7 | 7 of 7 | all |
-| **all** | 169 | **1345 of 1365** | **17039 of 17131** |
+| 56 coneoffrost (third pass; with `DummyDamager`) | 7 | 62 of 68 | 1013 of 1032 |
+| 57 shockoffire (with `Sparks`) | 5 | 47 of 49 | 786 of 790 |
+| 58 froststorm (with the storm and its shards) | 5 | 91 of 94 | 1798 of 1806 |
+| 65 giantgrowth | 8 | 45 of 45 | all |
+| 66 planarwind | 4 | 45 of 45 | all |
+| **all** | 192 | **1629 of 1660** | **21848 of 21971** |
 
-265,003 calls were compared in that run (274 s; the first pass alone: 235,931); none
-mismatched. 144 result lines, all PASS.
+284,354 calls were compared in that run (265,003 after the second pass, 235,931 after the
+first); none mismatched. 169 result lines, all PASS: the 144 of the first two passes, word
+for word as before, and five for each of the five new sections. The run took 801 s on a
+machine that was busy with other work (the run before the third pass took 300 s there);
+eleven of its calls stopped on both sides, all of them the `DummyDamager` touch without an
+owner (section 5).
+
+Of the five skills of the third pass 290 of 301 blocks were entered (the rows above count
+each skill's mana-cost slot too). The eleven missed are all the same thing: the "this slot
+of the record is already in use" arms of the inlined descriptor fill - six in
+`DummyDamager_onTouch` (two entry types), two in `Sparks_onTouch`, three in the Frost
+Storm's tick - which a record built two instructions earlier cannot reach.
 
 Of the eight skills of the second pass 532 of 539 blocks were entered; the seven missed are
 the "slot already in use" arms of Shock's descriptor fill (two), the statistic-0 read of a
@@ -189,6 +230,11 @@ by one frame under the console's arithmetic. Executed under the interpreter's de
 | ConvertEnemy / ConvertUndead, the call that rolls and ends the spell | 33 / 31 | 33 (section 39) |
 | Ground Pound effect object | 31 runs, damage on the first | 31 |
 | Charge without contact | ends in the run where frame − cast frame is 46 | 46 |
+| `DummyDamager` of the Cone of Frost that meets no terrain (third pass) | deletes itself in its 45th run, after 44 moves | 44 moving frames, destroyed on the 45th run |
+| Spark of Shock Of Fire that meets nothing | bursts and deletes itself in its 600th run, after 599 moves | "at most 600 frames" |
+| Frost Storm, runs with the factor 0.95 before it deletes itself, by radius | 24 → 14, 36 → 22, 48 → 28, 72 → 35, 132 → 47 | 14, 22, 28, 35, 47 |
+| Giant Growth, from the cast to the run that ends the spell (scale 1.0 at the cast) | rank 1: 469, rank 2: 539, rank 10: 845 | 469, 539, 845 |
+| Planar Wind over flat ground | 54 | 54 |
 
 Both rows of the table in section 1.8 are confirmed for every N tried. The statistic table
 of section 1.8 was also executed: tier 1 (ranks 1–20) gives the same integer under the
@@ -290,11 +336,25 @@ blocks just allocated, list nodes and the shared seed, in order of first appeara
 | 39, 40 | convertenemy, convertundead | no | the back lists of the creatures chosen as targets (`handle_link`, 0x1a17b4); before it the sound and the arc query | none; gate | gate first |
 | 51 | ancestralcall | **yes** | for the copy: **none**. For a real caster: action state +0x58c = 6 (0x2e0c58) | 0x2e0b80 | test first: every store outside the spell comes after it |
 | 52 | root | no | (other test) the victims' spell lists | none; gate | gate first |
-| 56, 57, 58, 66 | coneoffrost, shockoffire, froststorm, planarwind | no | not executed (casts not modelled) | gate | gate first |
-| 65 | giantgrowth | no | not executed | gate | gate first |
+| 56 | coneoffrost | no | **none** in the cast or the constructor: every store is into the spell (call-outs: `light_link`, `res_find`, `sound_playAtPos`). The first store outside comes from the RUN, on the first frame with (frame & 7) == 0: the owner's back list, when `Projectile_ctor` links the `DummyDamager`'s owner handle (`handle_link`, 0x1a17b4) | none in the class; gate 0x1a4320 | gate first: not reachable |
+| 57 | shockoffire | no | the caster's back list: `handle_link` of the spark's owner handle (0x1a17b4), inside `Projectile_ctor`. Before it only `GameObject_ctor` (call-out); after it `light_link`, `obj_runEveryFrame`, a sound | none; gate | gate first |
+| 58 | froststorm | no | the caster's back list: `handle_link` of the storm's caster handle +0x6c (0x1a17b4), the last thing the constructor does but for `obj_runEveryFrame`. Before it `GameObject_ctor` (twice for a monster caster) and `light_link`; after the constructor a sound on the caster | none; gate | gate first |
+| 65 | giantgrowth | no | the caster's back list: `handle_link` of the spell's owner handle +0xf8 (0x1a17b4). Nothing else in the cast: the stores that matter are the RUN's, every frame - the owner's scale +0xdc (0x3095a0, and 0x3095b0 / 0x3095d4 when it reaches the aim) and the speed factor of the owner's player record +0x4c20 (0x309668, 0x30966c); the test prints them | none; gate. The cast itself returns 0 for a caster without the player flag (0x308fc0) | gate first |
+| 66 | planarwind | no | the back lists of the targets gathered: one `handle_link` (0x1a17b4) for each object the arc query hands back; none when it hands back nobody. Before it `light_link`, the cast sound and the query (call-outs) | none; gate | gate first |
 | 67 | shadowstep | no | caster action state +0x58c = 0xe (0x31173c) and object flags \|= 5 (0x31174c), with no player test; later the knock-back words of the creatures that were targeting the caster (+0x2e8 at 0x311ab8, +0x2e0 at 0x311ae0) | none; gate | gate first |
 
-So within this pass there is no second SB1: the only id the copy can cast, 51, tests first.
+The five rows of the third pass (56, 57, 58, 65, 66) come from the same collection: the
+original's stores outside the stack, the blocks `pool_new` had just handed out, the list
+nodes and the shared seed, in order. For all five the first - and, in the cast, only -
+place is the first word of another object, written by `handle_link` when it puts a partner
+node on that object's back list; that word is freed with the spell or object that holds the
+handle. None of the five writes a clip header, an action state, a flag word or a player
+record in its cast or constructor, and none has a copy test of its own: flag bit 0 is
+clear for all five, so the copy is turned away at the gate. (Which objects the Planar
+Wind's query returns is scripted here; the real query is said to pass over the copy.)
+
+So within the second and third pass there is no second SB1: the only id the copy can cast, 51,
+tests first.
 Ground Pound is the one to remember: its cast rewrites four slots of a shared clip header on
 every real cast (constants, the same on every machine, and nothing in the class moves them
 afterwards), behind nothing but the gate - if flag bit 0 were ever set for id 38 it would be
@@ -305,8 +365,10 @@ way in their constructors.
 
 | Row | Proposed addition |
 |---|---|
+| SB6 | Mechanism confirmed by execution (third pass): with the owner handle emptied, `DummyDamager_onTouch` loads through the empty handle at 0x1ee7e8 on every touch of a creature (the interpreter stops there, on the model's side too: 11 calls of the run of record); a touch of a non-creature does not make the load and reaches `damage_apply` with attacker 0. The handle is emptied by the owner's deletion while a projectile still has up to 45 frames to live. What the console reads at address 0xc is not modelled |
 | SB3 | Mechanism confirmed by execution: `StaticFire_ctor` stores its owner argument as a plain word at +0x4a8 with no handle (40 of 40); on a damage frame `StaticFire_run` asks slot 20 of whatever that word points at and passes it to `damage_apply` as the attacker, also after the owner's memory was rewritten as another creature (40 of 40); rewritten as a non-creature, the fire itself attacks every creature in its box (40 of 40). `SpellShadowStep_ctor` (matched) hands the caster to every fire, lives 360 and 240 frames |
 | SB1 (note) | Ids 35-40, 51 and 67 checked for the same pattern. Only 51 can be cast by the copy; its constructor stores nothing outside the spell before its copy test at 0x2e0b80 (executed with the copy as caster). Id 38's cast writes four event slots of a shared clip header (0x2c727c–0x2c72a4) and has no copy test of its own: not reachable while its flag bit 0 stays clear |
+| SB1 (note, third pass) | Ids 56, 57, 58, 65 and 66 executed and checked: flag bit 0 clear for all five; the only store any of their casts or constructors makes outside its own new objects is the back-list word of the caster (57, 58, 65) or of the gathered targets (66) through `handle_link` 0x1a17b4, and 56 makes none. No shared clip header, action state or record is written before - or without - a copy test. With these the whole range 35-68 has been executed for the pattern |
 
 No new row and no patch is proposed.
 
@@ -330,6 +392,35 @@ What execution changes:
 | Section 67, constructor step 9 | "p.z = terrain_heightAtPoint(g_world, &p)" | the point handed to the query carries the PREVIOUS ring point's height as its z (0.0 for the first): one frame variable serves as input and result (0x311900–0x311960). Whether the query reads the z is `docs/spec/world-queries.md`'s business |
 | Section 51, layout, "+0x00 u8 level" | unsigned | read as a signed byte everywhere it is used (ring count level + 14, `lb` at 0x2e1100; statistic reads) |
 | Section 37, hit test | - | confirmed as written, including the two points a rebuild is likeliest to get wrong: with a live caster the target is linked into the candidate list twice, and the chained victims are damaged newest first |
+| Section 56, random draws, "15 × 4 draws (first particle kind: angle, speed, vertical speed, start offset along the path)" | the fourth draw places the particle | the fourth draw is made, its product (velocity × d × 1/60 added to the run position) is built in the frame and never handed on: `particle_spawn` gets the run position itself for all three kinds (0x2e9ec0–0x2e9f80; the position argument is set at 0x2e9f04). The draw count stands |
+| Section 56, the three particle kinds | amplitudes and speeds not given | angle amplitude A for the first kind, (int)(A × 0.999977) for the second (0x2e9f8c), (int)(A × 1.7489879) for the third (0x2ea0a4); speeds d × 74 × scale, (d × 0.2 + 0.9) × 60 × scale and a flat 42 (not scaled); rise (d − 0.5) × 6, × 4 and × 17, each × scale |
+| Section 56, `DummyDamager_run`, "if bits & 8: (fire: not used by this skill)" | not given | executed for the monsters' sake: ONE OWN DRAW d, f = (d × 2^-16 × 6 + 2) × 60, `pool_new(0x4ac)` and a `StaticFire` at the position with life (int) f, first number f, second 0.5, no owner (0x1ee460–0x1ee4c0; one shared draw inside the constructor). With both bits 0x10 and 8 the touch handler builds the cold entry only (0x1ee86c before 0x1ee8d0) |
+| Section 56, `DummyDamager_onTouch`, the owner read "without a null test" | Inferred hazard | executed: with the owner handle emptied, every touch of a creature stops at the load 0x1ee7e8 (address 0xc) - on both sides, in every case staged (the calls the test counts as "stopped on both"). A touch of a non-creature does not read it and calls `damage_apply` with attacker 0. What the console does with that load is not modelled |
+| Section 57, direct hit, the `LightEffect` | "colour arguments 255, 200, 100" | all twelve numbers: 255, 200, 100, −32, four zeros, and on the stack 180, 120, 1, 1 (0x29013c–0x2901b8) |
+| Section 57, flight | "for at most 600 frames" | a spark that meets nothing moves 599 times and bursts in its 600th run (end = frame of the cast + 600, tested before the move, 0x28fa88) |
+| Section 58, snow and shards | velocities not given | snow A: an own ball × 7 with z × 11.036939, snow B: × 6.8 with z × 2.073994, shard: × 0.20500399 sideways and z × 3.999987; z is then made −\|z\| through the double-precision library (0x1fecd8–0x1fed28 and twice more), which gives +0 for a zero of either sign. The z part of the offset ball is multiplied out and overwritten by the height draw (0x1fec10–0x1fec18) |
+| Section 58, table of shrinking frames | 24 → 14, 36 → 22, 48 → 28, 60 → 32, 72 → 35, 132 → 47 | confirmed for the five radii the run of record met (all but 60); other runs of the section also gave 84 → 38 and 120 → 45, which the table does not have |
+| Section 65, particles (0x309678) | "emitted from model sample points" | each serviced slot asks `model_getSamplePoint` for three things - the point, a number and a 3×3 matrix - with the owner's scale as the float argument; the matrix is turned about its third axis by the slot's angle (`mat3_rotateAxis`, 0x30978c) and the particle goes to (point − owner position) + first row × (number × 0.001 × 0.662995), velocity 0, inside the particle group whose matrix is the owner's position; the angle then advances by 0x5da. The slot restarts when (d & 3) + 41 < age after the increment (0x309864). The 4-slot case is "aim ≤ scale" (0x309710), so it also holds while something else has pushed the scale above the aim |
+| Section 65, timeline table | 469 / 539 / 845 runs at ranks 1 / 2 / 10 | confirmed by execution from the cast to the call that ends the spell (owner scale 1.0 at the cast) |
+| Sections 65 and 66, sample points | "draw % count" | as in sections 42, 49, 54 and 62 the count is not tested: `SpellGiantGrowth_ctor` 0x3092ec, `_emitParticles` 0x30987c and the hit particles of `SpellPlanarWind_run` 0x30a404 divide by it. Not staged here (this test stops on a division by zero) |
+| Section 66, hit particles | "one private draw → a model sample point → one particle" | the 72 particles all get the frame's step vector as their velocity, as it is before the stream loop adds its nudges (copied at 0x30a3dc–0x30a3f0) |
+| Section 66, stream particles, draws 6 and 7 | "a rotation angle for the scatter matrix; a distance fraction" | a COPY of the matrix at +0x38 is turned about its second axis by the drawn angle (`mat3_rotateAxis(copy, 1, angle)`, 0x30a5fc) and the particle is put at front + first row of the copy × (d × 2^-16 × half width) (0x30a630–0x30a668) |
+| Section 66, damage bounds | player rounded, others truncated | confirmed, and worth a number: a statistic of 55 gives 44..66 for a player owner and 44..65 for any other (0x30a25c–0x30a274) |
+
+Every other rule of sections 56, 57, 58, 65 and 66 held as written, constants included: the
+Cone of Frost's projectile on frames with (frame & 7) == 0 carrying statistic 0 × 0.13333333
+with bits 0x12 and flags 0x80c040, the victim - not the owner - deciding whether a
+`DummyDamager` hurts it, and the amount being delivered once (later touches carry an entry of
+0); the spark's direct hit on the first enemy only, its burst one run later with
+`world_damageInRadius(40, radius; splash, 0x40860, splash, 0)` and the spark itself as
+attacker when the owner is gone; the Frost Storm's loop counts in the stated order of
+multiplications, its shared draw per shard (none when the pool refuses), the tick asking the
+CASTER's slot 20 and striking everything in the box without one, half as base damage and
+half (truncated) as cold; Giant Growth refusing a non-player before it allocates, its exact
+float comparison of scale and aim and the speed factor max(1, scale × 0.75) written on every
+run; the Planar Wind's list being the query reversed, its strike test on the centre only, the
+burn draw made at chance 0 too, the PvP draw keeping the knock-back bit 21 times in 100, the
+speed step and the 54 runs.
 
 Every other rule of sections 35, 36, 37, 38, 39, 40, 51 and 67 held as written, constants
 included: Charge's unsigned frame difference and its contact rules, Darkness asking the
@@ -378,6 +469,19 @@ because it bypasses the pad pointer `Player_run` uses.
 
 No ledger row and no patch is proposed by this pass.
 
+Third pass: nothing per-machine is read by the functions of 56, 57, 58, 65 and 66. They
+read the frame counter (the Cone's projectile and light, the storm's shards and tick, the
+spark's time limit), `g_world` for terrain, and `g_pvpModeA` 0x4f711c in
+`SpellPlanarWind_run` (0x30a27c; a setting of the session, as in Healing). None calls
+`net_objOrGhost` or `net_isLocalSlot`, none touches 0x402797, the cosmetic generator
+0x404460 or 0x404468 in its own code (`fx_ringBurst`, which the spark's burst calls, uses the
+cosmetic generator inside - a call-out here, as the specification says). Their own
+generators - the spell's for 56, 65 and 66, the object's for the `DummyDamager`, `Sparks`,
+the storm and its shards - feed particles only, with one exception the specification
+already has: the Cone of Frost's aim draw comes from the spell's generator. Writes to
+shared state outside the caster's own objects: Giant Growth's two per-frame stores (the
+owner's scale and the record's speed factor), both inside lockstep state.
+
 Second pass, by address: `net_objOrGhost` in `SkillCharge_cast` 0x2c88e4 and
 `SpellCharge_run` 0x2c8fe0 (the extra state store lands on this machine's copy);
 `SpellAncestralCall_run` asks it once for the ring's matrix (0x2e1144) and again for every ring particle (0x2e1214) - placement only, the
@@ -395,4 +499,4 @@ in the specification's per-machine notes.
   mirrors with its address range; `SKILLS` groups them by id.
 - `tools/difftest_skills_b.py` - the comparison; prints, per skill, the functions executed,
   the basic blocks covered and the calls with a mismatch, and the frame counts of section 3.
-- `tools/test_ref_skills_b.py` - seventeen unit tests of the model's own logic (no game files).
+- `tools/test_ref_skills_b.py` - twenty-five unit tests of the model's own logic (no game files).

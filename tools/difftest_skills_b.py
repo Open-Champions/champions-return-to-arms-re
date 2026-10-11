@@ -50,6 +50,13 @@ pass for a player, a monster and the copy) and sb3 - the ORIGINAL StaticFire con
 and run function executed as they are, without a model, to see what they do with their
 owner argument.  After the frame counts the test prints, per skill, the stores a cast made
 outside its own new objects (the prediction-copy table of the companion document).
+
+Third pass (appended after those): coneoffrost (with the DummyDamager object, also built
+directly with every behaviour bit), shockoffire (Sparks), froststorm (the storm and its ice
+shards), giantgrowth and planarwind - cast, constructors and every run to the natural end.
+New stubs: voice_setPosition, world_damageInRadius; the two matrix functions these skills
+call (mat3_rotateAxis, mat3_setRotZ) run for real, as tools/ref_core.py models them, and
+so does the C library's double arithmetic the Frost Storm uses for a sign.
 """
 import hashlib
 import os
@@ -537,7 +544,7 @@ class Rig:
                 while mem.u32(v + 4 * len(items)):
                     items.append(mem.u32(v + 4 * len(items)))
                 canon.append(tuple(items))
-            elif kind in 'OW':
+            elif kind in 'OWQ':
                 canon.append(1 if v else 0)
                 outs.append((kind, v))
             elif kind in 'onwbL':
@@ -580,6 +587,10 @@ class Rig:
                         mem.w32(ptr, value)
                 elif kind == 'b':
                     mem.w8(ptr, value)
+                elif kind == 'Q':                       # an optional 3x3 matrix
+                    if ptr:
+                        for j in range(9):
+                            mem.w32(ptr + 4 * j, (value or (0,) * 9)[j])
                 elif kind == 'n':
                     for j, obj in enumerate(value):
                         mem.w32(ptr + 4 * j, obj)
@@ -1716,16 +1727,18 @@ SECTIONS = [('stats', section_stats), ('float', section_float), ('base', section
 COPY_ROWS = {}                  # skill id -> {what: [(pc, where), ...]}: the prediction-copy table
 
 
-def note_stores(rig, sid, what):
+def note_stores(rig, sid, what, own=()):
     """After a call: the stores the original made outside the stack that are not into a
     block pool_new had just handed it and not the shared seed - what a cast leaves behind
     that destroying its spell would not undo.  The first one of every call is kept, and
-    every distinct place, in order of first appearance."""
+    every distinct place, in order of first appearance.  `own` (third pass, for a run
+    function): blocks of earlier calls that are the skill's own objects as well."""
     world = rig.world
     row = COPY_ROWS.setdefault(sid, {}).setdefault(what, {'first': set(), 'all': []})
     first = None
+    mine = list(world.allocated) + list(own)
     for pc, addr, _size, _value in rig.emu.writes:
-        if RC.G_RAND_SEED <= addr < RC.G_RAND_SEED + 4 or any(b <= addr < b + 0x400 for b in world.allocated):
+        if RC.G_RAND_SEED <= addr < RC.G_RAND_SEED + 4 or any(b <= addr < b + 0x400 for b in mine):
             continue
         if world.node_lo <= addr < world.node_hi or addr == SB.G_HANDLE_FREE:
             continue                                    # list nodes: freed with the spell
@@ -2217,6 +2230,360 @@ def section_groundpound(rig):
 
 
 SECTIONS.append(('groundpound', section_groundpound))
+
+
+# =========================================================================================
+# The third pass: the casts and effects of ids 56, 57, 58, 65 and 66, appended after the
+# sections of the first two passes (which keep their random cases).
+# =========================================================================================
+def deleted(result, obj):
+    """Did the object delete itself in this call (obj_delete or its slot 1 with 3), or did
+    the call stop?"""
+    calls = result['emu_calls']
+    return ('obj_delete', (obj,)) in calls or ('Creature.v1', (obj, 3)) in calls or bool(result['fault']) \
+        or result['both_fault'] is not None
+
+
+def next_frame(mem, rng, multiple=0, chance=0.5):
+    """The frame counter one on - or, with the given chance, on to the next multiple."""
+    frame = (mem.u32(RC.G_SIM_FRAME) + 1) & M32
+    if multiple and rng.random() < chance:
+        frame += (multiple - frame % multiple) % multiple
+    mem.w32(RC.G_SIM_FRAME, frame & M32)
+
+
+def stack_word(rig, value, index=0):
+    """A word an original function called directly finds on its caller's stack."""
+    rig.emu.mem.w32(rig.emu.stack_hi - 0x100 + 8 * index, value & M32)
+
+
+def section_coneoffrost(rig):
+    """Skill 56: cast (player and monster), the channel frame by frame with its three
+    particle fans and a DummyDamager on every eighth frame; every DummyDamager run to its
+    end (45 frames, the terrain, objects touched every frame, the owner deleted); and the
+    DummyDamager built directly with the behaviour bits the monsters use."""
+    rig.section = 'coneoffrost'
+    mem, world, rng = rig.emu.mem, rig.world, rig.rng
+    pos, vel = world.scratch, world.scratch + 0x10
+    skill = skill_obj(mem, 56)
+    world.on_sound_playAtPos = lambda args, view, rng_: Res(rng_.choice((0, 5, 77)))
+    for round_ in range(4 if OPTIONS['quick'] else 40):
+        world.place(rng)
+        caster = rng.choice(world.players * 2 + world.monsters)
+        rig.vskill(skill, 1, (caster,))
+        spell = rig.vskill(skill, 2, (rng.choice((1, 2, 5, 10, 20, 40)), caster, pos, 0))['ret'] & M32
+        note_stores(rig, 56, 'cast')
+        if not spell:
+            continue
+        world.live.add(spell)
+        world.box_counts = rng.choice(((0, 1, 2, 3), (0, 0, 0, 1), (2, 3, 5)))
+        world.ground_up = rng.choice((0.0, 0.0, 0.03, 0.3))
+        bolts = {}
+        for tick in range(rng.choice((6, 20, 70))):
+            next_frame(mem, rng, 8, 0.3)
+            put_vec(mem, pos, (mem.f32(caster + 0x10) + rng.uniform(-9, 9), mem.f32(caster + 0x14) + rng.uniform(-9, 9),
+                               mem.f32(caster + 0x18) + rng.uniform(20, 58)))
+            rig.do('SpellConeOfFrost_run', 'coneoffrost_run', (spell, pos, rng.randrange(0x10000)))
+            note_stores(rig, 56, 'run', own=(spell,))
+            for block in world.allocated:
+                bolts[block] = [0, rng.random() < 0.3]  # runs so far; left alone
+                world.live.add(block)
+            for bolt in list(bolts):
+                if not bolts[bolt][1] and rng.random() < 0.2:       # something stands in the way
+                    victim = rng.choice(world.objects)
+                    put_vec(mem, bolt + 0x10, (mem.f32(victim + 0x10) + rng.uniform(-12, 12),
+                                               mem.f32(victim + 0x14) + rng.uniform(-12, 12), mem.f32(victim + 0x18) + 20.0))
+                if not bolts[bolt][1] and rng.random() < 0.01 and mem.u32(bolt + 0x4C):
+                    rig.do('handle_clear', 'handle_clear', (bolt + 0x4C,))      # the caster is deleted
+                result = rig.do('DummyDamager_run', 'dummydamager_run', (bolt,))
+                bolts[bolt][0] += 1
+                if any(name == 'terrain_height' for name, _a in result['emu_calls'][2:]):
+                    bolts[bolt][1] = False              # met the terrain
+                if deleted(result, bolt):
+                    if bolts[bolt][1] and result['both_fault'] is None:
+                        TIMERS.setdefault('coneoffrost: runs of a DummyDamager that meets no terrain', set()).add(bolts[bolt][0])
+                    rig.do('handle_clear', 'handle_clear', (bolt + 0x4C,))
+                    world.live.discard(bolt)
+                    del bolts[bolt]
+        for bolt in bolts:
+            rig.do('handle_clear', 'handle_clear', (bolt + 0x4C,))
+            world.live.discard(bolt)
+        world.live.discard(spell)
+        clear_handles(rig)
+    # the object as other code builds it: every combination of the behaviour bits
+    world.on_terrain_height = lambda args, view, rng_: Res(f=f32(fl(args[1][2]) + rng_.choice((-40.0, -40.0, -40.0, 3.0))))
+    for round_ in range(4 if OPTIONS['quick'] else 40):
+        world.place(rng)
+        bolt = world.blocks[-1]
+        for off in range(0, 0x400, 4):
+            mem.w32(bolt + off, 0)
+        world.live.add(bolt)
+        owner = rng.choice(world.players + world.monsters + [0])
+        near = rng.choice(world.objects)
+        put_vec(mem, pos, (mem.f32(near + 0x10) + rng.uniform(-40, 40), mem.f32(near + 0x14) + rng.uniform(-40, 40),
+                           mem.f32(near + 0x18) + 30.0))
+        put_vec(mem, vel, (rng.uniform(-300, 300), rng.uniform(-300, 300), rng.choice((0.0, 0.0, -30.0))))
+        stack_word(rig, 1)
+        rig.do('DummyDamager_ctor', 'dummydamager_ctor',
+               (bolt, pos, vel, rng.choice((1, 2, 9, 45)), rng.choice((6, 10, 24)),
+                rng.choice((0, 1, 2, 3, 8, 0xA, 0xC, 0x10, 0x12, 0x18, 0x1F)), rng.choice((0, 0x40, 0x80C040)), owner),
+               fargs=(f32(rng.choice((0.0, 46.5, 300.0, 40000.0))),))
+        world.box_counts = rng.choice(((0, 1, 2), (2, 3, 5)))
+        for tick in range(12):
+            next_frame(mem, rng)
+            if rng.random() < 0.3:
+                victim = rng.choice(world.objects)
+                put_vec(mem, bolt + 0x10, (mem.f32(victim + 0x10) + rng.uniform(-12, 12),
+                                           mem.f32(victim + 0x14) + rng.uniform(-12, 12), mem.f32(victim + 0x18) + 20.0))
+            if deleted(rig.do('DummyDamager_run', 'dummydamager_run', (bolt,)), bolt):
+                break
+        rig.do('handle_clear', 'handle_clear', (bolt + 0x4C,))
+        world.live.discard(bolt)
+        clear_handles(rig)
+    del world.on_terrain_height
+    del world.on_sound_playAtPos
+    world.box_counts, world.ground_up = (0, 0, 1, 2, 3, 5, 8), 0.4
+    rig.report('coneoffrost', 'id 56; player and monster casters; DummyDamager with every behaviour bit')
+
+
+SECTIONS.append(('coneoffrost', section_coneoffrost))
+
+
+def section_shockoffire(rig):
+    """Skill 57: cast (player and monster, with and without splash), the spark's flight
+    with its particles, the direct hit on the first enemy touched, the terrain, the time
+    limit, the burst with its area damage, the owner deleted in flight."""
+    rig.section = 'shockoffire'
+    mem, world, rng = rig.emu.mem, rig.world, rig.rng
+    pos = world.scratch
+    skill = skill_obj(mem, 57)
+    rounds = 5 if OPTIONS['quick'] else 60
+    for round_ in range(rounds):
+        world.place(rng)
+        caster = rng.choice(world.players * 2 + world.monsters)
+        near = rng.choice(world.objects)
+        put_vec(mem, pos, (mem.f32(near + 0x10) + rng.uniform(-60, 60), mem.f32(near + 0x14) + rng.uniform(-60, 60),
+                           mem.f32(near + 0x18) + 30.0))
+        rig.vskill(skill, 1, (caster,))
+        rig.vskill(skill, 2, (rng.choice((1, 2, 4, 5, 9, 10, 11, 20, 40)), caster, pos, rng.randrange(0x10000)))
+        note_stores(rig, 57, 'cast')
+        if not world.allocated:
+            continue
+        spark = world.allocated[0]
+        world.live.add(spark)
+        quiet = round_ < 2                              # two sparks that meet nothing: the time limit
+        world.box_counts = (0,) if quiet else rng.choice(((0, 1, 2, 3), (2, 3, 5, 8), (0, 0, 0, 1)))
+        world.ground_up = 0.0 if quiet else rng.choice((0.0, 0.0, 0.03))
+        ending = rng.random() < 0.3
+        runs = 0
+        for tick in range(700 if quiet else 40):
+            next_frame(mem, rng)
+            if not quiet:
+                if rng.random() < 0.25:                 # the spark reaches something
+                    victim = rng.choice(world.objects)
+                    put_vec(mem, spark + 0x10, (mem.f32(victim + 0x10) + rng.uniform(-20, 20),
+                                                mem.f32(victim + 0x14) + rng.uniform(-20, 20), mem.f32(victim + 0x18) + 20.0))
+                if rng.random() < 0.03 and mem.u32(spark + 0x4C):
+                    rig.do('handle_clear', 'handle_clear', (spark + 0x4C,))     # the caster is deleted
+                if ending and tick == 12:
+                    mem.w32(spark + 0x54, (mem.u32(RC.G_SIM_FRAME) + rng.choice((0, 1, 2))) & M32)
+            runs += 1
+            if deleted(rig.do('Sparks_run', 'sparks_run', (spark,)), spark):
+                if quiet:
+                    TIMERS.setdefault('shockoffire: runs of a spark that meets nothing', set()).add(runs)
+                break
+        rig.do('handle_clear', 'handle_clear', (spark + 0x4C,))
+        world.live.discard(spark)
+        clear_handles(rig)
+    world.box_counts, world.ground_up = (0, 0, 1, 2, 3, 5, 8), 0.4
+    rig.report('shockoffire', 'id 57; player and monster casters')
+
+
+SECTIONS.append(('shockoffire', section_shockoffire))
+
+
+def section_froststorm(rig):
+    """Skill 58: cast (player: moved ahead, no wait; monster: the 40-frame wait and the
+    warning light built in line), the storm frame by frame (snow, the shards of every
+    tenth frame with the pool refusing some, the ground particles, the damage tick of
+    every thirtieth frame with and without a caster, the shrinking end), and the shards
+    it made run until they land or time out."""
+    rig.section = 'froststorm'
+    mem, world, rng = rig.emu.mem, rig.world, rig.rng
+    pos = world.scratch
+    skill = skill_obj(mem, 58)
+    world.on_terrain_height = lambda args, view, rng_: Res(f=f32(fl(args[1][2]) + rng_.choice((-90.0, -90.0, -90.0, -16.0, -15.9, 2.0))))
+    for round_ in range(3 if OPTIONS['quick'] else 30):
+        world.place(rng)
+        caster = rng.choice(world.players * 2 + world.monsters)
+        put_vec(mem, pos, (mem.f32(caster + 0x10) + rng.uniform(-9, 9), mem.f32(caster + 0x14) + rng.uniform(-9, 9),
+                           mem.f32(caster + 0x18) + rng.uniform(20, 58)))
+        rig.vskill(skill, 1, (caster,))
+        level = rng.choice((1, 1, 2, 5, 10, 20, 40))
+        rig.vskill(skill, 2, (level, caster, pos, rng.randrange(0x10000)))
+        note_stores(rig, 58, 'cast')
+        if not world.allocated:
+            continue
+        storm = world.allocated[0]
+        world.live.add(storm)
+        world.box_counts = rng.choice(((0, 1, 2, 3), (2, 3, 5, 8)))
+        waited = mem.u32(storm + 0x50) != 0
+        quiet = rng.random() < 0.4                      # left alone to its end: the frame counts
+        if quiet:                                       # ... but not for the whole duration
+            mem.w32(storm + 0x4C, (max(mem.u32(storm + 0x50), mem.u32(RC.G_SIM_FRAME)) + rng.choice((3, 12, 33))) & M32)
+        radius, shrinking = int(mem.f32(storm + 0x54)), 0
+        shards = []
+        for tick in range(140):
+            next_frame(mem, rng, rng.choice((10, 30)), 0.0 if quiet else 0.3)
+            if not quiet:
+                if rng.random() < 0.03 and mem.u32(storm + 0x6C):
+                    rig.do('handle_clear', 'handle_clear', (storm + 0x6C,))     # the caster is deleted
+                if tick == 20 + (40 if waited else 0):
+                    mem.w32(storm + 0x4C, (mem.u32(RC.G_SIM_FRAME) + rng.choice((0, 5, 31))) & M32)
+            if mem.u32(storm + 0x58) == f32(0.95):
+                shrinking += 1
+            result = rig.do('FrostStormSpell_run', 'froststorm_run', (storm,))
+            for block in world.allocated:
+                if len(shards) < 5:
+                    shards.append(block)
+                    world.live.add(block)
+            for shard in list(shards):
+                if rng.random() < 0.02:
+                    mem.w32(shard + 0x60, mem.u32(RC.G_SIM_FRAME))              # its time is up
+                if deleted(rig.do('FrostStormIceShard_run', 'iceshard_run', (shard,)), shard):
+                    shards.remove(shard)
+                    world.live.discard(shard)
+            if deleted(result, storm):
+                if quiet:
+                    TIMERS.setdefault('froststorm: radius -> runs with the factor 0.95 before the storm deletes itself',
+                                      set()).add('%d -> %d' % (radius, shrinking))
+                break
+        for shard in shards:
+            world.live.discard(shard)
+        rig.do('handle_clear', 'handle_clear', (storm + 0x6C,))
+        world.live.discard(storm)
+        clear_handles(rig)
+    del world.on_terrain_height
+    world.box_counts = (0, 0, 1, 2, 3, 5, 8)
+    rig.report('froststorm', 'id 58; player and monster casters')
+
+
+SECTIONS.append(('froststorm', section_froststorm))
+
+
+def sample_point_with_matrix(args, view, rng):
+    """model_getSamplePoint as SpellGiantGrowth_emitParticles asks it: a point near the
+    position, a number, and a 3x3 matrix (when the caller wants one)."""
+    pos = args[2]
+    point = tuple(f32(fl(pos[i]) + rng.uniform(-30, 30)) for i in range(3))
+    matrix = tuple(f32(rng.uniform(-1, 1)) for _ in range(9))
+    return Res(outs=[point, (f32(rng.choice((0.0, 250.0, 1000.0, -40.0))), 0, f32(1.0)), matrix])
+
+
+def section_giantgrowth(rig):
+    """Skill 65: can-use, cast (a player; a monster gets nothing), the constructor, and
+    the spell run to its end: growing, holding, shrinking, the thirty frames after; the
+    owner deleted; the scale changed from outside; the speed factor in the player record."""
+    rig.section = 'giantgrowth'
+    mem, world, rng = rig.emu.mem, rig.world, rig.rng
+    pos = world.scratch
+    skill = skill_obj(mem, 65)
+    world.sample_counts = (1, 3, 7, 7, 12)
+    world.on_SpellGiantGrowth_typeinfo = lambda args, view, rng_: Res(0x90A0B0)
+    world.on_model_getSamplePoint = sample_point_with_matrix
+    for round_ in range(4 if OPTIONS['quick'] else 24):
+        world.place(rng)
+        quiet = round_ < (1 if OPTIONS['quick'] else 3)                 # casts left alone: the frame counts
+        caster = rng.choice(world.players * 4 + world.monsters[:1]) if not quiet else world.players[round_]
+        level = (1, 2, 10)[round_] if quiet else rng.choice((1, 2, 5, 10, 20, 40))
+        if quiet:
+            mem.wf32(caster + 0xDC, 1.0)
+        rig.vskill(skill, 1, (caster,))
+        spell = rig.vskill(skill, 2, (level, caster, pos, 0))['ret'] & M32
+        note_stores(rig, 65, 'cast')
+        if not spell:
+            clear_handles(rig)
+            continue
+        world.live.add(spell)
+        rig.do('SpellGiantGrowth_getOwnerField0dc', 'giantgrowth_owner_scale', (spell,), ret='f')
+        if not quiet:
+            mem.w32(spell + 0x20, rng.choice((0, 29, 31, 33, 60)))      # a short hold
+        runs = 0
+        for tick in range(1400 if quiet else 200):
+            next_frame(mem, rng)
+            if not quiet:
+                if rng.random() < 0.004 and mem.u32(spell + 0xF8):
+                    rig.do('handle_clear', 'handle_clear', (spell + 0xF8,))     # the owner is deleted
+                if rng.random() < 0.01:                 # something else set the owner's scale
+                    mem.wf32(caster + 0xDC, rng.choice((1.0, 1.21, 0.4, mem.f32(spell + 0x1C))))
+            runs += 1
+            result = rig.do('SpellGiantGrowth_run', 'giantgrowth_run', (spell, pos, 0))
+            note_stores(rig, 65, 'run', own=(spell,))
+            if ended(result, spell):
+                if quiet:
+                    TIMERS.setdefault('giantgrowth: level -> runs until the spell ends itself (scale 1.0 at the cast)',
+                                      set()).add('%d -> %d' % (level, runs))
+                break
+        rig.do('handle_clear', 'handle_clear', (spell + 0xF8,))
+        world.live.discard(spell)
+        clear_handles(rig)
+    del world.on_SpellGiantGrowth_typeinfo
+    del world.on_model_getSamplePoint
+    world.sample_counts = (0, 1, 3, 7, 7, 12)
+    rig.report('giantgrowth', 'id 65; player casters (a monster is refused)')
+
+
+SECTIONS.append(('giantgrowth', section_giantgrowth))
+
+
+def section_planarwind(rig):
+    """Skill 66: cast (player and monster) with its one target query, and the front run
+    to its end: the targets it passes struck in list order (the PvP roll, the burn roll,
+    the hit particles with and without a model), targets deleted before it reaches them,
+    the stream particles, the terrain, the 54th run."""
+    rig.section = 'planarwind'
+    mem, world, rng = rig.emu.mem, rig.world, rig.rng
+    pos = world.scratch
+    skill = skill_obj(mem, 66)
+    world.sample_counts = (1, 3, 7, 7, 12)
+    world.on_Creature_v16 = lambda args, view, rng_: Res(rng_.choice((world.model, world.model, world.model, 0)))
+    for round_ in range(5 if OPTIONS['quick'] else 36):
+        world.place(rng)
+        quiet = round_ < 2                              # two fronts over flat ground: the run count
+        caster = rng.choice(world.players * 2 + world.monsters)
+        mem.w32(SB.G_PVP_MODE_A, rng.choice((0, 0, 1)))
+        put_vec(mem, pos, (mem.f32(caster + 0x10), mem.f32(caster + 0x14), mem.f32(caster + 0x18)))
+        rig.vskill(skill, 1, (caster,))
+        level = (1, 10)[round_] if quiet else rng.choice((1, 2, 4, 5, 6, 9, 10, 11, 20, 40))
+        spell = rig.vskill(skill, 2, (level, caster, pos, rng.randrange(0x10000)))['ret'] & M32
+        note_stores(rig, 66, 'cast')
+        if not spell:
+            clear_handles(rig)
+            continue
+        world.live.add(spell)
+        world.ground_up = 0.0 if quiet else 0.02
+        if not quiet and mem.u32(spell + 0x5C) > 80 and rng.random() < 0.8:
+            mem.w32(spell + 0x5C, rng.choice((0, 5, 39)))               # fewer stream particles: time
+        runs = 0
+        for tick in range(60):
+            next_frame(mem, rng)
+            if not quiet and rng.random() < 0.05:       # a target is deleted before the front reaches it
+                rig.do('handle_clear', 'handle_clear', (rng.choice(world.objects),))
+            runs += 1
+            if ended(rig.do('SpellPlanarWind_run', 'planarwind_run', (spell, pos, 0)), spell):
+                if quiet:
+                    TIMERS.setdefault('planarwind: runs until the spell ends itself over flat ground', set()).add(runs)
+                break
+        rig.do('handle_clear', 'handle_clear', (spell + 0x6C,))
+        world.live.discard(spell)
+        clear_handles(rig)
+    mem.w32(SB.G_PVP_MODE_A, 0)
+    del world.on_Creature_v16
+    world.sample_counts, world.ground_up = (0, 1, 3, 7, 7, 12), 0.4
+    rig.report('planarwind', 'id 66; player and monster casters')
+
+
+SECTIONS.append(('planarwind', section_planarwind))
 
 
 def main(argv):

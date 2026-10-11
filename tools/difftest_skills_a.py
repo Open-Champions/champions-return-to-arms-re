@@ -64,7 +64,7 @@ Scenarios (-k matches the name)
                              natural end and cut short (owner dead, owner deleted, target
                              gone), the hit handlers on every kind of object
     s05 can-use of the rest  ids 1, 5, 6, 8, 10, 13, 17, 18, 22: can-use only, the prediction
-                             copy among the casters
+                             copy among the casters (the name is kept: it seeds the cases)
     second pass (appended, so that the scenarios above keep their random cases):
     s13 fireweapons          the fourth weapon buff, with its light
     s18 coneoffire           cast, the Mummy's constructor call, the run; the SA4 property:
@@ -75,11 +75,23 @@ Scenarios (-k matches the name)
     s22 dismissundead        cast, flight, hit; the SA2 property and the target-loop order
     s01 wizardbeam           cast and the held channel (the point arrays handed to the trail
                              functions are stack data and are not compared)
+    third pass (appended after those, for the same reason):
+    s05 diseaseshield        cast, the Mummy's constructor call, the run at every radius (the
+                             particle counts follow it), the tick; the "maximum below minimum"
+                             property of its damage calls
+    s06 diseasetrail         cast, the spell while the caster walks, a segment on its own
+    s08 fireflares           cast, the spell and its flares frame by frame, hit, explosion,
+                             burst (40 burst frames in full, the others taken to the burst's
+                             end), the spell's destructor for real
+    s10 blessed              cast (also refused), the run, the destructor, the statistic
+                             Player_regenMana asks for; and the flag word of ids 5, 6, 8, 10
+    Each of the four also casts with the prediction copy as the caster now and then, for
+    the store table only: the game never lets the copy reach these casts.
     After the coverage the test prints, per skill, the stores a cast made outside its own
     new objects, in order (the prediction-copy table of the companion document).
 
-Not compared: describeRank (slot 4, menu text), the draw functions, the casts and effects
-of ids 5, 6, 8 and 10, and states 1 and 2 of HammerOfWrath_run.
+Not compared: describeRank (slot 4, menu text), the draw functions, and states 1 and 2 of
+HammerOfWrath_run.
 """
 import hashlib
 import math
@@ -2285,7 +2297,7 @@ def s15(env, rounds):
 
 
 
-# ---- can-use of the ids whose cast is not modelled: 1, 5, 6, 8, 10, 13, 17, 18, 22 --------------------
+# ---- can-use of the ids whose casts came in later passes: 1, 5, 6, 8, 10, 13, 17, 18, 22 --------------
 for _sid, _name in ((1, 'wizardbeam'), (5, 'diseaseshield'), (6, 'diseasetrail'), (8, 'fireflares'), (10, 'blessed'),
                     (13, 'fireweapons'), (17, 'hammerofwrath'), (18, 'coneoffire'), (22, 'dismissundead'), (34, 'shieldbash')):
     SKILL_NAMES[_sid] = _name
@@ -2297,8 +2309,9 @@ BODIES.update({'SkillDiseaseShield_canUse': (0x2CE2B0, 0x2CE2E4, 5), 'SkillDisea
 
 @scenario('s05 can-use of the rest', 5)
 def s_canuse(env, rounds):
-    """Ids 1, 5, 6, 8, 10, 13, 17, 18 and 22: can-use only (their statistics and mana cost
-    are in the sweep; their casts and effects are not modelled)."""
+    """Ids 1, 5, 6, 8, 10, 13, 17, 18 and 22: can-use only, the prediction copy among the
+    casters (their statistics and mana cost are in the sweep; their casts and effects have
+    their own scenarios further down, from the second and third pass)."""
     world, mem, rng = env.world, env.mem, env.rng
     held = world.add_pool(0x1C, 3, 'spell')
     tables = {}
@@ -2808,6 +2821,377 @@ def s01(env, rounds):
                 facing = (facing + rng.choice((500, -900, 0x2000))) & 0xFFFF
             env.do('SpellWizardBeam_run', spell, env.pos_of(caster, 0.0, 36.0), facing)
     world.enemy_bias = 0.7
+
+
+# ==== the third pass: the casts and effects of ids 5, 6, 8 and 10 =============================================
+def spell_freed(result, spell):
+    """Did this call run the spell's own (real) destructor to the end: pool_free of its block?"""
+    return any(c[0] == 'pool_free' and c[1][0] == spell for c in result['emu_calls'])
+
+
+def set_list(env, head, objs):
+    """A handle list as the scripted handle_link leaves it: the objects' own nodes, chained from the head."""
+    mem, nodes = env.mem, [env.world.nodes[o] for o in objs]
+    for i, node in enumerate(nodes):
+        mem.w32(node, nodes[i + 1] if i + 1 < len(nodes) else 0)
+    mem.w32(head, nodes[0] if nodes else 0)
+
+
+def carried(env, caster, held, own_table, chance=0.3):
+    """Now and then the caster already carries spells: of the skill's own class or of others."""
+    world, mem, rng = env.world, env.mem, env.rng
+    for obj in world.everything:
+        mem.w32(obj + 0x364, 0)
+    for s in held:
+        mem.w32(s + 0x14, rng.choice((own_table, own_table, 0x518DB0, AM.VT_SPELL_SUMMON)))
+    attached = held[:rng.choice((1, 2))] if rng.random() < chance else []
+    world.spell_list(caster, attached)
+    return attached
+
+
+def cast_by_copy(env, sid, key, skill, level, pos, facing):
+    """The cast with the prediction copy as the caster, for the store table: Player_castSkill never lets the copy
+    get here (flag bit 0 of Skill +4 is clear); this shows what the cast itself would do - it has no test of its own."""
+    world, mem = env.world, env.mem
+    mem.w32(world.copy + 0x364, 0)
+    env.do(key, skill, level, world.copy, pos, facing)
+    note_stores(env, sid, 'cast, copy')
+
+
+# ---- skill 5 ---------------------------------------------------------------------------
+add_skill(5, 'diseaseshield', {
+    'SkillDiseaseShield_cast': (0x2CDFF8, 0x2CE090), 'SpellDiseaseShield_ctor': (0x2CCFC8, 0x2CD318),
+    'SpellDiseaseShield_run': (0x2CD318, 0x2CDEF8),
+}, {
+    'SkillDiseaseShield_canUse': (0x2CE2B0, 'ii', 'i', 'diseaseshield_can_use'),
+    'SkillDiseaseShield_cast': (0x2CDFF8, 'iiivi', 'i', 'diseaseshield_cast'),
+    'SpellDiseaseShield_ctor': (0x2CCFC8, 'iiii', 'n', 'diseaseshield_ctor'),
+    'SpellDiseaseShield_run': (0x2CD318, 'ivi', 'n', 'diseaseshield_run'),
+}, spell_tables=[0x5186C0])
+
+
+@scenario('s05 diseaseshield', 5)
+def s05(env, rounds):
+    """Cast (and the constructor as the Mummy calls it), then the shield run at every stage of its growth: the two
+    particle clouds whose counts follow the radius, the swarm, the owner walking, the tick and the end.  The damage
+    calls are collected for the "maximum below minimum" property."""
+    world, mem, rng = env.world, env.mem, env.rng
+    skill = env.skill(5)
+    spell = world.add_pool(0x1B0, 1, 'dshield')[0]
+    held = world.add_pool(0x1C, 2, 'spell')
+    ticks = [0, 0]
+    for env.round in range(rounds):
+        world.place(rng, spread=70.0)
+        caster = env.caster(('player', 'player', 'monster', 'monster'))
+        carried(env, caster, held, 0x5186C0)
+        env.do('SkillDiseaseShield_canUse', skill, caster)
+        mem.w32(caster + 0x364, 0)
+        for mob in rng.sample(world.mobs, 4):
+            world.enemy(mob)
+            world.put(mob, env.pos_of(caster), rng.uniform(-90, 90), rng.uniform(-90, 90), rng.choice((0.0, -10.0, 30.0)))
+        world.enemy_bias = rng.choice((0.3, 0.9, 1.0))
+        mem.w32(spell + 0x14, 0)
+        world.fail_alloc = 0.05
+        level = env.level()
+        pos, facing = env.pos_of(caster), facing_arg(rng)
+        if rng.random() < 0.7:
+            env.do('SkillDiseaseShield_cast', skill, level, caster, pos, facing)
+            note_stores(env, 5, 'cast')
+        else:                                                   # as the Mummy builds it (0x299ee8)
+            for off in range(0, 0x1B0, 4):
+                mem.w32(spell + off, 0)
+            env.do('SpellDiseaseShield_ctor', spell, rng.choice((level, level, 0x85, 0x103)), caster, skill)
+        world.fail_alloc = 0.0
+        if mem.u32(spell + 0x14) == 0x5186C0:
+            full = float(mem.s32(spell + 0x1A8))
+            for n in range(12):
+                frame = mem.u32(RC.G_SIM_FRAME)
+                if n == 9:
+                    frame = mem.u32(spell + 0x1A4) - rng.choice((31, 30, 2, 1, 0))
+                elif rng.random() < 0.5:
+                    frame += 30 - frame % 30
+                else:
+                    frame += rng.choice((1, 1, 3, 11))
+                mem.w32(RC.G_SIM_FRAME, frame & M32)
+                if n in (1, 4, 7):                              # the radius after any number of frames (it grows by 0.5 a frame)
+                    mem.wf32(spell + 0x1AC, rng.choice((0.0, 19.0, 19.5, 27.5, 28.0, 45.0, full - 1.0, full - 0.25, full, full + 30.0)))
+                if rng.random() < 0.3:                          # the owner walks
+                    for off in (0x10, 0x14, 0x18):
+                        mem.wf32(caster + off, mem.f32(caster + off) + rng.uniform(-7, 7))
+                result = env.do('SpellDiseaseShield_run', spell, env.pos_of(caster, 0.0, 36.0), mem.u16(caster + 0x38))
+                for name, args in result['emu_calls']:
+                    if name == 'damage_apply' and fl(args[8]) > 0.0:
+                        ticks[0] += 1
+                        ticks[1] += fl(args[9]) < fl(args[8]) and args[5] == 0x40
+                if spell_gone(result, spell):
+                    break
+        if rng.random() < 0.25:
+            cast_by_copy(env, 5, 'SkillDiseaseShield_cast', skill, level, pos, facing)
+    world.enemy_bias = 0.7
+    report('s05 diseaseshield halved maximum', ticks[0] - ticks[1], ticks[0],
+           'damage calls with d > 0: the maximum handed over is (d + spread) x 0.5, below the minimum d; flags 0x40')
+
+
+# ---- skill 6 ---------------------------------------------------------------------------
+add_skill(6, 'diseasetrail', {
+    'SkillDiseaseTrail_cast': (0x2CCBA0, 0x2CCC3C), 'SpellDiseaseTrail_ctor': (0x2CC080, 0x2CC248),
+    'SpellDiseaseTrail_run': (0x2CC248, 0x2CCAF8), 'DiseaseTrail_ctor': (0x2CB4E8, 0x2CB65C),
+    'DiseaseTrail_run': (0x2CB65C, 0x2CC080),
+}, {
+    'SkillDiseaseTrail_canUse': (0x2CCE28, 'ii', 'i', 'diseasetrail_can_use'),
+    'SkillDiseaseTrail_cast': (0x2CCBA0, 'iiivi', 'i', 'diseasetrail_cast'),
+    'SpellDiseaseTrail_run': (0x2CC248, 'ivi', 'n', 'diseasetrail_spell_run'),
+    'DiseaseTrail_ctor': (0x2CB4E8, 'iivvii', 'n', 'diseasetrail_ctor'),
+    'DiseaseTrail_run': (0x2CB65C, 'i', 'n', 'diseasetrail_run'),
+}, object_tables=[0x5184F0], spell_tables=[0x518608])
+
+
+@scenario('s06 diseasetrail', 6)
+def s06(env, rounds):
+    """Cast; the spell while the caster walks (steps on both sides of the two drop distances, pool failures, the
+    end); then one segment on its own: with and without an owner, creatures of every kind in its box, the tick, the
+    one-shot end and the expiry."""
+    world, mem, rng = env.world, env.mem, env.rng
+    skill = env.skill(6)
+    spell = world.add_pool(0x30, 1, 'dtrail')[0]
+    segment = world.add_pool(0x68, 1, 'segment')[0]
+    held = world.add_pool(0x1C, 2, 'spell')
+    drops = [0, 0]                                              # runs that dropped a segment / spell runs
+    for env.round in range(rounds):
+        world.place(rng, spread=60.0)
+        caster = env.caster(('player', 'player', 'monster'))
+        carried(env, caster, held, 0x518608)
+        env.do('SkillDiseaseTrail_canUse', skill, caster)
+        mem.w32(caster + 0x364, 0)
+        mem.w32(spell + 0x14, 0)
+        mem.w32(segment + 0x48, 0)
+        world.fail_alloc = 0.06
+        level = env.level()
+        pos, facing = env.pos_of(caster, 2.0), facing_arg(rng)
+        env.do('SkillDiseaseTrail_cast', skill, level, caster, pos, facing)
+        note_stores(env, 6, 'cast')
+        if mem.u32(spell + 0x14) == 0x518608:
+            here = [fl(v) for v in pos]
+            for n in range(12):
+                frame = mem.u32(RC.G_SIM_FRAME)
+                if n == 9:
+                    frame = int(mem.f32(spell + 0x2C)) - rng.choice((2, 1, 0))
+                else:
+                    frame += rng.choice((1, 1, 1, 5))
+                mem.w32(RC.G_SIM_FRAME, frame & M32)
+                step, turn = rng.choice((0.0, 5.0, 20.0, 31.9, 32.1, 35.9, 36.1, 37.0, 60.0)), rng.uniform(0, 2 * math.pi)
+                here[0] += step * math.cos(turn)
+                here[1] += step * math.sin(turn)
+                here[2] += rng.choice((0.0, 0.0, 0.0, 17.0, -40.0))
+                result = env.do('SpellDiseaseTrail_run', spell, tuple(f32(v) for v in here), mem.u16(caster + 0x38))
+                drops[1] += 1
+                drops[0] += any(name == 'handle_clear' for name, _args in result['emu_calls'])
+                if spell_gone(result, spell):
+                    break
+        world.fail_alloc = 0.0
+        # one segment: the one the spell dropped last, or one built here (also without an owner)
+        if rng.random() < 0.6 or mem.u32(segment + 0x48) != 0x5184F0:
+            for off in range(0, 0x68, 4):
+                mem.w32(segment + off, 0)
+            env.do('DiseaseTrail_ctor', segment, rng.choice((level, level, 0, 0xFFFFFFFB)), env.pos_of(caster, 40.0),
+                   env.pos_of(caster, 80.0), rng.choice((caster, caster, 0, world.mobs[0])), skill)
+        at = tuple(mem.u32(segment + 0x10 + 4 * i) for i in range(3))
+        for mob in rng.sample(world.mobs, 4):
+            world.enemy(mob)
+        for obj in rng.sample(world.mobs, 4) + [world.players[1], world.props[0]]:
+            world.put(obj, at, rng.uniform(-30, 30), rng.uniform(-30, 30), rng.choice((0.0, 0.0, -15.0, 25.0)))
+        world.enemy_bias = rng.choice((0.0, 0.3, 0.9, 1.0))
+        for n in range(10):
+            frame = mem.u32(RC.G_SIM_FRAME)
+            if n == 7:
+                frame = mem.u32(segment + 0x58) - rng.choice((16, 15, 1, 0))
+            elif rng.random() < 0.4:
+                frame += 15 - frame % 15
+            else:
+                frame += rng.choice((1, 1, 4))
+            mem.w32(RC.G_SIM_FRAME, frame & M32)
+            if n == 2 and rng.random() < 0.3:                   # the owner is deleted: the handle empties
+                mem.w32(segment + 0x5C, 0)
+            result = env.do('DiseaseTrail_run', segment)
+            if env.deleted(result, segment) or result['fault'] or result['both_fault'] is not None:
+                break
+        if rng.random() < 0.25:
+            cast_by_copy(env, 6, 'SkillDiseaseTrail_cast', skill, level, pos, facing)
+    world.enemy_bias = 0.7
+    report('s06 diseasetrail drops', 0 if drops[0] else 1, drops[1], 'spell runs; a segment was dropped in %d of them' % drops[0])
+
+
+# ---- skill 8 ---------------------------------------------------------------------------
+add_skill(8, 'fireflares', {
+    'SkillFireFlares_cast': (0x2DD4E8, 0x2DD570), 'SpellFireFlares_ctor': (0x2DCD40, 0x2DD0C8),
+    'SpellFireFlares_dtor': (0x2DD0C8, 0x2DD1AC), 'SpellFireFlares_run': (0x2DD1AC, 0x2DD404),
+    'FireFlare_ctor': (0x2DBD20, 0x2DBE00), 'FireFlare_run': (0x2DBF10, 0x2DCD40),
+}, {
+    'SkillFireFlares_canUse': (0x2DD8B8, 'ii', 'i', 'fireflares_can_use'),
+    'SkillFireFlares_cast': (0x2DD4E8, 'iiivi', 'i', 'fireflares_cast'),
+    'SpellFireFlares_run': (0x2DD1AC, 'ivi', 'n', 'fireflares_run'),
+    'SpellFireFlares_dtor': (0x2DD0C8, 'ii', 'n', 'fireflares_dtor'),
+    'FireFlare_run': (0x2DBF10, 'i', 'n', 'fireflare_run'),
+}, object_tables=[0x5193E0], spell_tables=[0x5194F8])
+
+
+@scenario('s08 fireflares', 8)
+def s08(env, rounds):
+    """Cast (1 to 16 flares, pool failures, the division by zero of levels without flares); then frame by frame the
+    spell, which moves the flares, and some of the flares: orbiting, the hit on frames divisible by 10, the explosion
+    from level 7, the burst and the end.  A flare that deletes itself is taken out of the spell's list, as the object
+    destructor's handle clearing would.  The spell's destructor runs for real."""
+    world, mem, rng = env.world, env.mem, env.rng
+    skill = env.skill(8)
+    spell = world.add_pool(0x78, 1, 'flares')[0]
+    flares = world.add_pool(0x6C, 16, 'flare')
+    held = world.add_pool(0x1C, 2, 'spell')
+    seen = [0, 0, 0]                                            # hits / with an explosion / the first victim hit again by it
+    bursts = [40]                                               # burst frames still to be run in full
+    for env.round in range(rounds):
+        world.place(rng, spread=80.0)
+        caster = env.caster(('player', 'player', 'player', 'monster'))
+        carried(env, caster, held, 0x5194F8)
+        env.do('SkillFireFlares_canUse', skill, caster)
+        mem.w32(caster + 0x364, 0)
+        mem.w32(spell + 0x14, 0)
+        for flare in flares:
+            mem.w32(flare + 0x48, 0)
+        world.fail_alloc = rng.choice((0.0, 0.0, 0.1))
+        level = rng.choice((0, 1, 2, 4, 6, 7, 7, 8, 12, 20, 30, 40, 46, 130, 0xFFFFFFE0))
+        pos, facing = env.pos_of(caster, 0.0, 36.0), facing_arg(rng)
+        env.do('SkillFireFlares_cast', skill, level, caster, pos, facing)
+        note_stores(env, 8, 'cast')
+        world.fail_alloc = 0.0
+        if mem.u32(spell + 0x14) == 0x5194F8:
+            live, node = [], mem.u32(spell + 0x18)
+            while node:
+                live.append(mem.u32(node + 0xC))
+                node = mem.u32(node)
+            for mob in rng.sample(world.mobs, 5):
+                world.enemy(mob)
+            world.enemy_bias = rng.choice((0.5, 0.9, 1.0))
+            mode = rng.choice(('end', 'end', 'destroyed'))
+            for n in range(10):
+                frame = mem.u32(RC.G_SIM_FRAME)
+                if mode == 'end' and n == 7:
+                    frame = mem.u32(spell + 0x28) - rng.choice((2, 1, 0))
+                elif rng.random() < 0.5:
+                    frame += 10 - frame % 10
+                else:
+                    frame += rng.choice((1, 1, 3))
+                mem.w32(RC.G_SIM_FRAME, frame & M32)
+                if rng.random() < 0.2:
+                    for off in (0x10, 0x14):
+                        mem.wf32(caster + off, mem.f32(caster + off) + rng.uniform(-9, 9))
+                result = env.do('SpellFireFlares_run', spell, env.pos_of(caster, 0.0, 36.0), mem.u16(caster + 0x38))
+                if spell_freed(result, spell):
+                    break
+                bursting = [f for f in live if mem.u32(f + 0x58)]
+                orbiting = [f for f in live if f not in bursting]
+                for flare in bursting + rng.sample(orbiting, min(rng.choice((1, 1, 2)), len(orbiting))):
+                    if mem.u32(flare + 0x58):                   # a burst frame is 110 rounds of its loop: a few dozen are run
+                        if bursts[0] <= 0:                      # in full, the others are taken straight to the burst's end
+                            mem.w16(flare + 0x5E, 77)
+                        elif mem.u16(flare + 0x5E) >= 14:
+                            mem.w16(flare + 0x5E, rng.choice((63, 70, 70, 77)))
+                        bursts[0] -= 1
+                    elif rng.random() < 0.5:                    # somebody stands where the flare is
+                        at = tuple(mem.u32(flare + 0x10 + 4 * i) for i in range(3))
+                        for mob in rng.sample(world.mobs, 2):
+                            world.put(mob, at, rng.uniform(-20, 20), rng.uniform(-20, 20), rng.choice((0.0, -30.0)))
+                    result = env.do('FireFlare_run', flare)
+                    hits = [args[0] for name, args in result['emu_calls'] if name == 'damage_apply']
+                    if hits:
+                        seen[0] += 1
+                        seen[1] += len(hits) > 1
+                        seen[2] += hits[0] in hits[1:]
+                    if env.deleted(result, flare):
+                        live.remove(flare)
+                        set_list(env, spell + 0x18, live)
+            if mem.u32(spell + 0x14) == 0x5194F8:               # the destructor on its own (the owner died, say)
+                if live and rng.random() < 0.4:
+                    mem.w32(world.nodes[live[0]] + 0xC, 0)      # a node whose object is gone
+                env.do('SpellFireFlares_dtor', spell, rng.choice((0, 1, 2, 3)))
+                if live:
+                    mem.w32(world.nodes[live[0]] + 0xC, live[0])
+        if rng.random() < 0.25:
+            cast_by_copy(env, 8, 'SkillFireFlares_cast', skill, level, pos, facing)
+    world.enemy_bias = 0.7
+    report('s08 fireflares hits', 0 if seen[0] and seen[1] else 1, seen[0],
+           'flare hits; %d with an explosion, which hit the first victim a second time in %d' % (seen[1], seen[2]))
+
+
+# ---- skill 10 --------------------------------------------------------------------------
+add_skill(10, 'blessed', {
+    'SkillBlessed_cast': (0x2DFEB8, 0x2DFF84), 'SpellBlessed_ctor': (0x2DF078, 0x2DF42C),
+    'SpellBlessed_dtor': (0x2DF42C, 0x2DF4BC), 'SpellBlessed_run': (0x2DF4BC, 0x2DFDB8),
+    'SpellBlessed_getStat0': (0x2DFDB8, 0x2DFDF0),
+}, {
+    'SkillBlessed_canUse': (0x2E000C, 'ii', 'i', 'blessed_can_use'),
+    'SkillBlessed_cast': (0x2DFEB8, 'iiivi', 'i', 'blessed_cast'),
+    'SpellBlessed_run': (0x2DF4BC, 'ivi', 'n', 'blessed_run'),
+    'SpellBlessed_dtor': (0x2DF42C, 'ii', 'n', 'blessed_dtor'),
+    'SpellBlessed_getStat0': (0x2DFDB8, 'i', 'i', 'blessed_stat0'),
+}, spell_tables=[0x5196F0])
+
+
+@scenario('s10 blessed', 10)
+def s10(env, rounds):
+    """Cast (also refused: the caster carries the spell already), the statistic Player_regenMana asks for, the run
+    with 0 to 6 sparkles and every clamp of their distance and height, the end through the real destructor."""
+    world, mem, rng = env.world, env.mem, env.rng
+    skill = env.skill(10)
+    spell = world.add_pool(0xFC, 1, 'blessed')[0]
+    held = world.add_pool(0x1C, 2, 'spell')
+    refused = [0, 0]
+    for env.round in range(rounds):
+        world.place(rng)
+        caster = env.caster(('player', 'player', 'player', 'monster'))
+        attached = carried(env, caster, held, 0x5196F0)
+        env.do('SkillBlessed_canUse', skill, caster)
+        mem.w32(spell + 0x14, 0)
+        world.fail_alloc = 0.05
+        level = rng.choice((0, 1, 2, 3, 4, 7, 10, 13, 16, 20, 40, 0x85))
+        pos, facing = env.pos_of(caster), facing_arg(rng)
+        result = env.do('SkillBlessed_cast', skill, level, caster, pos, facing)
+        note_stores(env, 10, 'cast')
+        if any(mem.u32(s + 0x14) == 0x5196F0 for s in attached):
+            refused[0] += 1
+            refused[1] += result['ret'] == 0 and not any(name == 'pool_new' for name, _args in result['emu_calls']) \
+                and not any(not is_stack(addr) for _pc, addr, _size, _value in env.rig.emu.writes)
+        world.fail_alloc = 0.0
+        mem.w32(caster + 0x364, 0)
+        if mem.u32(spell + 0x14) == 0x5196F0:
+            env.do('SpellBlessed_getStat0', spell)
+            mode = rng.choice(('end', 'end', 'destroyed'))
+            for n in range(8):
+                frame = mem.u32(RC.G_SIM_FRAME)
+                if mode == 'end' and n == 6:
+                    frame = mem.u32(spell + 0xB4) - rng.choice((2, 1, 0))
+                else:
+                    frame += rng.choice((1, 1, 2, 17, 60))
+                mem.w32(RC.G_SIM_FRAME, frame & M32)
+                if rng.random() < 0.3:                          # a sparkle is put outside its limits
+                    i = rng.randrange(6)
+                    mem.wf32(spell + 0x1C + 12 * i, rng.choice((-5.0, 0.0, 300.0)))
+                    mem.wf32(spell + 0x20 + 12 * i, rng.choice((-5.0, 500.0)))
+                if rng.random() < 0.2:                          # the owner moves and changes size
+                    mem.wf32(caster + 0x10, mem.f32(caster + 0x10) + rng.uniform(-9, 9))
+                    mem.wf32(caster + 0x1C, rng.choice((8.0, 24.0)))
+                    mem.wf32(caster + 0x20, rng.choice((40.0, 96.0)))
+                result = env.do('SpellBlessed_run', spell, env.pos_of(caster, 0.0, 36.0), mem.u16(caster + 0x38))
+                if spell_freed(result, spell):
+                    break
+            if mem.u32(spell + 0x14) == 0x5196F0:               # the destructor on its own (the owner died, say)
+                env.do('SpellBlessed_dtor', spell, rng.choice((0, 1, 2, 3)))
+        if rng.random() < 0.25:
+            cast_by_copy(env, 10, 'SkillBlessed_cast', skill, level, pos, facing)
+    report('s10 blessed refused', refused[0] - refused[1], refused[0],
+           'casts by a caster that already carries a SpellBlessed: 0 returned, nothing allocated, nothing stored')
+    bits = [sid for sid in (5, 6, 8, 10) if mem.u32(env.skill(sid) + 4) & 1]
+    report('copy flag of ids 5, 6, 8, 10', len(bits), 4,
+           'Skill +4 bit 0 is clear in the executed objects: Player_castSkill turns the prediction copy away (0x1a4320)', bits)
 
 
 def main(argv):

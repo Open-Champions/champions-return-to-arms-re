@@ -5,8 +5,10 @@ They exercise the model's own logic on made-up memory: the statistics slots on i
 tables, the mana-cost reader on hand-assembled instructions, the weapon-entry rule, the
 damage descriptor, the divide rule, attached-spell lookup, the radial damage, and - for the
 second pass - Cone of Fire's descriptor, Dismiss Undead's target loop, Shield Bash's turn
-target, the Hammer of Wrath's level, the Fire Weapons light and the Wizard Beam's chain.  Whether
-the model matches the game is tools/difftest_skills_a.py's business (it needs the
+target, the Hammer of Wrath's level, the Fire Weapons light and the Wizard Beam's chain; for
+the third pass the Disease Shield's tick and particle counts, the Disease Trail's drop rule
+and one-shot segment, the Fire Flares ring, hit, explosion and destructor, and Blessed.
+Whether the model matches the game is tools/difftest_skills_a.py's business (it needs the
 executable)."""
 import os
 import sys
@@ -336,6 +338,310 @@ class SecondPass(Fixture):
         self.assertEqual((hits[0][0], hits[0][1], hits[0][5], hits[0][8]), (target, owner, 0x100, f32(44.0)))
         self.assertGreater(C.to_float(m.u32(spell + 0x30 + 12 * 5)), 20.0)      # the tip rose toward the target's middle
         self.assertEqual(m.s16(target + 0x96), 0x10)        # the tint
+
+
+class ThirdPass(Fixture):
+    """The casts and effects of ids 5, 6, 8 and 10, on made-up memory."""
+    OBJ_TABLE, OWNER, SPELL, BOLT = SecondPass.OBJ_TABLE, SecondPass.OWNER, SecondPass.SPELL, SecondPass.BOLT
+    BLOCKS = (0xD000, 0xD400, 0xD800, 0xDC00)
+    creature = SecondPass.creature
+
+    def setUp(self):
+        Fixture.setUp(self)
+        for table, destructor in ((0x5194F8, 0x2DD0C8), (0x5196F0, 0x2DF42C)):      # slot 1 of the two classes whose
+            self.mem.poke(table + 8 + 4, 4, destructor)                             # destructor is modelled
+
+    def get(self, name):                        # an answer may be a function of the arguments
+        def answer(*args):
+            self.calls.append((name, args))
+            value = self.answers.get(name)
+            return value(*args) if callable(value) else value
+        return answer
+
+    def named(self, name):
+        return [args for called, args in self.calls if called == name]
+
+    def spell(self, level, owner):
+        mem = self.mem
+        mem.poke(self.SPELL, 1, level)
+        mem.poke(self.SPELL + 8, 4, SKILL)
+        mem.poke(self.SPELL + 0xC, 4, owner)
+        return self.SPELL
+
+    def test_disease_shield_tick_and_counts(self):
+        m, mem = self.model, self.mem
+        self.tier(1, 0, 1, 20, 2.0)
+        owner = self.creature(self.OWNER, 0.0, 0.0, kind=0, flags=0x60)
+        victim = self.creature(0xC000, 10.0, 0.0)
+        spell = self.spell(1, owner)
+        mem.poke(spell + 0x1A4, 4, 5000)                    # end frame
+        mem.poke(spell + 0x1A8, 4, 20)                      # full radius: reached, so no growth
+        mem.poke(spell + 0x1AC, 4, f32(20.0))
+        mem.poke(RC.G_SIM_FRAME, 4, 3000)                   # a multiple of 30
+        self.answers.update({'world_collectObjectsInBox': [victim], 'Creature.v20': 1, 'res_find': 0})
+        m.diseaseshield_run(spell, (0, 0, f32(36.0)), 0)
+        # (20 x 0.000833) x (20 x pi) = 1.05 low particles, half of that motes: 1 and 0; sixteen glows
+        self.assertEqual(len(self.named('particle_spawn')), 1)
+        self.assertEqual(self.named('particle_spawn')[0][0], 0x8E5280)
+        self.assertEqual(len(self.named('glow_add')), 16)
+        box = self.named('world_collectObjectsInBox')[0]
+        self.assertEqual((box[0][0], box[1][0]), (f32(-20.0), f32(20.0)))
+        hit = self.named('damage_apply')[0]
+        self.assertEqual((hit[0], hit[1], hit[5], hit[6]), (victim, owner, 0x40, SA.descriptor((0x26, 20, 20, 0))))
+        self.assertEqual(hit[8], f32(20.0))
+        self.assertTrue(C.lt(hit[9], hit[8]))               # the maximum is halved: 10 .. 12, below the minimum
+        self.assertTrue(10.0 <= C.to_float(hit[9]) < 12.0)
+        self.assertEqual(m.draws, 0)                        # only the spell's own generator
+        # the radius grows by half a unit a frame until the full radius; off a tick frame nobody is asked
+        del self.calls[:]
+        mem.poke(spell + 0x1A8, 4, 60)
+        mem.poke(RC.G_SIM_FRAME, 4, 3001)
+        m.diseaseshield_run(spell, (0, 0, 0), 0)
+        self.assertEqual(m.u32(spell + 0x1AC), f32(20.5))
+        self.assertEqual(self.named('damage_apply'), [])
+        # the end
+        del self.calls[:]
+        mem.poke(RC.G_SIM_FRAME, 4, 5000)
+        m.diseaseshield_run(spell, (0, 0, 0), 0)
+        self.assertEqual([name for name, _args in self.calls], ['Spell.v1'])
+
+    def test_disease_shield_cast_flashes_first(self):
+        m = self.model
+        self.tier(1, 1, 1, 2, 0.25)
+        self.tier(1, 2, 1, 5, 0.25)
+        owner = self.creature(self.OWNER, 0.0, 0.0, kind=0, flags=0x60)
+        self.answers.update({'pool_new': 0})
+        self.assertEqual(m.diseaseshield_cast(SKILL, 1, owner), 0)
+        # the flash is stored before the pool is asked: also when it has nothing to give
+        self.assertEqual([m.s16(owner + off) for off in (0x98, 0x9A, 0x9C, 0x9E)], [-100, -100, -100, 0])
+        self.assertEqual(m.draws, 0)
+        self.answers.update({'pool_new': self.BLOCKS[0], 'res_find': 0})
+        self.mem.poke(RC.G_SIM_FRAME, 4, 100)
+        self.assertEqual(m.diseaseshield_cast(SKILL, 1, owner), self.BLOCKS[0])
+        self.assertEqual(m.draws, 1)                        # the spell's own generator is seeded from the shared one
+        self.assertEqual((m.s32(self.BLOCKS[0] + 0x1A4), m.s32(self.BLOCKS[0] + 0x1A8)), (100 + 5 * 60, 2 * 12))
+
+    def test_disease_trail_drop_rule(self):
+        m, mem = self.model, self.mem
+        self.tier(1, 1, 1, 3, 0.333)
+        owner = self.creature(self.OWNER, 0.0, 0.0, kind=0, flags=0x60)
+        spell = self.spell(1, owner)
+        mem.poke(spell + 0x2C, 4, f32(5000.0))              # the end frame is a float
+        mem.poke(RC.G_SIM_FRAME, 4, 1000)
+        self.answers.update({'pool_new': 0})
+        for pos, drops in (((33.0, 0.0, 0.0), False),       # less than 36 away
+                           ((30.0, 0.0, 25.0), False),      # 39 away, but only 30 in the plane (30 x 30 < 1024.189)
+                           ((36.5, 0.0, 0.0), True)):
+            del self.calls[:]
+            mem.poke(spell + 0x1C, 8, 0)
+            mem.poke(spell + 0x24, 4, 0)
+            m.diseasetrail_spell_run(spell, tuple(f32(v) for v in pos), 0)
+            self.assertEqual(len(self.named('particle_spawn')), 4)
+            self.assertEqual(bool(self.named('handle_clear')), drops)
+            self.assertEqual(m.u32(spell + 0x1C), f32(36.5) if drops else 0)    # the drop point moves even without a block
+        # with a block: the segment runs from the old drop point to the run position and lives statistic 1 seconds
+        del self.calls[:]
+        mem.poke(spell + 0x1C, 8, 0)
+        self.answers.update({'pool_new': self.BLOCKS[0]})
+        m.diseasetrail_spell_run(spell, (f32(40.0), 0, 0), 0)
+        segment = self.BLOCKS[0]
+        self.assertEqual((m.u32(segment + 0x10), m.u32(segment + 0x4C)), (0, f32(40.0)))
+        self.assertEqual(m.u32(segment + 0xC) & 0x4421F, 0x4421F)
+        self.assertEqual(m.s32(segment + 0x58), 1000 + 3 * 60)
+        self.assertEqual(m.draws, 1)                        # GameObject_ctor's
+        self.assertIn(('handle_link', (spell + 0x18, segment, segment)), self.calls)
+        # (float) frame >= end: the spell deletes itself
+        del self.calls[:]
+        mem.poke(RC.G_SIM_FRAME, 4, 5000)
+        m.diseasetrail_spell_run(spell, (0, 0, 0), 0)
+        self.assertEqual([name for name, _args in self.calls], ['Spell.v1'])
+
+    def test_disease_trail_segment_is_a_one_shot_trap(self):
+        m, mem = self.model, self.mem
+        self.tier(1, 0, 1, 10, 2.0)
+        segment, node = self.BOLT, 0xE200
+        owner = self.creature(self.OWNER, 0.0, 0.0, kind=0, flags=0x60)
+        alive, dead, prop = self.creature(0xC000, 5.0, 0.0), self.creature(0xC400, 6.0, 0.0, flags=0x28), 0xC800
+        mem.poke(segment + 0x48, 4, self.OBJ_TABLE)
+        mem.poke(segment + 0x58, 4, 9000)
+        mem.poke(segment + 0x60, 4, 3)
+        mem.poke(segment + 0x64, 4, SKILL)
+        mem.poke(RC.G_SIM_FRAME, 4, 1500)                   # a multiple of 15
+        self.answers.update({'world_collectObjectsInBox': [dead, prop, alive], 'Creature.v20': 1, 'res_find': 0})
+        m.diseasetrail_run(segment)                         # no owner: every living creature, no attacker
+        hits = self.named('damage_apply')
+        self.assertEqual([(h[0], h[1]) for h in hits], [(alive, 0)])
+        self.assertEqual(hits[0][6], SA.descriptor((0x26, 14, 14, 0)))
+        self.assertEqual(hits[0][8], f32(14.0))
+        self.assertTrue(C.le(hits[0][8], hits[0][9]))
+        self.assertEqual(self.calls[-1], ('Creature.v1', (segment, 3)))      # it is gone after its first victims
+        del self.calls[:]
+        mem.poke(node + 0xC, 4, owner)                      # with an owner only what it calls an enemy
+        mem.poke(segment + 0x5C, 4, node)
+        self.answers['Creature.v20'] = 0
+        m.diseasetrail_run(segment)
+        self.assertEqual(self.named('damage_apply'), [])
+        self.assertEqual(self.named('Creature.v1'), [])
+
+    def flares(self, level, count_at_level):
+        """A cast at `level` with made-up tables; pool_new hands out BLOCKS in turn."""
+        self.tier(1, 0, 1, 95, 5.0)
+        self.tier(1, 1, 7, 32, 1.0)
+        self.tier(1, 2, 1, 8, 1.0)
+        self.tier(1, 3, 1, 1, 0.333)
+        owner = self.creature(self.OWNER, 0.0, 0.0, kind=0, flags=0x60)
+        blocks = list(self.BLOCKS[:count_at_level])
+        nodes = {block: 0xE400 + 0x20 * i for i, block in enumerate(blocks)}
+
+        def link(head, back, obj):                          # the list grows at the front
+            if obj in nodes and head == self.SPELL + 0x18:
+                self.mem.poke(nodes[obj] + 0xC, 4, obj)
+                self.mem.poke(nodes[obj], 4, self.model.u32(head))
+                self.mem.poke(head, 4, nodes[obj])
+        handed = iter([self.SPELL] + blocks)
+        self.answers.update({'pool_new': lambda size: next(handed), 'handle_link': link, 'res_find': 0,
+                             'sound_playAtPos': 7, 'Creature.v20': 1})
+        self.mem.poke(RC.G_SIM_FRAME, 4, 2000)
+        self.assertEqual(self.model.fireflares_cast(SKILL, level, owner, (f32(100.0), f32(50.0), f32(36.0))), self.SPELL)
+        return owner, blocks
+
+    def test_fire_flares_ring(self):
+        m = self.model
+        owner, blocks = self.flares(7, 3)                   # statistic 3 at level 7: 1 + 0.333 x 6 = 3 flares
+        spell = self.SPELL
+        self.assertEqual(m.draws, 4)                        # the spell's seed and one per flare
+        self.assertEqual((m.s32(spell + 0x68), m.s32(spell + 0x6C), m.s32(spell + 0x70)), (79, 750, 0))    # 4500 / (79 / 12)
+        self.assertEqual(m.s32(spell + 0x28), 2000 + 14 * 60)
+        self.assertEqual([m.s16(b + 0x5C) for b in blocks], [0, 0x5554, -0x5558])      # steps of 0xfffe / 3, as 16 bits
+        self.assertEqual([m.u32(b + 0x4C) for b in blocks], [owner] * 3)               # the caster: a plain word
+        self.assertEqual(m.u32(blocks[0] + 0x10), f32(100.0))                          # all at the cast position
+        self.assertEqual(m.u32(spell + 0x74), 7)
+        # a run: the orbit opens by 2 a frame and every flare is turned by the step
+        del self.calls[:]
+        m.fireflares_run(spell, (f32(100.0), f32(50.0), f32(36.0)), 0)
+        self.assertEqual(m.s32(spell + 0x70), 2)
+        self.assertEqual([m.s16(b + 0x5C) for b in blocks], [750, 0x5554 + 750, -0x5558 + 750])
+        self.assertAlmostEqual(C.to_float(m.u32(blocks[0] + 0x10)), 100.0 + 2.0 * 0.9974, places=2)
+        self.assertEqual(len(self.named('obj_updateGridCell')), 3)
+        # the destructor deletes what is left of the ring, stops the sound and frees the block
+        del self.calls[:]
+        m.fireflares_dtor(spell, 3)
+        self.assertEqual(self.named('Creature.v1'), [(b, 3) for b in reversed(blocks)])     # newest first
+        self.assertEqual(self.named('sound_stop'), [(7,)])
+        self.assertEqual((m.u32(spell + 0x74), m.u32(spell + 0x14)), (0xFFFFFFFF, SA.VT_SPELL_BASE))
+        self.assertEqual(self.calls[-1], ('pool_free', (spell,)))
+
+    def test_fire_flares_level_without_flares(self):
+        m = self.model
+        self.flares(0, 0)                                   # statistic 3 is 0: the angle step is 0xfffe / 0, never used
+        self.assertEqual((m.s32(self.SPELL + 0x68), m.s32(self.SPELL + 0x6C)), (65, 900))
+        self.assertEqual(m.draws, 1)
+        del self.calls[:]
+        self.mem.poke(self.SPELL + 0x28, 4, 9000)
+        m.fireflares_run(self.SPELL, (0, 0, 0), 0)          # an empty ring ends the spell
+        self.assertEqual(self.named('pool_free'), [(self.SPELL,)])
+
+    def test_fire_flare_hit_explosion_and_burst(self):
+        m, mem = self.model, self.mem
+        owner, blocks = self.flares(7, 3)
+        flare, victim, other = blocks[0], self.creature(0xC000, 100.0, 50.0), self.creature(0xC400, 130.0, 50.0)
+        mem.poke(flare + 0x48, 4, self.OBJ_TABLE)
+        # off a hit frame: seventeen particles and nothing else
+        del self.calls[:]
+        mem.poke(RC.G_SIM_FRAME, 4, 2001)
+        m.fireflare_run(flare)
+        self.assertEqual([args[0] for args in self.named('particle_spawn')], [0x8E59B0] * 6 + [0x8E5A00] * 7 + [0x8E5A50] * 4)
+        self.assertEqual(self.named('world_collectObjectsInBox'), [])
+        # a hit frame at level 7: the first enemy of the small box, then everybody in the box twice as wide - the victim again
+        del self.calls[:]
+        mem.poke(RC.G_SIM_FRAME, 4, 2010)
+        boxes = iter(([victim, other], [other, victim]))
+        self.answers['world_collectObjectsInBox'] = lambda low, high, capacity: next(boxes)
+        m.fireflare_run(flare)
+        hits = self.named('damage_apply')
+        self.assertEqual([h[0] for h in hits], [victim, other, victim])
+        self.assertEqual([h[1] for h in hits], [owner] * 3)
+        first, blast = hits[0][6][1], hits[1][6][1]
+        self.assertEqual((first[0], first[1]), (0x15, 125))                 # statistic 0 at level 7: 95 + 5 x 6
+        self.assertTrue(125 <= first[2] < 150)
+        self.assertEqual((blast[0], blast[1]), (0x15, 32))                  # statistic 1 at its first level
+        self.assertTrue(32 <= blast[2] <= 38)
+        self.assertEqual((hits[0][5], hits[0][8], hits[0][9]), (0x40, 0, 0))
+        boxes = self.named('world_collectObjectsInBox')
+        x = m.u32(flare + 0x10)
+        self.assertEqual((boxes[0][1][0], boxes[1][1][0]), (C.add(x, f32(24.0)), C.add(x, f32(48.0))))
+        self.assertEqual((m.u32(flare + 0x58), m.u32(flare + 0x60)), (1, f32(100.0)))
+        # the burst: 7 wider a frame, 110 pairs of particles, until it is three radii wide
+        del self.calls[:]
+        m.fireflare_run(flare)
+        self.assertEqual(m.s16(flare + 0x5E), 7)
+        self.assertEqual(len(self.named('particle_spawn')), 220)
+        mem.poke(flare + 0x5E, 2, 77)
+        del self.calls[:]
+        m.fireflare_run(flare)
+        self.assertEqual(self.calls, [('Creature.v1', (flare, 3))])
+        # below level 7 there is no explosion statistic: one damage call, and the flare is gone on its next run
+        mem.poke(flare + 0x50, 4, 3)
+        mem.poke(flare + 0x58, 4, 0)
+        del self.calls[:]
+        self.answers['world_collectObjectsInBox'] = [victim, other]
+        m.fireflare_run(flare)
+        self.assertEqual([h[0] for h in self.named('damage_apply')], [victim])
+        del self.calls[:]
+        m.fireflare_run(flare)
+        self.assertEqual(self.calls, [('Creature.v1', (flare, 3))])
+
+    def test_blessed(self):
+        m, mem = self.model, self.mem
+        self.tier(1, 0, 1, 90, 10.0)
+        self.tier(1, 1, 1, 30, 0.0)
+        self.tier(1, 2, 1, 1, 0.3334)
+        owner = self.creature(self.OWNER, 500.0, 0.0, kind=0, flags=0x60)
+        mem.poke(owner + 0x1C, 4, f32(24.0))
+        mem.poke(owner + 0x20, 4, f32(72.0))
+        held, node, table = 0xE600, 0xE700, 0xE800
+        mem.poke(table + 4, 4, SA.Model.BLESSED_GETTER)
+        mem.poke(held + 0x14, 4, table)
+        mem.poke(node + 0xC, 4, held)
+        mem.poke(RC.G_SIM_FRAME, 4, 4000)
+        self.answers.update({'pool_new': self.SPELL})
+        kept, SA.Model.type_info = SA.Model.type_info, {SA.Model.BLESSED_GETTER: 0x555}
+        try:
+            mem.poke(owner + 0x364, 4, node)                # the caster carries one already: refused before anything is stored
+            self.assertEqual(m.blessed_can_use(SKILL, owner), 0)
+            self.assertEqual(m.blessed_cast(SKILL, 4, owner), 0)
+            self.assertEqual((self.calls, m.s16(owner + 0x9C), m.draws), ([], 0, 0))
+            mem.poke(owner + 0x364, 4, 0)
+            self.assertEqual(m.blessed_can_use(SKILL, owner), 1)
+            self.assertEqual(m.blessed_cast(SKILL, 4, owner), self.SPELL)
+        finally:
+            SA.Model.type_info = kept
+        spell = self.SPELL
+        self.assertEqual([m.s16(owner + 0x90 + 2 * i) for i in range(8)], [75, 75, 200, 15] * 2)
+        self.assertEqual((m.draws, m.s32(spell + 0xB4)), (1, 4000 + 30 * 60))
+        self.assertEqual([m.u32(spell + 0x18 + 12 * i) for i in range(6)], [f32(float(i * 0x2AAA)) for i in range(6)])
+        for i in range(6):
+            self.assertTrue(0.0 <= C.to_float(m.u32(spell + 0x1C + 12 * i)) < 48.0)        # within two radii
+            self.assertTrue(36.0 <= C.to_float(m.u32(spell + 0x20 + 12 * i)) < 72.0)       # the upper half of the owner
+            self.assertTrue(159.0 <= (1 if i & 1 else -1) * C.to_float(m.u32(spell + 0x60 + 12 * i)) <= 161.0)
+        self.assertEqual(m.blessed_stat0(spell), 120)       # what Player_regenMana asks: 90 + 10 x 3 percent
+        # a run at level 4: statistic 2 gives two sparkles, each a glow and ten particles, all on the owner
+        del self.calls[:]
+        mem.poke(spell + 0x1C, 4, f32(1000.0))              # the first sparkle far outside its limits
+        mem.poke(spell + 0x20, 4, f32(-9.0))
+        m.blessed_run(spell, (0, 0, 0), 0)
+        self.assertEqual((len(self.named('glow_add')), len(self.named('particle_spawn'))), (2, 20))
+        self.assertEqual((m.u32(spell + 0x1C), m.u32(spell + 0x20)), (f32(48.0), f32(36.0)))
+        self.assertTrue(420.0 < C.to_float(self.named('glow_add')[0][0][0]) < 580.0)       # within (48 + 24) of the owner's x
+        quad = [m.s16(owner + 0x90 + 2 * i) for i in range(4)]
+        self.assertTrue(26 <= quad[0] <= 124 and quad[0] == quad[1] and quad[2] == quad[0] + 125 and 10 <= quad[3] <= 20)
+        self.assertEqual(m.draws, 1)                        # nothing shared after the constructor
+        # the end runs the destructor
+        del self.calls[:]
+        mem.poke(RC.G_SIM_FRAME, 4, 4000 + 1800)
+        m.blessed_run(spell, (0, 0, 0), 0)
+        self.assertEqual([name for name, _args in self.calls], ['light_unlink', 'light_dtor', 'handle_clear', 'pool_free'])
+        self.assertEqual(m.u32(spell + 0x14), SA.VT_SPELL_BASE)
 
 
 if __name__ == '__main__':

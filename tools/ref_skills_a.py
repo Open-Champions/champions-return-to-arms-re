@@ -47,9 +47,14 @@ so that a skill's constants, methods and table rows stay together)
          its spell; item_parseDescriptor through tools/ref_items.py)
          34 Shield Bash        22 Dismiss Undead (HolyBolt)        1 Wizard Beam (without
          the point arrays it hands to the trail functions)
-    3. NOT modelled beyond statistics, mana cost and can-use: 5 Disease Shield, 6 Disease
-       Trail, 8 Fire Flares, 10 Blessed.  (Also not: states 1 and 2 of HammerOfWrath_run,
-       which nothing stores.)
+       added by the third pass, after those:
+         5 Disease Shield      6 Disease Trail (the spell and the segments it drops)
+         8 Fire Flares (the spell, its destructor, the orbiting objects)
+         10 Blessed (with its destructor and the statistic Player_regenMana asks for)
+    3. NOT modelled: states 1 and 2 of HammerOfWrath_run, which nothing stores; the point
+       arrays of the Wizard Beam's trails; describeRank (slot 4) and the draw functions of
+       every id.  All 34 ids have their can-use, cast, constructors, per-tick run and hit
+       handling here.
 
 Presentation is modelled too where a function is: every particle_spawn, light and sound
 call-out is made with its arguments, because the own generators that place particles also
@@ -2795,9 +2800,10 @@ def carries_getter(mem_u32, function):
 
 class Model(Model):                             # noqa: F811
     # =====================================================================================
-    # Can-use of the skills whose cast and effect are NOT modelled here (ids 5, 6, 8, 10):
-    # the generic "carries" shape.  (Ids 1, 13, 17, 18 and 22 were in this group until the
-    # second pass; their own sections follow.)
+    # Can-use by shape, for a Skill whose slot 1 has no method of its own here: the generic
+    # "refused while the caster carries a spell of class X" function and the constant 1.
+    # (Since the third pass every can-use of ids 1-34 is in SKILL_BODIES - ids 5, 6, 8 and
+    # 10 were the last to rely on this; it stays for tables built by hand.)
     # =====================================================================================
     def skill_call(self, skill, slot, *args):
         if slot == 1:
@@ -4195,3 +4201,740 @@ class Model(Model):                             # noqa: F811
 SKILL_BODIES.update({0x2F3B0C: 'wizardbeam_cast'})
 SPELL_BODIES.update({0x2F1A44: 'wizardbeam_run'})
 MODELLED.update({'SkillWizardBeam_cast': 0x2F3B0C, 'SpellWizardBeam_ctor': 0x2F1528, 'SpellWizardBeam_run': 0x2F1A44})
+
+
+# =========================================================================================
+# The third pass: the casts and effects of ids 5, 6, 8 and 10
+# =========================================================================================
+VT_SPELL_BASE = 0x515BA0                        # the Spell base table every spell destructor leaves behind
+F_PI = 0x40490FCF                               # 3.14159 as the code has it
+EXTERNALS.update({
+    'light_dtor': Ext(0x14A490, 'pi', 0, 'n', '(light record, 2)'),
+    'pool_free': Ext(0x150470, 'p', 0, 'n', '(block)'),
+})
+
+
+class Model(Model):                             # noqa: F811
+    # =====================================================================================
+    # Skill 5, Disease Shield: SkillDiseaseShield (table 0x518638) and SpellDiseaseShield
+    # (0x1b0 bytes, table 0x5186c0), which sits on the caster.  Monsters: Bubo casts it, the
+    # Mummy calls the constructor (0x299ee8, with the level's monster level as an integer).
+    #
+    #   +0x18, +0xd8 16 swarm points and their velocities   +0x198 the owner's position at
+    #   the last run   +0x1a4 end frame   +0x1a8 full radius (int)   +0x1ac current radius
+    #   (float; the constructor does NOT store it - it is 0 because pool_new clears blocks)
+    # =====================================================================================
+    DISEASESHIELD_GETTER = 0x3CD300
+
+    def diseaseshield_can_use(self, skill, caster):
+        """SkillDiseaseShield_canUse 0x2ce2b0 -> 1 unless the caster carries a
+        SpellDiseaseShield."""
+        return 0 if self.carries(caster, self.DISEASESHIELD_GETTER) else 1
+
+    def diseaseshield_cast(self, skill, level, caster, pos=None, facing=0):
+        """SkillDiseaseShield_cast 0x2cdff8 -> the spell.  The caster's second flash quad =
+        (-100, -100, -100, 0) first (0x2ce03c-0x2ce04c; no test of the caster at all), then
+        pool_new(0x1b0) and the constructor."""
+        self.flash2(caster, -100, -100, -100, 0)
+        spell = self.call('pool_new', 0x1B0)
+        if spell:
+            self.diseaseshield_ctor(spell, level, caster, skill)
+        return spell
+
+    def diseaseshield_ctor(self, spell, level, owner, skill):
+        """SpellDiseaseShield_ctor 0x2ccfc8 (spell, level, owner, skill).
+
+        The Spell base (ONE SHARED DRAW).  end +0x1a4 = frame + slot 12 (2, the level
+        argument as a signed byte, owner, cap 20) x 60; full radius +0x1a8 = slot 12 (1,
+        the stored level byte, owner, cap 10) x 12.  16 swarm points from the OWN
+        generator: a ball x the owner's radius, and a ball for the velocity.  +0x198 = the
+        owner's position.  The cast sound at the owner's position."""
+        w32, u32 = self.w32, self.u32
+        self.spell_base(spell, level, owner, skill, 0x5186C0)
+        seconds = self.skill_call(skill, 12, 2, s8(level), owner, 0x14)
+        w32(spell + 0x1A4, u32(G_SIM_FRAME) + s32(seconds) * 60)
+        reach = self.skill_call(u32(spell + 8), 12, 1, self.s8(spell), u32(spell + 0xC), 10)
+        w32(spell + 0x1A8, s32(reach) * 12)
+        for i in range(16):
+            b = self.spell_ball(spell)
+            radius = u32(u32(spell + 0xC) + 0x1C)
+            for k in range(3):
+                w32(spell + 0x18 + 12 * i + 4 * k, C.mul(b[k], radius))
+            b = self.spell_ball(spell)
+            for k in range(3):
+                w32(spell + 0xD8 + 12 * i + 4 * k, b[k])
+        self.wvec(spell + 0x198, self.vec(u32(spell + 0xC) + 0x10))
+        self.call('sound_playAtPos', self.call('res_find', 0x54EB88, 0x54EB90), self.vec(u32(spell + 0xC) + 0x10), ONE)
+
+    def diseaseshield_run(self, spell, pos, facing=0):
+        """SpellDiseaseShield_run 0x2cd318 (spell, position, facing), once per frame of the
+        owner.
+
+          1. frame >= end: the spell deletes itself.
+          2. drift = (owner position - the one of the last run) x 6 in x and y, 0 in z.
+             radius < full radius: radius += 0.5.
+          3. the low cloud: n = (int)((r x 0.000833) x (r x pi)) particles, n read again
+             after every one.  Each: one OWN ball; z is flattened by 0.4; all three x
+             (r x 0.75); velocity = that vector with |z|, x 0.4, + drift; position = the
+             vector + the run position, lowered by a quarter of the owner's height.
+          4. the motes: (int)((r x 0.000417) x (r x pi)) particles.  Each: an OWN ball x
+             (r x 0.33) + the run position; a second OWN ball whose z is x 0.3 and made
+             positive, then all three x 14, + drift.
+          5. the swarm: per point one OWN ball (x 1.5), a pull back (-0.02 x the point)
+             once it is outside r^2 x 0.83333, velocity = (velocity + that) x 0.8, point +=
+             velocity, and a glow at the OWNER's position + point, raised by three quarters
+             of its height.  (The same swarm as the disease status, 0x2d5854, with the
+             shield's radius in place of the victim's.)
+          6. +0x198 = the owner's position.
+          7. frame % 30 == 0: every object of the box position -/+ (float)(int) r (capacity
+             64) the owner's slot 20 calls an enemy: d = slot 12 (0, level, owner, cap 0);
+             ONE OWN DRAW; damage_apply(it, owner, 100000, flags 0x40, descriptor slot 0 =
+             (0x26, d, d, 0); d, (d + (d x r/65536) x 0.2) x 0.5) - THE MAXIMUM IS HALVED
+             (0x2cde30), so it is below the minimum.  With any hit the hit sound at the
+             owner's position."""
+        u32, w32 = self.u32, self.w32
+        if not self.frame() < self.s32(spell + 0x1A4):
+            self.spell_delete(spell)
+            return
+        owner = u32(spell + 0xC)
+        drift = (C.mul(C.sub(u32(owner + 0x10), u32(spell + 0x198)), 0x40C00000),
+                 C.mul(C.sub(u32(owner + 0x14), u32(spell + 0x19C)), 0x40C00000), ZERO)
+        if C.lt(u32(spell + 0x1AC), C.from_int(self.s32(spell + 0x1A8))):
+            w32(spell + 0x1AC, C.add(u32(spell + 0x1AC), HALF))
+
+        def count(density):
+            r = u32(spell + 0x1AC)
+            return s32(C.to_int(C.mul(C.mul(r, density), C.mul(r, F_PI))))
+
+        n = 0
+        while n < count(0x3A5A740D):
+            b = self.spell_ball(spell)
+            scale = C.mul(u32(spell + 0x1AC), 0x3F400000)
+            p = (C.mul(b[0], scale), C.mul(b[1], scale), C.mul(C.mul(b[2], 0x3ECCCCCC), scale))
+            up = C.neg(p[2]) if C.lt(p[2], ZERO) else p[2]
+            velocity = tuple(C.add(C.mul(c, 0x3ECCCCCC), drift[k]) for k, c in enumerate((p[0], p[1], up)))
+            lowered = C.sub(C.add(p[2], pos[2]), C.mul(u32(u32(spell + 0xC) + 0x20), 0x3E800000))
+            self.call('particle_spawn', 0x8E5280, (C.add(p[0], pos[0]), C.add(p[1], pos[1]), lowered), velocity, ZERO)
+            n += 1
+        n = 0
+        while n < count(0x39DA740D):
+            b = self.spell_ball(spell)
+            scale = C.mul(u32(spell + 0x1AC), 0x3EA8F5C2)
+            point = tuple(C.add(C.mul(b[k], scale), pos[k]) for k in range(3))
+            v = self.spell_ball(spell)
+            up = C.mul(v[2], 0x3E999999)
+            if C.lt(up, ZERO):
+                up = C.neg(up)
+            velocity = tuple(C.add(C.mul(c, 0x41600000), drift[k]) for k, c in enumerate((v[0], v[1], up)))
+            self.call('particle_spawn', 0x8E52D0, point, velocity, ZERO)
+            n += 1
+        for i in range(16):
+            point, speed = spell + 0x18 + 12 * i, spell + 0xD8 + 12 * i
+            push = [C.mul(v, 0x3FC00000) for v in self.spell_ball(spell)]
+            p = self.vec(point)
+            r = u32(spell + 0x1AC)
+            if C.lt(C.mul(C.mul(r, r), 0x3F55554F), C.add(C.add(C.mul(p[0], p[0]), C.mul(p[1], p[1])), C.mul(p[2], p[2]))):
+                push = [C.add(push[k], C.mul(p[k], 0xBCA3D70A)) for k in range(3)]
+            v = [C.mul(C.add(u32(speed + 4 * k), push[k]), 0x3F4CCCCC) for k in range(3)]
+            for k in range(3):
+                w32(speed + 4 * k, v[k])
+            p = [C.add(u32(point + 4 * k), v[k]) for k in range(3)]
+            for k in range(3):
+                w32(point + 4 * k, p[k])
+            owner = u32(spell + 0xC)
+            glow = [C.add(p[k], u32(owner + 0x10 + 4 * k)) for k in range(3)]
+            glow[2] = C.add(glow[2], C.mul(u32(owner + 0x20), 0x3F400000))
+            self.call('glow_add', tuple(glow), 0, 0, 0, 200, u32(G_GLOW_TEXTURE), 0, 0, 0x41F00000, 0x43C80000)
+        self.wvec(spell + 0x198, self.vec(u32(spell + 0xC) + 0x10))
+        if rem(self.frame(), 30) != 0:
+            return
+        found = self.box_around(pos, C.from_int(s32(C.to_int(u32(spell + 0x1AC)))), 0x40)
+        hit = False
+        for other in found:
+            if not self.vcall(u32(spell + 0xC), 20, other):
+                continue
+            dmg = self.skill_call(u32(spell + 8), 12, 0, self.s8(spell), u32(spell + 0xC), 0)
+            amount = C.from_int(s32(dmg))
+            high = C.mul(spread_max(amount, self.spell_rand(spell)), HALF)
+            hit = True
+            self.call('damage_apply', other, u32(spell + 0xC), 100000, 0, 0, 0x40, descriptor((0x26, dmg, dmg, 0)), 0,
+                      amount, high)
+        if hit:
+            self.call('sound_playAtPos', self.call('res_find', 0x54EB88, 0x54EBA8), self.vec(u32(spell + 0xC) + 0x10), ONE)
+
+    # =====================================================================================
+    # Skill 6, Disease Trail: SkillDiseaseTrail (table 0x518580), SpellDiseaseTrail (0x30
+    # bytes, table 0x518608) on the caster and the segments it drops, DiseaseTrail (0x68
+    # bytes, table 0x5184f0).
+    #
+    #   spell:   +0x18 handle of the newest segment   +0x1c the last drop point
+    #            +0x2c end frame, AS A FLOAT
+    #   segment: +0x10 one end (the damage box is here)   +0x4c the other end   +0x58 expiry
+    #            +0x5c owner handle   +0x60 level   +0x64 Skill
+    # =====================================================================================
+    DISEASETRAIL_GETTER = 0x3CD120
+    DISEASETRAIL_PUFFS = ((0x8E5190, 1, 0x40C00000), (0x8E51E0, 1, 0x40C00000), (0x8E5230, 2, 0x41400000))
+
+    def diseasetrail_can_use(self, skill, caster):
+        """SkillDiseaseTrail_canUse 0x2cce28 -> 1 unless the caster carries a
+        SpellDiseaseTrail."""
+        return 0 if self.carries(caster, self.DISEASETRAIL_GETTER) else 1
+
+    def diseasetrail_cast(self, skill, level, caster, pos, facing=0):
+        """SkillDiseaseTrail_cast 0x2ccba0 -> the spell.  The caster's second flash quad =
+        (-100, -100, -100, 0) first (0x2ccbe4-0x2ccbf4), then pool_new(0x30) and the
+        constructor with the cast position."""
+        self.flash2(caster, -100, -100, -100, 0)
+        spell = self.call('pool_new', 0x30)
+        if spell:
+            self.diseasetrail_spell_ctor(spell, pos, level, caster, skill)
+        return spell
+
+    def diseasetrail_spell_ctor(self, spell, pos, level, owner, skill):
+        """SpellDiseaseTrail_ctor 0x2cc080 (spell, position, level, owner, skill).
+
+        The Spell base (ONE SHARED DRAW); segment handle +0x18 empty; drop point +0x1c =
+        the position; end +0x2c = (float)(int)((float) frame + 180.0).  pool_new(0x68): with
+        a block the first segment, both ends at the drop point (ONE SHARED DRAW in its
+        GameObject_ctor), handle_link(spell + 0x18, it, it) and the cast sound at the
+        owner's position.  WITHOUT a block nothing more happens - no sound either."""
+        w32, u32 = self.w32, self.u32
+        self.spell_base(spell, level, owner, skill, 0x518608)
+        w32(spell + 0x18, 0)
+        self.wvec(spell + 0x1C, pos)
+        w32(spell + 0x2C, C.from_int(s32(C.to_int(C.add(C.from_int(self.frame()), 0x43340000)))))
+        block = self.call('pool_new', 0x68)
+        if not block:
+            return
+        self.diseasetrail_ctor(block, self.s8(spell), self.vec(spell + 0x1C), self.vec(spell + 0x1C), u32(spell + 0xC),
+                               u32(spell + 8))
+        self.call('handle_link', spell + 0x18, block, block)
+        self.call('sound_playAtPos', self.call('res_find', 0x54EA78, 0x54EAA0), self.vec(u32(spell + 0xC) + 0x10), ONE)
+
+    def _trail_puffs(self, draw, ball, near, far):
+        """The particles both the spell and a segment make every frame: 1, 1 and 2 of
+        three kinds.  Each: ONE OWN DRAW t (x 2^-16); point = near x t + far x (1 - t), plus
+        an OWN ball x 10; velocity = a second OWN ball x 6 (x 12 for the third kind)."""
+        for definition, count, speed in self.DISEASETRAIL_PUFFS:
+            for _ in range(count):
+                t = frac(draw())
+                u = C.sub(ONE, t)
+                point = [C.add(C.mul(near[k], t), C.mul(far[k], u)) for k in range(3)]
+                b = ball()
+                point = tuple(C.add(point[k], C.mul(b[k], 0x41200000)) for k in range(3))
+                b = ball()
+                self.call('particle_spawn', definition, point, tuple(C.mul(b[k], speed) for k in range(3)), ZERO)
+
+    def diseasetrail_spell_run(self, spell, pos, facing=0):
+        """SpellDiseaseTrail_run 0x2cc248 (spell, position, facing).
+
+        (float) frame >= end: the spell deletes itself.  Otherwise the four particles of
+        _trail_puffs between the run position and the last drop point, from the OWN
+        generator.  A new segment when the run position is more than 36 from the drop
+        point (3-D, sqrt) AND more than 1024.189 in the plane, squared: handle_clear(spell
+        + 0x18); pool_new(0x68) and, with a block, DiseaseTrail_ctor from the drop point
+        to the run position (ONE SHARED DRAW) and handle_link.  The drop point = the run
+        position - also when the pool gave nothing."""
+        u32 = self.u32
+        if not C.lt(C.from_int(self.frame()), u32(spell + 0x2C)):
+            self.spell_delete(spell)
+            return
+        self._trail_puffs(lambda: self.spell_rand(spell), lambda: self.spell_ball(spell), pos, self.vec(spell + 0x1C))
+        last = self.vec(spell + 0x1C)
+        d = [C.sub(last[k], pos[k]) for k in range(3)]
+        if not C.lt(0x42100000, C.sqrt(C.add(C.add(C.mul(d[0], d[0]), C.mul(d[1], d[1])), C.mul(d[2], d[2])))):
+            return
+        dx, dy = C.sub(pos[0], last[0]), C.sub(pos[1], u32(spell + 0x20))
+        if not C.lt(0x4480060C, C.add(C.mul(dx, dx), C.mul(dy, dy))):
+            return
+        self.call('handle_clear', spell + 0x18)
+        block = self.call('pool_new', 0x68)
+        if block:
+            self.diseasetrail_ctor(block, self.s8(spell), self.vec(spell + 0x1C), pos, u32(spell + 0xC), u32(spell + 8))
+            self.call('handle_link', spell + 0x18, block, block)
+        self.wvec(spell + 0x1C, pos)
+
+    def diseasetrail_ctor(self, obj, level, start, end, owner, skill):
+        """DiseaseTrail_ctor 0x2cb4e8 (object, level, from, to, owner, skill).
+
+        GameObject_ctor at `from` (ONE SHARED DRAW); table 0x5184f0; flags |= 0x4421f;
+        with an owner handle_link(object + 0x5c, owner, owner); Skill +0x64, level +0x60;
+        radius 33, height 36; obj_updateGridCell; +0x4c = `to`; expiry +0x58 = frame +
+        slot 10 (1, level) x 60 (tier 1 whoever the owner is); the every-frame run list."""
+        w32, u32 = self.w32, self.u32
+        self.gameobject_ctor(obj, start, 0, 0)
+        w32(obj + 0x48, 0x5184F0)
+        w32(obj + 0xC, u32(obj + 0xC) | 0x4421F)
+        w32(obj + 0x5C, 0)
+        if owner:
+            self.call('handle_link', obj + 0x5C, owner, owner)
+        w32(obj + 0x64, skill)
+        w32(obj + 0x60, level)
+        self.wvec(obj + 0x10, start)
+        w32(obj + 0x1C, 0x42040000)
+        w32(obj + 0x20, 0x42100000)
+        self.call('obj_updateGridCell', obj)
+        self.wvec(obj + 0x4C, end)
+        seconds = self.skill_call(u32(obj + 0x64), 10, 1, u32(obj + 0x60))
+        w32(obj + 0x58, u32(G_SIM_FRAME) + s32(seconds) * 60)
+        self.call('obj_runEveryFrame', obj)
+
+    def diseasetrail_run(self, obj):
+        """DiseaseTrail_run 0x2cb65c (object), slot 4, once a frame.
+
+        frame >= expiry: the object deletes itself.  Otherwise the four particles of
+        _trail_puffs between its two ends, from the object's own generator.  On frames
+        divisible by 15: every object of the box position -/+ 19 (capacity 64) that is a
+        living creature (object flags & 0x28 == 0x20) and - when the owner handle holds
+        something - that the owner's slot 20 calls an enemy: d = slot 10 (0, level); ONE
+        OWN DRAW r; damage_apply(it, owner or 0, 100000, flags 0x40, descriptor slot 0 =
+        (0x26, d, d, 0); d, d + (d x r/65536) x 0.2).  With any hit the hit sound on the
+        object, and the object deletes itself: a segment is a one-shot trap.  The owner
+        node's object is not tested for null."""
+        u32 = self.u32
+        if not self.frame() < self.s32(obj + 0x58):
+            self.delete_self(obj)
+            return
+        self._trail_puffs(lambda: self.obj_rand(obj), lambda: self.obj_ball(obj), self.vec(obj + 0x10), self.vec(obj + 0x4C))
+        if rem(self.frame(), 15) != 0:
+            return
+        hit = False
+        for other in self.box_around(self.vec(obj + 0x10), 0x41980000, 0x40):
+            if u32(other + 0xC) & 0x28 != 0x20:
+                continue
+            owner = 0
+            if u32(obj + 0x5C):
+                owner = u32(u32(obj + 0x5C) + 0xC)
+                if not self.vcall(owner, 20, other):
+                    continue
+            dmg = self.skill_call(u32(obj + 0x64), 10, 0, u32(obj + 0x60))
+            amount = C.from_int(s32(dmg))
+            high = spread_max(amount, self.obj_rand(obj))
+            hit = True
+            self.call('damage_apply', other, owner, 100000, 0, 0, 0x40, descriptor((0x26, dmg, dmg, 0)), 0, amount, high)
+        if hit:
+            self.call('sound_playOnObject', self.call('res_find', 0x54EA78, 0x54EA80), obj, ONE)
+            self.delete_self(obj)
+
+    # =====================================================================================
+    # Skill 8, Fire Flares: SkillFireFlares (table 0x519470), SpellFireFlares (0x78 bytes,
+    # table 0x5194f8) on the caster and the orbiting objects FireFlare (0x6c bytes, table
+    # 0x5193e0).
+    #
+    #   spell: +0x18 list of the flares (newest first)   +0x1c owner   +0x20 level (a word)
+    #          +0x24 Skill   +0x28 end frame   +0x2c..+0x64 a light record (position +0x5c,
+    #          range +0x48 / +0x50, 1 / range^2 +0x4c / +0x54)   +0x68 orbit radius to reach
+    #          +0x6c angle step a frame   +0x70 orbit radius now   +0x74 the looping sound
+    #   flare: +0x4c the caster, A PLAIN WORD   +0x50 level   +0x54 Skill   +0x58 state (0
+    #          orbiting, 1 burst)   +0x5c s16 angle   +0x5e s16 burst size   +0x60 where the
+    #          victim stood
+    # =====================================================================================
+    FIREFLARES_GETTER = 0x3CE418
+    FIREFLARE_PUFFS = ((0x8E59B0, 6, 0x40E2E0E7, None), (0x8E5A00, 7, 0x40DB4B57, 0x3F8CAB60), (0x8E5A50, 4, 0x40E1CA7F, None))
+
+    def fireflares_can_use(self, skill, caster):
+        """SkillFireFlares_canUse 0x2dd8b8 -> 1 unless the caster carries a SpellFireFlares."""
+        return 0 if self.carries(caster, self.FIREFLARES_GETTER) else 1
+
+    def fireflares_cast(self, skill, level, caster, pos, facing=0):
+        """SkillFireFlares_cast 0x2dd4e8 -> the spell: pool_new(0x78) and the constructor
+        with the cast position.  No flash: the cast stores nothing in the caster."""
+        spell = self.call('pool_new', 0x78)
+        if spell:
+            self.fireflares_ctor(spell, level, caster, pos, skill)
+        return spell
+
+    def fireflares_ctor(self, spell, level, owner, pos, skill):
+        """SpellFireFlares_ctor 0x2dcd40 (spell, level, owner, position, skill).
+
+        The Spell base (ONE SHARED DRAW); the list +0x18 empty; the light record at +0x2c
+        (position = the cast position, range 0, 1 / range^2 = 1.0 / 0.0 as the machine
+        divides it), linked.  t = 2 x level + 65 (+0x68); step +0x6c = 4500 / (t / 12),
+        both the machine's integer divisions; radius now +0x70 = 0; end +0x28 = frame +
+        slot 10 (2, level) x 60; the light's z is raised by 0.000022; light_relink.
+        n = min(slot 10 (3, level), 16); da = (s16)(0xfffe / n) - divided before n is
+        tested, so n = 0 (level 0) is a division by zero that is not used.  n times:
+        pool_new(0x6c) and, with a block, FireFlare_ctor at the cast position (the orbit
+        radius is still 0) with the angle k x da as 16 bits (ONE SHARED DRAW each) and
+        handle_link(spell + 0x18, it, it).  The looping sound at the owner's position, kept
+        at +0x74 and released to repeat.  Every statistic is tier 1 (slot 10)."""
+        w32, u32, w16 = self.w32, self.u32, self.w16
+        self.spell_base(spell, level, owner, skill, 0x5194F8)
+        w32(spell + 0x18, 0)
+        huge = C.div(ONE, ZERO)
+        self.w8(spell + 0x35, 0)
+        self.wvec(spell + 0x5C, pos)
+        for off, value in ((0x58, 0x3F09FBD6), (0x54, huge), (0x48, 0), (0x50, 0), (0x4C, huge)):
+            w32(spell + off, value)
+        for off, value in ((0x3E, 0xFF), (0x40, 0x80), (0x44, 0xFFF0), (0x38, 0x80), (0x3C, 0xFFF0), (0x36, 0xFF), (0x3A, 0),
+                           (0x42, 0)):
+            w16(spell + off, value)
+        self.w8(spell + 0x34, 0)
+        self.call('light_link', spell + 0x2C)
+        w32(spell + 0x1C, owner)
+        target = s32(s32(level) * 2 + 0x41)
+        w32(spell + 0x68, target)
+        w32(spell + 0x20, level)
+        w32(spell + 0x24, skill)
+        w32(spell + 0x70, 0)
+        w32(spell + 0x6C, quot(0x1194, quot(target, 12)))
+        seconds = self.skill_call(skill, 10, 2, level)
+        w32(spell + 0x28, u32(G_SIM_FRAME) + s32(seconds) * 60)
+        w32(spell + 0x64, C.add(u32(spell + 0x64), 0x37B88CA3))
+        self.call('light_relink', spell + 0x2C)
+        n = s32(self.skill_call(u32(spell + 0x24), 10, 3, u32(spell + 0x20)))
+        if not n < 17:
+            n = 16
+        step = s16(quot(0xFFFE, n))
+        angle = 0
+        for _ in range(max(n, 0)):
+            around = C.from_int(self.s32(spell + 0x70))
+            point = (C.add(C.mul(C.cos16(angle), around), pos[0]), C.add(C.mul(C.sin16(angle), around), pos[1]),
+                     C.add(ZERO, pos[2]))
+            block = self.call('pool_new', 0x6C)
+            if block:
+                self.fireflare_ctor(block, point, u32(spell + 0x20), u32(spell + 0x1C), u32(spell + 0x24), s16(angle))
+                self.call('handle_link', spell + 0x18, block, block)
+            angle = s32(angle + step)
+        handle = self.call('sound_playAtPos', self.call('res_find', 0x54F7C8, 0x54F808), self.vec(u32(spell + 0xC) + 0x10), ONE)
+        w32(spell + 0x74, handle)
+        self.call('sound_release', handle)
+
+    def fireflares_dtor(self, spell, flags):
+        """SpellFireFlares_dtor 0x2dd0c8 (spell, flags), slot 1.  Every flare still in the
+        list deletes itself (its slot 1 with 3; the next node is read first, a node
+        without an object is skipped); sound_stop of +0x74, which becomes -1; the light is
+        unlinked and destroyed; both handle words (+0x18, +4) are cleared; the table is
+        the Spell base's; with flag bit 0 the block is freed."""
+        u32, w32 = self.u32, self.w32
+        w32(spell + 0x14, 0x5194F8)
+        node = u32(spell + 0x18)
+        while node:
+            flare, node = u32(node + 0xC), u32(node)
+            if flare:
+                self.vcall(flare, 1, 3)
+        self.call('sound_stop', u32(spell + 0x74))
+        w32(spell + 0x74, 0xFFFFFFFF)
+        self.call('light_unlink', spell + 0x2C)
+        self.call('light_dtor', spell + 0x2C, 2)
+        self.call('handle_clear', spell + 0x18)
+        w32(spell + 0x14, VT_SPELL_BASE)
+        self.call('handle_clear', spell + 4)
+        if flags & 1:
+            self.call('pool_free', spell)
+
+    def fireflares_run(self, spell, pos, facing=0):
+        """SpellFireFlares_run 0x2dd1ac (spell, position, facing).
+
+          1. frame >= end: the spell deletes itself (its destructor deletes the flares).
+          2. radius now < the one to reach: += 2.
+          3. the light: range = (float)(to reach + now + (int)((sin16(frame x 3000) +
+             sin16(frame x 1500)) x 12)), 1 / range^2, position = the run position;
+             light_relink.
+          4. every flare of the list, front to back (the node's object is not tested):
+             its angle += the step (16 bits); position = the run position + (cos16, sin16 of
+             the angle) x the radius now, z the run position's; obj_updateGridCell.
+          5. an empty list: the spell deletes itself."""
+        u32, w32 = self.u32, self.w32
+        frame = self.frame()
+        if not frame < self.s32(spell + 0x28):
+            self.spell_delete(spell)
+            return
+        reach = self.s32(spell + 0x68)
+        if self.s32(spell + 0x70) < reach:
+            w32(spell + 0x70, self.s32(spell + 0x70) + 2)
+        wave = C.add(C.sin16(frame * 3000), C.sin16(frame * 0x5DC))
+        size = C.from_int(s32(reach + self.s32(spell + 0x70) + s32(C.to_int(C.mul(wave, F_12)))))
+        w32(spell + 0x48, size)
+        w32(spell + 0x50, size)
+        inverse = C.div(ONE, C.mul(size, size))
+        w32(spell + 0x54, inverse)
+        w32(spell + 0x4C, inverse)
+        self.wvec(spell + 0x5C, pos)
+        self.call('light_relink', spell + 0x2C)
+        node, seen = u32(spell + 0x18), 0
+        while node:
+            flare, following = u32(node + 0xC), u32(node)
+            seen += 1
+            self.w16(flare + 0x5C, self.u16(flare + 0x5C) + self.u16(spell + 0x6C))
+            x = C.mul(C.cos16(self.s16(flare + 0x5C)), C.from_int(self.s32(spell + 0x70)))
+            y = C.mul(C.sin16(self.s16(u32(node + 0xC) + 0x5C)), C.from_int(self.s32(spell + 0x70)))
+            self.wvec(u32(node + 0xC) + 0x10, (C.add(x, pos[0]), C.add(y, pos[1]), C.add(ZERO, pos[2])))
+            self.call('obj_updateGridCell', u32(node + 0xC))
+            node = following
+        if not seen:
+            self.spell_delete(spell)
+
+    def fireflare_ctor(self, obj, pos, level, owner, skill, angle):
+        """FireFlare_ctor 0x2dbd20 (object, position, level, owner, skill, angle).
+        GameObject_ctor (ONE SHARED DRAW); table 0x5193e0; flags |= 0x421d; the owner as a
+        plain word +0x4c, Skill +0x54, level +0x50; radius 24; angle +0x5c (16 bits); state
+        +0x58 = 0, burst +0x5e = 0; obj_updateGridCell; the every-frame run list."""
+        w32 = self.w32
+        self.gameobject_ctor(obj, pos, 0, 0)
+        w32(obj + 0x48, 0x5193E0)
+        w32(obj + 0xC, self.u32(obj + 0xC) | 0x421D)
+        w32(obj + 0x4C, owner)
+        w32(obj + 0x54, skill)
+        w32(obj + 0x50, level)
+        self.wvec(obj + 0x10, pos)
+        w32(obj + 0x1C, F_24)
+        self.w16(obj + 0x5C, angle)
+        w32(obj + 0x58, 0)
+        self.w16(obj + 0x5E, 0)
+        self.call('obj_updateGridCell', obj)
+        self.call('obj_runEveryFrame', obj)
+
+    def fireflare_run(self, obj):
+        """FireFlare_run 0x2dbf10 (object), slot 4, once a frame.  All draws are OWN draws.
+
+        State 0, orbiting:
+          1. 6 + 7 + 4 particles of three kinds.  Each: a ball x 8.835896 + the position
+             (z + 0.000022 more); velocity = a second ball x the kind's speed (the second
+             kind's z x 1.09898 on top).
+          2. frame % 10 == 0: the box position -/+ (float)(int) radius (capacity 64).  The
+             FIRST entry the caster's slot 20 calls an enemy: d = slot 10 (0, level); ONE
+             DRAW r; damage_apply(it, caster, 100000, flags 0x40, descriptor slot 0 =
+             (0x15, d, d + (int)((d x r/65536) x 0.2), 0); 0, 0); state = 1; +0x60 = its
+             position.  Nothing else of the box is looked at.
+          3. after a hit: the hit sound on the object, and when slot 10 (1, level) is not 0
+             the explosion - every enemy of the box position -/+ (float)(2 x (int) radius)
+             (the first victim again, if it is still one): d1 = slot 10 (1, level); ONE
+             DRAW; damage_apply(it, caster, 100000, flags 0x40, (0x15, d1, (int)(d1 + (d1 x
+             r/65536) x 0.2), 0); 0, 0).
+        State 1, burst: while (float) burst < radius x 3 and slot 10 (1, level) is not 0:
+        burst += 7 and 110 times: ONE DRAW a; ring point = (cos16(a), sin16(a)) x burst; a
+        ball x 6.78 is added, then the victim's position +0x60; velocity = a second ball;
+        TWO particles (the first and second kind) at that point with that velocity.
+        Otherwise the object deletes itself - on the frame after the hit when there is no
+        explosion statistic (below level 7)."""
+        u32, w32 = self.u32, self.w32
+        ball = lambda: self.obj_ball(obj)
+        if u32(obj + 0x58):
+            if C.lt(C.from_int(self.s16(obj + 0x5E)), C.mul(u32(obj + 0x1C), 0x40400000)) \
+                    and self.skill_call(u32(obj + 0x54), 10, 1, u32(obj + 0x50)):
+                self.w16(obj + 0x5E, self.u16(obj + 0x5E) + 7)
+                for _ in range(110):
+                    turn = self.obj_rand(obj)
+                    x = C.mul(C.cos16(turn), C.from_int(self.s16(obj + 0x5E)))
+                    y = C.mul(C.sin16(turn), C.from_int(self.s16(obj + 0x5E)))
+                    b = ball()
+                    point = (C.add(C.add(x, C.mul(b[0], 0x40D8F5C2)), u32(obj + 0x60)),
+                             C.add(C.add(y, C.mul(b[1], 0x40D8F5C2)), u32(obj + 0x64)),
+                             C.add(C.add(ZERO, C.mul(b[2], 0x40D8F5C2)), u32(obj + 0x68)))
+                    velocity = tuple(ball())
+                    self.call('particle_spawn', 0x8E59B0, point, velocity, ZERO)
+                    self.call('particle_spawn', 0x8E5A00, point, velocity, ZERO)
+                return
+            self.delete_self(obj)
+            return
+        for definition, count, speed, squash in self.FIREFLARE_PUFFS:
+            for _ in range(count):
+                b = ball()
+                point = (C.add(C.mul(b[0], 0x410D5FD4), u32(obj + 0x10)), C.add(C.mul(b[1], 0x410D5FD4), u32(obj + 0x14)),
+                         C.add(C.add(C.mul(b[2], 0x410D5FD4), u32(obj + 0x18)), 0x37B88CA3))
+                v = [C.mul(c, speed) for c in ball()]
+                if squash is not None:
+                    v[2] = C.mul(v[2], squash)
+                self.call('particle_spawn', definition, point, tuple(v), ZERO)
+        if rem(self.frame(), 10) != 0:
+            return
+        for other in self.box_around(self.vec(obj + 0x10), C.from_int(s32(C.to_int(u32(obj + 0x1C)))), 0x40):
+            if not self.vcall(u32(obj + 0x4C), 20, other):
+                continue
+            dmg = self.skill_call(u32(obj + 0x54), 10, 0, u32(obj + 0x50))
+            extra = C.to_int(C.mul(C.mul(C.from_int(s32(dmg)), frac(self.obj_rand(obj))), F_0_2))
+            self.call('damage_apply', other, u32(obj + 0x4C), 100000, 0, 0, 0x40,
+                      descriptor((0x15, dmg, s32(dmg) + s32(extra), 0)), 0, ZERO, ZERO)
+            w32(obj + 0x58, 1)
+            self.wvec(obj + 0x60, self.vec(other + 0x10))
+            break
+        if not u32(obj + 0x58):
+            return
+        self.call('sound_playOnObject', self.call('res_find', 0x54F7C8, 0x54F7F0), obj, ONE)
+        if not self.skill_call(u32(obj + 0x54), 10, 1, u32(obj + 0x50)):
+            return
+        wide = C.from_int(s32(s32(C.to_int(u32(obj + 0x1C))) << 1))
+        for other in self.box_around(self.vec(obj + 0x10), wide, 0x40):
+            if not self.vcall(u32(obj + 0x4C), 20, other):
+                continue
+            dmg = self.skill_call(u32(obj + 0x54), 10, 1, u32(obj + 0x50))
+            high = C.to_int(spread_max(C.from_int(s32(dmg)), self.obj_rand(obj)))
+            self.call('damage_apply', other, u32(obj + 0x4C), 100000, 0, 0, 0x40, descriptor((0x15, dmg, high, 0)), 0,
+                      ZERO, ZERO)
+
+    # =====================================================================================
+    # Skill 10, Blessed: SkillBlessed (table 0x519668) and SpellBlessed (0xfc bytes, table
+    # 0x5196f0) on the caster.  What it does to mana is Player_regenMana's business
+    # (0x1b3900), which asks SpellBlessed_getStat0; the spell itself is light and sparkles.
+    #
+    #   +0x18 + 12 i six sparkles: angle (a float of 16-bit angle units), distance from
+    #   the owner's edge, height   +0x60 + 12 i their rates of change   +0xa8 the owner's
+    #   position at the cast (never read)   +0xb4 end frame   +0xc0..+0xf8 a light record
+    #   (position +0xf0, range +0xdc / +0xe4, 1 / range^2 +0xe0 / +0xe8)
+    # =====================================================================================
+    BLESSED_GETTER = 0x3CE700
+
+    def blessed_can_use(self, skill, caster):
+        """SkillBlessed_canUse 0x2e000c -> 1 unless the caster carries a SpellBlessed."""
+        return 0 if self.carries(caster, self.BLESSED_GETTER) else 1
+
+    def blessed_cast(self, skill, level, caster, pos=None, facing=0):
+        """SkillBlessed_cast 0x2dfeb8 -> the spell, or 0 when the caster already carries
+        one (asked again here, before anything is stored).  Then both flash quads of the
+        caster = (75, 75, 200, 15) (0x2dff20-0x2dff40), pool_new(0xfc) and the
+        constructor."""
+        if self.carries(caster, self.BLESSED_GETTER):
+            return 0
+        self.flash_both(caster, 0x4B, 0x4B, 200, 0xF)
+        spell = self.call('pool_new', 0xFC)
+        if spell:
+            self.blessed_ctor(spell, level, caster, skill)
+        return spell
+
+    def blessed_ctor(self, spell, level, owner, skill):
+        """SpellBlessed_ctor 0x2df078 (spell, level, owner, skill).
+
+        The Spell base (ONE SHARED DRAW); the light record at +0xc0 (position = the
+        owner's, range 0, 1 / range^2 = 1.0 / 0.0 as the machine divides it), linked; end
+        +0xb4 = frame + slot 10 (1, the level argument as a signed byte) x 60.  Six
+        sparkles i, all from the OWN generator: angle = (float)(i x 0x2aaa); distance =
+        ((d x 2^-16) x the owner's radius) doubled; height = h x 0.5 + (d x 2^-16) x (h x
+        0.5) with the owner's height h; rates = a ball, its x +160 for odd i and -160 for
+        even i.  +0xa8 = the owner's position."""
+        w32, u32, w16 = self.w32, self.u32, self.w16
+        self.spell_base(spell, level, owner, skill, 0x5196F0)
+        huge = C.div(ONE, ZERO)
+        self.w8(spell + 0xC9, 0)
+        self.wvec(spell + 0xF0, self.vec(owner + 0x10))
+        for off, value in ((0xD4, 0x4B), (0xCA, 0x4B), (0xCC, 0x4B), (0xD2, 0x4B), (0xD6, 200), (0xD8, 0xFF), (0xCE, 200),
+                           (0xD0, 0xFF)):
+            w16(spell + off, value)
+        for off, value in ((0xEC, 0x3F266677), (0xDC, 0), (0xE8, huge), (0xE4, 0), (0xE0, huge)):
+            w32(spell + off, value)
+        self.w8(spell + 0xC8, 0)
+        self.call('light_link', spell + 0xC0)
+        seconds = self.skill_call(skill, 10, 1, s8(level))
+        w32(spell + 0xB4, u32(G_SIM_FRAME) + s32(seconds) * 60)
+        for i in range(6):
+            sparkle, rate = spell + 0x18 + 12 * i, spell + 0x60 + 12 * i
+            w32(sparkle, C.from_int(i * 0x2AAA))
+            holder = u32(spell + 0xC)
+            out = C.mul(frac(self.spell_rand(spell)), u32(holder + 0x1C))
+            w32(sparkle + 4, C.add(out, out))
+            half = C.mul(u32(holder + 0x20), HALF)
+            t = frac(self.spell_rand(spell))
+            w32(sparkle + 8, C.add(half, C.mul(t, C.mul(u32(u32(spell + 0xC) + 0x20), HALF))))
+            b = self.spell_ball(spell)
+            w32(rate, C.add(b[0], 0x43200000) if i & 1 else C.sub(b[0], 0x43200000))
+            w32(rate + 4, b[1])
+            w32(rate + 8, b[2])
+        self.wvec(spell + 0xA8, self.vec(u32(spell + 0xC) + 0x10))
+
+    def blessed_dtor(self, spell, flags):
+        """SpellBlessed_dtor 0x2df42c (spell, flags), slot 1: the light is unlinked and
+        destroyed, the handle word +4 cleared, the table becomes the Spell base's; with
+        flag bit 0 the block is freed."""
+        self.w32(spell + 0x14, 0x5196F0)
+        self.call('light_unlink', spell + 0xC0)
+        self.call('light_dtor', spell + 0xC0, 2)
+        self.w32(spell + 0x14, VT_SPELL_BASE)
+        self.call('handle_clear', spell + 4)
+        if flags & 1:
+            self.call('pool_free', spell)
+
+    def blessed_stat0(self, spell):
+        """SpellBlessed_getStat0 0x2dfdb8 (spell) -> slot 10 (0, the spell's level byte) of
+        its Skill: the percentage Player_regenMana adds (its one caller, 0x1b3900)."""
+        return self.skill_call(self.u32(spell + 8), 10, 0, self.s8(spell))
+
+    def blessed_run(self, spell, pos=None, facing=0):
+        """SpellBlessed_run 0x2df4bc (spell, position, facing).  The run position is copied
+        and not used: everything is placed on the owner.
+
+          1. frame >= end: the spell deletes itself.
+          2. w = sin16(frame x 1000).  The light: position = the owner's, light_relink,
+             range = (float)(level + 66) + w x 10, 1 / range^2.  Both flash quads of the
+             owner = ((int)(w x 49 + 75) twice, (int)(w x 49 + 200), (int)(w x 5 + 15)).
+          3. n = min(slot 10 (2, level), 6) sparkles, all draws OWN draws.  Each: rates =
+             (rates + a ball x 0.12) x 0.85, then the angle's rate +160 (odd) or -160
+             (even); angle, distance and height += their rates; distance is kept in [0, 2 x
+             the owner's radius] and height in [h / 2, h].  Point = the owner's position +
+             (cos16, sin16 of (int) angle) x ((distance + radius) x 0.99975), z + height.
+             A glow there (colours (int)(w x 40 + 50) three times and (int)(w x 40 + 100)),
+             then 6 particles (velocity = a ball x 0.4, position = a second ball x 2 +
+             the point - in that order) and 4 more (a ball x 6.058, a second x 2 + the
+             point)."""
+        u32, w32 = self.u32, self.w32
+        frame = self.frame()
+        if not frame < self.s32(spell + 0xB4):
+            self.spell_delete(spell)
+            return
+        wave = C.sin16(frame * 1000)
+        self.wvec(spell + 0xF0, self.vec(u32(spell + 0xC) + 0x10))
+        self.call('light_relink', spell + 0xC0)
+        size = C.add(C.from_int(self.s8(spell) + 0x42), C.mul(wave, 0x41200000))
+        strong = C.to_int(C.add(C.mul(wave, 0x42440000), 0x43480000))
+        faint = C.to_int(C.add(C.mul(wave, 0x40A00000), 0x41700000))
+        mid = C.to_int(C.add(C.mul(wave, 0x42440000), 0x42960000))
+        w32(spell + 0xDC, size)
+        w32(spell + 0xE4, size)
+        self.flash_both(u32(spell + 0xC), mid, mid, strong, faint)
+        inverse = C.div(ONE, C.mul(size, size))
+        w32(spell + 0xE8, inverse)
+        w32(spell + 0xE0, inverse)
+        n = s32(self.skill_call(u32(spell + 8), 10, 2, self.s8(spell)))
+        if not n < 7:
+            n = 6
+        for i in range(max(n, 0)):
+            sparkle, rate = spell + 0x18 + 12 * i, spell + 0x60 + 12 * i
+            b = [C.mul(c, 0x3DF5BE5D) for c in self.spell_ball(spell)]
+            v = [C.mul(C.add(u32(rate + 4 * k), b[k]), 0x3F5999BB) for k in range(3)]
+            v[0] = C.add(v[0], 0x43200000) if i & 1 else C.sub(v[0], 0x43200000)
+            for k in range(3):
+                w32(rate + 4 * k, v[k])
+            s = [C.add(u32(sparkle + 4 * k), v[k]) for k in range(3)]
+            holder = u32(spell + 0xC)
+            widest = C.add(u32(holder + 0x1C), u32(holder + 0x1C))
+            if C.lt(widest, s[1]):
+                s[1] = widest
+            if C.lt(s[1], ZERO):
+                s[1] = ZERO
+            if C.lt(u32(holder + 0x20), s[2]):
+                s[2] = u32(holder + 0x20)
+            lowest = C.mul(u32(holder + 0x20), HALF)
+            if C.lt(s[2], lowest):
+                s[2] = lowest
+            for k in range(3):
+                w32(sparkle + 4 * k, s[k])
+            turn = C.to_int(s[0])
+            ring = C.mul(C.add(s[1], u32(holder + 0x1C)), 0x3F7FEFD0)
+            shade = C.mul(wave, 0x42200000)
+            dim, lit = C.to_int(C.add(shade, 0x42480000)), C.to_int(C.add(shade, 0x42C80000))
+            point = (C.add(C.mul(C.cos16(turn), ring), u32(holder + 0x10)), C.add(C.mul(C.sin16(turn), ring), u32(holder + 0x14)),
+                     C.add(s[2], u32(holder + 0x18)))
+            self.call('glow_add', point, dim, dim, lit, dim, u32(G_GLOW_TEXTURE), 0, 2, ZERO, 0x457A0000)
+            for definition, count, speed, spread in ((0x8E5B90, 6, 0x3ECCCCCC, 0x4000008A), (0x8E5BE0, 4, 0x40C1DAB9, 0x3FFFFF0C)):
+                for _ in range(count):
+                    velocity = tuple(C.mul(c, speed) for c in self.spell_ball(spell))
+                    q = self.spell_ball(spell)
+                    self.call('particle_spawn', definition, tuple(C.add(C.mul(q[k], spread), point[k]) for k in range(3)),
+                              velocity, ZERO)
+
+
+SKILL_BODIES.update({0x2CE2B0: 'diseaseshield_can_use', 0x2CDFF8: 'diseaseshield_cast',
+                     0x2CCE28: 'diseasetrail_can_use', 0x2CCBA0: 'diseasetrail_cast',
+                     0x2DD8B8: 'fireflares_can_use', 0x2DD4E8: 'fireflares_cast',
+                     0x2E000C: 'blessed_can_use', 0x2DFEB8: 'blessed_cast'})
+SPELL_BODIES.update({0x2CD318: 'diseaseshield_run', 0x2CC248: 'diseasetrail_spell_run', 0x2DD1AC: 'fireflares_run',
+                     0x2DD0C8: 'fireflares_dtor', 0x2DF4BC: 'blessed_run', 0x2DF42C: 'blessed_dtor'})
+OBJECT_BODIES.update({0x2CB65C: 'diseasetrail_run', 0x2DBF10: 'fireflare_run'})
+MODELLED.update({'SkillDiseaseShield_canUse': 0x2CE2B0, 'SkillDiseaseShield_cast': 0x2CDFF8, 'SpellDiseaseShield_ctor': 0x2CCFC8,
+                 'SpellDiseaseShield_run': 0x2CD318,
+                 'SkillDiseaseTrail_canUse': 0x2CCE28, 'SkillDiseaseTrail_cast': 0x2CCBA0, 'SpellDiseaseTrail_ctor': 0x2CC080,
+                 'SpellDiseaseTrail_run': 0x2CC248, 'DiseaseTrail_ctor': 0x2CB4E8, 'DiseaseTrail_run': 0x2CB65C,
+                 'SkillFireFlares_canUse': 0x2DD8B8, 'SkillFireFlares_cast': 0x2DD4E8, 'SpellFireFlares_ctor': 0x2DCD40,
+                 'SpellFireFlares_dtor': 0x2DD0C8, 'SpellFireFlares_run': 0x2DD1AC, 'FireFlare_ctor': 0x2DBD20,
+                 'FireFlare_run': 0x2DBF10,
+                 'SkillBlessed_canUse': 0x2E000C, 'SkillBlessed_cast': 0x2DFEB8, 'SpellBlessed_ctor': 0x2DF078,
+                 'SpellBlessed_dtor': 0x2DF42C, 'SpellBlessed_run': 0x2DF4BC, 'SpellBlessed_getStat0': 0x2DFDB8})

@@ -31,9 +31,12 @@ What is inside the model
                    68; the second pass (from "The second pass" on, where Model is built
                    up section by section) added 35 Charge, 36 Darkness, 37 Shock, 38
                    Ground Pound, 39 / 40 Convert Enemy / Undead, 51 AncestralCall, 67
-                   ShadowStep and the can-use of 65.  Not modelled beyond statistics, mana
-                   cost and can-use: 56, 57, 58, 66 and the cast of 65.  Id 52 (Root) is
-                   the class of ids 31 / 32, modelled in tools/ref_skills_a.py.
+                   ShadowStep and the can-use of 65.  The third pass (from "The third
+                   pass" on) added the five that were left: 56 Cone Of Frost with the
+                   DummyDamager object, 57 Shock Of Fire (Sparks), 58 Frost Storm with its
+                   ice shards, 65 Giant Growth and 66 Planar Wind.  Id 52 (Root) is the
+                   class of ids 31 / 32, modelled in tools/ref_skills_a.py; 46 MultiFire
+                   is modelled as far as the constructor arguments of its arrows.
 
 Virtual calls
     Skill (table at +0x60), Spell (table at +0x14) and effect objects (table at +0x48)
@@ -204,18 +207,19 @@ def shape_result(name, args, ret=0, fret=0, outs=None):
     ref_arena_monsters.shape_result, for the rows of this module): the integer or float
     result followed by every output the callee fills.  A list output (kind 'L') comes back
     as a Python list of objects; the model links them into its own list head with
-    list_fill, exactly as the stub of the test does on the interpreter's side."""
+    list_fill, exactly as the stub of the test does on the interpreter's side.  Kind 'Q'
+    (third pass) is an optional output of nine floats, a 3x3 matrix."""
     ext = EXTERNALS[name]
     values, position, given = [], 0, list(outs) if outs is not None else None
     for kind in ext.ints:
-        if kind in 'oOwWbnL':
+        if kind in 'oOwWbnLQ':
             if given:
                 value = given.pop(0)
             else:
-                value = (0, 0, 0) if kind in 'oO' else ([] if kind in 'nL' else 0)
-            if kind not in 'OW' or args[position]:
+                value = (0, 0, 0) if kind in 'oO' else ([] if kind in 'nL' else ((0,) * 9 if kind == 'Q' else 0))
+            if kind not in 'OWQ' or args[position]:
                 values.append(value)
-        if kind in 'ipvelsSOWVDM':
+        if kind in 'ipvelsSOWVDMQ':
             position += 1
     if ext.ret == 's':
         return ('buf', given[0] if given else b'')
@@ -4013,8 +4017,8 @@ EXTERNALS.update({
 
 class Model(Model):                             # noqa: F811
     # =====================================================================================
-    # Can-use (slot 1) of ids 38, 39, 40 and 65 - the four ids of the range whose casts
-    # are not modelled here but which have a can-use of their own.  Each is run for the
+    # Can-use (slot 1) of ids 38, 39, 40 and 65 - four ids with a can-use of their own
+    # whose casts come in later sections (38-40 below, 65 in the third pass).  Each is run for the
     # prediction copy too (the cast-start code of Player_run asks before Player_castSkill
     # turns the copy away): none of them stores anything; three can raise a HUD message.
     # =====================================================================================
@@ -4461,5 +4465,1018 @@ _register(38, 'groundpound', {
     'GroundPoundEffect_ctor': (0x2C74AC, 0x2C7808, '', 'groundpound_effect_ctor'),
     'GroundPoundEffect_run': (0x2C7808, 0x2C843C, 'object', 'groundpound_effect_run'),
 }, [(Model.VT_GROUNDPOUND, 'Creature', (1,))])
+
+
+# =========================================================================================
+# The third pass: the casts and effects of ids 56, 57, 58, 65 and 66
+# =========================================================================================
+EXTERNALS['sound_playAtPos'] = Ext(0x214428, 'pv', 1, 'i', '(entry, position; volume) -> sound handle')
+
+
+class Model(Model):                             # noqa: F811
+    # =====================================================================================
+    # 56 coneoffrost: docs/spec/skills-35-68.md section 56.  SkillConeOfFrost (table
+    # 0x519f08, kind 1: channelled; can-use is the base), SpellConeOfFrost (0x58 bytes,
+    # table 0x519ed8) and the object that carries its damage, DummyDamager (0x74 bytes,
+    # table 0x50ea28, a Projectile; monsters build it too, with other behaviour bits).
+    #
+    #   spell   +0x18 a light record (colours +0x22.., range +0x34 / +0x3c, inverse square
+    #           +0x38 / +0x40, position +0x48)   +0x54 the looping sound's handle
+    #   object  +0x54 velocity per second   +0x60 behaviour bits (1 end on any contact,
+    #           2 end on terrain, 4 object flag 1, 8 fire, 0x10 cold)   +0x64 damage flags
+    #           +0x68 damage (float; zeroed by the first touch that builds an entry)
+    #           +0x6c s16 frames left   +0x6e s16 the constructor's stack argument
+    # =====================================================================================
+    VT_SPELL_CONEOFFROST, VT_DUMMYDAMAGER = 0x519ED8, 0x50EA28
+    PDEF_CONE_A, PDEF_CONE_B, PDEF_CONE_C, PDEF_DUMMY_COLD = 0x8E6090, 0x8E60E0, 0x8E6130, 0x4F8760
+
+    def coneoffrost_cast(self, skill, level, caster, pos=0, facing=0):
+        """SkillConeOfFrost_cast 0x2e9930 -> the SpellConeOfFrost or 0: slot 14 (level, 1),
+        pool_new(0x58), the constructor.  Position and facing are not used."""
+        level = self.skill_call(skill, 14, level, 1)
+        spell = self.call('pool_new', 0x58)
+        if spell:
+            self.coneoffrost_spell_ctor(spell, level, caster, skill)
+        return spell
+
+    def coneoffrost_spell_ctor(self, spell, level, owner, skill):
+        """SpellConeOfFrost_ctor 0x2e9b08 (spell, level, owner, skill).
+
+        Spell base (ONE SHARED DRAW); the light record at +0x18 (range 156, position =
+        the owner's + (0, 0, 60)), linked; the looping sound at the owner's position, its
+        handle kept at +0x54.  Nothing outside the spell is stored."""
+        u32, w32, w16, w8 = self.u32, self.w32, self.w16, self.w8
+        x, y, z = self.vec(owner + 0x10)
+        self.spell_base_ctor(spell, level, owner, skill, self.VT_SPELL_CONEOFFROST)
+        w8(spell + 0x21, 0)
+        self.wvec(spell + 0x48, (C.add(x, ZERO), y, C.add(z, 0x42700000)))
+        for off, value in ((0x3C, 0x431C0000), (0x40, 0x382C598A), (0x44, 0), (0x34, 0x431C0000), (0x38, 0x382C598A)):
+            w32(spell + off, value)
+        for off, value in ((0x2A, 0x4D), (0x2C, 0x4C), (0x22, 0x4D), (0x24, 0x4C), (0x26, 0xBB), (0x28, 0), (0x2E, 0xBB),
+                           (0x30, 0)):
+            w16(spell + off, value)
+        w8(spell + 0x20, 0)
+        self.call('light_link', spell + 0x18)
+        entry = self.call('res_find', 0x550538, 0x550540)
+        w32(spell + 0x54, self.call('sound_playAtPos', entry, self.vec(u32(spell + 0xC) + 0x10), ONE))
+
+    def coneoffrost_run(self, spell, pos, facing):
+        """SpellConeOfFrost_run 0x2e9d10, slot 2 (spell, position, facing), once a frame.
+
+        A = (int)(slot 10 (2, level) x 182.04443) and scale = slot 10 (1, level) x 0.01 +
+        1.  An angle is always facing + (int)((d x 2^-16 - 0.5) x amplitude), 16 bits.
+        Own draws, in order: 15 particles of four draws (angle with amplitude A; speed
+        d x 74 x scale; rise (d - 0.5) x 6 x scale; a fourth draw whose product - a start
+        offset - is computed and thrown away: the particle starts at the position);
+        6 of three (amplitude (int)(A x 0.999977); speed (d x 0.2 + 0.9) x 60 x scale; rise
+        x 4); one draw, and when it is divisible by 5, 24 of three (amplitude (int)(A x
+        1.7489879); a draw not used; speed 42 unscaled; rise x 17 x scale).
+        On frames with (frame & 7) == 0 ONE MORE OWN DRAW aims a DummyDamager: velocity
+        (cos, sin of the angle) x 74, doubled, x scale; damage slot 10 (0, level) x
+        0.13333333; pool_new(0x74); life 45, radius 10, bits 0x12, damage flags 0x80c040,
+        owner = the spell's.  Then the light: range (int)(sin16(frame x 1000) x 6) + 108."""
+        u32, w32 = self.u32, self.w32
+        here = self.vec(pos)
+        facing = s16(facing)
+        skill = u32(spell + 8)
+        amplitude = s32(C.to_int(C.mul(C.from_int(self.stat(skill, 2, self.s8(spell))), 0x43360B60)))
+        scale = C.add(C.mul(C.from_int(self.stat(u32(spell + 8), 1, self.s8(spell))), F_0_01), ONE)
+        wide = C.from_int(amplitude)
+
+        def angle(reach):
+            offset = C.to_int(C.mul(C.sub(self.unit(self.spell_rand(spell)), HALF), reach))
+            return s16(facing + s32(offset))
+
+        def rise(factor):
+            return C.mul(C.mul(C.sub(self.unit(self.spell_rand(spell)), HALF), factor), scale)
+
+        for _ in range(15):
+            a = angle(wide)
+            speed = C.mul(C.mul(self.unit(self.spell_rand(spell)), 0x42940000), scale)
+            velocity = (C.mul(C.cos16(a), speed), C.mul(C.sin16(a), speed), rise(0x40C00000))
+            self.spell_rand(spell)
+            self.call('particle_spawn', self.PDEF_CONE_A, here, velocity, ZERO)
+        reach = C.from_int(s32(C.to_int(C.mul(wide, 0x3F7FFE7E))))
+        for _ in range(6):
+            a = angle(reach)
+            speed = C.mul(C.mul(C.add(C.mul(self.unit(self.spell_rand(spell)), 0x3E4CCCCC), 0x3F666666), 0x42700000), scale)
+            velocity = (C.mul(C.cos16(a), speed), C.mul(C.sin16(a), speed), rise(0x40800000))
+            self.call('particle_spawn', self.PDEF_CONE_B, here, velocity, ZERO)
+        reach = C.from_int(s32(C.to_int(C.mul(wide, 0x3FDFDED6))))
+        if self.spell_rand(spell) % 5 == 0:
+            for _ in range(24):
+                a = angle(reach)
+                self.spell_rand(spell)
+                velocity = (C.mul(C.cos16(a), 0x42280000), C.mul(C.sin16(a), 0x42280000), rise(0x41880000))
+                self.call('particle_spawn', self.PDEF_CONE_C, here, velocity, ZERO)
+        if u32(G_SIM_FRAME) & 7 == 0:
+            a = angle(wide)
+            x = C.mul(C.cos16(a), 0x42940000)
+            y = C.mul(C.sin16(a), 0x42940000)
+            velocity = (C.mul(C.add(x, x), scale), C.mul(C.add(y, y), scale), 0)
+            damage = C.mul(C.from_int(self.stat(u32(spell + 8), 0, self.s8(spell))), 0x3E088888)
+            block = self.call('pool_new', 0x74)
+            if block:
+                self.dummydamager_ctor(block, self.local_vec(here), self.local_vec(velocity), 0x2D, 10, 0x12, 0x80C040,
+                                       u32(spell + 0xC), damage, 1)
+        reach = C.from_int(s32(C.to_int(C.mul(C.sin16(s16(u32(G_SIM_FRAME) * 1000)), 0x40C00000))) + 0x6C)
+        w32(spell + 0x34, reach)
+        w32(spell + 0x3C, reach)
+        inverse = C.div(ONE, C.mul(reach, reach))
+        w32(spell + 0x40, inverse)
+        w32(spell + 0x38, inverse)
+        self.call('light_relink', spell + 0x18)
+
+    def dummydamager_ctor(self, obj, pos, velocity, life, radius, bits, flags, owner, damage, extra=1):
+        """DummyDamager_ctor 0x201e78 (object, position, velocity, life in frames, radius,
+        behaviour bits, damage flags, owner; damage; one 16-bit word on the stack - 1 from
+        this skill, which is what the model assumes when it is run on its own).
+
+        Projectile_ctor (ONE SHARED DRAW; the owner handle); table; velocity; life;
+        radius (an integer, converted); object flags |= 0x4008 - or 0x4009 with bit 4 -
+        so the object counts as dead for every enemy test and query; damage, damage
+        flags, the stack word at +0x6e, the bits; the every-frame run list."""
+        u32, w32 = self.u32, self.w32
+        speed = self.vec(velocity)
+        self.projectile_ctor(obj, self.local_vec(self.vec(pos)), owner, 0)
+        w32(obj + 0x48, self.VT_DUMMYDAMAGER)
+        self.wvec(obj + 0x54, speed)
+        self.w16(obj + 0x6C, life)
+        flags_before = u32(obj + 0xC)
+        w32(obj + 0x1C, C.from_int(s32(radius)))
+        w32(obj + 0xC, flags_before | 0x4008)
+        w32(obj + 0x68, damage)
+        w32(obj + 0x64, flags)
+        self.w16(obj + 0x6E, extra)
+        w32(obj + 0x60, bits)
+        if bits & 4:
+            w32(obj + 0xC, flags_before | 0x4009)
+        self.call('obj_runEveryFrame', obj)
+
+    def dummydamager_run(self, obj):
+        """DummyDamager_run 0x1ee330, slot 4, once a frame.
+
+        life -= 1 (16 bits); at 0 or below the object deletes itself.  Otherwise
+        obj_moveAndCollide with its velocity (the touch handler runs inside).  Result 0:
+        nothing more.  Result exactly 1 (terrain, nothing touched): with bit 8 ONE OWN
+        DRAW d and a StaticFire here (pool_new(0x4ac); life (int)f frames, first number
+        f = (d x 2^-16 x 6 + 2) x 60, second 0.5, no owner; ONE SHARED DRAW inside);
+        with bit 0x10 128 particles (an own ball x 10 round the position, an own ball x
+        12.129 + (0, 0, 10) - velocity x 0.05); with bit 2 the object deletes itself.
+        Any other non-zero result, or result 1 without bit 2: deleted when bit 1 is set."""
+        u32 = self.u32
+        life = (self.u16(obj + 0x6C) - 1) & 0xFFFF
+        self.w16(obj + 0x6C, life)
+        if s16(life) < 1:
+            self.vcall(obj, 1, 3)
+            return
+        result = self.obj_move_and_collide(obj, self.local_vec(self.vec(obj + 0x54)))
+        if result == 0:
+            return
+        bits = u32(obj + 0x60)
+        if result == 1:
+            if bits & 8:
+                here = self.vec(obj + 0x10)
+                number = C.mul(C.add(C.mul(self.unit(self.obj_rand(obj)), 0x40C00000), F_2), 0x42700000)
+                block = self.call('pool_new', 0x4AC)
+                if block:
+                    self.object_ctor('StaticFire_ctor', block, here, s32(C.to_int(number)), 0, 0, number, HALF)
+                bits = u32(obj + 0x60)
+            if bits & 0x10:
+                for _ in range(0x80):
+                    b = self.obj_ball(obj)
+                    point = tuple(C.add(C.mul(b[i], 0x41200000), u32(obj + 0x10 + 4 * i)) for i in range(3))
+                    w = self.obj_ball(obj)
+                    back = tuple(C.mul(u32(obj + 0x54 + 4 * i), 0x3D4CCCCC) for i in range(3))
+                    velocity = (C.sub(C.mul(w[0], 0x41421062), back[0]), C.sub(C.mul(w[1], 0x41421062), back[1]),
+                                C.sub(C.add(C.mul(w[2], 0x41421062), 0x41200000), back[2]))
+                    self.call('particle_spawn', self.PDEF_DUMMY_COLD, point, velocity, ZERO)
+                bits = u32(obj + 0x60)
+            if bits & 2:
+                self.vcall(obj, 1, 3)
+                return
+        if bits & 1:
+            self.vcall(obj, 1, 3)
+
+    def dummydamager_on_touch(self, obj, other):
+        """DummyDamager_onTouch 0x1ee7b0, slot 6 (object, other): called by the object's
+        own obj_moveAndCollide for every solid object it overlaps, every frame.
+
+        A creature (flag 0x20) is passed over unless ITS slot 20 accepts the owner - the
+        victim is asked, and the owner is read through the handle +0x4c WITHOUT a test.
+        Descriptor: with bit 0x10 one cold entry (0x16, d, d, 0), else with bit 8 one fire
+        entry (0x15, d, d, 0), d = (int) damage as 16 bits - and the damage +0x68 is then
+        set to 0, so the base amount handed over is 0 and a second touch carries nothing.
+        damage_apply(other, the owner or 0, 1000000, 0, 0, the damage flags, descriptor,
+        0; damage, damage) - for a non-creature too."""
+        u32 = self.u32
+        if u32(other + 0xC) & 0x20:
+            if not self.vcall(other, 20, u32(u32(obj + 0x4C) + 0xC)):
+                return
+        entries = []
+        bits = u32(obj + 0x60)
+        if bits & 0x18:
+            amount = C.to_int(u32(obj + 0x68))
+            entries.append((0x16 if bits & 0x10 else 0x15, amount, amount, 0))
+            self.w32(obj + 0x68, 0)
+        attacker = u32(u32(obj + 0x4C) + 0xC) if u32(obj + 0x4C) else 0
+        self.call('damage_apply', other, attacker, 1000000, 0, 0, u32(obj + 0x64), self.descriptor(*entries), 0,
+                  u32(obj + 0x68), u32(obj + 0x68))
+
+
+_register(56, 'coneoffrost', {
+    'SkillConeOfFrost_cast': (0x2E9930, 0x2E99D0, 'skill', 'coneoffrost_cast'),
+    'SpellConeOfFrost_ctor': (0x2E9B08, 0x2E9C90, '', 'coneoffrost_spell_ctor'),
+    'SpellConeOfFrost_run': (0x2E9D10, 0x2EA35C, 'spell', 'coneoffrost_run'),
+    'DummyDamager_ctor': (0x201E78, 0x201FA0, '', 'dummydamager_ctor'),
+    'DummyDamager_run': (0x1EE330, 0x1EE7A8, 'object', 'dummydamager_run'),
+    'DummyDamager_onTouch': (0x1EE7B0, 0x1EE988, 'object', 'dummydamager_on_touch'),
+}, [(Model.VT_SPELL_CONEOFFROST, 'Spell', (1,)), (Model.VT_DUMMYDAMAGER, 'Creature', (1,))])
+
+
+EXTERNALS.update({
+    'voice_setPosition': Ext(0x2168E8, 'iv', 1, 'n', '(voice handle, position; 1.0)'),
+    'world_damageInRadius': Ext(0x161270, 'pviiii', 2, 'n', '(attacker, centre, most, flags, least, skip flags; inner radius, '
+                                'outer radius): damage_apply for what stands in the outer radius'),
+})
+
+
+class Model(Model):                             # noqa: F811
+    # =====================================================================================
+    # 57 shockoffire: docs/spec/skills-35-68.md section 57.  SkillShockOfFire (table
+    # 0x51a190; can-use is the base) and the object Sparks (0xb8 bytes, table 0x50e998, a
+    # Projectile that five monsters build as well).
+    #
+    #   +0x54 end frame (0: burst on the next run)   +0x58 velocity per second   +0x64 a
+    #   light record (position +0x94)   +0xa0 the constructor's sixth argument   +0xa4 a
+    #   voice handle nothing here stores   +0xa8 direct damage, high   +0xac low
+    #   +0xb0 splash damage   +0xb4 splash radius
+    # =====================================================================================
+    VT_SPARKS = 0x50E998
+    PDEF_SPARKS_A, PDEF_SPARKS_B, PDEF_SPARKS_TRAIL, PDEF_SPARKS_END = 0x8E4010, 0x8E4060, 0x8E4150, 0x8E4100
+
+    def shockoffire_cast(self, skill, level, caster, pos, facing):
+        """SkillShockOfFire_cast 0x2ed4e4 -> 0.
+
+        L = slot 14 (level, 20); (low, high) = slot 8 (0, L, no randomising; spread 0.2) -
+        tier 1 for every caster; splash = slot 12 (1, L, caster, cap 0); radius = slot 12
+        (2, L, caster, cap 10) x 12; speed = slot 12 (3, L, caster, cap 10); velocity =
+        (cos, sin of the facing) x speed, z 0; pool_new(0xb8) and the Sparks."""
+        start = self.vec(pos)
+        level = self.skill_call(skill, 14, level, 0x14)
+        low, high = self.stat_range(skill, 0, level, 0, 0x3E4CCCCC)
+        splash = self.skill_call(skill, 12, 1, level, caster, 0)
+        radius = s32(self.skill_call(skill, 12, 2, level, caster, 10))
+        speed = C.from_int(s32(self.skill_call(skill, 12, 3, level, caster, 10)))
+        velocity = (C.mul(C.cos16(s16(facing)), speed), C.mul(C.sin16(s16(facing)), speed), 0)
+        obj = self.call('pool_new', 0xB8)
+        if obj:
+            self.sparks_ctor(obj, self.local_vec(start), self.local_vec(velocity), caster, 0, 0, low, high, splash, radius * 12)
+        return 0
+
+    def sparks_ctor(self, obj, pos, velocity, owner, unused, tag, low, high, splash, radius):
+        """Sparks_ctor 0x28f880 (object, position, velocity, owner, -, a word kept at
+        +0xa0, direct damage low, high; on the stack: splash damage, splash radius).
+
+        Projectile_ctor (ONE SHARED DRAW; radius 12, the owner handle); the table; the
+        light record at +0x64 (range 120), linked; velocity; end frame = frame + 600; the
+        four damage words; the every-frame run list; a sound on the object."""
+        u32, w32, w16, w8 = self.u32, self.w32, self.w16, self.w8
+        start, speed = self.vec(pos), self.vec(velocity)
+        self.projectile_ctor(obj, self.local_vec(start), owner, 0)
+        w32(obj + 0x48, self.VT_SPARKS)
+        w8(obj + 0x6D, 0)
+        self.wvec(obj + 0x94, start)
+        for off, value in ((0x88, 0x42F00000), (0x8C, 0x3891A2B3), (0x80, 0x42F00000), (0x84, 0x3891A2B3), (0x90, 0)):
+            w32(obj + off, value)
+        for off, value in ((0x76, 0x13E), (0x78, 0xC1), (0x7C, 0xFFE0), (0x6E, 0x13E), (0x70, 0xC1), (0x74, 0xFFE0), (0x72, 0),
+                           (0x7A, 0)):
+            w16(obj + off, value)
+        w8(obj + 0x6C, 0)
+        self.call('light_link', obj + 0x64)
+        self.wvec(obj + 0x58, speed)
+        w32(obj + 0xB0, splash)
+        w32(obj + 0xB4, radius)
+        w32(obj + 0x54, u32(G_SIM_FRAME) + 600)
+        w32(obj + 0xA8, high)
+        w32(obj + 0xAC, low)
+        self.call('obj_runEveryFrame', obj)
+        self.call('sound_playOnObject', self.call('res_find', 0x549088, 0x549458), obj, ONE)
+        w32(obj + 0xA0, tag)
+
+    def sparks_run(self, obj):
+        """Sparks_run 0x28fa3c, slot 4, once a frame.
+
+        While frame < end (signed): obj_moveAndCollide with the velocity (the touch
+        handler runs inside); result exactly 1 (terrain, nothing touched): end = 0;
+        voice_setPosition(the word at +0xa4, position; 1.0); three particles (an OWN ball
+        x 9.599999 as velocity); five more, each after an own ball that is thrown away;
+        ONE OWN DRAW, and when it is odd a trailing particle five steps behind (an own
+        ball x 10); the light follows.
+        Otherwise - timed out, or end zeroed the frame before: 50 particles (own ball x
+        57.6); with splash damage > 0 fx_ringBurst(position; 2.0) and
+        world_damageInRadius(the owner or - without one - the object itself, position,
+        splash, 0x40860, splash, 0; 40.0, the radius); the object deletes itself."""
+        u32 = self.u32
+        if self.s32(G_SIM_FRAME) < self.s32(obj + 0x54):
+            if self.obj_move_and_collide(obj, self.local_vec(self.vec(obj + 0x58))) == 1:
+                self.w32(obj + 0x54, 0)
+            self.call('voice_setPosition', u32(obj + 0xA4), self.vec(obj + 0x10), ONE)
+            for _ in range(3):
+                velocity = tuple(C.mul(c, 0x41199999) for c in self.obj_ball(obj))
+                self.call('particle_spawn', self.PDEF_SPARKS_A, self.vec(obj + 0x10), velocity, ZERO)
+            for _ in range(5):
+                self.obj_ball(obj)
+                velocity = tuple(C.mul(c, 0x41199999) for c in self.obj_ball(obj))
+                self.call('particle_spawn', self.PDEF_SPARKS_B, self.vec(obj + 0x10), velocity, ZERO)
+            if self.obj_rand(obj) & 1:
+                point = tuple(C.sub(u32(obj + 0x10 + 4 * i), C.mul(C.mul(u32(obj + 0x58 + 4 * i), DT), 0x40A00000))
+                              for i in range(3))
+                velocity = tuple(C.mul(c, 0x41200000) for c in self.obj_ball(obj))
+                self.call('particle_spawn', self.PDEF_SPARKS_TRAIL, point, velocity, ZERO)
+            self.wvec(obj + 0x94, self.vec(obj + 0x10))
+            self.call('light_relink', obj + 0x64)
+            return
+        for _ in range(50):
+            velocity = tuple(C.mul(c, 0x42666666) for c in self.obj_ball(obj))
+            self.call('particle_spawn', self.PDEF_SPARKS_END, self.vec(obj + 0x10), velocity, ZERO)
+        if self.s32(obj + 0xB0) > 0:
+            attacker = u32(u32(obj + 0x4C) + 0xC) if u32(obj + 0x4C) else obj
+            self.call('fx_ringBurst', self.vec(obj + 0x10), F_2)
+            self.call('world_damageInRadius', attacker, self.vec(obj + 0x10), u32(obj + 0xB0), 0x40860, u32(obj + 0xB0), 0,
+                      0x42200000, C.from_int(self.s32(obj + 0xB4)))
+        self.vcall(obj, 1, 3)
+
+    def sparks_on_touch(self, obj, other):
+        """Sparks_onTouch 0x2900c8, slot 6 (object, other), from the object's own
+        obj_moveAndCollide.
+
+        Only while end != 0, with an owner, and when the OWNER's slot 20 accepts the
+        other: pool_new(0xbc) and a LightEffect at the position (ONE SHARED DRAW inside,
+        none when the pool gives nothing); a sound on the object; descriptor slot 0 =
+        (0x1f, 100, low, high); damage_apply(other, owner, 10000000, low, high, flags
+        0xc060, the descriptor, 0; 0, 0); end = 0 - so only the first enemy of a collision
+        step is struck, and the burst comes on the next run."""
+        u32 = self.u32
+        owner = u32(u32(obj + 0x4C) + 0xC) if u32(obj + 0x4C) else 0
+        if not u32(obj + 0x54) or not owner or not self.vcall(owner, 20, other):
+            return
+        light = self.call('pool_new', 0xBC)
+        if light:
+            self.light_effect(light, self.vec(obj + 0x10), 0x437F0000, 0x43480000, 0x42C80000, 0x43340000, 0x42F00000, ONE, ONE,
+                              rest=(0xC2000000, 0, 0, 0, 0))
+        self.call('sound_playOnObject', self.call('res_find', 0x549088, 0x549470), obj, ONE)
+        low, high = u32(obj + 0xAC), u32(obj + 0xA8)
+        self.call('damage_apply', other, owner, 10000000, low, high, 0xC060, self.descriptor((0x1F, 100, low, high)), 0,
+                  ZERO, ZERO)
+        self.w32(obj + 0x54, 0)
+
+
+_register(57, 'shockoffire', {
+    'SkillShockOfFire_cast': (0x2ED4E4, 0x2ED6A4, 'skill', 'shockoffire_cast'),
+    'Sparks_ctor': (0x28F880, 0x28FA3C, '', 'sparks_ctor'),
+    'Sparks_run': (0x28FA3C, 0x2900C8, 'object', 'sparks_run'),
+    'Sparks_onTouch': (0x2900C8, 0x2902E4, 'object', 'sparks_on_touch'),
+}, [(Model.VT_SPARKS, 'Creature', (1,))])
+
+
+def down(value):
+    """-|value|, as the code gets it through the double-precision library (convert,
+    compare with 0, subtract from 0 once or twice, convert back): the magnitude with the
+    sign set, and +0 for either zero."""
+    return (value | 0x80000000) & M32 if value & 0x7FFFFFFF else 0
+
+
+class Model(Model):                             # noqa: F811
+    # =====================================================================================
+    # 58 froststorm: docs/spec/skills-35-68.md section 58.  SkillFrostStorm (table
+    # 0x51a218; can-use is the base), the object FrostStormSpell (0xac bytes, table
+    # 0x50d3e0, a GameObject - not a Spell: nothing is attached to the caster) and the
+    # shards it drops, FrostStormIceShard (0x64 bytes, table 0x512a40; decoration that
+    # costs a shared draw each).  A caster that is a creature but not a player also gets
+    # a LightEffect (0xbc bytes, table 0x50e198), built in line.
+    #
+    #   storm   +0x1c radius 0   +0x4c end frame   +0x50 start frame   +0x54 radius of the
+    #           box   +0x58 its factor per frame (1, then 0.95)   +0x5c damage a tick
+    #           +0x60 drift per frame   +0x6c caster handle   +0x70 a light record (range
+    #           +0x8c / +0x94, inverse square +0x90 / +0x98, position +0xa0)
+    #   shard   +0x4c landed   +0x50 scale   +0x54 velocity per frame   +0x60 end frame
+    # =====================================================================================
+    VT_FROSTSTORM, VT_ICESHARD, VT_LIGHTEFFECT = 0x50D3E0, 0x512A40, 0x50E198
+    PDEF_SNOW_A, PDEF_SNOW_B, PDEF_SHARD, PDEF_SNOW_GROUND = 0x871128, 0x871178, 0x8711C8, 0x871218
+
+    def froststorm_cast(self, skill, level, caster, pos, facing):
+        """SkillFrostStorm_cast 0x2ed9a0 -> 0.
+
+        L = slot 14 (level, 20).  Centre = the position, for a player moved (cos, sin of
+        the facing) x 3 x 12 ahead.  Slot 12 with the caster: damage (0, cap 0), radius
+        (1, cap 10) x 12, frames (2, cap 20) x 60, speed (3, cap 10); drift = (cos, sin)
+        x speed, z 0; the radius of a non-player is limited to 180.  pool_new(0xac) and
+        the storm; then - storm or not - the cast sound on the caster."""
+        u32 = self.u32
+        centre = self.vec(pos)
+        facing = s16(facing)
+        level = self.skill_call(skill, 14, level, 0x14)
+        if u32(caster + 0xC) & 0x40:
+            ahead = (C.mul(C.mul(C.cos16(facing), 0x40400000), F_12), C.mul(C.mul(C.sin16(facing), 0x40400000), F_12), ZERO)
+            centre = tuple(C.add(centre[i], ahead[i]) for i in range(3))
+        damage = self.skill_call(skill, 12, 0, level, caster, 0)
+        radius = s32(s32(self.skill_call(skill, 12, 1, level, caster, 10)) * 12)
+        frames = s32(s32(self.skill_call(skill, 12, 2, level, caster, 0x14)) * 60)
+        speed = C.from_int(s32(self.skill_call(skill, 12, 3, level, caster, 10)))
+        drift = (C.mul(C.cos16(facing), speed), C.mul(C.sin16(facing), speed), 0)
+        if not u32(caster + 0xC) & 0x40 and radius > 0xB4:
+            radius = 0xB4
+        obj = self.call('pool_new', 0xAC)
+        if obj:
+            self.froststorm_ctor(obj, self.local_vec(centre), frames, damage, caster, self.local_vec(drift),
+                                 C.from_int(radius))
+        self.call('sound_playOnObject', self.call('res_find', 0x550838, 0x550840), caster, ONE)
+        return 0
+
+    def froststorm_ctor(self, obj, pos, frames, damage, caster, drift, radius):
+        """FrostStormSpell_ctor 0x1fe508 (object, position, frames, damage, caster, drift
+        per second; radius).
+
+        GameObject_ctor (ONE SHARED DRAW); the light record at +0x70, range max(79,
+        min(300, radius x 1.715958)), linked; radius; flags |= 1.  A caster with the
+        creature flag and without the player flag: start = (int)(frame + 40.499996), end
+        = start + frames, and pool_new(0xbc) for a warning LightEffect built here, 12
+        above the centre (a second GameObject_ctor: ONE MORE SHARED DRAW; range min(300,
+        2 x radius); end frame + 80; the every-frame list).  Any other caster: start 0,
+        end = frame + frames.  Then object radius 0, factor 1, damage, drift x (1/60),
+        the caster handle, the every-frame list."""
+        u32, w32, w16, w8 = self.u32, self.w32, self.w16, self.w8
+        start, speed = self.vec(pos), self.vec(drift)
+        self.game_object_ctor(obj, self.local_vec(start), 0, 0)
+        reach = C.fmax(0x429E0000, C.fmin(0x43960000, C.mul(radius, 0x3FDBA483)))
+        inverse = C.div(ONE, C.mul(reach, reach))
+        w32(obj + 0x6C, 0)
+        w32(obj + 0x48, self.VT_FROSTSTORM)
+        w8(obj + 0x79, 0)
+        self.wvec(obj + 0xA0, start)
+        for off, value in ((0x9C, 0x3F333333), (0x8C, reach), (0x94, reach), (0x98, inverse), (0x90, inverse)):
+            w32(obj + off, value)
+        for off, value in ((0x88, 0x96), (0x7A, 0), (0x7C, 0x80), (0x7E, 0xFF), (0x80, 0x96), (0x82, 0), (0x84, 0x80),
+                           (0x86, 0xFF)):
+            w16(obj + off, value)
+        w8(obj + 0x78, 0)
+        self.call('light_link', obj + 0x70)
+        w32(obj + 0x54, radius)
+        w32(obj + 0xC, u32(obj + 0xC) | 1)
+        if u32(caster + 0xC) & 0x60 == 0x20:
+            begin = s32(C.to_int(C.add(C.from_int(self.s32(G_SIM_FRAME)), 0x4221FFFF)))
+            w32(obj + 0x50, begin)
+            w32(obj + 0x4C, begin + s32(frames))
+            light = self.call('pool_new', 0xBC)
+            if light:
+                spot = (C.add(start[0], ZERO), start[1], C.add(start[2], F_12))
+                wide = C.fmin(0x43960000, C.add(u32(obj + 0x54), u32(obj + 0x54)))
+                self.game_object_ctor(light, self.local_vec(spot), 0, 0)
+                w32(light + 0x48, self.VT_LIGHTEFFECT)
+                inverse = C.div(ONE, C.mul(wide, wide))
+                w8(light + 0x55, 0)
+                self.wvec(light + 0x7C, spot)
+                for off, value in ((0x78, 0x3F266666), (0x74, inverse), (0x6C, inverse), (0x68, wide), (0x70, wide)):
+                    w32(light + off, value)
+                for off, value in ((0x64, 100), (0x5C, 100), (0x60, 0x80), (0x62, 0xFF), (0x56, 0), (0x58, 0x80), (0x5A, 0xFF),
+                                   (0x5E, 0)):
+                    w16(light + off, value)
+                w8(light + 0x54, 0)
+                self.call('light_link', light + 0x4C)
+                w32(light + 0x88, 0)
+                w32(light + 0x90, 0x43000000)
+                w32(light + 0xC, u32(light + 0xC) | 3)
+                w32(light + 0xB4, u32(G_SIM_FRAME) + 0x50)
+                w32(light + 0x94, 0x437F0000)
+                w32(light + 0x98, 0x42C80000)
+                w32(light + 0xB0, C.mul(C.neg(wide), 0x3C4CCCCC))
+                for off in (0xA8, 0x8C, 0x9C, 0xA0, 0xA4):
+                    w32(light + off, 0)
+                w32(light + 0xAC, wide)
+                self.call('obj_runEveryFrame', light)
+                w32(light + 0xB8, 1)
+        else:
+            w32(obj + 0x50, 0)
+            w32(obj + 0x4C, u32(G_SIM_FRAME) + frames)
+        w32(obj + 0x1C, 0)
+        w32(obj + 0x58, ONE)
+        w32(obj + 0x5C, damage)
+        self.wvec(obj + 0x60, tuple(C.mul(c, DT) for c in speed))
+        self.handle_link(obj + 0x6C, caster, caster)
+        self.call('obj_runEveryFrame', obj)
+
+    def _froststorm_point(self, obj, spread):
+        """A point over the storm: an OWN ball x (radius x spread) round the centre in x
+        and y (its z part is computed and overwritten), and ONE OWN DRAW h for the height:
+        (h x 2^-16 x 12 + 120) above the centre."""
+        u32 = self.u32
+        b = self.obj_ball(obj)
+        k = C.mul(u32(obj + 0x54), spread)
+        x, y = C.mul(b[0], k), C.mul(b[1], k)
+        up = C.add(C.mul(self.unit(self.obj_rand(obj)), F_12), 0x42F00000)
+        return C.add(x, u32(obj + 0x10)), C.add(y, u32(obj + 0x14)), C.add(up, u32(obj + 0x18))
+
+    def froststorm_run(self, obj):
+        """FrostStormSpell_run 0x1fe950, slot 4, once a frame.
+
+        Nothing until start < frame.  Position += drift; radius x= factor; the light
+        follows, its range x= factor (at most 300).  While the factor is exactly 1.0,
+        with r the radius and every loop running while (float) i < n:
+          n = (r x 0.008333333) x (r x 0.2), twice: a snow particle at a point over the
+            storm (spread 1.000006, then 0.999999) with an OWN ball as velocity (x 7, and
+            x 6.8), its z x 11.036939 (x 2.073994) and made negative;
+          on frames divisible by 10, n = ((r x 0.051) x 0.0069444436) x r: a shard - a
+            point (spread 1.000001), an own ball (x 0.205 sideways, z x 3.999987 made
+            negative), pool_new(0x64) and, when that gives a block, GameObject_ctor (ONE
+            SHARED DRAW) and the shard's fields (flags |= 0x421d, end = frame + 120,
+            scale 1, radius 12), grid cell, the every-frame list;
+          n = (r x 0.008333333) x (r x 0.399999): TWO OWN DRAWS (angle, distance x r), the
+            ground height there + 5 (terrain_heightAtPoint), and a particle when that is
+            not more than 148 below the storm.
+        On frames divisible by 30 the tick: world_collectObjectsInBox(centre -/+ r,
+        capacity 64); with a caster only what ITS slot 20 accepts; h = damage x 0.5;
+        descriptor slot 0 = (0x16, (int) h, (int) h, 0); damage_apply(entry, the caster
+        or 0, 100000, 0, 0, flags 0, the descriptor, 0; h, h).
+        Once end < frame: factor = 0.95, and with the radius below 12 the storm deletes
+        itself."""
+        u32, w32 = self.u32, self.w32
+        if not self.s32(obj + 0x50) < self.s32(G_SIM_FRAME):
+            return
+        for i in range(3):
+            w32(obj + 0x10 + 4 * i, C.add(u32(obj + 0x10 + 4 * i), u32(obj + 0x60 + 4 * i)))
+        w32(obj + 0x54, C.mul(u32(obj + 0x54), u32(obj + 0x58)))
+        self.wvec(obj + 0xA0, self.vec(obj + 0x10))
+        self.call('light_relink', obj + 0x70)
+        reach = C.fmin(0x43960000, C.mul(u32(obj + 0x8C), u32(obj + 0x58)))
+        w32(obj + 0x8C, reach)
+        w32(obj + 0x94, reach)
+        inverse = C.div(ONE, C.mul(reach, reach))
+        w32(obj + 0x98, inverse)
+        w32(obj + 0x90, inverse)
+        if C.eq(u32(obj + 0x58), ONE):
+            radius = u32(obj + 0x54)
+            snow = C.mul(C.mul(radius, 0x3C088888), C.mul(radius, 0x3E4CCCCC))
+            for definition, spread, speed, fall in ((self.PDEF_SNOW_A, 0x3F800032, 0x40E00000, 0x4130974D),
+                                                    (self.PDEF_SNOW_B, 0x3F7FFFEF, 0x40D99999, 0x4004BC51)):
+                i = 0
+                while C.lt(C.from_int(i), snow):
+                    point = self._froststorm_point(obj, spread)
+                    w = self.obj_ball(obj)
+                    velocity = (C.mul(w[0], speed), C.mul(w[1], speed), down(C.mul(C.mul(w[2], speed), fall)))
+                    self.call('particle_spawn', definition, point, velocity, ZERO)
+                    i += 1
+            if c_rem(u32(G_SIM_FRAME), 10) == 0:
+                shards = C.mul(C.mul(C.mul(radius, 0x3D50E560), 0x3BE38E37), radius)
+                i = 0
+                while C.lt(C.from_int(i), shards):
+                    point = self._froststorm_point(obj, 0x3F800008)
+                    w = self.obj_ball(obj)
+                    velocity = (C.mul(w[0], 0x3E51EC91), C.mul(w[1], 0x3E51EC91), down(C.mul(w[2], 0x407FFFC9)))
+                    shard = self.call('pool_new', 0x64)
+                    if shard:
+                        self.game_object_ctor(shard, self.local_vec(point), 0, 0)
+                        w32(shard + 0x48, self.VT_ICESHARD)
+                        w32(shard + 0xC, u32(shard + 0xC) | 0x421D)
+                        self.wvec(shard + 0x10, point)
+                        w32(shard + 0x4C, 0)
+                        w32(shard + 0x60, u32(G_SIM_FRAME) + 0x78)
+                        self.wvec(shard + 0x54, velocity)
+                        w32(shard + 0x50, ONE)
+                        w32(shard + 0x1C, F_12)
+                        self.call('obj_updateGridCell', shard)
+                        self.call('obj_runEveryFrame', shard)
+                    i += 1
+            ground = C.mul(C.mul(radius, 0x3C088888), C.mul(radius, 0x3ECCCCAB))
+            i = 0
+            while C.lt(C.from_int(i), ground):
+                angle = s16(self.obj_rand(obj))
+                far = C.mul(self.unit(self.obj_rand(obj)), u32(obj + 0x54))
+                point = (C.add(C.mul(C.cos16(angle), far), u32(obj + 0x10)), C.add(C.mul(C.sin16(angle), far), u32(obj + 0x14)),
+                         C.add(ZERO, u32(obj + 0x18)))
+                height = C.add(self.call('terrain_heightAtPoint', u32(G_WORLD), point), 0x40A00000)
+                if C.le(C.sub(u32(obj + 0x18), 0x43140000), height):
+                    self.call('particle_spawn', self.PDEF_SNOW_GROUND, (point[0], point[1], height), (0, 0, 0), ZERO)
+                i += 1
+        if c_rem(u32(G_SIM_FRAME), 30) == 0:
+            radius = u32(obj + 0x54)
+            here = self.vec(obj + 0x10)
+            found = self.call('world_collectObjectsInBox', tuple(C.sub(v, radius) for v in here),
+                              tuple(C.add(v, radius) for v in here), 0x40) or ()
+            for other in found:
+                node = u32(obj + 0x6C)
+                if node:
+                    if not self.vcall(u32(node + 0xC), 20, other):
+                        continue
+                    node = u32(obj + 0x6C)
+                half = C.mul(C.from_int(self.s32(obj + 0x5C)), HALF)
+                amount = C.to_int(half)
+                self.call('damage_apply', other, u32(node + 0xC) if node else 0, 100000, 0, 0, 0,
+                          self.descriptor((0x16, amount, amount, 0)), 0, half, half)
+        if self.s32(obj + 0x4C) < self.s32(G_SIM_FRAME):
+            w32(obj + 0x58, 0x3F733333)
+            if C.lt(u32(obj + 0x54), F_12):
+                self.vcall(obj, 1, 3)
+
+    def _iceshard_particle(self, obj, speed):
+        b = self.obj_ball(obj)
+        point = tuple(C.add(C.mul(b[i], 0x3F5AA012), self.u32(obj + 0x10 + 4 * i)) for i in range(3))
+        velocity = tuple(C.mul(c, speed) for c in self.obj_ball(obj))
+        self.call('particle_spawn', self.PDEF_SHARD, point, velocity, ZERO)
+
+    def iceshard_run(self, obj):
+        """FrostStormIceShard_run 0x1fdef8, slot 4, once a frame.
+
+        Falling (not landed and frame < end): vz -= 0.40399897, position += velocity; a
+        trail particle while (float) i < (scale x 0.008333333) x (scale x 4.072701) - one
+        at scale 1 (two OWN balls: x 0.854005 round the shard, x 1.0780039 as velocity);
+        terrain_height(world, position; the radius): landed once less than 16 above it.
+        Landed, or at the end frame: particles while (float) i < scale x scale x 4.072701
+        (five at scale 1; velocity x 10.780039), and the shard deletes itself."""
+        u32, w32 = self.u32, self.w32
+        scale = u32(obj + 0x50)
+        if u32(obj + 0x4C) == 0 and self.s32(G_SIM_FRAME) < self.s32(obj + 0x60):
+            w32(obj + 0x5C, C.add(u32(obj + 0x5C), 0xBECED8F4))
+            for i in range(3):
+                w32(obj + 0x10 + 4 * i, C.add(u32(obj + 0x10 + 4 * i), u32(obj + 0x54 + 4 * i)))
+            count = C.mul(C.mul(scale, 0x3C088888), C.mul(scale, 0x40825391))
+            i = 0
+            while C.lt(C.from_int(i), count):
+                self._iceshard_particle(obj, 0x3F89FC08)
+                i += 1
+            ground = self.call('terrain_height', u32(G_WORLD), self.vec(obj + 0x10), u32(obj + 0x1C))
+            if C.lt(C.sub(u32(obj + 0x18), ground), 0x41800000):
+                w32(obj + 0x4C, 1)
+            return
+        count = C.mul(C.mul(scale, scale), 0x40825391)
+        i = 0
+        while C.lt(C.from_int(i), count):
+            self._iceshard_particle(obj, 0x412C7B0A)
+            i += 1
+        self.vcall(obj, 1, 3)
+
+
+_register(58, 'froststorm', {
+    'SkillFrostStorm_cast': (0x2ED9A0, 0x2EDC40, 'skill', 'froststorm_cast'),
+    'FrostStormSpell_ctor': (0x1FE508, 0x1FE950, '', 'froststorm_ctor'),
+    'FrostStormSpell_run': (0x1FE950, 0x1FF860, 'object', 'froststorm_run'),
+    'FrostStormIceShard_run': (0x1FDEF8, 0x1FE504, 'object', 'iceshard_run'),
+}, [(Model.VT_FROSTSTORM, 'Creature', (1,)), (Model.VT_ICESHARD, 'Creature', (1,))])
+
+
+EXTERNALS['model_getSamplePoint'] = Ext(0x178E18, 'ppviioOQ', 1, 'n', '(model, anim state, position, facing, index, point out, '
+                                        'number out or 0, 3x3 matrix out or 0; scale)')
+REAL_LIBRARY.update({'mat3_rotateAxis': 0x162960, 'mat3_setRotZ': 0x1639D8})      # tools/ref_core.py
+
+
+class Model(Model):                             # noqa: F811
+    # =====================================================================================
+    # 65 giantgrowth: docs/spec/skills-35-68.md section 65.  SkillGiantGrowth (table
+    # 0x51b6f0; can-use above) and SpellGiantGrowth (0x138 bytes, table 0x51b6c0).
+    #
+    #   +0x18 the owner's scale at the cast   +0x1c the scale aimed at   +0x20 frames to
+    #   hold   +0x24 end flag   +0x28 sample points of the owner's model   +0x2c particle
+    #   group   +0x30 fifty slots {u8 age, u8 sample point, s16 angle}   +0xf8 owner
+    #   handle   +0xfc a light record (range +0x118 / +0x120, inverse square +0x11c /
+    #   +0x124, position +0x12c)
+    # =====================================================================================
+    VT_SPELL_GIANTGROWTH = 0x51B6C0
+    PDEF_GIANTGROWTH = 0x8E73B8
+
+    def giantgrowth_cast(self, skill, level, caster, pos=0, facing=0):
+        """SkillGiantGrowth_cast 0x308f60 -> the SpellGiantGrowth or 0: slot 14 (level,
+        10); NOTHING for a caster without the player flag; pool_new(0x138), the
+        constructor.  Position and facing are not used."""
+        level = self.skill_call(skill, 14, level, 10)
+        if not self.u32(caster + 0xC) & 0x40:
+            return 0
+        spell = self.call('pool_new', 0x138)
+        if spell:
+            self.giantgrowth_spell_ctor(spell, level, caster, skill)
+        return spell
+
+    def giantgrowth_spell_ctor(self, spell, level, owner, skill):
+        """SpellGiantGrowth_ctor 0x3090d0 (spell, level, owner, skill).
+
+        Spell base (ONE SHARED DRAW); the light record at +0xfc (range 120, at the
+        owner), linked; the owner handle +0xf8; the owner's scale kept at +0x18; a
+        particle group; the scale aimed at = slot 10 (0, level) x 0.01 + 1; frames = slot
+        10 (1, level) x 60; the sample-point count of the owner's model; the fifty slots
+        cleared, then for each TWO OWN DRAWS (the angle; the sample point = draw modulo
+        the count, a signed division that is not guarded against a count of 0); the cast
+        sound.  The only stores outside the spell are the list nodes of the handle."""
+        u32, w32, w16, w8 = self.u32, self.w32, self.w16, self.w8
+        self.spell_base_ctor(spell, level, owner, skill, self.VT_SPELL_GIANTGROWTH)
+        w32(spell + 0xF8, 0)
+        w8(spell + 0x105, 0)
+        self.wvec(spell + 0x12C, self.vec(owner + 0x10))
+        for off, value in ((0x120, 0x42F00000), (0x118, 0x42F00000), (0x124, 0x3891A2B3), (0x11C, 0x3891A2B3), (0x128, 0)):
+            w32(spell + off, value)
+        for off, value in ((0x10E, 200), (0x106, 200), (0x112, 0x55), (0x110, 0x54), (0x108, 0x54), (0x10A, 0x55), (0x10C, 0),
+                           (0x114, 0)):
+            w16(spell + off, value)
+        w8(spell + 0x104, 0)
+        self.call('light_link', spell + 0xFC)
+        holder = u32(spell + 0xC)
+        self.handle_link(spell + 0xF8, owner, owner)
+        w32(spell + 0x18, u32(holder + 0xDC))
+        w32(spell + 0x2C, self.call('particleGroup_create'))
+        w32(spell + 0x1C, C.add(C.mul(C.from_int(self.stat(u32(spell + 8), 0, self.s8(spell))), F_0_01), ONE))
+        frames = self.stat(u32(spell + 8), 1, self.s8(spell))
+        w32(spell + 0x24, 0)
+        w32(spell + 0x20, frames * 60)
+        w32(spell + 0x28, self.call('model_getSamplePointCount', u32(holder + 0x544)))
+        for off in range(0x30, 0xF8, 4):
+            w32(spell + off, 0)
+        for slot in range(spell + 0x30, spell + 0xF8, 4):
+            w16(slot + 2, self.spell_rand(spell))
+            w8(slot, 0)
+            w8(slot + 1, c_rem(self.spell_rand(spell), self.s32(spell + 0x28)))
+        self.call('sound_playAtPos', self.call('res_find', 0x552180, 0x552188), self.vec(holder + 0x10), ONE)
+
+    def giantgrowth_run(self, spell, pos=0, facing=0):
+        """SpellGiantGrowth_run 0x309420, slot 2.  Without an owner (handle +0xf8 empty)
+        the end flag is set; otherwise the scale step, the particles, and the light goes
+        50 above the owner.  With the end flag the spell ends itself."""
+        u32 = self.u32
+        if not u32(spell + 0xF8):
+            self.w32(spell + 0x24, 1)
+        else:
+            owner = u32(u32(spell + 0xF8) + 0xC)
+            self.giantgrowth_step_scale(spell, owner)
+            self.giantgrowth_emit(spell, owner)
+            self.wvec(spell + 0x12C, (C.add(u32(owner + 0x10), ZERO), u32(owner + 0x14), C.add(u32(owner + 0x18), 0x42480000)))
+            self.call('light_relink', spell + 0xFC)
+        if u32(spell + 0x24):
+            self.spell_end(spell)
+
+    def giantgrowth_step_scale(self, spell, owner):
+        """SpellGiantGrowth_stepScale 0x309524 (spell, owner).
+
+        s = the owner's scale +0xdc.  s == the scale aimed at (exactly): frames -= 1;
+        below 30 the aim becomes the scale kept at the cast; below 0 the end flag.
+        Otherwise s += 0.006 (when s < aim) or -= 0.006, not past the aim, and the light's
+        range = ((s - 1) x 3 + 7) x 12.  Always: the owner's record +0x4c20 (the walking
+        speed factor) = max(1, s x 0.75) - the record of whatever slot the owner's +0x3c8
+        names."""
+        u32, w32 = self.u32, self.w32
+        scale, aim = u32(owner + 0xDC), u32(spell + 0x1C)
+        if C.eq(scale, aim):
+            frames = self.s32(spell + 0x20) - 1
+            w32(spell + 0x20, frames)
+            if frames < 0x1E:
+                w32(spell + 0x1C, u32(spell + 0x18))
+            if self.s32(spell + 0x20) < 0:
+                w32(spell + 0x24, 1)
+        else:
+            step = 0x3BC49BA5 if C.lt(scale, aim) else 0xBBC49BA5
+            scale = C.add(scale, step)
+            w32(owner + 0xDC, scale)
+            if C.lt(ZERO, step):
+                if C.lt(u32(spell + 0x1C), scale):
+                    w32(owner + 0xDC, u32(spell + 0x1C))
+            elif C.lt(step, ZERO) and C.lt(scale, u32(spell + 0x1C)):
+                w32(owner + 0xDC, u32(spell + 0x1C))
+            reach = C.mul(C.add(C.mul(C.sub(u32(owner + 0xDC), ONE), 0x40400000), 0x40E00000), F_12)
+            w32(spell + 0x118, reach)
+            w32(spell + 0x120, reach)
+            inverse = C.div(ONE, C.mul(reach, reach))
+            w32(spell + 0x124, inverse)
+            w32(spell + 0x11C, inverse)
+        factor = C.mul(u32(owner + 0xDC), 0x3F400000)
+        record = self.record(owner)
+        w32(record + 0x4C20, factor)
+        if C.lt(factor, ONE):
+            w32(record + 0x4C20, ONE)
+
+    def giantgrowth_emit(self, spell, owner):
+        """SpellGiantGrowth_emitParticles 0x309678 (spell, owner).
+
+        The particle group is opened and given the owner's position as its matrix.  k
+        slots from the first: 11 once the aim is the scale kept at the cast, else 4 when
+        the owner has reached the aim, else 47.  Each: its sample point of the owner's
+        model (model_getSamplePoint with the owner's scale, handing back the point, a
+        number and a 3x3 matrix); the matrix turned about its third axis by the slot's
+        angle; a particle at (point - owner) + the matrix's first row x (number x 0.001 x
+        0.662995), velocity 0; angle += 0x5da; age += 1; ONE OWN DRAW d, and when (d & 3)
+        + 41 < age: age = 0 and ONE MORE for a new sample point."""
+        u32 = self.u32
+        group = u32(spell + 0x2C)
+        self.call('particleGroup_begin', group)
+        self.call('particleGroup_setMatrix', u32(spell + 0x2C), tuple(C.mat34_set_pos_rot_z(list(self.vec(owner + 0x10)), 0)))
+        if C.eq(u32(spell + 0x1C), u32(spell + 0x18)):
+            count = 0xB
+        elif C.le(u32(spell + 0x1C), u32(owner + 0xDC)):
+            count = 4
+        else:
+            count = 0x2F
+        for k in range(count):
+            slot = spell + 0x30 + 4 * k
+            point, number, matrix = self.call('model_getSamplePoint', u32(owner + 0x544), owner + 0x114, self.vec(owner + 0x10),
+                                              self.s16(owner + 0x38), self.u8(slot + 1), 1, 1, u32(owner + 0xDC))
+            matrix = C.mat3_rotate_axis(list(matrix), 2, self.s16(slot + 2))
+            reach = C.mul(C.mul(number[0], 0x3A83126E), 0x3F29BA0A)
+            here = tuple(C.add(C.sub(point[i], u32(owner + 0x10 + 4 * i)), C.mul(matrix[i], reach)) for i in range(3))
+            self.call('particle_spawn', self.PDEF_GIANTGROWTH, here, (0, 0, 0), ZERO)
+            self.w16(slot + 2, self.u16(slot + 2) + 0x5DA)
+            age = (self.u8(slot) + 1) & 0xFF
+            self.w8(slot, age)
+            if (self.spell_rand(spell) & 3) + 0x29 < age:
+                self.w8(slot, 0)
+                self.w8(slot + 1, c_rem(self.spell_rand(spell), self.s32(spell + 0x28)))
+        self.call('particleGroup_end', u32(spell + 0x2C))
+
+    def giantgrowth_owner_scale(self, spell):
+        """SpellGiantGrowth_getOwnerField0dc 0x3098c8 -> the scale +0xdc of the spell's
+        owner word +0xc (what Player_recalcDamage multiplies a shaman's swing by)."""
+        return self.u32(self.u32(spell + 0xC) + 0xDC)
+
+
+_register(65, 'giantgrowth', {
+    'SkillGiantGrowth_cast': (0x308F60, 0x309014, 'skill', 'giantgrowth_cast'),
+    'SpellGiantGrowth_ctor': (0x3090D0, 0x309368, '', 'giantgrowth_spell_ctor'),
+    'SpellGiantGrowth_run': (0x309420, 0x309524, 'spell', 'giantgrowth_run'),
+    'SpellGiantGrowth_stepScale': (0x309524, 0x309678, '', 'giantgrowth_step_scale'),
+    'SpellGiantGrowth_emitParticles': (0x309678, 0x3098C8, '', 'giantgrowth_emit'),
+    'SpellGiantGrowth_getOwnerField0dc': (0x3098C8, 0x3098D4, '', 'giantgrowth_owner_scale'),
+}, [(Model.VT_SPELL_GIANTGROWTH, 'Spell', (1,))])
+
+
+class Model(Model):                             # noqa: F811
+    # =====================================================================================
+    # 66 planarwind: docs/spec/skills-35-68.md section 66.  SkillPlanarWind (table
+    # 0x51b7a8; can-use is the base) and SpellPlanarWind (0xac bytes, table 0x51b778).
+    #
+    #   +0x18 the front's position   +0x24 direction (cos, sin, 0)   +0x30 half width
+    #   +0x34 speed per second   +0x38 a 3x3 matrix for the particle scatter   +0x5c
+    #   particles a frame   +0x60 burn chance   +0x64 knock-back bit   +0x68 runs so far
+    #   +0x6c targets not struck yet (list)   +0x70 a light record (position +0xa0)
+    # =====================================================================================
+    VT_SPELL_PLANARWIND = 0x51B778
+    PDEF_WIND_RARE, PDEF_WIND, PDEF_WIND_HIT = 0x8E7408, 0x8E7458, 0x8E74A8
+
+    def planarwind_cast(self, skill, level, caster, pos, facing=0):
+        """SkillPlanarWind_cast 0x309acc -> the SpellPlanarWind or 0: slot 14 (level,
+        20), pool_new(0xac), the constructor with a copy of the position.  The facing
+        argument is not read."""
+        start = self.vec(pos)
+        level = self.skill_call(skill, 14, level, 0x14)
+        spell = self.call('pool_new', 0xAC)
+        if spell:
+            self.planarwind_spell_ctor(spell, level, caster, skill, self.local_vec(start))
+        return spell
+
+    def planarwind_spell_ctor(self, spell, level, owner, skill, pos):
+        """SpellPlanarWind_ctor 0x309d0c (spell, level, owner, skill, position).
+
+        Spell base (ONE SHARED DRAW); the target list empty; the light record at +0x70,
+        at the owner, linked; speed = slot 12 (2, level, owner, cap 10); direction =
+        (cos, sin of the owner's facing, 0); position = the cast position, 12 higher;
+        half width w = slot 12 (1, ...); the light's range min(300, max(60, w x 1.5));
+        particles = (int)(((w x 3.570941) x 0.0069444436) x w); the cast sound; the
+        scatter matrix (a turn of facing + 0x4000 about z); the knock-back bit by level
+        (below 6: 0x80000, 6-10: 0x100000, 11 up: 0x200000); burn chance = slot 12 (3,
+        ...); runs = 0.  Targets, once: world_collectObjectsInArc(the cast position, the
+        owner's facing, filter = the owner; radius 960, no arc test (-1), half width w),
+        each linked into +0x6c - at the head, so the spell's list is the query's
+        reversed."""
+        u32, w32, w16, w8 = self.u32, self.w32, self.w16, self.w8
+        start = self.vec(pos)
+        self.spell_base_ctor(spell, level, owner, skill, self.VT_SPELL_PLANARWIND)
+        w32(spell + 0x6C, 0)
+        w8(spell + 0x79, 0)
+        self.wvec(spell + 0xA0, self.vec(owner + 0x10))
+        w32(spell + 0x9C, 0)
+        for off, value in ((0x82, 0x9B), (0x84, 0x4C), (0x86, 0x1A2), (0x7A, 0x9B), (0x7C, 0x4C), (0x7E, 0x1A2), (0x80, 0),
+                           (0x88, 0)):
+            w16(spell + off, value)
+        w8(spell + 0x78, 0)
+        self.call('light_link', spell + 0x70)
+        w32(spell + 0x34, C.from_int(self.stat_for(u32(spell + 8), 2, self.s8(spell), u32(spell + 0xC), 10)))
+        w32(spell + 0x24, C.cos16(self.s16(u32(spell + 0xC) + 0x38)))
+        w32(spell + 0x28, C.sin16(self.s16(u32(spell + 0xC) + 0x38)))
+        w32(spell + 0x2C, 0)
+        w32(spell + 0x18, start[0])
+        w32(spell + 0x1C, start[1])
+        w32(spell + 0x20, C.add(start[2], F_12))
+        width = C.from_int(self.stat_for(u32(spell + 8), 1, self.s8(spell), u32(spell + 0xC), 10))
+        w32(spell + 0x30, width)
+        reach = C.fmin(0x43960000, C.fmax(0x42700000, C.mul(width, 0x3FC00000)))
+        w32(spell + 0x8C, reach)
+        w32(spell + 0x94, reach)
+        inverse = C.div(ONE, C.mul(reach, reach))
+        w32(spell + 0x5C, C.to_int(C.mul(C.mul(C.mul(width, 0x40648A4C), 0x3BE38E37), width)))
+        w32(spell + 0x98, inverse)
+        w32(spell + 0x90, inverse)
+        self.call('sound_playAtPos', self.call('res_find', 0x552260, 0x552268), start, ONE)
+        matrix = C.mat3_set_rot_z(s16(self.u16(u32(spell + 0xC) + 0x38) + 0x4000))
+        for i in range(9):
+            w32(spell + 0x38 + 4 * i, matrix[i])
+        rank = self.s8(spell)
+        w32(spell + 0x64, 0x200000 if rank >= 11 else 0x80000 if rank < 6 else 0x100000)
+        w32(spell + 0x60, self.skill_call(u32(spell + 8), 12, 3, self.s8(spell), u32(spell + 0xC), 10))
+        w32(spell + 0x68, 0)
+        head = self.query_list('world_collectObjectsInArc', start, self.s16(u32(spell + 0xC) + 0x38), owner,
+                               0x44700000, 0xBF800000, u32(spell + 0x30))
+        for target in self.list_objects(head):
+            self.handle_link(spell + 0x6C, target, target)
+        self.handle_clear(head)
+
+    def _planarwind_strike(self, spell, target, step):
+        """One target the front has passed (SpellPlanarWind_run 0x30a1ac-0x30a46c)."""
+        u32 = self.u32
+        owner, skill = u32(spell + 0xC), u32(spell + 8)
+        if owner and u32(owner + 0xC) & 0x40:
+            low, high = self.stat_range(skill, 0, self.s8(spell), 0, 0x3E4CCCCC)
+        else:
+            value = C.from_int(s32(self.skill_call(skill, 12, 0, self.s8(spell), owner, 0)))
+            spread = C.mul(value, 0x3E4CCCCC)
+            high = s32(C.to_int(C.add(value, spread)))
+            low = s32(C.to_int(C.sub(value, spread)))
+        flags = u32(spell + 0x64) | 0x40
+        if u32(G_PVP_MODE_A) and u32(target + 0xC) & 0x40:
+            if not self.draw() % 100 < 0x15:
+                flags = 0x40
+        self.call('damage_apply', target, u32(spell + 0xC), 100000, 0, 0, flags, 0, 1, C.from_int(low), C.from_int(high))
+        if self.draw() % 100 < self.s32(spell + 0x60):
+            self.call('Creature_setEffectTimer', target, 0, u32(spell + 0xC), F_2)
+        self.call('sound_playAtPos', self.call('res_find', 0x552260, 0x552280), self.vec(target + 0x10), ONE)
+        model = self.vcall(target, 16)
+        if model:
+            count = s32(self.call('model_getSamplePointCount', model))
+            for _ in range(0x48):
+                index = c_rem(self.spell_rand(spell), count)
+                point, _number = self.call('model_getSamplePoint', model, target + 0x114, self.vec(target + 0x10),
+                                           self.s16(target + 0x38), index, 1, 0, ONE)
+                self.call('particle_spawn', self.PDEF_WIND_HIT, tuple(point), step, ZERO)
+
+    def planarwind_run(self, spell, pos=0, facing=0):
+        """SpellPlanarWind_run 0x30a0b0, slot 2, once a frame; position and facing are
+        not used.
+
+        step = (direction x speed) x (1/60); the front moves by it.  Every target of the
+        list, head first (the next node is read before the body), that is still there
+        and whose centre the front has passed (vec3_dotDelta(front, direction, target) <
+        0) is struck and unlinked: (low, high) = slot 8 (0, level, no randomising; 0.2)
+        for an owner with the player flag, else v = slot 12 (0, level, owner, cap 0) and
+        (int)(v - v x 0.2), (int)(v + v x 0.2); flags = the knock-back bit | 0x40 - with
+        PvP mode A on and a player target ONE SHARED DRAW r, and the knock-back bit goes
+        unless r % 100 < 21; damage_apply(target, owner, 100000, 0, 0, flags, no
+        descriptor, no-crit 1; low, high); ONE SHARED DRAW r: r % 100 < burn chance sets
+        the target burning for 2 s (Creature_setEffectTimer, source = the owner); the hit
+        sound; with a model (slot 16) 72 hit particles on its sample points (ONE OWN DRAW
+        each), velocity = the step.
+        Then the light 60 behind the front; speed -= (speed x 0.016) x 0.99999994; the
+        stream: `particles` times SIX OWN DRAWS - an angle that turns a copy of the
+        scatter matrix about its second axis, a distance (x half width) along the matrix's
+        first row, three nudges of (d - 0.5) x 0.5 that ACCUMULATE on the step vector,
+        and the kind (the rarer definition when d & mask == 0; mask 0x7f at level 1, 0x3f
+        to 4, 0x1f to 9, 0xf above).  terrain_height(world, front; 8): the spell ends
+        itself when the front is under it, or on the 54th run."""
+        u32, w32 = self.u32, self.w32
+        speed = u32(spell + 0x34)
+        step = [C.mul(C.mul(u32(spell + 0x24 + 4 * i), speed), DT) for i in range(3)]
+        w32(spell + 0x1C, C.add(u32(spell + 0x1C), step[1]))
+        w32(spell + 0x20, C.add(u32(spell + 0x20), step[2]))
+        w32(spell + 0x18, C.add(u32(spell + 0x18), step[0]))
+        node = u32(spell + 0x6C)
+        while node:
+            target, after = u32(node + 0xC), u32(node)
+            if target and C.lt(C.vec3_dot_delta(self.vec(spell + 0x18), self.vec(spell + 0x24), self.vec(target + 0x10)), ZERO):
+                self._planarwind_strike(spell, target, tuple(step))
+                self.handle_removeNode(node)
+            node = after
+        front = self.vec(spell + 0x18)
+        self.wvec(spell + 0xA0, (C.sub(C.add(front[0], ZERO), C.mul(u32(spell + 0x24), 0x42700000)),
+                                 C.sub(front[1], C.mul(u32(spell + 0x28), 0x42700000)),
+                                 C.sub(front[2], C.mul(u32(spell + 0x2C), 0x42700000))))
+        self.call('light_relink', spell + 0x70)
+        speed = u32(spell + 0x34)
+        w32(spell + 0x34, C.sub(speed, C.mul(C.mul(speed, 0x3C83126E), 0x3F7FFFFF)))
+        rank = self.s8(spell)
+        mask = 0xF if rank >= 10 else 0x1F if rank >= 5 else 0x7F if rank < 2 else 0x3F
+        done = 0
+        while done < self.s32(spell + 0x5C):
+            matrix = C.mat3_rotate_axis([u32(spell + 0x38 + 4 * i) for i in range(9)], 1, s16(self.spell_rand(spell)))
+            far = C.mul(self.unit(self.spell_rand(spell)), u32(spell + 0x30))
+            point = tuple(C.add(u32(spell + 0x18 + 4 * i), C.mul(matrix[i], far)) for i in range(3))
+            for i in range(3):
+                step[i] = C.add(step[i], C.mul(C.sub(self.unit(self.spell_rand(spell)), HALF), HALF))
+            definition = self.PDEF_WIND if self.spell_rand(spell) & mask else self.PDEF_WIND_RARE
+            self.call('particle_spawn', definition, point, tuple(step), ZERO)
+            done += 1
+        ground = self.call('terrain_height', u32(G_WORLD), self.vec(spell + 0x18), 0x41000000)
+        runs = self.s32(spell + 0x68)
+        w32(spell + 0x68, runs + 1)
+        if not runs < 0x35 or C.lt(u32(spell + 0x20), ground):
+            self.spell_end(spell)
+
+
+_register(66, 'planarwind', {
+    'SkillPlanarWind_cast': (0x309ACC, 0x309B70, 'skill', 'planarwind_cast'),
+    'SpellPlanarWind_ctor': (0x309D0C, 0x30A0B0, '', 'planarwind_spell_ctor'),
+    'SpellPlanarWind_run': (0x30A0B0, 0x30A7F4, 'spell', 'planarwind_run'),
+}, [(Model.VT_SPELL_PLANARWIND, 'Spell', (1,))])
+
 
 MODELLED = {name: start for name, (start, _end) in FUNCTIONS.items()}

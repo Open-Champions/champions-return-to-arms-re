@@ -2,6 +2,8 @@
 """Unit tests for tools/ref_skills_b.py that need no game files: the Skill base on a made-up
 Skill object, the handle lists, the spell walk and the projectile step, and for the second pass the Shock
 chain, the Charge contact, AncestralCall's constructor for the prediction copy and its query.
+For the third pass: the DummyDamager's one delivery, the Frost Storm tick, the Giant Growth
+timeline and the Planar Wind strike for both kinds of owner.
 The comparison with
 the game's own code is tools/difftest_skills_b.py."""
 import os
@@ -294,6 +296,154 @@ class SecondPass(unittest.TestCase):
         self.assertEqual(model.ancestralcall_query_for(spell, other, 0, 0), 0)
         self.assertEqual(model.ancestralcall_query_for(spell, owner, 0, 0), 1)
         self.assertEqual(model.ancestralcall_query_for(spell, 0, 0, 0), 0)
+
+
+def answering(calls, answers):
+    """Callbacks that record (name, arguments) and answer from a table (0 otherwise)."""
+    class Callbacks:
+        def get(self, name):
+            def answer(*args):
+                calls.append((name, args))
+                value = answers.get(name, 0)
+                return value(*args) if callable(value) else value
+            return answer
+    return Callbacks()
+
+
+class ThirdPass(unittest.TestCase):
+    """The casts and effects of ids 56, 57, 58, 65 and 66, on made-up memory."""
+
+    def thing(self, mem, addr, x, y, z=0.0, flags=0x20):
+        mem.poke(addr + 0xC, 4, flags)
+        for i, v in enumerate((x, y, z)):
+            mem.poke(addr + 0x10 + 4 * i, 4, C.f32(v))
+        return addr
+
+    def test_down_is_minus_the_magnitude(self):
+        self.assertEqual(SB.down(C.f32(2.5)), C.f32(-2.5))
+        self.assertEqual(SB.down(C.f32(-2.5)), C.f32(-2.5))
+        self.assertEqual(SB.down(0), 0)
+        self.assertEqual(SB.down(0x80000000), 0)            # minus zero comes back as plus zero
+
+    def test_registry_of_the_third_pass(self):
+        for sid, names in ((56, ('SkillConeOfFrost_cast', 'SpellConeOfFrost_run', 'DummyDamager_run', 'DummyDamager_onTouch')),
+                           (57, ('SkillShockOfFire_cast', 'Sparks_run', 'Sparks_onTouch')),
+                           (58, ('SkillFrostStorm_cast', 'FrostStormSpell_run', 'FrostStormIceShard_run')),
+                           (65, ('SkillGiantGrowth_cast', 'SpellGiantGrowth_run', 'SpellGiantGrowth_stepScale')),
+                           (66, ('SkillPlanarWind_cast', 'SpellPlanarWind_ctor', 'SpellPlanarWind_run'))):
+            for name in names:
+                self.assertIn(name, SB.SKILLS[sid]['functions'])
+        self.assertEqual(SB.OBJECT_BODIES[0x1EE7B0], 'dummydamager_on_touch')
+        self.assertEqual(SB.SPELL_BODIES[0x30A0B0], 'planarwind_run')
+
+    def test_dummy_damager_carries_its_cold_once(self):
+        calls = []
+        model, mem = make(answering(calls, {'Creature.v20': 1}))
+        bolt, owner, victim = OBJ, 0x7000, 0x7400
+        self.thing(mem, owner, 0.0, 0.0, flags=0x60)
+        self.thing(mem, victim, 5.0, 0.0)
+        model.handle_link(bolt + 0x4C, owner, owner)
+        mem.poke(bolt + 0x60, 4, 0x12)
+        mem.poke(bolt + 0x64, 4, 0x80C040)
+        mem.poke(bolt + 0x68, 4, C.f32(46.67))
+        model.dummydamager_on_touch(bolt, victim)
+        model.dummydamager_on_touch(bolt, victim)
+        asked = [args for name, args in calls if name == 'Creature.v20']
+        self.assertEqual(asked, [(victim, owner), (victim, owner)])            # the VICTIM is asked about the owner
+        hits = [args for name, args in calls if name == 'damage_apply']
+        self.assertEqual(hits[0][:6], (victim, owner, 1000000, 0, 0, 0x80C040))
+        self.assertEqual(hits[0][6], ('desc', ((0x16, 46, 46, 0),)))
+        self.assertEqual(hits[0][8:], (0, 0))               # the base amount was zeroed before the call
+        self.assertEqual(hits[1][6], ('desc', ((0x16, 0, 0, 0),)))             # nothing left for a second touch
+
+    def test_dummy_damager_lives_its_frames(self):
+        calls = []
+        model, mem = make(answering(calls, {'world_collectObjectsInBox': []}))
+        bolt = OBJ
+        mem.poke(bolt + 0x6C, 2, 3)
+        mem.poke(bolt + 0x60, 4, 0x12)
+        for _ in range(3):
+            model.dummydamager_run(bolt)
+        self.assertEqual([name for name, _a in calls].count('obj_updateGridCell'), 2)       # moved twice
+        self.assertEqual(calls[-1], ('Creature.v1', (bolt, 3)))                             # ended on the third run
+
+    def test_frost_storm_tick_is_half_and_half(self):
+        calls = []
+        other = 0x7400
+        model, mem = make(answering(calls, {'world_collectObjectsInBox': [other]}))
+        storm = OBJ
+        self.thing(mem, storm, 100.0, 200.0, 30.0, flags=1)
+        mem.poke(RC.G_SIM_FRAME, 4, 300)
+        mem.poke(storm + 0x4C, 4, 290)                      # past its end: no particles
+        mem.poke(storm + 0x54, 4, C.f32(24.0))
+        mem.poke(storm + 0x58, 4, 0x3F733333)
+        mem.poke(storm + 0x5C, 4, 57)
+        mem.poke(storm + 0x8C, 4, C.f32(79.0))
+        model.froststorm_run(storm)
+        box = [args for name, args in calls if name == 'world_collectObjectsInBox'][0]
+        radius = C.mul(C.f32(24.0), 0x3F733333)
+        self.assertEqual(box[0][0], C.sub(C.f32(100.0), radius))               # the box uses the shrunken radius
+        hit = [args for name, args in calls if name == 'damage_apply'][0]
+        self.assertEqual(hit[:6], (other, 0, 100000, 0, 0, 0))                 # no caster: no test, no attacker
+        self.assertEqual(hit[6], ('desc', ((0x16, 28, 28, 0),)))
+        self.assertEqual(hit[8:], (C.f32(28.5), C.f32(28.5)))
+        self.assertNotIn(('Creature.v1', (storm, 3)), calls)                   # 22.8: not below 12 yet
+
+    def test_giant_growth_timeline(self):
+        model, mem = make()
+        spell, owner = OBJ, 0x7000
+        mem.poke(owner + 0xDC, 4, C.f32(1.0))
+        mem.poke(owner + 0x3C8, 4, 2)
+        mem.poke(spell + 0x18, 4, C.f32(1.0))
+        mem.poke(spell + 0x1C, 4, C.f32(1.5))
+        mem.poke(spell + 0x20, 4, 300)
+        record = SB.G_PLAYERS + 2 * SB.REC_SIZE
+        reached = runs = 0
+        while not model.u32(spell + 0x24) and runs < 2000:
+            model.giantgrowth_step_scale(spell, owner)
+            runs += 1
+            if not reached and model.u32(owner + 0xDC) == C.f32(1.5):
+                reached = runs
+                self.assertEqual(model.u32(record + 0x4C20), C.f32(1.125))     # 1.5 x 0.75
+        self.assertEqual((reached, runs), (84, 469))
+        self.assertEqual(model.u32(owner + 0xDC), C.f32(1.0))
+        self.assertEqual(model.u32(record + 0x4C20), C.f32(1.0))               # never below 1
+
+    def planar_wind(self, owner_flags):
+        calls = []
+        model, mem = make(answering(calls, {'terrain_height': 0}))
+        set_stat(mem, 0, 1, 55, 0.0, first2=1, base2=55, step2=0.0)
+        spell, owner, behind, ahead = OBJ, 0x7000, 0x7400, 0x7800
+        self.thing(mem, owner, 0.0, 0.0, flags=owner_flags)
+        self.thing(mem, behind, 5.0, 40.0)
+        self.thing(mem, ahead, 300.0, 0.0)
+        mem.poke(spell, 1, 3)
+        mem.poke(spell + 8, 4, SKILL)
+        mem.poke(spell + 0xC, 4, owner)
+        for off, value in ((0x18, 0.0), (0x1C, 0.0), (0x20, 12.0), (0x24, 1.0), (0x34, 600.0)):
+            mem.poke(spell + off, 4, C.f32(value))
+        mem.poke(spell + 0x64, 4, 0x80000)
+        mem.poke(spell + 0x60, 4, 0)
+        model.handle_link(spell + 0x6C, ahead, ahead)
+        model.handle_link(spell + 0x6C, behind, behind)
+        model.planarwind_run(spell)
+        return model, calls, spell, behind, ahead
+
+    def test_planar_wind_strikes_what_the_front_has_passed(self):
+        model, calls, spell, behind, ahead = self.planar_wind(0x20)
+        hits = [args for name, args in calls if name == 'damage_apply']
+        self.assertEqual(len(hits), 1)                      # sideways distance is not tested again
+        self.assertEqual(hits[0][0], behind)
+        self.assertEqual(hits[0][5:8], (0x80040, 0, 1))
+        self.assertEqual(hits[0][8:], (C.f32(44.0), C.f32(65.0)))              # a monster's bounds are truncated
+        self.assertEqual(model.list_objects(spell + 0x6C), [ahead])
+        self.assertEqual(model.draws, 1)                    # the burn roll, made at chance 0 too
+        self.assertEqual(model.u32(spell + 0x68), 1)
+
+    def test_planar_wind_player_bounds_are_rounded(self):
+        _model, calls, _spell, _behind, _ahead = self.planar_wind(0x60)
+        hit = [args for name, args in calls if name == 'damage_apply'][0]
+        self.assertEqual(hit[8:], (C.f32(44.0), C.f32(66.0)))
 
 
 if __name__ == '__main__':
