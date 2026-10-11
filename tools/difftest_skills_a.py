@@ -116,6 +116,7 @@ ENTRIES = {
     'creature_findSpellByType': (0x11A710, 'ii', 'i', 'find_spell_by_type'),
 }
 SKILL_NAMES = {}                # id -> short name, filled by the scenario table
+EXTRA_PARTIAL = []              # bodies run for real but not counted for coverage (their partial-word stores are tracked)
 OBJECT_TABLES = []              # class tables of GameObject-derived effects (slot 1 becomes 'Creature.v1')
 SPELL_TABLES = [AM.VT_SPELL_SUMMON]
 
@@ -158,6 +159,8 @@ class World:
         self.fail_alloc = 0.03
         self.ground_bias = 0.08
         self.extra_bias = 0.25
+        self.clips = {}                 # entry-name address -> a writable stand-in for what res_find returns
+        self.append_lists = False       # a query on a list head that is not empty adds in front (as the real ones do)
         self.build(rng)
 
     # ---- construction ------------------------------------------------------------------
@@ -420,7 +423,22 @@ class World:
             found = []
         return Res(outs=[found[:30]])
 
-    on_world_collectInSphere = on_world_collectObjectsInArc
+    def on_world_collectInSphere(self, args, view, rng):
+        centre, _facing, _head, radius = args
+        cx, cy, _cz = (fl(v) for v in centre)
+        found = []
+        for obj in self.everything:
+            if obj == self.copy:
+                continue
+            x, y, _z, r, _h = self.geometry(view, obj)
+            if (x - cx) ** 2 + (y - cy) ** 2 <= (fl(radius) + r) ** 2:
+                found.append(obj)
+        if rng.random() < self.extra_bias:
+            found.insert(rng.randrange(len(found) + 1), rng.choice(self.everything))
+        rng.shuffle(found)
+        if rng.random() < 0.15:
+            found = []
+        return Res(outs=[found[:30]])
 
     def on_damage_apply(self, args, view, rng):
         victim = args[0]
@@ -445,7 +463,21 @@ class World:
         return Res(outs=[b'name%d' % rng.randrange(3)])
 
     def on_res_find(self, args, view, rng):
+        if args[1] in self.clips:
+            return Res(self.clips[args[1]])
         return Res(0x00D00000 + rng.randrange(4) * 0x10)
+
+    def on_Player_animStep(self, args, view, rng):
+        return Res(rng.choice((0, 0, 0, 0, 1, 2, 2, 3, 6)))
+
+    def on_Player_move(self, args, view, rng):
+        return Res(rng.choice((0, 0, 4)))
+
+    def on_net_isLocalSlot(self, args, view, rng):
+        return Res(rng.choice((0, 1)))
+
+    def on_Creature_v26(self, args, view, rng):
+        return Res(rng.randrange(0x10000))
 
     def on_obj_getPropInt(self, args, view, rng):
         return Res(0)
@@ -529,6 +561,11 @@ class World:
 
     def on_text_lookup(self, args, view, rng):
         return Res(0x00D10000 + (args[0] & 0xFF0))
+
+    def on_model_transformSamplePoint(self, args, view, rng):
+        matrix = args[1]
+        point = tuple(f32(fl(matrix[9 + i]) + rng.uniform(-15, 15)) for i in range(3))
+        return Res(outs=[point, (f32(rng.choice((0.0, 1.0, 40.0, 900.0))), 0, 0)])
 
 
 # ---------------------------------------------------------------------------------------
@@ -616,8 +653,17 @@ class Rig:
         for name, addr in list(self.world.stub_addr.items()):
             if addr not in self.names:
                 add(addr, name, SA.EXTERNALS.get(name) or RC.Ext(0, 'p', 0, 'n'))
+        self.masked = set()                                     # bytes a scenario declares undefined (not compared)
+        # the C library's sscanf sets its stream tables up on the first call: make that call now, on scratch memory
+        emu.record_calls = emu.record_writes = False
+        kept = mem.u32(RC.G_RAND_SEED)
+        emu.call(SA.MODELLED['item_parseDescriptor'], 0x5508D0, self.world.argbuf, -1, 0, max_steps=20000000)
+        mem.w32(RC.G_RAND_SEED, kept)
+        for off in range(0, 0x48, 4):
+            mem.w32(self.world.argbuf + off, 0)
+        emu.record_calls = emu.record_writes = True
         self.partial, self.partial_ops = [], {}
-        bodies = [(s, e) for s, e, _sid in BODIES.values()] + list(DC.BODIES.values())
+        bodies = [(s, e) for s, e, _sid in BODIES.values()] + list(DC.BODIES.values()) + EXTRA_PARTIAL
         for start, end in bodies:
             for pc in range(start, end, 4):
                 w = mem.u32(pc)
@@ -728,6 +774,12 @@ class Rig:
             for kind, ptr in outs:
                 value = given.pop(0) if given else ((0, 0, 0) if kind in 'oO' else ([] if kind in 'nLH' else 0))
                 if kind == 'H':
+                    if self.world.append_lists and is_stack(ptr):       # the entries already there stay, behind the new ones
+                        node, old = mem.u32(ptr), []
+                        while node:
+                            old.append(mem.u32(node + 0xC))
+                            node = mem.u32(node)
+                        value = list(value) + old
                     self.write_chain(self.eview, 'stack' if is_stack(ptr) else ptr, None, value)
                     nodes = self.chain('stack' if is_stack(ptr) else ptr, len(value))
                     if is_stack(ptr):
@@ -771,6 +823,9 @@ class Rig:
                     if kind == 'H':
                         value = given[0] if given else []
                         head = args[position]
+                        if self.rig.world.append_lists and head == 'stack':     # the scratch nodes as the stub leaves them
+                            value = list(value) + self.view.state.get('stack list', [])
+                            self.view.state['stack list'] = value
                         self.rig.write_chain(self.view, head, None if head == 'stack' else head, value)
                     if kind in 'oOwWbnLH' and given:
                         given.pop(0)
@@ -835,12 +890,13 @@ class Rig:
         if model.calls != self.calls:
             out['calls'] = DC.describe_calls(model.calls, self.calls)
         lo, hi = world.argbuf, world.argbuf + 0x100
-        ebytes = self.stored_bytes(lo, hi)
+        ebytes = self.stored_bytes(lo, hi) - self.masked
         mbytes = set()
         for a, size, _value in model.writes:
             mbytes.update(range(a, a + size))
+        mbytes -= self.masked
         diff = []
-        for a in sorted(ebytes | mbytes | self.eview.touched | mview.touched):
+        for a in sorted((ebytes | mbytes | self.eview.touched | mview.touched) - self.masked):
             x, y = mem.load(a, 1), mview.load(a, 1)
             if x != y:
                 diff.append((a, x, y))
@@ -1194,6 +1250,25 @@ def tables_check(elf, mem):
 
 
 SCENARIOS = []                  # (name, skill id, function(env, rounds))
+COPY_ROWS = {}                  # skill id -> {what: set of (pc, where)}: the prediction-copy table (see note_stores)
+
+
+def note_stores(env, sid, what, skip=()):
+    """After a call: the first store the original made outside the stack that is not into a block it had just
+    been handed by pool_new, not the shared seed and not in `skip` (address ranges) - the first thing a cast leaves
+    behind that destroying its spell would not undo.  Collected per skill for the prediction-copy table."""
+    world = env.world
+    row = COPY_ROWS.setdefault(sid, {}).setdefault(what, [])
+    for pc, addr, _size, _value in env.rig.emu.writes:
+        if RC.G_RAND_SEED <= addr < RC.G_RAND_SEED + 4:
+            continue
+        if any(b <= addr < b + n for b, n in world.pool_size.items()) or any(lo <= addr < hi for lo, hi in skip):
+            continue
+        entry = (pc, re.sub(r'^(player|mob|prop)\d', r'\1', world.name_of(addr & ~3)))
+        if entry[1].startswith('weapon item'):
+            entry = (pc & ~0xFFF, 'weapon item (entry slots)')
+        if entry not in row:
+            row.append(entry)
 
 
 def scenario(name, sid):
@@ -1245,13 +1320,14 @@ def machinery(env, rounds):
             world.ground_bias = 0.08
         # spells on a creature: the real classes' tables, so that their getters run
         creature = rng.choice(world.mobs + world.players)
-        tables = [rng.choice(SPELL_TABLES) for _ in spells]
+        known = SPELL_TABLES[:FIRST_PASS_SPELL_TABLES]          # the classes of the first pass: its choices stay as they were
+        tables = [rng.choice(known) for _ in spells]
         for spell, table in zip(spells, tables):
             mem.w32(spell + 0x14, table)
         world.spell_list(creature, spells[:rng.choice((0, 1, 2, 3))])
         if rng.random() < 0.2:
             mem.w32(world.nodes[spells[0]] + 0xC, 0)            # a node whose spell is gone
-        getter = mem.u32(rng.choice(SPELL_TABLES) + 4)
+        getter = mem.u32(rng.choice(known) + 4)
         env.do('creature_findSpellByType', creature, env.rig.type_info[getter])
         mem.w32(world.nodes[spells[0]] + 0xC, spells[0])
         env.do('creature_addSpell', creature, rng.choice((0, spells[2])))
@@ -1894,10 +1970,10 @@ def give_weapons(env):
                 mem.w16(item + 0x2A + 8 * k, rng.choice((0, 12, 600)))
 
 
-def weapon_buff(env, rounds, sid, name, table):
+def weapon_buff(env, rounds, sid, name, table, size=0x24):
     world, mem, rng = env.world, env.mem, env.rng
     skill = env.skill(sid)
-    spell = world.add_pool(0x24, 1, 'buff')[0]
+    spell = world.add_pool(size, 1, 'buff')[0]
     world.add_pool(0xBC, 1, 'light')
     other_spells = world.add_pool(0x1C, 2, 'spell')
     holder = world.holder
@@ -1916,6 +1992,10 @@ def weapon_buff(env, rounds, sid, name, table):
         mem.w32(spell + 0x14, 0)
         world.fail_alloc = 0.05
         env.do(name % 'Skill' + '_cast', skill, rng.choice((0, 1, 3, 5, 6, 7, 12, 16, 20, 30)), caster, env.pos_of(caster), 0)
+        if sid == 13:
+            for item in world.items:
+                world.names.setdefault(item, 'weapon item')
+            note_stores(env, sid, 'cast')
         world.fail_alloc = 0.0
         if not mem.u32(spell + 0x14):
             continue
@@ -2222,7 +2302,445 @@ def s_canuse(env, rounds):
             entry = SlotEntry(env, skill, 1)
             ENTRIES['Skill_canUse (slot 1)'] = (entry.fn, 'ii', 'i', 'can_use_slot')
             env.do('Skill_canUse (slot 1)', skill, caster)
+            if caster == world.copy:
+                note_stores(env, sid, 'can-use, copy')
             mem.w32(caster + 0x364, 0)
+
+
+# ==== the second pass: the casts and effects of ids 1, 5, 6, 8, 10, 13, 17, 18, 22, 34 =================
+FIRST_PASS_SPELL_TABLES = len(SPELL_TABLES)
+
+
+# ---- skill 13 (the fourth weapon buff) ---------------------------------------------------------
+add_skill(13, 'fireweapons', {
+    'SkillFireWeapons_cast': (0x2E4AD0, 0x2E4B54),
+    'SpellFireWeapons_ctor': (0x2E34E0, 0x2E3A98), 'SpellFireWeapons_run': (0x2E3B28, 0x2E49C0),
+}, {
+    'SkillFireWeapons_canUse': (0x2E4DF8, 'ii', 'i', 'fireweapons_can_use'),
+    'SkillFireWeapons_cast': (0x2E4AD0, 'iiivi', 'i', 'fireweapons_cast'),
+    'SpellFireWeapons_run': (0x2E3B28, 'ivi', 'n', 'fireweapons_run'),
+}, spell_tables=[0x519A88])
+
+
+@scenario('s13 fireweapons', 13)
+def s13(env, rounds):
+    weapon_buff(env, rounds, 13, '%sFireWeapons', 0x519A88, size=0x60)
+
+
+# ---- skill 18 --------------------------------------------------------------------------
+add_skill(18, 'coneoffire', {
+    'SkillConeOfFire_cast': (0x2F1078, 0x2F10FC), 'SpellConeOfFire_ctor': (0x2F00AC, 0x2F0224),
+    'SpellConeOfFire_run': (0x2F02FC, 0x2F0F94),
+}, {
+    'SkillConeOfFire_canUse': (0x2F123C, 'ii', 'i', 'coneoffire_can_use'),
+    'SkillConeOfFire_cast': (0x2F1078, 'iiivi', 'i', 'coneoffire_cast'),
+    'SpellConeOfFire_ctor': (0x2F00AC, 'iiii', 'n', 'coneoffire_ctor'),
+    'SpellConeOfFire_run': (0x2F02FC, 'ivi', 'n', 'coneoffire_run'),
+}, spell_tables=[0x51A470])
+
+
+@scenario('s18 coneoffire', 18)
+def s18(env, rounds):
+    """Cast (and the constructor as the Mummy calls it), then the channel held for a
+    number of frames, most of them damage ticks.  The descriptors handed to damage_apply
+    are collected for the SA4 property."""
+    world, mem, rng = env.world, env.mem, env.rng
+    skill = env.skill(18)
+    spell = world.add_pool(0x58, 1, 'cone')[0]
+    seen = {}                                                   # (player owner, level) -> descriptors
+    for env.round in range(rounds):
+        world.place(rng, spread=70.0)
+        caster = env.caster(('player', 'player', 'monster', 'monster'))
+        facing = facing_arg(rng)
+        line_up(env, caster, facing, world.mobs[:4] + [world.players[1]], 20.0, 110.0)
+        for mob in rng.sample(world.mobs, 4):
+            world.enemy(mob)
+        world.enemy_bias = rng.choice((0.3, 0.9, 1.0))
+        env.do('SkillConeOfFire_canUse', skill, caster)
+        mem.w32(spell + 0x14, 0)
+        world.fail_alloc = 0.05
+        level = rng.choice((0, 1, 2, 2, 3, 3, 4, 5, 10, 11, 20, 40))
+        if rng.random() < 0.7:
+            env.do('SkillConeOfFire_cast', skill, level, caster, env.pos_of(caster), facing)
+        else:                                                   # as the Mummy builds it (0x299c68)
+            for off in range(0, 0x58, 4):
+                mem.w32(spell + off, 0)
+            env.do('SpellConeOfFire_ctor', spell, level, caster, skill)
+        note_stores(env, 18, 'cast')
+        world.fail_alloc = 0.0
+        if not mem.u32(spell + 0x14):
+            continue
+        for n in range(14):
+            frame = mem.u32(RC.G_SIM_FRAME)
+            frame += 15 - frame % 15 if rng.random() < 0.6 else rng.choice((1, 1, 2, 7))
+            mem.w32(RC.G_SIM_FRAME, frame & M32)
+            if n == 9 and rng.random() < 0.3:
+                mem.w32(caster + 0xC, mem.u32(caster + 0xC) | 8)       # the owner dies; the channel is still run
+            if rng.random() < 0.3:
+                facing = (facing + rng.choice((300, -700, 0x4000))) & 0xFFFF
+            result = env.do('SpellConeOfFire_run', spell, env.pos_of(caster, 0.0, 36.0), facing)
+            for name, args in result['emu_calls']:
+                if name == 'damage_apply':
+                    seen.setdefault((caster == world.player, level), set()).add(args[6])
+    world.enemy_bias = 0.7
+    # SA4: what Cone of Fire hands to damage_apply
+    bad, count, zero_divisor = [], 0, 0
+    for (is_player, level), descs in sorted(seen.items()):
+        for desc in descs:
+            count += 1
+            entry = desc[1] if desc[0] == 'desc' else None
+            if entry is None or desc[2:] != (None, None, None) or entry[0] != 0x15 or entry[3] != 0:
+                bad.append('level %d: %r' % (level, desc))
+                continue
+            v1, v2 = C.s16(entry[1]), C.s16(entry[2])
+            if v1 > 0 and not v2 < v1 or not v1 * 0.25 - 1 < v2 <= v1 * 0.3:
+                bad.append('level %d: v1 %d v2 %d' % (level, v1, v2))
+            if v2 - v1 + 1 == 0:
+                zero_divisor += 1
+                if is_player or level not in (2, 3):
+                    bad.append('level %d (%s): divisor 0' % (level, 'player' if is_player else 'monster'))
+            elif not is_player and level in (2, 3):
+                bad.append('monster level %d: %r' % (level, entry))
+    report('s18 coneoffire SA4 descriptor', len(bad), count,
+           'fire entry (0x15, v1, v2, 0) with v2 = (v1 + spread) x 0.25 < v1; v2 - v1 + 1 = 0 in %d (monster owner, level 2 or 3)'
+           % zero_divisor, bad)
+
+
+# ---- skill 17 --------------------------------------------------------------------------
+add_skill(17, 'hammerofwrath', {
+    'SkillHammerOfWrath_cast': (0x2EFB20, 0x2EFD44), 'HammerOfWrath_ctor': (0x2EDD78, 0x2EDFD0),
+    'HammerOfWrath_run': (0x2EE068, 0x2EF78C), 'SpellHammerOfWrath_ctor': (0x2EF974, 0x2EFA04),
+    'SpellHammerOfWrath_run': (0x2EFA04, 0x2EFA60),
+}, {
+    'SkillHammerOfWrath_canUse': (0x2EFEF8, 'ii', 'i', 'hammer_can_use'),
+    'SkillHammerOfWrath_cast': (0x2EFB20, 'iiivi', 'i', 'hammer_cast'),
+    'HammerOfWrath_run': (0x2EE068, 'i', 'n', 'hammer_run'),
+    'SpellHammerOfWrath_run': (0x2EFA04, 'ivi', 'n', 'hammer_spell_run'),
+}, object_tables=[0x51A2A0], spell_tables=[0x51A3B8])
+# item_parseDescriptor, item_randomizeVariant and item_getResourceIndex run for real (the model side is tools/ref_items.py)
+EXTRA_PARTIAL.extend([(0x1069B8, 0x107CA8), (0x1046E0, 0x104758), (0x1083F8, 0x108434)])
+
+
+@scenario('s17 hammerofwrath', 17)
+def s17(env, rounds):
+    """Cast (shaft, light, hammer with its parsed item record, spell), the spell's run, and
+    the hammer's run through its states: following, the strike (blow at c = 47), the spin
+    (blows at c = 80, 100, 120), cutscenes, a blocking owner, targets dying or deleted, the
+    owner far away or deleted, and the last frames with their rising particle count."""
+    world, mem, rng = env.world, env.mem, env.rng
+    skill = env.skill(17)
+    hammer = world.add_pool(0xE8, 1, 'hammer')[0]
+    spell = world.add_pool(0x1C, 1, 'hammerspell')[0]
+    world.add_pool(0x5C, 1, 'shaft')
+    world.add_pool(0xBC, 1, 'light')
+    held = [env.rig.emu.alloc(0x20) for _ in range(2)]
+    for s in held:
+        world.names[s] = 'held'
+        world.add_node(s)
+    seen = {}                                                   # level argument -> (stored level, shared draws of the cast)
+    # item_parseDescriptor builds the record in its own frame and copies all 0x48 bytes out: the bytes it never sets
+    # (+6, +0x22, the values of the three empty slots, +0x44) are whatever its stack held - not compared
+    env.rig.masked = {hammer + 0x58 + off for off in [6, 7, 0x22, 0x23, 0x44, 0x45, 0x46, 0x47]
+                      + [0x26 + 8 * k + i for k in (1, 2, 3) for i in range(6)]}
+    for env.round in range(rounds):
+        world.place(rng, spread=120.0)
+        caster = env.caster(('player', 'player', 'player', 'monster'))
+        for obj in world.everything:
+            mem.w32(obj + 0x364, 0)
+        for s in held:
+            mem.w32(s + 0x14, rng.choice((0x51A3B8, AM.VT_SPELL_SUMMON)))
+        if rng.random() < 0.3:
+            world.spell_list(caster, held[:rng.choice((1, 2))])
+        env.do('SkillHammerOfWrath_canUse', skill, caster)
+        mem.w32(caster + 0x364, 0)
+        mem.w32(hammer + 0x48, 0)
+        mem.w32(spell + 0x14, 0)
+        mem.w8(SA.G_HAMMER_COUNT, rng.choice((0, 1, 0xFF)))
+        world.fail_alloc = 0.05
+        level = rng.choice((0, 1, 2, 3, 4, 5, 9, 10, 19, 20, 40, 0xFFFFFFFF))
+        facing = facing_arg(rng)
+        result = env.do('SkillHammerOfWrath_cast', skill, level, caster, env.pos_of(caster, 4.0), facing)
+        note_stores(env, 17, 'cast')
+        world.fail_alloc = 0.0
+        if mem.u32(hammer + 0x48):
+            seen.setdefault(level, set()).add((mem.u32(hammer + 0xA4), result['draws'], bool(mem.u32(spell + 0x14))))
+        if mem.u32(spell + 0x14):
+            env.do('SpellHammerOfWrath_run', spell, env.pos_of(caster), 0)
+            if rng.random() < 0.5:
+                mem.w32(spell + 0x18, 0)                        # the hammer is gone
+                env.do('SpellHammerOfWrath_run', spell, env.pos_of(caster), 0)
+        if not mem.u32(hammer + 0x48):
+            continue
+        env.alive(hammer)
+        for mob in rng.sample(world.mobs, 4):
+            world.enemy(mob)
+            world.put(mob, tuple(mem.u32(caster + 0x10 + 4 * i) for i in range(3)), rng.uniform(-150, 150),
+                      rng.uniform(-150, 150), rng.choice((0.0, 0.0, 30.0)))
+        world.enemy_bias = rng.choice((0.3, 0.9, 1.0))
+        mode = rng.choice(('strike', 'spin', 'free', 'free', 'end'))
+        if mode == 'end':
+            mem.w32(hammer + 0xA8, rng.choice((125, 121, 90, 40, 8)))
+        for n in range(44):
+            env.advance(rng.choice((1, 1, 1, 3)))
+            state, c = mem.u32(hammer + 0xC8), mem.u32(hammer + 0xA0)
+            if n == 4 and mode in ('strike', 'spin'):
+                mem.w32(hammer + 0x50, world.nodes[rng.choice(world.mobs)])
+                mem.w32(hammer + 0xC8, 3 if mode == 'strike' else 4)
+                mem.w32(hammer + 0xA0, rng.choice((28, 39, 44)) if mode == 'strike' else rng.choice((57, 76, 96)))
+            if mode == 'spin' and state == 4 and c in (82, 102) and rng.random() < 0.7:
+                mem.w32(hammer + 0xA0, c + 15)
+            if mode == 'spin' and state == 4 and n == 12 and rng.random() < 0.4:
+                mem.w32(hammer + 0x50, 0)                       # the target is deleted: the hammer circles its owner
+            if mode == 'strike' and state == 3 and c == 50 and rng.random() < 0.7:
+                mem.w32(hammer + 0xA0, 58)
+            if rng.random() < 0.03:
+                mem.w8(RC.G_CUTSCENE_ACTIVE, 1)
+            elif rng.random() < 0.3:
+                mem.w8(RC.G_CUTSCENE_ACTIVE, 0)
+            if caster == world.player:
+                mem.w32(caster + 0x58C, 8 if rng.random() < 0.04 else rng.choice((0, 2, 6)))
+            if rng.random() < 0.05 and mem.u32(hammer + 0x50):
+                victim = mem.u32(mem.u32(hammer + 0x50) + 0xC)
+                mem.w32(victim + 0xC, mem.u32(victim + 0xC) | 8)       # the target dies
+            if rng.random() < 0.03:
+                mem.w32(hammer + 0x50, 0)                       # the target is deleted
+            if rng.random() < 0.02:                             # the owner is carried far away (and back)
+                world.put(caster, tuple(mem.u32(hammer + 0x10 + 4 * i) for i in range(3)), rng.choice((700.0, -650.0)), 0.0)
+            elif rng.random() < 0.1:
+                world.put(caster, tuple(mem.u32(hammer + 0x10 + 4 * i) for i in range(3)), rng.uniform(-90, 90),
+                          rng.uniform(-90, 90), -60.0)
+            if n == 40 and rng.random() < 0.3:
+                mem.w32(hammer + 0x4C, 0)                       # the owner is deleted
+            if n == 30 and mode != 'end' and rng.random() < 0.25:
+                mem.w32(hammer + 0xA8, rng.choice((2, 3, 14)))  # the last frames (3000 particles on the last)
+            result = env.do('HammerOfWrath_run', hammer)
+            if env.deleted(result, hammer) or result['fault'] or result['both_fault'] is not None:
+                break
+        mem.w8(RC.G_CUTSCENE_ACTIVE, 0)
+    world.enemy_bias = 0.7
+    # the level the object keeps, and the shared draws of a complete cast: shaft and light make theirs inside stubs,
+    # so what is executed here is GameObject_ctor (1) + item_randomizeVariant (1) + the spell's seed (1)
+    bad = []
+    for level, rows in sorted(seen.items()):
+        for stored, draws, has_spell in rows:
+            if stored != (level + 1) & M32 or draws != (3 if has_spell else 2):
+                bad.append('level %x: stored %x, %d shared draws, spell %s' % (level, stored, draws, has_spell))
+    env.rig.masked = set()
+    report('s17 hammerofwrath level and draws', len(bad), sum(len(r) for r in seen.values()),
+           'stored level = level + 1; executed shared draws of the cast: object, item variant, spell', bad)
+
+
+# ---- skill 34 --------------------------------------------------------------------------
+add_skill(34, 'shieldbash', {
+    'SkillShieldBash_canUse': (0x2FAA00, 0x2FAA88), 'SkillShieldBash_cast': (0x2FAA88, 0x2FAB28),
+    'SpellShieldBash_ctor': (0x2FACE4, 0x2FAE80), 'SpellShieldBash_run': (0x2FAE80, 0x2FB49C),
+    'SpellShieldBash_windupFx': (0x2FB49C, 0x2FB67C), 'SpellShieldBash_isDone': (0x2FB67C, 0x2FB684),
+}, {
+    'SkillShieldBash_canUse': (0x2FAA00, 'ii', 'i', 'shieldbash_can_use'),
+    'SkillShieldBash_cast': (0x2FAA88, 'iiivi', 'i', 'shieldbash_cast'),
+    'SpellShieldBash_run': (0x2FAE80, 'ivi', 'n', 'shieldbash_run'),
+    'SpellShieldBash_isDone': (0x2FB67C, 'i', 'i', 'shieldbash_done'),
+}, spell_tables=[0x51AD70])
+
+
+def class_def(env, obj, key='classdef'):
+    """Give an object a class definition whose first word is a lump (what the bash and charge constructors read)."""
+    world, mem = env.world, env.mem
+    if not hasattr(world, key):
+        setattr(world, key, env.rig.emu.alloc(0x20))
+        mem.w32(getattr(world, key), 0x00D20000)
+    mem.w32(obj + 0x24, getattr(world, key))
+
+
+@scenario('s34 shieldbash', 34)
+def s34(env, rounds):
+    """Can-use (shield, weapon class, the copy), cast, and the spell run through the
+    wind-up, the blow (enemies, the stun roll, the prop fallback) and its end.  SA3: the
+    turn target is sometimes destroyed under the spell (its memory scribbled over)."""
+    world, mem, rng = env.world, env.mem, env.rng
+    skill = env.skill(34)
+    spell = world.add_pool(0x28, 1, 'bash')[0]
+    world.add_pool(0xBC, 1, 'light')
+    clip = env.rig.emu.alloc(0x40)
+    world.names[clip] = 'clip'
+    world.clips[0x551298] = clip
+    world.append_lists = True
+    stale = [0, 0]                                              # runs with a destroyed target / of them still read
+    for env.round in range(rounds):
+        world.place(rng, spread=60.0)
+        caster = env.caster(('player', 'player', 'player', 'monster'))
+        for slot in range(4):
+            rec = G_PLAYERS + slot * REC_SIZE
+            mem.w32(rec + 0x43FC, rng.choice((0, world.items[0], world.items[0], world.items[0])))
+            mem.w8(rec + 0x4A86, rng.choice((0, 1, 2, 4, 0xFF)))
+        asker = env.caster(('player', 'player', 'monster', 'copy'))
+        env.do('SkillShieldBash_canUse', skill, asker)
+        if asker == world.copy:
+            note_stores(env, 34, 'can-use, copy')
+        for obj in (world.player, world.monster, world.copy):
+            class_def(env, obj)
+            mem.w32(obj + 0x544, world.model)
+        for off in range(0, 0x40, 4):
+            mem.w32(clip + off, rng.getrandbits(32))
+        facing = mem.u16(caster + 0x38)
+        line_up(env, caster, facing, world.mobs[:4] + [world.props[0]], 15.0, 70.0)
+        for mob in rng.sample(world.mobs, 4):
+            world.enemy(mob)
+        if rng.random() < 0.3:
+            for obj in world.mobs:
+                mem.w32(obj + 0xC, mem.u32(obj + 0xC) | 0x1000000)
+            mem.w32(rng.choice(world.mobs) + 0xC, 0x20)
+        world.enemy_bias = rng.choice((0.3, 0.9, 1.0))
+        mem.w32(spell + 0x14, 0)
+        world.fail_alloc = 0.05
+        env.do('SkillShieldBash_cast', skill, env.level(), caster, env.pos_of(caster), facing)
+        note_stores(env, 34, 'cast')
+        world.fail_alloc = 0.0
+        if not mem.u32(spell + 0x14):
+            continue
+        mem.w16(caster + 0x11A, 0x10 | rng.choice((0, 1, 0x40)))
+        target = mem.u32(spell + 0x24)
+        destroyed = False
+        for n in range(16):
+            if n == 12:
+                if rng.random() < 0.5:
+                    mem.w16(caster + 0x11A, 0)                  # the clip has ended
+                else:
+                    mem.w32(caster + 0x450, 1)
+            if target and n == 2 and rng.random() < 0.4:       # the turn target's object is destroyed and its memory reused
+                destroyed = True
+                for off in range(0, 0x60, 4):
+                    mem.w32(target + off, rng.getrandbits(32))
+            if rng.random() < 0.2:
+                world.fail_alloc = 0.3
+            result = env.do('SpellShieldBash_run', spell, env.pos_of(caster, 0.0, 36.0), mem.u16(caster + 0x38))
+            world.fail_alloc = 0.0
+            if destroyed:
+                stale[0] += 1
+                want = tuple(mem.u32(target + 0x10 + 4 * i) for i in range(3))
+                stale[1] += any(name == 'Creature.v26' and args[2] == want for name, args in result['emu_calls'])
+            env.do('SpellShieldBash_isDone', spell)
+            if spell_gone(result, spell):
+                break
+    world.enemy_bias, world.append_lists = 0.7, False
+    del world.clips[0x551298]
+    report('s34 shieldbash SA3 raw pointer', stale[0] - stale[1], stale[0],
+           'runs after the turn target was overwritten: slot 26 still got the three words at (+0x24) + 0x10')
+
+
+# ---- skill 22 --------------------------------------------------------------------------
+add_skill(22, 'dismissundead', {
+    'SkillDismissUndead_cast': (0x2F645C, 0x2F64EC), 'HolyBolt_ctor': (0x2F5248, 0x2F57B0),
+    'HolyBolt_run': (0x2F57B0, 0x2F5DDC), 'HolyBolt_onHit': (0x2F5FB4, 0x2F6398),
+}, {
+    'SkillDismissUndead_cast': (0x2F645C, 'iiivi', 'i', 'dismissundead_cast'),
+    'HolyBolt_run': (0x2F57B0, 'i', 'n', 'holybolt_run'),
+    'HolyBolt_onHit': (0x2F5FB4, 'ii', 'n', 'holybolt_hit'),
+}, object_tables=[0x50E908])
+
+
+@scenario('s22 dismissundead', 22)
+def s22(env, rounds):
+    """Cast with its target choice, the bolt's flight (homing, terrain bounces, expiry), the
+    hit handler on every kind of object.  SA2: the target is sometimes destroyed under the
+    bolt.  A third of the rounds put every mob in front of the caster as an undead enemy,
+    to show which one the constructor's loop keeps."""
+    world, mem, rng = env.world, env.mem, env.rng
+    skill = env.skill(22)
+    bolt = world.add_pool(0xC0, 1, 'holybolt')[0]
+    world.add_pool(0xBC, 1, 'light')
+    world.add_pool(0xB0, 1, 'soul')
+    boxes = []
+    plain = world.on_world_collectObjectsInBox
+
+    def recording(args, view, rng_):
+        res = plain(args, view, rng_)
+        boxes.append(list(res.outs[0]))
+        return res
+    world.on_world_collectObjectsInBox = recording
+    order = [0, 0, 0]                                           # staged casts / target is the last undead in box order / and not the nearest
+    stale = [0, 0]
+    linked = 0
+    for env.round in range(rounds):
+        world.place(rng)
+        staged = rng.random() < 0.34
+        caster = world.player if staged else env.caster()
+        facing = facing_arg(rng)
+        if staged:
+            facing = mem.u16(caster + 0x38)
+            line_up(env, caster, facing, world.mobs, 60.0, 300.0)
+            for mob in world.mobs:
+                world.enemy(mob, 0x10)
+            mem.w8(world.monster + 0xB4, 0)
+            world.enemy_bias = 1.0
+        else:
+            line_up(env, caster, facing, rng.sample(world.mobs, 3) + [world.players[1], world.props[0]])
+            for mob in rng.sample(world.mobs, 3):
+                world.enemy(mob, rng.choice((0x10, 0x10, 0)))
+            world.enemy_bias = rng.choice((0.2, 0.8, 1.0))
+        mem.w32(bolt + 0x48, 0)
+        world.fail_alloc = 0.0 if staged else 0.04
+        del boxes[:]
+        result = env.do('SkillDismissUndead_cast', skill, env.level(), caster, env.pos_of(caster, 4.0, 40.0), facing)
+        note_stores(env, 22, 'cast')
+        world.fail_alloc = 0.0
+        if not mem.u32(bolt + 0x48):
+            continue
+        linked += any(name == 'handle_link' and args[0] == bolt + 0x64 for name, args in result['emu_calls'])
+        target = mem.u32(bolt + 0x64)
+        if staged and boxes:
+            undead = [o for o in boxes[-1] if o in world.mobs]
+            order[0] += 1
+            if undead and target == undead[-1]:
+                order[1] += 1
+                here = [mem.f32(bolt + 0x10 + 4 * i) for i in range(3)]
+                nearest = min(undead, key=lambda o: sum((mem.f32(o + 0x10 + 4 * i) - here[i]) ** 2 for i in range(3)))
+                order[2] += nearest != target
+        env.alive(bolt)
+        mode = rng.choice(('fly', 'fly', 'fly', 'expire', 'orphan', 'hits'))
+        world.ground_bias = 0.0 if mode == 'expire' else rng.choice((0.0, 0.05, 0.3))
+        destroyed = [False]
+
+        def tick(n):
+            if mode == 'expire' and n == 8:
+                mem.w32(RC.G_SIM_FRAME, (mem.u32(bolt + 0x54) - rng.choice((3, 2, 1, 0))) & M32)
+            if mode == 'orphan' and n == 2:
+                mem.w32(bolt + 0x4C, 0)
+            if n == 4 and rng.random() < 0.3:
+                mem.w32(caster + 0xC, mem.u32(caster + 0xC) | 8)
+            if n == 3 and target and mem.u32(bolt + 0x64) and rng.random() < 0.4:
+                destroyed[0] = True                             # the target object is destroyed and its memory reused
+                for off in range(0, 0x60, 4):
+                    mem.w32(target + off, rng.getrandbits(32) & ~8 if off == 0xC else rng.getrandbits(32))
+                for i in range(3):
+                    mem.wf32(target + 0x10 + 4 * i, mem.f32(bolt + 0x10 + 4 * i) + rng.uniform(-400, 400))
+            if n == 9 and rng.random() < 0.3 and mem.u32(bolt + 0x64):
+                victim = mem.u32(bolt + 0x64)
+                mem.w32(victim + 0xC, mem.u32(victim + 0xC) | 8)       # the target dies: the pointer is dropped
+
+        if mode == 'hits':
+            for _ in range(12):
+                mem.w32(bolt + 0x54, rng.choice((0, 5, mem.u32(RC.G_SIM_FRAME) + 50)))
+                if rng.random() < 0.3:
+                    mem.w32(bolt + 0x4C, rng.choice((0, world.nodes[caster], world.nodes[world.monster])))
+                env.do('HolyBolt_onHit', bolt, rng.choice(world.everything))
+        else:
+            for n in range(40):
+                env.advance()
+                tick(n)
+                had = mem.u32(bolt + 0x64)
+                result = env.do('HolyBolt_run', bolt)
+                if destroyed[0] and had == target:
+                    stale[0] += 1
+                    stale[1] += mem.u32(bolt + 0x68) == mem.u32(target + 0x10) and mem.u32(bolt + 0x6C) == mem.u32(target + 0x14)
+                if env.deleted(result, bolt) or result['fault'] or result['both_fault'] is not None:
+                    break
+    world.on_world_collectObjectsInBox = plain
+    world.ground_bias, world.enemy_bias, world.fail_alloc = 0.08, 0.7, 0.0
+    report('s22 dismissundead SA2 raw pointer', (stale[0] - stale[1]) + linked, stale[0],
+           'runs after the target was overwritten: the aim was still read through +0x64; no handle is linked for it')
+    report('s22 dismissundead target order', order[0] - order[1], order[0],
+           'all undead in front: the target is the LAST of them in box order (not the nearest in %d)' % order[2])
 
 
 def main(argv):
@@ -2296,6 +2814,12 @@ def main(argv):
             for line in lines:
                 print(line)
     print('  %-34s                blocks %4d of %4d (%5.1f%%)' % ('all', tb, tbt, 100.0 * tb / max(tbt, 1)))
+    if COPY_ROWS:
+        print('stores outside the stack, the new objects and the shared seed (pc -> where), in order, per skill and call:')
+        for sid in sorted(COPY_ROWS):
+            for what, rows in sorted(COPY_ROWS[sid].items()):
+                text = ', '.join('%06x -> %s' % r for r in rows[:8]) or 'none'
+                print('  %3d %-14s %-22s %s' % (sid, SKILL_NAMES.get(sid, ''), what, text))
     print('%d calls compared in %.0f s' % (total, time.time() - started))
     return 0 if all(ok for _name, ok in RESULTS) else 1
 

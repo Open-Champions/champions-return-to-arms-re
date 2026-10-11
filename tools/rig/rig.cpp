@@ -33,7 +33,9 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <set>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <dlfcn.h>
 #include <fenv.h>
@@ -52,6 +54,7 @@
 #include "gs/GSH_Null.h"
 #include "gs/GSHandler.h"
 #include "ee/PS2OS.h"
+#include "ee/EeExecutor.h"
 #include "iop/IopBios.h"
 
 // ---------------------------------------------------------------------------------
@@ -1680,6 +1683,37 @@ public:
 	using CPS2VM::ResumeImpl;
 };
 
+#ifdef DEBUGGER_INCLUDED
+// An EE executor whose break point filter asks the rig first (--predict-trace). Play!
+// compiles a call to the filter into the head of every translated block that contains a
+// break point. With a break point on every instruction that is one call per block, made
+// without leaving the executor: the rig sees every block and the machine's timing does
+// not change, which a real break per block would (each one hands the IOP a time slice).
+class CRigEeExecutor : public CEeExecutor
+{
+public:
+	CRigEeExecutor(CMIPS& context, uint8* ram, std::function<bool(uint32)> onBlock)
+	    : CEeExecutor(context, ram)
+	    , m_onBlock(std::move(onBlock))
+	{
+	}
+	bool FilterBreakpoint() override
+	{
+		if(CEeExecutor::FilterBreakpoint()) return true; // resuming from a break at this very block
+		return !m_onBlock(m_context.m_State.nPC & 0x1FFFFFFF);
+	}
+	// address of the last instruction of the block that starts at an address
+	uint32 BlockEnd(uint32 address) const
+	{
+		auto block = FindBlockStartingAt(address);
+		return block ? block->GetEndAddress() : 0;
+	}
+
+private:
+	std::function<bool(uint32)> m_onBlock;
+};
+#endif
+
 class CRig;
 
 class CRigPad : public CPadHandler
@@ -1749,6 +1783,10 @@ struct Options
 	std::string tickAddress = "0x13aee8";
 	int fpRound = -1; // host rounding mode forced on the machine thread; -1: Play!'s own (toward zero)
 	std::string predictAuditPath;
+	std::string predictTracePath;
+	std::vector<std::string> traceRangeSpecs;
+	std::string traceTicks;
+	int traceRaw = 0;
 };
 
 class CRig
@@ -1839,6 +1877,28 @@ public:
 			Die("--predict-audit needs a build with break point support");
 #endif
 			m_auditSnapshot.resize(AUDIT_HI - AUDIT_LO);
+			SetBreakpoint(AUDIT_ENTRY, true);
+		}
+		if(!m_options.predictTracePath.empty())
+		{
+#ifndef DEBUGGER_INCLUDED
+			Die("--predict-trace needs a build with break point support");
+#endif
+			if(!m_traceExecutor) Die("--predict-trace: the tracing executor is not installed");
+			for(const auto& spec : m_options.traceRangeSpecs) m_traceRanges.push_back(ParseTraceRange(spec));
+			if(m_traceRanges.empty()) Die("--predict-trace needs at least one --trace-range");
+			if(!m_options.traceTicks.empty())
+			{
+				auto parts = SplitChar(m_options.traceTicks, ':');
+				m_traceTickLo = static_cast<uint32>(strtoul(parts[0].c_str(), nullptr, 0));
+				m_traceTickHi = parts.size() > 1 ? static_cast<uint32>(strtoul(parts[1].c_str(), nullptr, 0)) : m_traceTickLo;
+			}
+			if(m_options.traceRaw > 0)
+			{
+				m_traceRawFile = fopen((m_options.predictTracePath + ".raw").c_str(), "w");
+				if(m_traceRawFile) fprintf(m_traceRawFile, "tick\tframe\tinside\taddress\told\tnew\twriter_block\twriter\n");
+			}
+			m_traceOn = true;
 			SetBreakpoint(AUDIT_ENTRY, true);
 		}
 		if(m_needTickHook)
@@ -1978,22 +2038,326 @@ public:
 					site.tick = tick;
 					site.oldWord = oldWord;
 					site.newWord = newWord;
+					site.where = AuditWhere(address);
 				}
 			}
 		}
+		m_auditHeap.clear();
+		AuditListOrder(ghostNow, tick);
+	}
+
+	// Which object or heap block an address lies in: "pool <class> +0x<field>" through the
+	// pool table (g_poolClasses 0x403a10: size, count, base, free head; the virtual table
+	// of an object is at +0x48), "heap <allocating function>" through the tagged heap's
+	// block list (g_heapFirstBlock 0x6dffc8 points at the first block; header: u16 0xabcd,
+	// u16 used, size, tag, next, prev, group, caller).
+	std::string PoolWhere(uint32 address) const
+	{
+		for(uint32 entry = 0x403a10; entry < 0x403a40; entry += 16)
+		{
+			uint32 size = m_machine.Read32(entry), count = m_machine.Read32(entry + 4), base = m_machine.Read32(entry + 8) & 0x1FFFFFFF;
+			if(size == 0 || size > 0x10000 || count > 0x10000 || address < base || address >= base + size * count) continue;
+			uint32 block = base + (address - base) / size * size;
+			uint32 vtable = m_machine.Read32(block + 0x48) & 0x1FFFFFFF;
+			std::string name = vtable ? Symbolize(vtable) : "free block";
+			if(name.empty()) name = StrFormat("vtable %08x", vtable);
+			const char* role = "";
+			for(uint32 slot = 0; slot < 4; slot++)
+			{
+				if((m_machine.Read32(0x4d8af0 + slot * 0x4c30 + 0x43d8) & 0x1FFFFFFF) == block) role = " (a player's object)";
+			}
+			if(block == (m_machine.Read32(0x4027bc) & 0x1FFFFFFF)) role = " (the copy)";
+			return StrFormat("pool %s%s +0x%x", name.c_str(), role, address - block);
+		}
+		return "";
+	}
+
+	std::string AuditWhere(uint32 address)
+	{
+		std::string pool = PoolWhere(address);
+		if(!pool.empty()) return pool;
+		uint32 first = m_machine.Read32(0x006dffc8) & 0x1FFFFFFF;
+		if(first == 0 || address < first) return "";
+		if(m_auditHeap.empty())
+		{
+			uint32 block = first;
+			for(int guard = 0; guard < 200000; guard++)
+			{
+				if((m_machine.Read32(block) & 0xFFFF) != 0xabcd) break;
+				uint32 size = m_machine.Read32(block + 4), next = m_machine.Read32(block + 0xc) & 0x1FFFFFFF;
+				uint32 end = (next > block) ? next : block + 0x1c + size;
+				m_auditHeap.push_back({block, end, m_machine.Read32(block + 0x18) & 0x1FFFFFFF, (m_machine.Read32(block) >> 16) != 0});
+				if(next <= block || next == first) break;
+				block = next;
+			}
+			if(m_auditHeap.empty()) m_auditHeap.push_back({0, 0, 0, false});
+		}
+		auto it = std::upper_bound(m_auditHeap.begin(), m_auditHeap.end(), address, [](uint32 a, const AUDIT_HEAP_BLOCK& b) { return a < b.start; });
+		if(it == m_auditHeap.begin()) return "";
+		--it;
+		if(address >= it->end) return "";
+		std::string name = Symbolize(it->caller);
+		auto plus = name.find('+');
+		if(plus != std::string::npos) name.erase(plus);
+		if(name.empty()) name = StrFormat("%08x", it->caller);
+		return StrFormat("heap %s%s", it->used ? "" : "(free) ", name.c_str());
+	}
+
+	// The lists the simulation walks in order: the cells of the two grids and the off-grid
+	// list (handle lists: node +0 next, +0xc object). Compared before and after the call
+	// with the copy left out: a difference means a prediction call moved or relinked a
+	// real object.
+	void AuditListOrder(uint32 ghostNow, uint32 tick)
+	{
+		static const struct
+		{
+			const char* name;
+			uint32 address, cells;
+		} lists[] = {{"g_grid", 0x005db4f0, 14400}, {"g_gridB", 0x005e95f0, 14400}, {"g_offGridList", 0x005f76f0, 1}};
+		const uint8* before = m_auditSnapshot.data();
+		const uint8* after = m_machine.ram + AUDIT_LO;
+		auto word = [](const uint8* memory, uint32 address) {
+			uint32 value = 0;
+			if(address >= AUDIT_LO && address < AUDIT_HI - 4) memcpy(&value, memory + (address - AUDIT_LO), 4);
+			return value & 0x1FFFFFFF;
+		};
+		auto walk = [&](const uint8* memory, uint32 head, std::vector<uint32>& out) {
+			out.clear();
+			uint32 node = word(memory, head);
+			for(int guard = 0; node != 0 && guard < 4096; guard++)
+			{
+				uint32 object = word(memory, node + 0xc);
+				if(object != 0 && object != m_auditGhost && object != ghostNow) out.push_back(object);
+				node = word(memory, node);
+			}
+		};
+		bool orderChanged = false, membersChanged = false;
+		std::vector<uint32> a, b;
+		for(const auto& list : lists)
+		{
+			for(uint32 cell = 0; cell < list.cells; cell++)
+			{
+				uint32 head = list.address + cell * 4;
+				if(word(before, head) == 0 && word(after, head) == 0) continue;
+				walk(before, head, a);
+				walk(after, head, b);
+				if(a == b) continue;
+				std::vector<uint32> sa = a, sb = b;
+				std::sort(sa.begin(), sa.end());
+				std::sort(sb.begin(), sb.end());
+				bool members = sa != sb;
+				(members ? membersChanged : orderChanged) = true;
+				if(m_auditListExamples.size() < 40)
+				{
+					std::string line = StrFormat("tick %u %s cell %u %s:", tick, list.name, cell, members ? "MEMBERS" : "order");
+					for(uint32 object : a) line += StrFormat(" %s@%x", Symbolize(m_machine.Read32(object + 0x48) & 0x1FFFFFFF).c_str(), object);
+					line += " ->";
+					for(uint32 object : b) line += StrFormat(" %s@%x", Symbolize(m_machine.Read32(object + 0x48) & 0x1FFFFFFF).c_str(), object);
+					m_auditListExamples.push_back(line);
+				}
+			}
+		}
+		if(orderChanged) m_auditOrderCalls++;
+		if(membersChanged) m_auditMemberCalls++;
 	}
 
 	void AuditReport()
 	{
 		FILE* file = fopen(m_options.predictAuditPath.c_str(), "w");
 		if(!file) return;
-		fprintf(file, "# prediction calls audited: %" PRIu64 "\naddress\tsymbol\tcalls\tfirst_tick\told\tnew\n", m_auditCalls);
+		fprintf(file, "# prediction calls audited: %" PRIu64 "\n", m_auditCalls);
+		fprintf(file, "# calls after which a grid cell or the off-grid list held its real objects in another order: %" PRIu64 "; held other real objects: %" PRIu64 "\n", m_auditOrderCalls, m_auditMemberCalls);
+		for(const auto& line : m_auditListExamples) fprintf(file, "# %s\n", line.c_str());
+		fprintf(file, "address\tsymbol\tcalls\tfirst_tick\told\tnew\twhere\n");
 		for(const auto& entry : m_auditSites)
 		{
-			fprintf(file, "%08x\t%s\t%" PRIu64 "\t%u\t%08x\t%08x\n", entry.first, Symbolize(entry.first).c_str(), entry.second.count, entry.second.tick, entry.second.oldWord, entry.second.newWord);
+			fprintf(file, "%08x\t%s\t%" PRIu64 "\t%u\t%08x\t%08x\t%s\n", entry.first, Symbolize(entry.first).c_str(), entry.second.count, entry.second.tick, entry.second.oldWord, entry.second.newWord, entry.second.where.c_str());
 		}
 		fclose(file);
+		printf("  prediction audit: real objects of a grid cell or of the off-grid list reordered in %" PRIu64 " calls, replaced in %" PRIu64 "\n", m_auditOrderCalls, m_auditMemberCalls);
 		printf("  prediction audit: %" PRIu64 " calls, %zu words changed outside the ignore list -> %s\n", m_auditCalls, m_auditSites.size(), m_options.predictAuditPath.c_str());
+	}
+
+	// --predict-trace: which instruction writes a watched word. Every translated block
+	// reports here on entry (CRigEeExecutor); a watched word that differs from its shadow
+	// was written by the block entered before. Writes are gathered by site, writing block
+	// and the chain of calls leading to it (kept from the jal/jalr return addresses).
+	struct TRACE_RANGE
+	{
+		uint32 address = 0, length = 0, stride = 0;
+		bool always = false; // also outside prediction calls
+		std::string name;
+		std::vector<uint8> shadow;
+	};
+
+	// EXPR:LENGTH[:STRIDE][,all][,name=N]
+	TRACE_RANGE ParseTraceRange(const std::string& text)
+	{
+		auto options = SplitChar(text, ',');
+		auto parts = SplitChar(options[0], ':');
+		if(parts.size() < 2) Die("--trace-range %s: expected ADDRESS:LENGTH[:STRIDE][,all][,name=N]", text.c_str());
+		TRACE_RANGE range;
+		range.address = ExprParser(parts[0]).Parse().Eval(m_machine) & 0x1FFFFFFF;
+		range.length = static_cast<uint32>(strtoul(parts[1].c_str(), nullptr, 0)) & ~3u;
+		if(parts.size() > 2) range.stride = static_cast<uint32>(strtoul(parts[2].c_str(), nullptr, 0));
+		for(size_t i = 1; i < options.size(); i++)
+		{
+			if(options[i] == "all")
+				range.always = true;
+			else if(options[i].compare(0, 5, "name=") == 0)
+				range.name = options[i].substr(5);
+			else
+				Die("--trace-range %s: unknown option %s", text.c_str(), options[i].c_str());
+		}
+		if(range.length == 0 || !m_machine.Ptr(range.address, range.length)) Die("--trace-range %s: not in memory", text.c_str());
+		if(range.name.empty()) range.name = Symbolize(range.address);
+		if(range.name.empty()) range.name = StrFormat("%08x", range.address);
+		return range;
+	}
+
+	void TraceInstall(bool enable)
+	{
+#ifdef DEBUGGER_INCLUDED
+		auto& context = m_vm.m_ee->m_EE;
+		if(enable)
+		{
+			for(uint32 address = TEXT_LO; address < TEXT_HI; address += 4) context.m_breakpoints.insert(context.m_breakpoints.end(), address);
+		}
+		else
+		{
+			context.m_breakpoints.clear();
+			for(uint32 address : m_realBreaks) context.m_breakpoints.insert(address);
+		}
+		m_traceInstalled = enable;
+		context.m_executor->ClearActiveBlocksInRange(TEXT_LO, TEXT_HI, false);
+		printf("[frame %" PRIu64 "] tick %u: block trace %s\n", m_frame, m_machine.Read32(0x4027ac), enable ? "on" : "off");
+#endif
+	}
+
+	// at the entry of net_predictLocalPlayer (break notification)
+	void TraceEnter()
+	{
+		uint32 tick = m_machine.Read32(0x4027ac);
+		bool inWindow = tick >= m_traceTickLo && tick <= m_traceTickHi;
+		if(inWindow && !m_traceInstalled) TraceInstall(true);
+		if(!inWindow && m_traceInstalled && tick > m_traceTickHi) TraceInstall(false);
+		m_traceActive = inWindow;
+		if(!inWindow) return;
+		for(auto& range : m_traceRanges)
+		{
+			if(range.always && !range.shadow.empty()) continue;
+			const uint8* now = m_machine.ram + range.address;
+			range.shadow.assign(now, now + range.length);
+		}
+		m_traceStack.clear();
+		m_tracePrevPc = AUDIT_ENTRY;
+#ifdef DEBUGGER_INCLUDED
+		m_tracePrevEnd = m_traceExecutor->BlockEnd(AUDIT_ENTRY);
+#endif
+		m_traceCalls++;
+	}
+
+	// every block entry (machine thread, inside the executor); true if the rig wants the break
+	bool OnBlock(uint32 pc)
+	{
+		if(m_traceActive) TraceBlock(pc);
+		return m_realBreaks.count(pc) != 0;
+	}
+
+	void TraceBlock(uint32 pc)
+	{
+		m_traceBlocks++;
+		for(auto& range : m_traceRanges)
+		{
+			if(!range.always && !m_auditArmed) continue;
+			const uint8* now = m_machine.ram + range.address;
+			if(memcmp(now, range.shadow.data(), range.length) == 0) continue;
+			for(uint32 offset = 0; offset + 4 <= range.length; offset += 4)
+			{
+				uint32 oldWord, newWord;
+				memcpy(&oldWord, range.shadow.data() + offset, 4);
+				memcpy(&newWord, now + offset, 4);
+				if(oldWord != newWord) TraceWrite(range, range.address + offset, oldWord, newWord);
+			}
+			memcpy(range.shadow.data(), now, range.length);
+		}
+		uint32 ra = m_machine.Reg(CMIPS::RA) & 0x1FFFFFFF, sp = m_machine.Reg(CMIPS::SP);
+		while(!m_traceStack.empty() && ((pc == m_traceStack.back().ra && sp == m_traceStack.back().sp) || m_traceStack.back().sp < sp)) m_traceStack.pop_back();
+		if(m_tracePrevEnd != 0 && ra == m_tracePrevEnd + 4)
+		{
+			if(m_traceStack.size() >= 48) m_traceStack.erase(m_traceStack.begin());
+			m_traceStack.push_back({pc, sp, ra});
+		}
+		m_tracePrevPc = pc;
+#ifdef DEBUGGER_INCLUDED
+		m_tracePrevEnd = m_traceExecutor->BlockEnd(pc);
+#endif
+	}
+
+	void TraceWrite(const TRACE_RANGE& range, uint32 address, uint32 oldWord, uint32 newWord)
+	{
+		uint32 tick = m_machine.Read32(0x4027ac);
+		std::string site;
+		if(range.stride)
+			site = StrFormat("%s[] +0x%x", range.name.c_str(), (address - range.address) % range.stride);
+		else
+		{
+			site = PoolWhere(address);
+			if(site.empty()) site = Symbolize(address);
+			if(site.empty()) site = StrFormat("%08x", address);
+		}
+		std::string chain;
+		int shown = 0;
+		for(size_t i = m_traceStack.size(); i-- > 0 && shown < 7; shown++)
+		{
+			std::string name = Symbolize(m_traceStack[i].pc);
+			if(name.empty()) name = StrFormat("%08x", m_traceStack[i].pc);
+			chain += (shown ? " < " : "") + name;
+		}
+		std::string key = StrFormat("%s\t%c\t%08x\t", site.c_str(), m_auditArmed ? 'P' : '-', m_tracePrevPc) + chain;
+		auto& entry = m_traceWrites[key];
+		if(entry.count++ == 0)
+		{
+			entry.tick = tick;
+			entry.oldWord = oldWord;
+			entry.newWord = newWord;
+			entry.address = address;
+		}
+		entry.lastTick = tick;
+		if(m_traceRawFile && m_traceRawCount < static_cast<uint64>(m_options.traceRaw))
+		{
+			m_traceRawCount++;
+			fprintf(m_traceRawFile, "%u\t%" PRIu64 "\t%c\t%08x\t%08x\t%08x\t%08x\t%s\n", tick, m_frame, m_auditArmed ? 'P' : '-', address, oldWord, newWord, m_tracePrevPc, Symbolize(m_tracePrevPc).c_str());
+		}
+	}
+
+	void TraceReport()
+	{
+		FILE* file = fopen(m_options.predictTracePath.c_str(), "w");
+		if(!file) return;
+		fprintf(file, "# prediction calls traced: %" PRIu64 ", blocks seen: %" PRIu64 "\n", m_traceCalls, m_traceBlocks);
+		fprintf(file, "site\tinside\twriter_block\tchain\twriter\tcount\tfirst_tick\tlast_tick\taddress\told\tnew\n");
+		for(const auto& entry : m_traceWrites)
+		{
+			uint32 block = static_cast<uint32>(strtoul(SplitChar(entry.first, '\t')[2].c_str(), nullptr, 16));
+			fprintf(file, "%s\t%s\t%" PRIu64 "\t%u\t%u\t%08x\t%08x\t%08x\n", entry.first.c_str(), Symbolize(block).c_str(), entry.second.count, entry.second.tick, entry.second.lastTick, entry.second.address, entry.second.oldWord, entry.second.newWord);
+		}
+		fclose(file);
+		if(m_traceRawFile) fclose(m_traceRawFile);
+		printf("  prediction trace: %" PRIu64 " calls, %" PRIu64 " blocks, %zu distinct writers -> %s\n", m_traceCalls, m_traceBlocks, m_traceWrites.size(), m_options.predictTracePath.c_str());
+	}
+
+	// Called on the machine thread before anything has run (from the pad handler factory).
+	void InstallTraceExecutor()
+	{
+#ifdef DEBUGGER_INCLUDED
+		auto& context = m_vm.m_ee->m_EE;
+		static_cast<CEeExecutor*>(context.m_executor.get())->RemoveExceptionHandler();
+		auto executor = std::make_unique<CRigEeExecutor>(context, m_vm.m_ee->m_ram, [this](uint32 pc) { return OnBlock(pc); });
+		m_traceExecutor = executor.get();
+		context.m_executor = std::move(executor);
+		static_cast<CEeExecutor*>(context.m_executor.get())->AddExceptionHandler();
+#endif
 	}
 
 	// A lockstep tick: the machine is stopped at the instruction after the tick's task
@@ -2113,7 +2477,7 @@ public:
 			OnTick();
 			if(m_finished) return;
 		}
-		if(!m_auditSnapshot.empty())
+		if(!m_auditSnapshot.empty() || m_traceOn)
 		{
 			if(pc == AUDIT_ENTRY)
 			{
@@ -2123,14 +2487,18 @@ public:
 					m_auditReturn = ra;
 					SetBreakpoint(ra, true);
 				}
-				memcpy(m_auditSnapshot.data(), m_machine.ram + AUDIT_LO, AUDIT_HI - AUDIT_LO);
-				m_auditGhost = m_machine.Read32(0x4027bc) & 0x1FFFFFFF;
-				m_auditArmed = true;
+				if(!m_auditSnapshot.empty())
+				{
+					memcpy(m_auditSnapshot.data(), m_machine.ram + AUDIT_LO, AUDIT_HI - AUDIT_LO);
+					m_auditGhost = m_machine.Read32(0x4027bc) & 0x1FFFFFFF;
+				}
+				m_auditArmed = true; // inside a prediction call
+				if(m_traceOn) TraceEnter();
 			}
 			else if(pc == m_auditReturn && m_auditArmed)
 			{
 				m_auditArmed = false;
-				AuditLeave();
+				if(!m_auditSnapshot.empty()) AuditLeave();
 			}
 		}
 
@@ -2229,6 +2597,7 @@ public:
 		}
 		if(m_tickLog || m_ticks) printf("  lockstep ticks seen: %" PRIu64 "\n", m_ticks);
 		if(!m_auditSnapshot.empty()) AuditReport();
+		if(m_traceOn) TraceReport();
 		if(m_netShimReady) m_netShim.Summary();
 		if(m_tickLog) fclose(m_tickLog);
 		if(m_log) fclose(m_log);
@@ -2277,6 +2646,11 @@ private:
 	void SetBreakpoint(uint32 address, bool enable)
 	{
 		auto& context = m_vm.m_ee->m_EE;
+		if(enable)
+			m_realBreaks.insert(address);
+		else
+			m_realBreaks.erase(address);
+		if(m_traceInstalled) return; // every instruction carries a break point already
 		bool present = context.m_breakpoints.count(address) != 0;
 		if(present == enable) return;
 		context.ToggleBreakpoint(address);
@@ -3216,7 +3590,44 @@ private:
 	{
 		uint64 count = 0;
 		uint32 tick = 0, oldWord = 0, newWord = 0;
+		std::string where;
 	};
+	struct AUDIT_HEAP_BLOCK
+	{
+		uint32 start, end, caller;
+		bool used;
+	};
+	std::vector<AUDIT_HEAP_BLOCK> m_auditHeap;
+	std::vector<std::string> m_auditListExamples;
+	uint64 m_auditOrderCalls = 0, m_auditMemberCalls = 0;
+
+	enum : uint32
+	{
+		TEXT_LO = 0x00100000, // the executable's code
+		TEXT_HI = 0x003E9C00,
+	};
+	struct TRACE_FRAME
+	{
+		uint32 pc, sp, ra;
+	};
+	struct TRACE_WRITE
+	{
+		uint64 count = 0;
+		uint32 tick = 0, lastTick = 0, oldWord = 0, newWord = 0, address = 0;
+	};
+	std::vector<TRACE_RANGE> m_traceRanges;
+	std::vector<TRACE_FRAME> m_traceStack;
+	std::map<std::string, TRACE_WRITE> m_traceWrites;
+	std::unordered_set<uint32> m_realBreaks;
+#ifdef DEBUGGER_INCLUDED
+	CRigEeExecutor* m_traceExecutor = nullptr;
+#else
+	void* m_traceExecutor = nullptr;
+#endif
+	FILE* m_traceRawFile = nullptr;
+	uint64 m_traceRawCount = 0, m_traceCalls = 0, m_traceBlocks = 0;
+	uint32 m_traceTickLo = 0, m_traceTickHi = 0xFFFFFFFF, m_tracePrevPc = 0, m_tracePrevEnd = 0;
+	bool m_traceOn = false, m_traceInstalled = false, m_traceActive = false;
 	std::vector<uint8> m_auditSnapshot;
 	std::map<uint32, AUDIT_SITE> m_auditSites;
 	uint32 m_auditReturn = 0, m_auditGhost = 0;
@@ -3303,6 +3714,11 @@ static void Usage()
 	    "                         (frames; loss per 1000; stall: nothing crosses for N frames from frame F)\n"
 	    "  --predict-audit <file> snapshot memory around every call of net_predictLocalPlayer (0x131d88) and\n"
 	    "                         list what it left changed, outside an ignore list (needs break points)\n"
+	    "  --predict-trace <file> which code writes the --trace-range words during prediction calls: writers\n"
+	    "                         gathered by site, block and call chain (needs break points)\n"
+	    "  --trace-range <addr:length[:stride][,all][,name=N]>   a range to watch; 'all': outside the calls too\n"
+	    "  --trace-ticks <lo:hi>  trace only in these lockstep ticks;  --trace-raw <n>: also the first n writes\n"
+	    "                         one by one, to <file>.raw\n"
 	    "  --fp-round nearest|up|down|zero   force a floating-point rounding mode on this machine's thread\n"
 	    "                         (Play! runs the EE with round-toward-zero); for float-mismatch experiments\n"
 	    "  --tick-log <file>      one row of the --tick-watch values per lockstep tick (needs break points)\n"
@@ -3454,6 +3870,14 @@ static int Run(int argc, char** argv)
 		}
 		else if(arg == "--predict-audit")
 			options.predictAuditPath = value();
+		else if(arg == "--predict-trace")
+			options.predictTracePath = value();
+		else if(arg == "--trace-range")
+			options.traceRangeSpecs.push_back(value());
+		else if(arg == "--trace-ticks")
+			options.traceTicks = value();
+		else if(arg == "--trace-raw")
+			options.traceRaw = atoi(value().c_str());
 		else if(arg == "--tick-log")
 			options.tickLogPath = value();
 		else if(arg == "--tick-watch")
@@ -3503,6 +3927,7 @@ static int Run(int argc, char** argv)
 		rig.SetInlineGs(static_cast<CRigGsInline*>(vm.GetGSHandler()));
 	}
 	vm.CreatePadHandler([&]() {
+		if(!options.predictTracePath.empty()) rig.InstallTraceExecutor();
 		padHandler = new CRigPad(rig);
 		return padHandler;
 	});

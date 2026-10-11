@@ -2808,3 +2808,1074 @@ class Model(Model):                             # noqa: F811
     def can_use_slot(self, skill, caster):
         """Slot 1 of any skill, through its table."""
         return self.skill_call(skill, 1, caster)
+
+
+class Model(Model):                             # noqa: F811
+    # =====================================================================================
+    # Skill 13, Fire Weapons: SkillFireWeapons (table 0x519a00) and SpellFireWeapons (0x60
+    # bytes, table 0x519a88).  The weapon-buff template of ids 12 / 14 / 26 with entry type
+    # 0x15, weapon-holder slot 2, its own light record and no LightEffect.
+    #
+    #   +0x18 end frame   +0x1c aura radius (int)   +0x20..+0x58 a light record (position
+    #   +0x50, range +0x3c / +0x44, 1 / range^2 +0x40 / +0x48)   +0x5c the frame of the cast
+    # =====================================================================================
+    FIREWEAPONS_GETTER = 0x3CEC68
+    FIREWEAPONS_PUFFS = ((0x8E5D20, 4, 0x414A14C9, 0x40EE541D), (0x8E5D70, 5, 0x414A0AC0, 0x40DF7C5E),
+                         (0x8E5DC0, 1, 0x418E63DB, 0x40D701A7))
+
+    def fireweapons_can_use(self, skill, caster):
+        """SkillFireWeapons_canUse 0x2e4df8 -> 1 unless the caster carries a
+        SpellFireWeapons."""
+        return 0 if self.carries(caster, self.FIREWEAPONS_GETTER) else 1
+
+    def fireweapons_cast(self, skill, level, caster, pos=None, facing=0):
+        """SkillFireWeapons_cast 0x2e4ad0 -> the spell: pool_new(0x60) and the constructor."""
+        spell = self.call('pool_new', 0x60)
+        if spell:
+            self.fireweapons_ctor(spell, level, caster, skill)
+        return spell
+
+    def fireweapons_ctor(self, spell, level, owner, skill):
+        """SpellFireWeapons_ctor 0x2e34e0 (spell, level, owner, skill).
+
+        The Spell base (ONE SHARED DRAW).  The light record at +0x20: position = the
+        owner's, range words 0, the two 1 / range^2 words = 1.0 / 0.0 AS THE MACHINE
+        DIVIDES IT (the largest number, not an infinity), colour halfwords (0xff, 0x80, 0,
+        0) twice; light_link.  end +0x18 = frame + slot 12 (1, level as passed, owner, cap
+        20) x 60; radius +0x1c = slot 12 (2, the stored level byte, owner, cap 10) x 12;
+        +0x5c = frame.  dmg = slot 12 (0, ..., cap 0), frames = slot 12 (1, ..., cap 20) x
+        60.  An owner that is not a player: its weapon holder's slot 2 with 1.  A player:
+        both weapons get (0x15, dmg, round(1.2 dmg), frames) by the rule of enchant() with
+        the limit `frames`.  The sound at the owner's position.  No LightEffect, no flash."""
+        u32, w32, w16 = self.u32, self.w32, self.w16
+        self.spell_base(spell, level, owner, skill, 0x519A88)
+        huge = C.div(ONE, ZERO)
+        self.w8(spell + 0x29, 0)
+        self.wvec(spell + 0x50, self.vec(owner + 0x10))
+        for off, value in ((0x48, huge), (0x4C, 0x3F266655), (0x3C, 0), (0x44, 0), (0x40, huge)):
+            w32(spell + off, value)
+        for off, value in ((0x32, 0xFF), (0x34, 0x80), (0x2A, 0xFF), (0x2C, 0x80), (0x2E, 0), (0x30, 0), (0x36, 0), (0x38, 0)):
+            w16(spell + off, value)
+        self.w8(spell + 0x28, 0)
+        self.call('light_link', spell + 0x20)
+        seconds = self.skill_call(skill, 12, 1, level, owner, 0x14)
+        w32(spell + 0x18, u32(G_SIM_FRAME) + s32(seconds) * 60)
+        radius = self.skill_call(u32(spell + 8), 12, 2, self.s8(spell), owner, 10)
+        w32(spell + 0x5C, u32(G_SIM_FRAME))
+        w32(spell + 0x1C, s32(radius) * 12)
+        dmg = self.skill_call(u32(spell + 8), 12, 0, self.s8(spell), owner, 0)
+        frames = s32(self.skill_call(u32(spell + 8), 12, 1, self.s8(spell), owner, 0x14)) * 60
+        owner = u32(spell + 0xC)
+        if not u32(owner + 0xC) & 0x40:
+            holder = u32(owner + 0x50)
+            if holder:
+                self.holder_call(holder, 2, 1)
+        else:
+            for item in self.weapons_of(owner):
+                self.enchant(item, 0x15, dmg, frames, frames)
+        self.call('sound_playAtPos', self.call('res_find', 0x54FF80, 0x54FF88), self.vec(u32(spell + 0xC) + 0x10), ONE)
+
+    def fireweapons_run(self, spell, pos, facing=0):
+        """SpellFireWeapons_run 0x2e3b28 (spell, position, facing).
+
+        frame >= end: an owner that is a creature but not a player and has a weapon holder
+        gets holder slot 8 (1, 0); the spell deletes itself.
+        Otherwise, during the first 30 frames, 4 + 5 + 1 particles: position = an OWN ball
+        x spread + the run position, velocity = (cos, sin of the facing) x speed + a second
+        OWN ball.  The light: range r = (float)((int)((sin16(frame x 4000) + sin16(frame x
+        2000)) x 4) + 110) while more than 30 frames are left (and during the opening),
+        min(300, left x (1 / 30) x 110) in the last 30; +0x3c = +0x44 = r, +0x40 = +0x48 =
+        1 / r^2; its position = the run position + (cos, sin) x 18; light_relink.
+        The aura - a radius, a PLAYER owner and frame % 30 == 0: every other player of the
+        box position -/+ radius (capacity 64; same team only in PvP mode A, the owner's
+        slot 22) gets, on both weapons, (0x15, a, round(1.2 a), 31) by the rule of enchant()
+        with limit 31, a = slot 12 (3, level, owner, cap 10).
+        Last: an owner that is a DEAD creature and not a player gets holder slot 8 (1, 0)
+        and the spell deletes itself."""
+        u32, w32 = self.u32, self.w32
+        frame = self.frame()
+        facing = s16(facing)
+        owner = u32(spell + 0xC)
+        if not frame < self.s32(spell + 0x18):
+            if u32(owner + 0xC) & 0x60 == 0x20 and u32(owner + 0x50):
+                self.holder_call(u32(owner + 0x50), 8, 1, 0)
+            self.spell_delete(spell)
+            return
+        left = s32(self.s32(spell + 0x18) - frame)
+        flicker = True
+        if s32(frame - self.s32(spell + 0x5C)) < 0x1E:
+            for definition, count, spread, speed in self.FIREWEAPONS_PUFFS:
+                for _ in range(count):
+                    b = self.spell_ball(spell)
+                    point = tuple(C.add(C.mul(b[i], spread), pos[i]) for i in range(3))
+                    push = (C.mul(C.cos16(facing), speed), C.mul(C.sin16(facing), speed), ZERO)
+                    b = self.spell_ball(spell)
+                    self.call('particle_spawn', definition, point, tuple(C.add(push[i], b[i]) for i in range(3)), ZERO)
+        elif not left > 0x1E:
+            flicker = False
+        if flicker:
+            wave = C.add(C.sin16(s16(frame * 4000)), C.sin16(s16(frame * 2000)))
+            reach = C.from_int(s32(C.to_int(C.mul(wave, 0x40800000))) + 0x6E)
+        else:
+            reach = C.fmin(0x43960000, C.mul(C.mul(C.from_int(left), 0x3D088888), 0x42DC0000))
+        w32(spell + 0x3C, reach)
+        w32(spell + 0x44, reach)
+        inverse = C.div(ONE, C.mul(reach, reach))
+        w32(spell + 0x48, inverse)
+        w32(spell + 0x40, inverse)
+        ahead = (C.mul(C.cos16(facing), 0x41900000), C.mul(C.sin16(facing), 0x41900000), ZERO)
+        self.wvec(spell + 0x50, tuple(C.add(ahead[i], pos[i]) for i in range(3)))
+        self.call('light_relink', spell + 0x20)
+        if self.s32(spell + 0x1C) and u32(u32(spell + 0xC) + 0xC) & 0x40 and rem(self.frame(), 30) == 0:
+            found = self.box_around(pos, C.from_int(self.s32(spell + 0x1C)), 0x40)
+            owner = u32(spell + 0xC)
+            for other in found:
+                if other == owner or not u32(other + 0xC) & 0x40:
+                    continue
+                if u32(G_PVP_MODE_A) and not self.vcall(u32(spell + 0xC), 22, other):
+                    continue
+                first, second = self.weapons_of(other)
+                aura = self.skill_call(u32(spell + 8), 12, 3, self.s8(spell), u32(spell + 0xC), 10)
+                self.enchant(first, 0x15, aura, 0x1F, 0x1F)
+                self.enchant(second, 0x15, aura, 0x1F, 0x1F)
+        owner = u32(spell + 0xC)
+        if u32(owner + 0xC) & 0x68 == 0x28:
+            if u32(owner + 0x50):
+                self.holder_call(u32(owner + 0x50), 8, 1, 0)
+            self.spell_delete(spell)
+
+
+SKILL_BODIES.update({0x2E4DF8: 'fireweapons_can_use', 0x2E4AD0: 'fireweapons_cast'})
+SPELL_BODIES.update({0x2E3B28: 'fireweapons_run'})
+MODELLED.update({'SkillFireWeapons_canUse': 0x2E4DF8, 'SkillFireWeapons_cast': 0x2E4AD0,
+                 'SpellFireWeapons_ctor': 0x2E34E0, 'SpellFireWeapons_run': 0x2E3B28})
+
+
+class Model(Model):                             # noqa: F811
+    # =====================================================================================
+    # Skill 18, Cone of Fire: SkillConeOfFire (table 0x51a3e8, channelled) and
+    # SpellConeOfFire (0x58 bytes, table 0x51a470).
+    #
+    #   +0x18..+0x50 a light record (position +0x48, range +0x34 / +0x3c, 1 / range^2
+    #   +0x38 / +0x40)   +0x54 the looping sound
+    # =====================================================================================
+    CONEOFFIRE_SPRAY = ((0x8E63B0, 20, 0x409FFE80, 0x426FFFD7), (0x8E6400, 5, 0x40A00000, 0x4270000D),
+                        (0x8E6450, 3, 0x40A0000E, 0x42200057))
+
+    def coneoffire_can_use(self, skill, caster=0):
+        """SkillConeOfFire_canUse 0x2f123c -> 1."""
+        return 1
+
+    def coneoffire_cast(self, skill, level, caster, pos=None, facing=0):
+        """SkillConeOfFire_cast 0x2f1078 -> the spell: pool_new(0x58) and the constructor."""
+        spell = self.call('pool_new', 0x58)
+        if spell:
+            self.coneoffire_ctor(spell, level, caster, skill)
+        return spell
+
+    def coneoffire_ctor(self, spell, level, owner, skill):
+        """SpellConeOfFire_ctor 0x2f00ac (spell, level, owner, skill): the Spell base (ONE
+        SHARED DRAW); the light record at +0x18 (position = the owner's, range 0, 1 /
+        range^2 = 1.0 / 0.0 as the machine divides it), linked; the looping sound at the
+        owner's position, kept at +0x54 and released to repeat.  No statistic is read."""
+        w32, w16 = self.w32, self.w16
+        self.spell_base(spell, level, owner, skill, 0x51A470)
+        huge = C.div(ONE, ZERO)
+        self.w8(spell + 0x21, 0)
+        self.wvec(spell + 0x48, self.vec(owner + 0x10))
+        for off, value in ((0x2C, 0x7D), (0x24, 0x7D), (0x2A, 0xFF), (0x22, 0xFF), (0x30, 0x42), (0x28, 0x42), (0x26, 0),
+                           (0x2E, 0)):
+            w16(spell + off, value)
+        for off, value in ((0x40, huge), (0x44, 0x3F19DB22), (0x34, 0), (0x3C, 0), (0x38, huge)):
+            w32(spell + off, value)
+        self.w8(spell + 0x20, 0)
+        self.call('light_link', spell + 0x18)
+        sound = self.call('sound_playAtPos', self.call('res_find', 0x550B00, 0x550B08),
+                          self.vec(self.u32(spell + 0xC) + 0x10), ONE)
+        w32(spell + 0x54, sound)
+        self.call('sound_release', sound)
+
+    def coneoffire_run(self, spell, pos, facing=0):
+        """SpellConeOfFire_run 0x2f02fc (spell, position, facing), every frame the channel
+        is held.
+
+          1. the light's range r = (float)((int)((sin16(frame x 3500) + sin16(frame x
+             1750)) x 10) + 80): +0x34 = +0x3c = r, +0x38 = +0x40 = 1 / r^2 (the light is
+             not moved and not relinked here).
+          2. a = slot 12 (1, level, owner, cap 10), the arc in degrees.  28 particles (20,
+             5, 3 of three kinds), each: an OWN ball x spread + the run position; a second
+             OWN ball as velocity, to which (cos16(t1), sin16(t2)) x speed is added, t =
+             (int)((facing - 91 a) + (d x 2^-16) x (182 a)) with a fresh OWN draw d for
+             each of the two - the x and y parts come from DIFFERENT angles.
+          3. frame % 15 == 0: world_collectObjectsInArc(position - (cos, sin of the facing)
+             x 12, facing, no filter; 96, a + 10 degrees, 0) with a re-read of the arc
+             statistic.  For every entry the owner's slot 20 calls an enemy: s0 = slot 12
+             (0, level, owner, cap 0); v1 = (int)(s0 x 0.25); ONE OWN DRAW r; v2 =
+             (int)(((float)v1 + ((float)v1 x (r x 2^-16)) x 0.2) x 0.25) - THE MAXIMUM IS
+             SCALED BY 0.25 A SECOND TIME (0x2f0e5c), so v2 < v1 for every v1 > 0, and
+             v2 = v1 - 1 = 0 when v1 is 1; damage_apply(entry, owner, 100000, flags 0x40,
+             descriptor slot 0 = (0x15, v1, v2, 0), 0; 0, 0).  When anything was damaged
+             the hit sound at the owner's position.  The list is freed."""
+        u32, w32 = self.u32, self.w32
+        facing = s16(facing)
+        frame = self.frame()
+        wave = C.add(C.sin16(s16(frame * 0xDAC)), C.sin16(s16(frame * 0x6D6)))
+        reach = C.from_int(s32(C.to_int(C.mul(wave, 0x41200000))) + 0x50)
+        w32(spell + 0x34, reach)
+        w32(spell + 0x3C, reach)
+        inverse = C.div(ONE, C.mul(reach, reach))
+        w32(spell + 0x40, inverse)
+        w32(spell + 0x38, inverse)
+        arc = s32(self.skill_call(u32(spell + 8), 12, 1, self.s8(spell), u32(spell + 0xC), 10))
+        for definition, count, spread, speed in self.CONEOFFIRE_SPRAY:
+            for _ in range(count):
+                b = self.spell_ball(spell)
+                point = tuple(C.add(C.mul(b[i], spread), pos[i]) for i in range(3))
+                v = self.spell_ball(spell)
+                base, width = C.from_int(s32(facing - arc * 0x5B)), C.from_int(s32(arc * 0xB6))
+                turn = C.to_int(C.add(base, C.mul(C.mul(C.from_int(self.spell_rand(spell)), F_2M16), width)))
+                vx = C.add(v[0], C.mul(C.cos16(turn), speed))
+                turn = C.to_int(C.add(base, C.mul(C.mul(C.from_int(self.spell_rand(spell)), F_2M16), width)))
+                vy = C.add(v[1], C.mul(C.sin16(turn), speed))
+                self.call('particle_spawn', definition, point, (vx, vy, v[2]), ZERO)
+        if rem(self.frame(), 15) != 0:
+            return
+        origin = (C.sub(pos[0], C.mul(C.cos16(facing), F_12)), C.sub(pos[1], C.mul(C.sin16(facing), F_12)), pos[2])
+        arc = s32(self.skill_call(u32(spell + 8), 12, 1, self.s8(spell), u32(spell + 0xC), 10))
+        found = self.call('world_collectObjectsInArc', origin, facing, 'stack', 0, 0x42C00000, C.from_int(arc + 10), ZERO)
+        hit = False
+        for other in found or ():
+            owner = u32(spell + 0xC)
+            if not self.vcall(owner, 20, other):
+                continue
+            s0 = self.skill_call(u32(spell + 8), 12, 0, self.s8(spell), u32(spell + 0xC), 0)
+            low = C.to_int(C.mul(C.from_int(s32(s0)), 0x3E800000))
+            base = C.from_int(s32(low))
+            high = C.to_int(C.mul(spread_max(base, self.spell_rand(spell)), 0x3E800000))
+            hit = True
+            self.call('damage_apply', other, u32(spell + 0xC), 100000, 0, 0, 0x40, descriptor((0x15, low, high, 0)), 0,
+                      ZERO, ZERO)
+        if hit:
+            self.call('sound_playAtPos', self.call('res_find', 0x550B00, 0x550B38), self.vec(u32(spell + 0xC) + 0x10), ONE)
+        self.call('handle_clear', 'stack')
+
+
+SKILL_BODIES.update({0x2F123C: 'coneoffire_can_use', 0x2F1078: 'coneoffire_cast'})
+SPELL_BODIES.update({0x2F02FC: 'coneoffire_run'})
+MODELLED.update({'SkillConeOfFire_canUse': 0x2F123C, 'SkillConeOfFire_cast': 0x2F1078,
+                 'SpellConeOfFire_ctor': 0x2F00AC, 'SpellConeOfFire_run': 0x2F02FC})
+
+
+import ref_items as RI                          # noqa: E402
+
+G_ITEM_MODELS = 0x3E9CE0                        # rows of 0x10; +8 the loaded model (a pointer; presentation)
+G_HAMMER_COUNT = 0x41B4F0                       # a byte: hammers alive (nothing reads it)
+EXTERNALS.update({
+    'model_transformSamplePoint': Ext(0x1799E8, 'pmioo', 0, 'n', '(model, matrix, index, point out, size out)'),
+})
+MATH.update({'mat34_setPosEulerScale': 0x163E48, 'mat34_mul': 0x162808, 'mat34_rotateAxis': 0x163000})
+
+
+class _ImageExe(RI.Exe):
+    """The item tables of tools/ref_items.py read from a memory image instead of a file."""
+
+    def __init__(self, load):                   # noqa: super().__init__ opens a file
+        self.load = load
+
+    def read(self, addr, size):
+        return bytes(self.load(addr + i, 1) for i in range(size))
+
+    def cstr(self, addr):
+        out = bytearray()
+        while True:
+            byte = self.load(addr + len(out), 1)
+            if not byte:
+                return bytes(out)
+            out.append(byte)
+
+
+class _SharedDraws:
+    """tools/ref_items.py's Rng interface on the model's shared seed."""
+
+    def __init__(self, model):
+        self.model = model
+
+    def next(self):
+        return self.model.draw()
+
+
+class Model(Model):                             # noqa: F811
+    # =====================================================================================
+    # Skill 17, Hammer of Wrath: SkillHammerOfWrath (table 0x51a330), the object
+    # HammerOfWrath (0xe8 bytes, table 0x51a2a0) and SpellHammerOfWrath (0x1c bytes, table
+    # 0x51a3b8), which only holds a handle to the hammer.
+    #
+    #   +0x38 s16 rest heading     +0x4c owner handle        +0x50 target handle
+    #   +0x58 item record (0x48)   +0xa0 counter c           +0xa4 level + 1
+    #   +0xa8 frames left          +0xac yaw  +0xb0 pitch  +0xb4 roll and +0xb8, +0xbc,
+    #   +0xc0 their velocities (floats, in angle units)      +0xc4 Skill   +0xc8 state
+    #   +0xcc velocity per FRAME   +0xd8 goal point
+    # =====================================================================================
+    HAMMER_GETTER = 0x3CF768
+    HAMMER_TEXTS = {0: 0x5508D0, 1: 0x5508F0, 2: 0x550910, 3: 0x550930}        # else 0x550950
+    item_tables_cache = None
+
+    def item_tables(self):
+        """tools/ref_items.py's tables, read once from the memory image (static data)."""
+        if Model.item_tables_cache is None:
+            Model.item_tables_cache = RI.Tables(_ImageExe(self.mem.load))
+        return Model.item_tables_cache
+
+    def item_parse(self, text, record):
+        """item_parseDescriptor 0x1069b8 (text, record, variant -1, presets 0), as
+        tools/ref_items.py models it, on the record in memory.
+
+        The definition pointer, the count, the flag word and one slot per modifier are
+        stored; the rest of the record is left as the caller prepared it.  The variant -1
+        ends in item_randomizeVariant 0x1046e0: ONE SHARED DRAW when the definition has
+        model variants (bits 11-15 of its flag word), none otherwise."""
+        raw = _ImageExe(self.mem.load).cstr(text)
+        item = RI.parse_descriptor(self.item_tables(), raw, -1, False, rng=_SharedDraws(self))
+        self.w32(record, item.definition.addr)
+        self.w16(record + 4, item.count)
+        self.w64(record + 8, item.flags & M64)
+        for index, mod in enumerate(item.mods):
+            if mod is not None:
+                for k in range(4):
+                    self.w16(record + 0x24 + 8 * index + 2 * k, mod[k])
+
+    def item_resource_index(self, record):
+        """item_getResourceIndex 0x1083f8: definition +0x34 (s16), plus the variant (flag
+        bits 11-15) when flag bit 36 is set."""
+        row = self.s16(self.u32(record) + 0x34)
+        flags = self.u64(record + 8)
+        if flags & 0x1000000000:
+            row += (flags >> 11) & 0x1F
+        return row
+
+    def hammer_can_use(self, skill, caster):
+        """SkillHammerOfWrath_canUse 0x2efef8 -> 1 unless the caster carries a
+        SpellHammerOfWrath (its hammer exists)."""
+        return 0 if self.carries(caster, self.HAMMER_GETTER) else 1
+
+    def hammer_cast(self, skill, level, caster, pos, facing):
+        """SkillHammerOfWrath_cast 0x2efb20 (skill, level, caster, position, facing) -> the
+        spell or 0.
+
+        Both flash quads of the caster = (-100, -100, -100, 0); a GlowingShaft at the
+        position and a LightEffect 36 above it (ONE SHARED DRAW inside each); pool_new
+        (0xe8) and HammerOfWrath_ctor 60 above the position; only with a hammer:
+        pool_new(0x1c) and SpellHammerOfWrath_ctor.  A hammer whose spell could not be
+        allocated stays (and lives its statistic-1 seconds)."""
+        self.flash_both(caster, -100, -100, -100, 0)
+        shaft = self.call('pool_new', 0x5C)
+        if shaft:
+            self.call('GlowingShaft_ctor', shaft, tuple(pos), 0x5A, 0x56, 0x7E, 0xFA)
+            self.hidden_draws += 1
+        self.light_effect(0xBC, (C.add(pos[0], ZERO), pos[1], C.add(pos[2], 0x42100000)), 0, 0,
+                          ZERO, 0x431B0000, 0x437F0000, 0xC2C00000, ZERO, ZERO, ZERO, ZERO,
+                          0x43340000, 0x43100000, ZERO, ONE)
+        hammer = self.call('pool_new', 0xE8)
+        if hammer:
+            self.hammer_ctor(hammer, (C.add(pos[0], ZERO), pos[1], C.add(pos[2], 0x42700000)), s16(facing), caster, level,
+                             skill)
+        spell = 0
+        if hammer:
+            spell = self.call('pool_new', 0x1C)
+            if spell:
+                self.hammer_spell_ctor(spell, level, caster, skill, hammer)
+        return spell
+
+    def hammer_ctor(self, obj, pos, facing, owner, level, skill):
+        """HammerOfWrath_ctor 0x2edd78 (object, position, facing, owner, level, skill).
+
+        GameObject_ctor (ONE SHARED DRAW); both handles empty; the item record at +0x58
+        made empty (slot types -1, bytes +0x20 / +0x21 = 0xff, the eight halfwords at
+        +0x10 = 0); the heading; the owner handle; level +0xa4; item_parseDescriptor on
+        the text for the level (0, 1, 2, 3, else one more) with variant -1 - ONE MORE
+        SHARED DRAW when the base item has model variants; THEN THE STORED LEVEL IS RAISED
+        BY ONE (0x2edefc), and every statistic read of the object uses that; flags |= 1;
+        the every-frame run list; the sound; roll +0xb4 = 16384; goal = position; the
+        Skill; frames left +0xa8 = slot 10 (1, level + 1) x 60; the byte 0x41b4f0 += 1."""
+        u32, w32, w16 = self.u32, self.w32, self.w16
+        self.gameobject_ctor(obj, pos, 0, 0)
+        w32(obj + 0x4C, 0)
+        w32(obj + 0x48, 0x51A2A0)
+        w32(obj + 0x50, 0)
+        record = obj + 0x58
+        for k in range(4):
+            w16(record + 0x24 + 8 * k, 0xFFFF)
+        self.w8(record + 0x21, 0xFF)
+        self.w8(record + 0x20, 0xFF)
+        for k in range(8):
+            w16(record + 0x10 + 2 * k, 0)
+        w16(obj + 0x38, facing)
+        if owner:
+            self.call('handle_link', obj + 0x4C, owner, owner)
+        w32(obj + 0xA4, level)
+        self.item_parse(self.HAMMER_TEXTS.get(s32(level), 0x550950), record)
+        w32(obj + 0xA4, u32(obj + 0xA4) + 1)
+        w32(obj + 0xC, u32(obj + 0xC) | 1)
+        self.call('obj_runEveryFrame', obj)
+        self.call('sound_playOnObject', self.call('res_find', 0x550970, 0x550978), obj, ONE)
+        w32(obj + 0xB4, 0x46800000)
+        self.wvec(obj + 0xD8, self.vec(obj + 0x10))
+        w32(obj + 0xC4, skill)
+        w32(obj + 0xA8, s32(self.skill_call(skill, 10, 1, u32(obj + 0xA4))) * 60)
+        self.w8(G_HAMMER_COUNT, self.u8(G_HAMMER_COUNT) + 1)
+
+    def hammer_spell_ctor(self, spell, level, owner, skill, hammer):
+        """SpellHammerOfWrath_ctor 0x2ef974 (spell, level, owner, skill, hammer): the Spell
+        base (ONE SHARED DRAW) and a handle to the hammer at +0x18."""
+        self.spell_base(spell, level, owner, skill, 0x51A3B8)
+        self.w32(spell + 0x18, 0)
+        if hammer:
+            self.call('handle_link', spell + 0x18, hammer, hammer)
+
+    def hammer_spell_run(self, spell, pos=None, facing=0):
+        """SpellHammerOfWrath_run 0x2efa04: the spell deletes itself once its hammer handle
+        is empty."""
+        if not self.u32(spell + 0x18):
+            self.spell_delete(spell)
+
+    def _hammer_pull(self, obj, anchor, slack):
+        """Move the goal +0xd8 toward a point until it is `slack` away: L = |goal -
+        anchor|; when slack < L: goal += (anchor - goal) x (1 - slack / L), z first."""
+        u32 = self.u32
+        goal = self.vec(obj + 0xD8)
+        d = [C.sub(goal[i], anchor[i]) for i in range(3)]
+        length = C.sqrt(C.add(C.add(C.mul(d[0], d[0]), C.mul(d[1], d[1])), C.mul(d[2], d[2])))
+        if C.lt(slack, length):
+            f = C.sub(ONE, C.div(slack, length))
+            for i in (2, 1, 0):
+                self.w32(obj + 0xD8 + 4 * i, C.add(goal[i], C.mul(C.sub(anchor[i], goal[i]), f)))
+
+    def _hammer_blow(self, obj, victim, rating):
+        """One blow: d = slot 10 (0, level + 1); ONE OWN DRAW r; damage_apply(victim, the
+        owner, rating, flags 0x101, the item record at +0x58, 0; d, d + d x r/65536 x
+        0.2); the sound."""
+        u32 = self.u32
+        amount = C.from_int(s32(self.skill_call(u32(obj + 0xC4), 10, 0, u32(obj + 0xA4))))
+        high = spread_max(amount, self.obj_rand(obj))
+        self.call('damage_apply', victim, u32(u32(obj + 0x4C) + 0xC), rating, 0, 0, 0x101, obj + 0x58, 0, amount, high)
+        self.call('sound_playOnObject', self.call('res_find', 0x550970, 0x5509A8), obj, ONE)
+
+    def hammer_run(self, obj):
+        """HammerOfWrath_run 0x2ee068 (object), slot 4, once a frame.
+
+        No owner (handle +0x4c empty): the object deletes itself.  anchor = the owner's
+        position + (0, 0, 60); farther than 600 from it, during a cutscene, or with a
+        player owner whose action state +0x58c is 8 (blocking): state = 0.
+
+        state 0  the goal follows the anchor at 60; world_collectObjectsInBox(anchor -/+
+                 (180, 180, 1200), capacity 128) - always; outside cutscenes and blocking:
+                 the entry with terrain_raycast(world, position, entry - position, 0; 1.0)
+                 <= 0 that the owner's slot 20 calls an enemy and that is nearest to the
+                 anchor (3-D, squared, below 32400) becomes the target: handle +0x50, ONE
+                 OWN DRAW r, state = 4 when r/65536 x 100 < slot 10 (2, level + 1), else 3
+                 (during a cutscene no target is looked for at all); c = 0.
+        state 3  no target or a dead one: state 0.  Else the goal follows target + (0, 0,
+                 60) at 24; c += 1; at c == 47 the blow (attack rating 300000); at c >= 61
+                 c = 0 and, in PvP mode A, state = 0.
+        state 4  c += 1; yaw velocity +0xb8 = -3500; at c >= 61 and c % 20 == 0 the blow
+                 (rating 3000) on the nearest living non-player CREATURE of the box
+                 position -/+ (72, 72, 1200) within 72 (3-D) - no enemy test; without a
+                 target the goal circles the owner (radius 36, angle c << 9, 36 up), with a
+                 dead one state = 0, else it follows the target as in state 3; (c << 9) >
+                 0x10000: state = 0.
+        states 1, 2  never stored by anything (not modelled: NotImplementedError).
+
+        Then in every state: the three orientation springs (yaw toward the aim angle with
+        the state's stiffness and damping, pitch and roll toward the state's targets at
+        0.05 / 0.2, both shaken by sin16(frame << 10) and sin16(frame x 800) x 20), the
+        velocity wobble sin16(frame x 403 / 358 / 332) x 0.01, velocity += (goal -
+        position) x k, position += velocity, velocity -= velocity x damp, the grid cell;
+        the model matrix and 2 or more particles on the hammer's model from the PER-MACHINE
+        generator 0x404468 (the count rises over the last 120 frames; 3000 on the last);
+        frames left -= 1 and below 1 the object deletes itself."""
+        u32, w32 = self.u32, self.w32
+        roll, pitch = 0x46800000, 0xC61C4000
+        turn_k, turn_damp, pos_k, pos_damp = 0x399D4951, 0x3C23D70A, 0x3B449BA5, 0x3D4CCCCC
+        aim = self.s16(obj + 0x38)
+        node = u32(obj + 0x4C)
+        if not node:
+            self.delete_self(obj)
+            return
+        owner = u32(node + 0xC)
+        anchor = (C.add(u32(owner + 0x10), ZERO), u32(owner + 0x14), C.add(u32(owner + 0x18), 0x42700000))
+        d = [C.sub(anchor[i], u32(obj + 0x10 + 4 * i)) for i in range(3)]
+        if C.lt(0x48AFC800, C.add(C.add(C.mul(d[0], d[0]), C.mul(d[1], d[1])), C.mul(d[2], d[2]))):
+            w32(obj + 0xC8, 0)
+        if self.s8(G_CUTSCENE_ACTIVE):
+            w32(obj + 0xC8, 0)
+        blocked = False
+        if u32(owner + 0xC) & 0x40 and u32(owner + 0x58C) == 8:
+            w32(obj + 0xC8, 0)
+            blocked = True
+        state = u32(obj + 0xC8)
+        if state == 0:
+            v = self.vec(obj + 0xCC)
+            if C.lt(ONE, C.add(C.add(C.mul(v[0], v[0]), C.mul(v[1], v[1])), C.mul(v[2], v[2]))):
+                aim = -C.atan2_16(v[0], v[1])
+            anchor = self.vec(obj + 0x10)
+            if u32(obj + 0x4C):
+                owner = u32(u32(obj + 0x4C) + 0xC)
+                anchor = (C.add(u32(owner + 0x10), ZERO), u32(owner + 0x14), C.add(u32(owner + 0x18), 0x42700000))
+                self._hammer_pull(obj, anchor, 0x42700000)
+            reach = (0x43340000, 0x43340000, 0x44960000)
+            found = self.call('world_collectObjectsInBox', tuple(C.sub(anchor[i], reach[i]) for i in range(3)),
+                              tuple(C.add(anchor[i], reach[i]) for i in range(3)), 0x80) or ()
+            best, best_d = 0, 0x46FD2000
+            if not self.s8(G_CUTSCENE_ACTIVE) and not blocked:
+                for other in found:
+                    way = tuple(C.sub(u32(other + 0x10 + 4 * i), u32(obj + 0x10 + 4 * i)) for i in range(3))
+                    t = self.call('terrain_raycast', u32(G_WORLD), self.vec(obj + 0x10), way, 0, ONE)
+                    if C.le(t, ZERO) and u32(obj + 0x4C):
+                        owner = u32(u32(obj + 0x4C) + 0xC)
+                        if self.vcall(owner, 20, other):
+                            e = [C.sub(anchor[i], u32(other + 0x10 + 4 * i)) for i in range(3)]
+                            dist = C.add(C.add(C.mul(e[0], e[0]), C.mul(e[1], e[1])), C.mul(e[2], e[2]))
+                            if C.lt(dist, best_d):
+                                best, best_d = other, dist
+            if best:
+                self.call('handle_link', obj + 0x50, best, best)
+                state = 3
+                if not self.s8(G_CUTSCENE_ACTIVE):
+                    r = self.obj_rand(obj)
+                    chance = s32(self.skill_call(u32(obj + 0xC4), 10, 2, u32(obj + 0xA4)))
+                    if C.lt(C.mul(C.mul(C.from_int(r), F_2M16), 0x42C80000), C.from_int(chance)):
+                        state = 4
+                w32(obj + 0xA0, 0)
+                w32(obj + 0xC8, state)
+        elif state == 3:
+            target = self.handle_obj(obj + 0x50)
+            if not u32(obj + 0x50) or u32(target + 0xC) & 8:
+                w32(obj + 0xC8, 0)
+            else:
+                turn_k, turn_damp = 0x3DCCCCCC, 0x3F199999
+                aim = -C.atan2_16(C.sub(u32(target + 0x10), u32(obj + 0x10)), C.sub(u32(target + 0x14), u32(obj + 0x14)))
+                self._hammer_pull(obj, (C.add(u32(target + 0x10), ZERO), u32(target + 0x14),
+                                        C.add(u32(target + 0x18), 0x42700000)), 0x41C00000)
+                pos_k, pos_damp = 0x3BC49BA5, 0x3E199999
+                count = s32(u32(obj + 0xA0) + 1)
+                w32(obj + 0xA0, count)
+                if count > 0x1E:
+                    pitch = 0xC69C4000
+                if count > 0x29:
+                    pitch = ZERO
+                if count == 0x2F:
+                    self._hammer_blow(obj, target, 300000)
+                if not self.s32(obj + 0xA0) < 0x3D:
+                    w32(obj + 0xA0, 0)
+                    if u32(G_PVP_MODE_A):
+                        w32(obj + 0xC8, 0)
+        elif state == 4:
+            pitch = ZERO
+            count = s32(u32(obj + 0xA0) + 1)
+            w32(obj + 0xA0, count)
+            w32(obj + 0xB8, 0xC55AC000)
+            pos_k, pos_damp, roll = 0x3C23D70A, 0x3E4CCCCC, ZERO
+            if not count < 0x3D and rem(count, 0x14) == 0:
+                reach = (0x42900000, 0x42900000, 0x44960000)
+                here = self.vec(obj + 0x10)
+                found = self.call('world_collectObjectsInBox', tuple(C.sub(here[i], reach[i]) for i in range(3)),
+                                  tuple(C.add(here[i], reach[i]) for i in range(3)), 0x80) or ()
+                victim, best_d = 0, 0x45A20000
+                for other in found:
+                    flags = u32(other + 0xC)
+                    if not flags & 0x20 or flags & 0x48:
+                        continue
+                    e = [C.sub(u32(obj + 0x10 + 4 * i), u32(other + 0x10 + 4 * i)) for i in range(3)]
+                    dist = C.add(C.add(C.mul(e[0], e[0]), C.mul(e[1], e[1])), C.mul(e[2], e[2]))
+                    if C.lt(dist, best_d):
+                        victim, best_d = other, dist
+                if victim:
+                    self._hammer_blow(obj, victim, 3000)
+            ended = False
+            if not u32(obj + 0x50):
+                owner = u32(u32(obj + 0x4C) + 0xC)
+                base = (C.add(u32(owner + 0x10), ZERO), u32(owner + 0x14), C.add(u32(owner + 0x18), 0x42100000))
+                turn = s16(u32(obj + 0xA0) << 9)
+                self.wvec(obj + 0xD8, (C.add(base[0], C.mul(C.cos16(turn), 0x42100000)),
+                                       C.add(base[1], C.mul(C.sin16(turn), 0x42100000)), base[2]))
+            else:
+                target = self.handle_obj(obj + 0x50)
+                if u32(target + 0xC) & 8:
+                    w32(obj + 0xC8, 0)
+                    ended = True
+                else:
+                    turn_k, turn_damp = 0x3DCCCCCC, 0x3F199999
+                    aim = -C.atan2_16(C.sub(u32(target + 0x10), u32(obj + 0x10)), C.sub(u32(target + 0x14), u32(obj + 0x14)))
+                    self._hammer_pull(obj, (C.add(u32(target + 0x10), ZERO), u32(target + 0x14),
+                                            C.add(u32(target + 0x18), 0x42700000)), 0x41C00000)
+            if not ended and s32(u32(obj + 0xA0) << 9) > 0x10000:
+                w32(obj + 0xC8, 0)
+        elif state in (1, 2):
+            raise NotImplementedError('HammerOfWrath states 1 and 2: nothing stores them')
+        # the springs
+        yaw = u32(obj + 0xAC)
+        spin = C.add(u32(obj + 0xC0), C.mul(C.sub(roll, u32(obj + 0xB4)), 0x3D4CCCCC))
+        tilt = C.add(u32(obj + 0xBC), C.mul(C.sub(pitch, u32(obj + 0xB0)), 0x3D4CCCCC))
+        swing = C.add(u32(obj + 0xB8), C.mul(C.from_int(s16(aim - s32(C.to_int(yaw)))), turn_k))
+        spin = C.sub(spin, C.mul(spin, F_0_2))
+        tilt = C.sub(tilt, C.mul(tilt, F_0_2))
+        swing = C.sub(swing, C.mul(swing, turn_damp))
+        w32(obj + 0xC0, spin)
+        w32(obj + 0xBC, tilt)
+        w32(obj + 0xB4, C.add(u32(obj + 0xB4), spin))
+        w32(obj + 0xB0, C.add(u32(obj + 0xB0), tilt))
+        w32(obj + 0xB8, swing)
+        w32(obj + 0xAC, C.add(yaw, swing))
+        frame = self.frame()
+        w32(obj + 0xBC, C.add(u32(obj + 0xBC), C.mul(C.sin16(s16(frame << 10)), 0x41A00000)))
+        w32(obj + 0xC0, C.add(u32(obj + 0xC0), C.mul(C.sin16(s16(frame * 800)), 0x41A00000)))
+        for i, factor in enumerate((0x193, 0x166, 0x14C)):
+            w32(obj + 0xCC + 4 * i, C.add(u32(obj + 0xCC + 4 * i), C.mul(C.sin16(s16(frame * factor)), 0x3C23D70A)))
+        pull = [C.mul(C.sub(u32(obj + 0xD8 + 4 * i), u32(obj + 0x10 + 4 * i)), pos_k) for i in range(3)]
+        for i in range(3):
+            w32(obj + 0xCC + 4 * i, C.add(u32(obj + 0xCC + 4 * i), pull[i]))
+        for i in range(3):
+            w32(obj + 0x10 + 4 * i, C.add(u32(obj + 0x10 + 4 * i), u32(obj + 0xCC + 4 * i)))
+        for i in range(3):
+            v = u32(obj + 0xCC + 4 * i)
+            w32(obj + 0xCC + 4 * i, C.sub(v, C.mul(v, pos_damp)))
+        self.call('obj_updateGridCell', obj)
+        # presentation: the model matrix and the particles (generator 0x404468)
+        model = u32((G_ITEM_MODELS + self.item_resource_index(obj + 0x58) * 0x10 + 8) & M32)
+        base = [u32(0x5509C0 + 4 * i) for i in range(12)]
+        turned = C.mat34_set_pos_euler_scale(ONE, self.vec(obj + 0x10), s16(C.to_int(u32(obj + 0xAC))),
+                                             s16(C.to_int(u32(obj + 0xB0))), s16(C.to_int(u32(obj + 0xB4))))
+        matrix = C.mat34_mul(base, turned)
+        points = self.call('model_getSamplePointCount', model)
+        left = C.mul(C.from_int(self.s32(obj + 0xA8)), 0x3C088888)
+        if C.lt(ONE, left):
+            left = ONE
+        count, speed = 2, ZERO
+        if C.lt(left, ONE):
+            count = s32(C.to_int(C.mul(C.sub(ONE, left), 0x42C80000))) + 2
+            speed = C.mul(C.sub(ONE, left), 0x42480000)
+            if self.s32(obj + 0xA8) == 1:
+                count, speed = 3000, 0x42C80000
+        for _ in range(max(count, 0)):
+            index = rem(self.seed3_draw(), points)
+            point, size = self.call('model_transformSamplePoint', model, tuple(matrix), index)
+            scale = C.mul(C.mul(size[0], 0x3727C5AC), 0x420D6666)
+            jitter = [C.mul(C.sub(C.mul(C.from_int(self.seed3_draw()), F_2M16), HALF), scale) for _i in range(3)]
+            point = tuple(C.add(point[i], jitter[i]) for i in range(3))
+            while True:
+                b = [unit(self.seed3_draw()) for _i in range(3)]
+                if not C.lt(ONE, C.add(C.add(C.mul(b[0], b[0]), C.mul(b[1], b[1])), C.mul(b[2], b[2]))):
+                    break
+            self.call('particle_spawn', 0x8E62C0, point, tuple(C.mul(b[i], speed) for i in range(3)), ZERO)
+        w32(obj + 0xA8, u32(obj + 0xA8) - 1)
+        if self.s32(obj + 0xA8) < 1:
+            self.delete_self(obj)
+
+    def seed3_draw(self):
+        """One draw from the third generator 0x404468 (per machine; presentation)."""
+        seed = lcg(self.u32(G_SEED3))
+        self.w32(G_SEED3, seed)
+        return seed >> 16
+
+
+SKILL_BODIES.update({0x2EFEF8: 'hammer_can_use', 0x2EFB20: 'hammer_cast'})
+SPELL_BODIES.update({0x2EFA04: 'hammer_spell_run'})
+OBJECT_BODIES.update({0x2EE068: 'hammer_run'})
+MODELLED.update({'SkillHammerOfWrath_canUse': 0x2EFEF8, 'SkillHammerOfWrath_cast': 0x2EFB20,
+                 'HammerOfWrath_ctor': 0x2EDD78, 'HammerOfWrath_run': 0x2EE068,
+                 'SpellHammerOfWrath_ctor': 0x2EF974, 'SpellHammerOfWrath_run': 0x2EFA04,
+                 'item_parseDescriptor': 0x1069B8, 'item_randomizeVariant': 0x1046E0, 'item_getResourceIndex': 0x1083F8})
+
+
+G_PADS = 0x41BFD8                               # 0x58 bytes per player slot: the frame's agreed input
+G_FORCE_GHOST_REBASE = 0x402797                 # s8: rebuild the prediction copy (per machine)
+EXTERNALS.update({
+    'Player_animStep': Ext(0x1B9520, 'p', 1, 'i', '(player; speed) -> event bits'),
+    'Player_move': Ext(0x1B4020, 'pipi', 0, 'i', '(player, mode, pad, external velocity or 0) -> event bits'),
+    'net_isLocalSlot': Ext(0x13E150, 'i', 0, 'i', '(slot) -> this machine plays that slot (per machine)'),
+})
+
+
+class Model(Model):                             # noqa: F811
+    # =====================================================================================
+    # Skill 34, Shield Bash: SkillShieldBash (table 0x51ada0) and SpellShieldBash (0x28
+    # bytes, table 0x51ad70).  The code of skill 49, Bash, with other numbers.
+    #
+    #   +0x18 the blow is done (also what slot 4, 0x2fb67c, returns)   +0x1c the clip's
+    #   event was seen   +0x20 0   +0x24 the creature the player is turned toward: a PLAIN
+    #   POINTER, read every frame
+    # =====================================================================================
+    def shieldbash_can_use(self, skill, caster):
+        """SkillShieldBash_canUse 0x2faa00 -> 1 for a caster without the player flag; a
+        player needs a shield (record +0x43fc not 0) and a weapon class (the signed byte
+        +0x4a86) other than 4, else a HUD message for 180 frames and 0."""
+        if self.u32(caster + 0xC) & 0x40:
+            rec = (G_PLAYERS + self.u32(caster + 0x3C8) * REC_SIZE) & M32
+            if not self.u32(rec + 0x43FC) or self.s8(rec + 0x4A86) == 4:
+                self.call('hud_showMessage', self.call('text_lookup', 0x551258), 0xB4, self.u32(caster + 0x3C8), 0)
+                return 0
+        return 1
+
+    def shieldbash_cast(self, skill, level, caster, pos=None, facing=0):
+        """SkillShieldBash_cast 0x2faa88 -> the spell: slot 14 (level, 0), pool_new(0x28),
+        the constructor."""
+        level = self.skill_call(skill, 14, level, 0)
+        spell = self.call('pool_new', 0x28)
+        if spell:
+            self.shieldbash_ctor(spell, level, caster, skill)
+        return spell
+
+    def shieldbash_ctor(self, spell, level, owner, skill):
+        """SpellShieldBash_ctor 0x2face4 (spell, level, owner, skill).
+
+        The Spell base (ONE SHARED DRAW); the owner's action state +0x58c = 6, whatever the
+        owner is; the bash clip of the owner's class lump (res_find(lump, name)) is started
+        (anim_startBlendInOut, flags 0x812, 0.1 s in and out) and EVENT SLOT 1 OF THE CLIP
+        ITSELF - a header every object of that class shares - is set to mask 2 at 0.594 s
+        (stores 0x2fadac, 0x2fadb4).  +0x18, +0x1c, +0x20, +0x24 = 0.
+        world_collectObjectsInArc(owner position, facing, no filter; 100, 90 degrees, 0):
+        the turn target +0x24 is the HEAD entry when it lacks object flag 0x1000000, and
+        also when a later entry lacks it (the loop stores the head's object, not the one
+        it found); nothing when every entry has the flag.  The pointer is stored as a
+        plain word: no handle is made for it."""
+        u32, w32 = self.u32, self.w32
+        self.w8(spell, level)
+        w32(spell + 8, skill)
+        w32(spell + 4, 0)
+        w32(spell + 0xC, owner)
+        w32(spell + 0x10, self.draw())
+        lump = u32(u32(owner + 0x24))
+        w32(owner + 0x58C, 6)
+        w32(spell + 0x14, 0x51AD70)
+        clip = self.call('res_find', lump, 0x551298)
+        self.call('anim_startBlendInOut', owner + 0x114, clip, 0x812, F_0_1, F_0_1)
+        self.w8(clip + 0x20, 2)
+        w32(clip + 0x1C, 0x3F181040)
+        for off in (0x20, 0x1C, 0x18, 0x24):
+            w32(spell + off, 0)
+        found = self.call('world_collectObjectsInArc', self.vec(owner + 0x10), self.s16(owner + 0x38), 'stack', u32(spell + 0x20),
+                          0x42C80000, 0x42B40000, ZERO) or ()
+        if found and any(not u32(other + 0xC) & 0x1000000 for other in found):
+            w32(spell + 0x24, found[0])
+        self.call('handle_clear', 'stack')
+
+    def shieldbash_windup_fx(self, spell):
+        """SpellShieldBash_windupFx 0x2fb49c (spell): 203 particles on sample points of
+        net_objOrGhost(owner) - the owner or, on its own machine, its prediction copy; per
+        particle one OWN draw for the point (modulo the point count, which is not tested
+        for 0) and an OWN ball x 13 as velocity.  The number of draws is the same on every
+        machine; the points are not."""
+        u32 = self.u32
+        anchor = self.call('net_objOrGhost', u32(spell + 0xC))
+        count = self.call('model_getSamplePointCount', u32(anchor + 0x544))
+        for _ in range(0xCB):
+            index = rem(self.spell_rand(spell), count)
+            point, _second = self.call('model_getSamplePoint', u32(anchor + 0x544), anchor + 0x114, self.vec(anchor + 0x10),
+                                       self.s16(anchor + 0x38), index, 1, 0, ONE)
+            b = self.spell_ball(spell)
+            self.call('particle_spawn', 0x8E6AB0, tuple(point), tuple(C.mul(b[i], 0x41500000) for i in range(3)), ZERO)
+
+    def shieldbash_run(self, spell, pos=None, facing=0):
+        """SpellShieldBash_run 0x2fae80 (spell, position, facing), once a frame.
+
+          1. Player_animStep(owner; 1.0) -> event bits; Player_move(owner, mode 3, the pad
+             record of the owner's slot, 0); with a turn target the owner's slot 26 (0, the
+             target's position) - THE TARGET POINTER IS NOT TESTED AND NOT A HANDLE.  Event
+             bit 2 sets +0x1c.
+          2. Until the blow is done: before the event the wind-up particles.  On it: n =
+             slot 10 (3), chance = slot 10 (1), frames = slot 10 (2) x 60; knock-back bit
+             0x40000 below level 6, 0x80000 for 6-15, 0x200000 above; the hand (model
+             attach point 1); world_collectObjectsInArc(hand, facing, no filter; 41, -1
+             (any angle), 0).  In list order, until n are hit: an entry without object flag
+             0x1000000 that the owner's slot 20 calls an enemy takes damage_apply(entry,
+             owner, 100000, flags bit | 0x40, no descriptor, no-crit 1; low, high of slot
+             8 (0, level, no randomising; 0.2)); when it then has no hit points, or ONE
+             SHARED DRAW d gives chance < d % 100 + 1, it is tinted, else its slot 30
+             (frames, 1) stuns it; the first one hit gets a LightEffect (ONE SHARED DRAW
+             inside).  Nobody hit: world_collectInSphere(owner position, facing; 41) ADDS
+             to the same list, and its first entry that is neither creature nor player nor
+             flagged 0x1000000 is damaged the same way.  The blow is done either way.
+          3. The owner's animation status +0x11a without bit 0x10, or owner +0x450 set: the
+             owner's action state = 2 and the spell deletes itself.  Otherwise
+             net_isLocalSlot(owner's slot) sets the copy-rebuild countdown 0x402797 = 60 -
+             a per-machine store."""
+        u32, w32, w16 = self.u32, self.w32, self.w16
+        owner = u32(spell + 0xC)
+        events = self.call('Player_animStep', owner, ONE)
+        self.call('Player_move', owner, 3, (G_PADS + self.s32(owner + 0x3C8) * 0x58) & M32, 0)
+        target = u32(spell + 0x24)
+        if target:
+            self.vcall(owner, 26, 0, self.vec(target + 0x10))
+        if events & 2:
+            w32(spell + 0x1C, 1)
+        if not u32(spell + 0x18):
+            if not u32(spell + 0x1C):
+                self.shieldbash_windup_fx(spell)
+            else:
+                most = s32(self.skill_call(u32(spell + 8), 10, 3, self.s8(spell)))
+                chance = s32(self.skill_call(u32(spell + 8), 10, 1, self.s8(spell)))
+                frames = s32(self.skill_call(u32(spell + 8), 10, 2, self.s8(spell))) * 60
+                level = self.s8(spell)
+                knock = 0x200000 if level > 15 else 0x40000 if level < 6 else 0x80000
+                hand = self.call('model_getAttachPoint', u32(owner + 0x544), self.vec(owner + 0x10), self.s16(owner + 0x38),
+                                 owner + 0x114, 1, 0, ONE)
+                found = list(self.call('world_collectObjectsInArc', tuple(hand), self.s16(owner + 0x38), 'stack', 0,
+                                       0x42240000, 0xBF800000, ZERO) or ())
+                hits = 0
+                if found and most >= 1:
+                    for other in found:
+                        if not u32(other + 0xC) & 0x1000000 and self.vcall(owner, 20, other):
+                            low, high = self.skill_call(u32(spell + 8), 8, 0, self.s8(spell), 0, F_0_2)
+                            self.call('damage_apply', other, owner, 100000, 0, 0, knock | 0x40, 0, 1,
+                                      C.from_int(s32(low)), C.from_int(s32(high)))
+                            if C.lt(ZERO, u32(other + 0x228)) and not chance < self.draw() % 100 + 1:
+                                self.vcall(other, 30, frames, 1)
+                            else:
+                                for off, value in ((0x92, 100), (0x96, 0x40), (0x98, 100), (0x90, 100), (0x9A, 100),
+                                                   (0x9C, 0x40), (0x94, 0x40)):
+                                    w16(other + off, value)
+                            if not u32(spell + 0x18):
+                                spot = (C.add(u32(other + 0x10), ZERO), u32(other + 0x14), C.add(u32(other + 0x18), 0x42800000))
+                                self.light_effect(0xBC, spot, 0, 0, 0x43210000, 0x430A0000, 0x42800000, ZERO, ZERO, ZERO, ZERO,
+                                                  ZERO, 0x43340000, 0x42700000, HALF, 0x3F01479D)
+                            hits += 1
+                            w32(spell + 0x18, 1)
+                        if not hits < most:
+                            break
+                if not u32(spell + 0x18):
+                    more = self.call('world_collectInSphere', self.vec(owner + 0x10), self.s16(owner + 0x38), 'stack',
+                                     0x42240000) or ()
+                    for other in list(more) + found:
+                        if not u32(other + 0xC) & 0x1000060:
+                            low, high = self.skill_call(u32(spell + 8), 8, 0, self.s8(spell), 0, F_0_2)
+                            self.call('damage_apply', other, owner, 100000, 0, 0, knock | 0x40, 0, 1,
+                                      C.from_int(s32(low)), C.from_int(s32(high)))
+                            break
+                w32(spell + 0x18, 1)
+        if not self.u16(owner + 0x11A) & 0x10 or u32(owner + 0x450):
+            w32(owner + 0x58C, 2)
+            self.spell_delete(spell)
+        elif self.call('net_isLocalSlot', u32(owner + 0x3C8)):
+            self.w8(G_FORCE_GHOST_REBASE, 0x3C)
+        self.call('handle_clear', 'stack')
+
+    def shieldbash_done(self, spell):
+        """SpellShieldBash slot 4, 0x2fb67c -> +0x18 (Player_run polls it)."""
+        return self.u32(spell + 0x18)
+
+
+SKILL_BODIES.update({0x2FAA00: 'shieldbash_can_use', 0x2FAA88: 'shieldbash_cast'})
+SPELL_BODIES.update({0x2FAE80: 'shieldbash_run', 0x2FB67C: 'shieldbash_done'})
+MODELLED.update({'SkillShieldBash_canUse': 0x2FAA00, 'SkillShieldBash_cast': 0x2FAA88, 'SpellShieldBash_ctor': 0x2FACE4,
+                 'SpellShieldBash_run': 0x2FAE80, 'SpellShieldBash_windupFx': 0x2FB49C, 'SpellShieldBash_isDone': 0x2FB67C})
+
+
+EXTERNALS.update({
+    'voice_setPosition': Ext(0x2168E8, 'iv', 1, 'n', '(voice handle, position; 1.0)'),
+})
+
+
+class Model(Model):                             # noqa: F811
+    # =====================================================================================
+    # Skill 22, Dismiss Undead: SkillDismissUndead (table 0x51a7b0; can-use is the base) and
+    # the projectile HolyBolt (0xc0 bytes, table 0x50e908).
+    #
+    #   +0x38 s16 heading   +0x4c owner handle   +0x54 expiry frame, 0 once it has hit
+    #   +0x58 velocity   +0x64 the homing target: A PLAIN POINTER   +0x68 aim point
+    #   +0x74..+0xac a light record (position +0xa4)   +0xb0 voice handle (never stored by
+    #   the constructor)   +0xb4 trail   +0xb8 Skill   +0xbc level
+    # =====================================================================================
+    def dismissundead_cast(self, skill, level, caster, pos, facing):
+        """SkillDismissUndead_cast 0x2f645c (skill, level, caster, position, facing) -> 0:
+        pool_new(0xc0) and HolyBolt_ctor.  No flash; the caster is not tested for null."""
+        obj = self.call('pool_new', 0xC0)
+        if obj:
+            self.holybolt_ctor(obj, pos, s16(facing), level, caster, skill)
+        return 0
+
+    def holybolt_ctor(self, obj, pos, facing, level, owner, skill):
+        """HolyBolt_ctor 0x2f5248 (object, position, facing, level, owner, skill).
+
+        Projectile_ctor (ONE SHARED DRAW); the light record at +0x74, linked; heading;
+        radius 18; velocity (cos, sin) x 350; Skill, level; flags |= 0x4001; expiry = frame
+        + slot 10 (2, level) x 60; the every-frame run list.
+
+        The target, from world_collectObjectsInBox(position -/+ 360 on all axes, capacity
+        32), in the order returned.  front = back = none, frontD = backD = 1e7.  An entry
+        that is not the bolt, not the owner and is a creature, at 3-D distance d, is LOOKED
+        AT when d < frontD OR d < backD; it qualifies when its kind byte +0xb4 is 0x10
+        (undead), it is not dead (flag 8) and the owner's slot 20 calls it an enemy; then
+        with dot((cos, sin of the OWNER's facing), entry - owner) > 0 it becomes `front`
+        with frontD = d, else `back` with backD = d - with no test that it is nearer than
+        the one it replaces.  So while one of the two bests is still 1e7 every qualifying
+        undead on the other side replaces the previous one: the LAST in box order wins,
+        not the nearest.  target +0x64 = front, else back, else 0 - stored as a plain
+        pointer, no handle.  Without a target the aim point +0x68 is position + (cos, sin
+        of the owner's facing) x 12 x 4000, 36 up; with one the aim is left for the first
+        run.  Then the trail, its first point 10 ahead, and the voice (whose handle is not
+        kept: +0xb0 stays what the block held)."""
+        u32, w32, w16 = self.u32, self.w32, self.w16
+        self.projectile_ctor(obj, pos, owner, 0)
+        w32(obj + 0x48, 0x50E908)
+        self.w8(obj + 0x7D, 0)
+        self.wvec(obj + 0xA4, pos)
+        for off, value in ((0x88, 0xFC), (0x8A, 500), (0x80, 0xFC), (0x82, 500), (0x8C, 0xFFE0), (0x84, 0xFFE0),
+                           (0x86, 0xAC), (0x7E, 0xAC)):
+            w16(obj + off, value)
+        for off, value in ((0x98, 0x42F00000), (0x90, 0x42F00000), (0x9C, 0x3891A2B3), (0x94, 0x3891A2B3), (0xA0, 0)):
+            w32(obj + off, value)
+        self.w8(obj + 0x7C, 0)
+        self.call('light_link', obj + 0x74)
+        w16(obj + 0x38, facing)
+        w32(obj + 0x1C, 0x41900000)
+        speed = 0x43AF0000
+        self.wvec(obj + 0x58, (C.mul(C.cos16(s16(facing)), speed), C.mul(C.sin16(self.s16(obj + 0x38)), speed), ZERO))
+        w32(obj + 0xB8, skill)
+        w32(obj + 0xBC, level)
+        w32(obj + 0xC, u32(obj + 0xC) | 0x4001)
+        w32(obj + 0x54, u32(G_SIM_FRAME) + s32(self.skill_call(skill, 10, 2, level)) * 60)
+        self.call('obj_runEveryFrame', obj)
+        found = self.box_around(self.vec(obj + 0x10), 0x43B40000, 0x20)
+        front = back = None
+        front_d = back_d = 0x4B189680
+        for index, other in enumerate(found):
+            if other == obj or other == owner or not u32(other + 0xC) & 0x20:
+                continue
+            d = [C.sub(u32(other + 0x10 + 4 * i), u32(obj + 0x10 + 4 * i)) for i in range(3)]
+            dist = C.sqrt(C.add(C.add(C.mul(d[0], d[0]), C.mul(d[1], d[1])), C.mul(d[2], d[2])))
+            if C.le(front_d, dist) and C.le(back_d, dist):
+                continue
+            if self.s8(other + 0xB4) != 0x10 or u32(other + 0xC) & 8 or not self.vcall(owner, 20, other):
+                continue
+            cos, sin = C.cos16(self.s16(owner + 0x38)), C.sin16(self.s16(owner + 0x38))
+            dot = C.add(C.mul(cos, C.sub(u32(other + 0x10), u32(owner + 0x10))),
+                        C.mul(sin, C.sub(u32(other + 0x14), u32(owner + 0x14))))
+            if C.le(dot, ZERO):
+                back, back_d = index, dist
+            else:
+                front, front_d = index, dist
+        chosen = front if front is not None else back
+        w32(obj + 0x64, found[chosen] if chosen is not None else 0)
+        if not u32(obj + 0x64):
+            w32(obj + 0x68, C.add(u32(obj + 0x10), C.mul(C.mul(C.cos16(self.s16(owner + 0x38)), F_12), 0x457A0000)))
+            far = C.mul(C.mul(C.sin16(self.s16(owner + 0x38)), F_12), 0x457A0000)
+            w32(obj + 0x70, C.add(u32(obj + 0x18), 0x42100000))
+            w32(obj + 0x6C, C.add(u32(obj + 0x14), far))
+        w32(obj + 0xB4, self.call('trail_create', 4, 0x2EE, 4, 0x6B, 100, 0xEA, 0xAB, 0x3EA4DD2F))
+        ahead = (C.mul(C.cos16(self.s16(obj + 0x38)), 0x41200000), C.mul(C.sin16(self.s16(obj + 0x38)), 0x41200000))
+        self.call('trail_addPoint', u32(obj + 0xB4), (C.add(u32(obj + 0x10), ahead[0]), C.add(u32(obj + 0x14), ahead[1]),
+                                                      u32(obj + 0x18)))
+        self.call('sound_playOnObject', self.call('res_find', 0x550EE8, 0x550EF0), obj, ONE)
+
+    def holybolt_run(self, obj):
+        """HolyBolt_run 0x2f57b0 (object), slot 4, once a frame.
+
+          1. with a target (THE WORD +0x64, NOT TESTED AS AN OBJECT): aim = its position, 36
+             up; diff = (s16)(atan2_16(aim - position) - heading); heading += diff when
+             |diff| <= 0x443, else -/+ 0x444 (minus when diff < 1); a target with flag 8
+             (dead) is forgotten - the ONLY way the pointer is ever cleared.
+          2. velocity = (cos, sin of the heading) x 240; dz = (s16)(int)(aim z - z):
+             vertical speed 0 for -9..9, else -50 / +50.
+          3. obj_moveAndCollide -> r (the hit handler runs inside).
+          4. the trail point: position + a sideways unit vector x cos16(frame x 6880) x
+             0.754 + (0, 0, sin16(frame x 6880) x 0.754) + (cos, sin of the heading) x 10.
+          5. r == 1 (terrain and nothing else): ONE OWN DRAW a turns the heading by (a %
+             0x7fff) - 0x4000; then ten times ONE OWN DRAW for a candidate heading
+             (heading + (a % 0x7fff) - 0x4000) that is taken when terrain_raycast(world,
+             position, 24 units that way, 0; 2.0) <= 0; a sound; 25 particles (an OWN ball x
+             57.6 each).
+          6. the voice follows, the light follows, and at frame >= expiry the object
+             deletes itself (the hit handler sets the expiry to 0)."""
+        u32, w32, w16 = self.u32, self.w32, self.w16
+        target = u32(obj + 0x64)
+        if target:
+            ax, ay = u32(target + 0x10), u32(target + 0x14)
+            w32(obj + 0x68, ax)
+            w32(obj + 0x6C, ay)
+            w32(obj + 0x70, C.add(u32(target + 0x18), 0x42100000))
+            heading = self.u16(obj + 0x38)
+            diff = s16(C.atan2_16(C.sub(ay, u32(obj + 0x14)), C.sub(ax, u32(obj + 0x10))) - heading)
+            if abs(diff) > 0x443:
+                heading += -0x444 if diff < 1 else 0x444
+            else:
+                heading += diff
+            w16(obj + 0x38, heading)
+            if u32(u32(obj + 0x64) + 0xC) & 8:
+                w32(obj + 0x64, 0)
+        w32(obj + 0x58, C.mul(C.cos16(self.s16(obj + 0x38)), 0x43700000))
+        w32(obj + 0x5C, C.mul(C.sin16(self.s16(obj + 0x38)), 0x43700000))
+        dz = s16(C.to_int(C.sub(u32(obj + 0x70), u32(obj + 0x18))))
+        w32(obj + 0x60, ZERO if (dz + 9) & 0xFFFF < 0x13 else 0xC2480000 if dz < 1 else 0x42480000)
+        result = self.move_and_collide(obj, self.vec(obj + 0x58))
+        side = [u32(obj + 0x5C), C.neg(u32(obj + 0x58)), ZERO]
+        inverse = C.rsqrt(ONE, C.add(C.add(C.mul(side[0], side[0]), C.mul(side[1], side[1])), C.mul(side[2], side[2])))
+        side = [C.mul(v, inverse) for v in side]
+        frame = self.frame()
+        wave = C.mul(C.cos16(s16(frame * 0x1AE0)), 0x3F410624)
+        side = [C.mul(v, wave) for v in side]
+        wave = C.mul(C.sin16(s16(frame * 0x1AE0)), 0x3F410624)
+        up = [C.mul(ZERO, wave), C.mul(ZERO, wave), C.mul(ONE, wave)]
+        point = [C.add(C.add(side[i], up[i]), u32(obj + 0x10 + 4 * i)) for i in range(3)]
+        ahead = C.mul(C.cos16(self.s16(obj + 0x38)), 0x41200000)
+        point[1] = C.add(point[1], C.mul(C.sin16(self.s16(obj + 0x38)), 0x41200000))
+        point[0] = C.add(point[0], ahead)
+        self.call('trail_addPoint', u32(obj + 0xB4), tuple(point))
+        if s32(result) == 1:
+            w16(obj + 0x38, self.u16(obj + 0x38) + rem(self.obj_rand(obj), 0x7FFF) - 0x4000)
+            for _ in range(10):
+                cand = s16(self.u16(obj + 0x38) + rem(self.obj_rand(obj), 0x7FFF) - 0x4000)
+                spot = (C.add(u32(obj + 0x10), C.mul(C.cos16(cand), F_24)), C.add(u32(obj + 0x14), C.mul(C.sin16(cand), F_24)),
+                        u32(obj + 0x18))
+                way = tuple(C.sub(spot[i], u32(obj + 0x10 + 4 * i)) for i in range(3))
+                if C.le(self.call('terrain_raycast', u32(G_WORLD), self.vec(obj + 0x10), way, 0, TWO), ZERO):
+                    w16(obj + 0x38, cand)
+            self.call('sound_playOnObject', self.call('res_find', 0x550EE8, 0x550F08), obj, ONE)
+            for _ in range(0x19):
+                b = self.obj_ball(obj)
+                self.call('particle_spawn', 0x8E6880, self.vec(obj + 0x10), tuple(C.mul(b[i], 0x42666666) for i in range(3)), ZERO)
+        self.call('voice_setPosition', u32(obj + 0xB0), self.vec(obj + 0x10), ONE)
+        self.wvec(obj + 0xA4, self.vec(obj + 0x10))
+        self.call('light_relink', obj + 0x74)
+        if self.s32(obj + 0x54) <= self.frame():
+            self.delete_self(obj)
+
+    def holybolt_hit(self, obj, other):
+        """HolyBolt_onHit 0x2f5fb4 (object, other), slot 6.
+
+        Only a creature; with an owner only what its slot 20 calls an enemy; nothing once
+        the expiry is 0.  Then: expiry = 0 (the run that called this deletes the bolt); a
+        LightEffect (ONE SHARED DRAW inside); 50 particles (an OWN ball x 57.6 each); the
+        sound; d = slot 10 (0 for an undead - kind byte 0x10 - else 1, level); ONE OWN DRAW
+        r; damage_apply(other, owner or 0, 10000000, flags 0x200c040, no descriptor, 0; d,
+        d + (int)(r/65536 x 0.2 x d)); a victim left without hit points gets a LostSoul
+        (pool_new 0xb0; ONE SHARED DRAW inside)."""
+        u32 = self.u32
+        if not u32(other + 0xC) & 0x20:
+            return
+        if u32(obj + 0x4C) and not self.vcall(self.handle_obj(obj + 0x4C), 20, other):
+            return
+        if not u32(obj + 0x54):
+            return
+        self.w32(obj + 0x54, 0)
+        self.light_effect(0xBC, self.vec(obj + 0x10), 0, 0, 0x432C0000, 0x437C0000, 0x43FA0000, 0xC2000000, ZERO, ZERO, ZERO,
+                          ZERO, 0x43340000, 0x42F00000, ONE, ONE)
+        for _ in range(0x32):
+            b = self.obj_ball(obj)
+            self.call('particle_spawn', 0x8E68D0, self.vec(obj + 0x10), tuple(C.mul(b[i], 0x42666666) for i in range(3)), ZERO)
+        self.call('sound_playOnObject', self.call('res_find', 0x550EE8, 0x550F60), obj, ONE)
+        stat = 0 if self.s8(other + 0xB4) == 0x10 else 1
+        dmg = s32(self.skill_call(u32(obj + 0xB8), 10, stat, u32(obj + 0xBC)))
+        extra = C.to_int(C.mul(C.mul(C.mul(C.from_int(self.obj_rand(obj)), F_2M16), F_0_2), C.from_int(dmg)))
+        self.call('damage_apply', other, self.handle_obj(obj + 0x4C), 10000000, 0, 0, 0x200C040, 0, 0,
+                  C.from_int(dmg), C.from_int(s32(dmg + s32(extra))))
+        if C.le(u32(other + 0x228), ZERO):
+            soul = self.call('pool_new', 0xB0)
+            if soul:
+                self.call('LostSoul_ctor', soul, self.vec(obj + 0x10), self.vec(obj + 0x58), self.s16(obj + 0x38), 0, 0, 1)
+                self.hidden_draws += 1
+
+
+SKILL_BODIES.update({0x2F645C: 'dismissundead_cast'})
+OBJECT_BODIES.update({0x2F57B0: 'holybolt_run', 0x2F5FB4: 'holybolt_hit'})
+MODELLED.update({'SkillDismissUndead_cast': 0x2F645C, 'HolyBolt_ctor': 0x2F5248, 'HolyBolt_run': 0x2F57B0,
+                 'HolyBolt_onHit': 0x2F5FB4})

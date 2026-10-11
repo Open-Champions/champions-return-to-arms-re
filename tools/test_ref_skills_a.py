@@ -3,7 +3,9 @@
 
 They exercise the model's own logic on made-up memory: the statistics slots on invented
 tables, the mana-cost reader on hand-assembled instructions, the weapon-entry rule, the
-damage descriptor, the divide rule, attached-spell lookup and the radial damage.  Whether
+damage descriptor, the divide rule, attached-spell lookup, the radial damage, and - for the
+second pass - Cone of Fire's descriptor, Dismiss Undead's target loop, Shield Bash's turn
+target, the Hammer of Wrath's level and the Fire Weapons light.  Whether
 the model matches the game is tools/difftest_skills_a.py's business (it needs the
 executable)."""
 import os
@@ -198,6 +200,112 @@ class Helpers(Fixture):
             for function, method in registry.items():
                 self.assertTrue(hasattr(SA.Model, method), '%s at 0x%x' % (method, function))
         self.assertEqual(len(set(SA.MODELLED.values())), len(SA.MODELLED))
+
+
+class SecondPass(Fixture):
+    """The casts and effects added by the second pass, on made-up memory."""
+    OBJ_TABLE, OWNER, SPELL, BOLT = 0x8000, 0x9000, 0xA000, 0xB000
+
+    def creature(self, addr, x, y, kind=0x10, flags=0x20):
+        mem = self.mem
+        mem.poke(addr + 0xC, 4, flags)
+        mem.poke(addr + 0x48, 4, self.OBJ_TABLE)
+        mem.poke(addr + 0xB4, 1, kind)
+        mem.poke(addr + 0x10, 4, f32(x))
+        mem.poke(addr + 0x14, 4, f32(y))
+        return addr
+
+    def test_cone_of_fire_descriptor(self):
+        # a monster's cone at level 2: tier 2 gives 4, a quarter of that is 1, and the maximum - scaled by a
+        # quarter a second time - is 0: the range damage_apply's fire entry divides by is v2 - v1 + 1 = 0
+        m, mem = self.model, self.mem
+        self.tier(1, 0, 1, 380, 11.0)
+        self.tier(2, 0, 1, 2, 2.0)
+        self.tier(1, 1, 1, 30, 0.2)
+        self.tier(2, 1, 1, 30, 0.05)
+        owner, victim = self.creature(self.OWNER, 0.0, 0.0), self.creature(0xC000, 40.0, 0.0)
+        mem.poke(self.SPELL, 1, 2)
+        mem.poke(self.SPELL + 8, 4, SKILL)
+        mem.poke(self.SPELL + 0xC, 4, owner)
+        mem.poke(RC.G_SIM_FRAME, 4, 1500)                   # a multiple of 15
+        self.answers.update({'world_collectObjectsInArc': [victim], 'Creature.v20': 1, 'res_find': 0})
+        m.coneoffire_run(self.SPELL, (0, 0, 0), 0)
+        hits = [args for name, args in self.calls if name == 'damage_apply']
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0][6], SA.descriptor((0x15, 1, 0, 0)))
+        self.assertEqual(hits[0][5], 0x40)
+        # a player's cone at level 1: 380 -> 95, and the maximum is a quarter of 95..114
+        del self.calls[:]
+        mem.poke(owner + 0xC, 4, 0x60)
+        mem.poke(self.SPELL, 1, 1)
+        m.coneoffire_run(self.SPELL, (0, 0, 0), 0)
+        entry = [args for name, args in self.calls if name == 'damage_apply'][0][6][1]
+        self.assertEqual(entry[1], 95)
+        self.assertTrue(23 <= entry[2] <= 28 and entry[2] < entry[1])
+
+    def test_dismiss_undead_keeps_the_last_in_box_order(self):
+        m, mem = self.model, self.mem
+        self.tier(1, 2, 1, 3, 0.25)
+        owner = self.creature(self.OWNER, 0.0, 0.0, kind=0, flags=0x60)      # faces along +x (facing 0)
+        far, near, mid = (self.creature(0xC000 + 0x400 * i, x, 5.0) for i, x in enumerate((200.0, 50.0, 120.0)))
+        self.answers.update({'world_collectObjectsInBox': [far, near, mid], 'Creature.v20': 1, 'trail_create': 7,
+                             'res_find': 0, 'sound_playOnObject': 0})
+        m.holybolt_ctor(self.BOLT, (0, 0, 0), 0, 5, owner, SKILL)
+        self.assertEqual(m.u32(self.BOLT + 0x64), mid)      # not `near`: every undead in front replaces the one before
+        self.assertFalse(any(name == 'handle_link' and args[0] == self.BOLT + 0x64 for name, args in self.calls))
+        # once one behind the caster has been seen, only a nearer one in front replaces the front one
+        behind = self.creature(0xD000, -30.0, 0.0)
+        self.answers['world_collectObjectsInBox'] = [near, behind, far, mid]
+        m.holybolt_ctor(self.BOLT, (0, 0, 0), 0, 5, owner, SKILL)
+        self.assertEqual(m.u32(self.BOLT + 0x64), near)
+        # nothing qualifies: no target, and the aim point is 48000 ahead, 36 up
+        self.answers['world_collectObjectsInBox'] = []
+        m.holybolt_ctor(self.BOLT, (0, 0, 0), 0, 5, owner, SKILL)
+        self.assertEqual(m.u32(self.BOLT + 0x64), 0)
+        self.assertEqual(m.u32(self.BOLT + 0x68), f32(48000.0))
+        self.assertEqual(m.u32(self.BOLT + 0x70), f32(36.0))
+
+    def test_shield_bash_target_is_the_head_entry(self):
+        m, mem = self.model, self.mem
+        owner = self.creature(self.OWNER, 0.0, 0.0, kind=0, flags=0x60)
+        clip, class_def = 0xE000, 0xE100
+        mem.poke(owner + 0x24, 4, class_def)
+        flagged, plain = self.creature(0xC000, 20.0, 0.0, flags=0x1000020), self.creature(0xC400, 40.0, 0.0)
+        self.answers.update({'res_find': clip, 'world_collectObjectsInArc': [flagged, plain]})
+        m.shieldbash_ctor(self.SPELL, 3, owner, SKILL)
+        self.assertEqual(m.u32(self.SPELL + 0x24), flagged)     # the head, although it is the later entry that qualifies
+        self.assertEqual(m.u32(owner + 0x58C), 6)
+        self.assertEqual((m.u8(clip + 0x20), m.u32(clip + 0x1C)), (2, 0x3F181040))      # the shared clip header
+        self.answers['world_collectObjectsInArc'] = [flagged]
+        m.shieldbash_ctor(self.SPELL, 3, owner, SKILL)
+        self.assertEqual(m.u32(self.SPELL + 0x24), 0)
+
+    def test_hammer_level_is_one_higher(self):
+        m, mem = self.model, self.mem
+        self.tier(1, 1, 1, 15, 1.0)
+        calls = []
+        m.item_parse = lambda text, record: calls.append(text)             # the item tables are game data
+        self.answers.update({'res_find': 0, 'sound_playOnObject': 0})
+        m.hammer_ctor(self.BOLT, (0, 0, 0), 0x1234, 0, 3, SKILL)
+        self.assertEqual(m.u32(self.BOLT + 0xA4), 4)
+        self.assertEqual(m.u32(self.BOLT + 0xA8), (15 + 3) * 60)           # statistic 1 at level 4, in frames
+        self.assertEqual(calls, [0x550930])
+        m.hammer_ctor(self.BOLT, (0, 0, 0), 0, 0, 9, SKILL)
+        self.assertEqual(calls[-1], 0x550950)                              # every level above 3 shares one text
+
+    def test_fire_weapons_light(self):
+        m, mem = self.model, self.mem
+        owner = self.creature(self.OWNER, 0.0, 0.0, kind=0)
+        mem.poke(self.SPELL + 0xC, 4, owner)
+        mem.poke(RC.G_SIM_FRAME, 4, 1000)
+        mem.poke(self.SPELL + 0x18, 4, 1015)                # 15 frames left
+        mem.poke(self.SPELL + 0x5C, 4, 0)                   # the opening is long over
+        m.fireweapons_run(self.SPELL, (0, 0, 0), 0)
+        self.assertAlmostEqual(C.to_float(m.u32(self.SPELL + 0x3C)), 55.0, places=3)    # 15 x (1/30) x 110
+        mem.poke(self.SPELL + 0x18, 4, 1000)                # the end: the spell deletes itself
+        del self.calls[:]
+        m.fireweapons_run(self.SPELL, (0, 0, 0), 0)
+        self.assertEqual([name for name, _args in self.calls], ['Spell.v1'])
 
 
 if __name__ == '__main__':

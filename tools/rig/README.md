@@ -81,6 +81,8 @@ directory; keep that, and any logs and dumps, under `local/rig-out/`.
 | `--net-shim <a.b.c.d>`, `--net-log <file>`, `--net-log-all` | the libnet shim (below) |
 | `--machine A\|B`, `--link listen:<path>\|connect:<path>`, `--bus delay=N,jitter=N,loss=N,seed=N` | two joined machines (below) |
 | `--tick-log <file>`, `--tick-watch <name=expr:type>`, `--tick-at <addr>` | one row per lockstep tick (below) |
+| `--predict-audit <file>` | what each call of `net_predictLocalPlayer` 0x131d88 left changed, outside a short ignore list (`AuditIgnored`): address, symbol, calls, first tick, old and new word, and the object class and field (pool) or allocating function (heap); also whether any grid cell or the off-grid list changed the order or the set of its real objects |
+| `--predict-trace <file>`, `--trace-range <addr:length[:stride][,all][,name=N]>`, `--trace-ticks <lo:hi>`, `--trace-raw <n>` | which code writes the watched words: writers gathered by site, writing block and call chain (below) |
 | `--fp-round nearest\|up\|down\|zero` | force a floating-point rounding mode on this machine (Play! runs the EE with round-toward-zero); for float-mismatch experiments |
 | `--no-code-protect`, `--video-thread`, `--throttle`, `--play-logs` | emulator behaviour, see `--help` |
 
@@ -165,6 +167,31 @@ does not, and is silently never reported.
 points (`text_drawWideImpl`, `text_drawWrapped`, `text_drawWrappedCentered`), which gives
 a running transcript of the text on the screen — the only way to see menus without video.
 The transcript is game text: keep it under `local/`, do not commit it.
+
+### Finding the code that writes a word
+
+Play! has no write break points, and a real break per block would change the machine's
+timing. With `--predict-trace` the rig installs its own EE executor (a subclass of
+Play!'s) and, at the first traced prediction call, puts a break point on every instruction
+of the executable. Play! then compiles a call to the break-point filter into the head of
+every translated block; the rig's filter looks at the watched ranges and lets the block
+run on, so nothing leaves the executor and the run is the same as without the trace. A
+word that differs from its shadow was written by the block entered before. The output has
+one line per site, writing block and call chain (the chain is kept from `jal` return
+addresses), with a count and the first and last tick; `--trace-raw N` adds the first N
+writes one by one in `<file>.raw`.
+
+A range is watched inside prediction calls only; `,all` watches it everywhere (use it with
+`--trace-ticks` for anything but a few words: every block of the game then compares the
+range). `:stride` folds an array into its element's fields. The writer is known to the
+block; read the store in `tools/dis.py`. A word written by Play!'s kernel emulation rather
+than by game code is blamed on the block that happened to be running. Recompiling every
+block with a check costs about a minute per machine at the start.
+
+```
+python3 -I -B tools/rig/fuzz.py --states local/rig-out/run4 --seeds 402:1 --patches FIXES --no-rerun \
+    --extra "--predict-trace local/rig-out/t-%M.tsv --trace-range 0x631134:4,all --trace-ticks 4741:4933 --trace-raw 4000" ...
+```
 
 ### The libnet shim
 
@@ -257,7 +284,8 @@ excepted: they move the timing, which hides a coincidence without fixing it) to 
 which section removes the difference.
 
 By default the sections for the two known causes, K1 and K2, are applied on both machines
-(`--patches none`, or `--patches "name;name"`, changes that). `--prelude FILE` puts script
+(`--patches none`, `--patches FIXES` for every fix section, or `--patches "name;name"`,
+changes that). `--no-rerun` skips the second run of a pair that differed. `--prelude FILE` puts script
 lines before the fuzz; `--extra "…"` passes options to `rig.py pair` (for example
 `--extra "--b-arg --fp-round --b-arg nearest"`); `--keep` keeps the logs of pairs that
 agreed too.

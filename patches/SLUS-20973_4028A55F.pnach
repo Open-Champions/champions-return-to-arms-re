@@ -216,3 +216,28 @@ patch=1,EE,0011A434,word,00031B3C
 patch=1,EE,0011A438,word,00431025
 patch=1,EE,0011A43C,word,FC8200A8
 patch=1,EE,0011A440,word,03E00008
+
+[Net test: item records start from zero, not from stack leftovers]
+author=reverse engineering test patch; confirmed on two linked Play! emulator instances (FINDINGS V30: all twelve real-character arena pairs agree with it, where two still differed silently without it); untested on PCSX2 or a console
+description=When the game creates an item it starts from a default record of 72 bytes of which it sets only 26; the other 46 are whatever was left on the stack, and that differs between machines (for instance according to whether a skeleton pose was cached or rebuilt just before). Dropped loot then carries different unused bytes on different machines. This rewrites the default-record set-up in place so the whole record is cleared first (item descriptor parser, 0x1069FC-0x106A48). Fields a descriptor does not set become 0 instead of leftovers. FINDINGS I1, V23, V30. Every player should use the same setting.
+// was: 24050020 24040003 00C51021 24A50008 2403FFFF 2484FFFF 00000000 0481FFFA A4430004 A0C30021 24040010 A0C30020 24050003 00C41021 24840002 0040182D 24A5FFFF A4400000 04A1FFFA A4600008
+patch=1,EE,001069FC,word,FCC00000
+patch=1,EE,00106A00,word,FCC00008
+patch=1,EE,00106A04,word,FCC00010
+patch=1,EE,00106A08,word,FCC00018
+patch=1,EE,00106A0C,word,FCC00020
+patch=1,EE,00106A10,word,FCC00028
+patch=1,EE,00106A14,word,FCC00030
+patch=1,EE,00106A18,word,FCC00038
+patch=1,EE,00106A1C,word,FCC00040
+patch=1,EE,00106A20,word,2403FFFF
+patch=1,EE,00106A24,word,A4C30024
+patch=1,EE,00106A28,word,A4C3002C
+patch=1,EE,00106A2C,word,A4C30034
+patch=1,EE,00106A30,word,A4C3003C
+patch=1,EE,00106A34,word,A0C30021
+patch=1,EE,00106A38,word,A0C30020
+patch=1,EE,00106A3C,word,00000000
+patch=1,EE,00106A40,word,00000000
+patch=1,EE,00106A44,word,00000000
+patch=1,EE,00106A48,word,00000000

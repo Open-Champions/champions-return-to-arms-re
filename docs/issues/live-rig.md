@@ -6,7 +6,10 @@ mismatch between the machines, the lag sections) phase 4 (section 9: the arena w
 characters that have levels and skills — which does diverge — and a tested patch
 proposal for the spin skill, SB1) and phase 5 (section 10: the pet and the item bytes
 traced, and the arena with every section on) and phase 6 (section 11: every class skill
-swept, other levels, and an audit of what a prediction call leaves changed). In short: two machines play one lockstep game here;
+swept, other levels, and an audit of what a prediction call leaves changed) and phase 7
+(section 12: the audit with every fix on and resolved to objects, a block trace that finds
+the writing code, the six follow-up questions, and the source of the item bytes with a
+21-word fix). In short: two machines play one lockstep game here;
 random input found two real divergences, which are the ledger's K1 and K2, and the test
 patch for each removes it; the arena did **not** go out of sync in twelve runs.
 
@@ -1180,3 +1183,222 @@ their source.
 The store log on the item's +0x2c–0x2f (step 3); the writing instructions for the audit's
 top sites; the audit over the skill sweep and over more than one pair; per-object
 resolution of heap addresses.
+
+## 12. Phase 7: following the audit
+
+Limits as in section 7. Every run here has all fix sections on (`FIXES`, section 11). Three
+pairs: arena pair 402, arena pair 406 (the pet pair), and the same-class spin pair (states
+`run5`, seed 500, bus delay 8). **Ran** unless marked.
+
+### 12.1 Two new tools
+
+- **The audit resolves objects and checks list order.** A changed word inside the object
+  pool is reported as (class, field) through `g_poolClasses` 0x403a10 and the virtual table
+  at +0x48 (`rig.py` now names the tables from `vtables.txt`); one in the tagged heap as
+  the function that allocated the block (`g_heapFirstBlock` 0x6dffc8 points at the first
+  block). After every call the audit also walks every cell of `g_grid` and `g_gridB` and
+  the off-grid list, before and after, leaving the copy out, and counts the calls after
+  which a list holds its real objects in another order, or other real objects.
+- **`--predict-trace`: which instruction writes a word.** Play! has no write break points.
+  The rig installs its own EE executor (a subclass; Play!'s source is untouched) whose
+  break-point filter is called at the head of every translated block once a break point
+  sits on every instruction. That is a call per block inside the executor, so the
+  machine's timing is that of the same run without the trace (checked: each of the three
+  pairs, run with and without it, audited the same number of calls and found the same
+  number of changed words). A watched word (`--trace-range`) that differs from its shadow
+  was written by the block entered before;
+  writes are gathered by site, writing block and call chain (kept from the `jal` return
+  addresses). `,all` on a range watches it outside the prediction calls too. A whole arena
+  pair with the audit and the trace on one machine runs at 0.8 × real time. The writer is
+  known to the block, not to the instruction: the store is then read in the block's few
+  instructions. A word written by the emulator's own kernel emulation (not by game code)
+  is blamed on whatever block was running; two such words turned up (0x508548, 0x8ee340:
+  the "writers" are scattered over unrelated functions).
+
+### 12.2 The audit with every fix on
+
+74,522 prediction calls on the six machines. **No call left a grid cell or the off-grid
+list with its real objects in another order, or with other real objects: 0 of 74,522.**
+Words changed outside the ignore list, machine A of each pair (words / largest number of
+calls in which one of them changed; machine B the same picture unless noted):
+
+| Group | 402 | 406 | spin | What it is, and who writes it (trace) |
+|---|---|---|---|---|
+| `g_simFrame` | 1 / 15,314 | 1 / 15,306 | 1 / 6,346 | the prediction frame counter, 12.3 a |
+| `g_terrainStamp` 0x44f08c, and the stamps in the level's terrain elements (heap blocks of `gob_loadAll`, 24–113 words) | 1 / 13,864 | 1 / 13,918 | 1 / 6,346 | visit counter of the terrain queries: 32 bits (`lw`/`beq` at 0x18338c–0x1833a0), compared for equality inside one query only. Harmless (**Observed**) |
+| pose buffers and the pose list (0x791ec0–0x7b8344), animation decoder cache (0x6f0000–0x791e90) | ~150,000 words / up to 13,267 | same | same | the two animation caches, shared by the copy, the real objects and drawing. See the pool rows and 12.3 f |
+| camera: `g_cameraPos`, `g_cameraMatrix`, `g_viewProj…`, 0x44f0a8–0x44f104 and 0x7d5c08–0x7d5c64 (labelled `g_pathBusy`, `g_pathQueue` in section 11: wrong), 0x7d89d8, 0x86ad80–0x86aed4 (labelled `g_goldPending`: wrong) | ~130 / 6,500 | same | fewer | `Camera_update` → `Camera_updateFollow`, `Camera_followCollide`, `camera_buildFrustum`. Presentation |
+| particles and trails: 0x87072c–0x870780 (labelled `g_scriptPostAction`: wrong), 0x44facc–0x44fca4, 0x8657a0, 0x82d104…, 0x7e0000–0x810000 | thousands / up to 7,818 | same | few | `particle_spawn` ← `fx_modelParticlesNearCamera` ← `Creature_run` ← `Player_run`; `trail_create` ← `Player_weaponTrails`. Presentation |
+| sound, voice, HUD, rumble: `g_soundObjHandles`, `g_soundRpcClient`, `g_streams`, `g_musicVolume`, 0x8723e8, 0x86ab7c (labelled `g_receivedChecksums`: wrong; `hud_showMessage`), `g_hudMessageFrames`, `g_padRumble`, `g_cameraShake` | ~120 / up to 369 | same | few | `sound_playOnObject`, `sound_playFoley`, `player_voice`, `hud_showMessage`, all from `Player_run`. Presentation |
+| `g_cosmeticSeed`, 0x404468 | 2 / 294, 130 | 2 / 682, 139 | 1 / 27 | the unsynchronised generators: particles, foley, camera shake, voice; 0x404468 by `Player_run` itself |
+| the local player's record +0x4a80…+0x4ac0 | 16 / 2,827 | 16 / 4,375 | 15 / 703 | weapon-trail and ability-button fields (`docs/player.md`) |
+| `g_handleNodes`, `g_handleFreeList` | 287 / 2,223 | 317 / 1,913 | 20 / 69 | the copy's handles, 12.3 b |
+| `g_grid` heads, `g_offGridList` | 12 / 1,256 | 11 / 974 | 5 / 81 | the copy's own cell membership, 12.3 b |
+| **pool, field +0x0** of `Horsemen`, `Skelight`, `Cazic`, `CastBadger`, `AutoProp`, `PhProp`, `Gold`, `PoisonBolt`, `DiseaseBolt` and of the real `Player` objects | 15 / 73 | 16 / 52 | — | the object's list of handles that point at it: the copy took or dropped a handle to it, 12.3 b |
+| **pool, animation cache pointers**: `Player` +0x120, +0x140, +0x160, +0x180, +0x1a0; `Horsemen` +0x120; `AutoProp` +0x98, +0xa4; `HackDoor` +0xa4; `Gold` +0x58, +0x64 | 13 / 1 | 17 / 2 | 8 / 4 | a pointer into one of the two caches set to 0: the copy's animation took the cache entry of a real object. Up to 9 calls per field on machine B. 12.3 f |
+| pool, a free block; `g_poolLastBlock` | — (B: 109 / 7) | — (B: 72 / 8) | 48 / 4 | the spin effect object made and destroyed inside the call, 12.3 e |
+| **`g_pathQueueWrite` and queue entries** | — | 1 / 45 (B: 49) | — | the copy queues route requests, 12.3 d |
+| 0x508548, 0x8ee340 | 2 / 1,134 | 2 / 1,420 | 1 / 13 | counters written from outside the game's code (12.1) |
+| one heap block whose allocator field points into `frustum_testBox` | 20 / 3 | 20 / 3 | 244 / 108 | not identified |
+
+So with every fix on, a prediction call changed two kinds of field in objects other than
+the copy and nothing else: the head of the "who points at me" handle list (+0x0), and
+animation cache pointers. No position, flag, hit point or state field of a real object
+changed in any of the 74,522 calls. The spin's clip header and the pet's flag of section 11
+are gone from the table.
+
+### 12.3 The six questions
+
+**a. `g_simFrame` — harmless.** It is the prediction frame counter outside a tick, by
+design. `net_frameLoop` saves it and sets it to `g_netFrame` before the tick (0x139fb8,
+0x139fdc) and puts the saved value back after `tasks_run` and `path_service`
+(0x13af80–0x13af98). The prediction adds one per predicted frame (0x132ca0–0x132cd4), and
+the rebase stores a new value (0x13b28c). Traced over a whole pair with the range watched
+everywhere: every tick is bracketed by the two stores, so tick code always reads
+`g_netFrame`. The saved value also goes into the sync record (+4, 0x13afa0), which
+`docs/netcode.md` already lists as not compared.
+
+**b. Grid lists and handle nodes — only the copy.** The order check above is the answer
+for the lists the simulation walks: 0 of 74,522. `g_offGridList` is written by
+`obj_moveWithCollision` ← `creature_moveSimple` ← `Player_move` ← `Player_run` when the
+copy itself leaves the grid. Every change of `g_handleFreeList` inside a prediction call,
+by call chain (pair 402 / 406 / spin, machine A):
+
+| Chain | Count | What |
+|---|---|---|
+| `handle_link`, `handle_clear` ← `Player_run` (0x1aa32c–0x1aa554) | 410 / 219 / 0 | after `world_collectObjectsInBox`: the copy's list of nearby objects (+0x4b8) and its target (+0x234). These put a node into the real object's +0x0 list |
+| `handle_link`, `handle_clear` ← `sound_playOnObject`, `sound_playAtPos` ← … ← `Player_run` | 372 / 389 / 2 | sound handles |
+| `handle_link` ← `path_requestToPoint` | 0 / 90 / 0 | the requester handle of d |
+
+The nodes come off one free list, so which node a real link later gets differs between
+machines; the lists' contents and order do not. Nothing was found that reads a node
+address (compare ledger O8), and nothing but `handle_clear` at destruction walks an object's +0x0
+list (`docs/objects.md`).
+
+**c. `g_scriptPostAction` — not written.** The words section 11 put under that name are
+the particle pool (table above). The variable itself (0x86fa80, 32 bytes watched) was not
+written inside any of 37,262 traced calls. Its only writers in the executable are
+`script_resetState` 0x1eda90, `script_setPostAction` 0x1edab0 and `script_runPostAction`
+0x1edae8 (**Observed**, `tools/gxref.py`); the copy's `Player_run` reached none of them.
+
+**d. The route queue — the copy does queue requests; no effect on shared state shown.**
+In pair 406 the copy called `Creature_moveToDest` from `Player_run` 0x1a5604 (the player's
+walk-to-a-destination state) and through `Creature_advanceWaypoint` →
+`Creature_requestPath` → `path_requestToPoint` put 45 requests into the real queue on
+machine A (49 on B), ticks 11078–13766, advancing `g_pathQueueWrite` 0x44f09c. They are
+answered by the blocking `path_service(1)` of the next tick, like every request, so no
+monster is answered earlier or later (**Observed**, `docs/engine.md`). The answer is
+delivered to the requester's slot 7, `Creature_onPathResult` 0x11a260, which stores four
+fields of the requester — the copy — and calls nothing (**Observed**). The pair stayed in
+step through those ticks. What is left: the search for the copy's request runs inside the
+real tick on one machine and leaves its marks in the shared route grid; marks that the
+next search's clearing flood does not reach stay and block later searches
+(`docs/spec/world-queries.md` 10.3). Whether a copy's search can leave such marks was not
+tested (**Unknown**).
+
+**e. Allocation inside a prediction call — one object, freed in the same call.** The pool
+free heads (0x403a1c, 0x403a2c, 0x403a3c) and `g_heapFreeBytes` were watched for all
+37,262 calls. Pairs 402 and 406, machine A: no write. Spin pair: `pool_new` ←
+`SkillCyclone_cast` ← `Player_castSkill` ← `Player_run`, then `SpellCyclone_dtor` ←
+`Player_castSkill`, 8 times: the spin's effect object, a 0x180 block, made and destroyed
+within the call. The free head is the same at return; the freed block keeps the object's
+bytes (the audit's "free block" rows), which `pool_new` clears when it hands the block out
+again. On machine B of the arena pairs, whose player has the spin skill, the same rows
+appear. ST1 stands for these runs. No tagged-heap allocation or release in any call.
+
+**f. The item bytes — found.** The other words (`g_receivedChecksums`, `g_zeroPad` in
+section 11) were mislabelled: a HUD message buffer and animation cache bookkeeping. The
+item bytes of 10.2 (V23) come from the stack, in four steps, each traced on pair 402 on
+both machines (`--trace-range …,all`):
+
+1. `item_parseDescriptor` 0x1069b8 builds a default record in a local at `sp+0xd0` and
+   copies all 0x48 bytes of it over the caller's record (0x106a58–0x106a94) before it
+   parses anything. The default initialiser (0x1069f8–0x106a48) sets 26 of the 72 bytes
+   (−1 in the halfwords at +0x24, +0x2c, +0x34, +0x3c and the bytes +0x20, +0x21; 0 in
+   +0x10…+0x1f). The other 46 bytes are whatever the stack held. **Observed**; this is why
+   clearing the caller's record did nothing (10.2).
+2. In tick 4741 the bytes at +0x2e of that local (0x01ffccce) were 0x0000 on machine A and
+   0x3f80 on B, and the parser's copy carried them into the record (writing block
+   0x106a58), from where `PhProp_ctor` 0x155ad4 copied them into the dropped item
+   (object 0x630fc0, +0x174).
+3. On B the word had last been written, in the same tick, by `anim_buildPose` ←
+   `anim_getJointMatrix` ← `model_getAttachPoint` ← `Creature_processDamage` ←
+   `Horsemen_run`: 558 writes to those 72 bytes of stack in ticks 4739–4741, the last of
+   them in tick 4741. On A `anim_buildPose` did not write there in those ticks at all.
+4. So the dying monster's pose was in the cache on A and had to be rebuilt on B, inside
+   the tick. The pose is the same either way; the stack it leaves behind is not. The
+   audit's pool rows show a prediction call taking the cache entry of a real object;
+   that B's entry was lost that way is **Inferred** (with "no prediction copy" the pair
+   has no difference, 10.2).
+
+The general statement: **what a tick leaves on the stack differs between machines**,
+because the animation caches differ (and prediction calls and drawing run on the same
+stack between ticks). Any function of the tick that reads a local it did not write picks
+that up. The item parser is the one instance found; the same inlined initialiser occurs at
+151 places in the executable (pattern: `sb` −1 to +0x21 and +0x20 of a record), most of
+them followed by the parser, which overwrites the whole record.
+
+### 12.4 A fix for the item bytes (proposal)
+
+Replace the parser's default initialiser, in place, by one that clears the whole local
+first. 21 words, 0x1069f8–0x106a48; no branch from outside enters that range (checked in
+the disassembly). Original words read from the executable:
+
+| Address | Original | New | Meaning of the new word |
+|---|---|---|---|
+| 0x1069f8 | 27a600d0 | 27a600d0 | `addiu a2, sp, 0xd0` (unchanged) |
+| 0x1069fc | 24050020 | fcc00000 | `sd zero, 0x00(a2)` |
+| 0x106a00 | 24040003 | fcc00008 | `sd zero, 0x08(a2)` |
+| 0x106a04 | 00c51021 | fcc00010 | `sd zero, 0x10(a2)` |
+| 0x106a08 | 24a50008 | fcc00018 | `sd zero, 0x18(a2)` |
+| 0x106a0c | 2403ffff | fcc00020 | `sd zero, 0x20(a2)` |
+| 0x106a10 | 2484ffff | fcc00028 | `sd zero, 0x28(a2)` |
+| 0x106a14 | 00000000 | fcc00030 | `sd zero, 0x30(a2)` |
+| 0x106a18 | 0481fffa | fcc00038 | `sd zero, 0x38(a2)` |
+| 0x106a1c | a4430004 | fcc00040 | `sd zero, 0x40(a2)` |
+| 0x106a20 | a0c30021 | 2403ffff | `addiu v1, zero, -1` |
+| 0x106a24 | 24040010 | a4c30024 | `sh v1, 0x24(a2)` |
+| 0x106a28 | a0c30020 | a4c3002c | `sh v1, 0x2c(a2)` |
+| 0x106a2c | 24050003 | a4c30034 | `sh v1, 0x34(a2)` |
+| 0x106a30 | 00c41021 | a4c3003c | `sh v1, 0x3c(a2)` |
+| 0x106a34 | 24840002 | a0c30021 | `sb v1, 0x21(a2)` |
+| 0x106a38 | 0040182d | a0c30020 | `sb v1, 0x20(a2)` |
+| 0x106a3c | 24a5ffff | 00000000 | `nop` |
+| 0x106a40 | a4400000 | 00000000 | `nop` |
+| 0x106a44 | 04a1fffa | 00000000 | `nop` |
+| 0x106a48 | a4600008 | 00000000 | `nop` |
+
+What it changes: the fields of an item record that the descriptor does not set are 0 on
+every machine instead of stack leftovers. The registers the code after it uses are as
+before (`a2` = `sp+0xd0`; `v0`, `v1`, `a0`, `a1` are loaded again at 0x106a4c–0x106a58).
+
+**Tested on the rig only** (Play!; not on PCSX2 or a console): the twelve arena pairs of
+9.2 with every fix section and these 21 words on both machines: **180,701 ticks, no pair
+differs** — pairs 402 and 410, which differed in two item bytes with every section on
+(10.3; pair 402 again today at tick 4932), included.
+
+What could go wrong: a field that held a leftover now holds 0. A leftover was arbitrary,
+so code reading such a field had to cope with any value already (**Inferred**; nothing was
+seen reading +0x2e, 10.2). Only the arena was run. Records built without the parser keep
+their own leftovers (the other inlined initialisers were not followed). Every player must
+apply it: a patched and an unpatched machine agree no better than two unpatched ones.
+
+### 12.5 Proposed ledger rows
+
+| Row | Text | Kind |
+|---|---|---|
+| V27 | With every fix section on, 74,522 prediction calls on three pairs changed, in objects other than the copy, only the handle-list head +0x0 and animation cache pointers; no grid cell or off-grid list changed the order or the set of its real objects | Ran |
+| V28 | `g_simFrame` is the prediction frame outside a tick; the tick saves it, runs on `g_netFrame`, and restores it (0x139fb8, 0x139fdc, 0x13af98). Harmless | Observed, Ran |
+| V29 | The copy queues real route requests in the walk-to-destination state (`Player_run` 0x1a5604; 45 and 49 in pair 406). Answered in the next tick into the copy; the pair stayed in step. Marks left in the route grid by that search: not tested | Ran; Unknown |
+| V30 | V23's source: `item_parseDescriptor` copies a local default record of which 46 of 72 bytes are uninitialised; the stack differs between machines because a pose is rebuilt inside the tick on the machine whose cache lost it. 21-word fix, 12 arena pairs clean | Ran |
+| V31 | The only allocation inside a prediction call in these runs is the spin effect object, freed in the same call | Ran |
+
+### 12.6 Not done
+
+- Whether the copy's route search can leave marks in the route grid (12.3 d).
+- The other 150 inlined record initialisers: which of them are not followed by the parser.
+- Other locals read before written in tick code; the stack finding says this class exists,
+  one member was found.
+- The heap block attributed to `frustum_testBox`, and the two counters written from
+  outside game code.
+- The trace on machine B, and the audit over the skill sweep.

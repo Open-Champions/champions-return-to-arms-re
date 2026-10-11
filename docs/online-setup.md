@@ -109,7 +109,8 @@ hardware differences the other items are about:
 ## Suggested patch set for a first online test
 
 **Result on the two-machine rig with this whole set on:** none of twelve real-character arena
-fights reached the out-of-sync message, against 7 of 12 with no patches (FINDINGS V21). That
+fights reached the out-of-sync message, against 7 of 12 with no patches, and with the item-record
+section included the twelve agree in every shared value (FINDINGS V21, V30). That
 was the Play! emulator with two character builds; PCSX2, consoles, lobby characters and the
 other classes are untested.
 
@@ -134,6 +135,7 @@ holds for the machines that have it — enable them on every machine:
 | net launch clears a stuck memory-card latch | B10, B11 |
 | predicted spin cast leaves the shared animation alone | two players of the same class using the spin skill — **confirmed live**: 6 of 6 pairs diverged without it, 0 of 6 with it |
 | creatures ignore being touched by the prediction copy | a pet or monster reacting early on its owner's machine — **confirmed live**: the pet pair that diverged stays in step with it |
+| item records start from zero, not from stack leftovers | dropped items carrying different unused bytes on different machines — **confirmed live**: with it, all twelve arena fights agree completely |
 | prediction copy starts without pending damage | G11–G13, G24 |
 | equalise at once (LAG-1) | input delay staying high after a stall, which is also what widens K1 and K2 — **confirmed live**: peak 11 frames instead of 34, cleared in 10 s instead of 35 |
 

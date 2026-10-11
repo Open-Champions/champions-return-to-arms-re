@@ -50,6 +50,17 @@ def load_symbols():
                 except ValueError:
                     continue
                 table.setdefault(fields[1], address)
+    # the classes' virtual tables, so that an object can be named by the word at +0x48
+    vtables = os.path.join(ROOT, "vtables.txt")
+    if os.path.exists(vtables):
+        with open(vtables, encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                fields = line.split()
+                if len(fields) >= 2 and fields[0].startswith("0x"):
+                    try:
+                        table.setdefault("vtable_" + fields[1], int(fields[0], 16))
+                    except ValueError:
+                        pass
     return table
 
 

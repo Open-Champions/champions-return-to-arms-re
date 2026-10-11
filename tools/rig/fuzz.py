@@ -138,8 +138,11 @@ def main(argv):
     with concurrent.futures.ThreadPoolExecutor(workers) as pool:
         results = list(pool.map(lambda job: run_pair(config, job, base, ""), jobs))
 
-    # confirm each divergence by running the pair again
+    # confirm each divergence by running the pair again (--no-rerun: do not, for runs that
+    # write audit or trace files, which a second run would only write again)
     divergent = [(job, result) for job, result in zip(jobs, results) if result["ok"] and result["first"] is not None]
+    if "--no-rerun" in argv:
+        divergent = []
     with concurrent.futures.ThreadPoolExecutor(workers) as pool:
         again = list(pool.map(lambda item: run_pair(config, item[0], base, "-again"), divergent))
     for (job, result), second in zip(divergent, again):
