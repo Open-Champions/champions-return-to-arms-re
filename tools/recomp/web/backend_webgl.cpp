@@ -187,9 +187,11 @@ struct GlBackend::Impl {
 
     // ---- what is set, so that it is not set again -------------------------------------
     struct Shadow {
-        bool valid = false;
         int textured = -1, tfx = -1, tcc = -1, atst = -1, blend_c = -1, alpha_out = -1, wrap[2] = {-1, -1};
-        float st_scale[2], tex_size[2], tex_offset[2], region[4], weave_half, texa[4], aref, blend[4], fix, target[2];
+        // not-a-number: equal to nothing, so the first use in a frame always sets the uniform
+        // (the program keeps last frame's values; this record does not)
+        float st_scale[2] = {NAN, NAN}, tex_size[2] = {NAN, NAN}, tex_offset[2] = {NAN, NAN}, region[4] = {NAN, NAN, NAN, NAN}, weave_half = NAN,
+              texa[4] = {NAN, NAN, NAN, NAN}, aref = NAN, blend[4] = {NAN, NAN, NAN, NAN}, fix = NAN, target[2] = {NAN, NAN};
         GLuint texture = ~0u, sampler = ~0u;
         int scissor[4] = {-1, -1, -1, -1};
         GLenum depth_func = 0, equation = 0, dst_factor = 0, src_alpha = 0;
@@ -200,13 +202,13 @@ struct GlBackend::Impl {
 #define CALL(x) do { g_webgl_calls++; x; } while (0)
 #define SKIP() g_webgl_skipped++
     void u1i(GLint loc, int& have, int v) { if (have == v) { SKIP(); return; } have = v; CALL(glUniform1i(loc, v)); }
-    void u1f(GLint loc, float& have, float v) { if (s.valid && have == v) { SKIP(); return; } have = v; CALL(glUniform1f(loc, v)); }
+    void u1f(GLint loc, float& have, float v) { if (have == v) { SKIP(); return; } have = v; CALL(glUniform1f(loc, v)); }
     void u2f(GLint loc, float* have, float a, float b) {
-        if (s.valid && have[0] == a && have[1] == b) { SKIP(); return; }
+        if (have[0] == a && have[1] == b) { SKIP(); return; }
         have[0] = a; have[1] = b; CALL(glUniform2f(loc, a, b));
     }
     void u4f(GLint loc, float* have, float a, float b, float c, float d) {
-        if (s.valid && have[0] == a && have[1] == b && have[2] == c && have[3] == d) { SKIP(); return; }
+        if (have[0] == a && have[1] == b && have[2] == c && have[3] == d) { SKIP(); return; }
         have[0] = a; have[1] = b; have[2] = c; have[3] = d; CALL(glUniform4f(loc, a, b, c, d));
     }
 
@@ -500,7 +502,6 @@ void GlBackend::execute(const FrameList& frame) {
             g.u1f(g.u.fix, s.fix, 1.0f);
         }
         if (!g.dual) g.u1i(g.u.alpha_out, s.alpha_out, alpha_out);
-        s.valid = true;
         CALL(glDrawArrays(c.prim == PK_TRIANGLES ? GL_TRIANGLES : c.prim == PK_LINES ? GL_LINES : GL_POINTS, (GLint)c.first, (GLsizei)c.count));
         g.draws++;
     }

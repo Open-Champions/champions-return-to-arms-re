@@ -278,6 +278,14 @@ void GlBackend::execute(const FrameList& frame) {
         g.textures.erase(t);
     }
     for (const TargetInfo& info : frame.targets) g.make_target(info);
+    for (uint32_t id : frame.dead_targets) {
+        auto t = g.targets.find(id);
+        if (t == g.targets.end()) continue;
+        f->glDeleteFramebuffers(1, &t->second.fbo);
+        f->glDeleteTextures(1, &t->second.colour);
+        f->glDeleteRenderbuffers(1, &t->second.depth);
+        g.targets.erase(t);
+    }
     g.shown = frame.show_target;
     if (frame.commands.empty()) return;
 

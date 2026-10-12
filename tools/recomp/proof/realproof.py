@@ -360,20 +360,20 @@ def sweep_rows(path):
 
 
 def why(verdicts):
-    """One reason for a function without a comparable case, from its twelve synthetic runs."""
+    """The reason a function has no comparable case: what the interpreter stopped on in most
+    of its twelve synthetic runs (ties go to the earlier name in the list)."""
     kinds = [v[5:].split('/')[0] for v in verdicts if v.startswith('stop:')]
-    order = ('steps', 'unimpl', 'trap', 'error', 'unaligned', 'fault')
-    names = {'steps': 'step limit in every or some runs (a loop that waits, or a long one)',
-             'unimpl': 'an instruction the interpreter does not implement (vector unit, COP0)',
-             'trap': 'BREAK or a trap', 'error': 'a jump to address 0 or out of the code',
-             'unaligned': 'unaligned access through a made-up pointer', 'fault': 'wild pointer (memory outside the 32 MB)'}
-    present = set(kinds)
-    if present <= {'unaligned', 'fault'}:
-        return names['unaligned'] if 'unaligned' in present else names['fault']
-    for key in order:
-        if key in present:
-            return names[key]
-    return 'other'
+    names = (('unaligned', 'unaligned access through a made-up pointer'),
+             ('fault', 'wild pointer: memory outside the 32 MB'),
+             ('steps', 'step limit: a loop that waits for something, or a very long one'),
+             ('unimpl', 'an instruction the interpreter does not implement (vector unit, COP0)'),
+             ('trap', 'BREAK or a trap'),
+             ('error', 'a jump to address 0 or out of the code'))
+    best, count = 'other', 0
+    for key, text in names:
+        if kinds.count(key) > count:
+            best, count = text, kinds.count(key)
+    return best
 
 
 def want(args):
@@ -423,6 +423,25 @@ def symbols():
                 except ValueError:
                     pass
     return names
+
+
+def references(funcs):
+    """{function: (call sites, jump sites, data words holding its address)} read from the
+    executable: who could reach a function that no session entered."""
+    import recomp
+    image = recomp.Image(os.path.join(ROOT, 'SLUS_209.73'))
+    wanted = set(funcs)
+    out = {f: [0, 0, 0] for f in funcs}
+    for index, w in enumerate(image.words):
+        op = w >> 26
+        if op in (2, 3):
+            target = ((image.text_lo + 4 * index) & 0xF0000000) | ((w & 0x3FFFFFF) << 2)
+            if target in wanted:
+                out[target][0 if op == 3 else 1] += 1
+    for _addr, value in image.data_words():
+        if value in wanted:
+            out[value][2] += 1
+    return out
 
 
 def report(args):
@@ -478,6 +497,7 @@ def report(args):
         for state, funcs in sorted(classes[kind].items(), key=lambda kv: -len(kv[1])):
             print('  %4d  %s' % (len(funcs), state))
     if args.list:
+        refs = references(list(wanted))
         for kind in ('none', 'partial'):
             for state, funcs in sorted(classes[kind].items()):
                 if state.startswith('identical to the return'):
@@ -487,7 +507,10 @@ def report(args):
                     extra = ''
                     if func in best and best[func]['fail']:
                         extra = '  ' + best[func]['fail'][:200]
-                    print('  %08x %s%s' % (func, names.get(func, ''), extra))
+                    calls, jumps, data = refs[func]
+                    print('  %08x %-34s calls %d, jumps %d, data words %d%s' % (func, names.get(func, ''), calls, jumps, data, extra))
+        unreferenced = [f for f in wanted if not any(refs[f]) and f not in best]
+        print('%d of the functions no state exists for are referenced by no call, jump or data word' % len(unreferenced))
     return 0
 
 

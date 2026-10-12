@@ -27,6 +27,12 @@
                  e.g. --flag=-msimd128
   --vu FILE      page: the VU1 main program translated to C++ (rta_replay --translate-vu
                  writes it); without it VU1 is interpreted
+  --vu-arith nearest|zero
+                 page: the arithmetic of the vertex programs (VU1), which is the picture's and
+                 has nothing to do with the game's.  The unit rounds toward zero.  nearest
+                 (default): WebAssembly's own rounding - the vertices come out within a fifth
+                 of a pixel of the Mac application's; zero: toward zero in software
+                 (-DRTA_SOFT_RZ_VU1), the same vertices bit for bit, at 40 % more decoder time
   --no-sound     page: rt/sound_null.cpp instead of the sound library
   --profiling    keep function names in the WebAssembly (for profiles)
 
@@ -95,6 +101,7 @@ def main():
     parser.add_argument('--define', action='append', default=[])
     parser.add_argument('--flag', action='append', default=[], help='one more compiler flag for everything but the translated game, as --flag=-msimd128; repeatable')
     parser.add_argument('--vu')
+    parser.add_argument('--vu-arith', choices=['nearest', 'zero'], default='nearest')
     parser.add_argument('--no-sound', action='store_true')
     parser.add_argument('--profiling', action='store_true')
     args = parser.parse_args()
@@ -126,6 +133,8 @@ def main():
     headers = headers_of(rt, HERE)
     if args.target == 'page':
         flags += ['-DRTA_WEB_PAGE', '-I', render, '-I', sound, '-I', app]
+        if args.vu_arith == 'zero':
+            flags.append('-DRTA_SOFT_RZ_VU1')
         headers += headers_of(render, sound, app)
         sources += [os.path.join(render, n) for n in RENDER]
         sources.append(os.path.abspath(args.vu) if args.vu else os.path.join(render, 'vu1_none.cpp'))

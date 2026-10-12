@@ -130,20 +130,26 @@ a game** (you get a code), **Join a game** with a code, **Just go to the lobby**
 asks for a player name once; the rest of section 4 applies as it stands (the account the
 page makes for you, your character, what happens when it stops).
 
-- **Browser players play with browser players.** A game hosted in a browser cannot be
-  played from this application and the other way round: the two compute floating-point
-  results differently in the last bit and fall out of step within seconds
-  (`docs/issues/browser-build.md`). The lobby shows both kinds in one list; agree on one.
-- **Mixed games are prepared, not released.** The application can compute as a browser
-  does ("browser arithmetic"; against the browser build, the same recorded session of
-  12,400 frames with fights and level changes: every byte read was the same in every
-  frame) and is written to change to it by itself when a browser player is in the room,
-  and to warn when a copy cannot follow. The choice has been tried between two copies of
-  the application (one started with `--rta-arith browser`, the other left alone: the
-  second changed in the room, both said so, and they stayed in step through the first
-  level and a level change); it has not been tried between a page and the application,
-  and the relay does not carry a browser player's packets to a player outside it, so
-  until that is built the line above holds.
+- **Mixed games: a browser player and a player with this application in one game.**
+  The two compute floating-point results differently in the last bit, and the game
+  falls out of step within seconds when one machine rounds one way and one the other.
+  So the application computes as a browser does ("browser arithmetic") for as long as a
+  browser player is in its room: it changes by itself, nobody has to set anything, and
+  it says "browser arithmetic" in its status bar. The page shows a line under its menu
+  in the room: "Everyone computes the same way …" - or a warning. **Do not start a game
+  while either side shows a warning**: a different patch set (everyone needs the same
+  build: the page as it is served now, and the current application), or a copy that
+  cannot compute as a browser does - an older copy of the application, or one started
+  with `--rta-arith native`. An older copy shows that as its patch-set warning.
+  Tried on one Mac, a page and one copy of the application through the lobby server and
+  the relay, hosted by either and joined by code: in step for 2,300 to 3,900 lockstep
+  frames a stretch, walking and fighting, across a level change by the mission menu.
+  **Not tried: two computers.** **Three players: not working on the test Mac** - they
+  meet in the room, and at *Start Game* one machine stays behind with the game's
+  message that some players cannot be reached; three copies of the application alone do
+  the same there, and why is not known. Needs the relay and the page of 2026-10-12
+  (afternoon) on the server; the application needs no new build.
+  [issues/browser-build.md](issues/browser-build.md) ("Mixed games"),
   [issues/mixed-arithmetic.md](issues/mixed-arithmetic.md).
 - Every packet of a browser player goes through the relay on the server instead of
   straight to the other player, so the delay between two browser players is the sum of

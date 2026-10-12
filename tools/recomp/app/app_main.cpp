@@ -361,6 +361,7 @@ class Screen : public QObject {
         std::swap(slot.textures, frame.textures);
         std::swap(slot.targets, frame.targets);
         std::swap(slot.dead_textures, frame.dead_textures);
+        std::swap(slot.dead_targets, frame.dead_targets);
         slot.show_target = frame.show_target;
         memcpy(slot.show_rect, frame.show_rect, sizeof(slot.show_rect));
         slot.number = frame.number;
@@ -554,7 +555,8 @@ static std::string info_line() {
                      (unsigned long long)g.textures_held, (unsigned long long)g.textures_freed, g.texture_bytes / 1048576.0, (unsigned long long)g.texture_missing,
                      (unsigned long long)g.copies, (unsigned long long)g.copies_skipped, (unsigned long long)g_renderer->vif.vu.bad,
                      (unsigned long long)g.unknown_regs, (unsigned long long)s.backend->draw_calls(), (unsigned long long)apprt::fields(), apprt::machine_seconds());
-    n += snprintf(text + n, sizeof text - n, " fogged=%llu", (unsigned long long)g.fogged);
+    n += snprintf(text + n, sizeof text - n, " fogged=%llu targets_held=%llu targets_freed=%llu", (unsigned long long)g.fogged, (unsigned long long)g.targets_held,
+                  (unsigned long long)g.targets_freed);
     for (int k = 0; k < render::AP_COUNT && n < (int)sizeof text - 40; k++)
         if (g.approx[k]) n += snprintf(text + n, sizeof text - n, " approx%d=%llu", k, (unsigned long long)g.approx[k]);
     return std::string(text) + " " + apprt::sound_figures();

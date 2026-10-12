@@ -93,11 +93,12 @@ struct FrameList {
     std::vector<TextureData> textures;  // new this frame; made before any command runs
     std::vector<TargetInfo> targets;    // new or resized this frame
     std::vector<uint32_t> dead_textures;
+    std::vector<uint32_t> dead_targets; // surfaces nothing used for a long time (freed after this frame's new ones are made)
     uint32_t show_target = 0;           // what the display circuit reads; 0 = nothing
     int show_rect[4] = {0, 0, 0, 0};    // x, y, width, height in that target's logical pixels
     uint64_t number = 0;
     void clear() {
-        vertices.clear(); commands.clear(); textures.clear(); targets.clear(); dead_textures.clear();
+        vertices.clear(); commands.clear(); textures.clear(); targets.clear(); dead_textures.clear(); dead_targets.clear();
         show_target = 0;
     }
 };

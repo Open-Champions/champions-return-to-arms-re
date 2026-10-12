@@ -823,8 +823,13 @@ window.addEventListener("pointerdown", (event) => {
 // starts), meanwhile (the tab's title) and afterwards.
 const pageTitle = document.title;
 let hiddenOnlineSince = 0, onlineWarned = false;
+// Online: the page is going online, other players' copies are heard, or the game's machine
+// has used its network in the last twenty seconds (in the lobby too: paused there, the
+// machine would be dropped by the server).
+const network = { sent: 0, at: -1e9 };
 function playingOnline() {
-	return !!(online.relay && online.welcomed && online.state && (online.state.active || (online.players && online.players.players > 0)));
+	if(!(online.relay && online.welcomed && online.state)) return false;
+	return !!(online.state.active || (online.players && online.players.players > 0) || performance.now() - network.at < 20000);
 }
 function pause(why, text) {
 	if(!running || pausedBy) return;
@@ -868,6 +873,8 @@ document.addEventListener("visibilitychange", () => {
 });
 // once a second (the figures' timer): the warning before an online game, and the sound's and the disc's state
 function watch(now) {
+	const sent = (online.state && online.state.messages_out) || 0;
+	if(sent !== network.sent) { network.sent = sent; network.at = performance.now(); }
 	if(playingOnline() && !onlineWarned) {
 		onlineWarned = true;
 		notice("Online: keep this page in front, its window uncovered and the computer awake until you are done. A hidden page runs slowly, and an online game waits for every player's machine.", false, 16000);

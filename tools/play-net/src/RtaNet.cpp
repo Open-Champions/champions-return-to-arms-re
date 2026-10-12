@@ -519,9 +519,9 @@ namespace
 	// browser copy it would fall out of step, and it has no warning for that. It does have
 	// one for a different patch set, which its player sees in the room, before a game is
 	// started, with the words that everyone needs the same build. So a browser copy tells a
-	// copy that has said its patch set and, six seconds after it was first heard, nothing
-	// about arithmetic (a current copy has said both three times by then) this figure with
-	// no words, in place of its own: "0b50137e", obsolete. The browser copy's own page shows
+	// copy that has said its patch set - the same one as this copy's - and, six seconds after
+	// it was first heard, nothing about arithmetic (a current copy has said both three times
+	// by then) this figure with no words, in place of its own: "0b50137e", obsolete. The browser copy's own page shows
 	// its arithmetic warning at the same moment (rta-web.js). A copy that speaks about
 	// arithmetic after all is told the real figure again.
 	const uint32_t OLD_COPY_FIGURE = 0x0B50137E;
@@ -638,7 +638,8 @@ void CNet::PollUdp()
 				}
 				continue;
 			}
-			if(!peer.setKnown || peer.oldTold >= 3 || now - peer.firstHeard < OLD_COPY_AFTER + PATCH_SET_TIMES[peer.oldTold]) continue;
+			// (a copy whose patch set differs warns its player of that already, with the real figures)
+			if(!peer.setKnown || peer.patchSet != m_config.patchSet || peer.oldTold >= 3 || now - peer.firstHeard < OLD_COPY_AFTER + PATCH_SET_TIMES[peer.oldTold]) continue;
 			peer.oldTold++;
 			peer.told = times; // not this copy's own figure any more
 			auto socket = m_udp.find(peer.localPort);

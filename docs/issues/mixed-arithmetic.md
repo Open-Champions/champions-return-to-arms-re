@@ -24,7 +24,7 @@ section 3.2).
 | Proof without a browser | One machine in each arithmetic: out of step on the first step (3 pairs of 3 with input). Both in browser arithmetic: in step over the boot pair and every fuzz pair (54 pairs, 312,989 lockstep ticks); the existing pair scripts end as they do in native arithmetic (one exception, a timing race that did not happen). Section 3.2 | Ran |
 | Proof against the real thing | The browser build in Chrome and the rig in browser arithmetic, the same recorded input by vertical blank from power-on: two sessions, 12,400 frames (walking, turning, fighting, 8 deaths, four level changes) and 8,810 frames (another level, both sticks), 224 bytes of game state read in every frame, **no byte differs**. The rig in native arithmetic with the same input differs from frame 2741. Section 3.3 | Ran |
 | Does the game behave in that arithmetic? | Nothing broke in any run. Section 4 has what was measured | Ran |
-| How is the arithmetic chosen in a real game? | Written (application and shared network code), compiled for both builds, and tried between two copies of the application (one fixed to browser arithmetic, the other following; not yet between a page and the application): every copy tells the others what it can do and does, on the path the patch-set figure already uses; the application changes to browser arithmetic in the room when a browser copy is heard, and warns when a copy cannot follow. Section 5 | Observed (code); Ran (two application copies) |
+| How is the arithmetic chosen in a real game? | Every copy tells the others what it can do and does, on the path the patch-set figure already uses; the application changes to browser arithmetic in the room when a browser copy is heard, and both kinds warn when a copy cannot follow. Tried between two copies of the application, and then between a page and the application through the browser's relay: in step in both orders, across a level change. Section 5 | Observed (code); Ran (two application copies; a page and the application) |
 | Limits | An x86 browser was not available (a generated NaN has another sign there); an Intel build of the application is not covered; games in browser arithmetic are no longer bit-identical to a console. Section 6 | — |
 
 ## 1. How the two builds' arithmetic differs
@@ -270,8 +270,34 @@ arithmetic", a second later "with browser arithmetic". `peers` on both: `arith=b
 for this copy and for the other. The game was started from the room and ran in step:
 every sync hash both copies held was the same for 506 and 436 lockstep frames in the
 first level (both players walked) and 500 after a level change to `strife`; hit points
-`42033333` on both. Not run: a page and the application in one room (the browser's relay
-hands datagrams only between its own sessions).
+`42033333` on both.
+
+**Ran, a page and the application** (2026-10-12, afternoon; one Mac, the lobby server and
+the relay on it, load 190 to 500; the application the released working build with nothing
+given about arithmetic; `docs/issues/browser-build.md`, "Mixed games", has the table and
+how the relay now carries a page's datagrams to a player outside it):
+
+- *The application hosts by code, the page joins.* In the room the application's log:
+  the page "computes with browser arithmetic (can do: the browser's)", then "the machine
+  now computes as a browser copy's does"; `peers`: `arith=browser`. The page's own line:
+  "Everyone computes the same way: 1 other player heard, the same patch set (3f5b1e14),
+  browser arithmetic (in the Mac application)". Started from the room: 2,315 consecutive
+  lockstep frames in the first level with both players walking and swinging, every sync
+  hash the same on both (1,959 distinct values); then the game's own level change (the
+  host's player spoke with the hub's character, went to the gateway and accepted the
+  first mission): both machines in the next level at the same frame, and 3,929
+  consecutive frames there with fights (both players hit, both killed), every hash the
+  same; the game's own out-of-step flags 0 on both at frame 31,486.
+- *The page hosts by code, the application joins.* The application changed in the room
+  as above; 2,663 consecutive frames from the first, every hash the same (2,258 values).
+- *An application that cannot follow.* Started with `--rta-arith native`: its status
+  bar and log say "WARNING: another player's copy cannot compute with Play!'s own
+  arithmetic as this game does - the game would fall out of step: do not start it", and
+  the page shows its red line "another player's copy cannot compute as a browser does
+  (an older copy of the application, or one set to its own arithmetic) … do not start
+  it" within three seconds of the application entering the room. A packaged copy from
+  before the arithmetic message (patch set df6a6139): the page shows both warnings, the
+  old copy its patch-set warning.
 
 **The message** (`tools/play-net/src/RtaNet.cpp`, shared by the application and the
 browser build, which compiles the same file). The copies already tell each other their
@@ -308,12 +334,21 @@ copy, with a browser player in the game) … do not start it" when a copy that s
 about arithmetic - any application copy from before this change - is in a room with a
 browser player. `peers` on the control socket shows each player's arithmetic.
 
-**What the browser build still needs** (not done here; its sources are another piece of
-work): show the same warning on its page from the fields `arithKnown`, `arithCan`,
-`arithNow` that `CNet::Peers()` now returns - a browser copy must tell its player when the
-other copy is an application too old to follow; and lift "browser players play with
-browser players" from its texts once a mixed game has been played. The lobby could keep
-old application copies out of games hosted in a browser, which nothing does today.
+**The browser build's side** (done with the mixed games, `tools/play-web`): its page
+makes the application's two warnings from `CNet::Peers()` by the same rules
+(`onlinePlayers` in `web/rta-web.js`) and says in the room whether everyone computes the
+same way. One thing is the browser copy's own: an application copy from before the
+arithmetic message cannot warn its player of anything but a different patch set. So a
+browser copy tells a copy that has said its patch set - the same one as its own - and,
+six seconds after it was first heard, nothing about arithmetic, the patch-set figure
+`0b50137e` ("obsolete") in place of its own (`RtaNet.cpp`, compiled for a browser only):
+the old copy then shows its own warning that the sets differ and the game must not be
+started. Seen arriving and shown on a real old copy (whose own set differed as well);
+not seen on an old copy with the page's set, because there is none. A copy that says
+nothing at all - an application from before the patch-set message, a console, PCSX2 -
+cannot be told anything: the page warns its own player after twelve seconds, the other
+side sees nothing. The lobby could keep such copies out of games hosted in a browser,
+which nothing does today.
 
 **Known gaps in the proposal**: a browser player who enters the room in the second before
 the host starts the game may not have been heard yet (the first datagram goes out 0.3 s
@@ -342,15 +377,19 @@ consistent, and harmless.
 - **Not a console's arithmetic.** A game in browser arithmetic rounds differently from a
   PlayStation 2 and from PCSX2. That matters only if such machines were ever to join.
 - **Mid-game switching** is not built (section 5).
-- **The choice in the room was exercised between two application copies only** (section 5), not between a page and the application.
+- **The choice in the room was exercised on one Mac** (section 5): two application
+  copies, and a page with one application copy. Not with three players (a game of three
+  did not start for the third machine there, with or without a page:
+  `docs/issues/browser-build.md`, "Mixed games"), and not between two computers.
 - **Per-game rounding lists.** If `GameConfig.xml` ever gets an entry for this game that
   sets a rounding mode for a block, the ARM64 translator would write the control register
   inside that block and leave "toward zero" behind until the next vertical blank; the
   WebAssembly translator ignores such entries. There is none today.
 - **Coverage of the browser comparison**: one player, offline, two sessions (12,400 and
   8,810 frames) plus the 2,829-frame one with the served build; one browser (Chrome 155
-  on this Mac); two machines linked through the browser's relay were
-  not compared (the network path does not touch arithmetic, but it was not run).
+  on this Mac). Two machines linked through the browser's relay, a page and the
+  application, were compared afterwards by their sync hashes (section 5), not byte for
+  byte.
 
 ## 7. Files
 

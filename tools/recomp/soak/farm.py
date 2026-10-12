@@ -751,7 +751,8 @@ def report(dirs):
         machine_ticks = sum(int(r['ticks']) * int(r['machines']) for r in rows)
         differ = [r for r in rows if r['first']]
         print('%s: %d jobs, %d ticks compared (%d machine-ticks), %d with a deciding difference, %d dropped a peer, %d timed out, %d errors' % (
-            directory, len(rows), ticks, machine_ticks, len(differ), sum(1 for r in rows if r['dropped']),
+            directory, len(rows), ticks, machine_ticks, len(differ),
+            sum(1 for r in rows if r['dropped'] or 'held dropped' in r.get('notes', '')),
             sum(1 for r in rows if r['timed_out'] == '1'), sum(1 for r in rows if r['error'])))
         by = {}
         for r in rows:

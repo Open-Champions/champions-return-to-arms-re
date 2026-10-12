@@ -229,6 +229,23 @@ void Gs::free_unused_textures() {
     stats.textures_held = textures.size();
 }
 
+// The same for surfaces.  The shadow surface and the heat haze's piece of the picture are
+// textures of the game's ring of resident textures: every time the ring hands them other
+// blocks a surface is made at the new place, and the ones at the old places would stay
+// for ever (dozens within minutes; at four times the console's resolution 2 MB each).
+void Gs::free_unused_targets() {
+    if (!texture_keep_frames) return;
+    for (auto it = targets.begin(); it != targets.end();) {
+        if (frames_ended - it->second.last_used > texture_keep_frames) {
+            frame.dead_targets.push_back(it->second.id);
+            canvases.erase(it->first);
+            stats.targets_freed++;
+            it = targets.erase(it);
+        } else ++it;
+    }
+    stats.targets_held = targets.size();
+}
+
 void Gs::end_frame(uint64_t number) {
     flush_uploads();
     if (have_cmd && cur.count) frame.commands.push_back(cur);
@@ -236,11 +253,12 @@ void Gs::end_frame(uint64_t number) {
     state_dirty = true;
     frame.number = number;
     frames_ended++;
-    if ((frames_ended & 63) == 0) free_unused_textures();
+    if ((frames_ended & 63) == 0) { free_unused_textures(); free_unused_targets(); }
     int circuit = (pmode & 2) ? 1 : 0;
     uint64_t fb = dispfb[circuit];
     auto it = targets.find(((uint32_t)fb & 0x1FF) << 5);
     if (it != targets.end()) {
+        it->second.last_used = frames_ended;
         frame.show_target = it->second.id;
         frame.show_rect[0] = 0; frame.show_rect[1] = 0;
         frame.show_rect[2] = it->second.width; frame.show_rect[3] = it->second.height;
@@ -296,6 +314,7 @@ Gs::Target& Gs::target_at(uint32_t block, int width, int height) {
     Target& t = targets[block];
     uint32_t fbp = block >> 5;
     if (!t.id) t.id = next_target++;
+    t.last_used = frames_ended;
     // A buffer the display reads is as large as the display says, whatever was drawn into
     // it before: the film player shows one buffer of 448 lines, everything else two of 224,
     // at the same place.  (Other surfaces only grow.)
@@ -484,6 +503,7 @@ void Gs::write(uint32_t address, uint64_t value) {
                 state_dirty = true;
                 int sx = (int)(pos & 0x7FF), sy = (int)((pos >> 16) & 0x7FF), dx = (int)((pos >> 32) & 0x7FF), dy = (int)((pos >> 48) & 0x7FF);
                 uint32_t source_id = src->second.id;
+                src->second.last_used = frames_ended;
                 Target& dst = target_at(dbp, dx + w, dy + h);
                 dst.serial = serial++;
                 dst.fbw = (uint32_t)(bb >> 48) & 0x3F;
@@ -503,6 +523,7 @@ void Gs::write(uint32_t address, uint64_t value) {
     case 0x60: case 0x62: return;
     default:
         if (address < 0x64) {
+            if (log_display && address == 0x22 && reg[address] != value) fprintf(stderr, "gs: SCANMSK = %llu at frame %llu\n", (unsigned long long)value, (unsigned long long)frames_ended);
             if (reg[address] != value) { reg[address] = value; state_dirty = true; }
         } else stats.unknown_regs++;
         return;
@@ -757,7 +778,16 @@ void Gs::rebuild_state() {
     c.scissor[1] = (int)((scissor >> 32) & 0x7FF); c.scissor[3] = (int)((scissor >> 48) & 0x7FF) + 1;
     // a surface is as wide as its buffer width says and as high as the scissor allows
     int buffer_width = (int)((frame_reg >> 16) & 0x3F) * 64;
-    Target& target = target_at(((uint32_t)frame_reg & 0x1FF) << 5, buffer_width ? std::min(c.scissor[2], buffer_width) : c.scissor[2], c.scissor[3]);
+    // (no higher than 512 lines: the GS's reset scissor is 2048 lines, a draw under it into
+    // the 3-D surface during a dialogue made that surface 1280 x 2048, and from then on the
+    // whole picture was drawn at a quarter of its lines - blurred, text unreadable)
+    uint32_t frame_block = ((uint32_t)frame_reg & 0x1FF) << 5;
+    int scissor_height = c.scissor[3];
+    if (scissor_height > 512) {                         // not a surface's height: leave the surface as it is
+        auto known = targets.find(frame_block);
+        scissor_height = known != targets.end() && known->second.height ? known->second.height : 448;
+    }
+    Target& target = target_at(frame_block, buffer_width ? std::min(c.scissor[2], buffer_width) : std::min(c.scissor[2], 1280), scissor_height);
     target.fbw = (uint32_t)(frame_reg >> 16) & 0x3F;
     target.psm = (uint32_t)(frame_reg >> 24) & 0x3F;
     target.serial = serial++;
@@ -840,6 +870,7 @@ void Gs::rebuild_state() {
         cur_picture_height = t ? t->picture_height : 0;
         if (t) { c.texture = t->id; c.tex_size[0] = (float)t->width; c.tex_size[1] = (float)t->height; }
         else if (surface != targets.end() && surface->second.id != c.target) {
+            surface->second.last_used = frames_ended;
             c.texture = surface->second.id; c.tex_is_target = true;
             c.tex_size[0] = (float)surface->second.width; c.tex_size[1] = (float)surface->second.height;
             c.tex_offset[0] = (float)offset_x; c.tex_offset[1] = (float)offset_y;
@@ -937,12 +968,24 @@ void Gs::kick(bool draw) {
                     // interface art as two stacked field pictures: half a texture row per line,
                     // all of it inside the upper or the lower half of what was sent
                     float th = cur_picture_height ? (float)cur_picture_height : cur.tex_size[1];
+                    // A picture whose height the game's records did not give (the bag's item
+                    // pictures: a 94 x 98 picture in a texture named 128 x 128, whose header
+                    // carries no block number): a sprite that draws rows 0 to n or n to 2n at
+                    // half a row a line is taken to draw one whole field of a picture 2n rows
+                    // high.  (By the size that was sent the second field was looked for 15
+                    // rows too low, and the item showed twice, one copy between the lines of
+                    // the other.)
+                    if (!cur_picture_height && cmd_fst && !cur.tex_is_target && dy != 0 && fabsf(t1 - t0) * 2 == fabsf(dy)) {
+                        float rows = fabsf(t1 - t0), first = floorf(std::min(t0, t1) + 0.01f);
+                        if ((first == 0 || first == rows) && rows >= 2 && 2 * rows <= cur.tex_size[1]) th = 2 * rows;
+                    }
                     bool field = weave && cmd_fst && !cur.tex_is_target && dy != 0 && fabsf(t1 - t0) * 2 == fabsf(dy) && th >= 4
                                  && fmodf(th, 2) == 0 && std::max(t0, t1) <= th + 0.5f;
                     if (field) {
                         static const bool log_fields = getenv("RTA_GS_FIELDS") != nullptr;
-                        if (log_fields) fprintf(stderr, "gs: field sprite y %g..%g t %g..%g picture height %d sent %g x %g tex %u\n", (float)a.y / 16 - ofy / 16, (float)b.y / 16 - ofy / 16,
-                                                t0, t1, cur_picture_height, cur.tex_size[0], cur.tex_size[1], cur.texture);
+                        if (log_fields) fprintf(stderr, "gs: field sprite y %g..%g t %g..%g picture height %d sent %g x %g tex %u TEX0 %016llx\n", (float)a.y / 16 - ofy / 16, (float)b.y / 16 - ofy / 16,
+                                                t0, t1, cur_picture_height, cur.tex_size[0], cur.tex_size[1], cur.texture,
+                                                (unsigned long long)reg[0x06 + (((reg[0x1a] & 1) ? prim : (uint32_t)reg[0x1b]) >> 9 & 1)]);
                         half = th * 0.5f;
                         float base = (t0 + t1) * 0.5f >= half ? half : 0;
                         float line0 = floorf(2 * (std::min(t0, t1) - base) + 0.01f);

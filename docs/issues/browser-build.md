@@ -1,9 +1,9 @@
 # Browser build (Play! compiled to WebAssembly) — working notes
 
 Status: a first version runs (2026-10-12): built, measured, usable offline, and online
-between browser players through a relay (built and tried on one Mac: two pages in one
-game, in step; the relay is not on a public server yet). Not yet tried by a person. The
-summary is the state; the rest is the record.
+through a relay - between browser players, and since that afternoon between a page and
+the Mac application in one game (both tried on one Mac, in step; section "Mixed games").
+Not yet tried by a person. The summary is the state; the rest is the record.
 
 Related pages: [STATE-OF-PLAY.md](../STATE-OF-PLAY.md) sets this build beside the other
 routes to a game. The desktop application these notes compare with is
@@ -77,8 +77,12 @@ screen.
 **Online** (section "Online play from a browser: built"): a relay and the page's side of
 it; one-step online and games by code as in the desktop application; two Chrome pages
 hosted and joined by code and ran 1,387 lockstep frames with equal sync hashes.
-**Not there**: playing with desktop players (measured: the arithmetic differs in the last
-bit, below), a session that survives a lost connection to the relay, pacing by the
+**With the Mac application** (section "Mixed games"): one page and one application copy
+in one game through the relay, both orders, 2,300 to 3,900 lockstep frames a stretch in
+step, across a level change; the application changes its arithmetic by itself and the
+page says whether everyone computes the same way. Three players do not get into a game
+on the test Mac, with or without a page.
+**Not there**: a session that survives a lost connection to the relay, pacing by the
 display's refresh, anything beyond the first level.
 **Other browsers, first use, robustness** (section "For whoever opens the link"): the
 page now asks the browser what it has before it loads anything and says plainly what is
@@ -185,8 +189,8 @@ Play!'s React application under `js/play_browser`, which needs `npm install`).
 - A session that survives a lost connection to the relay (the relay would keep a
   session's sockets for some seconds and both sides would send again what the other has
   not confirmed); WebTransport for the game's datagrams.
-- Keeping browser and desktop players apart in the lobby (or making them compatible:
-  `docs/issues/mixed-arithmetic.md`).
+- Mixed games (section "Mixed games"): the relay and the page on the server; two
+  computers; why a game of three does not start for the third machine.
 
 ## How Play!'s browser port works (read in the source)
 
@@ -553,8 +557,9 @@ connection were not touched):
   without the "standard" layout is no longer ignored but used with the standard numbers
   as a guess, with a notice, and *Controls → Set up the controller* asks for every button
   in turn (buttons, axes - also triggers that rest at −1 - and a hat switch reported as
-  one axis, as Chrome does for older pads on Windows and Linux); a trigger counts when
-  the browser says "pressed" or gives a value over 30 %; a pad that goes away is said.
+  one axis, as Chrome does for older pads on Windows and Linux); a trigger counts beyond
+  30 % of its way, or when the browser only reports it as pressed; a pad that goes away
+  is said.
 - **Keys**: every key can be changed in *Controls* by clicking and pressing; the table
   shows what is printed on the player's own keys where the browser tells (Chromium's
   keyboard map), so a French keyboard shows Z Q S D where the keys are; keys stuck
@@ -650,11 +655,28 @@ still starts - it reads the file whole and says so in its log - but the browser 
 compiles while loading nor keeps the compiled code); and no file was added to the page,
 so the script's list of files is still complete.
 
-**Memory** (Chrome 155, a profile of its own, the game standing in the first level for
-20 minutes at factor 2, window visible throughout; the tab's renderer process by `ps`
-and `vmmap`):
+**Memory** (Chrome 155, a profile of its own, the game standing in the first level at
+factor 2, window visible throughout - the page counted 0 s hidden; the tab's renderer
+process by `ps` and `vmmap`, the latter's "physical footprint" being what Activity
+Monitor shows as Memory; load 220 – 510):
 
-MEMORY-TABLE
+| Minute in the level | tab's process, footprint | resident | GPU process, resident |
+|---|---|---|---|
+| 0 (just arrived) | 832 MB | 651 MB | 203 MB |
+| 5 | 838 MB | 486 MB | 188 MB |
+| 10 | 852 MB | 483 MB | 178 MB |
+| 15 | 856 MB | 470 MB | 176 MB |
+| **20** | **865 MB** | 495 MB | 175 MB |
+
+So after 20 minutes in a level the tab holds about **865 MB**, of which the emulator's
+own fixed memory is the larger part, plus 175 MB in the browser's GPU process; 33 MB
+more than on arriving (1.6 MB a minute), with 110 more blocks translated. In that run the
+test asked the browser once a minute for its own count of the page's memory
+(`performance.measureUserAgentSpecificMemory()`, which is useless here: it counts the
+emulator's 1 GiB of shared memory once for each of its five threads, 5,127 MB) - and
+asking makes the browser collect garbage first.
+
+MEMORY-RUNS
 
 ### A hidden tab and online play
 
@@ -662,7 +684,10 @@ A browser runs a page that is not in front at low priority and with late timers 
 frames a second were measured here earlier; Safari's engine throttles a hidden page's
 timers harder still). Offline the page now pauses. Online it must not - every machine in
 a lockstep game waits for every other, a paused one stops them all - and it cannot make
-the browser run it properly either. So it tells the player three times: **when going
+the browser run it properly either. ("Online" for this: the page is pressing its way
+online, another player's copy is heard, or the game's machine has used its network in
+the last twenty seconds, which covers the lobby; read from the state the online code
+already keeps, not tried with a relay here.) So it tells the player three times: **when going
 online starts** (a notice: keep this page in front, its window uncovered and the computer
 awake until you are done), **while it is hidden** (the tab's title becomes "⚠ Come back:
 the others are waiting") and **afterwards** (how many seconds it was hidden, and what
@@ -709,8 +734,8 @@ Built from the design in the next section; where it differs is said here.
   lobby server's discovery port and for datagrams to **other sessions of the same
   relay**, which are handed over inside the program. Different from the design: a
   datagram for any other address is refused and nothing arriving from outside on those
-  sockets is passed to a page - so a desktop player cannot be reached at all, which is
-  what is wanted as long as the two kinds fall out of step. Limits: sessions (64),
+  sockets is passed to a page - so a desktop player could not be reached at all. (That
+  was the relay of the morning; "Mixed games" below has what it does now.) Limits: sessions (64),
   sessions per address (4), message size, message and byte rate, a silent page (60 s),
   an idle session (15 min). WebSocket only: **WebTransport was not built**.
 - **The sockets** (`src/RtaWebNet.cpp`, `RtaWebSock.h`, `RtaWebNetCore.cpp`):
@@ -844,36 +869,149 @@ passes 18 of 18 inside the service's sandbox.
   the box again: the path exists, it was not run); *Stop going online* pressed.
 - A page that is not in front: a browser runs it slowly, and in a lockstep game that
   holds up everybody.
-- The lobby keeping browser and desktop players apart: a desktop player who joins a
-  browser player's room by hand will not get into the game (the relay does not carry
-  datagrams to or from outside).
+- (Was: the lobby keeping browser and desktop players apart. They play together now:
+  "Mixed games" below.)
 - The relay's limits under real load.
 
-## Mixed games: a page and the application in one game (2026-10-12, work in progress)
+## Mixed games: a page and the application in one game (2026-10-12)
 
-Working notes of the session that builds this; the finished account replaces them.
+**State: a page and one copy of the application play one game, in step, in both orders,
+across a level change. Built into the relay and the page; the application needs no new
+build. Tried on one Mac only (local lobby server, local relay). Games of three do not
+start for the third machine on that Mac - with the bridge or without it (below). The
+relay and the page have to be put on the server; that is the owner's to do.**
 
-- **Why an application player never reached a page** (read in `relay.py` as it was): (1) a
-  datagram a page asked to send to any address but the lobby's discovery port or another
-  session's socket was refused; (2) the relay never read its UDP sockets (4 KiB buffer,
-  no reader), so whatever an application player sent there was thrown away by the
-  system; (3) as deployed, the service may only talk to the server's own addresses
-  (`IPAddressDeny=any`) and the firewall has no UDP port open for it. The game, the lobby
-  and the application need nothing: the lobby already hands a page's relay socket to the
-  other players as that player's address.
-- **Built in `relay.py`** (self-test `check.py --selftest`: 30 checks pass): the sockets
-  are read; a datagram passes between a session's socket and an outside address and port
-  only when that pair is *open*: the lobby server named it to this page (the relay reads
-  the observed address out of replies 0x55 and 0x57 and notification 0x65 as they pass;
-  the own-network address a player claims is not taken), or the page has asked to send
-  there *and* that address has sent to the session's socket, within 30 s. Nothing else is
-  sent and nothing else is passed on. Options: `--udp-ports LOW-HIGH` (for a firewall),
-  `--lan` (private addresses and programs on the relay's own computer: tests),
-  `--pages-only` (as before), `--peer-rate`.
-- **Still to do** when this note was written: the page's warnings (patch set, arithmetic,
-  "everyone computes the same way"), the build, then the proof with one application copy
-  and one page (both orders), a level change, three players, an application copy that
-  cannot change its arithmetic; the documents. Test files: `local/mixed-online/`.
+The arithmetic side is [mixed-arithmetic.md](mixed-arithmetic.md): the application
+changes to "browser arithmetic" by itself while a browser copy is in its room. This
+section is the network side and the proof with real copies.
+
+### Why an application player never reached a page
+
+Read in the relay as it was, and then seen:
+
+1. A datagram a page asked to send to anything but the lobby's discovery port or another
+   session's socket was refused (the relay said so in a notice).
+2. The relay never read its UDP sockets (a 4 KiB buffer and no reader): whatever an
+   application player sent there was thrown away by the system.
+3. As set up for a server, the service may only talk to the server's own addresses
+   (`IPAddressDeny=any`), and the firewall has no UDP port open for it.
+
+Nothing else was in the way. The lobby server already hands a page's relay socket to the
+other players as that player's address, the game's hole punching needs nothing new, and
+the application sends to that address as to any player's.
+
+### What was built
+
+- **The relay** (`tools/play-web/relay/relay.py`; `README.md` beside it has the options).
+  Its UDP sockets are read. A datagram passes between a session's socket and an outside
+  address and port only when that pair is *open* for the session, and a pair is opened in
+  two ways only:
+  - *named*: the lobby server named the address to this page. The relay reads the lobby
+    connection as it passes, server to page only, and takes the address the server
+    **observed** for the host of a listed game (reply 0x55), of a game found by name
+    (reply 0x57) and of a player who wants in (notification 0x65); the layouts are in
+    `docs/lobby-protocol.md`. The "own-network" address in the same messages is what a
+    player claims and is not taken, and nothing a player can type (chat, a game's name)
+    is read as an address. A datagram from the named address with another port than the
+    named one opens that port too (a router changes ports; the game accepts by address);
+  - *both*: the page has asked to send to the address **and** a datagram from that
+    address has arrived on the session's socket, in either order, within 30 s. This is
+    for the third player of a game, whom the host introduces player to player and the
+    lobby server names to nobody.
+
+  What a page sends to an address that is not open is not sent; what arrives from an
+  address that is not open is not shown to a page. So neither a page nor a stranger can
+  make the relay send or pass anything alone. Addresses that are not public are left out
+  unless `--lan` is given (a test on one computer, a relay on a home network); addresses
+  no player can have (loop-back, multicast) are refused with a notice. At most 16 open
+  pairs a session, 150 datagrams a second to one of them (the game sent about 10 to 30),
+  the session's own message and byte rates on top and the same rates for what arrives;
+  a pair that hears nothing for two minutes is closed. `--udp-ports LOW-HIGH` puts the
+  sockets in a range a firewall can open; `--pages-only` is the relay as it was.
+  `check.py --selftest` goes through all of it with stand-in players (30 checks).
+- **The page** (`web/rta-web.js`, `web/index.html`, `src/RtaWebNet.cpp`): a line under
+  the driver's strip, made from `CNet::Peers()` by the application's own two rules
+  (`CheckPatchSets`, `CheckArithmetic`): green "Everyone computes the same way: N other
+  players heard, the same patch set (…), browser arithmetic (… in the Mac application)";
+  grey while a copy has not said yet; a red warning for a different patch set, and one
+  for a copy that cannot compute as a browser does ("an older copy of the application,
+  or one set to its own arithmetic … do not start it"). The texts that said browser
+  players only play with browser players are gone.
+- **For a copy that cannot follow and has no warning for it** (`tools/play-net/src/
+  RtaNet.cpp`, inside `#ifdef __EMSCRIPTEN__`: the application's own behaviour is not
+  changed, and the file still compiles for it): an application copy from before the
+  arithmetic message tells its patch set and nothing else. If that set is the page's own,
+  such a copy would show nothing while the game is about to fall out of step. Six seconds
+  after it was first heard the browser copy tells it the patch-set figure `0b50137e`
+  ("obsolete") in place of its own, so that the old copy shows the one warning it has -
+  another player's patch set differs, do not start, everyone needs the same build.
+
+### Tried (one Mac; lobby server, relay with `--lan`, page server, Chrome and the application all on it)
+
+The application copy in the first six rows is the working build as released
+(11:14 that day, patch set 3f5b1e14), started with `--rta-test`, nothing given about
+arithmetic. Load average 190 to 500 throughout (other work on the Mac): the times are
+slow because of it. "In step" is read as in "Tried on one Mac" above: every machine's
+ring of its own per-frame sync hashes and the rings of the others' hashes it received,
+compared by frame (`local/mixed-online/sync.py`), for the application through its
+control socket.
+
+| What | Result |
+|---|---|
+| the application hosts by code, the page joins by that code | relay: "path to the player at …:4001 opened (the lobby server named it)"; the application's log: the page "computes with browser arithmetic (can do: the browser's)", then `arith=browser` for itself; the page's line: "Everyone computes the same way: 1 other player heard, the same patch set (3f5b1e14), browser arithmetic (in the Mac application)" |
+| the application's ✕ *Start Game* | both in the first level, 2 players, 14 s later |
+| in step, first level, both players walking and swinging | 2,315 consecutive lockstep frames (38 – 2352): every hash the same on both, 1,959 distinct values; each side held the other's hashes for about 1,200 of its frames: all equal; checksum-failure, out-of-sync and dropped flags 0 on both; hit points `42033333` on both (the value to nearest) |
+| a level change by the game itself: the host's player walked to the hub's character, spoke with her, walked to the gateway and accepted the first mission in the mission menu | both machines in the next level at the same lockstep frame (27,377 – 27,392), 8 s later; 487 frames compared just before it: all equal |
+| in step in that level, walking and fighting | 3,929 consecutive frames (27,542 – 31,470): all equal, 1,565 distinct values; monsters hit both players (hit points fell) and killed both; flags 0 on both at frame 31,486 |
+| the page hosts by code, the application joins by that code, no press at all (remembered logins and characters) | page in its room after 52 s, application after 38 s; it changed arithmetic in the room ("the machine now computes as a browser copy's does"); the same green line; first level 17 s after the page's *Start Game*; 2,663 consecutive frames (2 – 2664) all equal, 2,258 distinct values, flags 0 |
+| the same once more with the page's last build and the application as another job had rebuilt it at 14:37 | first level after 17 s; 786 frames (2 – 787) all equal |
+| relay counts of the first game (29 minutes) | 16,941 datagrams to the application, 18,221 back, none dropped, none refused: about 10 a second each way |
+| an application copy started with `--rta-arith native` joins the page's room | page, within 3 s: the red arithmetic warning; application's status bar and log: "WARNING: another player's copy cannot compute with Play!'s own arithmetic as this game does - the game would fall out of step: do not start it" |
+| a packaged copy from before the arithmetic message (it tells its patch set, df6a6139) joins the page's room | page: both red warnings (different patch set; cannot compute as a browser does); the old copy: "WARNING: another player has a DIFFERENT PATCH SET (0b50137e; yours df6a6139) … do not start it" - it had warned of the page's real figure first, then of this one. After this run the figure is sent only to a copy whose own set is the page's (one that would otherwise show nothing); no such old copy exists to try it on |
+
+**Three players: into one room, yes; into the game, no - and not because of the
+bridge.** Three machines (application host, page, second application; and page host
+with two applications) came into one room, every copy heard the other two ("2 other
+players heard … all in the Mac application"), and the relay opened the page's path to
+the application that was not the host ("the lobby server named its address, with another
+port; and each has sent to the other" - on one computer all players have one address, so
+both rules held). At *Start Game* two machines went into the first level, with three
+players counted, and stayed in step with each other (1,710 and 1,822 frames of received
+hashes, all equal); the third stayed behind with the game's own launch error that some
+players cannot be reached, and was dropped. That happened in 3 of 3 tries with a page in
+the game - and with **three application copies and no page and no relay** one try ended
+the same way and another with the host back at the game list and nobody in the level,
+so it is not the relay's doing. The one try of six that worked was three application
+copies without the patch sections; a try with a page and without the sections failed
+too. Three players had never been tried in this project. Not found out: whether it is
+the load on the Mac that day, something in a game of three through the lobby server, or
+- the first suspicion - that every player of a one-computer test has the same address:
+the game takes an arriving connection for the first player it is looking for at that
+address, whatever the port (`docs/lobby-protocol.md` 9.3). If it is the last, it also
+concerns real games: all browser players have the relay's address.
+
+Not tried: two computers; a relay on a public address with players behind routers (the
+paths, the firewall range, a router that changes ports); a page in Safari or Firefox; a
+person playing. On the test Mac's sleep dips: none were seen in these runs (its sleep was
+switched off that afternoon).
+
+### What has to go to the server
+
+- **The relay**: the new `relay.py`, and its service changed - the line that limits the
+  service to the server's own addresses has to go (it must reach the players), and
+  `--udp-ports LOW-HIGH` added; the firewall opened for that UDP range from anywhere.
+  `relay/README.md` has both. Without the firewall range a game of two still works where
+  the lobby server named the player (the relay sends first), but a third player and a
+  player behind a router that changes ports are not reached.
+- **The page**: the new build (`Play.js`, `Play.wasm`) and `index.html`, `rta-web.js`.
+  An old page works with the new relay and plays mixed games, but shows no arithmetic
+  line; a new page with the old relay is as before (browser players only).
+- **The application: nothing.** The released build did everything above as it is.
+
+Test files (not in the repository): `local/mixed-online/` - `up.sh`, `down.sh`, `app.sh`,
+`mx.py` (a page through DevTools, an application copy through its control socket),
+`scen.py` (the runs above), `sync.py`, `walk.py` (walks a player to a place by reading
+its position), `relay.log`.
 
 ## Online play from a browser: the design it was built from
 

@@ -18,9 +18,19 @@
 //   square root    root * root is exact in a double: compare it with the operand
 //   from integer   every 32-bit integer is exact in a double
 //
+// Flush-to-zero.  The Mac builds also run the game's threads with tiny (denormal) numbers
+// switched off, as the Play! emulator does (FPCR.FZ on ARM64): a tiny operand is read as
+// zero and a result too small to be a normal number is zero, with its sign.  WebAssembly
+// has no such switch either.  The second family below (add_fz ...) is the first with that
+// rule applied: operands through flush(), the toward-zero result through flush().  (With
+// rounding toward zero a result is tiny after rounding exactly when it was before, so the
+// order does not matter.)  Compares and minimum / maximum read tiny operands as zero too:
+// fpu.h does that with flush() on the bit patterns.
+//
 // Used by tools/recomp/rt/fpu.h and vu0.h when RTA_SOFT_RZ is defined (web/build.py
 // --arith zero).  soft_rz_test.cpp checks every helper against the processor's own
-// toward-zero mode on a Mac, and prints a checksum a WebAssembly build has to reproduce.
+// toward-zero mode on a Mac, without and with flush-to-zero, and prints checksums a
+// WebAssembly build has to reproduce.
 #pragma once
 #include <cstdint>
 #include <cstring>
@@ -75,5 +85,23 @@ static inline float from_int(int32_t v) {
     if (magnitude((double)r) > magnitude((double)v)) r = back(r);
     return r;
 }
+
+// ---- with flush-to-zero ---------------------------------------------------------------
+// a tiny number (exponent field 0, fraction not 0) is zero with its sign
+static inline uint32_t flush_bits(uint32_t r) { return (r & 0x7F800000u) ? r : (r & 0x80000000u); }
+static inline float flush(float f) { return from_bits(flush_bits(bits(f))); }
+static inline float add_fz(float a, float b) { return flush(add(flush(a), flush(b))); }
+static inline float sub_fz(float a, float b) { return flush(add(flush(a), -flush(b))); }
+static inline float mul_fz(float a, float b) { return flush(mul(flush(a), flush(b))); }
+static inline float div_fz(float a, float b) { return flush(div(flush(a), flush(b))); }
+static inline float sqrt_fz(float x) { return sqrt(flush(x)); }
+// Compares, maximum and minimum as an ARM64 processor in that mode gives them (FCMP,
+// FMAXNM, FMINNM) for operands that are numbers: tiny ones are zero, and of +0 and -0 the
+// maximum is +0 and the minimum -0.
+static inline bool eq_fz(float a, float b) { return flush(a) == flush(b); }
+static inline bool lt_fz(float a, float b) { return flush(a) < flush(b); }
+static inline bool le_fz(float a, float b) { return flush(a) <= flush(b); }
+static inline float max_fz(float a, float b) { float x = flush(a), y = flush(b); return x > y ? x : x < y ? y : from_bits(bits(x) & bits(y)); }
+static inline float min_fz(float a, float b) { float x = flush(a), y = flush(b); return x < y ? x : x > y ? y : from_bits(bits(x) | bits(y)); }
 
 }  // namespace softrz

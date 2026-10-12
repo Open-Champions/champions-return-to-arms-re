@@ -38,6 +38,7 @@ struct GsStats {
     uint64_t copies_skipped = 0;        // local-to-local transfers that were not a copy from a surface
     uint64_t surface_uploads = 0;       // rectangles sent straight into a displayed buffer
     uint64_t fogged = 0;                // primitives drawn with fogging
+    uint64_t targets_held = 0, targets_freed = 0;
     // Primitives drawn with a piece of GS state this model does not apply or only
     // approximates, by kind (Gs::APPROX_NAMES): what a scene needs is known by counting.
     uint64_t approx[16] = {0};
@@ -105,7 +106,8 @@ class Gs {
     float ofx = 0, ofy = 0, zscale = 1.0f / 65536.0f;
     bool cmd_fst = true, cmd_iip = true, cmd_tme = false;
     // ---- render targets ----
-    struct Target { uint32_t id = 0; int width = 0, height = 0; uint64_t serial = 0; bool announced = false; uint32_t fbw = 0, psm = 0; };
+    struct Target { uint32_t id = 0; int width = 0, height = 0; uint64_t serial = 0; bool announced = false; uint32_t fbw = 0, psm = 0; uint64_t last_used = 0; };
+    void free_unused_targets();
     std::map<uint32_t, Target> targets;                 // by FBP
     std::map<uint32_t, uint64_t> display_fbps[2];       // buffers DISPFB1/2 have named, and at which frame last
     uint64_t frames_ended = 0;

@@ -152,6 +152,7 @@ class Screen : public QObject {
         std::swap(slot.textures, frame.textures);
         std::swap(slot.targets, frame.targets);
         std::swap(slot.dead_textures, frame.dead_textures);
+        std::swap(slot.dead_targets, frame.dead_targets);
         slot.show_target = frame.show_target;
         memcpy(slot.show_rect, frame.show_rect, sizeof(slot.show_rect));
         slot.number = frame.number;

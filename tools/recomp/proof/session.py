@@ -28,6 +28,10 @@ import cmp as cmpmod                            # noqa: E402
 ROOT = cmpmod.ROOT
 PROOF = os.path.join(ROOT, 'local', 'recomp-out', 'proof')
 NATIVE = os.path.join(ROOT, 'local', 'recomp-out', 'bin', 'rta_proof')
+# besides rigcompare's columns: the 32 sound-sequence slots and the equipment-model cache of
+# the first player, two places outside the compared simulation state that follow the
+# machines' own sound and disc timing (docs/issues/native-proof.md, part 1)
+DEFAULT_WATCHES = ['sseq=0x871a68:crc2432', 'eqcache=0x866388:crc88']
 
 
 def script_of(name, spec, out, ticks=None):
@@ -165,7 +169,7 @@ def main():
     if args.step == 'native' and 'echo @P' in open(script).read():
         script, pokes = replay_pokes(script, out, args.poke_shift)
         native_args += ['--opt', 'proof-pokes=' + pokes]
-    cmpmod.setup(args.name, NATIVE, native_args=native_args if args.step == 'native' else ())
+    cmpmod.setup(args.name, NATIVE, watches=spec.get('watch', DEFAULT_WATCHES), native_args=native_args if args.step == 'native' else ())
     if args.step == 'rig':
         sys.argv = ['rigcompare', 'boot-rig', '--script', script, '--more', '0', '--frames', str(args.frames)]
         return rigcompare.main()

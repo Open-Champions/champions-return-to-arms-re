@@ -60,6 +60,7 @@ What to report
 
 When something is wrong
   --no-sound            no sound device is opened
+  --no-films            the films at the start are skipped
   --window 640x480      a smaller window        --fullscreen   start full screen
   --scale 2             draw at twice the console's resolution instead of the window's size
   set RTA_SOUND_API=waveout   (before starting, in the same Command Prompt) the older sound interface
@@ -67,4 +68,7 @@ When something is wrong
   rta_app_gcc.exe (if it is in this folder): the same program built by a second compiler.
   Try it only if rta_app.exe does not start at all, and say which one you used.
 
-Known not to work yet (as on the Mac): the two films at the start are skipped.
+The two films at the start (the developer's logo, the intro) are new in this build. If one
+hangs, looks wrong or has no sound, say so and start again with  --no-films  (a film then
+ends at its first picture).
+There is no network play in the Windows build yet.

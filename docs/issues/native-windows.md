@@ -63,9 +63,18 @@ program does not use Qt.
 linked by `x86_64-w64-mingw32-g++ -static -s`. Reason: it is the same compiler, with the
 same x86-64 code generator and the same flags, as the stand-in that is run under Rosetta
 (below), so what was run and what is shipped differ in the calling convention and the
-object format, not in how arithmetic is compiled. `--compiler gcc` compiles with
-`x86_64-w64-mingw32-g++` instead (see "Resume here" for whether that was built). On
-Windows itself the script takes `g++` or `clang++` from an MSYS2 shell; that path was
+object format, not in how arithmetic is compiled.
+
+`--compiler gcc` compiles everything with `x86_64-w64-mingw32-g++` (GCC 16.2) instead and
+names its programs `rta_app_gcc.exe`, `rta_native_gcc.exe`, `fpcheck_gcc.exe`. **Built**:
+all 69 files compile unchanged and link without a warning (738 s of processor time, 3.5
+times clang's; 24.9 MB). It is a second chance for the tester if the first program does
+not start - one toolchain throughout instead of clang objects against GCC's libraries -
+and nothing more: its arithmetic was not compared with anything (another compiler; the
+x86 branch of `fpu.h` and the flags are the same, and `fpcheck_gcc.exe` checks its
+operations on the PC).
+
+On Windows itself the script takes `g++` or `clang++` from an MSYS2 shell; that path was
 never run.
 
 ## The parts that are new
@@ -81,7 +90,7 @@ never run.
 | `app/pad_win.cpp` | `pad_host.h` over XInput (looked up at run time), `pad_mac.mm`'s map and dead zones | Built, not run |
 | `app/win/fpcheck.cpp` | every operation of `rt/fpu.h` and the arithmetic of `rt/vu0.h` over corner values and a fixed random set, as checksums | Ran on the Mac (both architectures); the `.exe` not run |
 | `app/win/rta_app.manifest`, `rta_app.rc` | UTF-8 as the process code page (paths with any characters, Windows 10 1903+), per-monitor DPI | Built |
-| `app/build_win.py` | the build | Ran |
+| `app/build_win.py` | the build; `--standin`, `--reference`; the tester's folder with `boot-check.rig` | Ran |
 
 **Changes to existing files** (three, all small; the macOS build compiles the same code as before):
 
@@ -94,8 +103,23 @@ never run.
    sweep with the x86-64 driver).
 
 Not changed: `app_main.cpp`, `backend_gl.cpp`, `pipeline.h`, the runtime, the generated
-code. The control socket of `app_main.cpp` (`control.h`, Unix sockets) is not in the
-Windows program.
+code.
+
+**What the macOS application has and the Windows program has not:**
+
+- the control socket for test drivers (`control.h`, Unix sockets);
+- the network (`net/netdrv.cpp`, `online.cpp`, `RtaOnline.cpp`, `online_mac.mm`, added to
+  `app/build.py` this afternoon): POSIX sockets and a macOS dialogue. The Windows program
+  is translated without `net/hle-online.txt` and plays offline;
+- rumble is counted, not sent (as on the Mac).
+
+**Films.** `app/film.cpp` (the MPEG library's entry points, added to `app/build.py` this
+afternoon and still being worked on by its author) is part of the Windows program when it
+and `app/hle-app.txt` exist: the translation is made with `--hle-add app/hle-app.txt` as
+on the Mac, `win_main.cpp` passes `films=original` when the decoder is linked, and
+`--no-films` ends a film at its first picture as before. The file needs `<ctime>` for a
+timing aid, which it gets on macOS through another header; the Windows build passes
+`-include ctime` instead of touching it. Not run, like the rest.
 
 ## Portability: what was looked for and what was found
 
@@ -298,14 +322,25 @@ with anything; `fpcheck_gcc.exe` is its step 1).
 
 ## Resume here
 
-(2026-10-12 14:30) Done: toolchain; `rta_native.exe` + `fpcheck.exe` link (clang, 106 s for
-57 files at 8 jobs under a load average of 200); all Windows sources written and each
-compiles; `fpu.h` fix verified by `fpcheck` on both architectures; stand-in built
-(`rta_native_x64`, `recomp_test_x64`).
-Running / next: (1) full `build_win.py` (links `rta_app.exe`); (2) `difftest.py sweep
---seeds 2` with `RECOMP_TEST_DRIVER=local/recomp-out/win/standin/recomp_test_x64`, report
-in `win/standin/sweep-stub-x64.txt`; (3) `build_win.py --standin` again for the arm64
-control, then the rig comparison with both (`rigcompare.py boot-native --replay`, its
-output directory pointed at `win/standin/rig-x64` and `rig-arm64`) and a byte comparison of
-the two tick logs and memory dumps; (4) write the two pending sections; (5) optionally
-`--compiler gcc`.
+(2026-10-12 15:40) Everything of the brief is done except running on Windows, which needs
+a person with a PC: the test plan above. Open ends, in the order they matter:
+
+1. **The tester's report.** Steps 1 and 2 decide whether the arithmetic and the runtime
+   hold on real hardware; step 3 is the first time anybody sees the window or hears the
+   sound. Expect the first faults in `wgl.cpp` (context), the shaders on a non-Apple
+   driver, or pacing.
+2. **`vu0.h` with an infinity or NaN operand** is the one place where x86 and ARM64 can
+   still differ (sign and payload of the NaN). Not seen in the compared session. Closing
+   it means a check after each arithmetic result in the interpreter's x86 branch.
+3. **The network on Windows**: Winsock behind `net/netdrv.cpp` and a dialogue in place of
+   `online_mac.mm`.
+4. **Controllers that are not XInput** (a PlayStation controller without Steam or
+   DS4Windows): Windows.Gaming.Input or raw HID.
+5. **Building on Windows itself** (MSYS2): `build_win.py` has the branch, nobody ran it.
+6. `native-app.md` section 8 and `native-recomp.md` "Step 6 - Windows" still describe
+   Windows as not written; they are their author's and were left alone.
+
+The builds of other agents change `tools/recomp` while this is written: a later
+`build_win.py` picks their changes up (it follows `app/build.py` for the translation and
+the film decoder), and `build_win.py --standin` + `--reference` + `standin_compare.py`
+repeat every figure above.

@@ -7,9 +7,10 @@ with the same changes to the emulator's core as the desktop application
 A player opens a page, picks the disc image from their own computer and plays: nothing is
 installed, the image is read where it is and never leaves the computer.
 
-**State: an experiment that runs.** Offline, and **online with other browser players**
-through a small relay on the server (section "Online play"; two pages were put through a
-whole game start and stayed in step). In Chrome 155 on an Apple M5 Pro it
+**State: an experiment that runs.** Offline, and **online** through a small relay on the
+server (section "Online play"): with other browser players (two pages were put through a
+whole game start and stayed in step) and with players of the desktop application (one
+page and one copy, hosted by either, in step across a level change; tried on one Mac). In Chrome 155 on an Apple M5 Pro it
 holds 60 frames a second at the title and standing in the first level (resolution factor
 2, the Mac otherwise quiet); what was measured, what was checked and how, and what is
 missing is at the end, and the working notes with every figure are in
@@ -136,10 +137,16 @@ file; no Gamepad API → keyboard.
 
 ## Online play
 
-Browser players play with browser players, through the same lobby server as everybody
-else. **A browser player and a player with the desktop application cannot share a game**
-(their machines round differently and fall out of step within seconds: see the notes);
-the lobby does not keep the two kinds apart, so say which kind you are hosting.
+Browser players use the same lobby server as everybody else, and play with each other
+and with players of the desktop application. A browser's machine rounds floating-point
+results to nearest and cannot do otherwise, so a current application computes as a
+browser does while a browser player is in its room. In the room the page shows a line
+under its menu: "Everyone computes the same way: …", or a warning - another player's
+patch set differs, or another player's copy cannot compute as a browser does (an older
+copy of the application, or one set to its own arithmetic). **A game must not be started
+while that line is a warning**: it would fall out of step within seconds. Three players
+did not get into a game on the test Mac (neither did three copies of the application);
+see the notes, "Mixed games".
 
 **For a player** it is the desktop application's "one-step online" (`docs/play-online.md`,
 section 4) as buttons on the page - the same code, compiled in:
@@ -176,7 +183,10 @@ section 4) as buttons on the page - the same code, compiled in:
    connect to the configured lobby server's ports and to nothing else) and one UDP socket
    per UDP port the console uses, so that the lobby server sees a browser player as an
    ordinary player at the relay's address. Game traffic between two browser players is
-   handed from one session to the other inside the relay. A page served over `https`
+   handed from one session to the other inside the relay; to and from a player of the
+   desktop application it goes through that socket, only for an address the lobby server
+   named to the page or one that the page and that player have both sent to
+   (`relay/README.md`). A page served over `https`
    may only open `wss://`: the relay sits behind the web server that has the certificate.
 2. **`online.json` beside `index.html`**: `{ "relay": "relay", "signin": "NAME.pnach" }`.
    `relay` is the address of the relay's WebSocket, relative to the page or complete;
@@ -215,7 +225,7 @@ stand-in lobby; `relay/check.py wss://…` checks a running one without logging 
 | code overwritten by the game | noticed through page protection | not noticed (no page protection in WebAssembly); patches are written before the code first runs and checked every frame |
 | floating-point rounding | toward zero, as the console | the browser's (to nearest): results can differ in the last bit — this matters for playing online against a desktop player (`docs/issues/float-divergence.md`) |
 | network | the game's own stack on real sockets | the same stack; the sockets are a relay's, reached over one WebSocket connection |
-| online | with other desktop players (and consoles) | with other browser players only |
+| online | with other desktop players (and consoles), and with browser players (it then computes as a browser does) | with browser players and with players of the current desktop application |
 | pacing | by the display's refresh | by a timer (60.00 a second) |
 | one-step online, games by code | yes (menu *Online*) | yes (button *Online…*): the same code |
 | textures replaced, dumps, control socket | yes | no |
@@ -291,10 +301,10 @@ beyond the first level, two players in different places (everything was on one c
 the panel used by a hand (a test went through it by clicks sent to its buttons), WebTransport (not built: the game's datagrams travel
 on the WebSocket connection, in order, so a lost packet delays the ones behind it).
 
-Not there: playing against desktop players —
-measured: the browser build rounds floating-point results to nearest where the desktop
-build and the console round toward zero, so a mixed game would be out of sync within
-seconds (the notes give the measurement and three ways out); a session that survives a
+Not there: games with consoles or PCSX2 players (the browser build rounds floating-point
+results to nearest where a console rounds toward zero; the desktop application can
+follow a browser, they cannot); a game of three that starts for everybody (the notes,
+"Mixed games"); a session that survives a
 lost connection to the relay; anything beyond the first
 level; quick level loads in Safari (section "Browsers"); replaced textures, dumps and the
 control socket of the desktop application.
