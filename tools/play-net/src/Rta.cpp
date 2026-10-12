@@ -126,6 +126,8 @@ namespace
 		bool noOnline = false;   // --rta-no-online: not at this start, whatever the setting says
 		std::vector<std::string> onlineNames; // --rta-online-name: player names for a test, instead of asking
 		int gatewayPort = 0;     // --rta-gateway-port: where this host looks for the server's gateway (tests)
+		bool setQuiet = false;   // --rta-set-quiet: do not tell the other players which patch set this copy has (tests: an older copy)
+		bool setRaw = false;     // --rta-set-raw: pass other players' patch-set datagrams on to the game as well (tests: an older copy)
 		bool netcnfProgram = false; // --rta-netcnf-program: the game's "Config" may start Sony's network settings program
 	};
 
@@ -988,6 +990,11 @@ namespace
 			config.lobbyName = options.lobbyName;
 			config.pcapPath = options.pcapPath;
 			if(options.gatewayPort > 0 && options.gatewayPort < 65536) config.testGatewayPort = static_cast<uint16_t>(options.gatewayPort);
+			// which patch set this copy has, for the other players' copies (RtaNet.cpp)
+			config.tellPatchSet = !options.setQuiet;
+			config.patchSet = m_patchHash;
+			config.patchWords = m_patchWords;
+			config.passPatchSetOn = options.setRaw;
 			config.log = [this](const std::string& line) { Log("net: " + line); };
 			m_net = std::make_unique<Rta::CNet>(config);
 
@@ -1065,6 +1072,8 @@ namespace
 						for(int i = 0; i < 4; i++) hash = (hash ^ ((v >> (i * 8)) & 0xFF)) * 16777619u;
 					}
 				}
+				m_patchHash = hash;
+				m_patchWords = static_cast<uint16_t>(std::min<size_t>(m_patches.size(), 0xFFFF));
 				m_patchSet = Format("%zu sections, %zu words, set %08x", found.size(), m_patches.size(), hash);
 				Log("patches: " + m_patchSet + " from " + options.patchFile);
 				for(const auto& name : found) Log("  [" + name + "]");
@@ -1770,6 +1779,8 @@ namespace
 			}
 			else if(name == "note")
 				push(Step::REPLY, 0, "ok " + GameNote());
+			else if(name == "peers")
+				push(Step::REPLY, 0, "ok " + PeersText());
 			else if(name == "reset")
 			{
 				// what Reset in the application's menu does (answered at once; the machine
@@ -2018,9 +2029,11 @@ namespace
 
 		void UpdateStatus()
 		{
+			CheckPatchSets();
 			// what is wrong with the game comes first, then what the one-step log-in is doing
 			std::string text = GameNote();
 			if(!text.empty()) text += " | ";
+			if(!m_setNote.empty()) text += m_setNote + " | ";
 			text += online.Note();
 			if(!online.Note().empty()) text += " | ";
 			if(m_net)
@@ -2043,6 +2056,58 @@ namespace
 			}
 			std::lock_guard<std::mutex> lock(m_logMutex);
 			m_status = text;
+		}
+
+		// Other players' patch sets, as their copies told ours (RtaNet.cpp). A player not
+		// heard from for fifteen seconds has left.
+		void CheckPatchSets()
+		{
+			std::string note;
+			if(m_net)
+			{
+				unsigned int different = 0, unknown = 0;
+				uint32 theirs = 0;
+				for(const auto& peer : m_net->Peers())
+				{
+					if(peer.silentFor > 15000) continue;
+					if(!peer.setKnown)
+					{
+						if(peer.heardFor > 12000) unknown++;
+						continue;
+					}
+					if(peer.patchSet == m_patchHash) continue;
+					different++;
+					theirs = peer.patchSet;
+					uint64 key = (static_cast<uint64>(peer.ip) << 32) | peer.patchSet;
+					if(m_setWarned.insert(key).second)
+					{
+						std::string text = Format("Another player in this game has a different patch set: theirs is %08x (%u words), yours is %08x (%u words).\n\n"
+						                          "The game computes every frame on every machine, so with different patches the players fall out of step. "
+						                          "Do not start the game: everyone needs the same build and the same patch list (Online > Server, player, patch set... shows yours).",
+						                          peer.patchSet, peer.patchWords, m_patchHash, m_patchWords);
+						Log(Format("WARNING: a player (%s:%u) has patch set %08x, this copy %08x: they would fall out of step%s", Rta::CNet::IpText(peer.ip).c_str(), peer.port, peer.patchSet, m_patchHash, options.testBackground ? "" : "; a window says so"));
+						if(!options.testBackground) QMetaObject::invokeMethod(QCoreApplication::instance(), [text]() { Rta::WarnPatchSet(text); }, Qt::QueuedConnection);
+					}
+				}
+				if(different)
+					note = Format("WARNING: %s a DIFFERENT PATCH SET (%08x; yours %08x) - the game would fall out of step: do not start it", (different == 1) ? "another player has" : "other players have", theirs, m_patchHash);
+				else if(unknown)
+				{
+					note = Format("%u other player%s not say which patch set they have (an older copy?): compare the figures yourselves", unknown, (unknown == 1) ? " does" : "s do");
+					if(!m_setUnknownLogged) Log("another player's copy does not say which patch set it has (an older copy, or not this application)");
+					m_setUnknownLogged = true;
+				}
+			}
+			m_setNote = note;
+		}
+		std::string PeersText()
+		{
+			std::string text = Format("mine=%08x words=%u", m_patchHash, m_patchWords);
+			if(m_net)
+			{
+				for(const auto& peer : m_net->Peers()) text += Format(" [%s:%u set=%s heard_ms=%lld silent_ms=%lld]", Rta::CNet::IpText(peer.ip).c_str(), peer.port, peer.setKnown ? Format("%08x", peer.patchSet).c_str() : "?", static_cast<long long>(peer.heardFor), static_cast<long long>(peer.silentFor));
+			}
+			return text + " note=" + m_setNote;
 		}
 
 		void FillLaunchInfo(Rta::LaunchInfo& info)
@@ -2124,6 +2189,11 @@ namespace
 		CPS2VM* m_vm = nullptr;
 		std::unique_ptr<Rta::CNet> m_net;
 		std::string m_serverText, m_netNote, m_patchSet, m_onlineNote;
+		uint32 m_patchHash = 2166136261u; // the figure of the shared patch set (that of no patch at all until one is loaded)
+		uint16 m_patchWords = 0;
+		std::string m_setNote;             // the warning about another player's patch set
+		std::set<uint64> m_setWarned;      // those a window has been shown for
+		bool m_setUnknownLogged = false;
 		std::vector<PatchWord> m_patches;       // from the patch files
 		std::vector<PatchWord> m_activePatches; // those and the display patches, while the game is loaded
 		bool m_isGame = false;
@@ -2314,13 +2384,14 @@ void Rta::EarlyInit(int argc, char** argv)
 		if(!strncmp(argv[i], "--rta-data=", 11)) setenv("RTA_DATA_DIR", argv[i] + 11, 1), dataGiven = true;
 		if(!strncmp(argv[i], "--rta-player=", 13)) player = atoi(argv[i] + 13);
 	}
-	// "--rta-online" may stand alone or be followed by its mode (lobby, host, join:CODE):
+	// "--rta-online" may stand alone or be followed by its mode (lobby, host, join:CODE,
+	// the last two also with +choose at the end):
 	// alone, it is given the mode the parser wants to see.
 	for(int i = 1; i < argc; i++)
 	{
 		if(strcmp(argv[i], "--rta-online") != 0) continue;
 		const char* next = (i + 1 < argc) ? argv[i + 1] : "";
-		bool mode = !strcmp(next, "lobby") || !strcmp(next, "host") || !strncmp(next, "host:", 5) || !strncmp(next, "join:", 5);
+		bool mode = !strcmp(next, "lobby") || !strcmp(next, "host") || !strncmp(next, "host:", 5) || !strncmp(next, "host+", 5) || !strncmp(next, "join:", 5);
 		if(!mode)
 		{
 			static char alone[] = "--rta-online=lobby";
@@ -2382,6 +2453,8 @@ void Rta::AddCommandLineOptions(QCommandLineParser& parser)
 	parser.addOption(QCommandLineOption("rta-no-online", "Do not go online by itself at this start, whatever the setting says."));
 	parser.addOption(QCommandLineOption("rta-online-name", "Test aid: the player name(s) to use instead of asking in a dialog, separated by commas (the next one is taken when the server refuses one).", "names"));
 	parser.addOption(QCommandLineOption("rta-gateway-port", "Test aid: the TCP port at which this computer looks for the lobby server's gateway (a closed port stands for a server that is not there).", "port"));
+	parser.addOption(QCommandLineOption("rta-set-quiet", "Test aid: do not tell the other players' copies which patch set this one has (as an older copy)."));
+	parser.addOption(QCommandLineOption("rta-set-raw", "Test aid: hand the other players' patch-set datagrams on to the game as well (as an older copy would)."));
 	parser.addOption(QCommandLineOption("rta-netcnf-program", "Let \"Config\" on the game's network screen start Sony's network settings program from the disc (left out otherwise: there is nothing to configure)."));
 	parser.addOption(QCommandLineOption("rta-title", "A test run that a person takes part in: the window says so in its title with this text, and is otherwise an ordinary window.", "text"));
 }
@@ -2470,6 +2543,8 @@ void Rta::ReadCommandLine(const QCommandLineParser& parser)
 	for(const auto& name : parser.value("rta-online-name").split(',', Qt::SkipEmptyParts)) o.onlineNames.push_back(name.trimmed().toStdString());
 	o.gatewayPort = parser.value("rta-gateway-port").toInt();
 	o.netcnfProgram = parser.isSet("rta-netcnf-program");
+	o.setQuiet = parser.isSet("rta-set-quiet");
+	o.setRaw = parser.isSet("rta-set-raw");
 	if(parser.isSet("rta-title")) o.testLabel = parser.value("rta-title").toStdString();
 	if(o.testBackground) Rta::MakeBackgroundApplication();
 }

@@ -22,6 +22,8 @@
 #   --host            as --online, and on: opens a game of your own, named with a code
 #                     of four letters for your friends, and stops in its room
 #   --join CODE       as --online, and on: joins the game with that code, into its room
+#   --choose-character  with --host or --join: stop on the game's character screens
+#                     (otherwise the character you used last is taken by itself)
 #   anything after --  is passed to the application as it is
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
@@ -34,6 +36,7 @@ DATA=""
 SECTIONS="$HERE/sections-suggested.txt"
 FULLSCREEN=""
 ONLINE=""
+CHOOSE=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--disc) DISC="$2"; shift 2 ;;
@@ -46,8 +49,9 @@ while [ $# -gt 0 ]; do
 	--online) ONLINE="lobby"; shift ;;
 	--host) ONLINE="host"; shift ;;
 	--join) ONLINE="join:$2"; shift 2 ;;
+	--choose-character) CHOOSE="+choose"; shift ;;
 	--) shift; break ;;
-	-h|--help) sed -n '2,26p' "$0"; exit 0 ;;
+	-h|--help) sed -n '2,27p' "$0"; exit 0 ;;
 	*) echo "play.sh: unknown option $1 (see --help)" >&2; exit 2 ;;
 	esac
 done
@@ -65,7 +69,8 @@ mkdir -p "$DATA" || exit 1
 set -- --rta-data "$DATA" --disc "$DISC" $FULLSCREEN "$@"
 [ -z "$SERVER" ] || set -- "$@" --rta-server "$SERVER"
 [ -z "$SERVER_PUBLIC" ] || set -- "$@" --rta-server-public "$SERVER_PUBLIC"
-[ -z "$ONLINE" ] || set -- "$@" --rta-online "$ONLINE"
+[ "$ONLINE" = "lobby" ] && CHOOSE=""
+[ -z "$ONLINE" ] || set -- "$@" --rta-online "$ONLINE$CHOOSE"
 PATCHES="$ROOT/patches/SLUS-20973_4028A55F.pnach"
 case "$SECTIONS" in
 none) ;;

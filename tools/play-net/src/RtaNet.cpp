@@ -482,9 +482,76 @@ void CNet::OnUdp(uint16_t sourcePort, uint32_t destIp, uint16_t destPort, const 
 	}
 }
 
+// ---- Which patch set the other players have ---------------------------------------------
+// Play is lockstep: two players whose games are patched differently fall out of step. The
+// game and the lobby exchange nothing that says how a player's copy is patched, and nothing
+// can be added to what they send without changing a request the server parses or a
+// message the game itself reads. So the relay says it, player to player, on the path the
+// game has opened: to every address a datagram of another player arrives from it sends,
+// from the same socket, a "keep-alive" of the game's own UDP library - two bytes, 0 and 6,
+// which that library takes at any length and does nothing with (its dispatch at 0x392354
+// sends types 4, 6, 0x1c and 0x1e to one empty case) - followed by a mark, the figure of
+// the patch set and the number of words. A relay that knows the mark takes such a datagram
+// out before the machine sees it; a copy that does not passes a keep-alive to its game.
+// Nothing of it goes to the lobby server, and nothing reaches the simulation.
+namespace
+{
+	const uint8_t PATCH_SET_MARK[] = {0x00, 0x06, 'R', 'T', 'A', 's', 'e', 't', '1'};
+	const size_t PATCH_SET_SIZE = sizeof(PATCH_SET_MARK) + 6;
+	const int64_t PATCH_SET_TIMES[] = {300, 1500, 4000, 9000}; // milliseconds after the first datagram
+}
+
+std::vector<NetPeer> CNet::Peers() const
+{
+	std::vector<NetPeer> peers;
+	int64_t now = Now();
+	for(const auto& entry : m_peers)
+	{
+		NetPeer peer;
+		peer.ip = static_cast<uint32_t>(entry.first >> 16);
+		peer.port = static_cast<uint16_t>(entry.first & 0xFFFF);
+		peer.setKnown = entry.second.setKnown;
+		peer.patchSet = entry.second.patchSet;
+		peer.patchWords = entry.second.patchWords;
+		peer.heardFor = now - entry.second.firstHeard;
+		peer.silentFor = now - entry.second.lastHeard;
+		peers.push_back(peer);
+	}
+	return peers;
+}
+
 void CNet::PollUdp()
 {
 	uint8_t buffer[2048];
+	// our patch set, to the players heard from: a few times, as a datagram may be lost
+	if(m_config.tellPatchSet)
+	{
+		int64_t now = Now();
+		for(auto& entry : m_peers)
+		{
+			Peer& peer = entry.second;
+			const int times = static_cast<int>(sizeof(PATCH_SET_TIMES) / sizeof(PATCH_SET_TIMES[0]));
+			if(peer.told >= times || now - peer.firstHeard < PATCH_SET_TIMES[peer.told]) continue;
+			peer.told++;
+			auto socket = m_udp.find(peer.localPort);
+			if(socket == m_udp.end()) continue;
+			uint8_t datagram[PATCH_SET_SIZE];
+			memcpy(datagram, PATCH_SET_MARK, sizeof(PATCH_SET_MARK));
+			uint8_t* at = datagram + sizeof(PATCH_SET_MARK);
+			at[0] = static_cast<uint8_t>(m_config.patchSet >> 24);
+			at[1] = static_cast<uint8_t>(m_config.patchSet >> 16);
+			at[2] = static_cast<uint8_t>(m_config.patchSet >> 8);
+			at[3] = static_cast<uint8_t>(m_config.patchSet);
+			at[4] = static_cast<uint8_t>(m_config.patchWords >> 8);
+			at[5] = static_cast<uint8_t>(m_config.patchWords);
+			sockaddr_in to = {};
+			to.sin_family = AF_INET;
+			to.sin_addr.s_addr = htonl(static_cast<uint32_t>(entry.first >> 16));
+			to.sin_port = htons(static_cast<uint16_t>(entry.first & 0xFFFF));
+			sendto(socket->second.fd, datagram, sizeof(datagram), 0, reinterpret_cast<sockaddr*>(&to), sizeof(to));
+			if(peer.told == 1) Log("patch set %08x told to the player at %s:%u (a keep-alive of the game's UDP library with the figure after it)", m_config.patchSet, IpText(ntohl(to.sin_addr.s_addr)).c_str(), ntohs(to.sin_port));
+		}
+	}
 	for(auto& entry : m_udp)
 	{
 		for(int i = 0; i < 32; i++)
@@ -513,6 +580,28 @@ void CNet::PollUdp()
 				if(m_noted.insert(UdpKey(fromIp, fromPort) | (1ull << 62)).second)
 					Log("first datagram from another player: %s:%u -> port %u%s (%zd bytes)", IpText(fromIp).c_str(), fromPort, entry.first,
 					    shownIp == fromIp ? "" : (", shown to the machine as " + IpText(shownIp)).c_str(), n);
+				Peer& peer = m_peers[UdpKey(fromIp, fromPort)];
+				int64_t now = Now();
+				// a player back after a silence is told again
+				if(peer.firstHeard == 0 || now - peer.lastHeard > 30000)
+				{
+					peer.firstHeard = now;
+					peer.told = 0;
+				}
+				peer.lastHeard = now;
+				peer.localPort = entry.first;
+				if(static_cast<size_t>(n) == PATCH_SET_SIZE && memcmp(buffer, PATCH_SET_MARK, sizeof(PATCH_SET_MARK)) == 0)
+				{
+					const uint8_t* at = buffer + sizeof(PATCH_SET_MARK);
+					uint32_t set = (static_cast<uint32_t>(at[0]) << 24) | (static_cast<uint32_t>(at[1]) << 16) | (static_cast<uint32_t>(at[2]) << 8) | at[3];
+					uint16_t words = static_cast<uint16_t>((at[4] << 8) | at[5]);
+					if(!peer.setKnown || peer.patchSet != set)
+						Log("the player at %s:%u has patch set %08x (%u words): %s", IpText(fromIp).c_str(), fromPort, set, words, (set == m_config.patchSet) ? "the same as this copy" : "DIFFERENT from this copy's");
+					peer.setKnown = true;
+					peer.patchSet = set;
+					peer.patchWords = words;
+					if(!m_config.passPatchSetOn) continue; // ours, not the machine's
+				}
 			}
 			SendUdp(shownIp, fromPort, m_config.guestIp, entry.first, buffer, static_cast<size_t>(n));
 		}

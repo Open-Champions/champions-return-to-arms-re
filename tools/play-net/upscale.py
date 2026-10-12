@@ -3,6 +3,7 @@
 
     tools/play-net/upscale.py DUMP_DIR REPLACE_DIR --upscaler /path/to/realesrgan-ncnn-vulkan
                               [--scale 4|2] [--only TEXT] [--force] [--list] [--jobs N] [--limit N]
+                              [--check] [--from-pack REPLACE_DIR_4X]
 
 DUMP_DIR is `<textures>/dump` of runs with `--rta-texture-dump`, REPLACE_DIR is
 `<textures>/replace` (tools/play-net/README.md, "Texture dump and replacement" and
@@ -50,7 +51,8 @@ how the game draws with it, and that decides what is done.
 
 Incremental: REPLACE_DIR/upscale-manifest.json remembers what each file was made from;
 only new and changed pictures are done, `--jobs N` batches at a time (a whole game is
-some 160,000 pictures); a run that is stopped keeps what it has written. The dumps and everything made from them are the
+some 130,000 pictures); a run that is stopped keeps what it has written. A 2x pack can be
+made from a finished 4x pack by halving its pictures (`--scale 2 --from-pack DIR`). The dumps and everything made from them are the
 game's art: keep both folders out of any repository. Needs Python 3 with numpy and Pillow.
 """
 import argparse
@@ -105,9 +107,9 @@ def box_blur_axis(a, radius, axis):
     pad[axis] = (radius + 1, radius)
     total = np.cumsum(np.pad(a, pad, mode='edge'), axis=axis, dtype=np.float64)
     n = a.shape[axis]
-    high = np.take(total, np.arange(2 * radius + 1, 2 * radius + 1 + n), axis=axis)
-    low = np.take(total, np.arange(0, n), axis=axis)
-    return ((high - low) / (2 * radius + 1)).astype(np.float32)
+    high, low = [slice(None)] * a.ndim, [slice(None)] * a.ndim
+    high[axis], low[axis] = slice(2 * radius + 1, 2 * radius + 1 + n), slice(0, n)
+    return ((total[tuple(high)] - total[tuple(low)]) / (2 * radius + 1)).astype(np.float32)
 
 
 def blur(a, sigma):
@@ -186,21 +188,22 @@ def fill_from_neighbours(rgb, known):
         return rgb.astype(np.float32)
     out = rgb.astype(np.float32).copy()
     known = known.copy()
+    h, w = known.shape
     for step in range(48):
         if known.all():
             break
+        # the eight neighbours of every texel, taken as slices of a picture with a border
+        # of nothing round it (in the order the first version of this added them up)
+        values = np.pad(out * known[..., None], ((1, 1), (1, 1), (0, 0)))
+        sources = np.pad(known, 1).astype(np.float32)
         total = np.zeros_like(out)
         count = np.zeros(known.shape, dtype=np.float32)
         for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)):
-            source = np.roll(known, (dy, dx), axis=(0, 1))
-            value = np.roll(out, (dy, dx), axis=(0, 1))
-            if dy == 1: source[0, :] = False
-            if dy == -1: source[-1, :] = False
-            if dx == 1: source[:, 0] = False
-            if dx == -1: source[:, -1] = False
-            total += value * source[..., None]
-            count += source
+            total += values[1 - dy:1 - dy + h, 1 - dx:1 - dx + w]
+            count += sources[1 - dy:1 - dy + h, 1 - dx:1 - dx + w]
         grow = (~known) & (count > 0)
+        if not grow.any():
+            break
         out[grow] = total[grow] / count[grow][:, None]
         known |= grow
     if not known.all():
@@ -585,6 +588,15 @@ def enlarge_batch(task):
     return made
 
 
+def halve_one(task):
+    """A picture of a pack of twice the size made half as large (--from-pack)."""
+    source, target, name = task
+    big = np.asarray(Image.open(os.path.join(source, name)).convert('RGBA'), dtype=np.float32)
+    small = np.clip(reduce_by(big, 2) + 0.5, 0, 255).astype(np.uint8)
+    Image.fromarray(small, 'RGBA').save(os.path.join(target, name), compress_level=3)
+    return name
+
+
 def check_one(task):
     """The self-check of one finished file of a pack."""
     dump, replace, name = task
@@ -612,13 +624,16 @@ def main():
     parser.add_argument('--jobs', type=int, default=1, help='batches worked on at the same time, each in a process of its own (1)')
     parser.add_argument('--limit', type=int, default=0, help='stop after this many pictures (the rest is done by the next run)')
     parser.add_argument('--check', action='store_true', help='enlarge nothing: compare every file of REPLACE_DIR, made small again, with its dump')
+    parser.add_argument('--from-pack', metavar='DIR', help='with --scale 2: make each picture by halving the one in DIR, the replacement folder of a 4x pack made by this script (no enlarging program needed; pictures DIR does not hold are left to a run without this option)')
     args = parser.parse_args()
     for change in args.recipe:
         target, value = change.split('=', 1)
         kind, field = target.split(':', 1)
         old = RECIPES[kind][field]
         RECIPES[kind][field] = (value if isinstance(old, str) or old is None else type(old)(float(value))) if value != 'None' else None
-    if not args.list and not args.check and not args.upscaler:
+    if args.from_pack and args.scale != 2:
+        parser.error('--from-pack makes a 2x pack: give --scale 2')
+    if not args.list and not args.check and not args.upscaler and not args.from_pack:
         parser.error('--upscaler is needed')
 
     os.makedirs(args.replace, exist_ok=True)
@@ -627,13 +642,17 @@ def main():
     if os.path.exists(manifest_path):
         with open(manifest_path) as file:
             manifest = json.load(file)
+    source_manifest = {}
+    if args.from_pack:
+        with open(os.path.join(args.from_pack, 'upscale-manifest.json')) as file:
+            source_manifest = json.load(file)
     names = sorted(n for n in os.listdir(args.dump) if n.endswith('.png') and not n.startswith('mem-'))
     if args.only:
         names = [n for n in names if args.only in n]
 
     # what there is to do: read from the .json files and the pictures' headers alone, so
     # that a dump of a hundred thousand pictures is gone through in a minute
-    todo, to_check, counts, skipped, unseen = [], [], {}, 0, 0
+    todo, to_check, counts, skipped, unseen, waiting = [], [], {}, 0, 0, 0
     for name in names:
         meta_path = os.path.join(args.dump, name[:-4] + '.json')
         if not os.path.exists(meta_path):
@@ -664,8 +683,15 @@ def main():
         if size.shape[0] * size.shape[1] < FEWEST.get(use.kind, 0):
             signature.append('plain')               # (added to the signature only where it applies)
         signature = json.loads(json.dumps(signature))
-        if not args.force and manifest.get(name) == signature and os.path.exists(os.path.join(args.replace, name)):
+        # a picture made by halving the 4x pack's counts as done for a plain --scale 2 run too
+        if not args.force and manifest.get(name) in (signature, signature + ['halved']) and os.path.exists(os.path.join(args.replace, name)):
             continue
+        if args.from_pack:
+            # only from a 4x picture that is itself up to date
+            if source_manifest.get(name) != signature[:1] + [4] + signature[2:] or not os.path.exists(os.path.join(args.from_pack, name)):
+                waiting += 1
+                continue
+            signature = signature + ['halved']
         todo.append((name, signature))
     print('upscale.py: %d pictures in the dump (%s)%s' % (len(names), ', '.join('%d %s' % (v, k) for k, v in sorted(counts.items())),
                                                            '; %d without a readable .json file left out (dump them again with this build)' % skipped if skipped else ''), flush=True)
@@ -680,6 +706,8 @@ def main():
     if args.check:
         checks = dict(pool.imap_unordered(check_one, to_check, 16) if pool else map(check_one, to_check))
         return report(checks, None)
+    if waiting:
+        print('upscale.py: %d pictures have no up-to-date picture in %s to halve' % (waiting, args.from_pack))
     if not todo:
         print('upscale.py: nothing to do')
         return 0
@@ -691,6 +719,20 @@ def main():
         with open(manifest_path + '.new', 'w') as file:
             json.dump(manifest, file)
         os.replace(manifest_path + '.new', manifest_path)
+
+    if args.from_pack:
+        tasks = [(args.from_pack, args.replace, name) for name, signature in todo]
+        signatures = dict(todo)
+        try:
+            for number, name in enumerate(pool.imap_unordered(halve_one, tasks, 16) if pool else map(halve_one, tasks), 1):
+                manifest[name] = signatures[name]
+                if number % 2000 == 0:
+                    keep()
+                    print('upscale.py: %d of %d' % (number, len(todo)), flush=True)
+        finally:
+            keep()
+        print('upscale.py: wrote %d pictures to %s at 2x, each half the size of its picture in %s (check them with --check)' % (len(todo), args.replace, args.from_pack))
+        return 0
 
     done = fields = 0
     checks = {}

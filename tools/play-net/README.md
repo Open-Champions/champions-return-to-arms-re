@@ -648,18 +648,79 @@ the game list:
 | the form for a new game | +0xc24c = 2, name field at the pointer +0xc210 (an ordinary text field, 15 characters; the game refuses fewer than 4) | the code is written there, read back, sent with cross |
 | the list of games | lobby client (pointer at list window +0x314): count at +0x60 (u16), array at +0x98, 0xb8 bytes a game, name at +0x22 (16-bit characters), highlighted game at list window +0xc249 | the code is looked for at every frame; the cursor is walked to it; cross joins |
 | request out / let in | client +0x64, bits 0x10 and 0x20 | cross is pressed again until the first is seen |
-| character screens | `g_lobbyState` 8 to 11; 0x4fbbe2 = 1 when a character was chosen | the player's own: the pad is theirs while they are up, and there is no time limit |
+| character screens | `g_lobbyState` 8 to 11; 0x4fbbe2 = 1 when a character was chosen | the character used last is taken by itself (below); otherwise the player's own: the pad is theirs while they are up, and there is no time limit |
 | a game's room | `g_lobbyState` 6, window at 0x506140 | arrived |
 
-A host: triangle, cross, the character screens (the player), the form (name = the code,
-everything else as the form has it), the room. The code is four letters out of 24 (no I,
+A host: triangle, cross, the character screens (the character used last, or the player),
+the form (name = the code, everything else as the form has it), the room. The code is four letters out of 24 (no I,
 no O), made with `std::random_device`; it is the game's name on the server and no secret.
 A joiner: the list is watched until a game of that name is in it (two minutes at most),
 then cross on it, the character screens, the room. A box that stays after the form was
 sent, the character screens left without a character, the pad in a chat pane: it stops
-as above. *Not done*: choosing the character the player used last (it always waits on
-the character screens), and asking for difficulty or game type (the form's own are
-taken).
+as above. *Not done*: asking for difficulty or game type (the form's own are taken).
+
+**The character used last.** "Host" and "Join" always open the game's new-character
+screens; stored characters are behind triangle ("Import") on the first of them, in one
+list for those the server keeps ("RTA Net") and those on a memory card. What is read
+(`playerSel_task` 0x225478, `memcard_importScreen` 0x21fa2c):
+
+| What | Where | Values |
+|---|---|---|
+| page of the character screens | 0x8e2c02 (u8) | 1 race and class, 2 appearance, 3 ability points, 4 name, 5 done, 8 the sheet of an imported character |
+| card screen | `g_memcardState` 0x88d3a0, its own state 0x88d3a8 | 9 is "Import Character"; there 1 the list takes the pad, 0xd to 0xf the entry is fetched, 0x13 / 0x14 an error |
+| the list | pointer at 0x4f8ee4, 0xf4 bytes an entry, count 0x4f9230, cursor 0x8e1b43 (u8) | entry +2 kind (2: kept by the server), +0x48 the server's number, +0x4c name, +0x9c class, +0xa5 level |
+| the character in use | `g_players` 0x4d8af0, record 0 while the lobby screens are up | name first, class at +0x50 |
+
+When a character has been chosen (0x4fbbe2 = 1) its name, class and - if it came from the
+list - the server's number are written to `<data directory>/online-character`, one line
+per server (the key of `online-login`). The next Host or Join finds that line and does
+the screens itself: triangle on page 1, waits for the list, looks for the entry (by the
+server's number while it still has that name; else by name and class, the server's
+before a memory card's; two that fit are left to the player), walks the cursor to it,
+cross, waits for the sheet (page 8), cross. The player's own buttons are not passed on
+meanwhile, and **any button the player holds** (keyboard, controller, a test script)
+before the entry is taken hands the screens over, as do `+choose` after the mode
+(`host+choose`, `join:CODE+choose`; the tick in the Host and Join windows; `play.sh
+--choose-character`), an entry that is not there, a sheet or page that was not asked
+for, an error or question of the game on the list, or 40 s without getting there. A
+character's name appears in the status bar and, where it explains a hand-over, in
+`rta.log`; unlike the login it is no secret. `uishot host|join FILE` draws the two
+windows.
+
+**Which patch set the other players have** (`RtaNet.cpp`, `CheckPatchSets` in
+`Rta.cpp`). Looked at for a carrier: the chat line (a player's copy would have to drive
+the chat keyboard, and the text lands in everybody's chat pane); the game's name (only
+host to joiner, and it changes the code people type); what the server stores for a game
+(the game sends an empty attribute list and blob with its create request: filling them
+means changing a request the server parses). None is used. The copies tell each other
+directly, on the path the game has opened between them: to every address another
+player's datagram arrives from, the relay sends - from the same socket, four times in
+nine seconds - a keep-alive of the game's own UDP library (bytes 0, 6) followed by the
+mark `RTAset1`, the set's figure and its word count, 15 bytes in all. That library does
+nothing with a type 6 packet of any length (dispatch 0x392354: types 4, 6, 0x1c and
+0x1e share one empty case), so a copy that does not know the mark hands a keep-alive to
+its game; a copy that does takes the datagram out before the machine sees it. Nothing
+goes to the lobby server and nothing reaches the simulation. A different figure from a
+player heard within the last 15 s: a line in `rta.log`, "WARNING: another player has a
+DIFFERENT PATCH SET (…; yours …)" in the status bar, and once per player and figure a
+window that does not stop the game. A player heard for 12 s that has said nothing: "does
+not say which patch set". `peers` on the control socket lists them; `--rta-set-quiet`
+(say nothing) and `--rta-set-raw` (hand the datagrams on to the game as well) stand for
+an older copy in tests. Not done: a warning before joining (the figure is only known
+once the two machines talk, that is in the room), more than two players, and anything
+between two networks.
+
+**Measured with remembered characters** (two background test copies on one Mac, load
+average 60 to 140 from other work; each copy had used its character once before): host
+in its room 43 s after launch, joiner 53 s after its own, no press by anybody; *Start
+Game* by the test; 6 s later both in the first level, lockstep frames 247 / 250 / 256,
+396 / 402 / 406, 552 / 557 / 565 (host, joiner, host again), shared seed and both
+players' hit points the same on both, checksum flag 0. The room was reached this way
+three times (host 43 s each time, joiner 50 to 61 s) and the game started twice, the
+second time with the patch-set datagrams also handed to both games (`--rta-set-raw`):
+in step again (259 / 260 / 270, 400 / 402 / 410, 534 / 545 / 552). With one
+section taken out of the joiner's list: both copies had the other's figure 1 s after
+the first datagram between them and showed the warning; the room stayed up.
 
 **Measured, two background test copies on one Mac**: host started with `--host`: at the
 character screens 28.6 s after launch, in its room 3 s after the test had made a

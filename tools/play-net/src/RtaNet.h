@@ -65,6 +65,15 @@ namespace Rta
 		// Give the host socket for a UDP port of the machine the same port number when
 		// it is free, so that a router can be told to forward UDP 4000-4004.
 		bool bindGamePorts = true;
+		// The patch set of this copy, told to every other player a datagram arrives from
+		// (and theirs heard): see "Which patch set the other players have" in RtaNet.cpp.
+		// tellPatchSet false: nothing is sent; what arrives is still taken out and kept.
+		bool tellPatchSet = false;
+		uint32_t patchSet = 0;
+		uint16_t patchWords = 0;
+		// For tests: hand such a datagram on to the machine as well, as a copy that does
+		// not know the mark would.
+		bool passPatchSetOn = false;
 		// For tests: connections to the server's gateway port range go to this port of
 		// the server's host instead (a closed one stands for a server that is not there).
 		// 0: the port the machine asked for.
@@ -84,10 +93,24 @@ namespace Rta
 		bool dhcpDone = false, dnsAnswered = false;
 	};
 
+	// Another player's emulator, as the relay knows it
+	struct NetPeer
+	{
+		uint32_t ip = 0;
+		uint16_t port = 0;
+		bool setKnown = false;   // it has said which patch set it has
+		uint32_t patchSet = 0;
+		uint16_t patchWords = 0;
+		int64_t heardFor = 0;    // milliseconds since its first datagram
+		int64_t silentFor = 0;   // milliseconds since its last
+	};
+
 	class CNet
 	{
 	public:
 		CNet(const NetConfig&);
+		// the other players heard from (machine thread, like Poll)
+		std::vector<NetPeer> Peers() const;
 		~CNet();
 		CNet(const CNet&) = delete;
 		CNet& operator=(const CNet&) = delete;
@@ -181,5 +204,15 @@ namespace Rta
 		std::map<uint32_t, uint32_t> m_udpSeenAsAny; // the same by address alone, the latest
 		std::set<uint64_t> m_noted;
 		uint64_t m_peerOut = 0, m_peerIn = 0;
+		struct Peer
+		{
+			int64_t firstHeard = 0, lastHeard = 0;
+			uint16_t localPort = 0; // the machine's UDP port it talks to
+			int told = 0;           // times our patch set was sent to it
+			bool setKnown = false;
+			uint32_t patchSet = 0;
+			uint16_t patchWords = 0;
+		};
+		std::map<uint64_t, Peer> m_peers; // by address and port, as the host sees them
 	};
 }

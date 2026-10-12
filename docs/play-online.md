@@ -183,23 +183,31 @@ Everyone uses the same server address, the same disc version and the same patch 
 One of you hosts, the others join; nobody looks for anybody in a list.
 
 - **Host: *Online → Host a game*** (or start with `play.sh --host`). The application
-  goes online as above if it is not there yet, opens the lobby's *Host Game*, and hands
-  you the **character screens**: make a character, or press △ for one stored on the
-  server or the memory card, ✕ to accept it. When you are through, it goes on by itself:
-  it names the game with a **code of four letters**, takes the game form's own settings
-  (a public mission game at the difficulty your character allows), and stops in your
-  game's room. The code stands large in the window "Your game" and in the status bar:
-  **tell it to your friends**. When they have appeared in the room, press ✕ *Start Game*.
+  goes online as above if it is not there yet, opens the lobby's *Host Game*, takes
+  **your character** (below), names the game with a **code of four letters**, takes the
+  game form's own settings (a public mission game at the difficulty your character
+  allows), and stops in your game's room. The code stands large in the window "Your
+  game" and in the status bar: **tell it to your friends**. When they have appeared in
+  the room, press ✕ *Start Game*.
 - **Join: *Online → Join a game...***, type the code (or start with `play.sh --join
   CODE`). The application goes online, waits until a game of that name is in the lobby's
   list (the game asks the server for the list about every twelve seconds; it gives up
-  after two minutes and says so), joins it, hands you the character screens as for the
-  host, and stops in the room. The host starts the game.
+  after two minutes and says so), joins it, takes your character as for the host, and
+  stops in the room. The host starts the game.
+- **Your character.** The first time on a server the game's **character screens** are
+  yours: make a character, or press △ for one stored on the server or the memory card,
+  ✕ to accept it; when you are through, the application goes on by itself. It remembers
+  that character (per server), and **from then on Host and Join take it by themselves**
+  from the game's list of stored characters - you arrive in the room without a press.
+  The screens are yours again when you tick *Choose another character, or make a new
+  one* in the Host or Join window (`play.sh --choose-character`), when you **hold any
+  button** while the game is coming up to those screens, or when the remembered
+  character is not among the stored ones any more (the status bar says which).
 - The code is the game's name in the lobby, nothing more: anybody on that server can see
   the game in the list and join it by hand too. A game somebody named by hand can be
   joined by typing its name as the code, if it has 4 to 8 letters and digits.
 - The same rules as for going online: while the application presses, your keys are not
-  passed on (except on the character screens, which are yours); anything unexpected
+  passed on (except on the character screens when they are yours); anything unexpected
   stops it with a note in the status bar and `rta.log`, and you go on by hand from where
   the game is.
 
@@ -324,8 +332,13 @@ have it.
 - The patch list. `play.sh` applies the sections named in
   `tools/play-net/sections-suggested.txt` from `patches/SLUS-20973_4028A55F.pnach`. The
   status bar and `rta.log` show a figure for it ("patches: 19 sections, … set
-  xxxxxxxx"): compare it with your friends' before you start. Resolution, keys and the
-  other settings of section 5 may differ: they do not touch the game's simulation.
+  xxxxxxxx"). Resolution, keys and the other settings of section 5 may differ: they do
+  not touch the game's simulation.
+- **The application compares the figure for you.** As soon as two players are in one
+  game's room their copies tell each other which patch set they have. When they differ,
+  **both** get a window and a line in the status bar: "another player has a DIFFERENT
+  PATCH SET … do not start". A copy too old to say it is named as such after twelve
+  seconds; then compare the figures yourselves. (It warns; it does not stop you.)
 
 ## 7. Two people on different networks
 
@@ -392,6 +405,18 @@ person at the controls:
   shared seed and hit points and no checksum failure, for 650 frames. A code that no
   game has: stopped after two minutes at the list, with the reason.
 
+- **The remembered character and the patch-set warning**, two background test copies
+  on this Mac (a load average of 60 to 140 from other work): the host imported its
+  stored character by presses once and the joiner made one; started again, the host
+  (`--host`) was in its room 43 s after launch and the joiner (`--join CODE`) 53 s after
+  its own, **neither with a single press**; the host's *Start Game*, and 6 s later both
+  were in the first level at lockstep frames 247 / 250 / 256, 396 / 402 / 406, 552 / 557
+  / 565 when sampled host, joiner, host, with the same shared seed and hit points and no
+  checksum failure. A held button, a remembered character that is not in the list, and
+  `--choose-character` each left the screens to the player. With one patch section taken
+  out of the joiner's list both copies showed the warning in the room, each with the
+  other's figure; with equal lists none, and the game started and stayed in step.
+
 Not tried, or known not to work:
 
 - **One-step online**: the windows for the player name, the code and *Join a game* were
@@ -399,10 +424,9 @@ Not tried, or known not to work:
   cannot show a window to anyone; the tests gave the name and the code by option). The
   packaged application's going online at every start was not run (a test copy never
   does it by itself). Nothing of it was ever run against a server that is not on this
-  Mac. On the character screens the application waits for you: it does **not** pick the
-  character you used last by itself, and it does not ask for difficulty or game type:
-  the game form's own settings are taken. A character was made on those screens by the
-  test's own presses, not by a person.
+  Mac. It does not ask for difficulty or game type: the game form's own settings are
+  taken. A character was made on the character screens by the test's own presses, not
+  by a person.
 
 - **Controllers**: a DualSense by USB was seen to attach (log, status bar); every button,
   both sticks, the dead zone and the trigger threshold were exercised with a controller

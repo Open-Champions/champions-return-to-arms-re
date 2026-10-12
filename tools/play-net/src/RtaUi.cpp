@@ -78,6 +78,7 @@ namespace
 		QCheckBox* choose = nullptr;   // null when no character is known: the screens come up anyway
 	};
 	GameDialog BuildGameDialog(QWidget* parent, bool join, const QString& typed);
+	QMessageBox* BuildSetWarning(QWidget* parent, const QString& text);
 }
 
 void Rta::ShowControls(QWidget* parent)
@@ -359,6 +360,17 @@ bool Rta::RenderDialog(const std::string& name, const std::string& path)
 		dialog.hide();
 		return saved;
 	}
+	if(name == "setwarning")
+	{
+		std::unique_ptr<QMessageBox> box(BuildSetWarning(parent, "Another player in this game has a different patch set: theirs is 1b2c3d4e (150 words), yours is df6a6139 (81 words).\n\n"
+		                                                         "The game computes every frame on every machine, so with different patches the players fall out of step. "
+		                                                         "Do not start the game: everyone needs the same build and the same patch list (Online > Server, player, patch set... shows yours)."));
+		box->setAttribute(Qt::WA_DontShowOnScreen, true);
+		box->show();
+		bool saved = box->grab().save(QString::fromStdString(path), "PNG");
+		box->hide();
+		return saved;
+	}
 	if(name == "host" || name == "join")
 	{
 		auto game = BuildGameDialog(parent, name == "join", "KXRT");
@@ -606,6 +618,29 @@ void Rta::ShowGameCode(const std::string& code)
 	dialog->setAttribute(Qt::WA_DeleteOnClose, true);
 	g_codeWindow = dialog;
 	dialog->show(); // not modal: the game goes on
+}
+
+namespace
+{
+	// the first paragraph is the message, the rest the explanation under it (which wraps)
+	QMessageBox* BuildSetWarning(QWidget* parent, const QString& text)
+	{
+		auto box = new QMessageBox(parent);
+		box->setIcon(QMessageBox::Warning);
+		box->setWindowTitle("Different patch sets");
+		box->setText(text.section("\n\n", 0, 0));
+		box->setInformativeText(text.section("\n\n", 1));
+		box->setStandardButtons(QMessageBox::Ok);
+		return box;
+	}
+}
+
+void Rta::WarnPatchSet(const std::string& text)
+{
+	auto box = BuildSetWarning(g_mainWindow, QString::fromStdString(text));
+	box->setAttribute(Qt::WA_DeleteOnClose, true);
+	box->setModal(false);
+	box->show(); // the game goes on
 }
 
 void Rta::AskPlayerName(const std::string& why)

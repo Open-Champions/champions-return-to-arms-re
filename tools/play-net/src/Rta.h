@@ -152,6 +152,9 @@ namespace Rta
 	void AskPlayerName(const std::string& why);
 	// RtaUi.cpp: a window with the code of the game this copy hosts, large
 	void ShowGameCode(const std::string& code);
+	// RtaUi.cpp: a window that says that another player has a different patch set (it
+	// does not stop the game)
+	void WarnPatchSet(const std::string& text);
 	// what the one-step log-in is doing, as the status bar says it
 	std::string OnlineNote();
 	bool RenderDialog(const std::string& name, const std::string& path);

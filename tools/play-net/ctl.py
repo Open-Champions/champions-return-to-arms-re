@@ -30,7 +30,7 @@ square triangle l1 l2 l3 r1 r2 r3 start select):
                              raw, and "<index> <clock> <w> <h>" lines in <file>.txt
     sound [reset]            the sound handler's counts (times dry, pieces thrown away,
                              milliseconds queued, rate, samples at full scale)
-    uishot controls|online|about|playername|playername2|gamecode <file.png>
+    uishot controls|online|about|playername|playername2|gamecode|host|join|setwarning <file.png>
                              a picture of one of our windows
     pads                     the game controller: attached, its name, what is pressed
     gcpad connect|disconnect|set <buttons|none> [lx ly rx ry [l2 r2]]
@@ -56,7 +56,18 @@ square triangle l1 l2 l3 r1 r2 r3 start select):
                              as "Play Online", "Host a game" and "Join a game" in the
                              menu: by itself to the lobby's game list, into the room of
                              a game of one's own named with a code (made up when none is
-                             given), or into the room of the game with the given code
+                             given), or into the room of the game with the given code.
+                             Host and join take the character used last; "+choose" at
+                             the end (host+choose) leaves the character screens alone
+    peers                    this copy's patch set and, for every other player heard
+                             from, the set its copy told (or ?), with the warning
+    cpu                      where the main processor is, whether the game is taken to be
+                             stuck, the longest stretch without drawing
+    note                     the status bar's note about the game (network screen, stuck)
+    reset                    what Reset in the menu does
+    hang <seconds>           stop the machine's own thread (a stand-in for an emulator
+                             that is stuck); "<socket>.ui" with reset, escape or close in
+                             it reaches the application meanwhile
     online name NAME         the player name, when a background test run waits for one
     online stop | forget     stop pressing / delete the saved login for this server
     quit
