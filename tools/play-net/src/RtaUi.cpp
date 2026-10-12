@@ -6,6 +6,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -542,11 +543,43 @@ void Rta::AskPlayerName(const std::string& why)
 	Rta::OnlineGiveName(name);
 }
 
+void Rta::TriggerReset()
+{
+	if(!g_mainWindow) return;
+	// Play!'s own entry: it goes through Rta::BeforeReset like a click in the menu
+	if(auto reset = g_mainWindow->findChild<QAction*>("actionReset"))
+	{
+		if(reset->isEnabled())
+			reset->trigger();
+		else
+			Rta::LogLine("reset: nothing has been started that could be started again");
+	}
+}
+
 void Rta::SetupWindow(QWidget* window)
 {
 	auto mainWindow = qobject_cast<QMainWindow*>(window);
 	if(!mainWindow) return;
 	g_mainWindow = mainWindow;
+	// Tests: the control socket is answered by the machine's thread, so a machine that has
+	// stopped answers nothing. A file "<control path>.ui" holding "reset", "escape" or
+	// "close" is taken up here, on the application's own thread, once a second.
+	if(!Rta::ControlPath().empty())
+	{
+		auto timer = new QTimer(mainWindow);
+		QObject::connect(timer, &QTimer::timeout, mainWindow, [mainWindow]() {
+			QFile file(QString::fromStdString(Rta::ControlPath() + ".ui"));
+			if(!file.open(QIODevice::ReadOnly)) return;
+			QString command = QString::fromUtf8(file.readAll()).trimmed();
+			file.close();
+			file.remove();
+			Rta::LogLine("test: '" + command.toStdString() + "' from the .ui file");
+			if(command == "reset") Rta::TriggerReset();
+			if(command == "escape") Rta::EscapePressed();
+			if(command == "close") mainWindow->close();
+		});
+		timer->start(1000);
+	}
 	{
 		auto onlineMenu = new QMenu("Online", mainWindow);
 		auto helpAction = mainWindow->findChild<QMenu*>("menuHelp") ? mainWindow->findChild<QMenu*>("menuHelp")->menuAction() : nullptr;

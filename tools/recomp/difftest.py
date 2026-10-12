@@ -60,7 +60,7 @@ NATIVE_STATUS = ('return', 'fault', 'budget', 'trap', 'signal', 'badcall')
 class Case:
     """Everything that defines one run: function, registers, memory patches, stubs."""
     __slots__ = ('func', 'stub_all', 'budget', 'r', 'rh', 'hi', 'lo', 'hi1', 'lo1', 'sa', 'fcr31',
-                 'f', 'acc', 'cop0', 'stubs', 'patches', 'tag')
+                 'f', 'acc', 'cop0', 'stubs', 'patches', 'tag', 'keep_v0', 'follow')
 
     def __init__(self, func):
         self.func = func
@@ -74,19 +74,23 @@ class Case:
         self.f = [0] * 32
         self.acc = 0
         self.cop0 = [0] * 32
+        self.keep_v0 = False    # stub-all leaves v0 alone instead of returning 0
+        self.follow = []        # with stub_all: addresses that run for real
         self.stubs = []         # (address, value or None)
         self.patches = []       # (address, bytes)
         self.tag = ''
 
     def pack(self):
-        out = [struct.pack('<IIq', self.func, 1 if self.stub_all else 0, self.budget),
+        out = [struct.pack('<IIq', self.func, (1 if self.stub_all else 0) | (2 if self.keep_v0 else 0), self.budget),
                struct.pack('<32Q', *self.r), struct.pack('<32Q', *self.rh),
                struct.pack('<4Q', self.hi, self.lo, self.hi1, self.lo1),
                struct.pack('<II', self.sa, self.fcr31), struct.pack('<32I', *self.f),
                struct.pack('<I', self.acc), struct.pack('<32I', *self.cop0),
-               struct.pack('<I', len(self.stubs))]
+               struct.pack('<I', len(self.stubs) + len(self.follow))]
         for addr, value in self.stubs:
             out.append(struct.pack('<IIQ', addr, 0 if value is None else 1, (value or 0) & M64))
+        for addr in self.follow:
+            out.append(struct.pack('<IIQ', addr, 2, 0))
         out.append(struct.pack('<I', len(self.patches)))
         for addr, blob in self.patches:
             out.append(struct.pack('<II', addr, len(blob)))

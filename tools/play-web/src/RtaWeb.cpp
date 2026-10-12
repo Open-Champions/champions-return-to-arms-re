@@ -49,6 +49,7 @@
 extern "C" uint32 RtaWebDiscCounter(int);
 extern std::atomic<uint32> g_rtaWebFunctionCount;
 extern std::atomic<uint64> g_rtaWebFunctionMicros;
+extern unsigned int g_rtaWebDispatches;
 
 namespace
 {
@@ -103,6 +104,18 @@ namespace
 	{
 		uint32 buttons = 0;
 		uint32 frames = 0;
+		bool stick = false; // the left stick is given for these frames
+		uint8 x = 128, y = 128;
+	};
+
+	// DEV: what the game's memory held at one place, frame by frame (rtaTrace)
+	struct Trace
+	{
+		uint32 pointer = 0; // 0: 'offset' is the address itself; else the address of a pointer to add it to
+		uint32 offset = 0;
+		uint32 size = 0;
+		uint32 left = 0;
+		std::vector<uint8> bytes;
 	};
 
 	struct BurstEntry
@@ -125,6 +138,7 @@ namespace
 	std::vector<PatchWord> g_activePatches;
 	bool g_wantDisplayPatches = true;
 	std::deque<Step> g_steps;
+	Trace g_trace;
 	std::vector<BurstEntry> g_burst;
 	std::vector<uint8> g_burstLast, g_burstNow;
 	std::string g_executable;
@@ -330,15 +344,38 @@ namespace
 			g_frames++;
 			CheckPatches(ram);
 			uint32 buttons = g_shared.buttons;
+			uint32 axesSet = g_shared.axesSet;
+			uint32 axes[4] = {g_shared.axes[0], g_shared.axes[1], g_shared.axes[2], g_shared.axes[3]};
 			{
 				std::lock_guard lock(g_mutex);
+				if(g_trace.left != 0)
+				{
+					uint32 address = g_trace.offset;
+					if(g_trace.pointer != 0)
+					{
+						uint32 base = 0;
+						memcpy(&base, ram + (g_trace.pointer & (PS2::EE_RAM_SIZE - 4)), 4);
+						address = (base != 0) ? (base + g_trace.offset) : 0;
+					}
+					address &= 0x1FFFFFFF;
+					size_t at = g_trace.bytes.size();
+					g_trace.bytes.resize(at + g_trace.size, 0);
+					if(address != 0 && (address + g_trace.size) <= PS2::EE_RAM_SIZE) memcpy(g_trace.bytes.data() + at, ram + address, g_trace.size);
+					g_trace.left--;
+				}
 				if(!g_steps.empty())
 				{
-					buttons |= g_steps.front().buttons;
-					if(--g_steps.front().frames == 0) g_steps.pop_front();
+					auto& step = g_steps.front();
+					buttons |= step.buttons;
+					if(step.stick)
+					{
+						axes[0] = step.x;
+						axes[1] = step.y;
+						axesSet |= 1;
+					}
+					if(--step.frames == 0) g_steps.pop_front();
 				}
 			}
-			uint32 axesSet = g_shared.axesSet;
 			for(auto* listener : m_interfaces)
 			{
 				for(unsigned int i = 0; i < PS2::CControllerInfo::MAX_BUTTONS; i++)
@@ -347,7 +384,7 @@ namespace
 					if(PS2::CControllerInfo::IsAxis(button))
 					{
 						bool set = (axesSet & (i < 2 ? 1 : 2)) != 0;
-						listener->SetAxisState(0, button, set ? static_cast<uint8>(std::min<uint32>(g_shared.axes[i], 255)) : 0x80, ram);
+						listener->SetAxisState(0, button, set ? static_cast<uint8>(std::min<uint32>(axes[i], 255)) : 0x80, ram);
 					}
 					else
 					{
@@ -611,8 +648,13 @@ extern "C"
 		// pictures are shown at the same place.
 		config.RegisterPreferenceBoolean(PREF_CGSHANDLER_FIELD_OFFSET, true);
 		config.SetPreferenceBoolean(PREF_CGSHANDLER_FIELD_OFFSET, !g_wantDisplayPatches);
-		config.RegisterPreferenceInteger(PREF_AUDIO_SPUBLOCKCOUNT, 22);
-		if(soundBlocks > 0) config.SetPreferenceInteger(PREF_AUDIO_SPUBLOCKCOUNT, soundBlocks);
+		// Sound is handed over in pieces of 16 blocks of 45 samples: 16 ms, about a frame
+		// (Play!'s own default is 100 ms; the desktop application uses 30).
+		config.RegisterPreferenceInteger(PREF_AUDIO_SPUBLOCKCOUNT, 16);
+		config.SetPreferenceInteger(PREF_AUDIO_SPUBLOCKCOUNT, soundBlocks > 0 ? soundBlocks : 16);
+		// The frame limiter must be on for FrameWait to be asked at all.
+		config.RegisterPreferenceBoolean(PREF_PS2_LIMIT_FRAMERATE, true);
+		config.SetPreferenceBoolean(PREF_PS2_LIMIT_FRAMERATE, true);
 
 		CFrameLimiter::SetExternalWait(&FrameWait);
 
@@ -634,6 +676,15 @@ extern "C"
 	EMSCRIPTEN_KEEPALIVE int rtaReady()
 	{
 		return g_ready;
+	}
+
+	// The resolution factor while the game runs: the video handler throws its pictures and
+	// textures away and makes them anew at the new size (as the desktop application's
+	// settings dialog does).
+	EMSCRIPTEN_KEEPALIVE void rtaSetFactor(int factor)
+	{
+		CAppConfig::GetInstance().SetPreferenceInteger(PREF_CGSH_OPENGL_RESOLUTION_FACTOR, std::max(1, std::min(8, factor)));
+		if(g_ready) g_vm->GetGSHandler()->NotifyPreferencesChanged();
 	}
 
 	// The patch file's text (PCSX2 style) and the wanted section names, one per line
@@ -726,6 +777,47 @@ extern "C"
 		}
 	}
 
+	// DEV: the left stick held at (x, y), 0..255, for 'frames' frames, as a scripted step
+	EMSCRIPTEN_KEEPALIVE void rtaStick(uint32 x, uint32 y, uint32 frames)
+	{
+		if(!frames) return;
+		std::lock_guard lock(g_mutex);
+		Step step;
+		step.stick = true;
+		step.x = static_cast<uint8>(std::min<uint32>(x, 255));
+		step.y = static_cast<uint8>(std::min<uint32>(y, 255));
+		step.frames = frames;
+		g_steps.push_back(step);
+	}
+
+	// DEV: 'size' bytes of the game's memory, taken at every vertical blank for 'frames'
+	// frames from now: at 'offset', or at 'offset' past the pointer stored at 'pointer'.
+	// With frames 0: what was taken, as hexadecimal text, one frame after the other.
+	EMSCRIPTEN_KEEPALIVE const char* rtaTrace(uint32 pointer, uint32 offset, uint32 size, uint32 frames)
+	{
+		static std::string text;
+		std::lock_guard lock(g_mutex);
+		text.clear();
+		if(frames != 0)
+		{
+			g_trace.pointer = pointer & 0x1FFFFFFF;
+			g_trace.offset = offset;
+			g_trace.size = std::min<uint32>(size, 64);
+			g_trace.left = std::min<uint32>(frames, 100000);
+			g_trace.bytes.clear();
+			return text.c_str();
+		}
+		if(g_trace.left != 0) return text.c_str(); // not finished
+		static const char* digits = "0123456789abcdef";
+		text.reserve(g_trace.bytes.size() * 2);
+		for(uint8 byte : g_trace.bytes)
+		{
+			text += digits[byte >> 4];
+			text += digits[byte & 15];
+		}
+		return text.c_str();
+	}
+
 	EMSCRIPTEN_KEEPALIVE uint32 rtaStepsLeft()
 	{
 		std::lock_guard lock(g_mutex);
@@ -758,13 +850,13 @@ extern "C"
 		std::lock_guard lock(g_mutex);
 		g_text = Format(
 		    "{\"ready\":%d,\"now\":%.3f,\"frames\":%u,\"presents\":%u,\"wait_us\":%llu,\"video_us\":%llu,"
-		    "\"functions\":%u,\"function_us\":%llu,\"draw_calls\":%u,"
+		    "\"functions\":%u,\"function_us\":%llu,\"dispatches\":%u,\"draw_calls\":%u,"
 		    "\"disc_fetches\":%u,\"disc_fetch_us\":%u,\"disc_errors\":%u,"
 		    "\"is_game\":%d,\"crc\":\"%08X\",\"executable\":\"%s\",\"patch_words\":%zu,\"display_patches\":%u,\"patch_rewrites\":%u,"
 		    "\"steps\":%zu,\"gl_mode\":%d,\"gl_made\":%u,\"gl_skipped\":%u,\"sound_written\":%u,\"sound_dropped\":%u,\"burst_left\":%u}",
 		    static_cast<int>(g_ready), emscripten_get_now(), static_cast<unsigned int>(g_frames), static_cast<unsigned int>(g_presents),
 		    static_cast<unsigned long long>(g_waitMicros), static_cast<unsigned long long>(CGSHandler::g_webBusyMicros),
-		    static_cast<unsigned int>(g_rtaWebFunctionCount), static_cast<unsigned long long>(g_rtaWebFunctionMicros), static_cast<unsigned int>(g_drawCalls),
+		    static_cast<unsigned int>(g_rtaWebFunctionCount), static_cast<unsigned long long>(g_rtaWebFunctionMicros), g_rtaWebDispatches, static_cast<unsigned int>(g_drawCalls),
 		    RtaWebDiscCounter(0), RtaWebDiscCounter(1), RtaWebDiscCounter(2),
 		    g_isGame ? 1 : 0, static_cast<unsigned int>(g_crc), g_executable.c_str(), g_activePatches.size(),
 		    static_cast<unsigned int>(g_displayPatchCount), static_cast<unsigned int>(g_patchRewrites),

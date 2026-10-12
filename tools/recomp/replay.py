@@ -24,6 +24,7 @@ import ee_emu
 from ee_emu import EE
 
 PER_FUNCTION = 150
+TEXT_LO, TEXT_HI = 0x100000, 0x3E6000
 BATCH = 100
 
 
@@ -33,7 +34,8 @@ class Recorder:
         self.pending = []           # (case, expected outcome)
         self.count = {}             # function -> calls replayed
         self.stats = {'calls': 0, 'replayed': 0, 'identical': 0, 'different': 0, 'other_fpu': 0,
-                      'python_stub': 0, 'over_cap': 0, 'not_returned': 0, 'outside_ram': 0}
+                      'python_stub': 0, 'over_cap': 0, 'not_returned': 0, 'outside_ram': 0,
+                      'code_patched': 0}
         self.failed = {}
         self.passed = set()
         self.batches = 0
@@ -129,10 +131,19 @@ def call(self, addr, *args, fargs=(), max_steps=5000000, sp=None):
     case.cop0 = [v & 0xFFFFFFFF for v in self.cop0]
     stubs, watch = _classify_hooks(self)
     case.stubs = stubs
-    if self.follow is not None:
+    policy = self.follow
+    decisions = {}
+    if policy is not None:
+        # the script's follow policy may be any object with `in`; what it answers for
+        # each call target during this call is what the translation's run is given
+        class Recording:
+            def __contains__(_self, target):
+                answer = target in policy
+                decisions.setdefault(target, set()).add(bool(answer))
+                return answer
+        self.follow = Recording()
         case.stub_all = True
         case.keep_v0 = self.default_ret is None
-        case.follow = sorted(self.follow)
     before = {index: bytes(page) for index, page in self.mem.pages.items()}
     fired = [False]
     saved_hooks = None
@@ -154,6 +165,7 @@ def call(self, addr, *args, fargs=(), max_steps=5000000, sp=None):
         raise
     finally:
         _in_call[0] = False
+        self.follow = policy
         self.record_calls = record
         if saved_hooks is not None:
             self.hooks.clear()
@@ -161,9 +173,10 @@ def call(self, addr, *args, fargs=(), max_steps=5000000, sp=None):
     made = self.calls[calls_before:]
     if not record:
         del self.calls[calls_before:]
-    if fired[0]:
+    if fired[0] or any(len(answers) > 1 for answers in decisions.values()):
         stats['python_stub'] += 1
         return result
+    case.follow = sorted(target for target, answers in decisions.items() if True in answers)
     pristine = REC.native_pristine()
     if any(index >= (RAM >> 12) for index in self.mem.pages):
         # memory outside the 32 MB (e.g. a scratchpad the script mapped) - only a problem
@@ -174,6 +187,11 @@ def call(self, addr, *args, fargs=(), max_steps=5000000, sp=None):
                 return result
     for index, page in before.items():
         if index < (RAM >> 12) and page != pristine.get(index, ZERO_PAGE):
+            if TEXT_LO <= (index << 12) < TEXT_HI:
+                # the script changed code (a patch under test, or instructions of its own):
+                # the translation is of the unmodified executable
+                stats['code_patched'] += 1
+                return result
             case.patches.append((index << 12, page))
     expected = Outcome()
     expected.status, expected.info = 'return', 0
@@ -215,8 +233,9 @@ def run(script, rest):
     print('calls into game code: %d; replayed: %d (identical %d, DIFFERENT %d)' % (
         s['calls'], s['replayed'], s['identical'], s['different']))
     print('not replayed: %d under another FPU model, %d beyond %d per function, %d with a Python stub or '
-          'hook firing, %d that did not return, %d touching memory outside the 32 MB' % (
-              s['other_fpu'], s['over_cap'], PER_FUNCTION, s['python_stub'], s['not_returned'], s['outside_ram']))
+          'hook firing, %d that did not return, %d touching memory outside the 32 MB, %d on code the script changed' % (
+              s['other_fpu'], s['over_cap'], PER_FUNCTION, s['python_stub'], s['not_returned'], s['outside_ram'],
+              s['code_patched']))
     print('functions replayed: %d; all identical: %d; with a difference: %d' % (
         len(REC.count), len(REC.passed - set(REC.failed)), len(REC.failed)))
     for func, items in sorted(REC.failed.items())[:20]:

@@ -14,6 +14,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMessageBox>
 #include <QProcess>
 #include <QSettings>
 #include <QStandardPaths>
@@ -81,6 +82,20 @@ namespace
 	const char* GAME_EXECUTABLE = "SLUS_209.73";
 	const uint32 GAME_CRC = 0x4028A55F;
 
+	// What is read from the game to know that it is on its "Network Configuration and
+	// Selection" screen (names.tsv, symbols/netlib.tsv; RtaOnline.cpp has the rest):
+	// g_inFrontend, g_levelName, g_frontendState (10: the lobby screens), g_lobbyState
+	// (2: the network screen, 13: leaving), the network window and in it its state (0
+	// reading the card, 3 the list of settings, 8 an error), the count of settings found.
+	const uint32 A_IN_FRONTEND = 0x41B510, A_LEVEL_NAME = 0x41B721, A_FE_STATE = 0x4F6B78, A_LOBBY_STATE = 0x506160;
+	const uint32 A_WIN_NET = 0x506148, NET_STATE = 0xDB4, NET_SETTINGS = 0x4354, NET_BOX = 0xD88;
+	// frames (vertical blanks) without the machine drawing anything before the game is
+	// taken to be stuck; and the same where it is known to get stuck
+	const uint64 STUCK_FRAMES = 600, STUCK_FRAMES_KNOWN = 180;
+	// milliseconds the machine's own thread may take to come round before it is taken to
+	// have stopped (it comes round every 17)
+	const int MACHINE_ANSWER_MS = 2500;
+
 	struct Options
 	{
 		std::string dataDir;
@@ -111,6 +126,7 @@ namespace
 		bool noOnline = false;   // --rta-no-online: not at this start, whatever the setting says
 		std::vector<std::string> onlineNames; // --rta-online-name: player names for a test, instead of asking
 		int gatewayPort = 0;     // --rta-gateway-port: where this host looks for the server's gateway (tests)
+		bool netcnfProgram = false; // --rta-netcnf-program: the game's "Config" may start Sony's network settings program
 	};
 
 	// The packaged application (see Rta.h, LaunchInfo)
@@ -1084,6 +1100,18 @@ namespace
 					Log(Format("this is %s but not the version the patches are for (checksum %08X, wanted %08X): NO PATCH IS APPLIED", name.c_str(), crc, GAME_CRC));
 			}
 			Log("executable: " + name + (m_isGame ? Format(" (the game, version checked); %zu patch words", m_patches.size()) : ""));
+			// Another program, or the same one again (the menu's Reset; the game restarting
+			// itself): what the old one had open on the network is gone with it, and what
+			// the application was pressing for it has no screen any more.
+			if(m_executablesLoaded++ > 0)
+			{
+				if(m_net) m_net->DropTcp();
+				if(online.Active()) online.Stop("the machine was started again");
+			}
+			m_foreignProgram = !m_isGame && (name.compare(0, strlen(GAME_EXECUTABLE), GAME_EXECUTABLE) != 0);
+			m_activitySeen = false;
+			m_quietFrames = 0;
+			m_gameStuck = false;
 			online.OnExecutable(m_isGame);
 			m_activePatches.clear();
 			if(m_isGame)
@@ -1132,6 +1160,152 @@ namespace
 				rewritten++;
 			}
 			if(rewritten && m_patchRewrites++ < 5) Log(Format("%u patch word(s) had been overwritten and were written again", rewritten));
+		}
+
+		// ---- the game's network screen, and a game that has stopped (machine thread) ----
+		// "Network Configuration and Selection" (after Internet Game) lists the setting the
+		// application wrote to the memory card and offers, with triangle, "Config": the
+		// game then shuts its network down and restarts the machine into Sony's network
+		// settings program on the disc (NTGUI2.ELF), which restarts the game when it is
+		// left. There is nothing to set in it here - the network behind the adaptor is the
+		// application's own and the setting is written anew when it is missing - and it
+		// throws a player out of the game into a program with other controls. So the button
+		// is not passed on while that screen lists a setting (--rta-netcnf-program passes it
+		// on: the program does run), and the status bar says why.
+		//
+		// A game that draws nothing for ten seconds while the machine runs is stuck (this one
+		// does it when its sign-in step has failed and the error is cancelled: it never
+		// comes back from unloading Sony's sign-in modules). The status bar then says so
+		// and Escape, or Reset in the menu, starts the game again.
+		void WatchGame(uint8* ram, uint64 frame)
+		{
+			auto word = [ram](uint32 address) {
+				uint32 value = 0;
+				address &= 0x1FFFFFFF;
+				if(address != 0 && address <= PS2::EE_RAM_SIZE - 4) memcpy(&value, ram + address, 4);
+				return value;
+			};
+			std::string note;
+			bool block = false;
+			bool frontEnd = m_isGame && (ram[A_IN_FRONTEND] == 1) && (memcmp(ram + A_LEVEL_NAME, "intro", 6) == 0);
+			uint32 fe = frontEnd ? word(A_FE_STATE) : 0, lobby = frontEnd ? word(A_LOBBY_STATE) : 0;
+			if(frontEnd && fe == 10 && lobby == 2)
+			{
+				uint32 window = word(A_WIN_NET);
+				uint32 state = window ? word(window + NET_STATE) : 0xFFFFFFFF;
+				bool box = window && (word(window + NET_BOX) != 0);
+				bool listed = window && (static_cast<int32>(word(window + NET_SETTINGS)) > 0);
+				if(window && !box && state == 3 && listed)
+				{
+					block = !options.netcnfProgram;
+					if(block) note = "The network is already set up: press cross (Accept). There is nothing to configure, so Config is switched off";
+				}
+				// while the card is still being read the button would do the same
+				if(window && !box && state == 0 && options.netcnf && !options.netcnfProgram) block = true;
+				if(window && state == 8)
+				{
+					note = options.extraPatches.empty() ? "The game's sign-in step failed: this copy has no sign-in patch, and without it the game cannot go online (Online > Server, player, patch set... says where it is looked for)"
+					                                    : "The game reports a network error";
+					note += ". Circle (Cancel) may leave the game stuck: Escape, or Reset in the menu, then starts it again";
+				}
+			}
+			if(block && !m_blockConfig) Log("network screen: the setting is listed; Config (triangle) is not passed on to the game - there is nothing to configure (--rta-netcnf-program lets Sony's program start)");
+			m_blockConfig = block;
+			if(m_foreignProgram) note = "Sony's network settings program is running. Nothing needs to be set here. Back to the game: circle (Back) at its first menu, then Quit - or Reset in the menu";
+
+			// does the machine draw? (what the renderer counts: transfers and textured draws)
+			const auto& counters = CGSH_OpenGL::g_textureCounters;
+			uint64 activity = counters.uploads.load() + counters.byUpload.load() + counters.byMemory.load() + counters.inPlace.load();
+			if(activity != m_activity)
+			{
+				if(m_activitySeen && m_quietFrames >= 120) Log(Format("the machine drew nothing for %llu frames (%.1f s of its time)", static_cast<unsigned long long>(m_quietFrames), m_quietFrames / 60.0));
+				if(m_activitySeen) m_quietMost = std::max(m_quietMost, m_quietFrames);
+				m_activity = activity;
+				m_activitySeen = true;
+				m_quietFrames = 0;
+				if(m_gameStuck)
+				{
+					m_gameStuck = false;
+					Log("the game draws again");
+				}
+			}
+			else if(m_activitySeen)
+				m_quietFrames++;
+			bool known = frontEnd && fe == 10 && lobby == 13; // leaving the lobby screens
+			if(!m_gameStuck && m_activitySeen && m_quietFrames >= (known ? STUCK_FRAMES_KNOWN : STUCK_FRAMES))
+			{
+				m_gameStuck = true;
+				m_stuckWhy = known ? "it does not come back from leaving its network screen (after a failed sign-in it cannot unload Sony's sign-in modules here)" : "it has drawn nothing for ten seconds";
+				Log("THE GAME IS STUCK: " + m_stuckWhy + Format(" [front end %d, front-end state %u, lobby state %u, %s]. Escape or Reset starts it again", frontEnd ? 1 : 0, fe, lobby, CpuText().c_str()));
+			}
+			if(m_gameStuck) note = "The game is stuck: " + m_stuckWhy + ". Press Escape (or choose Reset in the menu) to start it again";
+			(void)frame;
+			std::lock_guard<std::mutex> lock(m_logMutex);
+			m_gameNote = note;
+		}
+
+		// where the main processor is, for the log and the control socket
+		std::string CpuText()
+		{
+			const auto& state = m_vm->m_ee->m_EE.m_State;
+			return Format("pc=%08x ra=%08x sp=%08x idle=%d", state.nPC, state.nGPR[CMIPS::RA].nV0, state.nGPR[CMIPS::SP].nV0, m_vm->m_ee->m_os->IsIdle() ? 1 : 0);
+		}
+
+		bool BlockConfig() const
+		{
+			return m_blockConfig;
+		}
+		void ConfigPressed()
+		{
+			if(!m_configPressed) Log("network screen: Config (triangle) was pressed and left out");
+			m_configPressed = true;
+		}
+		void ConfigReleased()
+		{
+			m_configPressed = false;
+		}
+		bool GameStuck() const
+		{
+			return m_gameStuck;
+		}
+		std::string GameNote()
+		{
+			std::lock_guard<std::mutex> lock(m_logMutex);
+			return m_gameNote;
+		}
+
+		// ---- the machine's own thread, seen from the application's (any thread) ---------
+		// True when the machine is not running (paused: its thread then looks for calls ten
+		// times a second) or comes round to a vertical blank within the time given.
+		bool MachineAnswers(int waitMs)
+		{
+			if(!m_vm || m_vm->GetStatus() != CVirtualMachine::RUNNING) return true;
+			uint64 before = m_frame.load();
+			if(before == 0) return true; // nothing has been started yet
+			for(int waited = 0; waited < waitMs; waited += 20)
+			{
+				std::this_thread::sleep_for(std::chrono::milliseconds(20));
+				if(m_frame.load() != before || m_vm->GetStatus() != CVirtualMachine::RUNNING) return true;
+			}
+			return m_frame.load() != before;
+		}
+		// once a second from the application's thread: seconds without a vertical blank
+		int MachineSilentSeconds()
+		{
+			if(!m_vm || m_vm->GetStatus() != CVirtualMachine::RUNNING)
+			{
+				m_silentSeconds = 0;
+				return 0;
+			}
+			uint64 now = m_frame.load();
+			m_silentSeconds = (now == m_silentFrame && now != 0) ? (m_silentSeconds + 1) : 0;
+			m_silentFrame = now;
+			return m_silentSeconds;
+		}
+		void NoteReset()
+		{
+			Log("reset: the game is started again");
+			if(online.Active()) online.Stop("the game was started again");
 		}
 
 		// ---- every vertical blank (machine thread) --------------------------------------
@@ -1573,6 +1747,31 @@ namespace
 				if(m_net) m_net->DropTcp();
 				push(Step::REPLY, 0, "ok");
 			}
+			else if(name == "cpu")
+			{
+				// where the main processor is, whether the game is taken to be stuck, and the
+				// longest stretch (in frames) the machine has gone without drawing
+				push(Step::REPLY, 0, "ok " + CpuText() + Format(" stuck=%d quiet=%llu quiet_most=%llu block_config=%d", m_gameStuck.load() ? 1 : 0, static_cast<unsigned long long>(m_quietFrames), static_cast<unsigned long long>(m_quietMost), m_blockConfig ? 1 : 0));
+			}
+			else if(name == "note")
+				push(Step::REPLY, 0, "ok " + GameNote());
+			else if(name == "reset")
+			{
+				// what Reset in the application's menu does (answered at once; the machine
+				// is started again a moment later)
+				QMetaObject::invokeMethod(QCoreApplication::instance(), []() { Rta::TriggerReset(); }, Qt::QueuedConnection);
+				push(Step::REPLY, 0, "ok");
+			}
+			else if(name == "hang" && words.size() == 2)
+			{
+				// test aid: the machine's own thread stops here for so many seconds, as it
+				// would if the emulator itself were stuck. Nothing answers on this socket
+				// meanwhile; "<control path>.ui" is the way to reach the application then.
+				uint32 seconds = std::min<uint32>(number(1, 1), 120);
+				Log(Format("test: the machine's thread stops for %u s", seconds));
+				Reply("ok");
+				std::this_thread::sleep_for(std::chrono::seconds(seconds));
+			}
 			else if(name == "quit")
 			{
 				Reply("ok");
@@ -1804,9 +2003,11 @@ namespace
 
 		void UpdateStatus()
 		{
-			// what the one-step log-in is doing comes first
-			std::string text = online.Note();
+			// what is wrong with the game comes first, then what the one-step log-in is doing
+			std::string text = GameNote();
 			if(!text.empty()) text += " | ";
+			text += online.Note();
+			if(!online.Note().empty()) text += " | ";
 			if(m_net)
 			{
 				const auto& s = m_net->Stats();
@@ -1912,6 +2113,17 @@ namespace
 		std::vector<PatchWord> m_activePatches; // those and the display patches, while the game is loaded
 		bool m_isGame = false;
 		unsigned int m_patchRewrites = 0;
+		// the network screen and a game that has stopped (machine thread, but for the note)
+		unsigned int m_executablesLoaded = 0;
+		bool m_foreignProgram = false; // another program than the game is loaded (Sony's network settings)
+		bool m_blockConfig = false, m_configPressed = false;
+		uint64 m_activity = 0, m_quietFrames = 0, m_quietMost = 0;
+		bool m_activitySeen = false;
+		std::atomic<bool> m_gameStuck{false};
+		std::string m_stuckWhy, m_gameNote, m_gameNoteShown;
+		// the application's thread
+		uint64 m_silentFrame = 0;
+		int m_silentSeconds = 0;
 		Framework::CSignal<void()>::Connection m_executableChange;
 		std::atomic<uint64> m_frame{0};
 		std::atomic<uint64> m_cpuMicroseconds{0}, m_gsCpuMicroseconds{0};
@@ -1992,6 +2204,17 @@ namespace
 				return;
 			}
 			uint32 buttons = g_state.Buttons() | pad.buttons;
+			if(g_state.BlockConfig())
+			{
+				// the network screen's "Config" (see WatchGame): the game does not see the
+				// button, wherever it is pressed - keyboard, controller or a test script
+				if(buttons & (1u << Button::TRIANGLE))
+					g_state.ConfigPressed();
+				else
+					g_state.ConfigReleased();
+				buttons &= ~(1u << Button::TRIANGLE);
+				for(auto* listener : m_interfaces) listener->SetButtonState(0, Button::TRIANGLE, false, ram);
+			}
 			bool stickSet[2];
 			uint8 stick[2][2];
 			for(int which = 0; which < 2; which++)
@@ -2036,11 +2259,14 @@ namespace
 		}
 		CheckPatches(ram);
 		ControlVBlank(ram);
+		WatchGame(ram, frame);
 		online.Tick(ram, PS2::EE_RAM_SIZE, m_isGame);
 		pad.Override(ram);
-		if((frame % 30) == 0 || online.Note() != m_onlineNote)
+		std::string gameNote = GameNote();
+		if((frame % 30) == 0 || online.Note() != m_onlineNote || gameNote != m_gameNoteShown)
 		{
 			m_onlineNote = online.Note();
+			m_gameNoteShown = gameNote;
 			UpdateStatus();
 		}
 	}
@@ -2130,6 +2356,7 @@ void Rta::AddCommandLineOptions(QCommandLineParser& parser)
 	parser.addOption(QCommandLineOption("rta-no-online", "Do not go online by itself at this start, whatever the setting says."));
 	parser.addOption(QCommandLineOption("rta-online-name", "Test aid: the player name(s) to use instead of asking in a dialog, separated by commas (the next one is taken when the server refuses one).", "names"));
 	parser.addOption(QCommandLineOption("rta-gateway-port", "Test aid: the TCP port at which this computer looks for the lobby server's gateway (a closed port stands for a server that is not there).", "port"));
+	parser.addOption(QCommandLineOption("rta-netcnf-program", "Let \"Config\" on the game's network screen start Sony's network settings program from the disc (left out otherwise: there is nothing to configure)."));
 	parser.addOption(QCommandLineOption("rta-title", "A test run that a person takes part in: the window says so in its title with this text, and is otherwise an ordinary window.", "text"));
 }
 
@@ -2216,6 +2443,7 @@ void Rta::ReadCommandLine(const QCommandLineParser& parser)
 	o.noOnline = parser.isSet("rta-no-online");
 	for(const auto& name : parser.value("rta-online-name").split(',', Qt::SkipEmptyParts)) o.onlineNames.push_back(name.trimmed().toStdString());
 	o.gatewayPort = parser.value("rta-gateway-port").toInt();
+	o.netcnfProgram = parser.isSet("rta-netcnf-program");
 	if(parser.isSet("rta-title")) o.testLabel = parser.value("rta-title").toStdString();
 	if(o.testBackground) Rta::MakeBackgroundApplication();
 }
@@ -2572,6 +2800,71 @@ void Rta::SetOnlineAtStart(bool on)
 	g_state.Log(std::string("online: going online by itself at the start is ") + (on ? "on" : "off"));
 }
 
+// ---- when the machine or the game has stopped -----------------------------------------------
+
+namespace
+{
+	// The machine's thread does not come round: everything that would wait for it - the
+	// machine's Pause and Reset, and so the application's ordinary way of ending - would
+	// wait for ever. The settings are written and the process ends here.
+	[[noreturn]] void EndNow(bool startAgain)
+	{
+		CAppConfig::GetInstance().Save();
+		if(startAgain)
+		{
+			QStringList arguments = QCoreApplication::arguments();
+			QString program = QCoreApplication::applicationFilePath();
+			if(!arguments.isEmpty()) arguments.removeFirst();
+			arguments.prepend(program);
+			QProcess::startDetached("/bin/sh", QStringList({"-c", "sleep 1.5; exec \"$0\" \"$@\""}) + arguments);
+		}
+		g_state.Log(startAgain ? "ending now; the application starts again in a moment" : "ending now");
+		fflush(nullptr);
+		_exit(0);
+	}
+}
+
+std::string Rta::ControlPath()
+{
+	return g_state.options.controlPath;
+}
+
+bool Rta::BeforeReset(QWidget* parent)
+{
+	if(g_state.MachineAnswers(MACHINE_ANSWER_MS))
+	{
+		g_state.NoteReset();
+		return false;
+	}
+	g_state.Log(Format("RESET asked for, but the emulated machine's own thread has not come round for %.1f s: it cannot be reset from inside", MACHINE_ANSWER_MS / 1000.0));
+	if(g_state.options.testBackground)
+	{
+		g_state.Log("a test run: nobody is asked, the application is not started again");
+		EndNow(false);
+	}
+	auto answer = QMessageBox::question(parent, "Reset", "The emulated machine has stopped answering, so it cannot be reset.\n\nEnd the application and start it again?", QMessageBox::Yes | QMessageBox::No);
+	if(answer == QMessageBox::Yes) EndNow(true);
+	return true;
+}
+
+bool Rta::BeforeClose()
+{
+	if(g_state.MachineAnswers(MACHINE_ANSWER_MS)) return false;
+	g_state.Log("closing, and the emulated machine's own thread does not come round: ending without waiting for it");
+	EndNow(false);
+}
+
+void Rta::EscapePressed()
+{
+	// outside full screen Escape has no other meaning: when the game (or the machine) is
+	// known to have stopped, it starts the game again
+	if(g_state.GameStuck() || !g_state.MachineAnswers(MACHINE_ANSWER_MS))
+	{
+		g_state.Log("Escape, and the game is stuck: reset");
+		Rta::TriggerReset();
+	}
+}
+
 CPadHandler::FactoryFunction Rta::GetPadHandlerFactory()
 {
 	return []() { return new CPadHandlerRta(); };
@@ -2589,5 +2882,12 @@ void Rta::Detach()
 
 std::string Rta::StatusText()
 {
+	// once a second, from the application's thread
+	int silent = g_state.MachineSilentSeconds();
+	if(silent >= 5)
+	{
+		if(silent == 5) g_state.Log("the emulated machine's own thread has not come round for 5 s");
+		return Format("The emulated machine has stopped answering (%d s). Press Escape or choose Reset: the application then ends and can start again.", silent);
+	}
 	return g_state.StatusText();
 }

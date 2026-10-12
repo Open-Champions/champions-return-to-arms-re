@@ -2,7 +2,7 @@
 """Enlarges the textures the playable build has written out, for its replacement folder.
 
     tools/play-net/upscale.py DUMP_DIR REPLACE_DIR --upscaler /path/to/realesrgan-ncnn-vulkan
-                              [--scale 4|2] [--only TEXT] [--force] [--list]
+                              [--scale 4|2] [--only TEXT] [--force] [--list] [--jobs N] [--limit N]
 
 DUMP_DIR is `<textures>/dump` of runs with `--rta-texture-dump`, REPLACE_DIR is
 `<textures>/replace` (tools/play-net/README.md, "Texture dump and replacement" and
@@ -43,12 +43,14 @@ how the game draws with it, and that decides what is done.
   brighter one.
 - **Noise is left alone**: where a picture is noise from texel to texel (grass, mottled
   fills) a model draws worms; the strength is lowered there. Pictures with a side under
-  12 texels (the interface's bars) are enlarged plainly.
+  12 texels (the interface's bars) and model textures of fewer than 2,048 texels are
+  enlarged plainly.
 - **Per kind of picture** a model and a strength (RECIPES below; chosen by eye, see the
   README).
 
 Incremental: REPLACE_DIR/upscale-manifest.json remembers what each file was made from;
-only new and changed pictures are done. The dumps and everything made from them are the
+only new and changed pictures are done, `--jobs N` batches at a time (a whole game is
+some 160,000 pictures); a run that is stopped keeps what it has written. The dumps and everything made from them are the
 game's art: keep both folders out of any repository. Needs Python 3 with numpy and Pillow.
 """
 import argparse
@@ -86,6 +88,10 @@ RECIPES = {
 }
 RANGE_SLACK = 6      # how far a result may leave the range of the texels around it
 SMALLEST = 12        # a picture with a side shorter than this gives a model nothing to go by
+# ... and so does a model texture of fewer texels than this (16 x 16 to 32 x 48: item and
+# hair pictures whose every feature is a texel or two; the model drew other shapes from them
+# and flattened their mottle. From 48 x 48 on it follows what is there)
+FEWEST = {'model': 2048}
 BLEED = 3            # texels: how far into what cannot be seen colour is replaced
 MOVED = 16           # of 255: the self-check's "this colour is no longer the game's"
 
@@ -367,7 +373,8 @@ class Job:
         h, w = self.rgb.shape[:2]
         self.box = use.box if use.box else (0, 0, w, h)
         # the bars of the interface are 6 or 8 lines high: enlarged plainly
-        self.strength = self.recipe['strength'] if min(h, w) >= SMALLEST else 0.0
+        # and so are the smallest model textures (FEWEST)
+        self.strength = self.recipe['strength'] if min(h, w) >= SMALLEST and h * w >= FEWEST.get(use.kind, 0) else 0.0
         self.alpha_values = np.unique(alpha[~unsent]) if (~unsent).any() else np.zeros(1, dtype=np.uint8)
         self.alpha_by_model = bool(self.recipe['alpha_model'] and self.cutout and len(self.alpha_values) > 1)
 
@@ -525,6 +532,66 @@ def report(checks, path):
     return 1 if bad else 0
 
 
+class Sized:
+    """Stands for a picture of which only the size is needed."""
+
+    def __init__(self, path):
+        with Image.open(path) as image:             # the header only: nothing is unpacked
+            self.shape = (image.size[1], image.size[0], 4)
+
+
+def load(dump, name):
+    """A dumped picture and what is known of it."""
+    with open(os.path.join(dump, name[:-4] + '.json')) as file:
+        meta = json.load(file)
+    rgba = np.asarray(Image.open(os.path.join(dump, name)).convert('RGBA'))
+    return rgba, Use(meta, rgba)
+
+
+def enlarge_batch(task):
+    """Enlarges some pictures (one call of each model for all of them); returns, for each
+    one written, its name, signature, self-check and whether it is a two-field picture.
+    Run in a process of its own with --jobs."""
+    dump, replace, upscaler, scale, part, recipes = task
+    RECIPES.update(recipes)
+    made = []
+    work = tempfile.mkdtemp(prefix='rta-upscale-')
+    try:
+        directories = {}
+        for model in (X4, ANIME, VIDEO):
+            directories[model] = (os.path.join(work, model, 'in'), os.path.join(work, model, 'out'))
+            os.makedirs(directories[model][0])
+            os.makedirs(directories[model][1])
+        jobs = []
+        for name, signature in part:
+            rgba, use = load(dump, name)
+            job = Job(name, rgba, use, scale)
+            if job.empty:
+                continue
+            job.stage(directories)
+            jobs.append((job, signature))
+        for model in directories:
+            run_model(upscaler, model, *directories[model])
+        for job, signature in jobs:
+            picture = job.finish(directories)
+            Image.fromarray(picture, 'RGBA').save(os.path.join(replace, job.name), compress_level=3)
+            made.append((job.name, signature, dict(job.check, kind=job.use.kind), bool(job.use.field_rows)))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    return made
+
+
+def check_one(task):
+    """The self-check of one finished file of a pack."""
+    dump, replace, name = task
+    rgba, use = load(dump, name)
+    job = Job(name, rgba, use, 1)
+    made = np.asarray(Image.open(os.path.join(replace, name)).convert('RGB'))
+    if use.field_rows:                              # the first of the two copies
+        made = made[:2 * use.field_rows * (made.shape[1] // rgba.shape[1])]
+    return name, dict(job.moved_colour(made), kind=use.kind)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('dump')
@@ -538,6 +605,8 @@ def main():
     parser.add_argument('--recipe', action='append', default=[], metavar='KIND:FIELD=VALUE',
                         help='change a recipe for this run, e.g. level:strength=0.6 (for trying)')
     parser.add_argument('--batch', type=int, default=120, help='pictures enlarged at a time')
+    parser.add_argument('--jobs', type=int, default=1, help='batches worked on at the same time, each in a process of its own (1)')
+    parser.add_argument('--limit', type=int, default=0, help='stop after this many pictures (the rest is done by the next run)')
     parser.add_argument('--check', action='store_true', help='enlarge nothing: compare every file of REPLACE_DIR, made small again, with its dump')
     args = parser.parse_args()
     for change in args.recipe:
@@ -558,7 +627,9 @@ def main():
     if args.only:
         names = [n for n in names if args.only in n]
 
-    todo, counts, skipped, unseen, checks = [], {}, 0, 0, {}
+    # what there is to do: read from the .json files and the pictures' headers alone, so
+    # that a dump of a hundred thousand pictures is gone through in a minute
+    todo, to_check, counts, skipped, unseen = [], [], {}, 0, 0
     for name in names:
         meta_path = os.path.join(args.dump, name[:-4] + '.json')
         if not os.path.exists(meta_path):
@@ -569,73 +640,68 @@ def main():
         if not meta.get('states'):                  # written by disctex.py: not seen drawn yet
             unseen += 1
             continue
-        rgba = np.asarray(Image.open(os.path.join(args.dump, name)).convert('RGBA'))
-        use = Use(meta, rgba)
+        size = Sized(os.path.join(args.dump, name))
+        use = Use(meta, size)
         counts[use.kind] = counts.get(use.kind, 0) + 1
         if args.list:
-            print('%s %-11s %4dx%-4d fields=%-3d box=%s tiles=%s' % (name[:16], use.kind, rgba.shape[1], rgba.shape[0], use.field_rows, use.box, use.tiles))
+            print('%s %-11s %4dx%-4d fields=%-3d box=%s tiles=%s' % (name[:16], use.kind, size.shape[1], size.shape[0], use.field_rows, use.box, use.tiles))
             continue
-        if use.kind not in RECIPES or (args.kind and use.kind != args.kind) or min(rgba.shape[:2]) < 8:
+        if use.kind not in RECIPES or (args.kind and use.kind != args.kind) or min(size.shape[:2]) < 8:
             continue
         if args.check:
-            path = os.path.join(args.replace, name)
-            if os.path.exists(path):
-                job = Job(name, rgba, use, 1)
-                made = np.asarray(Image.open(path).convert('RGB'))
-                if use.field_rows:                  # the first of the two copies
-                    made = made[:2 * use.field_rows * (made.shape[1] // rgba.shape[1])]
-                checks[name] = dict(job.moved_colour(made), kind=use.kind)
+            if os.path.exists(os.path.join(args.replace, name)):
+                to_check.append((args.dump, args.replace, name))
             continue
         signature = [VERSION, args.scale, os.path.getsize(os.path.join(args.dump, name)), use.signature(), RECIPES[use.kind]]
+        if size.shape[0] * size.shape[1] < FEWEST.get(use.kind, 0):
+            signature.append('plain')               # (added to the signature only where it applies)
         signature = json.loads(json.dumps(signature))
         if not args.force and manifest.get(name) == signature and os.path.exists(os.path.join(args.replace, name)):
             continue
-        todo.append((name, rgba, use, signature))
+        todo.append((name, signature))
     print('upscale.py: %d pictures in the dump (%s)%s' % (len(names), ', '.join('%d %s' % (v, k) for k, v in sorted(counts.items())),
-                                                           '; %d without a .json file left out (dump them again with this build)' % skipped if skipped else ''))
+                                                           '; %d without a .json file left out (dump them again with this build)' % skipped if skipped else ''), flush=True)
     if unseen:
         print('upscale.py: %d pictures from the disc whose way of drawing is not known left out (they are done once a run with --rta-texture-dump has drawn them)' % unseen)
     if args.list:
         return 0
+    pool = None
+    if args.jobs > 1:
+        import multiprocessing
+        pool = multiprocessing.get_context('spawn').Pool(args.jobs)
     if args.check:
+        checks = dict(pool.imap_unordered(check_one, to_check, 16) if pool else map(check_one, to_check))
         return report(checks, None)
     if not todo:
         print('upscale.py: nothing to do')
         return 0
+    if args.limit and len(todo) > args.limit:
+        print('upscale.py: %d pictures to do, %d of them in this run' % (len(todo), args.limit))
+        todo = todo[:args.limit]
+
+    def keep():
+        with open(manifest_path + '.new', 'w') as file:
+            json.dump(manifest, file)
+        os.replace(manifest_path + '.new', manifest_path)
 
     done = fields = 0
-    for start in range(0, len(todo), args.batch):
-        part = todo[start:start + args.batch]
-        work = tempfile.mkdtemp(prefix='rta-upscale-')
-        try:
-            directories = {}
-            for model in (X4, ANIME, VIDEO):
-                directories[model] = (os.path.join(work, model, 'in'), os.path.join(work, model, 'out'))
-                os.makedirs(directories[model][0])
-                os.makedirs(directories[model][1])
-            jobs = []
-            for name, rgba, use, signature in part:
-                job = Job(name, rgba, use, args.scale)
-                if job.empty:
-                    continue
-                job.stage(directories)
-                jobs.append((job, signature))
-            for model in directories:
-                run_model(args.upscaler, model, *directories[model])
-            for job, signature in jobs:
-                picture = job.finish(directories)
-                Image.fromarray(picture, 'RGBA').save(os.path.join(args.replace, job.name), compress_level=3)
-                manifest[job.name] = signature
-                checks[job.name] = dict(job.check, kind=job.use.kind)
+    checks = {}
+    tasks = [(args.dump, args.replace, args.upscaler, args.scale, todo[start:start + args.batch], RECIPES) for start in range(0, len(todo), args.batch)]
+    try:
+        for number, made in enumerate(pool.imap_unordered(enlarge_batch, tasks) if pool else map(enlarge_batch, tasks), 1):
+            for name, signature, check, two_fields in made:
+                manifest[name] = signature
+                checks[name] = check
                 done += 1
-                fields += 1 if job.use.field_rows else 0
-        finally:
-            shutil.rmtree(work, ignore_errors=True)
-        with open(manifest_path, 'w') as file:
-            json.dump(manifest, file)
-        print('upscale.py: %d of %d' % (min(start + args.batch, len(todo)), len(todo)), flush=True)
+                fields += 1 if two_fields else 0
+            if number % 8 == 0:
+                keep()
+            print('upscale.py: %d of %d' % (min(number * args.batch, len(todo)), len(todo)), flush=True)
+    finally:
+        keep()                                      # also when stopped half way: what is written is remembered
+        if checks:
+            report(checks, os.path.join(args.replace, 'upscale-check.json'))
     print('upscale.py: wrote %d pictures to %s at %dx (%d of them two-field interface pictures)' % (done, args.replace, args.scale, fields))
-    report(checks, os.path.join(args.replace, 'upscale-check.json'))
     return 0
 
 

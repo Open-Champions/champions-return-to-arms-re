@@ -1,0 +1,504 @@
+diff --git a/Source/BasicBlock.cpp b/Source/BasicBlock.cpp
+--- a/Source/BasicBlock.cpp
++++ b/Source/BasicBlock.cpp
+@@ -1,4 +1,8 @@
+ #include "BasicBlock.h"
++
++#ifdef __EMSCRIPTEN__
++unsigned int g_rtaWebDispatches = 0;
++#endif
+ #include "MemStream.h"
+ #include "offsetof_def.h"
+ #include "MipsJitter.h"
+diff --git a/Source/GenericMipsExecutor.h b/Source/GenericMipsExecutor.h
+--- a/Source/GenericMipsExecutor.h
++++ b/Source/GenericMipsExecutor.h
+@@ -17,6 +17,11 @@
+ 
+ typedef uint32 (*TranslateFunctionType)(CMIPS*, uint32);
+ typedef std::shared_ptr<CBasicBlock> BasicBlockPtr;
++
++#ifdef __EMSCRIPTEN__
++//RTA(web): how often the dispatcher below started a block (all processors together)
++extern unsigned int g_rtaWebDispatches;
++#endif
+ 
+ template <typename BlockLookupType, uint32 instructionSize = 4>
+ class CGenericMipsExecutor : public CMipsExecutor
+@@ -68,6 +73,9 @@
+ 			uint32 address = m_context.m_State.nPC & m_addressMask;
+ 			auto block = m_blockLookup.FindBlockAt(address);
+ 			block->Execute();
++#ifdef __EMSCRIPTEN__
++			g_rtaWebDispatches++; //RTA(web): for the speed figures
++#endif
+ 		}
+ 		m_context.m_State.nHasException &= ~MIPS_EXCEPTION_STATUS_QUOTADONE;
+ #ifdef DEBUGGER_INCLUDED
+diff --git a/Source/Js_DiscImageDeviceStream.cpp b/Source/Js_DiscImageDeviceStream.cpp
+--- a/Source/Js_DiscImageDeviceStream.cpp
++++ b/Source/Js_DiscImageDeviceStream.cpp
+@@ -3,7 +3,132 @@
+ #include <cassert>
+ #include <emscripten.h>
+ #include <unistd.h>
++#include <atomic>
++#include <cstring>
++#include <list>
++#include <mutex>
++#include <vector>
+ 
++//RTA(web): The disc image is read where the call is made - on the machine's thread,
++//with a synchronous request for a range of bytes of a URL - instead of asking the page's
++//main thread for each piece and polling it until the piece has come. The URL is either
++//one the browser made for a file the player picked (URL.createObjectURL: the file is read
++//in place, nothing is copied or sent anywhere) or, for tests, a file served by a local
++//web server. Pieces of 128 KiB are fetched and the last 48 kept: the machine reads the
++//disc 2 KiB at a time.
++namespace
++{
++	const uint32 PIECE_SIZE = 0x20000;
++	const size_t PIECE_COUNT = 48;
++
++	char g_discUrl[4096] = "";
++	std::atomic<uint64> g_discSize(0);
++	std::atomic<uint32> g_discFetches(0);
++	std::atomic<uint32> g_discFetchMicros(0);
++	std::atomic<uint32> g_discErrors(0);
++
++	struct PIECE
++	{
++		uint64 position = 0;
++		std::vector<uint8> data;
++	};
++	std::mutex g_pieceMutex;
++	std::list<PIECE> g_pieces;
++}
++
++extern "C"
++{
++	EMSCRIPTEN_KEEPALIVE void RtaWebDiscSet(const char* url, double size)
++	{
++		std::lock_guard lock(g_pieceMutex);
++		strncpy(g_discUrl, url, sizeof(g_discUrl) - 1);
++		g_discSize = static_cast<uint64>(size);
++		g_pieces.clear();
++	}
++
++	EMSCRIPTEN_KEEPALIVE uint32 RtaWebDiscCounter(int which)
++	{
++		switch(which)
++		{
++		case 0:
++			return g_discFetches;
++		case 1:
++			return g_discFetchMicros;
++		default:
++			return g_discErrors;
++		}
++	}
++}
++
++// clang-format off
++EM_JS_DEPS(RtaWebDisc, "$UTF8ToString");
++EM_JS(int, RtaWebDiscFetch, (const char* urlPtr, double position, void* buffer, int size), {
++	try {
++		const request = new XMLHttpRequest();
++		request.open("GET", UTF8ToString(urlPtr), false);
++		request.responseType = "arraybuffer";
++		request.setRequestHeader("Range", "bytes=" + position + "-" + (position + size - 1));
++		request.send();
++		if(request.status !== 206) return -request.status;
++		const data = new Uint8Array(request.response);
++		if(data.length > size) return -1;
++		HEAPU8.set(data, buffer);
++		return data.length;
++	} catch(e) {
++		err("disc: " + e);
++		return -2;
++	}
++});
++// clang-format on
++
++static bool RtaWebDiscRead(uint64 position, uint8* buffer, uint64 size)
++{
++	std::lock_guard lock(g_pieceMutex);
++	while(size != 0)
++	{
++		uint64 piecePosition = position & ~static_cast<uint64>(PIECE_SIZE - 1);
++		auto pieceIterator = g_pieces.begin();
++		for(; pieceIterator != g_pieces.end(); pieceIterator++)
++		{
++			if(pieceIterator->position == piecePosition) break;
++		}
++		if(pieceIterator == g_pieces.end())
++		{
++			PIECE piece;
++			piece.position = piecePosition;
++			uint64 discSize = g_discSize;
++			if(piecePosition >= discSize) return false;
++			uint32 wanted = static_cast<uint32>(std::min<uint64>(PIECE_SIZE, discSize - piecePosition));
++			piece.data.resize(wanted);
++			double start = emscripten_get_now();
++			int got = RtaWebDiscFetch(g_discUrl, static_cast<double>(piecePosition), piece.data.data(), static_cast<int>(wanted));
++			g_discFetches++;
++			g_discFetchMicros += static_cast<uint32>((emscripten_get_now() - start) * 1000.0);
++			if(got != static_cast<int>(wanted))
++			{
++				g_discErrors++;
++				return false;
++			}
++			if(g_pieces.size() >= PIECE_COUNT) g_pieces.pop_back();
++			g_pieces.push_front(std::move(piece));
++			pieceIterator = g_pieces.begin();
++		}
++		else if(pieceIterator != g_pieces.begin())
++		{
++			g_pieces.splice(g_pieces.begin(), g_pieces, pieceIterator);
++			pieceIterator = g_pieces.begin();
++		}
++		uint64 offset = position - piecePosition;
++		if(offset >= pieceIterator->data.size()) return false;
++		uint64 count = std::min<uint64>(size, pieceIterator->data.size() - offset);
++		memcpy(buffer, pieceIterator->data.data() + offset, count);
++		buffer += count;
++		position += count;
++		size -= count;
++	}
++	return true;
++}
++
+ void CJsDiscImageDeviceStream::Seek(int64 position, Framework::STREAM_SEEK_DIRECTION whence)
+ {
+ 	switch(whence)
+@@ -15,6 +140,11 @@
+ 		m_position += position;
+ 		break;
+ 	case Framework::STREAM_SEEK_END:
++		if(g_discUrl[0] != 0)
++		{
++			m_position = g_discSize;
++			break;
++		}
+ 	{
+ 		uint32 positionLo = MAIN_THREAD_EM_ASM_INT({return Module.discImageDevice.getFileSize()});
+ 		uint32 positionHi = MAIN_THREAD_EM_ASM_INT({return Module.discImageDevice.getFileSize() / 4294967296});
+@@ -35,6 +165,16 @@
+ 
+ 	assert(size <= std::numeric_limits<uint32>::max());
+ 
++	if(g_discUrl[0] != 0)
++	{
++		if(!RtaWebDiscRead(m_position, static_cast<uint8*>(buffer), size))
++		{
++			throw std::runtime_error("The disc image could not be read.");
++		}
++		m_position += size;
++		return size;
++	}
++
+ 	uint32 positionLow = static_cast<uint32>(m_position);
+ 	uint32 positionHigh = static_cast<uint32>(m_position >> 32);
+ 
+diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp
+--- a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp
++++ b/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp
+@@ -346,6 +346,8 @@
+ 
+ 	m_vertexParamsBuffer = GenerateUniformBlockBuffer(sizeof(VERTEXPARAMS));
+ 	m_fragmentParamsBuffer = GenerateUniformBlockBuffer(sizeof(FRAGMENTPARAMS));
++	m_sentVertexParamsValid = false;
++	m_sentFragmentParamsValid = false;
+ 
+ 	PresentBackbuffer();
+ 
+@@ -1880,19 +1882,31 @@
+ 
+ void CGSH_OpenGL::DoRenderPass()
+ {
++	//RTA(web): the values are sent only when they differ from what the buffer holds (the
++	//game writes the registers behind them before nearly every draw, mostly unchanged)
+ 	if((m_validGlState & GLSTATE_VERTEX_PARAMS) == 0)
+ 	{
+-		glBindBuffer(GL_UNIFORM_BUFFER, m_vertexParamsBuffer);
+-		glBufferData(GL_UNIFORM_BUFFER, sizeof(VERTEXPARAMS), &m_vertexParams, GL_STREAM_DRAW);
+-		CHECKGLERROR();
++		if(!m_sentVertexParamsValid || memcmp(&m_sentVertexParams, &m_vertexParams, sizeof(VERTEXPARAMS)) != 0)
++		{
++			glBindBuffer(GL_UNIFORM_BUFFER, m_vertexParamsBuffer);
++			glBufferData(GL_UNIFORM_BUFFER, sizeof(VERTEXPARAMS), &m_vertexParams, GL_STREAM_DRAW);
++			CHECKGLERROR();
++			memcpy(&m_sentVertexParams, &m_vertexParams, sizeof(VERTEXPARAMS));
++			m_sentVertexParamsValid = true;
++		}
+ 		m_validGlState |= GLSTATE_VERTEX_PARAMS;
+ 	}
+ 
+ 	if((m_validGlState & GLSTATE_FRAGMENT_PARAMS) == 0)
+ 	{
+-		glBindBuffer(GL_UNIFORM_BUFFER, m_fragmentParamsBuffer);
+-		glBufferData(GL_UNIFORM_BUFFER, sizeof(FRAGMENTPARAMS), &m_fragmentParams, GL_STREAM_DRAW);
+-		CHECKGLERROR();
++		if(!m_sentFragmentParamsValid || memcmp(&m_sentFragmentParams, &m_fragmentParams, sizeof(FRAGMENTPARAMS)) != 0)
++		{
++			glBindBuffer(GL_UNIFORM_BUFFER, m_fragmentParamsBuffer);
++			glBufferData(GL_UNIFORM_BUFFER, sizeof(FRAGMENTPARAMS), &m_fragmentParams, GL_STREAM_DRAW);
++			CHECKGLERROR();
++			memcpy(&m_sentFragmentParams, &m_fragmentParams, sizeof(FRAGMENTPARAMS));
++			m_sentFragmentParamsValid = true;
++		}
+ 		m_validGlState |= GLSTATE_FRAGMENT_PARAMS;
+ 	}
+ 
+diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.h b/Source/gs/GSH_OpenGL/GSH_OpenGL.h
+--- a/Source/gs/GSH_OpenGL/GSH_OpenGL.h
++++ b/Source/gs/GSH_OpenGL/GSH_OpenGL.h
+@@ -734,6 +734,11 @@
+ 	FRAGMENTPARAMS m_fragmentParams;
+ 	Framework::OpenGl::CBuffer m_vertexParamsBuffer;
+ 	Framework::OpenGl::CBuffer m_fragmentParamsBuffer;
++	//RTA(web): what the two buffers hold, so that the same values are not sent again
++	VERTEXPARAMS m_sentVertexParams;
++	FRAGMENTPARAMS m_sentFragmentParams;
++	bool m_sentVertexParamsValid = false;
++	bool m_sentFragmentParamsValid = false;
+ 	VertexBuffer m_vertexBuffer;
+ 
+ 	//If GPU has framebuffer fetch extension, some things will be done
+@@ -741,3 +746,6 @@
+ 	bool m_hasFramebufferFetchExtension = false;
+ 	bool m_hasFramebufferFetchDepthExtension = false;
+ };
++
++//RTA(web): redundant GL calls are left out in the browser build (see the file)
++#include "GlStateShadow.h"
+diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp
+--- a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp
++++ b/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp
+@@ -1,3 +1,8 @@
++#if defined(__EMSCRIPTEN__) && defined(__wasm_simd128__)
++//RTA(web): xxhash.h takes this header in inside its extern "C" block, which Emscripten's
++//copy of it (templates) does not survive; taken in here first it is skipped there.
++#include <arm_neon.h>
++#endif
+ #define XXH_INLINE_ALL
+ #include "xxhash.h"
+ #include <assert.h>
+diff --git a/Source/gs/GSHandler.cpp b/Source/gs/GSHandler.cpp
+--- a/Source/gs/GSHandler.cpp
++++ b/Source/gs/GSHandler.cpp
+@@ -8,6 +8,27 @@
+ #include "../FrameDump.h"
+ #include "../ee/INTC.h"
+ #include "GSHandler.h"
++#ifdef __EMSCRIPTEN__
++//RTA(web)
++#include <pthread.h>
++#include <emscripten.h>
++#include <emscripten/threading.h>
++// clang-format off
++EM_JS(void, WebStartLoop, (int stepFunction, void* param), {
++	//A message channel to ourselves: a task of its own for every turn, without the
++	//4 ms floor that nested timers have.
++	const channel = new MessageChannel();
++	const step = getWasmTableEntry(stepFunction);
++	channel.port1.onmessage = () => {
++		step(param);
++		channel.port2.postMessage(0);
++	};
++	channel.port2.postMessage(0);
++});
++// clang-format on
++const char* CGSHandler::g_webCanvas = nullptr;
++std::atomic<uint64> CGSHandler::g_webBusyMicros(0);
++#endif
+ #include "GsPixelFormats.h"
+ #include "string_format.h"
+ #include "ThreadUtils.h"
+@@ -104,6 +125,28 @@
+ 
+ 	if(m_gsThreaded)
+ 	{
++#ifdef __EMSCRIPTEN__
++		//RTA(web): see g_webCanvas in GSHandler.h
++		if(g_webCanvas)
++		{
++			pthread_attr_t attr;
++			pthread_attr_init(&attr);
++			emscripten_pthread_attr_settransferredcanvases(&attr, g_webCanvas);
++			pthread_t thread;
++			int result = pthread_create(
++			    &thread, &attr,
++			    [](void* param) -> void* {
++				    WebStartLoop(reinterpret_cast<int>(static_cast<void (*)(void*)>([](void* handler) { static_cast<CGSHandler*>(handler)->WebThreadStep(); })), param);
++				    emscripten_exit_with_live_runtime();
++				    return nullptr;
++			    },
++			    this);
++			assert(result == 0);
++			(void)result;
++			pthread_attr_destroy(&attr);
++			return;
++		}
++#endif
+ 		m_thread = std::thread([&]() { ThreadProc(); });
+ 		Framework::ThreadUtils::SetThreadName(m_thread, "GS Thread");
+ 	}
+@@ -2202,13 +2245,41 @@
+ 	while(!m_threadDone)
+ 	{
+ 		m_mailBox.WaitForCall();
++#ifdef __EMSCRIPTEN__
++		double start = emscripten_get_now();
++#endif
+ 		while(m_mailBox.IsPending())
+ 		{
+ 			m_mailBox.ReceiveCall();
+ 		}
++#ifdef __EMSCRIPTEN__
++		g_webBusyMicros += static_cast<uint64>((emscripten_get_now() - start) * 1000.0);
++#endif
+ 	}
+ }
+ 
++#ifdef __EMSCRIPTEN__
++//RTA(web): one turn of the video thread when it runs from its worker's event loop: the
++//calls that are waiting, up to and including one that hands a picture over. What was
++//drawn on the canvas is shown by the browser when the worker's task ends, so the turn
++//ends there. With nothing to do it waits a few milliseconds and ends too (the worker
++//has to come back to its event loop now and then anyway).
++void CGSHandler::WebThreadStep()
++{
++	m_webPresented = false;
++	if(!m_mailBox.IsPending())
++	{
++		m_mailBox.WaitForCall(4);
++	}
++	double start = emscripten_get_now();
++	while(m_mailBox.IsPending() && !m_webPresented)
++	{
++		m_mailBox.ReceiveCall();
++	}
++	g_webBusyMicros += static_cast<uint64>((emscripten_get_now() - start) * 1000.0);
++}
++#endif
++
+ void CGSHandler::SendGSCall(const CMailBox::FunctionType& function, bool waitForCompletion, bool forceWaitForCompletion)
+ {
+ 	if(!m_gsThreaded)
+diff --git a/Source/gs/GSHandler.h b/Source/gs/GSHandler.h
+--- a/Source/gs/GSHandler.h
++++ b/Source/gs/GSHandler.h
+@@ -1054,6 +1054,25 @@
+ 	void WriteToDelayedRegister(uint32, uint32, DELAYED_REGISTER&);
+ 
+ 	void ThreadProc();
++#ifdef __EMSCRIPTEN__
++public:
++	//RTA(web): The id of a canvas ("#name") that the video thread is to own. When set
++	//before the handler is made, the thread is started with that canvas handed over to
++	//it (the browser's OffscreenCanvas) and runs from its worker's event loop instead of
++	//blocking for ever: a browser shows what a worker drew on a canvas only when the
++	//worker's task ends. The WebGL context is then made on that thread and every GL
++	//call is a direct one. Without it (as Play! does it) the context belongs to the
++	//page's main thread and every GL call of the video thread is sent there.
++	static const char* g_webCanvas;
++	//Time the video thread spent in calls, in microseconds (for the speed figures)
++	static std::atomic<uint64> g_webBusyMicros;
++
++protected:
++	//Set by the handler when it has handed a picture over: ends the turn (WebThreadStep)
++	bool m_webPresented = false;
++
++	void WebThreadStep();
++#endif
+ 	virtual void InitializeImpl() = 0;
+ 	virtual void ReleaseImpl() = 0;
+ 	void ResetBase();
+diff --git a/Source/ui_js/CMakeLists.txt b/Source/ui_js/CMakeLists.txt
+--- a/Source/ui_js/CMakeLists.txt
++++ b/Source/ui_js/CMakeLists.txt
+@@ -32,20 +32,10 @@
+ endif()
+ list(APPEND UI_JS_PROJECT_LIBS gsh_opengl)
+ 
+-if(NOT TARGET sh_openal)
+-	add_subdirectory(
+-		${CMAKE_CURRENT_SOURCE_DIR}/../sound/SH_OpenAL
+-		${CMAKE_CURRENT_BINARY_DIR}/SH_OpenAL
+-	)
+-endif()
+-list(APPEND UI_JS_PROJECT_LIBS sh_openal)
+-
++#RTA(web): Play!'s own Main.cpp, GSH_OpenGLJs, InputProviderEmscripten and the OpenAL
++#sound handler are not built; RtaWeb.cpp (tools/play-web/src) takes their place.
+ add_executable(Play
+-	GSH_OpenGLJs.cpp
+-	GSH_OpenGLJs.h
+-	InputProviderEmscripten.cpp
+-	InputProviderEmscripten.h
+-	Main.cpp
++	RtaWeb.cpp
+ 	Ps2VmJs.cpp
+ 	Ps2VmJs.h
+ )
+@@ -54,16 +44,24 @@
+ target_link_options(Play PRIVATE "--bind")
+ target_link_options(Play PRIVATE "-sMODULARIZE=1")
+ target_link_options(Play PRIVATE "-sEXPORT_ES6=1")
+-target_link_options(Play PRIVATE "-sUSE_ES6_IMPORT_META=0")
+-target_link_options(Play PRIVATE "-sEXPORTED_FUNCTIONS=['_main', '_initVm', '_EmptyBlockHandler', '_MemoryUtils_GetByteProxy', '_MemoryUtils_GetHalfProxy', '_MemoryUtils_GetWordProxy', '_MemoryUtils_GetDoubleProxy', '_MemoryUtils_SetByteProxy', '_MemoryUtils_SetHalfProxy', '_MemoryUtils_SetWordProxy', '_MemoryUtils_SetDoubleProxy', '_LWL_Proxy', '_LWR_Proxy', '_LDL_Proxy', '_LDR_Proxy', '_SWL_Proxy', '_SWR_Proxy', '_SDL_Proxy', '_SDR_Proxy']")
+-target_link_options(Play PRIVATE "-sEXPORTED_RUNTIME_METHODS=['ccall', 'FS']")
++target_link_options(Play PRIVATE "-sEXPORTED_FUNCTIONS=['_main', '_EmptyBlockHandler', '_MemoryUtils_GetByteProxy', '_MemoryUtils_GetHalfProxy', '_MemoryUtils_GetWordProxy', '_MemoryUtils_GetDoubleProxy', '_MemoryUtils_SetByteProxy', '_MemoryUtils_SetHalfProxy', '_MemoryUtils_SetWordProxy', '_MemoryUtils_SetDoubleProxy', '_LWL_Proxy', '_LWR_Proxy', '_LDL_Proxy', '_LDR_Proxy', '_SWL_Proxy', '_SWR_Proxy', '_SDL_Proxy', '_SDR_Proxy', '_malloc', '_free']")
++target_link_options(Play PRIVATE "-sEXPORTED_RUNTIME_METHODS=['ccall', 'cwrap', 'FS', 'IDBFS', 'UTF8ToString', 'HEAPU8', 'HEAP16', 'HEAPU32', 'wasmMemory']")
+ target_link_options(Play PRIVATE "-sFORCE_FILESYSTEM")
++target_link_options(Play PRIVATE "-lidbfs.js")
+ target_link_options(Play PRIVATE "-sALLOW_TABLE_GROWTH")
+-target_link_options(Play PRIVATE "-sALLOW_MEMORY_GROWTH")
+-#target_link_options(Play PRIVATE "-sASSERTIONS=2")
++#RTA(web): a fixed size. With growth allowed every access of the page's glue code to the
++#shared memory (each GL call that passes a pointer) goes through a check.
++target_link_options(Play PRIVATE "-sINITIAL_MEMORY=1073741824")
++target_link_options(Play PRIVATE "-sSTACK_SIZE=1048576")
++target_link_options(Play PRIVATE "-sDEFAULT_PTHREAD_STACK_SIZE=1048576")
++#RTA(web): the machine's thread allocates what the video thread frees (every texture
++#the game sends, every batch of register writes): the default allocator has one lock
++#for all threads.
++target_link_options(Play PRIVATE "-sMALLOC=mimalloc")
+ target_link_options(Play PRIVATE "-sEXPORT_NAME=Play")
+-target_link_options(Play PRIVATE "-sPTHREAD_POOL_SIZE=2")
+-target_link_options(Play PRIVATE "-sWASM_BIGINT")
++target_link_options(Play PRIVATE "-sPTHREAD_POOL_SIZE=5")
+ target_link_options(Play PRIVATE "-sOFFSCREEN_FRAMEBUFFER=1")
++target_link_options(Play PRIVATE "-sOFFSCREENCANVAS_SUPPORT=1")
+ target_link_options(Play PRIVATE "-sENVIRONMENT=web,worker")
+-target_link_options(Play PRIVATE "-sUSE_WEBGL2=1")
++target_link_options(Play PRIVATE "-sMAX_WEBGL_VERSION=2")
++target_link_options(Play PRIVATE "-sMIN_WEBGL_VERSION=2")
+diff --git a/deps/CodeGen/src/MemoryFunction.cpp b/deps/CodeGen/src/MemoryFunction.cpp
+--- a/deps/CodeGen/src/MemoryFunction.cpp
++++ b/deps/CodeGen/src/MemoryFunction.cpp
+@@ -44,6 +44,10 @@
+ #include <sys/mman.h>
+ #include <pthread.h>
+ #elif defined(MEMFUNC_USE_WASM)
++#include <atomic>
++//RTA(web): how many pieces of translated code were made and how long that took
++std::atomic<uint32_t> g_rtaWebFunctionCount(0);
++std::atomic<uint64_t> g_rtaWebFunctionMicros(0);
+ EM_JS_DEPS(WasmMemoryFunction, "$addFunction,$removeFunction");
+ EM_JS(int, WasmCreateFunction, (emscripten::EM_VAL moduleHandle),
+ {
+@@ -129,9 +133,12 @@
+ 	pthread_jit_write_protect_np(true);
+ #endif
+ #elif defined(MEMFUNC_USE_WASM)
++	double rtaStart = emscripten_get_now();
+ 	m_wasmModule = emscripten::val::take_ownership(WasmCreateModule(reinterpret_cast<uintptr_t>(code), size));
+ 	m_size = size;
+ 	m_code = reinterpret_cast<void*>(WasmCreateFunction(m_wasmModule.as_handle()));
++	g_rtaWebFunctionCount++;
++	g_rtaWebFunctionMicros += static_cast<uint64_t>((emscripten_get_now() - rtaStart) * 1000.0);
+ #endif
+ 	ClearCache();
+ #if !defined(MEMFUNC_USE_WASM)

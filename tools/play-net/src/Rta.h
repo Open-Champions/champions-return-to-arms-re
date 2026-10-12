@@ -156,6 +156,21 @@ namespace Rta
 	// for the About box
 	std::string AboutText();
 
+	// ---- when the game or the machine has stopped ---------------------------------------
+	// The application watches that the machine draws (a game that draws nothing for ten
+	// seconds is stuck: the status bar says so) and that the machine's own thread comes
+	// round. The main window calls these before its Reset, on Escape outside full screen,
+	// and before it closes. BeforeReset and BeforeClose answer true when the machine's
+	// thread does not come round: nothing that waits for it may then be called, and the
+	// application ends there (BeforeReset asks first, and starts it again).
+	bool BeforeReset(QWidget* parent);
+	bool BeforeClose();
+	void EscapePressed();
+	// RtaUi.cpp: the main window's own Reset entry, as if chosen in the menu
+	void TriggerReset();
+	// the control socket's path; empty: none
+	std::string ControlPath();
+
 	// RtaMac.mm
 	std::string BundlePath();
 	std::string BundleResourcePath();

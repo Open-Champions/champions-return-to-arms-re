@@ -122,6 +122,7 @@ class Handler(SimpleHTTPRequestHandler):
             try:
                 data = json.loads(body)
                 data["at"] = round(time.time(), 2)
+                data["load"] = round(os.getloadavg()[0], 1)
                 with open(self.report, "a") as out:
                     out.write(json.dumps(data) + "\n")
             except ValueError:

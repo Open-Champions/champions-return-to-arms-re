@@ -1,0 +1,8 @@
+# Extra entry addresses for the translator (recomp.py --entries).
+#   <hex>         one address
+#   after <hex>   the return address of every call to this function
+322b48         # head of the session loop in mainloop_runSession: where a resumed memory image starts
+# A thread of a resumed memory image that sleeps in one of these kernel calls, called
+# directly from its thread procedure, can be continued at the call's return address:
+after 352a20   # WaitSema
+after 352900   # SleepThread

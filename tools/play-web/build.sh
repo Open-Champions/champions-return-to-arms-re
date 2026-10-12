@@ -85,4 +85,38 @@ cp "$HERE/web/"* "$SITE/"
 cp "$ROOT/patches/SLUS-20973_4028A55F.pnach" "$SITE/"
 # the sections applied by default: the same list as the desktop application's
 grep -v '^#' "$HERE/../play-net/sections-suggested.txt" > "$SITE/sections.txt"
+
+# whose work this is: the licences of Play!, of the libraries it is built with and of the
+# Emscripten runtime that is linked in
+LICENCES="$SITE/licences"
+mkdir -p "$LICENCES"
+cp "$SRC/License.txt" "$LICENCES/Play-LICENSE.txt"
+for dir in "$SRC"/deps/* "$SRC"/deps/Dependencies/*; do
+	[ -d "$dir" ] || continue
+	for file in "$dir"/LICENSE* "$dir"/License* "$dir"/COPYING* "$dir"/LICENCE*; do
+		[ -f "$file" ] && cp "$file" "$LICENCES/$(basename "$dir")-$(basename "$file").txt" || true
+	done
+done
+EMROOT=$(dirname "$(readlink -f "$(command -v emcc)" 2>/dev/null || command -v emcc)")
+[ -f "$EMROOT/LICENSE" ] && cp "$EMROOT/LICENSE" "$LICENCES/Emscripten-LICENSE.txt"
+[ -f "$EMROOT/system/lib/mimalloc/LICENSE" ] && cp "$EMROOT/system/lib/mimalloc/LICENSE" "$LICENCES/mimalloc-LICENSE.txt"
+cat > "$LICENCES/README.txt" <<NOTE
+This page runs the Play! PlayStation 2 emulator (https://github.com/jpd002/Play-), by
+Jean-Philip Desjardins and contributors, under the BSD 2-clause licence
+(Play-LICENSE.txt), compiled to WebAssembly with Emscripten, with changes by the
+Champions RE project for playing Champions: Return to Arms. The changes are two patches
+and source files published in that project (tools/play-net/play-net.patch,
+tools/play-web: play-web.patch, src/, web/); Play! was taken at commit
+$COMMIT.
+
+It is not an official product of the Play! project, of Sony Computer Entertainment, of
+Sony Online Entertainment, of Snowblind Studios, of Daybreak Game Company or of anyone
+else. It contains no PlayStation 2 BIOS and nothing of the game: the player supplies
+their own disc image, which is read on their own computer and not uploaded.
+
+The other files in this folder are the licences of the libraries Play! is built with
+and of the Emscripten runtime (its C and C++ libraries and the mimalloc allocator) that
+is part of Play.wasm and Play.js.
+NOTE
+
 echo "build.sh: built. Serve it with  tools/play-web/serve.py  and open http://127.0.0.1:8973/"

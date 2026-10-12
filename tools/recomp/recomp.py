@@ -344,7 +344,10 @@ def simple(pc, w):
         if rs == 0x10 and (w & 63) == 0x39:
             return 'rt_mtc0(c, 0x%xu, 12, c->cop0[12] & ~0x10000u);' % pc
         if rs == 0x10 and (w & 63) == 0x18:
-            return 'rt_eret(c, 0x%xu);' % pc
+            # ERET (no delay slot).  The SDK's kernel-mode helpers put $ra into the
+            # exception return register and "return from exception" to their caller; the
+            # runtime checks that this is what happens and the function returns.
+            return 'rt_eret(c, 0x%xu); return;' % pc
         return bad
 
     if op == 0x11:
@@ -619,7 +622,7 @@ def build_units(image, funcs_path):
     return units, rows, clipped
 
 
-def analyse(image, units):
+def analyse(image, units, extra=()):
     starts = [u.start for u in units]
 
     def unit_of(addr):
@@ -692,7 +695,7 @@ def analyse(image, units):
                 upper = {}
     stats['code_refs'] = len(code_refs)
 
-    for addr in outside | refs | code_refs:
+    for addr in outside | refs | code_refs | set(extra):
         unit = unit_of(addr)
         if unit is None:
             stats['no_unit'] += 1
@@ -880,6 +883,9 @@ def main(argv=None):
     parser.add_argument('--hle', default=os.path.join(HERE, 'hle.txt'),
                         help='file of hex addresses whose fn_ is supplied by the runtime; the '
                              'translation is still emitted, as orig_<address>')
+    parser.add_argument('--entries', default=os.path.join(HERE, 'entries.txt'),
+                        help='file of extra hex addresses to make entries (a loop head the runtime '
+                             'enters when it resumes a memory image, for example)')
     parser.add_argument('--chunk', type=int, default=0x10000, help='bytes of game code per C++ file')
     args = parser.parse_args(argv)
 
@@ -891,7 +897,21 @@ def main(argv=None):
     table_units = sum(1 for u in units if not u.gap)
     gap_units = [u for u in units if u.gap]
     units, merged = merge_entangled(image, units)
-    unit_of, stats = analyse(image, units)
+    extra = set()
+    if args.entries and os.path.isfile(args.entries):
+        after = set()
+        with open(args.entries) as source:
+            for line in source:
+                fields = line.split('#')[0].split()
+                if len(fields) == 2 and fields[0] == 'after':
+                    after.add(int(fields[1], 16))
+                elif fields:
+                    extra.add(int(fields[0], 16))
+        if after:           # the return address of every call to these functions
+            for index, w in enumerate(image.words):
+                if w >> 26 == 3 and ((w & 0x03FFFFFF) << 2) in after:
+                    extra.add(image.text_lo + index * 4 + 8)
+    unit_of, stats = analyse(image, units, extra)
 
     hle = set()
     if args.hle and os.path.isfile(args.hle):
@@ -956,6 +976,11 @@ def main(argv=None):
     text += ['    {0x%xu, fn_%08x},' % (addr, addr) for addr in sorted(known)]
     text += ['};', 'const unsigned g_recomp_entry_count = %d;' % len(known)]
     write_if_changed(os.path.join(args.out, 'table.cpp'), '\n'.join(text) + '\n')
+    # a program that does not replace a function on the HLE list gets the translation
+    text = ['// generated - do not commit', '#include "recomp.h"', '#include "funcs.h"']
+    text += ['__attribute__((weak)) void fn_%08x(Ctx* c) { orig_%08x(c); }' % (addr, addr)
+             for addr in sorted(hle & {u.start for u in units})]
+    write_if_changed(os.path.join(args.out, 'hle_weak.cpp'), '\n'.join(text) + '\n')
     for name in stale:
         os.remove(os.path.join(args.out, name))
     with open(os.path.join(args.out, 'units.tsv'), 'w') as sink:

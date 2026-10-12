@@ -76,16 +76,16 @@ extern u8 g_dirty[RAM_SIZE >> 12];
 #define LOCALCALL(label, target, site) do { if (rt_test_call(c, site, target)) goto label; } while (0)
 #else
 #define LOCALCALL(label, target, site) goto label
+// Runtime build.  Every call and every backward branch counts one "unit" against
+// c->budget; when it runs out the runtime gets control (rt_poll) to advance its clock,
+// deliver interrupts and let another guest thread run.  g_site is the address of the
+// last call instruction executed, for diagnostics.
+void rt_poll(Ctx* c);
+extern u32 g_site;
 #define DIRTY(a, n) ((void)0)
-#define BUDGET() ((void)0)
-#ifdef RECOMP_TRACE
-void rt_trace_call(Ctx* c, u32 site, u32 target);
-#define CALL(fn, target, site) do { rt_trace_call(c, site, target); fn(c); } while (0)
-#define CALLR(target, site) do { u32 t_ = (target); rt_trace_call(c, site, t_); rt_call(c, t_); } while (0)
-#else
-#define CALL(fn, target, site) fn(c)
-#define CALLR(target, site) rt_call(c, target)
-#endif
+#define BUDGET() do { if (UNLIKELY(--c->budget < 0)) rt_poll(c); } while (0)
+#define CALL(fn, target, site) do { g_site = site; BUDGET(); fn(c); } while (0)
+#define CALLR(target, site) do { g_site = site; BUDGET(); rt_call(c, target); } while (0)
 #endif
 
 #define SX32(x) ((u64)(s64)(s32)(x))
