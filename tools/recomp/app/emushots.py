@@ -69,6 +69,15 @@ def main():
                             answer = control.send('shotfb ' + os.path.abspath(os.path.join(args.out, name)))
                             driver.note('shotfb %s: %s' % (name, answer))
                         continue
+                    if words[0] == 'pad':
+                        # the whole state of port 1 at once: buttons, then the left and right stick
+                        control.ok('release all')
+                        if len(words) > 1 and words[1] != 'none':
+                            control.ok('press ' + words[1])
+                        axes = [int(v) for v in words[2:6]] + [128] * 4
+                        control.ok('stick l %d %d' % (axes[0], axes[1]))
+                        control.ok('stick r %d %d' % (axes[2], axes[3]))
+                        continue
                     if words[0] == 'poke' and len(words) >= 3 and ':' in words[1]:
                         # the control socket takes a number for a 32-bit word: a hex pattern
                         # (x32) and a float (f32) are handed over as that number

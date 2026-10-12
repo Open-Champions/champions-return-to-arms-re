@@ -1399,6 +1399,40 @@ void fn_003205ec(Ctx* c) {
 }
 
 // ---------------------------------------------------------------------------------------
+// Level music and fast loading.  mainloop_pollAmbientAudio 0x322520 runs once per displayed
+// frame and counts the word at 0x50608c down; a level load leaves 60 in it.  When it
+// reaches 0 it is set to a random 4 to 6 minutes, and the level's music is started -
+// unless stream_queuedFlags(2) 0x216310 shows a music entry (flag 0x20) active or queued
+// on the music stream; then nothing is started until the next 4 to 6 minutes are over.
+// On a console the level load takes longer (6 s for the first level) than the fade the
+// level change put on the old music (stop markers in the stream's queue; 3.07 s from full
+// volume), so at frame 60 of the level the stream is free.  With this machine's fast I/O
+// the load takes 2.6 s, the title music is still fading at frame 60, and the first level
+// stays without music for minutes (docs/issues/native-sound.md 4.5, native-app.md).
+//
+// The game's rule is left as it is; the countdown is held at its last step while the music
+// that is in the way is one a queued stop marker is about to end, so that the start falls
+// on the first frame the stream is free: what the console's timing gives.  One draw from
+// the generator at 0x404460 per start, as there.  `--opt music-start=original` switches
+// the hold off (the game then behaves exactly as its code says, also under fast loading).
+// ---------------------------------------------------------------------------------------
+static u64 g_music_holds;
+void fn_00322520(Ctx* c) {
+    static int original = -1;
+    if (original < 0) { const char* o = rt_option("music-start"); original = o && !strcmp(o, "original"); }
+    if (!original && W(0x50608C) == 1) {
+        const u32 stream = 0x876C10 + 2 * 0x1C4;            // g_streams[2]: music
+        bool music_active = W(stream + 0x14) != 0 && (W(stream + 0x20) & 0x20);
+        bool stop_queued = false;
+        u32 count = W(stream + 0x1C0);
+        for (u32 k = 0; k < count && k < 8; k++)
+            if ((W(stream + 0x6C + k * 0x30) & 2) && !g_ram[stream + 0x40 + k * 0x30]) stop_queued = true;
+        if (music_active && stop_queued) { W(0x50608C) = 2; g_music_holds++; }
+    }
+    orig_00322520(c);
+}
+
+// ---------------------------------------------------------------------------------------
 // Watches, in the format of the rig's tick log (expressions and types: script.cpp)
 // ---------------------------------------------------------------------------------------
 struct Watch { std::string name, expr, type; };
@@ -1439,6 +1473,7 @@ static void log_row(u64 number) {
            (unsigned long long)g_draw_frames, (unsigned long long)g_draw_packets, (unsigned long long)g_draw_textured,
            g_draw_frames ? (double)g_draw_packets / g_draw_frames : 0.0);
     printf("stores to addresses where no device is (lost): %llu\n", (unsigned long long)g_nothing_writes);
+    if (g_music_holds) printf("level music: the start countdown was held for %llu frames while the old music faded out\n", (unsigned long long)g_music_holds);
     if (g_films_skipped) printf("films ended at their first picture (no Image Processing Unit): %llu\n", (unsigned long long)g_films_skipped);
     printf("accesses to addresses where nothing is: %llu loads (answered with 0xCC bytes), %llu stores (dropped)\n",
            (unsigned long long)g_nothing_loads, (unsigned long long)g_nothing_stores);
