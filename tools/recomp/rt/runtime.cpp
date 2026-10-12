@@ -446,25 +446,48 @@ void rt_poll(Ctx* c) {
     lock.release();
 }
 
+static bool arith_nearest() {
+    static int nearest = -1;
+    if (nearest < 0) { const char* o = rt_option("arith"); nearest = o && !strcmp(o, "nearest"); }
+    return nearest != 0;
+}
+// One line at the start of a run: which arithmetic the game's threads compute with.
+static void say_arithmetic() {
+#ifdef RTA_SOFT_RZ
+    printf("arithmetic: toward zero, denormals are zero - in software (RTA_SOFT_RZ)%s\n", arith_nearest() ? "; --opt arith=nearest has no effect in this build" : "");
+#else
+    if (arith_nearest()) printf("arithmetic: the host's (to nearest, denormals kept): --opt arith=nearest - NOT the console's\n");
+    else printf("arithmetic: toward zero, denormals are zero - the processor's mode on every thread that runs the game's code\n");
+#endif
+}
+
 static void thread_main(GThread* self) {
     std::unique_lock<std::mutex> lock(g_big);
     t_self = self;
-    fesetround(FE_TOWARDZERO);
-    // The console's floating point has no denormals: one is zero when it is read and when
-    // it would be the result.  The emulator the translation is compared with runs the
-    // game's thread that way (rounding toward zero and flush-to-zero); with rounding alone
-    // an add, subtract, multiply, divide, square root, multiply-add, MAX / MIN or compare
-    // gives other bits as soon as a denormal is involved (found by directed operand sets
-    // against an exact reference; not yet seen to change a game run, but a value decaying
-    // into that range would step differently from the original).  Every host thread that
-    // runs translated code starts here, interrupt handlers and alarms included (they are
+    // The console's floating point rounds toward zero and has no denormals: one is zero
+    // when it is read and when it would be the result.  The emulator the translation is
+    // compared with runs the game's thread that way (rounding toward zero and
+    // flush-to-zero); with rounding alone an add, subtract, multiply, divide, square root,
+    // multiply-add, MAX / MIN or compare gives other bits as soon as a denormal is involved
+    // (found by directed operand sets against an exact reference; in the sessions compared
+    // so far the log is the same with and without it).  Every host thread that runs
+    // translated code starts here, interrupt handlers and alarms included (they are
     // delivered on these threads), and vu0.h computes with the host's floats, so this one
     // place covers the main processor, its FPU and the VU0 macro instructions.
+    //   RTA_SOFT_RZ (a build without these processor modes, WebAssembly): the float
+    //     helpers do the same in software; the processor's mode is left alone.
+    //   --opt arith=nearest: neither is set (the host's own arithmetic; not the console's -
+    //     for telling apart what depends on it).
+#ifndef RTA_SOFT_RZ
+    if (!arith_nearest()) {
+        fesetround(FE_TOWARDZERO);
 #if defined(__aarch64__) || defined(_M_ARM64)
-    { uint64_t fpcr; __asm__ __volatile__("mrs %0, fpcr" : "=r"(fpcr)); fpcr |= 1ull << 24; __asm__ __volatile__("msr fpcr, %0" : : "r"(fpcr)); }
+        { uint64_t fpcr; __asm__ __volatile__("mrs %0, fpcr" : "=r"(fpcr)); fpcr |= 1ull << 24; __asm__ __volatile__("msr fpcr, %0" : : "r"(fpcr)); }
 #elif defined(__x86_64__) || defined(_M_X64)
-    _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
-    _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
+        _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
+        _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
+#endif
+    }
 #endif
     try {
         wait_for_baton(lock, self);
@@ -1788,6 +1811,7 @@ int run(int argc, char** argv, const Hooks& hooks) {
         printf("booting: entry 0x%x\n", entry);
     } else rt_die("unknown mode %s", mode.c_str());
 
+    say_arithmetic();
     g_start_time = std::chrono::steady_clock::now();
     g_cur = main_thread;
     start_host(main_thread);

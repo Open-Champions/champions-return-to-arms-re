@@ -30,6 +30,7 @@ python3 tools/recomp/app/win/standin_compare.py    # x86-64 against arm64 and bo
 | In `local/recomp-out/win/` | Is |
 |---|---|
 | `rta_app.exe` (27.3 MB) | the game in a window: Win32 window, OpenGL 4.1 core through WGL, keyboard, XInput, WASAPI |
+| `rta_app_gcc.exe`, `rta_native_gcc.exe`, `fpcheck_gcc.exe` | the same three built by GCC (`--compiler gcc`); see "Compiler" and "Resume here" for their age |
 | `rta_native.exe` (26.5 MB) | the machine with nothing attached: boots, runs scripts, prints its report |
 | `fpcheck.exe` (0.2 MB) | the game's floating-point operations as a table of checksums (`app/win/fpcheck.cpp`) |
 | `rta-windows/` | **the folder a tester gets**: the three programs, `play.bat`, `README.txt`, `boot-check.rig` (the rig's boot script with addresses in place of names), `boot-check-mac.txt` (what the Mac printed for it) |
@@ -271,7 +272,7 @@ VU0: 466083 microprogram calls, 26111361 instructions
 ```
 
 and the script's last `show` puts the character at 131.570755, -96.2327423, -48. These
-figures belong to the sources of 2026-10-12 15:00; a later build gets its own
+figures belong to the sources of 2026-10-12 15:39; a later build gets its own
 (`--reference` again).
 
 ## Not run, and what could be wrong there
@@ -322,8 +323,22 @@ with anything; `fpcheck_gcc.exe` is its step 1).
 
 ## Resume here
 
-(2026-10-12 15:40) Everything of the brief is done except running on Windows, which needs
-a person with a PC: the test plan above. Open ends, in the order they matter:
+**State saved 2026-10-12 15:45.** Nothing is half-done in the sources; the tree compiles
+(last full `build_win.py` 15:37: 70 files, three programs linked; `--standin` and
+`--reference` after it). Every file of this work is listed under "The parts that are new"
+and "Changes to existing files".
+
+What exists now, by the clock:
+
+| Made | What |
+|---|---|
+| 15:37 | `rta_app.exe` (27.3 MB, with `film.cpp`), `rta_native.exe`, `fpcheck.exe`, clang; the folder `local/recomp-out/win/rta-windows` with them, `play.bat`, `README.txt`, `boot-check.rig` |
+| 15:39 | `standin/rta_native_fix_arm64` and `rta-windows/boot-check-mac.txt` from the same translation: `frames=2309 ... fields=2413 units=113069982`, `VU0: 466083 microprogram calls, 26111361 instructions` (unchanged by the film entries) |
+| 15:30 | `rta_app_gcc.exe`, `rta_native_gcc.exe`, `fpcheck_gcc.exe` - **older than the rest**: built before the film decoder was added to the Windows build, from the sources of 15:14 to 15:30. Its films end at their first picture. To bring it up to date: `python3 tools/recomp/app/build_win.py --compiler gcc` (about 12 minutes of processor time). A rebuild was started at 15:46; if the three files in `local/recomp-out/win/` are newer than that, it finished and the folder `rta-windows` has the new ones |
+| 14:38 - 15:00 | the stand-in comparison (`standin/rig-x64`, `rig-arm64`, `compare.log`) and the x86-64 sweep (`standin/sweep-stub-x64.txt`): made with the runtime sources of that time; `runtime.cpp` and the renderer were changed by others afterwards (15:03, 15:13). Repeat with `build_win.py --standin`, `standin_compare.py`, and the sweep line of the section above |
+
+Everything of the brief is done except running on Windows, which needs a person with a
+PC: the test plan above. Open ends, in the order they matter:
 
 1. **The tester's report.** Steps 1 and 2 decide whether the arithmetic and the runtime
    hold on real hardware; step 3 is the first time anybody sees the window or hears the
@@ -332,12 +347,15 @@ a person with a PC: the test plan above. Open ends, in the order they matter:
 2. **`vu0.h` with an infinity or NaN operand** is the one place where x86 and ARM64 can
    still differ (sign and payload of the NaN). Not seen in the compared session. Closing
    it means a check after each arithmetic result in the interpreter's x86 branch.
-3. **The network on Windows**: Winsock behind `net/netdrv.cpp` and a dialogue in place of
+3. **The film decoder on x86-64** (`app/mpeg2.h`, added by its author while this was
+   written): compiled for Windows, never compared between the two processors. It makes
+   pictures, not simulation state.
+4. **The network on Windows**: Winsock behind `net/netdrv.cpp` and a dialogue in place of
    `online_mac.mm`.
-4. **Controllers that are not XInput** (a PlayStation controller without Steam or
+5. **Controllers that are not XInput** (a PlayStation controller without Steam or
    DS4Windows): Windows.Gaming.Input or raw HID.
-5. **Building on Windows itself** (MSYS2): `build_win.py` has the branch, nobody ran it.
-6. `native-app.md` section 8 and `native-recomp.md` "Step 6 - Windows" still describe
+6. **Building on Windows itself** (MSYS2): `build_win.py` has the branch, nobody ran it.
+7. `native-app.md` section 8 and `native-recomp.md` "Step 6 - Windows" still describe
    Windows as not written; they are their author's and were left alone.
 
 The builds of other agents change `tools/recomp` while this is written: a later

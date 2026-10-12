@@ -184,7 +184,7 @@ def main():
     script.add('', '# ---- back to the first level ----', 'pad none', 'wait 20')
     script.pokes(level_change('hub'))
     script.add('until g_levelName:str8 == hub timeout 2500 continue', at_tick(120, True),
-               'show g_levelName:str16 g_simFrame:u32 g_players+0xac:f32 g_players+0x5c:s32 g_players+0xe4:s32')
+               'show g_levelName:str16 g_simFrame:u32 g_players+0xac:f32 g_players+0x5c:s32 g_players+0xe4:s32', 'quit')
     out = script.lines
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, 'w') as sink:

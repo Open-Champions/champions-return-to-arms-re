@@ -676,7 +676,48 @@ test asked the browser once a minute for its own count of the page's memory
 emulator's 1 GiB of shared memory once for each of its five threads, 5,127 MB) - and
 asking makes the browser collect garbage first.
 
-MEMORY-RUNS
+**Without that asking the tab grows much faster - open.** Two more runs of the same
+kind in which the browser was not asked: 777 MB → 972 MB in 6 minutes (the growth in the
+two regions that hold the browser's JavaScript heap, +70 MB, and its buffers and the
+emulator's memory, +116 MB), and 886 MB → 1.0 GB in 5 minutes (886, 925, 953, 969, 981,
+then "1.0G"; 40 pieces of the disc read meanwhile, so it is not the disc reads). That is
+25 – 30 MB a minute of something a forced collection removes (the first run, collected
+once a minute, grew 1.6 MB a minute) - garbage, not a leak in the strict sense. The
+third run was cut as a measurement at minute 7, when the page became hidden (the window
+was covered or the display went off; the Mac was unattended), and then showed the other
+half: hidden for three minutes the tab still held 1.0 GB, and one minute after it was
+visible again it held **776 MB** - the browser had collected by itself, back to where a
+level starts. So the tab's memory is a saw-tooth between about 780 MB and something over
+1 GB; **how high the teeth go while the page stays in front the whole time was not
+seen** (no run stayed visible beyond 6 minutes without a forced collection). What makes
+the garbage is not found; the
+suspects are the threads that never return to their event loop (the machine's) or do so
+sixty times a second (the video thread's: typed-array views made for WebGL calls). To do:
+a watched run of half an hour without forced collection; if it keeps growing, find the
+source with the browser's allocation profiler. Until then the honest figure for "memory
+after 20 minutes" is: 865 MB just after a collection, 1 GB or somewhat more between
+collections, plus 175 MB in the GPU process.
+
+### State of this work when it was written down (2026-10-12, 15:45)
+
+Done and in the files: everything in "What was changed for it". `web/` is in a working
+state (the last pass through every button and setting in Chrome ran without an uncaught
+error at 60 frames a second; two small edits after it - the canvas's size on a narrow
+screen, and "online" including the game's own network traffic - were checked for syntax
+and by a boot, not by a full pass). `play-web.patch` was checked to apply to an untouched
+tree together with the other two, and a build from an empty directory with all three as
+they were at 15:08 boots the game.
+
+Half-done or not started:
+
+- the memory question above;
+- full screen was never seen to work (refused in the unattended window);
+- "online" for the pause rule (the twenty seconds of network traffic) was not tried with
+  a relay;
+- nothing was run a second time in Safari's engine or Brave after the last edits to
+  `rta-web.js` (the pause, card, zip, sound and file-chooser tests there were made with
+  the page as it was at 14:45; later edits: the stopped-emulator check, the timing marks,
+  the canvas's size, the online rule).
 
 ### A hidden tab and online play
 

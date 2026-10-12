@@ -3927,7 +3927,7 @@ diff --git a/Source/ui_qt/GSH_OpenGLQt.cpp b/Source/ui_qt/GSH_OpenGLQt.cpp
  #include <QSurface>
  #include <QWindow>
  #include <QOpenGLContext>
-@@ -57,8 +58,78 @@
+@@ -57,8 +58,81 @@
  	delete m_context;
  }
  
@@ -3946,12 +3946,12 @@ diff --git a/Source/ui_qt/GSH_OpenGLQt.cpp b/Source/ui_qt/GSH_OpenGLQt.cpp
 +	m_captureRect[3] = height;
 +}
 +
-+void CGSH_OpenGLQt::RequestFramebufferCapture(const CaptureHandler& captureHandler)
++void CGSH_OpenGLQt::RequestFramebufferCapture(const CaptureHandler& captureHandler, bool presentedPart)
 +{
 +	std::lock_guard<std::mutex> lock(m_captureMutex);
 +	m_captureHandler = captureHandler;
 +	m_captureRect[2] = m_captureRect[3] = 0;
-+	m_captureFramebuffer = true;
++	m_captureFramebuffer = presentedPart ? 2 : 1;
 +}
 +
  void CGSH_OpenGLQt::PresentBackbuffer()
@@ -3961,12 +3961,12 @@ diff --git a/Source/ui_qt/GSH_OpenGLQt.cpp b/Source/ui_qt/GSH_OpenGLQt.cpp
 +		unsigned int x = 0, y = 0;
 +		unsigned int width = m_presentationParams.windowWidth;
 +		unsigned int height = m_presentationParams.windowHeight;
-+		bool fromFramebuffer = false;
++		unsigned int fromFramebuffer = 0;
 +		{
 +			std::lock_guard<std::mutex> lock(m_captureMutex);
 +			captureHandler.swap(m_captureHandler);
 +			fromFramebuffer = m_captureFramebuffer;
-+			m_captureFramebuffer = false;
++			m_captureFramebuffer = 0;
 +			if((m_captureRect[2] != 0) && (m_captureRect[3] != 0))
 +			{
 +				x = std::min(m_captureRect[0], width - 1);
@@ -3977,14 +3977,17 @@ diff --git a/Source/ui_qt/GSH_OpenGLQt.cpp b/Source/ui_qt/GSH_OpenGLQt.cpp
 +		}
 +		if(captureHandler && fromFramebuffer)
 +		{
-+			width = (m_displayFramebuffer != 0) ? m_displayPixelWidth : 0;
-+			height = (m_displayFramebuffer != 0) ? m_displayPixelHeight : 0;
++			//the whole picture, or what is presented of it (m_displayPixelX, -Y: the edge left out)
++			unsigned int left = (fromFramebuffer == 2) ? m_displayPixelX : 0;
++			unsigned int bottom = (fromFramebuffer == 2) ? m_displayPixelY : 0;
++			width = (m_displayFramebuffer != 0) ? (m_displayPixelWidth + (2 * (m_displayPixelX - left))) : 0;
++			height = (m_displayFramebuffer != 0) ? (m_displayPixelHeight + (2 * (m_displayPixelY - bottom))) : 0;
 +			std::vector<uint8> pixels(static_cast<size_t>(width) * height * 4);
 +			if(!pixels.empty())
 +			{
 +				glBindFramebuffer(GL_READ_FRAMEBUFFER, m_displayFramebuffer);
 +				glPixelStorei(GL_PACK_ALIGNMENT, 1);
-+				glReadPixels(m_displayPixelX, m_displayPixelY, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
++				glReadPixels(left, bottom, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
 +				glBindFramebuffer(GL_READ_FRAMEBUFFER, m_presentFramebuffer);
 +				//the console's alpha is not for looking at
 +				for(size_t i = 3; i < pixels.size(); i += 4) pixels[i] = 0xFF;
@@ -4018,7 +4021,7 @@ diff --git a/Source/ui_qt/GSH_OpenGLQt.h b/Source/ui_qt/GSH_OpenGLQt.h
  
  class QSurface;
  class QOpenGLContext;
-@@ -17,7 +19,23 @@
+@@ -17,7 +19,25 @@
  	void ReleaseImpl() override;
  	void PresentBackbuffer() override;
  
@@ -4031,13 +4034,15 @@ diff --git a/Source/ui_qt/GSH_OpenGLQt.h b/Source/ui_qt/GSH_OpenGLQt.h
 +	void RequestCapture(const CaptureHandler&, unsigned int, unsigned int, unsigned int, unsigned int);
 +	//The picture as the machine drew it, in the pixels it was drawn with (the console's
 +	//640 x 448 times the resolution factor), whatever the size of the window. Top row first.
-+	void RequestFramebufferCapture(const CaptureHandler&);
++	//'presentedPart': only what is presented of it (the edge of the picture is left out,
++	//see CGSH_OpenGL::FlipImpl).
++	void RequestFramebufferCapture(const CaptureHandler&, bool presentedPart = false);
 +
  private:
 +	std::mutex m_captureMutex;
 +	CaptureHandler m_captureHandler;
 +	unsigned int m_captureRect[4] = {0, 0, 0, 0};
-+	bool m_captureFramebuffer = false;
++	unsigned int m_captureFramebuffer = 0; //1: the whole picture, 2: the part presented
 +
  	QSurface* m_renderSurface = nullptr;
  	QOpenGLContext* m_context = nullptr;

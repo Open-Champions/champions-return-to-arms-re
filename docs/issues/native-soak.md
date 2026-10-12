@@ -216,30 +216,136 @@ The soak's main arm (`fix26c`) is the suggested set with this form of the sectio
 
 ## Totals
 
-(filled from `farm.py report`)
+**State at 2026-10-12 15:45 (the farm is still running; these are an hour's work on a
+machine at load 250–450, not the result).** `farm.py report <arm directory>` prints the
+current figures.
+
+| Arm | Jobs | Ticks compared | Jobs with a deciding difference | Jobs in which a machine dropped a peer |
+|---|---|---|---|---|
+| `fix26c` (26 sections, the flush section as proposed) | 4 | 191,793 | **0** | 1 (tick 38,407 of seed 3002, the arena; 38,406 ticks compared before it, none differing) |
+| `fix25` (the 26 less the flush section) | 4 (one of three machines) | 120,340 | **0** | 0 |
+| `nofix` | 6 | 126,950 | **6 of 6** | 5 |
+
+Together 312,133 ticks with fixes and no deciding difference — a twentieth of what one
+rig soak covered (5.1 million, live-rig.md 22), so it says nothing yet about what is
+left. The speed is the limit: a pair makes 60–200 ticks a second of wall time here
+against about 1,000 on a quiet machine (the instances get a fraction of a core each; the
+processor time per tick, about 2.2 ms, is itself twice the quiet figure of
+`native-net.md`). The pool checksum and the 110 columns do not show in that figure
+(the same game with `poolraw` every tick, every eighth tick or never: 12.1, 13.4 and
+14.5 s of processor for 4,779 ticks — noise).
+
+### The check on the method: the unpatched arm
+
+All six unpatched jobs differ, each repeating at the same tick in a second run:
+
+| Seed | Level | First tick | Columns at the first difference | Reading |
+|---|---|---|---|---|
+| 5000 | `hub2` | 10,380 | `pool` alone | an object of the pool (not yet looked at: the second run of this job was made before the farm dumped pools) |
+| 5001 | `drundar` | 2,101 | bag 2, load | K2's columns (the potion bag) |
+| 5002 | `stomedal` | 1,200 | bag 0 | not classified yet |
+| 5003 | `nit1` | 2,733 | bag 0, load, `pool`, object count | an object live on one machine only at that tick |
+| 5004 | `pvpnit` (three machines) | 1,123 | load | the carried-weight class (FINDINGS V57) by its column |
+| 5005 | `strife` | 5,897 | bag 2, load, `pool`, object count | an object live on one machine only |
+
+The classes are named here by their columns only; which section removes each has not
+been tried. Five of the six jobs went on to a dropped peer.
 
 ## Coverage
 
-(filled from the call tables)
+**State at 15:45, the two arms with fixes together (8 jobs, 312,133 ticks).** Counts are
+entries of the function on every machine, the prediction copy's included (the `CALL` /
+`CALLR` counters; calls inside a merged unit and tail jumps are not counted).
+
+| What | Entries |
+|---|---|
+| levels entered at the start | `wate2a`, `wate2b`, `torment0`, `bastion1`, `swamp1`, `drunare` × 3 |
+| machines | two in 7 jobs, three in 1; four: not yet |
+| `Player_castSkill`; `Player_usePotion`; `Player_meleeHit` | 4,576; 18,504; 1,859 |
+| `damage_apply`; `Player_takeDamage`; `player_giveExp` | 3,962; 3,057; 156 |
+| inventory opened; inventory messages; equip; drop; `itemprop_tryPickup` | 1,406; 4,965; 154; 165; 115 |
+| `stats_screen`; `skills_screen`; pause menu opened; `config_commitOptions` | 14,762; 6,683; 672; 173 |
+| `shop_openOrStock`; `shop_buySellMenu`; `shop_buy` | 52; 318; **0** |
+| `recall_execute`; `save_game`; `game_loadLevel`; `missionMenu_run`; `cut_advance` | 193; 163; 153; 53; 41,443 |
+| a stat point or a skill point spent; the workshop; a respawn; the jump-gate menu | **never** (the level-up is left pending in a third of the jobs, but no point was spent) |
+| skill and spell objects run (of 54 named `Spell…_run` / `Cast…_run`) | 18 in the first four jobs alone; the full list comes from `farm.py report` |
 
 ## Fields that differ between machines in step
 
-(from the calibration; to be classified)
+From the calibration (six games of the 25-section build in which no player column
+differed; pools compared at 42 sampled ticks each). **Ran**: the values; the reading is
+from the documents named, and where none is named the field is not classified.
+
+| Class | Offsets | What was seen | Reading |
+|---|---|---|---|
+| every object | +0x00, +0x04, +0x08 | handle-node addresses | the handle pool is used by the prediction copy too (live-rig.md 11.3) |
+| every object | flag 0x100 (+0x0c) | set on one machine | hit flash, cleared by drawing (`docs/objects.md`) |
+| `Player` | flag 0x200000 | set on the owner's machine | this machine's own player (`docs/netcode.md`) |
+| creatures, `Player`, props | a heap address against 0 at +0x120, +0xa4, +0x98, +0x1a0 … | a buffer on one machine, none on the other | pose and animation buffers (the pose cache is rewritten by the copy: live-rig.md 11.3). Not read per field |
+| `Player` | +0x198, +0x1b8 | bit 0x10000 | not classified (animation track state by its place) |
+| `Player` | +0x220 | 0xfdff51b7 against 0xffffffff | not classified |
+| `Player` | +0x98, +0x9c | 0xffc6ffc6, 0x0000ffc6 against 0 | not classified |
+| `Horsemen` +0x414, `Skelight` +0x40c | two low bytes, one or a few apart | not classified; `Creature_draw` decrements a status counter from draw code (`docs/creatures.md` C1) |
+| `Nightmare` | +0xa8 bit 0x80000000 | set on one machine | "boss health bar is showing", written from the local alive list (`docs/creatures.md` C3) |
+| `Gold`, `Torch`, `JumpGate`, `AddParticle` | +0x44 and blocks of floats | **the object's own random state differs** | not classified: presentation classes by their names; no reader in the simulation looked for |
+| `ItemProp` | +0x13c (float 0 / 1 / 2 / 6 / 7), +0x104 | a counter that runs differently | not classified |
+| `PhProp` | +0x104, +0x110–0x13c | twelve words | not classified |
+| `playerProjectile`, `MissileWeapon`, `DarknessProjectile`, `FireStorm`, `GlowingCylinder`, `Weather`, `AutoProp`, `HackDoor`, `Savepoint`, `Kobold`, `NPC` | see `tools/recomp/soak/poolmask.txt` | | not classified |
+| the three free lists | order | differ from about tick 700 to 2,000 on | the next object can land at different addresses on the two machines; the checksums do not depend on addresses |
+
+`poolraw` still differs in most games after this mask (in thousands of ticks), so it is
+followed, not counted. Each farm job now dumps its pools at seven sampled ticks and
+records the unmasked (class, offset) pairs that differ while the machines are in step
+(`rawdiff.tsv` in the arm's directory): the list above will grow from that.
 
 ## Proposed ledger rows
 
-(at the end of the work)
+For whoever edits `FINDINGS.md` (this document does not). Draft of 15:45; the soak rows
+are to be filled in when the farm has run.
+
+| Row | What to record |
+|---|---|
+| L (new) | Section "flush before a level load waits for the peers' tick" as first written: its word at 0x132DFC is the delay slot of the no-peers branch of `net_flushBeforeLoad`, so with `g_numPeers` = 0 the function makes 16 passes of `net_main(1,1)` (**Executed**: 0 unpatched, 16 patched). In the developer LAN start the main loop calls it before `net_gameInit`, and both players' lockstep pads then stay stuck for the whole game (held word 0x500000, left stick −1.138; the players walk out of `strife` by themselves at tick 228). **Ran** on a native pair and, with a control, on an emulator-rig pair from power-on: the same values. In step throughout. A lobby-launched game initialises in the front end and is not affected (reported by other work). Replacement, three words (0x132DF8 → 1840001D, 0x132DFC → 2A060010, 0x132E28 → 8C82FFF8): **Executed** (13 checks), **Ran** native and rig. `docs/issues/native-soak.md` finding 1 |
+| V (new) | Every rig or native run that applied the 26 suggested sections before a developer-LAN launch (2026-10-12 11:04 onward) had both sticks stuck; `docs/issues/native-net.md`'s remark that with the 26 sections "machine A's scripted walk does not move its player" is this |
+| V (new) | Object pools of two machines in step, compared word by word (native pair, 25 sections, six games): the block addresses of live objects agree at every sampled tick while the free lists' order does not; the fields that differ are listed in `docs/issues/native-soak.md` ("Fields that differ between machines in step") — among them the private random state (+0x44) of `Gold`, `Torch`, `JumpGate` and `AddParticle` objects. No reader in the simulation was looked for |
+| V (new) | Native soak farm, first hour: 312,133 ticks with fixes (26 sections with the flush section as proposed: 191,793; 25 sections: 120,340; one three-machine game), no deciding difference in any column of the rig's soaks or in a checksum of position, facing and random state of every pool object; unpatched, 6 of 6 games differ. To be replaced by the final totals |
 
 ## Working notes
 
-- Farm directories: `local/recomp-out/soak/farm/<arm>/` (`jobs.tsv`, `calls.tsv`,
-  `limit.txt` = native instances at a time, `stop` = start no more jobs). Started
-  2026-10-12 14:45: `fix25` seeds 2000– with 4 instances (stopped at 15:10 in favour of
-  `fix26c`, seeds 3000–4199), `nofix` seeds 5000–5299 with 2. `farm.py run` skips seeds
-  already in `jobs.tsv`, so the same command resumes:
-  `farm.py run --arm fix26c --out local/recomp-out/soak/farm/fix26c --seeds 3000:1200 --instances 4`.
-- The machine was at load 350–450 from other work all afternoon: a pair made 60–200
-  ticks a second instead of about 1,000.
-- Calibration dumps: `local/recomp-out/soak/cal/`. Experiments on finding 1:
-  `local/recomp-out/soak/t/` (native) and `local/recomp-out/soak/rig/` (emulator).
-- `RTA_DISC` must be set; runs are `nice -n 10`; at most 6 native instances at a time.
+State at 2026-10-12 15:45, for whoever resumes this.
+
+- **Running**: `local/recomp-out/soak/farm/supervise.sh` keeps two arms going —
+  `fix26c` seeds 3000–4199 (4 native instances, `farm/fix26c/limit.txt`) and `nofix`
+  seeds 5000–5599 capped at 30,000 frames (2 instances). **It ends by itself**: it tells
+  the arms to start no more jobs when `farm/heartbeat` has not been touched for 45
+  minutes (touch it at every poll), or when `farm/stop-all` appears; running jobs then
+  finish. To resume: `rm -f farm/stop-all farm/*/stop; nohup farm/supervise.sh &`
+  (`farm.py run` skips the seeds already in `jobs.tsv`).
+- **Per arm**: `jobs.tsv` (one row per job: first differing tick, columns, values,
+  `where` = the classes and offsets of the pool that differ in a second, cut-off run),
+  `calls.tsv` (call counts summed), `rawdiff.tsv` (unmasked pool fields differing in
+  step at sampled ticks), and the directory of every job that differed, with
+  `<job>-again` holding the pool dumps of the tick before and of the tick of the
+  difference (`poolcmp.py <dir> <tick> --words --masked`).
+- **Half-done**:
+  1. The soak itself: 0.3 million ticks with fixes against an aim of tens of millions.
+  2. The unpatched arm's classes are named by columns only; seed 5000 (`pool` alone at
+     tick 10,380 in `hub2`) has not been looked at:
+     `farm.py one --arm nofix --seed 5000 --frames 10800 --dump 10379,10380 --tag=-d`.
+  3. `poolraw` is not usable as a deciding column yet: the mask needs the fields in
+     `rawdiff.tsv` classified.
+  4. Coverage holes to close by scripted jobs rather than random input: a stat point and
+     a skill point spent, a purchase, the workshop, a respawn, four machines.
+  5. Not started: a pair of the rig against a native machine inside the farm; a
+     three-machine developer-start control for `docs/issues/three-players.md` (seed 2001,
+     three machines, 30,421 ticks in step with 25 sections, is one such run).
+- Experiments on finding 1: `local/recomp-out/soak/t/` (native: `*-1003-pad`) and
+  `local/recomp-out/soak/rig/flush-with`, `flush-without`, `flush-proposed` (emulator).
+  Calibration dumps: `local/recomp-out/soak/cal/`.
+- `RTA_DISC` must be set; machines run at `nice -n 10`; at most 6 native instances.
+- Tried and not used: the runtime's `--hle-renderer` (one game, 10,380 ticks: every
+  column of the tick log equal to the run without it, timing columns apart; no faster
+  under this load).
+- A machine whose partner has ended is sometimes still running 60 seconds later and is
+  killed by the farm; its last tick-log row is then cut off (the comparison skips it) and
+  its call table is missing from the coverage sum. Not looked into.

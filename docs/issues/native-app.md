@@ -37,17 +37,19 @@ pause menu and its load screen, change level; save (when the game asks for one) 
 the save again from the title menu after a restart; hear the game's sound through the
 Mac's sound device; use the keyboard or a game controller.
 
-**What is wrong or missing** (details under "Defects" and "Left for a release"):
+**What was wrong or missing at 13:15, and where it stands** (section 10 has each):
 
-- Films are not shown: the developer's logo film and the intro film end at their first
-  picture (the film decoder needs the Image Processing Unit, which this machine does not
-  have). The game goes from the publisher's logo straight to the title.
-- One drawing fault seen in play: during the fight a long thin pole runs from the player
-  to the lower right corner for some hundred ticks (stray vertices of 30 small two-pass
-  meshes). Not solved.
-- Sound drops out for some tens of milliseconds at a time while a level loads.
-- Water, trails, heat haze and floor decals: no level that shows them was visited.
-- The real DualSense could not be tested (it was not connected, see "Input").
+- Films were not shown. **They play** (10.3): the game's own film player on a host
+  MPEG-2 decoder, whole frames, in step with their sound.
+- The pole in fights. **Solved** (10.1): VU1 computed with the host's numbers.
+- Sound dropped out while a level loads. **It does not any more** (10.4): the sound
+  side runs by itself on the device's real-time thread.
+- Water, heat haze, the bag, the map, dialogue were never looked at. **Toured in both
+  builds** (10.2): the heat haze, the bag's item glow and item pictures and everything
+  after a dialogue were wrong and are corrected; water, lava, light shafts, menus were
+  right. Trails, hit effects and decals in a fight: drawn, not compared close up.
+- The real DualSense could not be tested (it was not connected, see "Input"): unchanged.
+- Still open: 10.7.
 
 ## The parts
 
@@ -418,20 +420,53 @@ copies carried out, none dropped. Read in the draw list of a recorded fire3 fram
 (`tour3/haze.rtavs`): each copy is followed by its 12-vertex fan sampling the copied
 piece.
 
-**The GS approximations of `native-render.md`: counted, none drawn with.** Every
+**The GS approximations of `native-render.md`: counted; one was needed.** Every
 primitive is now counted against the state the model does not apply exactly
 (`GsStats::approx`): an alpha test with a fail rule other than "keep" (besides "never
 passes", which is exact), the destination-alpha test, a blend factor of destination
 alpha, `FBA`, `PABE`, fog, `AA1`, a partial `FBMSK`, `COLCLAMP` off, region-repeat
-wrapping. From power-on through the front end and the 20 levels: **none of them is used
-by any primitive** (the final report line "primitives drawn with GS state the model
-approximates" says "none"). They were therefore left as they are; the count stays in the
-report so that a scene that needs one shows up. What did matter was the local-to-local
-transfer (above) and uploads straight into a displayed buffer (10.4).
+wrapping. From power-on through the front end and the 20 levels none of them is used by
+any primitive; in the bag **fog** is (7,200 primitives in a visit: the glow around the
+selected item is its model drawn additively with fogging on and the fog colour green),
+and without it the glow was white and hid the item. Fogging is now applied
+(`DrawCmd::fog`, `Vertex::fog`: after the texture function the colour is
+F x colour + (1 - F) x `FOGCOL`, F from `XYZF2` or the `FOG` register). The others were
+left as they are, since no scene draws with them; the count stays in the final report
+("primitives drawn with GS state the model approximates ... none") so that a scene that
+needs one shows up. What also mattered: the local-to-local transfer (above), uploads
+straight into a displayed buffer (10.3), and the two things under "screens" below.
 
-**Draws without their texture that remain**: 69 from power-on to the first level, about
-400 in tormenta and 600 in blood1 per visit; `RTA_GS_MISSING=1` lists them. Not looked
-into yet.
+**Screens** (`tour.py native|emu screens`; `local/recomp-out/app-test/screens/`,
+`cmp-1.png`, `cmp-bag.png`, `cmp-talk.png`): pause menu, options, the bag's six pages
+(items, the character in the alcove, statistics, quests, skill tree), the map overlay, a
+dialogue with its close-up, the talk prompt. Same as the emulator build after these
+three corrections:
+
+| Seen | Cause | Change |
+|---|---|---|
+| the bag's selected item glowed white and hid the item | fog not applied | above |
+| the bag's item pictures showed twice, one copy between the lines of the other | they are 94 x 98 pictures in textures named 128 x 128 whose record carries no block number (+0x18 is 0), so the picture's height was not found and the second field was looked for by the size that was sent, 15 rows too low | a sprite that draws rows 0 to n or n to 2n of such a picture at half a row a line is taken to draw one field of a picture 2n rows high (`gs.cpp`, where field sprites are recognised); `TexIndex::resident_at` also finds records of textures without a palette or with a 16-colour one |
+| **from the first dialogue on the whole picture was blurred and all text unreadable** | during a dialogue the game draws into the 3-D surface under the GS's reset scissor (2,048 lines); a surface was "as high as its scissor", so the 3-D surface became 1280 x 2048 and everything after was drawn at a quarter of its lines | a scissor higher than 512 lines leaves a surface's height as it is |
+
+Not reached by the script in either build: the shop's lists.
+
+**Surfaces are freed too.** The shadow surface and the heat haze's piece of the picture
+are textures of the game's ring of resident textures; each time the ring hands them
+other blocks a surface was made at the new place and the old ones stayed (47 within the
+first minutes of a session). A surface nothing has drawn into, sampled, copied or shown
+for 600 frames is now given back (`Gs::free_unused_targets`, `FrameList::dead_targets`).
+
+**Draws without their texture that remain** (`RTA_GS_MISSING=1` lists each texture
+once): 69 from power-on to the first level - the present pass reading the 3-D surface
+before anything was ever drawn into it; and 400 to 600 in a visit of tormenta or blood1
+- level strips that name a 1 x 1 eight-bit texture (`TEX0` with TW = TH = 0) whose
+palette was sent and whose picture never was. On the console such a strip takes its one
+colour from whatever lies at that block; here it is drawn without a texture. No picture
+of the tour shows a difference from the emulator build there. (A first suspicion, that
+an upload took away neighbouring textures, was real but not the cause: a narrow
+rectangle skips blocks in GS memory and the model had counted every block up to its
+last one as overwritten; it now takes away only textures that start in a block the
+rectangle writes.)
 
 **Textures are freed; memory.** A texture no draw has named for 600 frames is given back
 (`Gs::free_unused_textures`, `FrameList::dead_textures`, deleted by the backend;
@@ -445,9 +480,9 @@ level, not the number of levels; the second round lies 15 MB above the first on 
 (0.75 MB a level change), which is not textures (their count is the same) and was not
 traced. Before these two changes the same 20 levels ended at 861 MB.
 
-Not looked at yet in this tour: weapon trails and hit effects against the emulator at the
-same instant (they are drawn: the pole of 10.1 came from a trail's data), floor decals,
-the automap, bag, shop and skill screens, dialogue.
+Not compared with the emulator at the same instant: weapon trails, hit and spell effects
+and floor decals in a fight (they are drawn - the pole of 10.1 came from a trail's data -
+but the two builds' fights do not stay in step, and no close-up pair was made).
 
 ### 10.3 Films (Ran)
 
@@ -513,3 +548,98 @@ entry `porko_l.vag` on stream 0, played by the sound side like any other stream.
   12.93 s at the two-voice stream's 27,398 bytes a second.
 - Colour against the emulator build's film pictures (same scene, not the same picture):
   average 110, 137, 161 native; 114, 138, 160 emulator.
+
+### 10.4 Sound through level loads (Ran)
+
+Design: `native-sound.md` section 8. In short: paced, with a window, the sound side
+(chip, `LIBSD` commands, stream driver and its 6 ms timer) runs on the device's own
+real-time thread and clock (`sound-clock=real`, the default output unit asking for every
+buffer); the game's calls are carried out when they are made. A run that is not paced
+or has no window keeps the sound on the machine's clock (`sound-clock=machine`).
+
+**Gaps over a session with ten level changes** (`tour.py native levels valor wat1 fire1
+islc1 swamp1 storm1 nit1 tormenta fay1 dis2 --paced --views 0`, a test window, gain 0;
+the computer was shared with other jobs the whole afternoon: load average 280 to 430):
+
+| Sound on | Session | Taken by the device | Nothing to play |
+|---|---|---|---|
+| the machine's clock (the old way, same build, same session) | 345 s | 344.4 s, of which only 136.7 s had been rendered | 883 times, 5,564 ms of silence (the game itself reached 23.7 pictures a second under that load) |
+| its own clock, AudioQueue asking (first attempt) | 243 s | 241.45 s in 24,146 requests | 1 request 0.9 s late: an AudioQueue's callback thread is an ordinary one |
+| **its own clock, the default output unit (as built now)** | 294 s | **293.29 s in 27,496 requests** | **none: longest time between two requests 10.8 ms, none more than 30 ms apart** |
+
+In the last, 44 of the game's 28,000 sound calls found the device rendering and waited,
+1.4 ms at most; rendering a request took 0.056 ms on average, 0.12 ms at most; the sound
+side cost 0.51 % of one processor. Files: `local/recomp-out/app-test/snd1/` (the first
+two rows), `snd2/` (the last). The same in the three runs against the rig below: 261 s,
+218 s and 386 s without one late request.
+
+**Tick identity with sound attached** (`rta_app_orig`, picture off screen, the fight
+session `fight3.rig` of 7,904 fields given the rig's controller bytes, `rigcompare.py
+boot-native --replay` then `boot-compare`; a private copy of the rig's log in
+`local/recomp-out/app-test/rigsnd/`, wrappers `as-native-*.sh`, `rc.py`):
+
+| Sound on | Simulation columns | Cosmetic seed against the rig |
+|---|---|---|
+| the machine's clock | identical in all five episodes, as before this work: only the player record at tick 7 of the first level and the object pool in ticks 3,886 to 3,912 of `valor` differ | first level: 35 ticks from tick 60 (the music-start hold); `valor`: from tick 1,218, 2,343 of 5,410 ticks - the same line for line as before |
+| its own clock, not paced | the same | first level: none; `valor`: from tick 1,218, 1,847 ticks |
+| its own clock, paced by the clock | the same | first level: none; `valor`: from tick 1,218, 4,193 ticks |
+| its own clock, not paced, after the runtime's flush-to-zero | the same | first level: 39 ticks from tick 60; `valor`: from tick 1,205, 1,169 ticks |
+
+So **what changed is the cosmetic seed and nothing else**: with the sound side on its
+own clock the answers the game reads back (voice end flags every 8th sound frame, stream
+positions) depend on when in real time it asks, the cosmetic generator is drawn from
+when sounds start and end, and the number of ticks at which it differs from the rig is
+different in every run (1,169 to 4,193 of 5,410) where it was the same every time on the
+machine's clock. No simulation column follows it. A run that has to be the same twice
+(a comparison, a recording) uses `-- --opt sound-clock=machine`.
+
+**The runtime's arithmetic** (asked for by the coordinator while this was running):
+the game's threads now flush denormals to zero besides rounding toward zero
+(`rt/runtime.cpp`, `thread_main`; `native-recomp.md`, status). The machine-clock
+comparison above was repeated with it: the same line for line. `--opt arith=nearest`
+sets neither (the host's own arithmetic), `RTA_SOFT_RZ` leaves the processor's mode
+alone for a build that does it in software; a line at the start of a run says which is
+in force.
+
+### 10.5 to 10.7: state of the work at 15:45 (saved before a possible stop)
+
+Done and written above: the pole (10.1), the tour with its corrections (10.2), films
+(10.3), sound (10.4). The tree builds: `python3 tools/recomp/app/build.py` (and
+`--original`), `python3 tools/recomp/render/build.py replay`.
+
+**Running when this was written** (background chain `local/recomp-out/app-test/final.sh`,
+then `final2.sh`; results go to the files named, nothing else needs to be kept):
+
+- press-to-picture latency: `app latency BUTTONS [pictures [before]]` / `app latency
+  report` in `app_main.cpp` (a press put on port 1 at one controller read; every
+  presented picture reduced to a 40 x 28 grid of brightness; the first that differs from
+  its predecessor by more than three times what the pictures before the press differed).
+  Helper `local/recomp-out/app-test/perf/latency.py` (title menu, an attack in the first
+  level, the pause menu); output `perf/latency.txt`. To compare with the emulator
+  build's figure in `tools/play-net/README.md` ("in a menu the first picture after a
+  press shows the change ...; in the first level an attack shows in picture 5 or 6").
+- speed and pacing: `perf/perf.py find LEVELS` (pictures a second not paced at 640 x 448
+  per level: the lowest is the heaviest), `size LEVEL 2560x1792` and `2619x1964`, `paced
+  LEVEL 2560x1792` (1,800 blanks, then `app stats`); output `perf/find.txt`, `size.txt`,
+  `paced.txt`. Quote the load average beside every figure: it was 280 to 430 all
+  afternoon, so the figures are a floor, not the program's speed.
+- the screens tour again with all corrections: `screens2/cmp-1.png`, `cmp-2.png`.
+- memory over 40 level changes with surfaces freed as well: `mem3/run.txt` (before that
+  change: 428 MB in the first level, 512 to 601 MB over two rounds of 20 levels; without
+  freeing textures 1,068 MB and 2,782 textures after one round, `snd1/keep0.txt`).
+
+**Not done:**
+
+- a close-up comparison of weapon trails, hit and spell effects and floor decals with
+  the emulator build (helper written, not run: `local/recomp-out/app-test/fx/fx.py
+  native|emu` - swings in the first level at the near zoom, paused pictures);
+- the shop's lists (the script's route did not open the shop in either build);
+- a film compared picture for picture with the emulator build (it plays the film at
+  about twice its coded rate, so only the colour was compared);
+- the stalls and the integer branch hazard of VU1 that the reference emulator models
+  (10.1, last paragraph): no toured scene showed a need;
+- the 1 x 1 textures whose picture is never sent (10.2);
+- a listening test: no sound was made at any point (gain 0 in every run);
+- the 15 MB by which the second round of 20 levels lay above the first (10.2) - to be
+  read again from `mem3/run.txt`, since surfaces that were never freed are a likely
+  cause.

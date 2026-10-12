@@ -1,0 +1,367 @@
+--- a/rt/fpu.h
++++ b/rt/fpu.h
+@@ -148,15 +148,39 @@
+     return a;
+ }
+ static inline float fp_cf(u32 raw) { return fp_f(fp_clamp(raw)); }
+-static inline u32 fp_add(u32 a, u32 b) { float x = fp_cf(a), y = fp_cf(b); return fp_r(x + y); }
+-static inline u32 fp_sub(u32 a, u32 b) { float x = fp_cf(a), y = fp_cf(b); return fp_r(x - y); }
+-static inline u32 fp_mul(u32 a, u32 b) { float x = fp_cf(a), y = fp_cf(b); return fp_r(x * y); }
++// The operations whose result depends on the state of the host processor.  The runtime
++// puts it in round-toward-zero with flush-to-zero (runtime.cpp, thread_main: what the
++// Play! emulator sets for its machine thread) and these are then the host's own
++// instructions.  A host without those modes (WebAssembly) either computes to nearest with
++// tiny numbers kept - "browser arithmetic", what the emulator's page does - or is built
++// with -DRTA_SOFT_RZ and gets the same results in software (tools/recomp/web/soft_rz.h):
++// toward zero, tiny operands read as zero, tiny results zero; compares and minimum /
++// maximum read tiny operands as zero as well.
++#ifdef RTA_SOFT_RZ
++#include "soft_rz.h"
++#define FP_ADD(x, y) softrz::add_fz(x, y)
++#define FP_SUB(x, y) softrz::sub_fz(x, y)
++#define FP_MUL(x, y) softrz::mul_fz(x, y)
++#define FP_DIV(x, y) softrz::div_fz(x, y)
++#define FP_SQRT(x) softrz::sqrt_fz(x)
++#define FP_FROM_INT(v) softrz::from_int(v)
++#else
++#define FP_ADD(x, y) ((x) + (y))
++#define FP_SUB(x, y) ((x) - (y))
++#define FP_MUL(x, y) ((x) * (y))
++#define FP_DIV(x, y) ((x) / (y))
++#define FP_SQRT(x) __builtin_sqrtf(x)
++#define FP_FROM_INT(v) ((float)(v))
++#endif
++static inline u32 fp_add(u32 a, u32 b) { float x = fp_cf(a), y = fp_cf(b); return fp_r(FP_ADD(x, y)); }
++static inline u32 fp_sub(u32 a, u32 b) { float x = fp_cf(a), y = fp_cf(b); return fp_r(FP_SUB(x, y)); }
++static inline u32 fp_mul(u32 a, u32 b) { float x = fp_cf(a), y = fp_cf(b); return fp_r(FP_MUL(x, y)); }
+ static inline u32 fp_div(u32 a, u32 b) {
+     if ((b & 0x7F800000u) == 0) return ((a ^ b) & 0x80000000u) | 0x7F7FFFFFu;
+     float x = fp_cf(a), y = fp_cf(b);
+-    return fp_r(x / y);
++    return fp_r(FP_DIV(x, y));
+ }
+-static inline u32 fp_sqrt(u32 a) { float x = fp_f(fp_clamp(a) & 0x7FFFFFFFu); return fp_r(__builtin_sqrtf(x)); }
++static inline u32 fp_sqrt(u32 a) { float x = fp_f(fp_clamp(a) & 0x7FFFFFFFu); return fp_r(FP_SQRT(x)); }
+ static inline u32 fp_rsqrt(u32 a, u32 b) {
+     if ((b & 0x7F800000u) == 0) return ((a ^ b) & 0x80000000u) | 0x7F7FFFFFu;
+ #if defined(__x86_64__) || defined(_M_X64)
+@@ -166,9 +190,9 @@
+     if (b & 0x80000000u) return 0x7FC00000u;
+ #endif
+     float x = fp_cf(a), y = fp_cf(b);
+-    float s = __builtin_sqrtf(y);
+-    float r = 1.0f / s;
+-    return fp_r(x * r);
++    float s = FP_SQRT(y);
++    float r = FP_DIV(1.0f, s);
++    return fp_r(FP_MUL(x, r));
+ }
+ // FCVTZS: saturating, NaN gives 0
+ static inline u32 fp_to_int(u32 a) {
+@@ -178,8 +202,11 @@
+     if (x <= -2147483648.0f) return 0x80000000u;
+     return (u32)(s32)x;
+ }
+-static inline u32 fp_from_int(u32 w) { s32 v = (s32)w; return fp_r((float)v); }
+-#if defined(__x86_64__) || defined(_M_X64)
++static inline u32 fp_from_int(u32 w) { s32 v = (s32)w; return fp_r(FP_FROM_INT(v)); }
++#if defined(RTA_SOFT_RZ)
++static inline u32 fp_max(u32 a, u32 b) { return fp_r(softrz::max_fz(fp_cf(a), fp_cf(b))); }
++static inline u32 fp_min(u32 a, u32 b) { return fp_r(softrz::min_fz(fp_cf(a), fp_cf(b))); }
++#elif defined(__x86_64__) || defined(_M_X64)
+ // ARM64's FMAXNM / FMINNM (what the two built-ins below are there) spelled out: of +0 and
+ // -0 the maximum is +0 and the minimum -0.  x86's MAXSS / MINSS, and a C library's fmaxf,
+ // hand back one of the two by its position instead.  The operands are clamped, so never NaN.
+@@ -189,8 +216,14 @@
+ static inline u32 fp_max(u32 a, u32 b) { float x = fp_cf(a), y = fp_cf(b); return fp_r(__builtin_fmaxf(x, y)); }
+ static inline u32 fp_min(u32 a, u32 b) { float x = fp_cf(a), y = fp_cf(b); return fp_r(__builtin_fminf(x, y)); }
+ #endif
++#if defined(RTA_SOFT_RZ)
++static inline bool fp_eq(u32 a, u32 b) { return softrz::eq_fz(fp_cf(a), fp_cf(b)); }
++static inline bool fp_lt(u32 a, u32 b) { return softrz::lt_fz(fp_cf(a), fp_cf(b)); }
++static inline bool fp_le(u32 a, u32 b) { return softrz::le_fz(fp_cf(a), fp_cf(b)); }
++#else
+ static inline bool fp_eq(u32 a, u32 b) { return fp_cf(a) == fp_cf(b); }
+ static inline bool fp_lt(u32 a, u32 b) { return fp_cf(a) < fp_cf(b); }
+ static inline bool fp_le(u32 a, u32 b) { return fp_cf(a) <= fp_cf(b); }
++#endif
+ 
+ #endif
+--- a/rt/vu0.h
++++ b/rt/vu0.h
+@@ -32,8 +32,25 @@
+     exit(3);
+ }
+ 
++// arithmetic whose result depends on the processor's state: the host's own (the runtime
++// sets toward zero and flush-to-zero), or tools/recomp/web/soft_rz.h on a host that
++// cannot (fpu.h says more)
++#ifdef RTA_SOFT_RZ
++static inline float vu_add(float a, float b) { return softrz::add_fz(a, b); }
++static inline float vu_sub(float a, float b) { return softrz::sub_fz(a, b); }
++static inline float vu_mul(float a, float b) { return softrz::mul_fz(a, b); }
++static inline float vu_itof(s32 v) { return softrz::from_int(v); }
++static inline bool vu_gt(float a, float b) { return softrz::flush(a) > softrz::flush(b); }  // the compare reads tiny numbers as zero
++#else
++static inline float vu_add(float a, float b) { return a + b; }
++static inline float vu_sub(float a, float b) { return a - b; }
++static inline float vu_mul(float a, float b) { return a * b; }
++static inline float vu_itof(s32 v) { return (float)v; }
++static inline bool vu_gt(float a, float b) { return a > b; }
++#endif
++
+ static inline float vu_ftoi(float f, float scale) {
+-    float v = f * scale;
++    float v = vu_mul(f, scale);
+     s32 r;
+     if (v != v) r = 0;
+     else if (v >= 2147483648.0f) r = INT32_MAX;
+@@ -73,32 +90,32 @@
+                 for (int k = 0; k < 4; k++) {
+                     if (!on(k)) continue;
+                     float a = old[fs][k];
+-                    if (idx <= 0x03) v.acc[k] = a + b;
+-                    else if (idx <= 0x07) v.acc[k] = a - b;
+-                    else if (idx <= 0x0B) { float p = a * b; v.acc[k] = v.acc[k] + p; }
+-                    else if (idx <= 0x0F) { float p = a * b; v.acc[k] = v.acc[k] - p; }
+-                    else v.acc[k] = a * b;
++                    if (idx <= 0x03) v.acc[k] = vu_add(a, b);
++                    else if (idx <= 0x07) v.acc[k] = vu_sub(a, b);
++                    else if (idx <= 0x0B) { float p = vu_mul(a, b); v.acc[k] = vu_add(v.acc[k], p); }
++                    else if (idx <= 0x0F) { float p = vu_mul(a, b); v.acc[k] = vu_sub(v.acc[k], p); }
++                    else v.acc[k] = vu_mul(a, b);
+                 }
+             } else if (idx >= 0x10 && idx <= 0x13) {    // ITOF0/4/12/15: ft <- fs
+                 static const float scale[4] = {1.0f, 1.0f / 16.0f, 1.0f / 4096.0f, 1.0f / 32768.0f};
+                 for (int k = 0; k < 4; k++) {
+-                    float f = (float)(s32)vu_raw(old[fs][k]);
+-                    put(ft, k, idx == 0x10 ? f : f * scale[idx & 3]);
++                    float f = vu_itof((s32)vu_raw(old[fs][k]));
++                    put(ft, k, idx == 0x10 ? f : vu_mul(f, scale[idx & 3]));
+                 }
+             } else if (idx >= 0x14 && idx <= 0x17) {    // FTOI0/4/12/15
+                 static const float scale[4] = {1.0f, 16.0f, 4096.0f, 32768.0f};
+                 for (int k = 0; k < 4; k++) put(ft, k, vu_ftoi(old[fs][k], scale[idx & 3]));
+             } else if (idx == 0x1E) {                   // MULAi
+-                for (int k = 0; k < 4; k++) if (on(k)) v.acc[k] = old[fs][k] * v.i;
++                for (int k = 0; k < 4; k++) if (on(k)) v.acc[k] = vu_mul(old[fs][k], v.i);
+             } else if (idx == 0x28 || idx == 0x2A || idx == 0x2C || idx == 0x29 || idx == 0x2D) {
+                 for (int k = 0; k < 4; k++) {           // ADDA MULA SUBA MADDA MSUBA
+                     if (!on(k)) continue;
+                     float a = old[fs][k], b = old[ft][k];
+-                    if (idx == 0x28) v.acc[k] = a + b;
+-                    else if (idx == 0x2C) v.acc[k] = a - b;
+-                    else if (idx == 0x2A) v.acc[k] = a * b;
+-                    else if (idx == 0x29) { float p = a * b; v.acc[k] = v.acc[k] + p; }
+-                    else { float p = a * b; v.acc[k] = v.acc[k] - p; }
++                    if (idx == 0x28) v.acc[k] = vu_add(a, b);
++                    else if (idx == 0x2C) v.acc[k] = vu_sub(a, b);
++                    else if (idx == 0x2A) v.acc[k] = vu_mul(a, b);
++                    else if (idx == 0x29) { float p = vu_mul(a, b); v.acc[k] = vu_add(v.acc[k], p); }
++                    else { float p = vu_mul(a, b); v.acc[k] = vu_sub(v.acc[k], p); }
+                 }
+             } else if (idx == 0x1D) {                   // ABS
+                 for (int k = 0; k < 4; k++) put(ft, k, vu_flt(vu_raw(old[fs][k]) & 0x7FFFFFFFu));
+@@ -109,39 +126,39 @@
+             float b = old[ft][bc];
+             for (int k = 0; k < 4; k++) {
+                 float a = old[fs][k], r;
+-                if (op <= 0x03) r = a + b;
+-                else if (op <= 0x07) r = a - b;
+-                else if (op <= 0x0B) { float p = a * b; r = v.acc[k] + p; }
+-                else if (op <= 0x0F) { float p = a * b; r = v.acc[k] - p; }
+-                else r = a * b;
++                if (op <= 0x03) r = vu_add(a, b);
++                else if (op <= 0x07) r = vu_sub(a, b);
++                else if (op <= 0x0B) { float p = vu_mul(a, b); r = vu_add(v.acc[k], p); }
++                else if (op <= 0x0F) { float p = vu_mul(a, b); r = vu_sub(v.acc[k], p); }
++                else r = vu_mul(a, b);
+                 put(fd, k, r);
+             }
+         } else if (op >= 0x10 && op <= 0x17) {          // MAXbc MINIbc
+             float b = old[ft][bc];
+             for (int k = 0; k < 4; k++) {
+                 float a = old[fs][k];
+-                put(fd, k, op <= 0x13 ? (a > b ? a : b) : (a < b ? a : b));
++                put(fd, k, op <= 0x13 ? (vu_gt(a, b) ? a : b) : (vu_gt(b, a) ? a : b));
+             }
+         } else if (op == 0x1E || op == 0x22 || op == 0x26 || op == 0x23 || op == 0x27) {
+             for (int k = 0; k < 4; k++) {               // MULi ADDi SUBi MADDi MSUBi
+                 float a = old[fs][k], r;
+-                if (op == 0x1E) r = a * v.i;
+-                else if (op == 0x22) r = a + v.i;
+-                else if (op == 0x26) r = a - v.i;
+-                else if (op == 0x23) { float p = a * v.i; r = v.acc[k] + p; }
+-                else { float p = a * v.i; r = v.acc[k] - p; }
++                if (op == 0x1E) r = vu_mul(a, v.i);
++                else if (op == 0x22) r = vu_add(a, v.i);
++                else if (op == 0x26) r = vu_sub(a, v.i);
++                else if (op == 0x23) { float p = vu_mul(a, v.i); r = vu_add(v.acc[k], p); }
++                else { float p = vu_mul(a, v.i); r = vu_sub(v.acc[k], p); }
+                 put(fd, k, r);
+             }
+         } else if (op == 0x28 || op == 0x2A || op == 0x2C || op == 0x29 || op == 0x2D || op == 0x2B || op == 0x2F) {
+             for (int k = 0; k < 4; k++) {               // ADD MUL SUB MADD MSUB MAX MINI
+                 float a = old[fs][k], b = old[ft][k], r;
+-                if (op == 0x28) r = a + b;
+-                else if (op == 0x2C) r = a - b;
+-                else if (op == 0x2A) r = a * b;
+-                else if (op == 0x29) { float p = a * b; r = v.acc[k] + p; }
+-                else if (op == 0x2D) { float p = a * b; r = v.acc[k] - p; }
+-                else if (op == 0x2B) r = a > b ? a : b;
+-                else r = a < b ? a : b;
++                if (op == 0x28) r = vu_add(a, b);
++                else if (op == 0x2C) r = vu_sub(a, b);
++                else if (op == 0x2A) r = vu_mul(a, b);
++                else if (op == 0x29) { float p = vu_mul(a, b); r = vu_add(v.acc[k], p); }
++                else if (op == 0x2D) { float p = vu_mul(a, b); r = vu_sub(v.acc[k], p); }
++                else if (op == 0x2B) r = vu_gt(a, b) ? a : b;
++                else r = vu_gt(b, a) ? a : b;
+                 put(fd, k, r);
+             }
+         } else vu_die("upper instruction", pc, upper);
+--- a/render/vu1_step.h
++++ b/render/vu1_step.h
+@@ -62,6 +62,51 @@
+ // unchanged (integers kept in float registers go through them)
+ static VU1_INLINE int32_t vu_key(uint32_t u) { return (u & 0x80000000u) ? -(int32_t)(u & 0x7FFFFFFFu) : (int32_t)u; }
+ 
++// The operations whose result depends on the rounding mode.  The unit rounds toward zero
++// and the programs count on it (integers made by adding 2^23 to a float).  A host with
++// rounding modes is put in that mode while a program runs (Vu1::run) and these are its own
++// instructions.  WebAssembly has one mode, to nearest: built with RTA_SOFT_RZ_VU1 the same
++// results are worked out in double precision and cut to 24 bits (tools/recomp/web/soft_rz.h
++// has the reasoning; here the unit's own rules shorten it: operands are never infinite, a
++// result too small to be a number is zero, one too large is the largest).
++#if defined(RTA_SOFT_RZ_VU1)
++#include "soft_rz.h"
++static VU1_INLINE float vu_cut(double d) {              // a double as a float, toward zero
++    uint64_t u;
++    memcpy(&u, &d, 8);
++    uint64_t magnitude = u & 0x7FFFFFFFFFFFFFFFull;
++    if (magnitude < 0x3810000000000000ull) u &= 0x8000000000000000ull;             // below 2^-126: zero
++    else if (magnitude >= 0x47F0000000000000ull) u = (u & 0x8000000000000000ull) | 0x47EFFFFFE0000000ull;    // 2^128 and up: the largest
++    else u &= ~0x1FFFFFFFull;                           // 53 - 24 places
++    memcpy(&d, &u, 8);
++    return (float)d;                                    // exact now
++}
++static VU1_INLINE float vu_add(float a, float b) {
++    double x = a, y = b, d = x + y;
++    // exact unless one operand vanished in the other (more than 29 places apart): then the
++    // sum is that operand, or - with opposite signs - the number just below it
++    if (d == x && b != 0) { if ((a < 0) != (b < 0)) { uint32_t u; memcpy(&u, &a, 4); u--; memcpy(&a, &u, 4); } return a; }
++    if (d == y && a != 0) { if ((a < 0) != (b < 0)) { uint32_t u; memcpy(&u, &b, 4); u--; memcpy(&b, &u, 4); } return b; }
++    return vu_cut(d);
++}
++static VU1_INLINE float vu_sub(float a, float b) { return vu_add(a, -b); }
++static VU1_INLINE float vu_mul(float a, float b) { return vu_cut((double)a * (double)b); }      // the product is exact in a double
++static VU1_INLINE float vu_div(float a, float b) { return softrz::div(a, b); }
++static VU1_INLINE float vu_sqrt(float a) { return softrz::sqrt(a); }
++static VU1_INLINE float vu_itof(int32_t v) { return softrz::from_int(v); }
++#define VU1_ROUND_TOWARD_ZERO() ((void)0)
++#define VU1_ROUND_RESTORE(mode) ((void)(mode))
++#else
++static VU1_INLINE float vu_add(float a, float b) { return a + b; }
++static VU1_INLINE float vu_sub(float a, float b) { return a - b; }
++static VU1_INLINE float vu_mul(float a, float b) { return a * b; }
++static VU1_INLINE float vu_div(float a, float b) { return a / b; }
++static VU1_INLINE float vu_sqrt(float a) { return sqrtf(a); }
++static VU1_INLINE float vu_itof(int32_t v) { return (float)v; }
++#define VU1_ROUND_TOWARD_ZERO() fesetround(FE_TOWARDZERO)
++#define VU1_ROUND_RESTORE(mode) fesetround(mode)
++#endif
++
+ static VU1_INLINE bool vu1_step(Vu1& v, const Vu1::Ins& d, uint32_t at, uint32_t& dest, int old_round) {
+     if (v.q_busy && v.cyc >= v.q_ready) { v.q = v.q_next; v.q_busy = false; }
+     // ---- upper half, computed from the state before the pair ----
+@@ -85,18 +130,18 @@
+         Vu1::Reg r;
+         bool arithmetic = false;
+         switch (d.uop) {
+-        case U_ADD: for (int k = 0; k < 4; k++) r.f[k] = vu_out(a[k] + b[k]); arithmetic = true; break;
+-        case U_SUB: for (int k = 0; k < 4; k++) r.f[k] = vu_out(a[k] - b[k]); arithmetic = true; break;
+-        case U_MUL: for (int k = 0; k < 4; k++) r.f[k] = vu_out(a[k] * b[k]); arithmetic = true; break;
+-        case U_MADD: { float p[4]; for (int k = 0; k < 4; k++) p[k] = vu_out(a[k] * b[k]); for (int k = 0; k < 4; k++) r.f[k] = vu_out(v.acc.f[k] + p[k]); arithmetic = true; break; }
+-        case U_MSUB: { float p[4]; for (int k = 0; k < 4; k++) p[k] = vu_out(a[k] * b[k]); for (int k = 0; k < 4; k++) r.f[k] = vu_out(v.acc.f[k] - p[k]); arithmetic = true; break; }
++        case U_ADD: for (int k = 0; k < 4; k++) r.f[k] = vu_out(vu_add(a[k], b[k])); arithmetic = true; break;
++        case U_SUB: for (int k = 0; k < 4; k++) r.f[k] = vu_out(vu_sub(a[k], b[k])); arithmetic = true; break;
++        case U_MUL: for (int k = 0; k < 4; k++) r.f[k] = vu_out(vu_mul(a[k], b[k])); arithmetic = true; break;
++        case U_MADD: { float p[4]; for (int k = 0; k < 4; k++) p[k] = vu_out(vu_mul(a[k], b[k])); for (int k = 0; k < 4; k++) r.f[k] = vu_out(vu_add(v.acc.f[k], p[k])); arithmetic = true; break; }
++        case U_MSUB: { float p[4]; for (int k = 0; k < 4; k++) p[k] = vu_out(vu_mul(a[k], b[k])); for (int k = 0; k < 4; k++) r.f[k] = vu_out(vu_sub(v.acc.f[k], p[k])); arithmetic = true; break; }
+         case U_MAX: for (int k = 0; k < 4; k++) r.u[k] = vu_key(fs.u[k]) > vu_key(bb.u[k]) ? fs.u[k] : bb.u[k]; break;
+         case U_MINI: for (int k = 0; k < 4; k++) r.u[k] = vu_key(fs.u[k]) < vu_key(bb.u[k]) ? fs.u[k] : bb.u[k]; break;
+-        case U_ITOF: { float scale = 1.0f / (float)(1u << d.ubc); for (int k = 0; k < 4; k++) r.f[k] = (float)fs.s[k] * scale; break; }
++        case U_ITOF: { float scale = 1.0f / (float)(1u << d.ubc); for (int k = 0; k < 4; k++) r.f[k] = vu_mul(vu_itof(fs.s[k]), scale); break; }
+         case U_FTOI: {
+             float scale = (float)(1u << d.ubc);
+             for (int k = 0; k < 4; k++) {
+-                float scaled = vu_in(fs.u[k]) * scale;
++                float scaled = vu_mul(vu_in(fs.u[k]), scale);
+                 r.s[k] = scaled >= 2147483648.0f ? 0x7FFFFFFF : scaled <= -2147483648.0f ? (int32_t)0x80000000 : (int32_t)scaled;
+             }
+             break;
+@@ -184,16 +229,16 @@
+         if (v.q_busy) { if (v.q_ready > v.cyc) v.cyc = v.q_ready; v.q = v.q_next; v.q_busy = false; }
+         float a = vu_in(v.vf[d.ls].u[d.fsf]), b = vu_in(v.vf[d.lt].u[d.ftf]), r;
+         const float big = 3.4028235e38f;
+-        if (d.lop == L_DIV) r = b == 0 ? ((std::signbit(a) != std::signbit(b)) ? -big : big) : a / b;
+-        else if (d.lop == L_SQRT) r = sqrtf(fabsf(b));
+-        else r = b == 0 ? (std::signbit(a) ? -big : big) : a / sqrtf(fabsf(b));
++        if (d.lop == L_DIV) r = b == 0 ? ((std::signbit(a) != std::signbit(b)) ? -big : big) : vu_div(a, b);
++        else if (d.lop == L_SQRT) r = vu_sqrt(fabsf(b));
++        else r = b == 0 ? (std::signbit(a) ? -big : big) : vu_div(a, vu_sqrt(fabsf(b)));
+         v.q_next = vu_out(r);
+         v.q_ready = v.cyc + (d.lop == L_RSQRT ? 13 : 7);
+         v.q_busy = true;
+         break;
+     }
+     case L_WAITQ: if (v.q_busy) { if (v.q_ready > v.cyc) v.cyc = v.q_ready; v.q = v.q_next; v.q_busy = false; } break;
+-    case L_XGKICK: if (v.kick) { fesetround(old_round); v.kick(v.user, v.vi[d.ls] & 0x3FF); fesetround(FE_TOWARDZERO); } break;
++    case L_XGKICK: if (v.kick) { VU1_ROUND_RESTORE(old_round); v.kick(v.user, v.vi[d.ls] & 0x3FF); VU1_ROUND_TOWARD_ZERO(); } break;
+     default:
+         if (!v.bad++) fprintf(stderr, "vu1: lower instruction %08x not implemented at 0x%x\n", d.lower, at);
+         break;
+--- a/render/vu1.cpp
++++ b/render/vu1.cpp
+@@ -168,7 +168,7 @@
+         translated = use_translation && vu1_translated_count && micro_hash(micro, vu1_translated_count) == vu1_translated_hash;
+     }
+     int old_round = fegetround();
+-    fesetround(FE_TOWARDZERO);
++    VU1_ROUND_TOWARD_ZERO();
+     runs++;
+     uint32_t at = start & 2047;
+     int stop_in = -1;                                   // pairs left after an E bit
+@@ -179,7 +179,7 @@
+         int left = vu1_translated_run(*this, at, old_round);
+         if (left < 0) {                                 // ran to its end bit
+             if (q_busy) { q = q_next; q_busy = false; }
+-            fesetround(old_round);
++            VU1_ROUND_RESTORE(old_round);
+             return;
+         }
+         at = (uint32_t)left;                            // a place the translation leaves to the interpreter
+@@ -222,7 +222,7 @@
+     pc = at;
+     // a divide in flight finishes before the next program starts
+     if (q_busy) { q = q_next; q_busy = false; }
+-    fesetround(old_round);
++    VU1_ROUND_RESTORE(old_round);
+ }
+ 
+ // Write the main program as C++: every pair a constant handed to vu1_step, the branches,
+--- a/sound/audio_out.cpp
++++ b/sound/audio_out.cpp
+@@ -469,7 +469,12 @@
+ 
+ #elif defined(_WIN32)
+ #include "audio_out_win.cpp"        // WASAPI, waveOut as the fallback: the same two functions
++
++#elif defined(__EMSCRIPTEN__)
+ 
++// a page: a ring in the shared memory that an AudioWorklet of the page plays from
++#include "audio_out_web.h"      // tools/recomp/web
++
+ #else
+ 
+ namespace rta {

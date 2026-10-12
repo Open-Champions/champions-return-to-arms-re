@@ -260,8 +260,19 @@ still keeps a cycle counter and writes every register to memory; about 2.7 ns a 
   (`Gs::texture_keep_frames`, `FrameList::dead_textures`); it is made again from what the
   game sends if it comes back.
 - **What the model approximates is counted** per primitive (`GsStats::approx`,
-  `Gs::APPROX_NAMES`) and printed at the end of a run. Over the front end and 20 levels:
-  none of the listed states is used by any primitive.
+  `Gs::APPROX_NAMES`) and printed at the end of a run. Over the front end and 20 levels
+  none of the listed states is used by any primitive; the bag uses fog, which is now
+  **applied** (`DrawCmd::fog`, `fog_colour`, `Vertex::fog`).
+- **A surface's height** no longer follows a scissor higher than 512 lines (the GS's
+  reset scissor is 2,048: a draw under it made the 3-D surface 1280 x 2048 and the whole
+  picture was drawn at a quarter of its lines from the first dialogue on). **Surfaces
+  are freed** like textures (`FrameList::dead_targets`).
+- **Field pictures without a record of their height** (the bag's item pictures): a sprite
+  that draws rows 0 to n or n to 2n at half a row a line is taken to draw one field of a
+  picture 2n rows high; `TexIndex::resident_at` finds records of textures with a
+  16-colour palette or none.
+- An upload takes away only the textures that start in a block it really writes (a
+  narrow rectangle skips blocks in GS memory).
 - Debugging aids: `RTA_GS_FAR` (now with the input half, the strip and the joint slots),
   `RTA_WATCH=lo-hi` (`rta_replay`: every VU1 store and `UNPACK` into a range of VU1 data
   memory), `RTA_GS_MISSING` (draws that name a texture that is not there),
@@ -272,8 +283,10 @@ still keeps a cycle counter and writes every register to memory; about 2.7 ns a 
 - Alpha test with a fail rule other than "keep": only "never passes" is exact (colour
   only / depth only / RGB only); otherwise failing pixels are dropped.
 - Blend factor "destination alpha" is taken as 1; a source alpha above 1.0 (0x80) is
-  clamped by the 8-bit target; destination-alpha test, `FBA`, `PABE`, fog, dither and
-  `AA1` are not applied; `FBMSK` only per whole channel group.
+  clamped by the 8-bit target; destination-alpha test, `FBA`, `PABE`, dither and
+  `AA1` are not applied (fog is, since the later change above); `FBMSK` only per whole
+  channel group. The scan-line mask (`SCANMSK`) is not applied either: interface art
+  drawn under it is drawn from the woven picture instead.
 - Region-repeat wrapping is approximate; lines are one output pixel wide.
 - Local-to-local transfers are honoured when the source is a surface (the heat-haze
   copy; since the later change above also when the destination is not at the start of a

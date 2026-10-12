@@ -373,6 +373,7 @@ def run_job(job, out_root, program=None, tag='', keep=False, extra_lines=(), ext
         env.update(extra_env or {})
         sink = open(os.path.join(out, 'm%d.out' % m), 'w')
         command = ['nice', '-n', '10', program, 'boot', '--elf', os.path.join(ROOT, 'SLUS_209.73'), '--card', card]
+        command += os.environ.get('SOAK_RUNTIME_OPTIONS', '').split()
         processes.append((subprocess.Popen(command, stdout=sink, stderr=subprocess.STDOUT, env=env, cwd=ROOT), sink))
     began = time.time()
     limit = job['frames'] / 12.0 + 1500
@@ -472,7 +473,7 @@ def explain(directory, tick, pair):
         machines = tuple(int(x) for x in pair.split('-'))
         parts = []
         for t in (tick - 1, tick):
-            offsets, lines, _, _ = poolcmp.compare(directory, t, machines)
+            offsets, lines, _, _ = poolcmp.compare(directory, t, machines, masked=True)
             text = '; '.join('%s %s' % (name, ' '.join('+%x(%d)' % item for item in sorted(counter.items())[:10]))
                              for name, counter in sorted(offsets.items())[:8])
             blocks = sum(1 for l in lines if l.startswith('  block'))

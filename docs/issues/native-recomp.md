@@ -6,6 +6,42 @@
 **the tree builds**; steps 1 to 3 done as far as described under "Continuation", steps 4
 to 6 written up, not built.)
 
+**Changed 2026-10-12, 15:20: the game's threads flush denormals to zero.** `thread_main`
+in `rt/runtime.cpp` now sets flush-to-zero besides rounding toward zero (FPCR bit 24 on
+ARM64; `_MM_SET_FLUSH_ZERO_MODE` and `_MM_SET_DENORMALS_ZERO_MODE` on x86-64), as the
+emulator the translation is compared with does: on the console a denormal is zero when it
+is read and when it would be a result, and with rounding alone add, subtract, multiply,
+divide, square root, multiply-add, MAX / MIN and some compares gave other bits whenever a
+denormal was involved (found by another agent's directed operand sets against an exact
+reference). Every host thread that runs translated code starts in `thread_main`
+(interrupt handlers and alarms are delivered on those threads; `vu0.h` computes with the
+host's floats), so the one place covers the main processor's FPU and the VU0 macro
+instructions. `--opt arith=nearest` sets neither mode (the host's own arithmetic, for telling apart
+what depends on it); a build that defines `RTA_SOFT_RZ` (WebAssembly: the float helpers
+do it in software) leaves the processor's mode alone; one line at the start of a run
+("arithmetic: ...") says which is in force. **Who builds against `rt/`:** nothing to
+change in a build for ARM64 or
+x86-64 with clang or GCC; a Windows build with MSVC needs `<xmmintrin.h>` /
+`<pmmintrin.h>` (included under `_M_X64`) and, on ARM64, `_controlfp_s` or the intrinsic
+for FPCR in place of the inline assembly; a WebAssembly build has no such mode and has to
+flush in the float helpers (`fpu.h`) instead. Code of yours that runs on a game thread and
+wants round-to-nearest or denormals (a decoder, a mixer) must not rely on the thread's
+mode. **Checked:** the fight session against the rig's log (`rigcompare.py boot-native
+--replay`, `rta_app_orig`, 7,904 fields): the result is the same line for line as before
+the change - every simulation column identical, the player record still different at
+tick 7 of the first level and the object pool in ticks 3,886 to 3,912 of `valor`. So
+this session met no denormal that mattered, and the two unexplained differences are not
+denormals.
+
+**Changed 2026-10-12 afternoon, later** (the window program only; nothing in `rt/`):
+`tools/recomp/app/build.py` translates with `--hle-add tools/recomp/app/hle-app.txt`
+(Sony's MPEG library at the seven entry points the film player calls; supplied by
+`app/film.cpp`), so `rta_app` plays the films; the shared translation and `hle.txt` are
+unchanged, and the headless runtime still ends a film at its first picture.
+`tools/recomp/sound/sound_rta.cpp` has a second way of keeping time, `--opt
+sound-clock=real` (the sound side on the device's thread; `native-sound.md` section 8);
+the default is as before.
+
 **Changed 2026-10-12 afternoon** (the runtime is now kept by the author of
 `docs/issues/native-app.md`; section 7 there has the reasons). Additions only: nothing in
 `rt.h` / `iface.h` changed its shape.
