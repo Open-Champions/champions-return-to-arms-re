@@ -21,7 +21,7 @@ work here, see "Half-done, and how to resume")
 
 | Part | State |
 |---|---|
-| 1. The two differences against the rig | both located to the byte and to the writing code; causes: disc-read completion time (measured) and sound-slot allocation (writer measured, cause inferred); neither is a translation error |
+| 1. The two differences against the rig | both located to the byte, the writing code and the cause: disc-read completion time, and which sound-sequence slot was free; both measured on both machines; neither is a translation error |
 | 2. The 301 functions without a comparable case | method built; one session replayed: **49 of the 301 identical to their return on real inputs, 6 more identical up to a common stop, 0 different**, 25 entered but not comparable (they wait), 221 not entered by that session. More sessions recorded or running |
 | 3. Coverage of play | counter built. **2,602 of 7,732 functions (33.7 %)** reached by the sessions so far — but only the fight session (1,839 functions) is compared with the rig; seven tours were run natively only; their rig runs are in progress |
 | 4. Arithmetic corner cases | FPU: 24 instructions × 1,980,400 operand sets, **0 differences** in both builds; host model against the rig itself: 0 differences with flush-to-zero, and **one runtime gap found** (the runtime does not set flush-to-zero). Integer/multiply/divide/multimedia: 156 instruction words × 250,000 sets, **0 differences**. Vector unit: in progress |
@@ -113,16 +113,25 @@ in `sound_playOnObject` 0x214230, which picks one of the 32 sound-sequence slots
 (`g_soundSeqs`), clears the slot's handle and links it to the object the sound is to
 follow. Nothing else wrote the word in those 120 ticks.
 
-**The cause.** Which slot a sound gets, and whether an earlier sound on the same object
-still holds its handle, depends on when earlier sounds ended — and that is asked of the
-sound driver (the voice-end flags, `native-recomp.md` step 1), which is `sound_null.cpp`
-here and the emulator's sound processor on the rig. **Inferred**, not measured: that at
-tick 3885 the rig still had a sound playing on the player which the native build's driver
-had already reported ended. **Ran, and it does not settle it:** with `--emulator-timing`
-(which changes when the I/O processor's answers arrive, not what the sound driver
-answers) the window is the same 27 ticks. A run of the same fight with the 32 slots
-logged in full on both machines is half-done (`cmp/pool3/`); the tours of part 3 log a
-checksum of the slots on both machines.
+**The cause (Ran).** The fight was run once more on both machines with the 32 slots
+(2,432 bytes at `g_soundSeqs`) logged in full:
+
+- The slots differ between the machines at 854 of the 3,978 ticks compared, first at tick
+  1,522 — while every simulation column is identical. The bytes that differ are the
+  slots' time counters (+8 to +10) and track flags (+32, +34): where each sound is in its
+  life. That follows the sound driver, which is `sound_null.cpp` here and the emulator's
+  sound processor on the rig.
+- In the window: slot 30 holds a handle to the player on both machines throughout. Slot
+  31 holds one from tick 3886 on the rig and from tick 3889 in the native build; and the
+  native build re-links slot 30 at tick 3885, the rig at tick 3888. The same two sounds
+  are started on the player on both machines, in the two slots the other way round,
+  because the slots were in different states when the first was asked for. From tick 3889
+  both machines hold the same two handles in opposite list order, and at tick 3912/3913
+  the next re-link puts the same node at the head on both.
+
+So the difference is the order of two back links, set by which sound-sequence slot was
+free on each machine. With `--emulator-timing` (which changes when the I/O processor's
+answers arrive, not what the sound driver answers) the window is the same 27 ticks.
 
 **Can it reach the sync hash? (Read)** Not through this word: the handle list is a list
 of back links, walked when the object is deleted and when a handle is cleared; no code
@@ -377,7 +386,6 @@ State at 15:45 on 2026-10-12. Everything below is under `local/recomp-out/proof/
 |---|---|---|
 | rig runs of tours `s6`, `s5`, `s0` (classes 6, 5, 0; 13 levels of 480 ticks each) | running; logs in `cmp/<name>/boot-rig.tsv` | when a run has ended: `session.py NAME native --capture`, `session.py NAME compare` (writes `cmp/NAME/result.txt`), `realproof.py replay real/NAME` |
 | tours `s3`, `s1`, `s4`, `s2`, and `h6` (the walk in the first level) | defined in `sessions.json`, vetted natively (`s1`, `h6`) or not at all (`s4`, `s2`); no rig run | `session.py NAME rig`, then as above |
-| the fight once more with the 32 sound slots logged in full (`cmp/pool3/`), to measure the cause in 1b instead of inferring it | rig run done, native run running | compare the `sslots` column of the two logs at valor ticks 3880–3913 |
 | vector-unit arithmetic (`arith.py vu`) | running; result will be `arith/vu.txt` | — |
 | every function one tour reaches, replayed from its first real call (not only the 301) | queued behind the arithmetic (`chain-all.sh`, output `real/all-s1/`) | `realproof.py report real/all-s1` |
 
@@ -417,8 +425,9 @@ python3 tools/recomp/proof/rigarith.py                  # needs local/rig-out/st
 - **Vector unit 0** arithmetic: test written, not finished. The interpreter has no
   vector unit, so the function-by-function proof stops at the first vector-unit
   instruction of `anim_buildPose`; what stands for it is the play comparison.
-- The cause of 1b is established as far as the writer; that the sound slots differ
-  because the two sound drivers report voices ended at different times is inferred.
+- 1b: that the slots' time counters differ *because* the two sound drivers report voices
+  ended at different times was not traced into the drivers; the slots and the handle
+  order were measured.
 
 ## Proposed ledger rows
 
@@ -427,7 +436,7 @@ python3 tools/recomp/proof/rigarith.py                  # needs local/rig-out/st
 | Id | Statement | Status | Where |
 |---|---|---|---|
 | NP1 | The one-tick difference of the player record at hub tick 7 is the identity matrix of the weapon-trail state, written by `fx_modelStatusEffects` one tick after `eqcache_lookupModel` first returns the weapon's model; the tick depends on when the disc read completes. Cosmetic state | Ran (bytes, writer, both machines' cache record, three timings) | 0x1f6ac8, 0x1bc964, 0x1a2d48, record +0x4a88 |
-| NP2 | The 27-tick difference of the object pool in the fight is one word, the player object's handle-list head (+0x00), written by `sound_playOnObject` linking a sound-sequence slot's handle to the object | Ran (bytes, writer); cause (sound drivers end voices at different times) Inferred | 0x214230, 0x1a1698, 0x1a1738 |
+| NP2 | The 27-tick difference of the object pool in the fight is one word, the player object's handle-list head (+0x00), written by `sound_playOnObject` linking a sound-sequence slot's handle to the object: the same two sounds take the two slots the other way round on the two machines. The 32 slots differ between the machines at 854 of 3,978 ticks with the simulation identical | Ran (bytes, writer, slots on both machines) | 0x214230, 0x1a1698, 0x1a1738, `g_soundSeqs` |
 | NP3 | The runtime's threads keep denormals; the emulator flushes them to zero. `rt/fpu.h`'s host model equals the emulator's FPU arithmetic on 15 instructions × 16,384 edge pairs with flush-to-zero set and differs on 65–1,892 pairs per instruction without | Ran | `rt/runtime.cpp` `thread_main`; `tools/recomp/proof/rigarith.py` |
 | NP4 | `-DFPU_PS2` arithmetic equals the interpreter's on 24 FPU instructions × 1,980,400 directed operand sets; the host model equals its written reference with and without flush-to-zero on the same sets | Ran | `tools/recomp/proof/arith.py fpu` |
 | NP5 | The translation of 156 integer, multiply/divide and multimedia instruction words equals the interpreter on 250,000 operand sets each | Ran | `tools/recomp/proof/arith.py int` |

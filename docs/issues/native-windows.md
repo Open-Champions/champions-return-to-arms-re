@@ -30,7 +30,7 @@ python3 tools/recomp/app/win/standin_compare.py    # x86-64 against arm64 and bo
 | In `local/recomp-out/win/` | Is |
 |---|---|
 | `rta_app.exe` (27.3 MB) | the game in a window: Win32 window, OpenGL 4.1 core through WGL, keyboard, XInput, WASAPI |
-| `rta_app_gcc.exe`, `rta_native_gcc.exe`, `fpcheck_gcc.exe` | the same three built by GCC (`--compiler gcc`); see "Compiler" and "Resume here" for their age |
+| `rta_app_gcc.exe`, `rta_native_gcc.exe`, `fpcheck_gcc.exe` | the same three built by GCC (`--compiler gcc`); see "Compiler" |
 | `rta_native.exe` (26.5 MB) | the machine with nothing attached: boots, runs scripts, prints its report |
 | `fpcheck.exe` (0.2 MB) | the game's floating-point operations as a table of checksums (`app/win/fpcheck.cpp`) |
 | `rta-windows/` | **the folder a tester gets**: the three programs, `play.bat`, `README.txt`, `boot-check.rig` (the rig's boot script with addresses in place of names), `boot-check-mac.txt` (what the Mac printed for it) |
@@ -68,8 +68,8 @@ object format, not in how arithmetic is compiled.
 
 `--compiler gcc` compiles everything with `x86_64-w64-mingw32-g++` (GCC 16.2) instead and
 names its programs `rta_app_gcc.exe`, `rta_native_gcc.exe`, `fpcheck_gcc.exe`. **Built**:
-all 69 files compile unchanged and link without a warning (738 s of processor time, 3.5
-times clang's; 24.9 MB). It is a second chance for the tester if the first program does
+all 70 files compile unchanged and link without a warning (about 570 to 740 s of processor
+time, three times clang's; 24.96 MB). It is a second chance for the tester if the first program does
 not start - one toolchain throughout instead of clang objects against GCC's libraries -
 and nothing more: its arithmetic was not compared with anything (another compiler; the
 x86 branch of `fpu.h` and the flags are the same, and `fpcheck_gcc.exe` checks its
@@ -325,7 +325,7 @@ with anything; `fpcheck_gcc.exe` is its step 1).
 
 **State saved 2026-10-12 15:45.** Nothing is half-done in the sources; the tree compiles
 (last full `build_win.py` 15:37: 70 files, three programs linked; `--standin` and
-`--reference` after it). Every file of this work is listed under "The parts that are new"
+`--reference` after it; `--compiler gcc` after those). Every file of this work is listed under "The parts that are new"
 and "Changes to existing files".
 
 What exists now, by the clock:
@@ -334,7 +334,7 @@ What exists now, by the clock:
 |---|---|
 | 15:37 | `rta_app.exe` (27.3 MB, with `film.cpp`), `rta_native.exe`, `fpcheck.exe`, clang; the folder `local/recomp-out/win/rta-windows` with them, `play.bat`, `README.txt`, `boot-check.rig` |
 | 15:39 | `standin/rta_native_fix_arm64` and `rta-windows/boot-check-mac.txt` from the same translation: `frames=2309 ... fields=2413 units=113069982`, `VU0: 466083 microprogram calls, 26111361 instructions` (unchanged by the film entries) |
-| 15:30 | `rta_app_gcc.exe`, `rta_native_gcc.exe`, `fpcheck_gcc.exe` - **older than the rest**: built before the film decoder was added to the Windows build, from the sources of 15:14 to 15:30. Its films end at their first picture. To bring it up to date: `python3 tools/recomp/app/build_win.py --compiler gcc` (about 12 minutes of processor time). A rebuild was started at 15:46; if the three files in `local/recomp-out/win/` are newer than that, it finished and the folder `rta-windows` has the new ones |
+| 15:43 | `rta_app_gcc.exe` (24.96 MB, with `film.cpp`), `rta_native_gcc.exe`, `fpcheck_gcc.exe`: GCC, the same sources and translation as the 15:37 programs (rebuilt after them: 57 of 70 files, 568 s of processor time); copied into `rta-windows` |
 | 14:38 - 15:00 | the stand-in comparison (`standin/rig-x64`, `rig-arm64`, `compare.log`) and the x86-64 sweep (`standin/sweep-stub-x64.txt`): made with the runtime sources of that time; `runtime.cpp` and the renderer were changed by others afterwards (15:03, 15:13). Repeat with `build_win.py --standin`, `standin_compare.py`, and the sweep line of the section above |
 
 Everything of the brief is done except running on Windows, which needs a person with a

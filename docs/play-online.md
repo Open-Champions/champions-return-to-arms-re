@@ -123,8 +123,10 @@ part of this repository).
 
 There is also a version of the same emulator that runs in a web page
 ([tools/play-web](../tools/play-web/README.md)): nothing to install, any computer with
-Chrome; you still need your own disc image, which the page reads where it is and does
-not upload. When the page is served together with the project's relay it has an
+a current browser - run in Chrome, in Brave and in Safari's engine; Firefox and Edge
+have what the page needs by reading, but nobody has run it there, and the page says at
+its start what a browser lacks. You still need your own disc image, which the page reads
+where it is and does not upload. When the page is served together with the project's relay it has an
 *Online…* button with the same three things as the application's *Online* menu - **Host
 a game** (you get a code), **Join a game** with a code, **Just go to the lobby** - and
 asks for a player name once; the rest of section 4 applies as it stands (the account the
