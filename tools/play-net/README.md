@@ -419,6 +419,23 @@ For every kind:
   enlarged plainly (bicubic) inside its range, and stays exactly what it is wherever a
   texel and its neighbours have one value. (Letting a model enlarge alpha turned the soft
   shadow round the menu's letters into a hard black outline.)
+- **A texel's colour is only replaced when no way of drawing shows it, and then only
+  near the edge.** A texel counts as hidden only if *every* state in the `.json` file
+  hides it; a file that does not come from seeing the picture drawn (`"source": "disc"`,
+  written by `disctex.py`) or that has `states_overflow` hides nothing at all; and even
+  where texels are hidden, colour is replaced only within 3 texels of visible ones (as
+  far as an enlarging filter reaches) — further in they keep their own colour. So if a
+  `.json` file is ever wrong or incomplete, a rim can be lost, never the thing itself;
+  the price where nothing is known is a slightly darker edge on cut-outs.
+- **Self-check.** Every finished picture is made small again and compared with the
+  game's texels: where the colour, taken over about a texel either way, has moved by
+  more than 16 of 255 among texels the game shows, the run prints `LOOK AT <name>`
+  (sharpening does not count, a painted-over patch does: an eye of 12 × 14 texels
+  painted over with skin gives 253 texels, largest move 153). It also says in how many
+  pictures and texels colour was replaced on purpose. `upscale.py DUMP REPLACE --check`
+  does the same for the files of a pack as they are, without enlarging anything (exit
+  status 1 when something is to be looked at); `REPLACE/upscale-check.json` keeps the
+  figures of every picture made.
 - **The result has the game's colours.** The model's picture is mixed with a plain
   enlargement and then everything coarser than a texel and a half is taken from the plain
   one; then each pixel is held inside the range of the texels around it (plus 6 of 255).
@@ -441,7 +458,11 @@ For every kind:
   margin of its own, so that case is untested).
 
 What was looked at to choose (same frame with and without, `texreplace` with the game
-paused, pictures `local/play-out/hd2-*.png`): `realesrgan-x4plus-anime` flattens every
+paused, pictures `local/play-out/hd2-*.png`; a screen that cannot be paused, like
+character creation, is taken one whole turn of its idle animation apart, 240 frames —
+the character there shuts its eyes three times in those 4 seconds, for up to 8 frames,
+with the game's own textures as with any others, and a picture taken then shows it
+without eyes): `realesrgan-x4plus-anime` flattens every
 surface with grain (stone, parchment, the bars) into flat colour and was dropped;
 `realesr-animevideov3` and Lanczos both ring on noise; blurring the texture before the
 model turns grass into lichen; enlarging a Lanczos-doubled picture and halving the result
@@ -474,8 +495,9 @@ lower `--rta-texture-memory`.
   bytes, of the palette, the format and the size sent can all be worked out from the
   file (2,075 different pictures: 1,447 model textures, 628 others; checked against a
   dump made by playing, `--check`: all 112 names found in both hold the same picture,
-  pixel for pixel). Model textures get a `.json` file saying how models are drawn and
-  are enlarged at once; for the others (interface art, effects) the file does not say
+  pixel for pixel). Model textures get a `.json` file saying that they are model
+  textures and are enlarged at once — with nothing in them treated as hidden, since
+  nobody has seen them drawn; for the others (interface art, effects) the file does not say
   how they are drawn, and `upscale.py` leaves them until a run has drawn them. **Level
   textures cannot be named from the disc**: `<LEVEL>.TEX` holds them packed (header
   flags 0x010c, no upload packet, a table of offsets) and the game unpacks them before

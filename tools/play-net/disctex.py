@@ -19,12 +19,13 @@ What it cannot do:
   packed and the game unpacks them before sending. They are not named here; play the
   level with `--rta-texture-dump`.
 - **How a picture is drawn** is not in its file. For model textures (header flag 0x0010)
-  it is always the same and a `.json` file is written beside the picture that says so
-  (marked `"source": "disc"`; the application replaces it by what it sees when the
-  texture is drawn in a run). For everything else (interface art may be two fields or
-  not, effects may be added or blended) the `.json` file holds no way of drawing, and
-  `upscale.py` leaves such pictures alone until a run with `--rta-texture-dump` has seen
-  them.
+  a `.json` file is written beside the picture that names the model drawer's state, so
+  that `upscale.py` takes them for model textures; it is marked `"source": "disc"`, and
+  because nobody has seen the picture drawn `upscale.py` treats none of its texels as
+  hidden (the application replaces the file by what it sees when the texture is drawn in
+  a run). For everything else (interface art may be two fields or not, effects may be
+  added or blended) the `.json` file holds no way of drawing, and `upscale.py` leaves
+  such pictures alone until a run with `--rta-texture-dump` has seen them.
 - The size in the name is that of what was sent (how the game's usual, repeating draws
   know the texture). A texture that is only ever drawn clamped (trails) is known by its
   full size instead and is not found under the name given here.

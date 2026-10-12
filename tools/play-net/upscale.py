@@ -23,6 +23,12 @@ how the game draws with it, and that decides what is done.
   (transparent interface art, cut-out leaves) their colour is replaced by that of their
   visible neighbours before enlarging, so that no dark or coloured fringe comes out of the
   enlarged edge; where alpha 0 is opaque (level and model textures) colour is left alone.
+  A texel is hidden only when every way of drawing in the `.json` file hides it; a file
+  that does not come from seeing the picture drawn hides nothing; and colour is replaced
+  only within BLEED texels of visible ones.
+- **Self-check**: every finished picture, made small again, is compared with the game's
+  texels; a picture whose colour has moved where the game shows it is named (`LOOK AT`).
+  `--check` does that for a finished pack without enlarging anything.
 - **Texels the game never sent** (whole blocks of zeros in a picture the application says
   is not whole) are filled from their neighbours and stay filled: no triangle uses them,
   but a filter reads across their border.
@@ -57,7 +63,7 @@ import tempfile
 import numpy as np
 from PIL import Image
 
-VERSION = 7          # of the recipes: a change redoes every picture
+VERSION = 8          # of the recipes: a change redoes every picture
 PAD = 8              # texels of border given to the model around what it enlarges
 MARGIN = 6           # texels around the rectangle the game draws with
 MODEL_SCALE = 4      # what the models make; --scale 2 reduces that afterwards
@@ -80,6 +86,8 @@ RECIPES = {
 }
 RANGE_SLACK = 6      # how far a result may leave the range of the texels around it
 SMALLEST = 12        # a picture with a side shorter than this gives a model nothing to go by
+BLEED = 3            # texels: how far into what cannot be seen colour is replaced
+MOVED = 16           # of 255: the self-check's "this colour is no longer the game's"
 
 
 # ---- small picture arithmetic (numpy only) ---------------------------------------------
@@ -194,6 +202,15 @@ def fill_from_neighbours(rgb, known):
     return out
 
 
+def grow(mask, texels):
+    """A mask made larger by so many texels in every direction."""
+    for _ in range(texels):
+        p = np.pad(mask, 1, mode='edge')
+        h, w = mask.shape
+        mask = np.any([p[dy:dy + h, dx:dx + w] for dy in range(3) for dx in range(3)], axis=0)
+    return mask
+
+
 def weave(a, rows):
     """The two fields a[0:rows] and a[rows:2*rows] as one picture of 2*rows lines."""
     out = np.empty((2 * rows,) + a.shape[1:], dtype=a.dtype)
@@ -238,7 +255,12 @@ class Use:
         height, width = rgba.shape[:2]
         self.meta = meta
         self.whole = bool(meta.get('whole', False))
-        self.weight = alpha_weight(states) if states else np.ones(256, dtype=np.float32)
+        # What alpha hides is only believed when the application saw every way the
+        # picture is drawn: a file written by disctex.py (nobody has seen the picture
+        # drawn), or one with more ways of drawing than the application keeps, hides
+        # nothing. A texel's colour is only ever replaced when no way of drawing shows it.
+        self.seen = bool(states) and meta.get('source') != 'disc' and not meta.get('states_overflow')
+        self.weight = alpha_weight(states) if self.seen else np.ones(256, dtype=np.float32)
         masked = any(s['scanmsk'] for s in states)
         sprites = any(s['prim'] == 6 for s in states)
         blends = set(s['alpha'] for s in states if s['abe'])
@@ -330,7 +352,16 @@ class Job:
         self.empty = not known.any()
         # alpha that says "cannot be seen" for some texels and "can" for others
         self.cutout = bool(hidden.any() and known.any())
-        self.rgb = fill_from_neighbours(rgb, known)
+        # Colour is replaced by that of visible neighbours in what was never sent, and
+        # in what cannot be seen only as far in as an enlarging filter reaches from what
+        # can (BLEED texels). Hidden texels further in keep their own colour: if a .json
+        # file should ever be wrong about what is hidden, a rim is lost and not the
+        # thing itself.
+        filled = fill_from_neighbours(rgb, known)
+        self.bled = hidden & grow(known, BLEED)
+        self.known = known
+        self.rgb = np.where((unsent | self.bled)[..., None], filled, rgb.astype(np.float32))
+        self.rgb_own = np.where(unsent[..., None], filled, rgb.astype(np.float32))     # the game's colours
         # alpha of unsent texels would pull the enlarged alpha of their neighbours
         self.alpha_filled = fill_from_neighbours(alpha[..., None], ~unsent)[..., 0] if unsent.any() and not unsent.all() else alpha.astype(np.float32)
         h, w = self.rgb.shape[:2]
@@ -367,6 +398,21 @@ class Job:
             Image.fromarray(np.dstack([grey] * 3), 'RGB').save(os.path.join(directories[self.recipe['alpha_model']][0], 'alpha-' + self.name))
             wanted.append(self.recipe['alpha_model'])
         return wanted
+
+    def moved_colour(self, picture):
+        """The self-check: the finished picture (its colour, at its size) made small
+        again and compared with the game's texels. Counts the texels around which the
+        colour is no longer the game's (by more than MOVED, taken over about a texel
+        either way, so that sharpening does not count): 'seen' among texels the game
+        shows, away from the rim of what it shows - there should be none; 'hidden' among
+        the texels whose colour was replaced on purpose; 'worst' the largest move among
+        the first."""
+        scale = picture.shape[1] // self.rgb_own.shape[1]
+        small = reduce_by(picture[..., :3].astype(np.float32), scale)[:self.rgb_own.shape[0]]
+        move = np.abs(blur(small - self.rgb_own[:small.shape[0]], 1.0)).max(axis=2)
+        inner = ~grow(~self.known, 2)[:small.shape[0]]
+        return dict(seen=int(((move > MOVED) & inner).sum()), hidden=int(((move > MOVED) & self.bled[:small.shape[0]]).sum()),
+                    worst=round(float(move[inner].max()), 1) if inner.any() else 0.0)
 
     def from_model(self, directories, model, prefix=''):
         path = os.path.join(directories[model][1], prefix + self.name)
@@ -427,6 +473,7 @@ class Job:
             exact = np.repeat(np.repeat(a, scale, 0), scale, 1)
             alpha = np.clip(np.where(flat, exact, smooth) + 0.5, low, high).astype(np.uint8)
         picture = np.dstack([out, alpha])
+        self.check = self.moved_colour(out)
 
         rows = self.use.field_rows
         if rows:
@@ -453,6 +500,31 @@ def run_model(upscaler, model, source, target):
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def report(checks, path):
+    """Says what the self-check found (Job.moved_colour); `path`: a file that keeps the
+    figures of every picture made so far. Returns 1 when a picture's colour has moved
+    where the game shows it."""
+    if path:
+        kept = {}
+        if os.path.exists(path):
+            with open(path) as file:
+                kept = json.load(file)
+        kept.update(checks)
+        with open(path, 'w') as file:
+            json.dump(kept, file, indent=0, sort_keys=True)
+    bad = sorted(((c['seen'], c['worst'], name) for name, c in checks.items() if c['seen'] > 0), reverse=True)
+    replaced = [(c['hidden'], name) for name, c in checks.items() if c['hidden'] > 0]
+    print('upscale.py: self-check of %d pictures: colour moved by more than %d where the game shows it in %d of them%s'
+          % (len(checks), MOVED, len(bad), '' if bad else ' (none)'))
+    for seen, worst, name in bad[:40]:
+        print('upscale.py:   LOOK AT %s: %d texels, largest move %.0f' % (name, seen, worst))
+    if len(bad) > 40:
+        print('upscale.py:   ... and %d more' % (len(bad) - 40))
+    print('upscale.py: colour replaced on purpose, in texels no draw shows (within %d texels of ones that are shown): %d pictures, %d texels'
+          % (BLEED, len(replaced), sum(n for n, _ in replaced)))
+    return 1 if bad else 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('dump')
@@ -466,13 +538,14 @@ def main():
     parser.add_argument('--recipe', action='append', default=[], metavar='KIND:FIELD=VALUE',
                         help='change a recipe for this run, e.g. level:strength=0.6 (for trying)')
     parser.add_argument('--batch', type=int, default=120, help='pictures enlarged at a time')
+    parser.add_argument('--check', action='store_true', help='enlarge nothing: compare every file of REPLACE_DIR, made small again, with its dump')
     args = parser.parse_args()
     for change in args.recipe:
         target, value = change.split('=', 1)
         kind, field = target.split(':', 1)
         old = RECIPES[kind][field]
         RECIPES[kind][field] = (value if isinstance(old, str) or old is None else type(old)(float(value))) if value != 'None' else None
-    if not args.list and not args.upscaler:
+    if not args.list and not args.check and not args.upscaler:
         parser.error('--upscaler is needed')
 
     os.makedirs(args.replace, exist_ok=True)
@@ -485,7 +558,7 @@ def main():
     if args.only:
         names = [n for n in names if args.only in n]
 
-    todo, counts, skipped, unseen = [], {}, 0, 0
+    todo, counts, skipped, unseen, checks = [], {}, 0, 0, {}
     for name in names:
         meta_path = os.path.join(args.dump, name[:-4] + '.json')
         if not os.path.exists(meta_path):
@@ -504,6 +577,15 @@ def main():
             continue
         if use.kind not in RECIPES or (args.kind and use.kind != args.kind) or min(rgba.shape[:2]) < 8:
             continue
+        if args.check:
+            path = os.path.join(args.replace, name)
+            if os.path.exists(path):
+                job = Job(name, rgba, use, 1)
+                made = np.asarray(Image.open(path).convert('RGB'))
+                if use.field_rows:                  # the first of the two copies
+                    made = made[:2 * use.field_rows * (made.shape[1] // rgba.shape[1])]
+                checks[name] = dict(job.moved_colour(made), kind=use.kind)
+            continue
         signature = [VERSION, args.scale, os.path.getsize(os.path.join(args.dump, name)), use.signature(), RECIPES[use.kind]]
         signature = json.loads(json.dumps(signature))
         if not args.force and manifest.get(name) == signature and os.path.exists(os.path.join(args.replace, name)):
@@ -515,6 +597,8 @@ def main():
         print('upscale.py: %d pictures from the disc whose way of drawing is not known left out (they are done once a run with --rta-texture-dump has drawn them)' % unseen)
     if args.list:
         return 0
+    if args.check:
+        return report(checks, None)
     if not todo:
         print('upscale.py: nothing to do')
         return 0
@@ -542,6 +626,7 @@ def main():
                 picture = job.finish(directories)
                 Image.fromarray(picture, 'RGBA').save(os.path.join(args.replace, job.name), compress_level=3)
                 manifest[job.name] = signature
+                checks[job.name] = dict(job.check, kind=job.use.kind)
                 done += 1
                 fields += 1 if job.use.field_rows else 0
         finally:
@@ -550,6 +635,7 @@ def main():
             json.dump(manifest, file)
         print('upscale.py: %d of %d' % (min(start + args.batch, len(todo)), len(todo)), flush=True)
     print('upscale.py: wrote %d pictures to %s at %dx (%d of them two-field interface pictures)' % (done, args.replace, args.scale, fields))
+    report(checks, os.path.join(args.replace, 'upscale-check.json'))
     return 0
 
 
