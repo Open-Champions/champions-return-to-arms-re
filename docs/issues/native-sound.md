@@ -12,6 +12,14 @@ all audio stay under `local/sound/`.
 
 ## Notes for whoever continues (kept current)
 
+- 2026-10-12, later (`docs/issues/native-app.md` section 5): the library is linked into
+  the window program; the AudioQueue device **started** from there and took sound for
+  whole sessions (gain 0, nobody listened). It runs dry during level loads, because the
+  sound is rendered on the machine's clock and the game's thread stands still then. The
+  lost music of the first level (4.5) is explained and worked around in the runtime: the
+  game skips the start while the old music is still fading and tries again only after 4
+  to 6 minutes.
+
 - State (2026-10-12): library written and linked into the native build; the native build
   boots to the hub with sound rendered to a WAV; streams and one deterministic effect match
   the emulator to the waveform (section 4). Open: section 6.

@@ -14,6 +14,18 @@ lists what was not reached.
 
 ## State (2026-10-12)
 
+**Later the same day** (`docs/issues/native-app.md`): the renderer now runs in the window
+program `tools/recomp/app` from power-on. The memory-card screens, the publisher's logo,
+the title, the menus, character creation, the loading screen, the first level and a level
+with a fight draw and were compared with the emulator's `shotfb` screen by screen. Two
+things changed here for that: a display buffer takes the display's size instead of only
+growing (`Gs::display_size`), and a texture made before its header was known has its
+picture height asked for again (`Gs::texture_for`, `Renderer::set_memory`). Still open:
+films, one fault in the fight (a pole of stray vertices), and everything no visited level
+shows. `rta_replay` draws a stream recorded in the middle of a session wrongly (the
+display registers and uploads from before the recording are missing); its `--list` is
+still right.
+
 - **Ran:** the first level (hub) from the resumed memory image draws completely: level
   geometry with textures and point lights, skinned and lit models (player, the woman on
   the platform, butterflies), their shadow surfaces and ground shadows, environment-mapped

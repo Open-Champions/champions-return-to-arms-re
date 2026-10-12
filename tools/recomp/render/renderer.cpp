@@ -2,6 +2,7 @@
 #include "renderer.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace render {
@@ -18,6 +19,29 @@ Renderer::Renderer(uint8_t* vu_micro, uint8_t* vu_data) {
         r->gs.xgkick(r->vif.vu.data, qword);
     };
     gs.begin_frame();
+    if (getenv("RTA_GS_FAR")) {                         // debugging: the VIF codes that led to a far vertex, once
+        vif.debug_ring = 1;
+        gs.on_far_vertex = [this] {
+            static bool done = false;
+            if (done) return;
+            done = true;
+            size_t from = vif.ring.size() > 70 ? vif.ring.size() - 70 : 0;
+            for (size_t k = from; k < vif.ring.size(); k++) fprintf(stderr, "   vif: %s\n", vif.ring[k].c_str());
+            fprintf(stderr, "   vu1: top %03x itop %03x q %g\n", vif.vu.top, vif.vu.itop, vif.vu.q);
+            for (int r = 0; r < 32; r++)
+                fprintf(stderr, "   vf%02d %g %g %g %g  (%08x %08x %08x %08x)\n", r, vif.vu.vf[r].f[0], vif.vu.vf[r].f[1], vif.vu.vf[r].f[2], vif.vu.vf[r].f[3],
+                        vif.vu.vf[r].u[0], vif.vu.vf[r].u[1], vif.vu.vf[r].u[2], vif.vu.vf[r].u[3]);
+            for (uint32_t q = 0x3F0; q < 0x400; q++) {
+                float f[4]; memcpy(f, vif.vu.data + q * 16, 16);
+                fprintf(stderr, "   data[%03x] %g %g %g %g\n", q, f[0], f[1], f[2], f[3]);
+            }
+            for (uint32_t q = 0; q < 12; q++) {
+                uint32_t w[4]; float f[4];
+                memcpy(w, vif.vu.data + ((vif.vu.top + q) & 0x3FF) * 16, 16); memcpy(f, w, 16);
+                fprintf(stderr, "   data[top+%u] %08x %08x %08x %08x  %g %g %g %g\n", q, w[0], w[1], w[2], w[3], f[0], f[1], f[2], f[3]);
+            }
+        };
+    }
 }
 
 void Renderer::vblank(unsigned, uint64_t number) {

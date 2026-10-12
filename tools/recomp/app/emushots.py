@@ -16,6 +16,7 @@ only.  Standard library only.
 """
 import argparse
 import os
+import shutil
 import struct
 import subprocess
 import sys
@@ -34,6 +35,8 @@ def main():
     parser.add_argument('--script', required=True)
     parser.add_argument('--out', required=True, help='directory for the pictures (.bmp)')
     parser.add_argument('--label', default='reference pictures for the native app - silent, no network')
+    parser.add_argument('--card', help='a memory-card directory (holding mc0/ and mc1/, as the native application keeps it under '
+                        '<data>/card) to copy into the emulator\'s <data>/vfs before it starts: the same card in the other build')
     args = parser.parse_args()
     from ctl import Control
     from emuref import Driver, symbols
@@ -42,6 +45,10 @@ def main():
         raise SystemExit('emushots: %s exists; give a new directory' % data)
     os.makedirs(data)
     os.makedirs(args.out, exist_ok=True)
+    if args.card:
+        for slot in ('mc0', 'mc1'):
+            if os.path.isdir(os.path.join(args.card, slot)):
+                shutil.copytree(os.path.join(args.card, slot), os.path.join(data, 'vfs', slot))
     socket_path = os.path.join('/tmp', 'rta-emushots-%d.sock' % os.getpid())
     command = [os.path.join(ROOT, 'tools', 'play-net', 'play.sh'), '--disc', args.disc, '--data', data, '--sections', 'none',
                '--', '--rta-test', args.label, '--rta-no-net', '--rta-control', socket_path]

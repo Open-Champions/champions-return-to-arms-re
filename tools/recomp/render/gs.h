@@ -45,6 +45,7 @@ class Gs {
     bool no_interlace = true;           // drop the half-line of XYOFFSET
     int trace = 0;                      // > 0: print draws to stderr
     bool time_paths = false;
+    std::function<void()> on_far_vertex;    // debugging (RTA_GS_FAR): a vertex far outside every surface was drawn
     bool log_display = false;           // print display register changes and surface sizes to stderr
     int debug_entry = 0;                // the VU1 entry last started (for the trace)
     // Asked once per new texture: the size of the picture in the texture at this TBP0, from

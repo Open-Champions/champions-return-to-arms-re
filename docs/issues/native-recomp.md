@@ -6,6 +6,35 @@
 **the tree builds**; steps 1 to 3 done as far as described under "Continuation", steps 4
 to 6 written up, not built.)
 
+**Changed 2026-10-12 afternoon** (the runtime is now kept by the author of
+`docs/issues/native-app.md`; section 7 there has the reasons). Additions only: nothing in
+`rt.h` / `iface.h` changed its shape.
+
+- **Accesses where nothing is** no longer stop the run: a load answers 0xCC in every
+  byte, a store is dropped, both are counted and the first 16 are listed in the report
+  (`--opt strict-memory=1` for the old stop). A network build needs no memory wrapper.
+- **`--arg <text>`** (repeatable): the arguments of the game's `main()`.
+- **`hle.txt` gained two addresses**, supplied in `runtime.cpp`: 0x3205ec `movie_update`
+  (a film ends at its first update; `--opt films=original` for the game's code) and
+  0x322520 `mainloop_pollAmbientAudio` (the level-music countdown is held while the old
+  music fades out; `--opt music-start=original`). Every translation has to be made again
+  to link against this runtime (`recomp.py`, 1.5 s).
+- **I/O processor**: SIF command 0x80000001 is answered (word 0x8ef2c4), headset driver
+  function 1 answers 0x8000000A, module loader function 9 answers by the module's own
+  name. Not exercised offline.
+- **Script**: `app <text>` (for an application linked with the runtime; noted and ignored
+  without one), `call <address> [a0 [a1]]` (a game function called at a blank; a test
+  aid). `rt_at_finish` is called before the final report.
+- **Translator**: `recomp.py --pnach FILE --sections FILE [--section NAME]` translates
+  the patched game and writes `<out>/patches.cpp`, which the runtime applies to memory
+  after loading the executable (compile it with the other generated files). An entangled
+  cluster whose members lie far apart is merged member by member (a unit with several
+  address ranges) instead of with everything between them; the unpatched translation is
+  unchanged byte for byte.
+- **The window program** is `tools/recomp/app/` (`rta_app`); `rta_render` in
+  `tools/recomp/render/` is the renderer's old test program (it still builds against this
+  runtime; it boots without the renderer changes' benefit of input or sound).
+
 **How far `rta_native` boots today.** From power-on, headless, by a script: module loads,
 disc reads, the memory-card check (a save directory is created on a blank card), logo
 and intro, front end, character creation, **the first level (the hub) with a

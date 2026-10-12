@@ -715,7 +715,11 @@ void Gs::emit_vertex(const Queued& v, const DrawCmd&, float s, float t, float q,
     {
         static const bool log_far = getenv("RTA_GS_FAR") != nullptr;
         static int left = 40;
-        if (log_far && left > 0 && (o.x > 2400 || o.y > 2000)) { left--; fprintf(stderr, "gs: far vertex %04x %04x z %08x from VU1 entry %x prim %x\n", v.x, v.y, z, debug_entry, prim); }
+        if (log_far && left > 0 && (o.x > 2400 || o.y > 2000)) {
+            left--;
+            fprintf(stderr, "gs: far vertex %04x %04x z %08x from VU1 entry %x prim %x\n", v.x, v.y, z, debug_entry, prim);
+            if (on_far_vertex) on_far_vertex();
+        }
     }
     float zf = (float)z * zscale;
     o.z = zf > 0.99999994f ? 0.99999994f : zf;

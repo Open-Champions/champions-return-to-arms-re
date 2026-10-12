@@ -180,7 +180,7 @@ Value parse_literal(const std::string& word, const Type& type) {
 }
 
 struct Command {
-    enum Kind { WAIT, AT, UNTIL, PRESS, RELEASE, TAP, TAPUNTIL, STICK, PAD, POKE, DUMP, SHOW, ECHO, APP, QUIT } kind = WAIT;
+    enum Kind { WAIT, AT, UNTIL, PRESS, RELEASE, TAP, TAPUNTIL, STICK, PAD, POKE, DUMP, SHOW, ECHO, APP, CALL, QUIT } kind = WAIT;
     int line = 0, port = 0;
     u16 buttons = 0;
     s64 number = 0, number2 = 0;
@@ -319,6 +319,10 @@ void add_line(const std::string& raw) {
         while (!rest.empty() && isspace((unsigned char)rest[0])) rest.erase(0, 1);
         while (!rest.empty() && isspace((unsigned char)rest.back())) rest.pop_back();
         c.words = {rest};
+    }
+    else if (word == "call") {                          // a test aid: call a function of the game
+        if (w.size() < 2) rt_die("script line %d: call <address> [a0 [a1]]", g_line);
+        c.kind = Command::CALL; c.words = w;
     }
     else if (word == "log") return;
     else if (word == "quit") c.kind = Command::QUIT;
@@ -480,6 +484,17 @@ void script_vblank(u64 frame) {
             if (script_app_command) script_app_command(c.words[0], frame);
             else rt_note("script: app command without an application (" + c.words[0].substr(0, c.words[0].find(' ')) + ")");
             break;
+        case Command::CALL: {
+            // Runs at this vertical blank, where an interrupt handler would run, with up to
+            // two arguments.  For tests that need the game to do something no button reaches
+            // from where the script is (ask for a save without walking to a save point); a
+            // function that waits or that the main thread is in the middle of is not safe here.
+            u32 address = script_eval(c.words[1]);
+            u32 a0 = c.words.size() > 2 ? script_eval(c.words[2]) : 0, a1 = c.words.size() > 3 ? script_eval(c.words[3]) : 0;
+            printf("[frame %" PRIu64 "] call 0x%x(%u, %u)\n", frame, address, a0, a1);
+            rt_call_handler(address, a0, a1);
+            break;
+        }
         case Command::QUIT: rt_finish(0);
         }
         g_position++;
