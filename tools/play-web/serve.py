@@ -8,7 +8,9 @@ needs before a browser lets it use threads.
 --disc, --report and --shots are for the developer's tests: the image is then readable
 by range requests at /dev/disc.iso (so that a test needs no file dialog), what the page
 POSTs to /report is appended to the file, one JSON object per line, and a picture of the
-canvas that the page POSTs to /shot/NAME.png is written to the directory. A player needs neither: the
+canvas that the page POSTs to /shot/NAME.png is written to the directory. A file
+command.json beside the report file ({"goto": "/index.html?..."} or {"close": true}) is
+handed to the page once: a run of tests then needs one browser tab. A player needs neither: the
 page reads the image the player picks from the player's own computer, in place.
 The server never listens on any address but 127.0.0.1.
 """
@@ -82,6 +84,20 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_error(404)
                 return
             self.send_disc(False)
+            return
+        if self.path == "/command":
+            # developer tests: one command for the page (see rta-web.js), given once
+            command = os.path.join(os.path.dirname(self.report), "command.json") if self.report else None
+            body = b""
+            if command and os.path.isfile(command):
+                with open(command, "rb") as source:
+                    body = source.read()
+                os.remove(command)
+            self.send_response(200 if body else 204)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
             return
         super().do_GET()
 

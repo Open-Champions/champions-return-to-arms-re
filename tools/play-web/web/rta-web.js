@@ -369,6 +369,21 @@ setInterval(() => {
 	lastInfo = now;
 }, 1000);
 setInterval(saveCard, 5000);
+if(options.report) {
+	// DEV: the test's local server can send this tab on to another address of the same
+	// server or have it closed (a tab opened from a command line may close itself as
+	// long as it has shown one page only, hence "replace"), so that a run of tests needs
+	// one tab.
+	setInterval(async () => {
+		try {
+			const response = await fetch("/command");
+			if(response.status !== 200) return;
+			const command = await response.json();
+			if(command.goto && new URL(command.goto, location.href).origin === location.origin) location.replace(command.goto);
+			if(command.close) window.close();
+		} catch(e) { /* the server is gone */ }
+	}, 2000);
+}
 
 // ---- for tests (the developer's console, or a test driving the page) ------------------
 const rta = window.rta = {

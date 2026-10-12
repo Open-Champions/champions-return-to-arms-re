@@ -45,7 +45,7 @@ static const u32 MAX_CALLS = 512;
 
 struct Stub { u32 addr, has_ret; u64 ret; };
 static std::vector<Stub> g_stubs;
-static bool g_stub_all;
+static bool g_stub_all, g_keep_v0;
 
 u64 rt_load(u32 addr, unsigned) { stop(ST_FAULT, addr); return 0; }
 void rt_store(u32 addr, unsigned, u64) { stop(ST_FAULT, addr); }
@@ -75,7 +75,11 @@ bool rt_test_call(Ctx* c, u32 site, u32 target) {
     bool stubbed = g_stub_all;
     const Stub* stub = nullptr;
     for (const Stub& s : g_stubs)
-        if (s.addr == target) { stub = &s; stubbed = true; break; }
+        if (s.addr == target) {
+            if (s.has_ret == 2) stubbed = false;        // exempt from stub-all: runs for real
+            else { stub = &s; stubbed = true; }
+            break;
+        }
     g_call_total++;
     if (g_calls.size() < MAX_CALLS) {
         CallRec rec;
@@ -85,7 +89,7 @@ bool rt_test_call(Ctx* c, u32 site, u32 target) {
     }
     if (!stubbed) return true;
     if (stub) { if (stub->has_ret) c->r[2] = stub->ret; }
-    else c->r[2] = 0;
+    else if (!g_keep_v0) c->r[2] = 0;
     return false;
 }
 
@@ -156,6 +160,7 @@ static void* run_all(void*) {
         c->acc = rd.get<u32>();
         for (int i = 0; i < 32; i++) c->cop0[i] = rd.get<u32>();
         g_stub_all = flags & 1;
+        g_keep_v0 = flags & 2;
         g_stubs.clear();
         u32 nstubs = rd.get<u32>();
         for (u32 i = 0; i < nstubs; i++) {

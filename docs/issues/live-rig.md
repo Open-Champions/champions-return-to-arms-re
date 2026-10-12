@@ -35,7 +35,11 @@ arena entered by `drundar`'s own exit script and fought to its end and `hub2`) a
 (section 21: the carried load in the player record shown to decide a pick-up differently on
 the two machines, with a two-part fix; the two level-up bytes; a player leaving through
 the pause menu on the lobby path; and why a player placed at `drundar`'s arena door did
-not walk — a help box). In short: two machines play one lockstep game here;
+not walk — a help box) and phase 17 (section 22: a soak of 120 long pairs with all 24 fix
+sections on and new input, 5.1 million ticks without a difference in anything compared,
+the carried load and nearly the whole player record included; a second arm of 24 pairs
+with the skeleton section added; eight lobby-launched pairs; and the server's chat-room
+fix met by the real game). In short: two machines play one lockstep game here;
 random input found two real divergences, which are the ledger's K1 and K2, and the test
 patch for each removes it; the arena did **not** go out of sync in twelve runs.
 
@@ -3652,3 +3656,392 @@ Proposed, for whoever edits `FINDINGS.md` (this document does not):
 - The door from `drundar` on foot through the lobby, and the walk to it without a
   position write.
 - Anything on a console or in PCSX2: two copies of one Play! build show logic only.
+
+## 22. Phase 17: a soak with every fix section on, an arm with the skeleton section, eight lobby pairs
+
+The developer LAN pair of section 7 for 22.1–22.5 and the lobby path of section 19 for
+22.6. Limits as there: two copies of one Play! build — **not a PlayStation 2 and not
+PCSX2** — so only logic differences can show; characters built by writes; seeded random
+input. **Ran** unless marked. Local wrappers and logs are under `local/rig-out/p17` (not
+in the repository). The runner and the patch file were not changed.
+
+**In short.** With every "Net test" fix section on (24), 120 long pairs — 5,121,702 ticks —
+show no difference in any column the earlier soaks compared, in the carried load, or in
+the rest of the player record that is now logged, with one exception that is not
+simulation state: two bytes of the weapon-trail block, which on a player's own machine are
+advanced by the prediction copy (22.4). No out-of-sync flag. A second arm of 24 pairs with
+"skeleton queries rebuild inside the tick" added, 1,027,302 ticks, is the same. Eight
+lobby-launched pairs, 195,331 ticks, the same again, and the rebuilt server's chat-room fix
+does with the real game what it was written to do (22.6). Nothing new was found; what
+that is worth is said in 22.8.
+
+### 22.1 What was run
+
+**Sections on both machines, 24:** every section of the patch file whose title starts
+"Net test:" except the three lag-constant sections LAG-2, LAG-3, LAG-4 and "skeleton
+queries rebuild inside the tick". By title, in the file's order: cutscene audio sync off;
+prediction copy starts without pending damage; equalise at once (LAG-1); CloudGiant king
+conjure test uses a shared flag; net launch clears a stuck memory-card latch; save-point
+prompt ignores this machine's card screen; ignore the debug file on the memory card; use
+button works with the spell selector open; potions always leave the bag directly; stats
+page does not rewrite stored weapon damage; closing a notice box does not run the pending
+script; menu lockout never drops player damage; menu lockout never blocks weapon swap and
+use; option commit leaves the button maps alone; mission menu ignores the chooser's pause
+menu; jump-gate menu ignores the chooser's pause menu; script return keeps the saved stack
+pointer; predicted spin cast leaves the shared animation alone; creatures ignore being
+touched by the prediction copy; item records start from zero, not from stack leftovers;
+route search always clears the previous search's marks; menu screens do not recompute
+player statistics; stats page does not recompute the main weapon's damage either; carried
+weight is recomputed only inside the simulation. 78 words; the runner printed the old and
+the new word of each. No "Arena diagnostic" or "Diagnostic" section. Nine of the 24 had
+not been on in a soak before (the first two, the four from CloudGiant to the debug file,
+the two chooser-menu sections and the carried-weight section).
+
+**The second arm** has those 24 and "skeleton queries rebuild inside the tick" (91 words).
+It was meant to add "route search always clears the previous search's marks" as well; that
+section is a "Net test" section and so is in the first arm already, as it has been since
+section 17. The second arm therefore differs from the first by the skeleton section alone.
+
+**Driver.** `local/rig-out/p17/soak17.py` around the wrappers of sections 17 and 18: the
+job matrix of section 17 unchanged — six builds, 20 pairs each; 48 pairs starting in the
+arena and 72 in the 23 other levels; 40 pairs each of 30,000, 45,000 and 60,000 frames;
+the three input mixes (the pause button in two of them); no bus delay in 57 pairs, delay
+4, jitter 3, loss 5% in 29, delay 10, jitter 6, loss 10% in 28, and six pairs with one
+outage of 60, 90 or 120 frames — but with **new seeds** (1700 + pair number, for the
+input and for the bus), so that the input is not the one sections 17 and 18 already
+played. The second arm is every fifth pair of that matrix (24 pairs: four of each build,
+twelve from the arena, eleven without bus delay, two with an outage) with the first arm's
+seeds.
+
+**Compared at every tick, as before:** the launcher's columns (shared seed, level, and
+per player position, facing, action state, object seed, hit points, mana, gold,
+experience, a checksum of each bag, of the statistics, the points and passives, the
+equipment, the ability records and the skill ranks; the button maps; the game's own sync
+record and out-of-sync bytes), section 17's (cutscene flag, pending level, the first 512
+bytes of the quest variables, pending post action, weapon set, jump-gate and mission-menu
+state) and section 18's (maximum hit points and mana, the potion words, +0xdc, **the load
+and the load limit, +0x120 and +0x124**, armour and the five words `player_recalcArmor`
+rebuilds). A difference in any of these makes a pair "divergent".
+
+**Followed on their own** (first tick, ticks, stretches and both values per pair; they do
+not decide a pair's class): the stored attack rating and damage (+0xcc, 12 bytes), as in
+17.4, and, new, the rest of the record:
+
+| Column | Record bytes | What is there (`docs/player.md`) |
+|---|---|---|
+| head | +0x00–0x57 | name, appearance, the recall's return level and position, class, model |
+| d8, e0 | +0xd8, +0xe0 (a word each) | not named |
+| u128 | +0x128–0x12f | not named |
+| blk | +0x3748–0x41cf | the 0xa88-byte block copied whole on import |
+| quest | +0x41d0–0x43d7 | quest list, its count, +0x43d4 |
+| btnA | +0x4a60–0x4a73 | last ability button, cycle request |
+| btnB | +0x4a7c–0x4a87 | weapon set, swap pending, pad mask, ability buttons, animation class |
+| trailhit, trailhit2 | +0x4ac5–0x4ac6, +0x4b05–0x4b06 | bytes +0x3d and +0x3e of the two weapon-trail blocks |
+| tail | +0x4bc8–0x4c2f | countdowns, level-change cooldown, mission flags, medals, kind, speed, team |
+| qvars2 | — | the first 2,048 bytes of the quest variables |
+
+With the earlier columns that is the whole record except: one byte at +0x11f; four bytes
+after each bag (+0x1334, +0x253c, +0x3744); the object pointer and the words after it
+(+0x43d8–0x43ef); +0x4a58–0x4a5f (holds +0x4a5c, which the copy writes: G8); +0x4a74–0x4a7b;
+and the two trail blocks but for the four bytes named. The last two were left out after a
+probe pair (c0+c0, `hub`, 3,669 ticks, the ranges logged raw): the two words at +0x4a74 and
++0x4a78 were set on the owner's machine and zero on the other at the first tick and
+differed in 3,668 of the 3,669 — they are the two words `hud_spellSelect` stores (ledger
+K4); and bytes 0x00–0x31, 0x38, 0x39 and 0x3c of a trail block differed in more than half
+of the ticks, set on one machine and zero on the other where looked at.
+
+**Counted** by quiet break points, besides section 17's: `recall_execute`, `shop_buy`,
+`inventory_dropItem`, `inventory_unequipItem`, `itemprop_tryPickup`, `skills_screen`,
+`inventory_giveItem`, `inventory_removeItem`, `player_giveExp`, and three that never ran
+(`inventory_onSkillPoint`, `inventory_onStatPoint`, `workshop_input`).
+
+**How it went, and what stopped runs.** The host was shared with other work and badly
+overloaded for the first two hours (load averages of 100 to 350 on 18 cores), this soak's
+eighteen runners being a large part of that. Both arms had been started together, six and
+two pairs at a time, with the lobby pairs beside them. At 16:40 the runners' priority was
+lowered from outside and for about twenty seconds they were under a background scheduling
+policy, which all but stops a pair; at 16:42 all runs of this phase were stopped by
+hand. Done by then: 31 pairs of the first arm, 10 of the second, 5 lobby pairs. The rest
+ran from 16:44 at the lowest priority and at most eight runner processes (four pairs) at
+a time, steered by a gate in the wrapper, and ended at 22:17. A pair's result does not
+depend on the host's speed — the two runners advance frame by frame together (section 7)
+— and that was checked on three pairs:
+
+| Pair | Why it was run again | The second run |
+|---|---|---|
+| second arm, 045 | it ended at 16:41, in a peer drop | the same row in every field: ticks, first tick, columns, values, levels, entry counts. The drop is the game's (22.3) |
+| second arm, 000 | its machine A was killed by the launcher, still running two minutes after machine B had ended; no difference to its last tick, 58569 | ends normally; 57,914 ticks against 57,910 (machine A's log was four ticks short), no difference. The second run is the one counted |
+| first arm, 030 | it ran through the twenty seconds and ended normally | the same row in every field, 61,299 ticks, the followed columns included |
+
+No pair timed out and none was left without a usable log. A six-pair trial of the wrapper
+before the soak (short pairs, 31,749 ticks, an earlier version of the new columns) had no
+divergent pair either and is not counted below.
+
+### 22.2 Totals
+
+| | First arm (24 sections) | Second arm (+ skeleton section) |
+|---|---|---|
+| Pairs run / planned | 120 / 120 | 24 / 24 |
+| Frames of random input planned | 5,400,000 | 1,095,000 |
+| Ticks compared | **5,121,702** | **1,027,302** |
+| Pairs with a difference in a column that decides a class | **0** | 1: the tick of a kick (22.3) |
+| Pairs in which the game set its own out-of-sync flag | 0 | 0 |
+| Pairs ended early by a peer drop | 3, all kicks | 1, a kick |
+| Pairs with a followed column differing | 68, all in the trail bytes (22.4) | 15, the same |
+| Stored attack rating or damage (+0xcc) differing | 0 (section 17: 39 pairs) | 0 |
+| Pairs timed out, stuck or without a usable log | 0 | 0 (pair 000's first run: above) |
+| Wall time of a pair, seconds: least, median, most | 288, 812, 1,931 | 274, 879, 2,103 |
+
+| Build | First arm: pairs / ticks | Second arm: pairs / ticks |
+|---|---|---|
+| c0+c6 | 20 / 841,374 | 4 / 190,205 |
+| c0+c0 (spin) | 20 / 785,551 | 4 / 168,823 |
+| c1+c4 | 20 / 941,391 | 4 / 184,731 |
+| c3+c5 | 20 / 822,365 | 4 / 119,348 |
+| c2+c2 | 20 / 789,611 | 4 / 171,165 |
+| c6+c6 | 20 / 941,410 | 4 / 193,030 |
+
+| Split | First arm: pairs / ticks | Second arm: pairs / ticks |
+|---|---|---|
+| start in the arena; elsewhere | 48 / 2,074,053; 72 / 3,047,649 | 12 / 502,583; 12 / 524,719 |
+| 30,000; 45,000; 60,000 frames | 40 / 1,152,415; 40 / 1,669,365; 40 / 2,299,922 | 7 / 206,025; 9 / 355,899; 8 / 465,378 |
+| bus none; delay 4, jitter 3, loss 5%; delay 10, jitter 6, loss 10%; the outage pairs | 57 / 2,368,655; 29 / 1,293,394; 28 / 1,202,364; 6 / 257,289 | 11 / 493,845; 3 / 129,359; 8 / 320,643; 2 / 83,455 |
+| input mix 1; 2; 3 | 40 / 1,735,503; 40 / 1,700,038; 40 / 1,686,161 | 7 / 288,568; 6 / 289,545; 11 / 449,189 |
+| a healing skill (50, 55 or 86) in a build; none | 27 / 1,209,542; 93 / 3,912,160 | 6 / 280,220; 18 / 747,082 |
+
+No row of either table holds a divergent pair (the kick's tick apart). All eight outage
+pairs came through their outage in step.
+
+What the pairs did (machine A's log, and entries on both machines together):
+
+| | First arm | Second arm |
+|---|---|---|
+| level changes after the first entry, each in the same tick on both machines | 778 | 159 |
+| levels seen (among the first 14 a pair entered) | 27: the 24 start levels and `valor2`, `fay3`, `inmine2` | 14 |
+| arena entries; arena left for `hub2` (among those) | 122; 16 | 36; 3 |
+| ticks with the cutscene flag up | 159,117 | 41,270 |
+| deaths, slot 0; slot 1 | 325; 180 | 35; 37 |
+| `Player_castSkill`; `Player_usePotion` | 71,734; 412,686 | 17,939; 88,375 |
+| pause menu opened; `config_commitOptions` | 14,027 in the 80 pairs whose mix has the button; 2,773 | 2,360 in 13 pairs; 367 |
+| inventory opened; inventory messages applied | 23,412; 76,946 | 4,719; 15,398 |
+| equip; unequip; drop (`inventory_dropItem`, sales included) | 4,216; 1,808; 2,932 | 714; 324; 530 |
+| `itemprop_tryPickup`; `inventory_giveItem`; `inventory_removeItem` | 2,732; 3,290; 4,752 | 532; 598; 962 |
+| `stats_screen`; `skills_screen` | 234,122 in 119 pairs; 102,564 in 118 | 47,497; 20,480 |
+| `shop_openOrStock`; **`shop_buy`** | 1,029 in 115 pairs; **88 in 26 pairs** | 216 in 22; 22 in 7 |
+| **`recall_execute`** (entries: a potion used, or the refusal) | **4,626, in all 120 pairs** | 846, in all 24 |
+| `player_giveExp`; `game_loadLevel`; `save_game` | 2,988; 2,442; 2,412 | 616; 429; 460 |
+| mission menu task; jump-gate menu opened | 1,752 entries in 5 pairs; 4 in 1 | 0; 0 |
+| a skill point, a stat point, the workshop | never | never |
+
+Hit points were above the stored maximum on both machines alike — the heals of 17.3 with
+nothing left to trim them early: slot 0 in 11 pairs of the first arm, 7,590 ticks, by at
+most 6.04; slot 1 in 5 pairs, 497 ticks, by at most 5.44; the counts are the same in
+machine A's and machine B's logs. Second arm: 2 pairs and 2,880 ticks, 3 pairs and 1,514
+ticks, the same on both. Mana never.
+
+Eight pairs of the first arm compared fewer than 85% of their frames as ticks: the three
+kicks, and five without a drop or a difference, all of them starting in `honor` (2) or
+`arachna1` (3) — 64% to 84%, the longest gap between two ticks 407 frames, so the ticks
+were lost a few at a time and not in level loads (**Unknown** why; not looked at).
+
+### 22.3 Every difference in a column that decides a class
+
+**First arm: none**, in any of 5,121,702 ticks.
+
+Three pairs of the first arm ended when machine B dropped its peer with its own pause menu
+open in the ticks before — by the pattern of 8.2 and 17.2 the pause menu's kick entry,
+found by random input (**Inferred**; not traced again here): pair 028 (c2+c2, at tick
+43129, in `inmine2`), pair 031 (c0+c0, 38779, arena), pair 072 (c0+c6, 13713, arena).
+Machine A's log ends three to five ticks before the drop in each, so no differing tick
+was compared. The dropped byte is the per-machine one at
+`g_peers` + slot × 0x44e0 + 0x44d5.
+
+**Second arm: one pair, and it is the same thing.** Pair 045 (c3+c5, arena, delay 10,
+jitter 6, loss 10%): at tick 15787 machine B, its pause menu open in the ticks before,
+drops machine A; in that one tick the shared seed and slot 1's position, facing, action
+state (2 against 4) and hit points (768.6 against 0) differ — the kicked player's
+character dies on the machine that kicked. Run twice, identical. With the first arm's
+sections and the same seed this pair plays 42,201 ticks and nobody is kicked. That is
+the rule, not an exception: none of the 24 pairs of the second arm takes the course its
+seed takes in the first (the number of ticks compared differs in every one) —
+the skeleton section changes timing and some positions for everyone, as its description
+says, and with them what the random input meets.
+
+No known class came back: no hit-point difference (17.3), no bag, load, statistics or
+equipment difference, no seed or position difference outside a kick's tick.
+
+### 22.4 The followed columns: two bytes of the weapon-trail block
+
+Nothing differs in the stored attack rating and damage, the 2,048 bytes of quest
+variables, or the record ranges head, d8, e0, u128, blk, quest, btnA, btnB and tail, in
+any pair of either arm. One pair of columns does:
+
+| | Pairs | Ticks differing | Stretches | Longest |
+|---|---|---|---|---|
+| first arm, slot 0 (record +0x4ac5, +0x4ac6: 0x4dd5b5, 0x4dd5b6) | 58 | 2,187 | 250 | 279 |
+| first arm, slot 1 (0x4e21e5, 0x4e21e6) | 53 | 1,102 | 151 | 95 |
+| first arm, slot 1, second weapon (+0x4b05: 0x4e2225) | 1 | 1 | 1 | 1 |
+| first arm, all | 68 of 120 | 3,290 | 402 | 279 (pair 004) |
+| second arm, all | 15 of 24 | 8,148 | 97 | 7,532 (pair 070, slot 1, ticks 15754–23285) |
+
+Always equal again afterwards; no other column followed in any pair. Typical values: the
+first byte 1 on one machine and 0 on the other, or the second byte one apart (4 against
+5). Pair 017 (c6+c6, arena) has it at the same ticks in two runs: slot 0 in ticks
+4683–4700, slot 1 in 34 ticks from 5182.
+
+**What writes them** (`--predict-trace` on the two words holding the bytes, watched
+everywhere, pair 017, ticks 4640–5400, both machines; stores by `tools/fieldxref.py`):
+
+| Writer | What | Machine that does not own the player | The owner's machine |
+|---|---|---|---|
+| `Player_meleeHit` (stores 0x1b70d8, 0x1b70f8, 0x1b7118; chain `Player_run` ← `runObjects` ← the tick's task pass) | a hit sets +0x3d to 1 or 0 and +0x3e to 5 | in the tick: slot 0 at tick 4661 | in the tick, the same tick |
+| `fx_modelStatusEffects` (writing blocks 0x1f7aa4, 0x1f7ac4, 0x1f6b88, 0x1f6ba4), called from `Player_weaponTrails` ← `Player_run` | counts +0x3e down, then clears +0x3d; keeps a counter in the byte before them | in the tick, for the real player: countdown in ticks 4662–4666, cleared at 4701 | **inside prediction calls only**, for the copy: countdown in the same ticks, cleared at 4683 |
+
+So the simulation's write is the same on both machines, and the countdown is done by
+whichever object runs the trail code: the real player on other machines, the prediction
+copy — which is ahead by the input lead — on the player's own. The 18 ticks between 4683
+and 4701 are the column's difference. For slot 1 the picture is the mirror image.
+
+**Trials.** The skeleton section does not change it (second arm). With "Arena diagnostic:
+no prediction copy" on pair 017, slot 0's bytes agree and slot 1's differ from tick 3079
+for 2,483 ticks (5 on its owner's machine, 4 on the other): without a copy nothing counts
+down on the owner's machine. So the copy is not the cause; the countdown is per machine by
+construction.
+
+**Class.** Effect state kept in the shared record, local by design:
+`docs/issues/prediction-copy.md` lists trails among the copy's local effects and
+`docs/player.md` says they draw from the cosmetic seed. That these bytes sit in the record
+and differ between machines is new as an observation, not as a finding. A reader in the
+simulation is not known: no load of the two offsets with the record's fixed base exists
+(**Observed**, `tools/fieldxref.py`; the trail code reaches them through a pointer and was
+not read), they are not part of the game's hash (no flag in 3,290 differing ticks), and
+whether `player_checksum` mixes them was not looked up — in the eight lobby pairs they
+never differed (22.6), so the exchange had nothing to see.
+
+### 22.5 The carried-weight class is in these seeds, and the section removes it
+
+Because the seeds are new, three pairs of the first arm were run again without the section
+"carried weight is recomputed only inside the simulation" (23 sections), to see whether
+the events that make the class had happened in this soak at all:
+
+| Pair | 23 sections: the load column (+0x120) | 24 sections |
+|---|---|---|
+| 063 (c3+c5, arena; `shop_buy` entered four times) | slot 0 from tick 2301 (32.346, and 29.196 on the owner's machine), 111 ticks, last 14793; slot 1 from 3455, 105 ticks, last 16463 | no difference in 30,234 ticks |
+| 051 (c3+c5, `storm1`) | slot 1 from tick 2831 (26.846 on the owner's machine, 27.096 on the other), 19 ticks, last 4725 | no difference in 28,058 ticks |
+| 021 (c3+c5, `nit1`) | slot 1 in ticks 1183–1186 (30.146 on the owner's machine, 34.846 on the other) | no difference in 27,903 ticks |
+
+Nothing but the load differs in the three, and each compares exactly as many ticks as with
+the section. The first values of 063 and 021 are the staleness the rig's own skill-rank
+writes leave (21.2); the later stretches are the game's. So the class of section 21 is
+live in this soak's input, and with the section the load is equal at every tick of all
+144 pairs.
+
+### 22.6 Eight lobby-launched pairs with the 24 sections
+
+The path of section 19 from power-on, driven as in 20.2 (`local/rig-out/p17/lobby.py`
+around the drivers of sections 19 and 20): both runners with the 24 sections applied in
+the front end, log in with the two existing test accounts (none was added), host, join,
+launch; the build of 20.2 written in one tick in `hub` (level 25, skills at rank 10, mana
+back to 500 every 300 ticks); the pending level written in one tick; seeded random input
+on both controllers. Slot 0 is the host's warrior with the spin skill; slot 1 one of the
+three characters the server keeps for the joiner. The tick log has every column of 22.1
+and the checksum-exchange columns of 19.10. Five pairs have the pause button in the mix
+(20.2 had it in none).
+
+| Pair | Slot 1 | Level asked for (and where the input took them) | Frames | Pause button | Path model | Ticks compared | Difference, any column | Deaths | Character saves answered 0 |
+|---|---|---|---|---|---|---|---|---|---|
+| 01 | shaman, healing skill 86 on its second button | `drunare` (`hub2`) | 30,000 | yes | none | 24,052 | none | 0 / 0 | 94 |
+| 02 | berserker | `hub` | 30,000 | yes | delay 3, jitter 3, loss 5% | 23,180 | none | 0 / 0 | 88 |
+| 03 | a second warrior (the same-class spin case) | `strife` (`blood1`, `hub` and back) | 30,000 | no | none | 22,659 | none | 0 / 0 | 111 |
+| 04 | the same | `drunare` | 30,000 | no | delay 8, jitter 5, loss 10% | 23,384 | none | 1 / 2 | 63 |
+| 05 | shaman with the healing skill | `blood1` | 30,000 | yes | delay 3, jitter 3, loss 5% | 24,273 | none | 0 / 0 | 79 |
+| 06 | berserker | `citadel` | 30,000 | yes | none | 23,537 | none | 0 / 0 | 73 |
+| 07 | shaman with the healing skill | `fire1` | 30,000 | no | delay 8, jitter 5, loss 10% | 23,905 | none | 0 / 0 | 107 |
+| 08 | berserker | `drunare` | 40,000 | yes | delay 3, jitter 3, loss 5% | 30,341 | none | 1 / 2 | 97 |
+
+**Eight pairs, 250,000 frames, 195,331 ticks: no column differs on any tick in any
+pair** — the class-deciding ones, the load, and every followed one, the trail bytes
+included. No out-of-sync flag, no checksum failure (the failure flag is 0 at every tick;
+`checksum_start` was entered 816 times), no player dropped, nobody returned to the lobby,
+712 character saves all answered with result 0. Entries on both machines together:
+`Player_castSkill` 7,221; `Player_usePotion` 56,684; `recall_execute` 222; inventory
+opened 990; `stats_screen` 9,608; `skills_screen` 4,437; inventory messages 2,988; equip
+102, unequip 8, drop 32; `itemprop_tryPickup` 52; `shop_openOrStock` 34, `shop_buy` 0;
+pause menu 600. Hit points never passed the stored maximum in these pairs, so the case of
+17.3 was not in them; no purchase was made.
+
+One thing these pairs do differently from the developer start and that was not followed
+up: the trail bytes of 22.4 agree at every tick here. In pair 04 they are non-zero on
+both machines for most of the fight and the second byte stands at 5 for thousands of
+ticks — the countdown hardly runs on either machine (**Unknown** why).
+
+**The server.** Rebuilt and restarted before this phase with the chat-room fix
+(`server/upstream/FIXES.md` 19, this document's S6), which had not been run with the
+game. Run now, on the game list with both machines logged in, as in 20.1:
+
+| Step | On the wire (machine A) | Server's log |
+|---|---|---|
+| the host side of machine A's lobby connection is cut (`ethdrop`) | the game connects again by itself: gateway request, key exchange | connections closed and opened |
+| its next periodic 0x55, under the old session id | **result 0**, the list | the user is entered into the public room again, then the line that the session was picked up on a new connection |
+| cross on the game's lost-connection notice | 0x15 for the public room: **result 0** (20.1: result 1) | the user leaves the public room |
+
+So S6 is closed as far as the game can show it. Not shown: that a line said in the room
+by the other machine reaches the one that came back — that needs typing in the chat and
+was not done.
+
+Nothing the server sent in the eight pairs or in this test was refused or ignored by the
+game, and its log for the whole period has only the ordinary lines (connections, rooms,
+games made, joined and started) and the two "owner disconnected" lines of sessions this
+work stopped by hand. Things that went wrong on the way were the driver's or the host's,
+at the time the host was overloaded: twice, both times with the path model on, the host's
+first press of the start entry was refused by the game's own notice that not every player
+was ready — the joiner's character record, which travels between the runners and not
+through the server (19.8), had not shown on the host's screen — and the driver did not
+press again (it now does, and both pairs ran on the next attempt; the first attempts'
+captures were not kept, so whether the record was late or lost is **Unknown**); once the
+host's character-import press went astray in the new-character screens; and one pair was
+in flight when everything was stopped at 16:42 and was run again.
+
+### 22.7 For the ledger
+
+Proposed, for whoever edits `FINDINGS.md` (this document does not):
+
+| Row | What to record |
+|---|---|
+| new | Soak with 24 sections on (every "Net test" section but LAG-2, LAG-3, LAG-4 and the skeleton section): 120 real-character pairs of 30,000–60,000 frames with new seeds, six builds, 27 levels, **5,121,702 ticks: no shared column differs**, the carried load, the stored damage and nearly the whole player record included; no out-of-sync flag; three pairs ended by the pause menu's kick. `recall_execute` entered 4,626 times and `shop_buy` 88 times (both machines together). Three of its pairs without the carried-weight section differ in the load (V57's class); with it, none. Play!, two identical instances: logic only |
+| new | The same set plus "skeleton queries rebuild inside the tick": 24 pairs, 1,027,302 ticks, no difference outside the tick of one kick (identical in two runs). Every pair takes another course than without the section. "Route search always clears the previous search's marks" was on in both arms |
+| new | Player record +0x4ac5 and +0x4ac6 (and +0x4b05, +0x4b06): bytes +0x3d and +0x3e of the weapon-trail blocks. `Player_meleeHit` sets them in the tick on every machine; `fx_modelStatusEffects`, from `Player_weaponTrails`, counts down and clears them — for the real player on other machines, for the prediction copy on the owner's. They differ between machines in 68 of 120 pairs, 3,290 ticks, longest stretch 279 (7,532 in the second arm). Effect state; no simulation reader known; no consequence seen |
+| K4 | The two words `hud_spellSelect` stores, record +0x4a74 and +0x4a78: **Ran** — set on the owner's machine and zero on the other at every tick of a probe pair |
+| V46, V47, K3 | In 144 pairs and 6.1 million ticks with the two menu sections on, no hit-point difference and no difference in the stored attack rating or damage; hit points above the maximum in 12,481 ticks of one machine's logs, and in the same ticks of the other's |
+| lobby | Eight lobby-launched pairs with the 24 sections, five with the pause button in the input and five with the path model: 195,331 ticks, no difference in any column, no checksum failure, 712 saves answered 0 |
+| S6 | The chat-room fix **ran** with the game: after a session is picked up on the game list, the game's 0x15 for the public room gets result 0 |
+
+### 22.8 What this does and does not say
+
+"Nothing known is left" has been said after sections 17 and 18 and was wrong both times.
+What is different this time is narrow: the input is new, the pairs are as long as before
+and not longer, and the columns now cover nearly all of the player record. What the soak
+cannot see is unchanged:
+
+- State outside the two player records, the quest variables and the hashed positions:
+  monsters, pets, objects, level scripts' own variables. A difference there shows only
+  when it reaches the shared seed or a player — which, in six million ticks, none did.
+- No pair is longer than 60,000 frames (about 17 minutes of play), and a class that
+  needs an hour of accumulated state would not show.
+- Never run here: a skill point or stat point spent (no level was gained and
+  acknowledged), the workshop, a save point's prompt with a card screen open, the
+  CloudGiant king (whether a pair in `airarena` met him was not checked), a script's gift
+  with the load near the limit. The mission menu ran in 5 pairs and the jump-gate menu in
+  1. The nine sections that were new to a soak were on throughout but most of them guard
+  a case the input may never have made: that they did no harm is shown, that they work is
+  not (their own sections of this document are the evidence for that, where there is any).
+- The skill-rank writes and the builds are the rig's; characters carry starting items
+  and what they picked up or bought.
+- Two identical Play! instances show logic differences only: nothing here is a statement
+  about floating point, timing or anything else in which two real consoles, or a console
+  and PCSX2, can differ.
+
+Not done: the reader of the trail bytes, and why the lobby-launched game hardly counts
+them down; the five slow pairs of `honor` and `arachna1`; the kicks were not run again
+(pair 045 of the second arm apart); the room chat after a picked-up session; three or
+four machines; anything on a console or in PCSX2.
