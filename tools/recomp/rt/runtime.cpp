@@ -26,6 +26,10 @@
 #include "vu0.h"
 
 #include <cfenv>
+#if defined(__x86_64__) || defined(_M_X64)
+#include <pmmintrin.h>
+#include <xmmintrin.h>
+#endif
 #include <condition_variable>
 #include <cstdarg>
 #include <map>
@@ -446,6 +450,22 @@ static void thread_main(GThread* self) {
     std::unique_lock<std::mutex> lock(g_big);
     t_self = self;
     fesetround(FE_TOWARDZERO);
+    // The console's floating point has no denormals: one is zero when it is read and when
+    // it would be the result.  The emulator the translation is compared with runs the
+    // game's thread that way (rounding toward zero and flush-to-zero); with rounding alone
+    // an add, subtract, multiply, divide, square root, multiply-add, MAX / MIN or compare
+    // gives other bits as soon as a denormal is involved (found by directed operand sets
+    // against an exact reference; not yet seen to change a game run, but a value decaying
+    // into that range would step differently from the original).  Every host thread that
+    // runs translated code starts here, interrupt handlers and alarms included (they are
+    // delivered on these threads), and vu0.h computes with the host's floats, so this one
+    // place covers the main processor, its FPU and the VU0 macro instructions.
+#if defined(__aarch64__) || defined(_M_ARM64)
+    { uint64_t fpcr; __asm__ __volatile__("mrs %0, fpcr" : "=r"(fpcr)); fpcr |= 1ull << 24; __asm__ __volatile__("msr fpcr, %0" : : "r"(fpcr)); }
+#elif defined(__x86_64__) || defined(_M_X64)
+    _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
+    _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
+#endif
     try {
         wait_for_baton(lock, self);
         // A procedure that returns to an address with a translation continues there: that

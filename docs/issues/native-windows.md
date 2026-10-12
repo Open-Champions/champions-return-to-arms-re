@@ -20,20 +20,37 @@ STATE: see "Resume here" at the end (kept current while the work goes on).
 ## What is built
 
 ```
-python3 tools/recomp/app/build_win.py            # everything, into local/recomp-out/win/
-python3 tools/recomp/app/build_win.py --standin  # the x86-64 macOS stand-in and its arm64 control
+python3 tools/recomp/app/build_win.py              # the Windows programs, into local/recomp-out/win/
+python3 tools/recomp/app/build_win.py --standin    # the x86-64 macOS stand-in and its arm64 controls
+export RTA_DISC="/path/to/your/disc image.iso"
+python3 tools/recomp/app/build_win.py --reference  # what rta_native.exe should print (arm64 Mac build)
+python3 tools/recomp/app/win/standin_compare.py    # x86-64 against arm64 and both against the rig
 ```
 
 | In `local/recomp-out/win/` | Is |
 |---|---|
-| `rta_app.exe` | the game in a window: Win32 window, OpenGL 4.1 core through WGL, keyboard, XInput, WASAPI |
-| `rta_native.exe` | the machine with nothing attached (`rt/main_headless.cpp`): boots, runs scripts, prints its report |
-| `fpcheck.exe` | the game's floating-point operations as a table of checksums (`app/win/fpcheck.cpp`) |
-| `play.bat`, `README.txt` | for the tester (copies of `tools/recomp/app/win/`) |
-| `standin/` | `rta_native_x64`, `recomp_test_x64`, `fpcheck_x64` (macOS x86-64, run under Rosetta) and `rta_native_arm64`, `fpcheck_arm64` (the controls, same sources, same moment) |
+| `rta_app.exe` (27.3 MB) | the game in a window: Win32 window, OpenGL 4.1 core through WGL, keyboard, XInput, WASAPI |
+| `rta_native.exe` (26.5 MB) | the machine with nothing attached: boots, runs scripts, prints its report |
+| `fpcheck.exe` (0.2 MB) | the game's floating-point operations as a table of checksums (`app/win/fpcheck.cpp`) |
+| `rta-windows/` | **the folder a tester gets**: the three programs, `play.bat`, `README.txt`, `boot-check.rig` (the rig's boot script with addresses in place of names), `boot-check-mac.txt` (what the Mac printed for it) |
+| `gen-app/`, `gen-orig/` | this build's own translation of the game (with the fix set / unpatched), made by `recomp.py` at every build; a file is replaced only when its content changed |
+| `obj-clang/` | objects, and a linker map of each program (`rta_app.map`: the addresses a crash report names) |
+| `standin/` | `rta_native_x64`, `recomp_test_x64`, `fpcheck_x64` (macOS x86-64, run under Rosetta); `rta_native_arm64`, `fpcheck_arm64` (the controls, same sources); `rta_native_fix_arm64` (the game as `rta_native.exe` has it, for the reference); the comparison's logs |
+
+The build translates into its own directory because the other builds translate into
+`local/recomp-out/gen-app` whenever they run: at 14:13 that changed `funcs.h` under a
+running compile.
+
+**Time and size.** The 51 generated files (31 MB of C++) and the runtime for Windows at
+`-O2`: about 210 s of processor time; 106 s of wall time at 8 jobs and nice 10 under a load
+average of 200, 8.6 minutes under a load average of 500. Everything (68 files, three
+programs): 2 min 18 s when the machine was calmer. `rta_app.exe` is 27.3 MB stripped
+(43.2 MB with its symbol table; the arm64 macOS `rta_app` is 23.4 MB).
 
 No DLL has to be shipped: the programs are linked with `-static` (libstdc++, libgcc,
-winpthreads inside) and import only what Windows 10 and later has.
+winpthreads inside) and import only `KERNEL32`, `USER32`, `GDI32`, `OPENGL32`, `WINMM`,
+`AVRT`, `ole32` and the UCRT's `api-ms-win-crt-*` sets, all part of Windows 10 and later
+(read from the import table). XInput is looked up at run time.
 
 **Toolchain.** Installed with Homebrew, and nothing else: `mingw-w64` 14.0.0_3 (GCC
 16.2.0, binutils, the MinGW-w64 headers and libraries for the UCRT). Homebrew upgraded
@@ -57,7 +74,9 @@ never run.
 |---|---|---|
 | `rt/host_win32.cpp` | `host.h` for Windows: `_beginthreadex` with a 256 MB stack reservation, `TerminateProcess` after flushing, the disc image through a Win32 handle read at a 64-bit offset, a high-resolution waitable timer; sets the timer period to 1 ms; prints exception code and image offset when the program faults | Built, not run |
 | `sound/audio_out_win.cpp` | the sound device: WASAPI shared mode, event driven, 48 kHz 16-bit stereo handed over as it is (Windows converts), 20 ms buffer; the device is opened again when it goes away; waveOut (4 x 10 ms) when WASAPI does not open or `RTA_SOUND_API=waveout` | Built, not run |
-| `app/win_main.cpp` | the program: options, window, pacing, keyboard, F12 pictures (PNG written here), log file, the `app ...` script commands | Built, not run |
+| `app/win_main.cpp` | the program: options, window, pacing, keyboard, F12 pictures (PNG written here), log file, the `app ...` script commands; a disc image dropped on the program is taken as `--disc` | Built, not run |
+| `app/win/headless_main.cpp` | `rta_native.exe`: `rt/main_headless.cpp` with `native.py`'s defaults (the executable copied out of the disc image, a card directory) | Built, not run |
+| `app/win/standin_compare.py` | runs the x86-64 and the arm64 Mac build as `rigcompare.py boot-native --replay` does, each into its own directory, and compares | Ran |
 | `app/win/wgl.h`, `wgl.cpp`, `QOpenGLContext`, `QOpenGLExtraFunctions` | the OpenGL context (4.1 core, 3.3 core as second try) and the driver's functions, behind the two Qt class names `render/backend_gl.cpp` is written against - the backend compiles for Windows unchanged | Built, not run |
 | `app/pad_win.cpp` | `pad_host.h` over XInput (looked up at run time), `pad_mac.mm`'s map and dead zones | Built, not run |
 | `app/win/fpcheck.cpp` | every operation of `rt/fpu.h` and the arithmetic of `rt/vu0.h` over corner values and a fixed random set, as checksums | Ran on the Mac (both architectures); the `.exe` not run |
@@ -168,7 +187,68 @@ comparison only on the Mac.
 
 ## The x86-64 stand-in: differential test and session comparison (Ran on the Mac)
 
-RESULTS PENDING - see "Resume here".
+`build_win.py --standin` compiles the same sources with the same flags for macOS x86-64
+(`clang++ -arch x86_64`; the programs run under Rosetta) and, as the control, for arm64 at
+the same moment. Both use this build's own unpatched translation (`win/gen-orig`,
+byte-identical to the shared `gen/`): the game that is compared with the rig.
+
+**Function by function** (`RECOMP_TEST_DRIVER=.../recomp_test_x64 difftest.py sweep
+--seeds 2`; the test model `-DFPU_PS2`, which also exercises the 128-bit integers):
+
+| | functions | cases | pass | identical to a common stop | FAIL | cases different | not comparable |
+|---|---|---|---|---|---|---|---|
+| x86-64 under Rosetta (795 s) | 7,732 | 92,784 | 7,391 | 40 | 0 | 0 | 301 |
+| arm64 (this morning's `sweep-stub.txt`) | 7,732 | 92,784 | 7,391 | 40 | 0 | 0 | 301 |
+
+Every count of the two reports is the same (72,825 cases identical to the return, 501 to
+a common stop, 19,458 stopped in the interpreter).
+
+**A whole session** (`standin_compare.py`: script `fight3.rig` - power-on, front end,
+character creation, the first level, the level change to `valor`, the fight - with the
+rig's controller bytes replayed tick for tick and the rig's session seeds, exactly as
+`rigcompare.py boot-native --replay`; each build into its own directory):
+
+| | arm64 | x86-64 under Rosetta |
+|---|---|---|
+| frames / fields / units | 7,797 / 7,904 / 257,776,500 | 7,797 / 7,904 / 257,776,500 |
+| wall time (load average about 450) | 83 s | 115 s |
+
+- The two tick logs (27 watch columns - positions, hit points, the player record, the
+  object pool, the task list, both seeds - at every one of 7,798 logged frames) are
+  **byte-identical** (1,980,683 bytes).
+- Main memory, all 32 MB, written at frame 7,304 (after the fight; the two `--dump-tick`
+  conditions were both already true there, so it is one moment written twice): **byte-identical**.
+- `rigcompare.py boot-compare` against the rig's log gives the same text for both, and it
+  is the result `native-app.md` has: front end 1,383 ticks and `valor` 5,410 ticks identical
+  in every simulation column; the first level 99 ticks identical but for the player record
+  at tick 7; the object pool different in the same 27 ticks (3,886 to 3,912); the cosmetic
+  seed different where it was.
+
+So in this session nothing the game computed depended on the processor - which also means
+the one known hardware-dependent case (`vu0.h` with an infinity or NaN operand) either did
+not occur or left no trace in memory.
+
+**The Windows objects against the stand-in's (Read).** One generated file, the one with
+the most floating-point operations (`c_006.cpp`, 201 functions), compiled for
+`x86_64-w64-mingw32` and compared with the stand-in's object: 2,631 floating-point
+instructions in each; in all 201 functions the same instructions in the same numbers, in
+199 in the same order (in two the compiler laid the blocks out in another order). The
+other 45 files were not compared this way.
+
+**What rta_native.exe should print.** `build_win.py --reference` runs the tester's check
+script (`boot-check.rig`: the rig's `boot-to-hub.rig`, 2,413 fields from power-on into the
+first level) in `rta_native_fix_arm64` - the sources and the translation of
+`rta_native.exe`, as an arm64 Mac program. Two runs print the same 691 lines except the
+wall time. The lines to look for:
+
+```
+frames=2309 wall=...: ... fields=2413 units=113069982
+VU0: 466083 microprogram calls, 26111361 instructions
+```
+
+and the script's last `show` puts the character at 131.570755, -96.2327423, -48. These
+figures belong to the sources of 2026-10-12 15:00; a later build gets its own
+(`--reference` again).
 
 ## Not run, and what could be wrong there
 
@@ -187,7 +267,34 @@ RESULTS PENDING - see "Resume here".
 
 ## Test plan for a person with a Windows PC
 
-PENDING - see `tools/recomp/app/win/README.txt` for the tester's short version.
+**What to copy:** the folder `local/recomp-out/win/rta-windows` (54 MB; it contains
+translated game code, so it is not in the repository and goes to the tester directly),
+and the tester's own disc image of SLUS-20973 v2.00. Needs Windows 10 1903 or later, 64-bit,
+and a graphics driver with OpenGL 4.1. Nothing is installed; everything written goes to
+`rta-data` beside the programs. `README.txt` in the folder is this plan in the tester's words.
+
+| Step | The tester does | Passes when | Tells us |
+|---|---|---|---|
+| 1 | `fpcheck.exe > fpcheck.txt` in a Command Prompt | the line "must agree everywhere" ends in `2e77df4dc13ec9c5` and the rounding mode reads "toward zero" | the processor, the C library's `fesetround` and the compiled operations give the Mac's results |
+| 2 | `rta_native.exe boot --disc "C:\...\image.iso" --script boot-check.rig > boot-check.txt 2>&1` | the two lines above appear; `fc boot-check.txt boot-check-mac.txt` shows only the `wall=` line (and paths) | host file, threads, stacks, disc reading, memory card, the whole translated game from power-on into the first level, bit for bit as on the Mac |
+| 3 | drags the image onto `play.bat`; plays a few minutes | a window with the memory-card screens, logo, title, a level; sound; keyboard and controller | window, WGL, shaders, pacing, WASAPI, XInput |
+
+**What to send back:** `fpcheck.txt`, `boot-check.txt`, `rta-data\rta_app-log.txt` (the
+log of the last run of `rta_app.exe`: Windows version, OpenGL version and renderer, missing
+OpenGL functions, the pacing chosen, the sound device's line, and at the end the figures -
+pictures per second, how long pictures stood, sound requests late), pictures made with F12
+of anything that looks wrong, and the answers to: did a window open; which screens
+appeared; is there sound, does it crackle; do keyboard and controller work; is the speed
+right and even.
+
+**If it fails:** a fault prints `host: the program failed: exception 0x... at offset 0x...`
+as the last line of the log; the offset is looked up in `local/recomp-out/win/obj-clang/rta_app.map`
+of the same build (keep that directory until the report is in). "The window or its OpenGL
+4.1 context could not be made" names the step of `wgl.cpp` that failed. No sound:
+`set RTA_SOUND_API=waveout` before starting, or `--no-sound`, and the `sound:` lines of
+the log. `rta_app_gcc.exe`, when it is in the folder, is the same program built by GCC -
+to be tried only if `rta_app.exe` does not start at all (its arithmetic was not compared
+with anything; `fpcheck_gcc.exe` is its step 1).
 
 ## Resume here
 

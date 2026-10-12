@@ -28,6 +28,7 @@
 //                                  state is presentation)
 //      <virtual table> skip        the class is left out of both
 //    SOAK_MACHINES=2: the run ends 60 ticks after one machine holds the other dropped.
+//    SOAK_RAW_EVERY=N: "poolraw" is computed in ticks divisible by N only (it is the costly one).
 //
 // 2. --instrument count: g_soak_calls, one counter per call target, written at the end of
 //    the run to SOAK_CALLS=<file> as "address count" lines.
@@ -64,6 +65,7 @@ std::vector<MaskLine> g_mask;
 std::unordered_map<u32, int> g_class_rule;          // virtual table -> 1 "nohard", 2 "skip"
 std::unordered_map<u64, std::vector<u32>> g_keep;   // (virtual table, block size) -> bits kept per word
 bool g_started = false;
+int g_raw_every = 1;      // SOAK_RAW_EVERY=N: "poolraw" is computed in ticks divisible by N only
 void (*g_prev_finish)() = nullptr;
 
 void at_finish();
@@ -88,6 +90,7 @@ void start() {
         }
         fclose(f);
     }
+    if (const char* every = getenv("SOAK_RAW_EVERY")) g_raw_every = atoi(every);
     for (u32 a = SCRATCH; a < SCRATCH + 0x40; a += 4)
         if (rd(a)) { fprintf(stderr, "soak: the scratch block at 0x%x is in use\n", SCRATCH); _Exit(2); }
     g_prev_finish = rt_at_finish;
@@ -115,6 +118,7 @@ inline u32 canon(u32 v, const PoolClass* classes) {
 
 void pool_checksums() {
     static u8 is_free[2048];
+    bool want_raw = g_raw_every <= 1 || rd(G_NETFRAME) % (u32)g_raw_every == 0;
     u64 hard = 0, raw = 0, order = 0xA4093822299F31D0ull;
     u32 live = 0, per_class[3] = {};
     u32 ghost = rd(G_GHOST) & 0x1FFFFFFFu;
@@ -159,6 +163,7 @@ void pool_checksums() {
                 h = mix(h, ((u64)(rd(block + 0x18) & keep[6]) << 32) | (rd(block + 0x38) & keep[14] & 0xFFFFu));
                 hard += mix(h, rd(block + 0x44) & keep[17]);
             }
+            if (!want_raw) continue;
             u64 h = mix(0x13198A2E03707344ull, vtable);
             const u8* at = g_ram + block;
             for (u32 w = 0; w < words; w++) {
@@ -172,7 +177,7 @@ void pool_checksums() {
         }
     }
     wr(SCRATCH, (u32)(hard ^ (hard >> 32)));
-    wr(SCRATCH + 4, (u32)(raw ^ (raw >> 32)));
+    if (want_raw) wr(SCRATCH + 4, (u32)(raw ^ (raw >> 32)));
     wr(SCRATCH + 8, live);
     wr(SCRATCH + 12, (u32)(order ^ (order >> 32)));
     wr(SCRATCH + 16, per_class[0]);

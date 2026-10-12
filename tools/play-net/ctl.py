@@ -24,6 +24,8 @@ square triangle l1 l2 l3 r1 r2 r3 start select):
     shot <file.bmp>          a picture of the window's contents
     shotfb <file.bmp>        the picture as the machine drew it: the console's 640 x 448
                              times the resolution factor, whatever the window's size
+    shotview <file.bmp>      the part of that picture that is presented: without its
+                             outermost line and column (see "edge")
     burst <name> <n>         n consecutive presented pictures, <name>-0.bmp ..., with
                              the clock of each in <name>-times.txt
     probe <file> <n> <x> <y> <w> <h>   a rectangle of n consecutive presented pictures,
@@ -46,6 +48,22 @@ square triangle l1 l2 l3 r1 r2 r3 start select):
                              draws with is given to the graphics card; 0: all of it.
                              Every picture is read again ("info": tex_cropped, tex_regrown)
     texmemory <MB>           what --rta-texture-memory sets, in the running game
+    texorder 0|1             the replacement pictures are read in the order they were
+                             asked for (0) or what covers most of the screen first (1,
+                             the default)
+    upscale 0|1              at a resolution factor above 1: point-sampled effect sprites,
+                             the automap, points and lines as the console draws them (0)
+                             or filtered and a console pixel wide (1, the default)
+    texcentre 0|1            filtered indexed textures read as Play! has it, half a texel
+                             off (0), or round the place asked for (1, the default)
+    edge 0|1                 the whole of the console's picture is presented (0), or all
+                             but its outermost line and column, which a television does
+                             not show (1, the default)
+    drawlog <file> [frames [x0 y0 x1 y1]]
+                             how the game draws: a line for every draw of the next frames
+                             (1) with its GS registers and texture; with a rectangle (in
+                             pixels of the buffer drawn to) every primitive that touches it,
+                             vertex by vertex
     info                     frame number, clocks, thread processor times, the display's
                              rate, executable, network and texture counters
     gs                       the display state: interlace, field, the buffer shown

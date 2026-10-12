@@ -30,12 +30,15 @@ static const char* VERTEX_SOURCE = R"(#version 410 core
 layout(location = 0) in vec3 a_pos;
 layout(location = 1) in vec3 a_st;
 layout(location = 2) in vec4 a_col;
+layout(location = 3) in float a_fog;
 uniform vec2 u_target;
 out vec3 v_st;
 out vec4 v_col;
+out float v_fog;
 void main() {
     v_st = a_st;
     v_col = a_col * 255.0;
+    v_fog = a_fog;
     gl_Position = vec4(a_pos.x / u_target.x * 2.0 - 1.0, a_pos.y / u_target.y * 2.0 - 1.0, a_pos.z * 2.0 - 1.0, 1.0);
 }
 )";
@@ -45,6 +48,8 @@ void main() {
 static const char* FRAGMENT_SOURCE = R"(#version 410 core
 in vec3 v_st;
 in vec4 v_col;
+in float v_fog;
+uniform vec4 u_fog;         // fog colour (0..255), on
 uniform sampler2D u_tex;
 uniform int u_textured;
 uniform int u_tfx;
@@ -94,6 +99,7 @@ void main() {
             c.a = u_tcc == 0 ? v_col.a : (u_tfx == 2 ? min(t.a + v_col.a, 255.0) : t.a);
         }
     }
+    if (u_fog.w > 0.5) c.rgb = c.rgb * v_fog + u_fog.rgb * (1.0 - v_fog);
     if (u_atst != 1) {
         bool pass = true;
         float a = floor(c.a + 0.01);
@@ -134,7 +140,7 @@ struct GlBackend::Impl {
     GLuint program = 0, present_program = 0, vao = 0, vbo = 0, present_vao = 0;
     GLuint samplers[2][2][2] = {{{0, 0}, {0, 0}}, {{0, 0}, {0, 0}}};     // linear, clamp s, clamp t
     struct Uniforms {
-        GLint target, tex, textured, tfx, tcc, st_scale, tex_size, tex_offset, wrap, region, weave_half, texa, atst, aref, blend, blend_c, fix;
+        GLint target, tex, textured, tfx, tcc, st_scale, tex_size, tex_offset, wrap, region, weave_half, texa, atst, aref, blend, blend_c, fix, fog;
     } u;
     GLint present_rect = -1, present_tex = -1;
     struct Target { GLuint fbo = 0, colour = 0, depth = 0; int lw = 0, lh = 0, pw = 0, ph = 0; bool screen = false; };
@@ -169,7 +175,7 @@ struct GlBackend::Impl {
         present_program = link(PRESENT_VERTEX, PRESENT_FRAGMENT);
 #define U(name) u.name = f->glGetUniformLocation(program, "u_" #name)
         U(target); U(tex); U(textured); U(tfx); U(tcc); U(st_scale); U(tex_size); U(tex_offset); U(wrap); U(region); U(weave_half);
-        U(atst); U(aref); U(blend); U(blend_c); U(fix); U(texa);
+        U(atst); U(aref); U(blend); U(blend_c); U(fix); U(texa); U(fog);
 #undef U
         present_rect = f->glGetUniformLocation(present_program, "u_rect");
         present_tex = f->glGetUniformLocation(present_program, "u_tex");
@@ -184,6 +190,8 @@ struct GlBackend::Impl {
         f->glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)0);
         f->glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)12);
         f->glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (void*)24);
+        f->glEnableVertexAttribArray(3);
+        f->glVertexAttribPointer(3, 1, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (void*)28);
         for (int linear = 0; linear < 2; linear++)
             for (int cs = 0; cs < 2; cs++)
                 for (int ct = 0; ct < 2; ct++) {
@@ -341,6 +349,7 @@ void GlBackend::execute(const FrameList& frame) {
             f->glUniform1f(g.u.weave_half, c.weave_half);
             f->glUniform4f(g.u.texa, c.tex_is_target ? (float)c.texa_mode : 0.0f, (float)c.ta0, (float)c.ta1, c.aem ? 1.0f : 0.0f);
         }
+        f->glUniform4f(g.u.fog, (float)c.fog_colour[0], (float)c.fog_colour[1], (float)c.fog_colour[2], c.fog ? 1.0f : 0.0f);
         f->glUniform1i(g.u.atst, c.alpha_test ? c.atst : 1);
         f->glUniform1f(g.u.aref, (float)c.aref);
         // depth

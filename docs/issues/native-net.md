@@ -23,8 +23,10 @@ reading alone unless it says **Read**.
 - **Speed**: two native instances in a lockstep game, unthrottled, run 1,387 ticks per
   second of wall time idle (23 × real time) and 930 to 1,300 in the arena fight (15 to
   22 ×) on a quiet machine; the emulator rig manages about 0.85 ×.
-- Not done: the lobby path (TCP, DNS, network configuration, the two ERX modules) — see
-  "What the lobby path needs".
+- Not done here: the lobby path (TCP, DNS, network configuration, the two ERX modules) — see
+  "What the lobby path needs". **Done since, in a driver of its own**:
+  `docs/issues/native-online.md` (`tools/recomp/net/netdrv.cpp`; this shim stays the
+  test equipment of the LAN start).
 
 ## Where things are
 

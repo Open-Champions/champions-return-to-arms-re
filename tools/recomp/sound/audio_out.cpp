@@ -9,7 +9,11 @@
 // reserve is given up at once instead.
 //
 //   macOS    AudioQueue (AudioToolbox), found at run time with dlopen so that the
-//            program needs no extra link flag; three buffers of 10 ms
+//            program needs no extra link flag; three buffers of 10 ms.  A device that asks
+//            for its sound (open_device_puller) is the default output unit instead: its
+//            render callback runs on the system's real-time sound thread, which a loaded
+//            machine does not hold up (an AudioQueue's callback thread is an ordinary
+//            one: with the computer very busy it once came 0.9 s late)
 //   Windows  not written.  It needs the same three calls on WASAPI in shared mode
 //            (IAudioClient::Initialize with an event handle, a thread that waits for the
 //            event and copies from pull() into IAudioRenderClient::GetBuffer) or, with
@@ -359,6 +363,87 @@ private:
 
 }  // namespace
 
+// The default output unit, asking a source for every buffer on the real-time sound thread.
+class UnitPuller : public PullDevice {
+public:
+    UnitPuller(unsigned rate, float gain, AudioSource* source) : source_(source), rate_(rate), gain_(gain) {
+        void* lib = dlopen("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox", RTLD_LAZY);
+        if (!lib) { why_ = "AudioToolbox could not be loaded"; return; }
+#define RTA_SYM(name) name##_ = (decltype(name##_))dlsym(lib, #name)
+        RTA_SYM(AudioComponentFindNext); RTA_SYM(AudioComponentInstanceNew); RTA_SYM(AudioComponentInstanceDispose);
+        RTA_SYM(AudioUnitSetProperty); RTA_SYM(AudioUnitInitialize); RTA_SYM(AudioUnitUninitialize);
+        RTA_SYM(AudioOutputUnitStart); RTA_SYM(AudioOutputUnitStop);
+#undef RTA_SYM
+        if (!AudioComponentFindNext_ || !AudioComponentInstanceNew_ || !AudioUnitSetProperty_ || !AudioUnitInitialize_ || !AudioOutputUnitStart_) { why_ = "output unit functions not found"; return; }
+        AudioComponentDescription description;
+        memset(&description, 0, sizeof description);
+        description.componentType = kAudioUnitType_Output;
+        description.componentSubType = kAudioUnitSubType_DefaultOutput;
+        description.componentManufacturer = kAudioUnitManufacturer_Apple;
+        AudioComponent component = AudioComponentFindNext_(nullptr, &description);
+        if (!component) { why_ = "no default output unit"; return; }
+        if ((status_ = AudioComponentInstanceNew_(component, &unit_)) != 0) { unit_ = nullptr; why_ = "AudioComponentInstanceNew"; return; }
+        AudioStreamBasicDescription format;
+        memset(&format, 0, sizeof format);
+        format.mSampleRate = rate;
+        format.mFormatID = kAudioFormatLinearPCM;
+        format.mFormatFlags = kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked;
+        format.mBytesPerPacket = 4; format.mFramesPerPacket = 1; format.mBytesPerFrame = 4;
+        format.mChannelsPerFrame = 2; format.mBitsPerChannel = 16;
+        if ((status_ = AudioUnitSetProperty_(unit_, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &format, sizeof format)) != 0) { why_ = "stream format"; close(); return; }
+        AURenderCallbackStruct callback = {render, this};
+        if ((status_ = AudioUnitSetProperty_(unit_, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &callback, sizeof callback)) != 0) { why_ = "render callback"; close(); return; }
+        if ((status_ = AudioUnitInitialize_(unit_)) != 0) { why_ = "AudioUnitInitialize"; close(); return; }
+        if ((status_ = AudioOutputUnitStart_(unit_)) != 0) { why_ = "AudioOutputUnitStart"; close(); return; }
+        ok_ = true;
+    }
+    ~UnitPuller() override { close(); }
+    bool ok() const { return ok_; }
+    const char* why() const { return why_; }
+    int status() const { return (int)status_; }
+    PullFigures figures() override { return count_.figures(); }
+    void close() override {
+        if (!unit_) return;
+        if (AudioOutputUnitStop_) AudioOutputUnitStop_(unit_);
+        if (AudioUnitUninitialize_) AudioUnitUninitialize_(unit_);
+        if (AudioComponentInstanceDispose_) AudioComponentInstanceDispose_(unit_);
+        unit_ = nullptr;
+    }
+    void report(FILE* out) override {
+        count_.report(out, "default output unit (real-time thread)", rate_);
+        fprintf(out, "sound: delay from a register write to the device: one request of the device (about 10 ms) + the device's own\n");
+    }
+
+private:
+    static OSStatus render(void* self, AudioUnitRenderActionFlags*, const AudioTimeStamp*, UInt32, UInt32 frames, AudioBufferList* data) {
+        UnitPuller* unit = (UnitPuller*)self;
+        if (!data || !data->mNumberBuffers || !data->mBuffers[0].mData) return 0;
+        int16_t* out = (int16_t*)data->mBuffers[0].mData;
+        UInt32 room = data->mBuffers[0].mDataByteSize / 4;
+        if (frames > room) frames = room;
+        unit->count_.pull(unit->source_, out, frames);
+        if (unit->gain_ <= 0) memset(out, 0, (size_t)frames * 4);      // gain 0: nothing can be heard
+        else if (unit->gain_ < 1) for (UInt32 k = 0; k < frames * 2; k++) out[k] = (int16_t)(out[k] * unit->gain_);
+        return 0;
+    }
+    AudioSource* source_;
+    unsigned rate_;
+    float gain_;
+    PullCount count_;
+    bool ok_ = false;
+    const char* why_ = "";
+    OSStatus status_ = 0;
+    AudioComponentInstance unit_ = nullptr;
+    AudioComponent (*AudioComponentFindNext_)(AudioComponent, const AudioComponentDescription*) = nullptr;
+    OSStatus (*AudioComponentInstanceNew_)(AudioComponent, AudioComponentInstance*) = nullptr;
+    OSStatus (*AudioComponentInstanceDispose_)(AudioComponentInstance) = nullptr;
+    OSStatus (*AudioUnitSetProperty_)(AudioUnit, AudioUnitPropertyID, AudioUnitScope, AudioUnitElement, const void*, UInt32) = nullptr;
+    OSStatus (*AudioUnitInitialize_)(AudioUnit) = nullptr;
+    OSStatus (*AudioUnitUninitialize_)(AudioUnit) = nullptr;
+    OSStatus (*AudioOutputUnitStart_)(AudioUnit) = nullptr;
+    OSStatus (*AudioOutputUnitStop_)(AudioUnit) = nullptr;
+};
+
 AudioSink* open_device_sink(unsigned rate, unsigned latency_ms, float gain) {
     QueueSink* sink = new QueueSink(rate, latency_ms, gain);
     if (sink->ok()) return sink;
@@ -368,6 +453,10 @@ AudioSink* open_device_sink(unsigned rate, unsigned latency_ms, float gain) {
 }
 
 PullDevice* open_device_puller(unsigned rate, float gain, AudioSource* source) {
+    UnitPuller* unit = new UnitPuller(rate, gain, source);
+    if (unit->ok()) return unit;
+    fprintf(stderr, "sound: output unit not opened: %s (status %d); trying an AudioQueue\n", unit->why(), unit->status());
+    delete unit;
     QueueSink* sink = new QueueSink(rate, 0, gain, source);
     if (sink->ok()) return sink;
     fprintf(stderr, "sound: device not opened: %s (status %d)\n", sink->why(), sink->status());

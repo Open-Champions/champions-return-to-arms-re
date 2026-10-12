@@ -34,15 +34,23 @@ Three checks, in this order (each takes a minute)
      the number the Mac prints. If it does not, stop here and report it: the game would
      not compute on your PC as it does on the Mac.
 
-  2. The game without window or sound, 20 seconds of its time:
-         rta_native.exe boot --disc "C:\path\to\your.iso" --fields 1200 > headless.txt 2>&1
-     Send headless.txt (it ends with a report of what the machine did).
+  2. The game without window or sound, from power-on into the first level by a script
+     (it presses the buttons; about ten seconds):
+         rta_native.exe boot --disc "C:\path\to\your.iso" --script boot-check.rig > boot-check.txt 2>&1
+     Send boot-check.txt. Near its end it has to have these two lines, as on the Mac
+     (the "wall=" time and the speed will be different, nothing else):
+         frames=2309 wall=...: ... fields=2413 units=113069982
+         VU0: 466083 microprogram calls, 26111361 instructions
+     boot-check-mac.txt is what the Mac printed; to compare the two yourself:
+         fc boot-check.txt boot-check-mac.txt
+     (delete the folder rta-data\card-headless before running the check a second time:
+     the script expects a blank memory card.)
 
   3. The game: drag the .iso onto play.bat and play for a few minutes.
 
 What to report
-  - the file rta-data\rta_app-log.txt (written on every run; it starts again on each run,
-    so copy it before you start the program again)
+  - fpcheck.txt, boot-check.txt, and the file rta-data\rta_app-log.txt (written on every
+    run; it starts again on each run, so copy it before you start the program again)
   - did a window open? did the memory card screen, the logo, the title screen appear?
   - is there sound? does it crackle or drop out?
   - do the keyboard and the controller work?
@@ -50,9 +58,13 @@ What to report
   - anything that looks wrong: press F12 at that moment and send the picture
   - if it closes by itself: the last lines of rta-data\rta_app-log.txt say why
 
-Options that help when something is wrong
+When something is wrong
   --no-sound            no sound device is opened
   --window 640x480      a smaller window        --fullscreen   start full screen
   --scale 2             draw at twice the console's resolution instead of the window's size
   set RTA_SOUND_API=waveout   (before starting, in the same Command Prompt) the older sound interface
   rta_app.exe --help    the whole list
+  rta_app_gcc.exe (if it is in this folder): the same program built by a second compiler.
+  Try it only if rta_app.exe does not start at all, and say which one you used.
+
+Known not to work yet (as on the Mac): the two films at the start are skipped.

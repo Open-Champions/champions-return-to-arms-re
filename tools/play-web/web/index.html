@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Champions: Return to Arms</title>
+<link rel="icon" href="data:,">
 <style>
 	:root { color-scheme: dark; --ink: #e2ddd0; --dim: #9a9484; --line: #33302a; --panel: #1b1916; --accent: #c9a24a; }
 	* { box-sizing: border-box; }
@@ -52,9 +53,10 @@
 	footer { padding: 7px 16px 9px; border-top: 1px solid var(--line); color: var(--dim); font: 12px/1.45 -apple-system, "Segoe UI", sans-serif; }
 	footer a { color: inherit; }
 	input[type=file] { display: none; }
-	/* start-up, settings, pause, notices, on-screen pad (rta-web.js: "first use" and below) */
+	/* start-up, settings, pause, notices, on-screen pad. What lies over the picture is stacked in the order it stands in the page
+	   (start, on-screen pad, pause, then the online panel), with only the notices and the two panels at the right lifted above all. */
 	#progress[hidden], #needs[hidden], #notes[hidden], #hints[hidden], #paused[hidden], #notice[hidden], #settings[hidden], #touch[hidden], #cardFile { display: none; }
-	#start { overflow: auto; z-index: 5; }
+	#start { overflow: auto; }
 	#start.drop { outline: 2px dashed var(--accent); outline-offset: -12px; }
 	#start b { color: var(--ink); font-weight: normal; }
 	#progress { width: min(22em, 80%); height: 6px; border: 1px solid #4a453a; border-radius: 3px; background: #14120f; overflow: hidden; flex: none; }
@@ -66,7 +68,7 @@
 	#notes li { color: var(--dim); margin: 4px 0; }
 	#needs li::before, #notes li::before { content: "– "; }
 	#start #hints { font: 13px/1.5 -apple-system, "Segoe UI", sans-serif; }
-	#paused { position: absolute; inset: 0; z-index: 4; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; text-align: center; background: rgba(12, 11, 9, 0.8); cursor: pointer; font: 14px/1.45 -apple-system, "Segoe UI", sans-serif; }
+	#paused { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; text-align: center; background: rgba(12, 11, 9, 0.8); cursor: pointer; font: 14px/1.45 -apple-system, "Segoe UI", sans-serif; }
 	#paused b { font: 26px/1.2 Georgia, "Iowan Old Style", serif; letter-spacing: 0.08em; color: var(--accent); font-weight: normal; }
 	#paused .bad { color: #e08a6c; max-width: 36em; }
 	#notice { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 6; width: max-content; max-width: min(46em, calc(100% - 24px)); background: var(--panel); border: 1px solid #4a453a; border-radius: 4px; padding: 7px 14px; font: 13px/1.45 -apple-system, "Segoe UI", sans-serif; cursor: pointer; }
@@ -84,7 +86,7 @@
 	#controls .row { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0; }
 	main:fullscreen { background: #000; }
 	main:-webkit-full-screen { background: #000; }
-	#touch { position: absolute; inset: 0; z-index: 3; pointer-events: none; touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; font: 15px/1 -apple-system, "Segoe UI", sans-serif; }
+	#touch { position: absolute; inset: 0; pointer-events: none; touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; font: 15px/1 -apple-system, "Segoe UI", sans-serif; }
 	#touch > * { position: absolute; pointer-events: auto; touch-action: none; }
 	#touch button, #touchStick { background: rgba(38, 35, 30, 0.42); border: 1px solid rgba(226, 221, 208, 0.42); color: rgba(226, 221, 208, 0.9); border-radius: 50%; width: 3.3em; height: 3.3em; padding: 0; }
 	#touch button.wide { border-radius: 1.1em; width: 4.4em; height: 2.3em; }
@@ -345,7 +347,7 @@
 			if(!has.workerWebGl) notes.push("This browser cannot draw from a thread of its own (no WebGL 2 on an OffscreenCanvas): the picture goes through the page's main thread and the game runs slower. A current Chrome, Edge, Firefox or Safari 17 can.");
 			if(/swiftshader|llvmpipe|software|basic render/i.test(has.renderer || "")) notes.push("The picture is drawn without the graphics chip (“" + has.renderer + "”): the game will be slow. Switch on hardware acceleration in the browser's settings.");
 			if(!has.discInPlace) notes.push("This browser reads a chosen file through the page's main thread (no range requests on it from a thread): loading takes a little longer.");
-			if(!has.filePicker) notes.push("This browser does not let a page remember a file: you choose your disc image at every visit (Chrome, Edge and Brave ask only the first time).");
+			if(!has.filePicker) notes.push("This browser does not let a page remember a file: you choose your disc image at every visit (Chrome and Edge ask only the first time)." + (navigator.brave ? " In Brave that can be switched on: brave://flags, “File System Access API”." : ""));
 			if(!has.audioWorklet) notes.push("No sound: this browser has no audio worklets.");
 			if(!has.gamepads) notes.push("This browser shows no game controllers to a page: keyboard" + (has.touch ? " or touch screen" : "") + " only.");
 			if(!has.database) notes.push("This browser gives the page no storage (a private window, or storage is blocked for this site): saved games are lost when the page is closed. Settings → Saved games → Save to a file keeps them.");

@@ -68,12 +68,11 @@ void Renderer::set_memory(const uint8_t* ram, uint32_t size) {
     index.size = size;
     gs.picture_size = [this](uint32_t tbp, int& width, int& height) {
         TexHeader h;
-        if (tbp < 4) return false;
         // a block nothing was found for is asked for again only when more headers are
         // known (each failed lookup makes whoever keeps the list look through memory)
         auto failed = picture_failed.find(tbp);
         if (failed != picture_failed.end() && failed->second == index.headers.size()) return false;
-        if (!index.resident(tbp - 4, h)) { picture_failed[tbp] = index.headers.size(); return false; }
+        if (!index.resident_at(tbp, h)) { picture_failed[tbp] = index.headers.size(); return false; }
         picture_failed.erase(tbp);
         width = h.width; height = h.height;
         return true;

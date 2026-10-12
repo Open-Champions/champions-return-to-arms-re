@@ -21,6 +21,7 @@ struct Vertex {
     float x, y, z;
     float s, t, q;
     uint8_t r, g, b, a;
+    uint8_t fog = 255, pad[3] = {0, 0, 0};      // the GS fog coefficient: 255 leaves the colour, 0 gives the fog colour
 };
 
 enum PrimKind : uint8_t { PK_TRIANGLES, PK_LINES, PK_POINTS };
@@ -66,6 +67,10 @@ struct DrawCmd {
     bool blend = false;
     uint8_t ba = 0, bb = 0, bc = 0, bd = 0, fix = 0x80;
     bool mask_rgb = false, mask_a = false;  // channels not written
+    // fogging: after the texture function the colour is F x colour + (1 - F) x fog colour,
+    // F the vertex's coefficient (Vertex::fog / 256)
+    bool fog = false;
+    uint8_t fog_colour[3] = {0, 0, 0};
     // CMD_COPY: a rectangle of target `texture` copied to target `target` (logical pixels)
     int copy_src[4] = {0, 0, 0, 0}, copy_dst[4] = {0, 0, 0, 0};
 };

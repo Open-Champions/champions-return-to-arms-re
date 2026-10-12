@@ -1,0 +1,9 @@
+// Proposed replacement for the section of the same title in patches/SLUS-20973_4028A55F.pnach
+// (docs/issues/native-soak.md, finding 1).  One word more than the section has now.
+[Net test: flush before a level load waits for the peers' tick]
+author=reverse engineering test patch; this form confirmed on a native pair and on two linked Play! emulator instances from power-on (docs/issues/native-soak.md finding 1); untested on PCSX2 or a console
+description=net_flushBeforeLoad, 0x132DF8, 0x132DFC and 0x132E28: as before - at least 16 passes before a level load, then wait until every other machine has reported the simulation frame of the level change (peer +0x44C8) - but only when there are peers. The 16-pass test sits in the delay slot of the "no peers" branch, so the section as first written also made 16 passes of net_main with no peers at all: in the developer LAN start (boot argument --net) the main loop calls this function before net_gameInit, the passes ran on a netcode that was not set up, and both players' lockstep pads stayed stuck for the whole game (held word 0x500000, left stick -1.138). With the branch going straight to the function's exit the no-peers case makes no pass, as in the original. Per machine. docs/issues/online-quality.md 3.2.
+// was: 18400011 (blez v0,0x132e40), 0000302D (move a2,zero), 8C82FFF0 (lw v0,-0x10(a0))  now: blez v0,0x132e70; slti a2,s0,16; lw v0,-8(a0)
+patch=1,EE,00132DF8,word,1840001D
+patch=1,EE,00132DFC,word,2A060010
+patch=1,EE,00132E28,word,8C82FFF8

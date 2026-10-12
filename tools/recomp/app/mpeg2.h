@@ -591,6 +591,10 @@ class Decoder {
             }
     }
 
+    // to the nearest integer whatever rounding mode the calling thread is in (the game's
+    // threads round toward zero)
+    static int nearest(float v) { return (int)std::floor(v + 0.5f); }
+
     uint8_t* block_at(int address, int b, int& stride) {
         int mx = address % mbw, my = address / mbw, w = mbw * 16;
         if (b < 4) { stride = w; return out->y.data() + (size_t)(my * 16 + (b >> 1) * 8) * w + mx * 16 + (b & 1) * 8; }
@@ -604,7 +608,7 @@ class Decoder {
             uint8_t* to = block_at(address, b, stride);
             for (int y = 0; y < 8; y++)
                 for (int x = 0; x < 8; x++) {
-                    int v = (int)std::lrintf(samples[y * 8 + x]);
+                    int v = nearest(samples[y * 8 + x]);
                     to[(size_t)y * stride + x] = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
                 }
         }
@@ -614,7 +618,7 @@ class Decoder {
         uint8_t* to = block_at(address, b, stride);
         for (int y = 0; y < 8; y++)
             for (int x = 0; x < 8; x++) {
-                int v = to[(size_t)y * stride + x] + (int)std::lrintf(samples[y * 8 + x]);
+                int v = to[(size_t)y * stride + x] + nearest(samples[y * 8 + x]);
                 to[(size_t)y * stride + x] = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
             }
     }

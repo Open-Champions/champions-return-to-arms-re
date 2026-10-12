@@ -12,8 +12,9 @@ by class (the name of the virtual table at +0x48, from vtables.txt); --words pri
 differing word with both values.  The three handle heads (+0, +4, +8) and, in a Player,
 the flag bits 0x200100 differ between machines in step and are left out, and a word that
 is an address is compared as soakhooks.cpp compares it (a heap address as such, a pool
-address as the class it points into), unless --all is given.  --sum: one table over all
-the ticks given.
+address as the class it points into), unless --all is given.  --masked: the words of
+poolmask.txt are left out too (what "poolraw" sees).  --sum: one table over all the ticks
+given; --mask: the same as lines for poolmask.txt.
 
 Standard library only.  The dumps are game data: keep them under local/.
 """
@@ -69,6 +70,72 @@ def canon(value, pool, classes):
     return 0xA0000001
 
 
+def read_mask():
+    """poolmask.txt as {virtual table or 0: {offset: bits}}, with what soakhooks.cpp has built in."""
+    mask = {0: {0: 0xFFFFFFFF, 4: 0xFFFFFFFF, 8: 0xFFFFFFFF}, VT_PLAYER: {0xC: 0x200100}}
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'poolmask.txt')
+    if os.path.exists(path):
+        for line in open(path):
+            fields = line.split('#')[0].split()
+            if len(fields) < 2 or fields[1] in ('nohard', 'skip'):
+                continue
+            vtable = 0 if fields[0] == '*' else int(fields[0], 16)
+            entry = mask.setdefault(vtable, {})
+            offset = int(fields[1], 16)
+            entry[offset] = entry.get(offset, 0) | (int(fields[2], 16) if len(fields) > 2 else 0xFFFFFFFF)
+    return mask
+
+
+def compare(directory, tick, machines=(0, 1), everything=False, masked=False, names=None):
+    """(per class: Counter of differing word offsets, lines).  masked: also leave out the
+    words of poolmask.txt - what is left is what the "poolraw" checksum sees."""
+    names = names or vtable_names()
+    mask = read_mask() if masked else {}
+    pa, classes, fa, ga = load(directory, machines[0], tick)
+    pb, _, fb, gb = load(directory, machines[1], tick)
+    offsets = collections.defaultdict(collections.Counter)
+    lines = []
+    live = [0, 0]
+    for size, count, base in classes:
+        for i in range(count):
+            block = base + i * size
+            la, lb = block not in fa, block not in fb
+            live[0] += la
+            live[1] += lb
+            oa, ob = pa[block - BASE:block - BASE + size], pb[block - BASE:block - BASE + size]
+            va, vb = struct.unpack_from('<I', oa, 0x48)[0], struct.unpack_from('<I', ob, 0x48)[0]
+            if block in (ga, gb):
+                continue
+            if la != lb:
+                lines.append('  block %x (0x%x bytes): %s on machine %d, %s on machine %d' % (
+                    block, size, names.get(va, hex(va)) if la else 'free', machines[0],
+                    names.get(vb, hex(vb)) if lb else 'free', machines[1]))
+                continue
+            if not la or oa == ob:
+                continue
+            if va not in names and not everything:       # not a game object: soakhooks.cpp leaves it out
+                continue
+            name = names.get(va, hex(va)) + ('' if va == vb else '/' + names.get(vb, hex(vb)))
+            for o in range(0, size & ~3, 4):
+                wa, wb = struct.unpack_from('<I', oa, o)[0], struct.unpack_from('<I', ob, o)[0]
+                if wa == wb:
+                    continue
+                if not everything:
+                    if o != 0xC:
+                        wa, wb = canon(wa, pa, classes), canon(wb, pb, classes)
+                    if o in (0, 4, 8):
+                        continue
+                    if va == VT_PLAYER and o == 0xC:
+                        wa, wb = wa & ~0x200100, wb & ~0x200100
+                    if masked:
+                        bits = mask.get(0, {}).get(o, 0) | mask.get(va, {}).get(o, 0)
+                        wa, wb = wa & ~bits, wb & ~bits
+                if wa != wb:
+                    offsets[name][o] += 1
+                    lines.append('  %s at %x +0x%x: %08x | %08x' % (name, block, o, wa, wb))
+    return offsets, lines, live, (ga, gb)
+
+
 def main(argv):
     flags = [a for a in argv if a.startswith('--')]
     args = [a for a in argv if not a.startswith('--')]
@@ -78,56 +145,19 @@ def main(argv):
             machines = tuple(int(x) for x in flag.split('=')[1].split(','))
     directory, ticks = args[0], [int(t) for t in args[1:]]
     names = vtable_names()
-    everything = '--all' in flags
     total = collections.defaultdict(collections.Counter)
     for tick in ticks:
-        pa, classes, fa, ga = load(directory, machines[0], tick)
-        pb, _, fb, gb = load(directory, machines[1], tick)
-        offsets = collections.defaultdict(collections.Counter)
-        lines = []
-        live = [0, 0]
-        for size, count, base in classes:
-            for i in range(count):
-                block = base + i * size
-                la, lb = block not in fa, block not in fb
-                live[0] += la
-                live[1] += lb
-                oa, ob = pa[block - BASE:block - BASE + size], pb[block - BASE:block - BASE + size]
-                va, vb = struct.unpack_from('<I', oa, 0x48)[0], struct.unpack_from('<I', ob, 0x48)[0]
-                if block in (ga, gb):
-                    continue
-                if la != lb:
-                    lines.append('  block %x (0x%x bytes): %s on machine %d, %s on machine %d' % (
-                        block, size, names.get(va, hex(va)) if la else 'free', machines[0],
-                        names.get(vb, hex(vb)) if lb else 'free', machines[1]))
-                    continue
-                if not la or oa == ob:
-                    continue
-                if va not in names and not everything:       # not a game object: soakhooks.cpp leaves it out
-                    continue
-                name = names.get(va, hex(va)) + ('' if va == vb else '/' + names.get(vb, hex(vb)))
-                for o in range(0, size & ~3, 4):
-                    wa, wb = struct.unpack_from('<I', oa, o)[0], struct.unpack_from('<I', ob, o)[0]
-                    if wa != wb and not everything and o != 0xC:
-                        wa, wb = canon(wa, pa, classes), canon(wb, pb, classes)
-                    if not everything:
-                        if o in (0, 4, 8):
-                            continue
-                        if va == VT_PLAYER and o == 0xC:
-                            wa, wb = wa & ~0x200100, wb & ~0x200100
-                    if wa != wb:
-                        offsets[name][o] += 1
-                        if '--words' in flags:
-                            lines.append('  %s at %x +0x%x: %08x | %08x' % (name, block, o, wa, wb))
+        offsets, lines, live, ghosts = compare(directory, tick, machines, '--all' in flags, '--masked' in flags, names)
         for name, counter in offsets.items():
             for offset, n in counter.items():
                 total[name][offset] += n
         if '--sum' in flags or '--mask' in flags:
             continue
-        print('tick %d: live %d and %d (prediction copies at %x and %x)' % (tick, live[0], live[1], ga, gb))
+        print('tick %d: live %d and %d (prediction copies at %x and %x)' % (tick, live[0], live[1], ghosts[0], ghosts[1]))
         for name, counter in sorted(offsets.items()):
             print('  %s: differing word offsets (objects): %s' % (name, ' '.join('%x(%d)' % item for item in sorted(counter.items()))))
-        print('\n'.join(lines[:200]))
+        if '--words' in flags or not offsets:
+            print('\n'.join(l for l in lines if '--words' in flags or l.startswith('  block'))[:20000])
         if not offsets and not lines:
             print('  no difference')
     if '--mask' in flags:       # lines for poolmask.txt

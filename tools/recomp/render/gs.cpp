@@ -134,7 +134,7 @@ Gs::Gs() {
     reg[0x1a] = 1;                                      // PRMODECONT: attributes from PRIM
 }
 
-const char* const Gs::APPROX_NAMES[AP_COUNT] = {"alpha-test fail rule", "destination-alpha test", "destination-alpha blend", "FBA", "PABE", "fog",
+const char* const Gs::APPROX_NAMES[AP_COUNT] = {"alpha-test fail rule", "destination-alpha test", "destination-alpha blend", "FBA", "PABE", "(fog: applied)",
                                                  "AA1", "partial FBMSK", "COLCLAMP off", "region repeat", "texture is its own target"};
 
 void Gs::begin_frame() {
@@ -412,18 +412,21 @@ void Gs::packed(uint32_t d, const uint32_t* q) {
     case 0x4: case 0xC: {
         Queued& v = vq[vcount < 3 ? vcount : 2];
         v.x = q[0] & 0xFFFF; v.y = q[1] & 0xFFFF; v.z = (q[2] >> 4) & 0xFFFFFF;
+        v.fog = (uint8_t)(q[3] >> 4);
         kick(d == 0x4 && !(q[3] & 0x8000));
         break;
     }
     case 0x5: case 0xD: {
         Queued& v = vq[vcount < 3 ? vcount : 2];
         v.x = q[0] & 0xFFFF; v.y = q[1] & 0xFFFF; v.z = q[2];
+        v.fog = cur_fog;
         kick(d == 0x5 && !(q[3] & 0x8000));
         break;
     }
     case 0xE: write(q[2] & 0xFF, q[0] | (uint64_t)q[1] << 32); break;
     case 0xF: break;
-    default: write(d, q[0] | (uint64_t)q[1] << 32); break;      // TEX0_1/2, CLAMP_1/2, FOG
+    case 0xA: cur_fog = (uint8_t)(q[3] >> 4); stats.reg_writes++; break;       // FOG: the coefficient in bits 100 to 107
+    default: write(d, q[0] | (uint64_t)q[1] << 32); break;      // TEX0_1/2, CLAMP_1/2
     }
 }
 
@@ -449,16 +452,18 @@ void Gs::write(uint32_t address, uint64_t value) {
     case 0x04: case 0x0C: {
         Queued& v = vq[vcount < 3 ? vcount : 2];
         v.x = (uint32_t)value & 0xFFFF; v.y = (uint32_t)(value >> 16) & 0xFFFF; v.z = (uint32_t)(value >> 32) & 0xFFFFFF;
+        v.fog = (uint8_t)(value >> 56);
         kick(address == 0x04);
         return;
     }
     case 0x05: case 0x0D: {
         Queued& v = vq[vcount < 3 ? vcount : 2];
         v.x = (uint32_t)value & 0xFFFF; v.y = (uint32_t)(value >> 16) & 0xFFFF; v.z = (uint32_t)(value >> 32);
+        v.fog = cur_fog;
         kick(address == 0x05);
         return;
     }
-    case 0x0A: return;                                  // FOG: nothing fogs
+    case 0x0A: cur_fog = (uint8_t)(value >> 56); return;       // FOG
     case 0x3F: return;                                  // TEXFLUSH
     case 0x50: case 0x51: case 0x52: reg[address] = value; return;
     case 0x53:
@@ -538,17 +543,23 @@ void Gs::start_transfer() {
     // sixteen resident textures hands the same blocks to one texture after another)
     int bwid = r.psm == PSMT4 ? 32 : r.psm == PSMT8 || r.psm == PSMCT16 || r.psm == PSMCT16S ? 16 : 8;
     int bhei = r.psm == PSMT4 || r.psm == PSMT8 ? 16 : 8;
-    size_t end = 0;
+    // (only the blocks the rectangle really writes: GS memory is not laid out row after
+    // row, a narrow rectangle skips blocks, and the game puts other textures into the
+    // blocks between - taking the whole span away lost their pictures: "image never
+    // sent" for 400 to 600 draws a visit in two levels)
+    std::vector<uint32_t> written;
     if (r.w > 0 && r.h > 0)
         for (int by = r.y / bhei; by <= (r.y + r.h - 1) / bhei; by++)
             for (int bx = r.x / bwid; bx <= (r.x + r.w - 1) / bwid; bx++) {
                 int x = bx * bwid, y = by * bhei;
                 size_t a = r.psm == PSMT4 ? nibble4(x, y, r.bw) >> 1 : r.psm == PSMT8 ? addr8(x, y, r.bw)
                          : r.psm == PSMCT16 || r.psm == PSMCT16S ? addr16(x, y, r.bw) : addr32(x, y, r.bw);
-                end = std::max(end, (a & ~(size_t)255) + 256);
+                written.push_back((uint32_t)(a >> 8));
             }
-    uint32_t blocks = (uint32_t)(end >> 8);
-    for (auto it = sets.upper_bound(dbp); it != sets.end() && it->first < dbp + blocks;) it = sets.erase(it);
+    if (written.empty()) return;
+    std::sort(written.begin(), written.end());
+    for (auto it = sets.upper_bound(dbp); it != sets.end() && it->first <= dbp + written.back();)
+        if (std::binary_search(written.begin(), written.end(), it->first - dbp)) it = sets.erase(it); else ++it;
 }
 
 void Gs::image_data(const uint8_t* bytes, size_t count) {
@@ -723,7 +734,8 @@ static bool same_state(const DrawCmd& a, const DrawCmd& b) {
         && a.texa_mode == b.texa_mode && a.ta0 == b.ta0 && a.ta1 == b.ta1 && a.aem == b.aem
         && a.weave_half == b.weave_half && a.alpha_test == b.alpha_test && a.atst == b.atst && a.aref == b.aref && a.afail == b.afail
         && a.depth_test == b.depth_test && a.ztst == b.ztst && a.depth_write == b.depth_write && a.blend == b.blend && a.ba == b.ba
-        && a.bb == b.bb && a.bc == b.bc && a.bd == b.bd && a.fix == b.fix && a.mask_rgb == b.mask_rgb && a.mask_a == b.mask_a;
+        && a.bb == b.bb && a.bc == b.bc && a.bd == b.bd && a.fix == b.fix && a.mask_rgb == b.mask_rgb && a.mask_a == b.mask_a
+        && a.fog == b.fog && !memcmp(a.fog_colour, b.fog_colour, 3);
 }
 
 static bool g_skip_draw = false;
@@ -782,7 +794,11 @@ void Gs::rebuild_state() {
     if ((test >> 14) & 1) cur_approx |= 1u << AP_DATE;
     if (reg[0x4a + ctxt] & 1) cur_approx |= 1u << AP_FBA;
     if (reg[0x49] & 1) cur_approx |= 1u << AP_PABE;
-    if ((attr >> 5) & 1) cur_approx |= 1u << AP_FOG;
+    if ((attr >> 5) & 1) {
+        c.fog = true;
+        uint32_t fogcol = (uint32_t)reg[0x3d];
+        c.fog_colour[0] = (uint8_t)fogcol; c.fog_colour[1] = (uint8_t)(fogcol >> 8); c.fog_colour[2] = (uint8_t)(fogcol >> 16);
+    }
     if ((attr >> 7) & 1) cur_approx |= 1u << AP_AA1;
     if (!c.mask_rgb && (fbmsk & 0xFFFFFF)) cur_approx |= 1u << AP_FBMSK;
     if (!c.mask_a && (fbmsk >> 24)) cur_approx |= 1u << AP_FBMSK;
@@ -837,9 +853,8 @@ void Gs::rebuild_state() {
             stats.texture_missing++; c.tex_missing = tbp + 1;
             if (surface != targets.end()) cur_approx |= 1u << AP_SELF_TEXTURE;
             static const bool log_missing = getenv("RTA_GS_MISSING") != nullptr;
-            static int left = 60;
-            if (log_missing && left > 0) {
-                left--;
+            static std::set<uint64_t> seen;             // each texture and target once
+            if (log_missing && seen.size() < 200 && seen.insert(tex0 ^ ((uint64_t)frame_reg << 40)).second) {
                 uint32_t cbp = (uint32_t)(tex0 >> 37) & 0x3FFF, psm = (uint32_t)(tex0 >> 20) & 0x3F;
                 auto image = sets.find(tbp);
                 auto pal = sets.find(cbp);
@@ -869,7 +884,7 @@ void Gs::rebuild_state() {
     have_cmd = true;
 }
 
-void Gs::emit_vertex(const Queued& v, const DrawCmd&, float s, float t, float q, const uint8_t* rgba, uint32_t z) {
+void Gs::emit_vertex(const Queued& v, const DrawCmd&, float s, float t, float q, const uint8_t* rgba, uint32_t z, uint8_t fog) {
     Vertex o;
     o.x = ((float)v.x - ofx) * (1.0f / 16.0f);
     o.y = ((float)v.y - ofy) * (1.0f / 16.0f);
@@ -886,6 +901,7 @@ void Gs::emit_vertex(const Queued& v, const DrawCmd&, float s, float t, float q,
     o.z = zf > 0.99999994f ? 0.99999994f : zf;
     o.s = s; o.t = t; o.q = q;
     o.r = rgba[0]; o.g = rgba[1]; o.b = rgba[2]; o.a = rgba[3];
+    o.fog = fog;
     frame.vertices.push_back(o);
 }
 
@@ -907,6 +923,7 @@ void Gs::kick(bool draw) {
                 else { s = a.s; t = a.t; q = a.q; }
             };
             stats.prims++;
+            if (cur.fog) stats.fogged++;
             if (cur_approx) for (int k = 0; k < AP_COUNT; k++) if (cur_approx & (1u << k)) stats.approx[k]++;
             if (type == 6) {
                 const Queued& a = vq[0];
@@ -943,8 +960,8 @@ void Gs::kick(bool draw) {
                 }
                 Queued c0 = a, c1 = b, c2 = a, c3 = b;
                 c1.y = a.y; c2.y = b.y;                 // c0 = (ax, ay), c1 = (bx, ay), c2 = (ax, by), c3 = (bx, by)
-                emit_vertex(c0, cur, s0, t0, 1, b.rgba, b.z); emit_vertex(c1, cur, s1, t0, 1, b.rgba, b.z); emit_vertex(c2, cur, s0, t1, 1, b.rgba, b.z);
-                emit_vertex(c1, cur, s1, t0, 1, b.rgba, b.z); emit_vertex(c3, cur, s1, t1, 1, b.rgba, b.z); emit_vertex(c2, cur, s0, t1, 1, b.rgba, b.z);
+                emit_vertex(c0, cur, s0, t0, 1, b.rgba, b.z, b.fog); emit_vertex(c1, cur, s1, t0, 1, b.rgba, b.z, b.fog); emit_vertex(c2, cur, s0, t1, 1, b.rgba, b.z, b.fog);
+                emit_vertex(c1, cur, s1, t0, 1, b.rgba, b.z, b.fog); emit_vertex(c3, cur, s1, t1, 1, b.rgba, b.z, b.fog); emit_vertex(c2, cur, s0, t1, 1, b.rgba, b.z, b.fog);
                 cur.count += 6;
             } else {
                 if (cur.weave_half != 0) {
@@ -960,7 +977,7 @@ void Gs::kick(bool draw) {
                 for (int k = 0; k < n; k++) {
                     float s, t, q;
                     coords(vq[k], s, t, q);
-                    emit_vertex(vq[k], cur, s, t, q, cmd_iip ? vq[k].rgba : flat, vq[k].z);
+                    emit_vertex(vq[k], cur, s, t, q, cmd_iip ? vq[k].rgba : flat, vq[k].z, vq[k].fog);
                 }
                 cur.count += n;
             }

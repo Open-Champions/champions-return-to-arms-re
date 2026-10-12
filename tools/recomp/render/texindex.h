@@ -77,6 +77,30 @@ class TexIndex {
         }
         return false;
     }
+    // The header of the texture whose picture TEX0 names at block `tbp`: the picture lies 4
+    // blocks behind the texture's first block when a 256-colour palette comes first (flag
+    // 0x0004), 1 block behind a 16-colour palette (flag 0x2000), and at the first block
+    // itself when there is no palette (a 32-bit picture: the bag's item pictures).
+    bool resident_at(uint32_t tbp, TexHeader& out) {
+        if (!ram) return false;
+        for (int pass = 0; pass < 2; pass++) {
+            bool found = false;
+            int32_t best = 0;
+            for (uint32_t h : headers) {
+                if (u16(ram + h + 0x0a) != 0xa7fb) continue;
+                uint16_t flags = u16(ram + h + 8);
+                uint32_t behind = (flags & 0x0004) ? 4 : (flags & 0x2000) ? 1 : 0;
+                if ((uint32_t)u16(ram + h + 0x18) + behind != tbp) continue;
+                int32_t used = (int32_t)u32(ram + h + 0x1c);
+                if (!found || used > best) { out = read(h); best = used; found = true; }
+            }
+            if (found) return true;
+            missed = true;
+            if (pass || !auto_rescan) break;
+            scan();
+        }
+        return false;
+    }
     // A header whose packet transfers its picture to block `tbp`: the destination the game
     // patched into the packet when it sent it (BITBLTBUF, +0x14 for a 32-bit picture, +0x474
     // behind a 256-colour palette, +0xb4 behind a 16-colour one).

@@ -12,6 +12,14 @@ all audio stay under `local/sound/`.
 
 ## Notes for whoever continues (kept current)
 
+- 2026-10-12, later still: **the sound side runs by itself** (section 8). In the window
+  program, paced, the device asks for its sound and the chip, the stream driver and its
+  6 ms timer run on the device's real-time thread (`sound-clock=real`); the game's calls
+  are carried out when they are made. Level loads no longer make a gap. The old way,
+  sound rendered on the machine's clock (`sound-clock=machine`), stays for files,
+  comparisons and runs that go faster than time, and is what gives the same sound and the
+  same answers every time.
+
 - 2026-10-12, later (`docs/issues/native-app.md` section 5): the library is linked into
   the window program; the AudioQueue device **started** from there and took sound for
   whole sessions (gain 0, nobody listened). It runs dry during level loads, because the
@@ -499,3 +507,50 @@ RTA_NATIVE=local/recomp-out/bin/rta_native_sound python3 tools/recomp/native.py 
 
 WAV files, captures and anything cut from them are game data: under `local/` only, WAVs
 deleted after use.
+
+## 8. The sound side on its own clock (2026-10-12, later)
+
+**Why.** Sound was rendered on the machine's clock: at every remote call and every
+vertical blank, up to "now". While a level loads the game's thread makes no call and
+reaches no blank for up to a third of a second of real time, the 40 ms held in reserve
+run out and the device plays silence (51 times, 301 ms, in an 84 s session with two
+level changes; `native-app.md` section 4). On the console the I/O processor and the
+sound chip run on by themselves: voices keep sounding and the stream driver's timer keeps
+copying pieces of the rings into the chip's memory whatever the main processor does.
+
+**What was built** (`sound_rta.cpp`, `audio_out.cpp`, `rta_sound.h`):
+
+- `sound-clock=real`: the engine (chip, `LIBSD` commands, stream driver, timer) is
+  advanced by the device. `AudioSource::pull` is asked for every buffer the device wants
+  and renders exactly that many samples then (`Engine::advance_to(position + frames)`);
+  the stream timer runs inside at its sample positions as before, so it fires every 6 ms
+  of the device's time. Nothing is held in reserve: there is nothing that could run dry
+  while the game's thread stands still, and the delay from a register write to the
+  device is one request of the device (about 10 ms) instead of 40 ms + the queue.
+- The device is the default output unit (`UnitPuller`): its render callback is on the
+  system's real-time sound thread. (An AudioQueue asking a source was tried first,
+  `QueueSink` with a source: its callbacks come on an ordinary thread, and on a machine
+  with a load average of 400 one came 0.9 s late in a four-minute session. It is kept as
+  the fall-back.) `open_timer_puller` is the same without a device, for a machine where
+  none opens.
+- The game's calls take the engine for their duration (`Hold`); the lock is one that
+  hands its priority to its holder (`os_unfair_lock` on macOS), because the other side is
+  a real-time thread. A call that finds the device rendering waits for it: counted, and
+  the longest wait is reported.
+- What the game reads back - voice end flags (`sceSdGetSwitch`), stream positions and
+  volumes (command 0x50) - is then the state at the moment of the call in real time, as
+  on a console, and no longer a function of the machine's clock alone.
+- `sound-clock=machine` is the old way, unchanged, and the default of the library.
+  `rta_app` asks for `real` when it runs paced with a window; a run with `--unpaced` or
+  `--offscreen` keeps `machine` (it gives the same sound and the same answers every time,
+  and a run that goes five times as fast as time has no use for a device). Either can be
+  said by hand after `--`: `-- --opt sound-clock=machine`.
+
+**What "exactly as on a console" covers.** Effects voices and the three streams go on
+through a load: a looping ambience keeps sounding, a stream keeps playing out of its ring
+(the music ring holds between 4.8 and 9.5 s) and its fade (0x20 a tick down) goes on.
+What the game itself does at a level change is unchanged: it queues stop markers that
+fade the music out over 3.07 s and stops the stream timer around every sample upload
+(commands 0xb0 / 0xc0), exactly as it does on the console.
+
+Measurements and the comparison with the rig: `native-app.md` section 10.4.

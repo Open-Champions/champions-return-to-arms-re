@@ -522,7 +522,7 @@ static void final_report() {                            // on the game's thread,
         printf("rta_app: primitives drawn with GS state the model approximates (of %llu):", (unsigned long long)g.prims);
         bool any = false;
         for (int k = 0; k < render::AP_COUNT; k++) if (g.approx[k]) { printf(" %s %llu;", render::Gs::APPROX_NAMES[k], (unsigned long long)g.approx[k]); any = true; }
-        printf("%s\n", any ? "" : " none");
+        printf("%s; with fogging (applied): %llu\n", any ? "" : " none", (unsigned long long)g.fogged);
     }
     printf("rta_app: input: %llu key events, controller %s, %u rumble commands\n", (unsigned long long)g_key_events.load(),
            hostpad::name().empty() ? "none" : hostpad::name().c_str(), g_pads.rumbles.load());
@@ -554,6 +554,7 @@ static std::string info_line() {
                      (unsigned long long)g.textures_held, (unsigned long long)g.textures_freed, g.texture_bytes / 1048576.0, (unsigned long long)g.texture_missing,
                      (unsigned long long)g.copies, (unsigned long long)g.copies_skipped, (unsigned long long)g_renderer->vif.vu.bad,
                      (unsigned long long)g.unknown_regs, (unsigned long long)s.backend->draw_calls(), (unsigned long long)apprt::fields(), apprt::machine_seconds());
+    n += snprintf(text + n, sizeof text - n, " fogged=%llu", (unsigned long long)g.fogged);
     for (int k = 0; k < render::AP_COUNT && n < (int)sizeof text - 40; k++)
         if (g.approx[k]) n += snprintf(text + n, sizeof text - n, " approx%d=%llu", k, (unsigned long long)g.approx[k]);
     return std::string(text) + " " + apprt::sound_figures();

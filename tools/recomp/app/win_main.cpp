@@ -22,6 +22,7 @@
 //   --size WxH          or at exactly this size (default: the window's own pixels)
 //   --volume V          0..1 (default 1); --mute = --volume 0; --no-sound opens no device
 //   --emulator-timing   the I/O processor answers as slowly as on a console
+//   --no-films          a film ends at its first picture (when app/film.cpp is part of the program the films play)
 //   --script FILE, --do "COMMAND"   scripted input on top of keyboard and controller; the
 //                       "app ..." lines of app_main.cpp: shot, key, gcpad, pads, stats, record
 //   --offscreen         the window is never shown (pictures and timings only)
@@ -74,7 +75,7 @@ static render::Renderer* g_renderer;
 
 struct Options {
     int window_w = 960, window_h = 720, size_w = 0, size_h = 0, scale = 0;
-    bool offscreen = false, unpaced = false, fullscreen = false, no_sound = false, emulator_timing = false, no_log = false;
+    bool offscreen = false, unpaced = false, fullscreen = false, no_sound = false, emulator_timing = false, no_log = false, no_films = false;
     double volume = 1.0;
     std::string test, png, disc, data, elf;
     std::set<uint64_t> at;
@@ -600,6 +601,7 @@ static void final_report() {                            // on the game's thread,
     }
     printf("rta_app: input: %llu key events, controller %s, %u rumble commands\n", (unsigned long long)g_key_events.load(),
            hostpad::name().empty() ? "none" : hostpad::name().c_str(), g_pads.rumbles.load());
+    apprt::films_report();
     fflush(stdout);
 }
 
@@ -701,7 +703,7 @@ static void fail(const std::string& text, bool box) {
 static const char* HELP =
     "rta_app.exe IMAGE.iso      (or drag your disc image onto rta_app.exe or play.bat)\n"
     "rta_app.exe --disc IMAGE [--data DIR] [--window WxH] [--fullscreen] [--scale N | --size WxH] [--volume V | --mute | --no-sound]\n"
-    "        [--emulator-timing] [--script FILE] [--do COMMAND] [--offscreen] [--unpaced] [--png PREFIX --at n,..]\n"
+    "        [--emulator-timing] [--no-films] [--script FILE] [--do COMMAND] [--offscreen] [--unpaced] [--png PREFIX --at n,..]\n"
     "        [--stop-after N] [--no-log] [-- runtime arguments]\n"
     "keys: W A S D left stick; arrows direction pad; I J K L triangle square cross circle; Q E L1 R1; 1 3 L2 R2; X C L3 R3;\n"
     "      Enter Start; Backspace Select; F, F11 or Alt+Enter full screen; Escape leaves full screen; F12 writes a picture\n"
@@ -739,6 +741,7 @@ int main(int argc, char** argv) {
         else if (a == "--at") { std::string s = next(); for (char* p = &s[0]; *p;) { opt.at.insert(strtoull(p, &p, 10)); if (*p) p++; } }
         else if (a == "--stop-after") opt.stop_after = strtoull(next().c_str(), nullptr, 10);
         else if (a == "--no-log") opt.no_log = true;
+        else if (a == "--no-films") opt.no_films = true;
         else if (a == "--help" || a == "-h" || a == "/?") { printf("%s", HELP); return 0; }
         else if (a.compare(0, 2, "--") != 0) opt.disc = a;      // a file dropped on the program: the disc image
         else { fail("unknown option " + a + " (see --help; the runtime's own arguments go after --)", own_console); return 2; }
@@ -838,6 +841,8 @@ int main(int argc, char** argv) {
     if (!opt.disc.empty()) { args.push_back("--disc"); args.push_back(opt.disc); }
     args.push_back("--card"); args.push_back(opt.data + "\\card");
     if (opt.emulator_timing) args.push_back("--emulator-timing");
+    // the films: the game's own player runs when the decoder behind it is linked (film.cpp)
+    if (apprt::films_linked() && !opt.no_films) { args.push_back("--opt"); args.push_back("films=original"); }
     if (!opt.no_sound) {
         bool silent = !opt.test.empty() || opt.offscreen;       // a test makes no sound, whatever was asked
         char gain[32];

@@ -88,6 +88,13 @@ def main():
         args.name, args.gen, args.game_objects = 'rta_app', os.path.join(OUT, 'gen-app'), os.path.join(OUT, 'obj-rta_native_fix')
         translate = ['--out', args.gen, '--pnach', args.pnach, '--sections', args.sections,
                      '--hle-add', os.path.join(HERE, 'hle-app.txt')]
+        # the network (tools/recomp/net, docs/issues/native-online.md): the library entries of
+        # hle-online.txt are left to its driver, and the local sign-in patch - a file kept
+        # outside the repository - is applied when it is there (nothing of it is printed)
+        translate += ['--hle-add', os.path.join(RECOMP, 'net', 'hle-online.txt')]
+        signin = os.environ.get('RTA_SIGNIN_PATCH', os.path.join(ROOT, 'local', 'SLUS-20973_4028A55F_signin.pnach'))
+        if os.path.isfile(signin):
+            translate += ['--extra-pnach', signin]
         game = ['run', '--gen', args.gen, '--name', 'rta_native_fix']
     if not args.no_game:
         result = subprocess.run([sys.executable, os.path.join(RECOMP, 'recomp.py')] + translate, capture_output=True, text=True)
@@ -123,6 +130,12 @@ def main():
     if not args.original:
         # the films: the library entry points of hle-app.txt, which only this translation leaves open
         jobs.append((os.path.join(HERE, 'film.cpp'), rt_flags + ['-I', HERE], 'a_'))
+        # the network: the driver, the one-step online (the emulator build's own file, linked
+        # as it is) and its questions on the window
+        net = os.path.join(RECOMP, 'net')
+        jobs += [(os.path.join(net, n), rt_flags, 'n_') for n in ('netdrv.cpp', 'online.cpp')]
+        jobs.append((os.path.join(ROOT, 'tools', 'play-net', 'src', 'RtaOnline.cpp'), rt_flags, 'n_'))
+        jobs.append((os.path.join(net, 'online_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', net], 'n_'))
     jobs.append((os.path.join(HERE, 'app_main.cpp'), app_flags + qt_flags, 'a_'))
     jobs.append((os.path.join(HERE, 'pad_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE, '-I', rt], 'a_'))
     link = [os.path.join(args.game_objects, n) for n in sorted(os.listdir(args.game_objects))

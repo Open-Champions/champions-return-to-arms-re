@@ -314,6 +314,9 @@ int main(int argc, char** argv) {
         args.push_back("--opt"); args.push_back("sound-out=device");
     }
     args.insert(args.end(), script_args.begin(), script_args.end());
+    // the runtime ends a run when its script has ended unless it was told how long to go on:
+    // a page goes on (a script that wants the end says `quit`)
+    if (!script_args.empty()) { args.push_back("--fields"); args.push_back("4000000000"); }
     args.insert(args.end(), pass.begin(), pass.end());
     static std::vector<char*> run_args;
     for (auto& a : args) run_args.push_back(&a[0]);

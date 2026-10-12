@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+"""session.py - one scripted session from its script to the compared result.
+
+  python3 tools/recomp/proof/session.py NAME vet     [--ticks N]   # native alone: does the script get through?
+  python3 tools/recomp/proof/session.py NAME rig     [--frames N]  # the original in the rig
+  python3 tools/recomp/proof/session.py NAME native  [--capture]   # the translation on the rig's controller bytes
+  python3 tools/recomp/proof/session.py NAME compare               # tick for tick; writes result.txt
+
+A session is an entry of local/recomp-out/proof/sessions.json: {"class": 0..6, "levels":
+"a,b,c", "die": "a", "ticks": 480, "seed": 1} (tour.py's options) or {"script": FILE}.
+Everything goes to local/recomp-out/proof/cmp/NAME/ (cmp.py); `native` runs the
+instrumented runtime (bin/rta_proof) and leaves hits.tsv there - every entry point with
+the number of times it was reached - and with --capture the entry states of the functions
+in want.txt under local/recomp-out/proof/real/NAME/ for realproof.py.
+"""
+import argparse
+import json
+import os
+import re
+import struct
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import cmp as cmpmod                            # noqa: E402
+
+ROOT = cmpmod.ROOT
+PROOF = os.path.join(ROOT, 'local', 'recomp-out', 'proof')
+NATIVE = os.path.join(ROOT, 'local', 'recomp-out', 'bin', 'rta_proof')
+
+
+def script_of(name, spec, out, ticks=None):
+    if 'script' in spec:
+        return os.path.join(ROOT, spec['script'])
+    path = os.path.join(out, 'session.rig')
+    command = [sys.executable, os.path.join(HERE, 'tour.py'), '--out', path, '--class', str(spec.get('class', 6)),
+               '--levels', spec['levels'], '--ticks', str(ticks or spec.get('ticks', 480)), '--seed', str(spec.get('seed', 1))]
+    if spec.get('die'):
+        command += ['--die', spec['die']]
+    if spec.get('plain'):
+        command.append('--plain')
+    if spec.get('presses') is not None:
+        command += ['--presses', str(spec['presses'])]
+    subprocess.run(command, check=True, capture_output=True)
+    return path
+
+
+def poke_bytes(kind, value):
+    if kind in ('s8', 'u8'):
+        return struct.pack('<b' if kind == 's8' else '<B', int(value, 0))
+    if kind in ('s16', 'u16'):
+        return struct.pack('<h' if kind == 's16' else '<H', int(value, 0))
+    if kind in ('s32', 'u32'):
+        return struct.pack('<i' if kind == 's32' else '<I', int(value, 0))
+    if kind == 'x32':
+        return struct.pack('<I', int(value, 16))
+    if kind == 'f32':
+        return struct.pack('<f', float(value))
+    if kind.startswith('hex'):
+        return bytes.fromhex(value)
+    if kind.startswith('str'):
+        return value.encode('latin1') + b'\0'
+    raise ValueError('poke type %s' % kind)
+
+
+def replay_pokes(script, out, shift):
+    """The script without its announced poke groups, and the file that tells the native run
+    when to apply them: at the tick the rig applied them.  Returns (script path, pokes path)."""
+    lines = open(script).read().split('\n')
+    groups, kept, current = {}, [], None
+    for line in lines:
+        words = line.split()
+        if words[:1] == ['echo'] and words[1:2] == ['@P']:
+            current = int(words[2])
+            groups[current] = []
+            kept.append(line)
+        elif words[:1] == ['poke'] and current is not None:
+            target, kind = words[1].rsplit(':', 1)
+            groups[current].append((int(target, 0), poke_bytes(kind, words[2])))
+        else:
+            if words and not line.startswith('#'):
+                current = None
+            kept.append(line)
+    ran = {}
+    for line in open(os.path.join(out, 'boot-rig.out'), errors='replace'):
+        m = re.match(r'\[frame (\d+)\] @P (\d+)', line)
+        if m:
+            ran[int(m.group(2))] = int(m.group(1))
+    rows = []                                   # (rig frame, episode, tick, frame of the tick)
+    with open(os.path.join(out, 'boot-rig.tsv')) as source:
+        header = source.readline().rstrip('\n').split('\t')
+        sim = header.index('sim')
+        episode, last, frame = 0, 0, 0
+        for line in source:
+            row = line.split('\t', sim + 2)
+            if len(row) < sim + 2:
+                continue
+            tick = int(row[sim])
+            if tick < last:
+                episode += 1
+            frame = frame + 1 if tick == last else 0
+            last = tick
+            rows.append((int(row[0]), episode, tick, frame))
+    frames = [r[0] for r in rows]
+    import bisect
+    stripped = os.path.join(out, 'session-native.rig')
+    with open(stripped, 'w') as sink:
+        sink.write('\n'.join(kept))
+    pokes = os.path.join(out, 'pokes.txt')
+    missing = 0
+    with open(pokes, 'w') as sink:
+        for number in sorted(groups):
+            if number not in ran:
+                missing += 1
+                continue
+            at = bisect.bisect_left(frames, ran[number]) + shift
+            if at >= len(rows):
+                missing += 1
+                continue
+            _, episode, tick, frame = rows[max(0, at)]
+            for addr, blob in groups[number]:
+                sink.write('%d %d %d %x %s\n' % (episode, tick, frame, addr, blob.hex()))
+    print('%d groups of memory writes, %d the rig did not reach' % (len(groups), missing))
+    return stripped, pokes
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    parser.add_argument('name')
+    parser.add_argument('step', choices=('vet', 'rig', 'native', 'compare'))
+    parser.add_argument('--ticks', type=int)
+    parser.add_argument('--frames', type=int, default=40000)
+    parser.add_argument('--capture', action='store_true')
+    parser.add_argument('--per', type=int, default=3)
+    parser.add_argument('--poke-shift', type=int, default=0, help='native: apply the memory writes this many displayed frames later than the first frame after the rig ran them')
+    args = parser.parse_args()
+    spec = json.load(open(os.path.join(PROOF, 'sessions.json')))[args.name]
+    import rigcompare
+    if args.step == 'vet':
+        out = os.path.join(PROOF, 'vet', args.name)
+        os.makedirs(out, exist_ok=True)
+        script = script_of(args.name, spec, out, args.ticks)
+        card = os.path.join(out, 'card')
+        subprocess.run(['rm', '-rf', card])
+        env = dict(os.environ, RTA_NATIVE=NATIVE, RTA_NICE='19')
+        done = subprocess.run([sys.executable, os.path.join(os.path.dirname(HERE), 'native.py'),
+                               'boot', '--card', card, '--script', script, '--opt', 'proof-hits=' + os.path.join(out, 'hits.tsv')],
+                              capture_output=True, text=True, errors='replace', env=env, cwd=ROOT)
+        with open(os.path.join(out, 'native.out'), 'w') as sink:
+            sink.write(done.stdout + done.stderr)
+        for line in (done.stdout + done.stderr).splitlines():
+            if 'g_levelName@' in line or line.startswith(('proof:', 'rta_native', 'frames=')) or ('TIMEOUT' in line and 'g_simFrame' not in line):
+                print(line[:170])
+        return 0
+    native_args = ['--opt', 'proof-hits=' + os.path.join(cmpmod.BASE, args.name, 'hits.tsv')]
+    if args.capture:
+        real = os.path.join(PROOF, 'real', args.name)
+        os.makedirs(real, exist_ok=True)
+        native_args += ['--opt', 'proof-capture=' + real, '--opt', 'proof-want=' + os.path.join(PROOF, 'want.txt'),
+                        '--opt', 'proof-per=%d' % args.per]
+    out = os.path.join(cmpmod.BASE, args.name)
+    os.makedirs(out, exist_ok=True)
+    script = script_of(args.name, spec, out)
+    if args.step == 'native' and 'echo @P' in open(script).read():
+        script, pokes = replay_pokes(script, out, args.poke_shift)
+        native_args += ['--opt', 'proof-pokes=' + pokes]
+    cmpmod.setup(args.name, NATIVE, native_args=native_args if args.step == 'native' else ())
+    if args.step == 'rig':
+        sys.argv = ['rigcompare', 'boot-rig', '--script', script, '--more', '0', '--frames', str(args.frames)]
+        return rigcompare.main()
+    if args.step == 'native':
+        sys.argv = ['rigcompare', 'boot-native', '--script', script, '--more', '0', '--replay']
+        return rigcompare.main()
+    sys.argv = ['rigcompare', 'boot-compare']
+    import contextlib
+    import io
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        code = rigcompare.main()
+    text = buffer.getvalue()
+    with open(os.path.join(out, 'result.txt'), 'w') as sink:
+        sink.write(text)
+    for line in text.splitlines():
+        if not line.startswith(('  identical at', '  first common')):
+            print(line[:230])
+    return code
+
+
+if __name__ == '__main__':
+    sys.exit(main())

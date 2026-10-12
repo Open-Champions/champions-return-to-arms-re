@@ -37,3 +37,28 @@ from the arrival camera.
 - The slow-down while pictures are read was seen only with the computer heavily loaded; it was not
   reproduced on the fixed build.
 - The art pack was still being made when the check ran.
+
+## Second pass (2026-10-12, working notes; the final status is written at the end of this pass)
+
+Working build `local/play-playable-build`, pictures and logs under `local/vq.nosync` (helpers in its
+`tools/`). New control-socket aids: `drawlog FILE [frames [x0 y0 x1 y1]]` (every draw of a frame with
+its GS registers; inside a rectangle of the draw buffer every primitive vertex by vertex), and the
+switches `upscale 0|1`, `edge 0|1`, `texcentre 0|1`, `texorder 0|1` for the same frame before and after.
+
+- Top line of the menu screens: the game's own. The backdrop sprite is drawn from line 1 of the 448
+  (with the display patches; as shipped from line 2 on one field and from -0.5 on the other), so line 0
+  keeps the colour the draw buffer was cleared to. A console sends that line; a television does not
+  show it (overscan). Handled at the edge of the picture: the outermost line and the same share of the
+  width are not presented.
+- Dust motes: a particle cell of 32 x 32 texels holding eight specks, drawn 3 to 5 pixels wide and read
+  unfiltered. Rain: GS lines, drawn one pixel of the enlarged buffer wide. Automap: a strip of tiles
+  of 10 x 10 texels from a 120 x 160 sheet, read unfiltered because the interface drawers leave
+  "nearest" set. All three are given the higher-resolution treatment (README table).
+- Found on the way: Play!'s filter for indexed textures reads half a texel up and to the left. The same
+  paused frame with the pack on and off differs by 4.52 of 255 before and 2.96 after (strife).
+- Resolution factor changed in a running game: texture knowledge is kept (0 draws by memory after
+  4 -> 1 -> 4 several times; before 357 a frame).
+- Pictures popping in: read largest-on-screen first, kept through a menu visit; figures in the README.
+- Mission menu: the hub's `PushTrigger` at (118.9, 354.7, -6), radius 79, action `callScri8e04`
+  (-> `warnDetect` -> `activateMissionMenu`), locked by `lockDetect` unless a mission is available and
+  not complete. The earlier attempt had marked every mission complete, which locks it.

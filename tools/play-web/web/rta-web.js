@@ -264,7 +264,7 @@ async function boot(reader, url, name, file = null) {
 	const urlPointer = writeString(url), namePointer = writeString(name);
 	module._RtaWebDiscSet(urlPointer, reader.size);
 	// When the game runs already it is waiting for its disc (discWatch): it goes on with this one.
-	if(!running) module._rtaBoot(namePointer);
+	if(!running) { module._rtaBoot(namePointer); performance.mark("rta-boot"); }
 	module._free(urlPointer);
 	module._free(namePointer);
 	const first = !running;
@@ -874,14 +874,17 @@ function watch(now) {
 	}
 	discWatch(now.disc_errors || 0);
 	showMute();
-	// a machine that makes no frame for a quarter of a minute although nothing holds it has stopped
-	if(now.frames !== stall.frames || pausedBy || discLost || document.hidden) { stall.frames = now.frames; stall.since = now.now; stall.told = false; }
-	else if(!stall.told && now.now - stall.since > 15000) {
+	// A machine that for half a minute makes no frame, translates no code and reads nothing,
+	// although nothing holds it, has stopped. (Translating a level's code alone can take
+	// seconds without a frame in a browser that is slow at it.)
+	const work = now.frames + ":" + now.functions + ":" + now.disc_fetches;
+	if(work !== stall.work || pausedBy || discLost || document.hidden) { stall.work = work; stall.since = now.now; stall.told = false; }
+	else if(!stall.told && now.now - stall.since > 30000) {
 		stall.told = true;
-		notice("The game has stood still for a quarter of a minute: the emulator seems to have stopped. Load the page again; what the game had saved is kept.", true, 0);
+		notice("The game has stood still for half a minute: the emulator seems to have stopped. Load the page again; what the game had saved is kept.", true, 0);
 	}
 }
-const stall = { frames: -1, since: 0, told: false };
+const stall = { work: "", since: 0, told: false };
 
 // ---- online play ----------------------------------------------------------------------
 // A page has no sockets of its own. The console's network (the desktop application's,
@@ -1853,6 +1856,7 @@ async function start() {
 	// anything missing that the page cannot do without, nothing more is loaded.
 	check.started = true;
 	if(check.done) await check.done;
+	performance.mark("rta-checked"); // marks for whoever times a start: checked, program (the emulator is in), ready, boot
 	if(check.missing.length) { note("not started: " + check.missing.join(" | ")); return; }
 	if(!self.crossOriginIsolated) {
 		setStatus("This page has to be served with the headers Cross-Origin-Opener-Policy: same-origin and Cross-Origin-Embedder-Policy: require-corp (the emulator runs on several threads).", true);
@@ -1867,7 +1871,7 @@ async function start() {
 	const scale = Math.min(window.devicePixelRatio || 1, 2);
 	const stage = $("stage").getBoundingClientRect();
 	const wide = Math.max(screen.width, screen.height) || stage.width, high = Math.min(screen.width, screen.height) || stage.height;
-	let height = Math.max(480, Math.min(896, Math.floor(Math.max(stage.height, Math.min(high, wide * 3 / 4)) * scale)));
+	let height = Math.max(480, Math.min(896, Math.floor(Math.max(Math.min(stage.height, stage.width * 3 / 4), Math.min(high, wide * 3 / 4)) * scale)));
 	if(params.get("canvas")) height = parseInt(params.get("canvas"), 10);
 	canvas.height = height;
 	canvas.width = Math.round(height * 4 / 3);
@@ -1882,6 +1886,7 @@ async function start() {
 	});
 	try { module = await Promise.race([loaded, new Promise((resolve, reject) => { programFailed = reject; })]); } catch(e) { startFailure(e); return; }
 	module.rtaDiscRead = discReadForMachine;
+	performance.mark("rta-program");
 	setStatus("Reading the saved games…");
 	await mountCard(await cardAlone());
 	setStatus("Starting the emulator…");
@@ -1941,6 +1946,7 @@ async function start() {
 	requestAnimationFrame(frame);
 	setInterval(readInput, 8); // also when the page is not being painted
 	rta.state = "ready";
+	performance.mark("rta-ready");
 	showMute();
 	if(goesOnline) {
 		$("onlineButton").hidden = false;

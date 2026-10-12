@@ -700,11 +700,12 @@ class Session:
             if path is None:
                 now = time.monotonic()
                 why = None
+                asked = any(a == address and now - at < MEET_WITHIN for (a, _), at in self.asked.items())
                 if now - self.named.get(key, -1e9) < NAMED_FOR:
                     why = "the lobby server named it"
                 elif any(a == address and now - at < NAMED_FOR for (a, _), at in self.named.items()):
-                    why = "the lobby server named its address, with another port"
-                elif any(a == address and now - at < MEET_WITHIN for (a, _), at in self.asked.items()):
+                    why = "the lobby server named its address, with another port" + ("; and each has sent to the other" if asked else "")
+                elif asked:
                     why = "each has sent to the other"
                 if why:
                     path = self.open(key, why, source[:2])
@@ -906,7 +907,7 @@ def main():
     parser.add_argument("--lan", action="store_true", help="players on private addresses and on this computer are reached as well (a relay on a home network, a test on one computer); "
                         "without it only public addresses")
     parser.add_argument("--pages-only", action="store_true", help="browser players with browser players only: nothing passes to or from a player outside this relay")
-    parser.add_argument("--peer-rate", type=float, default=300, help="datagrams a second a page may send to one player outside (default 300; twice that for a moment)")
+    parser.add_argument("--peer-rate", type=float, default=150, help="datagrams a second a page may send to one player outside (default 150, twice that for a moment; the game sends a player some 30)")
     parser.add_argument("--max-sessions", type=int, default=64)
     parser.add_argument("--per-address", type=int, default=4, help="sessions from one address at a time (default 4)")
     parser.add_argument("--idle", type=int, default=900, help="seconds without use, and without a connection to the lobby, after which a session is closed (default 900)")

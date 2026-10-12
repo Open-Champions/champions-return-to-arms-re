@@ -63,7 +63,9 @@ static bool g_stub_all;
 
 // where an address outside main memory lives; marks what it touches as written when asked
 static u8* outside(u32 addr, unsigned size, bool write) {
-    u32 top = addr & 0xF0000000u, low = addr & 0x1FFFFFFFu;
+    // the mirrors as rt/runtime.cpp folds them (special_memory)
+    u32 top = addr & 0xF0000000u;
+    u32 low = (top == 0x20000000u || top == 0x30000000u) ? (addr & 0x0FFFFFFFu) : (addr & 0x1FFFFFFFu);
     if ((top == 0x20000000u || top == 0x30000000u || top == 0x80000000u || top == 0xA0000000u) &&
         low < RAM_SIZE && size <= RAM_SIZE - low) {
         if (write) { g_dirty[low >> 12] = 1; g_dirty[(low + size - 1) >> 12] = 1; }

@@ -459,7 +459,8 @@ void do_setup() {
     if (!value.empty()) {
         // "<tick> poke <expression> <text>" writes text and a zero byte inside that lockstep
         // tick (a level name into g_pendingLevel on every machine in the same tick, as the
-        // rig's "ontick"); "<tick> echo <text>"; "<tick> quit"
+        // rig's "ontick"); "<tick> poke32 <expression> <number>" a word; "<tick> echo <text>";
+        // "<tick> quit"
         std::ifstream in(value);
         std::string line;
         while (std::getline(in, line)) {
@@ -1145,6 +1146,11 @@ void fn_003226e4(Ctx* c) {                  // tasks_run: from net_frameLoop it 
             u32 address = script_eval(colon == std::string::npos ? target : target.substr(0, colon));
             if (u8* p = gptr(address, (u32)text.size() + 1)) memcpy(p, text.c_str(), text.size() + 1);
             printf("[tick %u] field %llu: poke %s %s\n", tick, (unsigned long long)rt_fields(), target.c_str(), text.c_str());
+        } else if (verb == "poke32") {
+            words >> target >> text;
+            u32 address = script_eval(target);
+            wr32(address, (u32)strtoul(text.c_str(), nullptr, 0));
+            printf("[tick %u] field %llu: poke32 %s %s\n", tick, (unsigned long long)rt_fields(), target.c_str(), text.c_str());
         } else if (verb == "echo") printf("[tick %u] field %llu: %s\n", tick, (unsigned long long)rt_fields(), it->second.c_str() + 5 < it->second.c_str() + it->second.size() ? it->second.c_str() + 5 : "");
         else if (verb == "quit") quit = true;
     }

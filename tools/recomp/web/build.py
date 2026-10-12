@@ -23,6 +23,8 @@
   --link-opt=-O2 what em++ is given when it links (-O2 and up run Binaryen's optimiser; =-O1 links in a third of the time)
   --jobs N       compilers at once (each at nice 10)
   --define NAME  (repeatable)
+  --flag=FLAG    one more compiler flag for everything but the translated game (repeatable),
+                 e.g. --flag=-msimd128
   --vu FILE      page: the VU1 main program translated to C++ (rta_replay --translate-vu
                  writes it); without it VU1 is interpreted
   --no-sound     page: rt/sound_null.cpp instead of the sound library
@@ -91,6 +93,7 @@ def main():
     parser.add_argument('--link-opt', default='-O2')
     parser.add_argument('--jobs', type=int, default=max(2, (os.cpu_count() or 4) - 6))
     parser.add_argument('--define', action='append', default=[])
+    parser.add_argument('--flag', action='append', default=[], help='one more compiler flag for everything but the translated game, as --flag=-msimd128; repeatable')
     parser.add_argument('--vu')
     parser.add_argument('--no-sound', action='store_true')
     parser.add_argument('--profiling', action='store_true')
@@ -118,7 +121,7 @@ def main():
 
     # the runtime and whatever the target adds
     own_dir = os.path.join(args.out, 'obj-' + name)
-    flags = list(base)
+    flags = list(base) + args.flag
     sources = [os.path.join(rt, n) for n in RT] + [os.path.join(rt, 'host_posix.cpp') if mac else os.path.join(HERE, 'host_web.cpp')]
     headers = headers_of(rt, HERE)
     if args.target == 'page':

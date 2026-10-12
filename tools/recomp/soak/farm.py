@@ -3,7 +3,7 @@
 every tick of every machine compared (docs/issues/native-soak.md).
 
   farm.py plan   --arm fix26 --seeds 1000:40                 print the jobs, run nothing
-  farm.py run    --arm fix26 --out DIR --seeds 1000:400 [--instances 6] [--hours H]
+  farm.py run    --arm fix26 --out DIR --seeds 1000:400 [--instances 6] [--hours H] [--max-frames F]
   farm.py one    --arm fix26 --out DIR --seed 1007 [--frames F] [--tag T] [--program NAME]
                  [--dump TICK[,TICK...]] [--lines FILE] [--env K=V] [--keep] [--columns FILE]
   farm.py report DIR [DIR...]                                totals and coverage
@@ -45,6 +45,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 OUT = os.path.join(ROOT, 'local', 'recomp-out', 'soak')
 sys.path.insert(0, os.path.join(ROOT, 'tools', 'rig'))
+sys.path.insert(0, HERE)
 import rig as riglib   # noqa: E402  (symbol files)
 
 REC = 0x4C30
@@ -66,6 +67,13 @@ BUSES = ['none', 'delay=4,jitter=3,loss=50', 'none', 'delay=10,jitter=6,loss=100
 ARENA = 'drunare'
 CORE = ['strife', 'hub', 'hub2', 'drundar', 'blood1', 'bastion1', 'citadel', 'valor', 'storm1', 'fire1', 'nit1', 'wat1',
         'islc1', 'torment0', 'swamp1', 'fay1', 'honor', 'shame1', 'inmine1', 'dis2', 'airarena', 'boar1', 'arachna1']
+COVERAGE = ['Player_castSkill', 'Player_usePotion', 'Player_meleeHit', 'Player_takeDamage', 'Player_processDamage',
+            'Creature_processDamage', 'damage_apply', 'player_respawn', 'arena_respawnPlayer', 'player_giveExp', 'Player_interact',
+            'itemprop_tryPickup', 'inventory_giveItem', 'inventory_removeItem', 'inventory_dropItem', 'inventory_equipItem',
+            'inventory_unequipItem', 'menu_openInventory', 'invmsg_dispatch', 'stats_screen', 'skills_screen',
+            'inventory_onStatPoint', 'inventory_onSkillPoint', 'player_recalcStats', 'pauseMenu_open', 'config_commitOptions',
+            'net_kickPeer', 'shop_openOrStock', 'shop_buy', 'shop_buySellMenu', 'workshop_input', 'recall_execute', 'save_game',
+            'JumpGate_openMenu', 'missionMenu_run', 'game_loadLevel', 'net_closeLocalMenus', 'cut_advance', 'net_predictLocalPlayer']
 LOCK = threading.Lock()
 
 
@@ -284,6 +292,9 @@ def tick_columns(local_slot, players):
                   'p%dbtnA=%s+0x4a60:crc20' % (n, r), 'p%dbtnB=%s+0x4a7c:crc12' % (n, r),
                   'p%dtrailhit=%s+0x4ac5:hex2' % (n, r), 'p%dtrailhit2=%s+0x4b05:hex2' % (n, r), 'p%dtail=%s+0x4bc8:crc104' % (n, r),
                   'oos%d=%s+0x44d7:u8' % (n, peer(n)), 'l_dropped%d=%s+0x44d5:u8' % (n, peer(n))]
+    if os.environ.get('SOAK_FARM_COLUMNS') == 'small':      # for measuring what the columns cost
+        keep = ('net=', 'seed=', 'level=', 'cut=', 'nobj=', 'pool=', 'l_dropped', 'oos')
+        specs = [x for x in specs if x.startswith(keep) or re.match(r'p\d(x|y|z|hp|maxhp)=', x)]
     return specs
 
 
@@ -311,7 +322,8 @@ class Gate:
             self.cond.notify_all()
 
 
-def run_job(job, out_root, program=None, tag='', keep=False, extra_lines=(), extra_env=None, extra_columns=(), dumps=()):
+def run_job(job, out_root, program=None, tag='', keep=False, extra_lines=(), extra_env=None, extra_columns=(), dumps=(),
+            sample_dumps=False):
     name = job['name'] + tag
     out = os.path.join(out_root, name)
     shutil.rmtree(out, ignore_errors=True)
@@ -391,6 +403,15 @@ def run_job(job, out_root, program=None, tag='', keep=False, extra_lines=(), ext
         result.update(analyse(out, n))
     except Exception as error:      # a machine that never wrote a log
         result.update({'ticks': 0, 'first': None, 'error': repr(error)[:300]})
+    if sample_dumps:
+        result['rawdiff'] = raw_differences(out, n, dumps, result)
+        for m in range(n):
+            for tick in dumps:
+                for kind in ('pool', 'glob'):
+                    try:
+                        os.remove(os.path.join(out, 'm%d-%s-%d.bin' % (m, kind, tick)))
+                    except OSError:
+                        pass
     result['notes'] = machine_notes(out, n)
     result['calls'] = read_calls(out, n)
     for m in range(n):
@@ -399,6 +420,66 @@ def run_job(job, out_root, program=None, tag='', keep=False, extra_lines=(), ext
     if clean and not keep:
         shutil.rmtree(out, ignore_errors=True)
     return result
+
+
+def raw_differences(out, n, ticks, result):
+    """[(tick, pair, class, offset, objects, a value, b value)] for the sampled ticks at which the
+    two machines were still in step (before any deciding difference or drop)."""
+    import poolcmp
+    rows = []
+    limit = min(x for x in (result.get('first'), result.get('dropped'), 1 << 60) if x is not None)
+    names = poolcmp.vtable_names()
+    for tick in ticks:
+        if tick >= limit:
+            continue
+        for b in range(1, n):
+            try:
+                offsets, lines, _, _ = poolcmp.compare(out, tick, (0, b), masked=True, names=names)
+            except (OSError, ValueError, IndexError, __import__('struct').error):
+                continue
+            sample = {}
+            for line in lines:
+                found = re.match(r'  (\S+) at \w+ \+0x(\w+): (\w+) \| (\w+)', line)
+                if found:
+                    sample.setdefault((found.group(1), int(found.group(2), 16)), (found.group(3), found.group(4)))
+            blocks = sum(1 for l in lines if l.startswith('  block'))
+            if blocks:
+                rows.append((tick, '0-%d' % b, '(blocks live on one machine only)', 0, blocks, '', ''))
+            for name, counter in offsets.items():
+                for offset, count in counter.items():
+                    rows.append((tick, '0-%d' % b, name, offset, count) + sample.get((name, offset), ('', '')))
+    return rows
+
+
+def shortened(job, frames):
+    """The same game with the input cut off after `frames` frames (the same segments)."""
+    if frames >= job['frames']:
+        return job
+    left, segments = frames, []
+    for n, groups in job['segments']:
+        if left <= 0:
+            break
+        segments.append((min(n, left), groups))
+        left -= n
+    return dict(job, frames=frames, segments=segments)
+
+
+def explain(directory, tick, pair):
+    """Which classes and word offsets of the object pool differ in the tick of a difference and
+    in the tick before it (poolcmp.py on the dumps of the second run)."""
+    try:
+        import poolcmp
+        machines = tuple(int(x) for x in pair.split('-'))
+        parts = []
+        for t in (tick - 1, tick):
+            offsets, lines, _, _ = poolcmp.compare(directory, t, machines)
+            text = '; '.join('%s %s' % (name, ' '.join('+%x(%d)' % item for item in sorted(counter.items())[:10]))
+                             for name, counter in sorted(offsets.items())[:8])
+            blocks = sum(1 for l in lines if l.startswith('  block'))
+            parts.append('tick %d: %s%s' % (t, text or 'no object differs', ', %d blocks live on one only' % blocks if blocks else ''))
+        return ' || '.join(parts)[:900]
+    except Exception as error:
+        return 'no dump (%r)' % (error,)
 
 
 def machine_notes(out, n):
@@ -545,7 +626,7 @@ def class_of(result):
 # ---- the farm ---------------------------------------------------------------------------------
 FIELDS = ['name', 'seed', 'machines', 'classes', 'skills', 'char_level', 'level', 'frames', 'bus', 'flags', 'mixes',
           'ticks', 'ticks_sum', 'first', 'class', 'pair', 'values', 'oos', 'dropped', 'repeats', 'soft', 'levels', 'deaths',
-          'cut_ticks', 'overmax', 'nobj_max', 'secs', 'codes', 'timed_out', 'notes', 'error']
+          'cut_ticks', 'overmax', 'nobj_max', 'secs', 'codes', 'timed_out', 'notes', 'error', 'where']
 
 
 def job_row(job, result):
@@ -564,7 +645,8 @@ def job_row(job, result):
            'deaths': '/'.join(map(str, result.get('deaths', []))), 'cut_ticks': result.get('cut_ticks', 0),
            'overmax': result.get('overmax', 0), 'nobj_max': result.get('nobj_max', 0), 'secs': int(result.get('secs', 0)),
            'codes': ','.join(map(str, result.get('codes', []))), 'timed_out': int(bool(result.get('timed_out'))),
-           'notes': '; '.join(result.get('notes', []))[:500], 'error': result.get('error', '')}
+           'notes': '; '.join(result.get('notes', []))[:500], 'error': result.get('error', ''),
+           'where': result.get('where', '')}
     return '\t'.join('' if row[k] is None else str(row[k]).replace('\t', ' ') for k in FIELDS)
 
 
@@ -600,17 +682,30 @@ def farm(args, levels, trees):
     gate = Gate(os.path.join(out_root, 'limit.txt'), args.instances)
     deadline = time.time() + args.hours * 3600 if args.hours else None
     todo = [make_job(seed, args.arm, levels, trees) for seed in range(first, first + count) if seed not in done]
+    if args.max_frames:     # an arm that is expected to differ early (the unpatched one) need not play long games
+        todo = [shortened(job, args.max_frames) for job in todo]
     threads = []
 
     def work(job):
         try:
-            result = run_job(job, out_root)
+            # six sampled ticks per game: the pools are dumped and compared word by word, which says
+            # which fields outside the mask differ between machines in step (rawdiff.tsv)
+            samples = sorted({int(job['frames'] * k / 6.5) for k in range(1, 7)} | {1500})
+            result = run_job(job, out_root, dumps=samples, sample_dumps=True)
             if result.get('first') is not None and not args.no_rerun:
-                again = run_job(job, out_root, tag='-again')
-                result['repeats'] = 'yes' if again.get('first') == result['first'] else 'no (%s)' % again.get('first')
+                # the same game again, cut off shortly after the first difference, with the pools
+                # of every machine dumped in the tick before and in the tick of the difference
+                first = result['first']
+                again = run_job(shortened(job, first + 400), out_root, tag='-again', keep=True, dumps=[first - 1, first])
+                result['repeats'] = 'yes' if again.get('first') == first else 'no (%s)' % again.get('first')
+                result['where'] = explain(again['dir'], first, result.get('pair') or '0-1')
             with LOCK:
                 with open(jobs_path, 'a') as sink:
                     sink.write(job_row(job, result) + '\n')
+                with open(os.path.join(out_root, 'rawdiff.tsv'), 'a') as sink:
+                    sink.write('%s\tsampled\t%s\t%s\n' % (job['name'], job['level'], ','.join(map(str, samples))))
+                    for row in result.get('rawdiff', []):
+                        sink.write('%s\t%s\n' % (job['name'], '\t'.join(str(x) for x in ((row[0], row[1], row[2], '%x' % row[3]) + row[4:]))))
                 add_calls(out_root, result.get('calls', {}))
         finally:
             gate.give(job['machines'])
@@ -679,12 +774,20 @@ def report(dirs):
             print('  class [%s]: %d jobs; first: %s' % (name, len(members), ', '.join('%s@%s' % (r['seed'], r['first']) for r in members[:12])))
         calls = os.path.join(directory, 'calls.tsv')
         if os.path.exists(calls):
-            table = []
+            table = {}
             for line in open(calls):
                 address, count = line.split()
-                table.append((names.get(int(address, 16), ''), int(address, 16), int(count)))
-            named = [t for t in table if t[0]]
-            print('  functions entered: %d (%d of them named); a file of all: %s' % (len(table), len(named), calls))
+                table[int(address, 16)] = int(count)
+            by_name = {names[a]: n for a, n in table.items() if a in names}
+            print('  functions entered: %d (%d of them named); calls are counted on every machine, the prediction copy\'s included' % (
+                len(table), len(by_name)))
+            print('  ' + '; '.join('%s %d' % (name, by_name.get(name, 0)) for name in COVERAGE))
+            for title, pattern in (('skill and spell objects run', r'^(Spell|Cast)\w+_run$'), ('object classes run', r'^\w+_run$')):
+                hit = sorted((n, c) for n, c in by_name.items() if re.match(pattern, n))
+                every = sorted(n for n in set(names.values()) if re.match(pattern, n))
+                print('  %s: %d of %d named' % (title, len(hit), len(every)))
+                print('    ' + ' '.join('%s:%d' % (n.replace('_run', ''), c) for n, c in hit))
+                print('    never: ' + ' '.join(n.replace('_run', '') for n in every if n not in by_name))
     return 0
 
 
@@ -699,6 +802,7 @@ def main():
         p.add_argument('--instances', type=int, default=6)
         p.add_argument('--hours', type=float, default=0)
         p.add_argument('--no-rerun', action='store_true')
+        p.add_argument('--max-frames', type=int, default=0)
         p.add_argument('--seed', type=int)
         p.add_argument('--frames', type=int)
         p.add_argument('--tag', default='')
@@ -726,15 +830,9 @@ def main():
     if args.command == 'one':
         job = make_job(args.seed, args.arm, levels, trees)
         if args.frames:     # a shorter (or longer) run of the same game: the same segments, cut off
-            left, segments = args.frames, []
-            for frames, groups in job['segments']:
-                if left <= 0:
-                    break
-                segments.append((min(frames, left), groups))
-                left -= frames
-            if left > 0:
-                segments.append((left, job['segments'][-1][1]))
-            job = dict(job, frames=args.frames, segments=segments)
+            if args.frames > job['frames']:
+                job = dict(job, segments=job['segments'] + [(args.frames - job['frames'], job['segments'][-1][1])], frames=args.frames)
+            job = shortened(job, args.frames)
         extra = open(args.lines).read().splitlines() if args.lines else []
         columns = [l.strip() for l in open(args.columns) if l.strip() and not l.startswith('#')] if args.columns else []
         env = dict(item.split('=', 1) for item in args.env)

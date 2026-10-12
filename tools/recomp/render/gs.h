@@ -37,11 +37,12 @@ struct GsStats {
     uint64_t textures_freed = 0, textures_held = 0, texture_bytes = 0;      // held: now; bytes: RGBA bytes of the held ones
     uint64_t copies_skipped = 0;        // local-to-local transfers that were not a copy from a surface
     uint64_t surface_uploads = 0;       // rectangles sent straight into a displayed buffer
+    uint64_t fogged = 0;                // primitives drawn with fogging
     // Primitives drawn with a piece of GS state this model does not apply or only
     // approximates, by kind (Gs::APPROX_NAMES): what a scene needs is known by counting.
     uint64_t approx[16] = {0};
 };
-enum { AP_AFAIL, AP_DATE, AP_DST_ALPHA, AP_FBA, AP_PABE, AP_FOG, AP_AA1, AP_FBMSK, AP_COLCLAMP, AP_REGION_REPEAT, AP_SELF_TEXTURE, AP_COUNT };
+enum { AP_AFAIL, AP_DATE, AP_DST_ALPHA, AP_FBA, AP_PABE, AP_FOG_UNUSED, AP_AA1, AP_FBMSK, AP_COLCLAMP, AP_REGION_REPEAT, AP_SELF_TEXTURE, AP_COUNT };
 
 class Gs {
   public:
@@ -80,7 +81,8 @@ class Gs {
     // ---- registers ----
     uint64_t reg[0x64];
     uint64_t pmode = 0, smode2 = 0, dispfb[2] = {0, 0}, display[2] = {0, 0};
-    struct Queued { uint32_t x, y, z; float s, t, q; uint32_t u, v; uint8_t rgba[4]; };
+    struct Queued { uint32_t x, y, z; float s, t, q; uint32_t u, v; uint8_t rgba[4]; uint8_t fog; };
+    uint8_t cur_fog = 0;                // the FOG register's coefficient (for vertices that carry none)
     Queued vq[3];
     int vcount = 0;
     float cur_s = 0, cur_t = 0, cur_q = 1, st_q = 1;
@@ -99,7 +101,7 @@ class Gs {
     DrawCmd cur;                        // state of the command being filled
     bool have_cmd = false;
     void rebuild_state();
-    void emit_vertex(const Queued& v, const DrawCmd& c, float s, float t, float q, const uint8_t* rgba, uint32_t z);
+    void emit_vertex(const Queued& v, const DrawCmd& c, float s, float t, float q, const uint8_t* rgba, uint32_t z, uint8_t fog = 255);
     float ofx = 0, ofy = 0, zscale = 1.0f / 65536.0f;
     bool cmd_fst = true, cmd_iip = true, cmd_tme = false;
     // ---- render targets ----

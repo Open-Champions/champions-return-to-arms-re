@@ -1623,12 +1623,13 @@ namespace
 				for(size_t i = 1; i + 1 < words.size(); i++) expression += words[i];
 				push(Step::REPLY, 1, expression + " " + words.back());
 			}
-			else if((name == "shot" || name == "shotfb") && words.size() >= 2)
+			else if((name == "shot" || name == "shotfb" || name == "shotview") && words.size() >= 2)
 			{
-				// shotfb: the picture as drawn (see RequestFramebufferCapture)
+				// shotfb: the picture as drawn (see RequestFramebufferCapture); shotview: the
+				// part of it that is presented (its edge is left out, see "edge")
 				Step step;
 				step.kind = Step::SHOT;
-				step.value3 = (name == "shotfb") ? 1 : 0;
+				step.value3 = (name == "shotfb") ? 1 : ((name == "shotview") ? 2 : 0);
 				step.text = line.substr(line.find(words[1], name.size()));
 				m_steps.push_back(step);
 				push(Step::SHOTWAIT, 600);
@@ -2104,7 +2105,8 @@ namespace
 						m_burstLeft = step.value;
 						m_burstIndex = 0;
 						std::string name = step.text;
-						bool topFirst = (step.value3 == 1);
+						bool topFirst = (step.value3 != 0);
+						bool presentedPart = (step.value3 == 2);
 						m_capture = [this, gs, name, topFirst](const uint8* rgba, unsigned int width, unsigned int height) {
 							// 24-bit BMP; the rows of the window's picture come bottom-up, as
 							// the file wants them, those of the machine's own top first
@@ -2156,7 +2158,7 @@ namespace
 							if(m_burstLeft == 0) m_shotDone = 1;
 						};
 						if(topFirst)
-							gs->RequestFramebufferCapture(m_capture);
+							gs->RequestFramebufferCapture(m_capture, presentedPart);
 						else
 							gs->RequestCapture(m_capture);
 					}

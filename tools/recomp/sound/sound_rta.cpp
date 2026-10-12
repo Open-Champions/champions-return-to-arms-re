@@ -78,7 +78,23 @@ u32 g_last_status[12];
 
 // ---- the sound side on its own clock -----------------------------------------------------
 bool g_real;                        // sound-clock=real
-std::mutex g_lock;                  // the engine, between the game's thread and the device's
+// The engine, between the game's thread and the device's.  The device's thread is the
+// system's real-time sound thread: the lock has to hand its priority to whoever holds it
+// (the game's thread, which a busy machine may not let run for a long time otherwise).
+#if defined(__APPLE__)
+}  // namespace
+#include <os/lock.h>
+namespace {
+struct EngineLock {
+    os_unfair_lock l = OS_UNFAIR_LOCK_INIT;
+    void lock() { os_unfair_lock_lock(&l); }
+    void unlock() { os_unfair_lock_unlock(&l); }
+    bool try_lock() { return os_unfair_lock_trylock(&l); }
+};
+#else
+typedef std::mutex EngineLock;
+#endif
+EngineLock g_lock;
 rta::snd::PullDevice* g_puller;
 u64 g_calls_waited;                 // remote calls that had to wait for the device's thread
 double g_longest_wait_ms;
@@ -99,7 +115,7 @@ public:
 class Puller : public rta::snd::AudioSource {
 public:
     void pull(int16_t* stereo, size_t frames) override {
-        std::lock_guard<std::mutex> hold(g_lock);
+        std::lock_guard<EngineLock> hold(g_lock);
         g_capture.out = stereo; g_capture.left = frames;
         if (g_engine && !g_off) g_engine->advance_to(g_engine->position() + frames);
         if (g_capture.left) memset(g_capture.out, 0, g_capture.left * 4);
@@ -170,7 +186,7 @@ void catch_up(Engine& e) {
 // may be rendering: the call waits for it (counted; a request is rendered in well under a
 // millisecond).
 struct Hold {
-    std::unique_lock<std::mutex> lock;
+    std::unique_lock<EngineLock> lock;
     Hold() : lock(g_lock, std::defer_lock) {
         if (!g_real) return;
         if (lock.try_lock()) return;

@@ -13,6 +13,12 @@
 //   --opt proof-watch-ticks=E:LO:HI  two points of execution it happened between, while
 //                                  the simulation tick of episode E is LO..HI
 //   --opt proof-watch-log=FILE     (default: standard output)
+//   --opt proof-pokes=FILE         memory writes keyed on the game's own time: lines of
+//                                  "episode tick frame address hexbytes", applied at the
+//                                  first displayed frame at or after that frame of that
+//                                  tick (frame counts the displayed frames of one tick as
+//                                  rigcompare.py's controller replay does).  session.py
+//                                  writes the file from the rig's run of the same script
 //   --opt proof-dump=E:TICK:FILE[,E:TICK:FILE...]
 //                                  write main memory at the first displayed frame of that
 //                                  tick of episode E (an episode ends when the tick counter
@@ -143,10 +149,25 @@ static void watch_check(const char* kind, u32 where) {
 struct Dump { u32 episode, tick; std::string path; bool done; };
 static std::vector<Dump> g_dumps;
 
+struct Poke { u32 episode, tick, frame, addr; std::vector<u8> bytes; };
+static std::vector<Poke> g_pokes;
+static size_t g_poke_next;
+static u32 g_tick_frame;
+
 static void per_frame() {
     u32 tick = W(SIM_TICK);
     if (tick < g_last_tick) g_episode++;
+    g_tick_frame = tick == g_last_tick ? g_tick_frame + 1 : 0;
     g_last_tick = tick;
+    while (g_poke_next < g_pokes.size()) {
+        const Poke& p = g_pokes[g_poke_next];
+        bool due = g_episode != p.episode ? g_episode > p.episode : tick != p.tick ? tick > p.tick : g_tick_frame >= p.frame;
+        if (!due) break;
+        if (p.addr < RAM_SIZE && p.bytes.size() <= RAM_SIZE - p.addr) memcpy(g_ram + p.addr, p.bytes.data(), p.bytes.size());
+        if (g_episode != p.episode || tick != p.tick)
+            printf("proof: poke for episode %u tick %u applied late, at episode %u tick %u\n", p.episode, p.tick, g_episode, tick);
+        g_poke_next++;
+    }
     for (Dump& d : g_dumps) {
         if (d.done || d.episode != g_episode || tick < d.tick) continue;
         d.done = true;
@@ -222,6 +243,24 @@ static void ready() {
         const char* log = rt_option("proof-watch-log");
         g_watch_log = log ? fopen(log, "w") : stdout;
         if (!g_watch_log) rt_die("proof: cannot write %s", log);
+    }
+    if (const char* pokes = rt_option("proof-pokes")) {
+        FILE* f = fopen(pokes, "r");
+        if (!f) rt_die("proof: cannot read %s", pokes);
+        char line[4096];
+        while (fgets(line, sizeof line, f)) {
+            Poke p;
+            char hex[2048];
+            if (sscanf(line, "%u %u %u %x %2047s", &p.episode, &p.tick, &p.frame, &p.addr, hex) != 5) continue;
+            for (size_t i = 0; hex[i] && hex[i + 1]; i += 2) {
+                unsigned byte;
+                sscanf(hex + i, "%2x", &byte);
+                p.bytes.push_back((u8)byte);
+            }
+            g_pokes.push_back(p);
+        }
+        fclose(f);
+        printf("proof: %zu memory writes from %s\n", g_pokes.size(), pokes);
     }
     if (const char* dumps = rt_option("proof-dump")) {
         std::string text = dumps;

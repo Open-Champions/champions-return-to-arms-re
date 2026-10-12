@@ -88,6 +88,9 @@ def main():
     parser.add_argument('--sections', help='file of section names, one per line')
     parser.add_argument('--section', action='append', default=[])
     parser.add_argument('--less', action='append', default=[], help='a section of --sections to leave out')
+    parser.add_argument('--extra-pnach', action='append', default=[],
+                        help='one more patch file, applied whole after the sections (recomp.py --extra-pnach): '
+                             'a proposed section that is not in the patch file yet')
     parser.add_argument('--instrument', choices=('count', 'trace', 'none'), default='count')
     parser.add_argument('--rt', choices=('live', 'frozen'), default='live')
     parser.add_argument('--jobs', type=int, default=5)
@@ -119,6 +122,8 @@ def main():
         with open(listing, 'w') as sink:
             sink.write('\n'.join(sections) + '\n')
         command += ['--pnach', args.pnach, '--sections', listing]
+    for path in args.extra_pnach:
+        command += ['--extra-pnach', path]
     done = subprocess.run(command, capture_output=True, text=True)
     if done.returncode != 0:
         print(done.stdout[-3000:] + done.stderr[-3000:])
@@ -126,7 +131,7 @@ def main():
     for line in done.stdout.splitlines():
         if line.startswith(('patched', 'warning', 'entangled', 'instructions emitted as rt_unimpl')):
             print('recomp: ' + line)
-    if not sections and os.path.exists(os.path.join(gen, 'patches.cpp')):
+    if not sections and not args.extra_pnach and os.path.exists(os.path.join(gen, 'patches.cpp')):
         os.remove(os.path.join(gen, 'patches.cpp'))
 
     # 2. compile
@@ -220,7 +225,8 @@ def main():
         return 1
     with open(os.path.join(gen, 'build-info.txt'), 'w') as sink:
         sink.write('%s\nexecutable sha1 %s\ninstrument %s\nsections %d: %s\nflags %s\nnetshim.cpp sha1 %s\nsoakhooks.cpp sha1 %s\n' % (
-            rt_note, sha1_file(os.path.join(ROOT, 'SLUS_209.73')), args.instrument, len(sections), '; '.join(sections),
+            rt_note, sha1_file(os.path.join(ROOT, 'SLUS_209.73')), args.instrument, len(sections),
+            '; '.join(sections + ['+ ' + os.path.basename(p) for p in args.extra_pnach]),
             ' '.join(CODEGEN), sha1_file(os.path.join(NET, 'netshim.cpp')), sha1_file(os.path.join(HERE, 'soakhooks.cpp'))))
     print(rt_note)
     print('linked %s (%d bytes), %d sections, instrument %s' % (program, os.path.getsize(program), len(sections), args.instrument))

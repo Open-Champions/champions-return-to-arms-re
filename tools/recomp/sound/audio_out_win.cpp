@@ -137,6 +137,7 @@ private:
         RTA_STEP("IAudioClient::Start", w.client->Start());
 #undef RTA_STEP
         buffer_ms_ = w.frames * 1000 / rate_;
+        if (buffer_ms_ > 30) buffer_ms_ = 30;
         return true;
     }
     // Plays until asked to stop (true) or until the device fails (false).
@@ -150,6 +151,10 @@ private:
             UINT32 queued = 0;
             if (FAILED(w.client->GetCurrentPadding(&queued))) return false;
             UINT32 space = w.frames > queued ? w.frames - queued : 0;
+            // a driver may hand out a much larger buffer than was asked for: never queue more than 30 ms
+            const UINT32 most = rate_ * 3 / 100;
+            if (queued >= most) continue;
+            if (space > most - queued) space = most - queued;
             if (!space) continue;
             BYTE* data = nullptr;
             if (FAILED(w.render->GetBuffer(space, &data))) return false;

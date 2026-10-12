@@ -276,11 +276,13 @@ units; the unpatched translation is byte-identical to before (`diff -r`). `--pna
   ticks of the fight (3,886 to 3,912), every other column identical throughout. Both are
   unchanged by renderer and sound; neither was located.
 - **ERX modules** (`LIBINSCK`, `NG_INSCK`, `DNAS_NET`): relocatable code the network
-  set-up loads; not translated (`native-recomp.md`, step 4).
-- **Network in the application**: `tools/recomp/net` links the runtime with its own
-  supplied-function list into a headless program; the application links none of it.
-  Needed: its shim as a module of the application, a lobby address option, and the
-  front end's network screens looked at.
+  set-up loads; not translated (`native-recomp.md`, step 4). (Since found to serve the
+  sign-in step only, which the lobby path does not reach: `native-online.md`.)
+- **Network in the application**: done since by `tools/recomp/net` (`native-online.md`):
+  `app/build.py` links its driver and the one-step online into `rta_app`, which was run
+  through the lobby into a game as host and as joiner in a test window;
+  `tools/recomp/net/play-native.sh` starts it with `--server`, `--online`, `--host`,
+  `--join CODE`. Left there: the name question on the window was built and not run.
 - **Windows**, exactly: `rt/host_win32.cpp` (thread with a large stack, 64-bit file
   offsets, exit, sleep); a WASAPI or waveOut sink in `sound/audio_out.cpp`; a pad file
   for XInput or Windows.Gaming.Input beside `pad_mac.mm`; the build scripts (clang-cl or

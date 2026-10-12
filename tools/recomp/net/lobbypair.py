@@ -7,8 +7,9 @@
 
 One copy hosts a game named with a code, the other joins it by that code; both go there
 by themselves (the one-step online: tools/recomp/net/online.cpp, or the emulator-based
-application's own).  `native` is local/recomp-out/bin/rta_native_online; `app` is the
-emulator-based application (tools/play-net/play.sh, a silent background test window,
+application's own).  `native` is local/recomp-out/bin/rta_native_online; `window` is the
+native window program local/recomp-out/bin/rta_app in a small silent test window titled
+"AGENT TEST - native online"; `app` is the emulator-based application (tools/play-net/play.sh, a silent background test window,
 driven over its control socket).  The lobby server is the one on this computer, and a
 native copy is started with net-local-only=1: it sends nothing beyond this computer.
 
@@ -117,7 +118,7 @@ def script_lines(role, new_character, args):
     if args.level:
         lines += ['echo waiting-for-level', 'until g_levelName:str8 == %s timeout 12000' % args.level,
                   'until g_players+0x43d8:u32 != 0 timeout 6000', 'wait 240', 'echo in-level']
-        lines += play_lines(args.play2, args.seed + (500 if role == 'host' else 1500))
+        lines += ['wait %d' % args.play2] if args.idle else play_lines(args.play2, args.seed + (500 if role == 'host' else 1500))
     lines += ['wait 120', 'show g_netFrame:s32 g_levelName:str12 g_checksumFailed:u8 g_expectedChecksums:crc32 g_receivedChecksums:crc32', 'app online', 'app net peers', 'quit']
     return lines
 
@@ -189,7 +190,7 @@ def symbol_files():
     return [os.path.join(ROOT, 'names.tsv')] + sorted(glob.glob(os.path.join(ROOT, 'symbols', '*.tsv')))
 
 
-def start_native(role, out, code, args):
+def start_native(role, out, code, args, window=False):
     import rig as riglib
     directory = os.path.join(out, role)
     os.makedirs(directory, exist_ok=True)
@@ -204,17 +205,23 @@ def start_native(role, out, code, args):
     with open(script, 'w') as sink:
         sink.write('\n'.join(script_lines(role, new_character, args)) + '\n')
     tick_do = os.path.join(out, 'tick-do.txt')
-    command = ['nice', '-n', '10', os.path.join(OUT, 'bin', args.program), 'boot', '--elf', os.path.join(ROOT, 'SLUS_209.73'),
-               '--disc', os.environ['RTA_DISC'], '--card', os.path.join(directory, 'card')]
-    for path in symbol_files():
-        command += ['--sym', path]
+    if window:
+        # the window program: a small test window behind the others, silent, paced by its display
+        command = ['nice', '-n', '10', os.path.join(OUT, 'bin', 'rta_app'), '--test', 'native online', '--window', '320x240',
+                   '--disc', os.environ['RTA_DISC'], '--data', directory, '--script', script, '--']
+    else:
+        program = args.join_program if (role == 'join' and args.join_program) else args.program
+        command = ['nice', '-n', '10', os.path.join(OUT, 'bin', program), 'boot', '--elf', os.path.join(ROOT, 'SLUS_209.73'),
+                   '--disc', os.environ['RTA_DISC'], '--card', os.path.join(directory, 'card')]
+        for path in symbol_files():
+            command += ['--sym', path]
     options = {'net-data': directory, 'net-local-only': '1', 'online': '%s:%s' % ('host' if role == 'host' else 'join', code),
                'online-name': name, 'online-person': '0', 'net-log': os.path.join(directory, 'net.log'),
                'tick-log': os.path.join(out, role + '.tick.tsv'), 'tick-watch-file': watch_file, 'tick-do': tick_do,
                'net-pace': str(args.pace)}
     for key, value in options.items():
         command += ['--opt', '%s=%s' % (key, value)]
-    command += ['--script', script, '--seconds', str(args.limit)] + args.native_arg
+    command += ([] if window else ['--script', script]) + ['--seconds', str(args.limit)] + args.native_arg
     log = open(os.path.join(out, role + '.out'), 'w')
     return subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
 
@@ -228,12 +235,14 @@ def run(args):
     with open(os.path.join(out, 'tick-do.txt'), 'w') as sink:
         if args.level:
             sink.write('%d poke g_pendingLevel %s\n' % (args.level_tick or (400 + args.play + 500), args.level))
+        for item in args.tick_do:
+            sink.write(item + '\n')
     kinds = {'host': args.host, 'join': args.join}
     started = time.time()
     processes = {}
     for role in ('host', 'join'):
-        if kinds[role] == 'native':
-            processes[role] = start_native(role, out, code, args)
+        if kinds[role] in ('native', 'window'):
+            processes[role] = start_native(role, out, code, args, kinds[role] == 'window')
         else:
             import lobbyapp
             processes[role] = lobbyapp.start(role, out, code, args)
@@ -257,12 +266,12 @@ def run(args):
             if line.startswith(keep) or 'out of sync' in line.lower():
                 print('  %s: %s' % (role, line.rstrip()[:230]))
     a, b = os.path.join(out, 'host.tick.tsv'), os.path.join(out, 'join.tick.tsv')
-    if kinds['host'] == 'native' and kinds['join'] == 'native':
+    if kinds['host'] != 'app' and kinds['join'] != 'app':
         subprocess.run([sys.executable, '-I', '-B', os.path.join(ROOT, 'tools', 'rig', 'compare.py'), 'ticks', a, b])
     else:
         for role in ('host', 'join'):
             other = 'join' if role == 'host' else 'host'
-            if kinds[role] == 'app' and kinds[other] == 'native':
+            if kinds[role] == 'app' and kinds[other] != 'app':
                 compare_samples(os.path.join(out, role + '.samples.tsv'), os.path.join(out, other + '.tick.tsv'), 0 if role == 'host' else 1)
     return 0 if all(c == 0 for c in codes.values()) else 1
 
@@ -272,9 +281,10 @@ def main():
     sub = parser.add_subparsers(dest='command', required=True)
     p = sub.add_parser('run')
     p.add_argument('out')
-    p.add_argument('--host', choices=('native', 'app'), default='native')
-    p.add_argument('--join', choices=('native', 'app'), default='native')
+    p.add_argument('--host', choices=('native', 'window', 'app'), default='native')
+    p.add_argument('--join', choices=('native', 'window', 'app'), default='native')
     p.add_argument('--program', default='rta_native_online')
+    p.add_argument('--join-program', help='another headless program for the joining copy (a build with another patch set)')
     p.add_argument('--play', type=int, default=1800)
     p.add_argument('--idle', action='store_true', help='no input at all after the launch: --play frames of waiting')
     p.add_argument('--level', help='a level name written into g_pendingLevel in one lockstep tick on both copies')
@@ -286,6 +296,8 @@ def main():
     p.add_argument('--stagger', type=float, default=1.0, help='seconds between the two starts')
     p.add_argument('--limit', type=int, default=600)
     p.add_argument('--tick-watch', action='append', default=[])
+    p.add_argument('--tick-do', action='append', default=[],
+                   help='a line for the native copies\' tick-do file: "<tick> poke32 <expression> <number>" and the like')
     p.add_argument('--native-arg', action='append', default=[])
     p.add_argument('--app-linger', type=float, default=5.0, help='seconds an emulator copy stays after its input ended')
     args = parser.parse_args()

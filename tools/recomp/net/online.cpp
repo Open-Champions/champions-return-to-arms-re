@@ -23,6 +23,7 @@
 #include "../../play-net/src/RtaOnline.h"
 
 #include <cstdio>
+#include <cstring>
 #include <iostream>
 #include <sstream>
 #include <thread>
@@ -143,6 +144,18 @@ void finish() {
     if (g_previous_finish) g_previous_finish();
 }
 
+// front end, lobby state 2 (the network window 0x506148), no message box, and the list of
+// settings up (window state 3 with a setting) or still being read (state 0)
+bool config_offered(const uint8_t* ram) {
+    auto word = [ram](u32 address) { u32 value = 0; address &= 0x1FFFFFFF; if (address && address <= RAM_SIZE - 4) memcpy(&value, ram + address, 4); return value; };
+    if (ram[0x41B510] != 1 || memcmp(ram + 0x41B721, "intro", 6) != 0) return false;
+    if (word(0x4F6B78) != 10 || word(0x506160) != 2) return false;
+    u32 window = word(0x506148);
+    if (!window || word(window + 0xD88) != 0) return false;
+    u32 state = word(window + 0xDB4);
+    return state == 0 || (state == 3 && (s32)word(window + 0x4354) > 0);
+}
+
 struct Pad : rta::PadSource {
     void read(unsigned port, uint64_t number, rta::PadState& state) override {
         if (g_inner) g_inner->read(port, number, state);
@@ -157,6 +170,12 @@ struct Pad : rta::PadSource {
             state = rta::PadState();
             state.buttons = (uint16_t)g_online.Buttons();
         }
+        // The game's network screen offers "Config" (triangle) while it lists the setting:
+        // that restarts the machine into Sony's network settings program on the disc, a
+        // second executable this build does not contain - and there is nothing to set (the
+        // host's network is used as it is, and the setting is written when it is missing).
+        // The emulator-based application does not pass the button on there either.
+        if (config_offered(rta::memory())) state.buttons &= (uint16_t)~rta::PAD_TRIANGLE;
         std::string note = g_online.Note();
         if (note != g_note) {
             g_note = note;

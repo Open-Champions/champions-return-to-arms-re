@@ -7,6 +7,9 @@
                                                      # Rosetta): win/standin/rta_native_x64, recomp_test_x64,
                                                      # fpcheck_x64, and rta_native_arm64, fpcheck_arm64 as
                                                      # the controls from the same sources
+  python3 tools/recomp/app/build_win.py --reference  # after --standin, with RTA_DISC: runs the tester's check script
+                                                     # (rta-windows/boot-check.rig) in the arm64 Mac build of the
+                                                     # same sources and writes rta-windows/boot-check-mac.txt
   options: --compiler clang|gcc   (default clang when it can target Windows, see below)
            --original             the unpatched game (gen/) instead of the fix set (gen-app/)
            --no-game              do not translate the game again first (recomp.py, about 2 s)
@@ -20,13 +23,15 @@ What it makes (docs/issues/native-windows.md says what was proven and what was n
                    sound/audio_out_win.cpp, render/backend_gl.cpp unchanged)
   rta_native.exe   the machine with nothing attached (app/win/headless_main.cpp): boots and runs scripts
   fpcheck.exe      the game's floating-point operations as a table of checksums (app/win/fpcheck.cpp)
-  play.bat, README.txt  for the person who tests (copied from app/win/)
+  rta-windows/     the folder a tester gets: the three programs, play.bat and README.txt (from
+                   app/win/), boot-check.rig (the rig's boot script with addresses for names)
 
 Toolchain.  On macOS: `brew install mingw-w64` (GCC, binutils, the MinGW-w64 headers and
 libraries, UCRT).  --compiler clang compiles with the Mac's own clang++ for the target
 x86_64-w64-mingw32 against that sysroot and links with the MinGW g++ driver: the same
 compiler and the same x86-64 code generator as the stand-in that is run under Rosetta.
---compiler gcc compiles with x86_64-w64-mingw32-g++.  On Windows itself (MSYS2 UCRT64 or
+--compiler gcc compiles with x86_64-w64-mingw32-g++ and names its programs rta_app_gcc.exe,
+rta_native_gcc.exe, fpcheck_gcc.exe (a second build to try if the first does not start).  On Windows itself (MSYS2 UCRT64 or
 CLANG64 shell: `pacman -S mingw-w64-ucrt-x86_64-gcc python`) the compiler is g++ or clang++
 from the PATH - that path of this script has not been run.
 Everything is linked statically (-static): the .exe needs only DLLs that are part of
@@ -60,6 +65,7 @@ NICE = [] if ON_WINDOWS else ['nice', '-n', '10']
 FP = ['-fno-strict-aliasing', '-ffp-contract=off', '-frounding-math']
 WIN_DEFINES = ['-D_WIN32_WINNT=0x0A00', '-DWINVER=0x0A00', '-D_USE_MATH_DEFINES', '-DNOMINMAX', '-DWIN32_LEAN_AND_MEAN']
 RENDER_CORE = ['vu1.cpp', 'vif1.cpp', 'gs.cpp', 'renderer.cpp']
+FILM, FILM_HLE = os.path.join(HERE, 'film.cpp'), os.path.join(HERE, 'hle-app.txt')
 RUNTIME = ['runtime.cpp', 'iop.cpp', 'script.cpp']
 WIN_LIBS = ['-lopengl32', '-lgdi32', '-luser32', '-lole32', '-lwinmm', '-lavrt', '-lshell32', '-ldwmapi']
 
@@ -149,13 +155,14 @@ def link(command, objects, libs, out):
     if result.returncode != 0:
         print('LINK FAILED %s\n%s' % (out, result.stderr[:6000]))
         return False
-    # clang and GCC pad the name strings of type information differently; ld says so for every
-    # one it merges with libstdc++'s copy ("duplicate section ... has different size") and keeps one
+    # clang and GCC pad C++ type information (the _ZTS name strings, the _ZTI objects) differently;
+    # ld says so for every one it merges with libstdc++'s copy ("duplicate section ... has
+    # different size") and keeps one
     lines = [l for l in result.stderr.splitlines() if l.strip()]
-    padding = [l for l in lines if 'duplicate section' in l and '.rdata$_ZTS' in l]
+    padding = [l for l in lines if 'duplicate section' in l and '.rdata$_ZT' in l and 'different size' in l]
     other = [l for l in lines if l not in padding]
     print('linked %s (%d bytes)%s%s' % (os.path.relpath(out, ROOT), os.path.getsize(out),
-                                        '; %d type-name sections merged with a different padding' % len(padding) if padding else '',
+                                        '; %d type-information sections merged with a different padding' % len(padding) if padding else '',
                                         '; warnings:\n' + '\n'.join(other)[:1500] if other else ''))
     return True
 
@@ -186,6 +193,11 @@ def translate(args):
     if not args.original:
         command += ['--pnach', os.path.join(ROOT, 'patches', 'SLUS-20973_4028A55F.pnach'),
                     '--sections', os.path.join(ROOT, 'tools', 'play-net', 'sections-suggested.txt')]
+        # as app/build.py: the film player's library entries are left to app/film.cpp.  (Its
+        # network part - net/hle-online.txt, the driver, the sign-in patch - is not in the
+        # Windows program: POSIX sockets and a macOS dialogue.)
+        if os.path.exists(FILM_HLE) and os.path.exists(FILM):
+            command += ['--hle-add', FILM_HLE]
     result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode != 0:
         print(result.stdout[-3000:] + result.stderr[-3000:])
@@ -205,23 +217,63 @@ def translate(args):
     return True
 
 
+def write_check_script(target):
+    """tools/rig/examples/boot-to-hub.rig with every name replaced by its address.
+
+    The boot route of the rig (memory card, front end, character creation, into the first
+    level) is written with the project's names for the game's variables; the runtime reads
+    them from names.tsv and symbols/*.tsv.  A tester has neither, so the copy that goes into
+    the package names addresses.  Lines of the form `<address>\t<name>...` define a name."""
+    names = {}
+    for path in [os.path.join(ROOT, 'names.tsv')] + sorted(
+            os.path.join(ROOT, 'symbols', n) for n in os.listdir(os.path.join(ROOT, 'symbols')) if n.endswith('.tsv')):
+        for line in open(path, errors='replace'):
+            parts = line.rstrip('\n').split('\t')
+            if len(parts) >= 2 and re.fullmatch(r'[0-9a-fA-F]{6,8}', parts[0]) and re.fullmatch(r'[A-Za-z_]\w*', parts[1]):
+                names.setdefault(parts[1], int(parts[0], 16))
+    out, replaced = [], set()
+    for line in open(os.path.join(ROOT, 'tools', 'rig', 'examples', 'boot-to-hub.rig')):
+        code, hash_, comment = line.partition('#')
+
+        def address(match):
+            word = match.group(0)
+            if word in names and ('_' in word):
+                replaced.add(word)
+                return '0x%x' % names[word]
+            return word
+        out.append(re.sub(r'(?<![\w.])[A-Za-z_]\w*', address, code) + hash_ + comment)
+    with open(target, 'w') as sink:
+        sink.write('# boot-check.rig - made by build_win.py from tools/rig/examples/boot-to-hub.rig: the same script with\n'
+                   '# addresses in place of names (%s).\n' % ', '.join(sorted(replaced)))
+        sink.writelines(out)
+    return len(replaced)
+
+
 def build_standin(args):
     """The same sources for macOS x86-64, with the Mac's compiler: what can be run here."""
     if sys.platform != 'darwin':
         sys.exit('--standin is for a Mac (it builds x86-64 programs that run under Rosetta)')
     out = os.path.join(WIN, 'standin')
     os.makedirs(out, exist_ok=True)
-    args.original, args.gen = True, os.path.join(WIN, 'gen-orig')    # the unpatched game: the one compared with the rig
-    if not translate(args):
-        return False
-    gen = args.gen
+    gens = {}
+    for kind, original in (('gen-orig', True), ('gen-app', False)):
+        args.original, args.gen = original, os.path.join(WIN, kind)
+        if not translate(args):
+            return False
+        gens[kind] = args.gen
+    headless = RUNTIME + ['host_posix.cpp', 'sound_null.cpp', 'main_headless.cpp']
     ok = True
-    # run: the headless runtime, for x86-64 and - from the same sources at the same moment, as the
-    # control it is compared with - for arm64; test: the driver of difftest.py for x86-64
-    for name, arch, defines, opt, sources in (
-            ('run', 'x86_64', [], '-O2', RUNTIME + ['host_posix.cpp', 'sound_null.cpp', 'main_headless.cpp']),
-            ('run', 'arm64', [], '-O2', RUNTIME + ['host_posix.cpp', 'sound_null.cpp', 'main_headless.cpp']),
-            ('test', 'x86_64', ['-DRECOMP_TEST', '-DFPU_PS2'], '-O1', ['test_driver.cpp'])):
+    # run: the headless runtime with the unpatched game (the one compared with the rig), for
+    #      x86-64 and - from the same sources at the same moment, as the control - for arm64;
+    # test: the driver of difftest.py for x86-64;
+    # fix: the headless runtime with the game as rta_native.exe has it (the fix set), for arm64:
+    #      what its report should read on a PC
+    for name, arch, kind, defines, opt, sources, program in (
+            ('run', 'x86_64', 'gen-orig', [], '-O2', headless, 'rta_native_x64'),
+            ('run', 'arm64', 'gen-orig', [], '-O2', headless, 'rta_native_arm64'),
+            ('test', 'x86_64', 'gen-orig', ['-DRECOMP_TEST', '-DFPU_PS2'], '-O1', ['test_driver.cpp'], 'recomp_test_x64'),
+            ('fix', 'arm64', 'gen-app', [], '-O2', headless, 'rta_native_fix_arm64')):
+        gen = gens[kind]
         short = 'x64' if arch == 'x86_64' else arch
         cxx = ['clang++', '-arch', arch]
         objdir = os.path.join(WIN, 'obj-standin-%s-%s' % (name, short))
@@ -230,8 +282,7 @@ def build_standin(args):
         jobs = game_jobs(gen, objdir, flags) + source_jobs([(os.path.join(RT, s), flags, 'rt_') for s in sources], objdir, [RT, gen])
         if not compile_all(jobs, cxx, args.jobs):
             return False
-        program = os.path.join(out, ('rta_native_' if name == 'run' else 'recomp_test_') + short)
-        ok = link(cxx, [j[2] for j in jobs], ['-lpthread'], program) and ok
+        ok = link(cxx, [j[2] for j in jobs], ['-lpthread'], os.path.join(out, program)) and ok
     flags = ['-std=c++17', '-O2', '-fwrapv', '-w'] + FP + ['-I', RT]
     for arch in ('x86_64', 'arm64'):
         program = os.path.join(out, 'fpcheck_' + ('x64' if arch == 'x86_64' else arch))
@@ -242,7 +293,31 @@ def build_standin(args):
     return ok
 
 
+def make_reference(args):
+    """What rta_native.exe should print for the check script: the same sources as an arm64 Mac program print it."""
+    binary = os.path.join(WIN, 'standin', 'rta_native_fix_arm64')
+    package = os.path.join(WIN, 'rta-windows')
+    disc = os.environ.get('RTA_DISC')
+    if not os.path.exists(binary) or not disc:
+        sys.exit('--reference needs build_win.py --standin first, and RTA_DISC set to the disc image')
+    os.makedirs(package, exist_ok=True)
+    script = os.path.join(package, 'boot-check.rig')
+    write_check_script(script)
+    card = os.path.join(WIN, 'standin', 'card-reference')
+    shutil.rmtree(card, ignore_errors=True)         # the script expects a blank memory card
+    done = subprocess.run(NICE + [binary, 'boot', '--elf', os.path.join(ROOT, 'SLUS_209.73'), '--disc', disc, '--card', card, '--script', script],
+                          capture_output=True, text=True)
+    text = done.stdout + done.stderr
+    open(os.path.join(package, 'boot-check-mac.txt'), 'w').write(text)
+    for line in text.splitlines():
+        if line.startswith(('frames=', 'VU0:')):
+            print('reference: ' + line)
+    print('wrote %s (%d lines, exit %d)' % (os.path.relpath(os.path.join(package, 'boot-check-mac.txt'), ROOT), len(text.splitlines()), done.returncode))
+    return done.returncode == 0
+
+
 def main():
+    sys.stdout.reconfigure(line_buffering=True)     # progress shows in a log file while it runs
     parser = argparse.ArgumentParser()
     parser.add_argument('--compiler', choices=('clang', 'gcc'))
     parser.add_argument('--opt')
@@ -251,20 +326,24 @@ def main():
     parser.add_argument('--no-game', action='store_true', help='do not translate the game again (use what win/gen-app holds)')
     parser.add_argument('--headless', action='store_true', help='only fpcheck.exe and rta_native.exe')
     parser.add_argument('--standin', action='store_true', help='build the macOS x86-64 stand-in instead')
+    parser.add_argument('--reference', action='store_true', help='run the check script in the arm64 Mac build: what rta_native.exe should print')
     parser.add_argument('--symbols', action='store_true', help='keep the symbol table in the programs')
     parser.add_argument('--no-translation', action='store_true', help='interpret VU1 even when its main program is translated')
     args = parser.parse_args()
     args.jobs = max(1, min(8, args.jobs))
     if args.standin:
         return 0 if build_standin(args) else 1
+    if args.reference:
+        return 0 if make_reference(args) else 1
     args.gen = os.path.join(WIN, 'gen-orig' if args.original else 'gen-app')
-    suffix = '_orig' if args.original else ''
     if not translate(args):
         return 1
     cxx, linker, windres, what = find_toolchain(args.compiler)
     tag = 'clang' if 'clang' in os.path.basename(cxx[0]) else 'gcc'
+    # the programs of the default build have plain names; the others say what they are
+    suffix = ('_orig' if args.original else '') + ('_gcc' if tag == 'gcc' and not ON_WINDOWS else '')
     print('toolchain: ' + what)
-    objdir = os.path.join(WIN, 'obj-%s%s' % (tag, suffix))
+    objdir = os.path.join(WIN, 'obj-%s%s' % (tag, '_orig' if args.original else ''))
     os.makedirs(objdir, exist_ok=True)
     opt = args.opt or '-O2'
     rt_flags = ['-std=c++17', opt, '-fwrapv', '-w'] + FP + WIN_DEFINES + ['-I', RT, '-I', args.gen]
@@ -296,6 +375,10 @@ def main():
              (os.path.join(SOUND, 'sound_rta.cpp'), rt_flags + ['-I', SOUND], 'rt_'),
              (os.path.join(HERE, 'app_rt.cpp'), rt_flags + ['-I', HERE], 'a_'),
              (os.path.join(HERE, 'win_main.cpp'), app_flags, 'a_'),
+             ] + ([
+             # the films (app/film.cpp, when the application has it); <ctime> is given from here:
+             # the file's timing aid finds it by itself only on macOS
+             (FILM, rt_flags + ['-I', HERE, '-include', 'ctime'], 'a_')] if os.path.exists(FILM) and os.path.exists(FILM_HLE) and not args.original else []) + [
              (os.path.join(HERE, 'pad_win.cpp'), app_flags, 'a_'),
              (os.path.join(WINSRC, 'wgl.cpp'), app_flags, 'a_')], objdir, search)
         jobs += app
@@ -306,7 +389,7 @@ def main():
     # program (the map beside the objects has the addresses a crash report names)
     def flags_for(name):
         return ['-static'] + ([] if args.symbols else ['-s']) + ['-Wl,-Map,' + os.path.join(objdir, name + '.map')]
-    ok = link(linker + flags_for('fpcheck'), objs(fpcheck) + objs(resource), [], os.path.join(WIN, 'fpcheck.exe'))
+    ok = link(linker + flags_for('fpcheck'), objs(fpcheck) + objs(resource), [], os.path.join(WIN, 'fpcheck%s.exe' % suffix))
     ok = link(linker + flags_for('rta_native'), objs(game) + objs(runtime) + objs(headless) + objs(resource), ['-lwinmm'],
               os.path.join(WIN, 'rta_native%s.exe' % suffix)) and ok
     if app:
@@ -316,11 +399,13 @@ def main():
         if os.path.exists(os.path.join(WINSRC, name)):
             shutil.copyfile(os.path.join(WINSRC, name), os.path.join(WIN, name))
     if ok and app and not args.original:
-        # exactly what a tester gets, in one folder
+        # exactly what a tester gets, in one folder (the GCC build's programs beside the others when they exist)
         package = os.path.join(WIN, 'rta-windows')
         os.makedirs(package, exist_ok=True)
-        for name in ('rta_app.exe', 'rta_native.exe', 'fpcheck.exe', 'play.bat', 'README.txt'):
-            shutil.copyfile(os.path.join(WIN, name), os.path.join(package, name))
+        for name in ('rta_app.exe', 'rta_native.exe', 'fpcheck.exe', 'rta_app_gcc.exe', 'fpcheck_gcc.exe', 'play.bat', 'README.txt'):
+            if os.path.exists(os.path.join(WIN, name)):
+                shutil.copyfile(os.path.join(WIN, name), os.path.join(package, name))
+        write_check_script(os.path.join(package, 'boot-check.rig'))
         print('the folder to give a tester: ' + os.path.relpath(package, ROOT))
     return 0 if ok else 1
 

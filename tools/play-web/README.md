@@ -13,7 +13,9 @@ whole game start and stayed in step). In Chrome 155 on an Apple M5 Pro it
 holds 60 frames a second at the title and standing in the first level (resolution factor
 2, the Mac otherwise quiet); what was measured, what was checked and how, and what is
 missing is at the end, and the working notes with every figure are in
-[docs/issues/browser-build.md](../../docs/issues/browser-build.md).
+[docs/issues/browser-build.md](../../docs/issues/browser-build.md). It also starts and
+plays in Brave and in Safari's engine, and tells a visitor whose browser lacks something
+what that is (section "Browsers"); Firefox, Edge and Windows have not been tried.
 [docs/STATE-OF-PLAY.md](../../docs/STATE-OF-PLAY.md) sets this build beside the other
 routes to a game: the desktop application ([docs/play-online.md](../../docs/play-online.md)),
 PCSX2 with the patch file ([docs/online-setup.md](../../docs/online-setup.md)) and the
@@ -25,15 +27,16 @@ source, a patch against Play! and scripts.
 | File | What it is |
 |---|---|
 | `build.sh` | gets Play! at commit `83700b2c31e593bc94e845b4b31b797be84dda59` into `local/play-web-src` (its own copy), applies `../play-net/play-net.patch`, `play-web.patch` and `perf.patch`, copies `src/` in, builds with Emscripten, and puts the page together in `local/play-web-site` |
-| `play-web.patch` | the changes to Play! on top of `play-net.patch` (10 files): the video thread owning the canvas, the disc read in place by range requests, uniform blocks sent only when changed, counters, the build's link options |
+| `play-web.patch` | the changes to Play! on top of `play-net.patch` (10 files): the video thread owning the canvas, the disc read in place by range requests (or through the page's main thread where a browser has none on a picked file; a piece that cannot be read is asked for again instead of ending the machine), uniform blocks sent only when changed, counters, the build's link options |
 | `perf.patch` | applied by `build.sh` after the two above (18 files): about a fifth less work per frame with the picture and the simulation unchanged - VU1's flags computed only where its program reads them, picture transfers by row, the VIF unpack, linked blocks ([docs/issues/browser-perf.md](../../docs/issues/browser-perf.md)); its option `-DRTA_WASM_EXCEPTIONS=ON` is off |
 | `src/RtaWeb.cpp` | the front end in the emulator (takes the place of Play!'s `Source/ui_js/Main.cpp`): patches and display patches, the pad, sound into a ring, the video handler, counters and test aids |
 | `src/RtaWebNet.cpp`, `RtaWebNet.h` | online play: the sockets of the desktop application's network turned into messages for the relay, the Ethernet adaptor's hooks, the network setting on the memory card, and the "one-step online" driver's link to the page |
 | `src/RtaWebNetCore.cpp`, `RtaWebSock.h` | `../play-net/src/RtaNet.cpp` compiled for the browser without a change: its socket calls are given other names, which `RtaWebNet.cpp` carries out |
 | `relay/relay.py` | the relay: what stands in for the sockets a page does not have (Python 3, standard library only); `relay/check.py` tests one; `relay/README.md` says how to run it on a server |
 | `src/GlStateShadow.h` | GL state remembered on our side so that calls which change nothing are not made (see "Speed") |
-| `web/index.html`, `web/rta-web.js` | the page: disc picker with the wrong-disc refusal, keyboard and controller, sound start, memory card kept in the browser's storage, the speed line, the *Online…* panel and the connection to the relay, test aids |
-| `web/rta-sound.js` | the AudioWorklet that plays the sound ring |
+| `web/index.html` | the page, and in it the **start-up check**: a plain script that asks the browser what it has of what the page needs and says what is missing before anything large is loaded |
+| `web/rta-web.js` | the page's program: loading with a progress bar, the disc image (button, dropped file, "Continue with …", the wrong-file refusals, a file that goes away), keyboard, controller and on-screen pad with their tables (*Controls*), sound start and volume, pause when the page is hidden, the memory card kept in the browser's storage (one tab at a time) and saved to or loaded from a file (*Settings*), the speed line, the *Online…* panel and the connection to the relay, test aids |
+| `web/rta-sound.js` | the AudioWorklet that plays the sound ring (volume and mute are applied there) |
 | `serve.py` | a web server for this computer only (127.0.0.1) that sends the two headers the page needs; with `--disc`, `--report`, `--shots` a developer's test rig |
 
 ## Build and run
@@ -46,9 +49,11 @@ tools/play-web/build.sh
 tools/play-web/serve.py                # http://127.0.0.1:8973/
 ```
 
-Open the address in Chrome, press *Choose disc image…* and pick your image of the game.
-The page refuses anything else and says why (not a disc image; another game; this game
-in another version: the program's checksum has to be `4028A55F`).
+Open the address in a current browser on a computer (section "Browsers"), press *Choose
+your disc image…* and pick your image of the game, or drop the file on the page. The page
+refuses anything else and says why (not a disc image; an archive or another emulator's
+format that has to be unpacked to an .iso first; another game; this game in another
+version: the program's checksum has to be `4028A55F`).
 
 The page must be served with `Cross-Origin-Opener-Policy: same-origin` and
 `Cross-Origin-Embedder-Policy: require-corp` (the emulator's threads share memory, which
@@ -61,20 +66,73 @@ that folder (the patch file is ours). Online play needs two things more on that 
 The first time, the page asks for the image with the browser's file dialog; browsers
 that can keep a handle to a picked file (the File System Access interface: Chrome, Edge)
 offer "Continue with <file name>" at the next visit and only ask whether the page may
-read it again. The memory card (Play! keeps it as a folder of files) and the settings
-(picture factor, sound on or off) are kept in the browser's storage for the site.
+read it again; in the others (Brave as it comes, Safari, Firefox) the file is chosen at
+every visit. When the file can no longer be read while the game runs (moved, its drive
+removed, the permission ended) the game waits, the page says so, and it goes on where it
+stood once the file is chosen again.
+
+The memory card (Play! keeps it as a folder of files) and the settings (picture factor,
+volume, keys, controller buttons) are kept in the browser's storage for the site. One tab
+has the card at a time: a second tab says so and waits. **Saved games as a file**:
+*Settings → Saved games → Save to a file…* writes a zip of the card's folders
+(`vfs/mc0/…`, `vfs/mc1/…`) and *Load from a file…* takes one, compressed or not, at any
+folder depth. That is the way to another browser or computer, to a copy for safe keeping
+(Safari removes a site's storage after a week without a visit; a private window keeps
+nothing), and into the Mac application: its card is the same two folders in
+`~/Library/Application Support/Play-RTA/player1/vfs`. The saved online login is not in
+the file.
+
+A page that is not in front is run slowly by a browser. A game played alone is
+**paused** when the page is hidden ("Paused" over the picture; a click, a key or a
+controller button goes on). An online game cannot be paused - everybody's machine waits
+for it - so the page warns instead: when going online starts, in the tab's title while it
+is hidden, and afterwards.
 
 ## Controls
 
-Keyboard (the desktop application's layout): W A S D left stick, arrow keys direction
-pad, I J K L = △ □ ✕ ○, Q E = L1 R1, 1 3 = L2 R2, X C = L3 R3, T F G H right stick,
-Enter Start, Backspace Select.
+Everything is listed, and can be changed by clicking an entry and pressing the key or
+button wanted, under *Controls*.
 
-Controller: the first one the browser reports with its "standard" layout (Gamepad API;
-a DualSense, DualShock or Xbox pad by USB or Bluetooth) is the pad in port 1, with
-nothing to bind: sticks with a 15 % dead zone, triggers pressed beyond 30 %, Options =
-Start, Create/Share and the touchpad button = Select. A browser shows a controller to a
-page only after a button has been pressed on it while the page is in front.
+Keyboard (the desktop application's layout, by the keys' places, so the same on every
+keyboard): W A S D left stick, arrow keys direction pad, I J K L = △ □ ✕ ○, Q E = L1 R1,
+1 3 = L2 R2, X C = L3 R3, T F G H right stick, Enter Start, Backspace Select.
+
+Controller: the one a button was pressed on last is the pad in port 1. With the "standard"
+layout of the Gamepad API (a DualSense, DualShock, Xbox or Switch Pro pad in Chrome, Edge
+and Safari; most of them in Firefox) there is nothing to bind: sticks with a 15 % dead
+zone, triggers pressed beyond 30 %, Options = Start, Create/Share and the touchpad button
+= Select. A pad the browser has no standard layout for is used with the same numbers as a
+guess, and *Controls → Set up the controller* asks for every button in turn. A browser
+shows a controller to a page only after a button has been pressed on it while the page is
+in front. **No controller was tried in a browser** (no test can press a button).
+
+Touch screen: an on-screen pad (left stick, direction pad, the four buttons, L1 L2 R1 R2,
+Start, Select) appears at the first touch; *Settings* has "always" and "never". It is
+plain, has no right stick, and was only tried with touch events made by a test.
+
+## Browsers
+
+At start the page asks the browser what it has and says plainly what is missing; the
+table with every item, what stands in for it and what each browser here answered is in
+the notes ("For whoever opens the link").
+
+| Browser | State |
+|---|---|
+| Chrome 155 (macOS) | everything; what the build was measured in |
+| Brave 155 (macOS) | runs (title 60 frames a second); no "Continue with …" unless Brave's flag for the File System Access interface is on |
+| Safari 27 | its engine (WebKit 27.2, in a test window: Safari's WebDriver is not enabled here) has everything the page needs and plays, with sound; **level loads stall for seconds** (translating a block of game code costs it 6 – 19 times what it costs Chrome) and reading the image is slower; no "Continue with …". Safari's own window was not tried |
+| Edge | not installed here; Chromium, expected as Chrome |
+| Firefox | not installed here; by reading it has what the page cannot do without; no "Continue with …"; **never run** |
+| Windows, Linux, ChromeOS | never run; what the code does that depends on the system is listed in the notes, with frame pacing on a Windows laptop on battery as the open risk |
+| phones, tablets | not what this is for (1 GB of memory, three busy threads, a 4 GB file); the page says so at start |
+
+What a browser lacks that the page cannot do without - threads with shared memory
+(cross-origin isolation), WebAssembly with SIMD, module workers, WebGL 2 - stops the
+start with a sentence that names it. What it can do without has a fall-back: no WebGL 2
+on a thread's own canvas → the context on the page's main thread (slower); no range
+requests on a picked file from a thread → the pieces are read through the main thread;
+no File System Access → the file dialog every time; no storage → saved games only as a
+file; no Gamepad API → keyboard.
 
 ## Online play
 
@@ -104,6 +162,11 @@ section 4) as buttons on the page - the same code, compiled in:
   activity for the computer's idle timer). When the computer sleeps or the screen is
   switched off, a browser closes the page's connections and an online game is lost; the
   page connects again by itself for the next attempt.
+- **Keep the page in front while you play online.** A browser runs a hidden or covered
+  page slowly, and every machine in the game waits for the slowest. The page cannot
+  pause an online game; it says this when going online starts, turns the tab's title into
+  "Come back: the others are waiting" while it is hidden, and tells afterwards for how
+  long it was.
 
 **For whoever serves the page** two things are needed beside the page's files:
 
@@ -198,9 +261,23 @@ reaching the machine's pad; sound without gaps at the title (0 times dry in 10 s
 counted, muted); the game's memory-card folder and a marker file surviving a new visit;
 the picture factor changed while playing.
 
-Not checked, because it needs a person: a controller (a browser shows one to a page only
-after a button press), the file dialog itself and "Continue with …", how the sound
-sounds, full screen, a game saved by playing and loaded again.
+Checked later, for whoever opens the link (the notes' section of that name has how):
+the start-up check in Chrome, Brave and Safari's engine; the real image through the file
+chooser's path (given without a dialog) in Chrome and in Safari's engine, and dropped on
+the page in Chrome, with "Continue with …" offered at the next visit; the image read
+through the page's main thread; a picked file taken away during play and chosen again;
+keys by real key events, a key changed in *Controls*; the on-screen pad by touch events;
+pause when hidden and the way back, in Chrome and Safari's engine; a second tab; the
+page loaded again during play; storage full; saved games to a zip and back, and a zip
+made by another tool; sound in Safari's engine; a cold start (1.5 s plus 807 KB over the
+line) and a warm one (0.4 s, 1 KB); the tab's memory over 20 minutes in a level; a build
+from an empty directory by `build.sh`.
+
+Not checked, because it needs a person or a machine that is not here: a controller (a
+browser shows one to a page only after a button press), the file dialog itself and the
+browser's question after "Continue with …", how the sound sounds, full screen (asked for
+and refused in the unattended test window), a game saved by playing and loaded again,
+Safari's own window, Firefox, Edge, Windows, a real touch screen.
 
 Online, checked by test on one Mac (two Chrome pages with their own profiles, the relay
 and a lobby server on the same Mac; the notes have the figures): a first start that made
@@ -219,14 +296,14 @@ measured: the browser build rounds floating-point results to nearest where the d
 build and the console round toward zero, so a mixed game would be out of sync within
 seconds (the notes give the measurement and three ways out); a session that survives a
 lost connection to the relay; anything beyond the first
-level; Safari and Firefox (untested); replaced textures, dumps and the control socket of
-the desktop application.
+level; quick level loads in Safari (section "Browsers"); replaced textures, dumps and the
+control socket of the desktop application.
 
 ## Developer aids
 
 `serve.py --disc IMAGE --report FILE --shots DIR` and the page's address parameters
 (`disc=/dev/disc.iso`, `auto=hub`, `report=1`, `limit=0`, `gl=main`, `res=N`, `sound=0`,
-`shot=NAME.png`, `card=0`, `canvas=LINES`, `auto=trace`, `title=…`, `relay=ws://127.0.0.1:PORT/relay`) are described in `docs/issues/browser-build.md`, "How to boot
+`shot=NAME.png`, `card=0`, `canvas=LINES`, `auto=trace`, `title=…`, `pause=0`, `discread=page`, `touch=1`, `relay=ws://127.0.0.1:PORT/relay`) are described in `docs/issues/browser-build.md`, "How to boot
 it and read the numbers", with what every figure means. In the page's console `rta` has
 the same things for use by hand (`await rta.measure(10)`, `await rta.glProfile(5)`,
 `await rta.burst(8)`, `rta.peek(address)`, `await rta.tap("cross", 8, 60)` …; for online

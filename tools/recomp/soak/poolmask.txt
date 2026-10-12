@@ -119,15 +119,13 @@
 5133c0 a4	# AutoProp
 5138c8 98	# HackDoor
 5138c8 a4	# HackDoor
-5155e8 a8	# Nightmare
+5155e8 a8 80000000	# Nightmare: creature flag "boss health bar is showing", written from the local alive list (docs/creatures.md C3)
 515730 120	# Horsemen
 515730 160	# Horsemen
 515730 414	# Horsemen
-515730 c	# Horsemen
 515ef0 120	# Kobold
 5174b0 120	# Skelight
 5174b0 40c	# Skelight
-5174b0 c	# Skelight
 518810 60	# DarknessProjectile
 518810 64	# DarknessProjectile
 518c98 ac	# FireStorm

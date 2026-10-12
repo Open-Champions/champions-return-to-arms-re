@@ -35,6 +35,25 @@ to 6 written up, not built.)
   `tools/recomp/render/` is the renderer's old test program (it still builds against this
   runtime; it boots without the renderer changes' benefit of input or sound).
 
+**Added 2026-10-12, network** (by the author of `docs/issues/native-online.md`; nothing in
+`tools/recomp/rt/` was changed, `rt.h` / `iface.h` are as they were):
+
+- **Translator**: `recomp.py --hle-add FILE` (repeatable: one more list of addresses whose
+  `fn_` somebody else supplies, beside `--hle`) and `--extra-pnach FILE` (repeatable: a
+  patch file from outside the repository, applied whole after `--pnach` — the local
+  sign-in patch). `patches.cpp` gained `unsigned recomp_patch_set_words()`: how many of
+  its words are the fix set's (the rest came from `--extra-pnach`).
+- **The network** is `tools/recomp/net/netdrv.cpp` with `online.cpp`: it supplies the
+  addresses of `tools/recomp/net/hle-online.txt` (Sony's libnet entries, the eznetcnf /
+  eznetctl clients, `net_loadModules`, `net_linkCheck`, and hooks on `main` 0x323dcc and
+  `tasks_run` 0x3226e4 in which the original runs). A program that does not link it gets
+  the originals through `hle_weak.cpp`. It reads `--opt` keys (`net-*`, `online*`,
+  `tick-*`; `netdrv.h`), stands in front of `g_hooks.pad`, and chains
+  `script_app_command` ("app online …", "app net …") and `rt_at_finish`.
+- **Programs**: `tools/recomp/net/build_online.py` builds `bin/rta_native_online`
+  (headless, the suggested fix set, the network); `app/build.py` now translates with the
+  network list and links the network into `rta_app`.
+
 **How far `rta_native` boots today.** From power-on, headless, by a script: module loads,
 disc reads, the memory-card check (a save directory is created on a blank card), logo
 and intro, front end, character creation, **the first level (the hub) with a
@@ -114,7 +133,8 @@ file; `rta_native --help` lists every option. Build options: `--opt -O1|-O2`, `-
   "Continuation", step 5.
 - **Network** (`iface.h`, `rta::NetDriver`): a reserved shape, not wired; the libnet
   entries are the original code today (they reach RPC servers 0x80001101 / 0x80001201,
-  which answer nothing). A build that replaces them does it with its own HLE list.
+  which answer nothing). A build that replaces them does it with its own HLE list:
+  `tools/recomp/net` does, for the lobby path as well (`docs/issues/native-online.md`).
   `rta::SoundSink` is reserved in the same way: nothing calls it.
 - **Controller** (`iface.h`, `rta::PadSource`): asked once per port per blank, before the
   game's blank handler runs. **Changed 09:45**: what it returns reaches the game's

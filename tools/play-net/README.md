@@ -156,6 +156,11 @@ else the computer is doing.
 | The emulated Ethernet chip stops receiving after 64 frames, or after the game restarts into another program | receive index wrapped at 512 instead of 64, and was not reset when the driver starts again; reads past the end of the receive buffer | `Iop_Speed.cpp` (as the test rig corrects from outside, live-rig.md section 13.2), plus a poll hook and "ready for a frame" | the lobby path below |
 | In the game's largest level (`fire3`) everything stops for good at certain places: nothing is presented any more, the level's clock `0x44fdcc` stands, with or without the frame limiter | The game sends a picture as eight layers. Each layer's draw packets go out by DMA from the interrupt of the packet before (`gfx_dmaHandler` 0x16b998), and a layer ends with a packet that writes the GS register `FINISH`; the main thread waits behind a semaphore (0x16c8e0) until the handler has counted that interrupt for all eight. Play! keeps the GS register writes between two vertical blanks in a buffer of 1,310,720 (`REGISTERWRITEBUFFER_SIZE`) and **threw away whatever came when it was full** — triangles and, here, the `FINISH`. Nothing in Play! accounts for the time DMA and VU1 take, so a whole layer of any size arrives between two blanks, and the widest views of this level are more than the buffer holds. The machine then idles for ever: main thread in `WaitSema`, the handler in state 2 with one `FINISH` asked for and none counted (`0x41b4e0` = 2, `0x41b4e6` = 1, `0x41b4e5` = 0), both DMA channels finished, `CSR` without the FINISH bit, no interrupt pending. A scripted event it is not, and it is none of our changes: the buffer is Play!'s own, and the stable build with textures known by address (`texmode 2`) and all display patches off stops at the same place | `CGSHandler::DrainWriteBuffer` (`GSHandler.cpp`, called from `WriteRegister`): a full buffer is processed (its `SIGNAL`, `FINISH`, `LABEL` events), handed to the video thread, waited for, and written from its start again. `info` counts it: `gs_buffer_drains`, and `gs_buffer_most` is the most register writes between two blanks | found with a labelled test instance, the new `hw` command (interrupt, DMA and GS registers of a machine that has stopped) and a temporary trace of DMA starts and ends, GS events and interrupt acknowledgements: the last `FINISH` packet (0x6f40b0) goes through VIF1 and the GIF, and no `FINISH` reaches the GS. Before: the tour's camera stopped the game at place 21–22 of the level's 342 in 4 runs of 4; after: all 342 places gone over without a stop (676 s at resolution factor 1, frame limiter off, 3,079 pictures dumped on the way); the buffer was full 15 times, and the most register writes between two vertical blanks were 2,147,619 (in `shame1`, the heaviest level for textures, 725,558) |
 | Heat haze is a rectangle of multicolour noise and blue and white stripes: around every lava golem of `fire3`, over the catapult fire of the first level's opening, as speckle over torches | For the haze (`particle_drawHaze` 0x18fe18) the game copies a piece of its 16-bit draw buffer (56 × 28 to 96 × 48 pixels) into a 16-bit texture of 128 × 64 with a GS local-to-local transfer and draws it back displaced, about 22 times a frame beside one golem. Play!'s OpenGL handler read those pixels back from the graphics card, made them small and wrote them into GS memory **as 32-bit pixels whatever the format of the destination**: two pixels of noise for each. It also made a texture from memory for every one of them | the piece is kept as a texture of its own on the graphics card, at the frame buffer's resolution factor (`FRAME_COPY`, `MakeFrameCopy` in `GSH_OpenGL_Texture.cpp`: a blit, no read-back); the texture set-up finds it by the address, width and format `TEX0` names, and it is dropped when anything else is written there. Where that cannot be done (a piece not put at the start of its destination: not seen in this game) the read-back stays, written in the destination's format now. `info`: `frame_copies`, `frame_copy_uses` | `local/play-out/fx_haze.py` (stands beside the same objects of `fire3`, pauses, takes `shotfb`), frame limiter and pack off, load 21–24. Beside a golem at 4×: noise before, none after; 35.7 frames a second and 22.0 ms of the video thread per frame before, 71.7 and 15.0 after (the read-back was what cost); 1,995 pieces kept in 90 frames and 1,995 textures set up from them. Without a golem near: 68.0 → 104.9 frames a second |
+| Along the top of the menu screens a line of another colour, half a console line high (Options, Controls, the title's other pages); one white pixel at the left edge of the skills page | Neither is the emulator's. Both are in the game's own picture, at its very edge, where a television does not look. `drawlog` of the controls screen: the draw buffer is cleared to the title scene's sky colour (0x59, 0x65, 0xa5, which the present pass shows times 0x99 / 0x80: 107, 121, 198, the colour of the line), and the backdrop is one sprite from line 1 to line 449 of the buffer's 448, so line 0 stays as cleared. As the game ships (display patches off) the sprite goes from line 2 on one field and from −0.5 on the other: on a console the top line of every second field is that colour. @@V7@@ A console puts both into its signal and a television does not show them: the outermost lines and pixels of a picture are behind the rim of the tube (overscan), which games count on | the edge of the picture is not presented (`FlipImpl` in `GSH_OpenGL.cpp`): one line of a field's 224 at the top and at the bottom and the same share of the width, three pixels of 640, at either side, so that the picture keeps its shape and is 0.9 % larger. `edge 0` on the control socket presents everything; `shotfb` is still the whole picture, `shotview` the part presented | the same screen before and after at 4× and at 1× (`local/vq.nosync/shots/controls-*`): the line is there in the whole picture and not in the part presented; inside that part the two are the same pixel for pixel (largest difference 0) |
+| At a resolution factor above 1: dust motes are small squares of dots, rain is a quarter as wide and as bright as it should be, the automap's outline is a staircase | Things the console reads unfiltered or draws a pixel wide. The game's interface drawers set point sampling (`TEX1` = 1) and nothing sets it back, so whatever is drawn after them in the same layers is read without filtering — not a choice made for each picture: particles (a mote is a cell of 32 × 32 texels holding eight specks, drawn 6 × 3 to 10 × 5 pixels of the draw buffer), the automap (a strip of tiles of 10 × 10 texels from a sheet of 120 × 160, turned 45°, 1.4 pixels to the texel), models shown in menus. On the console a texel is at most about a pixel and a mote is a glint of two or three pixels; with sixteen times the pixels each texel is a block and the inside of the mote's cell shows as a square of dots. Rain is GS lines (about 1,040 a frame in `strife`), one console pixel wide; OpenGL's lines are one pixel of the enlarged buffer wide and macOS draws no wider ones | `WantsSmoothTexture` (`GSH_OpenGL.cpp`): at a resolution factor above 1 a texture the game reads unfiltered is filtered — except by sprites drawn without a depth test: interface art and text, pixel for pixel, which stay exactly as they are. Where the console draws a texture smaller than it is, it is read at the console's density (the smaller copies of a replacement picture, chosen in the fragment shader from the texels per console pixel): what a console pixel cannot hold is not drawn. A sprite, and anything drawn flat over the picture, reads no texel outside those its own corners span (`texSmooth` 2: the box goes with each vertex), as reading the nearest texel guarantees: a sheet of tiles does not bleed from tile to tile. Points and lines are drawn as bands a console pixel wide (`Prim_Point`, `Prim_Line`). `upscale 0` on the control socket draws as before; `info` counts `smoothed_draws` and `scaled_points` | found with `drawlog`; one paused frame of `strife` before and after (`local/vq.nosync/shots/strife2-*`, crops `sheets/ba2-motes6.png`, `ba2-map-4x.png`): motes are soft glints of the size they have at 1×, the automap's edge is smooth with no lines between its tiles, rain has the weight it has at 1×. The controls screen at 4× is the same pixel for pixel; at 1× nothing of this is at work (the same frame differs by 0.015 of 255, from the row below). Without the art pack the particle sheet has no smaller copies: a mote is then filtered, its specks stay |
+| (found on the way) the game's own level and model textures sit half a texel up and to the left of where they belong, and of where their enlarged replacements are drawn: the picture shifts when a replacement comes in | Play! filters indexed textures in the fragment shader (the graphics card cannot: a texel is an index into the palette) and took the texel at the place asked for and the three after it. A texel's colour belongs to its middle: the four are those round the place, the first half a texel before, as the GS has it and as the graphics card does for the textures it filters itself | `GenerateFragmentShader` (`GSH_OpenGL_Shader.cpp`); `texcentre 0` on the control socket reads as before | the same paused frame of `strife` with the pack on and off: mean difference 4.52 of 255 and 1.40 % of the pixels more than 24 apart before, 2.96 and 0.38 % after; with the pack on the change itself moves the frame by 0.05 |
+| After the resolution factor is changed in the settings while a game runs, textures are told apart by reading video memory for the rest of the level (357 draws a frame in the first level) and every replacement picture is read from its file again | `NotifyPreferencesChangedImpl` forgot what the game had sent (`ForgetUploads`), the textures made of it and the pictures from outside. A change of settings makes the frame buffers anew and changes nothing in GS memory; a texture the game sends once, not again every frame, never had a known upload again | nothing of it is forgotten there any more (`GSH_OpenGL.cpp`); a reset of the machine still forgets all | @@V5@@ |
+| With the art pack, enlarged pictures replace the game's own in view: during the first moments in a level (for seconds on a busy computer), again after a visit to a menu that was opened while they came in, and all of a level's at once after ten seconds in a menu where the level holds more than the memory allowed | The files were read in the order the game draws — the ground at the far end of the view first, the character and the interface last — by threads at "utility" priority, which a busy computer hardly runs. A picture whose texture was not drawn for two seconds was given up, so a menu threw away what was coming in. Beyond the memory allowed every picture not drawn for ten seconds went at once | read order by what covers the screen (`NotePictureArea`, `g_textureOrder`; `ReadTextureFiles` in `Rta.cpp`), on-screen pictures at "user-initiated" priority; pictures whose texture is not being drawn stay wanted, are read last and handed to the graphics card at the end of a frame (`TakeTexturePicture`, `ContentTextures_EndFrame`); beyond the memory allowed the longest unused go, as many as it takes ("Texture dump and replacement" below). `texorder 0` reads in the old order | `strife`, every picture asked for again (`texreplace reload`), load average about 400 from other work: half of the screen's pending area enlarged after 0.97–1.82 s and all of it after 2.2–3.8 s in the old order, 0.07 s and 0.22–0.26 s in the new (today's release: all after 6.8–7.2 s). A menu opened at once and left open ten seconds: the release gives up 44 pictures, has 52–63 to read on the return and is done 3.9–8.4 s later; this build gives up none, hands over 14–16 while the menu is up, has 3 to read on the return (0.3 s). @@V10@@ |
 
 Looked at, at 4× (pictures of the machine's own output, `shotfb`; 60.0 frames a second
 in each): the publisher's logo and the opening film, title, menus, character creation,
@@ -359,12 +364,25 @@ format and its size.
 - A PNG file of the same name in `<data>/textures/replace/`, **of any size**, is drawn in
   its place. `--rta-textures DIR` puts both directories somewhere else. A replacement
   changes the picture only. The directory is listed once at start. A file is read when
-  its texture is first drawn, by three threads of their own at low priority: until it is
-  there the game's own texture is drawn, so reading never holds a frame up (unpacking a
+  its texture is first drawn, by three threads of their own: until it is there the
+  game's own texture is drawn, so reading never holds a frame up (unpacking a
   2688 × 640 picture takes longer than a frame lasts), and at most 24 MB a frame are
   handed to the GPU. A replacement gets mip maps and is drawn with them where the game
   filters (the game's textures have none: a picture four times the size glitters without
   on anything far away).
+- **What is on the screen is read first.** While a picture is being read the renderer
+  adds up how much of the frame its texture is drawn over (triangles by their area,
+  sprites by their box, both cut to the scissor rectangle) and tells the readers at the
+  end of every frame (`g_textureOrder`). They take the largest first — interface art
+  counted fourfold: text is what the eye reads —, then what was asked for since the
+  renderer last spoke, then pictures whose texture is not being drawn, the most recently
+  drawn first; a picture that is on the screen is read as work the person is waiting for
+  (`QOS_CLASS_USER_INITIATED`), the others as before as work that may wait. Before, the
+  files were read in the order they were asked for, which is the order the game draws
+  in: the ground at the far end of the view first, the character and the interface last.
+  `texorder 0` on the control socket goes back to that order for comparing;
+  `tex_pending_area` of `info` is the number of pixels of the last frame drawn with
+  textures whose picture has not come yet.
 - **Only the part of a replacement that is drawn with goes to the graphics card.** A level
   texture is a page of which the game draws with a corner (below); the rest of the page
   cost video memory and nothing else — 70 % of it in the heaviest level. From a picture's
@@ -389,18 +407,29 @@ format and its size.
   `--rta-texture-whole`, or `texcrop 0` in a running game, hands over whole pictures as
   before; `tex_cropped` of `info` counts those held as parts.
 - `--rta-texture-memory MB` (default 3072; `texmemory MB` in a running game) is the
-  video memory replacements may take; beyond it those not drawn with for ten seconds are
-  given up and read again when needed (`tex_dropped` of `info`). The first level with
+  video memory replacements may take; beyond it those longest not drawn with go — not
+  drawn with for ten seconds at least, and only as many as it takes to come back to nine
+  tenths of it — and are read again when needed (`tex_dropped` of `info`). (At first
+  every picture not drawn with for ten seconds went at once: ten seconds in a menu threw
+  a whole level's pictures away where the level holds more than is allowed.) The first level with
   every replacement at 4× holds 1.4 GB. The heaviest level (`shame1`) with every
   replacement held is 3.4 GB as parts (11.0 GB whole), so the limit is hardly at work
   any more (figures under "Upscaled art").
-- A picture that was asked for and whose texture is then not drawn with for two seconds
-  (120 frames) is given up: taken out of the readers' queue, what was read of it let go,
-  and asked for again when the texture is next drawn (`tex_abandoned`). Before, such a
-  picture stayed counted in `tex_pending` for ever and its unpacked pixels (7 MB for a
-  4× level picture) stayed in memory for ever — 541 of them after five levels gone
-  through fast — and a count that was not 0 made every frame start from an invalid
-  render state. Checked with the camera at a new
+- **A level's pictures stay warm through a visit to a menu.** A picture that was asked
+  for and whose texture is then not drawn with (a menu is up, the camera has turned
+  away) stays wanted: it is read after those that are on the screen and handed to the
+  graphics card at the end of a frame, with the room that frame's own draws left
+  (`tex_warmed` of `info`), so that it is there when its texture is drawn again. It is
+  given up — taken out of the readers' queue, what was read of it let go, asked for
+  again when the texture is next drawn (`tex_abandoned`) — only when it has not been
+  drawn with for 30 seconds, when more than 768 such pictures wait (the longest unused
+  go), or after two seconds while the pictures held are within a tenth of what they may
+  take. (First such a picture stayed counted in `tex_pending` for ever and its unpacked
+  pixels, 7 MB for a 4× level picture, stayed in memory for ever — 541 of them after
+  five levels gone through fast — and a count that was not 0 made every frame start
+  from an invalid render state. Then every one was given up after two seconds, which
+  threw a level's pictures away whenever a menu was opened while they were coming in.)
+  The two-second rule was checked with the camera at a new
   place every 20 frames through 40 places of `blood1`, `strife`, `islc1`, `fire1`,
   `shame1`): the count at the end of each level was 7, 12, 28, 34, 563 and stayed;
   it is now 1, 0, 0, 0, 3 and 0 five seconds later; in the first level afterwards 60.00
@@ -982,7 +1011,21 @@ they stay under `local/`.
 
 - `shot FILE` is the window's picture; `shotfb FILE` is the picture as the machine drew
   it — 640 × 224 console pixels per field times the resolution factor, 2560 × 892 at 4×,
-  twice as wide as high for a 4:3 screen — whatever the size of the window.
+  twice as wide as high for a 4:3 screen — whatever the size of the window. `shotview
+  FILE` is the part of that picture that is presented: without its outermost line and
+  column (the fault table, "the edge"), 2536 × 884 at 4×.
+- `drawlog FILE [frames [x0 y0 x1 y1]]` writes how the game draws, for finding out what
+  a thing on the screen is made of: one line for every draw of the next `frames`
+  pictures (1) with the kind of primitive, the number of vertices, the box drawn to, the
+  texels used, the GS registers (`PRIM`, `ALPHA`, `TEST`, `FRAME`, `ZBUF`, `SCISSOR`,
+  `SCANMSK`, `XYOFFSET`, `TEX0`, `TEX1`, `CLAMP`), the texture's address and size, its
+  filter, whether a replacement is drawn and the start of the picture's name; with a
+  rectangle, in pixels of the buffer drawn to (the game's draw buffer is 1280 × 448),
+  every primitive that touches it is listed vertex by vertex. A `FLIP` line ends each
+  picture. The four faults of the second visual pass were found with it.
+- `upscale 0|1`, `edge 0|1`, `texcentre 0|1`, `texorder 0|1` switch four of the changes
+  in the fault table off and on in the running game: the same paused frame before and
+  after.
 - `--rta-test "TEXT"` is for test runs on a computer somebody is using: the window is
   titled "AGENT TEST - TEXT", is small, is put behind the other windows, has no Dock icon
   and never takes the keyboard. Say in TEXT what is switched off.
@@ -1021,6 +1064,9 @@ they stay under `local/`.
   `tex_abandoned`, `frame_copies` and `frame_copy_uses` (the heat haze's pieces of the
   frame buffer), `gs_buffer_drains` and `gs_buffer_most` (GS register writes between
   two vertical blanks: how often there were more than Play!'s buffer holds, and the
-  most there were).
+  most there were), `tex_warmed` (replacement pictures handed to the graphics card
+  while their texture was not being drawn), `tex_pending_area`, `smoothed_draws` (draws
+  of the last frame whose point-sampled texture was filtered) and `scaled_points`
+  (points and lines of the last frame drawn a console pixel wide).
 - `RTA_TEXLOG=FILE` in the environment writes a line for every texture made (frame,
   figure, format, size, address, pieces).
