@@ -32,8 +32,25 @@ static inline float vu_flt(u32 r) { float f; memcpy(&f, &r, 4); return f; }
     exit(3);
 }
 
+// arithmetic whose result depends on the processor's state: the host's own (the runtime
+// sets toward zero and flush-to-zero), or tools/recomp/web/soft_rz.h on a host that
+// cannot (fpu.h says more)
+#ifdef RTA_SOFT_RZ
+static inline float vu_add(float a, float b) { return softrz::add_fz(a, b); }
+static inline float vu_sub(float a, float b) { return softrz::sub_fz(a, b); }
+static inline float vu_mul(float a, float b) { return softrz::mul_fz(a, b); }
+static inline float vu_itof(s32 v) { return softrz::from_int(v); }
+static inline bool vu_gt(float a, float b) { return softrz::flush(a) > softrz::flush(b); }  // the compare reads tiny numbers as zero
+#else
+static inline float vu_add(float a, float b) { return a + b; }
+static inline float vu_sub(float a, float b) { return a - b; }
+static inline float vu_mul(float a, float b) { return a * b; }
+static inline float vu_itof(s32 v) { return (float)v; }
+static inline bool vu_gt(float a, float b) { return a > b; }
+#endif
+
 static inline float vu_ftoi(float f, float scale) {
-    float v = f * scale;
+    float v = vu_mul(f, scale);
     s32 r;
     if (v != v) r = 0;
     else if (v >= 2147483648.0f) r = INT32_MAX;
@@ -73,32 +90,32 @@ static void vu0_run(Vu0& v, u32 pc) {
                 for (int k = 0; k < 4; k++) {
                     if (!on(k)) continue;
                     float a = old[fs][k];
-                    if (idx <= 0x03) v.acc[k] = a + b;
-                    else if (idx <= 0x07) v.acc[k] = a - b;
-                    else if (idx <= 0x0B) { float p = a * b; v.acc[k] = v.acc[k] + p; }
-                    else if (idx <= 0x0F) { float p = a * b; v.acc[k] = v.acc[k] - p; }
-                    else v.acc[k] = a * b;
+                    if (idx <= 0x03) v.acc[k] = vu_add(a, b);
+                    else if (idx <= 0x07) v.acc[k] = vu_sub(a, b);
+                    else if (idx <= 0x0B) { float p = vu_mul(a, b); v.acc[k] = vu_add(v.acc[k], p); }
+                    else if (idx <= 0x0F) { float p = vu_mul(a, b); v.acc[k] = vu_sub(v.acc[k], p); }
+                    else v.acc[k] = vu_mul(a, b);
                 }
             } else if (idx >= 0x10 && idx <= 0x13) {    // ITOF0/4/12/15: ft <- fs
                 static const float scale[4] = {1.0f, 1.0f / 16.0f, 1.0f / 4096.0f, 1.0f / 32768.0f};
                 for (int k = 0; k < 4; k++) {
-                    float f = (float)(s32)vu_raw(old[fs][k]);
-                    put(ft, k, idx == 0x10 ? f : f * scale[idx & 3]);
+                    float f = vu_itof((s32)vu_raw(old[fs][k]));
+                    put(ft, k, idx == 0x10 ? f : vu_mul(f, scale[idx & 3]));
                 }
             } else if (idx >= 0x14 && idx <= 0x17) {    // FTOI0/4/12/15
                 static const float scale[4] = {1.0f, 16.0f, 4096.0f, 32768.0f};
                 for (int k = 0; k < 4; k++) put(ft, k, vu_ftoi(old[fs][k], scale[idx & 3]));
             } else if (idx == 0x1E) {                   // MULAi
-                for (int k = 0; k < 4; k++) if (on(k)) v.acc[k] = old[fs][k] * v.i;
+                for (int k = 0; k < 4; k++) if (on(k)) v.acc[k] = vu_mul(old[fs][k], v.i);
             } else if (idx == 0x28 || idx == 0x2A || idx == 0x2C || idx == 0x29 || idx == 0x2D) {
                 for (int k = 0; k < 4; k++) {           // ADDA MULA SUBA MADDA MSUBA
                     if (!on(k)) continue;
                     float a = old[fs][k], b = old[ft][k];
-                    if (idx == 0x28) v.acc[k] = a + b;
-                    else if (idx == 0x2C) v.acc[k] = a - b;
-                    else if (idx == 0x2A) v.acc[k] = a * b;
-                    else if (idx == 0x29) { float p = a * b; v.acc[k] = v.acc[k] + p; }
-                    else { float p = a * b; v.acc[k] = v.acc[k] - p; }
+                    if (idx == 0x28) v.acc[k] = vu_add(a, b);
+                    else if (idx == 0x2C) v.acc[k] = vu_sub(a, b);
+                    else if (idx == 0x2A) v.acc[k] = vu_mul(a, b);
+                    else if (idx == 0x29) { float p = vu_mul(a, b); v.acc[k] = vu_add(v.acc[k], p); }
+                    else { float p = vu_mul(a, b); v.acc[k] = vu_sub(v.acc[k], p); }
                 }
             } else if (idx == 0x1D) {                   // ABS
                 for (int k = 0; k < 4; k++) put(ft, k, vu_flt(vu_raw(old[fs][k]) & 0x7FFFFFFFu));
@@ -109,39 +126,39 @@ static void vu0_run(Vu0& v, u32 pc) {
             float b = old[ft][bc];
             for (int k = 0; k < 4; k++) {
                 float a = old[fs][k], r;
-                if (op <= 0x03) r = a + b;
-                else if (op <= 0x07) r = a - b;
-                else if (op <= 0x0B) { float p = a * b; r = v.acc[k] + p; }
-                else if (op <= 0x0F) { float p = a * b; r = v.acc[k] - p; }
-                else r = a * b;
+                if (op <= 0x03) r = vu_add(a, b);
+                else if (op <= 0x07) r = vu_sub(a, b);
+                else if (op <= 0x0B) { float p = vu_mul(a, b); r = vu_add(v.acc[k], p); }
+                else if (op <= 0x0F) { float p = vu_mul(a, b); r = vu_sub(v.acc[k], p); }
+                else r = vu_mul(a, b);
                 put(fd, k, r);
             }
         } else if (op >= 0x10 && op <= 0x17) {          // MAXbc MINIbc
             float b = old[ft][bc];
             for (int k = 0; k < 4; k++) {
                 float a = old[fs][k];
-                put(fd, k, op <= 0x13 ? (a > b ? a : b) : (a < b ? a : b));
+                put(fd, k, op <= 0x13 ? (vu_gt(a, b) ? a : b) : (vu_gt(b, a) ? a : b));
             }
         } else if (op == 0x1E || op == 0x22 || op == 0x26 || op == 0x23 || op == 0x27) {
             for (int k = 0; k < 4; k++) {               // MULi ADDi SUBi MADDi MSUBi
                 float a = old[fs][k], r;
-                if (op == 0x1E) r = a * v.i;
-                else if (op == 0x22) r = a + v.i;
-                else if (op == 0x26) r = a - v.i;
-                else if (op == 0x23) { float p = a * v.i; r = v.acc[k] + p; }
-                else { float p = a * v.i; r = v.acc[k] - p; }
+                if (op == 0x1E) r = vu_mul(a, v.i);
+                else if (op == 0x22) r = vu_add(a, v.i);
+                else if (op == 0x26) r = vu_sub(a, v.i);
+                else if (op == 0x23) { float p = vu_mul(a, v.i); r = vu_add(v.acc[k], p); }
+                else { float p = vu_mul(a, v.i); r = vu_sub(v.acc[k], p); }
                 put(fd, k, r);
             }
         } else if (op == 0x28 || op == 0x2A || op == 0x2C || op == 0x29 || op == 0x2D || op == 0x2B || op == 0x2F) {
             for (int k = 0; k < 4; k++) {               // ADD MUL SUB MADD MSUB MAX MINI
                 float a = old[fs][k], b = old[ft][k], r;
-                if (op == 0x28) r = a + b;
-                else if (op == 0x2C) r = a - b;
-                else if (op == 0x2A) r = a * b;
-                else if (op == 0x29) { float p = a * b; r = v.acc[k] + p; }
-                else if (op == 0x2D) { float p = a * b; r = v.acc[k] - p; }
-                else if (op == 0x2B) r = a > b ? a : b;
-                else r = a < b ? a : b;
+                if (op == 0x28) r = vu_add(a, b);
+                else if (op == 0x2C) r = vu_sub(a, b);
+                else if (op == 0x2A) r = vu_mul(a, b);
+                else if (op == 0x29) { float p = vu_mul(a, b); r = vu_add(v.acc[k], p); }
+                else if (op == 0x2D) { float p = vu_mul(a, b); r = vu_sub(v.acc[k], p); }
+                else if (op == 0x2B) r = vu_gt(a, b) ? a : b;
+                else r = vu_gt(b, a) ? a : b;
                 put(fd, k, r);
             }
         } else vu_die("upper instruction", pc, upper);

@@ -665,8 +665,42 @@ the shared tree; these are from the build before that merge, load average 217 to
   90 pictures a second in the first level, load 364 and 295. To do again:
   `perf.py size fire3 2560x1792`, `size fire3 2619x1964`, `paced fire3 2560x1792`.
 
-**Merge of the graphics work (15:46, by the coordinator)**: being verified -
-`local/recomp-out/app-test/merge/verify.sh` (the rig comparison with `--plain` and with
-the new defaults; then the pole, the films, the heat haze, the bag, the dialogue with
-both; then sound through ten level changes). Results under `merge/`; this section is
-updated when they are in.
+### 10.8 The merged tree (graphics work merged 15:46 by the coordinator): verified (Ran)
+
+`local/recomp-out/app-test/merge/verify.sh`, results under `merge/`. `rta_app`,
+`rta_app_orig` and `rta_replay` build from the merged tree (16 more addresses in
+`hle.txt`: both translations made and compiled again).
+
+| Check | With the new defaults (aspect auto, 4 samples, anisotropy 16, mip maps) | With `--plain` |
+|---|---|---|
+| the fight session against the rig's log (`rta_app_orig`, sound on the machine's clock) | the same as before the merge, line for line (compared as text with the result of 10.4) | the same, line for line |
+| the pole (picture at tick 2,701 of `valor`) | none (`merge/check-default.png`) | none (`check-plain.png`) |
+| films from power-on with no button pressed | 410 pictures, no unsupported picture, no slice with an error | the same |
+| heat haze (fire3, islc1) | 3,483 copies carried out, none dropped, no new draw without its texture | 3,450, none dropped |
+| bag: item glow (fog) and item pictures | green glow, clean pictures | the same |
+| dialogue and the picture after it (the quarter-height fault) | text readable; the 3-D surface stays 1280 x 448 (`RTA_GS_LOG`) | the same |
+| sound through ten level changes, paced | 132.07 s taken in 12,382 requests, longest time between two 10.7 ms, none late | not run again |
+
+**What the merge broke: nothing that these checks show.** Found on the way, and mine,
+not the merge's: every film picture is a texture of its own (the player sends the
+picture to texture memory and draws it with one sprite; the upload path of 10.3 for
+pixels sent straight into a displayed buffer is not what this film uses), and a texture
+was kept until 600 frames had passed without it: 330 film pictures, 577 MB, at the
+peak of the intro film, gone again some seconds into the title. Textures now have a
+budget (`Gs::texture_budget`, 96 MB of RGBA): above it the ones not used in this frame
+or the one before are given back first, oldest first.
+
+(`RTA_GS_FAR` cannot be used to look for the pole in a whole session: its 40 lines are
+used up at power-on by a row of sprites drawn at an offset of zero. The picture was
+looked at instead.)
+
+**Pacing in that paced session** (ten level changes, load average falling from 100 to
+40): 8,180 pictures in 132.7 s; of 8,179 intervals 8,154 (99.7 %) stood exactly 2
+refreshes of the 120 Hz display, 8 stood 3, 17 longer (the level loads; longest 138 ms).
+
+**After that**, as the coordinator asked: `tools/recomp/web/shared-sources.patch` applied
+(`rt/fpu.h`, `rt/vu0.h`, `render/vu1_step.h`, `render/vu1.cpp`, `sound/audio_out.cpp`;
+it changes nothing unless `RTA_SOFT_RZ`, `RTA_SOFT_RZ_VU1` or `__EMSCRIPTEN__` is
+defined), the start-up line about the arithmetic corrected for WebAssembly, everything
+built again and the rig comparison repeated: `merge/rig-final-compare.txt` (see the last
+lines of this file for the result).

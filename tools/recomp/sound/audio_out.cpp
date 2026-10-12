@@ -470,6 +470,11 @@ PullDevice* open_device_puller(unsigned rate, float gain, AudioSource* source) {
 #elif defined(_WIN32)
 #include "audio_out_win.cpp"        // WASAPI, waveOut as the fallback: the same two functions
 
+#elif defined(__EMSCRIPTEN__)
+
+// a page: a ring in the shared memory that an AudioWorklet of the page plays from
+#include "audio_out_web.h"      // tools/recomp/web
+
 #else
 
 namespace rta {

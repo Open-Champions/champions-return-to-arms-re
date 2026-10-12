@@ -228,6 +228,23 @@ void Gs::free_unused_textures() {
             it = textures.erase(it);
         } else ++it;
     }
+    // A film is a new 640 x 448 texture with every picture (the player sends it to texture
+    // memory and draws it with one sprite): 300 of them would be held before the first is
+    // 600 frames old, half a gigabyte.  Above the budget the textures not used in this
+    // frame or the one before go first, oldest first.
+    if (stats.texture_bytes > texture_budget) {
+        std::vector<std::pair<uint64_t, uint64_t>> idle;    // (last used, key)
+        for (auto& entry : textures) if (entry.second.last_used + 2 <= frames_ended) idle.push_back({entry.second.last_used, entry.first});
+        std::sort(idle.begin(), idle.end());
+        for (auto& candidate : idle) {
+            if (stats.texture_bytes <= texture_budget) break;
+            auto it = textures.find(candidate.second);
+            frame.dead_textures.push_back(it->second.id);
+            stats.texture_bytes -= (uint64_t)it->second.width * it->second.height * 4;
+            stats.textures_freed++;
+            textures.erase(it);
+        }
+    }
     stats.textures_held = textures.size();
 }
 
@@ -269,6 +286,7 @@ void Gs::end_frame(uint64_t number) {
     frame.number = number;
     frames_ended++;
     if ((frames_ended & 63) == 0) { free_unused_textures(); free_unused_targets(); }
+    else if (stats.texture_bytes > texture_budget + (16u << 20)) free_unused_textures();
     int circuit = (pmode & 2) ? 1 : 0;
     uint64_t fb = dispfb[circuit];
     auto it = targets.find(((uint32_t)fb & 0x1FF) << 5);

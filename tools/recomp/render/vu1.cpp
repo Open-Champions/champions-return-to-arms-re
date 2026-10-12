@@ -168,7 +168,7 @@ void Vu1::run(uint32_t start) {
         translated = use_translation && vu1_translated_count && micro_hash(micro, vu1_translated_count) == vu1_translated_hash;
     }
     int old_round = fegetround();
-    fesetround(FE_TOWARDZERO);
+    VU1_ROUND_TOWARD_ZERO();
     runs++;
     uint32_t at = start & 2047;
     int stop_in = -1;                                   // pairs left after an E bit
@@ -179,7 +179,7 @@ void Vu1::run(uint32_t start) {
         int left = vu1_translated_run(*this, at, old_round);
         if (left < 0) {                                 // ran to its end bit
             if (q_busy) { q = q_next; q_busy = false; }
-            fesetround(old_round);
+            VU1_ROUND_RESTORE(old_round);
             return;
         }
         at = (uint32_t)left;                            // a place the translation leaves to the interpreter
@@ -222,7 +222,7 @@ void Vu1::run(uint32_t start) {
     pc = at;
     // a divide in flight finishes before the next program starts
     if (q_busy) { q = q_next; q_busy = false; }
-    fesetround(old_round);
+    VU1_ROUND_RESTORE(old_round);
 }
 
 // Write the main program as C++: every pair a constant handed to vu1_step, the branches,

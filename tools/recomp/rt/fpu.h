@@ -148,15 +148,39 @@ static inline u32 fp_clamp(u32 a) {
     return a;
 }
 static inline float fp_cf(u32 raw) { return fp_f(fp_clamp(raw)); }
-static inline u32 fp_add(u32 a, u32 b) { float x = fp_cf(a), y = fp_cf(b); return fp_r(x + y); }
-static inline u32 fp_sub(u32 a, u32 b) { float x = fp_cf(a), y = fp_cf(b); return fp_r(x - y); }
-static inline u32 fp_mul(u32 a, u32 b) { float x = fp_cf(a), y = fp_cf(b); return fp_r(x * y); }
+// The operations whose result depends on the state of the host processor.  The runtime
+// puts it in round-toward-zero with flush-to-zero (runtime.cpp, thread_main: what the
+// Play! emulator sets for its machine thread) and these are then the host's own
+// instructions.  A host without those modes (WebAssembly) either computes to nearest with
+// tiny numbers kept - "browser arithmetic", what the emulator's page does - or is built
+// with -DRTA_SOFT_RZ and gets the same results in software (tools/recomp/web/soft_rz.h):
+// toward zero, tiny operands read as zero, tiny results zero; compares and minimum /
+// maximum read tiny operands as zero as well.
+#ifdef RTA_SOFT_RZ
+#include "soft_rz.h"
+#define FP_ADD(x, y) softrz::add_fz(x, y)
+#define FP_SUB(x, y) softrz::sub_fz(x, y)
+#define FP_MUL(x, y) softrz::mul_fz(x, y)
+#define FP_DIV(x, y) softrz::div_fz(x, y)
+#define FP_SQRT(x) softrz::sqrt_fz(x)
+#define FP_FROM_INT(v) softrz::from_int(v)
+#else
+#define FP_ADD(x, y) ((x) + (y))
+#define FP_SUB(x, y) ((x) - (y))
+#define FP_MUL(x, y) ((x) * (y))
+#define FP_DIV(x, y) ((x) / (y))
+#define FP_SQRT(x) __builtin_sqrtf(x)
+#define FP_FROM_INT(v) ((float)(v))
+#endif
+static inline u32 fp_add(u32 a, u32 b) { float x = fp_cf(a), y = fp_cf(b); return fp_r(FP_ADD(x, y)); }
+static inline u32 fp_sub(u32 a, u32 b) { float x = fp_cf(a), y = fp_cf(b); return fp_r(FP_SUB(x, y)); }
+static inline u32 fp_mul(u32 a, u32 b) { float x = fp_cf(a), y = fp_cf(b); return fp_r(FP_MUL(x, y)); }
 static inline u32 fp_div(u32 a, u32 b) {
     if ((b & 0x7F800000u) == 0) return ((a ^ b) & 0x80000000u) | 0x7F7FFFFFu;
     float x = fp_cf(a), y = fp_cf(b);
-    return fp_r(x / y);
+    return fp_r(FP_DIV(x, y));
 }
-static inline u32 fp_sqrt(u32 a) { float x = fp_f(fp_clamp(a) & 0x7FFFFFFFu); return fp_r(__builtin_sqrtf(x)); }
+static inline u32 fp_sqrt(u32 a) { float x = fp_f(fp_clamp(a) & 0x7FFFFFFFu); return fp_r(FP_SQRT(x)); }
 static inline u32 fp_rsqrt(u32 a, u32 b) {
     if ((b & 0x7F800000u) == 0) return ((a ^ b) & 0x80000000u) | 0x7F7FFFFFu;
 #if defined(__x86_64__) || defined(_M_X64)
@@ -166,9 +190,9 @@ static inline u32 fp_rsqrt(u32 a, u32 b) {
     if (b & 0x80000000u) return 0x7FC00000u;
 #endif
     float x = fp_cf(a), y = fp_cf(b);
-    float s = __builtin_sqrtf(y);
-    float r = 1.0f / s;
-    return fp_r(x * r);
+    float s = FP_SQRT(y);
+    float r = FP_DIV(1.0f, s);
+    return fp_r(FP_MUL(x, r));
 }
 // FCVTZS: saturating, NaN gives 0
 static inline u32 fp_to_int(u32 a) {
@@ -178,8 +202,11 @@ static inline u32 fp_to_int(u32 a) {
     if (x <= -2147483648.0f) return 0x80000000u;
     return (u32)(s32)x;
 }
-static inline u32 fp_from_int(u32 w) { s32 v = (s32)w; return fp_r((float)v); }
-#if defined(__x86_64__) || defined(_M_X64)
+static inline u32 fp_from_int(u32 w) { s32 v = (s32)w; return fp_r(FP_FROM_INT(v)); }
+#if defined(RTA_SOFT_RZ)
+static inline u32 fp_max(u32 a, u32 b) { return fp_r(softrz::max_fz(fp_cf(a), fp_cf(b))); }
+static inline u32 fp_min(u32 a, u32 b) { return fp_r(softrz::min_fz(fp_cf(a), fp_cf(b))); }
+#elif defined(__x86_64__) || defined(_M_X64)
 // ARM64's FMAXNM / FMINNM (what the two built-ins below are there) spelled out: of +0 and
 // -0 the maximum is +0 and the minimum -0.  x86's MAXSS / MINSS, and a C library's fmaxf,
 // hand back one of the two by its position instead.  The operands are clamped, so never NaN.
@@ -189,8 +216,14 @@ static inline u32 fp_min(u32 a, u32 b) { u32 p = fp_clamp(a), q = fp_clamp(b); f
 static inline u32 fp_max(u32 a, u32 b) { float x = fp_cf(a), y = fp_cf(b); return fp_r(__builtin_fmaxf(x, y)); }
 static inline u32 fp_min(u32 a, u32 b) { float x = fp_cf(a), y = fp_cf(b); return fp_r(__builtin_fminf(x, y)); }
 #endif
+#if defined(RTA_SOFT_RZ)
+static inline bool fp_eq(u32 a, u32 b) { return softrz::eq_fz(fp_cf(a), fp_cf(b)); }
+static inline bool fp_lt(u32 a, u32 b) { return softrz::lt_fz(fp_cf(a), fp_cf(b)); }
+static inline bool fp_le(u32 a, u32 b) { return softrz::le_fz(fp_cf(a), fp_cf(b)); }
+#else
 static inline bool fp_eq(u32 a, u32 b) { return fp_cf(a) == fp_cf(b); }
 static inline bool fp_lt(u32 a, u32 b) { return fp_cf(a) < fp_cf(b); }
 static inline bool fp_le(u32 a, u32 b) { return fp_cf(a) <= fp_cf(b); }
+#endif
 
 #endif

@@ -291,7 +291,10 @@ def tick_columns(local_slot, players):
                   'p%du128=%s+0x128:hex8' % (n, r), 'p%dblk=%s+0x3748:crc2696' % (n, r), 'p%dquest=%s+0x41d0:crc520' % (n, r),
                   'p%dbtnA=%s+0x4a60:crc20' % (n, r), 'p%dbtnB=%s+0x4a7c:crc12' % (n, r),
                   'p%dtrailhit=%s+0x4ac5:hex2' % (n, r), 'p%dtrailhit2=%s+0x4b05:hex2' % (n, r), 'p%dtail=%s+0x4bc8:crc104' % (n, r),
-                  'oos%d=%s+0x44d7:u8' % (n, peer(n)), 'l_dropped%d=%s+0x44d5:u8' % (n, peer(n))]
+                  'oos%d=%s+0x44d7:u8' % (n, peer(n)), 'l_dropped%d=%s+0x44d5:u8' % (n, peer(n)),
+                  # the object pointer itself: while it is null (the tick of a level reload) the columns
+                  # read through it show low memory, which is the runtime's and per machine
+                  'l_p%dobj=%s+0x43d8:x32' % (n, r)]
     if os.environ.get('SOAK_FARM_COLUMNS') == 'small':      # for measuring what the columns cost
         keep = ('net=', 'seed=', 'level=', 'cut=', 'nobj=', 'pool=', 'l_dropped', 'oos')
         specs = [x for x in specs if x.startswith(keep) or re.match(r'p\d(x|y|z|hp|maxhp)=', x)]
@@ -575,6 +578,12 @@ def analyse(out, n):
             hb, rb = rows_of(os.path.join(out, 'm%d.tick.tsv' % b))
             shared = [c for c in ha if c in hb and c not in ('frame', 'net') and not c.startswith('l_')]
             hard = [(c, ha.index(c), hb.index(c)) for c in shared if not is_soft(c)]
+            # columns read through a player's object pointer, and where that pointer is in each log
+            through = {}
+            for p in range(n):
+                if 'l_p%dobj' % p in ha and 'l_p%dobj' % p in hb:
+                    through[p] = (ha.index('l_p%dobj' % p), hb.index('l_p%dobj' % p))
+            via_object = re.compile(r'^p(\d)(x|y|z|angle|state|objseed|armour|resist)$')
             soft = [(c, ha.index(c), hb.index(c)) for c in shared if is_soft(c)]
             drop_a = [ha.index('l_dropped%d' % p) for p in range(n)]
             drop_b = [hb.index('l_dropped%d' % p) for p in range(n)]
@@ -606,6 +615,16 @@ def analyse(out, n):
                         entry['last'] = tick_a
                 if first is None:
                     differing = [(c, fields_a[x], fields_b[y]) for c, x, y in hard if fields_a[x] != fields_b[y]]
+                    if differing and through:       # not while that player has no object on either machine
+                        kept = []
+                        for item in differing:
+                            found = via_object.match(item[0])
+                            if found and int(found.group(1)) in through:
+                                ia_, ib_ = through[int(found.group(1))]
+                                if fields_a[ia_] == '00000000' and fields_b[ib_] == '00000000':
+                                    continue
+                            kept.append(item)
+                        differing = kept
                     if differing:
                         first = tick_a
                         if result['first'] is None or tick_a < result['first']:

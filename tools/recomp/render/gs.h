@@ -63,6 +63,7 @@ class Gs {
     // A texture nothing drew with for this many frames is freed (0: never).  It is made
     // again from what the game sends if a draw names it later.
     uint32_t texture_keep_frames = 600;
+    uint64_t texture_budget = 96u << 20;    // bytes of RGBA held before idle textures go early
     // Asked once per new texture: the size of the picture in the texture at this TBP0, from
     // the game's own header (false: not known).
     std::function<bool(uint32_t tbp, int& width, int& height)> picture_size;

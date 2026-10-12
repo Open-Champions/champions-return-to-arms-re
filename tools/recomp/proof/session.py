@@ -120,15 +120,27 @@ def replay_pokes(script, out, shift):
             if number not in ran:
                 missing += 1
                 continue
-            # the rig ran the group at the blank that begins frame `ran[number]`: after the row
-            # logged in the frame before and before the row logged in that frame.  The native
-            # run applies it right after it has logged the row before (proof_rt.cpp applies at
-            # the frame hook, which follows the logging), so both logs show the write from the
-            # same row on, and a write that ends the level ends it after the same tick.
-            at = bisect.bisect_left(frames, ran[number]) - 1 + shift
-            if at < 0 or at >= len(rows):
+            # The rig ran the group at the blank that begins frame `ran[number]`: after the row
+            # logged in the frame before, before the row logged in that frame (row N).  Where
+            # in that frame's work the blank fell - before or after the tick's simulation
+            # step - differs from frame to frame.  The native run applies the group at its
+            # frame hook, which follows the logging of a row:
+            #   a write that ends the level: after the last row of the level, so that both
+            #     machines leave after the same tick;
+            #   any other: after row N, so that the first simulation step that sees the
+            #     written values is the same when the rig's blank fell after the step (what
+            #     the rig's logs show: a written value stands unchanged in row N).  The
+            #     native log then shows the write one row late - one tick of difference in
+            #     the written columns, listed as "write rows" by summary.py - and nothing
+            #     after it.  --poke-shift -1 applies them a row earlier.
+            at = bisect.bisect_left(frames, ran[number])
+            if at == 0:
                 missing += 1
                 continue
+            if at >= len(rows) or rows[at][1] != rows[at - 1][1]:
+                at -= 1
+            else:
+                at = max(0, min(len(rows) - 1, at + shift))
             _, episode, tick, frame = rows[at]
             for addr, blob in groups[number]:
                 sink.write('%d %d %d %x %s\n' % (episode, tick, frame, addr, blob.hex()))

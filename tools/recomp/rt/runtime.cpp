@@ -453,8 +453,11 @@ static bool arith_nearest() {
 }
 // One line at the start of a run: which arithmetic the game's threads compute with.
 static void say_arithmetic() {
-#ifdef RTA_SOFT_RZ
+#if defined(RTA_SOFT_RZ)
     printf("arithmetic: toward zero, denormals are zero - in software (RTA_SOFT_RZ)%s\n", arith_nearest() ? "; --opt arith=nearest has no effect in this build" : "");
+#elif defined(__EMSCRIPTEN__)
+    // no processor mode to set there: without RTA_SOFT_RZ a WebAssembly build computes as the browser does
+    printf("arithmetic: to nearest, denormals kept (WebAssembly without RTA_SOFT_RZ) - NOT the console's\n");
 #else
     if (arith_nearest()) printf("arithmetic: the host's (to nearest, denormals kept): --opt arith=nearest - NOT the console's\n");
     else printf("arithmetic: toward zero, denormals are zero - the processor's mode on every thread that runs the game's code\n");
