@@ -79,6 +79,8 @@ def replay_pokes(script, out, shift):
             current = int(words[2])
             groups[current] = []
             kept.append(line)
+        elif words[:1] == ['ontick']:
+            continue                            # the rig's own: a memory dump inside a tick
         elif words[:1] == ['poke'] and current is not None:
             target, kind = words[1].rsplit(':', 1)
             groups[current].append((int(target, 0), poke_bytes(kind, words[2])))
@@ -119,18 +121,14 @@ def replay_pokes(script, out, shift):
                 missing += 1
                 continue
             # the rig ran the group at the blank that begins frame `ran[number]`: after the row
-            # logged in the frame before, before the row logged in that frame.  The native run
-            # applies it when it has logged the row after (so both logs show the write from
-            # the same row on) - or, when the write ends the level and there is no row after
-            # in that level, the row before.
-            at = bisect.bisect_left(frames, ran[number])
-            if at == 0:
+            # logged in the frame before and before the row logged in that frame.  The native
+            # run applies it right after it has logged the row before (proof_rt.cpp applies at
+            # the frame hook, which follows the logging), so both logs show the write from the
+            # same row on, and a write that ends the level ends it after the same tick.
+            at = bisect.bisect_left(frames, ran[number]) - 1 + shift
+            if at < 0 or at >= len(rows):
                 missing += 1
                 continue
-            if at >= len(rows) or rows[at][1] != rows[at - 1][1]:
-                at -= 1
-            else:
-                at = max(0, min(len(rows) - 1, at + shift))
             _, episode, tick, frame = rows[at]
             for addr, blob in groups[number]:
                 sink.write('%d %d %d %x %s\n' % (episode, tick, frame, addr, blob.hex()))

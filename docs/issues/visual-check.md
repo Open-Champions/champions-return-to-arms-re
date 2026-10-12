@@ -56,8 +56,8 @@ picture as presented), and four switches for the same frame before and after: `u
 
 | Fault | Class now | Status |
 |---|---|---|
-| Noise over fire | emulator | fixed before this pass (heat haze); to be looked at again in `fire3` with the final build (standing checks, below) |
-| 24-37 frames a second while pictures are read, computer busy | ours | not seen again: level tours of this pass under a load average of 360-430 ran at 60 where no dump was being written (table below) |
+| Noise over fire | emulator | fixed before this pass (heat haze); looked at again in `fire3` with the final build: no block of noise in six pictures beside its golems (`sheets/std-haze.jpg`) |
+| 24-37 frames a second while pictures are read, computer busy | ours | not seen again: under a load average of 250-290 the release and this build both hold 60.0 in `innovat1` and `blood1`; on the release 38-71 pictures were still being read ten seconds after arriving, on this build none |
 | Art pack incomplete | art pack | the enlarging job's; 52,805 replacement files at the time of this pass |
 | Count of pictures to be read never 0 | ours | fixed before this pass; still returns to 0 with the changes below |
 | After a change of resolution factor textures are found by reading video memory | ours | **fixed**: what the game sent, the textures made of it and the replacement pictures are kept through a change of settings. Factor 4 -> 1 -> 4 several times in a menu, in `strife` and in the hub: `tex_by_memory` stays 0 |
@@ -104,21 +104,49 @@ Level tours of this pass (2.5 s sample on arrival, dump on, load average 360-430
 except where new textures were being written on arrival (`torment2` 42, `blomedal` 39, `watmedal` 47,
 `firmedal` 32, `watbonus` 26: the video thread 20-36 ms a frame while PNG files are written).
 
-### State at 15:45 (saved on the coordinator's word; finished and not finished)
+### Standing checks on the final build (2026-10-12, 15:45-16:05; other work on the computer throughout)
 
-Finished and in the build: the five changes above (edge of the picture; filtering of point-sampled
-effects, the automap, points and lines; texel centre; texture knowledge kept through a change of
-settings; read order, warm pictures, least-recently-used eviction), `drawlog`, `shotview`, the switches.
-`tools/play-net/play-net.patch` is regenerated and reproduces the tree; `ctl.py` lists the new commands;
-the README has the new rows (three places still marked `@@...@@`) and the changed texture section.
+- **Still screens**: three consecutive pictures of the controls screen at 4x and at 1x (whole picture
+  and the part presented), of the hub's pause menu and of a paused frame of `blood1` and `innovat1`:
+  largest difference 0. `shame1` paused: 3 of 255 in a few pixels (mean 0.0001).
+- **60 frames a second at 4x with the pack**. The release and this build side by side in the same level
+  (load average 250-290): `innovat1` 60.0 / 60.0, `blood1` 60.0 / 60.0, standing, pack on and off; video
+  thread 7.6-7.9 ms a frame on the release, 7.6-8.0 on this build with the pack and 8.0-8.4 without.
+  One instance alone (load average 220-240): `blood1` 59.99 standing, 60.03 / 59.64 walking; `shame1`
+  59.75, 59.99 / 59.96; `innovat1` 57.4, 57.7 / 56.5 in that run (60.0 in the side-by-side run a few
+  minutes later).
+- **Heat haze in `fire3`**: clean (0 blocks of noise in 6 pictures; 2,024-2,781 pieces of the frame kept
+  as textures in 90 frames beside a golem). Beside a golem both builds run at 37-41 frames a second
+  under a load average of 350 (video thread 21-25 ms a frame): the haze's cost, the same on the release.
+- **Patch set**: `rta.log` says "26 sections, 90 words, set 3f5b1e14".
+- **Resolution factor changed in the running game** (hub, 4 -> 1 -> 4): 854 draws a frame by upload and
+  0.0 by memory before and after; no replacement read again.
+- **Read order** on the final build (load average 180): all in view after 0.22 s, 0.82 s in the old
+  order; a menu visit while pictures come in: none given up, 7 handed over in the menu, 3 to read after.
 
-Not finished at this time:
-- the standing checks on the final build (`local/vq.nosync/tools/std.py still | levels | haze`): still
-  screens identical, 60 frames a second in `blood1`, `innovat1`, `shame1`, heat haze in `fire3`, the
-  set figure in `rta.log`;
-- before/after pictures of the wizard's skills page at 1x (`tools/after.py v7`); the same paused-frame
-  and memory-limit comparisons on this build (`after.py flicker new`, `after.py lru new`; the release
-  build's figures are in `logs/after.log`);
-- the three `@@` places in the README and its "looked at" paragraph;
-- handing the tours' dumps to the enlarging loop (`tools/handover.py`; 0 pictures new to the pack so
-  far, a few dozen in its dump that are not enlarged yet).
+### Finished, and not
+
+Finished and in the build, the patch and the README: the edge of the picture; filtering of point-sampled
+effects, the automap, points and lines; the texel centre of filtered indexed textures; texture knowledge
+kept through a change of settings; read order, warm pictures, least-recently-used eviction; `drawlog`,
+`shotview`, the four switches; `ctl.py` lists them. The tours' dumps (6,818 pictures, 62 for the list:
+21 new to the pack, none of them level pictures, and 41 in its dump that were not enlarged yet) are
+handed to the enlarging loop as `_visual` (`local/hd-tour.nosync/first.txt`, `done-8.jsonl`,
+`levels/_visual.txt`, folders `tex80`-`tex82`); nothing was written into the packs.
+
+Not done, or open:
+- The least-recently-used eviction is not measured: with the limit at 60 % of what `shame1` held,
+  what one view needs still fitted, on both builds.
+- Without the art pack a dust mote is filtered but its specks stay visible (the game's particle sheet
+  has no smaller copies to read at the console's density).
+- 21 active skills were cast by no model (bow skills want a bow, one a shield, others a target of
+  their kind); the entries of the mission menu were seen but only the story entry was taken (the medal
+  and bonus levels were entered by name).
+- What follows the save list after an end film: "Back" there returns to the title (seen on `endgood`);
+  the credits were looked at from the title's menu, not after a film.
+- Frame rate beside the lava golems of `fire3` at 4x under heavy load (37-41), on both builds.
+- Left behind: `local/vq.nosync` (pictures 360 MB, dumps 450 MB).
+
+To roll out: `tools/play-net/play-net.patch`, `tools/play-net/src/Rta.cpp`, `tools/play-net/ctl.py`,
+`tools/play-net/README.md`, this page. The changes are draw-only; the shared patch file, the section
+list and the set figure are as in a268011.
