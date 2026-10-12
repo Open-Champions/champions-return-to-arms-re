@@ -3,7 +3,7 @@
 
     tools/play-net/upscale.py DUMP_DIR REPLACE_DIR --upscaler /path/to/realesrgan-ncnn-vulkan
                               [--scale 4|2] [--only TEXT] [--force] [--list] [--jobs N] [--limit N]
-                              [--check] [--from-pack REPLACE_DIR_4X]
+                              [--names FILE] [--check] [--from-pack REPLACE_DIR_4X]
 
 DUMP_DIR is `<textures>/dump` of runs with `--rta-texture-dump`, REPLACE_DIR is
 `<textures>/replace` (tools/play-net/README.md, "Texture dump and replacement" and
@@ -616,6 +616,7 @@ def main():
     parser.add_argument('--scale', type=int, default=4, choices=(2, 4), help='size of the result (4)')
     parser.add_argument('--force', action='store_true', help='redo pictures that are up to date')
     parser.add_argument('--only', default='', help='only names containing this text')
+    parser.add_argument('--names', metavar='FILE', help='only the pictures named in FILE, one file name a line (the dump is not gone through: quick for a part of a large one)')
     parser.add_argument('--kind', default='', help='only pictures of this kind (interface, level, model, glow, sprite)')
     parser.add_argument('--list', action='store_true', help='say what each picture is and stop')
     parser.add_argument('--recipe', action='append', default=[], metavar='KIND:FIELD=VALUE',
@@ -646,7 +647,12 @@ def main():
     if args.from_pack:
         with open(os.path.join(args.from_pack, 'upscale-manifest.json')) as file:
             source_manifest = json.load(file)
-    names = sorted(n for n in os.listdir(args.dump) if n.endswith('.png') and not n.startswith('mem-'))
+    if args.names:
+        with open(args.names) as file:
+            names = sorted(set(line.strip() for line in file))
+        names = [n for n in names if n.endswith('.png') and not n.startswith('mem-') and os.path.exists(os.path.join(args.dump, n))]
+    else:
+        names = sorted(n for n in os.listdir(args.dump) if n.endswith('.png') and not n.startswith('mem-'))
     if args.only:
         names = [n for n in names if args.only in n]
 
@@ -693,7 +699,7 @@ def main():
                 continue
             signature = signature + ['halved']
         todo.append((name, signature))
-    print('upscale.py: %d pictures in the dump (%s)%s' % (len(names), ', '.join('%d %s' % (v, k) for k, v in sorted(counts.items())),
+    print('upscale.py: %d pictures %s (%s)%s' % (len(names), 'named' if args.names else 'in the dump', ', '.join('%d %s' % (v, k) for k, v in sorted(counts.items())),
                                                            '; %d without a readable .json file left out (dump them again with this build)' % skipped if skipped else ''), flush=True)
     if unseen:
         print('upscale.py: %d pictures from the disc whose way of drawing is not known left out (they are done once a run with --rta-texture-dump has drawn them)' % unseen)

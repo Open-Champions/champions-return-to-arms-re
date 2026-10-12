@@ -354,7 +354,8 @@ format and its size.
   on anything far away).
 - `--rta-texture-memory MB` (default 3072) is the video memory replacements may take;
   beyond it those not drawn with for ten seconds are given up and read again when needed
-  (`tex_dropped` of `info`). The first level with every replacement at 4× holds 1.4 GB.
+  (`tex_dropped` of `info`). The first level with every replacement at 4× holds 1.4 GB. The heaviest
+  level (`shame1`) would hold 9.4 GB, so there the limit is at work all the time.
 - A file whose name starts with `mem-` is a texture that could not be told by what was
   sent and was read back from video memory; its name may not come back. None appeared
   in the scenes listed at the end.
@@ -485,7 +486,12 @@ For every kind:
   level textures, 0.8 for the rest). Grass therefore stays close to the game's own, a
   little finer; stone, wood, leaves and skins get the model.
 - **Pictures with a side under 12 texels are enlarged plainly** (the bars of the
-  interface are 6 or 8 lines high; the model made a maze of their mottled fill).
+  interface are 6 or 8 lines high; the model made a maze of their mottled fill). **So
+  are model textures of fewer than 2,048 texels** (16 × 16 to 32 × 48: item pictures,
+  small hair and ornament pieces — 220 of the disc's 1,447). Every feature in them is a
+  texel or two wide; the model drew confident other shapes from them (a rune became a
+  different rune, a mottled pouch a flat one) and moved their colour. From 48 × 48 on it
+  follows what is there.
 - **Texels never sent are filled from their neighbours and stay filled**; a border of 8
   texels is given to the model around what it enlarges (the picture's own texels where
   the rectangle lies inside it; repeated edge otherwise; wrapped round where `other_uv`
@@ -504,22 +510,34 @@ surface with grain (stone, parchment, the bars) into flat colour and was dropped
 model turns grass into lichen; enlarging a Lanczos-doubled picture and halving the result
 gave a checkered pattern. What came out better than the game's art by eye: the title's logo, all text, the
 frames and icons of menus, bars and inventory, stone, leaves, the character's skin and
-armour close up. Grass is about as before.
+armour close up. Grass is about as before. Looked at for the whole game (pairs of the
+game's texture and the enlarged one, 40 model textures and 100 level textures of 15
+levels taken at random, and every picture the self-check named): rock, masonry, wood,
+metal, cloth, faces and hair follow the game's art, the dither of its 8-bit palettes
+goes. One thing is not right and not caught by the noise rule: a surface that is fine,
+low-contrast grain all over (the sea floor of the `wat` levels) gets faint flowing lines
+from the model; its figures (2.6 to 2.7 where rock has 2.4 to 2.9) do not tell it from
+rock, so the cure would be a lower strength for all level textures.
 
-Measured on an M5 Pro, other test runs going on beside (load average 10 to 16):
+Measured on an M5 Pro, other test runs going on beside (load average 10 to 16; for the
+whole game 10 to 130):
 
 | | |
 |---|---|
-| time to enlarge | 394 pictures 4 min 20 s; 25 new ones in a later run 20 s |
+| time to enlarge | 394 pictures 4 min 20 s; 25 new ones in a later run 20 s. The whole game: 1.5 to 2 pictures a second with four batches at a time, the graphics card shared with other work — 120,000 pictures take most of a day |
 | the pack for title, menus, character creation and the first level | 418 files, 257 MB (4×); 72 MB (2×) |
+| the pack for the whole game | 120,039 pictures dumped (118,257 level textures, 1,479 model textures — the disc's 1,447 and what the character is put together from —, 288 interface pictures, 15 others), 6.8 GB. A 4× picture is 0.8 MB on average, a 2× one 0.24 MB: about 95 GB and 29 GB |
 | video memory in the first level | the game's own 335 textures 16 MB; 4× replacements 1.39 GB (310 pictures, mip maps included; 1.46 GB with the inventory's); 2× 350 MB |
+| video memory in the heaviest level (`shame1`: 1,089 pictures, 606 of them in the nine texture cells round one place) at 4× | standing at its start 3.0 GB (306 replacements); with every replacement of the level kept (`--rta-texture-memory 40000`, the camera over every place once) 9.4 GB for 992 pictures. With the default 3,072 MB the application gives up what was not drawn for ten seconds and reads it again when needed: going through the level at a new place every second the most held at one time was 4.9 GB, 3,571 given up on the way |
+| how much of that is page nobody draws with | 70 %: the level's 1,051 dumps hold 127.8 million texels, the rectangles the game draws with 37.9 million. Given only those rectangles the level's 4× pictures would take 3.2 GB instead of 10.9 GB (the application stretches a replacement over the whole dump, so this needs a change there: a rectangle per replacement, from the `.json` file's `other_uv`) |
 | speed with the pack, standing and walking through the level | 60.00 frames a second at 4× and at 2×, as without |
+| speed with the 4× pack in three other levels (`blood1`, `innovat1`, `shame1`; load average 9 to 31) | standing and walking 60.00 frames a second, the same seconds later with the pack switched off (`texreplace 0`); with the camera at a new place of the level every second 59.84 to 60.00 (the game drew 56.6 to 59.2 pictures a second). An earlier run with the load average at 80 to 130 and the enlarging going on on the same graphics card gave 41 to 60, lowest where the load was highest; that one was not repeated with the pack off |
 
 For a computer with little memory make the pack with `--scale 2` (a quarter of the
-memory; text and frames are still clean, see `local/play-out/hd2-pack2x-vs-4x.png`), or
-lower `--rta-texture-memory`.
+memory: the heaviest level whole is 2.4 GB; text and frames are still clean, see
+`local/play-out/hd2-pack2x-vs-4x.png`), or lower `--rta-texture-memory`.
 
-**Growing the pack.** A dump holds what a run has drawn. Two ways to more:
+**Growing the pack.** A dump holds what a run has drawn. Three ways to more:
 
 - Play with `--rta-texture-dump` and run `upscale.py` again: it does the new pictures
   and those whose `.json` file has since learnt something that changes the work (a kind,
@@ -539,15 +557,68 @@ lower `--rta-texture-memory`.
   flags 0x010c, no upload packet, a table of offsets) and the game unpacks them before
   sending; the unpacker was not rewritten. Neither can the player's own character (put
   together from parts when the game starts) and the two font pages.
+- **A tour of every level** for the level textures. They are the bulk of the game's art:
+  the 111 `<LEVEL>.TEX` files hold 157,820 textures, one per piece of ground and wall;
+  25,540 of them are one flat tile of 6 × 6 to 12 × 12 texels again and again, 132,280
+  are pictures. A texture is dumped when it is drawn, so the camera has to pass over
+  every piece. `tools/play-net/leveltour.py --disc IMAGE --out DIR` does it (and
+  `--merge DUMP_DIR` afterwards):
+  - the level is asked for as the game's own level changes do, by writing its name to
+    `g_pendingLevel` (`poke 0x41b6d0 str <name>`, `docs/mainloop.md` section 7); a medal
+    round's notice box is answered with the confirm button;
+  - where to look comes from the level's `.world` (`docs/formats/world.md`): the bounds
+    of its chunks, sorted into squares of 345 units, one stop per square that holds
+    anything, in rows there and back;
+  - the camera is the game's own free camera: mode 3 (camera object `[0x4f8450]` +0x34)
+    stays where its position is written (`0x44f038`, three floats), so it is put above
+    each stop as the following camera would be (98, −98, 370 from the place, 1.3 times
+    that; yaw and pitch word +0x68 = 0x2efbe000) while the character stands at the
+    level's start: no trigger, no dialog and no way out of the level is touched. (Moving
+    the character instead — its position at object +0x10, held against falling — works
+    too and was used for the first half; it walks into level exits and conversations.)
+    Each stop is held until the application has written no new picture for 40 frames;
+  - the instances run without the frame limiter (`throttle 0`) at resolution factor 1,
+    three at a time, each with its own `--rta-textures` folder; the folders are joined
+    into the pack's dump afterwards (`.json` files united: every way of drawing, the
+    largest rectangles).
+  A level of 2,000 pictures takes three to six minutes. How complete it is was checked
+  on three levels by going over them again more densely (squares of 165 units instead
+  of 414: 3 more pictures of 1,787), with the camera turned round (none) and with the
+  other way of moving (1,925 against 1,918 of 2,014): what a level's file holds beyond
+  what a tour finds — 2 to 6 % of the pictures in most levels, up to 40 % in arenas and
+  island levels — are pieces that hold the same picture as another (107 sea-floor tiles
+  of one size, 64 different ones) or are never drawn. 58 levels were gone over a second
+  time with the free camera after the character: 0 to 5 new pictures each. In all:
+  118,257 different level pictures of the 132,280.
+- Also toured, once: every class and every position of every appearance slider of
+  character creation (the character's own textures), the shop's lists, the pages of the
+  bag, the pause menu and its options, the save screen, and the mission menu with every
+  mission unlocked (the flags at player record +0x4bbf, `docs/player.md`).
 
-Not judged by eye: the glow and sprite kinds (two such pictures from power-on to the
-first level), the 2× model (`--scale 2` reduces the 4× result). Not tried: other models (none may be fetched here; `4x-UltraSharp` and
-`4x_foolhardy_Remacri`, ESRGAN models of about 65 MB each listed on openmodeldb.info and
-made for textures rather than photographs, would be the first to try on stone and ground
-— from memory, not checked, and they need converting to ncnn's format); anisotropic
-filtering; giving only the used rectangle of a level page to the GPU (it would cut the
-memory to about 40 %; the application stretches a replacement over the whole dump);
-levels beyond the first; a second player's and monsters' textures in a fight.
+`upscale.py --jobs N` works on N batches at a time, `--names FILE` on the pictures named
+in a file (a level at a time, in the game's order, so that a run cut short leaves whole
+levels), and a run that is stopped keeps what it has written. **What limits it is the
+graphics card**: the model takes about a third of a second for a level picture (the 150 ×
+150 texels the game draws with, with their margin) on an M5 Pro with nothing else on its
+graphics card, so the game's 130,000 need half a day; the work around the model is
+0.2 seconds of one core. **The 2× pack is made from the 4× pack**: `upscale.py DUMP
+PACK2X/replace --scale 2 --from-pack PACK4X/replace` halves each picture (two-field
+pictures come out right, their second copy being two lines up at 4×, one at 2×). Against
+`--scale 2` done with the model: mean difference 0.37 of 255 on 15 model textures, 0.25 on
+86 interface pictures; a plain `--scale 2` run takes such pictures as done.
+
+Not judged by eye: the glow and sprite kinds (a handful of pictures). Not tried: other
+models (none may be fetched here; `4x-UltraSharp` and `4x_foolhardy_Remacri`, ESRGAN
+models of about 65 MB each listed on openmodeldb.info and made for textures rather than
+photographs, would be the first to try on stone and ground — from memory, not checked,
+and they need converting to ncnn's format); anisotropic filtering. Not covered: three quarters of
+`fire3` (about 900 of its 3,655 pictures: entered this way the game stops for good when
+the camera, or the character, comes to certain places of it — its clock `0x44fdcc`
+stands still and nothing is presented any more; with and without the frame limiter;
+not looked into); effects and interface art that only appear in play the tour does not
+do (spells cast by the player, most monsters' spells — 12 effect pictures were seen in
+all —, items that are not in the first shop, the medal and bonus entries of the mission
+menu, the films); of the title's level only what the title shows.
 
 ## One-step online
 
