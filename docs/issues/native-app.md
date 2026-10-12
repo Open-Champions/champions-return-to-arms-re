@@ -643,3 +643,30 @@ then `final2.sh`; results go to the files named, nothing else needs to be kept):
 - the 15 MB by which the second round of 20 levels lay above the first (10.2) - to be
   read again from `mem3/run.txt`, since surfaces that were never freed are a likely
   cause.
+
+**Partial results, 15:55** (the chain was stopped when the graphics work was merged into
+the shared tree; these are from the build before that merge, load average 217 to 300):
+
+- Press to picture, paced, `perf/latency.txt`: an attack in the first level (cross)
+  shows in the picture of the 6th, 7th, 7th and 9th blank after the one whose controller
+  read was given the press (the emulator build: picture 5 or 6); the pause menu (start)
+  in the 5th, twice. In milliseconds 157 to 295 from the press to the present - but the
+  application reached only about 28 pictures a second under that load, so the
+  milliseconds say nothing about the program. The title menu's move (down / up) was not
+  detected by the test: the measure was the mean difference over the whole grid and the
+  title's moving backdrop is larger than a moved highlight. To do: the largest
+  difference of a cell in place of the mean, and the move inside the pause menu.
+- Pictures a second, not paced, 640 x 448, by level (`perf/find.txt`): valor 36, fire3
+  21, arachna1 20, islc1 77, honor 67, swamp1 103, drunare 82. So arachna1 and fire3 are
+  the heaviest of those toured (many heat-haze copies a frame, each a blit between
+  surfaces in the middle of the frame). The runs at 2560 x 1792 and at the display's
+  resolution were made in the wrong place by a mistake in the helper (it handed the time
+  of day on as the level's name) and are **not** figures for the heaviest level: 73 and
+  90 pictures a second in the first level, load 364 and 295. To do again:
+  `perf.py size fire3 2560x1792`, `size fire3 2619x1964`, `paced fire3 2560x1792`.
+
+**Merge of the graphics work (15:46, by the coordinator)**: being verified -
+`local/recomp-out/app-test/merge/verify.sh` (the rig comparison with `--plain` and with
+the new defaults; then the pole, the films, the heat haze, the bag, the dialogue with
+both; then sound through ten level changes). Results under `merge/`; this section is
+updated when they are in.

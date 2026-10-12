@@ -250,6 +250,28 @@ async function main() {
 				}
 			}
 		}
+		if(opt("keep-card")) {
+			// the memory card: written by the game into the program's file system, kept in IndexedDB,
+			// still there after the page is loaded again (looked at without starting the game)
+			const files = await evaluate("rta.cardFiles()");
+			const synced = await evaluate("rta.syncCard()");
+			const stored = await evaluate("rta.storedCard()");
+			result.card = { files: files.length, bytes: files.reduce((sum, f) => sum + f[1], 0), synced, stored: stored ? stored.length : null };
+			result.sound_before_reload = (await evaluate("rta.info()")).sound_state;
+			await cdp.send("Page.navigate", { url }, page);
+			for(let i = 0; i < 100; i++) { await sleep(200); if(await evaluate("window.rta ? rta.state : ''") === "ready") break; }
+			const after = await evaluate("rta.storedCard()");
+			result.card.after_reload = after ? after.filter((k) => !/\/$/.test(k)).length : null;
+			result.card.names = after ? after.slice(0, 12) : null;
+			await evaluate("rta.forgetCard()");
+			console.log("  memory card: %d files, %d bytes written by the game; store write %s; %s entries in IndexedDB, %s after the page was loaded again: %s",
+				result.card.files, result.card.bytes, synced, result.card.stored, result.card.after_reload, JSON.stringify(result.card.names));
+			console.log("  sound before the reload: " + JSON.stringify(result.sound_before_reload));
+			fs.appendFileSync(path.join(OUT, "results.jsonl"), JSON.stringify(result) + "\n");
+			closing = true;
+			await cdp.send("Browser.close"); await gone();
+			process.exit();
+		}
 		const end = await evaluate("rta.info()");
 		result.end = { dual: end.dual, out: end.out, feedback_copies: end.feedback_copies, disc_reads: end.disc_reads, disc_mb: +(end.disc_bytes / 1e6).toFixed(1), disc_ms: end.disc_ms, sound: end.sound, sound_state: end.sound_state, late: end.late };
 		result.said = await evaluate("rta.log.filter((l) => /^(rta|sound|page)[: ]/.test(l)).slice(0, 12)");

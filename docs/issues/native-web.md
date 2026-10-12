@@ -21,15 +21,18 @@ player's disc image in place and takes the keyboard - but it is **not cheaper**:
 
 | First level, standing (Chrome 155, picture 1280 x 896) | native page | emulator page with `perf.patch` | emulator page unchanged |
 |---|---|---|---|
-| instructions per frame, whole page process | **292 million** | 227 million | 287 million |
-| cycles per frame | **62 million** (load 280) | 57.8 million (quiet) | 66 - 68 million |
-| busiest thread, CPU ms per frame | **18.3** decoder (load 280) | 7.85 machine (quiet) | 9.2 - 10.2 (quiet), 17 - 18 (loaded) |
-| the other threads | game 4.0, drawing 1.6 | video 5.1 | video 5.6 - 6.2 |
-| frames a second, this Mac | 49.5 at load 280 (not held) | 60 (quiet) | 60 (quiet), 28 - 53 (loaded) |
-| half speed (stand-in) | 21 (load 285) | 60 quiet, 36 - 38 loaded | 48 - 53 quiet, 28 loaded |
-| a quarter | 8.3 | 35 quiet, 18.5 loaded | 25 - 27 quiet, 14 loaded |
-| a sixth | 5.0 | 22 quiet | 18 quiet |
-| title screen: instructions / cycles per frame | 154 million / 29.5 million | 162 million (replay stretch) | 201 million |
+| instructions per frame, whole page process | **297 million** | 227 million | 287 million |
+| cycles per frame | **57 million** (load 350) | 57.8 million (quiet) | 66 - 68 million (quiet), 66 - 78 (loaded) |
+| busiest thread, CPU ms per frame | **15.2 - 18.4** decoder (load 350) | 7.85 machine (quiet) | 9.2 - 10.2 (quiet), 17 - 18 (loaded) |
+| the other threads | game 2.8 - 3.4, drawing 1.0 - 1.4 | video 5.1 | video 5.6 - 6.2 |
+| frames a second, this Mac | 49 paced, 60 with the limiter off (load 360) | 60 (quiet) | 60 (quiet), 28 - 53 (loaded) |
+| half speed (stand-in) | **30** (load 350) | 60 quiet, 36 - 38 loaded | 48 - 53 quiet, 28 loaded |
+| a quarter | **15** | 35 quiet, 18.5 loaded | 25 - 27 quiet, 14 loaded |
+| a sixth | **10** | 22 quiet | 18 quiet |
+| title screen: instructions / cycles per frame | 156 million / 30 - 34 million | 162 million (replay stretch) | 201 million |
+
+(Emulator columns: `docs/issues/browser-perf.md`. The native page could only be measured
+on the loaded Mac; its place is between the two emulator columns' loaded figures.)
 
 Why: the premise ("the game side needs 2 ms") is true and carries over - the translated
 game plus runtime costs **14 million instructions a frame** as WebAssembly, against some
@@ -40,10 +43,13 @@ VU1 instruction pairs and 186,000 vertices a frame in the first level, 185 milli
 instructions a frame **on the Mac natively** (measured here, section 5) and 312 million as
 WebAssembly. The Mac application holds 60 because that work has a thread to itself; so
 does the page on a fast Mac, but one thread carries 75 % of the frame, where the emulator
-page splits its frame 60 : 40, so the page falls below 60 sooner on a slower computer.
+page splits its frame 60 : 40, so the page falls below 60 sooner on a slower computer:
+the stand-in gives 30, 15 and 10 frames a second at a half, a quarter and a sixth, which
+is 1,000 / (15.5 ms x the factor) - the decoder thread alone.
 
-It also lacks what the native application lacks (`docs/issues/native-app.md`: films, the
-network), and its picture has a fault that is not solved (section 4, "models").
+It also lacks what the native application lacks (`docs/issues/native-app.md`: the
+network; films are not linked into the page), and nothing beyond the first level was
+looked at in it.
 
 **What would change the verdict** (section 8): a real translation of the VU1 programs
 (straight-line code per program path, without the per-instruction bookkeeping of flags,
@@ -68,12 +74,18 @@ the browser.
 | `perf.mjs`, `stopgo.c`, `rusage.c` | the measuring harness: a Chrome of its own (profile `local/recomp-web/chrome-profile`), the slow-computer stand-in, instructions and cycles of the page's process |
 | `soft_rz.h`, `soft_rz_test.cpp` | arithmetic rounded toward zero, with flush-to-zero, on a host that has neither; the test against the processor |
 | `decode_bench.cpp` | the renderer's CPU side alone on a recorded stream, for the Mac and for node |
-| `shared-sources.patch` | what had to change in `rt/`, `render/` and `sound/` (section 7); applies to the tree as of 15:45 |
+| `shared-sources.patch` | what had to change in `rt/`, `render/` and `sound/` (section 7); applies to the merged tree (16:00) |
 
-My working tree is `local/recomp-web/`: `src/` (a copy of `tools/recomp` from 14:00 with
-the patch applied), `orig/` (the touched files as copied), `gen/` (the translation, made
-again by `recomp.py --out`; identical to `local/recomp-out/gen`), `gen-vu/` (the VU1
-translation, copied), `build/` (objects, programs, sites), `out/` (logs, scripts, results).
+My working tree is `local/recomp-web/`: `src2/` (a copy of `tools/recomp` as merged with
+the graphics work, about 16:00, with the patch applied) and `gen2/` (its translation) -
+what the last builds are made from; `src/`, `orig/`, `gen/` (the copy of 14:00, the
+touched files as copied, its translation: everything before the merge); `gen-vu/` (the
+VU1 translation, copied), `build/` (objects, programs, sites), `out/` (logs, scripts,
+results). The merge changed nothing that was measured: the tick-for-tick logs of the
+builds from the merged tree have the same md5 as before it, and `backend_webgl.cpp`
+follows the new `backend.h` (fog, moved scissors, surfaces given back; multisampling,
+mip maps, anisotropy and replacement pictures are not in the WebGL backend, and
+widescreen was not tried).
 
 ## 2. Headless under node (Ran)
 
@@ -97,7 +109,7 @@ record, the 947,968-byte object pool, the task table - one row per displayed fra
 | Pair | Rows | Result |
 |---|---|---|
 | node to nearest == Mac `--opt arith=nearest` | 2,909 (boot) and 7,601 (front end, first level, 5,170 ticks of `valor` with the fight) | byte-identical logs (same md5) |
-| node toward zero + flush in software == Mac default (processor) | the same two sessions | byte-identical logs |
+| node toward zero + flush in software == Mac default (processor) | the same two sessions; the 7,601-row one again with both builds made from the merged tree | byte-identical logs (and the same md5 before and after the merge) |
 | Mac toward zero against Mac to nearest | | differ from row 887: tick 1 of the title's backdrop level, column `pool`; the player's position differs in 5,244 of 7,601 rows |
 | Mac with flush-to-zero against Mac without (rounding mode only, as `runtime.cpp` was) | 7,601 | byte-identical: no tiny number reaches a watched value in this session |
 
@@ -194,35 +206,53 @@ its own profile, window visible, closed afterwards; the server on 127.0.0.1 only
 - **Keyboard**: the application's map. A real key event through the browser (W held
   1.5 s) walked the character from (140.3, -122.5) to (17.1, 16.4).
 - **Picture**: title and first level drawn and looked at
-  (`local/recomp-web/out/shots/web-*-final1.png`). Level geometry, HUD, text, the title's
-  logo and menu are right. **Fault, not solved: the two characters in the first level are
-  drawn as flat pale silhouettes** in the last build (they were textured in the first
-  build, whose level geometry was broken by a bug of mine in the uniform shadowing, since
-  fixed). Not yet compared side by side with the application's pictures.
-- **Sound** (AudioWorklet reading a ring in the shared memory, the emulator page's
-  worklet) and the **memory card in IndexedDB** (the card directory is an IDBFS mount,
-  synchronised every 4 s) are **written and linked, not run**: every measurement was with
-  `--no-sound` and without the card store.
+  (`local/recomp-web/out/shots/web-title-final1.png`, `web-hub-fix2.png`): the title's
+  backdrop, logo and menu; in the first level the ground, the platform, both characters
+  textured and lit with their ground shadows, the HUD and the talk prompt. Two faults of
+  mine on the way, both fixed: float uniforms shadowed across frames (broken level
+  geometry in the first pictures), and draws without a texture that left the last one
+  bound (WebGL dropped them as feedback loops when it was the surface being drawn into:
+  the characters came out as flat pale shapes). **Not compared side by side with the
+  application's pictures**, and nothing beyond the first level was looked at.
+- **Sound** (Ran, to the title; Chrome muted, nobody listened): the sound library
+  renders into a ring in the shared memory and an AudioWorklet - the emulator page's -
+  plays from it; the page's main thread is not on the path. After 25 s: playing, never
+  ran dry, **428 ms queued** where 70 ms are asked for: the start-up burst is not given
+  up as the desktop device's ring does it (the worklet only corrects its rate by 0.5 %),
+  so the delay is too long as it is. The frame's cost with sound on is the same
+  (154 M instructions a frame at the title).
+- **Memory card** (Ran): the card directory is an IndexedDB mount (IDBFS), written back
+  every 4 s. The boot script's card initialisation left 3 files, 129,572 bytes; the
+  store held 6 entries (3 files, 3 directories) and still did after the page had been
+  loaded again (read without starting the game). **Not run: a game booting from the kept
+  card, a save and a load.**
 
 ### Figures
 
 `page-nearest`: game to nearest, VU1 to nearest, VU1 main program translated, `-O2`,
 Binaryen `-O2`, no SIMD; scale 2 (1280 x 896 on a 1195 x 896 canvas), no sound. Wall
-milliseconds per frame are each thread's own counters; thread CPU from `ps -M`.
+milliseconds per frame are each thread's own counters; thread CPU from `ps -M`. Run
+`final2`: the build from the merged tree with both picture faults fixed.
 
 | | fields/s | game / decoder / drawing, wall ms | thread CPU ms | process: instructions, cycles | load |
 |---|---|---|---|---|---|
-| title | 60.0 | 1.9 / 7.5 / 0.2 | 7.6, 1.8, 0.7 | 154 M, 29.5 M | 300 |
-| first level | 49.5 | 4.3 / 20.2 / 0.9 | 18.3, 4.0, 1.6 | 292 M, 62.2 M | 280 |
-| first level, limiter off | 48.3 | 4.7 / 20.7 / 1.1 | 19.6, 4.2, 1.7 | 295 M, 59.2 M | 287 |
-| half speed (ran 50.7 %) | 21.2 / 18.6 off | 10.3 / 47.2 / 1.8 | | 294 M, 64.4 M | 288 |
-| a quarter (26.0 %) | 8.3 / 7.9 | 24.8 / 120 / 4.7 | | 297 M, 65.8 M | 284 |
-| a sixth (17.8 %) | 5.0 / 5.0 | 37.1 / 198 / 6.3 | | 292 M, 64.1 M | 285 |
+| title | 54.4 (60.0 in three other runs) | 4.3 / 18.3 / 0.5 | 17.6, 4.3, 1.6 | 156 M, 34.1 M | 310 |
+| first level | 49.0 | 3.9 / 20.1 / 1.0 | 18.4, 3.4, 1.4 | 297 M, 57.2 M | 360 |
+| first level, limiter off | 60.1 | 3.6 / 16.7 / 1.3 | 15.2, 2.8, 1.0 | 300 M, 56.5 M | 356 |
+| half speed (ran 50.4 %) | 29.6 / 30.4 off | 7.1 / 33.8 / 2.2 | 15.8, 3.0, 1.2 | 299 M, 56.8 M | 350 |
+| a quarter (26.4 %) | 15.3 / 14.7 | 13.0 / 65.4 / 5.1 | 15.7, 2.9, 1.3 | 300 M, 58.2 M | 345 |
+| a sixth (18.2 %) | 9.9 / 10.5 | 21.4 / 100 / 8.0 | 15.9, 2.9, 1.4 | 308 M, 57.4 M | 340 |
 
-A quiet Mac was not available. From the cycles: 62 M a frame is about 14 ms of processor
-at this Mac's full clock, the decoder's share about 10.5 ms, so the first level should
-hold 60 on this Mac when it is quiet (**inferred, not run**), with less reserve than the
-emulator page's busiest thread has (7.9 ms). Other builds measured on the way (first
+(The run before it, `final1` - the earlier tree, draws without a texture still being
+dropped - at load 285: title 60.0; first level 49.5, 21.2, 8.3 and 5.0 with decoder
+thread CPU of 18 - 35 ms and the same 292 - 297 M instructions: the times moved with
+whatever else the Mac was doing, the instructions did not.)
+
+A quiet Mac was not available. From the cycles: 57 M a frame is about 13 ms of processor
+at this Mac's full clock, the decoder's share about 10 ms, so the first level should
+hold 60 on this Mac when it is quiet with a third in reserve (**inferred, not run**; with
+the limiter off it reached 60 at load 356), less than the emulator page's busiest thread
+has with `perf.patch` (7.9 ms of 16.7). Other builds measured on the way (first
 level, instructions per frame): linked without Binaryen 338 M; with `-msimd128` for the
 renderer 298 M (-12 %); VU1 interpreted instead of translated 519 M.
 
@@ -254,11 +284,12 @@ machine was at its busiest; `--link-opt=-O1` links in 15 s and costs 15 % speed.
 
 ```
 # once: Emscripten is installed (brew, 6.0.12); nothing else is needed
-python3 tools/recomp/recomp.py --out local/recomp-web/gen                      # the translation (5 s)
-cp -R tools/recomp local/recomp-web/src && (cd local/recomp-web/src && patch -p1 < ../../../tools/recomp/web/shared-sources.patch)
-#   (or apply the patch to tools/recomp itself and leave --src away; rt/runtime.cpp needs
-#    `--opt arith=nearest`, which its owner is adding)
-B="python3 tools/recomp/web/build.py"; S="--src local/recomp-web/src"
+cp -R tools/recomp local/recomp-web/src2 && (cd local/recomp-web/src2 && patch -p1 < web/shared-sources.patch)
+python3 local/recomp-web/src2/recomp.py --elf SLUS_209.73 --funcs ghidra_funcs.tsv --out local/recomp-web/gen2
+#   (or apply the patch to tools/recomp itself and leave --src and --gen away.  Without the
+#    patch `node --arith nearest` builds as the tree is; the page needs it for sound - or
+#    --no-sound, not tried - and --arith zero / --vu-arith zero need it)
+B="python3 tools/recomp/web/build.py"; S="--src local/recomp-web/src2 --gen local/recomp-web/gen2"
 $B mac  $S --name mac-host                    # reference: local/recomp-web/build/mac-host/rta_native
 $B node $S --arith nearest                    # local/recomp-web/build/node-nearest/rta_native.js
 $B node $S --arith zero                       # the same with toward zero + flush in software
@@ -290,7 +321,7 @@ All additions that change nothing unless a new name is defined:
 | `rt/vu0.h` | VU0's arithmetic through `vu_add`, `vu_sub`, `vu_mul`, `vu_itof`, `vu_gt` (same rule) |
 | `render/vu1_step.h`, `render/vu1.cpp` | VU1's arithmetic through `vu_add` ... `vu_itof`; `RTA_SOFT_RZ_VU1` computes them toward zero in double precision; the `fesetround` calls behind two macros |
 | `sound/audio_out.cpp` | three lines: under `__EMSCRIPTEN__` include `audio_out_web.h` |
-| `rt/runtime.cpp` | **not in the patch** (its owner is putting it in): `--opt arith=nearest`, an `#ifndef RTA_SOFT_RZ` guard round the mode setting, a report line that names the arithmetic by asking it. My version: `local/recomp-web/out/runtime-arith.diff` |
+| `rt/runtime.cpp` | **not in the patch**: its owner has put `--opt arith=nearest` and the `#ifndef RTA_SOFT_RZ` guard in (in the tree since the merge). One thing is still wrong there for a WebAssembly build *without* `RTA_SOFT_RZ`: the line at the start says "toward zero, denormals are zero - the processor's mode", because Emscripten's `fesetround` reports success; that build computes to nearest with tiny numbers kept (its log is byte-identical to the Mac's with `--opt arith=nearest`). The line should ask the arithmetic (1 + 0.75 of a place; half the smallest normal number) or say so under `__EMSCRIPTEN__` |
 
 Found on the way: `rt/runtime.cpp` set the rounding mode but not flush-to-zero (being
 fixed in the shared tree; invisible in the sessions compared here, section 2).
@@ -303,10 +334,13 @@ In the order in which it decides anything:
    path instead of a constant-folded interpreter step; SIMD; the GS model's per-vertex
    work. Measure with `decode_bench` (it prints a checksum of the lists, so a faster
    decoder is checked against the Mac's bit for bit).
-2. **The pale models** (section 4), then pictures side by side with the application's.
-3. **Run what is only written**: sound through the worklet, the memory card in
-   IndexedDB across a reload, the file picker by a person, `--basic-blend` on screen,
-   the `page-zero` (game arithmetic in software) and `page-vuzero` builds in Chrome.
+2. Pictures side by side with the application's, and levels beyond the first.
+3. **Run what is only written or half run**: the file picker by a person; a game from a
+   kept memory card; the sound's delay (428 ms queued) and a listening test;
+   `--basic-blend` on screen; the page with the game's arithmetic in software
+   (`build.py page --arith zero`: the headless build of it is proven, the page was not
+   built again after the last fixes) and with exact vertex programs (`--vu-arith zero`:
+   proven in `decode_bench`, not run as a page); `--no-sound`.
 4. A quiet Mac, a real slower computer, another browser (the page needs
    cross-origin isolation, OffscreenCanvas with WebGL 2 in a worker, WebAssembly
    exceptions and threads).
@@ -330,6 +364,14 @@ In the order in which it decides anything:
   cost is the renderer's CPU side, not the game.
 - 15:20 flush-to-zero added to the software family at the coordinator's word; proven
   against FPCR.FZ; fight session identical again; the flush changes nothing in it.
-- 15:45 final page build measured with the stand-in (section 4). State at this point:
-  `page-vuzero` and `page-zero` builds queued (`local/recomp-web/out/build-pages.sh`),
-  sound and card not run, pale models open.
+- 15:45 final page build measured with the stand-in (section 4).
+- 15:55 the pale characters: draws dropped by WebGL's feedback-loop rule; fixed
+  (`web-hub-fix2.png`). The shared tree was merged with the graphics work
+  (`render/gfx.patch`): fresh copy `local/recomp-web/src2`, translation `gen2`,
+  `backend_webgl.cpp` follows the new `backend.h` (fog, moved scissors, surfaces given
+  back; not: multisampling, mip maps, replacement pictures). Rebuild and re-check in
+  progress: `local/recomp-web/out/build-merged.sh`.
+- 16:15 merged tree: Mac, node (both arithmetics) and the page rebuilt; the fight session
+  tick for tick again, same md5 as before the merge in both arithmetics; the page
+  measured again with the stand-in (`final2`); sound and the memory card run to the
+  title. Test browser closed, test server stopped.

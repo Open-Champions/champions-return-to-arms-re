@@ -27,6 +27,10 @@
 //     just before it; they are counted (`feedback_copies`).  WebGL also refuses a draw that
 //     samples nothing while that surface's picture is merely still bound, so a draw
 //     without a texture unbinds.
+//  (What the desktop backend offers beyond the lists as they are - multisampling, mip maps,
+//  anisotropic filtering, replacement pictures: PictureOptions - is not here; configure(),
+//  figures() and set_replacements() are not defined and a page must not call them.  Fog,
+//  moved scissors and surfaces given back are.)
 //  4. Nothing else: vertex array objects, sampler objects, framebuffer blits, 32-bit float
 //     depth, integer operations in shaders and gl_VertexID are all in WebGL 2.
 //
@@ -59,12 +63,15 @@ precision highp float;
 layout(location = 0) in vec3 a_pos;
 layout(location = 1) in vec3 a_st;
 layout(location = 2) in vec4 a_col;
+layout(location = 3) in float a_fog;
 uniform vec2 u_target;
 out vec3 v_st;
 out vec4 v_col;
+out float v_fog;
 void main() {
     v_st = a_st;
     v_col = a_col * 255.0;
+    v_fog = a_fog;
     gl_PointSize = 1.0;
     gl_Position = vec4(a_pos.x / u_target.x * 2.0 - 1.0, a_pos.y / u_target.y * 2.0 - 1.0, a_pos.z * 2.0 - 1.0, 1.0);
 }
@@ -79,6 +86,8 @@ precision highp int;
 precision highp sampler2D;
 in vec3 v_st;
 in vec4 v_col;
+in float v_fog;
+uniform vec4 u_fog;         // fog colour (0..255), on
 uniform sampler2D u_tex;
 uniform int u_textured;
 uniform int u_tfx;
@@ -128,6 +137,7 @@ void main() {
             c.a = u_tcc == 0 ? v_col.a : (u_tfx == 2 ? min(t.a + v_col.a, 255.0) : t.a);
         }
     }
+    if (u_fog.w > 0.5) c.rgb = c.rgb * v_fog + u_fog.rgb * (1.0 - v_fog);
     if (u_atst != 1) {
         bool pass = true;
         float a = floor(c.a + 0.01);
@@ -177,7 +187,7 @@ struct GlBackend::Impl {
     GLuint program = 0, present_program = 0, vao = 0, vbo = 0, present_vao = 0;
     GLuint samplers[2][2][2] = {{{0, 0}, {0, 0}}, {{0, 0}, {0, 0}}};     // linear, clamp s, clamp t
     struct Uniforms {
-        GLint target, tex, textured, tfx, tcc, st_scale, tex_size, tex_offset, wrap, region, weave_half, texa, atst, aref, blend, blend_c, fix, alpha_out;
+        GLint target, tex, textured, tfx, tcc, st_scale, tex_size, tex_offset, wrap, region, weave_half, texa, atst, aref, blend, blend_c, fix, alpha_out, fog;
     } u;
     GLint present_rect = -1, present_tex = -1;
     struct Target { GLuint fbo = 0, colour = 0, depth = 0, copy = 0, copy_fbo = 0; int lw = 0, lh = 0, pw = 0, ph = 0; bool screen = false; };
@@ -193,7 +203,7 @@ struct GlBackend::Impl {
         // not-a-number: equal to nothing, so the first use in a frame always sets the uniform
         // (the program keeps last frame's values; this record does not)
         float st_scale[2] = {NAN, NAN}, tex_size[2] = {NAN, NAN}, tex_offset[2] = {NAN, NAN}, region[4] = {NAN, NAN, NAN, NAN}, weave_half = NAN,
-              texa[4] = {NAN, NAN, NAN, NAN}, aref = NAN, blend[4] = {NAN, NAN, NAN, NAN}, fix = NAN, target[2] = {NAN, NAN};
+              texa[4] = {NAN, NAN, NAN, NAN}, aref = NAN, blend[4] = {NAN, NAN, NAN, NAN}, fix = NAN, target[2] = {NAN, NAN}, fog[4] = {NAN, NAN, NAN, NAN};
         GLuint texture = ~0u, sampler = ~0u;
         int scissor[4] = {-1, -1, -1, -1};
         GLenum depth_func = 0, equation = 0, dst_factor = 0, src_alpha = 0;
@@ -243,7 +253,7 @@ struct GlBackend::Impl {
         present_program = link(PRESENT_VERTEX, PRESENT_FRAGMENT);
 #define U(name) u.name = glGetUniformLocation(program, "u_" #name)
         U(target); U(tex); U(textured); U(tfx); U(tcc); U(st_scale); U(tex_size); U(tex_offset); U(wrap); U(region); U(weave_half);
-        U(atst); U(aref); U(blend); U(blend_c); U(fix); U(texa); U(alpha_out);
+        U(atst); U(aref); U(blend); U(blend_c); U(fix); U(texa); U(alpha_out); U(fog);
 #undef U
         present_rect = glGetUniformLocation(present_program, "u_rect");
         present_tex = glGetUniformLocation(present_program, "u_tex");
@@ -258,6 +268,8 @@ struct GlBackend::Impl {
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)0);
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)12);
         glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (void*)24);
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(3, 1, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (void*)28);   // the fog coefficient
         for (int linear = 0; linear < 2; linear++)
             for (int cs = 0; cs < 2; cs++)
                 for (int ct = 0; ct < 2; ct++) {
@@ -372,6 +384,15 @@ void GlBackend::execute(const FrameList& frame) {
         g.textures.erase(t);
     }
     for (const TargetInfo& info : frame.targets) g.make_target(info);
+    for (uint32_t id : frame.dead_targets) {            // surfaces nothing used for a long time
+        auto t = g.targets.find(id);
+        if (t == g.targets.end() || id == frame.show_target) continue;
+        glDeleteFramebuffers(1, &t->second.fbo);
+        glDeleteTextures(1, &t->second.colour);
+        glDeleteRenderbuffers(1, &t->second.depth);
+        if (t->second.copy) { glDeleteTextures(1, &t->second.copy); glDeleteFramebuffers(1, &t->second.copy_fbo); }
+        g.targets.erase(t);
+    }
     g.shown = frame.show_target;
     if (frame.commands.empty()) return;
 
@@ -425,6 +446,7 @@ void GlBackend::execute(const FrameList& frame) {
         float sx = (float)target->pw / target->lw, sy = (float)target->ph / target->lh;
         int x0 = (int)(c.scissor[0] * sx + 0.5f), y0 = (int)(c.scissor[1] * sy + 0.5f);
         int x1 = (int)(c.scissor[2] * sx + 0.5f), y1 = (int)(c.scissor[3] * sy + 0.5f);
+        if (c.scissor_moved) { x0 = (int)(c.scissor_x[0] * sx + 0.5f); x1 = (int)(c.scissor_x[1] * sx + 0.5f); }
         int box[4] = {x0, y0, x1 > x0 ? x1 - x0 : 0, y1 > y0 ? y1 - y0 : 0};
         if (memcmp(box, s.scissor, sizeof box)) { memcpy(s.scissor, box, sizeof box); CALL(glScissor(box[0], box[1], box[2], box[3])); } else SKIP();
         // texture
@@ -455,6 +477,7 @@ void GlBackend::execute(const FrameList& frame) {
             g.u1f(g.u.weave_half, s.weave_half, c.weave_half);
             g.u4f(g.u.texa, s.texa, c.tex_is_target ? (float)c.texa_mode : 0.0f, (float)c.ta0, (float)c.ta1, c.aem ? 1.0f : 0.0f);
         }
+        g.u4f(g.u.fog, s.fog, (float)c.fog_colour[0], (float)c.fog_colour[1], (float)c.fog_colour[2], c.fog ? 1.0f : 0.0f);
         g.u1i(g.u.atst, s.atst, c.alpha_test ? c.atst : 1);
         g.u1f(g.u.aref, s.aref, (float)c.aref);
         // depth

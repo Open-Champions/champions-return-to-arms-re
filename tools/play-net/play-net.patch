@@ -1000,9 +1000,9 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
 +			float u[3] = {nS[0] / nQ[0], nS[1] / nQ[1], nS[2] / nQ[2]};
 +			float v[3] = {nT[0] / nQ[0], nT[1] / nQ[1], nT[2] / nQ[2]};
 +			NoteTextureCoords(3, u, v, 3);
-+			//RTA: how much of the screen a picture that is still being read covers
++			//RTA: how much of the screen a picture that is being read covers
 +			//(the triangle's area, no more than its box has inside the scissor)
-+			if(m_currentPicture->loadState != 2)
++			if(m_currentPicture->loadState == 1)
 +			{
 +				float left = std::max(std::min({nX1, nX2, nX3}), static_cast<float>(m_renderState.scissorX));
 +				float right = std::min(std::max({nX1, nX2, nX3}), static_cast<float>(m_renderState.scissorX + m_renderState.scissorWidth));
@@ -1054,7 +1054,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
 +				which = 1 + static_cast<unsigned int>((top + ((scanMask == 2) ? 1 : 0)) & 1);
 +			}
 +			NoteTextureCoords(which, nS, nT, 2);
-+			if(m_currentPicture->loadState != 2)
++			if(m_currentPicture->loadState == 1)
 +			{
 +				float left = std::max(std::min(nX1, nX2), static_cast<float>(m_renderState.scissorX));
 +				float right = std::min(std::max(nX1, nX2), static_cast<float>(m_renderState.scissorX + m_renderState.scissorWidth));
@@ -3139,7 +3139,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
 +void CGSH_OpenGL::NotePictureArea(float area, bool sprite)
 +{
 +	auto picture = m_currentPicture;
-+	if(!picture || (picture->loadState == 2) || !(area > 0)) return;
++	if(!picture || (picture->loadState != 1) || !(area > 0)) return;
 +	picture->drawnArea += area;
 +	if(sprite) picture->drawnBySprite = true;
 +}

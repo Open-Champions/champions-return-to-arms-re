@@ -118,11 +118,20 @@ def replay_pokes(script, out, shift):
             if number not in ran:
                 missing += 1
                 continue
-            at = bisect.bisect_left(frames, ran[number]) + shift
-            if at >= len(rows):
+            # the rig ran the group at the blank that begins frame `ran[number]`: after the row
+            # logged in the frame before, before the row logged in that frame.  The native run
+            # applies it when it has logged the row after (so both logs show the write from
+            # the same row on) - or, when the write ends the level and there is no row after
+            # in that level, the row before.
+            at = bisect.bisect_left(frames, ran[number])
+            if at == 0:
                 missing += 1
                 continue
-            _, episode, tick, frame = rows[max(0, at)]
+            if at >= len(rows) or rows[at][1] != rows[at - 1][1]:
+                at -= 1
+            else:
+                at = max(0, min(len(rows) - 1, at + shift))
+            _, episode, tick, frame = rows[at]
             for addr, blob in groups[number]:
                 sink.write('%d %d %d %x %s\n' % (episode, tick, frame, addr, blob.hex()))
     print('%d groups of memory writes, %d the rig did not reach' % (len(groups), missing))
@@ -137,7 +146,7 @@ def main():
     parser.add_argument('--frames', type=int, default=40000)
     parser.add_argument('--capture', action='store_true')
     parser.add_argument('--per', type=int, default=3)
-    parser.add_argument('--poke-shift', type=int, default=0, help='native: apply the memory writes this many displayed frames later than the first frame after the rig ran them')
+    parser.add_argument('--poke-shift', type=int, default=0, help='native: apply the memory writes this many displayed frames later (or, negative, earlier) than the first row the rig logged after it ran them')
     args = parser.parse_args()
     spec = json.load(open(os.path.join(PROOF, 'sessions.json')))[args.name]
     import rigcompare

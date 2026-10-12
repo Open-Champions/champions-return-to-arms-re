@@ -736,14 +736,17 @@ static void app_command(const std::string& text, uint64_t frame) {
             // differences between consecutive pictures: the largest before the press is the
             // noise (an idle animation); the first after it above three times that, and
             // above 1, is the answer
+            // (the largest difference of one cell, not the mean over the picture: a moved
+            // menu highlight changes a few cells much and the mean hardly at all, while a
+            // moving backdrop changes every cell a little)
             auto diff = [&](size_t k) {
-                unsigned d = 0;
-                for (size_t i = 0; i < t.samples[k].grid.size(); i++) d += (unsigned)abs((int)t.samples[k].grid[i] - (int)t.samples[k - 1].grid[i]);
-                return (double)d / (double)t.samples[k].grid.size();
+                int d = 0;
+                for (size_t i = 0; i < t.samples[k].grid.size(); i++) d = std::max(d, abs((int)t.samples[k].grid[i] - (int)t.samples[k - 1].grid[i]));
+                return (double)d;
             };
             double noise = 0;
             for (size_t k = 1; k < t.samples.size(); k++) if (t.samples[k].number <= t.press_blank) noise = std::max(noise, diff(k));
-            double limit = std::max(3 * noise, noise + 0.05);
+            double limit = std::max(2 * noise, noise + 6);
             bool found = false;
             for (size_t k = 1; k < t.samples.size() && !found; k++)
                 if (t.samples[k].number > t.press_blank && diff(k) > limit) {

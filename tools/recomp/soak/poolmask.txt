@@ -10,6 +10,10 @@
 # machine in every class.
 * c 100
 #
+# Creature flag 0x80000000 at +0xa8, "boss health bar is showing": written from the list of
+# alive LOCAL players (docs/creatures.md C3).  Seen differing in Nightmare, Cazic, Warrior.
+* a8 80000000
+#
 # Learned: every (class, offset) below differed between two native machines of the 25-section
 # build at one or more of 42 sampled ticks of six games (seeds 1001, 1003, 1005, 1006,
 # 1010, 1011; 9,000 frames each) in which no player column, quest variable or shared seed

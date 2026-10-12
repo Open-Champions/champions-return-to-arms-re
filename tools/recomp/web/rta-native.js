@@ -232,6 +232,34 @@ window.rta = {
 	// DEV: the picture is POSTed to the local test server (serve.py --shots), which keeps it under local/
 	postShot: async (name) => { const blob = await shot(); const r = await fetch("/shot/" + encodeURIComponent(name), { method: "POST", body: blob }); return r.status; },
 	quit: () => setWord(SHARED.quit, 1),
+	// the memory card: its files in the program's file system, a write to the browser's store
+	// now, and what the store holds (readable without starting the game: after a reload)
+	cardFiles: () => {
+		const out = [];
+		const walk = (dir) => {
+			for(const name of module.FS.readdir(dir)) {
+				if(name === "." || name === "..") continue;
+				const path = dir + "/" + name, stat = module.FS.stat(path);
+				if(module.FS.isDir(stat.mode)) walk(path); else out.push([path, stat.size]);
+			}
+		};
+		walk("/data/card");
+		return out;
+	},
+	syncCard: () => new Promise((done) => module.FS.syncfs(false, (error) => done(error ? String(error) : "ok"))),
+	storedCard: () => new Promise((done) => {
+		const open = indexedDB.open("/data/card");
+		open.onerror = () => done(null);
+		open.onupgradeneeded = () => { open.transaction.abort(); done([]); };     // there was none
+		open.onsuccess = () => {
+			const db = open.result;
+			if(!db.objectStoreNames.contains("FILE_DATA")) { db.close(); done([]); return; }
+			const all = db.transaction("FILE_DATA").objectStore("FILE_DATA").getAllKeys();
+			all.onsuccess = () => { db.close(); done(all.result); };
+			all.onerror = () => { db.close(); done(null); };
+		};
+	}),
+	forgetCard: () => new Promise((done) => { const r = indexedDB.deleteDatabase("/data/card"); r.onsuccess = r.onerror = r.onblocked = () => done(true); }),
 };
 
 (async () => {
