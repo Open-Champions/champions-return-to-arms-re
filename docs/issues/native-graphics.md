@@ -49,13 +49,18 @@ has the load beside it. Pictures are game output and stay under `local/recomp-gf
   was run by resizing); two players on one machine (no script reaches it: the screen clamp
   was never called in any run); a figure for frames a second on a free machine.
 
-**State of the hand-over (15:45).** `tools/recomp/render/gfx.patch` is against the shared
-sources as they stood at 15:39 and applies to them without a reject (dry run on a copy).
-The sources as merged at 15:26 were built in both flavours and everything in this
-document was run on them or on my copy before the merge; the merge with the 15:39 sources
-(the other work had added the freeing of surfaces in between) was built as `rta_app_orig`
-and run for the pictures of section 1.4 only. The shared sources keep moving: if a hunk
-fails, the list of places where the two works met is at the head of the patch.
+**State of the hand-over (15:50).** `tools/recomp/render/gfx.patch` is against the shared
+sources as they stood at 15:43; applied to them it gives, file for file, the tree that was
+built here in both flavours (`rta_app` with the films and the network of the other work,
+`rta_app_orig`) and applies without a reject (dry run on a copy; the shared files
+themselves were not touched). What was run on which sources: the comparisons of section
+1.3 and the 21:9 pictures on the merge with the 15:26 sources; the film at 4:3, the
+settings file and a last run from power-on to the first level (16:9, 2x pack) on the
+merge with the 15:39 sources; one picture of the first level on the 15:43 merge;
+everything else on my copy before any merge. The other work touched `gs.cpp`,
+`backend_gl.cpp`, `backend.h`, `app_main.cpp` and `app/build.py` three times in that
+hour: if a hunk fails later, the places where the two works met are listed at the head of
+the patch.
 
 ## 1. Widescreen
 
