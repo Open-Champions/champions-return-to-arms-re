@@ -28,20 +28,42 @@ adds the sources in `tools/play-net/src/` and builds
 `package.sh` makes of it an application that needs no terminal:
 `local/dist/Play-RTA.app`, with Qt and the patch list inside.
 
+A copy for other people can be given its settings in advance, so that they have nothing
+to set (`tools/play-net/package.sh --help` lists everything):
+
+```
+tools/play-net/package.sh --default-server ADDRESS --default-online on --zip
+```
+
+`--default-server` is the lobby server the copy uses and `--default-online` whether it
+goes online by itself at the start; both hold only until the person sets something else
+in the *Online* menu (they are kept inside the application, in
+`Contents/Resources/rta/defaults.ini`, and the person's own `launch.ini` goes before
+them). `--zip` also writes `Play-RTA.zip` beside the application, for sending; the
+signature survives unpacking.
+
 ## 2. Start
 
 ### The application
 
-Double-click `local/dist/Play-RTA.app` (or copy it anywhere, to another Mac too: there,
-the first time, right-click it and choose *Open*, because it is not notarised).
+Double-click `local/dist/Play-RTA.app` (or copy it anywhere, to another Mac too. There
+the first opening is refused, because it is not notarised: click *Done*, then open
+*System Settings → Privacy & Security*, scroll down to *Security* and click *Open
+Anyway* beside "“Play-RTA” was blocked to protect your Mac."; once is enough. Before
+macOS 15 a right-click and *Open* does the same.)
 
-- **The first start asks for your disc image** and remembers it. It takes Champions:
-  Return to Arms, US release SLUS-20973, version 2.00, and says what is wrong with
-  anything else. *Online → Choose the disc image…* changes it later. If the image lies
-  in Desktop, Documents or Downloads, macOS asks at a later start whether "Play-RTA" may
-  access that folder: allow it (or keep the image somewhere else).
+- **Keep the game image in the same folder as the app (or in Downloads).** Nobody is
+  asked to choose a file: at the start the application looks for the image by itself,
+  beside the application, in its data folder, then in Downloads, Desktop and Documents
+  (and one level of their sub-folders), and remembers it. The file may have any name; it
+  has to be Champions: Return to Arms, US release SLUS-20973, version 2.00, and anything
+  else is passed over. Only when there is none, one window says where to put the file,
+  with *Retry* and *Browse…*. *Online → Choose the disc image…* changes it later. For
+  Downloads, Desktop and Documents macOS asks once whether "Play-RTA" may access that
+  folder: allow it (a file beside the application needs no such question).
 - ***Online → Server, player, patch set…***: the lobby server's address (empty: the
-  server runs on this Mac), the player number (leave it at 1; another number is a second
+  server runs on this Mac; a copy made with `package.sh --default-server` comes with
+  one), the player number (leave it at 1; another number is a second
   copy on the same Mac with its own settings and memory card), and the patch-set figure
   to compare with your friends (section 6). A change is taken up when the application
   starts again; the dialog offers to do that.
@@ -53,7 +75,10 @@ the first time, right-click it and choose *Open*, because it is not notarised).
   your player name, after that you arrive in the lobby without pressing anything.
   *Online → Go online at start* switches that off.
 - Settings, memory card, the saved online login and the log `rta.log` are in
-  `~/Library/Application Support/Play-RTA/player1/`.
+  `~/Library/Application Support/Play-RTA/player1/`. One folder up, `launch.ini` holds
+  what the application was told: `server`, `player`, `online` (go online at start),
+  `disc` (the remembered image) and, if you write it there, `textures` (a directory of
+  replacement textures, what `--rta-textures` gives; section 5).
 - A second copy on the same Mac: set player 2 in the Online dialog of a second start
   (`open -n local/dist/Play-RTA.app --args --rta-player 2` does both at once).
 - *Help → About* says what this is: the Play! emulator (BSD licence) with this

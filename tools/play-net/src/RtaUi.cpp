@@ -126,51 +126,72 @@ std::string Rta::ChooseDisc(QWidget* parent, const std::string& given, bool askA
 	auto info = Rta::GetLaunchInfo();
 	if(!info.packaged) return std::string();
 	QSettings launch(QString::fromStdString(info.root + "/launch.ini"), QSettings::IniFormat);
-	QString candidate = given.empty() ? QString::fromStdString(info.disc) : QString::fromStdString(given);
-	if(askAnew) candidate.clear();
-	if(!candidate.isEmpty() && !QFileInfo::exists(candidate))
+	auto accept = [&launch](const QString& path) {
+		launch.setValue("disc", path);
+		launch.sync();
+		Rta::LogLine("disc image accepted: " + path.toStdString());
+		return path.toStdString();
+	};
+	if(!askAnew)
 	{
-		Rta::LogLine("the disc image that was used last is not there any more: " + candidate.toStdString());
-		QMessageBox::information(parent, "Disc image", QString("The disc image that was used last is not there any more:\n%1\n\nChoose it again.").arg(candidate));
-		candidate.clear();
+		// the one given, else the one remembered
+		QString candidate = given.empty() ? QString::fromStdString(info.disc) : QString::fromStdString(given);
+		if(!candidate.isEmpty() && !QFileInfo::exists(candidate))
+			Rta::LogLine("the disc image that was " + std::string(given.empty() ? "used last" : "named") + " is not there any more: " + candidate.toStdString() + "; looking for one");
+		else if(!candidate.isEmpty())
+		{
+			std::string verdict = Rta::CheckDisc(candidate.toStdString());
+			if(verdict.empty()) return accept(candidate);
+			Rta::LogLine("disc image REFUSED: " + verdict);
+			// a wrong file named for a test run: nobody is there to do anything about it
+			if(!given.empty() && Rta::IsTestRun()) return std::string();
+		}
 	}
-	bool asked = false;
 	for(;;)
 	{
-		if(candidate.isEmpty())
+		if(!askAnew)
 		{
-			if(!asked && given.empty() && info.disc.empty() && !askAnew)
+			// Nobody is asked to choose a file: it is looked for. Only when there is none,
+			// one window says where to put it.
+			std::string found = Rta::FindDisc();
+			if(!found.empty()) return accept(QString::fromStdString(found));
+			Rta::LogLine("no disc image: the window that says where to put it (Retry, Browse)");
+			QMessageBox box(parent);
+			box.setIcon(QMessageBox::Information);
+			box.setWindowTitle("Game image needed");
+			box.setText("Put the game image in the same folder as this app, or in Downloads, then press Retry.");
+			box.setInformativeText("It is your own disc image of Champions: Return to Arms - the US release, SLUS-20973, version 2.00: one file of about 4.3 GB, such as an .iso, under any name. "
+			                       "Nothing of the game is part of this application.\n\nThe Desktop and Documents folders are looked in as well. "
+			                       "macOS may ask once whether this app may read those folders: allow it, or keep the file beside the app.");
+			auto retry = box.addButton("Retry", QMessageBox::AcceptRole);
+			auto browse = box.addButton("Browse...", QMessageBox::ActionRole);
+			box.addButton("Not now", QMessageBox::RejectRole);
+			box.setDefaultButton(retry);
+			box.exec();
+			if(box.clickedButton() == retry) continue;
+			if(box.clickedButton() != browse)
 			{
-				Rta::LogLine("first start: no disc image known yet; saying what is needed");
-				QMessageBox::information(parent, "Disc image",
-				                         "To play you need your own disc image of Champions: Return to Arms - the US release, SLUS-20973, version 2.00 "
-				                         "(a file such as .iso). Nothing of the game is part of this application.\n\nChoose the file in the next window. It is remembered.");
-			}
-			asked = true;
-			Rta::LogLine("asking for the disc image (file dialog)");
-			QString start = launch.value("discdir", QDir::homePath()).toString();
-			candidate = QFileDialog::getOpenFileName(parent, "Choose your disc image of Champions: Return to Arms (SLUS-20973, version 2.00)", start,
-			                                         "Disc images (*.iso *.bin *.cue *.chd *.cso *.zso *.isz *.img *.mdf);;All files (*)");
-			if(candidate.isEmpty())
-			{
-				Rta::LogLine("no disc image chosen");
+				Rta::LogLine("no disc image: left for later");
 				return std::string();
 			}
-			launch.setValue("discdir", QFileInfo(candidate).absolutePath());
 		}
-		std::string verdict = Rta::CheckDisc(candidate.toStdString());
-		if(verdict.empty())
+		Rta::LogLine("asking for the disc image (file dialog)");
+		QString start = launch.value("discdir", QDir::homePath()).toString();
+		QString candidate = QFileDialog::getOpenFileName(parent, "Choose your disc image of Champions: Return to Arms (SLUS-20973, version 2.00)", start,
+		                                                 "Disc images (*.iso *.bin *.cue *.chd *.cso *.zso *.isz *.img *.mdf);;All files (*)");
+		if(candidate.isEmpty())
 		{
-			launch.setValue("disc", candidate);
-			launch.sync();
-			Rta::LogLine("disc image accepted: " + candidate.toStdString());
-			return candidate.toStdString();
+			Rta::LogLine("no disc image chosen");
+			if(askAnew) return std::string();
+			continue;
 		}
+		launch.setValue("discdir", QFileInfo(candidate).absolutePath());
+		std::string verdict = Rta::CheckDisc(candidate.toStdString());
+		if(verdict.empty()) return accept(candidate);
 		Rta::LogLine("disc image REFUSED: " + verdict);
 		// in a test run nobody is there to pick another one
 		if(Rta::IsTestRun()) return std::string();
-		QMessageBox::warning(parent, "Not the right disc", QString::fromStdString(verdict) + "\n\nChoose another file.");
-		candidate.clear();
+		QMessageBox::warning(parent, "Not the right disc", QString::fromStdString(verdict));
 	}
 }
 
@@ -244,7 +265,9 @@ namespace
 		form->addRow("", patchNote);
 
 		QString signin;
-		if(!info.signinPatch.empty())
+		if(!info.signinPatch.empty() && QString::fromStdString(info.signinPatch).startsWith(QString::fromStdString(Rta::BundleResourcePath()) + "/"))
+			signin = "found, inside this application";
+		else if(!info.signinPatch.empty())
 			signin = QString("found, in %1").arg(dialog.fontMetrics().elidedText(QFileInfo(QString::fromStdString(info.signinPatch)).absolutePath(), Qt::ElideMiddle, 360).toHtmlEscaped());
 		else
 			signin = QString("<b>not found.</b> Without it the game stops with a network error after \"Internet Game\" (the sign-in servers of 2005 are gone). "

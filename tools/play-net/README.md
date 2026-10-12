@@ -23,8 +23,8 @@ has been seen to do, and what not, is at the end; how to play is in
 | `src/RtaOnline.h`, `RtaOnline.cpp` | one-step online: the application presses its own way from power-on to the lobby by the game's state, makes and keeps the account ("One-step online" below; stand-alone C++) |
 | `src/RtaPad.mm` | game controllers through macOS's GameController framework: the first one attached is the pad in port 1, with nothing to bind |
 | `src/RtaSound.cpp` | the sound handler: a held reserve, counts of every fault, a WAV file on request |
-| `src/RtaUi.cpp` | what is added to the application's windows: *Help → Controls…*, the *Online* menu (Play Online, the player-name dialog, Forget online login), the first start's question for the disc image |
-| `package.sh` | makes `local/dist/Play-RTA.app` of the built application: Qt inside, the patch list inside, its own name, signed for this computer |
+| `src/RtaUi.cpp` | what is added to the application's windows: *Help → Controls…*, the *Online* menu (Play Online, the player-name dialog, Forget online login), the disc image at the start (the remembered one, else the one found, else one window that says where to put it) |
+| `package.sh` | makes `local/dist/Play-RTA.app` of the built application: Qt inside, the patch list inside, its own name, signed for this computer; on request with a default server and "online at start" inside, and as a `.zip` (`--help`) |
 | `sections-suggested.txt` | the patch sections `play.sh` applies by default (the suggested set of `docs/online-setup.md`) |
 | `ctl.py` | sends commands to a running application over its control socket (buttons, memory reads, pictures) |
 | `smoke.py` | test: power-on to the lobby server's first screen, with the network's log and the speed |
@@ -57,18 +57,53 @@ of the libraries it is built with and of Qt into `Contents/Resources/licences`, 
 its own name and identifier, lets `macdeployqt` (part of `qtbase`) copy the Qt frameworks
 in, and signs it ad hoc. An application bundle that holds the patch file behaves as a
 packaged application (`Rta::EarlyInit`): data in
-`~/Library/Application Support/Play-RTA/player<N>/`, the disc image asked for and checked
+`~/Library/Application Support/Play-RTA/player<N>/`, the disc image found and checked
 (`Rta::CheckDisc`: `SYSTEM.CNF` names `SLUS_209.73` and the program's checksum is
 `4028A55F`; `--rta-check-disc FILE` gives the verdict on a command line), server and
 player number from the *Online* dialog (`launch.ini`), the sign-in patch looked for in
-the data directories and beside the application and never inside it. Tested by starting
-it with `open` and driving it through the control socket: the first start asks for the
-image; an image of another game and one of SLUS-20973 with another program are refused
+the data directories and beside the application (`package.sh` does not put it inside;
+its `--help` names the one exception). Tested by starting
+it with `open` and driving it through the control socket: an image of another game and
+one of SLUS-20973 with another program are refused
 with the reason; the right one is remembered; the first level was reached at 59.99
 frames a second; a second start goes on from the remembered image. To macOS such an
 application is a program of its own: a disc image under Desktop, Documents or Downloads
 that is opened from the remembered path (not picked in the file dialog) makes macOS ask
 the person once for access to that folder.
+
+**Nobody is asked to choose a file.** When no image is remembered, or the remembered
+one is gone, `Rta::FindDisc` looks without any dialog, in this order: the folder the
+application is in, `Contents/Resources/rta`, the data folders, then Downloads, Desktop
+and Documents with one level of sub-folders each (hidden folders and application bundles
+are not entered; a file kept in iCloud and not on the computer is not fetched). A
+candidate is any regular file, whatever its name, of 1 to 9 GB that has the ISO 9660
+mark at sector 16 (or a `.chd`, `.cso`, `.zso`, `.isz` file of 256 MB or more); the
+first that passes `Rta::CheckDisc` is remembered and started. The application's own
+places come first because they need nobody's permission: macOS asks once before it lets
+a program read Downloads, Desktop or Documents, and a folder that was refused is logged
+as "could not be read" and passed over. Only when nothing is found, one window says
+"Put the game image in the same folder as this app, or in Downloads, then press Retry",
+with *Retry*, *Browse…* (the file dialog, as a way out) and *Not now*. *Online → Choose
+the disc image…* still opens the file dialog at once. Tested with labelled test starts
+of an unpacked `.zip` in a scratch home: nothing anywhere (the search's list of places
+and the window, in the log); a 4.3 GB image under another name beside the application,
+with a 2 GB file of zeros beside it (found, accepted, the game's program checked, no
+dialog); the remembered image gone and one a folder down in the home's Downloads (found
+there); a wrong file named with `--disc` (refused with the reason).
+
+**Defaults inside the bundle.** `package.sh --default-server ADDRESS` and
+`--default-online on|off` write `Contents/Resources/rta/defaults.ini` (`server`,
+`online`) before the bundle is signed. The application takes a value from there only
+when its own `launch.ini` has no such key (`LaunchValue` in `Rta.cpp`): what the person
+saves in the *Online* dialog or switches in the menu, an empty server address too, goes
+before it, and nothing is ever written into the bundle, so the signature stays good.
+The log says where the address came from ("lobby server: … (the default this
+application was made with)"). `--zip` packs the signed bundle with `ditto` into
+`Play-RTA.zip`; unpacked again, `codesign --verify --deep --strict` passes. `launch.ini`
+also takes `textures=DIR`, the same as `--rta-textures DIR`. On another Mac the first
+opening of such a copy has to be allowed once in *System Settings → Privacy & Security*
+("Open Anyway"), as it is signed ad hoc and not notarised; the Qt frameworks from
+Homebrew need macOS 14 or later.
 
 ## Start
 

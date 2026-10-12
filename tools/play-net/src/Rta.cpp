@@ -16,6 +16,7 @@
 #include <QJsonObject>
 #include <QProcess>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QStringList>
 #include <QTimer>
 #include <QWidget>
@@ -116,6 +117,7 @@ namespace
 	const char* SIGNIN_PATCH_NAME = "SLUS-20973_4028A55F_signin.pnach";
 	const char* BUNDLED_PATCH_NAME = "SLUS-20973_4028A55F.pnach";
 	const char* BUNDLED_SECTIONS_NAME = "sections.txt";
+	const char* BUNDLED_DEFAULTS_NAME = "defaults.ini";
 	struct Launch
 	{
 		bool packaged = false;
@@ -124,12 +126,27 @@ namespace
 		int player = 1;
 		std::string signinPatch;
 		std::string signinPlaces;
+		std::string serverFrom; // where the server's address was taken from, in words
 	};
 	Launch g_launch;
 
 	std::string LaunchFile()
 	{
 		return g_launch.root + "/launch.ini";
+	}
+
+	// A setting of the packaged application: its own (launch.ini) when it has one, even
+	// an empty one; else the default the bundle was made with (defaults.ini beside our
+	// patch file, written by package.sh); else none.
+	QVariant LaunchValue(const char* key, bool* bundled = nullptr)
+	{
+		if(bundled) *bundled = false;
+		QSettings launch(QString::fromStdString(LaunchFile()), QSettings::IniFormat);
+		if(launch.contains(key)) return launch.value(key);
+		QSettings defaults(QString::fromStdString(g_launch.resources + "/" + BUNDLED_DEFAULTS_NAME), QSettings::IniFormat);
+		if(!defaults.contains(key)) return QVariant();
+		if(bundled) *bundled = true;
+		return defaults.value(key);
 	}
 
 	// The key a saved login is kept under: the server's address as the player gave it.
@@ -510,6 +527,8 @@ namespace
 			if(g_launch.packaged)
 			{
 				Log(Format("packaged application: player %d, data in %s", g_launch.player, g_launch.root.c_str()));
+				Log("lobby server: " + (options.server.empty() ? std::string("this computer") : options.server) + " (" + g_launch.serverFrom + "); going online at start: " + (Rta::OnlineAtStart() ? "on" : "off"));
+				if(!g_launch.signinPatch.empty() && g_launch.signinPatch.compare(0, g_launch.resources.size(), g_launch.resources) == 0) Log("sign-in patch: the one inside the application");
 				if(g_launch.signinPatch.empty())
 				{
 					std::string places = g_launch.signinPlaces;
@@ -2150,14 +2169,24 @@ void Rta::ReadCommandLine(const QCommandLineParser& parser)
 		// what play.sh gives on the command line, from inside the bundle and from the
 		// Online dialog's file
 		QSettings launch(QString::fromStdString(LaunchFile()), QSettings::IniFormat);
-		if(!parser.isSet("rta-server")) o.server = launch.value("server").toString().trimmed().toStdString();
+		g_launch.serverFrom = "--rta-server";
+		if(!parser.isSet("rta-server"))
+		{
+			bool bundled = false;
+			auto server = LaunchValue("server", &bundled);
+			o.server = server.toString().trimmed().toStdString();
+			g_launch.serverFrom = bundled ? "the default this application was made with" : (server.isValid() ? "launch.ini" : "nothing set");
+		}
+		// textures=<dir> in launch.ini: what --rta-textures gives
+		if(!parser.isSet("rta-textures")) o.textureDir = launch.value("textures").toString().trimmed().toStdString();
 		if(o.patchFile.empty())
 		{
 			o.patchFile = g_launch.resources + "/" + BUNDLED_PATCH_NAME;
 			if(o.patchSections.empty()) o.patchSections = "@" + g_launch.resources + "/" + BUNDLED_SECTIONS_NAME;
 		}
-		// The sign-in patch is never inside the bundle: it is looked for in the data
-		// directory and beside the application.
+		// The sign-in patch is looked for in the data directory and beside the
+		// application (the places a person is told about), and last inside the bundle,
+		// where package.sh puts it only when asked to for a private build.
 		if(o.extraPatches.empty())
 		{
 			std::vector<std::string> places = {g_launch.root, o.dataDir, fs::path(Rta::BundlePath()).parent_path().string()};
@@ -2168,6 +2197,12 @@ void Rta::ReadCommandLine(const QCommandLineParser& parser)
 				if(g_launch.signinPlaces.find(place + "\n") == std::string::npos) g_launch.signinPlaces += place + "\n";
 				std::error_code error;
 				if(g_launch.signinPatch.empty() && fs::exists(candidate, error)) g_launch.signinPatch = candidate;
+			}
+			if(g_launch.signinPatch.empty())
+			{
+				std::string inside = g_launch.resources + "/" + SIGNIN_PATCH_NAME;
+				std::error_code error;
+				if(fs::exists(inside, error)) g_launch.signinPatch = inside;
 			}
 			if(!g_launch.signinPatch.empty()) o.extraPatches.push_back(g_launch.signinPatch);
 		}
@@ -2235,7 +2270,7 @@ Rta::LaunchInfo Rta::GetLaunchInfo()
 	if(g_launch.packaged)
 	{
 		QSettings launch(QString::fromStdString(LaunchFile()), QSettings::IniFormat);
-		info.server = launch.value("server").toString().toStdString();
+		info.server = LaunchValue("server").toString().trimmed().toStdString();
 		info.disc = launch.value("disc").toString().toStdString();
 	}
 	else
@@ -2260,6 +2295,108 @@ void Rta::Relaunch()
 	QString bundle = QString::fromStdString(Rta::BundlePath());
 	QProcess::startDetached("/bin/sh", {"-c", "sleep 1.5; exec /usr/bin/open -n \"$0\"", bundle});
 	QMetaObject::invokeMethod(QCoreApplication::instance(), []() { QCoreApplication::exit(0); }, Qt::QueuedConnection);
+}
+
+// ---- the disc image, found without asking -------------------------------------------------
+
+namespace
+{
+	// Cheap, before the full check: a file of a DVD image's size that begins as an ISO 9660
+	// volume does (any name), or one of the packed kinds, which only the full check reads.
+	bool DiscCandidate(const fs::path& path)
+	{
+		struct stat info = {};
+		if(stat(path.c_str(), &info) != 0 || !S_ISREG(info.st_mode)) return false;
+#ifdef SF_DATALESS
+		// kept in iCloud and not on this computer: looking into it would fetch all of it
+		if(info.st_flags & SF_DATALESS) return false;
+#endif
+		uint64 size = static_cast<uint64>(info.st_size);
+		std::string extension = path.extension().string();
+		std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return static_cast<char>(tolower(c)); });
+		if(extension == ".chd" || extension == ".cso" || extension == ".zso" || extension == ".isz") return size >= (256ull << 20);
+		if(size < (1ull << 30) || size > (9ull << 30)) return false;
+		FILE* file = fopen(path.c_str(), "rb");
+		if(!file) return false;
+		char magic[6] = {};
+		bool volume = (fseeko(file, 0x8000, SEEK_SET) == 0) && (fread(magic, 1, 6, file) == 6) && (memcmp(magic, "\x01" "CD001", 6) == 0);
+		fclose(file);
+		return volume;
+	}
+
+	// the files of a directory, by name; with 'below', those of its sub-folders after them
+	// (one level: not hidden ones, not application bundles)
+	std::vector<fs::path> FilesIn(const fs::path& directory, bool below, bool& readable)
+	{
+		std::vector<fs::path> files, folders;
+		std::error_code error;
+		fs::directory_iterator entries(directory, fs::directory_options::skip_permission_denied, error);
+		readable = !error;
+		if(error) return files;
+		for(fs::directory_iterator end; entries != end; entries.increment(error))
+		{
+			if(error) break;
+			auto path = entries->path();
+			std::string name = path.filename().string();
+			if(name.empty() || name[0] == '.') continue;
+			std::error_code kind;
+			if(entries->is_regular_file(kind))
+				files.push_back(path);
+			else if(below && entries->is_directory(kind) && path.extension() != ".app")
+				folders.push_back(path);
+		}
+		std::sort(files.begin(), files.end());
+		std::sort(folders.begin(), folders.end());
+		for(const auto& folder : folders)
+		{
+			bool ignored = false;
+			auto inside = FilesIn(folder, false, ignored);
+			files.insert(files.end(), inside.begin(), inside.end());
+		}
+		return files;
+	}
+}
+
+std::string Rta::FindDisc()
+{
+	if(!g_launch.packaged) return std::string();
+	// The application's own places first: they need nobody's permission. macOS asks the
+	// person once before it lets an application read Downloads, Desktop or Documents.
+	std::vector<std::pair<std::string, bool>> places;
+	auto add = [&places](const std::string& directory, bool below) {
+		if(directory.empty()) return;
+		for(const auto& place : places)
+		{
+			if(place.first == directory) return;
+		}
+		places.push_back({directory, below});
+	};
+	add(fs::path(Rta::BundlePath()).parent_path().string(), false);
+	add(g_launch.resources, false);
+	add(g_launch.root, false);
+	add(g_state.options.dataDir, false);
+	for(auto location : {QStandardPaths::DownloadLocation, QStandardPaths::DesktopLocation, QStandardPaths::DocumentsLocation})
+		add(QStandardPaths::writableLocation(location).toStdString(), true);
+	std::string looked;
+	for(const auto& place : places)
+	{
+		bool readable = false;
+		auto files = FilesIn(place.first, place.second, readable);
+		looked += (looked.empty() ? "" : ", ") + place.first + (readable ? "" : " (could not be read)");
+		for(const auto& file : files)
+		{
+			if(!DiscCandidate(file)) continue;
+			std::string verdict = Rta::CheckDisc(file.string());
+			if(verdict.empty())
+			{
+				g_state.Log("disc image found without asking, looking in " + place.first + ": " + file.string());
+				return file.string();
+			}
+			g_state.Log("disc image search: not the one: " + verdict);
+		}
+	}
+	g_state.Log("disc image search: none found in " + looked);
+	return std::string();
 }
 
 std::string Rta::CheckDisc(const std::string& path)
@@ -2422,7 +2559,8 @@ bool Rta::OnlineForget()
 bool Rta::OnlineAtStart()
 {
 	if(!g_launch.packaged) return false;
-	return QSettings(QString::fromStdString(LaunchFile()), QSettings::IniFormat).value("online", true).toBool();
+	auto online = LaunchValue("online");
+	return online.isValid() ? online.toBool() : true;
 }
 
 void Rta::SetOnlineAtStart(bool on)

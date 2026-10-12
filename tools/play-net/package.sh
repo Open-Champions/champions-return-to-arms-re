@@ -9,12 +9,57 @@
 # licence and Qt's in Contents/Resources/licences, another name and identifier (so that
 # it is not taken for an ordinary Play! installation and does not share its settings),
 # and an ad-hoc code signature. Such an application needs no command line: see
-# docs/play-online.md, "The application". The sign-in patch is never put in.
+# docs/play-online.md, "The application".
+#
+# Options (each also as the environment variable named beside it):
+#   --default-server ADDRESS     RTA_DEFAULT_SERVER   the lobby server this copy uses until
+#                                                     the person sets another (Online menu)
+#   --default-online on|off      RTA_DEFAULT_ONLINE   "Go online at start", until the person
+#                                                     switches it (without this: on)
+#   --zip                        RTA_ZIP=1            also <name>.zip beside the application,
+#                                                     for sending (the signature survives it)
+#   --private-signin-patch FILE  RTA_PRIVATE_SIGNIN_PATCH
+#                                                     copies that file into the application.
+#                                                     FOR PRIVATE HAND-TO-HAND BUILDS ONLY: a
+#                                                     copy made this way must never be published,
+#                                                     uploaded to a public place or put into the
+#                                                     repository. Without this option the sign-in
+#                                                     patch is never put in.
+# The two defaults are written to Contents/Resources/rta/defaults.ini; the application
+# reads them only for what its own launch.ini does not say.
 #
 # The result is for this computer and for people you hand it to yourself: it is not
-# notarised, so on another Mac it has to be opened the first time with a right-click and
-# "Open". It stays under local/ (ignored by the repository).
+# notarised, so on another Mac the first opening is refused and has to be allowed once in
+# System Settings > Privacy & Security ("Open Anyway"; before macOS 15 a right-click and
+# "Open" does it). It stays under local/ (ignored by the repository).
 set -e
+DEFAULT_SERVER="${RTA_DEFAULT_SERVER:-}"
+DEFAULT_ONLINE="${RTA_DEFAULT_ONLINE:-}"
+SIGNIN="${RTA_PRIVATE_SIGNIN_PATCH:-}"
+ZIP="${RTA_ZIP:-}"
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--default-server) DEFAULT_SERVER="$2"; shift 2 ;;
+	--default-server=*) DEFAULT_SERVER="${1#*=}"; shift ;;
+	--default-online) DEFAULT_ONLINE="$2"; shift 2 ;;
+	--default-online=*) DEFAULT_ONLINE="${1#*=}"; shift ;;
+	--private-signin-patch) SIGNIN="$2"; shift 2 ;;
+	--private-signin-patch=*) SIGNIN="${1#*=}"; shift ;;
+	--zip) ZIP=1; shift ;;
+	-h|--help) sed -n '2,/^set -e$/p' "$0" | sed -e '$d' -e 's/^# \{0,1\}//'; exit 0 ;;
+	*) echo "package.sh: unknown option $1 (see --help)" >&2; exit 1 ;;
+	esac
+done
+case "$DEFAULT_SERVER" in
+*[!A-Za-z0-9.-]*) echo "package.sh: --default-server takes a host name or an IPv4 address" >&2; exit 1 ;;
+esac
+case "$DEFAULT_ONLINE" in
+"") ;;
+on|true|1|yes) DEFAULT_ONLINE=true ;;
+off|false|0|no) DEFAULT_ONLINE=false ;;
+*) echo "package.sh: --default-online takes on or off" >&2; exit 1 ;;
+esac
+[ -z "$SIGNIN" ] || [ -f "$SIGNIN" ] || { echo "package.sh: --private-signin-patch: no such file" >&2; exit 1; }
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 NAME="${RTA_APP_NAME:-Play-RTA}"
@@ -51,6 +96,16 @@ cp -R "$BUILT" "$APP"
 mkdir -p "$APP/Contents/Resources/rta"
 cp "$PATCHES" "$APP/Contents/Resources/rta/SLUS-20973_4028A55F.pnach"
 cp "$SECTIONS" "$APP/Contents/Resources/rta/sections.txt"
+# what this copy does until the person says otherwise
+if [ -n "$DEFAULT_SERVER$DEFAULT_ONLINE" ]; then
+	{
+		echo "[General]"
+		[ -z "$DEFAULT_SERVER" ] || echo "server=$DEFAULT_SERVER"
+		[ -z "$DEFAULT_ONLINE" ] || echo "online=$DEFAULT_ONLINE"
+	} > "$APP/Contents/Resources/rta/defaults.ini"
+fi
+# only when asked to, for a private build (see the top of this file)
+[ -z "$SIGNIN" ] || cp "$SIGNIN" "$APP/Contents/Resources/rta/SLUS-20973_4028A55F_signin.pnach"
 
 # whose work this is
 LICENCES="$APP/Contents/Resources/licences"
@@ -109,10 +164,17 @@ xattr -cr "$APP"
 codesign --force --deep --sign - "$APP" > "$DIST/codesign.log" 2>&1 || { echo "package.sh: codesign failed, see $DIST/codesign.log" >&2; exit 1; }
 codesign --verify --deep --strict "$APP" || { echo "package.sh: the signature does not verify" >&2; exit 1; }
 
+# the archive is made here too, before a synced folder can touch the bundle
+[ -z "$ZIP" ] || ditto -c -k --keepParent "$APP" "$STAGE/$NAME.zip"
+
 rm -rf "$FINAL"
 mv "$APP" "$FINAL"
 APP="$FINAL"
+[ -z "$ZIP" ] || mv -f "$STAGE/$NAME.zip" "$DIST/$NAME.zip"
 
 echo "package.sh: made $APP ($(du -sh "$APP" | cut -f1))"
 echo "            double-click it, or: open \"$APP\""
 echo "            its data: ~/Library/Application Support/$NAME/"
+[ -z "$DEFAULT_SERVER$DEFAULT_ONLINE" ] || echo "            defaults inside: ${DEFAULT_SERVER:+server $DEFAULT_SERVER }${DEFAULT_ONLINE:+go online at start $DEFAULT_ONLINE}"
+[ -z "$ZIP" ] || echo "            archive: $DIST/$NAME.zip ($(du -h "$DIST/$NAME.zip" | cut -f1))"
+[ -z "$SIGNIN" ] || echo "            THE SIGN-IN PATCH IS INSIDE: a private copy, for people you hand it to yourself. Never publish it."

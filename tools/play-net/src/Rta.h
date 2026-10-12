@@ -84,15 +84,16 @@ namespace Rta
 	// ---- the packaged application (tools/play-net/package.sh) ---------------------------
 	// An application bundle that has our patch file in Contents/Resources/rta needs no
 	// command line: its data is in ~/Library/Application Support/<bundle name>/player<N>,
-	// it asks for the disc image and remembers it, and the lobby server's address and
+	// it finds the disc image by itself and remembers it, and the lobby server's address and
 	// the player number are set in a dialog (kept in launch.ini beside the player
-	// directories).
+	// directories). What launch.ini does not say is taken from defaults.ini beside the
+	// patch file, when package.sh was told to write one (server, online).
 	struct LaunchInfo
 	{
 		bool packaged = false;
 		std::string root;       // ~/Library/Application Support/<name>
 		int player = 1;
-		std::string server;     // as stored; empty: this computer
+		std::string server;     // as stored, else the bundle's default; empty: this computer
 		std::string disc;       // as stored
 		std::string patchSet;   // "19 sections, 152 words, set xxxxxxxx", or empty
 		bool gameChecked = false; // the game is loaded and is the version the patches are for
@@ -107,10 +108,15 @@ namespace Rta
 	// empty when the file is a disc image of the game in the version this is for;
 	// otherwise what is wrong with it, for a person
 	std::string CheckDisc(const std::string& path);
+	// The disc image, looked for without any dialog: beside the application, inside it,
+	// in its data, then in Downloads, Desktop and Documents (and one level of their
+	// sub-folders). Any file that passes CheckDisc, whatever its name. Empty: none.
+	std::string FindDisc();
 	// RtaUi.cpp. The disc image to start with: the one given, else the one remembered,
-	// else the one the person picks; refuses anything CheckDisc does. Empty: none (not a
-	// packaged application, or the person gave up).
-	// 'askAnew': do not take the remembered one.
+	// else the one FindDisc finds; only when there is none, one window that says where
+	// to put the file (Retry, Browse). 'askAnew' (the menu): the file dialog at once.
+	// Refuses anything CheckDisc does. Empty: none (not a packaged application, or the
+	// person left it for later).
 	std::string ChooseDisc(QWidget* parent, const std::string& given, bool askAnew);
 	// how the application starts a disc image (set by main), and the starting itself
 	void SetDiscBoot(const std::function<void(const std::string&)>&);
