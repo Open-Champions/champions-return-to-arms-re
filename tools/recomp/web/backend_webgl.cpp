@@ -24,7 +24,9 @@
 //     extension; gl_PointSize has to be written for points.
 //  3. A surface may not be sampled while it is the one drawn into (WebGL refuses the draw
 //     as a feedback loop; desktop OpenGL lets it pass).  Such a draw samples a copy made
-//     just before it; they are counted (`feedback_copies`).
+//     just before it; they are counted (`feedback_copies`).  WebGL also refuses a draw that
+//     samples nothing while that surface's picture is merely still bound, so a draw
+//     without a texture unbinds.
 //  4. Nothing else: vertex array objects, sampler objects, framebuffer blits, 32-bit float
 //     depth, integer operations in shaders and gl_VertexID are all in WebGL 2.
 //
@@ -435,6 +437,10 @@ void GlBackend::execute(const FrameList& frame) {
             } else { auto t = g.textures.find(c.texture); if (t != g.textures.end()) name = t->second; }
         }
         g.u1i(g.u.textured, s.textured, name ? 1 : 0);
+        // A draw without a texture must not leave one bound: if it is the picture of the
+        // surface now drawn into (sampled by an earlier draw, or bound by present()), WebGL
+        // takes the draw for a feedback loop and drops it, whether the shader samples or not.
+        if (!name && s.texture != 0) { s.texture = 0; CALL(glBindTexture(GL_TEXTURE_2D, 0)); }
         if (name) {
             if (s.texture != name) { s.texture = name; CALL(glBindTexture(GL_TEXTURE_2D, name)); } else SKIP();
             GLuint sampler = g.samplers[linear ? 1 : 0][c.wrap[0] == WRAP_REPEAT ? 0 : 1][c.wrap[1] == WRAP_REPEAT ? 0 : 1];

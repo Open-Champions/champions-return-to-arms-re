@@ -124,9 +124,11 @@ def main():
     else:
         jobs.append((os.path.join(render, 'vu1_none.cpp'), render_flags, 'r_'))
     jobs.append((os.path.join(render, 'backend_gl.cpp'), render_flags + qt_flags, 'r_'))
+    jobs.append((os.path.join(render, 'texpack.cpp'), render_flags + qt_flags, 'r_'))
     jobs += [(os.path.join(rt, n), rt_flags, 'rt_') for n in RUNTIME]
     jobs.append((os.path.join(sound, 'sound_rta.cpp'), rt_flags + ['-I', sound], 'rt_'))
     jobs.append((os.path.join(HERE, 'app_rt.cpp'), rt_flags + ['-I', HERE], 'a_'))
+    jobs.append((os.path.join(HERE, 'gfx_rt.cpp'), rt_flags + ['-I', HERE], 'a_'))
     if not args.original:
         # the films: the library entry points of hle-app.txt, which only this translation leaves open
         jobs.append((os.path.join(HERE, 'film.cpp'), rt_flags + ['-I', HERE], 'a_'))

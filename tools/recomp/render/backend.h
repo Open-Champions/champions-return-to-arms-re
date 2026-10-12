@@ -13,6 +13,7 @@
 // st_scale; q is 1 for draws that give texel coordinates.
 #pragma once
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace render {
@@ -34,6 +35,9 @@ struct DrawCmd {
     uint32_t first = 0, count = 0;      // vertices
     uint32_t target = 0;                // render target number
     int scissor[4] = {0, 0, 0, 0};      // x0, y0, x1, y1 in logical pixels, x1/y1 exclusive
+    // the scissor of a 2-D primitive in a wide picture, moved with it (layout.h): x0 and x1 are these instead
+    bool scissor_moved = false;
+    float scissor_x[2] = {0, 0};
     // texture: 0 = none.  tex_is_target: sample render target number `texture` instead.
     uint32_t texture = 0;
     bool tex_is_target = false;
@@ -67,6 +71,10 @@ struct DrawCmd {
     bool blend = false;
     uint8_t ba = 0, bb = 0, bc = 0, bd = 0, fix = 0x80;
     bool mask_rgb = false, mask_a = false;  // channels not written
+    // what the vertices are: 0 triangles (strips, fans) kicked by VU1 - the 3-D scene -,
+    // 1 triangles built on the CPU, 2 sprites.  A backend that holds mip-mapped parts of
+    // textures (texpack.h) looks at it.
+    uint8_t made_by = 0;
     // fogging: after the texture function the colour is F x colour + (1 - F) x fog colour,
     // F the vertex's coefficient (Vertex::fog / 256)
     bool fog = false;
@@ -79,6 +87,16 @@ struct TextureData {
     uint32_t id = 0;
     int width = 0, height = 0;
     std::vector<uint8_t> rgba;          // rows top to bottom, alpha as the GS has it (0x80 = 1.0)
+    // What the emulator-based build calls this texture (tools/play-net/README.md, "Texture
+    // dump and replacement"), when Gs::name_textures is set: the figure of the bytes sent
+    // for it, the figure of its palette, the format, the size of what was sent (the
+    // smallest rectangle from the corner that holds every texel sent) and the size TEX0
+    // names.  A file "<figure>-<palette>-p<format>-<width>x<height>.png", both figures as 16
+    // hexadecimal digits, replaces it.
+    bool named = false;
+    uint64_t figure = 0, palette_figure = 0;
+    uint32_t format = 0;
+    int sent_width = 0, sent_height = 0, named_width = 0, named_height = 0;
 };
 
 struct TargetInfo {
@@ -95,12 +113,31 @@ struct FrameList {
     std::vector<uint32_t> dead_textures;
     std::vector<uint32_t> dead_targets; // surfaces nothing used for a long time (freed after this frame's new ones are made)
     uint32_t show_target = 0;           // what the display circuit reads; 0 = nothing
+    // the shape the picture is meant to be seen in, width / height: 4/3, or what the game
+    // side made its view for (tools/recomp/app/gfx_rt.cpp)
+    float aspect = 4.0f / 3.0f;
     int show_rect[4] = {0, 0, 0, 0};    // x, y, width, height in that target's logical pixels
     uint64_t number = 0;
     void clear() {
         vertices.clear(); commands.clear(); textures.clear(); targets.clear(); dead_textures.clear(); dead_targets.clear();
         show_target = 0;
     }
+};
+
+// What a backend may do beyond drawing the lists as they are (docs/issues/native-graphics.md).
+struct PictureOptions {
+    int samples = 0;                    // multisampling of the 3-D surface: 0 (off), 2, 4, 8
+    int anisotropy = 1;                 // largest anisotropy for textures of the 3-D scene; 1 = off
+    bool mipmaps = false;               // mip maps for the game's own textures where the 3-D scene filters them
+    std::string pack;                   // a folder of replacement pictures (texpack.h); empty = none
+    int pack_memory_mb = 3072;          // video memory the replacement pictures may take
+    bool pack_parts = true;             // hand over only the part of a picture that is drawn with
+    bool pack_wait = false;             // tests: a frame waits for the pictures it asks for (every picture is whole then)
+};
+struct PictureFigures {
+    uint64_t pack_files = 0, replaced = 0, parts = 0, regrown = 0, dropped = 0, abandoned = 0, own_made = 0, named = 0, named_found = 0;
+    uint64_t pending = 0, held = 0, held_bytes = 0, most_bytes = 0;
+    int samples = 0, anisotropy = 1;
 };
 
 struct Backend {

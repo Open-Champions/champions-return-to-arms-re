@@ -15,6 +15,10 @@ class GlBackend : public Backend {
     bool read_shown(std::vector<uint8_t>& rgba, int& width, int& height) override;
     bool read_target(uint32_t id, std::vector<uint8_t>& rgba, int& width, int& height);
     uint64_t draw_calls() const;
+    // Multisampling, mip maps, anisotropic filtering, replacement pictures.  Once, before the first list.
+    void configure(const PictureOptions& options);
+    PictureFigures figures() const;
+    void set_replacements(bool on);     // draw with the game's own textures again (the same frame with and without)
 
   private:
     struct Impl;

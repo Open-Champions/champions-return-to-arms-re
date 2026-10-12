@@ -27,7 +27,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 OUT = os.path.join(ROOT, 'local', 'recomp-out')
 
 CORE = ['vu1.cpp', 'vif1.cpp', 'gs.cpp', 'renderer.cpp']
-GL = ['backend_gl.cpp']
+GL = ['backend_gl.cpp', 'texpack.cpp']
 
 
 def includes_of(source, dirs, seen=None):

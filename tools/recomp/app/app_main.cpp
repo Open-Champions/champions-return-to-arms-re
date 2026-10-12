@@ -14,6 +14,19 @@
 //   --fullscreen        start full screen (F or F11 toggles, Escape leaves)
 //   --scale N           draw the picture at N times the console's 640 x 448 (1..8)
 //   --size WxH          or at exactly this size (default: the window's own pixels)
+//   the picture (docs/issues/native-graphics.md; each is also a line of <data>/settings.txt,
+//   see settings.h - the file is read first, then these):
+//   --aspect A          the shape of the 3-D view: auto (the window's own, the default), 4:3
+//                       (the console's), 16:9, 16:10, 21:9, W:H.  The game itself makes the wide
+//                       view (gfx_rt.h); the HUD keeps to its edge, menus stay centred
+//   --resolution R      the size the picture is drawn at: window, WxH, or Nx (as --size / --scale)
+//   --antialiasing N    samples per pixel of the 3-D scene: off, 2, 4 (default), 8
+//   --anisotropy N      1 (off) to 16 (default);  --mipmaps yes|no  mip maps for the game's textures
+//   --art-pack DIR      replacement pictures named as the emulator build names textures
+//                       (tools/play-net/README.md, "Upscaled art");  --art-memory MB (3072)
+//   --frame-cap N       60 (default), 30, or 0 = --unpaced
+//   --plain             all of that off: 4:3, no multisampling, no mip maps, no pack
+//   --settings FILE, --no-settings;  tests: --no-layout, --art-whole, --art-wait
 //   --volume V          0..1 (default 1); --mute = --volume 0 (the device still runs);
 //                       --no-sound opens no device at all
 //   --emulator-timing   the I/O processor answers as slowly as on a console (default: fast loading)
@@ -27,6 +40,9 @@
 //                                                  a controller made by the program, to test the map
 //                         app pads                 print the controller and what port 1 holds
 //                         app stats [reset]        print the pacing figures so far
+//                         app window W H           give the window this size (the view follows with --aspect auto)
+//                         app fullscreen           what the F key does
+//                         app art off|on           draw with the game's own textures / with the art pack and mip maps again
 //                         app latency BUTTONS [pictures [before]]   a press given to the controller read after
 //                                                  `before` (12) more pictures; app latency report, `pictures`
 //                                                  (40) later, says which picture first showed a change
@@ -54,9 +70,11 @@
 #include "app_rt.h"
 #include "backend_gl.h"
 #include "control.h"
+#include "gfx_rt.h"
 #include "pad_host.h"
 #include "pipeline.h"
 #include "recorder.h"
+#include "settings.h"
 
 #include <QCoreApplication>
 #include <QEvent>
@@ -106,6 +124,13 @@ struct Options {
     std::string test, png, disc, data, elf, control;
     std::set<uint64_t> at;
     uint64_t stop_after = 0;
+    // the picture (settings.h): the settings file, then the command line
+    app::Settings set;
+    double aspect = 0;                  // of the 3-D view; 0 = the window's own shape
+    bool layout = true;                 // false: the wide picture without the 2-D layer put back into shape
+    bool art_parts = true;              // false: whole replacement pictures on the graphics card
+    bool art_wait = false;              // tests: every frame waits for the replacement pictures it asks for
+    std::string settings_file;
 };
 
 static void log_line(const std::string& line) {
@@ -272,6 +297,7 @@ class Screen : public QObject {
     QOpenGLContext* context = nullptr;
     GlBackend* backend = nullptr;
     bool follow_window = false;                         // the picture is drawn at the window's pixel size
+    double view_aspect = 4.0 / 3.0;                     // what the game is asked to make its view for
     // hand-over
     std::mutex lock;
     std::condition_variable done;
@@ -298,6 +324,7 @@ class Screen : public QObject {
 
     void create() {
         QSurfaceFormat format = QSurfaceFormat::defaultFormat();
+        format.setSwapInterval(opt.unpaced ? 0 : 1);
         if (opt.offscreen) {
             offscreen = new QOffscreenSurface;
             offscreen->setFormat(format);
@@ -322,16 +349,46 @@ class Screen : public QObject {
         QOpenGLExtraFunctions* gl = context->extraFunctions();
         log_line(std::string("OpenGL ") + (const char*)gl->glGetString(GL_VERSION) + " on " + (const char*)gl->glGetString(GL_RENDERER));
         backend = new GlBackend;
+        {
+            PictureOptions picture;
+            picture.samples = opt.set.samples;
+            picture.anisotropy = opt.set.anisotropy;
+            picture.mipmaps = opt.set.mipmaps;
+            picture.pack = opt.set.art_pack;
+            picture.pack_memory_mb = opt.set.art_memory;
+            picture.pack_parts = opt.art_parts;
+            picture.pack_wait = opt.art_wait;
+            backend->configure(picture);
+            PictureFigures fig = backend->figures();
+            char line[512];
+            snprintf(line, sizeof line, "picture: %d samples per pixel, anisotropy %d, mip maps for the game's textures %s; art pack %s (%llu pictures), %d MB",
+                     fig.samples, fig.anisotropy, opt.set.mipmaps ? "on" : "off", opt.set.art_pack.empty() ? "none" : opt.set.art_pack.c_str(),
+                     (unsigned long long)fig.pack_files, opt.set.art_memory);
+            log_line(line);
+        }
+        // The shape of the view: what was asked for, else the window's own (without a window:
+        // the shape of the size asked for; a size of 640 x 448 and its multiples is the
+        // console's picture, which is 4:3).
         int w = opt.size_w, h = opt.size_h;
-        if (opt.scale) { w = 640 * opt.scale; h = 448 * opt.scale; }
+        double shape = opt.aspect;
+        if (shape <= 0) {
+            if (window) shape = (double)window->width() / window->height();
+            else if (w && h) shape = (w * 448 == h * 640) ? 4.0 / 3.0 : (double)w / h;
+            else shape = (double)opt.window_w / opt.window_h;
+        }
+        if (shape < 4.0 / 3.0) shape = 4.0 / 3.0;
+        view_aspect = shape;
+        if (opt.scale) { h = 448 * opt.scale; w = (int)std::lround(640 * opt.scale * shape / (4.0 / 3.0)); }
         if (!w || !h) {
             follow_window = window != nullptr;
             double ratio = window ? window->devicePixelRatio() : 1.0;
             h = (int)((window ? window->height() : opt.window_h) * ratio);
-            w = h * 4 / 3;
+            w = (int)std::lround(h * shape);
+            if (window && w > (int)(window->width() * ratio)) { w = (int)(window->width() * ratio); h = (int)std::lround(w / shape); }
         }
         opt.size_w = w; opt.size_h = h;
         backend->set_output_size(w, h);
+        gfxrt::set_aspect(shape);
         if (window && window->screen()) refresh_hz = window->screen()->refreshRate();
         if (refresh_hz < 20 || refresh_hz > 1000) refresh_hz = 60;
         refresh_ms = 1000.0 / refresh_hz;
@@ -363,6 +420,7 @@ class Screen : public QObject {
         std::swap(slot.dead_textures, frame.dead_textures);
         std::swap(slot.dead_targets, frame.dead_targets);
         slot.show_target = frame.show_target;
+        slot.aspect = frame.aspect;
         memcpy(slot.show_rect, frame.show_rect, sizeof(slot.show_rect));
         slot.number = frame.number;
         slot_shots.swap(shots);
@@ -378,9 +436,22 @@ class Screen : public QObject {
         double t0 = now_ms();
         context->makeCurrent(surface());
         QOpenGLExtraFunctions* gl = context->extraFunctions();
+        if (window && opt.aspect == 0) {                // the view takes the window's shape
+            double shape = (double)window->width() / window->height();
+            if (shape < 4.0 / 3.0) shape = 4.0 / 3.0;
+            if (std::fabs(shape - view_aspect) > 0.002) { view_aspect = shape; gfxrt::set_aspect(shape); }
+        }
+        // The picture is sized for the shape THIS list was built for (it says so itself): while
+        // a new shape is on its way through the game and the decoder, the lists still in
+        // flight are drawn as what they are, with bars for a frame or two, never stretched.
         if (follow_window && window) {                  // the window was resized: draw at its new size
-            int h = (int)(window->height() * window->devicePixelRatio()), w = h * 4 / 3;
+            double ratio = window->devicePixelRatio(), shape = frame->aspect;
+            int h = (int)(window->height() * ratio), w = (int)std::lround(h * shape);
+            if (w > (int)(window->width() * ratio)) { w = (int)(window->width() * ratio); h = (int)std::lround(w / shape); }
             if (h >= 224 && (h != opt.size_h || w != opt.size_w)) { opt.size_w = w; opt.size_h = h; backend->set_output_size(w, h); }
+        } else if (opt.scale) {
+            int h = 448 * opt.scale, w = (int)std::lround(640 * opt.scale * frame->aspect / (4.0 / 3.0));
+            if (h != opt.size_h || w != opt.size_w) { opt.size_w = w; opt.size_h = h; backend->set_output_size(w, h); }
         }
         backend->execute(*frame);
         vertices += frame->vertices.size();
@@ -389,6 +460,7 @@ class Screen : public QObject {
         for (const std::string& path : slot_shots) save(path);
         slot_shots.clear();
         bool shown = window && window->isExposed();
+        if (opt.set.frame_cap > 0 && opt.set.frame_cap <= 30 && (blanks & 1)) shown = false;        // every other picture
         double swap_start = 0, after = 0;
         if (shown) {
             // with more than one refresh per picture the swap is asked for inside the last of
@@ -400,7 +472,7 @@ class Screen : public QObject {
             }
             double ratio = window->devicePixelRatio();
             gl->glBindFramebuffer(GL_FRAMEBUFFER, context->defaultFramebufferObject());
-            backend->present((int)(window->width() * ratio), (int)(window->height() * ratio), 4.0 / 3.0);
+            backend->present((int)(window->width() * ratio), (int)(window->height() * ratio), frame->aspect);
             swap_start = now_ms();
             context->swapBuffers(window);
             after = now_ms();
@@ -525,6 +597,26 @@ static void final_report() {                            // on the game's thread,
         for (int k = 0; k < render::AP_COUNT; k++) if (g.approx[k]) { printf(" %s %llu;", render::Gs::APPROX_NAMES[k], (unsigned long long)g.approx[k]); any = true; }
         printf("%s; with fogging (applied): %llu\n", any ? "" : " none", (unsigned long long)g.fogged);
     }
+    {
+        PictureFigures fig = s.backend->figures();
+        const render::Layout& l = g_renderer->gs.layout;
+        uint64_t wide = 0, clamps = 0, marks = 0;
+        gfxrt::figures(wide, clamps, marks);
+        uint32_t list_most = 0, list_room = 0;
+        gfxrt::list_figures(list_most, list_room);
+        printf("rta_app: picture: the game's display list: the fullest frame took %u of %u units (objects are no longer drawn when fewer than 3000 are left)\n",
+               list_most, list_room);
+        printf("rta_app: picture: view %.4f (k %.4f), %llu frames built wide, %llu marks in the stream; 2-D primitives moved %llu in %llu clusters, sprites narrowed %llu, "
+               "left across the width %llu; the screen clamp was handed the 4:3 planes %llu times\n", s.view_aspect, l.k, (unsigned long long)wide,
+               (unsigned long long)marks, (unsigned long long)l.moved_2d, (unsigned long long)l.clusters, (unsigned long long)l.moved_sprites,
+               (unsigned long long)l.kept_full, (unsigned long long)clamps);
+        printf("rta_app: picture: %d samples, anisotropy %d; art pack %llu files: textures named %llu, found in the pack %llu, pictures read %llu (%llu as parts), "
+               "read again for a larger part %llu, given up unread %llu, dropped for memory %llu; mip-mapped parts of the game's own textures made %llu; "
+               "held now %llu pictures, %.1f MB (most %.1f MB), %llu waiting\n", fig.samples, fig.anisotropy, (unsigned long long)fig.pack_files,
+               (unsigned long long)fig.named, (unsigned long long)fig.named_found, (unsigned long long)fig.replaced, (unsigned long long)fig.parts,
+               (unsigned long long)fig.regrown, (unsigned long long)fig.abandoned, (unsigned long long)fig.dropped, (unsigned long long)fig.own_made,
+               (unsigned long long)fig.held, fig.held_bytes / 1048576.0, fig.most_bytes / 1048576.0, (unsigned long long)fig.pending);
+    }
     printf("rta_app: input: %llu key events, controller %s, %u rumble commands\n", (unsigned long long)g_key_events.load(),
            hostpad::name().empty() ? "none" : hostpad::name().c_str(), g_pads.rumbles.load());
     fflush(stdout);
@@ -620,6 +712,21 @@ static void app_command(const std::string& text, uint64_t frame) {
             if (g_recorder.out.open(text.substr(text.find(w[1])).c_str())) g_recorder.first_frame = 0;
             else log_line("cannot write " + w[1]);
         }
+    } else if (w[0] == "window" && w.size() >= 3) {
+        // app window W H: the window takes this size (points), as a person dragging its corner would make it
+        int ww = atoi(w[1].c_str()), wh = atoi(w[2].c_str());
+        if (g_screen->window && ww >= 160 && wh >= 120)
+            QCoreApplication::postEvent(g_screen, new CallQEvent([ww, wh] { g_screen->window->resize(ww, wh); }));
+    } else if (w[0] == "fullscreen") {
+        // app fullscreen: what F does (a test window stays as it is: it must not cover the screen)
+        QCoreApplication::postEvent(g_screen, new CallQEvent([] {
+            if (g_screen->window && !g_screen->window->test) g_screen->window->toggle_fullscreen();
+            else log_line("app fullscreen: not in a test window");
+        }));
+    } else if (w[0] == "art" && w.size() >= 2) {
+        // the same frame with and without the pack's pictures (and the mip-mapped parts): app art off|on
+        bool on = w[1] != "off";
+        QCoreApplication::postEvent(g_screen, new CallQEvent([on] { g_screen->backend->set_replacements(on); }));
     } else if (w[0] == "stats") {
         g_screen->report_pace(w.size() >= 2 && w[1] == "reset");
     } else if (w[0] == "latency" && w.size() >= 2) {
@@ -687,6 +794,8 @@ static bool file_exists(const std::string& path) { struct stat st; return stat(p
 
 int main(int argc, char** argv) {
     Options opt;
+    std::vector<std::pair<std::string, std::string>> overrides;     // picture settings given on the command line
+    bool plain = false, no_settings = false;
     std::vector<std::string> pass, script_args;
     std::string mode = "boot";
     if (const char* disc = getenv("RTA_DISC")) opt.disc = disc;
@@ -698,10 +807,24 @@ int main(int argc, char** argv) {
         else if (a == "--disc") opt.disc = next();
         else if (a == "--data") opt.data = next();
         else if (a == "--elf") opt.elf = next();
-        else if (a == "--window") { std::string s = next(); sscanf(s.c_str(), "%dx%d", &opt.window_w, &opt.window_h); }
-        else if (a == "--size") { std::string s = next(); sscanf(s.c_str(), "%dx%d", &opt.size_w, &opt.size_h); }
-        else if (a == "--scale") { opt.scale = atoi(next().c_str()); if (opt.scale < 1) opt.scale = 1; if (opt.scale > 8) opt.scale = 8; }
-        else if (a == "--fullscreen") opt.fullscreen = true;
+        else if (a == "--window") overrides.push_back({"window", next()});
+        else if (a == "--size") overrides.push_back({"resolution", next()});
+        else if (a == "--scale") overrides.push_back({"resolution", next() + "x"});
+        else if (a == "--fullscreen") overrides.push_back({"fullscreen", "yes"});
+        else if (a == "--aspect") overrides.push_back({"aspect", next()});
+        else if (a == "--resolution") overrides.push_back({"resolution", next()});
+        else if (a == "--antialiasing" || a == "--aa") overrides.push_back({"antialiasing", next()});
+        else if (a == "--anisotropy") overrides.push_back({"anisotropy", next()});
+        else if (a == "--mipmaps") overrides.push_back({"mipmaps", next()});
+        else if (a == "--art-pack") overrides.push_back({"art_pack", next()});
+        else if (a == "--art-memory") overrides.push_back({"art_memory", next()});
+        else if (a == "--frame-cap") overrides.push_back({"frame_cap", next()});
+        else if (a == "--plain") plain = true;
+        else if (a == "--settings") opt.settings_file = next();
+        else if (a == "--no-settings") no_settings = true;
+        else if (a == "--no-layout") opt.layout = false;
+        else if (a == "--art-whole") opt.art_parts = false;
+        else if (a == "--art-wait") opt.art_wait = true;
         else if (a == "--volume") opt.volume = atof(next().c_str());
         else if (a == "--mute") opt.volume = 0;
         else if (a == "--no-sound") opt.no_sound = true;
@@ -709,13 +832,16 @@ int main(int argc, char** argv) {
         else if (a == "--no-films") opt.no_films = true;
         else if (a == "--script" || a == "--do") { script_args.push_back(a); script_args.push_back(next()); }
         else if (a == "--offscreen") opt.offscreen = true;
-        else if (a == "--unpaced") opt.unpaced = true;
+        else if (a == "--unpaced") overrides.push_back({"frame_cap", "0"});
         else if (a == "--test") opt.test = next();
         else if (a == "--png") opt.png = next();
         else if (a == "--at") { std::string s = next(); for (char* p = &s[0]; *p;) { opt.at.insert(strtoull(p, &p, 10)); if (*p) p++; } }
         else if (a == "--stop-after") opt.stop_after = strtoull(next().c_str(), nullptr, 10);
         else if (a == "--control") opt.control = next();
         else if (a == "--help" || a == "-h") {
+            printf("picture (each also a line of <data>/settings.txt, see tools/recomp/app/settings.h):\n"
+                   "        [--aspect auto|4:3|16:9|16:10|21:9|W:H] [--resolution window|WxH|Nx] [--antialiasing off|2|4|8] [--anisotropy 1..16]\n"
+                   "        [--mipmaps yes|no] [--art-pack DIR] [--art-memory MB] [--frame-cap 60|30|0] [--plain] [--settings FILE] [--no-settings]\n");
             printf("rta_app --disc IMAGE [--data DIR] [--window WxH] [--fullscreen] [--scale N | --size WxH] [--volume V | --mute | --no-sound]\n"
                    "        [--emulator-timing] [--script FILE] [--do COMMAND] [--test TEXT] [--offscreen] [--unpaced] [--png PREFIX --at n,..]\n"
                    "        [--stop-after N] [-- runtime arguments]\n"
@@ -728,6 +854,18 @@ int main(int argc, char** argv) {
     }
     for (; k < argc; k++) pass.push_back(argv[k]);
     if (!pass.empty() && (pass[0] == "boot" || pass[0] == "resume")) { mode = pass[0]; pass.erase(pass.begin()); }
+    bool settings_later = opt.settings_file.empty() && !no_settings;       // <data>/settings.txt, once the data directory is known
+    auto apply_settings = [&](const std::string& file) {
+        if (!file.empty() && !opt.set.load(file, log_line) && file == opt.settings_file) log_line("cannot read the settings file " + file);
+        if (plain) opt.set.plain();
+        for (auto& kv : overrides) opt.set.set(kv.first, kv.second);
+        opt.window_w = opt.set.window_w; opt.window_h = opt.set.window_h;
+        opt.fullscreen = opt.set.fullscreen;
+        opt.size_w = opt.set.size_w; opt.size_h = opt.set.size_h; opt.scale = opt.set.scale;
+        opt.aspect = opt.set.aspect;
+        opt.unpaced = opt.set.frame_cap <= 0;
+    };
+    if (!settings_later) apply_settings(opt.settings_file);
 
     if (opt.offscreen || !opt.test.empty()) qputenv("QT_MAC_DISABLE_FOREGROUND_APPLICATION_TRANSFORM", "1");   // no Dock icon, never in front
     QSurfaceFormat format;
@@ -745,6 +883,13 @@ int main(int argc, char** argv) {
     std::string out = bin + "/..", root = bin + "/../../..";
     if (opt.data.empty()) opt.data = out + "/app-data";
     mkdir(opt.data.c_str(), 0755);
+    if (settings_later) {
+        // the file beside the memory cards; a first run that somebody plays writes one to edit
+        std::string file = opt.data + "/settings.txt";
+        bool there = file_exists(file);
+        apply_settings(there ? file : std::string());
+        if (!there && opt.test.empty() && !opt.offscreen) app::Settings().save(file);
+    }
     if (mode == "boot") {
         if (opt.disc.empty() || !file_exists(opt.disc)) {
             fprintf(stderr, "rta_app: give your disc image of Champions: Return to Arms (SLUS-20973 v2.00): --disc \"/path/to/image.iso\" (or set RTA_DISC)\n");
@@ -770,6 +915,9 @@ int main(int argc, char** argv) {
 
     static Renderer renderer;
     g_renderer = &renderer;
+    renderer.gs.layout.enabled = opt.layout;
+    renderer.gs.name_textures = !opt.set.art_pack.empty();
+    gfxrt::install();
     if (getenv("RTA_GS_LOG")) renderer.gs.log_display = true;
     if (const char* keep = getenv("RTA_TEX_KEEP")) renderer.gs.texture_keep_frames = (uint32_t)atoi(keep);    // frames an unused texture is kept; 0 = for ever
     static AppSink sink;

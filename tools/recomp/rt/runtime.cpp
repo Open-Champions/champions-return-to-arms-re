@@ -1096,6 +1096,7 @@ static void dma_start(u32 ch) {
             u32 n = (u32)t & 0xFFFF, id = ((u32)t >> 28) & 7, addr = (u32)(t >> 32);
             chcr = (chcr & 0xFFFF) | ((u32)t & 0xFFFF0000u);
             bool end = false;
+            if (ch == 1 && rt_dma_tag) rt_dma_tag(tadr, stream);
             switch (id) {
             case 0: madr = addr; tadr += 16; end = true; break;                 // refe
             case 1: madr = tadr + 16; tadr = madr + n * 16; break;              // cnt
@@ -1545,6 +1546,8 @@ static void on_vblank() {
 
 
 
+void (*rt_frame_hook)(Ctx* c, int phase);
+void (*rt_dma_tag)(u32 tag_address, std::vector<u32>& stream);
 void fn_0019d8b0(Ctx* c) {                              // gfx_beginFrame: once per displayed frame
     if (g_log && !g_log_fields) log_row(g_frame);
     if (g_frame == g_dump_frame) {
@@ -1553,7 +1556,9 @@ void fn_0019d8b0(Ctx* c) {                              // gfx_beginFrame: once 
     }
     if (g_frame >= g_frames_wanted) report_and_exit();
     g_frame++;
+    if (rt_frame_hook) rt_frame_hook(c, 0);
     orig_0019d8b0(c);
+    if (rt_frame_hook) rt_frame_hook(c, 1);
 }
 
 // ---------------------------------------------------------------------------------------

@@ -1,5 +1,6 @@
 // gs.cpp - see gs.h.
 #include "gs.h"
+#include "xxh3_64.h"
 
 #include <algorithm>
 #include <cmath>
@@ -181,6 +182,7 @@ void Gs::flush_uploads() {
         int w = c.x1 - c.x0, h = c.y1 - c.y0;
         Target& target = target_at(entry.first, c.x1, c.y1);
         target.serial = serial++;
+        from_view[target.id] = false;
         if (!target.fbw) target.fbw = (uint32_t)(c.width + 63) / 64;
         TextureData data;
         data.id = next_texture++;
@@ -229,6 +231,18 @@ void Gs::free_unused_textures() {
     stats.textures_held = textures.size();
 }
 
+void Gs::note(uint32_t kind, uint32_t value) {
+    if (kind == 0xA5) { layout.set_mark(frame.vertices, (uint16_t)value); state_dirty = true; }
+    else if (kind == 0xA6) note_high = value & 0xFFFF;
+    else if (kind == 0xA7) {
+        uint32_t bits = note_high << 16 | (value & 0xFFFF);
+        float k;
+        memcpy(&k, &bits, 4);
+        layout.set_k(frame.vertices, k);
+        state_dirty = true;
+    }
+}
+
 // The same for surfaces.  The shadow surface and the heat haze's piece of the picture are
 // textures of the game's ring of resident textures: every time the ring hands them other
 // blocks a surface is made at the new place, and the ones at the old places would stay
@@ -247,6 +261,7 @@ void Gs::free_unused_targets() {
 }
 
 void Gs::end_frame(uint64_t number) {
+    layout.flush(frame.vertices);
     flush_uploads();
     if (have_cmd && cur.count) frame.commands.push_back(cur);
     have_cmd = false;
@@ -264,6 +279,9 @@ void Gs::end_frame(uint64_t number) {
         frame.show_rect[2] = it->second.width; frame.show_rect[3] = it->second.height;
     }
     stats.commands += frame.commands.size();
+    // the shape the picture is meant to be seen in: the view's, or 4:3 for a film
+    auto shown = from_view.find(frame.show_target);
+    frame.aspect = shown == from_view.end() || shown->second ? (4.0f / 3.0f) / layout.k : 4.0f / 3.0f;
 }
 
 void Gs::privileged(uint32_t address, uint64_t value) {
@@ -347,6 +365,7 @@ Gs::Target& Gs::target_at(uint32_t block, int width, int height) {
 // ---- GIF ------------------------------------------------------------------------------
 void Gs::gif(int path, const uint32_t* words, size_t quadwords) {
     Path& p = paths[path];
+    cur_path = path;
     size_t q = 0;
     while (q < quadwords) {
         const uint32_t* w = words + q * 4;
@@ -461,6 +480,7 @@ void Gs::write(uint32_t address, uint64_t value) {
         prim = (uint32_t)value & 0x7FF;
         vcount = 0;
         state_dirty = true;
+        prim_serial++;
         return;
     case 0x01:
         cur_rgba[0] = (uint8_t)value; cur_rgba[1] = (uint8_t)(value >> 8); cur_rgba[2] = (uint8_t)(value >> 16); cur_rgba[3] = (uint8_t)(value >> 24);
@@ -544,7 +564,8 @@ void Gs::start_transfer() {
     UploadSet& set = sets[dbp];
     if (set.used) { set.rects.clear(); set.data.clear(); set.hash = 0; set.used = false; }
     Rect r;
-    r.bw = std::max<uint32_t>((uint32_t)(bb >> 48) & 0x3F, 1);
+    r.bw_raw = (uint32_t)(bb >> 48) & 0x3F;
+    r.bw = std::max<uint32_t>(r.bw_raw, 1);
     r.psm = (uint32_t)(bb >> 56) & 0x3F;
     r.x = (int)((pos >> 32) & 0x7FF); r.y = (int)((pos >> 48) & 0x7FF);
     r.w = (int)(size & 0xFFF); r.h = (int)((size >> 32) & 0xFFF);
@@ -629,6 +650,91 @@ bool Gs::palette_of(const UploadSet& set, uint32_t cpsm, uint32_t* out, int entr
         }
     }
     return true;
+}
+
+// The name the emulator-based build knows this texture by (its CGSH_OpenGL::RecordUpload
+// and PrepareTextureByUpload, tools/play-net/play-net.patch), from what was sent:
+//   figure   chained over the pieces of the upload, each XXH3 of (figure so far, where the
+//            piece went, its size, XXH3 of its bytes, buffer width and format it was sent
+//            in); once more with the texture's buffer width and format when the bytes are
+//            read as another format than they were sent in (8-bit texels sent as 32-bit
+//            pixels of half the buffer width count as their own format);
+//   palette  XXH3 of the 16 or 256 colours in index order;
+//   size     one piece from the corner in the texture's own format: that piece (inside
+//            the named size); anything else: the smallest rectangle from the corner that
+//            holds every texel the pieces cover, read in the texture's format.
+void Gs::name_texture(TextureData& out, const UploadSet& set, const uint32_t* palette, int entries, uint32_t psm, uint32_t tbw_raw, uint32_t cpsm,
+                      int named_w, int named_h) {
+    const std::vector<Rect>& r = set.rects;
+    if (r.empty() || (psm != PSMCT32 && psm != PSMT8 && psm != PSMT4)) return;
+    // the pieces that build counts as one upload: a piece sent in another format or buffer
+    // width, or one that lies over an earlier piece, starts a new one
+    size_t start = 0;
+    for (size_t i = 1; i < r.size(); i++) {
+        bool further = r[i].psm == r[start].psm && r[i].bw_raw == r[start].bw_raw && i - start < 256;
+        for (size_t j = start; j < i && further; j++)
+            if (!(r[i].x + r[i].w <= r[j].x || r[j].x + r[j].w <= r[i].x || r[i].y + r[i].h <= r[j].y || r[j].y + r[j].h <= r[i].y)) further = false;
+        if (!further) start = i;
+    }
+    uint64_t figure = 0;
+    for (size_t i = start; i < r.size(); i++) {
+        if (!r[i].bytes) return;
+        uint64_t words[5] = {figure, (uint64_t)(uint32_t)r[i].y << 32 | (uint32_t)r[i].x, (uint64_t)(uint32_t)r[i].h << 32 | (uint32_t)r[i].w,
+                             xxh3::hash64(set.data.data() + r[i].offset, r[i].bytes), (uint64_t)r[i].bw_raw << 32 | r[i].psm};
+        figure = xxh3::hash64(words, sizeof(words));
+    }
+    const Rect& first = r[start];
+    bool plain = r.size() - start == 1 && first.psm == psm && first.bw_raw == tbw_raw && first.x == 0 && first.y == 0;
+    int w = 0, h = 0;
+    if (plain) { w = std::min(first.w, named_w); h = std::min(first.h, named_h); }
+    else {
+        bool natural = (first.psm == psm && first.bw_raw == tbw_raw) || (psm == PSMT8 && first.psm == PSMCT32 && first.bw_raw * 2 == tbw_raw);
+        if (!natural) {
+            uint64_t words[2] = {figure, (uint64_t)tbw_raw << 32 | psm};
+            figure = xxh3::hash64(words, sizeof(words));
+        }
+        // which texels the pieces cover: written, all ones, in the format they were sent in
+        // and read back in the texture's
+        struct { std::vector<Rect> rects; std::vector<uint8_t> data; } ones;
+        size_t most = 0;
+        for (size_t i = start; i < r.size(); i++) { Rect c = r[i]; c.offset = 0; ones.rects.push_back(c); most = std::max(most, c.bytes); }
+        ones.data.assign(most, 0xFF);
+        Scratch cover;
+        cover.reserve(8192);
+        replay(ones, cover);
+        uint32_t tbw = std::max<uint32_t>(tbw_raw, 1);
+        int bwid = psm == PSMT4 ? 32 : psm == PSMT8 ? 16 : 8, bhei = psm == PSMT4 || psm == PSMT8 ? 16 : 8;
+        for (int by = 0; by < named_h; by += bhei)
+            for (int bx = 0; bx < named_w; bx += bwid) {
+                size_t a = psm == PSMT4 ? nibble4(bx, by, tbw) >> 1 : psm == PSMT8 ? addr8(bx, by, tbw) : addr32(bx, by, tbw);
+                if (!cover.block_written(a)) continue;
+                for (int y = by; y < std::min(by + bhei, named_h); y++)
+                    for (int x = bx; x < std::min(bx + bwid, named_w); x++) {
+                        bool covered;
+                        if (psm == PSMT8) covered = cover.byte(addr8(x, y, tbw)) != 0;
+                        else if (psm == PSMT4) { size_t n = nibble4(x, y, tbw); covered = ((cover.byte(n >> 1) >> ((n & 1) * 4)) & 15) != 0; }
+                        else covered = cover.word(addr32(x, y, tbw)) != 0;
+                        if (covered) { w = std::max(w, x + 1); h = std::max(h, y + 1); }
+                    }
+            }
+    }
+    if (w <= 0 || h <= 0) return;
+    out.named = true;
+    out.figure = figure;
+    out.palette_figure = 0;
+    if (palette && entries > 0) {
+        uint32_t colours[256];
+        for (int i = 0; i < entries; i++) {
+            uint32_t c = palette[i];
+            // a 16-bit palette: that build turns the alpha bit into 0xff
+            if (cpsm == PSMCT16 || cpsm == PSMCT16S) c = (c & 0x00FFFFFF) | ((c & 0x80000000u) ? 0xFF000000u : 0);
+            colours[i] = c;
+        }
+        out.palette_figure = xxh3::hash64(colours, (size_t)entries * 4);
+    }
+    out.format = psm;
+    out.sent_width = w; out.sent_height = h;
+    out.named_width = named_w; out.named_height = named_h;
 }
 
 Gs::Texture* Gs::texture_for(uint64_t tex0, uint64_t texa) {
@@ -731,6 +837,7 @@ Gs::Texture* Gs::texture_for(uint64_t tex0, uint64_t texa) {
         fprintf(stderr, "texture %u: %dx%d psm %x tbw %u named %dx%d rects %zu (first %dx%d psm %x bw %u) alpha 0:%zu 80:%zu other:%zu tex0 %016llx\n", data.id, width, height, psm, tbw,
                 named_w, named_h, set.rects.size(), set.rects[0].w, set.rects[0].h, set.rects[0].psm, set.rects[0].bw, a0, a80, other, (unsigned long long)tex0);
     }
+    if (name_textures) name_texture(data, set, paletted ? palette : nullptr, psm == PSMT8 ? 256 : 16, psm, (uint32_t)(tex0 >> 14) & 0x3F, cpsm, named_w, named_h);
     Texture t = {data.id, width, height, 0, false, frames_ended};
     stats.texture_bytes += (uint64_t)width * height * 4;
     stats.textures_held = textures.size() + 1;
@@ -756,6 +863,7 @@ static bool same_state(const DrawCmd& a, const DrawCmd& b) {
         && a.weave_half == b.weave_half && a.alpha_test == b.alpha_test && a.atst == b.atst && a.aref == b.aref && a.afail == b.afail
         && a.depth_test == b.depth_test && a.ztst == b.ztst && a.depth_write == b.depth_write && a.blend == b.blend && a.ba == b.ba
         && a.bb == b.bb && a.bc == b.bc && a.bd == b.bd && a.fix == b.fix && a.mask_rgb == b.mask_rgb && a.mask_a == b.mask_a
+        && a.scissor_moved == b.scissor_moved && a.scissor_x[0] == b.scissor_x[0] && a.scissor_x[1] == b.scissor_x[1]
         && a.fog == b.fog && !memcmp(a.fog_colour, b.fog_colour, 3);
 }
 
@@ -819,6 +927,12 @@ void Gs::rebuild_state() {
         c.alpha_test = true; c.atst = (uint8_t)atst; c.afail = (uint8_t)afail;
     }
     if (c.ztst == 0) g_skip_draw = true;
+    // a wide picture: the scissor of 2-D things (a text box) moves with them
+    cur_wide = buffer_width == 1280;
+    if (cur_wide && layout.active() && ((cur_path != 0 && c.ztst == 1) || layout.mode() == Layout::M_MENU3D)) {
+        float x0 = (float)c.scissor[0], x1 = (float)c.scissor[2];
+        if (layout.scissor(x0, x1)) { c.scissor_moved = true; c.scissor_x[0] = x0; c.scissor_x[1] = x1; }
+    }
     cur_approx = 0;
     if (c.alpha_test && afail != 0) cur_approx |= 1u << AP_AFAIL;
     if ((test >> 14) & 1) cur_approx |= 1u << AP_DATE;
@@ -906,6 +1020,7 @@ void Gs::rebuild_state() {
             if (!cmd_fst) { c.st_scale[0] = (float)(1 << ((tex0 >> 26) & 15)); c.st_scale[1] = (float)(1 << ((tex0 >> 30) & 15)); }
             if (c.wrap[0] == WRAP_REGION_REPEAT || c.wrap[1] == WRAP_REGION_REPEAT) cur_approx |= 1u << AP_REGION_REPEAT;
         } else cmd_tme = false;
+        if (c.texture && !cur_wide && target.width >= 512) from_view[c.target] = c.tex_is_target && c.tex_size[0] == 1280.0f;
     }
     if (have_cmd && same_state(cur, c) ) return;
     if (have_cmd && cur.count) frame.commands.push_back(cur);
@@ -947,6 +1062,15 @@ void Gs::kick(bool draw) {
     if (vcount < need[type]) return;
     if (draw && type != 7) {
         if (state_dirty) rebuild_state();
+        uint8_t made_by = type == 6 ? 2 : cur_path == 0 ? 0 : 1;
+        if (!g_skip_draw && cur.made_by != made_by) {
+            DrawCmd c = cur;
+            c.made_by = made_by;
+            if (cur.count) frame.commands.push_back(cur);
+            c.first = (uint32_t)frame.vertices.size();
+            c.count = 0;
+            cur = c;
+        }
         if (!g_skip_draw) {
             auto coords = [&](const Queued& a, float& s, float& t, float& q) {
                 if (!cmd_tme) { s = t = 0; q = 1; }
@@ -964,6 +1088,7 @@ void Gs::kick(bool draw) {
                 if (cmd_tme && !cmd_fst) { float qq = b.q != 0 ? b.q : 1; s0 /= qq; t0 /= qq; s1 /= qq; t1 /= qq; q0 = q1 = 1; }
                 float dx = ((float)b.x - (float)a.x) * (1.0f / 16.0f), dy = ((float)b.y - (float)a.y) * (1.0f / 16.0f);
                 float half = 0;
+                int field_shift = 0;                    // lines the woven picture lies above (-) or below (+) the sprite
                 if (cmd_tme) {
                     // interface art as two stacked field pictures: half a texture row per line,
                     // all of it inside the upper or the lower half of what was sent
@@ -989,6 +1114,23 @@ void Gs::kick(bool draw) {
                         half = th * 0.5f;
                         float base = (t0 + t1) * 0.5f >= half ? half : 0;
                         float line0 = floorf(2 * (std::min(t0, t1) - base) + 0.01f);
+                        // Where the picture stands.  The game draws one field per frame: in
+                        // the frames of the display's even lines it reads a quarter texel in
+                        // (V = 0.25 + line / 2), in those of the odd lines from the row itself.
+                        // A picture whose top is on an even line of the 448 is drawn from its
+                        // first field in the one and its second in the other, at the same
+                        // place; one whose top is on an odd line (the HUD's name, one of its
+                        // bars) is drawn from its SECOND field two lines lower in the even
+                        // frames and from its first field in the odd frames.  Woven, the whole
+                        // picture is drawn every frame, so it has to stand where it is on the
+                        // screen, not where the field's sprite is: a line up or down in those
+                        // two cases, or it hops by two lines 60 times a second.
+                        static const bool hop = getenv("RTA_GS_FIELD_HOP") != nullptr;      // debugging: as it was before
+                        if (no_interlace && !hop) {
+                            float low = std::min(t0, t1);
+                            bool quarter = fabsf(low - floorf(low) - 0.25f) < 0.05f;
+                            field_shift = quarter ? (base != 0 ? -1 : 0) : (base != 0 ? 0 : 1);
+                        }
                         if (t1 >= t0) { t0 = line0; t1 = line0 + fabsf(dy); } else { t1 = line0; t0 = line0 + fabsf(dy); }
                     } else if (dy != 0) { float dv = (t1 - t0) / dy * 0.5f; t0 -= dv; t1 -= dv; }
                     if (dx != 0) { float du = (s1 - s0) / dx * 0.5f; s0 -= du; s1 -= du; }
@@ -1003,9 +1145,12 @@ void Gs::kick(bool draw) {
                 }
                 Queued c0 = a, c1 = b, c2 = a, c3 = b;
                 c1.y = a.y; c2.y = b.y;                 // c0 = (ax, ay), c1 = (bx, ay), c2 = (ax, by), c3 = (bx, by)
+                if (field_shift) { c0.y += field_shift * 16; c1.y += field_shift * 16; c2.y += field_shift * 16; c3.y += field_shift * 16; }
                 emit_vertex(c0, cur, s0, t0, 1, b.rgba, b.z, b.fog); emit_vertex(c1, cur, s1, t0, 1, b.rgba, b.z, b.fog); emit_vertex(c2, cur, s0, t1, 1, b.rgba, b.z, b.fog);
                 emit_vertex(c1, cur, s1, t0, 1, b.rgba, b.z, b.fog); emit_vertex(c3, cur, s1, t1, 1, b.rgba, b.z, b.fog); emit_vertex(c2, cur, s0, t1, 1, b.rgba, b.z, b.fog);
                 cur.count += 6;
+                if (cur_wide && layout.active())
+                    layout.primitive(frame.vertices, (uint32_t)frame.vertices.size() - 6, 6, cur_path, true, cur.ztst == 1, cur.texture != 0, cur.tex_is_target, prim_serial);
             } else {
                 if (cur.weave_half != 0) {
                     DrawCmd c = cur;
@@ -1023,6 +1168,8 @@ void Gs::kick(bool draw) {
                     emit_vertex(vq[k], cur, s, t, q, cmd_iip ? vq[k].rgba : flat, vq[k].z, vq[k].fog);
                 }
                 cur.count += n;
+                if (cur_wide && layout.active())
+                    layout.primitive(frame.vertices, (uint32_t)frame.vertices.size() - n, n, cur_path, false, cur.ztst == 1, cur.texture != 0, cur.tex_is_target, prim_serial);
             }
         }
     }

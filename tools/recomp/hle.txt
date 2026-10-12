@@ -7,3 +7,20 @@
 355d68   # sceSifInitRpc: handshake with the I/O processor (nothing to shake hands with)
 3205ec   # movie_update: one picture of a film per frame, decoded through the Image Processing Unit; the runtime ends a film at once while it has no such unit
 322520   # mainloop_pollAmbientAudio: once per displayed frame; starts the level's music when its countdown runs out. The runtime holds the countdown while the old music is still fading out (fast loading)
+# ---- native graphics (app/gfx_rt.cpp; docs/issues/native-graphics.md).  Without that file the weak pass-through runs: the game as it is ----
+165950   # mat4_setProjection (sx, sy, scale, ...): the projection CPU-side code uses; widescreen scales sx
+1659d0   # mat4_setProjectionVu: the same for the model vertex programs
+165a70   # mat4_setProjectionVu2: the same for the level vertex programs
+18619c   # camera_setProjection (fov, aspect, fov2, v): the two sets of frustum planes everything is culled by; widescreen widens them
+1863fc   # camera_buildFrustum (matrix): the planes in world space; a 4:3 set is kept beside the wide one for the simulation's one reader
+1e71b0   # game_buildScreenEdgePlanes: the offline two-player screen clamp reads the view planes (simulation); it is handed the 4:3 ones
+14b168   # world_drawObjects: its 2-D packets (names, floating text) belong to places in the world
+1d9cd4   # hud_drawPlayerStatus: a corner of the screen
+1dc708   # hud_drawGold
+1df720   # hud_drawCompass
+1e42e0   # minimap_draw
+1dd270   # hud_spellSelect
+1907d0   # glow_draw: screen-space quads at places in the world
+18fe18   # particle_drawHaze
+1c1108   # inventory_drawTask: a 3-D figure inside a 4:3 menu
+1d1bc0   # stats_task

@@ -60,6 +60,10 @@ int main(int argc, char** argv) {
     int vu_n = 0;
     std::string sheet;                                  // --sheet <file.png> <first id>: the first 48 textures made, from that id on
     int sheet_first = 1;
+    // the picture options of the application (docs/issues/native-graphics.md): --aa N, --anisotropy N,
+    // --mipmaps, --pack DIR (every frame waits for its pictures), --no-layout
+    PictureOptions picture;
+    bool layout = true;
     for (int k = 1; k < argc; k++) {
         std::string a = argv[k];
         auto next = [&]() -> std::string { return k + 1 < argc ? argv[++k] : ""; };
@@ -77,6 +81,11 @@ int main(int argc, char** argv) {
         else if (a == "--list") list_at = atoi(next().c_str());
         else if (a == "--target") read_target = atoi(next().c_str());
         else if (a == "--sheet") { sheet = next(); sheet_first = atoi(next().c_str()); }
+        else if (a == "--aa") picture.samples = atoi(next().c_str());
+        else if (a == "--anisotropy") picture.anisotropy = atoi(next().c_str());
+        else if (a == "--mipmaps") picture.mipmaps = true;
+        else if (a == "--pack") { picture.pack = next(); picture.pack_wait = true; }
+        else if (a == "--no-layout") layout = false;
         else path = a;
     }
     if (path.empty()) { fprintf(stderr, "usage: rta_replay <stream> [--size WxH] [--png prefix] [--at n,...] [--loops n]\n"); return 2; }
@@ -91,8 +100,11 @@ int main(int argc, char** argv) {
     printf("OpenGL: %s | %s\n", (const char*)gl->glGetString(GL_VERSION), (const char*)gl->glGetString(GL_RENDERER));
 
     GlBackend backend;
+    backend.configure(picture);
     backend.set_output_size(width, height);
     Renderer renderer;
+    renderer.gs.name_textures = !picture.pack.empty();
+    renderer.gs.layout.enabled = layout;
     renderer.gs.weave = weave;
     renderer.gs.no_interlace = !interlace;
     renderer.gs.trace = trace;
@@ -217,6 +229,12 @@ int main(int argc, char** argv) {
         printf("%s %s\n", ok ? "wrote" : "cannot write", translate.c_str());
     }
     printf("VU1 main program: %s\n", renderer.vif.vu.translated ? "translated" : "interpreted");
+    {
+        PictureFigures f = backend.figures();
+        printf("picture: %d samples, anisotropy %d; pack files %llu, textures named %llu, found %llu, read %llu (%llu as parts), own mip-mapped parts %llu, held %llu pictures, %.1f MB\n",
+               f.samples, f.anisotropy, (unsigned long long)f.pack_files, (unsigned long long)f.named, (unsigned long long)f.named_found, (unsigned long long)f.replaced,
+               (unsigned long long)f.parts, (unsigned long long)f.own_made, (unsigned long long)f.held, f.held_bytes / 1048576.0);
+    }
     const GsStats& s = renderer.gs.stats;
     const Vif1Stats& v = renderer.vif.stats;
     double n = blank ? (double)blank : 1;

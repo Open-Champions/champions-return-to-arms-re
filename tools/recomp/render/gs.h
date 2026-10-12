@@ -19,6 +19,7 @@
 //    pixel's corner, the graphics APIs at its centre.
 #pragma once
 #include "backend.h"
+#include "layout.h"
 
 #include <cstdint>
 #include <functional>
@@ -51,6 +52,7 @@ class Gs {
     FrameList frame;                    // being built
     GsStats stats;
     bool weave = true;                  // sample two-field interface art as one picture
+    bool name_textures = false;         // work out the emulator-based build's name of every texture made (TextureData::named)
     bool no_interlace = true;           // drop the half-line of XYOFFSET
     int trace = 0;                      // > 0: print draws to stderr
     bool time_paths = false;
@@ -73,6 +75,11 @@ class Gs {
     void gif(int path, const uint32_t* words, size_t quadwords);
     void xgkick(const uint8_t* vu_data, uint32_t qword);
     void privileged(uint32_t address, uint64_t value);
+    // A note from the game side, carried in the VIF1 stream as a NOP code with 0xA5..0xA7 in
+    // its NUM field (tools/recomp/app/gfx_rt.cpp): 0xA5 who made the packets that follow (a
+    // mark for the layout of the 2-D layer), 0xA6 and 0xA7 the halves of the widescreen factor.
+    void note(uint32_t kind, uint32_t value);
+    Layout layout;                      // the 2-D layer of a wide picture
     // Close the frame being built: names what the display shows.  The caller takes `frame`
     // and calls begin_frame() before feeding more.
     void end_frame(uint64_t number);
@@ -105,6 +112,14 @@ class Gs {
     void emit_vertex(const Queued& v, const DrawCmd& c, float s, float t, float q, const uint8_t* rgba, uint32_t z, uint8_t fog = 255);
     float ofx = 0, ofy = 0, zscale = 1.0f / 65536.0f;
     bool cmd_fst = true, cmd_iip = true, cmd_tme = false;
+    int cur_path = 1;                   // the path whose data is being read
+    uint32_t prim_serial = 0;           // counts writes of PRIM (one strip, fan or run of sprites)
+    uint32_t note_high = 0;
+    bool cur_wide = false;              // the state draws into the 1280-wide 3-D buffer
+    // Whether what a display buffer holds came from the 3-D buffer (the present pass) or
+    // was put there directly (pixels sent or drawn straight into it): the picture has the
+    // view's shape in the first case and is 4:3 in the second, whatever the view is.
+    std::map<uint32_t, bool> from_view;
     // ---- render targets ----
     struct Target { uint32_t id = 0; int width = 0, height = 0; uint64_t serial = 0; bool announced = false; uint32_t fbw = 0, psm = 0; uint64_t last_used = 0; };
     void free_unused_targets();
@@ -116,7 +131,7 @@ class Gs {
     uint32_t next_target = 1;
     Target& target_at(uint32_t fbp, int width, int height);
     // ---- transfers and textures ----
-    struct Rect { uint32_t psm, bw; int x, y, w, h; size_t offset, bytes; };
+    struct Rect { uint32_t psm, bw; int x, y, w, h; size_t offset, bytes; uint32_t bw_raw; };
     struct UploadSet { std::vector<Rect> rects; std::vector<uint8_t> data; uint64_t hash = 0, serial = 0; bool used = false; };
     std::map<uint32_t, UploadSet> sets;                 // by destination base pointer
     uint64_t serial = 1;
@@ -139,6 +154,8 @@ class Gs {
     std::unordered_map<uint64_t, Texture> textures;     // by content key
     uint32_t next_texture = 1;
     Texture* texture_for(uint64_t tex0, uint64_t texa);
+    void name_texture(TextureData& out, const UploadSet& set, const uint32_t* palette, int entries, uint32_t psm, uint32_t tbw_raw, uint32_t cpsm,
+                      int named_w, int named_h);
     bool palette_of(const UploadSet& set, uint32_t cpsm, uint32_t* out, int entries);
 };
 

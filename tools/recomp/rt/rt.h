@@ -13,6 +13,7 @@
 
 #include <functional>
 #include <string>
+#include <vector>
 
 // ---- runtime.cpp ------------------------------------------------------------------------
 [[noreturn]] void rt_die(const char* format, ...);
@@ -52,6 +53,13 @@ void rt_signal_sema(u32 id);
 extern void (*rt_at_finish)();
 // "--opt key=value" on the command line, for modules linked with the runtime; nullptr when absent
 const char* rt_option(const char* key);
+// Two places a window program's picture options hook into (tools/recomp/app/gfx_rt.cpp); both
+// null in a headless build.  rt_frame_hook: at the entry of gfx_beginFrame (phase 0) and when
+// it has returned (phase 1), on the game's thread.  rt_dma_tag: for every tag of a source
+// chain on channel 1, before the tag's words go into the stream; it may put VIF NOP codes in
+// front of them (render/vif1.cpp reads the ones with 0xA5..0xA7 in their NUM field).
+extern void (*rt_frame_hook)(Ctx* c, int phase);
+extern void (*rt_dma_tag)(u32 tag_address, std::vector<u32>& stream);
 
 // ---- iop.cpp ----------------------------------------------------------------------------
 struct IopOptions {
