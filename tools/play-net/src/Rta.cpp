@@ -604,10 +604,19 @@ namespace
 		Rta::COnline online;
 
 		// "", "lobby", "host", "host:CODE" or "join:CODE"
-		static bool ParseOnlineMode(const std::string& mode, Rta::COnline::Goal& goal, std::string& code, std::string& error)
+		// "+choose" after host or join: the player chooses the character, although the one
+		// used last is known
+		static bool ParseOnlineMode(const std::string& given, Rta::COnline::Goal& goal, std::string& code, bool& choose, std::string& error)
 		{
 			goal = Rta::COnline::Goal::Lobby;
 			code.clear();
+			choose = false;
+			std::string mode = given;
+			if(mode.size() > 7 && mode.compare(mode.size() - 7, 7, "+choose") == 0)
+			{
+				choose = true;
+				mode.erase(mode.size() - 7);
+			}
 			if(mode.empty() || mode == "lobby") return true;
 			std::string word = mode.substr(0, mode.find(':'));
 			std::string rest = (mode.find(':') == std::string::npos) ? "" : mode.substr(mode.find(':') + 1);
@@ -624,7 +633,7 @@ namespace
 			}
 			else
 			{
-				error = "'" + mode + "' is not lobby, host or join:CODE";
+				error = "'" + given + "' is not lobby, host or join:CODE (host and join may end in +choose)";
 				return false;
 			}
 			error = Rta::COnline::CheckCode(code);
@@ -635,13 +644,14 @@ namespace
 		{
 			Rta::COnline::Goal goal;
 			std::string code;
-			if(!ParseOnlineMode(mode, goal, code, error)) return false;
+			bool choose = false;
+			if(!ParseOnlineMode(mode, goal, code, choose, error)) return false;
 			if(!m_net)
 			{
 				error = "the built-in network is switched off (--rta-no-net)";
 				return false;
 			}
-			online.Start(goal, code, powerOn);
+			online.Start(goal, code, powerOn, choose);
 			if(goal == Rta::COnline::Goal::Host)
 			{
 				Log("online: hosting a game with the code " + code);
@@ -655,6 +665,7 @@ namespace
 		{
 			Rta::COnline::Setup setup;
 			setup.file = (base / "online-login").string();
+			setup.characterFile = (base / "online-character").string();
 			setup.server = ServerKey(options.server);
 			setup.serverText = m_serverText.empty() ? "(none)" : m_serverText;
 			setup.personPresent = !options.testBackground;
@@ -1251,6 +1262,10 @@ namespace
 			return Format("pc=%08x ra=%08x sp=%08x idle=%d", state.nPC, state.nGPR[CMIPS::RA].nV0, state.nGPR[CMIPS::SP].nV0, m_vm->m_ee->m_os->IsIdle() ? 1 : 0);
 		}
 
+		void SetBoundButtons(uint32 buttons)
+		{
+			m_boundButtons = buttons;
+		}
 		bool BlockConfig() const
 		{
 			return m_blockConfig;
@@ -2151,7 +2166,7 @@ namespace
 		int m_listenFd = -1, m_clientFd = -1;
 		std::string m_input;
 		std::deque<Step> m_steps;
-		uint32 m_buttons = 0;
+		uint32 m_buttons = 0, m_boundButtons = 0;
 		uint8 m_stick[2][2] = {{128, 128}, {128, 128}};
 		bool m_stickSet[2] = {false, false};
 		Rta::PadState m_pad;
@@ -2174,6 +2189,15 @@ namespace
 		void Update(uint8* ram) override
 		{
 			CPH_GenericInput::Update(ram);
+			// what the keyboard (and anything bound by hand) holds down, for the one-step
+			// automation: a held button there means "I do this myself"
+			uint32 bound = 0;
+			for(unsigned int i = 0; i < Button::MAX_BUTTONS; i++)
+			{
+				auto button = static_cast<Button>(i);
+				if(!PS2::CControllerInfo::IsAxis(button) && GetBindingManager().GetBindingValue(0, button) != 0) bound |= 1u << i;
+			}
+			g_state.SetBoundButtons(bound);
 			g_state.OnVBlank(*this, ram);
 		}
 
@@ -2260,6 +2284,8 @@ namespace
 		CheckPatches(ram);
 		ControlVBlank(ram);
 		WatchGame(ram, frame);
+		// the player's own buttons: keyboard, controller (as read a frame ago), test script
+		online.SetPlayerButtons(m_boundButtons | m_buttons | m_pad.buttons);
 		online.Tick(ram, PS2::EE_RAM_SIZE, m_isGame);
 		pad.Override(ram);
 		std::string gameNote = GameNote();
@@ -2352,7 +2378,7 @@ void Rta::AddCommandLineOptions(QCommandLineParser& parser)
 	parser.addOption(QCommandLineOption("rta-sound-block", "Milliseconds of sound handed over at a time (kept in the data directory's settings; 30 by default, 100 in Play! itself).", "ms"));
 	parser.addOption(QCommandLineOption("rta-player", "Packaged application: the player number for this start (its own settings and memory card); otherwise the one set in the Online dialog.", "number"));
 	parser.addOption(QCommandLineOption("rta-check-disc", "Say whether a file is a disc image of the game in the version this build is for, and end.", "file"));
-	parser.addOption(QCommandLineOption("rta-online", "Go online by itself after power-on: 'lobby' (also when nothing follows the option) stops at the game list, 'host' in the room of a game of your own named with a code, 'join:CODE' in the room of the game with that code.", "mode"));
+	parser.addOption(QCommandLineOption("rta-online", "Go online by itself after power-on: 'lobby' (also when nothing follows the option) stops at the game list, 'host' in the room of a game of your own named with a code, 'join:CODE' in the room of the game with that code. Host and join take the character you used last; with '+choose' at the end (host+choose) the character screens are yours.", "mode"));
 	parser.addOption(QCommandLineOption("rta-no-online", "Do not go online by itself at this start, whatever the setting says."));
 	parser.addOption(QCommandLineOption("rta-online-name", "Test aid: the player name(s) to use instead of asking in a dialog, separated by commas (the next one is taken when the server refuses one).", "names"));
 	parser.addOption(QCommandLineOption("rta-gateway-port", "Test aid: the TCP port at which this computer looks for the lobby server's gateway (a closed port stands for a server that is not there).", "port"));
@@ -2767,6 +2793,11 @@ std::string Rta::OnlineCheckCode(const std::string& code)
 std::string Rta::OnlineSavedName()
 {
 	return g_state.online.LoginName();
+}
+
+std::string Rta::OnlineLastCharacter()
+{
+	return g_state.online.LastCharacter();
 }
 
 std::string Rta::OnlineNote()

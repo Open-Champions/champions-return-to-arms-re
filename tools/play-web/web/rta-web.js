@@ -20,6 +20,7 @@
 //   auto=trace     DEV: into the first level, then the player's position frame by frame (standing, then walking)
 //   report=1       DEV: POST the speed figures to /report of the same server once a second
 //   shot=NAME.png  DEV: with auto=hub, POST one picture of the canvas in the level to /shot/NAME.png
+//   glprofile=1    DEV: with auto=hub, every WebGL call of the video thread counted for 5 s (slows it down)
 //   title=TEXT     the page's title (tests: "AGENT TEST - browser build")
 import Play from "./Play.js";
 
@@ -729,6 +730,7 @@ async function automatic() {
 			await report("hub", await soundOver(() => rta.measure(15)));
 			await report("hub-burst", { burst: await rta.burst(8) });
 			if(params.get("shot")) await report("shot", await rta.shot(params.get("shot")));
+			if(params.get("glprofile")) await report("gl-profile", await rta.glProfile(5));
 			rta.limiter(false);
 			await sleep(2000);
 			await report("hub-unlimited", await rta.measure(10));

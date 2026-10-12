@@ -1,7 +1,7 @@
 # Browser build (Play! compiled to WebAssembly) — working notes
 
-Status: IN PROGRESS (started 2026-10-11). Kept current while the work goes on; the
-summary at the top is rewritten when figures change.
+Status: a first version runs (2026-10-12): built, measured, usable offline; not yet tried
+by a person. The summary is the state; the rest is the record.
 
 Question: does Champions: Return to Arms (SLUS-20973 v2.00) run at full speed in Chrome
 on an Apple M5 Pro, at the title screen and standing in the first level, with the same
@@ -15,7 +15,7 @@ factor 1 and 2; factor 4 with the canvas the page now uses):
 
 | Where | frames/s | machine thread | video thread | limiter off |
 |---|---|---|---|---|
-| title screen | 59.95 – 60.04 in every run, even at load 115 | 6 – 9 ms/frame | 2.4 – 3.5 ms/frame | — |
+| title screen | 59.95 – 60.04, also at load 115 – 138 (not in three starts under load: point 3 below) | 6 – 9 ms/frame | 2.4 – 3.5 ms/frame | — |
 | first level, standing, factor 2 (load 9) | 59.98 | 9.9 ms CPU/frame | 6.2 ms CPU/frame | 93 frames/s |
 | first level, standing, factor 1 (load 12) | 59.97 | 11.6 ms CPU/frame | 7.4 ms CPU/frame | 76 frames/s |
 | first level, the first 10 s after arriving | 58 | (1,700 blocks of code being translated) | | |
@@ -23,7 +23,7 @@ factor 1 and 2; factor 4 with the canvas the page now uses):
 (Play! runs the NTSC machine at 60.00, not 59.94; "full speed" here is 60.) A frame has
 16.7 ms; the machine thread is the one nearer the limit, with about a third in reserve.
 With the Mac loaded by other test runs (load 80 – 170, which it was for most of this
-work) the level drops to 28 – 53 frames a second; the title holds 60.
+work) the level drops to 28 – 53 frames a second; the title mostly holds 60.
 
 What limits it, in order:
 
@@ -34,16 +34,25 @@ What limits it, in order:
 2. **The video thread** (6 – 7 ms, was 30): every WebGL call is checked and shipped to
    another process; fixed by not making calls that change nothing (below).
 3. **Other work on the computer, and whether the page is in front**: a hidden or covered
-   page is run at low priority with late timers (20 – 45 frames a second, sound breaking
-   up). Nothing a page can do about that.
-4. A canvas larger than about 1200 × 900 pixels costs the video thread some 11 ms a
-   frame of waiting (cause not found); the page keeps its canvas at 896 lines.
+   page is run at low priority with late timers (7 – 45 frames a second, sound breaking
+   up). And the load average does not say how busy the fast cores are: in a Chrome
+   started in the background by the test, page visible, the title ran at 60.04, 59.99
+   and 59.95 in one series (loads 62 – 115) and at 36, 39 and 45 in three other starts
+   (loads 51 – 64; two without sound, one with), while Chrome brought to the front with
+   `open -a` held 60 at load 138. What the other work is (three native instances drawing
+   at 4×, compilers, iCloud) and whether the browser is the application in front both
+   seem to matter; not untangled. Nothing a page can do about it.
+4. A canvas of 1749 × 1312 pixels instead of 1195 × 896 cost speed in each of the
+   three runs that had one (41 – 49 frames a second in the level at load 8, where the
+   same level otherwise ran at 60; 27 – 32 at load 80 with the video thread waiting some
+   11 ms a frame on top of its work). Point 3 may be part of it and the cause was not
+   found; the page keeps its canvas at 896 lines, at which factor 4 ran as fast as
+   factor 2 under the same load.
 
 What was changed to get there (all in `tools/play-web`): the video thread owns the
 canvas (OffscreenCanvas; upstream sends every GL call to the page's main thread);
-redundant GL calls are left out (28,700 calls a frame became 8,300 plus draws and
-uploads) and unchanged uniform blocks are not re-sent (video 30 ms → 13 ms at the same
-load); the mimalloc allocator; the disc read in place by range requests on the machine's
+redundant GL calls are left out (28,700 WebGL calls a frame became 11,700) and unchanged
+uniform blocks are not re-sent (video 30 ms → 13 ms at the same load); the mimalloc allocator; the disc read in place by range requests on the machine's
 thread. Tried without gain: compiling the C++ with WebAssembly SIMD.
 
 **What works** (how each was checked is under "Checked" below): build script; boot of the
@@ -62,11 +71,13 @@ beyond the first level, other browsers than Chrome.
 
 | What | Where |
 |---|---|
-| sources of the web front end, build script, local test server | `tools/play-web/` |
-| my copy of Play! (commit 83700b2c + `play-net.patch` + `play-web.patch`) | `local/play-web-src` (not in the repository) |
-| pristine copies of every Play! file `play-web.patch` touches (as they are after `play-net.patch`) | `local/play-web-orig` |
-| build directory | `local/play-web-build` |
-| the page as served | `local/play-web-site` |
+| sources of the web front end, patch, build script, local test server, README | `tools/play-web/` |
+| my copy of Play! (commit 83700b2c + `play-net.patch` + `play-web.patch` + `src/`) | `local/play-web-src` (not in the repository) |
+| every Play! file `play-web.patch` touches, as it is after `play-net.patch` | `local/play-web-orig` (`local/play-web-out/mkpatch.sh` writes the patch from the two) |
+| build directories | `local/play-web-build`; `local/play-web-build-prof` (`-DPROFILE=ON`, for `rta.zones()`); `local/play-web-build-simd` (the SIMD trial) |
+| the page as served | `local/play-web-site` (and `/prof`, `/simd` below it) |
+| test helpers and their output (not in the repository) | `local/play-web-out`: `chrome-run.py` (a series of page runs in one Chrome tab, in a Chrome of its own, or in the pane), `cpu.py` (thread CPU time of the renderer), `native-trace.py` and `compare-trace.py` (the position trace against the desktop build), `report*.jsonl`, `*-run*.txt` |
+| pictures of the page's canvas (game output) | `local/play-out/web-hub.png`, `web-hub-4x.png` |
 
 ## Installed
 
@@ -76,15 +87,57 @@ highway, python@3.14, openjdk, yuicompressor, and it upgraded node 26.5.0 to 26.
 Nothing else was downloaded (no npm packages: the page is plain HTML and JavaScript, not
 Play!'s React application under `js/play_browser`, which needs `npm install`).
 
-## Log
+## Log (what was done, in order)
 
-- The tree: `local/play-playable` copied without `.git` to `local/play-web-src`, the 18
-  files under `local/play-orig/Source` put back, `tools/play-net/play-net.patch` applied
-  (no rejects).
-- `emcmake cmake … -DBUILD_TESTS=OFF -DBUILD_PLAY=ON -DBUILD_PSFPLAYER=OFF -DUSE_QT=OFF`,
-  `cmake --build . --target Play`: all 429 objects compile with the patch as it is (the
-  Qt/macOS sources of `tools/play-net/src` are not part of this configuration). Only the
-  link failed: Play!'s `-sUSE_ES6_IMPORT_META=0` is no longer accepted by Emscripten 6.
+1. The tree: `local/play-playable` copied without `.git` to `local/play-web-src`, the
+   files under `local/play-orig/Source` put back, `tools/play-net/play-net.patch` applied
+   (no rejects). `emcmake cmake … -DBUILD_TESTS=OFF -DBUILD_PLAY=ON -DBUILD_PSFPLAYER=OFF
+   -DUSE_QT=OFF`: all 429 objects compile with the patch as it is. Only the link failed
+   (`-sUSE_ES6_IMPORT_META=0` is no longer accepted by Emscripten 6).
+2. A front end of our own instead of Play!'s React application (which needs `npm
+   install`): `RtaWeb.cpp`, a plain page. Video thread given the canvas; disc read by
+   range requests; patches written on `OnExecutableChange`; pad, counters, test aids.
+   First run in the pane: boots, title 60, level 26 frames a second.
+3. `rta.glProfile`: 28,700 GL calls a frame → `GlStateShadow.h`, uniform blocks only when
+   changed → video thread 30 → 13 ms.
+4. First run in Google Chrome itself (load 160+): title 60, level 28 – 50; picture saved.
+5. A build with Play!'s profiler zones (`-DPROFILE=ON`): machine thread EE 30 %, VU 28 %,
+   GIF 20 %, VIF 12 %, IOP 5 %. mimalloc. SIMD trial (no gain). Block starts counted:
+   194,000 a frame.
+6. With the Mac quiet: level 60 at factors 1 and 2 in Chrome; 93 with the limiter off.
+7. The "4× is slow" hunt: found that hidden pages and (probably) a background browser
+   without sound are held back by the system; visibility recorded with every figure
+   from then on; canvas capped at 896 lines.
+8. The page for a person: disc picker with the remembered handle, menu (picture factor
+   live, sound, controls, full screen, disc), sound through an AudioWorklet, memory card
+   and settings in the browser's storage, licences, "not affiliated" line. Stand-in file
+   test of the player's disc path; refusals; keyboard; card persistence.
+9. Position trace against the desktop build: rounding difference seen in the bits.
+   Online design written.
+
+## Left to do
+
+- A controller, the file dialog, "Continue with …", full screen and the sound have to be
+  tried by a person (start `tools/play-web/serve.py`, open http://127.0.0.1:8973/).
+- A level reading of the sound at full speed (the Mac was loaded whenever it was tried).
+- Why a 1312-line canvas costs what it does; whether a browser in the background without
+  sound is really held back by macOS (two observations, no proof).
+- Pacing by the display's refresh (the desktop build's `RtaMac.mm` does it; a worker has
+  `requestAnimationFrame`): today the machine runs on a timer at 60.00 and the browser
+  shows each picture at its next refresh, so motion can stutter on a 59.94 or 120 Hz
+  display although nothing is slow. Not looked at.
+- Linking translated blocks with WebAssembly tail calls (`return_call_indirect` through
+  table slots that are patched as Play!'s native code patches jump targets): the largest
+  remaining lever for the machine thread, perhaps 2 of its 10 ms. Not started.
+- Levels beyond the first, fights, spells: not visited. Code the game overwrites after it
+  has run is not noticed in a browser (no page protection); nothing of the kind was seen
+  up to the first level.
+- Safari and Firefox: untested (WebAssembly threads, OffscreenCanvas with WebGL 2 and
+  synchronous range requests on `blob:` addresses in a worker are all needed).
+- A build from an empty directory by `build.sh` (clone, both patches, full compile) was
+  not run; the script was run on the existing tree, and the patches were checked to
+  reproduce it.
+- Online: the relay and the network module (design below).
 
 ## How Play!'s browser port works (read in the source)
 
@@ -209,6 +262,35 @@ With the C++ compiled for WebAssembly SIMD (`-msimd128`; a second build director
 session, load 9): machine thread 10.3 ms CPU per frame, video 6.5 — the same as without
 (10.4 and 6.6). Not used.
 
+A Chrome of its own for the tests (separate profile, started by `chrome-run.py` in
+the background, sound allowed without a click and muted by flag; page visible
+throughout; the Mac busy again with three native instances of another test):
+
+| Factor, canvas | Sound | Where | Load | frames/s | machine ms/frame wall / CPU | video ms/frame wall / CPU | Sound ran dry |
+|---|---|---|---|---|---|---|---|
+| 2, 1195 × 896 | on | title | 62 | 60.04 | 11.2 | 4.7 | 0 times in 10 s, 64 ms queued |
+| 2, 1195 × 896 | on | hub standing | 85 – 96 | 30 – 48 | 21.0 / 19.2 | 15.1 / 14.0 | 53 times in 15 s |
+| 4, 1195 × 896 | on | title | 115 | 59.99 | 12.2 | 5.7 | 0, 67 ms |
+| 4, 1195 × 896 | on | hub standing | 107 – 137 | 48 – 53 | 19.0 / 18.1 | 13.8 / 13.4 | 33 times in 15 s |
+| 4, 1749 × 1312 | on | title | 74 | 59.95 | 10.6 | 4.8 | 0, 68 ms |
+| 4, 1749 × 1312 | on | hub standing | 74 – 94 | 27 – 32 | 37.6 / 21.5 | 26.7 / 15.6 | 53 times in 15 s |
+| 1, 1195 × 896 | off (`sound=0`) | title | 51 – 64 | 38.9, 44.7 (two runs) | 25.6, 21.2 | 19.9, 14.3 | — |
+| 2, 1195 × 896 (a later start) | on | title | 56 | 36.4 | 27.5 | 12.6 | 33 times in 10 s |
+| 2, 1195 × 896 (the same start) | on | hub standing | 76 – 84 | 43 – 46 | 23.1 / 20.2 | 16.7 / 14.8 | 39 times in 15 s |
+| 2, 1195 × 896, **`gl=main`: the WebGL context on the page's main thread as upstream Play! has it**, everything else ours (same Chrome session) | on | hub standing | 76 – 123 | 27 – 29 | 35.8 / 20.8 | 35.3 / 18.5, and the page's main thread 12.5 ms CPU a frame | 52 times in 15 s |
+
+| 2, 1195 × 896, the last build (picture `local/play-out/web-hub-2x.png`) | on | title | 97 | 59.94 | 13.1 | 6.1 | 0 times in 10 s, 86 ms queued |
+| the same | on | hub standing | 69 – 84 | 43.6 – 46.8 | 23.0 / 20.1 | 16.2 / 14.2 | 44 times in 15 s |
+
+So with the load the same within what can be told, the video thread owning its canvas
+gives about 45 frames a second where sending the GL calls to the main thread gives 28.
+
+Figures from the desktop application's browser pane taken while the pane was hidden
+(most of them, late in the evening) are left out: 7 to 50 frames a second at the title
+with both threads at a third of a core. Every figure the page reports now carries the
+time the page was hidden during it (`hidden_seconds`), and the test server stamps the
+load average on every line.
+
 Earlier thread CPU time in Chrome at load 165 (`ps -M` on the renderer process, two readings 20 s apart,
 1,060 frames between them, load 165): machine thread 18.0 ms per frame, video thread
 13.0 ms per frame, every other thread of the renderer under 0.6 ms.
@@ -235,6 +317,18 @@ checked again. Changes (`tools/play-web/src/GlStateShadow.h`, `play-web.patch`):
 the state is remembered on our side and a call that would not change it is not made
 (15,000 calls a frame left out, 8,300 of the watched kinds remain), and the two uniform
 blocks are sent only when their values differ from what was sent last.
+
+### What the video thread still sends (last build, hub, `glprofile=1`)
+
+11,700 WebGL calls a frame for 894 draws, about 13 a draw: `bufferData` 2,502 (the
+vertices of every draw, and the two uniform blocks, which do differ from draw to draw
+most of the time), `activeTexture` 1,740, `bindTexture` 1,728, `texParameteri` 1,586,
+`bindBuffer` 1,501, `drawArrays` 894, `useProgram` 800, `blendFuncSeparate` 784;
+everything else under 40. These are real changes: the game alternates between two kinds
+of draw. What could still be taken out: `activeTexture` (by switching the unit only when
+a call for it is really made, about 1,600 calls), the two `texParameteri` a draw (sampler
+objects), the uniform blocks (one large buffer and `bindBufferRange`). With the video
+thread at 6 – 7 ms of a 16.7 ms frame none of it was done.
 
 ## Checked
 

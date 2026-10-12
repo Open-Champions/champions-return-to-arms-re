@@ -148,8 +148,11 @@ namespace RtaGl
 			glBindBufferBase(target, index, buffer);
 			return;
 		}
-		// it also sets the general binding point
-		if(Skip(g_state.uniformBufferBase[index] == buffer && g_state.uniformBuffer == buffer)) return;
+		// The call also sets the general binding point. When the indexed point holds the
+		// buffer already the call is left out and the general point stays what it is, in
+		// GL and here alike: nothing in the handler takes the general point from this
+		// call (it binds before every glBufferData).
+		if(Skip(g_state.uniformBufferBase[index] == buffer)) return;
 		g_state.uniformBufferBase[index] = buffer;
 		g_state.uniformBuffer = buffer;
 		glBindBufferBase(target, index, buffer);

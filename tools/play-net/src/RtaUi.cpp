@@ -71,6 +71,13 @@ namespace
 	// the one-step log-in's windows (further down)
 	QLineEdit* BuildPlayerName(QDialog& dialog, const std::string& why);
 	QDialog* BuildGameCode(QWidget* parent, const std::string& code);
+	struct GameDialog
+	{
+		QDialog* dialog = nullptr;
+		QLineEdit* code = nullptr;     // Join only
+		QCheckBox* choose = nullptr;   // null when no character is known: the screens come up anyway
+	};
+	GameDialog BuildGameDialog(QWidget* parent, bool join, const QString& typed);
 }
 
 void Rta::ShowControls(QWidget* parent)
@@ -352,6 +359,16 @@ bool Rta::RenderDialog(const std::string& name, const std::string& path)
 		dialog.hide();
 		return saved;
 	}
+	if(name == "host" || name == "join")
+	{
+		auto game = BuildGameDialog(parent, name == "join", "KXRT");
+		std::unique_ptr<QDialog> dialog(game.dialog);
+		dialog->setAttribute(Qt::WA_DontShowOnScreen, true);
+		dialog->show();
+		bool saved = dialog->grab().save(QString::fromStdString(path), "PNG");
+		dialog->hide();
+		return saved;
+	}
 	if(name == "gamecode")
 	{
 		std::unique_ptr<QDialog> dialog(BuildGameCode(parent, "KXRT"));
@@ -496,26 +513,89 @@ namespace
 		return dialog;
 	}
 
+	// Host and Join take the character the player used last on this server from the
+	// game's list of stored characters. The dialogs say which one that is and have the way
+	// to the character screens instead.
+	GameDialog BuildGameDialog(QWidget* parent, bool join, const QString& typed)
+	{
+		GameDialog result;
+		result.dialog = new QDialog(parent);
+		QDialog& dialog = *result.dialog;
+		dialog.setWindowTitle(join ? "Join a game" : "Host a game");
+		auto layout = new QVBoxLayout(&dialog);
+		if(join)
+		{
+			layout->addWidget(new QLabel("The code of your friend's game (they see it when they choose Host a game):", &dialog));
+			result.code = new QLineEdit(typed, &dialog);
+			result.code->setMaxLength(8);
+			result.code->setMinimumWidth(320);
+			layout->addWidget(result.code);
+		}
+		else
+		{
+			auto text = new QLabel("A game of your own is opened and named with a code of four letters for your friends.", &dialog);
+			text->setWordWrap(true);
+			text->setMinimumWidth(380);
+			layout->addWidget(text);
+		}
+		QString last = QString::fromStdString(Rta::OnlineLastCharacter());
+		if(last.isEmpty())
+		{
+			auto none = new QLabel("You make or choose your character on the game's own screens; the next time it is taken by itself.", &dialog);
+			none->setWordWrap(true);
+			layout->addWidget(none);
+		}
+		else
+		{
+			auto with = new QLabel(QString("Your character: <b>%1</b> (the one you used last).").arg(last.toHtmlEscaped()), &dialog);
+			with->setWordWrap(true);
+			layout->addWidget(with);
+			result.choose = new QCheckBox("Choose another character, or make a new one", &dialog);
+			result.choose->setToolTip("The game's character screens are yours. (Holding any button while the game comes up does the same.)");
+			layout->addWidget(result.choose);
+		}
+		auto buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+		buttons->button(QDialogButtonBox::Ok)->setText(join ? "Join" : "Host");
+		QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+		QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+		layout->addWidget(buttons);
+		if(result.code) result.code->setFocus();
+		return result;
+	}
+
 	void HostGame(QWidget* parent)
 	{
+		std::string mode = "host";
+		// nothing to ask when no character is known: the game's screens come up
+		if(!Rta::OnlineLastCharacter().empty())
+		{
+			auto game = BuildGameDialog(parent, false, QString());
+			std::unique_ptr<QDialog> dialog(game.dialog);
+			if(dialog->exec() != QDialog::Accepted) return;
+			if(game.choose && game.choose->isChecked()) mode += "+choose";
+		}
 		std::string error;
-		if(!Rta::OnlineStart("host", error)) QMessageBox::information(parent, "Host a game", QString::fromStdString(error));
+		if(!Rta::OnlineStart(mode, error)) QMessageBox::information(parent, "Host a game", QString::fromStdString(error));
 	}
 
 	void JoinGame(QWidget* parent)
 	{
 		QString typed;
+		bool choose = false;
 		for(;;)
 		{
-			bool ok = false;
-			typed = QInputDialog::getText(parent, "Join a game", "The code of your friend's game (they see it when they choose Host a game):", QLineEdit::Normal, typed, &ok).trimmed().toUpper();
-			if(!ok) return;
+			auto game = BuildGameDialog(parent, true, typed);
+			std::unique_ptr<QDialog> dialog(game.dialog);
+			if(game.choose) game.choose->setChecked(choose);
+			if(dialog->exec() != QDialog::Accepted) return;
+			typed = game.code->text().trimmed().toUpper();
+			choose = game.choose && game.choose->isChecked();
 			std::string wrong = Rta::OnlineCheckCode(typed.toStdString());
 			if(wrong.empty()) break;
 			QMessageBox::information(parent, "Join a game", QString::fromStdString(wrong));
 		}
 		std::string error;
-		if(!Rta::OnlineStart("join:" + typed.toStdString(), error)) QMessageBox::information(parent, "Join a game", QString::fromStdString(error));
+		if(!Rta::OnlineStart("join:" + typed.toStdString() + (choose ? "+choose" : ""), error)) QMessageBox::information(parent, "Join a game", QString::fromStdString(error));
 	}
 }
 

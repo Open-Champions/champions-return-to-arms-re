@@ -139,6 +139,8 @@ namespace Rta
 	std::string OnlineCheckCode(const std::string& code);
 	// the player name saved for the server this run talks to; empty: none
 	std::string OnlineSavedName();
+	// the character this player used last on that server (its name); empty: none known
+	std::string OnlineLastCharacter();
 	// the code of the game being hosted or joined; empty: none
 	std::string OnlineCode();
 	bool OnlineForget();

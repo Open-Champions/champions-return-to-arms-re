@@ -35,6 +35,21 @@
 //             in 5 (the form, for a host) or 6 (the room: window at 0x506140)
 //   0x4fbbe2  1 when a character was chosen there
 //
+// The character screens (playerSel_task 0x225478 and the card screen memcard_importScreen
+// 0x21fa2c, seen by running the game and read from its code):
+//   0x8e2c02  the page (u8): 1 race and class (triangle: "Import"), 2 appearance, 3 ability
+//             points, 4 the name, 5 done, 8 the sheet of an imported character (cross accepts)
+//   0x88d3a0  g_memcardState: -1 none, 9 the "Import Character" list
+//   0x88d3a8  that screen's own state: 1 the list takes the pad (up, down, cross takes the
+//             entry, circle "New", triangle "Re-Scan"); 0xd to 0xf the entry is being
+//             fetched; 0x13, 0x14 an error; 0x16, 0x17 leaving; the rest is the scan
+//   0x4f9230  entries in the list;  0x8e1b43  the highlighted one (u8)
+//   0x4f8ee4  the list: 0xf4 bytes an entry; +2 its kind (2: kept by the server, "RTA
+//             Net"; 0 and 1: on a memory card), +0x48 the server's number for it, +0x4c its
+//             name, +0x9c its class, +0xa5 its level
+//   0x4d8af0  g_players: the character in use is record 0 while the lobby screens are up;
+//             its name first, its class at +0x50
+//
 // A text field (class vtable 0x51cdd0 at +0x48) holds what it shows at +0x52 and its
 // value at +0x2ca, both 16-bit characters; +0x2c9 is one more than the longest text it
 // takes and +0x44c says that it shows stars. The log-in window has two (+0x8a8 name,
@@ -74,6 +89,10 @@ namespace
 	const uint32_t ACCOUNT_FIELD[6] = {0x8A8, 0xCF8, 0x1148, 0x1598, 0x19E8, 0x1E38};
 	const uint32_t LIST_NEXT = 0xC248, LIST_BOX = 0xC244, LIST_HOSTING = 0xC24C, LIST_NAME_FIELD = 0xC210, LIST_FOCUS = 0xC258, LIST_PANE = 0x31C, LIST_CURSOR = 0xC249, LIST_CLIENT = 0x314;
 	const uint32_t CLIENT_GAMES = 0x60, CLIENT_GAME_LIST = 0x98, GAME_SIZE = 0xB8, GAME_NAME = 0x22;
+	const uint32_t A_SEL_PAGE = 0x8E2C02, A_CARD_STATE = 0x88D3A0, A_CARD_SUB = 0x88D3A8;
+	const uint32_t A_IMPORT_COUNT = 0x4F9230, A_IMPORT_CURSOR = 0x8E1B43, A_IMPORT_LIST = 0x4F8EE4;
+	const uint32_t ENTRY_SIZE = 0xF4, ENTRY_KIND = 2, ENTRY_ID = 0x48, ENTRY_NAME = 0x4C, ENTRY_CLASS = 0x9C;
+	const uint32_t A_PLAYERS = 0x4D8AF0, PLAYER_CLASS = 0x50;
 	const uint32_t FIELD_SHOWN = 0x52, FIELD_LIMIT = 0x2C9, FIELD_VALUE = 0x2CA, FIELD_STARS = 0x44C, FIELD_CLASS = 0x48;
 
 	const char* PLACEHOLDER_BIRTH = "01/01/1980"; // the form asks for mm/dd/yyyy
@@ -84,6 +103,7 @@ namespace
 	const int64_t BOOT_LIMIT = 90000;
 	const int64_t NAME_LIMIT_UNATTENDED = 120000;
 	const int64_t GAME_LIMIT = 120000; // for a game with the code to show up in the list
+	const int64_t CHARACTER_LIMIT = 40000; // for the character used last to be taken by itself
 
 	int64_t NowMs()
 	{
@@ -327,6 +347,69 @@ bool COnline::Forget()
 	return dropped;
 }
 
+// ---- the character used last ----------------------------------------------------------------
+// One line per server: server, name, class, the server's number for it (0: not known),
+// separated by tabs. A character's name is no secret (every player in a game sees it).
+
+std::vector<COnline::Character> COnline::ReadCharacters() const
+{
+	std::vector<Character> characters;
+	std::ifstream file(m_setup.characterFile);
+	std::string line;
+	while(std::getline(file, line))
+	{
+		std::vector<std::string> fields;
+		std::string field;
+		std::istringstream stream(line);
+		while(std::getline(stream, field, '\t')) fields.push_back(field);
+		if(fields.size() < 4 || fields[1].empty()) continue;
+		Character character;
+		character.server = fields[0];
+		character.name = fields[1];
+		character.classId = static_cast<uint32_t>(strtoul(fields[2].c_str(), nullptr, 10));
+		character.id = static_cast<uint32_t>(strtoul(fields[3].c_str(), nullptr, 10));
+		characters.push_back(character);
+	}
+	return characters;
+}
+
+bool COnline::FindCharacter(Character& found) const
+{
+	for(const auto& character : ReadCharacters())
+	{
+		if(character.server == m_setup.server)
+		{
+			found = character;
+			return true;
+		}
+	}
+	return false;
+}
+
+bool COnline::StoreCharacter(const Character& character) const
+{
+	if(m_setup.characterFile.empty()) return false;
+	auto characters = ReadCharacters();
+	characters.erase(std::remove_if(characters.begin(), characters.end(), [&](const Character& other) { return other.server == character.server; }), characters.end());
+	characters.push_back(character);
+	std::string fresh = m_setup.characterFile + ".new";
+	std::ofstream file(fresh, std::ios::trunc);
+	for(const auto& c : characters) file << c.server << "\t" << c.name << "\t" << c.classId << "\t" << c.id << "\n";
+	file.close();
+	if(!file || rename(fresh.c_str(), m_setup.characterFile.c_str()) != 0)
+	{
+		unlink(fresh.c_str());
+		return false;
+	}
+	return true;
+}
+
+std::string COnline::LastCharacter() const
+{
+	Character character;
+	return FindCharacter(character) ? character.name : std::string();
+}
+
 // ---- from other threads ---------------------------------------------------------------------
 
 void COnline::Configure(const Setup& setup)
@@ -339,7 +422,7 @@ void COnline::Log(const std::string& line) const
 	if(m_setup.log) m_setup.log(line);
 }
 
-void COnline::Start(Goal goal, const std::string& code, bool powerOn)
+void COnline::Start(Goal goal, const std::string& code, bool powerOn, bool chooseCharacter)
 {
 	std::lock_guard<std::mutex> lock(m_mutex);
 	m_startWanted = true;
@@ -347,6 +430,7 @@ void COnline::Start(Goal goal, const std::string& code, bool powerOn)
 	m_wantedGoal = goal;
 	m_wantedCode = code;
 	m_wantedPowerOn = powerOn;
+	m_wantedChoose = chooseCharacter;
 }
 
 void COnline::Stop(const std::string& why)
@@ -588,10 +672,20 @@ COnline::Screen COnline::Observe(const CMem& mem, bool isGame) const
 		case 9:
 		case 0xA:
 		case 0xB:
+		{
 			s.kind = Screen::CharMenu;
 			s.a = lobby;
 			s.b = mem.U8(A_CHARACTER_CHOSEN);
+			// the page; whether the "Import Character" list is up (1) or another card screen
+			// (2); what that list is doing: 0 scanning, 1 it takes the pad, 2 fetching the
+			// entry taken, 3 an error, 4 something else; its entries and its cursor
+			int32_t card = static_cast<int32_t>(mem.U32(A_CARD_STATE));
+			uint32_t sub = mem.U32(A_CARD_SUB), list = 0;
+			if(card == 9) list = (sub == 1) ? 1 : ((sub >= 0xD && sub <= 0xF) ? 2 : ((sub == 0x13 || sub == 0x14) ? 3 : ((sub >= 0x10 && sub <= 0x12) ? 4 : 0)));
+			s.c = mem.U8(A_SEL_PAGE) | ((card == 9 ? 1u : (card == -1 ? 0u : 2u)) << 8) | (list << 16);
+			if(card == 9 && list != 0) s.d = (mem.U32(A_IMPORT_COUNT) & 0xFF) | (static_cast<uint32_t>(mem.U8(A_IMPORT_CURSOR)) << 8);
 			break;
+		}
 		case 1:
 		case 0xD:
 		case 0xE:
@@ -679,8 +773,14 @@ std::string COnline::Describe(const Screen& s) const
 		         (s.d >> 16) & 0xFF, ((s.d >> 8) & 0xFF) + 1, (s.d & 2) ? "" : ", pad in another pane");
 		return text;
 	case Screen::CharMenu:
-		snprintf(text, sizeof(text), "the character screens (lobby state %u%s)", s.a, s.b ? ", a character is chosen" : "");
+	{
+		static const char* lists[] = {"being read", "open", "fetching the entry taken", "an error", "a question"};
+		if(((s.c >> 8) & 0xFF) == 1)
+			snprintf(text, sizeof(text), "the character screens (lobby state %u%s): the list of stored characters, %s, %u in it, cursor on %u", s.a, s.b ? ", a character is chosen" : "", lists[std::min<uint32_t>((s.c >> 16) & 0xFF, 4)], s.d & 0xFF, ((s.d >> 8) & 0xFF) + 1);
+		else
+			snprintf(text, sizeof(text), "the character screens (lobby state %u%s, page %u%s)", s.a, s.b ? ", a character is chosen" : "", s.c & 0xFF, ((s.c >> 8) & 0xFF) == 2 ? ", a memory card screen" : "");
 		return text;
+	}
 	case Screen::Room:
 		return "a game's room";
 	case Screen::LobbyOther:
@@ -707,6 +807,7 @@ void COnline::Tick(uint8_t* ram, uint32_t ramSize, bool isGame)
 		{
 			m_goal = m_wantedGoal;
 			m_powerOn = m_wantedPowerOn;
+			m_chooseCharacter = m_wantedChoose;
 			m_code = m_wantedCode;
 			m_outcome.clear();
 			m_stage = "starting";
@@ -736,12 +837,17 @@ void COnline::Tick(uint8_t* ram, uint32_t ramSize, bool isGame)
 		m_listSeen = false;
 		m_characterSeen = m_gamePressed = m_gameSent = m_joinPressed = m_joinSent = false;
 		m_lookingSince = 0;
+		m_charAuto = m_charPickPressed = m_charFetching = m_charStored = m_charOpen = false;
+		m_lastCharacter = Character();
+		m_pickedName.clear();
+		m_pickedId = 0;
 		m_askEarly = !HasLogin();
 		Log(std::string("online: going online by itself") + (m_powerOn ? " from power-on" : "") + "; server " + m_setup.serverText + "; " + (HasLogin() ? "a saved login for it is there" : "no saved login for it yet"));
 	}
 	if(!m_active) return;
-	// the character screens are the player's own to do
-	m_driving = isGame && !(m_haveScreen && m_screen.kind == Screen::CharMenu);
+	// the character screens are the player's own to do, unless the character used last is
+	// being taken from the game's list
+	m_driving = isGame && !(m_haveScreen && m_screen.kind == Screen::CharMenu && !m_charAuto);
 
 	if(m_hold > 0)
 	{
@@ -802,6 +908,9 @@ void COnline::Tick(uint8_t* ram, uint32_t ramSize, bool isGame)
 	if(now.kind == Screen::CharMenu)
 	{
 		m_lastChange = clock; // a person is choosing or making a character: no hurry
+		// taking the character used last has its own limit, and failing it is no failure:
+		// the screens are then the player's
+		if(m_charAuto && clock - m_charSince > CHARACTER_LIMIT) HandOverCharacter("it took too long");
 		return;
 	}
 	if(now.kind == Screen::List && m_goal == Goal::Join && !m_joinSent)
@@ -830,6 +939,7 @@ void COnline::Tick(uint8_t* ram, uint32_t ramSize, bool isGame)
 
 void COnline::Act(const CMem& mem, const Screen& s)
 {
+	if(m_charOpen && !m_charStored && mem.U8(A_CHARACTER_CHOSEN) == 1) RememberCharacter(mem);
 	switch(s.kind)
 	{
 	case Screen::NoGame:
@@ -891,8 +1001,7 @@ void COnline::Act(const CMem& mem, const Screen& s)
 			Fail("the game is at " + Describe(s));
 			return;
 		}
-		m_characterSeen = true;
-		Say("choose your character (new, or triangle for a stored one) - it goes on by itself when you have");
+		ActCharacter(mem, s);
 		return;
 	case Screen::Room:
 		if(m_goal == Goal::Host && m_gamePressed)
@@ -906,6 +1015,201 @@ void COnline::Act(const CMem& mem, const Screen& s)
 		Fail("the game is at " + Describe(s));
 		return;
 	}
+}
+
+// The character that is now in use is kept for the next time, per server.
+void COnline::RememberCharacter(const CMem& mem)
+{
+	m_charStored = true;
+	Character character;
+	character.server = m_setup.server;
+	character.name = mem.Str(A_PLAYERS, 31);
+	character.classId = mem.U32(A_PLAYERS + PLAYER_CLASS);
+	bool fine = !character.name.empty();
+	for(char c : character.name) fine = fine && (static_cast<unsigned char>(c) >= 32) && (c != '\t');
+	if(!fine)
+	{
+		Log("online: the character in use has no name that can be kept; none is remembered");
+		return;
+	}
+	if(character.name == m_pickedName) character.id = m_pickedId;
+	Log(StoreCharacter(character) ? "online: the character in use is remembered for this server (online-character in the data directory): the next game takes it by itself" : "online: the character in use could NOT be written down for the next time");
+}
+
+void COnline::HandOverCharacter(const std::string& why)
+{
+	if(!m_charAuto) return;
+	m_charAuto = false;
+	m_buttons = 0;
+	m_hold = m_settle = 0;
+	Log("online: the character screens are the player's: " + why);
+	Say("choose your character yourself (" + why + ") - it goes on by itself when you have");
+}
+
+// The character screens of a game hosted or joined. They are the player's - unless the
+// character used last on this server is known: then it is taken from the game's own list
+// of stored characters (triangle "Import" on the first page, the entry, cross; cross again
+// on its sheet). Whatever is not as expected hands the screens to the player where they
+// are; so does a button the player holds down while this is going on.
+void COnline::ActCharacter(const CMem& mem, const Screen& s)
+{
+	const uint32_t page = s.c & 0xFF, card = (s.c >> 8) & 0xFF, list = (s.c >> 16) & 0xFF;
+	const uint32_t count = s.d & 0xFF, cursor = (s.d >> 8) & 0xFF;
+	if(!m_characterSeen)
+	{
+		m_characterSeen = true;
+		m_charSince = NowMs();
+		m_charAuto = !m_chooseCharacter && FindCharacter(m_lastCharacter);
+		if(m_charAuto)
+			Log("online: the character used last on this server is known: taking it from the list of stored characters (a held button hands the screens to the player)");
+		else
+			Log(m_chooseCharacter ? "online: the character screens are the player's, as asked" : "online: no character has been used on this server from here yet: the character screens are the player's");
+	}
+	// the entry of the list that is being taken, by this or by the player: its number goes
+	// with the name that is remembered
+	uint32_t entries = mem.Pointer(A_IMPORT_LIST);
+	if(card == 1 && list == 2 && entries && cursor < count)
+	{
+		uint32_t entry = entries + cursor * ENTRY_SIZE;
+		m_pickedName = mem.Str(entry + ENTRY_NAME, 31);
+		m_pickedId = (mem.U8(entry + ENTRY_KIND) == 2) ? mem.U32(entry + ENTRY_ID) : 0;
+	}
+	if(s.b)
+	{
+		Say("entering the game with your character");
+		return;
+	}
+	m_charOpen = true;
+	if(!m_charAuto)
+	{
+		if(m_chooseCharacter || m_lastCharacter.name.empty()) Say("choose your character (new, or triangle for a stored one) - it goes on by itself when you have");
+		return;
+	}
+	if(m_playerButtons != 0 && !m_charFetching)
+	{
+		HandOverCharacter("you held a button");
+		return;
+	}
+	const std::string& name = m_lastCharacter.name;
+	if(card == 2)
+	{
+		HandOverCharacter("a memory card screen is up");
+		return;
+	}
+	if(card == 0)
+	{
+		switch(page)
+		{
+		case 0: // coming up
+			Say("your character " + name + " (hold any button to choose another)");
+			return;
+		case 1: // race and class: triangle is "Import"
+			Say("your character " + name + " (hold any button to choose another)");
+			if(m_charPickPressed)
+			{
+				// back here after the entry was taken: it was not fetched
+				if(m_sameFrames >= 60) HandOverCharacter(name + " could not be taken from the list");
+				return;
+			}
+			if(m_sameFrames < 45) return;
+			if(m_presses >= 5)
+			{
+				HandOverCharacter("the list of stored characters does not open");
+				return;
+			}
+			Press(m_setup.triangle, 10, 40);
+			return;
+		case 8: // the sheet of the character that was fetched
+			Say("entering the game with your character " + name);
+			if(!m_charPickPressed)
+			{
+				HandOverCharacter("a character's sheet is up that was not asked for");
+				return;
+			}
+			if(m_sameFrames < 20) return;
+			if(m_presses >= 5)
+			{
+				HandOverCharacter("the character's sheet does not answer");
+				return;
+			}
+			Press(m_setup.cross, 10, 40);
+			return;
+		case 5: // done: the game is on its way out of these screens
+			if(m_charPickPressed)
+			{
+				Say("entering the game with your character " + name);
+				return;
+			}
+			HandOverCharacter("the screens for a new character are up");
+			return;
+		default:
+			HandOverCharacter("the screens for a new character are up");
+			return;
+		}
+	}
+	// the "Import Character" list
+	switch(list)
+	{
+	case 0:
+		Say("looking for your character " + name);
+		return;
+	case 2:
+		m_charFetching = true;
+		Say("fetching your character " + name);
+		return;
+	case 1:
+		break;
+	default:
+		HandOverCharacter(list == 3 ? "the game shows an error on the list of stored characters" : "the game asks a question on the list of stored characters");
+		return;
+	}
+	Say("looking for your character " + name);
+	if(m_charFetching)
+	{
+		HandOverCharacter(name + " could not be fetched");
+		return;
+	}
+	if(m_sameFrames < 20) return;
+	// by the server's number when it is known and still has that name; else by name and
+	// class, those kept by the server first; two that fit are for the player to tell apart
+	int found = -1, fits = 0;
+	for(int pass = 0; pass < 3 && found < 0 && entries; pass++)
+	{
+		fits = 0;
+		for(uint32_t i = 0; i < count && i < 50; i++)
+		{
+			uint32_t entry = entries + i * ENTRY_SIZE;
+			bool kept = mem.U8(entry + ENTRY_KIND) == 2;
+			bool same = mem.Str(entry + ENTRY_NAME, 31) == name;
+			bool fit = (pass == 0) ? (kept && same && m_lastCharacter.id != 0 && mem.U32(entry + ENTRY_ID) == m_lastCharacter.id)
+			                       : (same && mem.U32(entry + ENTRY_CLASS) == m_lastCharacter.classId && (kept == (pass == 1)));
+			if(!fit) continue;
+			if(fits++ == 0) found = static_cast<int>(i);
+		}
+		if(fits > 1) break;
+	}
+	if(found < 0)
+	{
+		HandOverCharacter("your character " + name + " is not among the stored ones any more: take another with cross, or circle for a new one");
+		return;
+	}
+	if(fits > 1)
+	{
+		HandOverCharacter("more than one stored character is called " + name + ": take yours with cross");
+		return;
+	}
+	if(static_cast<uint32_t>(found) != cursor)
+	{
+		Press((static_cast<uint32_t>(found) > cursor) ? m_setup.down : m_setup.up, 8, 14);
+		return;
+	}
+	if(m_presses >= 4)
+	{
+		HandOverCharacter("the game does not take " + name + " for this game");
+		return;
+	}
+	m_charPickPressed = true;
+	Press(m_setup.cross, 10, 40);
 }
 
 void COnline::ActNet(const CMem&, const Screen& s)
@@ -1191,7 +1495,10 @@ void COnline::ActHost(const CMem& mem, const Screen& s)
 	{
 		if(m_characterSeen)
 		{
-			Fail("no game was opened (the character screens were left without a character?)");
+			// back from the character screens: the form for the new game comes up a few
+			// frames after the list does
+			Say("opening your game");
+			if(m_sameFrames > 180) Fail("no game was opened (the character screens were left without a character?)");
 			return;
 		}
 		Say("hosting a game");
@@ -1270,7 +1577,9 @@ void COnline::ActJoin(const CMem& mem, const Screen& s)
 	}
 	if(m_characterSeen)
 	{
-		Fail("game " + m_code + " was not joined (the character screens were left without a character?)");
+		// back from the character screens: the room comes up a few frames later
+		Say("joining game " + m_code);
+		if(m_sameFrames > 180) Fail("game " + m_code + " was not joined (the character screens were left without a character?)");
 		return;
 	}
 	if(keyboard || s.c != 0 || !listHasPad)

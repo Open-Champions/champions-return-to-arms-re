@@ -223,6 +223,7 @@ namespace Rta
 		bool m_chooseCharacter = false; // asked for: the player chooses
 		bool m_charAuto = false;        // the application is choosing the character used last
 		bool m_charPickPressed = false, m_charFetching = false, m_charStored = false;
+		bool m_charOpen = false;        // the screens were seen with no character chosen yet
 		Character m_lastCharacter;      // the one looked for
 		std::string m_pickedName;       // the list entry last taken, by anyone
 		uint32_t m_pickedId = 0;
