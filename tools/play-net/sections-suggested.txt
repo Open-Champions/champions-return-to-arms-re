@@ -23,3 +23,9 @@ Net test: carried weight is recomputed only inside the simulation
 Net test: prediction copy starts without pending damage
 Net test: equalise at once (LAG-1)
 Net test: peer silence time-out 900 -> 1440 calls
+Net test: trim leaves one spare frame (LAG-2)
+Net test: 4-player send cycle 6 -> 4 (LAG-3)
+Net test: 3-player send cycle 4 -> 3 (LAG-4)
+Net test: kick request is answered for a peer already dropped
+Net test: a peer being dropped still bounds the input lead
+Net test: flush before a level load waits for the peers' tick
