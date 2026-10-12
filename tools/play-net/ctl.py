@@ -42,6 +42,10 @@ square triangle l1 l2 l3 r1 r2 r3 start select):
                              runs (the same frame with and without); reload: the folder
                              is listed again and every picture read again. "info" then
                              says tex_pending=0 when all that are drawn with are in
+    texcrop 0|1              1 (the default): only the part of a replacement the game
+                             draws with is given to the graphics card; 0: all of it.
+                             Every picture is read again ("info": tex_cropped, tex_regrown)
+    texmemory <MB>           what --rta-texture-memory sets, in the running game
     info                     frame number, clocks, thread processor times, the display's
                              rate, executable, network and texture counters
     gs                       the display state: interlace, field, the buffer shown

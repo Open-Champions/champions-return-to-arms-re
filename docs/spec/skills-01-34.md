@@ -5,9 +5,15 @@ Second-round document. `docs/skills.md` catalogues all 101 skills; this file spe
 every simulated frame, every damage call with its arguments, and every draw from a random
 generator in order. It was written from the decompile of each function listed, with the
 disassembly consulted wherever the decompile was ambiguous. Nothing here was run on a
-console or an emulator. That still holds: the emulator the project now runs the game in
-(Play!, not a PlayStation 2 and not PCSX2; `FINDINGS.md`, "Run on the live game" (rows V1–V23) and `docs/issues/live-rig.md`)
-has not been used to look at a skill, and the test patches run on a live game so far are the five marked confirmed in the patch file (FINDINGS V10, V11, V16, V19, V22).
+console or an emulator when it was written. Since then two things have happened. The
+functions of these skills were executed one at a time in `tools/ee_emu.py`; what that
+confirmed and what it corrected is in `docs/spec/skills-01-34-executed.md`, section 3.
+Its rows 1 to 19 are noted in the sections below as "Executed"; rows 20 to 28 (sections
+5, 6, 8 and 10) are in that table only. And the project runs the game
+in an emulator (Play!, not a PlayStation 2 and not PCSX2; `FINDINGS.md`, "Run on the live
+game", and `docs/issues/live-rig.md`): skills were cast there in a sweep that compared
+two machines for sync (FINDINGS V24), which checks none of the numbers in this document.
+Which test patches have run on a live game is marked section by section in the patch file.
 
 Every statement is **Observed** (read at the address given) unless it is marked *Inferred*
 or *Unknown*. Pseudo-code is mine; it is not decompiler output. Numbers are decimal unless
@@ -391,6 +397,18 @@ no numerical difference.
 
 A null descriptor makes `damage_apply` use its all-empty default. Flag 0x100 is the
 lightning colour class.
+
+Executed (`docs/spec/skills-01-34-executed.md` section 3, rows 18 and 19). The damage line
+is as written, and worth a number because the constant is below a third and the product
+truncates: at rank 1 (statistic 0 = 135) the beam deals 44 a tick, not 45, and a side beam
+11 (0x2f2b70, 0x2f2c50). The side chains, left as presentation in step 3, were run as
+well. Side chain k has four nodes relative to the **primary** target. Nodes 1–3 are pulled
+toward side target k's middle by (j × 0.3333333)³, measured from the primary target's
+position plus half its height. Its segment length goes toward min(3 × rest, 1.1 × the side
+target's plane distance from the tip) × 0.3333333 at rate 0.05; an unused chain's goes
+toward the rest length. Each side target is tinted like the primary one. The side chains
+then take the same integration step as the main chain, with their own lengths and spoke
+directions (0x2f25d8–0x2f27bc, 0x2f2cd8–0x2f3120).
 
 **Draws, in order.** Cast: shared ×1 (seed), spell ×1. Per frame with a target: spell ×10
 if the target's model has sample points; on frames divisible by 20: spell ×1 then
@@ -1315,6 +1333,15 @@ id 13 only, after the above: if the owner is a dead non-player creature:
     holder.slot8(1, 0); delete self
 ```
 
+Executed for id 13, Fire Weapons (`docs/spec/skills-01-34-executed.md` section 3, row 11;
+0x2e4310–0x2e445c): the line "(opening effect … plus its light)" hides three phases of the
+light. During the opening, and while more than 30 frames are left, its range is
+(float)((int)((sin16(frame × 4000) + sin16(frame × 2000)) × 4) + 110). In the last 30
+frames it is min(300, left × (1/30) × 110), taken with the R5900's `min.s` (0x2e43d8) and
+not truncated. Both range words get that value and both inverse squares 1 / range²; the
+position is the run position plus (cos, sin of the facing) × 18. Each opening particle
+takes two own balls (position, then velocity), ten particles a frame. Presentation.
+
 The aura gives nearby players a 31-frame entry every 30 frames. The same misread applies:
 an ally's entry is refreshed only while its **minimum damage is below 31**. s3 reaches 31 at
 level 16 for id 12, level 12 for id 14 and level 4 for id 26 (never within 20 levels for id
@@ -1610,6 +1637,11 @@ type 0x20: chance %, minimum, maximum cold damage):
 |---|---|---|---|---|---|
 | chance, min–max | 10, 10–20 | 12, 12–24 | 14, 14–26 | 16, 16–28 | 18, 18–30 |
 
+Executed (`docs/spec/skills-01-34-executed.md` section 3, row 14): the parser builds the
+record in its own stack frame and copies all 0x48 bytes out, so bytes +6, +0x22, the
+values of the three empty slots and +0x44 of the hammer's record are whatever that stack
+held. Nothing known reads them. (This is the item-record class of FINDINGS I1 and V30.)
+
 The parser is called with variant −1, which ends in `item_randomizeVariant` 0x1046e0; the
 `warhammer` definition has two model variants (bits 11–15 of its flag word are 2), so
 **one shared draw** is made there (`draw mod 2`, model only). After parsing, the stored
@@ -1692,6 +1724,12 @@ Points worth copying exactly:
   passed is still the owner.
 - State 0 runs the box query and one terrain ray per candidate every frame.
 - When a case falls back to state 0 in the same frame the default k and damp apply.
+  Executed (`docs/spec/skills-01-34-executed.md` section 3, row 12): true only for state 3
+  losing its target. State 4 sets its own values (position k 0.01, damp 0.2, pitch and
+  roll targets 0, yaw velocity −3500) **before** it looks at the target, so the frame in
+  which a dead target ends the spin still moves with the spin's values (stores
+  0x2eec20–0x2eec44, target test after 0x2eee5c). State 3's PvP exit at c ≥ 61 likewise
+  keeps the strike's values (0.006, 0.15) for that frame (0x2eeadc–0x2eeaec).
 - States 1 and 2 exist in the switch (a wind-up and a lunge that damages on contact) but no
   instruction in the class stores 1 or 2 from state 0 (stores to +0xc8 in the function:
   0, the 3-or-4 choice at 0x2ee638, 2 at 0x2ee6cc inside case 1, 3 at 0x2ee96c inside case
@@ -1705,7 +1743,16 @@ shared draws, including the always-drawn chance roll for the cold entry.
 
 **Presentation only.** Shaft, light, the hammer model and its orientation springs
 (+0xac…+0xc0, driven by heading differences and `sin16(frame × 1024)`, `sin16(frame × 800)`),
-particles (fourth generator), sounds, draw 0x2ef78c.
+particles (fourth generator), sounds, draw 0x2ef78c. Executed since
+(`docs/spec/skills-01-34-executed.md` section 3, row 13; 0x2ef0b0–0x2ef24c,
+0x2ef42c–0x2ef700). Yaw: yaw += v, with v = (v + (s16)(aim − (int)yaw) × k) × (1 − d) and
+(k, d) = (0.0003, 0.01) at rest, (0.1, 0.6) with a live target. Pitch and roll go to their
+targets (−10000 and 16384 at rest; pitch −20000 for 31 ≤ c ≤ 41 of the strike) with gain
+0.05 and damping 0.2; both velocities then get sin16(frame << 10) × 20 and
+sin16(frame × 800) × 20. Particle count: 2, or (int)((1 − t) × 100) + 2 with t = frames
+left × (1/120) below 1, and 3000 on the last frame. Each particle takes one draw of
+0x404468 for the sample point — modulo the point count, which is not tested for 0 — and
+three for a jitter and a ball.
 
 **Per-machine state.** The particle count uses the fourth generator 0x404468, which is
 per-machine; it feeds nothing else. The cutscene flag is read from simulation code (shared
@@ -2022,6 +2069,13 @@ best unconditionally. Until an undead enemy behind the caster has been seen (`ba
 1e7) every qualifying undead in front replaces the previous one, so the choice is the
 **last** such creature in box order, not the nearest; the mirror-image holds for `back`. A
 rebuild has to copy the loop as written. Draws: shared ×1.
+
+Executed (`docs/spec/skills-01-34-executed.md` section 3, rows 15 and 16). The aim point
+without a target is not one product by 48000: it is (cos16 × 12.0) × 4000.0, two
+truncating products (0x2f5664, 0x2f5674; 0x2f5688, 0x2f569c for y). And +0xb0 is not a
+handle the constructor stores: the result of its `sound_playOnObject` call is dropped
+(0x2f5764), so the word is whatever the block held, and the run hands it to
+`voice_setPosition` every frame (0x2f5d48).
 
 **Run** (0x2f57b0), each frame:
 
@@ -2724,6 +2778,13 @@ The blow lands on the frame the animation passes 0.594 s. `kb` is the knock-back
 death code reads. A surviving target is stunned when `(d mod 100) + 1 <= stunChance`, i.e.
 with probability stunChance %. A killed target costs no stun draw.
 `Player_run` polls spell slot 4 (0x2fb67c, returns `done`) for ids 34 and 49.
+
+Executed (`docs/spec/skills-01-34-executed.md` section 3, row 17; 0x2fb380–0x2fb3e0): in
+the prop fallback the sphere query is handed the **same list head** as the arc query
+before it (0x2fb3a4), so it adds to that list and the walk that follows covers both — as
+section 49 of `docs/spec/skills-35-68.md` says of Bash. The pseudo-code's "first entry of
+`world_collectInSphere`" does not show that. (The head being shared is executed; the
+callee's linking was a stub in that run.)
 
 **Draws, in order.** Cast: shared ×1. Wind-up frames: spell ×(203 × at least 4). Blow: per
 target `damage_apply`'s shared draws (base roll, since lo < hi), then shared ×1 for the

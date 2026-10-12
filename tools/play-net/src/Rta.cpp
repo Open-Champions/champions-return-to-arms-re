@@ -1714,6 +1714,22 @@ namespace
 					push(Step::REPLY, 0, "ok");
 				}
 			}
+			else if(name == "texcrop" && words.size() == 2)
+			{
+				// texcrop 0|1: hand the whole of every replacement picture to the GPU, or
+				// only the part of it the game draws with (the default); every picture is
+				// read again
+				CGSH_OpenGL::g_textureReplaceCrop = (number(1, 1) != 0);
+				CGSH_OpenGL::g_textureReplaceReload++;
+				push(Step::WAIT, 3);
+				push(Step::REPLY, 0, "ok");
+			}
+			else if(name == "texmemory" && words.size() == 2)
+			{
+				// texmemory MB: what --rta-texture-memory sets, in the running game
+				CGSH_OpenGL::g_textureReplaceBudget = static_cast<uint64>(std::max<uint32>(1, number(1, 3072))) * 1024 * 1024;
+				push(Step::REPLY, 0, "ok");
+			}
 			else if(name == "displaypatch" && words.size() == 3)
 			{
 				// displaypatch all|<index> 0|1: a display patch off or on while the game runs
@@ -1886,12 +1902,13 @@ namespace
 							             (unsigned long long)s.udpToServer, (unsigned long long)s.udpToPeers, (unsigned long long)s.udpFromPeers, s.dhcpDone ? 1 : 0, s.dnsAnswered ? 1 : 0);
 						}
 						const auto& tc = CGSH_OpenGL::g_textureCounters;
-						std::string textures = Format("textures_dumped=%llu textures_replaced=%llu tex_made=%llu tex_held=%llu tex_by_upload=%llu tex_by_memory=%llu tex_memory_read=%llu tex_in_place=%llu tex_short_lived=%llu uploads=%llu tex_bytes=%llu tex_replace_on=%d tex_replacements=%llu tex_replacement_bytes=%llu tex_pending=%llu tex_dropped=%llu",
+						std::string textures = Format("textures_dumped=%llu textures_replaced=%llu tex_made=%llu tex_held=%llu tex_by_upload=%llu tex_by_memory=%llu tex_memory_read=%llu tex_in_place=%llu tex_short_lived=%llu uploads=%llu tex_bytes=%llu tex_replace_on=%d tex_replacements=%llu tex_replacement_bytes=%llu tex_pending=%llu tex_dropped=%llu tex_cropped=%llu tex_regrown=%llu",
 						                              static_cast<unsigned long long>(m_texturesDumped.load()), static_cast<unsigned long long>(m_texturesReplaced.load()), static_cast<unsigned long long>(tc.created.load()), static_cast<unsigned long long>(tc.alive.load()),
 						                              static_cast<unsigned long long>(tc.byUpload.load()), static_cast<unsigned long long>(tc.byMemory.load()), static_cast<unsigned long long>(tc.memoryHashed.load()), static_cast<unsigned long long>(tc.inPlace.load()),
 						                              static_cast<unsigned long long>(tc.shortLived.load()), static_cast<unsigned long long>(tc.uploads.load()), static_cast<unsigned long long>(tc.bytes.load()),
 						                              CGSH_OpenGL::g_textureReplaceOn.load() ? 1 : 0, static_cast<unsigned long long>(tc.replacements.load()), static_cast<unsigned long long>(tc.replacementBytes.load()),
-						                              static_cast<unsigned long long>(tc.replacementsPending.load()), static_cast<unsigned long long>(tc.replacementsDropped.load()));
+						                              static_cast<unsigned long long>(tc.replacementsPending.load()), static_cast<unsigned long long>(tc.replacementsDropped.load()),
+						                              static_cast<unsigned long long>(tc.replacementsCropped.load()), static_cast<unsigned long long>(tc.replacementsRegrown.load()));
 						Reply(Format("ok frame=%llu ms=%lld us=%llu cpu_us=%llu video_cpu_us=%llu display_hz=%.2f refreshes_per_frame=%d %s exe=%s game=%d %s", static_cast<unsigned long long>(m_frame.load()), static_cast<long long>(ms), static_cast<unsigned long long>(us),
 						             static_cast<unsigned long long>(m_cpuMicroseconds.load()), static_cast<unsigned long long>(m_gsCpuMicroseconds.load()), Rta::DisplayRefreshRate(), Rta::DisplayRefreshesPerFrame(), textures.c_str(), m_vm->m_ee->m_os->GetExecutableName(), m_isGame ? 1 : 0, net.c_str()));
 					}

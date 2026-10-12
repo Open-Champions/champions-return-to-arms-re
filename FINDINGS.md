@@ -2,8 +2,13 @@
 
 Each row says what kind of claim it is. "Observed" = read directly from the bytes at the
 address given. "Inferred" = follows from observations but not seen happening. "Unknown" =
-not established; the note says what would settle it. Nothing here was observed on a
-running game.
+not established; the note says what would settle it. Two more kinds came later.
+"Executed" = run with `tools/ee_emu.py`, one function at a time on state built by a test
+(section "Executed in isolation"). "Ran" = seen on the running game in the Play! emulator,
+mostly on the two-machine rig of `docs/issues/live-rig.md` (section "Run on the live
+game"). The first version of this page said that nothing here was observed on a running
+game; that is no longer so for the rows marked "Ran". It is still so for a PlayStation 2
+and for PCSX2: no row was observed on either.
 
 Paths under `scripts/`, `decomp/` and `extracted/` are files you generate locally from your
 own disc with the tools in this repository; they are not part of it.
@@ -535,7 +540,7 @@ machine has the first three fixes; the chat-room one needs another rebuild and r
 | LS2 | The server's forced-logout notice (0x41) carries a 32-bit field where the game reads a 16-bit one; no visible effect. **Fixed in the fork (6a909ed):** the notice is now 12 bytes. Seen by the real game as 12 bytes (V55) | Ran (rig) | `NotifyForcedLogout::Serialize`; docs/issues/live-rig.md section 19, S2 |
 | LS3 | The server checks for timed-out connections before it reads its sockets, so after the host computer has slept for more than 120 seconds every client is dropped with its waiting data unread. **Fixed in the fork (6a909ed):** sockets are read first, and time during which the server itself did not run is not counted. Run against the real game with the server held for 140 s (V55) | Ran (rig) | `LobbyServer::Run`, `CheckSocketProblem`; docs/issues/live-rig.md section 19, S3 |
 | LS4 | Smaller points: the game list's first column shows the game id plus one (not understood; may not be a server matter); the second array of the game-list reply is empty with nothing visibly missing | Ran (rig) | docs/issues/live-rig.md section 19, S4–S5 |
-| LS5 | A resumed session is not put back into its chat room, so the game's leave-room request then gets result 1; the game ignores it. **Fixed in the fork:** the lost session remembers its public room and is re-entered on resume (tested with the script client, not yet with the real game). A corner remains: if the console's own leave request was lost with the connection, the session is put back into a room the game believes it left | Ran (rig) | `ResumeSession` in `Source/Game/RealmUserManager.cpp`; docs/issues/live-rig.md section 20, S6 |
+| LS5 | A resumed session is not put back into its chat room, so the game's leave-room request then gets result 1; the game ignores it. **Fixed in the fork:** the lost session remembers its public room and is re-entered on resume (tested with the script client, not yet with the real game). Run with the real game since (docs/issues/live-rig.md 22.6): after a session is picked up on the game list, the game's leave-room request for the public room gets result 0. A corner remains: if the console's own leave request was lost with the connection, the session is put back into a room the game believes it left | Ran (rig) | `ResumeSession` in `Source/Game/RealmUserManager.cpp`; docs/issues/live-rig.md section 20, S6 |
 
 ## What "source" the disc contains
 

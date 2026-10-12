@@ -1,0 +1,20 @@
+# Functions the network shim (tools/recomp/net/netshim.cpp) supplies in the native build.
+# build_net.py appends this list to tools/recomp/hle.txt for its own translation
+# (local/recomp-out/gen-net*); the shared hle.txt is not changed.  One hex address per line.
+#
+# The ten places where the game's own netcode enters Sony's network library - the same ten
+# the rig replaces (tools/rig/rig.cpp, class CNetShim; docs/issues/live-rig.md 4d):
+365ec0   # sceLibnetInitialize
+365a08   # sceInetGetInterfaceList
+365a90   # sceInetInterfaceControl
+3654a8   # sceInetCreate
+365518   # sceInetOpen
+365560   # sceInetClose
+365830   # sceInetSendTo
+365670   # sceInetRecvFrom
+137a10   # net_loadModules
+13e638   # net_linkCheck
+# Hooks; the original runs in each of them:
+19b6e4   # gfx_vblankHandler: once per vertical blank - the shim's frame counter, the link exchange, the input script
+17421c   # pad_readPort: the 8-byte raw pad record is overwritten from the input script
+3226e4   # tasks_run: the call from net_frameLoop (return address 0x13aee8) is one lockstep tick - tick log, in-tick commands

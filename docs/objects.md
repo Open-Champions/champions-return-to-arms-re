@@ -456,7 +456,7 @@ the prediction copy.
 | O4 | `obj_updateActive` uses the camera focus when `g_cullByCamera` is set (FINDINGS D6). Everything that keys on activity inherits it: which run list an object is on, and for creatures whether AI runs at all | Observed | 0x14db28 onward |
 | O5 | `world_drawObjects` calls slot 5 of a per-machine set of objects (FINDINGS D13). Draw functions in this area were not audited individually; `Creature_draw` is covered in `docs/creatures.md` | Observed / not audited | 0x14b4f8–0x14b8b0 |
 | O6 | Box queries, run walks and grid walks honour `g_excludeMask`, and so does the delete-list flush (0x14b928; `runObjects` step 1 above); `Creature_pickTarget` temporarily overwrites the mask with 8 around its query (0x20000 is still skipped by the hard-coded test). Harmless while simulating; it would expose the hidden real player if ever reached during prediction | Observed; reachability Inferred none | 0x10e004–0x10e050 |
-| O7 | `obj_moveWithCollision` suppresses the other object's slot 6 for the prediction copy, but still calls the copy's own slot 6 and still pushes the copy; `Creature_moveBy` has no such test (it is not used for players' own movement as far as read) | Observed | 0x14d9ac, 0x114208 |
+| O7 | `obj_moveWithCollision` suppresses the other object's slot 6 for the prediction copy, but still calls the copy's own slot 6 and still pushes the copy; `Creature_moveBy` has no such test (it is not used for players' own movement as far as read). **Corrected (`docs/issues/touch-handlers.md` 3.2; FINDINGS G25, G26, V61):** it is used for a player, in `Player_run`'s scripted-control exit — the call at 0x1a5604 → `Creature_moveToDest` 0x119f38 → `Creature_moveTo` 0x114510 (call at 0x114bb0) → `Creature_moveBy` — taken when the player's inert byte +0x231 is non-zero and its action state +0x58c is 1. A prediction copy cloned from a player frozen by a cutscene gets there (Ran), and the slot-6 call at 0x114220 then hands it to the touched object's handler. An ordinary walk with the stick goes through `obj_moveWithCollision` and is guarded. The test patch "no touch handler runs for a prediction copy that walks into something" puts the missing test at that call | Observed; the scripted-control route Ran on the two-machine rig | 0x14d9ac, 0x114208, 0x114220, 0x1a5604 |
 | O8 | Pointer values: object addresses are used only as identities (name hash values, handle targets, `pool_free` class lookup). No ordering or hashing by address was found in this area | Observed for the functions read | 0x14bce0, 0x150470 |
 
 Not hazards, but easy to mistake for one: `world_findFreeSpot` and `Player1_ctor` draw
@@ -483,7 +483,9 @@ Not hazards, but easy to mistake for one: `world_findFreeSpot` and `Player1_ctor
   `CosmeticPropAnim_run`, `PushPhysicsProp` — constructor, load and run in outline — and
   `WaveMaker_run`. `WaveMaker_run` knocks creatures back and draws its own generator only
   when `isNearView(503)` holds, FINDINGS D35; a metal crate keeps a start rotation from the
-  cosmetic seed, D36. `AnimatedMissile`, `Gold` and `ItemProp` are still unread here.)
+  cosmetic seed, D36. `AnimatedMissile`, `Gold` and `ItemProp` are still unread here,
+  except for the touch handlers: slot 6 of every object class, these included, is
+  surveyed in `docs/issues/touch-handlers.md` section 2.)
 - Which objects, besides props, ever carry flag 0x1000 while in grid B. Only the Prop
   constructors, `Prop_launch`, `Prop_loadState` and 0x18c4e4 were seen setting or testing it.
 - `world_collectInSphere` third argument and the exact meaning of mask 0xd.

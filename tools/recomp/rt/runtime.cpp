@@ -1,16 +1,18 @@
-// runtime.cpp - the smallest platform under the translated game that lets it run headless.
+// runtime.cpp - the machine under the translated game.
 //
-//   rta_native resume --ram <image> [--spr <image>] --regs <file> --entry <hex>
-//                     [--frames N] [--watch-file F --log out.tsv] [--dump-at <frame> <file>]
-//   rta_native boot   --elf SLUS_209.73 [--frames N] ...
+//   rta_native boot   --elf SLUS_209.73 --disc <image.iso> [--card <dir>] [--script F] ...
+//   rta_native resume --ram <image> [--spr <image>] --regs <file> --entry <hex> ...
+//   (every option: rta::run() at the end of this file)
 //
 // What is here: guest memory (32 MB, scratchpad, vector-unit memories, the mirrors), a
 // virtual clock, the hardware registers the game touches (timers, interrupt controller,
-// DMA controller, GS privileged registers) with graphics data discarded, a kernel
-// (threads on host threads with one running at a time, semaphores, interrupt and DMA
-// handlers, vertical blank), remote procedure calls to the I/O processor answered
-// natively, vector unit 0 (rt/vu0.h).  What is not: any picture, any sound, the network,
-// the disc drive.
+// DMA controller, GS privileged registers), a kernel (threads on host threads with one
+// running at a time, semaphores, interrupt and DMA handlers, alarms, vertical blank),
+// vector unit 0 (rt/vu0.h).  The I/O processor's services are in iop.cpp and
+// sound_null.cpp, scripted input in script.cpp.  What leaves the machine - graphics
+// data, sound, network, controller - goes through the interfaces of iface.h; with none
+// attached the machine runs headless and the graphics data is walked only for the
+// events that feed back into the game.
 //
 // The kernel keeps its tables IN GUEST MEMORY, in the layout the Play! emulator's
 // high-level kernel uses (thread table at 0x11000, semaphores at 0xe000, interrupt
@@ -18,13 +20,12 @@
 // read in Play!'s PS2OS.h).  That choice is what makes "resume" possible: a memory image
 // written by the headless rig (tools/rig) carries the kernel's state with it, so the
 // translated game can be started in the middle of a session the original was running.
-#include "recomp.h"
+#include "rt.h"
+#include "host.h"
 #include "funcs.h"
 #include "vu0.h"
 
 #include <cfenv>
-#include <pthread.h>
-#include <unistd.h>
 #include <condition_variable>
 #include <cstdarg>
 #include <map>
@@ -42,25 +43,26 @@ static u8 g_vu1micro[0x4000], g_vu1mem[0x4000];
 static Vu0 g_vu0;
 static RecompFn* g_table;
 static u32 g_text_lo, g_text_hi;
-static bool g_verbose = false;
+bool g_rt_verbose = false;
+rta::Hooks g_hooks;
+static void final_report();
 
-[[noreturn]] static void die(const char* format, ...) {
+[[noreturn]] void rt_die(const char* format, ...) {
     va_list args;
     va_start(args, format);
     fprintf(stderr, "rta_native: ");
     vfprintf(stderr, format, args);
     fprintf(stderr, " (last call site 0x%x)\n", g_site);
     va_end(args);
-    fflush(stdout);
-    _exit(3);
+    host::quit(3);
 }
 
 static int g_trace_left = 0;
 #define TRACE(...) do { if (g_trace_left > 0) { g_trace_left--; fprintf(stderr, __VA_ARGS__); } } while (0)
 static std::map<std::string, u64> g_counts;       // things the game asked the platform for
-static void note(const std::string& what) { g_counts[what]++; }
-static std::string fmt(const char* format, ...) {
-    char buffer[256];
+void rt_note(const std::string& what) { g_counts[what]++; }
+std::string rt_fmt(const char* format, ...) {
+    char buffer[512];
     va_list args;
     va_start(args, format);
     vsnprintf(buffer, sizeof(buffer), format, args);
@@ -68,7 +70,6 @@ static std::string fmt(const char* format, ...) {
     return buffer;
 }
 
-static inline u32& W(u32 addr) { return *(u32*)(g_ram + addr); }
 
 // ---------------------------------------------------------------------------------------
 // Virtual clock.  One "unit" is a call or a backward branch in translated code.
@@ -175,7 +176,7 @@ static void run_handlers(u32 queue_slot, u32 base, u32 cause) {
             c->r[31] = 0;
             c->budget = 1 << 30;
             c->cop0[12] = 0x70030C12;           // interrupts off while a handler runs
-            note(fmt("interrupt handler 0x%x for %s %u", W(h + H_ADDRESS), base == INTC_BASE ? "INTC" : "DMAC", cause));
+            rt_note(rt_fmt("interrupt handler 0x%x for %s %u", W(h + H_ADDRESS), base == INTC_BASE ? "INTC" : "DMAC", cause));
             TRACE("  irq %s %u -> handler 0x%x\n", base == INTC_BASE ? "INTC" : "DMAC", cause, W(h + H_ADDRESS));
             call_guest(c, W(h + H_ADDRESS));
             if ((s32)c->r[2] < 0) break;
@@ -221,18 +222,66 @@ static void fire_alarms(u64 t) {
         Ctx* c = &g_irq_ctx;
         c->r[29] = KSTACK_TOP - 0x100;
         c->r[4] = k + 1; c->r[5] = (u32)(t / 18740) & 0xFFFF; c->r[6] = SX32(a.arg);
+        c->r[28] = SX32(g_gp);
         c->r[31] = 0;
         c->budget = (s64)1 << 30;
         c->cop0[12] = 0x70030C12;
-        note(fmt("alarm callback 0x%x", a.callback));
+        rt_note(rt_fmt("alarm callback 0x%x", a.callback));
         call_guest(c, a.callback);
         g_site = saved_site;
         g_in_irq = was;
     }
 }
 
+// Things that happen later on the virtual clock: answers of the I/O processor, the end
+// of a wait.  They run where an interrupt handler would.
+struct Later { u64 due, order; std::function<void()> fn; };
+static std::vector<Later> g_later;
+static u64 g_later_order;
+static u32 g_gp;                                  // the executable's global pointer
+u64 rt_cycles() { return now(t_self ? &t_self->ctx : nullptr); }
+u64 rt_fields() { return g_fields; }
+void rt_after(u64 delay, std::function<void()> fn) { g_later.push_back({rt_cycles() + delay, g_later_order++, std::move(fn)}); }
+static u64 next_later() {
+    u64 best = ~0ull;
+    for (auto& l : g_later) if (l.due < best) best = l.due;
+    return best;
+}
+static void fire_later(u64 t) {
+    if (g_in_irq) return;
+    for (;;) {
+        size_t pick = g_later.size();
+        for (size_t i = 0; i < g_later.size(); i++)
+            if (g_later[i].due <= t && (pick == g_later.size() || g_later[i].due < g_later[pick].due
+                                        || (g_later[i].due == g_later[pick].due && g_later[i].order < g_later[pick].order))) pick = i;
+        if (pick == g_later.size()) return;
+        std::function<void()> fn = std::move(g_later[pick].fn);
+        g_later.erase(g_later.begin() + pick);
+        g_in_irq = true;
+        fn();
+        g_in_irq = false;
+    }
+}
+void rt_call_handler(u32 address, u32 a0, u32 a1) {
+    bool was = g_in_irq;
+    g_in_irq = true;
+    u32 saved_site = g_site;
+    Ctx* c = &g_irq_ctx;
+    c->r[29] = KSTACK_TOP - 0x100;
+    c->r[4] = SX32(a0); c->r[5] = SX32(a1);
+    c->r[28] = SX32(g_gp);
+    c->r[31] = 0;
+    c->budget = (s64)1 << 30;
+    c->cop0[12] = 0x70030C12;
+    call_guest(c, address);
+    g_site = saved_site;
+    g_in_irq = was;
+}
+
+static void on_vblank();
 static void fire_due_events(u64 t) {
     fire_alarms(t);
+    fire_later(t);
     while (t >= g_next_vblank_start || t >= g_next_vblank_end) {
         if (g_next_vblank_start <= g_next_vblank_end) {
             g_next_vblank_start += VBLANK_PERIOD;
@@ -242,6 +291,7 @@ static void fire_due_events(u64 t) {
             if (W(ST_BASE + ST_VSYNC1)) W(W(ST_BASE + ST_VSYNC1) & 0x1FFFFFF) = 1;
             if (W(ST_BASE + ST_VSYNC2)) W(W(ST_BASE + ST_VSYNC2) & 0x1FFFFFF) = (g_gs_csr >> 13) & 1;
             g_intc_stat |= 1u << 2;
+            on_vblank();
         } else {
             g_next_vblank_end += VBLANK_PERIOD;
             g_intc_stat |= 1u << 3;
@@ -286,10 +336,11 @@ static void reschedule(std::unique_lock<std::mutex>& lock, GThread* self, Ctx* c
         if (!gone && W(thr(self->id) + T_STATUS) == TH_RUNNING) return;
         u64 next_event = g_next_vblank_start < g_next_vblank_end ? g_next_vblank_start : g_next_vblank_end;
         if (next_alarm() < next_event) next_event = next_alarm() > g_cycles ? next_alarm() : g_cycles;
+        if (next_later() < next_event) next_event = next_later() > g_cycles ? next_later() : g_cycles;
         if (c && !gone) c->budget = POLL_UNITS;
         g_cycles = next_event;
         fire_due_events(g_cycles);
-        if (g_verbose && (idle_fields < 12 || idle_fields % 100 == 0))
+        if (g_rt_verbose && (idle_fields < 12 || idle_fields % 100 == 0))
             fprintf(stderr, "idle field %llu: dma starts ch1 %llu ch2 %llu, FINISH %llu | list %u e0 %x e5 %u e6 %u e7 %u dc %x d8 %u e4 %u p40 %x p44 %x p48 %x p4c %x\n",
                     (unsigned long long)idle_fields, (unsigned long long)g_dma_starts[1], (unsigned long long)g_dma_starts[2],
                     (unsigned long long)g_gs_finish, g_ram[0x6f4130], W(0x41b4e0), g_ram[0x41b4e5], g_ram[0x41b4e6], g_ram[0x41b4e7],
@@ -300,7 +351,7 @@ static void reschedule(std::unique_lock<std::mutex>& lock, GThread* self, Ctx* c
                     fprintf(stderr, "  thread %u: status %u, waits on semaphore %u, procedure 0x%x%s\n", t, W(thr(t) + T_STATUS),
                             W(thr(t) + T_SEMA), W(thr(t) + T_PROC), g_foreign.count(t) ? " (of the image, cannot run)" : "");
             fprintf(stderr, "  INTC stat %x mask %x, DMAC stat %x, GS CSR %x IMR %x\n", g_intc_stat, g_intc_mask, g_dmac_stat, g_gs_csr, g_gs_imr);
-            die("every thread has been blocked for ten seconds of game time");
+            rt_die("every thread has been blocked for ten seconds of game time");
         }
         deliver_interrupts();
     }
@@ -352,12 +403,7 @@ static GThread* make_thread(u32 id, u32 entry) {
     return t;
 }
 static void start_host(GThread* t) {
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, (size_t)256 << 20);
-    pthread_t handle;
-    pthread_create(&handle, &attr, [](void* p) -> void* { thread_main((GThread*)p); return nullptr; }, t);
-    pthread_detach(handle);
+    host::start_thread([](void* p) { thread_main((GThread*)p); }, t, (size_t)256 << 20);
 }
 
 [[noreturn]] static void report_and_exit();
@@ -370,9 +416,38 @@ static void wake_sema_waiter(u32 id) {
         else continue;
         W(thr(t) + T_SEMA) = 0;
         W(sem(id) + S_WAITERS)--;
-        if (g_foreign.count(t)) note(fmt("thread %u of the resumed image was woken (it cannot run here; proc 0x%x)", t, W(thr(t) + T_PROC)));
+        if (g_foreign.count(t)) rt_note(rt_fmt("thread %u of the resumed image was woken (it cannot run here; proc 0x%x)", t, W(thr(t) + T_PROC)));
         return;
     }
+}
+
+void rt_signal_sema(u32 id) {
+    if (!sem_ok(id)) return;
+    if (W(sem(id) + S_WAITERS)) wake_sema_waiter(id);
+    else W(sem(id) + S_COUNT)++;
+}
+
+// The calling thread waits on the clock.  It is parked the way a thread waiting on a
+// semaphore is, on a semaphore number no semaphore has, so that neither SignalSema nor
+// WakeupThread from the game ends the wait early.
+static const u32 NO_SEMA = 0xFFFF;
+void rt_sleep(Ctx* c, u64 delay) {
+    if (g_in_irq || !t_self || c != &t_self->ctx || !delay) return;
+    GThread* self = t_self;
+    u32 me = self->id;
+    std::unique_lock<std::mutex> lock(g_big, std::adopt_lock);
+    struct Release { std::unique_lock<std::mutex>& l; ~Release() { l.release(); } } release{lock};
+    W(thr(me) + T_STATUS) = TH_WAITING;
+    W(thr(me) + T_SEMA) = NO_SEMA;
+    unlink_thread(me);
+    rt_after(delay, [me] {
+        if (!thr_ok(me) || W(thr(me) + T_SEMA) != NO_SEMA) return;
+        u32 status = W(thr(me) + T_STATUS);
+        if (status == TH_WAITING) { W(thr(me) + T_STATUS) = TH_RUNNING; link_thread(me); }
+        else if (status == TH_SUSPENDED_WAITING) W(thr(me) + T_STATUS) = TH_SUSPENDED;
+        W(thr(me) + T_SEMA) = 0;
+    });
+    reschedule(lock, self, c);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -435,7 +510,7 @@ static void remove_handler(u32 queue_slot, u32 base, u32 id) {
 void rt_syscall(Ctx* c, u32 pc) {
     s32 raw = (s32)c->r[3];
     u32 n = raw < 0 ? (u32)-raw : (u32)raw;
-    note(fmt("syscall 0x%02x %s", n, syscall_name(n)));
+    rt_note(rt_fmt("syscall 0x%02x %s", n, syscall_name(n)));
     TRACE("  syscall %x %s(%x, %x) by thread %u%s at %x\n", n, syscall_name(n), (u32)c->r[4], (u32)c->r[5], t_self ? t_self->id : 0,
           g_in_irq ? " (irq)" : "", (u32)c->r[31]);
     // a handler the game installed itself with SetSyscall (table at 0x10000, as Play! keeps it)
@@ -552,7 +627,7 @@ void rt_syscall(Ctx* c, u32 pc) {
         if (status == TH_SLEEPING) { W(t + T_STATUS) = TH_RUNNING; link_thread(a0); }
         else if (status == TH_SUSPENDED_SLEEPING) W(t + T_STATUS) = TH_SUSPENDED;
         else W(t + T_WAKEUPS)++;
-        if (g_foreign.count(a0)) note(fmt("thread %u of the resumed image was woken (it cannot run here; proc 0x%x)", a0, W(t + T_PROC)));
+        if (g_foreign.count(a0)) rt_note(rt_fmt("thread %u of the resumed image was woken (it cannot run here; proc 0x%x)", a0, W(t + T_PROC)));
         result = a0;
         yield = n == 0x33;
         break;
@@ -579,6 +654,8 @@ void rt_syscall(Ctx* c, u32 pc) {
     case 0x3C: {                                        // SetupThread(gp, stack, size, args, root)
         u32 top = a1 == 0xFFFFFFFFu ? RAM_SIZE - 4096 : a1 + a2;
         u32 t = thr(me);
+        g_gp = a0;
+        W(t + T_GP) = a0;
         W(t + T_STACKBASE) = top - a2; W(t + T_STACKSIZE) = a2;
         W(a3 & 0x1FFFFFF) = 0;                          // argc
         W((a3 & 0x1FFFFFF) + 4) = 0;
@@ -650,7 +727,7 @@ void rt_syscall(Ctx* c, u32 pc) {
         // kernel memory (0x80076000) and installs it as system calls 0xfc-0xff (alarms).
         // Code that exists only as data has no translation; the kernel here has alarms
         // of its own, so that registration is dropped.
-        if (!translated) note(fmt("SetSyscall(0x%x) to code outside the executable (0x%08x): dropped", a0, a1));
+        if (!translated) rt_note(rt_fmt("SetSyscall(0x%x) to code outside the executable (0x%08x): dropped", a0, a1));
         else if (a0 < 0x200) W(0x10000 + a0 * 4) = h;
         break;
     }
@@ -667,14 +744,14 @@ void rt_syscall(Ctx* c, u32 pc) {
         else result = SX32(-1);
         break;
     case 0x76: result = SX32(-1); break;                // SifDmaStat: completed
-    case 0x77: result = 1; break;                       // SifSetDma
+    case 0x77: result = iop_sif_set_dma(a0, a1); break; // SifSetDma(transfers, count): to I/O processor memory
     case 0x78: break;
     case 0x79: break;                                   // SifSetReg
     case 0x7A: result = a0 == 4 ? 0x60000 : 0; break;   // SifGetReg: the I/O processor is ready
     case 0x7E: result = 0; break;
     case 0x7F: result = RAM_SIZE; break;
     default:
-        note(fmt("UNHANDLED syscall 0x%02x at 0x%x", n, pc));
+        rt_note(rt_fmt("UNHANDLED syscall 0x%02x at 0x%x", n, pc));
     }
     c->r[2] = result;
     if (self && !g_in_irq && (yield || true)) reschedule(lock, self, c);
@@ -778,7 +855,7 @@ static void vif_stream(const std::vector<u32>& w, int which) {
             if (which == 0) {
                 for (u32 k = 0; k < count * 2 && i + k < n; k++)
                     memcpy(g_vu0.micro + ((imm * 8 + k * 4) & 0xFFF), &w[i + k], 4);
-                note(fmt("VIF0 MPG: %u instructions to VU0 address 0x%x", count, imm));
+                rt_note(rt_fmt("VIF0 MPG: %u instructions to VU0 address 0x%x", count, imm));
             }
             i += count * 2;
         } else if (cmd == 0x50 || cmd == 0x51) {        // DIRECT: GIF packets
@@ -793,7 +870,7 @@ static void vif_stream(const std::vector<u32>& w, int which) {
             u32 bytes = (vn == 3 && vl == 3) ? elements * 2 : elements * (vn + 1) * (4 >> vl);
             i += (bytes + 3) / 4;
             g_vif_unpacks++;
-            if (which == 0) note("VIF0 UNPACK (data for VU0 memory, not carried out)");
+            if (which == 0) rt_note("VIF0 UNPACK (data for VU0 memory, not carried out)");
         }
     }
 }
@@ -808,13 +885,13 @@ static void dma_start(u32 ch) {
     std::vector<u32> stream;
     auto append = [&](u32 addr, u32 quadwords) {
         u8* m = phys(addr, quadwords * 16);
-        if (!m) { note(fmt("DMA channel %u: data outside memory", ch)); return; }
+        if (!m) { rt_note(rt_fmt("DMA channel %u: data outside memory", ch)); return; }
         size_t at = stream.size();
         stream.resize(at + quadwords * 4);
         memcpy(stream.data() + at, m, quadwords * 16);
     };
     if (ch == 8 || ch == 9) {                           // scratchpad <-> memory
-        if (mode != 0) note(fmt("DMA channel %u in chain mode (not carried out)", ch));
+        if (mode != 0) rt_note(rt_fmt("DMA channel %u in chain mode (not carried out)", ch));
         else {
             u8* m = phys(madr, qwc * 16);
             u32 sp = sadr & 0x3FFF;
@@ -844,7 +921,7 @@ static void dma_start(u32 ch) {
         }
         for (int guard = 0; guard < 1000000; guard++) {
             u8* tag = phys(tadr, 16);
-            if (!tag) { note(fmt("DMA channel %u: chain tag outside memory", ch)); break; }
+            if (!tag) { rt_note(rt_fmt("DMA channel %u: chain tag outside memory", ch)); break; }
             u64 t;
             memcpy(&t, tag, 8);
             u32 n = (u32)t & 0xFFFF, id = ((u32)t >> 28) & 7, addr = (u32)(t >> 32);
@@ -885,6 +962,11 @@ static void dma_start(u32 ch) {
     if (ch == 0) vif_stream(stream, 0);
     else if (ch == 1) vif_stream(stream, 1);
     else if (ch == 2) gif_stream(stream.data(), stream.size());
+    if (g_hooks.video && !stream.empty()) {
+        if (ch == 0) g_hooks.video->vif0(stream.data(), stream.size());
+        else if (ch == 1) g_hooks.video->vif1(stream.data(), stream.size());
+        else if (ch == 2) g_hooks.video->gif(stream.data(), stream.size());
+    }
     g_hw[base] = chcr & ~0x100u;
     g_hw[base + 0x20] = 0;
     g_dmac_stat |= 1u << ch;
@@ -917,11 +999,11 @@ static u64 hw_read(u32 a, unsigned size) {
     case 0x10002010: return 0;                          // IPU control: not busy
     }
     if (!((a >= 0x10000000 && a < 0x10010000) || (a >= 0x12000000 && a < 0x12002000))) {
-        note(fmt("read of nothing at 0x%04xxxxx (gives 0)", a >> 16));
+        rt_note(rt_fmt("read of nothing at 0x%04xxxxx (gives 0)", a >> 16));
         return 0;
     }
     auto it = g_hw.find(a & ~3u);
-    if (a < 0x10008000 || a >= 0x1000E000) note(fmt("hardware read  0x%08x", a & ~0xFu));
+    if (a < 0x10008000 || a >= 0x1000E000) rt_note(rt_fmt("hardware read  0x%08x", a & ~0xFu));
     (void)size;
     return it == g_hw.end() ? 0 : it->second;
 }
@@ -929,6 +1011,8 @@ static u64 hw_read(u32 a, unsigned size) {
 static void hw_write(u32 a, unsigned size, u64 value) {
     u32 v = (u32)value;
     (void)size;
+    if (g_hooks.video && ((a >= 0x12000000 && a < 0x12002000) || (a >= 0x10003000 && a < 0x10004000)))
+        g_hooks.video->reg(a, value);
     if (a >= 0x10000000 && a < 0x10002000) {
         int n = (a >> 11) & 3;
         Timer& t = g_timers[n];
@@ -963,7 +1047,7 @@ static void hw_write(u32 a, unsigned size, u64 value) {
         }
         return;
     }
-    note(fmt("hardware write 0x%08x", a & ~0xFu));
+    rt_note(rt_fmt("hardware write 0x%08x", a & ~0xFu));
 }
 
 static u8* special_memory(u32& a, unsigned size) {
@@ -991,25 +1075,33 @@ u64 rt_load(u32 addr, unsigned size) {
     if (u8* p = special_memory(a, size)) { u64 v = 0; memcpy(&v, p, size); return v; }
     if (a >= 0x10000000 && a < 0x14000000) return hw_read(a, size);
     if (a >= 0x1FC00000 && a < 0x20000000) return 0;
-    die("load of %u bytes from 0x%08x, which is nothing", size, addr);
+    rt_die("load of %u bytes from 0x%08x, which is nothing", size, addr);
 }
 void rt_store(u32 addr, unsigned size, u64 value) {
     u32 a = addr;
     if (u8* p = special_memory(a, size)) { memcpy(p, &value, size); return; }
     if (a >= 0x10000000 && a < 0x14000000) { hw_write(a, size, value); return; }
-    die("store of %u bytes to 0x%08x, which is nothing", size, addr);
+    rt_die("store of %u bytes to 0x%08x, which is nothing", size, addr);
 }
 void rt_load128(u32 addr, u64* lo, u64* hi) {
     u32 a = addr;
     if (u8* p = special_memory(a, 16)) { memcpy(lo, p, 8); memcpy(hi, p + 8, 8); return; }
     if (a >= 0x10000000 && a < 0x14000000) { *lo = hw_read(a, 8); *hi = 0; return; }
-    die("128-bit load from 0x%08x, which is nothing", addr);
+    rt_die("128-bit load from 0x%08x, which is nothing", addr);
 }
 void rt_store128(u32 addr, u64 lo, u64 hi) {
     u32 a = addr;
     if (u8* p = special_memory(a, 16)) { memcpy(p, &lo, 8); memcpy(p + 8, &hi, 8); return; }
-    if (a >= 0x10000000 && a < 0x14000000) { note(fmt("128-bit store to FIFO 0x%08x", a)); return; }
-    die("128-bit store to 0x%08x, which is nothing", addr);
+    if (a >= 0x10000000 && a < 0x14000000) {            // a quadword pushed into a FIFO by hand
+        std::vector<u32> q(4);
+        memcpy(q.data(), &lo, 8); memcpy(q.data() + 2, &hi, 8);
+        rt_note(rt_fmt("128-bit store to FIFO 0x%08x", a));
+        if (a == 0x10004000) { vif_stream(q, 0); if (g_hooks.video) g_hooks.video->vif0(q.data(), 4); }
+        else if (a == 0x10005000) { vif_stream(q, 1); if (g_hooks.video) g_hooks.video->vif1(q.data(), 4); }
+        else if (a == 0x10006000) { gif_stream(q.data(), 4); if (g_hooks.video) g_hooks.video->gif(q.data(), 4); }
+        return;
+    }
+    rt_die("128-bit store to 0x%08x, which is nothing", addr);
 }
 
 void rt_call(Ctx* c, u32 target) {
@@ -1017,20 +1109,20 @@ void rt_call(Ctx* c, u32 target) {
         RecompFn fn = g_table[(target - g_text_lo) >> 2];
         if (fn) { fn(c); return; }
     }
-    die("call to 0x%08x, which has no translation", target);
+    rt_die("call to 0x%08x, which has no translation", target);
 }
-void rt_break(Ctx*, u32 pc, u32 code) { die("BREAK %u at 0x%x", code, pc); }
-void rt_trap(Ctx*, u32 pc, const char* what) { die("%s at 0x%x", what, pc); }
-void rt_unimpl(Ctx*, u32 pc, u32 word) { die("untranslated instruction %08x at 0x%x", word, pc); }
+void rt_break(Ctx*, u32 pc, u32 code) { rt_die("BREAK %u at 0x%x", code, pc); }
+void rt_trap(Ctx*, u32 pc, const char* what) { rt_die("%s at 0x%x", what, pc); }
+void rt_unimpl(Ctx*, u32 pc, u32 word) { rt_die("untranslated instruction %08x at 0x%x", word, pc); }
 void rt_eret(Ctx* c, u32 pc) {
     // return from exception: to ErrorEPC when the ERL bit is set, else to EPC
     u32 status = c->cop0[12];
     u32 target = (status & 4) ? c->cop0[30] : c->cop0[14];
     rt_mtc0(c, pc, 12, status & ~((status & 4) ? 4u : 2u));
-    if (target != (u32)c->r[31]) die("ERET at 0x%x returns to 0x%x, not to the caller", pc, target);
+    if (target != (u32)c->r[31]) rt_die("ERET at 0x%x returns to 0x%x, not to the caller", pc, target);
 }
 u32 rt_mfc0(Ctx* c, u32, unsigned reg) {
-    if (reg == 9) { note("read of the CPU cycle counter"); return (u32)now(c); }
+    if (reg == 9) { rt_note("read of the CPU cycle counter"); return (u32)now(c); }
     return c->cop0[reg];
 }
 void rt_mtc0(Ctx* c, u32, unsigned reg, u32 value) {
@@ -1079,44 +1171,7 @@ void rt_cop2(Ctx* c, u32 pc, u32 w) {
         vu0_run(v, (w >> 6) & 0x7FFF);
         return;
     }
-    die("COP2 instruction %08x at 0x%x is not implemented", w, pc);
-}
-
-// ---------------------------------------------------------------------------------------
-// Calls to the I/O processor, answered here
-// ---------------------------------------------------------------------------------------
-void fn_00355d68(Ctx* c) { note("sceSifInitRpc"); c->r[2] = 0; }
-void fn_00356510(Ctx* c) {                              // sceSifBindRpc(client, server id, mode)
-    u32 client = (u32)c->r[4] & 0x1FFFFFF, server = (u32)c->r[5];
-    note(fmt("RPC bind to server 0x%08x", server));
-    W(client + 0x24) = server;                          // "server": non-zero means bound
-    W(client + 0x00) = 0;
-    c->r[2] = 0;
-}
-void fn_003566f0(Ctx* c) {                              // sceSifCallRpc(client, fno, mode, send, ssize, recv, rsize, end, arg)
-    u32 client = (u32)c->r[4] & 0x1FFFFFF, fno = (u32)c->r[5];
-    u32 end = (u32)c->r[11], end_arg = LD32((u32)c->r[29]);
-    note(fmt("RPC call: client 0x%x (server 0x%08x) function 0x%x, %u bytes out, %u back", client, W(client + 0x24), fno,
-             (u32)c->r[8], (u32)c->r[10]));
-    W(client + 0x00) = 0;                               // no packet outstanding: not busy
-    // The answer of an I/O processor that does nothing: zeroes.  The module loader
-    // (server 0x80000006) answers with a module id, or the game stops with "Can't load
-    // IOP modules".
-    // (Only for servers bound through this runtime.  A client bound before a resumed image
-    // was taken keeps the answer it last got from the emulator's I/O processor: zeroes
-    // there tell the game its controller was unplugged, and it pauses.)
-    u32 recv = (u32)c->r[9] & 0x1FFFFFF, rsize = (u32)c->r[10];
-    if ((W(client + 0x24) & 0xFFFF0000u) == 0x80000000u && recv && rsize && recv + rsize <= RAM_SIZE) {
-        memset(g_ram + recv, 0, rsize);
-        if (W(client + 0x24) == 0x80000006u && rsize >= 4) W(recv) = 0x21 + (u32)(g_counts.size() & 0xFF);
-    }
-    if (end) {
-        u64 saved_ra = c->r[31];
-        c->r[4] = SX32(end_arg);
-        rt_call(c, end);
-        c->r[31] = saved_ra;
-    }
-    c->r[2] = 0;
+    rt_die("COP2 instruction %08x at 0x%x is not implemented", w, pc);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1131,9 +1186,11 @@ void fn_003566f0(Ctx* c) {                              // sceSifCallRpc(client,
 static u64 g_draw_frames, g_draw_packets, g_draw_textured;
 static bool g_hle_renderer = false;
 void fn_0016b998(Ctx* c) {
-    if (!g_hle_renderer || (s32)c->r[4] != -1) { orig_0016b998(c); return; }
-    g_ram[0x41B4D9] ^= 1;                               // the buffer being sent
-    u32 buffer = g_ram[0x41B4D9] & 1;
+    if ((s32)c->r[4] != -1) { orig_0016b998(c); return; }
+    u32 buffer = (g_ram[0x41B4D9] ^ 1) & 1;             // the buffer about to be sent
+    bool taken = g_hooks.video && g_hooks.video->frame(g_draw_frames, buffer);
+    if (!taken && !g_hle_renderer) { orig_0016b998(c); return; }
+    g_ram[0x41B4D9] ^= 1;
     for (u32 list = 0; list < 8; list++) {
         u32 head = W(0x6F4070 + (buffer * 8 + list) * 4);
         u32 node = head && head < RAM_SIZE - 16 ? W(head + 0xC) : 0;
@@ -1155,55 +1212,25 @@ void fn_0016b998(Ctx* c) {
 }
 
 // ---------------------------------------------------------------------------------------
-// Watches, in the format of the rig's tick log
+// Watches, in the format of the rig's tick log (expressions and types: script.cpp)
 // ---------------------------------------------------------------------------------------
 struct Watch { std::string name, expr, type; };
 static std::vector<Watch> g_watches;
 static FILE* g_log;
+static bool g_log_fields = false;                 // one row per vertical blank instead of per displayed frame
 static u64 g_frame;
 static double g_seconds = 0;
 static u64 g_dump_frame = ~0ull;
 static std::string g_dump_path;
 static std::chrono::steady_clock::time_point g_start_time;
+static u64 g_fields_wanted = ~0ull;
+static bool g_script_given = false;
+static int g_exit_code = 0;
 
-static u32 eval(const char*& p);
-static u32 eval_atom(const char*& p) {
-    while (*p == ' ') p++;
-    if (*p == '[') { p++; u32 a = eval(p); if (*p == ']') p++; a &= 0x1FFFFFFF; return a <= RAM_SIZE - 4 ? W(a) : 0; }
-    char* end;
-    u32 v = (u32)strtoul(p, &end, 0);
-    p = end;
-    return v;
-}
-static u32 eval(const char*& p) {
-    u32 v = eval_atom(p);
-    for (;;) {
-        while (*p == ' ') p++;
-        if (*p == '+') { p++; v += eval_atom(p); }
-        else if (*p == '-') { p++; v -= eval_atom(p); }
-        else if (*p == '*') { p++; v *= eval_atom(p); }
-        else return v;
-    }
-}
-static std::string watch_value(const Watch& w) {
-    const char* p = w.expr.c_str();
-    u32 a = eval(p) & 0x1FFFFFFF;
-    const std::string& t = w.type;
-    u32 n = t.size() > 3 ? (u32)atoi(t.c_str() + 3) : 0;
-    if (a >= RAM_SIZE || a + (n ? n : 4) > RAM_SIZE) return "?";
-    const u8* m = g_ram + a;
-    if (t == "u8") return fmt("%u", m[0]);
-    if (t == "s8") return fmt("%d", (s8)m[0]);
-    if (t == "u16") return fmt("%u", *(u16*)m);
-    if (t == "s16") return fmt("%d", *(s16*)m);
-    if (t == "u32") return fmt("%u", *(u32*)m);
-    if (t == "s32") return fmt("%d", *(s32*)m);
-    if (t == "x8") return fmt("%02x", m[0]);
-    if (t == "x16") return fmt("%04x", *(u16*)m);
-    if (t == "x32") return fmt("%08x", *(u32*)m);
-    if (t.compare(0, 3, "str") == 0) { std::string s; for (u32 i = 0; i < n && m[i]; i++) s += (char)m[i]; return s; }
-    if (t.compare(0, 3, "crc") == 0) { u32 h = 0x811C9DC5; for (u32 i = 0; i < n; i++) h = (h ^ m[i]) * 0x01000193; return fmt("%08x", h); }
-    return "?";
+static void log_row(u64 number) {
+    fprintf(g_log, "%llu", (unsigned long long)number);
+    for (auto& w : g_watches) fprintf(g_log, "\t%s", script_value(script_eval(w.expr), w.type).c_str());
+    fprintf(g_log, "\n");
 }
 
 [[noreturn]] static void report_and_exit() {
@@ -1226,17 +1253,27 @@ static std::string watch_value(const Watch& w) {
     printf("stores to addresses where no device is (lost): %llu\n", (unsigned long long)g_nothing_writes);
     printf("what the game asked the platform for:\n");
     for (auto& kv : g_counts) printf("  %10llu  %s\n", (unsigned long long)kv.second, kv.first.c_str());
+    iop_report();
+    sound_report();
     if (g_log) fclose(g_log);
-    fflush(stdout);
-    _exit(0);
+    host::quit(g_exit_code);
+}
+void rt_finish(int code) { g_exit_code = code; report_and_exit(); }
+
+static void on_vblank() {
+    script_vblank(g_fields);
+    iop_vblank(g_fields);
+    sound_vblank();
+    if (g_hooks.video) g_hooks.video->vblank((g_gs_csr >> 13) & 1, g_fields);
+    if (g_log && g_log_fields) log_row(g_fields);
+    if (g_fields >= g_fields_wanted) report_and_exit();
+    if (g_script_given && !script_active() && g_fields_wanted == ~0ull && g_frames_wanted == ~0ull) report_and_exit();
 }
 
+
+
 void fn_0019d8b0(Ctx* c) {                              // gfx_beginFrame: once per displayed frame
-    if (g_log) {
-        fprintf(g_log, "%llu", (unsigned long long)g_frame);
-        for (auto& w : g_watches) fprintf(g_log, "\t%s", watch_value(w).c_str());
-        fprintf(g_log, "\n");
-    }
+    if (g_log && !g_log_fields) log_row(g_frame);
     if (g_frame == g_dump_frame) {
         FILE* f = fopen(g_dump_path.c_str(), "wb");
         if (f) { fwrite(g_ram, 1, RAM_SIZE, f); fclose(f); }
@@ -1276,27 +1313,97 @@ static bool load_elf(const char* path, u32* entry) {
     return true;
 }
 
-int main(int argc, char** argv) {
-    if (argc < 2) { fprintf(stderr, "usage: rta_native resume|boot [options]\n"); return 2; }
-    std::string mode = argv[1], ram, spr, regs, elf, watch_file, log_path;
+static std::map<std::string, std::string> g_options;
+const char* rt_option(const char* key) {
+    auto it = g_options.find(key);
+    return it == g_options.end() ? nullptr : it->second.c_str();
+}
+
+namespace rta {
+uint8_t* memory() { return g_ram; }
+uint8_t* scratchpad() { return g_spr; }
+uint8_t* vu1_micro() { return g_vu1micro; }
+uint8_t* vu1_data() { return g_vu1mem; }
+
+static void usage() {
+    fprintf(stderr,
+        "rta_native boot --elf SLUS_209.73 --disc <image.iso> [options]\n"
+        "rta_native resume --ram <image> [--spr <image>] --regs <file> --entry <hex> [options]\n"
+        "  --disc <image>        ISO 9660 image of your disc, read in place (default: $RTA_DISC)\n"
+        "  --card <dir>          memory cards: <dir>/mc0 and <dir>/mc1, one host directory per card\n"
+        "                        (the layout of the Play! emulator's <data>/vfs); default ./rta-card\n"
+        "  --script <file>       scripted input and conditions (the rig's script language)\n"
+        "  --do \"<command>\"      one more script command; repeatable\n"
+        "  --sym <file.tsv>      symbol file (hex address, tab, name) for expressions; repeatable\n"
+        "  --watch <name=expr:type>, --watch-file <file>, --log <out.tsv>\n"
+        "                        values logged once per displayed frame (entry of gfx_beginFrame);\n"
+        "                        --log-fields logs once per vertical blank instead\n"
+        "  --frames <n>          stop after n displayed frames; --fields <n>: after n vertical blanks\n"
+        "  --dump-at <frame> <file>   write main memory at a displayed frame\n"
+        "  --emulator-timing     the I/O processor answers after the delays the Play! emulator uses\n"
+        "                        (default: as fast as the game's own protocol allows)\n"
+        "  --hle-renderer        do not send draw data through DMA; count and report frames as sent\n"
+        "  --opt key=value       an option for a module linked with the runtime (rt_option); repeatable\n"
+        "  --seconds <s>         stop after s seconds of wall time and say where the game is\n"
+        "  --verbose, --trace <n>\n");
+}
+
+int run(int argc, char** argv, const Hooks& hooks) {
+    g_hooks = hooks;
+    if (argc < 2) { usage(); return 2; }
+    std::string mode = argv[1], ram, spr, regs, elf, log_path, script;
+    std::vector<std::string> extra_commands;
+    IopOptions iop;
+    if (const char* disc = getenv("RTA_DISC")) iop.disc = disc;
+    iop.card_root = "rta-card";
     u32 entry = 0;
+    auto add_watch = [](std::string s) {
+        while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ')) s.pop_back();
+        if (s.empty() || s[0] == '#') return;
+        size_t eq = s.find('='), colon = s.rfind(':');
+        if (colon == std::string::npos) rt_die("bad watch %s", s.c_str());
+        if (eq == std::string::npos || eq > colon) g_watches.push_back({s.substr(0, colon), s.substr(0, colon), s.substr(colon + 1)});
+        else g_watches.push_back({s.substr(0, eq), s.substr(eq + 1, colon - eq - 1), s.substr(colon + 1)});
+    };
     for (int i = 2; i < argc; i++) {
         std::string a = argv[i];
-        auto next = [&]() -> std::string { if (i + 1 >= argc) die("%s needs a value", a.c_str()); return argv[++i]; };
+        auto next = [&]() -> std::string { if (i + 1 >= argc) rt_die("%s needs a value", a.c_str()); return argv[++i]; };
         if (a == "--ram") ram = next();
         else if (a == "--spr") spr = next();
         else if (a == "--regs") regs = next();
         else if (a == "--elf") elf = next();
         else if (a == "--entry") entry = (u32)strtoul(next().c_str(), nullptr, 16);
         else if (a == "--frames") g_frames_wanted = strtoull(next().c_str(), nullptr, 0);
-        else if (a == "--watch-file") watch_file = next();
+        else if (a == "--fields") g_fields_wanted = strtoull(next().c_str(), nullptr, 0);
+        else if (a == "--watch") add_watch(next());
+        else if (a == "--watch-file") {
+            std::string path = next();
+            FILE* f = fopen(path.c_str(), "r");
+            if (!f) rt_die("cannot read %s", path.c_str());
+            char line[512];
+            while (fgets(line, sizeof(line), f)) add_watch(line);
+            fclose(f);
+        }
         else if (a == "--log") log_path = next();
+        else if (a == "--log-fields") g_log_fields = true;
         else if (a == "--dump-at") { g_dump_frame = strtoull(next().c_str(), nullptr, 0); g_dump_path = next(); }
-        else if (a == "--verbose") g_verbose = true;
+        else if (a == "--verbose") g_rt_verbose = true;
         else if (a == "--seconds") g_seconds = atof(next().c_str());
         else if (a == "--hle-renderer") g_hle_renderer = true;
         else if (a == "--trace") g_trace_left = atoi(next().c_str());
-        else die("unknown option %s", a.c_str());
+        else if (a == "--disc") iop.disc = next();
+        else if (a == "--card") iop.card_root = next();
+        else if (a == "--emulator-timing") iop.emulator_timing = true;
+        else if (a == "--script") script = next();
+        else if (a == "--do") extra_commands.push_back(next());
+        else if (a == "--sym") script_add_symbols(next().c_str());
+        else if (a == "--opt") {
+            std::string kv = next();
+            size_t eq = kv.find('=');
+            g_options[kv.substr(0, eq)] = eq == std::string::npos ? "" : kv.substr(eq + 1);
+        }
+        else if (a == "--help") { usage(); return 0; }
+        else rt_die("unknown option %s", a.c_str());
     }
     g_ram = (u8*)calloc(RAM_SIZE + 4096, 1);
     g_text_lo = 0xFFFFFFFFu; g_text_hi = 0;
@@ -1313,39 +1420,29 @@ int main(int argc, char** argv) {
     memset(&g_irq_ctx, 0, sizeof(g_irq_ctx));
     g_irq_ctx.fcr31 = 0x01000001;
 
-    if (!watch_file.empty()) {
-        FILE* f = fopen(watch_file.c_str(), "r");
-        if (!f) die("cannot read %s", watch_file.c_str());
-        char line[512];
-        while (fgets(line, sizeof(line), f)) {
-            std::string s = line;
-            while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ')) s.pop_back();
-            if (s.empty() || s[0] == '#') continue;
-            size_t eq = s.find('='), colon = s.rfind(':');
-            if (eq == std::string::npos || colon == std::string::npos) die("bad watch %s", s.c_str());
-            g_watches.push_back({s.substr(0, eq), s.substr(eq + 1, colon - eq - 1), s.substr(colon + 1)});
-        }
-        fclose(f);
-    }
+    if (!script.empty() && !script_load(script.c_str())) rt_die("cannot read %s", script.c_str());
+    for (auto& line : extra_commands) script_add_command(line);
+    g_script_given = !script.empty() || !extra_commands.empty();
     if (!log_path.empty()) {
         g_log = fopen(log_path.c_str(), "w");
-        if (!g_log) die("cannot write %s", log_path.c_str());
+        if (!g_log) rt_die("cannot write %s", log_path.c_str());
         fprintf(g_log, "frame");
         for (auto& w : g_watches) fprintf(g_log, "\t%s", w.name.c_str());
         fprintf(g_log, "\n");
     }
+    iop_init(iop);
 
     std::unique_lock<std::mutex> lock(g_big);
     GThread* main_thread = nullptr;
     if (mode == "resume") {
-        if (ram.empty() || regs.empty() || !entry) die("resume needs --ram, --regs and --entry");
-        if (!read_file(ram.c_str(), g_ram, RAM_SIZE)) die("cannot read %s", ram.c_str());
-        if (!spr.empty() && !read_file(spr.c_str(), g_spr, sizeof(g_spr))) die("cannot read %s", spr.c_str());
+        if (ram.empty() || regs.empty() || !entry) rt_die("resume needs --ram, --regs and --entry");
+        if (!read_file(ram.c_str(), g_ram, RAM_SIZE)) rt_die("cannot read %s", ram.c_str());
+        if (!spr.empty() && !read_file(spr.c_str(), g_spr, sizeof(g_spr))) rt_die("cannot read %s", spr.c_str());
         u32 current = W(ST_BASE + ST_CURRENT);
-        if (!thr_ok(current)) die("the image's kernel state names no current thread");
+        if (!thr_ok(current)) rt_die("the image's kernel state names no current thread");
         main_thread = make_thread(current, entry);
         FILE* f = fopen(regs.c_str(), "r");
-        if (!f) die("cannot read %s", regs.c_str());
+        if (!f) rt_die("cannot read %s", regs.c_str());
         char name[32];
         unsigned value;
         static const char* names[32] = {"zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2", "t3", "t4", "t5",
@@ -1355,6 +1452,7 @@ int main(int argc, char** argv) {
             for (int n = 1; n < 32; n++)
                 if (!strcmp(name, names[n])) main_thread->ctx.r[n] = SX32(value);
         fclose(f);
+        g_gp = (u32)main_thread->ctx.r[28];
         // every other thread of the image stays as it is: its context is in guest memory
         // at an arbitrary instruction, which translated code cannot be entered at
         // -- unless it sleeps in a kernel call (its saved pc is the `jr $ra` of the call's
@@ -1392,15 +1490,15 @@ int main(int argc, char** argv) {
         printf("resumed: thread %u runs from 0x%x (sp 0x%x); %u other threads continue, %zu cannot\n", current, entry,
                (u32)main_thread->ctx.r[29], resumable, g_foreign.size());
     } else if (mode == "boot") {
-        if (elf.empty()) die("boot needs --elf");
-        if (!load_elf(elf.c_str(), &entry)) die("cannot load %s", elf.c_str());
+        if (elf.empty()) rt_die("boot needs --elf");
+        if (!load_elf(elf.c_str(), &entry)) rt_die("cannot load %s", elf.c_str());
         W(thr(1) + T_VALID) = 1;
         W(thr(1) + T_STATUS) = TH_RUNNING;
         link_thread(1);
         W(ST_BASE + ST_CURRENT) = 1;
         main_thread = make_thread(1, entry);
         printf("booting: entry 0x%x\n", entry);
-    } else die("unknown mode %s", mode.c_str());
+    } else rt_die("unknown mode %s", mode.c_str());
 
     g_start_time = std::chrono::steady_clock::now();
     g_cur = main_thread;
@@ -1416,8 +1514,10 @@ int main(int argc, char** argv) {
                 if (W(thr(t) + T_VALID) && W(thr(t) + T_STATUS) != TH_ZOMBIE)
                     printf("  thread %u: status %u, semaphore %u, procedure 0x%x, priority %u\n", t, W(thr(t) + T_STATUS),
                            W(thr(t) + T_SEMA), W(thr(t) + T_PROC), W(thr(t) + T_PRI));
+            g_exit_code = 4;
             report_and_exit();
         }
         if (main_thread->finished) { printf("the main thread ended\n"); report_and_exit(); }
     }
 }
+}  // namespace rta

@@ -6,8 +6,12 @@ the decompile and the disassembly; **nothing was run**, so every number here is 
 computes, not what was seen on a screen. That is still so for this document: the player
 tick has since been executed in `tools/ee_emu.py` (`docs/spec/player-tick.md`, which
 corrected S.2 and S.4 below), and the project has a live game in the Play! emulator
-(`FINDINGS.md`, "Run on the live game", rows V1–V23; `docs/issues/live-rig.md`), but no
-skill of this range was cast on it and the test patches run on a live game so far are the five marked confirmed in the patch file (FINDINGS V10, V11, V16, V19, V22). Claims are **Observed** (read at the address given)
+(`FINDINGS.md`, "Run on the live game"; `docs/issues/live-rig.md`). Skills of this range
+have been cast on it since, in a sweep that compared two machines for sync (FINDINGS
+V24) and in the soaks (V46, V62); that checks none of the numbers here. The functions themselves
+were executed one at a time in `tools/ee_emu.py`: `docs/spec/skills-35-68-executed.md`
+has what that confirmed and corrected. Which test patches have run on a live game is
+marked section by section in the patch file. Claims are **Observed** (read at the address given)
 unless marked *Inferred* or *Unknown*. The catalogue of all 101 skills, the `Skill` and
 `Spell` base layouts and the first-round per-machine audit are in `docs/skills.md`; this
 document does not repeat them except where a rebuild needs the exact rule.
@@ -1941,13 +1945,18 @@ On the first run (c == 0), in this order:
    (presentation; 492 draws of the object's generator).
 3. A `LightEffect` (0xbc bytes) is created 24 units ahead of the centre: start and end colour
    (193, 117, 57, −32), no owner. Being a GameObject, its constructor draws the shared
-   generator once.
+   generator once. Executed (`docs/spec/skills-35-68-executed.md` section 5;
+   0x2c7a50–0x2c7abc): the remaining arguments are 9.0, 0.0, 0.8, 0.3, passed on the stack.
 4. 60 particles, one draw of generator 0x404468 each (type chosen by R: below 152, below 232,
    else).
 5. If +0x50 is clear: 23 particles (46 over water), three draws of 0x404468 each.
 6. Not over water and +0x50 clear: one draw of 0x404468 for the angle of a floor decal
    (`decal_add(12.0, centre, angle, 9, 0)`), then `camera_shake(level × 0.715 (0x3f3709c7) +
    5.0, 0)`. Over water: `water_disturb(3573.0, 36.0, world, centre)` and the same shake.
+   Executed (`docs/spec/skills-35-68-executed.md` section 5; 0x2c7d98–0x2c7de8): the angle
+   handed to `decal_add` is the generator's new **state** shifted right 16 as a signed
+   word, that is the draw sign-extended from 16 bits, not the unsigned draw the other
+   sites use. Presentation; the generator is per machine.
 7. Damage. `world_collectObjectsInBox(centre − (R,R,R), centre + (R,R,R), list, 512)`. For
    each object o in list order, **only when the owner handle is not empty**:
    - skip unless `owner->isEnemy(o)` (Creature slot 20 of the owner) is non-zero;
@@ -4684,7 +4693,7 @@ Field layout of `SpellAncestralCall`:
 
 | Offset | Type | Meaning |
 |---|---|---|
-| +0x00 | u8 | level |
+| +0x00 | u8 | level. Executed (`docs/spec/skills-35-68-executed.md` section 5): read as a **signed** byte everywhere it is used (ring count level + 14, `lb` at 0x2e1100; the statistic reads) |
 | +0x04 | handle list head | base Spell |
 | +0x08 | Skill* | 0x6e2928 |
 | +0x0c | Creature* | owner (used by the query and by `net_objOrGhost`) |
@@ -8370,7 +8379,10 @@ not used at all: everything is taken from the caster object. Returns the spell o
            if obj: StaticFire_ctor(120.0, 1.0, obj, &p, life = 240, owner = caster,
                                    secondary = 1)
    ```
-   If s1 == 0, n is taken as 0.
+   If s1 == 0, n is taken as 0. Executed (`docs/spec/skills-35-68-executed.md` section 5;
+   0x311900–0x311960): the point handed to the height query carries the **previous** ring
+   point's height as its z, 0.0 for the first — one frame variable serves as input and as
+   result. Whether the query reads that z is the business of `docs/spec/world-queries.md`.
 10. `world_collectObjectsInBox(&min, &max, list, 0x40)` (at most 63 objects; the prediction
     copy and `g_excludeMask` objects are never returned). For each object o in list order,
     all of these must hold:
@@ -8908,8 +8920,10 @@ console's arithmetic does not give.
   the cast and before the spell's run. The ward is attached in the cast frame F after that
   frame's damage processing and is destroyed by its last run call at the end of frame
   F + N - 1 (N = the run-call total of the table), so the roll is available to
-  `Player_processDamage` in frames F+1 .. F+N-1: 180 frames for 3 s, 240 for 4 s, 299 for
-  5 s, 359, 419, 479, 539, 599, 659 and 720 for 12 s.
+  `Player_processDamage` in frames F+1 .. F+N-1, which is N − 1 frames: with the executed
+  table (N = 60 × seconds) 179 frames for 3 s, 239 for 4 s, 299 for 5 s, 359, 419, 479,
+  539, 599, 659 and 719 for 12 s. (The earlier version had 180, 240 and 720 at 3, 4 and
+  12 s, from the table's old 181, 241 and 721.)
 - `Player_processDamage` 0x1b2cc0, at the point where the player's record hit points are
   <= 0 (0x1b3370): if the player has a `SpellResurrect` attached **and `g_numPlayers` == 1**
   it calls 0x3130f4 (proposed `SpellResurrect_onOwnerDeath`) and stores the returned float

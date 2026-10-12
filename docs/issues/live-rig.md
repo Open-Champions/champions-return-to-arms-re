@@ -41,7 +41,12 @@ the carried load and nearly the whole player record included; a second arm of 24
 with the skeleton section added; eight lobby-launched pairs; and the server's chat-room
 fix met by the real game). In short: two machines play one lockstep game here;
 random input found two real divergences, which are the ledger's K1 and K2, and the test
-patch for each removes it; the arena did **not** go out of sync in twelve runs.
+patch for each removes it; the arena did **not** go out of sync in twelve runs. (That
+"in short" is phase 2, with placeholder characters. With real characters the arena does
+go out of sync, section 9; with the fix sections on, the last soak, section 22, ends with
+no difference in any column that decides a pair's class, while two bytes of local effect
+state in the player record still differ between the machines, 22.4. Section 22.8 says
+what that soak cannot see.)
 
 Every earlier statement in this project came from reading the executable or from running
 single functions in `tools/ee_emu.py`. This document is the first that reports what the
@@ -647,6 +652,17 @@ silent, as K2 says. With "Net test: potions always leave the bag directly" appli
 both machines (0x1b9fcc and 0x1ba3ac: 0x8043b69d → 0x00001821) both take the potion at
 tick 744 and no shared column differs.
 
+Added later (FINDINGS M1 and K2; `docs/spec/game-messages.md` section 10, **Executed**):
+what the stray drop message itself removes depends on the owner's slot. For the player in
+slot 0 it names record 0 of bag 2, the bag the potions are in, and takes one of whatever
+is in that first cell, on every machine. For slots
+1–3 in a net game it reads a panel grid that is never built, so its bag and index are a
+low-memory byte and a stale stamp, and the potions are not touched by it. That is why the
+scripted run above, whose owner is in slot 1, shows the potions one apart (2, 2, 2
+against 2, 1, 2) and nothing more: the only removal is the direct one on the other
+machine. Whether the message took one from the first record of bag 0 on both machines,
+as it does when that byte is zero, was not logged.
+
 **K1 — use, then D-pad, inside the input delay. Confirmed; its patch removes it; the
 consequence can be worse than the ledger says.** base4, no bus delay (machine A's lead 5):
 
@@ -1088,7 +1104,9 @@ Same limits as section 7; same twelve real-character pairs as section 9 (seeds 4
    (`Creature_moveBy`+0x5e0, so the call is at 0x114220); the first in tick 7132. On
    machine B 3,107 entries and none with the flag. This is not the path guarded at
    0x14d9b0 in `obj_moveWithCollision`. (The caller of `Creature_moveBy` was not
-   captured.) In pair 402 the same break point saw 1,483 entries on each machine and none
+   captured. Captured since, `docs/issues/touch-handlers.md` 3.2: `Player_run`'s
+   scripted-control exit, the call at 0x1a5604 → `Creature_moveToDest` →
+   `Creature_moveTo`, call at 0x114bb0.) In pair 402 the same break point saw 1,483 entries on each machine and none
    with the flag: the copy does not always get there.
 3. **Other touch handlers.** Logged the same way in pair 402: `Player_onTouch` 0x1beaf0
    (4,186 and 4,983 entries) and the gold pick-up touch 0x157a9c (679 on each machine) —
@@ -1130,6 +1148,22 @@ which are the same seeds, states and script.
 The caller of `Creature_moveBy` in the copy's path; a static list of the classes
 reachable from 0x114220; the real source of the item value; the touch section on pair
 406 without the spin section.
+
+Done since, the first three:
+
+- **The caller** (`docs/issues/touch-handlers.md` 3.2; FINDINGS G25, V61): `Player_run`
+  0x1a5030, call at 0x1a5604 → `Creature_moveToDest` 0x119f38 → `Creature_moveTo`
+  0x114510, call at 0x114bb0 → `Creature_moveBy`. That exit of `Player_run` needs the
+  inert byte +0x231 non-zero and the action state +0x58c equal to 1, and both are met in
+  play: in this pair the arena's second cutscene froze the players while both were in
+  state 1, and for its 958 ticks only the copies ran — 992 and 1,085 entries at
+  0x1a5604. The stack pointers of those entries and of the 164 handler entries above
+  close the chain.
+- **The classes** (the same document, section 2; FINDINGS G26): slot 6 has 38
+  implementations; 33 do not test the toucher for the copy and 30 of them change shared
+  state. The patch section "no touch handler runs for a prediction copy that walks into
+  something" guards the call at 0x114220 for all of them.
+- **The source of the item value**: sections 12.3 (f) and 12.4, FINDINGS V30.
 
 ## 11. Phase 6: every skill, other levels, and what the prediction leaves behind
 

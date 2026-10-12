@@ -537,6 +537,22 @@ needs the test `(flags & 0x20040) == 0x40`, which does not fit in the one maskin
 instruction there; a patch would have to move code. **No patch is proposed**: none was
 designed or tested.
 
+Followed up in `docs/issues/touch-handlers.md` (FINDINGS G26, V61), which qualifies the
+row above in one point and supplies the patch:
+
+- "The copy's own move step is what calls slot 6 of what it touches" is true of
+  `Creature_moveBy` only (the call at 0x114220). A player's ordinary step goes through
+  `obj_moveWithCollision`, which skips the call for a copy (0x14d9ac). **Ran**: a
+  predicted player that walks through a small spider with the stick does not kill it
+  early.
+- The copy reaches `Creature_moveBy` through `Player_run`'s scripted-control exit
+  (0x1a5604), for instance while a cutscene has the players frozen in action state 1.
+  **Ran** in two forced forms of that walk: the spider dies on the copy's machine only
+  (first difference at tick 1530; in the frozen form silent for 280 ticks).
+- The patch is at the caller, not in this handler: the section "no touch handler runs for
+  a prediction copy that walks into something" (one word at 0x114220, eight in unused
+  code). With it neither form differs.
+
 ## 11. What the differential test covers
 
 `python3 tools/difftest_monsters_1.py` builds one creature through the **original
@@ -674,7 +690,9 @@ word and constant it gives for them agreed with the executed code. What it and
 - The five draw functions; `Creature_init`, `Creature_deadUpdate`,
   `Creature_applyKnockback`, the hit helpers 0x1196e8 / 0x119850 / 0x119938 / 0x119b58 and
   the sight tests behind them (call-outs, as in the two documents underneath).
-- No patch for section 10; nothing was run on a console or on linked emulators.
+- No patch for section 10; nothing was run on a console or on linked emulators. (Both
+  done since for section 10, on linked Play! emulator instances: see the end of that
+  section. Still nothing on a console or in PCSX2.)
 
 ### Recommended for the next batch
 

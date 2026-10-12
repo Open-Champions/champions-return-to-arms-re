@@ -463,7 +463,10 @@ attaches it to the melee hit as an elemental effect.
 
 Constructor 0x271c70, run 0x27236c, draw 0x2721f8, setState 0x272f4c. One class, four
 variants (+0x470). `UndeadKnight1–4` are created without a mount; `Rider*` get a Nightmare
-(constructor 0x270968) linked both ways through +0x3c8 and start in state 0x1b.
+(constructor 0x270968) linked both ways through +0x3c8 and start in state 0x1b. The
+arena's four knights are the on-foot ones: `UndeadKnight3` is variant 2, which casts the
+insects, and `UndeadKnight4` is variant 3, the summoner (`docs/spec/arena-monsters.md`
+section 14; `docs/issues/arena-desync.md`).
 
 - Unmounted: the normal run skeleton, then the state switch. Mounted: the rider copies the
   mount's position and facing every frame, re-links itself in the world grid (0x14f028),

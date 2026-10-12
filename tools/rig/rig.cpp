@@ -57,6 +57,7 @@
 #include "iop/Iop_Speed.h"
 #undef private
 #include "PS2VM.h"
+#include "FpUtils.h"
 #include "PS2VM_Preferences.h"
 #include "AppConfig.h"
 #include "Ps2Const.h"
@@ -1210,6 +1211,7 @@ struct Command
 		SHOT,
 		IOPDUMP,
 		ETHDROP,
+		ARITH,
 		DUMP,
 		SHOW,
 		ECHO,
@@ -1910,6 +1912,7 @@ struct Options
 	std::vector<std::string> tickWatchSpecs;
 	std::string tickAddress = "0x13aee8";
 	int fpRound = -1; // host rounding mode forced on the machine thread; -1: Play!'s own (toward zero)
+	bool browserArith = false; // --arith browser: what the WebAssembly build computes (to nearest, denormals kept)
 	std::string predictAuditPath;
 	std::string predictTracePath;
 	std::vector<std::string> traceRangeSpecs;
@@ -1920,10 +1923,70 @@ struct Options
 class CRig
 {
 public:
+	static inline std::atomic<bool> s_browserArith{false};
+	static inline std::atomic<bool> s_arithChosen{false};
+	uint64_t m_arithSeen = ~0ull;
+
 	CRig(CRigVM& vm, const Options& options)
 	    : m_vm(vm)
 	    , m_options(options)
 	{
+	}
+
+	// ---- arithmetic (--arith, script command 'arith') -----------------------------
+	// 'browser': the machine's thread computes what the WebAssembly build of the core
+	// computes (results rounded to nearest, denormals kept) instead of Play!'s own
+	// (toward zero, denormals as zero). A core that has the switch (FpUtils.h of the
+	// playable application's tree, FPUTILS_HAS_ARITHMETIC) does it itself, at the start of
+	// its thread and at every vertical blank; with Play!'s own core the rig puts the
+	// thread's control register in the same state at every vertical blank.
+
+	static void SetArithmetic(bool browser)
+	{
+		s_browserArith = browser;
+		s_arithChosen = s_arithChosen || browser;
+#ifdef FPUTILS_HAS_ARITHMETIC
+		FpUtils::SetArithmetic(browser ? FpUtils::ARITHMETIC_BROWSER : FpUtils::ARITHMETIC_NATIVE);
+#endif
+	}
+
+	void ArithmeticAtBlank()
+	{
+#if defined(__aarch64__)
+		uint64_t fpcr = 0;
+		__asm__ __volatile__("mrs %0, fpcr" : "=r"(fpcr));
+#ifndef FPUTILS_HAS_ARITHMETIC
+		if(s_arithChosen)
+		{
+			// rounding mode bits 23:22, flush-to-zero bit 24, default-NaN bit 25, FIZ/AH/NEP bits 2:0
+			uint64_t wanted = s_browserArith ? (fpcr & ~((3ull << 22) | (1ull << 24) | (1ull << 25) | 7ull)) : ((fpcr & ~(3ull << 22)) | (3ull << 22) | (1ull << 24));
+			if(wanted != fpcr)
+			{
+				__asm__ __volatile__("msr fpcr, %0" : : "r"(wanted));
+				fpcr = wanted;
+			}
+		}
+#endif
+		if(fpcr != m_arithSeen)
+		{
+			static const char* rounding[4] = {"to nearest", "upward", "downward", "toward zero"};
+			printf("[frame %" PRIu64 "] machine thread: control register %08" PRIx64 ": results rounded %s, denormals %s%s\n", m_frame, fpcr,
+			       rounding[(fpcr >> 22) & 3], (fpcr & (1ull << 24)) ? "as zero" : "kept",
+#ifdef FPUTILS_HAS_ARITHMETIC
+			       " (set by the core)"
+#else
+			       s_arithChosen ? " (set by the rig)" : ""
+#endif
+			);
+			m_arithSeen = fpcr;
+		}
+#else
+		if(s_arithChosen)
+		{
+			int wanted = s_browserArith ? FE_TONEAREST : FE_TOWARDZERO;
+			if(fegetround() != wanted) fesetround(wanted);
+		}
+#endif
 	}
 
 	// ---- set-up (main thread, machine paused) -------------------------------------
@@ -2118,6 +2181,7 @@ public:
 		// sets to toward-zero once; forcing another one here makes every single-precision
 		// result of this machine round differently from then on.
 		if(m_options.fpRound >= 0 && fegetround() != m_options.fpRound) fesetround(m_options.fpRound);
+		ArithmeticAtBlank();
 		if(m_inlineGs) m_inlineGs->Drain();
 		if(m_link.Active() && !ExchangeWithPeer()) return;
 
@@ -3899,6 +3963,14 @@ private:
 			command.kind = Command::ETHDROP;
 			command.number = (tokens.size() > i) ? strtoll(tokens[i].c_str(), nullptr, 0) : 0;
 		}
+		else if(word == "arith")
+		{
+			// arith browser|native: this machine's arithmetic from the next vertical blank on
+			need(1);
+			command.kind = Command::ARITH;
+			command.text = Lower(tokens[i]);
+			if(command.text != "browser" && command.text != "native") throw std::runtime_error("arith browser|native");
+		}
 		else if(word == "dump")
 		{
 			need(3);
@@ -4163,6 +4235,10 @@ private:
 			break;
 			case Command::ETHDROP:
 				EtherDrop(static_cast<double>(command.number));
+				break;
+			case Command::ARITH:
+				SetArithmetic(command.text == "browser");
+				printf("[frame %" PRIu64 "] arithmetic: %s from the next vertical blank\n", m_frame, s_browserArith ? "browser (to nearest, denormals kept)" : "native (toward zero, denormals as zero)");
 				break;
 			case Command::IOPDUMP:
 			{
@@ -4680,6 +4756,9 @@ static void Usage()
 	    "                         one by one, to <file>.raw\n"
 	    "  --fp-round nearest|up|down|zero   force a floating-point rounding mode on this machine's thread\n"
 	    "                         (Play! runs the EE with round-toward-zero); for float-mismatch experiments\n"
+	    "  --arith browser|native this machine's arithmetic: 'browser' is what the WebAssembly build of the\n"
+	    "                         core computes (results to nearest, denormals kept); 'native' is Play!'s own\n"
+	    "                         (toward zero, denormals as zero), the default. Script command: arith <which>\n"
 	    "  --tick-log <file>      one row of the --tick-watch values per lockstep tick (needs break points)\n"
 	    "  --tick-watch <name=expr:type>   a value for the tick log; repeatable\n"
 	    "  --tick-at <addr>       where a tick is logged (default 0x13aee8, the return from the tick's tasks)\n");
@@ -4835,6 +4914,12 @@ static int Run(int argc, char** argv)
 			else
 				Die("--fp-round nearest|up|down|zero");
 		}
+		else if(arg == "--arith")
+		{
+			std::string which = value();
+			if(which != "browser" && which != "native") Die("--arith browser|native");
+			options.browserArith = (which == "browser");
+		}
 		else if(arg == "--predict-audit")
 			options.predictAuditPath = value();
 		else if(arg == "--predict-trace")
@@ -4892,6 +4977,7 @@ static int Run(int argc, char** argv)
 	CAppConfig::GetInstance().SetPreferencePath(PREF_PS2_ROM0_DIRECTORY, g_basePath / "vfs" / "rom0");
 	CAppConfig::GetInstance().SetPreferenceBoolean(PREF_PS2_LIMIT_FRAMERATE, options.throttle);
 
+	CRig::SetArithmetic(options.browserArith);
 	CRig rig(vm, options);
 	CRigPad* padHandler = nullptr;
 

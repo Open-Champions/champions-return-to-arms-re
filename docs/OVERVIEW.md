@@ -1,10 +1,62 @@
 # How the game is put together
 
-A map for people starting on this code. Every statement here comes from reading the
-executable; the evidence (addresses) is in `FINDINGS.md`, `names.tsv`, `symbols/` and the
-area documents in this folder. Most of it has only been read or executed function by function;
-what has been confirmed on the running game is listed in `FINDINGS.md`, "Run on the live game"
-(`docs/issues/live-rig.md`).
+A map for people starting on this code. Every statement in the map — from "The
+executable" on — comes from reading the executable; the evidence (addresses) is in
+`FINDINGS.md`, `names.tsv`, `symbols/` and the area documents in this folder. Most of it
+has only been read or executed function by function; what has been confirmed on the
+running game is listed in `FINDINGS.md`, "Run on the live game" (`docs/issues/live-rig.md`).
+The first section below is different: it says what the project can do today and marks
+how each thing is known.
+
+## Where the project stands
+
+As of 2026-10-12. The page with the figures, their conditions and their sources is
+[STATE-OF-PLAY.md](STATE-OF-PLAY.md).
+
+What can be done today:
+
+- **Play the game on an Apple-silicon Mac without a console or a BIOS file.** The Play!
+  emulator with this project's changes runs it at full speed at four times the console's
+  resolution, with a steady picture, a controller, sound and the game's own network. It
+  goes from start to the lobby by itself, and two players meet by a room code. **Ran**,
+  driven by test scripts, with two copies on one Mac. How to:
+  [play-online.md](play-online.md); what was changed in the emulator:
+  [tools/play-net/README.md](../tools/play-net/README.md).
+- **Run the same build in a browser**, offline, as far as the first level, at full speed
+  in Chrome when the computer is not busy. **Ran**, by scripted presses.
+  [issues/browser-build.md](issues/browser-build.md).
+- **Translate the game's code to native C++** and get the same game from it: every
+  function translates, 7,431 of 7,732 agree with the interpreter function by function
+  (**Executed**), and 2,005 consecutive frames agree with the original running in the
+  emulator (**Ran**). There is no picture, sound or input yet, so this is not playable.
+  [issues/native-recomp.md](issues/native-recomp.md).
+- **Join two machines and compare them tick by tick.** The two-machine rig reproduced
+  causes of "OUT OF SYNC" that reading had predicted and found others (`FINDINGS.md`,
+  "Run on the live game"). Each has a patch section that removes it on the rig. With 24
+  sections on, 120 long pairs and 5.1 million ticks ended without the game's out-of-sync
+  flag and with no difference in anything compared except two bytes of local effect state
+  (FINDINGS V62, V63). **Ran.** [issues/live-rig.md](issues/live-rig.md); the patches are
+  in `patches/SLUS-20973_4028A55F.pnach` and the suggested set in
+  [online-setup.md](online-setup.md).
+- **Take the real game through the whole lobby path** against a replacement lobby server:
+  account, characters, host, join, launch, play (FINDINGS V49). **Ran.**
+  [lobby-protocol.md](lobby-protocol.md).
+
+What is not proven:
+
+- **PCSX2 and consoles.** Nothing here has run on a PlayStation 2 or in PCSX2. Every
+  "Ran" is the Play! emulator. No patch section has been tried in PCSX2.
+- **Two different computers.** Every pair was two copies of one build on one Mac. That
+  shows differences in logic only. Whether two different machines compute the same
+  numbers is open ([issues/float-divergence.md](issues/float-divergence.md)). One case is
+  known to fail: the browser build rounds differently from the Mac app, so the two cannot
+  share a game as built.
+- **Two networks.** No session has gone through a router or across the internet.
+- **A person playing.** The tests pressed the buttons. Nobody has played a session,
+  pressed a real controller button in a test or listened to the sound.
+- **More than two players.**
+
+## The documents
 
 Each part of the code has its own document; this page is the summary they were checked
 against: [startup](startup.md) (really the item system), [creatures](creatures.md),
@@ -13,6 +65,17 @@ against: [startup](startup.md) (really the item system), [creatures](creatures.m
 [monsters](monsters.md), [skills](skills.md), [mainloop](mainloop.md), [netlib](netlib.md),
 [runtime](runtime.md). The lobby side is in [lobby-protocol](lobby-protocol.md) and
 [online-setup](online-setup.md).
+
+Beside them:
+
+| Where | What |
+|---|---|
+| [STATE-OF-PLAY.md](STATE-OF-PLAY.md), [play-online.md](play-online.md) | the routes to playing, and how to play on a Mac |
+| `docs/spec/` | specifications written closely enough to rebuild from; most have a model in `tools/ref_*.py` that `tools/difftest_*.py` compares with the game's own instructions |
+| `docs/issues/` | one investigation per file: the live rig, the browser and native builds, lag, the prediction copy, touch handlers, floating point and the others |
+| [FORMATS.md](FORMATS.md), `docs/formats/` | file formats |
+| [data-tables.md](data-tables.md) | where each game rule lives: a table, a file on the disc or a constant in a function |
+| `tools/rig/`, `tools/play-net/`, `tools/play-web/`, `tools/recomp/` | the test rig, the Mac build, the browser build, the recompiler; each has a README or a notes file in `docs/issues/` |
 
 ## The executable
 
@@ -82,9 +145,10 @@ only is enough to break sync.
 
 ## Online play
 
-- The lobby (`con.soegames.net`, TCP) only matches players. Gameplay is peer to peer: the
-  game's own netcode sends plain UDP datagrams. SOE's UdpLibrary is used only for the
-  player-to-player handshake before a game starts.
+- The lobby (`con.soegames.net`, TCP) matches players and keeps their characters; the
+  game also saves characters to it during play (FINDINGS V52). It takes no part in the
+  simulation. Gameplay is peer to peer: the game's own netcode sends plain UDP datagrams.
+  SOE's UdpLibrary is used only for the player-to-player handshake before a game starts.
 - The simulation is deterministic lockstep: every machine runs the same frame with the same
   inputs. `net_frameLoop` (0x139e88) applies each peer's input record for the frame,
   processes queued game messages, runs the run tasks, then stores a hash of the frame:
@@ -98,8 +162,9 @@ only is enough to break sync.
 - To hide latency, each machine keeps a *prediction copy* of its own player (a clone with
   flag 0x20000) and runs the player's code on it for frames that are not confirmed yet
   (`net_predictLocalPlayer`, 0x131d88). Afterwards it restores the global seed, the player's
-  hit points and mana, and nothing else. Code that changes shared state must therefore check
-  for the copy. The copy is what gets drawn on its owner's screen; the real local player is
+  hit points and mana and the player-table pointer, and nothing else (FINDINGS G3). Code
+  that changes shared state must therefore check for the copy; several places do not
+  (`docs/issues/prediction-copy.md`). The copy is what gets drawn on its owner's screen; the real local player is
   hidden from drawing and from queries made while predicting.
 - Three kinds of state exist side by side: shared (must match everywhere), per machine
   (camera, audio position, menus, the prediction copy, what was drawn) and cosmetic. A bug

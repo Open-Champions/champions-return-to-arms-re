@@ -355,7 +355,10 @@ walk targets from 10 s on and placed at their fight positions by the last four k
 - Every copy cloned during the cutscene copies the frozen player's flag word and inert
   byte. Its `Player_run` takes the inert branch (0x1a55a0–0x1a5604): animation only when
   the action state +0x58c is 0, nothing when it is neither 0 nor 1, and the scripted walk
-  only when it is 1, which the freeze does not set. **Observed.**
+  only when it is 1, which the freeze does not set. **Observed.** The freeze does not
+  clear it either: a player that is in state 1 when the cutscene begins stays in it, and
+  its copies then do take the scripted walk (**Ran**, `docs/issues/touch-handlers.md`
+  3.2; correction 2 at the end of this document).
 - `cut_end`'s restore walk (0x199074) again goes over the run lists, so the copy stays
   frozen after tick E until the next rebase, up to 30 ticks. On the owner's screen the
   character stands still for that long while the real one already moves. Presentation
@@ -696,6 +699,14 @@ camera-judged activity.
    holds for `creatures_freezeAll` only. With header flag 8 the real players get inert
    bit 4 and a copy cloned from them inherits it. The row's conclusion stands for a
    different reason: the walk also needs action state +0x58c = 1 (0x1a55ac–0x1a5604).
+   **That last sentence does not stand** (`docs/issues/touch-handlers.md` 3.2; FINDINGS
+   G25, V61). Action state 1 is an ordinary state for a player to be in when a cutscene
+   begins, and the freeze leaves it as it is. Ran on the two-machine rig: in the arena's
+   second cutscene both players were in state 1 on all 958 ticks, the real players were
+   not run, and each machine's copy took the scripted walk (992 and 1,085 entries at
+   0x1a5604). On one machine the copy touched a monster and the pet beside its player,
+   164 handler calls that the other machine never made. In the first cutscene of the
+   same run the players were in state 2 and nothing of the kind happened.
 3. docs/mainloop.md P9: "`cut_setup` runs in the first pass on every machine" applies only
    to a cutscene started during the load. The Unknown about `cut_evalCamera` is answered in
    section 3.2.

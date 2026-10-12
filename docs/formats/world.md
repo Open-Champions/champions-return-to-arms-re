@@ -32,7 +32,7 @@ loader turns offsets into pointers in place.
 | | | |
 |---|---|---|
 | Axes | x and y span the ground, z is height (up) | O: terrain heights add to z (`terrain_height` 0x183820); water level is a z value (`water_test` 0x189438) |
-| Handedness, which way +y points on screen | | U |
+| Handedness, which way +y points on screen | right-handed, z up; camera space has x right, y down, z forward. Which way the axes point on the compass is still open | O for the screen: `docs/spec/render-pipeline.md` section 3 (`Camera_apply` 0x2035c8); U for the compass |
 | World unit | the unit of object positions (floats) | O |
 | Stored positions | integers in quarter units: world = stored × 0.25 | O: 0x18b810, 0x18ba18, 0x182768; D: decoded vertices reproduce the stored chunk bounds |
 | Height samples | 4 units apart; heights in 1/16 unit | O: 0x183820 |
@@ -551,7 +551,7 @@ appear to carry the baked light; the normals are there for the dynamic lights.
   below them (0x18a5c0, 0x185a40).
 - `docs/engine.md` lists `world_fixup` as not read; it is described above.
 - `docs/FORMATS.md` still lists `.world` as unknown.
-- `docs/formats/model-texture.md` names `WCACHE.DAT` beside `<LEVEL>.TEX` as a level texture
-  container. The world code opens only `<level>.tex` (0x181d30, 0x17d680, 0x17d830). The strings
+- `docs/formats/model-texture.md` named `WCACHE.DAT` beside `<LEVEL>.TEX` as a level texture
+  container (it has been corrected since). The world code opens only `<level>.tex` (0x181d30, 0x17d680, 0x17d830). The strings
   `wcache.hdr` and `wcache.dat` are referenced only from the equipment cache code
   (0x1a2680, 0x1a2d48); I: it is the weapon model cache, not level data.

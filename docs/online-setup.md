@@ -1,27 +1,34 @@
 # Getting the game to a community server
 
 What stands between the game and a replacement lobby server, read from the executable.
-**Nothing on this page has been run on a console or an emulator yet**; each step says how
-it is known. The server side is in [lobby-protocol.md](lobby-protocol.md).
+The server side is in [lobby-protocol.md](lobby-protocol.md). This page was written for
+PCSX2 and consoles, and **nothing on it has been run in PCSX2 or on a console**; each
+step says how it is known.
 
-What has changed since that sentence was first written: the game itself now runs in this
-project, in the Play! emulator — not on a PlayStation 2 and not in PCSX2 — and what was run
-there is listed in `FINDINGS.md`, "Run on the live game" (rows V1–V23) and
-`docs/issues/live-rig.md`. Two results bear on this page. The executable has a developer
-LAN start that needs no network menu, no sign-in check and no lobby (boot argument `--net`,
-row V6). And two instances of the emulator have been joined that way into one lockstep
-game (rows V9–V23, `live-rig.md` sections 7–10): with placeholder characters they stay in
-sync under ordinary play once the two per-machine branches K1 and K2, which were
-reproduced, are patched; with real characters that cast skills they do not always — the
-Drundar arena went out of sync in 3 of 12 fights even with those patches, from a summoned
-pet, from stale bytes in a picked-up item and, for two players of one class, from the
-spin skill (rows V17–V20). The pet and the spin have patches too, and with the whole set
-on no fight of twelve reached the out-of-sync message; two still differed, silently, in
-two bytes of an item that nothing was seen to read (rows V21–V23).
-That path bypasses every step below, so none of them — network set-up, sign-in, the host
-name, the lobby, hole punching — has been exercised, and the two instances exchange their
-packets through the test rig, not through a network; whether a console or PCSX2 can pass
-that argument was not tried.
+If you want to play today, this is not the page: the playable build is the Mac
+application of [play-online.md](play-online.md), which does the steps below by itself.
+[STATE-OF-PLAY.md](STATE-OF-PLAY.md) compares the routes — PCSX2 with the patch file, the
+Mac application, the [browser build](issues/browser-build.md) and the
+[native build](issues/native-recomp.md) — with what each has been shown to do.
+
+What has been run, all of it in the Play! emulator — not a PlayStation 2 and not PCSX2
+(`FINDINGS.md`, "Run on the live game"; `docs/issues/live-rig.md`):
+
+- **The steps of the table below, with the real game.** On the project's rig the game's
+  own network stack found a network configuration, resolved the host name, did the
+  gateway step and reached the lobby (FINDINGS V32–V34, live-rig section 13), and then
+  went the whole way: account, characters, a game hosted and joined, the launch and a
+  lockstep game (V49, live-rig section 19). The sign-in step was passed with a local
+  sign-in patch that is not part of this repository; as shipped the game stops there with
+  a network error (V33). The Mac application does the same path
+  (`tools/play-net/README.md`).
+- **Player-to-player traffic between two instances on one Mac**, through the loop-back
+  address. Hole punching through a router has not been run.
+- **The patch set below**, on two linked instances: see "Suggested patch set".
+- **A developer LAN start that needs none of the steps**: the boot argument `--net` opens
+  a small discovery lobby with no network menu, no sign-in check and no lobby server
+  (V6). Most of the rig's pair runs start that way. Whether a console or PCSX2 can pass
+  that argument was not tried.
 
 ## What the game does when you choose online play
 
@@ -67,9 +74,10 @@ The network menu is a state machine (the function at 0x33ed70, state word at obj
 
 Play is deterministic lockstep: each machine runs the whole simulation itself and they only
 exchange controller input. Anything that makes one machine compute a different number puts
-it "OUT OF SYNC". From reading the code. Of this list two items have been
+it "OUT OF SYNC". From reading the code. Some items of this list have been
 seen on a running game: two linked emulator instances went out of step in the two ways
-of the K1 and K2 item (`docs/issues/live-rig.md` section 7.3), and, with the float
+of the K1 and K2 item (`docs/issues/live-rig.md` section 7.3), in the way of the options
+item (section 14.1), in the way of the inventory item (section 16.1) and, with the float
 rounding mode of one of them changed by the test rig, in the way of the arithmetic item
 (section 8.3 there). Those instances are two copies of one build on one host, so apart
 from that forced rounding mode they cannot show any of the version, arithmetic or
@@ -111,38 +119,46 @@ hardware differences the other items are about:
 
 ## Suggested patch set for a first online test
 
-**Result on the two-machine rig with this whole set on:** none of twelve real-character arena
-fights reached the out-of-sync message, against 7 of 12 with no patches, and with the item-record
-section included the twelve agree in every shared value (FINDINGS V21, V30). That
-was the Play! emulator with two character builds; PCSX2, consoles, lobby characters and the
-other classes are untested.
+The set is the 19 sections of the table (`tools/play-net/sections-suggested.txt` lists
+them by title; the Mac application applies exactly these). Each only makes one machine do
+what the others already do, so a mix of patched and unpatched machines is safe, but a fix
+only holds for the machines that have it — enable them on every machine. These are the
+sections written as fixes rather than diagnostics.
 
-Two of these are now confirmed on the running game: on two emulator instances joined
-together (the Play!-based rig, `docs/issues/live-rig.md`), random input reproduced the K1 and
-K2 desyncs and the K1 and K2 patches removed them; the LAG-1 patch was measured there too. With K1 and K2 fixed, 60 further pairs over 24 levels found no other desync. That was the Play! emulator, not PCSX2 or
-a console. The other patches in `patches/SLUS-20973_4028A55F.pnach` have been executed
-function by function but not on a running game. These are the ones written as fixes rather
-than diagnostics. Each only makes one machine do what the
-others already do, so a mix of patched and unpatched machines is safe, but the fix only
-holds for the machines that have it — enable them on every machine:
+**What the set rests on.** All of it is the two-machine rig: two copies of one Play!
+build on one host (`docs/issues/live-rig.md`). Nothing below has run in PCSX2 or on a
+console, and the patch file says so section by section.
+
+- Without any section, 7 of 12 real-character arena fights diverged (FINDINGS V17, V21).
+- "**Confirmed live**" in the table means: the fault was reproduced on the rig and the
+  section removed it there. A row without the mark says what was run and what was not.
+- A soak with 24 fix sections on — 120 long pairs, 5,121,702 ticks — ended with no
+  difference in any shared value compared and no out-of-sync message; eight pairs
+  launched through the real lobby path, 195,331 ticks, the same (FINDINGS V62, live-rig
+  section 22). **Those 24 are not this set.** Eighteen of the 19 were among them. "No
+  touch handler runs for a prediction copy that walks into something" was not; its runs
+  are in `docs/issues/touch-handlers.md` section 6 (FINDINGS V61) and it has not been in
+  a soak. The soak also had six sections that are not suggested here.
+- The Mac application applies this set ([play-online.md](play-online.md) section 6); its
+  online runs with two copies on one Mac are in section 8 there.
 
 | Patch section | Removes |
 |---|---|
 | use button works with the spell selector open | K1 — **confirmed live**: without it, one machine changes level and the other does not |
 | potions always leave the bag directly | K2 — **confirmed live**: without it, potion counts differ silently |
-| stats page does not rewrite stored weapon damage | K3 |
-| menu lockout never drops player damage / never blocks swap and use | D26, U3 |
-| closing a notice box does not run the pending script | E9 |
-| mission menu / jump-gate menu ignore the chooser's pause menu | U2 |
-| save-point prompt ignores this machine's card screen | B9 |
-| net launch clears a stuck memory-card latch | B10, B11 |
+| stats page does not rewrite stored weapon damage | K3 — the differing record and its removal ran live (V42); a hit that reads the differing values was not run |
+| menu lockout never drops player damage / never blocks swap and use | D26, U3 — **confirmed live**: dying with the inventory open made one machine drop a hit or skip a weapon swap for the other player; each section removes its half (V39) |
+| closing a notice box does not run the pending script | E9 — **confirmed live** (V40) |
+| mission menu / jump-gate menu ignore the chooser's pause menu | U2 — the jump-gate case **confirmed live**; the mission-menu case could only be produced by forcing the pause flag (V41) |
+| save-point prompt ignores this machine's card screen | B9 — the fault was not reproduced live; the section was on in the soak without harm (V62) |
+| net launch clears a stuck memory-card latch | B10, B11 — the fault was not reproduced live; the section was on in the soak without harm (V62) |
 | predicted spin cast leaves the shared animation alone | two players of the same class using the spin skill — **confirmed live**: 6 of 6 pairs diverged without it, 0 of 6 with it |
 | creatures ignore being touched by the prediction copy | a pet or monster reacting early on its owner's machine — **confirmed live**: the pet pair that diverged stays in step with it |
 | no touch handler runs for a prediction copy that walks into something | the same fault in every other kind of object (a small spider dying, a container or prop being shoved, on one machine only) while a player is under scripted control, for instance frozen by a cutscene — **confirmed live**: a spider killed on one machine only stays alive on both with it |
 | item records start from zero, not from stack leftovers | dropped items carrying different unused bytes on different machines — **confirmed live**: with it, all twelve arena fights agree completely |
 | menu screens do not recompute player statistics; stats page does not recompute the main weapon's damage either | a heal that overshoots being trimmed early on the machine with a menu open, which ends in a death on one machine only — **confirmed live**: the one cause left after a five-million-tick soak, gone with these two |
 | carried weight is recomputed only inside the simulation | one machine allowing a pick-up that another refuses, because only the owner's machine had updated the character's carried weight — **confirmed live** |
-| prediction copy starts without pending damage | G11–G13, G24 |
+| prediction copy starts without pending damage | G11–G13, G24 — the fault was not reproduced live; the section was on in the soak without harm (V62) |
 | equalise at once (LAG-1) | input delay staying high after a stall, which is also what widens K1 and K2 — **confirmed live**: peak 11 frames instead of 34, cleared in 10 s instead of 35 |
 
 Leave the "Arena diagnostic" and "Diagnostic" sections off unless you are bisecting; several
@@ -158,22 +174,33 @@ game's controls screen does not take effect.
 - Server defects that affect real sessions are listed in
   [lobby-protocol.md](lobby-protocol.md), section 10, and are fixed in the fork
   [TrustlessMike/Champions-Reborn-Server](https://github.com/TrustlessMike/Champions-Reborn-Server)
-  (33 of 33 extended test steps pass there). That fork also adds an optional setting for the
-  "player on the same home network as the server" case in step 5.
+  (40 of 40 extended test steps pass there; [lobby-protocol.md](lobby-protocol.md) section
+  1a). That fork also adds an optional setting for the "player on the same home network as
+  the server" case in step 5.
+- In the Play! emulator, with the real game: every step of the first table, and the patch
+  set, as the head of this page says.
 
 ## Not checked
 
-Everything on the game's side: that the emulator's DNS override is honoured, that the game
-gets past the sign-in step, that two real clients find each other, and that play then
-stays in sync ([VALIDATION.md](VALIDATION.md) describes how to test the last part). The
-live rig (`docs/issues/live-rig.md`) checks none of the first three: its machines start
-through the developer LAN path and exchange packets inside the rig. On the fourth it has
-a partial answer (sections 7–10 there): two copies of one emulator build, with placeholder
-characters and the K1 and K2 patches, stay in sync through hundreds of thousands of ticks
-of random play in 24 levels. With real characters that cast skills they do not: the
-Drundar arena diverged in 7 of 12 fights unpatched and 3 of 12 with the K1, K2 and LAG-1
-patches, the remaining causes being a summoned pet, stale bytes in a picked-up item and
-— for two players of the same class — the spin skill, of which the first and the last
-have patches in the table above; with those on as well, none of twelve fights reached the
-out-of-sync message and two kept a silent two-byte difference in an item record. Whether two *different* machines — two PCs, a PC and
-a console — stay in sync is still unchecked.
+- **Anything in PCSX2 or on a console**: that the emulator's DNS override is honoured,
+  that the game gets past the sign-in step there, that two clients find each other, that
+  the patch file applies and does what it does in Play!, and that play then stays in sync
+  ([VALIDATION.md](VALIDATION.md) describes how to test the last part).
+- **Two different machines** — two PCs, a PC and a console, two Macs. Every pair so far
+  was two copies of one emulator build on one host, which shows differences in the game's
+  logic and nothing else. The one mixed pair that has been looked at does not agree: the
+  browser build rounds floating-point results differently from the Mac application
+  ([issues/browser-build.md](issues/browser-build.md)).
+- **Two networks.** Step 5 (hole punching) and the port and address advice are from
+  reading and from runs on one host.
+- **More than two players.**
+
+What the rig did check about staying in sync, in the order it happened (sections 7–22 of
+`docs/issues/live-rig.md`): placeholder characters with the K1 and K2 patches stay in
+sync through hundreds of thousands of ticks of random play in 24 levels. Real characters
+that cast skills do not: the Drundar arena diverged in 7 of 12 fights unpatched and 3 of
+12 with the K1, K2 and LAG-1 patches. Each cause found after that has a section in the
+table above — a summoned pet, the spin skill for two players of one class, stale bytes in
+an item record, a heal trimmed by a menu, the carried weight — and with 24 sections on
+the last soak found none left in 5.1 million ticks. What that soak cannot see is listed
+in section 22.8 there.

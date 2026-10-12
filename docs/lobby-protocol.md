@@ -69,7 +69,10 @@ there (S1 to S3: a console that reconnects without logging in, the length of 0x4
 server that had stood still) and fixed (`FIXES.md` 16 to 18), and those fixes were then
 run with the real game as well [R: seen on the wire with the real client, live-rig.md
 section 20.1]. A fourth (S6, `FIXES.md` 19: a session picked up again was not in its
-chat room) was fixed afterwards and has only been run with the test client [T: step 40].
+chat room) was fixed afterwards and was at first run only with the test client [T: step
+40]; it has been run with the real game since: after a session is picked up on the game
+list, the game's 0x15 for the public room gets result 0 [R: seen on the wire with the real
+client, live-rig.md section 22.6].
 
 Sections 2 to 9 were brought in line with all of this on 2026-10-11: they describe the
 fork as it is now, and every statement that changed because of what the real client did
@@ -642,7 +645,11 @@ Not seen with the real client: result 7 on its own, without a lost connection be
 live-rig.md section 20.6), and the chat room of a session that is picked up. In the run
 of 20.1 the server did not yet restore the room, and the game's 0x15 on leaving the lobby
 was answered with result 1, which the game ignored (S6 there). The fix (`FIXES.md` 19)
-came after that run and has been through the test client only [T: step 40].
+came after that run and went through the test client first [T: step 40]. It has been run
+with the real client since: the session is put back into the public room when it is
+picked up, and the game's 0x15 then gets result 0 [R: seen on the wire with the real
+client, live-rig.md section 22.6]. Still not seen: a line said in the room by another
+player reaching the one that came back (that needs chat typed by a player).
 
 ## 9. How two consoles learn each other's address
 

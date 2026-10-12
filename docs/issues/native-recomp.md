@@ -1,3 +1,56 @@
+# Native build by static recompilation
+
+## Status for other agents
+
+(Kept current by the runtime's author at every step. Last update: 2026-10-12, step 1 in
+progress.)
+
+**How far `rta_native` boots today.** From power-on: start-up, engine and display set-up,
+then stops at the first I/O-processor module load (the binary of 2026-10-11). From a
+resumed emulator image: runs the hub level. The I/O services that take it further (module
+loads, disc, controller, memory card) are being written right now; this paragraph changes
+when they work.
+
+**The runtime is being split into several files today** (2026-10-12). Until this section
+says "builds", `python3 tools/recomp/build.py run` may fail for a few minutes at a time.
+The layout it is moving to, in `tools/recomp/rt/`:
+
+| File | Holds |
+|---|---|
+| `runtime.cpp` | memory, clock, kernel, interrupts, DMA, hardware registers, `rta::run()` — **no `main` any more** |
+| `main_headless.cpp` | `main()`: calls `rta::run(argc, argv, hooks)` with no hooks |
+| `iop.cpp` | the services behind `sceSifBindRpc` / `sceSifCallRpc`: module loader, disc (`iso9660.h`), controller, multitap, memory card; owns `fn_00356510`, `fn_003566f0`, `fn_00355d68` |
+| `sound_null.cpp` | the two sound servers, no output (replaceable, see below) |
+| `script.cpp` | scripted input and conditions in the rig's script language, symbols, watch expressions |
+| `host.h`, `host_posix.cpp` | the only host-specific code (threads with large stacks, 64-bit file offsets) |
+| `iface.h` | the interfaces for picture, sound, network, controller (`rta::Hooks`) |
+| `rt.h` | what those files share |
+
+**Interfaces that will be kept stable** (a change is announced here first):
+
+- **Sound** (`rt.h`): `bool sound_rpc(u32 server, u32 function, u32 send, u32 send_size,
+  u32 recv, u32 recv_size); void sound_vblank(); void sound_report();` — `function` is
+  the full number the game passed; `send`/`recv` are addresses in `g_ram` (already
+  reduced to main memory). `iop_ram()` is 2 MB; whatever the game sends to I/O-processor
+  memory (disc reads to IOP addresses, `SifSetDma`) is in that buffer before the RPC that
+  refers to it is made. `rt_cycles()` is the virtual clock (294,912,000 per second).
+  `build.py run --sound <file.cpp>` links another file in place of `sound_null.cpp`.
+- **Picture** (`iface.h`, `rta::VideoSink`, null by default, set through `rta::Hooks` or by
+  assigning `g_hooks.video` before `rta::run`): `vif1(words, count)` / `vif0` / `gif` once
+  per DMA transfer with the chain flattened, `reg(address, value)` for every store to a GS
+  privileged or GIF/VIF register, `vblank(field, number)` at every blank, `frame(number,
+  buffer)` when the game hands a finished frame to its back end. Exact wording: section
+  "Renderer interface" below (being written with step 5; the header is authoritative
+  until then).
+- **Network** (`iface.h`, `rta::NetDriver`): the libnet entries. Not wired yet.
+- **Controller** (`iface.h`, `rta::PadSource`), or a script (`--script`).
+- **Options for modules**: `--opt key=value` (repeatable) is accepted by `rta::run` and
+  read with `const char* rt_option(const char* key)` (`rt.h`); unknown options are still
+  refused.
+
+**Build**: `python3 tools/recomp/recomp.py && python3 tools/recomp/build.py run`
+(`--opt -O1|-O2`, `--jobs N`, `--gen DIR`, `--define NAME`, `--name NAME`, `--sound FILE`).
+
 # Native build by static recompilation: feasibility spike
 
 Started 2026-10-11. Question: if the executable's MIPS R5900 code is translated to C++ once

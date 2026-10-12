@@ -595,7 +595,7 @@ For level `<name>` (Observed in `game_loadLevel`, format strings 0x53da80 `%s.go
 | `<NAME>.GOB` on the disc | archive of lumps: `<name>.lmp`, `env.lmp`, `waterenv.lmp` |
 | `<name>.lmp` → `<name>.world` | geometry (entry found by the extension `world`) |
 | `<name>.lmp` → `objects.ob` | object placement (7.3) |
-| `<name>.lmp` → `script.scr`, `*.cut`, `ambient.bin`, `*_dialog.bin`, `*.dbin` | script, cutscenes, ambient sound list, dialog |
+| `<name>.lmp` → `script.scr`, `*.cut`, `ambient.bin`, `*_dialog.bin`, `*.dbin` | script, cutscenes, ambient sound list, the voice-stream directory (`*_dialog.bin`; not dialog, see `docs/FORMATS.md`), dialog trees (`*.dbin`) |
 | `<NAME>.TEX`, `<NAME>.VAT` | streamed textures and audio (not read here) |
 | `L<NAME>.LMP` (file name cut to 8 characters) | one entry `shot.tex`. Inferred: the loading picture; the code that opens it was not read |
 
