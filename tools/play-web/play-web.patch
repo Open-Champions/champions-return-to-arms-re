@@ -428,7 +428,7 @@ diff --git a/Source/gs/GSHandler.h b/Source/gs/GSHandler.h
 diff --git a/Source/ui_js/CMakeLists.txt b/Source/ui_js/CMakeLists.txt
 --- a/Source/ui_js/CMakeLists.txt
 +++ b/Source/ui_js/CMakeLists.txt
-@@ -32,20 +32,10 @@
+@@ -32,20 +32,16 @@
  endif()
  list(APPEND UI_JS_PROJECT_LIBS gsh_opengl)
  
@@ -442,6 +442,9 @@ diff --git a/Source/ui_js/CMakeLists.txt b/Source/ui_js/CMakeLists.txt
 -
 +#RTA(web): Play!'s own Main.cpp, GSH_OpenGLJs, InputProviderEmscripten and the OpenAL
 +#sound handler are not built; RtaWeb.cpp (tools/play-web/src) takes their place.
++#Online play: RtaWebNet.cpp, and the desktop application's network and online driver as
++#they are (tools/play-net/src: RtaNet.cpp through RtaWebNetCore.cpp, RtaOnline.cpp);
++#build.sh copies them here.
  add_executable(Play
 -	GSH_OpenGLJs.cpp
 -	GSH_OpenGLJs.h
@@ -449,10 +452,13 @@ diff --git a/Source/ui_js/CMakeLists.txt b/Source/ui_js/CMakeLists.txt
 -	InputProviderEmscripten.h
 -	Main.cpp
 +	RtaWeb.cpp
++	RtaWebNet.cpp
++	RtaWebNetCore.cpp
++	RtaOnline.cpp
  	Ps2VmJs.cpp
  	Ps2VmJs.h
  )
-@@ -54,16 +44,24 @@
+@@ -54,16 +50,24 @@
  target_link_options(Play PRIVATE "--bind")
  target_link_options(Play PRIVATE "-sMODULARIZE=1")
  target_link_options(Play PRIVATE "-sEXPORT_ES6=1")

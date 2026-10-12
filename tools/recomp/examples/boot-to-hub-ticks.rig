@@ -1,0 +1,115 @@
+# From power-on to a controllable character in the first level, offline, one player - the
+# same route as tools/rig/examples/boot-to-hub.rig, but every press in the front end is
+# keyed on the simulation tick instead of the frame.  Loading takes a different number of
+# frames in the emulator rig and in the native build; with presses tied to ticks the two
+# run the front end tick for tick alike, which is what tools/recomp/rigcompare.py
+# (boot-rig / boot-native / boot-compare) needs.  Needs a blank memory card.
+
+# memory-card screens (a modal loop before the front end; no simulation ticks to key on)
+at 300
+tap cross 4            # slot 1
+wait 300               # the card is checked; the question whether to initialise appears
+tap cross 4            # yes
+wait 200               # save data is created
+tap cross 4            # acknowledge
+wait 60
+# publisher logo and intro film: a press skips each
+tapuntil cross 40 g_inFrontend:u8 == 1 timeout 4000
+until g_levelName:str8 == intro timeout 3000
+
+# front end; g_simFrame counts from 0 when it starts
+until g_simFrame:u32 >= 10 timeout 3000
+tap cross 4            # main menu, first entry: new game
+until g_simFrame:u32 >= 80 timeout 3000
+tap cross 4            # first entry: offline game
+until g_simFrame:u32 >= 150 timeout 3000
+tap cross 4            # one player
+until g_simFrame:u32 >= 220 timeout 3000
+tap cross 4            # first entry: the mission game
+until g_simFrame:u32 >= 290 timeout 3000
+tap cross 4            # first difficulty
+# character creation: class, appearance, ability points, name
+until g_simFrame:u32 >= 500 timeout 3000
+tap cross 4            # the class shown first
+until g_simFrame:u32 >= 630 timeout 3000
+tap cross 4            # default appearance
+# 20 ability points must be spent before the screen can be left; all go to the first row
+until g_simFrame:u32 >= 760 timeout 3000
+tap right 3
+until g_simFrame:u32 >= 770 timeout 3000
+tap right 3
+until g_simFrame:u32 >= 780 timeout 3000
+tap right 3
+until g_simFrame:u32 >= 790 timeout 3000
+tap right 3
+until g_simFrame:u32 >= 800 timeout 3000
+tap right 3
+until g_simFrame:u32 >= 810 timeout 3000
+tap right 3
+until g_simFrame:u32 >= 820 timeout 3000
+tap right 3
+until g_simFrame:u32 >= 830 timeout 3000
+tap right 3
+until g_simFrame:u32 >= 840 timeout 3000
+tap right 3
+until g_simFrame:u32 >= 850 timeout 3000
+tap right 3
+until g_simFrame:u32 >= 860 timeout 3000
+tap right 3
+until g_simFrame:u32 >= 870 timeout 3000
+tap right 3
+until g_simFrame:u32 >= 880 timeout 3000
+tap right 3
+until g_simFrame:u32 >= 890 timeout 3000
+tap right 3
+until g_simFrame:u32 >= 900 timeout 3000
+tap right 3
+until g_simFrame:u32 >= 910 timeout 3000
+tap right 3
+until g_simFrame:u32 >= 920 timeout 3000
+tap right 3
+until g_simFrame:u32 >= 930 timeout 3000
+tap right 3
+until g_simFrame:u32 >= 940 timeout 3000
+tap right 3
+until g_simFrame:u32 >= 950 timeout 3000
+tap right 3
+until g_simFrame:u32 >= 980 timeout 3000
+tap cross 4
+# name: three presses type the first key three times; the done key is six rows down, five right
+until g_simFrame:u32 >= 1110 timeout 3000
+tap cross 3
+until g_simFrame:u32 >= 1122 timeout 3000
+tap cross 3
+until g_simFrame:u32 >= 1134 timeout 3000
+tap cross 3
+until g_simFrame:u32 >= 1146 timeout 3000
+tap down 3
+until g_simFrame:u32 >= 1158 timeout 3000
+tap down 3
+until g_simFrame:u32 >= 1170 timeout 3000
+tap down 3
+until g_simFrame:u32 >= 1182 timeout 3000
+tap down 3
+until g_simFrame:u32 >= 1194 timeout 3000
+tap down 3
+until g_simFrame:u32 >= 1206 timeout 3000
+tap down 3
+until g_simFrame:u32 >= 1220 timeout 3000
+tap right 3
+until g_simFrame:u32 >= 1232 timeout 3000
+tap right 3
+until g_simFrame:u32 >= 1244 timeout 3000
+tap right 3
+until g_simFrame:u32 >= 1256 timeout 3000
+tap right 3
+until g_simFrame:u32 >= 1268 timeout 3000
+tap right 3
+until g_simFrame:u32 >= 1290 timeout 3000
+tap cross 4
+
+# the first level loads
+until g_levelName:str8 == hub timeout 3000
+until g_players+0x43d8:u32 != 0 timeout 3000
+until g_simFrame:u32 >= 60 timeout 3000
+show g_levelName:str16 g_simFrame:u32 g_players:str16 [g_players+0x43d8]+0x10:f32 [g_players+0x43d8]+0x14:f32 [g_players+0x43d8]+0x18:f32

@@ -57,6 +57,7 @@
 
 #include "AppConfig.h"
 #include "DiskUtils.h"
+#include "FpUtils.h"
 #include "FrameLimiter.h"
 #include "PS2VM.h"
 #include "PS2VM_Preferences.h"
@@ -113,6 +114,7 @@ namespace
 		bool displayClock = true;
 		bool textureDump = false;
 		int textureMemory = 0; // megabytes of video memory for replacement pictures (0: the default)
+		bool textureWhole = false; // the whole of every replacement picture goes to the GPU, not only the part drawn with
 		std::string textureDir; // dump/ and replace/ below it; empty: <data>/textures
 		bool netcnf = true;
 		std::string controlPath;
@@ -128,6 +130,7 @@ namespace
 		int gatewayPort = 0;     // --rta-gateway-port: where this host looks for the server's gateway (tests)
 		bool setQuiet = false;   // --rta-set-quiet: do not tell the other players which patch set this copy has (tests: an older copy)
 		bool setRaw = false;     // --rta-set-raw: pass other players' patch-set datagrams on to the game as well (tests: an older copy)
+		std::string arith = "auto"; // --rta-arith auto|browser|native: the machine's arithmetic (CheckArithmetic)
 		bool netcnfProgram = false; // --rta-netcnf-program: the game's "Config" may start Sony's network settings program
 	};
 
@@ -576,6 +579,7 @@ namespace
 			m_executableChange.reset();
 			CGSH_OpenGL::g_textureDump = CGSH_OpenGL::TextureDumpFunction();
 			CGSH_OpenGL::g_textureLoad = CGSH_OpenGL::TextureLoadFunction();
+			CGSH_OpenGL::g_textureForget = CGSH_OpenGL::TextureForgetFunction();
 			StopTextureThreads();
 			CFrameLimiter::SetExternalWait(CFrameLimiter::ExternalWaitFunction());
 			CGSHandler::g_presentClock = CGSHandler::PresentClock();
@@ -753,6 +757,7 @@ namespace
 			// control socket's "texreplace reload" asks
 			m_textureReplaceDirectory = replaceDirectory;
 			if(options.textureMemory > 0) CGSH_OpenGL::g_textureReplaceBudget = static_cast<uint64>(options.textureMemory) * 1024 * 1024;
+			if(options.textureWhole) CGSH_OpenGL::g_textureReplaceCrop = false;
 			size_t nameCount = ListTextureReplacements();
 			if((nameCount != 0) || options.textureDump || !options.controlPath.empty())
 			{
@@ -781,6 +786,18 @@ namespace
 						m_textureWake.notify_one();
 					}
 					return 2;
+				};
+				// A picture that was asked for and is not wanted any more (its texture is not
+				// drawn with any more): out of the queue, and what was read of it is let go
+				CGSH_OpenGL::g_textureForget = [this](const CGSH_OpenGL::TEXTURE_PICTURE_KEY& key) {
+					auto name = TextureName(key);
+					std::lock_guard<std::mutex> lock(m_textureMutex);
+					m_textureRead.erase(name);
+					if(m_textureAsked.erase(name) != 0)
+					{
+						auto queued = std::find(m_textureQueue.begin(), m_textureQueue.end(), name);
+						if(queued != m_textureQueue.end()) m_textureQueue.erase(queued);
+					}
 				};
 				for(int i = 0; i < 3; i++) m_textureThreads.emplace_back([this]() { ReadTextureFiles(); });
 				if(nameCount != 0) Log(Format("textures: %zu replacement file(s) in %s", nameCount, replaceDirectory.string().c_str()));
@@ -835,7 +852,8 @@ namespace
 					for(uint32 y = 0; y < read.height; y++) memcpy(read.pixels.data() + (static_cast<size_t>(y) * read.width), image.constScanLine(static_cast<int>(y)), static_cast<size_t>(read.width) * 4);
 				}
 				std::lock_guard<std::mutex> lock(m_textureMutex);
-				if(generation == m_textureGeneration) m_textureRead[name] = std::move(read);
+				// kept only while somebody still waits for it
+				if((generation == m_textureGeneration) && (m_textureAsked.count(name) != 0)) m_textureRead[name] = std::move(read);
 			}
 		}
 
@@ -995,8 +1013,15 @@ namespace
 			config.patchSet = m_patchHash;
 			config.patchWords = m_patchWords;
 			config.passPatchSetOn = options.setRaw;
+#ifdef FPUTILS_HAS_ARITHMETIC
+			// this copy's machine can compute as a browser copy's does (CheckArithmetic)
+			config.arithCan = Rta::ARITH_CAN_NATIVE | Rta::ARITH_CAN_BROWSER;
+			if(options.arith == "browser") config.arithCan = Rta::ARITH_CAN_BROWSER;
+			if(options.arith == "native") config.arithCan = Rta::ARITH_CAN_NATIVE;
+#endif
 			config.log = [this](const std::string& line) { Log("net: " + line); };
 			m_net = std::make_unique<Rta::CNet>(config);
+			m_net->SetArithmetic(m_arithNow);
 
 			auto& speed = m_vm->m_iop->m_speed;
 			speed.SetEthernetFrameTxHandler([this](const uint8* frame, uint32 size) {
@@ -1208,6 +1233,7 @@ namespace
 			std::string note;
 			bool block = false;
 			bool frontEnd = m_isGame && (ram[A_IN_FRONTEND] == 1) && (memcmp(ram + A_LEVEL_NAME, "intro", 6) == 0);
+			m_frontEndNow = frontEnd;
 			uint32 fe = frontEnd ? word(A_FE_STATE) : 0, lobby = frontEnd ? word(A_LOBBY_STATE) : 0;
 			if(frontEnd && fe == 10 && lobby == 2)
 			{
@@ -1915,13 +1941,14 @@ namespace
 							             (unsigned long long)s.udpToServer, (unsigned long long)s.udpToPeers, (unsigned long long)s.udpFromPeers, s.dhcpDone ? 1 : 0, s.dnsAnswered ? 1 : 0);
 						}
 						const auto& tc = CGSH_OpenGL::g_textureCounters;
-						std::string textures = Format("textures_dumped=%llu textures_replaced=%llu tex_made=%llu tex_held=%llu tex_by_upload=%llu tex_by_memory=%llu tex_memory_read=%llu tex_in_place=%llu tex_short_lived=%llu uploads=%llu tex_bytes=%llu tex_replace_on=%d tex_replacements=%llu tex_replacement_bytes=%llu tex_pending=%llu tex_dropped=%llu tex_cropped=%llu tex_regrown=%llu",
+						std::string textures = Format("textures_dumped=%llu textures_replaced=%llu tex_made=%llu tex_held=%llu tex_by_upload=%llu tex_by_memory=%llu tex_memory_read=%llu tex_in_place=%llu tex_short_lived=%llu uploads=%llu tex_bytes=%llu tex_replace_on=%d tex_replacements=%llu tex_replacement_bytes=%llu tex_pending=%llu tex_dropped=%llu tex_cropped=%llu tex_regrown=%llu tex_abandoned=%llu frame_copies=%llu frame_copy_uses=%llu gs_buffer_drains=%llu gs_buffer_most=%llu",
 						                              static_cast<unsigned long long>(m_texturesDumped.load()), static_cast<unsigned long long>(m_texturesReplaced.load()), static_cast<unsigned long long>(tc.created.load()), static_cast<unsigned long long>(tc.alive.load()),
 						                              static_cast<unsigned long long>(tc.byUpload.load()), static_cast<unsigned long long>(tc.byMemory.load()), static_cast<unsigned long long>(tc.memoryHashed.load()), static_cast<unsigned long long>(tc.inPlace.load()),
 						                              static_cast<unsigned long long>(tc.shortLived.load()), static_cast<unsigned long long>(tc.uploads.load()), static_cast<unsigned long long>(tc.bytes.load()),
 						                              CGSH_OpenGL::g_textureReplaceOn.load() ? 1 : 0, static_cast<unsigned long long>(tc.replacements.load()), static_cast<unsigned long long>(tc.replacementBytes.load()),
 						                              static_cast<unsigned long long>(tc.replacementsPending.load()), static_cast<unsigned long long>(tc.replacementsDropped.load()),
-						                              static_cast<unsigned long long>(tc.replacementsCropped.load()), static_cast<unsigned long long>(tc.replacementsRegrown.load()));
+						                              static_cast<unsigned long long>(tc.replacementsCropped.load()), static_cast<unsigned long long>(tc.replacementsRegrown.load()), static_cast<unsigned long long>(tc.replacementsAbandoned.load()), static_cast<unsigned long long>(tc.frameCopies.load()), static_cast<unsigned long long>(tc.frameCopyUses.load()),
+						                              static_cast<unsigned long long>(CGSHandler::g_writeBufferDrains.load()), static_cast<unsigned long long>(CGSHandler::g_writeBufferMost.load()));
 						Reply(Format("ok frame=%llu ms=%lld us=%llu cpu_us=%llu video_cpu_us=%llu display_hz=%.2f refreshes_per_frame=%d %s exe=%s game=%d %s", static_cast<unsigned long long>(m_frame.load()), static_cast<long long>(ms), static_cast<unsigned long long>(us),
 						             static_cast<unsigned long long>(m_cpuMicroseconds.load()), static_cast<unsigned long long>(m_gsCpuMicroseconds.load()), Rta::DisplayRefreshRate(), Rta::DisplayRefreshesPerFrame(), textures.c_str(), m_vm->m_ee->m_os->GetExecutableName(), m_isGame ? 1 : 0, net.c_str()));
 					}
@@ -2060,10 +2087,12 @@ namespace
 		void UpdateStatus()
 		{
 			CheckPatchSets();
+			CheckArithmetic();
 			// what is wrong with the game comes first, then what the one-step log-in is doing
 			std::string text = GameNote();
 			if(!text.empty()) text += " | ";
 			if(!m_setNote.empty()) text += m_setNote + " | ";
+			if(!m_arithNote.empty()) text += m_arithNote + " | ";
 			text += online.Note();
 			if(!online.Note().empty()) text += " | ";
 			if(m_net)
@@ -2130,12 +2159,76 @@ namespace
 			}
 			m_setNote = note;
 		}
+		// ---- Which arithmetic the machines of this game compute with -----------------------
+		// (docs/issues/mixed-arithmetic.md; the datagram is described in RtaNet.cpp.) A
+		// browser copy's machine can only round to nearest; this copy's can do that too
+		// ("browser arithmetic", FpUtils.h). When a player is heard whose copy can only do
+		// the browser's arithmetic - or one that has already changed to it for such a player
+		// - this copy changes as well, and back to Play!'s own when nobody heard needs it.
+		// That is decided where games are put together, in the front end (the lobby and the
+		// room are there): once a level runs nothing is changed any more, because every
+		// machine would have to change in the same lockstep tick. --rta-arith browser or
+		// native fixes it instead (a copy fixed to one says that it cannot do the other).
+		void CheckArithmetic()
+		{
+			std::string note;
+#ifdef FPUTILS_HAS_ARITHMETIC
+			std::vector<Rta::NetPeer> peers;
+			if(m_net) peers = m_net->Peers();
+			bool wantBrowser = (options.arith == "browser");
+			if(options.arith == "auto")
+			{
+				for(const auto& peer : peers)
+				{
+					if(peer.silentFor > 15000 || !peer.arithKnown) continue;
+					if(!(peer.arithCan & Rta::ARITH_CAN_NATIVE) || peer.arithNow == Rta::ARITH_BROWSER) wantBrowser = true;
+				}
+			}
+			uint8 wanted = wantBrowser ? Rta::ARITH_BROWSER : Rta::ARITH_NATIVE;
+			if(wanted != m_arithNow && (m_frontEndNow || options.arith != "auto"))
+			{
+				m_arithNow = wanted;
+				FpUtils::SetArithmetic(wantBrowser ? FpUtils::ARITHMETIC_BROWSER : FpUtils::ARITHMETIC_NATIVE);
+				if(m_net) m_net->SetArithmetic(wanted);
+				Log(wantBrowser ? "arithmetic: the machine now computes as a browser copy's does (results rounded to nearest), from its next frame on"
+				                : "arithmetic: the machine computes with Play!'s own arithmetic again (results rounded toward zero, as the console), from its next frame on");
+			}
+			unsigned int cannot = 0, differ = 0;
+			for(const auto& peer : peers)
+			{
+				if(peer.silentFor > 15000) continue;
+				if(!peer.arithKnown && peer.heardFor < 12000) continue; // it may still say
+				uint8 can = peer.arithKnown ? peer.arithCan : static_cast<uint8>(Rta::ARITH_CAN_NATIVE);
+				uint8 theirs = peer.arithKnown ? peer.arithNow : static_cast<uint8>(Rta::ARITH_NATIVE);
+				if(!(can & (m_arithNow == Rta::ARITH_BROWSER ? Rta::ARITH_CAN_BROWSER : Rta::ARITH_CAN_NATIVE)))
+					cannot++;
+				else if(theirs != m_arithNow)
+					differ++;
+			}
+			const char* mine = (m_arithNow == Rta::ARITH_BROWSER) ? "browser arithmetic" : "Play!'s own arithmetic";
+			if(cannot)
+				note = Format("WARNING: %s cannot compute with %s as this game does%s - the game would fall out of step: do not start it", (cannot == 1) ? "another player's copy" : "other players' copies", mine,
+				              (m_arithNow == Rta::ARITH_BROWSER) ? " (an older copy, with a browser player in the game)" : "");
+			else if(differ)
+				note = Format("%s on different arithmetic from this copy's (%s)%s", (differ == 1) ? "another player's copy is" : "other players' copies are", mine,
+				              m_frontEndNow ? ": wait for this to go away before starting" : " - WARNING: the game falls out of step");
+			else if(m_arithNow == Rta::ARITH_BROWSER)
+				note = "browser arithmetic";
+			if((cannot || (differ && !m_frontEndNow)) && !m_arithWarned)
+			{
+				m_arithWarned = true;
+				Log((note.compare(0, 8, "WARNING:") == 0) ? note : ("WARNING: " + note));
+			}
+			if(!cannot && !differ) m_arithWarned = false;
+#endif
+			m_arithNote = note;
+		}
 		std::string PeersText()
 		{
-			std::string text = Format("mine=%08x words=%u", m_patchHash, m_patchWords);
+			std::string text = Format("mine=%08x words=%u arith=%s", m_patchHash, m_patchWords, (m_arithNow == Rta::ARITH_BROWSER) ? "browser" : "native");
 			if(m_net)
 			{
-				for(const auto& peer : m_net->Peers()) text += Format(" [%s:%u set=%s heard_ms=%lld silent_ms=%lld]", Rta::CNet::IpText(peer.ip).c_str(), peer.port, peer.setKnown ? Format("%08x", peer.patchSet).c_str() : "?", static_cast<long long>(peer.heardFor), static_cast<long long>(peer.silentFor));
+				for(const auto& peer : m_net->Peers()) text += Format(" [%s:%u set=%s arith=%s heard_ms=%lld silent_ms=%lld]", Rta::CNet::IpText(peer.ip).c_str(), peer.port, peer.setKnown ? Format("%08x", peer.patchSet).c_str() : "?", !peer.arithKnown ? "?" : ((peer.arithNow == Rta::ARITH_BROWSER) ? "browser" : "native"), static_cast<long long>(peer.heardFor), static_cast<long long>(peer.silentFor));
 			}
 			return text + " note=" + m_setNote;
 		}
@@ -2224,6 +2317,10 @@ namespace
 		std::string m_setNote;             // the warning about another player's patch set
 		std::set<uint64> m_setWarned;      // those a window has been shown for
 		bool m_setUnknownLogged = false;
+		std::string m_arithNote;           // what CheckArithmetic has to say
+		uint8 m_arithNow = Rta::ARITH_NATIVE; // what the machine computes with (machine's thread)
+		bool m_arithWarned = false;
+		bool m_frontEndNow = false;        // the game is in its front end (WatchGame)
 		std::vector<PatchWord> m_patches;       // from the patch files
 		std::vector<PatchWord> m_activePatches; // those and the display patches, while the game is loaded
 		bool m_isGame = false;
@@ -2469,6 +2566,7 @@ void Rta::AddCommandLineOptions(QCommandLineParser& parser)
 	parser.addOption(QCommandLineOption("rta-texture-dump", "Write every texture the game draws with, once, as a PNG file into <textures>/dump."));
 	parser.addOption(QCommandLineOption("rta-textures", "Directory for texture files: dump/ and replace/ below it (default: textures in the data directory).", "dir"));
 	parser.addOption(QCommandLineOption("rta-texture-memory", "Video memory the replacement pictures may take, in megabytes (default 3072); beyond it those not drawn with for ten seconds are given up and read again when needed.", "MB"));
+	parser.addOption(QCommandLineOption("rta-texture-whole", "Hand the whole of every replacement picture to the graphics card, as before; without this only the part of it the game draws with (a level texture is a page of which a corner is used)."));
 	parser.addOption(QCommandLineOption("rta-timer", "Time frames by a timer instead of by the display's refreshes."));
 	parser.addOption(QCommandLineOption("rta-no-netcnf", "Do not write the network setting to the memory card."));
 	parser.addOption(QCommandLineOption("rta-control", "UNIX socket for a test script (see tools/play-net/ctl.py).", "path"));
@@ -2485,6 +2583,7 @@ void Rta::AddCommandLineOptions(QCommandLineParser& parser)
 	parser.addOption(QCommandLineOption("rta-gateway-port", "Test aid: the TCP port at which this computer looks for the lobby server's gateway (a closed port stands for a server that is not there).", "port"));
 	parser.addOption(QCommandLineOption("rta-set-quiet", "Test aid: do not tell the other players' copies which patch set this one has (as an older copy)."));
 	parser.addOption(QCommandLineOption("rta-set-raw", "Test aid: hand the other players' patch-set datagrams on to the game as well (as an older copy would)."));
+	parser.addOption(QCommandLineOption("rta-arith", "The machine's arithmetic: auto (as a browser copy's machine computes when a browser player is in the game, otherwise Play!'s own), browser, native.", "which"));
 	parser.addOption(QCommandLineOption("rta-netcnf-program", "Let \"Config\" on the game's network screen start Sony's network settings program from the disc (left out otherwise: there is nothing to configure)."));
 	parser.addOption(QCommandLineOption("rta-title", "A test run that a person takes part in: the window says so in its title with this text, and is otherwise an ordinary window.", "text"));
 }
@@ -2508,6 +2607,7 @@ void Rta::ReadCommandLine(const QCommandLineParser& parser)
 	o.textureDump = parser.isSet("rta-texture-dump");
 	o.textureDir = parser.value("rta-textures").toStdString();
 	o.textureMemory = parser.value("rta-texture-memory").toInt();
+	o.textureWhole = parser.isSet("rta-texture-whole");
 	o.netcnf = !parser.isSet("rta-no-netcnf");
 	o.controlPath = parser.value("rta-control").toStdString();
 	o.pcapPath = parser.value("rta-pcap").toStdString();
@@ -2575,6 +2675,8 @@ void Rta::ReadCommandLine(const QCommandLineParser& parser)
 	o.netcnfProgram = parser.isSet("rta-netcnf-program");
 	o.setQuiet = parser.isSet("rta-set-quiet");
 	o.setRaw = parser.isSet("rta-set-raw");
+	if(parser.isSet("rta-arith")) o.arith = parser.value("rta-arith").toStdString();
+	if(o.arith != "browser" && o.arith != "native") o.arith = "auto";
 	if(parser.isSet("rta-title")) o.testLabel = parser.value("rta-title").toStdString();
 	if(o.testBackground) Rta::MakeBackgroundApplication();
 }

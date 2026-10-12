@@ -17,7 +17,8 @@
 //   kind 6  frame   a = buffer, b = number                       (no payload)
 //   kind 7  vu1 data memory, words from qword `a` on (stores the CPU made directly)
 //   kind 8  vu1 microprogram memory, words from byte offset `a` on
-//   kind 9  main memory, words from address `a` on (parts the renderer reads: see Recorder)
+//   kind 9  main memory, words from address `a` on (all of it once, then the texture headers
+//           whose block field changed: see Recorder)
 #pragma once
 #include <cstdint>
 #include <cstdio>

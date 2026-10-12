@@ -154,6 +154,8 @@ else the computer is doing.
 | Sound comes a tenth of a second after the picture | sound was handed over in pieces of 100 ms | 30 ms (`audio.spublockcount`, in the settings dialog) | see "Sound" below |
 | Clicks and short gaps in the sound, four or five a minute, more while a level loads | Play!'s sound handler queues each piece as it comes and starts the source when it finds it stopped: no reserve is kept, so a frame that is a few milliseconds late leaves the output without sound; and nothing matches the machine's pace to the sound device's | a sound handler of our own (`src/RtaSound.cpp`): starts when one piece and 40 ms are queued, and holds that amount by making the sound up to half a per cent shorter or longer | five minutes in the first level: 20 times dry with 100 ms pieces and 27 with 30 ms as Play! does it, 0 with the new handler; see "Sound" below |
 | The emulated Ethernet chip stops receiving after 64 frames, or after the game restarts into another program | receive index wrapped at 512 instead of 64, and was not reset when the driver starts again; reads past the end of the receive buffer | `Iop_Speed.cpp` (as the test rig corrects from outside, live-rig.md section 13.2), plus a poll hook and "ready for a frame" | the lobby path below |
+| In the game's largest level (`fire3`) everything stops for good at certain places: nothing is presented any more, the level's clock `0x44fdcc` stands, with or without the frame limiter | The game sends a picture as eight layers. Each layer's draw packets go out by DMA from the interrupt of the packet before (`gfx_dmaHandler` 0x16b998), and a layer ends with a packet that writes the GS register `FINISH`; the main thread waits behind a semaphore (0x16c8e0) until the handler has counted that interrupt for all eight. Play! keeps the GS register writes between two vertical blanks in a buffer of 1,310,720 (`REGISTERWRITEBUFFER_SIZE`) and **threw away whatever came when it was full** — triangles and, here, the `FINISH`. Nothing in Play! accounts for the time DMA and VU1 take, so a whole layer of any size arrives between two blanks, and the widest views of this level are more than the buffer holds. The machine then idles for ever: main thread in `WaitSema`, the handler in state 2 with one `FINISH` asked for and none counted (`0x41b4e0` = 2, `0x41b4e6` = 1, `0x41b4e5` = 0), both DMA channels finished, `CSR` without the FINISH bit, no interrupt pending. A scripted event it is not, and it is none of our changes: the buffer is Play!'s own, and the stable build with textures known by address (`texmode 2`) and all display patches off stops at the same place | `CGSHandler::DrainWriteBuffer` (`GSHandler.cpp`, called from `WriteRegister`): a full buffer is processed (its `SIGNAL`, `FINISH`, `LABEL` events), handed to the video thread, waited for, and written from its start again. `info` counts it: `gs_buffer_drains`, and `gs_buffer_most` is the most register writes between two blanks | found with a labelled test instance, the new `hw` command (interrupt, DMA and GS registers of a machine that has stopped) and a temporary trace of DMA starts and ends, GS events and interrupt acknowledgements: the last `FINISH` packet (0x6f40b0) goes through VIF1 and the GIF, and no `FINISH` reaches the GS. Before: the tour's camera stopped the game at place 21–22 of the level's 342 in 4 runs of 4; after: all 342 places gone over without a stop (676 s at resolution factor 1, frame limiter off, 3,079 pictures dumped on the way); the buffer was full 15 times, and the most register writes between two vertical blanks were 2,147,619 (in `shame1`, the heaviest level for textures, 725,558) |
+| Heat haze is a rectangle of multicolour noise and blue and white stripes: around every lava golem of `fire3`, over the catapult fire of the first level's opening, as speckle over torches | For the haze (`particle_drawHaze` 0x18fe18) the game copies a piece of its 16-bit draw buffer (56 × 28 to 96 × 48 pixels) into a 16-bit texture of 128 × 64 with a GS local-to-local transfer and draws it back displaced, about 22 times a frame beside one golem. Play!'s OpenGL handler read those pixels back from the graphics card, made them small and wrote them into GS memory **as 32-bit pixels whatever the format of the destination**: two pixels of noise for each. It also made a texture from memory for every one of them | the piece is kept as a texture of its own on the graphics card, at the frame buffer's resolution factor (`FRAME_COPY`, `MakeFrameCopy` in `GSH_OpenGL_Texture.cpp`: a blit, no read-back); the texture set-up finds it by the address, width and format `TEX0` names, and it is dropped when anything else is written there. Where that cannot be done (a piece not put at the start of its destination: not seen in this game) the read-back stays, written in the destination's format now. `info`: `frame_copies`, `frame_copy_uses` | `local/play-out/fx_haze.py` (stands beside the same objects of `fire3`, pauses, takes `shotfb`), frame limiter and pack off, load 21–24. Beside a golem at 4×: noise before, none after; 35.7 frames a second and 22.0 ms of the video thread per frame before, 71.7 and 15.0 after (the read-back was what cost); 1,995 pieces kept in 90 frames and 1,995 textures set up from them. Without a golem near: 68.0 → 104.9 frames a second |
 
 Looked at, at 4× (pictures of the machine's own output, `shotfb`; 60.0 frames a second
 in each): the publisher's logo and the opening film, title, menus, character creation,
@@ -362,10 +364,47 @@ format and its size.
   handed to the GPU. A replacement gets mip maps and is drawn with them where the game
   filters (the game's textures have none: a picture four times the size glitters without
   on anything far away).
-- `--rta-texture-memory MB` (default 3072) is the video memory replacements may take;
-  beyond it those not drawn with for ten seconds are given up and read again when needed
-  (`tex_dropped` of `info`). The first level with every replacement at 4× holds 1.4 GB. The heaviest
-  level (`shame1`) would hold 9.4 GB, so there the limit is at work all the time.
+- **Only the part of a replacement that is drawn with goes to the graphics card.** A level
+  texture is a page of which the game draws with a corner (below); the rest of the page
+  cost video memory and nothing else — 70 % of it in the heaviest level. From a picture's
+  first draw on the application gathers the rectangle of texture coordinates its
+  triangles use (the boxes the `.json` file gets), and when the file has been read it
+  hands over that rectangle and 4 texels round it, mip maps of its own included, and
+  maps the coordinates onto it (`GetTexturePictureCrop` in `GSH_OpenGL_Texture.cpp`; the
+  texture matrix in `SetupTexture`; the part is clamped at its own border). Held whole
+  as before: pictures drawn by sprites (interface art: other parts of them are drawn
+  later, and two-field pictures are laid out their own way), pictures that repeat
+  (coordinates beyond the size `TEX0` names), files that are not a whole multiple of the
+  game's picture, and parts of nine tenths of the picture or more. A draw beyond the
+  part held, or one that takes its texels from a region `CLAMP` names, makes the picture
+  be read again for the larger part — the game's own texture is drawn for those frames
+  — and after two such times it is held whole (`tex_regrown` of `info`; 4 of the 572 pictures held after a first crossing of the
+  heaviest level).
+  **The files are untouched**: every pack made so far works as it is and `upscale.py`
+  need not know. The other way that was weighed — files cut to the `.json` file's
+  `other_uv` with the rectangle in a small file beside them — would have meant writing
+  120,000 pictures again or a second pass over them, would have tied a pack to the dump
+  it was made from, and a draw beyond the rectangle could not have been served at all.
+  `--rta-texture-whole`, or `texcrop 0` in a running game, hands over whole pictures as
+  before; `tex_cropped` of `info` counts those held as parts.
+- `--rta-texture-memory MB` (default 3072; `texmemory MB` in a running game) is the
+  video memory replacements may take; beyond it those not drawn with for ten seconds are
+  given up and read again when needed (`tex_dropped` of `info`). The first level with
+  every replacement at 4× holds 1.4 GB. The heaviest level (`shame1`) with every
+  replacement held is 3.4 GB as parts (11.0 GB whole), so the limit is hardly at work
+  any more (figures under "Upscaled art").
+- A picture that was asked for and whose texture is then not drawn with for two seconds
+  (120 frames) is given up: taken out of the readers' queue, what was read of it let go,
+  and asked for again when the texture is next drawn (`tex_abandoned`). Before, such a
+  picture stayed counted in `tex_pending` for ever and its unpacked pixels (7 MB for a
+  4× level picture) stayed in memory for ever — 541 of them after five levels gone
+  through fast — and a count that was not 0 made every frame start from an invalid
+  render state. Checked with the camera at a new
+  place every 20 frames through 40 places of `blood1`, `strife`, `islc1`, `fire1`,
+  `shame1`): the count at the end of each level was 7, 12, 28, 34, 563 and stayed;
+  it is now 1, 0, 0, 0, 3 and 0 five seconds later; in the first level afterwards 60.00
+  frames a second with the pack on and off (15.1 and 15.5 ms of the video thread per
+  frame, load 41–46).
 - A file whose name starts with `mem-` is a texture that could not be told by what was
   sent and was read back from video memory; its name may not come back. None appeared
   in the scenes listed at the end.
@@ -538,13 +577,15 @@ whole game 10 to 130):
 | the pack for title, menus, character creation and the first level | 418 files, 257 MB (4×); 72 MB (2×) |
 | the pack for the whole game | 120,039 pictures dumped (118,257 level textures, 1,479 model textures — the disc's 1,447 and what the character is put together from —, 288 interface pictures, 15 others), 6.8 GB. A 4× picture is 0.8 MB on average, a 2× one 0.24 MB: about 95 GB and 29 GB |
 | video memory in the first level | the game's own 335 textures 16 MB; 4× replacements 1.39 GB (310 pictures, mip maps included; 1.46 GB with the inventory's); 2× 350 MB |
-| video memory in the heaviest level (`shame1`: 1,089 pictures, 606 of them in the nine texture cells round one place) at 4× | standing at its start 3.0 GB (306 replacements); with every replacement of the level kept (`--rta-texture-memory 40000`, the camera over every place once) 9.4 GB for 992 pictures. With the default 3,072 MB the application gives up what was not drawn for ten seconds and reads it again when needed: going through the level at a new place every second the most held at one time was 4.9 GB, 3,571 given up on the way |
-| how much of that is page nobody draws with | 70 %: the level's 1,051 dumps hold 127.8 million texels, the rectangles the game draws with 37.9 million. Given only those rectangles the level's 4× pictures would take 3.2 GB instead of 10.9 GB (the application stretches a replacement over the whole dump, so this needs a change there: a rectangle per replacement, from the `.json` file's `other_uv`) |
+| video memory in the heaviest level (`shame1`: 1,089 pictures, 606 of them in the nine texture cells round one place) at 4×, whole pictures handed to the graphics card (all there was before; `--rta-texture-whole` now) | with every replacement of the level kept (`--rta-texture-memory 40000`, the camera over every place once) 11.0 GB for 1,061 pictures (9.4 GB for the 992 there were when it was first measured). With the default 3,072 MB the application gives up what was not drawn for ten seconds and reads it again when needed: going through the level at a new place every second the most held at one time was 4.0 GB, 1,208 given up on the way |
+| the same with only the part that is drawn with (the default now, see "Texture dump and replacement") | 70 % of the level's pages is texels nobody draws with: its 1,051 dumps hold 127.8 million texels, the rectangles the game draws with 37.9 million. Everything kept: **3.4 GB** for the same 1,061 pictures, 743 of them as parts. Default budget: the most held at one time 3.2 GB, 664 given up |
+| speed and loading there, whole against part (the camera at a new place every second over the level's 109 places, 6,431 presented pictures a crossing; the enlarging paused, load average 16 to 33, one or two other test instances at 1× beside) | everything kept: 59.8 and 60.0 frames a second while it loads, 59.9 and 59.9 with all of it loaded; the video thread's own processor time 7.0–7.2 and 6.7–6.8 ms a frame; 99 % of the gaps between pictures under 26.4 and 22.8 ms, the longest 52 and 50 ms. Default budget: 59.8 and 59.9 frames a second; gaps over 25 ms 196 and 89, over 50 ms 6 and 1 (the longest 100 and 164 ms); places still reading a second after the camera came 48 and 6 of 109. Standing: 60.0 either way. The same paused frame drawn from parts and from whole pictures differs no more than two takes of one setting do (mean difference 0.33, 0.03 and 0.00 of 255 at three places, the same figures part against part) |
 | speed with the pack, standing and walking through the level | 60.00 frames a second at 4× and at 2×, as without |
 | speed with the 4× pack in three other levels (`blood1`, `innovat1`, `shame1`; load average 9 to 31) | standing and walking 60.00 frames a second, the same seconds later with the pack switched off (`texreplace 0`); with the camera at a new place of the level every second 59.84 to 60.00 (the game drew 56.6 to 59.2 pictures a second). An earlier run with the load average at 80 to 130 and the enlarging going on on the same graphics card gave 41 to 60, lowest where the load was highest; that one was not repeated with the pack off |
 
 For a computer with little memory make the pack with `--scale 2` (a quarter of the
-memory: the heaviest level whole is 2.4 GB; text and frames are still clean, see
+memory: the heaviest level was 2.4 GB with whole pictures, before only the part drawn
+with was handed over; text and frames are still clean, see
 `local/play-out/hd2-pack2x-vs-4x.png`), or lower `--rta-texture-memory`.
 
 **Growing the pack.** A dump holds what a run has drawn. Three ways to more:
@@ -791,6 +832,21 @@ an older copy in tests. Not done: a warning before joining (the figure is only k
 once the two machines talk, that is in the room), more than two players, and anything
 between two networks.
 
+**Which arithmetic the other players compute with** (`RtaNet.cpp`, `CheckArithmetic` in
+`Rta.cpp`; `docs/issues/mixed-arithmetic.md`). A browser copy's machine rounds
+floating-point results to nearest, this application's toward zero; the application's core
+can do either (`FpUtils::SetArithmetic`). The copies say what they can do and what they
+do in a second datagram of the same kind, at the same times and again whenever it
+changes: bytes 0, 6, the mark `RTAari1`, one byte "can do" (bit 0 Play!'s own, bit 1 the
+browser's), one byte "does now", 11 bytes. In the game's front end the application
+changes to browser arithmetic while a player is heard who cannot do Play!'s own or
+already does the browser's, and back when nobody needs it; in a running level it changes
+nothing and warns. The status bar says "browser arithmetic" while it is on and warns
+about a copy that cannot follow (a copy that says nothing is taken for one that can only
+do Play!'s own); `peers` lists each player's arithmetic; `--rta-arith browser|native|auto`
+fixes it. Compiled for the application and for the browser build; not yet tried between
+two copies.
+
 **Measured with remembered characters** (two background test copies on one Mac, load
 average 60 to 140 from other work; each copy had used its character once before): host
 in its room 43 s after launch, joiner 53 s after its own, no press by anybody; *Start
@@ -884,10 +940,20 @@ they stay under `local/`.
   takes a display patch out or puts it back; `texmode 0|1|2` makes textures known by
   what was sent (0, the default), by the texels read back from video memory (1), or by
   address as Play! itself does (2; not usable after a switch, only from the start).
+- `texcrop 0|1` hands the whole of every replacement to the graphics card, or (1, the
+  default) the part that is drawn with; `texmemory MB` sets the video memory they may
+  take. Both for measuring in one running game.
 - `texreplace 0|1` switches the replacement pictures off or on in the running game
   (three frames later the picture is drawn the other way): with the game paused that is
   the same frame with and without. `texreplace reload` lists the folder again and reads
   every picture again, for trying a changed file without a restart.
+- `hw` gives the registers that say what a machine that has stopped waits for: the
+  interrupt controller's status and mask, the DMA controller with the VIF1 and GIF
+  channels (`CHCR`, `MADR`, `QWC`, `TADR`), `VIF1_STAT`, `GIF_STAT`, the GS's `CSR` and
+  `IMR`, the processor's status and `EPC`. (`peek` reads main memory only.) With the
+  threads and semaphores the emulated kernel keeps in main memory (threads at 0x11000,
+  0x38 bytes each; semaphores at 0xe000, 0x18 each) that was enough to find the stop in
+  `fire3` (the table above).
 - `cpu` says where the main processor is (pc, ra, sp, idle), whether the game is taken
   to be stuck and the longest stretch without drawing; `note` gives the status bar's
   note about the game; `reset` does what Reset in the menu does; `hang N` stops the
@@ -901,6 +967,10 @@ they stay under `local/`.
   `tex_bytes` (the game's own textures and their video memory), `tex_replacements` and
   `tex_replacement_bytes` (replacement pictures held, mip maps included), `tex_pending`
   (asked for and not read yet: 0 before a picture is taken for comparing),
-  `tex_dropped`.
+  `tex_dropped`, `tex_cropped` (held as the part that is drawn with), `tex_regrown`,
+  `tex_abandoned`, `frame_copies` and `frame_copy_uses` (the heat haze's pieces of the
+  frame buffer), `gs_buffer_drains` and `gs_buffer_most` (GS register writes between
+  two vertical blanks: how often there were more than Play!'s buffer holds, and the
+  most there were).
 - `RTA_TEXLOG=FILE` in the environment writes a line for every texture made (frame,
   figure, format, size, address, pieces).

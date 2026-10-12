@@ -1,0 +1,738 @@
+// gs.cpp - see gs.h.
+#include "gs.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <ctime>
+
+namespace render {
+
+// ---------------------------------------------------------------------------------------
+// GS memory order, used only to turn "what was sent" into "what is sampled": a transfer
+// writes pixels in the order of its own format, a texture is read in the order of its
+// format, and the game sends 8-bit textures as 32-bit pixels (docs/formats/
+// model-texture.md, "Why sent as 32-bit matters").  Addresses are bytes from the base.
+// ---------------------------------------------------------------------------------------
+static const uint8_t BLOCK32[4][8] = {{0, 1, 4, 5, 16, 17, 20, 21}, {2, 3, 6, 7, 18, 19, 22, 23},
+                                      {8, 9, 12, 13, 24, 25, 28, 29}, {10, 11, 14, 15, 26, 27, 30, 31}};
+static const uint8_t BLOCK4[8][4] = {{0, 2, 8, 10}, {1, 3, 9, 11}, {4, 6, 12, 14}, {5, 7, 13, 15},
+                                     {16, 18, 24, 26}, {17, 19, 25, 27}, {20, 22, 28, 30}, {21, 23, 29, 31}};
+static const uint8_t COL8[8] = {0, 1, 4, 5, 8, 9, 12, 13};
+static const uint8_t COL16[16] = {0, 2, 8, 10, 16, 18, 24, 26, 1, 3, 9, 11, 17, 19, 25, 27};
+
+static inline size_t addr32(int x, int y, int bw) {
+    size_t page = (size_t)(y >> 5) * bw + (x >> 6);
+    unsigned block = BLOCK32[(y >> 3) & 3][(x >> 3) & 7];
+    int by = y & 7;
+    return page * 8192 + block * 256 + ((by >> 1) * 16 + (by & 1) * 2 + COL8[x & 7]) * 4;
+}
+static inline size_t addr16(int x, int y, int bw) {
+    size_t page = (size_t)(y >> 6) * bw + (x >> 6);
+    unsigned block = BLOCK4[(y >> 3) & 7][(x >> 4) & 3];
+    int by = y & 7;
+    return page * 8192 + block * 256 + ((by >> 1) * 32 + (by & 1) * 4 + COL16[x & 15]) * 2;
+}
+static inline size_t word48(int bx, int by) {             // the word of an 8- or 4-bit texel in its block
+    int r = by & 3, s = (((by + 2) >> 2) & 1) ? 4 : 0;
+    return (size_t)((by >> 2) * 16 + (r & 1) * 2 + COL8[(bx & 7) ^ s]) * 4;
+}
+static inline size_t addr8(int x, int y, int bw) {
+    size_t page = (size_t)(y >> 6) * std::max(bw >> 1, 1) + (x >> 7);
+    unsigned block = BLOCK32[(y >> 4) & 3][(x >> 4) & 7];
+    int bx = x & 15, by = y & 15;
+    return page * 8192 + block * 256 + word48(bx, by) + ((by & 3) >> 1) + 2 * ((bx >> 3) & 1);
+}
+static inline size_t nibble4(int x, int y, int bw) {       // address in nibbles
+    size_t page = (size_t)(y >> 7) * std::max(bw >> 1, 1) + (x >> 7);
+    unsigned block = BLOCK4[(y >> 4) & 7][(x >> 5) & 3];
+    int bx = x & 31, by = y & 15;
+    return (page * 8192 + block * 256 + word48(bx, by)) * 2 + ((by & 3) >> 1) + 2 * ((bx >> 3) & 3);
+}
+
+enum { PSMCT32 = 0, PSMCT24 = 1, PSMCT16 = 2, PSMCT16S = 10, PSMT8 = 0x13, PSMT4 = 0x14, PSMT8H = 0x1B,
+       PSMT4HL = 0x24, PSMT4HH = 0x2C };
+
+static inline uint64_t mix64(uint64_t a, uint64_t b) {
+    a ^= b;
+    a *= 0x9E3779B97F4A7C15ull;
+    return a ^ (a >> 29);
+}
+static uint64_t hash_bytes(const uint8_t* p, size_t n, uint64_t seed) {
+    uint64_t h[4] = {seed ^ 0x243F6A8885A308D3ull, seed ^ 0x13198A2E03707344ull, seed ^ 0xA4093822299F31D0ull,
+                     seed ^ 0x082EFA98EC4E6C89ull};
+    while (n >= 32) {
+        uint64_t v[4];
+        memcpy(v, p, 32);
+        for (int k = 0; k < 4; k++) { h[k] = (h[k] ^ v[k]) * 0x9FB21C651E98DF25ull; h[k] ^= h[k] >> 32; }
+        p += 32; n -= 32;
+    }
+    uint64_t tail[4] = {0, 0, 0, 0};
+    memcpy(tail, p, n);
+    uint64_t r = n;
+    for (int k = 0; k < 4; k++) r = mix64(r, h[k] ^ tail[k]);
+    return r;
+}
+
+// A scratch piece of GS memory holding the rectangles of one upload set, and which of its
+// 256-byte blocks were written.
+struct Scratch {
+    std::vector<uint8_t> mem;
+    std::vector<uint8_t> written;
+    void reserve(size_t bytes) {
+        bytes = (bytes + 8191) & ~(size_t)8191;
+        if (mem.size() < bytes) { mem.resize(bytes, 0); written.resize(bytes >> 8, 0); }
+    }
+    inline void put(size_t a, const uint8_t* src, size_t n) {
+        if (a + n > mem.size()) reserve(a + n);
+        memcpy(&mem[a], src, n);
+        written[a >> 8] = 1;
+    }
+    inline uint8_t byte(size_t a) const { return a < mem.size() ? mem[a] : 0; }
+    inline uint32_t word(size_t a) const { uint32_t v = 0; if (a + 4 <= mem.size()) memcpy(&v, &mem[a], 4); return v; }
+    inline bool block_written(size_t a) const { return (a >> 8) < written.size() && written[a >> 8]; }
+};
+
+template <class Set> static void replay(const Set& set, Scratch& s) {
+    for (const auto& r : set.rects) {
+        const uint8_t* src = set.data.data() + r.offset;
+        if (r.bytes < (size_t)r.w * r.h * (r.psm == PSMT4 ? 1 : r.psm == PSMT8 ? 2 : r.psm == PSMCT16 || r.psm == PSMCT16S ? 4 : r.psm == PSMCT24 ? 6 : 8) / 2) continue;
+        switch (r.psm) {
+        case PSMCT32:
+            for (int y = 0; y < r.h; y++) for (int x = 0; x < r.w; x++) s.put(addr32(r.x + x, r.y + y, r.bw), src + ((size_t)y * r.w + x) * 4, 4);
+            break;
+        case PSMCT24:
+            for (int y = 0; y < r.h; y++) for (int x = 0; x < r.w; x++) { uint8_t px[4] = {0, 0, 0, 0x80}; memcpy(px, src + ((size_t)y * r.w + x) * 3, 3); s.put(addr32(r.x + x, r.y + y, r.bw), px, 4); }
+            break;
+        case PSMCT16: case PSMCT16S:
+            for (int y = 0; y < r.h; y++) for (int x = 0; x < r.w; x++) s.put(addr16(r.x + x, r.y + y, r.bw), src + ((size_t)y * r.w + x) * 2, 2);
+            break;
+        case PSMT8:
+            for (int y = 0; y < r.h; y++) for (int x = 0; x < r.w; x++) s.put(addr8(r.x + x, r.y + y, r.bw), src + (size_t)y * r.w + x, 1);
+            break;
+        case PSMT4:
+            for (int y = 0; y < r.h; y++) for (int x = 0; x < r.w; x++) {
+                size_t k = (size_t)y * r.w + x, a = nibble4(r.x + x, r.y + y, r.bw);
+                uint8_t v = (src[k >> 1] >> ((k & 1) * 4)) & 15;
+                if ((a >> 1) >= s.mem.size()) s.reserve((a >> 1) + 1);
+                uint8_t& b = s.mem[a >> 1];
+                b = (a & 1) ? (uint8_t)((b & 0x0F) | (v << 4)) : (uint8_t)((b & 0xF0) | v);
+                s.written[a >> 9] = 1;
+            }
+            break;
+        default: break;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+Gs::Gs() {
+    memset(reg, 0, sizeof(reg));
+    memset(vq, 0, sizeof(vq));
+    reg[0x1a] = 1;                                      // PRMODECONT: attributes from PRIM
+}
+
+void Gs::begin_frame() { frame.clear(); have_cmd = false; state_dirty = true; }
+
+void Gs::end_frame(uint64_t number) {
+    if (have_cmd && cur.count) frame.commands.push_back(cur);
+    have_cmd = false;
+    state_dirty = true;
+    frame.number = number;
+    int circuit = (pmode & 2) ? 1 : 0;
+    uint64_t fb = dispfb[circuit];
+    auto it = targets.find((uint32_t)fb & 0x1FF);
+    if (it != targets.end()) {
+        frame.show_target = it->second.id;
+        frame.show_rect[0] = 0; frame.show_rect[1] = 0;
+        frame.show_rect[2] = it->second.width; frame.show_rect[3] = it->second.height;
+    }
+    stats.commands += frame.commands.size();
+}
+
+void Gs::privileged(uint32_t address, uint64_t value) {
+    switch (address) {
+    case 0x12000000: pmode = value; break;
+    case 0x12000070: dispfb[0] = value; break;
+    case 0x12000080: display[0] = value; break;
+    case 0x12000090: dispfb[1] = value; break;
+    case 0x120000A0: display[1] = value; break;
+    default: break;
+    }
+}
+
+Gs::Target& Gs::target_at(uint32_t fbp, int width, int height) {
+    Target& t = targets[fbp];
+    if (!t.id) t.id = next_target++;
+    if (width > t.width || height > t.height || !t.announced) {
+        t.width = std::max(t.width, width);
+        t.height = std::max(t.height, height);
+        t.announced = true;
+        TargetInfo info;
+        info.id = t.id; info.width = t.width; info.height = t.height;
+        info.screen = t.width >= 512;
+        frame.targets.push_back(info);
+    }
+    return t;
+}
+
+// ---- GIF ------------------------------------------------------------------------------
+void Gs::gif(int path, const uint32_t* words, size_t quadwords) {
+    Path& p = paths[path];
+    size_t q = 0;
+    while (q < quadwords) {
+        const uint32_t* w = words + q * 4;
+        if (!p.nloop) {
+            uint64_t lo = w[0] | (uint64_t)w[1] << 32, hi = w[2] | (uint64_t)w[3] << 32;
+            p.nloop = (uint32_t)lo & 0x7FFF;
+            p.eop = (lo >> 15) & 1;
+            p.flg = (uint32_t)(lo >> 58) & 3;
+            p.nreg = (uint32_t)(lo >> 60) & 15;
+            if (!p.nreg) p.nreg = 16;
+            p.regs = hi;
+            p.at = 0;
+            if (((lo >> 46) & 1) && p.flg == 0) write(0x00, (lo >> 47) & 0x7FF);
+            stats.packets++;
+            q++;
+            continue;
+        }
+        if (p.flg == 0) {
+            packed((uint32_t)(p.regs >> (4 * (p.at % p.nreg))) & 15, w);
+            q++;
+            if (++p.at >= p.nloop * p.nreg) p.nloop = 0;
+        } else if (p.flg == 1) {
+            uint32_t total = p.nloop * p.nreg;
+            for (int half = 0; half < 2 && p.at < total; half++, p.at++)
+                reglist((uint32_t)(p.regs >> (4 * (p.at % p.nreg))) & 15, w[half * 2] | (uint64_t)w[half * 2 + 1] << 32);
+            q++;
+            if (p.at >= total) p.nloop = 0;
+        } else {
+            size_t n = std::min<size_t>(p.nloop, quadwords - q);
+            image_data((const uint8_t*)w, n * 16);
+            p.nloop -= (uint32_t)n;
+            q += n;
+        }
+    }
+}
+
+void Gs::xgkick(const uint8_t* vu_data, uint32_t qword) {
+    uint32_t buffer[1024 * 4];
+    uint32_t at = qword & 0x3FF, used = 0;
+    for (int guard = 0; guard < 64 && used < 1024; guard++) {
+        uint32_t tag[4];
+        memcpy(tag, vu_data + at * 16, 16);
+        uint32_t nloop = tag[0] & 0x7FFF, flg = (tag[1] >> 26) & 3, nreg = (tag[1] >> 28) & 15;
+        if (!nreg) nreg = 16;
+        uint32_t body = flg == 0 ? nloop * nreg : flg == 1 ? (nloop * nreg + 1) / 2 : nloop;
+        if (used + 1 + body > 1024) break;
+        for (uint32_t k = 0; k <= body; k++) memcpy(buffer + (used + k) * 4, vu_data + ((at + k) & 0x3FF) * 16, 16);
+        used += 1 + body;
+        at = (at + 1 + body) & 0x3FF;
+        if (tag[0] & 0x8000) break;
+    }
+    paths[0].nloop = 0;
+    if (trace > 0) {
+        trace--;
+        fprintf(stderr, "entry %x ", debug_entry);
+        fprintf(stderr, "xgkick %03x: tag %08x %08x regs %08x %08x, %u qwords\n", qword, buffer[0], buffer[1], buffer[2], buffer[3], used);
+        for (uint32_t k = 1; k < used && k < 13; k++) {
+            float f[4];
+            memcpy(f, buffer + k * 4, 16);
+            fprintf(stderr, "   %08x %08x %08x %08x   %g %g %g %g\n", buffer[k * 4], buffer[k * 4 + 1], buffer[k * 4 + 2], buffer[k * 4 + 3], f[0], f[1], f[2], f[3]);
+        }
+    }
+    if (time_paths) {
+        timespec a, b;
+        clock_gettime(CLOCK_THREAD_CPUTIME_ID, &a);
+        gif(0, buffer, used);
+        clock_gettime(CLOCK_THREAD_CPUTIME_ID, &b);
+        stats.kick_ms += (b.tv_sec - a.tv_sec) * 1000.0 + (b.tv_nsec - a.tv_nsec) / 1e6;
+    } else gif(0, buffer, used);
+}
+
+void Gs::packed(uint32_t d, const uint32_t* q) {
+    switch (d) {
+    case 0x0: write(0x00, q[0] & 0x7FF); break;
+    case 0x1:
+        cur_rgba[0] = (uint8_t)q[0]; cur_rgba[1] = (uint8_t)q[1]; cur_rgba[2] = (uint8_t)q[2]; cur_rgba[3] = (uint8_t)q[3];
+        cur_q = st_q;
+        stats.reg_writes++;
+        break;
+    case 0x2: memcpy(&cur_s, &q[0], 4); memcpy(&cur_t, &q[1], 4); memcpy(&st_q, &q[2], 4); stats.reg_writes++; break;
+    case 0x3: cur_u = q[0] & 0x3FFF; cur_v = q[1] & 0x3FFF; stats.reg_writes++; break;
+    case 0x4: case 0xC: {
+        Queued& v = vq[vcount < 3 ? vcount : 2];
+        v.x = q[0] & 0xFFFF; v.y = q[1] & 0xFFFF; v.z = (q[2] >> 4) & 0xFFFFFF;
+        kick(d == 0x4 && !(q[3] & 0x8000));
+        break;
+    }
+    case 0x5: case 0xD: {
+        Queued& v = vq[vcount < 3 ? vcount : 2];
+        v.x = q[0] & 0xFFFF; v.y = q[1] & 0xFFFF; v.z = q[2];
+        kick(d == 0x5 && !(q[3] & 0x8000));
+        break;
+    }
+    case 0xE: write(q[2] & 0xFF, q[0] | (uint64_t)q[1] << 32); break;
+    case 0xF: break;
+    default: write(d, q[0] | (uint64_t)q[1] << 32); break;      // TEX0_1/2, CLAMP_1/2, FOG
+    }
+}
+
+void Gs::reglist(uint32_t d, uint64_t value) {
+    if (d == 0xE || d == 0xF) return;
+    write(d, value);
+}
+
+void Gs::write(uint32_t address, uint64_t value) {
+    stats.reg_writes++;
+    switch (address) {
+    case 0x00:
+        prim = (uint32_t)value & 0x7FF;
+        vcount = 0;
+        state_dirty = true;
+        return;
+    case 0x01:
+        cur_rgba[0] = (uint8_t)value; cur_rgba[1] = (uint8_t)(value >> 8); cur_rgba[2] = (uint8_t)(value >> 16); cur_rgba[3] = (uint8_t)(value >> 24);
+        { uint32_t qb = (uint32_t)(value >> 32); memcpy(&cur_q, &qb, 4); }
+        return;
+    case 0x02: { uint32_t a = (uint32_t)value, b = (uint32_t)(value >> 32); memcpy(&cur_s, &a, 4); memcpy(&cur_t, &b, 4); return; }
+    case 0x03: cur_u = (uint32_t)value & 0x3FFF; cur_v = (uint32_t)(value >> 16) & 0x3FFF; return;
+    case 0x04: case 0x0C: {
+        Queued& v = vq[vcount < 3 ? vcount : 2];
+        v.x = (uint32_t)value & 0xFFFF; v.y = (uint32_t)(value >> 16) & 0xFFFF; v.z = (uint32_t)(value >> 32) & 0xFFFFFF;
+        kick(address == 0x04);
+        return;
+    }
+    case 0x05: case 0x0D: {
+        Queued& v = vq[vcount < 3 ? vcount : 2];
+        v.x = (uint32_t)value & 0xFFFF; v.y = (uint32_t)(value >> 16) & 0xFFFF; v.z = (uint32_t)(value >> 32);
+        kick(address == 0x05);
+        return;
+    }
+    case 0x0A: return;                                  // FOG: nothing fogs
+    case 0x3F: return;                                  // TEXFLUSH
+    case 0x50: case 0x51: case 0x52: reg[address] = value; return;
+    case 0x53:
+        reg[address] = value;
+        if ((value & 3) == 0) start_transfer();
+        else if ((value & 3) == 2) {
+            // local to local: only a copy between surfaces means anything here
+            uint64_t bb = reg[0x50], pos = reg[0x51], size = reg[0x52];
+            uint32_t sbp = (uint32_t)bb & 0x3FFF, dbp = (uint32_t)(bb >> 32) & 0x3FFF;
+            int w = (int)(size & 0xFFF), h = (int)((size >> 32) & 0xFFF);
+            auto src = targets.find(sbp >> 5);
+            if (!(sbp & 31) && !(dbp & 31) && src != targets.end() && w && h) {
+                if (have_cmd && cur.count) frame.commands.push_back(cur);
+                have_cmd = false;
+                state_dirty = true;
+                int sx = (int)(pos & 0x7FF), sy = (int)((pos >> 16) & 0x7FF), dx = (int)((pos >> 32) & 0x7FF), dy = (int)((pos >> 48) & 0x7FF);
+                uint32_t source_id = src->second.id;
+                Target& dst = target_at(dbp >> 5, dx + w, dy + h);
+                dst.serial = serial++;
+                sets.erase(dbp);
+                DrawCmd c;
+                c.kind = CMD_COPY;
+                c.texture = source_id; c.target = dst.id;
+                c.copy_src[0] = sx; c.copy_src[1] = sy; c.copy_src[2] = w; c.copy_src[3] = h;
+                c.copy_dst[0] = dx; c.copy_dst[1] = dy; c.copy_dst[2] = w; c.copy_dst[3] = h;
+                frame.commands.push_back(c);
+                stats.copies++;
+            }
+        }
+        return;
+    case 0x61: stats.finish++; return;
+    case 0x60: case 0x62: return;
+    default:
+        if (address < 0x64) {
+            if (reg[address] != value) { reg[address] = value; state_dirty = true; }
+        } else stats.unknown_regs++;
+        return;
+    }
+}
+
+// ---- transfers ------------------------------------------------------------------------
+static inline size_t bits_per_pixel(uint32_t psm) {
+    switch (psm) {
+    case PSMCT32: return 32; case PSMCT24: return 24; case PSMCT16: case PSMCT16S: return 16;
+    case PSMT8: return 8; case PSMT4: return 4; case PSMT8H: return 8; default: return 32;
+    }
+}
+
+void Gs::start_transfer() {
+    uint64_t bb = reg[0x50], pos = reg[0x51], size = reg[0x52];
+    uint32_t dbp = (uint32_t)(bb >> 32) & 0x3FFF;
+    UploadSet& set = sets[dbp];
+    if (set.used) { set.rects.clear(); set.data.clear(); set.hash = 0; set.used = false; }
+    Rect r;
+    r.bw = std::max<uint32_t>((uint32_t)(bb >> 48) & 0x3F, 1);
+    r.psm = (uint32_t)(bb >> 56) & 0x3F;
+    r.x = (int)((pos >> 32) & 0x7FF); r.y = (int)((pos >> 48) & 0x7FF);
+    r.w = (int)(size & 0xFFF); r.h = (int)((size >> 32) & 0xFFF);
+    r.offset = set.data.size();
+    r.bytes = 0;
+    set.rects.push_back(r);
+    xfer.active = true; xfer.dbp = dbp; xfer.rect = set.rects.size() - 1; xfer.got = 0;
+    stats.uploads++;
+    // a texture that starts inside the blocks this one takes is gone (the game's ring of
+    // sixteen resident textures hands the same blocks to one texture after another)
+    int bwid = r.psm == PSMT4 ? 32 : r.psm == PSMT8 || r.psm == PSMCT16 || r.psm == PSMCT16S ? 16 : 8;
+    int bhei = r.psm == PSMT4 || r.psm == PSMT8 ? 16 : 8;
+    size_t end = 0;
+    if (r.w > 0 && r.h > 0)
+        for (int by = r.y / bhei; by <= (r.y + r.h - 1) / bhei; by++)
+            for (int bx = r.x / bwid; bx <= (r.x + r.w - 1) / bwid; bx++) {
+                int x = bx * bwid, y = by * bhei;
+                size_t a = r.psm == PSMT4 ? nibble4(x, y, r.bw) >> 1 : r.psm == PSMT8 ? addr8(x, y, r.bw)
+                         : r.psm == PSMCT16 || r.psm == PSMCT16S ? addr16(x, y, r.bw) : addr32(x, y, r.bw);
+                end = std::max(end, (a & ~(size_t)255) + 256);
+            }
+    uint32_t blocks = (uint32_t)(end >> 8);
+    for (auto it = sets.upper_bound(dbp); it != sets.end() && it->first < dbp + blocks;) it = sets.erase(it);
+}
+
+void Gs::image_data(const uint8_t* bytes, size_t count) {
+    if (!xfer.active) return;
+    auto it = sets.find(xfer.dbp);
+    if (it == sets.end()) { xfer.active = false; return; }
+    UploadSet& set = it->second;
+    Rect& r = set.rects[xfer.rect];
+    size_t want = ((size_t)r.w * r.h * bits_per_pixel(r.psm) + 7) / 8;
+    size_t take = std::min(count, want - xfer.got);
+    set.data.insert(set.data.end(), bytes, bytes + take);
+    xfer.got += take;
+    stats.upload_bytes += take;
+    if (xfer.got >= want) {
+        r.bytes = want;
+        uint64_t head[2] = {(uint64_t)r.psm | (uint64_t)r.bw << 8 | (uint64_t)r.x << 16 | (uint64_t)r.y << 32,
+                            (uint64_t)r.w | (uint64_t)r.h << 32};
+        set.hash = mix64(mix64(set.hash, head[0]), mix64(head[1], hash_bytes(set.data.data() + r.offset, want, set.rects.size())));
+        set.serial = serial++;
+        xfer.active = false;
+    }
+}
+
+bool Gs::palette_of(const UploadSet& set, uint32_t cpsm, uint32_t* out, int entries) {
+    Scratch s;
+    s.reserve(8192);
+    replay(set, s);
+    int bw = set.rects.empty() ? 1 : (int)set.rects[0].bw;
+    for (int i = 0; i < entries; i++) {
+        int px, py;
+        if (entries == 256) { int p = (i & 0xE7) | ((i & 8) << 1) | ((i & 16) >> 1); px = p & 15; py = p >> 4; }
+        else { px = i & 7; py = i >> 3; }
+        if (cpsm == PSMCT32 || cpsm == PSMCT24) out[i] = s.word(addr32(px, py, bw));
+        else {
+            size_t a = addr16(px, py, bw);
+            uint32_t v = s.byte(a) | (uint32_t)s.byte(a + 1) << 8;
+            out[i] = ((v & 31) << 3) | (((v >> 5) & 31) << 11) | (((v >> 10) & 31) << 19) | ((v & 0x8000) ? 0x80000000u : 0);
+        }
+    }
+    return true;
+}
+
+const Gs::Texture* Gs::texture_for(uint64_t tex0, uint64_t texa) {
+    uint32_t tbp = (uint32_t)tex0 & 0x3FFF, tbw = std::max<uint32_t>((uint32_t)(tex0 >> 14) & 0x3F, 1), psm = (uint32_t)(tex0 >> 20) & 0x3F;
+    uint32_t tw = (uint32_t)(tex0 >> 26) & 15, th = (uint32_t)(tex0 >> 30) & 15;
+    uint32_t cbp = (uint32_t)(tex0 >> 37) & 0x3FFF, cpsm = (uint32_t)(tex0 >> 51) & 15, csa = (uint32_t)(tex0 >> 56) & 31;
+    auto image = sets.find(tbp);
+    if (image == sets.end() || image->second.rects.empty() || !image->second.rects.back().bytes) return nullptr;
+    bool paletted = psm == PSMT8 || psm == PSMT4 || psm == PSMT8H || psm == PSMT4HL || psm == PSMT4HH;
+    const UploadSet* pal = nullptr;
+    if (paletted) {
+        auto p = sets.find(cbp);
+        if (p == sets.end() || p->second.rects.empty()) return nullptr;
+        pal = &p->second;
+        p->second.used = true;
+    }
+    image->second.used = true;
+    uint64_t key = mix64(image->second.hash, pal ? pal->hash : 0x5555);
+    key = mix64(key, (uint64_t)psm | (uint64_t)tbw << 8 | (uint64_t)tw << 16 | (uint64_t)th << 20 | (uint64_t)cpsm << 24 | (uint64_t)csa << 28);
+    if (psm == PSMCT24 || psm == PSMCT16 || psm == PSMCT16S) key = mix64(key, texa);
+    auto found = textures.find(key);
+    if (found != textures.end()) { stats.texture_hits++; return &found->second; }
+
+    // ---- make it ----
+    const UploadSet& set = image->second;
+    Scratch s;
+    s.reserve(8192);
+    replay(set, s);
+    int named_w = 1 << tw, named_h = 1 << th;
+    // how much of the named size was sent
+    int ext_w = 0, ext_h = 0;
+    bool same = true, as32 = true;
+    for (const Rect& r : set.rects) {
+        if (r.psm != psm && !((r.psm == PSMCT32 || r.psm == PSMCT24) && (psm == PSMCT32 || psm == PSMCT24))) same = false;
+        if (r.psm != PSMCT32) as32 = false;
+    }
+    if (same) for (const Rect& r : set.rects) { ext_w = std::max(ext_w, r.x + r.w); ext_h = std::max(ext_h, r.y + r.h); }
+    else if (psm == PSMT8 && as32) for (const Rect& r : set.rects) { ext_w = std::max(ext_w, 2 * (r.x + r.w)); ext_h = std::max(ext_h, 2 * (r.y + r.h)); }
+    else {
+        int bwid = psm == PSMT4 ? 32 : psm == PSMT8 || psm == PSMCT16 || psm == PSMCT16S ? 16 : 8;
+        int bhei = psm == PSMT4 || psm == PSMT8 ? 16 : 8;
+        for (int by = 0; by * bhei < named_h; by++)
+            for (int bx = 0; bx * bwid < named_w; bx++) {
+                int x = bx * bwid, y = by * bhei;
+                size_t a = psm == PSMT4 ? nibble4(x, y, tbw) >> 1 : psm == PSMT8 ? addr8(x, y, tbw)
+                         : psm == PSMCT16 || psm == PSMCT16S ? addr16(x, y, tbw) : addr32(x, y, tbw);
+                if (s.block_written(a)) { ext_w = std::max(ext_w, x + bwid); ext_h = std::max(ext_h, y + bhei); }
+            }
+    }
+    int width = ext_w * 2 > named_w ? named_w : std::max(ext_w, 1);
+    int height = ext_h * 2 > named_h ? named_h : std::max(ext_h, 1);
+    uint32_t palette[256];
+    if (paletted) palette_of(*pal, cpsm, palette, psm == PSMT8 || psm == PSMT8H ? 256 : 16);
+    uint8_t ta0 = (uint8_t)texa, ta1 = (uint8_t)(texa >> 32);
+    bool aem = (texa >> 15) & 1;
+    TextureData data;
+    data.id = next_texture++;
+    data.width = width; data.height = height;
+    data.rgba.resize((size_t)width * height * 4);
+    uint32_t* out = (uint32_t*)data.rgba.data();
+    for (int y = 0; y < height; y++)
+        for (int x = 0; x < width; x++) {
+            uint32_t c;
+            switch (psm) {
+            case PSMCT32: c = s.word(addr32(x, y, tbw)); break;
+            case PSMCT24: c = s.word(addr32(x, y, tbw)) & 0xFFFFFF; c |= (aem && !c) ? 0 : (uint32_t)ta0 << 24; break;
+            case PSMCT16: case PSMCT16S: {
+                size_t a = addr16(x, y, tbw);
+                uint32_t v = s.byte(a) | (uint32_t)s.byte(a + 1) << 8;
+                c = ((v & 31) << 3) | (((v >> 5) & 31) << 11) | (((v >> 10) & 31) << 19);
+                c |= (v & 0x8000) ? (uint32_t)ta1 << 24 : (aem && !v) ? 0 : (uint32_t)ta0 << 24;
+                break;
+            }
+            case PSMT8: c = palette[s.byte(addr8(x, y, tbw))]; break;
+            case PSMT4: { size_t a = nibble4(x, y, tbw); c = palette[((s.byte(a >> 1) >> ((a & 1) * 4)) & 15)]; break; }
+            case PSMT8H: c = palette[s.byte(addr32(x, y, tbw) + 3)]; break;
+            case PSMT4HL: c = palette[s.byte(addr32(x, y, tbw) + 3) & 15]; break;
+            case PSMT4HH: c = palette[s.byte(addr32(x, y, tbw) + 3) >> 4]; break;
+            default: c = 0xFFFF00FF; break;
+            }
+            out[(size_t)y * width + x] = c;
+        }
+    if (trace < 0) {
+        size_t a0 = 0, a80 = 0, other = 0;
+        for (size_t k = 0; k < (size_t)width * height; k++) { uint8_t a = out[k] >> 24; if (a == 0) a0++; else if (a == 0x80) a80++; else other++; }
+        fprintf(stderr, "texture %u: %dx%d psm %x tbw %u named %dx%d rects %zu (first %dx%d psm %x bw %u) alpha 0:%zu 80:%zu other:%zu tex0 %016llx\n", data.id, width, height, psm, tbw,
+                named_w, named_h, set.rects.size(), set.rects[0].w, set.rects[0].h, set.rects[0].psm, set.rects[0].bw, a0, a80, other, (unsigned long long)tex0);
+    }
+    Texture t = {data.id, width, height, 0};
+    int pw = 0, ph = 0;
+    if (picture_size && picture_size(tbp, pw, ph) && ph > 0 && ph <= height) t.picture_height = ph;
+    if (trace < 0) fprintf(stderr, "   texture %u at tbp %u: picture %d x %d by the game's header\n", t.id, tbp, pw, ph);
+    frame.textures.push_back(std::move(data));
+    stats.textures_made++;
+    return &textures.emplace(key, t).first->second;
+}
+
+// ---- drawing --------------------------------------------------------------------------
+static bool same_state(const DrawCmd& a, const DrawCmd& b) {
+    return a.prim == b.prim && a.target == b.target && !memcmp(a.scissor, b.scissor, sizeof(a.scissor)) && a.texture == b.texture
+        && a.tex_is_target == b.tex_is_target && a.tex_offset[0] == b.tex_offset[0] && a.tex_offset[1] == b.tex_offset[1]
+        && a.tex_missing == b.tex_missing && a.tex_size[0] == b.tex_size[0] && a.tex_size[1] == b.tex_size[1]
+        && a.st_scale[0] == b.st_scale[0] && a.st_scale[1] == b.st_scale[1] && a.linear == b.linear && a.wrap[0] == b.wrap[0]
+        && a.wrap[1] == b.wrap[1] && !memcmp(a.region, b.region, sizeof(a.region)) && a.tfx == b.tfx && a.tcc == b.tcc
+        && a.weave_half == b.weave_half && a.alpha_test == b.alpha_test && a.atst == b.atst && a.aref == b.aref && a.afail == b.afail
+        && a.depth_test == b.depth_test && a.ztst == b.ztst && a.depth_write == b.depth_write && a.blend == b.blend && a.ba == b.ba
+        && a.bb == b.bb && a.bc == b.bc && a.bd == b.bd && a.fix == b.fix && a.mask_rgb == b.mask_rgb && a.mask_a == b.mask_a;
+}
+
+static bool g_skip_draw = false;
+
+void Gs::rebuild_state() {
+    state_dirty = false;
+    uint32_t attr = (reg[0x1a] & 1) ? prim : ((prim & 7) | ((uint32_t)reg[0x1b] & 0x7F8));
+    unsigned ctxt = (attr >> 9) & 1;
+    uint64_t frame_reg = reg[0x4c + ctxt], zbuf = reg[0x4e + ctxt], scissor = reg[0x40 + ctxt], offset = reg[0x18 + ctxt];
+    uint64_t test = reg[0x47 + ctxt], alpha = reg[0x42 + ctxt], tex0 = reg[0x06 + ctxt], tex1 = reg[0x14 + ctxt], clamp = reg[0x08 + ctxt];
+    DrawCmd c;
+    unsigned type = prim & 7;
+    c.prim = type == 0 ? PK_POINTS : type <= 2 ? PK_LINES : PK_TRIANGLES;
+    cmd_iip = (attr >> 3) & 1;
+    cmd_tme = (attr >> 4) & 1;
+    cmd_fst = (attr >> 8) & 1;
+    c.scissor[0] = (int)(scissor & 0x7FF); c.scissor[2] = (int)((scissor >> 16) & 0x7FF) + 1;
+    c.scissor[1] = (int)((scissor >> 32) & 0x7FF); c.scissor[3] = (int)((scissor >> 48) & 0x7FF) + 1;
+    // a surface is as wide as its buffer width says and as high as the scissor allows
+    int buffer_width = (int)((frame_reg >> 16) & 0x3F) * 64;
+    Target& target = target_at((uint32_t)frame_reg & 0x1FF, buffer_width ? std::min(c.scissor[2], buffer_width) : c.scissor[2], c.scissor[3]);
+    target.fbw = (uint32_t)(frame_reg >> 16) & 0x3F;
+    target.psm = (uint32_t)(frame_reg >> 24) & 0x3F;
+    target.serial = serial++;
+    c.target = target.id;
+    ofx = (float)(offset & 0xFFFF);
+    uint32_t oy = (uint32_t)(offset >> 32) & 0xFFFF;
+    if (no_interlace) oy &= ~15u;
+    ofy = (float)oy;
+    unsigned zpsm = (unsigned)(zbuf >> 24) & 15;
+    zscale = zpsm == 0 ? 1.0f / 4294967296.0f : zpsm == 1 ? 1.0f / 16777216.0f : 1.0f / 65536.0f;
+    bool zmsk = (zbuf >> 32) & 1;
+    // tests
+    bool ate = test & 1;
+    unsigned atst = (test >> 1) & 7, afail = (test >> 12) & 3;
+    c.aref = (uint8_t)(test >> 4);
+    c.depth_test = true;
+    c.ztst = (test >> 16) & 1 ? (uint8_t)((test >> 17) & 3) : 1;
+    c.depth_write = !zmsk;
+    uint32_t fbmsk = (uint32_t)(frame_reg >> 32);
+    c.mask_rgb = (fbmsk & 0xFFFFFF) == 0xFFFFFF;
+    c.mask_a = (fbmsk >> 24) == 0xFF;
+    g_skip_draw = false;
+    if (ate && atst == 0) {                             // never passes: what the fail rule leaves
+        if (afail == 0) g_skip_draw = true;
+        else if (afail == 1) c.depth_write = false;
+        else if (afail == 2) { c.mask_rgb = true; c.mask_a = true; }
+        else { c.depth_write = false; c.mask_a = true; }
+    } else if (ate && atst != 1) {
+        c.alpha_test = true; c.atst = (uint8_t)atst; c.afail = (uint8_t)afail;
+    }
+    if (c.ztst == 0) g_skip_draw = true;
+    // blend
+    if ((attr >> 6) & 1) {
+        c.blend = true;
+        c.ba = alpha & 3; c.bb = (alpha >> 2) & 3; c.bc = (alpha >> 4) & 3; c.bd = (alpha >> 6) & 3;
+        c.fix = (uint8_t)(alpha >> 32);
+    }
+    // texture
+    if (cmd_tme) {
+        uint32_t tbp = (uint32_t)tex0 & 0x3FFF;
+        const Texture* t = nullptr;
+        // a surface the game drew into, or a part of one: the GS cannot name a texture
+        // wider than 1024, so the present pass reads the 1280-wide 3-D surface as two
+        // textures, the second starting at its 640th column
+        auto surface = targets.end();
+        int offset_x = 0, offset_y = 0;
+        if (!(tbp & 31) && !targets.empty()) {
+            auto it = targets.upper_bound(tbp >> 5);
+            if (it != targets.begin()) {
+                --it;
+                const Target& s = it->second;
+                uint32_t page = (tbp >> 5) - it->first, fbw = s.fbw ? s.fbw : 1;
+                int page_height = s.psm == PSMCT16 || s.psm == PSMCT16S ? 64 : 32;
+                int px = (int)(page % fbw) * 64, py = (int)(page / fbw) * page_height;
+                if (px < s.width && py < s.height) { surface = it; offset_x = px; offset_y = py; }
+            }
+        }
+        auto set = sets.find(tbp);
+        bool surface_newer = surface != targets.end() && (set == sets.end() || set->second.serial < surface->second.serial);
+        if (!surface_newer) t = texture_for(tex0, reg[0x3b]);
+        if (!t && !surface_newer && restore_texture && restore_tried.insert(tbp).second && restore_texture(tbp)) t = texture_for(tex0, reg[0x3b]);
+        cur_picture_height = t ? t->picture_height : 0;
+        if (t) { c.texture = t->id; c.tex_size[0] = (float)t->width; c.tex_size[1] = (float)t->height; }
+        else if (surface != targets.end() && surface->second.id != c.target) {
+            c.texture = surface->second.id; c.tex_is_target = true;
+            c.tex_size[0] = (float)surface->second.width; c.tex_size[1] = (float)surface->second.height;
+            c.tex_offset[0] = (float)offset_x; c.tex_offset[1] = (float)offset_y;
+        } else { stats.texture_missing++; c.tex_missing = tbp + 1; }
+        if (c.texture) {
+            c.tfx = (uint8_t)((tex0 >> 35) & 3);
+            c.tcc = (tex0 >> 34) & 1;
+            c.linear = (tex1 >> 5) & 1;
+            c.wrap[0] = (WrapMode)(clamp & 3); c.wrap[1] = (WrapMode)((clamp >> 2) & 3);
+            c.region[0] = (float)((clamp >> 4) & 0x3FF); c.region[1] = (float)((clamp >> 14) & 0x3FF);
+            c.region[2] = (float)((clamp >> 24) & 0x3FF); c.region[3] = (float)((clamp >> 34) & 0x3FF);
+            if (!cmd_fst) { c.st_scale[0] = (float)(1 << ((tex0 >> 26) & 15)); c.st_scale[1] = (float)(1 << ((tex0 >> 30) & 15)); }
+        } else cmd_tme = false;
+    }
+    if (have_cmd && same_state(cur, c) ) return;
+    if (have_cmd && cur.count) frame.commands.push_back(cur);
+    c.first = (uint32_t)frame.vertices.size();
+    c.count = 0;
+    cur = c;
+    have_cmd = true;
+}
+
+void Gs::emit_vertex(const Queued& v, const DrawCmd&, float s, float t, float q, const uint8_t* rgba, uint32_t z) {
+    Vertex o;
+    o.x = ((float)v.x - ofx) * (1.0f / 16.0f);
+    o.y = ((float)v.y - ofy) * (1.0f / 16.0f);
+    float zf = (float)z * zscale;
+    o.z = zf > 0.99999994f ? 0.99999994f : zf;
+    o.s = s; o.t = t; o.q = q;
+    o.r = rgba[0]; o.g = rgba[1]; o.b = rgba[2]; o.a = rgba[3];
+    frame.vertices.push_back(o);
+}
+
+void Gs::kick(bool draw) {
+    Queued& v = vq[vcount < 3 ? vcount : 2];
+    v.s = cur_s; v.t = cur_t; v.q = cur_q; v.u = cur_u; v.v = cur_v;
+    memcpy(v.rgba, cur_rgba, 4);
+    vcount++;
+    stats.vertices++;
+    unsigned type = prim & 7;
+    static const int need[8] = {1, 2, 2, 3, 3, 3, 2, 1};
+    if (vcount < need[type]) return;
+    if (draw && type != 7) {
+        if (state_dirty) rebuild_state();
+        if (!g_skip_draw) {
+            auto coords = [&](const Queued& a, float& s, float& t, float& q) {
+                if (!cmd_tme) { s = t = 0; q = 1; }
+                else if (cmd_fst) { s = (float)a.u * (1.0f / 16.0f); t = (float)a.v * (1.0f / 16.0f); q = 1; }
+                else { s = a.s; t = a.t; q = a.q; }
+            };
+            stats.prims++;
+            if (type == 6) {
+                const Queued& a = vq[0];
+                const Queued& b = vq[1];
+                float s0, t0, q0, s1, t1, q1;
+                coords(a, s0, t0, q0); coords(b, s1, t1, q1);
+                if (cmd_tme && !cmd_fst) { float qq = b.q != 0 ? b.q : 1; s0 /= qq; t0 /= qq; s1 /= qq; t1 /= qq; q0 = q1 = 1; }
+                float dx = ((float)b.x - (float)a.x) * (1.0f / 16.0f), dy = ((float)b.y - (float)a.y) * (1.0f / 16.0f);
+                float half = 0;
+                if (cmd_tme) {
+                    // interface art as two stacked field pictures: half a texture row per line,
+                    // all of it inside the upper or the lower half of what was sent
+                    float th = cur_picture_height ? (float)cur_picture_height : cur.tex_size[1];
+                    bool field = weave && cmd_fst && !cur.tex_is_target && dy != 0 && fabsf(t1 - t0) * 2 == fabsf(dy) && th >= 4
+                                 && fmodf(th, 2) == 0 && std::max(t0, t1) <= th + 0.5f;
+                    if (field) {
+                        half = th * 0.5f;
+                        float base = (t0 + t1) * 0.5f >= half ? half : 0;
+                        float line0 = floorf(2 * (std::min(t0, t1) - base) + 0.01f);
+                        if (t1 >= t0) { t0 = line0; t1 = line0 + fabsf(dy); } else { t1 = line0; t0 = line0 + fabsf(dy); }
+                    } else if (dy != 0) { float dv = (t1 - t0) / dy * 0.5f; t0 -= dv; t1 -= dv; }
+                    if (dx != 0) { float du = (s1 - s0) / dx * 0.5f; s0 -= du; s1 -= du; }
+                }
+                if (half != cur.weave_half) {
+                    DrawCmd c = cur;
+                    c.weave_half = half;
+                    if (cur.count) frame.commands.push_back(cur);
+                    c.first = (uint32_t)frame.vertices.size();
+                    c.count = 0;
+                    cur = c;
+                }
+                Queued c0 = a, c1 = b, c2 = a, c3 = b;
+                c1.y = a.y; c2.y = b.y;                 // c0 = (ax, ay), c1 = (bx, ay), c2 = (ax, by), c3 = (bx, by)
+                emit_vertex(c0, cur, s0, t0, 1, b.rgba, b.z); emit_vertex(c1, cur, s1, t0, 1, b.rgba, b.z); emit_vertex(c2, cur, s0, t1, 1, b.rgba, b.z);
+                emit_vertex(c1, cur, s1, t0, 1, b.rgba, b.z); emit_vertex(c3, cur, s1, t1, 1, b.rgba, b.z); emit_vertex(c2, cur, s0, t1, 1, b.rgba, b.z);
+                cur.count += 6;
+            } else {
+                if (cur.weave_half != 0) {
+                    DrawCmd c = cur;
+                    c.weave_half = 0;
+                    if (cur.count) frame.commands.push_back(cur);
+                    c.first = (uint32_t)frame.vertices.size();
+                    c.count = 0;
+                    cur = c;
+                }
+                int n = need[type];
+                const uint8_t* flat = vq[n - 1].rgba;
+                for (int k = 0; k < n; k++) {
+                    float s, t, q;
+                    coords(vq[k], s, t, q);
+                    emit_vertex(vq[k], cur, s, t, q, cmd_iip ? vq[k].rgba : flat, vq[k].z);
+                }
+                cur.count += n;
+            }
+        }
+    }
+    switch (type) {
+    case 2: vq[0] = vq[1]; vcount = 1; break;                       // line strip
+    case 4: vq[0] = vq[1]; vq[1] = vq[2]; vcount = 2; break;        // triangle strip
+    case 5: vq[1] = vq[2]; vcount = 2; break;                       // fan
+    default: vcount = 0; break;
+    }
+}
+
+}  // namespace render

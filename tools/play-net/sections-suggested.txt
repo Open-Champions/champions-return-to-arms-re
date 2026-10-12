@@ -22,3 +22,4 @@ Net test: stats page does not recompute the main weapon's damage either
 Net test: carried weight is recomputed only inside the simulation
 Net test: prediction copy starts without pending damage
 Net test: equalise at once (LAG-1)
+Net test: peer silence time-out 900 -> 1440 calls

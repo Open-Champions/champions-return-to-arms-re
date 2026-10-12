@@ -46,6 +46,12 @@
 //   RTA_NET_FRAMES=<n>        stop after n vertical blanks
 //   RTA_NET_PATCH=<file>      "address value" hex words written into memory at start
 //                             (the patch words a patched translation was built from)
+//   RTA_NET_ARG=<text>        boot argument for the game's main() (a start from power-on):
+//                             --net is the developer LAN start, which needs no lobby server
+//   RTA_NET_PADLAT=0|1        frames between a script's controller state and the game reading
+//                             it (default 1, the usual figure on the rig)
+//   RTA_NET_ALLOW_LEVEL=1     do not end the run when a level change becomes pending (exit
+//                             code 7); for a runtime that can read the disc
 //
 // Every function here runs on the host thread that carries the running guest thread, with
 // the runtime's one lock held, so nothing here needs a lock of its own.
@@ -85,6 +91,7 @@ namespace {
 enum : u32 {
     G_NETFRAME = 0x4027ac,          // the lockstep tick about to run / just run
     G_PEERS = 0x5bf838, PEER_SIZE = 0x44e0, PEER_OOS = 0x44d7,
+    G_PENDING_LEVEL = 0x41b6d0,     // name of the level to load next, empty when none
     TICK_RETURN = 0x13aee8,         // return address of the tick's task pass in net_frameLoop
 };
 const int ERROR_NO_DATA = -500;     // what the game expects from sceInetRecvFrom when nothing waits
@@ -477,8 +484,11 @@ struct Shim {
     std::multimap<u32, Command> tick_actions;
     size_t position = 0;
     bool script_given = false, script_done = false;
-    Pad pad;
+    Pad pad;                                // what the script holds now
+    Pad pad_seen;                           // what the game reads: the script's state one blank earlier
     bool pad_override = false;
+    int pad_latency = 1;
+    bool stop_on_level = true;
     bool oos_reported[4] = {};
 };
 Shim S;
@@ -1009,6 +1019,14 @@ void on_tick() {
             S.oos_reported[n] = true;
             printf("[tick %u] frame %" PRIu64 ": the game holds peer %u OUT OF SYNC\n", tick, S.frame, n);
         }
+    // A level name is pending: the main loop will load it after this call.  Until the
+    // runtime reads the disc, the run ends here instead of running on garbage.
+    if (S.stop_on_level && g_ram[G_PENDING_LEVEL]) {
+        char name[17] = {};
+        memcpy(name, g_ram + G_PENDING_LEVEL, 16);
+        printf("[tick %u] frame %" PRIu64 ": level change to '%s' is pending; the run ends here (RTA_NET_ALLOW_LEVEL=1 lets it go on)\n", tick, S.frame, name);
+        finish(7);
+    }
     auto range = S.tick_actions.equal_range(tick);
     bool quit = false;
     for (auto it = range.first; it != range.second; ++it) {
@@ -1137,6 +1155,9 @@ void start() {
         S.pace = 59.94;
         S.linked = true;
     }
+    if (!env("RTA_NET_ALLOW_LEVEL").empty()) S.stop_on_level = false;
+    value = env("RTA_NET_PADLAT");
+    if (!value.empty()) S.pad_latency = atoi(value.c_str());
     value = env("RTA_NET_PACE");
     if (!value.empty()) S.pace = atof(value.c_str());
     printf("net shim: machine %c, address %d.%d.%d.%d, %s; bus delay=%u jitter=%u loss=%u; %s\n", S.machine, S.own[3], S.own[2], S.own[1], S.own[0],
@@ -1161,10 +1182,15 @@ void on_vblank() {
         double due = S.start_wall + S.frame / S.pace, now = wall_seconds();
         if (due > now) usleep((useconds_t)((due - now) * 1e6));
     }
+    // On the rig a controller state set at one vertical blank is what the game reads in
+    // the frame after the next blank (measured: the same script moved a player one tick
+    // earlier here); the same latency is kept so that one script gives one game.
+    if (S.pad_latency) S.pad_seen = S.pad;
     if (S.script_given) {
         step_script();
         if (S.script_done && S.frames_wanted == 0) finish(0);
     }
+    if (!S.pad_latency) S.pad_seen = S.pad;
     if (S.frames_wanted && S.frame >= S.frames_wanted) finish(S.script_given && !S.script_done ? 4 : 0);
 }
 
@@ -1210,6 +1236,7 @@ void send_to(Ctx* c) {
             wire.data = datagram.data;
             S.outbox.push_back(std::move(wire));
             S.crossed++;
+            if (S.udp_base) udp_flush();        // a datagram with no delay left goes out at once
             fate = broadcast ? "queued here and sent across" : "sent across";
         }
     }
@@ -1305,6 +1332,50 @@ void fn_00137a10(Ctx* c) {                  // net_loadModules
 }
 void fn_0013e638(Ctx* c) { start(); S.calls[LINK_CHECK]++; answer(c, 1); }     // net_linkCheck
 
+void fn_00323dcc(Ctx* c) {                  // main(argc, argv)
+    // The runtime starts the game with no arguments.  With RTA_NET_ARG the argument block
+    // the start-up code gave the kernel (0x5f8740: count, sixteen pointers, then text) is
+    // filled as a loader would fill it: the program's name, then the arguments.
+    const char* given = getenv("RTA_NET_ARG");
+    if (given && *given) {
+        const u32 block = 0x5f8740, text = block + 4 + 16 * 4;
+        std::vector<std::string> words = {"cdrom0:\\SLUS_209.73;1"};
+        for (const auto& word : split(given, ' ')) if (!word.empty()) words.push_back(word);
+        u32 at = text;
+        for (size_t i = 0; i < words.size() && i < 16 && at + words[i].size() + 1 <= text + 256; i++) {
+            memcpy(g_ram + at, words[i].c_str(), words[i].size() + 1);
+            write32(block + 4 + (u32)i * 4, at);
+            at += (u32)words[i].size() + 1;
+            write32(block, (u32)i + 1);
+        }
+        c->r[4] = read32(block);
+        c->r[5] = block + 4;
+        printf("net shim: main() gets %u arguments (%s)\n", read32(block), given);
+    }
+    orig_00323dcc(c);
+}
+
+void fn_003646c8(Ctx* c) {                  // sceSifMInitRpc (libmrpc), called by net_gameInit before sceLibnetInitialize
+    // It sends the I/O processor SIF command 0x80000001 and then polls sceSifGetSreg(1)
+    // (the word at 0x8ef2c4) until the multi-thread RPC manager there has answered.  That
+    // manager carries the network library's calls, all of which are replaced here, so
+    // nothing will answer: the word is set as the answer would set it and the original runs.
+    start();
+    write32(0x8ef2c0 + 4, 1);
+    orig_003646c8(c);
+}
+
+void fn_0036c1a0(Ctx* c) {                  // lgAudEnumerate(index, description)
+    // A net game lists the USB headsets after its first ticks (0x31f634): it asks for
+    // index 0, 1, 2 ... until an answer has bit 31 set.  The headset driver's answer comes
+    // from the runtime's I/O-processor services; while that answer carries no data for
+    // this function the list never ends (seen: 181,038 calls in 3,000 fields, the main
+    // thread never back in the session loop).  The original runs; an answer without the
+    // error bit becomes the library's own error code, which says "no headset".
+    orig_0036c1a0(c);
+    if (!((u32)c->r[2] & 0x80000000u)) c->r[2] = (u64)(s64)(s32)0x8000000Au;
+}
+
 void fn_0019b6e4(Ctx* c) {                  // gfx_vblankHandler: once per vertical blank
     on_vblank();
     orig_0019b6e4(c);
@@ -1317,10 +1388,14 @@ void fn_0017421c(Ctx* c) {                  // pad_readPort(port, out 8-byte rec
     u8* record = gptr(out, 8);
     if (!record) return;
     u16 buttons = 0;
-    for (int b = B_UP; b < B_MAX; b++) if (S.pad.buttons & (1u << b)) buttons |= RECORD_BIT[b];
+    const Pad& pad = S.pad_seen;
+    for (int b = B_UP; b < B_MAX; b++) if (pad.buttons & (1u << b)) buttons |= RECORD_BIT[b];
     memcpy(record, &buttons, 2);
-    record[2] = S.pad.axis[AX_LX]; record[3] = S.pad.axis[AX_LY];
-    record[4] = S.pad.axis[AX_RX]; record[5] = S.pad.axis[AX_RY];
+    record[2] = pad.axis[AX_LX]; record[3] = pad.axis[AX_LY];
+    record[4] = pad.axis[AX_RX]; record[5] = pad.axis[AX_RY];
+    // the two pressure bytes the game reads (L1, R1): full when held, as the emulator's controller gives them
+    record[6] = (pad.buttons & (1u << B_L1)) ? 0xFF : 0;
+    record[7] = (pad.buttons & (1u << B_R1)) ? 0xFF : 0;
     c->r[2] = 1;
 }
 

@@ -1,0 +1,175 @@
+--- a/tools/play-web/src/RtaWeb.cpp
++++ b/tools/play-web/src/RtaWeb.cpp
+@@ -108,7 +108,34 @@
+ 		uint32 frames = 0;
+ 		bool stick = false; // the left stick is given for these frames
+ 		uint8 x = 128, y = 128;
++		bool stickRight = false; // DEV (rtaStep): the right stick as well
++		uint8 rx = 128, ry = 128;
++	};
++
++	// DEV: a write into the game's memory in one given vertical blank (rtaPokeAt), and what
++	// the game's memory held at several places, frame by frame (rtaWatchAdd, rtaWatchStart,
++	// rtaWatchRead). For comparing this build with another machine that is given the same
++	// presses and the same writes in the same vertical blanks (tools/arith).
++	struct TimedPoke
++	{
++		uint32 frame = 0; // the number of the vertical blank, counted from the first one
++		uint32 address = 0;
++		uint32 size = 0;
++		uint32 value = 0;
++	};
++	struct WatchRegion
++	{
++		uint32 pointer = 0; // 0: 'offset' is the address itself; else the address of a pointer to add it to
++		uint32 offset = 0;
++		uint32 size = 0;
+ 	};
++	struct Watch
++	{
++		std::vector<WatchRegion> regions;
++		uint32 rowSize = 0;
++		uint32 left = 0;
++		std::vector<uint8> bytes;
++	};
+ 
+ 	// DEV: what the game's memory held at one place, frame by frame (rtaTrace)
+ 	struct Trace
+@@ -141,6 +168,8 @@
+ 	bool g_wantDisplayPatches = true;
+ 	std::deque<Step> g_steps;
+ 	Trace g_trace;
++	std::vector<TimedPoke> g_timedPokes;
++	Watch g_watch;
+ 	std::vector<BurstEntry> g_burst;
+ 	std::vector<uint8> g_burstLast, g_burstNow;
+ 	std::string g_executable;
+@@ -350,6 +379,31 @@
+ 			uint32 axes[4] = {g_shared.axes[0], g_shared.axes[1], g_shared.axes[2], g_shared.axes[3]};
+ 			{
+ 				std::lock_guard lock(g_mutex);
++				// DEV: the writes asked for this vertical blank, before anything is read
++				for(const auto& poke : g_timedPokes)
++				{
++					if(poke.frame != g_frames) continue;
++					uint32 address = poke.address & 0x1FFFFFFF;
++					if(address + 4 <= PS2::EE_RAM_SIZE) memcpy(ram + address, &poke.value, poke.size);
++				}
++				if(g_watch.left != 0)
++				{
++					for(const auto& region : g_watch.regions)
++					{
++						uint32 address = region.offset;
++						if(region.pointer != 0)
++						{
++							uint32 base = 0;
++							memcpy(&base, ram + (region.pointer & (PS2::EE_RAM_SIZE - 4)), 4);
++							address = (base != 0) ? (base + region.offset) : 0;
++						}
++						address &= 0x1FFFFFFF;
++						size_t at = g_watch.bytes.size();
++						g_watch.bytes.resize(at + region.size, 0);
++						if(address != 0 && (address + region.size) <= PS2::EE_RAM_SIZE) memcpy(g_watch.bytes.data() + at, ram + address, region.size);
++					}
++					g_watch.left--;
++				}
+ 				if(g_trace.left != 0)
+ 				{
+ 					uint32 address = g_trace.offset;
+@@ -374,6 +428,12 @@
+ 						axes[0] = step.x;
+ 						axes[1] = step.y;
+ 						axesSet |= 1;
++					}
++					if(step.stickRight)
++					{
++						axes[2] = step.rx;
++						axes[3] = step.ry;
++						axesSet |= 2;
+ 					}
+ 					if(--step.frames == 0) g_steps.pop_front();
+ 				}
+@@ -875,6 +935,83 @@
+ 		return text.c_str();
+ 	}
+ 
++	// DEV: a scripted step with everything in it: 'buttons' held and both sticks at the
++	// given places (0..255, 128 at rest) for 'frames' frames.
++	EMSCRIPTEN_KEEPALIVE void rtaStep(uint32 buttons, uint32 lx, uint32 ly, uint32 rx, uint32 ry, uint32 frames)
++	{
++		if(!frames) return;
++		std::lock_guard lock(g_mutex);
++		Step step;
++		step.buttons = buttons;
++		step.frames = frames;
++		step.stick = (lx != 128) || (ly != 128);
++		step.x = static_cast<uint8>(std::min<uint32>(lx, 255));
++		step.y = static_cast<uint8>(std::min<uint32>(ly, 255));
++		step.stickRight = (rx != 128) || (ry != 128);
++		step.rx = static_cast<uint8>(std::min<uint32>(rx, 255));
++		step.ry = static_cast<uint8>(std::min<uint32>(ry, 255));
++		g_steps.push_back(step);
++	}
++
++	// DEV: 'value' (1, 2 or 4 bytes) is written to the game's memory at 'address' in
++	// vertical blank number 'frame' (the machine's first one is 1), on the machine's thread,
++	// before that blank's presses are given and before rtaTrace / rtaWatch read. Data only:
++	// translated code that covers the address is not thrown away.
++	EMSCRIPTEN_KEEPALIVE void rtaPokeAt(uint32 frame, uint32 address, uint32 size, uint32 value)
++	{
++		std::lock_guard lock(g_mutex);
++		TimedPoke poke;
++		poke.frame = frame;
++		poke.address = address;
++		poke.size = (size == 1 || size == 2) ? size : 4;
++		poke.value = value;
++		g_timedPokes.push_back(poke);
++	}
++
++	// DEV: several places of the game's memory, taken together at every vertical blank.
++	// rtaWatchAdd names one more place ('size' bytes at 'offset', or at 'offset' past the
++	// pointer stored at 'pointer'; at most 4096 bytes per frame in all) and returns the
++	// number of bytes per frame so far; rtaWatchStart takes them for 'frames' frames from
++	// the next vertical blank on; rtaWatchRead gives what was taken as hexadecimal text,
++	// frame after frame, place after place - or nothing while frames are still to come.
++	EMSCRIPTEN_KEEPALIVE uint32 rtaWatchAdd(uint32 pointer, uint32 offset, uint32 size)
++	{
++		std::lock_guard lock(g_mutex);
++		if(g_watch.left == 0 && size != 0 && (g_watch.rowSize + size) <= 4096)
++		{
++			WatchRegion region;
++			region.pointer = pointer & 0x1FFFFFFF;
++			region.offset = offset;
++			region.size = size;
++			g_watch.regions.push_back(region);
++			g_watch.rowSize += size;
++		}
++		return g_watch.rowSize;
++	}
++
++	EMSCRIPTEN_KEEPALIVE void rtaWatchStart(uint32 frames)
++	{
++		std::lock_guard lock(g_mutex);
++		g_watch.bytes.clear();
++		g_watch.left = std::min<uint32>(frames, 1000000);
++	}
++
++	EMSCRIPTEN_KEEPALIVE const char* rtaWatchRead()
++	{
++		static std::string text;
++		std::lock_guard lock(g_mutex);
++		text.clear();
++		if(g_watch.left != 0) return text.c_str(); // not finished
++		static const char* digits = "0123456789abcdef";
++		text.reserve(g_watch.bytes.size() * 2);
++		for(uint8 byte : g_watch.bytes)
++		{
++			text += digits[byte >> 4];
++			text += digits[byte & 15];
++		}
++		return text.c_str();
++	}
++
+ 	EMSCRIPTEN_KEEPALIVE uint32 rtaStepsLeft()
+ 	{
+ 		std::lock_guard lock(g_mutex);

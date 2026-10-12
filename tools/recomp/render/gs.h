@@ -1,0 +1,114 @@
+// gs.h - the Graphics Synthesizer as this game uses it, modelled at the level of what a
+// draw means, not of video memory.
+//
+// Input: GIF packets on the three paths (VU1's XGKICK, VIF1 DIRECT, the GIF channel) and
+// the privileged registers.  Output: a FrameList (backend.h).
+//
+//  - A surface the game draws into is a render target, known by its base pointer.  Its
+//    size is what the scissor says; a surface as large as the picture is drawn at the
+//    output resolution, so the 3-D scene never exists at 1280 x 448.
+//  - A texture is what the game sent: the rectangles transferred to an address, in the
+//    format they were sent in, read back in the format the draw names.  It is known by a
+//    hash of those bytes, so the 340 textures the game sends again every frame cost a hash
+//    and nothing else.  Its size is the part that was sent, not the 1024 x 1024 that TEX0
+//    names for interface art.  No video memory is kept between textures: a rectangle that
+//    was never sent reads as zero, never as what lay there before.
+//  - The half-line interlace offset in XYOFFSET is dropped, and interface art stored as
+//    two stacked field pictures is sampled as the woven picture (DrawCmd::weave_half).
+//  - A sprite's texture coordinates are moved back by half a pixel: the GS samples at a
+//    pixel's corner, the graphics APIs at its centre.
+#pragma once
+#include "backend.h"
+
+#include <cstdint>
+#include <functional>
+#include <map>
+#include <set>
+#include <unordered_map>
+#include <vector>
+
+namespace render {
+
+struct GsStats {
+    uint64_t packets = 0, reg_writes = 0, prims = 0, vertices = 0, uploads = 0, upload_bytes = 0;
+    uint64_t textures_made = 0, texture_hits = 0, texture_missing = 0, commands = 0, finish = 0;
+    uint64_t copies = 0, unknown_regs = 0;
+    double kick_ms = 0, path3_ms = 0;   // processor time inside xgkick() and gif(2, ...), when Gs::time_paths is set
+};
+
+class Gs {
+  public:
+    Gs();
+    FrameList frame;                    // being built
+    GsStats stats;
+    bool weave = true;                  // sample two-field interface art as one picture
+    bool no_interlace = true;           // drop the half-line of XYOFFSET
+    int trace = 0;                      // > 0: print draws to stderr
+    bool time_paths = false;
+    int debug_entry = 0;                // the VU1 entry last started (for the trace)
+    // Asked once per new texture: the size of the picture in the texture at this TBP0, from
+    // the game's own header (false: not known).
+    std::function<bool(uint32_t tbp, int& width, int& height)> picture_size;
+    // Asked once per address when a draw names a texture nothing was sent for: send it
+    // (through gif(3, ...)) if the machine still has it.
+    std::function<bool(uint32_t tbp)> restore_texture;
+
+    // GIF data, whole quadwords.  path 0 = XGKICK (from VU1 memory), 1 = DIRECT, 2 = GIF channel,
+    // 3 = the renderer itself (restore_texture)
+    void gif(int path, const uint32_t* words, size_t quadwords);
+    void xgkick(const uint8_t* vu_data, uint32_t qword);
+    void privileged(uint32_t address, uint64_t value);
+    // Close the frame being built: names what the display shows.  The caller takes `frame`
+    // and calls begin_frame() before feeding more.
+    void end_frame(uint64_t number);
+    void begin_frame();
+
+  private:
+    // ---- registers ----
+    uint64_t reg[0x64];
+    uint64_t pmode = 0, dispfb[2] = {0, 0}, display[2] = {0, 0};
+    struct Queued { uint32_t x, y, z; float s, t, q; uint32_t u, v; uint8_t rgba[4]; };
+    Queued vq[3];
+    int vcount = 0;
+    float cur_s = 0, cur_t = 0, cur_q = 1, st_q = 1;
+    uint32_t cur_u = 0, cur_v = 0;
+    uint8_t cur_rgba[4] = {0, 0, 0, 0x80};
+    uint32_t prim = 0;
+    bool state_dirty = true;
+    // ---- GIF tag state per path ----
+    struct Path { uint64_t regs = 0; uint32_t nloop = 0, nreg = 0, flg = 0, at = 0; bool eop = false; };
+    Path paths[4];
+    void write(uint32_t address, uint64_t value);
+    void packed(uint32_t descriptor, const uint32_t* q);
+    void reglist(uint32_t descriptor, uint64_t value);
+    void kick(bool draw);
+    // ---- drawing ----
+    DrawCmd cur;                        // state of the command being filled
+    bool have_cmd = false;
+    void rebuild_state();
+    void emit_vertex(const Queued& v, const DrawCmd& c, float s, float t, float q, const uint8_t* rgba, uint32_t z);
+    float ofx = 0, ofy = 0, zscale = 1.0f / 65536.0f;
+    bool cmd_fst = true, cmd_iip = true, cmd_tme = false;
+    // ---- render targets ----
+    struct Target { uint32_t id = 0; int width = 0, height = 0; uint64_t serial = 0; bool announced = false; uint32_t fbw = 0, psm = 0; };
+    std::map<uint32_t, Target> targets;                 // by FBP
+    uint32_t next_target = 1;
+    Target& target_at(uint32_t fbp, int width, int height);
+    // ---- transfers and textures ----
+    struct Rect { uint32_t psm, bw; int x, y, w, h; size_t offset, bytes; };
+    struct UploadSet { std::vector<Rect> rects; std::vector<uint8_t> data; uint64_t hash = 0, serial = 0; bool used = false; };
+    std::map<uint32_t, UploadSet> sets;                 // by destination base pointer
+    uint64_t serial = 1;
+    struct Transfer { bool active = false; uint32_t dbp = 0; size_t rect = 0, got = 0; } xfer;
+    void start_transfer();
+    void image_data(const uint8_t* bytes, size_t count);
+    struct Texture { uint32_t id; int width, height, picture_height; };
+    std::set<uint32_t> restore_tried;
+    int cur_picture_height = 0;
+    std::unordered_map<uint64_t, Texture> textures;     // by content key
+    uint32_t next_texture = 1;
+    const Texture* texture_for(uint64_t tex0, uint64_t texa);
+    bool palette_of(const UploadSet& set, uint32_t cpsm, uint32_t* out, int entries);
+};
+
+}  // namespace render

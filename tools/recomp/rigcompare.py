@@ -12,6 +12,16 @@ displayed frame at the same code address (the entry of gfx_beginFrame).
   python3 tools/recomp/rigcompare.py compare
   python3 tools/recomp/rigcompare.py memdiff
 
+From power-on both run the same script (default tools/rig/examples/boot-to-hub.rig, which
+needs a blank memory card on both sides).  Loading takes a different number of frames on
+the two, so rows are not matched by frame but by game event: the level name and the
+simulation tick.  The offline session takes its two random seeds from the CPU's cycle
+counter; the rig's values are logged and given to the translation (--count-at).
+
+  python3 tools/recomp/rigcompare.py boot-rig    [--script S] [--more N]
+  python3 tools/recomp/rigcompare.py boot-native [--script S] [--more N] [--emulator-timing]
+  python3 tools/recomp/rigcompare.py boot-compare [--level hub]
+
 Everything it writes (memory images are game data) goes to local/recomp-out/rig/.
 Needs the disc image (RTA_DISC) for the rig.  Nothing here modifies the rig.
 """
@@ -36,8 +46,15 @@ REGS = ('at v0 v1 a0 a1 a2 a3 t0 t1 t2 t3 t4 t5 t6 t7 s0 s1 s2 s3 s4 s5 s6 s7 t8
         'gp sp fp ra').split()
 
 
+RECORD_CHUNKS = False           # --record-chunks: the player record again in 256-byte pieces
+
+
 def watches():
     """name=expression:type, numbers only, so that the rig and the runtime read them alike."""
+    return base_watches() + (['r%04x=0x%x:crc256' % (off, PLAYERS + off) for off in range(0, 19504, 256)] if RECORD_CHUNKS else [])
+
+
+def base_watches():
     obj = '[0x%x]' % (PLAYERS + 0x43D8)
     rec = lambda off: '0x%x' % (PLAYERS + off)
     return [
@@ -53,6 +70,9 @@ def watches():
         # the task table and the controller state
         'record0=%s:crc19504' % rec(0), 'pool=0x5f88c0:crc947968', 'tasks=0x840100:crc1024',
         'pads=0x41bfd8:crc256',
+        # the 32 bytes the first controller delivered to the game this tick (the library's
+        # read buffer of player 1); boot-native --replay feeds them to the translation
+        'padraw=0x7cbc00:hex32',
     ]
 
 
@@ -165,12 +185,15 @@ def compare(args):
 
 
 def memdiff(args):
-    with open(os.path.join(OUT, 'rig-end.bin'), 'rb') as source:
+    with open(args.a or os.path.join(OUT, 'rig-end.bin'), 'rb') as source:
         a = source.read()
-    with open(os.path.join(OUT, 'native-end.bin'), 'rb') as source:
+    with open(args.b or os.path.join(OUT, 'native-end.bin'), 'rb') as source:
         b = source.read()
-    with open(os.path.join(OUT, 'image-ram.bin'), 'rb') as source:
-        start = source.read()
+    if args.a and not args.base:
+        start = a                               # no image both started from: nothing counts as "changed"
+    else:
+        with open(args.base or os.path.join(OUT, 'image-ram.bin'), 'rb') as source:
+            start = source.read()
     regions = [(0x0, 0x100000, 'kernel area (thread contexts, kernel stack, tables)'),
                (0x100000, 0x3E5C40, 'code'), (0x3E5C40, 0x564380, 'data sections'),
                (0x564380, 0x5F88C0, 'bss below the object pool'), (0x5F88C0, 0x6E0000, 'object pool'),
@@ -219,7 +242,205 @@ def memdiff(args):
     for lo, hi, count in sorted(runs, key=lambda r: -r[2])[:args.top]:
         first = next(i for i in range(lo, hi) if a[i] != b[i])
         print('  %06x-%06x  %7d bytes differ  (first at %06x, %s)' % (lo, hi, count, first, symbol(first)))
+    if args.words:
+        # the differing 32-bit words of one range, with the object-pool slot they lie in
+        lo, hi = (int(x, 16) for x in args.words.split(':'))
+        shown = 0
+        for at in range(lo & ~3, hi, 4):
+            if a[at:at + 4] != b[at:at + 4] and shown < args.top * 4:
+                shown += 1
+                print('  %06x  rig %s  translation %s  %s' % (at, a[at:at + 4][::-1].hex(), b[at:at + 4][::-1].hex(), symbol(at)))
     return 0
+
+
+SEED_SITE = 0x1E6CC0            # game_addCoreTasks: called by mainloop_runSession (return address
+SEED_RETURN = 0x322A28          # 0x322a28) right after the two seeds are taken
+SEED_READS = (0x3229F0, 0x322A00)   # the two reads of the cycle counter: cosmetic seed, shared seed
+BOOT_SCRIPT = os.path.join(ROOT, 'tools', 'rig', 'examples', 'boot-to-hub.rig')
+# columns that are not expected to agree from power-on: counters of displayed frames and
+# of the rig's own marker
+TIMING_COLUMNS = ('draw', 'net')
+
+
+def dump_commands(args, stem):
+    """Script commands that write main memory when the simulation tick reaches each of --dump-tick."""
+    commands = []
+    for tick in sorted(args.dump_tick):
+        commands += ['--do', 'until 0x44fdcc:u32 >= %d timeout 4000' % tick,
+                     '--do', 'dump 0 0x2000000 %s' % os.path.join(OUT, '%s-tick%d.bin' % (stem, tick))]
+    return commands
+
+
+def boot_rig(args):
+    """The original from power-on: one row per displayed frame, and the session seeds."""
+    disc = os.environ.get('RTA_DISC')
+    if not disc:
+        raise SystemExit('set RTA_DISC to the disc image')
+    os.makedirs(OUT, exist_ok=True)
+    data = os.path.join(OUT, 'boot-data')
+    if os.path.exists(data):
+        import shutil
+        shutil.rmtree(data)                     # the script expects a blank memory card
+    log, breaks = os.path.join(OUT, 'boot-rig.tsv'), os.path.join(OUT, 'boot-rig-breaks.log')
+    command = ['nice', '-n', '19', sys.executable, '-I', '-B', os.path.join(ROOT, 'tools', 'rig', 'rig.py'),
+               '--data', data, '--script', args.script] + dump_commands(args, 'boot-rig') + ['--do', 'wait %d' % args.more,
+               '--frames', str(args.frames), '--tick-at', '0x%x' % FRAME_HOOK, '--tick-log', log,
+               '--break', '0x%x,name=seeds,val=cosmetic=0x404460:x32,val=seed=0x404464:x32' % SEED_SITE,
+               '--break-log', breaks]
+    for watch in watches():
+        command += ['--tick-watch', watch]
+    start = time.time()
+    done = subprocess.run(command, capture_output=True, text=True, cwd=ROOT)
+    with open(os.path.join(OUT, 'boot-rig.out'), 'w') as sink:
+        sink.write(done.stdout + done.stderr)
+    for line in (done.stdout + done.stderr).splitlines():
+        if line.startswith(('[frame', 'frames=', 'exit')):
+            print('rig: ' + line[:200])
+    print('rig: %.0f s wall, exit %d' % (time.time() - start, done.returncode))
+    return 0
+
+
+def rig_seeds():
+    """[(cosmetic, shared)] for every session the rig started, in order."""
+    found = []
+    for line in open(os.path.join(OUT, 'boot-rig-breaks.log')):
+        m = re.search(r'bp=seeds .*cosmetic\S*=([0-9a-f]{8}).*seed\S*=([0-9a-f]{8})', line)
+        if m and 'ra=%08x' % SEED_RETURN in line:
+            found.append((m.group(1), m.group(2)))
+    return found
+
+
+def boot_native(args):
+    seeds = rig_seeds()
+    if not seeds:
+        raise SystemExit('the rig log has no session seeds; run boot-rig first')
+    card = os.path.join(OUT, 'boot-card')
+    if os.path.exists(card):
+        import shutil
+        shutil.rmtree(card)
+    watch_file = os.path.join(OUT, 'watch.txt')
+    with open(watch_file, 'w') as sink:
+        sink.write('\n'.join(watches()) + '\n')
+    command = [sys.executable, os.path.join(HERE, 'native.py'), 'boot', '--card', card, '--script', args.script] + \
+        dump_commands(args, 'boot-native') + [
+               '--do', 'wait %d' % args.more, '--watch-file', watch_file, '--log', os.path.join(OUT, 'boot-native.tsv'),
+               '--count-at', '%x=%s' % (SEED_READS[0], ','.join(c for c, _ in seeds)),
+               '--count-at', '%x=%s' % (SEED_READS[1], ','.join(s for _, s in seeds))]
+    if args.emulator_timing:
+        command.append('--emulator-timing')
+    if args.replay:
+        # the rig's controller bytes per (episode, tick, frame of that tick); an episode starts when the tick counter goes back
+        rows = [line.rstrip('\n').split('\t') for line in open(os.path.join(OUT, 'boot-rig.tsv'))]
+        header, rows = rows[0], rows[1:]
+        sim, raw = header.index('sim'), header.index('padraw')
+        replay = os.path.join(OUT, 'boot-replay.txt')
+        episode, last, frame = 0, 0, 0
+        with open(replay, 'w') as sink:
+            for row in rows:
+                if len(row) != len(header):
+                    continue
+                tick = int(row[sim])
+                if tick < last:
+                    episode += 1
+                frame = frame + 1 if tick == last else 0     # the n-th displayed frame of this tick
+                last = tick
+                sink.write('%d %d %d %s\n' % (episode, tick, frame, row[raw]))
+        command += ['--opt', 'pad-replay=' + replay]
+    start = time.time()
+    done = subprocess.run(command, capture_output=True, text=True, cwd=ROOT)
+    with open(os.path.join(OUT, 'boot-native.out'), 'w') as sink:
+        sink.write(done.stdout + done.stderr)
+    for line in (done.stdout + done.stderr).splitlines():
+        if line.startswith(('[frame', 'frames=', 'rta_native', 'stopped')):
+            print('native: ' + line[:200])
+    print('native: %.0f s wall, exit %d; seeds given: %s' % (time.time() - start, done.returncode, seeds))
+    return 0
+
+
+def by_event(path, level):
+    """header, {simulation tick: (row index, first row logged at that tick)} for the rows of one level."""
+    header, episodes = episodes_of(path)
+    first, order, repeats = {}, [], 0
+    for name, rows, again in episodes:
+        if name != level:
+            continue
+        repeats += again
+        for tick in sorted(rows):
+            if tick not in first:
+                first[tick] = rows[tick]
+                order.append(tick)
+    return header, first, order, repeats
+
+
+def episodes_of(path):
+    """header, [(level name, {tick: (row index, first row at that tick)}, repeated rows)].
+
+    An episode is a stretch in which the simulation tick does not go back: one level from
+    its start to the next level start (or to a restart after the player's death).  The
+    level name of an episode is the one its last row carries (the name changes a few
+    frames into the load)."""
+    rows = [line.rstrip('\n').split('\t') for line in open(path)]
+    header, rows = rows[0], rows[1:]
+    sim, name = header.index('sim'), header.index('level')
+    episodes, current, last, repeats, label = [], {}, 0, 0, ''
+    for index, row in enumerate(rows):
+        if len(row) != len(header):
+            continue
+        tick = int(row[sim])
+        if tick < last:
+            episodes.append((label, current, repeats))
+            current, repeats = {}, 0
+        last, label = tick, row[name]
+        if tick in current:
+            repeats += 1
+        else:
+            current[tick] = (index, row)
+    episodes.append((label, current, repeats))
+    return header, episodes
+
+
+def compare_rows(header, rig_rows, nat_rows, ticks):
+    first = {}
+    for tick in ticks:
+        a, b = rig_rows[tick][1], nat_rows[tick][1]
+        for column in range(1, len(header)):
+            if a[column] != b[column] and header[column] not in first:
+                first[header[column]] = tick
+    same = [n for n in header[1:] if n not in first]
+    print('  ticks compared: %d (%d..%d); columns: %d' % (len(ticks), ticks[0], ticks[-1], len(header) - 1))
+    print('  identical at every tick: %s' % (', '.join(same) or 'none'))
+    failed = 0
+    for name, tick in sorted(first.items(), key=lambda kv: kv[1]):
+        column = header.index(name)
+        differing = [t for t in ticks if rig_rows[t][1][column] != nat_rows[t][1][column]]
+        expected = name in TIMING_COLUMNS
+        failed += 0 if expected else 1
+        print('  %s %-10s first at tick %d: rig %s, translation %s; %d of %d ticks differ (last at %d)' % (
+            'different (timing)' if expected else 'DIFFERENT', name, tick, rig_rows[tick][1][column][:24],
+            nat_rows[tick][1][column][:24], len(differing), len(ticks), differing[-1]))
+    return failed
+
+
+def boot_compare(args):
+    head_a, rig = episodes_of(os.path.join(OUT, 'boot-rig.tsv'))
+    head_b, nat = episodes_of(os.path.join(OUT, 'boot-native.tsv'))
+    if head_a[1:] != head_b[1:]:
+        raise SystemExit('the two logs have different columns')
+    failed = 0
+    print('episodes (a level from its start to the next start): rig %d, translation %d' % (len(rig), len(nat)))
+    for number, ((name_a, rows_a, again_a), (name_b, rows_b, again_b)) in enumerate(zip(rig, nat)):
+        if args.level and name_a != args.level:
+            continue
+        ticks = [t for t in sorted(rows_a) if t in rows_b and t >= args.from_tick]
+        print('episode %d, level %r (translation: %r): rig ticks %d..%d (%d rows repeat a tick), translation %d..%d (%d repeat)' % (
+            number, name_a, name_b, min(rows_a), max(rows_a), again_a, min(rows_b), max(rows_b), again_b))
+        if name_a != name_b or not ticks:
+            print('  NOT COMPARABLE')
+            failed += 1
+            continue
+        print('  first common tick %d is frame row %d on the rig and %d in the translation' % (ticks[0], rows_a[ticks[0]][0], rows_b[ticks[0]][0]))
+        failed += compare_rows(head_a, rows_a, rows_b, ticks)
+    return 1 if failed else 0
 
 
 def main():
@@ -232,8 +453,30 @@ def main():
     sub.add_parser('compare')
     p = sub.add_parser('memdiff')
     p.add_argument('--top', type=int, default=25)
+    p.add_argument('--a', help='memory image of the rig (default: rig-end.bin of `run`)')
+    p.add_argument('--b', help='memory image of the translation')
+    p.add_argument('--base', help='the image both started from')
+    p.add_argument('--words', help='lo:hi (hex): list the differing words of this range')
+    for name in ('boot-rig', 'boot-native'):
+        p = sub.add_parser(name)
+        p.add_argument('--script', default=BOOT_SCRIPT)
+        p.add_argument('--more', type=int, default=600, help='frames to run on after the script ends')
+        p.add_argument('--frames', type=int, default=6000, help='the rig gives up after this many frames')
+        p.add_argument('--emulator-timing', action='store_true')
+        p.add_argument('--replay', action='store_true',
+                       help='boot-native: give the game the controller bytes the rig logged, tick for tick')
+        p.add_argument('--dump-tick', type=int, action='append', default=[],
+                       help='write main memory when the simulation tick reaches this; repeatable')
+        p.add_argument('--record-chunks', action='store_true',
+                       help='log the player record in 256-byte pieces as well, to locate a difference in it')
+    p = sub.add_parser('boot-compare')
+    p.add_argument('--level', help='only the episodes of this level')
+    p.add_argument('--from-tick', type=int, default=1)
     args = parser.parse_args()
-    return {'snapshot': snapshot, 'run': run, 'compare': compare, 'memdiff': memdiff}[args.command](args) or 0
+    global RECORD_CHUNKS
+    RECORD_CHUNKS = getattr(args, 'record_chunks', False)
+    return {'snapshot': snapshot, 'run': run, 'compare': compare, 'memdiff': memdiff, 'boot-rig': boot_rig,
+            'boot-native': boot_native, 'boot-compare': boot_compare}[args.command](args) or 0
 
 
 if __name__ == '__main__':

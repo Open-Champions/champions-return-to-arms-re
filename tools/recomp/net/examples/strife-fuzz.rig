@@ -1,0 +1,11 @@
+# Seeded random input on both machines in the level the images were taken in (strife):
+# walking, the fight buttons, potions, the use button.  The same file drives a native
+# instance (RTA_NET_SCRIPT) and an rta_rig runner (--script); machine B draws a different
+# stream from the same seed.
+#
+#   python3 tools/recomp/net/netpair.py run local/recomp-out/net/nn1 --img local/recomp-out/net/img1 \
+#       --a native --b native --script tools/recomp/net/examples/strife-fuzz.rig \
+#       --bus delay=3,jitter=3,loss=50,seed=1
+wait 30
+fuzz 7 3000 move,fight,potion,use
+wait 120

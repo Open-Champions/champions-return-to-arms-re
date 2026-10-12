@@ -19,6 +19,7 @@
 // TakeFrame(), and Poll() has to be called often. Everything runs on the caller's thread.
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -31,6 +32,16 @@
 
 namespace Rta
 {
+	// Which arithmetic a copy's machine computes with: Play!'s own (results rounded toward
+	// zero, as the console) or what a WebAssembly build computes (rounded to nearest).
+	enum : uint8_t
+	{
+		ARITH_NATIVE = 0,
+		ARITH_BROWSER = 1,
+		ARITH_CAN_NATIVE = 1,  // bits of NetConfig::arithCan
+		ARITH_CAN_BROWSER = 2,
+	};
+
 	struct NetConfig
 	{
 		// The lobby server, as the host reaches it (IPv4, host byte order).
@@ -74,6 +85,16 @@ namespace Rta
 		// For tests: hand such a datagram on to the machine as well, as a copy that does
 		// not know the mark would.
 		bool passPatchSetOn = false;
+		// The arithmetic this copy's machine can compute with, told with the patch set
+		// (see "Which arithmetic the other players compute with" in RtaNet.cpp and
+		// docs/issues/mixed-arithmetic.md): a browser copy can only do the browser's, a
+		// desktop copy Play!'s own and - when its core has the switch - the browser's too.
+		// A copy that says nothing is taken for ARITH_CAN_NATIVE.
+#ifdef __EMSCRIPTEN__
+		uint8_t arithCan = ARITH_CAN_BROWSER;
+#else
+		uint8_t arithCan = ARITH_CAN_NATIVE;
+#endif
 		// For tests: connections to the server's gateway port range go to this port of
 		// the server's host instead (a closed one stands for a server that is not there).
 		// 0: the port the machine asked for.
@@ -101,6 +122,9 @@ namespace Rta
 		bool setKnown = false;   // it has said which patch set it has
 		uint32_t patchSet = 0;
 		uint16_t patchWords = 0;
+		bool arithKnown = false; // it has said which arithmetic it can do and does (else: Play!'s own only)
+		uint8_t arithCan = ARITH_CAN_NATIVE;
+		uint8_t arithNow = ARITH_NATIVE;
 		int64_t heardFor = 0;    // milliseconds since its first datagram
 		int64_t silentFor = 0;   // milliseconds since its last
 	};
@@ -111,6 +135,11 @@ namespace Rta
 		CNet(const NetConfig&);
 		// the other players heard from (machine thread, like Poll)
 		std::vector<NetPeer> Peers() const;
+		// The arithmetic this copy's machine computes with now (ARITH_NATIVE at the start,
+		// ARITH_BROWSER always in a browser copy); the other players are told again when it
+		// changes. Any thread.
+		void SetArithmetic(uint8_t now);
+		uint8_t Arithmetic() const;
 		~CNet();
 		CNet(const CNet&) = delete;
 		CNet& operator=(const CNet&) = delete;
@@ -212,7 +241,18 @@ namespace Rta
 			bool setKnown = false;
 			uint32_t patchSet = 0;
 			uint16_t patchWords = 0;
+			int arithTold = 0;      // times our arithmetic was sent to it since it last changed
+			uint8_t arithToldAs = 0xFF;
+			int64_t arithSince = 0;
+			bool arithKnown = false;
+			uint8_t arithCan = ARITH_CAN_NATIVE;
+			uint8_t arithNow = ARITH_NATIVE;
 		};
 		std::map<uint64_t, Peer> m_peers; // by address and port, as the host sees them
+#ifdef __EMSCRIPTEN__
+		std::atomic<uint8_t> m_arithNow{ARITH_BROWSER};
+#else
+		std::atomic<uint8_t> m_arithNow{ARITH_NATIVE};
+#endif
 	};
 }

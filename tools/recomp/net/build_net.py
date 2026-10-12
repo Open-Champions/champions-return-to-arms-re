@@ -12,8 +12,9 @@ local/recomp-out/gen and tools/recomp/hle.txt are not touched):
 2. With --pnach: the patch words of the named sections are written into a COPY of the
    executable before translation.  Translated code is fixed at build time, so a code patch
    has to be in the executable the translator reads; the same words are also written to
-   <gen>/patch-words.txt, which the shim applies to the memory image at start
-   (RTA_NET_PATCH=<file>) for the words that are data and so that memory reads the same.
+   <gen>/patch-words.txt, which the shim applies to memory at start (RTA_NET_PATCH=<file>)
+   for the words that are data and so that memory reads the same.  The function table is
+   given extra rows at the targets of the patches' jumps (split_function_table).
 3. tools/recomp/recomp.py --elf <copy> --hle <list> --out local/recomp-out/gen-net[-NAME].
 4. Compile with the flags of tools/recomp/build.py and link with netshim.cpp and the
    runtime.  Objects are cached by the text of their source, so a second variant compiles
@@ -99,10 +100,70 @@ def patch_elf(source, target, words):
         handle.write(data)
 
 
+def split_function_table(source, target, words):
+    """A patch that jumps to a routine written into the body of an unused function, and
+    from there back into the middle of the patched function, makes the translator treat
+    the two functions as entangled - and it merges every function that lies between them
+    into one C++ function (the suggested fix set: 1,921 functions, 13.6 MB of C++ in one
+    body, which the compiler does not get through).  Giving each target of such a jump a
+    row of its own in the function table makes it the start of a unit instead: the jump
+    is then an ordinary tail call.  Returns the addresses the table was split at."""
+    import bisect
+    rows = []
+    with open(source) as handle:
+        for line in handle:
+            parts = line.rstrip('\n').split('\t')
+            if len(parts) < 3 or line.startswith('#'):
+                continue
+            rows.append((int(parts[0], 16), parts[1], [tuple(int(x, 16) for x in item.split('-')) for item in parts[2].split(',')]))
+    ranges = sorted((lo, hi) for _, _, items in rows for lo, hi in items)
+    starts = [r[0] for r in ranges]
+
+    def range_of(address):
+        index = bisect.bisect_right(starts, address) - 1
+        if index >= 0 and ranges[index][0] <= address <= ranges[index][1]:
+            return ranges[index]
+        return None
+
+    def targets(address, word):
+        op = word >> 26
+        if op == 2:                                                 # j
+            return [(address & 0xF0000000) | ((word & 0x03FFFFFF) << 2)]
+        if op in (4, 5, 6, 7, 0x14, 0x15, 0x16, 0x17) or (op == 1 and ((word >> 16) & 31) in (0, 1, 2, 3, 0x10, 0x11, 0x12, 0x13)):
+            offset = word & 0xFFFF
+            return [address + 4 + (offset - 0x10000 if offset & 0x8000 else offset) * 4]
+        return []
+
+    splits = set()
+    for address, word in words:
+        for goal in targets(address, word):
+            here, there = range_of(address), range_of(goal)
+            if there is not None and there is not here and goal != there[0]:
+                splits.add(goal)
+    out = []
+    for owner, name, items in rows:
+        pieces = []
+        for lo, hi in items:
+            cursor = lo
+            for cut in sorted(s for s in splits if lo < s <= hi):
+                pieces.append((cursor, cut - 1))
+                cursor = cut
+            pieces.append((cursor, hi))
+        kept = [piece for piece in pieces if piece[0] not in splits]
+        if kept:
+            out.append((owner, name, kept))
+        out += [(piece[0], 'PATCH_%08x' % piece[0], [piece]) for piece in pieces if piece[0] in splits]
+    with open(target, 'w') as handle:
+        for owner, name, items in sorted(out):
+            handle.write('%08x\t%s\t%s\n' % (owner, name, ','.join('%08x-%08x' % item for item in items)))
+    return sorted(splits)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--name', help='variant: gen-net-NAME, rta_native_net-NAME')
     parser.add_argument('--elf', default=os.path.join(ROOT, 'SLUS_209.73'))
+    parser.add_argument('--funcs', default=os.path.join(ROOT, 'ghidra_funcs.tsv'))
     parser.add_argument('--pnach', help='PCSX2 patch file')
     parser.add_argument('--sections', help='file of section names, one per line (# comments)')
     parser.add_argument('--section', action='append', default=[], help='one section name; repeatable')
@@ -149,26 +210,33 @@ def main():
         print('patched: %d words of %d sections into %s' % (len(words), len(sections), elf))
     elif os.path.exists(words_path):
         os.remove(words_path)
+    table = []
+    if words:
+        funcs = os.path.join(gen, 'funcs-split.tsv')
+        splits = split_function_table(args.funcs, funcs, words)
+        table = ['--funcs', funcs]
+        print('function table split at the targets of patch jumps: %s' % (' '.join('%x' % a for a in splits) or 'nowhere'))
 
     # 3. translate
     done = subprocess.run([sys.executable, os.path.join(RECOMP, 'recomp.py'), '--elf', elf, '--hle', hle_path,
-                           '--out', gen], capture_output=True, text=True)
+                           '--out', gen] + table, capture_output=True, text=True)
     if done.returncode != 0:
         print(done.stdout[-3000:] + done.stderr[-3000:])
         return 1
     for line in done.stdout.splitlines():
-        if line.startswith(('warning', 'instructions emitted as rt_unimpl', 'entries', 'transfer targets')):
+        if line.startswith(('warning', 'instructions emitted as rt_unimpl', 'entries', 'transfer targets', 'entangled')):
             print('recomp: ' + line)
 
     # 4. compile
     codegen = ['-std=c++17', args.opt, '-fno-strict-aliasing', '-fwrapv', '-w', '-ffp-contract=off', '-frounding-math']
     codegen += ['-D' + d for d in args.define]
     includes = ['-I', RT, '-I', gen]
-    headers = sorted(os.path.join(RT, n) for n in os.listdir(RT) if n.endswith('.h'))
+    # generated code includes recomp.h, which includes fpu.h and mmi.h, and funcs.h;
+    # funcs.h is declarations only: it cannot change the code of a file that compiles
+    headers = [os.path.join(RT, n) for n in ('recomp.h', 'fpu.h', 'mmi.h')]
     header_digest = hashlib.sha1()
     for path in headers:
         header_digest.update(open(path, 'rb').read())
-    # funcs.h is declarations only: it cannot change the code of a file that compiles
     base_key = ' '.join(codegen) + header_digest.hexdigest()
 
     def key_of(source, extra=''):

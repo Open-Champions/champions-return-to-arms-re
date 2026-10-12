@@ -7,7 +7,9 @@ with the same changes to the emulator's core as the desktop application
 A player opens a page, picks the disc image from their own computer and plays: nothing is
 installed, the image is read where it is and never leaves the computer.
 
-**State: an experiment that runs.** Offline only. In Chrome 155 on an Apple M5 Pro it
+**State: an experiment that runs.** Offline, and **online with other browser players**
+through a small relay on the server (section "Online play"; two pages were put through a
+whole game start and stayed in step). In Chrome 155 on an Apple M5 Pro it
 holds 60 frames a second at the title and standing in the first level (resolution factor
 2, the Mac otherwise quiet); what was measured, what was checked and how, and what is
 missing is at the end, and the working notes with every figure are in
@@ -25,8 +27,11 @@ source, a patch against Play! and scripts.
 | `build.sh` | gets Play! at commit `83700b2c31e593bc94e845b4b31b797be84dda59` into `local/play-web-src` (its own copy), applies `../play-net/play-net.patch` and `play-web.patch`, copies `src/` in, builds with Emscripten, and puts the page together in `local/play-web-site` |
 | `play-web.patch` | the changes to Play! on top of `play-net.patch` (10 files): the video thread owning the canvas, the disc read in place by range requests, uniform blocks sent only when changed, counters, the build's link options |
 | `src/RtaWeb.cpp` | the front end in the emulator (takes the place of Play!'s `Source/ui_js/Main.cpp`): patches and display patches, the pad, sound into a ring, the video handler, counters and test aids |
+| `src/RtaWebNet.cpp`, `RtaWebNet.h` | online play: the sockets of the desktop application's network turned into messages for the relay, the Ethernet adaptor's hooks, the network setting on the memory card, and the "one-step online" driver's link to the page |
+| `src/RtaWebNetCore.cpp`, `RtaWebSock.h` | `../play-net/src/RtaNet.cpp` compiled for the browser without a change: its socket calls are given other names, which `RtaWebNet.cpp` carries out |
+| `relay/relay.py` | the relay: what stands in for the sockets a page does not have (Python 3, standard library only); `relay/check.py` tests one; `relay/README.md` says how to run it on a server |
 | `src/GlStateShadow.h` | GL state remembered on our side so that calls which change nothing are not made (see "Speed") |
-| `web/index.html`, `web/rta-web.js` | the page: disc picker with the wrong-disc refusal, keyboard and controller, sound start, memory card kept in the browser's storage, the speed line, test aids |
+| `web/index.html`, `web/rta-web.js` | the page: disc picker with the wrong-disc refusal, keyboard and controller, sound start, memory card kept in the browser's storage, the speed line, the *Online…* panel and the connection to the relay, test aids |
 | `web/rta-sound.js` | the AudioWorklet that plays the sound ring |
 | `serve.py` | a web server for this computer only (127.0.0.1) that sends the two headers the page needs; with `--disc`, `--report`, `--shots` a developer's test rig |
 
@@ -49,7 +54,8 @@ The page must be served with `Cross-Origin-Opener-Policy: same-origin` and
 a browser allows only to such pages), and over `https` or from `localhost`/`127.0.0.1`.
 `serve.py` does that for local use. Hosting it for others is a matter of putting
 `local/play-web-site` on a server that sends those two headers; no part of the game is in
-that folder (the patch file is ours).
+that folder (the patch file is ours). Online play needs two things more on that server
+(section "Online play").
 
 The first time, the page asks for the image with the browser's file dialog; browsers
 that can keep a handle to a picked file (the File System Access interface: Chrome, Edge)
@@ -69,6 +75,73 @@ nothing to bind: sticks with a 15 % dead zone, triggers pressed beyond 30 %, Opt
 Start, Create/Share and the touchpad button = Select. A browser shows a controller to a
 page only after a button has been pressed on it while the page is in front.
 
+## Online play
+
+Browser players play with browser players, through the same lobby server as everybody
+else. **A browser player and a player with the desktop application cannot share a game**
+(their machines round differently and fall out of step within seconds: see the notes);
+the lobby does not keep the two kinds apart, so say which kind you are hosting.
+
+**For a player** it is the desktop application's "one-step online" (`docs/play-online.md`,
+section 4) as buttons on the page - the same code, compiled in:
+
+- *Online…* → **Host a game**: the page presses its own way from wherever the game is
+  (power-on or the title screen) through *Internet Game*, the network setting, the
+  server's terms and the log-in, opens a game named with a **code of four letters** and
+  stops in its room. Tell your friends the code; press ✕ *Start Game* when they are there.
+- *Online…* → **Join a game** with the code: the same way in, then into that game's room.
+- **Just go to the lobby** stops at the game list.
+- The first time, the page asks for a **player name** (3 to 15 letters and digits). That
+  is all: the account is made by the page in the game's own account form, with a random
+  password that is kept in the browser's storage for the site (beside the memory card)
+  and is never shown. *Forget online login* removes it.
+- The first time on a server the game's **character screens** are yours (make one, or △
+  for a stored one); after that Host and Join take the character used last by themselves.
+- While the page is pressing, your keys and controller are not passed to the game; a strip
+  under the title says where it is, and why it stopped if it did.
+- The page keeps the screen awake while the game runs (a controller does not count as
+  activity for the computer's idle timer). When the computer sleeps or the screen is
+  switched off, a browser closes the page's connections and an online game is lost; the
+  page connects again by itself for the next attempt.
+
+**For whoever serves the page** two things are needed beside the page's files:
+
+1. **The relay** (`relay/relay.py`, `relay/README.md`). A page has no TCP or UDP, only
+   connections to a web server. The page opens one WebSocket connection to the relay;
+   the relay owns the real sockets: the two TCP connections to the lobby server (it will
+   connect to the configured lobby server's ports and to nothing else) and one UDP socket
+   per UDP port the console uses, so that the lobby server sees a browser player as an
+   ordinary player at the relay's address. Game traffic between two browser players is
+   handed from one session to the other inside the relay. A page served over `https`
+   may only open `wss://`: the relay sits behind the web server that has the certificate.
+2. **`online.json` beside `index.html`**: `{ "relay": "relay", "signin": "NAME.pnach" }`.
+   `relay` is the address of the relay's WebSocket, relative to the page or complete;
+   `signin` names a patch file beside the page that takes the game past its sign-in
+   step. That file is not in this repository (as for the desktop application: see
+   `docs/play-online.md`); a page without it shows the panel and says that it cannot go
+   online. Without `online.json` the page is the offline page and shows nothing of this.
+
+How it is put together: the console's own network stack talks to an emulated Ethernet
+adaptor; `RtaNet.cpp` (the desktop application's user-space network: address by DHCP,
+the lobby's name by DNS, TCP ended locally, one socket per UDP port) is compiled in
+unchanged and its dozen socket calls become messages (`RtaWebSock.h`). The machine's
+thread never returns to the browser, so the WebSocket belongs to the page's main thread
+and the two meet in a pair of queues; a datagram costs one hand-over to the main thread
+and one WebSocket message each way. `RtaOnline.cpp` is called at every vertical blank,
+as in the application.
+
+Trying it on one computer, with a lobby server running on the same computer:
+
+```
+tools/play-web/relay/relay.py --lobby <this computer's network address, not 127.0.0.1>
+tools/play-web/serve.py --port 8973 --disc "/path/to/image.iso"
+# two browser profiles, each:  http://127.0.0.1:8973/index.html?disc=/dev/disc.iso&relay=ws://127.0.0.1:8975/relay
+```
+
+(with the sign-in patch file and an `online.json` naming it put into `local/play-web-site`
+by hand: `build.sh` does not). `relay/check.py --selftest` tests a relay against a
+stand-in lobby; `relay/check.py wss://…` checks a running one without logging in anywhere.
+
 ## How it differs from the desktop application
 
 | | Desktop (`tools/play-net`) | Browser |
@@ -77,9 +150,11 @@ page only after a button has been pressed on it while the page is in front.
 | graphics | OpenGL (on Metal) | WebGL 2 from a worker that owns the canvas (OffscreenCanvas) |
 | code overwritten by the game | noticed through page protection | not noticed (no page protection in WebAssembly); patches are written before the code first runs and checked every frame |
 | floating-point rounding | toward zero, as the console | the browser's (to nearest): results can differ in the last bit — this matters for playing online against a desktop player (`docs/issues/float-divergence.md`) |
-| network | the game's own stack on real sockets | none yet (see the notes: what a relay would have to do) |
+| network | the game's own stack on real sockets | the same stack; the sockets are a relay's, reached over one WebSocket connection |
+| online | with other desktop players (and consoles) | with other browser players only |
 | pacing | by the display's refresh | by a timer (60.00 a second) |
-| textures replaced, dumps, one-step online, control socket | yes | no |
+| one-step online, games by code | yes (menu *Online*) | yes (button *Online…*): the same code |
+| textures replaced, dumps, control socket | yes | no |
 
 ## Speed, and what was done for it
 
@@ -126,11 +201,23 @@ Not checked, because it needs a person: a controller (a browser shows one to a p
 after a button press), the file dialog itself and "Continue with …", how the sound
 sounds, full screen, a game saved by playing and loaded again.
 
-Not there: online play — browsers have no raw sockets, a relay on the server is needed
-(designed in the notes, not built); playing against desktop players even with a relay —
+Online, checked by test on one Mac (two Chrome pages with their own profiles, the relay
+and a lobby server on the same Mac; the notes have the figures): a first start that made
+its account and reached the lobby by itself; a game hosted by code and joined by code;
+both pages in the first level after *Start Game*; 1,387 consecutive lockstep frames for
+which both pages held the game's own sync hash, all equal, with both characters walking;
+a second start that needed no press at all (saved login, remembered character). The
+relay's own test (`relay/check.py --selftest`: destinations it must refuse, limits,
+datagrams from session to session) passes. Not checked: more than two players, a game
+beyond the first level, two players in different places (everything was on one computer),
+the panel used by a hand (a test went through it by clicks sent to its buttons), WebTransport (not built: the game's datagrams travel
+on the WebSocket connection, in order, so a lost packet delays the ones behind it).
+
+Not there: playing against desktop players —
 measured: the browser build rounds floating-point results to nearest where the desktop
 build and the console round toward zero, so a mixed game would be out of sync within
-seconds (the notes give the measurement and three ways out); anything beyond the first
+seconds (the notes give the measurement and three ways out); a session that survives a
+lost connection to the relay; anything beyond the first
 level; Safari and Firefox (untested); replaced textures, dumps and the control socket of
 the desktop application.
 
@@ -138,8 +225,10 @@ the desktop application.
 
 `serve.py --disc IMAGE --report FILE --shots DIR` and the page's address parameters
 (`disc=/dev/disc.iso`, `auto=hub`, `report=1`, `limit=0`, `gl=main`, `res=N`, `sound=0`,
-`shot=NAME.png`, `card=0`, `canvas=LINES`, `auto=trace`, `title=…`) are described in `docs/issues/browser-build.md`, "How to boot
+`shot=NAME.png`, `card=0`, `canvas=LINES`, `auto=trace`, `title=…`, `relay=ws://127.0.0.1:PORT/relay`) are described in `docs/issues/browser-build.md`, "How to boot
 it and read the numbers", with what every figure means. In the page's console `rta` has
 the same things for use by hand (`await rta.measure(10)`, `await rta.glProfile(5)`,
-`await rta.burst(8)`, `rta.peek(address)`, `await rta.tap("cross", 8, 60)` …).
+`await rta.burst(8)`, `rta.peek(address)`, `await rta.tap("cross", 8, 60)` …; for online
+play `rta.online.state()`, `rta.online.start(1)`, `rta.online.start(2, "CODE")`,
+`rta.online.name("…")`, `await rta.online.pings(50)`).
 Pictures and dumps are game output: keep them under `local/`.

@@ -1,7 +1,9 @@
 # Browser build (Play! compiled to WebAssembly) — working notes
 
-Status: a first version runs (2026-10-12): built, measured, usable offline; not yet tried
-by a person. The summary is the state; the rest is the record.
+Status: a first version runs (2026-10-12): built, measured, usable offline, and online
+between browser players through a relay (built and tried on one Mac: two pages in one
+game, in step; the relay is not on a public server yet). Not yet tried by a person. The
+summary is the state; the rest is the record.
 
 Related pages: [STATE-OF-PLAY.md](../STATE-OF-PLAY.md) sets this build beside the other
 routes to a game. The desktop application these notes compare with is
@@ -72,9 +74,12 @@ title and first level reached and looked at.
 **Not checked by a person**: a controller (needs a button pressed on it), the file
 dialog and the "continue with the remembered image" button, how the sound sounds, full
 screen.
-**Not there**: online play (design below), playing with desktop players (measured: the
-arithmetic differs in the last bit, below), pacing by the display's refresh, anything
-beyond the first level, other browsers than Chrome.
+**Online** (section "Online play from a browser: built"): a relay and the page's side of
+it; one-step online and games by code as in the desktop application; two Chrome pages
+hosted and joined by code and ran 1,387 lockstep frames with equal sync hashes.
+**Not there**: playing with desktop players (measured: the arithmetic differs in the last
+bit, below), a session that survives a lost connection to the relay, pacing by the
+display's refresh, anything beyond the first level, other browsers than Chrome.
 
 ## Where things are
 
@@ -85,6 +90,10 @@ beyond the first level, other browsers than Chrome.
 | every Play! file `play-web.patch` touches, as it is after `play-net.patch` | `local/play-web-orig` (`local/play-web-out/mkpatch.sh` writes the patch from the two) |
 | build directories | `local/play-web-build`; `local/play-web-build-prof` (`-DPROFILE=ON`, for `rta.zones()`); `local/play-web-build-simd` (the SIMD trial) |
 | the page as served | `local/play-web-site` (and `/prof`, `/simd` below it) |
+| the relay, its test, how to run it | `tools/play-web/relay/` (`relay.py`, `check.py`, `README.md`) |
+| the page's side of online play | `tools/play-web/src/RtaWebNet.cpp`, `RtaWebNet.h`, `RtaWebNetCore.cpp`, `RtaWebSock.h`; the panel and the connection in `web/rta-web.js`, `web/index.html` |
+| online test helpers (not in the repository) | `local/play-web-out`: `cdp.py` (drives a Chrome of the test's own through its DevTools port), `online-pair.py` (two pages: host by code, join by code, start), `pair-check.py` and `sample.js` (the two pages' sync hashes compared frame by frame), `makechar.js` (presses through the character screens), `online-rebuild.sh`; the test site `local/play-web-online-site`; `relay.log` |
+| putting it on a server (not in the repository: it knows the server and the private path) | `local/friend-download/web-setup.sh` (once: certificate, relay service, site), `web-update.sh` (page and relay up, checks) |
 | test helpers and their output (not in the repository) | `local/play-web-out`: `chrome-run.py` (a series of page runs in one Chrome tab, in a Chrome of its own, or in the pane), `cpu.py` (thread CPU time of the renderer), `native-trace.py` and `compare-trace.py` (the position trace against the desktop build), `report*.jsonl`, `*-run*.txt` |
 | pictures of the page's canvas (game output) | `local/play-out/web-hub.png`, `web-hub-4x.png` |
 
@@ -123,6 +132,16 @@ Play!'s React application under `js/play_browser`, which needs `npm install`).
    test of the player's disc path; refusals; keyboard; card persistence.
 9. Position trace against the desktop build: rounding difference seen in the bits.
    Online design written.
+10. Online play built from that design (another session; the first one was stopped after
+    the relay and its test were written): the socket calls of `RtaNet.cpp` as relay
+    messages, the adaptor's hooks, the network setting on the card, `RtaOnline.cpp`
+    compiled in, the panel. Compiled and linked at the first attempt; the first page
+    reached the lobby at the first attempt; two pages in one game in step.
+11. Found while testing: the test Mac's lid was closed and it went into "Clamshell
+    Sleep" every minute or two; at each of those Chrome closed every connection it had.
+    A screen wake lock added to the page (it does not help against a closed lid).
+12. The scripts for the server written and tried there without changing anything
+    (`web-setup.sh --check`); the setup itself is the owner's to run.
 
 ## Left to do
 
@@ -146,7 +165,13 @@ Play!'s React application under `js/play_browser`, which needs `npm install`).
 - A build from an empty directory by `build.sh` (clone, both patches, full compile) was
   not run; the script was run on the existing tree, and the patches were checked to
   reproduce it.
-- Online: the relay and the network module (design below).
+- Online: the relay on the public server (prepared, see "Putting it on a server"); then
+  two players in different places; more than two players; a level beyond the first.
+- A session that survives a lost connection to the relay (the relay would keep a
+  session's sockets for some seconds and both sides would send again what the other has
+  not confirmed); WebTransport for the game's datagrams.
+- Keeping browser and desktop players apart in the lobby (or making them compatible:
+  `docs/issues/mixed-arithmetic.md`).
 
 ## How Play!'s browser port works (read in the source)
 
@@ -195,6 +220,7 @@ Address parameters of the page (`tools/play-web/web/rta-web.js`, top):
 | `limit=0` | DEV: the machine runs as fast as it can |
 | `auto=title` or `auto=hub` | DEV: scripted presses to the title screen, or on into the first level (the button sequence of `local/play-out/tohub.py`), a measurement at each (title 10 s; level: the first 10 s, then 15 s), eight consecutive pictures compared, in the level also 10 s with the limiter off |
 | `report=1` | DEV: every figure is POSTed to `/report` (appended to the `--report` file, one JSON object per line: `kind` is `start`, `second`, `title`, `title-burst`, `hub-arrival` (the first 10 s in the level), `hub` (the 15 s after), `hub-burst`, `shot`, `hub-unlimited`, `done` or `failed`) |
+| `relay=ws://127.0.0.1:PORT/relay` | DEV: go online through a relay on this computer (only loop-back addresses are taken); otherwise the relay is the one `online.json` beside the page names |
 | `shot=NAME.png` | DEV: with `auto=hub`, one picture of the canvas in the level is POSTed to `/shot/NAME.png` (written to the `--shots` directory; game output, keep it under `local/`) |
 
 What the figures mean (`rates()` in `rta-web.js`, counters from `rtaInfo` in `RtaWeb.cpp`):
@@ -357,7 +383,160 @@ thread at 6 – 7 ms of a 16.7 ms frame none of it was done.
 | the remembered image (File System Access handle) and the file dialog | — | **unchecked** (a dialog only a person can answer) |
 | one page, one tab | `chrome-run.py` sends one tab from test to test and the page closes itself; or a Chrome of its own with its own profile, ended by the script | no window was left behind by those; the very first test's tab (opened before that existed) had to be left to the user |
 
-## Online play from a browser: design (nothing built, nothing deployed)
+## Online play from a browser: built (2026-10-12)
+
+Built from the design in the next section; where it differs is said here.
+
+### What there is
+
+- **The relay** (`tools/play-web/relay/relay.py`, Python 3, standard library only, about
+  550 lines; `relay/README.md` has the options and limits). One WebSocket connection per
+  page. Per session: TCP connections to the configured lobby server's configured ports
+  and to nothing else; one UDP socket per socket of the console's network, used for the
+  lobby server's discovery port and for datagrams to **other sessions of the same
+  relay**, which are handed over inside the program. Different from the design: a
+  datagram for any other address is refused and nothing arriving from outside on those
+  sockets is passed to a page - so a desktop player cannot be reached at all, which is
+  what is wanted as long as the two kinds fall out of step. Limits: sessions (64),
+  sessions per address (4), message size, message and byte rate, a silent page (60 s),
+  an idle session (15 min). WebSocket only: **WebTransport was not built**.
+- **The sockets** (`src/RtaWebNet.cpp`, `RtaWebSock.h`, `RtaWebNetCore.cpp`):
+  `tools/play-net/src/RtaNet.cpp` is compiled without a change; its `socket`, `bind`,
+  `connect`, `send`, `recv`, `sendto`, `recvfrom`, `close`, `shutdown`, `poll`,
+  `getsockopt`, `setsockopt`, `getsockname`, `fcntl` are renamed by the preprocessor and
+  carried out as messages (a connect answers "in progress" and `poll` says when the relay
+  has it; a UDP socket is a socket at the relay). The machine's thread never returns to
+  the browser's event loop, so the WebSocket belongs to the page's main thread: the
+  machine's thread queues a message and wakes the main thread (`emscripten_proxy_async`,
+  one wake-up for whatever is queued), the main thread sends; what arrives is put into
+  per-socket queues that the machine's thread reads at its next poll (about every
+  millisecond of the machine's time, as on the desktop).
+- **The adaptor and the card**: the Ethernet chip's two hooks as in `Rta.cpp`; the
+  network is made when the relay has said where the lobby server is (its first message
+  names the lobby server's address and its own). The network setting the game looks for
+  on the memory card is written at start (`WriteNetcnf`, copied from `Rta.cpp`).
+- **One-step online and games by code**: `tools/play-net/src/RtaOnline.cpp` compiled in
+  without a change and called at every vertical blank; while it drives, the game sees
+  its buttons only. The saved login and the remembered character are files beside the
+  memory card, so they are kept in the browser's storage with it. The page
+  (`web/rta-web.js`): the *Online…* panel (Host a game, Join a game with a code, Just go
+  to the lobby, the name asked once, Stop, Forget online login), a strip that shows the
+  driver's note, the connection to the relay with a ping every 15 s, a warning when
+  another player's patch set differs (the figure is made as the desktop application
+  makes it and exchanged the same way).
+- **What a page needs to offer it**: `online.json` beside the page (the relay's address,
+  the name of the sign-in patch file) and that patch file (not in the repository). The
+  sign-in patch's words are not part of the patch-set figure, as on the desktop.
+- **The build**: `build.sh` copies `RtaNet.cpp/.h` and `RtaOnline.cpp/.h` from
+  `tools/play-net/src` into the Play! tree beside our sources; `play-web.patch` names
+  three more source files in `Source/ui_js/CMakeLists.txt` (its only change). The two
+  desktop sources are taken as they are at the time of the build: whatever is changed in
+  them has to compile for the browser as well (`__EMSCRIPTEN__` is defined there).
+
+### Tried on one Mac
+
+The lobby server on the Mac; the relay on the same Mac (`--lobby` the Mac's network
+address, listening on 127.0.0.1:8975); `serve.py --disc`; two Google Chromes with their
+own profiles and DevTools ports, windows side by side, pages titled "AGENT TEST - online
+A / B", driven by `local/play-web-out/online-pair.py`; player names made by the test.
+Nothing was typed into the panel by a person: the test called the same functions the
+buttons call (`rta.online.start`, `rta.online.name`), and in one run sent clicks to the
+buttons themselves.
+
+| What | Result |
+|---|---|
+| first start of a page that has no login: *Just go to the lobby*, name given when asked | account made in the game's own form, lobby's game list reached about 25 s after the start (load about 100) |
+| *Host a game* from the lobby | code made, the game's character screens came up and were the player's (first time on the server): the test pressed through them; then the room, with the code in the strip |
+| a second page, no login: *Join a game* with that code from power-on | account, lobby, the game found in the list and joined, character screens (the test pressed through them), the room |
+| the host's ✕ *Start Game* | both pages in the first level, two players, about 14 s later |
+| in step? first run (load 130 – 155, both characters made to walk) | 974 consecutive lockstep frames (497 – 1470) for which both pages still held their own sync hash: 974 equal, 0 different, 656 distinct values; each page had also received the other's hashes for about 490 of its frames: all equal to its own; seed, positions and hit points the same raw bits when both were read at the same frame; the game's checksum-failure flag 0 and no player out of sync or dropped, on both |
+| the same from two fresh page loads, **no press at all** (saved login, remembered character), load 41 | host in its room 39 s after *Host a game* at power-on; joiner in the room 43 s after *Join*; first level 14 s after *Start Game*; 1,387 consecutive frames (642 – 2028), all hashes equal, 1,122 distinct values; each page held the other's hashes for about 700 frames, all equal; flags as above |
+| the same once more with the build made after `RtaNet.cpp` learnt to tell the other players which arithmetic a copy computes with (load 52) | host in its room after 38 s, joiner after 43 s, first level 14 s after *Start Game*; 1,451 consecutive frames (650 – 2100), all hashes equal, 1,190 distinct values; each page's log: "this copy computes with browser arithmetic" told, and the same heard from the other |
+| the panel itself, on a page with no login, by clicks sent to its buttons and text put into its box: *Just go to the lobby* | the name box opened by itself with the focus in it; "x" refused with the reason ("at least 3 characters"); a good name taken, the box closed, the buttons greyed and *Stop going online* shown; the strip followed every stage; lobby 31 s after the click at power-on (load about 150); *Forget online login (name)* removed the saved login |
+| the relay's own test (`check.py --selftest`, 18 checks) | passes on the Mac and on the project's server inside the service's sandbox |
+| the files as laid out for a server (the build in a directory named by its content, the rest beside the page) | boots and connects, served by `serve.py` from that directory |
+
+"In step" was read from the game itself: each machine keeps a ring of its own per-frame
+sync hash (`g_peers[local] + 0x18ac`, 256 entries of frame, counter, hash; the hash is
+made of the shared seed and every player's position: `docs/netcode.md`), and the ring of
+each other player's hashes as received. `pair-check.py` reads both pages' rings every
+second and a half and compares them by frame number.
+
+Frame rates while two pages ran on the one Mac: 46 – 61 a second at load 41; 15 – 28
+while both were still translating the level's code at load 130 – 155.
+
+### The relay path, measured
+
+| What | Where | Figure |
+|---|---|---|
+| one message to the relay and its answer (`check.py`) | the Mac, load 105 | median 0.27 ms, 95th 0.41 ms |
+| a datagram from one session to another and one back (`check.py`) | the Mac, load 105 | median 0.33 ms, 95th 0.42 ms |
+| the same two | the project's server (load 0.1), inside the service's sandbox | 0.51 ms / 0.34 ms median |
+| a message from a page to the relay and its answer, timed in the page while the game ran (so with the main thread's own delay) | the Mac, two pages in a game, load 130 – 135 | median 2.3 ms, 95th 13 – 16 ms, worst 17 – 19 ms (100 each from both pages) |
+| the game's own figure for the other player's lead (newest input frame minus simulation frame) | the two pages | 9 and 7 frames at load 41; 13 and 9 at load 130 |
+
+The relay and the page add about a millisecond to a datagram on a quiet computer. What a
+browser player really pays is the **detour**: every datagram goes player → server →
+player instead of player → player. From the test Mac a TCP connection to the project's
+server takes 58 ms (median of 9): two players both that far from it would see each other
+at about 58 ms one way, whatever the distance between them. Not measured with two real
+players.
+
+### What a lost connection does
+
+When the computer sleeps or its screen is switched off, Chrome closes every connection a
+page has. Seen on the test Mac three times within four minutes: its lid was closed, the
+power log (`pmset -g log`) says "Entering DarkWake state due to 'Clamshell Sleep'" at the
+very seconds at which both pages' connections to the relay (and the test's own DevTools
+connections) ended. The relay closes a session's sockets with it: the lobby connection
+is gone and the game shows its own error; the page connects again by itself as soon as
+the game uses its network (seen: 6 – 9 s later). An online game does not survive it. The
+page now asks the browser to keep the screen on while the game runs (a controller does
+not count as activity); against a closed lid nothing helps.
+
+### Putting it on a server: prepared, not done
+
+Two local scripts (they hold nothing private themselves and take the server and the
+private path from the user's own files; not in the repository):
+
+- `web-setup.sh`, once: installs certbot (apt), opens 443/tcp in the firewall, registers
+  with Let's Encrypt and gets a certificate for a host name that needs no DNS of ours,
+  writes an nginx site of its own (port 80 only for that name's certificate check; port
+  443 for the page under the private path with the cross-origin isolation headers,
+  gzip, a long cache life for the build's directory, the relay's WebSocket handed on,
+  404 for everything else, uploads over 64 KiB refused) and the relay as a systemd
+  service (a dynamic user, a read-only system, the network limited to the server's own
+  addresses). It does not touch the lobby server, the existing download, or anything else
+  on that host. **It was not run**: opening a firewall port and registering with a
+  certificate authority are the server owner's own to do.
+- `web-update.sh`: lays the files out, uploads them beside the place and swaps them in,
+  replaces the relay when it has changed, adds a link to the existing download page, and
+  checks what a browser gets (page, headers, the build's files, 404s, an upload being
+  refused, the relay through `check.py` without logging in, the existing download as
+  before).
+
+Tried on the server without changing anything (`web-setup.sh --check`: a directory in
+`/run`, removed again): nginx accepts the generated site file; the relay's self-test
+passes 18 of 18 inside the service's sandbox.
+
+### Not tried, not built
+
+- The relay on a public server; two players in different places; more than two players;
+  a level beyond the first; a long session.
+- WebTransport: the game's datagrams travel on the WebSocket connection, in order: one
+  lost packet holds back those behind it for a retransmission time.
+- A session that survives a lost connection (above).
+- The panel used by a hand (below "Tried": it was gone through by clicks sent to its own
+  buttons); a name that is taken on the server (the driver asks again and the page shows
+  the box again: the path exists, it was not run); *Stop going online* pressed.
+- A page that is not in front: a browser runs it slowly, and in a lockstep game that
+  holds up everybody.
+- The lobby keeping browser and desktop players apart: a desktop player who joins a
+  browser player's room by hand will not get into the game (the relay does not carry
+  datagrams to or from outside).
+- The relay's limits under real load.
+
+## Online play from a browser: the design it was built from
 
 ### What the game's machine does on its network
 
@@ -429,7 +608,8 @@ number, a length, the bytes).
    the one-step online driver (`RtaOnline.cpp`, stand-alone C++) carry over as they are;
    the Ethernet chip's fixes are already in the build (`play-net.patch`, `Iop_Speed.cpp`).
 
-Nothing of this has been built or tried. The public server was never contacted.
+(Written before anything was built. What was built from it, and where it differs, is in
+the section before this one.)
 
 ### Can a browser player and a desktop player share a game? Measured: not as the builds are
 

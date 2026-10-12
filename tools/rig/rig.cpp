@@ -1913,6 +1913,8 @@ struct Options
 	std::string tickAddress = "0x13aee8";
 	int fpRound = -1; // host rounding mode forced on the machine thread; -1: Play!'s own (toward zero)
 	bool browserArith = false; // --arith browser: what the WebAssembly build computes (to nearest, denormals kept)
+	std::string recordInputPath; // --record-input: controller 1 as the machine was given it, frame by frame
+	std::string replayInputPath; // --replay-input: such a file played back, frame by frame
 	std::string predictAuditPath;
 	std::string predictTracePath;
 	std::vector<std::string> traceRangeSpecs;
@@ -1926,6 +1928,14 @@ public:
 	static inline std::atomic<bool> s_browserArith{false};
 	static inline std::atomic<bool> s_arithChosen{false};
 	uint64_t m_arithSeen = ~0ull;
+	std::vector<std::pair<uint64, PadState>> m_replay;
+	size_t m_replayNext = 0;
+	bool m_replayLoaded = false;
+	PadState m_replayState;
+	FILE* m_record = nullptr;
+	PadState m_recorded;
+	bool m_recordAny = false;
+	bool m_recordFailed = false;
 
 	CRig(CRigVM& vm, const Options& options)
 	    : m_vm(vm)
@@ -1987,6 +1997,75 @@ public:
 			if(fegetround() != wanted) fesetround(wanted);
 		}
 #endif
+	}
+
+	// ---- controller 1 recorded and played back by frame (--record-input, --replay-input) ----
+	// The file has one line per change: frame, buttons (hexadecimal, bit n = button n of
+	// Play!'s CControllerInfo), left x, left y, right x, right y (0..255, 128 at rest). A
+	// line holds from its frame until the next line's. Played back, it replaces whatever the
+	// script did to controller 1 in those frames, so the same file gives the same presses in
+	// the same vertical blanks on any machine that counts them from power-on (the browser
+	// build's test page takes the same stream: tools/arith/steps.py).
+
+	void LoadReplay()
+	{
+		FILE* file = fopen(m_options.replayInputPath.c_str(), "r");
+		if(!file)
+		{
+			printf("[error] cannot read %s\n", m_options.replayInputPath.c_str());
+			Finish(2);
+			return;
+		}
+		char line[256];
+		while(fgets(line, sizeof(line), file))
+		{
+			unsigned long long frame = 0;
+			unsigned int buttons = 0, axis[4] = {128, 128, 128, 128};
+			if(line[0] == '#' || sscanf(line, "%llu %x %u %u %u %u", &frame, &buttons, &axis[0], &axis[1], &axis[2], &axis[3]) != 6) continue;
+			PadState state;
+			state.buttons = buttons;
+			for(int k = 0; k < 4; k++) state.axis[k] = static_cast<uint8>(axis[k] > 255 ? 255 : axis[k]);
+			m_replay.push_back(std::make_pair(static_cast<uint64>(frame), state));
+		}
+		fclose(file);
+		printf("input played back from %s: %zu changes\n", m_options.replayInputPath.c_str(), m_replay.size());
+	}
+
+	void ReplayAndRecordInput()
+	{
+		if(!m_options.replayInputPath.empty())
+		{
+			if(!m_replayLoaded)
+			{
+				m_replayLoaded = true;
+				LoadReplay();
+			}
+			while(m_replayNext < m_replay.size() && m_replay[m_replayNext].first <= m_frame) m_replayState = m_replay[m_replayNext++].second;
+			m_pads[0] = m_replayState;
+		}
+		if(!m_options.recordInputPath.empty() && !m_recordFailed)
+		{
+			if(!m_record)
+			{
+				m_record = fopen(m_options.recordInputPath.c_str(), "w");
+				if(!m_record)
+				{
+					printf("[error] cannot write %s\n", m_options.recordInputPath.c_str());
+					m_recordFailed = true;
+					Finish(2);
+					return;
+				}
+				fprintf(m_record, "# frame buttons(hex) left-x left-y right-x right-y: controller 1, one line per change\n");
+			}
+			const PadState& now = m_pads[0];
+			if(!m_recordAny || now.buttons != m_recorded.buttons || memcmp(now.axis, m_recorded.axis, 4) != 0)
+			{
+				fprintf(m_record, "%" PRIu64 " %x %u %u %u %u\n", m_frame, now.buttons, now.axis[0], now.axis[1], now.axis[2], now.axis[3]);
+				fflush(m_record);
+				m_recorded = now;
+				m_recordAny = true;
+			}
+		}
 	}
 
 	// ---- set-up (main thread, machine paused) -------------------------------------
@@ -2199,6 +2278,7 @@ public:
 
 		FlushCollected();
 		StepScript();
+		ReplayAndRecordInput();
 		pad.Push(m_pads, ram);
 
 		if(m_log && m_logEnabled && (m_frame % m_options.logEvery) == 0) WriteLogRow();
@@ -4756,6 +4836,8 @@ static void Usage()
 	    "                         one by one, to <file>.raw\n"
 	    "  --fp-round nearest|up|down|zero   force a floating-point rounding mode on this machine's thread\n"
 	    "                         (Play! runs the EE with round-toward-zero); for float-mismatch experiments\n"
+	    "  --record-input <file>  controller 1 as the machine was given it, one line per change, by frame\n"
+	    "  --replay-input <file>  such a file played back by frame (replaces the script's presses)\n"
 	    "  --arith browser|native this machine's arithmetic: 'browser' is what the WebAssembly build of the\n"
 	    "                         core computes (results to nearest, denormals kept); 'native' is Play!'s own\n"
 	    "                         (toward zero, denormals as zero), the default. Script command: arith <which>\n"
@@ -4914,6 +4996,10 @@ static int Run(int argc, char** argv)
 			else
 				Die("--fp-round nearest|up|down|zero");
 		}
+		else if(arg == "--record-input")
+			options.recordInputPath = value();
+		else if(arg == "--replay-input")
+			options.replayInputPath = value();
 		else if(arg == "--arith")
 		{
 			std::string which = value();

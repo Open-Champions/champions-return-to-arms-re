@@ -18,3 +18,6 @@
 19b6e4   # gfx_vblankHandler: once per vertical blank - the shim's frame counter, the link exchange, the input script
 17421c   # pad_readPort: the 8-byte raw pad record is overwritten from the input script
 3226e4   # tasks_run: the call from net_frameLoop (return address 0x13aee8) is one lockstep tick - tick log, in-tick commands
+323dcc   # main(argc, argv): RTA_NET_ARG gives the game its boot argument (--net: the developer LAN start); the original runs
+3646c8   # sceSifMInitRpc (libmrpc): waits for the I/O processor's multi-thread RPC manager to answer; the shim answers, the original runs
+36c1a0   # lgAudEnumerate (USB headset library): a net game lists headsets until an error code comes back; see netshim.cpp

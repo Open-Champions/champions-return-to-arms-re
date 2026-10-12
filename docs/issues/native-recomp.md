@@ -2,54 +2,111 @@
 
 ## Status for other agents
 
-(Kept current by the runtime's author at every step. Last update: 2026-10-12, step 1 in
-progress.)
+(Kept current by the runtime's author at every step. Last update: 2026-10-12 10:50 local,
+**the tree builds**; steps 1 to 3 done as far as described under "Continuation", steps 4
+to 6 written up, not built.)
 
-**How far `rta_native` boots today.** From power-on: start-up, engine and display set-up,
-then stops at the first I/O-processor module load (the binary of 2026-10-11). From a
-resumed emulator image: runs the hub level. The I/O services that take it further (module
-loads, disc, controller, memory card) are being written right now; this paragraph changes
-when they work.
+**How far `rta_native` boots today.** From power-on, headless, by a script: module loads,
+disc reads, the memory-card check (a save directory is created on a blank card), logo
+and intro, front end, character creation, **the first level (the hub) with a
+controllable character**, a level change into a level with monsters (`valor`), a fight,
+the pause menu and its load screen, and back to the hub. Nothing the game asks for goes
+unanswered. Compared with the rig tick for tick from power-on: front end, hub, the fight
+level and the hub again agree in every simulation value, the whole object pool included
+(details and the exceptions: "Continuation", steps 2 and 3). From a resumed emulator
+image the 2,005-frame comparison of the spike still passes unchanged.
 
-**The runtime is being split into several files today** (2026-10-12). Until this section
-says "builds", `python3 tools/recomp/build.py run` may fail for a few minutes at a time.
-The layout it is moving to, in `tools/recomp/rt/`:
+```
+export RTA_DISC="/path/to/your/disc image.iso"
+python3 tools/recomp/recomp.py && python3 tools/recomp/build.py run     # 46 generated files + 6 of the runtime
+python3 tools/recomp/native.py boot --card local/recomp-out/card-test --script tools/rig/examples/boot-to-hub.rig
+```
+
+`native.py` adds `--elf`, `--disc` (from `RTA_DISC`), `--card` and one `--sym` per symbol
+file; `rta_native --help` lists every option. Build options: `--opt -O1|-O2`, `--jobs N`,
+`--gen DIR`, `--define NAME`, `--name NAME` (objects in `obj-NAME`, program `bin/NAME`),
+`--sound FILE.cpp` (in place of `rt/sound_null.cpp`), `--main FILE.cpp` (in place of
+`rt/main_headless.cpp`), `--extra FILE.cpp` and `--lib NAME` (both repeatable).
+
+**Files** (`tools/recomp/rt/`; every `.cpp` there except `test_driver.cpp` is the runtime):
 
 | File | Holds |
 |---|---|
-| `runtime.cpp` | memory, clock, kernel, interrupts, DMA, hardware registers, `rta::run()` — **no `main` any more** |
+| `runtime.cpp` | memory, clock, kernel, interrupts, timers, DMA, hardware registers, `rta::run()` — no `main` |
 | `main_headless.cpp` | `main()`: calls `rta::run(argc, argv, hooks)` with no hooks |
-| `iop.cpp` | the services behind `sceSifBindRpc` / `sceSifCallRpc`: module loader, disc (`iso9660.h`), controller, multitap, memory card; owns `fn_00356510`, `fn_003566f0`, `fn_00355d68` |
-| `sound_null.cpp` | the two sound servers, no output (replaceable, see below) |
+| `iop.cpp` | the services behind `sceSifBindRpc` / `sceSifCallRpc`: module loader, I/O-processor heap, disc (`iso9660.h`), controller, multitap, memory card; owns `fn_00356510`, `fn_003566f0`, `fn_00355d68` |
+| `sound_null.cpp` | the two sound servers, no output (replaceable) |
 | `script.cpp` | scripted input and conditions in the rig's script language, symbols, watch expressions |
 | `host.h`, `host_posix.cpp` | the only host-specific code (threads with large stacks, 64-bit file offsets) |
 | `iface.h` | the interfaces for picture, sound, network, controller (`rta::Hooks`) |
 | `rt.h` | what those files share |
 
-**Interfaces that will be kept stable** (a change is announced here first):
+**Services that exist**
+
+- **Controller**: both ports report a DualShock 2. Input comes from `rta::PadSource`
+  when an application sets one (`rta::Hooks::pad`), otherwise from the script
+  (`--script FILE`, `--do "command"`; the rig's language: `wait`, `at`, `until`, `press`,
+  `release`, `tap`, `tapuntil`, `stick`, `pad`, input-table lines, the `…2` forms for the
+  second port, `poke`, `dump`, `show`, `echo`, `quit`), otherwise nothing is held. The
+  runtime writes the library's controller buffers at every vertical blank; `pad_readPort`
+  0x17421c is not replaced. In a resumed image the ports are already open: name the
+  buffers with `--opt pad0=7cb140 --opt pad1=7cb640` to drive them.
+- **Memory card**: `--card DIR` (default `./rta-card`; `native.py` passes
+  `local/recomp-out/card`): `DIR/mc0` and `DIR/mc1`, one host directory per card, a save
+  a sub-directory of plain files — the layout of the Play! emulator's `<data>/vfs`, so a
+  card directory can be copied to and from the emulator build.
+- **Disc**: `--disc IMAGE` or `RTA_DISC`, an ISO 9660 image read in place: search, sector
+  reads to main memory and to I/O-processor memory, streaming reads.
+- **Modules**: every load is answered "loaded" after the name is checked on the disc.
+- **Sound**: `sound_null.cpp` answers both sound servers without output.
+- **Time**: I/O answers arrive after short fixed times on the virtual clock (50 µs and
+  up); `--emulator-timing` uses the delays the Play! emulator applies instead.
+- The game's own console text (through the debugger link) is printed as `[game] …`.
+
+**Interfaces kept stable** (a change is announced here first)
 
 - **Sound** (`rt.h`): `bool sound_rpc(u32 server, u32 function, u32 send, u32 send_size,
   u32 recv, u32 recv_size); void sound_vblank(); void sound_report();` — `function` is
-  the full number the game passed; `send`/`recv` are addresses in `g_ram` (already
-  reduced to main memory). `iop_ram()` is 2 MB; whatever the game sends to I/O-processor
-  memory (disc reads to IOP addresses, `SifSetDma`) is in that buffer before the RPC that
-  refers to it is made. `rt_cycles()` is the virtual clock (294,912,000 per second).
-  `build.py run --sound <file.cpp>` links another file in place of `sound_null.cpp`.
-- **Picture** (`iface.h`, `rta::VideoSink`, null by default, set through `rta::Hooks` or by
-  assigning `g_hooks.video` before `rta::run`): `vif1(words, count)` / `vif0` / `gif` once
-  per DMA transfer with the chain flattened, `reg(address, value)` for every store to a GS
-  privileged or GIF/VIF register, `vblank(field, number)` at every blank, `frame(number,
-  buffer)` when the game hands a finished frame to its back end. Exact wording: section
-  "Renderer interface" below (being written with step 5; the header is authoritative
-  until then).
-- **Network** (`iface.h`, `rta::NetDriver`): the libnet entries. Not wired yet.
-- **Controller** (`iface.h`, `rta::PadSource`), or a script (`--script`).
+  the full number the game passed; `send`/`recv` are offsets into `g_ram` (already
+  reduced to main memory; `~0u` when the game gave no usable buffer). `sound_rpc` returns
+  false for a server that is not a sound server. `iop_ram()` is 2 MB; whatever the game
+  sends to I/O-processor memory (disc reads to I/O-processor addresses, `sceSifSetDma`)
+  is in that buffer before the call that made it returns, so before any RPC that refers
+  to it. `rt_cycles()` is the virtual clock (`CYCLES_PER_SECOND` = 294,912,000).
+  `sound_vblank()` is called at the start of every vertical blank, `sound_report()` once
+  at the end of a run. `build.py run --sound <file.cpp>` links another file in place of
+  `sound_null.cpp`.
+- **Picture** (`iface.h`, `rta::VideoSink`, every member a no-op by default; set through
+  `rta::Hooks::video`): `vif1(words, count)` / `vif0` / `gif` once per DMA transfer with
+  the chain flattened, `reg(address, value)` for every store to a GS privileged or GIF/VIF
+  register, `vblank(field, number)` at every blank, `frame(number, buffer)` when the game
+  hands a finished frame to its back end. `rta::memory()`, `scratchpad()`, `vu1_micro()`,
+  `vu1_data()` give guest memory. Exact wording: section "Renderer interface" under
+  "Continuation", step 5.
+- **Network** (`iface.h`, `rta::NetDriver`): a reserved shape, not wired; the libnet
+  entries are the original code today (they reach RPC servers 0x80001101 / 0x80001201,
+  which answer nothing). A build that replaces them does it with its own HLE list.
+  `rta::SoundSink` is reserved in the same way: nothing calls it.
+- **Controller** (`iface.h`, `rta::PadSource`): asked once per port per blank, before the
+  game's blank handler runs. **Changed 09:45**: what it returns reaches the game's
+  controller buffer one blank later, as on the console and in the rig (the I/O
+  processor's copy lands during the frame); `--opt pad-delay=0` hands it over at once,
+  `--opt pad-delay=N` delays N blanks. Scripts behave like the rig's with the default.
+- **Comparison aids**: `--count-at <site>=<v1>,<v2>…` gives the reads of the CPU cycle
+  counter at one code address their values (the offline session seeds are read at
+  0x3229f0 and 0x322a00); `--adopt` (resume only) lets this runtime's services answer the
+  clients an emulator image had bound; `--script-offset N` starts the script's frame
+  numbers at N; `--opt pad-replay=FILE` hands the game recorded controller bytes tick
+  for tick (written by `rigcompare.py boot-native --replay` from the rig's log).
+  `tools/recomp/examples/boot-to-hub-ticks.rig` is the boot route with every front-end
+  press keyed on the simulation tick, for runs that are compared.
 - **Options for modules**: `--opt key=value` (repeatable) is accepted by `rta::run` and
-  read with `const char* rt_option(const char* key)` (`rt.h`); unknown options are still
+  read with `const char* rt_option(const char* key)` (`rt.h`); other unknown options are
   refused.
-
-**Build**: `python3 tools/recomp/recomp.py && python3 tools/recomp/build.py run`
-(`--opt -O1|-O2`, `--jobs N`, `--gen DIR`, `--define NAME`, `--name NAME`, `--sound FILE`).
+- `rt_after(cycles, fn)`, `rt_sleep(ctx, cycles)`, `rt_call_handler(address, a0, a1)`,
+  `rt_signal_sema(id)`, `rt_note(text)`, `rt_fmt`, `rt_die`, `rt_finish(code)`,
+  `rt_fields()`, `guest_addr(pointer, size)` (`rt.h`) are available to code linked with
+  the runtime.
 
 # Native build by static recompilation: feasibility spike
 
@@ -89,7 +146,8 @@ applied to the R5900: 128-bit registers, a runtime that answers syscalls).
   sweep, 0 failing; 40,991 calls of the reference-model tests replayed, 0 different.
 - Step 3 platform boundary and runtime: **a runtime exists that runs the game's frame
   loop headless** (kernel, interrupts, DMA, GS events, VU0, RPC stubs); disc, controller
-  input, memory card and sound are not in it.
+  input, memory card and sound are not in it. (State of the spike, 2026-10-11. The
+  section "Continuation, 2026-10-12" adds them and boots from power-on.)
 - Step 4 compare with the rig: **done from a resumed session** — 2,005 consecutive frames
   in the hub level, every compared value identical, whole object pool and heap identical
   at the end. From power-on the translation gets through start-up, engine and display
@@ -461,6 +519,9 @@ not been optimised. Compile time: 213 processor-seconds at `-O2`, 38 s on 14 job
 
 ## Step 5 — verdict
 
+(The verdict of the spike, 2026-10-11, kept as written. The I/O services it lists as
+missing, the boot from power-on and play are in "Continuation, 2026-10-12" below.)
+
 ### Does the translated code compute the same game?
 
 Yes, as far as it was tested, and it was tested three ways:
@@ -570,7 +631,396 @@ frame time left to it.
   sweep cannot drive.
 - VU1, any drawing, any sound, the network, a Windows build.
 
-## How to repeat
+# Continuation, 2026-10-12: boot from power-on, and play
+
+The spike above ended at the first module load. This part takes the same translation
+from power-on into play and compares it with the rig again. Same conventions: **Ran**,
+**Read**, **Not reached**. Machine load is quoted beside speeds because other jobs shared
+the Mac (load average between 35 and 420 during the day).
+
+## Step 1 — the I/O processor's services (Ran)
+
+`tools/recomp/rt/iop.cpp` replaces three library functions — `sceSifInitRpc` 0x355d68,
+`sceSifBindRpc` 0x356510, `sceSifCallRpc` 0x3566f0 — and puts one native service behind
+each server the game binds. What each answers was taken from two sources: the layouts of
+the Play! emulator's own services (read, nothing copied), and a capture of every call and
+reply of a boot of the original in the rig (break points at the call, at its return and
+at the completion functions; `local/recomp-out/ref/boot2.log`, 24,770 lines).
+
+| Server | Service here | Calls in a boot to the hub and 1,400 fields of standing there (3,908 fields) |
+|---|---|---|
+| 0x80000006 | module loader: 0xff answers the version text the library accepts, 0 (load and start) checks the name on the disc and answers a running id | 23 loads, all found |
+| 0x80000003 | I/O-processor heap: allocate, free, largest and total free block; the heap begins at 0x11a400 and ends at 2 MB, as in the rig | 4 allocations (0x14800, 0x1000, 0x1000, 0x7a000), 21 size queries |
+| 0x80000592 / 0x593 / 0x595 / 0x597 / 0x59a / 0x59c | the disc on an ISO 9660 image (`iso9660.h`): init, media mode, layer information, last error, clock, search (the game asks once, for a directory, and walks the directory sectors itself), read to main memory, read to I/O-processor memory, the streaming commands (init, start, read, stop, seek, status), drive-ready | 115 reads, 65 stream commands, 3 reads to I/O-processor memory, 118 ready polls; 15,277 sectors |
+| 0x80000100 / 0x101 | controller ports: open, slots per port, main mode, actuator alignment, button information (pressures), version; the library's two 0x80-byte records per port and slot are rewritten every vertical blank | 478 |
+| 0x80000900 | multitap: version, port open; none connected | 6 |
+| 0x80000400 | memory card on a host directory: init, card information, open (and make directory), close, seek, read, write, flush, change directory, directory listing with wild cards, rename, delete, slot count | 53; 760 bytes read, 129,572 written |
+| 0x61766973, 0x50494c42 | the USB keyboard and headset drivers: their version and packet-size answers; the keyboard read stays open for ever, as with no keyboard | 4 |
+| 0x80000701, 0x163a5 | sound: `sound_rpc()` (below) | about 12,400 |
+
+Two library details the replacement has to honour: a no-wait call is "in progress" for
+`sceSifCheckStatRpc` 0x3568f0 while the packet the client points at carries the call's
+number and a busy bit (64 small packets at 0xff000 serve as that), and a completion
+function runs later, where an interrupt handler would (`rt_after`), not inside the call.
+
+**Time.** A call takes time on the virtual clock: 50 µs and up by default (the calling
+thread sleeps, other threads and interrupts run), or with `--emulator-timing` the delays
+Play! applies (16.67 ms per stream read and per read to I/O-processor memory, 0.1 ms +
+0.5 ms per sector for a plain read, 2.7 ms per card command). Loading is therefore much
+faster here by default: the hub is reached at field 2,453 instead of 2,826.
+
+**Controller.** Both ports report a DualShock 2; the mode sequence the game drives
+(digital → analog → analog with pressures) is modelled with the busy states the library
+polls. The record layout was taken from dumps of the original's buffer in the rig. The
+state read at a vertical blank reaches the game one blank later (see the findings).
+
+**Memory card.** `--card DIR`: `DIR/mc0`, `DIR/mc1`; a save is a sub-directory of plain
+files, `:` and `\` in names written `%3A` and `%5C` — Play!'s layout. A boot on a blank
+card creates the same three files with the same sizes as the rig's run (760, 127,848 and
+964 bytes). Not yet exercised: a save of a character (see "Not reached").
+
+**Sound, what the game asks** (`sound_null.cpp` answers it and makes no sound). Function
+numbers as the game passes them; counts from the same 3,908 fields:
+
+| Server | Function | Count | Answer here |
+|---|---|---|---|
+| 0x80000701 | 0x8000 init | 1 | 0 |
+| | 0x8010 set parameter | 42 | 0 |
+| | 0x8030 set switch | 108 | 0 |
+| | 0x8040 get switch (the voice-end flags, twice every 8th frame) | 924 | every voice ended (0xffffff — what the rig's sound library answered throughout the capture) |
+| | 0x8050 set address, 0x8070 set core attribute, 0x8190 / 0x81a1 / 0x81b1 effects | 13 each | 0 |
+| | 0x80b0 batch | 114 | the number of commands |
+| | 0x80d0 voice transfer (sample upload from I/O-processor memory) | 743 | the size; 2,082,176 bytes in all |
+| | 0x80f0 transfer status | 756 | done |
+| 0x163a5 | 0x20 init, 0x30 stream buffer (stream, address, size) ×3 | 4 | the status block |
+| | 0x40 data written (stream, write position, sample rate, flags) | 3 | status block |
+| | 0x50 status | 9,668 | 0x40 bytes: per stream write position, read position, current volume, bytes played |
+| | 0x60 stop, 0x70 volume target, 0x80 volumes | 36 / 100 / 233 | status block |
+| | 0xb0 / 0xc0 sample upload | 488 each | status block |
+
+The stream model advances the read position on the virtual clock at the stream's byte
+rate (16 bytes per 28 samples per channel) in 0x800-byte steps, never past the write
+position, and ramps the volume word toward its target; the game feeds a stream as the
+driver consumes it and treats "read = write" as finished, so without this model dialogue
+and music logic would not move.
+
+## Runtime changes the boot needed (Ran)
+
+| What | Why |
+|---|---|
+| Timer compare and overflow interrupts (INTC 9–12), `timer_sync` / `next_timer` | Sony's `DelayThread` 0x353a58 and its alarms run on timer 2's compare interrupt; without it the first delay never ended |
+| `Deci2Call` (system call 0x7c): open, send, poll, puts | the game's console output goes through the debugger link and waits for the "sent" flag; the text is printed as `[game] …` |
+| Hardware status bits are raised whether or not the CPU accepts interrupts | code polls INTC_STAT with interrupts off |
+| The vertical-blank interrupt is taken 4,800 cycles after its status bit | `sceGsSyncV` 0x34fde0 → 0x352e70 clears the bit and polls for it with interrupts on while the game has a blank handler installed; it only sees the bit if code runs between the hardware raising it and the kernel acknowledging it. Play! gives it that window (interrupts are looked at after the next slice of code); a kernel that acknowledges at once hangs the boot in `gfx_uploadMicrocode` 0x19be08 |
+| `rt_after`, `rt_sleep`, `rt_call_handler` | answers that arrive later; completion functions in interrupt context |
+| per-thread last call site, possible return addresses on the stack in the `--seconds` report | finding where a boot waits |
+
+Not handled and harmless so far: system calls 0x5b (13 calls) and 0x6b (1), which the
+SDK reaches after its own `SetSyscall` registrations of code copied out of the data
+section were dropped; one bind to the file server 0x80000001 with one call 0xff after a
+level change (answered with nothing).
+
+## Step 2 — from power-on to the first level, against the rig (Ran)
+
+`python3 tools/recomp/native.py boot --script tools/rig/examples/boot-to-hub.rig` runs the
+rig's own boot script unchanged: card check and creation of the save directory, logo and
+film skipped, front end, character creation, the hub — sim tick 60 with a controllable
+character at field 2,453 (rig: 2,826 to 2,830). Nothing the game asked for went
+unanswered.
+
+**Method** (`tools/recomp/rigcompare.py boot-rig`, `boot-native`, `boot-compare`). Both
+run the same script from a blank card and log the same watches once per displayed frame
+at the entry of `gfx_beginFrame`. Frames cannot be matched: loading takes a different
+number of them. Rows are matched on **game events**: an *episode* is a stretch in which
+the simulation tick `g_simFrame` does not go back (one level from its start to the next
+level start), and within an episode the first row of each tick is compared with the
+other machine's first row of that tick. Two things have to be made equal first:
+
+- **The session seeds.** `mainloop_runSession` takes `g_cosmeticSeed` and `g_randSeed`
+  from the CPU cycle counter (0x3229f0, 0x322a00) when the front-end session starts. The
+  rig's values are logged at the next block start (`game_addCoreTasks`, return address
+  0x322a28: 0x0bade742 and 0x0bade743 in every run of this script) and given to the
+  native run with `--count-at`.
+- **The controller, tick for tick.** See findings 2, 3 and 4 below.
+
+**Result** (2026-10-12; `tools/recomp/examples/boot-to-hub-ticks.rig`, the rig's boot
+route with every front-end press keyed on the simulation tick):
+
+| Episode | Ticks compared | Result |
+|---|---|---|
+| start-up and card screens (level name empty) | 662 + 22 | simulation columns identical; the cosmetic seed differs (it is seeded from the cycle counter at 0x19d1e0 in `engine_init`, which was not forced), and the controller bytes differ at 73 ticks while the two controller drivers bring the pad up |
+| front end (`intro`) | 1,383 | **all 27 columns identical**, the object pool included |
+| first level (`hub`) | 599 | all identical, the object pool included, except the whole-record checksum of the player at one tick (tick 7) |
+
+The 27 columns: simulation tick, shared seed, cosmetic seed, displayed-frame counter
+(different by design), the rig's marker, level name, player count, the player's position
+(three raw floats), facing, action state, object seed, hit points, mana, gold, experience,
+checksums of bag, statistics, equipment, abilities and skills, of the whole player record
+(19,504 bytes), of **the whole object pool (947,968 bytes)**, of the task table and of
+the controller state, and the 32 controller bytes of the tick.
+
+At hub tick 300 the two memories were also diffed (`rigcompare.py memdiff --a … --b …`):
+the heap's block list is identical (111 blocks, same addresses, sizes and callers); 0
+bytes differ in code; the object pool differed in 5 pointer words when the rig's
+frame-timed boot script was used (finding 4) and in none of the compared ticks with the
+tick-keyed one.
+
+## Step 3 — play (Ran)
+
+Scripts are written by two tools, so that they play the same in the rig and here:
+
+- `tools/recomp/playscript.py` — the boot route, then in the first level: walk a square,
+  strike, open and close the pause menu, open the pause menu's load entry (the card is
+  searched, no save is found) and leave it; a level change into a level with monsters
+  (the request is written into `g_pendingLevel`, as the game's own code does), seeded
+  random walking and striking; the level change back.
+- `tools/recomp/pilot.py` — a script cannot look at the game; this tool does it for the
+  script. It runs the native build to a memory dump, reads the player's and the
+  creatures' positions from the object pool, and writes the next piece of script: the
+  stick direction that walks the player toward a creature (turning aside when a trial
+  run shows no headway), then strikes while it re-aims every 60 ticks. 56 native runs of
+  about 6 s each wrote the fight below.
+
+All runs: `boot-rig --script S`, then `boot-native --script S --replay`, then
+`boot-compare`. Results of 2026-10-12, level `valor`:
+
+| Scenario | Episode | Ticks | Result |
+|---|---|---|---|
+| **Walk, strike, level change, random play, return** (`playscript.py --no-menus --ticks 1800`), the player record also logged in 77 pieces | hub | 299 | all 104 columns identical except the record piece 0x4a00–0x4aff at tick 7 |
+| | valor (opening cutscene to tick 1,171, then random play; a message box stops the ticks at 1,341 and is dismissed) | 1,909 | all simulation columns identical, the object pool included; controller bytes differ at tick 1 (a stick byte left over from the load); cosmetic seed differs at 47 ticks |
+| | hub again | 419 | **all identical** |
+| **The same with menus** (`playscript.py --ticks 2400`): pause menu opened and closed, load entry opened (two cards searched, "no save" shown), left with the back button | hub | 339 | all identical, pool included, except the player record at tick 7 |
+| | valor | 2,509 | all simulation columns identical, pool and player record included; cosmetic seed differs at 617 ticks |
+| | hub again | 319 | **all identical** |
+| **Fight** (`pilot.py --hit-points 100000`, continued with `--weaken 6`): walk 1,100 units around obstacles to a creature, 1,900 ticks of blows exchanged (the creature from 228 to 118 hit points, 22 blows taken), the creature then weakened by a poke and killed, a walk over the place | valor | 5,010 | all simulation columns identical at every tick: tick, shared seed, position, facing, state, object seed, hit points (999,959.8 → 999,092.9 on both), mana, gold, experience, bag, stats, equipment, abilities, skills, whole player record, task table, controller; the object pool identical at 4,983 ticks and different in one window of 27 (finding 6); cosmetic seed different from tick 1,218 |
+
+What the fight needed that a real player would not: a level-1 character dies of one blow
+in that level (seen: hit points 32.8 to 0 at tick 2,482, the level restarts), so the
+script pokes the character's hit points once before the first blow, on both machines,
+and later the creature's.
+
+### Findings
+
+1. **Two driver replies shift the whole heap.** Without the USB keyboard driver's version
+   word and the headset driver's packet size in their init replies, the two libraries
+   take other paths: an allocation of 0x680 bytes at 0x36b3a0 is missing and every later
+   heap block lies 0xd00 lower. Nothing in the simulation columns shows it; the object
+   pool does, through every pointer it holds. Found with the block-list diff, fixed in
+   `iop.cpp` (*runtime service*).
+2. **The controller is one blank late on the console.** The first comparisons had every
+   press one tick early here. The I/O processor reads the controller at the blank and
+   its copy reaches main memory during the frame, after the game has read its buffer;
+   the rig shows exactly one tick of lag. `iop.cpp` now delivers the state of the
+   previous blank (`--opt pad-delay=0` for none) (*runtime service*).
+3. **A scripted press cannot be put on the same tick on two machines.** A script acts at
+   a vertical blank. When a frame of the game runs late on one machine, the press lands
+   one tick earlier or later relative to the simulation there. The rig ran late at tick
+   1,986 of the fight level (entering new scenery; the native clock does not charge CPU
+   time per instruction, so nothing runs late here), a stick release moved by one tick,
+   and from that tick on position, seed and pool differed. The same script agrees for
+   the 1,985 ticks before. Leaving a menu has the same weakness: the frame in which the
+   menu closes relative to the button differs, and a button still held counts as a new
+   press on one machine only (seen: a spell cast at the first tick after the load
+   screen). This is *timing*, not translation. The cure is the replay: the rig logs the
+   32 bytes the controller delivered in every displayed frame (column `padraw`, the
+   library's read buffer at 0x7cbc00), and the native run hands the game the same bytes
+   for the same tick — and, while the tick stands still on both (menu, message box), for
+   the same frame of that tick (`--opt pad-replay=FILE`, `iop.cpp`). All results above
+   are with the replay.
+4. **Frame-timed presses in the front end change draw-side state that later sits in the
+   pool.** With the rig's `boot-to-hub.rig` (taps every 40 frames) the simulation columns
+   agree for 659 hub ticks, but five pointers in creature objects (+0x98, +0x114) point
+   at different 0x620-byte entries of a table near 0x795000: the entries were handed out
+   in another order because the presses fell on other ticks. Hence the tick-keyed boot
+   script (*timing*).
+5. **The cosmetic generator follows sound.** `g_cosmeticSeed` (documented as outside
+   the sync hash) is reseeded from the frame counter by a cutscene and then first drawn
+   at tick 1,218 on the rig and later here; its draws come from sound and ambience code,
+   and `sound_null.cpp`'s timing is not the emulator's. It differs for part of every
+   level with sound events and agrees again after the next level start (*timing, per
+   machine by the game's design*).
+6. **One short-lived object.** In the fight the pool checksum differs in one window of
+   27 consecutive ticks (3,886–3,912) and is identical before and after, with every
+   other column identical throughout. Not dumped; an effect object that draws from the
+   cosmetic generator is the likely cause (*not located*).
+7. **One tick of the player record in the hub.** Record bytes 0x4a00–0x4aff (ability
+   button and weapon-trail state, `docs/player.md`) differ at hub tick 7 and at no other
+   tick; cause not determined (*not located*).
+
+No divergence found was a translation error. The 301 functions the automatic sweep could
+not drive were not re-tested function by function; what play adds for them is that the
+code reached by a boot, three level loads, menus and a fight computes the same pool,
+player record and seeds as the original.
+
+## Step 4 — robustness of the translation at scale
+
+- **Indirect jumps and calls outside the tables** (Ran): none. `rt_call` stops the run
+  with the address when a target has no entry; in every run of this day (about 90 boots,
+  three levels, menus, the fight) it never did.
+- **Code that exists only as data** (Ran): the SDK's three kernel-mode blocks are still
+  not run (their `SetSyscall` registrations are dropped; alarms and delays work through
+  the timer interrupt instead). Nothing else of that kind appeared.
+- **The ERX modules** (Not reached): `BG/0ERX` has `LIBINSCK.ERX` (23,769 bytes),
+  `NG_INSCK.ERX` (3,341) and `DNAS_NET.ERX` (1,863,761). They are relocatable EE code the
+  network set-up loads; offline play never loads them and they were not translated.
+  What it takes: apply their relocations for a fixed load address, give `recomp.py` a
+  second input with its own function list (the modules have no `ghidra_funcs.tsv`; entry
+  points can come from their export tables and `jal` targets), and add their entries to
+  the call table so that the game's calls through the modules' function pointers land
+  in translated code. `tools/recomp/disc.py` extracts them (`extract --all '*.ERX'`).
+
+## Step 5 — the boundary for what others add
+
+### Renderer interface
+
+`rta::VideoSink` (`rt/iface.h`), set in `rta::Hooks::video` by the application that calls
+`rta::run()` (build it with `build.py run --main yourmain.cpp --extra … --lib …`). Every
+member is a no-op by default. All calls are made under the runtime's one lock, on the
+host thread that carries the running guest thread (it changes from call to call); a
+pointer passed in is valid until the call returns.
+
+| Call | When | What |
+|---|---|---|
+| `vif1(words, count)` | once per DMA transfer on channel 1 | the transfer flattened to the 32-bit words the VIF receives: the source chain is followed (call/return stack, tag interrupts); with CHCR.TTE set the upper two words of each tag come ahead of its data, as on the hardware. A transfer can stop at a tag with the interrupt bit and the next one continues the list, so a decoder keeps its state between calls |
+| `vif0(words, count)` | the same for channel 0 | VU0 microprogram uploads (one at start-up) |
+| `gif(words, count)` | once per DMA transfer on channel 2 (PATH3) | whole quadwords, DMA tags removed |
+| `reg(address, value)` | every store to 0x12000000–0x12001fff (GS privileged, 64 bits) and 0x10003000–0x10003fff (GIF and VIF registers, 32 bits) | the raw value; CSR and IMR are also acted on by the runtime |
+| `vblank(field, number)` | start of every vertical blank, after the controller buffers are written | `field` is CSR.FIELD after the flip. A windowed application presents here and may block here to pace the game |
+| `frame(number, buffer)` → bool | the game calls `gfx_dmaHandler(-1)`: a finished frame's eight draw lists are about to be sent | list heads at 0x6f4070 + (buffer·8 + list)·4, each a chain of nodes linked through the word at +0xc. Return true to take the frame there: the runtime then reports it as sent and no `vif1`/`gif` calls are made for it. Return false and the game's own back end sends the lists through DMA |
+
+A quadword stored by hand into a FIFO (0x10004000, 0x10005000, 0x10006000) arrives as a
+four-word `vif0` / `vif1` / `gif` call. Guest memory for a sink: `rta::memory()` (32 MB),
+`rta::scratchpad()`, `rta::vu1_micro()`, `rta::vu1_data()` (stores the game makes
+straight into VU1 memory land there; data that arrives through VIF1 is the sink's to
+apply). Headless, the runtime walks the same data only for what feeds back into the game:
+VU0 microcode and the GS `SIGNAL` / `FINISH` / `LABEL` registers, whose interrupt the
+game's back end waits for. Volume at the hub, per frame: 55 VIF1 transfers with 68,400
+quadwords, 24 GIF transfers with 234,000 quadwords, 4 `FINISH`.
+
+### Sound interface
+
+Three functions in one source file (`rt.h`); `sound_null.cpp` is the silent one and
+`build.py run --sound FILE.cpp` links another:
+
+```
+bool sound_rpc(u32 server, u32 function, u32 send, u32 send_size, u32 recv, u32 recv_size);
+void sound_vblank();     // start of every vertical blank
+void sound_report();     // once, at the end of a run
+```
+
+`sound_rpc` is offered every RPC whose server the I/O services do not know and returns
+false for a server that is not a sound server (0x80000701, 0x000163a5 are). `function`
+is the number the game passed; `send` and `recv` are offsets into `g_ram`, `~0u` when the
+game gave no usable buffer. `iop_ram()` is the I/O processor's 2 MB: what the game puts
+there (`sceSifSetDma`, disc reads to I/O-processor addresses) is in it when the call
+that put it returns, so before any RPC that refers to it. `rt_cycles()` is the clock
+(294,912,000 per second; one 48 kHz sample is 6,144 cycles). The answer is written
+before `sound_rpc` returns; the caller then sleeps 50 µs of virtual time (500 µs with
+`--emulator-timing`). The traffic is the table in step 1.
+
+### Network interface
+
+Not wired in this runtime. Offline play does not reach the network library; its ten
+entry points used by the game's netcode are the original translated code here and would
+reach RPC servers 0x80001101 / 0x80001201, which answer nothing. A network build
+replaces those entries with its own list of supplied functions (`tools/recomp/net`,
+`hle-net.txt`: `sceLibnetInitialize` 0x365ec0, `sceInetGetInterfaceList` 0x365a08,
+`sceInetInterfaceControl` 0x365a90, `sceInetCreate` 0x3654a8, `sceInetOpen` 0x365518,
+`sceInetClose` 0x365560, `sceInetSendTo` 0x365830, `sceInetRecvFrom` 0x365670,
+`net_loadModules` 0x137a10, `net_linkCheck` 0x13e638). `rta::NetDriver` in `iface.h` is
+a reserved shape for the same boundary; nothing calls it. Options for such a module:
+`--opt key=value` and `rt_option()`.
+
+### Controller interface
+
+`rta::PadSource` in `rta::Hooks::pad`: `read(port, number, state)` once per port at the
+start of every vertical blank (buttons in libpad's bit values with 1 = held, sticks
+0–255 with 128 at rest), `rumble(port, small, large)` when the game sets the motors.
+What `read` returns reaches the game one blank later. Without a source, the script
+(`--script`, `--do`) supplies the state; `--opt pad-replay=FILE` overrides both with
+recorded controller bytes. `pad_readPort` 0x17421c is the original code and reads the
+library's buffer, which the runtime writes at 0x7cb140 (port 1) and 0x7cb640 (port 2).
+
+## Step 6 — Windows (Read)
+
+Not built; nothing was installed. What the sources need:
+
+- `rt/host.h` is the whole host boundary: a thread with a 256 MB stack, a 64-bit file
+  read, process exit, sleep. `host_posix.cpp` implements it; a `host_win32.cpp` of about
+  the same 50 lines (`CreateThread` with a stack size, `_fseeki64` / `_ftelli64`,
+  `ExitProcess`, `Sleep`) is the only new file.
+- The rest is C++17 and the standard library (`<thread>`, `<mutex>`,
+  `<condition_variable>`, `<filesystem>`, `<chrono>`). Compiler-specific constructs:
+  `__builtin_ctz` and `__builtin_expect` (runtime and `recomp.h`), `__attribute__((weak))`
+  in the generated `hle_weak.cpp`. clang-cl accepts all three; for MSVC the first two
+  have intrinsics and the weak definitions have to become a generated list of the
+  replaced functions that are actually supplied.
+- Floating point: the build relies on `-ffp-contract=off -frounding-math` and sets the
+  rounding mode to toward-zero per guest thread (`fesetround`); the MSVC equivalents are
+  `/fp:strict` and the same `fesetround`. Guest memory is read with `memcpy` as
+  little-endian, which holds on x86-64 and ARM64 Windows.
+- `build.py` calls `clang++` and `nice`; a Windows branch is needed there.
+- The memory-card directory uses `%3A` / `%5C` for `:` and `\`, so card paths are valid
+  Windows names already.
+
+## Not reached in the continuation
+
+- A save of a character written to the card and loaded again. The load entry of the
+  pause menu was exercised (card searched, no save found); the hub's pause menu has no
+  save entry, a save point has to be walked to, and that was not scripted. The card
+  service's write path is exercised only by the creation of the save directory at boot.
+- An item picked up: the creature that was killed left nothing the walk over the place
+  collected (gold and bag unchanged on both machines).
+- The ERX modules, the Windows build, the function-by-function re-test of the 301
+  unproven functions.
+- A comparison in which the native run uses its own scripted presses throughout
+  (finding 3): it agrees up to the first late frame of the rig, not beyond.
+- `--adopt` (a resumed image served by this runtime's services) with input, a level
+  change or the card. Tested only at rest: the spike's 2,005-frame comparison still
+  passes with the image's 14 clients adopted and the controller buffers written by the
+  runtime (`--adopt --opt pad0=7cb140 --opt pad1=7cb640`).
+
+## Speed (Ran)
+
+| Run | Fields | Wall | × real time | Load average |
+|---|---|---|---|---|
+| native, boot to the hub + 600 ticks, 26 watches logged | 3,035 | 9.3 s | 5.2 | about 50 |
+| native, boot + fight (27 watches, controller replay) | 7,608 | 20.2 s | 6.1 | about 35 |
+| native, same boot under the heavy job | 3,908 | 972 s | 0.07 | about 400 |
+| rig, boot to the hub + play | 9,800 | 161–178 s | 0.9–1.0 | about 35 |
+
+The start-up to the hub is mostly loading and logging; the idle hub figure of the spike
+(10.8× with the game's renderer back end feeding a null GS) still stands.
+
+## How to repeat the continuation
+
+```
+export RTA_DISC="/path/to/your/disc image.iso"
+python3 tools/recomp/recomp.py && python3 tools/recomp/build.py run
+python3 tools/recomp/native.py boot --card local/recomp-out/card-test \
+        --script tools/rig/examples/boot-to-hub.rig                       # boot alone
+
+S=tools/recomp/examples/boot-to-hub-ticks.rig                             # boot compared
+python3 tools/recomp/rigcompare.py boot-rig --script $S
+python3 tools/recomp/rigcompare.py boot-native --script $S --replay
+python3 tools/recomp/rigcompare.py boot-compare
+
+python3 tools/recomp/playscript.py --out local/recomp-out/play.rig        # menus, level change, play
+python3 tools/recomp/pilot.py --out local/recomp-out/fight.rig --legs 40 --hit-points 100000   # the fight
+python3 tools/recomp/rigcompare.py boot-rig --script local/recomp-out/fight.rig --frames 10400
+python3 tools/recomp/rigcompare.py boot-native --script local/recomp-out/fight.rig --replay
+python3 tools/recomp/rigcompare.py boot-compare
+python3 tools/recomp/rigcompare.py memdiff --a <rig image> --b <native image> [--words lo:hi]
+```
+
+New files of the continuation: `tools/recomp/rt/iop.cpp`, `script.cpp`, `sound_null.cpp`,
+`host.h`, `host_posix.cpp`, `iso9660.h`, `iface.h`, `rt.h`, `main_headless.cpp`;
+`tools/recomp/native.py`, `disc.py`, `playscript.py`, `pilot.py`,
+`examples/boot-to-hub-ticks.rig`; `rigcompare.py` (boot-rig, boot-native, boot-compare,
+memdiff over any two images) and `build.py` (source list, `--sound`, `--main`, `--extra`,
+`--lib`) were extended.
+
+## How to repeat (the spike)
 
 ```
 python3 tools/recomp/recomp.py                      # translate (1.5 s)

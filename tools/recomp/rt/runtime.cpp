@@ -116,6 +116,7 @@ struct GThread {
     std::condition_variable cv;
     bool kill = false, finished = false;
     u32 entry = 0;
+    u32 site = 0;                                 // last call site when it last gave up the processor
 };
 static std::mutex g_big;
 static std::map<u32, GThread*> g_threads;
@@ -187,9 +188,23 @@ static void run_handlers(u32 queue_slot, u32 base, u32 cause) {
     g_in_irq = was;
 }
 
+// The vertical-blank interrupt is taken a moment after its status bit is raised, not at
+// once.  Sony's sceGsSyncV (0x34fde0 -> 0x352e70), which the game calls while it has a
+// blank handler of its own installed, clears the bit and then polls for it with
+// interrupts on: it only ever sees the bit if the CPU gets to run between the hardware
+// raising it and the kernel acknowledging it.  The Play! emulator gives it that window
+// (interrupts are looked at after the next slice of code), and so does this.
+static const u64 VBLANK_HOLD = 4800;
+static u64 g_vblank_hold;
+static u32 deliverable() {
+    u32 pending = g_intc_stat & g_intc_mask;
+    if ((pending & 4) && now(t_self && !g_in_irq ? &t_self->ctx : nullptr) < g_vblank_hold) pending &= ~4u;
+    return pending;
+}
+
 static void deliver_interrupts() {
     if (g_in_irq) return;
-    for (int round = 0; round < 100000 && (g_dmac_pending || (g_intc_stat & g_intc_mask)); round++) {
+    for (int round = 0; round < 100000 && (g_dmac_pending || deliverable()); round++) {
         if (g_dmac_pending) {
             u32 ch = __builtin_ctz(g_dmac_pending);
             g_dmac_pending &= ~(1u << ch);
@@ -197,12 +212,65 @@ static void deliver_interrupts() {
             g_dmac_stat &= ~(1u << ch);
             continue;
         }
-        u32 line = __builtin_ctz(g_intc_stat & g_intc_mask);
+        u32 line = __builtin_ctz(deliverable());
         g_intc_stat &= ~(1u << line);
         run_handlers(ST_INTCQ, INTC_BASE, line);
     }
 }
 
+static u32 g_gp;                                  // the executable's global pointer
+struct Timer { u32 mode = 0, comp = 0, hold = 0; u64 base_cycles = 0; u32 base_count = 0; };
+static Timer g_timers[4];
+static u64 timer_divisor(const Timer& t) {
+    static const u64 divisor[4] = {2, 32, 512, 18740};          // CPU cycles per count
+    return divisor[t.mode & 3];
+}
+// Carry timer n forward to time `t`: count, flags, interrupts.
+static void timer_sync(int n, u64 t) {
+    Timer& tm = g_timers[n];
+    if (!(tm.mode & 0x80)) { if (t > tm.base_cycles) tm.base_cycles = t; return; }
+    if (t <= tm.base_cycles) return;
+    u64 div = timer_divisor(tm);
+    u64 ticks = (t - tm.base_cycles) / div;
+    if (!ticks) return;
+    tm.base_cycles += ticks * div;
+    u64 count = tm.base_count & 0xFFFF;
+    u32 comp = tm.comp & 0xFFFF;
+    while (ticks) {
+        u64 to_comp = comp > count ? comp - count : ~0ull;
+        u64 to_wrap = 0x10000 - count;
+        u64 step = ticks < to_wrap ? ticks : to_wrap;
+        if (to_comp < step) step = to_comp;
+        count += step;
+        ticks -= step;
+        bool match = step == to_comp;
+        if (count == 0x10000) {
+            count = 0;
+            if ((tm.mode & 0x200) && !(tm.mode & 0x800)) { tm.mode |= 0x800; g_intc_stat |= 1u << (9 + n); }
+            if (comp == 0) match = true;
+        }
+        if (match) {
+            if ((tm.mode & 0x100) && !(tm.mode & 0x400)) { tm.mode |= 0x400; g_intc_stat |= 1u << (9 + n); }
+            if (tm.mode & 0x40) count = 0;
+        }
+    }
+    tm.base_count = (u32)count;
+}
+// When the next timer interrupt can happen (for the idle machine to wake up at).
+static u64 next_timer() {
+    u64 best = ~0ull;
+    for (int n = 0; n < 4; n++) {
+        Timer& tm = g_timers[n];
+        if (!(tm.mode & 0x80)) continue;
+        u64 count = tm.base_count & 0xFFFF, ticks = ~0ull;
+        if ((tm.mode & 0x100) && !(tm.mode & 0x400)) { u64 d = ((tm.comp & 0xFFFF) - count) & 0xFFFF; ticks = d ? d : 0x10000; }
+        if ((tm.mode & 0x200) && !(tm.mode & 0x800) && 0x10000 - count < ticks) ticks = 0x10000 - count;
+        if (ticks == ~0ull) continue;
+        u64 at = tm.base_cycles + ticks * timer_divisor(tm);
+        if (at < best) best = at;
+    }
+    return best;
+}
 struct Alarm { bool active; u64 due; u32 callback, arg; };
 static Alarm g_alarms[16];
 static u64 next_alarm() {
@@ -238,7 +306,6 @@ static void fire_alarms(u64 t) {
 struct Later { u64 due, order; std::function<void()> fn; };
 static std::vector<Later> g_later;
 static u64 g_later_order;
-static u32 g_gp;                                  // the executable's global pointer
 u64 rt_cycles() { return now(t_self ? &t_self->ctx : nullptr); }
 u64 rt_fields() { return g_fields; }
 void rt_after(u64 delay, std::function<void()> fn) { g_later.push_back({rt_cycles() + delay, g_later_order++, std::move(fn)}); }
@@ -279,9 +346,15 @@ void rt_call_handler(u32 address, u32 a0, u32 a1) {
 }
 
 static void on_vblank();
-static void fire_due_events(u64 t) {
-    fire_alarms(t);
-    fire_later(t);
+// What the hardware does by itself goes on whether or not the CPU accepts interrupts
+// (the status bits are raised; code that polls them with interrupts off sees them).
+// What needs the CPU - alarm callbacks, completions - waits until it accepts them.
+static void fire_due_events(u64 t, bool accepting = true) {
+    if (accepting) {
+        fire_alarms(t);
+        fire_later(t);
+    }
+    for (int n = 0; n < 4; n++) timer_sync(n, t);
     while (t >= g_next_vblank_start || t >= g_next_vblank_end) {
         if (g_next_vblank_start <= g_next_vblank_end) {
             g_next_vblank_start += VBLANK_PERIOD;
@@ -291,6 +364,7 @@ static void fire_due_events(u64 t) {
             if (W(ST_BASE + ST_VSYNC1)) W(W(ST_BASE + ST_VSYNC1) & 0x1FFFFFF) = 1;
             if (W(ST_BASE + ST_VSYNC2)) W(W(ST_BASE + ST_VSYNC2) & 0x1FFFFFF) = (g_gs_csr >> 13) & 1;
             g_intc_stat |= 1u << 2;
+            g_vblank_hold = t + VBLANK_HOLD;
             on_vblank();
         } else {
             g_next_vblank_end += VBLANK_PERIOD;
@@ -317,10 +391,8 @@ static void reschedule(std::unique_lock<std::mutex>& lock, GThread* self, Ctx* c
     u64 idle_fields = 0;
     for (;;) {
         bool enabled = gone || !c || (c->cop0[12] & 0x10001) == 0x10001;
-        if (enabled) {
-            fire_due_events(now(gone ? nullptr : c));
-            deliver_interrupts();
-        }
+        fire_due_events(now(gone ? nullptr : c), enabled);
+        if (enabled) deliver_interrupts();
         u32 id = pick_thread();
         if (!gone && id == self->id) { W(ST_BASE + ST_CURRENT) = id; return; }
         if (id) {
@@ -329,7 +401,9 @@ static void reschedule(std::unique_lock<std::mutex>& lock, GThread* self, Ctx* c
             g_cur = next;
             next->cv.notify_one();
             if (gone) return;
+            self->site = g_site;
             wait_for_baton(lock, self);
+            g_site = self->site;
             continue;
         }
         // nobody can run: the machine idles until the next event
@@ -337,6 +411,8 @@ static void reschedule(std::unique_lock<std::mutex>& lock, GThread* self, Ctx* c
         u64 next_event = g_next_vblank_start < g_next_vblank_end ? g_next_vblank_start : g_next_vblank_end;
         if (next_alarm() < next_event) next_event = next_alarm() > g_cycles ? next_alarm() : g_cycles;
         if (next_later() < next_event) next_event = next_later() > g_cycles ? next_later() : g_cycles;
+        if (next_timer() < next_event) next_event = next_timer() > g_cycles ? next_timer() : g_cycles;
+        if ((g_intc_stat & g_intc_mask & 4) && g_vblank_hold > g_cycles && g_vblank_hold < next_event) next_event = g_vblank_hold;
         if (c && !gone) c->budget = POLL_UNITS;
         g_cycles = next_event;
         fire_due_events(g_cycles);
@@ -748,7 +824,40 @@ void rt_syscall(Ctx* c, u32 pc) {
     case 0x78: break;
     case 0x79: break;                                   // SifSetReg
     case 0x7A: result = a0 == 4 ? 0x60000 : 0; break;   // SifGetReg: the I/O processor is ready
-    case 0x7E: result = 0; break;
+    case 0x7C: {                                        // Deci2Call(function, parameters): the debugger link, used for the game's console text
+        u32 p = guest_addr(a1, 8);
+        static u32 buffers[16];
+        static std::string line;
+        result = 1;
+        if (p == ~0u) break;
+        if (a0 == 1) {                                  // open: device, buffer -> id
+            u32 id = 0;
+            while (id < 16 && buffers[id]) id++;
+            if (id == 16) { result = SX32(-1); break; }
+            buffers[id] = W(p + 4);
+            result = id;
+        } else if (a0 == 3 || a0 == 4) {                // send (the text is taken at once), poll (clears "busy")
+            u32 id = W(p);
+            u32 b = id < 16 && buffers[id] ? guest_addr(buffers[id], 0x14) : ~0u;
+            if (b == ~0u) break;
+            if (a0 == 4) { W(b + 0x0C) = 0; break; }
+            u32 data = W(b + 0x10) ? guest_addr(W(b + 0x10), 12) : ~0u;
+            if (data == ~0u) { W(b + 4) = (u32)-1; break; }
+            u32 size = W(data);
+            for (u32 k = 12; k < size && data + k < RAM_SIZE; k++) {
+                char ch = (char)g_ram[data + k];
+                if (ch == '\n') { printf("[game] %s\n", line.c_str()); line.clear(); }
+                else if (ch != '\r') line += ch;
+            }
+            W(b + 4) = 0;
+        } else if (a0 == 0x10) {                        // kernel puts
+            u32 text = guest_addr(W(p), 1);
+            if (text != ~0u) printf("[game] %s", (const char*)g_ram + text);
+        }
+        break;
+    }
+    case 0x4A: break;                                   // SetOsdConfigParam
+    case 0x7E: result = 0x100; break;
     case 0x7F: result = RAM_SIZE; break;
     default:
         rt_note(rt_fmt("UNHANDLED syscall 0x%02x at 0x%x", n, pc));
@@ -760,14 +869,14 @@ void rt_syscall(Ctx* c, u32 pc) {
 // ---------------------------------------------------------------------------------------
 // Hardware registers
 // ---------------------------------------------------------------------------------------
-struct Timer { u32 mode = 0, comp = 0, hold = 0; u64 base_cycles = 0; u32 base_count = 0; };
-static Timer g_timers[4];
+// Four 16-bit timers.  A timer counts the bus clock (half the CPU clock), that divided by
+// 16 or 256, or scan lines; it can raise its interrupt (INTC 9 + n) when the count
+// reaches the compare register (mode bit 8, flag bit 10) and when it overflows (bit 9,
+// flag bit 11), and return to zero on a compare match (bit 6).  Sony's library builds
+// its thread delays and alarms on these interrupts.
 static u32 timer_count(int n) {
-    Timer& t = g_timers[n];
-    if (!(t.mode & 0x80)) return t.base_count & 0xFFFF;
-    static const u64 divisor[4] = {2, 32, 512, 18740};          // bus clock, /16, /256, per scan line
-    u64 t_now = now(t_self ? &t_self->ctx : nullptr);
-    return (u32)(t.base_count + (t_now - t.base_cycles) / divisor[t.mode & 3]) & 0xFFFF;
+    timer_sync(n, now(t_self && !g_in_irq ? &t_self->ctx : nullptr));
+    return g_timers[n].base_count & 0xFFFF;
 }
 
 static u8* phys(u32 addr, u32 size) {
@@ -982,7 +1091,7 @@ static u64 hw_read(u32 a, unsigned size) {
         int n = (a >> 11) & 3;
         switch (a & 0x7FF) {
         case 0x00: return timer_count(n);
-        case 0x10: return g_timers[n].mode;
+        case 0x10: timer_count(n); return g_timers[n].mode;
         case 0x20: return g_timers[n].comp;
         case 0x30: return g_timers[n].hold;
         }
@@ -1016,10 +1125,14 @@ static void hw_write(u32 a, unsigned size, u64 value) {
     if (a >= 0x10000000 && a < 0x10002000) {
         int n = (a >> 11) & 3;
         Timer& t = g_timers[n];
-        u64 t_now = now(t_self ? &t_self->ctx : nullptr);
+        u64 t_now = now(t_self && !g_in_irq ? &t_self->ctx : nullptr);
+        timer_sync(n, t_now);
         switch (a & 0x7FF) {
-        case 0x00: t.base_count = v & 0xFFFF; t.base_cycles = t_now; return;
-        case 0x10: t.base_count = timer_count(n); t.base_cycles = t_now; t.mode = v & 0x3FF; return;
+        case 0x00: t.base_count = v & 0xFFFF; if (t_now > t.base_cycles) t.base_cycles = t_now; return;
+        case 0x10:                                      // the two flag bits are cleared by writing 1
+            if (!(t.mode & 0x80) && t_now > t.base_cycles) t.base_cycles = t_now;
+            t.mode = (v & 0x3FF) | (t.mode & 0xC00 & ~v);
+            return;
         case 0x20: t.comp = v & 0xFFFF; return;
         case 0x30: t.hold = v & 0xFFFF; return;
         }
@@ -1121,8 +1234,23 @@ void rt_eret(Ctx* c, u32 pc) {
     rt_mtc0(c, pc, 12, status & ~((status & 4) ? 4u : 2u));
     if (target != (u32)c->r[31]) rt_die("ERET at 0x%x returns to 0x%x, not to the caller", pc, target);
 }
-u32 rt_mfc0(Ctx* c, u32, unsigned reg) {
-    if (reg == 9) { rt_note("read of the CPU cycle counter"); return (u32)now(c); }
+// The CPU's cycle counter.  The game seeds its random generators from it when an offline
+// session starts, so a run that is to be compared with another machine's needs the values
+// that machine read: --count-at <site>=<v1>,<v2>,... gives the reads at one code address
+// their values in order; after the list, and everywhere else, the virtual clock answers.
+static std::map<u32, std::vector<u32>> g_count_forced;
+u32 rt_mfc0(Ctx* c, u32 pc, unsigned reg) {
+    if (reg == 9) {
+        auto forced = g_count_forced.find(pc);
+        if (forced != g_count_forced.end() && !forced->second.empty()) {
+            u32 value = forced->second.front();
+            forced->second.erase(forced->second.begin());
+            rt_note(rt_fmt("read of the CPU cycle counter at 0x%x answered with a given value", pc));
+            return value;
+        }
+        rt_note(rt_fmt("read of the CPU cycle counter at 0x%x", pc));
+        return (u32)now(c);
+    }
     return c->cop0[reg];
 }
 void rt_mtc0(Ctx* c, u32, unsigned reg, u32 value) {
@@ -1260,8 +1388,9 @@ static void log_row(u64 number) {
 }
 void rt_finish(int code) { g_exit_code = code; report_and_exit(); }
 
+static u64 g_script_offset;                       // the script's frame numbers run this far ahead of the blank count
 static void on_vblank() {
-    script_vblank(g_fields);
+    script_vblank(g_fields + g_script_offset);
     iop_vblank(g_fields);
     sound_vblank();
     if (g_hooks.video) g_hooks.video->vblank((g_gs_csr >> 13) & 1, g_fields);
@@ -1342,6 +1471,13 @@ static void usage() {
         "  --dump-at <frame> <file>   write main memory at a displayed frame\n"
         "  --emulator-timing     the I/O processor answers after the delays the Play! emulator uses\n"
         "                        (default: as fast as the game's own protocol allows)\n"
+        "  --count-at <hex site>=<hex>[,<hex>...]   values for the reads of the CPU cycle counter at one\n"
+        "                        code address, in order (the offline session seeds: 3229f0, 322a00)\n"
+        "  --adopt               resume: the services of this runtime answer the clients the image had\n"
+        "                        bound in the emulator (disc, memory card, sound, ...); without it their\n"
+        "                        calls are left unanswered, which is enough for a run without input\n"
+        "  --script-offset <n>   the script's frame numbers start at n instead of 0 (a script written\n"
+        "                        for the rig, which had run n frames when the resumed image was taken)\n"
         "  --hle-renderer        do not send draw data through DMA; count and report frames as sent\n"
         "  --opt key=value       an option for a module linked with the runtime (rt_option); repeatable\n"
         "  --seconds <s>         stop after s seconds of wall time and say where the game is\n"
@@ -1354,6 +1490,7 @@ int run(int argc, char** argv, const Hooks& hooks) {
     std::string mode = argv[1], ram, spr, regs, elf, log_path, script;
     std::vector<std::string> extra_commands;
     IopOptions iop;
+    bool adopt = false;
     if (const char* disc = getenv("RTA_DISC")) iop.disc = disc;
     iop.card_root = "rta-card";
     u32 entry = 0;
@@ -1394,6 +1531,20 @@ int run(int argc, char** argv, const Hooks& hooks) {
         else if (a == "--disc") iop.disc = next();
         else if (a == "--card") iop.card_root = next();
         else if (a == "--emulator-timing") iop.emulator_timing = true;
+        else if (a == "--adopt") adopt = true;
+        else if (a == "--script-offset") g_script_offset = strtoull(next().c_str(), nullptr, 0);
+        else if (a == "--count-at") {
+            std::string spec = next();
+            size_t eq = spec.find('=');
+            if (eq == std::string::npos) rt_die("--count-at wants <hex address>=<hex value>[,<hex value>...]");
+            std::vector<u32>& values = g_count_forced[(u32)strtoul(spec.substr(0, eq).c_str(), nullptr, 16)];
+            for (size_t at = eq + 1; at < spec.size();) {
+                size_t comma = spec.find(',', at);
+                values.push_back((u32)strtoul(spec.substr(at, comma == std::string::npos ? std::string::npos : comma - at).c_str(), nullptr, 16));
+                if (comma == std::string::npos) break;
+                at = comma + 1;
+            }
+        }
         else if (a == "--script") script = next();
         else if (a == "--do") extra_commands.push_back(next());
         else if (a == "--sym") script_add_symbols(next().c_str());
@@ -1487,6 +1638,7 @@ int run(int argc, char** argv, const Hooks& hooks) {
         g_intc_mask &= ~((1u << 9) | (1u << 10) | (1u << 11) | (1u << 12));     // no timer interrupts
         g_gs_imr = 0x7C00;                              // SIGNAL and FINISH reach the game
         g_timers[0].mode = 0x82;
+        if (adopt) iop_adopt();
         printf("resumed: thread %u runs from 0x%x (sp 0x%x); %u other threads continue, %zu cannot\n", current, entry,
                (u32)main_thread->ctx.r[29], resumable, g_foreign.size());
     } else if (mode == "boot") {
@@ -1512,8 +1664,24 @@ int run(int argc, char** argv, const Hooks& hooks) {
             printf("stopped after %.0f s of wall time; last call site 0x%x, field %llu\n", wall, g_site, (unsigned long long)g_fields);
             for (u32 t = 1; t <= MAX_THREAD; t++)
                 if (W(thr(t) + T_VALID) && W(thr(t) + T_STATUS) != TH_ZOMBIE)
-                    printf("  thread %u: status %u, semaphore %u, procedure 0x%x, priority %u\n", t, W(thr(t) + T_STATUS),
-                           W(thr(t) + T_SEMA), W(thr(t) + T_PROC), W(thr(t) + T_PRI));
+                    printf("  thread %u: status %u, semaphore %u, procedure 0x%x, priority %u, last call site 0x%x\n", t, W(thr(t) + T_STATUS),
+                           W(thr(t) + T_SEMA), W(thr(t) + T_PROC), W(thr(t) + T_PRI),
+                           g_threads.count(t) ? (g_cur == g_threads[t] ? g_site : g_threads[t]->site) : 0);
+            printf("  INTC stat %x mask %x, DMAC stat %x, GS CSR %x IMR %x, main thread status register %x\n", g_intc_stat, g_intc_mask,
+                   g_dmac_stat, g_gs_csr, g_gs_imr, main_thread->ctx.cop0[12]);
+            // return addresses found on the stack of the thread that was running: words that
+            // point just behind a call instruction (not a proof of the call chain, a guide)
+            if (g_cur) {
+                printf("  stack of thread %u (sp 0x%x), possible return addresses:", g_cur->id, (u32)g_cur->ctx.r[29]);
+                u32 sp = (u32)g_cur->ctx.r[29] & 0x1FFFFFF;
+                for (u32 a = sp, found = 0; a < sp + 0x1000 && a < RAM_SIZE - 4 && found < 24; a += 4) {
+                    u32 v = W(a);
+                    if (v < g_text_lo + 8 || v >= g_text_hi || (v & 3)) continue;
+                    u32 call = W(v - 8);
+                    if ((call >> 26) == 3 || (call & 0xFC00003F) == 9) { printf(" %x", v); found++; }
+                }
+                printf("\n");
+            }
             g_exit_code = 4;
             report_and_exit();
         }

@@ -119,6 +119,39 @@ the emulated memory card, the lobby's host name is answered by the application, 
 sign-in step that needs Sony's long-gone servers is skipped by the sign-in patch (not
 part of this repository).
 
+### Play in a browser
+
+There is also a version of the same emulator that runs in a web page
+([tools/play-web](../tools/play-web/README.md)): nothing to install, any computer with
+Chrome; you still need your own disc image, which the page reads where it is and does
+not upload. When the page is served together with the project's relay it has an
+*Online…* button with the same three things as the application's *Online* menu - **Host
+a game** (you get a code), **Join a game** with a code, **Just go to the lobby** - and
+asks for a player name once; the rest of section 4 applies as it stands (the account the
+page makes for you, your character, what happens when it stops).
+
+- **Browser players play with browser players.** A game hosted in a browser cannot be
+  played from this application and the other way round: the two compute floating-point
+  results differently in the last bit and fall out of step within seconds
+  (`docs/issues/browser-build.md`). The lobby shows both kinds in one list; agree on one.
+- **Mixed games are prepared, not released.** The application can compute as a browser
+  does ("browser arithmetic"; against the browser build, the same recorded session of
+  12,400 frames with fights and level changes: every byte read was the same in every
+  frame) and is written to change to it by itself when a browser player is in the room,
+  and to warn when a copy cannot follow. That choice has not been tried between two
+  copies yet and needs the next builds of both; until then the line above holds. An
+  application built from the current sources takes `--rta-arith browser` to try the
+  arithmetic by itself.
+  [issues/mixed-arithmetic.md](issues/mixed-arithmetic.md).
+- Every packet of a browser player goes through the relay on the server instead of
+  straight to the other player, so the delay between two browser players is the sum of
+  their delays to the server.
+- Keep the page in front and the computer awake: a page that is covered or minimised
+  runs slowly (and holds the others up), and when the computer sleeps the browser cuts
+  the page's connection and the online game is lost.
+- Tried: two pages on one Mac, hosted and joined by code, in step for 1,387 frames in
+  the first level. Not tried: two people in two places.
+
 ## 3. Controller and keys
 
 **A game controller** works the moment it is attached — plugged in by USB or paired by

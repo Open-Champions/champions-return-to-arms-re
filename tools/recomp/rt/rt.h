@@ -61,6 +61,8 @@ void iop_vblank(u64 number);                        // controller buffers
 u32 iop_sif_set_dma(u32 list, u32 count);           // system call 0x77: EE memory to IOP memory
 u8* iop_ram();                                      // 2 MB
 void iop_report();
+// resume: take over the clients the image's game bound while it ran in the emulator
+void iop_adopt();
 
 // ---- sound_null.cpp ---------------------------------------------------------------------
 // One RPC to a sound server.  Returns false for a server that is not a sound server.

@@ -90,6 +90,9 @@ directory; keep that, and any logs and dumps, under `local/rig-out/`.
 | `--eth-pcap <file>` | every Ethernet frame the emulated chip sends or is given, as a capture file (`tcpdump -nn -r <file>`) |
 | `--eth-net server=<address>[,name=<host>][,guest=<address>][,udp=<port>+<port>][,peerdelay=N][,peerjitter=N][,peerloss=N][,peerseed=N]` | a small network behind the emulated chip, for the game's own network stack (below) |
 | `--fp-round nearest\|up\|down\|zero` | force a floating-point rounding mode on this machine (Play! runs the EE with round-toward-zero); for float-mismatch experiments |
+| `--arith browser\|native` | this machine's arithmetic: `browser` is what the WebAssembly build of the core computes (results rounded to nearest, denormals kept), `native` Play!'s own (toward zero, denormals as zero; the default). A core with the switch (`FpUtils::SetArithmetic`, the playable application's tree) does it itself; with another core the rig sets the thread's control register at every vertical blank. The first lines of the output name the control register the machine's thread really has. Script command: `arith browser\|native`. See `docs/issues/mixed-arithmetic.md` |
+| `--record-input <file>` | controller 1 as the machine was given it, one line per change: frame, buttons (hexadecimal), left x, left y, right x, right y |
+| `--replay-input <file>` | such a file played back by frame; it replaces what the script does to controller 1 (other script commands, `at` and `poke` for instance, still run). With `tools/arith/session.py` the same stream goes to the browser build |
 | `--no-code-protect`, `--video-thread`, `--throttle`, `--play-logs` | emulator behaviour, see `--help` |
 
 A **frame** is one vertical blank of the emulated machine. Frame numbers count from the

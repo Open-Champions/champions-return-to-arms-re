@@ -2,7 +2,9 @@
 # Builds the browser version: Play! (https://github.com/jpd002/Play-, BSD 2-clause) at the
 # commit tools/play-net was written against, with tools/play-net/play-net.patch (the
 # changes this game needs in the emulator's core), play-web.patch (what a browser needs on
-# top of that) and the sources in src/, compiled to WebAssembly with Emscripten.
+# top of that), the sources in src/ and - for online play - the desktop application's
+# network and online driver (tools/play-net/src: RtaNet, RtaOnline), compiled to
+# WebAssembly with Emscripten.
 #
 #   brew install emscripten cmake ninja      # once
 #   tools/play-web/build.sh                  # clone (first time), patch, configure, build
@@ -69,8 +71,19 @@ apply() {
 apply play-net "$HERE/../play-net/play-net.patch"
 apply play-web "$HERE/play-web.patch"
 
-cp "$HERE/src/RtaWeb.cpp" "$SRC/Source/ui_js/RtaWeb.cpp"
-cp "$HERE/src/GlStateShadow.h" "$SRC/Source/gs/GSH_OpenGL/GlStateShadow.h"
+# our sources: the front end, and for online play the desktop application's network and
+# online driver as they are (only what has changed is copied, so that a second run
+# compiles nothing again)
+put() {
+	cmp -s "$1" "$2" || cp "$1" "$2"
+}
+for f in RtaWeb.cpp RtaWebNet.cpp RtaWebNet.h RtaWebNetCore.cpp RtaWebSock.h; do
+	put "$HERE/src/$f" "$SRC/Source/ui_js/$f"
+done
+for f in RtaNet.cpp RtaNet.h RtaOnline.cpp RtaOnline.h; do
+	put "$HERE/../play-net/src/$f" "$SRC/Source/ui_js/$f"
+done
+put "$HERE/src/GlStateShadow.h" "$SRC/Source/gs/GSH_OpenGL/GlStateShadow.h"
 
 if [ ! -f "$BUILD/build.ninja" ]; then
 	mkdir -p "$BUILD"

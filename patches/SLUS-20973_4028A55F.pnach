@@ -35,6 +35,32 @@ description=Send-cycle table, 0x4027F0: with two remote peers each one is sent a
 // was: 00000004
 patch=1,EE,004027F0,word,00000003
 
+[Net test: peer silence time-out 900 -> 1440 calls]
+author=reverse engineering test patch; confirmed on two linked Play! emulator instances (a machine standing still for 1300 frames is kept and the pair stays in sync, one standing still for 1500 is dropped in the other's call 1442; docs/issues/online-quality.md 1.7); untested on PCSX2 or a console
+description=net_main, 0x133060: a peer from which no packet has been accepted is dropped after 1441 calls in a row (24 s at 60 calls a second) instead of 901 (15 s). Keeps a session through a longer emulator pause or host hang. Stays below the HUD's own thresholds (lost-connection line after 1500 stalled calls; with more than two players a machine leaves after 2100). When a peer really is gone the others wait 24 s instead of 15; the host's kick entry is not affected. Per machine: players need not match on it. docs/issues/online-quality.md.
+// was: 28630385 (slti v1,v1,901)
+patch=1,EE,00133060,word,286305A1
+
+[Net test: kick request is answered for a peer already dropped]
+author=reverse engineering test patch; confirmed on three and four linked Play! emulator instances (the host kicks one player: without the section every machine but the host never drops that player and all of them stand still for good, with it they drop it 30 frames after the host and play on in sync; docs/issues/online-quality.md 4.2); untested on PCSX2 or a console
+description=net_pumpReceive, 0x13C2F4: a machine asked to confirm a drop (packet 0xBD41) answers with its copy of that player's last frames even if it has already dropped the player itself. In the original it stays silent then, the asking machine never gets a drop frame, its game stops at that frame and the others stop behind it (FINDINGS L7). Three- and four-player games only. It is the answering machine that needs it, so every player should have it; mixing is harmless. docs/issues/online-quality.md.
+// was: 1440002F (bnez v0,0x13c3b4)  now: nop
+patch=1,EE,0013C2F4,word,00000000
+
+[Net test: a peer being dropped still bounds the input lead]
+author=reverse engineering test patch; confirmed on three and four linked Play! emulator instances (one machine stopped, or kicked: on the machines that go on the input lead at the drop is 13-18 frames instead of 33-38, and 4-15 ten seconds later instead of 14-29; docs/issues/online-quality.md 3.1); untested on PCSX2 or a console
+description=net_main, 0x1333B0: the loop that finds the smallest input lead and the slowest simulation frame among the other machines leaves a peer out once its drop frame is agreed (peer +0x44D8 above 0), not as soon as its drop is being negotiated (+0x44D6 not 0). In the original the 30-60 calls of the negotiation let every remaining machine sample input unchecked up to the 38-frame cap, which then drains at one frame a second. Three- and four-player games only; does its work together with LAG-1. Per machine. docs/issues/online-quality.md.
+// was: 80E20006 (lb v0,6(a3)), 1440000F (bnez v0,0x1333f4)  now: lw v0,8(a3); bgtz v0,0x1333f4
+patch=1,EE,001333B0,word,8CE20008
+patch=1,EE,001333B4,word,1C40000F
+
+[Net test: flush before a level load waits for the peers' tick]
+author=reverse engineering test patch; confirmed on two and four linked Play! emulator instances (six level changes each: without the section two or three of them hold every machine for 117-144 frames, with it none for more than 47; docs/issues/online-quality.md 3.2); untested on PCSX2 or a console
+description=net_flushBeforeLoad, 0x132DFC and 0x132E28: before it loads a level a machine now makes at least 16 passes and then waits until every other machine has reported the simulation frame of the level change (peer +0x44C8), instead of waiting for their acknowledgement of its own input (+0x44C0) with no minimum. In the original a machine whose last input frames had not been acknowledged when the others went off to load waited out all 121 passes, and the others then waited for it after their own load: about two seconds of standstill at many level changes, mostly on good links. Costs a quarter of a second at every level change. Per machine, but each machine helps the others by staying for its 16 passes. docs/issues/online-quality.md.
+// was: 0000302D (move a2,zero), 8C82FFF0 (lw v0,-0x10(a0))  now: slti a2,s0,16; lw v0,-8(a0)
+patch=1,EE,00132DFC,word,2A060010
+patch=1,EE,00132E28,word,8C82FFF8
+
 [Arena diagnostic: knight never summons]
 author=reverse engineering test patch, untested on a running game
 description=Diagnostic only, changes the fight. The fourth knight of the Drundar arena never casts Summon Skeleton (Horsemen_run, 0x2726F4). If the arena still goes out of sync with this on every machine, the skeletons are not involved. Every player must use the same setting.

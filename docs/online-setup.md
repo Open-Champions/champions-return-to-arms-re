@@ -161,6 +161,7 @@ console, and the patch file says so section by section.
 | item records start from zero, not from stack leftovers | dropped items carrying different unused bytes on different machines — **confirmed live**: with it, all twelve arena fights agree completely |
 | menu screens do not recompute player statistics; stats page does not recompute the main weapon's damage either | a heal that overshoots being trimmed early on the machine with a menu open, which ends in a death on one machine only — **confirmed live**: the one cause left after a five-million-tick soak, gone with these two |
 | carried weight is recomputed only inside the simulation | one machine allowing a pick-up that another refuses, because only the owner's machine had updated the character's carried weight — **confirmed live** |
+| peer silence time-out 900 -> 1440 calls | a player whose machine stands completely still (asleep, frozen, a long hitch) being dropped after 15 seconds, which ends the game for both sides; with this the others wait 24 seconds — **confirmed live**: a machine frozen for 21.7 seconds is kept and the pair is in step afterwards; without it the same machine is dropped. Each machine decides alone, so players need not match on it |
 | prediction copy starts without pending damage | G11–G13, G24 — the fault was not reproduced live; the section was on in the soak without harm (V62) |
 | equalise at once (LAG-1) | input delay staying high after a stall, which is also what widens K1 and K2 — **confirmed live**: peak 11 frames instead of 34, cleared in 10 s instead of 35 |
 

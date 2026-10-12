@@ -499,6 +499,33 @@ namespace
 	const uint8_t PATCH_SET_MARK[] = {0x00, 0x06, 'R', 'T', 'A', 's', 'e', 't', '1'};
 	const size_t PATCH_SET_SIZE = sizeof(PATCH_SET_MARK) + 6;
 	const int64_t PATCH_SET_TIMES[] = {300, 1500, 4000, 9000}; // milliseconds after the first datagram
+
+	// ---- Which arithmetic the other players compute with ---------------------------------
+	// A browser copy's machine rounds floating-point results to nearest, a desktop copy's
+	// toward zero as the console does, and two machines that round differently fall out of
+	// step within seconds of the first step (docs/issues/mixed-arithmetic.md). A desktop
+	// copy whose core has the switch can compute as a browser does. So that the copies of
+	// one game can agree before it starts, each tells the others - in the same way and at
+	// the same times as the patch set, and again whenever it changes - what it can do and
+	// what it does now: a keep-alive (0, 6), the mark RTAari1, one byte of ARITH_CAN_*
+	// bits and one byte ARITH_NATIVE or ARITH_BROWSER, 11 bytes. A copy that does not know
+	// the mark hands a keep-alive to its game, as with the patch set.
+	const uint8_t ARITH_MARK[] = {0x00, 0x06, 'R', 'T', 'A', 'a', 'r', 'i', '1'};
+	const size_t ARITH_SIZE = sizeof(ARITH_MARK) + 2;
+}
+
+void CNet::SetArithmetic(uint8_t now)
+{
+#ifdef __EMSCRIPTEN__
+	(void)now; // a browser copy has one arithmetic
+#else
+	m_arithNow = now;
+#endif
+}
+
+uint8_t CNet::Arithmetic() const
+{
+	return m_arithNow;
 }
 
 std::vector<NetPeer> CNet::Peers() const
@@ -513,6 +540,9 @@ std::vector<NetPeer> CNet::Peers() const
 		peer.setKnown = entry.second.setKnown;
 		peer.patchSet = entry.second.patchSet;
 		peer.patchWords = entry.second.patchWords;
+		peer.arithKnown = entry.second.arithKnown;
+		peer.arithCan = entry.second.arithCan;
+		peer.arithNow = entry.second.arithNow;
 		peer.heardFor = now - entry.second.firstHeard;
 		peer.silentFor = now - entry.second.lastHeard;
 		peers.push_back(peer);
@@ -550,6 +580,33 @@ void CNet::PollUdp()
 			to.sin_port = htons(static_cast<uint16_t>(entry.first & 0xFFFF));
 			sendto(socket->second.fd, datagram, sizeof(datagram), 0, reinterpret_cast<sockaddr*>(&to), sizeof(to));
 			if(peer.told == 1) Log("patch set %08x told to the player at %s:%u (a keep-alive of the game's UDP library with the figure after it)", m_config.patchSet, IpText(ntohl(to.sin_addr.s_addr)).c_str(), ntohs(to.sin_port));
+		}
+		// our arithmetic, in the same way; from the start again when it has changed
+		uint8_t arithNow = m_arithNow;
+		for(auto& entry : m_peers)
+		{
+			Peer& peer = entry.second;
+			if(peer.arithToldAs != arithNow)
+			{
+				peer.arithToldAs = arithNow;
+				peer.arithTold = 0;
+				peer.arithSince = std::max<int64_t>(peer.firstHeard, now - PATCH_SET_TIMES[0]);
+			}
+			const int times = static_cast<int>(sizeof(PATCH_SET_TIMES) / sizeof(PATCH_SET_TIMES[0]));
+			if(peer.arithTold >= times || now - peer.arithSince < PATCH_SET_TIMES[peer.arithTold]) continue;
+			peer.arithTold++;
+			auto socket = m_udp.find(peer.localPort);
+			if(socket == m_udp.end()) continue;
+			uint8_t datagram[ARITH_SIZE];
+			memcpy(datagram, ARITH_MARK, sizeof(ARITH_MARK));
+			datagram[sizeof(ARITH_MARK)] = m_config.arithCan;
+			datagram[sizeof(ARITH_MARK) + 1] = arithNow;
+			sockaddr_in to = {};
+			to.sin_family = AF_INET;
+			to.sin_addr.s_addr = htonl(static_cast<uint32_t>(entry.first >> 16));
+			to.sin_port = htons(static_cast<uint16_t>(entry.first & 0xFFFF));
+			sendto(socket->second.fd, datagram, sizeof(datagram), 0, reinterpret_cast<sockaddr*>(&to), sizeof(to));
+			if(peer.arithTold == 1) Log("arithmetic told to the player at %s:%u: this copy computes with %s", IpText(ntohl(to.sin_addr.s_addr)).c_str(), ntohs(to.sin_port), (arithNow == ARITH_BROWSER) ? "browser arithmetic" : "Play!'s own arithmetic");
 		}
 	}
 	for(auto& entry : m_udp)
@@ -600,6 +657,17 @@ void CNet::PollUdp()
 					peer.setKnown = true;
 					peer.patchSet = set;
 					peer.patchWords = words;
+					if(!m_config.passPatchSetOn) continue; // ours, not the machine's
+				}
+				else if(static_cast<size_t>(n) == ARITH_SIZE && memcmp(buffer, ARITH_MARK, sizeof(ARITH_MARK)) == 0)
+				{
+					uint8_t can = buffer[sizeof(ARITH_MARK)], doing = buffer[sizeof(ARITH_MARK) + 1];
+					if(!peer.arithKnown || peer.arithCan != can || peer.arithNow != doing)
+						Log("the player at %s:%u computes with %s (can do: %s%s%s)", IpText(fromIp).c_str(), fromPort, (doing == ARITH_BROWSER) ? "browser arithmetic" : "Play!'s own arithmetic",
+						    (can & ARITH_CAN_NATIVE) ? "Play!'s own" : "", ((can & ARITH_CAN_NATIVE) && (can & ARITH_CAN_BROWSER)) ? " and " : "", (can & ARITH_CAN_BROWSER) ? "the browser's" : "");
+					peer.arithKnown = true;
+					peer.arithCan = can;
+					peer.arithNow = doing;
 					if(!m_config.passPatchSetOn) continue; // ours, not the machine's
 				}
 			}

@@ -1,0 +1,19 @@
+# Prelude for `netpair.py snapshot --prelude`: from the pair states of
+# tools/rig/examples/pair-start.rig (lockstep tick 659, level strife) into the arena
+# level and through its opening cutscene, so that the images are taken where the fight
+# starts.  The steps are those of tools/rig/examples/pair-arena.rig; it runs on the rig.
+ontick 700 poke g_pendingLevel:str16 drunare
+wait 60
+until g_levelName:str8 == drunare timeout 3000
+until g_players+0x43d8:u32 != 0 timeout 3000
+wait 240
+A: stick L 0 128
+wait 60
+A: stick L 128 128
+wait 20
+A: stick L 128 0
+wait 60
+A: stick L 128 128
+until 0x44fcd0:u8 != 0 timeout 600
+until 0x44fcd0:u8 == 0 timeout 4000
+wait 30

@@ -140,7 +140,8 @@ def main():
     parser.add_argument("--report", help="developer tests only: file that POSTs to /report are appended to")
     parser.add_argument("--shots", help="developer tests only: directory that pictures POSTed to /shot/NAME.png are written to (game output: keep it under local/)")
     args = parser.parse_args()
-    if not os.path.isfile(os.path.join(args.site, "Play.wasm")):
+    # a build as build.sh leaves it, or one laid out for a web server (the build's files in a directory of their own)
+    if not os.path.isfile(os.path.join(args.site, "Play.wasm")) and not os.path.isfile(os.path.join(args.site, "index.html")):
         sys.exit("serve.py: %s holds no build (run tools/play-web/build.sh first)" % args.site)
     Handler.disc = args.disc
     if args.report:

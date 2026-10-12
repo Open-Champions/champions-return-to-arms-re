@@ -4,11 +4,12 @@
 // Besides the calls of the interface it records the two things the renderer reads from
 // the machine itself: VU1 memory as the CPU's direct stores changed it (the game writes a
 // few constants straight into VU1 data memory, section 4.1 of docs/spec/render-pipeline.md)
-// and, once, the main VU1 program's upload packet from the executable's data (a resumed
-// memory image does not carry VU1 memory, so the renderer loads the program from there).
+// and main memory - all of it once at the start, then the 32 bytes of a texture header
+// whenever the game gives the texture other GS blocks (texindex.h says what is read there).
 #pragma once
 #include "iface.h"
 #include "stream.h"
+#include "texindex.h"
 
 namespace render {
 
@@ -35,15 +36,33 @@ struct Recorder : rta::VideoSink {
             out.put(SK_VU1MICRO, 0, 0, (const uint32_t*)m, 0x1000);
         }
     }
+    TexIndex index;
+    std::vector<uint16_t> blocks;       // +0x18 of every indexed header as last recorded
     void start() {
         if (started) return;
         started = true;
-        // the executable's VU1 upload packet (0x3e5ec0, 940 quadwords) and the two words
-        // the renderer needs to know a resumed image by
-        out.put(SK_RAM, 0x3e5ec0, 0, (const uint32_t*)(rta::memory() + 0x3e5ec0), 940 * 4);
+        // main memory once (the renderer reads the executable's VU1 upload packet and the
+        // game's texture headers from it), then the headers' block fields as they change
+        const uint32_t* ram = (const uint32_t*)rta::memory();
+        for (uint32_t at = 0; at < 0x2000000; at += 0x100000) out.put(SK_RAM, at, 0, ram + at / 4, 0x100000 / 4);
+        index.ram = rta::memory();
+        index.size = 0x2000000;
+        index.scan();
+        blocks.assign(index.headers.size(), 0);
+        for (size_t k = 0; k < blocks.size(); k++) blocks[k] = TexIndex::u16(index.ram + index.headers[k] + 0x18);
+    }
+    void sync_headers() {
+        for (size_t k = 0; k < blocks.size(); k++) {
+            const uint8_t* h = index.ram + index.headers[k];
+            if (TexIndex::u16(h + 0x18) == blocks[k]) continue;
+            blocks[k] = TexIndex::u16(h + 0x18);
+            uint32_t words[8];
+            memcpy(words, h, 32);
+            out.put(SK_RAM, index.headers[k], 0, words, 8);
+        }
     }
     void vif1(const uint32_t* words, size_t count) override {
-        if (active()) { start(); sync_vu(); out.put(SK_VIF1, 0, 0, words, count); }
+        if (active()) { start(); sync_vu(); sync_headers(); out.put(SK_VIF1, 0, 0, words, count); }
         if (next) next->vif1(words, count);
     }
     void vif0(const uint32_t* words, size_t count) override {

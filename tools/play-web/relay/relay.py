@@ -204,8 +204,10 @@ class Session:
         except Stop as stop:
             why = str(stop)
             self.notice(stop.code, why)
-        except (asyncio.IncompleteReadError, ConnectionError, OSError):
-            why = "the connection to the page was lost"
+        except asyncio.IncompleteReadError:
+            why = "the connection to the page ended without a goodbye"
+        except (ConnectionError, OSError) as error:
+            why = "the connection to the page was lost (%s)" % (type(error).__name__ + (": " + str(error) if str(error) else ""))
         except (struct.error, IndexError):
             why = "a message too short for its kind"
             self.notice(N_PROTOCOL, why)

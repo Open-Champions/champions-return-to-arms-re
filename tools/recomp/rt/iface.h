@@ -1,10 +1,12 @@
 // iface.h - the runtime's boundary to the parts it does not contain.
 //
-// The translated game plus runtime.cpp, iop.cpp and sound_null.cpp is a complete headless
-// machine.  Four things leave it: the picture, the sound, the network and the controller.
-// Each has one interface here.  An application that wants a window, audio or sockets
-// implements the interface, puts a pointer into rta::Hooks and calls rta::run() from its
-// own main(); main_headless.cpp is the smallest such application (it sets none of them).
+// The translated game plus runtime.cpp, iop.cpp, script.cpp and sound_null.cpp is a
+// complete headless machine.  Four things leave it: the picture, the sound, the network
+// and the controller.  The picture (VideoSink) and the controller (PadSource) are wired:
+// an application implements them, puts pointers into rta::Hooks and calls rta::run()
+// from its own main(); main_headless.cpp is the smallest such application (it sets
+// neither).  Sound is replaced at the level of the game's RPC calls (see (b)); the network
+// at the level of the library entries (see (c)).
 //
 // Rules common to all four:
 //  - Every callback is made while the runtime holds its one lock, on the host thread that
@@ -64,9 +66,11 @@ struct VideoSink {
 // ---- (b) sound ------------------------------------------------------------------------
 // The game reaches sound through two RPC servers on the I/O processor: the SDK's sound
 // remote 0x80000701 (libsd calls: SPU2 registers, switches, addresses, voice transfers,
-// effects) and its own stream driver 0x000163a5 (HELLO.IRX).  sound_null.cpp models both
-// without producing sound - registers, the 2 MB of SPU2 memory, voice end flags and
-// stream positions as functions of the virtual clock - and reports what a mixer needs.
+// effects) and its own stream driver 0x000163a5 (HELLO.IRX).  The boundary for sound is
+// those calls: one source file supplies sound_rpc / sound_vblank / sound_report (rt.h);
+// sound_null.cpp is the one that makes no sound, and `build.py run --sound FILE.cpp`
+// links another in its place.  The struct below is RESERVED for an output-side interface
+// and nothing in the runtime calls it today.
 struct SoundSink {
     virtual ~SoundSink() {}
     // sceSdSetParam / SetSwitch / SetAddr / SetCoreAttr as the game issued them: `entry`
@@ -82,8 +86,9 @@ struct SoundSink {
 
 // ---- (c) network ----------------------------------------------------------------------
 // The socket-level entries of Sony's libnet as the game's netcode calls them (addresses
-// in docs/issues/native-recomp.md).  With no driver the entries answer as a console with
-// no network adaptor does.  Values and errors are libnet's: >= 0 success, negative
+// in docs/issues/native-recomp.md).  RESERVED: the runtime does not replace those entries
+// today (offline play never reaches them); a network build replaces them with its own
+// list of supplied functions (tools/recomp/net) and may use this shape or not.  Values and errors are libnet's: >= 0 success, negative
 // sceINETE_* codes; addresses are IPv4 in network byte order inside the 16-byte libnet
 // address; `ms` is the time-out the game asked for (0 = do not wait, -1 = no limit).
 struct NetAddress { uint8_t bytes[16]; };
@@ -120,8 +125,10 @@ struct PadState {
 struct PadSource {
     virtual ~PadSource() {}
     // Asked once per controller port (0, 1) at the start of every vertical blank, before
-    // the game's blank handler runs; what it returns is what scePadRead gives the game
-    // until the next blank.  `number` counts blanks since power-on.
+    // the game's blank handler runs.  What it returns reaches the game's controller buffer
+    // one blank later, as on the console (the I/O processor's copy arrives during the
+    // frame); `--opt pad-delay=0` hands it over at once.  `number` counts blanks since
+    // power-on.
     virtual void read(unsigned port, uint64_t number, PadState& state) = 0;
     // The game set the two vibration motors of a port (scePadSetActDirect).
     virtual void rumble(unsigned port, uint8_t small_motor, uint8_t large_motor) { (void)port; (void)small_motor; (void)large_motor; }

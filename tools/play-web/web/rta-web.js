@@ -22,6 +22,13 @@
 //   shot=NAME.png  DEV: with auto=hub, POST one picture of the canvas in the level to /shot/NAME.png
 //   glprofile=1    DEV: with auto=hub, every WebGL call of the video thread counted for 5 s (slows it down)
 //   title=TEXT     the page's title (tests: "AGENT TEST - browser build")
+//   relay=ws://127.0.0.1:PORT/relay   DEV: go online through a relay on this computer
+//
+// Online play is there when a file online.json lies beside the page:
+//   { "relay": "relay", "signin": "NAME.pnach" }
+// "relay" is the address of the relay's WebSocket (tools/play-web/relay), relative to the
+// page or complete; "signin" names a patch file beside the page that takes the game past
+// its sign-in step (a privately served page has one; it is not part of the repository).
 import Play from "./Play.js";
 
 const params = new URLSearchParams(location.search);
@@ -187,8 +194,22 @@ async function boot(reader, url, name) {
 	$("start").hidden = true;
 	canvas.focus();
 	setStatus("Running.");
+	keepAwake();
 	return true;
 }
+
+// The screen stays on while the game runs. A controller does not count as activity for
+// the computer's idle timer, and when the screen is switched off or the computer sleeps a
+// browser closes the page's connections: an online game would be lost.
+let wakeLock = null;
+async function keepAwake() {
+	if(!running || wakeLock || !navigator.wakeLock || document.hidden) return;
+	try {
+		wakeLock = await navigator.wakeLock.request("screen");
+		wakeLock.addEventListener("release", () => { wakeLock = null; });
+	} catch(e) { /* the browser does not allow it now; asked again when the page is shown again */ }
+}
+document.addEventListener("visibilitychange", keepAwake);
 
 // The image the player picked. It is read in place, through a URL that only this page
 // can use (URL.createObjectURL): nothing is copied and nothing leaves the computer.
@@ -338,7 +359,7 @@ function readInput() {
 }
 
 window.addEventListener("keydown", (event) => {
-	if(!running || event.target instanceof HTMLSelectElement || event.metaKey || event.ctrlKey || event.altKey) return;
+	if(!running || event.target instanceof HTMLSelectElement || event.target instanceof HTMLInputElement || event.metaKey || event.ctrlKey || event.altKey) return;
 	if(event.code in KEYS || event.code in STICK_KEYS) {
 		keysDown.add(event.code);
 		event.preventDefault();
@@ -353,6 +374,219 @@ window.addEventListener("keyup", (event) => {
 window.addEventListener("blur", () => { keysDown.clear(); readInput(); });
 window.addEventListener("gamepadconnected", (event) => note("controller attached: " + event.gamepad.id + " (" + (event.gamepad.mapping || "no standard layout") + ")"));
 canvas.addEventListener("pointerdown", () => { canvas.focus(); startSound(); });
+
+// ---- online play ----------------------------------------------------------------------
+// A page has no sockets of its own. The console's network (the desktop application's,
+// compiled in: tools/play-web/src/RtaWebNet.cpp) hands what it wants sent to this thread,
+// which owns the one WebSocket connection to the relay; what the relay sends goes back
+// the same way. Going online itself - title screen, network setting, terms, log-in, a
+// game by code - is the desktop application's "one-step online", also compiled in: this
+// page only asks for the player name, starts it and shows what it says.
+const online = {
+	relay: null,        // the relay's address; null: this page has none and nothing below is shown
+	signin: null,       // the name of the sign-in patch file
+	signinLoaded: false,
+	socket: null,
+	welcomed: false,
+	lastTry: -1e9,
+	buffer: 0,          // a piece of the module's memory for handing messages over
+	notice: "",         // what the relay said last (why it refused something, or closed)
+	rtt: [],            // the last round trips to the relay, in milliseconds
+	pongs: new Map(),
+	state: null,
+	codeShown: "",
+};
+const RELAY_BUFFER = 16384;
+
+async function onlineConfig() {
+	try {
+		const response = await fetch("online.json", { cache: "no-store" });
+		if(response.ok) {
+			const setting = await response.json();
+			if(typeof setting.relay === "string" && setting.relay) {
+				const url = new URL(setting.relay, location.href);
+				if(url.protocol === "http:") url.protocol = "ws:";
+				if(url.protocol === "https:") url.protocol = "wss:";
+				online.relay = url.href;
+			}
+			if(typeof setting.signin === "string" && /^[\w.-]+$/.test(setting.signin)) online.signin = setting.signin;
+		}
+	} catch(e) { /* no such file: a page without online play */ }
+	// DEV: a relay on the developer's own computer
+	const given = params.get("relay");
+	if(given && /^ws:\/\/(127\.0\.0\.1|localhost)(:\d+)?\//.test(given)) online.relay = given;
+	return online.relay !== null;
+}
+
+function relayConnect() {
+	if(!online.relay || online.socket || !module) return;
+	const now = performance.now();
+	if(now - online.lastTry < 3000) return;
+	online.lastTry = now;
+	module._rtaNetLink(1);
+	let socket;
+	try { socket = new WebSocket(online.relay); } catch(e) { module._rtaNetLink(0); note("relay: " + e); return; }
+	socket.binaryType = "arraybuffer";
+	online.socket = socket;
+	socket.onopen = () => socket.send(new Uint8Array([1, 1])); // HELLO, version 1
+	socket.onmessage = (event) => {
+		const bytes = new Uint8Array(event.data);
+		if(bytes.length < 1 || bytes.length > RELAY_BUFFER) return;
+		if(bytes[0] === 0x89) { // PONG
+			const key = bytes.length >= 9 ? new DataView(bytes.buffer).getFloat64(1) : -1;
+			const pending = online.pongs.get(key);
+			if(pending) { online.pongs.delete(key); pending(performance.now() - key); }
+			return;
+		}
+		if(bytes[0] === 0x8A) { // NOTICE: why something was refused, or why the session ends
+			online.notice = new TextDecoder().decode(bytes.subarray(2));
+			note("relay: " + online.notice);
+			return;
+		}
+		module.HEAPU8.set(bytes, online.buffer);
+		module._rtaNetGive(online.buffer, bytes.length);
+		if(bytes[0] === 0x81) {
+			online.welcomed = true;
+			online.notice = "";
+			note("relay: connected");
+			relayDrain();
+		}
+	};
+	socket.onclose = (event) => {
+		if(online.socket !== socket) return;
+		online.socket = null;
+		online.welcomed = false;
+		online.pongs.clear();
+		module._rtaNetLink(0);
+		note("relay: the connection is closed (" + (online.notice || (event.wasClean ? "by the relay" : "it broke")) + "; code " + event.code + ")");
+	};
+}
+// what the console's network wants sent
+function relayDrain() {
+	if(!online.welcomed || !online.socket || online.socket.readyState !== WebSocket.OPEN) return;
+	for(let n; (n = module._rtaNetTake(online.buffer, RELAY_BUFFER)) > 0;) {
+		online.socket.send(module.HEAPU8.slice(online.buffer, online.buffer + n)); // a copy: the module's memory is shared
+	}
+}
+// one round trip to the relay, in milliseconds (null: none within three seconds)
+function relayPing() {
+	return new Promise((resolve) => {
+		if(!online.welcomed) { resolve(null); return; }
+		const key = performance.now();
+		const message = new Uint8Array(9);
+		message[0] = 9;
+		new DataView(message.buffer).setFloat64(1, key);
+		online.pongs.set(key, resolve);
+		online.socket.send(message);
+		sleep(3000).then(() => { if(online.pongs.delete(key)) resolve(null); });
+	});
+}
+
+function onlineState() {
+	return JSON.parse(module.UTF8ToString(module._rtaOnlineState()));
+}
+function onlineCall(name, ...texts) {
+	const pointers = texts.map((text) => (typeof text === "string" ? writeString(text) : text));
+	const result = module[name](...pointers);
+	texts.forEach((text, index) => { if(typeof text === "string") module._free(pointers[index]); });
+	return result;
+}
+// mode: 0 the lobby, 1 host a game, 2 join the game with the code
+function onlineStart(mode, code = "") {
+	if(!online.relay || !module) return "this page has no online play";
+	if(!online.signinLoaded) return "this copy of the page has no sign-in patch: the game cannot get past its sign-in step";
+	if(!running) return "start the game first: choose your disc image";
+	relayConnect();
+	const wrong = module.UTF8ToString(onlineCall("_rtaOnlineStart", mode, code.trim(), $("chooseCharacter").checked ? 1 : 0));
+	if(!wrong) { online.codeShown = ""; canvas.focus(); }
+	return wrong;
+}
+function onlineSay(text, bad = false) {
+	$("onlineSay").textContent = text;
+	$("onlineSay").classList.toggle("bad", bad);
+}
+function onlineShow() {
+	if(!module || !online.relay) return;
+	const state = online.state = onlineState();
+	const bar = $("onlineBar");
+	const others = (state.players || []).filter((player) => player.set_known && !player.same_set);
+	let text = state.note;
+	if(others.length) text = "WARNING: another player has a different patch set (theirs " + others[0].set + ", yours " + state.patch_set + "): the game would fall out of step. Everyone needs the same page.";
+	bar.hidden = !text;
+	bar.classList.toggle("bad", others.length > 0 || /stopped/.test(text));
+	if(bar.dataset.text !== text) {
+		bar.dataset.text = text;
+		bar.textContent = text;
+		if(text) note("online: " + text);
+	}
+	// the name is asked for once; the panel opens by itself for it
+	const ask = $("nameAsk");
+	if(state.name_wanted && ask.hidden) {
+		ask.hidden = false;
+		$("online").hidden = false;
+		$("nameWhy").textContent = state.name_why || "";
+		$("playerName").focus();
+	} else if(!state.name_wanted && !ask.hidden) {
+		ask.hidden = true;
+		canvas.focus();
+	}
+	for(const id of ["onlineHost", "onlineJoin", "onlineLobby"]) $(id).disabled = !!state.active;
+	$("onlineStop").hidden = !state.active;
+	$("onlineForget").hidden = !state.has_login || !!state.active;
+	$("onlineForget").textContent = state.name ? "Forget online login (" + state.name + ")" : "Forget online login";
+	const code = $("onlineCode");
+	code.hidden = !state.code;
+	if(state.code && online.codeShown !== state.code) {
+		online.codeShown = state.code;
+		code.textContent = "Game code: ";
+		code.appendChild(document.createElement("b")).textContent = state.code;
+	}
+	if(!state.active && !$("onlineSay").classList.contains("bad")) {
+		onlineSay(online.signinLoaded ? (state.has_login ? "Online as " + state.name + "." : "You will be asked for a player name, once.") : "This copy of the page has no sign-in patch: the game cannot go online.", !online.signinLoaded);
+	} else if(state.active) {
+		onlineSay(state.note);
+	}
+}
+$("onlineButton").addEventListener("click", () => {
+	const panel = $("online");
+	panel.hidden = !panel.hidden;
+	$("onlineButton").setAttribute("aria-expanded", String(!panel.hidden));
+	if(panel.hidden) canvas.focus(); else onlineShow();
+});
+function onlineClick(mode) {
+	const code = mode === 2 ? $("joinCode").value : "";
+	if(mode === 2 && !code.trim()) { onlineSay("Type the code your friend's page shows.", true); $("joinCode").focus(); return; }
+	const wrong = onlineStart(mode, code);
+	onlineSay(wrong ? wrong.charAt(0).toUpperCase() + wrong.slice(1) + "." : "Going online…", !!wrong);
+	startSound();
+}
+$("onlineHost").addEventListener("click", () => onlineClick(1));
+$("onlineJoin").addEventListener("click", () => onlineClick(2));
+$("onlineLobby").addEventListener("click", () => onlineClick(0));
+$("joinCode").addEventListener("keydown", (event) => { if(event.key === "Enter") onlineClick(2); });
+function onlineName() {
+	const wrong = module.UTF8ToString(onlineCall("_rtaOnlineName", $("playerName").value.trim()));
+	$("nameWhy").textContent = wrong;
+	if(!wrong) { $("nameAsk").hidden = true; canvas.focus(); }
+}
+$("nameOk").addEventListener("click", onlineName);
+$("playerName").addEventListener("keydown", (event) => { if(event.key === "Enter") onlineName(); });
+$("onlineStop").addEventListener("click", () => { module._rtaOnlineStop(); canvas.focus(); });
+$("onlineForget").addEventListener("click", () => { module._rtaOnlineForget(); saveCard(); onlineShow(); });
+
+async function onlineLoop() {
+	// by the worker's clock: a page that is not in front must not fall silent
+	for(let tick = 0; ; tick++) {
+		await sleep(250);
+		try {
+			onlineShow();
+			if(tick % 60 === 59 && online.welcomed) { // every 15 s: the relay drops a page it does not hear
+				const ms = await relayPing();
+				if(ms !== null) { online.rtt.push(+ms.toFixed(2)); if(online.rtt.length > 40) online.rtt.shift(); }
+			}
+		} catch(e) { note("online: " + e); }
+	}
+}
 
 // ---- sound --------------------------------------------------------------------------
 // A browser lets a page make sound only after the person has done something on it.
@@ -668,6 +902,22 @@ const rta = window.rta = {
 		if(rta.levelName() !== "hub") throw new Error("the first level was not reached (level '" + rta.levelName() + "')");
 		if(settle) await rta.wait(settle);
 	},
+	// online play: what the page shows; start(0 lobby | 1 host | 2 join, code); name(text);
+	// DEV: round trips to the relay in milliseconds, and the link taken down
+	online: {
+		state: () => onlineState(),
+		link: () => ({ relay: !!online.relay, signin: online.signinLoaded, welcomed: online.welcomed, notice: online.notice, rtt: online.rtt.slice(), awake: !!wakeLock }),
+		start: (mode, code = "") => onlineStart(mode, code),
+		name: (text) => module.UTF8ToString(onlineCall("_rtaOnlineName", text)),
+		stop: () => module._rtaOnlineStop(),
+		forget: () => module._rtaOnlineForget(),
+		pings: async (count = 50, gap = 20) => {
+			const times = [];
+			for(let i = 0; i < count; i++) { const ms = await relayPing(); if(ms !== null) times.push(+ms.toFixed(3)); await sleep(gap); }
+			return times;
+		},
+		drop: () => online.socket && online.socket.close(),
+	},
 	state: "loading",
 };
 
@@ -766,6 +1016,7 @@ async function start() {
 		printErr: (text) => note("emulator (error): " + text),
 	});
 	await mountCard();
+	const goesOnline = await onlineConfig();
 
 	if(options.patches) {
 		try {
@@ -779,6 +1030,16 @@ async function start() {
 			module._free(b);
 			note("patches: " + words + " words");
 			if(words < 0) { setStatus("The patch file could not be understood: not started."); return; }
+			if(goesOnline && online.signin) {
+				// what takes the game past its sign-in step; without it the page plays offline only
+				const response = await fetch(online.signin);
+				if(response.ok) {
+					const c = writeString(await response.text());
+					online.signinLoaded = module._rtaAddPatches(c) > 0;
+					module._free(c);
+				}
+				note("online: sign-in patch " + (online.signinLoaded ? "loaded" : "NOT loaded: the game cannot go online"));
+			}
 		} catch(e) {
 			setStatus("The patch file could not be loaded (" + e.message + "): not started.");
 			return;
@@ -789,6 +1050,14 @@ async function start() {
 		module._free(empty);
 	}
 
+	if(goesOnline) {
+		// before the machine is made: it then gets its Ethernet adaptor's cable, the network
+		// setting on its memory card and the online driver
+		const host = new URL(online.relay).host;
+		onlineCall("_rtaOnlineSetup", host, "of this site (" + host + ")", DATA);
+		module.rtaNetWake = () => { if(module._rtaNetWoke()) relayConnect(); relayDrain(); };
+		online.buffer = module._malloc(RELAY_BUFFER);
+	}
 	module._rtaInit(canvas.width, canvas.height, options.factor, options.glMain ? 0 : 1, options.sound ? 1 : 0, 0);
 	for(let i = 0; i < 1000 && !module._rtaReady(); i++) await sleep(20);
 	if(!module._rtaReady()) { setStatus("The emulator did not start."); return; }
@@ -799,6 +1068,11 @@ async function start() {
 	setInterval(readInput, 8); // also when the page is not being painted
 	rta.state = "ready";
 	showMute();
+	if(goesOnline) {
+		$("onlineButton").hidden = false;
+		relayConnect(); // so that the cable is in when the game looks for it
+		onlineLoop();
+	}
 
 	if(options.disc) {
 		// DEV: a disc image served by the developer's own local server
