@@ -4,6 +4,7 @@
 // machine is stopped for loading an executable.
 #include "Rta.h"
 #include "RtaNet.h"
+#include "RtaOnline.h"
 
 #include <QCommandLineParser>
 #include <QCoreApplication>
@@ -105,6 +106,10 @@ namespace
 		bool soundWav = false;   // write the mixed sound to <data>/sound-<time>.wav
 		bool soundPlain = false; // queue sound as Play! itself does (for comparing)
 		int soundBlock = 0;      // milliseconds of sound handed over at a time, for this data directory (0: as set)
+		std::string online;      // --rta-online: "lobby", "host" or "join:CODE"; empty: not given
+		bool noOnline = false;   // --rta-no-online: not at this start, whatever the setting says
+		std::vector<std::string> onlineNames; // --rta-online-name: player names for a test, instead of asking
+		int gatewayPort = 0;     // --rta-gateway-port: where this host looks for the server's gateway (tests)
 	};
 
 	// The packaged application (see Rta.h, LaunchInfo)
@@ -125,6 +130,18 @@ namespace
 	std::string LaunchFile()
 	{
 		return g_launch.root + "/launch.ini";
+	}
+
+	// The key a saved login is kept under: the server's address as the player gave it.
+	std::string ServerKey(std::string server)
+	{
+		std::string key;
+		for(char c : server)
+		{
+			if(c != ' ' && c != '\t' && c != '\r' && c != '\n') key += static_cast<char>(tolower(static_cast<unsigned char>(c)));
+		}
+		if(key.empty() || key == "localhost" || key.compare(0, 4, "127.") == 0) key = "this-computer";
+		return key;
 	}
 
 	struct PatchWord
@@ -501,6 +518,7 @@ namespace
 				}
 			}
 			if(options.net) StartNet();
+			StartOnline(base);
 
 			m_executableChange = m_vm->m_ee->m_os->OnExecutableChange.Connect([this]() { OnExecutableChange(); });
 			StartTextures(base);
@@ -545,6 +563,103 @@ namespace
 		{
 			std::lock_guard<std::mutex> lock(m_logMutex);
 			return m_status;
+		}
+
+		// ---- one-step online (RtaOnline.h) ----------------------------------------------
+		Rta::COnline online;
+
+		// "", "lobby", "host", "host:CODE" or "join:CODE"
+		static bool ParseOnlineMode(const std::string& mode, Rta::COnline::Goal& goal, std::string& code, std::string& error)
+		{
+			goal = Rta::COnline::Goal::Lobby;
+			code.clear();
+			if(mode.empty() || mode == "lobby") return true;
+			std::string word = mode.substr(0, mode.find(':'));
+			std::string rest = (mode.find(':') == std::string::npos) ? "" : mode.substr(mode.find(':') + 1);
+			for(auto& c : rest) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+			if(word == "host")
+			{
+				goal = Rta::COnline::Goal::Host;
+				code = rest.empty() ? Rta::COnline::MakeCode() : rest;
+			}
+			else if(word == "join")
+			{
+				goal = Rta::COnline::Goal::Join;
+				code = rest;
+			}
+			else
+			{
+				error = "'" + mode + "' is not lobby, host or join:CODE";
+				return false;
+			}
+			error = Rta::COnline::CheckCode(code);
+			return error.empty();
+		}
+
+		bool StartOnlineMode(const std::string& mode, bool powerOn, std::string& error)
+		{
+			Rta::COnline::Goal goal;
+			std::string code;
+			if(!ParseOnlineMode(mode, goal, code, error)) return false;
+			if(!m_net)
+			{
+				error = "the built-in network is switched off (--rta-no-net)";
+				return false;
+			}
+			online.Start(goal, code, powerOn);
+			if(goal == Rta::COnline::Goal::Host)
+			{
+				Log("online: hosting a game with the code " + code);
+				if(!options.testBackground) QMetaObject::invokeMethod(QCoreApplication::instance(), [code]() { Rta::ShowGameCode(code); }, Qt::QueuedConnection);
+			}
+			if(goal == Rta::COnline::Goal::Join) Log("online: joining the game with the code " + code);
+			return true;
+		}
+
+		void StartOnline(const fs::path& base)
+		{
+			Rta::COnline::Setup setup;
+			setup.file = (base / "online-login").string();
+			setup.server = ServerKey(options.server);
+			setup.serverText = m_serverText.empty() ? "(none)" : m_serverText;
+			setup.personPresent = !options.testBackground;
+			setup.log = [this](const std::string& line) { Log(line); };
+			setup.askName = [this](const std::string& why) {
+				if(options.testBackground)
+				{
+					Log("online: a test run - the name comes from --rta-online-name or from 'online name NAME' on the control socket");
+					return;
+				}
+				QMetaObject::invokeMethod(QCoreApplication::instance(), [why]() { Rta::AskPlayerName(why); }, Qt::QueuedConnection);
+			};
+			setup.cross = 1u << Button::CROSS;
+			setup.circle = 1u << Button::CIRCLE;
+			setup.triangle = 1u << Button::TRIANGLE;
+			setup.square = 1u << Button::SQUARE;
+			setup.up = 1u << Button::DPAD_UP;
+			setup.down = 1u << Button::DPAD_DOWN;
+			setup.left = 1u << Button::DPAD_LEFT;
+			setup.right = 1u << Button::DPAD_RIGHT;
+			setup.l1 = 1u << Button::L1;
+			setup.r1 = 1u << Button::R1;
+			setup.start = 1u << Button::START;
+			online.Configure(setup);
+			if(!options.onlineNames.empty()) online.QueueNames(options.onlineNames);
+
+			// at this start? The option says so; the packaged application does it unless
+			// it was told not to (and not in a test run, and not without the sign-in patch,
+			// where the game only reaches a network error).
+			std::string mode = options.online;
+			if(mode.empty() && g_launch.packaged && !options.noOnline && !Rta::IsTestRun() && Rta::OnlineAtStart())
+			{
+				if(options.extraPatches.empty())
+					Log("online: not going online by itself at this start: there is no sign-in patch");
+				else
+					mode = "lobby";
+			}
+			if(mode.empty() || options.noOnline) return;
+			std::string error;
+			if(!StartOnlineMode(mode, true, error)) Log("online: NOT going online by itself: " + error);
 		}
 
 		// ---- texture files --------------------------------------------------------------
@@ -826,6 +941,7 @@ namespace
 			config.bindGamePorts = options.bindGamePorts;
 			config.lobbyName = options.lobbyName;
 			config.pcapPath = options.pcapPath;
+			if(options.gatewayPort > 0 && options.gatewayPort < 65536) config.testGatewayPort = static_cast<uint16_t>(options.gatewayPort);
 			config.log = [this](const std::string& line) { Log("net: " + line); };
 			m_net = std::make_unique<Rta::CNet>(config);
 
@@ -949,6 +1065,7 @@ namespace
 					Log(Format("this is %s but not the version the patches are for (checksum %08X, wanted %08X): NO PATCH IS APPLIED", name.c_str(), crc, GAME_CRC));
 			}
 			Log("executable: " + name + (m_isGame ? Format(" (the game, version checked); %zu patch words", m_patches.size()) : ""));
+			online.OnExecutable(m_isGame);
 			m_activePatches.clear();
 			if(m_isGame)
 			{
@@ -1010,6 +1127,7 @@ namespace
 		//   peek <expression> <type>   shot <file.bmp>   shotfb <file.bmp>   burst <name> <n>   info   gs
 		//   probe <file> <n> <x> <y> <w> <h>   bench   poke <expression> u8|u32|str <value>
 		//   throttle <0|1>   pref int|bool <setting> <value>   ethdrop   quit
+		//   online [start [lobby|host[:CODE]|join:CODE] | stop | forget | name NAME]
 		// Buttons are joined with '+': up down left right cross circle square triangle
 		// l1 l2 l3 r1 r2 r3 start select. Expressions: numbers, '+', '-', and [x] for the
 		// 32-bit word at x. Types: u8 u16 u32 s32 x32 f32 strN wstrN hexN.
@@ -1343,7 +1461,7 @@ namespace
 			}
 			else if(name == "uishot" && words.size() >= 3)
 			{
-				// uishot controls|online|about <file.png>: a picture of one of our windows
+				// uishot controls|online|about|playername|playername2|gamecode <file.png>: a picture of one of our windows
 				std::string which = words[1], file = line.substr(line.find(words[2], line.find(words[1]) + words[1].size()));
 				QMetaObject::invokeMethod(QCoreApplication::instance(), [which, file]() { Rta::RenderDialog(which, file); }, Qt::QueuedConnection);
 				push(Step::WAIT, 30);
@@ -1399,6 +1517,37 @@ namespace
 					count++;
 				}
 				push(Step::REPLY, 0, Format("ok %u display patch(es) %s", count, on ? "on" : "off"));
+			}
+			else if(name == "online")
+			{
+				// online                      where the one-step log-in is (never a name or a password)
+				// online start [lobby|host[:CODE]|join:CODE]   as "Play Online" in the menu
+				// online stop | online forget
+				// online name NAME            the player name, when a test run is waiting for one
+				std::string action = (words.size() >= 2) ? words[1] : "";
+				if(action.empty())
+					push(Step::REPLY, 0, "ok " + online.Report() + " saved_login=" + (online.HasLogin() ? "1" : "0"));
+				else if(action == "start")
+				{
+					std::string error;
+					bool started = StartOnlineMode((words.size() >= 3) ? words[2] : "", false, error);
+					push(Step::REPLY, 0, started ? "ok" : ("err " + error));
+				}
+				else if(action == "stop")
+				{
+					online.Stop("stopped from the control socket");
+					push(Step::REPLY, 0, "ok");
+				}
+				else if(action == "forget")
+					push(Step::REPLY, 0, online.Forget() ? "ok forgotten" : "ok nothing saved");
+				else if(action == "name" && words.size() == 3)
+				{
+					std::string wrong = Rta::COnline::CheckName(words[2]);
+					if(wrong.empty()) online.GiveName(words[2]);
+					push(Step::REPLY, 0, wrong.empty() ? "ok" : ("err " + wrong));
+				}
+				else
+					push(Step::REPLY, 0, "err online [start [lobby|host[:CODE]|join:CODE] | stop | forget | name NAME]");
 			}
 			else if(name == "ethdrop")
 			{
@@ -1636,11 +1785,13 @@ namespace
 
 		void UpdateStatus()
 		{
-			std::string text;
+			// what the one-step log-in is doing comes first
+			std::string text = online.Note();
+			if(!text.empty()) text += " | ";
 			if(m_net)
 			{
 				const auto& s = m_net->Stats();
-				text = "Online: server " + m_serverText;
+				text += "Online: server " + m_serverText;
 				if(!m_netNote.empty())
 					text += " - " + m_netNote;
 				else if(s.tcpBytesIn > 0)
@@ -1737,7 +1888,7 @@ namespace
 	private:
 		CPS2VM* m_vm = nullptr;
 		std::unique_ptr<Rta::CNet> m_net;
-		std::string m_serverText, m_netNote, m_patchSet;
+		std::string m_serverText, m_netNote, m_patchSet, m_onlineNote;
 		std::vector<PatchWord> m_patches;       // from the patch files
 		std::vector<PatchWord> m_activePatches; // those and the display patches, while the game is loaded
 		bool m_isGame = false;
@@ -1802,6 +1953,25 @@ namespace
 			// bindings gave
 			auto pad = Rta::GamePadState();
 			g_state.NotePad(pad);
+			if(g_state.online.Driving())
+			{
+				// The application is pressing its way to the lobby: for these frames the
+				// game sees its buttons and nothing else - not the keyboard's, not the
+				// controller's, not a test script's - and both sticks at rest.
+				uint32 own = g_state.online.Buttons();
+				for(auto* listener : m_interfaces)
+				{
+					for(unsigned int i = 0; i < Button::MAX_BUTTONS; i++)
+					{
+						auto button = static_cast<Button>(i);
+						if(PS2::CControllerInfo::IsAxis(button))
+							listener->SetAxisState(0, button, 0x80, ram);
+						else
+							listener->SetButtonState(0, button, (own & (1u << i)) != 0, ram);
+					}
+				}
+				return;
+			}
 			uint32 buttons = g_state.Buttons() | pad.buttons;
 			bool stickSet[2];
 			uint8 stick[2][2];
@@ -1847,8 +2017,13 @@ namespace
 		}
 		CheckPatches(ram);
 		ControlVBlank(ram);
+		online.Tick(ram, PS2::EE_RAM_SIZE, m_isGame);
 		pad.Override(ram);
-		if((frame % 30) == 0) UpdateStatus();
+		if((frame % 30) == 0 || online.Note() != m_onlineNote)
+		{
+			m_onlineNote = online.Note();
+			UpdateStatus();
+		}
 	}
 }
 
@@ -1867,6 +2042,19 @@ void Rta::EarlyInit(int argc, char** argv)
 	{
 		if(!strncmp(argv[i], "--rta-data=", 11)) setenv("RTA_DATA_DIR", argv[i] + 11, 1), dataGiven = true;
 		if(!strncmp(argv[i], "--rta-player=", 13)) player = atoi(argv[i] + 13);
+	}
+	// "--rta-online" may stand alone or be followed by its mode (lobby, host, join:CODE):
+	// alone, it is given the mode the parser wants to see.
+	for(int i = 1; i < argc; i++)
+	{
+		if(strcmp(argv[i], "--rta-online") != 0) continue;
+		const char* next = (i + 1 < argc) ? argv[i + 1] : "";
+		bool mode = !strcmp(next, "lobby") || !strcmp(next, "host") || !strncmp(next, "host:", 5) || !strncmp(next, "join:", 5);
+		if(!mode)
+		{
+			static char alone[] = "--rta-online=lobby";
+			argv[i] = alone;
+		}
 	}
 	// The packaged application: our patch file is inside the bundle. Its data directory
 	// has to be known before the application reads its settings, so it is found here.
@@ -1919,6 +2107,10 @@ void Rta::AddCommandLineOptions(QCommandLineParser& parser)
 	parser.addOption(QCommandLineOption("rta-sound-block", "Milliseconds of sound handed over at a time (kept in the data directory's settings; 30 by default, 100 in Play! itself).", "ms"));
 	parser.addOption(QCommandLineOption("rta-player", "Packaged application: the player number for this start (its own settings and memory card); otherwise the one set in the Online dialog.", "number"));
 	parser.addOption(QCommandLineOption("rta-check-disc", "Say whether a file is a disc image of the game in the version this build is for, and end.", "file"));
+	parser.addOption(QCommandLineOption("rta-online", "Go online by itself after power-on: 'lobby' (also when nothing follows the option) stops at the game list, 'host' in the room of a game of your own named with a code, 'join:CODE' in the room of the game with that code.", "mode"));
+	parser.addOption(QCommandLineOption("rta-no-online", "Do not go online by itself at this start, whatever the setting says."));
+	parser.addOption(QCommandLineOption("rta-online-name", "Test aid: the player name(s) to use instead of asking in a dialog, separated by commas (the next one is taken when the server refuses one).", "names"));
+	parser.addOption(QCommandLineOption("rta-gateway-port", "Test aid: the TCP port at which this computer looks for the lobby server's gateway (a closed port stands for a server that is not there).", "port"));
 	parser.addOption(QCommandLineOption("rta-title", "A test run that a person takes part in: the window says so in its title with this text, and is otherwise an ordinary window.", "text"));
 }
 
@@ -1985,6 +2177,10 @@ void Rta::ReadCommandLine(const QCommandLineParser& parser)
 	o.soundWav = parser.isSet("rta-sound-wav");
 	o.soundPlain = parser.isSet("rta-sound-plain");
 	o.soundBlock = parser.value("rta-sound-block").toInt();
+	o.online = parser.value("rta-online").toStdString();
+	o.noOnline = parser.isSet("rta-no-online");
+	for(const auto& name : parser.value("rta-online-name").split(',', Qt::SkipEmptyParts)) o.onlineNames.push_back(name.trimmed().toStdString());
+	o.gatewayPort = parser.value("rta-gateway-port").toInt();
 	if(parser.isSet("rta-title")) o.testLabel = parser.value("rta-title").toStdString();
 	if(o.testBackground) Rta::MakeBackgroundApplication();
 }
@@ -2166,6 +2362,76 @@ bool Rta::TakeKeyboardDefaults()
 bool Rta::IsTestRun()
 {
 	return !g_state.options.testLabel.empty() || !g_state.options.controlPath.empty();
+}
+
+// ---- one-step online ----------------------------------------------------------------------
+
+bool Rta::OnlineStart(const std::string& mode, std::string& error)
+{
+	return g_state.StartOnlineMode(mode, false, error);
+}
+
+void Rta::OnlineStop()
+{
+	g_state.online.Stop("stopped from the menu");
+}
+
+bool Rta::OnlineActive()
+{
+	return g_state.online.Active();
+}
+
+void Rta::OnlineGiveName(const std::string& name)
+{
+	if(name.empty())
+		g_state.online.DeclineName();
+	else
+		g_state.online.GiveName(name);
+}
+
+std::string Rta::OnlineCheckName(const std::string& name)
+{
+	return Rta::COnline::CheckName(name);
+}
+
+std::string Rta::OnlineCheckCode(const std::string& code)
+{
+	return Rta::COnline::CheckCode(code);
+}
+
+std::string Rta::OnlineSavedName()
+{
+	return g_state.online.LoginName();
+}
+
+std::string Rta::OnlineNote()
+{
+	return g_state.online.Note();
+}
+
+std::string Rta::OnlineCode()
+{
+	return g_state.online.Code();
+}
+
+bool Rta::OnlineForget()
+{
+	return g_state.online.Forget();
+}
+
+bool Rta::OnlineAtStart()
+{
+	if(!g_launch.packaged) return false;
+	return QSettings(QString::fromStdString(LaunchFile()), QSettings::IniFormat).value("online", true).toBool();
+}
+
+void Rta::SetOnlineAtStart(bool on)
+{
+	if(!g_launch.packaged) return;
+	QSettings launch(QString::fromStdString(LaunchFile()), QSettings::IniFormat);
+	launch.setValue("online", on);
+	launch.sync();
+	g_state.Log(std::string("online: going online by itself at the start is ") + (on ? "on" : "off"));
 }
 
 CPadHandler::FactoryFunction Rta::GetPadHandlerFactory()

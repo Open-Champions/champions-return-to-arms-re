@@ -116,6 +116,36 @@ namespace Rta
 	void SetDiscBoot(const std::function<void(const std::string&)>&);
 	void BootDisc(const std::string& path);
 	void ShowOnline(QWidget* parent);
+
+	// ---- one-step online (RtaOnline.h) -------------------------------------------------
+	// The application presses its own way from the title screen to the lobby: Start New
+	// Game, Internet Game, the network setting, the server's terms, the log-in. The
+	// account is its business: it asks for a player name once, makes the password itself
+	// and keeps the pair per server in the data directory.
+	// mode: "lobby" (or empty), "host", "host:CODE", "join:CODE". False: not started, and why.
+	bool OnlineStart(const std::string& mode, std::string& error);
+	void OnlineStop();
+	bool OnlineActive();
+	// the answer to AskPlayerName; empty: none given
+	void OnlineGiveName(const std::string& name);
+	// empty: fine; otherwise what is wrong with it, for a person
+	std::string OnlineCheckName(const std::string& name);
+	std::string OnlineCheckCode(const std::string& code);
+	// the player name saved for the server this run talks to; empty: none
+	std::string OnlineSavedName();
+	// the code of the game being hosted or joined; empty: none
+	std::string OnlineCode();
+	bool OnlineForget();
+	// the packaged application: go online by itself when it starts (on unless switched off)
+	bool OnlineAtStart();
+	void SetOnlineAtStart(bool);
+	// RtaUi.cpp: the dialog for the player name. 'why' is empty the first time and says
+	// what was wrong with the last name otherwise.
+	void AskPlayerName(const std::string& why);
+	// RtaUi.cpp: a window with the code of the game this copy hosts, large
+	void ShowGameCode(const std::string& code);
+	// what the one-step log-in is doing, as the status bar says it
+	std::string OnlineNote();
 	bool RenderDialog(const std::string& name, const std::string& path);
 	// for the About box
 	std::string AboutText();

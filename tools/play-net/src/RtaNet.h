@@ -65,6 +65,10 @@ namespace Rta
 		// Give the host socket for a UDP port of the machine the same port number when
 		// it is free, so that a router can be told to forward UDP 4000-4004.
 		bool bindGamePorts = true;
+		// For tests: connections to the server's gateway port range go to this port of
+		// the server's host instead (a closed one stands for a server that is not there).
+		// 0: the port the machine asked for.
+		uint16_t testGatewayPort = 0;
 		// Every frame in either direction, as a capture file (tcpdump -r). Empty: none.
 		std::string pcapPath;
 		// One line per event worth knowing.

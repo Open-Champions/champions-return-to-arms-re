@@ -676,7 +676,7 @@ void CNet::OnTcp(uint32_t sourceIp, uint32_t destIp, const uint8_t* tcp, uint32_
 				sockaddr_in to = {};
 				to.sin_family = AF_INET;
 				to.sin_addr.s_addr = htonl(c.realIp);
-				to.sin_port = htons(destPort);
+				to.sin_port = htons((c.gateway && m_config.testGatewayPort) ? m_config.testGatewayPort : destPort);
 				if(connect(c.fd, reinterpret_cast<sockaddr*>(&to), sizeof(to)) == 0)
 					c.connecting = false;
 				else if(errno == EINPROGRESS)

@@ -30,7 +30,8 @@ square triangle l1 l2 l3 r1 r2 r3 start select):
                              raw, and "<index> <clock> <w> <h>" lines in <file>.txt
     sound [reset]            the sound handler's counts (times dry, pieces thrown away,
                              milliseconds queued, rate, samples at full scale)
-    uishot controls|online|about <file.png>   a picture of one of our windows
+    uishot controls|online|about|playername|playername2|gamecode <file.png>
+                             a picture of one of our windows
     pads                     the game controller: attached, its name, what is pressed
     gcpad connect|disconnect|set <buttons|none> [lx ly rx ry [l2 r2]]
                              a controller made by the program, for testing the map
@@ -49,6 +50,15 @@ square triangle l1 l2 l3 r1 r2 r3 start select):
     bench                    how fast the cores are that the two main threads run on
     throttle <0|1>           0: run as fast as the computer can (for measuring)
     ethdrop                  cut the connections to the lobby server (a lost line)
+    online                   where the one-step log-in is: stage, outcome, whether a login
+                             is saved (never a name or a password)
+    online start [lobby|host[:CODE]|join:CODE]
+                             as "Play Online", "Host a game" and "Join a game" in the
+                             menu: by itself to the lobby's game list, into the room of
+                             a game of one's own named with a code (made up when none is
+                             given), or into the room of the game with the given code
+    online name NAME         the player name, when a background test run waits for one
+    online stop | forget     stop pressing / delete the saved login for this server
     quit
 
 Pictures are game output: keep them out of the repository. Standard library only.

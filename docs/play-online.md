@@ -1,7 +1,9 @@
 # Playing online, on a Mac, without a console
 
 How to build the playable application, start it, and get from the title screen into a
-game with a friend. It is the [Play!](https://github.com/jpd002/Play-) emulator's desktop
+game with a friend. **The short version: start it, type a player name once, and you are
+in the lobby; *Online → Host a game* gives you a code of four letters, and your friend
+types it under *Online → Join a game*** (section 4). It is the [Play!](https://github.com/jpd002/Play-) emulator's desktop
 application with this project's changes (`tools/play-net/`): the game's own network stack
 behind a built-in network, the test patches, and repairs to the emulator's picture and
 speed for this game. It needs **no PlayStation 2 BIOS file**. You need your own disc image
@@ -47,7 +49,10 @@ the first time, right-click it and choose *Open*, because it is not notarised).
   `SLUS-20973_4028A55F_signin.pnach` into `~/Library/Application Support/Play-RTA/` or
   next to the application; the Online dialog says whether it was found. Without it the
   game stops with a network error after "Internet Game".
-- Settings, memory card and the log `rta.log` are in
+- **It goes online by itself** when it starts (section 4): the first time it asks for
+  your player name, after that you arrive in the lobby without pressing anything.
+  *Online → Go online at start* switches that off.
+- Settings, memory card, the saved online login and the log `rta.log` are in
   `~/Library/Application Support/Play-RTA/player1/`.
 - A second copy on the same Mac: set player 2 in the Online dialog of a second start
   (`open -n local/dist/Play-RTA.app --args --rta-player 2` does both at once).
@@ -63,6 +68,10 @@ tools/play-net/play.sh --disc "/path/to/your disc image.iso" --server ADDRESS
 
 - `--server ADDRESS` is the lobby server: an IPv4 address or a host name. Leave it out
   when the server runs on this same Mac.
+- `--online` goes online by itself after the start (section 4). Without it the
+  application waits at the title screen, and *Online → Play Online* does the same later.
+  `--host` goes on to open a game of your own (its code is in the window "Your game" and
+  in the status bar); `--join CODE` goes on into the game with that code.
 - A second copy on the same Mac (to try it alone): add `--player 2`. It has its own
   settings and memory card.
 - Settings, the memory card and a log (`rta.log`, with every step of the network) are in
@@ -112,6 +121,68 @@ Double-click the picture (or *View*) for full screen; Escape leaves it.
 Everyone uses the same server address, the same disc version and the same patch list
 (section 6).
 
+### Into the lobby: the short way
+
+**Start it, type a player name once, and you are in the lobby.**
+
+- The packaged application does it at every start; from a terminal it is `play.sh
+  --online`; at any time from the title screen it is *Online → Play Online*.
+- The application then presses its own way through the game: the memory-card questions
+  and the logos, *Start New Game*, *Internet Game*, the network setting, the server's
+  terms (accepted), the log-in. It stops at the lobby's game list ("Game Selection and
+  Chat") and the controls are yours. From a cold start that takes about half a minute;
+  the status bar says where it is ("Going online: logging in...").
+- **The first time** a window asks for your **player name**: what the others see in the
+  lobby, in a game's room and in chat. 3 to 15 letters and digits, typed on the Mac's
+  keyboard. That is all you are asked. If the name is taken on that server the window
+  comes back for another one.
+- You never see an account or a password. The application makes both for you in the
+  game's own account screen: the name you chose, a random password, a placeholder e-mail
+  address (`<name>@example.invalid`) and date of birth (01/01/1980), and your name again
+  as the chat handle. Name and password are kept per server in the file `online-login`
+  in the data directory, readable by you alone; every later start logs in with them.
+  The player name is registered with the server you are connected to, and going online
+  this way accepts that server's terms for you (the game shows them under *Internet
+  Game* if you go by hand).
+- *Online → Forget online login* deletes the saved pair for the server you are on; the
+  next start asks for a name again. (The old name stays taken on the server.) A second
+  copy (`--player 2`) has its own.
+- While it is pressing, your own keys and controller are not passed to the game. When
+  anything comes up that it does not know - an error box, another menu, the server not
+  answering for twenty seconds - it stops, says why in the status bar and in `rta.log`
+  ("Going online stopped: ..."), and you have the controls where the game is. *Online →
+  Stop going online* does the same on request.
+
+### Into a game with a friend: the short way, by code
+
+One of you hosts, the others join; nobody looks for anybody in a list.
+
+- **Host: *Online → Host a game*** (or start with `play.sh --host`). The application
+  goes online as above if it is not there yet, opens the lobby's *Host Game*, and hands
+  you the **character screens**: make a character, or press △ for one stored on the
+  server or the memory card, ✕ to accept it. When you are through, it goes on by itself:
+  it names the game with a **code of four letters**, takes the game form's own settings
+  (a public mission game at the difficulty your character allows), and stops in your
+  game's room. The code stands large in the window "Your game" and in the status bar:
+  **tell it to your friends**. When they have appeared in the room, press ✕ *Start Game*.
+- **Join: *Online → Join a game...***, type the code (or start with `play.sh --join
+  CODE`). The application goes online, waits until a game of that name is in the lobby's
+  list (the game asks the server for the list about every twelve seconds; it gives up
+  after two minutes and says so), joins it, hands you the character screens as for the
+  host, and stops in the room. The host starts the game.
+- The code is the game's name in the lobby, nothing more: anybody on that server can see
+  the game in the list and join it by hand too. A game somebody named by hand can be
+  joined by typing its name as the code, if it has 4 to 8 letters and digits.
+- The same rules as for going online: while the application presses, your keys are not
+  passed on (except on the character screens, which are yours); anything unexpected
+  stops it with a note in the status bar and `rta.log`, and you go on by hand from where
+  the game is.
+
+### Into the lobby: by hand
+
+The way the game itself wants it; it always works, and it is the way to use an account
+you made earlier.
+
 1. **Start New Game → Internet Game** (down, ✕). The screen "Network Configuration and
    Selection" lists "1 Setting 1": ✕. The game connects and shows the server's terms: ✕.
 2. **Log in.** The first time, △ *Create New Account*: login, password, password again,
@@ -121,6 +192,9 @@ Everyone uses the same server address, the same disc version and the same patch 
    ○ closes it. Then ✕. Later: □ on *login*, type, L2, type the password, L2, ✕ *Login*.
    ("Save Login/Password? Yes" keeps them on the memory card.) The account lives on the
    server you are connected to.
+
+### In the lobby, by hand
+
 3. **The lobby** ("Game Selection and Chat") lists the open games; it refreshes about
    every twelve seconds. L1/R1 move between the list and the chat panes.
 4. **To host:** △ *Host/Search*, ✕ *Host Game*. The character screens come up: make a
@@ -267,7 +341,30 @@ person at the controls:
   lockstep frames of both characters walking and fighting with both machines agreeing on
   positions and hit points and no checksum failure.
 
+- **One-step online and games by code** (section 4), with background test copies
+  against the lobby server on the same Mac, player names made by the test: a first start
+  that made its account and reached the lobby's game list by itself (30 s after launch);
+  a second start that logged in with the saved pair (28 s); a first name that was taken,
+  the second accepted; the server's gateway at a closed port (stopped after 20 s of the
+  game's "Connecting", controls handed back); a saved login the server refused (stopped
+  at the game's "Login Failed" box); *Play Online* from the title screen and from the
+  Normal Game / Internet Game menu; *Forget online login* and a new name after it. Two copies: one hosted (`--host`), the other joined by the
+  code (`--join CODE`), both reached the room, the host pressed *Start Game*, both were
+  in the first level, at the same simulated frame when sampled together, with the same
+  shared seed and hit points and no checksum failure, for 650 frames. A code that no
+  game has: stopped after two minutes at the list, with the reason.
+
 Not tried, or known not to work:
+
+- **One-step online**: the windows for the player name, the code and *Join a game* were
+  drawn to pictures and read, but no person has typed into them (a background test copy
+  cannot show a window to anyone; the tests gave the name and the code by option). The
+  packaged application's going online at every start was not run (a test copy never
+  does it by itself). Nothing of it was ever run against a server that is not on this
+  Mac. On the character screens the application waits for you: it does **not** pick the
+  character you used last by itself, and it does not ask for difficulty or game type:
+  the game form's own settings are taken. A character was made on those screens by the
+  test's own presses, not by a person.
 
 - **Controllers**: a DualSense by USB was seen to attach (log, status bar); every button,
   both sticks, the dead zone and the trigger threshold were exercised with a controller

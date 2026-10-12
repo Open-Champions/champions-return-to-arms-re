@@ -20,9 +20,10 @@ has been seen to do, and what not, is at the end; how to play is in
 | `latency.py` | test: time from a button press to the first changed picture, and the spacing of presented pictures |
 | `src/RtaNet.h`, `RtaNet.cpp` | the network behind the emulated Ethernet adaptor (stand-alone C++, nothing of the emulator in it) |
 | `src/Rta.h`, `Rta.cpp`, `RtaMac.mm` | what joins it to the application: patches, the memory card's network setting, display patches, settings, thread priority, the control socket |
+| `src/RtaOnline.h`, `RtaOnline.cpp` | one-step online: the application presses its own way from power-on to the lobby by the game's state, makes and keeps the account ("One-step online" below; stand-alone C++) |
 | `src/RtaPad.mm` | game controllers through macOS's GameController framework: the first one attached is the pad in port 1, with nothing to bind |
 | `src/RtaSound.cpp` | the sound handler: a held reserve, counts of every fault, a WAV file on request |
-| `src/RtaUi.cpp` | what is added to the application's windows: *Help → Controls…*, the *Online* menu, the first start's question for the disc image |
+| `src/RtaUi.cpp` | what is added to the application's windows: *Help → Controls…*, the *Online* menu (Play Online, the player-name dialog, Forget online login), the first start's question for the disc image |
 | `package.sh` | makes `local/dist/Play-RTA.app` of the built application: Qt inside, the patch list inside, its own name, signed for this computer |
 | `sections-suggested.txt` | the patch sections `play.sh` applies by default (the suggested set of `docs/online-setup.md`) |
 | `ctl.py` | sends commands to a running application over its control socket (buttons, memory reads, pictures) |
@@ -512,6 +513,129 @@ made for textures rather than photographs, would be the first to try on stone an
 filtering; giving only the used rectangle of a level page to the GPU (it would cut the
 memory to about 40 %; the application stretches a replacement over the whole dump);
 levels beyond the first; a second player's and monsters' textures in a fight.
+
+## One-step online
+
+`src/RtaOnline.{h,cpp}`; the user's side of it is `docs/play-online.md` section 4.
+
+**What it does.** `--rta-online` (play.sh: `--online`; the packaged application: at every
+start unless *Online → Go online at start* is off; at any time: *Online → Play Online*)
+makes the application press its own way from power-on to the lobby's game list: the
+memory-card questions and logos, *Start New Game*, *Internet Game*, the network setting,
+the server's terms, the log-in. It runs on the machine's thread at every vertical blank,
+before the pad is handed to the game.
+
+**How it knows where the game is.** By the game's own state, read from its memory at
+every frame; never by the clock alone. A press is made only when the screen it belongs to
+has been identified and has stood still for some frames; it is held 8 to 10 frames (the
+lobby screens drop shorter ones, `docs/issues/live-rig.md` 19.3), and the state is looked
+at again before the next. What is read (addresses for SLUS-20973 v2.00; the application
+does nothing unless the executable's checksum is that version's):
+
+| What | Where | Values used |
+|---|---|---|
+| front end up | `g_inFrontend` 0x41b510, `g_levelName` 0x41b721 | 1 and `intro` |
+| which menu | `g_frontendState` 0x4f6b78 | 0 main menu, 1 normal / internet game, 10 the lobby |
+| the menu's entries and cursor | table at `g_frontendMenu` 0x4f6b7c: 16 bytes an entry, the name's address first (`menu_startnewgame`, `menu_netgame`); the entry after the last holds the cursor in its second word | found by name, not by position |
+| menu takes input | float at 0x4d8a10 | 1.0 |
+| which lobby screen | `g_lobbyState` 0x506160 | 2 network setting, 4 log-in, 3 account, 5 game list |
+| network window (pointer at 0x506148) | +0xdb4 state, +0x4354 settings found, +0xd88 message box | state 3 the list of settings, 1 "already up", 7 signed in: each goes on with cross |
+| log-in window (0x50614c) | +0x165c state, +0x115c terms box, +0x1148 message box | 1 with the terms box: cross accepts; 2 the form; 4 sent; 6 refused; 8 to the account form; 9 to the list |
+| account window (0x506150) | +0x229c state, +0x2288 message box, +0x22b0 request under way | 0 the form; 2 sent; 3 refused (box); 4, 5 made |
+| game list window (0x506144) | +0xc248 next state, +0xc244 request under way | both 0 for 30 frames: arrived |
+| on-screen keyboard (0x5071f4) | +0x14 | 1 while open (then nothing is sent) |
+
+**The two forms are filled by writing the game's text fields**, not by walking its
+on-screen keyboard: a text field (class vtable 0x51cdd0 at +0x48) keeps what it shows at
++0x52 and its value at +0x2ca (16-bit characters), its limit at +0x2c9 and its "stars"
+flag at +0x44c. Before anything is written the field's class, its limit and its flag are
+checked against what is expected; after writing, at a later frame, every field is read
+back, and only then is the form sent with cross. The log-in form's two fields take 15
+characters each; the account form has six fields (name 15, password twice 15, e-mail 79,
+date of birth 11, chat handle 15). "Save Login/Password?" on the game's log-in form is
+set to "No": the pair is kept by the application instead.
+
+**The account.** A player name is asked for once (a dialog, `Rta::AskPlayerName`): 3 to
+15 letters and digits - the game's name fields take 15, the server refuses a chat handle
+longer than 15 and its own rule for a name is 3 to 20. The application makes the account
+in the game's Create New Account form with: login = the name, a password of 14 random
+characters from a-z and 0-9 (`std::random_device`), e-mail `<name>@example.invalid`,
+date of birth 01/01/1980, chat handle = the name. When the server refuses (the game's
+box; it gives no reason, a taken name is the usual one) the box is closed and another
+name is asked for.
+
+**The saved login**: `<data directory>/online-login`, mode 0600, one line per server
+(the server's address as given; `this-computer` for a server on the same Mac): server,
+name, password, `ok` or `pending`, separated by tabs. It is written, as `pending`,
+before the account form is sent, so that an application that ends between the server's
+making the account and its answer still has the pair; `pending` becomes `ok` when the
+game list is reached. A `pending` pair that the server does not know is dropped at the
+next start and a name is asked for. The password is never written to the log, the status
+bar or the control socket, and neither is the name. *Online → Forget online login*
+(control socket: `online forget`) deletes the line.
+
+**When it stops.** A message box it does not expect, a menu it does not know, a screen
+that was passed coming back (a lost connection), a saved login the server refuses, six
+presses that a form does not answer, nothing changing for 20 seconds (90 for the start
+up to the title screen): it lets go of the pad, writes "online: STOPPED - why" to
+`rta.log`, shows "Going online stopped: why. The controls are yours." in the status bar,
+and does nothing more. While it runs, and only then, the game is given its buttons alone
+(`CPadHandlerRta::Override`): keyboard, controller and control-socket presses are left
+out and the sticks are at rest.
+
+**Test aids.** A background test run (`--rta-test`) can show a dialog to nobody, so:
+`--rta-online-name NAME[,NAME...]` gives the player names to use (the next one when the
+server refuses one), and `online name NAME` on the control socket answers when the
+application is waiting for one (it gives up after two minutes). `online` reports the
+stage and the outcome; `online start [lobby|host[:CODE]|join:CODE]`, `online stop`, `online forget` do what
+the menu entries do; `uishot playername|playername2|gamecode FILE` draws the new windows
+to a picture. `--rta-gateway-port N` makes this computer look for the server's gateway at
+TCP port N instead of 40810: a closed port stands for a server that is not there.
+`--rta-no-online` keeps the packaged application from going online at one start.
+
+**Measured** (M5 Pro, lobby server on the same Mac, background test instances, fresh
+data directories, player names made by the test): first start, account made, game list
+reached 30.4 s after launch (machine frame 1666: 11 s to the title screen's menu, 4 s
+for the title to take input, 4 s of network set-up, 4 s for the lobby's first answer,
+then terms, account and list in 4 s); second start with the saved pair 28.3 s; a first
+start whose first name was taken, second name accepted, 32.0 s; with the gateway at a
+closed port it stopped 20 s after the game began to say "Connecting" and left the game
+there.
+
+**Games by code** (`--rta-online host`, `--rta-online join:CODE`; play.sh `--host`,
+`--join CODE`; *Online → Host a game*, *Join a game...*). The same machine, going on from
+the game list:
+
+| What | Where | Used for |
+|---|---|---|
+| the pane that has the pad | list window +0xc258 | must be the list of games (+0x31c), or the form's name field |
+| "Host / Search" box | list window +0xc244 (a box), +0xc24c = 1 | cross there is *Host Game* |
+| the form for a new game | +0xc24c = 2, name field at the pointer +0xc210 (an ordinary text field, 15 characters; the game refuses fewer than 4) | the code is written there, read back, sent with cross |
+| the list of games | lobby client (pointer at list window +0x314): count at +0x60 (u16), array at +0x98, 0xb8 bytes a game, name at +0x22 (16-bit characters), highlighted game at list window +0xc249 | the code is looked for at every frame; the cursor is walked to it; cross joins |
+| request out / let in | client +0x64, bits 0x10 and 0x20 | cross is pressed again until the first is seen |
+| character screens | `g_lobbyState` 8 to 11; 0x4fbbe2 = 1 when a character was chosen | the player's own: the pad is theirs while they are up, and there is no time limit |
+| a game's room | `g_lobbyState` 6, window at 0x506140 | arrived |
+
+A host: triangle, cross, the character screens (the player), the form (name = the code,
+everything else as the form has it), the room. The code is four letters out of 24 (no I,
+no O), made with `std::random_device`; it is the game's name on the server and no secret.
+A joiner: the list is watched until a game of that name is in it (two minutes at most),
+then cross on it, the character screens, the room. A box that stays after the form was
+sent, the character screens left without a character, the pad in a chat pane: it stops
+as above. *Not done*: choosing the character the player used last (it always waits on
+the character screens), and asking for difficulty or game type (the form's own are
+taken).
+
+**Measured, two background test copies on one Mac**: host started with `--host`: at the
+character screens 28.6 s after launch, in its room 3 s after the test had made a
+character there (the test's presses, each checked by the screens' page number at
+0x8e2c02); joiner started with `--join CODE`: at the character screens 28.8 s after
+launch (logged in, found the game in the list, joined it), in the room after its
+character; the host's *Start Game* by the test; 4 to 6 s later both in the first level,
+lobby state 12, at simulated frames 234 / 234, 433 / 447, 643 / 653 when sampled one
+after the other, shared seed and both players' hit points the same on both, checksum
+flag (`g_checksumFailed`) 0. Run twice. A code that no game has: stopped two minutes
+after the list came up.
 
 ## Control socket and tests
 

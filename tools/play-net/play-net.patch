@@ -2413,7 +2413,7 @@ diff --git a/Source/iop/Iop_Speed.h b/Source/iop/Iop_Speed.h
 diff --git a/Source/ui_qt/CMakeLists.txt b/Source/ui_qt/CMakeLists.txt
 --- a/Source/ui_qt/CMakeLists.txt
 +++ b/Source/ui_qt/CMakeLists.txt
-@@ -279,6 +279,14 @@
+@@ -279,6 +279,16 @@
  		macos/InputProviderMacOsHid.h
  		macos/LayerFromView.mm
  		macos/LayerFromView.h
@@ -2422,13 +2422,15 @@ diff --git a/Source/ui_qt/CMakeLists.txt b/Source/ui_qt/CMakeLists.txt
 +		rta/RtaMac.mm
 +		rta/RtaNet.cpp
 +		rta/RtaNet.h
++		rta/RtaOnline.cpp
++		rta/RtaOnline.h
 +		rta/RtaPad.mm
 +		rta/RtaSound.cpp
 +		rta/RtaUi.cpp
  	)
  	FILE(GLOB ARCADE_DEFS ${CMAKE_CURRENT_SOURCE_DIR}/../../arcadedefs/*.arcadedef)
  	set(OSX_RES
-@@ -313,7 +321,8 @@
+@@ -313,7 +323,8 @@
  		RESOURCE "${OSX_RES}"
  	)
  	SET_SOURCE_FILES_PROPERTIES(${ARCADE_DEFS} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources/arcadedefs")
