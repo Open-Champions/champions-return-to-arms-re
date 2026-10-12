@@ -10,12 +10,13 @@ asks the emulator for the picture as the machine drew it (`shotfb`, the console'
   python3 -I -B tools/recomp/app/emushots.py --disc IMAGE --data local/recomp-out/app-test/emu1 \\
       --script local/recomp-out/app-test/boot-shots.rig --out local/recomp-out/app-test/emu-shots
 
-Other `app ...` lines, `echo` and `quit` are passed over.  The script language and the
+Other `app ...` lines, `echo`, `dump` and `quit` are passed over.  The script language and the
 driver are those of tools/recomp/sound/emuref.py.  Pictures are game output: under local/
 only.  Standard library only.
 """
 import argparse
 import os
+import struct
 import subprocess
 import sys
 import time
@@ -58,7 +59,7 @@ def main():
             with open(args.script) as script:
                 for line in script:
                     words = line.split('#')[0].split()
-                    if not words or words[0] in ('echo', 'sync'):
+                    if not words or words[0] in ('echo', 'sync', 'dump'):
                         continue
                     if words[0] == 'quit':
                         break
@@ -68,6 +69,14 @@ def main():
                             answer = control.send('shotfb ' + os.path.abspath(os.path.join(args.out, name)))
                             driver.note('shotfb %s: %s' % (name, answer))
                         continue
+                    if words[0] == 'poke' and len(words) >= 3 and ':' in words[1]:
+                        # the control socket takes a number for a 32-bit word: a hex pattern
+                        # (x32) and a float (f32) are handed over as that number
+                        expr, kind = words[1].rsplit(':', 1)
+                        if kind == 'x32':
+                            line = 'poke %s:u32 %d' % (expr, int(words[2], 16))
+                        elif kind == 'f32':
+                            line = 'poke %s:u32 %d' % (expr, struct.unpack('<I', struct.pack('<f', float(words[2])))[0])
                     driver.run(line)
         control.close()
     finally:

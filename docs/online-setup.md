@@ -119,7 +119,7 @@ hardware differences the other items are about:
 
 ## Suggested patch set for a first online test
 
-The set is the 19 sections of the table (`tools/play-net/sections-suggested.txt` lists
+The set is the 26 sections of the table (`tools/play-net/sections-suggested.txt` lists
 them by title; the Mac application applies exactly these). Each only makes one machine do
 what the others already do, so a mix of patched and unpatched machines is safe, but a fix
 only holds for the machines that have it — enable them on every machine. These are the

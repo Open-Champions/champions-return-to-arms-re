@@ -69,6 +69,40 @@ struct Call {
 u32 g_heap_top = 0x11A400;                          // where the reference's heap began after its modules
 const u32 HEAP_END = 0x200000;
 
+// A module's own name is in its file: the section of type 0x70000080 (.iopmod) holds
+// seven words and a half of header and then the name.  Read from the disc for the
+// modules that were loaded, when somebody asks (the network start-up does, once).
+std::vector<std::string> g_module_names;            // beside g_modules; "" = not read or not found
+int module_by_name(const std::string& wanted) {
+    g_module_names.resize(g_modules.size());
+    for (size_t k = 0; k < g_modules.size(); k++) {
+        if (g_module_names[k].empty()) {
+            g_module_names[k] = "?";
+            std::string path = g_modules[k];
+            size_t colon = path.find(':');
+            Iso9660::Entry entry;
+            if (!g_disc.find(path.substr(colon == std::string::npos ? 0 : colon + 1).c_str(), &entry) || entry.size < 0x34 || entry.size > 0x400000) continue;
+            u32 sectors = (entry.size + Iso9660::SECTOR - 1) / Iso9660::SECTOR;
+            std::vector<u8> file((size_t)sectors * Iso9660::SECTOR);
+            if (!g_disc.read(entry.sector, sectors, file.data())) continue;
+            auto u32at = [&](size_t a) { u32 v = 0; if (a + 4 <= file.size()) memcpy(&v, &file[a], 4); return v; };
+            auto u16at = [&](size_t a) { u16 v = 0; if (a + 2 <= file.size()) memcpy(&v, &file[a], 2); return v; };
+            u32 shoff = u32at(0x20), shentsize = u16at(0x2E), shnum = u16at(0x30);
+            for (u32 n = 0; n < shnum; n++) {
+                size_t head = shoff + (size_t)n * shentsize;
+                if (u32at(head + 4) != 0x70000080) continue;
+                size_t at = u32at(head + 0x10) + 26, end = u32at(head + 0x10) + u32at(head + 0x14);
+                std::string name;
+                while (at < end && at < file.size() && file[at]) name += (char)file[at++];
+                if (!name.empty()) g_module_names[k] = name;
+                break;
+            }
+        }
+        if (g_module_names[k] == wanted) return (int)k + 1;
+    }
+    return 0;
+}
+
 void serve_loader(Call& c) {
     if (c.fn == 0xFF) { c.ret(0, 0x2E2E2E2E); return; }     // initialise: the version text the library accepts ("....")
     if (c.fn == 0) {                                // load and start a module: length of arguments, path, arguments
@@ -80,6 +114,13 @@ void serve_loader(Call& c) {
         c.ret(0, found ? (u32)g_modules.size() : (u32)-203);
         c.ret(1, 0);
         c.delay = us(200, 3000);
+        return;
+    }
+    if (c.fn == 9) {                                // search a module by its own name (not its file's)
+        std::string wanted = c.text(8);
+        if (wanted.empty()) wanted = c.text(0);
+        int id = module_by_name(wanted);
+        c.ret(0, id > 0 ? (u32)id : (u32)-202);     // -202: no such module
         return;
     }
     rt_note(rt_fmt("UNANSWERED module loader function 0x%x", c.fn));
@@ -652,6 +693,9 @@ bool serve(Call& c) {
     case 0x80000400: serve_card(c); return true;
     case 0x50494C42:                                // USB headset driver: nothing plugged in
         if (c.fn == 0x10) { c.ret(2, 0x1090400); c.ret(8, 0x530); }    // init: driver version 1.09.004, largest packet
+        // 1: enumerate (lgAudEnumerate 0x36c1a0 asks for device 0, 1, 2 ... until an answer
+        // has bit 31 set; a net game does that after its first ticks): no such device
+        if (c.fn == 1) c.ret(0, 0x8000000Au);
         return true;
     case 0x61766973:                                // USB keyboard driver
         // 3: versions - the library sends its own (1.06) and wants the driver's beside it;
@@ -733,6 +777,16 @@ u32 iop_sif_set_dma(u32 list, u32 count) {
         memcpy(g_iop + to, g_ram + from, size);
         g_sif_dma_bytes += size;
         if (rd(record + 12) & ~0u) rt_note(rt_fmt("SifSetDma with flags 0x%x", rd(record + 12)));
+        // A command packet (flagged; 16 bytes of header with the command number in the
+        // third word).  0x80000001 sets a status register on the other side; the
+        // multi-thread RPC library (sceSifMInitRpc 0x3646c8) sends it and then polls its own
+        // status register 1 - the word at 0x8ef2c4, sceSifGetSreg(1) - until the manager on
+        // the I/O processor (MSIFRPC.IRX) has set it in return.  That manager's calls are
+        // all replaced in a network build, so its only act here is this answer.
+        if (rd(record + 12) && size >= 16 && rd(from + 8) == 0x80000001u) {
+            rt_note("SIF command 0x80000001 (status register): answered as the multi-thread RPC manager does");
+            rt_after(usec_to_cycles(50), [] { wr(0x8EF2C4, 1); });
+        }
     }
     return 1;
 }
