@@ -35,7 +35,9 @@ the first time, right-click it and choose *Open*, because it is not notarised).
 
 - **The first start asks for your disc image** and remembers it. It takes Champions:
   Return to Arms, US release SLUS-20973, version 2.00, and says what is wrong with
-  anything else. *Online → Choose the disc image…* changes it later.
+  anything else. *Online → Choose the disc image…* changes it later. If the image lies
+  in Desktop, Documents or Downloads, macOS asks at a later start whether "Play-RTA" may
+  access that folder: allow it (or keep the image somewhere else).
 - ***Online → Server, player, patch set…***: the lobby server's address (empty: the
   server runs on this Mac), the player number (leave it at 1; another number is a second
   copy on the same Mac with its own settings and memory card), and the patch-set figure
@@ -147,7 +149,7 @@ bar (right-click the "4x" to change the resolution).
 | presentation | fit, 4:3 | the game is 4:3; Play! used to show it 7 % too wide |
 | steady picture | on (`--rta-interlaced` turns it off) | the game draws for an interlaced television: every other picture half a line lower, interface art split into two field pictures. Shown in a window that makes the whole picture jump up and down. The application changes six instructions of the game's drawing code (picture only, never the simulation, so they are not part of the shared patch set) and emulates the GS scanline mask, so that every picture is drawn at the same height and the interface is drawn from both of its field pictures |
 | frame timing | by the display's refreshes (`--rta-timer` for a timer) | each picture stays on screen for exactly two refreshes of a 120 Hz display (one at 60 Hz) |
-| sound block | 30 ms | how far sound runs behind the picture; Play!'s 100 ms was audible |
+| sound | pieces of 30 ms, 40 ms held in reserve | about 55 ms behind the picture, and no gaps: Play!'s own way (100 ms pieces, no reserve) ran dry 20 times in five minutes of play |
 | pause when the window is not in front | off | a paused machine loses the lobby after two minutes and stalls every other player at once |
 
 **Speed.** In the first level the machine runs at 60 frames a second with about half a
@@ -235,8 +237,9 @@ person at the controls:
 
 - Power-on, title, menus, character creation, the lobby screens, the first level, one
   dungeon level (`fire1`) and the arena level, with video at 4×, at 60 frames a second
-  (machine thread 6–9 ms and video thread 8–12 ms of a 16.7 ms frame); pictures looked at
-  for these scenes only, standing or walking a few steps.
+  (machine thread 6–9 ms and video thread 8–12 ms of a 16.7 ms frame).
+- The packaged application, started by `open`: first start, a wrong disc refused, the
+  right one remembered, the first level reached, a second start.
 - The whole online path with two copies on this Mac against the lobby server on the same
   Mac: network setting found by the game, address, name lookup, gateway, lobby, terms,
   log in typed on the on-screen keyboard, stored characters imported, a game hosted and
@@ -251,13 +254,17 @@ Not tried, or known not to work:
   made by the program, which goes through the same code as a real one, and the game was
   driven from the title into the first level with it. No real button was pressed by the
   tests, and Bluetooth and other makes were not tried.
-- **Sound was never listened to**; it goes through Play!'s own code unchanged (OpenAL).
+- **Sound was never listened to.** It was counted: five minutes in the first level and
+  five at the title without the output running dry once, nothing thrown away, no
+  silence inside sound (`tools/play-net/README.md`, "Sound"). While a level loads there
+  are short gaps (the machine stops on disc reads).
 - **Two different networks.** Section 7 follows from how the relay and the server work
   and from the lobby protocol; no session between two homes has been run.
 - **More than two players**, private games, friends, chat typed by a player.
-- **Fights, spells, cutscenes, films and most levels** have not been looked at on screen.
-  Films are stored as two field pictures and probably still alternate between them.
-- At 4× some interface panels show a one-pixel line along their right and bottom edge.
+- **Looked at on pictures at 4×** besides the scenes above: the opening film, the pause
+  menu, a dungeon and an underwater level, two cutscenes, the arena with a fight against
+  five opponents. **Not looked at**: the inventory, shop, skill and map screens, spells,
+  and most levels.
 - Whether play **stays in step** between two different Macs is unknown; everything in
   `docs/online-setup.md` about that applies. Two copies on one Mac agree with each other.
 - A machine that is paused, asleep or stopped for two minutes is dropped by the server;

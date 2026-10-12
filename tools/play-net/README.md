@@ -16,7 +16,7 @@ has been seen to do, and what not, is at the end; how to play is in
 |---|---|
 | `build.sh` | clones Play! at commit `83700b2c31e593bc94e845b4b31b797be84dda59` into `local/play-playable`, applies the patch, copies `src/` in, builds `local/play-playable-build/Source/ui_qt/Play.app` |
 | `play.sh` | starts the application with the disc image, a data directory under `local/play-data/`, the patch file and the list of sections, and the lobby server's address |
-| `play-net.patch` | the changes to Play! (18 files): the Ethernet chip, the graphics handler, the frame limiter, the front end's hooks |
+| `play-net.patch` | the changes to Play! (19 files): the Ethernet chip, the graphics handler (textures, sprites, the scanline mask), the frame limiter, the keyboard's defaults, the front end's hooks |
 | `latency.py` | test: time from a button press to the first changed picture, and the spacing of presented pictures |
 | `src/RtaNet.h`, `RtaNet.cpp` | the network behind the emulated Ethernet adaptor (stand-alone C++, nothing of the emulator in it) |
 | `src/Rta.h`, `Rta.cpp`, `RtaMac.mm` | what joins it to the application: patches, the memory card's network setting, display patches, settings, thread priority, the control socket |
@@ -36,14 +36,36 @@ Homebrew.
 ```
 brew install cmake ninja qtbase
 tools/play-net/build.sh
+tools/play-net/package.sh      # optional: local/dist/Play-RTA.app, to double-click
 ```
 
 `qtbase` is the part of Qt the application needs (Widgets); `brew install qt` works too.
 The first run clones Play! with its submodules (about 1 GB) and compiles about 560 files;
 later runs only copy `src/` in and rebuild what changed. When the patch itself has
 changed, `build.sh --reset` puts Play!'s files back and applies it anew. `local/` is
-ignored by the repository. (A build from nothing in another directory, with the
-script, was done once to check it.)
+ignored by the repository. (After the last change the script was run on a second copy
+of the Play! checkout with an empty build directory: it put Play!'s own files back,
+applied the patch, copied `src/` in and built everything; the patched files were the
+same as the working tree's.)
+
+`package.sh` copies the built application to `local/dist/Play-RTA.app`, puts the patch
+file and the list of sections into `Contents/Resources/rta` and the licences of Play!,
+of the libraries it is built with and of Qt into `Contents/Resources/licences`, gives it
+its own name and identifier, lets `macdeployqt` (part of `qtbase`) copy the Qt frameworks
+in, and signs it ad hoc. An application bundle that holds the patch file behaves as a
+packaged application (`Rta::EarlyInit`): data in
+`~/Library/Application Support/Play-RTA/player<N>/`, the disc image asked for and checked
+(`Rta::CheckDisc`: `SYSTEM.CNF` names `SLUS_209.73` and the program's checksum is
+`4028A55F`; `--rta-check-disc FILE` gives the verdict on a command line), server and
+player number from the *Online* dialog (`launch.ini`), the sign-in patch looked for in
+the data directories and beside the application and never inside it. Tested by starting
+it with `open` and driving it through the control socket: the first start asks for the
+image; an image of another game and one of SLUS-20973 with another program are refused
+with the reason; the right one is remembered; the first level was reached at 59.99
+frames a second; a second start goes on from the remembered image. To macOS such an
+application is a program of its own: a disc image under Desktop, Documents or Downloads
+that is opened from the remembered path (not picked in the file dialog) makes macOS ask
+the person once for access to that folder.
 
 ## Start
 
@@ -86,21 +108,24 @@ else the computer is doing.
 | The emulated Ethernet chip stops receiving after 64 frames, or after the game restarts into another program | receive index wrapped at 512 instead of 64, and was not reset when the driver starts again; reads past the end of the receive buffer | `Iop_Speed.cpp` (as the test rig corrects from outside, live-rig.md section 13.2), plus a poll hook and "ready for a frame" | the lobby path below |
 
 Looked at, at 4× (pictures of the machine's own output, `shotfb`; 60.0 frames a second
-in each): title, menus, character creation, the first level with the bars and the pause
-menu, a dungeon level (`fire1`: weapon trails), an underwater level (`wat1`: its opening
-cutscene with the letterbox, bubbles), the arena (`drunare`: the cutscene at its gate, a
-fight against five opponents with weapon trails, torches); the same still scenes at 1×
-beside them. Levels were entered by writing their name to the game's pending-level
-word, which is what a level script does. Not reached: the inventory, shop, skill and map
-screens (which button opens them offline was not found in the time), spells (the test
-character has none), and the films — see below.
+in each): the publisher's logo and the opening film, title, menus, character creation,
+the first level with the bars and the pause menu, a dungeon level (`fire1`: weapon
+trails), an underwater level (`wat1`: its opening cutscene with the letterbox, bubbles),
+the arena (`drunare`: the cutscene at its gate, a fight against five opponents with
+weapon trails, torches); the same still scenes at 1× beside them. Levels were entered by
+writing their name to the game's pending-level word (0x41b6d0), which is what a level
+script does.
 
-Not changed, known:
-
-- **Films** (the opening film after the publisher's logo) were not looked at: the test
-  scripts get past the memory-card question by pressing ✕, which also skips the logo and
-  the film. They are stored as two field pictures and probably still alternate between
-  them.
+- **The opening film** plays as whole, steady pictures. The logo before it is shown as a
+  448-line interlaced frame, the film itself in the game's usual 224-line mode; eight
+  consecutive presented pictures in each part are at the same height (best vertical
+  shift within 0.06 of a window row; a picture alternating between its two fields would
+  show 1.4). Its pictures go through Play!'s own path for large direct-colour pictures
+  (one texture updated in place: 410 draws for logo and film), are never kept as
+  textures and so never dumped.
+- **Not reached**: the inventory, shop, skill and map screens (Start opens the pause
+  menu offline; which button opens the others was not found in the time), and spells
+  (the test character has none). Nothing is known to be wrong there; nothing was seen.
 
 ## Sound
 

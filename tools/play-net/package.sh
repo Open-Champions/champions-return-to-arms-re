@@ -36,8 +36,15 @@ fi
 [ -n "$DEPLOY" ] || DEPLOY=$(command -v macdeployqt || true)
 [ -n "$DEPLOY" ] || { echo "package.sh: macdeployqt not found (it comes with: brew install qtbase)" >&2; exit 1; }
 
+# Put together and signed in a temporary directory and moved into place at the end: a
+# folder that is synced (a Desktop kept in iCloud) gets extended attributes hung on
+# every bundle in it within seconds, and a bundle with those can be neither signed nor
+# checked.
 mkdir -p "$DIST"
-rm -rf "$APP"
+STAGE=$(mktemp -d "${TMPDIR:-/tmp}/play-rta-package.XXXXXX")
+trap 'rm -rf "$STAGE"' EXIT
+FINAL="$APP"
+APP="$STAGE/$NAME.app"
 cp -R "$BUILT" "$APP"
 
 # what play.sh gives on the command line
@@ -88,7 +95,7 @@ PLIST="$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :NSLocalNetworkUsageDescription string 'The game talks to the lobby server and to the other players on your network.'" "$PLIST" 2>/dev/null || true
 
 # Qt inside
-"$DEPLOY" "$APP" -always-overwrite > "$DIST/macdeployqt.log" 2>&1 || { echo "package.sh: macdeployqt failed, see $DIST/macdeployqt.log" >&2; exit 1; }
+(cd "$STAGE" && "$DEPLOY" "$NAME.app" -always-overwrite) > "$DIST/macdeployqt.log" 2>&1 || { echo "package.sh: macdeployqt failed, see $DIST/macdeployqt.log" >&2; exit 1; }
 OUTSIDE=$(find "$APP/Contents" -type f \( -name "*.dylib" -o -perm +111 \) -exec otool -L {} + 2>/dev/null | grep -E "^\s+(/opt/homebrew|/usr/local)" | sort -u || true)
 if [ -n "$OUTSIDE" ]; then
 	echo "package.sh: something inside still wants a library from outside the application:" >&2
@@ -101,6 +108,10 @@ fi
 xattr -cr "$APP"
 codesign --force --deep --sign - "$APP" > "$DIST/codesign.log" 2>&1 || { echo "package.sh: codesign failed, see $DIST/codesign.log" >&2; exit 1; }
 codesign --verify --deep --strict "$APP" || { echo "package.sh: the signature does not verify" >&2; exit 1; }
+
+rm -rf "$FINAL"
+mv "$APP" "$FINAL"
+APP="$FINAL"
 
 echo "package.sh: made $APP ($(du -sh "$APP" | cut -f1))"
 echo "            double-click it, or: open \"$APP\""
