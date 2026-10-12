@@ -21,8 +21,8 @@ reading alone unless it says **Read**.
   E9, D26, U1) and are gone with the suggested fix set built in (K2, K3, E9, D26; U1's
   section is not in the set). The same holds in a mixed pair (D26, K2).
 - **Speed**: two native instances in a lockstep game, unthrottled, run 1,387 ticks per
-  second of wall time idle (23 × real time) and 927 in the arena fight (15 ×) on a quiet
-  machine; the emulator rig manages about 0.85 ×.
+  second of wall time idle (23 × real time) and 930 to 1,300 in the arena fight (15 to
+  22 ×) on a quiet machine; the emulator rig manages about 0.85 ×.
 - Not done: the lobby path (TCP, DNS, network configuration, the two ERX modules) — see
   "What the lobby path needs".
 
@@ -401,6 +401,42 @@ anyone, the project's own lobby server on 127.0.0.1 is the peer
   an emulator machine in a net game was not attempted.
 - `pad_readPort` is overwritten only for port 0 and only when a script is given; without
   a script the runtime's own controller service is what the game reads.
+
+## How to repeat
+
+```
+export RTA_DISC="/path/to/your/disc image.iso"
+N=local/recomp-out/net; E=tools/rig/examples; S=tools/play-net/sections-suggested.txt
+python3 tools/recomp/net/build_net.py
+python3 tools/recomp/net/build_net.py --name fix --pnach patches/SLUS-20973_4028A55F.pnach --sections $S
+python3 tools/recomp/net/build_net.py --name wrap --wrap-memory
+
+# power-on, lobby, launch, strife: native pair; native + emulator
+python3 tools/recomp/net/netpair.py run $N/boot --boot --script $E/pair-start.rig
+python3 tools/recomp/net/netpair.py run $N/bootx --boot --a native --b rig --script $E/pair-start.rig
+
+# into the arena and its fight, with delay and loss; the same over host UDP
+cat $E/pair-start.rig $E/pair-arena.rig > $N/boot-arena.rig
+python3 tools/recomp/net/netpair.py run $N/arena --boot --script $N/boot-arena.rig --bus delay=3,jitter=3,loss=50,seed=1
+python3 tools/recomp/net/netpair.py run $N/arenax --boot --a rig --b native --script $N/boot-arena.rig --bus delay=3,jitter=3,loss=50,seed=1
+python3 tools/recomp/net/netpair.py run $N/arenau --boot --udp 42000 --pace 240 --script $N/boot-arena.rig
+
+# a known desync without and with the fix set (K2; K3, E9, D26 start from pair-chars-start.rig)
+cat $E/pair-start.rig $E/pair-k2.rig > $N/boot-k2.rig
+W="--tick-watch p1q1=g_players+0x4c30+0x258c:s16"
+python3 tools/recomp/net/netpair.py run $N/k2 --boot --script $N/boot-k2.rig --bus delay=10 $W
+python3 tools/recomp/net/netpair.py run $N/k2f --boot --program rta_native_net-fix --script $N/boot-k2.rig --bus delay=10 $W
+
+# a long soak (the fuzz line of pair-arena.rig lengthened to 300000 frames)
+python3 tools/recomp/net/netpair.py run $N/soak --boot --program rta_native_net-wrap --script $N/boot-arena-300k.rig \
+        --bus delay=3,jitter=4,loss=60,seed=11 --columns small
+```
+
+A rig machine is an `rta_rig` runner under `nice -n 19`; a mixed pair has one, a rig pair
+two. Exit codes of a native machine: 0 done, 3 a script condition timed out or the runtime
+stopped, 4 `RTA_NET_FRAMES` ended before the script, 6 the other machine ended first, 7 a
+level change became pending and `RTA_NET_ALLOW_LEVEL` was not set (resumed images without
+`--adopt`).
 
 ## Files
 
