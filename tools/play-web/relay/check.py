@@ -5,7 +5,8 @@
         Starts a stand-in lobby server (a TCP port that echoes, a UDP port that notes what
         arrives) and a relay of its own on this computer, and goes through everything the
         relay promises: the two kinds of TCP destination, what is refused, the UDP socket
-        the stand-in sees, datagrams from one session to another, the limits.
+        the stand-in sees, datagrams from one session to another, the players outside (who
+        is reached and who is not, with stand-in players on this computer), the limits.
 
     check.py ws://127.0.0.1:8975/relay
     check.py wss://HOST/PATH/relay --origin https://HOST [--gateway-port 40810]
@@ -13,7 +14,7 @@
         server's gateway port and closes it again WITHOUT SENDING A BYTE (no request, no
         log-in); asks for a destination that must be refused; sends datagrams from one
         session to the other and back and times them. Nothing is sent to the lobby
-        server's discovery port.
+        server's discovery port, and nothing to any address outside the relay.
 
 Standard library only. Figures: "ping" is one message to the relay and its answer;
 "player to player" is a datagram from session A through the relay to session B and one
@@ -211,11 +212,11 @@ def check_running(args):
     refused_port = struct.unpack(">HB", a.expect(TCP_OPENED))[1]
     a.send(TCP_OPEN, struct.pack(">HIH", 3, 0x01010101, args.gateway_port))
     refused_host = struct.unpack(">HB", a.expect(TCP_OPENED))[1]
-    a.send(UDP_SEND, struct.pack(">BIH", 1, 0x01010101, 53) + b"x")
+    a.send(UDP_SEND, struct.pack(">BIH", 1, 0x7F000002, 53) + b"x")
     a.send(PING, b"end")
     a.expect(PONG)
     refused_udp = any("datagram" in text for _, text in a.notices)
-    print("refused, as it must be: TCP to another port of the lobby server: %s; TCP to another host: %s; a datagram to another host: %s"
+    print("refused, as it must be: TCP to another port of the lobby server: %s; TCP to another host: %s; a datagram to an address no player can have: %s"
           % ("yes" if refused_port == 1 else "NO (status %d)" % refused_port, "yes" if refused_host == 1 else "NO (status %d)" % refused_host, "yes" if refused_udp else "NO"))
     ok = ok and refused_port == 1 and refused_host == 1 and refused_udp
     pings = ping_times(a, args.count)
@@ -263,17 +264,107 @@ class StandIn:
         conn.close()
 
 
-def selftest():
-    address = "127.0.0.1"  # the stand-in is on this computer and nothing leaves it
-    lobby = StandIn(address)
+def lobby_message(kind, body, reply=True, result=0):
+    """A lobby server's message as it is on the wire (docs/lobby-protocol.md section 2)."""
+    payload = struct.pack("<HI", kind, 7 if reply else 0) + (struct.pack("<I", result) if reply else b"") + body
+    return struct.pack(">I", len(payload) + 4) + payload
+
+
+def nstr(text):
+    return struct.pack("<I", len(text)) + text.encode()
+
+
+def wstr(text):
+    return struct.pack("<I", len(text)) + text.encode("utf-16-le")
+
+
+def wants_in(own_network, observed):
+    """Notification 0x65: a player wants into this player's game - its own-network pair, then the pair the server observed."""
+    return lobby_message(0x65, nstr(own_network[0]) + struct.pack("<I", own_network[1]) + nstr(observed[0]) + struct.pack("<I", observed[1]), reply=False)
+
+
+def game_list(games):
+    """Reply 0x55: eight arrays; games are (own-network pair, observed pair)."""
+    count = struct.pack("<I", len(games))
+    body = count + b"".join(wstr("01,00,00,00,01|game %d at 203.0.113.%d" % (i, i)) for i in range(len(games)))
+    body += count + b"".join(wstr("1") for _ in games) + count + b"".join(struct.pack("<I", 100 + i) for i in range(len(games)))
+    body += count + b"".join(struct.pack("<I", 3) + b"\xff\x00\xfe" for _ in games)
+    body += count + b"".join(wstr(g[0][0]) for g in games) + count + b"".join(struct.pack("<I", g[0][1]) for g in games)
+    body += count + b"".join(wstr(g[1][0]) for g in games) + count + b"".join(struct.pack("<I", g[1][1]) for g in games)
+    return lobby_message(0x55, body)
+
+
+def start_relay(lobby, address, *more):
     listen = socket.socket()
     listen.bind(("127.0.0.1", 0))
     port = listen.getsockname()[1]
     listen.close()
     relay = subprocess.Popen([sys.executable, os.path.join(HERE, "relay.py"), "--lobby", address, "--listen", "127.0.0.1:%d" % port, "--tcp-ports", str(lobby.tcp_port),
-                              "--udp-port", str(lobby.udp_port), "--test-loopback", "--per-address", "3", "--origin", "http://test.invalid", "--max-message", "2048", "--silent", "4"],
+                              "--udp-port", str(lobby.udp_port), "--test-loopback", "--per-address", "3", "--origin", "http://test.invalid", "--max-message", "2048", "--silent", "6"] + list(more),
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    url = "ws://127.0.0.1:%d/relay" % port
+    for _ in range(50):
+        try:
+            socket.create_connection(("127.0.0.1", port), 0.2).close()
+            break
+        except OSError:
+            time.sleep(0.1)
+    return relay, "ws://127.0.0.1:%d/relay" % port
+
+
+class Outside:
+    """A stand-in for a player outside the relay: a UDP socket on this computer."""
+
+    def __init__(self, address):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind((address, 0))
+        self.pair = self.sock.getsockname()
+        self.address = address
+
+    def send(self, data, port):
+        self.sock.sendto(data, (self.address, port))
+
+    def recv(self, timeout=0.4):
+        self.sock.settimeout(timeout)
+        try:
+            return self.sock.recvfrom(2048)
+        except socket.timeout:
+            return None
+
+
+def said_by_lobby(client, conn, message):
+    """The stand-in echoes: what the page sends on its lobby connection comes back as the server's words."""
+    client.send(TCP_DATA, struct.pack(">H", conn) + message)
+    got = b""
+    while len(got) < len(message):
+        got += client.expect(R_TCP_DATA)[2:]
+
+
+def parser_checks(check):
+    sys.path.insert(0, HERE)
+    import relay as program
+    pair = lambda text, port: (struct.unpack(">I", socket.inet_aton(text))[0], port)
+    listed = game_list([(("192.168.0.9", 4000), ("198.51.100.7", 4001)), (("10.0.0.2", 4002), ("203.0.113.9", 50123))])
+    found_by_name = lobby_message(0x57, wstr("Test") + struct.pack("<I", 5) + wstr("192.168.0.9") + struct.pack("<I", 4000) + wstr("198.51.100.8") + struct.pack("<I", 4003))
+    chat = lobby_message(0x0F, nstr("198.51.100.99") + struct.pack("<I", 4000) + nstr("198.51.100.99") + struct.pack("<I", 4000), reply=False)
+    stream = listed + chat + found_by_name + wants_in(("192.168.0.9", 4000), ("198.51.100.20", 4004)) + lobby_message(0x55, struct.pack("<8I", *[0] * 8), result=1)
+    reader = program.LobbyReader()
+    whole = reader.feed(stream)
+    wanted = [pair("198.51.100.7", 4001), pair("203.0.113.9", 50123), pair("198.51.100.8", 4003), pair("198.51.100.20", 4004)]
+    check("lobby messages: the observed address of a listed game's host, of a game found by name and of a player who wants in are read; own-network addresses, texts and other messages are not", whole == wanted, repr(whole))
+    reader, pieces = program.LobbyReader(), []
+    for i in range(len(stream)):
+        pieces.extend(reader.feed(stream[i:i + 1]))
+    check("lobby messages: the same when they arrive a byte at a time", pieces == wanted)
+    reader = program.LobbyReader()
+    odd = reader.feed(lobby_message(0x65, b"\xff" * 9, reply=False) + lobby_message(0x55, struct.pack("<I", 4000000)) + lobby_message(0x99, bytes(70000)) + wants_in(("x", 1), ("198.51.100.21", 4000)) + wants_in(("x", 1), ("not an address", 4000)))
+    check("lobby messages: a message that is not as expected names nobody and the next one is still read", odd == [pair("198.51.100.21", 4000)], repr(odd))
+
+
+def selftest():
+    address = "127.0.0.1"  # the stand-in is on this computer and nothing leaves it
+    lobby = StandIn(address)
+    # --lan: the stand-in players are on this computer, which is not a public address
+    relay, url = start_relay(lobby, address, "--lan")
     results = []
 
     def check(name, good, detail=""):
@@ -281,12 +372,6 @@ def selftest():
         print("%-4s %s%s" % ("ok" if good else "FAIL", name, (": " + detail) if detail and not good else ""))
 
     try:
-        for _ in range(50):
-            try:
-                socket.create_connection(("127.0.0.1", port), 0.2).close()
-                break
-            except OSError:
-                time.sleep(0.1)
         lobby_int = struct.unpack(">I", socket.inet_aton(address))[0]
         for what, target, origin, wanted in (("another path", url + "x", "http://test.invalid", "404"), ("a page from elsewhere", url, "http://other.invalid", "403"), ("no origin", url, None, "403")):
             try:
@@ -314,24 +399,89 @@ def selftest():
         bound = struct.unpack(">BH", a.expect(UDP_BOUND))
         data, sender = lobby.udp.recvfrom(100)
         check("the lobby server sees the datagram from the session's socket", data == b"discovery" and sender == (address, bound[1]), "%r from %r, socket %r" % (data, sender, bound))
-        a.send(UDP_SEND, struct.pack(">BIH", 0, 0x08080808, 53) + b"x")
+        a.send(UDP_SEND, struct.pack(">BIH", 0, 0xE0000001, 53) + b"x")
         a.send(UDP_SEND, struct.pack(">BIH", 0, 0x7F000002, lobby.udp_port) + b"x")
         a.send(PING, b"1")
         a.expect(PONG)
-        check("datagrams to other hosts are refused and said so", sum("datagram" in text for _, text in a.notices) == 2, repr(a.notices))
+        check("datagrams to addresses no player can have are refused and said so", sum("datagram" in text for _, text in a.notices) == 2, repr(a.notices))
         b = Client(url, "http://test.invalid")
         b.hello()
         times, lost, ports = player_to_player(a, b, lobby_int, count=50, gap=0)
         check("datagrams go from one session to the other and back, with the sender's socket as their source", len(times) == 50 and lost == 0)
         check("the first session's socket is the one the lobby server saw", ports[0] == bound[1])
-        # nothing from outside reaches a page
-        outside = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        outside.sendto(b"from outside", (address, ports[0]))
-        outside.close()
-        check("a datagram from outside is not passed on", a.recv(0.5) is None)
+        # players outside: a path opens when the lobby server named the address, or when each has sent to the other
+        mine = ports[0]
+        to = lambda player, data: a.send(UDP_SEND, struct.pack(">BIH", 0, lobby_int, player.pair[1]) + data)
+        heard = lambda player, data: a.expect(UDP_RECV, 2) == struct.pack(">BIH", 0, lobby_int, player.pair[1]) + data
+        one, two, three, four = Outside(address), Outside(address), Outside(address), Outside(address)
+        to(one, b"anyone there")
+        check("a page alone opens no path: what it sends to an address nobody named is not sent", one.recv() is None)
+        one.send(b"here", mine)
+        check("... until that address has sent as well: its datagram is passed on, with its address", heard(one, b"here"))
+        to(one, b"hello")
+        check("... and the page's next one arrives there, from the session's socket", one.recv() == (b"hello", (address, mine)))
+        two.send(b"knock", mine)
+        check("a stranger alone opens no path: a datagram from outside is not passed on", a.recv(0.5) is None)
+        to(two, b"come in")
+        got = two.recv()
+        two.send(b"thanks", mine)
+        check("... until the page has sent to it as well", got == (b"come in", (address, mine)) and heard(two, b"thanks"))
+        a.send(TCP_OPEN, struct.pack(">HIH", 5, lobby_int, lobby.tcp_port))
+        a.expect(TCP_OPENED)
+        said_by_lobby(a, 5, wants_in((address, four.pair[1]), (address, three.pair[1])))
+        to(three, b"welcome")
+        got = three.recv()
+        three.send(b"joining", mine)
+        check("an address the lobby server named (the observed one) is reached at once, and answers", got == (b"welcome", (address, mine)) and heard(three, b"joining"))
+        to(four, b"welcome")
+        check("the own-network address in the same message is not taken", four.recv() is None)
+        a.send(TCP_CLOSE, struct.pack(">H", 5))
+        parser_checks(check)
+        # without --lan only public addresses are reached; with --pages-only nobody outside
+        plain, plain_url = start_relay(lobby, address)
+        try:
+            p = Client(plain_url, "http://test.invalid")
+            p.hello()
+            p.send(UDP_OPEN, b"\x00")
+            there = struct.unpack(">BH", p.expect(UDP_BOUND))[1]
+            five = Outside(address)
+            p.send(TCP_OPEN, struct.pack(">HIH", 1, lobby_int, lobby.tcp_port))
+            p.expect(TCP_OPENED)
+            said_by_lobby(p, 1, wants_in((address, five.pair[1]), (address, five.pair[1])) + wants_in(("192.168.0.9", five.pair[1]), ("192.168.0.9", five.pair[1])))
+            five.send(b"knock", there)
+            p.send(UDP_SEND, struct.pack(">BIH", 0, lobby_int, five.pair[1]) + b"x")
+            check("without --lan nothing passes to or from an address that is not public, named or not", five.recv() is None and p.recv(0.3) is None)
+            p.close()
+        finally:
+            plain.terminate()
+            plain.communicate(timeout=5)
+        a.send(PING, b"2")  # the first relay drops a page it does not hear
+        a.expect(PONG)
+        only, only_url = start_relay(lobby, address, "--pages-only")
+        try:
+            p = Client(only_url, "http://test.invalid")
+            p.hello()
+            p.send(UDP_OPEN, b"\x00")
+            there = struct.unpack(">BH", p.expect(UDP_BOUND))[1]
+            six = Outside(address)
+            six.send(b"knock", there)
+            p.send(UDP_SEND, struct.pack(">BIH", 0, lobby_int, six.pair[1]) + b"x")
+            p.send(UDP_SEND, struct.pack(">BIH", 0, 0x7F000002, six.pair[1]) + b"x")
+            p.send(PING, b"1")
+            p.expect(PONG)
+            check("with --pages-only nothing passes to or from outside, and a datagram for another host is refused and said so",
+                  six.recv() is None and p.recv(0.3) is None and sum("players of this relay" in text for _, text in p.notices) == 1, repr(p.notices))
+            p.close()
+        finally:
+            only.terminate()
+            only.communicate(timeout=5)
         timing = "timing on this computer (load %.1f): ping %s\n" % (os.getloadavg()[0], figures(ping_times(a, 100, 0.002)))
         timing += "                                    player to player and back %s" % figures(times)
         # limits
+        b.close()
+        time.sleep(0.3)
+        b = Client(url, "http://test.invalid")
+        b.hello()
         c = Client(url, "http://test.invalid")
         c.hello()
         try:
@@ -348,7 +498,7 @@ def selftest():
         except (Gone, OSError):
             check("a message that is too large ends the session", True)
         try:
-            b.recv(6)
+            b.recv(9)
             check("a page that says nothing is dropped", False)
         except Gone:
             check("a page that says nothing is dropped", True)
@@ -361,6 +511,8 @@ def selftest():
         relay.terminate()
         output = relay.communicate(timeout=5)[0]
     check("the relay ended cleanly", "relay: stopped" in output, output[-400:])
+    counted = [line for line in output.splitlines() if line.find("session 1 ") > 0 and "ended" in line]
+    check("the relay's log counts what it did not send and did not pass on", bool(counted) and "3 path(s)" in counted[0] and " 2 not sent (no path), 1 not passed on (no path)" in counted[0], counted[0] if counted else output[-600:])
     print("relay log: %d lines; %d session(s) opened" % (len(output.splitlines()), output.count(" opened;")))
     print(timing)
     return all(results)

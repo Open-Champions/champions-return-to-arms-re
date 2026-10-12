@@ -1,0 +1,42 @@
+# Functions the native online driver (tools/recomp/net/netdrv.cpp) supplies.  The build
+# hands this list to the translator beside tools/recomp/hle.txt (recomp.py --hle-add); a
+# program that does not link the driver gets the translated originals (hle_weak.cpp).
+# One hex address per line.  docs/issues/native-online.md says why the cut is here.
+#
+# Sony's network library (libnet), the entries the game calls:
+365ec0   # sceLibnetInitialize
+365f88   # sceLibnetTerminate
+365a08   # sceInetGetInterfaceList
+365a90   # sceInetInterfaceControl
+3654a8   # sceInetCreate
+365518   # sceInetOpen
+365560   # sceInetClose
+365830   # sceInetSendTo
+365670   # sceInetRecvFrom
+365780   # sceInetSend
+3655a8   # sceInetRecv
+3651e0   # sceInetPoll
+365288   # sceInetName2Address
+365348   # sceInetAddress2String
+364fb8   # libnet_callRpc: every other library entry ends here; answered with an error and noted
+# The network configuration clients (eznetcnf / eznetctl): the setting on the memory card
+# and the state of the interface.
+367da8   # ezNetCnfInit
+367e98   # ezNetCnfExit
+367f18   # ezNetCnfGetCount
+367fd8   # ezNetCnfGetCombinationList
+368270   # ezNetCnfGetProperties
+37a5d8   # ezNetCtlInit
+37a6c8   # ezNetCtlExit
+37a750   # ezNetCtlSetProperties
+37a868   # ezNetCtlSetCombination
+37aac8   # ezNetCtlUpInterface
+37ab58   # ezNetCtlDownInterface
+37abe8   # ezNetCtlGetStatus
+37ad38   # ezNetCtlWaitEventTO
+# The game's own two entries for the developer LAN start (as tools/recomp/net/hle-net.txt):
+137a10   # net_loadModules
+13e638   # net_linkCheck
+# Hooks; the original runs in each:
+323dcc   # main(argc, argv): the driver and the one-step online are set up before the game starts
+3226e4   # tasks_run: the call from net_frameLoop (return address 0x13aee8) is one lockstep tick - the tick log of a test run

@@ -25,7 +25,7 @@ Renderer::Renderer(uint8_t* vu_micro, uint8_t* vu_data) {
             static bool done = false;
             if (done) return;
             done = true;
-            size_t from = vif.ring.size() > 70 ? vif.ring.size() - 70 : 0;
+            size_t from = vif.ring.size() > 400 ? vif.ring.size() - 400 : 0;
             for (size_t k = from; k < vif.ring.size(); k++) fprintf(stderr, "   vif: %s\n", vif.ring[k].c_str());
             fprintf(stderr, "   vu1: top %03x itop %03x q %g\n", vif.vu.top, vif.vu.itop, vif.vu.q);
             for (int r = 0; r < 32; r++)
@@ -35,10 +35,22 @@ Renderer::Renderer(uint8_t* vu_micro, uint8_t* vu_data) {
                 float f[4]; memcpy(f, vif.vu.data + q * 16, 16);
                 fprintf(stderr, "   data[%03x] %g %g %g %g\n", q, f[0], f[1], f[2], f[3]);
             }
-            for (uint32_t q = 0; q < 12; q++) {
+            for (uint32_t q = 0; q < 0x100; q++) {
+                uint32_t w[4]; float f[4];
+                memcpy(w, vif.vu.data + q * 16, 16); memcpy(f, w, 16);
+                fprintf(stderr, "   joint[%02x.%u] %08x %08x %08x %08x  %g %g %g %g\n", q >> 2, q & 3, w[0], w[1], w[2], w[3], f[0], f[1], f[2], f[3]);
+            }
+            // the whole input half, then the strip in the other half (tag at +0x80)
+            for (uint32_t q = 0; q < 0x80; q++) {
                 uint32_t w[4]; float f[4];
                 memcpy(w, vif.vu.data + ((vif.vu.top + q) & 0x3FF) * 16, 16); memcpy(f, w, 16);
-                fprintf(stderr, "   data[top+%u] %08x %08x %08x %08x  %g %g %g %g\n", q, w[0], w[1], w[2], w[3], f[0], f[1], f[2], f[3]);
+                fprintf(stderr, "   data[top+%02x] %08x %08x %08x %08x  %g %g %g %g\n", q, w[0], w[1], w[2], w[3], f[0], f[1], f[2], f[3]);
+            }
+            uint32_t other = vif.vu.top == 0x27b ? 0x100 : 0x27b;
+            for (uint32_t q = 0x80; q < 0x17b; q++) {
+                uint32_t w[4]; float f[4];
+                memcpy(w, vif.vu.data + ((other + q) & 0x3FF) * 16, 16); memcpy(f, w, 16);
+                fprintf(stderr, "   strip[%03x] %08x %08x %08x %08x  %g %g %g %g\n", q - 0x81, w[0], w[1], w[2], w[3], f[0], f[1], f[2], f[3]);
             }
         };
     }

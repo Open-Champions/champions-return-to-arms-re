@@ -45,7 +45,8 @@ struct Vu1 {
     int debug_left = 0;                 // print the registers at the next instructions in [debug_lo, debug_hi]
     uint32_t debug_lo = 0, debug_hi = 0;
     bool debug_hit = false;             // a watched store happened in the copy loop (0x314 / 0x318)
-    int debug_store = 0;                // report the next stores into qwords 0x3f0-0x3f7
+    int debug_store = 0;                // report the next stores into qwords debug_store_lo..hi (default 0x3f0-0x3f7)
+    uint32_t debug_store_lo = 0x3F0, debug_store_hi = 0x3F7;
 
     Vu1();
     void run(uint32_t start);

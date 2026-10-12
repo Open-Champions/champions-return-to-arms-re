@@ -394,6 +394,7 @@ const online = {
 	rtt: [],            // the last round trips to the relay, in milliseconds
 	pongs: new Map(),
 	state: null,
+	players: null,      // what onlinePlayers() made of the other players' copies
 	codeShown: "",
 };
 const RELAY_BUFFER = 16384;
@@ -505,19 +506,75 @@ function onlineSay(text, bad = false) {
 	$("onlineSay").textContent = text;
 	$("onlineSay").classList.toggle("bad", bad);
 }
+// The other players' copies, as each told ours (tools/play-net/src/RtaNet.cpp: the patch-set
+// figure and the arithmetic, player to player). The game computes every frame on every
+// machine: a copy with other patches, or one that rounds differently, falls out of step. These
+// are the two warnings of the desktop application (CheckPatchSets and CheckArithmetic in
+// tools/play-net/src/Rta.cpp), by the same rules: a player not heard for fifteen seconds has
+// left; a copy has twelve seconds to say what it has; one that then says nothing about
+// arithmetic is an application from before it could compute as a browser does. A page has one
+// arithmetic, the browser's; a current application changes to it by itself while a browser
+// player is in its room.
+function onlinePlayers(state) {
+	const here = (state.players || []).filter((player) => player.silent_ms <= 15000);
+	if(!here.length) return { text: "", bad: false, players: 0 };
+	const settled = (player) => player.heard_ms >= 12000;
+	const count = (n, one, many) => (n === 1 ? one : many);
+	const otherSet = here.filter((player) => player.set_known && !player.same_set);
+	const noSet = here.filter((player) => !player.set_known && settled(player));
+	const cannot = here.filter((player) => (player.arith_known ? !player.can_browser : settled(player)));
+	const differ = here.filter((player) => player.arith_known && player.can_browser && !player.does_browser);
+	const unheard = here.filter((player) => !settled(player) && !(player.set_known && player.arith_known));
+	let inGame = false;
+	try { inGame = !rta.inFrontEnd(); } catch(e) { /* the machine is not up */ }
+	const parts = [];
+	if(otherSet.length) {
+		parts.push("WARNING: " + count(otherSet.length, "another player has", "other players have") + " a DIFFERENT PATCH SET (theirs " + otherSet[0].set + ", yours " + state.patch_set +
+			"): the game would fall out of step - do not start it. Everyone needs the same build: this page as it is now, and the current application.");
+	}
+	if(cannot.length) {
+		parts.push("WARNING: " + count(cannot.length, "another player's copy", "other players' copies") + " cannot compute as a browser does (an older copy of the application, or one set to its own arithmetic)" +
+			(inGame ? ": the game falls out of step." : ": the game would fall out of step - do not start it. That player needs the current application, left to choose its arithmetic by itself."));
+	} else if(differ.length) {
+		parts.push(inGame ? "WARNING: " + count(differ.length, "another player's copy computes", "other players' copies compute") + " differently from this page: the game falls out of step."
+			: count(differ.length, "Another player's application has", "Other players' applications have") + " not changed to browser arithmetic yet: wait for this line to change before starting.");
+	}
+	const bad = otherSet.length > 0 || cannot.length > 0 || (differ.length > 0 && inGame);
+	if(!parts.length && noSet.length) {
+		parts.push(noSet.length + count(noSet.length, " other player does", " other players do") + " not say which patch set they have (an older copy?): compare the figures yourselves (yours is " + state.patch_set + ").");
+	}
+	if(!parts.length && unheard.length) {
+		parts.push("Hearing from " + count(here.length, "the other player's copy", "the other players' copies") + "… (patch set and arithmetic: wait for this line before starting)");
+	}
+	if(!parts.length) {
+		const apps = here.filter((player) => player.can_native).length;
+		parts.push("Everyone computes the same way: " + here.length + count(here.length, " other player", " other players") + " heard, the same patch set (" + state.patch_set + "), browser arithmetic" +
+			(apps ? " (" + (apps === here.length ? count(apps, "in the Mac application", "all in the Mac application") : apps + " in the Mac application") + ")" : "") + ".");
+	}
+	return { text: parts.join(" "), bad, wait: !bad && (differ.length > 0 || unheard.length > 0), players: here.length };
+}
 function onlineShow() {
 	if(!module || !online.relay) return;
 	const state = online.state = onlineState();
 	const bar = $("onlineBar");
-	const others = (state.players || []).filter((player) => player.set_known && !player.same_set);
-	let text = state.note;
-	if(others.length) text = "WARNING: another player has a different patch set (theirs " + others[0].set + ", yours " + state.patch_set + "): the game would fall out of step. Everyone needs the same page.";
+	const text = state.note;
 	bar.hidden = !text;
-	bar.classList.toggle("bad", others.length > 0 || /stopped/.test(text));
+	bar.classList.toggle("bad", /stopped/.test(text));
 	if(bar.dataset.text !== text) {
 		bar.dataset.text = text;
 		bar.textContent = text;
 		if(text) note("online: " + text);
+	}
+	// the line under it: the other players' copies
+	const players = online.players = onlinePlayers(state);
+	const line = $("onlinePlayers");
+	line.hidden = !players.text;
+	line.classList.toggle("bad", players.bad);
+	line.classList.toggle("wait", !!players.wait);
+	if(line.dataset.text !== players.text) {
+		line.dataset.text = players.text;
+		line.textContent = players.text;
+		if(players.text) note("players: " + players.text);
 	}
 	// the name is asked for once; the panel opens by itself for it
 	const ask = $("nameAsk");
@@ -906,6 +963,7 @@ const rta = window.rta = {
 	// DEV: round trips to the relay in milliseconds, and the link taken down
 	online: {
 		state: () => onlineState(),
+		players: () => onlinePlayers(onlineState()),
 		link: () => ({ relay: !!online.relay, signin: online.signinLoaded, welcomed: online.welcomed, notice: online.notice, rtt: online.rtt.slice(), awake: !!wakeLock }),
 		start: (mode, code = "") => onlineStart(mode, code),
 		name: (text) => module.UTF8ToString(onlineCall("_rtaOnlineName", text)),

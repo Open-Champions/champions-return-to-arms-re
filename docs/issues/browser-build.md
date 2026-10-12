@@ -536,6 +536,32 @@ passes 18 of 18 inside the service's sandbox.
   datagrams to or from outside).
 - The relay's limits under real load.
 
+## Mixed games: a page and the application in one game (2026-10-12, work in progress)
+
+Working notes of the session that builds this; the finished account replaces them.
+
+- **Why an application player never reached a page** (read in `relay.py` as it was): (1) a
+  datagram a page asked to send to any address but the lobby's discovery port or another
+  session's socket was refused; (2) the relay never read its UDP sockets (4 KiB buffer,
+  no reader), so whatever an application player sent there was thrown away by the
+  system; (3) as deployed, the service may only talk to the server's own addresses
+  (`IPAddressDeny=any`) and the firewall has no UDP port open for it. The game, the lobby
+  and the application need nothing: the lobby already hands a page's relay socket to the
+  other players as that player's address.
+- **Built in `relay.py`** (self-test `check.py --selftest`: 30 checks pass): the sockets
+  are read; a datagram passes between a session's socket and an outside address and port
+  only when that pair is *open*: the lobby server named it to this page (the relay reads
+  the observed address out of replies 0x55 and 0x57 and notification 0x65 as they pass;
+  the own-network address a player claims is not taken), or the page has asked to send
+  there *and* that address has sent to the session's socket, within 30 s. Nothing else is
+  sent and nothing else is passed on. Options: `--udp-ports LOW-HIGH` (for a firewall),
+  `--lan` (private addresses and programs on the relay's own computer: tests),
+  `--pages-only` (as before), `--peer-rate`.
+- **Still to do** when this note was written: the page's warnings (patch set, arithmetic,
+  "everyone computes the same way"), the build, then the proof with one application copy
+  and one page (both orders), a level change, three players, an application copy that
+  cannot change its arithmetic; the documents. Test files: `local/mixed-online/`.
+
 ## Online play from a browser: the design it was built from
 
 ### What the game's machine does on its network

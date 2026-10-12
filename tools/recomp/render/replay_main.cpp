@@ -101,6 +101,12 @@ int main(int argc, char** argv) {
     if (getenv("RTA_NO_VU")) renderer.vif.run_programs = false;         // for telling the parts' processor time apart
     if (getenv("RTA_NO_KICK")) renderer.vif.vu.kick = nullptr;
     if (getenv("RTA_DEBUG_STORE")) renderer.vif.vu.debug_store = atoi(getenv("RTA_DEBUG_STORE"));
+    if (getenv("RTA_WATCH")) {                          // RTA_WATCH=lo-hi (hex qwords): every VU1 store and UNPACK into the range
+        unsigned lo = 0, hi = 0;
+        sscanf(getenv("RTA_WATCH"), "%x-%x", &lo, &hi);
+        renderer.vif.vu.debug_store_lo = lo; renderer.vif.vu.debug_store_hi = hi; renderer.vif.vu.debug_store = 1 << 30;
+        renderer.vif.debug_unpack_lo = lo; renderer.vif.debug_unpack_hi = hi; renderer.vif.debug_unpack = 1 << 30;
+    }
     if (getenv("RTA_DEBUG_RING")) renderer.vif.debug_ring = atoi(getenv("RTA_DEBUG_RING"));
     if (getenv("RTA_DEBUG_UNPACK")) renderer.vif.debug_unpack = atoi(getenv("RTA_DEBUG_UNPACK"));
     renderer.vif.vu.debug_lo = vu_lo; renderer.vif.vu.debug_hi = vu_hi; renderer.vif.vu.debug_left = vu_n;

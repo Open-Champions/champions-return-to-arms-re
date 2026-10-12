@@ -10,23 +10,47 @@ own:
         ports only (the gateway port and the lobby port), nothing else;
   UDP   one socket here per UDP port the console uses, kept for the session and used for
         every destination. The lobby server sees a browser player at this host's address
-        and that socket's port, exactly as it sees a desktop player's router. A datagram
-        may go to two kinds of destination only: the lobby server's discovery port, and
-        the UDP socket of another session of this relay (browser players play with
-        browser players; such a datagram is handed over inside this program). Nothing
-        that arrives from outside on those sockets is passed on to a page.
+        and that socket's port, exactly as it sees a desktop player's router, and hands
+        that address to the other players. A datagram may go to three kinds of
+        destination only:
+          - the lobby server's discovery port;
+          - the UDP socket of another session of this relay (another browser player:
+            handed over inside this program);
+          - a player outside (the desktop application), under the rule below.
 
-So this is not a proxy to anywhere: a page can reach the lobby server and the other
-pages, and that is all.
+Players outside. A datagram passes between a session's socket and an outside address and
+port only when that pair is OPEN for the session, and it is opened in two ways only:
+
+  named    the lobby server itself named the address to this player: the relay reads the
+           lobby connection as it passes (server to page only) and takes the address the
+           server OBSERVED for the host of a listed game (reply 0x55), of a game found by
+           name (reply 0x57) or of a player who wants in (notification 0x65). The
+           "own-network" addresses in the same messages are what a player claims and are
+           not taken. docs/lobby-protocol.md has the messages.
+  both     the page has asked to send to the address AND a datagram from that address has
+           arrived on the session's socket (in either order, within half a minute). This
+           is how the third player of a game is met: the host passes addresses along
+           player to player and the lobby server names nobody.
+
+Neither a page nor a stranger can open a path alone: what a page sends to an address that
+is not open is dropped (never sent), and what arrives from an address that is not open is
+dropped (never shown to a page). Addresses that are not public are left out unless --lan
+is given. Open paths are few per session, each has a datagram rate, and one that hears
+nothing for two minutes is closed.
+
+So this is not a proxy to anywhere: a page reaches the lobby server, the other pages, and
+the players the lobby server put it in a game with.
 
     relay.py --lobby 192.0.2.10                        # ws://127.0.0.1:8975/relay
     relay.py --lobby 192.0.2.10 --listen 127.0.0.1:8975 --path /relay \\
-             --origin https://play.example --trust-proxy
+             --origin https://play.example --trust-proxy --udp-ports 41000-41999
 
 Python 3.8 or later, standard library only (the WebSocket handshake and framing are
 written out below: RFC 6455, binary messages, no extensions). It listens on a loop-back
 address by default: put a web server in front for TLS (a page served over https may only
-open wss://) and let it hand the connection on (README.md beside this file).
+open wss://) and let it hand the connection on (README.md beside this file). The UDP
+sockets are on every address of the host: players outside must be able to reach them
+(--udp-ports gives the range to open in a firewall).
 
 Messages (one per binary WebSocket message; numbers big-endian):
 
@@ -68,6 +92,32 @@ WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 MAX_TCP = 4          # connections of one session at a time (the game has one or two)
 MAX_UDP = 8          # UDP sockets of one session (the game uses one of its ports 4000-4004)
 WRITE_HIGH = 1 << 20  # bytes waiting for a page before its datagrams are dropped
+# players outside (the desktop application): see "Players outside" above
+MAX_NAMED = 64       # addresses the lobby server named to one session (a game list names every host)
+MAX_ASKED = 16       # outside addresses a page has asked for that have not sent yet
+MAX_HEARD = 32       # outside addresses that have sent to a session and were not asked for yet
+MAX_PATHS = 16       # open paths of one session (a game has three other players)
+NAMED_FOR = 300.0    # seconds an address stays named after the lobby server last named it
+MEET_WITHIN = 30.0   # seconds within which asking and hearing have to meet
+PATH_SILENT = 120.0  # seconds without a datagram from outside after which a path is closed
+MAX_DATAGRAM = 1500  # bytes of one datagram from outside (the game's own are far smaller)
+LOBBY_FRAME = 65536  # the largest lobby message that is read for addresses (larger ones pass unread)
+
+# what an address is, for a datagram's destination or source
+NEVER, PRIVATE, PUBLIC = range(3)
+_NEVER = [(0x00000000, 8), (0x7F000000, 8), (0xE0000000, 4), (0xF0000000, 4)]  # this network, loop-back, multicast, reserved and broadcast
+_PRIVATE = [(0x0A000000, 8), (0xAC100000, 12), (0xC0A80000, 16), (0xA9FE0000, 16), (0x64400000, 10),  # private, link-local, carrier NAT
+            (0xC0000000, 24), (0xC0000200, 24), (0xC6120000, 15), (0xC6336400, 24), (0xCB007100, 24)]  # set aside for protocols, documents and tests
+
+
+def address_kind(address):
+    for net, bits in _NEVER:
+        if (address ^ net) >> (32 - bits) == 0:
+            return NEVER
+    for net, bits in _PRIVATE:
+        if (address ^ net) >> (32 - bits) == 0:
+            return PRIVATE
+    return PUBLIC
 
 
 def log(text):
@@ -139,17 +189,133 @@ async def read_frame(reader, largest):
     return opcode, data
 
 
+class LobbyReader:
+    """Reads what the lobby server sends on one connection, for the addresses it names.
+
+    Nothing is changed and nothing is held back: the bytes have gone to the page already.
+    A lobby message is a length of four bytes (big-endian, counting itself) and a payload
+    whose numbers are little-endian: u16 kind, u32 tracking number (0 in a notification),
+    in a reply a u32 result, then the body (docs/lobby-protocol.md, sections 2, 3, 8.5
+    and 9.4). Three messages carry another player's address; each carries two, the
+    "own-network" pair the player claimed and the pair the server observed. Only the
+    observed pair is taken."""
+
+    def __init__(self):
+        self.buffer = b""
+        self.skip = 0  # bytes of a message too large to be one of the three
+
+    def feed(self, data):
+        """Yields (address, port) for every observed pair in the messages completed by 'data'."""
+        if self.skip:
+            gone = min(self.skip, len(data))
+            self.skip -= gone
+            data = data[gone:]
+        self.buffer += data
+        found = []
+        while len(self.buffer) >= 4:
+            length = struct.unpack(">I", self.buffer[:4])[0]
+            if length < 4:  # not a lobby message: nothing further on this connection is read
+                self.buffer, self.skip = b"", 1 << 62
+                break
+            if length > LOBBY_FRAME:  # too large to be one of the three: it passes unread
+                if len(self.buffer) >= length:
+                    self.buffer = self.buffer[length:]
+                    continue
+                self.skip = length - len(self.buffer)
+                self.buffer = b""
+                break
+            if len(self.buffer) < length:
+                break
+            payload, self.buffer = self.buffer[4:length], self.buffer[length:]
+            try:
+                found.extend(self.pairs(payload))
+            except (struct.error, IndexError, ValueError, UnicodeError):
+                pass  # not the layout expected: no address from this message
+        return found
+
+    @staticmethod
+    def pairs(payload):
+        if len(payload) < 6:
+            return []
+        kind = struct.unpack_from("<H", payload, 0)[0]
+        if kind not in (0x55, 0x57, 0x65):
+            return []
+        at = [6]
+
+        def u32():
+            value = struct.unpack_from("<I", payload, at[0])[0]
+            at[0] += 4
+            return value
+
+        def text(wide):
+            count = u32()
+            size = count * 2 if wide else count
+            if count > 512 or at[0] + size > len(payload):
+                raise ValueError("a string longer than its message")
+            raw = payload[at[0]:at[0] + size]
+            at[0] += size
+            return raw.decode("utf-16-le" if wide else "ascii")
+
+        def blob():
+            size = u32()
+            if at[0] + size > len(payload):
+                raise ValueError("a blob longer than its message")
+            at[0] += size
+
+        def many(read):
+            count = u32()
+            if count > 256:
+                raise ValueError("more entries than a list has")
+            return [read() for _ in range(count)]
+
+        def pair(address, port):
+            if not 0 < port < 65536:
+                raise ValueError("not a port")
+            return ip_int(address.strip("\0 ")), port
+
+        if kind == 0x65:  # notification: a player wants into this player's game
+            text(False), u32()
+            return [pair(text(False), u32())]
+        if u32() != 0:  # a reply that says "failed" names nobody
+            return []
+        if kind == 0x57:  # reply: the game found by its name
+            text(True), u32(), text(True), u32()
+            return [pair(text(True), u32())]
+        # 0x55, reply: the list of games - eight arrays, the hosts' observed addresses and ports last
+        many(lambda: text(True)), many(lambda: text(True)), many(u32), many(blob), many(lambda: text(True)), many(u32)
+        addresses, ports = many(lambda: text(True)), many(u32)
+        found = []
+        for address, port in zip(addresses, ports):
+            try:
+                found.append(pair(address, port))
+            except ValueError:
+                pass
+        return found
+
+
 class Tcp:
     def __init__(self):
         self.writer = None
         self.task = None
         self.shut = False
+        self.lobby = LobbyReader()
 
 
 class Udp:
     def __init__(self, sock, port):
         self.sock = sock
         self.port = port
+
+
+class Path:
+    """An outside address and port a session's datagrams pass to and from."""
+
+    def __init__(self, real, rate, why):
+        self.real = real      # where to send: (text, port) - the loop-back address for a program on this host
+        self.heard = time.monotonic()
+        self.rate = Bucket(rate)
+        self.why = why
+        self.out = self.back = 0
 
 
 class Session:
@@ -162,8 +328,16 @@ class Session:
         self.last_use = time.monotonic()
         self.messages = Bucket(relay.args.message_rate)
         self.bytes = Bucket(relay.args.byte_rate)
-        self.counts = {"tcp": 0, "tcp_out": 0, "tcp_in": 0, "udp_lobby": 0, "udp_peer": 0, "udp_in": 0, "udp_dropped": 0, "refused": 0}
+        self.counts = {"tcp": 0, "tcp_out": 0, "tcp_in": 0, "udp_lobby": 0, "udp_peer": 0, "udp_in": 0, "udp_dropped": 0, "refused": 0,
+                       "out": 0, "back": 0, "not_open": 0, "strangers": 0, "paths": 0}
         self.noticed = set()
+        # players outside: (address, port) -> ...
+        self.named = {}   # ... when the lobby server last named it
+        self.asked = {}   # ... when the page last asked to send there, not open
+        self.heard = {}   # ... when a datagram last came from there, not open
+        self.paths = {}   # ... the open Path
+        self.arrivals = Bucket(relay.args.message_rate)  # datagrams from outside, per second
+        self.arrival_bytes = Bucket(relay.args.byte_rate)
 
     # ---- to the page
     def send(self, kind, payload=b""):
@@ -230,8 +404,10 @@ class Session:
         self.closed = True
         self.relay.gone(self)
         c = self.counts
-        log("session %d (%s) ended: %s; %d TCP connection(s), %d bytes to the lobby, %d from it; datagrams: %d to the lobby, %d to players, %d from players, %d dropped, %d refused"
-            % (self.number, self.address, why, c["tcp"], c["tcp_out"], c["tcp_in"], c["udp_lobby"], c["udp_peer"], c["udp_in"], c["udp_dropped"], c["refused"]))
+        log("session %d (%s) ended: %s; %d TCP connection(s), %d bytes to the lobby, %d from it; datagrams: %d to the lobby, %d to players, %d from players, %d dropped, %d refused; "
+            "players outside: %d path(s), %d datagrams out, %d back, %d not sent (no path), %d not passed on (no path)"
+            % (self.number, self.address, why, c["tcp"], c["tcp_out"], c["tcp_in"], c["udp_lobby"], c["udp_peer"], c["udp_in"], c["udp_dropped"], c["refused"],
+               c["paths"], c["out"], c["back"], c["not_open"], c["strangers"]))
 
     def idle(self):
         """Nothing open towards the lobby and nothing sent for the idle time."""
@@ -343,6 +519,8 @@ class Session:
                 self.counts["tcp_in"] += len(data)
                 self.last_use = time.monotonic()
                 self.send(R_TCP_DATA, head + data)
+                for address, port in conn.lobby.feed(data):
+                    self.name(address, port)
                 await self.writer.drain()
         except (ConnectionError, OSError):
             if self.tcp.get(conn_id) is conn:
@@ -366,15 +544,13 @@ class Session:
             return entry
         if sock_id >= MAX_UDP or len(self.udp) >= MAX_UDP:
             raise Stop(N_PROTOCOL, "more UDP sockets than a game uses")
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setblocking(False)
-        try:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)  # nothing is read from it
-        except OSError:
-            pass
-        sock.bind(("0.0.0.0", 0))
+        sock = self.relay.udp_socket()
+        if sock is None:
+            raise Stop(N_FULL, "the relay has no UDP port left; try again later")
         entry = self.udp[sock_id] = Udp(sock, sock.getsockname()[1])
         self.relay.ports[entry.port] = (self, sock_id)
+        if not self.relay.args.pages_only:
+            asyncio.get_running_loop().add_reader(sock.fileno(), self.udp_arrived, sock_id, entry)
         self.send(UDP_BOUND, struct.pack(">BH", sock_id, entry.port))
         return entry
 
@@ -382,6 +558,8 @@ class Session:
         entry = self.udp.pop(sock_id, None)
         if entry:
             self.relay.ports.pop(entry.port, None)
+            if not self.relay.args.pages_only:
+                asyncio.get_running_loop().remove_reader(entry.sock.fileno())
             entry.sock.close()
 
     def udp_send(self, sock_id, address, port, data):
@@ -395,12 +573,9 @@ class Session:
             except OSError:
                 self.counts["udp_dropped"] += 1
             return
-        if address == relay.own_int:
-            # another player of this relay (or nobody: a port that is not open loses the datagram)
-            target = relay.ports.get(port)
-            if target is None:
-                self.counts["udp_dropped"] += 1
-                return
+        target = relay.ports.get(port) if address == relay.own_int else None
+        if target is not None:
+            # another player of this relay
             other, other_sock = target
             if other.waiting() > WRITE_HIGH:
                 self.counts["udp_dropped"] += 1
@@ -409,7 +584,142 @@ class Session:
             other.counts["udp_in"] += 1
             other.send(UDP_RECV, struct.pack(">BIH", other_sock, relay.own_int, entry.port) + data)
             return
-        self.refuse("a datagram to %s:%d (only the lobby server and players of this relay are reached)" % (ip_text(address), port))
+        if relay.args.pages_only:
+            if address == relay.own_int:
+                self.counts["udp_dropped"] += 1  # nobody: a port that is not open loses the datagram
+            else:
+                self.refuse("a datagram to %s:%d (only the lobby server and players of this relay are reached)" % (ip_text(address), port))
+            return
+        # a player outside: only where a path is open
+        if port == 0 or (address != relay.own_int and address_kind(address) == NEVER):
+            self.refuse("a datagram to %s:%d (not an address a player can have)" % (ip_text(address), port))
+            return
+        if not relay.outside(address):
+            # another player's own-network address, which the game tries as well as the one
+            # the server saw; or a port of this host that is no session's. Lost, as between two houses.
+            self.counts["not_open"] += 1
+            return
+        key = (address, port)
+        path = self.paths.get(key)
+        if path is None:
+            now = time.monotonic()
+            if now - self.named.get(key, -1e9) < NAMED_FOR:
+                path = self.open(key, "the lobby server named it")
+            elif now - self.heard.get(key, -1e9) < MEET_WITHIN:
+                path = self.open(key, "each has sent to the other")
+            if path is None:
+                self.remember(self.asked, key, MAX_ASKED)
+                self.counts["not_open"] += 1
+                return
+        if not path.rate.take():
+            self.counts["udp_dropped"] += 1
+            return
+        try:
+            entry.sock.sendto(data, path.real)
+            path.out += 1
+            self.counts["out"] += 1
+        except OSError:
+            self.counts["udp_dropped"] += 1
+
+    # ---- players outside
+    @staticmethod
+    def remember(table, key, most):
+        table.pop(key, None)
+        if len(table) >= most:
+            del table[next(iter(table))]  # the oldest goes
+        table[key] = time.monotonic()
+
+    def name(self, address, port):
+        """The lobby server named this address to the page (LobbyReader)."""
+        if self.relay.args.pages_only:
+            return
+        if not self.relay.outside(address):
+            return
+        if address == self.relay.own_int and port in self.relay.ports:
+            return  # a player of this relay: handed over inside
+        self.remember(self.named, (address, port), MAX_NAMED)
+
+    def open(self, key, why, real=None):
+        if len(self.paths) >= MAX_PATHS:
+            now = time.monotonic()
+            oldest = min(self.paths, key=lambda k: self.paths[k].heard)
+            if now - self.paths[oldest].heard < MEET_WITHIN:
+                return None  # all in use
+            self.shut(oldest, "the session has as many paths as it may")
+        address, port = key
+        if real is None:
+            real = (ip_text(address), port)
+        path = self.paths[key] = Path(real, self.relay.args.peer_rate, why)
+        self.asked.pop(key, None)
+        self.heard.pop(key, None)
+        self.counts["paths"] += 1
+        if self.counts["paths"] <= 64:
+            log("session %d (%s): path to the player at %s:%d opened (%s)" % (self.number, self.address, ip_text(address), port, why))
+        return path
+
+    def shut(self, key, why):
+        path = self.paths.pop(key, None)
+        if path and self.counts["paths"] <= 64:
+            log("session %d (%s): path to the player at %s:%d closed (%s); %d datagrams out, %d back" % (self.number, self.address, ip_text(key[0]), key[1], why, path.out, path.back))
+
+    def tidy(self):
+        """Paths that hear nothing are closed; what was asked or heard and never met is forgotten."""
+        now = time.monotonic()
+        for key in [key for key, path in self.paths.items() if now - path.heard > PATH_SILENT]:
+            self.shut(key, "nothing heard from it for %d seconds" % PATH_SILENT)
+        for table, age in ((self.asked, MEET_WITHIN), (self.heard, MEET_WITHIN), (self.named, NAMED_FOR)):
+            for key in [key for key, at in table.items() if now - at > age]:
+                del table[key]
+
+    def udp_arrived(self, sock_id, entry):
+        """Datagrams from outside on one of the session's sockets."""
+        relay = self.relay
+        for _ in range(32):
+            try:
+                data, source = entry.sock.recvfrom(MAX_DATAGRAM + 1)
+            except (BlockingIOError, InterruptedError):
+                return
+            except OSError:
+                return  # an error some earlier datagram earned (a closed port at the other end): nothing to read
+            try:
+                real, port = ip_int(source[0]), source[1]
+            except ValueError:
+                continue
+            address = real
+            if real >> 24 == 127:
+                # a program on this host that sent through the loop-back interface is the one
+                # the lobby server saw at this host's own address
+                address = relay.own_int
+            if len(data) > MAX_DATAGRAM or not relay.outside(address) or (address == relay.own_int and port in relay.ports):
+                self.counts["strangers"] += 1
+                continue
+            if (address, port) == (relay.lobby_int, relay.args.udp_port):
+                continue  # the lobby server sends no datagrams
+            key = (address, port)
+            path = self.paths.get(key)
+            if path is None:
+                now = time.monotonic()
+                why = None
+                if now - self.named.get(key, -1e9) < NAMED_FOR:
+                    why = "the lobby server named it"
+                elif any(a == address and now - at < NAMED_FOR for (a, _), at in self.named.items()):
+                    why = "the lobby server named its address, with another port"
+                elif any(a == address and now - at < MEET_WITHIN for (a, _), at in self.asked.items()):
+                    why = "each has sent to the other"
+                if why:
+                    path = self.open(key, why, source[:2])
+                if path is None:
+                    self.remember(self.heard, key, MAX_HEARD)
+                    self.counts["strangers"] += 1
+                    continue
+            path.real = source[:2]
+            path.heard = time.monotonic()
+            if not self.arrivals.take() or not self.arrival_bytes.take(len(data)) or self.waiting() > WRITE_HIGH:
+                self.counts["udp_dropped"] += 1
+                continue
+            path.back += 1
+            self.counts["back"] += 1
+            self.send(UDP_RECV, struct.pack(">BIH", sock_id, address, port) + data)
 
 
 class Relay:
@@ -437,6 +747,43 @@ class Relay:
         self.sessions = set()
         self.ports = {}  # UDP port here -> (session, its socket number)
         self.count = 0
+        self.udp_range = None
+        if args.udp_ports:
+            low, _, high = args.udp_ports.partition("-")
+            self.udp_range = (int(low), int(high or low))
+            if not 1024 <= self.udp_range[0] <= self.udp_range[1] <= 65535:
+                sys.exit("relay.py: --udp-ports wants LOW-HIGH between 1024 and 65535")
+        self.udp_next = 0
+
+    def outside(self, address):
+        """May a datagram pass to or from this address at all (given a path)?"""
+        if address == self.own_int:
+            return self.args.lan  # a program on this host: tests on one computer
+        kind = address_kind(address)
+        return kind == PUBLIC or (kind == PRIVATE and self.args.lan)
+
+    def udp_socket(self):
+        """A UDP socket for a session: on every address of this host, in the range given."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setblocking(False)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096 if self.args.pages_only else 262144)
+        except OSError:
+            pass
+        if self.udp_range is None:
+            sock.bind(("0.0.0.0", 0))
+            return sock
+        low, high = self.udp_range
+        for _ in range(high - low + 1):
+            port = low + self.udp_next % (high - low + 1)
+            self.udp_next += 1
+            try:
+                sock.bind(("0.0.0.0", port))
+                return sock
+            except OSError:
+                continue
+        sock.close()
+        return None
 
     def gone(self, session):
         self.sessions.discard(session)
@@ -507,6 +854,7 @@ class Relay:
         while True:
             await asyncio.sleep(15)
             for session in list(self.sessions):
+                session.tidy()
                 if session.idle():
                     session.notice(N_IDLE, "nothing was sent for %d minutes; the page connects again when the game goes online" % (self.args.idle // 60))
                     session.close("idle")
@@ -518,6 +866,14 @@ class Relay:
         log("relay: listening on %s%s; lobby server %s (TCP ports %s, UDP %d); this host is %s to it; at most %d sessions, %d from one address%s"
             % (args.listen, args.path, self.lobby_text, args.tcp_ports, args.udp_port, self.own_text, args.max_sessions, args.per_address,
                ("; pages from " + ", ".join(args.origin)) if args.origin else "; pages from anywhere (no --origin)"))
+        if args.pages_only:
+            log("relay: --pages-only: no datagram passes to or from a player outside this relay")
+        else:
+            where = "UDP ports %d-%d" % self.udp_range if self.udp_range else "UDP ports the system picks (give --udp-ports to fix a range for a firewall)"
+            log("relay: players outside (the desktop application) are reached on %s, at %s" % (where, "public and private addresses and this host (--lan)" if args.lan else "public addresses only"))
+            if address_kind(self.own_int) != PUBLIC and not args.lan:
+                log("relay: NOTE: this host is %s to the lobby server, which is not a public address: players outside will be told that address for the pages' players. "
+                    "On a private network or on one computer, give --lan" % self.own_text)
         loop = asyncio.get_running_loop()
         stop = loop.create_future()
         for name in ("SIGTERM", "SIGINT"):
@@ -546,6 +902,11 @@ def main():
     parser.add_argument("--udp-port", type=int, default=10101, help="the lobby server's discovery port (default 10101)")
     parser.add_argument("--own-address", help="this host's address as the lobby server sees it (default: found by asking the system)")
     parser.add_argument("--test-loopback", action="store_true", help="for tests of the relay itself: take a loop-back address for --lobby (no game can be played through such a relay)")
+    parser.add_argument("--udp-ports", metavar="LOW-HIGH", help="the UDP ports the sessions' sockets take, so that a firewall can be opened for them (default: whatever the system gives)")
+    parser.add_argument("--lan", action="store_true", help="players on private addresses and on this computer are reached as well (a relay on a home network, a test on one computer); "
+                        "without it only public addresses")
+    parser.add_argument("--pages-only", action="store_true", help="browser players with browser players only: nothing passes to or from a player outside this relay")
+    parser.add_argument("--peer-rate", type=float, default=300, help="datagrams a second a page may send to one player outside (default 300; twice that for a moment)")
     parser.add_argument("--max-sessions", type=int, default=64)
     parser.add_argument("--per-address", type=int, default=4, help="sessions from one address at a time (default 4)")
     parser.add_argument("--idle", type=int, default=900, help="seconds without use, and without a connection to the lobby, after which a session is closed (default 900)")

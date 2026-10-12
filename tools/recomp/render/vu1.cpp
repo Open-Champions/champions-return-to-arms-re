@@ -198,11 +198,12 @@ void Vu1::run(uint32_t start) {
                 uint32_t a = d.lop == L_SQ ? (uint32_t)vi[d.lt] + d.imm11 : d.lop == L_ISW ? (uint32_t)vi[d.ls] + d.imm11
                            : d.lop == L_SQI ? vi[d.lt] : d.lop == L_SQD ? (uint32_t)vi[d.lt] - 1 : vi[d.ls];
                 a &= 0x3FF;
-                if (a >= 0x3F0 && a <= 0x3F7) {
+                if (a >= debug_store_lo && a <= debug_store_hi) {
                     debug_store--;
                     if (at == 0x314 || at == 0x318) debug_hit = true;
                     fprintf(stderr, "vu store to %03x at %03x (run from %03x, cycle %llu): top %03x itop %u vi", a, at, start, (unsigned long long)cyc, top, itop);
                     for (int k = 1; k < 16; k++) fprintf(stderr, " %x", vi[k]);
+                    if (d.lop != L_ISW && d.lop != L_ISWR) fprintf(stderr, " | %08x %08x %08x %08x", vf[d.ls].u[0], vf[d.ls].u[1], vf[d.ls].u[2], vf[d.ls].u[3]);
                     fprintf(stderr, "\n");
                 }
             }

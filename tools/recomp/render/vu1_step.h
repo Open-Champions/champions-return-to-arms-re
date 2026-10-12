@@ -29,6 +29,39 @@ enum { L_NOP, L_LQ, L_SQ, L_ILW, L_ISW, L_IADDIU, L_ISUBIU, L_FCEQ, L_FCSET, L_F
 #define VU1_INLINE inline
 #endif
 
+// The unit's numbers.  An exponent of 255 is an ordinary exponent - there are no
+// infinities and no NaNs - and an exponent of 0 is zero whatever the fraction says.  The
+// game relies on it: registers and data memory hold integers and stale data of other
+// drawers (a pose is blended as `new * 1 + old * 0` over whatever the slot held before,
+// 16-bit trail points for instance, whose bit patterns are NaNs to the host; with host
+// arithmetic the joint matrix became NaN and its vertices went to a far corner).  So what
+// an arithmetic instruction reads is brought into the host's range first (the largest
+// number for exponent 255, as other emulators do), and a result too small to be a number
+// is zero.  Results cannot overflow: the unit rounds toward zero, and so does the host
+// while a program runs.
+static VU1_INLINE float vu_in(uint32_t u) {
+#ifdef VU1_HOST_NUMBERS
+    { float h; memcpy(&h, &u, 4); return h; }
+#endif
+    uint32_t e = u & 0x7F800000u;
+    u = e == 0x7F800000u ? ((u & 0x80000000u) | 0x7F7FFFFFu) : e == 0 ? (u & 0x80000000u) : u;
+    float f;
+    memcpy(&f, &u, 4);
+    return f;
+}
+static VU1_INLINE float vu_out(float f) {
+#ifdef VU1_HOST_NUMBERS
+    return f;
+#endif
+    uint32_t u;
+    memcpy(&u, &f, 4);
+    if ((u & 0x7F800000u) == 0) { u &= 0x80000000u; memcpy(&f, &u, 4); }
+    return f;
+}
+// MAX and MINI compare the bit patterns as sign and magnitude and hand one of them on
+// unchanged (integers kept in float registers go through them)
+static VU1_INLINE int32_t vu_key(uint32_t u) { return (u & 0x80000000u) ? -(int32_t)(u & 0x7FFFFFFFu) : (int32_t)u; }
+
 static VU1_INLINE bool vu1_step(Vu1& v, const Vu1::Ins& d, uint32_t at, uint32_t& dest, int old_round) {
     if (v.q_busy && v.cyc >= v.q_ready) { v.q = v.q_next; v.q_busy = false; }
     // ---- upper half, computed from the state before the pair ----
@@ -40,39 +73,41 @@ static VU1_INLINE bool vu1_step(Vu1& v, const Vu1::Ins& d, uint32_t at, uint32_t
     if (d.uop != U_NOP) {
         const Vu1::Reg& fs = v.vf[d.ufs];
         const Vu1::Reg& ft = v.vf[d.uft];
-        float b[4];
+        Vu1::Reg bb;                                    // the second operand as it is
         switch (d.usrc) {
-        case S_VEC: b[0] = ft.f[0]; b[1] = ft.f[1]; b[2] = ft.f[2]; b[3] = ft.f[3]; break;
-        case S_BC: b[0] = b[1] = b[2] = b[3] = ft.f[d.ubc]; break;
-        case S_Q: b[0] = b[1] = b[2] = b[3] = v.q; break;
-        default: b[0] = b[1] = b[2] = b[3] = v.i_reg; break;
+        case S_VEC: bb = ft; break;
+        case S_BC: bb.u[0] = bb.u[1] = bb.u[2] = bb.u[3] = ft.u[d.ubc]; break;
+        case S_Q: bb.f[0] = bb.f[1] = bb.f[2] = bb.f[3] = v.q; break;
+        default: bb.f[0] = bb.f[1] = bb.f[2] = bb.f[3] = v.i_reg; break;
         }
+        float a[4], b[4];                               // both as the numbers the unit computes with
+        if (d.uop <= U_MSUB) for (int k = 0; k < 4; k++) { a[k] = vu_in(fs.u[k]); b[k] = vu_in(bb.u[k]); }
         Vu1::Reg r;
         bool arithmetic = false;
         switch (d.uop) {
-        case U_ADD: for (int k = 0; k < 4; k++) r.f[k] = fs.f[k] + b[k]; arithmetic = true; break;
-        case U_SUB: for (int k = 0; k < 4; k++) r.f[k] = fs.f[k] - b[k]; arithmetic = true; break;
-        case U_MUL: for (int k = 0; k < 4; k++) r.f[k] = fs.f[k] * b[k]; arithmetic = true; break;
-        case U_MADD: { float p[4]; for (int k = 0; k < 4; k++) p[k] = fs.f[k] * b[k]; for (int k = 0; k < 4; k++) r.f[k] = v.acc.f[k] + p[k]; arithmetic = true; break; }
-        case U_MSUB: { float p[4]; for (int k = 0; k < 4; k++) p[k] = fs.f[k] * b[k]; for (int k = 0; k < 4; k++) r.f[k] = v.acc.f[k] - p[k]; arithmetic = true; break; }
-        case U_MAX: for (int k = 0; k < 4; k++) r.f[k] = fs.f[k] > b[k] ? fs.f[k] : b[k]; break;
-        case U_MINI: for (int k = 0; k < 4; k++) r.f[k] = fs.f[k] < b[k] ? fs.f[k] : b[k]; break;
+        case U_ADD: for (int k = 0; k < 4; k++) r.f[k] = vu_out(a[k] + b[k]); arithmetic = true; break;
+        case U_SUB: for (int k = 0; k < 4; k++) r.f[k] = vu_out(a[k] - b[k]); arithmetic = true; break;
+        case U_MUL: for (int k = 0; k < 4; k++) r.f[k] = vu_out(a[k] * b[k]); arithmetic = true; break;
+        case U_MADD: { float p[4]; for (int k = 0; k < 4; k++) p[k] = vu_out(a[k] * b[k]); for (int k = 0; k < 4; k++) r.f[k] = vu_out(v.acc.f[k] + p[k]); arithmetic = true; break; }
+        case U_MSUB: { float p[4]; for (int k = 0; k < 4; k++) p[k] = vu_out(a[k] * b[k]); for (int k = 0; k < 4; k++) r.f[k] = vu_out(v.acc.f[k] - p[k]); arithmetic = true; break; }
+        case U_MAX: for (int k = 0; k < 4; k++) r.u[k] = vu_key(fs.u[k]) > vu_key(bb.u[k]) ? fs.u[k] : bb.u[k]; break;
+        case U_MINI: for (int k = 0; k < 4; k++) r.u[k] = vu_key(fs.u[k]) < vu_key(bb.u[k]) ? fs.u[k] : bb.u[k]; break;
         case U_ITOF: { float scale = 1.0f / (float)(1u << d.ubc); for (int k = 0; k < 4; k++) r.f[k] = (float)fs.s[k] * scale; break; }
         case U_FTOI: {
             float scale = (float)(1u << d.ubc);
             for (int k = 0; k < 4; k++) {
-                float scaled = fs.f[k] * scale;
+                float scaled = vu_in(fs.u[k]) * scale;
                 r.s[k] = scaled >= 2147483648.0f ? 0x7FFFFFFF : scaled <= -2147483648.0f ? (int32_t)0x80000000 : (int32_t)scaled;
             }
             break;
         }
         case U_ABS: for (int k = 0; k < 4; k++) r.u[k] = fs.u[k] & 0x7FFFFFFF; break;
         case U_CLIP: {
-            float w = fabsf(ft.f[3]);
+            float w = fabsf(vu_in(ft.u[3])), x = vu_in(fs.u[0]), y = vu_in(fs.u[1]), z = vu_in(fs.u[2]);
             uint32_t c = 0;
-            if (fs.f[0] > w) c |= 1;  if (fs.f[0] < -w) c |= 2;
-            if (fs.f[1] > w) c |= 4;  if (fs.f[1] < -w) c |= 8;
-            if (fs.f[2] > w) c |= 16; if (fs.f[2] < -w) c |= 32;
+            if (x > w) c |= 1;  if (x < -w) c |= 2;
+            if (y > w) c |= 4;  if (y < -w) c |= 8;
+            if (z > w) c |= 16; if (z < -w) c |= 32;
             v.clip_now = ((v.clip_now << 6) | c) & 0xFFFFFF;
             v.clip_ring[v.clip_count++ & 7] = {v.cyc, v.clip_now};
             break;
@@ -147,12 +182,12 @@ static VU1_INLINE bool vu1_step(Vu1& v, const Vu1::Ins& d, uint32_t at, uint32_t
     case L_DIV: case L_SQRT: case L_RSQRT: {
         // a divide still in flight is waited for
         if (v.q_busy) { if (v.q_ready > v.cyc) v.cyc = v.q_ready; v.q = v.q_next; v.q_busy = false; }
-        float a = v.vf[d.ls].f[d.fsf], b = v.vf[d.lt].f[d.ftf], r;
+        float a = vu_in(v.vf[d.ls].u[d.fsf]), b = vu_in(v.vf[d.lt].u[d.ftf]), r;
         const float big = 3.4028235e38f;
-        if (d.lop == L_DIV) r = b == 0 ? (((a < 0) != std::signbit(b)) ? -big : big) : a / b;
+        if (d.lop == L_DIV) r = b == 0 ? ((std::signbit(a) != std::signbit(b)) ? -big : big) : a / b;
         else if (d.lop == L_SQRT) r = sqrtf(fabsf(b));
-        else r = b == 0 ? (a < 0 ? -big : big) : a / sqrtf(fabsf(b));
-        v.q_next = r;
+        else r = b == 0 ? (std::signbit(a) ? -big : big) : a / sqrtf(fabsf(b));
+        v.q_next = vu_out(r);
         v.q_ready = v.cyc + (d.lop == L_RSQRT ? 13 : 7);
         v.q_busy = true;
         break;

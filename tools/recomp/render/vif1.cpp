@@ -166,7 +166,11 @@ void Vif1::unpack(uint32_t code, const uint32_t* data) {
                     src += (vn + 1) * (4 >> vl);
                 }
             }
-            if ((address & 0x3FF) >= 0x3F6 && debug_unpack > 0) {
+            if (debug_unpack > 0 && debug_unpack_hi && (address & 0x3FF) >= debug_unpack_lo && (address & 0x3FF) <= debug_unpack_hi) {
+                debug_unpack--;
+                fprintf(stderr, "unpack to %03x: code %08x tops %03x cl %u wl %u written %u/%u waiting %d entry %x | in %08x %08x %08x %08x mask %08x mode %u\n", address & 0x3FF, code,
+                        tops, cl, wl, written, total, (int)waiting, waiting_at, in[0], in[1], in[2], in[3], masked ? mask : 0, mode);
+            } else if (!debug_unpack_hi && (address & 0x3FF) >= 0x3F6 && debug_unpack > 0) {
                 debug_unpack--;
                 fprintf(stderr, "unpack to %03x: code %08x tops %03x base %03x ofst %03x dbf %d cl %u wl %u total %u written %u waiting %d entry %x\n", address & 0x3FF, code,
                         tops, base, ofst, (int)dbf, cl, wl, total, written, (int)waiting, waiting_at);

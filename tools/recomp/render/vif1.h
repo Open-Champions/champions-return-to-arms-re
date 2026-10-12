@@ -22,6 +22,7 @@ class Vif1 {
     int debug_ring = 0;                 // > 0: keep the last codes and print them when vu.debug_hit is raised
     std::vector<std::string> ring;
     int debug_unpack = 0;               // > 0: report unpacks that reach the constants at 0x3f6 and up
+    uint32_t debug_unpack_lo = 0, debug_unpack_hi = 0;   // when hi is set: report unpacks into this range instead
     uint64_t entry_counts[128] = {0};   // MSCAL starts by entry (instruction index < 128)
 
     void feed(const uint32_t* words, size_t count);

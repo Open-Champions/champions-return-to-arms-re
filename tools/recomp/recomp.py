@@ -114,8 +114,9 @@ class Image:
 
 def read_pnach(path, sections):
     """[(address, value)] of the `patch=1,EE,<address>,word,<value>` lines under the named
-    sections of a PCSX2 patch file."""
-    wanted = set(sections)
+    sections of a PCSX2 patch file (sections None: every line of the file)."""
+    everything = sections is None
+    wanted = set(sections or ())
     found, words, section = set(), [], None
     with open(path, errors='replace') as source:
         for line in source:
@@ -125,7 +126,7 @@ def read_pnach(path, sections):
                 section = match.group(1)
                 continue
             match = re.match(r'patch=1,EE,([0-9a-fA-F]+),(\w+),([0-9a-fA-F]+)', line)
-            if not match or section not in wanted:
+            if not match or not (everything or section in wanted):
                 continue
             if match.group(2) != 'word':
                 raise SystemExit('pnach: only word patches are handled (%s)' % line)
@@ -1005,6 +1006,13 @@ def main(argv=None):
                         'patch has to be there), and into <out>/patches.cpp for the runtime to write into memory')
     parser.add_argument('--sections', help='with --pnach: a file of section names, one per line (# comments)')
     parser.add_argument('--section', action='append', default=[], help='with --pnach: one section name; repeatable')
+    parser.add_argument('--extra-pnach', action='append', default=[],
+                        help='one more patch file, applied whole after --pnach (repeatable): a patch kept outside the '
+                        'repository, such as the local sign-in skip.  Its words go into the image and into patches.cpp '
+                        'after the words of --pnach, and are not counted in recomp_patch_set_words()')
+    parser.add_argument('--hle-add', action='append', default=[],
+                        help='one more file of addresses supplied by whoever links the translation (repeatable), '
+                        'added to --hle: a module such as tools/recomp/net keeps its own list')
     args = parser.parse_args(argv)
 
     if not os.path.isfile(args.elf):
@@ -1020,6 +1028,12 @@ def main(argv=None):
         patch_words = read_pnach(args.pnach, sections)
         image.patch(patch_words)
         print('patched: %d words of %d sections' % (len(patch_words), len(sections)))
+    set_words = len(patch_words)        # the words every player has to have the same
+    for path in args.extra_pnach:
+        extra_words = read_pnach(path, None)
+        image.patch(extra_words)
+        patch_words += extra_words
+        print('patched: %d more words from a local patch file' % len(extra_words))
     units, rows, clipped = build_units(image, args.funcs)
     table_units = sum(1 for u in units if not u.gap)
     gap_units = [u for u in units if u.gap]
@@ -1041,8 +1055,10 @@ def main(argv=None):
     unit_of, stats = analyse(image, units, extra)
 
     hle = set()
-    if args.hle and os.path.isfile(args.hle):
-        with open(args.hle) as source:
+    for path in [args.hle] + args.hle_add:
+        if not (path and os.path.isfile(path)):
+            continue
+        with open(path) as source:
             for line in source:
                 line = line.split('#')[0].strip()
                 if line:
@@ -1115,7 +1131,9 @@ def main(argv=None):
         text = ['// generated - do not commit', '#include "recomp.h"', 'unsigned recomp_patches(const u32 (**words)[2]) {',
                 '    static const u32 table[][2] = {']
         text += ['        {0x%xu, 0x%08xu},' % word for word in patch_words]
-        text += ['    };', '    *words = table;', '    return %d;' % len(patch_words), '}']
+        text += ['    };', '    *words = table;', '    return %d;' % len(patch_words), '}',
+                 '// the first so many are the fix set (--pnach); the rest came from --extra-pnach',
+                 'unsigned recomp_patch_set_words() { return %d; }' % set_words]
         write_if_changed(os.path.join(args.out, 'patches.cpp'), '\n'.join(text) + '\n')
     for name in stale:
         os.remove(os.path.join(args.out, name))

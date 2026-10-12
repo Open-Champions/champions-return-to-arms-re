@@ -309,8 +309,13 @@ namespace
 			bool first = true;
 			for(const auto& peer : g_net->Peers())
 			{
-				text += Format("%s{\"port\":%u,\"set_known\":%d,\"same_set\":%d,\"set\":\"%08x\",\"heard_ms\":%lld,\"silent_ms\":%lld}", first ? "" : ",", peer.port, peer.setKnown ? 1 : 0,
-				               (peer.setKnown && peer.patchSet == g_patchSet) ? 1 : 0, peer.patchSet, static_cast<long long>(peer.heardFor), static_cast<long long>(peer.silentFor));
+				// what the desktop application's CheckPatchSets and CheckArithmetic read (Rta.cpp):
+				// the page makes the same two warnings from it (rta-web.js, onlineShow)
+				text += Format("%s{\"port\":%u,\"set_known\":%d,\"same_set\":%d,\"set\":\"%08x\",\"words\":%u,\"arith_known\":%d,\"can_browser\":%d,\"can_native\":%d,\"does_browser\":%d,"
+				               "\"heard_ms\":%lld,\"silent_ms\":%lld}",
+				               first ? "" : ",", peer.port, peer.setKnown ? 1 : 0, (peer.setKnown && peer.patchSet == g_patchSet) ? 1 : 0, peer.patchSet, peer.patchWords, peer.arithKnown ? 1 : 0,
+				               (peer.arithCan & Rta::ARITH_CAN_BROWSER) ? 1 : 0, (peer.arithCan & Rta::ARITH_CAN_NATIVE) ? 1 : 0, (peer.arithNow == Rta::ARITH_BROWSER) ? 1 : 0,
+				               static_cast<long long>(peer.heardFor), static_cast<long long>(peer.silentFor));
 				first = false;
 			}
 			text += "],";
