@@ -658,18 +658,60 @@ pictures come out right, their second copy being two lines up at 4×, one at 2×
 `--scale 2` done with the model: mean difference 0.37 of 255 on 15 model textures, 0.25 on
 86 interface pictures; a plain `--scale 2` run takes such pictures as done.
 
-Not judged by eye: the glow and sprite kinds (a handful of pictures). Not tried: other
-models (none may be fetched here; `4x-UltraSharp` and `4x_foolhardy_Remacri`, ESRGAN
-models of about 65 MB each listed on openmodeldb.info and made for textures rather than
-photographs, would be the first to try on stone and ground — from memory, not checked,
-and they need converting to ncnn's format); anisotropic filtering. Not covered: three quarters of
-`fire3` (about 900 of its 3,655 pictures: entered this way the game stops for good when
-the camera, or the character, comes to certain places of it — its clock `0x44fdcc`
-stands still and nothing is presented any more; with and without the frame limiter;
-not looked into); effects and interface art that only appear in play the tour does not
-do (spells cast by the player, most monsters' spells — 12 effect pictures were seen in
-all —, items that are not in the first shop, the medal and bonus entries of the mission
-menu, the films); of the title's level only what the title shows.
+**Effects, skills and what else is only drawn in play.** The game's effect art is small:
+of the disc's 628 pictures that are not model textures (`disctex.py DISC --kinds other
+--list` names them with their lumps) nine are in `FX.LMP` and five in `ENGINE.LMP` —
+halos, one sheet of particles (512 × 160: sparks, bubbles, puffs, stars), a floor sprite,
+the shadow blob, the trail, a spider web. Spells are particles from that sheet, halos,
+trails and models (whose textures are all in the pack from the disc), so "12 effect
+pictures were seen in all" was nearly all there is: 11 of the 14 have been drawn now
+(ten were in the pack, `halo3` is new; a twelfth, the trail, is known by another name
+because it is only drawn clamped; `halo5` and `bordersmall` were never drawn). What the first tours lacked is interface art that
+only shows with a character who has the skills: 87 skill icons, a skill-tree page and
+its pipes per class, the ring of abilities. Toured for it (local helpers, results in the
+pack's notes): a character of each of the seven classes with every skill of its class
+at rank 10 on the ability records (the rig's recipe: `tools/rig/sweep.py`), the bag's
+pages, the level-up page (statistics and skill tree; it opens with a level gained and
+not yet looked at: record +0x58 below +0x59), the shop, the ring all the way round,
+and every skill cast among the arena's opponents (`drunare`) — 89 skills on the
+buttons, 71 of them not passive, 45 cast for certain (the recast counter moved); bow
+skills want a bow drawn, others a target or a weapon of their kind. Then a few blows
+beside sixteen things each of twelve levels with the character unhurtable (what monsters
+cast and throw, what dies), and `fire3` whole. In all 10,908 pictures drawn, 2,171 of
+them new to the pack: 1,923 level pictures of `fire3`, about 150 of the other levels,
+38 skill icons, 27 pictures of the skill-tree pages, the spell ring (6), one halo. The
+tours add no way of drawing that changes what an effect picture is taken for (the
+particle sheet is drawn blended and added: kind sprite; the halos added: glow).
+
+**Light that is added stays dark where it was dark.** The effect pictures are white or
+coloured all over and carry their shape in alpha (`ALPHA` 0x48 adds colour × alpha,
+0x44 mixes by alpha), so "black" there is alpha 0. For the seven that are in the 4× pack
+(`floorsprite`, `halo1`, `particletex`, `halo2`, `halo4`, `halo7`, `wisphalo`): where
+the game's picture adds nothing — a texel and all its neighbours — the enlarged one adds
+at most 0.4 of 255 (the floor decal 19, in 0.05 % of such texels, at the edge of its
+blots), and the light a picture adds in all is the same to 0.3 of 255. Pairs were looked
+at (what each adds to black, the game's beside the enlarged one): the same shapes,
+smoother, no box, no rim. The recipe was left as it is.
+
+Not tried: other models (none may be fetched here; `4x-UltraSharp` and
+`4x_foolhardy_Remacri`, ESRGAN models of about 65 MB each listed on openmodeldb.info and
+made for textures rather than photographs, would be the first to try on stone and
+ground — from memory, not checked, and they need converting to ncnn's format);
+anisotropic filtering. Not covered: about a sixth of `fire3`'s 3,655 pictures (3,079
+were drawn, and part of the rest never is, as in other levels; it could not be toured
+past its first quarter until the emulator fault in the table at the top was found); the medal and bonus entries of the mission
+menu (the hub's script opens the menu from a detector the player walks into,
+`warnDetect` in its script; neither standing on or using any of the hub's ten objects
+nor standing on each of 55 pieces of its ground opened it, and where the detector is
+was not read out of the level's data); 48 of the 87 pictures of `ICONS.LMP` (skill
+icons) and 63 of the 131 of `INVENTRY.LMP` (skill-tree pages and pipes among them: an
+icon shows when its skill is in the ring or on the page that is open, and the tour
+went round both blindly); 26 of the 71 active skills not cast; the six
+busts of things aimed at that the first act shows (`bust_catapult`, `bust_scout` …),
+the twelve head pictures (two players), the map icons, the boss meter; items that are
+not in the first shop; the films; of the title's level only what the title shows. The
+pictures new since the first tours are not enlarged yet: they are handed to the
+enlarging loop, which was paused when this was written.
 
 ## One-step online
 

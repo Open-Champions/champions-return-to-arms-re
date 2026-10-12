@@ -149,7 +149,12 @@ def run(args):
     for letter in 'AB':
         address, slot, mode = riglib.PAIR[letter]
         low = letter.lower()
-        watches = riglib.tick_watches(slot)[1::2] + args.tick_watch
+        watches = riglib.tick_watches(slot)[1::2]
+        if args.columns == 'small':     # a long soak: the columns the game itself hashes, and its verdict
+            keep = ('net=', 'seed=', 'level=', 'nplayers=', 'prevhash=', 'p0x=', 'p0y=', 'p0z=', 'p1x=', 'p1y=', 'p1z=',
+                    'p0hp=', 'p1hp=', 'p0state=', 'p1state=', 'p0exp=', 'p1exp=', 'oos0=', 'oos1=', 'l_dropped0=', 'l_dropped1=')
+            watches = [w for w in watches if w.startswith(keep)]
+        watches += args.tick_watch
         own = [v.replace('%M', low) for v in (args.a_arg if letter == 'A' else args.b_arg)]
         if kinds[letter] == 'native':
             watch_file = os.path.join(out, low + '.watch.txt')
@@ -275,6 +280,8 @@ def main():
     p.add_argument('--pace', type=float)
     p.add_argument('--frames', type=int)
     p.add_argument('--tick-watch', action='append', default=[])
+    p.add_argument('--columns', choices=('all', 'small'), default='all',
+                   help='tick-log columns: the rig launcher\'s full set, or a small set for long soaks')
     p.add_argument('--a-arg', action='append', default=[])
     p.add_argument('--b-arg', action='append', default=[])
     p.add_argument('--grace', type=float, default=30, help='seconds the second machine gets after the first has ended')
