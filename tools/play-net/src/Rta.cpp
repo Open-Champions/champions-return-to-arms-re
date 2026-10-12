@@ -8,7 +8,11 @@
 #include <QCommandLineParser>
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
 #include <QImage>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QProcess>
 #include <QSettings>
 #include <QStringList>
@@ -18,15 +22,19 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
+#include <condition_variable>
 #include <cstdarg>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <fstream>
+#include <map>
 #include <mutex>
 #include <random>
 #include <set>
 #include <sstream>
+#include <thread>
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -87,6 +95,7 @@ namespace
 		bool steadyPicture = true;
 		bool displayClock = true;
 		bool textureDump = false;
+		int textureMemory = 0; // megabytes of video memory for replacement pictures (0: the default)
 		std::string textureDir; // dump/ and replace/ below it; empty: <data>/textures
 		bool netcnf = true;
 		std::string controlPath;
@@ -512,6 +521,7 @@ namespace
 			m_executableChange.reset();
 			CGSH_OpenGL::g_textureDump = CGSH_OpenGL::TextureDumpFunction();
 			CGSH_OpenGL::g_textureLoad = CGSH_OpenGL::TextureLoadFunction();
+			StopTextureThreads();
 			CFrameLimiter::SetExternalWait(CFrameLimiter::ExternalWaitFunction());
 			CGSHandler::g_presentClock = CGSHandler::PresentClock();
 			if(m_vm && m_net)
@@ -563,38 +573,192 @@ namespace
 			{
 				fs::create_directories(dumpDirectory, error);
 				fs::create_directories(replaceDirectory, error);
-				CGSH_OpenGL::g_textureDump = [this, dumpDirectory](const CGSH_OpenGL::TEXTURE_PICTURE_KEY& key, const uint32* rgba) {
-					auto path = dumpDirectory / TextureName(key);
-					std::error_code exists;
-					if(fs::exists(path, exists)) return;
-					QImage image(reinterpret_cast<const uchar*>(rgba), static_cast<int>(key.width), static_cast<int>(key.height), static_cast<int>(key.width * 4), QImage::Format_RGBA8888);
-					if(image.save(QString::fromStdString(path.string()), "PNG")) m_texturesDumped++;
-				};
-				Log("textures: every new one is written to " + dumpDirectory.string());
-			}
-			// the names that have a replacement, read once
-			auto names = std::make_shared<std::set<std::string>>();
-			if(fs::is_directory(replaceDirectory, error))
-			{
-				for(const auto& entry : fs::directory_iterator(replaceDirectory, error)) names->insert(entry.path().filename().string());
-			}
-			if(!names->empty())
-			{
-				CGSH_OpenGL::g_textureLoad = [this, replaceDirectory, names](const CGSH_OpenGL::TEXTURE_PICTURE_KEY& key, std::vector<uint32>& picture, uint32& width, uint32& height) {
+				CGSH_OpenGL::g_textureDump = [this, dumpDirectory](const CGSH_OpenGL::TEXTURE_PICTURE_KEY& key, const uint32* rgba, const CGSH_OpenGL::TEXTURE_PICTURE_USE& use) {
 					auto name = TextureName(key);
-					if(names->count(name) == 0) return false;
-					QImage image(QString::fromStdString((replaceDirectory / name).string()));
-					if(image.isNull()) return false;
-					image = image.convertToFormat(QImage::Format_RGBA8888);
-					width = static_cast<uint32>(image.width());
-					height = static_cast<uint32>(image.height());
-					picture.resize(static_cast<size_t>(width) * height);
-					for(uint32 y = 0; y < height; y++) memcpy(picture.data() + (static_cast<size_t>(y) * width), image.constScanLine(static_cast<int>(y)), static_cast<size_t>(width) * 4);
-					m_texturesReplaced++;
-					return true;
+					auto path = dumpDirectory / name;
+					std::error_code exists;
+					if(rgba && !fs::exists(path, exists))
+					{
+						QImage image(reinterpret_cast<const uchar*>(rgba), static_cast<int>(key.width), static_cast<int>(key.height), static_cast<int>(key.width * 4), QImage::Format_RGBA8888);
+						if(image.save(QString::fromStdString(path.string()), "PNG")) m_texturesDumped++;
+					}
+					WriteTextureUse(dumpDirectory / (name.substr(0, name.size() - 4) + ".json"), name, key, use);
 				};
-				Log(Format("textures: %zu replacement file(s) in %s", names->size(), replaceDirectory.string().c_str()));
+				Log("textures: every new one is written to " + dumpDirectory.string() + ", with a .json file of how the game draws with it");
 			}
+			// the names that have a replacement: read at the start, and again when the
+			// control socket's "texreplace reload" asks
+			m_textureReplaceDirectory = replaceDirectory;
+			if(options.textureMemory > 0) CGSH_OpenGL::g_textureReplaceBudget = static_cast<uint64>(options.textureMemory) * 1024 * 1024;
+			size_t nameCount = ListTextureReplacements();
+			if((nameCount != 0) || options.textureDump || !options.controlPath.empty())
+			{
+				// The files are read by threads of their own (a picture of 2688 x 640 takes
+				// longer to unpack than a frame lasts); the renderer asks again until the
+				// picture is there and draws the game's own meanwhile.
+				CGSH_OpenGL::g_textureLoad = [this](const CGSH_OpenGL::TEXTURE_PICTURE_KEY& key, std::vector<uint32>& picture, uint32& width, uint32& height) {
+					auto name = TextureName(key);
+					std::lock_guard<std::mutex> lock(m_textureMutex);
+					if(m_textureNames.count(name) == 0) return 0;
+					auto ready = m_textureRead.find(name);
+					if(ready != m_textureRead.end())
+					{
+						picture = std::move(ready->second.pixels);
+						width = ready->second.width;
+						height = ready->second.height;
+						m_textureRead.erase(ready);
+						m_textureAsked.erase(name);
+						if(width == 0) return 0;
+						m_texturesReplaced++;
+						return 1;
+					}
+					if(m_textureAsked.insert(name).second)
+					{
+						m_textureQueue.push_back(name);
+						m_textureWake.notify_one();
+					}
+					return 2;
+				};
+				for(int i = 0; i < 3; i++) m_textureThreads.emplace_back([this]() { ReadTextureFiles(); });
+				if(nameCount != 0) Log(Format("textures: %zu replacement file(s) in %s", nameCount, replaceDirectory.string().c_str()));
+			}
+		}
+
+		size_t ListTextureReplacements()
+		{
+			std::set<std::string> names;
+			std::error_code error;
+			if(fs::is_directory(m_textureReplaceDirectory, error))
+			{
+				for(const auto& entry : fs::directory_iterator(m_textureReplaceDirectory, error))
+				{
+					auto name = entry.path().filename().string();
+					if((name.size() > 4) && (name.compare(name.size() - 4, 4, ".png") == 0)) names.insert(name);
+				}
+			}
+			std::lock_guard<std::mutex> lock(m_textureMutex);
+			m_textureNames.swap(names);
+			// what was read or is being read belongs to the files as they were
+			m_textureGeneration++;
+			m_textureQueue.clear();
+			m_textureRead.clear();
+			m_textureAsked.clear();
+			return m_textureNames.size();
+		}
+
+		void ReadTextureFiles()
+		{
+			pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+			for(;;)
+			{
+				std::string name;
+				uint32 generation = 0;
+				{
+					std::unique_lock<std::mutex> lock(m_textureMutex);
+					m_textureWake.wait(lock, [this]() { return m_textureStop || !m_textureQueue.empty(); });
+					if(m_textureStop) return;
+					name = m_textureQueue.front();
+					m_textureQueue.pop_front();
+					generation = m_textureGeneration;
+				}
+				TexturePicture read;
+				QImage image(QString::fromStdString((m_textureReplaceDirectory / name).string()));
+				if(!image.isNull())
+				{
+					image = image.convertToFormat(QImage::Format_RGBA8888);
+					read.width = static_cast<uint32>(image.width());
+					read.height = static_cast<uint32>(image.height());
+					read.pixels.resize(static_cast<size_t>(read.width) * read.height);
+					for(uint32 y = 0; y < read.height; y++) memcpy(read.pixels.data() + (static_cast<size_t>(y) * read.width), image.constScanLine(static_cast<int>(y)), static_cast<size_t>(read.width) * 4);
+				}
+				std::lock_guard<std::mutex> lock(m_textureMutex);
+				if(generation == m_textureGeneration) m_textureRead[name] = std::move(read);
+			}
+		}
+
+		void StopTextureThreads()
+		{
+			{
+				std::lock_guard<std::mutex> lock(m_textureMutex);
+				m_textureStop = true;
+			}
+			m_textureWake.notify_all();
+			for(auto& thread : m_textureThreads)
+			{
+				if(thread.joinable()) thread.join();
+			}
+			m_textureThreads.clear();
+		}
+
+		// What the game does with a picture, beside its dump as <name>.json: the size
+		// TEX0 names, whether every texel was sent, each different way it was drawn
+		// (blending, alpha test, wrapping, filter, scanline mask - the numbers are the GS
+		// registers' fields) and the texel coordinates used: "sprite_uv" by sprites drawn to
+		// all lines, "field0_uv" and "field1_uv" by sprites drawn under the scanline mask
+		// to their own even and odd lines (the two halves of a two-field picture),
+		// "other_uv" by triangles; each is u0, v0, u1, v1. A file that is there already
+		// (an earlier run, or earlier in this one) is added to, never made poorer.
+		static void WriteTextureUse(const fs::path& path, const std::string& name, const CGSH_OpenGL::TEXTURE_PICTURE_KEY& key, const CGSH_OpenGL::TEXTURE_PICTURE_USE& use)
+		{
+			QString fileName = QString::fromStdString(path.string());
+			QJsonObject root;
+			{
+				QFile file(fileName);
+				if(file.open(QIODevice::ReadOnly)) root = QJsonDocument::fromJson(file.readAll()).object();
+			}
+			// a file written by disctex.py holds what was read from the disc, not seen
+			if(root.contains("source")) root = QJsonObject();
+			root["picture"] = QString::fromStdString(name);
+			root["format"] = static_cast<int>(key.psm);
+			root["width"] = static_cast<int>(key.width);
+			root["height"] = static_cast<int>(key.height);
+			root["named_width"] = static_cast<int>(use.namedWidth);
+			root["named_height"] = static_cast<int>(use.namedHeight);
+			root["whole"] = use.whole;
+			auto states = root["states"].toArray();
+			for(uint32 i = 0; i < use.stateCount; i++)
+			{
+				const auto& state = use.states[i];
+				QJsonObject item;
+				item["prim"] = state.prim;
+				item["abe"] = state.abe;
+				item["alpha"] = state.alpha;
+				item["fix"] = state.fix;
+				item["test"] = static_cast<int>(state.test);
+				item["wms"] = state.wms;
+				item["wmt"] = state.wmt;
+				item["mag"] = state.mag;
+				item["tfx"] = state.tfx;
+				item["tcc"] = state.tcc;
+				item["scanmsk"] = state.scanMask;
+				item["context"] = state.context;
+				bool known = false;
+				for(const auto& other : states) known = known || (other.toObject() == item);
+				if(!known) states.append(item);
+			}
+			root["states"] = states;
+			if(use.statesOverflow) root["states_overflow"] = true;
+			auto mergeBox = [&root](const QString& field, const CGSH_OpenGL::TEXTURE_PICTURE_USE::BOX& box) {
+				if(!box.seen) return;
+				double values[4] = {box.u0, box.v0, box.u1, box.v1};
+				auto before = root[field].toArray();
+				if(before.size() == 4)
+				{
+					values[0] = std::min(values[0], before[0].toDouble());
+					values[1] = std::min(values[1], before[1].toDouble());
+					values[2] = std::max(values[2], before[2].toDouble());
+					values[3] = std::max(values[3], before[3].toDouble());
+				}
+				QJsonArray after;
+				for(double value : values) after.append(std::round(value * 16.0) / 16.0);
+				root[field] = after;
+			};
+			mergeBox("sprite_uv", use.sprite[0]);
+			mergeBox("field0_uv", use.sprite[1]);
+			mergeBox("field1_uv", use.sprite[2]);
+			mergeBox("other_uv", use.other);
+			QFile file(fileName);
+			if(file.open(QIODevice::WriteOnly | QIODevice::Truncate)) file.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
 		}
 
 		// ---- the network ----------------------------------------------------------------
@@ -1196,6 +1360,25 @@ namespace
 				CGSH_OpenGL::g_textureMode = static_cast<int>(number(1, 0));
 				push(Step::REPLY, 0, "ok");
 			}
+			else if(name == "texreplace" && words.size() == 2)
+			{
+				// texreplace 0|1: the pictures of <textures>/replace off or on while the
+				// game runs (for the same frame with and without); texreplace reload: the
+				// folder is listed again and every picture looked for again
+				if(words[1] == "reload")
+				{
+					size_t count = ListTextureReplacements();
+					CGSH_OpenGL::g_textureReplaceReload++;
+					push(Step::WAIT, 3);
+					push(Step::REPLY, 0, Format("ok %zu replacement file(s)", count));
+				}
+				else
+				{
+					CGSH_OpenGL::g_textureReplaceOn = (number(1, 1) != 0);
+					push(Step::WAIT, 3);
+					push(Step::REPLY, 0, "ok");
+				}
+			}
 			else if(name == "displaypatch" && words.size() == 3)
 			{
 				// displaypatch all|<index> 0|1: a display patch off or on while the game runs
@@ -1310,10 +1493,12 @@ namespace
 							             (unsigned long long)s.udpToServer, (unsigned long long)s.udpToPeers, (unsigned long long)s.udpFromPeers, s.dhcpDone ? 1 : 0, s.dnsAnswered ? 1 : 0);
 						}
 						const auto& tc = CGSH_OpenGL::g_textureCounters;
-						std::string textures = Format("textures_dumped=%llu textures_replaced=%llu tex_made=%llu tex_held=%llu tex_by_upload=%llu tex_by_memory=%llu tex_memory_read=%llu tex_in_place=%llu tex_short_lived=%llu uploads=%llu",
+						std::string textures = Format("textures_dumped=%llu textures_replaced=%llu tex_made=%llu tex_held=%llu tex_by_upload=%llu tex_by_memory=%llu tex_memory_read=%llu tex_in_place=%llu tex_short_lived=%llu uploads=%llu tex_bytes=%llu tex_replace_on=%d tex_replacements=%llu tex_replacement_bytes=%llu tex_pending=%llu tex_dropped=%llu",
 						                              static_cast<unsigned long long>(m_texturesDumped.load()), static_cast<unsigned long long>(m_texturesReplaced.load()), static_cast<unsigned long long>(tc.created.load()), static_cast<unsigned long long>(tc.alive.load()),
 						                              static_cast<unsigned long long>(tc.byUpload.load()), static_cast<unsigned long long>(tc.byMemory.load()), static_cast<unsigned long long>(tc.memoryHashed.load()), static_cast<unsigned long long>(tc.inPlace.load()),
-						                              static_cast<unsigned long long>(tc.shortLived.load()), static_cast<unsigned long long>(tc.uploads.load()));
+						                              static_cast<unsigned long long>(tc.shortLived.load()), static_cast<unsigned long long>(tc.uploads.load()), static_cast<unsigned long long>(tc.bytes.load()),
+						                              CGSH_OpenGL::g_textureReplaceOn.load() ? 1 : 0, static_cast<unsigned long long>(tc.replacements.load()), static_cast<unsigned long long>(tc.replacementBytes.load()),
+						                              static_cast<unsigned long long>(tc.replacementsPending.load()), static_cast<unsigned long long>(tc.replacementsDropped.load()));
 						Reply(Format("ok frame=%llu ms=%lld us=%llu cpu_us=%llu video_cpu_us=%llu display_hz=%.2f refreshes_per_frame=%d %s exe=%s game=%d %s", static_cast<unsigned long long>(m_frame.load()), static_cast<long long>(ms), static_cast<unsigned long long>(us),
 						             static_cast<unsigned long long>(m_cpuMicroseconds.load()), static_cast<unsigned long long>(m_gsCpuMicroseconds.load()), Rta::DisplayRefreshRate(), Rta::DisplayRefreshesPerFrame(), textures.c_str(), m_vm->m_ee->m_os->GetExecutableName(), m_isGame ? 1 : 0, net.c_str()));
 					}
@@ -1561,6 +1746,21 @@ namespace
 		std::atomic<uint64> m_frame{0};
 		std::atomic<uint64> m_cpuMicroseconds{0}, m_gsCpuMicroseconds{0};
 		std::atomic<uint64> m_texturesDumped{0}, m_texturesReplaced{0};
+		fs::path m_textureReplaceDirectory;
+		struct TexturePicture
+		{
+			std::vector<uint32> pixels;
+			uint32 width = 0, height = 0;
+		};
+		std::mutex m_textureMutex; // for everything below
+		std::set<std::string> m_textureNames;
+		std::deque<std::string> m_textureQueue;           // asked for, not read yet
+		std::set<std::string> m_textureAsked;             // in the queue, being read, or read
+		std::map<std::string, TexturePicture> m_textureRead; // read, not fetched yet (width 0: unreadable)
+		std::condition_variable m_textureWake;
+		std::vector<std::thread> m_textureThreads;
+		uint32 m_textureGeneration = 0;
+		bool m_textureStop = false;
 
 		std::mutex m_logMutex;
 		FILE* m_logFile = nullptr;
@@ -1708,6 +1908,7 @@ void Rta::AddCommandLineOptions(QCommandLineParser& parser)
 	parser.addOption(QCommandLineOption("rta-interlaced", "Leave the game's half-line shift between television fields alone (the picture then jumps up and down; for comparing)."));
 	parser.addOption(QCommandLineOption("rta-texture-dump", "Write every texture the game draws with, once, as a PNG file into <textures>/dump."));
 	parser.addOption(QCommandLineOption("rta-textures", "Directory for texture files: dump/ and replace/ below it (default: textures in the data directory).", "dir"));
+	parser.addOption(QCommandLineOption("rta-texture-memory", "Video memory the replacement pictures may take, in megabytes (default 3072); beyond it those not drawn with for ten seconds are given up and read again when needed.", "MB"));
 	parser.addOption(QCommandLineOption("rta-timer", "Time frames by a timer instead of by the display's refreshes."));
 	parser.addOption(QCommandLineOption("rta-no-netcnf", "Do not write the network setting to the memory card."));
 	parser.addOption(QCommandLineOption("rta-control", "UNIX socket for a test script (see tools/play-net/ctl.py).", "path"));
@@ -1739,6 +1940,7 @@ void Rta::ReadCommandLine(const QCommandLineParser& parser)
 	o.displayClock = !parser.isSet("rta-timer");
 	o.textureDump = parser.isSet("rta-texture-dump");
 	o.textureDir = parser.value("rta-textures").toStdString();
+	o.textureMemory = parser.value("rta-texture-memory").toInt();
 	o.netcnf = !parser.isSet("rta-no-netcnf");
 	o.controlPath = parser.value("rta-control").toStdString();
 	o.pcapPath = parser.value("rta-pcap").toStdString();

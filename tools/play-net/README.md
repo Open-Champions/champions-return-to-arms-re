@@ -27,6 +27,8 @@ has been seen to do, and what not, is at the end; how to play is in
 | `sections-suggested.txt` | the patch sections `play.sh` applies by default (the suggested set of `docs/online-setup.md`) |
 | `ctl.py` | sends commands to a running application over its control socket (buttons, memory reads, pictures) |
 | `smoke.py` | test: power-on to the lobby server's first screen, with the network's log and the speed |
+| `upscale.py` | enlarges dumped textures for the replacement folder, each kind of picture in its own way ("Upscaled art" below) |
+| `disctex.py` | names and writes out the textures kept in the disc's lumps without playing (model, monster and item textures, interface art) |
 
 ## Build
 
@@ -289,14 +291,34 @@ format and its size.
   (`<format>` is the console's number: 19 is 8-bit, 20 is 4-bit, 0 is 32-bit).
   Power-on to the first level and 40 seconds of walking gives 339 files, the same 339 in
   every run. Dumping costs speed while new textures appear; afterwards nothing.
+- Beside each picture it writes `<same name>.json`: **how the game draws with it**, so
+  that nobody has to guess from the picture. It is added to as long as the run goes on
+  (every two seconds) and by later runs, never made poorer:
+
+  | Field | Meaning |
+  |---|---|
+  | `width`, `height`, `named_width`, `named_height` | the picture's size and the size `TEX0` names |
+  | `whole` | every texel of the picture was sent (false: the zero texels in whole blocks are unsent ones) |
+  | `states` | each different way it was drawn, as fields of the GS registers: `prim` (6 sprite, 3–5 triangles), `abe` and `alpha` (blending on, `ALPHA`'s low byte) with `fix`, `test` (`TEST`: alpha test and its reference), `wms`/`wmt` (0 repeat, 1 clamp, 2 and 3 region), `mag` (0 nearest, 1 linear), `tfx`, `tcc`, `scanmsk` (0, 2, 3), `context`. At most 16; `states_overflow` when there were more |
+  | `sprite_uv` | u0, v0, u1, v1: the texels sprites drawn to all lines used |
+  | `field0_uv`, `field1_uv` | the same for sprites drawn under the scanline mask to their own even lines (counted from the sprite's top) and to their odd lines: the two halves of a two-field picture |
+  | `other_uv` | the same for triangles (beyond 0 … named size: the texture repeats) |
 - A picture is written when it is still being drawn 30 frames after it was first drawn.
   Pictures that are made anew every frame (film frames that are small enough to be kept as
   textures at all) are therefore not written; `tex_short_lived` of the control socket's
   `info` counts them.
 - A PNG file of the same name in `<data>/textures/replace/`, **of any size**, is drawn in
-  its place (read when first needed; the directory is listed once at start).
-  `--rta-textures DIR` puts both directories somewhere else. A replacement changes the
-  picture only.
+  its place. `--rta-textures DIR` puts both directories somewhere else. A replacement
+  changes the picture only. The directory is listed once at start. A file is read when
+  its texture is first drawn, by three threads of their own at low priority: until it is
+  there the game's own texture is drawn, so reading never holds a frame up (unpacking a
+  2688 × 640 picture takes longer than a frame lasts), and at most 24 MB a frame are
+  handed to the GPU. A replacement gets mip maps and is drawn with them where the game
+  filters (the game's textures have none: a picture four times the size glitters without
+  on anything far away).
+- `--rta-texture-memory MB` (default 3072) is the video memory replacements may take;
+  beyond it those not drawn with for ten seconds are given up and read again when needed
+  (`tex_dropped` of `info`). The first level with every replacement at 4× holds 1.4 GB.
 - A file whose name starts with `mem-` is a texture that could not be told by what was
   sent and was read back from video memory; its name may not come back. None appeared
   in the scenes listed at the end.
@@ -304,16 +326,19 @@ format and its size.
 How a replacement has to be laid out (for a pipeline that takes a file and gives back a
 file of 4 times the size):
 
-- **Same name, same proportions, any whole multiple of the size.** The picture is
-  stretched over the same rectangle of texture coordinates, so a 160 × 160 file becomes
-  640 × 640. Nothing else has to be told to the application.
+- **Same name, any whole multiple of the size.** The picture is stretched over the same
+  rectangle of texture coordinates, so a 160 × 160 file becomes 640 × 640. The factor
+  may differ between width and height (two-field pictures below use that). Nothing else
+  has to be told to the application.
 - **An ordinary rectangle is right, also for textures the game sent as an L shape.** The
   file is the smallest rectangle (from the top left corner) that holds everything that
   was sent. Texels that were not sent are written as red 0, green 0, blue 0, alpha 0. The
   game's triangles do not use them, so a replacement may hold anything there — but an
-  enlarging filter reads across that border: fill the unsent part from its neighbours
-  before enlarging (or enlarge colour and alpha separately), or the border of the used
-  part comes out darkened.
+  enlarging filter reads across that border, and so do bilinear filtering and the mip
+  maps: fill the unsent part from its neighbours before enlarging **and leave it
+  filled**, or the border of the used part comes out darkened. A level texture is a page
+  of 1024 × 1024 of which the game sends and uses a corner (typically 144 × 144 texels
+  with a 3-texel margin, of a 672 × 160 dump); `other_uv` says which.
 - **Alpha is the console's: 128 is opaque**, 255 is not "more opaque", and many world
   textures have alpha 0 on purpose (the game's blend modes read it the other way round:
   `docs/spec/render-pipeline.md` section 6). A viewer shows such files half or fully
@@ -321,19 +346,150 @@ file of 4 times the size):
   its own, or with nearest-neighbour), and use tools that do not premultiply: one pass
   through `sips` turned every texture with alpha 0 black here. That alpha 0 also marks
   unsent texels does no harm: those are never drawn.
-- **Interface art is two field pictures, one above the other**: the top half of the file
-  is the picture's lines 0, 2, 4 …, the bottom half its lines 1, 3, 5 …
+- **Interface art is two field pictures, one above the other**: the first field is the
+  picture's lines 0, 2, 4 …, the second its lines 1, 3, 5 …
   (`docs/formats/model-texture.md`, "Interface pictures are two fields"). The game draws
-  each half over the same place, to the even and to the odd lines. It has to stay that
-  way: to enlarge such a picture, interleave the two halves into one picture, enlarge
-  that, and take it apart again into even and odd lines, one above the other. Which
-  files these are does not show in the name: everything the 2-D drawers draw (menus,
-  the bars and their frame, inventory, text) except head portraits, map icons and effect
-  sprites; a picture whose top and bottom halves look alike is one.
+  each field over the same place, one to the sprite's even lines and one to its odd
+  lines, under the scanline mask. Which files these are and how high a field is does not
+  show in the name or the size — the `.json` file says it: a picture with `field0_uv` and
+  `field1_uv` is one, and a field has `field1_uv[1] − field0_uv[1] + 0.25` lines. That is
+  **not** half the file's height as a rule: a font page of 256 × 180 has fields of 89
+  lines, the bars' frame of 160 × 48 fields of 23. (The first pass of `upscale.py` cut
+  at half the height and got combs.) And the game reads the first field a quarter texel
+  into it and the second from its very first line: V runs `0.25 + line/2` and
+  `rows + line/2`.
+- **How to lay out the replacement of a two-field picture**: interleave the fields into
+  the one picture they are (2 × rows lines), enlarge that by *s*, and write the enlarged
+  picture **twice**, one above the other, into a file of *s* times the width and 2*s*
+  times the height (the rest of the height, if the dump is higher than two fields, is
+  not drawn); the second copy moved up by *s*/2 lines. Each of the game's two draws
+  stretches its field over all the sprite's lines, so with twice the vertical factor it
+  finds, behind every line of the screen, exactly that line of the enlarged picture —
+  whichever of the two draws the mask lets through, at any resolution factor, with point
+  sampling as with filtering; the half-line move makes up for the quarter texel. (Taking
+  the enlarged picture apart into even and odd lines again, as this section said before,
+  shows only every other line of it, the odd ones a line off.)
 - Indexed (4- and 8-bit) and 32-bit textures only; a replacement is always 32-bit.
 - Checked with 492 textures replaced by double-size copies with red and blue swapped:
   drawn in place, 60 frames a second (before the change of names; the mechanism is
   unchanged). Dumps are the game's art: they stay under `local/`.
+
+## Upscaled art
+
+The game's textures enlarged four times by a learned model (Real-ESRGAN), drawn in place
+of the game's own. Three steps, each of which can be done again at any time; only what
+is new or changed is worked on:
+
+```
+tools/play-net/play.sh --disc IMAGE -- --rta-textures "$PWD/local/hd-pack" --rta-texture-dump
+        # play: every texture drawn is written to local/hd-pack/dump, with its .json file
+tools/play-net/upscale.py local/hd-pack/dump local/hd-pack/replace \
+        --upscaler local/upscaler/realesrgan/realesrgan-ncnn-vulkan      # --scale 2 for a 2x pack
+tools/play-net/play.sh --disc IMAGE -- --rta-textures "$PWD/local/hd-pack"
+        # play with the pack (add --rta-texture-dump again to keep growing it)
+```
+
+The enlarging program is not part of this repository
+(https://github.com/xinntao/Real-ESRGAN, `realesrgan-ncnn-vulkan` with its models
+`realesrgan-x4plus`, `realesrgan-x4plus-anime`, `realesr-animevideov3`). Dumps and packs
+are the game's art: they stay under `local/`.
+
+**Nothing is guessed from the picture.** `upscale.py` reads the `.json` file the
+application wrote beside each dump (the section above) and sorts the pictures by how the
+game draws them:
+
+| Kind | Known by | What is done |
+|---|---|---|
+| interface | sprites under the scanline mask, or blended sprites (`ALPHA` 0x44) | two-field pictures (those with `field0_uv`/`field1_uv`) are interleaved, enlarged as the one picture they are and laid out as described above; `realesrgan-x4plus` at full strength |
+| level | triangles, texture function 0 (ground, walls, stone, wood, foliage: one pre-lit picture per piece of the level) | `realesrgan-x4plus`; the distribution of brightness is matched as well; only the rectangle `other_uv` names (plus 6 texels) goes to the model, the rest of the page is enlarged plainly |
+| model | triangles, texture function 3 (characters, monsters, weapons, props) | `realesrgan-x4plus` at full strength |
+| glow | every draw adds to the picture (`ALPHA` 0x48, 0x68) | `realesr-animevideov3` at 0.6, and never brighter than the game's picture around it: what is black stays black |
+| sprite | other effects drawn without writing depth, other sprites | `realesrgan-x4plus` at 0.8 |
+| environment | only drawn in GS context 2 (the reflection picture, the shadow blob) | left alone |
+
+For every kind:
+
+- **Alpha means what the draws say.** From each state's blend mode and alpha test the
+  script works out which alpha values put any of a texel's colour on the screen. Texels
+  that cannot be seen (transparent interface art under 0x44; the rim of cut-out foliage,
+  which fails the level's alpha test "less than 0x2f"; model texels the test "less than
+  0x7f" drops) get the colour of their visible neighbours before enlarging, so no
+  fringe of the hidden colour comes out of the enlarged edge. Where alpha 0 is opaque
+  (`ALPHA` 1 and 2: level and model textures) nothing is touched. Alpha itself is
+  enlarged plainly (bicubic) inside its range, and stays exactly what it is wherever a
+  texel and its neighbours have one value. (Letting a model enlarge alpha turned the soft
+  shadow round the menu's letters into a hard black outline.)
+- **The result has the game's colours.** The model's picture is mixed with a plain
+  enlargement and then everything coarser than a texel and a half is taken from the plain
+  one; then each pixel is held inside the range of the texels around it (plus 6 of 255).
+  A thin olive line stays an olive line: the model alone made the bars' frame a thinner,
+  bright yellow one.
+- **Where the picture is noise from texel to texel, most of the model is taken away.**
+  A photo model draws worms where it finds noise (the grass: every texel differs from
+  its neighbours). The script measures that — the energy of differences between
+  neighbouring texels against that across two texels, about 4 for noise and 1.5 to 2.7
+  for anything drawn with a brush — and lowers the strength there (`calm`: 0.6 of it for
+  level textures, 0.8 for the rest). Grass therefore stays close to the game's own, a
+  little finer; stone, wood, leaves and skins get the model.
+- **Pictures with a side under 12 texels are enlarged plainly** (the bars of the
+  interface are 6 or 8 lines high; the model made a maze of their mottled fill).
+- **Texels never sent are filled from their neighbours and stay filled**; a border of 8
+  texels is given to the model around what it enlarges (the picture's own texels where
+  the rectangle lies inside it; repeated edge otherwise; wrapped round where `other_uv`
+  shows that the texture repeats and the dump is the whole of it — no such texture
+  occurs from power-on to the first level, where every level texture is a page with a
+  margin of its own, so that case is untested).
+
+What was looked at to choose (same frame with and without, `texreplace` with the game
+paused, pictures `local/play-out/hd2-*.png`): `realesrgan-x4plus-anime` flattens every
+surface with grain (stone, parchment, the bars) into flat colour and was dropped;
+`realesr-animevideov3` and Lanczos both ring on noise; blurring the texture before the
+model turns grass into lichen; enlarging a Lanczos-doubled picture and halving the result
+gave a checkered pattern. What came out better than the game's art by eye: the title's logo, all text, the
+frames and icons of menus, bars and inventory, stone, leaves, the character's skin and
+armour close up. Grass is about as before.
+
+Measured on an M5 Pro, other test runs going on beside (load average 10 to 16):
+
+| | |
+|---|---|
+| time to enlarge | 394 pictures 4 min 20 s; 25 new ones in a later run 20 s |
+| the pack for title, menus, character creation and the first level | 418 files, 257 MB (4×); 72 MB (2×) |
+| video memory in the first level | the game's own 335 textures 16 MB; 4× replacements 1.39 GB (310 pictures, mip maps included; 1.46 GB with the inventory's); 2× 350 MB |
+| speed with the pack, standing and walking through the level | 60.00 frames a second at 4× and at 2×, as without |
+
+For a computer with little memory make the pack with `--scale 2` (a quarter of the
+memory; text and frames are still clean, see `local/play-out/hd2-pack2x-vs-4x.png`), or
+lower `--rta-texture-memory`.
+
+**Growing the pack.** A dump holds what a run has drawn. Two ways to more:
+
+- Play with `--rta-texture-dump` and run `upscale.py` again: it does the new pictures
+  and those whose `.json` file has since learnt something that changes the work (a kind,
+  a larger rectangle). `REPLACE_DIR/upscale-manifest.json` remembers what each file was
+  made from; `--force` does everything again, `--list` says what each picture is taken
+  for.
+- `disctex.py DISC.iso DUMP_DIR` names and writes the textures kept in the disc's lumps
+  without playing: they are stored as the packets the game sends, so the figure of the
+  bytes, of the palette, the format and the size sent can all be worked out from the
+  file (2,075 different pictures: 1,447 model textures, 628 others; checked against a
+  dump made by playing, `--check`: all 112 names found in both hold the same picture,
+  pixel for pixel). Model textures get a `.json` file saying how models are drawn and
+  are enlarged at once; for the others (interface art, effects) the file does not say
+  how they are drawn, and `upscale.py` leaves them until a run has drawn them. **Level
+  textures cannot be named from the disc**: `<LEVEL>.TEX` holds them packed (header
+  flags 0x010c, no upload packet, a table of offsets) and the game unpacks them before
+  sending; the unpacker was not rewritten. Neither can the player's own character (put
+  together from parts when the game starts) and the two font pages.
+
+Not judged by eye: the glow and sprite kinds (two such pictures from power-on to the
+first level), the 2× model (`--scale 2` reduces the 4× result). Not tried: other models (none may be fetched here; `4x-UltraSharp` and
+`4x_foolhardy_Remacri`, ESRGAN models of about 65 MB each listed on openmodeldb.info and
+made for textures rather than photographs, would be the first to try on stone and ground
+— from memory, not checked, and they need converting to ncnn's format); anisotropic
+filtering; giving only the used rectangle of a level page to the GPU (it would cut the
+memory to about 40 %; the application stretches a replacement over the whole dump);
+levels beyond the first; a second player's and monsters' textures in a fight.
 
 ## Control socket and tests
 
@@ -354,8 +510,16 @@ they stay under `local/`.
   takes a display patch out or puts it back; `texmode 0|1|2` makes textures known by
   what was sent (0, the default), by the texels read back from video memory (1), or by
   address as Play! itself does (2; not usable after a switch, only from the start).
+- `texreplace 0|1` switches the replacement pictures off or on in the running game
+  (three frames later the picture is drawn the other way): with the game paused that is
+  the same frame with and without. `texreplace reload` lists the folder again and reads
+  every picture again, for trying a changed file without a restart.
 - `info` counts, among other things: `tex_made` (textures made), `tex_by_upload` and
   `tex_by_memory` (draws that found their texture one way or the other),
-  `tex_memory_read`, `tex_in_place`, `tex_short_lived`, `uploads`.
+  `tex_memory_read`, `tex_in_place`, `tex_short_lived`, `uploads`; `tex_held` and
+  `tex_bytes` (the game's own textures and their video memory), `tex_replacements` and
+  `tex_replacement_bytes` (replacement pictures held, mip maps included), `tex_pending`
+  (asked for and not read yet: 0 before a picture is taken for comparing),
+  `tex_dropped`.
 - `RTA_TEXLOG=FILE` in the environment writes a line for every texture made (frame,
   figure, format, size, address, pieces).

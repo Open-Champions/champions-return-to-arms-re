@@ -240,18 +240,19 @@ diff --git a/Source/gs/GSH_OpenGL/CMakeLists.txt b/Source/gs/GSH_OpenGL/CMakeLis
 diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp
 --- a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp
 +++ b/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp
-@@ -112,6 +112,10 @@
+@@ -112,6 +112,11 @@
  {
  	LoadPreferences();
  	m_textureCache.Flush();
 +	m_contentTextures.clear();
-+	m_textureReplacements.clear();
++	g_textureCounters.bytes = 0;
++	ForgetTexturePictures();
 +	m_lastContentTexture = nullptr;
 +	ForgetUploads();
  	PalCache_Flush();
  	m_framebuffers.clear();
  	m_depthbuffers.clear();
-@@ -217,6 +221,20 @@
+@@ -217,6 +222,20 @@
  		assert(m_presentTexCoordScaleUniform != -1);
  		glUniform2f(m_presentTexCoordScaleUniform, u1, v1);
  
@@ -272,10 +273,12 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  		glBindBuffer(GL_ARRAY_BUFFER, m_presentVertexBuffer);
  		glBindVertexArray(m_presentVertexArray);
  
-@@ -240,6 +258,24 @@
+@@ -238,6 +257,24 @@
+ 			DumpTexture(framebuffer->m_width * m_fbScale, framebuffer->m_height * m_fbScale, framebuffer->m_basePtr);
+ 		}
  		glBindTexture(GL_TEXTURE_2D, 0);
- 	}
- 
++	}
++
 +	ContentTextures_EndFrame();
 +
 +	//RTA: for CGSH_OpenGLQt::RequestCapture
@@ -292,23 +295,22 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
 +	{
 +		glFlush();
 +		g_presentClock.wait(dispInfo.presentAfter);
-+	}
-+
+ 	}
+ 
  	PresentBackbuffer();
- 	CGSHandler::FlipImpl(dispInfo);
- }
-@@ -264,6 +300,10 @@
+@@ -264,6 +301,11 @@
  {
  	LoadPreferences();
  	m_textureCache.Flush();
 +	m_contentTextures.clear();
-+	m_textureReplacements.clear();
++	g_textureCounters.bytes = 0;
++	ForgetTexturePictures();
 +	m_lastContentTexture = nullptr;
 +	ForgetUploads();
  	PalCache_Flush();
  	m_framebuffers.clear();
  	m_depthbuffers.clear();
-@@ -290,6 +330,7 @@
+@@ -290,6 +332,7 @@
  	m_presentVertexArray = GeneratePresentVertexArray();
  	m_presentTextureUniform = glGetUniformLocation(*m_presentProgram, "g_texture");
  	m_presentTexCoordScaleUniform = glGetUniformLocation(*m_presentProgram, "g_texCoordScale");
@@ -316,7 +318,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  
  	m_copyToFbProgram = GenerateCopyToFbProgram();
  	m_copyToFbTexture = Framework::OpenGl::CTexture::Create();
-@@ -571,6 +612,24 @@
+@@ -571,15 +614,33 @@
  	if(!prim.nTexture)
  	{
  		shaderCaps.texSourceMode = TEXTURE_SOURCE_MODE_NONE;
@@ -329,8 +331,8 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
 +	{
 +		shaderCaps.texSourceMode = TEXTURE_SOURCE_MODE_STD;
 +		shaderCaps.texBilinearFilter = 0;
-+	}
-+
+ 	}
+ 
 +	//RTA: The scanline mask: drawing only to every other line of the picture. A game uses
 +	//it to put the two fields of an interlaced picture into one frame; this one draws
 +	//its interface art that way when it is told to (see tools/play-net). It was not
@@ -338,10 +340,11 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
 +	{
 +		uint32 scanMask = static_cast<uint32>(m_nReg[GS_REG_SCANMSK]) & 0x03;
 +		shaderCaps.scanMask = (scanMask >= 2) ? scanMask : 0;
- 	}
- 
++	}
++
  	//--------------------------------------------------------
-@@ -579,7 +638,7 @@
+ 	// Fast path: if everything (shader caps + relevant regs) matches, skip.
+ 	//--------------------------------------------------------
  	if(m_renderState.isValid)
  	{
  		if(m_renderState.isTextureStateValid && m_renderState.isFramebufferStateValid &&
@@ -350,7 +353,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  		   (m_renderState.primReg == primReg) &&
  		   (m_renderState.alphaReg == alphaReg) &&
  		   (m_renderState.testReg == testReg) &&
-@@ -605,7 +664,7 @@
+@@ -605,7 +666,7 @@
  	//--------------------------------------------------------
  	uint64 prevPrimValue = m_renderState.isValid ? m_renderState.primReg : 0;
  	auto prevPrim = make_convertible<PRMODE>(prevPrimValue);
@@ -359,7 +362,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  	bool primChanged = !m_renderState.isValid || (m_renderState.primReg != primReg);
  	bool blendEnableChanged = primChanged && !m_hasFramebufferFetchExtension && ((!m_renderState.isValid) || (prevPrim.nAlpha != prim.nAlpha));
  	bool alphaChanged = !m_renderState.isValid || (m_renderState.alphaReg != alphaReg);
-@@ -631,6 +690,11 @@
+@@ -631,6 +692,11 @@
  	if(shaderChanged)
  	{
  		m_renderState.shaderCaps = shaderCaps;
@@ -371,7 +374,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  	}
  
  	if(blendEnableChanged)
-@@ -670,6 +734,11 @@
+@@ -670,6 +736,11 @@
  	{
  		SetupTexture(primReg, tex0Reg, tex1Reg, texAReg, clampReg);
  		CHECKGLERROR();
@@ -383,7 +386,17 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  	}
  
  	if(fogColorChanged)
-@@ -698,6 +767,7 @@
+@@ -683,6 +754,9 @@
+ 	m_nPrimOfsY = offset.GetY();
+ 
+ 	CHECKGLERROR();
++
++	//RTA: what is done with the picture bound, for the file beside its dump
++	if(m_currentPicture && prim.nTexture) NoteTextureUse(primReg, alphaReg, testReg, clampReg, tex0Reg, tex1Reg);
+ 
+ 	m_renderState.isValid = true;
+ 	m_renderState.isTextureStateValid = true;
+@@ -698,6 +772,7 @@
  	m_renderState.texAReg = texAReg;
  	m_renderState.clampReg = clampReg;
  	m_renderState.fogColReg = fogColReg;
@@ -391,7 +404,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  }
  
  void CGSH_OpenGL::SetupBlendingFunction(uint64 alphaReg)
-@@ -1032,10 +1102,32 @@
+@@ -1032,11 +1107,33 @@
  
  	assert(framebuffer->m_width == depthbuffer->m_width);
  
@@ -419,15 +432,16 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
 +		glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthbuffer->m_depthBuffer);
 +		CHECKGLERROR();
 +		framebuffer->m_attachedDepthBuffer = depthbuffer->m_depthBuffer;
-+
+ 
 +		GLenum drawBufferId = GL_COLOR_ATTACHMENT0;
 +		glDrawBuffers(1, &drawBufferId);
 +		CHECKGLERROR();
 +	}
- 
++
  	assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
  
-@@ -1046,12 +1138,6 @@
+ 	m_renderState.framebufferHandle = framebuffer->m_framebuffer;
+@@ -1046,12 +1143,6 @@
  	//to resolve samples at some point if multisampling is enabled
  	framebuffer->m_resolveNeeded = true;
  
@@ -440,7 +454,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  	m_renderState.viewportWidth = framebuffer->m_width;
  	m_renderState.viewportHeight = framebuffer->m_height;
  	m_validGlState &= ~GLSTATE_VIEWPORT;
-@@ -1257,9 +1343,24 @@
+@@ -1257,10 +1348,25 @@
  	m_nTexWidth = tex0.GetWidth();
  	m_nTexHeight = tex0.GetHeight();
  
@@ -450,7 +464,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
 +	m_texAllowReducedSize = false;
  	m_renderState.texture0Handle = texInfo.textureHandle;
  	m_renderState.texture0AlphaAsIndex = texInfo.alphaAsIndex;
-+
+ 
 +	//RTA: a picture from outside in place of the game's (see TEXTURE_PICTURE_KEY)
 +	m_renderState.texture0Replaced = false;
 +	if(g_textureDump || g_textureLoad)
@@ -462,10 +476,24 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
 +			m_renderState.texture0Replaced = true;
 +		}
 +	}
- 
++
  	//Setup sampling modes
  	switch(tex1.nMagFilter)
-@@ -1337,7 +1438,7 @@
+ 	{
+@@ -1295,6 +1401,12 @@
+ 		m_renderState.texture0MinFilter = GL_LINEAR;
+ 	}
+ 
++	//RTA: a picture from outside has smaller copies of itself (FindTextureReplacement)
++	if(m_renderState.texture0Replaced && (m_renderState.texture0MinFilter == GL_LINEAR))
++	{
++		m_renderState.texture0MinFilter = GL_LINEAR_MIPMAP_LINEAR;
++	}
++
+ 	unsigned int clampMin[2] = {0, 0};
+ 	unsigned int clampMax[2] = {0, 0};
+ 	float textureScaleRatio[2] = {texInfo.scaleRatioX, texInfo.scaleRatioY};
+@@ -1337,7 +1449,7 @@
  		}
  	}
  
@@ -474,7 +502,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  	   (m_renderState.texture0MinFilter != GL_NEAREST || m_renderState.texture0MagFilter != GL_NEAREST))
  	{
  		//We'll need to filter the texture manually
-@@ -1345,7 +1446,7 @@
+@@ -1345,7 +1457,7 @@
  		m_renderState.texture0MagFilter = GL_NEAREST;
  	}
  
@@ -483,7 +511,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  	{
  		m_renderState.texture1Handle = PreparePalette(tex0);
  	}
-@@ -1358,10 +1459,11 @@
+@@ -1358,10 +1470,11 @@
  	m_vertexParams.texMatrix[3 + (3 * 4)] = 1;
  	m_validGlState &= ~GLSTATE_VERTEX_PARAMS;
  
@@ -499,7 +527,40 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  	m_fragmentParams.clampMin[0] = static_cast<float>(clampMin[0]);
  	m_fragmentParams.clampMin[1] = static_cast<float>(clampMin[1]);
  	m_fragmentParams.clampMax[0] = static_cast<float>(clampMax[0]);
-@@ -1690,6 +1792,30 @@
+@@ -1587,6 +1700,12 @@
+ 			nQ[0] = rgbaq[0].nQ;
+ 			nQ[1] = rgbaq[1].nQ;
+ 			nQ[2] = rgbaq[2].nQ;
++		}
++		if(m_currentPicture)
++		{
++			float u[3] = {nS[0] / nQ[0], nS[1] / nQ[1], nS[2] / nQ[2]};
++			float v[3] = {nT[0] / nQ[0], nT[1] / nQ[1], nT[2] / nQ[2]};
++			NoteTextureCoords(3, u, v, 3);
+ 		}
+ 	}
+ 
+@@ -1683,6 +1802,19 @@
+ 
+ 			nT[0] = st[0].nT / nQ1;
+ 			nT[1] = st[1].nT / nQ2;
++		}
++		if(m_currentPicture)
++		{
++			//RTA: which of its own lines the sprite is drawn to (see TEXTURE_PICTURE_USE);
++			//SCANMSK 2 leaves the picture's even lines out, 3 the odd ones
++			uint32 scanMask = static_cast<uint32>(m_nReg[GS_REG_SCANMSK]) & 0x03;
++			unsigned int which = 0;
++			if(scanMask >= 2)
++			{
++				long top = lroundf(std::min(nY1, nY2));
++				which = 1 + static_cast<unsigned int>((top + ((scanMask == 2) ? 1 : 0)) & 1);
++			}
++			NoteTextureCoords(which, nS, nT, 2);
+ 		}
+ 	}
+ 
+@@ -1690,6 +1822,30 @@
  	    rgbaq[1].nR, rgbaq[1].nG,
  	    rgbaq[1].nB, rgbaq[1].nA);
  
@@ -530,7 +591,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  	// clang-format off
  	PRIM_VERTEX vertices[] =
  	{
-@@ -1874,6 +2000,11 @@
+@@ -1874,6 +2030,11 @@
  
  	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthbuffer->m_depthBuffer);
  	CHECKGLERROR();
@@ -542,7 +603,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  
  	assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
  
-@@ -2052,6 +2183,7 @@
+@@ -2052,6 +2213,7 @@
  				   m_renderState.texAReg == texAReg &&
  				   m_renderState.clampReg == clampReg &&
  				   m_renderState.fogColReg == fogColReg &&
@@ -550,7 +611,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  				   m_renderState.scissorReg == scissorReg)
  				{
  					needCtx = false; // fully same state; skip call
-@@ -2105,6 +2237,16 @@
+@@ -2105,6 +2267,16 @@
  
  void CGSH_OpenGL::ProcessHostToLocalTransfer()
  {
@@ -567,7 +628,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  	if(m_trxCtx.nDirty)
  	{
  		FlushVertexBuffer();
-@@ -2231,6 +2373,7 @@
+@@ -2231,6 +2403,7 @@
  
  		auto [transferAddress, transferSize] = GsTransfer::GetDstRange(bltBuf, trxReg, trxPos);
  		m_textureCache.InvalidateRange(transferAddress, transferSize);
@@ -575,7 +636,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  
  		//Write back to RAM
  		{
-@@ -2525,10 +2668,7 @@
+@@ -2525,10 +2698,7 @@
  	public:
  		void EnableCopyToFb(const FramebufferPtr& framebuffer, GLuint copyToFbTexture)
  		{
@@ -587,22 +648,21 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  			glActiveTexture(GL_TEXTURE0);
  			glBindTexture(GL_TEXTURE_2D, copyToFbTexture);
  			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, framebuffer->m_width, framebuffer->m_height,
-@@ -2538,6 +2678,10 @@
+@@ -2537,6 +2707,10 @@
+ 			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
  			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
  			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
- 
++
 +			if(m_copyToFbEnabled) return;
 +
 +			glDisable(GL_SCISSOR_TEST);
-+
+ 
  			glBindFramebuffer(GL_FRAMEBUFFER, framebuffer->m_framebuffer);
  
- 			m_copyToFbEnabled = true;
-@@ -2580,9 +2724,23 @@
- 		if((texY + texHeight) > framebuffer->m_height)
+@@ -2581,8 +2755,22 @@
  		{
  			texHeight = framebuffer->m_height - texY;
-+		}
+ 		}
 +		//RTA: Nothing below the lines that are about to be drawn to is wanted (what lies
 +		//beyond them is dropped at the end of this function in any case). Every
 +		//framebuffer is taken to be 1024 lines high here; for the small picture this
@@ -611,7 +671,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
 +		if((texY + texHeight) > (maxY + 1))
 +		{
 +			texHeight = (maxY + 1) - texY;
- 		}
++		}
  
  		m_validGlState &= ~(GLSTATE_SCISSOR | GLSTATE_FRAMEBUFFER | GLSTATE_TEXTURE);
 +		//RTA: a texture of its own for every upload. Writing into the one texture that
@@ -647,16 +707,16 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.h b/Source/gs/GSH_OpenGL/GSH_OpenGL
  
  private:
  	typedef CGsTextureCache<Framework::OpenGl::CTexture> TextureCache;
-@@ -98,6 +106,9 @@
- 		unsigned int alphaFailMethod : 2;
+@@ -99,6 +107,9 @@
  		unsigned int alphaTestDepthTest_DepthFetch : 1;
  		unsigned int alphaTestDepthTestEqual_DepthFetch : 1;
-+
+ 
 +		//RTA: SCANMSK (0: none, 2: lines with an even number are not drawn, 3: odd)
 +		unsigned int scanMask : 2;
- 
++
  		bool isIndexedTextureSource() const
  		{
+ 			return texSourceMode == TEXTURE_SOURCE_MODE_IDX4 || texSourceMode == TEXTURE_SOURCE_MODE_IDX8;
 @@ -124,6 +135,8 @@
  		uint64 texAReg;
  		uint64 clampReg;
@@ -686,7 +746,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.h b/Source/gs/GSH_OpenGL/GSH_OpenGL
  		Framework::OpenGl::CFramebuffer m_resolveFramebuffer;
  		bool m_resolveNeeded = false;
  		Framework::OpenGl::CRenderbuffer m_colorBufferMs;
-@@ -273,8 +290,101 @@
+@@ -273,8 +290,168 @@
  		float scaleRatioX = 1;
  		float scaleRatioY = 1;
  		bool alphaAsIndex = false;
@@ -728,6 +788,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.h b/Source/gs/GSH_OpenGL/GSH_OpenGL
 +		//One byte per texel, 0 where the game sent nothing (empty: it sent all of it);
 +		//kept with 'pixels'
 +		std::vector<uint8> coverage;
++		uint32 bytes = 0;
 +	};
 +
 +public:
@@ -758,8 +819,61 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.h b/Source/gs/GSH_OpenGL/GSH_OpenGL
 +			return static_cast<size_t>(key.hash ^ (key.clutHash * 0x9E3779B97F4A7C15ULL) ^ (static_cast<uint64>(key.psm) << 56) ^ (static_cast<uint64>(key.width) << 40) ^ (static_cast<uint64>(key.height) << 24) ^ key.kind);
 +		}
 +	};
-+	typedef std::function<void(const TEXTURE_PICTURE_KEY&, const uint32*)> TextureDumpFunction;
-+	typedef std::function<bool(const TEXTURE_PICTURE_KEY&, std::vector<uint32>&, uint32&, uint32&)> TextureLoadFunction;
++	//What the game did with a picture, gathered while textures are written out: it goes
++	//into a file beside the picture, for whoever enlarges or redraws it (how alpha is
++	//used, whether the picture repeats, whether it is one of the two-field ones).
++	struct TEXTURE_PICTURE_USE
++	{
++		enum
++		{
++			MAX_STATES = 16
++		};
++		//One way of drawing with the picture: the parts of the GS registers that say
++		//what its texels and its alpha do
++		struct STATE
++		{
++			uint8 prim = 0;       //PRIM's primitive type (6: sprite, 3 to 5: triangles)
++			uint8 abe = 0;        //alpha blending on
++			uint8 alpha = 0;      //ALPHA's low byte (A, B, C, D)
++			uint8 fix = 0;        //ALPHA's FIX
++			uint32 test = 0;      //TEST (ATE, ATST, AREF, AFAIL, DATE, DATM, ZTE, ZTST)
++			uint8 wms = 0, wmt = 0; //CLAMP: 0 repeat, 1 clamp, 2 region clamp, 3 region repeat
++			uint8 mag = 0;        //TEX1's MMAG: 0 nearest, 1 linear
++			uint8 tfx = 0, tcc = 0; //TEX0's texture function and "texture has alpha"
++			uint8 scanMask = 0;   //SCANMSK: 0, 2 (even lines left out), 3 (odd lines left out)
++			uint8 context = 0;
++			bool operator==(const STATE& rhs) const
++			{
++				return (prim == rhs.prim) && (abe == rhs.abe) && (alpha == rhs.alpha) && (fix == rhs.fix) && (test == rhs.test) && (wms == rhs.wms) && (wmt == rhs.wmt) &&
++				       (mag == rhs.mag) && (tfx == rhs.tfx) && (tcc == rhs.tcc) && (scanMask == rhs.scanMask) && (context == rhs.context);
++			}
++		};
++		STATE states[MAX_STATES];
++		uint32 stateCount = 0;
++		bool statesOverflow = false;
++		//The texels drawn with: smallest and largest u and v over all vertices, in
++		//texels of the texture the game named. Three boxes for sprites - 0: drawn to
++		//all lines; 1: drawn under the scanline mask to the sprite's own lines 0, 2,
++		//4 ... (counted from its top); 2: to its lines 1, 3, 5 ... - and one for
++		//everything else. This game draws a two-field picture as two such sprites over
++		//the same place, each from its own half of the texture.
++		struct BOX
++		{
++			bool seen = false;
++			float u0 = 0, v0 = 0, u1 = 0, v1 = 0;
++		};
++		BOX sprite[3];
++		BOX other;
++		uint32 namedWidth = 0, namedHeight = 0; //the size TEX0 gives
++		bool whole = true;                      //the game sent every texel of the picture
++		bool changed = false;                   //since it was last handed out
++	};
++	//'rgba' is the picture, or nullptr when only what is known of its use has grown
++	typedef std::function<void(const TEXTURE_PICTURE_KEY&, const uint32*, const TEXTURE_PICTURE_USE&)> TextureDumpFunction;
++	//'load' answers 0: there is no picture for this key; 1: here it is; 2: it is being
++	//read, ask again (the game's own texture is drawn meanwhile, so that reading a
++	//large file never holds a frame up)
++	typedef std::function<int(const TEXTURE_PICTURE_KEY&, std::vector<uint32>&, uint32&, uint32&)> TextureLoadFunction;
 +	static TextureDumpFunction g_textureDump;
 +	static TextureLoadFunction g_textureLoad;
 +	//Counted on the video thread, read by anyone
@@ -773,7 +887,20 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.h b/Source/gs/GSH_OpenGL/GSH_OpenGL
 +		std::atomic<uint64> uploads{0};      //transfers from the game
 +		std::atomic<uint64> shortLived{0};   //pictures drawn for less than g_textureDumpAge frames so far (film frames)
 +		std::atomic<uint64> alive{0};        //textures held
++		std::atomic<uint64> bytes{0};        //video memory of the textures held (the game's own)
++		std::atomic<uint64> replacements{0}; //pictures from outside held
++		std::atomic<uint64> replacementBytes{0}; //their video memory, smaller copies included
++		std::atomic<uint64> replacementsPending{0}; //pictures from outside asked for and not there yet
++		std::atomic<uint64> replacementsDropped{0}; //given up again to stay within g_textureReplaceBudget
 +	};
++	//Video memory the pictures from outside may take; beyond it those not drawn with
++	//for ten seconds are given up (and read again when they are next needed)
++	static std::atomic<uint64> g_textureReplaceBudget;
++	//Pictures from outside: 'on' may be changed while the game runs (the game's own are
++	//drawn while it is off); a change of 'reload' makes every picture be looked for again
++	//(after files were added or changed). Both are taken up at the end of a frame.
++	static std::atomic<bool> g_textureReplaceOn;
++	static std::atomic<uint32> g_textureReplaceReload;
 +	static TEXTURE_COUNTERS g_textureCounters;
 +	//For comparing (tests): 0 textures are known by what the game sent, 1 by the texels
 +	//found in GS memory, 2 by their address as in Play! itself
@@ -788,7 +915,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.h b/Source/gs/GSH_OpenGL/GSH_OpenGL
  	struct TEXTUREFORMAT_INFO
  	{
  		GLenum internalFormat;
-@@ -420,7 +530,78 @@
+@@ -420,7 +597,91 @@
  	Framework::OpenGl::CVertexArray m_presentVertexArray;
  	GLint m_presentTextureUniform = -1;
  	GLint m_presentTexCoordScaleUniform = -1;
@@ -854,9 +981,22 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.h b/Source/gs/GSH_OpenGL/GSH_OpenGL
 +	struct TEXTURE_PICTURE
 +	{
 +		Framework::OpenGl::CTexture replacement;
++		uint32 replacementBytes = 0;
++		uint8 loadState = 0; //0: not asked for, 1: being read, 2: settled (there or not)
++		uint32 lastUsedFrame = 0;
 +		uint32 firstUsedFrame = 0;
 +		bool dumped = false;
++		TEXTURE_PICTURE_USE use;
 +	};
++	//The picture of the texture that is bound (nullptr: none, or nothing is gathered)
++	TEXTURE_PICTURE* m_currentPicture = nullptr;
++	void NoteTextureUse(uint64, uint64, uint64, uint64, uint64, uint64);
++	void NoteTextureCoords(unsigned int, const float*, const float*, unsigned int);
++	void ForgetTexturePictures();
++	//Bytes of pictures from outside that may still be handed to the GPU in this frame
++	int64 m_replacementUploadRoom = 0;
++	bool m_textureReplaceOnSeen = true;
++	uint32 m_textureReplaceReloadSeen = 0;
 +	std::unordered_map<TEXTURE_PICTURE_KEY, TEXTURE_PICTURE, TEXTURE_PICTURE_KEY_HASHER> m_textureReplacements;
 +	void ContentTextures_EndFrame();
 +	ContentTextureMap m_contentTextures;
@@ -914,7 +1054,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
  #include <assert.h>
  #include <cstring>
  #include <sys/stat.h>
-@@ -183,14 +185,52 @@
+@@ -183,12 +185,50 @@
  	}
  }
  
@@ -941,8 +1081,8 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
  	if(texInfo.textureHandle != 0)
  	{
  		return texInfo;
- 	}
- 
++	}
++
 +	//RTA: textures kept by what the game sent (see UPLOAD_RECORD, PrepareTextureByUpload)
 +	//or, when that is not known, by the texels found in GS memory
 +	//(PrepareTextureByContent). Large pictures in direct colour (film frames, pictures
@@ -962,12 +1102,10 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
 +			return PrepareTextureByContent(tex0, usedSize.first, usedSize.second);
 +		}
 +		g_textureCounters.inPlace++;
-+	}
-+
+ 	}
+ 
  	auto texture = m_textureCache.Search(tex0);
- 	if(!texture)
- 	{
-@@ -250,8 +290,815 @@
+@@ -250,8 +290,986 @@
  	cachedArea.ClearDirtyPages();
  
  	return texInfo;
@@ -1059,8 +1197,8 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
 +			memmove(m_pCvtBuffer + (static_cast<size_t>(y) * texWidth), m_pCvtBuffer + (static_cast<size_t>(y) * convertWidth), texWidth);
 +		}
 +	}
- }
- 
++}
++
 +//RTA: Textures kept by their contents.
 +//
 +//A PlayStation 2 has 4 MB of video memory, so a game keeps only the textures it is about
@@ -1226,6 +1364,8 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
 +		if(coverage) contentTexture.coverage = *coverage;
 +	}
 +	contentTexture.lastUsedFrame = m_contentTextureFrame;
++	contentTexture.bytes = static_cast<uint32>(pixelCount * pixelSize);
++	g_textureCounters.bytes += contentTexture.bytes;
 +	auto contentTextureIterator = m_contentTextures.emplace(key, std::move(contentTexture)).first;
 +	g_textureCounters.created++;
 +	g_textureCounters.alive = m_contentTextures.size();
@@ -1239,6 +1379,9 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
 +CGSH_OpenGL::TEXTURE_COUNTERS CGSH_OpenGL::g_textureCounters;
 +std::atomic<int> CGSH_OpenGL::g_textureMode{0};
 +uint32 CGSH_OpenGL::g_textureDumpAge = 30;
++std::atomic<bool> CGSH_OpenGL::g_textureReplaceOn{true};
++std::atomic<uint32> CGSH_OpenGL::g_textureReplaceReload{0};
++std::atomic<uint64> CGSH_OpenGL::g_textureReplaceBudget{3072ULL * 1024 * 1024};
 +
 +namespace
 +{
@@ -1681,6 +1824,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
 +//32-bit ones only.
 +GLuint CGSH_OpenGL::FindTextureReplacement(const TEX0& tex0)
 +{
++	m_currentPicture = nullptr;
 +	if(!m_lastContentTexture || m_lastContentTexture->pixels.empty()) return 0;
 +	bool indexed = CGsPixelFormats::IsPsmIDTEX(tex0.nPsm);
 +	if(!indexed && (tex0.nPsm != PSMCT32)) return 0;
@@ -1704,23 +1848,51 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
 +	{
 +		TEXTURE_PICTURE texturePicture;
 +		texturePicture.firstUsedFrame = m_contentTextureFrame;
-+		if(g_textureLoad)
-+		{
-+			std::vector<uint32> picture;
-+			uint32 width = 0, height = 0;
-+			if(g_textureLoad(key, picture, width, height) && (width != 0) && (height != 0) && (picture.size() >= (static_cast<size_t>(width) * height)))
-+			{
-+				texturePicture.replacement = Framework::OpenGl::CTexture::Create();
-+				glBindTexture(GL_TEXTURE_2D, texturePicture.replacement);
-+				glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, width, height);
-+				glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, picture.data());
-+				CHECKGLERROR();
-+			}
-+		}
++		texturePicture.use.namedWidth = tex0.GetWidth();
++		texturePicture.use.namedHeight = tex0.GetHeight();
++		texturePicture.use.whole = m_lastContentTexture->coverage.empty();
 +		replacementIterator = m_textureReplacements.emplace(key, std::move(texturePicture)).first;
 +		g_textureCounters.shortLived++;
 +	}
 +	auto& texturePicture = replacementIterator->second;
++	//The picture from outside is asked for when it is first wanted, and drawn with from
++	//the frame it has arrived in. It gets smaller copies of itself (mip maps; the game's
++	//textures have none): a picture four times the size is drawn much smaller than it
++	//is on anything far away, and glitters without them. Only so many bytes are handed
++	//to the GPU in one frame.
++	texturePicture.lastUsedFrame = m_contentTextureFrame;
++	if((texturePicture.loadState != 2) && g_textureLoad && g_textureReplaceOn && (m_replacementUploadRoom > 0))
++	{
++		std::vector<uint32> picture;
++		uint32 width = 0, height = 0;
++		int answer = g_textureLoad(key, picture, width, height);
++		if(answer == 2)
++		{
++			if(texturePicture.loadState == 0) g_textureCounters.replacementsPending++;
++			texturePicture.loadState = 1;
++		}
++		else
++		{
++			if(texturePicture.loadState == 1) g_textureCounters.replacementsPending--;
++			texturePicture.loadState = 2;
++			if((answer == 1) && (width != 0) && (height != 0) && (picture.size() >= (static_cast<size_t>(width) * height)))
++			{
++				uint32 levels = 1;
++				for(uint32 size = std::max(width, height); size > 1; size >>= 1) levels++;
++				texturePicture.replacement = Framework::OpenGl::CTexture::Create();
++				glBindTexture(GL_TEXTURE_2D, texturePicture.replacement);
++				glTexStorage2D(GL_TEXTURE_2D, levels, GL_RGBA8, width, height);
++				glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, picture.data());
++				glGenerateMipmap(GL_TEXTURE_2D);
++				CHECKGLERROR();
++				texturePicture.replacementBytes = static_cast<uint32>(std::min<uint64>((static_cast<uint64>(width) * height * 16) / 3, 0xFFFFFFFFULL));
++				g_textureCounters.replacements++;
++				g_textureCounters.replacementBytes += texturePicture.replacementBytes;
++				m_replacementUploadRoom -= texturePicture.replacementBytes;
++			}
++		}
++	}
++	if(g_textureDump) m_currentPicture = &texturePicture;
 +	//Written out once it has been in use for a while: a film is thousands of pictures
 +	//that are each drawn for a frame or two, and nobody wants those.
 +	if(!texturePicture.dumped && ((m_contentTextureFrame - texturePicture.firstUsedFrame) >= g_textureDumpAge))
@@ -1751,16 +1923,152 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
 +					if(coverage[i] == 0) picture[i] = 0;
 +				}
 +			}
-+			g_textureDump(key, picture.data());
++			texturePicture.use.changed = false;
++			g_textureDump(key, picture.data(), texturePicture.use);
 +		}
 +	}
-+	return texturePicture.replacement;
++	return g_textureReplaceOn ? static_cast<GLuint>(texturePicture.replacement) : 0;
++}
++
++//RTA: see TEXTURE_PICTURE_USE. Called when the state of a draw has been set up.
++void CGSH_OpenGL::NoteTextureUse(uint64 primReg, uint64 alphaReg, uint64 testReg, uint64 clampReg, uint64 tex0Reg, uint64 tex1Reg)
++{
++	auto picture = m_currentPicture;
++	if(!picture) return;
++	auto prim = make_convertible<PRMODE>(primReg);
++	auto tex0 = make_convertible<TEX0>(tex0Reg);
++	auto tex1 = make_convertible<TEX1>(tex1Reg);
++	auto clamp = make_convertible<CLAMP>(clampReg);
++	TEXTURE_PICTURE_USE::STATE state;
++	state.prim = static_cast<uint8>(m_primitiveType);
++	state.abe = static_cast<uint8>(prim.nAlpha);
++	state.alpha = static_cast<uint8>(alphaReg & 0xFF);
++	state.fix = static_cast<uint8>((alphaReg >> 32) & 0xFF);
++	state.test = static_cast<uint32>(testReg & 0x7FFFF);
++	state.wms = static_cast<uint8>(clamp.nWMS);
++	state.wmt = static_cast<uint8>(clamp.nWMT);
++	state.mag = static_cast<uint8>(tex1.nMagFilter);
++	state.tfx = static_cast<uint8>(tex0.nFunction);
++	state.tcc = static_cast<uint8>(tex0.nColorComp);
++	uint32 scanMask = static_cast<uint32>(m_nReg[GS_REG_SCANMSK]) & 0x03;
++	state.scanMask = static_cast<uint8>((scanMask >= 2) ? scanMask : 0);
++	state.context = static_cast<uint8>(prim.nContext);
++	auto& use = picture->use;
++	for(uint32 i = 0; i < use.stateCount; i++)
++	{
++		if(use.states[i] == state) return;
++	}
++	if(use.stateCount == TEXTURE_PICTURE_USE::MAX_STATES)
++	{
++		use.changed = use.changed || !use.statesOverflow;
++		use.statesOverflow = true;
++		return;
++	}
++	use.states[use.stateCount++] = state;
++	use.changed = true;
++}
++
++//The texel coordinates of a primitive's vertices, as parts of the texture the game named
++//('which': 0 to 2 a sprite's box, see TEXTURE_PICTURE_USE; 3 everything else)
++void CGSH_OpenGL::NoteTextureCoords(unsigned int which, const float* s, const float* t, unsigned int count)
++{
++	auto picture = m_currentPicture;
++	if(!picture) return;
++	auto& use = picture->use;
++	TEXTURE_PICTURE_USE::BOX* box = (which < 3) ? &use.sprite[which] : &use.other;
++	for(unsigned int i = 0; i < count; i++)
++	{
++		float u = s[i] * static_cast<float>(m_nTexWidth);
++		float v = t[i] * static_cast<float>(m_nTexHeight);
++		if(!(u == u) || !(v == v)) continue;
++		if(!box->seen)
++		{
++			box->seen = true;
++			box->u0 = box->u1 = u;
++			box->v0 = box->v1 = v;
++			use.changed = true;
++			continue;
++		}
++		if(u < box->u0) box->u0 = u, use.changed = true;
++		if(u > box->u1) box->u1 = u, use.changed = true;
++		if(v < box->v0) box->v0 = v, use.changed = true;
++		if(v > box->v1) box->v1 = v, use.changed = true;
++	}
+ }
+ 
++void CGSH_OpenGL::ForgetTexturePictures()
++{
++	m_textureReplacements.clear();
++	m_currentPicture = nullptr;
++	g_textureCounters.replacements = 0;
++	g_textureCounters.replacementBytes = 0;
++	g_textureCounters.replacementsPending = 0;
 +}
 +
 +//Once a frame, when nothing is waiting to be drawn: forget textures not used for a while
 +void CGSH_OpenGL::ContentTextures_EndFrame()
 +{
 +	m_contentTextureFrame++;
++
++	//What has been learnt of the use of pictures already written out
++	if(g_textureDump && ((m_contentTextureFrame % 120) == 0))
++	{
++		for(auto& picturePair : m_textureReplacements)
++		{
++			auto& picture = picturePair.second;
++			if(!picture.dumped || !picture.use.changed) continue;
++			picture.use.changed = false;
++			g_textureDump(picturePair.first, nullptr, picture.use);
++		}
++	}
++
++	//Pictures from outside switched off or on, or to be looked for again
++	{
++		bool on = g_textureReplaceOn;
++		uint32 reload = g_textureReplaceReload;
++		if((on != m_textureReplaceOnSeen) || (reload != m_textureReplaceReloadSeen))
++		{
++			if(reload != m_textureReplaceReloadSeen)
++			{
++				for(auto& picturePair : m_textureReplacements)
++				{
++					picturePair.second.replacement.Reset();
++					picturePair.second.replacementBytes = 0;
++					picturePair.second.loadState = 0;
++				}
++				g_textureCounters.replacements = 0;
++				g_textureCounters.replacementBytes = 0;
++				g_textureCounters.replacementsPending = 0;
++			}
++			m_textureReplaceOnSeen = on;
++			m_textureReplaceReloadSeen = reload;
++			m_renderState.isValid = false;
++			m_validGlState &= ~GLSTATE_TEXTURE;
++		}
++	}
++
++	//Pictures from outside: what may be handed to the GPU in the next frame; while some
++	//are still being read every texture is set up anew in each frame, so that they are
++	//asked for again; and beyond the budget those not drawn with for a while go.
++	m_replacementUploadRoom = 24 * 1024 * 1024;
++	if(g_textureCounters.replacementsPending != 0) m_renderState.isValid = false;
++	if(((m_contentTextureFrame % 120) == 0) && (g_textureCounters.replacementBytes > g_textureReplaceBudget))
++	{
++		for(auto& picturePair : m_textureReplacements)
++		{
++			auto& picture = picturePair.second;
++			if((picture.replacementBytes == 0) || ((m_contentTextureFrame - picture.lastUsedFrame) < 600)) continue;
++			picture.replacement.Reset();
++			g_textureCounters.replacementBytes -= picture.replacementBytes;
++			g_textureCounters.replacements--;
++			g_textureCounters.replacementsDropped++;
++			picture.replacementBytes = 0;
++			picture.loadState = 0;
++		}
++		m_renderState.isValid = false;
++		m_validGlState &= ~GLSTATE_TEXTURE;
++	}
++
 +	static const uint32 g_sweepInterval = 300;
 +	static const uint32 g_maxAge = 1800;
 +	static const size_t g_keepCount = 512;
@@ -1770,6 +2078,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
 +		if((m_contentTextureFrame - contentTextureIterator->second.lastUsedFrame) > g_maxAge)
 +		{
 +			if(m_lastContentTexture == &contentTextureIterator->second) m_lastContentTexture = nullptr;
++			g_textureCounters.bytes -= contentTextureIterator->second.bytes;
 +			contentTextureIterator = m_contentTextures.erase(contentTextureIterator);
 +		}
 +		else
@@ -1783,7 +2092,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
  GLuint CGSH_OpenGL::PreparePalette(const TEX0& tex0)
  {
  	GLuint textureHandle = PalCache_Search(tex0);
-@@ -319,7 +1166,7 @@
+@@ -319,7 +1337,7 @@
  		dst += texWidth;
  	}
  
@@ -1792,7 +2101,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
  	CHECKGLERROR();
  }
  
-@@ -345,7 +1192,7 @@
+@@ -345,7 +1363,7 @@
  		dst += texWidth;
  	}
  
@@ -1801,7 +2110,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
  	CHECKGLERROR();
  }
  
-@@ -590,7 +1437,7 @@
+@@ -590,7 +1608,7 @@
  		dst += texWidth * 16;
  	}
  
@@ -1810,7 +2119,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
  	CHECKGLERROR();
  }
  
-@@ -631,7 +1478,7 @@
+@@ -631,7 +1649,7 @@
  
  		dst += texWidth * 16;
  	}
@@ -1819,7 +2128,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
  	CHECKGLERROR();
  }
  
-@@ -652,7 +1499,7 @@
+@@ -652,7 +1670,7 @@
  		dst += texWidth;
  	}
  
@@ -1828,7 +2137,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
  	CHECKGLERROR();
  }
  
-@@ -674,7 +1521,7 @@
+@@ -674,7 +1692,7 @@
  		dst += texWidth;
  	}
  

@@ -37,6 +37,10 @@ square triangle l1 l2 l3 r1 r2 r3 start select):
                              (sticks -1..1, up and right positive; triggers 0..1)
     displaypatch all|N 0|1   a display patch off or on while the game runs
     texmode 0|1|2            textures known by what was sent / by memory / by address
+    texreplace 0|1|reload    the pictures of <textures>/replace off or on while the game
+                             runs (the same frame with and without); reload: the folder
+                             is listed again and every picture read again. "info" then
+                             says tex_pending=0 when all that are drawn with are in
     info                     frame number, clocks, thread processor times, the display's
                              rate, executable, network and texture counters
     gs                       the display state: interlace, field, the buffer shown

@@ -183,6 +183,26 @@ a state), and do not pause.
 any size with the same name (`tools/play-net/README.md`, "Texture dump and
 replacement"); replaced textures change the picture only.
 
+**Sharper art (optional).** The textures can be enlarged four times by a learned model
+and drawn in place of the game's own: text, menus, bars, stone, leaves and characters
+come out sharper, in the game's colours; grass stays about as it is. It needs the
+`realesrgan-ncnn-vulkan` program, which is not part of this repository
+(`tools/play-net/README.md`, "Upscaled art", has what is done and why):
+
+```
+tools/play-net/play.sh --disc IMAGE -- --rta-textures "$PWD/local/hd-pack" --rta-texture-dump
+tools/play-net/upscale.py local/hd-pack/dump local/hd-pack/replace --upscaler PATH/realesrgan-ncnn-vulkan
+tools/play-net/play.sh --disc IMAGE -- --rta-textures "$PWD/local/hd-pack"
+```
+
+The first line is playing with every texture written out as it is drawn; the second
+enlarges what is new (about two thirds of a second a picture); the third plays with the
+pack. Keep `--rta-texture-dump` on and repeat the second line to make the pack grow with
+where you have been. The pack for the title, the menus and the first level takes 1.4 GB
+of video memory at 60 frames a second on an M5 Pro; `--scale 2` on the second line makes
+one of a quarter of that. A pack changes your picture only: the other players need not
+have it.
+
 ## 6. What every player has to have the same
 
 - The disc: SLUS-20973 v2.00. The application checks the executable and applies no patch
