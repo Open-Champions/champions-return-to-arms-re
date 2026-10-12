@@ -21,7 +21,9 @@ has been seen to do, and what not, is at the end; how to play is in
 | `src/RtaNet.h`, `RtaNet.cpp` | the network behind the emulated Ethernet adaptor (stand-alone C++, nothing of the emulator in it) |
 | `src/Rta.h`, `Rta.cpp`, `RtaMac.mm` | what joins it to the application: patches, the memory card's network setting, display patches, settings, thread priority, the control socket |
 | `src/RtaPad.mm` | game controllers through macOS's GameController framework: the first one attached is the pad in port 1, with nothing to bind |
-| `src/RtaUi.cpp` | what is added to the application's windows: *Help → Controls…* |
+| `src/RtaSound.cpp` | the sound handler: a held reserve, counts of every fault, a WAV file on request |
+| `src/RtaUi.cpp` | what is added to the application's windows: *Help → Controls…*, the *Online* menu, the first start's question for the disc image |
+| `package.sh` | makes `local/dist/Play-RTA.app` of the built application: Qt inside, the patch list inside, its own name, signed for this computer |
 | `sections-suggested.txt` | the patch sections `play.sh` applies by default (the suggested set of `docs/online-setup.md`) |
 | `ctl.py` | sends commands to a running application over its control socket (buttons, memory reads, pictures) |
 | `smoke.py` | test: power-on to the lobby server's first screen, with the network's log and the speed |
@@ -67,6 +69,7 @@ else the computer is doing.
 | the same | The game names a size of 1024 × 1024 in `TEX0` for most interface textures, whatever their real size (it addresses them by texel; the size only says where coordinates wrap). Play! took the megabyte behind the address as the texture and uploaded it again whenever anything in it changed: 103 such textures, about 103 MB, per frame | `GetUsedTextureSize`: the texture is the rectangle the game actually transferred to that address — 8-bit textures are sent as 32-bit pictures of half the width and height, which share their block order — and failing that the pages it touched (`GSH_OpenGL_Texture.cpp`; only for plainly repeated textures) | trace of one frame: named 1024 × 1024, used 320 × 192, 256 × 112, 144 × 48, 112 × 32 … |
 | the same | The game keeps a ring of sixteen textures in the console's 4 MB of video memory and sends about 340 textures and palettes again in every frame. Play! knew a texture by its address, so every re-send was converted and uploaded again in the middle of drawing (on macOS each upload also ends the render pass and waits for the graphics processor) | a texture is known by **what the game sent**: a 64-bit figure (XXH3) of the bytes of every piece sent to that address and of where each piece went, taken while they arrive (`RecordUpload`, `PrepareTextureByUpload` in `GSH_OpenGL_Texture.cpp`). A texture sent again is found by that figure without reading or converting anything. A table of which upload last wrote each 256-byte block of video memory tells whether a texture is still whole; one that is not (never seen in this game) is read back from memory and known by its texels, as a first version of this change did for all. Large direct-colour pictures (film frames) are updated in place as before | power-on to the first level and 40 s of walking, per frame: 595 draws found their texture by upload, 0 by reading memory, 0.000 textures made once the level had been seen (339 in all); 60.0 frames a second at 4× |
 | Textures got a new name again and again; dumped pictures were full of blocks of other textures (7,516 dump files for the first level where a few hundred were expected, new ones for ever) | the first version of the change above read a texture back from video memory, as the rectangle bounding what had been sent. But the game does not send rectangles of texels: an 8-bit texture arrives as one or more rectangles **of 32-bit pixels** that cover only what its triangles use (an L shape, say), of any height — and one line of 32-bit pixels is two lines of 8-bit texels that are not next to each other. The rest of the bounding rectangle keeps whatever texture lay there before, different each time the ring puts the texture somewhere else | the figure of what was sent (above) names the texture; texels that were not sent are 0 in the texture made and transparent in a dump. Which texels were sent is not worked out but done: the pieces are written, all ones, into a second video memory in the format they were sent in and read back in the texture's format with the code that reads textures (`GetUploadCoverage`) | two runs, power-on to the first level and 40 s of walking: 339 dump files each, the same 339 names, the same bytes in every file; contact sheets of all of them looked at: no foreign blocks |
+| A dark line one pixel wide down the right edge of interface panels at 4× (and thin vertical lines over the picture behind the pause menu) | the GS takes a pixel's sample at the pixel's top left corner, OpenGL at its centre, half a pixel further along. The game draws its interface with half a texel to the pixel and a quarter of a texel added to the coordinates, so that a GS reads every texel at .25 and .75; read half a pixel later that is .5 and exactly on the border between two texels, and for the last pixel of a sprite 128.0 of a picture that ends at 128. At 1× the wrong column is half a console pixel and is blended away; at 4× it is a line | `Prim_Sprite` moves a sprite's texture coordinates back by half a pixel's worth: the texture is read where the GS reads it, and at higher factors evenly on both sides of that place. What a sprite covers is unchanged; triangles are untouched (`GSH_OpenGL.cpp`) | coordinates of every interface sprite of a frame logged (x 454…710, u 0.25…128.25, point sampled); pictures of the pause menu's corner at 4× and 1× before and after: the lines are gone; consecutive pictures of the menu still identical; 60.0 frames a second |
 | A patch of streaky noise over the left quarter of the health and mana bars | the bars' fills are 4-bit textures 104 texels wide (33 of them: 11 frames of animation in 3 colours). Making a texture the size that was sent rather than the 128 that `TEX0` names (the row about 1024 × 1024 above) met Play!'s converters for 4- and 8-bit textures, which copy whole blocks of 32 or 16 texels and take the width to be a multiple of that: every row spilled its last 24 texels — never sent, leftovers — over the start of the next | `ConvertTexture`: conversion at the next multiple of the block width, rows moved together afterwards | found by switching, in one running game, each display patch and the way textures are known (`displaypatch`, `texmode` of the control socket): the noise stayed with all of them; pictures of the bars before and after |
 | the same, smaller | A picture the game renders its shadows into lives among its textures; Play! takes every framebuffer to be 1024 lines high, so textures landing "inside" it were uploaded into it (704 lines for 128 of use), through one texture that the driver had to wait for | the upload is cut to the lines about to be drawn, and uses a texture of its own each time (`CommitFramebufferDirtyPages`) | profile: 19 % of the video thread asleep in the driver before, under 4 % after |
 | The whole picture jumps up and down by a line, sixty times a second; menus and text tremble | The game is made for an interlaced television. It draws every other picture half a line lower (`XYOFFSET` 1824.5 instead of 1824.0), and it keeps interface art as two stacked half-height pictures, one per field, drawing the one for the current field a line higher or lower. A television interleaves the two fields; the emulator showed them one after the other in the same place | **display patches** built into the application (`Rta.cpp`, `g_displayPatches`; each applied only where the expected instruction is found; they change drawing only, so they are not part of the shared patch set or its figure): `0x19C904` — the drawing offset is the same for both fields; `0x19D9EC` — `gfx_displayField` always answers "first field". `--rta-interlaced` leaves the game as it is; the emulator then moves the two fields half a line apart when it shows them (`renderer.fieldoffset`), which steadies the interface but leaves the 3-D picture moving by a quarter line | burst on the memory-card screen: consecutive pictures byte-identical (before: 12.8 % of samples differ, ±0.57 rows); title, network dialog, level: 0.00–0.01 rows of shift (before ±2.7 to ±3.6) |
@@ -78,19 +81,80 @@ else the computer is doing.
 | Movement stutters although nothing is slow | the machine was timed by its own timer and drifted against the display: a picture stayed for one refresh, the next for three | frames start on a refresh of the display (`RtaMac.mm`, a display link; two refreshes per frame at 120 Hz, one at 60, the timer when the display's rate is neither), and a finished picture is handed to the window after the refresh before the one it is meant for (`CGSHandler::PresentClock`). `--rta-timer` goes back to the timer | 240 consecutive pictures in the first level: 238 spaced two refreshes, 1 spaced one |
 | A press is answered later than it need be | the limiter's wait was at the end of the vertical blank, after the controller had been read | the wait is immediately before the controller is read (`PS2VM.cpp`) | `latency.py`: in a menu the first picture after a press shows the change (6–7 ms after the press with the timer; one frame time with display timing). In the first level an attack shows in picture 5 or 6 (82–104 ms): the game's own |
 | The application slows down when its window is covered, or when the computer is busy | macOS treats its threads as ordinary work | the machine and video threads ask for interactive priority; the application asks not to be napped (`Rta.cpp`, `RtaMac.mm`) | — |
-| Sound comes a tenth of a second after the picture | sound was handed over in pieces of 100 ms | 30 ms (`audio.spublockcount`, in the settings dialog) | not measured by ear |
+| Sound comes a tenth of a second after the picture | sound was handed over in pieces of 100 ms | 30 ms (`audio.spublockcount`, in the settings dialog) | see "Sound" below |
+| Clicks and short gaps in the sound, four or five a minute, more while a level loads | Play!'s sound handler queues each piece as it comes and starts the source when it finds it stopped: no reserve is kept, so a frame that is a few milliseconds late leaves the output without sound; and nothing matches the machine's pace to the sound device's | a sound handler of our own (`src/RtaSound.cpp`): starts when one piece and 40 ms are queued, and holds that amount by making the sound up to half a per cent shorter or longer | five minutes in the first level: 20 times dry with 100 ms pieces and 27 with 30 ms as Play! does it, 0 with the new handler; see "Sound" below |
 | The emulated Ethernet chip stops receiving after 64 frames, or after the game restarts into another program | receive index wrapped at 512 instead of 64, and was not reset when the driver starts again; reads past the end of the receive buffer | `Iop_Speed.cpp` (as the test rig corrects from outside, live-rig.md section 13.2), plus a poll hook and "ready for a frame" | the lobby path below |
+
+Looked at, at 4× (pictures of the machine's own output, `shotfb`; 60.0 frames a second
+in each): title, menus, character creation, the first level with the bars and the pause
+menu, a dungeon level (`fire1`: weapon trails), an underwater level (`wat1`: its opening
+cutscene with the letterbox, bubbles), the arena (`drunare`: the cutscene at its gate, a
+fight against five opponents with weapon trails, torches); the same still scenes at 1×
+beside them. Levels were entered by writing their name to the game's pending-level
+word, which is what a level script does. Not reached: the inventory, shop, skill and map
+screens (which button opens them offline was not found in the time), spells (the test
+character has none), and the films — see below.
 
 Not changed, known:
 
-- **A one-pixel line along the right and bottom edge of some interface panels** at 4×:
-  where a sprite ends, the upscaled picture samples the texel just outside it. Not looked
-  into further.
-- **Films** are stored as two field pictures as well and probably still alternate between
-  them (not looked at).
-- Only the title screens, the menus, character creation, the lobby screens, the first
-  level, one dungeon level and the arena level have been looked at, on pictures, standing
-  or walking a few steps; all ran at 60 frames a second. See docs/play-online.md, "What is known not to work".
+- **Films** (the opening film after the publisher's logo) were not looked at: the test
+  scripts get past the memory-card question by pressing ✕, which also skips the logo and
+  the film. They are stored as two field pictures and probably still alternate between
+  them.
+
+## Sound
+
+Nobody listened; this is what was counted. `RtaSound.cpp` counts every time the output
+ran dry (and for how long, from the clock), every piece thrown away, how much sound was
+queued, and samples at full scale; `--rta-sound-wav` writes what the machine hands over
+to `sound-<time>.wav` in the data directory (game audio: looked at and deleted; never
+in the repository). `sound` and `sound reset` of the control socket give the counts.
+`--rta-sound-plain` makes the handler queue as Play!'s own does, `--rta-sound-block N`
+sets the piece. Three copies ran at the same time for each row (load average 14 to 18),
+five minutes each after the level or the title had come up, walking and attacking in the
+level:
+
+| Where | Handler, piece | Ran dry | In all | Longest | Queued after a piece, ms (least / mean / most) |
+|---|---|---|---|---|---|
+| first level | Play!'s way, 100 ms (as Play! is) | 20 times | 272 ms | 125 ms | 102 / 119 / 137 |
+| first level | Play!'s way, 30 ms | 27 times (2 in a second run) | 171 ms | 27 ms | 31 / 60 / 90 |
+| first level | held reserve, 30 ms | **0** | 0 | — | 37 / 71 / 91 |
+| title | Play!'s way, 30 ms | 8 times | 11 ms | 8 ms | 31 / 46 / 65 |
+| title | held reserve, 30 ms | **0** | 0 | — | 54 / 71 / 93 |
+
+- **Going from 100 ms to 30 ms did not bring the gaps**: they were there with 100 ms (20
+  in five minutes) and are a fifth as long with 30. Their cause is that nothing was kept
+  in reserve: Play!'s way runs with whatever was queued when the source last started,
+  and whether that is enough is luck — the two 30 ms runs in the level, 27 and 2, differ
+  only in that the machine ran at 59.96 frames a second in one and 60.00 in the other
+  (the display paces it; sound is made at 735 samples a frame, so at 59.96 a little less
+  sound is made than is played).
+- **The held reserve** is one piece and 40 ms after a piece has been added (71 ms; about
+  55 ms on average over time, where 100 ms pieces gave about 70 to 120). The rate
+  correction stayed between 0.9994 and 1.0014 (a fortieth of a semitone). The least that
+  was left just before a piece arrived was 6 ms in the level, 24 ms at the title: there
+  is no room to make the reserve smaller on a busy computer.
+- **Power-on and loading** (the minute before each stretch): the machine stops for up to
+  a third of a second at a time while it reads the disc, and no reserve of this size
+  covers that: 9 to 19 times dry there with the held reserve (0.9 s in all), 46 to 89 with
+  Play!'s way (1.2 to 1.6 s).
+- **Sound against the emulated clock**: 735.07 samples a frame in every run — Play! makes
+  sound for frames of 1/60 s. Sound and picture therefore cannot drift apart; against a
+  console's 59.94 frames a second the sound is 0.09 % short for the same number of
+  frames, and against the wall clock it runs at 1.00003 when the display paces the
+  machine at 60.00.
+- **Nothing was thrown away** in any run (no piece without a free buffer, none dropped for
+  too much queued).
+- **Silence and full scale**, from the WAV files: in the level no stretch of exact silence
+  inside sound; 389 samples of 25 million at full scale, in 32 runs of three or more —
+  loud hits reach the top of the scale in the machine's own mix (a console's mixer
+  saturates the same way; nothing is added after it). At the title two stretches of
+  exact silence of 40 and 50 ms (where the music loops), peak 9 dB under full scale.
+- The first version of the reserve used the source's own pitch control, set anew for
+  every piece; it did not hold the amount (71 ms queued where 56 was asked for, with the
+  pitch at +0.3 %) and is gone: the sound is resampled before it is queued (four-point
+  interpolation, in step from piece to piece).
+- A test run started with `--rta-test` is silent (gain 0); everything else is the same.
 
 ## Controller and keyboard
 

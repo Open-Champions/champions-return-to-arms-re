@@ -272,12 +272,10 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  		glBindBuffer(GL_ARRAY_BUFFER, m_presentVertexBuffer);
  		glBindVertexArray(m_presentVertexArray);
  
-@@ -238,8 +256,26 @@
- 			DumpTexture(framebuffer->m_width * m_fbScale, framebuffer->m_height * m_fbScale, framebuffer->m_basePtr);
- 		}
+@@ -240,6 +258,24 @@
  		glBindTexture(GL_TEXTURE_2D, 0);
-+	}
-+
+ 	}
+ 
 +	ContentTextures_EndFrame();
 +
 +	//RTA: for CGSH_OpenGLQt::RequestCapture
@@ -287,8 +285,8 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
 +		m_displayFramebuffer = m_multisampleEnabled ? framebuffer->m_resolveFramebuffer : framebuffer->m_framebuffer;
 +		m_displayPixelWidth = std::min<uint32>(dispLayer.width, framebuffer->m_width) * m_fbScale;
 +		m_displayPixelHeight = std::min<uint32>(dispLayer.height, framebuffer->m_height) * m_fbScale;
- 	}
- 
++	}
++
 +	//RTA: see CGSHandler::PresentClock
 +	if(g_presentClock.wait && (dispInfo.presentAfter != 0))
 +	{
@@ -318,7 +316,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  
  	m_copyToFbProgram = GenerateCopyToFbProgram();
  	m_copyToFbTexture = Framework::OpenGl::CTexture::Create();
-@@ -571,15 +612,33 @@
+@@ -571,6 +612,24 @@
  	if(!prim.nTexture)
  	{
  		shaderCaps.texSourceMode = TEXTURE_SOURCE_MODE_NONE;
@@ -331,8 +329,8 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
 +	{
 +		shaderCaps.texSourceMode = TEXTURE_SOURCE_MODE_STD;
 +		shaderCaps.texBilinearFilter = 0;
- 	}
- 
++	}
++
 +	//RTA: The scanline mask: drawing only to every other line of the picture. A game uses
 +	//it to put the two fields of an interlaced picture into one frame; this one draws
 +	//its interface art that way when it is told to (see tools/play-net). It was not
@@ -340,11 +338,10 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
 +	{
 +		uint32 scanMask = static_cast<uint32>(m_nReg[GS_REG_SCANMSK]) & 0x03;
 +		shaderCaps.scanMask = (scanMask >= 2) ? scanMask : 0;
-+	}
-+
+ 	}
+ 
  	//--------------------------------------------------------
- 	// Fast path: if everything (shader caps + relevant regs) matches, skip.
- 	//--------------------------------------------------------
+@@ -579,7 +638,7 @@
  	if(m_renderState.isValid)
  	{
  		if(m_renderState.isTextureStateValid && m_renderState.isFramebufferStateValid &&
@@ -394,7 +391,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  }
  
  void CGSH_OpenGL::SetupBlendingFunction(uint64 alphaReg)
-@@ -1032,11 +1102,33 @@
+@@ -1032,10 +1102,32 @@
  
  	assert(framebuffer->m_width == depthbuffer->m_width);
  
@@ -422,15 +419,14 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
 +		glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthbuffer->m_depthBuffer);
 +		CHECKGLERROR();
 +		framebuffer->m_attachedDepthBuffer = depthbuffer->m_depthBuffer;
- 
++
 +		GLenum drawBufferId = GL_COLOR_ATTACHMENT0;
 +		glDrawBuffers(1, &drawBufferId);
 +		CHECKGLERROR();
 +	}
-+
+ 
  	assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
  
- 	m_renderState.framebufferHandle = framebuffer->m_framebuffer;
 @@ -1046,12 +1138,6 @@
  	//to resolve samples at some point if multisampling is enabled
  	framebuffer->m_resolveNeeded = true;
@@ -444,7 +440,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  	m_renderState.viewportWidth = framebuffer->m_width;
  	m_renderState.viewportHeight = framebuffer->m_height;
  	m_validGlState &= ~GLSTATE_VIEWPORT;
-@@ -1257,10 +1343,25 @@
+@@ -1257,9 +1343,24 @@
  	m_nTexWidth = tex0.GetWidth();
  	m_nTexHeight = tex0.GetHeight();
  
@@ -454,7 +450,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
 +	m_texAllowReducedSize = false;
  	m_renderState.texture0Handle = texInfo.textureHandle;
  	m_renderState.texture0AlphaAsIndex = texInfo.alphaAsIndex;
- 
++
 +	//RTA: a picture from outside in place of the game's (see TEXTURE_PICTURE_KEY)
 +	m_renderState.texture0Replaced = false;
 +	if(g_textureDump || g_textureLoad)
@@ -466,10 +462,9 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
 +			m_renderState.texture0Replaced = true;
 +		}
 +	}
-+
+ 
  	//Setup sampling modes
  	switch(tex1.nMagFilter)
- 	{
 @@ -1337,7 +1438,7 @@
  		}
  	}
@@ -504,7 +499,38 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  	m_fragmentParams.clampMin[0] = static_cast<float>(clampMin[0]);
  	m_fragmentParams.clampMin[1] = static_cast<float>(clampMin[1]);
  	m_fragmentParams.clampMax[0] = static_cast<float>(clampMax[0]);
-@@ -1874,6 +1976,11 @@
+@@ -1690,6 +1792,30 @@
+ 	    rgbaq[1].nR, rgbaq[1].nG,
+ 	    rgbaq[1].nB, rgbaq[1].nA);
+ 
++	//RTA: A sprite's texture is read where the GS reads it. The GS takes a pixel's sample
++	//at the pixel's top left corner; OpenGL takes it at the centre, half a pixel further
++	//along. For triangles that is of no account. A sprite is exact work: this game draws
++	//its interface with half a texel to the pixel and a quarter texel added to the
++	//coordinates, so that the GS reads at .25 and .75 of each texel - and OpenGL read at
++	//.5 and exactly on the border, and for a sprite's last pixel beyond the end of its
++	//picture: at higher resolution factors a line along the right edge of panels. The
++	//coordinates are moved back by half a pixel's worth; what a sprite covers is as before.
++	if(m_PrimitiveMode.nTexture)
++	{
++		if(nX2 != nX1)
++		{
++			float halfStep = 0.5f * (nS[1] - nS[0]) / (nX2 - nX1);
++			nS[0] -= halfStep;
++			nS[1] -= halfStep;
++		}
++		if(nY2 != nY1)
++		{
++			float halfStep = 0.5f * (nT[1] - nT[0]) / (nY2 - nY1);
++			nT[0] -= halfStep;
++			nT[1] -= halfStep;
++		}
++	}
++
+ 	// clang-format off
+ 	PRIM_VERTEX vertices[] =
+ 	{
+@@ -1874,6 +2000,11 @@
  
  	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthbuffer->m_depthBuffer);
  	CHECKGLERROR();
@@ -516,7 +542,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  
  	assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
  
-@@ -2052,6 +2159,7 @@
+@@ -2052,6 +2183,7 @@
  				   m_renderState.texAReg == texAReg &&
  				   m_renderState.clampReg == clampReg &&
  				   m_renderState.fogColReg == fogColReg &&
@@ -524,7 +550,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  				   m_renderState.scissorReg == scissorReg)
  				{
  					needCtx = false; // fully same state; skip call
-@@ -2105,6 +2213,16 @@
+@@ -2105,6 +2237,16 @@
  
  void CGSH_OpenGL::ProcessHostToLocalTransfer()
  {
@@ -541,7 +567,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  	if(m_trxCtx.nDirty)
  	{
  		FlushVertexBuffer();
-@@ -2231,6 +2349,7 @@
+@@ -2231,6 +2373,7 @@
  
  		auto [transferAddress, transferSize] = GsTransfer::GetDstRange(bltBuf, trxReg, trxPos);
  		m_textureCache.InvalidateRange(transferAddress, transferSize);
@@ -549,7 +575,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  
  		//Write back to RAM
  		{
-@@ -2525,10 +2644,7 @@
+@@ -2525,10 +2668,7 @@
  	public:
  		void EnableCopyToFb(const FramebufferPtr& framebuffer, GLuint copyToFbTexture)
  		{
@@ -561,7 +587,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  			glActiveTexture(GL_TEXTURE0);
  			glBindTexture(GL_TEXTURE_2D, copyToFbTexture);
  			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, framebuffer->m_width, framebuffer->m_height,
-@@ -2538,6 +2654,10 @@
+@@ -2538,6 +2678,10 @@
  			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
  			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
  
@@ -572,10 +598,11 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  			glBindFramebuffer(GL_FRAMEBUFFER, framebuffer->m_framebuffer);
  
  			m_copyToFbEnabled = true;
-@@ -2581,8 +2701,22 @@
+@@ -2580,9 +2724,23 @@
+ 		if((texY + texHeight) > framebuffer->m_height)
  		{
  			texHeight = framebuffer->m_height - texY;
- 		}
++		}
 +		//RTA: Nothing below the lines that are about to be drawn to is wanted (what lies
 +		//beyond them is dropped at the end of this function in any case). Every
 +		//framebuffer is taken to be 1024 lines high here; for the small picture this
@@ -584,7 +611,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
 +		if((texY + texHeight) > (maxY + 1))
 +		{
 +			texHeight = (maxY + 1) - texY;
-+		}
+ 		}
  
  		m_validGlState &= ~(GLSTATE_SCISSOR | GLSTATE_FRAMEBUFFER | GLSTATE_TEXTURE);
 +		//RTA: a texture of its own for every upload. Writing into the one texture that

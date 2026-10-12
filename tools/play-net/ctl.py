@@ -28,6 +28,9 @@ square triangle l1 l2 l3 r1 r2 r3 start select):
                              the clock of each in <name>-times.txt
     probe <file> <n> <x> <y> <w> <h>   a rectangle of n consecutive presented pictures,
                              raw, and "<index> <clock> <w> <h>" lines in <file>.txt
+    sound [reset]            the sound handler's counts (times dry, pieces thrown away,
+                             milliseconds queued, rate, samples at full scale)
+    uishot controls|online|about <file.png>   a picture of one of our windows
     pads                     the game controller: attached, its name, what is pressed
     gcpad connect|disconnect|set <buttons|none> [lx ly rx ry [l2 r2]]
                              a controller made by the program, for testing the map

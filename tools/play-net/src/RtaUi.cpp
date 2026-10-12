@@ -201,7 +201,7 @@ namespace
 		form->addRow("", serverNote);
 
 		auto player = new QSpinBox(&dialog);
-		player->setRange(1, 8);
+		player->setRange(1, 99);
 		player->setValue(info.player);
 		player->setEnabled(info.packaged);
 		form->addRow("Player number:", player);
@@ -220,7 +220,7 @@ namespace
 
 		QString signin;
 		if(!info.signinPatch.empty())
-			signin = QString("found: %1").arg(QString::fromStdString(info.signinPatch).toHtmlEscaped());
+			signin = QString("found, in %1").arg(dialog.fontMetrics().elidedText(QFileInfo(QString::fromStdString(info.signinPatch)).absolutePath(), Qt::ElideMiddle, 360).toHtmlEscaped());
 		else
 			signin = QString("<b>not found.</b> Without it the game stops with a network error after \"Internet Game\" (the sign-in servers of 2005 are gone). "
 			                 "It is not part of this application. If you have the file <tt>SLUS-20973_4028A55F_signin.pnach</tt>, put it into one of these folders and start again:<br>%1")
@@ -232,8 +232,16 @@ namespace
 
 		if(info.packaged)
 		{
-			auto disc = new QLabel(info.disc.empty() ? QString("none chosen yet") : QString::fromStdString(info.disc).toHtmlEscaped(), &dialog);
-			disc->setWordWrap(true);
+			// a path has no place to break a line at: the name, and the folder shortened in the middle
+			QString discText = "none chosen yet";
+			if(!info.disc.empty())
+			{
+				QFileInfo file(QString::fromStdString(info.disc));
+				discText = file.fileName() + "\nin " + dialog.fontMetrics().elidedText(file.absolutePath(), Qt::ElideMiddle, 400);
+			}
+			auto disc = new QLabel(discText, &dialog);
+			disc->setTextFormat(Qt::PlainText);
+			disc->setToolTip(QString::fromStdString(info.disc));
 			disc->setTextInteractionFlags(Qt::TextSelectableByMouse);
 			form->addRow("Disc image:", disc);
 		}
