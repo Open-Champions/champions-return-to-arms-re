@@ -24,6 +24,35 @@ void Rta::KeepAwake()
 #endif
 }
 
+// ---- where the application is and where its data goes -----------------------------------
+
+static std::string PathText(NSString* string)
+{
+	return string ? std::string([string fileSystemRepresentation]) : std::string();
+}
+
+std::string Rta::BundlePath()
+{
+	return PathText([[NSBundle mainBundle] bundlePath]);
+}
+
+std::string Rta::BundleResourcePath()
+{
+	return PathText([[NSBundle mainBundle] resourcePath]);
+}
+
+std::string Rta::BundleName()
+{
+	id name = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleName"];
+	return [name isKindOfClass:[NSString class]] ? std::string([(NSString*)name UTF8String]) : std::string();
+}
+
+std::string Rta::ApplicationSupportPath()
+{
+	NSArray<NSString*>* paths = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES);
+	return ([paths count] != 0) ? PathText(paths[0]) : std::string();
+}
+
 void Rta::MakeBackgroundApplication()
 {
 	[NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];

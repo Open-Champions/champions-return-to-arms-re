@@ -2077,7 +2077,7 @@ diff --git a/Source/iop/Iop_Speed.h b/Source/iop/Iop_Speed.h
 diff --git a/Source/ui_qt/CMakeLists.txt b/Source/ui_qt/CMakeLists.txt
 --- a/Source/ui_qt/CMakeLists.txt
 +++ b/Source/ui_qt/CMakeLists.txt
-@@ -279,6 +279,13 @@
+@@ -279,6 +279,14 @@
  		macos/InputProviderMacOsHid.h
  		macos/LayerFromView.mm
  		macos/LayerFromView.h
@@ -2087,11 +2087,12 @@ diff --git a/Source/ui_qt/CMakeLists.txt b/Source/ui_qt/CMakeLists.txt
 +		rta/RtaNet.cpp
 +		rta/RtaNet.h
 +		rta/RtaPad.mm
++		rta/RtaSound.cpp
 +		rta/RtaUi.cpp
  	)
  	FILE(GLOB ARCADE_DEFS ${CMAKE_CURRENT_SOURCE_DIR}/../../arcadedefs/*.arcadedef)
  	set(OSX_RES
-@@ -313,7 +320,8 @@
+@@ -313,7 +321,8 @@
  		RESOURCE "${OSX_RES}"
  	)
  	SET_SOURCE_FILES_PROPERTIES(${ARCADE_DEFS} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources/arcadedefs")
@@ -2311,7 +2312,7 @@ diff --git a/Source/ui_qt/main.cpp b/Source/ui_qt/main.cpp
  #if QT_VERSION >= QT_VERSION_CHECK(5, 6, 0)
  	QApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
  #endif
-@@ -49,10 +51,15 @@
+@@ -49,13 +51,28 @@
  	QCommandLineOption load_state_option("state", "Load state at index", "state_index");
  	parser.addOption(load_state_option);
  
@@ -2325,9 +2326,23 @@ diff --git a/Source/ui_qt/main.cpp b/Source/ui_qt/main.cpp
  	w.show();
 +	Rta::AfterShow(&w);
  
- 	if(parser.isSet(cdrom_image_option))
+-	if(parser.isSet(cdrom_image_option))
++	//RTA: the packaged application finds its disc image itself (the one given, the one
++	//remembered, or the one the person picks) and takes nothing but the game
++	Rta::SetDiscBoot([&w](const std::string& path) {
++		w.LoadCDROM(fs::path(path));
++		w.BootCDROM();
++	});
++	if(Rta::GetLaunchInfo().packaged)
  	{
-@@ -112,8 +119,14 @@
++		Rta::BootDisc(Rta::ChooseDisc(&w, parser.isSet(disc_image_option) ? parser.value(disc_image_option).toStdString() : std::string(), false));
++	}
++	else if(parser.isSet(cdrom_image_option))
++	{
+ 		try
+ 		{
+ 			w.BootCDROM();
+@@ -112,8 +129,14 @@
  	static const auto basePath =
  	    []() {
  		    fs::path result;
@@ -2412,7 +2427,17 @@ diff --git a/Source/ui_qt/mainwindow.cpp b/Source/ui_qt/mainwindow.cpp
  }
  
  void MainWindow::SetOutputWindowSize()
-@@ -606,6 +618,12 @@
+@@ -270,7 +282,8 @@
+ #ifdef _WIN32
+ 			m_virtualMachine->CreateSoundHandler(&CSH_WaveOut::HandlerFactory);
+ #else
+-			m_virtualMachine->CreateSoundHandler(&CSH_OpenAL::HandlerFactory);
++			//RTA: a handler that keeps a reserve and counts its faults (rta/RtaSound.cpp)
++			m_virtualMachine->CreateSoundHandler(Rta::GetSoundHandlerFactory());
+ #endif
+ 		}
+ 		catch(const std::exception& ex)
+@@ -606,6 +619,12 @@
  	m_cpuUsageLabel->setText(QString("EE CPU: %1%").arg(static_cast<int>(eeUsageRatio)));
  
  	CStatsManager::GetInstance().ClearStats();
@@ -2425,7 +2450,15 @@ diff --git a/Source/ui_qt/mainwindow.cpp b/Source/ui_qt/mainwindow.cpp
  }
  
  void MainWindow::on_actionSettings_triggered()
-@@ -839,7 +857,7 @@
+@@ -827,6 +846,7 @@
+ {
+ 	auto about = QString("Version %1 (%2)\nQt v%3 - zlib v%4")
+ 	                 .arg(QString(PLAY_VERSION), __DATE__, QT_VERSION_STR, ZLIB_VERSION);
++	about += QString::fromStdString(Rta::AboutText()); //RTA
+ 	QMessageBox::about(this, this->windowTitle(), about);
+ }
+ 
+@@ -839,7 +859,7 @@
  {
  	UpdateUI();
  	auto titleString = QString("Play! - [ %1 ] - %2").arg(m_virtualMachine->m_ee->m_os->GetExecutableName(), QString(PLAY_VERSION));

@@ -20,6 +20,8 @@ has been seen to do, and what not, is at the end; how to play is in
 | `latency.py` | test: time from a button press to the first changed picture, and the spacing of presented pictures |
 | `src/RtaNet.h`, `RtaNet.cpp` | the network behind the emulated Ethernet adaptor (stand-alone C++, nothing of the emulator in it) |
 | `src/Rta.h`, `Rta.cpp`, `RtaMac.mm` | what joins it to the application: patches, the memory card's network setting, display patches, settings, thread priority, the control socket |
+| `src/RtaPad.mm` | game controllers through macOS's GameController framework: the first one attached is the pad in port 1, with nothing to bind |
+| `src/RtaUi.cpp` | what is added to the application's windows: *Help → Controls…* |
 | `sections-suggested.txt` | the patch sections `play.sh` applies by default (the suggested set of `docs/online-setup.md`) |
 | `ctl.py` | sends commands to a running application over its control socket (buttons, memory reads, pictures) |
 | `smoke.py` | test: power-on to the lobby server's first screen, with the network's log and the speed |
@@ -89,6 +91,49 @@ Not changed, known:
 - Only the title screens, the menus, character creation, the lobby screens, the first
   level, one dungeon level and the arena level have been looked at, on pictures, standing
   or walking a few steps; all ran at 60 frames a second. See docs/play-online.md, "What is known not to work".
+
+## Controller and keyboard
+
+Play! reads controllers on macOS as raw HID devices (`InputProviderMacOsHid`): it has
+report layouts for three Sony product numbers, takes every other device's elements by
+their HID usage number, and leaves it to the player to bind each button in the
+Controller Manager — nothing works until that is done, and what a button is called
+differs from pad to pad. `RtaPad.mm` uses GameController.framework instead, which
+presents every controller macOS supports (by USB or Bluetooth) as the same extended
+gamepad. `CPadHandlerRta` asks for its state once a frame, on the machine's thread, at
+the place where the machine reads its pad (immediately before the frame is computed),
+and puts it on top of what Play!'s bindings and the keyboard gave: pressed buttons are
+added, a stick that is not at rest replaces the keyboard's. Attaching and detaching come
+as the framework's notifications; the controller object is kept in a list under a lock
+until it is detached, so reading from the machine's thread is safe against unplugging.
+Only the first controller is read, and only while the application is the active one
+(two copies on one Mac would otherwise both move). `rta.log` gets a line for every
+attach and detach and for the first press of each button and direction.
+
+| Extended gamepad | PlayStation 2 pad |
+|---|---|
+| left / right thumbstick | left / right stick: nothing inside 15 % of the way, then evenly to the edge |
+| direction pad | direction pad |
+| A (bottom), B (right), X (left), Y (top) | ✕, ○, □, △ |
+| left / right shoulder | L1 / R1 |
+| left / right trigger | L2 / R2, pressed beyond 30 % |
+| thumbstick buttons | L3 / R3 |
+| Menu (Options on a DualSense) | Start |
+| Options (Create, Share, View) and a Sony pad's touchpad button | Select |
+
+Checked: a DualSense by USB attaches (log, `pads` of the control socket, status bar).
+With a controller made by the program (`gcpad connect`, `gcpad set …`: the framework's
+own settable controller object, attached through the same notification and read through
+the same map) every button, three at once, each direction of both sticks, the dead zone
+and the trigger threshold arrive as in the table, and the game was driven from the title
+into the first level and walked with it. Not checked: a real button press, Bluetooth,
+other makes of controller.
+
+The keyboard's defaults (`AutoConfigureKeyboard`, in the patch) are W A S D for the left
+stick, the arrow keys for the direction pad, I J K L for △ □ ✕ ○, Q and E for L1 and R1,
+1 and 3 for L2 and R2, X and C for L3 and R3, T F G H for the right stick, Return and
+Backspace for Start and Select; a data directory that has Play!'s own (left stick on
+T G F H) is given them once (`rta.keys`).
 
 ## The network
 

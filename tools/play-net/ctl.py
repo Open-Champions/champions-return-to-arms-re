@@ -28,6 +28,12 @@ square triangle l1 l2 l3 r1 r2 r3 start select):
                              the clock of each in <name>-times.txt
     probe <file> <n> <x> <y> <w> <h>   a rectangle of n consecutive presented pictures,
                              raw, and "<index> <clock> <w> <h>" lines in <file>.txt
+    pads                     the game controller: attached, its name, what is pressed
+    gcpad connect|disconnect|set <buttons|none> [lx ly rx ry [l2 r2]]
+                             a controller made by the program, for testing the map
+                             (sticks -1..1, up and right positive; triggers 0..1)
+    displaypatch all|N 0|1   a display patch off or on while the game runs
+    texmode 0|1|2            textures known by what was sent / by memory / by address
     info                     frame number, clocks, thread processor times, the display's
                              rate, executable, network and texture counters
     gs                       the display state: interlace, field, the buffer shown

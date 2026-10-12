@@ -11,8 +11,10 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include "PadHandler.h"
+#include "sound/SoundHandler.h"
 
 class CPS2VM;
 class QCommandLineParser;
@@ -47,6 +49,13 @@ namespace Rta
 	// started with --rta-test, --rta-title or a control socket
 	bool IsTestRun();
 
+	// RtaSound.cpp: the sound handler (keeps a set reserve of sound queued; counts every
+	// time the output ran dry or a block was thrown away; can write what the machine
+	// hands over to a WAV file). SoundReport: one line of counts, optionally starting anew.
+	void ConfigureSound(bool wav, bool plain, bool muted, const std::string& directory);
+	CSoundHandler::FactoryFunction GetSoundHandlerFactory();
+	std::string SoundReport(bool reset);
+
 	// RtaPad.mm: the first game controller macOS knows (DualSense, DualShock 4, Xbox,
 	// Switch Pro ...) as the pad in port 1, with nothing to bind. Buttons are bits by
 	// PS2::CControllerInfo::BUTTON; a stick is two bytes, 128 128 in the middle.
@@ -71,6 +80,51 @@ namespace Rta
 	// true once per data directory when this build's keyboard layout is newer than the
 	// one stored there
 	bool TakeKeyboardDefaults();
+
+	// ---- the packaged application (tools/play-net/package.sh) ---------------------------
+	// An application bundle that has our patch file in Contents/Resources/rta needs no
+	// command line: its data is in ~/Library/Application Support/<bundle name>/player<N>,
+	// it asks for the disc image and remembers it, and the lobby server's address and
+	// the player number are set in a dialog (kept in launch.ini beside the player
+	// directories).
+	struct LaunchInfo
+	{
+		bool packaged = false;
+		std::string root;       // ~/Library/Application Support/<name>
+		int player = 1;
+		std::string server;     // as stored; empty: this computer
+		std::string disc;       // as stored
+		std::string patchSet;   // "19 sections, 152 words, set xxxxxxxx", or empty
+		bool gameChecked = false; // the game is loaded and is the version the patches are for
+		std::string signinPatch;  // the sign-in patch that is used, or empty
+		std::string signinPlaces; // where it is looked for, one per line
+		std::string serverNow;    // the server this run talks to, in words
+	};
+	LaunchInfo GetLaunchInfo();
+	void SaveLaunch(const std::string& server, int player);
+	// starts the application again (a moment later) and ends this one
+	void Relaunch();
+	// empty when the file is a disc image of the game in the version this is for;
+	// otherwise what is wrong with it, for a person
+	std::string CheckDisc(const std::string& path);
+	// RtaUi.cpp. The disc image to start with: the one given, else the one remembered,
+	// else the one the person picks; refuses anything CheckDisc does. Empty: none (not a
+	// packaged application, or the person gave up).
+	// 'askAnew': do not take the remembered one.
+	std::string ChooseDisc(QWidget* parent, const std::string& given, bool askAnew);
+	// how the application starts a disc image (set by main), and the starting itself
+	void SetDiscBoot(const std::function<void(const std::string&)>&);
+	void BootDisc(const std::string& path);
+	void ShowOnline(QWidget* parent);
+	bool RenderDialog(const std::string& name, const std::string& path);
+	// for the About box
+	std::string AboutText();
+
+	// RtaMac.mm
+	std::string BundlePath();
+	std::string BundleResourcePath();
+	std::string BundleName();
+	std::string ApplicationSupportPath();
 
 	// RtaMac.mm: an application without a Dock icon that is never made the active one,
 	// and its window behind every other.

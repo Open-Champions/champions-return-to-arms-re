@@ -9,6 +9,8 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QImage>
+#include <QProcess>
+#include <QSettings>
 #include <QStringList>
 #include <QTimer>
 #include <QWidget>
@@ -43,6 +45,7 @@
 #endif
 
 #include "AppConfig.h"
+#include "DiskUtils.h"
 #include "FrameLimiter.h"
 #include "PS2VM.h"
 #include "PS2VM_Preferences.h"
@@ -90,7 +93,30 @@ namespace
 		std::string pcapPath;
 		std::string testLabel; // --rta-test: a test run, and what the window's title says about it
 		bool testBackground = false; // --rta-test (not --rta-title): small, behind, never active
+		bool soundWav = false;   // write the mixed sound to <data>/sound-<time>.wav
+		bool soundPlain = false; // queue sound as Play! itself does (for comparing)
+		int soundBlock = 0;      // milliseconds of sound handed over at a time, for this data directory (0: as set)
 	};
+
+	// The packaged application (see Rta.h, LaunchInfo)
+	const char* SIGNIN_PATCH_NAME = "SLUS-20973_4028A55F_signin.pnach";
+	const char* BUNDLED_PATCH_NAME = "SLUS-20973_4028A55F.pnach";
+	const char* BUNDLED_SECTIONS_NAME = "sections.txt";
+	struct Launch
+	{
+		bool packaged = false;
+		std::string resources; // <bundle>/Contents/Resources/rta
+		std::string root;
+		int player = 1;
+		std::string signinPatch;
+		std::string signinPlaces;
+	};
+	Launch g_launch;
+
+	std::string LaunchFile()
+	{
+		return g_launch.root + "/launch.ini";
+	}
 
 	struct PatchWord
 	{
@@ -455,6 +481,16 @@ namespace
 			}
 
 			LoadPatches();
+			if(g_launch.packaged)
+			{
+				Log(Format("packaged application: player %d, data in %s", g_launch.player, g_launch.root.c_str()));
+				if(g_launch.signinPatch.empty())
+				{
+					std::string places = g_launch.signinPlaces;
+					std::replace(places.begin(), places.end(), '\n', ' ');
+					Log(std::string("NO SIGN-IN PATCH (") + SIGNIN_PATCH_NAME + "): the game will stop with a network error after 'Internet Game'. Looked in: " + places);
+				}
+			}
 			if(options.net) StartNet();
 
 			m_executableChange = m_vm->m_ee->m_os->OnExecutableChange.Connect([this]() { OnExecutableChange(); });
@@ -1141,8 +1177,18 @@ namespace
 				if(known) Rta::GamePadTest(words[1], padButtons, values);
 				push(Step::REPLY, 0, known ? "ok" : "err gcpad connect|disconnect|set <buttons|none> [lx ly rx ry [l2 r2]]");
 			}
+			else if(name == "uishot" && words.size() >= 3)
+			{
+				// uishot controls|online|about <file.png>: a picture of one of our windows
+				std::string which = words[1], file = line.substr(line.find(words[2], line.find(words[1]) + words[1].size()));
+				QMetaObject::invokeMethod(QCoreApplication::instance(), [which, file]() { Rta::RenderDialog(which, file); }, Qt::QueuedConnection);
+				push(Step::WAIT, 30);
+				push(Step::REPLY, 0, "ok");
+			}
 			else if(name == "pads")
 				push(Step::REPLY, 4);
+			else if(name == "sound")
+				push(Step::REPLY, (words.size() >= 2 && words[1] == "reset") ? 6 : 5);
 			else if(name == "texmode" && words.size() == 2)
 			{
 				// 0: textures by what the game sent; 1: by the texels in GS memory; 2: by
@@ -1273,6 +1319,8 @@ namespace
 					}
 					else if(step.value == 4)
 						Reply("ok " + PadText());
+					else if(step.value == 5 || step.value == 6)
+						Reply("ok frame=" + std::to_string(m_frame.load()) + " " + Rta::SoundReport(step.value == 6));
 					else if(step.value == 3)
 					{
 						// the picture the machine is sending to the screen right now
@@ -1424,6 +1472,14 @@ namespace
 			}
 			std::lock_guard<std::mutex> lock(m_logMutex);
 			m_status = text;
+		}
+
+		void FillLaunchInfo(Rta::LaunchInfo& info)
+		{
+			std::lock_guard<std::mutex> lock(m_logMutex);
+			info.patchSet = m_patchSet;
+			info.gameChecked = m_isGame;
+			info.serverNow = m_serverText;
 		}
 
 		uint32 Buttons() const
@@ -1600,13 +1656,39 @@ namespace
 
 void Rta::EarlyInit(int argc, char** argv)
 {
+	bool dataGiven = false;
+	int player = 0;
 	for(int i = 1; i + 1 < argc; i++)
 	{
-		if(!strcmp(argv[i], "--rta-data")) setenv("RTA_DATA_DIR", argv[i + 1], 1);
+		if(!strcmp(argv[i], "--rta-data")) setenv("RTA_DATA_DIR", argv[i + 1], 1), dataGiven = true;
+		if(!strcmp(argv[i], "--rta-player")) player = atoi(argv[i + 1]);
 	}
 	for(int i = 1; i < argc; i++)
 	{
-		if(!strncmp(argv[i], "--rta-data=", 11)) setenv("RTA_DATA_DIR", argv[i] + 11, 1);
+		if(!strncmp(argv[i], "--rta-data=", 11)) setenv("RTA_DATA_DIR", argv[i] + 11, 1), dataGiven = true;
+		if(!strncmp(argv[i], "--rta-player=", 13)) player = atoi(argv[i] + 13);
+	}
+	// The packaged application: our patch file is inside the bundle. Its data directory
+	// has to be known before the application reads its settings, so it is found here.
+	std::string resources = Rta::BundleResourcePath() + "/rta";
+	std::error_code error;
+	if(fs::exists(fs::path(resources) / BUNDLED_PATCH_NAME, error))
+	{
+		g_launch.packaged = true;
+		g_launch.resources = resources;
+		std::string name = Rta::BundleName();
+		if(name.empty()) name = "Play-RTA";
+		g_launch.root = Rta::ApplicationSupportPath() + "/" + name;
+		fs::create_directories(g_launch.root, error);
+		if(player <= 0) player = QSettings(QString::fromStdString(LaunchFile()), QSettings::IniFormat).value("player", 1).toInt();
+		if(player <= 0 || player > 99) player = 1;
+		g_launch.player = player;
+		if(!dataGiven)
+		{
+			std::string data = g_launch.root + "/player" + std::to_string(player);
+			fs::create_directories(data, error);
+			setenv("RTA_DATA_DIR", data.c_str(), 1);
+		}
 	}
 }
 
@@ -1631,6 +1713,11 @@ void Rta::AddCommandLineOptions(QCommandLineParser& parser)
 	parser.addOption(QCommandLineOption("rta-control", "UNIX socket for a test script (see tools/play-net/ctl.py).", "path"));
 	parser.addOption(QCommandLineOption("rta-pcap", "Write every Ethernet frame of the emulated adaptor to this capture file.", "file"));
 	parser.addOption(QCommandLineOption("rta-test", "A test run: the window says so in its title with this text (name what is switched off), is small, stays behind the other windows and does not take the keyboard.", "text"));
+	parser.addOption(QCommandLineOption("rta-sound-wav", "Write the sound the machine makes to sound-<time>.wav in the data directory (game audio: keep it out of the repository)."));
+	parser.addOption(QCommandLineOption("rta-sound-plain", "Queue sound as Play! itself does, without a held reserve (for comparing)."));
+	parser.addOption(QCommandLineOption("rta-sound-block", "Milliseconds of sound handed over at a time (kept in the data directory's settings; 30 by default, 100 in Play! itself).", "ms"));
+	parser.addOption(QCommandLineOption("rta-player", "Packaged application: the player number for this start (its own settings and memory card); otherwise the one set in the Online dialog.", "number"));
+	parser.addOption(QCommandLineOption("rta-check-disc", "Say whether a file is a disc image of the game in the version this build is for, and end.", "file"));
 	parser.addOption(QCommandLineOption("rta-title", "A test run that a person takes part in: the window says so in its title with this text, and is otherwise an ordinary window.", "text"));
 }
 
@@ -1658,6 +1745,44 @@ void Rta::ReadCommandLine(const QCommandLineParser& parser)
 	o.testLabel = parser.value("rta-test").toStdString();
 	if(parser.isSet("rta-test") && o.testLabel.empty()) o.testLabel = "ignore";
 	o.testBackground = !o.testLabel.empty();
+	if(parser.isSet("rta-check-disc"))
+	{
+		std::string verdict = Rta::CheckDisc(parser.value("rta-check-disc").toStdString());
+		printf("%s\n", verdict.empty() ? "ok: Champions: Return to Arms, SLUS-20973, version 2.00" : verdict.c_str());
+		exit(verdict.empty() ? 0 : 3);
+	}
+	if(g_launch.packaged)
+	{
+		// what play.sh gives on the command line, from inside the bundle and from the
+		// Online dialog's file
+		QSettings launch(QString::fromStdString(LaunchFile()), QSettings::IniFormat);
+		if(!parser.isSet("rta-server")) o.server = launch.value("server").toString().trimmed().toStdString();
+		if(o.patchFile.empty())
+		{
+			o.patchFile = g_launch.resources + "/" + BUNDLED_PATCH_NAME;
+			if(o.patchSections.empty()) o.patchSections = "@" + g_launch.resources + "/" + BUNDLED_SECTIONS_NAME;
+		}
+		// The sign-in patch is never inside the bundle: it is looked for in the data
+		// directory and beside the application.
+		if(o.extraPatches.empty())
+		{
+			std::vector<std::string> places = {g_launch.root, o.dataDir, fs::path(Rta::BundlePath()).parent_path().string()};
+			for(const auto& place : places)
+			{
+				if(place.empty()) continue;
+				std::string candidate = place + "/" + SIGNIN_PATCH_NAME;
+				if(g_launch.signinPlaces.find(place + "\n") == std::string::npos) g_launch.signinPlaces += place + "\n";
+				std::error_code error;
+				if(g_launch.signinPatch.empty() && fs::exists(candidate, error)) g_launch.signinPatch = candidate;
+			}
+			if(!g_launch.signinPatch.empty()) o.extraPatches.push_back(g_launch.signinPatch);
+		}
+	}
+	else if(!o.extraPatches.empty())
+		g_launch.signinPatch = o.extraPatches.front();
+	o.soundWav = parser.isSet("rta-sound-wav");
+	o.soundPlain = parser.isSet("rta-sound-plain");
+	o.soundBlock = parser.value("rta-sound-block").toInt();
 	if(parser.isSet("rta-title")) o.testLabel = parser.value("rta-title").toStdString();
 	if(o.testBackground) Rta::MakeBackgroundApplication();
 }
@@ -1701,6 +1826,100 @@ void Rta::LogLine(const std::string& line)
 	g_state.Log(line);
 }
 
+Rta::LaunchInfo Rta::GetLaunchInfo()
+{
+	LaunchInfo info;
+	info.packaged = g_launch.packaged;
+	info.root = g_launch.root;
+	info.player = g_launch.player;
+	info.signinPatch = g_launch.signinPatch;
+	info.signinPlaces = g_launch.signinPlaces;
+	if(g_launch.packaged)
+	{
+		QSettings launch(QString::fromStdString(LaunchFile()), QSettings::IniFormat);
+		info.server = launch.value("server").toString().toStdString();
+		info.disc = launch.value("disc").toString().toStdString();
+	}
+	else
+		info.server = g_state.options.server;
+	g_state.FillLaunchInfo(info);
+	return info;
+}
+
+void Rta::SaveLaunch(const std::string& server, int player)
+{
+	if(!g_launch.packaged) return;
+	QSettings launch(QString::fromStdString(LaunchFile()), QSettings::IniFormat);
+	launch.setValue("server", QString::fromStdString(server));
+	launch.setValue("player", player);
+	launch.sync();
+	g_state.Log(Format("online settings saved: server '%s', player %d (taken up at the next start)", server.c_str(), player));
+}
+
+void Rta::Relaunch()
+{
+	// a moment later, so that this copy has written its settings and let go of its data
+	QString bundle = QString::fromStdString(Rta::BundlePath());
+	QProcess::startDetached("/bin/sh", {"-c", "sleep 1.5; exec /usr/bin/open -n \"$0\"", bundle});
+	QMetaObject::invokeMethod(QCoreApplication::instance(), []() { QCoreApplication::exit(0); }, Qt::QueuedConnection);
+}
+
+std::string Rta::CheckDisc(const std::string& path)
+{
+	const std::string wanted = "This build is for Champions: Return to Arms, the US release SLUS-20973 in version 2.00, and for nothing else.";
+	std::string file = fs::path(path).filename().string();
+	std::error_code error;
+	if(!fs::is_regular_file(path, error)) return "'" + file + "' is not a file.";
+	try
+	{
+		auto media = DiskUtils::CreateOpticalMediaFromPath(path, COpticalMedia::CREATE_AUTO_DISABLE_DL_DETECT);
+		auto fileSystem = media->GetFileSystem();
+		auto configFile = std::unique_ptr<Framework::CStream>(fileSystem->Open("SYSTEM.CNF;1"));
+		if(!configFile) return "'" + file + "' is a disc image, but not of a PlayStation 2 game (it has no SYSTEM.CNF). " + wanted;
+		auto config = DiskUtils::ParseSystemConfigFile(configFile.get());
+		auto boot = config.find("BOOT2");
+		if(boot == config.end()) return "'" + file + "' is not a PlayStation 2 game disc (its SYSTEM.CNF names no program). " + wanted;
+		// "cdrom0:\SLUS_209.73;1"
+		std::string program = boot->second;
+		auto slash = program.find_last_of("\\:/");
+		if(slash != std::string::npos) program = program.substr(slash + 1);
+		std::string name = program.substr(0, program.find(';'));
+		std::string version = config.count("VER") ? config["VER"] : "?";
+		if(name != GAME_EXECUTABLE) return "'" + file + "' is the disc " + name + " (version " + version + "), another game or another release. " + wanted;
+		auto executable = std::unique_ptr<Framework::CStream>(fileSystem->Open(program.c_str()));
+		if(!executable) return "'" + file + "' names " + program + " as its program but does not hold it: the image is damaged. " + wanted;
+		uint64 length = executable->GetLength();
+		if(length > (64 * 1024 * 1024)) return "'" + file + "': the program on it is far too large; the image is damaged.";
+		std::vector<uint8> content(static_cast<size_t>(length));
+		if(executable->Read(content.data(), length) != length) return "'" + file + "' could not be read to the end: the image is damaged or cut short.";
+		uint32 crc = 0;
+		for(size_t i = 0; i + 4 <= content.size(); i += 4)
+		{
+			uint32 word;
+			memcpy(&word, content.data() + i, 4);
+			crc ^= word;
+		}
+		if(crc != GAME_CRC)
+			return Format("'%s' is SLUS-20973, but version %s with another program (checksum %08X where version 2.00 has %08X): another pressing, or a changed image. %s", file.c_str(), version.c_str(), crc, GAME_CRC, wanted.c_str());
+		return "";
+	}
+	catch(const std::exception& exception)
+	{
+		return "'" + file + "' is not a disc image this application can read (" + exception.what() + "). " + wanted;
+	}
+}
+
+std::string Rta::AboutText()
+{
+	std::string text =
+	    "\n\nThis is the Play! PlayStation 2 emulator (https://github.com/jpd002/Play-, by Jean-Philip Desjardins and contributors, BSD 2-clause licence) "
+	    "with changes by the Champions RE project for playing Champions: Return to Arms online: a built-in network, patches, repairs to picture, sound and timing for this game, controller support.\n\n"
+	    "It is not an official product of the Play! project, of Sony or of anyone else, and it contains nothing of the game: you need your own disc image.\n\n"
+	    "The changes are described in tools/play-net/README.md of the project.";
+	if(g_launch.packaged) text += " Licences: Contents/Resources/licences inside the application.";
+	return text;
+}
+
 void Rta::OverridePreferences()
 {
 	// A machine that stops when its window is not in front loses the lobby server after
@@ -1728,6 +1947,9 @@ void Rta::OverridePreferences()
 		config.SetPreferenceInteger(PREF_RTA_DEFAULTS, RTA_DEFAULTS);
 	}
 	if(!g_state.options.controlPath.empty()) CAppConfig::GetInstance().SetPreferenceBoolean(PREF_UI_SHOWEXITCONFIRMATION, false);
+	if(g_state.options.soundBlock > 0) config.SetPreferenceInteger(PREF_AUDIO_SPUBLOCKCOUNT, g_state.options.soundBlock);
+	// a background test run is silent
+	Rta::ConfigureSound(g_state.options.soundWav, g_state.options.soundPlain, g_state.options.testBackground, CAppConfig::GetInstance().GetBasePath().string());
 }
 
 bool Rta::TakeKeyboardDefaults()

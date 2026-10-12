@@ -17,13 +17,43 @@ Apple silicon Mac, Xcode command line tools, [Homebrew](https://brew.sh).
 ```
 brew install cmake ninja qtbase
 tools/play-net/build.sh
+tools/play-net/package.sh
 ```
 
-The script fetches Play! (one fixed commit), applies `tools/play-net/play-net.patch`,
+`build.sh` fetches Play! (one fixed commit), applies `tools/play-net/play-net.patch`,
 adds the sources in `tools/play-net/src/` and builds
-`local/play-playable-build/Source/ui_qt/Play.app`. About ten minutes the first time.
+`local/play-playable-build/Source/ui_qt/Play.app`; about ten minutes the first time.
+`package.sh` makes of it an application that needs no terminal:
+`local/dist/Play-RTA.app`, with Qt and the patch list inside.
 
 ## 2. Start
+
+### The application
+
+Double-click `local/dist/Play-RTA.app` (or copy it anywhere, to another Mac too: there,
+the first time, right-click it and choose *Open*, because it is not notarised).
+
+- **The first start asks for your disc image** and remembers it. It takes Champions:
+  Return to Arms, US release SLUS-20973, version 2.00, and says what is wrong with
+  anything else. *Online → Choose the disc image…* changes it later.
+- ***Online → Server, player, patch set…***: the lobby server's address (empty: the
+  server runs on this Mac), the player number (leave it at 1; another number is a second
+  copy on the same Mac with its own settings and memory card), and the patch-set figure
+  to compare with your friends (section 6). A change is taken up when the application
+  starts again; the dialog offers to do that.
+- **The sign-in patch** is not inside the application. Put
+  `SLUS-20973_4028A55F_signin.pnach` into `~/Library/Application Support/Play-RTA/` or
+  next to the application; the Online dialog says whether it was found. Without it the
+  game stops with a network error after "Internet Game".
+- Settings, memory card and the log `rta.log` are in
+  `~/Library/Application Support/Play-RTA/player1/`.
+- A second copy on the same Mac: set player 2 in the Online dialog of a second start
+  (`open -n local/dist/Play-RTA.app --args --rta-player 2` does both at once).
+- *Help → About* says what this is: the Play! emulator (BSD licence) with this
+  project's changes; the licences are inside the application
+  (`Contents/Resources/licences`).
+
+### From a terminal
 
 ```
 tools/play-net/play.sh --disc "/path/to/your disc image.iso" --server ADDRESS
@@ -33,32 +63,47 @@ tools/play-net/play.sh --disc "/path/to/your disc image.iso" --server ADDRESS
   when the server runs on this same Mac.
 - A second copy on the same Mac (to try it alone): add `--player 2`. It has its own
   settings and memory card.
-- The first start may bring up the macOS question whether "Play" may accept incoming
-  network connections: allow it (other players' game data arrives that way).
 - Settings, the memory card and a log (`rta.log`, with every step of the network) are in
-  `local/play-data/player1/`.
+  `local/play-data/player1/`. The sign-in patch is looked for at
+  `local/SLUS-20973_4028A55F_signin.pnach`.
 
-Nothing has to be set up in the game: the network setting it asks for is already on the
-emulated memory card, the lobby's host name is answered by the application, and the
-sign-in step that needs Sony's long-gone servers is skipped if you have the sign-in patch
-at `local/SLUS-20973_4028A55F_signin.pnach` (it is not part of this repository; without
-it the game stops with a network error after "Internet Game").
+Either way: the first start may bring up the macOS question whether the application may
+accept incoming network connections: allow it (other players' game data arrives that
+way). Nothing has to be set up in the game: the network setting it asks for is already on
+the emulated memory card, the lobby's host name is answered by the application, and the
+sign-in step that needs Sony's long-gone servers is skipped by the sign-in patch (not
+part of this repository).
 
-## 3. Keys
+## 3. Controller and keys
 
-The keyboard, as Play! sets it up (change it, or bind a controller, in
-*Settings → Controller Manager*: click a row, press the key or the controller's button):
+**A game controller** works the moment it is attached — plugged in by USB or paired by
+Bluetooth, before the start or in the middle of a game — with nothing to set up:
+DualSense, DualShock 4, Xbox and Switch Pro controllers and the others macOS knows. The
+sticks, the direction pad, the four face buttons and the shoulder buttons are where they
+are on a PlayStation pad (on an Xbox pad A is ✕, B is ○, X is □, Y is △); Options or Menu
+is Start; Create, Share or View is Select, and so is pressing a Sony pad's touchpad. L2
+and R2 count as pressed from a third of the way. The status bar says "controller:
+DualSense" (or what it is) while one is attached. The first controller attached is the
+one that plays; it is listened to while the window is in front. A controller macOS does
+not know can still be bound by hand in *Settings → Controller Manager*.
+
+**The keyboard** works beside it:
 
 | Controller | Key | Controller | Key |
 |---|---|---|---|
-| D-pad | arrow keys | left stick | T G F H (up, down, left, right) |
-| ✕ cross | Z | right stick | I K J L |
-| ○ circle | X | L1 / L2 / L3 | 1 / 2 / 3 |
-| □ square | A | R1 / R2 / R3 | 8 / 9 / 0 |
-| △ triangle | S | Start / Select | Return / Backspace |
+| left stick (move) | W A S D | D-pad (menus) | arrow keys |
+| ✕ cross | K | ○ circle | L |
+| □ square | J | △ triangle | I |
+| L1 / L2 / L3 | Q / 1 / X | R1 / R2 / R3 | E / 3 / C |
+| right stick (camera) | T F G H (up, left, down, right) | Start / Select | Return / Backspace |
 
-Double-click the picture (or *View*) for full screen; Escape leaves it. The game moves the
-character with the left stick, so on a keyboard that is T G F H until you change it.
+The four face buttons lie on I J K L as they lie on the pad: I on top, J left, K below,
+L right. *Help → Controls…* shows this table and the attached controller; it opens by
+itself on the first start. Keys can be changed in *Settings → Controller Manager* (click
+a row, press the key). A data directory made by an earlier version of this build is given
+this layout once (Play!'s own put the left stick on T G F H).
+
+Double-click the picture (or *View*) for full screen; Escape leaves it.
 
 ## 4. From the title screen into a game with a friend
 
@@ -201,8 +246,12 @@ person at the controls:
 
 Not tried, or known not to work:
 
-- **Sound was never listened to**, and **no controller was connected**: both go through
-  Play!'s own code unchanged (OpenAL; HID controllers bound in the Controller Manager).
+- **Controllers**: a DualSense by USB was seen to attach (log, status bar); every button,
+  both sticks, the dead zone and the trigger threshold were exercised with a controller
+  made by the program, which goes through the same code as a real one, and the game was
+  driven from the title into the first level with it. No real button was pressed by the
+  tests, and Bluetooth and other makes were not tried.
+- **Sound was never listened to**; it goes through Play!'s own code unchanged (OpenAL).
 - **Two different networks.** Section 7 follows from how the relay and the server work
   and from the lobby protocol; no session between two homes has been run.
 - **More than two players**, private games, friends, chat typed by a player.
