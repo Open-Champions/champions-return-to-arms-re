@@ -24,7 +24,7 @@ section 3.2).
 | Proof without a browser | One machine in each arithmetic: out of step on the first step (3 pairs of 3 with input). Both in browser arithmetic: in step over the boot pair and every fuzz pair (54 pairs, 312,989 lockstep ticks); the existing pair scripts end as they do in native arithmetic (one exception, a timing race that did not happen). Section 3.2 | Ran |
 | Proof against the real thing | The browser build in Chrome and the rig in browser arithmetic, the same recorded input by vertical blank from power-on: two sessions, 12,400 frames (walking, turning, fighting, 8 deaths, four level changes) and 8,810 frames (another level, both sticks), 224 bytes of game state read in every frame, **no byte differs**. The rig in native arithmetic with the same input differs from frame 2741. Section 3.3 | Ran |
 | Does the game behave in that arithmetic? | Nothing broke in any run. Section 4 has what was measured | Ran |
-| How is the arithmetic chosen in a real game? | Proposed and written (application and shared network code), compiled for both builds, one copy seen to change on request, **not yet tried between two copies**: every copy tells the others what it can do and does, on the path the patch-set figure already uses; the application changes to browser arithmetic in the room when a browser copy is heard, and warns when a copy cannot follow. Section 5 | Observed (code); the exchange between copies not Ran |
+| How is the arithmetic chosen in a real game? | Written (application and shared network code), compiled for both builds, and tried between two copies of the application (one fixed to browser arithmetic, the other following; not yet between a page and the application): every copy tells the others what it can do and does, on the path the patch-set figure already uses; the application changes to browser arithmetic in the room when a browser copy is heard, and warns when a copy cannot follow. Section 5 | Observed (code); Ran (two application copies) |
 | Limits | An x86 browser was not available (a generated NaN has another sign there); an Intel build of the application is not covered; games in browser arithmetic are no longer bit-identical to a console. Section 6 | — |
 
 ## 1. How the two builds' arithmetic differs
@@ -86,7 +86,7 @@ So the intermediate operations are one-to-one, and what differs is the processor
 ## 2. The switch: "browser arithmetic"
 
 `local/play-playable/Source/FpUtils.h`, `FpUtils.cpp`, `PS2VM.cpp` (in
-`tools/play-net/play-net.patch` once that is regenerated).
+`tools/play-net/play-net.patch` since its regeneration on 2026-10-12).
 
 - `FpUtils::SetArithmetic(ARITHMETIC_NATIVE | ARITHMETIC_BROWSER)`, any thread, any time;
   the default is native and nothing changes for a copy that never calls it.
@@ -260,9 +260,18 @@ Every machine of a game must use the same arithmetic from its first lockstep tic
 browser copy has no choice; the application has. Written and compiled for both builds.
 **Ran**: one copy of the application built from these sources, started with `--rta-arith
 browser`, changes at frame 30 and says so (`rta.log`: "arithmetic: the machine now
-computes as a browser copy's does"; `peers`: `arith=browser`). **Not yet tried between two
-copies** (that needs two copies in a room on the local lobby server), so the message and
-the choice below are as read in the code, not as seen working.
+computes as a browser copy's does"; `peers`: `arith=browser`). **Ran, two copies of the
+application** in one room on the lobby server of the same Mac (2026-10-12, 26 fix
+sections on both, set 3f5b1e14): host started with `--rta-arith browser`, joiner left at
+`auto`. The joiner's `rta.log`: "the player at … computes with browser arithmetic (can
+do: the browser's)", and one second later "arithmetic: the machine now computes as a
+browser copy's does"; the host's: the joiner first "computes with Play!'s own
+arithmetic", a second later "with browser arithmetic". `peers` on both: `arith=browser`
+for this copy and for the other. The game was started from the room and ran in step:
+every sync hash both copies held was the same for 506 and 436 lockstep frames in the
+first level (both players walked) and 500 after a level change to `strife`; hit points
+`42033333` on both. Not run: a page and the application in one room (the browser's relay
+hands datagrams only between its own sessions).
 
 **The message** (`tools/play-net/src/RtaNet.cpp`, shared by the application and the
 browser build, which compiles the same file). The copies already tell each other their
@@ -333,7 +342,7 @@ consistent, and harmless.
 - **Not a console's arithmetic.** A game in browser arithmetic rounds differently from a
   PlayStation 2 and from PCSX2. That matters only if such machines were ever to join.
 - **Mid-game switching** is not built (section 5).
-- **The choice in the room was not exercised** between two copies (section 5).
+- **The choice in the room was exercised between two application copies only** (section 5), not between a page and the application.
 - **Per-game rounding lists.** If `GameConfig.xml` ever gets an entry for this game that
   sets a rounding mode for a block, the ARM64 translator would write the control register
   inside that block and leave "toward zero" behind until the next vertical blank; the
@@ -347,7 +356,7 @@ consistent, and harmless.
 
 | File | What |
 |---|---|
-| `local/play-playable/Source/FpUtils.h`, `FpUtils.cpp`, `PS2VM.cpp` | the switch (to go into `tools/play-net/play-net.patch`) |
+| `local/play-playable/Source/FpUtils.h`, `FpUtils.cpp`, `PS2VM.cpp` | the switch (in `tools/play-net/play-net.patch`) |
 | `tools/play-net/src/RtaNet.h`, `RtaNet.cpp`, `Rta.cpp` | the arithmetic message, the choice, the warning |
 | `tools/rig/rig.cpp`, `README.md` | `--arith`, script command `arith`, `--record-input`, `--replay-input` |
 | `tools/arith/` | `jitdiff.cpp` and `build.sh` (the translators against each other), `session.py`, `browser-run.py`, `web/arith.html`, `web/arith.js` (a session on both machines), `web-hooks.patch` (test entry points for the browser front end), `README.md` |

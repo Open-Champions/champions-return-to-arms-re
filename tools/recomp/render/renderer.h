@@ -9,6 +9,7 @@
 
 #include <ctime>
 #include <functional>
+#include <unordered_map>
 
 namespace render {
 
@@ -51,6 +52,7 @@ class Renderer {
 
   private:
     uint8_t own_micro[0x4000], own_data[0x4000];
+    std::unordered_map<uint32_t, size_t> picture_failed;    // TBP0 -> headers known when its lookup failed
 };
 
 }  // namespace render

@@ -829,24 +829,26 @@
  	{
 --- a/Source/gs/GSHandler.h
 +++ b/Source/gs/GSHandler.h
-@@ -878,6 +878,9 @@
+@@ -878,6 +878,11 @@
  	{
- 		assert(m_writeBufferSize < REGISTERWRITEBUFFER_SIZE);
- 		if(m_writeBufferSize == REGISTERWRITEBUFFER_SIZE) return;
+ 		//RTA: a full buffer is emptied (see DrainWriteBuffer); the write was dropped before
+ 		if((m_writeBufferSize == REGISTERWRITEBUFFER_SIZE) && !DrainWriteBuffer()) return;
 +		//RTA(web): ProcessWriteBuffer looks through the writes only if one of them is to
-+		//SIGNAL, FINISH or LABEL (it used to look at every write a second time)
++		//SIGNAL, FINISH or LABEL (it used to look at every write a second time). Set
++		//after a full buffer has been emptied: emptying it processes what is there and
++		//clears the mark, and this write is not in the buffer yet
 +		m_writeBufferHasEvents |= ((write.first >= GS_REG_SIGNAL) && (write.first <= GS_REG_LABEL));
  		m_currentWriteBuffer[m_writeBufferSize++] = write;
  	}
- 
-@@ -1158,6 +1161,7 @@
+ 	bool DrainWriteBuffer();
+@@ -1163,6 +1168,7 @@
  	RegisterWrite* m_currentWriteBuffer = nullptr;
  	uint32 m_writeBufferIndex = 0;
  	uint32 m_writeBufferSize = 0;
 +	bool m_writeBufferHasEvents = false;
+ 	uint64 m_writeBufferDrained = 0; //RTA: register writes handed over by DrainWriteBuffer since the last vertical blank
  	uint32 m_writeBufferProcessIndex = 0;
  	uint32 m_writeBufferSubmitIndex = 0;
- 
 --- a/deps/CodeGen/include/Jitter_CodeGen_Wasm.h
 +++ b/deps/CodeGen/include/Jitter_CodeGen_Wasm.h
 @@ -153,6 +153,7 @@

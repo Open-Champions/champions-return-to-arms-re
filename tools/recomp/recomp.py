@@ -36,6 +36,7 @@ the result against that interpreter.
 import argparse
 import bisect
 import os
+import re
 import struct
 import sys
 
@@ -79,6 +80,23 @@ class Image:
             return self.words[(addr - self.text_lo) >> 2]
         return None
 
+    def patch(self, words):
+        """Write (address, value) words into the image as a patch file would write them
+        into memory before the game starts."""
+        data = bytearray(self.data)
+        text = list(self.words)
+        for address, value in words:
+            if self.text_lo <= address < self.text_hi:
+                text[(address - self.text_lo) >> 2] = value
+            for vaddr, offset, filesz, _m in self.segments:
+                if vaddr <= address and address + 4 <= vaddr + filesz:
+                    struct.pack_into('<I', data, offset + address - vaddr, value)
+                    break
+            else:
+                raise SystemExit('patch word at 0x%x is not in the executable file' % address)
+        self.data = bytes(data)
+        self.words = tuple(text)
+
     def data_words(self):
         """Every aligned word of the loaded file data outside .text: (address, value)."""
         for vaddr, offset, filesz, _m in self.segments:
@@ -92,6 +110,31 @@ class Image:
             values = struct.unpack_from('<%dI' % count, self.data, offset + (start - vaddr))
             for index, value in enumerate(values):
                 yield start + index * 4, value
+
+
+def read_pnach(path, sections):
+    """[(address, value)] of the `patch=1,EE,<address>,word,<value>` lines under the named
+    sections of a PCSX2 patch file."""
+    wanted = set(sections)
+    found, words, section = set(), [], None
+    with open(path, errors='replace') as source:
+        for line in source:
+            line = line.strip()
+            match = re.match(r'\[(.*)\]$', line)
+            if match:
+                section = match.group(1)
+                continue
+            match = re.match(r'patch=1,EE,([0-9a-fA-F]+),(\w+),([0-9a-fA-F]+)', line)
+            if not match or section not in wanted:
+                continue
+            if match.group(2) != 'word':
+                raise SystemExit('pnach: only word patches are handled (%s)' % line)
+            found.add(section)
+            words.append((int(match.group(1), 16) & 0x1FFFFFFF, int(match.group(3), 16)))
+    missing = wanted - found
+    if missing:
+        raise SystemExit('pnach: no such section: %s' % '; '.join(sorted(missing)))
+    return words
 
 
 # ---------------------------------------------------------------------------------------
@@ -526,9 +569,9 @@ def branch_condition(w):
 # ---------------------------------------------------------------------------------------
 
 class Unit:
-    __slots__ = ('start', 'end', 'labels', 'entries', 'computed', 'gap', 'next_pc', 'hle', 'local')
+    __slots__ = ('start', 'end', 'labels', 'entries', 'computed', 'gap', 'next_pc', 'hle', 'local', 'pieces', 'runoff')
 
-    def __init__(self, start, end, gap=False):
+    def __init__(self, start, end, gap=False, pieces=None):
         self.start, self.end, self.gap = start, end, gap
         self.labels = set()
         self.entries = {start}
@@ -536,31 +579,52 @@ class Unit:
         self.next_pc = None
         self.hle = False
         self.local = False      # merged cluster: calls inside the unit are jumps
+        # A merged cluster whose members lie far apart is not one address range but
+        # several: [(start, end), ...] in address order (None: the one range start-end).
+        # `start` is then the first piece's start and `end` the last piece's end.
+        self.pieces = pieces
+        self.runoff = {}        # end of a piece that is not the last -> where execution runs on to (or None)
+
+    def ranges(self):
+        return self.pieces if self.pieces else [(self.start, self.end)]
+
+    def contains(self, addr):
+        if not self.pieces:
+            return self.start <= addr < self.end
+        return any(lo <= addr < hi for lo, hi in self.pieces)
+
+    def size(self):
+        return sum(hi - lo for lo, hi in self.ranges())
 
 
 def walk(image, unit):
     """Yield (pc, word, kind, delay_pc, delay_word) for every instruction slot of the unit
     in emission order; a branch consumes its delay slot.  After the walk unit.next_pc is
     the address execution reaches when it runs off the end (None when it cannot)."""
-    pc = unit.start
-    open_end = True
-    while pc < unit.end:
-        w = image.word(pc)
-        kind = control_kind(w)
-        if kind is None:
-            yield pc, w, None, None, None
-            open_end = True
-            pc += 4
-            continue
-        dpc = pc + 4
-        dw = image.word(dpc)
-        if dw is None:
-            dw = 0
-        yield pc, w, kind, dpc, dw
-        open_end = not (kind in ('j', 'jr') or (kind == 'b' and always_taken(w))
-                        or (kind == 'jalr' and ((w >> 11) & 31) == 0))
-        pc += 8
-    unit.next_pc = pc if open_end else None
+    ranges = unit.ranges()
+    for number, (lo, hi) in enumerate(ranges):
+        pc = lo
+        open_end = True
+        while pc < hi:
+            w = image.word(pc)
+            kind = control_kind(w)
+            if kind is None:
+                yield pc, w, None, None, None
+                open_end = True
+                pc += 4
+                continue
+            dpc = pc + 4
+            dw = image.word(dpc)
+            if dw is None:
+                dw = 0
+            yield pc, w, kind, dpc, dw
+            open_end = not (kind in ('j', 'jr') or (kind == 'b' and always_taken(w))
+                            or (kind == 'jalr' and ((w >> 11) & 31) == 0))
+            pc += 8
+        if number + 1 < len(ranges):
+            unit.runoff[hi] = pc if open_end else None
+        else:
+            unit.next_pc = pc if open_end else None
 
 
 def build_units(image, funcs_path):
@@ -623,12 +687,13 @@ def build_units(image, funcs_path):
 
 
 def analyse(image, units, extra=()):
-    starts = [u.start for u in units]
+    spans = sorted((lo, hi, unit) for unit in units for lo, hi in unit.ranges())
+    starts = [span[0] for span in spans]
 
     def unit_of(addr):
         index = bisect.bisect_right(starts, addr) - 1
-        if index >= 0 and units[index].start <= addr < units[index].end:
-            return units[index]
+        if index >= 0 and spans[index][0] <= addr < spans[index][1]:
+            return spans[index][2]
         return None
 
     outside = set()          # addresses something outside their unit transfers to
@@ -644,19 +709,19 @@ def analyse(image, units, extra=()):
                 continue
             if kind in ('b', 'bl'):
                 target = branch_target(pc, w)
-                if unit.start <= target < unit.end:
+                if unit.contains(target):
                     unit.labels.add(target)
                 else:
                     outside.add(target)
             elif kind == 'j':
                 target = jump_target(pc, w)
-                if unit.start <= target < unit.end:
+                if unit.contains(target):
                     unit.labels.add(target)
                 else:
                     outside.add(target)
             elif kind == 'jal':
                 target = jump_target(pc, w)
-                if unit.local and unit.start <= target < unit.end:
+                if unit.local and unit.contains(target):
                     unit.labels.add(target)
                     unit.labels.add(pc + 8)
                 else:
@@ -672,6 +737,12 @@ def analyse(image, units, extra=()):
                     unit.computed = True
         if unit.next_pc is not None:
             outside.add(unit.next_pc)
+        for target in unit.runoff.values():         # a piece that runs off its end
+            if target is not None:
+                if unit.contains(target):
+                    unit.labels.add(target)
+                else:
+                    outside.add(target)
 
     # addresses held in data words, and addresses formed by lui + addiu/ori in code
     refs = set()
@@ -682,7 +753,7 @@ def analyse(image, units, extra=()):
     code_refs = set()
     for unit in units:
         upper = {}
-        for pc in range(unit.start, unit.end, 4):
+        for pc in (a for lo, hi in unit.ranges() for a in range(lo, hi, 4)):
             w = image.word(pc)
             op, rs, rt = w >> 26, (w >> 21) & 31, (w >> 16) & 31
             if op == 0x0F:
@@ -708,6 +779,9 @@ def analyse(image, units, extra=()):
             stats['computed_units'] += 1
     stats['outside'] = outside
     return unit_of, stats
+
+
+MERGE_SLACK = 16        # units between the members of a cluster that are taken along (see merge_entangled)
 
 
 def merge_entangled(image, units):
@@ -751,28 +825,60 @@ def merge_entangled(image, units):
     for index in range(len(units)):
         root = find(index)
         groups.setdefault(root, []).append(index)
-    spans = []
+    # A cluster whose members lie close together takes the units between them along (the
+    # few that lie there are padding and bodies shared with the members): one address
+    # range.  A cluster whose members lie far apart - a patch that jumps to a routine
+    # written into the body of a function elsewhere, and back - takes its members only:
+    # several ranges in one unit.  (Taking the whole span made one C++ function of every
+    # function between the two.)
+    clusters = []                            # sets of unit indices
     for members in groups.values():
-        if len(members) > 1:
-            spans.append((min(members), max(members)))
-    spans.sort()
-    merged_spans = []
-    for lo, hi in spans:                     # overlapping clusters join
-        if merged_spans and lo <= merged_spans[-1][1]:
-            merged_spans[-1] = (merged_spans[-1][0], max(hi, merged_spans[-1][1]))
+        if len(members) < 2:
+            continue
+        lo, hi = min(members), max(members)
+        if (hi - lo + 1) - len(members) <= MERGE_SLACK:
+            clusters.append(set(range(lo, hi + 1)))
         else:
-            merged_spans.append((lo, hi))
-    out, cursor, report = [], 0, []
-    for lo, hi in merged_spans:
-        out.extend(units[cursor:lo])
-        unit = Unit(units[lo].start, units[hi].end)
+            clusters.append(set(members))
+    changed = True
+    while changed:                           # clusters that share a unit join
+        changed = False
+        for a in range(len(clusters)):
+            for b in range(a + 1, len(clusters)):
+                if clusters[a] & clusters[b]:
+                    clusters[a] |= clusters[b]
+                    del clusters[b]
+                    changed = True
+                    break
+            if changed:
+                break
+    taken = {}
+    report = []
+    for cluster in clusters:
+        indices = sorted(cluster)
+        runs = []                            # consecutive indices: one address range
+        for index in indices:
+            if runs and index == runs[-1][1] + 1:
+                runs[-1][1] = index
+            else:
+                runs.append([index, index])
+        pieces = [(units[lo].start, units[hi].end) for lo, hi in runs]
+        unit = Unit(pieces[0][0], pieces[-1][1], pieces=pieces if len(pieces) > 1 else None)
         unit.local = True
-        for member in units[lo:hi + 1]:
-            unit.entries |= member.entries
-        out.append(unit)
-        report.append((unit.start, unit.end, hi - lo + 1))
-        cursor = hi + 1
-    out.extend(units[cursor:])
+        for index in indices:
+            unit.entries |= units[index].entries
+            taken[index] = None
+        taken[indices[0]] = unit
+        report.append((unit.start, unit.end, len(indices)) if len(pieces) == 1
+                      else (unit.start, unit.end, len(indices), len(pieces)))
+    out = []
+    for index, unit in enumerate(units):
+        if index in taken:
+            if taken[index] is not None:
+                out.append(taken[index])
+        else:
+            out.append(unit)
+    report.sort()
     return out, report
 
 
@@ -787,7 +893,7 @@ def emit_unit(image, unit, unit_of, known_entries):
 
     def go(target, backward_from=None):
         """Transfer to a static target."""
-        if unit.start <= target < unit.end:
+        if unit.contains(target):
             if backward_from is not None and target <= backward_from:
                 return 'BUDGET(); goto L_%08x;' % target
             return 'goto L_%08x;' % target
@@ -800,7 +906,14 @@ def emit_unit(image, unit, unit_of, known_entries):
             return 'CALL(fn_%08x, 0x%xu, 0x%xu);' % (target, target, site)
         return 'CALLR(0x%xu, 0x%xu);' % (target, site)
 
+    piece_starts = {lo: number for number, (lo, hi) in enumerate(unit.ranges()) if number}
     for pc, w, kind, dpc, dw in walk(image, unit):
+        if pc in piece_starts:
+            # the piece before this one ended: where it runs on to is not the next line
+            before = unit.ranges()[piece_starts[pc] - 1][1]
+            target = unit.runoff.get(before)
+            if target is not None:
+                out.append('    %s' % go(target))
         label = 'L_%08x: ' % pc if pc in unit.labels else ''
         if kind is None:
             out.append('    %s%s' % (label, simple(pc, w)))
@@ -812,7 +925,7 @@ def emit_unit(image, unit, unit_of, known_entries):
         rs, rd = (w >> 21) & 31, (w >> 11) & 31
         if kind == 'j':
             text = '%s %s' % (delay, go(jump_target(pc, w), pc))
-        elif kind == 'jal' and unit.local and unit.start <= jump_target(pc, w) < unit.end:
+        elif kind == 'jal' and unit.local and unit.contains(jump_target(pc, w)):
             target = jump_target(pc, w)
             text = 'c->r[31] = 0x%xull; %s LOCALCALL(L_%08x, 0x%xu, 0x%xu);' % (pc + 8, delay, target, target, pc)
         elif kind == 'jal':
@@ -839,7 +952,7 @@ def emit_unit(image, unit, unit_of, known_entries):
             else:
                 text = '{ bool t = %s; %s if (t) { %s } }' % (cond, delay, target)
         out.append('    %s%s' % (label, text))
-        if dpc in unit.labels and dpc < unit.end:
+        if dpc in unit.labels and unit.contains(dpc):
             # something jumps straight to the delay slot: a second copy, reached only by label
             out.append('    goto S_%08x; L_%08x: %s S_%08x:;' % (dpc, dpc, delay, dpc))
     if unit.next_pc is not None:
@@ -887,12 +1000,26 @@ def main(argv=None):
                         help='file of extra hex addresses to make entries (a loop head the runtime '
                              'enters when it resumes a memory image, for example)')
     parser.add_argument('--chunk', type=int, default=0x10000, help='bytes of game code per C++ file')
+    parser.add_argument('--pnach', help='a PCSX2 patch file: the word patches of the named sections are written into '
+                        'the image before it is translated (translated code is fixed when it is built, so a code '
+                        'patch has to be there), and into <out>/patches.cpp for the runtime to write into memory')
+    parser.add_argument('--sections', help='with --pnach: a file of section names, one per line (# comments)')
+    parser.add_argument('--section', action='append', default=[], help='with --pnach: one section name; repeatable')
     args = parser.parse_args(argv)
 
     if not os.path.isfile(args.elf):
         print('no executable at %s (bring your own SLUS_209.73)' % args.elf)
         return 0
     image = Image(args.elf)
+    patch_words = []
+    if args.pnach:
+        sections = list(args.section)
+        if args.sections:
+            with open(args.sections) as source:
+                sections += [line.strip() for line in source if line.strip() and not line.startswith('#')]
+        patch_words = read_pnach(args.pnach, sections)
+        image.patch(patch_words)
+        print('patched: %d words of %d sections' % (len(patch_words), len(sections)))
     units, rows, clipped = build_units(image, args.funcs)
     table_units = sum(1 for u in units if not u.gap)
     gap_units = [u for u in units if u.gap]
@@ -960,9 +1087,9 @@ def main(argv=None):
     for unit in units:
         lines = emit_unit(image, unit, unit_of, known)
         bad += sum(line.count('rt_unimpl(') for line in lines)
-        total_ins += (unit.end - unit.start) // 4
+        total_ins += unit.size() // 4
         current.extend(lines)
-        current_size += unit.end - unit.start
+        current_size += unit.size()
         if current_size >= args.chunk:
             flush()
     flush()
@@ -981,6 +1108,15 @@ def main(argv=None):
     text += ['__attribute__((weak)) void fn_%08x(Ctx* c) { orig_%08x(c); }' % (addr, addr)
              for addr in sorted(hle & {u.start for u in units})]
     write_if_changed(os.path.join(args.out, 'hle_weak.cpp'), '\n'.join(text) + '\n')
+    if patch_words:
+        # the same words for memory: the runtime loads the unpatched executable and writes
+        # these over it (data words; and code words, so that memory reads as it does on a
+        # machine that was patched)
+        text = ['// generated - do not commit', '#include "recomp.h"', 'unsigned recomp_patches(const u32 (**words)[2]) {',
+                '    static const u32 table[][2] = {']
+        text += ['        {0x%xu, 0x%08xu},' % word for word in patch_words]
+        text += ['    };', '    *words = table;', '    return %d;' % len(patch_words), '}']
+        write_if_changed(os.path.join(args.out, 'patches.cpp'), '\n'.join(text) + '\n')
     for name in stale:
         os.remove(os.path.join(args.out, name))
     with open(os.path.join(args.out, 'units.tsv'), 'w') as sink:
@@ -994,7 +1130,8 @@ def main(argv=None):
     print('units before merging: %d from the table, %d gap units holding %d bytes' % (
         table_units, len(gap_units), sum(u.end - u.start for u in gap_units)))
     print('entangled clusters merged into one unit each: %d (%s)' % (
-        len(merged), ', '.join('%x-%x: %d units' % m for m in merged)))
+        len(merged), ', '.join('%x-%x: %d units' % m if len(m) == 3 else '%x-%x: %d units in %d separate ranges' % m
+                               for m in merged)))
     print('units: %d' % len(units))
     print('instruction slots translated: %d' % total_ins)
     print('entries (fn_ symbols, table slots): %d' % len(known))

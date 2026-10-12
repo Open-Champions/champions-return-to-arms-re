@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 
@@ -140,6 +141,7 @@ void Gs::end_frame(uint64_t number) {
     have_cmd = false;
     state_dirty = true;
     frame.number = number;
+    frames_ended++;
     int circuit = (pmode & 2) ? 1 : 0;
     uint64_t fb = dispfb[circuit];
     auto it = targets.find((uint32_t)fb & 0x1FF);
@@ -152,23 +154,70 @@ void Gs::end_frame(uint64_t number) {
 }
 
 void Gs::privileged(uint32_t address, uint64_t value) {
+    if (log_display) {
+        static uint64_t last[16];
+        unsigned slot = (address >> 4) & 15;
+        if (address >= 0x12000000 && address < 0x12000100 && last[slot] != value && address != 0x12000090 && address != 0x12000070) {
+            last[slot] = value;
+            fprintf(stderr, "gs: privileged %08x = %016llx\n", address, (unsigned long long)value);
+        }
+    }
     switch (address) {
-    case 0x12000000: pmode = value; break;
-    case 0x12000070: dispfb[0] = value; break;
+    case 0x12000000: pmode = value; circuits_on |= (unsigned)value & 3; break;
+    case 0x12000020: smode2 = value; break;
+    case 0x12000070: dispfb[0] = value; display_fbps[0][(uint32_t)value & 0x1FF] = frames_ended; break;
     case 0x12000080: display[0] = value; break;
-    case 0x12000090: dispfb[1] = value; break;
+    case 0x12000090: dispfb[1] = value; display_fbps[1][(uint32_t)value & 0x1FF] = frames_ended; break;
     case 0x120000A0: display[1] = value; break;
     default: break;
     }
 }
 
+// What the display circuit reads out of a buffer: DISPLAY's width over its magnification,
+// and its height in lines of the buffer.  This game shows 640 x 224 buffers, one per
+// field (SMODE2 interlaced, frame mode: 448 lines of DISPLAY are two fields of 224), and
+// for a film one 640 x 448 buffer (field mode).
+bool Gs::display_size(uint32_t fbp, int& width, int& height) const {
+    // of a circuit that was ever switched on, and named for it within the last two seconds
+    // (the start-up code names buffer 0, which is the 3-D surface, and never shows it)
+    int circuit = -1;
+    for (int c = 1; c >= 0 && circuit < 0; c--) {
+        auto named = display_fbps[c].find(fbp);
+        if ((circuits_on & (1u << c)) && named != display_fbps[c].end() && frames_ended - named->second <= 120) circuit = c;
+    }
+    if (circuit < 0) return false;
+    uint64_t d = display[circuit];
+    if (!d) return false;
+    width = (int)(((d >> 32) & 0xFFF) + 1) / (int)(((d >> 23) & 15) + 1);
+    height = (((int)((d >> 44) & 0x7FF) + 2) & ~1) / (int)(((d >> 27) & 3) + 1);
+    if ((smode2 & 1) && (smode2 & 2)) height /= 2;
+    return width > 0 && height > 0;
+}
+
 Gs::Target& Gs::target_at(uint32_t fbp, int width, int height) {
     Target& t = targets[fbp];
     if (!t.id) t.id = next_target++;
+    // A buffer the display reads is as large as the display says, whatever was drawn into
+    // it before: the film player shows one buffer of 448 lines, everything else two of 224,
+    // at the same place.  (Other surfaces only grow.)
+    int dw = 0, dh = 0;
+    if (display_size(fbp, dw, dh)) {
+        if (t.width != dw || t.height != dh || !t.announced) {
+            t.width = dw; t.height = dh;
+            t.announced = true;
+            if (log_display) fprintf(stderr, "gs: target %u at fbp %u is %d x %d (the display's size)\n", t.id, fbp, t.width, t.height);
+            TargetInfo info;
+            info.id = t.id; info.width = t.width; info.height = t.height;
+            info.screen = true;
+            frame.targets.push_back(info);
+        }
+        return t;
+    }
     if (width > t.width || height > t.height || !t.announced) {
         t.width = std::max(t.width, width);
         t.height = std::max(t.height, height);
         t.announced = true;
+        if (log_display) fprintf(stderr, "gs: target %u at fbp %u is %d x %d\n", t.id, fbp, t.width, t.height);
         TargetInfo info;
         info.id = t.id; info.width = t.width; info.height = t.height;
         info.screen = t.width >= 512;
@@ -431,7 +480,7 @@ bool Gs::palette_of(const UploadSet& set, uint32_t cpsm, uint32_t* out, int entr
     return true;
 }
 
-const Gs::Texture* Gs::texture_for(uint64_t tex0, uint64_t texa) {
+Gs::Texture* Gs::texture_for(uint64_t tex0, uint64_t texa) {
     uint32_t tbp = (uint32_t)tex0 & 0x3FFF, tbw = std::max<uint32_t>((uint32_t)(tex0 >> 14) & 0x3F, 1), psm = (uint32_t)(tex0 >> 20) & 0x3F;
     uint32_t tw = (uint32_t)(tex0 >> 26) & 15, th = (uint32_t)(tex0 >> 30) & 15;
     uint32_t cbp = (uint32_t)(tex0 >> 37) & 0x3FFF, cpsm = (uint32_t)(tex0 >> 51) & 15, csa = (uint32_t)(tex0 >> 56) & 31;
@@ -450,7 +499,20 @@ const Gs::Texture* Gs::texture_for(uint64_t tex0, uint64_t texa) {
     key = mix64(key, (uint64_t)psm | (uint64_t)tbw << 8 | (uint64_t)tw << 16 | (uint64_t)th << 20 | (uint64_t)cpsm << 24 | (uint64_t)csa << 28);
     if (psm == PSMCT24 || psm == PSMCT16 || psm == PSMCT16S) key = mix64(key, texa);
     auto found = textures.find(key);
-    if (found != textures.end()) { stats.texture_hits++; return &found->second; }
+    if (found != textures.end()) {
+        stats.texture_hits++;
+        // made before the game's header for it was known here (a machine that boots sends a
+        // texture in the frame it loads it): ask again until there is an answer
+        Texture& known = found->second;
+        if (!known.height_known && picture_size) {
+            int pw = 0, ph = 0;
+            if (picture_size(tbp, pw, ph)) {
+                known.height_known = true;
+                if (ph > 0 && ph <= known.height) known.picture_height = ph;
+            }
+        }
+        return &known;
+    }
 
     // ---- make it ----
     const UploadSet& set = image->second;
@@ -517,9 +579,12 @@ const Gs::Texture* Gs::texture_for(uint64_t tex0, uint64_t texa) {
         fprintf(stderr, "texture %u: %dx%d psm %x tbw %u named %dx%d rects %zu (first %dx%d psm %x bw %u) alpha 0:%zu 80:%zu other:%zu tex0 %016llx\n", data.id, width, height, psm, tbw,
                 named_w, named_h, set.rects.size(), set.rects[0].w, set.rects[0].h, set.rects[0].psm, set.rects[0].bw, a0, a80, other, (unsigned long long)tex0);
     }
-    Texture t = {data.id, width, height, 0};
+    Texture t = {data.id, width, height, 0, false};
     int pw = 0, ph = 0;
-    if (picture_size && picture_size(tbp, pw, ph) && ph > 0 && ph <= height) t.picture_height = ph;
+    if (picture_size && picture_size(tbp, pw, ph)) {
+        t.height_known = true;
+        if (ph > 0 && ph <= height) t.picture_height = ph;
+    }
     if (trace < 0) fprintf(stderr, "   texture %u at tbp %u: picture %d x %d by the game's header\n", t.id, tbp, pw, ph);
     frame.textures.push_back(std::move(data));
     stats.textures_made++;
@@ -687,6 +752,9 @@ void Gs::kick(bool draw) {
                     bool field = weave && cmd_fst && !cur.tex_is_target && dy != 0 && fabsf(t1 - t0) * 2 == fabsf(dy) && th >= 4
                                  && fmodf(th, 2) == 0 && std::max(t0, t1) <= th + 0.5f;
                     if (field) {
+                        static const bool log_fields = getenv("RTA_GS_FIELDS") != nullptr;
+                        if (log_fields) fprintf(stderr, "gs: field sprite y %g..%g t %g..%g picture height %d sent %g x %g tex %u\n", (float)a.y / 16 - ofy / 16, (float)b.y / 16 - ofy / 16,
+                                                t0, t1, cur_picture_height, cur.tex_size[0], cur.tex_size[1], cur.texture);
                         half = th * 0.5f;
                         float base = (t0 + t1) * 0.5f >= half ? half : 0;
                         float line0 = floorf(2 * (std::min(t0, t1) - base) + 0.01f);

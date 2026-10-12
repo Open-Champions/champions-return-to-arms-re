@@ -2,14 +2,21 @@
 """build.py - build rta_app: the native game in a window, with picture, sound and input.
 
   python3 tools/recomp/app/build.py            # local/recomp-out/bin/rta_app
-  options: --opt -O1|-O2   --qt DIR (default /opt/homebrew/opt/qtbase)   --gen DIR
-           --no-game          do not bring the translated game's objects up to date first
+  python3 tools/recomp/app/build.py --original # local/recomp-out/bin/rta_app_orig: the game as it is on the disc
+  options: --opt -O1|-O2   --qt DIR (default /opt/homebrew/opt/qtbase)
+           --pnach FILE --sections FILE   the fix set (defaults below)
+           --no-game          do not translate and compile the game first (link what is there)
            --no-translation   interpret VU1 even when a translation of its main program exists
-           --name NAME        program name (default rta_app; objects in obj-<NAME>)
 
 One program from five parts:
-  the translated game   objects from local/recomp-out/obj-run (python3 tools/recomp/build.py
-                        run makes them; this script runs that first unless --no-game)
+  the translated game   rta_app: translated with the suggested fix set applied - the word
+                        patches of patches/SLUS-20973_4028A55F.pnach in the sections named in
+                        tools/play-net/sections-suggested.txt, what every other build of the
+                        game here runs with (recomp.py --pnach, into local/recomp-out/gen-app;
+                        objects in obj-rta_native_fix, and a headless bin/rta_native_fix as a
+                        by-product).  rta_app_orig (--original): the shared translation of
+                        the unpatched executable (gen, obj-run) - the one that is compared
+                        tick for tick with the original in the rig.
   the runtime           tools/recomp/rt/ (runtime, iop, script, host) - as it is now
   the renderer          tools/recomp/render/ (vu1, vif1, gs, renderer, the OpenGL backend,
                         and the VU1 main program translated to C++ when
@@ -65,17 +72,31 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--opt', default='-O2')
     parser.add_argument('--qt', default='/opt/homebrew/opt/qtbase')
-    parser.add_argument('--gen', default=os.path.join(OUT, 'gen'))
-    parser.add_argument('--game-objects', default=os.path.join(OUT, 'obj-run'))
+    parser.add_argument('--original', action='store_true', help='the unpatched game: rta_app_orig from the shared translation')
+    parser.add_argument('--pnach', default=os.path.join(ROOT, 'patches', 'SLUS-20973_4028A55F.pnach'))
+    parser.add_argument('--sections', default=os.path.join(ROOT, 'tools', 'play-net', 'sections-suggested.txt'))
     parser.add_argument('--no-game', action='store_true')
     parser.add_argument('--no-translation', action='store_true')
-    parser.add_argument('--name', default='rta_app')
     args = parser.parse_args()
     rt = os.path.join(RECOMP, 'rt')
     render = os.path.join(RECOMP, 'render')
     sound = os.path.join(RECOMP, 'sound')
+    if args.original:
+        args.name, args.gen, args.game_objects = 'rta_app_orig', os.path.join(OUT, 'gen'), os.path.join(OUT, 'obj-run')
+        translate, game = [], ['run', '--gen', args.gen]
+    else:
+        args.name, args.gen, args.game_objects = 'rta_app', os.path.join(OUT, 'gen-app'), os.path.join(OUT, 'obj-rta_native_fix')
+        translate = ['--out', args.gen, '--pnach', args.pnach, '--sections', args.sections]
+        game = ['run', '--gen', args.gen, '--name', 'rta_native_fix']
     if not args.no_game:
-        result = subprocess.run([sys.executable, os.path.join(RECOMP, 'build.py'), 'run', '--gen', args.gen])
+        result = subprocess.run([sys.executable, os.path.join(RECOMP, 'recomp.py')] + translate, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(result.stdout[-3000:] + result.stderr[-3000:])
+            return result.returncode
+        for line in result.stdout.splitlines():
+            if line.startswith(('patched', 'warning', 'entangled', 'instructions emitted as rt_unimpl', 'transfer targets')):
+                print('recomp: ' + line)
+        result = subprocess.run([sys.executable, os.path.join(RECOMP, 'build.py')] + game)
         if result.returncode != 0:
             return result.returncode
     objdir = os.path.join(OUT, 'obj-' + args.name.replace('rta_', ''))
@@ -101,7 +122,7 @@ def main():
     jobs.append((os.path.join(HERE, 'app_main.cpp'), app_flags + qt_flags, 'a_'))
     jobs.append((os.path.join(HERE, 'pad_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE, '-I', rt], 'a_'))
     link = [os.path.join(args.game_objects, n) for n in sorted(os.listdir(args.game_objects))
-            if n.endswith('.o') and (n.startswith('c_') or n in ('table.o', 'hle_weak.o'))]
+            if n.endswith('.o') and (n.startswith('c_') or n in ('table.o', 'hle_weak.o', 'patches.o'))]
     objects = []
     todo = []
     for source, flags, prefix in jobs:

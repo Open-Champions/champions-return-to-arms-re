@@ -24,8 +24,9 @@ source, a patch against Play! and scripts.
 
 | File | What it is |
 |---|---|
-| `build.sh` | gets Play! at commit `83700b2c31e593bc94e845b4b31b797be84dda59` into `local/play-web-src` (its own copy), applies `../play-net/play-net.patch` and `play-web.patch`, copies `src/` in, builds with Emscripten, and puts the page together in `local/play-web-site` |
+| `build.sh` | gets Play! at commit `83700b2c31e593bc94e845b4b31b797be84dda59` into `local/play-web-src` (its own copy), applies `../play-net/play-net.patch`, `play-web.patch` and `perf.patch`, copies `src/` in, builds with Emscripten, and puts the page together in `local/play-web-site` |
 | `play-web.patch` | the changes to Play! on top of `play-net.patch` (10 files): the video thread owning the canvas, the disc read in place by range requests, uniform blocks sent only when changed, counters, the build's link options |
+| `perf.patch` | applied by `build.sh` after the two above (18 files): about a fifth less work per frame with the picture and the simulation unchanged - VU1's flags computed only where its program reads them, picture transfers by row, the VIF unpack, linked blocks ([docs/issues/browser-perf.md](../../docs/issues/browser-perf.md)); its option `-DRTA_WASM_EXCEPTIONS=ON` is off |
 | `src/RtaWeb.cpp` | the front end in the emulator (takes the place of Play!'s `Source/ui_js/Main.cpp`): patches and display patches, the pad, sound into a ring, the video handler, counters and test aids |
 | `src/RtaWebNet.cpp`, `RtaWebNet.h` | online play: the sockets of the desktop application's network turned into messages for the relay, the Ethernet adaptor's hooks, the network setting on the memory card, and the "one-step online" driver's link to the page |
 | `src/RtaWebNetCore.cpp`, `RtaWebSock.h` | `../play-net/src/RtaNet.cpp` compiled for the browser without a change: its socket calls are given other names, which `RtaWebNet.cpp` carries out |

@@ -45,6 +45,7 @@ class Gs {
     bool no_interlace = true;           // drop the half-line of XYOFFSET
     int trace = 0;                      // > 0: print draws to stderr
     bool time_paths = false;
+    bool log_display = false;           // print display register changes and surface sizes to stderr
     int debug_entry = 0;                // the VU1 entry last started (for the trace)
     // Asked once per new texture: the size of the picture in the texture at this TBP0, from
     // the game's own header (false: not known).
@@ -66,7 +67,7 @@ class Gs {
   private:
     // ---- registers ----
     uint64_t reg[0x64];
-    uint64_t pmode = 0, dispfb[2] = {0, 0}, display[2] = {0, 0};
+    uint64_t pmode = 0, smode2 = 0, dispfb[2] = {0, 0}, display[2] = {0, 0};
     struct Queued { uint32_t x, y, z; float s, t, q; uint32_t u, v; uint8_t rgba[4]; };
     Queued vq[3];
     int vcount = 0;
@@ -92,6 +93,10 @@ class Gs {
     // ---- render targets ----
     struct Target { uint32_t id = 0; int width = 0, height = 0; uint64_t serial = 0; bool announced = false; uint32_t fbw = 0, psm = 0; };
     std::map<uint32_t, Target> targets;                 // by FBP
+    std::map<uint32_t, uint64_t> display_fbps[2];       // buffers DISPFB1/2 have named, and at which frame last
+    uint64_t frames_ended = 0;
+    unsigned circuits_on = 0;                           // PMODE.EN1/EN2 as ever set
+    bool display_size(uint32_t fbp, int& width, int& height) const;
     uint32_t next_target = 1;
     Target& target_at(uint32_t fbp, int width, int height);
     // ---- transfers and textures ----
@@ -102,12 +107,12 @@ class Gs {
     struct Transfer { bool active = false; uint32_t dbp = 0; size_t rect = 0, got = 0; } xfer;
     void start_transfer();
     void image_data(const uint8_t* bytes, size_t count);
-    struct Texture { uint32_t id; int width, height, picture_height; };
+    struct Texture { uint32_t id; int width, height, picture_height; bool height_known; };
     std::set<uint32_t> restore_tried;
     int cur_picture_height = 0;
     std::unordered_map<uint64_t, Texture> textures;     // by content key
     uint32_t next_texture = 1;
-    const Texture* texture_for(uint64_t tex0, uint64_t texa);
+    Texture* texture_for(uint64_t tex0, uint64_t texa);
     bool palette_of(const UploadSet& set, uint32_t cpsm, uint32_t* out, int entries);
 };
 

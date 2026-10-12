@@ -26,6 +26,9 @@
 //                                                  a controller made by the program, to test the map
 //                         app pads                 print the controller and what port 1 holds
 //                         app stats [reset]        print the pacing figures so far
+//                         app record FILE | app record stop
+//                                                  write the picture stream from here on (render/stream.h;
+//                                                  played back by rta_replay: draw lists, texture sheets)
 //   --test "TEXT"       a test run on a computer somebody is using: the window is titled
 //                       "AGENT TEST - TEXT", small, behind the others, takes no keyboard,
 //                       and the sound is silent whatever --volume says
@@ -46,6 +49,7 @@
 #include "backend_gl.h"
 #include "pad_host.h"
 #include "pipeline.h"
+#include "recorder.h"
 
 #include <QCoreApplication>
 #include <QEvent>
@@ -422,6 +426,7 @@ class Screen : public QObject {
 
 static Screen* g_screen;
 static app::Sink* g_sink;
+static Recorder g_recorder;                             // between the runtime and the sink; writes only while a file is open
 
 static void final_report() {                            // on the game's thread, when the run ends
     Screen& s = *g_screen;
@@ -490,6 +495,15 @@ static void app_command(const std::string& text, uint64_t frame) {
                (unsigned long long)frame, hostpad::name().empty() ? "none" : hostpad::name().c_str(), hostpad::generation(), g_pads.last_buttons.load(),
                sticks & 255, (sticks >> 8) & 255, (sticks >> 16) & 255, sticks >> 24, g_keys.load());
         fflush(stdout);
+    } else if (w[0] == "record" && w.size() >= 2) {
+        g_recorder.out.close();
+        g_recorder.first_frame = ~0ull;                 // not active: everything passes straight through
+        if (w[1] != "stop") {
+            g_recorder.started = false;
+            g_recorder.vu_data.clear();
+            if (g_recorder.out.open(text.substr(text.find(w[1])).c_str())) g_recorder.first_frame = 0;
+            else log_line("cannot write " + w[1]);
+        }
     } else if (w[0] == "stats") {
         g_screen->report_pace(w.size() >= 2 && w[1] == "reset");
     } else log_line("unknown app command: " + text);
@@ -601,6 +615,7 @@ int main(int argc, char** argv) {
     hostpad::start(log_line);
 
     static Renderer renderer;
+    if (getenv("RTA_GS_LOG")) renderer.gs.log_display = true;
     static AppSink sink;
     g_sink = &sink;
     sink.renderer = &renderer;
@@ -647,7 +662,9 @@ int main(int argc, char** argv) {
     static std::vector<char*> run_args;
     for (auto& a : args) run_args.push_back(&a[0]);
     static rta::Hooks hooks;
-    hooks.video = &sink;
+    g_recorder.next = &sink;
+    g_recorder.first_frame = ~0ull;
+    hooks.video = &g_recorder;
     hooks.pad = &g_pads;
     std::thread game([] { rta::run((int)run_args.size(), run_args.data(), hooks); });
     game.detach();

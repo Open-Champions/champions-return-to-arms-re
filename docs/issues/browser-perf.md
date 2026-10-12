@@ -13,7 +13,14 @@ with the picture and the game's simulation unchanged?
 **About a fifth of the work per frame is gone, with the picture and the simulation
 unchanged.** `tools/play-web/perf.patch` (18 files of the Play! tree, applied after
 `play-net.patch` and `play-web.patch`; it dry-runs clean against `local/play-web-src` as
-it was on 2026-10-12 11:00). Measured in Chrome 155 on the M5 Pro, first level
+it was on 2026-10-12 11:00). Since then `play-net.patch` has gained the emptying of a
+full register buffer (`DrainWriteBuffer`, `tools/play-net/README.md`) in the lines of
+`GSHandler.h` that this patch changes: its section for that file was written again on
+that base, and `tools/play-web/build.sh` applies the patch. The mark for "an event write
+is in the buffer" is now set after a full buffer has been emptied, because emptying
+processes the buffer and clears the mark; set before, a FINISH that arrives at a full
+buffer would have been stored unmarked and never seen. The figures below are of the
+patch before that change. Measured in Chrome 155 on the M5 Pro, first level
 standing, resolution factor 2, the Mac quiet (load 8 – 16), one run each, unchanged
 build measured twice:
 

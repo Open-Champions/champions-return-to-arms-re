@@ -26,7 +26,7 @@ emulator, is in `tools/recomp/`
 |---|---|
 | `build.sh` | clones Play! at commit `83700b2c31e593bc94e845b4b31b797be84dda59` into `local/play-playable`, applies the patch, copies `src/` in, builds `local/play-playable-build/Source/ui_qt/Play.app` |
 | `play.sh` | starts the application with the disc image, a data directory under `local/play-data/`, the patch file and the list of sections, and the lobby server's address |
-| `play-net.patch` | the changes to Play! (19 files): the Ethernet chip, the graphics handler (textures, sprites, the scanline mask), the frame limiter, the keyboard's defaults, the front end's hooks |
+| `play-net.patch` | the changes to Play! (21 files): the Ethernet chip, the graphics handler (textures, sprites, the scanline mask, frame copies), the frame limiter, the choice of arithmetic in the processor core (`FpUtils`, `PS2VM.cpp`), the keyboard's defaults, the front end's hooks |
 | `latency.py` | test: time from a button press to the first changed picture, and the spacing of presented pictures |
 | `src/RtaNet.h`, `RtaNet.cpp` | the network behind the emulated Ethernet adaptor (stand-alone C++, nothing of the emulator in it) |
 | `src/Rta.h`, `Rta.cpp`, `RtaMac.mm` | what joins it to the application: patches, the memory card's network setting, display patches, settings, thread priority, the control socket |
@@ -325,7 +325,8 @@ applied when the executable is `SLUS_209.73` with PCSX2's checksum `4028A55F`. A
 does with its every-frame patches, a word that is not what the patch says is written
 again at every vertical blank. The status bar and `rta.log` show a figure for the set
 ("set xxxxxxxx", from the addresses and values of the shared sections only): every
-player in a game has to have the same.
+player in a game has to have the same. For `sections-suggested.txt` as it is now the
+line reads "patches: 26 sections, 90 words, set 3f5b1e14".
 
 ## Texture dump and replacement
 
@@ -886,8 +887,15 @@ already does the browser's, and back when nobody needs it; in a running level it
 nothing and warns. The status bar says "browser arithmetic" while it is on and warns
 about a copy that cannot follow (a copy that says nothing is taken for one that can only
 do Play!'s own); `peers` lists each player's arithmetic; `--rta-arith browser|native|auto`
-fixes it. Compiled for the application and for the browser build; not yet tried between
-two copies.
+fixes it. Compiled for the application and for the browser build. Tried between two
+copies of the application through the lobby server on the same Mac (2026-10-12; the
+browser build itself was not part of it): the host started with `--rta-arith browser`,
+the joiner left at `auto`. The joiner heard "computes with browser arithmetic (can do:
+the browser's)", changed one second later in the room ("arithmetic: the machine now
+computes as a browser copy's does", `rta.log`), `peers` said `arith=browser` for both
+players on both copies, and the game ran in step: 506 and 436 lockstep frames in the
+first level and 500 after a level change, every sync hash the same on both, hit points
+`42033333` (the value to nearest) on both.
 
 **Measured with remembered characters** (two background test copies on one Mac, load
 average 60 to 140 from other work; each copy had used its character once before): host

@@ -2,9 +2,9 @@
 # Builds the browser version: Play! (https://github.com/jpd002/Play-, BSD 2-clause) at the
 # commit tools/play-net was written against, with tools/play-net/play-net.patch (the
 # changes this game needs in the emulator's core), play-web.patch (what a browser needs on
-# top of that), the sources in src/ and - for online play - the desktop application's
-# network and online driver (tools/play-net/src: RtaNet, RtaOnline), compiled to
-# WebAssembly with Emscripten.
+# top of that), perf.patch (less work per frame, on top of both: docs/issues/browser-perf.md),
+# the sources in src/ and - for online play - the desktop application's network and online
+# driver (tools/play-net/src: RtaNet, RtaOnline), compiled to WebAssembly with Emscripten.
 #
 #   brew install emscripten cmake ninja      # once
 #   tools/play-web/build.sh                  # clone (first time), patch, configure, build
@@ -18,7 +18,9 @@
 # Run again after changing src/ or web/: it copies them in and rebuilds what changed.
 # RTA_PLAY_SOURCE=<a Play! tree at the commit, untouched> makes the script copy that tree
 # instead of cloning. -DPROFILE=ON in RTA_CMAKE_ARGS gives a build whose page can show
-# the machine thread's time by zone (rta.zones()).
+# the machine thread's time by zone (rta.zones()); -DRTA_WASM_EXCEPTIONS=ON (perf.patch's
+# option, off unless asked for) compiles C++ exceptions as WebAssembly exceptions and
+# needs an empty build directory.
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
@@ -70,6 +72,7 @@ apply() {
 }
 apply play-net "$HERE/../play-net/play-net.patch"
 apply play-web "$HERE/play-web.patch"
+apply perf "$HERE/perf.patch"
 
 # our sources: the front end, and for online play the desktop application's network and
 # online driver as they are (only what has changed is copied, so that a second run

@@ -1200,24 +1200,47 @@ static u8* special_memory(u32& a, unsigned size) {
     return nullptr;
 }
 
+// An access to an address where nothing is.  The game makes such accesses in ordinary play
+// (Player_run 0x1ab7c0 reads a float through a track index it did not test,
+// docs/spec/player-tick.md; a button pressed while the publisher's logo shows makes the
+// allocator read 24 bytes below a null pointer, call site 0x1501b0).  The reference
+// emulator answers such a read with 0xCC in every byte and drops such a store, and the
+// game runs on; this machine does the same, so that it stays in step with a game played
+// there, and counts them for the report.  `--opt strict-memory=1` stops the run instead
+// (what this runtime did before: useful when looking for a fault of the translation).
+static u64 g_nothing_loads, g_nothing_stores;
+static bool g_strict_memory = false;
+struct NothingSeen { u32 addr, site; unsigned size; u64 field; bool store; };
+static std::vector<NothingSeen> g_nothing_seen;       // the first few, for the report
+static void nothing_there(bool store, u32 addr, unsigned size) {
+    if (g_strict_memory) rt_die("%s of %u bytes at 0x%08x, which is nothing", store ? "store" : "load", size, addr);
+    (store ? g_nothing_stores : g_nothing_loads)++;
+    if (g_nothing_seen.size() < 16) {
+        for (auto& s : g_nothing_seen) if (s.addr == addr && s.site == g_site && s.store == store) return;
+        g_nothing_seen.push_back({addr, g_site, size, g_fields, store});
+    }
+}
+
 u64 rt_load(u32 addr, unsigned size) {
     u32 a = addr;
     if (u8* p = special_memory(a, size)) { u64 v = 0; memcpy(&v, p, size); return v; }
     if (a >= 0x10000000 && a < 0x14000000) return hw_read(a, size);
     if (a >= 0x1FC00000 && a < 0x20000000) return 0;
-    rt_die("load of %u bytes from 0x%08x, which is nothing", size, addr);
+    nothing_there(false, addr, size);
+    return 0xCCCCCCCCCCCCCCCCull >> (64 - 8 * (size > 8 ? 8 : size));
 }
 void rt_store(u32 addr, unsigned size, u64 value) {
     u32 a = addr;
     if (u8* p = special_memory(a, size)) { memcpy(p, &value, size); return; }
     if (a >= 0x10000000 && a < 0x14000000) { hw_write(a, size, value); return; }
-    rt_die("store of %u bytes to 0x%08x, which is nothing", size, addr);
+    nothing_there(true, addr, size);
 }
 void rt_load128(u32 addr, u64* lo, u64* hi) {
     u32 a = addr;
     if (u8* p = special_memory(a, 16)) { memcpy(lo, p, 8); memcpy(hi, p + 8, 8); return; }
     if (a >= 0x10000000 && a < 0x14000000) { *lo = hw_read(a, 8); *hi = 0; return; }
-    rt_die("128-bit load from 0x%08x, which is nothing", addr);
+    nothing_there(false, addr, 16);
+    *lo = *hi = 0xCCCCCCCCCCCCCCCCull;
 }
 void rt_store128(u32 addr, u64 lo, u64 hi) {
     u32 a = addr;
@@ -1231,7 +1254,7 @@ void rt_store128(u32 addr, u64 lo, u64 hi) {
         else if (a == 0x10006000) { gif_stream(q.data(), 4); if (g_hooks.video) g_hooks.video->gif(q.data(), 4); }
         return;
     }
-    rt_die("128-bit store to 0x%08x, which is nothing", addr);
+    nothing_there(true, addr, 16);
 }
 
 void rt_call(Ctx* c, u32 target) {
@@ -1357,6 +1380,25 @@ void fn_0016b998(Ctx* c) {
 }
 
 // ---------------------------------------------------------------------------------------
+// Films.  movie_update 0x3205ec decodes one picture per frame with Sony's MPEG library,
+// which works through the Image Processing Unit (commands at 0x10002000, data through DMA
+// channels 3 and 4).  This machine has no such unit: a command is never answered and the
+// library polls for the answer for ever.  Until there is one, a film ends at its first
+// update - the game goes on as it does when a film has played to its end (g_movieFinished
+// 0x50602c, which splash_introMovie 0x321788 waits for).  `--opt films=original` runs the
+// game's own code instead (it then hangs in the first film unless a button skips it first).
+// ---------------------------------------------------------------------------------------
+static u64 g_films_skipped;
+void fn_003205ec(Ctx* c) {
+    static int original = -1;
+    if (original < 0) { const char* o = rt_option("films"); original = o && !strcmp(o, "original"); }
+    if (original) { orig_003205ec(c); return; }
+    if (!g_ram[0x50602C]) g_films_skipped++;
+    g_ram[0x50602C] = 1;
+    c->r[2] = 1;
+}
+
+// ---------------------------------------------------------------------------------------
 // Watches, in the format of the rig's tick log (expressions and types: script.cpp)
 // ---------------------------------------------------------------------------------------
 struct Watch { std::string name, expr, type; };
@@ -1397,6 +1439,12 @@ static void log_row(u64 number) {
            (unsigned long long)g_draw_frames, (unsigned long long)g_draw_packets, (unsigned long long)g_draw_textured,
            g_draw_frames ? (double)g_draw_packets / g_draw_frames : 0.0);
     printf("stores to addresses where no device is (lost): %llu\n", (unsigned long long)g_nothing_writes);
+    if (g_films_skipped) printf("films ended at their first picture (no Image Processing Unit): %llu\n", (unsigned long long)g_films_skipped);
+    printf("accesses to addresses where nothing is: %llu loads (answered with 0xCC bytes), %llu stores (dropped)\n",
+           (unsigned long long)g_nothing_loads, (unsigned long long)g_nothing_stores);
+    for (auto& n : g_nothing_seen)
+        printf("  %s of %u bytes at 0x%08x, last call site 0x%x, first at field %llu\n", n.store ? "store" : "load", n.size, n.addr, n.site,
+               (unsigned long long)n.field);
     printf("what the game asked the platform for:\n");
     for (auto& kv : g_counts) printf("  %10llu  %s\n", (unsigned long long)kv.second, kv.first.c_str());
     iop_report();
@@ -1438,6 +1486,10 @@ static bool read_file(const char* path, u8* into, size_t size) {
     fclose(f);
     return got == size;
 }
+
+// The words of a patch set the translation was made with (recomp.py --pnach writes
+// patches.cpp into the generated directory; a translation without patches has none).
+__attribute__((weak)) unsigned recomp_patches(const u32 (**words)[2]) { *words = nullptr; return 0; }
 
 static bool load_elf(const char* path, u32* entry) {
     FILE* f = fopen(path, "rb");
@@ -1602,6 +1654,7 @@ int run(int argc, char** argv, const Hooks& hooks) {
         for (auto& w : g_watches) fprintf(g_log, "\t%s", w.name.c_str());
         fprintf(g_log, "\n");
     }
+    if (const char* strict = rt_option("strict-memory")) g_strict_memory = atoi(strict) != 0;
     iop_init(iop);
 
     std::unique_lock<std::mutex> lock(g_big);
@@ -1665,6 +1718,13 @@ int run(int argc, char** argv, const Hooks& hooks) {
     } else if (mode == "boot") {
         if (elf.empty()) rt_die("boot needs --elf");
         if (!load_elf(elf.c_str(), &entry)) rt_die("cannot load %s", elf.c_str());
+        {
+            // the translated code already is the patched code; memory has to read the same
+            const u32 (*words)[2] = nullptr;
+            unsigned count = recomp_patches(&words);
+            for (unsigned k = 0; k < count; k++) if (words[k][0] <= RAM_SIZE - 4) W(words[k][0]) = words[k][1];
+            if (count) printf("patched: %u words of the fix set this translation was made with\n", count);
+        }
         W(thr(1) + T_VALID) = 1;
         W(thr(1) + T_STATUS) = TH_RUNNING;
         link_thread(1);

@@ -70,8 +70,9 @@ struct Sink : rta::VideoSink {
         blanks++;
         if (left_at != 0) game_ms += now_ms() - left_at;
         // the game loads textures as it goes: when the decoder met one it has no header
-        // for, look through memory again (at most twice a second: it takes milliseconds)
-        if (renderer->index.missed && blanks - last_scan >= 30) { renderer->index.missed = false; rescan(); }
+        // for, look through memory again (it takes milliseconds; the decoder asks once per
+        // texture and again only when the list has grown)
+        if (renderer->index.missed && blanks - last_scan >= 3) { renderer->index.missed = false; rescan(); }
         filling.put(render::SK_VBLANK, field, number, nullptr, 0);
         std::unique_lock<std::mutex> hold(lock);
         changed.wait(hold, [this] { return !has_waiting; });

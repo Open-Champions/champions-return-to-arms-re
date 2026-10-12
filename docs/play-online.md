@@ -138,10 +138,12 @@ page makes for you, your character, what happens when it stops).
   does ("browser arithmetic"; against the browser build, the same recorded session of
   12,400 frames with fights and level changes: every byte read was the same in every
   frame) and is written to change to it by itself when a browser player is in the room,
-  and to warn when a copy cannot follow. That choice has not been tried between two
-  copies yet and needs the next builds of both; until then the line above holds. An
-  application built from the current sources takes `--rta-arith browser` to try the
-  arithmetic by itself.
+  and to warn when a copy cannot follow. The choice has been tried between two copies of
+  the application (one started with `--rta-arith browser`, the other left alone: the
+  second changed in the room, both said so, and they stayed in step through the first
+  level and a level change); it has not been tried between a page and the application,
+  and the relay does not carry a browser player's packets to a player outside it, so
+  until that is built the line above holds.
   [issues/mixed-arithmetic.md](issues/mixed-arithmetic.md).
 - Every packet of a browser player goes through the relay on the server instead of
   straight to the other player, so the delay between two browser players is the sum of
@@ -373,14 +375,23 @@ have it.
   is lockstep: every machine computes the whole game itself.
 - The patch list. `play.sh` applies the sections named in
   `tools/play-net/sections-suggested.txt` from `patches/SLUS-20973_4028A55F.pnach`. The
-  status bar and `rta.log` show a figure for it ("patches: 19 sections, … set
-  xxxxxxxx"). Resolution, keys and the other settings of section 5 may differ: they do
-  not touch the game's simulation.
+  status bar and `rta.log` show a figure for it ("patches: 26 sections, 90 words, set
+  3f5b1e14" for the list as it is now; a copy made before 2026-10-12 has fewer sections
+  and another figure, and is warned about as below). The browser page shows the same
+  figure for the same list. Resolution, keys and the other settings of section 5 may
+  differ: they do not touch the game's simulation.
 - **The application compares the figure for you.** As soon as two players are in one
   game's room their copies tell each other which patch set they have. When they differ,
   **both** get a window and a line in the status bar: "another player has a DIFFERENT
   PATCH SET … do not start". A copy too old to say it is named as such after twelve
   seconds; then compare the figures yourselves. (It warns; it does not stop you.)
+- The arithmetic. Every machine of a game has to round its floating-point results the
+  same way. Application copies do by themselves (Play!'s own way, as the console); the
+  copies also tell each other which way they compute, and a copy left at its default
+  (`--rta-arith auto`) changes to a browser copy's way in the room when it hears a copy
+  that can only do that, and says so in the status bar ("browser arithmetic") and in
+  `rta.log`. Nothing to set; `--rta-arith browser|native` fixes it for tests. Section 2,
+  "Play in a browser", says what that does and does not make possible today.
 
 ## 7. Two people on different networks
 

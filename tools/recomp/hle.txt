@@ -5,3 +5,4 @@
 19d8b0   # gfx_beginFrame: once per displayed frame; the runtime logs its watches here
 16b998   # gfx_dmaHandler: feeds the frame's draw packets to the GS; called with -1 it starts a frame
 355d68   # sceSifInitRpc: handshake with the I/O processor (nothing to shake hands with)
+3205ec   # movie_update: one picture of a film per frame, decoded through the Image Processing Unit; the runtime ends a film at once while it has no such unit
