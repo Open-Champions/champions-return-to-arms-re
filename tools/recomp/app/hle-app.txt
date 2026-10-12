@@ -1,0 +1,11 @@
+# Functions the application supplies on top of tools/recomp/hle.txt (recomp.py --hle-add):
+# Sony's MPEG library as the game's film player calls it (app/film.cpp decodes on the host;
+# the library itself works through the Image Processing Unit, which this machine has not).
+# One hex address per line.
+3734f0   # sceMpegInit
+372948   # sceMpegCreate(mp, work area, size)
+3735a0   # sceMpegDelete(mp)
+3735a8   # sceMpegAddBs(mp, stream data, size)
+3735e8   # sceMpegGetPicture(mp, picture as 16 x 16 RGBA macroblocks, count)
+373688   # sceMpegReset(mp)
+373708   # sceMpegIsEnd(mp)

@@ -43,6 +43,11 @@ struct DrawCmd {
     bool linear = false;
     WrapMode wrap[2] = {WRAP_REPEAT, WRAP_REPEAT};
     float region[4] = {0, 0, 0, 0};     // minu, maxu, minv, maxv for the region modes
+    // a surface sampled as a texture of a format without eight bits of alpha: 1 = 24 bit
+    // (alpha is ta0), 2 = 16 bit (ta1 where the stored alpha is 0x80 or more, else ta0);
+    // aem: alpha 0 where the colour is black and ta0 would be taken
+    uint8_t texa_mode = 0, ta0 = 0, ta1 = 0x80;
+    bool aem = false;
     uint8_t tfx = 0;                    // 0 modulate, 1 decal, 2 highlight, 3 highlight 2
     bool tcc = false;                   // texture alpha used
     // interface art stored as two stacked fields: sample line L of the woven picture from

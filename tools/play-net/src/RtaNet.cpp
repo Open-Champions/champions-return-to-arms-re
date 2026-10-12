@@ -512,6 +512,21 @@ namespace
 	// the mark hands a keep-alive to its game, as with the patch set.
 	const uint8_t ARITH_MARK[] = {0x00, 0x06, 'R', 'T', 'A', 'a', 'r', 'i', '1'};
 	const size_t ARITH_SIZE = sizeof(ARITH_MARK) + 2;
+
+#ifdef __EMSCRIPTEN__
+	// ---- A desktop copy from before it could compute as a browser does --------------------
+	// Such a copy tells its patch set and says nothing about arithmetic. In a game with a
+	// browser copy it would fall out of step, and it has no warning for that. It does have
+	// one for a different patch set, which its player sees in the room, before a game is
+	// started, with the words that everyone needs the same build. So a browser copy tells a
+	// copy that has said its patch set and, six seconds after it was first heard, nothing
+	// about arithmetic (a current copy has said both three times by then) this figure with
+	// no words, in place of its own: "0b50137e", obsolete. The browser copy's own page shows
+	// its arithmetic warning at the same moment (rta-web.js). A copy that speaks about
+	// arithmetic after all is told the real figure again.
+	const uint32_t OLD_COPY_FIGURE = 0x0B50137E;
+	const int64_t OLD_COPY_AFTER = 6000;
+#endif
 }
 
 void CNet::SetArithmetic(uint8_t now)
@@ -608,6 +623,43 @@ void CNet::PollUdp()
 			sendto(socket->second.fd, datagram, sizeof(datagram), 0, reinterpret_cast<sockaddr*>(&to), sizeof(to));
 			if(peer.arithTold == 1) Log("arithmetic told to the player at %s:%u: this copy computes with %s", IpText(ntohl(to.sin_addr.s_addr)).c_str(), ntohs(to.sin_port), (arithNow == ARITH_BROWSER) ? "browser arithmetic" : "Play!'s own arithmetic");
 		}
+#ifdef __EMSCRIPTEN__
+		// a desktop copy that cannot compute as this one does and has no warning for it
+		for(auto& entry : m_peers)
+		{
+			Peer& peer = entry.second;
+			const int times = static_cast<int>(sizeof(PATCH_SET_TIMES) / sizeof(PATCH_SET_TIMES[0]));
+			if(peer.arithKnown)
+			{
+				if(peer.oldTold)
+				{
+					peer.oldTold = 0;
+					peer.told = 0; // the real figure, again
+				}
+				continue;
+			}
+			if(!peer.setKnown || peer.oldTold >= 3 || now - peer.firstHeard < OLD_COPY_AFTER + PATCH_SET_TIMES[peer.oldTold]) continue;
+			peer.oldTold++;
+			peer.told = times; // not this copy's own figure any more
+			auto socket = m_udp.find(peer.localPort);
+			if(socket == m_udp.end()) continue;
+			uint8_t datagram[PATCH_SET_SIZE] = {};
+			memcpy(datagram, PATCH_SET_MARK, sizeof(PATCH_SET_MARK));
+			uint8_t* at = datagram + sizeof(PATCH_SET_MARK);
+			at[0] = static_cast<uint8_t>(OLD_COPY_FIGURE >> 24);
+			at[1] = static_cast<uint8_t>(OLD_COPY_FIGURE >> 16);
+			at[2] = static_cast<uint8_t>(OLD_COPY_FIGURE >> 8);
+			at[3] = static_cast<uint8_t>(OLD_COPY_FIGURE);
+			sockaddr_in to = {};
+			to.sin_family = AF_INET;
+			to.sin_addr.s_addr = htonl(static_cast<uint32_t>(entry.first >> 16));
+			to.sin_port = htons(static_cast<uint16_t>(entry.first & 0xFFFF));
+			sendto(socket->second.fd, datagram, sizeof(datagram), 0, reinterpret_cast<sockaddr*>(&to), sizeof(to));
+			if(peer.oldTold == 1)
+				Log("the player at %s:%u says nothing about arithmetic (a desktop copy from before it could compute as a browser does): it is told the patch-set figure %08x so that it warns its player",
+				    IpText(ntohl(to.sin_addr.s_addr)).c_str(), ntohs(to.sin_port), OLD_COPY_FIGURE);
+		}
+#endif
 	}
 	for(auto& entry : m_udp)
 	{
@@ -644,6 +696,7 @@ void CNet::PollUdp()
 				{
 					peer.firstHeard = now;
 					peer.told = 0;
+					peer.oldTold = 0;
 				}
 				peer.lastHeard = now;
 				peer.localPort = entry.first;

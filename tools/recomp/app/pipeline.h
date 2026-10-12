@@ -40,7 +40,12 @@ struct Batch {
         records.push_back({kind, a, b, words.size(), count});
         if (count) words.insert(words.end(), data, data + count);
     }
-    void clear() { records.clear(); words.clear(); }
+    // A level's textures arrive in one frame (tens of megabytes): the three batches that
+    // go round would each keep that much for ever, so a buffer that large is given back.
+    void clear() {
+        records.clear();
+        if (words.capacity() > (4u << 20)) std::vector<uint32_t>().swap(words); else words.clear();
+    }
 };
 
 struct Sink : rta::VideoSink {

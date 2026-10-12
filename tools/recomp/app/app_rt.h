@@ -21,6 +21,9 @@ void set_finish_handler(void (*handler)());
 // End the run from the game's thread (prints the reports, ends the process).
 [[noreturn]] void finish(int code);
 
+bool films_linked();            // app/film.cpp is part of this program (the films play)
+void films_report();
+std::string sound_figures();    // key=value figures of the sound side (empty without tools/recomp/sound)
 uint64_t fields();              // vertical blanks since power-on
 double machine_seconds();       // the virtual clock
 

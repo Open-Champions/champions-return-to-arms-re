@@ -86,7 +86,8 @@ def main():
         translate, game = [], ['run', '--gen', args.gen]
     else:
         args.name, args.gen, args.game_objects = 'rta_app', os.path.join(OUT, 'gen-app'), os.path.join(OUT, 'obj-rta_native_fix')
-        translate = ['--out', args.gen, '--pnach', args.pnach, '--sections', args.sections]
+        translate = ['--out', args.gen, '--pnach', args.pnach, '--sections', args.sections,
+                     '--hle-add', os.path.join(HERE, 'hle-app.txt')]
         game = ['run', '--gen', args.gen, '--name', 'rta_native_fix']
     if not args.no_game:
         result = subprocess.run([sys.executable, os.path.join(RECOMP, 'recomp.py')] + translate, capture_output=True, text=True)
@@ -119,6 +120,9 @@ def main():
     jobs += [(os.path.join(rt, n), rt_flags, 'rt_') for n in RUNTIME]
     jobs.append((os.path.join(sound, 'sound_rta.cpp'), rt_flags + ['-I', sound], 'rt_'))
     jobs.append((os.path.join(HERE, 'app_rt.cpp'), rt_flags + ['-I', HERE], 'a_'))
+    if not args.original:
+        # the films: the library entry points of hle-app.txt, which only this translation leaves open
+        jobs.append((os.path.join(HERE, 'film.cpp'), rt_flags + ['-I', HERE], 'a_'))
     jobs.append((os.path.join(HERE, 'app_main.cpp'), app_flags + qt_flags, 'a_'))
     jobs.append((os.path.join(HERE, 'pad_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE, '-I', rt], 'a_'))
     link = [os.path.join(args.game_objects, n) for n in sorted(os.listdir(args.game_objects))

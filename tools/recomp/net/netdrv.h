@@ -82,6 +82,8 @@ std::string online_report();            // stage and outcome in words; never a n
 extern void (*ask_name)(const std::string& why);        // answer with give_name / decline_name
 extern void (*show_code)(const std::string& code);
 extern void (*show_note)(const std::string& note);      // when the note changes
+extern void (*show_warning)(const std::string& text);   // another player's copy is patched differently
+void ask_name_on_terminal(const std::string& why);      // the fallback, for a hook that has no window
 void give_name(const std::string& name);
 void decline_name();
 std::string check_name(const std::string& name);        // empty: fine

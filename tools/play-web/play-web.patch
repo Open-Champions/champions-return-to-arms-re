@@ -38,14 +38,17 @@ diff --git a/Source/GenericMipsExecutor.h b/Source/GenericMipsExecutor.h
 diff --git a/Source/Js_DiscImageDeviceStream.cpp b/Source/Js_DiscImageDeviceStream.cpp
 --- a/Source/Js_DiscImageDeviceStream.cpp
 +++ b/Source/Js_DiscImageDeviceStream.cpp
-@@ -3,7 +3,142 @@
+@@ -2,8 +2,198 @@
+ #include <stdexcept>
  #include <cassert>
  #include <emscripten.h>
++#include <emscripten/threading.h>
  #include <unistd.h>
 +#include <atomic>
 +#include <cstring>
 +#include <list>
 +#include <mutex>
++#include <string>
 +#include <vector>
  
 +//RTA(web): The disc image is read where the call is made - on the machine's thread,
@@ -55,6 +58,14 @@ diff --git a/Source/Js_DiscImageDeviceStream.cpp b/Source/Js_DiscImageDeviceStre
 +//in place, nothing is copied or sent anywhere) or, for tests, a file served by a local
 +//web server. Pieces of 128 KiB are fetched and the last 48 kept: the machine reads the
 +//disc 2 KiB at a time.
++//For a page that people use (docs/issues/browser-build.md, "For whoever opens the link"):
++// - A browser that does not answer a range request on a picked file's URL from a thread
++//   is served through the page's main thread instead (RtaWebDiscMode(1): the page's
++//   Module.rtaDiscRead reads the piece of the file and calls RtaWebDiscDone).
++// - A piece that cannot be read (the file was moved, its drive removed, the browser's
++//   permission taken back) is asked for again every 300 ms instead of ending the
++//   machine's thread: the page sees the error count rise, says so and lets the player
++//   choose the file again (RtaWebDiscSet), and the game goes on where it stood.
 +namespace
 +{
 +	const uint32 PIECE_SIZE = 0x20000;
@@ -65,13 +76,16 @@ diff --git a/Source/Js_DiscImageDeviceStream.cpp b/Source/Js_DiscImageDeviceStre
 +	std::atomic<uint32> g_discFetches(0);
 +	std::atomic<uint32> g_discFetchMicros(0);
 +	std::atomic<uint32> g_discErrors(0);
++	std::atomic<int> g_discMode(0);      //0: range requests on this thread; 1: through the page's main thread
++	std::atomic<uint32> g_discAnswer(0); //mode 1: 0 while the page is asked; then bytes read + 2, or 1 for "could not"
 +
 +	struct PIECE
 +	{
 +		uint64 position = 0;
 +		std::vector<uint8> data;
 +	};
-+	std::mutex g_pieceMutex;
++	std::mutex g_pieceMutex; //the pieces kept, the URL and the list for tests; never held across a fetch
++	std::mutex g_readMutex;  //one read at a time
 +	std::list<PIECE> g_pieces;
 +	std::vector<uint32> g_fetched; //the number of every piece fetched, in order (for tests)
 +}
@@ -85,6 +99,19 @@ diff --git a/Source/Js_DiscImageDeviceStream.cpp b/Source/Js_DiscImageDeviceStre
 +		g_discSize = static_cast<uint64>(size);
 +		g_pieces.clear();
 +		g_fetched.clear();
++	}
++
++	EMSCRIPTEN_KEEPALIVE void RtaWebDiscMode(int mode)
++	{
++		g_discMode = mode;
++	}
++
++	//Mode 1, called on the page's main thread: the piece asked for is in the buffer
++	//('got' bytes), or could not be read (negative).
++	EMSCRIPTEN_KEEPALIVE void RtaWebDiscDone(int got)
++	{
++		g_discAnswer = (got >= 0) ? static_cast<uint32>(got) + 2 : 1;
++		emscripten_futex_wake(&g_discAnswer, 1);
 +	}
 +
 +	//For tests: the number of the n-th piece fetched since the image was set, or -1
@@ -129,9 +156,26 @@ diff --git a/Source/Js_DiscImageDeviceStream.cpp b/Source/Js_DiscImageDeviceStre
 +});
 +// clang-format on
 +
++static int RtaWebDiscThroughPage(double position, void* buffer, int size)
++{
++	g_discAnswer = 0;
++	// clang-format off
++	MAIN_THREAD_ASYNC_EM_ASM({
++		if(Module["rtaDiscRead"]) Module["rtaDiscRead"]($0, $1, $2); else _RtaWebDiscDone(-1);
++	}, position, buffer, size);
++	// clang-format on
++	while(g_discAnswer.load() == 0)
++	{
++		emscripten_futex_wait(&g_discAnswer, 0, 100);
++	}
++	uint32 answer = g_discAnswer;
++	return (answer >= 2) ? static_cast<int>(answer - 2) : -2;
++}
++
 +static bool RtaWebDiscRead(uint64 position, uint8* buffer, uint64 size)
 +{
-+	std::lock_guard lock(g_pieceMutex);
++	std::lock_guard readLock(g_readMutex);
++	std::unique_lock lock(g_pieceMutex);
 +	while(size != 0)
 +	{
 +		uint64 piecePosition = position & ~static_cast<uint64>(PIECE_SIZE - 1);
@@ -144,19 +188,31 @@ diff --git a/Source/Js_DiscImageDeviceStream.cpp b/Source/Js_DiscImageDeviceStre
 +		{
 +			PIECE piece;
 +			piece.position = piecePosition;
-+			uint64 discSize = g_discSize;
-+			if(piecePosition >= discSize) return false;
-+			uint32 wanted = static_cast<uint32>(std::min<uint64>(PIECE_SIZE, discSize - piecePosition));
-+			piece.data.resize(wanted);
-+			double start = emscripten_get_now();
-+			int got = RtaWebDiscFetch(g_discUrl, static_cast<double>(piecePosition), piece.data.data(), static_cast<int>(wanted));
-+			g_discFetches++;
-+			g_fetched.push_back(static_cast<uint32>(piecePosition / PIECE_SIZE));
-+			g_discFetchMicros += static_cast<uint32>((emscripten_get_now() - start) * 1000.0);
-+			if(got != static_cast<int>(wanted))
++			for(;;)
 +			{
++				uint64 discSize = g_discSize;
++				if(piecePosition >= discSize) return false;
++				uint32 wanted = static_cast<uint32>(std::min<uint64>(PIECE_SIZE, discSize - piecePosition));
++				piece.data.resize(wanted);
++				std::string url = g_discUrl;
++				g_fetched.push_back(static_cast<uint32>(piecePosition / PIECE_SIZE));
++				//not under the lock: the page's main thread may want it (RtaWebDiscSet) while this waits
++				lock.unlock();
++				double start = emscripten_get_now();
++				int got = (g_discMode == 1)
++				              ? RtaWebDiscThroughPage(static_cast<double>(piecePosition), piece.data.data(), static_cast<int>(wanted))
++				              : RtaWebDiscFetch(url.c_str(), static_cast<double>(piecePosition), piece.data.data(), static_cast<int>(wanted));
++				g_discFetches++;
++				g_discFetchMicros += static_cast<uint32>((emscripten_get_now() - start) * 1000.0);
++				if(got == static_cast<int>(wanted))
++				{
++					lock.lock();
++					break;
++				}
++				//see the top of this file: the page offers to choose the image again; until then, ask again
 +				g_discErrors++;
-+				return false;
++				emscripten_thread_sleep(300);
++				lock.lock();
 +			}
 +			if(g_pieces.size() >= PIECE_COUNT) g_pieces.pop_back();
 +			g_pieces.push_front(std::move(piece));
@@ -181,7 +237,7 @@ diff --git a/Source/Js_DiscImageDeviceStream.cpp b/Source/Js_DiscImageDeviceStre
  void CJsDiscImageDeviceStream::Seek(int64 position, Framework::STREAM_SEEK_DIRECTION whence)
  {
  	switch(whence)
-@@ -15,6 +150,11 @@
+@@ -15,6 +205,11 @@
  		m_position += position;
  		break;
  	case Framework::STREAM_SEEK_END:
@@ -193,7 +249,7 @@ diff --git a/Source/Js_DiscImageDeviceStream.cpp b/Source/Js_DiscImageDeviceStre
  	{
  		uint32 positionLo = MAIN_THREAD_EM_ASM_INT({return Module.discImageDevice.getFileSize()});
  		uint32 positionHi = MAIN_THREAD_EM_ASM_INT({return Module.discImageDevice.getFileSize() / 4294967296});
-@@ -35,6 +175,16 @@
+@@ -35,6 +230,16 @@
  
  	assert(size <= std::numeric_limits<uint32>::max());
  

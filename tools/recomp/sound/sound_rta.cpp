@@ -7,10 +7,20 @@
 // this file (rta_sound.h: the SPU2 chip, Sony's sound remote, the game's stream driver),
 // compiled into this one object.
 //
-// Time: the mixer follows the machine's virtual clock.  One output sample (48 kHz) is
-// 6,144 cycles of the 294,912,000 Hz clock; at every remote call and every vertical blank
-// the sound is rendered up to "now" before anything else happens, so a register write or
-// a status read lands on the sample it would have landed on.
+// Time, two ways (sound-clock):
+//   machine  the mixer follows the machine's virtual clock.  One output sample (48 kHz) is
+//            6,144 cycles of the 294,912,000 Hz clock; at every remote call and every
+//            vertical blank the sound is rendered up to "now" before anything else happens,
+//            so a register write or a status read lands on the sample it would have landed
+//            on.  The same run gives the same sound and the same answers every time: for
+//            files, comparisons and runs that go faster than time.
+//   real     the sound side runs by itself, as the console's does: the device asks for
+//            its sound and the chip, the stream driver and its 6 ms timer run on the
+//            device's thread and clock.  The game's calls are carried out when they are
+//            made.  Voices keep playing and streams keep being fed out of their rings
+//            while the main side loads a level and makes no call for a third of a second.
+//            What the game is told (voice end flags, stream positions) then depends on
+//            when it asks, as on a console.
 //
 // Options (--opt key=value):
 //   sound-wav=FILE        write everything rendered to a WAV file (48 kHz, 16 bit, stereo)
@@ -18,7 +28,9 @@
 //   sound-out=timer       a stand-in device that only keeps time and discards the sound:
 //                         measures the buffering where no sound may be made
 //   sound-gain=0..1       device volume (0: the device runs, silent - for tests)
-//   sound-latency=MS      reserve held in front of the device (default 40)
+//   sound-clock=machine|real   see above (default machine; the application asks for real
+//                         when it runs paced with a device)
+//   sound-latency=MS      reserve held in front of the device (default 40; machine clock only)
 //   sound-interp=gauss|linear|nearest   the voices' interpolation (default gauss)
 //   sound-off=1           answer the calls, render nothing
 //   sound-log=FILE        one line per remote call: machine time, server, function,
@@ -35,8 +47,11 @@
 #include "drivers.cpp"
 #include "audio_out.cpp"
 
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
+#include <string>
 
 namespace {
 
@@ -61,6 +76,37 @@ bool g_off;
 FILE* g_log;
 u32 g_last_status[12];
 
+// ---- the sound side on its own clock -----------------------------------------------------
+bool g_real;                        // sound-clock=real
+std::mutex g_lock;                  // the engine, between the game's thread and the device's
+rta::snd::PullDevice* g_puller;
+u64 g_calls_waited;                 // remote calls that had to wait for the device's thread
+double g_longest_wait_ms;
+
+// What the engine renders while the device asks goes straight into the device's buffer
+// (and into the WAV file when one is written).
+class Capture : public AudioSink {
+public:
+    int16_t* out = nullptr;
+    size_t left = 0;
+    void write(const int16_t* s, size_t n) override {
+        if (g_tee.a) g_tee.a->write(s, n);
+        size_t take = n < left ? n : left;
+        if (take) { memcpy(out, s, take * 4); out += take * 2; left -= take; }
+    }
+} g_capture;
+
+class Puller : public rta::snd::AudioSource {
+public:
+    void pull(int16_t* stereo, size_t frames) override {
+        std::lock_guard<std::mutex> hold(g_lock);
+        g_capture.out = stereo; g_capture.left = frames;
+        if (g_engine && !g_off) g_engine->advance_to(g_engine->position() + frames);
+        if (g_capture.left) memset(g_capture.out, 0, g_capture.left * 4);
+        g_capture.out = nullptr; g_capture.left = 0;
+    }
+} g_source;
+
 Engine& engine() {
     if (g_engine) return *g_engine;
     g_engine = new Engine();
@@ -83,12 +129,27 @@ Engine& engine() {
         g_tee.a = rta::snd::open_wav_sink(text, 48000);
         if (!g_tee.a) fprintf(stderr, "sound: cannot write %s\n", text);
     }
-    if ((text = rt_option("sound-out"))) {
+    const char* clock = rt_option("sound-clock");
+    const char* out = rt_option("sound-out");
+    if (clock && !strcmp(clock, "real") && out && !g_off) {
+        // the sound side by itself: the device (or, where none may be used or none opens, a
+        // thread that keeps its time) asks for every 10 ms
+        const char* gain = rt_option("sound-gain");
+        g_real = true;
+        g_engine->set_sink(&g_capture);
+        if (!strcmp(out, "device")) g_puller = rta::snd::open_device_puller(48000, gain ? (float)atof(gain) : 1.0f, &g_source);
+        if (!g_puller) {
+            if (!strcmp(out, "device")) fprintf(stderr, "sound: no sound device; the sound side runs on a timer and is not heard\n");
+            g_puller = rta::snd::open_timer_puller(48000, &g_source);
+        }
+        return *g_engine;
+    }
+    if (out) {
         const char* gain = rt_option("sound-gain");
         const char* latency = rt_option("sound-latency");
         unsigned reserve = latency ? (unsigned)atoi(latency) : 40;
-        if (!strcmp(text, "device")) g_tee.b = rta::snd::open_device_sink(48000, reserve, gain ? (float)atof(gain) : 1.0f);
-        else if (!strcmp(text, "timer")) g_tee.b = rta::snd::open_timer_sink(48000, reserve);
+        if (!strcmp(out, "device")) g_tee.b = rta::snd::open_device_sink(48000, reserve, gain ? (float)atof(gain) : 1.0f);
+        else if (!strcmp(out, "timer")) g_tee.b = rta::snd::open_timer_sink(48000, reserve);
         if (!g_tee.b) fprintf(stderr, "sound: no sound device\n");
     }
     if (g_tee.a || g_tee.b) g_engine->set_sink(&g_tee);
@@ -102,14 +163,31 @@ Engine& engine() {
 }
 
 void catch_up(Engine& e) {
-    if (!g_off) e.advance_to(rt_cycles() / CYCLES_PER_SAMPLE);
+    if (!g_off && !g_real) e.advance_to(rt_cycles() / CYCLES_PER_SAMPLE);
 }
+
+// The game's thread takes the engine for one call.  On its own clock the device's thread
+// may be rendering: the call waits for it (counted; a request is rendered in well under a
+// millisecond).
+struct Hold {
+    std::unique_lock<std::mutex> lock;
+    Hold() : lock(g_lock, std::defer_lock) {
+        if (!g_real) return;
+        if (lock.try_lock()) return;
+        auto t0 = std::chrono::steady_clock::now();
+        lock.lock();
+        double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        g_calls_waited++;
+        if (ms > g_longest_wait_ms) g_longest_wait_ms = ms;
+    }
+};
 
 }  // namespace
 
 bool sound_rpc(u32 server, u32 function, u32 send, u32 send_size, u32 recv, u32 recv_size) {
     if (server != Engine::SERVER_SD && server != Engine::SERVER_STREAM) return false;
     Engine& e = engine();
+    Hold hold;
     catch_up(e);
     u8 reply[64];
     const u8* args = send != ~0u && send < RAM_SIZE && send_size <= RAM_SIZE - send ? g_ram + send : nullptr;
@@ -133,13 +211,35 @@ bool sound_rpc(u32 server, u32 function, u32 send, u32 send_size, u32 recv, u32 
 }
 
 void sound_vblank() {
-    if (g_engine) catch_up(*g_engine);
+    if (g_engine && !g_real) catch_up(*g_engine);
 }
 
 void sound_report() {
     if (!g_engine) return;
-    catch_up(*g_engine);
-    g_engine->report(stdout);
-    g_tee.close();
+    if (g_real) {
+        if (g_puller) g_puller->close();                // the device's thread is gone before the engine is read
+        g_engine->report(stdout);
+        printf("sound: on its own clock (sound-clock=real): %llu of the game's calls waited for the device's thread, %.2f ms at most\n",
+               (unsigned long long)g_calls_waited, g_longest_wait_ms);
+        if (g_puller) g_puller->report(stdout);
+        if (g_tee.a) g_tee.a->close();
+    } else {
+        catch_up(*g_engine);
+        g_engine->report(stdout);
+        g_tee.close();
+    }
     if (g_log) fclose(g_log), g_log = nullptr;
+}
+
+// Figures for whoever asks while the run goes on (the application's control socket): one
+// line of key=value.  Not part of rt.h.
+std::string rta_sound_figures() {
+    if (!g_engine) return "sound=none";
+    char text[256];
+    if (g_real && g_puller) {
+        rta::snd::PullFigures f = g_puller->figures();
+        snprintf(text, sizeof text, "sound=real sound_requests=%llu sound_late=%llu sound_longest_gap_ms=%.1f sound_s=%.2f sound_calls_waited=%llu",
+                 (unsigned long long)f.pulls, (unsigned long long)f.late, f.longest_gap_ms, (double)f.frames / 48000.0, (unsigned long long)g_calls_waited);
+    } else snprintf(text, sizeof text, "sound=machine sound_s=%.2f", (double)g_engine->position() / 48000.0);
+    return text;
 }

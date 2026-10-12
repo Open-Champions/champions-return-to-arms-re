@@ -1,0 +1,133 @@
+# poolmask.txt - words of pool objects that the "pool" and "poolraw" checksums leave out
+# (tools/recomp/soak/soakhooks.cpp, SOAK_MASK; docs/issues/native-soak.md "The object-pool
+# checksum").  Line: <virtual table of the class, hex, or *> <offset, hex> [<bits, hex>],
+# or <virtual table> nohard | skip.
+#
+# Built into the hooks: the three handle heads (+0, +4, +8) of every object; flag bit
+# 0x200000 and 0x100 of a Player.
+#
+# Flag 0x100 is the hit flash, set by damage and cleared by drawing (docs/objects.md): per
+# machine in every class.
+* c 100
+#
+# Learned: every (class, offset) below differed between two native machines of the 25-section
+# build at one or more of 42 sampled ticks of six games (seeds 1001, 1003, 1005, 1006,
+# 1010, 1011; 9,000 frames each) in which no player column, quest variable or shared seed
+# differed at any tick.  A word that is a heap address on both machines is not in the list
+# (the checksum takes any heap address as "a heap address").  The list says "differs
+# between machines in step", not "local by design": the classification of each is in the
+# document, and most are not classified.
+50dbe8 44	# JumpGate
+50dbe8 d0	# JumpGate
+50dc78 c8	# Savepoint
+50e470 130	# playerProjectile
+50e470 134	# playerProjectile
+50e470 138	# playerProjectile
+50e470 13c	# playerProjectile
+50e470 140	# playerProjectile
+50e470 144	# playerProjectile
+50e470 148	# playerProjectile
+50e470 14c	# playerProjectile
+50e470 150	# playerProjectile
+50e470 154	# playerProjectile
+50e470 158	# playerProjectile
+50e470 15c	# playerProjectile
+50e470 160	# playerProjectile
+50e470 16c	# playerProjectile
+50e470 170	# playerProjectile
+50e470 f8	# playerProjectile
+50e5a0 154	# MissileWeapon
+50e5a0 158	# MissileWeapon
+50e5a0 15c	# MissileWeapon
+50e5a0 160	# MissileWeapon
+50e5a0 16c	# MissileWeapon
+50e5a0 170	# MissileWeapon
+50ecf8 68	# GlowingCylinder
+50ecf8 6c	# GlowingCylinder
+50f298 44	# Torch
+50f298 68	# Torch
+50f298 6c	# Torch
+50f298 70	# Torch
+50f298 74	# Torch
+50f298 7c	# Torch
+50f298 80	# Torch
+50f298 84	# Torch
+50f298 88	# Torch
+50f590 120	# NPC
+511308 114	# Player
+511308 120	# Player
+511308 140	# Player
+511308 160	# Player
+511308 180	# Player
+511308 198	# Player
+511308 1a0	# Player
+511308 1b8	# Player
+511308 220	# Player
+511308 464	# Player
+511308 520	# Player
+511308 524	# Player
+511308 528	# Player
+511308 52c	# Player
+511308 90	# Player
+511308 94	# Player
+511308 98	# Player
+511308 9c	# Player
+511a88 44	# Gold
+511a88 58	# Gold
+511a88 64	# Gold
+511a88 84	# Gold
+511a88 88	# Gold
+511a88 8c	# Gold
+511a88 90	# Gold
+511a88 94	# Gold
+511a88 98	# Gold
+511a88 9c	# Gold
+511a88 a0	# Gold
+511a88 a4	# Gold
+511a88 a8	# Gold
+511a88 ac	# Gold
+511a88 b0	# Gold
+511a88 b4	# Gold
+511a88 b8	# Gold
+511a88 bc	# Gold
+511ba8 104	# PhProp
+511ba8 110	# PhProp
+511ba8 114	# PhProp
+511ba8 118	# PhProp
+511ba8 11c	# PhProp
+511ba8 120	# PhProp
+511ba8 124	# PhProp
+511ba8 128	# PhProp
+511ba8 12c	# PhProp
+511ba8 130	# PhProp
+511ba8 134	# PhProp
+511ba8 138	# PhProp
+511ba8 13c	# PhProp
+511c38 104	# ItemProp
+511c38 13c	# ItemProp
+512890 138	# Weather
+512890 13c	# Weather
+512890 1f4	# Weather
+513288 11c	# AddParticle
+513288 120	# AddParticle
+513288 124	# AddParticle
+513288 128	# AddParticle
+513288 13c	# AddParticle
+513288 44	# AddParticle
+513288 b4	# AddParticle
+5133c0 98	# AutoProp
+5133c0 a4	# AutoProp
+5138c8 98	# HackDoor
+5138c8 a4	# HackDoor
+5155e8 a8	# Nightmare
+515730 120	# Horsemen
+515730 160	# Horsemen
+515730 414	# Horsemen
+515730 c	# Horsemen
+515ef0 120	# Kobold
+5174b0 120	# Skelight
+5174b0 40c	# Skelight
+5174b0 c	# Skelight
+518810 60	# DarknessProjectile
+518810 64	# DarknessProjectile
+518c98 ac	# FireStorm

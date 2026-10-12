@@ -33,6 +33,7 @@
 #include <deque>
 #include <fstream>
 #include <map>
+#include <unordered_map>
 #include <mutex>
 #include <random>
 #include <set>
@@ -580,6 +581,7 @@ namespace
 			CGSH_OpenGL::g_textureDump = CGSH_OpenGL::TextureDumpFunction();
 			CGSH_OpenGL::g_textureLoad = CGSH_OpenGL::TextureLoadFunction();
 			CGSH_OpenGL::g_textureForget = CGSH_OpenGL::TextureForgetFunction();
+			CGSH_OpenGL::g_textureOrder = CGSH_OpenGL::TextureOrderFunction();
 			StopTextureThreads();
 			CFrameLimiter::SetExternalWait(CFrameLimiter::ExternalWaitFunction());
 			CGSHandler::g_presentClock = CGSHandler::PresentClock();
@@ -799,6 +801,15 @@ namespace
 						if(queued != m_textureQueue.end()) m_textureQueue.erase(queued);
 					}
 				};
+				// What to read first: the renderer says, frame by frame, how much of the screen
+				// each picture that is being read covers (see ReadTextureFiles)
+				CGSH_OpenGL::g_textureOrder = [this](const std::vector<std::pair<CGSH_OpenGL::TEXTURE_PICTURE_KEY, float>>& order) {
+					std::unordered_map<std::string, float> priority;
+					priority.reserve(order.size());
+					for(const auto& entry : order) priority.emplace(TextureName(entry.first), entry.second);
+					std::lock_guard<std::mutex> lock(m_textureMutex);
+					m_texturePriority.swap(priority);
+				};
 				for(int i = 0; i < 3; i++) m_textureThreads.emplace_back([this]() { ReadTextureFiles(); });
 				if(nameCount != 0) Log(Format("textures: %zu replacement file(s) in %s", nameCount, replaceDirectory.string().c_str()));
 			}
@@ -823,23 +834,55 @@ namespace
 			m_textureQueue.clear();
 			m_textureRead.clear();
 			m_textureAsked.clear();
+			m_texturePriority.clear();
 			return m_textureNames.size();
 		}
 
+		// The readers take the picture that covers most of the screen first (interface art
+		// counted fourfold: text is what the eye reads), then those asked for since the
+		// renderer last spoke, then those whose texture is not being drawn with, the most
+		// recently drawn first. Before, they were read in the order they were asked for,
+		// which is the order the game draws in: the ground at the far end of the view came
+		// before the character and the interface. A picture that is on the screen is read
+		// as work the person is waiting for; one that is not (a menu is up) as work that
+		// may wait, as all were before.
 		void ReadTextureFiles()
 		{
-			pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+			qos_class_t working = QOS_CLASS_UTILITY;
+			pthread_set_qos_class_self_np(working, 0);
 			for(;;)
 			{
 				std::string name;
 				uint32 generation = 0;
+				qos_class_t wanted = QOS_CLASS_UTILITY;
 				{
 					std::unique_lock<std::mutex> lock(m_textureMutex);
 					m_textureWake.wait(lock, [this]() { return m_textureStop || !m_textureQueue.empty(); });
 					if(m_textureStop) return;
-					name = m_textureQueue.front();
-					m_textureQueue.pop_front();
+					auto best = m_textureQueue.begin();
+					if(m_textureOrdered)
+					{
+						float bestPriority = -1e30f;
+						for(auto queued = m_textureQueue.begin(); queued != m_textureQueue.end(); queued++)
+						{
+							auto known = m_texturePriority.find(*queued);
+							float priority = (known != m_texturePriority.end()) ? known->second : 0.5f;
+							if(priority > bestPriority)
+							{
+								bestPriority = priority;
+								best = queued;
+							}
+						}
+						if(bestPriority > 0) wanted = QOS_CLASS_USER_INITIATED;
+					}
+					name = *best;
+					m_textureQueue.erase(best);
 					generation = m_textureGeneration;
+				}
+				if(wanted != working)
+				{
+					working = wanted;
+					pthread_set_qos_class_self_np(working, 0);
 				}
 				TexturePicture read;
 				QImage image(QString::fromStdString((m_textureReplaceDirectory / name).string()));
@@ -1750,6 +1793,52 @@ namespace
 				push(Step::WAIT, 3);
 				push(Step::REPLY, 0, "ok");
 			}
+			else if(name == "texorder" && words.size() == 2)
+			{
+				// texorder 0|1: the replacement pictures are read in the order they were
+				// asked for, as before (0), or what covers most of the screen first (1, the
+				// default). For measuring in one running game.
+				m_textureOrdered = (number(1, 1) != 0);
+				push(Step::REPLY, 0, "ok");
+			}
+			else if(name == "upscale" && words.size() == 2)
+			{
+				// upscale 0|1: point-sampled effect sprites, points and lines as the console
+				// draws them (0) or as a higher resolution factor wants them (1, the default)
+				CGSH_OpenGL::g_upscaleSmooth = (number(1, 1) != 0);
+				push(Step::WAIT, 2);
+				push(Step::REPLY, 0, "ok");
+			}
+			else if(name == "texcentre" && words.size() == 2)
+			{
+				// texcentre 0|1: filtered indexed textures read as Play! has it, half a
+				// texel off (0), or round the place asked for (1, the default)
+				CGSH_OpenGL::g_texelCentre = (number(1, 1) != 0);
+				push(Step::WAIT, 3);
+				push(Step::REPLY, 0, "ok");
+			}
+			else if(name == "edge" && words.size() == 2)
+			{
+				// edge 0|1: the whole of the console's picture is presented (0), or all but
+				// its outermost line and column, which a television does not show (1, the default)
+				CGSH_OpenGL::g_trimEdge = (number(1, 1) != 0);
+				push(Step::WAIT, 2);
+				push(Step::REPLY, 0, "ok");
+			}
+			else if(name == "drawlog" && words.size() >= 2)
+			{
+				// drawlog <file> [frames [x0 y0 x1 y1]]: how the game draws, for the next
+				// 'frames' pictures (1): a line for every draw; with a rectangle (pixels of
+				// the buffer drawn to) every primitive touching it vertex by vertex
+				std::string file = words[1];
+				uint32 frames = (words.size() >= 3) ? std::max<uint32>(1, std::min<uint32>(number(2, 1), 600)) : 1;
+				bool hasRegion = (words.size() >= 7);
+				float region[4] = {0, 0, 0, 0};
+				for(size_t i = 0; hasRegion && (i < 4); i++) region[i] = static_cast<float>(atof(words[3 + i].c_str()));
+				if(auto gs = m_vm->GetGSHandler()) gs->SendGSCall([=]() { CGSH_OpenGL::StartDrawLog(file, frames, hasRegion, region[0], region[1], region[2], region[3]); }, true);
+				push(Step::WAIT, frames + 2);
+				push(Step::REPLY, 0, "ok");
+			}
 			else if(name == "texmemory" && words.size() == 2)
 			{
 				// texmemory MB: what --rta-texture-memory sets, in the running game
@@ -1941,14 +2030,15 @@ namespace
 							             (unsigned long long)s.udpToServer, (unsigned long long)s.udpToPeers, (unsigned long long)s.udpFromPeers, s.dhcpDone ? 1 : 0, s.dnsAnswered ? 1 : 0);
 						}
 						const auto& tc = CGSH_OpenGL::g_textureCounters;
-						std::string textures = Format("textures_dumped=%llu textures_replaced=%llu tex_made=%llu tex_held=%llu tex_by_upload=%llu tex_by_memory=%llu tex_memory_read=%llu tex_in_place=%llu tex_short_lived=%llu uploads=%llu tex_bytes=%llu tex_replace_on=%d tex_replacements=%llu tex_replacement_bytes=%llu tex_pending=%llu tex_dropped=%llu tex_cropped=%llu tex_regrown=%llu tex_abandoned=%llu frame_copies=%llu frame_copy_uses=%llu gs_buffer_drains=%llu gs_buffer_most=%llu",
+						std::string textures = Format("textures_dumped=%llu textures_replaced=%llu tex_made=%llu tex_held=%llu tex_by_upload=%llu tex_by_memory=%llu tex_memory_read=%llu tex_in_place=%llu tex_short_lived=%llu uploads=%llu tex_bytes=%llu tex_replace_on=%d tex_replacements=%llu tex_replacement_bytes=%llu tex_pending=%llu tex_dropped=%llu tex_cropped=%llu tex_regrown=%llu tex_abandoned=%llu frame_copies=%llu frame_copy_uses=%llu gs_buffer_drains=%llu gs_buffer_most=%llu tex_warmed=%llu tex_pending_area=%llu smoothed_draws=%llu scaled_points=%llu",
 						                              static_cast<unsigned long long>(m_texturesDumped.load()), static_cast<unsigned long long>(m_texturesReplaced.load()), static_cast<unsigned long long>(tc.created.load()), static_cast<unsigned long long>(tc.alive.load()),
 						                              static_cast<unsigned long long>(tc.byUpload.load()), static_cast<unsigned long long>(tc.byMemory.load()), static_cast<unsigned long long>(tc.memoryHashed.load()), static_cast<unsigned long long>(tc.inPlace.load()),
 						                              static_cast<unsigned long long>(tc.shortLived.load()), static_cast<unsigned long long>(tc.uploads.load()), static_cast<unsigned long long>(tc.bytes.load()),
 						                              CGSH_OpenGL::g_textureReplaceOn.load() ? 1 : 0, static_cast<unsigned long long>(tc.replacements.load()), static_cast<unsigned long long>(tc.replacementBytes.load()),
 						                              static_cast<unsigned long long>(tc.replacementsPending.load()), static_cast<unsigned long long>(tc.replacementsDropped.load()),
 						                              static_cast<unsigned long long>(tc.replacementsCropped.load()), static_cast<unsigned long long>(tc.replacementsRegrown.load()), static_cast<unsigned long long>(tc.replacementsAbandoned.load()), static_cast<unsigned long long>(tc.frameCopies.load()), static_cast<unsigned long long>(tc.frameCopyUses.load()),
-						                              static_cast<unsigned long long>(CGSHandler::g_writeBufferDrains.load()), static_cast<unsigned long long>(CGSHandler::g_writeBufferMost.load()));
+						                              static_cast<unsigned long long>(CGSHandler::g_writeBufferDrains.load()), static_cast<unsigned long long>(CGSHandler::g_writeBufferMost.load()),
+						                              static_cast<unsigned long long>(tc.replacementsWarmed.load()), static_cast<unsigned long long>(tc.pendingArea.load()), static_cast<unsigned long long>(tc.smoothedDraws.load()), static_cast<unsigned long long>(tc.scaledPoints.load()));
 						Reply(Format("ok frame=%llu ms=%lld us=%llu cpu_us=%llu video_cpu_us=%llu display_hz=%.2f refreshes_per_frame=%d %s exe=%s game=%d %s", static_cast<unsigned long long>(m_frame.load()), static_cast<long long>(ms), static_cast<unsigned long long>(us),
 						             static_cast<unsigned long long>(m_cpuMicroseconds.load()), static_cast<unsigned long long>(m_gsCpuMicroseconds.load()), Rta::DisplayRefreshRate(), Rta::DisplayRefreshesPerFrame(), textures.c_str(), m_vm->m_ee->m_os->GetExecutableName(), m_isGame ? 1 : 0, net.c_str()));
 					}
@@ -2349,6 +2439,11 @@ namespace
 		std::mutex m_textureMutex; // for everything below
 		std::set<std::string> m_textureNames;
 		std::deque<std::string> m_textureQueue;           // asked for, not read yet
+		// what the renderer said of each picture being read at the end of the last frame:
+		// above zero the part of the screen it covers, below zero how long it has not been
+		// drawn (CGSH_OpenGL::g_textureOrder). The readers take the highest first.
+		std::unordered_map<std::string, float> m_texturePriority;
+		std::atomic<bool> m_textureOrdered{true};         // off (control socket "texorder 0"): in the order asked for, as before
 		std::set<std::string> m_textureAsked;             // in the queue, being read, or read
 		std::map<std::string, TexturePicture> m_textureRead; // read, not fetched yet (width 0: unreadable)
 		std::condition_variable m_textureWake;

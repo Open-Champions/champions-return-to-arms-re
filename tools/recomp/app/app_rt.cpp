@@ -7,8 +7,16 @@
 #include <cstdio>
 #include <vector>
 
+std::string rta_sound_figures() __attribute__((weak));     // tools/recomp/sound/sound_rta.cpp
+// tools/recomp/app/film.cpp defines these two when it is part of the program
+__attribute__((weak)) bool rta_films_linked() { return false; }
+__attribute__((weak)) void rta_films_report() {}
+
 namespace apprt {
 
+bool films_linked() { return rta_films_linked(); }
+void films_report() { rta_films_report(); }
+std::string sound_figures() { return rta_sound_figures ? rta_sound_figures() : std::string(); }
 rta::PadState script_pad(unsigned port) { return ::script_pad(port); }
 
 static void (*g_command)(const std::string&, uint64_t);

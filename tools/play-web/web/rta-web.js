@@ -21,6 +21,9 @@
 //   report=1       DEV: POST the speed figures to /report of the same server once a second
 //   shot=NAME.png  DEV: with auto=hub, POST one picture of the canvas in the level to /shot/NAME.png
 //   glprofile=1    DEV: with auto=hub, every WebGL call of the video thread counted for 5 s (slows it down)
+//   pause=0        DEV: the game is not paused when the page is hidden (auto= implies it: tests run unwatched)
+//   discread=page  DEV: a picked file is read through the page's main thread, as in a browser without range requests on it
+//   touch=1        the on-screen pad is shown at once
 //   title=TEXT     the page's title (tests: "AGENT TEST - browser build")
 //   relay=ws://127.0.0.1:PORT/relay   DEV: go online through a relay on this computer
 //
@@ -42,19 +45,39 @@ const B = {
 	lx: 0, ly: 1, rx: 2, ry: 3, up: 4, down: 5, left: 6, right: 7, select: 8, start: 9,
 	square: 10, triangle: 11, circle: 12, cross: 13, l1: 14, l2: 15, l3: 16, r1: 17, r2: 18, r3: 19,
 };
-const KEYS = {
-	ArrowUp: B.up, ArrowDown: B.down, ArrowLeft: B.left, ArrowRight: B.right,
-	KeyI: B.triangle, KeyJ: B.square, KeyK: B.cross, KeyL: B.circle,
-	KeyQ: B.l1, KeyE: B.r1, Digit1: B.l2, Digit3: B.r2, KeyX: B.l3, KeyC: B.r3,
-	Enter: B.start, Backspace: B.select,
+// What can be given a key or a controller button: the sixteen buttons and the four
+// directions of each stick. [name, what the page calls it]
+const CONTROLS = [
+	["up", "D-pad ↑"], ["down", "D-pad ↓"], ["left", "D-pad ←"], ["right", "D-pad →"],
+	["cross", "✕"], ["circle", "○"], ["square", "□"], ["triangle", "△"],
+	["l1", "L1"], ["r1", "R1"], ["l2", "L2"], ["r2", "R2"], ["l3", "L3 (left stick pressed)"], ["r3", "R3 (right stick pressed)"],
+	["start", "Start"], ["select", "Select"],
+	["ls-left", "Left stick ←"], ["ls-right", "Left stick →"], ["ls-up", "Left stick ↑"], ["ls-down", "Left stick ↓"],
+	["rs-left", "Right stick ←"], ["rs-right", "Right stick →"], ["rs-up", "Right stick ↑"], ["rs-down", "Right stick ↓"],
+];
+// a stick's direction: [stick (0 left, 1 right), axis (0 x, 1 y), direction]
+const STICKS = {
+	"ls-left": [0, 0, -1], "ls-right": [0, 0, 1], "ls-up": [0, 1, -1], "ls-down": [0, 1, 1],
+	"rs-left": [1, 0, -1], "rs-right": [1, 0, 1], "rs-up": [1, 1, -1], "rs-down": [1, 1, 1],
 };
-// keys that push a stick: [stick (0 left, 1 right), axis (0 x, 1 y), direction]
-const STICK_KEYS = {
-	KeyA: [0, 0, -1], KeyD: [0, 0, 1], KeyW: [0, 1, -1], KeyS: [0, 1, 1],
-	KeyF: [1, 0, -1], KeyH: [1, 0, 1], KeyT: [1, 1, -1], KeyG: [1, 1, 1],
+// Keys are named by their place on the keyboard (KeyboardEvent.code), not by the letter
+// printed there: the layout is the same on a French, German or Dvorak keyboard.
+const DEFAULT_KEYS = {
+	up: "ArrowUp", down: "ArrowDown", left: "ArrowLeft", right: "ArrowRight",
+	triangle: "KeyI", square: "KeyJ", cross: "KeyK", circle: "KeyL",
+	l1: "KeyQ", r1: "KeyE", l2: "Digit1", r2: "Digit3", l3: "KeyX", r3: "KeyC", start: "Enter", select: "Backspace",
+	"ls-left": "KeyA", "ls-right": "KeyD", "ls-up": "KeyW", "ls-down": "KeyS",
+	"rs-left": "KeyF", "rs-right": "KeyH", "rs-up": "KeyT", "rs-down": "KeyG",
 };
-// the Gamepad API's "standard" layout
-const PAD_BUTTONS = [B.cross, B.circle, B.square, B.triangle, B.l1, B.r1, B.l2, B.r2, B.select, B.start, B.l3, B.r3, B.up, B.down, B.left, B.right, -1, B.select];
+// A controller: "b<n>" a button, "a<n>+" / "a<n>-" an axis pushed that way, "h<n>u|r|d|l" a
+// direction of a hat switch that is reported as one axis. This is the Gamepad API's
+// "standard" layout, which browsers give for the pads they know (button 17, a
+// PlayStation pad's touchpad, is Select as well).
+const DEFAULT_PAD = {
+	cross: "b0", circle: "b1", square: "b2", triangle: "b3", l1: "b4", r1: "b5", l2: "b6", r2: "b7", select: "b8", start: "b9", l3: "b10", r3: "b11",
+	up: "b12", down: "b13", left: "b14", right: "b15",
+	"ls-left": "a0-", "ls-right": "a0+", "ls-up": "a1-", "ls-down": "a1+", "rs-left": "a2-", "rs-right": "a2+", "rs-up": "a3-", "rs-down": "a3+",
+};
 
 const G_IN_FRONTEND = 0x41b510, G_LEVEL_NAME = 0x41b721;
 
@@ -74,6 +97,13 @@ function setStatus(text, bad = false) {
 	statusElement.classList.toggle("bad", bad);
 	note("status: " + text);
 }
+// The bar under the status line: a fraction (0..1), "busy" (how far is not known), or null (gone).
+function progress(state) {
+	const bar = $("progress");
+	bar.hidden = state === null;
+	bar.classList.toggle("busy", state === "busy");
+	bar.firstElementChild.style.width = typeof state === "number" ? Math.round(Math.max(0, Math.min(1, state)) * 100) + "%" : "";
+}
 
 // settings: this browser's storage for this site
 function stored(key, fallback) {
@@ -90,6 +120,10 @@ const options = {
 	allSections: params.get("sections") === "*",
 	sound: params.get("sound") !== "0",
 	muted: stored("muted", "0") === "1",
+	volume: Math.max(0, Math.min(100, parseInt(stored("volume", "100"), 10) || 0)),
+	touch: params.get("touch") === "1" ? "on" : stored("touch", "auto"),
+	// tests run unwatched, often with the window covered: they are not paused
+	autoPause: params.get("pause") !== "0" && !params.get("auto") && params.get("report") !== "1",
 	glMain: params.get("gl") === "main",
 	limit: params.get("limit") !== "0",
 	disc: params.get("disc"),
@@ -110,7 +144,34 @@ let shared = 0;           // index into HEAPU32 of the shared words
 let running = false;
 let audio = null;
 const keysDown = new Set();
-let padSeen = false;
+// the start-up check (index.html); without it (the script alone on another page) everything is taken to be there
+const check = window.rtaCheck || { has: { discInPlace: true, audioWorklet: true, gamepads: true, database: true, locks: !!navigator.locks, filePicker: !!window.showOpenFilePicker }, missing: [], notes: [], browser: "this browser" };
+let pausedBy = "";        // "": the game runs; "hidden": the page was not in front; "disc": the image cannot be read
+let discFile = null;      // the picked file
+
+// What the page has to tell while the game runs: a line over the lower edge of the
+// picture, gone after a while or at a click (ms 0: it stays).
+let noticeTimer = 0;
+function notice(text, bad = false, ms = 9000) {
+	const element = $("notice");
+	element.textContent = text;
+	element.classList.toggle("bad", bad);
+	element.hidden = !text;
+	clearTimeout(noticeTimer);
+	if(text && ms) noticeTimer = setTimeout(() => { element.hidden = true; }, ms);
+	if(text) note("notice: " + text);
+}
+$("notice").addEventListener("click", () => notice(""));
+// Of the panels at the right (controls, settings) one is open at a time.
+function panel(id, open) {
+	for(const [other, its] of [["controls", "help"], ["settings", "settingsButton"]]) {
+		const show = other === id ? (open ?? $(other).hidden) : false;
+		$(other).hidden = !show;
+		$(its).setAttribute("aria-expanded", String(show));
+	}
+	if($(id).hidden) canvas.focus();
+	return !$(id).hidden;
+}
 
 // ---- the disc -----------------------------------------------------------------------
 // A reader is { size, read(offset, length) -> Promise<Uint8Array> }.
@@ -137,9 +198,16 @@ async function urlReader(url) {
 // reason for refusing.
 async function checkDisc(reader) {
 	const SECTOR = 2048;
-	if(reader.size < 64 * SECTOR) return "this is not a disc image (too small)";
+	if(reader.size < 64 * SECTOR) return "this file is not a disc image (it is far too small)";
 	const volume = await reader.read(16 * SECTOR, SECTOR);
-	if(String.fromCharCode(...volume.subarray(1, 6)) !== "CD001") return "this is not a disc image a PlayStation 2 game comes on (no ISO 9660 volume)";
+	if(String.fromCharCode(...volume.subarray(1, 6)) !== "CD001") {
+		// what people pick instead: the image still packed, or in an emulator's own format
+		const head = String.fromCharCode(...(await reader.read(0, 8)));
+		const packed = head.startsWith("PK") ? "a zip archive" : head.startsWith("7z") ? "a 7-Zip archive" : head.startsWith("Rar!") ? "a RAR archive" : head.startsWith("\x1f\x8b") ? "a gzip file" :
+			head.startsWith("MComprHD") ? "a CHD image" : head.startsWith("CISO") ? "a CSO image" : head.startsWith("ZISO") ? "a ZSO image" : "";
+		if(packed) return "this file is " + packed + ", not a plain disc image: unpack or convert it to an .iso file first and choose that";
+		return "this file is not a disc image a PlayStation 2 game comes on (no ISO 9660 volume in it)";
+	}
 	const view = new DataView(volume.buffer, volume.byteOffset);
 	const rootSector = view.getUint32(156 + 2, true), rootSize = view.getUint32(156 + 10, true);
 	const root = await reader.read(rootSector * SECTOR, Math.min(rootSize, 64 * SECTOR));
@@ -157,15 +225,15 @@ async function checkDisc(reader) {
 	const config = String.fromCharCode(...await reader.read(files["SYSTEM.CNF"].sector * SECTOR, Math.min(files["SYSTEM.CNF"].size, 4096)));
 	const boot = /BOOT2\s*=\s*cdrom0:\\?([^;\s]+)/i.exec(config);
 	if(!boot) return "this is not a PlayStation 2 game disc (SYSTEM.CNF names no program)";
-	if(boot[1].toUpperCase() !== GAME_EXECUTABLE) return "this is another game (" + boot[1] + "); wanted is Champions: Return to Arms, " + GAME_EXECUTABLE;
+	if(boot[1].toUpperCase() !== GAME_EXECUTABLE) return "this is the disc of another game, or of another country's release (it names " + boot[1] + "); wanted is Champions: Return to Arms, US release, " + GAME_EXECUTABLE;
 	const program = files[GAME_EXECUTABLE];
-	if(!program) return "the disc's program " + GAME_EXECUTABLE + " is missing";
+	if(!program) return "the disc image is damaged: its program " + GAME_EXECUTABLE + " is missing";
 	const bytes = await reader.read(program.sector * SECTOR, program.size);
 	const words = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.length >> 2);
 	let crc = 0;
 	for(let i = 0; i < words.length; i++) crc ^= words[i];
 	crc >>>= 0;
-	if(crc !== GAME_CRC) return "this is Champions: Return to Arms, but another version of it (checksum " + crc.toString(16).toUpperCase().padStart(8, "0") + "; wanted is v2.00, " + GAME_CRC.toString(16).toUpperCase() + ")";
+	if(crc !== GAME_CRC) return "this is Champions: Return to Arms, but not the version this page is made for, or a changed or damaged copy (its program's checksum is " + crc.toString(16).toUpperCase().padStart(8, "0") + "; wanted is version 2.00, " + GAME_CRC.toString(16).toUpperCase() + ")";
 	return "";
 }
 
@@ -177,25 +245,83 @@ function writeString(text) {
 	return pointer;
 }
 
-async function boot(reader, url, name) {
+// 'file': the picked file behind the URL (null: the URL is a server's).
+async function boot(reader, url, name, file = null) {
 	setStatus("Checking the disc image…");
+	progress("busy");
 	let refusal;
-	try { refusal = await checkDisc(reader); } catch(e) { refusal = "the disc image could not be read (" + e.message + ")"; }
+	try { refusal = await checkDisc(reader); } catch(e) {
+		refusal = "the file could not be read (" + (/NotReadable|NotFound|Security|NotAllowed/.test(e.name) ? "the browser may not read it any more, or it is no longer where it was" : e.message) + ")";
+	}
+	progress(null);
 	if(refusal) {
-		setStatus("Not started: " + refusal + ".", true);
+		setStatus((running ? "Not taken: " : "Not started: ") + refusal + ".", true);
 		return false;
 	}
+	discFile = file;
+	// a browser that answers no range requests on a picked file from a thread: the pieces go through this thread (rtaDiscRead)
+	if(module._RtaWebDiscMode) module._RtaWebDiscMode(file && (!check.has.discInPlace || params.get("discread") === "page") ? 1 : 0);
 	const urlPointer = writeString(url), namePointer = writeString(name);
 	module._RtaWebDiscSet(urlPointer, reader.size);
-	module._rtaBoot(namePointer);
+	// When the game runs already it is waiting for its disc (discWatch): it goes on with this one.
+	if(!running) module._rtaBoot(namePointer);
 	module._free(urlPointer);
 	module._free(namePointer);
+	const first = !running;
 	running = true;
+	discLost = false;
+	discGrace = performance.now() + 2500; // a read that failed while the new image was being put in is not counted against it
 	$("start").hidden = true;
 	canvas.focus();
 	setStatus("Running.");
 	keepAwake();
+	if(first) firstHints();
 	return true;
+}
+// Mode 1 of the disc stream (Js_DiscImageDeviceStream.cpp): the machine's thread asks for a
+// piece of the picked file and waits; it is put into the shared memory here.
+function discReadForMachine(position, buffer, size) {
+	const file = discFile;
+	(file ? file.slice(position, position + size).arrayBuffer() : Promise.reject(new Error("no file"))).then(
+		(data) => { module.HEAPU8.set(new Uint8Array(data), buffer); module._RtaWebDiscDone(data.byteLength); },
+		(e) => { note("disc: a piece could not be read (" + e + ")"); module._RtaWebDiscDone(-1); });
+}
+// The image cannot be read any more (the file was moved or renamed, its drive removed, or
+// the browser's permission taken back): the machine waits and asks again; the player is
+// told and can choose the file again, and the game goes on where it stood.
+let discLost = false, discErrors = 0, discQuiet = 0, discGrace = 0;
+function discWatch(errors) {
+	const more = errors > discErrors && performance.now() > discGrace;
+	discErrors = errors;
+	if(discLost && !more && ++discQuiet >= 3) {
+		// three seconds without a failed read: the same file is there again (its drive came back)
+		discLost = false;
+		$("start").hidden = true;
+		setStatus("Running.");
+		notice("The disc image can be read again.");
+		canvas.focus();
+	}
+	if(more) discQuiet = 0;
+	if(!more || discLost || !running) return;
+	discLost = true;
+	$("start").hidden = false;
+	$("choose").hidden = false;
+	setStatus(options.disc ? "The disc image can no longer be read from the test server." :
+		"The game is waiting: your disc image can no longer be read. The file was moved or renamed, its drive was removed, or the browser's permission to read it has ended. Choose it again and the game goes on where it stood.", true);
+	notice("");
+}
+// What a new player is not told by the game itself: once per visit, after the start.
+function firstHints() {
+	const parts = [];
+	if(options.sound && check.has.audioWorklet && (!audio || audio.context.state !== "running")) parts.push("Sound starts with your next click or key press.");
+	if(check.has.gamepads && !activePad()) parts.push("Controller: press a button on it and it is in use.");
+	parts.push("Keys and controller buttons are under Controls.");
+	notice(parts.join(" "), false, 14000);
+	if(options.touch === "on" || (options.touch === "auto" && check.has.touch && !check.has.finePointer)) touchPad(true);
+	if(navigator.storage && navigator.storage.persist && card.kept && !/Firefox/.test(navigator.userAgent)) {
+		// asks the browser not to clear the saved games when it runs short of room (Firefox would put a question to the player: not asked there)
+		navigator.storage.persist().then((kept) => note("storage: " + (kept ? "kept by the browser for good" : "may be cleared by the browser when it runs short of room"))).catch(() => {});
+	}
 }
 
 // The screen stays on while the game runs. A controller does not count as activity for
@@ -214,13 +340,49 @@ document.addEventListener("visibilitychange", keepAwake);
 // The image the player picked. It is read in place, through a URL that only this page
 // can use (URL.createObjectURL): nothing is copied and nothing leaves the computer.
 async function bootFile(file, handle) {
+	const url = URL.createObjectURL(file);
+	const ok = await boot(fileReader(file), url, /\.(bin|img)$/i.test(file.name) ? "disc.bin" : "disc.iso", file);
+	if(!ok) { URL.revokeObjectURL(url); return false; }
 	if(discUrl) URL.revokeObjectURL(discUrl);
-	discUrl = URL.createObjectURL(file);
-	const ok = await boot(fileReader(file), discUrl, /\.(bin|img)$/i.test(file.name) ? "disc.bin" : "disc.iso");
-	if(ok && handle) await remember("disc", handle);
-	return ok;
+	discUrl = url;
+	if(handle) await remember("disc", handle);
+	showDisc(file.name, !!handle);
+	return true;
 }
 let discUrl = null;
+function showDisc(name, kept) {
+	$("discSay").textContent = name ? "In use: " + name + (kept ? ". This browser remembers where it is and offers it at the next visit." : check.has.filePicker ? "." : ". This browser cannot remember a file: you choose it at every visit.") : "";
+	$("discForget").hidden = !kept;
+}
+// A file dropped on the page is taken like a chosen one (and remembered, where the browser hands out a handle for it).
+function dropTarget(event) {
+	return (!running || discLost) && module && rta.state !== "loading" && event.dataTransfer && Array.from(event.dataTransfer.types || []).includes("Files");
+}
+for(const kind of ["dragenter", "dragover"]) {
+	window.addEventListener(kind, (event) => {
+		if(!dropTarget(event)) return;
+		event.preventDefault();
+		event.dataTransfer.dropEffect = "copy";
+		$("start").classList.add("drop");
+	});
+}
+window.addEventListener("dragleave", () => $("start").classList.remove("drop"));
+window.addEventListener("drop", async (event) => {
+	$("start").classList.remove("drop");
+	if(!dropTarget(event)) return;
+	event.preventDefault();
+	const item = event.dataTransfer.items && event.dataTransfer.items[0];
+	let file = event.dataTransfer.files[0], handle = null;
+	try {
+		// asked for before anything is awaited: the items are gone afterwards
+		const asked = item && item.getAsFileSystemHandle ? item.getAsFileSystemHandle() : null;
+		handle = asked ? await asked : null;
+		if(handle && handle.kind !== "file") { setStatus("That is a folder: drop the disc image itself.", true); return; }
+		if(handle) file = await handle.getFile();
+	} catch(e) { handle = null; }
+	startSound();
+	if(file) await bootFile(file, handle);
+});
 
 // A small store in the browser's database: the handle of the picked file can be kept
 // there (browsers with the File System Access interface), so that the next visit only
@@ -261,11 +423,15 @@ $("choose").addEventListener("click", async () => {
 	let handle;
 	try {
 		[handle] = await window.showOpenFilePicker({ id: "rta-disc", types: [{ description: "Disc image", accept: { "application/octet-stream": [".iso", ".bin", ".img"] } }] });
-	} catch(e) { return; } // closed without choosing
-	await bootFile(await handle.getFile(), handle);
+	} catch(e) {
+		if(e.name !== "AbortError") { note("file dialog: " + e); $("discFile").click(); } // AbortError: closed without choosing
+		return;
+	}
+	try { await bootFile(await handle.getFile(), handle); } catch(e) { setStatus("The file could not be opened (" + e.message + ").", true); }
 });
 $("discFile").addEventListener("change", async (event) => {
 	const file = event.target.files[0];
+	event.target.value = ""; // the same file can be chosen again
 	if(file && module) await bootFile(file, null);
 });
 $("resume").addEventListener("click", async () => {
@@ -274,32 +440,61 @@ $("resume").addEventListener("click", async () => {
 	if(!handle) return;
 	try {
 		if((await handle.queryPermission({ mode: "read" })) !== "granted" && (await handle.requestPermission({ mode: "read" })) !== "granted") {
-			setStatus("The browser was not allowed to read the image again; choose it once more.", true);
+			setStatus("The browser asked whether this page may read " + handle.name + " again and the answer was no (or the question was closed). Press the button again and allow it, or choose the file once more.", true);
 			return;
 		}
 		await bootFile(await handle.getFile(), handle);
 	} catch(e) {
-		setStatus("The remembered image is no longer where it was (" + e.name + "); choose it again.", true);
+		setStatus(handle.name + " is no longer where it was (moved, renamed, or its drive is not attached). Choose your disc image again.", true);
+		note("remembered image: " + e);
 		await remember("disc", null);
 		$("resume").hidden = true;
+		$("choose").textContent = "Choose your disc image…";
 	}
 });
-$("change").addEventListener("click", () => { saveCard(); location.reload(); });
-$("fullscreen").addEventListener("click", () => {
-	$("stage").requestFullscreen?.();
-	canvas.focus();
+$("discForget").addEventListener("click", async () => {
+	await remember("disc", null);
+	showDisc(discFile ? discFile.name : "", false);
+	notice("Forgotten: the next visit asks for the disc image.");
 });
-$("help").addEventListener("click", () => {
-	const panel = $("controls");
-	panel.hidden = !panel.hidden;
-	$("help").setAttribute("aria-expanded", String(!panel.hidden));
-	canvas.focus();
-});
-function showMute() {
-	$("mute").textContent = options.muted ? "Sound off" : "Sound on";
-	$("mute").setAttribute("aria-pressed", String(options.muted));
-	audio?.node?.port.postMessage({ muted: options.muted });
+$("change").addEventListener("click", async () => { await flushCard(); location.reload(); });
+
+// Full screen: the picture with what lies over it (pause, notices, the on-screen pad).
+function fullScreenElement() { return document.fullscreenElement || document.webkitFullscreenElement || null; }
+function fullScreen() {
+	const stage = document.querySelector("main");
+	if(fullScreenElement()) { (document.exitFullscreen || document.webkitExitFullscreen).call(document); return; }
+	const request = stage.requestFullscreen || stage.webkitRequestFullscreen;
+	if(!request) { notice("This browser has no full screen for a page" + (check.has.system === "iPhone or iPad" ? " (on an iPhone or iPad: Share → Add to Home Screen opens the page without the browser's bars)" : "") + ".", true); return; }
+	try {
+		const asked = request.call(stage);
+		if(asked && asked.catch) asked.catch((e) => notice("The browser refused full screen (" + e.message + ").", true));
+	} catch(e) { notice("The browser refused full screen (" + e.message + ").", true); }
 }
+$("fullscreen").addEventListener("click", () => { fullScreen(); canvas.focus(); });
+canvas.addEventListener("dblclick", fullScreen);
+for(const kind of ["fullscreenchange", "webkitfullscreenchange"]) {
+	document.addEventListener(kind, () => { $("fullscreen").textContent = fullScreenElement() ? "Leave full screen" : "Full screen"; canvas.focus(); });
+}
+$("help").addEventListener("click", () => { if(panel("controls")) showBindings(); });
+$("settingsButton").addEventListener("click", () => { if(panel("settings")) showCard(); });
+function showMute() {
+	const asleep = !options.muted && running && options.sound && (!audio || audio.context.state !== "running") && !pausedBy;
+	$("mute").textContent = options.muted ? "Sound off" : "Sound on";
+	$("mute").title = asleep ? "The browser lets a page make sound only after a click or a key press on it" : "";
+	$("mute").setAttribute("aria-pressed", String(options.muted));
+	if(audio && audio.node) audio.node.port.postMessage({ muted: options.muted, volume: (options.volume / 100) ** 2 });
+}
+$("volume").value = String(options.volume);
+$("volumeSay").textContent = options.volume + " %";
+$("volume").addEventListener("input", () => {
+	options.volume = parseInt($("volume").value, 10);
+	$("volumeSay").textContent = options.volume + " %";
+	store("volume", String(options.volume));
+	if(options.muted && options.volume > 0) { options.muted = false; store("muted", "0"); }
+	startSound();
+	showMute();
+});
 $("mute").addEventListener("click", () => {
 	options.muted = !options.muted;
 	store("muted", options.muted ? "1" : "0");
@@ -310,57 +505,225 @@ $("mute").addEventListener("click", () => {
 if(!options.sound) $("mute").hidden = true;
 
 // ---- input --------------------------------------------------------------------------
-function axisValue(v) {
-	// nothing inside 15 % of the way, then evenly to the edge
-	const magnitude = Math.abs(v);
-	if(magnitude < 0.15) return 128;
-	const scaled = Math.sign(v) * Math.min(1, (magnitude - 0.15) / 0.85);
-	return Math.max(0, Math.min(255, Math.round(128 + scaled * 127)));
+// Which key and which controller button is which: 'keyOf' (control -> key), and for a
+// controller a table per controller (by the name the browser gives it), both kept in this
+// browser's storage. A controller the browser reports with the "standard" layout needs
+// no table; any other starts with the same numbers as a guess and can be set button by
+// button under Controls.
+function parsed(text, fallback) {
+	try { const value = JSON.parse(text); return value && typeof value === "object" ? value : fallback; } catch(e) { return fallback; }
 }
+const keyOf = { ...DEFAULT_KEYS, ...parsed(stored("keys", "{}"), {}) };
+let controlOfKey = {};
+function keysChanged() {
+	controlOfKey = {};
+	for(const [control] of CONTROLS) if(keyOf[control]) controlOfKey[keyOf[control]] = control;
+}
+keysChanged();
+const padMaps = parsed(stored("pads", "{}"), {});
+let padInUse = -1, padName = "", padHeld = false;
+const touchDown = new Map();   // the on-screen pad: control -> how far (0..1)
+let asking = null;             // Controls: { control, kind: "key" | "pad", queue, rest, wait } while a key or a button is waited for
+
+function padMapOf(pad) { return padMaps[pad.id] || DEFAULT_PAD; }
+function shortPad(id) { return id.replace(/\s*\((STANDARD GAMEPAD\s*)?Vendor:.*$/i, "").replace(/^[0-9a-f]{4}-[0-9a-f]{4}-/i, "").trim() || id; }
+// A button's value: browsers give "pressed", a value from 0 to 1 (triggers), or both.
+function buttonValue(button) {
+	if(!button) return 0;
+	const value = button.value || 0;
+	return Math.max(value, button.pressed && !(value > 0) ? 1 : 0);
+}
+// how far one source of a controller is pushed, 0..1
+function padSource(pad, source) {
+	if(!source) return 0;
+	const index = parseInt(source.slice(1), 10);
+	if(source[0] === "b") return buttonValue(pad.buttons[index]);
+	const value = pad.axes[index];
+	if(value === undefined) return 0;
+	if(source[0] === "a") return Math.max(0, source.endsWith("-") ? -value : value);
+	// a hat switch as one axis: eight places clockwise from up (-1) in steps of 2/7, beyond 1 at rest
+	if(Math.abs(value) > 1.05) return 0;
+	const place = Math.round((value + 1) * 3.5) % 8, wanted = "urdl".indexOf(source[source.length - 1]) * 2;
+	return place === wanted || place === (wanted + 1) % 8 || place === (wanted + 7) % 8 ? 1 : 0;
+}
+function padBusy(pad) { return pad.buttons.some((button) => buttonValue(button) > 0.5); }
+// The controller in use is the one a button was pressed on last: a browser shows a
+// controller to a page only after a button press on it, and may list things that are none.
+function activePad() {
+	let pads = [];
+	try { pads = navigator.getGamepads ? Array.from(navigator.getGamepads()).filter((pad) => pad && pad.connected) : []; } catch(e) { /* not allowed here */ }
+	let pad = pads.find((one) => one.index === padInUse) || null;
+	if(!pad || !padBusy(pad)) pad = pads.find((one) => one !== pad && padBusy(one)) || pad;
+	if(!pad) { padInUse = -1; return null; }
+	if(pad.index !== padInUse || pad.id !== padName) {
+		padInUse = pad.index;
+		padName = pad.id;
+		note("controller: " + pad.id + " (" + (pad.mapping || "no standard layout") + ")");
+		if(pad.mapping !== "standard" && !padMaps[pad.id]) {
+			notice("This controller (" + shortPad(pad.id) + ") has no standard layout in this browser. If its buttons are wrong: Controls → Set up the controller.", false, 15000);
+		} else if(running) notice("Controller in use: " + shortPad(pad.id) + ".", false, 5000);
+		if(!$("controls").hidden) showBindings();
+	}
+	return pad;
+}
+// nothing inside 15 % of the way, then evenly to the edge
+function pushed(value) { return value < 0.15 ? 0 : Math.min(1, (value - 0.15) / 0.85); }
 
 function readInput() {
 	if(!module || !shared) return;
-	let buttons = 0;
-	const axes = [128, 128, 128, 128];
-	let axesSet = 0;
-	for(const code of keysDown) {
-		if(code in KEYS) buttons |= 1 << KEYS[code];
-		const stick = STICK_KEYS[code];
-		if(stick) {
-			axes[stick[0] * 2 + stick[1]] = stick[2] < 0 ? 0 : 255;
-			axesSet |= 1 << stick[0];
+	const pad = activePad();
+	if(asking) askStep(pad);
+	if(pad && pausedBy === "hidden" && !document.hidden && padBusy(pad)) { padHeld = true; resume(); }
+	if(padHeld && !(pad && padBusy(pad))) padHeld = false; // the press that ended the pause is not passed on
+	const how = {}; // control -> how far, 0..1
+	if(!asking && !pausedBy) {
+		for(const code of keysDown) { const control = controlOfKey[code]; if(control) how[control] = 1; }
+		for(const [control, value] of touchDown) how[control] = Math.max(how[control] || 0, value);
+		if(pad && !padHeld) {
+			const map = padMapOf(pad);
+			for(const [control] of CONTROLS) {
+				const source = map[control];
+				if(!source) continue;
+				let value = padSource(pad, source);
+				if(control in STICKS) value = source[0] === "a" ? pushed(value) : (value > 0.5 ? 1 : 0);
+				else value = value > (source[0] === "b" ? 0.3 : 0.5) ? 1 : 0; // a trigger counts beyond 30 %
+				if(value > (how[control] || 0)) how[control] = value;
+			}
+			if(pad.mapping === "standard" && !padMaps[pad.id] && buttonValue(pad.buttons[17]) > 0.3) how.select = 1; // a PlayStation pad's touchpad
 		}
 	}
-	const pads = navigator.getGamepads ? navigator.getGamepads() : [];
-	for(const pad of pads) {
-		if(!pad || !pad.connected || pad.mapping !== "standard") continue;
-		if(!padSeen) { padSeen = true; note("controller: " + pad.id); $("padname").textContent = "In use: " + pad.id; }
-		pad.buttons.forEach((button, index) => {
-			const bit = PAD_BUTTONS[index];
-			if(bit === undefined || bit < 0) return;
-			// the triggers count beyond 30 %
-			const pressed = (index === 6 || index === 7) ? button.value > 0.3 : button.pressed;
-			if(pressed) buttons |= 1 << bit;
-		});
-		for(let stick = 0; stick < 2; stick++) {
-			const x = axisValue(pad.axes[stick * 2] || 0), y = axisValue(pad.axes[stick * 2 + 1] || 0);
-			if(x !== 128 || y !== 128) {
-				axes[stick * 2] = x;
-				axes[stick * 2 + 1] = y;
-				axesSet |= 1 << stick;
-			}
-		}
-		break; // the first controller is the pad in port 1
+	let buttons = 0, axesSet = 0;
+	const axes = [0, 0, 0, 0];
+	for(const control in how) {
+		if(!how[control]) continue;
+		const stick = STICKS[control];
+		if(stick) axes[stick[0] * 2 + stick[1]] += stick[2] * how[control];
+		else buttons |= 1 << B[control];
 	}
 	const words = module.HEAPU32;
+	for(let i = 0; i < 4; i++) {
+		const value = Math.max(-1, Math.min(1, axes[i]));
+		const word = Math.round(128 + value * (value < 0 ? 128 : 127));
+		words[shared + 1 + i] = word;
+		if(word !== 128) axesSet |= 1 << (i >> 1);
+	}
 	words[shared + 0] = buttons;
-	for(let i = 0; i < 4; i++) words[shared + 1 + i] = axes[i];
 	words[shared + 5] = axesSet;
 }
 
+// Controls: a key or a controller button for every control, chosen by pressing it.
+let keyNames = null; // what is printed on the keys of this keyboard, where the browser tells
+if(navigator.keyboard && navigator.keyboard.getLayoutMap) {
+	navigator.keyboard.getLayoutMap().then((map) => { keyNames = map; if(!$("controls").hidden) showBindings(); }).catch(() => {});
+}
+function keyName(code) {
+	if(!code) return "—";
+	const named = { ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→", Space: "Space", ShiftLeft: "left Shift", ShiftRight: "right Shift", ControlLeft: "left Ctrl", ControlRight: "right Ctrl", AltLeft: "left Alt", AltRight: "right Alt" };
+	if(named[code]) return named[code];
+	const printed = keyNames && keyNames.get(code);
+	if(printed) return printed.toUpperCase();
+	return code.replace(/^Key|^Digit/, "").replace(/^Numpad/, "Num ");
+}
+function sourceName(source) {
+	if(!source) return "—";
+	const number = source.slice(1).replace(/[-+urdl]$/, "");
+	if(source[0] === "b") return "button " + number;
+	if(source[0] === "a") return "axis " + number + (source.endsWith("-") ? " −" : " +");
+	return "hat " + number + " " + { u: "↑", r: "→", d: "↓", l: "←" }[source[source.length - 1]];
+}
+function labelOf(control) { return CONTROLS.find((one) => one[0] === control)[1]; }
+function ask(control, kind, queue = []) {
+	const pad = kind === "pad" ? activePad() : null;
+	if(kind === "pad" && !pad) { notice("Press a button on the controller first: a browser shows a controller to a page only then.", true); return; }
+	asking = { control, kind, queue, rest: pad ? Array.from(pad.axes) : [], wait: true };
+	keysDown.clear();
+	showBindings();
+}
+// one look at the controller while a button of it is waited for
+function askStep(pad) {
+	if(asking.kind !== "pad" || !pad) return;
+	const moved = [];
+	pad.buttons.forEach((button, index) => { if(buttonValue(button) > 0.5) moved.push("b" + index); });
+	pad.axes.forEach((value, index) => {
+		const rest = asking.rest[index] || 0;
+		if(Math.abs(rest) > 1.05) { // a hat switch: beyond 1 at rest
+			const place = Math.round((value + 1) * 3.5) % 8;
+			if(Math.abs(value) <= 1.05 && place % 2 === 0) moved.push("h" + index + "urdl"[place / 2]);
+		} else if(Math.abs(value - rest) > 0.6) moved.push("a" + index + (value > rest ? "+" : "-"));
+	});
+	if(asking.wait) { if(!moved.length) asking.wait = false; return; } // everything let go first
+	if(!moved.length) return;
+	padMaps[pad.id] = { ...padMapOf(pad), [asking.control]: moved[0] };
+	store("pads", JSON.stringify(padMaps));
+	askNext();
+}
+function askNext() {
+	const next = asking && asking.queue.shift();
+	asking = next ? { ...asking, control: next, wait: true } : null;
+	showBindings();
+}
+function showBindings() {
+	const table = $("bindings");
+	table.textContent = "";
+	const pad = activePad();
+	const map = pad ? padMapOf(pad) : DEFAULT_PAD;
+	for(const [control, label] of CONTROLS) {
+		const row = table.insertRow();
+		row.insertCell().textContent = label;
+		for(const kind of ["key", "pad"]) {
+			const button = row.insertCell().appendChild(document.createElement("button"));
+			const waiting = !!asking && asking.control === control && asking.kind === kind;
+			button.type = "button";
+			button.textContent = waiting ? "press it…" : kind === "key" ? keyName(keyOf[control]) : sourceName(map[control]);
+			button.classList.toggle("ask", waiting);
+			button.title = "Click, then press the " + (kind === "key" ? "key" : "controller's button") + " for " + label;
+			button.addEventListener("click", () => { if(waiting) { asking = null; showBindings(); } else ask(control, kind); });
+		}
+	}
+	$("padname").textContent = !check.has.gamepads ? "This browser shows no game controllers to a page." :
+		!pad ? "No controller yet: plug one in or pair it, then press a button on it (a browser shows it to a page only then)." :
+		"Controller in use: " + shortPad(pad.id) + (padMaps[pad.id] ? " (buttons as set here)." : pad.mapping === "standard" ? " (standard layout: nothing to set)." : " (no standard layout in this browser: the buttons shown are a guess).");
+	$("askSay").textContent = !asking ? "" : (asking.kind === "key" ? "Press the key for " : "Press the controller's button, or push its stick, for ") + labelOf(asking.control) + ". Esc leaves it as it is.";
+	$("padSkip").hidden = !(asking && asking.kind === "pad" && asking.queue.length);
+	$("padSetup").disabled = !pad;
+	$("padReset").disabled = !(pad && padMaps[pad.id]);
+}
+$("padSetup").addEventListener("click", () => ask(CONTROLS[0][0], "pad", CONTROLS.slice(1).map((one) => one[0])));
+$("padSkip").addEventListener("click", askNext);
+$("padReset").addEventListener("click", () => {
+	const pad = activePad();
+	if(pad) delete padMaps[pad.id];
+	store("pads", JSON.stringify(padMaps));
+	asking = null;
+	showBindings();
+});
+$("keysReset").addEventListener("click", () => {
+	Object.assign(keyOf, DEFAULT_KEYS);
+	store("keys", "{}");
+	keysChanged();
+	asking = null;
+	showBindings();
+});
+
 window.addEventListener("keydown", (event) => {
+	if(asking && (asking.kind === "key" || event.code === "Escape")) {
+		event.preventDefault();
+		if(event.code !== "Escape") {
+			for(const [control] of CONTROLS) if(keyOf[control] === event.code) keyOf[control] = ""; // a key is one control's
+			keyOf[asking.control] = event.code;
+			store("keys", JSON.stringify(keyOf));
+			keysChanged();
+		}
+		asking = null;
+		showBindings();
+		return;
+	}
 	if(!running || event.target instanceof HTMLSelectElement || event.target instanceof HTMLInputElement || event.metaKey || event.ctrlKey || event.altKey) return;
-	if(event.code in KEYS || event.code in STICK_KEYS) {
+	if(pausedBy === "hidden") {
+		if(!["Shift", "Control", "Alt", "Meta", "CapsLock"].includes(event.key)) { event.preventDefault(); startSound(); resume(); }
+		return;
+	}
+	if(event.code in controlOfKey) {
 		keysDown.add(event.code);
 		event.preventDefault();
 		startSound();
@@ -368,12 +731,157 @@ window.addEventListener("keydown", (event) => {
 	}
 });
 window.addEventListener("keyup", (event) => {
-	keysDown.delete(event.code);
+	// with the command key held a Mac does not report other keys being let go
+	if(event.key === "Meta") keysDown.clear(); else keysDown.delete(event.code);
 	readInput();
 });
-window.addEventListener("blur", () => { keysDown.clear(); readInput(); });
-window.addEventListener("gamepadconnected", (event) => note("controller attached: " + event.gamepad.id + " (" + (event.gamepad.mapping || "no standard layout") + ")"));
+window.addEventListener("blur", () => { keysDown.clear(); touchDown.clear(); readInput(); });
+window.addEventListener("gamepadconnected", (event) => { note("controller attached: " + event.gamepad.id + " (" + (event.gamepad.mapping || "no standard layout") + ")"); readInput(); });
+window.addEventListener("gamepaddisconnected", (event) => {
+	note("controller gone: " + event.gamepad.id);
+	if(event.gamepad.index === padInUse && running) notice("The controller is gone (switched off, out of reach or unplugged). Keyboard works; press a button on a controller to use it.", true);
+	if(!$("controls").hidden) showBindings();
+});
 canvas.addEventListener("pointerdown", () => { canvas.focus(); startSound(); });
+
+// ---- the on-screen pad (touch screens) -------------------------------------------------
+// A left stick, the direction pad, the four buttons, the shoulder buttons, Start and
+// Select, drawn over the picture. Shown when the screen is touched (Settings: always or
+// never). Plain and untried on a real device: see docs/issues/browser-build.md.
+const TOUCH = [ // control, what it shows, where, a wide one
+	["l2", "L2", "left:1.2em;top:1em", 1], ["l1", "L1", "left:6.2em;top:1em", 1], ["r1", "R1", "right:6.2em;top:1em", 1], ["r2", "R2", "right:1.2em;top:1em", 1],
+	["up", "↑", "left:4em;bottom:16.8em"], ["left", "←", "left:0.5em;bottom:13.6em"], ["right", "→", "left:7.5em;bottom:13.6em"], ["down", "↓", "left:4em;bottom:10.4em"],
+	["triangle", "△", "right:4.5em;bottom:9.4em"], ["square", "□", "right:8em;bottom:5.7em"], ["circle", "○", "right:1em;bottom:5.7em"], ["cross", "✕", "right:4.5em;bottom:2em"],
+	["select", "Select", "left:calc(50% - 5em);bottom:1em", 1], ["start", "Start", "left:calc(50% + 0.6em);bottom:1em", 1],
+];
+let touchBuilt = false;
+function touchPad(show) {
+	const root = $("touch");
+	if(show && !touchBuilt) {
+		touchBuilt = true;
+		for(const [control, text, place, wide] of TOUCH) {
+			const button = root.appendChild(document.createElement("button"));
+			button.type = "button";
+			button.textContent = text;
+			button.style.cssText = place;
+			button.tabIndex = -1;
+			button.setAttribute("aria-label", labelOf(control));
+			if(wide) button.className = "wide";
+			const set = (down) => (event) => {
+				event.preventDefault();
+				if(down) { touchDown.set(control, 1); try { button.setPointerCapture(event.pointerId); } catch(e) { /* gone already */ } startSound(); } else touchDown.delete(control);
+				button.classList.toggle("on", down);
+				readInput();
+			};
+			button.addEventListener("pointerdown", set(true));
+			for(const kind of ["pointerup", "pointercancel", "lostpointercapture"]) button.addEventListener(kind, set(false));
+			button.addEventListener("contextmenu", (event) => event.preventDefault());
+		}
+		const stick = root.appendChild(document.createElement("div")), knob = stick.appendChild(document.createElement("i"));
+		const directions = ["ls-left", "ls-right", "ls-up", "ls-down"];
+		stick.id = "touchStick";
+		const move = (event) => {
+			event.preventDefault();
+			const box = stick.getBoundingClientRect(), reach = box.width * 0.35;
+			let x = (event.clientX - box.left - box.width / 2) / reach, y = (event.clientY - box.top - box.height / 2) / reach;
+			const length = Math.hypot(x, y);
+			if(length > 1) { x /= length; y /= length; }
+			knob.style.transform = "translate(" + (x * reach).toFixed(1) + "px," + (y * reach).toFixed(1) + "px)";
+			[-x, x, -y, y].forEach((value, index) => touchDown.set(directions[index], Math.max(0, value)));
+			readInput();
+		};
+		const end = (event) => {
+			event.preventDefault();
+			knob.style.transform = "";
+			for(const direction of directions) touchDown.delete(direction);
+			readInput();
+		};
+		stick.addEventListener("pointerdown", (event) => { try { stick.setPointerCapture(event.pointerId); } catch(e) { /* gone already */ } startSound(); move(event); });
+		stick.addEventListener("pointermove", (event) => { if(stick.hasPointerCapture(event.pointerId)) move(event); });
+		for(const kind of ["pointerup", "pointercancel", "lostpointercapture"]) stick.addEventListener(kind, end);
+		stick.addEventListener("contextmenu", (event) => event.preventDefault());
+	}
+	root.hidden = !show;
+	if(!show) { touchDown.clear(); if(shared) readInput(); }
+}
+$("touchMode").value = options.touch;
+$("touchMode").addEventListener("change", () => {
+	options.touch = $("touchMode").value;
+	store("touch", options.touch);
+	touchPad(running && (options.touch === "on" || (options.touch === "auto" && check.has.touch)));
+});
+// "when the screen is touched": the first touch on the picture brings the pad
+window.addEventListener("pointerdown", (event) => {
+	if(event.pointerType === "touch" && options.touch === "auto" && running && $("touch").hidden) touchPad(true);
+}, true);
+
+// ---- pause --------------------------------------------------------------------------
+// A browser runs a page that is not in front slowly and lets its timers run late. A game
+// played alone is paused then, with a plain sign over the picture, and goes on at a
+// click, a key or a controller button. An online game cannot be paused - every machine in
+// it waits for every other - so the player is told instead: before (when going online
+// starts), meanwhile (the tab's title) and afterwards.
+const pageTitle = document.title;
+let hiddenOnlineSince = 0, onlineWarned = false;
+function playingOnline() {
+	return !!(online.relay && online.welcomed && online.state && (online.state.active || (online.players && online.players.players > 0)));
+}
+function pause(why, text) {
+	if(!running || pausedBy) return;
+	pausedBy = why;
+	module._rtaPause(1);
+	if(audio) audio.context.suspend().catch(() => {});
+	keysDown.clear();
+	touchDown.clear();
+	readInput();
+	$("pausedWhy").textContent = text;
+	$("paused").hidden = false;
+	note("paused (" + why + ")");
+}
+function resume() {
+	if(!pausedBy) return;
+	pausedBy = "";
+	$("paused").hidden = true;
+	module._rtaPause(0);
+	if(audio) audio.context.resume().catch(() => {});
+	canvas.focus();
+	keepAwake();
+	note("going on");
+}
+$("paused").addEventListener("click", () => { startSound(); resume(); });
+document.addEventListener("visibilitychange", () => {
+	if(!running) return;
+	if(document.hidden) {
+		saveCard();
+		if(playingOnline()) {
+			hiddenOnlineSince = performance.now();
+			document.title = "⚠ Come back: the others are waiting";
+		} else if(options.autoPause) pause("hidden", "The page was not in front.");
+	} else {
+		document.title = pageTitle;
+		if(hiddenOnlineSince) {
+			const seconds = Math.round((performance.now() - hiddenOnlineSince) / 1000);
+			hiddenOnlineSince = 0;
+			if(seconds >= 2) notice("This page was hidden for " + seconds + " s. A browser runs a hidden page slowly, and an online game waits for every player's machine: keep the page in front while you play online.", true, 15000);
+		}
+	}
+});
+// once a second (the figures' timer): the warning before an online game, and the sound's and the disc's state
+function watch(now) {
+	if(playingOnline() && !onlineWarned) {
+		onlineWarned = true;
+		notice("Online: keep this page in front, its window uncovered and the computer awake until you are done. A hidden page runs slowly, and an online game waits for every player's machine.", false, 16000);
+	}
+	discWatch(now.disc_errors || 0);
+	showMute();
+	// a machine that makes no frame for a quarter of a minute although nothing holds it has stopped
+	if(now.frames !== stall.frames || pausedBy || discLost || document.hidden) { stall.frames = now.frames; stall.since = now.now; stall.told = false; }
+	else if(!stall.told && now.now - stall.since > 15000) {
+		stall.told = true;
+		notice("The game has stood still for a quarter of a minute: the emulator seems to have stopped. Load the page again; what the game had saved is kept.", true, 0);
+	}
+}
+const stall = { frames: -1, since: 0, told: false };
 
 // ---- online play ----------------------------------------------------------------------
 // A page has no sockets of its own. The console's network (the desktop application's,
@@ -512,9 +1020,10 @@ function onlineSay(text, bad = false) {
 // are the two warnings of the desktop application (CheckPatchSets and CheckArithmetic in
 // tools/play-net/src/Rta.cpp), by the same rules: a player not heard for fifteen seconds has
 // left; a copy has twelve seconds to say what it has; one that then says nothing about
-// arithmetic is an application from before it could compute as a browser does. A page has one
-// arithmetic, the browser's; a current application changes to it by itself while a browser
-// player is in its room.
+// arithmetic is an application from before it could compute as a browser does - and one that
+// has told its patch set is given six seconds (RtaNet.cpp tells such a copy "obsolete" at that
+// moment, so that it warns its own player). A page has one arithmetic, the browser's; a
+// current application changes to it by itself while a browser player is in its room.
 function onlinePlayers(state) {
 	const here = (state.players || []).filter((player) => player.silent_ms <= 15000);
 	if(!here.length) return { text: "", bad: false, players: 0 };
@@ -522,9 +1031,9 @@ function onlinePlayers(state) {
 	const count = (n, one, many) => (n === 1 ? one : many);
 	const otherSet = here.filter((player) => player.set_known && !player.same_set);
 	const noSet = here.filter((player) => !player.set_known && settled(player));
-	const cannot = here.filter((player) => (player.arith_known ? !player.can_browser : settled(player)));
+	const cannot = here.filter((player) => (player.arith_known ? !player.can_browser : settled(player) || (player.set_known && player.heard_ms >= 6000)));
 	const differ = here.filter((player) => player.arith_known && player.can_browser && !player.does_browser);
-	const unheard = here.filter((player) => !settled(player) && !(player.set_known && player.arith_known));
+	const unheard = here.filter((player) => !settled(player) && !(player.set_known && player.arith_known) && !cannot.includes(player));
 	let inGame = false;
 	try { inGame = !rta.inFrontEnd(); } catch(e) { /* the machine is not up */ }
 	const parts = [];
@@ -646,11 +1155,28 @@ async function onlineLoop() {
 }
 
 // ---- sound --------------------------------------------------------------------------
-// A browser lets a page make sound only after the person has done something on it.
+// A browser lets a page make sound only after the person has done something on it: this
+// is called at every click and key press until the sound runs.
+function soundContext() {
+	const Context = window.AudioContext || window.webkitAudioContext;
+	try { return new Context({ sampleRate: 44100, latencyHint: "interactive" }); } catch(e) { return new Context(); }
+}
 async function startSound() {
 	if(!options.sound || !module) return;
-	if(audio) { if(audio.context.state === "suspended") audio.context.resume(); return; }
-	audio = { context: new AudioContext({ sampleRate: 44100, latencyHint: "interactive" }), dry: 0, queuedMs: 0 };
+	if(audio) {
+		if(audio.context.state !== "running" && !pausedBy) audio.context.resume().catch(() => {});
+		return;
+	}
+	if(!check.has.audioWorklet) return;
+	try { audio = { context: soundContext(), dry: 0, queuedMs: 0 }; } catch(e) {
+		note("sound: no sound output (" + e + ")");
+		options.sound = false;
+		$("mute").hidden = true;
+		return;
+	}
+	// asked for at once, inside the click or key press itself: some browsers want that
+	audio.context.resume().catch(() => {});
+	audio.context.onstatechange = () => { note("sound: " + audio.context.state); showMute(); };
 	try {
 		await audio.context.audioWorklet.addModule("rta-sound.js");
 		const ring = module._rtaSoundRing();
@@ -661,20 +1187,30 @@ async function startSound() {
 		});
 		audio.node.port.onmessage = (event) => { audio.dry = event.data.dry; audio.queuedMs = event.data.queuedMs; audio.playing = event.data.playing; };
 		audio.node.connect(audio.context.destination);
-		audio.node.port.postMessage({ muted: options.muted });
-		audio.context.resume();
+		showMute(); // tells the worklet the volume
+		if(!pausedBy) audio.context.resume().catch(() => {});
 		note("sound: started at " + audio.context.sampleRate + " Hz");
 	} catch(e) {
 		note("sound: could not be started (" + e + ")");
+		notice("The sound could not be started in this browser (" + (e.message || e) + ").", true);
 	}
 }
 
 // ---- the memory card ----------------------------------------------------------------
 // Play! keeps a memory card as a folder of files. The folder lives in the browser's
-// storage for this site (IndexedDB), read when the page starts and written back a few
-// seconds after anything in it changed.
+// storage for this site (IndexedDB), read when the page starts and written back a moment
+// after anything in it changed. One tab has it at a time; it can be saved to a file and
+// loaded from one (Settings), which is also how saved games move to another browser or
+// into the desktop application.
 const DATA = "/home/web_user/.local/share/Play Data Files"; // where Play! keeps its files in Emscripten's file system
-let cardSignature = "";
+const card = {
+	kept: false,    // the folder is kept in the browser's storage
+	why: "",        // why not
+	signature: "",  // what was written last
+	saving: false, again: false, failed: "",
+};
+let cardIdle = Promise.resolve();
+function errorText(error) { return (error && (error.name || error.message)) || String(error); }
 function cardState() {
 	let signature = "";
 	const walk = (path) => {
@@ -691,30 +1227,231 @@ function cardState() {
 	walk(DATA);
 	return signature;
 }
-function mountCard() {
+// Two tabs would each write their own picture of the card over the other's. Resolves true
+// when this tab has the card to itself (at once, or when the other tab is closed), false
+// when the player chose to play here without it.
+function cardAlone() {
+	if(!check.has.locks || params.get("card") === "0") return Promise.resolve(true);
 	return new Promise((resolve) => {
-		if(params.get("card") === "0") { resolve(); return; } // DEV: an empty card in memory, forgotten afterwards
+		let settled = false, button = null;
+		const settle = (alone) => {
+			if(settled) return;
+			settled = true;
+			if(button) button.remove();
+			resolve(alone);
+		};
+		navigator.locks.request("rta-memory-card", () => {
+			if(settled) return undefined;   // decided meanwhile: given back at once
+			settle(true);
+			return new Promise(() => {});  // held for as long as this page lives
+		}).catch(() => settle(true));
+		sleep(700).then(() => {
+			if(settled) return;
+			setStatus("The game is open in another tab or window of this browser, and two at once would overwrite each other's saved games. Close the other one: this one then goes on by itself.", true);
+			progress(null);
+			button = document.createElement("button");
+			button.type = "button";
+			button.className = "big";
+			button.textContent = "Play here without keeping saved games";
+			button.addEventListener("click", () => settle(false));
+			statusElement.after(button);
+		});
+	});
+}
+function mountCard(alone = true) {
+	return new Promise((resolve) => {
+		if(params.get("card") === "0") { card.why = "switched off for this visit"; resolve(); return; } // DEV: an empty card in memory, forgotten afterwards
+		if(!alone) { card.why = "another tab of this browser has the memory card"; resolve(); return; }
+		if(!check.has.database) { card.why = "this browser gives the page no storage (a private window?)"; resolve(); return; }
 		try {
 			module.FS.mkdirTree(DATA);
 			module.FS.mount(module.IDBFS, {}, DATA);
 			module.FS.syncfs(true, (error) => {
-				if(error) note("memory card: the browser's storage could not be read (" + error + ")");
-				cardSignature = cardState();
+				// not read: nothing is written either, or an empty card would replace what is there
+				if(error) { card.why = "the browser's storage could not be read (" + errorText(error) + ")"; note("memory card: " + card.why); } else card.kept = true;
+				card.signature = cardState();
 				resolve();
 			});
 		} catch(e) {
-			note("memory card: not kept in this browser (" + e + ")");
+			card.why = "the browser's storage could not be used (" + errorText(e) + ")";
+			note("memory card: " + card.why);
 			resolve();
 		}
 	});
 }
 function saveCard() {
-	if(!module || params.get("card") === "0") return;
+	if(!module || !card.kept) return;
+	if(card.saving) { card.again = true; return; }
 	const signature = cardState();
-	if(signature === cardSignature) return;
-	cardSignature = signature;
-	module.FS.syncfs(false, (error) => note(error ? "memory card: could not be written to the browser's storage (" + error + ")" : "memory card: saved in the browser's storage"));
+	if(signature === card.signature) return;
+	card.saving = true;
+	let done;
+	cardIdle = new Promise((resolve) => { done = resolve; });
+	const finish = (error) => {
+		card.saving = false;
+		if(error) {
+			const first = !card.failed;
+			card.failed = errorText(error);
+			if(first) {
+				note("memory card: could not be written to the browser's storage (" + card.failed + ")");
+				notice("Your saved games could NOT be written to this browser's storage (" + (/quota/i.test(card.failed) ? "it is full" : card.failed) +
+					"). They last only until this page is closed: Settings → Saved games → Save to a file.", true, 0);
+			}
+		} else {
+			card.signature = signature;
+			if(card.failed) { card.failed = ""; notice("Saved games are written to the browser's storage again."); }
+			note("memory card: saved in the browser's storage");
+		}
+		done();
+		if(card.again) { card.again = false; saveCard(); }
+	};
+	try { module.FS.syncfs(false, finish); } catch(e) { finish(e); }
 }
+// what is not written yet is written; resolves when it is (or after a second and a half)
+function flushCard() { saveCard(); return Promise.race([cardIdle, sleep(1500)]); }
+
+// Saved games as a file: a zip of the card's folders, laid out as Play! and the desktop
+// application keep them (vfs/mc0/<save>/..., vfs/mc1/...), not compressed.
+const CRC_TABLE = (() => {
+	const table = new Uint32Array(256);
+	for(let n = 0; n < 256; n++) {
+		let c = n;
+		for(let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+		table[n] = c >>> 0;
+	}
+	return table;
+})();
+function crc32(bytes) {
+	let c = 0xFFFFFFFF;
+	for(let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 255] ^ (c >>> 8);
+	return (c ^ 0xFFFFFFFF) >>> 0;
+}
+function cardFiles() {
+	const files = [];
+	const walk = (path) => {
+		let names;
+		try { names = module.FS.readdir(path); } catch(e) { return; }
+		for(const name of names) {
+			if(name === "." || name === "..") continue;
+			const full = path + "/" + name, stat = module.FS.stat(full);
+			if(module.FS.isDir(stat.mode)) walk(full);
+			else files.push({ name: full.slice(DATA.length + 1), data: module.FS.readFile(full), time: stat.mtime });
+		}
+	};
+	for(const slot of ["mc0", "mc1"]) walk(DATA + "/vfs/" + slot);
+	return files;
+}
+function zip(files) {
+	const parts = [], directory = [], encoder = new TextEncoder();
+	let offset = 0, directorySize = 0;
+	for(const file of files) {
+		const name = encoder.encode(file.name), crc = crc32(file.data), size = file.data.length, t = file.time || new Date();
+		const time = (t.getHours() << 11) | (t.getMinutes() << 5) | (t.getSeconds() >> 1);
+		const date = (Math.max(0, t.getFullYear() - 1980) << 9) | ((t.getMonth() + 1) << 5) | t.getDate();
+		const local = new DataView(new ArrayBuffer(30)), central = new DataView(new ArrayBuffer(46));
+		local.setUint32(0, 0x04034b50, true); local.setUint16(4, 20, true); local.setUint16(6, 0x0800, true); // names in UTF-8
+		local.setUint16(10, time, true); local.setUint16(12, date, true); local.setUint32(14, crc, true);
+		local.setUint32(18, size, true); local.setUint32(22, size, true); local.setUint16(26, name.length, true);
+		central.setUint32(0, 0x02014b50, true); central.setUint16(4, 20, true); central.setUint16(6, 20, true); central.setUint16(8, 0x0800, true);
+		central.setUint16(12, time, true); central.setUint16(14, date, true); central.setUint32(16, crc, true);
+		central.setUint32(20, size, true); central.setUint32(24, size, true); central.setUint16(28, name.length, true); central.setUint32(42, offset, true);
+		parts.push(local.buffer, name, file.data);
+		directory.push(central.buffer, name);
+		offset += 30 + name.length + size;
+		directorySize += 46 + name.length;
+	}
+	const end = new DataView(new ArrayBuffer(22));
+	end.setUint32(0, 0x06054b50, true); end.setUint16(8, files.length, true); end.setUint16(10, files.length, true);
+	end.setUint32(12, directorySize, true); end.setUint32(16, offset, true);
+	return new Blob([...parts, ...directory, end.buffer], { type: "application/zip" });
+}
+// the files of a zip (stored or deflated, as the usual tools write them)
+async function unzip(blob) {
+	const bytes = new Uint8Array(await blob.arrayBuffer()), view = new DataView(bytes.buffer);
+	let end = -1;
+	for(let i = bytes.length - 22; i >= Math.max(0, bytes.length - 65557); i--) {
+		if(view.getUint32(i, true) === 0x06054b50) { end = i; break; }
+	}
+	if(end < 0) throw new Error("this is not a zip file");
+	const count = view.getUint16(end + 10, true), files = [];
+	let at = view.getUint32(end + 16, true);
+	for(let n = 0; n < count; n++) {
+		if(at + 46 > bytes.length || view.getUint32(at, true) !== 0x02014b50) throw new Error("the zip file is damaged");
+		const method = view.getUint16(at + 10, true), packed = view.getUint32(at + 20, true), size = view.getUint32(at + 24, true);
+		const nameLength = view.getUint16(at + 28, true), local = view.getUint32(at + 42, true);
+		const name = new TextDecoder().decode(bytes.subarray(at + 46, at + 46 + nameLength));
+		at += 46 + nameLength + view.getUint16(at + 30, true) + view.getUint16(at + 32, true);
+		if(name.endsWith("/")) continue;
+		const start = local + 30 + view.getUint16(local + 26, true) + view.getUint16(local + 28, true);
+		const raw = bytes.subarray(start, start + packed);
+		let data;
+		if(method === 0) data = raw.slice();
+		else if(method === 8 && typeof DecompressionStream === "function") {
+			data = new Uint8Array(await new Response(new Blob([raw]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).arrayBuffer());
+		} else throw new Error(method === 8 ? "this browser cannot unpack a compressed zip file" : "the zip file is packed in a way this page does not know");
+		if(data.length !== size) throw new Error("the zip file is damaged");
+		files.push({ name, data });
+	}
+	return files;
+}
+// A zip with a memory card in it (vfs/mc0/..., or mc0/..., at any depth: also a zip made of
+// the desktop application's folder) is written over the card here. Returns the number of files.
+async function cardImport(blob) {
+	const files = [];
+	for(const file of await unzip(blob)) {
+		const name = file.name.replace(/\\/g, "/");
+		const match = /(?:^|\/)(mc[01]\/.+)$/.exec(name);
+		if(!match || /(^|\/)(__MACOSX|\.DS_Store|\._[^/]*)(\/|$)/.test(name) || name.split("/").includes("..")) continue;
+		files.push({ name: "vfs/" + match[1], data: file.data });
+	}
+	if(!files.length) throw new Error("there is no memory card in it (no folder mc0 or mc1)");
+	for(const file of files) {
+		const full = DATA + "/" + file.name;
+		module.FS.mkdirTree(full.replace(/\/[^/]*$/, ""));
+		module.FS.writeFile(full, file.data);
+	}
+	saveCard();
+	return files.length;
+}
+async function showCard() {
+	if(!module) return;
+	const files = cardFiles();
+	const saves = new Set(files.map((file) => file.name.split("/").slice(1, 3).join("/")));
+	const bytes = files.reduce((sum, file) => sum + file.data.length, 0);
+	let text = (card.kept ? "Kept in this browser's storage for this site" : "NOT kept (" + card.why + "): what the game saves is lost when the page is closed, unless you save it to a file") +
+		": " + saves.size + (saves.size === 1 ? " entry" : " entries") + " on the memory cards, " + Math.ceil(bytes / 1024) + " KB.";
+	if(card.failed) text += " The last attempt to write them failed (" + card.failed + ").";
+	$("cardExport").disabled = !files.length;
+	$("cardSay").textContent = text;
+	try {
+		const estimate = await navigator.storage.estimate();
+		if(estimate.quota) $("cardSay").textContent = text + " The browser lets this site use about " + (estimate.quota >= 2 ** 30 ? (estimate.quota / 2 ** 30).toFixed(0) + " GB" : (estimate.quota / 2 ** 20).toFixed(0) + " MB") + ".";
+	} catch(e) { /* not told */ }
+}
+$("cardExport").addEventListener("click", async () => {
+	await flushCard();
+	const files = cardFiles();
+	if(!files.length) { notice("There is nothing on the memory cards yet.", true); return; }
+	const link = document.createElement("a"), day = new Date();
+	link.href = URL.createObjectURL(zip(files));
+	link.download = "champions-rta-saved-games-" + day.getFullYear() + "-" + String(day.getMonth() + 1).padStart(2, "0") + "-" + String(day.getDate()).padStart(2, "0") + ".zip";
+	document.body.appendChild(link);
+	link.click();
+	link.remove();
+	setTimeout(() => URL.revokeObjectURL(link.href), 60000);
+	notice("Saved as " + link.download + " (where your browser puts downloads). In the Mac application its two folders belong into ~/Library/Application Support/Play-RTA/player1/vfs.", false, 15000);
+});
+$("cardImport").addEventListener("click", () => $("cardFile").click());
+$("cardFile").addEventListener("change", async (event) => {
+	const file = event.target.files[0];
+	event.target.value = "";
+	if(!file || !module) return;
+	try {
+		const count = await cardImport(file);
+		notice("Loaded: " + count + " files are on the memory card now" + (running ? "; the game sees them the next time it looks at the card." : "."));
+	} catch(e) { notice("Not loaded: " + e.message + ".", true, 15000); }
+	showCard();
+});
 
 // ---- figures ------------------------------------------------------------------------
 // A browser runs a page that is not in front (another tab, a covered or minimised window)
@@ -767,9 +1504,10 @@ let lastInfo = null, lastRates = null;
 setInterval(() => {
 	if(!module || !running) return;
 	const now = info();
+	watch(now);
 	if(lastInfo) {
 		lastRates = rates(lastInfo, now);
-		speedElement.textContent = lastRates.fps.toFixed(1) + " frames/s";
+		speedElement.textContent = pausedBy ? "paused" : lastRates.fps.toFixed(1) + " frames/s";
 		speedElement.title = "machine " + lastRates.machine_ms_per_frame.toFixed(1) + " ms a frame, video " + lastRates.video_ms_per_frame.toFixed(1) + " ms a frame (16.7 is the limit)";
 		if(options.report) {
 			fetch("/report", { method: "POST", body: JSON.stringify({ kind: "second", level: rta.levelName(), ...lastRates }) }).catch(() => {});
@@ -777,7 +1515,9 @@ setInterval(() => {
 	}
 	lastInfo = now;
 }, 1000);
-setInterval(saveCard, 5000);
+// the card is looked at often and written when it has changed: a game saved a moment
+// before the page is closed or loaded again should be in the browser's storage by then
+sleep(0).then(async function cardLoop() { for(;;) { await sleep(400); saveCard(); } });
 if(options.report) {
 	// DEV: the test's local server can send this tab on to another address of the same
 	// server or have it closed (a tab opened from a command line may close itself as
@@ -864,6 +1604,16 @@ const rta = window.rta = {
 	writeFile: (name, text) => { module.FS.mkdirTree((DATA + "/" + name).replace(/\/[^/]*$/, "")); module.FS.writeFile(DATA + "/" + name, text); },
 	removeFile: (name) => { module.FS.unlink(DATA + "/" + name); try { module.FS.rmdir((DATA + "/" + name).replace(/\/[^/]*$/, "")); } catch(e) { /* not empty */ } },
 	saveCard: () => saveCard(),
+	// DEV: the start-up check's answers, the card's state, why the game is paused ("": it is not),
+	// the saved games as a zip and back, the controller and key tables, what the machine reads of them
+	check, card, flushCard,
+	paused: () => pausedBy,
+	zipCard: () => zip(cardFiles()),
+	importCard: (blob) => cardImport(blob),
+	unzip,
+	bindings: () => ({ keys: { ...keyOf }, pads: padMaps, asking }),
+	disc: () => ({ url: discUrl, file: discFile && discFile.name, lost: discLost, errors: discErrors }),
+	readInput: () => { readInput(); return Array.from(module.HEAPU32.subarray(shared, shared + 6)); },
 	// DEV: the left stick at (x, y), 0..255, for exactly 'frames' frames of the machine
 	stick: async (x, y, frames) => {
 		module._rtaStick(x, y, frames);
@@ -1053,27 +1803,89 @@ async function automatic() {
 }
 
 // ---- start --------------------------------------------------------------------------
+// The emulator's program is fetched here rather than by its loader, so that the page can
+// show how far it is. The compiler gets the response itself (a browser keeps the compiled
+// code of such a response for the next visit); a copy is read beside it for the count.
+let programFailed = null;
+function loadProgram(imports, receive) {
+	(async () => {
+		const address = new URL("Play.wasm", import.meta.url);
+		let result;
+		try {
+			const response = await fetch(address, { credentials: "same-origin" });
+			if(!response.ok) throw new Error("Play.wasm: the server answered " + response.status);
+			// sent compressed, the length the server names is not the length that is read: then only what has come is shown
+			const total = response.headers.get("content-encoding") ? 0 : parseInt(response.headers.get("content-length"), 10) || 0;
+			const counted = response.clone().body.getReader();
+			(async () => {
+				for(let seen = 0; ;) {
+					const { done, value } = await counted.read();
+					if(done) break;
+					seen += value.length;
+					if(!module) { statusElement.textContent = "Loading the emulator… " + (seen / 1048576).toFixed(1) + " MB"; progress(total ? seen / total : "busy"); }
+				}
+				if(!module) { statusElement.textContent = "Starting the emulator…"; progress("busy"); }
+			})().catch(() => {});
+			result = await WebAssembly.instantiateStreaming(response, imports);
+		} catch(e) {
+			if(e instanceof WebAssembly.CompileError || e instanceof WebAssembly.LinkError || e instanceof RangeError) throw e;
+			note("emulator: read as a whole (" + e + ")"); // a server that does not name the file's type, or a connection that broke
+			result = await WebAssembly.instantiate(await (await fetch(address, { credentials: "same-origin" })).arrayBuffer(), imports);
+		}
+		receive(result.instance, result.module);
+	})().catch((e) => programFailed(e));
+	return {};
+}
+// Why the emulator did not come up, in words for the person in front of it.
+function startFailure(e) {
+	const text = String((e && e.message) || e);
+	progress(null);
+	note("not started: " + text);
+	if(e instanceof RangeError || /out of memory|allocat/i.test(text)) {
+		setStatus("The browser could not give the page the memory the emulator asks for (1 GB in one piece). Phones, tablets and 32-bit browsers often cannot; with many tabs open a computer may not either: close some and load the page again. This is " + check.browser + ".", true);
+	} else if(e instanceof WebAssembly.CompileError || e instanceof WebAssembly.LinkError) {
+		setStatus("This browser cannot run the emulator's program (" + text + "). Use a current Chrome, Edge, Brave, Firefox or Safari on a computer. This is " + check.browser + ".", true);
+	} else setStatus("The emulator could not be started (" + text + "). Check the connection and load the page again. This is " + check.browser + ".", true);
+}
+
 async function start() {
+	// What this browser lacks is found and said by the start-up check (index.html); with
+	// anything missing that the page cannot do without, nothing more is loaded.
+	check.started = true;
+	if(check.done) await check.done;
+	if(check.missing.length) { note("not started: " + check.missing.join(" | ")); return; }
 	if(!self.crossOriginIsolated) {
-		setStatus("This page has to be served with the headers Cross-Origin-Opener-Policy: same-origin and Cross-Origin-Embedder-Policy: require-corp (the emulator runs on several threads).");
+		setStatus("This page has to be served with the headers Cross-Origin-Opener-Policy: same-origin and Cross-Origin-Embedder-Policy: require-corp (the emulator runs on several threads).", true);
 		return;
 	}
-	// The canvas: 4:3, as many pixels as it takes up on this screen, but not more than 896
-	// lines (the console's 448 twice; a larger canvas costs speed out of proportion - see
-	// docs/issues/browser-build.md) and not fewer than 480. Its size is fixed from here on:
-	// the video thread owns it.
+	// no WebGL 2 on a thread's own canvas here: the context is made on this thread, as Play! itself does it (slower)
+	if(check.has.workerWebGl === false && check.has.mainWebGl) options.glMain = true;
+	// The canvas: 4:3, as many pixels as the picture can take up on this screen (in full
+	// screen: the window may be small now), but not more than 896 lines (the console's 448
+	// twice; a larger canvas costs speed out of proportion - see docs/issues/browser-build.md)
+	// and not fewer than 480. Its size is fixed from here on: the video thread owns it.
 	const scale = Math.min(window.devicePixelRatio || 1, 2);
 	const stage = $("stage").getBoundingClientRect();
-	let height = Math.max(480, Math.min(896, Math.floor(stage.height * scale), Math.floor(stage.width * scale * 3 / 4)));
+	const wide = Math.max(screen.width, screen.height) || stage.width, high = Math.min(screen.width, screen.height) || stage.height;
+	let height = Math.max(480, Math.min(896, Math.floor(Math.max(stage.height, Math.min(high, wide * 3 / 4)) * scale)));
 	if(params.get("canvas")) height = parseInt(params.get("canvas"), 10);
 	canvas.height = height;
 	canvas.width = Math.round(height * 4 / 3);
 
-	module = await Play({
+	setStatus("Loading the emulator…");
+	progress("busy");
+	const loaded = Play({
 		print: (text) => note("emulator: " + text),
 		printErr: (text) => note("emulator (error): " + text),
+		instantiateWasm: loadProgram,
+		onAbort: (what) => { note("emulator: aborted (" + what + ")"); if(running) notice("The emulator has stopped (" + what + "). Load the page again; what the game had saved is kept.", true, 0); },
 	});
-	await mountCard();
+	try { module = await Promise.race([loaded, new Promise((resolve, reject) => { programFailed = reject; })]); } catch(e) { startFailure(e); return; }
+	module.rtaDiscRead = discReadForMachine;
+	setStatus("Reading the saved games…");
+	await mountCard(await cardAlone());
+	setStatus("Starting the emulator…");
+	progress("busy");
 	const goesOnline = await onlineConfig();
 
 	if(options.patches) {
@@ -1118,7 +1930,11 @@ async function start() {
 	}
 	module._rtaInit(canvas.width, canvas.height, options.factor, options.glMain ? 0 : 1, options.sound ? 1 : 0, 0);
 	for(let i = 0; i < 1000 && !module._rtaReady(); i++) await sleep(20);
-	if(!module._rtaReady()) { setStatus("The emulator did not start."); return; }
+	if(!module._rtaReady()) {
+		progress(null);
+		setStatus("The emulator's threads did not come up. Load the page again; if it stays like this, this browser cannot run it (" + check.browser + (check.has.renderer ? ", drawing with " + check.has.renderer : "") + ").", true);
+		return;
+	}
 	shared = module._rtaShared() >> 2;
 	module.HEAPU32[shared + 6] = options.limit ? 1 : 0;
 	const frame = () => { readInput(); requestAnimationFrame(frame); };
@@ -1139,15 +1955,20 @@ async function start() {
 		if(await boot(await urlReader(url.href), url.href, "disc.iso") && options.auto) automatic();
 		return;
 	}
-	const handle = await remembered("disc");
+	const handle = check.has.filePicker === false ? null : await remembered("disc");
+	progress(null);
 	if(handle) {
 		$("resume").textContent = "Continue with " + handle.name;
 		$("resume").hidden = false;
 		$("choose").textContent = "Choose another disc image…";
+		showDisc(handle.name, true);
 	}
 	$("choose").hidden = false;
+	$("hints").textContent = "Sound starts with your first click. A game controller is in use as soon as you press a button on it; keys and buttons are under Controls." +
+		(card.kept ? " Saved games stay in this browser; Settings saves them to a file." : " Saved games are NOT kept here (" + card.why + "): Settings saves them to a file.");
+	$("hints").hidden = false;
 	setStatus(handle ? "Ready." : "Ready. Choose your disc image to start.");
 }
 
-start().catch((e) => setStatus("Could not start: " + e.message, true));
+start().catch(startFailure);
 window.addEventListener("pagehide", saveCard);

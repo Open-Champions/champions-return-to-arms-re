@@ -1,0 +1,2 @@
+// Qt's header of this name, for Windows without Qt: see wgl.h.
+#include "wgl.h"

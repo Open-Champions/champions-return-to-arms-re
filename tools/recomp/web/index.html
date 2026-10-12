@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Champions: Return to Arms - native build in the browser (experimental)</title>
+<style>
+	html, body { margin: 0; background: #111; color: #ddd; font: 14px/1.4 system-ui, sans-serif; }
+	#bar { padding: 8px 12px; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+	#bar button { font: inherit; padding: 4px 10px; }
+	#status { color: #9c9; }
+	#status.bad { color: #f88; }
+	#stage { display: flex; justify-content: center; }
+	canvas { width: min(100vw, calc((100vh - 120px) * 4 / 3)); aspect-ratio: 4 / 3; background: #000; outline: none; }
+	#figures { padding: 6px 12px; margin: 0; color: #888; font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap; }
+	#keys { padding: 0 12px 10px; color: #777; font-size: 12px; }
+</style>
+</head>
+<body>
+<div id="bar">
+	<button id="choose">Choose disc image…</button>
+	<label><input type="checkbox" id="sound" checked> sound</label>
+	<label><input type="checkbox" id="limit" checked> 60 pictures a second</label>
+	<span id="status">Loading…</span>
+</div>
+<div id="stage"><canvas id="canvas" width="1195" height="896" tabindex="0"></canvas></div>
+<pre id="figures"></pre>
+<div id="keys">Keys: W A S D left stick · arrows direction pad · I J K L triangle, square, cross, circle · Q E L1 R1 · 1 3 L2 R2 · X C L3 R3 · Return Start · Backspace Select.
+Your disc image of Champions: Return to Arms (SLUS-20973 v2.00) is read where it is, on your computer; nothing of it is sent anywhere.</div>
+<input type="file" id="file" accept=".iso,.bin,.img" hidden>
+<script src="rta-native.js"></script>
+</body>
+</html>

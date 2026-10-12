@@ -55,6 +55,7 @@ uniform vec2 u_tex_offset;
 uniform ivec2 u_wrap;
 uniform vec4 u_region;
 uniform float u_weave_half;
+uniform vec4 u_texa;        // mode (0 none, 1 24 bit, 2 16 bit), ta0, ta1, aem
 uniform int u_atst;
 uniform float u_aref;
 uniform vec4 u_blend;       // source: coefficient of C, constant; destination: coefficient of C, constant
@@ -78,6 +79,10 @@ void main() {
         tc.x = wrap(tc.x, u_wrap.x, u_region.x, u_region.y);
         tc.y = wrap(tc.y, u_wrap.y, u_region.z, u_region.w);
         vec4 t = texture(u_tex, (tc + u_tex_offset) / u_tex_size) * 255.0;
+        if (u_texa.x > 0.5) {
+            bool black = u_texa.w > 0.5 && t.r + t.g + t.b < 0.5;
+            t.a = (u_texa.x > 1.5 && t.a >= 127.5) ? u_texa.z : (black ? 0.0 : u_texa.y);
+        }
         if (u_tfx == 0) {
             c.rgb = min(t.rgb * v_col.rgb / 128.0, 255.0);
             c.a = u_tcc != 0 ? min(t.a * v_col.a / 128.0, 255.0) : v_col.a;
@@ -129,7 +134,7 @@ struct GlBackend::Impl {
     GLuint program = 0, present_program = 0, vao = 0, vbo = 0, present_vao = 0;
     GLuint samplers[2][2][2] = {{{0, 0}, {0, 0}}, {{0, 0}, {0, 0}}};     // linear, clamp s, clamp t
     struct Uniforms {
-        GLint target, tex, textured, tfx, tcc, st_scale, tex_size, tex_offset, wrap, region, weave_half, atst, aref, blend, blend_c, fix;
+        GLint target, tex, textured, tfx, tcc, st_scale, tex_size, tex_offset, wrap, region, weave_half, texa, atst, aref, blend, blend_c, fix;
     } u;
     GLint present_rect = -1, present_tex = -1;
     struct Target { GLuint fbo = 0, colour = 0, depth = 0; int lw = 0, lh = 0, pw = 0, ph = 0; bool screen = false; };
@@ -164,7 +169,7 @@ struct GlBackend::Impl {
         present_program = link(PRESENT_VERTEX, PRESENT_FRAGMENT);
 #define U(name) u.name = f->glGetUniformLocation(program, "u_" #name)
         U(target); U(tex); U(textured); U(tfx); U(tcc); U(st_scale); U(tex_size); U(tex_offset); U(wrap); U(region); U(weave_half);
-        U(atst); U(aref); U(blend); U(blend_c); U(fix);
+        U(atst); U(aref); U(blend); U(blend_c); U(fix); U(texa);
 #undef U
         present_rect = f->glGetUniformLocation(present_program, "u_rect");
         present_tex = f->glGetUniformLocation(present_program, "u_tex");
@@ -258,6 +263,12 @@ void GlBackend::execute(const FrameList& frame) {
         f->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         g.textures[t.id] = name;
     }
+    for (uint32_t id : frame.dead_textures) {
+        auto t = g.textures.find(id);
+        if (t == g.textures.end()) continue;
+        f->glDeleteTextures(1, &t->second);
+        g.textures.erase(t);
+    }
     for (const TargetInfo& info : frame.targets) g.make_target(info);
     g.shown = frame.show_target;
     if (frame.commands.empty()) return;
@@ -328,6 +339,7 @@ void GlBackend::execute(const FrameList& frame) {
             f->glUniform2i(g.u.wrap, c.wrap[0], c.wrap[1]);
             f->glUniform4f(g.u.region, c.region[0], c.region[1], c.region[2], c.region[3]);
             f->glUniform1f(g.u.weave_half, c.weave_half);
+            f->glUniform4f(g.u.texa, c.tex_is_target ? (float)c.texa_mode : 0.0f, (float)c.ta0, (float)c.ta1, c.aem ? 1.0f : 0.0f);
         }
         f->glUniform1i(g.u.atst, c.alpha_test ? c.atst : 1);
         f->glUniform1f(g.u.aref, (float)c.aref);

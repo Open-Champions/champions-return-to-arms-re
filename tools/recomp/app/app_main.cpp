@@ -17,6 +17,7 @@
 //   --volume V          0..1 (default 1); --mute = --volume 0 (the device still runs);
 //                       --no-sound opens no device at all
 //   --emulator-timing   the I/O processor answers as slowly as on a console (default: fast loading)
+//   --no-films          a film ends at its first picture (as the headless runtime does it)
 //   --script FILE, --do "COMMAND"   scripted input (the rig's script language) on top of
 //                       keyboard and controller; "app ..." lines are for this program:
 //                         app shot FILE.png        the picture of this vertical blank, at its drawn size
@@ -26,6 +27,9 @@
 //                                                  a controller made by the program, to test the map
 //                         app pads                 print the controller and what port 1 holds
 //                         app stats [reset]        print the pacing figures so far
+//                         app latency BUTTONS [pictures [before]]   a press given to the controller read after
+//                                                  `before` (12) more pictures; app latency report, `pictures`
+//                                                  (40) later, says which picture first showed a change
 //                         app record FILE | app record stop
 //                                                  write the picture stream from here on (render/stream.h;
 //                                                  played back by rta_replay: draw lists, texture sheets)
@@ -36,6 +40,8 @@
 //   --unpaced           as fast as the machine goes
 //   --png PREFIX --at n,n,...   write the shown picture at these vertical blanks
 //   --stop-after N      print the figures and end after N vertical blanks
+//   --control PATH      a control socket for test runs (control.h): the protocol of the emulator
+//                       build's, so that one driver walks both builds through the same places
 //
 // Keyboard: W A S D left stick, arrows direction pad, I J K L triangle square cross circle,
 // Q E L1 R1, 1 3 L2 R2, X C L3 R3, Return Start, Backspace Select.  The first game
@@ -47,6 +53,7 @@
 // through the two hand-overs to the game.
 #include "app_rt.h"
 #include "backend_gl.h"
+#include "control.h"
 #include "pad_host.h"
 #include "pipeline.h"
 #include "recorder.h"
@@ -83,6 +90,8 @@ using namespace render;
 using app::now_ms;
 
 static const char* TITLE = "Champions: Return to Arms - native build (experimental)";
+static render::Renderer* g_renderer;
+static double memory_mb();
 
 static double cpu_ms() {                                // processor time of the whole process
     rusage u;
@@ -92,9 +101,9 @@ static double cpu_ms() {                                // processor time of the
 
 struct Options {
     int window_w = 960, window_h = 720, size_w = 0, size_h = 0, scale = 0;
-    bool offscreen = false, unpaced = false, fullscreen = false, no_sound = false, emulator_timing = false;
+    bool offscreen = false, unpaced = false, fullscreen = false, no_sound = false, emulator_timing = false, no_films = false;
     double volume = 1.0;
-    std::string test, png, disc, data, elf;
+    std::string test, png, disc, data, elf, control;
     std::set<uint64_t> at;
     uint64_t stop_after = 0;
 };
@@ -145,17 +154,49 @@ static int key_by_name(const std::string& name) {
     return 0;
 }
 
-// Port 1 is the script, the controller and the keyboard together: buttons of all three,
-// each stick from the first of them that is not at rest.
+// ---- press to picture ("app latency BUTTONS [pictures [before]]") ---------------------------
+// A press is put on port 1 at one controller read; every picture presented from `before`
+// pictures earlier on is reduced to a coarse grid of brightness, and the first one that
+// differs from its predecessor by clearly more than the pictures before the press differed
+// among themselves is the answer to the press.
+struct Latency {
+    std::mutex lock;
+    int state = 0;                      // 0 off, 1 armed (counting pictures before the press), 2 pressed, 3 done
+    uint16_t buttons = 0;
+    int before = 12, after = 40, hold = 4;
+    uint64_t arm_blank = 0, press_blank = 0;
+    double press_ms = 0;
+    struct Sample { uint64_t number; double presented_ms; std::vector<uint8_t> grid; };
+    std::vector<Sample> samples;
+} g_latency;
+
+static app::Control& control();
+
+// Port 1 is the script, the control socket, the controller and the keyboard together:
+// buttons of all, each stick from the first of them that is not at rest.
 struct Pads : rta::PadSource {
     std::atomic<uint32_t> last_buttons{0};
     std::atomic<uint32_t> last_sticks{0x80808080};
     std::atomic<uint32_t> rumbles{0};
     std::atomic<bool> quit{false};
-    void read(unsigned port, uint64_t, rta::PadState& state) override {
+    void read(unsigned port, uint64_t frame, rta::PadState& state) override {
         if (quit) apprt::finish(0);                     // the window was closed: end from the game's thread
+        if (port == 0) control().on_blank(frame);
         state = apprt::script_pad(port);
         if (port != 0) return;
+        {
+            std::lock_guard<std::mutex> hold(g_latency.lock);
+            Latency& t = g_latency;
+            if (t.state == 1 && !t.arm_blank) t.arm_blank = frame;
+            if (t.state == 1 && frame >= t.arm_blank + (uint64_t)t.before) { t.state = 2; t.press_blank = frame; t.press_ms = now_ms(); }
+            if (t.state == 2 && frame < t.press_blank + (uint64_t)t.hold) state.buttons |= t.buttons;
+        }
+        {
+            app::Control& c = control();
+            state.buttons |= c.held;
+            if (state.lx == 128 && state.ly == 128) { state.lx = c.sticks[0]; state.ly = c.sticks[1]; }
+            if (state.rx == 128 && state.ry == 128) { state.rx = c.sticks[2]; state.ry = c.sticks[3]; }
+        }
         rta::PadState pad;
         bool have_pad = hostpad::read(pad);
         uint32_t keys = g_keys;
@@ -177,6 +218,8 @@ struct Pads : rta::PadSource {
     void rumble(unsigned, uint8_t, uint8_t) override { rumbles++; }
 };
 static Pads g_pads;
+static app::Control g_control;
+static app::Control& control() { return g_control; }
 
 // ---- the window ---------------------------------------------------------------------------
 static const QEvent::Type FrameEvent = (QEvent::Type)(QEvent::User + 1);
@@ -387,6 +430,7 @@ class Screen : public QObject {
             pace.last = t;
             pace.presents++;
         }
+        latency_sample(frame->number, after);
         blanks++;
         if (opt.stop_after && blanks >= opt.stop_after) {
             gl->glFinish();
@@ -398,12 +442,38 @@ class Screen : public QObject {
         return true;
     }
 
+    // the shown picture as a 40 x 28 grid of brightness, while a latency test runs
+    void latency_sample(uint64_t number, double presented) {
+        Latency& t = g_latency;
+        { std::lock_guard<std::mutex> hold(t.lock); if (t.state != 1 && t.state != 2) return; }
+        std::vector<uint8_t> rgba;
+        int w = 0, h = 0;
+        if (!backend->read_shown(rgba, w, h) || w < 40 || h < 28) return;
+        Latency::Sample s;
+        s.number = number; s.presented_ms = presented;
+        s.grid.resize(40 * 28);
+        for (int gy = 0; gy < 28; gy++)
+            for (int gx = 0; gx < 40; gx++) {
+                unsigned sum = 0, n = 0;
+                for (int y = gy * h / 28; y < (gy + 1) * h / 28; y += 2)
+                    for (int x = gx * w / 40; x < (gx + 1) * w / 40; x += 2) {
+                        const uint8_t* p = &rgba[((size_t)y * w + x) * 4];
+                        sum += p[0] + 2 * p[1] + p[2]; n++;
+                    }
+                s.grid[gy * 40 + gx] = (uint8_t)(n ? sum / (4 * n) : 0);
+            }
+        std::lock_guard<std::mutex> hold(t.lock);
+        t.samples.push_back(std::move(s));
+        if (t.state == 2 && number >= t.press_blank + (uint64_t)t.after) t.state = 3;
+    }
+
     void save(const std::string& name) {
         std::vector<uint8_t> rgba;
         int w = 0, h = 0;
-        if (!backend->read_shown(rgba, w, h)) { log_line("no picture to write to " + name + " (nothing is shown)"); return; }
+        if (!backend->read_shown(rgba, w, h)) { log_line("no picture to write to " + name + " (nothing is shown)"); g_control.shots_written++; return; }
         QImage image(rgba.data(), w, h, w * 4, QImage::Format_RGBA8888);
         image.convertToFormat(QImage::Format_RGB888).save(QString::fromStdString(name));
+        g_control.shots_written++;
         log_line("wrote " + name + " (" + std::to_string(w) + " x " + std::to_string(h) + ") at vertical blank " + std::to_string(blanks));
     }
 
@@ -441,9 +511,52 @@ static void final_report() {                            // on the game's thread,
                "%.2f ms of its own processor time (VIF1, VU1, GS model)\n", g_sink->game_ms / b, g_sink->decode_wall_ms / b, g_sink->decode_cpu_ms / b);
     }
     s.report_pace(false);
+    apprt::films_report();
+    {
+        const render::GsStats& g = g_renderer->gs.stats;
+        printf("rta_app: memory %.1f MB; textures made %llu, held %llu (%.1f MB as RGBA), freed %llu; draws without their texture %llu; surface copies %llu, "
+               "transfers inside GS memory not carried out %llu; VU1 instructions not implemented %llu; GS registers unknown %llu\n", memory_mb(),
+               (unsigned long long)g.textures_made, (unsigned long long)g.textures_held, g.texture_bytes / 1048576.0, (unsigned long long)g.textures_freed,
+               (unsigned long long)g.texture_missing, (unsigned long long)g.copies, (unsigned long long)g.copies_skipped,
+               (unsigned long long)g_renderer->vif.vu.bad, (unsigned long long)g.unknown_regs);
+        printf("rta_app: primitives drawn with GS state the model approximates (of %llu):", (unsigned long long)g.prims);
+        bool any = false;
+        for (int k = 0; k < render::AP_COUNT; k++) if (g.approx[k]) { printf(" %s %llu;", render::Gs::APPROX_NAMES[k], (unsigned long long)g.approx[k]); any = true; }
+        printf("%s\n", any ? "" : " none");
+    }
     printf("rta_app: input: %llu key events, controller %s, %u rumble commands\n", (unsigned long long)g_key_events.load(),
            hostpad::name().empty() ? "none" : hostpad::name().c_str(), g_pads.rumbles.load());
     fflush(stdout);
+}
+
+// What the process holds in memory now (macOS: the footprint Activity Monitor shows).
+#ifdef __APPLE__
+#include <mach/mach.h>
+static double memory_mb() {
+    task_vm_info_data_t vm;
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vm, &count) != KERN_SUCCESS) return 0;
+    return (double)vm.phys_footprint / 1048576.0;
+}
+#else
+static double memory_mb() { rusage u; getrusage(RUSAGE_SELF, &u); return (double)u.ru_maxrss / 1024.0; }
+#endif
+
+// One line of key=value figures for the control socket's `info` (read on the game's
+// thread while the other threads count: figures, not a consistent snapshot).
+static std::string info_line() {
+    Screen& s = *g_screen;
+    const render::GsStats& g = g_renderer->gs.stats;
+    char text[1024];
+    int n = snprintf(text, sizeof text, "ms=%.0f cpu_ms=%.0f pictures=%llu memory_mb=%.1f tex_made=%llu tex_held=%llu tex_freed=%llu tex_mb=%.1f tex_missing=%llu "
+                     "copies=%llu copies_skipped=%llu vu_bad=%llu gs_unknown=%llu draws=%llu fields=%llu machine_s=%.3f",
+                     now_ms() - s.start_ms, cpu_ms() - s.start_cpu, (unsigned long long)s.blanks, memory_mb(), (unsigned long long)g.textures_made,
+                     (unsigned long long)g.textures_held, (unsigned long long)g.textures_freed, g.texture_bytes / 1048576.0, (unsigned long long)g.texture_missing,
+                     (unsigned long long)g.copies, (unsigned long long)g.copies_skipped, (unsigned long long)g_renderer->vif.vu.bad,
+                     (unsigned long long)g.unknown_regs, (unsigned long long)s.backend->draw_calls(), (unsigned long long)apprt::fields(), apprt::machine_seconds());
+    for (int k = 0; k < render::AP_COUNT && n < (int)sizeof text - 40; k++)
+        if (g.approx[k]) n += snprintf(text + n, sizeof text - n, " approx%d=%llu", k, (unsigned long long)g.approx[k]);
+    return std::string(text) + " " + apprt::sound_figures();
 }
 
 // ---- "app ..." script lines (game's thread) -------------------------------------------------
@@ -506,6 +619,42 @@ static void app_command(const std::string& text, uint64_t frame) {
         }
     } else if (w[0] == "stats") {
         g_screen->report_pace(w.size() >= 2 && w[1] == "reset");
+    } else if (w[0] == "latency" && w.size() >= 2) {
+        Latency& t = g_latency;
+        std::lock_guard<std::mutex> hold(t.lock);
+        if (w[1] == "report") {
+            // differences between consecutive pictures: the largest before the press is the
+            // noise (an idle animation); the first after it above three times that, and
+            // above 1, is the answer
+            auto diff = [&](size_t k) {
+                unsigned d = 0;
+                for (size_t i = 0; i < t.samples[k].grid.size(); i++) d += (unsigned)abs((int)t.samples[k].grid[i] - (int)t.samples[k - 1].grid[i]);
+                return (double)d / (double)t.samples[k].grid.size();
+            };
+            double noise = 0;
+            for (size_t k = 1; k < t.samples.size(); k++) if (t.samples[k].number <= t.press_blank) noise = std::max(noise, diff(k));
+            double limit = std::max(3 * noise, noise + 0.05);
+            bool found = false;
+            for (size_t k = 1; k < t.samples.size() && !found; k++)
+                if (t.samples[k].number > t.press_blank && diff(k) > limit) {
+                    found = true;
+                    printf("[frame %llu] rta_app: latency: buttons %04x given to the game's controller read at vertical blank %llu; the first changed picture is that of blank %llu: "
+                           "%llu pictures after the press, presented %.1f ms after it (difference %.2f against %.2f before the press; state %d, %zu pictures looked at)\n",
+                           (unsigned long long)frame, t.buttons, (unsigned long long)t.press_blank, (unsigned long long)t.samples[k].number,
+                           (unsigned long long)(t.samples[k].number - t.press_blank), t.samples[k].presented_ms - t.press_ms, diff(k), noise, t.state, t.samples.size());
+                }
+            if (!found) printf("[frame %llu] rta_app: latency: no picture changed after the press at blank %llu (noise %.2f, state %d, %zu pictures)\n", (unsigned long long)frame,
+                               (unsigned long long)t.press_blank, noise, t.state, t.samples.size());
+            fflush(stdout);
+            t.state = 0;
+        } else {
+            t.buttons = parse_buttons(w[1]);
+            t.after = w.size() >= 3 ? atoi(w[2].c_str()) : 40;
+            t.before = w.size() >= 4 ? atoi(w[3].c_str()) : 12;
+            t.samples.clear();
+            t.arm_blank = 0; t.press_blank = 0;
+            t.state = 1;
+        }
     } else log_line("unknown app command: " + text);
 }
 
@@ -554,6 +703,7 @@ int main(int argc, char** argv) {
         else if (a == "--mute") opt.volume = 0;
         else if (a == "--no-sound") opt.no_sound = true;
         else if (a == "--emulator-timing") opt.emulator_timing = true;
+        else if (a == "--no-films") opt.no_films = true;
         else if (a == "--script" || a == "--do") { script_args.push_back(a); script_args.push_back(next()); }
         else if (a == "--offscreen") opt.offscreen = true;
         else if (a == "--unpaced") opt.unpaced = true;
@@ -561,6 +711,7 @@ int main(int argc, char** argv) {
         else if (a == "--png") opt.png = next();
         else if (a == "--at") { std::string s = next(); for (char* p = &s[0]; *p;) { opt.at.insert(strtoull(p, &p, 10)); if (*p) p++; } }
         else if (a == "--stop-after") opt.stop_after = strtoull(next().c_str(), nullptr, 10);
+        else if (a == "--control") opt.control = next();
         else if (a == "--help" || a == "-h") {
             printf("rta_app --disc IMAGE [--data DIR] [--window WxH] [--fullscreen] [--scale N | --size WxH] [--volume V | --mute | --no-sound]\n"
                    "        [--emulator-timing] [--script FILE] [--do COMMAND] [--test TEXT] [--offscreen] [--unpaced] [--png PREFIX --at n,..]\n"
@@ -615,7 +766,9 @@ int main(int argc, char** argv) {
     hostpad::start(log_line);
 
     static Renderer renderer;
+    g_renderer = &renderer;
     if (getenv("RTA_GS_LOG")) renderer.gs.log_display = true;
+    if (const char* keep = getenv("RTA_TEX_KEEP")) renderer.gs.texture_keep_frames = (uint32_t)atoi(keep);    // frames an unused texture is kept; 0 = for ever
     static AppSink sink;
     g_sink = &sink;
     sink.renderer = &renderer;
@@ -630,6 +783,14 @@ int main(int argc, char** argv) {
 
     apprt::set_command_handler(app_command);
     apprt::set_finish_handler(final_report);
+    if (!opt.control.empty()) {
+        g_control.buttons_of = parse_buttons;
+        g_control.app_command = app_command;
+        g_control.shot = [](const std::string& path) { std::lock_guard<std::mutex> hold(g_shot_lock); g_shots_asked.push_back(path); };
+        g_control.quit = [] { apprt::finish(0); };
+        g_control.info = info_line;
+        if (!g_control.start(opt.control)) { fprintf(stderr, "rta_app: cannot listen on %s\n", opt.control.c_str()); return 1; }
+    }
 
     // the runtime's arguments
     static std::vector<std::string> args = {argv[0], mode};
@@ -637,12 +798,20 @@ int main(int argc, char** argv) {
     if (!opt.disc.empty()) { args.push_back("--disc"); args.push_back(opt.disc); }
     args.push_back("--card"); args.push_back(opt.data + "/card");
     if (opt.emulator_timing) args.push_back("--emulator-timing");
+    // the films: the game's own player runs when the decoder behind it is linked (film.cpp)
+    if (apprt::films_linked() && !opt.no_films) { args.push_back("--opt"); args.push_back("films=original"); }
     if (!opt.no_sound) {
         bool silent = !opt.test.empty() || opt.offscreen;       // a test makes no sound, whatever was asked
         char gain[32];
         snprintf(gain, sizeof gain, "sound-gain=%.3f", silent ? 0.0 : opt.volume < 0 ? 0.0 : opt.volume > 1 ? 1.0 : opt.volume);
         args.push_back("--opt"); args.push_back("sound-out=device");
         args.push_back("--opt"); args.push_back(gain);
+        // Paced, the sound side runs by itself on the device's clock, as the console's does
+        // (it goes on through a level load).  A run that goes as fast as it can, or without a
+        // window, keeps the sound on the machine's clock: the same run, the same answers.
+        bool own_clock = !opt.unpaced && !opt.offscreen;
+        for (auto& a : pass) if (a.compare(0, 12, "sound-clock=") == 0) own_clock = false;      // said by hand after "--"
+        if (own_clock) { args.push_back("--opt"); args.push_back("sound-clock=real"); }
     }
     if (!script_args.empty()) {                         // names for the script's expressions
         if (file_exists(root + "/names.tsv")) { args.push_back("--sym"); args.push_back(root + "/names.tsv"); }

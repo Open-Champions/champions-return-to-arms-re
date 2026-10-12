@@ -159,6 +159,12 @@ static inline u32 fp_div(u32 a, u32 b) {
 static inline u32 fp_sqrt(u32 a) { float x = fp_f(fp_clamp(a) & 0x7FFFFFFFu); return fp_r(__builtin_sqrtf(x)); }
 static inline u32 fp_rsqrt(u32 a, u32 b) {
     if ((b & 0x7F800000u) == 0) return ((a ^ b) & 0x80000000u) | 0x7F7FFFFFu;
+#if defined(__x86_64__) || defined(_M_X64)
+    // The square root of a negative number is a NaN, and which NaN is the processor's
+    // choice: ARM64 makes 0x7fc00000, x86 0xffc00000 (the next operation clamps them to
+    // +FLT_MAX and -FLT_MAX).  This model is the ARM64 one, so say it.
+    if (b & 0x80000000u) return 0x7FC00000u;
+#endif
     float x = fp_cf(a), y = fp_cf(b);
     float s = __builtin_sqrtf(y);
     float r = 1.0f / s;
@@ -173,8 +179,16 @@ static inline u32 fp_to_int(u32 a) {
     return (u32)(s32)x;
 }
 static inline u32 fp_from_int(u32 w) { s32 v = (s32)w; return fp_r((float)v); }
+#if defined(__x86_64__) || defined(_M_X64)
+// ARM64's FMAXNM / FMINNM (what the two built-ins below are there) spelled out: of +0 and
+// -0 the maximum is +0 and the minimum -0.  x86's MAXSS / MINSS, and a C library's fmaxf,
+// hand back one of the two by its position instead.  The operands are clamped, so never NaN.
+static inline u32 fp_max(u32 a, u32 b) { u32 p = fp_clamp(a), q = fp_clamp(b); float x = fp_f(p), y = fp_f(q); return x > y ? p : x < y ? q : (p & q); }
+static inline u32 fp_min(u32 a, u32 b) { u32 p = fp_clamp(a), q = fp_clamp(b); float x = fp_f(p), y = fp_f(q); return x < y ? p : x > y ? q : (p | q); }
+#else
 static inline u32 fp_max(u32 a, u32 b) { float x = fp_cf(a), y = fp_cf(b); return fp_r(__builtin_fmaxf(x, y)); }
 static inline u32 fp_min(u32 a, u32 b) { float x = fp_cf(a), y = fp_cf(b); return fp_r(__builtin_fminf(x, y)); }
+#endif
 static inline bool fp_eq(u32 a, u32 b) { return fp_cf(a) == fp_cf(b); }
 static inline bool fp_lt(u32 a, u32 b) { return fp_cf(a) < fp_cf(b); }
 static inline bool fp_le(u32 a, u32 b) { return fp_cf(a) <= fp_cf(b); }

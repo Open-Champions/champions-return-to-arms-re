@@ -123,7 +123,8 @@ What the interpreter models, each because the programs rely on it:
 - arithmetic rounded toward zero (the programs make GS integers by adding 2^23 and the
   like to a float).
 
-Not modelled: FMAC data stalls, the EFU, integer-register branch hazards — the loop at
+(The numbers themselves are the unit's, not the host's: see "Changes of 2026-10-12,
+later".) Not modelled: FMAC data stalls, the EFU, integer-register branch hazards — the loop at
 instruction 0x117 (`SQI (vi2++)` directly before `IBNE vi3, vi2`) ends after 63 slots only
 if the branch sees the incremented register, so the programs do not expect one there.
 
@@ -241,7 +242,32 @@ still keeps a cycle counter and writes every register to memory; about 2.7 ns a 
   `/fp:strict` (or `#pragma fenv_access`) for `vu1.cpp` and the translation, and no
   contraction of multiply-add.
 
-## Approximations in the GS model (Read: none was seen to matter in the hub)
+## Changes of 2026-10-12, later (details and evidence: `native-app.md` section 10)
+
+- **VU1 computes with the unit's numbers** (`vu1_step.h`, `vu_in` / `vu_out`): an exponent
+  of 255 is an ordinary exponent (no NaN, no infinity; taken as the largest number), an
+  exponent of 0 is zero; `MAX` / `MINI` compare bit patterns as sign and magnitude. The
+  game blends a pose over whatever a joint slot held (`new x 1 + old x 0`), and what it
+  held can be another drawer's 16-bit data: with the host's arithmetic that made NaN
+  joint matrices - the "pole" in fights. +1.0 ms of VU1 time a picture in a fight.
+- **Surfaces are known by the block they start at**, so a local-to-local transfer out of a
+  surface into the middle of texture memory makes a surface there (the heat haze's piece
+  of the picture; it was dropped before, and the haze drew without a texture). A surface
+  read as a texture of a format without eight bits of alpha takes alpha from `TEXA`.
+- **Pixels sent straight into a buffer of display size** are collected and drawn into the
+  surface as one picture at the end of the frame (the film player's 16 x 16 rectangles).
+- **Textures are freed**: one that no draw has named for 600 frames is given back
+  (`Gs::texture_keep_frames`, `FrameList::dead_textures`); it is made again from what the
+  game sends if it comes back.
+- **What the model approximates is counted** per primitive (`GsStats::approx`,
+  `Gs::APPROX_NAMES`) and printed at the end of a run. Over the front end and 20 levels:
+  none of the listed states is used by any primitive.
+- Debugging aids: `RTA_GS_FAR` (now with the input half, the strip and the joint slots),
+  `RTA_WATCH=lo-hi` (`rta_replay`: every VU1 store and `UNPACK` into a range of VU1 data
+  memory), `RTA_GS_MISSING` (draws that name a texture that is not there),
+  `RTA_TEX_KEEP=frames`.
+
+## Approximations in the GS model (Read: none was seen to matter in the hub; counted since - see above)
 
 - Alpha test with a fail rule other than "keep": only "never passes" is exact (colour
   only / depth only / RGB only); otherwise failing pixels are dropped.
@@ -249,9 +275,11 @@ still keeps a cycle counter and writes every register to memory; about 2.7 ns a 
   clamped by the 8-bit target; destination-alpha test, `FBA`, `PABE`, fog, dither and
   `AA1` are not applied; `FBMSK` only per whole channel group.
 - Region-repeat wrapping is approximate; lines are one output pixel wide.
-- Local-to-local transfers are honoured only between surfaces (the heat-haze copy);
-  nothing in the hub uses one.
-- Textures are never freed (137 in the hub).
+- Local-to-local transfers are honoured when the source is a surface (the heat-haze
+  copy; since the later change above also when the destination is not at the start of a
+  page). One inside texture memory, from a texture to a texture, is not carried out and is
+  counted (`copies_skipped`: none in 40 level changes).
+- Textures were never freed (137 in the hub); since the later change above they are.
 - No input: `rta_render` sets no `PadSource`.
 
 ## Not reached

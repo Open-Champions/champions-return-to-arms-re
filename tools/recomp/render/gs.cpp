@@ -134,17 +134,112 @@ Gs::Gs() {
     reg[0x1a] = 1;                                      // PRMODECONT: attributes from PRIM
 }
 
-void Gs::begin_frame() { frame.clear(); have_cmd = false; state_dirty = true; }
+const char* const Gs::APPROX_NAMES[AP_COUNT] = {"alpha-test fail rule", "destination-alpha test", "destination-alpha blend", "FBA", "PABE", "fog",
+                                                 "AA1", "partial FBMSK", "COLCLAMP off", "region repeat", "texture is its own target"};
+
+void Gs::begin_frame() {
+    frame.clear(); have_cmd = false; state_dirty = true;
+    // the pictures made for the uploads of the frame before
+    frame.dead_textures.insert(frame.dead_textures.end(), transient_textures.begin(), transient_textures.end());
+    transient_textures.clear();
+}
+
+// ---- uploads straight into a surface ------------------------------------------------------
+void Gs::upload_to_surface(uint32_t block, const Rect& r, const uint8_t* bytes) {
+    if (r.w <= 0 || r.h <= 0 || r.x + r.w > 2048 || r.y + r.h > 2048) return;
+    Canvas& c = canvases[block];
+    int need_w = std::max(c.width, r.x + r.w), need_h = std::max(c.height, r.y + r.h);
+    if (need_w != c.width || need_h != c.height) {
+        std::vector<uint32_t> grown((size_t)need_w * need_h, 0);
+        for (int y = 0; y < c.height; y++) memcpy(&grown[(size_t)y * need_w], &c.pixels[(size_t)y * c.width], (size_t)c.width * 4);
+        c.pixels.swap(grown);
+        c.width = need_w; c.height = need_h;
+    }
+    if (c.x1 <= c.x0) { c.x0 = r.x; c.y0 = r.y; c.x1 = r.x + r.w; c.y1 = r.y + r.h; }
+    else { c.x0 = std::min(c.x0, r.x); c.y0 = std::min(c.y0, r.y); c.x1 = std::max(c.x1, r.x + r.w); c.y1 = std::max(c.y1, r.y + r.h); }
+    for (int y = 0; y < r.h; y++) {
+        uint32_t* to = &c.pixels[(size_t)(r.y + y) * c.width + r.x];
+        const uint8_t* from = bytes + (size_t)y * r.w * (r.psm == PSMCT24 ? 3 : r.psm == PSMCT16 || r.psm == PSMCT16S ? 2 : 4);
+        if (r.psm == PSMCT32) memcpy(to, from, (size_t)r.w * 4);
+        else if (r.psm == PSMCT24) for (int x = 0; x < r.w; x++) to[x] = from[x * 3] | (uint32_t)from[x * 3 + 1] << 8 | (uint32_t)from[x * 3 + 2] << 16 | 0x80000000u;
+        else for (int x = 0; x < r.w; x++) {
+            uint32_t v = from[x * 2] | (uint32_t)from[x * 2 + 1] << 8;
+            to[x] = ((v & 31) << 3) | (((v >> 5) & 31) << 11) | (((v >> 10) & 31) << 19) | ((v & 0x8000) ? 0x80000000u : 0);
+        }
+    }
+    stats.surface_uploads++;
+}
+
+void Gs::flush_uploads() {
+    if (canvases.empty()) return;
+    for (auto& entry : canvases) {
+        Canvas& c = entry.second;
+        if (c.x1 <= c.x0) continue;
+        if (have_cmd && cur.count) frame.commands.push_back(cur);
+        have_cmd = false;
+        state_dirty = true;
+        int w = c.x1 - c.x0, h = c.y1 - c.y0;
+        Target& target = target_at(entry.first, c.x1, c.y1);
+        target.serial = serial++;
+        if (!target.fbw) target.fbw = (uint32_t)(c.width + 63) / 64;
+        TextureData data;
+        data.id = next_texture++;
+        data.width = w; data.height = h;
+        data.rgba.resize((size_t)w * h * 4);
+        for (int y = 0; y < h; y++) memcpy(&data.rgba[(size_t)y * w * 4], &c.pixels[(size_t)(c.y0 + y) * c.width + c.x0], (size_t)w * 4);
+        transient_textures.push_back(data.id);
+        DrawCmd d;
+        d.prim = PK_TRIANGLES;
+        d.target = target.id;
+        d.scissor[0] = 0; d.scissor[1] = 0; d.scissor[2] = std::max(target.width, c.x1); d.scissor[3] = std::max(target.height, c.y1);
+        d.texture = data.id;
+        d.tex_size[0] = (float)w; d.tex_size[1] = (float)h;
+        d.tfx = 1; d.tcc = true;                        // the pixels as they are, alpha too
+        d.ztst = 1; d.depth_test = true; d.depth_write = false;
+        d.first = (uint32_t)frame.vertices.size();
+        d.count = 6;
+        static const int corner[6][2] = {{0, 0}, {1, 0}, {0, 1}, {1, 0}, {1, 1}, {0, 1}};
+        for (int k = 0; k < 6; k++) {
+            Vertex v;
+            v.x = (float)(corner[k][0] ? c.x1 : c.x0); v.y = (float)(corner[k][1] ? c.y1 : c.y0); v.z = 0;
+            v.s = (float)(corner[k][0] ? w : 0); v.t = (float)(corner[k][1] ? h : 0); v.q = 1;
+            v.r = v.g = v.b = v.a = 0x80;
+            frame.vertices.push_back(v);
+        }
+        frame.textures.push_back(std::move(data));
+        frame.commands.push_back(d);
+        c.x0 = c.y0 = c.x1 = c.y1 = 0;
+    }
+}
+
+// Textures are known by content and the game sends its resident ones again every frame,
+// so nothing says when one is gone for good: one that no draw has named for
+// texture_keep_frames is given back (the backend deletes it), and made again from what the
+// game sends if it comes back.
+void Gs::free_unused_textures() {
+    if (!texture_keep_frames) return;
+    for (auto it = textures.begin(); it != textures.end();) {
+        if (frames_ended - it->second.last_used > texture_keep_frames) {
+            frame.dead_textures.push_back(it->second.id);
+            stats.texture_bytes -= (uint64_t)it->second.width * it->second.height * 4;
+            stats.textures_freed++;
+            it = textures.erase(it);
+        } else ++it;
+    }
+    stats.textures_held = textures.size();
+}
 
 void Gs::end_frame(uint64_t number) {
+    flush_uploads();
     if (have_cmd && cur.count) frame.commands.push_back(cur);
     have_cmd = false;
     state_dirty = true;
     frame.number = number;
     frames_ended++;
+    if ((frames_ended & 63) == 0) free_unused_textures();
     int circuit = (pmode & 2) ? 1 : 0;
     uint64_t fb = dispfb[circuit];
-    auto it = targets.find((uint32_t)fb & 0x1FF);
+    auto it = targets.find(((uint32_t)fb & 0x1FF) << 5);
     if (it != targets.end()) {
         frame.show_target = it->second.id;
         frame.show_rect[0] = 0; frame.show_rect[1] = 0;
@@ -194,18 +289,22 @@ bool Gs::display_size(uint32_t fbp, int& width, int& height) const {
     return width > 0 && height > 0;
 }
 
-Gs::Target& Gs::target_at(uint32_t fbp, int width, int height) {
-    Target& t = targets[fbp];
+// Surfaces are known by the block they start at: a frame buffer's FBP x 32, or wherever a
+// copy out of a surface was put (the heat haze's piece of the picture lies in the middle
+// of texture memory, not at the start of a page).
+Gs::Target& Gs::target_at(uint32_t block, int width, int height) {
+    Target& t = targets[block];
+    uint32_t fbp = block >> 5;
     if (!t.id) t.id = next_target++;
     // A buffer the display reads is as large as the display says, whatever was drawn into
     // it before: the film player shows one buffer of 448 lines, everything else two of 224,
     // at the same place.  (Other surfaces only grow.)
     int dw = 0, dh = 0;
-    if (display_size(fbp, dw, dh)) {
+    if (!(block & 31) && display_size(fbp, dw, dh)) {
         if (t.width != dw || t.height != dh || !t.announced) {
             t.width = dw; t.height = dh;
             t.announced = true;
-            if (log_display) fprintf(stderr, "gs: target %u at fbp %u is %d x %d (the display's size)\n", t.id, fbp, t.width, t.height);
+            if (log_display) fprintf(stderr, "gs: target %u at block %u is %d x %d (the display's size)\n", t.id, block, t.width, t.height);
             TargetInfo info;
             info.id = t.id; info.width = t.width; info.height = t.height;
             info.screen = true;
@@ -217,7 +316,7 @@ Gs::Target& Gs::target_at(uint32_t fbp, int width, int height) {
         t.width = std::max(t.width, width);
         t.height = std::max(t.height, height);
         t.announced = true;
-        if (log_display) fprintf(stderr, "gs: target %u at fbp %u is %d x %d\n", t.id, fbp, t.width, t.height);
+        if (log_display) fprintf(stderr, "gs: target %u at block %u is %d x %d\n", t.id, block, t.width, t.height);
         TargetInfo info;
         info.id = t.id; info.width = t.width; info.height = t.height;
         info.screen = t.width >= 512;
@@ -366,19 +465,24 @@ void Gs::write(uint32_t address, uint64_t value) {
         reg[address] = value;
         if ((value & 3) == 0) start_transfer();
         else if ((value & 3) == 2) {
-            // local to local: only a copy between surfaces means anything here
+            // local to local: a copy out of a surface means something here (the heat haze
+            // takes a piece of the picture into a texture and draws it back displaced); what
+            // it is put into becomes a surface of its own at that block
             uint64_t bb = reg[0x50], pos = reg[0x51], size = reg[0x52];
             uint32_t sbp = (uint32_t)bb & 0x3FFF, dbp = (uint32_t)(bb >> 32) & 0x3FFF;
             int w = (int)(size & 0xFFF), h = (int)((size >> 32) & 0xFFF);
-            auto src = targets.find(sbp >> 5);
-            if (!(sbp & 31) && !(dbp & 31) && src != targets.end() && w && h) {
+            if (!canvases.empty()) flush_uploads();
+            auto src = targets.find(sbp);
+            if (src != targets.end() && sbp != dbp && w && h) {
                 if (have_cmd && cur.count) frame.commands.push_back(cur);
                 have_cmd = false;
                 state_dirty = true;
                 int sx = (int)(pos & 0x7FF), sy = (int)((pos >> 16) & 0x7FF), dx = (int)((pos >> 32) & 0x7FF), dy = (int)((pos >> 48) & 0x7FF);
                 uint32_t source_id = src->second.id;
-                Target& dst = target_at(dbp >> 5, dx + w, dy + h);
+                Target& dst = target_at(dbp, dx + w, dy + h);
                 dst.serial = serial++;
+                dst.fbw = (uint32_t)(bb >> 48) & 0x3F;
+                dst.psm = (uint32_t)(bb >> 56) & 0x3F;
                 sets.erase(dbp);
                 DrawCmd c;
                 c.kind = CMD_COPY;
@@ -387,7 +491,7 @@ void Gs::write(uint32_t address, uint64_t value) {
                 c.copy_dst[0] = dx; c.copy_dst[1] = dy; c.copy_dst[2] = w; c.copy_dst[3] = h;
                 frame.commands.push_back(c);
                 stats.copies++;
-            }
+            } else stats.copies_skipped++;
         }
         return;
     case 0x61: stats.finish++; return;
@@ -423,6 +527,13 @@ void Gs::start_transfer() {
     set.rects.push_back(r);
     xfer.active = true; xfer.dbp = dbp; xfer.rect = set.rects.size() - 1; xfer.got = 0;
     stats.uploads++;
+    // pixels for a buffer of display size (the film player's pictures) are not a texture
+    {
+        auto surface = targets.find(dbp);
+        xfer.to_surface = surface != targets.end() && surface->second.width >= 512 && r.bw * 64 >= 512
+                          && (r.psm == PSMCT32 || r.psm == PSMCT24 || r.psm == PSMCT16 || r.psm == PSMCT16S);
+        if (xfer.to_surface) return;
+    }
     // a texture that starts inside the blocks this one takes is gone (the game's ring of
     // sixteen resident textures hands the same blocks to one texture after another)
     int bwid = r.psm == PSMT4 ? 32 : r.psm == PSMT8 || r.psm == PSMCT16 || r.psm == PSMCT16S ? 16 : 8;
@@ -451,6 +562,14 @@ void Gs::image_data(const uint8_t* bytes, size_t count) {
     set.data.insert(set.data.end(), bytes, bytes + take);
     xfer.got += take;
     stats.upload_bytes += take;
+    if (xfer.got >= want && xfer.to_surface) {
+        Rect done = r;
+        std::vector<uint8_t> bytes(set.data.begin() + (std::ptrdiff_t)r.offset, set.data.end());
+        sets.erase(it);                                 // nothing of it is kept as a texture
+        xfer.active = false;
+        if (bytes.size() >= want) upload_to_surface(xfer.dbp, done, bytes.data());
+        return;
+    }
     if (xfer.got >= want) {
         r.bytes = want;
         uint64_t head[2] = {(uint64_t)r.psm | (uint64_t)r.bw << 8 | (uint64_t)r.x << 16 | (uint64_t)r.y << 32,
@@ -504,6 +623,7 @@ Gs::Texture* Gs::texture_for(uint64_t tex0, uint64_t texa) {
         // made before the game's header for it was known here (a machine that boots sends a
         // texture in the frame it loads it): ask again until there is an answer
         Texture& known = found->second;
+        known.last_used = frames_ended;
         if (!known.height_known && picture_size) {
             int pw = 0, ph = 0;
             if (picture_size(tbp, pw, ph)) {
@@ -579,7 +699,9 @@ Gs::Texture* Gs::texture_for(uint64_t tex0, uint64_t texa) {
         fprintf(stderr, "texture %u: %dx%d psm %x tbw %u named %dx%d rects %zu (first %dx%d psm %x bw %u) alpha 0:%zu 80:%zu other:%zu tex0 %016llx\n", data.id, width, height, psm, tbw,
                 named_w, named_h, set.rects.size(), set.rects[0].w, set.rects[0].h, set.rects[0].psm, set.rects[0].bw, a0, a80, other, (unsigned long long)tex0);
     }
-    Texture t = {data.id, width, height, 0, false};
+    Texture t = {data.id, width, height, 0, false, frames_ended};
+    stats.texture_bytes += (uint64_t)width * height * 4;
+    stats.textures_held = textures.size() + 1;
     int pw = 0, ph = 0;
     if (picture_size && picture_size(tbp, pw, ph)) {
         t.height_known = true;
@@ -598,6 +720,7 @@ static bool same_state(const DrawCmd& a, const DrawCmd& b) {
         && a.tex_missing == b.tex_missing && a.tex_size[0] == b.tex_size[0] && a.tex_size[1] == b.tex_size[1]
         && a.st_scale[0] == b.st_scale[0] && a.st_scale[1] == b.st_scale[1] && a.linear == b.linear && a.wrap[0] == b.wrap[0]
         && a.wrap[1] == b.wrap[1] && !memcmp(a.region, b.region, sizeof(a.region)) && a.tfx == b.tfx && a.tcc == b.tcc
+        && a.texa_mode == b.texa_mode && a.ta0 == b.ta0 && a.ta1 == b.ta1 && a.aem == b.aem
         && a.weave_half == b.weave_half && a.alpha_test == b.alpha_test && a.atst == b.atst && a.aref == b.aref && a.afail == b.afail
         && a.depth_test == b.depth_test && a.ztst == b.ztst && a.depth_write == b.depth_write && a.blend == b.blend && a.ba == b.ba
         && a.bb == b.bb && a.bc == b.bc && a.bd == b.bd && a.fix == b.fix && a.mask_rgb == b.mask_rgb && a.mask_a == b.mask_a;
@@ -606,6 +729,7 @@ static bool same_state(const DrawCmd& a, const DrawCmd& b) {
 static bool g_skip_draw = false;
 
 void Gs::rebuild_state() {
+    if (!canvases.empty()) flush_uploads();             // what was sent into a surface is there before anything is drawn
     state_dirty = false;
     uint32_t attr = (reg[0x1a] & 1) ? prim : ((prim & 7) | ((uint32_t)reg[0x1b] & 0x7F8));
     unsigned ctxt = (attr >> 9) & 1;
@@ -621,7 +745,7 @@ void Gs::rebuild_state() {
     c.scissor[1] = (int)((scissor >> 32) & 0x7FF); c.scissor[3] = (int)((scissor >> 48) & 0x7FF) + 1;
     // a surface is as wide as its buffer width says and as high as the scissor allows
     int buffer_width = (int)((frame_reg >> 16) & 0x3F) * 64;
-    Target& target = target_at((uint32_t)frame_reg & 0x1FF, buffer_width ? std::min(c.scissor[2], buffer_width) : c.scissor[2], c.scissor[3]);
+    Target& target = target_at(((uint32_t)frame_reg & 0x1FF) << 5, buffer_width ? std::min(c.scissor[2], buffer_width) : c.scissor[2], c.scissor[3]);
     target.fbw = (uint32_t)(frame_reg >> 16) & 0x3F;
     target.psm = (uint32_t)(frame_reg >> 24) & 0x3F;
     target.serial = serial++;
@@ -653,11 +777,22 @@ void Gs::rebuild_state() {
         c.alpha_test = true; c.atst = (uint8_t)atst; c.afail = (uint8_t)afail;
     }
     if (c.ztst == 0) g_skip_draw = true;
+    cur_approx = 0;
+    if (c.alpha_test && afail != 0) cur_approx |= 1u << AP_AFAIL;
+    if ((test >> 14) & 1) cur_approx |= 1u << AP_DATE;
+    if (reg[0x4a + ctxt] & 1) cur_approx |= 1u << AP_FBA;
+    if (reg[0x49] & 1) cur_approx |= 1u << AP_PABE;
+    if ((attr >> 5) & 1) cur_approx |= 1u << AP_FOG;
+    if ((attr >> 7) & 1) cur_approx |= 1u << AP_AA1;
+    if (!c.mask_rgb && (fbmsk & 0xFFFFFF)) cur_approx |= 1u << AP_FBMSK;
+    if (!c.mask_a && (fbmsk >> 24)) cur_approx |= 1u << AP_FBMSK;
+    if (!(reg[0x46] & 1)) cur_approx |= 1u << AP_COLCLAMP;
     // blend
     if ((attr >> 6) & 1) {
         c.blend = true;
         c.ba = alpha & 3; c.bb = (alpha >> 2) & 3; c.bc = (alpha >> 4) & 3; c.bd = (alpha >> 6) & 3;
         c.fix = (uint8_t)(alpha >> 32);
+        if (c.bc == 1 && c.ba != c.bb) cur_approx |= 1u << AP_DST_ALPHA;
     }
     // texture
     if (cmd_tme) {
@@ -668,15 +803,18 @@ void Gs::rebuild_state() {
         // textures, the second starting at its 640th column
         auto surface = targets.end();
         int offset_x = 0, offset_y = 0;
-        if (!(tbp & 31) && !targets.empty()) {
-            auto it = targets.upper_bound(tbp >> 5);
+        if (!targets.empty()) {
+            auto it = targets.upper_bound(tbp);
             if (it != targets.begin()) {
                 --it;
                 const Target& s = it->second;
-                uint32_t page = (tbp >> 5) - it->first, fbw = s.fbw ? s.fbw : 1;
-                int page_height = s.psm == PSMCT16 || s.psm == PSMCT16S ? 64 : 32;
-                int px = (int)(page % fbw) * 64, py = (int)(page / fbw) * page_height;
-                if (px < s.width && py < s.height) { surface = it; offset_x = px; offset_y = py; }
+                uint32_t blocks = tbp - it->first;
+                if (!(blocks & 31)) {                   // at the surface's start or a whole number of pages into it
+                    uint32_t page = blocks >> 5, fbw = s.fbw ? s.fbw : 1;
+                    int page_height = s.psm == PSMCT16 || s.psm == PSMCT16S ? 64 : 32;
+                    int px = (int)(page % fbw) * 64, py = (int)(page / fbw) * page_height;
+                    if (px < s.width && py < s.height) { surface = it; offset_x = px; offset_y = py; }
+                }
             }
         }
         auto set = sets.find(tbp);
@@ -689,7 +827,29 @@ void Gs::rebuild_state() {
             c.texture = surface->second.id; c.tex_is_target = true;
             c.tex_size[0] = (float)surface->second.width; c.tex_size[1] = (float)surface->second.height;
             c.tex_offset[0] = (float)offset_x; c.tex_offset[1] = (float)offset_y;
-        } else { stats.texture_missing++; c.tex_missing = tbp + 1; }
+            // a surface read in a format without eight bits of alpha gets its alpha from
+            // TEXA, as a texture of that format does
+            uint32_t tpsm = (uint32_t)(tex0 >> 20) & 0x3F;
+            uint64_t texa = reg[0x3b];
+            c.texa_mode = tpsm == PSMCT24 ? 1 : tpsm == PSMCT16 || tpsm == PSMCT16S ? 2 : 0;
+            c.ta0 = (uint8_t)texa; c.ta1 = (uint8_t)(texa >> 32); c.aem = (texa >> 15) & 1;
+        } else {
+            stats.texture_missing++; c.tex_missing = tbp + 1;
+            if (surface != targets.end()) cur_approx |= 1u << AP_SELF_TEXTURE;
+            static const bool log_missing = getenv("RTA_GS_MISSING") != nullptr;
+            static int left = 60;
+            if (log_missing && left > 0) {
+                left--;
+                uint32_t cbp = (uint32_t)(tex0 >> 37) & 0x3FFF, psm = (uint32_t)(tex0 >> 20) & 0x3F;
+                auto image = sets.find(tbp);
+                auto pal = sets.find(cbp);
+                fprintf(stderr, "gs: frame %llu: no texture for TEX0 %016llx (tbp %u psm %x cbp %u) ctxt %u prim %x target block %u: image %s, palette %s, %s\n",
+                        (unsigned long long)frames_ended, (unsigned long long)tex0, tbp, psm, cbp, ctxt, prim, ((uint32_t)frame_reg & 0x1FF) << 5,
+                        image == sets.end() ? "never sent" : image->second.rects.empty() || !image->second.rects.back().bytes ? "incomplete" : "there",
+                        pal == sets.end() ? "never sent" : "there",
+                        surface != targets.end() ? (surface->second.id == c.target ? "it is the surface being drawn into" : "a surface is there") : "no surface there");
+            }
+        }
         if (c.texture) {
             c.tfx = (uint8_t)((tex0 >> 35) & 3);
             c.tcc = (tex0 >> 34) & 1;
@@ -698,6 +858,7 @@ void Gs::rebuild_state() {
             c.region[0] = (float)((clamp >> 4) & 0x3FF); c.region[1] = (float)((clamp >> 14) & 0x3FF);
             c.region[2] = (float)((clamp >> 24) & 0x3FF); c.region[3] = (float)((clamp >> 34) & 0x3FF);
             if (!cmd_fst) { c.st_scale[0] = (float)(1 << ((tex0 >> 26) & 15)); c.st_scale[1] = (float)(1 << ((tex0 >> 30) & 15)); }
+            if (c.wrap[0] == WRAP_REGION_REPEAT || c.wrap[1] == WRAP_REGION_REPEAT) cur_approx |= 1u << AP_REGION_REPEAT;
         } else cmd_tme = false;
     }
     if (have_cmd && same_state(cur, c) ) return;
@@ -746,6 +907,7 @@ void Gs::kick(bool draw) {
                 else { s = a.s; t = a.t; q = a.q; }
             };
             stats.prims++;
+            if (cur_approx) for (int k = 0; k < AP_COUNT; k++) if (cur_approx & (1u << k)) stats.approx[k]++;
             if (type == 6) {
                 const Queued& a = vq[0];
                 const Queued& b = vq[1];

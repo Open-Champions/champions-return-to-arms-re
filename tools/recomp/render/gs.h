@@ -34,7 +34,14 @@ struct GsStats {
     uint64_t textures_made = 0, texture_hits = 0, texture_missing = 0, commands = 0, finish = 0;
     uint64_t copies = 0, unknown_regs = 0;
     double kick_ms = 0, path3_ms = 0;   // processor time inside xgkick() and gif(2, ...), when Gs::time_paths is set
+    uint64_t textures_freed = 0, textures_held = 0, texture_bytes = 0;      // held: now; bytes: RGBA bytes of the held ones
+    uint64_t copies_skipped = 0;        // local-to-local transfers that were not a copy from a surface
+    uint64_t surface_uploads = 0;       // rectangles sent straight into a displayed buffer
+    // Primitives drawn with a piece of GS state this model does not apply or only
+    // approximates, by kind (Gs::APPROX_NAMES): what a scene needs is known by counting.
+    uint64_t approx[16] = {0};
 };
+enum { AP_AFAIL, AP_DATE, AP_DST_ALPHA, AP_FBA, AP_PABE, AP_FOG, AP_AA1, AP_FBMSK, AP_COLCLAMP, AP_REGION_REPEAT, AP_SELF_TEXTURE, AP_COUNT };
 
 class Gs {
   public:
@@ -48,6 +55,10 @@ class Gs {
     std::function<void()> on_far_vertex;    // debugging (RTA_GS_FAR): a vertex far outside every surface was drawn
     bool log_display = false;           // print display register changes and surface sizes to stderr
     int debug_entry = 0;                // the VU1 entry last started (for the trace)
+    static const char* const APPROX_NAMES[AP_COUNT];
+    // A texture nothing drew with for this many frames is freed (0: never).  It is made
+    // again from what the game sends if a draw names it later.
+    uint32_t texture_keep_frames = 600;
     // Asked once per new texture: the size of the picture in the texture at this TBP0, from
     // the game's own header (false: not known).
     std::function<bool(uint32_t tbp, int& width, int& height)> picture_size;
@@ -105,10 +116,20 @@ class Gs {
     struct UploadSet { std::vector<Rect> rects; std::vector<uint8_t> data; uint64_t hash = 0, serial = 0; bool used = false; };
     std::map<uint32_t, UploadSet> sets;                 // by destination base pointer
     uint64_t serial = 1;
-    struct Transfer { bool active = false; uint32_t dbp = 0; size_t rect = 0, got = 0; } xfer;
+    struct Transfer { bool active = false; uint32_t dbp = 0; size_t rect = 0, got = 0; bool to_surface = false; } xfer;
+    // Pixels the game sends straight into a displayed buffer (the film player: 16 x 16
+    // pieces of a decoded picture, 1,120 a picture): collected per buffer and drawn into
+    // the surface as one picture when the frame ends or something else uses the surface.
+    struct Canvas { int width = 0, height = 0, x0 = 0, y0 = 0, x1 = 0, y1 = 0; std::vector<uint32_t> pixels; };
+    std::map<uint32_t, Canvas> canvases;                // by block
+    std::vector<uint32_t> transient_textures;           // made for one frame's uploads: freed with the next frame
+    void upload_to_surface(uint32_t block, const Rect& r, const uint8_t* bytes);
+    void flush_uploads();
     void start_transfer();
     void image_data(const uint8_t* bytes, size_t count);
-    struct Texture { uint32_t id; int width, height, picture_height; bool height_known; };
+    struct Texture { uint32_t id; int width, height, picture_height; bool height_known; uint64_t last_used = 0; };
+    void free_unused_textures();
+    uint32_t cur_approx = 0;            // AP_ bits of the state being drawn with
     std::set<uint32_t> restore_tried;
     int cur_picture_height = 0;
     std::unordered_map<uint64_t, Texture> textures;     // by content key

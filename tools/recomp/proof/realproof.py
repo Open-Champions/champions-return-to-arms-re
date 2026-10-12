@@ -1,0 +1,515 @@
+#!/usr/bin/env python3
+"""realproof.py - the functions the automatic sweep could not drive, on inputs taken from
+the running game.
+
+tools/recomp/difftest.py compares every function of the executable in the interpreter
+(tools/ee_emu.py) and in the translation on synthetic inputs; for 301 functions the
+interpreter stops on every one of them (a made-up pointer, an endless wait).  Here the
+inputs are real: the instrumented runtime (proof_rt.cpp, --opt proof-capture) records the
+registers and all of memory at the moment the game enters a function, and each recorded
+state is run to the function's return twice - in the interpreter and in the translation
+(proof_driver) - and everything observable is compared, as difftest.py does: all general
+registers (128 bits), HI/LO and the second pair, the shift-amount register, the FPU
+registers, accumulator and compare bit, every call made (site, target, eight integer and
+eight float argument registers) and every byte of main memory, the scratchpad and any
+other memory touched.
+
+  python3 tools/recomp/proof/realproof.py want    [--sweep FILE]
+  python3 tools/recomp/proof/realproof.py replay  DIR [--jobs N] [--steps N] [--stub-steps N] [--all]
+  python3 tools/recomp/proof/realproof.py report  [DIR ...] [--hits FILE ...]
+
+want    reads the sweep's report and writes local/recomp-out/proof/want.txt: the functions
+        without a comparable case (and those identical only up to a common stop), with the
+        reason the interpreter stopped on the synthetic inputs.
+replay  runs the states recorded in DIR (pages.bin, captures.bin).  Each state is tried
+        with callees running ("follow": the whole call tree is compared); when the
+        interpreter does not reach the return within --steps instructions, again with
+        every call replaced by "return 0" on both sides ("stub": the function's own
+        translation on real arguments and memory).  Writes DIR/results.tsv.
+report  the table: of the functions in want.txt, how many now have an identical
+        comparable case, how many were never entered in any session, how many differ.
+
+Verdicts: pass (ran to the return, identical), pass@stop (both stopped at the same
+instruction - BREAK, a vector-unit instruction - identical up to there), FAIL (a
+difference), stop:<why> (the interpreter did not finish; nothing proved).
+"""
+import argparse
+import mmap
+import multiprocessing
+import os
+import struct
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+RECOMP = os.path.dirname(HERE)
+ROOT = os.path.dirname(os.path.dirname(RECOMP))
+sys.path.insert(0, RECOMP)
+sys.path.insert(0, os.path.join(ROOT, 'tools'))
+import difftest                                 # noqa: E402
+import ee_emu                                   # noqa: E402
+from ee_emu import EE, EmuError                 # noqa: E402
+
+OUT = os.path.join(ROOT, 'local', 'recomp-out')
+PROOF = os.path.join(OUT, 'proof')
+DRIVER = os.path.join(OUT, 'bin', 'proof_driver')
+RAM_PAGES = 0x02000000 >> 12
+PAGES = RAM_PAGES + 4
+SPR_PAGE = 0x70000000 >> 12
+MIRRORS = (0x20000000, 0x30000000, 0x80000000, 0xA0000000)
+HEAD = struct.Struct('<6I16s')
+BODY = struct.Struct('<32Q32Q4Q2I32II')
+NATIVE_STATUS = difftest.NATIVE_STATUS
+
+
+class Capture:
+    __slots__ = ('index', 'number', 'addr', 'hit', 'episode', 'tick', 'level', 'r', 'rh', 'hi', 'lo', 'hi1', 'lo1',
+                 'sa', 'fcr31', 'f', 'acc', 'changed')
+
+
+def load_captures(directory):
+    with open(os.path.join(directory, 'captures.bin'), 'rb') as source:
+        data = source.read()
+    out, pos = [], 0
+    while pos + HEAD.size + BODY.size + 4 <= len(data):
+        magic, number, addr, hit, episode, tick, level = HEAD.unpack_from(data, pos)
+        if magic != 0x50414350:
+            raise ValueError('bad state record at %d' % pos)
+        pos += HEAD.size
+        v = BODY.unpack_from(data, pos)
+        pos += BODY.size
+        cap = Capture()
+        cap.index, cap.number, cap.addr, cap.hit, cap.episode, cap.tick = len(out), number, addr, hit, episode, tick
+        cap.level = level.split(b'\0')[0].decode('latin1')
+        cap.r, cap.rh = list(v[0:32]), list(v[32:64])
+        cap.hi, cap.lo, cap.hi1, cap.lo1, cap.sa, cap.fcr31 = v[64:70]
+        cap.f, cap.acc = list(v[70:102]), v[102]
+        count, = struct.unpack_from('<I', data, pos)
+        pos += 4
+        if pos + 8 * count > len(data):
+            break                               # a run that was cut short
+        cap.changed = struct.unpack_from('<%dI' % (2 * count), data, pos)
+        pos += 8 * count
+        out.append(cap)
+    return out
+
+
+def _syscall_stub(emu):
+    emu.r[2] = 0
+
+
+class RealReference:
+    """The interpreter on recorded states."""
+
+    def __init__(self, directory):
+        emu = self.emu = EE(None, fpu_model='ps2')
+        emu.mem.auto_map = True
+        emu.div_zero = 'r5900'
+        emu.stack_lo = emu.stack_hi = 0
+        emu.record_writes = False
+        self.file = open(os.path.join(directory, 'pages.bin'), 'rb')
+        self.store = mmap.mmap(self.file.fileno(), 0, access=mmap.ACCESS_READ)
+        self.pages = [bytearray(4096) for _ in range(PAGES)]
+        self.have = [-1] * PAGES                # number in the store of what a page holds; -1 unknown
+        self.want = [0] * PAGES
+        self.base = {}
+        for page in range(RAM_PAGES):
+            self.base[page] = self.pages[page]
+            for mirror in MIRRORS:
+                self.base[(mirror >> 12) + page] = self.pages[page]
+        for k in range(4):
+            self.base[SPR_PAGE + k] = self.pages[RAM_PAGES + k]
+        emu.mem.pages = dict(self.base)
+        self.message = ''
+
+    def advance(self, cap):
+        """Apply a state's page changes to `want` (states must be visited in file order)."""
+        changed = cap.changed
+        for i in range(0, len(changed), 2):
+            if changed[i] < PAGES:
+                self.want[changed[i]] = changed[i + 1]
+
+    def materialise(self):
+        store, pages, have, want = self.store, self.pages, self.have, self.want
+        for page in range(PAGES):
+            ref = want[page]
+            if have[page] != ref:
+                pages[page][:] = store[ref * 4096:ref * 4096 + 4096]
+                have[page] = ref
+
+    def run(self, cap, stub_all, budget):
+        emu = self.emu
+        self.materialise()
+        emu.mem.pages = dict(self.base)
+        emu.mem.auto_mapped = []
+        emu.hooks.clear()
+        emu.stub_names.clear()
+        emu.breakpoints.clear()
+        emu.r[:] = cap.r
+        emu.rh[:] = cap.rh
+        emu.r[0] = emu.rh[0] = 0
+        emu.hi, emu.lo, emu.hi1, emu.lo1 = cap.hi, cap.lo, cap.hi1, cap.lo1
+        emu.sa, emu.acc = cap.sa, cap.acc
+        emu.fcr31 = (cap.fcr31 & 0x00800000) | 0x01000001
+        emu.f[:] = cap.f
+        emu.cop0[:] = [0] * 32
+        emu.calls, emu.writes, emu.notes, emu.steps = [], [], [], 0
+        emu._pending_call = emu._fresh_call = None
+        emu.follow = set() if stub_all else None
+        emu.default_ret = 0
+        for addr in range(0, EE.RETURN_ADDR, 4):
+            emu.hooks[addr] = difftest._null_jump
+        emu.r[31] = EE.RETURN_ADDR
+        emu.jump(cap.addr)
+        emu.syscall_handler = _syscall_stub
+        self.message = ''
+        try:
+            reason = emu.run(max_steps=budget)
+            status = 'return' if reason == 'return' else 'error'
+        except ee_emu.StepLimit:
+            status = 'steps'
+        except ee_emu.UnimplementedInstruction as exc:
+            status, self.message = 'unimpl', str(exc)
+        except ee_emu.CpuTrap as exc:
+            status = 'unaligned' if str(exc).startswith('unaligned') else 'trap'
+            self.message = str(exc)
+        except ee_emu.MemoryFault as exc:
+            status, self.message = 'fault', str(exc)
+        except EmuError as exc:
+            status, self.message = 'error', str(exc)
+        o = difftest.Outcome()
+        o.status, o.info = status, (emu.cur if status in ('trap', 'unimpl') else emu.pc)
+        o.r, o.rh = list(emu.r), list(emu.rh)
+        o.hi, o.lo, o.hi1, o.lo1 = emu.hi, emu.lo, emu.hi1, emu.lo1
+        o.sa, o.fcr31, o.f, o.acc = emu.sa, emu.fcr31, list(emu.f), emu.acc
+        o.call_total = len(emu.calls)
+        o.calls = [(rec.site, rec.target, tuple(a & ee_emu.M64 for a in rec.args), tuple(rec.fargs)) for rec in emu.calls[:512]]
+        # every page that no longer holds what the state had
+        store, pages, have, want = self.store, self.pages, self.have, self.want
+        changed = {}
+        for page in range(PAGES):
+            ref = want[page]
+            if pages[page] != store[ref * 4096:ref * 4096 + 4096]:
+                changed[page if page < RAM_PAGES else SPR_PAGE + page - RAM_PAGES] = bytes(pages[page])
+                have[page] = -1
+        zero = bytes(4096)
+        for addr in emu.mem.auto_mapped:
+            index = addr >> 12
+            page = emu.mem.pages.get(index)
+            if page is not None and index not in self.base and bytes(page) != zero:
+                changed[index] = bytes(page)
+        o.pages = changed
+        return status, o
+
+
+def read_native(path, count, pre_page):
+    """Outcomes of proof_driver; pre_page(job number, page index) gives a page before the run."""
+    with open(path, 'rb') as source:
+        data = source.read()
+    magic, n = struct.unpack_from('<II', data, 0)
+    if magic != 0x31525352 or n != count:
+        raise ValueError('bad result file')
+    pos, outcomes = 8, []
+    for job in range(n):
+        o = difftest.Outcome()
+        o.status, o.info = struct.unpack_from('<II', data, pos); pos += 8
+        o.r = list(struct.unpack_from('<32Q', data, pos)); pos += 256
+        o.rh = list(struct.unpack_from('<32Q', data, pos)); pos += 256
+        o.hi, o.lo, o.hi1, o.lo1 = struct.unpack_from('<4Q', data, pos); pos += 32
+        o.sa, o.fcr31 = struct.unpack_from('<II', data, pos); pos += 8
+        o.f = list(struct.unpack_from('<32I', data, pos)); pos += 128
+        o.acc, o.call_total, ncalls = struct.unpack_from('<III', data, pos); pos += 12
+        o.calls = []
+        for _ in range(ncalls):
+            site, target, _stubbed, _pad = struct.unpack_from('<4I', data, pos)
+            o.calls.append((site, target, struct.unpack_from('<8Q', data, pos + 16), struct.unpack_from('<8I', data, pos + 80)))
+            pos += 112
+        runs, = struct.unpack_from('<I', data, pos); pos += 4
+        raw = []
+        for _ in range(runs):
+            addr, length = struct.unpack_from('<II', data, pos); pos += 8
+            raw.append((addr, data[pos:pos + length]))
+            pos += (length + 3) & ~3
+        o.pages = raw                           # turned into pages by the caller, which has the state
+        outcomes.append(o)
+    return outcomes
+
+
+def native_pages(runs, ref):
+    """{page index: bytes} from the driver's runs of changed bytes."""
+    pages = {}
+    for addr, blob in runs:
+        index = addr >> 12
+        page = pages.get(index)
+        if page is None:
+            if index < RAM_PAGES:
+                r = ref.want[index]
+                page = bytearray(ref.store[r * 4096:r * 4096 + 4096])
+            elif SPR_PAGE <= index < SPR_PAGE + 4:
+                r = ref.want[RAM_PAGES + index - SPR_PAGE]
+                page = bytearray(ref.store[r * 4096:r * 4096 + 4096])
+            else:
+                page = bytearray(4096)
+            pages[index] = page
+        page[addr & 0xFFF:(addr & 0xFFF) + len(blob)] = blob
+    return {k: bytes(v) for k, v in pages.items()}
+
+
+def judge(status, out, nat):
+    """(verdict, detail) for one run of one state."""
+    native = NATIVE_STATUS[nat.status]
+    if status == 'return':
+        diffs = difftest.compare(out, nat)
+        return ('pass', '') if not diffs else ('FAIL', '; '.join(diffs[:4]))
+    if status in ('trap', 'unimpl') and native == 'trap' and out.info == nat.info:
+        diffs = difftest.compare(out, nat, 'trap')
+        return ('pass@stop', '%x' % out.info) if not diffs else ('FAIL', 'at stop %x: %s' % (out.info, '; '.join(diffs[:4])))
+    # nothing to compare at an end; the calls made so far still can be
+    shared = min(len(out.calls), len(nat.calls))
+    agree = all(out.calls[i] == nat.calls[i] for i in range(shared))
+    detail = 'translation %s; first %d calls %s' % (native, shared, 'agree' if agree else 'DIFFER')
+    return 'stop:%s' % status, detail
+
+
+def replay_worker(job):
+    directory, first, last, steps, stub_steps, wanted, tag = job
+    caps = load_captures(directory)
+    ref = RealReference(directory)
+    chosen = [c for c in caps[first:last] if wanted is None or c.addr in wanted]
+    if not chosen:
+        return []
+    work = os.path.join(directory, 'work')
+    os.makedirs(work, exist_ok=True)
+    jobs_path = os.path.join(work, 'jobs-%s.bin' % tag)
+    result_path = os.path.join(work, 'results-%s.bin' % tag)
+    with open(jobs_path, 'wb') as sink:
+        sink.write(struct.pack('<II', 0x424F4A50, 2 * len(chosen)))
+        for cap in chosen:
+            sink.write(struct.pack('<IIq', cap.index, 0, 400000000))
+            sink.write(struct.pack('<IIq', cap.index, 1, 400000000))
+    done = subprocess.run(['nice', '-n', '19', DRIVER, directory, jobs_path, result_path], capture_output=True, text=True)
+    if done.returncode != 0:
+        raise RuntimeError('proof_driver failed (%d): %s' % (done.returncode, done.stderr[:400]))
+    natives = read_native(result_path, 2 * len(chosen), None)
+    os.remove(jobs_path)
+    os.remove(result_path)
+    rows = []
+    position = 0
+    for n, cap in enumerate(chosen):
+        while position <= cap.index:
+            ref.advance(caps[position])
+            position += 1
+        results = []
+        for mode, stub_all, budget in (('follow', False, steps), ('stub', True, stub_steps)):
+            nat = natives[2 * n + (1 if stub_all else 0)]
+            status, out = ref.run(cap, stub_all, budget)
+            nat_pages = native_pages(nat.pages, ref)
+            keep = nat.pages
+            nat.pages = nat_pages
+            verdict, detail = judge(status, out, nat)
+            nat.pages = keep
+            results.append((mode, verdict, ref.emu.steps, detail or ref.message[:120]))
+            if verdict in ('pass', 'FAIL'):
+                break
+        for mode, verdict, count, detail in results:
+            rows.append((cap.index, cap.addr, cap.hit, cap.episode, cap.tick, cap.level, mode, verdict, count, detail))
+    return rows
+
+
+def replay(args):
+    caps = load_captures(args.dir)
+    wanted = None
+    if not args.all and os.path.exists(os.path.join(PROOF, 'want.txt')):
+        wanted = {int(line.split()[0], 16) for line in open(os.path.join(PROOF, 'want.txt')) if line.strip() and not line.startswith('#')}
+    if args.only:
+        wanted = {int(x, 16) for x in args.only.split(',')}
+    step = max(1, (len(caps) + args.jobs * 4 - 1) // (args.jobs * 4))
+    jobs = [(args.dir, at, min(len(caps), at + step), args.steps, args.stub_steps, wanted, '%d-%d' % (os.getpid(), at))
+            for at in range(0, len(caps), step)]
+    start = time.time()
+    rows = []
+    with multiprocessing.Pool(args.jobs) as pool:
+        for part in pool.imap_unordered(replay_worker, jobs):
+            rows.extend(part)
+    rows.sort()
+    with open(os.path.join(args.dir, 'results.tsv'), 'w') as sink:
+        sink.write('# state\tfunction\tcall\tepisode\ttick\tlevel\tmode\tverdict\tsteps\tdetail\n')
+        for row in rows:
+            sink.write('%d\t%08x\t%d\t%d\t%d\t%s\t%s\t%s\t%d\t%s\n' % row)
+    counts = {}
+    for row in rows:
+        counts[(row[6], row[7].split(':')[0])] = counts.get((row[6], row[7].split(':')[0]), 0) + 1
+    print('%d states in %s, %d runs, %.0f s: %s' % (len(caps), args.dir, len(rows), time.time() - start,
+                                                   ', '.join('%s %s %d' % (m, v, n) for (m, v), n in sorted(counts.items()))))
+    for row in rows:
+        if row[7] == 'FAIL':
+            print('FAIL %08x state %d (%s tick %d, %s): %s' % (row[1], row[0], row[5], row[4], row[6], row[9][:300]))
+    return 1 if any(row[7] == 'FAIL' for row in rows) else 0
+
+
+# ---- the list of unproven functions ------------------------------------------------------------
+
+def sweep_rows(path):
+    rows = {}
+    for line in open(path):
+        parts = line.rstrip('\n').split('\t')
+        if len(parts) == 2 and len(parts[0]) == 8:
+            rows[int(parts[0], 16)] = [item.split('=')[1] for item in parts[1].split()]
+    return rows
+
+
+def why(verdicts):
+    """One reason for a function without a comparable case, from its twelve synthetic runs."""
+    kinds = [v[5:].split('/')[0] for v in verdicts if v.startswith('stop:')]
+    order = ('steps', 'unimpl', 'trap', 'error', 'unaligned', 'fault')
+    names = {'steps': 'step limit in every or some runs (a loop that waits, or a long one)',
+             'unimpl': 'an instruction the interpreter does not implement (vector unit, COP0)',
+             'trap': 'BREAK or a trap', 'error': 'a jump to address 0 or out of the code',
+             'unaligned': 'unaligned access through a made-up pointer', 'fault': 'wild pointer (memory outside the 32 MB)'}
+    present = set(kinds)
+    if present <= {'unaligned', 'fault'}:
+        return names['unaligned'] if 'unaligned' in present else names['fault']
+    for key in order:
+        if key in present:
+            return names[key]
+    return 'other'
+
+
+def want(args):
+    rows = sweep_rows(args.sweep)
+    os.makedirs(PROOF, exist_ok=True)
+    none, partial, reasons = [], [], {}
+    for func in sorted(rows):
+        verdicts = rows[func]
+        if 'pass' in verdicts:
+            continue
+        if 'pass@stop' in verdicts:
+            partial.append(func)
+            continue
+        none.append(func)
+        reasons.setdefault(why(verdicts), []).append(func)
+    with open(os.path.join(PROOF, 'want.txt'), 'w') as sink:
+        sink.write('# function\tclass\treason on synthetic inputs\n')
+        for reason, funcs in reasons.items():
+            for func in funcs:
+                sink.write('%08x\tnone\t%s\n' % (func, reason))
+        for func in partial:
+            sink.write('%08x\tpartial\tidentical only up to an instruction both sides stop at\n' % func)
+    print('%d functions without a comparable case, %d identical only up to a common stop' % (len(none), len(partial)))
+    for reason, funcs in sorted(reasons.items(), key=lambda kv: -len(kv[1])):
+        print('  %4d  %s' % (len(funcs), reason))
+    return 0
+
+
+def read_want():
+    out = {}
+    for line in open(os.path.join(PROOF, 'want.txt')):
+        if line.strip() and not line.startswith('#'):
+            parts = line.rstrip('\n').split('\t')
+            out[int(parts[0], 16)] = (parts[1], parts[2])
+    return out
+
+
+def symbols():
+    import glob
+    names = {}
+    for path in [os.path.join(ROOT, 'names.tsv')] + sorted(glob.glob(os.path.join(ROOT, 'symbols', '*.tsv'))):
+        for line in open(path):
+            parts = line.split('\t')
+            if len(parts) >= 2 and not line.startswith('#'):
+                try:
+                    names[int(parts[0], 16)] = parts[1].strip()
+                except ValueError:
+                    pass
+    return names
+
+
+def report(args):
+    wanted = read_want()
+    best = {}                                   # function -> best verdict rank and row
+    rank = {'FAIL': 5, 'pass': 4, 'pass@stop': 3}
+    runs = 0
+    for directory in args.dirs:
+        path = os.path.join(directory, 'results.tsv')
+        if not os.path.exists(path):
+            continue
+        for line in open(path):
+            if line.startswith('#'):
+                continue
+            p = line.rstrip('\n').split('\t')
+            func, mode, verdict = int(p[1], 16), p[6], p[7]
+            runs += 1
+            entry = best.setdefault(func, {'FAIL': 0, 'pass': 0, 'pass@stop': 0, 'stop': 0, 'modes': set(), 'why': {}, 'fail': ''})
+            key = verdict if verdict in rank else 'stop'
+            entry[key] += 1
+            if verdict == 'pass':
+                entry['modes'].add(mode)
+            if key == 'stop':
+                entry['why'][verdict] = entry['why'].get(verdict, 0) + 1
+            if verdict == 'FAIL' and not entry['fail']:
+                entry['fail'] = '%s state %s: %s' % (directory, p[0], p[9])
+    hits = {}
+    for path in args.hits or []:
+        for line in open(path):
+            p = line.split()
+            if len(p) == 2:
+                hits[int(p[0], 16)] = hits.get(int(p[0], 16), 0) + int(p[1])
+    names = symbols()
+    classes = {'none': {}, 'partial': {}}
+    for func, (kind, _reason) in wanted.items():
+        entry = best.get(func)
+        if entry is None:
+            state = 'never entered' if (args.hits and not hits.get(func)) else 'entered, no state replayed' if args.hits else 'no state'
+        elif entry['FAIL']:
+            state = 'DIFFERENT'
+        elif entry['pass']:
+            state = 'identical to the return (callees run)' if 'follow' in entry['modes'] else 'identical to the return (calls replaced)'
+        elif entry['pass@stop']:
+            state = 'identical up to a common stop'
+        else:
+            state = 'not comparable: ' + max(entry['why'].items(), key=lambda kv: kv[1])[0]
+        classes[kind].setdefault(state, []).append(func)
+    print('%d runs of recorded states read' % runs)
+    for kind, title in (('none', 'functions without a comparable case in the sweep'),
+                        ('partial', 'functions identical only up to a common stop in the sweep')):
+        total = sum(len(v) for v in classes[kind].values())
+        print('%s: %d' % (title, total))
+        for state, funcs in sorted(classes[kind].items(), key=lambda kv: -len(kv[1])):
+            print('  %4d  %s' % (len(funcs), state))
+    if args.list:
+        for kind in ('none', 'partial'):
+            for state, funcs in sorted(classes[kind].items()):
+                if state.startswith('identical to the return'):
+                    continue
+                print('%s / %s:' % (kind, state))
+                for func in sorted(funcs):
+                    extra = ''
+                    if func in best and best[func]['fail']:
+                        extra = '  ' + best[func]['fail'][:200]
+                    print('  %08x %s%s' % (func, names.get(func, ''), extra))
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    sub = parser.add_subparsers(dest='command', required=True)
+    p = sub.add_parser('want')
+    p.add_argument('--sweep', default=os.path.join(OUT, 'sweep-stub.txt'))
+    p = sub.add_parser('replay')
+    p.add_argument('dir')
+    p.add_argument('--jobs', type=int, default=3)
+    p.add_argument('--steps', type=int, default=1000000)
+    p.add_argument('--stub-steps', type=int, default=200000)
+    p.add_argument('--all', action='store_true', help='every recorded state, not only the functions in want.txt')
+    p.add_argument('--only', help='hex addresses, comma separated')
+    p = sub.add_parser('report')
+    p.add_argument('dirs', nargs='*')
+    p.add_argument('--hits', action='append')
+    p.add_argument('--list', action='store_true')
+    args = parser.parse_args()
+    return {'want': want, 'replay': replay, 'report': report}[args.command](args)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

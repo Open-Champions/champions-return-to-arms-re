@@ -45,7 +45,7 @@ from ee_emu import EE, EmuError, M64            # noqa: E402
 
 ELF = os.path.join(ROOT, 'SLUS_209.73')
 OUT = os.path.join(ROOT, 'local', 'recomp-out')
-DRIVER = os.path.join(OUT, 'bin', 'recomp_test')
+DRIVER = os.environ.get('RECOMP_TEST_DRIVER') or os.path.join(OUT, 'bin', 'recomp_test')    # another build of the driver (build_win.py --standin)
 RAM = 0x02000000
 RETURN_ADDR = EE.RETURN_ADDR
 ARENA = 0x01000000

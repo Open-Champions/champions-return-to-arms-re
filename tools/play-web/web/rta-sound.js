@@ -5,7 +5,9 @@
 // A reserve is held, as the desktop application's sound handler does: playing starts
 // when RESERVE_MS are queued, and the amount queued is held near that by reading very
 // slightly faster or slower (at most half a per cent). When the ring runs dry (the
-// machine was stopped, or is too slow) silence is played and the reserve is built again.
+// machine was stopped, or is too slow) silence is played and the reserve is built again;
+// when far more than the reserve is queued, the oldest is left out. The page's volume
+// setting and its mute are applied here.
 const RESERVE_MS = 70;
 
 class RtaRing extends AudioWorkletProcessor {
@@ -20,7 +22,11 @@ class RtaRing extends AudioWorkletProcessor {
 		this.dry = 0;           // times the ring ran dry while playing
 		this.report = 0;
 		this.muted = false;
-		this.port.onmessage = (event) => { if("muted" in event.data) this.muted = event.data.muted; };
+		this.volume = 1;        // what every sample is multiplied by (the page's volume setting)
+		this.port.onmessage = (event) => {
+			if("muted" in event.data) this.muted = event.data.muted;
+			if(typeof event.data.volume === "number") this.volume = Math.max(0, Math.min(1, event.data.volume));
+		};
 	}
 
 	process(inputs, outputs) {
@@ -33,20 +39,27 @@ class RtaRing extends AudioWorkletProcessor {
 		let queued = ((write - read) >>> 0) >> 1; // stereo frames
 		const reserve = (sourceRate * RESERVE_MS / 1000) | 0;
 		if(!this.playing && queued >= reserve) this.playing = true;
+		// What piled up while nobody played (the sound was started after the game, or the
+		// page stood still) is not played late: beyond three reserves, skip to one.
+		if(this.playing && queued > reserve * 3) {
+			read = (write - reserve * 2) >>> 0;
+			queued = reserve;
+			this.position = 0;
+		}
 		if(this.playing) {
 			// hold the reserve: up to 0.5 % faster or slower
 			let correction = (queued - reserve) / reserve * 0.01;
 			correction = Math.max(-0.005, Math.min(0.005, correction));
 			const step = (sourceRate / sampleRate) * (1 + correction);
-			const samples = this.samples, mask = this.mask;
+			const samples = this.samples, mask = this.mask, scale = this.volume / 32768;
 			let position = this.position;
 			let produced = 0;
 			for(; produced < count; produced++) {
 				if(queued < 2) break;
 				const index = read & mask, next = (read + 2) & mask;
 				const fraction = position;
-				left[produced] = (samples[index] + (samples[next] - samples[index]) * fraction) / 32768;
-				right[produced] = (samples[index + 1] + (samples[next + 1] - samples[index + 1]) * fraction) / 32768;
+				left[produced] = (samples[index] + (samples[next] - samples[index]) * fraction) * scale;
+				right[produced] = (samples[index + 1] + (samples[next + 1] - samples[index + 1]) * fraction) * scale;
 				position += step;
 				const whole = position | 0;
 				if(whole) {

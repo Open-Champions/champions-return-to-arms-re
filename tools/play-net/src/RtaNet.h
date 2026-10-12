@@ -238,6 +238,7 @@ namespace Rta
 			int64_t firstHeard = 0, lastHeard = 0;
 			uint16_t localPort = 0; // the machine's UDP port it talks to
 			int told = 0;           // times our patch set was sent to it
+			int oldTold = 0;        // browser copy: times it was told "obsolete" in place of the patch set (RtaNet.cpp)
 			bool setKnown = false;
 			uint32_t patchSet = 0;
 			uint16_t patchWords = 0;

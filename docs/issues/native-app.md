@@ -314,3 +314,200 @@ Scripts under `local/recomp-out/app-test/`: `boot-shots.rig`, `input-test.rig`,
 `music-probe.rig` with `music-watch.txt`, `times.rig`. Debugging aids in the renderer,
 all off unless the variable is set: `RTA_GS_LOG` (display registers, surface sizes),
 `RTA_GS_FIELDS` (field sprites), `RTA_GS_FAR` (far vertices).
+
+## 10. The defects, worked through (2026-10-12, afternoon and later)
+
+Kept current while the work goes on; each item says **Ran** with what was seen. The list of
+what is still open is at the end of this section.
+
+### 10.1 The pole: solved (Ran)
+
+**Cause.** The vector unit's arithmetic was done with the host's numbers. The unit has no
+NaN and no infinity - an exponent of 255 is an ordinary exponent - and an exponent of 0 is
+zero whatever the fraction says. The game relies on it:
+
+- the trail drawer (entry 0x28 of the main VU1 program) unpacks the points of a weapon
+  trail, four signed 16-bit values each, to qwords 0x60 to 0x7f of VU1 data memory
+  (`UNPACK` V4-16, 32 rows, absolute address 0x60) - the joint slots 24 to 31;
+- in the next frame the pose upload (entry 0x3a, instructions 0x27e to 0x286) writes every
+  joint row as `new x weight + old x other weight`, with the weights 1 and 0 for a plain
+  pose, reading `old` from the slot itself. A trail point such as -3677 is the bit pattern
+  0xfffff1a3: to the host a NaN, and NaN x 0 is NaN. The console computes
+  (a large number) x 0 = 0;
+- joint 24 so became NaN in two rows, entry 0x0c (pose x transform) spread it over the
+  row, and every mesh weighted to that joint (about 30 small two-pass meshes of the
+  player's model) got Q = 1 / NaN and positions whose low 16 bits were
+  0xf1a3: the far corner the pole ran to.
+
+So it showed only while a weapon trail existed (the fight), and only on models with 25 or
+more joints.
+
+**Fix** (`tools/recomp/render/vu1_step.h`): what an arithmetic instruction reads is first
+brought into the unit's range (`vu_in`: the largest number for exponent 255, zero for
+exponent 0), a result too small to be a number is zero (`vu_out`), `MAX` / `MINI` compare
+the bit patterns as sign and magnitude and hand one on unchanged, `DIV`, `RSQRT`, `FTOI`
+and `CLIP` read the same way. Results cannot overflow because the unit rounds toward zero
+and so does the host while a program runs.
+
+**Seen.** The recorded stream `local/recomp-out/app-test/pole.rtavs` played back: 40
+vertices far outside the surface before (the log stops counting at 40), none after. The
+script `pole-fixed.rig` (the fight, picture at tick 2,701 of `valor`):
+`shots/pole-app.png` before, `shots/pole-fixed.png` after, side by side in
+`shots/cmp-pole.png` - the pole is gone, the rest of the picture is the same.
+Cost: 1.0 ms more VU1 time a picture in that scene (decoding without the kicks 5.7 ms
+before, 6.7 ms after; 762,000 instruction pairs; load average 36).
+
+How it was found: `RTA_GS_FAR=1` now prints the whole input half, the strip and the joint
+slots at the first far vertex; `RTA_WATCH=lo-hi` (hexadecimal qwords, `rta_replay`) lists
+every VU1 store and every `UNPACK` into a range of data memory with the entry that did it.
+
+What the reference emulator models and this interpreter does not, found on the way
+(Read in its source, `Source/ee/VuBasicBlock.cpp`): stalls when an instruction reads a
+float register written less than four cycles before (they move the time at which Q and the
+flags change), and a conditional branch that tests an integer register written by the
+instruction directly before it taking the value from four instructions earlier - except in
+the four-instruction store loops at 0x117 and 0x25e, which it exempts by name of the
+engine. A scan of the main program (`local/recomp-out/render/work/hazard.py`) finds three
+more such branches: 0x084 (particles), 0x1f3, 0x255 (entry 0x34, whose result nothing
+reads). None is on the path of a mesh. See 10.2 for whether a scene shows them.
+
+### 10.2 What the first level does not show: a tour (Ran)
+
+**A control socket and a driver for both builds.** `rta_app --control PATH`
+(`tools/recomp/app/control.h`) listens on a UNIX socket and speaks the protocol of the
+emulator build's control socket (`tools/play-net/ctl.py`: `press`, `release`, `tap`,
+`stick`, `wait`, `peek`, `poke`, `shotfb`, `info`, `quit`; one command a line, carried out
+on the game's thread at a vertical blank). `tools/recomp/app/tour.py native|emu levels NAME…`
+drives either build through the same stops: power-on to the first level, then every level
+asked for by writing its name to `g_pendingLevel` 0x41b6d0 (the emulator tours' way), a
+picture where the level starts and more with the game's free camera (camera mode 3,
+`g_camera` + 0x34) above places spread over the level's chunks; `tour.py sheet` lays the
+pictures of the two builds one above the other. `info` gives memory, textures held, made
+and freed, draws without their texture, surface copies, and how many primitives were drawn
+with each piece of GS state the model only approximates.
+
+**Toured** (20 levels, three pictures each, both builds; `local/recomp-out/app-test/tour2/`,
+sheets `cmp-A.png` … `cmp-C.png`): hub, valor, wat1, fire1, fire3, islc1, swamp1, storm1,
+nit1, tormenta, fay1, dis2, arachna1, blood1, innovat1, drunare, watg2a, islsm1, honor,
+boar1.
+
+| Seen | Native against the emulator build |
+|---|---|
+| level geometry, textures, point lights, environment-mapped chunks, sky dome (hub), lava (fire1, fire3), light shafts (watg2a), the arena (drunare) | same |
+| water: the sea at the beach of islsm1 with its foam; the saw-tooth edge of the water grid at the level's rim is in both | same |
+| HUD, level name banner, "Check Point Saved", prompts | same |
+| chunks far from the character under the free camera | the emulator build shows holes (background colour) where the native build draws ground: it loads a level's cells as slowly as a console, the native build at once. With `--settle 500` (vertical blanks to wait at a view) the four fire3 views are the same in both, down to an untextured dark triangle the game itself draws there (`tour4/cmp.png`) |
+| **heat haze** | was wrong, see below |
+
+**Heat haze: the copy was not carried out.** `particle_drawHaze` 0x18fe18 copies a small
+rectangle of the 3-D surface (12 x 6 to 40 x 20 pixels) into a texture with a GS
+local-to-local transfer and draws it back displaced as a fan with blend
+`(Cs - Cd) x As + Cd`. The model honoured such a transfer only when the destination began
+on a page (a multiple of 32 blocks); the haze's destination lies in the middle of texture
+memory, so the copy was dropped and the fan drawn without a texture: 15,958 transfers
+dropped and 16,709 draws without their texture over the 20 levels (fire3, islc1, fay1,
+arachna1, blood1, innovat1, drunare most). Fixed in `tools/recomp/render/gs.cpp`:
+surfaces are known by the block they start at (a frame buffer's FBP x 32, or wherever a
+copy out of a surface was put), a texture that starts a whole number of pages into a
+surface is that surface with an offset as before, and a surface read as a texture of a
+format without eight bits of alpha takes its alpha from `TEXA` as such a texture does
+(`DrawCmd::texa_mode`; the 3-D surface is 16 bit). After: over 40 level changes 9,849
+copies carried out, none dropped. Read in the draw list of a recorded fire3 frame
+(`tour3/haze.rtavs`): each copy is followed by its 12-vertex fan sampling the copied
+piece.
+
+**The GS approximations of `native-render.md`: counted, none drawn with.** Every
+primitive is now counted against the state the model does not apply exactly
+(`GsStats::approx`): an alpha test with a fail rule other than "keep" (besides "never
+passes", which is exact), the destination-alpha test, a blend factor of destination
+alpha, `FBA`, `PABE`, fog, `AA1`, a partial `FBMSK`, `COLCLAMP` off, region-repeat
+wrapping. From power-on through the front end and the 20 levels: **none of them is used
+by any primitive** (the final report line "primitives drawn with GS state the model
+approximates" says "none"). They were therefore left as they are; the count stays in the
+report so that a scene that needs one shows up. What did matter was the local-to-local
+transfer (above) and uploads straight into a displayed buffer (10.4).
+
+**Draws without their texture that remain**: 69 from power-on to the first level, about
+400 in tormenta and 600 in blood1 per visit; `RTA_GS_MISSING=1` lists them. Not looked
+into yet.
+
+**Textures are freed; memory.** A texture no draw has named for 600 frames is given back
+(`Gs::free_unused_textures`, `FrameList::dead_textures`, deleted by the backend;
+`RTA_TEX_KEEP=frames`, 0 = never), and a batch buffer that held a level's whole texture
+upload (tens of megabytes; three of them go round the picture path) is released instead
+of kept (`pipeline.h`). Measured over 40 level changes (the 20 levels twice, unpaced,
+`local/recomp-out/app-test/mem2/run.txt`; memory is the process footprint): 428 MB in the
+first level, 512 to 586 MB over the first round, 544 to 601 MB over the second; textures
+held 166 to 395 (27 to 67 MB as RGBA) whatever the round. So what is held follows the
+level, not the number of levels; the second round lies 15 MB above the first on average
+(0.75 MB a level change), which is not textures (their count is the same) and was not
+traced. Before these two changes the same 20 levels ended at 861 MB.
+
+Not looked at yet in this tour: weapon trails and hit effects against the emulator at the
+same instant (they are drawn: the pole of 10.1 came from a trail's data), floor decals,
+the automap, bag, shop and skill screens, dialogue.
+
+### 10.3 Films (Ran)
+
+**Chosen: the game's own film player on top of a host decoder, replacing Sony's MPEG
+library at the seven entry points the player calls - not a model of the Image Processing
+Unit, and not a separate host player.** Why:
+
+- The game does not talk to the unit; Sony's library does (bit reading, variable-length
+  decoding, the inverse transform and the colour conversion are commands to the unit,
+  with data going round through DMA channels 3 and 4 and the answer polled). A model of
+  the unit would be a model of that library's private dealings with it, used by nothing
+  else in the game.
+- The player uses seven library functions and no callback (Read in the disassembly):
+  0x3734f0 init, 0x372948 create (mp, work area, size), 0x3735a0 delete, 0x373688 reset
+  (zeroes the frame number at mp + 8), 0x3735a8 add stream data (mp, data, size),
+  0x373708 "at the end", 0x3735e8 get picture (mp, RGBA macroblocks, count 0x546).
+  That is a small, clean boundary.
+- The player itself stays the game's code: it reads the stream from the disc in pieces
+  into two alternating buffers, builds its own GS upload (one 16 x 16 rectangle per
+  macroblock, column after column: `0x31fdf4`), switches the display to one 640 x 448
+  buffer and ends the film. A separate host player would have had to redo all of that.
+
+**The parts.** `tools/recomp/app/mpeg2.h`: an MPEG-2 video decoder written from the
+standard, standard library only (I, P and B frame pictures with frame prediction and frame
+DCT, both coefficient tables, both scans, both quantiser scales, half-sample motion
+compensation; field pictures and field prediction are refused and counted).
+`tools/recomp/app/film.cpp`: the seven functions (`tools/recomp/app/hle-app.txt` names
+them for the translator; only `rta_app`'s translation leaves them open, so the headless
+runtime and `rta_app_orig` are unchanged and still end a film at its first picture).
+`tools/recomp/render/gs.cpp`: pixels sent straight into a buffer of display size are
+collected per buffer and drawn into the surface as one picture when the frame ends
+(`Gs::upload_to_surface`, `flush_uploads`): the film's 1,120 rectangles a picture become
+one texture and one draw. `rta_app --no-films` gives the old behaviour.
+
+**The films on the disc** (Ran: the stream headers): `PORKO.LMP` holds `porko0.m2v` (60
+pictures) and the index `porko.bin` of six pieces of `PORKO.SMG` (350 pictures); all are
+MPEG-2 Main Profile, 640 x 448, 29.97 pictures a second, frame pictures with
+`frame_pred_frame_dct` = 1, I / P / B in groups of 15, alternate scan, non-linear
+quantiser scale, the second coefficient table in I pictures. The sound is the stream
+entry `porko_l.vag` on stream 0, played by the sound side like any other stream.
+
+**Seen.**
+- The decoder against another decoder (ffmpeg, already on this computer; nothing was
+  installed): all 410 pictures of the two streams, display order, 63.8 dB PSNR at worst
+  (the difference is rounding in the inverse transform). `tools/recomp/app/mpeg2_test.cpp`
+  writes the pictures as raw planes for such a comparison.
+- In the application from power-on with no button pressed (`film-test.rig`): publisher's
+  logo, then the developer's film from its first to its last picture, then the title
+  (`local/recomp-out/app-test/film/sheet.png`, larger `sheet2.png`): 410 pictures from 7
+  pieces of stream, no unsupported picture, no slice with an error, 4.5 ms of processor
+  time a picture. Whole frames of 640 x 448 (the display is one 448-line buffer during
+  the film and is shown whole at every blank): nothing bobs.
+- **Pace.** The player does not time the film: its wait for a field (`movie_waitForField`
+  0x3201ec) has no caller and its check against the sound stream (`g_movieAudioSync`) is
+  never switched on; it decodes one picture in every frame of the loop. On the console
+  decoding takes longer than a field, so the loop comes round every second field. Here
+  decoding takes no machine time and the film ran at one picture a field, twice its
+  speed (and the emulator build does the same: 410 pictures in about 480 fields). The
+  get-picture call therefore takes the machine time of a little more than a field
+  (`rt_sleep`): one picture every two fields, measured (54 pictures in 108 fields), which
+  is the rate the stream is coded for.
+- **Sound in step.** At picture 391 (13.05 s of film) stream 0 had played 354,304 bytes,
+  12.93 s at the two-voice stream's 27,398 bytes a second.
+- Colour against the emulator build's film pictures (same scene, not the same picture):
+  average 110, 137, 161 native; 114, 138, 160 emulator.

@@ -412,7 +412,29 @@ diff --git a/Source/gs/GSH_OpenGL/CMakeLists.txt b/Source/gs/GSH_OpenGL/CMakeLis
 diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp
 --- a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp
 +++ b/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp
-@@ -98,6 +98,7 @@
+@@ -74,6 +74,21 @@
+ 	delete[] m_pCvtBuffer;
+ }
+ 
++//RTA: see StartDrawLog. The state is the video thread's.
++namespace
++{
++	struct DRAW_LOG
++	{
++		FILE* file = nullptr;
++		uint32 frames = 0;
++		uint32 frame = 0;
++		uint32 draw = 0;
++		bool hasRegion = false;
++		float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
++	};
++	DRAW_LOG g_drawLog;
++}
++
+ void CGSH_OpenGL::InitializeImpl()
+ {
+ 	InitializeRC();
+@@ -98,6 +113,7 @@
  	m_presentProgram.reset();
  	m_presentVertexBuffer.Reset();
  	m_presentVertexArray.Reset();
@@ -420,7 +442,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  	m_copyToFbProgram.reset();
  	m_copyToFbTexture.Reset();
  	m_copyToFbVertexBuffer.Reset();
-@@ -112,6 +113,11 @@
+@@ -112,6 +128,11 @@
  {
  	LoadPreferences();
  	m_textureCache.Flush();
@@ -432,11 +454,41 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  	PalCache_Flush();
  	m_framebuffers.clear();
  	m_depthbuffers.clear();
-@@ -216,6 +222,20 @@
+@@ -190,10 +211,28 @@
+ 	glViewport(presentationViewport.offsetX, presentationViewport.offsetY,
+ 	           presentationViewport.width, presentationViewport.height);
  
++	//RTA: The edge of the picture. A television shows less than the console sends: some
++	//lines at the top and bottom and some pixels at either side are behind the rim of the
++	//tube (overscan), and games count on it. This one draws the backdrop of its menu
++	//screens from line 1 of its 448 (from line 2 on one of the two fields, as shipped), so
++	//that the top line of the picture is the colour the buffer was cleared to; and the
++	//corner texel of one skill-tree page is white, at the very left of the screen. Both
++	//are in the console's own signal and were never seen. The outermost line of the
++	//picture shown (two of the 448) and the same share of its width (three pixels of 640)
++	//are left out at each side: the picture keeps its shape and is 0.9 % larger.
++	uint32 trimX = 0, trimY = 0;
++	if(framebuffer && g_trimEdge && (dispLayer.width >= 256) && (dispLayer.height >= 128))
++	{
++		trimY = (dispLayer.height + 111) / 223;
++		trimX = ((dispLayer.width * trimY) + (dispLayer.height / 2)) / dispLayer.height;
++	}
++
+ 	if(framebuffer)
+ 	{
+-		float u1 = static_cast<float>(dispLayer.width) / static_cast<float>(framebuffer->m_width);
+-		float v1 = static_cast<float>(dispLayer.height) / static_cast<float>(framebuffer->m_height);
++		float u0 = static_cast<float>(trimX) / static_cast<float>(framebuffer->m_width);
++		float v0 = static_cast<float>(trimY) / static_cast<float>(framebuffer->m_height);
++		float u1 = static_cast<float>(dispLayer.width - (2 * trimX)) / static_cast<float>(framebuffer->m_width);
++		float v1 = static_cast<float>(dispLayer.height - (2 * trimY)) / static_cast<float>(framebuffer->m_height);
+ 
+ 		glDisable(GL_BLEND);
+ 		glDisable(GL_DEPTH_TEST);
+@@ -217,6 +256,20 @@
  		assert(m_presentTexCoordScaleUniform != -1);
  		glUniform2f(m_presentTexCoordScaleUniform, u1, v1);
-+
+ 
 +		//RTA: the two fields of an interlaced picture belong half a line apart (see
 +		//CGSHandler::Flip): each is moved a quarter of a line, in opposite directions.
 +		//The texture coordinate grows downward on the screen, so adding moves the
@@ -449,23 +501,53 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
 +			float quarterLine = 0.25f / static_cast<float>(framebuffer->m_height);
 +			fieldOffset = (dispInfo.field == 0) ? -quarterLine : quarterLine;
 +		}
-+		glUniform2f(m_presentTexCoordOffsetUniform, 0, fieldOffset);
- 
++		glUniform2f(m_presentTexCoordOffsetUniform, u0, v0 + fieldOffset);
++
  		glBindBuffer(GL_ARRAY_BUFFER, m_presentVertexBuffer);
  		glBindVertexArray(m_presentVertexArray);
-@@ -240,6 +260,24 @@
+ 
+@@ -240,6 +293,53 @@
  		glBindTexture(GL_TEXTURE_2D, 0);
  	}
  
 +	ContentTextures_EndFrame();
++
++	//RTA: see StartDrawLog
++	if(g_drawLog.file)
++	{
++		fprintf(g_drawLog.file, "F%u FLIP display %06x w%u p%u %ux%u field %d\n", g_drawLog.frame, dispLayer.bufPtr, dispLayer.bufWidth, static_cast<unsigned int>(dispLayer.psm), dispLayer.width, dispLayer.height, dispInfo.field);
++		g_drawLog.frame++;
++		g_drawLog.draw = 0;
++		if(g_drawLog.frame >= g_drawLog.frames)
++		{
++			fclose(g_drawLog.file);
++			g_drawLog = DRAW_LOG();
++		}
++	}
 +
 +	//RTA: for CGSH_OpenGLQt::RequestCapture
 +	m_displayFramebuffer = 0;
 +	if(framebuffer)
 +	{
 +		m_displayFramebuffer = m_multisampleEnabled ? framebuffer->m_resolveFramebuffer : framebuffer->m_framebuffer;
-+		m_displayPixelWidth = std::min<uint32>(dispLayer.width, framebuffer->m_width) * m_fbScale;
-+		m_displayPixelHeight = std::min<uint32>(dispLayer.height, framebuffer->m_height) * m_fbScale;
++		m_displayPixelWidth = (std::min<uint32>(dispLayer.width, framebuffer->m_width) - (2 * trimX)) * m_fbScale;
++		m_displayPixelHeight = (std::min<uint32>(dispLayer.height, framebuffer->m_height) - (2 * trimY)) * m_fbScale;
++		m_displayPixelX = trimX * m_fbScale;
++		m_displayPixelY = trimY * m_fbScale;
++	}
++
++	//RTA: counted for the frame that has been drawn
++	g_textureCounters.smoothedDraws = m_smoothedDrawCount;
++	g_textureCounters.scaledPoints = m_scaledPointCount;
++	m_smoothedDrawCount = 0;
++	m_scaledPointCount = 0;
++	//the shaders are made anew when the way indexed textures are filtered is changed
++	if(g_texelCentre != m_texelCentreSeen)
++	{
++		m_texelCentreSeen = g_texelCentre;
++		m_shaders.clear();
++		m_renderState.isValid = false;
++		m_validGlState = 0;
 +	}
 +
 +	//RTA: see CGSHandler::PresentClock
@@ -478,19 +560,30 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  	PresentBackbuffer();
  	CGSHandler::FlipImpl(dispInfo);
  }
-@@ -264,6 +302,11 @@
+@@ -262,11 +362,22 @@
+ 
+ void CGSH_OpenGL::NotifyPreferencesChangedImpl()
  {
++	//RTA: A change of settings (the resolution factor, say) makes the frame buffers anew.
++	//It changes nothing in GS memory, so what is known of the game's textures stays: what
++	//the game sent where (UPLOAD_RECORD), the textures made of it and the pictures from
++	//outside. (All of it used to be forgotten here. A texture the game sends once - not
++	//the ring it sends again every frame - then had no known upload for the rest of the
++	//level and was told by reading GS memory at every use: 357 draws a frame in the first
++	//level; and every picture from outside was read from its file again.)
++	FlushVertexBuffer();
  	LoadPreferences();
  	m_textureCache.Flush();
-+	m_contentTextures.clear();
-+	g_textureCounters.bytes = 0;
-+	ForgetTexturePictures();
-+	m_lastContentTexture = nullptr;
-+	ForgetUploads();
  	PalCache_Flush();
  	m_framebuffers.clear();
  	m_depthbuffers.clear();
-@@ -290,6 +333,7 @@
++	for(auto& copy : m_frameCopies) copy.valid = false;
++	m_renderState.isValid = false;
++	m_validGlState = 0;
+ 	CGSHandler::NotifyPreferencesChangedImpl();
+ }
+ 
+@@ -290,6 +401,7 @@
  	m_presentVertexArray = GeneratePresentVertexArray();
  	m_presentTextureUniform = glGetUniformLocation(*m_presentProgram, "g_texture");
  	m_presentTexCoordScaleUniform = glGetUniformLocation(*m_presentProgram, "g_texCoordScale");
@@ -498,10 +591,33 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  
  	m_copyToFbProgram = GenerateCopyToFbProgram();
  	m_copyToFbTexture = Framework::OpenGl::CTexture::Create();
-@@ -573,13 +617,36 @@
+@@ -449,6 +561,11 @@
+ 	glEnableVertexAttribArray(static_cast<GLuint>(PRIM_VERTEX_ATTRIB::FOG));
+ 	glVertexAttribPointer(static_cast<GLuint>(PRIM_VERTEX_ATTRIB::FOG), 1, GL_FLOAT,
+ 	                      GL_FALSE, sizeof(PRIM_VERTEX), reinterpret_cast<const GLvoid*>(offsetof(PRIM_VERTEX, f)));
++
++	//RTA
++	glEnableVertexAttribArray(static_cast<GLuint>(PRIM_VERTEX_ATTRIB::TEXBOUNDS));
++	glVertexAttribPointer(static_cast<GLuint>(PRIM_VERTEX_ATTRIB::TEXBOUNDS), 4, GL_FLOAT,
++	                      GL_FALSE, sizeof(PRIM_VERTEX), reinterpret_cast<const GLvoid*>(offsetof(PRIM_VERTEX, boundS0)));
+ 
+ 	glBindVertexArray(0);
+ 
+@@ -573,13 +690,48 @@
  		shaderCaps.texSourceMode = TEXTURE_SOURCE_MODE_NONE;
  	}
  
++	//RTA: see WantsSmoothTexture. An indexed texture is filtered by the shader. A sprite,
++	//and anything drawn flat over the picture (no depth test), reads its own texels only.
++	bool smooth = WantsSmoothTexture(primReg, tex1Reg, testReg);
++	if(smooth)
++	{
++		if(shaderCaps.isIndexedTextureSource()) shaderCaps.texBilinearFilter = 1;
++		auto test = make_convertible<TEST>(testReg);
++		bool flat = (m_primitiveType == PRIM_SPRITE) || !test.nDepthEnabled || (test.nDepthMethod == DEPTH_TEST_ALWAYS);
++		shaderCaps.texSmooth = flat ? 2 : 1;
++	}
++
 +	//RTA: a picture from outside is bound for this very texture state (SetupTexture):
 +	//it is a plain RGBA texture, whatever the format of the game's own
 +	if(m_renderState.isValid && m_renderState.isTextureStateValid && m_renderState.texture0Replaced && prim.nTexture &&
@@ -513,6 +629,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
 +		{
 +			shaderCaps.texClampS = TEXTURE_CLAMP_MODE_STD;
 +			shaderCaps.texClampT = TEXTURE_CLAMP_MODE_STD;
++			if(shaderCaps.texSmooth == 2) shaderCaps.texSmooth = 1;
 +		}
 +	}
 +
@@ -536,7 +653,19 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  		   (m_renderState.primReg == primReg) &&
  		   (m_renderState.alphaReg == alphaReg) &&
  		   (m_renderState.testReg == testReg) &&
-@@ -605,7 +672,7 @@
+@@ -590,9 +742,11 @@
+ 		   (m_renderState.tex1Reg == tex1Reg) &&
+ 		   (m_renderState.texAReg == texAReg) &&
+ 		   (m_renderState.clampReg == clampReg) &&
++		   (m_renderState.texture0Smoothed == smooth) &&
+ 		   (m_renderState.fogColReg == fogColReg))
+ 		{
+ 			// Nothing changed.
++			m_renderState.smoothPrimitiveType = m_primitiveType;
+ 			auto offsetFast = make_convertible<XYOFFSET>(m_nReg[GS_REG_XYOFFSET_1 + context]);
+ 			m_nPrimOfsX = offsetFast.GetX();
+ 			m_nPrimOfsY = offsetFast.GetY();
+@@ -605,7 +759,7 @@
  	//--------------------------------------------------------
  	uint64 prevPrimValue = m_renderState.isValid ? m_renderState.primReg : 0;
  	auto prevPrim = make_convertible<PRMODE>(prevPrimValue);
@@ -545,7 +674,16 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  	bool primChanged = !m_renderState.isValid || (m_renderState.primReg != primReg);
  	bool blendEnableChanged = primChanged && !m_hasFramebufferFetchExtension && ((!m_renderState.isValid) || (prevPrim.nAlpha != prim.nAlpha));
  	bool alphaChanged = !m_renderState.isValid || (m_renderState.alphaReg != alphaReg);
-@@ -631,6 +698,11 @@
+@@ -616,7 +770,7 @@
+ 	bool textureEnableChanged = !m_renderState.isValid || (prevPrim.nTexture != prim.nTexture);
+ 	bool textureChanged = !m_renderState.isValid || !m_renderState.isTextureStateValid ||
+ 	                      (m_renderState.tex0Reg != tex0Reg) || (m_renderState.tex1Reg != tex1Reg) || (m_renderState.texAReg != texAReg) ||
+-	                      (m_renderState.clampReg != clampReg) || textureEnableChanged;
++	                      (m_renderState.clampReg != clampReg) || textureEnableChanged || (m_renderState.texture0Smoothed != smooth);
+ 	bool fogColorChanged = !m_renderState.isValid || (m_renderState.fogColReg != fogColReg);
+ 
+ 	bool needFlush = shaderChanged || primChanged || alphaChanged || testChanged || zbufChanged || framebufferRelatedChanged || textureChanged || fogColorChanged;
+@@ -631,6 +785,11 @@
  	if(shaderChanged)
  	{
  		m_renderState.shaderCaps = shaderCaps;
@@ -557,7 +695,13 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  	}
  
  	if(blendEnableChanged)
-@@ -670,6 +742,17 @@
+@@ -666,10 +825,24 @@
+ 		CHECKGLERROR();
+ 	}
+ 
++	m_renderState.texture0Smoothed = smooth;
++	m_renderState.smoothPrimitiveType = m_primitiveType;
+ 	if(textureChanged)
  	{
  		SetupTexture(primReg, tex0Reg, tex1Reg, texAReg, clampReg);
  		CHECKGLERROR();
@@ -570,12 +714,13 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
 +			{
 +				m_renderState.shaderCaps.texClampS = TEXTURE_CLAMP_MODE_STD;
 +				m_renderState.shaderCaps.texClampT = TEXTURE_CLAMP_MODE_STD;
++				if(m_renderState.shaderCaps.texSmooth == 2) m_renderState.shaderCaps.texSmooth = 1;
 +			}
 +		}
  	}
  
  	if(fogColorChanged)
-@@ -684,6 +767,9 @@
+@@ -684,6 +857,9 @@
  
  	CHECKGLERROR();
  
@@ -585,15 +730,32 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  	m_renderState.isValid = true;
  	m_renderState.isTextureStateValid = true;
  	m_renderState.isFramebufferStateValid = true;
-@@ -698,6 +784,7 @@
+@@ -698,8 +874,24 @@
  	m_renderState.texAReg = texAReg;
  	m_renderState.clampReg = clampReg;
  	m_renderState.fogColReg = fogColReg;
 +	m_renderState.scanMskReg = m_nReg[GS_REG_SCANMSK];
  }
  
++bool CGSH_OpenGL::WantsSmoothTexture(uint64 primReg, uint64 tex1Reg, uint64 testReg) const
++{
++	if((m_fbScale <= 1) || !g_upscaleSmooth) return false;
++	auto prim = make_convertible<PRMODE>(primReg);
++	if(!prim.nTexture) return false;
++	auto tex1 = make_convertible<TEX1>(tex1Reg);
++	if(tex1.nMagFilter != MAG_FILTER_NEAREST) return false;
++	if(m_primitiveType == PRIM_SPRITE)
++	{
++		auto test = make_convertible<TEST>(testReg);
++		if(!test.nDepthEnabled || (test.nDepthMethod == DEPTH_TEST_ALWAYS)) return false;
++	}
++	return true;
++}
++
  void CGSH_OpenGL::SetupBlendingFunction(uint64 alphaReg)
-@@ -1032,11 +1119,33 @@
+ {
+ 	auto alpha = make_convertible<ALPHA>(alphaReg);
+@@ -1032,11 +1224,33 @@
  
  	assert(framebuffer->m_width == depthbuffer->m_width);
  
@@ -630,7 +792,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  	assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
  
  	m_renderState.framebufferHandle = framebuffer->m_framebuffer;
-@@ -1045,12 +1154,6 @@
+@@ -1045,12 +1259,6 @@
  	//We assume that we will be drawing to this framebuffer and that we'll need
  	//to resolve samples at some point if multisampling is enabled
  	framebuffer->m_resolveNeeded = true;
@@ -643,7 +805,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  
  	m_renderState.viewportWidth = framebuffer->m_width;
  	m_renderState.viewportHeight = framebuffer->m_height;
-@@ -1257,9 +1360,44 @@
+@@ -1257,9 +1465,44 @@
  	m_nTexWidth = tex0.GetWidth();
  	m_nTexHeight = tex0.GetHeight();
  
@@ -688,18 +850,25 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  
  	//Setup sampling modes
  	switch(tex1.nMagFilter)
-@@ -1295,11 +1433,22 @@
- 		m_renderState.texture0MinFilter = GL_LINEAR;
+@@ -1289,10 +1532,16 @@
+ 		break;
  	}
  
+-	if(m_forceBilinearTextures)
++	if(m_forceBilinearTextures || m_renderState.texture0Smoothed)
+ 	{
+ 		m_renderState.texture0MagFilter = GL_LINEAR;
+ 		m_renderState.texture0MinFilter = GL_LINEAR;
++	}
++
 +	//RTA: a picture from outside has smaller copies of itself (FindTextureReplacement)
 +	if(m_renderState.texture0Replaced && (m_renderState.texture0MinFilter == GL_LINEAR))
 +	{
 +		m_renderState.texture0MinFilter = GL_LINEAR_MIPMAP_LINEAR;
-+	}
-+
+ 	}
+ 
  	unsigned int clampMin[2] = {0, 0};
- 	unsigned int clampMax[2] = {0, 0};
+@@ -1300,6 +1549,11 @@
  	float textureScaleRatio[2] = {texInfo.scaleRatioX, texInfo.scaleRatioY};
  	m_renderState.texture0WrapS = g_nativeClampModes[clamp.nWMS];
  	m_renderState.texture0WrapT = g_nativeClampModes[clamp.nWMT];
@@ -711,7 +880,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  
  	if((clamp.nWMS >= CLAMP_MODE_CLAMP) || (clamp.nWMT >= CLAMP_MODE_CLAMP))
  	{
-@@ -1337,7 +1486,7 @@
+@@ -1337,7 +1591,7 @@
  		}
  	}
  
@@ -720,7 +889,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  	   (m_renderState.texture0MinFilter != GL_NEAREST || m_renderState.texture0MagFilter != GL_NEAREST))
  	{
  		//We'll need to filter the texture manually
-@@ -1345,7 +1494,7 @@
+@@ -1345,7 +1599,7 @@
  		m_renderState.texture0MagFilter = GL_NEAREST;
  	}
  
@@ -729,7 +898,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  	{
  		m_renderState.texture1Handle = PreparePalette(tex0);
  	}
-@@ -1356,12 +1505,25 @@
+@@ -1356,12 +1610,25 @@
  	m_vertexParams.texMatrix[2 + (2 * 4)] = 1;
  	m_vertexParams.texMatrix[0 + (3 * 4)] = texInfo.offsetX;
  	m_vertexParams.texMatrix[3 + (3 * 4)] = 1;
@@ -759,7 +928,70 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  	m_fragmentParams.clampMin[0] = static_cast<float>(clampMin[0]);
  	m_fragmentParams.clampMin[1] = static_cast<float>(clampMin[1]);
  	m_fragmentParams.clampMax[0] = static_cast<float>(clampMax[0]);
-@@ -1588,6 +1750,12 @@
+@@ -1413,6 +1680,28 @@
+ 	    rgbaq.nR, rgbaq.nG,
+ 	    rgbaq.nB, rgbaq.nA);
+ 
++	//RTA: at a higher resolution factor the point is the console's pixel: the square
++	//that starts at its coordinates (see m_expandThinPrimitives)
++	if(m_vertexBuffer.empty()) m_expandThinPrimitives = (m_fbScale > 1) && g_upscaleSmooth;
++	if(m_expandThinPrimitives)
++	{
++		// clang-format off
++		PRIM_VERTEX vertices[] =
++		{
++			{x,     y,     z, color, 0, 0, 1, 0},
++			{x + 1, y,     z, color, 0, 0, 1, 0},
++			{x,     y + 1, z, color, 0, 0, 1, 0},
++
++			{x,     y + 1, z, color, 0, 0, 1, 0},
++			{x + 1, y,     z, color, 0, 0, 1, 0},
++			{x + 1, y + 1, z, color, 0, 0, 1, 0},
++		};
++		// clang-format on
++		m_vertexBuffer.insert(m_vertexBuffer.end(), std::begin(vertices), std::end(vertices));
++		m_scaledPointCount++;
++		return;
++	}
++
+ 	// clang-format off
+ 	PRIM_VERTEX vertex =
+ 	{
+@@ -1493,6 +1782,33 @@
+ 	auto color2 = MakeColor(
+ 	    rgbaq[1].nR, rgbaq[1].nG,
+ 	    rgbaq[1].nB, rgbaq[1].nA);
++
++	//RTA: A line of the GS is one of its pixels wide: across for a steep line, down for a
++	//flat one. At a higher resolution factor it is drawn as that band (OpenGL's own line
++	//is one pixel of the larger buffer wide - rain at factor 4 was a quarter of its width
++	//and of its light; and macOS draws no wider lines).
++	if(m_vertexBuffer.empty()) m_expandThinPrimitives = (m_fbScale > 1) && g_upscaleSmooth;
++	if(m_expandThinPrimitives)
++	{
++		bool steep = fabsf(nY2 - nY1) >= fabsf(nX2 - nX1);
++		float ox = steep ? 1.0f : 0.0f;
++		float oy = steep ? 0.0f : 1.0f;
++		// clang-format off
++		PRIM_VERTEX vertices[] =
++		{
++			{	nX1,		nY1,		nZ1,	color1,	nS[0],	nT[0],	nQ[0],	0	},
++			{	nX1 + ox,	nY1 + oy,	nZ1,	color1,	nS[0],	nT[0],	nQ[0],	0	},
++			{	nX2,		nY2,		nZ2,	color2,	nS[1],	nT[1],	nQ[1],	0	},
++
++			{	nX2,		nY2,		nZ2,	color2,	nS[1],	nT[1],	nQ[1],	0	},
++			{	nX1 + ox,	nY1 + oy,	nZ1,	color1,	nS[0],	nT[0],	nQ[0],	0	},
++			{	nX2 + ox,	nY2 + oy,	nZ2,	color2,	nS[1],	nT[1],	nQ[1],	0	},
++		};
++		// clang-format on
++		m_vertexBuffer.insert(m_vertexBuffer.end(), std::begin(vertices), std::end(vertices));
++		m_scaledPointCount++;
++		return;
++	}
+ 
+ 	// clang-format off
+ 	PRIM_VERTEX vertices[] =
+@@ -1588,6 +1904,26 @@
  			nQ[1] = rgbaq[1].nQ;
  			nQ[2] = rgbaq[2].nQ;
  		}
@@ -768,11 +1000,45 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
 +			float u[3] = {nS[0] / nQ[0], nS[1] / nQ[1], nS[2] / nQ[2]};
 +			float v[3] = {nT[0] / nQ[0], nT[1] / nQ[1], nT[2] / nQ[2]};
 +			NoteTextureCoords(3, u, v, 3);
++			//RTA: how much of the screen a picture that is still being read covers
++			//(the triangle's area, no more than its box has inside the scissor)
++			if(m_currentPicture->loadState != 2)
++			{
++				float left = std::max(std::min({nX1, nX2, nX3}), static_cast<float>(m_renderState.scissorX));
++				float right = std::min(std::max({nX1, nX2, nX3}), static_cast<float>(m_renderState.scissorX + m_renderState.scissorWidth));
++				float top = std::max(std::min({nY1, nY2, nY3}), static_cast<float>(m_renderState.scissorY));
++				float bottom = std::min(std::max({nY1, nY2, nY3}), static_cast<float>(m_renderState.scissorY + m_renderState.scissorHeight));
++				if((right > left) && (bottom > top))
++				{
++					float area = 0.5f * fabsf(((nX2 - nX1) * (nY3 - nY1)) - ((nX3 - nX1) * (nY2 - nY1)));
++					NotePictureArea(std::min(area, (right - left) * (bottom - top)), false);
++				}
++			}
 +		}
  	}
  
  	auto color1 = MakeColor(
-@@ -1684,11 +1852,48 @@
+@@ -1617,6 +1953,19 @@
+ 	};
+ 	// clang-format on
+ 
++	//RTA: the texels its corners span (see SHADERCAPS::texSmooth)
++	if(m_renderState.shaderCaps.texSmooth == 2)
++	{
++		float u[3] = {nS[0] / nQ[0], nS[1] / nQ[1], nS[2] / nQ[2]};
++		float v[3] = {nT[0] / nQ[0], nT[1] / nQ[1], nT[2] / nQ[2]};
++		float u0 = std::min({u[0], u[1], u[2]}), u1 = std::max({u[0], u[1], u[2]});
++		float v0 = std::min({v[0], v[1], v[2]}), v1 = std::max({v[0], v[1], v[2]});
++		for(auto& vertex : vertices)
++		{
++			vertex.boundS0 = u0, vertex.boundT0 = v0, vertex.boundS1 = u1, vertex.boundT1 = v1;
++		}
++	}
++
+ 	m_vertexBuffer.insert(m_vertexBuffer.end(), std::begin(vertices), std::end(vertices));
+ }
+ 
+@@ -1684,26 +2033,159 @@
  			nT[0] = st[0].nT / nQ1;
  			nT[1] = st[1].nT / nQ2;
  		}
@@ -788,12 +1054,24 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
 +				which = 1 + static_cast<unsigned int>((top + ((scanMask == 2) ? 1 : 0)) & 1);
 +			}
 +			NoteTextureCoords(which, nS, nT, 2);
++			if(m_currentPicture->loadState != 2)
++			{
++				float left = std::max(std::min(nX1, nX2), static_cast<float>(m_renderState.scissorX));
++				float right = std::min(std::max(nX1, nX2), static_cast<float>(m_renderState.scissorX + m_renderState.scissorWidth));
++				float top = std::max(std::min(nY1, nY2), static_cast<float>(m_renderState.scissorY));
++				float bottom = std::min(std::max(nY1, nY2), static_cast<float>(m_renderState.scissorY + m_renderState.scissorHeight));
++				if((right > left) && (bottom > top)) NotePictureArea((right - left) * (bottom - top), true);
++			}
 +		}
  	}
  
  	auto color = MakeColor(
  	    rgbaq[1].nR, rgbaq[1].nG,
  	    rgbaq[1].nB, rgbaq[1].nA);
+ 
++	//RTA: the texels the sprite's corners span (see SHADERCAPS::texSmooth)
++	float boundS0 = std::min(nS[0], nS[1]), boundS1 = std::max(nS[0], nS[1]);
++	float boundT0 = std::min(nT[0], nT[1]), boundT1 = std::max(nT[0], nT[1]);
 +
 +	//RTA: A sprite's texture is read where the GS reads it. The GS takes a pixel's sample
 +	//at the pixel's top left corner; OpenGL takes it at the centre, half a pixel further
@@ -818,10 +1096,139 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
 +			nT[1] -= halfStep;
 +		}
 +	}
- 
++
  	// clang-format off
  	PRIM_VERTEX vertices[] =
-@@ -1874,6 +2079,11 @@
+ 	{
+-		{nX1, nY1, nZ, color, nS[0], nT[0], 1, nF},
+-		{nX2, nY1, nZ, color, nS[1], nT[0], 1, nF},
+-		{nX1, nY2, nZ, color, nS[0], nT[1], 1, nF},
++		{nX1, nY1, nZ, color, nS[0], nT[0], 1, nF, boundS0, boundT0, boundS1, boundT1},
++		{nX2, nY1, nZ, color, nS[1], nT[0], 1, nF, boundS0, boundT0, boundS1, boundT1},
++		{nX1, nY2, nZ, color, nS[0], nT[1], 1, nF, boundS0, boundT0, boundS1, boundT1},
+ 
+-		{nX1, nY2, nZ, color, nS[0], nT[1], 1, nF},
+-		{nX2, nY1, nZ, color, nS[1], nT[0], 1, nF},
+-		{nX2, nY2, nZ, color, nS[1], nT[1], 1, nF},
++		{nX1, nY2, nZ, color, nS[0], nT[1], 1, nF, boundS0, boundT0, boundS1, boundT1},
++		{nX2, nY1, nZ, color, nS[1], nT[0], 1, nF, boundS0, boundT0, boundS1, boundT1},
++		{nX2, nY2, nZ, color, nS[1], nT[1], 1, nF, boundS0, boundT0, boundS1, boundT1},
+ 	};
+ 	// clang-format on
+ 
+ 	m_vertexBuffer.insert(m_vertexBuffer.end(), std::begin(vertices), std::end(vertices));
++}
++
++void CGSH_OpenGL::StartDrawLog(const std::string& path, uint32 frames, bool hasRegion, float x0, float y0, float x1, float y1)
++{
++	if(g_drawLog.file) fclose(g_drawLog.file);
++	g_drawLog = DRAW_LOG();
++	if(frames == 0) return;
++	g_drawLog.file = fopen(path.c_str(), "w");
++	if(!g_drawLog.file) return;
++	g_drawLog.frames = frames;
++	g_drawLog.hasRegion = hasRegion;
++	g_drawLog.x0 = x0;
++	g_drawLog.y0 = y0;
++	g_drawLog.x1 = x1;
++	g_drawLog.y1 = y1;
++}
++
++void CGSH_OpenGL::LogDraw()
++{
++	auto file = g_drawLog.file;
++	if(m_vertexBuffer.empty()) return;
++	float x0 = m_vertexBuffer[0].x, x1 = x0, y0 = m_vertexBuffer[0].y, y1 = y0;
++	float u0 = 0, u1 = 0, v0 = 0, v1 = 0;
++	uint32 z0 = m_vertexBuffer[0].z, z1 = z0;
++	bool first = true;
++	for(const auto& vertex : m_vertexBuffer)
++	{
++		x0 = std::min(x0, vertex.x), x1 = std::max(x1, vertex.x);
++		y0 = std::min(y0, vertex.y), y1 = std::max(y1, vertex.y);
++		z0 = std::min(z0, vertex.z), z1 = std::max(z1, vertex.z);
++		float q = (vertex.q != 0) ? vertex.q : 1;
++		float u = (vertex.s / q) * static_cast<float>(m_nTexWidth), v = (vertex.t / q) * static_cast<float>(m_nTexHeight);
++		if(first) u0 = u1 = u, v0 = v1 = v, first = false;
++		u0 = std::min(u0, u), u1 = std::max(u1, u);
++		v0 = std::min(v0, v), v1 = std::max(v1, v);
++	}
++	auto prim = make_convertible<PRMODE>(m_renderState.primReg);
++	auto tex0 = make_convertible<TEX0>(m_renderState.tex0Reg);
++	bool textured = (prim.nTexture != 0);
++	fprintf(file, "F%u D%u prim=%u verts=%zu xy=%.3f,%.3f..%.3f,%.3f z=%08x..%08x rgba=%08x PRIM=%llx ALPHA=%llx TEST=%llx FRAME=%llx ZBUF=%llx SCISSOR=%llx SCANMSK=%u ofs=%.4f,%.4f",
++	        g_drawLog.frame, g_drawLog.draw++, m_primitiveType, m_vertexBuffer.size(), x0, y0, x1, y1, z0, z1, m_vertexBuffer[0].color,
++	        static_cast<unsigned long long>(m_renderState.primReg), static_cast<unsigned long long>(m_renderState.alphaReg), static_cast<unsigned long long>(m_renderState.testReg),
++	        static_cast<unsigned long long>(m_renderState.frameReg), static_cast<unsigned long long>(m_renderState.zbufReg), static_cast<unsigned long long>(m_renderState.scissorReg),
++	        static_cast<unsigned int>(m_renderState.scanMskReg & 3), m_nPrimOfsX, m_nPrimOfsY);
++	if(textured)
++	{
++		fprintf(file, " uv=%.3f,%.3f..%.3f,%.3f TEX0=%llx TEX1=%llx CLAMP=%llx tex=%06x/%ux%u/p%u smooth=%u mag=%s min=%s replaced=%d cropped=%d",
++		        u0, v0, u1, v1, static_cast<unsigned long long>(m_renderState.tex0Reg), static_cast<unsigned long long>(m_renderState.tex1Reg), static_cast<unsigned long long>(m_renderState.clampReg),
++		        tex0.GetBufPtr(), static_cast<unsigned int>(tex0.GetWidth()), static_cast<unsigned int>(tex0.GetHeight()), static_cast<unsigned int>(tex0.nPsm),
++		        static_cast<unsigned int>(m_renderState.shaderCaps.texSmooth),
++		        (m_renderState.texture0MagFilter == GL_NEAREST) ? "nearest" : "linear", (m_renderState.texture0MinFilter == GL_NEAREST) ? "nearest" : "linear",
++		        m_renderState.texture0Replaced ? 1 : 0, m_renderState.texture0Cropped ? 1 : 0);
++		if(m_lastContentTexture)
++		{
++			fprintf(file, " name=%s%016llx/p%u/%ux%u", (m_lastContentKey.kind == 1) ? "" : "mem-", static_cast<unsigned long long>(m_lastContentKey.hash), m_lastContentKey.psm, m_lastContentKey.width, m_lastContentKey.height);
++		}
++	}
++	fprintf(file, "\n");
++	if(g_drawLog.hasRegion)
++	{
++		bool thin = (m_primitiveType == PRIM_POINT) || (m_primitiveType == PRIM_LINE) || (m_primitiveType == PRIM_LINESTRIP);
++		size_t step = (thin && m_expandThinPrimitives) ? 6 : ((m_primitiveType == PRIM_POINT) ? 1 : (thin ? 2 : ((m_primitiveType == PRIM_SPRITE) ? 6 : 3)));
++		for(size_t i = 0; (i + step) <= m_vertexBuffer.size(); i += step)
++		{
++			float px0 = m_vertexBuffer[i].x, px1 = px0, py0 = m_vertexBuffer[i].y, py1 = py0;
++			for(size_t j = 1; j < step; j++)
++			{
++				px0 = std::min(px0, m_vertexBuffer[i + j].x), px1 = std::max(px1, m_vertexBuffer[i + j].x);
++				py0 = std::min(py0, m_vertexBuffer[i + j].y), py1 = std::max(py1, m_vertexBuffer[i + j].y);
++			}
++			if((px1 < g_drawLog.x0) || (px0 > g_drawLog.x1) || (py1 < g_drawLog.y0) || (py0 > g_drawLog.y1)) continue;
++			fprintf(file, "  p%zu", i / step);
++			for(size_t j = 0; j < step; j++)
++			{
++				const auto& vertex = m_vertexBuffer[i + j];
++				//a sprite is two triangles here: its corners are vertices 0 and 5 (a line
++				//drawn as a band: its ends are vertices 0 and 2)
++				if((step == 6) && (j != 0) && (j != (thin ? 2 : 5))) continue;
++				float q = (vertex.q != 0) ? vertex.q : 1;
++				fprintf(file, " (%.4f,%.4f z%08x c%08x uv %.4f,%.4f)", vertex.x, vertex.y, vertex.z, vertex.color, (vertex.s / q) * static_cast<float>(m_nTexWidth), (vertex.t / q) * static_cast<float>(m_nTexHeight));
++			}
++			fprintf(file, "\n");
++		}
++	}
+ }
+ 
+ void CGSH_OpenGL::FlushVertexBuffer()
+@@ -1824,11 +2306,11 @@
+ 	switch(m_primitiveType)
+ 	{
+ 	case PRIM_POINT:
+-		primitiveMode = GL_POINTS;
++		primitiveMode = m_expandThinPrimitives ? GL_TRIANGLES : GL_POINTS;
+ 		break;
+ 	case PRIM_LINE:
+ 	case PRIM_LINESTRIP:
+-		primitiveMode = GL_LINES;
++		primitiveMode = m_expandThinPrimitives ? GL_TRIANGLES : GL_LINES;
+ 		break;
+ 	case PRIM_TRIANGLE:
+ 	case PRIM_TRIANGLESTRIP:
+@@ -1841,6 +2323,9 @@
+ 		break;
+ 	}
+ 
++	if(g_drawLog.file) LogDraw();
++	if(m_renderState.texture0Smoothed) m_smoothedDrawCount++;
++
+ 	glDrawArrays(primitiveMode, 0, m_vertexBuffer.size());
+ 
+ 	m_drawCallCount++;
+@@ -1874,6 +2359,11 @@
  
  	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthbuffer->m_depthBuffer);
  	CHECKGLERROR();
@@ -833,15 +1240,16 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  
  	assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
  
-@@ -2052,6 +2262,7 @@
+@@ -2052,6 +2542,8 @@
  				   m_renderState.texAReg == texAReg &&
  				   m_renderState.clampReg == clampReg &&
  				   m_renderState.fogColReg == fogColReg &&
 +				   m_renderState.scanMskReg == m_nReg[GS_REG_SCANMSK] &&
++				   m_renderState.smoothPrimitiveType == m_primitiveType &&
  				   m_renderState.scissorReg == scissorReg)
  				{
  					needCtx = false; // fully same state; skip call
-@@ -2105,6 +2316,17 @@
+@@ -2105,6 +2597,17 @@
  
  void CGSH_OpenGL::ProcessHostToLocalTransfer()
  {
@@ -859,7 +1267,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  	if(m_trxCtx.nDirty)
  	{
  		FlushVertexBuffer();
-@@ -2220,6 +2442,17 @@
+@@ -2220,6 +2723,17 @@
  
  		auto trxPos = make_convertible<TRXPOS>(m_nReg[GS_REG_TRXPOS]);
  		auto trxReg = make_convertible<TRXREG>(m_nReg[GS_REG_TRXREG]);
@@ -877,7 +1285,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  		auto imgbuffer = Framework::CBitmap(trxReg.nRRW * m_fbScale, trxReg.nRRH * m_fbScale, 32);
  
  		glBindFramebuffer(GL_FRAMEBUFFER, (*srcFramebufferIterator)->m_framebuffer);
-@@ -2231,9 +2464,37 @@
+@@ -2231,8 +2745,36 @@
  
  		auto [transferAddress, transferSize] = GsTransfer::GetDstRange(bltBuf, trxReg, trxPos);
  		m_textureCache.InvalidateRange(transferAddress, transferSize);
@@ -887,7 +1295,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
 +		//RTA: in the format of the destination. It was written as 32-bit pixels whatever
 +		//the destination was; a 16-bit one got two pixels of noise for each.
 +		if((bltBuf.nDstPsm == PSMCT16) || (bltBuf.nDstPsm == PSMCT16S))
- 		{
++		{
 +			auto write16 = [&](auto& indexor) {
 +				for(uint32 y = 0; y < trxReg.nRRH; y++)
 +				{
@@ -911,11 +1319,10 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
 +			}
 +		}
 +		else
-+		{
+ 		{
  			CGsPixelFormats::CPixelIndexorPSMCT32 indexor(m_pRAM, bltBuf.GetDstPtr(), bltBuf.nDstWidth);
  			for(uint32 y = 0; y < trxReg.nRRH; y++)
- 			{
-@@ -2525,10 +2786,7 @@
+@@ -2525,10 +3067,7 @@
  	public:
  		void EnableCopyToFb(const FramebufferPtr& framebuffer, GLuint copyToFbTexture)
  		{
@@ -927,7 +1334,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  			glActiveTexture(GL_TEXTURE0);
  			glBindTexture(GL_TEXTURE_2D, copyToFbTexture);
  			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, framebuffer->m_width, framebuffer->m_height,
-@@ -2538,6 +2796,10 @@
+@@ -2538,6 +3077,10 @@
  			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
  			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
  
@@ -938,7 +1345,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.cpp b/Source/gs/GSH_OpenGL/GSH_Open
  			glBindFramebuffer(GL_FRAMEBUFFER, framebuffer->m_framebuffer);
  
  			m_copyToFbEnabled = true;
-@@ -2581,8 +2843,22 @@
+@@ -2581,8 +3124,22 @@
  		{
  			texHeight = framebuffer->m_height - texY;
  		}
@@ -974,7 +1381,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.h b/Source/gs/GSH_OpenGL/GSH_OpenGL
  #include <unordered_map>
  #include "../GSHandler.h"
  #include "../GsDebuggerInterface.h"
-@@ -65,6 +68,11 @@
+@@ -65,6 +68,14 @@
  	void FlipImpl(const DISPLAY_INFO&) override;
  
  	GLuint m_presentFramebuffer = 0;
@@ -983,30 +1390,40 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.h b/Source/gs/GSH_OpenGL/GSH_OpenGL
 +	GLuint m_displayFramebuffer = 0;
 +	uint32 m_displayPixelWidth = 0;
 +	uint32 m_displayPixelHeight = 0;
++	//RTA: ... and where that part starts (not 0 when the edge of the picture is left out, see FlipImpl)
++	uint32 m_displayPixelX = 0;
++	uint32 m_displayPixelY = 0;
  
  private:
  	typedef CGsTextureCache<Framework::OpenGl::CTexture> TextureCache;
-@@ -99,6 +107,9 @@
+@@ -99,6 +110,14 @@
  		unsigned int alphaTestDepthTest_DepthFetch : 1;
  		unsigned int alphaTestDepthTestEqual_DepthFetch : 1;
  
 +		//RTA: SCANMSK (0: none, 2: lines with an even number are not drawn, 3: odd)
 +		unsigned int scanMask : 2;
++		//RTA: the game asks for the nearest texel and gets a filtered one (WantsSmoothTexture).
++		//1: filtered; 2: and no texel is read that lies outside the texels the primitive's
++		//own corners span (what reading the nearest texel guarantees, and what a sheet of
++		//tiles or of particles relies on)
++		unsigned int texSmooth : 2;
 +
  		bool isIndexedTextureSource() const
  		{
  			return texSourceMode == TEXTURE_SOURCE_MODE_IDX4 || texSourceMode == TEXTURE_SOURCE_MODE_IDX8;
-@@ -124,6 +135,9 @@
+@@ -124,6 +143,11 @@
  		uint64 texAReg;
  		uint64 clampReg;
  		uint64 fogColReg;
 +		uint64 scanMskReg; //RTA
 +		bool texture0Replaced; //RTA: a picture from outside is bound in place of the game's
 +		bool texture0Cropped;  //RTA: ... and it holds only the part of the picture that is drawn with
++		bool texture0Smoothed; //RTA: the game asks for the nearest texel and gets a filtered one (WantsSmoothTexture)
++		unsigned int smoothPrimitiveType; //RTA: the kind of primitive texture0Smoothed was decided for
  
  		//Intermediate State
  		SHADERCAPS shaderCaps;
-@@ -172,7 +186,8 @@
+@@ -172,7 +196,8 @@
  		uint32 alphaRef;
  		float alphaFix;
  		float fogColor[3];
@@ -1016,7 +1433,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.h b/Source/gs/GSH_OpenGL/GSH_OpenGL
  	};
  	static_assert(sizeof(FRAGMENTPARAMS) == 0x40, "Size of FRAGMENTPARAMS must be 64 bytes.");
  
-@@ -242,6 +257,9 @@
+@@ -242,6 +267,9 @@
  		Framework::OpenGl::CFramebuffer m_framebuffer;
  		Framework::OpenGl::CTexture m_texture;
  
@@ -1026,15 +1443,15 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.h b/Source/gs/GSH_OpenGL/GSH_OpenGL
  		Framework::OpenGl::CFramebuffer m_resolveFramebuffer;
  		bool m_resolveNeeded = false;
  		Framework::OpenGl::CRenderbuffer m_colorBufferMs;
-@@ -273,8 +291,180 @@
+@@ -273,8 +301,207 @@
  		float scaleRatioX = 1;
  		float scaleRatioY = 1;
  		bool alphaAsIndex = false;
 +		//RTA: size of the texture that was made, as a fraction of the size TEX0 names
 +		float sizeScaleX = 1;
 +		float sizeScaleY = 1;
-+	};
-+
+ 	};
+ 
 +	//RTA: indexed textures kept by what is in them rather than by where they are in GS
 +	//memory (GSH_OpenGL_Texture.cpp, PrepareIndexedTexture)
 +	struct CONTENT_TEXTURE_KEY
@@ -1057,7 +1474,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.h b/Source/gs/GSH_OpenGL/GSH_OpenGL
 +		{
 +			return static_cast<size_t>(key.hash ^ (static_cast<uint64>(key.psm) << 56) ^ (static_cast<uint64>(key.width) << 40) ^ (static_cast<uint64>(key.height) << 24) ^ key.kind);
 +		}
- 	};
++	};
 +	struct CONTENT_TEXTURE
 +	{
 +		Framework::OpenGl::CTexture handle;
@@ -1070,7 +1487,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.h b/Source/gs/GSH_OpenGL/GSH_OpenGL
 +		std::vector<uint8> coverage;
 +		uint32 bytes = 0;
 +	};
- 
++
 +public:
 +	//RTA: Texture dump and replacement. A texture is known by the figure of its texels
 +	//and, for an indexed one, the figure of the palette it is drawn with (the same
@@ -1157,9 +1574,16 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.h b/Source/gs/GSH_OpenGL/GSH_OpenGL
 +	//'forget' says that a picture 'load' was asked for is not wanted any more: what has
 +	//been read of it, or is being read, is thrown away
 +	typedef std::function<void(const TEXTURE_PICTURE_KEY&)> TextureForgetFunction;
++	//'order' is told at the end of every frame, for each picture that is being read, how
++	//much of the screen its texture was drawn over in that frame (in pixels of the buffer
++	//drawn to, interface sprites counted fourfold); below zero: not drawn in that frame,
++	//the lower the longer ago. The pictures are to be read in that order: what the eye
++	//is on first.
++	typedef std::function<void(const std::vector<std::pair<TEXTURE_PICTURE_KEY, float>>&)> TextureOrderFunction;
 +	static TextureDumpFunction g_textureDump;
 +	static TextureLoadFunction g_textureLoad;
 +	static TextureForgetFunction g_textureForget;
++	static TextureOrderFunction g_textureOrder;
 +	//Counted on the video thread, read by anyone
 +	struct TEXTURE_COUNTERS
 +	{
@@ -1181,7 +1605,27 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.h b/Source/gs/GSH_OpenGL/GSH_OpenGL
 +		std::atomic<uint64> replacementsRegrown{0}; //read again because the game drew beyond the part held
 +		std::atomic<uint64> frameCopies{0};         //pieces of a frame buffer the game copied into its texture memory (FRAME_COPY)
 +		std::atomic<uint64> frameCopyUses{0};       //textures set up from such a piece
++		std::atomic<uint64> replacementsWarmed{0};  //pictures from outside handed to the GPU while their texture was not being drawn with (a menu was up)
++		std::atomic<uint64> pendingArea{0};         //pixels of the last frame drawn with textures whose picture from outside is still being read
++		std::atomic<uint64> smoothedDraws{0};       //draws of the last frame whose point-sampled texture was filtered (see SmoothMagnifiedTexture)
++		std::atomic<uint64> scaledPoints{0};        //points and lines of the last frame drawn at the size of the console's pixel
 +	};
++	//RTA: for finding out how the game draws a thing (control socket "drawlog"): every
++	//draw of the next 'frames' pictures is written to the file, one line each (primitive,
++	//number of vertices, the box drawn to, the texels used, the GS registers, the texture);
++	//with a region (pixels of the buffer drawn to) every primitive touching it is listed
++	//vertex by vertex. To be called on the video thread (SendGSCall).
++	static void StartDrawLog(const std::string& path, uint32 frames, bool hasRegion, float x0, float y0, float x1, float y1);
++	//For comparing (tests), each may be changed while the game runs. 'smooth': point-sampled
++	//effect sprites and lines get the treatment a higher resolution wants (see
++	//SmoothMagnifiedTexture, Prim_Point, Prim_Line); 'edge': the outermost line and column
++	//of the console's picture, which a television does not show, are left out of what is
++	//presented (see FlipImpl).
++	static std::atomic<bool> g_upscaleSmooth;
++	static std::atomic<bool> g_trimEdge;
++	//The filter for indexed textures takes the four texels round the place asked for (on),
++	//or as Play! has it the texel there and the three after it, half a texel off (off)
++	static std::atomic<bool> g_texelCentre;
 +	//Video memory the pictures from outside may take; beyond it those not drawn with
 +	//for ten seconds are given up (and read again when they are next needed)
 +	static std::atomic<uint64> g_textureReplaceBudget;
@@ -1207,7 +1651,25 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.h b/Source/gs/GSH_OpenGL/GSH_OpenGL
  	struct TEXTUREFORMAT_INFO
  	{
  		GLenum internalFormat;
-@@ -316,6 +506,34 @@
+@@ -289,6 +516,7 @@
+ 		COLOR,
+ 		TEXCOORD,
+ 		FOG,
++		TEXBOUNDS, //RTA
+ 	};
+ 
+ 	struct PRIM_VERTEX
+@@ -298,6 +526,9 @@
+ 		uint32 color;
+ 		float s, t, q;
+ 		float f;
++		//RTA: smallest and largest s and t (as s / q, t / q) of the primitive the vertex
++		//belongs to; only set and only read for SHADERCAPS::texSmooth 2
++		float boundS0, boundT0, boundS1, boundT1;
+ 	};
+ 
+ 	enum VERTEX_BUFFER_SIZE
+@@ -316,6 +547,34 @@
  	void MakeLinearZOrtho(float*, float, float, float, float);
  	TEXTURE_INFO PrepareTexture(const TEX0&);
  	TEXTURE_INFO SearchTextureFramebuffer(const TEX0&);
@@ -1242,12 +1704,12 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.h b/Source/gs/GSH_OpenGL/GSH_OpenGL
  	GLuint PreparePalette(const TEX0&);
  
  	void ProcessPrim(uint64);
-@@ -420,6 +638,123 @@
+@@ -420,7 +679,161 @@
  	Framework::OpenGl::CVertexArray m_presentVertexArray;
  	GLint m_presentTextureUniform = -1;
  	GLint m_presentTexCoordScaleUniform = -1;
 +	GLint m_presentTexCoordOffsetUniform = -1;
-+
+ 
 +	//RTA
 +	TEXTURE_INFO PrepareTextureByContent(const TEX0&, uint32, uint32);
 +	std::pair<uint32, uint32> GetUsedTextureSize(const TEX0&) const;
@@ -1330,8 +1792,37 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.h b/Source/gs/GSH_OpenGL/GSH_OpenGL
 +		uint32 lastUsedFrame = 0;
 +		uint32 firstUsedFrame = 0;
 +		bool dumped = false;
++		//How much of the screen the texture is drawn over in the frame being drawn (pixels
++		//of the buffer drawn to), gathered while the picture is being read: it says which
++		//picture to read first. 'drawnBySprite': by sprites (interface art, text).
++		float drawnArea = 0;
++		bool drawnBySprite = false;
 +		TEXTURE_PICTURE_USE use;
 +	};
++	void NotePictureArea(float, bool);
++	//RTA: Point-sampled textures at a higher resolution factor. The console's picture is
++	//640 x 448 and a texel read without filtering is, there, about a pixel; four times as
++	//many pixels show every texel as a block of its own, and a sprite of a few pixels
++	//(a cluster of dust specks in a cell of 32 x 32 texels drawn 3 pixels wide) as a
++	//square of dots. This game sets "nearest" in its interface drawers and never sets it
++	//back for what is drawn after them in the same layers, so it is not a choice made for
++	//each picture: the automap (a mask of 120 x 160 texels stretched over a third of the
++	//screen), the map's icons, particles and glows, and models shown in menus are all
++	//read unfiltered. With a resolution factor above 1 those are filtered. Left as they
++	//are: sprites drawn without a depth test - interface art and text, pixel for pixel,
++	//which has to stay crisp (and the shadow blobs drawn into their own surface).
++	bool WantsSmoothTexture(uint64, uint64, uint64) const;
++	//Points and lines are a console pixel wide: at a higher resolution factor they are
++	//drawn as rectangles of that width (OpenGL's own are one pixel of the larger buffer:
++	//a quarter of the width and of the light at factor 4). Decided when a batch starts.
++	bool m_expandThinPrimitives = false;
++	uint32 m_smoothedDrawCount = 0;
++	uint32 m_scaledPointCount = 0;
++	//The manual bilinear filter of indexed textures read its four texels half a texel
++	//too far up and to the left; g_texelCentre (below) as last seen by the shaders made
++	bool m_texelCentreSeen = true;
++	void TakeTexturePicture(const TEXTURE_PICTURE_KEY&, TEXTURE_PICTURE&);
++	void LogDraw();
 +	//The picture of the texture that is bound (nullptr: none, or nothing is gathered)
 +	TEXTURE_PICTURE* m_currentPicture = nullptr;
 +	void NoteTextureUse(uint64, uint64, uint64, uint64, uint64, uint64);
@@ -1341,14 +1832,22 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.h b/Source/gs/GSH_OpenGL/GSH_OpenGL
 +	//Pictures drawn beyond the part held, since the last end of a frame
 +	std::vector<TEXTURE_PICTURE*> m_outgrownPictures;
 +	//Pictures from outside that are being read (loadState 1). They are settled when
-+	//their texture is next drawn with; one whose texture has not been drawn with for
-+	//PENDING_PATIENCE frames is given up at the end of a frame and asked for again when
-+	//it is next wanted. (Before, such a picture was counted as being read for ever, what
-+	//had been read of it was kept for ever, and the count made every frame start from
-+	//nothing.)
++	//their texture is next drawn with, or - when it is not being drawn with: a menu is
++	//up, the camera has turned away - at the end of a frame, with what room the frame's
++	//own draws left (so that a level's pictures are there when the player comes back
++	//from a menu, and are not asked for anew). One whose texture has not been drawn with
++	//for PENDING_PATIENCE_LONG frames is given up and asked for again when it is next
++	//wanted; so are the longest unused beyond MAX_PENDING_IDLE of them, and, while the
++	//pictures held are close to what they may take, all not drawn with for
++	//PENDING_PATIENCE frames. (At first such a picture was counted as being read for
++	//ever and what had been read of it was kept for ever; then all were given up after
++	//PENDING_PATIENCE frames, which threw a level's pictures away whenever a menu was
++	//opened while they were coming in.)
 +	enum
 +	{
-+		PENDING_PATIENCE = 120
++		PENDING_PATIENCE = 120,
++		PENDING_PATIENCE_LONG = 1800,
++		MAX_PENDING_IDLE = 768
 +	};
 +	std::vector<std::pair<TEXTURE_PICTURE_KEY, TEXTURE_PICTURE*>> m_pendingPictures;
 +	void SettlePendingPictures(bool);
@@ -1363,13 +1862,54 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL.h b/Source/gs/GSH_OpenGL/GSH_OpenGL
 +	uint32 m_contentTextureFrame = 0;
 +	bool m_texConvertOnly = false;
 +	void ConvertTexture(const TEX0&, uint32, uint32);
- 
++
  	Framework::OpenGl::ProgramPtr m_copyToFbProgram;
  	Framework::OpenGl::CTexture m_copyToFbTexture;
+ 	Framework::OpenGl::CBuffer m_copyToFbVertexBuffer;
 diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Shader.cpp b/Source/gs/GSH_OpenGL/GSH_OpenGL_Shader.cpp
 --- a/Source/gs/GSH_OpenGL/GSH_OpenGL_Shader.cpp
 +++ b/Source/gs/GSH_OpenGL/GSH_OpenGL_Shader.cpp
-@@ -188,6 +188,7 @@
+@@ -69,6 +69,7 @@
+ 	glBindAttribLocation(*result, static_cast<GLuint>(PRIM_VERTEX_ATTRIB::COLOR), "a_color");
+ 	glBindAttribLocation(*result, static_cast<GLuint>(PRIM_VERTEX_ATTRIB::TEXCOORD), "a_texCoord");
+ 	glBindAttribLocation(*result, static_cast<GLuint>(PRIM_VERTEX_ATTRIB::FOG), "a_fog");
++	glBindAttribLocation(*result, static_cast<GLuint>(PRIM_VERTEX_ATTRIB::TEXBOUNDS), "a_texBounds");
+ 
+ #ifdef USE_DUALSOURCE_BLENDING
+ 	glBindFragDataLocationIndexed(*result, 0, 0, "fragColor");
+@@ -107,9 +108,20 @@
+ 		shaderBuilder << "in float a_fog;" << std::endl;
+ 		shaderBuilder << "out float v_fog;" << std::endl;
+ 	}
++	//RTA: see SHADERCAPS::texSmooth
++	if(caps.texSmooth == 2)
++	{
++		shaderBuilder << "in vec4 a_texBounds;" << std::endl;
++		shaderBuilder << "flat out vec4 v_texBounds;" << std::endl;
++	}
+ 
+ 	shaderBuilder << "void main()" << std::endl;
+ 	shaderBuilder << "{" << std::endl;
++	if(caps.texSmooth == 2)
++	{
++		shaderBuilder << "	v_texBounds.xy = (g_texMatrix * vec4(a_texBounds.xy, 1, 1)).xy;" << std::endl;
++		shaderBuilder << "	v_texBounds.zw = (g_texMatrix * vec4(a_texBounds.zw, 1, 1)).xy;" << std::endl;
++	}
+ 	shaderBuilder << "	vec4 texCoord = g_texMatrix * vec4(a_texCoord, 1);" << std::endl;
+ 	shaderBuilder << "	v_depth = float(a_depth) / 4294967296.0;" << std::endl;
+ 	shaderBuilder << "	v_color = a_color;" << std::endl;
+@@ -160,6 +172,10 @@
+ 	{
+ 		shaderBuilder << "in float v_fog;" << std::endl;
+ 	}
++	if(caps.texSmooth == 2)
++	{
++		shaderBuilder << "flat in highp vec4 v_texBounds;" << std::endl;
++	}
+ 
+ 	if(useFramebufferFetch)
+ 	{
+@@ -188,6 +204,7 @@
  	shaderBuilder << "	uint g_alphaRef;" << std::endl;
  	shaderBuilder << "	float g_alphaFix;" << std::endl;
  	shaderBuilder << "	vec3 g_fogColor;" << std::endl;
@@ -1377,11 +1917,10 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Shader.cpp b/Source/gs/GSH_OpenGL/G
  	shaderBuilder << "};" << std::endl;
  
  	if(caps.texClampS == TEXTURE_CLAMP_MODE_REGION_REPEAT || caps.texClampT == TEXTURE_CLAMP_MODE_REGION_REPEAT)
-@@ -224,6 +225,14 @@
- 
+@@ -225,6 +242,14 @@
  	shaderBuilder << "void main()" << std::endl;
  	shaderBuilder << "{" << std::endl;
-+
+ 
 +	//RTA: SCANMSK. Line 0 of the console's picture is at the bottom of the framebuffer
 +	//here (the projection does not turn it over), and one of its lines is g_fbScale
 +	//pixels high.
@@ -1389,10 +1928,80 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Shader.cpp b/Source/gs/GSH_OpenGL/G
 +	{
 +		shaderBuilder << "	if((int(gl_FragCoord.y / g_fbScale) & 1) == " << ((caps.scanMask == 2) ? 0 : 1) << ") discard;" << std::endl;
 +	}
- 
++
  	if(useFramebufferFetch && caps.hasDestAlphaTest)
  	{
-@@ -662,9 +671,10 @@
+ 		switch(caps.destAlphaTestRef)
+@@ -268,10 +293,33 @@
+ 		}
+ 		else
+ 		{
+-			shaderBuilder << "	float tlIdx = texture(g_texture, texCoord.st                                     ).r * 255.0;" << std::endl;
+-			shaderBuilder << "	float trIdx = texture(g_texture, texCoord.st + vec2(g_texelSize.x, 0)            ).r * 255.0;" << std::endl;
+-			shaderBuilder << "	float blIdx = texture(g_texture, texCoord.st + vec2(0, g_texelSize.y)            ).r * 255.0;" << std::endl;
+-			shaderBuilder << "	float brIdx = texture(g_texture, texCoord.st + vec2(g_texelSize.x, g_texelSize.y)).r * 255.0;" << std::endl;
++			//RTA: The four texels round the place asked for: a texel's colour belongs to
++			//its middle, so the first of the four is the one half a texel before (as the
++			//GS has it, and as the graphics card does for a texture it filters itself -
++			//which is how a picture from outside is drawn). Play! took the texel at the
++			//place and the three after it: every filtered indexed texture half a texel up
++			//and to the left of where it belongs, and of where its replacement is drawn.
++			if(m_texelCentreSeen)
++			{
++				shaderBuilder << "	texCoord.st -= 0.5 * g_texelSize;" << std::endl;
++			}
++			if(caps.texSmooth == 2)
++			{
++				//RTA: none of the four outside the texels the primitive's corners span
++				shaderBuilder << "	highp vec2 tapLo = v_texBounds.xy;" << std::endl;
++				shaderBuilder << "	highp vec2 tapHi = max(v_texBounds.xy, v_texBounds.zw - (0.01 * g_texelSize));" << std::endl;
++				shaderBuilder << "	float tlIdx = texture(g_texture, clamp(texCoord.st                                     , tapLo, tapHi)).r * 255.0;" << std::endl;
++				shaderBuilder << "	float trIdx = texture(g_texture, clamp(texCoord.st + vec2(g_texelSize.x, 0)            , tapLo, tapHi)).r * 255.0;" << std::endl;
++				shaderBuilder << "	float blIdx = texture(g_texture, clamp(texCoord.st + vec2(0, g_texelSize.y)            , tapLo, tapHi)).r * 255.0;" << std::endl;
++				shaderBuilder << "	float brIdx = texture(g_texture, clamp(texCoord.st + vec2(g_texelSize.x, g_texelSize.y), tapLo, tapHi)).r * 255.0;" << std::endl;
++			}
++			else
++			{
++				shaderBuilder << "	float tlIdx = texture(g_texture, texCoord.st                                     ).r * 255.0;" << std::endl;
++				shaderBuilder << "	float trIdx = texture(g_texture, texCoord.st + vec2(g_texelSize.x, 0)            ).r * 255.0;" << std::endl;
++				shaderBuilder << "	float blIdx = texture(g_texture, texCoord.st + vec2(0, g_texelSize.y)            ).r * 255.0;" << std::endl;
++				shaderBuilder << "	float brIdx = texture(g_texture, texCoord.st + vec2(g_texelSize.x, g_texelSize.y)).r * 255.0;" << std::endl;
++			}
+ 
+ 			if(caps.texSourceMode == TEXTURE_SOURCE_MODE_IDX4)
+ 			{
+@@ -294,7 +342,30 @@
+ 			shaderBuilder << "	vec4 tA = mix(tl, tr, f.x);" << std::endl;
+ 			shaderBuilder << "	vec4 tB = mix(bl, br, f.x);" << std::endl;
+ 			shaderBuilder << "	textureColor = mix(tA, tB, f.y);" << std::endl;
++		}
++	}
++	else if((caps.texSourceMode == TEXTURE_SOURCE_MODE_STD) && (caps.texSmooth != 0))
++	{
++		//RTA: A texture the game reads unfiltered, filtered (WantsSmoothTexture). Where
++		//the console draws it smaller than it is - a cell of 32 texels for a dust mote
++		//three pixels wide - the console's pixel shows one texel of several, and more
++		//pixels show the structure inside the cell instead (a square of dots). There the
++		//texture is read at the console's density: what the console's pixel cannot hold
++		//is not drawn. g_textureSize is the size of the game's own texture, so this is
++		//the same for a picture from outside of any size (which has the smaller copies
++		//this takes; the game's own textures have none and are just filtered).
++		shaderBuilder << "	highp vec2 texelCoord = texCoord.st * g_textureSize;" << std::endl;
++		shaderBuilder << "	highp vec2 texelDx = dFdx(texelCoord);" << std::endl;
++		shaderBuilder << "	highp vec2 texelDy = dFdy(texelCoord);" << std::endl;
++		shaderBuilder << "	float texelsPerPixel = 0.5 * log2(max(max(dot(texelDx, texelDx), dot(texelDy, texelDy)), 1e-12));" << std::endl;
++		shaderBuilder << "	float consoleBias = clamp(texelsPerPixel + log2(g_fbScale), 0.0, log2(g_fbScale));" << std::endl;
++		if(caps.texSmooth == 2)
++		{
++			shaderBuilder << "	highp vec2 boundLo = v_texBounds.xy + (0.5 * g_texelSize);" << std::endl;
++			shaderBuilder << "	highp vec2 boundHi = max(boundLo, v_texBounds.zw - (0.5 * g_texelSize));" << std::endl;
++			shaderBuilder << "	texCoord.st = clamp(texCoord.st, boundLo, boundHi);" << std::endl;
+ 		}
++		shaderBuilder << "	textureColor = expandAlpha(texture(g_texture, texCoord.st, consoleBias));" << std::endl;
+ 	}
+ 	else if(caps.texSourceMode == TEXTURE_SOURCE_MODE_STD)
+ 	{
+@@ -662,9 +733,10 @@
  		shaderBuilder << "in vec2 a_texCoord;" << std::endl;
  		shaderBuilder << "out vec2 v_texCoord;" << std::endl;
  		shaderBuilder << "uniform vec2 g_texCoordScale;" << std::endl;
@@ -1413,7 +2022,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
  #include <assert.h>
  #include <cstring>
  #include <sys/stat.h>
-@@ -183,14 +185,59 @@
+@@ -183,14 +185,63 @@
  	}
  }
  
@@ -1433,6 +2042,10 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
 +CGSH_OpenGL::TextureDumpFunction CGSH_OpenGL::g_textureDump;
 +CGSH_OpenGL::TextureLoadFunction CGSH_OpenGL::g_textureLoad;
 +CGSH_OpenGL::TextureForgetFunction CGSH_OpenGL::g_textureForget;
++CGSH_OpenGL::TextureOrderFunction CGSH_OpenGL::g_textureOrder;
++std::atomic<bool> CGSH_OpenGL::g_upscaleSmooth{true};
++std::atomic<bool> CGSH_OpenGL::g_trimEdge{true};
++std::atomic<bool> CGSH_OpenGL::g_texelCentre{true};
 +
  CGSH_OpenGL::TEXTURE_INFO CGSH_OpenGL::PrepareTexture(const TEX0& tex0)
  {
@@ -1473,10 +2086,12 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
  	auto texture = m_textureCache.Search(tex0);
  	if(!texture)
  	{
-@@ -252,6 +299,1226 @@
- 	return texInfo;
- }
+@@ -250,8 +301,1344 @@
+ 	cachedArea.ClearDirtyPages();
  
+ 	return texInfo;
++}
++
 +//RTA: The part of a texture that holds a picture.
 +//
 +//TEX0 gives a texture's width and height only as powers of two, and nothing obliges a
@@ -1536,8 +2151,8 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
 +	uint32 usedWidth = std::max<uint32>(bufWidth, 16);
 +
 +	return std::make_pair(std::min(texWidth, usedWidth), std::min(texHeight, usedHeight));
-+}
-+
+ }
+ 
 +//RTA: Puts the texels of a texture of any size into m_pCvtBuffer, row after row, without
 +//uploading anything.
 +//
@@ -2291,6 +2906,67 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
 +	return true;
 +}
 +
++//RTA: asks for the picture from outside of 'key' and, when it has come, hands it (or the
++//part of it that is drawn with) to the GPU. Called when the texture is set up for a
++//draw, and at the end of a frame for pictures whose texture is not being drawn with.
++void CGSH_OpenGL::TakeTexturePicture(const TEXTURE_PICTURE_KEY& key, TEXTURE_PICTURE& texturePicture)
++{
++	std::vector<uint32> picture;
++	uint32 width = 0, height = 0;
++	int answer = g_textureLoad(key, picture, width, height);
++	if(answer == 2)
++	{
++		if(texturePicture.loadState == 0)
++		{
++			g_textureCounters.replacementsPending++;
++			m_pendingPictures.emplace_back(key, &texturePicture);
++		}
++		texturePicture.loadState = 1;
++	}
++	else
++	{
++		if(texturePicture.loadState == 1) g_textureCounters.replacementsPending--;
++		texturePicture.loadState = 2;
++		if((answer == 1) && (width != 0) && (height != 0) && (picture.size() >= (static_cast<size_t>(width) * height)))
++		{
++			//Only the part the game draws with goes to the GPU (see TEXTURE_PICTURE)
++			uint32 cropX = 0, cropY = 0, cropWidth = 0, cropHeight = 0;
++			uint32 partX = 0, partY = 0, partWidth = width, partHeight = height;
++			if(GetTexturePictureCrop(key, texturePicture, width, height, cropX, cropY, cropWidth, cropHeight))
++			{
++				uint32 factorX = width / key.width, factorY = height / key.height;
++				partX = cropX * factorX;
++				partY = cropY * factorY;
++				partWidth = cropWidth * factorX;
++				partHeight = cropHeight * factorY;
++				texturePicture.cropOkU0 = (cropX == 0) ? -0.5f : static_cast<float>(cropX + 1);
++				texturePicture.cropOkV0 = (cropY == 0) ? -0.5f : static_cast<float>(cropY + 1);
++				texturePicture.cropOkU1 = ((cropX + cropWidth) == key.width) ? (static_cast<float>(texturePicture.use.namedWidth) + 0.5f) : static_cast<float>(cropX + cropWidth - 1);
++				texturePicture.cropOkV1 = ((cropY + cropHeight) == key.height) ? (static_cast<float>(texturePicture.use.namedHeight) + 0.5f) : static_cast<float>(cropY + cropHeight - 1);
++				g_textureCounters.replacementsCropped++;
++			}
++			texturePicture.cropX = static_cast<uint16>(cropX);
++			texturePicture.cropY = static_cast<uint16>(cropY);
++			texturePicture.cropWidth = static_cast<uint16>(cropWidth);
++			texturePicture.cropHeight = static_cast<uint16>(cropHeight);
++			uint32 levels = 1;
++			for(uint32 size = std::max(partWidth, partHeight); size > 1; size >>= 1) levels++;
++			texturePicture.replacement = Framework::OpenGl::CTexture::Create();
++			glBindTexture(GL_TEXTURE_2D, texturePicture.replacement);
++			glTexStorage2D(GL_TEXTURE_2D, levels, GL_RGBA8, partWidth, partHeight);
++			glPixelStorei(GL_UNPACK_ROW_LENGTH, width);
++			glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, partWidth, partHeight, GL_RGBA, GL_UNSIGNED_BYTE, picture.data() + (static_cast<size_t>(partY) * width) + partX);
++			glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
++			glGenerateMipmap(GL_TEXTURE_2D);
++			CHECKGLERROR();
++			texturePicture.replacementBytes = static_cast<uint32>(std::min<uint64>((static_cast<uint64>(partWidth) * partHeight * 16) / 3, 0xFFFFFFFFULL));
++			g_textureCounters.replacements++;
++			g_textureCounters.replacementBytes += texturePicture.replacementBytes;
++			m_replacementUploadRoom -= texturePicture.replacementBytes;
++		}
++	}
++}
++
 +//RTA: see TEXTURE_PICTURE_KEY. Returns the texture to draw with in place of the one
 +//PrepareTextureByUpload or PrepareTextureByContent gave, or 0. Indexed textures and
 +//32-bit ones only.
@@ -2333,62 +3009,11 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
 +	//is on anything far away, and glitters without them. Only so many bytes are handed
 +	//to the GPU in one frame.
 +	texturePicture.lastUsedFrame = m_contentTextureFrame;
-+	if((texturePicture.loadState != 2) && g_textureLoad && g_textureReplaceOn && (m_replacementUploadRoom > 0))
++	//A picture not asked for yet is asked for at once (the readers start on it); one
++	//that is being read is taken when it has come and there is room left in this frame.
++	if((texturePicture.loadState != 2) && g_textureLoad && g_textureReplaceOn && ((texturePicture.loadState == 0) || (m_replacementUploadRoom > 0)))
 +	{
-+		std::vector<uint32> picture;
-+		uint32 width = 0, height = 0;
-+		int answer = g_textureLoad(key, picture, width, height);
-+		if(answer == 2)
-+		{
-+			if(texturePicture.loadState == 0)
-+			{
-+				g_textureCounters.replacementsPending++;
-+				m_pendingPictures.emplace_back(key, &texturePicture);
-+			}
-+			texturePicture.loadState = 1;
-+		}
-+		else
-+		{
-+			if(texturePicture.loadState == 1) g_textureCounters.replacementsPending--;
-+			texturePicture.loadState = 2;
-+			if((answer == 1) && (width != 0) && (height != 0) && (picture.size() >= (static_cast<size_t>(width) * height)))
-+			{
-+				//Only the part the game draws with goes to the GPU (see TEXTURE_PICTURE)
-+				uint32 cropX = 0, cropY = 0, cropWidth = 0, cropHeight = 0;
-+				uint32 partX = 0, partY = 0, partWidth = width, partHeight = height;
-+				if(GetTexturePictureCrop(key, texturePicture, width, height, cropX, cropY, cropWidth, cropHeight))
-+				{
-+					uint32 factorX = width / key.width, factorY = height / key.height;
-+					partX = cropX * factorX;
-+					partY = cropY * factorY;
-+					partWidth = cropWidth * factorX;
-+					partHeight = cropHeight * factorY;
-+					texturePicture.cropOkU0 = (cropX == 0) ? -0.5f : static_cast<float>(cropX + 1);
-+					texturePicture.cropOkV0 = (cropY == 0) ? -0.5f : static_cast<float>(cropY + 1);
-+					texturePicture.cropOkU1 = ((cropX + cropWidth) == key.width) ? (static_cast<float>(texturePicture.use.namedWidth) + 0.5f) : static_cast<float>(cropX + cropWidth - 1);
-+					texturePicture.cropOkV1 = ((cropY + cropHeight) == key.height) ? (static_cast<float>(texturePicture.use.namedHeight) + 0.5f) : static_cast<float>(cropY + cropHeight - 1);
-+					g_textureCounters.replacementsCropped++;
-+				}
-+				texturePicture.cropX = static_cast<uint16>(cropX);
-+				texturePicture.cropY = static_cast<uint16>(cropY);
-+				texturePicture.cropWidth = static_cast<uint16>(cropWidth);
-+				texturePicture.cropHeight = static_cast<uint16>(cropHeight);
-+				uint32 levels = 1;
-+				for(uint32 size = std::max(partWidth, partHeight); size > 1; size >>= 1) levels++;
-+				texturePicture.replacement = Framework::OpenGl::CTexture::Create();
-+				glBindTexture(GL_TEXTURE_2D, texturePicture.replacement);
-+				glTexStorage2D(GL_TEXTURE_2D, levels, GL_RGBA8, partWidth, partHeight);
-+				glPixelStorei(GL_UNPACK_ROW_LENGTH, width);
-+				glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, partWidth, partHeight, GL_RGBA, GL_UNSIGNED_BYTE, picture.data() + (static_cast<size_t>(partY) * width) + partX);
-+				glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-+				glGenerateMipmap(GL_TEXTURE_2D);
-+				CHECKGLERROR();
-+				texturePicture.replacementBytes = static_cast<uint32>(std::min<uint64>((static_cast<uint64>(partWidth) * partHeight * 16) / 3, 0xFFFFFFFFULL));
-+				g_textureCounters.replacements++;
-+				g_textureCounters.replacementBytes += texturePicture.replacementBytes;
-+				m_replacementUploadRoom -= texturePicture.replacementBytes;
-+			}
-+		}
++		TakeTexturePicture(key, texturePicture);
 +	}
 +	//The coordinates drawn with are gathered for every picture: the file beside a dump
 +	//wants them, and so does the part of a picture from outside that is held
@@ -2509,6 +3134,16 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
 +	}
 +}
 +
++//RTA: 'area' pixels of the buffer drawn to are covered by a primitive with the picture
++//that is bound, which is still being read (see TEXTURE_PICTURE::drawnArea)
++void CGSH_OpenGL::NotePictureArea(float area, bool sprite)
++{
++	auto picture = m_currentPicture;
++	if(!picture || (picture->loadState == 2) || !(area > 0)) return;
++	picture->drawnArea += area;
++	if(sprite) picture->drawnBySprite = true;
++}
++
 +//The part of a picture from outside to hand to the GPU: what the game has drawn with so
 +//far and a margin, in texels of the game's picture. False: all of it - nothing is known,
 +//it is drawn by sprites (interface art: other parts of it are drawn later, and the
@@ -2555,17 +3190,45 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
 +}
 +
 +//The pictures that are being read: those that have come (or of which there is none) since
-+//they were asked for leave the list; those whose texture has not been drawn with for a
-+//while - or all of them - are given up.
++//they were asked for leave the list; those whose texture has not been drawn with for
++//long, the longest unused when there are very many, those not drawn with for a while
++//when there is no room to hold them anyway - or all of them - are given up.
 +void CGSH_OpenGL::SettlePendingPictures(bool all)
 +{
++	//the frame that has just been drawn is m_contentTextureFrame - 1 here
++	bool tight = (g_textureCounters.replacementBytes * 10) >= (g_textureReplaceBudget.load() * 9);
++	uint32 idleCount = 0;
++	if(!all)
++	{
++		for(const auto& pending : m_pendingPictures)
++		{
++			const auto& picture = *pending.second;
++			if((picture.loadState == 1) && ((m_contentTextureFrame - picture.lastUsedFrame) >= PENDING_PATIENCE)) idleCount++;
++		}
++	}
++	//the age beyond which idle ones go, when there are more of them than are kept
++	uint32 idleAgeLimit = PENDING_PATIENCE_LONG;
++	if(idleCount > MAX_PENDING_IDLE)
++	{
++		std::vector<uint32> ages;
++		ages.reserve(idleCount);
++		for(const auto& pending : m_pendingPictures)
++		{
++			const auto& picture = *pending.second;
++			uint32 age = m_contentTextureFrame - picture.lastUsedFrame;
++			if((picture.loadState == 1) && (age >= PENDING_PATIENCE)) ages.push_back(age);
++		}
++		std::nth_element(ages.begin(), ages.begin() + MAX_PENDING_IDLE, ages.end());
++		idleAgeLimit = std::min<uint32>(idleAgeLimit, ages[MAX_PENDING_IDLE]);
++	}
++	if(tight) idleAgeLimit = PENDING_PATIENCE;
 +	size_t kept = 0;
 +	for(size_t i = 0; i < m_pendingPictures.size(); i++)
 +	{
 +		auto pending = m_pendingPictures[i];
 +		auto& picture = *pending.second;
 +		if(picture.loadState != 1) continue;
-+		if(all || ((m_contentTextureFrame - picture.lastUsedFrame) >= PENDING_PATIENCE))
++		if(all || ((m_contentTextureFrame - picture.lastUsedFrame) >= idleAgeLimit))
 +		{
 +			if(g_textureForget) g_textureForget(pending.first);
 +			picture.loadState = 0;
@@ -2640,9 +3303,64 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
 +		}
 +	}
 +
-+	//Pictures from outside: what may be handed to the GPU in the next frame; those being
-+	//read whose texture is not drawn with any more are given up; and beyond the budget
-+	//those not drawn with for a while go.
++	//Pictures from outside that are being read. Those whose texture was not drawn with in
++	//the frame just drawn (a menu is up, the camera has turned) are taken here when they
++	//have come, with the room the frame's draws left, as long as there is memory to hold
++	//them: they are there when their texture is drawn with again. Then the readers are
++	//told what to read first: the pictures that covered most of the frame just drawn,
++	//then those not drawn, the most recently drawn first.
++	if(!m_pendingPictures.empty() && g_textureLoad && g_textureReplaceOn)
++	{
++		uint32 frameDrawn = m_contentTextureFrame - 1;
++		bool roomToHold = (g_textureCounters.replacementBytes * 10) < (g_textureReplaceBudget.load() * 9);
++		std::vector<std::pair<TEXTURE_PICTURE_KEY, float>> order;
++		order.reserve(m_pendingPictures.size());
++		double pendingArea = 0;
++		//(a picture taken leaves the list in SettlePendingPictures below; the list
++		//itself is not changed by TakeTexturePicture for a picture already in it)
++		for(size_t i = 0; i < m_pendingPictures.size(); i++)
++		{
++			auto key = m_pendingPictures[i].first;
++			auto& picture = *m_pendingPictures[i].second;
++			if(picture.loadState != 1) continue;
++			bool drawn = (picture.lastUsedFrame == frameDrawn);
++			if(!drawn && roomToHold && (m_replacementUploadRoom > 0))
++			{
++				TakeTexturePicture(key, picture);
++				if(picture.loadState == 2)
++				{
++					if(picture.replacementBytes != 0) g_textureCounters.replacementsWarmed++;
++					picture.drawnArea = 0;
++					continue;
++				}
++			}
++			float priority = 0;
++			if(drawn)
++			{
++				//drawn without its area known (a kind of primitive that is not measured): as a small one
++				priority = std::max(picture.drawnArea, 1.0f) * (picture.drawnBySprite ? 4.0f : 1.0f);
++				pendingArea += picture.drawnArea;
++			}
++			else
++			{
++				priority = -static_cast<float>(frameDrawn - picture.lastUsedFrame);
++			}
++			picture.drawnArea = 0;
++			picture.drawnBySprite = false;
++			order.emplace_back(key, priority);
++		}
++		g_textureCounters.pendingArea = static_cast<uint64>(pendingArea);
++		if(g_textureOrder && !order.empty()) g_textureOrder(order);
++		//TakeTexturePicture binds the texture it makes
++		m_validGlState &= ~GLSTATE_TEXTURE;
++	}
++	else
++	{
++		g_textureCounters.pendingArea = 0;
++	}
++
++	//What may be handed to the GPU in the next frame; pictures being read that are not
++	//wanted any more are given up; and beyond the budget those longest not drawn with go.
 +	m_replacementUploadRoom = 24 * 1024 * 1024;
 +	SettlePendingPictures(false);
 +	//A picture is asked for (again) when its texture is set up. Should the texture bound
@@ -2664,13 +3382,26 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
 +		m_renderState.isValid = false;
 +		m_validGlState &= ~GLSTATE_TEXTURE;
 +	}
++	//Beyond the budget: the pictures longest not drawn with go, as many as it takes to
++	//come back under it and no more. (Before, every picture not drawn with for ten seconds
++	//went at once: in a level that holds more than the budget, ten seconds in a menu threw
++	//all of the level's pictures away, and they came in again one by one afterwards.)
 +	if(((m_contentTextureFrame % 120) == 0) && (g_textureCounters.replacementBytes > g_textureReplaceBudget))
 +	{
++		std::vector<std::pair<uint32, TEXTURE_PICTURE*>> unused;
 +		for(auto& picturePair : m_textureReplacements)
 +		{
 +			auto& picture = picturePair.second;
 +			if((picture.replacementBytes == 0) || ((m_contentTextureFrame - picture.lastUsedFrame) < 600)) continue;
-+			DropTextureReplacement(picture);
++			unused.emplace_back(picture.lastUsedFrame, &picture);
++		}
++		std::sort(unused.begin(), unused.end(), [](const std::pair<uint32, TEXTURE_PICTURE*>& a, const std::pair<uint32, TEXTURE_PICTURE*>& b) { return a.first < b.first; });
++		//down to nine tenths, so that not every new picture sends one away
++		uint64 target = (g_textureReplaceBudget.load() / 10) * 9;
++		for(const auto& entry : unused)
++		{
++			if(g_textureCounters.replacementBytes <= target) break;
++			DropTextureReplacement(*entry.second);
 +			g_textureCounters.replacementsDropped++;
 +		}
 +		m_renderState.isValid = false;
@@ -2700,7 +3431,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
  GLuint CGSH_OpenGL::PreparePalette(const TEX0& tex0)
  {
  	GLuint textureHandle = PalCache_Search(tex0);
-@@ -319,7 +1586,7 @@
+@@ -319,7 +1706,7 @@
  		dst += texWidth;
  	}
  
@@ -2709,7 +3440,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
  	CHECKGLERROR();
  }
  
-@@ -345,7 +1612,7 @@
+@@ -345,7 +1732,7 @@
  		dst += texWidth;
  	}
  
@@ -2718,7 +3449,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
  	CHECKGLERROR();
  }
  
-@@ -590,7 +1857,7 @@
+@@ -590,7 +1977,7 @@
  		dst += texWidth * 16;
  	}
  
@@ -2727,7 +3458,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
  	CHECKGLERROR();
  }
  
-@@ -631,7 +1898,7 @@
+@@ -631,7 +2018,7 @@
  
  		dst += texWidth * 16;
  	}
@@ -2736,7 +3467,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
  	CHECKGLERROR();
  }
  
-@@ -652,7 +1919,7 @@
+@@ -652,7 +2039,7 @@
  		dst += texWidth;
  	}
  
@@ -2745,7 +3476,7 @@ diff --git a/Source/gs/GSH_OpenGL/GSH_OpenGL_Texture.cpp b/Source/gs/GSH_OpenGL/
  	CHECKGLERROR();
  }
  
-@@ -674,7 +1941,7 @@
+@@ -674,7 +2061,7 @@
  		dst += texWidth;
  	}
  
@@ -3253,7 +3984,7 @@ diff --git a/Source/ui_qt/GSH_OpenGLQt.cpp b/Source/ui_qt/GSH_OpenGLQt.cpp
 +			{
 +				glBindFramebuffer(GL_READ_FRAMEBUFFER, m_displayFramebuffer);
 +				glPixelStorei(GL_PACK_ALIGNMENT, 1);
-+				glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
++				glReadPixels(m_displayPixelX, m_displayPixelY, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
 +				glBindFramebuffer(GL_READ_FRAMEBUFFER, m_presentFramebuffer);
 +				//the console's alpha is not for looking at
 +				for(size_t i = 3; i < pixels.size(); i += 4) pixels[i] = 0xFF;

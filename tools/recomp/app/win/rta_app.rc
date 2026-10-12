@@ -1,0 +1,3 @@
+// The manifest of every program build_win.py links: paths and arguments in UTF-8
+// (Windows 10 1903 and later), the window drawn at the display's own pixels.
+1 24 "rta_app.manifest"

@@ -1,0 +1,27 @@
+// proof.h - the entry hook of the instrumented translation (from proof.h.in: instrument.py
+// copies this file beside the generated code and fills in the number of entries).
+//
+// PROOF_ENTER(n) stands at the first instruction of every entry point.  It counts the
+// entry and, when something is being recorded, calls proof_enter (proof_rt.cpp): a capture
+// of the machine state for the function-by-function replay, the per-frame work, or a look
+// at the watched memory range.  CALL / CALLR are the runtime's own with one test added
+// after the callee returns, so that a watched range can be checked on both sides of every
+// call: a change is then pinned to the straight-line code between two such points.
+#pragma once
+#define PROOF_ENTRIES @PROOF_ENTRIES@u
+
+extern u32 g_proof_hits[PROOF_ENTRIES];     // times each entry was reached
+extern u8 g_proof_want[PROOF_ENTRIES];      // non-zero: proof_enter wants to see this entry
+extern u8 g_proof_slow;                     // non-zero: proof_enter / proof_return see everything
+extern const u32 g_proof_addr[PROOF_ENTRIES];
+void proof_enter(Ctx* c, u32 number);
+void proof_return(Ctx* c, u32 site);
+
+#define PROOF_ENTER(n) do { g_proof_hits[n]++; if (UNLIKELY(g_proof_slow | g_proof_want[n])) proof_enter(c, n); } while (0)
+
+#ifndef RECOMP_TEST
+#undef CALL
+#undef CALLR
+#define CALL(fn, target, site) do { g_site = site; BUDGET(); fn(c); if (UNLIKELY(g_proof_slow)) proof_return(c, site); } while (0)
+#define CALLR(target, site) do { g_site = site; BUDGET(); rt_call(c, target); if (UNLIKELY(g_proof_slow)) proof_return(c, site); } while (0)
+#endif

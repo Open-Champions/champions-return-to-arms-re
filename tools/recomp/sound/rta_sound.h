@@ -46,6 +46,25 @@ AudioSink* open_device_sink(unsigned rate, unsigned latency_ms, float gain);
 // The same ring with a thread in place of a device: takes 10 ms every 10 ms, discards it.
 AudioSink* open_timer_sink(unsigned rate, unsigned latency_ms);
 
+// The other way round: the device asks for its sound.  Every buffer it wants is rendered
+// when it wants it, on the device's own thread and clock - which is how the console's
+// sound side runs: by itself, whatever the main processor is doing.  Nothing is held in
+// reserve, so nothing can run dry while the main side stands still.
+class AudioSource {
+public:
+    virtual ~AudioSource() {}
+    virtual void pull(int16_t* stereo, size_t frames) = 0;   // exactly `frames` frames
+};
+struct PullFigures { uint64_t pulls = 0, frames = 0, late = 0; double longest_gap_ms = 0, longest_render_ms = 0, render_ms = 0; };
+// The returned sink is only a handle (close, report, figures); write() does nothing.
+class PullDevice : public AudioSink {
+public:
+    void write(const int16_t*, size_t) override {}
+    virtual PullFigures figures() = 0;
+};
+PullDevice* open_device_puller(unsigned rate, float gain, AudioSource* source);
+PullDevice* open_timer_puller(unsigned rate, AudioSource* source);
+
 // ---- the chip ----------------------------------------------------------------------------
 class Spu2 {
 public:

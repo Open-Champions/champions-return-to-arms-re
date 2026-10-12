@@ -198,6 +198,74 @@ private:
 
 AudioSink* open_timer_sink(unsigned rate, unsigned latency_ms) { return new TimerSink(rate, latency_ms); }
 
+// ---- a device that asks ---------------------------------------------------------------------
+namespace {
+// What is counted about the asking: how often, how long between two requests (the device
+// holds 20 ms besides the buffer it hands back; a request more than 30 ms after the one
+// before means it may have had nothing to play), how long rendering took.
+class PullCount {
+public:
+    void pull(AudioSource* source, int16_t* out, size_t frames) {
+        auto now = std::chrono::steady_clock::now();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (f_.pulls > 4) {                         // the first requests fill the device's buffers before it starts
+                double gap = std::chrono::duration<double, std::milli>(now - last_).count();
+                if (gap > f_.longest_gap_ms) f_.longest_gap_ms = gap;
+                if (gap > 30.0) f_.late++;
+            }
+            last_ = now;
+        }
+        source->pull(out, frames);
+        double took = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - now).count();
+        std::lock_guard<std::mutex> lock(mutex_);
+        f_.pulls++; f_.frames += frames; f_.render_ms += took;
+        if (took > f_.longest_render_ms) f_.longest_render_ms = took;
+    }
+    PullFigures figures() { std::lock_guard<std::mutex> lock(mutex_); return f_; }
+    void report(FILE* out, const char* device, unsigned rate) {
+        PullFigures f = figures();
+        fprintf(out, "sound: device %s, asking for its sound: %.2f s taken in %llu requests; longest time between two %.1f ms, %llu more than 30 ms apart "
+                     "(the device may have had nothing to play); rendering a request took %.3f ms on average, %.2f ms at most\n",
+                device, (double)f.frames / rate, (unsigned long long)f.pulls, f.longest_gap_ms, (unsigned long long)f.late,
+                f.pulls ? f.render_ms / f.pulls : 0.0, f.longest_render_ms);
+    }
+private:
+    std::mutex mutex_;
+    PullFigures f_;
+    std::chrono::steady_clock::time_point last_;
+};
+
+class TimerPuller : public PullDevice {
+public:
+    TimerPuller(unsigned rate, AudioSource* source) : rate_(rate), source_(source), thread_([this] { run(); }) {}
+    ~TimerPuller() override { close(); }
+    void close() override {
+        if (stop_.exchange(true)) return;
+        thread_.join();
+    }
+    void report(FILE* out) override { count_.report(out, "timer (no output), 10 ms", rate_); }
+    PullFigures figures() override { return count_.figures(); }
+private:
+    void run() {
+        std::vector<int16_t> buffer(rate_ / 100 * 2);
+        auto next = std::chrono::steady_clock::now();
+        while (!stop_) {
+            next += std::chrono::milliseconds(10);
+            std::this_thread::sleep_until(next);
+            count_.pull(source_, buffer.data(), buffer.size() / 2);
+        }
+    }
+    unsigned rate_;
+    AudioSource* source_;
+    PullCount count_;
+    std::atomic<bool> stop_{false};
+    std::thread thread_;
+};
+}  // namespace
+
+PullDevice* open_timer_puller(unsigned rate, AudioSource* source) { return new TimerPuller(rate, source); }
+
 }  // namespace snd
 }  // namespace rta
 
@@ -210,9 +278,11 @@ namespace rta {
 namespace snd {
 namespace {
 
-class QueueSink : public AudioSink {
+class QueueSink : public PullDevice {
 public:
-    QueueSink(unsigned rate, unsigned latency_ms, float gain) : ring_(rate, latency_ms), silent_(gain <= 0) {
+    // with a source the device asks it for every buffer; without, it reads the ring
+    QueueSink(unsigned rate, unsigned latency_ms, float gain, AudioSource* source = nullptr)
+        : ring_(rate, latency_ms), silent_(gain <= 0), source_(source), rate_(rate) {
         void* lib = dlopen("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox", RTLD_LAZY);
         if (!lib) { why_ = "AudioToolbox could not be loaded"; return; }
 #define RTA_SYM(name) name##_ = (decltype(name##_))dlsym(lib, #name)
@@ -241,7 +311,8 @@ public:
     bool ok() const { return ok_; }
     const char* why() const { return why_; }
     int status() const { return (int)status_; }
-    void write(const int16_t* stereo, size_t frames) override { ring_.push(stereo, frames); }
+    void write(const int16_t* stereo, size_t frames) override { if (!source_) ring_.push(stereo, frames); }
+    PullFigures figures() override { return count_.figures(); }
     void close() override {
         if (!queue_) return;
         if (AudioQueueStop_) AudioQueueStop_(queue_, true);
@@ -249,6 +320,11 @@ public:
         queue_ = nullptr;
     }
     void report(FILE* out) override {
+        if (source_) {
+            count_.report(out, "AudioQueue, 3 x 10 ms", rate_);
+            fprintf(out, "sound: delay from a register write to the device: 20 to 30 ms of queue buffers + the device's own\n");
+            return;
+        }
         ring_.report(out, "AudioQueue, 3 x 10 ms");
         fprintf(out, "sound: delay from render to the device: the reserve + 20 to 30 ms of queue buffers + the device's own\n");
     }
@@ -257,13 +333,17 @@ private:
     enum { kBuffers = 3, kFrames = 480 };
     static void callback(void* self, AudioQueueRef queue, AudioQueueBufferRef buffer) {
         QueueSink* sink = (QueueSink*)self;
-        sink->ring_.pull((int16_t*)buffer->mAudioData, kFrames);
+        if (sink->source_) sink->count_.pull(sink->source_, (int16_t*)buffer->mAudioData, kFrames);
+        else sink->ring_.pull((int16_t*)buffer->mAudioData, kFrames);
         if (sink->silent_) memset(buffer->mAudioData, 0, kFrames * 4);     // gain 0: nothing can be heard
         buffer->mAudioDataByteSize = kFrames * 4;
         sink->AudioQueueEnqueueBuffer_(queue, buffer, 0, nullptr);
     }
     Ring ring_;
     bool silent_;
+    AudioSource* source_;
+    unsigned rate_;
+    PullCount count_;
     bool ok_ = false;
     const char* why_ = "";
     OSStatus status_ = 0;
@@ -287,14 +367,26 @@ AudioSink* open_device_sink(unsigned rate, unsigned latency_ms, float gain) {
     return nullptr;
 }
 
+PullDevice* open_device_puller(unsigned rate, float gain, AudioSource* source) {
+    QueueSink* sink = new QueueSink(rate, 0, gain, source);
+    if (sink->ok()) return sink;
+    fprintf(stderr, "sound: device not opened: %s (status %d)\n", sink->why(), sink->status());
+    delete sink;
+    return nullptr;
+}
+
 }  // namespace snd
 }  // namespace rta
+
+#elif defined(_WIN32)
+#include "audio_out_win.cpp"        // WASAPI, waveOut as the fallback: the same two functions
 
 #else
 
 namespace rta {
 namespace snd {
 AudioSink* open_device_sink(unsigned, unsigned, float) { return nullptr; }
+PullDevice* open_device_puller(unsigned, float, AudioSource*) { return nullptr; }
 }  // namespace snd
 }  // namespace rta
 
