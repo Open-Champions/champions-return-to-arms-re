@@ -237,6 +237,19 @@ you made earlier.
 If a press seems to be ignored on the lobby and character screens, press again and hold
 the key a little longer: the game itself drops short presses there.
 
+**"Config" on the network screen does nothing, on purpose.** Besides *Accept* the screen
+"Network Configuration and Selection" offers △ *Config*, which would restart the machine
+into Sony's network settings program. There is nothing to set there (the application has
+set the network up), so the button is not passed on and the status bar says so: press ✕.
+
+**If the game ever stops** - the picture stands still and nothing answers - the status
+bar says "The game is stuck" after ten seconds at most. **Press Escape** (when you are
+in full screen: twice, the first leaves full screen), or choose *Reset* in the menu: the
+game starts again from its first screen. If the emulated machine itself has stopped,
+*Reset* offers to end the application and start it again. (One such stop is known: a
+copy without the sign-in patch shows "Network Error (-611)" after *Accept*, and
+cancelling that message leaves the game stuck.)
+
 ## 5. Picture and response
 
 The application starts with the settings below. They are in *Settings* and on the status

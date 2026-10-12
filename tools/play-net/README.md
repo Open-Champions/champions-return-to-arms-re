@@ -672,6 +672,57 @@ after the other, shared seed and both players' hit points the same on both, chec
 flag (`g_checksumFailed`) 0. Run twice. A code that no game has: stopped two minutes
 after the list came up.
 
+## The network screen's "Config", and a game that has stopped
+
+**"Config" (triangle) on "Network Configuration and Selection".** The game stops its
+network worker and restarts the machine into Sony's network settings program on the disc
+(`LoadExecPS2` of `NTGUI2.ELF`, from `FUN_00332490`); leaving that program restarts the
+game. In this build the program does run: it draws (a few letters of its text are
+missing), takes the pad, its connection test succeeds against the built-in network, and
+*Back → Quit* lands at the game's title again (55 to 57 machine frames a second with a
+load average of 15 to 60, background test copies). But there is nothing to set in it -
+the setting on the memory card is the application's own and the network behind the
+adaptor is made up - and it throws a player out of the session. So the button is **not
+passed on** while that screen lists a setting or is still reading the card (`WatchGame`
+in `Rta.cpp`: front-end state 10, lobby state 2, network window state 0 or 3): the game
+stays where it is and the status bar says "The network is already set up: press cross
+(Accept)…". `--rta-netcnf-program` passes it on.
+
+**A freeze on that screen that was found.** A copy without the sign-in patch gets
+"Network Error (-611) … Please check your network configuration" after *Accept*.
+Cancelling it (circle) leaves the game drawing nothing for ever, the machine still
+running: the screen's shutdown calls the shutdown of Sony's ERX loader (`FUN_0039ccf0`),
+whose module-stop call (`FUN_003a4710`) does not give back the driver's id on Play!; the
+game prints "liberx: PANIC!! ELOADP driver unload failure" and stays in an endless loop
+of its own (0x39ce18). With the sign-in patch the sign-in modules are never loaded and
+that shutdown has nothing to do. (A freeze from "Config" itself was not reproduced.)
+
+**What the application does about a stop of any kind.**
+
+- It watches that the machine draws (the renderer's counts of transfers and textured
+  draws). Nothing drawn for 600 frames - 180 while the game is leaving the lobby screens,
+  where the case above sits - and the status bar says "The game is stuck: … Press Escape
+  (or choose Reset in the menu) to start it again"; `rta.log` gets the front-end and lobby
+  states and the processor's pc and ra. The longest stretch without drawing in ordinary
+  use was 141 frames (power-on). On the error screen itself the status bar says that the
+  sign-in step failed and whether this copy has a sign-in patch.
+- **Escape** outside full screen starts the game again when it is known to be stuck (in
+  full screen it leaves full screen, as before). **Reset** in the menu also drops the
+  relayed TCP connections and ends the one-step automation.
+- The machine's own thread (`MachineAnswers`): when no vertical blank comes for 2.5 s
+  while the machine is running, Reset, Escape and closing do not call anything that would
+  wait for that thread (Play!'s Pause and Reset do, for ever). The status bar says "The
+  emulated machine has stopped answering" after 5 s; Reset asks whether to end the
+  application and start it again, and does; closing ends it at once.
+
+Tested with background test copies: "Config" pressed three times and left out, then
+*Accept* to the server's terms; with `--rta-netcnf-program` the program, and Reset from
+inside it back to the title; without the sign-in patch the error, circle, "stuck" after
+3 s, Escape, the title again; the machine's thread stopped by `hang 60`, Reset asked
+through the `.ui` file, the application ended 3.9 s later. Not tested: the question and
+the restart after it (a test run ends without asking), closing with the thread stopped,
+a real key or menu click, anything with the window in front.
+
 ## Control socket and tests
 
 `--rta-control <path>` makes the application listen on a UNIX socket; `ctl.py` sends
@@ -695,6 +746,13 @@ they stay under `local/`.
   (three frames later the picture is drawn the other way): with the game paused that is
   the same frame with and without. `texreplace reload` lists the folder again and reads
   every picture again, for trying a changed file without a restart.
+- `cpu` says where the main processor is (pc, ra, sp, idle), whether the game is taken
+  to be stuck and the longest stretch without drawing; `note` gives the status bar's
+  note about the game; `reset` does what Reset in the menu does; `hang N` stops the
+  machine's own thread for N seconds (a stand-in for an emulator that is stuck). The
+  socket is answered by that thread, so for a machine that has stopped there is a file:
+  `<control path>.ui` holding `reset`, `escape` or `close` is taken up by the
+  application's own thread within a second.
 - `info` counts, among other things: `tex_made` (textures made), `tex_by_upload` and
   `tex_by_memory` (draws that found their texture one way or the other),
   `tex_memory_read`, `tex_in_place`, `tex_short_lived`, `uploads`; `tex_held` and

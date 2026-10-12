@@ -9,18 +9,54 @@ core changes as the native build (`tools/play-net/play-net.patch`) and the same 
 
 ## Summary
 
-(being rewritten as figures come in; the table under "Measurements" is the record)
+**Does it run at full speed in Chrome on the M5 Pro? Yes, when the Mac is not busy with
+other work, at the title and standing in the first level** (Chrome 155, resolution
+factor 1 and 2; factor 4 with the canvas the page now uses):
 
-- It builds, boots the disc, applies the patch set and the display patches, reaches the
-  title and the first level by scripted presses, and draws correctly (a picture of the
-  page's canvas in the level was looked at: `local/play-out/web-hub.png`).
-- Title screen: full speed (60.0 frames a second) in Chrome 155 and in the Browser pane.
-- First level, standing: full speed (59.97 – 60.0) in Chrome 155 at resolution factors 1
-  and 2 with the computer otherwise quiet (load 9 – 12): the machine thread needs 10 – 12
-  ms of CPU per frame, the video thread 6 – 7 ms; 75 – 93 frames a second with the limiter
-  off. With the computer busy with other test runs (load above 100) it drops to 30 – 50.
-- Factor 4 in Chrome: see the measurements (41 – 49 frames a second in one run with a
-  1749 × 1312 canvas; 60.0 in the pane with a 969 × 727 canvas) — being looked at.
+| Where | frames/s | machine thread | video thread | limiter off |
+|---|---|---|---|---|
+| title screen | 59.95 – 60.04 in every run, even at load 115 | 6 – 9 ms/frame | 2.4 – 3.5 ms/frame | — |
+| first level, standing, factor 2 (load 9) | 59.98 | 9.9 ms CPU/frame | 6.2 ms CPU/frame | 93 frames/s |
+| first level, standing, factor 1 (load 12) | 59.97 | 11.6 ms CPU/frame | 7.4 ms CPU/frame | 76 frames/s |
+| first level, the first 10 s after arriving | 58 | (1,700 blocks of code being translated) | | |
+
+(Play! runs the NTSC machine at 60.00, not 59.94; "full speed" here is 60.) A frame has
+16.7 ms; the machine thread is the one nearer the limit, with about a third in reserve.
+With the Mac loaded by other test runs (load 80 – 170, which it was for most of this
+work) the level drops to 28 – 53 frames a second; the title holds 60.
+
+What limits it, in order:
+
+1. **The machine thread** (10 – 12 ms): game code translated to WebAssembly, one small
+   module per block, 194,000 block starts a frame through a dispatcher (the desktop
+   build links blocks to each other; the browser port does not). By Play!'s own zones:
+   EE 30 %, VU 28 %, GIF 20 %, VIF 12 %, IOP 5 %.
+2. **The video thread** (6 – 7 ms, was 30): every WebGL call is checked and shipped to
+   another process; fixed by not making calls that change nothing (below).
+3. **Other work on the computer, and whether the page is in front**: a hidden or covered
+   page is run at low priority with late timers (20 – 45 frames a second, sound breaking
+   up). Nothing a page can do about that.
+4. A canvas larger than about 1200 × 900 pixels costs the video thread some 11 ms a
+   frame of waiting (cause not found); the page keeps its canvas at 896 lines.
+
+What was changed to get there (all in `tools/play-web`): the video thread owns the
+canvas (OffscreenCanvas; upstream sends every GL call to the page's main thread);
+redundant GL calls are left out (28,700 calls a frame became 8,300 plus draws and
+uploads) and unchanged uniform blocks are not re-sent (video 30 ms → 13 ms at the same
+load); the mimalloc allocator; the disc read in place by range requests on the machine's
+thread. Tried without gain: compiling the C++ with WebAssembly SIMD.
+
+**What works** (how each was checked is under "Checked" below): build script; boot of the
+player's own disc image read in place, with the wrong-disc refusal; the patch set and
+the display patches; a steady picture; keyboard; sound; the memory card and the settings
+kept in the browser; resolution factor 1 – 4 changeable while playing (2 by default);
+title and first level reached and looked at.
+**Not checked by a person**: a controller (needs a button pressed on it), the file
+dialog and the "continue with the remembered image" button, how the sound sounds, full
+screen.
+**Not there**: online play (design below), playing with desktop players (measured: the
+arithmetic differs in the last bit, below), pacing by the display's refresh, anything
+beyond the first level, other browsers than Chrome.
 
 ## Where things are
 
@@ -200,56 +236,162 @@ the state is remembered on our side and a call that would not change it is not m
 (15,000 calls a frame left out, 8,300 of the watched kinds remain), and the two uniform
 blocks are sent only when their values differ from what was sent last.
 
-## Online play from a browser: what the network module would need (not built)
+## Checked
 
-A page has no raw sockets: it can open WebSocket (TCP to a server that speaks
-WebSocket), WebRTC data channels (UDP-like, to a peer that speaks WebRTC), and
-WebTransport (to an HTTP/3 server). The game speaks plain TCP and UDP. So the emulated
-Ethernet adaptor of the browser build needs a relay on a real host that owns the
-sockets. What the game's machine does on its network, as `tools/play-net/src/RtaNet.cpp`
-carries it today (one user-space network per emulator: ARP, DHCP, ping and DNS answered
-locally, TCP and UDP carried on host sockets):
+| What | How | Result |
+|---|---|---|
+| the build from the repository's files | `tools/play-web/build.sh` run on my tree (it finds the patches applied); separately, a copy of the tree put back to Play!'s own files, `play-net.patch` and `play-web.patch` applied to it, `src/` copied in, compared with my tree | builds; the trees are the same except `Source/ui_qt/mainwindow.cpp` (the Qt front end, not part of this build: `play-net.patch` has changed there since I applied it). A build from an empty directory by the script was not run |
+| the player's disc path: a picked file read in place through a `blob:` address, by range requests made on the machine's thread | no file dialog can be driven here, so a stand-in: a `File` as large as the image (4,293,984,256 bytes) made in the page of the 236 pieces of 128 KiB the game reads up to the title screen and one zero piece named 32,525 times (`rta.standIn`), given to the same function the picker calls | disc check passed, executable loaded and checked, title screen reached; 249 pieces fetched, 0 errors. (Each fetch took 9 – 32 ms because that stand-in has 32,761 parts; a real file is one part) |
+| the wrong-disc refusal | `rta.checkDisc` with a 1,000-byte "image", with zeroes, with the real image but `SYSTEM.CNF` naming `SLUS_209.93`, with the real image and one bit of the program flipped, with the real image | "too small"; "no ISO 9660 volume"; "another game (SLUS_209.93)"; "another version (checksum 4028A55E; wanted 4028A55F)"; accepted |
+| patches | the emulator's line at boot | `SLUS_209.73;1`, checksum `4028A55F`, 87 words written (81 from the 19 suggested sections, 6 display patches), in every run |
+| steady picture | `rta.burst(12)` on the memory-card screen | 12 consecutive pictures, 0 pixels differ |
+| the picture itself | the page's canvas read back on the video thread and saved as PNG by the test server | `local/play-out/web-hub.png` (factor 1) and `web-hub-4x.png` (factor 4): level, character, the other figure, bars and level badge as in the desktop build |
+| keyboard | key events for K, ↑, D and Enter sent to the page; the pad word the machine reads | buttons 8720 = ✕ + up + Start, left stick x 255; all zero again after release. Not checked: a key pressed by a hand |
+| controller | — | the page reads the first pad the browser reports with the standard layout; a browser reports a pad only after a button was pressed on it, which no test here can do. **Unchecked** |
+| sound | a Chrome started with sound allowed without a click and muted (`--autoplay-policy=no-user-gesture-required --mute-audio`); the worklet's count of times the ring ran dry | title: 0 times in 10 s at 60 frames a second, 64 – 68 ms queued, in three runs. First level with the Mac loaded (30 – 48 frames a second): 33 – 53 times in 15 s — the machine makes too little sound when it is slow. No level reading at full speed yet. Nobody listened |
+| memory card | the files Play! keeps, listed at the start of a later visit (`rta.files()`); a marker file written, the page loaded again | the game's own folder `vfs/mc0/BASLUS-20973` (3 files, written by the game at its memory-card screen) and the marker were there at the next visit. Not checked: a game saved by playing and loaded again |
+| settings | the menu's factor changed while the title ran (2 → 4 → 2) | the picture went on (not black, same brightness within 2 %), the choice was stored. Mute is stored the same way |
+| the remembered image (File System Access handle) and the file dialog | — | **unchecked** (a dialog only a person can answer) |
+| one page, one tab | `chrome-run.py` sends one tab from test to test and the page closes itself; or a Chrome of its own with its own profile, ended by the script | no window was left behind by those; the very first test's tab (opened before that existed) had to be left to the user |
 
-| Traffic of the emulated machine | Today (desktop) | Destination |
+## Online play from a browser: design (nothing built, nothing deployed)
+
+### What the game's machine does on its network
+
+As `tools/play-net/src/RtaNet.cpp` carries it today for the desktop application: the
+emulated machine is alone on a made-up network with our code as its gateway; ARP, DHCP,
+ping and DNS are answered locally; TCP and UDP are carried on host sockets.
+
+| Traffic of the emulated machine | Desktop application | Destination |
 |---|---|---|
 | DNS query for `con.soegames.net` | answered locally with the lobby server's address; every other name "does not exist" | — |
-| TCP, connections the machine opens (it never listens) | one host TCP connection per connection | the lobby server: the gateway port 40810 (the application accepts 40800–40817), then the lobby port the gateway's reply names (40910 on our server) |
-| UDP from the machine's ports 4000–4004 | **one host UDP socket per source port, used for every destination** (a "full cone": the server and every other player see the same address and port for it; the game's hole punching depends on that) | the lobby server's UDP 10101 (it learns the socket's outside address there) and **the other players' consoles directly** (console to console; addresses and ports handed out by the lobby) |
+| TCP connection 1: the gateway ("where is the lobby?") | one host TCP connection | the lobby server, port 40810 (the application accepts 40800–40817) |
+| TCP connection 2: the lobby itself (log-in, account, game list, rooms, the hole-punching hand-out) | one host TCP connection | the address and port the gateway's reply names (our server: the same host, port 40910) |
+| UDP from the machine's ports 4000–4004: the lobby's discovery port | **one host UDP socket per source port, used for every destination** (a "full cone": the server and every other player see one address and port for it) | the lobby server, UDP 10101 — it learns the socket's outside address there and hands it to the other players |
+| UDP from the same ports: the game itself (input, sync records, game messages; unreliable datagrams, up to 60 a second per peer) | the same sockets | **the other players directly**, console to console, at the addresses the lobby handed out |
 
-What a relay for browsers has to provide, then:
+The machine only ever opens connections; it never listens for TCP.
 
-1. **Per browser player, one session** on the relay (a WebSocket is enough to start
-   with; WebTransport datagrams or a WebRTC data channel would spare UDP traffic the
-   head-of-line blocking of TCP — the game's own traffic is UDP at up to 60 packets a
-   second per peer).
-2. **TCP**: for each connection the machine opens, a TCP connection from the relay to
-   the lobby server (ports 40810 and the lobby port). Bytes both ways, close both ways.
-   The relay should refuse every other destination (it must not be an open proxy).
-3. **UDP**: per session, **one UDP socket on the relay for each source port the machine
-   uses** (4000–4004), kept for the session and used for every destination. Datagrams
-   from the page go out of it with the destination the machine named; whatever arrives
-   on it goes to the page with the sender's address and port. That is exactly the
-   desktop application's rule, so a browser player looks to the lobby and to desktop
-   players like a player whose address is the relay's — desktop and browser players can
-   then be in one game, with the browser player's game traffic going through the relay.
-   Destinations must be limited (the lobby's UDP 10101 and addresses the lobby has named
-   to this session, or at least no private and no loop-back addresses).
-4. The simplest framing keeps `RtaNet.cpp` whole: compile it into the browser build and
-   replace its `socket`/`connect`/`sendto`/`recvfrom` calls by messages to the relay
-   ("open TCP n to a:p", "TCP n data", "UDP from port s to a:p", …). The alternative,
-   shipping raw Ethernet frames to a relay that runs `RtaNet.cpp` itself, needs less
-   code in the page but puts every player's user-space TCP on the server.
-5. **Where it runs**: next to the lobby server is natural (one address for the lobby's
-   rule that gateway, lobby and discovery are reachable at one address). It needs TLS
-   (a page served over https may only open `wss://`), a certificate, and the
-   cross-origin isolation headers are the page's affair, not the relay's.
-6. **Two things to settle before building it**: (a) floating point — the browser build
-   cannot set the rounding mode the console uses (see above), and the game's lock-step
-   play compares simulation results between players: a browser and a desktop player may
-   drift apart (docs/issues/float-divergence.md lists what is sensitive); browser-only
-   games would agree with each other; (b) latency — every packet of a browser player
-   takes the detour through the relay.
+### What a page cannot do, and what stands in for it
 
-The memory card's network setting (`WriteNetcnf` in `Rta.cpp`: four small files) and the
-one-step online driver (`RtaOnline.cpp`, stand-alone C++) would carry over as they are.
-Nothing here has been tried. The public server was never contacted.
+A page has no raw TCP or UDP. It has WebSocket (a TCP connection to a server that speaks
+WebSocket; reliable, ordered), WebTransport (HTTP/3: reliable streams **and unreliable
+datagrams** to a server; Chrome, Edge and Firefox have it, Safari only recently) and
+WebRTC data channels (unreliable datagrams to a peer that speaks WebRTC; peer to peer
+between browsers, but a desktop player's game does not speak it). So the browser build
+needs a **relay** on a real host that owns the sockets.
+
+### The relay the server could run
+
+One session per browser player, opened by the page when the game's machine first uses
+its Ethernet adaptor. Framing: small typed messages (a byte of type, a connection or port
+number, a length, the bytes).
+
+1. **Transport**: WebTransport where the browser has it — one reliable stream for the two
+   TCP connections and the relay's control messages, datagrams for the game's UDP — and
+   WebSocket as the fall-back for everything. Over WebSocket the game's UDP inherits
+   TCP's head-of-line blocking: one lost packet holds back everything behind it for a
+   retransmission time, which lockstep play shows as a stall. It will work on a good
+   line and is the first thing to build; WebTransport datagrams are the proper carrier.
+   Either needs TLS and a certificate (a page served over https may only open `wss://`
+   or `https://`), i.e. a host name for the server.
+2. **TCP** ("open n to address:port", "data n", "close n", both ways): for each connection
+   the machine opens, the relay opens a TCP connection. Allowed destinations: the lobby
+   server's gateway port and the lobby port its reply names — nothing else (the relay
+   must not be an open proxy). Two connections per player at most.
+3. **UDP** ("from port s to address:port: bytes", and the reverse with the sender's
+   address): per session **one UDP socket on the relay for each source port the machine
+   uses** (4000–4004), kept for the session and used for every destination, exactly the
+   desktop application's rule. To the lobby and to every other player a browser player
+   is then simply a player at the relay's address with those ports, and the game's own
+   hole punching works unchanged: desktop players send to the relay's socket, the relay
+   forwards to the page. A relay on a public address needs no punching at all (it is
+   reachable), which also makes browser players the easy case for desktop players
+   behind awkward routers. Allowed destinations: the lobby's UDP 10101 and addresses the
+   lobby has named to this session (the relay can read them out of the lobby connection
+   it carries, or simply refuse private, loop-back and its own addresses).
+4. **Where the user-space network lives**: keep `RtaNet.cpp` whole and compile it into the
+   browser build, replacing its `socket`, `connect`, `send`, `recv`, `sendto`, `recvfrom`
+   by the relay messages (about 300 lines of it touch sockets). The relay then is a dumb
+   forwarder with an allow-list, a few hundred lines in any language, and holds no TCP
+   state of the players. (The alternative — ship raw Ethernet frames and run `RtaNet.cpp`
+   on the server — puts every player's user-space TCP on the server and gains nothing.)
+5. **Where it runs and what it costs**: beside the lobby server (same host name: the
+   lobby's rule is that gateway, lobby and discovery are reachable at one address). Per
+   browser player: two TCP connections, up to five UDP sockets, and the game's traffic
+   (a few kilobytes a second per peer) through the server both ways. Every packet of a
+   browser player takes the detour through the relay: the added delay is the round trip
+   between that player and the server instead of between the two players.
+6. The memory card's network setting (`WriteNetcnf` in `Rta.cpp`, four small files) and
+   the one-step online driver (`RtaOnline.cpp`, stand-alone C++) carry over as they are;
+   the Ethernet chip's fixes are already in the build (`play-net.patch`, `Iop_Speed.cpp`).
+
+Nothing of this has been built or tried. The public server was never contacted.
+
+### Can a browser player and a desktop player share a game? Measured: not as the builds are
+
+The game is deterministic lockstep: every machine must compute the same bits
+(`docs/issues/float-divergence.md`). The console rounds floating-point results toward
+zero; the desktop application sets the host processor to do the same
+(`fesetround(FE_TOWARDZERO)` on the machine's thread). WebAssembly has no rounding
+control: it always rounds to nearest. It also has no "flush tiny results to zero" mode,
+which the desktop application sets as well.
+
+**Measurement** (2026-10-11; `local/play-web-out/native-trace.py`, the page's
+`auto=trace`): the stable desktop build and the browser build (Chrome 155), same disc,
+same patch set, fresh memory card, the same button sequence into the first level; then
+the left stick held fully right and the player's position (three floats in the player's
+object, `g_players[0]` +0x43d8, +0x10) read as raw bits at every frame.
+
+- While the character walks down the first steps its height is smoothed over a few
+  frames through the values −48.15, −48.45, −48.9, −49.5, −50. The desktop build holds
+  them as `C2409999`, `C241CCCC`, `C2439998`, `C245FFFE`, `C2480000` (two runs, the same
+  bits both times); the browser build as `C240999A`, `C241CCCD`, `C243999A`, `C2460000`,
+  `C2480000` (three runs: two in Chrome, one in the pane, the same bits every time).
+  `C240999A` is −48.15 rounded to nearest, `C2409999` is it cut off toward zero; the
+  later values are one and two places apart because the cut-off error adds up. The same
+  computation, the same inputs, different last bits: the rounding difference, seen.
+- The steady walking speed itself is the same bits in both builds (x grows by 0x1E231
+  places a frame, y by 0x374BC, in both): not every operation is affected, only those
+  whose exact result does not fit.
+- The x and y of the walk could not be compared frame for frame: where the game stands
+  the character on arrival, and which way it faces, depends on how many frames the menus
+  took (three browser runs: three places; the desktop runs, whose test presses arrive
+  with constant delay: one place), and the first frames of a walk are a turn. Putting the
+  browser's character at the desktop run's place (`place=43152305,c2edbc5a`) did not make
+  the first frames agree (first step 1.08, 2.32 against 0.67, 2.47: it faces another
+  way), so the game's sync hash was not compared for identical ticks either.
+
+What that means for a shared game is already measured in this project
+(`docs/issues/live-rig.md` 8.3, `float-divergence.md`: two linked desktop machines, one
+forced to round to nearest — which is what a browser machine is): the raw position
+differs on the first tick anybody moves and the game's own out-of-sync check trips 7 to
+113 ticks later (a tenth of a second to two seconds), in the first level, in every one
+of the pairs with movement. **A browser player and a desktop player as the builds are
+today would be out of sync within two seconds of the first step.**
+
+Ways out, none built:
+
+1. **Browser players only with browser players.** WebAssembly arithmetic is the same on
+   every computer and browser (the specification leaves only the bit patterns of NaNs
+   open), so browser-only games agree with each other — on any mix of Macs and PCs,
+   which is more than can be said of native builds for different processors without
+   testing. The relay above is all that is needed; the lobby would have to keep the two
+   kinds of player apart (a version field, or separate servers).
+2. **A "browser arithmetic" switch in the desktop application** for mixed games: round to
+   nearest and no flushing of tiny results, on every machine of the game. Cheap to build
+   (two processor flags not set). Before trusting it, a desktop machine and a browser
+   machine have to be compared over long runs: the two translators do not necessarily
+   emit the same operations for the same game code (a fused multiply-add on one side and
+   a multiply and an add on the other give different last bits; so can the conversions
+   to integers at the edges, and minimum/maximum of NaNs). The linked-pair rig of
+   `docs/issues/live-rig.md` is the tool; it would need a browser machine as one side.
+   Such games are no longer bit-identical to a real console's arithmetic, which matters
+   only if consoles (or PCSX2 players) are ever to join.
+3. **Rounding toward zero in the browser build**: the translator could compute each
+   single-precision add, subtract, multiply, divide and square root in double precision
+   and correct the result toward zero. Exact, and it keeps the desktop application as it
+   is, but it makes every floating-point operation of game code several times as
+   expensive (and the vector unit's four-wide operations have to be taken apart); with
+   the machine thread at 10 of 16.7 ms per frame there is some room, not much.
+

@@ -360,6 +360,7 @@ static void start_host(GThread* t) {
     pthread_detach(handle);
 }
 
+[[noreturn]] static void report_and_exit();
 static void wake_sema_waiter(u32 id) {
     for (u32 t = 1; t <= MAX_THREAD; t++) {
         if (!W(thr(t) + T_VALID) || W(thr(t) + T_SEMA) != id) continue;
@@ -453,7 +454,7 @@ void rt_syscall(Ctx* c, u32 pc) {
     u32 me = self ? self->id : 0;
     switch (n) {
     case 0x02: break;                                   // SetGsCrt
-    case 0x04: printf("the game called Exit(%d)\n", (s32)a0); fflush(stdout); _exit(0);
+    case 0x04: printf("the game called Exit(%d)\n", (s32)a0); report_and_exit();
     case 0x10: result = SX32(add_handler(ST_INTCQ, INTC_BASE, c)); break;
     case 0x11: remove_handler(ST_INTCQ, INTC_BASE, a1); break;
     case 0x12: result = SX32(add_handler(ST_DMACQ, DMAC_BASE, c)); break;
@@ -1101,8 +1102,11 @@ void fn_003566f0(Ctx* c) {                              // sceSifCallRpc(client,
     // The answer of an I/O processor that does nothing: zeroes.  The module loader
     // (server 0x80000006) answers with a module id, or the game stops with "Can't load
     // IOP modules".
+    // (Only for servers bound through this runtime.  A client bound before a resumed image
+    // was taken keeps the answer it last got from the emulator's I/O processor: zeroes
+    // there tell the game its controller was unplugged, and it pauses.)
     u32 recv = (u32)c->r[9] & 0x1FFFFFF, rsize = (u32)c->r[10];
-    if (recv && rsize && recv + rsize <= RAM_SIZE) {
+    if ((W(client + 0x24) & 0xFFFF0000u) == 0x80000000u && recv && rsize && recv + rsize <= RAM_SIZE) {
         memset(g_ram + recv, 0, rsize);
         if (W(client + 0x24) == 0x80000006u && rsize >= 4) W(recv) = 0x21 + (u32)(g_counts.size() & 0xFF);
     }
@@ -1202,7 +1206,7 @@ static std::string watch_value(const Watch& w) {
     return "?";
 }
 
-static void report_and_exit() {
+[[noreturn]] static void report_and_exit() {
     double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - g_start_time).count();
     printf("frames=%llu wall=%.3fs: %.0f frames per second, %.1fx real time at 59.94; fields=%llu units=%llu\n",
            (unsigned long long)g_frame, wall, g_frame / wall, g_frame / wall / 59.94, (unsigned long long)g_fields,

@@ -564,7 +564,11 @@ def enlarge_batch(task):
             os.makedirs(directories[model][1])
         jobs = []
         for name, signature in part:
-            rgba, use = load(dump, name)
+            try:
+                rgba, use = load(dump, name)
+            except (OSError, ValueError) as error:      # a file a running game is still writing
+                print('upscale.py: %s left out: %s' % (name, error), flush=True)
+                continue
             job = Job(name, rgba, use, scale)
             if job.empty:
                 continue
@@ -635,12 +639,16 @@ def main():
         if not os.path.exists(meta_path):
             skipped += 1
             continue
-        with open(meta_path) as file:
-            meta = json.load(file)
+        try:
+            with open(meta_path) as file:
+                meta = json.load(file)
+            size = Sized(os.path.join(args.dump, name))
+        except (OSError, ValueError):               # a file a running game is still writing
+            skipped += 1
+            continue
         if not meta.get('states'):                  # written by disctex.py: not seen drawn yet
             unseen += 1
             continue
-        size = Sized(os.path.join(args.dump, name))
         use = Use(meta, size)
         counts[use.kind] = counts.get(use.kind, 0) + 1
         if args.list:
@@ -660,7 +668,7 @@ def main():
             continue
         todo.append((name, signature))
     print('upscale.py: %d pictures in the dump (%s)%s' % (len(names), ', '.join('%d %s' % (v, k) for k, v in sorted(counts.items())),
-                                                           '; %d without a .json file left out (dump them again with this build)' % skipped if skipped else ''), flush=True)
+                                                           '; %d without a readable .json file left out (dump them again with this build)' % skipped if skipped else ''), flush=True)
     if unseen:
         print('upscale.py: %d pictures from the disc whose way of drawing is not known left out (they are done once a run with --rta-texture-dump has drawn them)' % unseen)
     if args.list:

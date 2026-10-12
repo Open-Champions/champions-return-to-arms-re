@@ -60,6 +60,15 @@ def main():
                          headers + (os.path.join(args.gen, 'funcs.h'),)))
     for entry in config['sources']:
         jobs.append((os.path.join(rt, entry), os.path.join(objdir, entry[:-4] + '.o'), headers))
+    # objects built with other flags are stale
+    stamp = os.path.join(objdir, 'flags.txt')
+    previous = open(stamp).read() if os.path.exists(stamp) else None
+    if previous != ' '.join(flags):
+        for job in jobs:
+            if os.path.exists(job[1]):
+                os.remove(job[1])
+        with open(stamp, 'w') as sink:
+            sink.write(' '.join(flags))
     todo = [job for job in jobs if newer(job[0], job[1], job[2])]
     start = time.time()
 

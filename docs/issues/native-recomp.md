@@ -29,11 +29,12 @@ applied to the R5900: 128-bit registers, a runtime that answers syscalls).
   sweep, 0 failing; 40,991 calls of the reference-model tests replayed, 0 different.
 - Step 3 platform boundary and runtime: **a runtime exists that runs the game's frame
   loop headless** (kernel, interrupts, DMA, GS events, VU0, RPC stubs); disc, controller
-  input and memory card are not in it yet.
+  input, memory card and sound are not in it.
 - Step 4 compare with the rig: **done from a resumed session** — 2,005 consecutive frames
   in the hub level, every compared value identical, whole object pool and heap identical
-  at the end. Boot from power-on: not reached.
-- Step 5 verdict: below.
+  at the end. From power-on the translation gets through start-up, engine and display
+  set-up to the first I/O-processor module load, and stops there.
+- Step 5 verdict: at the end of this file.
 
 ## Facts about the input (Ran: opcode census over the function table)
 
@@ -72,8 +73,8 @@ python3 tools/recomp/build.py test        # 35-45 s on 14 jobs (232 s of process
 | instruction slots translated | 757,702 — every word of `.text` that is in a function range or is a non-zero word outside one |
 | instructions with no translation | 0 |
 | units (C++ function bodies) | 8,056: 7,751 from the 7,732 table rows, 329 "gap" units (55,588 bytes of `.text` in no table row), less 30 that were merged into 6 clusters |
-| entries (`fn_<address>` symbols and slots in the call table) | 12,023 |
-| units with a computed jump | 240; units with a dispatch switch: 559 |
+| entries (`fn_<address>` symbols and slots in the call table) | 12,147 (124 of them added for step 4: the session-loop head and the return address of every `WaitSema`/`SleepThread` call, `tools/recomp/entries.txt`) |
+| units with a computed jump | 240; units with a dispatch switch: 655 |
 | C++ files that fail to compile | 0 of 46 |
 
 Design, in the order the task asked:
@@ -183,6 +184,11 @@ Bugs the sweep found in the translator, all fixed:
 Two test artefacts were also removed: a jump to an address below 0xff0 slides down a page
 of zeroes into the interpreter's return address and looks like a return.
 
+After the later changes to the translator (extra entries for step 4, `ERET` as a checked
+return) the stub-mode sweep was run again with one seed: 46,392 cases, 36,382 identical
+to the return, 247 identical up to a common stop, 0 different; 7,349 functions pass, 42
+partly, 0 fail.
+
 ```
 python3 tools/recomp/difftest.py sweep --seeds 2 --report local/recomp-out/sweep-stub.txt
 python3 tools/recomp/difftest.py sweep --mode follow --seeds 2 --report local/recomp-out/sweep-follow.txt
@@ -236,7 +242,7 @@ the 2,004 frames of step 4 (hub level, no input, numbers per 2,004 frames).
 
 | Boundary | What the executable has | What a native runtime must supply | Effort |
 |---|---|---|---|
-| **Kernel calls** | a complete wrapper table 0x3525c0–0x352e54 (every `SYSCALL` number 0x00–0x83 and the interrupt-context variants) plus 5 inline ones in the start-up code; by callers: semaphores (Create 56, Delete 109, Signal 166, iSignal 20, Wait 116, Poll 28), threads (Create 13, Start, Exit/Terminate 10, ChangePriority 12, GetThreadId 15, Sleep 9, Wakeup 5+2, Suspend/Resume), interrupt and DMA handlers (Add 9+11, Remove 13, Enable/Disable), `FlushCache` 52, `SetVSyncFlag`, `GsGetIMR/PutIMR`, SIF register and DMA calls, alarms, `SetSyscall` (the SDK installs four handlers of its own, 0x35c0c4–0x35e594) | threads, semaphores, sleep/wake, handler tables, a vertical-blank source, alarms. **Done** in `rt/runtime.cpp` except alarms and the SDK's own syscall handlers (not hit). Hit: `WaitSema` 4,008, `iSignalSema` 4,008, `PollSema` 2,004, `SleepThread`/`WakeupThread` 2,004 each, `FlushCache` 4,008, `Deci2Call` 4 (unhandled, harmless) | small; done |
+| **Kernel calls** | a complete wrapper table 0x3525c0–0x352e54 (every `SYSCALL` number 0x00–0x83 and the interrupt-context variants) plus 5 inline ones in the start-up code; by callers: semaphores (Create 56, Delete 109, Signal 166, iSignal 20, Wait 116, Poll 28), threads (Create 13, Start, Exit/Terminate 10, ChangePriority 12, GetThreadId 15, Sleep 9, Wakeup 5+2, Suspend/Resume), interrupt and DMA handlers (Add 9+11, Remove 13, Enable/Disable), `FlushCache` 52, `SetVSyncFlag`, `GsGetIMR/PutIMR`, SIF register and DMA calls, alarms, `SetSyscall` (the SDK installs four handlers of its own, 0x35c0c4–0x35e594) | threads, semaphores, sleep/wake, handler tables, a vertical-blank source, alarms. **Done** in `rt/runtime.cpp`, alarms and game-installed handlers included (see the boot section). Hit: `WaitSema` 4,008, `iSignalSema` 4,008, `PollSema` 2,004, `SleepThread`/`WakeupThread` 2,004 each, `FlushCache` 4,008, `Deci2Call` 4 (unhandled, harmless) | small; done |
 | **Threads** | 6 at the hub: main (priority 10), three library threads (procedures 0x3536e0, 0x31ed80, 0x36a988), the texture/terrain worker 0x17ca58, the loading-screen thread 0x32187c | each guest thread on a host thread, one running at a time, switched only at kernel calls, interrupts and a poll every 20,000 calls/loop iterations | done |
 | **Interrupts** | handlers present at the hub: vertical blank start 0x19b6e4, GS 0x16c910, timers 0/2/3, DMA channels 0–2 `gfx_dmaHandler` 0x16b998, channel 5 (SIF) 0x355b70 | call the registered handler on an interrupt stack at the right moments. Hit: vblank 2,004, DMA ch1 ~110,000, ch2 ~48,000, GS ~8,000 | done |
 | **DMA controller** 0x10008000–0x1000e050 | channels 0 (VIF0), 1 (VIF1), 2 (GIF), 3/4 (IPU), 5/6 (SIF), 8/9 (scratchpad) | the register semantics exactly: the game's renderer reads TADR and the call stack ASR0 to see how far a list got. Source-chain mode with call/return, tag interrupts and resumption is implemented; data to VIF1/GIF is walked and dropped | done for what the frame loop uses |
@@ -268,7 +274,7 @@ high-level kernel** (threads at 0x11000, semaphores at 0xe000, interrupt handler
 carries the kernel's state, so the translated game can be started in the middle of a
 session the original was running — which is what step 4 uses.
 
-Functions the runtime replaces (`tools/recomp/hle.txt`): `sceSifBindRpc`,
+Functions the runtime replaces (`tools/recomp/hle.txt`): `sceSifInitRpc`, `sceSifBindRpc`,
 `sceSifCallRpc`, `gfx_beginFrame` (only to log the watches, then the original runs) and
 `gfx_dmaHandler` (the original runs; `--hle-renderer` instead counts the frame's draw
 packets and reports the frame as sent — the hook a native renderer would use: 153 draw
@@ -319,6 +325,8 @@ Result, 2026-10-11, hub level, simulation ticks 73 to 2,077 (one tick per frame)
   0 in the 23 MB heap, 0 in the code.**
 - The first version of the run, with the renderer back end replaced (`--hle-renderer`),
   gave the same 25 identical columns.
+- The translation compiled at `-O1` and at `-O2` gives the same 25 columns and the same
+  987 bytes.
 
 What this shows: with the same memory to start from, the translated code computes the
 same game as the original running in the emulator, tick for tick, including every draw of
@@ -329,21 +337,196 @@ in `rt/fpu.h`), so this is agreement with the emulator, not with a console.
 What it does not show: a level with fighting, a level change, input, or anything before
 the hub (boot, front end, loading) — see below.
 
-### Boot from power-on (Not reached)
+### Sensitivity of the comparison (Ran, by accident)
 
-`rta_native boot --elf SLUS_209.73` enters the start-up code and has the kernel calls it
-needs, but nothing behind the I/O processor calls: the first disc access cannot be
-answered. Not attempted further; the list under "the next piece of work" above is what
-it takes (disc, module loads, controller, memory card), then the film player has to be
-skipped or stubbed.
+While extending the runtime for the boot path, the RPC stub was changed to answer every
+call with zeroes. The resumed run then differed from the original: the controller-state
+checksum from frame 9, the task table from frame 38, and from frame 39 the tick counter
+stood still (112 on the rig, 111 here) with the seed and the object pool diverging — the
+zero answer of the controller library says "unplugged", and the game pauses. Restoring the
+previous behaviour for clients bound before the image was taken (they keep the last answer
+the emulator's I/O processor gave) restored the identical run. So the comparison does
+notice a divergence, within frames, and names the tick.
+
+### Boot from power-on (Ran as far as it goes)
+
+`rta_native boot --elf SLUS_209.73 --seconds 6` runs the translated game from its entry
+point 0x14fa88. What happens, in order (from the runtime's trace):
+
+1. Start-up code: `SetupThread`, `SetupHeap`, then the SDK's kernel patches. The SDK
+   installs system calls of its own with `SetSyscall` and runs them: 0x83 and 0x5a are
+   translated code (0x35c108, 0x35c0d0, 0x35c738, 0x35c318, 0x35e548) and run natively.
+   Three times it then copies a block of kernel-mode code out of its **data** section
+   (0x507da0, 0x5075d8, 0x508570) to kernel memory (0x80076000, 0x80074000, 0x80075000)
+   and installs that as system calls 0xfc–0xff (alarms), 0x55–0x59, 0x8, 0x12c. Code that
+   exists only as data has no translation. The runtime drops those registrations and
+   implements alarms itself; the 0x55–0x59 group (TLB entry calls, 48 of them during
+   start-up) returns 0.
+2. A kernel-mode helper (0x35c858) writes a hardware register and returns with `ERET`.
+   `ERET` is now translated as a checked return (the return register must equal `$ra`).
+3. The timer thread (procedure 0x3536e0) is created and started; static constructors run;
+   `main` runs `engine_init`: semaphores, `SetGsCrt`, the vertical-blank handler
+   0x19b6e4, two GIF transfers (71,696 quadwords), waits on vertical blanks that the
+   runtime delivers.
+4. `sceSifInitRpc` (0x355d68) polls for the I/O processor's answer forever; replaced by
+   "done" (`hle.txt`).
+5. The game binds to the module loader (0x80000006) and the disc drive (0x80000592,
+   0x80000593), sets the disc mode, and then stops itself with its own message "Can't
+   load IOP modules!" and `Exit(0)`, 24 fields after power-on: nothing behind those calls
+   loads a module or reads the disc.
+
+That is the edge of the runtime, and it is where the list "the next piece of work" in
+step 3 starts: module loads that answer "loaded", an ISO 9660 reader behind the disc and
+file servers, the controller buffer, the memory card, then the logo films (skip) and the
+front end. None of it is translation work.
 
 ### Speed (Ran)
 
-Same machine (Apple silicon), same 2,004 frames of the hub:
+Same machine (Apple silicon, one core used; other agents kept the machine at a load
+average near 60 during the measurements, so processor time is the fair column), the hub
+level, no input:
 
-| | frames per second | × real time (59.94) |
-|---|---|---|
-| original in the rig (Play! core, break-point build, logging) | 17–19 | 0.3 |
-| original in the rig, 300 frames without the wide log | 36–45 | 0.6–0.76 |
-| translation, `-O1`, with the 26-value log (1 MB of checksums per frame) and the original renderer back end walking 4.8 MB of graphics data per frame | 325 | 5.4 |
-| translation, `-O1`, renderer back end replaced | 388 | 6.4 |
+| | frames per second of wall time | frames per processor-second | × real time (59.94 fps) by processor time |
+|---|---|---|---|
+| original in the rig (Play! core, break-point build), 1,200 frames | 31 | 36 | 0.6 |
+| original in the rig, build without break points, 1,200 frames | 29 | 62 | 1.04 |
+| translation `-O2`, original renderer back end walking 4.8 MB of graphics data per frame, 6,000 frames | 476 | 650 | 10.8 |
+| translation `-O2`, renderer back end replaced by the hand-over hook, 6,000 frames | 1,026 | 1,325 | 22 |
+| translation `-O1` with the 26-value log (1 MB of checksums per frame), 2,004 frames | 233–388 | — | — |
+
+A frame of the hub is about 37,600 calls and loop iterations of translated code. In the
+fastest configuration a third of the processor time is the VU0 interpreter (173
+microprogram runs per frame, each instruction copying the register file first); it has
+not been optimised. Compile time: 213 processor-seconds at `-O2`, 38 s on 14 jobs.
+
+## Step 5 — verdict
+
+### Does the translated code compute the same game?
+
+Yes, as far as it was tested, and it was tested three ways:
+
+1. **Function by function against the project's interpreter** (the R5900's own
+   floating-point rules, `ps2` model): 7,431 of 7,732 functions agree on every register,
+   call and memory byte; 0 disagree; 301 could not be driven automatically. 124,284
+   automatic cases and 40,991 calls from the reference-model tests are identical.
+2. **Frame by frame against the original running in the emulator** (the emulator's
+   floating-point rules, `host` model): 2,005 consecutive frames of a real session, every
+   compared value identical including checksums of all object memory; at the end 0
+   differing bytes in the object pool and the heap.
+3. **A deliberate-in-effect perturbation is detected** within 9 frames (above).
+
+Limits of that statement: one level (the hub), no input, no fighting, no level change, no
+network session; equality with the emulator, not with a console (the console-accurate
+float model exists and passes test 1, but nobody here has a console to check the
+interpreter's model against, as `tools/ee_emu.py` says itself).
+
+### What fraction is done
+
+| Part | State |
+|---|---|
+| Translator: all instructions, all 757,702 instruction slots, jump tables, cross-function clusters, 128-bit registers, both float models | done |
+| Proof of the translation | done at function level (96 % of functions) and for 2,005 frames of one level |
+| Kernel: threads, semaphores, interrupt/DMA handlers, alarms, vertical blank, game-installed system calls | done for what the frame loop and start-up use |
+| DMA controller, GS events, timers, scratchpad, mirrors, VU0 | done (headless) |
+| I/O-processor services: module loader, disc, files, controller, memory card | **missing** — the boot stops here |
+| Renderer | **missing** — the hand-over point exists (`gfx_dmaHandler(-1)`: 153 draw packets per frame at the hub; or the raw VIF1/GIF streams, 4.8 MB per frame) |
+| Sound | **missing** — the game's driver is polled by RPC three to four times per frame |
+| Network | **missing** — plus two ERX code modules that need translating ahead of time |
+| Windows | not built; the runtime uses POSIX threads and Clang built-ins, the generated code is plain C++17 |
+
+The part that could not have been bought with ordinary engineering — is a mechanical
+translation of 3 MB of machine code faithful enough to be the simulation core — is
+answered. What is left is ordinary, and large: it is the platform, not the game.
+
+### What a playable native application still needs, in order
+
+1. **I/O services** behind `sceSifBindRpc`/`sceSifCallRpc` (two functions, already the
+   runtime's): module loads answer "loaded"; an ISO 9660 reader for the disc image behind
+   the drive's search/read/stream calls and the file server; the controller library's
+   buffer written from host input; the memory card as a host directory. This takes the
+   boot to the front end and makes every level reachable — and with it, the same
+   frame-for-frame comparison with the rig from power-on (the seeds the offline session
+   takes from the cycle counter have to be forced equal on both sides) and in levels with
+   fighting.
+2. **A renderer.** Two ways in. (a) Emulate what is there: run the VU1 microprograms
+   (15,680 bytes of microcode; 1,717 program starts and 8,135 unpacks per frame at the
+   hub) and rasterise the GS primitives they emit — a small GS on the GPU; faithful,
+   resolution-independent only with effort. (b) Take the frame at the hand-over point and
+   draw the packets from their documented layout (`docs/spec/render-pipeline.md`), doing
+   in shaders what the microprograms do; more work to start, but it is the route to
+   higher resolution and wide screen. Texture uploads are in the GIF stream either way.
+3. **Sound**: a replacement for the game's I/O-processor sound driver at its RPC
+   interface (functions 0x50, 0x70, 0x80 are the per-frame ones), mixing the sample and
+   stream formats of `docs/audio-save.md`.
+4. **Films**: skip, or decode the MPEG streams with a host library in place of the IPU.
+5. **Network**: host sockets under the libnet RPC interface (the rig's shim shows the
+   shape) and the two ERX modules translated for a fixed load address, or replaced at
+   their socket API.
+6. Frame pacing against the host display, input mapping, a Windows build of the runtime.
+
+### Measured speed
+
+One core runs the hub at 10.8 times real time with the game's own renderer back end
+feeding a null GS, 22 times with the back end replaced — against 0.6 to 1.04 for the
+emulator core on the same machine by the same measure. A native renderer has the whole
+frame time left to it.
+
+### Risks
+
+- **Floating point and online play.** The translation can do the emulator's arithmetic
+  (fast) or the interpreter's console model (integer arithmetic, slower). Two native
+  clients agree with each other under either. Agreement with consoles or with other
+  emulators' settings is the question `docs/issues/float-divergence.md` already asks, and
+  this work does not answer it.
+- **Code that is not in `.text`.** Seen: the SDK's kernel patches (three blocks copied
+  from data — handled by not running them) and the ERX modules (network only). Anything
+  else of that kind stops the runtime with the address; none appeared in start-up or in
+  2,005 frames. An interpreter for such code as a fallback was considered and not built.
+- **Indirect jumps to an address without an entry**, and the rule that a return goes back
+  to the caller whatever `$ra` holds. Both are checked or visible when they fail (the
+  runtime stops and names the address); neither occurred. Coverage is one level.
+- **Threads of a resumed image** continue only when they sleep in a kernel call made
+  directly from their thread procedure (true for all four at the hub). A fresh boot does
+  not have this limit.
+- **Timing.** The runtime's clock counts calls and loop iterations, I/O is instantaneous,
+  DMA completes at once. The frame loop is paced by vertical blanks and agreed with the
+  emulator; code that depends on how long loading takes (the loading-screen thread, the
+  half-rate display mode after 32 late frames, asynchronous lump loads) will see
+  different timing than a console. In lockstep network play ticks are counted, not
+  timed, so this is a per-machine matter.
+- **The renderer back end reads DMA registers back** (TADR, ASR0) and waits for the GS
+  `FINISH` interrupt. A native renderer replaces that code; until then the DMA model has
+  to stay exact.
+- **Distribution.** The generated C++ is a translation of the game's code. This project
+  keeps it under `local/`; a release would ship the translator and runtime and build from
+  the user's own executable, which puts a C++ compiler on the user's machine — the way
+  the N64 recompilation projects handle it is the model to look at.
+
+### Not reached
+
+- Boot beyond the first module load; the title screen; any level entered natively.
+- A comparison with fighting, input, a level change or a network session.
+- `difftest_anim.py` in the replay (needs extracted `.anm` files); the 301 functions the
+  sweep cannot drive.
+- VU1, any drawing, any sound, the network, a Windows build.
+
+## How to repeat
+
+```
+python3 tools/recomp/recomp.py                      # translate (1.5 s)
+python3 tools/recomp/build.py test                  # test build
+python3 tools/recomp/difftest.py sweep --seeds 2    # step 2, stub mode  (2 min)
+python3 tools/recomp/difftest.py sweep --seeds 2 --mode follow
+python3 tools/recomp/difftest.py replay tools/difftest_core.py --quick
+python3 tools/recomp/build.py run                   # runtime build (-O2)
+export RTA_DISC=/path/to/your/disc.iso
+python3 tools/recomp/rigcompare.py snapshot         # needs the rig and its state 04-hub.zip
+python3 tools/recomp/rigcompare.py run --frames 2000
+python3 tools/recomp/rigcompare.py memdiff
+local/recomp-out/bin/rta_native boot --elf SLUS_209.73 --seconds 6
+```
+
+Files: `tools/recomp/recomp.py` (translator), `build.py`, `difftest.py`, `replay.py`,
+`rigcompare.py`, `hle.txt`, `entries.txt`, `rt/recomp.h`, `rt/fpu.h`, `rt/mmi.h`,
+`rt/vu0.h`, `rt/test_driver.cpp`, `rt/runtime.cpp`. Everything generated or dumped is
+under `local/recomp-out/`.

@@ -38,7 +38,7 @@ diff --git a/Source/GenericMipsExecutor.h b/Source/GenericMipsExecutor.h
 diff --git a/Source/Js_DiscImageDeviceStream.cpp b/Source/Js_DiscImageDeviceStream.cpp
 --- a/Source/Js_DiscImageDeviceStream.cpp
 +++ b/Source/Js_DiscImageDeviceStream.cpp
-@@ -3,7 +3,132 @@
+@@ -3,7 +3,142 @@
  #include <cassert>
  #include <emscripten.h>
  #include <unistd.h>
@@ -73,6 +73,7 @@ diff --git a/Source/Js_DiscImageDeviceStream.cpp b/Source/Js_DiscImageDeviceStre
 +	};
 +	std::mutex g_pieceMutex;
 +	std::list<PIECE> g_pieces;
++	std::vector<uint32> g_fetched; //the number of every piece fetched, in order (for tests)
 +}
 +
 +extern "C"
@@ -83,6 +84,14 @@ diff --git a/Source/Js_DiscImageDeviceStream.cpp b/Source/Js_DiscImageDeviceStre
 +		strncpy(g_discUrl, url, sizeof(g_discUrl) - 1);
 +		g_discSize = static_cast<uint64>(size);
 +		g_pieces.clear();
++		g_fetched.clear();
++	}
++
++	//For tests: the number of the n-th piece fetched since the image was set, or -1
++	EMSCRIPTEN_KEEPALIVE int RtaWebDiscFetched(uint32 index)
++	{
++		std::lock_guard lock(g_pieceMutex);
++		return (index < g_fetched.size()) ? static_cast<int>(g_fetched[index]) : -1;
 +	}
 +
 +	EMSCRIPTEN_KEEPALIVE uint32 RtaWebDiscCounter(int which)
@@ -142,6 +151,7 @@ diff --git a/Source/Js_DiscImageDeviceStream.cpp b/Source/Js_DiscImageDeviceStre
 +			double start = emscripten_get_now();
 +			int got = RtaWebDiscFetch(g_discUrl, static_cast<double>(piecePosition), piece.data.data(), static_cast<int>(wanted));
 +			g_discFetches++;
++			g_fetched.push_back(static_cast<uint32>(piecePosition / PIECE_SIZE));
 +			g_discFetchMicros += static_cast<uint32>((emscripten_get_now() - start) * 1000.0);
 +			if(got != static_cast<int>(wanted))
 +			{
@@ -171,7 +181,7 @@ diff --git a/Source/Js_DiscImageDeviceStream.cpp b/Source/Js_DiscImageDeviceStre
  void CJsDiscImageDeviceStream::Seek(int64 position, Framework::STREAM_SEEK_DIRECTION whence)
  {
  	switch(whence)
-@@ -15,6 +140,11 @@
+@@ -15,6 +150,11 @@
  		m_position += position;
  		break;
  	case Framework::STREAM_SEEK_END:
@@ -183,7 +193,7 @@ diff --git a/Source/Js_DiscImageDeviceStream.cpp b/Source/Js_DiscImageDeviceStre
  	{
  		uint32 positionLo = MAIN_THREAD_EM_ASM_INT({return Module.discImageDevice.getFileSize()});
  		uint32 positionHi = MAIN_THREAD_EM_ASM_INT({return Module.discImageDevice.getFileSize() / 4294967296});
-@@ -35,6 +165,16 @@
+@@ -35,6 +175,16 @@
  
  	assert(size <= std::numeric_limits<uint32>::max());
  

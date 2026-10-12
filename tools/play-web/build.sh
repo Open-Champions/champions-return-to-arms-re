@@ -91,15 +91,23 @@ grep -v '^#' "$HERE/../play-net/sections-suggested.txt" > "$SITE/sections.txt"
 LICENCES="$SITE/licences"
 mkdir -p "$LICENCES"
 cp "$SRC/License.txt" "$LICENCES/Play-LICENSE.txt"
+rm -f "$LICENCES"/*-*
 for dir in "$SRC"/deps/* "$SRC"/deps/Dependencies/*; do
 	[ -d "$dir" ] || continue
+	case "$(basename "$dir")" in
+	AltKit|SDWebImage|iCade-iOS|glew*|boost*) continue ;; # not part of this build
+	esac
 	for file in "$dir"/LICENSE* "$dir"/License* "$dir"/COPYING* "$dir"/LICENCE*; do
-		[ -f "$file" ] && cp "$file" "$LICENCES/$(basename "$dir")-$(basename "$file").txt" || true
+		[ -f "$file" ] || continue
+		name="$(basename "$dir")-$(basename "$file")"
+		cp "$file" "$LICENCES/${name%.txt}.txt"
 	done
 done
-EMROOT=$(dirname "$(readlink -f "$(command -v emcc)" 2>/dev/null || command -v emcc)")
-[ -f "$EMROOT/LICENSE" ] && cp "$EMROOT/LICENSE" "$LICENCES/Emscripten-LICENSE.txt"
-[ -f "$EMROOT/system/lib/mimalloc/LICENSE" ] && cp "$EMROOT/system/lib/mimalloc/LICENSE" "$LICENCES/mimalloc-LICENSE.txt"
+EMROOT=$(em-config EMSCRIPTEN_ROOT 2>/dev/null || true)
+if [ -n "$EMROOT" ] && [ -f "$EMROOT/LICENSE" ]; then
+	cp "$EMROOT/LICENSE" "$LICENCES/Emscripten-LICENSE.txt"
+	[ -f "$EMROOT/system/lib/mimalloc/LICENSE" ] && cp "$EMROOT/system/lib/mimalloc/LICENSE" "$LICENCES/mimalloc-LICENSE.txt"
+fi
 cat > "$LICENCES/README.txt" <<NOTE
 This page runs the Play! PlayStation 2 emulator (https://github.com/jpd002/Play-), by
 Jean-Philip Desjardins and contributors, under the BSD 2-clause licence

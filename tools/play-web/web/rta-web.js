@@ -297,7 +297,7 @@ function axisValue(v) {
 }
 
 function readInput() {
-	if(!module) return;
+	if(!module || !shared) return;
 	let buttons = 0;
 	const axes = [128, 128, 128, 128];
 	let axesSet = 0;
@@ -570,6 +570,7 @@ const rta = window.rta = {
 		return list;
 	},
 	writeFile: (name, text) => { module.FS.mkdirTree((DATA + "/" + name).replace(/\/[^/]*$/, "")); module.FS.writeFile(DATA + "/" + name, text); },
+	removeFile: (name) => { module.FS.unlink(DATA + "/" + name); try { module.FS.rmdir((DATA + "/" + name).replace(/\/[^/]*$/, "")); } catch(e) { /* not empty */ } },
 	saveCard: () => saveCard(),
 	// DEV: the left stick at (x, y), 0..255, for exactly 'frames' frames of the machine
 	stick: async (x, y, frames) => {

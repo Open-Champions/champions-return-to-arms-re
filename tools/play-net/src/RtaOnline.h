@@ -39,6 +39,7 @@ namespace Rta
 		struct Setup
 		{
 			std::string file;      // the saved logins
+			std::string characterFile; // the character used last, per server
 			std::string server;    // the key they are saved under: the server's address as given
 			std::string serverText; // the server in words, for messages
 			bool personPresent = true; // false: nobody can answer a dialog (a background test)
@@ -57,7 +58,9 @@ namespace Rta
 		// 'powerOn': armed before the game runs, so the card questions and the logos before
 		// the title screen are its to press through. Otherwise the title screen (or a
 		// lobby screen it knows) has to be up.
-		void Start(Goal goal, const std::string& code, bool powerOn);
+		// 'chooseCharacter': stop on the character screens of a game hosted or joined even
+		// when the character used last is known.
+		void Start(Goal goal, const std::string& code, bool powerOn, bool chooseCharacter = false);
 		void Stop(const std::string& why);
 		void GiveName(const std::string& name);
 		void DeclineName();
@@ -70,6 +73,16 @@ namespace Rta
 		std::string Report() const;
 		// the code of the game being hosted or joined; empty: none
 		std::string Code() const;
+
+		// The character this player used last on this server (its name; empty: none known).
+		// Host and Join take it from the game's list of stored characters by themselves.
+		std::string LastCharacter() const;
+		// what the player holds down, every vertical blank (machine thread): a button held
+		// when the character screens come up means "I choose myself"
+		void SetPlayerButtons(uint32_t buttons)
+		{
+			m_playerButtons = buttons;
+		}
 
 		// the saved login for this server
 		bool HasLogin() const;
@@ -100,6 +113,11 @@ namespace Rta
 		{
 			std::string server, name, password;
 			bool pending = false; // the account was asked for; no log-in with it has worked yet
+		};
+		struct Character
+		{
+			std::string server, name;
+			uint32_t classId = 0, id = 0; // id: the server's number for it; 0: not known
 		};
 		struct Screen
 		{
@@ -138,6 +156,9 @@ namespace Rta
 		void ActList(const CMem&, const Screen&);
 		void ActHost(const CMem&, const Screen&);
 		void ActJoin(const CMem&, const Screen&);
+		void ActCharacter(const CMem&, const Screen&);
+		void HandOverCharacter(const std::string& why);
+		void RememberCharacter(const CMem&);
 		void Press(uint32_t mask, unsigned int hold, unsigned int settle);
 		void Say(const std::string& note);
 		void Finish(const std::string& note, int64_t showFor = 20000);
@@ -157,6 +178,10 @@ namespace Rta
 		bool StoreLogin(const Login&) const;
 		bool DropLogin() const;
 		static std::string MakePassword();
+		// the character used last
+		std::vector<Character> ReadCharacters() const;
+		bool FindCharacter(Character&) const;
+		bool StoreCharacter(const Character&) const;
 
 		Setup m_setup;
 		mutable std::mutex m_mutex; // for everything another thread may touch
@@ -164,7 +189,7 @@ namespace Rta
 		bool m_startWanted = false, m_stopWanted = false;
 		Goal m_wantedGoal = Goal::Lobby;
 		std::string m_wantedCode, m_stopWhy;
-		bool m_wantedPowerOn = false;
+		bool m_wantedPowerOn = false, m_wantedChoose = false;
 		std::string m_givenName;
 		bool m_nameGiven = false, m_nameDeclined = false;
 		std::vector<std::string> m_queuedNames;
@@ -194,5 +219,14 @@ namespace Rta
 		// a game of our own, or somebody's
 		bool m_characterSeen = false, m_gamePressed = false, m_gameSent = false, m_joinPressed = false, m_joinSent = false;
 		int64_t m_lookingSince = 0;
+		// the character screens
+		bool m_chooseCharacter = false; // asked for: the player chooses
+		bool m_charAuto = false;        // the application is choosing the character used last
+		bool m_charPickPressed = false, m_charFetching = false, m_charStored = false;
+		Character m_lastCharacter;      // the one looked for
+		std::string m_pickedName;       // the list entry last taken, by anyone
+		uint32_t m_pickedId = 0;
+		int64_t m_charSince = 0;
+		uint32_t m_playerButtons = 0;
 	};
 }
