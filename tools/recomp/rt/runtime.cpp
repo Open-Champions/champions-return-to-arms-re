@@ -45,6 +45,8 @@ static RecompFn* g_table;
 static u32 g_text_lo, g_text_hi;
 bool g_rt_verbose = false;
 rta::Hooks g_hooks;
+void (*rt_at_finish)() = nullptr;
+static std::vector<std::string> g_boot_args;        // --arg: the arguments of the game's main()
 static void final_report();
 
 [[noreturn]] void rt_die(const char* format, ...) {
@@ -733,8 +735,23 @@ void rt_syscall(Ctx* c, u32 pc) {
         g_gp = a0;
         W(t + T_GP) = a0;
         W(t + T_STACKBASE) = top - a2; W(t + T_STACKSIZE) = a2;
+        // The argument block: a count, sixteen pointers, then the text.  Without --arg
+        // the game starts with no arguments at all (the count is 0); with it the block is
+        // filled as the kernel fills it for a start from the disc: the program's name
+        // first, then one argument per --arg.
         W(a3 & 0x1FFFFFF) = 0;                          // argc
         W((a3 & 0x1FFFFFF) + 4) = 0;
+        if (!g_boot_args.empty()) {
+            u32 block = a3 & 0x1FFFFFF, text = block + 4 + 16 * 4, at = text;
+            std::vector<std::string> words = {"cdrom0:\\SLUS_209.73;1"};
+            words.insert(words.end(), g_boot_args.begin(), g_boot_args.end());
+            for (size_t i = 0; i < words.size() && i < 16 && at + words[i].size() + 1 <= text + 256; i++) {
+                memcpy(g_ram + at, words[i].c_str(), words[i].size() + 1);
+                W(block + 4 + (u32)i * 4) = at;
+                at += (u32)words[i].size() + 1;
+                W(block) = (u32)i + 1;
+            }
+        }
         result = top - 0x2A0;
         break;
     }
@@ -1362,6 +1379,7 @@ static void log_row(u64 number) {
 }
 
 [[noreturn]] static void report_and_exit() {
+    if (rt_at_finish) { void (*fn)() = rt_at_finish; rt_at_finish = nullptr; fn(); }
     double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - g_start_time).count();
     printf("frames=%llu wall=%.3fs: %.0f frames per second, %.1fx real time at 59.94; fields=%llu units=%llu\n",
            (unsigned long long)g_frame, wall, g_frame / wall, g_frame / wall / 59.94, (unsigned long long)g_fields,
@@ -1480,6 +1498,8 @@ static void usage() {
         "                        for the rig, which had run n frames when the resumed image was taken)\n"
         "  --hle-renderer        do not send draw data through DMA; count and report frames as sent\n"
         "  --opt key=value       an option for a module linked with the runtime (rt_option); repeatable\n"
+        "  --arg <text>          one argument for the game's main(), after the program's name; repeatable\n"
+        "                        (without it main() gets no arguments at all, as in the compared runs)\n"
         "  --seconds <s>         stop after s seconds of wall time and say where the game is\n"
         "  --verbose, --trace <n>\n");
 }
@@ -1531,6 +1551,7 @@ int run(int argc, char** argv, const Hooks& hooks) {
         else if (a == "--disc") iop.disc = next();
         else if (a == "--card") iop.card_root = next();
         else if (a == "--emulator-timing") iop.emulator_timing = true;
+        else if (a == "--arg") g_boot_args.push_back(next());
         else if (a == "--adopt") adopt = true;
         else if (a == "--script-offset") g_script_offset = strtoull(next().c_str(), nullptr, 0);
         else if (a == "--count-at") {

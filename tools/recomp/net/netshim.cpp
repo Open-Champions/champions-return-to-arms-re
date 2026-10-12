@@ -490,6 +490,7 @@ struct Shim {
     int pad_latency = 1;
     bool stop_on_level = true;
     bool oos_reported[4] = {};
+    u64 nothing_reads = 0, nothing_stores = 0;  // --wrap-memory: accesses where nothing is
 };
 Shim S;
 
@@ -595,7 +596,11 @@ bool link_receive(u64& frame, bool& bye, std::vector<Wire>& datagrams) {
     printf("net shim: %" PRIu64 " datagrams sent (%" PRIu64 " to another machine, %" PRIu64 " lost on the bus), %" PRIu64 " received; calls:",
            S.sent, S.crossed, S.lost, S.received);
     for (int i = 0; i < 10; i++) printf(" %s=%" PRIu64, names[i], S.calls[i]);
-    printf("\nnet shim: exit code %d\n", code);
+    printf("\n");
+#ifdef RTA_NET_WRAP_MEMORY
+    printf("net shim: accesses where nothing is, answered as the emulator answers: %" PRIu64 " reads, %" PRIu64 " stores\n", S.nothing_reads, S.nothing_stores);
+#endif
+    printf("net shim: exit code %d\n", code);
     if (S.log) fclose(S.log);
     if (S.tick_log) fclose(S.tick_log);
     fflush(stdout);
@@ -1270,6 +1275,61 @@ void recv_from(Ctx* c) {
 }
 
 }  // namespace
+
+#ifdef RTA_NET_WRAP_MEMORY
+// build_net.py --wrap-memory: an access to an address where nothing is.
+//
+// The game makes such accesses in play (Player_run 0x1ab7c0 reads a float through a track
+// index it did not test, docs/spec/player-tick.md "An out-of-bounds read in the original":
+// seen at tick 5,115 of a fight).  The runtime stops there; the Play! emulator gives every
+// byte of such a read the value 0xCC and drops such a store (its MemoryMap.cpp), and the
+// game runs on.  A native machine that plays against an emulator has to do the same, so
+// with this option runtime.cpp is compiled with its four functions renamed (…_rt) - the
+// source is not touched - and the ones below stand in front of them.  The test for
+// "something is there" repeats the runtime's own decoding and has to follow it.
+u64 rt_load_rt(u32 addr, unsigned size);
+void rt_store_rt(u32 addr, unsigned size, u64 value);
+void rt_load128_rt(u32 addr, u64* lo, u64* hi);
+void rt_store128_rt(u32 addr, u64 lo, u64 hi);
+static bool something_there(u32 a, unsigned size) {
+    u32 top = a >> 28;
+    if (top == 2 || top == 3) {
+        if ((a & 0x0FFFFFFFu) <= RAM_SIZE - size) return true;
+    } else if (top >= 8 && top <= 0xB) {
+        u32 p = a & 0x1FFFFFFFu;
+        if (p <= RAM_SIZE - size) return true;
+        a = p;
+    }
+    if (a >= 0x70000000u && a <= 0x70004000u - size) return true;      // scratchpad
+    if (a >= 0x11000000u && a <= 0x11010000u - size) return true;      // vector-unit memories
+    if (a >= 0x10000000u && a < 0x14000000u) return true;              // hardware registers
+    if (a >= 0x1FC00000u && a < 0x20000000u) return true;              // boot ROM
+    return false;
+}
+static void nothing(const char* what, u32 addr, unsigned size, u64& counter) {
+    if (counter++ < 8)
+        printf("net shim: %s of %u bytes at 0x%08x, where nothing is (last call site 0x%x, tick %u, frame %" PRIu64 "): as on the emulator\n",
+               what, size, addr, g_site, read32(G_NETFRAME), S.frame);
+}
+u64 rt_load(u32 addr, unsigned size) {
+    if (something_there(addr, size)) return rt_load_rt(addr, size);
+    nothing("read", addr, size, S.nothing_reads);
+    return 0xCCCCCCCCCCCCCCCCull >> (64 - 8 * (size > 8 ? 8 : size));
+}
+void rt_store(u32 addr, unsigned size, u64 value) {
+    if (something_there(addr, size)) { rt_store_rt(addr, size, value); return; }
+    nothing("store", addr, size, S.nothing_stores);
+}
+void rt_load128(u32 addr, u64* lo, u64* hi) {
+    if (something_there(addr, 16)) { rt_load128_rt(addr, lo, hi); return; }
+    nothing("read", addr, 16, S.nothing_reads);
+    *lo = *hi = 0xCCCCCCCCCCCCCCCCull;
+}
+void rt_store128(u32 addr, u64 lo, u64 hi) {
+    if (something_there(addr, 16)) { rt_store128_rt(addr, lo, hi); return; }
+    nothing("store", addr, 16, S.nothing_stores);
+}
+#endif
 
 void fn_00365ec0(Ctx* c) {                  // sceLibnetInitialize
     start();

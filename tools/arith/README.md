@@ -63,7 +63,7 @@ hold either buttons or the left stick, one place of at most 64 bytes, through th
 POINTER,OFFSET,SIZE` runs it). For a session with a memory write, several places per
 frame, or buttons and a stick together (what the rig's `fuzz` command produces), the
 front end needs three more test entry points. `web-hooks.patch` adds them to
-`tools/play-web/src/RtaWeb.cpp` (made against the file as it stood on 2026-10-12, 138
+`tools/play-web/src/RtaWeb.cpp` (made against the file as it stood on 2026-10-12, about 140
 added lines, nothing changed in what exists):
 
 - `rtaStep(buttons, lx, ly, rx, ry, frames)`: one scripted step with buttons and both

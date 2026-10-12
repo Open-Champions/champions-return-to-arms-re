@@ -143,13 +143,10 @@
  	static bool UseClamping(uint32 compileHints)
 --- a/Source/ee/Vif.h
 +++ b/Source/ee/Vif.h
-@@ -200,7 +200,42 @@
- 			else
- 			{
- 				Read(buffer, ValueSize);
-+			}
-+		}
-+
+@@ -203,6 +203,41 @@
+ 			}
+ 		}
+ 
 +		//RTA(web): for reading straight from the source memory (CVif::Unpack). Possible
 +		//when the buffered quadword is a copy of the source at the stream's place: not
 +		//while a DMA tag is still to be skipped, and not while the buffer holds the
@@ -175,7 +172,7 @@
 +			{
 +				m_nextAddress = position;
 +				m_bufferPosition = BUFFERSIZE;
- 			}
++			}
 +			else
 +			{
 +				uint32 quadword = position - inQuadword;
@@ -183,9 +180,11 @@
 +				m_nextAddress = quadword + BUFFERSIZE;
 +				m_bufferPosition = inQuadword;
 +			}
- 		}
- 
++		}
++
  		void Flush();
+ 		inline void Align32();
+ 		void SetDmaParams(uint32, uint32, bool);
 @@ -330,12 +365,35 @@
  
  	inline uint32 GetColMaskOp(unsigned int) const;
@@ -330,17 +329,16 @@
  	{
  		bool success = false;
  		switch(dataType)
-@@ -558,7 +617,68 @@
- 		nDstAddr *= 0x10;
+@@ -559,6 +618,71 @@
  		assert(nDstAddr < vuMemSize);
  		nDstAddr &= (vuMemSize - 1);
-+
-+		//RTA(web): The common case - every vector of the packet is read and written, no
-+		//mask - without the FIFO stream's bookkeeping for every value: the values are
-+		//read from the source memory the stream stands on, and the stream is moved on
-+		//once at the end. What is written, the ticks and where it stops when the data
-+		//runs out are those of the loop below, which goes on with whatever is left.
-+		if(clGreaterEqualWl && !useMask && (cl == wl) && (m_readTick < wl) && stream.CanReadDirect())
+ 
++		//RTA(web): The case without a mask and without filling writes, done without the
++		//FIFO stream's bookkeeping for every value: the values are read from the source
++		//memory the stream stands on, and the stream is moved on once at the end. What
++		//is written and skipped, the ticks and where it stops when the data runs out
++		//are those of the loop below, which goes on with whatever is left.
++		if(clGreaterEqualWl && !useMask && stream.CanReadDirect())
 +		{
 +			CDirectStream direct;
 +			direct.pointer = stream.GetDirectReadPointer();
@@ -350,33 +348,37 @@
 +			uint32 writeTick = m_writeTick;
 +			while(currentNum != 0)
 +			{
-+				uint128 writeValue;
-+				memset(&writeValue, 0, sizeof(writeValue));
-+				if(!Unpack_ReadValue<dataType, usn>(direct, writeValue)) break;
++				//With CL above WL the addresses after the first WL of every CL are skipped
++				if(readTick < wl)
++				{
++					uint128 writeValue;
++					memset(&writeValue, 0, sizeof(writeValue));
++					if(!Unpack_ReadValue<dataType, usn>(direct, writeValue)) break;
 +
-+				auto dst = reinterpret_cast<uint128*>(vuMem + nDstAddr);
-+				if(mode == 0)
-+				{
-+					(*dst) = writeValue;
-+				}
-+				else
-+				{
-+					for(unsigned int i = 0; i < 4; i++)
++					auto dst = reinterpret_cast<uint128*>(vuMem + nDstAddr);
++					if(mode == 0)
 +					{
-+						if(mode == MODE_OFFSET)
-+						{
-+							writeValue.nV[i] += m_R[i];
-+						}
-+						else if(mode == MODE_DIFFERENCE)
-+						{
-+							writeValue.nV[i] += m_R[i];
-+							m_R[i] = writeValue.nV[i];
-+						}
-+						dst->nV[i] = writeValue.nV[i];
++						(*dst) = writeValue;
 +					}
++					else
++					{
++						for(unsigned int i = 0; i < 4; i++)
++						{
++							if(mode == MODE_OFFSET)
++							{
++								writeValue.nV[i] += m_R[i];
++							}
++							else if(mode == MODE_DIFFERENCE)
++							{
++								writeValue.nV[i] += m_R[i];
++								m_R[i] = writeValue.nV[i];
++							}
++							dst->nV[i] = writeValue.nV[i];
++						}
++					}
++					currentNum--;
 +				}
-+				currentNum--;
- 
++
 +				writeTick = std::min<uint32>(writeTick + 1, wl);
 +				readTick = std::min<uint32>(readTick + 1, cl);
 +				if(readTick == cl)

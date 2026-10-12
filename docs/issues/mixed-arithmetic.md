@@ -21,7 +21,7 @@ section 3.2).
 |---|---|---|
 | How does the two builds' arithmetic differ for this game? | In the state of the host processor only: the rounding rule (toward zero against to nearest) and the treatment of tiny numbers (taken as zero against kept). The two translators are fed the same intermediate operations by the same front end and turn each into the same IEEE operation; neither fuses or reorders. Section 1 | Observed; Ran (60 operations, 2,000,000 operand sets each) |
 | Can the application compute what a browser computes? | Yes: "browser arithmetic", a switch in the core, off by default (`FpUtils::SetArithmetic`). It puts the machine thread's control register in the state WebAssembly code runs in. Section 2 | Ran |
-| Proof without a browser | One machine in each arithmetic: out of step on the first step (3 pairs of 3 with input). Both in browser arithmetic: in step over the boot pair and every fuzz pair; the existing pair scripts end as they do in native arithmetic (one exception, a timing race that did not happen). Section 3.2 | Ran |
+| Proof without a browser | One machine in each arithmetic: out of step on the first step (3 pairs of 3 with input). Both in browser arithmetic: in step over the boot pair and every fuzz pair (54 pairs, 312,989 lockstep ticks); the existing pair scripts end as they do in native arithmetic (one exception, a timing race that did not happen). Section 3.2 | Ran |
 | Proof against the real thing | The browser build in Chrome and the rig in browser arithmetic, the same recorded input by vertical blank from power-on: two sessions, 12,400 frames (walking, turning, fighting, 8 deaths, four level changes) and 8,810 frames (another level, both sticks), 224 bytes of game state read in every frame, **no byte differs**. The rig in native arithmetic with the same input differs from frame 2741. Section 3.3 | Ran |
 | Does the game behave in that arithmetic? | Nothing broke in any run. Section 4 has what was measured | Ran |
 | How is the arithmetic chosen in a real game? | Proposed and written (application and shared network code), compiled for both builds, one copy seen to change on request, **not yet tried between two copies**: every copy tells the others what it can do and does, on the path the patch-set figure already uses; the application changes to browser arithmetic in the room when a browser copy is heard, and warns when a copy cannot follow. Section 5 | Observed (code); the exchange between copies not Ran |
@@ -132,8 +132,8 @@ seconds.
 
 **Both machines in browser arithmetic.** Fuzz (`tools/rig/fuzz.py`, every fix section of
 the patch file on both machines, 6,000 frames a pair, levels strife / drunare / hub in
-turn, three input mixes, every second pair with a bus that delays, jitters and loses
-datagrams): see "Rig totals" at the end of the document for the count reached. No shared
+turn, several input mixes, most pairs on a bus that delays, jitters or loses datagrams):
+**54 pairs, 312,989 lockstep ticks** ("Rig totals" at the end of the document). No shared
 column of the tick logs (seed, level, both players' position, angle, state, hit points,
 mana, gold, experience, bags, statistics, equipment, abilities, the game's own sync record
 and out-of-sync flags) differs on any tick of any pair. Several pairs changed level by
@@ -351,20 +351,31 @@ consistent, and harmless.
 | `tools/play-net/src/RtaNet.h`, `RtaNet.cpp`, `Rta.cpp` | the arithmetic message, the choice, the warning |
 | `tools/rig/rig.cpp`, `README.md` | `--arith`, script command `arith`, `--record-input`, `--replay-input` |
 | `tools/arith/` | `jitdiff.cpp` and `build.sh` (the translators against each other), `session.py`, `browser-run.py`, `web/arith.html`, `web/arith.js` (a session on both machines), `web-hooks.patch` (test entry points for the browser front end), `README.md` |
-| `local/mixed/` | `NOTES.md`; `jit/` (the two programs and their result lists); `st-native`, `st-browser` (pair states); `p2-mixed` (one machine each); `fz-bb`, `fz-bb2` (fuzz, both in browser arithmetic); `fz-nn` (control, native); `ps/` (pair scripts); `off1*`, `web/`, `web-out/` (the 2,829-frame comparison with the served browser build); `s1*`, `session1.rig`, `session-watch.txt`, `webhook/` (the long session and the private front-end build) |
+| `local/mixed/` | `NOTES.md`; `jit/` (the two programs and their result lists); `st-native`, `st-browser` (pair states); `p2-mixed` (one machine each); `fz-bb`, `fz-bb2`, `fz-bb3` (fuzz, both in browser arithmetic); `fz-nn`, `fz-nn2` (control, native); `ps/` (pair scripts); `off1*`, `web/`, `web-out/` (the 2,829-frame comparison with the served browser build); `s1*`, `s2*`, `session1.rig`, `session2.rig`, `session-watch.txt`, `webhook/` (the two sessions and the private front-end build); `play-net.patch.mine` (the committed core patch plus the switch) |
 
 ## Rig totals
 
-Both machines in browser arithmetic, tick logs compared column by column:
+Both machines in browser arithmetic, tick logs compared column by column (**Ran**):
 
 | Run | Pairs | Lockstep ticks compared | Pairs with a difference in a shared column |
 |---|---|---|---|
 | Boot pair (`pair-start.rig`) | 1 | 659 | 0 |
-| Fuzz, first batch (seeds 1000–1008, 1010) | 10 | 57,454 | 0 |
+| Fuzz, seeds 1000–1008 and 1010: strife / drunare / hub in turn; mixes "move, fight, potion, use, dpad, select, start", "move, rstick, fight", "move, fight, potion, use"; every second pair on a bus with delay 3, jitter 3, loss 50 | 10 | 57,454 | 0 |
+| Fuzz, seeds 1009–1040: the same lists | 32 | 185,360 | 0 |
+| Fuzz, seeds 1100–1111: drunare / strife / hub; mixes "move, rstick, fight, potion, use", "move, fight, dpad, select, start, l3r3", "move, fight"; buses delay 2 jitter 2 loss 30, none, delay 5 | 12 | 70,175 | 0 |
+| **Fuzz in all** | **54** | **312,989** | **0** |
+| Pair scripts that are in step in both arithmetics (`pair-k1`, `pair-arena`) and `pair-u2-gate` | 3 | 8,581 | 0 |
+| **All** | 58 | **322,229** | 0 |
 
-The fuzz was asked to reach hundreds of thousands of ticks and did not: the Mac was shared
-and at a load average of 150 to 420 while it ran (a pair of 6,000 frames took 11 minutes
-or more), and from the middle of the work this job was held to four runners.
+Every fuzz pair: 6,000 frames of random input on both controllers, every fix section of
+the patch file on both machines. All four levels the random input reached (strife,
+drunare, hub, blood1) are in each batch. For comparison, the control in native arithmetic
+(8 pairs with the first batch's seeds, 45,083 ticks) has no difference either, and one
+machine in each arithmetic differs on the first step (section 3.2).
+
+The Mac was shared while this ran, at a load average of 150 to 420 for the first two
+hours (a pair of 6,000 frames then took 11 minutes or more) and of 15 to 50 later; this
+job was held to four runners from the middle of the work on.
 
 ## Behaviour figures
 

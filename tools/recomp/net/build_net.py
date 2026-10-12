@@ -171,6 +171,10 @@ def main():
     parser.add_argument('--opt', default='-O2')
     parser.add_argument('--jobs', type=int, default=6)
     parser.add_argument('--define', action='append', default=[])
+    parser.add_argument('--wrap-memory', action='store_true',
+                        help='accesses to addresses where nothing is answer as the Play! emulator answers them '
+                             '(reads give 0xCC bytes, stores are dropped) instead of stopping the run: runtime.cpp is '
+                             'compiled with rt_load/rt_store/rt_load128/rt_store128 renamed and the shim stands in front')
     parser.add_argument('--seed-cache', help='a directory of objects built by build.py from --seed-gen '
                                              '(same flags): reuse them where the source text is the same')
     parser.add_argument('--seed-gen', default=os.path.join(OUT, 'gen'))
@@ -261,6 +265,8 @@ def main():
         print('object cache: %d objects taken from %s' % (seeded, args.seed_cache))
 
     rt_objects, rt_sources, rt_note = [], [], ''
+    if args.wrap_memory and args.rt != 'live':
+        raise SystemExit('--wrap-memory needs the runtime compiled here (--rt live)')
     if args.rt == 'live':
         rt_sources = sorted(os.path.join(RT, n) for n in os.listdir(RT)
                             if n.endswith('.cpp') and n != 'test_driver.cpp')
@@ -291,6 +297,11 @@ def main():
             shutil.copyfile(cached, target)
             return source, 0, '', True
         extra = [shim_define] if source.startswith(HERE) else []
+        if args.wrap_memory:
+            if source.startswith(HERE):
+                extra.append('-DRTA_NET_WRAP_MEMORY')
+            elif os.path.basename(source) == 'runtime.cpp':
+                extra += ['-D%s=%s_rt' % (name, name) for name in ('rt_load', 'rt_store', 'rt_load128', 'rt_store128')]
         result = subprocess.run(['nice', '-n', '15', 'clang++'] + codegen + includes + extra + ['-c', source, '-o', target],
                                 capture_output=True, text=True)
         if result.returncode == 0 and cached:

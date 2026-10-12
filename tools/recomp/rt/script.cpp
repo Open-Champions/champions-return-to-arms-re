@@ -180,7 +180,7 @@ Value parse_literal(const std::string& word, const Type& type) {
 }
 
 struct Command {
-    enum Kind { WAIT, AT, UNTIL, PRESS, RELEASE, TAP, TAPUNTIL, STICK, PAD, POKE, DUMP, SHOW, ECHO, QUIT } kind = WAIT;
+    enum Kind { WAIT, AT, UNTIL, PRESS, RELEASE, TAP, TAPUNTIL, STICK, PAD, POKE, DUMP, SHOW, ECHO, APP, QUIT } kind = WAIT;
     int line = 0, port = 0;
     u16 buttons = 0;
     s64 number = 0, number2 = 0;
@@ -313,6 +313,13 @@ void add_line(const std::string& raw) {
         while (!rest.empty() && isspace((unsigned char)rest.back())) rest.pop_back();
         c.words = {word == "sync" ? "sync " + rest : rest};
     }
+    else if (word == "app") {                           // for the application linked with the runtime
+        c.kind = Command::APP;
+        std::string rest = line.substr(line.find(word) + word.size());
+        while (!rest.empty() && isspace((unsigned char)rest[0])) rest.erase(0, 1);
+        while (!rest.empty() && isspace((unsigned char)rest.back())) rest.pop_back();
+        c.words = {rest};
+    }
     else if (word == "log") return;
     else if (word == "quit") c.kind = Command::QUIT;
     else rt_die("script line %d: the command '%s' belongs to the emulator rig and is not available here", g_line, word.c_str());
@@ -337,6 +344,8 @@ void poke(const Command& c) {
 }
 
 }  // namespace
+
+void (*script_app_command)(const std::string& text, u64 frame) = nullptr;
 
 void script_add_symbols(const char* path) {
     FILE* f = fopen(path, "r");
@@ -467,6 +476,10 @@ void script_vblank(u64 frame) {
             break;
         }
         case Command::ECHO: printf("[frame %" PRIu64 "] %s\n", frame, c.words[0].c_str()); fflush(stdout); break;
+        case Command::APP:
+            if (script_app_command) script_app_command(c.words[0], frame);
+            else rt_note("script: app command without an application (" + c.words[0].substr(0, c.words[0].find(' ')) + ")");
+            break;
         case Command::QUIT: rt_finish(0);
         }
         g_position++;

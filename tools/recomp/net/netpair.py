@@ -228,7 +228,9 @@ def run(args):
     for letter, process, sink in processes:
         code = process.wait()
         sink.close()
-        if code not in (0, 6, 7):
+        # 6: the other machine ended first; 7: a level change the runtime could not load;
+        # -13: a rig machine was writing to a native one that had just ended
+        if code not in (0, 6, 7, -13):
             status = code
         lines = [l for l in open(sink.name, errors='replace').read().splitlines() if 'CMIPSAnalysis' not in l]
         print('== machine %s (%s), exit code %d' % (letter, kinds[letter], code))

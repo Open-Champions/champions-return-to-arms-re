@@ -47,6 +47,9 @@ void rt_sleep(Ctx* c, u64 delay);
 void rt_signal_sema(u32 id);
 
 [[noreturn]] void rt_finish(int code);               // print the report and end the process
+// Called once when the run ends, before the report is printed (an application's own
+// figures, closing its window); set before rta::run().
+extern void (*rt_at_finish)();
 // "--opt key=value" on the command line, for modules linked with the runtime; nullptr when absent
 const char* rt_option(const char* key);
 
@@ -76,6 +79,10 @@ bool script_load(const char* path);
 void script_add_command(const std::string& line);   // --do
 void script_vblank(u64 number);                     // advances the script by one frame
 bool script_active();                               // commands left
+// The script command "app <text>" hands <text> to the application linked with the runtime
+// (a window program: take a picture, press a key); `frame` is the script's frame number.
+// Without a handler the command is noted and does nothing.  Set before rta::run().
+extern void (*script_app_command)(const std::string& text, u64 frame);
 const rta::PadState& script_pad(unsigned port);
 // expressions and typed values, shared with the watch log
 u32 script_eval(const std::string& expression);
