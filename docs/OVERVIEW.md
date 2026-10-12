@@ -25,21 +25,24 @@ What can be done today:
 - **Run the same build in a browser**, offline, as far as the first level, at full speed
   in Chrome when the computer is not busy. **Ran**, by scripted presses.
   [issues/browser-build.md](issues/browser-build.md).
-- **Translate the game's code to native C++** and get the same game from it: every
-  function translates, 7,431 of 7,732 agree with the interpreter function by function
-  (**Executed**), and 2,005 consecutive frames agree with the original running in the
-  emulator (**Ran**). There is no picture, sound or input yet, so this is not playable.
+- **Translate the game's code to native C++** and, as far as it was tested, get the same
+  game from it: every function translates, 7,431 of 7,732 agree with the interpreter
+  function by function (**Executed**), and 2,005 consecutive frames of one level, with no
+  input, agree with the original running in the emulator (**Ran**). There is no picture,
+  sound or input yet, so this is not playable.
   [issues/native-recomp.md](issues/native-recomp.md).
 - **Join two machines and compare them tick by tick.** The two-machine rig reproduced
   causes of "OUT OF SYNC" that reading had predicted and found others (`FINDINGS.md`,
-  "Run on the live game"). Each has a patch section that removes it on the rig. With 24
-  sections on, 120 long pairs and 5.1 million ticks ended without the game's out-of-sync
-  flag and with no difference in anything compared except two bytes of local effect state
-  (FINDINGS V62, V63). **Ran.** [issues/live-rig.md](issues/live-rig.md); the patches are
-  in `patches/SLUS-20973_4028A55F.pnach` and the suggested set in
+  "Run on the live game"). Each cause in the game's logic that it reproduced has a patch
+  section that removes it on the rig. With 24 sections on, 120 long pairs and 5.1 million
+  ticks ended without the game's out-of-sync flag and with no difference in anything
+  compared except two bytes of local effect state (FINDINGS V62, V63). **Ran.**
+  [issues/live-rig.md](issues/live-rig.md); the patches are in
+  `patches/SLUS-20973_4028A55F.pnach` and the suggested set in
   [online-setup.md](online-setup.md).
 - **Take the real game through the whole lobby path** against a replacement lobby server:
-  account, characters, host, join, launch, play (FINDINGS V49). **Ran.**
+  account, characters, host, join, launch, play (FINDINGS V49). **Ran.** The server
+  defects met on the way are FINDINGS LS1–LS5.
   [lobby-protocol.md](lobby-protocol.md).
 
 What is not proven:

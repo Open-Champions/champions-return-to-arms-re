@@ -12,6 +12,10 @@ holds 60 frames a second at the title and standing in the first level (resolutio
 2, the Mac otherwise quiet); what was measured, what was checked and how, and what is
 missing is at the end, and the working notes with every figure are in
 [docs/issues/browser-build.md](../../docs/issues/browser-build.md).
+[docs/STATE-OF-PLAY.md](../../docs/STATE-OF-PLAY.md) sets this build beside the other
+routes to a game: the desktop application ([docs/play-online.md](../../docs/play-online.md)),
+PCSX2 with the patch file ([docs/online-setup.md](../../docs/online-setup.md)) and the
+native build ([docs/issues/native-recomp.md](../../docs/issues/native-recomp.md)).
 
 Nothing of the game and nothing of Play! is in this directory: what is here is our own
 source, a patch against Play! and scripts.

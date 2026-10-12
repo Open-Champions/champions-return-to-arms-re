@@ -11,7 +11,8 @@
 //    API), and a queue of scripted presses for tests;
 //  - the video thread owning the canvas (see CGSHandler::g_webCanvas in play-web.patch);
 //  - sound into a ring that an AudioWorklet of the page plays from;
-//  - counters for the speed figures, and a comparison of consecutive pictures.
+//  - counters for the speed figures, and a comparison of consecutive pictures;
+//  - online play (RtaWebNet.cpp), on a page that has a relay.
 // Everything here is called from the page's main thread unless it says otherwise.
 
 #include <algorithm>
@@ -39,6 +40,7 @@
 #include "PS2VM_Preferences.h"
 #include "PadHandler.h"
 #include "Ps2VmJs.h"
+#include "RtaWebNet.h"
 #include "ee/PS2OS.h"
 #include "gs/GSH_OpenGL/GSH_OpenGL.h"
 #include "sound/SoundHandler.h"
@@ -376,6 +378,14 @@ namespace
 					if(--step.frames == 0) g_steps.pop_front();
 				}
 			}
+			// "One-step online" is pressing its way to the lobby: for these frames the game
+			// sees its buttons and nothing else, and both sticks at rest (as Rta.cpp).
+			RtaWebNet::OnVBlank(ram, PS2::EE_RAM_SIZE, g_isGame, buttons);
+			if(RtaWebNet::Driving())
+			{
+				buttons = RtaWebNet::Buttons();
+				axesSet = 0;
+			}
 			for(auto* listener : m_interfaces)
 			{
 				for(unsigned int i = 0; i < PS2::CControllerInfo::MAX_BUTTONS; i++)
@@ -470,6 +480,7 @@ namespace
 			for(const auto& word : g_activePatches) memcpy(ram + word.address, &word.value, 4);
 		}
 		g_isGame = isGame;
+		RtaWebNet::OnExecutable(isGame);
 		printf("RTA: executable %s, checksum %08X%s, %zu patch words written (%u of them display patches)\n",
 		       name.c_str(), crc, isGame ? " (the game, version checked)" : " (NOT the version the patches are for: none applied)",
 		       g_activePatches.size(), static_cast<unsigned int>(g_displayPatchCount));
@@ -483,6 +494,7 @@ namespace
 		void CreateVM() override
 		{
 			CPs2VmJs::CreateVM();
+			RtaWebNet::Attach(this);
 			m_executableChange = m_ee->m_os->OnExecutableChange.Connect([]() { GameExecutableChanged(); });
 		}
 
@@ -555,6 +567,7 @@ namespace
 	{
 		g_vm = new CPs2VmWeb();
 		g_vm->Initialize();
+		RtaWebNet::PrepareCard();
 		if(g_glMode == GL_MODE_OWN_CANVAS) CGSHandler::g_webCanvas = "#outputCanvas";
 		g_vm->CreateGSHandler([]() { return new CGSH_OpenGLWeb(); });
 		{
@@ -725,9 +738,53 @@ extern "C"
 			if(word.address >= PS2::EE_RAM_SIZE - 4 || (word.address & 3)) return -1;
 			words.push_back(word);
 		}
+		// what every player has to have the same: a short figure to compare, made as the
+		// desktop application makes it (Rta.cpp, LoadPatches) and told to the other players
+		{
+			uint32 hash = 2166136261u;
+			auto sorted = words;
+			std::sort(sorted.begin(), sorted.end(), [](const PatchWord& a, const PatchWord& b) { return a.address < b.address; });
+			for(const auto& word : sorted)
+			{
+				for(uint32 v : {word.address, word.value})
+				{
+					for(int i = 0; i < 4; i++) hash = (hash ^ ((v >> (i * 8)) & 0xFF)) * 16777619u;
+				}
+			}
+			RtaWebNet::SetPatchSet(hash, static_cast<uint16_t>(std::min<size_t>(words.size(), 0xFFFF)));
+		}
 		std::lock_guard lock(g_mutex);
 		g_patches = words;
 		g_wantDisplayPatches = (displayPatches != 0);
+		return static_cast<int>(words.size());
+	}
+
+	// More patch words from a file of the page's own (every section of it), after
+	// rtaSetPatches and before the disc is booted: on a privately served page, what the
+	// game needs to get past its sign-in step. They are not part of the patch set's figure
+	// (as the desktop application's extra patch files are not). Returns the number of
+	// words added, -1 on a line that is not an EE word patch.
+	EMSCRIPTEN_KEEPALIVE int rtaAddPatches(const char* text)
+	{
+		std::vector<PatchWord> words;
+		for(auto line : Split(text, '\n'))
+		{
+			line = Trim(line);
+			if(line.compare(0, 6, "patch=") != 0) continue;
+			auto fields = Split(line.substr(6), ',');
+			std::string type = fields.size() == 5 ? fields[3] : "";
+			std::string cpu = fields.size() == 5 ? fields[1] : "";
+			for(auto& c : type) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+			for(auto& c : cpu) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+			if(type != "word" || cpu != "ee") return -1;
+			PatchWord word;
+			word.address = static_cast<uint32>(strtoul(fields[2].c_str(), nullptr, 16)) & 0x1FFFFFFF;
+			word.value = static_cast<uint32>(strtoul(fields[4].c_str(), nullptr, 16));
+			if(word.address >= PS2::EE_RAM_SIZE - 4 || (word.address & 3)) return -1;
+			words.push_back(word);
+		}
+		std::lock_guard lock(g_mutex);
+		g_patches.insert(g_patches.end(), words.begin(), words.end());
 		return static_cast<int>(words.size());
 	}
 

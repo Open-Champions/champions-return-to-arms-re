@@ -12,6 +12,15 @@ of Champions: Return to Arms, SLUS-20973 version 2.00.
 What has and has not been tried is at the end. Read "What is known not to work" before
 you plan an evening around it.
 
+Related pages: [STATE-OF-PLAY.md](STATE-OF-PLAY.md) compares this application with the
+other routes to a game and gives the measured figures with their sources. Those routes
+are PCSX2 or a console with the patch file ([online-setup.md](online-setup.md), which
+also has the patch set and what it rests on), the same build in a browser
+([issues/browser-build.md](issues/browser-build.md)) and the game's code translated to
+native C++ ([issues/native-recomp.md](issues/native-recomp.md)). What was changed in the
+emulator for this application, and how each change was checked, is in
+[tools/play-net/README.md](../tools/play-net/README.md).
+
 ## 1. Build (once)
 
 Apple silicon Mac, Xcode command line tools, [Homebrew](https://brew.sh).

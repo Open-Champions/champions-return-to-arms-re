@@ -1793,6 +1793,19 @@ namespace
 				// longest stretch (in frames) the machine has gone without drawing
 				push(Step::REPLY, 0, "ok " + CpuText() + Format(" stuck=%d quiet=%llu quiet_most=%llu block_config=%d", m_gameStuck.load() ? 1 : 0, static_cast<unsigned long long>(m_quietFrames), static_cast<unsigned long long>(m_quietMost), m_blockConfig ? 1 : 0));
 			}
+			else if(name == "hw")
+			{
+				// the machine's interrupt and DMA registers, for telling what a game that has
+				// stopped waits for: interrupt controller, DMA controller with the VIF1 and
+				// GIF channels, the GS's status and interrupt mask, the processor's status
+				auto map = m_vm->m_ee->m_EE.m_pMemoryMap;
+				const auto& state = m_vm->m_ee->m_EE.m_State;
+				auto word = [&](uint32 address) { return map->GetWord(address); };
+				push(Step::REPLY, 0, Format("ok intc_stat=%x intc_mask=%x d_ctrl=%x d_stat=%x d1_chcr=%x d1_madr=%x d1_qwc=%x d1_tadr=%x d2_chcr=%x d2_madr=%x d2_qwc=%x d2_tadr=%x vif1_stat=%x gif_stat=%x gs_csr=%x gs_imr=%x status=%x epc=%x",
+				                            word(0x1000F000), word(0x1000F010), word(0x1000E000), word(0x1000E010), word(0x10009000), word(0x10009010), word(0x10009020), word(0x10009030),
+				                            word(0x1000A000), word(0x1000A010), word(0x1000A020), word(0x1000A030), word(0x10003C00), word(0x10003020), word(0x12001000), word(0x12001010),
+				                            state.nCOP0[CCOP_SCU::STATUS], state.nCOP0[CCOP_SCU::EPC]));
+			}
 			else if(name == "note")
 				push(Step::REPLY, 0, "ok " + GameNote());
 			else if(name == "peers")

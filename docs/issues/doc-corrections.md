@@ -8,8 +8,8 @@ applied them, and then compared the documents with each other.
 
 A second pass, made after more reports had come in, is recorded at the end of this file
 under "Second pass", a third under "Third pass", a fourth under "Fourth pass", a fifth
-under "Fifth pass" and a sixth under "Sixth pass"; sections 1 to 7 describe the first pass
-only. The fourth pass is the first that applies results from the running game; the fifth
+under "Fifth pass", a sixth under "Sixth pass" and a seventh, shorter, under "Seventh
+pass"; sections 1 to 7 describe the first pass only. The fourth pass is the first that applies results from the running game; the fifth
 is the first that applies results from two linked instances of it; the sixth is the first
 in which a result from two linked instances overturns one from an earlier run (the arena
 with real characters against the arena with placeholder ones).
@@ -1744,3 +1744,78 @@ python3 -I -B tools/dis.py SLUS_209.73 14d930:14d9f4              # … reloaded
 python3 -I -B tools/dis.py SLUS_209.73 114200:114228              # Creature_moveBy: touched.slot6(mover) with no test (the caller of V22)
 grep -n 'predicted spin cast\|touched by the prediction copy\|no prediction copy' patches/*.pnach   # the three patch-file sections named in rows 78, 80, 81
 ```
+
+## Seventh pass
+
+2026-10-12. Scope: the items the sixth pass left over, the list in
+`docs/issues/touch-handlers.md` section 7, and a re-check of every item of the earlier
+passes against the text as it stands now. Documents only. No symbol file, tool or patch
+file was edited, and nothing was run; where a corrected statement says **Executed** or
+**Ran** the evidence is in the document it names.
+
+### Y1. Summary
+
+| | |
+|---|---|
+| Clauses of the earlier passes checked against the current text | 346 in documents, 18 in symbol files and tools |
+| Of the 346, already carried by a line of the target document | 343 |
+| Corrected now (Y2 rows 9, 10 and 12) | 3 |
+| Stale lines found beside them and corrected (rows 10 and 11) | 2 |
+| Items of the sixth pass's hand-over and of touch-handlers section 7 applied | Y2 rows 1–8 |
+| Not applied | Y4 |
+
+### Y2. Corrections
+
+| # | Document | It said | It says now |
+|---|---|---|---|
+| 1 | `objects.md` O7 | `Creature_moveBy` is not used for players' own movement as far as read | it is: `Player_run`'s scripted-control exit, the call at 0x1a5604 → `Creature_moveToDest` → `Creature_moveTo` (0x114bb0), taken when the inert byte +0x231 is non-zero and the action state is 1; a copy cloned from a player frozen by a cutscene gets there (**Ran**, `docs/issues/touch-handlers.md` 3.2). The note on the unread classes points to the survey of slot 6 |
+| 2 | `issues/prediction-copy.md` 3.1, 3.5, the list of patches, the open questions | the caller that brings the copy into `Creature_moveBy` is not known; the scripted walk may be unreachable; no patch for the item bytes; the write of the carried load is harmless | the caller and its two conditions, met in play; the 38 handlers and the patch at the call site; the source of the item bytes and its patch (FINDINGS V30); the carried load is written outside the tick on the owner's machine only (V57). Each added beside the earlier sentence |
+| 3 | `issues/live-rig.md` 7.3 | nothing about what the stray drop message removes | what it removes depends on the owner's slot (FINDINGS M1, K2; `docs/spec/game-messages.md` section 10, **Executed**) |
+| 4 | `issues/live-rig.md` 10.1, 10.4, and the "in short" at the head of the document | the caller of `Creature_moveBy` was not captured; three things not done; the arena did not go out of sync in twelve runs | captured since, with the chain; the three done since, with where; the "in short" is marked as phase 2 with placeholder characters, with pointers to sections 9, 22 and 22.8 |
+| 5 | `issues/arena-entry.md` correction 2 and the sentence it corrects | the row's conclusion stands because the walk needs action state 1 | that does not stand: state 1 is an ordinary state for a player when a cutscene begins, and the copies took the scripted walk on the rig (**Ran**) |
+| 6 | `spec/monsters-1.md` section 10 and its "not done" | the copy's own move step is what calls slot 6; no patch; nothing run | true of `Creature_moveBy` only, the ordinary step is guarded (**Ran**); the patch is at the caller; run since on linked Play! instances, still not on a console or in PCSX2 |
+| 7 | `spec/skills-01-34.md` sections 1, 12, 17, 22, 34 and its head | the reading | the corrections of `spec/skills-01-34-executed.md` section 3, each written into the section it concerns and marked **Executed** |
+| 8 | `spec/skills-35-68.md` sections 38, 51, 67 and its head | the reading | the corrections of `spec/skills-35-68-executed.md` section 5, likewise |
+| 9 | `spec/skills-35-68.md` section 68, "Order inside a frame" | 180 frames for 3 s, 240 for 4 s … 720 for 12 s | 179, 239 … 719: the sentence was derived from the table before the table was corrected to 60 × seconds calls |
+| 10 | `formats/world.md`, table "Coordinates and units", and its last section | handedness Unknown; `model-texture.md` "names" `WCACHE.DAT` as a level texture container | right-handed, z up; camera x right, y down, z forward (`docs/spec/render-pipeline.md` section 3); the compass direction still Unknown. The remark about `WCACHE.DAT` is put in the past: that document has been corrected |
+| 11 | `data-tables.md`, table of files | `*_dialog.bin` listed as dialog | the voice-stream directory; dialog trees are `*.dbin` |
+| 12 | `monsters.md`, Horsemen | the type names and the variant numbers were not tied together | `UndeadKnight3` is variant 2, which casts the insects; `UndeadKnight4` is variant 3, the summoner; the arena's four are these on-foot knights |
+| 13 | `lobby-protocol.md` section 1a and 8.9; `FINDINGS.md` LS5 | the chat-room fix has been run with the test client only | run with the real game since (`issues/live-rig.md` 22.6): the game's leave-room request for the public room gets result 0. A line said in the room reaching the player that came back is still not seen |
+| 14 | `FINDINGS.md`, head | "Nothing here was observed on a running game" | the two later kinds of evidence, **Executed** and **Ran**, are defined; the sentence holds only for a PlayStation 2 and PCSX2 |
+
+### Y3. Found already in the text
+
+The lobby items of the sixth pass's hand-over are all in `lobby-protocol.md` as it stands:
+the extra block of an encrypted string whose text is a multiple of 16 bytes, the 52-byte
+discovery datagram, UDP ports 4000–4004, "import" on the new-character screen, the 32
+hexadecimal digits of 0x27, the two strings of 0x42, the two TCP segments per message, the
+12 bytes of 0x41, result 7 of 0x55 and the result codes the game shows. The two facts
+listed as having no ledger row are in rows R17 and R18.
+
+### Y4. Not applied
+
+- **`symbols/creatures.tsv`, note of `Creature_moveBy`**: it still ends "which caller
+  brings the copy here is not known". The answer is row 1 above.
+- **`names.tsv`**: the fuller notes proposed in X5 (`script_getScaledTime`,
+  `script_playGotItemSound`, `script_lightEffect`, `script_clearAllSkills`,
+  `script_addQuest`, `Creature_run`, `Horsemen_run`, `Zek_run`).
+- **`tools/lobby_e2e_test.py`**: the six further steps that need no server control, an
+  exact 12-byte check for 0x41, and gateway ports taken from the argument in its
+  extended step 30.
+- **Tools, as reported and unchanged**: the four gaps of `tools/ee_emu.py`
+  (`docs/spec/creature-tick.md` section 17); `tools/ghostreach.py` not printing indexed
+  record stores (`docs/issues/field-claims-audit.md` 6.3); new tools should append
+  `tools/` to the module path, and 22 files still prepend it.
+- **`patches/SLUS-20973_4028A55F.pnach`**: the `author=` line of a section that was on
+  in the soak of `issues/live-rig.md` section 22 without its fault being reproduced still
+  reads "untested on a running game". `docs/online-setup.md` says for each such section
+  what was and was not run.
+
+### Y5. Where a correction sits somewhere other than its report said
+
+- "player.md cast step 8" (the helper charges cost/60 once): the sentence is in
+  `skills.md`, and is corrected there.
+- `Camera_followCollide` raising the pitch: `gameplay.md` section 10, not section 5.
+- The divide at 0x30cee8 in Tagar's Insects: no area document states the premise; the
+  fact is FINDINGS F3 and `issues/float-divergence.md`.
+- Creature +0xe4 (armour): `creatures.md`; `monsters.md` has no row for that field.

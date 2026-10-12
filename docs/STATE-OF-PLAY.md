@@ -41,8 +41,10 @@ file and the evidence for it from the other emulator:
 
 - The patch file has 37 sections. The suggested set is 19 of them
   ([online-setup.md](online-setup.md), "Suggested patch set";
-  `tools/play-net/sections-suggested.txt`). Every section's `author=` line says whether it
-  ran on a live game; none says it ran in PCSX2 or on a console.
+  `tools/play-net/sections-suggested.txt`). Each section's `author=` line says whether its
+  fault and its fix were seen on a live game; none says PCSX2 or a console. A section
+  that was only switched on in the soak below, without its fault being reproduced, still
+  reads "untested on a running game" there.
 - A simulated pair of clients passes 16 of 16 core steps and 40 of 40 extended steps
   against the fixed fork of the lobby server (`tools/lobby_e2e_test.py`;
   [lobby-protocol.md](lobby-protocol.md) section 1a). That tests the server, not the game.
@@ -59,7 +61,7 @@ file and the evidence for it from the other emulator:
 | 24 pairs, 1,027,302 ticks: one differing tick, a kick from the pause menu | the same 24 sections plus the skeleton section | FINDINGS V62; live-rig 22.3 |
 | 8 pairs, 195,331 ticks: no difference, no checksum failure, 712 saves accepted | launched through the real lobby path, 24 sections | FINDINGS V62; live-rig 22.6 |
 
-The three arms together are 6,344,335 ticks. Three things to know about them:
+The three arms together are 6,344,335 ticks. Four things to know about them:
 
 - **The soak's 24 sections are not the suggested 19.** Eighteen of the 19 were in the
   soak. The nineteenth, "no touch handler runs for a prediction copy that walks into
@@ -69,6 +71,11 @@ The three arms together are 6,344,335 ticks. Three things to know about them:
 - Two bytes of local effect state in the player record do differ between machines, in
   68 of the 120 pairs. The soak follows them but does not count them as a divergence; no
   reader in the simulation is known (FINDINGS V63; live-rig 22.4).
+- Four pairs ended early: one machine dropped the other while its own pause menu was
+  open (three pairs of the first arm, one of the second; live-rig 22.3). By the pattern
+  of earlier runs the random input had found the pause menu's kick entry (**Inferred**;
+  not traced again). A kick ends a session without the machines having disagreed before
+  it. [issues/online-quality.md](issues/online-quality.md) has started on it.
 - What the soak cannot see is listed in live-rig 22.8: state outside the player records
   unless it reaches the shared seed or a player, anything that needs longer than a pair
   lasts (17 minutes of play at most), and every difference between two real machines.
@@ -168,14 +175,18 @@ place (issues/browser-build.md, "Can a browser player and a desktop player share
 game?"). A shared game between the two was **not run**. What it would do is taken from
 the rig, where one of two linked machines was forced to round to nearest: the game's own
 out-of-sync check tripped 7 to 113 ticks after anyone moved (FINDINGS V15; live-rig 8.3).
-So a browser player and a native player cannot share a game as the builds are. Browser
-players among themselves should agree (Inferred from the WebAssembly specification; not
-run).
+So a browser player and a Mac-app player cannot share a game as the builds are. (The
+browser notes call the Mac app the "desktop" or "native" build; on this page "native
+build" means route 4 only.) Browser players among themselves should agree (**Inferred**
+from the WebAssembly specification; not run).
 
-**Missing.** Online play: a browser has no raw sockets, so a relay is needed; it is
-designed in the notes and not built. A controller, the file dialog, full screen and the
-sound have not been tried by a person. Nothing beyond the first level. Safari and Firefox
-are untested. A build from an empty directory by the script was not run.
+**Missing.** Online play: a browser has no raw sockets, so a relay on a server is needed.
+The notes have the design and say that nothing of it was built or tried. As of this date
+a relay program and its checker are in `tools/play-web/relay/` and the page's network
+module is being written; no document reports a browser game going online. A controller,
+the file dialog, full screen and the sound have not been tried by a person. Nothing
+beyond the first level. Safari and Firefox are untested. A build from an empty directory
+by the script was not run.
 
 ## 4. The native build
 
@@ -205,7 +216,9 @@ the game and stays out of the repository. Notes:
 load of an I/O-processor module. Not built: disc, controller and memory-card services, a
 renderer, sound, the network, a Windows build. Not compared: a level with fighting,
 input, a level change, a network session. The agreement shown is with the emulator, not
-with a console (native-recomp, step 5).
+with a console (native-recomp, step 5). The services that take the boot further are
+being written as of this date; the section "Status for other agents" at the top of the
+notes is kept current by their author and goes before this paragraph where they differ.
 
 ## Mixing routes
 

@@ -21,7 +21,7 @@ What has been run, all of it in the Play! emulator — not a PlayStation 2 and n
   lockstep game (V49, live-rig section 19). The sign-in step was passed with a local
   sign-in patch that is not part of this repository; as shipped the game stops there with
   a network error (V33). The Mac application does the same path
-  (`tools/play-net/README.md`).
+  ([tools/play-net/README.md](../tools/play-net/README.md)).
 - **Player-to-player traffic between two instances on one Mac**, through the loop-back
   address. Hole punching through a router has not been run.
 - **The patch set below**, on two linked instances: see "Suggested patch set".
@@ -135,7 +135,10 @@ console, and the patch file says so section by section.
 - A soak with 24 fix sections on — 120 long pairs, 5,121,702 ticks — ended with no
   difference in any shared value compared and no out-of-sync message; eight pairs
   launched through the real lobby path, 195,331 ticks, the same (FINDINGS V62, live-rig
-  section 22). **Those 24 are not this set.** Eighteen of the 19 were among them. "No
+  section 22). Two bytes of local effect state in the player record did differ between
+  the machines, in 68 of the 120 pairs; the soak follows them without counting them as a
+  divergence, and no reader in the simulation is known (V63). **Those 24 are not this
+  set.** Eighteen of the 19 were among them. "No
   touch handler runs for a prediction copy that walks into something" was not; its runs
   are in `docs/issues/touch-handlers.md` section 6 (FINDINGS V61) and it has not been in
   a soak. The soak also had six sections that are not suggested here.

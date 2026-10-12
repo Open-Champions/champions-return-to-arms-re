@@ -65,6 +65,8 @@ square triangle l1 l2 l3 r1 r2 r3 start select):
                              the end (host+choose) leaves the character screens alone
     peers                    this copy's patch set and, for every other player heard
                              from, the set its copy told (or ?), with the warning
+    hw                       the machine's interrupt and DMA registers (what a stopped game
+                             waits for): INTC, DMAC with channels 1 and 2, VIF1, GIF, GS
     cpu                      where the main processor is, whether the game is taken to be
                              stuck, the longest stretch without drawing
     note                     the status bar's note about the game (network screen, stuck)

@@ -61,6 +61,13 @@ Mac/Windows application?
 This file is written as the work proceeds; every section says what was **Ran** (executed
 here, with the numbers), what was only **Read**, and what was **Not reached**.
 
+Related pages: [STATE-OF-PLAY.md](../STATE-OF-PLAY.md) sets this build beside the three
+other routes to a game — PCSX2 with the patch file ([online-setup.md](../online-setup.md)),
+the Play! emulator as a Mac application ([play-online.md](../play-online.md),
+[tools/play-net](../../tools/play-net/README.md)) and the same emulator in a browser
+([browser-build.md](browser-build.md)). The rig this build is compared with is
+[live-rig.md](live-rig.md).
+
 Where things are:
 
 | What | Where | In the repository? |

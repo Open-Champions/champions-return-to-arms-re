@@ -12,6 +12,16 @@ source (`src/`), a patch against one Play! commit (`play-net.patch`) and scripts
 has been seen to do, and what not, is at the end; how to play is in
 [docs/play-online.md](../../docs/play-online.md).
 
+Related pages: [docs/STATE-OF-PLAY.md](../../docs/STATE-OF-PLAY.md) sets this build
+beside the other routes to a game, with the measured figures. The patch set applied here
+and what it rests on is in [docs/online-setup.md](../../docs/online-setup.md). The same
+core changes compiled for a browser are in [tools/play-web](../play-web/README.md)
+(notes: [docs/issues/browser-build.md](../../docs/issues/browser-build.md)); a browser
+player and a player of this build cannot share a game as built, because the two round
+floating-point results differently. The game's code translated to native C++, with no
+emulator, is in `tools/recomp/`
+([docs/issues/native-recomp.md](../../docs/issues/native-recomp.md)).
+
 | File | What it is |
 |---|---|
 | `build.sh` | clones Play! at commit `83700b2c31e593bc94e845b4b31b797be84dda59` into `local/play-playable`, applies the patch, copies `src/` in, builds `local/play-playable-build/Source/ui_qt/Play.app` |

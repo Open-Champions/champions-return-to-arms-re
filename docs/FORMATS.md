@@ -62,3 +62,35 @@ against the loader here): `u32 count; u32 stringTable;` then per object `u32 cla
 u16 size; u16 angle; float x, y, z;` followed by `(size − 20) / 4` property-string
 offsets, a zero word ending the list. All string offsets are relative to the string
 table.
+
+## Texture names used by the Mac build's dump and replacement
+
+Not a format of the disc: the names the playable Mac build (`tools/play-net`) gives to
+textures when it writes them out and when it looks for a replacement. They are listed
+here because they are how a texture of this game is told apart outside the game.
+
+`<texels>-<palette>-p<format>-<width>x<height>.png`
+
+- `<texels>` is a figure of the bytes the game sent for the texture, `<palette>` a figure
+  of the palette it is drawn with. The same texels with another palette are another
+  picture.
+- `<format>` is the console's pixel-format number: 19 is 8-bit, 20 is 4-bit, 0 is 32-bit
+  (the pixel-format field of the `TEX0` bits a `.tex` header keeps at +0x0c,
+  [formats/model-texture.md](formats/model-texture.md)).
+- `<width>x<height>` is the size sent, which can be smaller than the size the texture
+  register names.
+
+The name does not change from run to run or with where the game puts the texture in video
+memory. Beside each dumped picture a `.json` file of the same name records how the game
+draws with it (primitive, blending, alpha test, wrap modes, the rectangles used). A PNG
+file of the same name and of any whole multiple of the size is drawn in its place.
+
+`tools/play-net/disctex.py` works out the same names from the disc for the textures kept
+in lumps (model, monster and item textures, interface art) without playing. It cannot do
+that for level textures: `<LEVEL>.TEX` holds them in a packed form that the game unpacks
+before sending, and that unpacker has not been rewritten.
+
+The rules a replacement has to follow (alpha 128 is opaque, interface art stored as two
+fields, texels that were never sent) and the whole pipeline are in
+[tools/play-net/README.md](../tools/play-net/README.md), "Texture dump and replacement"
+and "Upscaled art". Dumps and packs are the game's art and stay out of the repository.

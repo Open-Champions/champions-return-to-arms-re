@@ -3,6 +3,15 @@
 Status: a first version runs (2026-10-12): built, measured, usable offline; not yet tried
 by a person. The summary is the state; the rest is the record.
 
+Related pages: [STATE-OF-PLAY.md](../STATE-OF-PLAY.md) sets this build beside the other
+routes to a game. The desktop application these notes compare with is
+[tools/play-net](../../tools/play-net/README.md) (how to play:
+[play-online.md](../play-online.md)); the patch set both apply is in
+[online-setup.md](../online-setup.md); the sources of this build are in
+[tools/play-web](../../tools/play-web/README.md). "Native build" in these notes means
+that desktop application. The game's code translated to native C++ is another piece of
+work: [native-recomp.md](native-recomp.md).
+
 Question: does Champions: Return to Arms (SLUS-20973 v2.00) run at full speed in Chrome
 on an Apple M5 Pro, at the title screen and standing in the first level, with the same
 core changes as the native build (`tools/play-net/play-net.patch`) and the same patches?

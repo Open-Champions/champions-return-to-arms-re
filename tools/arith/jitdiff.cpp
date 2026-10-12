@@ -17,7 +17,13 @@
 // register while the translated code runs. 'browser': results rounded to nearest,
 // denormals kept (what "browser arithmetic" in the application sets). 'native': rounded
 // toward zero, denormals as zero (Play!'s own). A WebAssembly build has no such register.
-// --dump DIR writes every result of every operation to DIR/<name>.bin, for compare.py.
+// --dump DIR writes every result of every operation to DIR/<name>.bin (compare with cmp).
+//
+// Operations whose name starts with "unused." are in the intermediate language but are not
+// emitted by the emulator's front ends for the EE's FPU or the vector units (checked by
+// searching Play!'s Source directory); they are run for interest and are not part of the
+// "ALL" line. One of them differs by design of the two translators: a "greater than"
+// compare with a NaN operand (true from the ARM64 translator, false from the WebAssembly one).
 //
 // Nothing of the game is in here. Build: tools/arith/build.sh.
 
@@ -25,6 +31,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <string>
 #include <vector>
@@ -34,6 +41,20 @@
 #include "MemStream.h"
 #include "MemoryFunction.h"
 #include "offsetof_def.h"
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+// The WebAssembly code generator's modules import a table of the functions translated code
+// may call; Play! creates it when the first such function is registered. Nothing here
+// calls out, so an empty one is made.
+EM_JS(void, MakeImportTable, (), {
+	if(Module.codeGenImportTable === undefined)
+	{
+		Module.codeGenImportTable = new WebAssembly.Table({element : 'anyfunc', initial : 32});
+		Module.codeGenImportTableNextIndex = 0;
+	}
+});
+#endif
 
 struct CONTEXT
 {
@@ -93,6 +114,16 @@ static void PushC(Jitter::CJitter& j, bool clamp)
 	if(clamp) j.FP_ClampS();
 }
 
+static void MakeComparable(Jitter::CJitter& j)
+{
+	uint32 cursor = j.GetTopCursor();
+	j.MD_PushCstExpandW(0xFFFFFFFFU); j.PushCursor(cursor); j.MD_SubW();
+	j.MD_PushCstExpandW(0x7FFFFFFFU); j.PushCursor(cursor); j.MD_AddW();
+	j.PushCursor(cursor); j.MD_SraW(31); j.MD_BitSelect();
+	j.MD_PushCstExpandW(0x80000000U); j.MD_SubW();
+	j.Swap(); j.PullTop();
+}
+
 static std::vector<CASE> MakeCases()
 {
 	using J = Jitter::CJitter;
@@ -103,7 +134,7 @@ static std::vector<CASE> MakeCases()
 	{
 		bool c = (clamp != 0);
 		// the names are static strings: built once
-		static std::vector<std::string> names;
+		static std::deque<std::string> names; // a deque: the strings stay where they are
 		auto name = [&](const char* base) {
 			names.push_back(std::string(c ? "fpu." : "raw.") + base);
 			return names.back().c_str();
@@ -125,7 +156,7 @@ static std::vector<CASE> MakeCases()
 		add(name("cmp.lt"), S2I, [c](J& j) { PushA(j, c); PushB(j, c); j.FP_CmpS(Jitter::CONDITION_BL); j.PullRel(OFF(ir)); });
 		add(name("cmp.le"), S2I, [c](J& j) { PushA(j, c); PushB(j, c); j.FP_CmpS(Jitter::CONDITION_BE); j.PullRel(OFF(ir)); });
 	}
-	add("raw.cmp.gt", S2I, [](J& j) { PushA(j, false); PushB(j, false); j.FP_CmpS(Jitter::CONDITION_AB); j.PullRel(OFF(ir)); });
+	add("unused.cmp.gt", S2I, [](J& j) { PushA(j, false); PushB(j, false); j.FP_CmpS(Jitter::CONDITION_AB); j.PullRel(OFF(ir)); });
 	add("raw.rcpl", S1, [](J& j) { PushA(j, false); j.FP_RcplS(); j.FP_PullRel32(OFF(fr)); });
 	add("raw.rsqrt1", S1, [](J& j) { PushA(j, false); j.FP_RsqrtS(); j.FP_PullRel32(OFF(fr)); });
 	add("raw.abs", S1, [](J& j) { PushA(j, false); j.FP_AbsS(); j.FP_PullRel32(OFF(fr)); });
@@ -149,10 +180,10 @@ static std::vector<CASE> MakeCases()
 	add("md.sub", V2, [](J& j) { j.MD_PushRel(OFF(a)); j.MD_PushRel(OFF(b)); j.MD_SubS(); j.MD_PullRel(OFF(r)); });
 	add("md.mul", V2, [](J& j) { j.MD_PushRel(OFF(a)); j.MD_PushRel(OFF(b)); j.MD_MulS(); j.MD_PullRel(OFF(r)); });
 	add("md.div", V2, [](J& j) { j.MD_PushRel(OFF(a)); j.MD_PushRel(OFF(b)); j.MD_DivS(); j.MD_PullRel(OFF(r)); });
-	add("md.min", V2, [](J& j) { j.MD_PushRel(OFF(a)); j.MD_PushRel(OFF(b)); j.MD_MinS(); j.MD_PullRel(OFF(r)); });
-	add("md.max", V2, [](J& j) { j.MD_PushRel(OFF(a)); j.MD_PushRel(OFF(b)); j.MD_MaxS(); j.MD_PullRel(OFF(r)); });
-	add("md.cmplt", V2, [](J& j) { j.MD_PushRel(OFF(a)); j.MD_PushRel(OFF(b)); j.MD_CmpLtS(); j.MD_PullRel(OFF(r)); });
-	add("md.cmpgt", V2, [](J& j) { j.MD_PushRel(OFF(a)); j.MD_PushRel(OFF(b)); j.MD_CmpGtS(); j.MD_PullRel(OFF(r)); });
+	add("unused.md.min", V2, [](J& j) { j.MD_PushRel(OFF(a)); j.MD_PushRel(OFF(b)); j.MD_MinS(); j.MD_PullRel(OFF(r)); });
+	add("unused.md.max", V2, [](J& j) { j.MD_PushRel(OFF(a)); j.MD_PushRel(OFF(b)); j.MD_MaxS(); j.MD_PullRel(OFF(r)); });
+	add("unused.md.cmplt", V2, [](J& j) { j.MD_PushRel(OFF(a)); j.MD_PushRel(OFF(b)); j.MD_CmpLtS(); j.MD_PullRel(OFF(r)); });
+	add("unused.md.cmpgt", V2, [](J& j) { j.MD_PushRel(OFF(a)); j.MD_PushRel(OFF(b)); j.MD_CmpGtS(); j.MD_PullRel(OFF(r)); });
 	add("md.abs", V1, [](J& j) { j.MD_PushRel(OFF(a)); j.MD_AbsS(); j.MD_PullRel(OFF(r)); });
 	add("md.neg", V1, [](J& j) { j.MD_PushRel(OFF(a)); j.MD_NegS(); j.MD_PullRel(OFF(r)); });
 	add("md.clamp", V1, [](J& j) { j.MD_PushRel(OFF(a)); j.MD_ClampS(); j.MD_PullRel(OFF(r)); });
@@ -170,8 +201,25 @@ static std::vector<CASE> MakeCases()
 	// the fixed-point conversions: scale by a power of two, then convert (ftoi4/12/15, itof4/12/15)
 	add("vu.ftoi4", V1, [](J& j) { j.MD_PushRel(OFF(a)); j.MD_PushCstExpandS(16.0f); j.MD_MulS(); j.MD_ToInt32TruncateS(); j.MD_PullRel(OFF(r)); });
 	add("vu.ftoi12", V1, [](J& j) { j.MD_PushRel(OFF(a)); j.MD_PushCstExpandS(4096.0f); j.MD_MulS(); j.MD_ToInt32TruncateS(); j.MD_PullRel(OFF(r)); });
-	add("vu.itof4", V1, [](J& j) { j.MD_PushRel(OFF(a)); j.MD_ToSingleI32(); j.MD_PushCstExpandS(1.0f / 16.0f); j.MD_MulS(); j.MD_PullRel(OFF(r)); });
-	add("vu.itof15", V1, [](J& j) { j.MD_PushRel(OFF(a)); j.MD_ToSingleI32(); j.MD_PushCstExpandS(1.0f / 32768.0f); j.MD_MulS(); j.MD_PullRel(OFF(r)); });
+	add("vu.itof4", V1, [](J& j) { j.MD_PushRel(OFF(a)); j.MD_ToSingleI32(); j.MD_PushCstExpandS(16.0f); j.MD_DivS(); j.MD_PullRel(OFF(r)); });
+	add("vu.itof15", V1, [](J& j) { j.MD_PushRel(OFF(a)); j.MD_ToSingleI32(); j.MD_PushCstExpandS(32768.0f); j.MD_DivS(); j.MD_PullRel(OFF(r)); });
+	// max / mini: the larger or smaller of two, chosen by an integer compare of the bit
+	// patterns made comparable (VUShared::MakeComparableFromFloat), no float compare at all
+	add("vu.max", V2, [](J& j) {
+		j.MD_PushRel(OFF(a)); j.MD_PushRel(OFF(b));
+		j.MD_PushRel(OFF(a)); MakeComparable(j); j.MD_PushRel(OFF(b)); MakeComparable(j);
+		j.MD_CmpGtW(); j.MD_BitSelect(); j.MD_PullRel(OFF(r));
+	});
+	add("vu.mini", V2, [](J& j) {
+		j.MD_PushRel(OFF(b)); j.MD_PushRel(OFF(a));
+		j.MD_PushRel(OFF(a)); MakeComparable(j); j.MD_PushRel(OFF(b)); MakeComparable(j);
+		j.MD_CmpGtW(); j.MD_BitSelect(); j.MD_PullRel(OFF(r));
+	});
+	// clip: the six compares of x, y, z against +w and -w (VUShared::CLIP)
+	add("vu.clip", V3I, [](J& j) {
+		j.MD_PushRel(OFF(a)); j.MD_PushRel(OFF(b)); j.MD_AbsS(); j.MD_PushRel(OFF(b)); j.MD_AbsS(); j.MD_NegS();
+		j.MD_MakeClip(); j.PullRel(OFF(ir));
+	});
 	return cases;
 }
 
@@ -308,6 +356,9 @@ int main(int argc, char** argv)
 		}
 	}
 
+#ifdef __EMSCRIPTEN__
+	MakeImportTable();
+#endif
 	auto context = static_cast<CONTEXT*>(framework_aligned_alloc(sizeof(CONTEXT), 0x10));
 	auto cases = MakeCases();
 	SetMode(mode);
@@ -383,9 +434,9 @@ int main(int argc, char** argv)
 			}
 		}
 		if(dump) fclose(dump);
-		printf("%-14s %016llx  nan_results=%llu\n", test.name, static_cast<unsigned long long>(hash), static_cast<unsigned long long>(nans));
-		all = (all ^ hash) * 0x100000001B3ull;
+		printf("%-16s %016llx  nan_results=%llu\n", test.name, static_cast<unsigned long long>(hash), static_cast<unsigned long long>(nans));
+		if(strncmp(test.name, "unused.", 7) != 0) all = (all ^ hash) * 0x100000001B3ull;
 	}
-	printf("%-14s %016llx\n", "ALL", static_cast<unsigned long long>(all));
+	printf("%-16s %016llx\n", "ALL", static_cast<unsigned long long>(all));
 	return 0;
 }
