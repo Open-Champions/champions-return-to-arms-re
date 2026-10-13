@@ -546,6 +546,11 @@ func _finish(code: int) -> void:
 				file.close()
 	if player != null:
 		player.stop()
+	if scene_view != null:
+		scene_view.call("release")
+	if drawer != null:
+		view.set("drawer", null)
+		drawer.call("release")
 	get_tree().quit(code)
 
 

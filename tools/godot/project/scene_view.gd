@@ -49,6 +49,16 @@ func _ready() -> void:
 	_apply()
 
 
+func release() -> void:
+	for rid in [sun_instance, lamp_instance, sun, lamp]:
+		if rid.is_valid():
+			RenderingServer.free_rid(rid)
+	sun_instance = RID()
+	lamp_instance = RID()
+	sun = RID()
+	lamp = RID()
+
+
 func takes_input() -> bool:
 	return false
 

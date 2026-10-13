@@ -1,6 +1,6 @@
 # How complete is it
 
-Updated at every check-in of the work. **Last update: 2026-10-13, 08:57 CDT.**
+Updated at every check-in of the work. **Last update: 2026-10-13, 09:10 CDT.**
 
 One table for the whole effort to make Champions: Return to Arms (SLUS-20973 v2.00)
 playable again, online, on today's computers. The percentages are estimates by the people
@@ -27,7 +27,7 @@ a session by hand - every test drove the game by script, on one Apple-silicon Ma
 | Native build: online | 98 % | through the lobby with itself, with the emulator application and with a browser page, in step; three and four players with the window program (4 of 4 launches of four after a fix, up to 5,454 ticks every pair, with level change, deaths and reload); private games, chat, friends, kick, leaving and playing again nine games in a row, a dropped player and a dropped host ([native-online](issues/native-online.md)) | a second computer; a person at the controls; one host thread left behind per ended game thread |
 | Native build: Windows | 85 % | compiles and links with picture, sound, controller and online play; the same sources built for x86-64 on the Mac give byte-identical results ([native-windows](issues/native-windows.md)) | a first run on a Windows computer |
 | Native build: in a browser | 60 % | boots and plays the first level in Chrome, tick-identical to the Mac build ([native-web](issues/native-web.md)) | rebuilt with the faster renderer; sound delay; online |
-| Native build: inside Godot | started | the translated game as the game logic under Godot, which does window, input, sound and drawing | everything; notes will be in issues/native-godot.md |
+| Native build: inside Godot | 35 % | a first spike on Godot 4.5.2: the translated game runs as a library under Godot, which does window, input and sound (same result as the stand-alone program in the tick comparison, pictures identical); Godot draws every frame itself (within 3 of 255 of the game's own picture); on the first level the scene is handed over in 3-D and Godot adds real-time shadows, a light of its own and a free camera; a macOS application exported ([native-godot](issues/native-godot.md)) | 60 pictures a second with Godot drawing (75 unpaced so far); the 3-D scene beyond the first level; the game's culling widened for a free camera; online; Windows |
 
 What "the game" is in each row: the first five rows run the original program in an
 emulator; the "native build" rows run the game's own code translated to C++
@@ -37,6 +37,8 @@ and the Godot client are tracked in their own repositories
 
 ## Since the last update
 
+- A first Godot spike: the translated game plays inside Godot, Godot draws it, and on the
+  first level Godot lights it with real-time shadows.
 - Native online play exercised end to end: three and four players, the lobby's screens,
   leaving and returning, drops, and a game with a browser page; one launch failure of four
   players found and fixed.

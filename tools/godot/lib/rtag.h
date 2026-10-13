@@ -128,12 +128,14 @@ typedef struct rtag_target {
     int32_t screen;             /* a surface the size of the picture: meant to be drawn at output resolution */
 } rtag_target;
 
-/* The 3-D scene before the game's projection (config.scene3d).  For every vertex the main VU1 programs
- * transformed: where it was in the world.  Parallel to the draw list: a draw with scene_first >= 0 has
- * `count` scene vertices from there, one per vertex of the draw, in the same order. */
+/* The 3-D scene before the game's projection (config.scene3d): for every vertex of the draws that make up
+ * the 3-D scene - what the vertex programs kicked and what the CPU projected into the 3-D surface with a
+ * depth test - where it was in the world (scene_tap.cpp turns the projection round).  Parallel to the draw
+ * list: a draw with scene_first >= 0 has `count` scene vertices from there, one per vertex of the draw, in
+ * the same order; the list's own vertices still carry colour and texture coordinates. */
 typedef struct rtag_scene_vertex {
     float x, y, z;              /* world space, the game's units */
-    float w;                    /* the projection's w (distance along the view axis), for depth */
+    float w;                    /* its distance along the game camera's view axis */
 } rtag_scene_vertex;
 
 typedef struct rtag_scene {
