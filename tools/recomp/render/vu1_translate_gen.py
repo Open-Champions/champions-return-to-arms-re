@@ -342,10 +342,12 @@ class Writer:
 
             def brought_in(expr, is_clean):
                 return ('v4_in_clean(%s)' if is_clean else 'v4_in(%s)') % expr
+            # (Only the fields the instruction writes count: what it computes in the others
+            # is thrown away, and the flags are read from the written fields alone.)
             fs = self.vf(d.ufs)
-            fs_clean = clean['vf'][d.ufs] == 15
+            fs_clean = (clean['vf'][d.ufs] & d.udest) == d.udest
             if d.usrc == S_VEC:
-                other, other_clean = self.vf(d.uft), clean['vf'][d.uft] == 15
+                other, other_clean = self.vf(d.uft), (clean['vf'][d.uft] & d.udest) == d.udest
             elif d.usrc == S_BC:
                 other, other_clean = 'v4_bc(%s, %d)' % (self.vf(d.uft), d.ubc), bool(clean['vf'][d.uft] & (8 >> d.ubc))
             elif d.usrc == S_Q:
@@ -625,6 +627,7 @@ class Writer:
         for n in sorted(p.clip_var):
             head.append('    uint32_t cv_%03x = 0;' % n)
         head.append('    (void)top; (void)itop; (void)go_; (void)jump_; (void)vf0;')
+        head.append('    goto dispatch;')
         head.append('dispatch:')
         head.append('    switch (at) {')
         for e in entries:

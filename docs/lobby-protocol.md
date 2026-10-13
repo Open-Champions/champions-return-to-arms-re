@@ -340,8 +340,8 @@ The executable also contains builders for ids 0x00, 0x03, 0x04, 0x07, 0x0B, 0x10
 
 | id | name | body | sent to, when |
 | --- | --- | --- | --- |
-| 0x3E | GameDiscovered | `nstr` address, `u32` port | a host, when its first discovery datagram arrives: its own address as the server saw it. Opens the game. [T] [R: seen on the wire with the real client, live-rig.md section 19.6] |
-| 0x40 | ClientDiscovered | `nstr` address, `u32` port | a joiner, for each discovery datagram while the game is open: its own address as the server saw it. [T] [R: seen on the wire with the real client, live-rig.md section 19.7] |
+| 0x3E | GameDiscovered | `nstr` address, `u32` port | a host, when its first discovery datagram arrives: its own address as the server saw it - since `FIXES.md` 32 the address is `0.0.0.0` and only the port is the observed one (`docs/issues/three-players.md`; `rta_tell_console_its_observed_address=1` gives the observed address). Opens the game. [T] [R: seen on the wire with the real client, live-rig.md section 19.6] |
+| 0x40 | ClientDiscovered | `nstr` address, `u32` port | a joiner, for each discovery datagram while the game is open: its own address as the server saw it (`0.0.0.0` with the observed port since `FIXES.md` 32, as for 0x3E). [T] [R: seen on the wire with the real client, live-rig.md section 19.7] |
 | 0x65 | ClientRequestConnect_RTA | `nstr` LAN address, `u32` LAN port, `nstr` observed address, `u32` observed port | the host, at the same moment: the joiner's two addresses. [T] [R: seen on the wire with the real client, live-rig.md section 19.7] |
 | 0x2F | FriendStatus | `wstr` chat handle, `u8` 1 online / 0 offline | everyone **on the list of** the user who logs in or disconnects (not everyone who lists that user). The game parses it and does nothing with it: its handler is an empty function [G: 0x330028]. |
 | 0x30 | InstantMessage | `wstr` sender handle, `wstr` text | the addressee of 0x21. [T] |
@@ -679,8 +679,8 @@ not read. Behind a router the observed port is whatever the router makes of it.
 
 | who | is told | by |
 | --- | --- | --- |
-| host | its own observed pair | 0x3E |
-| joiner | its own observed pair | 0x40 |
+| host | its own observed port, and `0.0.0.0` for the address (the observed address before `FIXES.md` 32: told that, players who share an address could not start a game of three or four) | 0x3E |
+| joiner | the same | 0x40 |
 | joiner | host's LAN pair and observed pair | 0x55 arrays 5–8, or the 0x57 reply |
 | host | joiner's LAN pair and observed pair | 0x65 |
 | later joiners and earlier joiners | each other | not by the server — the host passes its peer list along peer-to-peer [G: 0x32bce8, 0x32a1b8] |

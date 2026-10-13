@@ -334,15 +334,15 @@ this computer, two players on different networks, a router; a browser copy in th
 the window program's sheet and title note (built, not run); a real person at the
 controls.
 
-**Windows.** The driver is POSIX: `socket`/`connect`/`poll`/`fcntl`, `getifaddrs`,
-`getaddrinfo`, `SIGPIPE`, `_NSGetExecutablePath` for the default data directory. A
-Windows build needs Winsock set-up and its names for the same calls (`WSAPoll`,
-`ioctlsocket`, `closesocket`, `WSAEWOULDBLOCK`), `GetAdaptersAddresses` for "is this
-address this computer's", and a place for the login file whose access is the user's alone
-(`RtaOnline.cpp` relies on mode 0600). `online_mac.mm` needs a counterpart for the name
-question (or the terminal's, which is in `online.cpp`). Until then a build that does not
-link the driver gets the translated originals of the listed entries (`hle_weak.cpp`) and
-plays offline as before.
+**Windows.** Done since, as far as a Mac can take it (`docs/issues/native-windows.md`, "The
+network"): the driver's socket calls are behind `tools/recomp/net/sock.h`, one header with
+a BSD body and a Winsock body; `net/online_win.cpp` is the counterpart of `online_mac.mm`
+(a Win32 dialogue for the name, the title note, the set warning); `net/posix_win.h` gives
+`RtaOnline.cpp` the three file calls MinGW lacks, with an access list in place of mode
+0600. `rta_app.exe` links all of it. The BSD body played three lobby games here (two
+x86-64 copies; x86-64 with ARM64; the window program with a headless copy); the Winsock
+body was compiled and read, never run. A build that does not link the driver still gets
+the translated originals of the listed entries (`hle_weak.cpp`) and plays offline.
 
 **Other.** The network settings program (Config) is kept away rather than run. The
 `rta::NetDriver` shape in `iface.h` is still unused; if the runtime ever owns the library

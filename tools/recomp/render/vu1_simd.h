@@ -46,6 +46,27 @@ namespace render {
 #define VU1_RESULTS_STAY_FINITE 1
 #endif
 
+// AArch64 has a mode that does half of vu_in and all of vu_out by itself: with FPCR.FZ set
+// ("flush to zero") an arithmetic instruction reads an operand with exponent 0 as zero
+// of that sign and gives zero of the result's sign where the result would have exponent
+// 0 - and with rounding toward zero a result is that small after rounding exactly when it
+// was before.  Vu1::run sets the bit while a translated program runs (vu1_flush_on / off;
+// VU1_HARDWARE_FLUSH says the code below counts on it), the interpreter does not use it.
+// vu1_fast_test.cpp compares the two over random operands, and Vu1 checks a handful of
+// cases once at run time before it trusts the mode (vu1_flush_works).  x86's bit of the
+// same name keeps an exact tiny result, so SSE does the masking itself.
+#if VU1_SIMD_KIND == 1 && !defined(VU1_NO_HARDWARE_FLUSH) && (defined(__clang__) || defined(__GNUC__))
+#define VU1_HARDWARE_FLUSH 1
+static VU1_INLINE uint64_t vu1_fpcr() { uint64_t v; __asm__ __volatile__("mrs %0, fpcr" : "=r"(v)); return v; }
+static VU1_INLINE void vu1_set_fpcr(uint64_t v) { __asm__ __volatile__("msr fpcr, %0" : : "r"(v)); }
+static VU1_INLINE void vu1_flush_on() { vu1_set_fpcr(vu1_fpcr() | (1ull << 24)); }
+static VU1_INLINE void vu1_flush_off() { vu1_set_fpcr(vu1_fpcr() & ~(1ull << 24)); }
+#else
+#define VU1_HARDWARE_FLUSH 0
+static VU1_INLINE void vu1_flush_on() {}
+static VU1_INLINE void vu1_flush_off() {}
+#endif
+
 #if VU1_SIMD_KIND == 1
 // ---------------------------------------------------------------------------------- NEON
 typedef uint32x4_t V4;
@@ -56,16 +77,27 @@ static VU1_INLINE V4 v4_set(uint32_t x, uint32_t y, uint32_t z, uint32_t w) { co
 #define v4_get(v, k) vgetq_lane_u32((v), (k))
 #define v4_bc(v, k) vdupq_laneq_u32((v), (k))
 static VU1_INLINE V4 v4_select(V4 mask, V4 a, V4 b) { return vbslq_u32(mask, a, b); }
-static VU1_INLINE V4 v4_in(V4 u) {
+// the same without the mode's help (the test compares them)
+static VU1_INLINE V4 v4_in_masked(V4 u) {
     V4 sign = vandq_u32(u, vdupq_n_u32(0x80000000u));
     V4 magnitude = vminq_u32(vbicq_u32(u, vdupq_n_u32(0x80000000u)), vdupq_n_u32(0x7F7FFFFFu));    // exponent 255: the largest number
     V4 number = vtstq_u32(u, vdupq_n_u32(0x7F800000u));                                             // exponent 0: zero
     return vorrq_u32(vandq_u32(magnitude, number), sign);
 }
-static VU1_INLINE V4 v4_out(V4 r) {
+static VU1_INLINE V4 v4_out_masked(V4 r) {
     V4 number = vtstq_u32(r, vdupq_n_u32(0x7F800000u));
     return vandq_u32(r, vorrq_u32(number, vdupq_n_u32(0x80000000u)));
 }
+#if VU1_HARDWARE_FLUSH
+// exponent 255 becomes the largest number; an exponent of 0 is left for the instruction that reads it
+static VU1_INLINE V4 v4_in(V4 u) {
+    return vorrq_u32(vminq_u32(vbicq_u32(u, vdupq_n_u32(0x80000000u)), vdupq_n_u32(0x7F7FFFFFu)), vandq_u32(u, vdupq_n_u32(0x80000000u)));
+}
+static VU1_INLINE V4 v4_out(V4 r) { return r; }
+#else
+static VU1_INLINE V4 v4_in(V4 u) { return v4_in_masked(u); }
+static VU1_INLINE V4 v4_out(V4 r) { return v4_out_masked(r); }
+#endif
 static VU1_INLINE V4 v4_add(V4 a, V4 b) { return vreinterpretq_u32_f32(vaddq_f32(vreinterpretq_f32_u32(a), vreinterpretq_f32_u32(b))); }
 static VU1_INLINE V4 v4_sub(V4 a, V4 b) { return vreinterpretq_u32_f32(vsubq_f32(vreinterpretq_f32_u32(a), vreinterpretq_f32_u32(b))); }
 static VU1_INLINE V4 v4_mul(V4 a, V4 b) { return vreinterpretq_u32_f32(vmulq_f32(vreinterpretq_f32_u32(a), vreinterpretq_f32_u32(b))); }

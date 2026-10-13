@@ -3685,7 +3685,17 @@ diff --git a/Source/iop/Iop_Speed.cpp b/Source/iop/Iop_Speed.cpp
  #include <cassert>
  #include <cstring>
  
-@@ -48,13 +49,33 @@
+@@ -32,7 +33,8 @@
+ 	m_intrStat = 0;
+ 	m_intrMask = 0;
+ 	m_eepRomReadIndex = 0;
+-	m_txBuffer.clear();
++	m_txBuffer.assign(TX_FIFO_SIZE, 0);
++	m_txFifoWr = 0;
+ 	m_rxBuffer.clear();
+ 	m_rxFifoPtr = 0;
+ 	m_rxFrameCount = 0;
+@@ -48,13 +50,33 @@
  	m_ethernetFrameTxHandler = ethernetFrameTxHandler;
  }
  
@@ -3721,7 +3731,7 @@ diff --git a/Source/iop/Iop_Speed.cpp b/Source/iop/Iop_Speed.cpp
  	auto& bdRx = reinterpret_cast<SMAP_BD*>(m_smapBdRx)[m_rxIndex];
  	assert((bdRx.ctrlStat & SMAP_BD_RX_EMPTY) != 0);
  	bdRx.ctrlStat &= ~SMAP_BD_RX_EMPTY;
-@@ -62,7 +83,7 @@
+@@ -62,7 +84,7 @@
  	bdRx.pointer = 0;
  
  	m_rxIndex++;
@@ -3730,7 +3740,85 @@ diff --git a/Source/iop/Iop_Speed.cpp b/Source/iop/Iop_Speed.cpp
  
  	m_pendingRx = true;
  	m_rxDelay = 100000;
-@@ -191,11 +212,15 @@
+@@ -131,26 +153,58 @@
+ 
+ void CSpeed::HandleTx()
+ {
++	//RTA: the transmit buffer is the chip's ring of TX_FIFO_SIZE bytes, and a descriptor
++	//says where in it its frame begins: the driver reads the chip's write pointer
++	//(REG_SMAP_TXFIFO_WR_PTR) before it writes a frame and puts that into the descriptor.
++	//The pointer used to read as 0 always and the buffer was emptied after every "send",
++	//which is right for one frame at a time only. Of two frames written before the first
++	//of them was sent - a game of three sends two datagrams in one frame of its launch
++	//handshake - the first went out twice and the second never, and the player whose
++	//keep-alive was the second one was left behind. (The very first frame after the
++	//driver's start went out as the driver's 1516-byte test pattern, for the same reason.)
++	auto bd = reinterpret_cast<SMAP_BD*>(m_smapBdTx);
++	//the oldest ready descriptor is the one whose predecessor in the ring is not ready
++	uint32 first = 0;
+ 	for(uint32 i = 0; i < SMAP_BD_COUNT; i++)
+ 	{
+-		auto& bdTx = reinterpret_cast<SMAP_BD*>(m_smapBdTx)[i];
+-		if(bdTx.ctrlStat & SMAP_BD_TX_READY)
++		uint32 before = (i + SMAP_BD_COUNT - 1) % SMAP_BD_COUNT;
++		if((bd[i].ctrlStat & SMAP_BD_TX_READY) && !(bd[before].ctrlStat & SMAP_BD_TX_READY))
+ 		{
+-			//Is this always 0x1000?
+-			static const uint32 bdTxBase = 0x1000;
+-			assert(bdTx.pointer >= bdTxBase);
+-			if(m_ethernetFrameTxHandler)
++			first = i;
++			break;
++		}
++	}
++	for(uint32 n = 0; n < SMAP_BD_COUNT; n++)
++	{
++		auto& bdTx = bd[(first + n) % SMAP_BD_COUNT];
++		if(!(bdTx.ctrlStat & SMAP_BD_TX_READY)) continue;
++		uint32 length = std::min<uint32>(bdTx.length, TX_FIFO_SIZE);
++		if(m_ethernetFrameTxHandler && (length != 0))
++		{
++			std::vector<uint8> frame(length);
++			uint32 at = bdTx.pointer % TX_FIFO_SIZE;
++			for(uint32 i = 0; i < length; i++)
+ 			{
+-				m_ethernetFrameTxHandler(m_txBuffer.data() + bdTx.pointer - bdTxBase, bdTx.length);
+-			}
+-			bdTx.ctrlStat &= ~SMAP_BD_TX_READY;
++				frame[i] = m_txBuffer[(at + i) % TX_FIFO_SIZE];
++			}
++			m_ethernetFrameTxHandler(frame.data(), length);
+ 		}
++		bdTx.ctrlStat &= ~SMAP_BD_TX_READY;
+ 	}
+-	m_txBuffer.clear();
+ 	m_intrStat |= (1 << INTR_SMAP_TXDNV) | (1 << INTR_SMAP_TXEND) | (1 << INTR_SMAP_RXEND);
+ 	CheckInterrupts();
+ }
+ 
++//RTA: one byte into the chip's transmit ring
++void CSpeed::TxFifoWrite(const uint8* data, uint32 size)
++{
++	for(uint32 i = 0; i < size; i++)
++	{
++		m_txBuffer[m_txFifoWr] = data[i];
++		m_txFifoWr = (m_txFifoWr + 1) % TX_FIFO_SIZE;
++	}
++}
++
+ uint32 CSpeed::ReadRegister(uint32 address)
+ {
+ 	uint32 result = 0;
+@@ -186,16 +240,24 @@
+ 		m_eepRomReadIndex++;
+ 	}
+ 	break;
++	case REG_SMAP_TXFIFO_WR_PTR:
++		//RTA: where the next byte goes in the transmit ring (see HandleTx)
++		result = m_txFifoWr;
++		break;
+ 	case REG_SMAP_RXFIFO_FRAME_CNT:
+ 		result = m_rxFrameCount;
  		break;
  	case REG_SMAP_RXFIFO_DATA:
  	{
@@ -3751,7 +3839,30 @@ diff --git a/Source/iop/Iop_Speed.cpp b/Source/iop/Iop_Speed.cpp
  		m_rxFifoPtr += 4;
  	}
  	break;
-@@ -275,6 +300,10 @@
+@@ -254,13 +316,18 @@
+ 	case REG_SMAP_RXFIFO_FRAME_DEC:
+ 		assert(m_rxFrameCount != 0);
+ 		m_rxFrameCount--;
++		break;
++	case REG_SMAP_TXFIFO_CTRL:
++		//RTA: bit 0 empties the transmit ring
++		if(value & 1) m_txFifoWr = 0;
+ 		break;
++	case REG_SMAP_TXFIFO_WR_PTR:
++		m_txFifoWr = value % TX_FIFO_SIZE;
++		break;
+ 	case REG_SMAP_TXFIFO_DATA:
+ 	{
+-		m_txBuffer.push_back(static_cast<uint8>(value >> 0));
+-		m_txBuffer.push_back(static_cast<uint8>(value >> 8));
+-		m_txBuffer.push_back(static_cast<uint8>(value >> 16));
+-		m_txBuffer.push_back(static_cast<uint8>(value >> 24));
++		const uint8 bytes[4] = {static_cast<uint8>(value >> 0), static_cast<uint8>(value >> 8), static_cast<uint8>(value >> 16), static_cast<uint8>(value >> 24)};
++		TxFifoWrite(bytes, 4);
+ 	}
+ 	break;
+ 	case REG_SMAP_EMAC3_TXMODE0_HI:
+@@ -275,6 +342,10 @@
  		break;
  	case REG_SMAP_EMAC3_ADDR_LO:
  		m_smapEmac3AddressLo = value;
@@ -3762,7 +3873,7 @@ diff --git a/Source/iop/Iop_Speed.cpp b/Source/iop/Iop_Speed.cpp
  		break;
  	case REG_SMAP_EMAC3_STA_CTRL_HI:
  		m_smapEmac3StaCtrl.h1 = static_cast<uint16>(value);
-@@ -308,7 +337,11 @@
+@@ -308,18 +379,31 @@
  	if(direction == Iop::Dmac::CChannel::CHCR_DR_TO)
  	{
  		uint32 size = blockSize * blockAmount;
@@ -3775,7 +3886,12 @@ diff --git a/Source/iop/Iop_Speed.cpp b/Source/iop/Iop_Speed.cpp
  		m_rxFifoPtr += size;
  	}
  	else
-@@ -320,6 +353,15 @@
+ 	{
+-		m_txBuffer.insert(std::end(m_txBuffer), buffer, buffer + blockSize * blockAmount);
++		TxFifoWrite(buffer, blockSize * blockAmount);
+ 	}
+ 	return blockAmount;
+ }
  
  void CSpeed::CountTicks(uint32 ticks)
  {
@@ -3809,7 +3925,24 @@ diff --git a/Source/iop/Iop_Speed.h b/Source/iop/Iop_Speed.h
  		uint32 ReadRegister(uint32);
  		void WriteRegister(uint32, uint32);
  
-@@ -127,6 +135,9 @@
+@@ -78,6 +86,8 @@
+ 			REG_PIO_DIR = 0x1000002C,
+ 			REG_PIO_DATA = 0x1000002E,
+ 			REG_SMAP_INTR_CLR = 0x10000128,
++			REG_SMAP_TXFIFO_CTRL = 0x10001000,
++			REG_SMAP_TXFIFO_WR_PTR = 0x10001004,
+ 			REG_SMAP_TXFIFO_FRAME_INC = 0x10001010,
+ 			REG_SMAP_RXFIFO_RD_PTR = 0x10001034,
+ 			REG_SMAP_RXFIFO_FRAME_CNT = 0x1000103C,
+@@ -120,6 +130,7 @@
+ 		void CheckInterrupts();
+ 		void ProcessEmac3StaCtrl();
+ 		void HandleTx();
++		void TxFifoWrite(const uint8*, uint32);
+ 
+ 		void LogRead(uint32);
+ 		void LogWrite(uint32, uint32);
+@@ -127,6 +138,9 @@
  		void LogBdWrite(const char*, uint32, uint32, uint32);
  
  		EthernetFrameTxHandler m_ethernetFrameTxHandler;
@@ -3819,6 +3952,21 @@ diff --git a/Source/iop/Iop_Speed.h b/Source/iop/Iop_Speed.h
  
  		CIntc& m_intc;
  
+@@ -139,7 +153,13 @@
+ 		uint32 m_eepRomReadIndex = 0;
+ 		static const uint32 m_eepRomDataSize = 4;
+ 		static const uint16 m_eepromData[];
+-		std::vector<uint8> m_txBuffer;
++		//RTA: the chip's transmit ring and where the next byte goes in it (HandleTx)
++		enum
++		{
++			TX_FIFO_SIZE = 0x1000,
++		};
++		std::vector<uint8> m_txBuffer = std::vector<uint8>(TX_FIFO_SIZE, 0);
++		uint32 m_txFifoWr = 0;
+ 		std::vector<uint8> m_rxBuffer;
+ 		uint32 m_rxFifoPtr = 0;
+ 		uint32 m_rxFrameCount = 0;
 diff --git a/Source/ui_qt/CMakeLists.txt b/Source/ui_qt/CMakeLists.txt
 --- a/Source/ui_qt/CMakeLists.txt
 +++ b/Source/ui_qt/CMakeLists.txt

@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """vu1_translate.py - the game's VU1 microprograms, translated ahead of time to C++.
 
-  python3 tools/recomp/render/vu1_translate.py --stream FILE.rtavs [--stream ...] --out DIR/vu1_fast.cpp
-          [--listing FILE] [--entries LIST] [--report]
+  python3 tools/recomp/render/vu1_translate.py [--stream FILE.rtavs ...] [--elf SLUS_209.73] --out DIR/vu1_fast.cpp
+          [--listing FILE] [--entry N,N,...] [--report]
 
-Reads the microprograms out of recorded picture streams (render/stream.h): every MPG
-upload in the VIF1 data, and the main program's upload packet in a stream that starts
-with main memory.  Uploads that follow each other without a gap are one program.  Writes
-one C++ function per program (render/vu1_fast.h says how they are called), straight code
+Reads the microprograms out of recorded picture streams (render/stream.h; rta_app's
+`app record FILE` writes one): every MPG upload in the VIF1 data, and the main program's
+upload packet in a stream that starts with main memory.  Uploads that follow each other
+without a gap are one program.  --elf takes the main program from the game's executable
+instead (its upload packet at 0x3e5ec0); the two small programs the game loads behind it
+are not in the executable as such, so give a stream of a fight as well (fire3 uses both).
+A program that is not translated is interpreted, as before.  Writes one C++ function per
+program (render/vu1_fast.h says how they are called), straight code
 block by block:
 
   - registers are local variables for the length of a run; a float register is a vector
@@ -318,6 +322,24 @@ class Programs:
                     used = self.vif(words)
                     pending = words[used:]
 
+    def elf(self, path):
+        """The main program's upload packet out of the executable (0x3e5ec0, 940 quadwords)."""
+        data = open(path, 'rb').read()
+        if data[:4] != b'\x7fELF':
+            raise SystemExit('%s is not an ELF file' % path)
+        phoff, = struct.unpack_from('<I', data, 28)
+        phentsize, phnum = struct.unpack_from('<HH', data, 42)
+        for k in range(phnum):
+            p_type, offset, vaddr, _paddr, filesz, _memsz = struct.unpack_from('<6I', data, phoff + k * phentsize)
+            if p_type == 1 and vaddr <= 0x3E5EC0 and 0x3E5EC0 + 940 * 16 <= vaddr + filesz:
+                at = offset + 0x3E5EC0 - vaddr
+                words = list(struct.unpack_from('<%dI' % (940 * 4), data, at))
+                saved = (self.cl, self.wl)
+                self.vif(words[2:])
+                self.cl, self.wl = saved
+                return
+        raise SystemExit('%s: the upload packet of the VU1 main program is not where it is in SLUS-20973 v2.00' % path)
+
     def programs(self):
         """[(start pair, [Ins]), ...] sorted, one per distinct upload."""
         out = []
@@ -337,6 +359,8 @@ def fnv64(data):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('--stream', action='append', default=[], help='a recorded picture stream to take the programs from')
+    parser.add_argument('--elf', help='the game\'s executable: the main program is taken from it')
+    parser.add_argument('--entry', default='', help='more instruction indexes programs are started at, hexadecimal, comma-separated')
     parser.add_argument('--out', help='the C++ file to write (derived from the game: under local/)')
     parser.add_argument('--listing', help='write the programs as text (derived from the game: under local/)')
     parser.add_argument('--report', action='store_true', help='print what the analysis found')
@@ -345,6 +369,8 @@ def main():
         if path and '/local/' not in os.path.abspath(path) + '/':
             raise SystemExit('%s: what is made from the game\'s programs must be written under local/' % path)
     found = Programs()
+    if args.elf:
+        found.elf(args.elf)
     for path in args.stream:
         found.stream(path)
     programs = found.programs()
@@ -358,8 +384,10 @@ def main():
                     f.write('%03x: %s\n' % (d.n, disassemble(d)))
                 f.write('\n')
     if args.out:
-        from vu1_translate_gen import generate      # noqa: the second half, beside this file
-        text = generate(programs, found.entries, report=args.report)
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))     # the second half is beside this file
+        from vu1_translate_gen import generate
+        extra = [int(x, 16) for x in args.entry.split(',') if x]
+        text = generate(programs, found.entries, extra_entries=extra, report=args.report)
         os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
         with open(args.out, 'w') as f:
             f.write(text)

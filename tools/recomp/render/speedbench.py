@@ -5,6 +5,10 @@ compares (docs/issues/native-render-speed.md).
 
   speedbench.py build NAME [--vu fast|old|none] [--prof] [--flag F ...] [--wasm] [--simd none]
   speedbench.py run NAME STREAM [bench arguments ...]
+  speedbench.py count NAME STREAM [--loops A,B] [bench arguments ...]
+                                                    # instructions and cycles per picture of the whole process,
+                                                    # from the difference of two runs of A and B passes (start-up,
+                                                    # the first pass and - for node - compiling cancel); macOS
   speedbench.py translate STREAM [STREAM ...]       # vu1_translate.py into local/recomp-out/gen-vu/vu1_fast.cpp
 
   --vu fast    the ahead-of-time translation local/recomp-out/gen-vu/vu1_fast.cpp (default when it exists)
@@ -96,6 +100,58 @@ def run(args, rest):
     return subprocess.run(['nice', '-n', '10'] + command + [args.stream] + rest).returncode
 
 
+class RusageInfo(__import__('ctypes').Structure):      # rusage_info_v4 of <sys/resource.h>
+    _fields_ = [('uuid', __import__('ctypes').c_uint8 * 16)] + [(n, __import__('ctypes').c_uint64) for n in (
+        'user_time', 'system_time', 'pkg_idle_wkups', 'interrupt_wkups', 'pageins', 'wired_size', 'resident_size', 'phys_footprint',
+        'proc_start_abstime', 'proc_exit_abstime', 'child_user_time', 'child_system_time', 'child_pkg_idle_wkups', 'child_interrupt_wkups',
+        'child_pageins', 'child_elapsed_abstime', 'diskio_bytesread', 'diskio_byteswritten', 'cpu_time_qos_default', 'cpu_time_qos_maintenance',
+        'cpu_time_qos_background', 'cpu_time_qos_utility', 'cpu_time_qos_legacy', 'cpu_time_qos_user_initiated', 'cpu_time_qos_user_interactive',
+        'billed_system_time', 'serviced_system_time', 'logical_writes', 'lifetime_max_phys_footprint', 'instructions', 'cycles', 'billed_energy',
+        'serviced_energy', 'interval_max_phys_footprint', 'runnable_time')]
+
+
+def counted(command):
+    """Runs a command; (instructions, cycles) of its process when it has ended, and its output."""
+    import ctypes
+    libproc = ctypes.CDLL('/usr/lib/libproc.dylib')
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    output = process.stdout.read().decode('utf-8', 'replace')
+    # wait until it has ended without reaping it: its figures are still there then
+    # (waitid(P_PID, pid, &info, WEXITED | WNOWAIT) of macOS's C library; Python's os has none there)
+    libc = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True)
+    siginfo = ctypes.create_string_buffer(256)
+    libc.waitid(1, process.pid, siginfo, 0x4 | 0x20)
+    info = RusageInfo()
+    ok = libproc.proc_pid_rusage(process.pid, 4, ctypes.byref(info)) == 0
+    process.wait()
+    return (info.instructions, info.cycles) if ok else (0, 0), output
+
+
+def count(args, rest):
+    import re
+    out = os.path.join(OUT, 'speed', args.name)
+    if os.path.exists(os.path.join(out, 'decode_bench')):
+        command = [os.path.join(out, 'decode_bench')]
+    else:
+        command = ['node', '--stack-size=3000', os.path.join(out, 'decode_bench.js')]
+    a, b = (int(x) for x in args.loops.split(','))
+    figures = []
+    for loops in (a, b):
+        (instructions, cycles), output = counted(['nice', '-n', '10'] + command + [args.stream, '--loops', str(loops)] + rest)
+        blanks = re.search(r'first pass: (\d+) blanks', output)
+        if not blanks or not instructions:
+            print(output[-2000:])
+            return 1
+        figures.append((instructions, cycles, int(blanks.group(1)) * loops, output))
+    pictures = figures[1][2] - figures[0][2]
+    sums = re.search(r'list checksum (\w+)', figures[1][3]).group(1)
+    commands = re.search(r'draw commands of the first pass: checksum (\w+)', figures[1][3])
+    print('%s %s%s: %.2f million instructions, %.2f million cycles per picture (runs of %d and %d passes); lists %s%s; load average %.0f' % (
+        args.name, os.path.basename(args.stream), ' ' + ' '.join(rest) if rest else '', (figures[1][0] - figures[0][0]) / pictures / 1e6,
+        (figures[1][1] - figures[0][1]) / pictures / 1e6, a, b, sums, ' commands ' + commands.group(1) if commands else '', os.getloadavg()[0]))
+    return 0
+
+
 def translate(args):
     command = [sys.executable, os.path.join(HERE, 'vu1_translate.py'), '--out', os.path.join(OUT, 'gen-vu', 'vu1_fast.cpp'), '--report']
     for stream in args.streams:
@@ -120,6 +176,10 @@ def main():
     r = sub.add_parser('run')
     r.add_argument('name')
     r.add_argument('stream')
+    c = sub.add_parser('count')
+    c.add_argument('name')
+    c.add_argument('stream')
+    c.add_argument('--loops', default='3,9')
     t = sub.add_parser('translate')
     t.add_argument('streams', nargs='+')
     args, rest = parser.parse_known_args()
@@ -127,6 +187,8 @@ def main():
         return build(args)
     if args.what == 'run':
         return run(args, rest)
+    if args.what == 'count':
+        return count(args, rest)
     return translate(args)
 
 

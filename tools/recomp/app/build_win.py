@@ -34,6 +34,8 @@ What it makes (docs/issues/native-windows.md says what was proven and what was n
                    tools/play-net/src/RtaOnline.cpp, net/online_win.cpp)
   rta_native.exe   the machine with nothing attached (app/win/headless_main.cpp): boots and runs scripts
   fpcheck.exe      the game's floating-point operations as a table of checksums (app/win/fpcheck.cpp)
+  pnghash.exe      one figure over what the PNG reader of the art pack makes of a folder (app/win/pnghash.cpp);
+                   the folder is rta-windows/pngtest, made by app/win/pngtest.py
   rta-windows/     the folder a tester gets: the three programs, play.bat and README.txt (from
                    app/win/), boot-check.rig (the rig's boot script with addresses for names)
 
@@ -345,7 +347,7 @@ def write_readme(package):
     if not os.path.exists(source):
         return
     values = {'@FRAMES_LINE@': '(not made yet: build_win.py --reference)', '@VU0_LINE@': '(not made yet: build_win.py --reference)',
-              '@PATCH_SET@': '(not made yet: build_win.py --reference)'}
+              '@PATCH_SET@': '(not made yet: build_win.py --reference)', '@PNG_HASH@': '(not made yet: build_win.py --reference)'}
     reference = os.path.join(package, 'boot-check-mac.txt')
     if os.path.exists(reference):
         for line in open(reference, errors='replace'):
@@ -357,6 +359,9 @@ def write_readme(package):
     figure = os.path.join(WIN, 'standin', 'patch-set.txt')
     if os.path.exists(figure):
         values['@PATCH_SET@'] = open(figure).read().strip()
+    figure = os.path.join(WIN, 'standin', 'png-hash.txt')
+    if os.path.exists(figure):
+        values['@PNG_HASH@'] = open(figure).read().strip()
     text = open(source).read()
     for key, value in values.items():
         text = text.replace(key, value)
@@ -428,7 +433,23 @@ def build_pngcheck(args):
          '-framework', 'QtCore', '-framework', 'QtGui', '-Wl,-rpath,' + qtlib, '-lpthread']
     result = subprocess.run(command, capture_output=True, text=True)
     print(result.stderr[:3000] if result.returncode else 'built ' + os.path.relpath(os.path.join(out, 'pngcheck'), ROOT))
-    return result.returncode == 0
+    ok = result.returncode == 0
+    # pnghash (no Qt): the reader alone, as x86-64 code (under Rosetta) and as arm64
+    for arch in ('x86_64', 'arm64'):
+        program = os.path.join(out, 'pnghash_' + ('x64' if arch == 'x86_64' else arch))
+        result = subprocess.run(NICE + ['clang++', '-arch', arch, '-std=c++17', '-O2', '-Wall'] + FP + ['-I', RENDER, os.path.join(WINSRC, 'pnghash.cpp'), '-o', program],
+                                capture_output=True, text=True)
+        print(result.stderr[:3000] if result.returncode else 'built ' + os.path.relpath(program, ROOT))
+        ok = ok and result.returncode == 0
+    return ok
+
+
+def test_pictures(package):
+    """rta-windows/pngtest: the made PNG files pnghash.exe is run over (app/win/pngtest.py; nothing of the game)."""
+    target = os.path.join(package, 'pngtest')
+    if not os.path.isdir(target):
+        subprocess.run(NICE + [sys.executable, os.path.join(WINSRC, 'pngtest.py'), target], capture_output=True, text=True)
+    return target
 
 
 def make_reference(args):
@@ -468,6 +489,16 @@ def make_reference(args):
         else:
             print('reference: the stand-in with the network did not say its patch set')
         shutil.rmtree(scratch, ignore_errors=True)
+    # the figure pnghash.exe must print for the folder of made pictures: the same reader as an arm64 Mac program
+    hasher = os.path.join(WIN, 'standin', 'pnghash_arm64')
+    if os.path.exists(hasher):
+        said = subprocess.run(NICE + [hasher, test_pictures(package)], capture_output=True, text=True)
+        found = re.search(r'figure ([0-9a-f]{16})', said.stdout)
+        if found:
+            open(os.path.join(WIN, 'standin', 'png-hash.txt'), 'w').write(found.group(1) + '\n')
+            print('reference: ' + said.stdout.strip())
+    else:
+        print('reference: no standin/pnghash_arm64 (build_win.py --pngcheck): README.txt will not have the figure of pnghash.exe')
     write_readme(package)
     return done.returncode == 0
 
@@ -522,11 +553,12 @@ def main():
                             (os.path.join(WINSRC, 'headless_main.cpp'), rt_flags + ['-I', HERE], 'h_'),
                             (os.path.join(HERE, 'app_rt.cpp'), rt_flags + ['-I', HERE], 'h_')], objdir, search)
     fpcheck = source_jobs([(os.path.join(WINSRC, 'fpcheck.cpp'), rt_flags, 'a_')], objdir, search)
+    pnghash = source_jobs([(os.path.join(WINSRC, 'pnghash.cpp'), render_flags, 'a_')], objdir, search)
     resource = []
     if windres and os.path.exists(os.path.join(WINSRC, 'rta_app.rc')):
         resource = [(os.path.join(WINSRC, 'rta_app.rc'), [windres, '-I', WINSRC], os.path.join(objdir, 'a_resource.o'),
                      [os.path.join(WINSRC, 'rta_app.manifest')])]
-    jobs = game + runtime + headless + fpcheck + resource
+    jobs = game + runtime + headless + fpcheck + pnghash + resource
     app = []
     if not args.headless:
         translation = os.path.join(OUT, 'gen-vu', 'vu1_translated.cpp')
@@ -568,6 +600,7 @@ def main():
     def flags_for(name):
         return ['-static'] + ([] if args.symbols else ['-s']) + ['-Wl,-Map,' + os.path.join(objdir, name + '.map')]
     ok = link(linker + flags_for('fpcheck'), objs(fpcheck) + objs(resource), [], os.path.join(WIN, 'fpcheck%s.exe' % suffix))
+    ok = link(linker + flags_for('pnghash'), objs(pnghash) + objs(resource), [], os.path.join(WIN, 'pnghash%s.exe' % suffix)) and ok
     ok = link(linker + flags_for('rta_native'), objs(game) + objs(runtime) + objs(headless) + objs(resource), ['-lwinmm'],
               os.path.join(WIN, 'rta_native%s.exe' % suffix)) and ok
     if app:
@@ -581,7 +614,8 @@ def main():
         # exactly what a tester gets, in one folder (the GCC build's programs beside the others when they exist)
         package = os.path.join(WIN, 'rta-windows')
         os.makedirs(package, exist_ok=True)
-        for name in ('rta_app.exe', 'rta_native.exe', 'fpcheck.exe', 'rta_app_gcc.exe', 'fpcheck_gcc.exe') + texts:
+        test_pictures(package)
+        for name in ('rta_app.exe', 'rta_native.exe', 'fpcheck.exe', 'pnghash.exe', 'rta_app_gcc.exe', 'fpcheck_gcc.exe') + texts:
             source, target = os.path.join(WIN, name), os.path.join(package, name)
             if name == 'server.txt' and os.path.exists(target):
                 continue                    # the tester's (or the builder's) address stays

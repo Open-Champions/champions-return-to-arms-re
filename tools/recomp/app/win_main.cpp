@@ -45,6 +45,8 @@
 //   --join CODE         as --online, and on: joins the game with that code
 //   --choose-character  with --host or --join: stop on the game's character screens
 //   --player N          a second player on the same PC: data in rta-data-player<N>
+//   --name NAME         the player name for a new account, instead of the dialogue (for a PC
+//                       on which the dialogue does not appear)
 //   --volume V          0..1 (default 1); --mute = --volume 0; --no-sound opens no device
 //   --emulator-timing   the I/O processor answers as slowly as on a console
 //   --no-films          a film ends at its first picture (when app/film.cpp is part of the program the films play)
@@ -119,7 +121,7 @@ struct Options {
     bool art_wait = false;              // tests: every frame waits for the replacement pictures it asks for
     std::string settings_file;
     // online
-    std::string server, server_public, online;      // online: "", lobby, host, host:CODE, join:CODE
+    std::string server, server_public, online, name;    // online: "", lobby, host, host:CODE, join:CODE
     bool choose_character = false;
     int player = 1;
 };
@@ -855,7 +857,7 @@ static const char* HELP =
     "        [--mipmaps yes|no] [--art-pack FOLDER] [--art-memory MB] [--frame-cap 60|30|0] [--plain] [--settings FILE] [--no-settings]\n"
 #ifdef RTA_NET
     "online: [--server ADDRESS] (or the first line of server.txt beside the program) [--online | --host [CODE] | --join CODE]\n"
-    "        [--choose-character] [--player N] [--server-public ADDRESS]\n"
+    "        [--choose-character] [--player N] [--server-public ADDRESS] [--name NAME]\n"
 #else
     "(this build has no network)\n"
 #endif
@@ -913,6 +915,7 @@ int main(int argc, char** argv) {
         else if (a == "--join") opt.online = "join:" + next();
         else if (a == "--choose-character") opt.choose_character = true;
         else if (a == "--player") { opt.player = atoi(next().c_str()); if (opt.player < 1) opt.player = 1; }
+        else if (a == "--name") opt.name = next();
 #endif
         else if (a == "--volume") opt.volume = atof(next().c_str());
         else if (a == "--mute") opt.volume = 0;
@@ -1118,6 +1121,7 @@ int main(int argc, char** argv) {
         args.push_back("--opt");
         args.push_back("online=" + opt.online + ((opt.choose_character && opt.online != "lobby") ? "+choose" : ""));
     }
+    if (!opt.name.empty()) { args.push_back("--opt"); args.push_back("online-name=" + opt.name); }
 #endif
     args.insert(args.end(), script_args.begin(), script_args.end());
     args.insert(args.end(), pass.begin(), pass.end());

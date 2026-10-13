@@ -638,7 +638,7 @@ interpreter's model against, as `tools/ee_emu.py` says itself).
 | Renderer | **missing** — the hand-over point exists (`gfx_dmaHandler(-1)`: 153 draw packets per frame at the hub; or the raw VIF1/GIF streams, 4.8 MB per frame) |
 | Sound | **missing** — the game's driver is polled by RPC three to four times per frame |
 | Network | **missing** — plus two ERX code modules that need translating ahead of time |
-| Windows | not built; the runtime uses POSIX threads and Clang built-ins, the generated code is plain C++17 |
+| Windows | not built then (since: `docs/issues/native-windows.md`); the runtime uses POSIX threads and Clang built-ins, the generated code is plain C++17 |
 
 The part that could not have been bought with ordinary engineering — is a mechanical
 translation of 3 MB of machine code faithful enough to be the simulation core — is
@@ -1028,6 +1028,11 @@ library's buffer, which the runtime writes at 0x7cb140 (port 1) and 0x7cb640 (po
 
 ## Step 6 — Windows (Read)
 
+**Later the same day this was done**: `docs/issues/native-windows.md` has the Windows
+x86-64 build (cross-compiled on the Mac with MinGW-w64, `rt/host_win32.cpp`,
+`app/build_win.py`; compiles and links, not run on Windows). What follows is the reading
+it started from, kept as it was written:
+
 Not built; nothing was installed. What the sources need:
 
 - `rt/host.h` is the whole host boundary: a thread with a 256 MB stack, a 64-bit file
@@ -1056,8 +1061,8 @@ Not built; nothing was installed. What the sources need:
   service's write path is exercised only by the creation of the save directory at boot.
 - An item picked up: the creature that was killed left nothing the walk over the place
   collected (gold and bag unchanged on both machines).
-- The ERX modules, the Windows build, the function-by-function re-test of the 301
-  unproven functions.
+- The ERX modules, the function-by-function re-test of the 301 unproven functions.
+  (The Windows build exists since: `docs/issues/native-windows.md`.)
 - A comparison in which the native run uses its own scripted presses throughout
   (finding 3): it agrees up to the first late frame of the rig, not beyond.
 - `--adopt` (a resumed image served by this runtime's services) with input, a level

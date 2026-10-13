@@ -82,7 +82,7 @@ static VU1_INLINE uint32_t vu1_clip_value(uint32_t clip_now, V4 fs, V4 ft) {
 }
 
 // XGKICK from translated code (vu1.cpp): as the interpreter does it - the thread's own
-// rounding mode is put back while the GS model takes the packet.
+// floating-point mode is put back while the GS model takes the packet.
 void vu1_fast_kick(Vu1& v, uint32_t qword);
 
 // ---- the divider (the result; the pipeline is in the generated code) -----------------------

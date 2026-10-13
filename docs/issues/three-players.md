@@ -264,20 +264,33 @@ joiner's word that it "sees everybody ready" (flag bit 8 at record+0x5d).
 
 **Where:** `Source/iop/Iop_Speed.cpp` of Play!, `CSpeed::HandleTx` (the emulated SMAP
 chip; the file is part of `tools/play-net/play-net.patch`, and the browser build
-compiles the same file). It sends each ready descriptor's frame from
-`m_txBuffer.data() + descriptor.pointer - 0x1000` and then empties the buffer. The
-game's driver gives a descriptor the chip's transmit write pointer, which this chip does
-not emulate (the register reads 0), so every descriptor says 0x1000 - right for one
-frame at a time, and for two frames written before the first "send" the first frame is
-sent twice. That is candidate **(d)**, in the emulator's adaptor, below our own
+compiles the same file). It sent each ready descriptor's frame from
+`m_txBuffer.data() + descriptor.pointer - 0x1000` and then emptied the buffer. Seen with
+a log line in a test build: the game's driver **reads the chip's transmit write pointer
+(register 0x10001004) before it writes a frame** and puts that into the descriptor. The
+emulated chip had no such register (it read 0), so every descriptor said 0x1000 - right
+for one frame at a time; of two frames written before the first "send", the first went
+out twice and the second never. (For the same reason the first frame after the driver
+starts went out as the driver's own 1516-byte test pattern, which it writes at start
+and never sends.) That is candidate **(d)**, in the emulator's adaptor, below our own
 `RtaNet.cpp`. It is not a fault of the game.
 
-**Fix (being built in a copy of the released source under
-`local/three-players/play-src`, build `play-build`):** the adaptor keeps the frames in
-the order they were written and takes each ready descriptor's frame from where the one
-before it ended, and only the frames that were sent leave the buffer. No change to the
-game, to the patch set or to the server; it needs a new application build and a new
-page build.
+**Fix:** the transmit buffer is the chip's ring of 4096 bytes with its write pointer;
+the register reads that pointer (and can be written; bit 0 of the control register
+0x10001000 empties the ring); `HandleTx` takes each ready descriptor's frame from where
+its descriptor says, oldest descriptor first, and nothing is emptied. The two files as
+changed are `local/three-players/Iop_Speed.final.cpp` and `.final.h` (from the released
+source in `local/play-stable-src`). No change to the game, to the patch set or to the
+server; it needs a new application build and a new page build.
+
+Built: the application from a copy of the released source (`local/three-players/
+play-src`, build `play-build`), the page from a copy of `local/play-web-src`
+(`web-src`, `web-build`, test site `site`).
+
+| Application copies, fixed server, last joiner held 2 s at Start Game | Launches | All in the level | Notes |
+|---|---|---|---|
+| released stable build (no adaptor fix) | 4 | **0** | each time two in the level counting three, one left behind |
+| build with the adaptor fix | 2 so far | **2** | both stale (the hold), 1,741 and 1,686 frames, in step |
 
 ## Where things are
 

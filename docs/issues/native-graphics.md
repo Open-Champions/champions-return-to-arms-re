@@ -495,10 +495,12 @@ Notes for the merge are at the head of the patch.
 - **Texture cells at 32:9** in a large level; the display list's room there.
 - **Alpha-tested edges** (leaves) get nothing from multisampling; alpha-to-coverage was
   not tried. Supersampling beyond 2x is filtered by one bilinear tap.
-- **Windows**: `texpack.cpp` reads PNG files through Qt's `QImage`; a build without Qt
-  defines `RTA_NO_QIMAGE` (no pack, mip-mapped parts still work) until `read_png` there
-  has another reader. `gfx_rt.cpp`, `layout.h`, `xxh3_64.h` (it uses `__uint128_t` and
-  `__builtin_bswap64`: MSVC needs `_umul128` and `_byteswap_uint64`) are plain C++.
+- **Windows**: built since (`docs/issues/native-windows.md`, "The picture options"): the
+  Windows program has all of this, and a build without Qt (`RTA_NO_QIMAGE`) reads the
+  pack with `render/png_read.h`, which gives QImage's bytes for every file of
+  `local/hd-pack`. Not run on Windows. `gfx_rt.cpp`, `layout.h`, `xxh3_64.h` (it uses
+  `__uint128_t` and `__builtin_bswap64`: MSVC needs `_umul128` and `_byteswap_uint64`) are
+  plain C++ and compile with MinGW's clang and GCC as they are.
 - Settings are read, not written back when something is changed while playing (the file
   is made once with the defaults).
 

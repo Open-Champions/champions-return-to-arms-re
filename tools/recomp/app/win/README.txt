@@ -63,6 +63,10 @@ Five checks, in this order
        - If anything looks wrong, start once with  --plain  (everything of this list off:
          the picture as the console makes it) and say whether it is still wrong.
      Press F12 on a normal and on a wide picture and send both.
+     The reader of enlarged textures ("art packs") has a check of its own, without a pack:
+         pnghash.exe pngtest > pnghash.txt
+     Send pnghash.txt. Its line has to end in  figure @PNG_HASH@  - what the Mac prints
+     for the same folder of test pictures (pngtest, beside this file).
      If you have a folder of enlarged textures made for the emulator build of this project
      (files named like 0123456789abcdef-0123456789abcdef-p19-256x128.png), try
          rta_app.exe --disc "C:\path\to\your.iso" --art-pack "C:\path\to\that folder"
@@ -94,7 +98,7 @@ Five checks, in this order
      Without online.bat:  rta_app.exe --disc "..." --server ADDRESS --online | --host [CODE] | --join CODE
 
 What to report
-  - fpcheck.txt, boot-check.txt, and the file rta-data\rta_app-log.txt (written on every
+  - fpcheck.txt, boot-check.txt, pnghash.txt, and the file rta-data\rta_app-log.txt (written on every
     run; it starts again on each run, so copy it before you start the program again)
   - did a window open? did the memory card screen, the logo, the title screen appear?
   - is there sound? does it crackle or drop out?
@@ -122,6 +126,9 @@ When something is wrong
   Online: "the game will not get online" or a network error after "Internet Game" in the
   log means the server's address could not be reached: check server.txt, your firewall,
   and that the server is running; the line with "TCP ->" names the address that was tried.
+  Online, and no dialogue asks for your name (the game waits at the log-in screen):
+         rta_app.exe --disc "C:\path\to\your.iso" --online --name YourName
+  gives the name on the command line (3 to 15 letters and digits). Say so in the report.
 
 The two films at the start (the developer's logo, the intro) are played by this build. If
 one hangs, looks wrong or has no sound, say so and start again with  --no-films  (a film

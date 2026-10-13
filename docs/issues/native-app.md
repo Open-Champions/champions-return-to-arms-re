@@ -285,11 +285,12 @@ units; the unpatched translation is byte-identical to before (`diff -r`). `--pna
   through the lobby into a game as host and as joiner in a test window;
   `tools/recomp/net/play-native.sh` starts it with `--server`, `--online`, `--host`,
   `--join CODE`. Left there: the name question on the window was built and not run.
-- **Windows**, exactly: `rt/host_win32.cpp` (thread with a large stack, 64-bit file
-  offsets, exit, sleep); a WASAPI or waveOut sink in `sound/audio_out.cpp`; a pad file
-  for XInput or Windows.Gaming.Input beside `pad_mac.mm`; the build scripts (clang-cl or
-  MSVC: weak definitions in `hle_weak.cpp`, `/fp:strict`); Qt 6 for Windows with a
-  desktop OpenGL driver, or a Direct3D backend behind `render/backend.h`.
+- **Windows**: written since, and built on the Mac with a cross-compiler
+  (`docs/issues/native-windows.md`): `rt/host_win32.cpp`, a WASAPI / waveOut device,
+  XInput, a Win32 window with OpenGL through WGL in place of Qt (`app/win_main.cpp`),
+  the picture settings, the art pack read without Qt, and the network over Winsock.
+  It compiles and links (`app/build_win.py`); **nothing of it has been run on Windows** -
+  what is left is a person with a PC and the test plan in that file.
 - **The application itself**: an application bundle with Qt beside it (today it runs from
   the build directory against Homebrew's Qt), settings kept between runs, key and
   controller bindings, a second player, rumble, the delay from a press to the picture

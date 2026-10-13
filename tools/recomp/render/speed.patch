@@ -1,5 +1,5 @@
-speed.patch - the renderer's processor side made cheaper: the changes to files other work is going on in.
-docs/issues/native-render-speed.md says what it is and what was run.
+speed.patch - the renderer's processor side made several times cheaper: the changes to files
+other work is going on in.  docs/issues/native-render-speed.md says what it is and what was run.
 
 Made against tools/recomp as it stood at the time in the line "snapshot" below.  Apply from
 tools/recomp:
@@ -8,15 +8,129 @@ tools/recomp:
 
 The new files it needs are already in place and are not in the patch:
     render/vu1_translate.py  render/vu1_translate_gen.py   the translator of the VU1 microprograms (a tool)
-    render/vu1_fast.h  render/vu1_simd.h  render/vu1_fast_none.cpp
-    render/prof.h  render/speedbench.py  render/vu1_fast_test.cpp
+    render/vu1_fast.h  render/vu1_simd.h                   what the translated programs are written against
+    render/vu1_fast_none.cpp                               linked when there is no translation
+    render/vu1_fast_test.cpp                               the four-wide arithmetic against the interpreter's
+    render/prof.h                                          instruction counters per part (-DRTA_PROF only)
+    render/speedbench.py                                   builds and runs decode_bench in the variants compared
 
-(WORK IN PROGRESS - this head is rewritten when the work is reported.)
+After the patch, once (the output is derived from the game and stays under local/):
+
+    python3 tools/recomp/render/vu1_translate.py --elf SLUS_209.73 \
+        --stream local/recomp-speed/streams/fire3-fight.rtavs --stream local/recomp-speed/streams/hub.rtavs \
+        --out local/recomp-out/gen-vu/vu1_fast.cpp --report
+    python3 tools/recomp/app/build.py            # and render/build.py replay: both link gen-vu/vu1_fast.cpp when it is there
+
+(--elf gives the main program; the two small programs the game loads behind it every frame come
+from a recorded stream of a fight - any stream written by `app record FILE` in a level that uses
+them.  A program that is not translated is interpreted, as before.  A translation that does not
+match what is in microprogram memory is never used: it is compared by hash.)
+
+Notes for the merge
+ - Nothing changes unless gen-vu/vu1_fast.cpp exists, except four things that are on by default
+   and give the same lists (proof in the document): Gs::triangle_run (a whole run of triangles in
+   one loop), a kicked packet read where it lies, Vif1::unpack_fast (one loop per UNPACK format),
+   and Gs::start_transfer's bookkeeping
+   (the list of blocks a rectangle writes is kept; a table of the blocks upload sets start at).
+ - Run-time switches, all in the environment, read once in Renderer's constructor (renderer.cpp):
+     RTA_VU1_INTERPRET=1   every VU1 program interpreted (the reference)
+     RTA_VU1_OLD=1         not the new translation; the older one of the main program if linked
+     RTA_GS_SLOW=1         every vertex through packed() / kick(), kicked packets copied first
+     RTA_VIF_SLOW=1        every UNPACK through the old function
+   In code: Vu1::use_fast, Gs::fast_runs, Gs::copy_kicks, Vif1::fast_unpack.  rta_replay has
+   --reference (all four), --interpret, --old-translation; decode_bench --interpret and
+   --old-translation; web_main's --interpret-vu covers the new translation too.
+ - render/gs.cpp (the file with the most traffic): one new function (triangle_run, with its
+   macro) placed before emit_vertex; five lines in gif() after a tag is read; xgkick() split in
+   two (the packet is measured first, then read where it lies or copied); start_transfer's last
+   lines; `set_at[...]` beside the three places `sets` gains or loses an entry - if a later change
+   adds another sets.erase() or sets[...], it needs the same line; the static `log_far` moved
+   from inside emit_vertex to file scope; RTA_PROF_SCOPE lines, which are empty without -DRTA_PROF.
+   Nothing in rebuild_state, kick, packed, texture_for or the texture code is changed.
+ - render/vu1.cpp: decode() and the hash of the older translation are now made only when the
+   interpreter is really needed and only for the pairs that changed (micro_changed(first, count);
+   the old micro_changed() is "all of it"): Vif1's MPG passes the range.
+ - render/renderer.h: the renderer's own VU1 memories are aligned to 16 bytes (a kicked packet
+   is read in place as words).
+ - app/build.py, render/build.py, web/build.py: one job more each (gen-vu/vu1_fast.cpp or
+   render/vu1_fast_none.cpp); web/build.py takes it as --vu-fast FILE, with --flag=-msimd128.
+ - web/decode_bench.cpp: counters, a checksum of the draw commands beside the one of the
+   vertices, --no-check, --list FILE, --old-translation.
+ - Windows: vu1_simd.h has SSE2 for x86-64 (tested here under Rosetta: vu1_fast_test.cpp) and
+   falls back to plain C++ elsewhere; the flush-to-zero mode is used on AArch64 with clang or gcc
+   only (MSVC on ARM64 gets NEON doing the masking itself).  The generated file needs the flags of
+   vu1.cpp: no contraction of multiply-add, rounding-mode access (/fp:strict).
+ - Found on the way, not changed (docs, section "Found on the way"): after rebuild_state() sends
+   a texture again (restore_texture -> gif(3, ...)), cur_path stays 3 for the rest of the packet
+   being read, so those triangles are marked made_by 1 and treated as 2-D by the layout.
 snapshot: Mon Oct 12 19:52:46 CDT 2026
 
+diff -ruN a/app/build.py b/app/build.py
+--- a/app/build.py	2026-10-12 19:52:46
++++ b/app/build.py	2026-10-12 20:49:07
+@@ -6,7 +6,7 @@
+   options: --opt -O1|-O2   --qt DIR (default /opt/homebrew/opt/qtbase)
+            --pnach FILE --sections FILE   the fix set (defaults below)
+            --no-game          do not translate and compile the game first (link what is there)
+-           --no-translation   interpret VU1 even when a translation of its main program exists
++           --no-translation   interpret VU1 even when a translation of its programs exists
+ 
+ One program from five parts:
+   the translated game   rta_app: translated with the suggested fix set applied - the word
+@@ -19,8 +19,8 @@
+                         tick for tick with the original in the rig.
+   the runtime           tools/recomp/rt/ (runtime, iop, script, host) - as it is now
+   the renderer          tools/recomp/render/ (vu1, vif1, gs, renderer, the OpenGL backend,
+-                        and the VU1 main program translated to C++ when
+-                        local/recomp-out/gen-vu/vu1_translated.cpp exists)
++                        and the VU1 programs translated to C++ when
++                        local/recomp-out/gen-vu/vu1_fast.cpp and vu1_translated.cpp exist)
+   the sound library     tools/recomp/sound/sound_rta.cpp in place of rt/sound_null.cpp
+   the application       this directory: window, pacing, keyboard, game controller
+ 
+@@ -123,6 +123,10 @@
+         jobs.append((translation, render_flags, 'r_'))
+     else:
+         jobs.append((os.path.join(render, 'vu1_none.cpp'), render_flags, 'r_'))
++    # the VU1 microprograms translated ahead of time (render/vu1_translate.py writes the file
++    # into local/recomp-out/gen-vu/; docs/issues/native-render-speed.md)
++    fast = os.path.join(OUT, 'gen-vu', 'vu1_fast.cpp')
++    jobs.append((fast if os.path.exists(fast) and not args.no_translation else os.path.join(render, 'vu1_fast_none.cpp'), render_flags, 'r_'))
+     jobs.append((os.path.join(render, 'backend_gl.cpp'), render_flags + qt_flags, 'r_'))
+     jobs.append((os.path.join(render, 'texpack.cpp'), render_flags + qt_flags, 'r_'))
+     jobs += [(os.path.join(rt, n), rt_flags, 'rt_') for n in RUNTIME]
+diff -ruN a/render/build.py b/render/build.py
+--- a/render/build.py	2026-10-12 19:52:46
++++ b/render/build.py	2026-10-12 20:49:07
+@@ -6,9 +6,12 @@
+   options: --opt -O1|-O2   --qt DIR (default /opt/homebrew/opt/qtbase)   --gen DIR   --rt DIR
+            --no-translation
+ 
+-The VU1 main program runs translated when local/recomp-out/gen-vu/vu1_translated.cpp exists:
++The VU1 microprograms run translated ahead of time when local/recomp-out/gen-vu/vu1_fast.cpp
++exists (docs/issues/native-render-speed.md):
++  python3 tools/recomp/render/vu1_translate.py --stream <stream> [--stream ...] --out local/recomp-out/gen-vu/vu1_fast.cpp
++then build again.  Behind it, the older translation of the main program is used when
++local/recomp-out/gen-vu/vu1_translated.cpp exists:
+   local/recomp-out/bin/rta_replay <stream> --translate-vu local/recomp-out/gen-vu/vu1_translated.cpp
+-then build again.
+ 
+ Objects go to local/recomp-out/obj-render/, programs to local/recomp-out/bin/.  Uses the
+ compiler and the Qt 6 already on the machine; nothing is downloaded.  `app` links the
+@@ -80,6 +83,10 @@
+         jobs.append((translation, base, 'r_'))
+     else:
+         jobs.append((os.path.join(HERE, 'vu1_none.cpp'), base, 'r_'))
++    # the microprograms translated ahead of time (vu1_translate.py writes the file; derived
++    # from the game too)
++    fast = os.path.join(OUT, 'gen-vu', 'vu1_fast.cpp')
++    jobs.append((fast if os.path.exists(fast) and not args.no_translation else os.path.join(HERE, 'vu1_fast_none.cpp'), base, 'r_'))
+     jobs += [(os.path.join(HERE, n), base + qt_flags, 'r_') for n in GL]
+     link = []
+     if args.what == 'replay':
 diff -ruN a/render/gs.cpp b/render/gs.cpp
 --- a/render/gs.cpp	2026-10-12 19:52:46
-+++ b/render/gs.cpp	2026-10-12 20:40:43
++++ b/render/gs.cpp	2026-10-12 21:14:22
 @@ -1,5 +1,6 @@
  // gs.cpp - see gs.h.
  #include "gs.h"
@@ -96,7 +210,15 @@ diff -ruN a/render/gs.cpp b/render/gs.cpp
      paths[0].nloop = 0;
      if (trace > 0) {
          trace--;
-@@ -577,6 +599,7 @@
+@@ -547,6 +569,7 @@
+                 dst.fbw = (uint32_t)(bb >> 48) & 0x3F;
+                 dst.psm = (uint32_t)(bb >> 56) & 0x3F;
+                 sets.erase(dbp);
++                set_at[dbp] = 0;
+                 DrawCmd c;
+                 c.kind = CMD_COPY;
+                 c.texture = source_id; c.target = dst.id;
+@@ -577,9 +600,11 @@
  }
  
  void Gs::start_transfer() {
@@ -104,7 +226,47 @@ diff -ruN a/render/gs.cpp b/render/gs.cpp
      uint64_t bb = reg[0x50], pos = reg[0x51], size = reg[0x52];
      uint32_t dbp = (uint32_t)(bb >> 32) & 0x3FFF;
      UploadSet& set = sets[dbp];
-@@ -623,6 +646,7 @@
++    set_at[dbp] = 1;
+     if (set.used) { set.rects.clear(); set.data.clear(); set.hash = 0; set.used = false; }
+     Rect r;
+     r.bw_raw = (uint32_t)(bb >> 48) & 0x3F;
+@@ -607,8 +632,15 @@
+     // row, a narrow rectangle skips blocks, and the game puts other textures into the
+     // blocks between - taking the whole span away lost their pictures: "image never
+     // sent" for 400 to 600 draws a visit in two levels)
+-    std::vector<uint32_t> written;
+-    if (r.w > 0 && r.h > 0)
++    if (r.w <= 0 || r.h <= 0) return;
++    // (Which blocks a rectangle writes depends on its place, size and format alone, and
++    // the game sends the same few hundred rectangles every frame: the sorted list is made
++    // once per kind of rectangle and kept.  It was 13,000 instructions an upload.)
++    if (written_blocks.size() > 4096) written_blocks.clear();
++    auto kept = written_blocks.try_emplace(std::make_pair((uint64_t)r.psm | (uint64_t)r.bw << 8 | (uint64_t)(uint32_t)r.x << 16 | (uint64_t)(uint32_t)r.y << 40,
++                                                          (uint64_t)(uint32_t)r.w | (uint64_t)(uint32_t)r.h << 32));
++    std::vector<uint32_t>& written = kept.first->second;
++    if (kept.second) {
+         for (int by = r.y / bhei; by <= (r.y + r.h - 1) / bhei; by++)
+             for (int bx = r.x / bwid; bx <= (r.x + r.w - 1) / bwid; bx++) {
+                 int x = bx * bwid, y = by * bhei;
+@@ -616,13 +648,22 @@
+                          : r.psm == PSMCT16 || r.psm == PSMCT16S ? addr16(x, y, r.bw) : addr32(x, y, r.bw);
+                 written.push_back((uint32_t)(a >> 8));
+             }
++        std::sort(written.begin(), written.end());
++    }
+     if (written.empty()) return;
+-    std::sort(written.begin(), written.end());
+-    for (auto it = sets.upper_bound(dbp); it != sets.end() && it->first <= dbp + written.back();)
+-        if (std::binary_search(written.begin(), written.end(), it->first - dbp)) it = sets.erase(it); else ++it;
++    // (Every set that starts behind this one in a block the rectangle writes.  Asked of a
++    // table of the blocks sets start at: walking the map over the rectangle's span and
++    // searching the list for each set found there cost as much as hashing the upload.)
++    for (uint32_t block : written) {
++        const uint32_t at = dbp + block;
++        if (!block || at >= 0x4000 || !set_at[at]) continue;
++        sets.erase(at);
++        set_at[at] = 0;
++    }
  }
  
  void Gs::image_data(const uint8_t* bytes, size_t count) {
@@ -112,7 +274,15 @@ diff -ruN a/render/gs.cpp b/render/gs.cpp
      if (!xfer.active) return;
      auto it = sets.find(xfer.dbp);
      if (it == sets.end()) { xfer.active = false; return; }
-@@ -756,6 +780,7 @@
+@@ -636,6 +677,7 @@
+     if (xfer.got >= want && xfer.to_surface) {
+         Rect done = r;
+         std::vector<uint8_t> bytes(set.data.begin() + (std::ptrdiff_t)r.offset, set.data.end());
++        set_at[xfer.dbp & 0x3FFF] = 0;
+         sets.erase(it);                                 // nothing of it is kept as a texture
+         xfer.active = false;
+         if (bytes.size() >= want) upload_to_surface(xfer.dbp, done, bytes.data());
+@@ -756,6 +798,7 @@
  }
  
  Gs::Texture* Gs::texture_for(uint64_t tex0, uint64_t texa) {
@@ -120,7 +290,7 @@ diff -ruN a/render/gs.cpp b/render/gs.cpp
      uint32_t tbp = (uint32_t)tex0 & 0x3FFF, tbw = std::max<uint32_t>((uint32_t)(tex0 >> 14) & 0x3F, 1), psm = (uint32_t)(tex0 >> 20) & 0x3F;
      uint32_t tw = (uint32_t)(tex0 >> 26) & 15, th = (uint32_t)(tex0 >> 30) & 15;
      uint32_t cbp = (uint32_t)(tex0 >> 37) & 0x3FFF, cpsm = (uint32_t)(tex0 >> 51) & 15, csa = (uint32_t)(tex0 >> 56) & 31;
-@@ -791,6 +816,7 @@
+@@ -791,6 +834,7 @@
      }
  
      // ---- make it ----
@@ -128,7 +298,7 @@ diff -ruN a/render/gs.cpp b/render/gs.cpp
      const UploadSet& set = image->second;
      Scratch s;
      s.reserve(8192);
-@@ -888,6 +914,7 @@
+@@ -888,6 +932,7 @@
  static bool g_skip_draw = false;
  
  void Gs::rebuild_state() {
@@ -136,7 +306,7 @@ diff -ruN a/render/gs.cpp b/render/gs.cpp
      if (!canvases.empty()) flush_uploads();             // what was sent into a surface is there before anything is drawn
      state_dirty = false;
      uint32_t attr = (reg[0x1a] & 1) ? prim : ((prim & 7) | ((uint32_t)reg[0x1b] & 0x7F8));
-@@ -1048,12 +1075,248 @@
+@@ -1048,12 +1093,256 @@
      have_cmd = true;
  }
  
@@ -267,11 +437,14 @@ diff -ruN a/render/gs.cpp b/render/gs.cpp
 +    goto done;
 +strip:
 +    {
-+        // The two vertices before the one being read, as they are emitted, and the new one
-+        // made where it goes: three vertices of 32 bytes are written per triangle, as
-+        // blocks.  (Kept as blocks of memory on purpose: as separate fields in registers
-+        // the compiler shuffled forty values around the loop.)
-+        Vertex prev[2] = {made[0], made[1]};
++        // The new vertex is made where it goes, and the two before it are copied from where
++        // they lie - in the output, or beside it when the triangle they ended was not drawn:
++        // three vertices of 32 bytes per triangle, moved as blocks.  (By address on purpose:
++        // held as values the compiler kept forty separate fields in registers and shuffled
++        // them around the loop.)
++        Vertex beside[2];
++        const Vertex* p0 = &made[0];
++        const Vertex* p1 = &made[1];
 +        // the last two vertices of the run, as the queue holds them
 +        uint64_t left = (uint64_t)nloop * vertex_regs - vertices;       // vertices still to come
 +        Queued tail[2];
@@ -290,6 +463,7 @@ diff -ruN a/render/gs.cpp b/render/gs.cpp
 +            const uint32_t z = with_fog ? (w[2] >> 4) & 0xFFFFFF : w[2];
 +            const uint8_t fog = with_fog ? (uint8_t)(w[3] >> 4) : reg_fog;
 +            Vertex* n = o + 2;
++            const Vertex* const p0_before = p0;
 +            n->x = ((float)x - ofx) * (1.0f / 16.0f);
 +            n->y = ((float)y - ofy) * (1.0f / 16.0f);
 +            float zf = (float)z * zscale;
@@ -300,14 +474,18 @@ diff -ruN a/render/gs.cpp b/render/gs.cpp
 +            memcpy(&n->r, &rgba, 4);
 +            const uint8_t last[4] = {fog, 0, 0, 0};
 +            memcpy(&n->fog, last, 4);
-+            const bool drawn = !(w[3] & 0x8000);
-+            if (drawn) {
-+                memcpy((void*)o, (const void*)prev, 2 * sizeof(Vertex));
++            p0 = p1;
++            if (!(w[3] & 0x8000)) {                     // drawn
++                memcpy((void*)o, (const void*)p0_before, sizeof(Vertex));
++                memcpy((void*)(o + 1), (const void*)p1, sizeof(Vertex));
 +                if (!iip) { memcpy(&o[0].r, &rgba, 4); memcpy(&o[1].r, &rgba, 4); }      // flat: the colour of the last vertex
++                p1 = n;
++                o += 3;
++            } else {                                    // not drawn: out of the way of the next one
++                Vertex* keep = p1 == &beside[0] ? &beside[1] : &beside[0];
++                memcpy((void*)keep, (const void*)n, sizeof(Vertex));
++                p1 = keep;
 +            }
-+            memcpy((void*)&prev[0], (const void*)&prev[1], sizeof(Vertex));
-+            memcpy((void*)&prev[1], (const void*)n, sizeof(Vertex));
-+            if (drawn) o += 3;
 +            if (left-- <= 2) {
 +                Queued& k = tail[tails++];
 +                k.x = x; k.y = y; k.z = z; k.fog = fog; k.s = s; k.t = t; k.q = cq; k.u = u; k.v = vv;
@@ -388,7 +566,7 @@ diff -ruN a/render/gs.cpp b/render/gs.cpp
              left--;
 diff -ruN a/render/gs.h b/render/gs.h
 --- a/render/gs.h	2026-10-12 19:52:46
-+++ b/render/gs.h	2026-10-12 20:38:14
++++ b/render/gs.h	2026-10-12 21:04:32
 @@ -102,10 +102,20 @@
      // ---- GIF tag state per path ----
      struct Path { uint64_t regs = 0; uint32_t nloop = 0, nreg = 0, flg = 0, at = 0; bool eop = false; };
@@ -410,9 +588,18 @@ diff -ruN a/render/gs.h b/render/gs.h
      // ---- drawing ----
      DrawCmd cur;                        // state of the command being filled
      bool have_cmd = false;
+@@ -135,6 +145,8 @@
+     struct Rect { uint32_t psm, bw; int x, y, w, h; size_t offset, bytes; uint32_t bw_raw; };
+     struct UploadSet { std::vector<Rect> rects; std::vector<uint8_t> data; uint64_t hash = 0, serial = 0; bool used = false; };
+     std::map<uint32_t, UploadSet> sets;                 // by destination base pointer
++    uint8_t set_at[0x4000] = {0};                       // 1 where `sets` has an entry (start_transfer asks it block by block)
++    std::map<std::pair<uint64_t, uint64_t>, std::vector<uint32_t>> written_blocks;     // start_transfer: the blocks a kind of rectangle writes, sorted
+     uint64_t serial = 1;
+     struct Transfer { bool active = false; uint32_t dbp = 0; size_t rect = 0, got = 0; bool to_surface = false; } xfer;
+     // Pixels the game sends straight into a displayed buffer (the film player: 16 x 16
 diff -ruN a/render/renderer.cpp b/render/renderer.cpp
 --- a/render/renderer.cpp	2026-10-12 19:52:46
-+++ b/render/renderer.cpp	2026-10-12 20:33:10
++++ b/render/renderer.cpp	2026-10-12 20:50:18
 @@ -1,5 +1,6 @@
  // renderer.cpp - see renderer.h.
  #include "renderer.h"
@@ -420,12 +607,13 @@ diff -ruN a/render/renderer.cpp b/render/renderer.cpp
  
  #include <cstdio>
  #include <cstdlib>
-@@ -19,7 +20,11 @@
+@@ -19,7 +20,12 @@
          r->gs.xgkick(r->vif.vu.data, qword);
      };
      gs.begin_frame();
 -    if (getenv("RTA_GS_FAR")) {                         // debugging: the VIF codes that led to a far vertex, once
 +    if (getenv("RTA_VU1_INTERPRET")) vif.vu.use_fast = vif.vu.use_translation = false;     // the reference: every program interpreted
++    if (getenv("RTA_VU1_OLD")) vif.vu.use_fast = false; // only the older translation of the main program (when one is linked)
 +    if (getenv("RTA_GS_SLOW")) { gs.fast_runs = false; gs.copy_kicks = true; }    // ... every vertex through the general path
 +    if (getenv("RTA_VIF_SLOW")) vif.fast_unpack = false;    // ... every UNPACK field by field
 +    if (getenv("RTA_GS_FAR")) {
@@ -433,7 +621,7 @@ diff -ruN a/render/renderer.cpp b/render/renderer.cpp
          vif.debug_ring = 1;
          gs.on_far_vertex = [this] {
              static bool done = false;
-@@ -59,7 +64,7 @@
+@@ -59,7 +65,7 @@
  void Renderer::vblank(unsigned, uint64_t number) {
      blanks++;
      gs.end_frame(number);
@@ -455,6 +643,47 @@ diff -ruN a/render/renderer.h b/render/renderer.h
      std::unordered_map<uint32_t, size_t> picture_failed;    // TBP0 -> headers known when its lookup failed
  };
  
+diff -ruN a/render/replay_main.cpp b/render/replay_main.cpp
+--- a/render/replay_main.cpp	2026-10-12 19:52:46
++++ b/render/replay_main.cpp	2026-10-12 20:49:07
+@@ -55,6 +55,8 @@
+     int crop[4] = {0, 0, 0, 0};                         // --crop x,y,w,h: write only this part of the picture
+     std::string translate;                              // --translate-vu <file.cpp>: write the main VU1 program as C++
+     bool interpret = false;                             // --interpret: do not use a linked translation
++    bool old_translation = false;                       // --old-translation: not the ahead-of-time one (vu1_fast.h), the older one of the main program
++    bool reference = false;                             // --reference: VU1 interpreted, and the GS model and UNPACK the long way too
+     int list_at = -1;                                   // --list <blank>: print that blank's command list
+     unsigned vu_lo = 0, vu_hi = 0;
+     int vu_n = 0;
+@@ -78,6 +80,8 @@
+         else if (a == "--crop") { std::string v = next(); sscanf(v.c_str(), "%d,%d,%d,%d", &crop[0], &crop[1], &crop[2], &crop[3]); }
+         else if (a == "--translate-vu") translate = next();
+         else if (a == "--interpret") interpret = true;
++        else if (a == "--old-translation") old_translation = true;
++        else if (a == "--reference") reference = true;
+         else if (a == "--list") list_at = atoi(next().c_str());
+         else if (a == "--target") read_target = atoi(next().c_str());
+         else if (a == "--sheet") { sheet = next(); sheet_first = atoi(next().c_str()); }
+@@ -109,6 +113,8 @@
+     renderer.gs.no_interlace = !interlace;
+     renderer.gs.trace = trace;
+     renderer.vif.vu.use_translation = !interpret;
++    renderer.vif.vu.use_fast = !interpret && !old_translation;
++    if (reference) { renderer.vif.vu.use_translation = renderer.vif.vu.use_fast = false; renderer.gs.fast_runs = false; renderer.gs.copy_kicks = true; renderer.vif.fast_unpack = false; }
+     renderer.vif.time_runs = renderer.gs.time_paths = getenv("RTA_TIME") != nullptr;
+     if (getenv("RTA_NO_VU")) renderer.vif.run_programs = false;         // for telling the parts' processor time apart
+     if (getenv("RTA_NO_KICK")) renderer.vif.vu.kick = nullptr;
+@@ -228,7 +234,9 @@
+         bool ok = renderer.vif.vu.write_translation(translate.c_str(), 0x74c);
+         printf("%s %s\n", ok ? "wrote" : "cannot write", translate.c_str());
+     }
+-    printf("VU1 main program: %s\n", renderer.vif.vu.translated ? "translated" : "interpreted");
++    printf("VU1: %llu runs, %llu of them in the ahead-of-time translation (%llu finished by the interpreter); main program otherwise %s\n",
++           (unsigned long long)renderer.vif.vu.runs, (unsigned long long)renderer.vif.vu.fast_runs, (unsigned long long)renderer.vif.vu.fast_left,
++           renderer.vif.vu.translated ? "in the older translation" : "interpreted");
+     {
+         PictureFigures f = backend.figures();
+         printf("picture: %d samples, anisotropy %d; pack files %llu, textures named %llu, found %llu, read %llu (%llu as parts), own mip-mapped parts %llu, held %llu pictures, %.1f MB\n",
 diff -ruN a/render/vif1.cpp b/render/vif1.cpp
 --- a/render/vif1.cpp	2026-10-12 19:52:46
 +++ b/render/vif1.cpp	2026-10-12 20:33:10
@@ -578,7 +807,7 @@ diff -ruN a/render/vif1.cpp b/render/vif1.cpp
      uint32_t total = num ? num : 256;
 diff -ruN a/render/vif1.h b/render/vif1.h
 --- a/render/vif1.h	2026-10-12 19:52:46
-+++ b/render/vif1.h	2026-10-12 20:26:35
++++ b/render/vif1.h	2026-10-12 20:51:04
 @@ -34,6 +34,10 @@
      std::vector<uint32_t> pending;
      size_t process(const uint32_t* w, size_t n);       // returns words consumed
@@ -590,17 +819,19 @@ diff -ruN a/render/vif1.h b/render/vif1.h
      void start_program(uint32_t at, bool from_pc);
      // A started program runs when the VIF comes to a code that would wait for VU1 or that
      // writes where the program may read, not at its MSCAL.  On the machine the VIF goes on
-@@ -44,6 +48,7 @@
+@@ -44,6 +48,9 @@
      // (+0x80 and up) are carried out first; any other code runs the program before it.
      bool waiting = false, waiting_from_pc = false;
      uint32_t waiting_at = 0;
++#ifdef RTA_PROF
 +    uint32_t prof_entry = 0;            // the entry of the last MSCAL (prof.h: a continued program counts for it)
++#endif
      void run_waiting();
  };
  
 diff -ruN a/render/vu1.cpp b/render/vu1.cpp
 --- a/render/vu1.cpp	2026-10-12 19:52:46
-+++ b/render/vu1.cpp	2026-10-12 20:33:10
++++ b/render/vu1.cpp	2026-10-12 20:44:25
 @@ -1,5 +1,6 @@
  // vu1.cpp - see vu1.h.  Compile with -frounding-math -ffp-contract=off: the rounding mode
  // is changed while a program runs and a multiply-add must stay two rounded operations.
@@ -637,7 +868,7 @@ diff -ruN a/render/vu1.cpp b/render/vu1.cpp
  }
  
  uint32_t Vu1::mac_seen() const {
-@@ -162,12 +175,31 @@
+@@ -162,12 +175,63 @@
      return h;
  }
  
@@ -660,9 +891,41 @@ diff -ruN a/render/vu1.cpp b/render/vu1.cpp
 +
 +void vu1_fast_kick(Vu1& v, uint32_t qword) {
 +    if (!v.kick) return;
++    vu1_flush_off();
 +    VU1_ROUND_RESTORE(v.round_before);
 +    v.kick(v.user, qword);
 +    VU1_ROUND_TOWARD_ZERO();
++    vu1_flush_on();
++}
++
++// Does the processor's flush-to-zero mode do what the translated programs leave to it
++// (vu1_simd.h)?  A few products and sums around the smallest normal number, by the
++// processor in that mode and by vu_in / vu_out, in the unit's rounding.
++static bool vu1_flush_works() {
++#if VU1_HARDWARE_FLUSH
++    static const uint32_t cases[][2] = {
++        {0x00800000u, 0x3F000000u}, {0x80800000u, 0x3F000000u}, {0x00C00000u, 0x80800000u}, {0x00000001u, 0x7F000000u}, {0x807FFFFFu, 0x40000000u},
++        {0x00800001u, 0x3F7FFFFFu}, {0x1E000000u, 0x1E000000u}, {0x00FFFFFFu, 0x80FFFFFEu}, {0x7F7FFFFFu, 0x00000001u}, {0x3F800000u, 0x3F800000u}};
++    bool good = true;
++    for (const auto& c : cases) {
++        volatile uint32_t a = c[0], b = c[1];           // not folded at compile time
++        V4 x = v4_splat(a), y = v4_splat(b);
++        uint32_t want[3] = {0, 0, 0}, got[3];
++        float fa = vu_in(a), fb = vu_in(b), r;
++        r = vu_out(vu_mul(fa, fb)); memcpy(&want[0], &r, 4);
++        r = vu_out(vu_add(fa, fb)); memcpy(&want[1], &r, 4);
++        r = vu_out(vu_sub(fa, fb)); memcpy(&want[2], &r, 4);
++        vu1_flush_on();
++        got[0] = v4_get(v4_out(v4_mul(v4_in(x), v4_in(y))), 0);
++        got[1] = v4_get(v4_out(v4_add(v4_in(x), v4_in(y))), 1);
++        got[2] = v4_get(v4_out(v4_sub(v4_in(x), v4_in(y))), 2);
++        vu1_flush_off();
++        if (memcmp(want, got, sizeof(want))) good = false;
++    }
++    return good;
++#else
++    return true;
++#endif
 +}
 +
 +void Vu1::run(uint32_t start) {
@@ -673,15 +936,22 @@ diff -ruN a/render/vu1.cpp b/render/vu1.cpp
      VU1_ROUND_TOWARD_ZERO();
      runs++;
      uint32_t at = start & 2047;
-@@ -175,6 +207,25 @@
+@@ -175,6 +239,32 @@
      int branch_in = -1;
      uint32_t branch_to = 0;
      const bool debugging = debug_left > 0 || debug_store > 0;
 +    if (use_fast && fast_match && !debugging) {
-+        for (uint32_t k = 0; k < vu1_fast_program_count && k < 32; k++) {
++        static const bool flush_works = vu1_flush_works();      // (in the unit's rounding, as the programs run)
++        if (!flush_works) {
++            fprintf(stderr, "vu1: this processor's flush-to-zero mode is not what the translated programs count on - interpreting\n");
++            use_fast = false;
++        }
++        for (uint32_t k = 0; use_fast && k < vu1_fast_program_count && k < 32; k++) {
 +            const Vu1Program& p = vu1_fast_programs[k];
 +            if (!(fast_match & (1u << k)) || at < p.start || at >= p.start + p.count) continue;
++            vu1_flush_on();
 +            int left = p.run(*this, at);
++            vu1_flush_off();
 +            if (left < 0) {                             // ran to its end bit
 +                fast_runs++;
 +                if (q_busy) { q = q_next; q_busy = false; }
@@ -743,6 +1013,25 @@ diff -ruN a/render/vu1.h b/render/vu1.h
  };
  
  }  // namespace render
+diff -ruN a/web/build.py b/web/build.py
+--- a/web/build.py	2026-10-12 19:52:46
++++ b/web/build.py	2026-10-12 20:49:13
+@@ -101,6 +101,7 @@
+     parser.add_argument('--define', action='append', default=[])
+     parser.add_argument('--flag', action='append', default=[], help='one more compiler flag for everything but the translated game, as --flag=-msimd128; repeatable')
+     parser.add_argument('--vu')
++    parser.add_argument('--vu-fast', help='the VU1 microprograms translated ahead of time (render/vu1_translate.py writes the file); give --flag=-msimd128 with it')
+     parser.add_argument('--vu-arith', choices=['nearest', 'zero'], default='nearest')
+     parser.add_argument('--no-sound', action='store_true')
+     parser.add_argument('--profiling', action='store_true')
+@@ -138,6 +139,7 @@
+         headers += headers_of(render, sound, app)
+         sources += [os.path.join(render, n) for n in RENDER]
+         sources.append(os.path.abspath(args.vu) if args.vu else os.path.join(render, 'vu1_none.cpp'))
++        sources.append(os.path.abspath(args.vu_fast) if args.vu_fast else os.path.join(render, 'vu1_fast_none.cpp'))
+         sources += [os.path.join(app, 'app_rt.cpp'), os.path.join(HERE, 'backend_webgl.cpp'), os.path.join(HERE, 'web_main.cpp')]
+         if args.no_sound:
+             sources += [os.path.join(rt, 'sound_null.cpp'), os.path.join(HERE, 'sound_none_web.cpp')]
 diff -ruN a/web/decode_bench.cpp b/web/decode_bench.cpp
 --- a/web/decode_bench.cpp	2026-10-12 19:52:46
 +++ b/web/decode_bench.cpp	2026-10-12 20:33:10
@@ -891,3 +1180,15 @@ diff -ruN a/web/decode_bench.cpp b/web/decode_bench.cpp
      if (!dump.empty()) {
          FILE* f = fopen(dump.c_str(), "wb");
          uint32_t n_blanks = (uint32_t)kept_counts.size();
+diff -ruN a/web/web_main.cpp b/web/web_main.cpp
+--- a/web/web_main.cpp	2026-10-12 19:52:46
++++ b/web/web_main.cpp	2026-10-12 20:49:07
+@@ -302,7 +302,7 @@
+     static Renderer renderer;
+     g_renderer = &renderer;
+     renderer.vif.time_runs = renderer.gs.time_paths = g_opt.times;
+-    if (g_opt.interpret) renderer.vif.vu.use_translation = false;
++    if (g_opt.interpret) renderer.vif.vu.use_translation = renderer.vif.vu.use_fast = false;
+     g_sink.renderer = &renderer;
+     g_sink.waited_downstream_ms = &g_screen.submit_wait_ms;
+     renderer.on_frame = [](FrameList& frame) { g_screen.submit(frame); };

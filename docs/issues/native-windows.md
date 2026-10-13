@@ -25,18 +25,21 @@ python3 tools/recomp/app/build_win.py --standin    # the x86-64 macOS stand-in a
 export RTA_DISC="/path/to/your/disc image.iso"
 python3 tools/recomp/app/build_win.py --reference  # what rta_native.exe should print (arm64 Mac build)
 python3 tools/recomp/app/win/standin_compare.py    # x86-64 against arm64 and both against the rig
+python3 tools/recomp/app/build_win.py --mac        # after --standin: the macOS rta_app from the same translation, into win/mac/
+python3 tools/recomp/app/build_win.py --pngcheck   # win/standin/pngcheck: the PNG reader against QImage
 ```
 
 | In `local/recomp-out/win/` | Is |
 |---|---|
-| `rta_app.exe` (27.3 MB) | the game in a window: Win32 window, OpenGL 4.1 core through WGL, keyboard, XInput, WASAPI |
+| `rta_app.exe` (27.7 MB) | the game in a window: Win32 window, OpenGL 4.1 core through WGL, keyboard, XInput, WASAPI; since the second pass (below) the network and the picture options |
 | `rta_app_gcc.exe`, `rta_native_gcc.exe`, `fpcheck_gcc.exe` | the same three built by GCC (`--compiler gcc`); see "Compiler" |
 | `rta_native.exe` (26.5 MB) | the machine with nothing attached: boots, runs scripts, prints its report |
 | `fpcheck.exe` (0.2 MB) | the game's floating-point operations as a table of checksums (`app/win/fpcheck.cpp`) |
-| `rta-windows/` | **the folder a tester gets**: the three programs, `play.bat`, `README.txt`, `boot-check.rig` (the rig's boot script with addresses in place of names), `boot-check-mac.txt` (what the Mac printed for it) |
+| `rta-windows/` | **the folder a tester gets**: the three programs, `play.bat`, `online.bat`, `server.txt` (where the lobby server's address goes), `README.txt` (with this build's figures filled in), `boot-check.rig` (the rig's boot script with addresses in place of names), `boot-check-mac.txt` (what the Mac printed for it) |
 | `gen-app/`, `gen-orig/` | this build's own translation of the game (with the fix set / unpatched), made by `recomp.py` at every build; a file is replaced only when its content changed |
 | `obj-clang/` | objects, and a linker map of each program (`rta_app.map`: the addresses a crash report names) |
-| `standin/` | `rta_native_x64`, `recomp_test_x64`, `fpcheck_x64` (macOS x86-64, run under Rosetta); `rta_native_arm64`, `fpcheck_arm64` (the controls, same sources); `rta_native_fix_arm64` (the game as `rta_native.exe` has it, for the reference); the comparison's logs |
+| `standin/` | `rta_native_x64`, `recomp_test_x64`, `fpcheck_x64` (macOS x86-64, run under Rosetta); `rta_native_arm64`, `fpcheck_arm64` (the controls, same sources); `rta_native_fix_arm64` (the game as `rta_native.exe` has it, for the reference); `rta_native_online_x64`, `rta_native_online_arm64` (headless with the network: the lobby games below); `pngcheck`; `online/` (the lobby games' logs); the comparisons' logs |
+| `mac/` | `rta_app` (the macOS window program, arm64 with Qt, from this build's translation and the sources as they are: what `app/build.py` makes, without touching the shared `bin/`), `rta_app_pngread` (the same with the art pack read by `render/png_read.h`) |
 
 The build translates into its own directory because the other builds translate into
 `local/recomp-out/gen-app` whenever they run: at 14:13 that changed `funcs.h` under a
@@ -46,11 +49,15 @@ running compile.
 `-O2`: about 210 s of processor time; 106 s of wall time at 8 jobs and nice 10 under a load
 average of 200, 8.6 minutes under a load average of 500. Everything (68 files, three
 programs): 2 min 18 s when the machine was calmer. `rta_app.exe` is 27.3 MB stripped
-(43.2 MB with its symbol table; the arm64 macOS `rta_app` is 23.4 MB).
+(43.2 MB with its symbol table; the arm64 macOS `rta_app` is 23.4 MB). Second pass: 76
+files (the network's four, `texpack.cpp`, `gfx_rt.cpp`), 71 of them in 203 s at load
+200; `rta_app.exe` 27.7 MB.
 
 No DLL has to be shipped: the programs are linked with `-static` (libstdc++, libgcc,
 winpthreads inside) and import only `KERNEL32`, `USER32`, `GDI32`, `OPENGL32`, `WINMM`,
-`AVRT`, `ole32` and the UCRT's `api-ms-win-crt-*` sets, all part of Windows 10 and later
+`AVRT`, `ole32`, since the second pass `WS2_32` (24 functions), `IPHLPAPI`
+(`GetAdaptersAddresses`) and `ADVAPI32` (five functions for the saved login's access
+list), and the UCRT's `api-ms-win-crt-*` sets, all part of Windows 10 and later
 (read from the import table). XInput is looked up at run time.
 
 **Toolchain.** Installed with Homebrew, and nothing else: `mingw-w64` 14.0.0_3 (GCC
@@ -92,8 +99,14 @@ never run.
 | `app/win/fpcheck.cpp` | every operation of `rt/fpu.h` and the arithmetic of `rt/vu0.h` over corner values and a fixed random set, as checksums | Ran on the Mac (both architectures); the `.exe` not run |
 | `app/win/rta_app.manifest`, `rta_app.rc` | UTF-8 as the process code page (paths with any characters, Windows 10 1903+), per-monitor DPI | Built |
 | `app/build_win.py` | the build; `--standin`, `--reference`; the tester's folder with `boot-check.rig` | Ran |
+| *second pass:* `net/sock.h` | the host's sockets as `netdrv.cpp` uses them, one header with two bodies: BSD sockets and Winsock 2 ("The network", below) | BSD body: Ran on the Mac (three lobby games); Winsock body: Built and Read, not run |
+| `net/online_win.cpp`, `online_win.h` | the name question (a modeless Win32 dialogue made in memory), the note in the window's title, the set warning (a box); the two file calls of `posix_win.h` | Built and Read, not run |
+| `net/posix_win.h` | `fchmod`, `fsync`, `rename` for `tools/play-net/src/RtaOnline.cpp`, given to that one file with `-include` (the file itself is unchanged) | Built and Read, not run |
+| `render/png_read.h` | a PNG file as RGBA8 without a library (own inflate), for the art pack | Ran on the Mac: identical to QImage over 222,094 files; the same source is what the `.exe` contains |
+| `app/win/pngcheck.cpp`, `pngtest.py` | the comparison of `png_read.h` with QImage over folders; made PNG files of every kind and damaged ones | Ran |
+| `app/win/online.bat`, `server.txt` | the tester's way online: the address in a text file, a menu of three | not run (cmd.exe) |
 
-**Changes to existing files** (three, all small; the macOS build compiles the same code as before):
+**Changes to existing files** (first pass: three, all small; the macOS build compiles the same code as before):
 
 1. `rt/fpu.h`, the default ("host") model, inside `#if defined(__x86_64__) || defined(_M_X64)`:
    `fp_max`, `fp_min` and `fp_rsqrt` (below, "Arithmetic").
@@ -103,16 +116,34 @@ never run.
 3. `difftest.py`: the test driver's path can be given by `RECOMP_TEST_DRIVER` (to run the
    sweep with the x86-64 driver).
 
+Second pass (the macOS build was made again from the changed files and played a lobby
+game: "The network"):
+
+4. `net/netdrv.cpp`: its socket calls (`socket`, `bind`, `connect`, `poll`, `fcntl`,
+   `send`, `recv`, `sendto`, `recvfrom`, `getsockopt`, `getifaddrs`, `getaddrinfo`,
+   `SIGPIPE`, `_NSGetExecutablePath`) are calls of `net/sock.h`; host sockets are
+   `sock::Handle` instead of `int`; `setvbuf(..., _IOLBF, 0)` for the tick log is left out
+   on Windows (its C library ends the program for a size of 0). Nothing else: the rules
+   below the library entries are the same lines as before.
+5. `render/texpack.cpp`: under `RTA_NO_QIMAGE` `read_png` calls `pngread::read_file`
+   (it returned false), `open` lists the folder (it returned 0), and on Windows the reader
+   threads run below normal priority. The Qt branch is untouched.
+6. `net/lobbypair.py`: the window program can be another build (`RTA_NATIVE_APP`, as
+   `play-native.sh` has it). One line.
+7. `app/win_main.cpp`, `app/build_win.py`, `app/win/README.txt`: this work's own files.
+
 Not changed: `app_main.cpp`, `backend_gl.cpp`, `pipeline.h`, the runtime, the generated
-code.
+code, `net/online.cpp`, `tools/play-net/src/RtaOnline.cpp`, `app/build.py`,
+`net/build_online.py` (the layer is a header: no build list changes).
 
 **What the macOS application has and the Windows program has not:**
 
-- the control socket for test drivers (`control.h`, Unix sockets);
-- the network (`net/netdrv.cpp`, `online.cpp`, `RtaOnline.cpp`, `online_mac.mm`, added to
-  `app/build.py` this afternoon): POSIX sockets and a macOS dialogue. The Windows program
-  is translated without `net/hle-online.txt` and plays offline;
+- the control socket for test drivers (`control.h`, Unix sockets) and with it
+  `app latency`;
 - rumble is counted, not sent (as on the Mac).
+
+The network and the picture options were missing after the first pass and are in the
+program now: the next two sections.
 
 **Films.** `app/film.cpp` (the MPEG library's entry points, added to `app/build.py` this
 afternoon and still being worked on by its author) is part of the Windows program when it
@@ -121,6 +152,169 @@ on the Mac, `win_main.cpp` passes `films=original` when the decoder is linked, a
 `--no-films` ends a film at its first picture as before. The file needs `<ctime>` for a
 timing aid, which it gets on macOS through another header; the Windows build passes
 `-include ctime` instead of touching it. Not run, like the rest.
+
+## The network (second pass, 2026-10-12 evening)
+
+`rta_app.exe` has the online path of the macOS `rta_app` (`docs/issues/native-online.md`):
+the same driver source, the same one-step online, the same translation (`--hle-add
+net/hle-online.txt`, and the local sign-in patch through `--extra-pnach` when the file is
+in `local/`; nothing of that file is printed, copied or in the repository).
+`build_win.py --no-net` leaves all of it out. `rta_native.exe` does not link the driver
+and is offline as before (it gets the translated originals of the listed entries).
+
+**One source for both systems: `net/sock.h`.** A header with two bodies and one small
+interface in host byte order (`udp`, `tcp`, `bind_port`, `local_port`, `connect`,
+`connect_check`, `send`, `recv`, `send_to`, `recv_from`, `readable`, `shut`,
+`outside_address`, `own_addresses`, `resolve`, `program_dir`, `start`). `netdrv.cpp` has
+no socket header and no `#ifdef` for the host any more (one, for `setvbuf`). The BSD body
+is the calls `netdrv.cpp` made, moved; the Winsock body differs from it in more than names
+in these places:
+
+| | BSD body (Ran) | Winsock body (Built, Read) |
+|---|---|---|
+| start | `SIGPIPE` ignored | `WSAStartup(2.2)`, once |
+| non-blocking | `fcntl(O_NONBLOCK)`, macOS `SO_NOSIGPIPE` | `ioctlsocket(FIONBIO)` |
+| a connection under way | `connect` says `EINPROGRESS`; asked with `poll(POLLOUT)` and `SO_ERROR` | `connect` says `WSAEWOULDBLOCK`; asked with `select`: writable = up, in the "except" set = refused (`SO_ERROR` has the reason). `WSAPoll` is not used: before Windows 10 2004 it did not report a refused connection |
+| nothing to read / cannot send now | `EAGAIN`, `EWOULDBLOCK`, `EINTR` | `WSAEWOULDBLOCK`, `WSAEINTR` (send also `WSAENOBUFS`) |
+| a datagram sent to a port nobody listens on | nothing | the ICMP answer comes back as `WSAECONNRESET` of a later `recvfrom` on that socket. The driver sends to players who may not be there yet (the hole punching), so the report is switched off per socket (`SIO_UDP_CONNRESET`), and one that still arrives is skipped, not taken for "no datagram" |
+| a datagram longer than the buffer | its first part | its first part and `WSAEMSGSIZE`: taken as the first part |
+| "is something to read" | `poll(POLLIN)` | `select` with a zero time-out |
+| this computer's addresses | `getifaddrs` | `GetAdaptersAddresses(AF_INET)` |
+| error text in the log | `strerror` | `FormatMessage` and the number |
+| close, both directions off | `close`, `shutdown(SHUT_RDWR)` | `closesocket`, `shutdown(SD_BOTH)` |
+
+Read in the linked program: the import table has the 24 Winsock functions the body calls
+and no others; in the link map `fn_003654a8` (`sceInetCreate`), `fn_00365780`
+(`sceInetSend`), `fn_00323dcc` (`main`) lie inside `n_netdrv.o` and the `.weak. ... .default`
+copies of the translation are separate symbols; `recomp_patch_set_words()` is
+`g_patches.o`'s (90 words), not the driver's weak fallback.
+
+**The player-name question, the title note, the set warning: `net/online_win.cpp`.**
+The driver calls from the game's thread; the calls post a message to the game's window,
+and the window's thread makes a small modeless dialogue from a template built in memory
+(no resource file): the explanation, one text field limited to 15 characters, "Play
+online" and "Not now". A name that does not fit the rule leaves the dialogue open with
+the reason above the field. It is modeless for the reason the macOS sheet is one: the
+game goes on running and being drawn behind it, and the lobby server drops a client it
+does not hear from. The note of the one-step driver and the server go into the window's
+title; the warning that another player's patch set (or arithmetic) differs is a box with
+the text and OK. A test window, and a window that is never shown, are left alone as on
+the Mac. `win_main.cpp` hands messages from `WM_APP` on to `onlinewin::window_message`
+and offers every message of its loop to `onlinewin::dialog_message` first.
+
+**The saved login on Windows: `net/posix_win.h`.** `RtaOnline.cpp` writes the login with
+`open` / `fchmod(0600)` / `write` / `fsync` / `close` / `rename`. MinGW-w64 has no `fchmod`
+and no `fsync`, and its `rename` does not replace an existing file - which would have
+kept the first login and the first "character used last" for ever. The Windows build
+compiles that file with `-include net/posix_win.h`: `fsync` is `_commit`; `rename` is
+`MoveFileEx(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`; `fchmod(fd, 0600)` gives
+the file, still empty, an access list of its own with one entry - full access for the user
+the program runs as - and stops it inheriting its folder's (`ReOpenFile` with `WRITE_DAC`,
+`SetSecurityInfo` with a protected DACL). If a step of that fails the file keeps its
+inherited access and is saved all the same. `std::random_device` (the password, the game
+code, the made-up address) is hardware random numbers or `rand_s` in this libstdc++
+(Read: `rdseed`, `rdrand` and `__imp_rand_s` in the program), not a fixed sequence.
+
+**Options** (`rta_app.exe --help`; `app/win_main.cpp`): `--server ADDRESS`, or the first
+line of `server.txt` beside the program that is not a remark (a line `public = ADDRESS` is
+`--server-public`), or neither: a server on this computer; `--online`, `--host [CODE]`,
+`--join CODE`, `--choose-character`; `--player N` (data in `rta-data-player<N>`). They
+become the driver's `--opt net-server=`, `net-server-public=`, `net-data=`, `net-card=`,
+`online=`; what follows `--` on the command line comes later and wins. `online.bat` in
+the tester's folder asks "list of games, host or join" and for the code.
+
+**What was run on the Mac** (the lobby server on this computer, throw-away names made by
+`net/lobbypair.py`, every copy with `net-local-only=1`; the only addresses in the logs
+are this computer's own, 127.0.0.1 and the copies' made-up 198.19 ones). All four programs are
+from this build's own translation and the sources with the socket layer:
+
+| Run (`local/recomp-out/win/standin/online/`) | Load | Result |
+|---|---|---|
+| `x64pair`: `rta_native_online_x64` hosts, `rta_native_online_x64` joins (both x86-64 under Rosetta), `--play 1800 --level drunare --play2 1800` | 146 | 4,813 ticks compared, **no shared column differs**; the game's checksum exchange equal (6de5a610 on both); patch set 3f5b1e14 (90 words) told both ways; both ended by their script |
+| `mixed`: `rta_native_online_x64` hosts, `rta_native_online_arm64` joins, `--play 3000 --level drunare --play2 3000` | 212 | 6,758 ticks compared, nothing differs; checksums equal (0b647cd6): an x86-64 copy and an ARM64 copy in one lockstep game |
+| `macpair2`: the macOS window program `win/mac/rta_app` (arm64, Qt, test window) hosts, `rta_native_online_arm64` joins, `--play 1800` | 230 | 1,654 ticks compared, nothing differs; checksums equal (4eca3948) |
+
+(`macpair`, the first try of the third run, ended at the launch with "unknown name
+g_levelName": the window program looks for `names.tsv` three directories above itself,
+which is right for `bin/` and wrong for `win/mac/`. The second try names the symbol files
+with `--native-arg=--sym`. Nothing in the program.)
+
+The shared `local/recomp-out/bin/rta_app` was **not** rebuilt by this work (other work
+runs tests against it); it takes the layer at its owner's next `app/build.py`, which
+compiles the same `netdrv.cpp` with the same flags as `build_win.py --mac`.
+
+**What the stand-in proves here and what it does not.** The driver, the one-step online
+and the translated game as x86-64 code hold a lobby game, against themselves and against
+ARM64. The socket layer that ran is the BSD body. Of the Winsock body nothing ran: it is
+about 150 lines that were compiled by clang and GCC and read against the table above.
+
+## The picture options (second pass)
+
+The merged graphics work (`docs/issues/native-graphics.md`) is in the Windows program:
+
+- `build_win.py` translates with the current `hle.txt` (its 16 new addresses come with
+  it) and compiles `app/gfx_rt.cpp` (the hooks on the game's view functions and the marks
+  for the 2-D layer) and `render/texpack.cpp`. `render/backend_gl.cpp` with its
+  multisampled surfaces, mip-mapped parts and samplers compiles against `app/win/wgl.h`
+  unchanged: every OpenGL function it now calls was in the list already.
+- `app/win_main.cpp` has what `app_main.cpp` got in the merge: `<data>\settings.txt`
+  (written with its defaults at the first start somebody plays), `--settings`,
+  `--no-settings`, `--aspect`, `--resolution`, `--antialiasing`, `--anisotropy`,
+  `--mipmaps`, `--art-pack`, `--art-memory`, `--frame-cap`, `--plain`, `--no-layout`,
+  `--art-whole`, `--art-wait`; the view's shape from the window's client area, followed
+  when the window is resized or goes full screen; the picture sized for the shape each
+  frame list was built for; every other picture at `frame_cap = 30`; the report lines
+  `rta_app: picture:`; the script lines `app window W H`, `app fullscreen`, `app art
+  off|on` (posted to the window's thread). It also takes `dead_targets` over with a
+  frame, which the first pass's file did not know.
+
+**The art pack without Qt: `render/png_read.h`.** A PNG reader written for this (its own
+table-driven inflate, CRC-32, Adler-32, the five row filters, Adam7, every colour type
+and bit depth, tRNS); no code of zlib, libpng or anything else, nothing downloaded. A
+build without Qt (`-DRTA_NO_QIMAGE`) reads the pack with it. What is not 8-bit RGBA is
+converted as Qt 6 converts it on the way to `Format_RGBA8888` - found by experiment, not
+from Qt's source: 16 bits to 8 as (v x 255 + 32767) / 65535 (all 65,536 values checked),
+a palette index beyond the palette shown as the palette's first entry (white in a 1-bit
+picture), the transparent grey of a 2-, 4- or 8-bit grey picture as transparent black.
+
+Compared with QImage, used exactly as `texpack.cpp` uses it (`app/win/pngcheck.cpp`;
+**Ran**):
+
+| Files | Result |
+|---|---|
+| all of `local/hd-pack` as it stood at 20:11 to 20:42: `replace` (the 4x pack) and `dump` (the game's own textures), 222,094 PNG files, 79.09 GB, 123,101 million pixels - every one 8-bit RGBA, not interlaced | **222,094 identical in every byte, 0 different**, 0 refused |
+| 913 files made by `app/win/pngtest.py` (nothing of the game): every colour type and bit depth, interlaced and not, with tRNS, palettes of several sizes, every filter, streams of stored / fixed / dynamic blocks cut into IDAT chunks in several ways | 894 identical; 19 damaged ones refused by both (cut short, wrong CRC of a critical chunk, wrong Adler-32, wrong filter byte, rows missing, unknown critical chunk ...); 0 different |
+| 48 more of those: 16-bit RGB with a transparent colour | differ, and stay so: Qt 6 reads such a file's rows of three samples as rows of four (checked: its output is that misreading, pixel for pixel). `png_read.h` follows the PNG specification. No pack file is of this kind |
+
+**The reader alone, for the tester: `app/win/pnghash.cpp`.** It prints one figure (FNV-1a
+over name, size and every pixel of every file) for a folder, with no Qt. `pnghash.exe` is
+in the tester's folder beside `pngtest/`, the 961 made files; `--reference` runs the
+arm64 Mac build over that folder and writes the figure into `README.txt`. On the Mac the
+x86-64 build (under Rosetta) and the arm64 build print the same figure for it (942 read,
+19 refused, b4ed3d8917871960) and for 3,000 files drawn from the 4x pack
+(`standin/packsample.log`). This is the one part of the picture work that step 4 of the
+test plan checks on Windows without a pack.
+
+Reading took QImage 3,899 s and `png_read.h` 7,056 s summed over six threads at load 150
+to 230: the reader is about 1.8 times slower than libpng. It runs on the pack's three
+reader threads beside the game, not in it; a faster inflate is possible and was not
+needed for a proof.
+
+**The whole path on the Mac (Ran).** `win/mac/rta_app` (QImage) and
+`win/mac/rta_app_pngread` (the same objects but `texpack.cpp` with `RTA_NO_QIMAGE`), each
+from power-on by the tester's script into the first level, 16:9 at 1280 x 720, no window,
+the 4x pack, every frame waiting for its pictures (`--art-wait`): the same report in both -
+303 textures named, 289 found in the pack, 333 pictures read (229 as parts, 46 read again
+for a larger part), 244 held, 575.0 MB; 2,629 frames built wide, 436,627 2-D primitives
+moved - and the picture written at vertical blank 2,712 is **the same file, byte for
+byte** (1,732,487 bytes; `win/mac/arttest/`).
+
+**Not run:** all of this on Windows - whether a Windows OpenGL driver makes the
+multisampled surface and resolves it, compiles the shaders with `centroid` and
+`textureGrad`, has `GL_TEXTURE_MAX_ANISOTROPY`; the window's shape reaching the game
+through `win_main.cpp` (the same arithmetic as `app_main.cpp`, typed again for Win32
+client sizes); `settings.txt` through the Windows C library; the pack folder listed with
+MinGW's `dirent`.
 
 ## Portability: what was looked for and what was found
 
@@ -249,6 +443,12 @@ rig's controller bytes replayed tick for tick and the rig's session seeds, exact
   at tick 7; the object pool different in the same 27 ticks (3,886 to 3,912); the cosmetic
   seed different where it was.
 
+**Repeated at 21:13** with the stand-ins of the second pass (the current shared tree: the
+16 new `hle.txt` addresses, the runtime as others left it at 16:11): the same figures to
+the digit - 7,797 / 7,904 / 257,776,500 on both, tick logs identical (7,798 rows,
+1,980,683 bytes), memory identical at both dump ticks, the same `boot-compare` text for
+both (`standin/compare-pass2.log`). The function-by-function sweep was not repeated.
+
 So in this session nothing the game computed depended on the processor - which also means
 the one known hardware-dependent case (`vu0.h` with an infinity or NaN operand) either did
 not occur or left no trace in memory.
@@ -272,8 +472,11 @@ VU0: 466083 microprogram calls, 26111361 instructions
 ```
 
 and the script's last `show` puts the character at 131.570755, -96.2327423, -48. These
-figures belong to the sources of 2026-10-12 15:39; a later build gets its own
-(`--reference` again).
+figures were made with the sources of 15:39 and again at 20:57 with the second pass's
+translation (network entries, sign-in patch, 16 view and draw hooks, which a headless
+program leaves to the originals): the same two lines. A later build gets its own
+(`--reference` again; it also fills them, and the patch set a copy announces, into the
+tester's `README.txt`).
 
 ## Not run, and what could be wrong there
 
@@ -289,12 +492,21 @@ figures belong to the sources of 2026-10-12 15:39; a later build gets its own
   and condition variables of winpthreads under the game's scheduler.
 - The UTF-8 manifest on Windows before 10 1903 (there: ASCII paths only).
 - Building on Windows itself (MSYS2).
+- Second pass: every line of the Winsock body of `net/sock.h` (start-up, the connection
+  under way, `WSAECONNRESET` on datagram sockets, the address list); Windows Firewall's
+  question at the first start and what it does to the peer datagrams when declined; the
+  name dialogue (its template, focus, Enter and Escape through `IsDialogMessage`), the
+  title note, the warning box; the saved login's access list and the replace-on-rename;
+  `server.txt` and `online.bat` (cmd.exe); a lobby game between a Windows copy and any
+  other copy; the picture options on a Windows OpenGL driver ("The picture options").
 
 ## Test plan for a person with a Windows PC
 
-**What to copy:** the folder `local/recomp-out/win/rta-windows` (54 MB; it contains
+**What to copy:** the folder `local/recomp-out/win/rta-windows` (85 MB with the GCC programs; it contains
 translated game code, so it is not in the repository and goes to the tester directly),
-and the tester's own disc image of SLUS-20973 v2.00. Needs Windows 10 1903 or later, 64-bit,
+and the tester's own disc image of SLUS-20973 v2.00. For step 5 the tester is told the
+address of a lobby server and writes it into `server.txt` (the folder's copy has none; a
+rebuild keeps a `server.txt` that is already there). Needs Windows 10 1903 or later, 64-bit,
 and a graphics driver with OpenGL 4.1. Nothing is installed; everything written goes to
 `rta-data` beside the programs. `README.txt` in the folder is this plan in the tester's words.
 
@@ -303,49 +515,108 @@ and a graphics driver with OpenGL 4.1. Nothing is installed; everything written 
 | 1 | `fpcheck.exe > fpcheck.txt` in a Command Prompt | the line "must agree everywhere" ends in `2e77df4dc13ec9c5` and the rounding mode reads "toward zero" | the processor, the C library's `fesetround` and the compiled operations give the Mac's results |
 | 2 | `rta_native.exe boot --disc "C:\...\image.iso" --script boot-check.rig > boot-check.txt 2>&1` | the two lines above appear; `fc boot-check.txt boot-check-mac.txt` shows only the `wall=` line (and paths) | host file, threads, stacks, disc reading, memory card, the whole translated game from power-on into the first level, bit for bit as on the Mac |
 | 3 | drags the image onto `play.bat`; plays a few minutes | a window with the memory-card screens, logo, title, a level; sound; keyboard and controller | window, WGL, shaders, pacing, WASAPI, XInput |
+| 4 | makes the window wide, presses F; F12 on a normal and a wide picture; once with `--plain` if something looks wrong; `pnghash.exe pngtest > pnghash.txt`; `--art-pack FOLDER` if they have a pack | the 3-D view wider and not stretched, HUD at its edge, menus centred; smooth edges; `rta-data\settings.txt` written; `pnghash.txt` ends in `figure b4ed3d8917871960` | the multisampled surface, mip maps and samplers on a Windows driver; the view's shape from Win32; the settings file; the PNG reader on Windows |
+| 5 | puts the server's address into `server.txt`; drags the image onto `online.bat`: 1 (list of games), then 2 (host) with a second person who types 3 and the code | the name dialogue appears once and takes a name; the game reaches the list by itself; the title shows server and code; the two play together; the log has `patch set 3f5b1e14 (90 words)` and no warning | Winsock: TCP to the lobby, the UDP path between players, the firewall; the dialogue; the saved login (a second start asks nothing) |
 
-**What to send back:** `fpcheck.txt`, `boot-check.txt`, `rta-data\rta_app-log.txt` (the
+**What to send back:** `fpcheck.txt`, `boot-check.txt`, `pnghash.txt`, `rta-data\rta_app-log.txt` (the
 log of the last run of `rta_app.exe`: Windows version, OpenGL version and renderer, missing
-OpenGL functions, the pacing chosen, the sound device's line, and at the end the figures -
-pictures per second, how long pictures stood, sound requests late), pictures made with F12
-of anything that looks wrong, and the answers to: did a window open; which screens
+OpenGL functions, the pacing chosen, the sound device's line, the `picture:` lines, the
+`[net]` lines - server, patch set, every TCP connection and the first datagram each way,
+never a name or a password - and at the end the figures: pictures per second, how long
+pictures stood, sound requests late, `net:` connections and datagrams), pictures made with
+F12 of anything that looks wrong - never `rta-data\online-login`, which holds the saved
+login - and the answers to: did a window open; which screens
 appeared; is there sound, does it crackle; do keyboard and controller work; is the speed
-right and even.
+right and even; does the picture follow the window's shape; did the name dialogue work,
+did the game get to the list of games, did host and join by code work, did the two games
+stay together.
 
 **If it fails:** a fault prints `host: the program failed: exception 0x... at offset 0x...`
 as the last line of the log; the offset is looked up in `local/recomp-out/win/obj-clang/rta_app.map`
 of the same build (keep that directory until the report is in). "The window or its OpenGL
 4.1 context could not be made" names the step of `wgl.cpp` that failed. No sound:
 `set RTA_SOUND_API=waveout` before starting, or `--no-sound`, and the `sound:` lines of
-the log. `rta_app_gcc.exe`, when it is in the folder, is the same program built by GCC -
+the log. Online: the `[net]` lines say what was tried - `CANNOT find the lobby server`, `TCP
+-> a.b.c.d:40800 could not connect (...)` with Winsock's reason, `UDP ... NOT SENT`; a
+game that reaches the room but never starts points at the datagrams between the players
+(firewall, router). `rta_app_gcc.exe`, when it is in the folder, is the same program built by GCC -
 to be tried only if `rta_app.exe` does not start at all (its arithmetic was not compared
 with anything; `fpcheck_gcc.exe` is its step 1).
 
 ## Resume here
 
-**Second pass, started 2026-10-12 19:50 (in progress - this block is rewritten as it goes).**
-Brief: (1) the network in `rta_app.exe` (Winsock behind one socket layer shared with the
-Mac build, a Win32 name dialogue, server address from an option or `server.txt` beside the
-program); (2) the merged graphics of `native-graphics.md` in the Windows program (settings,
-widescreen, multisampling, mip maps, the art pack read without Qt); proofs on the Mac;
-tester's folder and README. Plan and state:
+**State saved 2026-10-12 21:22 (second pass). Nothing is half-done in the sources.** The
+brief of this pass - the network in `rta_app.exe`, the merged graphics in it with the art
+pack read without Qt, proofs on the Mac, the tester's folder - is done as far as a Mac can
+take it. Every file is in "The parts that are new" and "Changes to existing files"; what
+was run is in "The network" and "The picture options".
 
-| Step | Files | State (20:20) |
-|---|---|---|
-| socket layer | `net/sock.h` (new, header only: BSD and Winsock bodies), `net/netdrv.cpp` (every POSIX socket call replaced by `sock::`) | written; both bodies compile; not yet run |
-| name dialogue, title note, set warning for Windows | `net/online_win.cpp`, `net/online_win.h` (new); `net/posix_win.h` (new: `fchmod`, `fsync`, `rename` for `tools/play-net/src/RtaOnline.cpp`, force-included, that file unchanged) | written, compile for Windows |
-| PNG reader without Qt | `render/png_read.h` (new), `render/texpack.cpp` (`read_png` uses it under `RTA_NO_QIMAGE`; `open` no longer returns 0 there; reader threads below normal priority on Windows) | done; `app/win/pngcheck.cpp` + `app/win/pngtest.py` (new): 894 made files of every PNG kind identical to QImage, 19 damaged ones refused by both, 0 different (48 more are 16-bit RGB with tRNS, which Qt 6 itself reads wrongly); the run over `local/hd-pack` (221,453 files) is going: `local/recomp-out/win/standin/pngcheck-pack.log` |
-| settings, aspect, online options in the Windows program | `app/win_main.cpp` (as `app_main.cpp` after the graphics merge; `--server`, `server.txt`, `--online`, `--host`, `--join`, `--choose-character`, `--player`) | written, compiles with and without `-DRTA_NET` |
-| build | `app/build_win.py`: `texpack.cpp` (`-DRTA_NO_QIMAGE`), `gfx_rt.cpp`, the four network files, `--hle-add net/hle-online.txt`, `--extra-pnach` (sign-in, when in `local/`), `-lws2_32 -liphlpapi -ladvapi32`; `--standin` also makes `rta_native_online_x64` / `_arm64`; new `--mac` (the macOS `rta_app` into `win/mac/`, and `rta_app_pngread`), `--pngcheck`, `--no-net`; README figures filled in by `--reference` | written; the first full Windows build is running (`local/recomp-out/win/build-pass2.log`) |
-| tester's texts | `app/win/README.txt` (five checks, with online), `app/win/online.bat`, `app/win/server.txt` (new) | written |
-| `net/lobbypair.py` | `RTA_NATIVE_APP` names another window program (one line) | done |
-| proofs: x86-64 stand-in lobby game, Mac `rta_app` lobby game (`build_win.py --standin`, `--mac`, then `net/lobbypair.py run OUT --program <path>`) | | not started |
-| this file's body, `native-app.md` 8, `native-recomp.md` step 6 | | not started |
+What exists now, by the clock:
 
-Rules of this pass: the local lobby only (never 167.99.183.124), builds into
-`local/recomp-out/win/` only, no git, nothing derived from the game outside `local/`.
+| Made | What |
+|---|---|
+| 21:20 | by clang: `rta_app.exe` (27.7 MB: network, picture options, films), `rta_native.exe`, `fpcheck.exe`, `pnghash.exe`; the folder `rta-windows` (85 MB) with them, `play.bat`, `online.bat`, `server.txt` (no address in it), `README.txt` (five checks; this build's figures filled in), `boot-check.rig`, `pngtest/` (961 made PNG files) |
+| 21:18 | by GCC (`--compiler gcc`, the same sources and translation): `rta_app_gcc.exe` (25.4 MB), `rta_native_gcc.exe`, `fpcheck_gcc.exe`; all 76 files compile unchanged, no link warning; the first and the third are in the folder. Their arithmetic was not compared with anything, as before |
+| 21:20 | `--reference`: `rta-windows/boot-check-mac.txt` (`frames=2309 ... fields=2413 units=113069982`, `VU0: 466083 microprogram calls, 26111361 instructions`), `standin/patch-set.txt` (3f5b1e14, 90 words), `standin/png-hash.txt` (b4ed3d8917871960) |
+| 20:21 - 20:29 | `--standin`: all six stand-ins from the tree of that time; 21:13 `standin_compare.py` (`standin/compare-pass2.log`); `fpcheck_x64` and `fpcheck_arm64` run again: 2e77df4dc13ec9c5 on both |
+| 20:58 | `--mac`: `win/mac/rta_app`, `rta_app_pngread`; 21:01 `win/mac/arttest/` (the two runs with the pack) |
+| 21:01 - 21:11 | the three lobby games (`standin/online/x64pair`, `macpair2`, `mixed`, each with its `.log`) |
+| 20:11 - 20:42 | `standin/pngcheck-pack.log`: the reader against QImage over `local/hd-pack` |
 
-**State saved 2026-10-12 15:45 (first pass).** Nothing is half-done in the sources; the tree compiles
+To repeat everything from nothing (each line is independent of the session that wrote this;
+`RTA_DISC` set; about 25 minutes of compiling at load 200):
+
+```
+python3 tools/recomp/app/build_win.py                  # the Windows programs and the tester's folder
+python3 tools/recomp/app/build_win.py --standin        # stand-ins, with rta_native_online_x64 / _arm64
+python3 tools/recomp/app/build_win.py --pngcheck       # pngcheck, pnghash_x64, pnghash_arm64
+python3 tools/recomp/app/build_win.py --reference      # boot-check-mac.txt, the figures in README.txt
+python3 tools/recomp/app/build_win.py --mac            # win/mac/rta_app, rta_app_pngread
+python3 tools/recomp/app/build_win.py --compiler gcc   # the second-chance programs
+O=local/recomp-out/win/standin; S=$PWD/$O
+python3 tools/recomp/net/lobbypair.py run $O/online/x64pair --program $S/rta_native_online_x64 --play 1800 --level drunare --play2 1800
+python3 tools/recomp/net/lobbypair.py run $O/online/mixed --program $S/rta_native_online_x64 --join-program $S/rta_native_online_arm64 --play 3000 --level drunare --play2 3000
+RTA_NATIVE_APP=$PWD/local/recomp-out/win/mac/rta_app python3 tools/recomp/net/lobbypair.py run $O/online/macpair2 --host window --join native \
+    --program $S/rta_native_online_arm64 --play 1800 --native-arg=--sym --native-arg=$PWD/names.tsv   # and one pair per symbols/*.tsv
+python3 tools/recomp/app/win/pngtest.py && $O/pngcheck local/recomp-out/win/pngtest
+$O/pngcheck --threads 6 local/hd-pack/replace.nosync local/hd-pack/dump.nosync          # half an hour
+```
+
+(The lobby games need the lobby server on this computer, which this work did not start and
+did not touch; they send nothing beyond it. Never point a test at the public server.)
+
+Open ends, in the order they matter:
+
+1. **The tester's report** - now five steps. Steps 1 and 2 as before. Step 3 is the first
+   time anybody sees the window. Step 4 is the first Windows OpenGL driver to meet the
+   multisampled surface, `centroid` and `textureGrad`: if the 3-D scene is black or the
+   shaders do not compile, `--plain` and `--antialiasing off` separate the causes, and
+   the log has the driver's message. Step 5 is the first time the Winsock body runs:
+   expect trouble first at the connection under way (`sock::connect_check`), at the
+   firewall (the room is reached, the game never starts), and in the dialogue (there is
+   `--name NAME` to go round it).
+2. **The Winsock body has no test at all.** A person with a PC could also build a small
+   console program over `net/sock.h` (connect to a port that refuses, to one that
+   accepts; a datagram to a closed port and then a `recv_from`) before a whole game is
+   tried; it was not written because it could not be run here.
+3. **The shared `bin/rta_app`** has not been rebuilt with the socket layer by this work;
+   its owner's next `app/build.py` does it (same file, same flags as `--mac`, which
+   played a lobby game).
+4. **`png_read.h` is 1.8 times slower than libpng.** Enough for three background
+   threads; if a pack loads visibly slowly on a PC, the inflate's inner loop (one symbol
+   at a time, a 10-bit table) is the place.
+5. From the first pass, unchanged: `vu0.h` with an infinity or NaN operand; the film
+   decoder on x86-64; controllers that are not XInput; building on Windows itself (MSYS2:
+   `build_win.py` has the branch - now with the network and the new files in it - and
+   nobody ran it).
+6. Not done in the Windows program: the control socket (`control.h`) and `app latency`;
+   settings are read, not written back (as on the Mac); `rta_native.exe` has no network
+   (a headless online check for a tester would be `net/online.cpp` linked into it, as the
+   stand-ins are built).
+
+**State saved 2026-10-12 15:45 (first pass; kept as it was written - of its open ends, 4
+"the network on Windows" and 7 "the two documents" are done by the second pass above, and
+its table of what exists is superseded by the one above).** Nothing is half-done in the sources; the tree compiles
 (last full `build_win.py` 15:37: 70 files, three programs linked; `--standin` and
 `--reference` after it; `--compiler gcc` after those). Every file of this work is listed under "The parts that are new"
 and "Changes to existing files".
