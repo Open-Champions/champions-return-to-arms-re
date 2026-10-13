@@ -274,10 +274,57 @@ void rtag_run(double hz);
  *                            always did, and a view that looks up and down takes the stick's y (fpview.h).
  *   "view.<mode>.<name>"     a setting of a view (fov, distance, height, pitch, eye_height, ... : fpview.h)
  *   "aspect"                 the shape of the 3-D view as a number, width / height ("1.7778"); 4:3 at the least
+ *   "music_volume"           0..1: the game's music alone (speech and effects stay); refused by a library whose sound core lacks it
+ *   "controls.<name>"        a setting of the look controls (fpcontrols.h); "controls" = "off" | "on": the library leaves
+ *                            the controller rows alone / translates them in the look views (default on)
+ *   "game_hud_text"          "off": also the game's boss meter, its one-line message and its prompt box are left out
+ *                            (refused by a library whose translation does not wrap those two draw functions)
  *   "game_hud"               "off": the game's own HUD layer (player status, gold, compass, minimap, spell selector) is
  *                            left out of the frames, for a host that draws its own; "on" (default)
  */
 int rtag_set_option(const char* key, const char* value);
+
+/* ---- the controls of the views that look along the ground (optional functions) ------------
+ * tools/recomp/app/fpcontrols.h, when the library was built with it (rtag_has("controls")): in chase, shoulder and
+ * first person the right stick and the pointer are the look (the game camera's yaw, a pitch of the picture), and
+ * the character is turned to where the player looks - all by ordinary controller rows, the simulation is told
+ * nothing new.  The library does this by itself with the controller it is given (rtag_set_pad); a host adds the
+ * pointer, and may show what the controls know (rtag_controls: fpcontrols::Hud, field for field).
+ * These functions were added after version 6 of the interface without changing it: a host looks them up by name
+ * and does without them when the library is older. */
+typedef struct rtag_mark {
+    uint8_t valid, pad[3];
+    uint32_t object;            /* guest address of the creature */
+    float x, y, z, distance, bearing, hp, hp_max;
+} rtag_mark;
+typedef struct rtag_threat {
+    uint32_t object;
+    float x, y, z, distance, bearing;
+    uint8_t targets_me, attacking, in_view, pad;
+} rtag_threat;
+typedef struct rtag_controls {
+    uint32_t struct_size;       /* sizeof(rtag_controls), set by the caller */
+    uint32_t tick;
+    uint64_t blank;
+    int32_t view;
+    uint8_t look, playing, ranged, aligning, reticle, usable, wants_pointer, pad;
+    int32_t slot;
+    uint32_t player;
+    float x, y, z, look_heading, look_pitch, facing, facing_error;
+    int32_t state, weapon_class;
+    rtag_mark melee, shot, locked;
+    int32_t usable_kind, usable_fade;
+    uint32_t usable_object;
+    float usable_x, usable_y, usable_z, usable_bearing;
+    char usable_text[96];
+    int32_t threat_count, behind;
+    rtag_threat threats[16];
+    uint32_t swings, hits_dealt, hits_taken, deaths, respawns;
+    float last_hit_bearing, last_hit_amount;
+} rtag_controls;
+int rtag_controls_hud(rtag_controls* out);      /* 1: filled (as of the last controller read); 0: no controls in this library */
+void rtag_mouse(float dx, float dy, float wheel);       /* pointer motion since the last call (right and down positive), wheel steps (up positive) */
+void rtag_mouse_button(int button, int down);           /* 0 left, 1 right, 2 middle, 3 and 4 the side buttons */
 
 /* ---- sound --------------------------------------------------------------------------- */
 /* Exactly `frames` frames of interleaved 16-bit stereo at 48 kHz (silence where there is nothing).  With

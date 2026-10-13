@@ -20,6 +20,10 @@
 #include "pipeline.h"
 #include "png_write.h"
 #include "scene_export.h"
+#if __has_include("fpcontrols.h") && !defined(RTAG_NO_CONTROLS)
+#include "fpcontrols.h"
+#define RTAG_HAVE_CONTROLS 1
+#endif
 
 #include <atomic>
 #include <cmath>
@@ -125,7 +129,11 @@ struct Pads : rta::PadSource {
     rtag_pad held[2] = {{0, 128, 128, 128, 128}, {0, 128, 128, 128, 128}};
     std::atomic<bool> quit{false};
     std::atomic<uint32_t> rumbles{0};
-    void read(unsigned port, uint64_t, rta::PadState& state) override {
+    std::atomic<bool> controls_on{true};
+    std::mutex hud_lock;
+    rtag_controls hud;
+    bool have_hud = false;
+    void read(unsigned port, uint64_t blank, rta::PadState& state) override {
         if (quit) apprt::finish(0);                     // rtag_stop(): end from the game's thread
         state = apprt::script_pad(port);
         if (port > 1) return;
@@ -134,6 +142,47 @@ struct Pads : rta::PadSource {
         state.buttons |= p.buttons;
         if (state.lx == 128 && state.ly == 128) { state.lx = p.lx; state.ly = p.ly; }
         if (state.rx == 128 && state.ry == 128) { state.rx = p.rx; state.ry = p.ry; }
+#ifdef RTAG_HAVE_CONTROLS
+        // The views that look along the ground: stick and pointer are the look (the game camera's yaw word), the
+        // character is turned to it; in the overhead views nothing changes (fpcontrols.h; as app_main.cpp does it).
+        // Not while another machine's rows are replayed: the input is then given whole.
+        if (port == 0) {
+            static const bool replayed = apprt::replaying();
+            const fpview::View& v = fpview::view();
+            fpcontrols::set_view(replayed || !controls_on ? 0 : fpview::mode(), v.active && !v.fallback, v.look_pitch);
+            fpcontrols::translate(blank, state);
+            if (float pitch = fpcontrols::take_pitch(); pitch != 0) fpview::add_pitch(pitch);
+            const fpcontrols::Hud& h = fpcontrols::hud();
+            rtag_controls o;
+            memset(&o, 0, sizeof o);
+            o.struct_size = sizeof o; o.tick = h.tick; o.blank = h.blank; o.view = h.view;
+            o.look = h.look; o.playing = h.playing; o.ranged = h.ranged; o.aligning = h.aligning; o.reticle = h.reticle; o.usable = h.usable;
+            o.wants_pointer = fpcontrols::wants_pointer();
+            o.slot = h.slot; o.player = h.player; o.x = h.x; o.y = h.y; o.z = h.z;
+            o.look_heading = h.look_heading; o.look_pitch = h.look_pitch; o.facing = h.facing; o.facing_error = h.facing_error;
+            o.state = h.state; o.weapon_class = h.weapon_class;
+            auto mark = [](rtag_mark& to, const fpcontrols::Mark& from) {
+                to.valid = from.valid; to.object = from.object; to.x = from.x; to.y = from.y; to.z = from.z;
+                to.distance = from.distance; to.bearing = from.bearing; to.hp = from.hp; to.hp_max = from.hp_max;
+            };
+            mark(o.melee, h.melee); mark(o.shot, h.shot); mark(o.locked, h.locked);
+            o.usable_kind = h.usable_kind; o.usable_fade = h.usable_fade; o.usable_object = h.usable_object;
+            o.usable_x = h.usable_x; o.usable_y = h.usable_y; o.usable_z = h.usable_z; o.usable_bearing = h.usable_bearing;
+            snprintf(o.usable_text, sizeof o.usable_text, "%s", h.usable_text);
+            o.threat_count = h.threat_count < 16 ? h.threat_count : 16; o.behind = h.behind;
+            for (int k = 0; k < o.threat_count; k++) {
+                const fpcontrols::Threat& t = h.threats[k];
+                o.threats[k] = {t.object, t.x, t.y, t.z, t.distance, t.bearing, (uint8_t)t.targets_me, (uint8_t)t.attacking, (uint8_t)t.in_view, 0};
+            }
+            o.swings = h.swings; o.hits_dealt = h.hits_dealt; o.hits_taken = h.hits_taken; o.deaths = h.deaths; o.respawns = h.respawns;
+            o.last_hit_bearing = h.last_hit_bearing; o.last_hit_amount = h.last_hit_amount;
+            std::lock_guard<std::mutex> hold(hud_lock);
+            hud = o;
+            have_hud = true;
+        }
+#else
+        (void)blank;
+#endif
     }
     void rumble(unsigned, uint8_t, uint8_t) override { rumbles++; }
 };
@@ -169,6 +218,7 @@ struct Machine {
     std::vector<rtag_target> targets;
     std::vector<const char*> shot_names, command_names;
     // the end
+    bool hud_text_off = false;
     std::atomic<bool> ended{false};
     std::atomic<int> exit_code{0};
     // the library's own clock (rtag_run)
@@ -225,6 +275,20 @@ void view_drawn(const fpview::View& v, Ctx*, void*) {
     o.facing = v.facing; o.look_pitch = v.look_pitch;
     o.have_player = v.have_player; o.valid = 1;
     o.tick = v.tick;
+    if (!v.active) {
+        // No view of fpview's is in place (overhead; a cutscene, a dialogue, a menu): the frame was drawn with the
+        // game's own camera, and that is the camera it carries - read where camera_setView left it (g_cameraPos
+        // 0x44f038; g_cameraMatrix 0x44f110, whose columns are the camera's right, down, forward in the world;
+        // g_projScale 0x44f108 = 477.5 / tan(fov / 2)).
+        if (const uint8_t* ram = rta::memory()) {
+            float pos[3], m[9], scale;
+            memcpy(pos, ram + 0x44F038, 12); memcpy(m, ram + 0x44F110, 36); memcpy(&scale, ram + 0x44F108, 4);
+            for (int a = 0; a < 3; a++) { o.eye[a] = pos[a]; o.right[a] = m[a * 3]; o.up[a] = -m[a * 3 + 1]; o.forward[a] = m[a * 3 + 2]; }
+            if (scale > 1.0f) o.fov = 2.0f * std::atan(477.5f / scale) * 57.29578f;
+            o.yaw = std::atan2(o.forward[1], o.forward[0]);
+            o.near_plane = 18.0f; o.far_plane = 1800.0f;
+        }
+    }
     if (g_m->scene3d) scene::drawn(rta::memory(), v.near_plane, v.far_plane);
 }
 
@@ -246,6 +310,15 @@ void app_command(const std::string& text, uint64_t frame) {
         else if (!rtag_set_option("view", w[1].c_str())) say("no such view: " + w[1]);
     } else if (w[0] == "gamehud" && w.size() >= 2) {
         rtag_set_option("game_hud", w[1].c_str());
+    } else if (w[0] == "gamehudtext" && w.size() >= 2) {
+        if (!rtag_set_option("game_hud_text", w[1].c_str())) say("this library cannot leave the game's boss meter, message and prompt out");
+    } else if (w[0] == "option" && w.size() >= 3) {     // app option KEY VALUE: rtag_set_option from a script
+        if (!rtag_set_option(w[1].c_str(), w[2].c_str())) say("option refused: " + w[1] + " " + w[2]);
+#ifdef RTAG_HAVE_CONTROLS
+    } else if (w[0] == "fpc" && w.size() >= 2) {        // the look controls' own lines (fpcontrols.h), as the native application's
+        printf("[frame %llu] fpc: %s\n", (unsigned long long)frame, fpcontrols::command(text.substr(text.find(w[1])), frame).c_str());
+        fflush(stdout);
+#endif
     } else if (w[0] == "stats") {
         printf("[frame %llu] rtag: %s\n", (unsigned long long)frame, rtag_info());
         fflush(stdout);
@@ -469,6 +542,27 @@ int rtag_has(const char* feature) {
     if (f == "picture") return 1;
     if (f == "scene3d") return 1;
     if (f == "views") return 1;
+    if (f == "controls") {
+#ifdef RTAG_HAVE_CONTROLS
+        return 1;
+#else
+        return 0;
+#endif
+    }
+    if (f == "music_volume") {
+#ifdef RTAG_HAVE_MUSIC_GAIN
+        return 1;
+#else
+        return 0;
+#endif
+    }
+    if (f == "game_hud_text") {
+#ifdef RTAG_HAVE_HUD_TEXT
+        return 1;
+#else
+        return 0;
+#endif
+    }
     if (f == "network") return 0;
     return 0;
 }
@@ -519,6 +613,16 @@ int rtag_start(const rtag_config* config) {
     memset(&m->sink.sent_view, 0, sizeof m->sink.sent_view);
     fpview::install();
     fpview::on_drawn(view_drawn);
+#ifdef RTAG_HAVE_CONTROLS
+    // the picture of a look view: its centre on the walking direction, the kick of swings and hits (fpcontrols.h)
+    fpview::on_view([](fpview::View& v, Ctx*, void*) {
+        if (v.shown != v.mode || !g_m->pads.controls_on) return;
+        float forward[3] = {v.forward.x, v.forward.y, v.forward.z}, up[3] = {v.up.x, v.up.y, v.up.z};
+        fpcontrols::apply_view(v.mode, forward, up);
+        v.forward = {forward[0], forward[1], forward[2]};
+        v.up = {up[0], up[1], up[2]};
+    });
+#endif
     if (config->view && *config->view) { int mode = fpview::mode_by_name(config->view); if (mode >= 0) fpview::set_mode(mode); }
     if (getenv("RTA_GS_LOG")) m->renderer.gs.log_display = true;
     if (m->scene3d) { scene::install(m->renderer); scene::set_aspect(m->aspect); }
@@ -616,9 +720,43 @@ void rtag_run(double hz) {
     g_m->sink.gate.set_open(hz < 0);
 }
 
+#ifdef RTAG_HAVE_MUSIC_GAIN
+extern "C" void rta_sound_set_music_gain(float gain);      // tools/recomp/sound/drivers.cpp (the HUD agent's hunk)
+#endif
+
 int rtag_set_option(const char* key, const char* value) {
     if (!g_m || !key || !value) return 0;
     std::string k = key, v = value;
+    if (k == "music_volume") {                          // 0..1: the game's music alone (stream 2 of the stream driver)
+#ifdef RTAG_HAVE_MUSIC_GAIN
+        rta_sound_set_music_gain((float)atof(value));
+        return 1;
+#else
+        return 0;
+#endif
+    }
+    if (k == "controls") {
+#ifdef RTAG_HAVE_CONTROLS
+        g_m->pads.controls_on = !(v == "off" || v == "0" || v == "no");
+        return 1;
+#else
+        return 0;
+#endif
+    }
+#ifdef RTAG_HAVE_CONTROLS
+    if (k.compare(0, 9, "controls.") == 0) return fpcontrols::setting(key, value) ? 1 : 0;
+#endif
+    if (k == "game_hud_text") {
+#ifdef RTAG_HAVE_HUD_TEXT
+        bool off = v == "off" || v == "0" || v == "no";
+        g_m->hud_text_off = off;
+        gfxrt::set_hud_marks(off || g_m->renderer.gs.hide_edge);    // the marks are needed while either layer is left out
+        g_m->renderer.gs.hide_text = off;
+        return 1;
+#else
+        return 0;
+#endif
+    }
     if (k == "view") {
         int mode = fpview::mode_by_name(value);
         if (mode < 0) return 0;
@@ -637,7 +775,7 @@ int rtag_set_option(const char* key, const char* value) {
     }
     if (k == "game_hud") {
         bool off = v == "off" || v == "0" || v == "no";
-        gfxrt::set_hud_marks(off);                      // the marks that say what the HUD's draw functions made, also at 4:3
+        gfxrt::set_hud_marks(off || g_m->hud_text_off); // the marks that say what the HUD's draw functions made, also at 4:3
         g_m->renderer.gs.hide_edge = off;               // ... and the GS model leaves those primitives out
         return 1;
     }
@@ -648,6 +786,32 @@ void rtag_audio_pull(int16_t* stereo, int frames) {
     if (frames <= 0) return;
     if (!g_m || g_m->sound == RTAG_SOUND_NONE || g_m->ended) { memset(stereo, 0, (size_t)frames * 4); return; }
     rta::snd::host_audio_pull(stereo, (size_t)frames, (float)g_m->gain);
+}
+
+int rtag_controls_hud(rtag_controls* out) {
+    if (!g_m || !out || out->struct_size != sizeof(rtag_controls)) return 0;
+    std::lock_guard<std::mutex> hold(g_m->pads.hud_lock);
+    if (!g_m->pads.have_hud) return 0;
+    *out = g_m->pads.hud;
+    return 1;
+}
+
+void rtag_mouse(float dx, float dy, float wheel) {
+#ifdef RTAG_HAVE_CONTROLS
+    if (!g_m) return;
+    if (dx != 0 || dy != 0) fpcontrols::mouse_motion(dx, dy);
+    if (wheel != 0) fpcontrols::mouse_wheel(wheel);
+#else
+    (void)dx; (void)dy; (void)wheel;
+#endif
+}
+
+void rtag_mouse_button(int button, int down) {
+#ifdef RTAG_HAVE_CONTROLS
+    if (g_m) fpcontrols::mouse_button(button, down != 0);
+#else
+    (void)button; (void)down;
+#endif
 }
 
 const uint8_t* rtag_memory(void) { return g_m ? rta::memory() : nullptr; }

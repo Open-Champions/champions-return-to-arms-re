@@ -12,7 +12,7 @@ the game's memory while it runs. No game art, no game font: every shape is drawn
 the font is the one inside Godot (Open Sans, SIL Open Font License). Pictures, memory
 images, routes, logs and the test tones are under `local/godot-hud/`.
 
-## STATE (2026-10-13, 15:45)
+## STATE (2026-10-13, 15:50)
 
 Nothing of this work is still running; test windows are closed (checked by process id at
 the end, section "Processes").
@@ -26,7 +26,7 @@ the end, section "Processes").
 | the game's own HUD off (`set_option("game_hud", "off")`) | **Ran**; the boss meter, the one-line message and the prompt box are not hideable yet (asked for) | section 5 |
 | custom music for boss fights from the player's own files | **Ran** with test tones; the game's music turned down by itself needs the two patch hunks of `tools/godot/hud-recomp.patch` (Ran here in a private library) | section 8 |
 | look as a swappable theme | **Ran** with a small example skin | section 9 |
-| cost | see section 10 | measured by the HUD itself |
+| cost | **0.33 ms a frame in play, 0.80 ms in the worst staged picture** (the reader 15 microseconds) | measured by the HUD itself in paced runs, section 10 |
 | what the controls side offers (`fpcontrols::hud()`) | **consumer written, not run**: the library does not hand it out yet | section 7 |
 | network: a second player | **not run**: the library has no network; party frames, a desync notice and chat were drawn from data made up by the test and marked "TEST DATA" on screen | section 6 |
 
@@ -259,7 +259,20 @@ that was loaded the whole day (load average 95 to 240), so these are upper figur
 
 | Run | Scripts per frame | of it the reader | Drawing per frame |
 |---|---|---|---|
-COST_ROWS
+| a fight, 16:9, overhead, game HUD off, paced (60.0 pictures a second, 5,475 frames) | 239 us | 15.5 us | 91 us |
+| the same in the chase view (5,473 frames) | 230 us | 15.3 us | 82 us |
+| everything at once at 4:3: boss bar, three party frames from test data (redrawn every frame), chat, a desync notice (pulsing), the portal's card; paced (59.7 a second, 5,876 frames) | 289 us | 15.5 us | 507 us |
+| not paced, 16:9 fight / boss with music (1,245 / 1,332 frames) | 244 / 230 us | 15 us | 265 / 137 us |
+
+So a frame of play costs about **0.33 ms** (scripts and drawing calls together), and the
+worst picture that could be staged **0.80 ms**; the reader itself is 15 microseconds. All
+under the millisecond asked for, the worst case not by much. Where the time goes (Read,
+from the structure, not profiled): the scripts' share is mostly turning the state into
+Godot values every frame (one Dictionary per player, the frame's Dictionary, the creature
+array) and the pieces' checks whether anything changed; the drawing share is text - every
+string is drawn twice, outline and fill. Each piece is drawn again only when what it shows
+changed or moves (the compass and, while anything is there, the world piece every frame).
+What Godot's renderer then spends on the HUD's canvas items is not in these figures.
 
 ## 11. What has to be merged where
 
@@ -312,4 +325,10 @@ runs from a snapshot (three were taken as its tree moved):
 ## Processes
 
 Every Godot started here was started by `hud.py run`, which records the process id in
-`local/godot-hud/test/NAME/pid`, waits for it and kills it on a time-out. PROCESS_LINE
+`local/godot-hud/test/NAME/pid`, waits for it and kills it on a time-out. **Checked at
+the end (15:50): 33 process-id files, none of the processes exists any more; no process
+on the machine has `godot-hud` in its command line; no Godot process is running at all.**
+The two research helpers started at the beginning (they only read the decompile) have
+ended; one of them wrote helper scripts into the session's shared scratch directory and
+said it overwrote a file `rd.py` there once (it was replaced again by its owner's version
+afterwards) - told to the coordinator.

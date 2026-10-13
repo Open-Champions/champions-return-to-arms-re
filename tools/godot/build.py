@@ -69,7 +69,8 @@ RENDER_CORE = ['vu1.cpp', 'vif1.cpp', 'gs.cpp', 'renderer.cpp']
 RUNTIME = ['runtime.cpp', 'iop.cpp', 'script.cpp']
 NICE = ['nice', '-n', '10']
 EXPORTS = ['rtag_api_version', 'rtag_has', 'rtag_start', 'rtag_set_pad', 'rtag_step', 'rtag_poll', 'rtag_run', 'rtag_audio_pull',
-           'rtag_memory', 'rtag_fields', 'rtag_info', 'rtag_ended', 'rtag_exit_code', 'rtag_stop', 'rtag_set_option']
+           'rtag_memory', 'rtag_fields', 'rtag_info', 'rtag_ended', 'rtag_exit_code', 'rtag_stop', 'rtag_set_option',
+           'rtag_controls_hud', 'rtag_mouse', 'rtag_mouse_button']
 
 
 def copy_sources(to, recomp):
@@ -211,6 +212,20 @@ def build_lib(args):
     rt_flags = ['-std=c++17', opt, '-fno-strict-aliasing', '-fwrapv', '-w', '-ffp-contract=off', '-frounding-math', '-I', rt, '-I', game_dir]
     lib_flags = ['-std=c++17', opt, '-Wall', '-Wno-unused-function', '-fno-strict-aliasing', '-ffp-contract=off', '-frounding-math',
                  '-I', LIB, '-I', app, '-I', render, '-I', rt] + (['-DRTAG_ORIGINAL'] if args.original else [])
+    # What the library can do depends on what the snapshot's core has (recomp.patch, or the shared tree once it is merged):
+    # the music's own volume (sound/drivers.cpp: rta_sound_set_music_gain) and the second HUD group (render/gs.h:
+    # hide_text - and the translation must wrap the two draw functions: funcs.h then declares orig_001d93b0).
+    def has(path, word):
+        try:
+            return word in open(path, errors='replace').read()
+        except OSError:
+            return False
+    if has(os.path.join(sound, 'drivers.cpp'), 'rta_sound_set_music_gain'):
+        lib_flags.append('-DRTAG_HAVE_MUSIC_GAIN')
+    hud_text = has(os.path.join(render, 'gs.h'), 'hide_text') and has(os.path.join(game_dir, 'funcs.h'), 'orig_001d93b0')
+    if hud_text:
+        lib_flags.append('-DRTAG_HAVE_HUD_TEXT')
+    gfx_flags = rt_flags + ['-I', app] + ([] if hud_text else ['-DRTA_NO_HUD_TEXT_HOOKS'])
     jobs = [(os.path.join(render, n), render_flags, 'r_') for n in RENDER_CORE + ['scene_tap.cpp']]
     vu = os.path.join(SRC, 'gen-vu')
     translated, fast = os.path.join(vu, 'vu1_translated.cpp'), os.path.join(vu, 'vu1_fast.cpp')
@@ -222,9 +237,14 @@ def build_lib(args):
     jobs.append((os.path.join(LIB, 'host_godot.cpp'), rt_flags, 'rt_'))
     jobs.append((os.path.join(sound, 'sound_rta.cpp'), rt_flags + ['-I', sound, '-I', LIB, '-DRTA_AUDIO_HOST="audio_host.inc"'], 'rt_'))
     jobs.append((os.path.join(app, 'app_rt.cpp'), rt_flags + ['-I', app], 'a_'))
-    jobs.append((os.path.join(app, 'gfx_rt.cpp'), rt_flags + ['-I', app], 'a_'))
+    jobs.append((os.path.join(app, 'gfx_rt.cpp'), gfx_flags, 'a_'))
     if os.path.exists(os.path.join(app, 'fpview.cpp')):      # the view modes (a snapshot with tools/recomp/app/fpview.patch applied)
         jobs.append((os.path.join(app, 'fpview.cpp'), rt_flags + ['-I', app], 'a_'))
+    # the look controls (fpcontrols.h): nothing of the runtime in them but iface.h; rtag.cpp finds the header by itself
+    if os.path.exists(os.path.join(app, 'fpcontrols.cpp')):
+        jobs.append((os.path.join(app, 'fpcontrols.cpp'), ['-std=c++17', opt, '-Wall', '-I', app, '-I', rt], 'a_'))
+    else:
+        lib_flags.append('-DRTAG_NO_CONTROLS')
     if not args.original:
         jobs.append((os.path.join(app, 'film.cpp'), rt_flags + ['-I', app], 'a_'))     # the films: only this translation leaves their entries open
     jobs.append((os.path.join(LIB, 'rtag.cpp'), lib_flags, 'g_'))
