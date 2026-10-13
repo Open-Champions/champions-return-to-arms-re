@@ -68,10 +68,14 @@ position, state, hit points, gold, experience, out-of-step flags, own sync hash)
 | headless, **window**, headless | 3 in a row | 3 | 5,376; 5,344; 5,282 | hub > drunare, 3 deaths, 1 reload |
 | **window**, headless, headless, headless | 3 in a row | 3 | 4,951; 5,207; 5,315 (all 6 pairs) | hub > drunare, 1 to 4 deaths, a reload in the third |
 | headless, headless, headless, **window** | 3 in a row | **2** | 5,245; 5,206 (all 6 pairs) | hub > drunare, 4 deaths, a reload in the third; **the first launch failed for everybody** (below) |
+| headless, **window**, headless, headless (launch tables printed) | 4 in a row | 4 | 5,126; 5,100; 5,453; 5,209 (all 6 pairs) | hub > drunare, 1 to 4 deaths |
+| **window**, headless, headless, headless (again, after midnight) | 3 in a row | 3 | 5,347; 5,332; 5,312 (all 6 pairs) | hub > drunare, 4 deaths, 1 reload |
 
-In the 16 launches that got into the level no column differed in any pair. (The launches
-from 23:21 on ran the build with the arithmetic switch described below; the earlier ones
-the build before it.)
+Games of three: 11 launches, 11 in the level. Games of four: 14 launches, 13 in the level.
+In the 24 launches that got into the level no column differed in any pair, through the
+level change, the deaths and the reload. (The launches from 23:13 on ran the build with
+the arithmetic switch described below; the earlier ones the build before it; none of
+these had the disconnect hold yet.)
 
 **One launch of four did not start (1 of 7 launches of four, 23:21).** All four copies
 went to lobby state 12 and none got a level within 60 s; no datagram to 0.0.0.0, nothing
@@ -85,8 +89,20 @@ which the handshake's repair-from-the-datagram cannot heal (each sends to where 
 is not). The launch tables were not in that run's log; `lobbyparty.py` prints them since
 (`launch-tables`: 0x402a37.., the port table, each player's launch record four times),
 so the next one can be read. Two other things ran on the Mac at that minute (the
-leave-and-return rounds of two window copies, and the name-question test). Not caused by
-the network driver as far as the logs go, and not explained: **open**.
+leave-and-return rounds of two window copies, and the name-question test).
+
+How two joiners can both be wrong about each other, when the one who fills its tables
+first still has the other's connection: `three-players.md` names a second way to a wrong
+entry - the peer library's accept rule files an arriving connection under the first
+sought player with that ADDRESS, whatever the port, so with every player at one address
+a fourth copy can hold two fellow joiners the wrong way round (seen there in two of four
+launches). A swapped entry on one joiner and a stale one on the other is a pair that
+never meets: the first sends its datagrams for the other to a third machine, the second
+sends its to the host. Each alone is repaired from the first datagram that arrives.
+**Inferred** from the logs above, not read from that run's tables.
+
+**The defence, in the driver ("Fix", 2026-10-13):** a peer's disconnect is shown to a
+game that is in a game's room half a second late - see "The disconnect hold" below.
 
 ### The name question in the window: shown and worked
 
@@ -191,6 +207,24 @@ every pair: 1,415 / 1,380 / 1,414 ticks with three players, 1,937 / 1,986 / 1,93
 host and the joiner who stayed longer - nothing differs. Sockets and threads per process
 went as in the table above (headless host: 2 to 5 sockets, 9 to 19 threads over three
 games).
+
+**Joining a game in progress** (`lobbyparty.py --scenario late`): the original does not
+allow it - a started game is in nobody's list and the server has forgotten it (the game
+even has a text for a server that would say so, "Failed to join game: It has already
+started."). **Ran**: two copies in their game (1,819 ticks in step), a third at the
+lobby's game list asking for the game by its code 30 s after it started: its list held 0
+games throughout, and the one-step driver said after its two minutes "STOPPED - no game
+with the code ... appeared in the lobby's list within two minutes. Check the code with
+your friend ...". Nothing reached the running game.
+
+**Leaving the lobby altogether, a night at the lobby, and going online again.** The two
+window copies of the rounds were left running overnight. Copy B stood at the game list
+for 8 h 10 min (1.77 million vertical blanks): still logged in in the morning, its one
+connection to the lobby open, 54 threads and 412 MB as at midnight. Copy A had been sent
+out of the lobby by a circle press in the chat pane (*Exit*): the game closed its lobby
+connection (44,634 bytes out, 43,058 in) and stood at "Normal Game / Internet Game" for
+the night; in the morning `app online start lobby` in that same process logged in again
+with the saved login and had the game list up (9 sockets, 60 threads, 342 MB).
 
 ### A player's program dying in mid-game; the host's program dying
 

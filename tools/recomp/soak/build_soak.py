@@ -5,6 +5,8 @@
   python3 tools/recomp/soak/build_soak.py --name nofix
   python3 tools/recomp/soak/build_soak.py --name fix26t --sections ... --instrument trace
   options: --section NAME (repeatable), --less NAME (repeatable: a section of --sections left out),
+           --extra-pnach FILE (a proposed file, applied after the sections), --extra-section PART
+           (repeatable: only the sections of the extra files whose title contains PART),
            --instrument count|trace|none, --rt live|frozen, --jobs N
 
 It is tools/recomp/net/build_net.py's program - the translated game, the runtime, the
@@ -91,6 +93,8 @@ def main():
     parser.add_argument('--extra-pnach', action='append', default=[],
                         help='one more patch file, applied whole after the sections (recomp.py --extra-pnach): '
                              'a proposed section that is not in the patch file yet')
+    parser.add_argument('--extra-section', action='append', default=[],
+                        help='only these sections of the --extra-pnach files (repeatable; a part of the title is enough)')
     parser.add_argument('--instrument', choices=('count', 'trace', 'none'), default='count')
     parser.add_argument('--rt', choices=('live', 'frozen'), default='live')
     parser.add_argument('--jobs', type=int, default=5)
@@ -122,7 +126,19 @@ def main():
         with open(listing, 'w') as sink:
             sink.write('\n'.join(sections) + '\n')
         command += ['--pnach', args.pnach, '--sections', listing]
-    for path in args.extra_pnach:
+    for index, path in enumerate(args.extra_pnach):
+        if args.extra_section:      # a copy with the chosen sections only
+            kept, keep = [], False
+            for line in open(path):
+                if line.startswith('['):
+                    keep = any(part in line for part in args.extra_section)
+                if keep:
+                    kept.append(line)
+            if not kept:
+                raise SystemExit('--extra-section: none of %s in %s' % (args.extra_section, path))
+            path = os.path.join(SOAK, 'extra-%s-%d.pnach' % (args.name, index))
+            with open(path, 'w') as sink:
+                sink.writelines(kept)
         command += ['--extra-pnach', path]
     done = subprocess.run(command, capture_output=True, text=True)
     if done.returncode != 0:

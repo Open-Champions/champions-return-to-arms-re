@@ -150,8 +150,10 @@ def main():
         jobs.append((os.path.join(net, 'online_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', net], 'n_'))
     jobs.append((os.path.join(HERE, 'app_main.cpp'), app_flags + qt_flags, 'a_'))
     jobs.append((os.path.join(HERE, 'pad_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE, '-I', rt], 'a_'))
+    # the game's objects by their exact names: a stray copy beside them ("c_003 2.o", as a file
+    # synchroniser leaves them) is not one of them and must not be linked a second time
     link = [os.path.join(args.game_objects, n) for n in sorted(os.listdir(args.game_objects))
-            if n.endswith('.o') and (n.startswith('c_') or n in ('table.o', 'hle_weak.o', 'patches.o'))]
+            if re.fullmatch(r'c_\d+\.o', n) or n in ('table.o', 'hle_weak.o', 'patches.o')]
     objects = []
     todo = []
     for source, flags, prefix in jobs:

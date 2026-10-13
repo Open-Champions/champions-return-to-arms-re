@@ -1,0 +1,23 @@
+// Proposed sections for patches/SLUS-20973_4028A55F.pnach (docs/issues/native-soak.md,
+// findings 3 and 2; "Save point" and "Script variables" there).  Not in the patch file and
+// not in the suggested list: the set changes only at a release.
+
+[Net test: save point is used on every machine whatever this machine's card screen does]
+author=reverse engineering test patch; confirmed to remove the difference on native pairs (docs/issues/native-soak.md, section "Save point"); untested on the emulator, PCSX2 or a console
+description=When a player presses use at a save point, every machine runs the save point's own code inside the tick (Savepoint_interact, 0x28DC30) - but a machine whose own memory-card screen is up at that moment (its save dialog, the options being written after a change in the pause menu) skips all of it, so the save point's state (+0x84, its light, its active flag and, were there any, its action scripts) then differs from the other machines': the "saved" burst, the point's private random numbers and the 6 bytes it writes into the level's stored state follow on some machines and not on others. This swaps the two tests and narrows the card one: the menu-mutex test (shared state in a net game) still guards everything, the card test guards only the request to open this machine's save dialog. Nothing else changes; a machine that was not busy does exactly what it did. Offline the only change is that the point lights up when used while a card screen is open. FINDINGS B9. Each machine fixes its own copy; use on every machine.
+// was: 0C085D46 (jal memcard_isBusy)  now: jal menuMutex_isHeld
+patch=1,EE,0028DC44,word,0C08BF0B
+// was: 0C08BF0B (jal menuMutex_isHeld)  now: jal memcard_isBusy
+patch=1,EE,0028DC54,word,0C085D46
+// was: 1440000A (bnez v0,0x28dc88)  now: bnez v0,0x28dc68
+patch=1,EE,0028DC5C,word,14400002
+// was: 24100001 (addiu s0,zero,1)  now: jal memcard_requestSave
+patch=1,EE,0028DC64,word,0C085D6D
+// was: 0C085D6D (jal memcard_requestSave)  now: addiu s0,zero,1
+patch=1,EE,0028DC68,word,24100001
+
+[Net test: reading a quest variable never adds it to the table]
+author=reverse engineering test patch; confirmed to remove the difference on a native pair (docs/issues/native-soak.md, section "Script variables"); untested on the emulator, PCSX2 or a console
+description=Reading a quest variable that does not exist yet (script getv, vars_get 0x1ED778) appends its name to the table with value 0. Level scripts are also run from drawing code - the prompt of a jump gate or a locked object for this machine's own player, the marker over a character's head, the map - so the machine that draws appends the name some ticks before the others, or alone, and the tables then differ in content or in order. This makes a read of a missing name return 0 and leave the table as it is; names are added only by a store (setv), which every machine does in the same tick. Every value read is what it was (a missing name read 0 before, too); the table and the save file hold only variables that were ever set. docs/script.md P1. Per machine; a mix is as safe as the game is without it.
+// was: 0C0EE1A3 (jal libc_strcpy)  now: b 0x1ed844 (v0 is 0 on both ways in)
+patch=1,EE,001ED828,word,10000006

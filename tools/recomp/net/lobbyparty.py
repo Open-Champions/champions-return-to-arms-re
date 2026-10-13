@@ -107,6 +107,10 @@ def to_room_lines(role, new_character, n, args, first=True):
         for k in range(n - 1):
             lines += ['until %s:s8 != -1 timeout 60000' % known(k), 'until %s:u8 != 255 timeout 30000' % known(k, 0x42)]
         lines += ['echo all-known']
+        if role in args.stall:
+            # this joiner stands still across the host's Start (the host presses it --room-wait frames after it
+            # has seen everybody): it takes START late, when the others have disconnected already
+            lines += ['wait %d' % max(1, args.room_wait - 120), 'app net stall %d' % args.stall_ms]
     # the launch tables (docs/issues/three-players.md): players, own number, the address and port tables,
     # and each player's launch record (address, port, state, flags) at the start and three times after
     table = ' '.join(['0x402a37:u8', '0x402a39:u8'] + ['0x%x:x32' % (0x402b3b + 4 * i) for i in range(4)] + ['0x%x:u32' % (0x402b5c + 4 * i) for i in range(4)])
@@ -424,6 +428,8 @@ def main():
     parser.add_argument('--launches', type=int, default=1)
     parser.add_argument('--scenario', choices=('plain', 'drop', 'hostquit', 'leave', 'late'), default='plain')
     parser.add_argument('--rounds', type=int, default=3)
+    parser.add_argument('--stall', default='', help='joiners (j1,j2,...) that stand still across the host\'s Start')
+    parser.add_argument('--stall-ms', type=int, default=5000)
     parser.add_argument('--late-wait', type=int, default=5800, help='late: frames the last copy waits at the game list before it asks for the game')
     parser.add_argument('--server', default=None)
     parser.add_argument('--port-shift', type=int, default=0)
@@ -450,6 +456,7 @@ def main():
         args.server = mine
     if args.server != mine and args.server not in ('127.0.0.1', 'localhost'):
         raise SystemExit('the server must be this computer (%s), not %s' % (mine, args.server))
+    args.stall = [r for r in args.stall.split(',') if r]
     kinds = [k for k in args.kinds.split(',') if k] or []
     kinds += ['native'] * (4 - len(kinds))
     out = os.path.abspath(args.out)

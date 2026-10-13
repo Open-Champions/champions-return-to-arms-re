@@ -14,7 +14,7 @@
 //   - script commands, for tests (the runtime's "app <text>"):
 //       app online start lobby|host[:CODE]|join:CODE[+choose]
 //       app online stop | app online name NAME | app online       (the last prints the report)
-//       app net peers | app net drop | app net sockets | app net arith
+//       app net peers | app net drop | app net sockets | app net arith | app net stall MS
 //       app online sheet info|type TEXT|press N|picture FILE   (the window's name question)
 //   - a name is asked for on the terminal unless an application took the question over
 //     (rtanet::ask_name); the code of a hosted game is printed, or handed to show_code.
@@ -23,6 +23,7 @@
 #include "rt.h"
 #include "../../play-net/src/RtaOnline.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <iostream>
@@ -136,6 +137,12 @@ void command(const std::string& text, u64 frame) {
     if (first == "net") {
         if (second == "peers") printf("[frame %llu] peers: %s\n", (unsigned long long)frame, peers_text().c_str());
         else if (second == "drop") rtanet::drop_tcp();
+        else if (second == "stall") {       // tests: this machine stands still (a hitch at the wrong moment)
+            int ms = atoi(third.c_str());
+            printf("[frame %llu] standing still for %d ms\n", (unsigned long long)frame, ms);
+            fflush(stdout);
+            if (ms > 0 && ms <= 20000) std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+        }
         else if (second == "arith") printf("[frame %llu] arithmetic: %s\n", (unsigned long long)frame, rtanet::arithmetic_text().c_str());
         else if (second == "sockets") printf("[frame %llu] %s\n", (unsigned long long)frame, rtanet::sockets_text().c_str());
         return;

@@ -52,7 +52,37 @@ def first_tick_fix(path):
         sink.writelines(kept)
 
 
-def setup(name, native=None, watches=(), chunks=(), native_args=(), fix_first_tick=False):
+def last_tick_fix(path):
+    """Add, to a controller replay file, the bytes of the tick that ended each level.
+
+    The rig's tick log has one row per displayed frame, written at the head of the frame:
+    the row of tick T carries the controller bytes the game read while it computed tick T.
+    The frame that begins with the row of a level's last tick T computes tick T+1, and when
+    that tick asks for a level change (the player uses a door: Player_interact on a button
+    edge, script built-in newWorld) the next row belongs to the new level - there is no row
+    of tick T+1, so the replay has nothing for the blank before it and the translation
+    falls back on its own script's timing, which puts the same press one frame later: it
+    then stays one tick longer in the old level (docs/issues/native-proof.md, NP14).  The
+    bytes are in the log all the same: nothing reads the controller between that tick and
+    the first frame of the load, so the first row of the next episode still shows them."""
+    rows = [line.split() for line in open(path)]
+    rows = [r for r in rows if len(r) == 4]
+    first, last, have = {}, {}, set()
+    for r in rows:
+        episode, tick, frame = int(r[0]), int(r[1]), int(r[2])
+        first.setdefault(episode, r[3])
+        last[episode] = max(last.get(episode, 0), tick)
+        have.add((episode, tick))
+    added = 0
+    with open(path, 'a') as sink:
+        for episode in sorted(last):
+            if episode + 1 in first and (episode, last[episode] + 1) not in have:
+                sink.write('%d %d 0 %s\n' % (episode, last[episode] + 1, first[episode + 1]))
+                added += 1
+    return added
+
+
+def setup(name, native=None, watches=(), chunks=(), native_args=(), fix_first_tick=False, fix_last_tick=True):
     """Point rigcompare at its own directory; returns the directory."""
     out = os.path.join(BASE, name)
     os.makedirs(out, exist_ok=True)
@@ -68,14 +98,16 @@ def setup(name, native=None, watches=(), chunks=(), native_args=(), fix_first_ti
         prefix = parts[3] if len(parts) > 3 else 'c'
         for at in range(lo, hi, step):
             extra.append('%s%06x=0x%x:crc%d' % (prefix, at, at, min(step, hi - at)))
-    if native_args or fix_first_tick:
+    if native_args or fix_first_tick or fix_last_tick:
         real_run = subprocess.run
 
         def run(command, *args, **kwargs):
             if len(command) > 1 and str(command[1]).endswith('native.py'):
-                if fix_first_tick:
-                    for item in command:
-                        if str(item).startswith('pad-replay='):
+                for item in command:
+                    if str(item).startswith('pad-replay='):
+                        if fix_last_tick:           # before the other: it reads the load rows
+                            last_tick_fix(str(item)[len('pad-replay='):])
+                        if fix_first_tick:
                             first_tick_fix(str(item)[len('pad-replay='):])
                 command = list(command) + list(native_args)
             return real_run(command, *args, **kwargs)

@@ -1,0 +1,8 @@
+{
+  "godot": "4.5.2-stable",
+  "godot_cpp_repository": "https://github.com/godotengine/godot-cpp.git",
+  "godot_cpp_tag": "godot-4.5-stable",
+  "godot_cpp_commit": "e83fd0904c13356ed1d4c3d09f8bb9132bdc6b77",
+  "api": "4.5",
+  "precision": "single"
+}

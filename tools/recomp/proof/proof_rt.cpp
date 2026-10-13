@@ -126,10 +126,20 @@ static const char* g_last_kind = "start";
 static u32 g_last_where;
 static u64 g_watch_events;
 
+// the calls under way while the watch is armed: (call site, entry reached).  Kept from the
+// arming on, so the outermost frames are those entered after it; printed with every change
+static std::vector<std::pair<u32, u32>> g_stack;
+
 static void watch_check(const char* kind, u32 where) {
     if (memcmp(g_ram + g_watch_addr, g_shadow.data(), g_watch_len) != 0) {
         g_watch_events++;
         if (g_watch_events <= 20000) {
+            if (!g_stack.empty()) {
+                fprintf(g_watch_log, "  calls under way (site>entry), outermost first:");
+                size_t from = g_stack.size() > 24 ? g_stack.size() - 24 : 0;
+                for (size_t i = from; i < g_stack.size(); i++) fprintf(g_watch_log, " %x>%x", g_stack[i].first, g_stack[i].second);
+                fprintf(g_watch_log, "\n");
+            }
             fprintf(g_watch_log, "episode %u tick %u: changed between %s %x and %s %x (last call site %x):", g_episode, W(SIM_TICK),
                     g_last_kind, g_last_where, kind, where, g_site);
             unsigned shown = 0;
@@ -182,6 +192,7 @@ static void per_frame() {
             g_last_kind = "frame";
             g_last_where = tick;
         }
+        if (!inside) g_stack.clear();
         g_watch_armed = inside;
         g_proof_slow = inside ? 1 : 0;
     }
@@ -282,7 +293,10 @@ static void ready() {
 
 void proof_enter(Ctx* c, u32 number) {
     if (!g_ready) ready();
-    if (g_watch_armed) watch_check("entry of", g_proof_addr[number]);
+    if (g_watch_armed) {
+        watch_check("entry of", g_proof_addr[number]);
+        g_stack.push_back({g_site, g_proof_addr[number]});
+    }
     if (number == g_frame_hook) per_frame();
     if (g_cap_file && g_proof_want[number] && number != g_frame_hook) {
         u8 done = g_per[number];
@@ -295,7 +309,11 @@ void proof_enter(Ctx* c, u32 number) {
 }
 
 void proof_return(Ctx*, u32 site) {
-    if (g_watch_armed) watch_check("return to", site);
+    if (g_watch_armed) {
+        while (!g_stack.empty() && g_stack.back().first != site) g_stack.pop_back();
+        while (!g_stack.empty() && g_stack.back().first == site) g_stack.pop_back();
+        watch_check("return to", site);
+    }
 }
 
 static void proof_finish() {
