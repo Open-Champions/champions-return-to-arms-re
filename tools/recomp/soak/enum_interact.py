@@ -41,6 +41,12 @@ LOCAL_CALLS = {
 }
 SHARED_CALLS = {0x22fc2c: 'menuMutex_isHeld (shared in a net game: Creature_interact, Creature_trigger, dialog messages)',
                 0x22fc04: 'menuMutex_tryAcquire', 0x1e7b78: 'game_inNoSaveZone', 0x22fbc0: 'dialog_isOpen'}
+# Globals that boot, level entry or offline-only code also store, and that are the same on
+# every machine during a net game: left out of "reads".  g_paused is set offline only
+# (names.tsv); g_drawFrame is read by script_runByName for a stamp nothing reads;
+# g_simFrame is the tick's frame inside the tick (slot 14) but the prediction frame at draw
+# time, so it is kept for slot 13.
+SAME_EVERYWHERE = {'g_networkMode', 'g_difficultyIdx', 'g_drawFrame', 'g_world', 'g_inFrontend', 'g_warmupFrames', 'g_paused'}
 EFFECT_CALLS = {0x1ed694: 'script_runByName', 0x27db60: 'jumpgate_addCurrentLevel', 0x1d92a0: 'hud_showMessage',
                 0x14dcc8: 'obj_runActionScripts', 0x1ed854: 'vars_set', 0x1ed778: 'vars_get (appends a missing name)',
                 0x148bc8: 'light_link2', 0x1de0dc: 'hudmsg (game message 2)', 0x1de1a0: 'hudmsg_sendSavepoint'}
@@ -103,6 +109,8 @@ def main(argv):
                 if g in EFFECT_CALLS and len(chain) <= 2:
                     effects.append(EFFECT_CALLS[g].split(' (')[0])
                 for v in readers.get(g, ()):
+                    if P.name(v) in SAME_EVERYWHERE or (slot == 14 and P.name(v) == 'g_simFrame'):
+                        continue
                     globs.append('%s%s' % (P.name(v), '' if g == fn else ' in ' + P.name(g)))
             stores = ''
             if slot == 13:

@@ -457,8 +457,7 @@ For whoever edits `FINDINGS.md` (this document does not).
 
 # Second part, 2026-10-13: the two findings to the bottom, three proposed sections
 
-**Status: in progress** (the soak arm is running; this part is written as the work goes
-and says at each point what is done). Base: the shipping set as it is in
+**Status: ended 2026-10-13 09:16.** The farm is stopped; nothing of it is running. Base: the shipping set as it is in
 `patches/SLUS-20973_4028A55F.pnach` since the release (26 sections, 91 words). Neither that
 file nor `tools/play-net/sections-suggested.txt` is changed by any of this: the proposed
 sections are in `tools/recomp/soak/proposed-sections.pnach`.
@@ -486,6 +485,14 @@ sections are in `tools/recomp/soak/proposed-sections.pnach`.
   the early marking.
 - Three sections proposed, 8 words, each executed in the interpreter (36 checks) and each
   shown on a native pair without and with it.
+- **Soak, shipping set plus the three sections: 26 games, 1,779,709 ticks, no difference in
+  any deciding column** — 18 games of two machines, 4 of three, 4 of four; neither of the
+  two old differences; the menu mutex and the jump-gate list, new columns, equal in every
+  tick. With A and B alone, before C: 365,308 more, none.
+- The per-machine fields of the first part's table are classified; all but one family are
+  presentation by reading or a known cache. The one that is not: the real player's
+  animation tracks differ on its owner's machine, because the spin spell animates the
+  prediction copy there (**Ran**); no position followed from it in 9 million ticks.
 
 ## Programs of the second part
 
@@ -616,7 +623,7 @@ levels; the lines were then read.
 | `Creature_interact` 0x116bd8 (76 classes), `PushTrigger_interact` 0x1ecc70 | through `shop_openOrStock`: the local slot | the shop opens on its owner's machine only, by design (`docs/script.md`, open question 7) |
 | `JumpGate_interact`, `Savepoint_interact` | `menuMutex_isHeld` | shared state (above) |
 | door, chest, switch, anchor interacts | `game_isFrozen` (in a net game `g_paused`, which is set offline only), `hud_showMessage`, `player_voice`, the gold floater | display and sound |
-| the other 11 prompts and 6 interacts | nothing of the kind within two calls | |
+| the other 12 prompts (the creatures' among them, 76 classes) and 8 interacts | nothing of the kind within two calls | |
 
 So one implementation of 45 has a per-machine test that decides what the tick does and is
 not covered by the set: `Savepoint_interact`. Stores made by a prompt — which also runs at
@@ -844,8 +851,72 @@ looked at.
 
 ## The soak arm: shipping set + A + B + C
 
-(running; totals below are filled in as it goes)
+`farm.py run --arm s26abc`, seeds 6100–6121 in order, then the four-machine seeds 6130,
+6156 and 6164; at most six native instances, `nice -n 19`, on a machine at load 60–130 from
+other work. The deciding columns are the first part's plus the menu mutex, the jump-gate
+destination count and list; the script's active player is followed.
 
+| Arm | Jobs | Ticks compared | Machines 2 / 3 / 4 (jobs, ticks) | Longest game | Deciding differences | Out-of-sync flags | Ended by a dropped peer |
+|---|---|---|---|---|---|---|---|
+| `s26abc`: the 26 sections and A, B, C (29 sections, 99 words) | 26 | **1,779,709** | 18, 1,404,844 / 4, 189,755 / 4, 185,110 | 301,002 ticks | **0** | 0 | 2 (seeds 6104 at tick 16,380 and 6156 at 21,020: a kick or a leave from the pause menu under random input; no difference before either) |
+| `s26ab`: the 26 and A, B — the hour before C was written, the last four jobs with the new columns | 8 | 365,308 | 5, 210,475 / — / 3, 154,833 | 61,636 | 0 | 0 | 0 |
+
+Machine-ticks of the main arm: 4,119,393. No job timed out, none was left without a log.
+The farm was started 08:01 and its last job ended 09:16; nothing of it is running.
+
+- **Neither old difference came back.** The quest-variable column is equal in every tick
+  of every pair. No save point differs in +0x84, +0xcc, +0x80 or its private generator at
+  any of the 182 sampled ticks (the save points' words that do differ there are the pose
+  word +0x58 and words of the light, +0x88, +0x8c, +0xc0), and `pool`, which holds every
+  save point's generator, is equal throughout.
+- **The new columns never differ**: mutex, destination count, destination list — and the
+  active player, which is only followed, in no tick either.
+- The sections' code ran: `Savepoint_interact` was entered 363 times and
+  `memcard_requestSave` 339 times, so in 24 of them the request was not made (a card screen
+  up, or the mutex held: the first is section A's new path); `Savepoint_startSavedEffect`
+  101; `JumpGate_interactPrompt` 56,377 and `jumpgate_addCurrentLevel` 22; `vars_get`
+  713,044 against `vars_set` 4,900.
+- By bus: none 10 jobs, 691,237 ticks; delay 2 jitter 2 loss 1 %: 5, 275,883; 4, 3, 5 %: 3,
+  211,626; 6, 8, 3 %: 3, 301,184; 10, 6, 10 %: 5, 299,779. 23 levels seen from 13 start
+  levels, 153 level changes after the first entry, 347 deaths, 60,594 ticks with the
+  cutscene flag up; `Player_castSkill` 36,922, `Player_usePotion` 152,801,
+  `damage_apply` 31,476, 42 of the 54 named skill classes and 144 of the 267 named object
+  classes run, `config_commitOptions` 614, `shop_buy` 33, `save_game` 904.
+- Followed columns: the weapon-trail bytes (V63) differ in 30 games' player columns,
+  `poolfree` in 22 games, `poolraw` in all 26.
+
+What `poolraw` still trips over, with the classification above applied to the words that
+differed outside the present mask at the 182 sampled ticks:
+
+| Family | Rows | Games |
+|---|---|---|
+| model-particle record | 281 | 11 |
+| pose cache (animation state pointer, track cache word) | 117 | 21 |
+| light, emitter or generator of an effect class | 34 | 9 |
+| colour quads | 23 | 3 |
+| the real player's animation tracks (open) | 14 | 4 |
+| `Player` menu byte, light, draw cache | 8 | 2 |
+| trail handle | 5 | 3 |
+| status counters 8 and 10 | 4 | 1 |
+| `LightEffect` +0x4c, +0x50: the same two lights in the other order in the light list (with a save point's +0x88, +0x8c, one game) | 4 | 1 |
+| `FatCyclops` +0xa8: two different objects at one address | 4 | 1 |
+
+Nothing outside the families of the classification. Not covered: as in the first part
+(the lobby path, spent points, bosses never met, two networks); every game is two to four
+copies of one native build on one machine, so this shows logic differences only; none of
+the three sections was run on the emulator rig, on PCSX2 or on a console.
+
+## What is left
+
+- The real player's animation tracks on its owner's machine (classification, last table):
+  the one per-machine field found that is not presentation by reading.
+- The consequence of a jump gate found on one machine for good was read, not run, beyond
+  the list itself differing to the end of a game.
+- The three sections on the emulator rig (the first part ran its flush section there) and
+  through a lobby-launched game.
+- The mask by structure, and `poolraw` as a deciding column.
+- `Savepoint_interact`'s second effect of section A — a stale "card screen done" flag
+  answered by the burst — was reasoned, not produced.
 
 ## Proposed ledger rows (second part)
 
@@ -859,7 +930,7 @@ For whoever edits `FINDINGS.md` (this document does not).
 | new (jump gate) | `JumpGate_interactPrompt` 0x27d7a0 marks an unfound gate found (+0x4d), adds the level to the jump-gate destinations (0x8e3a50, count 0x8e3c30) and shows the message — also when called from drawing. **Ran**, directed game, the suggested set plus the two sections above: the owner's machine has the gate found and two destinations 19 ticks before the other; with the player's hit points written to zero inside those ticks, for the rest of the game. The count decides in the same prompt whether a gate can be used: **Read** from there on. Section "a jump gate is found only inside the tick" (2 words, 0x27D820, 0x27D824; it reads `Player_interact`'s display-only argument in register s7): **Executed** (10 checks), **Ran** (both directed games: no difference with it) |
 | new (prompts and interacts) | Enumeration: 22 prompt and 23 interact implementations over 232 classes. Per-machine tests that decide what the tick does: `Savepoint_interactPrompt` (card; removed by the set), `Savepoint_interact` (card; the section above); the shop opening on its owner's machine through `Creature_interact` and `PushTrigger_interact` is by design. Stores a prompt makes at draw time: the jump gate's (above); frame stamps in `PhProp`, `ItemProp` +0x104, `UserParamProp` +0x168, `Vehicle` +0x190, read only by the classes' draw functions |
 | V (replace the first part's "Object pools … No reader in the simulation was looked for") | The fields that differ between two native machines in step are classified in `docs/issues/native-soak.md` ("The fields that differ…"): presentation by reading for the lights, the drawn flags, the private generators of `Gold`, `Torch`, `JumpGate`, `Savepoint` and `AddParticle`, the model-particle records, status counters 8 and 10, the frame stamps, trail handles, prop draw matrices and a menu byte; the pose pointers are D34's cache. Not presentation: the real player's animation tracks 5 and 6 differ on its owner's machine because `SpellCyclone_run` (**Ran**) starts its animation on `net_objOrGhost` inside the tick; no position followed in 9 million ticks; open |
-| V (new) | Native soak, the shipping set (26 sections, 91 words) plus the three proposed sections (8 words): see the totals in `docs/issues/native-soak.md`, "The soak arm" |
+| V (new) | Native soak, the shipping set (26 sections, 91 words) plus the three proposed sections (8 words): 26 games from power-on through the developer LAN start (18 of two machines, 4 of three, 4 of four), 1,779,709 ticks, up to 301,002 in one game, 23 levels, 153 level changes, 347 deaths, 36,922 `Player_castSkill` entries, 363 `Savepoint_interact`, 56,377 `JumpGate_interactPrompt`: no difference in any deciding column — the first part's, and the menu mutex and the jump-gate destination count and list — and no out-of-sync flag; 2 games ended by a kick or leave. With the first two sections only: 365,308 more, none. Two to four copies of one native build: logic only |
 
 ## How to repeat
 
@@ -911,7 +982,8 @@ logged is under `local/recomp-out/` (`gen-soak-*`, `soak/`): the farm's rows in
 `rawdiff.tsv`, the kept games beside them; the runs of the findings in `soak/t/` (native)
 and `soak/rig/` (emulator).
 
-Left undone: the two findings' wider consequences; a section for finding 3; the
+Left undone by the first part (the first three items are done in the second part, which
+has its own "What is left"): the two findings' wider consequences; a section for finding 3; the
 classification of the in-step fields; scripted games for spent points and the workshop; a
 native machine against a rig machine inside the farm. A machine whose partner has ended
 is sometimes still running 60 seconds later and is killed by the farm (its last tick-log

@@ -1,6 +1,6 @@
 # How complete is it
 
-Updated at every check-in of the work. **Last update: 2026-10-13, 09:10 CDT.**
+Updated at every check-in of the work. **Last update: 2026-10-13, 09:18 CDT.**
 
 One table for the whole effort to make Champions: Return to Arms (SLUS-20973 v2.00)
 playable again, online, on today's computers. The percentages are estimates by the people
@@ -37,6 +37,10 @@ and the Godot client are tracked in their own repositories
 
 ## Since the last update
 
+- Three further fix sections proposed and proven for the next release (a save point's
+  per-machine card test, a script read that wrote, a jump gate marked from drawing):
+  1.78 million more ticks in step with them on
+  ([native-soak](issues/native-soak.md), second part).
 - A first Godot spike: the translated game plays inside Godot, Godot draws it, and on the
   first level Godot lights it with real-time shadows.
 - Native online play exercised end to end: three and four players, the lobby's screens,
