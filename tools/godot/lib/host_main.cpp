@@ -143,7 +143,7 @@ int main(int argc, char** argv) {
             }
         });
     if (paced) api.rtag_run(59.94);
-    unsigned long long frames = 0, vertices = 0, draws = 0, textures = 0, scene_vertices = 0, scene_frames = 0;
+    unsigned long long frames = 0, vertices = 0, draws = 0, textures = 0, scene_vertices = 0, scene_frames = 0, scene_pieces = 0;
     for (;;) {
         const rtag_frame* frame = nullptr;
         int got = paced ? api.rtag_poll(-1, &frame) : api.rtag_step(nullptr, -1, &frame);
@@ -151,7 +151,7 @@ int main(int argc, char** argv) {
         if (got == 0) continue;
         frames++;
         vertices += frame->vertex_count; draws += frame->draw_count; textures += frame->texture_count;
-        if (frame->scene && frame->scene->valid) { scene_frames++; scene_vertices += frame->scene->vertex_count; }
+        if (frame->scene && frame->scene->valid) { scene_frames++; scene_vertices += frame->scene->vertex_count; scene_pieces += frame->scene->piece_count; }
         if (stats && frame->draw_count) {
             // the layout: runs of consecutive draws into one surface, with what they read
             std::string layout;
@@ -209,8 +209,8 @@ int main(int argc, char** argv) {
     }
     pulling = false;
     if (puller.joinable()) puller.join();
-    fprintf(stderr, "rtag_host: %llu frames taken; in the lists %llu vertices, %llu draws, %llu textures; scene: %llu frames with a camera, %llu vertices\n", frames, vertices,
-            draws, textures, scene_frames, scene_vertices);
+    fprintf(stderr, "rtag_host: %llu frames taken; in the lists %llu vertices, %llu draws, %llu textures; scene: %llu frames with a camera, %llu vertices, %llu mesh packets\n", frames, vertices,
+            draws, textures, scene_frames, scene_vertices, scene_pieces);
     if (stats) {
         fprintf(stderr, "rtag_host: frame layouts (runs of draws per surface, in order), by number of frames:\n");
         for (auto& kv : layouts) fprintf(stderr, "  %8llu  %s\n", kv.second, kv.first.c_str());

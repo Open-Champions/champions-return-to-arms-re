@@ -20,18 +20,18 @@ diff -ru recomp.orig/render/vif1.cpp recomp/render/vif1.cpp
 diff -ru recomp.orig/render/vif1.h recomp/render/vif1.h
 --- recomp.orig/render/vif1.h
 +++ recomp/render/vif1.h
-@@ -49,6 +49,11 @@
-     bool waiting = false, waiting_from_pc = false;
-     uint32_t waiting_at = 0;
- #ifdef RTA_PROF
+@@ -18,6 +18,11 @@
+     Gs* gs = nullptr;
+     Vif1Stats stats;
+     bool run_programs = true;
 +    // The scene tap (scene_tap.h): told before a microprogram runs (entry, or -1 for a continued one), and given
 +    // the notes from the game side that are its own (NOP codes with 0xA8 / 0xA9 in NUM)
 +    void (*on_program)(void* user, int entry) = nullptr;
 +    void (*on_note)(void* user, uint32_t num, uint32_t imm) = nullptr;
 +    void* tap_user = nullptr;
-     uint32_t prof_entry = 0;            // the entry of the last MSCAL (prof.h: a continued program counts for it)
- #endif
-     void run_waiting();
+     bool time_runs = false;             // add the processor time of every program run to stats.run_ms (kicks included)
+     int debug_ring = 0;                 // > 0: keep the last codes and print them when vu.debug_hit is raised
+     std::vector<std::string> ring;
 diff -ru recomp.orig/sound/audio_out.cpp recomp/sound/audio_out.cpp
 --- recomp.orig/sound/audio_out.cpp
 +++ recomp/sound/audio_out.cpp

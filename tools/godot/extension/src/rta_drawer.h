@@ -140,7 +140,7 @@ class RtaDrawer : public RefCounted {
     bool scene_take(Pass& pass, const rtag_frame& frame, const rtag_draw& draw, const Target& target, RID texture, float order);
     void scene_end(const rtag_frame& frame);
     void scene_release();
-    static void add_surface_bytes(RID mesh, int primitive, const PackedByteArray& positions, const PackedByteArray& attributes, int count);
+    static void add_surface_bytes(RID mesh, int primitive, const PackedByteArray& positions, const PackedByteArray& attributes, int count, bool normals = false);
     friend struct Scene;
 };
 

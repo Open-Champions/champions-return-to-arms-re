@@ -109,6 +109,9 @@ void vertex() {
 	// scene, it maps without perspective; this maps it with: a difference of a texel or two on
 	// large triangles seen at a slant.)
 	if (abs(CUSTOM0.z) > 1e-12) v_st = vec3(CUSTOM0.xy / CUSTOM0.z, 1.0);
+#ifdef GS_NORMALS
+	NORMAL = CUSTOM1.xyz;                               // the game's own normal (the mesh is in world space)
+#endif
 	v_pos = vec2(0.0);
 	POSITION = PROJECTION_MATRIX * (MODELVIEW_MATRIX * vec4(VERTEX, 1.0));
 	POSITION.z += depth_bias * POSITION.w;
@@ -206,8 +209,14 @@ void fragment() {
 	// The colour the game drew - its texture times its own vertex light - is the surface's
 	// colour here; Godot's ambient light and lights (light() below) say how much of it
 	// arrives.  The normal is the triangle's own: the list carries none.
+#ifdef GS_NORMALS
+	// the game's, interpolated: smooth, per pixel.  The renderer turns the normal of a triangle seen from
+	// behind; the game's triangles are wound either way (no program tests winding), so that is undone.
+	NORMAL = normalize(FRONT_FACING ? NORMAL : -NORMAL);
+#else
 	vec3 flat_normal = normalize(cross(dFdy(VERTEX), dFdx(VERTEX)));
 	NORMAL = dot(flat_normal, VIEW) < 0.0 ? -flat_normal : flat_normal;
+#endif
 	ROUGHNESS = 1.0;
 	METALLIC = 0.0;
 #endif
@@ -221,13 +230,21 @@ void fragment() {
 }
 
 #ifdef GS_LIT
-// A directional light gives all of its colour where its shadow map says the surface is
-// lit, whatever way the surface faces (the game's own shading is in the colour already):
+// A directional light gives its colour where its shadow map says the surface is lit - all
+// of it where the mesh has no normals (the game's own shading is in the colour already),
+// by the game's own normal where it has (sun_wrap):
 // with an ambient energy of 1 - e and a sun of energy e the picture is the game's where
 // the sun reaches, and darker by e in a shadow.  A point light is added on top, by distance
 // and by the triangle's facing.
+uniform float sun_wrap = 0.55;                      // how much of the sun a surface turned away from it still gets (1: all of it)
 void light() {
+	float facing = dot(NORMAL, LIGHT);
+#ifdef GS_NORMALS
+	if (LIGHT_IS_DIRECTIONAL) DIFFUSE_LIGHT += ATTENUATION * LIGHT_COLOR / PI * mix(clamp(facing * 0.5 + 0.5, 0.0, 1.0), 1.0, sun_wrap);
+	else DIFFUSE_LIGHT += ATTENUATION * LIGHT_COLOR / PI * clamp(facing * 0.6 + 0.4, 0.0, 1.0);
+#else
 	if (LIGHT_IS_DIRECTIONAL) DIFFUSE_LIGHT += ATTENUATION * LIGHT_COLOR / PI;
-	else DIFFUSE_LIGHT += ATTENUATION * LIGHT_COLOR / PI * (0.35 + 0.65 * max(dot(NORMAL, LIGHT), 0.0));
+	else DIFFUSE_LIGHT += ATTENUATION * LIGHT_COLOR / PI * (0.35 + 0.65 * max(facing, 0.0));
+#endif
 }
 #endif

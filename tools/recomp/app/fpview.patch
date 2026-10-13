@@ -1,0 +1,348 @@
+fpview.patch - the view modes of the native build (overhead / action / chase / shoulder / first
+person): the changes to files other work owns.  docs/issues/native-first-person.md says what it
+is, how a view is selected, and what was run.
+
+Made against tools/recomp as it stood at the time in the line "snapshot" below.  Apply from
+tools/recomp:
+
+    cd tools/recomp && patch -p1 --dry-run < app/fpview.patch && patch -p1 < app/fpview.patch
+
+The new files it needs are already in place and are not in the patch (nothing compiles them
+until app/build.py is patched):
+    app/fpview.h  app/fpview.cpp
+
+Notes for the merge
+ - hle.txt gains 5 addresses (tasks_call, camera_updateFocus, worldtex_stream, Player_draw,
+   Camera_followZoomInput).  funcs.h changes with them, so every translation is made again and
+   compiled again at its next build (about 2 minutes each).  A program that does not link
+   app/fpview.cpp gets the weak pass-through of hle_weak.cpp: the game as before.  They are in
+   hle.txt and not in app/hle-app.txt so that rta_app_orig (the unpatched translation the rig
+   is compared with) has them too.
+ - app/build.py links app/fpview.cpp into both rta_app and rta_app_orig, after gfx_rt.cpp.
+   app/build_win.py is NOT touched: the Windows program keeps working without the views (weak
+   pass-through; rt_dma_skip stays null).  To give it the views: add app/fpview.cpp to its job
+   list beside gfx_rt.cpp, call fpview::install() after gfxrt::install() in win_main.cpp, and
+   take over the --view / "app view" / V-key lines of app_main.cpp.
+ - rt/rt.h, rt/runtime.cpp: one new hook point, rt_dma_skip (null unless fpview installs it):
+   a DMA tag on channel 1 whose data is left out of the stream.  With the pointer null the walk
+   is the code it was.
+ - app/gfx_rt.h, gfx_rt.cpp: two small functions for fpview (projection_args,
+   set_depth_range) and one branch at the head of scaled() that is not taken unless a view
+   has set a depth range.  Widescreen itself is unchanged; the views go through it (a view's
+   projection is built by fn_0018619c and the three mat4_setProjection hooks like the game's).
+ - app/settings.h: lines "view = ..." and "view.<mode>.<name> = ..." are kept and handed to
+   fpview::setting; Settings::save takes the view lines as a second argument.
+ - app/app_main.cpp: --view, --view-set, the script / control-socket command "app view ...",
+   the V key (not in a test window, like F), fpview::install() after gfxrt::install().
+ - Default is "overhead": with it fpview's draw-pass hook returns before reading or writing
+   anything, and the four other hooks are the plain call of the original.
+snapshot: Tue Oct 13 13:15:39 CDT 2026
+made:     Tue Oct 13 13:28:38 CDT 2026
+
+--- a/hle.txt
++++ b/hle.txt
+@@ -24,3 +24,9 @@
+ 18fe18   # particle_drawHaze
+ 1c1108   # inventory_drawTask: a 3-D figure inside a 4:3 menu
+ 1d1bc0   # stats_task
++# ---- view modes (app/fpview.cpp; docs/issues/native-first-person.md).  Without that file the weak pass-through runs: the game as it is ----
++19e798   # tasks_call (excludeMask, includeMask): (0, 1) is the draw pass of a displayed frame; the selected view is in place for its length only
++18a520   # camera_updateFocus: g_cameraFocus is read by the simulation; inside the draw pass it is made from the game's own camera
++17d830   # worldtex_stream: the texture cells kept loaded follow the view that is drawn
++1a46c0   # Player_draw: the local player's model is not shown in first person (it is still drawn: its packets are left out of the stream)
++205880   # Camera_followZoomInput: can be held off in a view that uses the camera stick's y for looking up and down (off by default)
+--- a/rt/rt.h
++++ b/rt/rt.h
+@@ -62,6 +62,10 @@
+ // front of them (render/vif1.cpp reads the ones with 0xA5..0xA7 in their NUM field).
+ extern void (*rt_frame_hook)(Ctx* c, int phase);
+ extern void (*rt_dma_tag)(u32 tag_address, std::vector<u32>& stream);
++// rt_dma_skip (app/fpview.cpp; null: nothing is skipped): asked for every tag of a source chain
++// on channel 1; true = the tag is followed but its data (and, when the tag is a call, everything
++// up to the matching return) is not put into the stream.  A model that is drawn but not shown.
++extern bool (*rt_dma_skip)(u32 tag_address);
+ 
+ // ---- iop.cpp ----------------------------------------------------------------------------
+ struct IopOptions {
+--- a/rt/runtime.cpp
++++ b/rt/runtime.cpp
+@@ -1135,6 +1135,11 @@
+             chcr = (chcr & 0xFFFF) | ((u32)t & 0xFFFF0000u);
+             bool end = false;
+             if (ch == 1 && rt_dma_tag) rt_dma_tag(tadr, stream);
++            // rt_dma_skip: this tag's data stays out of the stream; a call that is skipped takes
++            // its whole subroutine with it (the level of the return stack it was made at is kept)
++            static int skip_above = -1;
++            bool skip = ch == 1 && rt_dma_skip && (skip_above >= 0 || rt_dma_skip(tadr));
++            if (skip && id == 5 && skip_above < 0 && asp < 2) skip_above = (int)asp;
+             switch (id) {
+             case 0: madr = addr; tadr += 16; end = true; break;                 // refe
+             case 1: madr = tadr + 16; tadr = madr + n * 16; break;              // cnt
+@@ -1149,10 +1154,11 @@
+                 madr = tadr + 16;
+                 if (asp > 0) { asp--; tadr = g_hw[base + 0x40 + asp * 0x10]; }
+                 else end = true;
++                if (skip_above >= 0 && (int)asp <= skip_above) skip_above = -1;
+                 break;
+             case 7: madr = tadr + 16; end = true; break;                        // end
+             }
+-            if (ch <= 2) {
++            if (ch <= 2 && !skip) {
+                 if (tte && ch != 2) { u32 two[2]; memcpy(two, tag + 8, 8); stream.push_back(two[0]); stream.push_back(two[1]); }
+                 append(madr, n);
+             }
+@@ -1590,6 +1596,7 @@
+ 
+ void (*rt_frame_hook)(Ctx* c, int phase);
+ void (*rt_dma_tag)(u32 tag_address, std::vector<u32>& stream);
++bool (*rt_dma_skip)(u32 tag_address);
+ void fn_0019d8b0(Ctx* c) {                              // gfx_beginFrame: once per displayed frame
+     if (g_log && !g_log_fields) log_row(g_frame);
+     if (g_frame == g_dump_frame) {
+--- a/app/gfx_rt.h
++++ b/app/gfx_rt.h
+@@ -27,5 +27,11 @@
+ void figures(uint64_t& wide_frames, uint64_t& clamp_calls, uint64_t& marks);
+ // The game's display list: the units (of 8 bytes) the fullest frame took, and what a frame has.
+ void list_figures(uint32_t& most, uint32_t& room);
++// For app/fpview.cpp (the view modes).  The four arguments of the game's last call of
++// camera_setProjection (fov, aspect, fov2, v) as raw floats; and a near and far distance
++// that mat4_setProjection x 3 are given in place of the game's 18 and 1800 while a view of
++// its own is in place (0, 0 = the game's).  Game thread only.
++void projection_args(uint32_t out[4]);
++void set_depth_range(float near_plane, float far_plane);
+ 
+ }  // namespace gfxrt
+--- a/app/gfx_rt.cpp
++++ b/app/gfx_rt.cpp
+@@ -67,11 +67,28 @@
+     g_menu3d = !is("wide-menu3d", "off");
+ }
+ 
++float g_near = 0, g_far = 0;             // fpview: the depth range of a view of its own (0 = the game's 18 and 1800)
++
+ inline float view_k() { return (g_menu_view && g_menu3d) ? 1.0f : g_k; }
+ 
+ // ---- the projection -----------------------------------------------------------------------
+ void scaled(Ctx* c, void (*original)(Ctx*)) {
+     float k = view_k();
++    if (g_near > 0 && !g_menu_view) {        // (sx, sy, scale, z near, z far, near, far): f17 and f18
++        u32 near_asked = c->f[17], far_asked = c->f[18];
++        c->f[17] = as_bits(g_near);
++        c->f[18] = as_bits(g_far);
++        if (k == 1.0f) original(c);
++        else {
++            u32 asked = c->f[12];
++            c->f[12] = as_bits(as_float(asked) * k);
++            original(c);
++            c->f[12] = asked;
++        }
++        c->f[17] = near_asked;
++        c->f[18] = far_asked;
++        return;
++    }
+     if (k == 1.0f) { original(c); return; }
+     u32 asked = c->f[12], wide = as_bits(as_float(asked) * k);
+     c->f[12] = wide;
+@@ -292,5 +309,7 @@
+     wide_frames = g_wide_frames; clamp_calls = g_clamp_calls; marks = g_marks;
+ }
+ void list_figures(uint32_t& most, uint32_t& room) { most = g_list_most; room = g_list_room; }
++void projection_args(uint32_t out[4]) { memcpy(out, g_projection_args, sizeof g_projection_args); }
++void set_depth_range(float near_plane, float far_plane) { g_near = near_plane; g_far = far_plane; }
+ 
+ }  // namespace gfxrt
+--- a/app/settings.h
++++ b/app/settings.h
+@@ -14,6 +14,9 @@
+ //   art_pack     =            a folder of replacement pictures (tools/play-net/README.md,
+ //                             "Upscaled art"); empty = the game's own art
+ //   art_memory   = 3072       megabytes of video memory the pack may take
++//   view         = overhead   the camera: overhead (the game's own), action, chase, shoulder,
++//                             first; and view.<mode>.<name> = value for each view's own
++//                             numbers (fpview.h)
+ //   frame_cap    = 60         pictures a second: 60, 30 (every other picture is shown), or
+ //                             0 = no cap (the game then runs as fast as the machine: a
+ //                             benchmark, not for playing).  The game itself always counts 60
+@@ -23,6 +26,8 @@
+ #include <cstdlib>
+ #include <cstring>
+ #include <string>
++#include <utility>
++#include <vector>
+ 
+ namespace app {
+ 
+@@ -37,6 +42,7 @@
+     std::string art_pack;
+     int art_memory = 3072;
+     int frame_cap = 60;
++    std::vector<std::pair<std::string, std::string>> view;     // "view" and "view.<mode>.<name>" lines, for fpview::setting
+ 
+     static double parse_aspect(const std::string& text) {
+         if (text == "auto" || text == "window" || text.empty()) return 0;
+@@ -65,6 +71,7 @@
+         else if (key == "art_pack") art_pack = value;
+         else if (key == "art_memory") { art_memory = atoi(value.c_str()); if (art_memory < 64) art_memory = 64; }
+         else if (key == "frame_cap") frame_cap = atoi(value.c_str());
++        else if (key == "view" || key.compare(0, 5, "view.") == 0) view.push_back({key, value});
+         else return false;
+         return true;
+     }
+@@ -95,7 +102,8 @@
+     }
+ 
+     // Writes the file with what is set now and a line of explanation for each key.
+-    bool save(const std::string& path) const {
++    // `views`: the view settings as fpview::settings_text() gives them
++    bool save(const std::string& path, const char* views = nullptr) const {
+         FILE* f = fopen(path.c_str(), "w");
+         if (!f) return false;
+         auto yes = [](bool b) { return b ? "yes" : "no"; };
+@@ -115,6 +123,7 @@
+         fprintf(f, "art_pack = %s            # a folder of replacement pictures; empty: the game's own art\n", art_pack.c_str());
+         fprintf(f, "art_memory = %d         # megabytes of video memory the art pack may take\n", art_memory);
+         fprintf(f, "frame_cap = %d           # pictures a second: 60, 30, or 0 for no cap (the game then runs fast: for measuring only)\n", frame_cap);
++        if (views) fprintf(f, "\n# the camera (docs/issues/native-first-person.md): distances in the game's units (a character is about 60 high), angles in degrees\n%s", views);
+         fclose(f);
+         return true;
+     }
+--- a/app/app_main.cpp
++++ b/app/app_main.cpp
+@@ -25,6 +25,9 @@
+ //   --art-pack DIR      replacement pictures named as the emulator build names textures
+ //                       (tools/play-net/README.md, "Upscaled art");  --art-memory MB (3072)
+ //   --frame-cap N       60 (default), 30, or 0 = --unpaced
++//   --view V            the camera: overhead (the game's own, the default), action, chase,
++//                       shoulder, first (fpview.h; docs/issues/native-first-person.md).  V switches
++//                       while the game runs; --view-set NAME=VALUE is a "view.<mode>.<name>" line
+ //   --present metal|opengl   how a picture gets into the window (present_host.h): through a Metal
+ //                       layer, drawn and handed over by a thread of its own that nothing AppKit
+ //                       does to the window can hold up (the default), or by an OpenGL swap on the
+@@ -50,6 +53,9 @@
+ //                                                  what each part of the path from the game to the swap took
+ //                         app window W H           give the window this size (the view follows with --aspect auto)
+ //                         app fullscreen           what the F key does
++//                         app view NAME|next       the camera: overhead action chase shoulder first
++//                         app view set KEY VALUE   a view setting, e.g. app view set view.first.fov 75
++//                         app view info            print the view of the last frame
+ //                         app art off|on           draw with the game's own textures / with the art pack and mip maps again
+ //                         app latency BUTTONS [pictures [before]]   a press given to the controller read after
+ //                                                  `before` (12) more pictures; app latency report, `pictures`
+@@ -80,6 +86,7 @@
+ #include "app_rt.h"
+ #include "backend_gl.h"
+ #include "control.h"
++#include "fpview.h"
+ #include "gfx_rt.h"
+ #include "help_host.h"
+ #include "pad_host.h"
+@@ -375,7 +382,7 @@
+         {"w", Qt::Key_W}, {"a", Qt::Key_A}, {"s", Qt::Key_S}, {"d", Qt::Key_D}, {"up", Qt::Key_Up}, {"down", Qt::Key_Down},
+         {"left", Qt::Key_Left}, {"right", Qt::Key_Right}, {"i", Qt::Key_I}, {"j", Qt::Key_J}, {"k", Qt::Key_K}, {"l", Qt::Key_L},
+         {"q", Qt::Key_Q}, {"e", Qt::Key_E}, {"1", Qt::Key_1}, {"3", Qt::Key_3}, {"x", Qt::Key_X}, {"c", Qt::Key_C},
+-        {"return", Qt::Key_Return}, {"backspace", Qt::Key_Backspace}, {"escape", Qt::Key_Escape}, {"f", Qt::Key_F}};
++        {"return", Qt::Key_Return}, {"backspace", Qt::Key_Backspace}, {"escape", Qt::Key_Escape}, {"f", Qt::Key_F}, {"v", Qt::Key_V}};
+     for (auto& n : names) if (name == n.name) return n.key;
+     return 0;
+ }
+@@ -475,6 +482,7 @@
+         if (uint32_t bit = key_bit(e->key())) { g_keys |= bit; return; }
+         if (test) return;
+         if (e->key() == Qt::Key_F1 || e->key() == Qt::Key_Help) { hosthelp::toggle(); return; }
++        if (e->key() == Qt::Key_V) { fpview::cycle(e->modifiers() & Qt::ShiftModifier ? -1 : 1); log_line(std::string("view: ") + fpview::mode_name(fpview::mode())); return; }
+         if (e->key() == Qt::Key_F11 || (e->key() == Qt::Key_F && !(e->modifiers() & ~Qt::KeyboardModifiers(Qt::ControlModifier | Qt::MetaModifier)))) toggle_fullscreen();
+         else if (e->key() == Qt::Key_Escape && visibility() == QWindow::FullScreen) showNormal();
+     }
+@@ -1315,6 +1323,19 @@
+         int ww = atoi(w[1].c_str()), wh = atoi(w[2].c_str());
+         if (g_screen->window && ww >= 160 && wh >= 120)
+             QCoreApplication::postEvent(g_screen, new CallQEvent([ww, wh] { g_screen->window->resize(ww, wh); }));
++    } else if (w[0] == "view" && w.size() >= 2) {
++        if (w[1] == "next") fpview::cycle(1);
++        else if (w[1] == "set" && w.size() >= 4) { if (!fpview::setting(w[2].c_str(), w[3].c_str())) log_line("app view set: not a view setting: " + w[2]); }
++        else if (w[1] == "info") {
++            const fpview::View& v = fpview::view();
++            printf("[frame %llu] view: selected %s, shown %s, blend %.2f%s%s; tick %u; eye %.1f %.1f %.1f forward %.3f %.3f %.3f fov %.1f near %.1f; "
++                   "game eye %.1f %.1f %.1f yaw %.1f zoom %d; player %.1f %.1f %.1f facing %.1f pitch %.1f\n",
++                   (unsigned long long)frame, fpview::mode_name(v.mode), fpview::mode_name(v.shown), v.blend, v.fallback ? "; the game's camera: " : "",
++                   v.fallback_why, v.tick, v.eye.x, v.eye.y, v.eye.z, v.forward.x, v.forward.y, v.forward.z, v.fov, v.near_plane, v.game_eye.x, v.game_eye.y,
++                   v.game_eye.z, v.game_yaw, v.game_zoom, v.player_pos.x, v.player_pos.y, v.player_pos.z, v.facing, v.look_pitch);
++            fflush(stdout);
++        } else if (fpview::mode_by_name(w[1].c_str()) >= 0) fpview::set_mode(fpview::mode_by_name(w[1].c_str()));
++        else log_line("app view: overhead, action, chase, shoulder, first, next, info, or set KEY VALUE");
+     } else if (w[0] == "fullscreen") {
+         // app fullscreen: what F does (a test window stays as it is: it must not cover the screen)
+         // (RTA_TEST_FULLSCREEN_OK=1: a test that has to see full screen work asks for it, for seconds)
+@@ -1439,6 +1460,8 @@
+         else if (a == "--art-pack") overrides.push_back({"art_pack", next()});
+         else if (a == "--art-memory") overrides.push_back({"art_memory", next()});
+         else if (a == "--frame-cap") overrides.push_back({"frame_cap", next()});
++        else if (a == "--view") overrides.push_back({"view", next()});
++        else if (a == "--view-set") { std::string kv = next(); size_t eq = kv.find('='); if (eq != std::string::npos) overrides.push_back({kv.substr(0, eq), kv.substr(eq + 1)}); }
+         else if (a == "--plain") plain = true;
+         else if (a == "--settings") opt.settings_file = next();
+         else if (a == "--no-settings") no_settings = true;
+@@ -1464,12 +1487,13 @@
+             printf("picture (each also a line of <data>/settings.txt, see tools/recomp/app/settings.h):\n"
+                    "        [--aspect auto|4:3|16:9|16:10|21:9|W:H] [--resolution window|WxH|Nx] [--antialiasing off|2|4|8] [--anisotropy 1..16]\n"
+                    "        [--mipmaps yes|no] [--art-pack DIR] [--art-memory MB] [--frame-cap 60|30|0] [--plain] [--settings FILE] [--no-settings]\n"
++                   "        [--view overhead|action|chase|shoulder|first] [--view-set view.<mode>.<name>=VALUE]   (V switches while the game runs)\n"
+                    "        [--pacing ahead|queued] [--present metal|opengl]   (opengl: the way into the window used until 2026-10-13 - if the picture looks wrong)\n");
+             printf("rta_app --disc IMAGE [--data DIR] [--window WxH] [--fullscreen] [--scale N | --size WxH] [--volume V | --mute | --no-sound]\n"
+                    "        [--emulator-timing] [--script FILE] [--do COMMAND] [--test TEXT] [--offscreen] [--unpaced] [--png PREFIX --at n,..]\n"
+                    "        [--stop-after N] [-- runtime arguments]\n"
+                    "keys: W A S D left stick; arrows direction pad; I J K L triangle square cross circle; Q E L1 R1; 1 3 L2 R2; X C L3 R3;\n"
+-                   "      Return Start; Backspace Select; F or F11 full screen; Escape leaves full screen; F1 shows this list beside the window\n"
++                   "      Return Start; Backspace Select; F or F11 full screen; Escape leaves full screen; V the next camera view; F1 shows this list beside the window\n"
+                    "(the head of tools/recomp/app/app_main.cpp describes every option)\n");
+             return 0;
+         }
+@@ -1488,6 +1512,9 @@
+         opt.size_w = opt.set.size_w; opt.size_h = opt.set.size_h; opt.scale = opt.set.scale;
+         opt.aspect = opt.set.aspect;
+         opt.unpaced = opt.set.frame_cap <= 0;
++        for (auto& kv : opt.set.view)
++            if (!fpview::setting(kv.first.c_str(), kv.second.c_str())) log_line("settings: not a view setting: " + kv.first + " = " + kv.second);
++        opt.set.view.clear();
+     };
+     if (!settings_later) apply_settings(opt.settings_file);
+ 
+@@ -1512,7 +1539,7 @@
+         std::string file = opt.data + "/settings.txt";
+         bool there = file_exists(file);
+         apply_settings(there ? file : std::string());
+-        if (!there && opt.test.empty() && !opt.offscreen) { app::Settings().save(file); first_start = true; }
++        if (!there && opt.test.empty() && !opt.offscreen) { app::Settings().save(file, fpview::settings_text()); first_start = true; }
+     }
+     if (mode == "boot") {
+         if (opt.disc.empty() || !file_exists(opt.disc)) {
+@@ -1572,6 +1599,7 @@
+     renderer.gs.layout.enabled = opt.layout;
+     renderer.gs.name_textures = !opt.set.art_pack.empty();
+     gfxrt::install();
++    fpview::install();
+     if (getenv("RTA_GS_LOG")) renderer.gs.log_display = true;
+     if (const char* keep = getenv("RTA_TEX_KEEP")) renderer.gs.texture_keep_frames = (uint32_t)atoi(keep);    // frames an unused texture is kept; 0 = for ever
+     g_sink = &sink;
+--- a/app/help_mac.mm
++++ b/app/help_mac.mm
+@@ -17,6 +17,7 @@
+            "  Start (pause menu)    Return     Select      Backspace\n"
+            "\n"
+            "  Full screen           F or F11 (Escape leaves it)\n"
++           "  Camera view           V (overhead, action, chase, shoulder, first person)\n"
+            "  This list             F1\n"
+            "\n"
+            "A game controller that macOS knows (PlayStation, Xbox and others, by cable or\n"
+--- a/app/build.py
++++ b/app/build.py
+@@ -141,6 +141,8 @@
+     jobs.append((os.path.join(sound, 'sound_rta.cpp'), rt_flags + ['-I', sound], 'rt_'))
+     jobs.append((os.path.join(HERE, 'app_rt.cpp'), rt_flags + ['-I', HERE], 'a_'))
+     jobs.append((os.path.join(HERE, 'gfx_rt.cpp'), rt_flags + ['-I', HERE], 'a_'))
++    # the view modes (fpview.h; docs/issues/native-first-person.md)
++    jobs.append((os.path.join(HERE, 'fpview.cpp'), rt_flags + ['-I', HERE], 'a_'))
+     if not args.original:
+         # the films: the library entry points of hle-app.txt, which only this translation leaves open
+         jobs.append((os.path.join(HERE, 'film.cpp'), rt_flags + ['-I', HERE], 'a_'))

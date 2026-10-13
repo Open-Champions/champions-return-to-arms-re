@@ -143,7 +143,6 @@ class SceneTap {
     float camera_world[16];                 // g_viewProjWorld as it came
     std::vector<uint32_t> note_words;
     uint32_t note_expect = 0, note_half = 0, note_low = 0;
-    size_t before_vertices = 0;
     std::unordered_map<uint64_t, uint32_t> seen;    // identities of this frame, for the occurrence count
     static void kick(void* user, uint32_t qword);
     void kicked(uint32_t qword, size_t before, size_t after);

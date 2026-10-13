@@ -9,6 +9,7 @@ enum : uint32_t {
     V_WORLD = 64,       // scene mode: the vertex is a world position under Godot's camera
     V_LIT = 128,        // ... and the surface takes Godot's lights and shadows on top of the game's own (baked) light
     V_CASTER = 256,     // ... a twin that is only drawn into Godot's shadow maps
+    V_NORMALS = 512,    // ... the mesh carries the game's own normals (world space, in CUSTOM1)
 };
 
 }  // namespace rta_variant

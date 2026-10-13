@@ -119,6 +119,7 @@ RID RtaDrawer::shader_for(uint32_t variant) {
     if (variant & V_WORLD) code += "#define GS_WORLD\n";
     if (variant & V_LIT) code += "#define GS_LIT\n";
     if (variant & V_CASTER) code += "#define GS_CASTER\n";
+    if (variant & V_NORMALS) code += "#define GS_NORMALS\n";
     if (stored_colours) code += "#define GS_STORED_COLOURS\n";
     code += shader_code;
     Ref<Shader> shader;
@@ -248,12 +249,15 @@ RID RtaDrawer::place(Pass& pass, RID material, float order) {
     return instance;
 }
 
-void RtaDrawer::add_surface_bytes(RID mesh, int primitive, const PackedByteArray& positions, const PackedByteArray& attributes, int count) {
+void RtaDrawer::add_surface_bytes(RID mesh, int primitive, const PackedByteArray& positions, const PackedByteArray& attributes, int count, bool normals) {
     Dictionary surface;
     surface["primitive"] = primitive;
     surface["format"] = (int64_t)(RenderingServer::ARRAY_FORMAT_VERTEX | RenderingServer::ARRAY_FORMAT_COLOR | RenderingServer::ARRAY_FORMAT_CUSTOM0 |
                                   ((int64_t)RenderingServer::ARRAY_CUSTOM_RGBA_FLOAT << RenderingServer::ARRAY_FORMAT_CUSTOM0_SHIFT) |
                                   RenderingServer::ARRAY_FLAG_FORMAT_CURRENT_VERSION);
+    // scene mode: the game's normal, world space, as three more floats per vertex (after the colour and the texture coordinates)
+    if (normals) surface["format"] = (int64_t)surface["format"] | RenderingServer::ARRAY_FORMAT_CUSTOM1 |
+                                     ((int64_t)RenderingServer::ARRAY_CUSTOM_RGB_FLOAT << RenderingServer::ARRAY_FORMAT_CUSTOM1_SHIFT);
     surface["vertex_data"] = positions;
     surface["attribute_data"] = attributes;
     surface["vertex_count"] = count;

@@ -18,7 +18,7 @@
 #include "gl_offscreen.h"
 #include "pipeline.h"
 #include "png_write.h"
-#include "scene_tap.h"
+#include "scene_export.h"
 
 #include <atomic>
 #include <cmath>
@@ -96,6 +96,8 @@ struct GateSink : app::Sink {
     std::vector<std::string> shots_asked;               // by the script, at this blank
     std::vector<std::string> commands_asked;            // "app ..." lines that are the host's
     void vblank(unsigned field, uint64_t number) override;
+    void vif1(const uint32_t* words, size_t count) override;
+    std::vector<uint32_t> scene_codes;
     bool take(uint64_t number, Note& out) {
         std::lock_guard<std::mutex> hold(notes_lock);
         bool found = false;
@@ -185,6 +187,14 @@ void GateSink::vblank(unsigned field, uint64_t number) {
     if (g_m->scene3d) scene::at_blank(rta::memory(), number);
     app::Sink::vblank(field, number);                   // hands the batch to the decoder
     gate.wait();                                        // the host lets the next frame go; the controller is read after this
+}
+
+void GateSink::vif1(const uint32_t* words, size_t count) {
+    if (g_m->scene3d) {                                 // the camera these packets were made with goes ahead of them
+        scene::before_transfer(rta::memory(), scene_codes);
+        if (!scene_codes.empty()) app::Sink::vif1(scene_codes.data(), scene_codes.size());
+    }
+    app::Sink::vif1(words, count);
 }
 
 void app_command(const std::string& text, uint64_t frame) {
@@ -364,6 +374,7 @@ void fill_view(Machine& m) {
         memcpy(d.copy_src, c.copy_src, sizeof d.copy_src);
         memcpy(d.copy_dst, c.copy_dst, sizeof d.copy_dst);
         d.scene_first = -1;
+        d.scene_kind = 0;
     }
     m.textures.resize(l.textures.size());
     for (size_t k = 0; k < l.textures.size(); k++) m.textures[k] = {l.textures[k].id, l.textures[k].width, l.textures[k].height, l.textures[k].rgba.data()};

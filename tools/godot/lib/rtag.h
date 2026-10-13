@@ -24,7 +24,7 @@
 extern "C" {
 #endif
 
-#define RTAG_API_VERSION 3
+#define RTAG_API_VERSION 4
 
 /* ---- start ------------------------------------------------------------------------- */
 enum { RTAG_SOUND_NONE = 0, RTAG_SOUND_PULL = 1, RTAG_SOUND_MACHINE = 2 };
@@ -114,7 +114,11 @@ typedef struct rtag_draw {
     int32_t copy_src[4], copy_dst[4];
     /* with scene3d: the first vertex of this draw in the scene's vertex list, or -1 (see rtag_scene) */
     int32_t scene_first;
+    /* ... and where its world positions are from: RTAG_SCENE_DEPTH put back by the 16-bit depth (no normals),
+     * RTAG_SCENE_EXACT from the vertex programs' inputs (normals in rtag_scene::normals) */
+    int32_t scene_kind;
 } rtag_draw;
+enum { RTAG_SCENE_NONE = 0, RTAG_SCENE_DEPTH = 1, RTAG_SCENE_EXACT = 2 };
 
 typedef struct rtag_texture {
     uint32_t id;
@@ -138,9 +142,25 @@ typedef struct rtag_scene_vertex {
     float w;                    /* its distance along the game camera's view axis */
 } rtag_scene_vertex;
 
+/* One mesh packet as a vertex program drew it (core/render/scene_tap.h): `count` vertices of the list from
+ * `first`, three per triangle.  `mesh` is a figure over the packet's own data - the same packet of the same
+ * file has the same figure in every frame; `occurrence` counts earlier packets with that figure in the frame;
+ * `object` changes with every set-up, so packets with one number are one draw of one object. */
+typedef struct rtag_scene_piece {
+    uint64_t mesh;
+    uint32_t occurrence, object;
+    uint32_t first, count;
+    uint8_t kind;               /* 1 level chunk, 2 model */
+    uint8_t flags;              /* 1 two-pass program, 2 its first (environment-map) pass, 4 skinned, 8 mirrored, 16 clip flag */
+    uint8_t entry, pad;
+} rtag_scene_piece;
+
 typedef struct rtag_scene {
     const rtag_scene_vertex* vertices;
     uint32_t vertex_count;
+    const float* normals;       /* three per vertex, world space, unit length; zero where there is none */
+    const rtag_scene_piece* pieces;
+    uint32_t piece_count;
     uint32_t valid;             /* 1: the camera below was found this frame */
     float world_to_view[16];    /* row-major 4 x 4: the game's camera (world to view space) */
     float view_to_clip[16];     /* the game's projection (view to its clip space) */

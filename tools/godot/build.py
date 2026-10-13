@@ -111,7 +111,7 @@ def snapshot(args):
         path = os.path.join(RECOMP_OUT, 'gen-vu', name)
         if os.path.exists(path):
             shutil.copy2(path, os.path.join(vu, name))
-    if os.path.exists(PATCH) and os.path.getsize(PATCH):
+    if os.path.exists(PATCH) and os.path.getsize(PATCH):    # (the new files of tools/godot/core are copied in by `lib`)
         result = subprocess.run(['patch', '-p1', '-d', SNAP, '-i', PATCH, '--no-backup-if-mismatch'], capture_output=True, text=True)
         print(result.stdout.strip())
         if result.returncode != 0:
@@ -124,6 +124,7 @@ def snapshot(args):
 
 def make_patch(args):
     result = subprocess.run(['diff', '-ru', 'recomp.orig', 'recomp'], cwd=SRC, capture_output=True, text=True)
+    result.stdout = ''.join(line + '\n' for line in result.stdout.splitlines() if not line.startswith('Only in '))    # the new files are in core/
     text = re.sub(r'^(---|\+\+\+) (\S+)\t.*$', r'\1 \2', result.stdout, flags=re.M)    # no time stamps
     open(PATCH, 'w').write(text)
     print('wrote %s (%d lines)' % (PATCH, text.count('\n')))
@@ -189,13 +190,20 @@ def build_lib(args):
         print('no compiled game in %s (see `snapshot`)' % game_dir)
         return 1
     rt, render, sound, app = (os.path.join(SNAP, p) for p in PARTS)
+    # the files proposed for tools/recomp (tools/godot/core/<part>/...): into the snapshot, where they will live
+    core = os.path.join(HERE, 'core')
+    for folder, _, files in os.walk(core):
+        for name in files:
+            a, b = os.path.join(folder, name), os.path.join(SNAP, os.path.relpath(folder, core), name)
+            if not os.path.exists(b) or not filecmp.cmp(a, b, shallow=False):
+                shutil.copy2(a, b)
     standin = os.path.join(LIB, 'gl_standin')
     opt = args.opt
     render_flags = ['-std=c++17', opt, '-fno-strict-aliasing', '-ffp-contract=off', '-frounding-math', '-Wall', '-Wno-unused-function', '-I', render]
     rt_flags = ['-std=c++17', opt, '-fno-strict-aliasing', '-fwrapv', '-w', '-ffp-contract=off', '-frounding-math', '-I', rt, '-I', game_dir]
     lib_flags = ['-std=c++17', opt, '-Wall', '-Wno-unused-function', '-fno-strict-aliasing', '-ffp-contract=off', '-frounding-math',
                  '-I', LIB, '-I', app, '-I', render, '-I', rt] + (['-DRTAG_ORIGINAL'] if args.original else [])
-    jobs = [(os.path.join(render, n), render_flags, 'r_') for n in RENDER_CORE]
+    jobs = [(os.path.join(render, n), render_flags, 'r_') for n in RENDER_CORE + ['scene_tap.cpp']]
     vu = os.path.join(SRC, 'gen-vu')
     translated, fast = os.path.join(vu, 'vu1_translated.cpp'), os.path.join(vu, 'vu1_fast.cpp')
     jobs.append((translated if os.path.exists(translated) else os.path.join(render, 'vu1_none.cpp'), render_flags, 'r_'))
@@ -210,7 +218,7 @@ def build_lib(args):
     if not args.original:
         jobs.append((os.path.join(app, 'film.cpp'), rt_flags + ['-I', app], 'a_'))     # the films: only this translation leaves their entries open
     jobs.append((os.path.join(LIB, 'rtag.cpp'), lib_flags, 'g_'))
-    jobs.append((os.path.join(LIB, 'scene_tap.cpp'), lib_flags + ['-I', game_dir, '-w'], 'g_'))
+    jobs.append((os.path.join(LIB, 'scene_export.cpp'), lib_flags, 'g_'))
     jobs.append((os.path.join(LIB, 'gl_offscreen_mac.cpp'), lib_flags, 'g_'))
     objects = compile_all(jobs, os.path.join(OUT, 'obj-' + game), [LIB, app, render, rt, sound, game_dir, vu], args.jobs)
     if objects is None:

@@ -53,7 +53,7 @@ struct RtaDrawer::Scene {
     size_t casters_used = 0;
     RID caster_scenario;
     // figures
-    uint64_t world_draws = 0, world_vertices = 0, flat_draws = 0, frames = 0, frames_without_camera = 0;
+    uint64_t world_draws = 0, world_vertices = 0, flat_draws = 0, frames = 0, frames_without_camera = 0, exact_draws = 0, blob_shadows_dropped = 0;
 };
 
 void RtaDrawer::set_scene_mode(bool on) {
@@ -91,8 +91,10 @@ Dictionary RtaDrawer::get_scene_info() const {
     info["fov_y"] = scene->fov_y;
     info["focus"] = scene->game_camera.origin - scene->game_camera.basis.get_column(2) * (real_t)scene->focus;
     double n = scene->frames ? (double)scene->frames : 1;
-    info["figures"] = vformat("scene: %d lists (%d without a camera); per list %.1f draws and %.0f vertices in the world, %.1f draws of the 2-D layer", (int64_t)scene->frames,
-                              (int64_t)scene->frames_without_camera, scene->world_draws / n, scene->world_vertices / n, scene->flat_draws / n);
+    info["figures"] = vformat("scene: %d lists (%d without a camera); per list %.1f draws and %.0f vertices in the world (%.1f of the draws from the vertex programs' inputs, "
+                              "with normals), %.1f draws of the 2-D layer, %.2f of the game's own ground shadows left out", (int64_t)scene->frames,
+                              (int64_t)scene->frames_without_camera, scene->world_draws / n, scene->world_vertices / n, scene->exact_draws / n, scene->flat_draws / n,
+                              scene->blob_shadows_dropped / n);
     return info;
 }
 
@@ -141,22 +143,30 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
         return false;
     }
     RenderingServer* s = RenderingServer::get_singleton();
+    // the game's own ground shadows (a silhouette drawn into a small surface, then subtracted from the ground through a
+    // quad the CPU projects) go when Godot throws real ones
+    if (sc.shadows && d.tex_is_target && d.scene_kind == RTAG_SCENE_DEPTH && d.blend) { sc.blob_shadows_dropped++; return true; }
+    const bool normals = d.scene_kind == RTAG_SCENE_EXACT && sc.tap->normals != nullptr;
+    const int stride = normals ? 32 : 20;
     PackedByteArray positions, attributes;
     positions.resize((int64_t)d.count * 12);
-    attributes.resize((int64_t)d.count * 20);
+    attributes.resize((int64_t)d.count * stride);
     uint8_t* p = positions.ptrw();
     uint8_t* a = attributes.ptrw();
     const rtag_vertex* v = f.vertices + d.first;
     const rtag_scene_vertex* w = sc.tap->vertices + d.scene_first;
-    for (uint32_t k = 0; k < d.count; k++, v++, w++, p += 12, a += 20) {
+    const float* n = normals ? sc.tap->normals + (size_t)d.scene_first * 3 : nullptr;
+    for (uint32_t k = 0; k < d.count; k++, v++, w++, p += 12, a += stride) {
         memcpy(p, &w->x, 12);
         memcpy(a, &v->r, 4);
         float st[4] = {v->s, v->t, v->q, (float)v->fog / 255.0f};
         memcpy(a + 4, st, 16);
+        if (normals) memcpy(a + 20, n + (size_t)k * 3, 12);
     }
     RID mesh = mesh_for(pass);
-    add_surface_bytes(mesh, RenderingServer::PRIMITIVE_TRIANGLES, positions, attributes, (int)d.count);
-    uint32_t extra = V_WORLD | (sc.lit ? V_LIT : 0);
+    add_surface_bytes(mesh, RenderingServer::PRIMITIVE_TRIANGLES, positions, attributes, (int)d.count, normals);
+    uint32_t extra = V_WORLD | (sc.lit ? V_LIT : 0) | (normals ? V_NORMALS : 0);
+    if (normals) sc.exact_draws++;
     place(pass, material_for(d, target, false, texture, false, extra), order);
     // what is opaque also throws a shadow: a twin of the same mesh that Godot only draws into its shadow maps
     if (sc.shadows && d.depth_write && (!d.blend || d.alpha_test)) {
@@ -176,7 +186,7 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
         }
         sc.casters_used++;
         s->instance_set_base(caster, mesh);
-        s->instance_geometry_set_material_override(caster, material_for(d, target, false, texture, false, V_WORLD | V_CASTER));
+        s->instance_geometry_set_material_override(caster, material_for(d, target, false, texture, false, V_WORLD | V_CASTER | (normals ? V_NORMALS : 0)));
     }
     sc.world_draws++;
     sc.world_vertices += d.count;
