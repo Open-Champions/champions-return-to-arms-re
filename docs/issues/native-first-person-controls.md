@@ -11,26 +11,23 @@ under `local/recomp-fp-controls/`.
 
 ## STATE (rewritten at every step; read this first after a stop)
 
-**2026-10-13 13:45.**
+**2026-10-13 14:30 - delivered.**
 
-- Part 1 is written; the movement facts are **Ran** in the unmodified native build offline,
-  the targeting rules are **Read** from the code.
-- Built and **Ran** offline in the first level (`work/test1.py`): mouse and right-stick
-  look, movement relative to the look, the character turned to the look while it stands
-  and before a strike, in first person and over the shoulder; chase leaves the facing to
-  the running direction. Not yet run: a fight (targets, bow, block), a net game, the
-  two-copy lockstep check, anything on Windows (compile only), the pointer capture with a
-  real mouse (must not be run on a machine somebody is using: the tests move the look
-  through the control socket).
-- Sources: `local/recomp-fp-controls/src` (= the shared tree of 13:30 with
-  `app/fpview.patch` applied, in `base`, plus this work); the edits to files other work
-  owns are made by `work/glue.py`; the program is
-  `local/recomp-fp-controls/root/local/recomp-out/bin/rta_app_fpc`.
-- New files (to go to `tools/recomp/app/`): `fpcontrols.h`, `fpcontrols.cpp`,
-  `look_host.h`, `look_mac.mm`. The patch `fpcontrols.patch` is not written yet.
-
-Next: the fight in a monster level; the two-copy game, one first person and one overhead;
-Windows; the strafing proposal (section 2.6).
+- Part 1 (how the original moves and aims): written; the movement facts **Ran** in the
+  unmodified native build, the targeting rules **Read**.
+- Part 2: built and **Ran** - look, move and "face where you look" offline and in two-copy
+  net games (first person against overhead: in step in every run, 1,819 to 5,433 ticks,
+  with a fight); the fight in first person with the marks, the turn before a strike, the
+  look coming round to the simulation's target; the data for a HUD; the proposal for
+  strafing with its own two-copy run. **Built, not run**: the pointer capture with a real
+  mouse, everything on Windows, the settings file round trip. **Not done**: weapon and
+  hands in view, bows and spells run, nobody has played it (2.9).
+- Deliverables: `tools/recomp/app/fpcontrols.h`, `fpcontrols.cpp`, `look_host.h`,
+  `look_mac.mm` (new files), `fpcontrols.patch` (against the tree with the camera work's
+  `fpview.patch` of 14:23 applied; it reproduces the sources that were built, checked by
+  `work/mkpatch.sh`), `fp-proposed.pnach` (a proposal, not in the fix set).
+- Sources and builds: `local/recomp-fp-controls/` (2.11). Nothing of this work is left
+  running (the lobby instance of the pair runs was stopped at the end).
 
 ---
 
@@ -245,6 +242,23 @@ degree round the true one, even while the camera stands still (the coder keeps a
 delta until its prediction is 200 units off). It is the same on every machine. The
 picture uses the exact word; the character is turned to the delivered one.
 
+## 2.1a The model (one paragraph)
+
+**The player's look leads, and the look is the game camera's yaw word.** Mouse and right
+stick turn that word; the picture looks along it; forward on the stick walks along it;
+the character is turned to it by the turning push (standing, before a strike, and through
+the turn-only states). The one time the simulation turns the character by itself - it
+picks a target for a swing or a shot inside 60 degrees of the facing and turns to it -
+the look **comes round to that target** (`controls.swing_turn`, below), again by turning
+the yaw word, so picture, steering and character stay one direction. The camera work's
+`view.<mode>.follow` (the picture eased from the camera's heading to the character's
+facing) therefore stays **0 in first person and shoulder**: with it on the picture would
+leave the yaw word, forward would no longer be into the picture, and the 2.48-degree
+centring would be wrong. In chase, where the character faces where it runs and the camera
+orbits freely, `follow` may ease the picture behind the character if that is liked - but
+a chase camera that follows *and* steers needs the yaw word to follow as well, which
+would be a setting here (ease the yaw word toward the facing while running); not built.
+
 ## 2.1 Look and move (Ran)
 
 - **Look.** Mouse (0.12 degrees a count) and right stick x (220 degrees a second at full
@@ -291,9 +305,11 @@ own pointer and keyboard are never touched):
 **Ran in a net game** (`work/pair.py --look-only`, the first-person copy only turns where
 it stands, 1,500 blanks): the character is within a degree of the look 0 to 4 ticks after
 a turn ends. It does **creep** there: a net game's speed scale is 0.75 and its stick codec
-cannot deliver the exact push (the nearest it reaches is 44/128, a step of 0.079 a tick),
-so turning on the spot moves the character about 4.7 units a second in the direction it
-faces - a circle of a few units when the look sweeps round. Figures in 2.7.
+cannot deliver the exact push (its steps are even and the nearest value it reaches is
+44/128, a step of 0.079 a tick; no pair of even stick values gives the turn without the
+step), so turning on the spot moves the character about 3.4 units for every second of
+turning, along the way it faces - a small circle when the look sweeps round (4.8 units
+from the start after 25 seconds of it). The proposal of 2.6 removes it. Figures in 2.7.
 
 ## 2.2 Aim and hit (Ran offline)
 
@@ -320,6 +336,20 @@ roll of a level-1 character), `hits_dealt` counted it. Looking 150 degrees away:
 107 degrees off: the press was held 5 ticks (107, 64, 39, 23, 14 degrees), then the swing
 took the monster as its target at once. Blocking with the look turning: the character
 follows at the block state's 20 % a tick without moving.
+
+**The fight beside the picture, and the look coming round** (`controls.swing_turn`,
+degrees a tick at most, default 5, 0 = off; `controls.swing_turn_within`, default 6). The
+camera work found that in first person the character turns to the target the simulation
+picked while the view keeps looking where it looked. While a swing or a shot holds a
+target, the look now turns toward it - a quarter of what is left each tick, bounded, until
+the target is within 6 degrees of the middle. It is the yaw word that turns: input, the
+same on every machine. **Ran, the same strike before and after** (`work/test4.py off|on`,
+`valor`, the look put 40 degrees beside the first monster, then the strike):
+
+| | 14 ticks into the swing | 30 ticks | Picture |
+|---|---|---|---|
+| off | the monster 42 / 53 / 53 degrees right of the look (the character had turned 17 to 22 degrees toward it) | 44 / 53 / 53 | `work/test4-off/t4-off-1-swing.png`: forest, the weapon's trail at the right edge |
+| on | 8 / 9 degrees | -1 / 9 | `work/test4-on/t4-on-1-swing.png`: the monster and the trail in the lower middle, the view tipped down to it |
 
 ## 2.3 Feel
 
@@ -384,6 +414,8 @@ Found by the scripted fights, not by a person playing through:
 Running one way while facing another. In a look view with the stock simulation a player
 who runs left faces left; the controls turn the character back before a strike, which
 costs up to a tenth of a second, and in a net game turning on the spot creeps (2.1).
+The body also runs turned away from the look, which matters as soon as hands and weapon
+are drawn (2.3).
 
 `tools/recomp/app/fp-proposed.pnach` (**not in the fix set, not in the suggested
 sections**; house style; written by `local/recomp-fp-controls/work/fpasm.py`, a small
@@ -450,6 +482,9 @@ out-of-sync flags, plus both facing words and both entries of `g_netCamYaw`.
 | `online/p1` | first level, 1,500 blanks of play | 1,819 ticks compared, **no shared column differs**; no checksum failure, no out-of-sync flag; 3 presses held back for the turn (18 ticks) |
 | `online/p2` | 900 blanks, then `drunare`, 3,600 blanks: the arena fight | 5,433 ticks, nothing differs; both players hit (310 and 405 different hit-point values), both died, the level was loaded again |
 | `online/p3`, `p4` | the first-person copy only turns where it stands | 1,819 ticks each, nothing differs; the creep and turn figures of 2.1 |
+| `online/p5` | the same after the standing-turn rule for net games (turn from 3 degrees, until 1) | 1,819 ticks, nothing differs; 86.6 units of path in 1,542 ticks of which the look turned in 864: about 3.4 units for every second of turning, ending 4.8 units from the start |
+| `online/p6` | rebased on the camera work's prediction-copy anchor; 1,500 blanks of play | 1,819 ticks, nothing differs. **First person no longer trails the visible world**: in 7 samples taken in mid-run the view's player point was within 0.1 units of the prediction copy (the eye 7.0 ahead of it, as set) while the simulated player was 0.8 to 14.8 units behind the copy |
+| `online/s3` | **the proposal** (both copies built with `fp-proposed.pnach`): the first-person copy sends the mode by the section's sender, then plays; `drunare` fight | 4,887 ticks, **nothing differs**. The mode byte of slot 0 became 1 in tick 272 on both machines, was 0 again from the first tick of the new level on both (new character object), 1 again from tick 1,879 after the second send, 0 after the reload. With the mode on: 519 ticks of running, 263 of them more than 45 degrees off the facing - sideways and backwards in the simulation of both machines; the turning push was given 68 times (before the mode came on) and no press was held back, against 897 pushes and 5 held presses (28 ticks) in the same script's run without the mode (`s2`). (A first try, `s2`, stayed in step but never set the mode: the translator had run the sender in place of the handler - 2.6.) |
 
 ## 2.8 Keyboard, mouse, controller; settings; help
 
@@ -488,7 +523,7 @@ remark; also `app fpc set NAME VALUE` while running): `controls.mouse_sensitivit
 `stick_pitch`, `stick_deadzone`, `stick_curve`, `stick_ease`, `move_deadzone`,
 `face.chase|shoulder|first`, `turn_before_strike`, `strike_wait`, `strike_within`,
 `idle_within`, `mouse_buttons`, `capture_pointer`, `kick`, `centre`, `swing_tilt`,
-`strafe`. **Help**: the keys panel (F1) and the text printed at a start end with the
+`swing_turn`, `swing_turn_within`, `strafe`. **Help**: the keys panel (F1) and the text printed at a start end with the
 look views' controls (`fpcontrols::help_text()`). The settings round trip through the
 file and the panel were not run (a test window writes no settings file and shows no
 panel); `app fpc set` was.
@@ -507,8 +542,6 @@ that day.
 - In a net game the stock simulation creeps while turning on the spot (2.1) and a strike
   from a sideways run waits up to a tenth of a second for the turn; the proposal of 2.6
   removes both, at the price of a fix-set section everybody must have.
-- In a net game the camera work's eye follows the simulated player, the picture shows the
-  prediction copy (`g_ghost` 0x4027bc): asked of the camera work.
 - The weapon and hands in view (2.3): not done.
 - Bows and spells were read, not run: the test character had no bow, and the cast that
   was pressed in the net runs was not looked at. `reticle` and `shot` are there for them.
@@ -516,6 +549,13 @@ that day.
   attackers only.
 - A second local player: the look views fall back to the game's camera with two local
   players (the camera work's rule), so nothing here handles port 2.
+- The proposal's program (`root2`, `rta_app_fps`) was built before the last rebase on the
+  camera work's files of 14:23; its runs stand, the rebased sources were run without it.
+- States the camera work asked about, as far as these runs reached them: death (the game's
+  own camera takes the frame, rows pass unchanged, the look is taken up again on the new
+  character: Ran offline and in the net fights), a cutscene (the level's opening cutscene
+  after a reload in a net game: the same). Pause menu, bag, dialogue, shop, vehicle with
+  these controls: not run here.
 - With the proposal: the application does not send the mode in a net game by itself (the
   test called the section's sender from the script); mode off when leaving a look view is
   sent the same way.
@@ -531,6 +571,7 @@ cd local/recomp-fp-controls/work
 python3 -B facts1.py; python3 -B facts2.py          # part 1 by running (the unmodified game's stick, yaw word, turn in place)
 python3 -B test1.py                                 # look, move, face: first person, chase, shoulder
 python3 -B test2.py valor                           # usable in reach; a fight: marks, strikes, block, attackers behind, death
+python3 -B test4.py off; python3 -B test4.py on     # the same strike without and with the look coming round to the target
 (cd ../lobby && ./champions-server &)               # this work's own lobby instance, ports +4000 (config.ini there)
 python3 -B pair.py online/p1 --views first,overhead --play 1500
 python3 -B pair.py online/p2 --views first,overhead --play 900 --level drunare --play2 3600 --seed 7

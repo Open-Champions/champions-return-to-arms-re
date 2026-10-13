@@ -37,7 +37,8 @@ func build() -> void:
 	say(Rect2(0, UI.px(58), size.x, UI.px(30)), "The one you choose is the one your friends see you with." if not list.is_empty() else "None yet - make your first one.", 20, UI.DIM)
 	var top := UI.px(108)
 	var gap := UI.px(18)
-	var cols := clampi(int((size.x + gap) / UI.px(300)), 3, 6)
+	var most := clampi(int((size.x + gap) / UI.px(300)), 3, 6)
+	var cols := clampi(list.size() + 1, mini(4, most), most)
 	var cw := (size.x - gap * (cols - 1)) / cols
 	var rows := int(ceil((list.size() + 1) / float(cols)))
 	var ch := minf(UI.px(430), (size.y - top - gap * (rows - 1)) / maxf(rows, 1))

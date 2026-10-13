@@ -88,6 +88,8 @@ struct Settings {
     float kick = 1.0f;                  // the view kick of swings and hits, 0 = none
     bool centre = true;                 // first person: the picture's centre is the walking direction
     bool strafe = true;                 // with the proposed "strafe mode" section in the game (fp-proposed.pnach): use it in the views that face the look
+    float swing_turn = 5.0f;            // during a swing or shot the look comes round to the simulation's target: at most this many degrees a tick (0 = never)
+    float swing_turn_within = 6.0f;     // ... until the target is this near the middle of the picture
     bool swing_tilt = true;             // first person: during a swing the view tips toward a target that is above or below the picture's middle
 };
 Settings g_set;
@@ -130,6 +132,7 @@ float g_locked_hp = 0;
 float g_kick_pitch = 0, g_kick_roll = 0;    // degrees, decaying
 bool g_log = false;
 // counters
+uint64_t g_assist_blanks = 0;
 uint64_t g_blanks_steered = 0, g_nudges = 0, g_held_back = 0, g_held_ticks = 0, g_turn_states = 0, g_released_late = 0;
 
 // ---- helpers ----------------------------------------------------------------------------------
@@ -477,6 +480,14 @@ void translate(uint64_t blank, rta::PadState& state) {
     turn += g_stick_yaw_now * dt;
     pitch += g_stick_pitch_now * dt;
     if (pitch != 0) add(g_pitch_out, pitch);
+    // The simulation picks its own target for a swing or a shot (inside 60 degrees of the facing) and turns the
+    // character to it; a view that kept looking where it looked would have the fight beside the picture.  While
+    // a swing or shot holds a target, the look comes round to it: a quarter of what is left a tick, bounded, and
+    // only as far as `swing_turn_within` of the middle.  It is the yaw word that turns - input like any other.
+    if (set.swing_turn > 0 && set.face[view] && (b.state == 1 || b.state == 0) && g_hud.locked.valid && g_hud.blank + 1 == blank) {
+        float off = g_hud.locked.bearing, excess = std::fabs(off) - set.swing_turn_within;
+        if (excess > 0) { turn += (off > 0 ? 1.0f : -1.0f) * std::min(excess * 0.25f, set.swing_turn); g_assist_blanks++; }
+    }
     // a growing yaw word turns the camera clockwise seen from above: to the right
     g_look_units += (double)turn * UNITS;
     while (g_look_units >= 32768.0) g_look_units -= 65536.0;
@@ -669,6 +680,8 @@ bool setting(const char* key, const char* value) {
     else if (name == "kick") s.kick = clampf(number, 0, 4);
     else if (name == "centre") s.centre = yes;
     else if (name == "swing_tilt") s.swing_tilt = yes;
+    else if (name == "swing_turn") s.swing_turn = clampf(number, 0, 30);
+    else if (name == "swing_turn_within") s.swing_turn_within = clampf(number, 0, 45);
     else if (name == "strafe") s.strafe = yes;
     else if (name.compare(0, 5, "face.") == 0) {
         for (int v = 0; v < VIEW_COUNT; v++) if (name.substr(5) == views[v]) { s.face[v] = yes && v >= CHASE; return true; }
@@ -707,10 +720,12 @@ std::string settings_text() {
              "controls.kick = %g                   # how much a swing or a hit moves the view (0 = not at all)\n"
              "controls.centre = %s                # first person: the middle of the picture is where forward walks and arrows fly\n"
              "controls.swing_tilt = %s            # first person: during a swing the view tips toward a target under or over the picture\n"
+             "controls.swing_turn = %g             # during a swing or shot the look comes round to the target the game took: degrees a tick at most (0 = never)\n"
+             "controls.swing_turn_within = %g      # ... until the target is this many degrees from the middle of the picture\n"
              "controls.strafe = %s                # only with the proposed strafe section in the game (fp-proposed.pnach): run sideways and backwards facing the look\n",
              s.mouse_sensitivity, s.mouse_pitch_scale, s.mouse_smoothing, yes(s.invert_y), yes(s.invert_stick_y), s.stick_yaw, s.stick_pitch, s.stick_deadzone,
              s.stick_curve, s.stick_ease, s.move_deadzone, yes(s.face[CHASE]), yes(s.face[SHOULDER]), yes(s.face[FIRST]), yes(s.turn_before_strike), s.strike_wait,
-             s.strike_within, s.idle_within, yes(s.mouse_buttons), yes(s.capture), s.kick, yes(s.centre), yes(s.swing_tilt), yes(s.strafe));
+             s.strike_within, s.idle_within, yes(s.mouse_buttons), yes(s.capture), s.kick, yes(s.centre), yes(s.swing_tilt), s.swing_turn, s.swing_turn_within, yes(s.strafe));
     return text;
 }
 
@@ -769,11 +784,11 @@ std::string command(const std::string& text, uint64_t blank) {
 }
 
 std::string figures() {
-    char text[400];
+    char text[520];
     snprintf(text, sizeof text, "controls: %llu blanks steered in a look view, the turning push given at %llu, %llu presses held back for %llu ticks in all (%llu let through after "
-             "the button was up again), %llu blanks in a state where the stick only turns",
+             "the button was up again), %llu blanks in a state where the stick only turns, the look brought round to a target in %llu",
              (unsigned long long)g_blanks_steered, (unsigned long long)g_nudges, (unsigned long long)g_held_back, (unsigned long long)g_held_ticks, (unsigned long long)g_released_late,
-             (unsigned long long)g_turn_states);
+             (unsigned long long)g_turn_states, (unsigned long long)g_assist_blanks);
     return text;
 }
 

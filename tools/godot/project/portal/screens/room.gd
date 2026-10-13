@@ -95,12 +95,12 @@ func build() -> void:
 	var options: Dictionary = room.get("options", {})
 	var can_choose := i_host and state == Session.ROOM_OPEN
 	var cw := (left_w - UI.px(14)) * 0.5
-	var difficulty := W.Choice.new("Difficulty", PackedStringArray(["The game's own", "1", "2", "3", "4"]), clampi(int(options.get("difficulty", 0)), 0, 4))
+	var difficulty := W.Choice.new("Difficulty", PackedStringArray(["Default", "1", "2", "3", "4"]), clampi(int(options.get("difficulty", 0)), 0, 4))
 	difficulty.key = "difficulty"
 	difficulty.locked = not can_choose
 	put(difficulty, Rect2(0, choices_y, cw, choices_h))
 	difficulty.changed.connect(func(index: int) -> void: _set_option("difficulty", index))
-	var open_to := W.Choice.new("Who can come in", PackedStringArray(["Whoever has the code", "Friends can walk in"]), clampi(int(options.get("open_to", 0)), 0, 1))
+	var open_to := W.Choice.new("Who can join", PackedStringArray(["Code only", "Friends too"]), clampi(int(options.get("open_to", 0)), 0, 1))
 	open_to.key = "open_to"
 	open_to.locked = not can_choose
 	put(open_to, Rect2(cw + UI.px(14), choices_y, cw, choices_h))
@@ -435,7 +435,10 @@ class SeatText extends Control:
 			tag = "HOST"
 		var y := text_top + UI.px(6)
 		var av := UI.px(34)
-		W.Avatar.draw_avatar(self, Rect2(pad, y, av, av), name, String(member.get("id", name)), -1)
+		if size.x < UI.px(230):
+			av = -UI.px(10)             # a narrow seat: the name gets the whole line
+		else:
+			W.Avatar.draw_avatar(self, Rect2(pad, y, av, av), name, String(member.get("id", name)), -1)
 		var name_right := size.x - pad
 		if bool(member.get("me", false)):
 			var yw := UI.text_width("you", UI.bold(), 14) + UI.px(16)
@@ -443,8 +446,8 @@ class SeatText extends Control:
 			draw_style_box(UI.box(UI.px(12), Color(1, 1, 1, 0.09), Color(1, 1, 1, 0.2), 1), yr)
 			UI.text(self, yr, "you", UI.bold(), 14, UI.DIM, HORIZONTAL_ALIGNMENT_CENTER)
 			name_right = yr.position.x - UI.px(8)
-		UI.text(self, Rect2(pad + av + UI.px(10), y, name_right - (pad + av + UI.px(10)), av), name, UI.bold(), 21, UI.TEXT)
-		y += av + UI.px(10)
+		UI.text(self, Rect2(pad + av + UI.px(10), y, name_right - (pad + av + UI.px(10)), UI.px(34)), name, UI.bold(), 21, UI.TEXT)
+		y += UI.px(44)
 		# the character they play
 		if String(c.get("name", "")) != "":
 			UI.text(self, Rect2(pad, y, w, UI.px(32)), String(c.name), UI.serif_bold(), 24, UI.GOLD_HI)

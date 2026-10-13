@@ -3,7 +3,7 @@ person): mouse and right-stick look, movement relative to the look, the characte
 look, the data a HUD needs.  This file holds the changes to files other work owns;
 docs/issues/native-first-person-controls.md says what it is and what was run.
 
-Made against tools/recomp WITH app/fpview.patch applied (the camera base of 13:28; the line
+Made against tools/recomp WITH app/fpview.patch applied (the camera work's files of 14:23; the line
 "base" below).  Apply from tools/recomp, after fpview.patch:
 
     cd tools/recomp && patch -p1 --dry-run < app/fpcontrols.patch && patch -p1 < app/fpcontrols.patch
@@ -18,10 +18,10 @@ Notes for the merge
  - Nothing in hle.txt, rt/, render/, net/, sound/: no new translation, no change to the game.
    The simulation is given ordinary controller rows and the game camera's yaw word; with the
    view "overhead" (the default) or "action", fpcontrols::translate changes nothing in a row.
- - app/fpview.h, fpview.cpp (the camera work's files): ONE addition, fpview::add_pitch(degrees) -
-   an atomic that is added to the selected view's pitch at the next draw pass, inside the
-   view's own limits - so that a mouse can look up and down.  12 lines; if the camera work
-   adds it itself, drop these two hunks.
+ - app/fpview.h, fpview.cpp (the camera work's files): untouched.  The pitch of a mouse goes
+   through fpview::add_pitch, which those files have since 14:18; the camera work's
+   "view.<mode>.follow" must stay 0 in first person and shoulder (this work turns the yaw
+   word itself: docs/issues/native-first-person-controls.md 2.1, "The model").
  - app/app_main.cpp: the last step of Pads::read tells fpcontrols the view of the last draw
    pass and lets it translate the row (in a look view the right stick and L3 are withheld
    from the game: its own camera-stick code would turn the same yaw word slowly and step the
@@ -32,6 +32,8 @@ Notes for the merge
    played in the window that has the keyboard (never in a test window, never off screen);
    three more key names (Space = Square, Shift = R1, Tab = R3); "app fpc ..." for scripts
    and the control socket; settings lines "controls.*"; the report's last lines.
+ - app/build.py also gains --extra-pnach FILE (more word patches for the translation: how
+   the proposal app/fp-proposed.pnach was built for its tests; without the option nothing changes).
  - app/settings.h: "controls.*" lines are kept with the "view" lines and handed on.
  - app/help_mac.mm: the keys panel ends with fpcontrols::help_text().
  - app/build.py: fpcontrols.cpp and look_mac.mm are compiled; help_mac.mm is given -I rt.
@@ -41,52 +43,9 @@ Notes for the merge
    calls fpcontrols::set_view - fpview.patch's own note says how the views get there); raw
    mouse input, the pointer clipped and hidden, mouse buttons and wheel, the three key
    names, "app fpc", the report line.
-base: Tue Oct 13 13:30:22 CDT 2026
-made: Tue Oct 13 14:07:09 CDT 2026
+base: Tue Oct 13 14:27:12 CDT 2026
+made: Tue Oct 13 14:27:36 CDT 2026
 
---- a/app/fpview.h
-+++ b/app/fpview.h
-@@ -94,6 +94,9 @@
- const char* mode_name(int mode);                // "overhead", "action", "chase", "shoulder", "first"
- int mode_by_name(const char* name);             // -1 when it is not one
- void cycle(int step = 1);                       // the key: next view
-+// Looking up (+) and down (-) by other means than the camera stick (a mouse: fpcontrols.h):
-+// degrees added to the selected view's pitch at the next draw pass, inside its limits.
-+void add_pitch(float degrees);
- 
- // A per-view setting, as a line of the settings file gives it: key "view" (value = a mode
- // name), or "view.<mode>.<name>" with <name> one of fov, near, distance, height, side,
---- a/app/fpview.cpp
-+++ b/app/fpview.cpp
-@@ -192,6 +192,7 @@
- std::string g_settings_text;
- 
- std::atomic<int> g_wanted{OVERHEAD};
-+std::atomic<float> g_pitch_add{0};  // add_pitch(): taken at the next draw pass
- bool g_options_read = false, g_zoom_off = false, g_log = false;
- 
- // ---- state of the view (host side; the game never reads it) --------------------------------------
-@@ -523,6 +524,9 @@
-         // pad.ry is negative when the stick is pushed up (a byte of 0 is -1.0): up looks up
-         g_pitch[g_mode] = clampf(g_pitch[g_mode] - in.stick_y * s.look_speed * in.dt, s.pitch_min - s.pitch, s.pitch_max - s.pitch);
-     }
-+
-+    if (float more = g_pitch_add.exchange(0); more != 0 && g_mode != OVERHEAD && s.pitch_max > s.pitch_min)
-+        g_pitch[g_mode] = clampf(g_pitch[g_mode] + more, s.pitch_min - s.pitch, s.pitch_max - s.pitch);
- 
-     Pose target = pose_of(c, g_mode, in);
-     Pose shown = g_t >= 1 ? target : blend(from_pose(in), target, smooth(g_t));
-@@ -653,6 +657,10 @@
-     if (!strcmp(name, "game") || !strcmp(name, "classic")) return OVERHEAD;
-     return -1;
- }
-+void add_pitch(float degrees) {
-+    float old = g_pitch_add.load();
-+    while (!g_pitch_add.compare_exchange_weak(old, old + degrees)) {}
-+}
- void cycle(int step) { g_wanted = ((g_wanted.load() + step) % MODE_COUNT + MODE_COUNT) % MODE_COUNT; }
- 
- bool setting(const char* key, const char* value) {
 --- a/app/settings.h
 +++ b/app/settings.h
 @@ -71,7 +71,7 @@

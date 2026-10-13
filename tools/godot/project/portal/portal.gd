@@ -535,13 +535,19 @@ func _on_event(e: Dictionary) -> void:
 			if state == Session.ROOM_IN_GAME and starting_since > 0:
 				starting_since = 0
 				handover.call("reveal")
-			if state >= Session.ROOM_JOINING and state <= Session.ROOM_OPEN and pending_room and current_name() != "room":
+			if state == Session.ROOM_OPEN and pending_room:
 				pending_room = false
 				if not shown:
 					handover.call("finish", "room")
-				go("room")
+				if current_name() != "room":
+					go("room")
 			elif state == Session.ROOM_NONE and current_name() == "room":
-				home()
+				# the room is gone (it could not be opened, or I was taken out): back to where I came from
+				if stack.size() > 1:
+					stack.pop_back()
+					_show(-1)
+				else:
+					home()
 		Session.EV_START:
 			# the game is woken under the portal; the room stays up ("finding each other") until the game runs
 			handover.call("start", {"kind": "session", "session": session.game()}, false)
