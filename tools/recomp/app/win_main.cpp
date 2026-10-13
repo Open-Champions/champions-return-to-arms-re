@@ -87,6 +87,7 @@
 #include "gfx_rt.h"
 #include "pad_host.h"
 #include "fpcontrols.h"
+#include "fpview.h"
 #include "pipeline.h"
 #include "recorder.h"
 #include "settings.h"
@@ -317,7 +318,7 @@ static WPARAM key_by_name(const std::string& name) {
     static const struct { const char* name; WPARAM key; } names[] = {
         {"w", 'W'}, {"a", 'A'}, {"s", 'S'}, {"d", 'D'}, {"up", VK_UP}, {"down", VK_DOWN}, {"left", VK_LEFT}, {"right", VK_RIGHT},
         {"i", 'I'}, {"j", 'J'}, {"k", 'K'}, {"l", 'L'}, {"q", 'Q'}, {"e", 'E'}, {"1", '1'}, {"3", '3'}, {"x", 'X'}, {"c", 'C'},
-        {"return", VK_RETURN}, {"backspace", VK_BACK}, {"escape", VK_ESCAPE}, {"f", 'F'}};
+        {"return", VK_RETURN}, {"backspace", VK_BACK}, {"escape", VK_ESCAPE}, {"f", 'F'}, {"v", 'V'}};
     for (auto& n : names) if (name == n.name) return n.key;
     return 0;
 }
@@ -348,9 +349,16 @@ struct Pads : rta::PadSource {
             else { state.lx = kb.lx; state.ly = kb.ly; }
         }
         if (rest(state.rx, state.ry) && have_pad) { state.rx = pad.rx; state.ry = pad.ry; }
-        // the look views' controls (fpcontrols.h).  This program has no views yet (app/fpview.patch,
-        // "Notes for the merge"): until fpcontrols::set_view is called with one, rows pass unchanged
-        fpcontrols::translate(blank, state);
+        // the views that look along the ground: mouse and right stick are the look, the character
+        // is turned to it; in the overhead views nothing changes (fpcontrols.h; app_main.cpp has
+        // the same lines).  Not while another machine's controller rows are replayed.
+        {
+            static const bool replayed = apprt::replaying();
+            const fpview::View& v = fpview::view();
+            fpcontrols::set_view(replayed ? 0 : fpview::mode(), v.active && !v.fallback, v.look_pitch);
+            fpcontrols::translate(blank, state);
+            if (float pitch = fpcontrols::take_pitch(); pitch != 0) fpview::add_pitch(pitch);
+        }
         last_buttons = state.buttons;
         last_sticks = state.lx | state.ly << 8 | state.rx << 16 | (uint32_t)state.ry << 24;
     }
@@ -847,6 +855,11 @@ LRESULT CALLBACK Screen::proc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         if (uint32_t bit = key_bit(wp)) { g_keys |= bit; return 0; }
         if (!s || test) return 0;
         if (wp == VK_ESCAPE && g_pointer_held) { g_pointer_let_go = true; hold_pointer(hwnd, false); return 0; }
+        if (wp == 'V') {                                // the next camera view (Shift: the one before)
+            fpview::cycle(GetKeyState(VK_SHIFT) < 0 ? -1 : 1);
+            log_line(std::string("view: ") + fpview::mode_name(fpview::mode()));
+            return 0;
+        }
         if (wp == VK_F11 || wp == 'F') s->toggle_fullscreen();
         else if (wp == VK_ESCAPE && s->is_fullscreen) s->toggle_fullscreen();
         else if (wp == VK_F12) {
@@ -1040,6 +1053,18 @@ static void app_command(const std::string& text, uint64_t frame) {
             if (g_recorder.out.open(text.substr(text.find(w[1])).c_str())) g_recorder.first_frame = 0;
             else log_line("cannot write " + w[1]);
         }
+    } else if (w[0] == "view" && w.size() >= 2) {
+        // app view NAME|next | set KEY VALUE | info   (fpview.h; as in app_main.cpp)
+        if (w[1] == "next") fpview::cycle(1);
+        else if (w[1] == "set" && w.size() >= 4) { if (!fpview::setting(w[2].c_str(), w[3].c_str())) log_line("app view set: not a view setting: " + w[2]); }
+        else if (w[1] == "info") {
+            const fpview::View& v = fpview::view();
+            printf("[frame %llu] view: selected %s, shown %s, blend %.2f%s%s; tick %u; eye %.1f %.1f %.1f forward %.3f %.3f %.3f fov %.1f near %.1f\n",
+                   (unsigned long long)frame, fpview::mode_name(v.mode), fpview::mode_name(v.shown), v.blend, v.fallback ? "; the game's camera: " : "",
+                   v.fallback_why, v.tick, v.eye.x, v.eye.y, v.eye.z, v.forward.x, v.forward.y, v.forward.z, v.fov, v.near_plane);
+            fflush(stdout);
+        } else if (fpview::mode_by_name(w[1].c_str()) >= 0) fpview::set_mode(fpview::mode_by_name(w[1].c_str()));
+        else log_line("app view: overhead, action, chase, shoulder, first, next, info, or set KEY VALUE");
     } else if (w[0] == "window" && w.size() >= 3) {
         // app window W H: the window takes this size (points), as a person dragging its corner would make it
         int ww = atoi(w[1].c_str()), wh = atoi(w[2].c_str());
@@ -1115,6 +1140,7 @@ static const char* HELP =
     "        [--aspect auto|4:3|16:9|16:10|21:9|W:H] [--resolution window|WxH|Nx] [--antialiasing off|2|4|8] [--anisotropy 1..16]\n"
     "        [--mipmaps yes|no] [--art-pack FOLDER] [--art-memory MB] [--frame-cap 60|30|0] [--plain] [--settings FILE] [--no-settings]\n"
     "        [--pacing ahead|queued]   (queued: the pacing of the first builds - try it when the picture stutters, and say so)\n"
+    "        [--view overhead|action|chase|shoulder|first] [--view-set view.<mode>.<name>=VALUE]   (V switches while the game runs)\n"
 #ifdef RTA_NET
     "online: [--server ADDRESS] (or the first line of server.txt beside the program) [--online | --host [CODE] | --join CODE]\n"
     "        [--choose-character] [--player N] [--server-public ADDRESS] [--name NAME]\n"
@@ -1161,6 +1187,8 @@ int main(int argc, char** argv) {
         else if (a == "--art-pack") overrides.push_back({"art_pack", next()});
         else if (a == "--art-memory") overrides.push_back({"art_memory", next()});
         else if (a == "--frame-cap") overrides.push_back({"frame_cap", next()});
+        else if (a == "--view") overrides.push_back({"view", next()});
+        else if (a == "--view-set") { std::string kv = next(); size_t eq = kv.find('='); if (eq != std::string::npos) overrides.push_back({kv.substr(0, eq), kv.substr(eq + 1)}); }
         else if (a == "--pacing") { std::string way = next(); opt.queued = way == "queued"; if (way != "queued" && way != "ahead") { fail("--pacing ahead|queued", own_console); return 2; } }
         else if (a == "--plain") plain = true;
         else if (a == "--settings") opt.settings_file = next();
@@ -1210,6 +1238,10 @@ int main(int argc, char** argv) {
         opt.size_w = opt.set.size_w; opt.size_h = opt.set.size_h; opt.scale = opt.set.scale;
         opt.aspect = opt.set.aspect;
         opt.unpaced = opt.set.frame_cap <= 0;
+        for (auto& kv : opt.set.view)
+            if (!fpview::setting(kv.first.c_str(), kv.second.c_str()) && !fpcontrols::setting(kv.first.c_str(), kv.second.c_str()))
+                log_line("settings: not a view setting: " + kv.first + " = " + kv.second);
+        opt.set.view.clear();
     };
     if (!settings_later) apply_settings(opt.settings_file);
 
@@ -1254,7 +1286,7 @@ int main(int argc, char** argv) {
         std::string file = opt.data + "\\settings.txt";
         bool there = file_exists(file);
         apply_settings(there ? file : std::string());
-        if (!there && opt.test.empty() && !opt.offscreen) app::Settings().save(file);
+        if (!there && opt.test.empty() && !opt.offscreen) app::Settings().save(file, (std::string(fpview::settings_text()) + "\n" + fpcontrols::settings_text()).c_str());
     }
 #ifdef RTA_NET
     // the lobby server: --server, else server.txt beside the program - its first line that is
@@ -1322,6 +1354,15 @@ int main(int argc, char** argv) {
     renderer.gs.layout.enabled = opt.layout;
     renderer.gs.name_textures = !opt.set.art_pack.empty();
     gfxrt::install();
+    fpview::install();                                  // (after gfx_rt's: it chains itself in front of the frame hook)
+    // the picture of a look view: its centre on the walking direction, the kick of swings and hits (fpcontrols.h)
+    fpview::on_view([](fpview::View& v, Ctx*, void*) {
+        if (v.shown != v.mode) return;
+        float forward[3] = {v.forward.x, v.forward.y, v.forward.z}, up[3] = {v.up.x, v.up.y, v.up.z};
+        fpcontrols::apply_view(v.mode, forward, up);
+        v.forward = {forward[0], forward[1], forward[2]};
+        v.up = {up[0], up[1], up[2]};
+    });
     if (getenv("RTA_GS_LOG")) renderer.gs.log_display = true;
     if (const char* keep = getenv("RTA_TEX_KEEP")) renderer.gs.texture_keep_frames = (uint32_t)atoi(keep);    // frames an unused texture is kept; 0 = for ever
     static AppSink sink;

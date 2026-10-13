@@ -403,6 +403,9 @@ def build_mac(args):
         (os.path.join(SOUND, 'sound_rta.cpp'), rt_flags + ['-I', SOUND], 'rt_'),
         (os.path.join(HERE, 'app_rt.cpp'), rt_flags + ['-I', HERE], 'a_'),
         (os.path.join(HERE, 'gfx_rt.cpp'), rt_flags + ['-I', HERE], 'a_'),
+        (os.path.join(HERE, 'fpview.cpp'), rt_flags + ['-I', HERE], 'a_'),
+        (os.path.join(HERE, 'fpcontrols.cpp'), ['-std=c++17', opt, '-Wall', '-I', HERE, '-I', RT], 'a_'),
+        (os.path.join(HERE, 'look_mac.mm'), objc + ['-I', HERE, '-I', RT], 'a_'),
         (FILM, rt_flags + ['-I', HERE], 'a_'),
         (os.path.join(NET, 'netdrv.cpp'), rt_flags, 'n_'),
         (os.path.join(NET, 'online.cpp'), rt_flags, 'n_'),
@@ -411,7 +414,7 @@ def build_mac(args):
         (os.path.join(HERE, 'app_main.cpp'), app_flags + qt_flags, 'a_'),
         (os.path.join(HERE, 'pad_mac.mm'), objc + ['-I', HERE, '-I', RT], 'a_'),
         (os.path.join(HERE, 'present_mac.mm'), objc + ['-I', HERE], 'a_'),
-        (os.path.join(HERE, 'help_mac.mm'), objc + ['-I', HERE], 'a_')]
+        (os.path.join(HERE, 'help_mac.mm'), objc + ['-I', HERE, '-I', RT], 'a_')]
     search = [HERE, RENDER, RT, SOUND, NET, gen]
     common = source_jobs(sources, objdir, search)
     with_qt = source_jobs([(os.path.join(RENDER, 'texpack.cpp'), render_flags + qt_flags, 'r_')], objdir, search)
@@ -597,6 +600,7 @@ def main():
              (FILM, rt_flags + ['-I', HERE, '-include', 'ctime'], 'a_')] if os.path.exists(FILM) and os.path.exists(FILM_HLE) and not args.original else []) + [
              (os.path.join(HERE, 'pad_win.cpp'), app_flags, 'a_'),
              (os.path.join(HERE, 'fpcontrols.cpp'), app_flags, 'a_'),          # the look views' controls: plain C++, the Mac's file
+             (os.path.join(HERE, 'fpview.cpp'), rt_flags + ['-I', HERE], 'a_'),  # the view modes (the Mac's file; NOT RUN on Windows)
              (os.path.join(WINSRC, 'wgl.cpp'), app_flags, 'a_')], objdir, search)
         # a file given with -include is a dependency the sources do not name
         app = [(source, flags, target, deps + ([os.path.join(NET, 'posix_win.h')] if source == ONLINE else []))

@@ -11,7 +11,9 @@ program stands in the middle of N machines, each of which connects to its own so
 reads one message from every machine and answers each with one message that carries the
 datagrams of all the others, in machine order.  A machine drops what is not addressed to
 it, so nothing has to be routed.  All machines advance frame by frame together and a run
-repeats exactly, as a pair does.  When one machine ends, the others are told and end.
+repeats exactly, as a pair does.  When one machine ends, the others are told and end -
+unless HUB_SURVIVE=1 (directed games in which a machine drops out): then the machine that
+ended is forgotten and the others go on while two are left.
 
 Standard library only; no game data passes through but the game's own datagrams.
 """
@@ -70,23 +72,33 @@ def main(paths):
         os.unlink(path)
         conns.append(conn)
     frames = 0
+    survive = os.environ.get('HUB_SURVIVE') == '1'      # a machine that ends is forgotten; the others go on
+    live = list(range(len(conns)))
     while True:
-        messages = [read_message(conn) for conn in conns]
-        gone = [m is None or m[1] for m in messages]
-        if any(gone) or len({m[0] for m in messages}) != 1:
+        messages = {index: read_message(conns[index]) for index in live}
+        gone = [index for index in live if messages[index] is None or messages[index][1]]
+        if gone and survive:
+            for index in gone:
+                print('hub: machine %d ended after %d frames; the others go on' % (index, frames))
+                live.remove(index)
+                del messages[index]
+            gone = []
+            if len(live) < 2:
+                gone = list(live)
+        if gone or len({m[0] for m in messages.values()}) != 1:
             bye = struct.pack('<IIQI', MAGIC, 1, 0, 0)
-            for conn, was_gone in zip(conns, gone):
-                if not was_gone:
+            for index in live:
+                if index not in gone or survive:
                     try:
-                        conn.sendall(bye)
+                        conns[index].sendall(bye)
                     except OSError:
                         pass
             break
-        frame = messages[0][0]
-        for index, conn in enumerate(conns):
-            records = [r for other, m in enumerate(messages) if other != index for r in m[2]]
+        frame = next(iter(messages.values()))[0]
+        for index in live:
+            records = [r for other in live if other != index for r in messages[other][2]]
             try:
-                conn.sendall(struct.pack('<IIQI', MAGIC, 0, frame, len(records)) + b''.join(records))
+                conns[index].sendall(struct.pack('<IIQI', MAGIC, 0, frame, len(records)) + b''.join(records))
             except OSError:
                 pass
         frames += 1

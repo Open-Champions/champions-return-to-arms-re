@@ -253,6 +253,43 @@ def build_lines(job):
     return lines
 
 
+CONTROL = 0xE0040        # soakhooks.cpp: +0 address, +4 a0, +8 when (1 entry to net_main, 2 in the tick, 3 vertical blank)
+STRAFE_SENDER = 0x215C98
+
+
+def expand_directed(lines, machine):
+    """A directed game's lines for one machine.  `@1,2: <command>` is for those machines only
+    (the others let the same frames pass: tap and fuzz become a wait, a command that takes no
+    frames is left out).  `strafe on|off` asks this machine's hooks to call the strafe sender
+    on its next entry to net_main (`strafeblank`: at its next vertical blank);
+    `call ADDRESS A0 [WHEN]` asks for any one call.  %M is the machine's number."""
+    out = []
+    for line in lines:
+        line = line.replace('%M', str(machine)).strip()
+        found = re.match(r'@([\d,]+):\s*(.*)$', line)
+        if found:
+            line = found.group(2)
+            if str(machine) not in found.group(1).split(','):
+                words = line.split()
+                if words[0] == 'tap':
+                    out.append('wait %d' % (int(words[2]) if len(words) > 2 else 3))
+                elif words[0] == 'fuzz':
+                    out.append('wait %s' % words[2])
+                elif words[0] in ('wait', 'until', 'at'):
+                    out.append(line)
+                continue
+        words = line.split()
+        if words and words[0] in ('strafe', 'strafeblank', 'call'):
+            if words[0] == 'call':
+                address, a0, when = int(words[1], 0), int(words[2], 0), int(words[3]) if len(words) > 3 else 1
+            else:
+                address, a0, when = STRAFE_SENDER, 1 if words[1] == 'on' else 0, 1 if words[0] == 'strafe' else 3
+            out += ['poke 0x%x:u32 %d' % (CONTROL + 4, a0), 'poke 0x%x:u32 %d' % (CONTROL, address), 'poke 0x%x:u32 %d' % (CONTROL + 8, when)]
+        else:
+            out.append(line)
+    return out
+
+
 def script_lines(job, machine, extra_lines=()):
     """One machine's script.  Every machine's script lets the same frames pass in every line."""
     n = job['machines']
@@ -286,7 +323,7 @@ def script_lines(job, machine, extra_lines=()):
     lines += ['wait 30']
     for index, (frames, groups) in enumerate(job['segments']):
         if job.get('directed') is not None:     # a directed game: the caller's lines in place of random input
-            lines += [line.replace('%M', str(machine)) for line in job['directed']]
+            lines += expand_directed(job['directed'], machine)
             lines.append('wait %d' % frames)
             break
         lines.append('fuzz %d %d %s' % (job['seed'] * 64 + index * 4 + machine, frames, groups))
@@ -367,7 +404,10 @@ class Gate:
 
     def take(self, n):
         with self.cond:
-            while self.active + n > max(self.limit(), n if self.active == 0 and self.limit() > 0 else 0):
+            # a job larger than the limit starts when nothing else of this farm runs - unless
+            # SOAK_STRICT_GATE=1 (another farm shares the machine): then it waits for a larger limit
+            strict = os.environ.get('SOAK_STRICT_GATE') == '1'
+            while self.active + n > max(self.limit(), n if self.active == 0 and self.limit() > 0 and not strict else 0):
                 self.cond.wait(timeout=5)
             self.active += n
 
@@ -398,7 +438,8 @@ def run_job(job, out_root, program=None, tag='', keep=False, extra_lines=(), ext
     hub = None
     if n > 2:
         hub = subprocess.Popen([sys.executable, '-I', '-B', os.path.join(HERE, 'hub.py')] + paths,
-                               stdout=open(os.path.join(out, 'hub.out'), 'w'), stderr=subprocess.STDOUT)
+                               stdout=open(os.path.join(out, 'hub.out'), 'w'), stderr=subprocess.STDOUT,
+                               env=dict(os.environ, HUB_SURVIVE='1' if job.get('survive') else '0'))
         deadline = time.time() + 20
         while not all(os.path.exists(p) for p in paths) and time.time() < deadline:
             time.sleep(0.05)
@@ -468,7 +509,7 @@ def run_job(job, out_root, program=None, tag='', keep=False, extra_lines=(), ext
         shutil.rmtree(out, ignore_errors=True)
         return result
     try:
-        result.update(analyse(out, n, through_drops=bool(job.get('survive'))))
+        result.update(analyse(out, n, through_drops=bool(job.get('survive')), only=job.get('pairs')))
     except Exception as error:      # a machine that never wrote a log
         result.update({'ticks': 0, 'first': None, 'error': repr(error)[:300]})
     if sample_dumps:
@@ -607,7 +648,7 @@ def bits_float(text):
     return struct.unpack('<f', struct.pack('<I', int(text, 16)))[0]
 
 
-def analyse(out, n, through_drops=False):
+def analyse(out, n, through_drops=False, only=None):
     """Every pair of machines, tick by tick.  The result describes the earliest difference
     of any pair in a deciding column; soft columns are counted on their own.
     through_drops: a pair is compared on after one of the two holds a peer dropped (directed
@@ -616,7 +657,7 @@ def analyse(out, n, through_drops=False):
               'soft': {}, 'levels': [], 'deaths': [0] * n, 'cut_ticks': 0, 'pair_ticks': {}, 'overmax': 0,
               'nobj_max': 0, 'last_tick': None,
               # the strafe mode (third part): ticks with any player in the mode; player-ticks in the mode; of those,
-              # running ticks (state 1, moved more than a unit) and how many of them ran more than 45 and more than
+              # running ticks (moved more than a unit and less than twenty) and how many of them ran more than 45 and more than
               # 135 degrees off the facing; the same two figures for players not in the mode (the check on the measure)
               'mode_any': 0, 'mode_ticks': 0, 'run_mode': 0, 'run_side': 0, 'run_back': 0, 'run_plain': 0, 'run_plain_off': 0,
               'mode_switches': 0, 'sent': 0}
@@ -648,7 +689,7 @@ def analyse(out, n, through_drops=False):
                     if bool(before[p][2]) != bool(mode):
                         result['mode_switches'] += 1
                     dx, dy = x - before[p][0], y - before[p][1]
-                    if state == '1' and 1.0 < dx * dx + dy * dy < 400.0:
+                    if 1.0 < dx * dx + dy * dy < 400.0:
                         # the game's heading: an object facing a runs along (cos a, sin a), a in 65536ths of a turn
                         off = abs(((int(round(math.atan2(dy, dx) * 32768.0 / math.pi)) - facing + 32768) & 0xFFFF) - 32768)
                         if mode:
@@ -684,6 +725,8 @@ def analyse(out, n, through_drops=False):
         result['last_tick'] = tick
     for a in range(n):
         for b in range(a + 1, n):
+            if only and not (a in only and b in only):      # a directed game: only the machines that stay
+                continue
             ha, ra = rows_of(os.path.join(out, 'm%d.tick.tsv' % a))
             hb, rb = rows_of(os.path.join(out, 'm%d.tick.tsv' % b))
             shared = [c for c in ha if c in hb and c not in ('frame', 'net') and not c.startswith('l_')]
@@ -1095,6 +1138,7 @@ def main():
         p.add_argument('--strafe-spec', default='', help='appended to SOAK_STRAFE: ,rate=N and / or ,at=blank')
         p.add_argument('--survive', action='store_true', help='one: machines that leave do not end the game for the others, '
                                                               'and pairs are compared on after a drop')
+        p.add_argument('--pairs', help='one: compare only these machines with each other (0,1): those that stay in the game')
         p.add_argument('--menv', action='append', default=[], help='one: M:K=V, an environment variable for machine M alone')
         p.add_argument('--level', help='one: this start level instead of the seed\'s')
         p.add_argument('--machines', type=int, help='one: this many machines instead of the seed\'s')
@@ -1135,6 +1179,8 @@ def main():
         job = with_strafe(job, args.strafe, args.strafe_spec)
         if args.survive:
             job = dict(job, survive=True)
+        if args.pairs:
+            job = dict(job, pairs=[int(x) for x in args.pairs.split(',')])
         if args.menv:
             menv = {}
             for item in args.menv:

@@ -406,6 +406,19 @@ interface (`--lan`).
 
 ### What the second round found outside `tools/recomp/net/` (nothing there was changed)
 
+**2026-10-13, afternoon (`native-app.md` section 12, by the owner of `rt/`, `app/` and
+`net/` since 12:15):** item 1 is fixed (12.1: ten games in the same two window processes,
+threads 18 > 14 to 15 where they went 20 > 33 in four; a headless host 6 6 6 7 6 over three
+games); item 2 is done (12.2: `app online ...` and `app net ...` arrive over the control
+socket; the whole walk of 12.7 was driven that way); item 4 was done by the release work
+(`RtaNet.cpp` has the hold; `RtaOnline.cpp` now calls `CNet::NoteGame`, which a native
+build has to supply - `net/online.cpp` does, empty: 12.4); item 5 is fixed in every build
+script (12.4). New for a person: an **Online menu** in the window program's menu bar (Go
+Online, Host a Game, Join a Game with a Code..., Stop Going Online: 12.7) - until then the
+one-step online could only be asked for on the command line - and test lines
+`app online menu info | click N`. `bin/rta_native_online` was rebuilt at 14:50 (fix set
+073064bb, the thread fix).
+
 1. **`tools/recomp/rt/runtime.cpp`: a host thread is left for every guest thread ended by
    `TerminateThread`.** Case 0x25 / 0x26 of the system calls sets `kill` on the thread and
    unlinks it; `wait_for_baton` (line 383) waits for `g_cur == self` and looks at `kill`

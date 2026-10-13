@@ -545,6 +545,26 @@ with anything; `fpcheck_gcc.exe` is its step 1).
 
 ## Resume here
 
+**2026-10-13 14:53, by the owner of `rt/`, `render/`, `app/`, `net/`** (`native-app.md`
+12.5 and 12.10 have the detail): the folder `rta-windows` was rebuilt twice this afternoon
+(13:35, and 14:46 with the camera views) - `rta_app.exe` 27.99 MB (clang),
+`rta_app_gcc.exe` 25.67 MB, `rta_native.exe`, `fpcheck.exe`, `pnghash.exe`,
+`fpcheck_gcc.exe`, README. New in `win_main.cpp`, all of it **compiled and linked, none of
+it run**: the macOS program's pacing (the game let go by a clock ahead of each picture's
+moment; a late picture drawn and not shown; the grid moved onto the display's refreshes
+by the swaps' return times or, where swaps do not wait, by `DwmGetCompositionTimingInfo`;
+`--pacing queued` is the old way), a high-resolution timer for the game's thread, the
+above-normal priority class and no power throttling; the camera views (`--view`, V) and
+their controls (raw mouse input, the pointer clipped). In shared files: the thread fix,
+the new fix set, the link fix for `CNet::NoteGame`. The stand-in checks and `--reference`
+were repeated after each build: tick logs and memory images of x86-64 and arm64 identical
+(7,798 rows), the comparison with the rig the same text as before, `fpcheck`
+2e77df4dc13ec9c5, `frames=2309 ... fields=2413 units=113069192` (the new fix set; it was
+`units=113069982`), **patch set 073064bb (99 words)**, `pnghash` b4ed3d8917871960. The
+README's check 3 now says what a tester must look at for the pacing ("How even is it")
+and its key list has V and the mouse. In the test plan above, step 5's "patch set
+3f5b1e14 (90 words)" is now 073064bb (99 words).
+
 **2026-10-13 07:48, by the owner of `rt/`, `render/`, `app/` since last night** (the
 passes below are as their author left them): the folder `rta-windows` was built again
 from the tree as it is now - with the render speed work (`gen-vu/vu1_fast.cpp` is found

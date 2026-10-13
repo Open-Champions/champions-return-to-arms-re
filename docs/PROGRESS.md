@@ -1,6 +1,6 @@
 # How complete is it
 
-Updated at every check-in of the work. **Last update: 2026-10-13, 14:29 CDT.**
+Updated at every check-in of the work. **Last update: 2026-10-13, 14:58 CDT.**
 
 One table for the whole effort to make Champions: Return to Arms (SLUS-20973 v2.00)
 playable again, online, on today's computers. The percentages are estimates by the people
@@ -27,7 +27,7 @@ a session by hand - every test drove the game by script, on one Apple-silicon Ma
 | Native build: online | 98 % | through the lobby with itself, with the emulator application and with a browser page, in step; three and four players with the window program (4 of 4 launches of four after a fix, up to 5,454 ticks every pair, with level change, deaths and reload); private games, chat, friends, kick, leaving and playing again nine games in a row, a dropped player and a dropped host ([native-online](issues/native-online.md)) | a second computer; a person at the controls; one host thread left behind per ended game thread |
 | Native build: Windows | 85 % | compiles and links with picture, sound, controller and online play; the same sources built for x86-64 on the Mac give byte-identical results ([native-windows](issues/native-windows.md)) | a first run on a Windows computer |
 | Native build: in a browser | 60 % - paused | boots and plays the first level in Chrome, tick-identical to the Mac build ([native-web](issues/native-web.md)) | paused with the browser work; rebuilt with the faster renderer; sound delay; online |
-| Native build: first person and other views | 45 % | five camera views as hooks on the game's own camera, in seven levels and a fight, the simulation identical to overhead in every view ([native-first-person](issues/native-first-person.md)); look with mouse or stick, the character turned to face the look, a strike held until it faces its target - all without changing the simulation; a first-person player in step online with an overhead player through an arena fight, 5,433 ticks ([native-first-person-controls](issues/native-first-person-controls.md)); what every level lacks from eye height, measured ([native-first-person-world](issues/native-first-person-world.md)) | merged into one program a person can try; ceilings and skies; weapon and hands in view; running sideways (proposed as a fix section, not adopted); nobody has played it |
+| Native build: first person and other views | 45 % | five camera views as hooks on the game's own camera, in seven levels and a fight, the simulation identical to overhead in every view ([native-first-person](issues/native-first-person.md)); look with mouse or stick, the character turned to face the look, a strike held until it faces its target - all without changing the simulation; a first-person player in step online with an overhead player through an arena fight, 5,433 ticks ([native-first-person-controls](issues/native-first-person-controls.md)); what every level lacks from eye height, measured ([native-first-person-world](issues/native-first-person-world.md)) | the views and the look controls are merged into the native program (key V cycles them; host in first person against overhead 4,332 ticks in step); still missing: ceilings and skies; weapon and hands in view; running sideways (proposed as a fix section, not adopted); nobody has played it |
 | Native build: inside Godot | 35 % | a first spike on Godot 4.5.2: the translated game runs as a library under Godot, which does window, input and sound (same result as the stand-alone program in the tick comparison, pictures identical); Godot draws every frame itself (within 3 of 255 of the game's own picture); on the first level the scene is handed over in 3-D and Godot adds real-time shadows, a light of its own and a free camera; a macOS application exported ([native-godot](issues/native-godot.md)) | 60 pictures a second with Godot drawing (75 unpaced so far); the 3-D scene beyond the first level; the game's culling widened for a free camera; online; Windows |
 
 What "the game" is in each row: the first five rows run the original program in an
@@ -77,6 +77,13 @@ linked document. It does not mean played by a person, or tried on two computers.
 
 ## Since the last update
 
+- The native program now carries the five camera views and the look controls; its window
+  is presented through a Metal layer so that the picture no longer stalls when the window
+  server holds the main thread (27 late pictures of 36,000 in a ten-minute fight, 769
+  before); an Online menu and a keys panel; leftover threads fixed.
+- The portal's screens are built in Godot against a mock of our own online service.
+- Strafing (running one way while facing another) proposed as a fix section and under
+  proof; not in the fix set yet.
 - The public relay now bridges browser players and application players, and the public
   page carries the same fix set as the applications.
 - First person and third person: five camera views in the native build, proven in step

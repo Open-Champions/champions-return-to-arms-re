@@ -1209,21 +1209,22 @@ cap, the pacing in the Windows program, a person's first start, the smaller thin
 
 ### 12.0 STATE (rewritten at every step; read this first after a stop)
 
-**14:30.** `bin/rta_app` = **candidate n13** since 13:42 (everything of 12.1 to 12.8, the
-fix set of 12:19: it announces 073064bb, 99 words). `rta_app.prev` = n4 of 12:42 (also
-`rta_app_n4`), `rta_app_c5` the program of this morning; `rta_app_orig` / `.prev` likewise.
-The Windows folder was rebuilt at 13:35 from the same sources (12.5). Details: 12.9.
+**15:00 - the list is worked through; nothing of this work is running.**
 
-**Now: a new first job from the coordinator (14:25)** - merge the three patches for the
-camera views (`app/fpview.patch`, `app/fpcontrols.patch`, the core lines of
-`tools/godot/recomp.patch`), build, check, put in place, and say what line the owner's
-launcher needs: section 12.10, written as it goes. Not rebuilt before the pause: the
-headless `bin/rta_native_online` (still the program of 2026-10-12 with the old fix set;
-`net/build_online.py` makes it).
-
-Processes of this work running now: the lobby server instance `s12/lobby/champions-server`
-(pid in `s12/lobby/server.pid`; ports 42800-42817, 42900, 42910, UDP 12101, bound to
-192.168.1.123). Nothing else.
+- `bin/rta_app` = **candidate f3** (built 14:37, in place 14:47): 12.1 to 12.9 and the
+  camera views (12.10: V cycles overhead, action, chase, shoulder, first person; mouse look
+  with the pointer held only in the last three). Fix set 073064bb (99 words).
+  `rta_app.prev` = n13 of 13:33 (also `rta_app_n13`: everything but the views),
+  `rta_app_c5` = this morning's program; `rta_app_orig` (f3) / `.prev` (n13).
+- Headless programs rebuilt from the same sources: `bin/rta_native_fix` and `rta_native`
+  (14:32 / 14:33, by `app/build.py`), `bin/rta_native_online` (14:50; three lobby games
+  against the window program in step, its threads 6 6 6 7 6 6).
+- The Windows folder `local/recomp-out/win/rta-windows`: rebuilt 14:46 with the views
+  (12.5, 12.10); stand-in checks and README figures repeated 14:51 to 14:53.
+- What the owner is asked to look at: 12.9 "Left" 1, and 12.10 (the launcher's line, what
+  is rough in the views).
+- The lobby instance of this work (`s12/lobby`) was stopped at the end; start it again
+  with the line in 12.9 before any of the lobby checks.
 
 ### 12.1 Threads left behind (Ran)
 
@@ -1446,6 +1447,9 @@ back, the two kinds of line in `rta-data\rta_app-log.txt`, and `--pacing queued`
 compare. Not carried over: the drawing thread of 12.3 (WGL does not need the window's
 thread, but nobody could see it run) and the art readers' class.
 
+(The folder was built once more at 14:46, with the camera views: 12.10. Same checks, same
+results, `rta_app.exe` 27.99 MB, `rta_app_gcc.exe` 25.67 MB.)
+
 **The folder `local/recomp-out/win/rta-windows`, rebuilt 13:35** (`s12/win/chain.sh`:
 `build_win.py --compiler gcc`, `build_win.py`, `--standin`, `--reference`,
 `win/standin_compare.py`, the two `fpcheck` stand-ins; all exit 0): `rta_app.exe`
@@ -1580,6 +1584,9 @@ should compare colours and sharpness with `--present opengl`**.
 
 ### 12.9 What `bin/rta_app` is now, what is left, how to repeat
 
+(Since 14:47 `bin/rta_app` is candidate f3 - n13 with the camera views merged: 12.10,
+where its checks are. What follows is n13, now `rta_app.prev`.)
+
 **`bin/rta_app` = candidate n13** (built 13:33, in place 13:42): 12.1 to 12.8, translated
 with the fix set as it landed at 12:19 ("patched: 99 words of 29 sections"; it announces
 "patch set 073064bb (99 words)"). Checked before it was moved: `s12/verify.sh n13`
@@ -1597,12 +1604,20 @@ again with the Metal layer as default; the new fix set changes none of the 71 pi
 `rta_app.prev` = n4, `rta_app_c5` = this morning's; `rta_app_orig` (n13) / `.prev` (n4).
 The headless by-products: `bin/rta_native_fix` rebuilt 13:00 (new set, thread fix),
 `bin/rta_native` 13:42 (thread fix; built by `tools/recomp/build.py run` out of the object
-directory with 97 strays in it); `bin/rta_native_online` NOT rebuilt (2026-10-12, old set).
+directory with 97 strays in it); `bin/rta_native_online` rebuilt 14:50 (`net/build_online.py`:
+the new set, the thread fix, the views' five addresses left to the weak pass-through) and
+run: `s12/online/mixed-f3`, the headless program hosting three games in a row against the
+window program, 1,410 / 1,414 / 1,413 ticks in step, its threads 6 6 6 7 6 6 6 6 6 6 6 6
+(9 to 19 over three games before the fix).
 
 **Shared files changed** (outside `rt/`, `render/`, `app/`, `sound/`, `net/`):
 `tools/recomp/build.py` (the translation's files from `genfiles.py`), new
-`tools/recomp/genfiles.py`, and the notes: this section, `native-online.md`,
-`native-windows.md`, `native-graphics.md`. Inside the five directories, by file:
+`tools/recomp/genfiles.py`, `tools/recomp/hle.txt` (the views' five addresses, from
+`fpview.patch`), `tools/godot/recomp.patch` (one hunk left), `tools/godot/build.py` (a
+comment), `tools/godot/core/render/scene_tap.*` moved to `tools/recomp/render/` (12.10),
+and the notes: this section, `native-online.md`, `native-windows.md`, `native-graphics.md`.
+(One slip to own up to: a `git status` was typed once at 14:31 in `tools/recomp`, against
+the rule of no git commands; it reads, and changed nothing in the work tree.) Inside the five directories, by file:
 `rt/runtime.cpp`, `rt/rt.h` (12.1); `render/backend_gl.cpp`, `backend_gl.h`
 (`present_top_down`, joined draws), `render/texpack.cpp`, `render/build.py`;
 `app/app_main.cpp`, `app_rt.cpp`, `app_rt.h`, `pipeline.h` (`Pacer::sleep_until`),
@@ -1654,4 +1669,122 @@ python3 -B $S/first/walk.py person $B/rta_app_next           # as the launcher s
 python3 -B $S/first/arttest.py                               # the art pack's readers, two classes side by side (the program is named inside)
 sh $S/win/chain.sh                                           # the Windows folder and its Mac checks
 mv $B/rta_app_next $B/rta_app                                # only when verify and the lobby pair passed
+```
+
+### 12.10 The camera views merged (2026-10-13, 14:25 to 15:00; Ran)
+
+A new first job from the coordinator: three finished pieces of other work, merged into
+the shared tree in this order, each after a dry run that applied without a reject.
+
+| Piece | What went in | Left out |
+|---|---|---|
+| `app/fpview.patch` (`native-first-person.md`; its files `app/fpview.h`, `fpview.cpp`) | 5 addresses in `tools/recomp/hle.txt`; `rt/rt.h`, `rt/runtime.cpp` (`rt_dma_skip`, `rt_unit_cost` - the slice's cost goes through `slice_cycles()`, which is what it was while nothing changes the price); `app/gfx_rt.*`, `settings.h`, `app_main.cpp`, `help_mac.mm`, `build.py` | nothing |
+| `app/fpcontrols.patch` (`native-first-person-controls.md`; `app/fpcontrols.h`, `fpcontrols.cpp`, `look_host.h`, `look_mac.mm`) | `settings.h`, `app_main.cpp`, `help_mac.mm`, `build.py`, `win_main.cpp`, `build_win.py` | `app/fp-proposed.pnach` is in no build (`build.py --extra-pnach` exists and is not used) |
+| the core lines of `tools/godot/recomp.patch` | `gfxrt::set_hud_marks` (`app/gfx_rt.*`), `Gs::hide_edge` (`render/gs.*`), the tap's two hooks in `render/vif1.*` (null pointers unless set); `scene_tap.h`, `scene_tap.cpp` **moved** from `tools/godot/core/render/` to `tools/recomp/render/` (nothing here compiles them) | the patch's own change to `sound/audio_out.cpp` stays the spike's: `tools/godot/recomp.patch` now holds that one hunk (the patch as it was: `s12/godot-recomp.patch.before-merge`) |
+
+**The Godot build still works** (Ran, in a stand-in root of this work's own so that the
+spike's directory was not touched: `s12/godot-root`, a copy of `tools/godot` with links to
+`tools/recomp` and `local/recomp-out`): `build.py snapshot` (the one-hunk patch applies;
+the snapshot's `render/` brings `scene_tap.*` with it) and `build.py lib` (21 files,
+`librta_game.dylib` linked, `rtag_host` made). `tools/godot/build.py` needed no path
+changed - it compiles `render/scene_tap.cpp` out of its snapshot, and its overlay of
+`tools/godot/core/` simply finds nothing now; its comment there says so. Not run: the
+extension, the export, the spike's own tests. The spike's present snapshot
+(`local/godot-spike/src`) still has its old copy; its next `snapshot --refresh` takes
+the shared tree.
+
+**One thing the merge needed** (`app/app_main.cpp`, `app_rt.*`: `apprt::replaying()`).
+With both patches in, the rig comparison in **shoulder and first person did not come out
+as overhead's**: from tick 2,419 of `valor` the facing, then position, seed, hit points
+differ. Not a fault of either piece: in those two views the controls drive the game
+camera's yaw word themselves at every controller read - input, like a stick - while a
+replay gives the game the rig's rows and lets the game turn the yaw from them. So: **while
+another machine's controller rows are replayed (`--opt pad-replay`), the controls stand
+aside** (the view is still drawn). With that the camera work's claim holds in the merged
+tree (below). Playing, nothing changes.
+
+**Checks on the candidate (f3, built 14:37; `bin/rta_app` since 14:47)**:
+
+| Check | Result |
+|---|---|
+| `s12/verify.sh f3`, everything in overhead: 11 tick-keyed pictures (fast renderer, reference switches, the program before; default picture and `--plain`), 60 tour pictures, the rig comparison three ways | all the same files: 11 + 11 + 60 pictures, `merge/rig-final-compare.txt` byte for byte three times (`s12/verify-f3.txt`); the same for f1, the merge before the replay rule |
+| the rig comparison in each view (`s12/fp/rig.sh VIEW`: the camera work's `rig.sh` with this candidate's unpatched program, `--view VIEW` from power-on, the rig's rows replayed) | overhead: the same file as `merge/rig-final-compare.txt`. action, chase, shoulder, first: every simulation column identical to overhead's at every tick of every episode (5,410 ticks of `valor` with the fight); what differs is the object pool's sum (from the first tick a view is drawn) and the cosmetic seed - the camera work's own finding (pose-cache and decoder-slot pointers), not looked into again here |
+| the same before the replay rule (f1) | overhead, action, chase as above; shoulder and first different from tick 2,419 (above) |
+| a lobby game, the host in **first person** played by the controls' own test input (mouse turns, stick look, walking, strafing, strikes, blocks, casts), the joiner overhead (`s12/fp/pair.py`: the controls work's `pair.py` pointed at this work's lobby instance, ports + 2000, this Mac only, throw-away names) | 4,332 ticks through the change into `drunare`, **no shared column differs**; 3,376 blanks steered in the look view, the turning push given at 410, 8 presses held back (`fp/online-p3`); the same on f1: 4,334 ticks |
+| the host overhead, the joiner over the **shoulder** | 1,824 ticks in step (`fp/online-p4`) |
+
+Not run by this work: the camera work's second session (the camera stick in use, then
+overhead given the delivered rows), three or four players with views, a net game with the
+proposal.
+
+**In a real window** (`s12/fp/keys.py`: a 480 x 360 window of this work's own, in front,
+muted, 20 s at 14:36; the pointer was held for under five seconds): V went overhead >
+action > chase > shoulder > first > overhead (each press as the key itself, sent to the
+window); the pointer was **not** held in overhead and action and **was** held and hidden
+from chase on ("pointer: held=1 shown=0"); Escape gave it back ("held=0 shown=1, given
+back by Escape=1") and it stayed free; a click in the window took it again; back in
+overhead it was free. `app fpc mouse 60 0` turned the first-person look (yaw 134.9 to
+127.8 degrees). The keys panel has 35 lines now and the terminal text names the new keys
+("Camera view V ...", and the look views' block: mouse, W A S D, the three mouse buttons,
+the wheel, Tab, Escape). **Not tested: the mouse itself moving the look** - the motion
+comes from the system's mouse events while the pointer is held, and nothing here can move
+a real mouse; the function those events call is the one `app fpc mouse` calls. New test
+commands: `app pointer`, `app pointer click`.
+
+**The owner's launcher** ("Play Champions NATIVE (experimental).command"; not edited by
+this work). Its last line can stay as it is - the classic view is the default, V cycles,
+and the pointer is taken only in chase, shoulder and first person. To make the classic
+start explicit whatever a settings file says later, the line is:
+
+```
+exec "$R/local/recomp-out/bin/rta_app" --view overhead --disc "$(cd "$(dirname "$0")" && pwd)/Champions - Return to Arms (v2.00).iso"
+```
+
+(Its data directory, `local/recomp-out/app-data`, has no `settings.txt` yet: the next
+start is a first start - the keys panel comes up by itself and `settings.txt` is written
+with the `view` and `controls.*` lines.)
+
+**What a person will find rough** (pictures of this work's own: `s12/fp/look/sheet-hub.png`,
+`sheet-fire3.png`, `sheet-fight.png`; five views in the first level and in fire3, a fight):
+
+- Outdoors with a sky (the first level) chase, shoulder and first person look right; the
+  sky is the game's small dome - looking up in first person shows a plain colour.
+- Where a level has nothing above or behind it (fire3) the background is one flat colour:
+  the game never drew a ceiling or a far wall for a camera that looks along the ground.
+- **In first person the effects that belong to your own character are drawn at your eye**:
+  the glow after arriving in a level and the sparks of a hit are a coarse, blocky cloud
+  over much of the picture for as long as they last (`sheet-fight.png`, top row). Over the
+  shoulder the same effects sit round the character and look right.
+- No weapon and no hands in first person; the HUD is the overhead game's.
+- A creature that stands close fills the picture (shoulder in fire3); the game picks the
+  target of a swing itself, within 60 degrees of the facing, and the look comes round to
+  it only partly - a fight can be half beside the picture.
+- The camera work's and the controls work's own lists: `native-first-person.md` 8,
+  `native-first-person-controls.md` 2.9 (nobody has played it; sensitivity and the stick
+  curve are first guesses).
+
+**Windows.** `win_main.cpp` now has the views as well (`fpview.cpp` in `build_win.py`'s
+list, `fpview::install`, `--view`, `--view-set`, `app view`, the V key, the `view` and
+`controls.*` lines of the settings file; the controls patch had already brought the raw
+mouse input, the clipped pointer, the mouse buttons and `app fpc`). **It compiles and
+links with both compilers** (`s12/win/chain.sh`, 14:46: clang and GCC exit 0); nothing of
+it was run. `build_win.py --mac` has the three new files in its list. The folder's README
+names the V key and the mouse.
+
+Also changed for this merge, beyond the three pieces: `app/app_rt.*` (`replaying`),
+`app/look_host.h`, `look_mac.mm` (`state`, for `app pointer`), `app/app_main.cpp` (the
+replay rule, `app pointer [click]`), `app/win_main.cpp` and `build_win.py` (the views on
+Windows; the three new files in the `--mac` list, `help_mac.mm` given the runtime's
+include path there), `app/win/README.txt`.
+
+How to repeat the checks of this section (the lobby instance running, 12.9):
+
+```
+B=$PWD/local/recomp-out/bin; S=local/recomp-out/app-test/s12
+for v in overhead action chase shoulder first; do $S/fp/rig.sh $v $B/rta_app_orig; done    # $S/fp/rig/VIEW/compare.txt, against overhead's
+python3 -B $S/fp/pair.py $PWD/$S/fp/online-NAME --views first,overhead --play 900 --level drunare --play2 2400 --seed 7 --app $B/rta_app
+python3 -B $S/fp/keys.py                    # A REAL WINDOW IN FRONT for 20 s, the pointer held for a few of them (the program is named inside)
+$B/rta_app --offscreen --unpaced --size 960x540 --aspect 16:9 --data $S/fp/look/data --script $S/fp/look/look.rig     # the pictures of the five views
+(mkdir -p R/tools R/local && cp -R tools/godot R/tools/ && ln -s $PWD/tools/recomp R/tools/recomp && ln -s $PWD/local/recomp-out R/local/recomp-out \
+   && python3 R/tools/godot/build.py snapshot && python3 R/tools/godot/build.py lib)    # the Godot library from the merged tree, in a stand-in root R
 ```

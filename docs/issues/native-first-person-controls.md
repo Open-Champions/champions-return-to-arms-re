@@ -599,3 +599,113 @@ document. Local (`local/recomp-fp-controls/`, game output and generated code): `
 `src`, `root`, `root2` (the proposal's build), `lobby` (the server instance), `work`
 (`glue.py` - the edits to other work's files, `mkpatch.sh`, `fpasm.py`, `fpc.py`,
 `facts*.py`, `test*.py`, `pair.py`, logs, pictures, `online/` run directories).
+
+---
+
+# Part 3. The strafe section, proposed for the fix set
+
+The owner asked for the strafing of 2.6 to be added. This part is the section in its final
+form and the proof asked for before it is adopted. The section is
+`tools/recomp/app/fp-proposed.pnach`: `[Net test: strafe mode - a player can run one way
+and face another]`, **84 words** (sha256 of its `patch=` lines: 3259b951fc619c0e...). It is
+not in `patches/SLUS-20973_4028A55F.pnach` and not in the suggested sections; adopting it
+is the coordinator's step at a release. Sections 2.6 and the `s3` row of 2.7 describe the
+87-word draft; what changed is in 3.1.
+
+## 3.1 What it is
+
+- **A mode byte per player**: player object +0x47e. While it is 0 the game is, tick for
+  tick, the game without the section (3.3, 3.5).
+- **While it is not 0**, in the neutral moving state (`Player_move` mode 0) the character
+  turns - `angle_approach` with the game's own 40 % - to **0x3e3d minus the yaw word of its
+  player**, the heading a pushed-up stick asks for, also when the stick is at rest; and its
+  velocity is `180 x s` along **the stick's own direction** instead of along the facing.
+  Nothing else changes: the states where the stick only turns, skills, the rush, collision,
+  animation rates.
+- **How the mode travels**: game message 4, sub-type 2: `{2, slot, mode}`. Message 4 is the
+  game's "null" channel: registered, carried in the input packets and executed in lockstep
+  by every machine in the sender's slot order - with a handler that is an empty function
+  (0x1e01b0). The section gives it a handler that stores `mode` in that slot's player
+  object, and a sender (`0x215c98`, mode in a0) that builds the three bytes on the stack
+  and calls `net_sendGameMsg` as the game's own sender of the channel does. Offline
+  `net_sendGameMsg` runs the handler at once. **Nothing is added to the pad row**: the
+  heading is the yaw word that is already in it.
+- **Reset**: `Player_ctor` now clears +0x47e with +0x47c and +0x47d. A new character -
+  level start, level change, respawn - therefore starts with the mode off on every
+  machine, in lockstep; whoever wants it asks again. A player who never sends the message
+  is in the original's mode for good; a remote player's mode is whatever that player's
+  messages said. The prediction copy is a clone and carries the byte.
+- **Joining and leaving**: nobody can join a game in progress in the original (the peer
+  table is filled once, at the launch: `docs/netcode.md`), so there is no joiner to bring
+  up to date. A player who leaves or is dropped stops sending; its character is killed by
+  the game's own drop code and the byte goes with the object.
+- Changed since the draft of 2.6: the sender keeps its bytes on the stack (the draft kept
+  them in a word of the code area), and sender and handler each stand at the entry of a
+  function of their own (a jump into the middle of a function is not a call for a
+  translator).
+
+## 3.2 Where the bytes go
+
+| Words | Address | What stood there | Why it is free |
+|---|---|---|---|
+| 2 | 0x1b4210, 0x1b4214 in `Player_move` | `li v0,5`; `beq s5,v0,0x1b4408` | replaced by a jump and the `li` in its delay slot; the code jumped to does the `beq` (and the `li v0,2` of its delay slot, 0x1b4218, which stays where it is and is skipped). 0x1b4210 is a branch target (from 0x1b4204) and still starts the same sequence; nothing branches to 0x1b4214 or 0x1b4218 |
+| 45 | 0x2128c8-0x212978 | an unreferenced function of 45 words (audio area; `docs/audio-save.md` lists it as unreferenced) | no jump, call, branch from outside or data word in the whole executable refers to it (W3); all 45 words are used |
+| 16 | 0x215c98-0x215cd4 | an unreferenced function of 36 words | the same; 20 words of it are left as they were |
+| 17 | 0x215d28-0x215d68 | an unreferenced function of 31 words | the same; 14 words left |
+| 2 | 0x1e01b0, 0x1e01b4 | `jr ra`; `nop` - the empty handler of game message 4 | the whole function; referred to only by the registration at 0x1dc1ac |
+| 2 | 0x1a22fc, 0x1a2300 in `Player_ctor` | `sb zero,0x47c(s5)`; `sb zero,0x47d(s5)` | become `sh zero,0x47c(s5)`; `sb zero,0x47e(s5)`: the same two bytes cleared, and the third |
+| mode byte | player object +0x47e | read by `Player_move` (the 1.25 speed-up, only together with +0x47c) and by action state 7, written by state 7 | state 7 has no way in (`docs/player.md`); +0x47c is 0 outside it, so a set +0x47e alone changes nothing in the shipped code (M1, M2 of 3.3 run exactly that). The constructor did not initialise it: it held what the memory held |
+
+Against the fix set: no address of the section, and none inside the three functions, is
+patched by any section of `patches/SLUS-20973_4028A55F.pnach` or of
+`tools/recomp/soak/proposed-sections.pnach` (W4). The fix set's own code lives in another
+unreferenced function, 0x257ab4-0x257b4c.
+
+**Other users of game message 4.** In the original: `nullmsg_sendShopClosed` 0x1e0134
+(reached by the jump at 0x1d0b70 when a shop closes in a net game) sends `{1, slot}`;
+`nullmsg_send0` 0x1e0108 (`{0}`) has no caller (W5). The handler takes sub-type 2 only, so
+a closing shop is ignored as before (H2). The applications' own announcements - patch set,
+arithmetic - are datagrams of their network layers, not game messages: neither
+`tools/play-net/src` nor `tools/recomp/net` calls `net_sendGameMsg` or names the channel.
+
+## 3.3 In the interpreter (Executed)
+
+`python3 tools/recomp/app/fp_section_test.py` - the section in the function-level
+interpreter (`tools/ee_emu.py`, the fake player of `tools/ee_tests.py`), in the style of
+`tools/recomp/soak/sections_test.py`. 15 checks, 0 failed:
+
+| Check | What |
+|---|---|
+| W1, W2 | 84 words in 6 blocks; every block stands on the words its `// was:` line quotes |
+| W3, W4, W5 | the three functions are referred to by nothing; no clash with any other section; the channel's one sender in the game |
+| C1 | the constructor's two words: +0x47c, +0x47d cleared as shipped, +0x47e as well, +0x47b and +0x47f untouched |
+| S1 | the sender: one `net_sendGameMsg(channel id, {2, local slot, mode}, 3)`; stack and saved registers kept |
+| H1-H4 | the handler: `{2, slot, mode}` changes that slot's byte and nothing else in any player object; `{0}`, `{1, slot}`, other sub-types, slots of 4 and more, a slot without an object: nothing; as shipped: nothing at all |
+| **M1** | **mode byte 0**: `Player_move` in modes 0 to 6, 10 sticks x 4 yaw words x facings, offline and net: **1,200 of 1,200 calls leave the same player object (all 0x590 bytes), pad, move vector and return value with the section as without** |
+| M2 | mode byte 1, modes 1 to 6: 240 of 240 the same bytes with the section as without |
+| M3 | mode byte 1, mode 0: 240 of 240: the facing is `angle_approach(0.4, facing, 0x3e3d - yaw word)`, also at rest; the speed is the shipped one, along the stick |
+| M4 | mode byte 1, mode 0: 32 of 32: velocity words and the vector handed to the move are bit for bit those of the shipped game for a character whose facing is exactly the stick's direction |
+
+## 3.4 The application sends the mode by itself (Ran)
+
+`fpcontrols` knows the section is in the game by the hook word at 0x1b4210. Each blank it
+compares the mode it wants - on while a view that faces the look is steered (`controls.strafe
+= auto`: first person and shoulder; `on`: chase as well; `off`: never), off in overhead and
+action and whenever the game's own camera has the frame (cutscene, dialogue, menu, death) -
+with the byte of the simulated player; when they differ, the application calls the section's
+sender in that frame's draw pass (`fpview::on_drawn`, where the game's own HUD code sends its
+messages from; `apprt::call_game`, new), and again every half second while the byte is still
+not what is wanted. Offline and in a net game it is the same call. With the mode on, the
+controls give no turning push and hold no strike back (2.6).
+
+**Ran offline** (`work/test5.py`, the program with the section):
+
+| What | The simulated player's mode byte |
+|---|---|
+| view first / overhead / shoulder / chase / action / first | 1 / 0 / 1 / 0 / 0 / 1, each in the first blank after the view was asked for |
+| `controls.strafe` off / on / (chase) / auto | 0 / 1 / 1 in chase / 0 in chase |
+| pause menu opened and closed in first person | 1 throughout |
+| level change | 0 on the new character while the level's own camera has the frame, 1 as soon as the view steers again |
+| death | 0 (asked off when the game's camera took the frame); 1 again on the character of the restarted level |
+
+12 messages in the whole session.

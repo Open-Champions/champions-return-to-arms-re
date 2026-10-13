@@ -1,0 +1,4 @@
+# Functions the soak hooks (tools/recomp/soak/soakhooks.cpp) wrap in the soak builds, added to
+# tools/recomp/hle.txt and tools/recomp/net/hle-net.txt by build_soak.py.  One hex address per
+# line.  The original runs in each of them.
+132e90   # net_main: once per displayed frame on the main thread, outside the tick - where the mode driver makes its calls (SOAK_STRAFE, at=frame)

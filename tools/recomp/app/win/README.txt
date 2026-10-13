@@ -7,8 +7,10 @@ Nothing is installed; everything it writes goes into the folder "rta-data" besid
 In the second build: playing online through a lobby server, widescreen and the other
 picture settings. New in this one (2026-10-13): the way the game is held to 60 pictures a
 second (check 3, "How even is it"), a fix for threads that were left behind after every
-online game, and the fix set every build of this day has. None of it has been seen on
-Windows either.
+online game, the fix set every build of this day has, and the camera views (the V key:
+they were made and tried on the Mac this afternoon; on Windows not even the mouse code
+has run - say what happens when you press V and move the mouse). None of it has been
+seen on Windows either.
 
 You need
   - Windows 10 (version 1903 or later) or Windows 11, 64-bit
@@ -29,6 +31,12 @@ Keys
   Enter      Start                 Backspace  Select
   F, F11 or Alt+Enter  full screen (Escape leaves it)
   F12        writes a picture of the game to rta-data\picture-N.png
+  V          the next camera view: overhead (the game's own), action, chase, shoulder,
+             first person (Shift+V: the one before). In chase, shoulder and first person
+             the mouse looks (the pointer is hidden and kept in the window; Escape gives
+             it back, a click takes it again), W A S D walk where you look, left mouse
+             button attacks, right blocks, middle uses, the wheel swaps weapons, Tab is
+             the map. With a controller the right stick looks.
   An Xbox controller (or any controller that Steam or DS4Windows presents as one) works
   as controller 1 as well.
 

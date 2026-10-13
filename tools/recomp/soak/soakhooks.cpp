@@ -45,11 +45,12 @@
 //          to its own player - a new player object (level entry, respawn), a level change
 //          becoming pending, death, a change of action state, its menu opening or closing -
 //          with 1 and 0 in turn (now and then the value it already asked for).
-//          at=frame (default): on the main thread, in the per-frame task pass outside the
-//          tick, as game code would call it; at=blank: from the vertical-blank handler.
+//          at=frame (default): on the main thread, on entry to net_main - once per displayed
+//          frame, outside the tick, as game code would call it; at=blank: from the
+//          vertical-blank handler (where the runtime's script command `call` runs).
 //      SOAK_STRAFE_SLOT=<n>   the player slot this machine owns (the driver looks at it).
 //    A script can ask for one call by storing into the control block 0xE0040:
-//      +0 u32 address, +4 u32 a0, +8 u32 when (1 the next frame's task pass, 2 inside the
+//      +0 u32 address, +4 u32 a0, +8 u32 when (1 the next entry to net_main, 2 inside the
 //      next tick after the task pass, 3 the next vertical blank); the hooks clear +8.
 //      +0x10 u32 calls of the strafe sender made by this machine, +0x14 the mode last sent.
 #include "recomp.h"
@@ -326,7 +327,7 @@ void driver_setup() {
     if (const char* v = getenv("SOAK_STRAFE_SLOT")) D.slot = atoi(v) & 3;
 }
 
-// where: 1 the per-frame task pass (main thread, outside the tick), 2 inside a tick, 3 the vertical blank
+// where: 1 entry to net_main (main thread, outside the tick), 2 inside a tick, 3 the vertical blank
 void driver_step(Ctx* c, u32 where) {
     if (!D.ready) driver_setup();
     if (rd(CTRL + 8) == where && rd(CTRL)) {        // a script's request
@@ -366,7 +367,6 @@ void driver_step(Ctx* c, u32 where) {
 // then - if this was a lockstep tick - the checksums, which the shim's tick log then reads
 void soak_tasks_run(Ctx* c) {
     u32 ra = (u32)c->r[31];
-    if (ra != TICK_RETURN) driver_step(c, 1);
     orig_003226e4(c);
     if (ra != TICK_RETURN) return;
     driver_step(c, 2);
@@ -383,6 +383,14 @@ void soak_tasks_run(Ctx* c) {
         }
         if (countdown > 0 && --countdown == 0) { fflush(nullptr); rt_finish(0); }
     }
+}
+
+// net_main (hle-soak.txt): the game calls it once per displayed frame from the session loop
+// (and in a row from net_flushBeforeLoad); the driver's main-thread calls are made on entry,
+// before the frame's input is sampled - outside the tick, as the game's own code would
+void fn_00132e90(Ctx* c) {
+    driver_step(c, 1);
+    orig_00132e90(c);
 }
 
 // gfx_vblankHandler, likewise: the driver's vertical-blank calls

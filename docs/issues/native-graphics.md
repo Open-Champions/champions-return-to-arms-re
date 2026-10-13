@@ -479,6 +479,12 @@ Notes for the merge are at the head of the patch.
 
 ## 7. Left
 
+(2026-10-13, `native-app.md` 12.6: **full screen** was switched on, for five seconds each
+way of presenting, and works - 1512 x 949 points, drawn at 3024 x 1898, the view 16:10
+wide; the **30-a-second cap** shows one picture every four refreshes of the 120 Hz display,
+as the system itself reports; 24 resizes while walking went through. The window's picture
+now goes through a Metal layer by default: 12.3.)
+
 - **Frames a second at 4K on a free machine**, and whether 60 hold; a tour of `shame1`
   with every picture in view (memory against the budget, pictures dropped and read again).
 - **Full screen** was not switched on (a test window must not cover the screen).

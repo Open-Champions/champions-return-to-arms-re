@@ -932,6 +932,60 @@ For whoever edits `FINDINGS.md` (this document does not).
 | V (replace the first part's "Object pools … No reader in the simulation was looked for") | The fields that differ between two native machines in step are classified in `docs/issues/native-soak.md` ("The fields that differ…"): presentation by reading for the lights, the drawn flags, the private generators of `Gold`, `Torch`, `JumpGate`, `Savepoint` and `AddParticle`, the model-particle records, status counters 8 and 10, the frame stamps, trail handles, prop draw matrices and a menu byte; the pose pointers are D34's cache. Not presentation: the real player's animation tracks 5 and 6 differ on its owner's machine because `SpellCyclone_run` (**Ran**) starts its animation on `net_objOrGhost` inside the tick; no position followed in 9 million ticks; open |
 | V (new) | Native soak, the shipping set (26 sections, 91 words) plus the three proposed sections (8 words): 26 games from power-on through the developer LAN start (18 of two machines, 4 of three, 4 of four), 1,779,709 ticks, up to 301,002 in one game, 23 levels, 153 level changes, 347 deaths, 36,922 `Player_castSkill` entries, 363 `Savepoint_interact`, 56,377 `JumpGate_interactPrompt`: no difference in any deciding column — the first part's, and the menu mutex and the jump-gate destination count and list — and no out-of-sync flag; 2 games ended by a kick or leave. With the first two sections only: 365,308 more, none. Two to four copies of one native build: logic only |
 
+---
+
+# Third part, 2026-10-13 afternoon: the strafe section, soaked before it goes into the set
+
+**Status: in progress** (started 14:36; this part is rewritten as the arms report).
+
+The section under test is `[Net test: strafe mode - a player can run one way and face
+another]` of `tools/recomp/app/fp-proposed.pnach` (84 words; the sha256 of its `patch=`
+lines begins 3259b951fc619c0e), proposed and interpreter-tested by the controls work
+(`docs/issues/native-first-person-controls.md`, `tools/recomp/app/fp_section_test.py`). It
+is a rule change, not a fix: a mode byte per player object (+0x47e) that, while set, makes
+`Player_move` turn the character to its player's look and run it along the stick; set by
+game message 4 sub-type 2 from a sender at 0x215c98; cleared by `Player_ctor`.
+
+## Programs and method (third part)
+
+| Program | Sections |
+|---|---|
+| `rta_soak-s29` | the released set 073064bb: the 29 of `tools/play-net/sections-suggested.txt`, 99 words (`patches/SLUS-20973_4028A55F.pnach` as of 12:19, sha1 3b97954e…). The same words as the morning's `s26abc` (the two `patches.cpp` differ in the set's word count alone) |
+| `rta_soak-s29f` | the same and the strafe section through `build_soak.py --extra-pnach` |
+
+Built into `local/recomp-out/soak/bin/` from the morning's copy of the tools, runtime
+headers and shim (`src-1013`; `recomp.py` and `netshim.cpp` have not changed since) and the
+patch files as copied at 14:40 into `local/recomp-out/soak/src-1013b/`
+(`local/recomp-out/soak/build-1013b.sh`). The translator merges `Player_move` with the
+section's move code into one unit (0x1b4020–0x21297c), as the section's notes say it must.
+
+New in the soak's own code for this part:
+
+- **A driver for the mode** in `soakhooks.cpp` (`SOAK_STRAFE=<seed>[,rate=N][,at=blank]`):
+  on every entry to `net_main` — once per displayed frame, on the main thread, outside the
+  tick; `net_main` is hooked for it through `tools/recomp/soak/hle-soak.txt` — a machine's
+  driver looks at its own player and calls the section's sender with 1 and 0 in turn (15 %
+  of the calls repeat the value already asked for): about one frame in 120 at random, one
+  frame in 40 while its player is dead, and with a set chance when something happens — a
+  new player object, that is a level entry or a respawn (70 %: "on", 0 to 7 frames later),
+  a level change becoming pending (80 %), its player dying (80 %), a change of its action
+  state — a swing, a block, a cast, a hit taken — (20 %), its menu or a shop opening or
+  closing (30 %). Seeded by the job and the machine, so a game repeats. `at=blank` makes
+  the same calls from the vertical-blank handler instead, where the runtime's script
+  command `call` runs.
+- A script can ask the hooks for one call of any game function (control block 0xE0040):
+  the directed games use it for the sender (`strafe on`), and for `net_kickPeer`.
+- `farm.py`: `--strafe all|mixed|0,2` (whose driver runs); every player's mode byte
+  (`p<n>mode`) and the yaw word that travels with the input (`yaw<n>`, 0x5d0bc0) are
+  deciding columns beside the facing, which always was; per game the ticks with a player in
+  the mode, the sender calls, and of the ticks in which a player in the mode moved more
+  than a unit how many went more than 45 and more than 135 degrees off its facing (the same
+  share for players not in the mode is the check on the measure: 4 % in the first game —
+  knock-backs and pushes); `twin`: two programs play the same seeds and each machine's tick
+  log of the one is compared with the other's row for row; `one` takes `--survive`,
+  `--pairs` and per-machine lines (`@2: …`) for games in which a machine leaves.
+
+
 ## How to repeat
 
 ```
