@@ -79,6 +79,7 @@
 #include "gfx_rt.h"
 #include "pad_host.h"
 #include "pipeline.h"
+#include "present_host.h"
 #include "recorder.h"
 #include "settings.h"
 
@@ -92,6 +93,7 @@
 #include <QOpenGLExtraFunctions>
 #include <QScreen>
 #include <QSurfaceFormat>
+#include <QThread>
 #include <QTimer>
 #include <QWindow>
 
@@ -169,6 +171,126 @@ struct DisplayClock {
 #endif
 static DisplayClock g_display;
 
+// ---- what holds the window's thread ("RTA_STALL_LOG=1", a debugging aid) ---------------------
+// A list that is ready to be drawn is normally taken by the window's thread within a
+// millisecond.  When it is not taken for `after_ms`, a thread of its own takes the window
+// thread's call stack every few milliseconds until the list is taken, and prints the
+// stacks with the names the dynamic loader knows (image and nearest exported name, and
+// the offsets, so that `atos -o IMAGE -l BASE ADDRESS` gives the rest afterwards).  The
+// window's thread is stopped for the microseconds it takes to copy the addresses; nothing
+// that may wait for a lock is called while it is stopped.
+#ifdef __APPLE__
+#include <dlfcn.h>
+#include <mach/mach.h>
+#include <pthread.h>
+struct StallWatch {
+    const char* what;                           // what stood: said in every line
+    explicit StallWatch(const char* text) : what(text) {}
+    std::atomic<double> waiting_since{0};       // the watched thread has had something to do since then (0: nothing, or it is at it)
+    std::atomic<bool> on{false};
+    std::atomic<uint64_t> stalls{0};
+    std::atomic<double> longest_ms{0}, total_ms{0};
+    double after_ms = 25.0;
+    thread_act_t port = 0;
+    uintptr_t stack_low = 0, stack_high = 0;
+    enum { DEPTH = 48, MOST = 12 };
+    struct Stack { double at_ms; int count; uintptr_t pc[DEPTH]; };
+    void start() {                              // on the thread to be watched
+        if (!getenv("RTA_STALL_LOG")) return;
+        if (const char* ms = getenv("RTA_STALL_MS")) after_ms = std::max(2.0, atof(ms));
+        port = mach_thread_self();
+        stack_high = (uintptr_t)pthread_get_stackaddr_np(pthread_self());
+        stack_low = stack_high - pthread_get_stacksize_np(pthread_self());
+        on = true;
+        std::thread([this] { app::interactive_thread(); loop(); }).detach();
+    }
+    void ready() { if (on) { double zero = 0; waiting_since.compare_exchange_strong(zero, now_ms()); } }
+    void taken() { if (on) waiting_since = 0; }
+    void beat() { if (on) waiting_since = now_ms(); }           // a thread that should come by every few milliseconds
+    bool take(Stack& out) {
+#if defined(__arm64__) || defined(__aarch64__)
+        if (thread_suspend(port) != KERN_SUCCESS) return false;
+        arm_thread_state64_t state;
+        mach_msg_type_number_t n = ARM_THREAD_STATE64_COUNT;
+        out.count = 0;
+        if (thread_get_state(port, ARM_THREAD_STATE64, (thread_state_t)&state, &n) == KERN_SUCCESS) {
+            out.pc[out.count++] = (uintptr_t)arm_thread_state64_get_pc(state);
+            out.pc[out.count++] = (uintptr_t)arm_thread_state64_get_lr(state);
+            uintptr_t fp = (uintptr_t)arm_thread_state64_get_fp(state);
+            while (out.count < DEPTH && fp >= stack_low && fp + 16 <= stack_high && !(fp & 7)) {
+                uintptr_t next = ((uintptr_t*)fp)[0], ret = ((uintptr_t*)fp)[1];
+                if (!ret) break;
+                out.pc[out.count++] = ret;
+                if (next <= fp) break;
+                fp = next;
+            }
+        }
+        thread_resume(port);
+        return out.count > 0;
+#else
+        (void)out;
+        return false;
+#endif
+    }
+    void loop() {
+        std::vector<Stack> stacks;
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(3));
+            double since = waiting_since;
+            if (since == 0 || now_ms() - since < after_ms) continue;
+            stacks.clear();
+            while (waiting_since.load() == since && stacks.size() < MOST) {
+                Stack one;
+                one.at_ms = now_ms() - since;
+                if (take(one)) stacks.push_back(one);
+                std::this_thread::sleep_for(std::chrono::milliseconds(stacks.size() < 4 ? 6 : 25));
+            }
+            while (waiting_since.load() == since) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            double held = now_ms() - since;
+            stalls++;
+            total_ms = total_ms + held;
+            if (held > longest_ms) longest_ms = held;
+            std::string text;
+            char line[640];
+            snprintf(line, sizeof line, "rta_app: stall: %s for %.1f ms; its call stack meanwhile (%zu taken):\n", what, held, stacks.size());
+            text += line;
+            for (size_t k = 0; k < stacks.size(); k++) {
+                bool same = k > 0 && stacks[k].count == stacks[k - 1].count && !memcmp(stacks[k].pc + 2, stacks[k - 1].pc + 2, (stacks[k].count - 2) * sizeof(uintptr_t));
+                snprintf(line, sizeof line, "rta_app: stall:  at %.1f ms%s\n", stacks[k].at_ms, same ? ": as before (but for the innermost frames)" : ":");
+                text += line;
+                for (int f = 0; f < stacks[k].count && (!same || f < 2); f++) {
+                    uintptr_t pc = stacks[k].pc[f] & 0x0000FFFFFFFFFFFFull;
+                    Dl_info info;
+                    if (dladdr((void*)pc, &info) && info.dli_fname) {
+                        const char* image = strrchr(info.dli_fname, '/');
+                        snprintf(line, sizeof line, "rta_app: stall:    %-28s %s + %lu   [%s base 0x%lx address 0x%lx]\n", image ? image + 1 : info.dli_fname,
+                                 info.dli_sname ? info.dli_sname : "?", info.dli_saddr ? (unsigned long)(pc - (uintptr_t)info.dli_saddr) : 0ul,
+                                 info.dli_fname, (unsigned long)(uintptr_t)info.dli_fbase, (unsigned long)pc);
+                    } else snprintf(line, sizeof line, "rta_app: stall:    0x%lx\n", (unsigned long)pc);
+                    text += line;
+                }
+            }
+            fputs(text.c_str(), stderr);
+            fflush(stderr);
+        }
+    }
+};
+#else
+struct StallWatch {
+    explicit StallWatch(const char*) {}
+    double after_ms = 0;
+    std::atomic<bool> on{false};
+    std::atomic<uint64_t> stalls{0};
+    std::atomic<double> longest_ms{0}, total_ms{0};
+    void start() {}
+    void ready() {}
+    void taken() {}
+    void beat() {}
+};
+#endif
+static StallWatch g_stall("a list that was ready to be drawn waited for the thread that draws");
+static StallWatch g_main_stall("the window's own thread (the main one: events, AppKit) did not come back to its event loop");
+
 static const char* TITLE = "Champions: Return to Arms - native build (experimental)";
 static render::Renderer* g_renderer;
 static double memory_mb();
@@ -179,10 +301,20 @@ static double cpu_ms() {                                // processor time of the
     return (u.ru_utime.tv_sec + u.ru_stime.tv_sec) * 1000.0 + (u.ru_utime.tv_usec + u.ru_stime.tv_usec) / 1000.0;
 }
 
+// How a picture gets into the window when nothing is said (--present, RTA_PRESENT):
+// through a Metal layer from a drawing thread of its own (macOS), or by an OpenGL swap on
+// the window's own thread.
+#ifdef __APPLE__
+static const bool PRESENT_METAL_DEFAULT = false;
+#else
+static const bool PRESENT_METAL_DEFAULT = false;
+#endif
+
 struct Options {
     int window_w = 960, window_h = 720, size_w = 0, size_h = 0, scale = 0;
     bool offscreen = false, unpaced = false, fullscreen = false, no_sound = false, emulator_timing = false, no_films = false;
     bool queued = false;                // --pacing queued: the picture path's hand-overs hold the game back
+    bool metal = PRESENT_METAL_DEFAULT; // --present metal|opengl: how the picture gets into the window (present_host.h)
     double volume = 1.0;
     std::string test, png, disc, data, elf, control;
     std::set<uint64_t> at;
@@ -316,6 +448,19 @@ class GameWindow : public QWindow {
   public:
     bool test = false;
     void toggle_fullscreen() { if (visibility() == QWindow::FullScreen) showNormal(); else showFullScreen(); }
+    // What the thread that draws needs to know of the window, kept here by this (the main)
+    // thread whenever it changes: size in points, device pixels per point, whether any of
+    // it can be seen.
+    std::atomic<int> points_w{0}, points_h{0};
+    std::atomic<double> pixel_ratio{1.0};
+    std::atomic<bool> exposed{false};
+    std::atomic<uint64_t> changes{0};
+    void mirror() {
+        points_w = width(); points_h = height();
+        pixel_ratio = devicePixelRatio();
+        exposed = isExposed();
+        changes++;
+    }
 
   protected:
     void keyPressEvent(QKeyEvent* e) override {
@@ -332,7 +477,10 @@ class GameWindow : public QWindow {
         if (uint32_t bit = key_bit(e->key())) g_keys &= ~bit;
     }
     void focusOutEvent(QFocusEvent*) override { g_keys = 0; }       // nothing stays held when the window is left
+    void resizeEvent(QResizeEvent*) override { mirror(); }
+    void exposeEvent(QExposeEvent*) override { mirror(); }
     bool event(QEvent* e) override {
+        if (e->type() == QEvent::DevicePixelRatioChange || e->type() == QEvent::WindowStateChange) { bool r = QWindow::event(e); mirror(); return r; }
         if (e->type() == QEvent::Close) {
             // the game's thread ends the run at its next vertical blank (reports, sound device);
             // if it does not come to one, end here
@@ -350,10 +498,21 @@ struct CallQEvent : QEvent {
     explicit CallQEvent(std::function<void()> f) : QEvent(CallEvent), fn(std::move(f)) {}
 };
 
-// The main-thread side: owns the context, the backend and the window; draws and paces.
+// The window and the picture.  The window is the main thread's (Qt, AppKit: events, the
+// title bar, everything the system does to a window).  The picture - the OpenGL context,
+// the backend, drawing, the swap and its timing - belongs to a thread of its own, the
+// "drawing thread": while the main thread is inside one of AppKit's own jobs for the
+// window (its display cycle makes calls to the window server that take 100 ms and more
+// when a person is moving other windows about: seen with RTA_STALL_LOG, native-app.md
+// 12.3), pictures go on being drawn and shown.  RTA_PICTURE_THREAD=main: the main thread
+// draws as well, as it did until 2026-10-13 (for comparing).
 class Screen : public QObject {
   public:
     Options opt;
+    bool own_thread = true;                             // a thread of its own draws (see above)
+    QThread* painter = nullptr;
+    std::condition_variable work;                       // a list or a call waits for the drawing thread
+    std::vector<std::function<void()>> calls;           // to be carried out by the drawing thread, with its context current (under `lock`)
     GameWindow* window = nullptr;
     QOffscreenSurface* offscreen = nullptr;
     QOpenGLContext* context = nullptr;
@@ -414,40 +573,74 @@ class Screen : public QObject {
         // the path, per picture (milliseconds of wall time)
         app::Figure game, slot_wait, decoder_idle, decode, queue, gl, to_swap, swap, pipe;
         std::vector<float> slack;                               // the moment minus the time it was drawn at (negative: drawn late)
+        // through Metal the system says when each picture really was on the glass (present_host.h)
+        uint64_t glass = 0, glass_never = 0, glass_by_refreshes[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+        double glass_last = 0, glass_worst_ms = 0;
+        app::Figure glass_after_due;                            // on the glass, minus the moment it was meant for (+1000 ms, see where it is added)
         double slack_mean = 0, slack_low = 0;                   // filled in by report_pace
         // processor time at the reset, to say what a picture cost since
         double cpu0 = 0, main_cpu0 = 0, decode_cpu0 = 0;
         uint64_t blanks0 = 0;
     } pace;
 
-    QSurface* surface() { return window ? (QSurface*)window : (QSurface*)offscreen; }
+    // Through a Metal layer (present_host.h): the window has no OpenGL in it, the context is
+    // made current on a surface without a window, and the drawing thread hands each picture
+    // to the layer itself.
+    bool metal = false;
+    hostpresent::Surface* presenter = nullptr;
+    QSurface* surface() { return window && !metal ? (QSurface*)window : (QSurface*)offscreen; }     // what the context is made current on
 
     void create() {
         QSurfaceFormat format = QSurfaceFormat::defaultFormat();
         format.setSwapInterval(opt.unpaced ? 0 : 1);
-        if (opt.offscreen) {
+#ifdef __APPLE__
+        metal = !opt.offscreen && opt.metal;
+#endif
+        if (opt.offscreen || metal) {
             offscreen = new QOffscreenSurface;
             offscreen->setFormat(format);
             offscreen->create();
-        } else {
+        }
+        if (!opt.offscreen) {
+            // (a plain CAMetalLayer, not Qt's own kind that presents with the main thread's transaction while a window is resized)
+            if (metal) qputenv("QT_MTL_NO_TRANSACTION", "1");
             window = new GameWindow;
-            window->setSurfaceType(QSurface::OpenGLSurface);
-            window->setFormat(format);
+            window->setSurfaceType(metal ? QSurface::MetalSurface : QSurface::OpenGLSurface);
+            if (!metal) window->setFormat(format);
             if (!opt.test.empty()) {
                 window->test = true;
                 window->setTitle(QString("AGENT TEST - ") + QString::fromStdString(opt.test));
-                window->setFlags(window->flags() | Qt::WindowDoesNotAcceptFocus | Qt::WindowStaysOnBottomHint);
+                // (tests of what is on the glass need the window to be seen: RTA_TEST_WINDOW_FRONT=1 keeps a test
+                // window above the others instead of below them; it still takes no keyboard)
+                bool front = getenv("RTA_TEST_WINDOW_FRONT") != nullptr;
+                window->setFlags(window->flags() | Qt::WindowDoesNotAcceptFocus | (front ? Qt::WindowStaysOnTopHint : Qt::WindowStaysOnBottomHint));
             } else window->setTitle(TITLE);
             window->resize(opt.window_w, opt.window_h);
             window->setMinimumSize(QSize(320, 240));
+            // tests: RTA_TEST_WINDOW_AT=X,Y puts a test window where the test wants it (to move another window over it)
+            // (a negative figure counts from the screen's right or lower edge)
+            if (const char* at = getenv("RTA_TEST_WINDOW_AT")) {
+                int x = 0, y = 0;
+                if (!opt.test.empty() && sscanf(at, "%d,%d", &x, &y) == 2) {
+                    QRect screen = QGuiApplication::primaryScreen() ? QGuiApplication::primaryScreen()->availableGeometry() : QRect(0, 0, 1440, 900);
+                    if (x < 0) x = screen.right() + x - opt.window_w;
+                    if (y < 0) y = screen.bottom() + y - opt.window_h;
+                    window->setPosition(x, y);
+                }
+            }
             if (opt.fullscreen && opt.test.empty()) window->showFullScreen(); else window->show();
-            if (!opt.test.empty()) window->lower();
+            if (!opt.test.empty() && !getenv("RTA_TEST_WINDOW_FRONT")) window->lower();
+            window->mirror();
         }
         context = new QOpenGLContext;
         context->setFormat(format);
         if (!context->create() || !context->makeCurrent(surface())) { log_line("no OpenGL 4.1 context"); _exit(1); }
         QOpenGLExtraFunctions* gl = context->extraFunctions();
         log_line(std::string("OpenGL ") + (const char*)gl->glGetString(GL_VERSION) + " on " + (const char*)gl->glGetString(GL_RENDERER));
+        if (metal) {
+            presenter = hostpresent::create((void*)window->winId(), log_line);
+            if (!presenter) { log_line("the window cannot be given its pictures through Metal; start again with --present opengl"); _exit(1); }
+        }
         backend = new GlBackend;
         {
             PictureOptions picture;
@@ -537,6 +730,51 @@ class Screen : public QObject {
         start_ms = now_ms();
         start_cpu = cpu_ms();
         pace.cpu0 = start_cpu;
+        // Who draws.  Without a window: a thread of its own.  With the window as an OpenGL
+        // view: the main thread - AppKit ends the program when a context that has a view is
+        // updated from any other ("-[NSOpenGLContext update] must be called from the main
+        // thread if the context has a view", met at the first resize: Ran, 12.3), and Qt
+        // says of itself that it cannot draw OpenGL from another thread on macOS.
+        const char* who = getenv("RTA_PICTURE_THREAD");
+        own_thread = !window || metal;
+        if (who && !strcmp(who, "main")) own_thread = false;
+        if (own_thread) {
+            // the context goes to the drawing thread for good (Qt: a context is made current
+            // only on the thread its object lives on)
+            context->doneCurrent();
+            painter = QThread::create([this] { painter_loop(); });
+            context->moveToThread(painter);
+            painter->start();
+        } else {
+            log_line("picture: drawn by the window's own (main) thread (RTA_PICTURE_THREAD=main)");
+            g_stall.start();
+        }
+    }
+
+    // Something for the drawing thread to do with its context current (an "app art" line).
+    void on_drawing_thread(std::function<void()> fn) {
+        if (!own_thread) { QCoreApplication::postEvent(this, new CallQEvent(std::move(fn))); return; }
+        { std::lock_guard<std::mutex> hold(lock); calls.push_back(std::move(fn)); }
+        work.notify_one();
+    }
+    void painter_loop() {
+        app::interactive_thread();
+        g_stall.start();
+        for (;;) {
+            std::vector<std::function<void()>> todo;
+            bool have;
+            {
+                std::unique_lock<std::mutex> hold(lock);
+                work.wait(hold, [this] { return count > 0 || !calls.empty(); });
+                todo.swap(calls);
+                have = count > 0;
+            }
+            if (!todo.empty()) {
+                context->makeCurrent(surface());
+                for (auto& fn : todo) fn();
+            }
+            if (have) draw_one();
+        }
     }
 
     // called on the decoder's thread: take this list to be drawn.  Returns as soon as there
@@ -564,14 +802,22 @@ class Screen : public QObject {
         shots.clear();
         item.timing = timing;
         count++;
-        QCoreApplication::postEvent(this, new QEvent(FrameEvent));
+        if (count == 1) g_stall.ready();                // nothing was before it: the drawing thread is free to take it
+        if (own_thread) work.notify_one(); else QCoreApplication::postEvent(this, new QEvent(FrameEvent));
     }
 
-    bool event(QEvent* e) override {
+    bool event(QEvent* e) override {                    // the main thread
         if (e->type() == CallEvent) { static_cast<CallQEvent*>(e)->fn(); return true; }
         if (e->type() != FrameEvent) return QObject::event(e);
+        draw_one();
+        return true;
+    }
+
+    // The drawing thread: the oldest list waiting is drawn, shown at its moment, counted.
+    void draw_one() {
         Item* item;
         double newer_due = -1;                          // the moment of the list behind this one, when there is one
+        g_stall.taken();
         {
             std::lock_guard<std::mutex> hold(lock);
             item = &items[head];                        // ours until it is counted off below
@@ -584,8 +830,12 @@ class Screen : public QObject {
         if (window_free > timing.decode_end) timing.blocked += std::min(t0, window_free) - timing.decode_end;
         context->makeCurrent(surface());
         QOpenGLExtraFunctions* gl = context->extraFunctions();
+        // the window as its own thread last saw it (GameWindow::mirror)
+        int win_w = window ? window->points_w.load() : 0, win_h = window ? window->points_h.load() : 0;
+        double win_ratio = window ? window->pixel_ratio.load() : 1.0;
+        if (win_w < 1 || win_h < 1) { win_w = opt.window_w; win_h = opt.window_h; }
         if (window && opt.aspect == 0) {                // the view takes the window's shape
-            double shape = (double)window->width() / window->height();
+            double shape = (double)win_w / win_h;
             if (shape < 4.0 / 3.0) shape = 4.0 / 3.0;
             if (std::fabs(shape - view_aspect) > 0.002) { view_aspect = shape; gfxrt::set_aspect(shape); }
         }
@@ -593,9 +843,9 @@ class Screen : public QObject {
         // a new shape is on its way through the game and the decoder, the lists still in
         // flight are drawn as what they are, with bars for a frame or two, never stretched.
         if (follow_window && window) {                  // the window was resized: draw at its new size
-            double ratio = window->devicePixelRatio(), shape = frame->aspect;
-            int h = (int)(window->height() * ratio), w = (int)std::lround(h * shape);
-            if (w > (int)(window->width() * ratio)) { w = (int)(window->width() * ratio); h = (int)std::lround(w / shape); }
+            double ratio = win_ratio, shape = frame->aspect;
+            int h = (int)(win_h * ratio), w = (int)std::lround(h * shape);
+            if (w > (int)(win_w * ratio)) { w = (int)(win_w * ratio); h = (int)std::lround(w / shape); }
             if (h >= 224 && (h != opt.size_h || w != opt.size_w)) { opt.size_w = w; opt.size_h = h; backend->set_output_size(w, h); }
         } else if (opt.scale) {
             int h = 448 * opt.scale, w = (int)std::lround(640 * opt.scale * frame->aspect / (4.0 / 3.0));
@@ -615,14 +865,23 @@ class Screen : public QObject {
         // a swap that waited long or by anything else).  This one was drawn - the surfaces
         // and textures the next list builds on are as they have to be - and is not shown.
         bool overtaken = ahead && newer_due > 0 && newer_due <= now_ms() + 0.5 * refresh_ms;
-        bool shown = window && window->isExposed() && !overtaken;
+        bool shown = window && window->exposed.load() && !overtaken;
         if (opt.set.frame_cap > 0 && opt.set.frame_cap <= 30 && (blanks & 1)) shown = false;        // every other picture
         double after = 0;
         bool timed = false;                             // the swap returned at a refresh of the display
+        bool for_window = false;                        // the window's picture is drawn (through Metal: there was a surface for it)
         auto to_window = [&] {
-            double ratio = window->devicePixelRatio();
-            gl->glBindFramebuffer(GL_FRAMEBUFFER, context->defaultFramebufferObject());
-            backend->present((int)(window->width() * ratio), (int)(window->height() * ratio), frame->aspect);
+            int pw = (int)(win_w * win_ratio), ph = (int)(win_h * win_ratio);
+            if (metal) {
+                unsigned target = hostpresent::begin(presenter, pw, ph);
+                if (!target) return;
+                gl->glBindFramebuffer(GL_FRAMEBUFFER, target);
+                backend->present_top_down(pw, ph, frame->aspect);
+            } else {
+                gl->glBindFramebuffer(GL_FRAMEBUFFER, context->defaultFramebufferObject());
+                backend->present(pw, ph, frame->aspect);
+            }
+            for_window = true;
         };
         // Let go ahead of its moment, a picture is "drawn" when the graphics card has
         // finished it, the window's copy included: what is left for the swap is to hand it
@@ -640,7 +899,10 @@ class Screen : public QObject {
                 app::sleep_until_ms(due - (ahead ? ask_ahead() : 0.5 * refresh_ms));
             if (!ahead) to_window();
             timing.swap_start = now_ms();
-            context->swapBuffers(window);
+            if (metal) {
+                if (!ahead) gl->glFlush();              // (let go ahead, the picture was finished above)
+                if (for_window) hostpresent::show(presenter, now_ms(), opt.unpaced ? 0.0 : due);
+            } else context->swapBuffers(window);
             if (fake_refresh_ms > 0) {                  // the display that is not there: wait for its next refresh
                 double now = now_ms();
                 app::sleep_until_ms((std::floor((now - fake_phase_ms) / fake_refresh_ms) + 1) * fake_refresh_ms + fake_phase_ms);
@@ -685,7 +947,24 @@ class Screen : public QObject {
         if (pacer && !overtaken) pacer->presented(timing, timed);
         // figures: how long the picture before this one stood, in refreshes of the display,
         // and what each part of this one's way took
+        std::vector<hostpresent::Glass> told;
+        if (presenter) hostpresent::glass(presenter, told);
         std::unique_lock<std::mutex> figures(pace_lock);
+        for (const hostpresent::Glass& g : told) {
+            if (g.on_glass_ms <= 0) { pace.glass_never++; continue; }
+            if (pace.glass_last > 0) {
+                double stood = g.on_glass_ms - pace.glass_last;
+                long k = std::lround(stood / refresh_ms);
+                pace.glass_by_refreshes[k < 0 ? 0 : k > 7 ? 7 : k]++;
+                if (stood > pace.glass_worst_ms) pace.glass_worst_ms = stood;
+            }
+            pace.glass_last = g.on_glass_ms;
+            pace.glass++;
+            if (g.due_ms > 0) {
+                double off = g.on_glass_ms - g.due_ms;
+                pace.glass_after_due.add(off + 1000.0);         // (kept positive for the figure: 1000 is taken off again when it is printed)
+            }
+        }
         if (shown) { pace.swap_ms += after - timing.swap_start; if (after - timing.swap_start > 1.0) pace.swap_waited++; }
         if (overtaken) pace.overtaken++;
         if (clock_held) pace.timer_waited++;
@@ -730,12 +1009,13 @@ class Screen : public QObject {
         if (opt.stop_after && blanks >= opt.stop_after) {
             gl->glFinish();
             g_pads.quit = true;                         // the game's thread prints the reports and ends the process
-            QTimer::singleShot(3000, [] { fflush(stdout); _exit(0); });
+            QCoreApplication::postEvent(this, new CallQEvent([] { QTimer::singleShot(3000, [] { fflush(stdout); _exit(0); }); }));
         }
         window_free = now_ms();
-        { std::lock_guard<std::mutex> hold(lock); head = (head + 1) % DEPTH; count--; }
+        bool more;
+        { std::lock_guard<std::mutex> hold(lock); head = (head + 1) % DEPTH; count--; more = count > 0; if (more) g_stall.ready(); }
         done.notify_all();
-        return true;
+        // (the main thread drawing: every list posted its own event; the drawing thread comes round by itself)
     }
     double window_free = 0;                             // when this thread was done with the picture before
 
@@ -827,6 +1107,19 @@ class Screen : public QObject {
                        (unsigned long long)g_display.ticks.load());
             printf("\n");
         }
+        if (p.glass || p.glass_never) {
+            printf("rta_app: on the glass (told by the system for every picture handed to the Metal layer): %llu shown, %llu never (window hidden, or dropped); a picture stood for",
+                   (unsigned long long)p.glass, (unsigned long long)p.glass_never);
+            for (int k = 0; k < 8; k++) if (p.glass_by_refreshes[k]) printf(" %d%s refreshes: %llu;", k, k == 7 ? "+" : "", (unsigned long long)p.glass_by_refreshes[k]);
+            // The system's compositor puts a window's picture on the glass a fixed number of refreshes after
+            // it is handed over: "the usual" is the median, and a picture is early or late against that.
+            double usual = p.glass_after_due.percentile(0.5) - 1000.0;
+            uint64_t early = 0, late = 0;
+            for (float v : p.glass_after_due.values) { double off = v - 1000.0 - usual; if (off > 0.5 * refresh_ms) late++; else if (off < -0.5 * refresh_ms) early++; }
+            printf(" longest %.1f ms; on the glass %.2f ms after the moment the program meant (the median: %.2f refreshes, the compositor's own delay); "
+                   "against that %llu came a refresh or more early and %llu late (the latest %.1f ms)\n",
+                   p.glass_worst_ms, usual, usual / refresh_ms, (unsigned long long)early, (unsigned long long)late, p.glass_after_due.most - 1000.0 - usual);
+        }
         double pictures = blanks_now > p.blanks0 ? (double)(blanks_now - p.blanks0) : 1;
         printf("rta_app: processor time per picture since the figures were last reset (%.0f pictures): %.2f ms over all threads; of it the decoder %.2f ms, "
                "the window's thread (OpenGL) %.2f ms, everything else (the game, the runtime, sound, art readers) %.2f ms\n", pictures,
@@ -888,6 +1181,21 @@ static void final_report() {                            // on the game's thread,
     }
     printf("rta_app: input: %llu key events, controller %s, %u rumble commands\n", (unsigned long long)g_key_events.load(),
            hostpad::name().empty() ? "none" : hostpad::name().c_str(), g_pads.rumbles.load());
+    {
+        unsigned threads_now = 0, threads_made = 0, threads_ended = 0;
+        apprt::thread_figures(threads_now, threads_made, threads_ended);
+        printf("rta_app: the game's threads: %u now, %u started in all, %u ended by the game from outside (TerminateThread)\n", threads_now, threads_made, threads_ended);
+    }
+    if (s.presenter) {
+        unsigned long long presented = 0, refused = 0;
+        hostpresent::figures(s.presenter, presented, refused);
+        printf("rta_app: present: %llu pictures handed to the window's Metal layer, %llu times it had no drawable\n", presented, refused);
+    }
+    if (g_stall.on)
+        printf("rta_app: stalls (RTA_STALL_LOG): a list waited more than %.0f ms for the thread that draws (%s) %llu times, longest %.1f ms, %.0f ms in all; "
+               "the window's own thread stayed away from its event loop for more than %.0f ms %llu times, longest %.1f ms, %.0f ms in all\n",
+               g_stall.after_ms, s.own_thread ? "a thread of its own" : "the window's own thread", (unsigned long long)g_stall.stalls.load(), g_stall.longest_ms.load(),
+               g_stall.total_ms.load(), g_main_stall.after_ms, (unsigned long long)g_main_stall.stalls.load(), g_main_stall.longest_ms.load(), g_main_stall.total_ms.load());
     fflush(stdout);
 }
 
@@ -918,8 +1226,11 @@ static std::string info_line() {
                      (unsigned long long)g.unknown_regs, (unsigned long long)s.backend->draw_calls(), (unsigned long long)apprt::fields(), apprt::machine_seconds());
     n += snprintf(text + n, sizeof text - n, " fogged=%llu targets_held=%llu targets_freed=%llu", (unsigned long long)g.fogged, (unsigned long long)g.targets_held,
                   (unsigned long long)g.targets_freed);
-    for (int k = 0; k < render::AP_COUNT && n < (int)sizeof text - 40; k++)
+    for (int k = 0; k < render::AP_COUNT && n < (int)sizeof text - 120; k++)
         if (g.approx[k]) n += snprintf(text + n, sizeof text - n, " approx%d=%llu", k, (unsigned long long)g.approx[k]);
+    unsigned threads_now = 0, threads_made = 0, threads_ended = 0;
+    apprt::thread_figures(threads_now, threads_made, threads_ended);
+    n += snprintf(text + n, sizeof text - n, " game_threads=%u game_threads_made=%u game_threads_ended=%u", threads_now, threads_made, threads_ended);
     return std::string(text) + " " + apprt::sound_figures();
 }
 
@@ -995,7 +1306,18 @@ static void app_command(const std::string& text, uint64_t frame) {
     } else if (w[0] == "art" && w.size() >= 2) {
         // the same frame with and without the pack's pictures (and the mip-mapped parts): app art off|on
         bool on = w[1] != "off";
-        QCoreApplication::postEvent(g_screen, new CallQEvent([on] { g_screen->backend->set_replacements(on); }));
+        g_screen->on_drawing_thread([on] { g_screen->backend->set_replacements(on); });
+    } else if (w[0] == "presented" && w.size() >= 2) {
+        // app presented FILE.png: what the window's Metal layer was last handed, as it was handed (a test of the way into the window)
+        std::string path = text.substr(text.find(w[1]));
+        g_screen->on_drawing_thread([path] {
+            std::vector<unsigned char> bgra;
+            int pw = 0, ph = 0;
+            if (!g_screen->presenter || !hostpresent::read(g_screen->presenter, bgra, pw, ph)) { log_line("app presented: nothing is presented through Metal"); return; }
+            QImage image(bgra.data(), pw, ph, pw * 4, QImage::Format_ARGB32);
+            image.convertToFormat(QImage::Format_RGB888).save(QString::fromStdString(path));
+            log_line("wrote " + path + " (" + std::to_string(pw) + " x " + std::to_string(ph) + "), the window's picture as the Metal layer was handed it");
+        });
     } else if (w[0] == "stats") {
         g_screen->report_pace(w.size() >= 2 && w[1] == "reset", g_sink ? g_sink->decode_cpu_ms : 0.0);
     } else if (w[0] == "latency" && w.size() >= 2) {
@@ -1074,6 +1396,7 @@ int main(int argc, char** argv) {
     std::vector<std::string> pass, script_args;
     std::string mode = "boot";
     if (const char* disc = getenv("RTA_DISC")) opt.disc = disc;
+    if (const char* way = getenv("RTA_PRESENT")) opt.metal = !strcmp(way, "metal");
     int k = 1;
     for (; k < argc; k++) {
         std::string a = argv[k];
@@ -1108,6 +1431,7 @@ int main(int argc, char** argv) {
         else if (a == "--script" || a == "--do") { script_args.push_back(a); script_args.push_back(next()); }
         else if (a == "--offscreen") opt.offscreen = true;
         else if (a == "--unpaced") overrides.push_back({"frame_cap", "0"});
+        else if (a == "--present") { std::string way = next(); opt.metal = way == "metal"; if (way != "metal" && way != "opengl") { fprintf(stderr, "rta_app: --present metal|opengl\n"); return 2; } }
         else if (a == "--pacing") { std::string way = next(); opt.queued = way == "queued"; if (way != "queued" && way != "ahead") { fprintf(stderr, "rta_app: --pacing ahead|queued\n"); return 2; } }
         else if (a == "--test") opt.test = next();
         else if (a == "--png") opt.png = next();
@@ -1190,6 +1514,16 @@ int main(int argc, char** argv) {
     screen.pacer = &sink.pacer;
     screen.create();
     g_screen = &screen;
+    // RTA_STALL_LOG: the main thread's event loop is watched as well - a timer that should
+    // come by every 8 ms
+    g_main_stall.start();
+    static QTimer heartbeat;
+    if (g_main_stall.on) {
+        g_main_stall.after_ms += 8;
+        heartbeat.setTimerType(Qt::PreciseTimer);
+        QObject::connect(&heartbeat, &QTimer::timeout, [] { g_main_stall.beat(); });
+        heartbeat.start(8);
+    }
     hostpad::start(log_line);
     // the picture's threads and the game's are the player's own work, not background work
     app::interactive_thread();
@@ -1218,7 +1552,9 @@ int main(int argc, char** argv) {
     apprt::set_finish_handler(final_report);
     if (!opt.control.empty()) {
         g_control.buttons_of = parse_buttons;
-        g_control.app_command = app_command;
+        // as a script's "app" line: through the network's commands (online ..., net ...) when the
+        // network is linked, then to this program's own
+        g_control.app_command = [](const std::string& text, uint64_t frame) { apprt::command(text, frame); fflush(stdout); };
         g_control.shot = [](const std::string& path) { std::lock_guard<std::mutex> hold(g_shot_lock); g_shots_asked.push_back(path); };
         g_control.quit = [] { apprt::finish(0); };
         g_control.info = info_line;

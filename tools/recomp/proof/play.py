@@ -92,8 +92,11 @@ class Script(tour.Script):
         self.pokes(tour.level_change(level))
         self.add('until g_levelName:str8 == %s timeout 2500 continue' % level[:8], 'until g_players+0x43d8:u32 != 0 timeout 2500 continue',
                  'until g_simFrame:u32 >= 40 timeout 2500 continue',
-                 # an arrival cutscene is skipped (the start button); without one nothing is pressed
-                 'tapuntil start 30 %s+0x34:u32 == 1 timeout 1800' % CAMERA, 'wait 30',
+                 # an arrival cutscene is skipped (the start button); without one nothing is pressed -
+                 # the test is the cutscene flag itself (g_cutsceneActive): the camera's mode
+                 # is not the follow mode for a moment in a level without a cutscene too, and
+                 # start then opens the pause menu (session pf4 of 2026-10-13 went that way)
+                 'tapuntil start 30 0x44fcd0:u8 == 0 timeout 1800', 'wait 30',
                  'show g_levelName:str16 g_simFrame:u32 g_players+0x59:s8 g_players+0x5c:s32 g_players+0xac:f32')
 
 
@@ -270,13 +273,23 @@ def build_fight(args):
                 script.add('# death')
                 found = monsters(image)
                 found.sort(key=lambda item: math.hypot(item[0]['x'] - px, item[0]['y'] - py))
-                for k in range(args.death_tries):
-                    if k % 6 == 0 and found:
+                # six tries at a time, then a look: once the character is dead nothing more is
+                # written (a write during the restart's load lands in a frame the other
+                # machine's shorter load does not have: session pf2 of 2026-10-13)
+                dead = False
+                for k in range(0, args.death_tries, 6):
+                    if found:
                         t = found[(k // 6) % len(found)][0]
                         script.put(t['x'] + 20.0, t['y'], t['z'] + 6.0)
-                    script.pokes(['poke %s:f32 0.5' % rec(0xAC)])
-                    script.add('pad cross', 'wait 5', 'pad none', 'wait 15')
-                after_death(script)
+                    for _ in range(6):
+                        script.pokes(['poke %s:f32 0.5' % rec(0xAC)])
+                        script.add('pad cross', 'wait 5', 'pad none', 'wait 15')
+                    if f32(probe(script, args.name), PLAYERS + 0xAC) <= 0:
+                        dead = True
+                        break
+                report.append('%s: %s' % (level, 'killed by a creature with its hit points written low' if dead else 'not killed in %d tries' % args.death_tries))
+                if dead:
+                    after_death(script)
     script.add('pad none', 'wait 30', 'quit')
     return script, report
 

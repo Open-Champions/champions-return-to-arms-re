@@ -66,9 +66,50 @@ again 07:53.)
   branches are predicted away), so exact vertices still cost about 11 - 14 million cycles
   a picture more than rounding to nearest.
 
-**Still to do tonight** (this list shrinks): measure the pages in Chrome; sound resync;
-disc check; file picker; memory card save and load; pictures against the Mac
-application's; level change and fight; controller; pause when hidden; the online notes.
+**Measured in Chrome 155 (Ran, 08:10 - 08:50; `perf.mjs`, results in `out/results.jsonl`
+labels n1, m1; the Mac at load 300 - 650, so the times are a floor and the instructions
+are what counts).**  Pages built from the UNPATCHED translation (see the fault below);
+instructions / cycles per frame of the whole page process, millions:
+
+| | `page-zero` (game toward zero, VU1 to nearest) | `page-fast` (both to nearest) | `page-exact` (both toward zero) | afternoon's page | emulator page with `perf.patch` (quiet Mac) |
+|---|---|---|---|---|---|
+| title | 50.3 / 15.6 | 49.0 / 16.8 | 59.4 / 19.7 | 156 / 34 | 162 (replay stretch) |
+| first level, standing | 90.2 / 26.6 | 87.8 / 25.6 | 114.3 / 36.5 | 297 / 57 | 227 / 57.8 |
+| first level, walking and striking | 76.5 / 23.6 | 76.3 / 22.9 | 96.2 / 30.7 | - | 234 |
+| the fight in `valor` (lighter scene: 320 draws) | 60.0 / 18.5 | 57.6 / 18.6 | 74.0 / 29.6 | - | - |
+| frames a second paced, first level | 59.99 (load 410) | 59.93 (load 316) | 59.99 (load 600) | 49 (load 360) | 60 |
+| stand-in 1/2, 1/4, 1/6 (first level, standing; run n1, load 55 - 90) | | 60.0, 46.8, 31.2 | | 30, 15, 10 | 60, 34.6, 22.1 |
+| busiest thread, CPU ms per frame (decoder) | 5.1 (load 410) | 5.3 | 8.6 (load 600) | 15 - 18 | 7.85 machine + 5.1 video |
+
+**A fault of this page found by comparing pictures (Ran, 08:55): it was built from the
+translation of the UNPATCHED executable.**  The Mac application `rta_app` is translated
+with the suggested fix set (`recomp.py --pnach patches/SLUS-20973_4028A55F.pnach
+--sections tools/play-net/sections-suggested.txt`: 26 sections, 91 words, figure 27f61e1d -
+"what every other build of the game here runs with"), `rta_app_orig` without; my `gen2`
+is the unpatched one, as the afternoon's was.  Seen as: the page's pictures at seven
+fixed ticks against `rta_app`'s differ in 98 % of the pixels from the first level on (the
+character stands elsewhere: (131.6, -96.2) patched, (140.3, -122.5) unpatched, at tick 60
+of the first level), and against `rta_app_orig`'s only by what the vertex rounding
+explains (0.19 - 0.68 % of the pixels by more than 8 of 255).  **To do next: translate with
+the fix set (no film and network entries: the page links neither), rebuild, repeat
+identity, table and pictures with it.**
+
+**Written and partly run** (all in `tools/recomp/web/`): the disc check with the emulator
+page's sentences (`rta-native.js`, `checkDisc`; nine wrong files through the page's file
+input all refused with the right sentence: `playtest.mjs discs`, `out/mkdisctests.py`);
+pause (hidden tab, P key, button); a controller through the Gamepad interface with
+rumble; the sound worklet gives up a burst of more than 200 ms above its 70 ms reserve;
+the memory card is written to IndexedDB every 4 s and when the page is hidden or left;
+`app shot NAME.png` script lines post that blank's picture to the test server
+(`web_main.cpp`); `perf.mjs --route fight`, `--walk`; `playtest.mjs` (discs, play, card,
+pictures).  **Not yet run**: `playtest.mjs play` (file input with the real image, sound
+queue, controller, pause) and `card` (save, reload, load).
+
+**Left over to clean when done**: `local/recomp-web/out/disc-tests/` (two files hold
+pieces of the disc image).  One thing touched outside my directories, by mistake of the
+script and not mine to keep: `local/recomp-out/fight3.rig` has `dump` lines, so the four
+runs of 08:06 rewrote `local/recomp-out/pilot/c0.bin`, `c1.bin`, `c2.bin` (memory dumps of
+that same script; the afternoon's runs did the same).  Later runs use a copy without them.
 
 ## Verdict
 

@@ -15,6 +15,13 @@ rta::PadState script_pad(unsigned port);
 
 // Script lines "app <text>" arrive here, on the game's thread, at a vertical blank.
 void set_command_handler(void (*handler)(const std::string& text, uint64_t frame));
+// An "app <text>" line that did not come from a script (the control socket's): it goes the
+// way a script's line goes - through whoever chained itself in front of the handler above
+// (the network: "online ...", "net ...", net/online.cpp) and then to the handler.
+void command(const std::string& text, uint64_t frame);
+// Host threads that carry one of the game's threads now, started in all, and ended by the
+// game's TerminateThread (rt/runtime.cpp).
+void thread_figures(unsigned& now, unsigned& made, unsigned& ended);
 // Called once when the run ends (script `quit`, --fields, the window closed), before the
 // runtime prints its report.
 void set_finish_handler(void (*handler)());

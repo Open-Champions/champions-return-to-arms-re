@@ -12,6 +12,9 @@ class GlBackend : public Backend {
     void set_output_size(int width, int height) override;
     void execute(const FrameList& frame) override;
     void present(int width, int height, double aspect) override;
+    // The same into a framebuffer whose first row is the top one (a surface shown by Metal:
+    // app/present_host.h); present() is for one whose first row is the bottom (OpenGL's own window).
+    void present_top_down(int width, int height, double aspect);
     bool read_shown(std::vector<uint8_t>& rgba, int& width, int& height) override;
     bool read_target(uint32_t id, std::vector<uint8_t>& rgba, int& width, int& height);
     uint64_t draw_calls() const;
@@ -23,6 +26,7 @@ class GlBackend : public Backend {
   private:
     struct Impl;
     Impl* impl;
+    void present_to(int width, int height, double aspect, bool top_down);
 };
 
 }  // namespace render

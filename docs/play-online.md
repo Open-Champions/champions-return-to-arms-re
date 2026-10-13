@@ -383,11 +383,12 @@ have it.
   is lockstep: every machine computes the whole game itself.
 - The patch list. `play.sh` applies the sections named in
   `tools/play-net/sections-suggested.txt` from `patches/SLUS-20973_4028A55F.pnach`. The
-  status bar and `rta.log` show a figure for it ("patches: 26 sections, 91 words, set
-  27f61e1d" for the list as it is now, since the evening of 2026-10-12: one section got
-  a third word, [online-setup.md](online-setup.md); the copies handed out earlier that
-  day say "90 words, set 3f5b1e14", older ones have fewer sections - any other figure
-  than yours is warned about as below, and everybody then needs the newer copy). The browser page shows the same
+  status bar and `rta.log` show a figure for it ("patches: 29 sections, 99 words, set
+  073064bb" for the list as it is now, since 2026-10-13: three sections were added,
+  [online-setup.md](online-setup.md); the copies handed out that morning say "26
+  sections, 91 words, set 27f61e1d", those of 2026-10-12 "90 words, set 3f5b1e14",
+  older ones have fewer sections - any other figure than yours is warned about as
+  below, and everybody then needs the newer copy). The browser page shows the same
   figure for the same list. Resolution, keys and the other settings of section 5 may
   differ: they do not touch the game's simulation.
 - **The application compares the figure for you.** As soon as two players are in one

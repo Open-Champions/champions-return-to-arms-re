@@ -42,6 +42,8 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RECOMP = os.path.dirname(HERE)
+sys.path.insert(0, RECOMP)
+import genfiles  # noqa: E402  (the translation's own list of files)
 ROOT = os.path.dirname(os.path.dirname(RECOMP))
 OUT = os.path.join(ROOT, 'local', 'recomp-out')
 RT = os.path.join(RECOMP, 'rt')
@@ -251,7 +253,7 @@ def main():
     if args.seed_cache and os.path.isdir(args.seed_cache):
         newest_header = max(os.path.getmtime(p) for p in headers)
         seeded = 0
-        for entry in sorted(os.listdir(args.seed_gen)):
+        for entry in genfiles.sources(args.seed_gen):
             source = os.path.join(args.seed_gen, entry)
             obj = os.path.join(args.seed_cache, entry[:-4] + '.o')
             if not entry.endswith('.cpp') or not os.path.exists(obj):
@@ -269,7 +271,7 @@ def main():
         raise SystemExit('--wrap-memory needs the runtime compiled here (--rt live)')
     if args.rt == 'live':
         rt_sources = sorted(os.path.join(RT, n) for n in os.listdir(RT)
-                            if n.endswith('.cpp') and n != 'test_driver.cpp')
+                            if n.endswith('.cpp') and ' ' not in n and n != 'test_driver.cpp')
         digest = hashlib.sha1()
         for path in rt_sources:
             digest.update(open(path, 'rb').read())
@@ -282,12 +284,13 @@ def main():
         raise SystemExit('--rt live | object:<file.o>')
 
     jobs = []           # (source, object, cache key or None)
-    for entry in sorted(os.listdir(gen)):
-        if entry.endswith('.cpp'):
-            source = os.path.join(gen, entry)
-            jobs.append((source, os.path.join(objdir, entry[:-4] + '.o'), key_of(source)))
+    # the translation's files by their own names (genfiles.py), not a directory listing: a
+    # file synchroniser leaves copies such as "c_003 2.cpp" beside them
+    for entry in genfiles.sources(gen):
+        source = os.path.join(gen, entry)
+        jobs.append((source, os.path.join(objdir, entry[:-4] + '.o'), key_of(source)))
     shim_define = '-DRTA_NET_RT_NOTE="%s"' % rt_note.replace('"', '').replace('\\', '/')
-    for source in [os.path.join(HERE, n) for n in sorted(os.listdir(HERE)) if n.endswith('.cpp')] + rt_sources:
+    for source in [os.path.join(HERE, n) for n in sorted(os.listdir(HERE)) if n.endswith('.cpp') and ' ' not in n] + rt_sources:
         jobs.append((source, os.path.join(objdir, os.path.basename(source)[:-4] + '.o'), None))
 
     def build_one(job):

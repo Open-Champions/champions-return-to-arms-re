@@ -30,6 +30,7 @@
 #include <pmmintrin.h>
 #include <xmmintrin.h>
 #endif
+#include <atomic>
 #include <condition_variable>
 #include <cstdarg>
 #include <map>
@@ -125,6 +126,8 @@ struct GThread {
     u32 site = 0;                                 // last call site when it last gave up the processor
 };
 static std::mutex g_big;
+// host threads that carry a guest thread now / started in all / ended by TerminateThread
+static std::atomic<u32> g_host_threads{0}, g_host_threads_made{0}, g_host_threads_ended{0};
 static std::map<u32, GThread*> g_threads;
 static GThread* g_cur;
 static thread_local GThread* t_self;
@@ -314,6 +317,7 @@ static std::vector<Later> g_later;
 static u64 g_later_order;
 u64 rt_cycles() { return now(t_self ? &t_self->ctx : nullptr); }
 u64 rt_fields() { return g_fields; }
+void rt_thread_figures(u32* now, u32* made, u32* ended) { *now = g_host_threads; *made = g_host_threads_made; *ended = g_host_threads_ended; }
 void rt_after(u64 delay, std::function<void()> fn) { g_later.push_back({rt_cycles() + delay, g_later_order++, std::move(fn)}); }
 static u64 next_later() {
     u64 best = ~0ull;
@@ -380,8 +384,13 @@ static void fire_due_events(u64 t, bool accepting = true) {
 }
 
 // ---- scheduling ------------------------------------------------------------------------
+// A thread another thread ended (TerminateThread) is taken out of the schedule and so is
+// never handed the baton again: its wait ends on `kill` as well, and it leaves through
+// thread_main without touching the machine (the one who ended it has already made it a
+// zombie; by the time it wakes, its number may belong to a new thread).  It wakes when the
+// thread that ended it next gives up the big lock, and holds that lock while it unwinds.
 static void wait_for_baton(std::unique_lock<std::mutex>& lock, GThread* self) {
-    self->cv.wait(lock, [&] { return g_cur == self; });
+    self->cv.wait(lock, [&] { return g_cur == self || self->kill; });
     if (self->kill) throw ThreadKill();
 }
 
@@ -442,8 +451,10 @@ static void reschedule(std::unique_lock<std::mutex>& lock, GThread* self, Ctx* c
 void rt_poll(Ctx* c) {
     if (g_in_irq || !t_self || c != &t_self->ctx) { c->budget = (s64)1 << 30; return; }
     std::unique_lock<std::mutex> lock(g_big, std::adopt_lock);
+    // (released on every way out: a thread ended while it waits here leaves by an exception,
+    // and the lock is thread_main's to give back)
+    struct Release { std::unique_lock<std::mutex>& l; ~Release() { l.release(); } } release{lock};
     reschedule(lock, t_self, c);
-    lock.release();
 }
 
 static bool arith_nearest() {
@@ -492,6 +503,7 @@ static void thread_main(GThread* self) {
 #endif
     }
 #endif
+    bool ended = false;
     try {
         wait_for_baton(lock, self);
         // A procedure that returns to an address with a translation continues there: that
@@ -504,10 +516,13 @@ static void thread_main(GThread* self) {
             if (pc < g_text_lo || pc >= g_text_hi || (pc & 3) || !g_table[(pc - g_text_lo) >> 2]) break;
         }
     } catch (ThreadKill&) {
+        ended = true;
     }
-    // the thread procedure returned, or the thread was ended
+    // the thread procedure returned, or the thread was ended (by itself: ExitThread, or by
+    // another: TerminateThread - both have made it a zombie and taken it out of the schedule)
     self->finished = true;
-    if (thr_ok(self->id) && W(thr(self->id) + T_STATUS) != TH_ZOMBIE) {
+    g_host_threads--;
+    if (!ended && thr_ok(self->id) && W(thr(self->id) + T_STATUS) != TH_ZOMBIE) {
         W(thr(self->id) + T_STATUS) = TH_ZOMBIE;
         unlink_thread(self->id);
     }
@@ -527,6 +542,8 @@ static GThread* make_thread(u32 id, u32 entry) {
     return t;
 }
 static void start_host(GThread* t) {
+    g_host_threads++;
+    g_host_threads_made++;
     host::start_thread([](void* p) { thread_main((GThread*)p); }, t, (size_t)256 << 20);
 }
 
@@ -698,10 +715,18 @@ void rt_syscall(Ctx* c, u32 pc) {
         throw ThreadKill();
     case 0x25: case 0x26:                               // TerminateThread
         if (thr_ok(a0) && a0 != me) {
+            static const bool log = getenv("RTA_THREAD_LOG") != nullptr;     // debugging: what the ended thread was doing
+            if (log) fprintf(stderr, "thread %u ends thread %u (procedure 0x%x, status %u, waits on semaphore %u with %u waiters, host threads %u)\n", me, a0,
+                             W(thr(a0) + T_PROC), W(thr(a0) + T_STATUS), W(thr(a0) + T_SEMA),
+                             sem_ok(W(thr(a0) + T_SEMA)) ? W(sem(W(thr(a0) + T_SEMA)) + S_WAITERS) : 0, g_host_threads.load());
             W(thr(a0) + T_STATUS) = TH_ZOMBIE;
             unlink_thread(a0);
             auto it = g_threads.find(a0);
-            if (it != g_threads.end() && !it->second->finished) it->second->kill = true;
+            if (it != g_threads.end() && !it->second->finished && !it->second->kill) {
+                it->second->kill = true;
+                it->second->cv.notify_one();            // it is not in the schedule any more: its wait ends on `kill`
+                g_host_threads_ended++;
+            }
         }
         break;
     case 0x29: case 0x2A: {                             // ChangeThreadPriority(id, priority)

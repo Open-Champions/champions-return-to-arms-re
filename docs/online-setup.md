@@ -119,7 +119,7 @@ hardware differences the other items are about:
 
 ## Suggested patch set for a first online test
 
-The set is the 26 sections of the table (`tools/play-net/sections-suggested.txt` lists
+The set is the 29 sections of the table (`tools/play-net/sections-suggested.txt` lists
 them by title; the Mac application applies exactly these). Each only makes one machine do
 what the others already do, so a mix of patched and unpatched machines is safe, but a fix
 only holds for the machines that have it — enable them on every machine. These are the
@@ -142,6 +142,15 @@ console, and the patch file says so section by section.
   touch handler runs for a prediction copy that walks into something" was not; its runs
   are in `docs/issues/touch-handlers.md` section 6 (FINDINGS V61) and it has not been in
   a soak. The soak also had six sections that are not suggested here.
+- The last three rows of the table (added 2026-10-13) rest on something else: the game
+  translated to native code, two to four machines on one host
+  ([issues/native-soak.md](issues/native-soak.md), "Second part"). Each was shown there
+  on a pair without and with it, and the 26 sections plus these three ran 26 games,
+  1,779,709 ticks, with no difference in any deciding column. On two copies of the Mac
+  application ([issues/mac-app-start.md](issues/mac-app-start.md), "The three proposed
+  sections on the emulator") a game of 13,123 lockstep frames with them stayed in step;
+  the save-point and the jump-gate difference were seen without them and not with
+  them, the script-variable race was not produced there.
 - The Mac application applies this set ([play-online.md](play-online.md) section 6); its
   online runs with two copies on one Mac are in section 8 there.
 
@@ -169,6 +178,9 @@ console, and the patch file says so section by section.
 | 4-player send cycle 6 -> 4 (LAG-3) | input delay with four players — **confirmed live**: 1.8 to 3.0 frames less; on a slow link the game runs at 97.9 % speed instead of 92.6 % |
 | 3-player send cycle 4 -> 3 (LAG-4) | input delay with three players — **confirmed live**: 1.3 to 2.1 frames less |
 | prediction copy starts without pending damage | G11–G13, G24 — the fault was not reproduced live; the section was on in the soak without harm (V62) |
+| save point is used on every machine whatever this machine's card screen does | the other half of B9: a machine whose own memory-card screen is up when another player uses a save point skips the save point's code, and the point's state (its light, its active flag, six bytes of the level's stored state) then differs from the other machines' for good — **confirmed** on native pairs and on two copies of the Mac application (the state differs without it, not with it). By reading, nothing in the shipped levels reads the differing state back into play; a save point can only be used with a character from a memory card, not with one made in the lobby |
+| reading a quest variable never adds it to the table | the table of quest variables differing in content or order between machines, because a prompt drawn for this machine's own player reads a variable that does not exist yet and so appends its name — **confirmed** on a native pair; on the Mac application the section was at work but the race was not produced. By reading, the appended name cannot reach play; the section removes the difference all the same |
+| a jump gate is found only inside the tick | a jump gate being marked found, and its level added to the list of jump-gate destinations, on its finder's machine some ticks before the others (19 in a directed native game), and for good if the player dies or the level changes first — **confirmed** on a native pair and on two copies of the Mac application (found in the same frame with it, a frame apart without). It reads register s7 as this executable's `Player_interact` leaves it across the call: a patch for SLUS-20973 v2.00 only |
 | equalise at once (LAG-1) | input delay staying high after a stall, which is also what widens K1 and K2 — **confirmed live**: peak 11 frames instead of 34, cleared in 10 s instead of 35 |
 
 **The older two-word form of the flush section must not be on before a developer LAN
@@ -180,8 +192,9 @@ stuck for the whole game (held word 0x500000, left stick −1.138;
 [issues/native-soak.md](issues/native-soak.md) finding 1). A game started through the
 lobby sets the netcode up in the front end and was not affected. The three-word form in
 the file now makes no pass without peers, as the original; use it, or leave the section
-off, for a LAN start. The change also changes the set's figure: every player in a game
-needs the patch file of the same date ([play-online.md](play-online.md) section 6).
+off, for a LAN start. The change also changes the set's figure, as the three sections
+added on 2026-10-13 do: every player in a game needs the patch file of the same date
+([play-online.md](play-online.md) section 6).
 
 Leave the "Arena diagnostic" and "Diagnostic" sections off unless you are bisecting; several
 of them change the simulation and must then be identical on every machine. "Option commit

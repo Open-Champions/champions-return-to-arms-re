@@ -65,6 +65,8 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RECOMP = os.path.dirname(HERE)
+sys.path.insert(0, RECOMP)
+import genfiles  # noqa: E402  (the translation's own list of files)
 ROOT = os.path.dirname(os.path.dirname(RECOMP))
 OUT = os.path.join(ROOT, 'local', 'recomp-out')
 WIN = os.path.join(OUT, 'win')
@@ -198,8 +200,9 @@ def link(command, objects, libs, out):
 
 def game_jobs(gen, objdir, flags):
     deps = [os.path.join(RT, n) for n in ('recomp.h', 'fpu.h', 'mmi.h')] + [os.path.join(gen, 'funcs.h')]
+    # the translation's files by their own names (genfiles.py), never a directory listing
     return [(os.path.join(gen, n), flags, os.path.join(objdir, 'g_' + n[:-4] + '.o'), deps)
-            for n in sorted(os.listdir(gen)) if n.endswith('.cpp') and ' ' not in n]
+            for n in genfiles.sources(gen)]
 
 
 def source_jobs(sources, objdir, search):
@@ -406,7 +409,8 @@ def build_mac(args):
         (ONLINE, rt_flags, 'n_'),
         (os.path.join(NET, 'online_mac.mm'), objc + ['-I', NET], 'n_'),
         (os.path.join(HERE, 'app_main.cpp'), app_flags + qt_flags, 'a_'),
-        (os.path.join(HERE, 'pad_mac.mm'), objc + ['-I', HERE, '-I', RT], 'a_')]
+        (os.path.join(HERE, 'pad_mac.mm'), objc + ['-I', HERE, '-I', RT], 'a_'),
+        (os.path.join(HERE, 'present_mac.mm'), objc + ['-I', HERE], 'a_')]
     search = [HERE, RENDER, RT, SOUND, NET, gen]
     common = source_jobs(sources, objdir, search)
     with_qt = source_jobs([(os.path.join(RENDER, 'texpack.cpp'), render_flags + qt_flags, 'r_')], objdir, search)
@@ -415,9 +419,9 @@ def build_mac(args):
     if not compile_all(common + with_qt + own, cxx, args.jobs):
         return False
     # (objects by their own names: a stray copy such as "g_patches 2.o", as a file synchroniser leaves them, is not one)
-    game = [os.path.join(shared, n) for n in sorted(os.listdir(shared))
-            if n.endswith('.o') and ' ' not in n and (n.startswith('g_') or n in ('rt_runtime.o', 'rt_iop.o', 'rt_script.o', 'rt_host_posix.o'))]
-    frameworks = sum((['-framework', f] for f in ('QtCore', 'QtGui', 'GameController', 'AppKit', 'Foundation', 'CoreVideo', 'CoreGraphics')), [])
+    game = genfiles.objects(gen, shared, 'g_') + [os.path.join(shared, n) for n in ('rt_runtime.o', 'rt_iop.o', 'rt_script.o', 'rt_host_posix.o')]
+    frameworks = sum((['-framework', f] for f in ('QtCore', 'QtGui', 'GameController', 'AppKit', 'Foundation', 'CoreVideo', 'CoreGraphics',
+                                                     'Metal', 'QuartzCore', 'IOSurface', 'OpenGL')), [])
     libs = ['-F', qtlib] + frameworks + ['-Wl,-rpath,' + qtlib, '-lpthread']
     ok = link(cxx, game + [j[2] for j in common + with_qt], libs, os.path.join(out, 'rta_app'))
     return link(cxx, game + [j[2] for j in common + own], libs, os.path.join(out, 'rta_app_pngread')) and ok

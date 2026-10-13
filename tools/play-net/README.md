@@ -429,8 +429,9 @@ does with its every-frame patches, a word that is not what the patch says is wri
 again at every vertical blank. The status bar and `rta.log` show a figure for the set
 ("set xxxxxxxx", from the addresses and values of the shared sections only): every
 player in a game has to have the same. For `sections-suggested.txt` as it is now the
-line reads "patches: 26 sections, 91 words, set 27f61e1d" (until the evening of
-2026-10-12, before the flush section got its third word: 90 words, set 3f5b1e14).
+line reads "patches: 29 sections, 99 words, set 073064bb" (26 sections, 91 words, set
+27f61e1d before three sections were added on 2026-10-13; 90 words, set 3f5b1e14 until
+the evening of 2026-10-12, before the flush section got its third word).
 
 ## Texture dump and replacement
 
@@ -618,7 +619,7 @@ game draws them:
 
 | Kind | Known by | What is done |
 |---|---|---|
-| interface | sprites under the scanline mask, or blended sprites (`ALPHA` 0x44) | two-field pictures (those with `field0_uv`/`field1_uv`) are interleaved, enlarged as the one picture they are and laid out as described above; `realesrgan-x4plus` at full strength, pictures of fewer than 2,048 texels plainly (below) |
+| interface | sprites under the scanline mask, or blended sprites (`ALPHA` 0x44) | two-field pictures (those with `field0_uv`/`field1_uv`) are interleaved, enlarged as the one picture they are and laid out as described above; `realesrgan-x4plus` only where it shows what the game shows, the rest by a filter that draws nothing of its own ("Interface art keeps its shapes", below) |
 | level | triangles, texture function 0 (ground, walls, stone, wood, foliage: one pre-lit picture per piece of the level) | `realesrgan-x4plus`; the distribution of brightness is matched as well; only the rectangle `other_uv` names (plus 6 texels) goes to the model, the rest of the page is enlarged plainly |
 | model | triangles, texture function 3 (characters, monsters, weapons, props) | `realesrgan-x4plus` at full strength |
 | glow | every draw adds to the picture (`ALPHA` 0x48, 0x68) | `realesr-animevideov3` at 0.6, and never brighter than the game's picture around it: what is black stays black |
@@ -698,6 +699,29 @@ For every kind:
   before a faithful one in a quarter of the cases. A coin's head turned into scribble agrees with the game's texels as well as a
   sharpened shield does. So the rule stays plain for all
   (`local/hd-work/interface-redo/sheet-measure.png`, `calib*.py`).
+- **Interface art keeps its shapes.** The model redraws whatever is a texel or two wide,
+  in large pictures too: on the 48 × 44 icons (2,112 texels, just over the rule above) a
+  face became another face and an axe a blot; on the skill-tree pages a branch lost its
+  tines and a skull its teeth; a brooch's knotwork turned into rune-like marks; the bars'
+  frame and the bag's tab bar came out with thinner lines and a bright rim. So for
+  interface pictures (`agree` in their recipe) the model's picture is taken only where,
+  made small again, it is the game's texels — fully where the largest difference in a
+  texel's surroundings is under 6 of 255, not at all over 18 — and everything else is
+  enlarged by `edged`: the plain enlargement smoothed along its edges (the direction is
+  that of the picture's own gradients) and made steeper across them inside the range of
+  the texels around, so that no pixel can leave that range: no halo, no ringing, no
+  stroke the game has not; noise stays plain. The interface pictures of fewer than 2,048
+  texels, which never see the model, are enlarged by `edged` too instead of plainly
+  (sharper, the same shapes); a side under 12 stays plain. Paintings (loading screens,
+  the shop's niche), frames and item pictures keep the model nearly everywhere. **The
+  two pages of letters are left out of this** (`LETTERS`, known by their texels): glyph
+  by glyph the model's letters are the game's, heavier, without ringing on the sheet or
+  in the game — it makes a thin grey stroke a solid one, which the rule takes for
+  redrawing, and letters crisp in patches are worse than either. What was tried and
+  dropped: the model at 0.3 and 0.5 (half-redrawn faces), fitting the result back to the
+  texels (shows the texel grid), counting the difference against the local range (lets
+  the redrawn faces through again). `VERSION` is unchanged: the recipe is part of each
+  picture's signature, so a run does the 405 interface pictures again and nothing else.
 - **Texels never sent are filled from their neighbours and stay filled**; a border of 8
   texels is given to the model around what it enlarges (the picture's own texels where
   the rectangle lies inside it; repeated edge otherwise; wrapped round where `other_uv`

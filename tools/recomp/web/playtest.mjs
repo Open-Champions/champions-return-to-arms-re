@@ -37,7 +37,7 @@ let closing = false;
 const args = process.argv.slice(2);
 const mode = args.shift();
 const opt = (name, fallback = null) => { const i = args.indexOf("--" + name); return i < 0 ? fallback : (args[i + 1] === undefined || args[i + 1].startsWith("--") ? true : args[i + 1]); };
-const site = opt("site", "page-zero");
+const site = opt("site", "page");
 const DISC = opt("disc") || process.env.RTA_DISC || "";
 
 // a script of the rig's language for the page: names replaced by addresses (the page has no
@@ -102,9 +102,12 @@ async function connectChrome() {
 async function startChrome() {
 	try { return await connectChrome(); } catch(e) { /* none running */ }
 	fs.mkdirSync(PROFILE_DIR, { recursive: true });
-	// (no --disable-backgrounding flags here: a hidden tab is to behave as a player's does)
+	// The flags keep Chrome from treating a window that is covered, or on a display that is asleep (the Mac's lid may be
+	// closed), as hidden: such a page gets one task a second on its main thread, and every disc read of this page goes through
+	// that thread - a run without them made 716 pictures in 16 minutes.  A tab put behind another tab is still hidden.
 	spawn(CHROME, ["--user-data-dir=" + PROFILE_DIR, "--remote-debugging-port=" + DEBUG_PORT, "--no-first-run", "--no-default-browser-check",
-		"--autoplay-policy=no-user-gesture-required", "--mute-audio", "--window-size=1320,1080", "--window-position=80,60", "about:blank"], { stdio: "ignore", detached: true }).unref();
+		"--autoplay-policy=no-user-gesture-required", "--mute-audio", "--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding",
+		"--disable-background-timer-throttling", "--window-size=1320,1080", "--window-position=80,60", "about:blank"], { stdio: "ignore", detached: true }).unref();
 	for(let i = 0; i < 150; i++) {
 		try { return await connectChrome(); } catch(e) { await sleep(200); }
 	}
@@ -118,6 +121,10 @@ async function openPage(cdp, label, query = "") {
 	const { sessionId } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
 	await cdp.send("Runtime.enable", {}, sessionId);
 	await cdp.send("DOM.enable", {}, sessionId);
+	// The test window may be behind the owner's own windows or on another desktop: the page is then hidden to the browser
+	// (document.hidden, a few pictures a second at most).  Focus emulation makes the page count as in front.
+	await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true }, sessionId);
+	await cdp.send("Page.bringToFront", {}, sessionId).catch(() => {});
 	const page = { targetId, sessionId, url, problems: [] };
 	cdp.on((m) => { if(m.sessionId === sessionId && m.method === "Runtime.exceptionThrown") page.problems.push(m.params.exceptionDetails.text + " " + (m.params.exceptionDetails.exception?.description || "").slice(0, 300)); });
 	page.evaluate = async (expression) => {
@@ -232,20 +239,10 @@ async function play(cdp) {
 	await sleep(400);
 	const dead = await page.evaluate("rta.info().pad");
 	await page.evaluate("fakePad.axes[0] = 0");
-	// every button once: which bits the program is given
-	const bits = [];
-	for(let i = 0; i < 16; i++) {
-		if(i === 9) { bits.push(null); continue; }             // Start would open the game's own menu here
-		await page.evaluate("padPress(" + i + ", true)"); await sleep(60);
-		bits.push((await page.evaluate("rta.info().pad")).buttons);
-		await page.evaluate("padPress(" + i + ", false)"); await sleep(60);
-	}
-	const want = [0x4000, 0x2000, 0x8000, 0x1000, 0x0400, 0x0800, 0x0100, 0x0200, 0x0001, null, 0x0002, 0x0004, 0x0010, 0x0040, 0x0080, 0x0020];
-	result.pad = { name: during.name, stick_word: during.sticks.toString(16), moved: [before, after], dead_zone_word: dead.sticks.toString(16), buttons_ok: bits.every((b, i) => b === want[i]), bits: bits.map((b) => b === null ? null : b.toString(16)),
-		rumble_effects: await page.evaluate("fakePad.effects.length"), rumbles: (await page.evaluate("rta.info()")).rumbles, where_first: p0 };
-	say("  controller (stand-in object behind navigator.getGamepads): left stick up for 1.5 s moved the character from (%s) to (%s); stick word %s, in the dead zone %s; 15 buttons give the console's bits: %s; rumble calls by the game %d, effects played %d",
-		before.join(", "), after.join(", "), result.pad.stick_word, result.pad.dead_zone_word, result.pad.buttons_ok ? "all right" : "WRONG " + JSON.stringify(result.pad.bits), result.pad.rumbles, result.pad.rumble_effects);
-	if(!result.pad.buttons_ok || (before[0] === after[0] && before[1] === after[1])) process.exitCode = 1;
+	result.pad = { name: during.name, stick_word: during.sticks.toString(16), moved: [before, after], dead_zone_word: dead.sticks.toString(16), where_first: p0 };
+	say("  controller (stand-in object behind navigator.getGamepads): left stick up for 1.5 s moved the character from (%s) to (%s); stick word %s, in the dead zone %s",
+		before.join(", "), after.join(", "), result.pad.stick_word, result.pad.dead_zone_word);
+	if(before[0] === after[0] && before[1] === after[1]) process.exitCode = 1;
 
 	// ---- pause: asked by the player (the P key), ended by a key ----
 	const tick = async () => { const i = await page.evaluate("rta.info()"); return { sim: i.sim, fields: i.fields, paused_ms: i.paused_ms, pauses: i.pauses, queued: i.sound_state ? i.sound_state.queuedMs : null, dry: i.sound_state ? i.sound_state.dry : null }; };
@@ -266,13 +263,15 @@ async function play(cdp) {
 
 	// ---- pause: the tab is hidden (another tab is put in front of it), then comes back ----
 	const b0 = await tick();
+	await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: false }, page.sessionId);
 	const other = await cdp.send("Target.createTarget", { url: "about:blank" });        // a new tab in the same window: in front
-	await sleep(800);
+	await sleep(1500);
 	const hidden = await page.evaluate("[document.hidden, document.visibilityState, rta.paused()]");
 	const b1 = await tick();
 	await sleep(3000);
 	const b2 = await tick();
 	await cdp.send("Target.activateTarget", { targetId: page.targetId });
+	await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true }, page.sessionId);
 	await sleep(1500);
 	const back = await page.evaluate("[document.hidden, rta.paused(), document.getElementById('pausedWhy').textContent]");
 	const b3 = await tick();
@@ -291,6 +290,18 @@ async function play(cdp) {
 	const s = (await page.evaluate("rta.info()")).sound_state;
 	result.sound_after_pauses = s;
 	say("  sound 6 s after the pauses: %s", JSON.stringify(s));
+	// ---- the controller's buttons, last (one of them opens a menu of the game's, which stops its simulation): which bits the program is given
+	const bits = [];
+	for(let i = 0; i < 16; i++) {
+		if(i === 9) { bits.push(null); continue; }             // Start would open the game's own menu here
+		await page.evaluate("padPress(" + i + ", true)"); await sleep(60);
+		bits.push((await page.evaluate("rta.info().pad")).buttons);
+		await page.evaluate("padPress(" + i + ", false)"); await sleep(60);
+	}
+	const want = [0x4000, 0x2000, 0x8000, 0x1000, 0x0400, 0x0800, 0x0100, 0x0200, 0x0001, null, 0x0002, 0x0004, 0x0010, 0x0040, 0x0080, 0x0020];
+	Object.assign(result.pad, { buttons_ok: bits.every((b, i) => b === want[i]), bits: bits.map((b) => b === null ? null : b.toString(16)), rumble_effects: await page.evaluate("fakePad.effects.length"), rumbles: (await page.evaluate("rta.info()")).rumbles });
+	say("  controller: 15 buttons give the console's bits: %s; rumble calls by the game %d, effects played %d", result.pad.buttons_ok ? "all right" : "WRONG " + JSON.stringify(result.pad.bits), result.pad.rumbles, result.pad.rumble_effects);
+	if(!result.pad.buttons_ok) process.exitCode = 1;
 	result.problems = page.problems.slice(0, 5);
 }
 

@@ -21,6 +21,8 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import genfiles  # noqa: E402  (the translation's own list of files, not a directory listing)
 ROOT = os.path.dirname(os.path.dirname(HERE))
 OUT = os.path.join(ROOT, 'local', 'recomp-out')
 
@@ -59,17 +61,18 @@ def main():
     os.makedirs(objdir, exist_ok=True)
     os.makedirs(bindir, exist_ok=True)
     rt = os.path.join(HERE, 'rt')
-    headers = tuple(os.path.join(rt, n) for n in os.listdir(rt) if n.endswith('.h'))
+    headers = tuple(os.path.join(rt, n) for n in os.listdir(rt) if n.endswith('.h') and ' ' not in n)
     # generated code is written against these only; the other headers are the runtime's own
     gen_headers = tuple(os.path.join(rt, n) for n in ('recomp.h', 'fpu.h', 'mmi.h'))
     flags = ['-std=c++17', args.opt or config['opt'], '-fno-strict-aliasing', '-fwrapv', '-w',
              '-ffp-contract=off', '-frounding-math', '-I', rt, '-I', args.gen]
     flags += ['-D' + d for d in config['defines'] + args.define]
     jobs = []
-    for entry in sorted(os.listdir(args.gen)):
-        if entry.endswith('.cpp'):
-            jobs.append((os.path.join(args.gen, entry), os.path.join(objdir, entry[:-4] + '.o'),
-                         gen_headers + (os.path.join(args.gen, 'funcs.h'),)))
+    # the translation's files by their own names (genfiles.py): a stray copy in the directory
+    # ("c_003 2.cpp", as a file synchroniser leaves them) is not compiled as one more of them
+    for entry in genfiles.sources(args.gen):
+        jobs.append((os.path.join(args.gen, entry), os.path.join(objdir, entry[:-4] + '.o'),
+                     gen_headers + (os.path.join(args.gen, 'funcs.h'),)))
     sources = [os.path.join(rt, entry) for entry in config['sources']]
     for replaced, by in (('sound_null.cpp', args.sound), ('main_headless.cpp', args.main)):
         if by:

@@ -1197,3 +1197,155 @@ mv $B/rta_app_next $B/rta_app                                                   
 sh $S/win/chain.sh                                                                                               # the Windows folder and its Mac checks
 ```
 
+
+## 12. The loose ends (2026-10-13, from 12:15; kept current as the work goes on)
+
+Owner of `tools/recomp/rt`, `render`, `app`, `sound` and `net` from 12:15. Helpers and
+results of this section: `local/recomp-out/app-test/s12/` (nothing of it is in the
+repository). Every statement says **Ran** or **Read**. The list worked through is the one
+of 11.9 and of `native-online.md` ("What the second round found outside ..."), in this
+order: threads left behind, the control socket, the stalls, full screen and the 30-a-second
+cap, the pacing in the Windows program, a person's first start, the smaller things.
+
+### 12.0 STATE (rewritten at every step; read this first after a stop)
+
+**13:00.** `bin/rta_app` is still candidate c5 of 07:35 (11.8). Sources hold: the thread
+fix (12.1), the control socket's route (12.2), the stall probe and the drawing-thread
+switch (12.3), the build scripts' lists and the link fix (12.4). Candidate **n4**
+(`bin/rta_app_n4`, `rta_app_orig_n4`, 12:42, built with `--no-game`: the translation of
+22:45 yesterday, set 27f61e1d) is in `s12/verify.sh n4` and a two-copy lobby game
+(`s12/online/pair-n4`); when both pass it becomes `bin/rta_app` (and c5 `rta_app.prev`).
+
+- The fix set in `patches/` and `tools/play-net/sections-suggested.txt` changed at 12:19
+  (29 sections). Candidates are built with `app/build.py --no-game` until the coordinator
+  says the set has landed; then one build without it (it also rebuilds the headless
+  `bin/rta_native_fix`).
+- Next: 12.3 (a picture path that does not need the main thread), then 12.5 on.
+- Processes of this work running now: the lobby server instance `s12/lobby/champions-server`
+  (pid in `s12/lobby/server.pid`; ports 42800-42817, 42900, 42910, UDP 12101, bound to
+  192.168.1.123), `verify.sh n4` and `lobbyparty.py pair-n4` with their copies of
+  `rta_app_n4` (pids in `s12/verify-n4.pid`, `s12/online/pair-n4.pid`, `pair-n4/pids`).
+
+### 12.1 Threads left behind (Ran)
+
+**Found** (`rt/runtime.cpp`). `TerminateThread` (system calls 0x25 / 0x26) makes the
+other thread a zombie, takes it out of the schedule and sets `kill` on it; its host thread
+waits in `wait_for_baton` for `g_cur == self`, which an unlinked thread never becomes, so
+it stood there for ever. With `RTA_THREAD_LOG=1` (new: one line per ended thread) every
+case in ten online games is the same one: thread 1 ends thread 5, procedure 0x17ca58, in
+state 2 (asleep in `SleepThread`), waiting on no semaphore - three times on the way to
+the lobby's game list and four more with every game.
+
+**Changed.**
+
+- `wait_for_baton` ends on `kill` as well, and case 0x25 wakes the thread's condition
+  variable. The ended thread gets the big lock when the thread that ended it next gives it
+  up, unwinds by the `ThreadKill` exception that `ExitThread` already used, and leaves
+  through `thread_main`.
+- It must not touch the machine on its way out: by then its thread number may belong to
+  a new thread. `thread_main` marks a zombie and unlinks only when the procedure
+  *returned*; a thread that was ended (by itself or by another) has been dealt with by
+  whoever ended it.
+- `rt_poll` gave the big lock back in its `unique_lock`'s destructor when an exception
+  passed through it (it released the lock object only on the normal way out); a thread
+  ended while it waits there - pre-empted, not asleep - would have unlocked a mutex that
+  `thread_main` unlocks again. It now releases on every way out, as the system-call path
+  and `rt_sleep` did.
+- Counters: `rt_thread_figures` (`rt.h`): host threads carrying a guest thread now,
+  started in all, ended from outside. The window program prints them in its last lines
+  ("the game's threads: ...") and in the control socket's `info`
+  (`game_threads=`, `game_threads_made=`, `game_threads_ended=`).
+- Read, not changed: a thread ended while it waits on a semaphore would leave the
+  semaphore's waiter count one too high (a later `SignalSema` would wake nobody and not
+  count either). The game does not do it (43 of 43 ended threads were asleep, on no
+  semaphore); the log line says so if it ever does.
+
+**Proven** (load average 550 to 780 the whole time: other work on the machine).
+
+| What | Program of 07:35 (c5) | Candidate n1 (the fix) |
+|---|---|---|
+| `lobbyparty.py --players 2 --kinds window,window --scenario leave --rounds N --port-shift 2000 --play 900`: the same two window processes host, join, play 900 frames, leave by the pause menu, are back at the game list, and again | 4 games, all started and in step (1,413 / 1,410 / 1,412 / 1,410 ticks) | **10 games**, all started, both back at the list every time, in step game by game: 1,409 / 1,411 / 1,412 / 1,412 / 1,409 / 1,409 / 1,413 / 1,410 / 1,411 / 1,408 ticks, no shared column differs |
+| threads of the host's process, read every 20 s (`ps -M`; `run1/resources.txt`) | 20 20 20 23 21 23 23 25 27 30 29 31 30 32 | 18 17 16 17 17 16 16 16 16 16 16 16 15 15 14 16 15 15 15 15 14 14 15 15 14 15 15 15 15 15 14 15 15 |
+| ... of the joiner's | 20 20 19 23 22 23 26 27 27 29 29 31 31 33 | 17 17 17 17 16 16 16 16 16 17 15 16 15 15 14 15 14 16 14 15 15 15 16 15 15 15 15 15 15 15 14 14 14 |
+| the program's own last line | - | "the game's threads: 5 now, 70 started in all, 43 ended by the game from outside" |
+
+So: three to four more threads per game before, none after (the count falls a little over
+the first games as the system's own helper threads go idle). Sockets as before (4, then
+one more per UDP port the game takes, five at most). Files: `s12/online/leave-n1`,
+`leave-c5` (each with `.log`).
+
+The standing checks on n1 (`s12/verify.sh n1`: `s12/verify-n1.txt`): 11 tick-keyed
+pictures the same with the fast renderer, the reference switches and the program in place
+(c5), default picture and `--plain`; 60 tour pictures the same three ways, 20 levels, no
+time-out; the rig comparison the same file as `merge/rig-final-compare.txt` three ways,
+byte for byte (`cmp`).
+
+### 12.2 The control socket (Ran)
+
+`app ...` lines arriving on the socket now go the way a script's `app` line goes
+(`apprt::command` in `app/app_rt.cpp`: `script_app_command`, in front of which
+`net/online.cpp` chains itself, then the window program's own handler). What worked,
+works: every picture and figure of the checks came through the old commands. **Ran over
+the socket**: 12.7 (the walk of a person's first start sends `app online ...` and
+`app net ...` that way). `--opt online-commands=FILE` still exists; nothing needs it any
+more.
+
+### 12.3 The stalls (Ran; in progress)
+
+**What holds the window's thread: AppKit's own work for the window, on the main thread.**
+New debugging aid, `RTA_STALL_LOG=1` (`app/app_main.cpp`, `StallWatch`): when a list that
+is ready to be drawn is not taken within 25 ms (`RTA_STALL_MS`), a thread of its own
+stops the window's thread for microseconds at a time, copies its call stack, and prints
+the stacks with the loader's names once the list is taken; the main thread's event loop
+is watched the same way by a timer that should come by every 8 ms. The last lines of the
+run count both. No other program is involved (no `sample`, no permission asked).
+
+Three stalls caught in the first paced run with it (candidate n2, small test window,
+load average 570; `s12/pace/st1/out.txt`), each with the main thread inside the run
+loop's own callbacks, never in this program's code:
+
+| Waited | Where the main thread was |
+|---|---|
+| 93.6 ms (at the first pass through the event loop) | `HIToolbox _CheckEventsInited`: the window server's port (`SLWindowServerCreateServerPort`), the Apple-event registration and "application ready" (`LaunchServices`): messages answered by other processes |
+| 140.3 ms (the window's first display) | the run loop's display cycle (`CA::Transaction::flush_as_runloop_observer` > `NSDisplayCycleFlush`): the window's layout (`-[NSWindow layoutIfNeeded]`, the title bar's views, its symbols loaded through SwiftUI and CoreUI), `-[NSWindow displayIfNeeded]`, `-[_NSOpenGLViewBackingLayer display]` > Qt's `displayLayer:` > `QCocoaScreen::isOnline` > `SLSDisplayStatusQuery` (a message to the window server) |
+| 172.4 ms | the same display cycle, in `CA::Transaction::commit` > `_NSCGSTransactionGetEntanglingHandle_` > `+[CAFenceHandle newFenceFromDefaultServer]` > `mach_msg`: waiting 150 ms for the window server to answer |
+
+So it is not App Nap, not timer coalescing, not the display link's thread and not a
+priority class: the main thread is running, or waiting inside, AppKit's display cycle for
+the window (layout, the title bar, the layer's display, the commit of the Core Animation
+transaction), and that cycle makes calls to the window server that are answered late when
+the window server is busy - a person moving windows about is exactly that. Such a cycle
+runs when something about the window changes: its first display, being covered and
+uncovered, another window ordered above it, a resize.
+
+**A thread of its own for drawing: not possible with the window as an OpenGL view.**
+Tried (candidate n3): the context moved to a drawing thread (`Screen::painter_loop`,
+`draw_one`), the window's size and exposure mirrored for it by the main thread
+(`GameWindow::mirror`). Without a window it works and is now how every run without a
+window draws (11 pictures the same as before; 293 pictures a second unpaced, 285 before).
+With a window AppKit ended the program at the first resize: "-[NSOpenGLContext update]
+must be called from the main thread if the context has a view" (an exception breakpoint
+in `QCocoaGLContext::update`, called by Qt from `makeCurrent`; the crash report is
+`~/Library/Logs/DiagnosticReports/rta_app_n3-2026-10-13-123901.ips`); Qt says of itself
+that OpenGL from another thread is not supported on macOS. `RTA_PICTURE_THREAD=main`
+forces the main thread; with a window as an OpenGL view it is the only way.
+
+### 12.4 Build scripts, and a link that had broken (Ran)
+
+- **The native programs did not link any more.** `tools/play-net/src/RtaOnline.cpp` (the
+  emulator application's file, linked as it is) has called `Rta::CNet::NoteGame` since
+  09:35 today - the release work gave the application's network layer the disconnect hold
+  of `native-online.md`. A native build does not contain that layer; `net/online.cpp` now
+  defines the function, empty (the driver here has its own hold and reads the lobby state
+  word itself). Every native build with the network needs it: `app/build.py`,
+  `build_win.py`, `net/build_online.py`.
+- **The list of the game's files comes from the translation, not from a directory
+  listing**: new `tools/recomp/genfiles.py` (the names `recomp.py` writes: `c_000.cpp`
+  counted up without a gap, `table.cpp`, `hle_weak.cpp`, `patches.cpp`), used by
+  `tools/recomp/build.py` (it compiled every `.cpp` of the directory - and that is the
+  script `app/build.py` runs for the game), `app/build.py`, `app/build_win.py` (the
+  game's jobs and the `--mac` link), `render/build.py`, `net/build_net.py`. The object
+  directories hold strays today: `obj-run` 97 of them ("c_026 3.o", "table 2.o",
+  "runtime 3.o" ...), `obj-rta_native_fix` three. Source listings of `rt/` and `net/`
+  in those scripts leave out names with a space as well. `app/build.py --no-game` says
+  so when a game object is missing instead of failing in the linker.

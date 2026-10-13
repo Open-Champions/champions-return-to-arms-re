@@ -34,6 +34,8 @@ static const u64 CYCLES_PER_SECOND = 294912000ull;   // the virtual clock counts
 static inline u64 usec_to_cycles(u64 usec) { return usec * CYCLES_PER_SECOND / 1000000ull; }
 u64 rt_cycles();                                    // now
 u64 rt_fields();                                    // vertical blanks since power-on
+// host threads carrying a guest thread now, started in all, ended by TerminateThread
+void rt_thread_figures(u32* now, u32* made, u32* ended);
 
 // Run `fn` when the clock has advanced by `delay` cycles, between two instructions of
 // whatever guest thread runs then, with interrupts held (the context of an interrupt

@@ -140,6 +140,133 @@ at every tick (49 load blanks got the first-tick row), `s2w` and `s3w` identical
 position and seeds at every tick. `first_tick_fix` is removed from `cmp.py`;
 `last_tick_fix` (R2.1) stays, since it supplies a row the rig's log does not have.
 
+### R2.4 Play that no session had reached (Ran; one question open - read to the end)
+
+**Why round 1's tours covered so little of the game.** They walk and cast at random
+where a level starts, which is seldom where its monsters are: the seven tours gained
+experience once (one kill, in `inmine1`).
+
+**The new sessions** (`tools/recomp/proof/play.py`; scripts under
+`local/recomp-out/proof/play/`). The generator looks before it writes, as `pilot.py`
+does: it runs the native build with the script so far, takes a memory image, reads
+where the living creatures are (`objs.py`), and writes the next piece.
+
+- `pt6` **the first level**: both potions drunk (hit points and mana written low
+  first); the shop - talk to the keeper, through her lines, "Enter Shop", **buy** twice,
+  the sell list, **equip** and **unequip** there, **sell**; the inventory screen
+  (unequip, equip, every page); the **save point** (card check, new save, "Save
+  Successful"); the pause menu's **Load Game** and the save loaded again.
+- `pf0`–`pf6` **one per class, three levels each** (21 levels, 2 of them the boss
+  levels): the tour's character with its experience one point below the next level;
+  per level four "legs" - the character is put beside the nearest awake creature of a
+  kind not fought yet (position and facing written), then strikes, casts and blocks for
+  216 frames, the ability buttons moving through the class's skills; after the first
+  kill the **level-up** screen (three ability points and skill points spent); both
+  potions; a **chest** opened and its contents picked up; at the end hit points
+  written to next to nothing among monsters until one of them **kills** the
+  character, and the **restart**. Kinds fought: Minotaur, WarBoar, Warrior, Skeleton,
+  Marr, Demon, SeaMonster, Kobold, WarWraith, FireBeetle, Goblin, Cazic, Badger,
+  LavaMonster, Orc, WoodElfSoldier, Creep, Gremlin, Bubo, Mosquito, GnawSpawn, Hag,
+  Tormentor, FatCyclops, Clockwork, Froglock, Ant, BlackWidow, Scorpion, Droid.
+- `pp0`–`pp6` **the characters as created** (their first skills), one level each; each
+  is killed by a creature within three legs, and restarts.
+- Not reached: **the workshop**. The item-list code has a fourth mode that leads to
+  `workshop_input` 0x1d0b90 (0x1ceb30), but neither shop met (the first level's
+  keeper, the gnome island's trigger) offers more than Buy and Sell to a character
+  without gems; how the mode is entered was not found.
+
+How the menus are driven was found in a rig session with its screen text (`rig.py
+session … --screen-text`): the use button held 12 frames at an object; in the shop
+cross chooses, the use button buys or sells, circle goes back; select opens the
+inventory, and the level-up screen while a gained level is not acknowledged.
+
+**Two things the comparison needed.**
+
+1. *Memory writes inside the tick hook.* A scripted write runs at a vertical blank and
+   the blank falls anywhere in a frame (3b.1), so the first simulation step that sees
+   it can differ by one between the machines; for a position in a fight that is another
+   fight. A session marked `"ticked"` has every group of writes moved into the rig's
+   tick hook (`ontick M poke …`, armed by the script writing the marker M into
+   `g_netFrame`): the hook logs the row and then writes - the order in which the native
+   run logs and writes - so both machines apply a group at the same row. With it the
+   written columns agree in every row (no "write rows" left in `pt6`).
+2. *Pointers through the player object* in a write (`[g_players+0x43d8]+off`):
+   resolved by `proof_rt.cpp` when the write is applied.
+
+**Results so far** (position, both seeds, state, hit points, mana, gold, experience,
+statistics, bag, equipment, abilities, skills at every tick; the record and the pool
+differ in every session for the causes of R2.2 - the HUD's frame count, cache pointers,
+the dialogue speaker's track times - confirmed by image pairs in `pt6`):
+
+| Session | Levels | Result |
+|---|---|---|
+| `pt6` | first level, 1,585 ticks; after the load 189 | **identical at every tick** - potions, shop, equipment, save, load |
+| `pf1` | blood1, fire1, bossgood: 5,157 ticks | **identical at every tick** |
+| `pf3` | swamp1, dis2, torment2, restart: 5,631 ticks | **identical at every tick** |
+| `pf5` | fire3 (death), restart, storm3, arachna1, restart: 5,090 ticks | **identical at every tick** |
+| `pf6` | honor, wate2a, inmine1, restart: 5,699 ticks | **identical at every tick** |
+| `pf2` (first run) | storm1, fay1, nit1: 4,243 ticks identical; the restart after the death differed from its second tick | the script's doing, below; run again |
+| `pf4` (first run) | islsm1 identical; innovat1 differed from tick 43, islc1 after it | the script's doing, below; run again |
+| `pf0` | valor identical to tick 372; the shared seed differs from tick 373, everything after | **explained, and identical once the cause is removed** - below |
+
+**`pf2`, `pf4`: writes in frames the other machine does not have (the harness).** In
+`pf4` the script's "skip the arrival cutscene" pressed start in a level without one
+(it tested the camera's mode), which opened the pause menu; in `pf2` the character died
+while the script was still writing its hit points and position. In both the script then
+writes while the tick stands - in a menu, in the restart's load - and the tick stands
+for more frames on the rig than natively (the load: 120 against 38). A write the rig
+applied in a frame the native run does not have is applied a tick late there (`proof:
+poke … applied late`, 19 times in `pf2`). `play.py` now tests the cutscene flag itself
+and looks after every six tries whether the character is dead; both sessions were made
+and run again (table at the end of this section).
+
+**`pf0`: the first place where the two machines' simulations part for a cause that is
+in the game (Ran, every step).**
+
+1. After the level-up screen is closed the game "warms up": `g_warmupFrames` 0x506048
+   is set to 10, counts down one per displayed frame and is **put back to 10 while
+   terrain streaming is busy**; while it is not 0 the game is frozen and the tick
+   stands. Logged per frame: the screen was up for 1,159 frames on both machines; the
+   warm-up after it took **25 frames on the rig and 11 natively**.
+2. `script_runDeferred` 0x1ed5a0 (run task `Script`, priority 125) has no test for
+   "frozen": it runs once per displayed frame, paused or not, and each run carries out
+   the scripts queued by the frame before - which is how a level script counts time.
+   Its counter `g_scriptDeferFlip` 0x4f8690 is 14 further on the rig in an image pair
+   at tick 349 (0x62f against 0x621) - the 14 frames.
+3. The level's monster generator fires 14 ticks earlier on the rig: `script_runDeferred`
+   → `script_runByName` → `scr_interpret` → `script_generateMonster` 0x1473d4 →
+   `ScriptGenerator_spawn` 0x265fc4 → `world_createObject` → `Skeleton_ctor` 0x2a5af4 →
+   `Creature_ctor`, in tick 373 on the rig (break point on `GameObject_ctor`) and in
+   tick 387 natively (write-watch with the calls under way).
+4. `GameObject_ctor` 0x14cb10 draws the new object's seed from the shared generator:
+   from tick 373 the two machines' `g_randSeed` differ, and with it every fight after.
+
+**The proof of it:** the native run was repeated with nothing changed but
+`g_warmupFrames` held at 10 for 15 more frames at that one place (written from a file,
+`PROOF_EXTRA_POKES`), so that its warm-up is the rig's 25 frames. The session then
+agrees with the rig **at every tick of all three levels** - valor 1,497, wat1 1,305,
+bossevil 1,171 ticks, the boss fight and the death in it - in position, both seeds,
+state, hit points, mana, gold, experience, statistics, bag, equipment and skills. With
+14 frames instead of 15 the generator fires one tick late and the run parts again.
+
+**What it means.**
+- It is not the translation: the native build does exactly what the original does once
+  its streaming takes as long.
+- **Offline, two machines with different disc or streaming speed play different games
+  after the first menu, save screen or cutscene** (the nine callers of
+  `mainloop_startWarmup`): level scripts run on displayed frames, the simulation on
+  ticks, and the warm-up puts a machine-dependent number of frames between them. So a
+  tick-for-tick comparison of a native machine with an emulator (or a console) through
+  a menu holds only while no level script is counting - which is why `pf1`, `pf3`,
+  `pf5` and `pf6` agree through their level-up screens and `pf0` does not. This is the
+  limit of what "identical in play" can be made to mean offline; before, it had only
+  been seen in cosmetic state (NP1).
+- **In a network game (Read, `docs/mainloop.md` sections 5 and 6):** the run pass is
+  not called once per displayed frame there but once per lockstep tick
+  (`net_frameLoop` → `tasks_run(1, 2)`), and `game_isFrozen` is `g_paused` alone, so
+  `script_runDeferred` runs once per tick on every machine whatever each one's warm-up
+  does. The mechanism above does not exist there. Not run on a pair here.
+
 ### R2.5 The 24 functions that wait: compared at a bound (Ran)
 
 **Method.** The translation counts: its budget goes down at every call and at every

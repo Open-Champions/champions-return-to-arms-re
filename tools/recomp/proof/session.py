@@ -58,6 +58,15 @@ def with_dumps(path, spec, out):
     for n, item in enumerate(dumps):
         mark = DUMP_MARK + n
         head.append('ontick %d dump 0 0x2000000 %s' % (mark, os.path.join(out, 'rig-dump-%d.bin' % mark)))
+        if item.startswith('line:'):
+            # "line:TEXT": after the first line of the script that starts with TEXT
+            for at, line in enumerate(lines):
+                if line.startswith(item[5:]):
+                    lines.insert(at + 1, 'poke 0x%x:s32 %d' % (0x4027AC, mark))
+                    break
+            else:
+                raise SystemExit('no line starting with %r in %s' % (item[5:], path))
+            continue
         if item.startswith('#'):
             # "# text": after the k-th line of the script that is this comment (k counts
             # the earlier items of the same text) - play.py marks its scenes that way
@@ -369,6 +378,7 @@ def main():
     parser.add_argument('--capture', action='store_true')
     parser.add_argument('--native-opt', action='append', default=[], help='native: one more --opt KEY=VALUE for the runtime (proof_rt.cpp: proof-watch=..., proof-watch-ticks=...); repeatable')
     parser.add_argument('--no-last-tick-fix', action='store_true', help='native: do not add the bytes of the tick that ended each level to the replay file (cmp.py, last_tick_fix)')
+    parser.add_argument('--native-arg', action='append', default=[], help='native: one more argument for the runtime as it is (--emulator-timing); repeatable')
     parser.add_argument('--per', type=int, default=3)
     parser.add_argument('--want', help='with --capture: the list of functions to record (default local/recomp-out/proof/want.txt)')
     parser.add_argument('--poke-shift', type=int, default=0, help='native: apply the memory writes this many displayed frames later (or, negative, earlier) than the first row the rig logged after it ran them')
@@ -402,6 +412,7 @@ def main():
     script = script_of(args.name, spec, out, for_rig=args.step == 'rig')
     for item in args.native_opt:
         native_args += ['--opt', item]
+    native_args += args.native_arg
     if args.step == 'native':
         # a script that made the rig write a memory image inside a tick (`ontick 77 dump`,
         # armed by `poke 0x4027ac:s32 77`): the native run writes its image at the same tick
@@ -421,6 +432,12 @@ def main():
         native_args += ['--count-at', '%x=%08x' % (INIT_COUNTER_SITE, init_counter(out))]
     if args.step == 'native' and 'echo @P' in open(script).read():
         script, pokes = replay_pokes(script, out, args.poke_shift, ticked=bool(spec.get('ticked')))
+        extra = os.environ.get('PROOF_EXTRA_POKES')     # an experiment: more lines for pokes.txt (native only), sorted in
+        if extra:
+            rows = [line.split() for line in open(pokes)] + [line.split() for line in open(extra) if line.strip()]
+            rows.sort(key=lambda r: (int(r[0]), int(r[1]), int(r[2])))
+            with open(pokes, 'w') as sink:
+                sink.write(''.join(' '.join(r) + '\n' for r in rows))
         native_args += ['--opt', 'proof-pokes=' + pokes]
     cmpmod.setup(args.name, NATIVE, watches=SOUND_WATCHES if spec.get('watch') == 'sound' else spec.get('watch', DEFAULT_WATCHES), native_args=native_args if args.step == 'native' else (),
                  fix_last_tick=not args.no_last_tick_fix)

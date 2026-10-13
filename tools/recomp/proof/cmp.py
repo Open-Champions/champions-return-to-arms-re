@@ -85,10 +85,13 @@ def setup(name, native=None, watches=(), chunks=(), native_args=(), fix_last_tic
         prefix = parts[3] if len(parts) > 3 else 'c'
         for at in range(lo, hi, step):
             extra.append('%s%06x=0x%x:crc%d' % (prefix, at, at, min(step, hi - at)))
-    if native_args or fix_last_tick:
+    rig_args = [a for a in os.environ.get('PROOF_RIG_ARGS', '').split('|') if a]     # more options for the rig run, '|' between them
+    if native_args or fix_last_tick or rig_args:
         real_run = subprocess.run
 
         def run(command, *args, **kwargs):
+            if rig_args and any(str(item).endswith('rig.py') for item in command):
+                command = list(command) + rig_args
             if len(command) > 1 and str(command[1]).endswith('native.py'):
                 for item in command:
                     if str(item).startswith('pad-replay='):

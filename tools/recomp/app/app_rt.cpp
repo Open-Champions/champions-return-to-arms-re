@@ -26,6 +26,11 @@ void set_command_handler(void (*handler)(const std::string&, uint64_t)) {
     g_command = handler;
     script_app_command = [](const std::string& text, u64 frame) { if (g_command) g_command(text, frame); };
 }
+void command(const std::string& text, uint64_t frame) {
+    if (script_app_command) script_app_command(text, frame);
+    else if (g_command) g_command(text, frame);
+}
+void thread_figures(unsigned& now, unsigned& made, unsigned& ended) { u32 a = 0, b = 0, c = 0; rt_thread_figures(&a, &b, &c); now = a; made = b; ended = c; }
 void set_finish_handler(void (*handler)()) { rt_at_finish = handler; }
 void finish(int code) { rt_finish(code); }
 

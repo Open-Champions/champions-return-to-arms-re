@@ -771,7 +771,9 @@ void GlBackend::execute(const FrameList& frame) {
     f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-void GlBackend::present(int width, int height, double aspect) {
+void GlBackend::present(int width, int height, double aspect) { present_to(width, height, aspect, false); }
+void GlBackend::present_top_down(int width, int height, double aspect) { present_to(width, height, aspect, true); }
+void GlBackend::present_to(int width, int height, double aspect, bool top_down) {
     Impl& g = *impl;
     QOpenGLExtraFunctions* f = g.f;
     f->glViewport(0, 0, width, height);
@@ -788,7 +790,8 @@ void GlBackend::present(int width, int height, double aspect) {
     double window = (double)width / height;
     float w = window > aspect ? (float)(aspect / window) : 1.0f, h = window > aspect ? 1.0f : (float)(window / aspect);
     f->glUseProgram(g.present_program);
-    f->glUniform4f(g.present_rect, -w, -h, 2 * w, 2 * h);
+    if (top_down) f->glUniform4f(g.present_rect, -w, h, 2 * w, -2 * h);     // the picture's top row at the framebuffer's first
+    else f->glUniform4f(g.present_rect, -w, -h, 2 * w, 2 * h);
     f->glUniform1i(g.present_tex, 0);
     f->glActiveTexture(GL_TEXTURE0);
     f->glBindTexture(GL_TEXTURE_2D, t->second.colour);

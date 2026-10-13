@@ -29,3 +29,6 @@ Net test: 3-player send cycle 4 -> 3 (LAG-4)
 Net test: kick request is answered for a peer already dropped
 Net test: a peer being dropped still bounds the input lead
 Net test: flush before a level load waits for the peers' tick
+Net test: save point is used on every machine whatever this machine's card screen does
+Net test: reading a quest variable never adds it to the table
+Net test: a jump gate is found only inside the tick

@@ -26,6 +26,8 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+import genfiles  # noqa: E402  (the translation's own list of files)
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 OUT = os.path.join(ROOT, 'local', 'recomp-out')
 
@@ -97,10 +99,11 @@ def main():
                     '-I', args.rt, '-I', args.gen]
         jobs.append((os.path.join(HERE, 'app_main.cpp'), base + qt_flags + ['-I', args.rt, '-I', args.gen, '-w'], 'r_'))
         for n in sorted(os.listdir(args.rt)):
-            if n.endswith('.cpp') and n not in ('main_headless.cpp', 'test_driver.cpp', 'host_win32.cpp', 'snap_main.cpp'):
+            if n.endswith('.cpp') and ' ' not in n and n not in ('main_headless.cpp', 'test_driver.cpp', 'host_win32.cpp', 'snap_main.cpp'):
                 jobs.append((os.path.join(args.rt, n), rt_flags, 'rt_'))
-        link += [os.path.join(args.game_objects, n) for n in sorted(os.listdir(args.game_objects))
-                 if n.endswith('.o') and (n.startswith('c_') or n in ('table.o', 'hle_weak.o'))]
+        # the game's objects: those of the translation's files (genfiles.py), not a listing of
+        # the object directory, where a file synchroniser leaves copies such as "c_003 2.o"
+        link += genfiles.objects(args.gen, args.game_objects)
         program = 'rta_render'
     objects = []
     todo = []

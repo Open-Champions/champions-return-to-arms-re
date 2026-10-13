@@ -41,6 +41,8 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RECOMP = os.path.dirname(HERE)
+sys.path.insert(0, RECOMP)
+import genfiles  # noqa: E402  (the translation's own list of files)
 ROOT = os.path.dirname(os.path.dirname(RECOMP))
 OUT = os.path.join(ROOT, 'local', 'recomp-out')
 
@@ -150,10 +152,15 @@ def main():
         jobs.append((os.path.join(net, 'online_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', net], 'n_'))
     jobs.append((os.path.join(HERE, 'app_main.cpp'), app_flags + qt_flags, 'a_'))
     jobs.append((os.path.join(HERE, 'pad_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE, '-I', rt], 'a_'))
-    # the game's objects by their exact names: a stray copy beside them ("c_003 2.o", as a file
-    # synchroniser leaves them) is not one of them and must not be linked a second time
-    link = [os.path.join(args.game_objects, n) for n in sorted(os.listdir(args.game_objects))
-            if re.fullmatch(r'c_\d+\.o', n) or n in ('table.o', 'hle_weak.o', 'patches.o')]
+    jobs.append((os.path.join(HERE, 'present_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE], 'a_'))
+    # the game's objects are those of the translation's files (genfiles.py), never a listing of
+    # the object directory: a stray copy there ("c_003 2.o", as a file synchroniser leaves
+    # them) is not one of them and must not be linked a second time
+    link = genfiles.objects(args.gen, args.game_objects)
+    missing = [p for p in link if not os.path.exists(p)]
+    if missing:
+        print('the game is not compiled: %s is missing (run without --no-game)' % os.path.relpath(missing[0], ROOT))
+        return 1
     objects = []
     todo = []
     for source, flags, prefix in jobs:
@@ -185,7 +192,8 @@ def main():
     # linked beside its place and moved there: a copy that is running or being started by
     # somebody else never sees a half-written file
     final, out = out, out + '.link%d' % os.getpid()
-    frameworks = sum((['-framework', f] for f in ('QtCore', 'QtGui', 'GameController', 'AppKit', 'Foundation', 'CoreVideo', 'CoreGraphics')), [])
+    frameworks = sum((['-framework', f] for f in ('QtCore', 'QtGui', 'GameController', 'AppKit', 'Foundation', 'CoreVideo', 'CoreGraphics',
+                                                     'Metal', 'QuartzCore', 'IOSurface', 'OpenGL')), [])
     result = subprocess.run(['clang++', '-o', out] + objects + link + ['-F', qtlib] + frameworks + ['-Wl,-rpath,' + qtlib, '-lpthread'],
                             capture_output=True, text=True)
     if result.returncode != 0:

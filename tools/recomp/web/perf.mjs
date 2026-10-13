@@ -16,7 +16,7 @@
 //
 // Needs the test server: tools/recomp/web/serve.py --port 8975 --site local/recomp-web/build
 //                        --disc IMAGE --shots local/recomp-web/out/shots
-// (--site names the directory below that one: page-nearest by default.)
+// (--site names the directory below that one: page by default.)
 // The page is titled "AGENT TEST - native web (...)", stays visible while it is measured and
 // the browser is closed afterwards.  Results: local/recomp-web/out/results.jsonl.
 import { spawn, execFileSync } from "node:child_process";
@@ -147,7 +147,7 @@ async function main() {
 	}
 	if(mode !== "measure") { console.error("usage: perf.mjs measure [options] | perf.mjs close"); process.exit(2); }
 	fs.mkdirSync(OUT, { recursive: true });
-	const site = opt("site", "page-nearest"), label = opt("label", "");
+	const site = opt("site", "page"), label = opt("label", "");
 	const { cdp, version } = await startChrome();
 	let targetId = null;
 	const result = { site, label, browser: version, when: new Date().toISOString(), load_start: load(), scale: opt("scale", "2"), sound: !!opt("sound") };
@@ -156,6 +156,10 @@ async function main() {
 		({ targetId } = await cdp.send("Target.createTarget", { url: "about:blank" }));
 		const { sessionId: page } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
 		await cdp.send("Runtime.enable", {}, page);
+		// the test window may be behind the owner's windows or on another desktop: without this the page is hidden to the
+		// browser there and draws a few pictures a second (playtest.mjs has the story)
+		await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true }, page);
+		await cdp.send("Page.bringToFront", {}, page).catch(() => {});
 		const problems = [];
 		cdp.on((m) => { if(m.method === "Runtime.exceptionThrown") problems.push(m.params.exceptionDetails.text + " " + (m.params.exceptionDetails.exception?.description || "").slice(0, 300)); });
 		await cdp.send("Page.navigate", { url }, page);

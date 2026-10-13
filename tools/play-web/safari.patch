@@ -1,0 +1,355 @@
+safari.patch - the browser build: translated code without the two stalls measured in
+docs/issues/browser-safari.md. For "patch -p1" in the Play! tree, AFTER play-net.patch,
+play-web.patch and perf.patch (it changes lines that perf.patch wrote). Made from
+local/play-web-safari/base-src (the tree tools/play-web/build.sh makes from the patches
+as they were on 2026-10-13 10:52, play-net.patch of commit 356add2) and work-src, by
+local/play-web-safari/out/mkpatch.sh.
+
+What it changes (three files of Play!'s core, one of its code generator; nothing of the
+page, of tools/play-web/src or of the game):
+
+  deps/CodeGen/src/MemoryFunction.cpp
+      A block of translated code gets its place in the program's function table from a
+      run of 4,096 places made by one growth of the table, instead of one growth per
+      block (Emscripten's addFunction). In Safari's engine growing a table costs time
+      for every instance that imports it - since perf.patch that is every block - so a
+      place cost 1.3 to 3 ms once there were thousands of blocks. Places given back are
+      used again first, as before.
+  Source/ee/VuExecutor.cpp, VuExecutor.h
+      The blocks made for a VU1 program are kept when VU1's program memory changes, and
+      taken up again when the same content comes back: one executor per content of the
+      whole of program memory (at most 64, the one unused longest goes). perf.patch
+      threw every VU1 block away at every change, which a level that alternates
+      between programs does many times a frame.
+  Source/GenericMipsExecutor.h
+      The handler for "no block here" is installed by a method of its own, so that the
+      executor in use can install its own (needed by the above; no change for the main
+      processor and the IOP).
+
+To merge:
+  1. tools/play-web/build.sh: one line after  apply perf "$HERE/perf.patch" :
+         apply safari "$HERE/safari.patch"
+     and the patch named in the script's header comment and in the licence note's list
+     of patches (README.txt in the site's licences folder), as perf.patch is.
+  2. A tree that has the three patches takes this one as it is (build.sh applies it and
+     compiles what changed: about 60 files include GenericMipsExecutor.h). Nothing else
+     has to be built from scratch and no option changes.
+  3. If perf.patch's sections for MemoryFunction.cpp or VuExecutor.cpp/.h are written
+     again, this patch has to be made again on top (mkpatch.sh); play-net.patch and
+     play-web.patch do not touch these files.
+  4. Check after merging: the page boots; "blocks" in rta.info() (functions) stops
+     rising while standing in a level; in Safari the first level comes up without
+     seconds of stillness.
+
+--- a/Source/GenericMipsExecutor.h
++++ b/Source/GenericMipsExecutor.h
+@@ -49,8 +49,17 @@
+ 		ResetBlockOutLinks(m_emptyBlock.get());
+ 
+ 		assert(!context.m_emptyBlockHandler);
+-		context.m_emptyBlockHandler =
+-		    [&](CMIPS* context) {
++		InstallEmptyBlockHandler();
++	}
++
++	//RTA(web): what the processor's context calls where there is no block yet. A method
++	//of its own because a context can have more than one executor, one of them in use
++	//at a time (CVuExecutor keeps one per program it has seen): the one in use is the
++	//one that installed its handler last.
++	void InstallEmptyBlockHandler()
++	{
++		m_context.m_emptyBlockHandler =
++		    [this](CMIPS* context) {
+ 			    uint32 address = m_context.m_State.nPC & m_addressMask;
+ 			    PartitionFunction(address);
+ 			    auto block = FindBlockStartingAt(address);
+--- a/Source/ee/VuExecutor.cpp
++++ b/Source/ee/VuExecutor.cpp
+@@ -1,4 +1,7 @@
+ #include <cstdio>
++#include <cstring>
++#include <algorithm>
++#include <vector>
+ #include "VuExecutor.h"
+ #include "VuBasicBlock.h"
+ #include "VUShared.h"
+@@ -12,6 +15,10 @@
+ };
+ // clang-format on
+ 
++//RTA(web): for tests: executors made for a program, and changes of program
++unsigned int g_rtaWebVuProgramsMade = 0;
++unsigned int g_rtaWebVuProgramChanges = 0;
++
+ CVuExecutor::CVuExecutor(CMIPS& context, uint32 maxAddress)
+     : CGenericMipsExecutor(context, maxAddress, BLOCK_CATEGORY_PS2_VU)
+ {
+@@ -20,12 +27,23 @@
+ void CVuExecutor::SetBlockNoClamping(BlockNoClampingSet blockNoClamping)
+ {
+ 	m_blockNoClamping = std::move(blockNoClamping);
++	//RTA(web): the kept programs were made with the set as it was
++	m_keptPrograms.clear();
++	m_program = nullptr;
++	if(KeepsPrograms())
++	{
++		InstallEmptyBlockHandler();
++		m_flagsPolicyPending = true;
++	}
+ }
+ 
+ void CVuExecutor::Reset()
+ {
+ 	m_cachedBlocks.clear();
+ 	m_blockNoClamping.clear();
++	m_keptPrograms.clear();
++	m_program = nullptr;
++	InstallEmptyBlockHandler();
+ 	CGenericMipsExecutor::Reset();
+ 	m_skipStickyFlags = false;
+ 	m_flagsPolicyPending = m_flagsElision;
+@@ -37,11 +55,29 @@
+ 	m_flagsPolicyPending = true;
+ }
+ 
++bool CVuExecutor::KeepsPrograms() const
++{
++	//Not with the debugger: its breakpoints and single steps go through the one executor
++#ifdef DEBUGGER_INCLUDED
++	return false;
++#else
++	return m_flagsElision && !m_isFixedProgram;
++#endif
++}
++
+ int CVuExecutor::Execute(int cycles)
+ {
+ 	//RTA(web): before any block is run or made. Program memory is written between runs,
+ 	//and the range written is cleared before the new words are in it, so this is the
+ 	//first moment the new program can be looked at.
++	if(KeepsPrograms())
++	{
++		if(m_flagsPolicyPending || !m_program)
++		{
++			SelectProgram();
++		}
++		return m_program->Execute(cycles);
++	}
+ 	if(m_flagsPolicyPending)
+ 	{
+ 		UpdateFlagsPolicy();
+@@ -51,6 +87,26 @@
+ 
+ void CVuExecutor::ClearActiveBlocksInRange(uint32 start, uint32 end, bool executing)
+ {
++	if(KeepsPrograms())
++	{
++		//RTA(web): Program memory is about to change (or has just changed). The blocks
++		//are in the executor of the program that was in memory, which is kept as it is
++		//- if program memory still is what that executor was made for. If it is not
++		//(a write that came before its notice, or one without a notice), the executor
++		//may hold blocks made from a content that is not its key: it is not kept.
++		assert(!executing);
++		if(!m_flagsPolicyPending && m_program)
++		{
++			if(!(GetProgramKey() == m_programKey))
++			{
++				m_program = nullptr;
++				m_keptPrograms.erase(m_programKey);
++				InstallEmptyBlockHandler();
++			}
++		}
++		m_flagsPolicyPending = true;
++		return;
++	}
+ 	if(m_flagsElision)
+ 	{
+ 		m_flagsPolicyPending = true;
+@@ -58,6 +114,81 @@
+ 	CGenericMipsExecutor::ClearActiveBlocksInRange(start, end, executing);
+ }
+ 
++uint128 CVuExecutor::GetProgramKey() const
++{
++	//The whole of program memory, as the translator reads it
++	XXH128_hash_t xxHash;
++	auto map = m_context.m_pMemoryMap->GetInstructionMap(0);
++	if(map && (map->nStart == 0) && (map->nEnd >= (m_maxAddress - 1)) && map->pPointer)
++	{
++		xxHash = XXH3_128bits(map->pPointer, m_maxAddress);
++	}
++	else
++	{
++		std::vector<uint32> words(m_maxAddress / 4);
++		for(uint32 address = 0; address < m_maxAddress; address += 4)
++		{
++			words[address / 4] = m_context.m_pMemoryMap->GetInstruction(address);
++		}
++		xxHash = XXH3_128bits(words.data(), words.size() * sizeof(uint32));
++	}
++	uint128 key;
++	memcpy(&key, &xxHash, sizeof(xxHash));
++	static_assert(sizeof(key) == sizeof(xxHash));
++	return key;
++}
++
++void CVuExecutor::SetFixedProgram(const BlockNoClampingSet& blockNoClamping)
++{
++	//This executor is made for program memory as it is now, and is only used while
++	//program memory is that: its flags policy is settled here, once
++	m_isFixedProgram = true;
++	m_flagsElision = true;
++	m_blockNoClamping = blockNoClamping;
++	m_skipStickyFlags = !HasStickyFlagReaders();
++	m_flagsPolicyPending = false;
++}
++
++void CVuExecutor::SelectProgram()
++{
++	m_flagsPolicyPending = false;
++	m_programKey = GetProgramKey();
++	auto programIterator = m_keptPrograms.find(m_programKey);
++	if(programIterator == std::end(m_keptPrograms))
++	{
++		if(m_keptPrograms.size() >= MAX_KEPT_PROGRAMS)
++		{
++			//The one that was in memory longest ago goes
++			auto oldestIterator = std::min_element(std::begin(m_keptPrograms), std::end(m_keptPrograms),
++			                                       [](const auto& item1, const auto& item2) { return item1.second.lastUse < item2.second.lastUse; });
++			m_keptPrograms.erase(oldestIterator);
++		}
++		KEPT_PROGRAM program;
++		//(the new executor installs its handler for "no block here" itself)
++		m_context.m_emptyBlockHandler = nullptr;
++		program.executor = std::make_unique<CVuExecutor>(m_context, m_maxAddress);
++		//(an executor's table of blocks is only set up by Reset)
++		program.executor->Reset();
++		program.executor->SetFixedProgram(m_blockNoClamping);
++		programIterator = m_keptPrograms.insert(std::make_pair(m_programKey, std::move(program))).first;
++		g_rtaWebVuProgramsMade++;
++	}
++	else
++	{
++		programIterator->second.executor->InstallEmptyBlockHandler();
++	}
++	programIterator->second.lastUse = ++m_programUse;
++	g_rtaWebVuProgramChanges++;
++	m_program = programIterator->second.executor.get();
++	bool skipStickyFlags = m_program->m_skipStickyFlags;
++	if(skipStickyFlags != m_skipStickyFlags)
++	{
++		m_skipStickyFlags = skipStickyFlags;
++		printf("VU: sticky sign and zero flags are %s (the program memory has %s that reads them).\r\n",
++		       skipStickyFlags ? "not kept" : "kept", skipStickyFlags ? "no instruction" : "an instruction");
++	}
++}
++
+ bool CVuExecutor::HasStickyFlagReaders() const
+ {
+ 	//The lower word of every pair in program memory. A word that only looks like one of
+--- a/Source/ee/VuExecutor.h
++++ b/Source/ee/VuExecutor.h
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ #include <map>
++#include <memory>
+ #include "../GenericMipsExecutor.h"
+ 
+ class CVuExecutor : public CGenericMipsExecutor<BlockLookupOneWay, 8>
+@@ -22,8 +23,16 @@
+ 	//  instruction that reads them (FSEQ, FSOR, or FSAND with one of their bits);
+ 	//- the MAC flags of a block's last instructions are kept only if the code after
+ 	//  the block can read them (CVuBasicBlock::AreTrailingFlagsRead).
+-	//Both depend on program memory outside a block, so when that memory changes every
+-	//block is made again.
++	//Both depend on program memory outside a block, so the blocks made for one content
++	//of program memory are of no use for another. They are not thrown away when the
++	//memory changes, though: a game that alternates between a few programs (a level
++	//with several kinds of drawing does it many times a frame) would have every block
++	//translated again at every change. The executor keeps one executor of its own kind
++	//per program - the whole content of program memory - with the blocks made while
++	//that program was in memory, and goes back to it when the same content comes back
++	//(docs/issues/browser-safari.md). What a kept executor holds is what would be made
++	//again from that content: block code is a function of program memory and the
++	//block's first address only.
+ 	void SetFlagsElision(bool);
+ 
+ 	int Execute(int) override;
+@@ -54,4 +63,27 @@
+ 	bool m_flagsElision = false;       //asked for
+ 	bool m_flagsPolicyPending = false; //program memory may have changed since the blocks were made
+ 	bool m_skipStickyFlags = false;    //what the existing blocks were compiled with
++
++	//RTA(web): the programs kept (see SetFlagsElision)
++	enum
++	{
++		MAX_KEPT_PROGRAMS = 64,
++	};
++	struct KEPT_PROGRAM
++	{
++		std::unique_ptr<CVuExecutor> executor;
++		uint64 lastUse = 0;
++	};
++	typedef std::map<uint128, KEPT_PROGRAM> KeptProgramMap;
++
++	bool KeepsPrograms() const;
++	uint128 GetProgramKey() const;
++	void SelectProgram();
++	void SetFixedProgram(const BlockNoClampingSet&);
++
++	KeptProgramMap m_keptPrograms;
++	CVuExecutor* m_program = nullptr; //the executor of the program in memory; null: to be found (m_flagsPolicyPending)
++	uint128 m_programKey = {};        //its key in m_keptPrograms
++	uint64 m_programUse = 0;
++	bool m_isFixedProgram = false;    //this executor is one of another's kept programs: its program memory never changes
+ };
+--- a/deps/CodeGen/src/MemoryFunction.cpp
++++ b/deps/CodeGen/src/MemoryFunction.cpp
+@@ -48,7 +48,7 @@
+ //RTA(web): how many pieces of translated code were made and how long that took
+ std::atomic<uint32_t> g_rtaWebFunctionCount(0);
+ std::atomic<uint64_t> g_rtaWebFunctionMicros(0);
+-EM_JS_DEPS(WasmMemoryFunction, "$addFunction,$removeFunction");
++EM_JS_DEPS(WasmMemoryFunction, "$setWasmTableEntry");
+ //RTA(web): the instance is given the program's own function table (calls into the
+ //runtime and jumps to other blocks go through it) and the address of its link slots
+ EM_JS(int, WasmCreateFunction, (emscripten::EM_VAL moduleHandle, uintptr_t linkBase),
+@@ -62,12 +62,35 @@
+ 		}
+ 	});
+ 	let fct = moduleInstance.exports.codeGenFunc;
+-	let fctId = addFunction(fct, 'vi');
++	//RTA(web): The function's place in the program's function table comes from a run of
++	//places made by one growth of the table, not from a growth by one place for every
++	//function (Emscripten's addFunction). In Safari's engine growing a table costs time
++	//for every instance that imports the table - every piece of translated code there
++	//is - so a place per function cost milliseconds each once there were thousands
++	//(docs/issues/browser-safari.md). Places given back are used again first.
++	let places = Module["rtaTablePlaces"];
++	if(!places)
++	{
++		places = Module["rtaTablePlaces"] = [];
++	}
++	if(places.length === 0)
++	{
++		let first = wasmTable.length;
++		let count = 4096;
++		wasmTable.grow(count);
++		for(let i = count - 1; i >= 0; i--)
++		{
++			places.push(first + i);
++		}
++	}
++	let fctId = places.pop();
++	setWasmTableEntry(fctId, fct);
+ 	return fctId;
+ });
+ EM_JS(void, WasmDeleteFunction, (int fctId),
+ {
+-	removeFunction(fctId);
++	setWasmTableEntry(fctId, null);
++	Module["rtaTablePlaces"].push(fctId);
+ });
+ EM_JS(emscripten::EM_VAL, WasmCreateModule, (uintptr_t code, uintptr_t size),
+ {

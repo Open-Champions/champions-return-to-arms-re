@@ -22,6 +22,7 @@
 
 #include "rt.h"
 #include "../../play-net/src/RtaOnline.h"
+#include "../../play-net/src/RtaNet.h"
 
 #include <chrono>
 #include <cstdio>
@@ -30,6 +31,13 @@
 #include <sstream>
 #include <thread>
 #include <unistd.h>
+
+// RtaOnline.cpp (linked as it is) tells the emulator application's network layer once per
+// vertical blank whether the game is in a game's room, for that layer's hold of a peer's
+// disconnect (tools/play-net/src/RtaNet.cpp, since 2026-10-13).  That layer is not part of
+// a native build: the driver here has the same hold and reads the lobby state word itself
+// (netdrv.cpp, udp_receive), so there is nothing to be told.
+void Rta::CNet::NoteGame(bool) {}
 
 namespace rtanet {
 void (*ask_name)(const std::string& why) = nullptr;
