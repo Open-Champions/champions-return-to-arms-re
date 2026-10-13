@@ -142,6 +142,9 @@ def replay_pokes(script, out, shift):
             else:
                 at = max(0, min(len(rows) - 1, at + shift))
             _, episode, tick, frame = rows[at]
+            if tick == 0 and episode >= 4 and os.environ.get('PROOF_DROP_LOAD_WRITES'):
+                missing += 1                    # an experiment: leave such a group out
+                continue
             if tick == 0 and episode >= 4:
                 # written while a level loads (the script ran on through a level change the
                 # game made): the load takes fewer frames here, so the row's frame number

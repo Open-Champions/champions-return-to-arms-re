@@ -1,5 +1,12 @@
 # Three and four players do not launch from the online lobby
 
+**State (2026-10-12, 20:40 CDT): TWO causes. (1) The game's launch handshake and the
+address the lobby server tells a console as its own: fixed in the server (below), proven
+with native copies. (2) The emulator's Ethernet adaptor loses the second of two datagrams
+sent back to back - this is what leaves one player of three behind in the application
+and the browser; found in packet captures at 20:35, fix being built. Read the section
+"The second cause" and "Where the work stands". What follows is the state at 16:20:**
+
 **State (2026-10-12, 16:20 CDT): the cause is found and reproduced with three native
 copies (one failing run read call by call). The fix is one change in the lobby server -
 no change to the game, to the patch set or to any player's copy. It is in the working
@@ -228,39 +235,49 @@ of those launched and stayed in step for 3,117 frames - the handshake repaired t
 as predicted. Not counted: one attempt in which the fourth copy's one-step driver
 stopped at the game list and never joined.
 
-### A second way to be left behind, seen once: the end of the handshake (not fixed)
+### The second cause, and the one the earlier report saw: the emulated Ethernet adaptor loses the second of two datagrams (found 20:35; fix not yet built)
 
-The third launch of four application copies on the fixed server (load 116 - 337): three
-copies went into the level with four players counted, and the copy that was player 1
-stayed behind. Its tables were right. Read 150 s later, all its launch records were
-"contacted, state 0": it had been done with everybody (the other three have it in state
-8) and then stopped hearing from them. **That is the picture the earlier report
-describes** (two in the level counting three, the third left with the launch error) -
-and it is not what causes 1 and 2 produce (there nobody gets into the level).
+**Seen:** on the fixed server, with the last joiner held 2 s at Start Game, the
+application copies still failed 3 of 3 launches - but differently: two copies in the
+level counting three players, one left behind with the launch error ("two in, one out",
+which is what the earlier report describes; causes 1 and 2 leave nobody in the level).
+The same happened once without any hold in a launch of four. The copy left behind had
+right addresses and had been done with everybody (state 8); what it lacked was the other
+joiner's word that it "sees everybody ready" (flag bit 8 at record+0x5d).
 
-What the code says (0x135638, read; the one occurrence above is the only run):
-- a machine that has all the others in state 8 answers a keep-alive (type 6) with type 7
-  and the number of others it has in state 8; a machine sends keep-alives to players in
-  state 8 once every 0.75 s **of its own frames** (45 frames);
-- a machine starts its 120-frame countdown when every other player is in state 8 **and**
-  has told it, in a type 7, that it sees all the others ready (flag bit 8 at +0x5d);
-  after the countdown it closes the launch socket and is in the game. Nothing tells the
-  others; each machine decides for itself;
-- a record in state 8 that gets no datagram for six keep-alives goes back to state 0,
-  and 2,700 frames later the launch fails with the message about players who cannot be
-  reached.
+**Read from packet captures of all three copies** (`--rta-pcap`, kept in
+`local/three-players/app3s/app<k>.pcap`; `launchcap.py` lists the launch datagrams):
+- A copy that has two players in state 8 sends two keep-alives in one frame, one to
+  each. In the captures of the two joiners the first of the two leaves the machine
+  **twice, with the same IP identification, and the second never leaves**: the next
+  datagram has the identification after the missing one. The left-behind copy sent 58
+  such pairs in that run and lost 58 datagrams; its keep-alive to the other joiner never
+  went out once, so it never got that joiner's answer, while its answers to the others'
+  keep-alives (single datagrams) did go out - they counted down and left.
+- It is the same for any two datagrams sent back to back (SHAKE to two players, an
+  answer and a keep-alive in one frame); the launch survives those by its retries, and
+  which datagram of a group is lost shifts when an answer is sent in the same frame -
+  which is why most launches of three got through and why it looked like load.
+- A game of two never sends two datagrams back to back in the launch: this is why two
+  players always worked. The native build has no emulated adaptor: this is why three
+  and four native copies need only the server fix.
 
-So a machine must send a keep-alive and get the answer from every other machine within
-the 2 seconds those machines take to count down. At 60 frames a second on every machine
-that always works (45 frames against 120). A copy that runs at less than about a third
-of full speed in those two seconds, or stands still for more than about a second there,
-answers the others (so they go) and has not asked them yet - it is left behind. That is
-candidate (c), and it is a matter of speed, not of the number of players: it should hit
-a game of two as well. **Not yet reproduced on purpose, and no fix written.** A fix on
-our side would have to answer keep-alives for a copy that has already gone into the
-game (in the network layer of the copy left behind, once it sees the other's first
-lockstep datagram, or of the copy that has gone); a game patch could make everyone wait
-for the host's word, but changes the patch set.
+**Where:** `Source/iop/Iop_Speed.cpp` of Play!, `CSpeed::HandleTx` (the emulated SMAP
+chip; the file is part of `tools/play-net/play-net.patch`, and the browser build
+compiles the same file). It sends each ready descriptor's frame from
+`m_txBuffer.data() + descriptor.pointer - 0x1000` and then empties the buffer. The
+game's driver gives a descriptor the chip's transmit write pointer, which this chip does
+not emulate (the register reads 0), so every descriptor says 0x1000 - right for one
+frame at a time, and for two frames written before the first "send" the first frame is
+sent twice. That is candidate **(d)**, in the emulator's adaptor, below our own
+`RtaNet.cpp`. It is not a fault of the game.
+
+**Fix (being built in a copy of the released source under
+`local/three-players/play-src`, build `play-build`):** the adaptor keeps the frames in
+the order they were written and takes each ready descriptor's frame from where the one
+before it ended, and only the frames that were sent leave the buffer. No change to the
+game, to the patch set or to the server; it needs a new application build and a new
+page build.
 
 ## Where things are
 

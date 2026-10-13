@@ -84,19 +84,35 @@ upload's copy and hash, 1 to 4 % of the instructions and 3 to 9 % of the cycles.
 
 ## State and next step
 
-(21:05) **Step 1 works**: `vu1_translate.py` (+ `vu1_translate_gen.py`, `vu1_simd.h`,
-`vu1_fast.h`, `vu1_fast_none.cpp`) translates the three programs; `decode_bench` built by
-`speedbench.py build fast` gives the same checksums of vertices and draw commands as the
-interpreter on title, hub and fire3-fight, every run in translated code. Whole process:
-title 80.8 -> 46.9, hub 187 -> 103, fire3 249 -> 141 million instructions. Next: profile
-again, then the GS vertex path, UNPACK, uploads; then the patch, the app, WebAssembly.
+(20:36) Three things are in and proven on six streams (title, hub, fire3-start,
+fire3-fight, drunare-start, drunare-fight): the checksums of all vertices and of all draw
+commands, first pass and all passes, are the same as with everything on the reference
+path (`--interpret` with `RTA_GS_SLOW=1 RTA_VIF_SLOW=1`):
+
+1. the ahead-of-time VU1 translation (`vu1_translate.py`, `vu1_translate_gen.py`,
+   `vu1_simd.h`, `vu1_fast.h`, `vu1_fast_none.cpp`; run-time side in `vu1.cpp`);
+2. `Gs::triangle_run`: a whole PACKED run of triangles / strips / fans in one loop, and a
+   kicked packet read where it lies in VU1 memory instead of copied first;
+3. `Vif1::unpack_fast`: one loop per UNPACK format.
+
+Whole process, instructions per picture: title 80.8 -> 27.1 million, hub 187 -> 60.2,
+fire3 fight 249.8 -> 82.5 (the bench's own share is 3.4 / 8.5 / 15 of those).
+
+Next: profile again; uploads (copy + hash); VU1 code quality (13 instructions a pair);
+then `build.py` of render / app / web, `rta_replay` pictures, the application's frame
+time, WebAssembly, the arithmetic test (`vu1_fast_test.cpp`), the patch's head.
+`local/recomp-speed/out/mkpatch.sh` makes `tools/recomp/render/speed.patch` from
+`base` and `root` and copies the new files into `tools/recomp/render/`: run it after
+every step.
 
 How to build and compare (from `local/recomp-speed/`, all at nice 10):
 
 ```
 python3 -I root/tools/recomp/render/speedbench.py translate streams/fire3-fight.rtavs streams/hub.rtavs streams/title.rtavs
 python3 -I root/tools/recomp/render/speedbench.py build fast [--prof]      # root/local/recomp-out/speed/fast/decode_bench
-root/local/recomp-out/speed/fast/decode_bench streams/hub.rtavs --loops 5 [--interpret | --old-translation]
+root/local/recomp-out/speed/fast/decode_bench streams/hub.rtavs --loops 5                       # the fast paths
+RTA_GS_SLOW=1 RTA_VIF_SLOW=1 root/local/recomp-out/speed/fast/decode_bench streams/hub.rtavs --loops 5 --interpret    # the reference
+#   --old-translation: the older translation of the main program; --list FILE: the draw commands as text
 ```
 
 ## Log
@@ -106,6 +122,16 @@ root/local/recomp-out/speed/fast/decode_bench streams/hub.rtavs --loops 5 [--int
   (load average 340): times mean nothing, instructions and cycles are what is compared.
 - 20:00 scenes recorded with my own build of the application (`out/record.py`).
 - 20:10 profile of the three scenes before any change.
-- 21:05 the ahead-of-time VU1 translation: identical lists on the three scenes at the first
+- 20:25 the ahead-of-time VU1 translation: identical lists on the three scenes at the first
   build; kicks of a translated run are taken out of VU1 memory at once and drawn after the
   run (`Gs::xgkick_take` / `xgkick_flush`), the interpreter still draws them at once.
+  (Taken out again at 20:33: reading the packet where it lies, at once, is cheaper than
+  copying it, and it is one way for both.)
+- 20:30 `Gs::triangle_run`, `Vif1::unpack_fast`. One difference found by the command
+  checksum and kept as the reference has it: when making a draw's state sends a texture
+  again (`restore_texture`, GIF data of "path 3"), `cur_path` stays 3 for the rest of the
+  packet being read, so the triangles of that one VU1 packet are marked `made_by` 1
+  (built on the CPU) in the reference. `triangle_run` reads the path after the state is
+  made, as `kick()` does, and gives the same. It looks like a small fault of the model
+  (the path should be put back after the restore); it is `gs.cpp`'s owner's to decide.
+- 20:35 the shared tree's files that the patch touches are unchanged since my copy.

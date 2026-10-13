@@ -16,14 +16,23 @@ rig figures are slow.
 
 ## Status
 
-(kept current; last update 2026-10-12 16:35)
+(final for this round: 2026-10-12 21:20. Everything below was re-run after the graphics
+patch and the flush-to-zero change were merged into `tools/recomp` — translation,
+instrumented runtime and state driver rebuilt, all eight tours, the fight, every recorded
+state and all arithmetic runs repeated — and gives the same numbers as before the merge.
+Nothing of this work is still running.)
 
-| Part | State |
+| Part | Result |
 |---|---|
-| 1. The two differences against the rig | both located to the byte, the writing code and the cause: disc-read completion time, and which sound-sequence slot was free; both measured on both machines; neither is a translation error |
-| 2. The 301 functions without a comparable case | method built; one session replayed: **49 of the 301 identical to their return on real inputs, 6 more identical up to a common stop, 0 different**, 25 entered but not comparable (they wait), 221 not entered by that session. The states of five tours are recorded (942 states) and not replayed yet |
-| 3. Coverage of play | **2,660 of 7,732 functions (34.4 %)** reached by sessions that were compared with the rig tick for tick (the fight and five class tours of 13 levels each, 47,565 ticks). Two tours agree in every simulation column at every tick (18,872 ticks, 26 levels), a third in all but 122 ticks of the pool checksum in one level; two do not, for reasons located or being located (3c). Three more rig runs in progress. The set has not stopped growing |
-| 4. Arithmetic corner cases | FPU: 24 instructions × 1,980,400 operand sets, **0 differences** in both builds; host model against the rig itself: 0 differences with flush-to-zero, and **one runtime gap found** (the runtime does not set flush-to-zero). Integer/multiply/divide/multimedia: 156 instruction words × 250,000 sets, **0 differences**. Vector unit 0: 225 instruction forms, 21,000,000 lane results in each of two modes, **0 differences** |
+| 1. The two differences against the rig | both located to the byte, the writing code and the cause — the completion time of a disc read, and which sound-sequence slot was free — measured on both machines. Neither is a translation error |
+| 2. The 301 functions without a comparable case | **69 now identical to their return on states recorded in the running game, 6 more identical up to a common stop, 0 different.** 24 are entered and cannot return in isolation (they wait for an interrupt or the I/O processor). 202 were entered by no session; 137 of those are library and C++ runtime code offline play does not call, 20 are named by no call, jump or data word |
+| 3. Coverage of play | nine sessions compared with the rig tick for tick (79,547 ticks, 93 levels besides the first, all seven classes): **2,987 of 7,732 functions (38.6 %)** ran. Four tours (34,995 ticks) agree in every column at every tick; in the others position, both seeds, state and all character columns agree at every tick and the pool or record checksum differs for causes located to bytes and writer (3c), one of them not explained. The set was still growing when the round ended |
+| 4. Arithmetic corner cases | FPU: 24 instructions × 1,980,400 operand sets, **0 differences** in both builds against their references; integer, multiply/divide and multimedia: 156 instruction words × 250,000 sets, **0**; vector unit 0: 225 forms × 21,000,000 lane results in two modes, **0**; the host model against the rig itself: 15 instructions × 16,384 pairs, **0** with flush-to-zero. One gap found in the runtime (no flush-to-zero) — since fixed by the runtime's keeper |
+
+Across everything: **no difference found is a translation error.** Of the 7,732
+functions, 7,460 now have at least one comparable case identical to the return (7,391
+from the sweep, 69 from recorded states), 46 only up to an instruction both sides stop
+at, 226 none; none fails.
 
 ## Tools added (all in `tools/recomp/proof/`, outputs under `local/recomp-out/proof/`)
 
@@ -32,7 +41,7 @@ Nothing under `tools/recomp/rt`, `render`, `sound`, `app`, `net` and nothing in
 
 | File | What it does |
 |---|---|
-| `cmp.py` | `rigcompare.py` with an output directory per run, a choice of native binary, extra watch columns and extra arguments for the native run |
+| `cmp.py` | `rigcompare.py` with an output directory per run, a choice of native binary, extra watch columns and extra arguments for the native run; removes a level's loading rows from the controller replay file (3b.3) |
 | `instrument.py`, `proof.h.in` | a copy of the generated translation with one line added at every entry point: `PROOF_ENTER(n)` |
 | `proof_rt.cpp` | what that line calls, linked into a build of the unchanged runtime (`bin/rta_proof`): a counter per entry point; the machine state at a function's entry (registers and all memory, pages stored once); a write-watch that reports the two points of execution between which watched bytes changed; memory dumps and memory writes keyed on level episode and tick |
 | `build_proof.py` | translate, instrument, build `rta_proof` and `proof_driver` in directories of their own |
@@ -40,6 +49,7 @@ Nothing under `tools/recomp/rt`, `render`, `sound`, `app`, `net` and nothing in
 | `realproof.py` | the function-by-function comparison on recorded states (part 2) |
 | `tour.py`, `session.py` | scripted sessions: class, character, a list of levels, seeded play; rig run, native run on the rig's controller bytes and memory writes, comparison (part 3) |
 | `coverage.py` | adds the counters of several runs up against the function table (part 3) |
+| `summary.py` | a session's comparison, one line per level, with the rows of scripted memory writes counted apart |
 | `arith.py`, `arith_main.cpp`, `softf.py`, `rigarith.py` | the arithmetic tests (part 4) |
 
 The instrumented build was checked to be the same program: on the fight session it gives
@@ -172,35 +182,70 @@ bits, HI/LO and the second pair, the shift amount, the FPU registers, accumulato
 compare bit, every call with its eight integer and eight float argument registers — and
 **every byte of memory**: all 32 MB, the scratchpad and any other page touched (not only
 the pages a write log names). Each state is tried with callees running (the whole call
-tree is compared); when the interpreter does not reach the return within a million
+tree is compared); when the interpreter does not reach the return within three million
 instructions, again with every call replaced by "return 0" on both sides. On both sides a
 system call returns 0, the mirrors of main memory fold as `rt/runtime.cpp` folds them,
 and hardware registers are plain memory that starts at zero.
 
-### Result so far (Ran: one session — boot, first level, the fight in valor)
-
-168 states of 82 functions were recorded (80 of the 301, 2 of the 40).
+### Result (Ran: nine sessions — the fight and eight tours of part 3; 1,679 states, 2,310 runs)
 
 | Of the 301 | Functions |
 |---|---|
-| identical to the return, callees running | 42 |
+| identical to the return, callees running | 62 |
 | identical to the return, calls replaced | 7 |
-| identical up to an instruction both sides stop at (first vector-unit instruction, `BREAK`) | 6 |
-| entered, not comparable: neither side returns (they wait for an interrupt or an I/O answer: `gfx_waitVsync`, `iop_loadModules`, `scePadInit`, `sceMtapInit`, `lgAudInit`, `engine_init`, the session loop …); the calls made up to the limit agree on both sides | 25 |
-| not entered by this session | 221 |
+| identical up to an instruction both sides stop at (an `ERET` in four SDK functions around 0x35c8c8; the first vector-unit control-register move in `sceGsSyncPath` and 0x34f890) | 6 |
+| entered, not comparable: neither side returns in isolation | 24 |
+| entered by no session | 202 |
 | **different** | **0** |
 
-Of the 40 partial ones: 2 entered (again identical up to the stop), 38 not entered.
+Of the 40 partial ones: 2 entered (`gfx_uploadMicrocode` and 0x35c858, again identical
+up to the stop), 38 not entered (37 of them library code).
+
+**The 24 that cannot return** wait for something only the running machine supplies —
+a vertical blank, an answer of the I/O processor, the end of the session:
+`gfx_waitVsync`, `iop_loadModules`, `engine_init`, `sound_init`, `scePadInit`,
+`sceMtapInit`, `sceSdRemoteInit`, `sceMcInit`, `lgAudInit`, `loadscreen_renderLoop`,
+`loadscreen_stop`, `mainloop_runSession`, `mainloop_runModalCallback`,
+`shop_openOrStock`, and 0x14fa88, 0x17ca58, 0x31ed80, 0x323dcc, 0x3536e0, 0x353f00,
+0x35c190, 0x36a878, 0x36a988, 0x36af80. On both sides they run until the limit (three
+million interpreter instructions; 400 million loop iterations and calls in the
+translation), and the calls they made up to there — site, target and arguments — are the
+same on both sides in every one of their 642 runs. That is evidence, not a comparison of
+an end state. A method that would compare them is not built: stop both sides after the
+same number of backward branches and calls (the translation counts exactly those) and
+compare the state there.
+
+**The 202 never entered**, by where they lie: 84 in the libraries above 0x34e000 (SDK,
+keyboard, network configuration, UDP, lobby API), 53 in the C and C++ runtime, 11 in the
+lobby and network-session client, 3 in the netcode — 151 that offline play has no reason
+to call — and 51 in game code (11 monsters, 10 skills and spells, 10 engine, 7 menus, 6
+effects, 4 player, 3 others) that the tours did not reach. Twenty are named by no `jal`,
+no `j` and no data word of the executable, so nothing visible can call them (dead code,
+unless reached through a computed address): 0x164a48, 0x19d0c4, 0x19dea4, 0x1c2120,
+0x1d3f2c, `minimap_blipColor` 0x1e40a8, `dbg_scanIopMemory` 0x323d70, 0x3284c0, 0x3570f8,
+0x357a40, 0x35f3f8, 0x360ea0, 0x3676d0, 0x3697f0, 0x38235c, 0x3a0f50, 0x3a4eb8, 0x3ad1c0,
+0x3c7f60, 0x3c8030. The full list with reference counts:
+`realproof.py report local/recomp-out/proof/real/* --hits … --list`.
 
 A first run reported 6 differences; all six were the test driver folding the 0x30000000
 mirror with the wrong mask (`proof_driver.cpp`, fixed), none was the translation.
 
-Not yet done: the states of the tours (part 3) — each `session.py NAME native --capture`
-records them, `realproof.py replay local/recomp-out/proof/real/NAME` compares them, and
-`realproof.py report DIR... --hits FILE... --list` prints this table over all sessions
-with, for every function still without a state, how many calls, jumps and data words of
-the executable name it (20 of the 221 are named by none: candidates for dead code, the
-list is printed by that command).
+### Beyond the 301: every function a tour enters, from its first real call (Ran)
+
+One tour (class 1, 13 levels) was run with a state recorded at the first entry of every
+entry point it reached, and all were replayed (budget 200,000 instructions with callees
+running, then 100,000 with calls replaced).
+
+| Of the 2,015 functions entered | Functions |
+|---|---|
+| identical to the return, callees running (the whole call tree compared) | 1,845 |
+| identical to the return, calls replaced | 123 |
+| identical up to an instruction both sides stop at | 9 |
+| not comparable within the budget | 38 |
+| **different** | **0** |
+
+So for 1,968 functions the sweep's result on made-up inputs is now also a result on the
+registers and the 32 MB of memory the game really called them with.
 
 ## 3. Coverage of the comparison in play
 
@@ -220,21 +265,30 @@ checksums of the 32 sound slots and of the equipment cache).
 
 | Session | Levels | Ticks compared | Result | Functions reached | New | Total |
 |---|---|---|---|---|---|---|
-| fight (class 6 as created) | start-up, front end, first level, valor | 5,010 in valor | identical but for 1a and 1b | 1,839 | 1,839 | 1,839 |
-| `s6` class 6 | 13 + first level twice | 9,916 | **every simulation column identical at every tick** except: the pool at 122 ticks of the last level (not located), 1a | 2,048 | 259 | 2,098 |
-| `s5` class 5 | 13 | 9,916 | positions, seeds, state, hit points, statistics, bag, equipment, abilities, skills identical at every tick; the whole-record checksum differs from the second level on (being located, 3c) | 2,175 | 243 | 2,341 |
-| `s0` class 0 | 13 | 10,016 | **identical at every tick** (two ticks of 1a) | 1,906 | 36 | 2,377 |
-| `s1` class 1 | 13 | 8,856 | **identical at every tick** (one tick of 1a) | 2,054 | 77 | 2,454 |
-| `s3` class 3 | 13 | 8,861 | identical for the first level and the first tour level; then the game itself changed level in mid-play and the two runs part at the first tick of the new level (3c) | 2,255 | 206 | 2,660 |
+| fight (class 6 as created) | start-up, front end, first level, valor | 4,810 in valor | identical but for 1a and 1b | 1,839 | 1,839 | 1,839 |
+| `s6` class 6 | 13 | 9,916 | identical except 122 ticks of the pool in the boss level (3c, row 4) | 2,048 | 259 | 2,098 |
+| `s5` class 5 | 13 | 9,916 | position, seeds, state, hit points, mana, statistics, bag, equipment, abilities, skills identical at every tick; one word of the record differs from the first tour level on, and the pool in the last two levels (3c, rows 2 and 6) | 2,175 | 243 | 2,341 |
+| `s0` class 0 | 13 | 10,016 | **identical at every tick** | 1,906 | 36 | 2,377 |
+| `s1` class 1 | 13 | 8,856 | **identical at every tick** | 2,054 | 77 | 2,454 |
+| `s3` class 3 | 13 and one the game entered | 8,861 | position, seeds, state and character columns identical at every tick; one word of the record and two of the pool differ from the fourth level on (3c, rows 2 and 3) | 2,255 | 206 | 2,660 |
+| `s4` class 4 | 13 | 9,056 | **identical at every tick** | 2,093 | 93 | 2,753 |
+| `s2` class 2 | 15, four level changes made by the game | 11,049 | position, seeds, state identical at every tick; hit points one regeneration step apart from one of those level changes on, record and pool with it (3c, row 5) | 2,298 | 139 | 2,892 |
+| `h6` class 6 | the first level and its twin, 1,599 ticks of walking each, three times | 7,067 | **identical at every tick** | 1,909 | 95 | 2,987 |
 
-"Identical" leaves out what is not expected to agree — the displayed-frame counter, the
-cosmetic seed, the controller checksum, the sound-slot and equipment-cache checksums
-(part 1) — and the "write rows" explained in 3b.
+"Identical" leaves out the tick of 1a (in every session), the columns that are not
+expected to agree — the displayed-frame counter, the cosmetic seed, the controller
+checksum, the sound-slot and equipment-cache checksums (part 1) — and the "write rows"
+of 3b.
 
-**2,660 of 7,732 functions (34.4 %)**, 2,682 of 12,147 entry points. Each tour still adds
-functions (36 to 259), so the set has **not** stopped growing. Native-only runs of the
-same tours with other seeds and of a 1,500-tick walk through the first level and its twin
-reach 2,602 together with the fight; their union with the above was not taken.
+**2,987 of 7,732 functions (38.6 %)**, 3,009 of 12,147 entry points. The last three
+sessions added 93, 139 and 95: the set has **not** stopped growing.
+
+By area (reached / all): start-up, items, creatures 154 / 380; netcode 28 / 69; engine
+653 / 938; player 96 / 140; menus 90 / 207; effects and vehicles 168 / 311; sound, card,
+save, dialogs 170 / 272; monsters 481 / 891; skills and spells 490 / 983; lobby and
+network-session client 19 / 437; libraries 221 / 1,551; C and C++ runtime 417 / 1,553.
+`coverage.py … --areas --list FILE` prints the table and the 4,745 functions never
+reached.
 
 The tours (`tour.py`): the class is chosen on the character-creation screen (the number
 of presses per class was measured: the screen turns through twelve models); in the first
@@ -242,10 +296,12 @@ level the character is given level 25, large statistics and every active skill o
 class at rank 10 by memory writes; then, per level, the game's own level-change request,
 seeded random walking, striking, blocking and casting, the two ability buttons moving on
 to the next two skills every 96 ticks, and in one level per tour hit points written to
-almost nothing (no tour character died of it: nothing hit it in time). Seven tours are
-defined (`local/recomp-out/proof/sessions.json`: classes 0–6, 92 levels between them,
-among them the two boss levels, the medal and bonus levels, the arenas and the three
-cutscene levels); `s4`, `s2` and the walk `h6` are running in the rig.
+almost nothing (no character died of it: nothing hit it in time). The levels are in
+`local/recomp-out/proof/sessions.json`: 93 between the seven tours, among them the two
+boss levels, the medal and bonus levels, the arenas and the three cutscene levels.
+
+**Not reached:** shops, the workshop, saving at a save point, a level-up by experience, a
+death. Each needs the character walked to an object or a creature, as `pilot.py` does.
 
 ### 3b. What it took to compare a session with memory writes and many levels (Ran)
 
@@ -254,53 +310,58 @@ cutscene levels); `s4`, `s2` and the walk `h6` are running in the rig.
    frame it ran them in, and the native run applies the same bytes at that row of the tick
    log (`--opt proof-pokes`) instead of running them from the script. A write that ends a
    level is applied after the level's last row, so both machines leave after the same
-   tick (all 70 level changes of the five tours did). Any other write is applied one row
-   later than the rig's log first shows it: the columns it touches then differ for that
-   one row ("write rows": 1 for the character, 5 per level for the ability buttons and
-   mana, up to 3 for hit points) and nothing after it. Applied a row earlier they agree in
-   that row, but the simulation step of that tick sees the write in the native run and
-   not on the rig, and a hit-point write then leaves a constant offset for the rest of
-   the session (seen, and the reason for the choice).
+   tick (all 102 scripted level changes did). Any other write is applied one
+   row later than the rig's log first shows it: the columns it touches then differ for
+   that one row ("write rows": 1 for the character, 3 to 5 per level for the ability
+   buttons and mana, up to 3 for hit points) and nothing after it. Applied a row earlier
+   they agree in that row, but the simulation step of that tick sees the write here and
+   not on the rig, and a hit-point write then leaves a constant offset for the rest of the
+   session (seen, and the reason for the choice).
 2. **The noise table.** `engine_init` 0x19d19c seeds the cosmetic generator from the CPU
    cycle counter (0x19d1e0) and `math_buildNoiseTable` 0x1646c8 fills `g_noiseTable` from
    it; `Torch_run` 0x2b2088 takes a torch's light radius and position from the table
    (`math_noise` 0x166b48) and stores them in the torch object (+0x68 to +0x84), which is
-   in the pool. With different counter values the pool therefore differs at every tick of
-   every level that has a torch (seen in three of the first tour's levels: 14 words in
-   two objects in a memory image taken on both machines at the same tick; writer found
-   with the write-watch). The rig's log shows the seed only after start-up has drawn from
-   it, but each draw is a step of a linear generator, so the logged seed is
-   a·counter + b mod 2³²: two short native runs with the counter forced to 0 and 1 give a
-   and b, the rig's seed gives its counter (0x002a3038 in every run of these scripts), and
-   the native run is given it (`--count-at 19d1e0=…`; `session.py` does all of it). After
-   that the three levels are identical in every pool byte at every tick.
-3. **Memory images at the same tick on both machines.** The rig dumps memory inside its
+   in the pool. With different counter values the pool differs at every tick of every
+   level that has a torch (three of the first tour's levels: 14 words in two objects in a
+   memory image taken on both machines at the same tick; writer found with the
+   write-watch). The rig's log shows the seed only after start-up has drawn from it, but
+   each draw is a step of a linear generator, so the logged seed is a·counter + b
+   mod 2³²: two short native runs with the counter forced to 0 and 1 give a and b, the
+   rig's seed gives its counter (0x002a3038 in every run of these scripts), and the native
+   run is given it (`--count-at 19d1e0=…`; `session.py` does all of it). After that those
+   levels are identical in every pool byte at every tick.
+3. **The first tick of a level gets stale controller bytes.** `rt/iop.cpp`'s replay
+   hands the game, at a blank where the tick stands at T, the rig's next row of tick T
+   if there is one and else the row of tick T+1. A level stands at tick 0 while it loads,
+   for more frames on the rig than here, so the last blank before tick 1 gets one of the
+   rig's loading rows and the game's first tick reads the wrong bytes (native tick 1 =
+   the rig's tick 0; equal from tick 2). When a level starts with the stick at rest — all
+   level changes the script makes — it cannot matter. When the game changes level itself
+   in mid-play (seven times in `s3` and `s2`) or the script plays through a load (`h6`),
+   the character moves differently in tick 1 and the runs part: position from tick 1,
+   seeds some hundred ticks later. `cmp.py` (`first_tick_fix`) removes a level's loading
+   rows after the first from the replay file, so every blank of the load gets the tick-1
+   row; with that, all three sessions agree in position and seeds at every tick. The
+   replay itself is not changed by this work.
+4. **A write the rig made while a level was loading** (the script ran on through a level
+   change the game made) is applied at the start of the load here: the load is shorter
+   and the rig's frame of it never comes.
+5. **Memory images at the same tick on both machines.** The rig dumps memory inside its
    tick hook when a script write arms it (`ontick 77 dump …`, `poke 0x4027ac:s32 77`);
-   the native run dumps at the row of the same episode and tick (`--opt proof-dump`);
-   `rigcompare.py memdiff --a … --b …` compares. This is what located the torches.
+   `session.py` makes the native run dump at the row of the same episode and tick
+   (`--opt proof-dump`); `rigcompare.py memdiff --a … --b …` compares. This located every
+   row of 3c.
 
-### 3c. Differences in the tours, and where they come from
+### 3c. Every difference in the tours
 
-| Where | What differs | Cause |
-|---|---|---|
-| every tour, first level, tick 7 (class 5 and 0: ticks 7–8) | player record | 1a |
-| `s6`, last level (boss), ticks 453–578 | object pool, 122 ticks | **not located** (the pool differs, no other column does) |
-| `s5`, from tick 2 of the first tour level to the end | whole-record checksum; from the twelfth level on also the pool | **being located** (a memory image pair of that level is being made); hit points, mana, statistics, bag, equipment, abilities and skills are identical, so it is a record byte outside those |
-| `s3`, second tour level onward | position from tick 1 of a level the game itself entered (through an exit, in mid-play), seeds 430 ticks later, then record and pool for the rest of the session | **the controller replay, not the game** (Ran): at the first tick of a level the native run is handed the controller bytes of the rig's row before (native tick 1: the rig's tick-0 bytes; equal from tick 2). When a level starts with the stick neutral — all level changes the script makes — this cannot matter; here the stick was held and a button pressed, and the character moved differently in tick 1. The replay is `--opt pad-replay` in `rt/iop.cpp`; reported, not changed |
-
-### Not reached, by area (Ran: the 2,602 against the symbol files' areas, after the first three sessions)
-
-Largest unreached blocks: the libraries above 0x34e000 (SDK, network stack, lobby API:
-1,328 of 1,551 functions never entered — offline play cannot reach most of them), the
-C/C++ runtime and the virtual-table default slots above 0x3a7000 (1,349 of 1,553), the
-lobby and network-session client at 0x322000 (418 of 437), monsters (734 of 891 after
-three sessions) and skills and spells (637 of 983). `coverage.py … --areas --list FILE`
-prints the table and the list for whatever runs it is given.
-
-**Not reached at all:** shops, the workshop, saving at a save point, a level-up by
-experience. Each needs the character walked to an object (as `pilot.py` does for a
-creature), and a native run costs two minutes under today's load because it boots from
-power-on every time.
+| # | Where | What differs (Ran) | Writer (Ran) | Cause |
+|---|---|---|---|---|
+| 1 | every session, first level, tick 7 (two sessions: 7–8) | player record: the weapon-trail matrix | `fx_modelStatusEffects` | 1a: disc-read completion (**Ran**) |
+| 2 | `s5` from its first tour level, `s3` from its fourth | one float of the record, +0x4a74, one unit apart (−3161 / −3160 in an image pair at tick 89; −2085 / −2086 in another) | read from the code: stored only by `hud_spellSelect` 0x1dd270 and the HUD function 0x1de8c4 (and copied by `player_importCharacter`) | **Inferred:** an animation value of the spell-selection display that moves per displayed frame, and the machines display different numbers of frames. No reader outside the HUD |
+| 3 | `s3` from its fourth level | two pool words: the player object's +0x114 and another object's same field, pointers to different 0x620-byte entries of the table near 0x795000 | not traced here | the pose cache of `docs/issues/rescan.md` R1 and `native-recomp.md` finding 4: entries are handed out by drawing (**Read**, not re-measured) |
+| 4 | `s6`, boss level, ticks 453–578 | two floats in one creature object, 0.9 apart (162.9 / 162.0, −238.1 / −239.0), each moving by 1 per tick on both machines | `anim_advance` 0x16d748 called from `Creature_stepAnim` at 0x1163a4 | animation track times that start 0.9 apart at tick 453. **Inferred:** `anim_advance` takes a sound position as its third argument (an animation that follows a voice), and the two sound drivers are at different positions. Not measured; whether such a track can move an event that matters to the simulation is not established |
+| 5 | two of the seven level changes the game made itself (`s2` third level, `s3` third level) | the native run stays **one tick longer** in the old level (last tick 153 against 152, 189 against 188); in `s2`, where hit points were regenerating, they are one step (0.653) ahead from then on, record and pool with them; in `s3` rows 2 and 3 begin there | not traced | **not explained.** Positions, seeds and state agree at every tick both machines have. Not the load-time write (left out as an experiment: no change). **Inferred:** the change waits for something counted in fields or answered by the I/O processor, as in 1a; at the other five the two machines leave after the same tick |
+| 6 | `s5`, last two levels and the return | pool checksum | not traced | **not located** (no image pair made); every other column agrees |
 
 ## 4. Arithmetic corner cases
 
@@ -393,13 +454,13 @@ zero, adding a negative denormal to a positive number lowers its last bit
 results per arithmetic instruction and 33,000–67,000 per compare (column "fz changes" of
 `local/recomp-out/proof/arith/fpu.txt`).
 
-None of the sessions compared so far shows it — no compared value met a denormal — but a
-value that decays toward zero does reach the denormal range, and from there the two
-machines would compute different numbers, positions included. The fix was sent to the
-runtime's keeper and is not applied by this work: next to `fesetround` in `thread_main`,
-set FPCR bit 24 on ARM64 (`mrs`/`orr`/`msr`) and `_MM_SET_DENORMALS_ZERO_MODE` +
-`_MM_SET_FLUSH_ZERO_MODE` on x86-64; `vu0.h` uses host floats and is covered by the same
-setting.
+No compared session showed it — no compared value met a denormal — but a value that
+decays toward zero does reach the denormal range, and from there the two machines would
+compute different numbers, positions included. The fix was sent to the runtime's keeper
+and **is in the merged runtime**: `thread_main` now sets the processor's mode on every
+thread that runs the game's code (the run prints "arithmetic: toward zero, denormals are
+zero"; `--opt arith=nearest` switches both off). All sessions and tables of this file
+were repeated on the merged runtime; none changed.
 
 ### 4c. Integer, multiply/divide and multimedia instructions (Ran)
 
@@ -437,19 +498,7 @@ loads, stores, one branch), and the vector unit against the rig itself. The game
 vector-unit program runs in every session of part 3 (`anim_buildPose`), where its results
 feed the compared state.
 
-## Half-done, and how to resume
-
-State at 16:35 on 2026-10-12. Everything below is under `local/recomp-out/proof/`.
-
-| What | State | To finish |
-|---|---|---|
-| recorded entry states of the tours `s6`, `s5`, `s0`, `s1`, `s3` (942 states, `real/<name>/`) | recorded, not replayed | `realproof.py replay real/NAME` for each, then `realproof.py report real/* --hits cmp/*/hits.tsv --list` |
-| rig runs of `s4`, `s2` (classes 4 and 2) and `h6` (walk in the first level) | running | `session.py NAME native --capture`, `summary.py NAME` |
-| the record difference of `s5` | a memory image pair of its first tour level is being made (`cmp/d2/`) | native run with `--opt proof-dump=4:<tick>:FILE` at the tick of the rig's row whose `net` column is 77, then `rigcompare.py memdiff --a cmp/d2/rig-dump.bin --b FILE --words 4d8af0:4dd720` |
-| the pool difference in the boss level of `s6` | not started | the same with a script that goes to that level |
-| every function one tour reaches, replayed from its first real call (not only the 301) | queued (`chain-all.sh`, output `real/all-s1/`) | `realproof.py report real/all-s1` |
-
-Repeat from nothing:
+## How to repeat
 
 ```
 export RTA_DISC="/path/to/your/disc image.iso"
@@ -459,7 +508,7 @@ python3 tools/recomp/proof/build_proof.py driver        # bin/proof_driver
 python3 tools/recomp/proof/realproof.py want            # the 301 (+40) from sweep-stub.txt
 python3 tools/recomp/proof/session.py s6 rig            # one tour in the rig ...
 python3 tools/recomp/proof/session.py s6 native --capture
-python3 tools/recomp/proof/session.py s6 compare
+python3 tools/recomp/proof/summary.py s6                 # the comparison, one line per level
 python3 tools/recomp/proof/realproof.py replay local/recomp-out/proof/real/s6
 python3 tools/recomp/proof/realproof.py report local/recomp-out/proof/real/* --hits local/recomp-out/proof/cmp/s6/hits.tsv --list
 python3 tools/recomp/proof/coverage.py --sessions s6,s5,s0 --areas
@@ -469,52 +518,55 @@ python3 tools/recomp/proof/rigarith.py                  # needs local/rig-out/st
 
 ## What remains unproven
 
-(as of 16:35; to be rewritten at the end)
-
-- **252 of the 301 functions** have no identical comparable case yet: 221 were not
-  entered by the one session replayed (the five tours' states are recorded and not yet
-  replayed), 25 wait for an interrupt or an I/O answer and cannot return in isolation, 6
-  are identical only up to their first vector-unit instruction or `BREAK`. None differs.
-- **5,072 functions have not run in any compared session.** Most of them cannot run
-  offline (network stack, lobby, most of the C++ runtime's default slots); the rest are
-  monsters, skills, menus and the save path not visited yet.
-- **Two differences in the tours are not explained**: 122 ticks of the pool in the boss
-  level of `s6`, and the record checksum of `s5`. In both, every other column agrees.
-- **A level the game enters by itself in mid-play** cannot be compared beyond its first
-  tick with the controller replay as it is (3c).
-- **Flush-to-zero** is missing in the runtime (4b); until it is set, a compared value
-  that meets a denormal will differ from the rig.
-- **Not reached:** shops, the workshop, saving at a save point, a level-up, a death.
-- The function-by-function proof stops at the first vector-unit instruction of
-  `anim_buildPose` (the interpreter has no vector unit); what stands for it is 4d and the
-  play comparison.
+- **226 functions have no comparable case**: 24 cannot return in isolation (the bounded
+  comparison described in part 2 would cover them and is not built); 202 ran in no
+  session — 151 of them network, library and runtime code offline play does not call, 20
+  of the 202 apparently dead, the rest reachable game code not reached.
+- **46 functions are compared only up to an instruction both sides stop at**, most of
+  them at their first vector-unit instruction: the interpreter has no vector unit. What
+  stands for the vector unit is 4d (the header against a written reference) and the play
+  comparison, in which `anim_buildPose` runs every frame.
+- **4,745 functions ran in no compared session.** About 2,880 of them lie in the
+  libraries, the C++ runtime and the lobby client; the others are monsters, skills,
+  menus and the save path not visited: no shop, workshop, save point, level-up or death
+  was reached, and the executed set was still growing.
+- **Two differences in the tours are not explained** (3c rows 5 and 6: one tick more of
+  the old level at two level changes the game made; a pool checksum) and two are
+  explained by reading, not by measurement (rows 3 and 4). In all four every simulation
+  column other than the one named agrees at every tick.
+- **Tool limits found:** the controller replay's first tick of a level (3b.3: worked
+  around in `cmp.py`, the replay in `rt/iop.cpp` is unchanged); a scripted memory write
+  costs one row of difference in what it writes (3b.1).
 - 1b: that the sound slots' time counters differ *because* the two sound drivers report
   voices ended at different times was not traced into the drivers; the slots and the
   handle order were measured.
+- The arithmetic of the vector unit was not run inside the rig (only the FPU was), and
+  infinity and NaN operands of the vector unit were not tested.
 
 ## Proposed ledger rows
-
-(as of the save point; counts will move)
 
 | Id | Statement | Status | Where |
 |---|---|---|---|
 | NP1 | The one-tick difference of the player record at hub tick 7 is the identity matrix of the weapon-trail state, written by `fx_modelStatusEffects` one tick after `eqcache_lookupModel` first returns the weapon's model; the tick depends on when the disc read completes. Cosmetic state | Ran (bytes, writer, both machines' cache record, three timings) | 0x1f6ac8, 0x1bc964, 0x1a2d48, record +0x4a88 |
 | NP2 | The 27-tick difference of the object pool in the fight is one word, the player object's handle-list head (+0x00), written by `sound_playOnObject` linking a sound-sequence slot's handle to the object: the same two sounds take the two slots the other way round on the two machines. The 32 slots differ between the machines at 854 of 3,978 ticks with the simulation identical | Ran (bytes, writer, slots on both machines) | 0x214230, 0x1a1698, 0x1a1738, `g_soundSeqs` |
-| NP3 | The runtime's threads keep denormals; the emulator flushes them to zero. `rt/fpu.h`'s host model equals the emulator's FPU arithmetic on 15 instructions × 16,384 edge pairs with flush-to-zero set and differs on 65–1,892 pairs per instruction without | Ran | `rt/runtime.cpp` `thread_main`; `tools/recomp/proof/rigarith.py` |
+| NP3 | `rt/fpu.h`'s host model equals the emulator's FPU arithmetic on 15 instructions × 16,384 edge pairs when the thread runs with flush-to-zero, and differs on 65–1,892 pairs per instruction without. The runtime did not set it; it does since the merge of 2026-10-12 | Ran | `rt/runtime.cpp` `thread_main`; `tools/recomp/proof/rigarith.py` |
 | NP4 | `-DFPU_PS2` arithmetic equals the interpreter's on 24 FPU instructions × 1,980,400 directed operand sets; the host model equals its written reference with and without flush-to-zero on the same sets | Ran | `tools/recomp/proof/arith.py fpu` |
 | NP5 | The translation of 156 integer, multiply/divide and multimedia instruction words equals the interpreter on 250,000 operand sets each | Ran | `tools/recomp/proof/arith.py int` |
-| NP6 | Of the 301 functions without a comparable synthetic case, 49 are identical to their return on states recorded in the running game (registers, calls, all of memory), 6 more up to a common stop; none differs | Ran (one session) | `tools/recomp/proof/realproof.py` |
-| NP7 | Sessions compared with the rig at every tick (a fight and five class tours of 13 levels, 47,565 ticks) reach 2,660 of the 7,732 functions; two tours (18,872 ticks, 26 levels) agree in every simulation column at every tick, a third (9,916 ticks) in all but 122 ticks of the pool checksum | Ran | `tools/recomp/proof/coverage.py`, `summary.py` |
-| NP8 | The object pool of a level with a torch differs between two machines at every tick unless they read the same cycle-counter value in `engine_init`: `Torch_run` stores light radius and position taken from the per-boot noise table in the torch object (+0x68–+0x84). With the counter made equal the pools are identical | Ran | 0x19d1e0, 0x1646c8, 0x166b48, 0x2b2088 |
-| NP9 | `rt/vu0.h` equals IEEE single precision rounded toward zero on 225 upper-instruction forms × 21,000,000 lane results, with and without flush-to-zero | Ran | `tools/recomp/proof/arith.py vu` |
-| NP10 | The controller replay of `rt/iop.cpp` hands the game, at the first tick of a level, the bytes of the rig's row before; a level that starts with input held diverges from the rig at that tick | Ran (one case) | `--opt pad-replay` |
+| NP6 | `rt/vu0.h` equals IEEE single precision rounded toward zero on 225 upper-instruction forms, 21,000,000 lane results, with and without flush-to-zero | Ran | `tools/recomp/proof/arith.py vu` |
+| NP7 | Of the 301 functions without a comparable synthetic case, 69 are identical to their return on states recorded in the running game (registers, calls, all of memory), 6 more up to a common stop; 24 wait and cannot return in isolation; 202 ran in no session; none differs. 7,460 of 7,732 functions now have a comparable case identical to the return | Ran (nine sessions, 2,310 runs) | `tools/recomp/proof/realproof.py` |
+| NP8 | 1,968 of the 2,015 functions one tour enters are identical to their return when replayed from the state of their first real call; none differs | Ran | `realproof.py replay … --all` |
+| NP9 | Nine sessions compared with the rig at every tick (79,547 ticks, 93 levels, seven classes) run 2,987 of the 7,732 functions. Position, both seeds, state and every character column agree at every tick of all nine; four tours (34,995 ticks) agree in every column | Ran | `tools/recomp/proof/session.py`, `summary.py`, `coverage.py` |
+| NP10 | The object pool of a level with a torch differs between two machines at every tick unless they read the same cycle-counter value in `engine_init`: `Torch_run` stores light radius and position taken from the per-boot noise table in the torch object (+0x68–+0x84). With the counter made equal the pools are identical | Ran | 0x19d1e0, 0x1646c8, 0x166b48, 0x2b2088 |
+| NP11 | The controller replay of `rt/iop.cpp` hands the game, at the first tick of a level, a row of the rig's loading frames; a level that starts with input held then diverges from the rig at tick 1. Removing the loading rows from the replay file removes the divergence in all three sessions that had it | Ran | `--opt pad-replay`; `tools/recomp/proof/cmp.py` `first_tick_fix` |
+| NP12 | Record +0x4a74 is written only by `hud_spellSelect` and the HUD function 0x1de8c4 and differs between machines by one unit in two tours | Ran (bytes), Read (writers), cause Inferred | 0x1dd270, 0x1de8c4 |
+| NP13 | In a boss level two animation track times of one creature start 0.9 apart on the two machines and stay so; written by `anim_advance` from `Creature_stepAnim` | Ran (bytes, writer), cause Inferred | 0x16d748, 0x1163a4 |
+| NP14 | At two of seven level changes the game made itself the native run stays one tick longer in the old level than the rig (hit points regenerate one step more); unexplained | Ran | — |
 
 ## Working notes
 
-- `RTA_DISC` must be set. Rig runs: `nice -n 19`, at most three at a time here; a rig run
-  with the whole-pool checksum column makes 3–9 displayed frames a second under this load
-  (the checksum of 948 KB per frame is the larger part), a run resumed from a saved state
-  with small columns 20.
+- `RTA_DISC` must be set. Rig runs: `nice -n 19`, at most three at a time here. Under
+  the afternoon's load a tour took 30 minutes in the rig and 3 natively; at a load of 17,
+  7 minutes and 2.
 - A rig state saved in mid-script (`save`) cannot continue the same run: the script's
   held buttons are not in the state. `cmp/pool/valor3800.state` was made that way and its
   resumed run is a different fight; the full run was repeated instead.

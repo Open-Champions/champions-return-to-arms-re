@@ -1,0 +1,893 @@
+speed.patch - the renderer's processor side made cheaper: the changes to files other work is going on in.
+docs/issues/native-render-speed.md says what it is and what was run.
+
+Made against tools/recomp as it stood at the time in the line "snapshot" below.  Apply from
+tools/recomp:
+
+    cd tools/recomp && patch -p1 --dry-run < render/speed.patch && patch -p1 < render/speed.patch
+
+The new files it needs are already in place and are not in the patch:
+    render/vu1_translate.py  render/vu1_translate_gen.py   the translator of the VU1 microprograms (a tool)
+    render/vu1_fast.h  render/vu1_simd.h  render/vu1_fast_none.cpp
+    render/prof.h  render/speedbench.py  render/vu1_fast_test.cpp
+
+(WORK IN PROGRESS - this head is rewritten when the work is reported.)
+snapshot: Mon Oct 12 19:52:46 CDT 2026
+
+diff -ruN a/render/gs.cpp b/render/gs.cpp
+--- a/render/gs.cpp	2026-10-12 19:52:46
++++ b/render/gs.cpp	2026-10-12 20:40:43
+@@ -1,5 +1,6 @@
+ // gs.cpp - see gs.h.
+ #include "gs.h"
++#include "prof.h"
+ #include "xxh3_64.h"
+ 
+ #include <algorithm>
+@@ -139,6 +140,7 @@
+                                                  "AA1", "partial FBMSK", "COLCLAMP off", "region repeat", "texture is its own target"};
+ 
+ void Gs::begin_frame() {
++    RTA_PROF_SCOPE(prof::P_GS_FRAME);
+     frame.clear(); have_cmd = false; state_dirty = true;
+     // the pictures made for the uploads of the frame before
+     frame.dead_textures.insert(frame.dead_textures.end(), transient_textures.begin(), transient_textures.end());
+@@ -278,6 +280,7 @@
+ }
+ 
+ void Gs::end_frame(uint64_t number) {
++    RTA_PROF_SCOPE(prof::P_GS_FRAME);
+     layout.flush(frame.vertices);
+     flush_uploads();
+     if (have_cmd && cur.count) frame.commands.push_back(cur);
+@@ -382,6 +385,7 @@
+ 
+ // ---- GIF ------------------------------------------------------------------------------
+ void Gs::gif(int path, const uint32_t* words, size_t quadwords) {
++    RTA_PROF_SCOPE(path == 0 ? prof::P_GS_VU : prof::P_GS_DIRECT);
+     Path& p = paths[path];
+     cur_path = path;
+     size_t q = 0;
+@@ -399,6 +403,11 @@
+             if (((lo >> 46) & 1) && p.flg == 0) write(0x00, (lo >> 47) & 0x7FF);
+             stats.packets++;
+             q++;
++            // all of a PACKED run of triangles is here: one loop for it
++            if (p.flg == 0 && p.nloop && fast_runs && (size_t)p.nloop * p.nreg <= quadwords - q && triangle_run(words + q * 4, p.nloop, p.nreg, p.regs)) {
++                q += (size_t)p.nloop * p.nreg;
++                p.nloop = 0;
++            }
+             continue;
+         }
+         if (p.flg == 0) {
+@@ -421,8 +430,11 @@
+ }
+ 
+ void Gs::xgkick(const uint8_t* vu_data, uint32_t qword) {
+-    uint32_t buffer[1024 * 4];
++    RTA_PROF_SCOPE(prof::P_KICK_COPY);
++    // how long the packet is, and whether it runs round the end of VU1 memory
+     uint32_t at = qword & 0x3FF, used = 0;
++    const uint32_t first = at;
++    bool round = false;
+     for (int guard = 0; guard < 64 && used < 1024; guard++) {
+         uint32_t tag[4];
+         memcpy(tag, vu_data + at * 16, 16);
+@@ -430,11 +442,21 @@
+         if (!nreg) nreg = 16;
+         uint32_t body = flg == 0 ? nloop * nreg : flg == 1 ? (nloop * nreg + 1) / 2 : nloop;
+         if (used + 1 + body > 1024) break;
+-        for (uint32_t k = 0; k <= body; k++) memcpy(buffer + (used + k) * 4, vu_data + ((at + k) & 0x3FF) * 16, 16);
++        if (at + 1 + body > 0x400) round = true;
+         used += 1 + body;
+         at = (at + 1 + body) & 0x3FF;
+         if (tag[0] & 0x8000) break;
+     }
++    // It is read where it lies (nothing writes VU1 memory while the GS model works: the
++    // program that kicked it waits in its XGKICK), unless it runs round the end or the
++    // memory is not laid out for reading words.
++    if (!round && !((uintptr_t)vu_data & 3) && !copy_kicks) { xgkick_draw((const uint32_t*)(vu_data + first * 16), used, qword); return; }
++    uint32_t buffer[1024 * 4];
++    for (uint32_t k = 0; k < used; k++) memcpy(buffer + k * 4, vu_data + ((first + k) & 0x3FF) * 16, 16);
++    xgkick_draw(buffer, used, qword);
++}
++
++void Gs::xgkick_draw(const uint32_t* buffer, uint32_t used, uint32_t qword) {
+     paths[0].nloop = 0;
+     if (trace > 0) {
+         trace--;
+@@ -577,6 +599,7 @@
+ }
+ 
+ void Gs::start_transfer() {
++    RTA_PROF_SCOPE(prof::P_GS_UPLOAD);
+     uint64_t bb = reg[0x50], pos = reg[0x51], size = reg[0x52];
+     uint32_t dbp = (uint32_t)(bb >> 32) & 0x3FFF;
+     UploadSet& set = sets[dbp];
+@@ -623,6 +646,7 @@
+ }
+ 
+ void Gs::image_data(const uint8_t* bytes, size_t count) {
++    RTA_PROF_SCOPE(prof::P_GS_UPLOAD);
+     if (!xfer.active) return;
+     auto it = sets.find(xfer.dbp);
+     if (it == sets.end()) { xfer.active = false; return; }
+@@ -756,6 +780,7 @@
+ }
+ 
+ Gs::Texture* Gs::texture_for(uint64_t tex0, uint64_t texa) {
++    RTA_PROF_SCOPE(prof::P_GS_TEXID);
+     uint32_t tbp = (uint32_t)tex0 & 0x3FFF, tbw = std::max<uint32_t>((uint32_t)(tex0 >> 14) & 0x3F, 1), psm = (uint32_t)(tex0 >> 20) & 0x3F;
+     uint32_t tw = (uint32_t)(tex0 >> 26) & 15, th = (uint32_t)(tex0 >> 30) & 15;
+     uint32_t cbp = (uint32_t)(tex0 >> 37) & 0x3FFF, cpsm = (uint32_t)(tex0 >> 51) & 15, csa = (uint32_t)(tex0 >> 56) & 31;
+@@ -791,6 +816,7 @@
+     }
+ 
+     // ---- make it ----
++    RTA_PROF_SCOPE(prof::P_GS_TEXMAKE);
+     const UploadSet& set = image->second;
+     Scratch s;
+     s.reserve(8192);
+@@ -888,6 +914,7 @@
+ static bool g_skip_draw = false;
+ 
+ void Gs::rebuild_state() {
++    RTA_PROF_SCOPE(prof::P_GS_STATE);
+     if (!canvases.empty()) flush_uploads();             // what was sent into a surface is there before anything is drawn
+     state_dirty = false;
+     uint32_t attr = (reg[0x1a] & 1) ? prim : ((prim & 7) | ((uint32_t)reg[0x1b] & 0x7F8));
+@@ -1048,12 +1075,248 @@
+     have_cmd = true;
+ }
+ 
++static const bool log_far = getenv("RTA_GS_FAR") != nullptr;    // debugging: far vertices are reported (and every vertex goes the long way)
++
++// The vertex a queued one becomes (what emit_vertex() makes of it, with the texture
++// coordinates kick() picks), for a state that is settled.
++#define GS_MAKE_VERTEX(o, vx, vy, vz, vu_, vv_, vs_, vt_, vq_, rgba_, fog_) do { \
++        (o).x = ((float)(vx) - ofx) * (1.0f / 16.0f); \
++        (o).y = ((float)(vy) - ofy) * (1.0f / 16.0f); \
++        float zf_ = (float)(vz) * zscale; \
++        (o).z = zf_ > 0.99999994f ? 0.99999994f : zf_; \
++        if (!tme) { (o).s = (o).t = 0; (o).q = 1; } \
++        else if (fst) { (o).s = (float)(vu_) * (1.0f / 16.0f); (o).t = (float)(vv_) * (1.0f / 16.0f); (o).q = 1; } \
++        else { (o).s = (vs_); (o).t = (vt_); (o).q = (vq_); } \
++        (o).r = (rgba_)[0]; (o).g = (rgba_)[1]; (o).b = (rgba_)[2]; (o).a = (rgba_)[3]; \
++        (o).fog = (fog_); \
++    } while (0)
++
++bool Gs::triangle_run(const uint32_t* data, uint32_t nloop, uint32_t nreg, uint64_t regs) {
++    const unsigned type = prim & 7;
++    if (type < 3 || type > 5 || log_far || trace) return false;
++    uint8_t desc[16];
++    uint32_t vertex_regs = 0;
++    for (uint32_t r = 0; r < nreg; r++) {
++        desc[r] = (uint8_t)((regs >> (4 * r)) & 15);
++        if (desc[r] != 0x1 && desc[r] != 0x2 && desc[r] != 0x3 && desc[r] != 0x4 && desc[r] != 0x5 && desc[r] != 0xF) return false;
++        if (desc[r] == 0x4 || desc[r] == 0x5) vertex_regs++;
++    }
++    // Vertices are written to a piece of memory of the run's own and added to the list in
++    // one piece: at most three for every vertex register of the run.
++    const size_t most = (size_t)nloop * vertex_regs * 3;
++    if (run_vertices.size() < most) run_vertices.resize(most);
++    Vertex* const out = run_vertices.data();
++    size_t out_count = 0, emitted = 0;
++    // The vertices of the queue as they will be emitted, made when first needed: what they
++    // are made with (offsets, depth scale, which texture coordinates) is settled by the
++    // first primitive of the run that draws and does not change inside the run.
++    Vertex made[3];
++    bool have[3] = {false, false, false};
++    bool started = false, layout_each = false;
++    bool tme = false, fst = false, iip = false;
++    const uint32_t* q = data;
++    const uint32_t* const end = data + (size_t)nloop * nreg * 4;
++    uint64_t reg_writes = 0, vertices = 0, prims = 0;
++    uint32_t r = 0;
++    // ---- any run, a register at a time (and every run up to its first primitive) ----
++    for (; q < end; q += 4, r = r + 1 == nreg ? 0 : r + 1) {
++        switch (desc[r]) {
++        case 0x1:
++            cur_rgba[0] = (uint8_t)q[0]; cur_rgba[1] = (uint8_t)q[1]; cur_rgba[2] = (uint8_t)q[2]; cur_rgba[3] = (uint8_t)q[3];
++            cur_q = st_q;
++            reg_writes++;
++            continue;
++        case 0x2: memcpy(&cur_s, &q[0], 4); memcpy(&cur_t, &q[1], 4); memcpy(&st_q, &q[2], 4); reg_writes++; continue;
++        case 0x3: cur_u = q[0] & 0x3FFF; cur_v = q[1] & 0x3FFF; reg_writes++; continue;
++        case 0xF: continue;
++        default: break;                                 // XYZF2, XYZ2: a vertex
++        }
++        const int slot = vcount < 3 ? vcount : 2;
++        Queued& v = vq[slot];
++        v.x = q[0] & 0xFFFF; v.y = q[1] & 0xFFFF;
++        if (desc[r] == 0x4) { v.z = (q[2] >> 4) & 0xFFFFFF; v.fog = (uint8_t)(q[3] >> 4); }
++        else { v.z = q[2]; v.fog = cur_fog; }
++        v.s = cur_s; v.t = cur_t; v.q = cur_q; v.u = cur_u; v.v = cur_v;
++        memcpy(v.rgba, cur_rgba, 4);
++        have[slot] = false;
++        vcount++;
++        vertices++;
++        if (vcount < 3) continue;
++        if (!(q[3] & 0x8000)) {                         // drawn
++            if (!started) {
++                started = true;
++                if (state_dirty) rebuild_state();
++                // (the path is read after the state is made, as kick() reads it: making
++                // the state can send a texture again, which is GIF data of its own path)
++                const uint8_t made_by = cur_path == 0 ? 0 : 1;
++                if (!g_skip_draw && cur.made_by != made_by) {
++                    DrawCmd c = cur;
++                    c.made_by = made_by;
++                    if (cur.count) frame.commands.push_back(cur);
++                    c.first = (uint32_t)frame.vertices.size();
++                    c.count = 0;
++                    cur = c;
++                }
++                if (!g_skip_draw && cur.weave_half != 0) {
++                    DrawCmd c = cur;
++                    c.weave_half = 0;
++                    if (cur.count) frame.commands.push_back(cur);
++                    c.first = (uint32_t)frame.vertices.size();
++                    c.count = 0;
++                    cur = c;
++                }
++                // In a wide picture the 2-D layer is put back into shape primitive by
++                // primitive (layout.h): everything built on the CPU, and a 3-D figure
++                // inside a menu.  Triangles VU1 kicks otherwise are left as they are.
++                layout_each = cur_wide && layout.active() && (cur_path != 0 || layout.mode() == Layout::M_MENU3D);
++                tme = cmd_tme; fst = cmd_fst; iip = cmd_iip;
++            }
++            if (!g_skip_draw) {
++                prims++;
++                for (int k = 0; k < 3; k++) {
++                    if (have[k]) continue;
++                    const Queued& a = vq[k];
++                    GS_MAKE_VERTEX(made[k], a.x, a.y, a.z, a.u, a.v, a.s, a.t, a.q, a.rgba, a.fog);
++                    have[k] = true;
++                }
++                Vertex* o = out + out_count;
++                o[0] = made[0]; o[1] = made[1]; o[2] = made[2];
++                if (!iip) {                             // flat: the colour of the last vertex
++                    o[0].r = o[1].r = made[2].r; o[0].g = o[1].g = made[2].g; o[0].b = o[1].b = made[2].b; o[0].a = o[1].a = made[2].a;
++                }
++                out_count += 3;
++                if (layout_each) {
++                    frame.vertices.insert(frame.vertices.end(), out, out + 3);
++                    out_count = 0; emitted += 3;
++                    layout.primitive(frame.vertices, (uint32_t)frame.vertices.size() - 3, 3, cur_path, false, cur.ztst == 1, cur.texture != 0, cur.tex_is_target, prim_serial);
++                }
++            }
++        }
++        if (type == 4) { vq[0] = vq[1]; vq[1] = vq[2]; made[0] = made[1]; made[1] = made[2]; have[0] = have[1]; have[1] = have[2]; vcount = 2; }
++        else if (type == 5) { vq[1] = vq[2]; made[1] = made[2]; have[1] = have[2]; vcount = 2; }
++        else vcount = 0;
++        // A strip whose state is settled goes on below: there the queue is kept as made
++        // vertices only, and its last two are put back into the queue when the run ends.
++        if (type == 4 && started && !g_skip_draw && !layout_each && have[0] && have[1]) { q += 4; r = r + 1 == nreg ? 0 : r + 1; goto strip; }
++    }
++    goto done;
++strip:
++    {
++        // The two vertices before the one being read, as they are emitted, and the new one
++        // made where it goes: three vertices of 32 bytes are written per triangle, as
++        // blocks.  (Kept as blocks of memory on purpose: as separate fields in registers
++        // the compiler shuffled forty values around the loop.)
++        Vertex prev[2] = {made[0], made[1]};
++        // the last two vertices of the run, as the queue holds them
++        uint64_t left = (uint64_t)nloop * vertex_regs - vertices;       // vertices still to come
++        Queued tail[2];
++        int tails = 0;
++        const float ofx = this->ofx, ofy = this->ofy, zscale = this->zscale;
++        uint32_t u = cur_u, vv = cur_v;
++        float s = cur_s, t = cur_t, cq = cur_q, sq = st_q;
++        uint32_t rgba;                                  // the four bytes as they lie in a vertex
++        memcpy(&rgba, cur_rgba, 4);
++        const uint8_t reg_fog = cur_fog;
++        Vertex* o = out + out_count;
++        Vertex* const first_out = o;
++        const uint64_t before = vertices;
++        auto vertex = [&](const uint32_t* w, bool with_fog) __attribute__((always_inline)) {
++            const uint32_t x = w[0] & 0xFFFF, y = w[1] & 0xFFFF;
++            const uint32_t z = with_fog ? (w[2] >> 4) & 0xFFFFFF : w[2];
++            const uint8_t fog = with_fog ? (uint8_t)(w[3] >> 4) : reg_fog;
++            Vertex* n = o + 2;
++            n->x = ((float)x - ofx) * (1.0f / 16.0f);
++            n->y = ((float)y - ofy) * (1.0f / 16.0f);
++            float zf = (float)z * zscale;
++            n->z = zf > 0.99999994f ? 0.99999994f : zf;
++            if (!tme) { n->s = n->t = 0; n->q = 1; }
++            else if (fst) { n->s = (float)u * (1.0f / 16.0f); n->t = (float)vv * (1.0f / 16.0f); n->q = 1; }
++            else { n->s = s; n->t = t; n->q = cq; }
++            memcpy(&n->r, &rgba, 4);
++            const uint8_t last[4] = {fog, 0, 0, 0};
++            memcpy(&n->fog, last, 4);
++            const bool drawn = !(w[3] & 0x8000);
++            if (drawn) {
++                memcpy((void*)o, (const void*)prev, 2 * sizeof(Vertex));
++                if (!iip) { memcpy(&o[0].r, &rgba, 4); memcpy(&o[1].r, &rgba, 4); }      // flat: the colour of the last vertex
++            }
++            memcpy((void*)&prev[0], (const void*)&prev[1], sizeof(Vertex));
++            memcpy((void*)&prev[1], (const void*)n, sizeof(Vertex));
++            if (drawn) o += 3;
++            if (left-- <= 2) {
++                Queued& k = tail[tails++];
++                k.x = x; k.y = y; k.z = z; k.fog = fog; k.s = s; k.t = t; k.q = cq; k.u = u; k.v = vv;
++                memcpy(k.rgba, &rgba, 4);
++            }
++        };
++        // The usual shape of a loop: texel coordinates and a colour (or only one of them, or
++        // neither), unused registers, and the vertex last.  Then a loop is read as a whole.
++        int uv_at = -1, rgba_at = -1;
++        bool usual = r == 0 && vertex_regs == 1 && (desc[nreg - 1] == 0x4 || desc[nreg - 1] == 0x5);
++        uint32_t writes_per_loop = 0;
++        for (uint32_t k = 0; usual && k + 1 < nreg; k++) {
++            if (desc[k] == 0x3) { uv_at = (int)k; writes_per_loop++; }
++            else if (desc[k] == 0x1) { rgba_at = (int)k; writes_per_loop++; }
++            else if (desc[k] != 0xF) usual = false;
++        }
++        if (usual) {
++            const bool with_fog = desc[nreg - 1] == 0x4;
++            const size_t step = (size_t)nreg * 4;
++            for (; q < end; q += step) {
++                if (uv_at >= 0) { u = q[uv_at * 4] & 0x3FFF; vv = q[uv_at * 4 + 1] & 0x3FFF; }
++                if (rgba_at >= 0) {
++                    const uint32_t* c = q + rgba_at * 4;
++                    const uint8_t bytes[4] = {(uint8_t)c[0], (uint8_t)c[1], (uint8_t)c[2], (uint8_t)c[3]};
++                    memcpy(&rgba, bytes, 4);
++                    cq = sq;
++                }
++                vertex(q + step - 4, with_fog);
++            }
++        } else {
++            for (; q < end; q += 4, r = r + 1 == nreg ? 0 : r + 1) {
++                switch (desc[r]) {
++                case 0x1: {
++                    const uint8_t bytes[4] = {(uint8_t)q[0], (uint8_t)q[1], (uint8_t)q[2], (uint8_t)q[3]};
++                    memcpy(&rgba, bytes, 4);
++                    cq = sq;
++                    reg_writes++;
++                    break;
++                }
++                case 0x2: memcpy(&s, &q[0], 4); memcpy(&t, &q[1], 4); memcpy(&sq, &q[2], 4); reg_writes++; break;
++                case 0x3: u = q[0] & 0x3FFF; vv = q[1] & 0x3FFF; reg_writes++; break;
++                case 0xF: break;
++                default: vertex(q, desc[r] == 0x4); break;
++                }
++            }
++        }
++        vertices = (uint64_t)nloop * vertex_regs - left;
++        if (usual) reg_writes += (vertices - before) * writes_per_loop;
++        prims += (size_t)(o - first_out) / 3;
++        out_count = (size_t)(o - out);
++        cur_u = u; cur_v = vv; cur_s = s; cur_t = t; cur_q = cq; st_q = sq;
++        memcpy(cur_rgba, &rgba, 4);
++        if (tails == 2) { vq[0] = tail[0]; vq[1] = tail[1]; }
++        else if (tails == 1) { vq[0] = vq[1]; vq[1] = tail[0]; }
++    }
++done:
++    if (out_count) { frame.vertices.insert(frame.vertices.end(), out, out + out_count); emitted += out_count; }
++    stats.reg_writes += reg_writes;
++    stats.vertices += vertices;
++    if (emitted) {
++        cur.count += (uint32_t)emitted;
++        stats.prims += prims;
++        if (cur.fog) stats.fogged += prims;
++        if (cur_approx) for (int k = 0; k < AP_COUNT; k++) if (cur_approx & (1u << k)) stats.approx[k] += prims;
++    }
++    return true;
++}
++#undef GS_MAKE_VERTEX
++
+ void Gs::emit_vertex(const Queued& v, const DrawCmd&, float s, float t, float q, const uint8_t* rgba, uint32_t z, uint8_t fog) {
+     Vertex o;
+     o.x = ((float)v.x - ofx) * (1.0f / 16.0f);
+     o.y = ((float)v.y - ofy) * (1.0f / 16.0f);
+     {
+-        static const bool log_far = getenv("RTA_GS_FAR") != nullptr;
+         static int left = 40;
+         if (log_far && left > 0 && (o.x > 2400 || o.y > 2000)) {
+             left--;
+diff -ruN a/render/gs.h b/render/gs.h
+--- a/render/gs.h	2026-10-12 19:52:46
++++ b/render/gs.h	2026-10-12 20:38:14
+@@ -102,10 +102,20 @@
+     // ---- GIF tag state per path ----
+     struct Path { uint64_t regs = 0; uint32_t nloop = 0, nreg = 0, flg = 0, at = 0; bool eop = false; };
+     Path paths[4];
++    void xgkick_draw(const uint32_t* buffer, uint32_t used, uint32_t qword);
+     void write(uint32_t address, uint64_t value);
+     void packed(uint32_t descriptor, const uint32_t* q);
+     void reglist(uint32_t descriptor, uint64_t value);
+     void kick(bool draw);
++    // A whole PACKED run of triangles, strips or fans (what VU1 kicks is nearly all of
++    // this kind): the same registers, queue and vertices as packed() and kick() make of
++    // it one quadword at a time.  False: not a run it takes; nothing was done.
++    bool triangle_run(const uint32_t* data, uint32_t nloop, uint32_t nreg, uint64_t regs);
++    std::vector<Vertex> run_vertices;   // where a run puts its vertices before they are added to the list
++  public:
++    bool fast_runs = true;              // false: every quadword through packed() (the reference; RTA_GS_SLOW)
++    bool copy_kicks = false;            // true: a kicked packet is copied out of VU1 memory first (the reference; RTA_GS_SLOW)
++  private:
+     // ---- drawing ----
+     DrawCmd cur;                        // state of the command being filled
+     bool have_cmd = false;
+diff -ruN a/render/renderer.cpp b/render/renderer.cpp
+--- a/render/renderer.cpp	2026-10-12 19:52:46
++++ b/render/renderer.cpp	2026-10-12 20:33:10
+@@ -1,5 +1,6 @@
+ // renderer.cpp - see renderer.h.
+ #include "renderer.h"
++#include "prof.h"
+ 
+ #include <cstdio>
+ #include <cstdlib>
+@@ -19,7 +20,11 @@
+         r->gs.xgkick(r->vif.vu.data, qword);
+     };
+     gs.begin_frame();
+-    if (getenv("RTA_GS_FAR")) {                         // debugging: the VIF codes that led to a far vertex, once
++    if (getenv("RTA_VU1_INTERPRET")) vif.vu.use_fast = vif.vu.use_translation = false;     // the reference: every program interpreted
++    if (getenv("RTA_GS_SLOW")) { gs.fast_runs = false; gs.copy_kicks = true; }    // ... every vertex through the general path
++    if (getenv("RTA_VIF_SLOW")) vif.fast_unpack = false;    // ... every UNPACK field by field
++    if (getenv("RTA_GS_FAR")) {
++        vif.vu.use_fast = false;                        // the registers are printed as the interpreter keeps them                         // debugging: the VIF codes that led to a far vertex, once
+         vif.debug_ring = 1;
+         gs.on_far_vertex = [this] {
+             static bool done = false;
+@@ -59,7 +64,7 @@
+ void Renderer::vblank(unsigned, uint64_t number) {
+     blanks++;
+     gs.end_frame(number);
+-    if (on_frame) on_frame(gs.frame);
++    if (on_frame) { RTA_PROF_SCOPE(prof::P_HOST); on_frame(gs.frame); }
+     gs.begin_frame();
+ }
+ 
+diff -ruN a/render/renderer.h b/render/renderer.h
+--- a/render/renderer.h	2026-10-12 19:52:46
++++ b/render/renderer.h	2026-10-12 20:33:10
+@@ -51,7 +51,8 @@
+     TexIndex index;
+ 
+   private:
+-    uint8_t own_micro[0x4000], own_data[0x4000];
++    alignas(16) uint8_t own_micro[0x4000];
++    alignas(16) uint8_t own_data[0x4000];
+     std::unordered_map<uint32_t, size_t> picture_failed;    // TBP0 -> headers known when its lookup failed
+ };
+ 
+diff -ruN a/render/vif1.cpp b/render/vif1.cpp
+--- a/render/vif1.cpp	2026-10-12 19:52:46
++++ b/render/vif1.cpp	2026-10-12 20:33:10
+@@ -1,5 +1,6 @@
+ // vif1.cpp - see vif1.h.
+ #include "vif1.h"
++#include "prof.h"
+ 
+ #include <algorithm>
+ #include <cstdio>
+@@ -32,6 +33,13 @@
+     if (!waiting) return;
+     waiting = false;
+     if (gs) gs->debug_entry = waiting_from_pc ? -1 : (int)waiting_at;
++#if RTA_PROF_ON
++    if (!waiting_from_pc) prof_entry = waiting_at;
++    prof::Scope prof_scope(prof::vu_part(prof_entry));
++    uint64_t prof_pairs = vu.instructions;
++    struct ProfCount { Vif1& v; uint64_t before; int slot; ~ProfCount() { if (!prof::state().on) return; prof::state().pairs[slot] += v.vu.instructions - before; prof::state().runs[slot]++; } }
++        prof_count{*this, prof_pairs, prof::vu_part(prof_entry) - prof::P_VU_FIRST};
++#endif
+     if (run_programs && time_runs) {
+         timespec a, b;
+         clock_gettime(CLOCK_THREAD_CPUTIME_ID, &a);
+@@ -66,6 +74,7 @@
+ }
+ 
+ size_t Vif1::process(const uint32_t* w, size_t n) {
++    RTA_PROF_SCOPE(prof::P_VIF);
+     size_t i = 0;
+     while (i < n) {
+         uint32_t code = w[i];
+@@ -108,7 +117,7 @@
+         case 0x31: memcpy(col, data, 16); break;
+         case 0x4A:
+             memcpy(vu.micro + ((imm * 8) & 0x3FFF), data, std::min<size_t>(need * 4, 0x4000 - ((imm * 8) & 0x3FFF)));
+-            vu.micro_changed();
++            vu.micro_changed(imm & 0x7FF, (uint32_t)(need / 2));
+             stats.mpg++;
+             break;
+         case 0x50: case 0x51:
+@@ -126,9 +135,79 @@
+     return i;
+ }
+ 
++// UNPACK without a mask and with a write cycle that skips (WL <= CL; in this game every
++// one: S, V2, V3 and V4 of 8, 16 and 32 bits, with the offset and the difference mode):
++// one loop per format instead of one decision per field.  What it writes is what unpack()
++// below writes - that function is the description, and RTA_VIF_SLOW=1 uses it for all.
++namespace {
++#if defined(__GNUC__) || defined(__clang__)
++#define VIF_INLINE inline __attribute__((always_inline))
++#else
++#define VIF_INLINE inline
++#endif
++// FIELDS elements of SIZE bytes per vector; MODE 0 as it is, 1 with the row added, 2 added and kept
++template <unsigned FIELDS, unsigned SIZE, bool USN, unsigned MODE>
++VIF_INLINE void unpack_run(const uint8_t* src, uint8_t* memory, uint32_t address, uint32_t total, uint32_t wcl, uint32_t wwl, uint32_t* row) {
++    uint32_t r[4] = {row[0], row[1], row[2], row[3]};
++    uint32_t cycle = 0;
++    for (uint32_t written = 0; written < total; address++) {
++        if (cycle < wwl) {
++            uint32_t in[4] = {0, 0, 0, 0};
++            for (unsigned f = 0; f < FIELDS; f++) {
++                if (SIZE == 4) memcpy(&in[f], src + f * 4, 4);
++                else if (SIZE == 2) { uint16_t e; memcpy(&e, src + f * 2, 2); in[f] = USN ? (uint32_t)e : (uint32_t)(int32_t)(int16_t)e; }
++                else in[f] = USN ? (uint32_t)src[f] : (uint32_t)(int32_t)(int8_t)src[f];
++            }
++            if (FIELDS == 1) in[1] = in[2] = in[3] = in[0];
++            src += FIELDS * SIZE;
++            if (MODE == 1) for (int f = 0; f < 4; f++) in[f] += r[f];
++            else if (MODE == 2) for (int f = 0; f < 4; f++) { in[f] += r[f]; r[f] = in[f]; }
++            memcpy(memory + (address & 0x3FF) * 16, in, 16);
++            written++;
++        }
++        if (++cycle >= wcl) cycle = 0;
++    }
++    if (MODE == 2) memcpy(row, r, 16);
++}
++template <unsigned FIELDS, unsigned SIZE>
++VIF_INLINE void unpack_format(bool usn, uint32_t mode, const uint8_t* src, uint8_t* memory, uint32_t address, uint32_t total, uint32_t wcl, uint32_t wwl, uint32_t* row) {
++    if (mode == 1) { if (usn) unpack_run<FIELDS, SIZE, true, 1>(src, memory, address, total, wcl, wwl, row); else unpack_run<FIELDS, SIZE, false, 1>(src, memory, address, total, wcl, wwl, row); }
++    else if (mode == 2) { if (usn) unpack_run<FIELDS, SIZE, true, 2>(src, memory, address, total, wcl, wwl, row); else unpack_run<FIELDS, SIZE, false, 2>(src, memory, address, total, wcl, wwl, row); }
++    else { if (usn) unpack_run<FIELDS, SIZE, true, 0>(src, memory, address, total, wcl, wwl, row); else unpack_run<FIELDS, SIZE, false, 0>(src, memory, address, total, wcl, wwl, row); }
++}
++}  // namespace
++
++bool Vif1::unpack_fast(uint32_t code, const uint32_t* data) {
++    uint32_t cmd = (code >> 24) & 0x7F, num = (code >> 16) & 0xFF, imm = code & 0xFFFF;
++    uint32_t vn = (cmd >> 2) & 3, vl = cmd & 3;
++    if ((cmd & 0x10) || vl == 3 || debug_unpack > 0) return false;
++    uint32_t wcl = cl ? cl : 1, wwl = wl ? wl : 1;
++    if (wwl > wcl) return false;
++    const bool usn = imm & 0x4000, flg = imm & 0x8000;
++    const uint32_t address = (imm & 0x3FF) + (flg ? tops : 0), total = num ? num : 256;
++    const uint8_t* src = (const uint8_t*)data;
++    switch (vn * 4 + vl) {
++    case 0: unpack_format<1, 4>(usn, mode, src, vu.data, address, total, wcl, wwl, row); break;
++    case 1: unpack_format<1, 2>(usn, mode, src, vu.data, address, total, wcl, wwl, row); break;
++    case 2: unpack_format<1, 1>(usn, mode, src, vu.data, address, total, wcl, wwl, row); break;
++    case 4: unpack_format<2, 4>(usn, mode, src, vu.data, address, total, wcl, wwl, row); break;
++    case 5: unpack_format<2, 2>(usn, mode, src, vu.data, address, total, wcl, wwl, row); break;
++    case 6: unpack_format<2, 1>(usn, mode, src, vu.data, address, total, wcl, wwl, row); break;
++    case 8: unpack_format<3, 4>(usn, mode, src, vu.data, address, total, wcl, wwl, row); break;
++    case 9: unpack_format<3, 2>(usn, mode, src, vu.data, address, total, wcl, wwl, row); break;
++    case 10: unpack_format<3, 1>(usn, mode, src, vu.data, address, total, wcl, wwl, row); break;
++    case 12: unpack_format<4, 4>(usn, mode, src, vu.data, address, total, wcl, wwl, row); break;
++    case 13: unpack_format<4, 2>(usn, mode, src, vu.data, address, total, wcl, wwl, row); break;
++    default: unpack_format<4, 1>(usn, mode, src, vu.data, address, total, wcl, wwl, row); break;
++    }
++    return true;
++}
++
+ void Vif1::unpack(uint32_t code, const uint32_t* data) {
+     uint32_t cmd = (code >> 24) & 0x7F, num = (code >> 16) & 0xFF, imm = code & 0xFFFF;
+     uint32_t vn = (cmd >> 2) & 3, vl = cmd & 3;
++    RTA_PROF_SCOPE(prof::P_UNPACK);
++    if (fast_unpack && unpack_fast(code, data)) return;
+     bool masked = cmd & 0x10, usn = imm & 0x4000, flg = imm & 0x8000;
+     uint32_t address = (imm & 0x3FF) + (flg ? tops : 0);
+     uint32_t total = num ? num : 256;
+diff -ruN a/render/vif1.h b/render/vif1.h
+--- a/render/vif1.h	2026-10-12 19:52:46
++++ b/render/vif1.h	2026-10-12 20:26:35
+@@ -34,6 +34,10 @@
+     std::vector<uint32_t> pending;
+     size_t process(const uint32_t* w, size_t n);       // returns words consumed
+     void unpack(uint32_t code, const uint32_t* data);
++    bool unpack_fast(uint32_t code, const uint32_t* data);
++  public:
++    bool fast_unpack = true;            // false: every UNPACK field by field (the reference; RTA_VIF_SLOW)
++  private:
+     void start_program(uint32_t at, bool from_pc);
+     // A started program runs when the VIF comes to a code that would wait for VU1 or that
+     // writes where the program may read, not at its MSCAL.  On the machine the VIF goes on
+@@ -44,6 +48,7 @@
+     // (+0x80 and up) are carried out first; any other code runs the program before it.
+     bool waiting = false, waiting_from_pc = false;
+     uint32_t waiting_at = 0;
++    uint32_t prof_entry = 0;            // the entry of the last MSCAL (prof.h: a continued program counts for it)
+     void run_waiting();
+ };
+ 
+diff -ruN a/render/vu1.cpp b/render/vu1.cpp
+--- a/render/vu1.cpp	2026-10-12 19:52:46
++++ b/render/vu1.cpp	2026-10-12 20:33:10
+@@ -1,5 +1,6 @@
+ // vu1.cpp - see vu1.h.  Compile with -frounding-math -ffp-contract=off: the rounding mode
+ // is changed while a program runs and a multiply-add must stay two rounded operations.
++#include "vu1_fast.h"
+ #include "vu1_step.h"
+ 
+ #include <cfenv>
+@@ -19,8 +20,19 @@
+     cyc = 16;                                           // so that "four cycles ago" never is before the start
+ }
+ 
++void Vu1::micro_changed(uint32_t first, uint32_t count) {
++    uint32_t end = first + count > 2048 ? 2048 : first + count;
++    if (first >= end) return;
++    if (decoded_valid) { dirty_first = first; dirty_end = end; }
++    else { if (first < dirty_first) dirty_first = first; if (end > dirty_end) dirty_end = end; }
++    decoded_valid = false;
++    if (fast_checked) { fast_dirty_first = first; fast_dirty_end = end; }
++    else { if (first < fast_dirty_first) fast_dirty_first = first; if (end > fast_dirty_end) fast_dirty_end = end; }
++    fast_checked = false;
++}
++
+ void Vu1::decode() {
+-    for (unsigned n = 0; n < 2048; n++) {
++    for (unsigned n = dirty_first; n < dirty_end; n++) {
+         uint32_t lo, up;
+         memcpy(&lo, micro + n * 8, 4);
+         memcpy(&up, micro + n * 8 + 4, 4);
+@@ -123,6 +135,7 @@
+         decoded[n] = d;
+     }
+     decoded_valid = true;
++    dirty_first = 2048; dirty_end = 0;
+ }
+ 
+ uint32_t Vu1::mac_seen() const {
+@@ -162,12 +175,31 @@
+     return h;
+ }
+ 
+-void Vu1::run(uint32_t start) {
+-    if (!decoded_valid) {
+-        decode();
+-        translated = use_translation && vu1_translated_count && micro_hash(micro, vu1_translated_count) == vu1_translated_hash;
++// Which of the translated programs are in the microprogram memory now.  Only those the
++// change touched are looked at again: the game loads a small program behind the main one
++// every frame, and the main one is 15 KB to hash.
++void Vu1::fast_check() {
++    for (uint32_t k = 0; k < vu1_fast_program_count && k < 32; k++) {
++        const Vu1Program& p = vu1_fast_programs[k];
++        if (p.start + p.count > 2048 || p.start >= fast_dirty_end || p.start + p.count <= fast_dirty_first) continue;
++        if (micro_hash(micro + p.start * 8, p.count) == p.hash) fast_match |= 1u << k; else fast_match &= ~(1u << k);
+     }
++    fast_checked = true;
++    fast_dirty_first = 2048; fast_dirty_end = 0;
++}
++
++void vu1_fast_kick(Vu1& v, uint32_t qword) {
++    if (!v.kick) return;
++    VU1_ROUND_RESTORE(v.round_before);
++    v.kick(v.user, qword);
++    VU1_ROUND_TOWARD_ZERO();
++}
++
++void Vu1::run(uint32_t start) {
++    bool micro_was_changed = !decoded_valid;
++    if (!fast_checked) fast_check();
+     int old_round = fegetround();
++    round_before = old_round;
+     VU1_ROUND_TOWARD_ZERO();
+     runs++;
+     uint32_t at = start & 2047;
+@@ -175,6 +207,25 @@
+     int branch_in = -1;
+     uint32_t branch_to = 0;
+     const bool debugging = debug_left > 0 || debug_store > 0;
++    if (use_fast && fast_match && !debugging) {
++        for (uint32_t k = 0; k < vu1_fast_program_count && k < 32; k++) {
++            const Vu1Program& p = vu1_fast_programs[k];
++            if (!(fast_match & (1u << k)) || at < p.start || at >= p.start + p.count) continue;
++            int left = p.run(*this, at);
++            if (left < 0) {                             // ran to its end bit
++                fast_runs++;
++                if (q_busy) { q = q_next; q_busy = false; }
++                VU1_ROUND_RESTORE(old_round);
++                return;
++            }
++            if ((uint32_t)left != at) { fast_runs++; fast_left++; at = (uint32_t)left; break; }    // it ran some of it
++        }
++    }
++    if (!decoded_valid) {
++        decode();
++        micro_was_changed = true;
++    }
++    if (micro_was_changed) translated = use_translation && vu1_translated_count && micro_hash(micro, vu1_translated_count) == vu1_translated_hash;
+     if (translated && !debugging && at < vu1_translated_count) {
+         int left = vu1_translated_run(*this, at, old_round);
+         if (left < 0) {                                 // ran to its end bit
+diff -ruN a/render/vu1.h b/render/vu1.h
+--- a/render/vu1.h	2026-10-12 19:52:46
++++ b/render/vu1.h	2026-10-12 20:33:10
+@@ -41,6 +41,7 @@
+     uint8_t* data = nullptr;            // 16 KB: 1,024 quadwords
+     void (*kick)(void* user, uint32_t qword) = nullptr;    // XGKICK: a GIF packet starts at this quadword
+     void* user = nullptr;
++    int round_before = 0;               // the thread's rounding mode outside the run in progress
+     uint64_t instructions = 0, runs = 0, bad = 0;
+     int debug_left = 0;                 // print the registers at the next instructions in [debug_lo, debug_hi]
+     uint32_t debug_lo = 0, debug_hi = 0;
+@@ -50,11 +51,18 @@
+ 
+     Vu1();
+     void run(uint32_t start);
+-    void micro_changed() { decoded_valid = false; }
++    // The microprogram memory changed: pairs [first, first + count), or all of it.
++    void micro_changed(uint32_t first = 0, uint32_t count = 2048);
+     // The main program as C++ source (vu1.cpp); false when the file cannot be written.
+     bool write_translation(const char* path, uint32_t pairs);
+     bool use_translation = true;        // false: interpret even when a translation is linked
+     bool translated = false;            // the linked translation matches what is in `micro`
++    // The ahead-of-time translation (vu1_fast.h, vu1_translate.py): used for every program
++    // whose bytes are in `micro` as they were when it was made; false: never.  It comes
++    // before the older translation above.
++    bool use_fast = true;
++    uint64_t fast_runs = 0;             // runs that began in a translated program
++    uint64_t fast_left = 0;             // of those, runs the interpreter had to finish
+     uint32_t mac_seen() const;          // MAC flags as an instruction of this cycle reads them
+     uint32_t clip_seen() const;
+ 
+@@ -72,7 +80,12 @@
+   private:
+     Ins decoded[2048];
+     bool decoded_valid = false;
++    uint32_t dirty_first = 0, dirty_end = 2048;    // pairs to decode again
+     void decode();
++    uint32_t fast_match = 0;            // bit k: vu1_fast_programs[k] is what `micro` holds
++    bool fast_checked = false;
++    uint32_t fast_dirty_first = 0, fast_dirty_end = 2048;
++    void fast_check();
+ };
+ 
+ }  // namespace render
+diff -ruN a/web/decode_bench.cpp b/web/decode_bench.cpp
+--- a/web/decode_bench.cpp	2026-10-12 19:52:46
++++ b/web/decode_bench.cpp	2026-10-12 20:33:10
+@@ -16,9 +16,24 @@
+ //
+ // The stream is read into memory first; the first pass (textures decoded, tables filled)
+ // is timed apart from the rest.  A recording is derived from the game: it stays under local/.
++#include "prof.h"
+ #include "renderer.h"
+ #include "stream.h"
+ 
++#ifdef __APPLE__
++#include <libproc.h>
++#include <unistd.h>
++// instructions retired and processor cycles of this process so far (they do not move with
++// the machine's load the way times do)
++static void counters(uint64_t& instructions, uint64_t& cycles) {
++    rusage_info_v4 info;
++    if (proc_pid_rusage(getpid(), RUSAGE_INFO_V4, (rusage_info_t*)&info) != 0) { instructions = cycles = 0; return; }
++    instructions = info.ri_instructions; cycles = info.ri_cycles;
++}
++#else
++static void counters(uint64_t& instructions, uint64_t& cycles) { instructions = cycles = 0; }
++#endif
++
+ #include <chrono>
+ #include <cstdio>
+ #include <cstdlib>
+@@ -34,15 +49,38 @@
+ 
+ struct Record { uint32_t kind, a; uint64_t b; size_t offset, count; };
+ 
++// A draw command folded into a figure, field by field (the structure has padding).
++static uint64_t fold_command(uint64_t h, const DrawCmd& c) {
++    auto word = [&](uint64_t x) { h = (h ^ x) * 0x100000001B3ull; };
++    auto real = [&](float f) { uint32_t u; memcpy(&u, &f, 4); word(u); };
++    word(c.kind); word(c.prim); word(c.first); word(c.count); word(c.target);
++    for (int v : c.scissor) word((uint32_t)v);
++    word(c.scissor_moved); real(c.scissor_x[0]); real(c.scissor_x[1]);
++    word(c.texture); word(c.tex_is_target); real(c.tex_size[0]); real(c.tex_size[1]); real(c.tex_offset[0]); real(c.tex_offset[1]);
++    word(c.tex_missing); real(c.st_scale[0]); real(c.st_scale[1]); word(c.linear); word(c.wrap[0]); word(c.wrap[1]);
++    for (float v : c.region) real(v);
++    word(c.texa_mode); word(c.ta0); word(c.ta1); word(c.aem); word(c.tfx); word(c.tcc); real(c.weave_half); real(c.weave_base);
++    word(c.alpha_test); word(c.atst); word(c.aref); word(c.afail); word(c.depth_test); word(c.ztst); word(c.depth_write);
++    word(c.blend); word(c.ba); word(c.bb); word(c.bc); word(c.bd); word(c.fix); word(c.mask_rgb); word(c.mask_a); word(c.made_by);
++    word(c.fog); word(c.fog_colour[0]); word(c.fog_colour[1]); word(c.fog_colour[2]);
++    for (int v : c.copy_src) word((uint32_t)v);
++    for (int v : c.copy_dst) word((uint32_t)v);
++    return h;
++}
++
+ int main(int argc, char** argv) {
+     std::string path;
+     int loops = 20;
+-    bool interpret = false, no_vu = false, no_kick = false, times = false;
+-    std::string dump, compare;
++    bool interpret = false, no_vu = false, no_kick = false, times = false, old_translation = false, check = true;
++    std::string dump, compare, list;
++    FILE* list_file = nullptr;
+     for (int k = 1; k < argc; k++) {
+         std::string a = argv[k];
+         if (a == "--loops" && k + 1 < argc) loops = atoi(argv[++k]);
+         else if (a == "--interpret") interpret = true;
++        else if (a == "--old-translation") old_translation = true;      // not the ahead-of-time translation: the older one of the main program
++        else if (a == "--no-check") check = false;
++        else if (a == "--list" && k + 1 < argc) list = argv[++k];       // the first pass's draw commands as text (derived from the game: under local/)                      // no checksum of the lists: the bench's own cost is smaller
+         else if (a == "--no-vu") no_vu = true;
+         else if (a == "--no-kick") no_kick = true;
+         else if (a == "--times") times = true;
+@@ -62,10 +100,11 @@
+ 
+     static Renderer renderer;
+     renderer.vif.vu.use_translation = !interpret;
++    renderer.vif.vu.use_fast = !interpret && !old_translation;
+     renderer.vif.time_runs = renderer.gs.time_paths = times;
+     if (no_vu) renderer.vif.run_programs = false;
+     if (no_kick) renderer.vif.vu.kick = nullptr;
+-    uint64_t blanks = 0, vertices = 0, commands = 0, checksum = 0;
++    uint64_t blanks = 0, vertices = 0, commands = 0, checksum = 0, command_checksum = 0;
+     std::vector<Vertex> kept;                           // the first pass's vertices, with a count per blank
+     std::vector<uint32_t> kept_counts;
+     bool keeping = !dump.empty() || !compare.empty();
+@@ -75,13 +114,30 @@
+         commands += frame.commands.size();
+         // what a backend would be handed, folded into one number: two builds that print the
+         // same one made the same lists
+-        for (const Vertex& v : frame.vertices) { uint32_t w[7]; memcpy(w, &v, 28); for (uint32_t x : w) checksum = (checksum ^ x) * 0x100000001B3ull; }
++        if (list_file) {
++            fprintf(list_file, "blank %llu: %zu vertices, %zu commands, %zu textures, %zu targets, shows %u\n", (unsigned long long)blanks, frame.vertices.size(),
++                    frame.commands.size(), frame.textures.size(), frame.targets.size(), frame.show_target);
++            for (const DrawCmd& c : frame.commands)
++                fprintf(list_file, "  %d %d first %u count %u tgt %u sc %d,%d,%d,%d%s tex %u%s %gx%g off %g,%g miss %u st %g,%g lin %d wrap %d%d tfx %d tcc %d weave %g at %d:%d/%d/%d z %d:%d%s bl %d:%d%d%d%d %02x mask %d%d by %d fog %d\n",
++                        c.kind, c.prim, c.first, c.count, c.target, c.scissor[0], c.scissor[1], c.scissor[2], c.scissor[3], c.scissor_moved ? "m" : "", c.texture, c.tex_is_target ? "T" : "",
++                        c.tex_size[0], c.tex_size[1], c.tex_offset[0], c.tex_offset[1], c.tex_missing, c.st_scale[0], c.st_scale[1], c.linear, c.wrap[0], c.wrap[1], c.tfx, c.tcc, c.weave_half,
++                        c.alpha_test, c.atst, c.aref, c.afail, c.depth_test, c.ztst, c.depth_write ? "w" : "", c.blend, c.ba, c.bb, c.bc, c.bd, c.fix, c.mask_rgb, c.mask_a, c.made_by, c.fog);
++        }
++        if (check) {
++            for (const Vertex& v : frame.vertices) { uint32_t w[7]; memcpy(w, &v, 28); for (uint32_t x : w) checksum = (checksum ^ x) * 0x100000001B3ull; }
++            // the draw commands too (their state and vertex ranges), into a figure of their own
++            for (const DrawCmd& c : frame.commands) command_checksum = fold_command(command_checksum, c);
++        }
+         blanks++;
+     };
+     std::vector<uint8_t> ram;
++    if (!list.empty()) list_file = fopen(list.c_str(), "w");
+     double first_ms = 0, rest_ms = 0;
+-    uint64_t first_blanks = 0, first_checksum = 0;
++    uint64_t first_blanks = 0, first_checksum = 0, first_command_checksum = 0;
++    uint64_t i0 = 0, c0 = 0, i1 = 0, c1 = 0;
++    prof::calibrate();
+     for (int loop = 0; loop < loops; loop++) {
++        if (loop == 1) { counters(i0, c0); prof::start(); }
+         double t0 = now_ms();
+         for (const Record& r : records) {
+             const uint32_t* w = words.data() + r.offset;
+@@ -104,14 +160,30 @@
+             }
+         }
+         double took = now_ms() - t0;
+-        if (loop == 0) { first_ms = took; first_blanks = blanks; first_checksum = checksum; keeping = false; } else rest_ms += took;
++        if (loop == 0) { first_ms = took; first_blanks = blanks; first_checksum = checksum; first_command_checksum = command_checksum; keeping = false; if (list_file) { fclose(list_file); list_file = nullptr; } } else rest_ms += took;
+     }
++    prof::stop();
++    counters(i1, c1);
+     double n = blanks > first_blanks ? (double)(blanks - first_blanks) : 1;
+-    printf("VU1 main program: %s\n", renderer.vif.vu.translated ? "translated" : "interpreted");
++    printf("VU1: %llu runs, %llu of them in the ahead-of-time translation (%llu finished by the interpreter); main program otherwise %s\n",
++           (unsigned long long)renderer.vif.vu.runs, (unsigned long long)renderer.vif.vu.fast_runs, (unsigned long long)renderer.vif.vu.fast_left,
++           renderer.vif.vu.translated ? "in the older translation" : "interpreted");
+     printf("first pass: %llu blanks in %.1f ms (%.2f ms each), list checksum %016llx\n", (unsigned long long)first_blanks, first_ms,
+            first_ms / (first_blanks ? first_blanks : 1), (unsigned long long)first_checksum);
++    // (the figure of all passes says the same of the later ones: the lists of a pass depend on what the passes before left)
++    printf("draw commands of the first pass: checksum %016llx; all passes: vertices %016llx, commands %016llx\n", (unsigned long long)first_command_checksum,
++           (unsigned long long)checksum, (unsigned long long)command_checksum);
+     printf("then %d passes: %.0f blanks, %.3f ms each of wall time; per blank %.0f vertices, %.0f commands, %.0f VU1 instruction pairs in %.0f runs\n",
+            loops - 1, n, rest_ms / n, vertices / (double)blanks, commands / (double)blanks, renderer.vif.vu.instructions / (double)blanks, renderer.vif.vu.runs / (double)blanks);
++    if (i1 > i0 && loops > 1) {
++        double load[3] = {0, 0, 0};
++#ifdef __APPLE__
++        getloadavg(load, 3);
++#endif
++        printf("per blank after the first pass: %.2f million instructions, %.2f million cycles (whole process, the bench's own reading and checksum included); load average %.0f\n",
++               (i1 - i0) / n / 1e6, (c1 - c0) / n / 1e6, load[0]);
++    }
++    if (RTA_PROF_ON && loops > 1) prof::report(stdout, n);
+     if (!dump.empty()) {
+         FILE* f = fopen(dump.c_str(), "wb");
+         uint32_t n_blanks = (uint32_t)kept_counts.size();
