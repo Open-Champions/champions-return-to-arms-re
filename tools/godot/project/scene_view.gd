@@ -135,10 +135,10 @@ func set_look(text: String) -> void:
 	for part in text.split(",", false):
 		var kv := part.split("=")
 		if kv.size() == 2:
-			_set(kv[0].strip_edges(), kv[1].strip_edges())
+			_put(kv[0].strip_edges(), kv[1].strip_edges())
 
 
-func _set(key: String, value: String) -> void:
+func _put(key: String, value: String) -> void:
 	if not look.has(key):
 		push_warning("look: no such key " + key)
 		return
@@ -417,7 +417,7 @@ func command(w: PackedStringArray) -> void:
 		if w.size() >= 2 and w[1] == "info":
 			print("[blank %d] rta_godot: %s" % [main.blanks, info_text()])
 		elif w.size() >= 3:
-			_set(w[1], w[2])
+			_put(w[1], w[2])
 	elif w[0] == "scene" and w.size() >= 3:
 		if w[1] == "shadow":
 			look.sun = "on" if w[2] == "on" else "off"

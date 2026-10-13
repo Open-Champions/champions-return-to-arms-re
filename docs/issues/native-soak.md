@@ -986,6 +986,28 @@ New in the soak's own code for this part:
   `--pairs` and per-machine lines (`@2: …`) for games in which a machine leaves.
 
 
+## Arm S0: the strafe section in the set, the mode never asked for (third part)
+
+`farm.py twin --ref s29 --arm s29f`: each seed is played by both programs and each
+machine's tick log of the one is compared with the same machine's of the other, row for
+row. The seeds are a block of the morning's arm (6100–6107, 6119, 6130; `s29` holds the
+same words as that arm's program), the first 30,000 frames of each.
+
+| Seeds | Machines | Ticks per program | Rows compared (machine-ticks) | Identical |
+|---|---|---|---|---|
+| 6100, 6102, 6104–6107 | 2 | 169,534 | 339,135 | 6 of 6 |
+| 6101, 6103 | 3 | 59,773 | 179,320 | 2 of 2 |
+| 6119, 6130 | 4 | 56,891 | 227,571 | 2 of 2 |
+| all | | **286,198** | **746,026** | **10 of 10** |
+
+"Identical" is more than was asked for: every column of every row — the deciding ones, the
+followed ones and each machine's own (its input lead, its menu flags, its displayed-frame
+counter, the cosmetic generator, the free lists' order) — and the same number of rows.
+Seed 6104 ends by a dropped peer at tick 16,380 in both programs. With the mode never set
+the section changes nothing that the tick log can see. (The mode-byte columns are left out
+of this comparison: without the section the byte at +0x47e is not cleared by the
+constructor.)
+
 ## Directed games for the corners (third part)
 
 `rta_soak-s29f`, level `drundar`, no bus delay; scripts in `local/recomp-out/soak/dir3/`,
@@ -1109,7 +1131,8 @@ Not covered by it: the load screen at a level load (last row of the table).
 | Check | Without the section | With it |
 |---|---|---|
 | `tools/recomp/soak/sections_test.py` D1–D17 (25 checks; the run task on its globals, `save_game` counted) | a card screen, the menu flag or the camera out of follow mode: no save, the countdown waits; two machines, one with its inventory open for 40 ticks: restart points from ticks 1 and 41 | the save in the first tick in all three; both machines from tick 1; a cutscene, the pause, the inhibit, player-against-player, the front end hold it as before; a countdown of 99 is cancelled as before |
-| the directed game above | `s29`: the reload gives the two machines different records (table) | `s29d`: both save in tick 1,001, the reload at 1,773 restores the same records, no difference in 2,747 ticks |
+| the directed game above | `s29`: the reload gives the two machines different records (table): first difference tick 1,773, both players' mana and record tails; no out-of-sync flag in the 974 ticks that follow | `s29d`: both save in tick 1,001, the reload at 1,773 restores the same records, no difference in 2,747 ticks |
+| seed 7306, four machines, every driver using the strafe mode | `s29f`: tick 4,068, out-of-sync flag at 4,071 (above) | `s29fd` (the released set, the strafe section and this one): all four save in tick 2,365 with machine 2's inventory open; played to tick 9,446, past the wipe: no difference (six pairs, 56,676 pair-ticks) |
 
 ## How to repeat
 

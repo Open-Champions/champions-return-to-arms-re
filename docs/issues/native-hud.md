@@ -42,7 +42,8 @@ tools/godot/project/hud/
     world.gd               bars above heads, name tags of other players, floating numbers, the aim marks of the close views
     threat.gd              attackers out of sight, where a hit came from
     status.gd              the player's frame, the party's frames
-    top.gd                 target bar, boss bar, radar or compass strip, the game's message, level title, level-up, network, chat
+    compass.gd             the radar (overhead) or the compass strip (close views)
+    top.gd                 target bar, boss bar, the game's message, level title, level-up, network, chat
     bottom.gd              potions, quick slots, weapon, prompt, gold, the feed, the quick-cast ring
     pause.gd               the band while the pause menu is open
     notice.gd              the portal's invitation / request card

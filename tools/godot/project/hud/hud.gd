@@ -10,7 +10,8 @@ extends CanvasLayer
 #     World    health bars above heads, name tags of the other players, floating numbers
 #     Threat   who is attacking from outside the picture (or from behind, in a close view)
 #     Status   the player's frame and the party's
-#     Top      the target's and the boss's bar, compass or radar, the game's own message, online notices, chat
+#     Compass  the radar (overhead) or the compass strip (close views), with the objective's direction
+#     Top      the target's and the boss's bar, the game's own message, the level's title, online notices, chat
 #     Bottom   quick slots, potions, the weapon, the interaction prompt, gold and the feed of what was gained
 #     Pause    the pause bands
 #
@@ -114,7 +115,7 @@ var phase_blanks := {}
 var timed: Array = []                   # [level, tick, words] still to run (--hud-at)
 
 @onready var root: Control = $Root
-@onready var pieces: Array = [$Root/World, $Root/Threat, $Root/Status, $Root/Top, $Root/Bottom, $Root/Pause]
+@onready var pieces: Array = [$Root/World, $Root/Threat, $Root/Status, $Root/Compass, $Root/Top, $Root/Bottom, $Root/Pause]
 @onready var music: Node = $Music
 @onready var notice_piece: Control = $Root/Notice
 
