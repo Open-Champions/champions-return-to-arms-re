@@ -10,9 +10,16 @@
   python3 tools/recomp/app/build_win.py --reference  # after --standin, with RTA_DISC: runs the tester's check script
                                                      # (rta-windows/boot-check.rig) in the arm64 Mac build of the
                                                      # same sources and writes rta-windows/boot-check-mac.txt
+  python3 tools/recomp/app/build_win.py --mac        # after --standin: the macOS window program (arm64, Qt) from this
+                                                     # build's own translation and the sources as they are now, into
+                                                     # win/mac/rta_app - app/build.py's program without touching the
+                                                     # shared local/recomp-out/bin - and win/mac/rta_app_pngread, the
+                                                     # same with the art pack read by render/png_read.h instead of QImage
+  python3 tools/recomp/app/build_win.py --pngcheck   # win/standin/pngcheck: png_read.h against QImage (app/win/pngcheck.cpp)
   options: --compiler clang|gcc   (default clang when it can target Windows, see below)
            --original             the unpatched game (gen/) instead of the fix set (gen-app/)
            --no-game              do not translate the game again first (recomp.py, about 2 s)
+           --no-net               rta_app.exe without the network (tools/recomp/net) and without the sign-in patch
            --opt -O1|-O2          --jobs N (default 8, never more: other jobs share the machine)
            --symbols              keep the symbol table in the programs (default: stripped; a map
                                   of each program is written beside its objects either way)
@@ -20,7 +27,11 @@
 What it makes (docs/issues/native-windows.md says what was proven and what was not run):
   rta_app.exe      the game in a window: Win32 window, OpenGL 4.1 core through WGL, XInput
                    and keyboard, WASAPI (app/win_main.cpp, app/pad_win.cpp, app/win/*,
-                   sound/audio_out_win.cpp, render/backend_gl.cpp unchanged)
+                   sound/audio_out_win.cpp, render/backend_gl.cpp unchanged); the picture
+                   options of docs/issues/native-graphics.md (app/gfx_rt.cpp, app/settings.h,
+                   render/texpack.cpp with render/png_read.h in place of Qt's QImage); the
+                   network (net/netdrv.cpp over net/sock.h's Winsock body, net/online.cpp,
+                   tools/play-net/src/RtaOnline.cpp, net/online_win.cpp)
   rta_native.exe   the machine with nothing attached (app/win/headless_main.cpp): boots and runs scripts
   fpcheck.exe      the game's floating-point operations as a table of checksums (app/win/fpcheck.cpp)
   rta-windows/     the folder a tester gets: the three programs, play.bat and README.txt (from
@@ -57,6 +68,10 @@ OUT = os.path.join(ROOT, 'local', 'recomp-out')
 WIN = os.path.join(OUT, 'win')
 RT, RENDER, SOUND, WINSRC = (os.path.join(RECOMP, 'rt'), os.path.join(RECOMP, 'render'), os.path.join(RECOMP, 'sound'),
                              os.path.join(HERE, 'win'))
+NET = os.path.join(RECOMP, 'net')
+ONLINE = os.path.join(ROOT, 'tools', 'play-net', 'src', 'RtaOnline.cpp')      # the one-step online, linked as it is
+NET_HLE = os.path.join(NET, 'hle-online.txt')
+QT = '/opt/homebrew/opt/qtbase'                         # --mac and --pngcheck only
 ON_WINDOWS = os.name == 'nt'
 NICE = [] if ON_WINDOWS else ['nice', '-n', '10']
 
@@ -68,6 +83,18 @@ RENDER_CORE = ['vu1.cpp', 'vif1.cpp', 'gs.cpp', 'renderer.cpp']
 FILM, FILM_HLE = os.path.join(HERE, 'film.cpp'), os.path.join(HERE, 'hle-app.txt')
 RUNTIME = ['runtime.cpp', 'iop.cpp', 'script.cpp']
 WIN_LIBS = ['-lopengl32', '-lgdi32', '-luser32', '-lole32', '-lwinmm', '-lavrt', '-lshell32', '-ldwmapi']
+NET_LIBS = ['-lws2_32', '-liphlpapi', '-ladvapi32']     # Winsock, the list of this computer's addresses, the saved login's access list
+
+
+def with_net(args):
+    """The network is part of the fix-set program unless it was switched off."""
+    return not args.original and not getattr(args, 'no_net', False)
+
+
+def signin_patch():
+    """The local sign-in patch (kept outside the repository; nothing of it is printed), or None."""
+    path = os.environ.get('RTA_SIGNIN_PATCH', os.path.join(ROOT, 'local', 'SLUS-20973_4028A55F_signin.pnach'))
+    return path if os.path.isfile(path) else None
 
 
 def includes_of(source, dirs, seen=None):
@@ -193,11 +220,18 @@ def translate(args):
     if not args.original:
         command += ['--pnach', os.path.join(ROOT, 'patches', 'SLUS-20973_4028A55F.pnach'),
                     '--sections', os.path.join(ROOT, 'tools', 'play-net', 'sections-suggested.txt')]
-        # as app/build.py: the film player's library entries are left to app/film.cpp.  (Its
-        # network part - net/hle-online.txt, the driver, the sign-in patch - is not in the
-        # Windows program: POSIX sockets and a macOS dialogue.)
+        # as app/build.py: the film player's library entries are left to app/film.cpp, the
+        # network library's to net/netdrv.cpp, and the local sign-in patch is applied when
+        # the file is there (a program that does not link the driver - rta_native.exe - gets
+        # the translated originals of those entries and is offline as before)
         if os.path.exists(FILM_HLE) and os.path.exists(FILM):
             command += ['--hle-add', FILM_HLE]
+        if with_net(args):
+            command += ['--hle-add', NET_HLE]
+            if signin_patch():
+                command += ['--extra-pnach', signin_patch()]
+            else:
+                print('no sign-in patch in local/: the program will stop with a network error after "Internet Game"')
     result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode != 0:
         print(result.stdout[-3000:] + result.stderr[-3000:])
@@ -261,25 +295,35 @@ def build_standin(args):
         if not translate(args):
             return False
         gens[kind] = args.gen
+    args.original = False
     headless = RUNTIME + ['host_posix.cpp', 'sound_null.cpp', 'main_headless.cpp']
+    online = [os.path.join(NET, 'netdrv.cpp'), os.path.join(NET, 'online.cpp'), ONLINE]
     ok = True
     # run: the headless runtime with the unpatched game (the one compared with the rig), for
     #      x86-64 and - from the same sources at the same moment, as the control - for arm64;
     # test: the driver of difftest.py for x86-64;
     # fix: the headless runtime with the game as rta_native.exe has it (the fix set), for arm64:
-    #      what its report should read on a PC
-    for name, arch, kind, defines, opt, sources, program in (
-            ('run', 'x86_64', 'gen-orig', [], '-O2', headless, 'rta_native_x64'),
-            ('run', 'arm64', 'gen-orig', [], '-O2', headless, 'rta_native_arm64'),
-            ('test', 'x86_64', 'gen-orig', ['-DRECOMP_TEST', '-DFPU_PS2'], '-O1', ['test_driver.cpp'], 'recomp_test_x64'),
-            ('fix', 'arm64', 'gen-app', [], '-O2', headless, 'rta_native_fix_arm64')):
+    #      what its report should read on a PC;
+    # the same with the network (net/netdrv.cpp over net/sock.h's BSD body, net/online.cpp,
+    #      RtaOnline.cpp: what net/build_online.py builds as bin/rta_native_online), for x86-64
+    #      and for arm64: the programs of a lobby game between two copies on this Mac
+    for name, arch, kind, defines, opt, sources, extra, program in (
+            ('run', 'x86_64', 'gen-orig', [], '-O2', headless, [], 'rta_native_x64'),
+            ('run', 'arm64', 'gen-orig', [], '-O2', headless, [], 'rta_native_arm64'),
+            ('test', 'x86_64', 'gen-orig', ['-DRECOMP_TEST', '-DFPU_PS2'], '-O1', ['test_driver.cpp'], [], 'recomp_test_x64'),
+            ('fix', 'arm64', 'gen-app', [], '-O2', headless, [], 'rta_native_fix_arm64'),
+            ('fix', 'arm64', 'gen-app', [], '-O2', headless, online, 'rta_native_online_arm64'),
+            ('fix', 'x86_64', 'gen-app', [], '-O2', headless, online, 'rta_native_online_x64')):
+        if extra and getattr(args, 'no_net', False):
+            continue
         gen = gens[kind]
         short = 'x64' if arch == 'x86_64' else arch
         cxx = ['clang++', '-arch', arch]
         objdir = os.path.join(WIN, 'obj-standin-%s-%s' % (name, short))
         os.makedirs(objdir, exist_ok=True)
         flags = ['-std=c++17', args.opt or opt, '-fwrapv', '-w'] + FP + ['-I', RT, '-I', gen] + defines
-        jobs = game_jobs(gen, objdir, flags) + source_jobs([(os.path.join(RT, s), flags, 'rt_') for s in sources], objdir, [RT, gen])
+        jobs = game_jobs(gen, objdir, flags) + source_jobs([(os.path.join(RT, s), flags, 'rt_') for s in sources] +
+                                                           [(path, flags, 'n_') for path in extra], objdir, [RT, gen, NET])
         if not compile_all(jobs, cxx, args.jobs):
             return False
         ok = link(cxx, [j[2] for j in jobs], ['-lpthread'], os.path.join(out, program)) and ok
@@ -291,6 +335,74 @@ def build_standin(args):
             print(result.stderr[:3000])
             ok = False
     return ok
+
+
+def build_mac(args):
+    """The macOS window program from this build's own translation: app/build.py's rta_app, made
+    beside the Windows build instead of in the shared bin/ (other work runs tests against that).
+
+    Game and runtime objects are the stand-in's (obj-standin-fix-arm64: the same sources and
+    flags); everything else is compiled here.  Two programs: rta_app (the art pack through
+    QImage, as app/build.py makes it) and rta_app_pngread (texpack.cpp with RTA_NO_QIMAGE: the
+    pack through render/png_read.h, the reader of the Windows program)."""
+    if sys.platform != 'darwin':
+        sys.exit('--mac is for a Mac')
+    shared = os.path.join(WIN, 'obj-standin-fix-arm64')
+    gen = os.path.join(WIN, 'gen-app')
+    if not os.path.exists(os.path.join(shared, 'rt_runtime.o')):
+        sys.exit('--mac needs build_win.py --standin first (its arm64 objects of the game and the runtime)')
+    out, objdir = os.path.join(WIN, 'mac'), os.path.join(WIN, 'obj-mac')
+    os.makedirs(out, exist_ok=True)
+    os.makedirs(objdir, exist_ok=True)
+    opt = args.opt or '-O2'
+    qtlib = os.path.join(QT, 'lib')
+    qt_flags = ['-F', qtlib] + sum((['-I', os.path.join(qtlib, m + '.framework', 'Headers')] for m in ('QtCore', 'QtGui')), [])
+    render_flags = ['-std=c++17', opt, '-Wall', '-Wno-unused-function'] + FP + ['-I', RENDER]
+    rt_flags = ['-std=c++17', opt, '-fwrapv', '-w'] + FP + ['-I', RT, '-I', gen]
+    app_flags = ['-std=c++17', opt, '-Wall', '-Wno-unused-function', '-I', HERE, '-I', RENDER, '-I', RT]
+    objc = ['-std=c++17', opt, '-Wall', '-fobjc-arc']
+    translation = os.path.join(OUT, 'gen-vu', 'vu1_translated.cpp')
+    vu1 = translation if os.path.exists(translation) and not args.no_translation else os.path.join(RENDER, 'vu1_none.cpp')
+    sources = [(os.path.join(RENDER, n), render_flags, 'r_') for n in RENDER_CORE] + [
+        (vu1, render_flags, 'r_'),
+        (os.path.join(RENDER, 'backend_gl.cpp'), render_flags + qt_flags, 'r_'),
+        (os.path.join(SOUND, 'sound_rta.cpp'), rt_flags + ['-I', SOUND], 'rt_'),
+        (os.path.join(HERE, 'app_rt.cpp'), rt_flags + ['-I', HERE], 'a_'),
+        (os.path.join(HERE, 'gfx_rt.cpp'), rt_flags + ['-I', HERE], 'a_'),
+        (FILM, rt_flags + ['-I', HERE], 'a_'),
+        (os.path.join(NET, 'netdrv.cpp'), rt_flags, 'n_'),
+        (os.path.join(NET, 'online.cpp'), rt_flags, 'n_'),
+        (ONLINE, rt_flags, 'n_'),
+        (os.path.join(NET, 'online_mac.mm'), objc + ['-I', NET], 'n_'),
+        (os.path.join(HERE, 'app_main.cpp'), app_flags + qt_flags, 'a_'),
+        (os.path.join(HERE, 'pad_mac.mm'), objc + ['-I', HERE, '-I', RT], 'a_')]
+    search = [HERE, RENDER, RT, SOUND, NET, gen]
+    common = source_jobs(sources, objdir, search)
+    with_qt = source_jobs([(os.path.join(RENDER, 'texpack.cpp'), render_flags + qt_flags, 'r_')], objdir, search)
+    own = source_jobs([(os.path.join(RENDER, 'texpack.cpp'), render_flags + ['-DRTA_NO_QIMAGE'], 'rp_')], objdir, search)
+    cxx = ['clang++', '-arch', 'arm64']
+    if not compile_all(common + with_qt + own, cxx, args.jobs):
+        return False
+    game = [os.path.join(shared, n) for n in sorted(os.listdir(shared))
+            if n.endswith('.o') and (n.startswith('g_') or n in ('rt_runtime.o', 'rt_iop.o', 'rt_script.o', 'rt_host_posix.o'))]
+    frameworks = sum((['-framework', f] for f in ('QtCore', 'QtGui', 'GameController', 'AppKit', 'Foundation')), [])
+    libs = ['-F', qtlib] + frameworks + ['-Wl,-rpath,' + qtlib, '-lpthread']
+    ok = link(cxx, game + [j[2] for j in common + with_qt], libs, os.path.join(out, 'rta_app'))
+    return link(cxx, game + [j[2] for j in common + own], libs, os.path.join(out, 'rta_app_pngread')) and ok
+
+
+def build_pngcheck(args):
+    """app/win/pngcheck.cpp: render/png_read.h against QImage over folders of PNG files (macOS, Qt)."""
+    out = os.path.join(WIN, 'standin')
+    os.makedirs(out, exist_ok=True)
+    qtlib = os.path.join(QT, 'lib')
+    command = NICE + ['clang++', '-std=c++17', '-O2', '-Wall', '-F', qtlib] + \
+        sum((['-I', os.path.join(qtlib, m + '.framework', 'Headers')] for m in ('QtCore', 'QtGui')), []) + \
+        ['-I', RENDER, os.path.join(WINSRC, 'pngcheck.cpp'), '-o', os.path.join(out, 'pngcheck'),
+         '-framework', 'QtCore', '-framework', 'QtGui', '-Wl,-rpath,' + qtlib, '-lpthread']
+    result = subprocess.run(command, capture_output=True, text=True)
+    print(result.stderr[:3000] if result.returncode else 'built ' + os.path.relpath(os.path.join(out, 'pngcheck'), ROOT))
+    return result.returncode == 0
 
 
 def make_reference(args):
@@ -329,8 +441,15 @@ def main():
     parser.add_argument('--reference', action='store_true', help='run the check script in the arm64 Mac build: what rta_native.exe should print')
     parser.add_argument('--symbols', action='store_true', help='keep the symbol table in the programs')
     parser.add_argument('--no-translation', action='store_true', help='interpret VU1 even when its main program is translated')
+    parser.add_argument('--no-net', action='store_true', help='without the network and the sign-in patch')
+    parser.add_argument('--mac', action='store_true', help='the macOS window program from this build\'s translation, into win/mac/')
+    parser.add_argument('--pngcheck', action='store_true', help='build the comparison of png_read.h with QImage')
     args = parser.parse_args()
     args.jobs = max(1, min(8, args.jobs))
+    if args.pngcheck:
+        return 0 if build_pngcheck(args) else 1
+    if args.mac:
+        return 0 if build_mac(args) else 1
     if args.standin:
         return 0 if build_standin(args) else 1
     if args.reference:
@@ -349,7 +468,8 @@ def main():
     rt_flags = ['-std=c++17', opt, '-fwrapv', '-w'] + FP + WIN_DEFINES + ['-I', RT, '-I', args.gen]
     render_flags = ['-std=c++17', opt, '-Wall', '-Wno-unused-function'] + FP + WIN_DEFINES + ['-I', RENDER]
     app_flags = ['-std=c++17', opt, '-Wall', '-Wno-unused-function'] + WIN_DEFINES + ['-I', HERE, '-I', WINSRC, '-I', RENDER, '-I', RT]
-    search = [HERE, WINSRC, RENDER, RT, SOUND, args.gen]
+    search = [HERE, WINSRC, RENDER, RT, SOUND, NET, args.gen]
+    net = with_net(args)
 
     game = game_jobs(args.gen, objdir, rt_flags)
     runtime = source_jobs([(os.path.join(RT, n), rt_flags, 'rt_') for n in RUNTIME + ['host_win32.cpp']], objdir, search)
@@ -372,15 +492,29 @@ def main():
             # backend_gl.cpp is written against Qt's QOpenGLExtraFunctions; app/win/ has the two headers it
             # includes, over WGL (no Qt on Windows)
             [(os.path.join(RENDER, 'backend_gl.cpp'), render_flags + ['-I', WINSRC], 'r_'),
+             # the art pack: PNG files through render/png_read.h (no Qt, so no QImage)
+             (os.path.join(RENDER, 'texpack.cpp'), render_flags + ['-DRTA_NO_QIMAGE'], 'r_'),
              (os.path.join(SOUND, 'sound_rta.cpp'), rt_flags + ['-I', SOUND], 'rt_'),
              (os.path.join(HERE, 'app_rt.cpp'), rt_flags + ['-I', HERE], 'a_'),
-             (os.path.join(HERE, 'win_main.cpp'), app_flags, 'a_'),
+             # widescreen and the marks for the 2-D layer: the hooks of the 16 view and draw functions in hle.txt
+             (os.path.join(HERE, 'gfx_rt.cpp'), rt_flags + ['-I', HERE], 'a_'),
+             (os.path.join(HERE, 'win_main.cpp'), app_flags + (['-DRTA_NET', '-I', NET] if net else []), 'a_'),
              ] + ([
+             # the network: the driver on net/sock.h's Winsock body, the one-step online (the
+             # emulator build's own file, with three POSIX calls supplied by net/posix_win.h),
+             # and its questions on the window
+             (os.path.join(NET, 'netdrv.cpp'), rt_flags, 'n_'),
+             (os.path.join(NET, 'online.cpp'), rt_flags, 'n_'),
+             (ONLINE, rt_flags + ['-include', os.path.join(NET, 'posix_win.h')], 'n_'),
+             (os.path.join(NET, 'online_win.cpp'), app_flags + ['-I', NET], 'n_')] if net else []) + ([
              # the films (app/film.cpp, when the application has it); <ctime> is given from here:
              # the file's timing aid finds it by itself only on macOS
              (FILM, rt_flags + ['-I', HERE, '-include', 'ctime'], 'a_')] if os.path.exists(FILM) and os.path.exists(FILM_HLE) and not args.original else []) + [
              (os.path.join(HERE, 'pad_win.cpp'), app_flags, 'a_'),
              (os.path.join(WINSRC, 'wgl.cpp'), app_flags, 'a_')], objdir, search)
+        # a file given with -include is a dependency the sources do not name
+        app = [(source, flags, target, deps + ([os.path.join(NET, 'posix_win.h')] if source == ONLINE else []))
+               for source, flags, target, deps in app]
         jobs += app
     if not compile_all(jobs, cxx, args.jobs):
         return 1
@@ -393,18 +527,33 @@ def main():
     ok = link(linker + flags_for('rta_native'), objs(game) + objs(runtime) + objs(headless) + objs(resource), ['-lwinmm'],
               os.path.join(WIN, 'rta_native%s.exe' % suffix)) and ok
     if app:
-        ok = link(linker + flags_for('rta_app'), objs(game) + objs(runtime) + objs(app) + objs(resource), WIN_LIBS,
+        ok = link(linker + flags_for('rta_app'), objs(game) + objs(runtime) + objs(app) + objs(resource), WIN_LIBS + (NET_LIBS if net else []),
                   os.path.join(WIN, 'rta_app%s.exe' % suffix)) and ok
-    for name in ('play.bat', 'README.txt'):
+    texts = ('play.bat', 'online.bat', 'README.txt', 'server.txt')
+    for name in texts:
         if os.path.exists(os.path.join(WINSRC, name)):
             shutil.copyfile(os.path.join(WINSRC, name), os.path.join(WIN, name))
     if ok and app and not args.original:
         # exactly what a tester gets, in one folder (the GCC build's programs beside the others when they exist)
         package = os.path.join(WIN, 'rta-windows')
         os.makedirs(package, exist_ok=True)
-        for name in ('rta_app.exe', 'rta_native.exe', 'fpcheck.exe', 'rta_app_gcc.exe', 'fpcheck_gcc.exe', 'play.bat', 'README.txt'):
-            if os.path.exists(os.path.join(WIN, name)):
-                shutil.copyfile(os.path.join(WIN, name), os.path.join(package, name))
+        for name in ('rta_app.exe', 'rta_native.exe', 'fpcheck.exe', 'rta_app_gcc.exe', 'fpcheck_gcc.exe') + texts:
+            source, target = os.path.join(WIN, name), os.path.join(package, name)
+            if name == 'server.txt' and os.path.exists(target):
+                continue                    # the tester's (or the builder's) address stays
+            if os.path.exists(source) and name in texts:
+                # text for Windows: lines end in CR LF (cmd.exe reads a batch file with bare LF unreliably)
+                text = open(source, 'rb').read().replace(b'\r\n', b'\n').replace(b'\n', b'\r\n')
+                open(target, 'wb').write(text)
+            elif os.path.exists(source):
+                shutil.copyfile(source, target)
+        # a program of the second compiler that is older than this build's is not the same program
+        newest = os.path.getmtime(os.path.join(WIN, 'rta_app.exe'))
+        for name in ('rta_app_gcc.exe', 'fpcheck_gcc.exe'):
+            if tag != 'gcc' and os.path.exists(os.path.join(WIN, name)) and os.path.getmtime(os.path.join(WIN, name)) < newest - 3600:
+                if os.path.exists(os.path.join(package, name)):
+                    os.remove(os.path.join(package, name))
+                print('%s is from an earlier build and was left out of the folder (make it again: --compiler gcc)' % name)
         write_check_script(os.path.join(package, 'boot-check.rig'))
         print('the folder to give a tester: ' + os.path.relpath(package, ROOT))
     return 0 if ok else 1

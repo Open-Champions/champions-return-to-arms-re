@@ -207,7 +207,8 @@ def start_native(role, out, code, args, window=False):
     tick_do = os.path.join(out, 'tick-do.txt')
     if window:
         # the window program: a small test window behind the others, silent, paced by its display
-        command = ['nice', '-n', '10', os.path.join(OUT, 'bin', 'rta_app'), '--test', 'native online', '--window', '320x240',
+        # (RTA_NATIVE_APP: another build of the window program, as tools/recomp/net/play-native.sh takes it)
+        command = ['nice', '-n', '10', os.environ.get('RTA_NATIVE_APP', os.path.join(OUT, 'bin', 'rta_app')), '--test', 'native online', '--window', '320x240',
                    '--disc', os.environ['RTA_DISC'], '--data', directory, '--script', script, '--']
     else:
         program = args.join_program if (role == 'join' and args.join_program) else args.program

@@ -330,14 +330,14 @@ program); (2) the merged graphics of `native-graphics.md` in the Windows program
 widescreen, multisampling, mip maps, the art pack read without Qt); proofs on the Mac;
 tester's folder and README. Plan and state:
 
-| Step | Files | State |
+| Step | Files | State (20:55) |
 |---|---|---|
-| socket layer | `net/sock.h` (new), `net/netdrv.cpp` (its POSIX calls replaced by the layer) | not started |
-| name dialogue, title note, set warning for Windows | `net/online_win.cpp` (new) | not started |
-| PNG reader without Qt | `render/png_read.h` (new), `render/texpack.cpp` (`read_png`, `open`) | not started |
+| socket layer | `net/sock.h` (new, header only: BSD and Winsock bodies), `net/netdrv.cpp` (every POSIX socket call replaced by `sock::`) | written; both bodies compile (`-fsyntax-only`, macOS and `x86_64-w64-mingw32`); not yet run |
+| name dialogue, title note, set warning for Windows | `net/online_win.cpp`, `net/online_win.h` (new); `net/posix_win.h` (new: `fchmod`, `fsync`, `rename` for `tools/play-net/src/RtaOnline.cpp`, force-included, that file unchanged) | written, compile for Windows; `win_main.cpp` does not call them yet |
+| PNG reader without Qt | `render/png_read.h` (new), `render/texpack.cpp` (`read_png` uses it under `RTA_NO_QIMAGE`; `open` no longer returns 0 there) | written; `app/win/pngcheck.cpp` + `app/win/pngtest.py` (new): 894 made files of every PNG kind identical to QImage, 19 damaged ones refused by both, 0 different; the run over `local/hd-pack` is going (`local/recomp-out/win/standin/pngcheck-pack.log`) |
 | settings, aspect, online options in the Windows program | `app/win_main.cpp` | not started |
-| build: new files, network, sign-in patch, stand-ins with the network | `app/build_win.py` | not started |
-| proofs: x86-64 stand-in lobby game, Mac `rta_app` lobby game, PNG reader against QImage over `local/hd-pack` | | not started |
+| build: new files, network, sign-in patch, stand-ins with the network | `app/build_win.py` | not started (pngcheck was built by hand: the command is in the head of `pngcheck.cpp`'s build line below) |
+| proofs: x86-64 stand-in lobby game, Mac `rta_app` lobby game | | not started |
 | tester's folder, README, this file, `native-app.md` 8, `native-recomp.md` step 6 | | not started |
 
 Rules of this pass: the local lobby only (never 167.99.183.124), builds into

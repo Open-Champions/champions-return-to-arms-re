@@ -20,11 +20,37 @@
 //   --fullscreen        start full screen (F, F11 or Alt+Enter toggles, Escape leaves)
 //   --scale N           draw the picture at N times the console's 640 x 448 (1..8)
 //   --size WxH          or at exactly this size (default: the window's own pixels)
+//   the picture (docs/issues/native-graphics.md; each is also a line of <data>\settings.txt,
+//   see settings.h - the file is read first, then these):
+//   --aspect A          the shape of the 3-D view: auto (the window's own, the default), 4:3
+//                       (the console's), 16:9, 16:10, 21:9, W:H
+//   --resolution R      the size the picture is drawn at: window, WxH, or Nx (as --size / --scale)
+//   --antialiasing N    samples per pixel of the 3-D scene: off, 2, 4 (default), 8
+//   --anisotropy N      1 (off) to 16 (default);  --mipmaps yes|no  mip maps for the game's textures
+//   --art-pack DIR      replacement pictures (PNG, read by render/png_read.h: no Qt here);
+//                       --art-memory MB (3072)
+//   --frame-cap N       60 (default), 30, or 0 = --unpaced
+//   --plain             all of that off: 4:3, no multisampling, no mip maps, no pack
+//   --settings FILE, --no-settings;  tests: --no-layout, --art-whole, --art-wait
+//   online (docs/issues/native-online.md; only in a build with the network, RTA_NET):
+//   --server ADDRESS    the lobby server, an IPv4 address or a host name.  Left out: the first
+//                       line of server.txt beside the program; neither: a server on this computer
+//   --server-public A   the server's public address, when it hands that out and you are on
+//                       its own network (normally found by itself)
+//   --online            go online by itself: title, Internet Game, network setting, log-in,
+//                       and stop at the lobby's game list.  The first time a player name is
+//                       asked for (a small dialogue); the account is the program's business
+//   --host [CODE]       as --online, and on: opens a game named with a code for your friends
+//                       (made up when none is given; shown in the window's title)
+//   --join CODE         as --online, and on: joins the game with that code
+//   --choose-character  with --host or --join: stop on the game's character screens
+//   --player N          a second player on the same PC: data in rta-data-player<N>
 //   --volume V          0..1 (default 1); --mute = --volume 0; --no-sound opens no device
 //   --emulator-timing   the I/O processor answers as slowly as on a console
 //   --no-films          a film ends at its first picture (when app/film.cpp is part of the program the films play)
 //   --script FILE, --do "COMMAND"   scripted input on top of keyboard and controller; the
-//                       "app ..." lines of app_main.cpp: shot, key, gcpad, pads, stats, record
+//                       "app ..." lines of app_main.cpp: shot, key, gcpad, pads, stats, record,
+//                       window W H, fullscreen, art off|on
 //   --offscreen         the window is never shown (pictures and timings only)
 //   --unpaced           as fast as the machine goes
 //   --png PREFIX --at n,n,...   write the shown picture at these vertical blanks
@@ -42,10 +68,15 @@
 #ifdef _WIN32
 #include "app_rt.h"
 #include "backend_gl.h"
+#include "gfx_rt.h"
 #include "pad_host.h"
 #include "pipeline.h"
 #include "recorder.h"
+#include "settings.h"
 #include "win/wgl.h"
+#ifdef RTA_NET
+#include "online_win.h"                                 // tools/recomp/net: the name question and the notes on this window
+#endif
 
 #include <mmsystem.h>
 #include <psapi.h>
@@ -80,6 +111,17 @@ struct Options {
     std::string test, png, disc, data, elf;
     std::set<uint64_t> at;
     uint64_t stop_after = 0;
+    // the picture (settings.h): the settings file, then the command line
+    app::Settings set;
+    double aspect = 0;                  // of the 3-D view; 0 = the window's own shape
+    bool layout = true;                 // false: the wide picture without the 2-D layer put back into shape
+    bool art_parts = true;              // false: whole replacement pictures on the graphics card
+    bool art_wait = false;              // tests: every frame waits for the replacement pictures it asks for
+    std::string settings_file;
+    // online
+    std::string server, server_public, online;      // online: "", lobby, host, host:CODE, join:CODE
+    bool choose_character = false;
+    int player = 1;
 };
 
 static void log_line(const std::string& line) {
@@ -260,6 +302,8 @@ static std::vector<std::string> g_shots_asked;           // picked up by the sin
 
 // ---- the window and the main-thread side -----------------------------------------------------
 enum { TIMER_END = 1, TIMER_MOVE = 2 };
+// asked for by a script line on the game's thread, done by the window's thread
+enum { MSG_RESIZE = WM_APP + 1, MSG_FULLSCREEN, MSG_ART };
 
 struct Screen {
     Options opt;
@@ -267,6 +311,8 @@ struct Screen {
     wgl::Context gl;
     GlBackend* backend = nullptr;
     bool follow_window = false;                         // the picture is drawn at the window's pixel size
+    double view_aspect = 4.0 / 3.0;                     // what the game is asked to make its view for
+    UINT dpi = 96;
     bool is_fullscreen = false;
     WINDOWPLACEMENT placement;
     DWORD normal_style = 0;
@@ -350,7 +396,6 @@ struct Screen {
         if (!RegisterClassW(&wc)) { error = "RegisterClass failed"; return false; }
         bool test = !opt.test.empty();
         DWORD style = WS_OVERLAPPEDWINDOW, ex = test ? WS_EX_NOACTIVATE : 0;
-        UINT dpi = 96;
         if (HMODULE user = GetModuleHandleW(L"user32.dll"))
             if (auto get = (UINT(WINAPI*)())(void*)GetProcAddress(user, "GetDpiForSystem")) dpi = get();
         if (dpi < 96 || dpi > 960) dpi = 96;
@@ -374,17 +419,48 @@ struct Screen {
             UpdateWindow(window);
         }
         backend = new GlBackend;
+        {
+            PictureOptions picture;
+            picture.samples = opt.set.samples;
+            picture.anisotropy = opt.set.anisotropy;
+            picture.mipmaps = opt.set.mipmaps;
+            picture.pack = opt.set.art_pack;
+            picture.pack_memory_mb = opt.set.art_memory;
+            picture.pack_parts = opt.art_parts;
+            picture.pack_wait = opt.art_wait;
+            backend->configure(picture);
+            PictureFigures fig = backend->figures();
+            char line[512];
+            snprintf(line, sizeof line, "picture: %d samples per pixel, anisotropy %d, mip maps for the game's textures %s; art pack %s (%llu pictures), %d MB",
+                     fig.samples, fig.anisotropy, opt.set.mipmaps ? "on" : "off", opt.set.art_pack.empty() ? "none" : opt.set.art_pack.c_str(),
+                     (unsigned long long)fig.pack_files, opt.set.art_memory);
+            log_line(line);
+            if (!opt.set.art_pack.empty() && fig.pack_files == 0) log_line("the art pack folder holds no pictures (or cannot be read): " + opt.set.art_pack);
+        }
+        // The shape of the view: what was asked for, else the window's own (a window that is
+        // never shown: the shape of the size asked for; a size of 640 x 448 and its multiples
+        // is the console's picture, which is 4:3).
         int w = opt.size_w, h = opt.size_h;
-        if (opt.scale) { w = 640 * opt.scale; h = 448 * opt.scale; }
+        int cw = 0, ch = 0;
+        client_size(cw, ch);
+        double shape = opt.aspect;
+        if (shape <= 0) {
+            if (!opt.offscreen && cw > 0 && ch > 0) shape = (double)cw / ch;
+            else if (w && h) shape = (w * 448 == h * 640) ? 4.0 / 3.0 : (double)w / h;
+            else shape = (double)opt.window_w / opt.window_h;
+        }
+        if (shape < 4.0 / 3.0) shape = 4.0 / 3.0;
+        view_aspect = shape;
+        if (opt.scale) { h = 448 * opt.scale; w = (int)std::lround(640 * opt.scale * shape / (4.0 / 3.0)); }
         if (!w || !h) {
             follow_window = !opt.offscreen;
-            int cw = 0, ch = 0;
-            client_size(cw, ch);
             h = ch >= 224 ? ch : opt.window_h;
-            w = h * 4 / 3;
+            w = (int)std::lround(h * shape);
+            if (follow_window && cw > 0 && w > cw) { w = cw; h = (int)std::lround(w / shape); }
         }
         opt.size_w = w; opt.size_h = h;
         backend->set_output_size(w, h);
+        gfxrt::set_aspect(shape);
         refresh_hz = display_rate();
         if (refresh_hz < 20 || refresh_hz > 1000) refresh_hz = 60;
         refresh_ms = 1000.0 / refresh_hz;
@@ -415,7 +491,9 @@ struct Screen {
         std::swap(slot.textures, frame.textures);
         std::swap(slot.targets, frame.targets);
         std::swap(slot.dead_textures, frame.dead_textures);
+        std::swap(slot.dead_targets, frame.dead_targets);
         slot.show_target = frame.show_target;
+        slot.aspect = frame.aspect;
         memcpy(slot.show_rect, frame.show_rect, sizeof(slot.show_rect));
         slot.number = frame.number;
         slot_shots.swap(shots);
@@ -432,8 +510,21 @@ struct Screen {
         wgl::Functions* f = wgl::functions();
         int cw = 0, ch = 0;
         client_size(cw, ch);
-        if (follow_window && ch >= 224) {               // the window was resized: draw at its new size
-            int h = ch, w = h * 4 / 3;
+        if (!opt.offscreen && opt.aspect == 0 && cw > 0 && ch > 0) {     // the view takes the window's shape
+            double shape = (double)cw / ch;
+            if (shape < 4.0 / 3.0) shape = 4.0 / 3.0;
+            if (std::fabs(shape - view_aspect) > 0.002) { view_aspect = shape; gfxrt::set_aspect(shape); }
+        }
+        // The picture is sized for the shape THIS list was built for (it says so itself): while
+        // a new shape is on its way through the game and the decoder, the lists still in
+        // flight are drawn as what they are, with bars for a frame or two, never stretched.
+        if (follow_window && cw > 0 && ch > 0) {        // the window was resized: draw at its new size
+            double shape = frame->aspect;
+            int h = ch, w = (int)std::lround(h * shape);
+            if (w > cw) { w = cw; h = (int)std::lround(w / shape); }
+            if (h >= 224 && (h != opt.size_h || w != opt.size_w)) { opt.size_w = w; opt.size_h = h; backend->set_output_size(w, h); }
+        } else if (opt.scale) {
+            int h = 448 * opt.scale, w = (int)std::lround(640 * opt.scale * frame->aspect / (4.0 / 3.0));
             if (h != opt.size_h || w != opt.size_w) { opt.size_w = w; opt.size_h = h; backend->set_output_size(w, h); }
         }
         backend->execute(*frame);
@@ -443,6 +534,7 @@ struct Screen {
         for (const std::string& path : slot_shots) save(path);
         slot_shots.clear();
         bool shown = !opt.offscreen && IsWindowVisible(window) && !IsIconic(window) && cw > 0 && ch > 0;
+        if (opt.set.frame_cap > 0 && opt.set.frame_cap <= 30 && (blanks & 1)) shown = false;        // every other picture
         double swap_start = 0, after = 0;
         if (shown) {
             // with more than one refresh per picture the swap is asked for inside the last of
@@ -453,7 +545,7 @@ struct Screen {
                 if (ask_at > now) sleep_ms(ask_at - now);
             }
             f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
-            backend->present(cw, ch, 4.0 / 3.0);
+            backend->present(cw, ch, frame->aspect);
             swap_start = now_ms();
             SwapBuffers(gl.dc);
             after = now_ms();
@@ -572,7 +664,26 @@ LRESULT CALLBACK Screen::proc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         g_pads.quit = true;
         SetTimer(hwnd, TIMER_END, 1500, nullptr);
         return 0;
+    case WM_GETMINMAXINFO:
+        if (lp) { ((MINMAXINFO*)lp)->ptMinTrackSize.x = 320; ((MINMAXINFO*)lp)->ptMinTrackSize.y = 240; }
+        return 0;
+    case MSG_RESIZE:                                    // app window W H: the client area, in points
+        if (s && !s->is_fullscreen) {
+            RECT r = {0, 0, MulDiv((int)wp, (int)s->dpi, 96), MulDiv((int)lp, (int)s->dpi, 96)};
+            AdjustWindowRectEx(&r, (DWORD)GetWindowLongPtrW(hwnd, GWL_STYLE), FALSE, (DWORD)GetWindowLongPtrW(hwnd, GWL_EXSTYLE));
+            SetWindowPos(hwnd, nullptr, 0, 0, r.right - r.left, r.bottom - r.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        return 0;
+    case MSG_FULLSCREEN:
+        if (s && !test) s->toggle_fullscreen(); else log_line("app fullscreen: not in a test window");
+        return 0;
+    case MSG_ART:
+        if (s && s->backend) s->backend->set_replacements(wp != 0);
+        return 0;
     default:
+#ifdef RTA_NET
+        if (message >= WM_APP && onlinewin::window_message(hwnd, message, wp, lp)) return 0;
+#endif
         break;
     }
     return DefWindowProcW(hwnd, message, wp, lp);
@@ -598,6 +709,30 @@ static void final_report() {                            // on the game's thread,
                (unsigned long long)g.textures_made, (unsigned long long)g.textures_held, g.texture_bytes / 1048576.0, (unsigned long long)g.textures_freed,
                (unsigned long long)g.texture_missing, (unsigned long long)g.copies, (unsigned long long)g.copies_skipped,
                (unsigned long long)g_renderer->vif.vu.bad, (unsigned long long)g.unknown_regs);
+        printf("rta_app: primitives drawn with GS state the model approximates (of %llu):", (unsigned long long)g.prims);
+        bool any = false;
+        for (int k = 0; k < render::AP_COUNT; k++) if (g.approx[k]) { printf(" %s %llu;", render::Gs::APPROX_NAMES[k], (unsigned long long)g.approx[k]); any = true; }
+        printf("%s; with fogging (applied): %llu\n", any ? "" : " none", (unsigned long long)g.fogged);
+    }
+    {
+        PictureFigures fig = s.backend->figures();
+        const render::Layout& l = g_renderer->gs.layout;
+        uint64_t wide = 0, clamps = 0, marks = 0;
+        gfxrt::figures(wide, clamps, marks);
+        uint32_t list_most = 0, list_room = 0;
+        gfxrt::list_figures(list_most, list_room);
+        printf("rta_app: picture: the game's display list: the fullest frame took %u of %u units (objects are no longer drawn when fewer than 3000 are left)\n",
+               list_most, list_room);
+        printf("rta_app: picture: view %.4f (k %.4f), %llu frames built wide, %llu marks in the stream; 2-D primitives moved %llu in %llu clusters, sprites narrowed %llu, "
+               "left across the width %llu; the screen clamp was handed the 4:3 planes %llu times\n", s.view_aspect, l.k, (unsigned long long)wide,
+               (unsigned long long)marks, (unsigned long long)l.moved_2d, (unsigned long long)l.clusters, (unsigned long long)l.moved_sprites,
+               (unsigned long long)l.kept_full, (unsigned long long)clamps);
+        printf("rta_app: picture: %d samples, anisotropy %d; art pack %llu files: textures named %llu, found in the pack %llu, pictures read %llu (%llu as parts), "
+               "read again for a larger part %llu, given up unread %llu, dropped for memory %llu; mip-mapped parts of the game's own textures made %llu; "
+               "held now %llu pictures, %.1f MB (most %.1f MB), %llu waiting\n", fig.samples, fig.anisotropy, (unsigned long long)fig.pack_files,
+               (unsigned long long)fig.named, (unsigned long long)fig.named_found, (unsigned long long)fig.replaced, (unsigned long long)fig.parts,
+               (unsigned long long)fig.regrown, (unsigned long long)fig.abandoned, (unsigned long long)fig.dropped, (unsigned long long)fig.own_made,
+               (unsigned long long)fig.held, fig.held_bytes / 1048576.0, fig.most_bytes / 1048576.0, (unsigned long long)fig.pending);
     }
     printf("rta_app: input: %llu key events, controller %s, %u rumble commands\n", (unsigned long long)g_key_events.load(),
            hostpad::name().empty() ? "none" : hostpad::name().c_str(), g_pads.rumbles.load());
@@ -660,6 +795,16 @@ static void app_command(const std::string& text, uint64_t frame) {
             if (g_recorder.out.open(text.substr(text.find(w[1])).c_str())) g_recorder.first_frame = 0;
             else log_line("cannot write " + w[1]);
         }
+    } else if (w[0] == "window" && w.size() >= 3) {
+        // app window W H: the window takes this size (points), as a person dragging its corner would make it
+        int ww = atoi(w[1].c_str()), wh = atoi(w[2].c_str());
+        if (g_screen->window && ww >= 160 && wh >= 120) PostMessageW(g_screen->window, MSG_RESIZE, (WPARAM)ww, (LPARAM)wh);
+    } else if (w[0] == "fullscreen") {
+        // app fullscreen: what F does (a test window stays as it is: it must not cover the screen)
+        if (g_screen->window) PostMessageW(g_screen->window, MSG_FULLSCREEN, 0, 0);
+    } else if (w[0] == "art" && w.size() >= 2) {
+        // the same frame with and without the pack's pictures (and the mip-mapped parts): app art off|on
+        if (g_screen->window) PostMessageW(g_screen->window, MSG_ART, w[1] != "off" ? 1 : 0, 0);
     } else if (w[0] == "stats") {
         g_screen->report_pace(w.size() >= 2 && w[1] == "reset");
     } else log_line("unknown app command: " + text);
@@ -705,15 +850,32 @@ static const char* HELP =
     "rta_app.exe --disc IMAGE [--data DIR] [--window WxH] [--fullscreen] [--scale N | --size WxH] [--volume V | --mute | --no-sound]\n"
     "        [--emulator-timing] [--no-films] [--script FILE] [--do COMMAND] [--offscreen] [--unpaced] [--png PREFIX --at n,..]\n"
     "        [--stop-after N] [--no-log] [-- runtime arguments]\n"
+    "picture (each also a line of rta-data\\settings.txt, which is written with its defaults at the first start):\n"
+    "        [--aspect auto|4:3|16:9|16:10|21:9|W:H] [--resolution window|WxH|Nx] [--antialiasing off|2|4|8] [--anisotropy 1..16]\n"
+    "        [--mipmaps yes|no] [--art-pack FOLDER] [--art-memory MB] [--frame-cap 60|30|0] [--plain] [--settings FILE] [--no-settings]\n"
+#ifdef RTA_NET
+    "online: [--server ADDRESS] (or the first line of server.txt beside the program) [--online | --host [CODE] | --join CODE]\n"
+    "        [--choose-character] [--player N] [--server-public ADDRESS]\n"
+#else
+    "(this build has no network)\n"
+#endif
     "keys: W A S D left stick; arrows direction pad; I J K L triangle square cross circle; Q E L1 R1; 1 3 L2 R2; X C L3 R3;\n"
     "      Enter Start; Backspace Select; F, F11 or Alt+Enter full screen; Escape leaves full screen; F12 writes a picture\n"
     "a controller that speaks XInput (Xbox; PlayStation through Steam or DS4Windows) is port 1 as well\n";
 
 int main(int argc, char** argv) {
     Options opt;
+    std::vector<std::pair<std::string, std::string>> overrides;     // picture settings given on the command line
+    bool plain = false, no_settings = false;
     std::vector<std::string> pass, script_args;
     std::string mode = "boot";
     if (const char* disc = getenv("RTA_DISC")) opt.disc = disc;
+    // a game code: 4 to 8 letters and digits (what --host may be followed by)
+    auto code_like = [](const std::string& text) {
+        if (text.size() < 4 || text.size() > 8) return false;
+        for (char ch : text) if (!isalnum((unsigned char)ch)) return false;
+        return true;
+    };
     // started by a double click or a drop: the console is ours alone and closes with us
     DWORD console_processes[2];
     bool own_console = GetConsoleProcessList(console_processes, 2) <= 1;
@@ -725,17 +887,40 @@ int main(int argc, char** argv) {
         else if (a == "--disc") opt.disc = next();
         else if (a == "--data") opt.data = next();
         else if (a == "--elf") opt.elf = next();
-        else if (a == "--window") { std::string s = next(); sscanf(s.c_str(), "%dx%d", &opt.window_w, &opt.window_h); }
-        else if (a == "--size") { std::string s = next(); sscanf(s.c_str(), "%dx%d", &opt.size_w, &opt.size_h); }
-        else if (a == "--scale") { opt.scale = atoi(next().c_str()); if (opt.scale < 1) opt.scale = 1; if (opt.scale > 8) opt.scale = 8; }
-        else if (a == "--fullscreen") opt.fullscreen = true;
+        else if (a == "--window") overrides.push_back({"window", next()});
+        else if (a == "--size") overrides.push_back({"resolution", next()});
+        else if (a == "--scale") overrides.push_back({"resolution", next() + "x"});
+        else if (a == "--fullscreen") overrides.push_back({"fullscreen", "yes"});
+        else if (a == "--aspect") overrides.push_back({"aspect", next()});
+        else if (a == "--resolution") overrides.push_back({"resolution", next()});
+        else if (a == "--antialiasing" || a == "--aa") overrides.push_back({"antialiasing", next()});
+        else if (a == "--anisotropy") overrides.push_back({"anisotropy", next()});
+        else if (a == "--mipmaps") overrides.push_back({"mipmaps", next()});
+        else if (a == "--art-pack") overrides.push_back({"art_pack", next()});
+        else if (a == "--art-memory") overrides.push_back({"art_memory", next()});
+        else if (a == "--frame-cap") overrides.push_back({"frame_cap", next()});
+        else if (a == "--plain") plain = true;
+        else if (a == "--settings") opt.settings_file = next();
+        else if (a == "--no-settings") no_settings = true;
+        else if (a == "--no-layout") opt.layout = false;
+        else if (a == "--art-whole") opt.art_parts = false;
+        else if (a == "--art-wait") opt.art_wait = true;
+#ifdef RTA_NET
+        else if (a == "--server") opt.server = next();
+        else if (a == "--server-public") opt.server_public = next();
+        else if (a == "--online") opt.online = "lobby";
+        else if (a == "--host") { opt.online = "host"; if (k + 1 < argc && code_like(argv[k + 1])) opt.online += std::string(":") + argv[++k]; }
+        else if (a == "--join") opt.online = "join:" + next();
+        else if (a == "--choose-character") opt.choose_character = true;
+        else if (a == "--player") { opt.player = atoi(next().c_str()); if (opt.player < 1) opt.player = 1; }
+#endif
         else if (a == "--volume") opt.volume = atof(next().c_str());
         else if (a == "--mute") opt.volume = 0;
         else if (a == "--no-sound") opt.no_sound = true;
         else if (a == "--emulator-timing") opt.emulator_timing = true;
         else if (a == "--script" || a == "--do") { script_args.push_back(a); script_args.push_back(next()); }
         else if (a == "--offscreen") opt.offscreen = true;
-        else if (a == "--unpaced") opt.unpaced = true;
+        else if (a == "--unpaced") overrides.push_back({"frame_cap", "0"});
         else if (a == "--test") opt.test = next();
         else if (a == "--png") opt.png = next();
         else if (a == "--at") { std::string s = next(); for (char* p = &s[0]; *p;) { opt.at.insert(strtoull(p, &p, 10)); if (*p) p++; } }
@@ -748,13 +933,28 @@ int main(int argc, char** argv) {
     }
     for (; k < argc; k++) pass.push_back(argv[k]);
     if (!pass.empty() && (pass[0] == "boot" || pass[0] == "resume")) { mode = pass[0]; pass.erase(pass.begin()); }
+    (void)code_like;
+    bool settings_later = opt.settings_file.empty() && !no_settings;       // <data>\settings.txt, once the data directory is known
+    auto apply_settings = [&](const std::string& file) {
+        if (!file.empty() && !opt.set.load(file, log_line) && file == opt.settings_file) log_line("cannot read the settings file " + file);
+        if (plain) opt.set.plain();
+        for (auto& kv : overrides) opt.set.set(kv.first, kv.second);
+        // a folder given with a slash at its end is the same folder
+        while (opt.set.art_pack.size() > 3 && (opt.set.art_pack.back() == '\\' || opt.set.art_pack.back() == '/')) opt.set.art_pack.pop_back();
+        opt.window_w = opt.set.window_w; opt.window_h = opt.set.window_h;
+        opt.fullscreen = opt.set.fullscreen;
+        opt.size_w = opt.set.size_w; opt.size_h = opt.set.size_h; opt.scale = opt.set.scale;
+        opt.aspect = opt.set.aspect;
+        opt.unpaced = opt.set.frame_cap <= 0;
+    };
+    if (!settings_later) apply_settings(opt.settings_file);
 
     // where things are: everything beside the program
     wchar_t module[MAX_PATH * 4];
     GetModuleFileNameW(nullptr, module, MAX_PATH * 4);
     std::string bin = narrow(module);
     bin = bin.substr(0, bin.find_last_of("\\/"));
-    if (opt.data.empty()) opt.data = bin + "\\rta-data";
+    if (opt.data.empty()) opt.data = bin + (opt.player > 1 ? "\\rta-data-player" + std::to_string(opt.player) : std::string("\\rta-data"));
     std::error_code ec;
     std::filesystem::create_directories(std::filesystem::path(wide(opt.data)), ec);
 
@@ -785,6 +985,40 @@ int main(int argc, char** argv) {
         log_line(text);
     }
 
+    if (settings_later) {
+        // the file beside the memory cards; a first run that somebody plays writes one to edit
+        std::string file = opt.data + "\\settings.txt";
+        bool there = file_exists(file);
+        apply_settings(there ? file : std::string());
+        if (!there && opt.test.empty() && !opt.offscreen) app::Settings().save(file);
+    }
+#ifdef RTA_NET
+    // the lobby server: --server, else server.txt beside the program - its first line that is
+    // not empty and not a remark (#) is the address; a line "public = ADDRESS" is --server-public
+    if (opt.server.empty()) {
+        if (FILE* f = fopen((bin + "\\server.txt").c_str(), "r")) {
+            char line[512];
+            while (fgets(line, sizeof line, f)) {
+                std::string text = line;
+                size_t hash = text.find('#');
+                if (hash != std::string::npos) text.erase(hash);
+                size_t a = text.find_first_not_of(" \t\r\n"), b = text.find_last_not_of(" \t\r\n");
+                if (a == std::string::npos) continue;
+                text = text.substr(a, b - a + 1);
+                size_t eq = text.find('=');
+                if (eq != std::string::npos) {
+                    std::string key = text.substr(0, text.find_last_not_of(" \t", eq - 1 < text.size() ? eq - 1 : 0) + 1), value = text.substr(eq + 1);
+                    size_t v = value.find_first_not_of(" \t");
+                    value = v == std::string::npos ? "" : value.substr(v);
+                    if (key == "public" && opt.server_public.empty()) opt.server_public = value;
+                    else if (key == "server" && opt.server.empty()) opt.server = value;
+                } else if (opt.server.empty()) opt.server = text;
+            }
+            fclose(f);
+            if (!opt.server.empty()) log_line("the lobby server is taken from server.txt: " + opt.server);
+        }
+    }
+#endif
     if (mode == "boot") {
         if (opt.disc.empty() || !file_exists(opt.disc)) {
             fail(opt.disc.empty() ? "Give your disc image of Champions: Return to Arms (SLUS-20973 v2.00): drag the .iso file onto rta_app.exe "
@@ -815,9 +1049,15 @@ int main(int argc, char** argv) {
     }
     hostpad::set_window(screen.window);
     hostpad::start(log_line);
+#ifdef RTA_NET
+    onlinewin::attach(screen.window, !opt.test.empty() || opt.offscreen);
+#endif
 
     static Renderer renderer;
     g_renderer = &renderer;
+    renderer.gs.layout.enabled = opt.layout;
+    renderer.gs.name_textures = !opt.set.art_pack.empty();
+    gfxrt::install();
     if (getenv("RTA_GS_LOG")) renderer.gs.log_display = true;
     if (const char* keep = getenv("RTA_TEX_KEEP")) renderer.gs.texture_keep_frames = (uint32_t)atoi(keep);    // frames an unused texture is kept; 0 = for ever
     static AppSink sink;
@@ -866,6 +1106,19 @@ int main(int argc, char** argv) {
         std::sort(found.begin(), found.end());
         for (auto& path : found) { args.push_back("--sym"); args.push_back(path); }
     }
+#ifdef RTA_NET
+    // the network driver (tools/recomp/net/netdrv.h): where its files are, the server, and
+    // what the one-step online is to do.  What follows "--" on the command line comes later
+    // and wins.
+    args.push_back("--opt"); args.push_back("net-data=" + opt.data);
+    args.push_back("--opt"); args.push_back("net-card=" + opt.data + "\\card");
+    if (!opt.server.empty()) { args.push_back("--opt"); args.push_back("net-server=" + opt.server); }
+    if (!opt.server_public.empty()) { args.push_back("--opt"); args.push_back("net-server-public=" + opt.server_public); }
+    if (!opt.online.empty()) {
+        args.push_back("--opt");
+        args.push_back("online=" + opt.online + ((opt.choose_character && opt.online != "lobby") ? "+choose" : ""));
+    }
+#endif
     args.insert(args.end(), script_args.begin(), script_args.end());
     args.insert(args.end(), pass.begin(), pass.end());
     static std::vector<char*> run_args;
@@ -885,6 +1138,9 @@ int main(int argc, char** argv) {
         MSG msg;
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) end_now(0);
+#ifdef RTA_NET
+            if (onlinewin::dialog_message(&msg)) continue;      // a key or click for the name question
+#endif
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }

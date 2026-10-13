@@ -1,0 +1,13 @@
+# server.txt - the lobby server for playing online, read by rta_app.exe when it starts.
+#
+# Put the address you were given on a line of its own, without the # in front:
+# an IPv4 address (203.0.113.7) or a host name (lobby.example.net).
+# Lines that start with # are remarks. With no address here the program looks for
+# a lobby server on this PC itself.
+#
+# Only when the person who runs the server tells you to (you are on the server's
+# own home network and it hands out its public address), add a second line:
+#   public = THE.SERVER'S.PUBLIC.ADDRESS
+#
+# The same on the command line:  rta_app.exe --server ADDRESS ...
+

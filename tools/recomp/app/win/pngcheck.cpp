@@ -8,7 +8,9 @@
 //   pngcheck [--threads N] [--verbose] [--list-kinds] FOLDER...
 // A file both readers refuse counts as agreement (and is listed with --verbose); a file one
 // of them refuses, or that differs in size or in any byte, is a difference and is named.
-// Exit code 0: no difference.
+// One kind is counted apart: 16-bit RGB with a transparent colour (tRNS), which Qt 6 reads
+// wrongly (rows of three samples taken for rows of four) and png_read.h reads as the PNG
+// specification says.  Exit code 0: no difference outside that kind.
 #include "png_read.h"
 
 #include <QCoreApplication>
@@ -36,6 +38,23 @@ static bool read_qt(const std::string& path, std::vector<uint8_t>& rgba, int& wi
     rgba.resize((size_t)width * height * 4);
     for (int y = 0; y < height; y++) memcpy(rgba.data() + (size_t)y * width * 4, image.constScanLine(y), (size_t)width * 4);
     return true;
+}
+
+// a tRNS chunk before the first IDAT
+static bool has_trns(const std::string& path) {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return false;
+    bool found = false;
+    unsigned char head[8];
+    if (fseek(f, 8, SEEK_SET) == 0)
+        while (fread(head, 1, 8, f) == 8) {
+            if (!memcmp(head + 4, "tRNS", 4)) { found = true; break; }
+            if (!memcmp(head + 4, "IDAT", 4) || !memcmp(head + 4, "IEND", 4)) break;
+            long n = ((long)head[0] << 24) | (head[1] << 16) | (head[2] << 8) | head[3];
+            if (fseek(f, n + 4, SEEK_CUR) != 0) break;
+        }
+    fclose(f);
+    return found;
 }
 
 static void list(const std::string& folder, std::vector<std::string>& out, int depth) {
@@ -68,7 +87,7 @@ int main(int argc, char** argv) {
     if (threads < 1) threads = 1;
     std::atomic<size_t> next{0};
     std::mutex lock;
-    uint64_t same = 0, both_refused = 0, differ = 0, only_qt = 0, only_own = 0, pixels = 0, file_bytes = 0;
+    uint64_t same = 0, both_refused = 0, differ = 0, only_qt = 0, only_own = 0, pixels = 0, file_bytes = 0, qt_wrong_kind = 0;
     double qt_s = 0, own_s = 0;
     std::map<std::string, uint64_t> by_kind;
     auto work = [&]() {
@@ -92,7 +111,8 @@ int main(int argc, char** argv) {
                 if (fstat(fileno(f), &st) == 0) size = (uint64_t)st.st_size;
                 fclose(f);
                 char text[64];
-                if (n == 33) snprintf(text, sizeof text, "colour type %d, %d bits%s", head[25], head[24], head[28] ? ", interlaced" : "");
+                if (n == 33) snprintf(text, sizeof text, "colour type %d, %d bits%s%s", head[25], head[24], head[28] ? ", interlaced" : "",
+                                      (head[25] == 2 && head[24] == 16 && has_trns(path)) ? ", tRNS" : "");
                 else snprintf(text, sizeof text, "shorter than a header");
                 kind = text;
             }
@@ -114,6 +134,7 @@ int main(int argc, char** argv) {
             }
             pixels += (uint64_t)aw * ah;
             if (memcmp(a.data(), b.data(), a.size()) == 0) { same++; continue; }
+            if (kind.find("tRNS") != std::string::npos) { qt_wrong_kind++; if (verbose) printf("16-bit RGB with tRNS (Qt reads it wrongly): %s\n", path.c_str()); continue; }
             differ++;
             size_t first = 0, count = 0;
             for (size_t i = 0; i < a.size(); i++) if (a[i] != b[i]) { if (!count) first = i; count++; }
@@ -129,6 +150,8 @@ int main(int argc, char** argv) {
     printf("pngcheck: %zu files (%.2f GB): %llu identical in every byte (%.1f million pixels), %llu refused by both, %llu DIFFERENT, "
            "%llu read by QImage only, %llu read by png_read.h only\n", files.size(), file_bytes / 1e9, (unsigned long long)same, pixels / 1e6,
            (unsigned long long)both_refused, (unsigned long long)differ, (unsigned long long)only_qt, (unsigned long long)only_own);
+    if (qt_wrong_kind) printf("pngcheck: %llu more files are 16-bit RGB with a transparent colour and differ: Qt 6 reads that kind wrongly (see the head of pngcheck.cpp)\n",
+                              (unsigned long long)qt_wrong_kind);
     printf("pngcheck: %.0f s of wall time on %d threads; reading took QImage %.0f s and png_read.h %.0f s (summed over the threads)\n", wall, threads, qt_s, own_s);
     if (kinds) for (auto& entry : by_kind) printf("pngcheck:   %8llu  %s\n", (unsigned long long)entry.second, entry.first.c_str());
     return (differ || only_qt || only_own) ? 1 : 0;

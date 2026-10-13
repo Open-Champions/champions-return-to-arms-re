@@ -608,7 +608,19 @@ For every kind:
   pack made before the rule has exactly these pictures done again by the next run
   (pictures that were plain already for their short side are written again unchanged).
   Before and after, both packs: `local/hd-work/interface-redo/sheet-4x.png`,
-  `sheet-2x.png`.
+  `sheet-2x.png`. Not every model result was wrong (the shield, the scales, the crossed
+  swords, the gem and the pointer were faithful and crisper), so choosing per picture
+  was tried: 37 figures of the model's result against the game's picture and the plain
+  one — made small again and compared texel by texel, structure (local correlation),
+  edges that do not run along the plain picture's, total variation, detail inside
+  texels, colour and darkness of the rim, change of chroma, and how far the model's
+  answers differ when the picture is given to it mirrored, upside down and turned.
+  None tells the redrawn ones from the faithful ones: of 47 pictures judged by eye (30
+  redrawn, 17 faithful) the best single figure sorts 13 wrongly (calling all of them
+  redrawn: 17), and the best of 400 pairs of figures still puts a redrawn picture
+  before a faithful one in a quarter of the cases. A coin's head turned into scribble agrees with the game's texels as well as a
+  sharpened shield does. So the rule stays plain for all
+  (`local/hd-work/interface-redo/sheet-measure.png`, `calib*.py`).
 - **Texels never sent are filled from their neighbours and stay filled**; a border of 8
   texels is given to the model around what it enlarges (the picture's own texels where
   the rectangle lies inside it; repeated edge otherwise; wrapped round where `other_uv`

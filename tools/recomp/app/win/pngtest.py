@@ -150,7 +150,8 @@ def main():
                                 dict(palette=full, trns=bytes([0, 128]))]
                     if depth > 1:
                         variants += [dict(palette=full[:3 * (top // 2 + 1)]),                      # shorter than the pixels need
-                                     dict(palette=full[:3 * 3], trns=bytes([7]), index_limit=2)]    # short, and enough
+                                     dict(palette=full[:3 * 3], trns=bytes([7]), index_limit=2),    # short, and enough
+                                     dict(palette=full[:3 * 2], trns=bytes([77, 200]))]             # too short, its first entry half transparent
                     else:
                         variants += [dict(palette=full[:3])]
                 for n, extra in enumerate(variants):
@@ -196,6 +197,11 @@ def main():
     write(bad, 'crc-ihdr', b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', ihdr, bad_crc=True) + chunk(b'IDAT', packed) + chunk(b'IEND', b''))
     write(bad, 'crc-text', b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', ihdr) + chunk(b'tEXt', b'a\x00b', bad_crc=True) + chunk(b'IDAT', packed) + chunk(b'IEND', b''))
     write(bad, 'adler', rebuild(packed[:-4] + bytes(4)))
+    write(bad, 'adler-missing', rebuild(packed[:-4]))
+    write(bad, 'adler-half', rebuild(packed[:-2]))
+    write(bad, 'iend-without-crc', base[:-4])
+    write(bad, 'iend-with-body', rebuild(packed, tail=chunk(b'IEND', b'body')))
+    write(bad, 'idat-after-iend', rebuild(packed[:len(packed) // 2]) + chunk(b'IDAT', packed[len(packed) // 2:]))
     write(bad, 'rows-missing', rebuild(zlib.compress(raw[:len(raw) // 2])))
     write(bad, 'rows-extra', rebuild(zlib.compress(raw + bytes(1000))))
     write(bad, 'bytes-after-stream', rebuild(packed + b'more bytes'))

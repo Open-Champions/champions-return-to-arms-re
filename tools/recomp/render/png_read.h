@@ -10,14 +10,19 @@
 // without alpha, 1 to 16 bits a sample, a transparent colour (tRNS), Adam7 interlacing.
 // What is not 8-bit RGBA is converted as Qt 6 converts it on the way to
 // QImage::Format_RGBA8888 (so that a pack looks the same in both builds):
-//   - 16-bit samples become 8-bit as (v - (v >> 8) + 128) >> 8;
-//   - a palette index beyond the palette, and the transparent grey of a 2-, 4- or 8-bit
-//     grey picture, become transparent black; the transparent colour of an RGB picture and
-//     of a 1-bit grey picture keeps its colour with alpha 0;
+//   - 16-bit samples become 8-bit as (v * 255 + 32767) / 65535, the nearest value;
+//   - the transparent grey of a 2-, 4- or 8-bit grey picture becomes transparent black; the
+//     transparent colour of an RGB picture and of a 1-bit or 16-bit grey picture keeps its
+//     colour with alpha 0;
+//   - a palette index beyond the palette is shown as the palette's first entry (in a 1-bit
+//     picture: white);
 //   - no gamma, colour profile or background is applied.
-// Checked: every chunk's CRC up to IEND, the zlib header, the stream itself, the filter
-// bytes.  As with libpng, data after the last row and a wrong Adler-32 behind complete
-// picture data are not errors; a file that ends early is.
+// One kind is NOT read as Qt reads it: 16-bit RGB with a transparent colour.  Qt 6 takes
+// such a file's rows of three samples for rows of four and shows a wrong picture; this
+// reader follows the PNG specification.
+// Checked, and refused as Qt with libpng refuses them: the CRC of every critical chunk, the
+// zlib header, the stream itself, its Adler-32, the filter bytes, a file that ends before
+// IEND.  Accepted, as there: data after the last row, an IEND whose CRC is wrong or missing.
 //
 // The decompressor is a table-driven inflate (RFC 1951) written for this file; no code
 // from zlib or any other library.  docs/issues/native-windows.md says what it was compared
@@ -288,7 +293,25 @@ inline bool unfilter(uint8_t type, uint8_t* row, const uint8_t* up, size_t n, si
     }
 }
 
-inline uint8_t to8(unsigned v16) { return (uint8_t)((v16 - (v16 >> 8) + 128) >> 8); }
+// 16 bits to 8, to the nearest: (v * 255 + 32767) / 65535 without the division (the same for all 65,536 values)
+inline uint8_t to8(unsigned v16) { return (uint8_t)((v16 * 255u + 32895u) >> 16); }
+
+inline uint32_t adler32(const uint8_t* data, size_t size) {
+    uint32_t a = 1, b = 0;
+    while (size) {
+        size_t n = size < 5552 ? size : 5552;       // the longest run before the sums must be reduced
+        size -= n;
+        while (n >= 8) {
+            for (int k = 0; k < 8; k++) { a += data[k]; b += a; }
+            data += 8;
+            n -= 8;
+        }
+        while (n--) { a += *data++; b += a; }
+        a %= 65521;
+        b %= 65521;
+    }
+    return (b << 16) | a;
+}
 
 struct Kind {
     int colour = 0, depth = 0;          // IHDR's colour type and bit depth
@@ -346,10 +369,15 @@ inline void to_rgba(const Kind& k, const uint8_t* row, size_t n, uint8_t* out) {
         break;
     case 3: {
         size_t colours = k.palette->size() / 3;
-        // a 1-bit picture has a table of two in Qt whatever the file's palette holds
         for (size_t x = 0; x < n; x++, out += 4) {
             unsigned v = k.depth == 8 ? row[x] : sample(x);
-            if (v >= colours) { out[0] = out[1] = out[2] = out[3] = 0; continue; }
+            if (v >= colours) {
+                // beyond the palette.  Qt: a 1-bit picture has a table of two, black and
+                // white, of which the file's palette replaces what it has; any other
+                // picture shows its first colour
+                if (k.depth == 1 || colours == 0) { out[0] = out[1] = out[2] = out[3] = 255; continue; }
+                v = 0;
+            }
             const uint8_t* c = k.palette->data() + 3 * (size_t)v;
             out[0] = c[0]; out[1] = c[1]; out[2] = c[2];
             out[3] = v < k.alpha->size() ? (*k.alpha)[v] : 255;
@@ -386,10 +414,11 @@ inline bool decode(const uint8_t* data, size_t size, std::vector<uint8_t>& rgba,
     size_t single_size = 0, idat_chunks = 0;
     bool have_head = false, ended = false, after_idat = false;
     for (size_t at = 8; !ended;) {
-        if (size - at < 12) return false;               // the file ends inside a chunk, or before IEND
+        if (size - at < 8) return false;                // the file ends before IEND
         uint32_t n = be32(data + at);
         const uint8_t* type = data + at + 4;
-        if (n > 0x7FFFFFFFu || size - at - 12 < n) return false;
+        if (have_head && !memcmp(type, "IEND", 4)) break;       // (its own CRC may be wrong or cut off: Qt reads such files)
+        if (n > 0x7FFFFFFFu || size - at < 12 || size - at - 12 < n) return false;
         const uint8_t* body = data + at + 8;
         bool crc_good = crc32(type, (size_t)n + 4) == be32(body + n);
         bool critical = !(type[0] & 0x20);
@@ -435,8 +464,6 @@ inline bool decode(const uint8_t* data, size_t size, std::vector<uint8_t>& rgba,
                 for (int c = 0; c < 3; c++) kind.key[c] = ((unsigned)body[2 * c] << 8) | body[2 * c + 1];
                 if (kind.depth == 8) for (int c = 0; c < 3; c++) kind.key[c] &= 0xFF;     // libpng compares the low bytes
             }
-        } else if (!memcmp(type, "IEND", 4)) {
-            ended = true;
         } else if (critical) return false;              // a critical chunk this reader does not know
     }
     if (!have_head || idat_chunks == 0) return false;
@@ -468,6 +495,11 @@ inline bool decode(const uint8_t* data, size_t size, std::vector<uint8_t>& rgba,
     size_t made = 0;
     bool stream_done = false;
     if (inflater.run(raw, made, stream_done) != 0) return false;        // damaged, or not enough for the picture
+    if (stream_done) {
+        // the stream ended with the picture's last byte: its check figure follows, on a byte boundary
+        size_t tail = 2 + inflater.in_pos - (size_t)(inflater.have / 8);
+        if (single_size - tail < 4 || be32(single + tail) != adler32(raw.data(), raw.size())) return false;
+    }
 
     rgba.resize((size_t)w * h * 4);
     width = (int)w;

@@ -127,8 +127,9 @@ N_FULL, N_ADDRESS_FULL, N_IDLE, N_PROTOCOL, N_NOT_ALLOWED, N_TOO_MUCH, N_STOPPIN
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 MAX_TCP = 4          # connections of one session at a time (the game has one or two)
 MAX_UDP = 8          # UDP sockets of one session (the game uses one of its ports 4000-4004)
-WRITE_HIGH = 1 << 20  # bytes waiting for a page before its datagrams are dropped
-PAGE_HIGH = 4 << 20  # bytes waiting for a page at which its session is ended: it does not read
+WRITE_HIGH = 1 << 18  # bytes waiting for a page before its datagrams are dropped
+PAGE_HIGH = 1 << 20  # bytes waiting for a page at which its session is ended: it does not read
+LINGER = 10          # seconds a closed session's connection is given to take the goodbye
 MAX_HANDSHAKES = 64  # connections that have not finished their WebSocket handshake
 MAX_ADDRESSES = 4096  # player addresses whose allowances are kept
 # the lobby connection, page to server (docs/lobby-protocol.md section 2; the lobby server's LobbyServer.cpp)
@@ -312,6 +313,30 @@ def say(said, kind, text, every=60.0):
     log(text + ("; %d more of the kind since it was last said" % last[1] if last and last[1] else ""))
 
 
+def one_piece(transport, owner, resumed):
+    """Makes a connection take one piece at a time: 'owner.busy' is set while it has not
+    sent all it was given, and 'resumed' is called when it has.
+
+    What follows meanwhile is kept by the owner in ONE buffer. Left to itself the event
+    loop's transport keeps every write as a piece of its own and adds up their lengths at
+    every further write (Python 3.12), so a connection that does not take its data would
+    cost more with every small message sent to it - and with it everybody else's game."""
+    protocol = transport.get_protocol()
+    pause, resume = protocol.pause_writing, protocol.resume_writing
+
+    def paused():
+        owner.busy = True
+        pause()
+
+    def free():
+        resume()
+        owner.busy = False
+        resumed()
+
+    protocol.pause_writing, protocol.resume_writing = paused, free
+    transport.set_write_buffer_limits(high=0)
+
+
 def frame(opcode, payload):
     n = len(payload)
     if n < 126:
@@ -454,6 +479,7 @@ class Tcp:
         self.shut = False
         self.lobby = LobbyReader()
         self.held = bytearray()  # what the page has sent and the lobby server has not been handed yet
+        self.busy = False        # the connection has not sent all it was given (one_piece)
         self.timer = None        # set while requests wait for the address's budget
         self.waited = False
         self.ended = False       # the lobby server has closed its side
@@ -485,6 +511,9 @@ class Session:
         self.greeted = False
         self.closed = False
         self.stuck = False
+        self.busy = False       # the connection to the page has not sent all it was given (one_piece)
+        self.out = bytearray()  # what waits for the page meanwhile
+        one_piece(writer.transport, self, self.flush)
         self.last_use = time.monotonic()
         self.messages = Bucket(relay.args.message_rate)
         self.bytes = Bucket(relay.args.byte_rate)
@@ -507,17 +536,31 @@ class Session:
         if self.closed:
             return False
         try:
-            self.writer.write(frame(2, bytes((kind,)) + payload))
+            self.raw(frame(2, bytes((kind,)) + payload))
         except (ConnectionError, RuntimeError, OSError):
             return False
-        self.reads()
         return True
 
-    def reads(self):
-        """A page that does not take what it is sent is not kept: what waits for it is this program's memory."""
-        if self.waiting() > PAGE_HIGH and not self.stuck:
+    def raw(self, data):
+        """Bytes for the page: to the connection when it is free, else to what waits for it.
+        A page that lets too much wait is not kept: it is this program's memory."""
+        if not self.busy:
+            self.writer.write(data)
+            return
+        self.out += data
+        if len(self.out) > PAGE_HIGH and not self.stuck:
             self.stuck = True
-            asyncio.get_running_loop().call_soon(self.close, "the page does not read what it is sent (%d bytes were waiting)" % self.waiting())
+            asyncio.get_running_loop().call_soon(self.close, "the page does not read what it is sent (%d bytes were waiting)" % len(self.out))
+
+    def flush(self):
+        """The connection has sent what it had: it is given all that has waited, as one piece."""
+        if self.out and not self.closed:
+            data = bytes(self.out)
+            del self.out[:]
+            try:
+                self.writer.write(data)
+            except (ConnectionError, RuntimeError, OSError):
+                pass
 
     def notice(self, code, text):
         self.send(NOTICE, bytes((code,)) + text.encode("utf-8")[:300])
@@ -531,7 +574,8 @@ class Session:
         self.notice(code, text)
 
     def waiting(self):
-        return self.writer.transport.get_write_buffer_size()
+        """Bytes that wait for the page behind what its connection is sending."""
+        return len(self.out)
 
     # ---- the session
     async def run(self):
@@ -549,8 +593,7 @@ class Session:
                     # a WebSocket ping is answered, and counts as a message like any other
                     if not self.messages.take() or not self.bytes.take(len(data)):
                         raise Stop(N_TOO_MUCH, "more data than a game sends")
-                    self.writer.write(frame(10, data[:125]))
-                    self.reads()
+                    self.raw(frame(10, data[:125]))
                     continue
                 if opcode == 10:
                     continue
@@ -578,14 +621,7 @@ class Session:
         self.tcp.clear()
         for sock_id in list(self.udp):
             self.udp_close(sock_id)
-        try:
-            if self.stuck:
-                self.writer.transport.abort()  # what waits for a page that does not read is thrown away, not kept until it does
-            else:
-                self.writer.write(frame(8, struct.pack(">H", 1000)))
-                self.writer.close()
-        except (ConnectionError, RuntimeError, OSError):
-            pass
+        self.goodbye(1000)
         self.closed = True
         self.relay.gone(self)
         c = self.counts
@@ -595,10 +631,20 @@ class Session:
             % (self.number, self.address, why, c["tcp"], c["tcp_out"], c["tcp_in"], c["udp_lobby"], c["udp_peer"], c["udp_in"], c["udp_dropped"], c["refused"],
                c["paths"], c["out"], c["back"], c["not_open"], c["strangers"], c["requests"], c["held"], c["limited"]))
 
-    def end(self, code, why):
-        """The session ends here, from outside the loop that reads the page."""
-        self.notice(code, why)
-        self.close(why)
+    def goodbye(self, code):
+        """The connection to the page is closed. What still waits for it is sent first, if
+        the page takes it within a few seconds; nothing is kept for a page that does not read."""
+        transport = self.writer.transport
+        try:
+            if self.stuck:
+                transport.abort()
+            else:
+                self.writer.write(bytes(self.out) + frame(8, struct.pack(">H", code)))
+                self.writer.close()
+                asyncio.get_running_loop().call_later(LINGER, transport.abort)
+        except (ConnectionError, RuntimeError, OSError):
+            pass
+        del self.out[:]
 
     def idle(self):
         """Nothing open towards the lobby and nothing sent for the idle time. A connection
@@ -687,8 +733,8 @@ class Session:
     def pump(self, conn_id, conn):
         """Hands the lobby server the whole requests that wait on a connection, as far as
         the player's address may send them (the module's text, "Limits per player address")."""
-        if self.closed or self.tcp.get(conn_id) is not conn or conn.writer is None:
-            return
+        if self.closed or self.tcp.get(conn_id) is not conn or conn.writer is None or conn.busy:
+            return  # (a connection that has not sent what it was given is given no more: pump is called again when it has)
         if conn.timer:
             conn.timer.cancel()
             conn.timer = None
@@ -730,14 +776,14 @@ class Session:
             del held[:length]
             self.counts["tcp_out"] += length
             self.counts["requests"] += 1
+            if conn.busy:
+                return
         if conn.shut and conn.writer.can_write_eof() and not conn.writer.transport.is_closing():
             del held[:]  # no more to send: half a request is no request
             try:
                 conn.writer.write_eof()
             except (OSError, RuntimeError):
                 pass
-        if conn.writer.transport.get_write_buffer_size() > WRITE_HIGH:
-            self.end(N_TOO_MUCH, "the lobby server does not take the data as fast as the page sends it")
 
     def limited(self, conn_id, conn, what, allowance, most, every):
         """A request over the allowance of the player's address: not handed to the lobby server."""
@@ -773,6 +819,7 @@ class Session:
             self.send(TCP_OPENED, struct.pack(">HB", conn_id, status))
             return
         conn.writer = writer
+        one_piece(writer.transport, conn, lambda: self.pump(conn_id, conn))
         sock = writer.get_extra_info("socket")
         if sock is not None:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -1199,11 +1246,8 @@ class Relay:
         if full:
             session.notice(*full)
             say(where.said if where else self.said, "not taken", "session %d (%s) not taken: %s" % (session.number, address, full[1]))
-            try:
-                writer.write(frame(8, struct.pack(">H", 1013)))
-                writer.close()
-            except (ConnectionError, OSError):
-                pass
+            session.goodbye(1013)
+            session.closed = True
             return
         where.arrivals.take(1.0)
         where.sessions += 1

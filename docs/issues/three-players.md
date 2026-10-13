@@ -207,6 +207,61 @@ Notes:
   attempt each of the application series). Both server instances stood still at the same
   moments (16:04 and 16:17), so it was the Mac, not either server.
 
+### The emulator application (added 20:15)
+
+The released stable build as it is (`local/play-stable-build`), every copy with
+`--rta-test`, a data directory of its own and `--rta-server 192.168.1.123`; "in step" is
+read as in [browser-build.md](browser-build.md): every copy's ring of its own per-frame
+sync hashes compared by frame, and the rings of the others' hashes each copy received.
+Load 53 - 344 (seven application copies at once for most of it).
+
+| What | Launches tried | All in the level | Notes |
+|---|---|---|---|
+| 3 copies, no fix, local lobby | 5 | **5** | never stale: in the application the joiners took START close enough together every time; 1,120 - 2,185 frames each, in step |
+| 3 copies, no fix, local lobby, **the last joiner's machine held still for 2 s from just before Start Game** (`--hitch 2`) | 2 | **0** | both stale; the held copy's launch record for the other joiner is `00000000:4000`, state 2 - cause 2, in the application; nobody in the level after 150 s |
+| 3 copies, fixed server | 2 | **2** | not stale; 2,103 and 2,279 frames, in step |
+| 4 copies, fixed server | 3 | **2** | see below; 1,621 and 3,117 frames, in step, on all four |
+
+In two of the three launches of four the fourth copy had players 1 and 2 **swapped** in
+its tables (the accept rule: ports 53610/4000 and 56937/4004 the wrong way round). One
+of those launched and stayed in step for 3,117 frames - the handshake repaired the swap
+as predicted. Not counted: one attempt in which the fourth copy's one-step driver
+stopped at the game list and never joined.
+
+### A second way to be left behind, seen once: the end of the handshake (not fixed)
+
+The third launch of four application copies on the fixed server (load 116 - 337): three
+copies went into the level with four players counted, and the copy that was player 1
+stayed behind. Its tables were right. Read 150 s later, all its launch records were
+"contacted, state 0": it had been done with everybody (the other three have it in state
+8) and then stopped hearing from them. **That is the picture the earlier report
+describes** (two in the level counting three, the third left with the launch error) -
+and it is not what causes 1 and 2 produce (there nobody gets into the level).
+
+What the code says (0x135638, read; the one occurrence above is the only run):
+- a machine that has all the others in state 8 answers a keep-alive (type 6) with type 7
+  and the number of others it has in state 8; a machine sends keep-alives to players in
+  state 8 once every 0.75 s **of its own frames** (45 frames);
+- a machine starts its 120-frame countdown when every other player is in state 8 **and**
+  has told it, in a type 7, that it sees all the others ready (flag bit 8 at +0x5d);
+  after the countdown it closes the launch socket and is in the game. Nothing tells the
+  others; each machine decides for itself;
+- a record in state 8 that gets no datagram for six keep-alives goes back to state 0,
+  and 2,700 frames later the launch fails with the message about players who cannot be
+  reached.
+
+So a machine must send a keep-alive and get the answer from every other machine within
+the 2 seconds those machines take to count down. At 60 frames a second on every machine
+that always works (45 frames against 120). A copy that runs at less than about a third
+of full speed in those two seconds, or stands still for more than about a second there,
+answers the others (so they go) and has not asked them yet - it is left behind. That is
+candidate (c), and it is a matter of speed, not of the number of players: it should hit
+a game of two as well. **Not yet reproduced on purpose, and no fix written.** A fix on
+our side would have to answer keep-alives for a copy that has already gone into the
+game (in the network layer of the copy left behind, once it sees the other's first
+lockstep datagram, or of the copy that has gone); a game patch could make everyone wait
+for the host's word, but changes the patch set.
+
 ## Where things are
 
 - scratch files of this work: `local/three-players/` (not in the repository)

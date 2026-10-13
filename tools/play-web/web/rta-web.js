@@ -960,6 +960,9 @@ function relayConnect() {
 		if(bytes[0] === 0x8A) { // NOTICE: why something was refused, or why the session ends
 			online.notice = new TextDecoder().decode(bytes.subarray(2));
 			note("relay: " + online.notice);
+			// what the player has to know: the relay is full (1), too many pages from this address (2),
+			// a limit of this address - log-ins, new accounts, requests, new connections (8)
+			if(bytes[1] === 1 || bytes[1] === 2 || bytes[1] === 8) notice("Online: " + online.notice + ".", true, 20000);
 			return;
 		}
 		module.HEAPU8.set(bytes, online.buffer);
