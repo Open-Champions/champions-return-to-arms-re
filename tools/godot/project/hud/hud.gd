@@ -19,7 +19,7 @@ extends CanvasLayer
 # script, "app hud ..." lines (the same words; plus "app hud cost" and "app hud say").
 #
 #   mode      new: this HUD, and the game's own HUD layer asked off (needs the switch of the draw-list side:
-#             machine.set_game_hud(false) - until that exists both are visible);  original: this HUD hidden;
+#             machine.set_option("game_hud", "off") - with a library that lacks it both are visible);  original: this HUD hidden;
 #             both: for comparing
 #   view      which of the three layouts: auto takes it from the camera's view mode (tools/recomp/app/fpview.h,
 #             handed in by the host as machine.get_view()); until the library has that, the setting decides
@@ -73,7 +73,7 @@ const CF_NAMED := 256
 const CF_INERT := 512
 const CF_ONSCREEN := 1024
 
-var setting := {"mode": "both", "view": "auto", "scale": 1.0, "numbers": true, "radar": true, "fake_party": 0}
+var setting := {"mode": "both", "view": "auto", "scale": 1.0, "numbers": true, "radar": true, "fake_party": 0, "music": true, "music_volume": 0.8}
 
 var host: Node                          # main.gd
 var machine: Object                     # RtaMachine
@@ -108,6 +108,7 @@ var timed: Array = []                   # [level, tick, words] still to run (--h
 
 @onready var root: Control = $Root
 @onready var pieces: Array = [$Root/World, $Root/Threat, $Root/Status, $Root/Top, $Root/Bottom, $Root/Pause]
+@onready var music: Node = $Music
 
 
 func _ready() -> void:
@@ -120,6 +121,7 @@ func _ready() -> void:
 		piece.set("hud", self)
 		piece.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	music.set("hud", self)
 	if ClassDB.class_exists("RtaGameState"):
 		gs = ClassDB.instantiate("RtaGameState")
 	else:
@@ -187,6 +189,15 @@ func command(w: Array) -> void:
 			setting.radar = value != "off"
 		"fake-party":
 			setting.fake_party = clampi(value.to_int() if value.is_valid_int() else (0 if value == "off" else 1), 0, 3)
+		"music":
+			if value in ["on", "off"]:
+				setting.music = value == "on"
+			elif value == "say":
+				print("hud music: " + music.call("figures"))
+			elif value == "scan":
+				music.call("scan")
+		"music-volume":
+			setting.music_volume = clampf(value.to_float(), 0.0, 1.0)
 		"cost":
 			print(cost_text())
 		"say":
@@ -288,6 +299,7 @@ func _process(_delta: float) -> void:
 	_game_hud()
 	for piece in pieces:
 		piece.call("tick")
+	music.call("tick")
 	var spent := float(Time.get_ticks_usec() - t0)
 	cost_usec = spent
 	cost_total += spent
@@ -363,13 +375,11 @@ func _game_hud() -> void:
 	if want == game_hud_asked:
 		return
 	game_hud_asked = want
-	for target in [machine, host.get("drawer")]:
-		if target != null and target.has_method("set_game_hud"):
-			target.call("set_game_hud", want == 2)
-			return
+	if machine.has_method("set_option") and machine.call("set_option", "game_hud", "on" if want == 2 else "off"):
+		return
 	if want == 1 and not said.has("game_hud"):
 		said["game_hud"] = true
-		print("hud: mode new, but the host has no switch for the game's own HUD layer yet (set_game_hud): both are visible")
+		print("hud: mode new, but this library has no switch for the game's own HUD layer (set_option game_hud): both are visible")
 
 
 # ---- test data ---------------------------------------------------------------------------------

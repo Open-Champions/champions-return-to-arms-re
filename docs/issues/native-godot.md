@@ -47,17 +47,63 @@ inputs, (2) scene mode everywhere, (3) 60 pictures a second with proper lighting
 cleaner models, (5) plug-in points for the camera, world and HUD agents, (6) exports.
 **Kept current here; newest state first.**
 
-### State
+### State (13:55)
 
 - **(1) The tap at the vertex programs' inputs: done and verified (Ran).** Section
   "The scene tap" below. The 16-bit-depth route of stage 4 is now only the fallback for
   what the mesh programs do not draw.
 - Scene mode uses it: exact positions, the game's own normals (smooth, per pixel), one
   shadow per character (the game's blob shadows are left out when Godot casts).
-  Pictures: `local/godot-spike/test/scene/scene/hub-2-shadow.png`,
-  `hub-3-shadow-light.png`, `hub-5-pulled-back.png`.
-- In work: the camera agent's views (`fpview`) through the library, the view of the
-  frame and the HUD switch for the HUD agent. Then (2), (3), (4).
+- **(5) The camera agent's views through the library: done (Ran).** The snapshot is
+  rebased on a root with `app/fpview.patch` applied and built (`build.py snapshot
+  --refresh --from local/recomp-fp/root`); `rtag_config::view`, `rtag_set_option("view",
+  NAME)` and `("view.<mode>.<name>", VALUE)`; script line `app view NAME`; in Godot
+  `--view NAME`, the V key, `RtaMachine.set_option`. The look inputs are the
+  controller's own (the right stick through `rtag_set_pad`): `fpview` reads the game's
+  camera stick. **The scene simply follows**: the camera block the tap gets is taken in
+  `fpview`'s `on_drawn` call-out, while the view's camera is still in place (the game puts
+  its own back right after), with the view's near and far plane; the tap's check passes
+  in every view (72,320 of 72,320 level set-ups bit for bit, 0 vertices off through
+  action, chase, shoulder and first person).
+- **(5) The view of the frame, for the HUD agent: done (Ran).** `rtag_frame::view`
+  (`rtag_view`: laid out as `rta_gs_view` of `app/gamestate.h` up to `yaw`, then near /
+  far, player position, facing, look pitch, tick) - the view of the draw pass that built
+  the frame's list, carried with the frame; `RtaMachine.get_view() -> Dictionary`.
+  The HUD agent's `RtaGameState` (its `extension/src/rta_gamestate.*`) is compiled into
+  the extension and registered (`CMakeLists.txt` names `tools/recomp/app` for
+  `gamestate.h`).
+- **(5) The switch for the game's own HUD layer: done (Ran).** `rtag_set_option(
+  "game_hud", "off")`, `app gamehud off|on`, `--no-game-hud`. Patch lines for the core
+  (in `recomp.patch`, with the reasons): `gfxrt::set_hud_marks` (marks also at 4:3; and a
+  tag outside the display list resets the mark, or the present pass went on under the
+  HUD's mark and the picture was black), `Gs::hide_edge` (in `rebuild_state`: what is
+  marked `M_EDGE`, drawn into the 3-D buffer without a depth test, is skipped - not in
+  `Layout::primitive`, which is not called at 4:3). Picture:
+  `local/godot-spike/test/hud/no-game-hud.png`; first person without the game's HUD,
+  drawn by Godot with its sun: `test/views-godot/g-first-sun-lamp.png`.
+- Regression on the rebased library (Ran): 11 of 11 pictures identical to `rta_app`'s;
+  the rig's session comparison the same file as before.
+- **Open, in order**: sky and atmosphere per level (the world agent's catalogue,
+  `native-first-person-world.md` sections 4 and 6: mine); geometry from the tap's packets
+  instead of the list's triangles (persistent meshes per identity, re-posed; this is
+  also what makes the scene immune to the triangles the programs drop near the eye);
+  60 pictures a second paced; lighting, fog, bloom, anti-aliasing as switches; the art
+  pack and model clean-up; `worldfill.h` meshes when they exist; exports (the macOS
+  export was not re-run after the rebase).
+
+**For the world agent - is the scene immune to its two faults?** (Read, from how the
+scene is built; not looked at in a close view.)
+- *Texturing without perspective*: **immune** in scene mode. The mesh is in world space
+  and Godot interpolates the texel position with perspective (stage 4, the difference
+  against draw mode). Draw mode and picture mode show the game's own mapping.
+- *Whole triangles dropped near the eye*: **not immune yet.** The scene's triangles are
+  the draw list's - what the program kicked with the no-draw bit clear - with exact
+  world positions attached; a triangle the program's clip pass dropped never reaches
+  the list. The tap HAS the whole packet (every vertex and the slot rows, whose own
+  no-draw bits are the strip's stitching, not the clip pass), so building the scene's
+  geometry from the packets instead of from the list restores every dropped triangle
+  and lets Godot clip them properly; that is the same step as the persistent meshes of
+  task 3 and is the next piece of work here.
 
 ### The scene tap (Ran)
 
@@ -112,9 +158,9 @@ range), `rtag_draw::scene_kind` (from the inputs / by depth). The tap's own fram
 (`TapFrame`: object-space vertices, joints and weights, the matrices) is not exported
 through C yet: it is what persistent, re-posed Godot meshes will be built from (task 3).
 
-Not tapped, and why it matters: shell passes (weapon glow) are tapped as the plain mesh
-(the check passes because the tap compares with what the program drew... **not verified
-for a shell pass: none occurred in this route**); water (0x36 / 0x38), particles, trails
+Not tapped, and why it matters: a shell pass (weapon glow: the mesh again, pushed out
+along a second set of normals) would fail the tap's check and go by its depth - **none
+occurred in the routes run, so this is Read**; water (0x36 / 0x38), particles, trails
 and decals have their own input formats (`render-pipeline.md` 4.8 to 4.11) and no tap.
 
 ## From nothing

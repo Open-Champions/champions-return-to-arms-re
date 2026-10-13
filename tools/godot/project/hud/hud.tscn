@@ -1,4 +1,4 @@
-[gd_scene load_steps=8 format=3]
+[gd_scene load_steps=9 format=3]
 
 [ext_resource type="Script" path="res://hud/hud.gd" id="1"]
 [ext_resource type="Script" path="res://hud/world.gd" id="2"]
@@ -7,6 +7,7 @@
 [ext_resource type="Script" path="res://hud/top.gd" id="5"]
 [ext_resource type="Script" path="res://hud/bottom.gd" id="6"]
 [ext_resource type="Script" path="res://hud/pause.gd" id="7"]
+[ext_resource type="Script" path="res://hud/music/music.gd" id="8"]
 
 [node name="Hud" type="CanvasLayer"]
 layer = 10
@@ -68,3 +69,6 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 mouse_filter = 2
 script = ExtResource("7")
+
+[node name="Music" type="Node" parent="."]
+script = ExtResource("8")

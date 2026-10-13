@@ -42,14 +42,15 @@ void RtaGameState::set_view(const Dictionary& view) {
     v.active = (bool)view.get("active", false);
     v.fallback = (bool)view.get("fallback", false);
     v.hide_player = (bool)view.get("hide_player", false);
-    CharString why = String(view.get("why", "")).utf8();
+    if (view.has("valid") && !(bool)view["valid"]) { rta_gs_set_view(reader, nullptr); return; }     // RtaMachine.get_view() of a library without the view modes
+    CharString why = String(view.get("fallback_why", view.get("why", ""))).utf8();
     strncpy(v.fallback_why, why.get_data(), sizeof v.fallback_why - 1);
     put(v.eye, view["eye"]);
     put(v.forward, view.get("forward", Vector3(1, 0, 0)));
     put(v.up, view.get("up", Vector3(0, 0, 1)));
     put(v.right, view.get("right", Vector3(0, -1, 0)));
     v.fov = (float)(double)view.get("fov", 50.0);
-    if (view.has("head")) { put(v.head, view["head"]); v.have_head = 1; }
+    if (view.has("head")) { put(v.head, view["head"]); v.have_head = (bool)view.get("have_head", true); }
     v.yaw = atan2f(v.forward[1], v.forward[0]);
     rta_gs_set_view(reader, &v);
 }
