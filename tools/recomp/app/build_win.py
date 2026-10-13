@@ -410,7 +410,8 @@ def build_mac(args):
         (os.path.join(NET, 'online_mac.mm'), objc + ['-I', NET], 'n_'),
         (os.path.join(HERE, 'app_main.cpp'), app_flags + qt_flags, 'a_'),
         (os.path.join(HERE, 'pad_mac.mm'), objc + ['-I', HERE, '-I', RT], 'a_'),
-        (os.path.join(HERE, 'present_mac.mm'), objc + ['-I', HERE], 'a_')]
+        (os.path.join(HERE, 'present_mac.mm'), objc + ['-I', HERE], 'a_'),
+        (os.path.join(HERE, 'help_mac.mm'), objc + ['-I', HERE], 'a_')]
     search = [HERE, RENDER, RT, SOUND, NET, gen]
     common = source_jobs(sources, objdir, search)
     with_qt = source_jobs([(os.path.join(RENDER, 'texpack.cpp'), render_flags + qt_flags, 'r_')], objdir, search)

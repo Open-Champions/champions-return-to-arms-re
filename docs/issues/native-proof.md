@@ -423,6 +423,22 @@ Nothing under `tools/recomp/rt`, `render`, `sound`, `app`, `net` and nothing in
 | `summary.py` | a session's comparison, one line per level, with the rows of scripted memory writes counted apart |
 | `arith.py`, `arith_main.cpp`, `softf.py`, `rigarith.py` | the arithmetic tests (part 4) |
 
+Added in round 2 (2026-10-13):
+
+| File | What it does |
+|---|---|
+| `build_proof.py` | now builds from a **snapshot** of the translator and runtime (`snapshot`, `--snap DIR`) into `local/recomp-out/proof/build/`; `sites` writes the branch sites at which the translation counts |
+| `cmp.py` | `last_tick_fix` (R2.1); `first_tick_fix` is gone (R2.3); `PROOF_RIG_ARGS` passes more options to the rig run (a break point) |
+| `session.py` | `"dumps"` (memory images on both machines at the same tick, several a run), `"watch"`, `"ticked"` (memory writes inside the rig's tick hook, R2.4), writes through a pointer, `--native-arg`, `--want` |
+| `imgdiff.py`, `objs.py` | the differing words of an image pair with object, class and offset; the objects of an image |
+| `proof_rt.cpp` | the write-watch prints the calls under way; writes through a pointer; the vector unit's state in every recorded state |
+| `play.py` | scripts that play: fights, level-up, chests, potions, shop, save and load, death (R2.4) |
+| `realproof.py` | `bounded` (R2.5); the interpreter with vector unit 0 (`VuEE`), the unit's state compared (R2.6); `replay --out` |
+| `vu0ref.py` | vector unit 0 for the interpreter, in integer arithmetic, two models |
+| `proof_driver.cpp` | COP2 on `rt/vu0.h`, the unit's memory mapped, its state in the results |
+| `rigvu.py` | the vector unit in the rig on edge operands, infinities and NaNs included (R2.7) |
+| `rt-proposed.patch` | two changes proposed for `tools/recomp/rt` (not applied) |
+
 The instrumented build was checked to be the same program: on the fight session it gives
 the same 27 columns at every tick as the plain build, including the two differences below
 at the same ticks (**Ran**).
@@ -885,6 +901,24 @@ python3 tools/recomp/proof/realproof.py report local/recomp-out/proof/real/* --h
 python3 tools/recomp/proof/coverage.py --sessions s6,s5,s0 --areas
 python3 tools/recomp/proof/arith.py build && python3 tools/recomp/proof/arith.py fpu && python3 tools/recomp/proof/arith.py int && python3 tools/recomp/proof/arith.py vu
 python3 tools/recomp/proof/rigarith.py                  # needs local/rig-out/states/04-hub.zip
+```
+
+Round 2:
+
+```
+python3 tools/recomp/proof/build_proof.py snapshot      # once: rt/, recomp.py, build.py, hle.txt -> proof/snap/recomp
+python3 tools/recomp/proof/build_proof.py translate && python3 tools/recomp/proof/build_proof.py runtime
+python3 tools/recomp/proof/build_proof.py driver && python3 tools/recomp/proof/build_proof.py sites
+python3 tools/recomp/proof/play.py town pt6             # writes the script and enters the session
+python3 tools/recomp/proof/play.py fight pf1 --class 1 --levels blood1,fire1,bossgood
+python3 tools/recomp/proof/play.py fight pp0 --class 0 --levels valor --plain --legs 3
+python3 tools/recomp/proof/session.py pf1 rig --frames 60000 && python3 tools/recomp/proof/session.py pf1 native
+python3 tools/recomp/proof/summary.py pf1
+python3 tools/recomp/proof/imgdiff.py local/recomp-out/proof/cmp/pf1/rig-dump-77.bin local/recomp-out/proof/cmp/pf1/native-dump-77.bin
+python3 tools/recomp/proof/session.py pf1 native --capture --want $PWD/local/recomp-out/proof/want-vu.txt --per 4
+python3 tools/recomp/proof/realproof.py replay local/recomp-out/proof/real/pf1 --all
+python3 tools/recomp/proof/realproof.py bounded local/recomp-out/proof/real/s6 --events 16,256,4096,32768
+python3 tools/recomp/proof/rigvu.py                     # needs local/rig-out/states/04-hub.zip
 ```
 
 ## What remains unproven

@@ -37,6 +37,12 @@ std::string sound_figures();    // key=value figures of the sound side (empty wi
 uint64_t fields();              // vertical blanks since power-on
 double machine_seconds();       // the virtual clock
 
+// What a file given as the disc image is: 0 - not a disc image this program can read;
+// 1 - a disc image without SLUS_209.73 (another game); 2 - it has the game's executable,
+// and `figure` is the figure builds and patches of this game are named by (the exclusive
+// or of the executable's words: 0x4028A55F for SLUS-20973 v2.00).
+int disc_check(const std::string& image, uint32_t& figure);
+
 // Copies one file out of the disc image (ISO 9660), e.g. "\\SLUS_209.73;1".  False when
 // the image or the file cannot be read.
 bool extract_from_disc(const std::string& image, const char* path_on_disc, const std::string& to);

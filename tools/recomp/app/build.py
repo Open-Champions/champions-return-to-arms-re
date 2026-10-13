@@ -153,6 +153,7 @@ def main():
     jobs.append((os.path.join(HERE, 'app_main.cpp'), app_flags + qt_flags, 'a_'))
     jobs.append((os.path.join(HERE, 'pad_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE, '-I', rt], 'a_'))
     jobs.append((os.path.join(HERE, 'present_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE], 'a_'))
+    jobs.append((os.path.join(HERE, 'help_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE], 'a_'))
     # the game's objects are those of the translation's files (genfiles.py), never a listing of
     # the object directory: a stray copy there ("c_003 2.o", as a file synchroniser leaves
     # them) is not one of them and must not be linked a second time

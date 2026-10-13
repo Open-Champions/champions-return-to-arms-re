@@ -275,7 +275,7 @@ async function play(cdp) {
 	await sleep(1500);
 	const back = await page.evaluate("[document.hidden, rta.paused(), document.getElementById('pausedWhy').textContent]");
 	const b3 = await tick();
-	await cdp.send("Target.closeTarget", { targetId: other.targetId });
+	await cdp.send("Target.closeTarget", { targetId: other.targetId }).catch(() => {});       // (it is sometimes gone already)
 	await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: 600, y: 500, button: "left", clickCount: 1 }, page.sessionId);
 	await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: 600, y: 500, button: "left", clickCount: 1 }, page.sessionId);
 	await sleep(2000);

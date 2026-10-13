@@ -6,6 +6,7 @@
 #include "iso9660.h"
 
 #include <cstdio>
+#include <cstring>
 #include <vector>
 
 std::string rta_sound_figures() __attribute__((weak));     // tools/recomp/sound/sound_rta.cpp
@@ -36,6 +37,19 @@ void finish(int code) { rt_finish(code); }
 
 uint64_t fields() { return rt_fields(); }
 double machine_seconds() { return (double)rt_cycles() / (double)CYCLES_PER_SECOND; }
+
+int disc_check(const std::string& image, uint32_t& figure) {
+    Iso9660 disc;
+    Iso9660::Entry entry;
+    figure = 0;
+    if (!disc.open(image.c_str())) return 0;
+    if (!disc.find("\\SLUS_209.73;1", &entry) || entry.directory || entry.size < 4096) return 1;
+    uint32_t sectors = (entry.size + Iso9660::SECTOR - 1) / Iso9660::SECTOR;
+    std::vector<uint8_t> data((size_t)sectors * Iso9660::SECTOR);
+    if (!disc.read(entry.sector, sectors, data.data())) return 0;
+    for (size_t at = 0; at + 4 <= entry.size; at += 4) { uint32_t word; memcpy(&word, data.data() + at, 4); figure ^= word; }
+    return 2;
+}
 
 bool extract_from_disc(const std::string& image, const char* path_on_disc, const std::string& to) {
     Iso9660 disc;

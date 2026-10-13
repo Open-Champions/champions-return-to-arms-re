@@ -1209,22 +1209,34 @@ cap, the pacing in the Windows program, a person's first start, the smaller thin
 
 ### 12.0 STATE (rewritten at every step; read this first after a stop)
 
-**13:00.** `bin/rta_app` is still candidate c5 of 07:35 (11.8). Sources hold: the thread
-fix (12.1), the control socket's route (12.2), the stall probe and the drawing-thread
-switch (12.3), the build scripts' lists and the link fix (12.4). Candidate **n4**
-(`bin/rta_app_n4`, `rta_app_orig_n4`, 12:42, built with `--no-game`: the translation of
-22:45 yesterday, set 27f61e1d) is in `s12/verify.sh n4` and a two-copy lobby game
-(`s12/online/pair-n4`); when both pass it becomes `bin/rta_app` (and c5 `rta_app.prev`).
+**13:03.** `bin/rta_app` = **candidate n4** since 12:51 (thread fix, control socket, stall
+probe, runs without a window drawn by a thread of their own; translation of 22:45
+yesterday, set 27f61e1d). It passed `s12/verify.sh n4` (11 + 11 + 60 pictures the same as
+before, rig comparison the same file three ways) and a two-copy lobby game
+(`s12/online/pair-n4`: 4,634 ticks through the change into `drunare`, no shared column
+differs). `rta_app.prev` = c5 of 07:35 (also `rta_app_c5`); `rta_app_orig` / `.prev` likewise.
 
-- The fix set in `patches/` and `tools/play-net/sections-suggested.txt` changed at 12:19
-  (29 sections). Candidates are built with `app/build.py --no-game` until the coordinator
-  says the set has landed; then one build without it (it also rebuilds the headless
-  `bin/rta_native_fix`).
-- Next: 12.3 (a picture path that does not need the main thread), then 12.5 on.
-- Processes of this work running now: the lobby server instance `s12/lobby/champions-server`
-  (pid in `s12/lobby/server.pid`; ports 42800-42817, 42900, 42910, UDP 12101, bound to
-  192.168.1.123), `verify.sh n4` and `lobbyparty.py pair-n4` with their copies of
-  `rta_app_n4` (pids in `s12/verify-n4.pid`, `s12/online/pair-n4.pid`, `pair-n4/pids`).
+In the sources since n4, not yet in `bin/rta_app`:
+
+- presenting through a Metal layer from a drawing thread of its own (`app/present_host.h`,
+  `present_mac.mm`; `--present metal|opengl`, `RTA_PRESENT`; default still `opengl`), the
+  system's word on when each picture was on the glass (12.3);
+- the Windows program's pacing (`app/win_main.cpp`, 12.5): compiled and linked
+  (`build_win.py --no-game`, 13:00), not run anywhere;
+- **the new fix set**: the coordinator said at 13:00 it has landed (29 sections, 99 words,
+  figure 073064bb). `app/build.py` without `--no-game` at 13:00 translated with it
+  ("patched: 99 words of 29 sections") and candidate **n7** (`bin/rta_app_n7`) announces
+  "patch set 073064bb (99 words)". The headless `bin/rta_native_fix` was rebuilt by that
+  build (13:00), with the runtime as it is now.
+
+Running now: the ten-minute fight two ways side by side in visible test windows (12.3;
+ends about 13:08). Next: `s12/verify.sh n7` + a lobby pair, then 12.6 (full screen, the cap,
+resize), 12.7 (first start), the Windows folder rebuilt on the new set.
+
+Processes of this work running now: the lobby server instance `s12/lobby/champions-server`
+(pid in `s12/lobby/server.pid`; ports 42800-42817, 42900, 42910, UDP 12101, bound to
+192.168.1.123); two copies of `rta_app_n6` (pids in `s12/long.pids`) and two of
+`s12/cover/cover` (pids in `s12/cover-longa.pid`, `cover-longb.pid`).
 
 ### 12.1 Threads left behind (Ran)
 

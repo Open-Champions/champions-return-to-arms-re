@@ -10,6 +10,11 @@
 // into the layer's next drawable and presents it.  CAMetalLayer's nextDrawable and present
 // may be called from any thread; nothing here waits for the main thread.
 //
+// The drawing thread never waits for the layer either: a presenter thread inside
+// present_mac.mm asks the layer for its drawable (that call stands for up to a second when
+// the display is asleep), and a picture that finds the two shared surfaces both still on
+// their way is drawn and not shown.
+//
 // A host without this links nothing of it (the Windows program presents through WGL on
 // its own window thread: app/win_main.cpp).
 #pragma once
@@ -26,12 +31,13 @@ struct Surface;
 Surface* create(void* view, void (*log)(const std::string& line));
 
 // Drawing thread, OpenGL context current: the framebuffer to draw the window's picture
-// into, of exactly width x height pixels, FIRST ROW ON TOP (as Metal shows it).  0: none.
+// into, of exactly width x height pixels, FIRST ROW ON TOP (as Metal shows it).  0: none
+// just now (both surfaces are still on their way to the glass): this picture is not shown.
 unsigned begin(Surface* surface, int width, int height);
 
-// Drawing thread, after the picture is in the framebuffer and OpenGL has been flushed:
-// present it at the display's next refresh.  False when the layer had no drawable for it
-// (it is then not shown; the next one will be).  `now_ms` is the caller's clock now and
+// Drawing thread, after the picture is in the framebuffer begin() gave and OpenGL has
+// FINISHED it (glFinish): hand it to the presenter, which presents it at the display's next
+// refresh.  Returns at once.  `now_ms` is the caller's clock now and
 // `due_ms` the moment the picture is meant for on that clock (0: none): the system tells
 // afterwards when the picture really was on the glass, and glass() hands that on.
 bool show(Surface* surface, double now_ms, double due_ms);
@@ -46,7 +52,9 @@ void glass(Surface* surface, std::vector<Glass>& out);
 // four bytes a pixel: blue, green, red, alpha).
 bool read(Surface* surface, std::vector<unsigned char>& bgra, int& width, int& height);
 
-// Figures: pictures presented, and how often the layer had no drawable.
-void figures(Surface* surface, unsigned long long& presented, unsigned long long& refused);
+// Figures: pictures presented; how often the layer had no drawable (or one of another size:
+// a resize under way); pictures not shown because the ones before were still on their way;
+// the longest the layer kept the presenter waiting for a drawable.
+void figures(Surface* surface, unsigned long long& presented, unsigned long long& refused, unsigned long long& skipped, double& longest_wait_ms);
 
 }  // namespace hostpresent

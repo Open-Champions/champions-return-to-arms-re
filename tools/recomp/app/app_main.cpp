@@ -25,6 +25,10 @@
 //   --art-pack DIR      replacement pictures named as the emulator build names textures
 //                       (tools/play-net/README.md, "Upscaled art");  --art-memory MB (3072)
 //   --frame-cap N       60 (default), 30, or 0 = --unpaced
+//   --present metal|opengl   how a picture gets into the window (present_host.h): through a Metal
+//                       layer, drawn and handed over by a thread of its own that nothing AppKit
+//                       does to the window can hold up (the default), or by an OpenGL swap on the
+//                       window's own thread as it was until 2026-10-13 (if the picture looks wrong)
 //   --pacing ahead|queued   how the game is held to one frame per picture (pipeline.h): let go
 //                       by a clock just ahead of each picture's moment (the default), or held
 //                       back through the picture path's hand-overs as it was until 2026-10-12
@@ -77,6 +81,7 @@
 #include "backend_gl.h"
 #include "control.h"
 #include "gfx_rt.h"
+#include "help_host.h"
 #include "pad_host.h"
 #include "pipeline.h"
 #include "present_host.h"
@@ -302,10 +307,11 @@ static double cpu_ms() {                                // processor time of the
 }
 
 // How a picture gets into the window when nothing is said (--present, RTA_PRESENT):
-// through a Metal layer from a drawing thread of its own (macOS), or by an OpenGL swap on
-// the window's own thread.
+// through a Metal layer from a drawing thread of its own (macOS: ten minutes of a fight in
+// a window somebody was moving another window over had 27 of 36,000 pictures late that way
+// and 769 the other way, native-app.md 12.3), or by an OpenGL swap on the window's own thread.
 #ifdef __APPLE__
-static const bool PRESENT_METAL_DEFAULT = false;
+static const bool PRESENT_METAL_DEFAULT = true;
 #else
 static const bool PRESENT_METAL_DEFAULT = false;
 #endif
@@ -468,6 +474,7 @@ class GameWindow : public QWindow {
         g_key_events++;
         if (uint32_t bit = key_bit(e->key())) { g_keys |= bit; return; }
         if (test) return;
+        if (e->key() == Qt::Key_F1 || e->key() == Qt::Key_Help) { hosthelp::toggle(); return; }
         if (e->key() == Qt::Key_F11 || (e->key() == Qt::Key_F && !(e->modifiers() & ~Qt::KeyboardModifiers(Qt::ControlModifier | Qt::MetaModifier)))) toggle_fullscreen();
         else if (e->key() == Qt::Key_Escape && visibility() == QWindow::FullScreen) showNormal();
     }
@@ -480,7 +487,14 @@ class GameWindow : public QWindow {
     void resizeEvent(QResizeEvent*) override { mirror(); }
     void exposeEvent(QExposeEvent*) override { mirror(); }
     bool event(QEvent* e) override {
-        if (e->type() == QEvent::DevicePixelRatioChange || e->type() == QEvent::WindowStateChange) { bool r = QWindow::event(e); mirror(); return r; }
+        if (e->type() == QEvent::DevicePixelRatioChange || e->type() == QEvent::WindowStateChange) {
+            bool r = QWindow::event(e);
+            mirror();
+            if (e->type() == QEvent::WindowStateChange)
+                log_line(std::string("window: ") + (visibility() == QWindow::FullScreen ? "full screen" : visibility() == QWindow::Minimized ? "minimised" : "a window") +
+                         ", " + std::to_string(width()) + " x " + std::to_string(height()) + " points");
+            return r;
+        }
         if (e->type() == QEvent::Close) {
             // the game's thread ends the run at its next vertical blank (reports, sound device);
             // if it does not come to one, end here
@@ -746,7 +760,8 @@ class Screen : public QObject {
             context->moveToThread(painter);
             painter->start();
         } else {
-            log_line("picture: drawn by the window's own (main) thread (RTA_PICTURE_THREAD=main)");
+            log_line(metal ? "picture: drawn by the window's own (main) thread (RTA_PICTURE_THREAD=main)"
+                           : "picture: drawn and swapped by the window's own (main) thread (--present opengl: an OpenGL view cannot be drawn from another)");
             g_stall.start();
         }
     }
@@ -900,7 +915,7 @@ class Screen : public QObject {
             if (!ahead) to_window();
             timing.swap_start = now_ms();
             if (metal) {
-                if (!ahead) gl->glFlush();              // (let go ahead, the picture was finished above)
+                if (!ahead) gl->glFinish();             // (let go ahead, the picture was finished above)
                 if (for_window) hostpresent::show(presenter, now_ms(), opt.unpaced ? 0.0 : due);
             } else context->swapBuffers(window);
             if (fake_refresh_ms > 0) {                  // the display that is not there: wait for its next refresh
@@ -1187,9 +1202,12 @@ static void final_report() {                            // on the game's thread,
         printf("rta_app: the game's threads: %u now, %u started in all, %u ended by the game from outside (TerminateThread)\n", threads_now, threads_made, threads_ended);
     }
     if (s.presenter) {
-        unsigned long long presented = 0, refused = 0;
-        hostpresent::figures(s.presenter, presented, refused);
-        printf("rta_app: present: %llu pictures handed to the window's Metal layer, %llu times it had no drawable\n", presented, refused);
+        unsigned long long presented = 0, refused = 0, skipped = 0;
+        double longest = 0;
+        hostpresent::figures(s.presenter, presented, refused, skipped, longest);
+        printf("rta_app: present: %llu pictures handed to the window's Metal layer; %llu times it had no drawable of the right size (a resize under way); "
+               "%llu pictures not shown because the ones before were still on their way; the layer's longest wait for a drawable %.1f ms (the drawing thread does not wait for it)\n",
+               presented, refused, skipped, longest);
     }
     if (g_stall.on)
         printf("rta_app: stalls (RTA_STALL_LOG): a list waited more than %.0f ms for the thread that draws (%s) %llu times, longest %.1f ms, %.0f ms in all; "
@@ -1299,8 +1317,9 @@ static void app_command(const std::string& text, uint64_t frame) {
             QCoreApplication::postEvent(g_screen, new CallQEvent([ww, wh] { g_screen->window->resize(ww, wh); }));
     } else if (w[0] == "fullscreen") {
         // app fullscreen: what F does (a test window stays as it is: it must not cover the screen)
+        // (RTA_TEST_FULLSCREEN_OK=1: a test that has to see full screen work asks for it, for seconds)
         QCoreApplication::postEvent(g_screen, new CallQEvent([] {
-            if (g_screen->window && !g_screen->window->test) g_screen->window->toggle_fullscreen();
+            if (g_screen->window && (!g_screen->window->test || getenv("RTA_TEST_FULLSCREEN_OK"))) g_screen->window->toggle_fullscreen();
             else log_line("app fullscreen: not in a test window");
         }));
     } else if (w[0] == "art" && w.size() >= 2) {
@@ -1318,6 +1337,12 @@ static void app_command(const std::string& text, uint64_t frame) {
             image.convertToFormat(QImage::Format_RGB888).save(QString::fromStdString(path));
             log_line("wrote " + path + " (" + std::to_string(pw) + " x " + std::to_string(ph) + "), the window's picture as the Metal layer was handed it");
         });
+    } else if (w[0] == "close") {
+        // app close: what a click on the window's close button does (and Command-Q: the application asks its window to close)
+        if (g_screen->window) QCoreApplication::postEvent(g_screen->window, new QEvent(QEvent::Close));
+    } else if (w[0] == "help") {
+        // app help [show|hide|info]: the keys panel (help_host.h), for tests
+        log_line(hosthelp::test(w.size() >= 2 ? w[1] : "info"));
     } else if (w[0] == "stats") {
         g_screen->report_pace(w.size() >= 2 && w[1] == "reset", g_sink ? g_sink->decode_cpu_ms : 0.0);
     } else if (w[0] == "latency" && w.size() >= 2) {
@@ -1442,12 +1467,12 @@ int main(int argc, char** argv) {
             printf("picture (each also a line of <data>/settings.txt, see tools/recomp/app/settings.h):\n"
                    "        [--aspect auto|4:3|16:9|16:10|21:9|W:H] [--resolution window|WxH|Nx] [--antialiasing off|2|4|8] [--anisotropy 1..16]\n"
                    "        [--mipmaps yes|no] [--art-pack DIR] [--art-memory MB] [--frame-cap 60|30|0] [--plain] [--settings FILE] [--no-settings]\n"
-                   "        [--pacing ahead|queued]\n");
+                   "        [--pacing ahead|queued] [--present metal|opengl]   (opengl: the way into the window used until 2026-10-13 - if the picture looks wrong)\n");
             printf("rta_app --disc IMAGE [--data DIR] [--window WxH] [--fullscreen] [--scale N | --size WxH] [--volume V | --mute | --no-sound]\n"
                    "        [--emulator-timing] [--script FILE] [--do COMMAND] [--test TEXT] [--offscreen] [--unpaced] [--png PREFIX --at n,..]\n"
                    "        [--stop-after N] [-- runtime arguments]\n"
                    "keys: W A S D left stick; arrows direction pad; I J K L triangle square cross circle; Q E L1 R1; 1 3 L2 R2; X C L3 R3;\n"
-                   "      Return Start; Backspace Select; F or F11 full screen; Escape leaves full screen\n"
+                   "      Return Start; Backspace Select; F or F11 full screen; Escape leaves full screen; F1 shows this list beside the window\n"
                    "(the head of tools/recomp/app/app_main.cpp describes every option)\n");
             return 0;
         }
@@ -1455,6 +1480,7 @@ int main(int argc, char** argv) {
     }
     for (; k < argc; k++) pass.push_back(argv[k]);
     if (!pass.empty() && (pass[0] == "boot" || pass[0] == "resume")) { mode = pass[0]; pass.erase(pass.begin()); }
+    bool first_start = false;                                               // nobody has played from this data directory before
     bool settings_later = opt.settings_file.empty() && !no_settings;       // <data>/settings.txt, once the data directory is known
     auto apply_settings = [&](const std::string& file) {
         if (!file.empty() && !opt.set.load(file, log_line) && file == opt.settings_file) log_line("cannot read the settings file " + file);
@@ -1489,13 +1515,34 @@ int main(int argc, char** argv) {
         std::string file = opt.data + "/settings.txt";
         bool there = file_exists(file);
         apply_settings(there ? file : std::string());
-        if (!there && opt.test.empty() && !opt.offscreen) app::Settings().save(file);
+        if (!there && opt.test.empty() && !opt.offscreen) { app::Settings().save(file); first_start = true; }
     }
     if (mode == "boot") {
-        if (opt.disc.empty() || !file_exists(opt.disc)) {
-            fprintf(stderr, "rta_app: give your disc image of Champions: Return to Arms (SLUS-20973 v2.00): --disc \"/path/to/image.iso\" (or set RTA_DISC)\n");
-            return 1;
-        }
+        // Something is wrong with what was given as the disc: said on the terminal, and to a
+        // person (not a test, not a run without a window) in a box as well.
+        bool person = opt.test.empty() && !opt.offscreen;
+        auto refuse = [&](const std::string& headline, const std::string& text) {
+            fprintf(stderr, "rta_app: %s. %s\n", headline.c_str(), text.c_str());
+            if (person) hosthelp::box(headline, text);
+        };
+        const std::string how = "Start the program with your own disc image of Champions: Return to Arms (the US disc, SLUS-20973, version 2.00):\n"
+                                "rta_app --disc \"/path/to/image.iso\"\n(or set RTA_DISC to that path; a launcher names the path it expects inside itself).";
+        if (opt.disc.empty()) { refuse("No disc image was given", how); return 1; }
+        if (!file_exists(opt.disc)) { refuse("The disc image was not found", "There is no file at\n" + opt.disc + "\n(if that is a link, what it points to is gone).\n\n" + how); return 1; }
+        uint32_t figure = 0;
+        int disc_kind = apprt::disc_check(opt.disc, figure);
+        if (disc_kind == 0) { refuse("This file is not a disc image the program can read", opt.disc + "\n\nAn .iso file of the game's DVD is expected.\n\n" + how); return 1; }
+        if (disc_kind == 1) { refuse("This disc image is another game", opt.disc + "\nhas no file SLUS_209.73.\n\n" + how); return 1; }
+        char found[32];
+        snprintf(found, sizeof found, "%08X", figure);
+        if (figure != 0x4028A55Fu) {
+            // not refused: the levels and pictures may still fit - but said plainly
+            std::string text = opt.disc + "\nis another version of the game than the one this program is made from (its executable has the figure " + found +
+                               "; version 2.00 of SLUS-20973 has 4028A55F). The program runs its own copy of the game's code and reads everything else "
+                               "from this image: it may stop or look wrong.";
+            fprintf(stderr, "rta_app: WARNING: %s\n", text.c_str());
+            if (person) hosthelp::box("This disc image is another version of the game", text);
+        } else log_line("disc: Champions: Return to Arms, SLUS-20973 version 2.00 (figure " + std::string(found) + "): " + opt.disc);
         if (opt.elf.empty()) {
             opt.elf = root + "/SLUS_209.73";
             if (!file_exists(opt.elf)) {
@@ -1525,6 +1572,20 @@ int main(int argc, char** argv) {
         heartbeat.start(8);
     }
     hostpad::start(log_line);
+    // what a person has to be told (help_host.h): the keys on the terminal at every start
+    // somebody plays, in a panel beside the window at the first one, and under F1 and Help
+    if (!opt.offscreen) {
+        hosthelp::start();
+        if (opt.test.empty()) {
+            fprintf(stderr, "\n%s\n\n", hosthelp::keys_text().c_str());
+            fflush(stderr);
+            if (first_start) {
+                log_line("first start with this data directory: settings are in " + opt.data + "/settings.txt (a text file you can edit), memory cards in " +
+                         opt.data + "/card");
+                hosthelp::show();
+            }
+        }
+    }
     // the picture's threads and the game's are the player's own work, not background work
     app::interactive_thread();
     apprt::interactive_threads();

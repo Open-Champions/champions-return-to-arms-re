@@ -102,6 +102,9 @@ extern void (*show_note)(const std::string& note);      // when the note changes
 extern void (*show_warning)(const std::string& text);   // another player's copy is patched differently
 extern void (*window_test)(const std::string& text);    // tests: "sheet info|type TEXT|press N|picture FILE" for the window's question
 void ask_name_on_terminal(const std::string& why);      // the fallback, for a hook that has no window
+// Any thread: an "online ..." line (as the script's `app online ...`) to be carried out by
+// the game's thread at its next vertical blank - what the window's Online menu asks for.
+void request(const std::string& line);
 void give_name(const std::string& name);
 void decline_name();
 std::string check_name(const std::string& name);        // empty: fine

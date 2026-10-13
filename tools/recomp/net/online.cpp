@@ -28,8 +28,10 @@
 #include <cstdio>
 #include <cstring>
 #include <iostream>
+#include <mutex>
 #include <sstream>
 #include <thread>
+#include <vector>
 #include <unistd.h>
 
 // RtaOnline.cpp (linked as it is) tells the emulator application's network layer once per
@@ -139,6 +141,10 @@ void command(const std::string& text, u64 frame) {
             if (rtanet::window_test) rtanet::window_test(text.substr(at + 5));
             else rtanet::say("online: this program has no window question to test");
         }
+        else if (second == "menu") {        // tests: the window's Online menu (online_mac.mm): menu info | menu click N [TEXT]
+            if (rtanet::window_test) rtanet::window_test(text.substr(text.find("menu")));
+            else rtanet::say("online: this program has no menu to test");
+        }
         else printf("[frame %llu] online: %s saved_login=%d\n", (unsigned long long)frame, g_online.Report().c_str(), g_online.HasLogin() ? 1 : 0);
         return;
     }
@@ -184,6 +190,8 @@ bool config_offered(const uint8_t* ram) {
 // tests: "app ..." lines for the network from a file (online-commands=FILE), looked for twice
 // a second - a way in for a test that drives the window program by its control socket, whose
 // own "app" command goes to the window program alone
+std::mutex g_request_lock;
+std::vector<std::string> g_requests;
 std::string g_command_file;
 void poll_command_file(uint64_t number) {
     if (g_command_file.empty() || number % 30 != 0) return;
@@ -208,6 +216,12 @@ struct Pad : rta::PadSource {
         if (port != 0) return;
         rtanet::per_blank(number);
         poll_command_file(number);
+        {
+            // what the window's menu asked for since the last blank
+            std::vector<std::string> lines;
+            { std::lock_guard<std::mutex> hold(g_request_lock); lines.swap(g_requests); }
+            for (const auto& text : lines) { command(text, number); fflush(stdout); }
+        }
         g_online.SetPlayerButtons(state.buttons);
         g_online.Tick(rta::memory(), RAM_SIZE, true);
         if (g_online.Driving()) {
@@ -238,6 +252,7 @@ struct Pad : rta::PadSource {
 namespace rtanet {
 
 void ask_name_on_terminal(const std::string& why) { terminal_ask(why); }
+void request(const std::string& line) { std::lock_guard<std::mutex> hold(g_request_lock); g_requests.push_back(line); }
 void give_name(const std::string& name) { g_online.GiveName(name); }
 void decline_name() { g_online.DeclineName(); }
 std::string check_name(const std::string& name) { return Rta::COnline::CheckName(name); }

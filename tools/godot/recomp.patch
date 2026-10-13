@@ -1,3 +1,37 @@
+diff -ru recomp.orig/render/vif1.cpp recomp/render/vif1.cpp
+--- recomp.orig/render/vif1.cpp
++++ recomp/render/vif1.cpp
+@@ -33,6 +33,7 @@
+     if (!waiting) return;
+     waiting = false;
+     if (gs) gs->debug_entry = waiting_from_pc ? -1 : (int)waiting_at;
++    if (on_program) on_program(tap_user, waiting_from_pc ? -1 : (int)waiting_at);
+ #if RTA_PROF_ON
+     if (!waiting_from_pc) prof_entry = waiting_at;
+     prof::Scope prof_scope(prof::vu_part(prof_entry));
+@@ -102,6 +103,7 @@
+         switch (cmd) {
+         case 0x00:                                      // NOP; with 0xA5..0xA7 in NUM a note from the game side (gs.h)
+             if (num >= 0xA5 && num <= 0xA7 && gs) { run_waiting(); gs->note(num, imm); }
++            else if ((num == 0xA8 || num == 0xA9) && on_note) { run_waiting(); on_note(tap_user, num, imm); }
+             break;
+         case 0x01: cl = imm & 0xFF; wl = (imm >> 8) & 0xFF; break;
+         case 0x02: ofst = imm & 0x3FF; dbf = false; tops = base; break;
+diff -ru recomp.orig/render/vif1.h recomp/render/vif1.h
+--- recomp.orig/render/vif1.h
++++ recomp/render/vif1.h
+@@ -49,6 +49,11 @@
+     bool waiting = false, waiting_from_pc = false;
+     uint32_t waiting_at = 0;
+ #ifdef RTA_PROF
++    // The scene tap (scene_tap.h): told before a microprogram runs (entry, or -1 for a continued one), and given
++    // the notes from the game side that are its own (NOP codes with 0xA8 / 0xA9 in NUM)
++    void (*on_program)(void* user, int entry) = nullptr;
++    void (*on_note)(void* user, uint32_t num, uint32_t imm) = nullptr;
++    void* tap_user = nullptr;
+     uint32_t prof_entry = 0;            // the entry of the last MSCAL (prof.h: a continued program counts for it)
+ #endif
+     void run_waiting();
 diff -ru recomp.orig/sound/audio_out.cpp recomp/sound/audio_out.cpp
 --- recomp.orig/sound/audio_out.cpp
 +++ recomp/sound/audio_out.cpp
