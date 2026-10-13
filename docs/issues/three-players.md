@@ -1,6 +1,6 @@
 # Three and four players do not launch from the online lobby
 
-**State (2026-10-12, 21:30 CDT). Two causes, both found, both fixed, both needed:**
+**State (2026-10-12, 21:50 CDT), final. Two causes, both found, both fixed, both needed:**
 
 1. **The game's launch handshake and the address the lobby server tells a console as its
    own.** With players who share an address (one computer, one router, one relay) a
@@ -19,8 +19,8 @@ Proven on one Mac, every copy at one address, against a second server instance w
 change (the running local lobby was not rebuilt, restarted or reconfigured; nothing
 touched the public server): three and four native copies, three and four copies of the
 application built with the adaptor fix, two applications and a page through the current
-relay - the table is under "Proof". **One application and two pages: see the last rows
-of that table.** Not tried: two computers, a real router, a person playing.
+relay, one application and two pages through it - the table is under "Proof". Not
+tried: two computers, a real router, a person playing.
 
 Related: [browser-build.md](browser-build.md) section "Mixed games" (the report this
 started from), [native-online.md](native-online.md) finding 2 (the same hole in the
@@ -244,7 +244,7 @@ others, players walking and swinging.
 | 3 application, **build with the adaptor fix**, held | fixed | 3 in a row | **3** | 1,741, 1,686, 1,529 | all 3 stale |
 | 4 application, **build with the adaptor fix** | fixed | 4 in a row | **4** | 1,479, 2,298, 1,444, 2,918 | players 1 and 2 swapped in the fourth copy's tables in two of them |
 | 2 application + 1 page, **both with the adaptor fix**, through the relay | fixed | 3 | **3** | 2,089, 2,755, 2,074 | one stale; the application hosts; "Everyone computes the same way: 2 other players heard ... browser arithmetic" |
-| 1 application + 2 pages, **both with the adaptor fix**, through the relay | fixed | PG12-LAUNCHES | **PG12-OK** | PG12-FRAMES | PG12-NOTES |
+| 1 application + 2 pages, **both with the adaptor fix**, through the relay | fixed | 3 in a row | **3** | 2,942, 2,906, 1,886 | none stale; two browser players in one game, both at the relay's address |
 
 Not counted as launches (nobody was in a room): runs in which a lobby server did not
 answer a copy within 20 s (five native runs and two application runs, at moments when
