@@ -3,7 +3,9 @@
 Status: a first version runs (2026-10-12): built, measured, usable offline, and online
 through a relay - between browser players, and since that afternoon between a page and
 the Mac application in one game (both tried on one Mac, in step; section "Mixed games").
-Not yet tried by a person. The summary is the state; the rest is the record.
+Since that evening the relay keeps the lobby server's limits per player itself and was
+gone through for what a hostile page can do with it (section "The relay in public");
+that relay is not on the server yet. Not yet tried by a person. The summary is the state; the rest is the record.
 
 Related pages: [STATE-OF-PLAY.md](../STATE-OF-PLAY.md) sets this build beside the other
 routes to a game. The desktop application these notes compare with is
@@ -158,6 +160,11 @@ Play!'s React application under `js/play_browser`, which needs `npm install`).
     start-up check; Brave and Safari's engine run; the picked-file path with the real
     image; a file that goes away; pause; one tab; settings, key and controller tables,
     on-screen pad; saved games as a file; cold and warm start; memory over 20 minutes.
+14. The relay made fit to stand in public (another session, the evening): limits per
+    player address for log-ins, accounts, requests and sessions; a page can no longer
+    send to another page that does not want to hear from it; bounds on what waits for a
+    page; a threat review; the server scripts prepared and not run. "The relay in
+    public" below.
 
 ## Left to do
 
@@ -1041,7 +1048,9 @@ switched off that afternoon).
 - **The relay**: the new `relay.py`, and its service changed - the line that limits the
   service to the server's own addresses has to go (it must reach the players), and
   `--udp-ports LOW-HIGH` added; the firewall opened for that UDP range from anywhere.
-  `relay/README.md` has both. Without the firewall range a game of two still works where
+  `relay/README.md` has both. (Since that evening the relay also keeps limits per
+  player, the line is replaced by the tightest rule that still reaches players, and the
+  scripts are prepared: "The relay in public" below.) Without the firewall range a game of two still works where
   the lobby server named the player (the relay sends first), but a third player and a
   player behind a router that changes ports are not reached.
 - **The page**: the new build (`Play.js`, `Play.wasm`) and `index.html`, `rta-web.js`.
@@ -1086,7 +1095,9 @@ The numbers for log-ins, accounts and the budget are the lobby server's own
 `requests_per_second`, `request_burst`, `LobbyServer::RequestCost`), each an option of
 `relay.py`; `relay/README.md` has the table with the options and what an operator must
 set. Per session: 8 connections to the lobby server a second, 10 discovery datagrams a
-second.
+second. A notice that concerns the player - the relay full, too many pages from the
+address, one of these limits - is put on the screen by the page (`web/rta-web.js`; the
+other notices stay in its log), in a page built from that evening on.
 
 **Where it counts, and what was checked in the lobby server's source.** The message
 numbers are right: `Include/Network/Events.hpp` maps 0x0006 to `RequestCreateAccount`,
@@ -1103,12 +1114,15 @@ whole requests only. A log-in therefore counts however it is cut up or packed; w
 not a lobby request is not sent on.
 
 **Whose address.** The address a connection comes from; with `--trust-proxy`, for a
-connection from the relay's own host, the last value of the last `X-Real-IP` line. nginx
-is told `proxy_set_header X-Real-IP $remote_addr`, which *replaces* a header of that name
-sent by the client, so the value is what nginx saw. Checked: a client-sent
-`X-Forwarded-For`, `Forwarded` or `X-Client-IP` is not read; a second `X-Real-IP` line
-before the web server's, or a list in one line, loses to the last value; without
-`--trust-proxy`, or from another host, no header is read. It rests on the web server's
+connection from the relay's own host, the last value of the `X-Real-IP` line. nginx is
+told `proxy_set_header X-Real-IP $remote_addr`, which *replaces* a header of that name
+sent by the client (whatever its capitals), so the value is what nginx saw. Checked: a
+client-sent `X-Forwarded-For`, `Forwarded` or `X-Client-IP` is not read; of a list in
+the one line the last value counts (a web server that appends puts its own there, the
+right-most hop that is not ours); a request with **two** `X-Real-IP` lines is turned
+away with 400 whichever comes first - nginx writes its own headers before the client's,
+other servers after, so neither "the first" nor "the last" would be safe everywhere;
+without `--trust-proxy`, or from another host, no header is read. It rests on the web server's
 line: without it nginx would pass a client's own `X-Real-IP` on. An IPv6 player counts by
 its /64. The allowances outlive the session.
 
@@ -1193,7 +1207,31 @@ Written down, not changed:
 `check.py --selftest`: 57 of 57 on the Mac (load average 120 to 250). The 30 checks of
 the afternoon are among them, two changed in form only (what is sent on a lobby
 connection is a lobby request now; the two test pages send to each other before they are
-timed). (A run against a lobby server of the test's own is being made; its result comes here.)
+timed). Also with Python 3.9 (57 of 57): the relay and its test need nothing newer than
+3.8 has.
+
+**With the lobby server itself** (an instance of the test's own on 127.0.0.1, ports of
+its own, a fresh database, started from a copy of the program built that afternoon; its
+`config.ini` with `limits_for_local_addresses=1` and `trusted_addresses=127.0.0.1`, so
+that the relay's address is trusted there exactly as it would be on the server). The
+lobby's protocol test (`tools/lobby_e2e_test.py`) with its two consoles' sockets swapped
+for a WebSocket connection each to the relay, the test saying in `X-Real-IP` who each
+player is (`local/relay-limits/e2e.py`, not in the repository); 19 of 19, three times:
+
+| what | result |
+|---|---|
+| gateway, key exchange, account, log-in (a wrong password refused), a public game, the host's discovery datagram, the game found in the list, the request to join, the joiner's discovery datagram, the join reported, the game started - all through the relay | 14 of 14 steps. The lobby server observed the host at the relay's address and the session's socket (127.0.0.1:42000, the first port of `--udp-ports 42000-42099`) |
+| the two pages' sockets, on the addresses the lobby server named (reply 0x55 to the joiner, notification 0x65 to the host) | a datagram each way, the first at once, no page having sent to the other before: the relay took both names from the lobby server's real messages |
+| `check.py ws://…` against that relay | passes; ping median 0.43 ms, page to page and back 0.63 ms (load 189) |
+| a third address tries passwords for the first player's account, the relay set to 5 log-ins per address | five wrong passwords answered by the lobby server (its code 4, its log has five failed log-ins); the sixth - **with the right password** -, an account-details request and a log-in from a new session of that address: not passed on, connection closed, the page told how long to wait; the lobby server's log has no sixth |
+| the account's owner, from the owner's own address, meanwhile | logs in |
+| a fourth address creates accounts, the relay set to 3 | three created; the fourth request not passed on, and that account does not exist (a log-in to it fails, the three others log in) |
+| the two relays' logs | 41 lines; no player name, no password |
+
+Not tried: a page and the game itself against the new relay (the checks above send what
+the game sends, as the lobby's own test does); the relay behind a real nginx; anything
+on the server. Test files (not in the repository): `local/relay-limits/` - `e2e.py`, the
+lobby instance, and the files as they were before this work.
 
 ### Deployment: prepared, not done
 

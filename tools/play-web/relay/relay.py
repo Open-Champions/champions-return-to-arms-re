@@ -69,8 +69,9 @@ told why (NOTICE, code 8). Requests over the budget wait here, as they would wai
 lobby server. The allowances belong to the address, not to the session: a page that
 connects again finds them as it left them. The player's address is the one this
 connection comes from; with --trust-proxy, for connections from this host, it is the
-last value of the last X-Real-IP line (what the web server in front saw). No other header
-is read: X-Forwarded-For is whatever the client wrote. An IPv6 player counts by its /64.
+last value of the X-Real-IP line (what the web server in front saw); a request with more
+than one such line is turned away. No other header is read: X-Forwarded-For is whatever
+the client wrote. An IPv6 player counts by its /64.
 
     relay.py --lobby 192.0.2.10                        # ws://127.0.0.1:8975/relay
     relay.py --lobby 192.0.2.10 --listen 127.0.0.1:8975 --path /relay \\
@@ -283,9 +284,12 @@ def player_address(peer, real_ip_lines, trust_proxy):
     Without --trust-proxy, and for a connection that does not come from this host, it is
     the peer and no header is looked at: whoever connects could write anything there.
     From this host with --trust-proxy it is what the web server in front says it saw: the
-    last value of the last line. A web server that sets the header (nginx's
-    proxy_set_header) replaces what the client sent; one that appends puts its own value
-    last. A line that holds no address leaves the peer: every such connection then shares
+    last value of the line. A web server that sets the header (nginx's proxy_set_header)
+    replaces what the client sent; one that appends to it puts its own value last.
+    MORE THAN ONE LINE is nothing a web server sends: one of them is the client's own,
+    and which comes first is the web server's habit (nginx writes its own headers before
+    those it passes on) - the answer is None, and the connection is turned away. No line,
+    or a line that holds no address, leaves the peer: every such connection then shares
     this host's own allowances, which is the careful side."""
     try:
         local = ipaddress.ip_address(peer).is_loopback
@@ -293,8 +297,10 @@ def player_address(peer, real_ip_lines, trust_proxy):
         local = False
     if not trust_proxy or not local or not real_ip_lines:
         return peer
+    if len(real_ip_lines) > 1:
+        return None
     try:
-        return str(ipaddress.ip_address(real_ip_lines[-1].split(",")[-1].strip()))
+        return str(ipaddress.ip_address(real_ip_lines[0].split(",")[-1].strip()))
     except ValueError:
         return peer
 
@@ -1225,6 +1231,11 @@ class Relay:
             answer("403 Forbidden", "not from this page")
             return
         address = player_address(peer[0], real_ip, args.trust_proxy)
+        if address is None:
+            say(self.said, "two player addresses", "relay: NOTE: a connection from this host came with %d X-Real-IP lines and was turned away: the web server in front has to SET that header, "
+                "which replaces what a client sent (README.md)" % len(real_ip), 600.0)
+            answer("400 Bad Request", "one X-Real-IP line is wanted from the web server in front")
+            return
         if args.trust_proxy and address == peer[0] and address in ("127.0.0.1", "::1") and (real_ip[-1].split(",")[-1].strip() if real_ip else "") != address:
             say(self.said, "no player address", "relay: NOTE: a connection from this host came without a player address in X-Real-IP (--trust-proxy): it counts as this host itself. "
                 "The web server in front has to set that header (README.md)", 600.0)

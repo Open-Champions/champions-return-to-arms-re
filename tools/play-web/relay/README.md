@@ -103,8 +103,9 @@ relay.py --lobby 192.168.1.20 --lan              # everything on one computer or
   above does: that replaces whatever the client sent under that name. Without that line
   nginx would pass a client's own `X-Real-IP` through, and every limit below could be
   walked around by writing a new address into each request. The relay reads the last
-  value of the last `X-Real-IP` line and no other header (`X-Forwarded-For` is whatever
-  the client wrote). Every program on the relay's own host can connect to it and claim
+  value of the `X-Real-IP` line and no other header (`X-Forwarded-For` is whatever the
+  client wrote); a request with more than one `X-Real-IP` line is turned away (400): a
+  web server never sends two, so one of them is the client's. Every program on the relay's own host can connect to it and claim
   any address: nothing but the web server should run there under other people's control.
 - It needs no privileges and writes no files; what it has to say goes to standard output
   ("What it logs" below). As a systemd service it can run as a dynamic user on a

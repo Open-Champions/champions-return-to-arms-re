@@ -186,7 +186,10 @@ section 4) as buttons on the page - the same code, compiled in:
    handed from one session to the other inside the relay; to and from a player of the
    desktop application it goes through that socket, only for an address the lobby server
    named to the page or one that the page and that player have both sent to
-   (`relay/README.md`). A page served over `https`
+   (`relay/README.md`). The lobby server sees all browser players at one address, so the
+   relay keeps the lobby server's limits per address itself, per player: log-ins,
+   accounts created, requests, sessions (`relay/README.md`, "Limits per player address"
+   and "What an operator must set"). A page served over `https`
    may only open `wss://`: the relay sits behind the web server that has the certificate.
 2. **`online.json` beside `index.html`**: `{ "relay": "relay", "signin": "NAME.pnach" }`.
    `relay` is the address of the relay's WebSocket, relative to the page or complete;
@@ -296,7 +299,7 @@ both pages in the first level after *Start Game*; 1,387 consecutive lockstep fra
 which both pages held the game's own sync hash, all equal, with both characters walking;
 a second start that needed no press at all (saved login, remembered character). The
 relay's own test (`relay/check.py --selftest`: destinations it must refuse, limits,
-datagrams from session to session) passes. Not checked: more than two players, a game
+the limits per player address, datagrams from session to session) passes. Not checked: more than two players, a game
 beyond the first level, two players in different places (everything was on one computer),
 the panel used by a hand (a test went through it by clicks sent to its buttons), WebTransport (not built: the game's datagrams travel
 on the WebSocket connection, in order, so a lost packet delays the ones behind it).

@@ -491,19 +491,24 @@ def limit_checks(check, lobby, address, logs):
         check("another address is not affected: its log-in passes", attempt(b, 1, 0x16) == (True, True))
         # what a client can write itself, as a web server hands it on (nginx sets X-Real-IP and leaves the rest as it came)
         claims = []
-        for lines in ([("X-Forwarded-For", "203.0.113.77"), ("Forwarded", "for=203.0.113.77"), ("X-Client-IP", "203.0.113.77")],  # headers the relay does not read
-                      [("X-Real-IP", "203.0.113.77")],                                                                       # a second X-Real-IP line before the web server's
-                      [("X-Real-IP", "203.0.113.77, 203.0.113.78")]):
-            liar = page(url, one, lines)
-            lobby_open(liar, 1, lobby_int, lobby.tcp_port)
-            claims.append(attempt(liar, 1, 0x16))
-            liar.close()
-        liar = page(url, None, [("X-Real-IP", "203.0.113.77, " + one)])  # a web server that appends to what the client wrote
+        liar = page(url, one, [("X-Forwarded-For", "203.0.113.77"), ("Forwarded", "for=203.0.113.77"), ("X-Client-IP", "203.0.113.77")])  # headers the relay does not read
         lobby_open(liar, 1, lobby_int, lobby.tcp_port)
         claims.append(attempt(liar, 1, 0x16))
         liar.close()
-        check("a forwarding header a client writes itself does not help: X-Forwarded-For and the like are not read, and of X-Real-IP only the web server's own, last value counts",
-              claims == [(False, False)] * 4, repr(claims))
+        liar = page(url, None, [("X-Real-IP", "203.0.113.77, " + one)])  # a web server that appends its own value to what the client wrote
+        lobby_open(liar, 1, lobby_int, lobby.tcp_port)
+        claims.append(attempt(liar, 1, 0x16))
+        liar.close()
+        for lines in ([("X-Real-IP", "203.0.113.77")], [("x-real-ip", "203.0.113.77")]):  # a second line of that name, before the web server's and after it
+            for player, more in ((one, lines), (None, [("X-Real-IP", one)] + lines)):
+                try:
+                    page(url, player, more).close()
+                    claims.append("taken")
+                except Gone as error:
+                    claims.append("turned away" if " 400 " in str(error) else str(error))
+        check("a forwarding header a client writes itself does not help: X-Forwarded-For and the like are not read; of one X-Real-IP line the last value counts (the web server's own); "
+              "a request with two such lines, whichever comes first, is turned away",
+              claims == [(False, False)] * 2 + ["turned away"] * 4, repr(claims))
         made = [attempt(b, 1, 0x06), attempt(b, 1, 0x06), attempt(b, 1, 0x06)]
         check("accounts created: the address's allowance passes, the next is not passed on and the page is told",
               made == [(True, True), (True, True), (False, False)] and told(b, 8, "too many new accounts from your address"), "%r %r" % (made, b.notices))
@@ -555,7 +560,7 @@ def limit_checks(check, lobby, address, logs):
         except Gone:
             fourth = "not taken"
         try:
-            page(url, five, [("X-Forwarded-For", "203.0.113.80"), ("X-Real-IP", "203.0.113.80")], hello=False).recv(2)
+            page(url, five, [("X-Forwarded-For", "203.0.113.80"), ("Forwarded", "for=203.0.113.80")], hello=False).recv(2)
             claimed = "taken"
         except Gone:
             claimed = "not taken"
@@ -653,7 +658,7 @@ def limit_checks(check, lobby, address, logs):
         except Gone:
             result = "not taken"
         try:
-            page(url, one, [("X-Real-IP", "203.0.113.90"), ("X-Forwarded-For", "203.0.113.90")], hello=False).recv(2)
+            page(url, one, [("X-Forwarded-For", "203.0.113.90"), ("Forwarded", "for=203.0.113.90")], hello=False).recv(2)
             claimed = "taken"
         except Gone:
             claimed = "not taken"
@@ -690,11 +695,12 @@ def limit_checks(check, lobby, address, logs):
         stop(relay)
     import relay as program
     lines = (("203.0.113.5", ["198.51.100.9"], True, "203.0.113.5"), ("127.0.0.1", ["198.51.100.9"], False, "127.0.0.1"), ("127.0.0.1", ["198.51.100.9"], True, "198.51.100.9"),
-             ("127.0.0.1", ["6.6.6.6", "198.51.100.9"], True, "198.51.100.9"), ("127.0.0.1", ["6.6.6.6, 198.51.100.9"], True, "198.51.100.9"), ("::1", [" 2001:db8::7 "], True, "2001:db8::7"),
+             ("127.0.0.1", ["6.6.6.6", "198.51.100.9"], True, None), ("127.0.0.1", ["198.51.100.9", "6.6.6.6"], True, None), ("127.0.0.1", ["6.6.6.6", "198.51.100.9"], False, "127.0.0.1"),
+             ("127.0.0.1", ["6.6.6.6, 198.51.100.9"], True, "198.51.100.9"), ("::1", [" 2001:db8::7 "], True, "2001:db8::7"),
              ("127.0.0.1", ["no address"], True, "127.0.0.1"), ("127.0.0.1", [], True, "127.0.0.1"), ("198.51.100.1", [], True, "198.51.100.1"))
     got = [program.player_address(peer, said, trust) for peer, said, trust, _ in lines]
     key = program.address_key
-    check("the player's address: the connection's own unless it comes from this host and the relay was told of a web server there; then the last X-Real-IP value; an IPv6 player counts by its /64",
+    check("the player's address: the connection's own unless it comes from this host and the relay was told of a web server there; then the last value of the one X-Real-IP line (two lines: none); an IPv6 player counts by its /64",
           got == [wanted for _, _, _, wanted in lines] and key("2001:db8:1:2:aaaa::1") == key("2001:db8:1:2:bbbb::2") != key("2001:db8:1:3::1")
           and key("::ffff:198.51.100.9") == key("198.51.100.9") == "198.51.100.9", repr(got))
 

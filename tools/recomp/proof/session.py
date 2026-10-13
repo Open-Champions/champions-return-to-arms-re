@@ -212,6 +212,7 @@ def main():
     parser.add_argument('--ticks', type=int)
     parser.add_argument('--frames', type=int, default=40000)
     parser.add_argument('--capture', action='store_true')
+    parser.add_argument('--native-opt', action='append', default=[], help='native: one more --opt KEY=VALUE for the runtime (proof_rt.cpp: proof-watch=..., proof-watch-ticks=...); repeatable')
     parser.add_argument('--no-first-tick-fix', action='store_true', help='native: leave the controller replay file as rigcompare.py writes it (cmp.py, first_tick_fix)')
     parser.add_argument('--per', type=int, default=3)
     parser.add_argument('--poke-shift', type=int, default=0, help='native: apply the memory writes this many displayed frames later (or, negative, earlier) than the first row the rig logged after it ran them')
@@ -243,6 +244,8 @@ def main():
     out = os.path.join(cmpmod.BASE, args.name)
     os.makedirs(out, exist_ok=True)
     script = script_of(args.name, spec, out)
+    for item in args.native_opt:
+        native_args += ['--opt', item]
     if args.step == 'native':
         # a script that made the rig write a memory image inside a tick (`ontick 77 dump`,
         # armed by `poke 0x4027ac:s32 77`): the native run writes its image at the same tick
