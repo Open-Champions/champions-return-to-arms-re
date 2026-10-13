@@ -535,9 +535,29 @@ def create_private_game(c, name):
     return f"private game {name!r}; discovery at {c.discovery[0]}:{c.discovery[1]}"
 
 
+def observed_pair(c, told):
+    """The pair the server observed this console at, from what 0x3E or 0x40 told it.
+
+    A Return to Arms console is told 0.0.0.0 with the observed port as its own address
+    (server FIXES.md 32, docs/issues/three-players.md: told the observed address, players who
+    share an address cannot start a game of three or four); with the server's setting
+    rta_tell_console_its_observed_address=1 it is told the observed address as before. With
+    0.0.0.0 the address is the one this test's datagrams to the server leave from."""
+    addr, port = told
+    if addr != "0.0.0.0":
+        return told
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect((c.discovery[0] if c.follow else c.host, c.discovery[1]))
+        addr = probe.getsockname()[0]
+    finally:
+        probe.close()
+    return (addr, port)
+
+
 def host_discovery(c, loopback):
     r = c.discover(c.discovery[0], c.discovery[1], 0x3E)
-    c.seen_addr = (r.nstr(0x200), r.u32())
+    c.seen_addr = observed_pair(c, (r.nstr(0x200), r.u32()))
     if loopback:
         expect(c.seen_addr == ("127.0.0.1", c.udp_port),
                f"server reports {c.seen_addr[0]}:{c.seen_addr[1]} but the packet left from "
@@ -614,7 +634,7 @@ def ask_to_join(c, game_id):
 def joiner_discovery(joiner, host, loopback):
     host.drop_notifications(0x65)
     r = joiner.discover(joiner.discovery[0], joiner.discovery[1], 0x40)
-    joiner.seen_addr = (r.nstr(0x200), r.u32())
+    joiner.seen_addr = observed_pair(joiner, (r.nstr(0x200), r.u32()))
     if loopback:
         expect(joiner.seen_addr == ("127.0.0.1", joiner.udp_port),
                f"server reports {joiner.seen_addr[0]}:{joiner.seen_addr[1]} but the packet left "

@@ -148,6 +148,58 @@ def replay_pokes(script, out, shift):
     return stripped, pokes
 
 
+COSMETIC = 'cosmetic=0x404460:x32'
+INIT_COUNTER_SITE = 0x19D1E0        # engine_init: the cosmetic seed is taken from the CPU cycle counter
+
+
+def first_seed(path):
+    """The cosmetic seed in the first row of a tick log whose simulation tick is 1."""
+    with open(path) as source:
+        header = source.readline().rstrip('\n').split('\t')
+        sim, seed = header.index('sim'), header.index('cosmetic')
+        for line in source:
+            row = line.rstrip('\n').split('\t')
+            if len(row) > max(sim, seed) and row[sim] == '1':
+                return int(row[seed], 16)
+    raise SystemExit('no row with tick 1 in %s' % path)
+
+
+def init_counter(out):
+    """The value the rig's machine read from the cycle counter in engine_init.
+
+    engine_init seeds the cosmetic generator from that read and builds the noise table
+    (math_buildNoiseTable) from it; lights that flicker (Torch_run) take their radius and
+    position from the table, and those are fields of objects in the pool.  The rig's log
+    shows the seed only after start-up has drawn from it, but every draw is one step of a
+    linear generator, so the logged seed is a*counter + b (mod 2^32): two short native runs
+    with the counter forced to 0 and 1 give a and b, and the rig's seed gives its counter."""
+    cache = os.path.join(PROOF, 'init-counter.txt')
+    if os.path.exists(cache):
+        a, b = (int(x, 16) for x in open(cache).read().split())
+    else:
+        seeds = []
+        work = os.path.join(PROOF, 'init-counter')
+        os.makedirs(work, exist_ok=True)
+        with open(os.path.join(work, 'watch.txt'), 'w') as sink:
+            sink.write('sim=0x44fdcc:u32\n%s\n' % COSMETIC)
+        with open(os.path.join(work, 'wait.rig'), 'w') as sink:
+            sink.write('wait 120\nquit\n')
+        for value in (0, 1, 2):
+            log = os.path.join(work, 'log-%d.tsv' % value)
+            env = dict(os.environ, RTA_NATIVE=NATIVE, RTA_NICE='19')
+            subprocess.run([sys.executable, os.path.join(os.path.dirname(HERE), 'native.py'), 'boot', '--card', os.path.join(work, 'card'),
+                            '--script', os.path.join(work, 'wait.rig'), '--watch-file', os.path.join(work, 'watch.txt'), '--log', log,
+                            '--count-at', '%x=%x' % (INIT_COUNTER_SITE, value)], capture_output=True, env=env, cwd=ROOT)
+            seeds.append(first_seed(log))
+        a, b = (seeds[1] - seeds[0]) & 0xFFFFFFFF, seeds[0]
+        if (2 * a + b) & 0xFFFFFFFF != seeds[2] or not a & 1:
+            raise SystemExit('the start-up seed is not a linear function of the counter: %s' % ['%08x' % s for s in seeds])
+        with open(cache, 'w') as sink:
+            sink.write('%08x %08x\n' % (a, b))
+    seed = first_seed(os.path.join(out, 'boot-rig.tsv'))
+    return ((seed - b) * pow(a, -1, 1 << 32)) & 0xFFFFFFFF
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('name')
@@ -185,6 +237,8 @@ def main():
     out = os.path.join(cmpmod.BASE, args.name)
     os.makedirs(out, exist_ok=True)
     script = script_of(args.name, spec, out)
+    if args.step == 'native':
+        native_args += ['--count-at', '%x=%08x' % (INIT_COUNTER_SITE, init_counter(out))]
     if args.step == 'native' and 'echo @P' in open(script).read():
         script, pokes = replay_pokes(script, out, args.poke_shift)
         native_args += ['--opt', 'proof-pokes=' + pokes]

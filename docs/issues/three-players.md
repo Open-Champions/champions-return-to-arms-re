@@ -1,11 +1,13 @@
 # Three and four players do not launch from the online lobby
 
-**State (2026-10-12, 16:10 CDT): the cause is found and reproduced with three native
+**State (2026-10-12, 16:20 CDT): the cause is found and reproduced with three native
 copies (one failing run read call by call). The fix is one change in the lobby server -
-no change to the game, to the patch set or to any player's copy. It is BUILT in a copy
-of the server source under `local/three-players/server/` and a second server instance
-with it is running; the series that proves it is under way. The change is NOT yet in
-`server/upstream`. Not yet tried: four players, the emulator application, a page.
+no change to the game, to the patch set or to any player's copy. It is in the working
+tree of `server/upstream` (source and FIXES.md 32; nothing built there, the running
+lobby untouched) and was proven against a second server instance built from a copy:
+three native players 6 of 6 and four native players 4 of 4 launches in a row, all of
+them with the race gone the bad way, a few thousand ticks in step each; three copies of
+the released emulator application 1 of 1. Not tried: a page through the relay.
 Whoever continues: read "Where the work stands" at the end first.**
 
 ## The defect
@@ -90,6 +92,27 @@ port 4000, joiner 1 port 4004, joiner 2 port 53777, all at 192.168.1.123.
   state 2. Joiner 1's record for player 2 stays in state 0 (never heard). Host: both
   records in state 8 (done).
 
+### A control from another job: the developer LAN start works with three and four
+
+Reported by the soak work (its runs, not this work's; not repeated here): with the
+developer LAN start, three and four **native** machines launch and stay in step - three
+machines for 30,421 ticks and twice 60,000 frames (one of those with delay 10, jitter 6
+and 10 % loss), four machines for 30,000 frames; `g_numPeers` 3, nobody dropped; the 26
+sections with the proposed flush section, one run with 25. The launch packets (0xbd3e),
+the input packets on port 4000 and the kick and lead sections all work with three and
+four. To repeat: `RTA_DISC=... python3 tools/recomp/soak/farm.py one --arm fix26c --out
+<a directory of your own> --seed 3013 [--frames 6000]`.
+
+That fits the cause and narrows it the same way: the lockstep game and the launch
+handshake themselves are sound with three and four players. What differs on the lobby
+path is only where the launch tables come from. The LAN start (0x1e21e0) writes every
+player's address into **both** tables (0x402b3b and 0x402b4b) and port 4000 into both
+port tables from the developer's list, needs no live connection, and every machine has
+an address of its own - so neither the race of cause 1 nor the own-address branch of
+cause 2 can occur. The lobby start takes them from the peer library's connections at
+the moment START is taken (cause 1), leaves the second table empty, and the two
+non-host players learn each other's address only from the host's peer list.
+
 ### Also read: the accept rule, which matters for four
 
 `SRSClient_onPeerConnected` 0x32c2c0 takes an arriving connection for the first sought
@@ -117,9 +140,8 @@ Why there: one redeploy of the server covers every copy players already have (th
 application with set 3f5b1e14, the browser page, the native build, a console); no game
 patch, so the patch-set figure does not change; no new application build, no new page.
 
-The change (in `local/three-players/server/`, a copy of `server/upstream` of 16:00;
-`diff -ru server/upstream/Source local/three-players/server/Source` and the same for
-`Include/configuration.hpp` show all of it - 4 files):
+The change is in the working tree of `server/upstream` (4 source files and FIXES.md
+section 32; the files as they were before are in `local/three-players/server-before/`):
 
 - `Include/configuration.hpp`, `Source/configuration.cpp`: a setting
   `rta_tell_console_its_observed_address` (default 0; 1 gives the old behaviour, for
@@ -129,43 +151,61 @@ The change (in `local/three-players/server/`, a copy of `server/upstream` of 16:
   address is `Config::OwnAddressForRta(user->m_discoveryAddr)`. Champions of Norrath
   clients are told what they were told before (that game was not read).
 - `Source/Network/Event/NotifyClientDiscovered_RTA.cpp` (0x40): the same.
+- `tools/lobby_e2e_test.py` (this repository): `observed_pair` - told 0.0.0.0, the test
+  takes the address its own datagrams leave from as what the server observed. The file
+  as it was: `local/three-players/lobby_e2e_test.py.before`.
 
-**To be done by the owner once proven:** the four files into `server/upstream` (another
-job changed `configuration.cpp/.hpp` there at 14:23 today: merge, do not overwrite), a
-line in `server/upstream/FIXES.md` and in `bin/config.ini`'s comments, rebuild, restart
-the local lobby, redeploy the public one. Nothing else has to be released.
+**Nothing was built in `server/upstream` and the running local lobby was not touched:**
+its binary is the one of 11 October. The proof ran against a second instance built from
+a copy of the same source (`local/three-players/server/`).
 
-### Tried so far (kept current; the raw lines are in `local/three-players/*.results`)
+**Left for the owner:** rebuild (`sh build.sh` in `server/upstream`) and restart the
+local lobby; redeploy the public one; commit. `docs/lobby-protocol.md` (0x3E and 0x40 in
+section 7, the table in 9.2) still says "its own address as the server saw it" - to be
+corrected with the release. Nothing else has to be released: no application build, no
+page, no patch set.
+
+### Tried (the raw lines are in `local/three-players/*.results`, each run's logs in `<series>/run<k>/`)
 
 All on one Mac, every copy at 192.168.1.123, the 26 suggested sections (set 3f5b1e14).
-"Stale" = a joiner's port table 0x402b5c had another joiner's entry wrong when the
-launch began: the race of cause 1 went the bad way. "In step" = `tools/rig/compare.py
-ticks` over every pair of tick logs: seed, level, player count, button maps, every
-player's position, state, hit points, gold and experience, the out-of-sync flags and the
-machine's own sync hash of the previous tick, tick by tick. "Own address zeroed" = a test
-script writes 0 into client+0xd10 on every copy once it is in the room, which is what
-the server change causes. "Fixed server" = the second server instance with the change;
-there client+0xd10 read 00000000 on every copy by itself.
+Load average 35 to 306 from other jobs: the times mean little, and what the load decides
+here is only which joiner reads its socket first. "Stale" = a joiner's port table
+0x402b5c had another player's entry wrong when the launch began: the race of cause 1
+went the bad way. "In step" = `tools/rig/compare.py ticks` over every pair of tick logs:
+seed, level, player count, button maps, every player's position, state, hit points, gold
+and experience, the out-of-sync flags and the machine's own sync hash of the previous
+tick, tick by tick, with drawn input on every copy (walking, fighting buttons). "Own
+address zeroed" = a test script writes 0 into client+0xd10 on every copy once it is in
+the room, which is what the server change causes. "Fixed server" = the second server
+instance with the change; there client+0xd10 read 00000000 on every copy by itself.
 
-| What | Copies | Runs | Launched | Of them stale | Ticks compared, each pair | Load |
-|---|---|---|---|---|---|---|
-| 3 players, no fix, local lobby | native ×3 | 4 | **2** | the 2 that failed were stale; the 2 that launched were not | 2,625 and 2,718, in step | 44 - 306 |
-| 3 players, own address zeroed, local lobby | native ×3 | 3 | **3** | 3 | 2,715 - 2,719, in step (see the note) | 50 - 164 |
-| 3 players, fixed server | native ×3 | 3 | **3** | 3 | 2,718 - 2,719, in step (see the note) | 35 - 109 |
-| 4 players, fixed server | native ×4 | 1 | **1** | yes: 3 wrong entries on 2 joiners | 2,718 on all 6 pairs, in step | 40 |
+| What | Copies | Launches tried | All in the level | Stale among them | Lockstep ticks compared, every pair |
+|---|---|---|---|---|---|
+| 3 players, no fix, local lobby | native ×3 | 7 | **3** | 4 - and exactly those 4 failed | 2,617 - 2,719 in the 3 that launched, in step |
+| 3 players, own address zeroed, local lobby | native ×3 | 3 | **3** | 3 | 2,715 - 2,719, in step |
+| 3 players, **fixed server** | native ×3 | 6 in a row | **6** | 6 (in one the joiner had no entry even for the host) | 2,529 - 2,719, in step |
+| 4 players, **fixed server** | native ×4 | 4 in a row | **4** | 4 (two or three wrong entries each) | 2,537 - 2,719 on all 6 pairs, in step |
+| 3 players, **fixed server** | emulator application ×3 (released stable build) | 1 | **1** | 0 | 2,103 consecutive frames (16 - 2118): every copy's own sync hash the same on all three, 1,714 distinct values; received hashes equal; flags 0 |
 
-Both failed runs without the fix show a datagram answered to 0.0.0.0:4000 in the stale
-joiner's log. With the fix no run that was stale failed (7 of 7).
+All four failures without the fix show the stale joiner answering a launch datagram at
+0.0.0.0:4000. With the fix no stale launch failed: 13 of 13 on the fixed server and by
+the zeroed word.
 
-Note: in three of the runs above the two joiners got their player numbers in the order
-they joined, not the order the test started them, and the test's hash column then read
-another player's ring on those two copies. In those runs that one column differs and
-every other column is equal on every tick; the column was corrected for the runs after
-16:12 (it now follows the byte at 0x402a39).
-
-Not counted: one run of each local-lobby series at 16:04 in which the local lobby server
-did not answer for 20 s. The second instance stood still in the same 40 seconds, so it
-was the Mac, not either server.
+Notes:
+- The server's own test, `tools/lobby_e2e_test.py 192.168.1.123 --gateway-port 41810
+  --extended`, passes 40 of 40 against the fixed instance. It had to learn that 0x3E and
+  0x40 may say 0.0.0.0 (`observed_pair`): it used that address as "what the server
+  observed" when checking the game list and 0x65.
+- In four of the runs above (three of three players, one of four) the joiners got their
+  player numbers in the order they joined, not the order the test started them, and the
+  test's hash column then read another player's ring on those copies. In those runs that
+  one column differs and every other column is equal on every tick. The column was
+  corrected at 16:12 (it now follows the byte at 0x402a39); runs after that with the
+  numbers out of order compare clean.
+- Not counted: runs in which a lobby server did not answer a copy for 20 s, so that
+  nobody came into a room (one of the no-fix series, two of the zeroed series, one
+  attempt each of the application series). Both server instances stood still at the same
+  moments (16:04 and 16:17), so it was the Mac, not either server.
 
 ## Where things are
 
