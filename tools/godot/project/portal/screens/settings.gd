@@ -82,7 +82,7 @@ func _page_view(r: Rect2) -> void:
 	var per_row := 5 if r.size.x >= UI.px(1040) else 3
 	var cw := (r.size.x - gap * (per_row - 1)) / per_row
 	var rows := int(ceil(VIEWS.size() / float(per_row)))
-	var ch := minf(UI.px(330), (r.end.y - y - gap * (rows - 1)) / rows)
+	var ch := minf(UI.px(430), (r.end.y - y - gap * (rows - 1)) / rows)
 	for k in VIEWS.size():
 		var card := ViewCard.new()
 		card.view = VIEWS[k][0]
@@ -412,10 +412,26 @@ class Controls extends Control:
 		for name in ["lt", "rt"]:
 			draw_style_box(UI.box(u * 0.016, soft, hard, 1), Rect2((at[name] as Vector2) - Vector2(u * 0.045, u * 0.034), Vector2(u * 0.09, u * 0.05)))
 		# the labels: left column and right column, a line from each to its button
-		var left := ["lt", "lb", "ls", "dpad", "back"]
-		var right := ["rt", "rb", "y", "x", "b", "a", "rs", "start"]
-		_labels(left, at, true, pr, label_w)
-		_labels(right, at, false, pr, label_w)
+		# labels in the order that keeps their lines apart; Select and Start sit under the controller
+		_labels(["lt", "lb", "ls", "dpad"], at, true, pr, label_w)
+		_labels(["rt", "rb", "y", "b", "x", "a", "rs"], at, false, pr, label_w)
+		var bw := minf(UI.px(250), pr.size.x * 0.34)
+		var by := minf(pr.end.y - UI.px(40), size.y - UI.px(46))
+		for name in ["back", "start"]:
+			var m: Array = []
+			for row in MAP:
+				if row[0] == name:
+					m = row
+			var to: Vector2 = at[name]
+			var bx := to.x - bw - UI.px(6) if name == "back" else to.x + UI.px(6)
+			var r := Rect2(bx, by, bw, UI.px(46))
+			draw_polyline(PackedVector2Array([to, Vector2(to.x, by)]), Color(UI.GOLD.r, UI.GOLD.g, UI.GOLD.b, 0.45), maxf(1.0, UI.px(1.5)), true)
+			draw_circle(to, maxf(2.0, UI.px(3.5)), UI.GOLD, true, -1.0, true)
+			draw_style_box(UI.box(UI.px(9), Color(0.07, 0.08, 0.11, 0.96), UI.LINE_STRONG, 1), r)
+			var what := String(m[3]) if String(m[3]) != "" else String(m[1])
+			var w := UI.text(self, Rect2(r.position.x + UI.px(12), r.position.y, r.size.x - UI.px(24), r.size.y), what, UI.bold(), 17, UI.TEXT)
+			if String(m[3]) != "":
+				UI.text(self, Rect2(r.position.x + UI.px(22) + w, r.position.y, r.size.x - UI.px(34) - w, r.size.y), String(m[1]), UI.sans(), 15, UI.FAINT)
 
 	func _labels(names: Array, at: Dictionary, on_left: bool, pr: Rect2, label_w: float) -> void:
 		var rh := minf(UI.px(52), (size.y - UI.px(8)) / names.size())
@@ -436,6 +452,8 @@ class Controls extends Control:
 				UI.text(self, Rect2(r.position.x + UI.px(22) + w, r.position.y, r.size.x - UI.px(34) - w, r.size.y), sub, UI.sans(), 15, UI.FAINT)
 			var from := Vector2(r.end.x if on_left else r.position.x, r.position.y + r.size.y * 0.5)
 			var to: Vector2 = at[name]
+			if name in ["a", "b", "x", "y"]:
+				to += Vector2(pr.size.x * 0.034, 0)     # the edge of the button: its letter stays readable
 			var elbow := Vector2(from.x + (UI.px(22) if on_left else -UI.px(22)), from.y)
 			draw_polyline(PackedVector2Array([from, elbow, to]), Color(UI.GOLD.r, UI.GOLD.g, UI.GOLD.b, 0.45), maxf(1.0, UI.px(1.5)), true)
 			draw_circle(to, maxf(2.0, UI.px(3.5)), UI.GOLD, true, -1.0, true)

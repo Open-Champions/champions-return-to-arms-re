@@ -1,6 +1,6 @@
 # How complete is it
 
-Updated at every check-in of the work. **Last update: 2026-10-13, 14:14 CDT.**
+Updated at every check-in of the work. **Last update: 2026-10-13, 14:24 CDT.**
 
 One table for the whole effort to make Champions: Return to Arms (SLUS-20973 v2.00)
 playable again, online, on today's computers. The percentages are estimates by the people
@@ -35,6 +35,45 @@ emulator; the "native build" rows run the game's own code translated to C++
 ([native-recomp](issues/native-recomp.md)), with no emulator. A hand-written C++ rebuild
 and the Godot client are tracked in their own repositories
 ([REPOSITORIES.md](REPOSITORIES.md)) and are not counted here.
+
+## Completed and verified
+
+"Verified" here means: checked by test on one Apple-silicon Mac, with the evidence in the
+linked document. It does not mean played by a person, or tried on two computers.
+
+- **Release of 2026-10-13, fix set `073064bb`** (29 sections, 99 words): the Mac
+  application, the stable build, the private download and the browser page all carry it.
+  Two copies 12,348 lockstep frames in step through a save point, a jump gate and the
+  game's own level change; three copies and four copies launched three times each, all in
+  step; 60 pictures a second at the title and in the first level
+  ([online-setup](online-setup.md), [issues/three-players](issues/three-players.md)).
+- **The fix set itself**: 7.9 million lockstep ticks on the native build with no difference
+  that reached a player, then 1.78 million more with the three newest sections
+  ([issues/native-soak](issues/native-soak.md)).
+- **Three- and four-player launches** from the lobby, both causes fixed
+  ([issues/three-players](issues/three-players.md)).
+- **The lobby server** with those fixes, and the browser relay with limits per player and
+  the bridge to application players, running in public.
+- **The art pack**: every dumped picture enlarged, the whole pack swept, interface art
+  redone to keep the game's shapes.
+- **The native build**: all 7,732 functions translated, 7,460 proven identical to the
+  original, none failing; picture, films, sound, online play; paced at exactly 60 pictures
+  a second; the Windows program builds from the same sources and gives byte-identical
+  results on an x86-64 stand-in ([issues/native-proof](issues/native-proof.md),
+  [issues/native-app](issues/native-app.md), [issues/native-windows](issues/native-windows.md)).
+- **Camera views in the native build**: overhead, action, third person, shoulder and first
+  person in seven levels and a fight; the simulation identical to overhead at every tick
+  in every view; a first-person player with mouse look in step online with an overhead
+  player for 1,819 ticks ([issues/native-first-person](issues/native-first-person.md)).
+
+## In progress - pushed, not finished, not verified as a whole
+
+- First-person and third-person **controls and combat**, the levels made to hold up from
+  eye height (ceilings, skies), the **Godot** scene beyond the first level and at 60
+  pictures a second, the **new interface**, the **portal** and our own online service, the
+  Windows program on a real Windows computer. Their patches and notes are in the
+  repository as work in progress; the table above gives each part's state.
+- Never done by anyone yet: a session played by a person, two computers on two networks.
 
 ## Since the last update
 

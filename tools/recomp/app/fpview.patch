@@ -44,7 +44,7 @@ Notes for the merge
  - fpview chains itself in front of rt_frame_hook (it notes two times for --opt view-timing
    and hands on to gfx_rt's): fpview::install() must stay after gfxrt::install().
 snapshot: Tue Oct 13 13:15:39 CDT 2026
-made:     Tue Oct 13 14:18:45 CDT 2026
+made:     Tue Oct 13 14:23:25 CDT 2026
 
 --- a/hle.txt
 +++ b/hle.txt

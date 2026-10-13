@@ -22,7 +22,6 @@ var in_game_hint := ""              # how to answer while the game has the butto
 
 func _init() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
-	set_anchors_preset(Control.PRESET_FULL_RECT)
 
 
 func push(item: Dictionary) -> void:
@@ -102,7 +101,7 @@ func _process(delta: float) -> void:
 
 
 func _card_size(it: Dictionary) -> Vector2:
-	var w := 560.0 if not compact else 420.0
+	var w := 560.0 if not compact else 470.0
 	var h := 88.0 if not compact else 74.0
 	if not it.has("on_accept") and String(it.get("text", "")) == "":
 		h = 64.0 if not compact else 56.0
@@ -112,8 +111,12 @@ func _card_size(it: Dictionary) -> Vector2:
 func _card_rects() -> Array:
 	var out := []
 	var y := UI.px(top_offset if not compact else 28.0)
+	var only: Dictionary = current() if compact else {}
 	for it in items:
 		var z := _card_size(it)
+		if compact and (only.is_empty() or it.id != only.id):
+			out.append([Rect2(0, 0, z.x, z.y), 0.0])      # the game has the screen: one card at a time
+			continue
 		var appear := clampf(float(it.age) / 0.16, 0.0, 1.0)
 		appear = 1.0 - pow(1.0 - appear, 3.0)
 		var leave := clampf(float(it.out) / 0.16, 0.0, 1.0) if float(it.out) >= 0.0 else 0.0
@@ -182,17 +185,18 @@ func _draw() -> void:
 		if it.has("on_accept"):
 			var label := String(it.get("accept_text", "Accept"))
 			var is_current: bool = not first_answerable.is_empty() and first_answerable.id == it.id
+			var by_key := compact and in_game_hint != "" and is_current
+			if by_key:
+				label = in_game_hint + "  " + label
 			var g := UI.px(30)
 			var tw := UI.text_width(label, UI.bold(), 18)
-			var bw := tw + UI.px(34) + (g + UI.px(8) if is_current else 0.0)
+			var bw := tw + UI.px(34) + (g + UI.px(8) if is_current and not by_key else 0.0)
 			var b := Rect2(right - bw, r.position.y + (r.size.y - UI.px(44)) * 0.5, bw, UI.px(44))
 			draw_style_box(UI.box(b.size.y * 0.5, Color(UI.GOLD.r, UI.GOLD.g, UI.GOLD.b, (0.95 if is_current else 0.16) * a), Color(1, 1, 1, 0.2 * a), 1), b)
 			var bx := b.position.x + UI.px(14)
 			var ink := UI.INK if is_current else UI.TEXT
-			if is_current:
-				if in_game_hint != "" and compact:
-					bx += 0.0
-				elif UI.pad_glyphs:
+			if is_current and not by_key:
+				if UI.pad_glyphs:
 					draw_circle(Vector2(bx - UI.px(4) + g * 0.5, b.position.y + b.size.y * 0.5), g * 0.5, Color(0.05, 0.05, 0.05, 0.55), true, -1.0, true)
 					W.Hints.draw_glyph(self, Rect2(bx - UI.px(4), b.position.y + (b.size.y - g) * 0.5, g, g), "y", glyph_style)
 				else:
@@ -200,8 +204,7 @@ func _draw() -> void:
 					draw_style_box(UI.box(UI.px(6), Color(0.05, 0.05, 0.05, 0.75)), cap)
 					UI.text(self, cap, "Y", UI.bold(), 15, UI.TEXT, HORIZONTAL_ALIGNMENT_CENTER)
 				bx += g + UI.px(4)
-			UI.text(self, Rect2(bx, b.position.y, b.end.x - bx - UI.px(8), b.size.y), label if not (compact and in_game_hint != "" and is_current) else in_game_hint + "  " + label,
-				UI.bold(), 18, Color(ink.r, ink.g, ink.b, a), HORIZONTAL_ALIGNMENT_CENTER)
+			UI.text(self, Rect2(bx, b.position.y, b.end.x - bx - UI.px(8), b.size.y), label, UI.bold(), 18, Color(ink.r, ink.g, ink.b, a), HORIZONTAL_ALIGNMENT_CENTER)
 			right = b.position.x - UI.px(14)
 		var title := String(it.get("title", ""))
 		var body := String(it.get("text", ""))

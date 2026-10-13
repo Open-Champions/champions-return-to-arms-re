@@ -181,6 +181,7 @@ struct ModeSettings {
     bool head_pose;         // first person: the eye follows the head joint (else a fixed height)
     bool hide_player;
     bool collide;           // pull in when the level is between pivot and camera
+    float follow = 0;       // 0..1: how far the view turns from the game camera's heading to the character's facing
 };
 ModeSettings g_set[MODE_COUNT] = {
     //  fov near dist height side pitch  min   max  fwd  speed far  head   hide   collide
@@ -216,6 +217,7 @@ float g_anchor_z = 0;               // the character's height, smoothed over ste
 bool g_anchor_valid = false;
 float g_pull[MODE_COUNT];           // distance in use after pulling in for the level
 float g_raise[MODE_COUNT];          // degrees the camera has swung up over what stood in the way
+float g_turn = 0;                   // degrees the view is turned from the game camera's heading toward the facing (follow)
 u32 g_last_tick = 0;
 bool g_in_pass = false;             // a view is in place: between begin_pass and end_pass
 u8 g_saved[SAVED_BYTES];
@@ -565,6 +567,20 @@ bool begin_pass(Ctx* c) {
     g_last_tick = v.tick;
     in.dt = (float)ticks / 60.0f;
 
+    // "follow": the view turned from the game camera's heading toward where the character faces, eased.
+    // Picture only - the stick still means what it means to the game's camera (fpview.h)
+    {
+        float want = g_set[wanted].follow > 0 ? wrap_deg(in.facing - in.yaw) * clampf(g_set[wanted].follow, 0, 1) : 0;
+        if (g_was_fallback) g_turn = want;
+        else g_turn += wrap_deg(want - g_turn) * (1 - std::exp(-in.dt * 5.0f));
+        g_turn = wrap_deg(g_turn);
+        if (g_turn != 0) {
+            float a = (in.yaw + g_turn) * DEG;
+            in.heading = v3(std::cos(a), std::sin(a), 0);
+            in.left = v3(-in.heading.y, in.heading.x, 0);
+        }
+    }
+
     // the character's height, eased over steps and stairs (the game eases its look-at point the same way)
     if (!g_anchor_valid || std::fabs(in.feet.z - g_anchor_z) > 90) g_anchor_z = in.feet.z;
     else g_anchor_z += (in.feet.z - g_anchor_z) * (1 - std::exp(-in.dt * 14.0f));
@@ -638,7 +654,7 @@ bool begin_pass(Ctx* c) {
     v.head_from_pose = false;
     v.facing = in.facing;
     v.facing_dir = in.facing_dir;
-    v.look_yaw = in.yaw;
+    v.look_yaw = wrap_deg(in.yaw + g_turn);
     v.look_pitch = std::asin(clampf(shown.forward.z, -1, 1)) / DEG;
     for (const Callout& call : g_on_view) ((ViewFn)call.fn)(v, c, call.user);
 
@@ -769,6 +785,7 @@ bool setting(const char* key, const char* value) {
     else if (name == "eye_forward") s.eye_forward = clampf(number, -50, 50);
     else if (name == "look_speed") s.look_speed = clampf(number, 0, 720);
     else if (name == "far") s.far = clampf(number, 0, 1800);
+    else if (name == "follow") s.follow = clampf(number, 0, 1);
     else if (name == "head") s.head_pose = !strcmp(value, "pose");
     else if (name == "hide_player") s.hide_player = yes;
     else if (name == "collide") s.collide = yes;
@@ -797,8 +814,8 @@ const char* settings_text() {
             snprintf(line, sizeof line, "view.%s.eye_forward = %g\nview.%s.hide_player = %s\n", NAMES[m], s.eye_forward, NAMES[m], s.hide_player ? "yes" : "no");
             g_settings_text += line;
         }
-        snprintf(line, sizeof line, "view.%s.pitch = %g\nview.%s.pitch_min = %g\nview.%s.pitch_max = %g\nview.%s.look_speed = %g\n", NAMES[m], s.pitch, NAMES[m],
-                 s.pitch_min, NAMES[m], s.pitch_max, NAMES[m], s.look_speed);
+        snprintf(line, sizeof line, "view.%s.pitch = %g\nview.%s.pitch_min = %g\nview.%s.pitch_max = %g\nview.%s.look_speed = %g\nview.%s.follow = %g\n", NAMES[m],
+                 s.pitch, NAMES[m], s.pitch_min, NAMES[m], s.pitch_max, NAMES[m], s.look_speed, NAMES[m], s.follow);
         g_settings_text += line;
     }
     return g_settings_text.c_str();

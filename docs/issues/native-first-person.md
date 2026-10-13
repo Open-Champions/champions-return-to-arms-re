@@ -9,7 +9,7 @@ the camera system for the native build of Champions: Return to Arms (SLUS-20973 
 
 ## STATE (rewritten at every step; read this first after a stop)
 
-**2026-10-13 14:16 - all five views run; the simulation is the overhead view's in each.**
+**2026-10-13 14:23 - all five views run; the simulation is the overhead view's in each.**
 
 - **Ran:** overhead, action, chase, shoulder, first person in seven levels (hub, valor,
   honor, arachna1, fire3, tormenta, islsm1), a fight, level changes, and the opening
@@ -21,11 +21,13 @@ the camera system for the native build of Champions: Return to Arms (SLUS-20973 
 - Three things had to be found for that (section 5.2): the view is held off during the
   blanked warm-up; a view's draw pass costs the virtual console no time; the game's
   "terrain late" count is held while a view is drawn.
-- **Not run:** a window (every run was off screen), the V key, widescreen with a view, the
-  settings file round trip, a net game (the prediction copy as anchor, section 3, is Read
-  only), two local players, death, the pause menu, inventory and dialogue with a view
-  selected (the fallback rule covers them by the camera mode; only cutscenes and loads were
-  seen).
+- **Ran:** with a view selected, the pause menu (the view stays under it), the bag and a
+  dialogue (the game's own camera has them; the view is back afterwards), a 16:9 picture,
+  the view lines of a settings file, `app view ...`, and 7 seconds of three views paced in
+  a small test window (section 6.1).
+- **Not run:** the V key (a test window takes no keys but the pad's), a first start that
+  writes the settings file, a net game (the prediction copy as anchor, section 3, is Read
+  only), two local players, death, a shop, a vehicle.
 - The patch is `tools/recomp/app/fpview.patch`; new files `tools/recomp/app/fpview.h`,
   `fpview.cpp`. Nothing in the shared tree compiles them until the patch is applied.
 - My copy of the sources and my builds: `local/recomp-fp/` (`base` = `tools/recomp` as it
@@ -33,9 +35,8 @@ the camera system for the native build of Champions: Return to Arms (SLUS-20973 
   `tools/recomp` is `src` and whose `local/recomp-out` holds my translations, objects and
   `bin/rta_app_fp`, `bin/rta_app_orig_fp`; `work` = scripts and results; `pictures`).
 
-Next (section 8 has the list): a window and the key; chase and shoulder against creatures
-and trees in the way; the first-person eye from the head joint; the listener of the sound
-at the view.
+Next (section 8 has the list): chase and shoulder against creatures and trees in the way;
+the first-person eye from the head joint; the listener of the sound at the view.
 
 ## 1. How to apply, build and select a view
 
@@ -332,6 +333,39 @@ What they show, by kind of level:
 | islsm1 (beach) | sea, foam and a sky with clouds in first person | the level's ogre stands at the start: in chase and shoulder the camera is behind *him* and his back fills the picture (creatures are not in the camera's line-of-sight test) |
 | blood1, fay1, drunare | open with a cutscene: every view shows the game's own camera through it, letterbox and all, as intended | - |
 
+### 6.1 Menus, a dialogue, widescreen, settings, a window (Ran)
+
+`pictures/screens/` (`work/mkscreens.py`; the first level, shoulder and first person at
+4:3, chase at 16:9 in `wide/`): `s1-pause` - the pause menu over the view, which stays (the
+game is frozen, the camera mode is still "follow"); `s3-bag` and `s7-dialogue` - the
+game's own screens with its own camera ("the game holds the camera" in `app view info`);
+`s4-after-bag`, `s8-after-dialogue-12`, `s9-after-dialogue` - the view is back; `s5-map`.
+At 16:9 the chase view is wide like the game's own (the view's projection goes through
+the widescreen hooks), HUD at its edge, menu centred.
+
+A settings file with `view = first`, `view.first.fov = 82`, `view.first.eye_height = 75`,
+`view.chase.distance = 220` and one unknown line: each took effect (`app view info`: fov
+82, the eye 75 over the feet, the chase camera 220 back), the unknown line was reported;
+`app view set view.chase.distance 90` and `app view next` did what they say.
+
+Paced, in a test window of 320 x 240 behind the others (`work/win/`): chase, first and
+shoulder with the sticks held, 410 pictures in 7.0 s (58.4 a second, the build's own
+pace), 402 of them standing exactly two refreshes of the 120 Hz display, three longer
+(the longest 93 ms); 6.9 ms of processor time a picture over all threads.
+
+### 6.2 "follow" (Ran)
+
+`view.<mode>.follow = 1` turns the view from the game camera's heading to the
+character's facing, eased (picture only; default 0). The fight route with it:
+`pictures/fight-follow/`. In first person the boars are then in the picture
+(`fight-6-first.png`; at `fight-2-first.png` one is at the feet, its ears at the lower
+edge - they are half the eye's height); the chase camera swings behind the character
+(`valor-meet-chase.png`: character and boar side by side). The rig session with
+`view.first.follow=1` is identical to overhead like the others. With it on, "up" on the
+stick is no longer into the picture once the character has turned (the stick is the game
+camera's): for a view that both follows and steers, the game's yaw has to follow - the
+controls work's.
+
 Everywhere: the HUD is where it was; names and prompts follow the view (they are
 projected by the game with the view's matrix); the heading the view looks along is the
 game camera's, not the character's (section 4), so in first person a fight the character
@@ -356,8 +390,9 @@ Runtime options of `fpview.cpp` (after `--`): `view=NAME`, `view-zoom=off`,
 
 ## 8. Left
 
-- **A window.** Nothing here was run in a window: the V key, the easing as a person sees
-  it, the stick's look speed, a change of the window's shape with a view selected.
+- **A person at the window.** The V key, the easing as a person sees it, the stick's look
+  speed, a change of the window's shape with a view selected: none of it was looked at by
+  a person (a test window takes no keys).
 - **The first-person eye.** A fixed height (60 x the character's height extent / 72) over
   the smoothed feet. The head joint can be read (`model_getAttachPoint` 0x1754a0,
   `anim_getJointMatrix` 0x16f720 on the animation state at creature +0x114); it is not

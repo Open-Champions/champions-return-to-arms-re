@@ -46,6 +46,7 @@ func build() -> void:
 	say(Rect2(0, 0, left_w, UI.px(60)), title, 44, UI.TEXT, UI.serif_bold())
 	y += UI.px(70)
 	# ---- only when something is wrong ----
+	_find_odd(members, host_member)
 	var wrong := _mismatch_text(members, mine, host_member)
 	if wrong != "":
 		var banner := Banner.new()
@@ -80,6 +81,8 @@ func build() -> void:
 		put(seat, Rect2(k * (seat_w + seat_gap), y, seat_w, seats_h))
 		seat.build()
 		if member.is_empty():
+			if state != Session.ROOM_OPEN:
+				seat.focus_mode = Control.FOCUS_NONE
 			seat.activated.connect(func() -> void: portal.call("go", "friends"))
 		else:
 			var m := member
@@ -191,8 +194,9 @@ func build() -> void:
 			"done": func(t: String) -> void:
 				chat_typed = t
 				_say()}))
-	if want_focus == "" or (want_focus == "main" and main.disabled):
-		want_focus = "main" if not main.disabled else "invite"
+	if want_focus in ["", "main", "invite", "leave"] or want_focus.begins_with("seat"):
+		if want_focus == "" or find_key(self, want_focus) == null:
+			want_focus = "main" if not main.disabled else ("invite" if not invite.disabled else "leave")
 
 
 func _slot_taken(members: Array, k: int) -> bool:
@@ -210,15 +214,31 @@ func _names(list: Array) -> String:
 	return "%d players" % list.size()
 
 
-static func _is_odd(member: Dictionary, host_member: Dictionary) -> bool:
-	# a copy of the game that said what it is, and it is not what the host's is
-	if host_member.is_empty() or bool(member.get("host", false)):
-		return false
-	var a := int(member.get("fix_set", 0))
-	var b := int(host_member.get("fix_set", 0))
-	if a != 0 and b != 0 and (a != b or int(member.get("fix_words", 0)) != int(host_member.get("fix_words", 0))):
-		return true
-	return false
+var odd_ids := {}
+
+
+func _find_odd(members: Array, host_member: Dictionary) -> void:
+	# whose copy of the game is not what most of the room has (a tie: not what the host has)
+	odd_ids = {}
+	if not bool(room.get("mismatch", false)):
+		return
+	var groups := {}
+	for m in members:
+		var k := "%d/%d/%d" % [int(m.get("fix_set", 0)), int(m.get("fix_words", 0)), int(m.get("arith_does", 0))]
+		groups[k] = int(groups.get(k, 0)) + 1
+	var host_key := "%d/%d/%d" % [int(host_member.get("fix_set", 0)), int(host_member.get("fix_words", 0)), int(host_member.get("arith_does", 0))]
+	var best := host_key
+	for k in groups:
+		if int(groups[k]) > int(groups.get(best, 0)):
+			best = k
+	for m in members:
+		var k := "%d/%d/%d" % [int(m.get("fix_set", 0)), int(m.get("fix_words", 0)), int(m.get("arith_does", 0))]
+		if k != best:
+			odd_ids[String(m.id)] = true
+
+
+func _is_odd(member: Dictionary, _host_member: Dictionary) -> bool:
+	return odd_ids.has(String(member.get("id", "")))
 
 
 func _mismatch_text(members: Array, mine: Dictionary, host_member: Dictionary) -> String:
@@ -232,7 +252,7 @@ func _mismatch_text(members: Array, mine: Dictionary, host_member: Dictionary) -
 		return "These copies of the game do not match - somebody needs to update."
 	if odd.size() == 1:
 		if bool(odd[0].me):
-			return "Your game is a different version from %s's - you need to update." % String(host_member.get("name", "the host"))
+			return "Your game is a different version from the others' - you need to update."
 		return "%s's game is a different version - they need to update." % String(odd[0].name)
 	var names := []
 	for m in odd:
@@ -318,6 +338,7 @@ func session_changed(what: String) -> void:
 func session_event(e: Dictionary) -> void:
 	if int(e.type) == Session.EV_GAME_OVER:
 		played = true
+		want_focus = "main"
 		rebuild()
 
 
@@ -353,7 +374,7 @@ class Seat extends W.Focusable:
 		UI.focus_glow(self, r, radius, e)
 		if member.is_empty():
 			# an open seat: a dashed outline and what to do about it
-			draw_style_box(UI.box(radius, Color(1, 1, 1, 0.025 + 0.05 * e)), r)
+			draw_style_box(UI.box(radius, Color(UI.PANEL.r, UI.PANEL.g, UI.PANEL.b, 0.35).lerp(UI.PANEL_HOT, e)), r)
 			_dashes(r.grow(-UI.px(1)), radius, Color(1, 1, 1, 0.20 + 0.3 * e))
 			UI.focus_ring(self, r, radius, e)
 			var m := UI.px(64)

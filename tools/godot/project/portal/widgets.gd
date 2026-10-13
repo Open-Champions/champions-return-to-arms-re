@@ -147,9 +147,15 @@ class Btn extends Focusable:
 				fill = Color(0.30, 0.10, 0.10).lerp(Color(0.52, 0.15, 0.14), e)
 				line = Color(UI.RED.r, UI.RED.g, UI.RED.b, 0.5)
 		if disabled:
-			fill = Color(fill.r, fill.g, fill.b, fill.a * 0.35)
-			ink = Color(ink.r, ink.g, ink.b, 0.35) if kind != "primary" else Color(0, 0, 0, 0.45)
-			line = Color(1, 1, 1, 0.05)
+			if kind == "primary":
+				# what will be the one thing to press, not yet: an outline in its colour
+				fill = Color(UI.GOLD.r, UI.GOLD.g, UI.GOLD.b, 0.07)
+				ink = Color(UI.GOLD.r, UI.GOLD.g, UI.GOLD.b, 0.50)
+				line = Color(UI.GOLD.r, UI.GOLD.g, UI.GOLD.b, 0.30)
+			else:
+				fill = Color(fill.r, fill.g, fill.b, fill.a * 0.35)
+				ink = Color(ink.r, ink.g, ink.b, 0.35)
+				line = Color(1, 1, 1, 0.05)
 		if pressed_t > 0.0:
 			r = r.grow(-UI.px(2) * pressed_t)
 		UI.focus_glow(self, r, radius, e)
@@ -518,6 +524,8 @@ class Field extends Focusable:
 				x = area.position.x + (area.size.x + w) * 0.5 + UI.px(3)
 				if text == "":
 					x = area.position.x + (area.size.x - ghost_w) * 0.5 - UI.px(8)
+			elif text == "":
+				x = area.position.x - UI.px(7)
 			var ch := UI.px(fsize * 1.1)
 			draw_rect(Rect2(x, (size.y - ch) * 0.5, maxf(2.0, UI.px(2.5)), ch), UI.GOLD)
 
@@ -822,8 +830,9 @@ class Hints extends Control:
 			UI.text(self, Rect2(x, 0, tw + 2.0, h), label, UI.sans(), 19, UI.DIM)
 			x -= UI.px(10)
 			if UI.pad_glyphs:
-				x -= g
-				draw_glyph(self, Rect2(x, (h - g) * 0.5, g, g), String(it.get("pad", "a")), style)
+				var gw := glyph_width(String(it.get("pad", "a")), style, g)
+				x -= gw
+				draw_glyph(self, Rect2(x, (h - g) * 0.5, gw, g), String(it.get("pad", "a")), style)
 			else:
 				var cap := String(it.get("key", "Enter"))
 				var cw := maxf(g, UI.text_width(cap, UI.bold(), 15) + UI.px(20))
@@ -835,6 +844,16 @@ class Hints extends Control:
 		if left_text != "":
 			UI.dot(self, Vector2(UI.px(7), h * 0.5), UI.px(5), left_colour)
 			UI.text(self, Rect2(UI.px(24), 0, maxf(10.0, x - UI.px(24)), h), left_text, UI.sans(), 18, UI.DIM)
+
+	static func glyph_label(name: String, glyph_style: String) -> String:
+		if glyph_style == "ps":
+			return {"start": "OPTIONS", "lb": "L1", "rb": "R1", "lr": "L1  R1", "dpad": "D-PAD", "back": "SHARE"}.get(name, name.to_upper()) as String
+		return {"start": "START", "lb": "LB", "rb": "RB", "lr": "LB  RB", "dpad": "D-PAD", "back": "BACK"}.get(name, name.to_upper()) as String
+
+	static func glyph_width(name: String, glyph_style: String, round_size: float) -> float:
+		if name in ["a", "b", "x", "y"]:
+			return round_size
+		return UI.text_width(glyph_label(name, glyph_style), UI.bold(), 13) + UI.px(18)
 
 	static func draw_glyph(ci: CanvasItem, rect: Rect2, name: String, glyph_style := "xbox") -> void:
 		var c := rect.position + rect.size * 0.5
@@ -860,9 +879,7 @@ class Hints extends Control:
 			else:
 				UI.text(ci, rect, name.to_upper(), UI.bold(), rad * 1.05 / UI.s, UI.TEXT, HORIZONTAL_ALIGNMENT_CENTER)
 			return
-		var label := {"start": "START", "lb": "LB", "rb": "RB", "lr": "LB  RB", "dpad": "D-PAD", "back": "BACK"}.get(name, name.to_upper()) as String
-		if glyph_style == "ps":
-			label = {"start": "OPTIONS", "lb": "L1", "rb": "R1", "lr": "L1  R1", "dpad": "D-PAD", "back": "SHARE"}.get(name, name.to_upper()) as String
+		var label := glyph_label(name, glyph_style)
 		var cw := UI.text_width(label, UI.bold(), 13) + UI.px(18)
 		var crect := Rect2(rect.end.x - cw, rect.position.y + rect.size.y * 0.5 - UI.px(14), cw, UI.px(28))
 		ci.draw_style_box(UI.box(UI.px(14), Color(1, 1, 1, 0.07), Color(1, 1, 1, 0.25), 1), crect)

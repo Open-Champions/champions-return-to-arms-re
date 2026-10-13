@@ -92,7 +92,10 @@ func open_portal(size: Vector2i, setup := {}, options := {}) -> void:
 	portal.options = o
 	UI.pad_glyphs = bool(setup.get("pad", false))
 	vp.add_child(portal)
-	await wait(0.5)
+	await wait(0.3)
+	if bool(o.mock) and portal.session.available():
+		await until(func() -> bool: return portal.session.online() and not portal.session.friends().is_empty())
+		await wait(0.1)
 
 
 func close_portal() -> void:
@@ -294,7 +297,7 @@ func many_friends(count: int, long_names := false) -> Array:
 # The scripted walk-through, with a controller: first start -> the name -> home -> host ->
 # a friend walks in -> ready -> start -> the game -> back in the room.
 func scenario_walk() -> void:
-	await open_portal(Vector2i(1920, 1080), {"pad": true})
+	await open_portal(Vector2i(1920, 1080), {"pad": true}, {"mock_speed": "2"})
 	await shot("walk-01-first-start")
 	await pad_type("Tester")
 	await shot("walk-02-name-typed")
@@ -305,24 +308,39 @@ func scenario_walk() -> void:
 	print("shots: walk focus ", focused())
 	await shot("walk-04-home-host")
 	await pad(JOY_BUTTON_A)
-	await mock(0.6)
+	await until(func() -> bool: return int(portal.session.room().state) == 2)
 	await shot("walk-05-room-open")
-	await mock(3.2)
+	await until(func() -> bool: return int(portal.session.room().count) >= 2)
 	await shot("walk-06-friend-walked-in")
-	await mock(3.0)
+	await until(func() -> bool: return int(portal.session.room().count) >= 2 and bool(portal.session.room().members[1].ready))
 	await shot("walk-07-friend-ready")
-	await mock(7.2)
+	await until(func() -> bool: return int(portal.session.room().count) >= 3 and bool(portal.session.room().all_ready))
 	await shot("walk-08-everybody-ready")
 	print("shots: walk focus in room ", focused())
+	portal.session.setting("mock-speed", "0.7")
 	await focus_key("main")
 	await pad(JOY_BUTTON_A)
-	await wait(0.12)
+	await wait(0.2)
 	await shot("walk-09-starting")
-	await mock(3.4)
-	await shot("walk-10-in-the-game")
-	await mock(38.0)
+	await until(func() -> bool: return portal.session.room().members.size() > 1 and int(portal.session.room().members[1].route) >= 2)
+	await shot("walk-10-starting-connected")
+	portal.session.setting("mock-speed", "6")
+	await until(func() -> bool: return not portal.shown)
 	await wait(0.4)
-	await shot("walk-11-back-in-the-room")
+	await shot("walk-11-in-the-game")
+	await until(func() -> bool: return portal.shown, 20.0)
+	await wait(0.4)
+	print("shots: walk focus back in room ", focused())
+	await shot("walk-12-back-in-the-room")
+
+
+func until(condition: Callable, most := 12.0) -> void:
+	var t := 0.0
+	while t < most and not condition.call():
+		await get_tree().create_timer(0.05).timeout
+		t += 0.05
+	if t >= most:
+		print("shots: WAITED IN VAIN (", most, " s)")
 
 
 func scenario_states() -> void:
@@ -413,7 +431,7 @@ func scenario_friends() -> void:
 	# adding a friend by code, with a controller: the letters on screen
 	await focus_key("add_code")
 	await pad(JOY_BUTTON_A)
-	await pad_type_entry("K7QF2MXD")
+	await pad_type_entry("WREN2DGS")
 	await shot("friends-add-code-keys")
 	await pad(JOY_BUTTON_START)
 	await wait(0.4)

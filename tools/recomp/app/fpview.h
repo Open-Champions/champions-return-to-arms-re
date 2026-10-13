@@ -106,7 +106,12 @@ void add_pitch(float degrees);
 // A per-view setting, as a line of the settings file gives it: key "view" (value = a mode
 // name), or "view.<mode>.<name>" with <name> one of fov, near, distance, height, side,
 // pitch, pitch_min, pitch_max, eye_height, eye_forward, look_speed, head (pose|fixed),
-// hide_player (yes|no), collide (yes|no), far, ease.  False when the key is not one.
+// hide_player (yes|no), collide (yes|no), far, follow, and "view.ease".  False when the key
+// is not one.  follow (0..1, default 0): the view turns from the game camera's heading toward
+// where the character faces, eased - a chase camera that swings behind the character, a
+// first-person view that looks at what the character strikes.  It is picture only: the move
+// stick keeps the meaning the game's camera gives it, so with follow on, "up" is no longer
+// into the picture once the character has turned.  View::look_yaw has the heading in use.
 bool setting(const char* key, const char* value);
 // The settings as lines for the settings file.
 const char* settings_text();

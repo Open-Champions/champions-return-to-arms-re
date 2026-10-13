@@ -35,13 +35,15 @@ func build() -> void:
 			online += 1
 	say(Rect2(0, 0, left_w * 0.6, UI.px(60)), "Friends", 44, UI.TEXT, UI.serif_bold())
 	if not friends.is_empty():
-		say(Rect2(left_w * 0.5, UI.px(14), left_w * 0.5 - UI.px(20), UI.px(40)), "%d of %d online" % [online, friends.size()], 20, UI.DIM, null, HORIZONTAL_ALIGNMENT_RIGHT)
+		var tw := UI.text_width("Friends", UI.serif_bold(), 44)
+		say(Rect2(tw + UI.px(22), UI.px(16), left_w - tw - UI.px(30), UI.px(40)), "%d of %d online" % [online, friends.size()], 20, UI.DIM)
 	var list_rect := Rect2(-UI.px(8), UI.px(68), left_w + UI.px(8), size.y - UI.px(68))
 	var nothing := friends.is_empty() and requests.is_empty() and invites.is_empty()
 	if nothing:
 		var empty := Empty.new()
 		empty.code = String(me.get("friend_code", ""))
 		empty.offline = int(me.get("link", 0)) != Session.LINK_ONLINE
+		empty.connecting = int(me.get("link", 0)) == Session.LINK_CONNECTING
 		empty.problem = String(me.get("problem", ""))
 		put(empty, Rect2(0, UI.px(76), left_w, size.y - UI.px(76)))
 	else:
@@ -298,8 +300,7 @@ func _add() -> void:
 		portal.call("toast", "Type your friend's code first", "info")
 		return
 	if portal.session.friend_add(code) == 0:
-		code_typed = ""
-		portal.call("toast", "Asked - they show up here when they accept", "good")
+		code_typed = ""             # the list shows "asked, not answered yet"; a refusal comes as a notice in the service's words
 		rebuild()
 
 
@@ -345,6 +346,7 @@ class BigText extends Control:
 class Empty extends Control:
 	var code := ""
 	var offline := false
+	var connecting := false
 	var problem := ""
 
 	func _init() -> void:
@@ -359,11 +361,13 @@ class Empty extends Control:
 		var w := minf(size.x - UI.px(80), UI.px(720))
 		var x := (size.x - w) * 0.5
 		var y := c.y + m * 0.5 + UI.px(30)
-		UI.text(self, Rect2(x, y, w, UI.px(50)), "No friends here yet", UI.serif_bold(), 38, UI.TEXT, HORIZONTAL_ALIGNMENT_CENTER)
+		UI.text(self, Rect2(x, y, w, UI.px(50)), "No friends here yet" if not offline else "Friends", UI.serif_bold(), 38, UI.TEXT, HORIZONTAL_ALIGNMENT_CENTER)
 		y += UI.px(62)
 		var lines := ["Read your code out to a friend - or type theirs in on the right.", "Once they accept, they show up here with the character they play,", "and one press joins their game."]
-		if offline:
-			lines = ["You are offline right now" + (": " + problem if problem != "" else "."), "Playing alone works; friends come back with the connection."]
+		if connecting:
+			lines = ["Connecting..."]
+		elif offline:
+			lines = ["You are offline right now.", problem, "Playing alone works; friends come back with the connection."]
 		for line in lines:
 			UI.text(self, Rect2(x, y, w, UI.px(32)), line, UI.sans(), 21, UI.DIM, HORIZONTAL_ALIGNMENT_CENTER)
 			y += UI.px(32)
