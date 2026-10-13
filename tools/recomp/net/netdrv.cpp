@@ -35,38 +35,25 @@
 // Nothing here waits: every entry answers at once (the game asks for 0 or 1 ms), with
 // libnet's -500 for "not yet".  Options: netdrv.h.  What was run: docs/issues/native-online.md.
 #include "netdrv.h"
+#include "sock.h"       // the host's sockets: BSD or Winsock (first: on Windows it brings <winsock2.h>, which wants to come before the rest)
 
 #include "rt.h"
 #include "funcs.h"
 
 #include <algorithm>
-#include <arpa/inet.h>
-#include <cerrno>
 #include <chrono>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
-#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
-#include <ifaddrs.h>
 #include <map>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <poll.h>
 #include <random>
 #include <set>
 #include <sstream>
-#include <sys/socket.h>
-#include <sys/stat.h>
 #include <thread>
-#include <unistd.h>
-#ifdef __APPLE__
-#include <mach-o/dyld.h>
-#endif
 
 unsigned recomp_patches(const u32 (**words)[2]);
 __attribute__((weak)) unsigned recomp_patch_set_words() { return ~0u; }    // a translation older than --extra-pnach
@@ -90,12 +77,13 @@ const u8 ARITH_MARK[] = {0x00, 0x06, 'R', 'T', 'A', 'a', 'r', 'i', '1'};
 const size_t ARITH_SIZE = sizeof(ARITH_MARK) + 2;
 
 const u32 MADE_UP_NET = 0xC6120000, MADE_UP_MASK = 0xFFFE0000;      // 198.18.0.0/15, set aside for test networks
+const u32 LOOPBACK = 0x7F000001;                                    // 127.0.0.1
 const u32 GUEST_SERVER_NAME = 0xC6120002;                           // 198.18.0.2: the server, when this computer has no address
 
 struct Conn {
     int type = T_DGRAM;
     u16 game_port = 0;              // datagram: the game's UDP port
-    int fd = -1;                    // stream: the host connection
+    sock::Handle fd = sock::NONE;   // stream: the host connection
     u32 dest_ip = 0, real_ip = 0;
     u16 dest_port = 0;
     bool connecting = false, connected = false, eof = false, failed = false;
@@ -103,7 +91,7 @@ struct Conn {
     std::vector<u8> head;           // the first bytes from a gateway, for its reply
     u64 out = 0, in = 0;
 };
-struct UdpHost { int fd = -1; u16 host_port = 0; };
+struct UdpHost { sock::Handle fd = sock::NONE; u16 host_port = 0; };
 struct PeerState {
     int64_t first_heard = 0, last_heard = 0;
     u16 local_port = 0;
@@ -197,60 +185,12 @@ u32 arg(Ctx* c, int index) { return (u32)c->r[4 + index]; }
 void answer(Ctx* c, s32 result) { c->r[2] = (u64)(s64)result; }
 
 // ---- this computer ------------------------------------------------------------------------
-// the address this computer uses toward the outside (no packet is sent)
-u32 primary_address() {
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) return 0;
-    sockaddr_in to = {};
-    to.sin_family = AF_INET;
-    to.sin_addr.s_addr = htonl(0x08080808);
-    to.sin_port = htons(53);
-    u32 found = 0;
-    if (connect(fd, (sockaddr*)&to, sizeof(to)) == 0) {
-        sockaddr_in local = {};
-        socklen_t length = sizeof(local);
-        if (getsockname(fd, (sockaddr*)&local, &length) == 0) found = ntohl(local.sin_addr.s_addr);
-    }
-    close(fd);
-    return (found == 0 || is_loopback(found)) ? 0 : found;
-}
-void list_own_addresses() {
-    ifaddrs* list = nullptr;
-    if (getifaddrs(&list) != 0) return;
-    for (ifaddrs* i = list; i; i = i->ifa_next)
-        if (i->ifa_addr && i->ifa_addr->sa_family == AF_INET) D.own_addresses.insert(ntohl(((sockaddr_in*)i->ifa_addr)->sin_addr.s_addr));
-    freeifaddrs(list);
-}
+// (the sockets themselves are in sock.h)
+void list_own_addresses() { sock::own_addresses(D.own_addresses); }
 bool resolve_host(const std::string& name, u32& out) {
     if (parse_ip(name, out)) return true;
-    addrinfo hints = {}, *found = nullptr;
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo(name.c_str(), nullptr, &hints, &found) != 0 || !found) return false;
-    out = ntohl(((sockaddr_in*)found->ai_addr)->sin_addr.s_addr);
-    freeaddrinfo(found);
-    return true;
+    return sock::resolve(name, out);
 }
-std::string executable_dir() {
-#ifdef __APPLE__
-    char path[4096];
-    uint32_t size = sizeof(path);
-    if (_NSGetExecutablePath(path, &size) == 0) return fs::path(path).parent_path().string();
-#endif
-    return ".";
-}
-void set_non_blocking(int fd) {
-    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
-#ifdef SO_NOSIGPIPE
-    int one = 1;
-    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
-#endif
-}
-#ifdef MSG_NOSIGNAL
-const int SEND_FLAGS = MSG_NOSIGNAL;
-#else
-const int SEND_FLAGS = 0;
-#endif
 
 // ---- the network setting on the memory card ------------------------------------------------
 // What Sony's set-up program saves for "Ethernet adaptor, automatic address, automatic
@@ -356,7 +296,7 @@ std::string option(const char* name, const char* fallback = "") {
 void do_setup() {
     D.ready = true;
     D.start = std::chrono::steady_clock::now();
-    signal(SIGPIPE, SIG_IGN);
+    if (!sock::start()) rtanet::say("the host's network could not be started: the game will not get online");
     rtanet::Info& I = D.info;
     std::string value = option("net-log");
     if (!value.empty()) D.log_file = fopen(value.c_str(), "w");
@@ -370,7 +310,7 @@ void do_setup() {
     list_own_addresses();
 
     I.data_dir = option("net-data");
-    if (I.data_dir.empty()) I.data_dir = (fs::path(executable_dir()).parent_path() / "app-data").string();
+    if (I.data_dir.empty()) I.data_dir = (fs::path(sock::program_dir()).parent_path() / "app-data").string();
     I.card_dir = option("net-card");
     if (I.card_dir.empty()) I.card_dir = (fs::path(I.data_dir) / "card").string();
     std::error_code ec;
@@ -387,9 +327,9 @@ void do_setup() {
         // A server on this computer is reached at the computer's outside address, as the
         // emulator-based application reaches it: the lobby server must see the address
         // other players' copies can use.
-        I.server_ip = primary_address();
+        I.server_ip = sock::outside_address();
         if (I.server_ip == 0) {
-            I.server_ip = INADDR_LOOPBACK;
+            I.server_ip = LOOPBACK;
             I.guest_server_ip = GUEST_SERVER_NAME;
             I.server_text = "this computer, which has no network address";
         } else I.server_text = "this computer (" + rtanet::ip_text(I.server_ip) + ")";
@@ -482,18 +422,11 @@ UdpHost& udp_host(u16 game_port) {
     auto found = D.udp.find(game_port);
     if (found != D.udp.end()) return found->second;
     UdpHost entry;
-    entry.fd = socket(AF_INET, SOCK_DGRAM, 0);
-    sockaddr_in local = {};
-    local.sin_family = AF_INET;
-    local.sin_port = htons(game_port);
-    bool same = D.bind_game_ports && game_port >= 1024 && bind(entry.fd, (sockaddr*)&local, sizeof(local)) == 0;
-    if (!same) { local.sin_port = 0; bind(entry.fd, (sockaddr*)&local, sizeof(local)); }
-    set_non_blocking(entry.fd);
-    int size = 256 * 1024;
-    setsockopt(entry.fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof(size));
-    socklen_t length = sizeof(local);
-    getsockname(entry.fd, (sockaddr*)&local, &length);
-    entry.host_port = ntohs(local.sin_port);
+    entry.fd = sock::udp();
+    bool same = D.bind_game_ports && game_port >= 1024 && sock::bind_port(entry.fd, game_port);
+    if (!same) sock::bind_port(entry.fd, 0);
+    sock::receive_buffer(entry.fd, 256 * 1024);
+    entry.host_port = sock::local_port(entry.fd);
     rtanet::log("UDP port %u of the game is host port %u%s", game_port, entry.host_port, (D.bind_game_ports && !same) ? " (the same number was taken)" : "");
     return D.udp[game_port] = entry;
 }
@@ -514,18 +447,14 @@ s32 udp_send(Conn& conn, const u8* data, u32 length, u32 dest_ip, u16 dest_port)
     // the server's address on a port that is not the server's: another copy on the server's
     // computer (a host firewall may drop datagrams between two local programs on the
     // outside address)
-    if (to_server && !server_port && I.loopback_peers) real_ip = INADDR_LOOPBACK;
+    if (to_server && !server_port && I.loopback_peers) real_ip = LOOPBACK;
     if (!allowed(real_ip)) {
         I.dropped++;
         if (D.noted.insert(key(dest_ip, dest_port) | (1ull << 61)).second) rtanet::say("UDP to %s:%u NOT SENT: not this computer (net-local-only)", rtanet::ip_text(real_ip).c_str(), dest_port);
         return (s32)length;
     }
     UdpHost& host = udp_host(conn.game_port);
-    sockaddr_in to = {};
-    to.sin_family = AF_INET;
-    to.sin_addr.s_addr = htonl(real_ip);
-    to.sin_port = htons(dest_port);
-    sendto(host.fd, data, length, 0, (sockaddr*)&to, sizeof(to));
+    sock::send_to(host.fd, data, length, real_ip, dest_port);
     if (real_ip != dest_ip) { D.seen_as[key(real_ip, dest_port)] = dest_ip; D.seen_as_any[real_ip] = dest_ip; }
     else D.seen_as.erase(key(real_ip, dest_port));
     if (server_port) {
@@ -534,7 +463,7 @@ s32 udp_send(Conn& conn, const u8* data, u32 length, u32 dest_ip, u16 dest_port)
         I.udp_to_peers++;
         if (D.noted.insert(key(dest_ip, dest_port) | (1ull << 63)).second)
             rtanet::log("first datagram to another player: port %u -> %s:%u%s (%u bytes)", conn.game_port, rtanet::ip_text(dest_ip).c_str(), dest_port,
-                        real_ip == dest_ip ? "" : (real_ip == INADDR_LOOPBACK ? ", sent through the loop-back interface" : ", sent to the server's host"), length);
+                        real_ip == dest_ip ? "" : (real_ip == LOOPBACK ? ", sent through the loop-back interface" : ", sent to the server's host"), length);
     }
     return (s32)length;
 }
@@ -544,12 +473,9 @@ bool udp_receive(u16 game_port, u8* buffer, size_t capacity, size_t& size, u32& 
     rtanet::Info& I = D.info;
     UdpHost& host = udp_host(game_port);
     for (int tries = 0; tries < 32; tries++) {
-        sockaddr_in from = {};
-        socklen_t from_length = sizeof(from);
-        ssize_t n = recvfrom(host.fd, buffer, capacity, 0, (sockaddr*)&from, &from_length);
+        u32 from_ip = 0;
+        int n = sock::recv_from(host.fd, buffer, capacity, from_ip, from_port);
         if (n < 0) return false;
-        u32 from_ip = ntohl(from.sin_addr.s_addr);
-        from_port = ntohs(from.sin_port);
         // shown to the game as coming from the address it knows the sender by
         shown_ip = from_ip;
         auto seen = D.seen_as.find(key(from_ip, from_port));
@@ -561,7 +487,7 @@ bool udp_receive(u16 game_port, u8* buffer, size_t capacity, size_t& size, u32& 
         else {
             I.udp_from_peers++;
             if (D.noted.insert(key(from_ip, from_port) | (1ull << 62)).second)
-                rtanet::log("first datagram from another player: %s:%u -> port %u%s (%zd bytes)", rtanet::ip_text(from_ip).c_str(), from_port, game_port,
+                rtanet::log("first datagram from another player: %s:%u -> port %u%s (%d bytes)", rtanet::ip_text(from_ip).c_str(), from_port, game_port,
                             shown_ip == from_ip ? "" : (", shown to the game as " + rtanet::ip_text(shown_ip)).c_str(), n);
             PeerState& peer = D.peer[key(from_ip, from_port)];
             int64_t now = now_ms();
@@ -614,12 +540,10 @@ void tell_patch_set() {
         u8* at = datagram + sizeof(PATCH_SET_MARK);
         at[0] = (u8)(D.info.patch_set >> 24); at[1] = (u8)(D.info.patch_set >> 16); at[2] = (u8)(D.info.patch_set >> 8); at[3] = (u8)D.info.patch_set;
         at[4] = (u8)(D.info.patch_words >> 8); at[5] = (u8)D.info.patch_words;
-        sockaddr_in to = {};
-        to.sin_family = AF_INET;
-        to.sin_addr.s_addr = htonl((u32)(entry.first >> 16));
-        to.sin_port = htons((u16)(entry.first & 0xFFFF));
-        if (!allowed(ntohl(to.sin_addr.s_addr))) continue;
-        sendto(host->second.fd, datagram, sizeof(datagram), 0, (sockaddr*)&to, sizeof(to));
+        u32 to_ip = (u32)(entry.first >> 16);
+        u16 to_port = (u16)(entry.first & 0xFFFF);
+        if (!allowed(to_ip)) continue;
+        sock::send_to(host->second.fd, datagram, sizeof(datagram), to_ip, to_port);
         // and the arithmetic, in the same way (docs/issues/mixed-arithmetic.md): this build
         // computes as the console does (results rounded toward zero), which the other
         // builds call Play!'s own, and can do nothing else: one byte "can" (1), one "does" (0)
@@ -627,8 +551,8 @@ void tell_patch_set() {
         memcpy(arithmetic, ARITH_MARK, sizeof(ARITH_MARK));
         arithmetic[sizeof(ARITH_MARK)] = 1;
         arithmetic[sizeof(ARITH_MARK) + 1] = 0;
-        sendto(host->second.fd, arithmetic, sizeof(arithmetic), 0, (sockaddr*)&to, sizeof(to));
-        if (peer.told == 1) rtanet::log("patch set %08x and the arithmetic (the console's) told to the player at %s:%u", D.info.patch_set, rtanet::ip_text(ntohl(to.sin_addr.s_addr)).c_str(), ntohs(to.sin_port));
+        sock::send_to(host->second.fd, arithmetic, sizeof(arithmetic), to_ip, to_port);
+        if (peer.told == 1) rtanet::log("patch set %08x and the arithmetic (the console's) told to the player at %s:%u", D.info.patch_set, rtanet::ip_text(to_ip).c_str(), to_port);
     }
     for (auto& entry : D.peer) {
         PeerState& peer = entry.second;
@@ -673,19 +597,16 @@ void gateway_reply(Conn& conn) {
 }
 
 void tcp_check(Conn& conn) {            // a connection under way: has it come up?
-    if (!conn.connecting || conn.fd < 0) return;
-    pollfd p = {conn.fd, POLLOUT, 0};
-    if (poll(&p, 1, 0) <= 0) return;
-    int error = 0;
-    socklen_t length = sizeof(error);
-    getsockopt(conn.fd, SOL_SOCKET, SO_ERROR, &error, &length);
+    if (!conn.connecting || conn.fd == sock::NONE) return;
+    int state = sock::connect_check(conn.fd);
+    if (state == sock::UNDER_WAY) return;
     conn.connecting = false;
-    if (error == 0 && !(p.revents & (POLLERR | POLLNVAL))) {
+    if (state == sock::CONNECTED) {
         conn.connected = true;
         rtanet::log("TCP -> %s:%u connected", rtanet::ip_text(conn.dest_ip).c_str(), conn.dest_port);
     } else {
         conn.failed = true;
-        rtanet::log("TCP -> %s:%u could not connect (%s)", rtanet::ip_text(conn.dest_ip).c_str(), conn.dest_port, strerror(error));
+        rtanet::log("TCP -> %s:%u could not connect (%s)", rtanet::ip_text(conn.dest_ip).c_str(), conn.dest_port, sock::error_text(sock::error()).c_str());
     }
 }
 
@@ -735,7 +656,7 @@ std::vector<Peer> peers() {
 }
 void drop_tcp() {
     for (auto& entry : D.conns)
-        if (entry.second.type == T_CONNECT && entry.second.fd >= 0) { shutdown(entry.second.fd, SHUT_RDWR); log("TCP -> %s:%u cut (a test)", ip_text(entry.second.dest_ip).c_str(), entry.second.dest_port); }
+        if (entry.second.type == T_CONNECT && entry.second.fd != sock::NONE) { sock::shut(entry.second.fd); log("TCP -> %s:%u cut (a test)", ip_text(entry.second.dest_ip).c_str(), entry.second.dest_port); }
 }
 void per_blank(uint64_t number) {
     ensure();
@@ -826,24 +747,18 @@ void fn_00365518(Ctx* c) {                  // sceInetOpen(cd, buf, id, ms)
         answer(c, E_FAILED);
         return;
     }
-    conn->fd = socket(AF_INET, SOCK_STREAM, 0);
-    set_non_blocking(conn->fd);
-    int one = 1;
-    setsockopt(conn->fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-    sockaddr_in to = {};
-    to.sin_family = AF_INET;
-    to.sin_addr.s_addr = htonl(conn->real_ip);
-    to.sin_port = htons(conn->dest_port);
+    conn->fd = sock::tcp();
     D.info.tcp_connections++;
     rtanet::log("TCP -> %s:%u%s", rtanet::ip_text(conn->dest_ip).c_str(), conn->dest_port, conn->real_ip == conn->dest_ip ? "" : (" (the server, at " + rtanet::ip_text(conn->real_ip) + ")").c_str());
-    if (connect(conn->fd, (sockaddr*)&to, sizeof(to)) == 0) { conn->connected = true; answer(c, 0); return; }
-    if (errno == EINPROGRESS) {
+    int state = conn->fd == sock::NONE ? sock::FAILED : sock::connect(conn->fd, conn->real_ip, conn->dest_port);
+    if (state == sock::CONNECTED) { conn->connected = true; answer(c, 0); return; }
+    if (state == sock::UNDER_WAY) {
         conn->connecting = true;
         tcp_check(*conn);
         answer(c, conn->connected ? 0 : conn->failed ? E_FAILED : E_NOT_YET);
         return;
     }
-    rtanet::log("TCP -> %s:%u could not connect (%s)", rtanet::ip_text(conn->dest_ip).c_str(), conn->dest_port, strerror(errno));
+    rtanet::log("TCP -> %s:%u could not connect (%s)", rtanet::ip_text(conn->dest_ip).c_str(), conn->dest_port, sock::error_text(sock::error()).c_str());
     conn->failed = true;
     answer(c, E_FAILED);
 }
@@ -853,7 +768,7 @@ void fn_00365560(Ctx* c) {                  // sceInetClose(cd, buf, id, ms)
     s32 id = (s32)arg(c, 2);
     if (Conn* conn = find(id)) {
         if (conn->type == T_CONNECT) {
-            if (conn->fd >= 0) close(conn->fd);
+            sock::close(conn->fd);
             rtanet::log("TCP -> %s:%u closed by the game (%llu bytes out, %llu in)", rtanet::ip_text(conn->dest_ip).c_str(), conn->dest_port, (unsigned long long)conn->out, (unsigned long long)conn->in);
         } else if (D.log_all) rtanet::log("sceInetClose(id %d)", id);
         D.conns.erase(id);      // a datagram socket's host socket stays: the port's path is kept
@@ -910,17 +825,17 @@ void fn_00365780(Ctx* c) {                  // sceInetSend(cd, buf, id, ptr, len
     tcp_check(*conn);
     // a connection the server has closed answers the game's next send with an error, as
     // a reset would on a console
-    if (conn->failed || conn->eof || conn->fd < 0) { answer(c, E_FAILED); return; }
+    if (conn->failed || conn->eof || conn->fd == sock::NONE) { answer(c, E_FAILED); return; }
     if (!conn->connected) { answer(c, E_NOT_YET); return; }
-    ssize_t sent = send(conn->fd, data, length, SEND_FLAGS);
+    int sent = sock::send(conn->fd, data, length);
     if (sent >= 0) {
         conn->out += sent;
         D.info.tcp_out += sent;
-        if (D.log_all) rtanet::log("sceInetSend(%u bytes) -> %zd", length, sent);
+        if (D.log_all) rtanet::log("sceInetSend(%u bytes) -> %d", length, sent);
         answer(c, (s32)sent);
-    } else if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) answer(c, E_NOT_YET);
+    } else if (sent == sock::AGAIN) answer(c, E_NOT_YET);
     else {
-        rtanet::log("TCP -> %s:%u lost while sending (%s)", rtanet::ip_text(conn->dest_ip).c_str(), conn->dest_port, strerror(errno));
+        rtanet::log("TCP -> %s:%u lost while sending (%s)", rtanet::ip_text(conn->dest_ip).c_str(), conn->dest_port, sock::error_text(sock::error()).c_str());
         conn->failed = true;
         answer(c, E_FAILED);
     }
@@ -939,9 +854,9 @@ void fn_003655a8(Ctx* c) {                  // sceInetRecv(cd, buf, id, ptr, len
             break;
         }
         tcp_check(*conn);
-        if (conn->failed || conn->fd < 0) { answer(c, E_FAILED); return; }
+        if (conn->failed || conn->fd == sock::NONE) { answer(c, E_FAILED); return; }
         if (conn->eof) { answer(c, 0); return; }
-        ssize_t got = conn->connected ? recv(conn->fd, into, length, 0) : -2;
+        int got = conn->connected ? sock::recv(conn->fd, into, length) : sock::AGAIN;
         if (got > 0) {
             conn->in += got;
             D.info.tcp_in += got;
@@ -950,7 +865,7 @@ void fn_003655a8(Ctx* c) {                  // sceInetRecv(cd, buf, id, ptr, len
                 gateway_reply(*conn);
             }
             wr32(arg(c, 5), 0);
-            if (D.log_all) rtanet::log("sceInetRecv -> %zd bytes", got);
+            if (D.log_all) rtanet::log("sceInetRecv -> %d bytes", got);
             answer(c, (s32)got);
             return;
         }
@@ -960,8 +875,8 @@ void fn_003655a8(Ctx* c) {                  // sceInetRecv(cd, buf, id, ptr, len
             answer(c, 0);
             return;
         }
-        if (got == -1 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
-            rtanet::log("TCP -> %s:%u lost (%s)", rtanet::ip_text(conn->dest_ip).c_str(), conn->dest_port, strerror(errno));
+        if (got == sock::LOST) {
+            rtanet::log("TCP -> %s:%u lost (%s)", rtanet::ip_text(conn->dest_ip).c_str(), conn->dest_port, sock::error_text(sock::error()).c_str());
             conn->failed = true;
             answer(c, E_FAILED);
             return;
@@ -988,11 +903,11 @@ void fn_003651e0(Ctx* c) {                  // sceInetPoll(cd, buf, pollfd array
                 if (conn->failed) revents = P_ERR | P_HUP;
                 else if (conn->connected) {
                     if (events & P_OUT) revents |= P_OUT;
-                    if (events & P_IN) { pollfd p = {conn->fd, POLLIN, 0}; if (poll(&p, 1, 0) > 0) revents |= P_IN; }
+                    if ((events & P_IN) && sock::readable(conn->fd)) revents |= P_IN;
                 }
             } else if (conn->type == T_DGRAM) {
                 if (events & P_OUT) revents |= P_OUT;
-                if (events & P_IN) { pollfd p = {udp_host(conn->game_port).fd, POLLIN, 0}; if (poll(&p, 1, 0) > 0) revents |= P_IN; }
+                if ((events & P_IN) && sock::readable(udp_host(conn->game_port).fd)) revents |= P_IN;
             }
             wr16(at + 6, revents);
             if (revents) ready++;

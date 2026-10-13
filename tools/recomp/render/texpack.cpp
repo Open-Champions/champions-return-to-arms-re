@@ -1,13 +1,15 @@
 // texpack.cpp - see texpack.h.  PNG files are read with Qt (QImage), which the OpenGL
 // backend links anyway; nothing else of Qt is used.  A build without Qt (the Windows one
-// stands in for Qt's OpenGL headers only) defines RTA_NO_QIMAGE: no pack is read then -
-// open() finds nothing - and the mip-mapped parts of the game's own textures still work;
-// what it needs to read packs is a PNG reader in read_png() below.
+// stands in for Qt's OpenGL headers only) defines RTA_NO_QIMAGE and reads them with the
+// reader in png_read.h, which gives the same bytes (compared with QImage over the whole
+// pack: docs/issues/native-windows.md).
 #include "texpack.h"
 
 #ifndef RTA_NO_QIMAGE
 #include <QImage>
 #include <QString>
+#else
+#include "png_read.h"
 #endif
 
 #include <algorithm>
@@ -19,6 +21,9 @@
 #ifdef __APPLE__
 #include <pthread.h>
 #include <sys/qos.h>
+#endif
+#ifdef _WIN32
+#include <windows.h>
 #endif
 
 namespace render {
@@ -34,17 +39,12 @@ static bool read_png(const std::string& path, std::vector<uint8_t>& rgba, int& w
     for (int y = 0; y < height; y++) memcpy(rgba.data() + (size_t)y * width * 4, image.constScanLine(y), (size_t)width * 4);
     return true;
 #else
-    (void)path; (void)rgba; (void)width; (void)height;
-    return false;
+    return pngread::read_file(path, rgba, width, height);
 #endif
 }
 
 size_t TexPack::open(const std::string& folder) {
     names.clear();
-#ifdef RTA_NO_QIMAGE
-    (void)folder;
-    return 0;
-#endif
     dir = folder;
     while (dir.size() > 1 && dir.back() == '/') dir.pop_back();
     struct stat st;
@@ -117,6 +117,8 @@ size_t TexPack::waiting() const {
 void TexPack::work() {
 #ifdef __APPLE__
     pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);        // reading never takes a core from the game
+#elif defined(_WIN32)
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
 #endif
     for (;;) {
         PictureJob job;

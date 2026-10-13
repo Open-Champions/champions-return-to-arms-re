@@ -248,33 +248,29 @@ cd local/three-players/server/bin && (nohup ./champions-server > server.out 2>&1
 cd local/three-players && ./series.sh srv3 6 --players 3 --play 2400 --limit 420 --second-server --log-all
 ```
 
-## Where the work stands (for whoever continues)
+## Where the work stands (for whoever continues) - 20:00 CDT
 
-Running now, all started by this work, to be stopped by pid when done:
-- the second server instance: pid in `local/three-players/server/bin/server.pid`;
-- three series (`base3`: no fix, local lobby; `zero3`: own address zeroed, local lobby;
-  `srv3`: the fixed server instance), 6 runs each: pids of the shell loops in
-  `local/three-players/<name>.series.pid` (removed when a series ends), pids of the
-  copies of the current run in `local/three-players/<name>/pids`.
+Done: the cause; the server change in the working tree of `server/upstream` with its
+FIXES.md entry and the adapted test client; native copies, three and four players.
 
-Next, in this order:
-1. read the three `.results` files; `srv3` is the proof for three players (wanted: 6 of
-   6 launched, a few thousand ticks each, some of them "stale");
-2. four players against the fixed instance: `series.sh srv4 4 --players 4 --play 2400
-   --limit 480 --second-server`; and four without the fix for the base rate;
-3. the emulator application, three copies: the released build in
-   `local/play-stable-build` as it is. Every copy needs `--rta-test "TEXT"`, a data
-   directory of its own under `local/three-players/`, and `--rta-server 192.168.1.123`;
-   never start the bundle without arguments. Start the `Play` binary directly with the
-   arguments `tools/play-net/play.sh` would build (so that `DYLD_INSERT_LIBRARIES`
-   reaches it), read its log for the server line first, drive it over `--rta-control`
-   (see `local/mixed-online/mx.py`, class `App`, and `sync.py` for the sync hashes).
-   On a failure read the tables with `peek`: 0x402b5c (4 ports), 0x402b3b (4 addresses),
-   launch records 0x402ba4 / 0x402bc8 / 0x402bec + 0x144 × player;
-4. two applications and a page, one application and two pages, through a relay of the
-   test's own (`local/mixed-online/up.sh` shows how; the relay must be pointed at the
-   second instance - not looked at yet how);
-5. put the change into `server/upstream` (see "The fix") - the owner's step.
+Running now, all started by this work (`local/three-players/down.sh all` ends every one
+of them by pid; `apppage.py down` ends the relay, the page server and the test browsers):
+- the second server instance (the fix): pid in `local/three-players/server/bin/server.pid`;
+- a relay of the test's own on 127.0.0.1:8991 pointed at that instance and a page server
+  on 127.0.0.1:8990 (`relay-fixed.pid`, `pageserver.pid`);
+- two series of emulator application copies (`aplay.py`): four copies against the fixed
+  instance (`app3s.pid`, log `app4s.log`, results `app3s.results`) and three copies on
+  the unchanged local lobby (`app3b.pid`, `app3b-2.log`, `app3b.results`).
+
+Helpers added since the list above: `aplay.py NAME --players N [--second-server]
+[--launches K] [--hitch S]` (application copies; `--hitch` holds the last joiner's
+machine still for S seconds from just before Start Game, which makes the race go the bad
+way), `apppage.py run NAME apps=A pages=P [launches=K] [fixed=0|1]` (application copies
+and pages in Chrome windows of the test's own, through the relay above).
+
+Next: (1) application copies with `--hitch 2`, with and without the fix - in the
+application the race went the good way in every launch so far, so the fix has not yet
+been exercised there; (2) two applications and a page, one application and two pages.
 
 ## Not tried
 

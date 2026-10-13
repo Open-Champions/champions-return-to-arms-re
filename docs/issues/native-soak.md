@@ -312,6 +312,17 @@ are to be filled in when the farm has run.
 
 ## Working notes
 
+State at 20:10 (after a pause from 17:10 to 19:50, during which the farm had ended by itself):
+2.49 million ticks with fixes. Three reported differences, none a new cause — (1) seeds
+3009 and 3017, `armour` in the one tick of a level reload: the comparison's fault (object
+pointer null, the column shows low memory, where the native runtime keeps per-machine
+tables), fixed in `farm.py`; (2) seed 3103, `nit2`, quest variables differ in ticks
+4662–4665: on the owner's machine `Player_draw` → `Player_interact` (display mode) →
+`JumpGate_interactPrompt` → `script_runByName` → `getv` appends the variable
+`nit_gotshard` four ticks before `Trigger_run` appends it in the tick on both machines —
+`docs/script.md` P1, known from reading, now **Ran** (trace: `local/recomp-out/soak/t/qv-watch-m*.txt`).
+The sections below this note are older; the final figures replace them.
+
 State at 2026-10-12 15:45, for whoever resumes this.
 
 - **Running**: `local/recomp-out/soak/farm/supervise.sh` keeps two arms going —

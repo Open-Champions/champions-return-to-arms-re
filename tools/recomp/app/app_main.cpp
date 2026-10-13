@@ -746,7 +746,7 @@ static void app_command(const std::string& text, uint64_t frame) {
             };
             double noise = 0;
             for (size_t k = 1; k < t.samples.size(); k++) if (t.samples[k].number <= t.press_blank) noise = std::max(noise, diff(k));
-            double limit = std::max(2 * noise, noise + 6);
+            double limit = std::max(2 * noise, noise + 2);
             bool found = false;
             for (size_t k = 1; k < t.samples.size() && !found; k++)
                 if (t.samples[k].number > t.press_blank && diff(k) > limit) {

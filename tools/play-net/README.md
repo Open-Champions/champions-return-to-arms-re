@@ -541,7 +541,7 @@ game draws them:
 
 | Kind | Known by | What is done |
 |---|---|---|
-| interface | sprites under the scanline mask, or blended sprites (`ALPHA` 0x44) | two-field pictures (those with `field0_uv`/`field1_uv`) are interleaved, enlarged as the one picture they are and laid out as described above; `realesrgan-x4plus` at full strength |
+| interface | sprites under the scanline mask, or blended sprites (`ALPHA` 0x44) | two-field pictures (those with `field0_uv`/`field1_uv`) are interleaved, enlarged as the one picture they are and laid out as described above; `realesrgan-x4plus` at full strength, pictures of fewer than 2,048 texels plainly (below) |
 | level | triangles, texture function 0 (ground, walls, stone, wood, foliage: one pre-lit picture per piece of the level) | `realesrgan-x4plus`; the distribution of brightness is matched as well; only the rectangle `other_uv` names (plus 6 texels) goes to the model, the rest of the page is enlarged plainly |
 | model | triangles, texture function 3 (characters, monsters, weapons, props) | `realesrgan-x4plus` at full strength |
 | glow | every draw adds to the picture (`ALPHA` 0x48, 0x68) | `realesr-animevideov3` at 0.6, and never brighter than the game's picture around it: what is black stays black |
@@ -595,7 +595,20 @@ For every kind:
   small hair and ornament pieces — 220 of the disc's 1,447). Every feature in them is a
   texel or two wide; the model drew confident other shapes from them (a rune became a
   different rune, a mottled pouch a flat one) and moved their colour. From 48 × 48 on it
-  follows what is there.
+  follows what is there. **And so are interface pictures of fewer than 2,048 texels**
+  (`FEWEST` in `upscale.py`: the 32 × 32 skill icons of the ability ring, the coin, the
+  scales, the socket, the pointer, the corners of the notice box, the skill tree's
+  pipes — 83 of the first 310 interface pictures enlarged). At full strength they came
+  out redrawn, not sharper: the head on the coin became scribble, a hand got other
+  fingers, masks other faces, a frame black bars, the pipes a dark blue rim; the
+  self-check does not see that (colour averaged over a texel stays where it was: 0
+  pictures named before and after). Enlarged plainly they are soft and keep every shape.
+  A two-field picture is counted as the one picture its fields make (a 64 × 32 file with
+  fields of 15 lines is 64 × 30), in the rule and in the manifest's note `plain`, so a
+  pack made before the rule has exactly these pictures done again by the next run
+  (pictures that were plain already for their short side are written again unchanged).
+  Before and after, both packs: `local/hd-work/interface-redo/sheet-4x.png`,
+  `sheet-2x.png`.
 - **Texels never sent are filled from their neighbours and stay filled**; a border of 8
   texels is given to the model around what it enlarges (the picture's own texels where
   the rectangle lies inside it; repeated edge otherwise; wrapped round where `other_uv`

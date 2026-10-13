@@ -7,7 +7,9 @@ compiled into the page) asks for what the desktop application does with sockets 
 own:
 
   TCP   connections to the lobby server - to the configured lobby host and the configured
-        ports only (the gateway port and the lobby port), nothing else;
+        ports only (the gateway port and the lobby port), nothing else; and on them only
+        whole lobby requests, as many as the player's address may send ("Limits per
+        player address" below);
   UDP   one socket here per UDP port the console uses, kept for the session and used for
         every destination. The lobby server sees a browser player at this host's address
         and that socket's port, exactly as it sees a desktop player's router, and hands
@@ -15,7 +17,9 @@ own:
         destination only:
           - the lobby server's discovery port;
           - the UDP socket of another session of this relay (another browser player:
-            handed over inside this program);
+            handed over inside this program), when that page wants to hear from this one:
+            the lobby server named this player to it, or it has itself sent to this
+            player within the last half minute;
           - a player outside (the desktop application), under the rule below.
 
 Players outside. A datagram passes between a session's socket and an outside address and
@@ -40,6 +44,33 @@ nothing for two minutes is closed.
 
 So this is not a proxy to anywhere: a page reaches the lobby server, the other pages, and
 the players the lobby server put it in a game with.
+
+Limits per player address. The lobby server sees every browser player at this host's
+address and cannot tell them apart, so what it limits per address (connections, the
+request budget, password checks, accounts created: its SECURITY.md) the relay limits
+here, per PLAYER address, with the lobby server's own numbers unless told otherwise:
+
+  - sessions at a time (--per-address) and new sessions a minute (--new-sessions);
+  - log-ins and account-detail requests, which are the two requests that check a
+    password (lobby messages 0x16 and 0x64): --login-burst at once, one more every
+    --login-every seconds;
+  - accounts created (0x06): --account-burst at once, one more every --account-every
+    seconds;
+  - the request budget: every request costs what the lobby server says it costs
+    (REQUEST_COST below, from its LobbyServer::RequestCost), --request-burst units at
+    once and --request-rate a second.
+
+The length of a lobby request (four bytes, big-endian, counting themselves) and its kind
+(the two bytes after, little-endian) are not encrypted - the game encrypts single text
+fields, nothing else - so the relay reads those six bytes of each request and nothing
+more. It hands the lobby server whole requests only. A log-in or an account over the
+allowance is NOT handed on: the connection to the lobby server is closed and the page is
+told why (NOTICE, code 8). Requests over the budget wait here, as they would wait at the
+lobby server. The allowances belong to the address, not to the session: a page that
+connects again finds them as it left them. The player's address is the one this
+connection comes from; with --trust-proxy, for connections from this host, it is the
+last value of the last X-Real-IP line (what the web server in front saw). No other header
+is read: X-Forwarded-For is whatever the client wrote. An IPv6 player counts by its /64.
 
     relay.py --lobby 192.0.2.10                        # ws://127.0.0.1:8975/relay
     relay.py --lobby 192.0.2.10 --listen 127.0.0.1:8975 --path /relay \\
@@ -69,6 +100,11 @@ Messages (one per binary WebSocket message; numbers big-endian):
                                               89 PONG       the same bytes
                                               8A NOTICE     u8 code, text (why something was
                                                             refused, or why the session ends)
+
+NOTICE codes: 1 the relay is full, 2 too many pages from the address, 3 idle, 4 not the
+relay's messages, 5 a destination that is not allowed, 6 more data than a game sends,
+7 the relay is stopping, 8 a limit of the player's address (log-ins, accounts, requests,
+new sessions): the text says which and how long to wait.
 """
 import argparse
 import asyncio
@@ -86,12 +122,28 @@ HELLO, TCP_OPEN, TCP_DATA, TCP_SHUT, TCP_CLOSE, UDP_OPEN, UDP_SEND, UDP_CLOSE, P
 WELCOME, TCP_OPENED, R_TCP_DATA, TCP_EOF, TCP_CLOSED, UDP_BOUND, UDP_RECV, PONG, NOTICE = 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x89, 0x8A
 OK, NOT_ALLOWED, REFUSED, TIMED_OUT, UNREACHABLE, TOO_MANY = range(6)
 # NOTICE codes
-N_FULL, N_ADDRESS_FULL, N_IDLE, N_PROTOCOL, N_NOT_ALLOWED, N_TOO_MUCH, N_STOPPING = range(1, 8)
+N_FULL, N_ADDRESS_FULL, N_IDLE, N_PROTOCOL, N_NOT_ALLOWED, N_TOO_MUCH, N_STOPPING, N_LIMIT = range(1, 9)
 
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 MAX_TCP = 4          # connections of one session at a time (the game has one or two)
 MAX_UDP = 8          # UDP sockets of one session (the game uses one of its ports 4000-4004)
 WRITE_HIGH = 1 << 20  # bytes waiting for a page before its datagrams are dropped
+PAGE_HIGH = 4 << 20  # bytes waiting for a page at which its session is ended: it does not read
+MAX_HANDSHAKES = 64  # connections that have not finished their WebSocket handshake
+MAX_ADDRESSES = 4096  # player addresses whose allowances are kept
+# the lobby connection, page to server (docs/lobby-protocol.md section 2; the lobby server's LobbyServer.cpp)
+LOBBY_REQUEST = 2048    # the largest request the lobby server takes; a longer one makes it close the connection
+REQUESTS_HELD = 131072  # bytes of requests of one connection that may wait here for the address's budget
+PASSWORD_CHECKS = (0x16, 0x64)  # log in; account details - the two requests that check a password
+CREATE_ACCOUNT = 0x06
+KEEP_ALIVE_COST = 0.1   # a request with no payload: the game's keep-alive
+# what a request costs its sender's address: LobbyServer::RequestCost. A character upload
+# (0x58, 0x5E) costs 3 there and 30 more when its last piece is written to the database;
+# the relay does not look into the pieces and charges the write at the start.
+REQUEST_COST = {0x06: 20, 0x16: 10, 0x64: 10, 0x5C: 10, 0x01: 5, 0x02: 5, 0x1C: 5, 0x1D: 5, 0x5A: 5, 0x08: 5, 0x09: 5, 0x0A: 5,
+                0x54: 5, 0x56: 5, 0x58: 33, 0x5E: 33, 0x5B: 3, 0x21: 2, 0x22: 2}
+DISCOVERY_SIZE = 256    # bytes of a datagram for the lobby server's discovery port (the game's has 52)
+DISCOVERY_RATE = 10     # of them a second from one session (the game sends six at most)
 # players outside (the desktop application): see "Players outside" above
 MAX_NAMED = 64       # addresses the lobby server named to one session (a game list names every host)
 MAX_ASKED = 16       # outside addresses a page has asked for that have not sent yet
@@ -156,6 +208,108 @@ class Bucket:
             return False
         self.level -= units
         return True
+
+
+class Allowance:
+    """So many at once, and so many more a second: the lobby server's own kind of allowance
+    (its TokenBucket). It starts full. What is taken may overdraw it: a request is let in
+    when one unit is there and is then paid for with what it costs."""
+
+    def __init__(self, most, rate):
+        self.most, self.rate = float(most), float(rate)
+        self.level = self.most
+        self.at = time.monotonic()
+
+    def fill(self):
+        now = time.monotonic()
+        if now > self.at:
+            self.level = min(self.most, self.level + (now - self.at) * self.rate)
+            self.at = now
+
+    def has(self, units=1.0):
+        self.fill()
+        return self.level >= units
+
+    def take(self, units=1.0):
+        self.level -= units
+
+    def wait(self, units=1.0):
+        """Seconds until so many are there."""
+        self.fill()
+        if self.level >= units:
+            return 0.0
+        return min(3600.0, (units - self.level) / self.rate) if self.rate > 0 else 3600.0
+
+    def full(self):
+        self.fill()
+        return self.level >= self.most
+
+
+class Address:
+    """What is kept for one player address. It outlives the address's sessions: a page that
+    connects again finds its allowances as it left them."""
+
+    def __init__(self, args):
+        self.sessions = 0
+        self.logins = Allowance(args.login_burst, 1.0 / args.login_every)        # password checks: 0x16, 0x64
+        self.accounts = Allowance(args.account_burst, 1.0 / args.account_every)  # accounts created: 0x06
+        self.requests = Allowance(args.request_burst, args.request_rate)         # the request budget
+        self.arrivals = Allowance(args.new_sessions, args.new_sessions / 60.0)   # new sessions
+        self.said = {}
+
+    def rested(self):
+        """Nothing is open and every allowance is full again: forgetting it changes nothing."""
+        return self.sessions == 0 and self.logins.full() and self.accounts.full() and self.requests.full() and self.arrivals.full()
+
+
+def address_key(text):
+    """What the limits of a player address are kept under: an IPv4 address itself; of an
+    IPv6 address its /64, since one subscriber has a whole one to pick addresses from."""
+    try:
+        ip = ipaddress.ip_address(text.split("%")[0])
+    except ValueError:
+        return text
+    if ip.version == 6:
+        if ip.ipv4_mapped is not None:
+            return str(ip.ipv4_mapped)
+        return str(ipaddress.IPv6Network((int(ip) >> 64 << 64, 64)))
+    return str(ip)
+
+
+def player_address(peer, real_ip_lines, trust_proxy):
+    """The player's address for a connection from 'peer' that carried these X-Real-IP lines.
+
+    Without --trust-proxy, and for a connection that does not come from this host, it is
+    the peer and no header is looked at: whoever connects could write anything there.
+    From this host with --trust-proxy it is what the web server in front says it saw: the
+    last value of the last line. A web server that sets the header (nginx's
+    proxy_set_header) replaces what the client sent; one that appends puts its own value
+    last. A line that holds no address leaves the peer: every such connection then shares
+    this host's own allowances, which is the careful side."""
+    try:
+        local = ipaddress.ip_address(peer).is_loopback
+    except ValueError:
+        local = False
+    if not trust_proxy or not local or not real_ip_lines:
+        return peer
+    try:
+        return str(ipaddress.ip_address(real_ip_lines[-1].split(",")[-1].strip()))
+    except ValueError:
+        return peer
+
+
+def say(said, kind, text, every=60.0):
+    """A log line of a kind that could be made to repeat without end: one every so often,
+    and how many were left out is said with the next."""
+    now = time.monotonic()
+    last = said.get(kind)
+    if last and now - last[0] < every:
+        last[1] += 1
+        return
+    if not last and len(said) >= 32:
+        return
+    said[kind] = [now, 0]
+    log(text + ("; %d more of the kind since it was last said" % last[1] if last and last[1] else ""))
 
 
 def frame(opcode, payload):
@@ -299,6 +453,10 @@ class Tcp:
         self.task = None
         self.shut = False
         self.lobby = LobbyReader()
+        self.held = bytearray()  # what the page has sent and the lobby server has not been handed yet
+        self.timer = None        # set while requests wait for the address's budget
+        self.waited = False
+        self.ended = False       # the lobby server has closed its side
 
 
 class Udp:
@@ -319,18 +477,23 @@ class Path:
 
 
 class Session:
-    def __init__(self, relay, reader, writer, address, number):
+    def __init__(self, relay, reader, writer, address, number, where=None):
         self.relay, self.reader, self.writer = relay, reader, writer
         self.address, self.number = address, number
+        self.where = where  # the player address's allowances (Address); None only for a session that is not taken
         self.tcp, self.udp = {}, {}
         self.greeted = False
         self.closed = False
+        self.stuck = False
         self.last_use = time.monotonic()
         self.messages = Bucket(relay.args.message_rate)
         self.bytes = Bucket(relay.args.byte_rate)
+        self.connects = Bucket(relay.args.connect_rate)
+        self.discovery = Bucket(DISCOVERY_RATE)
         self.counts = {"tcp": 0, "tcp_out": 0, "tcp_in": 0, "udp_lobby": 0, "udp_peer": 0, "udp_in": 0, "udp_dropped": 0, "refused": 0,
-                       "out": 0, "back": 0, "not_open": 0, "strangers": 0, "paths": 0}
+                       "out": 0, "back": 0, "not_open": 0, "strangers": 0, "paths": 0, "requests": 0, "held": 0, "limited": 0}
         self.noticed = set()
+        self.told = {}    # notices of a kind that could repeat: when each was last sent
         # players outside: (address, port) -> ...
         self.named = {}   # ... when the lobby server last named it
         self.asked = {}   # ... when the page last asked to send there, not open
@@ -347,10 +510,25 @@ class Session:
             self.writer.write(frame(2, bytes((kind,)) + payload))
         except (ConnectionError, RuntimeError, OSError):
             return False
+        self.reads()
         return True
+
+    def reads(self):
+        """A page that does not take what it is sent is not kept: what waits for it is this program's memory."""
+        if self.waiting() > PAGE_HIGH and not self.stuck:
+            self.stuck = True
+            asyncio.get_running_loop().call_soon(self.close, "the page does not read what it is sent (%d bytes were waiting)" % self.waiting())
 
     def notice(self, code, text):
         self.send(NOTICE, bytes((code,)) + text.encode("utf-8")[:300])
+
+    def tell(self, kind, code, text, every=10.0):
+        """A notice of a kind that a page could earn again and again: one every so often."""
+        now = time.monotonic()
+        if now - self.told.get(kind, -1e9) < every or (kind not in self.told and len(self.told) >= 16):
+            return
+        self.told[kind] = now
+        self.notice(code, text)
 
     def waiting(self):
         return self.writer.transport.get_write_buffer_size()
@@ -368,7 +546,11 @@ class Session:
                 if opcode == 8:
                     break
                 if opcode == 9:
-                    self.writer.write(frame(10, data))
+                    # a WebSocket ping is answered, and counts as a message like any other
+                    if not self.messages.take() or not self.bytes.take(len(data)):
+                        raise Stop(N_TOO_MUCH, "more data than a game sends")
+                    self.writer.write(frame(10, data[:125]))
+                    self.reads()
                     continue
                 if opcode == 10:
                     continue
@@ -397,21 +579,31 @@ class Session:
         for sock_id in list(self.udp):
             self.udp_close(sock_id)
         try:
-            self.writer.write(frame(8, struct.pack(">H", 1000)))
-            self.writer.close()
+            if self.stuck:
+                self.writer.transport.abort()  # what waits for a page that does not read is thrown away, not kept until it does
+            else:
+                self.writer.write(frame(8, struct.pack(">H", 1000)))
+                self.writer.close()
         except (ConnectionError, RuntimeError, OSError):
             pass
         self.closed = True
         self.relay.gone(self)
         c = self.counts
         log("session %d (%s) ended: %s; %d TCP connection(s), %d bytes to the lobby, %d from it; datagrams: %d to the lobby, %d to players, %d from players, %d dropped, %d refused; "
-            "players outside: %d path(s), %d datagrams out, %d back, %d not sent (no path), %d not passed on (no path)"
+            "players outside: %d path(s), %d datagrams out, %d back, %d not sent (no path), %d not passed on (no path); "
+            "lobby requests: %d passed on, %d made to wait, %d refused (the address's limits)"
             % (self.number, self.address, why, c["tcp"], c["tcp_out"], c["tcp_in"], c["udp_lobby"], c["udp_peer"], c["udp_in"], c["udp_dropped"], c["refused"],
-               c["paths"], c["out"], c["back"], c["not_open"], c["strangers"]))
+               c["paths"], c["out"], c["back"], c["not_open"], c["strangers"], c["requests"], c["held"], c["limited"]))
+
+    def end(self, code, why):
+        """The session ends here, from outside the loop that reads the page."""
+        self.notice(code, why)
+        self.close(why)
 
     def idle(self):
-        """Nothing open towards the lobby and nothing sent for the idle time."""
-        return not self.tcp and time.monotonic() - self.last_use > self.relay.args.idle
+        """Nothing open towards the lobby and nothing sent for the idle time. A connection
+        the lobby server has closed, and the page has not, is not open."""
+        return all(conn.ended for conn in self.tcp.values()) and time.monotonic() - self.last_use > self.relay.args.idle
 
     def message(self, kind, body):
         relay = self.relay
@@ -421,36 +613,32 @@ class Session:
             self.greeted = True
             self.send(WELCOME, struct.pack(">BIIHH", VERSION, relay.lobby_int, relay.own_int, min(relay.args.idle, 65535), relay.args.max_message))
             return
-        if kind == PING:
-            self.send(PONG, body[:16])
-            return
         if not self.messages.take() or not self.bytes.take(len(body)):
             if kind == UDP_SEND:
                 self.counts["udp_dropped"] += 1  # a datagram too many is lost, as on any line
                 return
             raise Stop(N_TOO_MUCH, "more data than a game sends")
+        if kind == PING:  # counted as a message, but it is not use: an idle session stays idle
+            self.send(PONG, body[:16])
+            return
         self.last_use = time.monotonic()
         if kind == UDP_SEND:
             sock_id, address, port = struct.unpack(">BIH", body[:7])
             self.udp_send(sock_id, address, port, body[7:])
         elif kind == TCP_DATA:
-            conn = self.tcp.get(struct.unpack(">H", body[:2])[0])
-            if conn and conn.writer and not conn.shut:
-                conn.writer.write(body[2:])
-                self.counts["tcp_out"] += len(body) - 2
-                if conn.writer.transport.get_write_buffer_size() > WRITE_HIGH:
-                    raise Stop(N_TOO_MUCH, "the lobby server does not take the data as fast as the page sends it")
+            conn_id = struct.unpack(">H", body[:2])[0]
+            conn = self.tcp.get(conn_id)
+            if conn and not conn.shut and not conn.ended:
+                self.tcp_data(conn_id, conn, body[2:])
         elif kind == TCP_OPEN:
             conn_id, address, port = struct.unpack(">HIH", body[:8])
             self.tcp_open(conn_id, address, port)
         elif kind == TCP_SHUT:
-            conn = self.tcp.get(struct.unpack(">H", body[:2])[0])
-            if conn and conn.writer and not conn.shut:
-                conn.shut = True
-                try:
-                    conn.writer.write_eof()
-                except (OSError, RuntimeError):
-                    pass
+            conn_id = struct.unpack(">H", body[:2])[0]
+            conn = self.tcp.get(conn_id)
+            if conn and not conn.shut:
+                conn.shut = True  # said to the lobby server when the requests that wait here have gone (pump)
+                self.pump(conn_id, conn)
         elif kind == TCP_CLOSE:
             conn = self.tcp.pop(struct.unpack(">H", body[:2])[0], None)
             if conn:
@@ -481,11 +669,92 @@ class Session:
             self.refuse("a TCP connection to %s:%d (only the lobby server's own ports are reached)" % (ip_text(address), port))
             self.send(TCP_OPENED, struct.pack(">HB", conn_id, NOT_ALLOWED))
             return
-        if len(self.tcp) >= MAX_TCP:
+        if len(self.tcp) >= MAX_TCP or not self.connects.take():
+            # too many at a time, or faster than a game that cannot get through tries again
             self.send(TCP_OPENED, struct.pack(">HB", conn_id, TOO_MANY))
             return
         conn = self.tcp[conn_id] = Tcp()
         conn.task = asyncio.ensure_future(self.tcp_run(conn_id, conn, port))
+
+    def tcp_data(self, conn_id, conn, data):
+        """What the page sends on a connection to the lobby server: kept until a request is whole."""
+        conn.held += data
+        if len(conn.held) > REQUESTS_HELD:
+            self.tcp_end(conn_id, conn, "held", N_TOO_MUCH, "more requests are waiting on one connection than the lobby server would be sent")
+            return
+        self.pump(conn_id, conn)
+
+    def pump(self, conn_id, conn):
+        """Hands the lobby server the whole requests that wait on a connection, as far as
+        the player's address may send them (the module's text, "Limits per player address")."""
+        if self.closed or self.tcp.get(conn_id) is not conn or conn.writer is None:
+            return
+        if conn.timer:
+            conn.timer.cancel()
+            conn.timer = None
+        where, args, held = self.where, self.relay.args, conn.held
+        while len(held) >= 4:
+            length = int.from_bytes(held[:4], "big")
+            if length < 4 or length > LOBBY_REQUEST:
+                # the lobby server closes a connection that sends this; it is not sent
+                self.tcp_end(conn_id, conn, "form", N_PROTOCOL, "what the page sent to the lobby server is not a lobby request (a length of %d)" % length)
+                return
+            if len(held) < length:
+                break
+            kind = held[4] | held[5] << 8 if length >= 6 else 0
+            if not where.requests.has(1.0):
+                # as at the lobby server: nothing is refused, the requests wait
+                if not conn.waited:
+                    conn.waited = True
+                    self.counts["held"] += 1
+                self.tell("budget", N_LIMIT, "your address sends the lobby server more requests than it takes from one address "
+                          "(%g a second, %g at once): they wait" % (args.request_rate, args.request_burst), 30.0)
+                conn.timer = asyncio.get_running_loop().call_later(where.requests.wait(1.0) + 0.01, self.pump, conn_id, conn)
+                return
+            if kind in PASSWORD_CHECKS:
+                if not where.logins.has(1.0):
+                    self.limited(conn_id, conn, "log-ins", where.logins, args.login_burst, args.login_every)
+                    return
+                where.logins.take(1.0)
+            elif kind == CREATE_ACCOUNT:
+                if not where.accounts.has(1.0):
+                    self.limited(conn_id, conn, "new accounts", where.accounts, args.account_burst, args.account_every)
+                    return
+                where.accounts.take(1.0)
+            where.requests.take(KEEP_ALIVE_COST if length == 4 else REQUEST_COST.get(kind, 1.0))
+            conn.waited = False
+            try:
+                conn.writer.write(bytes(held[:length]))
+            except (ConnectionError, RuntimeError, OSError):
+                return  # the connection's own task says that it is gone
+            del held[:length]
+            self.counts["tcp_out"] += length
+            self.counts["requests"] += 1
+        if conn.shut and conn.writer.can_write_eof() and not conn.writer.transport.is_closing():
+            del held[:]  # no more to send: half a request is no request
+            try:
+                conn.writer.write_eof()
+            except (OSError, RuntimeError):
+                pass
+        if conn.writer.transport.get_write_buffer_size() > WRITE_HIGH:
+            self.end(N_TOO_MUCH, "the lobby server does not take the data as fast as the page sends it")
+
+    def limited(self, conn_id, conn, what, allowance, most, every):
+        """A request over the allowance of the player's address: not handed to the lobby server."""
+        wait = int(allowance.wait(1.0)) + 1
+        self.counts["limited"] += 1
+        say(self.where.said, what, "session %d (%s): %s over the address's allowance (%g at once, one more every %g s): not passed to the lobby server"
+            % (self.number, self.address, what, most, every))
+        self.tcp_end(conn_id, conn, what, N_LIMIT, "too many %s from your address: the relay passes %g at once and then one more every %g seconds. "
+                     "Wait %d seconds and try again" % (what, most, every, wait))
+
+    def tcp_end(self, conn_id, conn, kind, code, text):
+        """A connection to the lobby server is closed from here, and the page is told why."""
+        self.tell(kind, code, text)
+        if self.tcp.get(conn_id) is conn:
+            del self.tcp[conn_id]
+        self.tcp_drop(conn)
+        self.send(TCP_CLOSED, struct.pack(">H", conn_id))
 
     async def tcp_run(self, conn_id, conn, port):
         relay = self.relay
@@ -510,10 +779,12 @@ class Session:
         self.counts["tcp"] += 1
         self.send(TCP_OPENED, struct.pack(">HB", conn_id, OK))
         head = struct.pack(">H", conn_id)
+        self.pump(conn_id, conn)  # what the page sent while the connection was being made
         try:
             while True:
                 data = await reader.read(4096)
                 if not data:
+                    conn.ended = True
                     self.send(TCP_EOF, head)
                     return  # the page closes it when the console has
                 self.counts["tcp_in"] += len(data)
@@ -529,6 +800,9 @@ class Session:
                 self.send(TCP_CLOSED, head)
 
     def tcp_drop(self, conn, cancel=True):
+        if conn.timer:
+            conn.timer.cancel()
+            conn.timer = None
         if cancel and conn.task and not conn.task.done():
             conn.task.cancel()
         if conn.writer:
@@ -561,25 +835,48 @@ class Session:
             if not self.relay.args.pages_only:
                 asyncio.get_running_loop().remove_reader(entry.sock.fileno())
             entry.sock.close()
+            # whoever gets this port next is another player: nobody keeps a path to it
+            key = (self.relay.own_int, entry.port)
+            for other in self.relay.sessions:
+                if other is not self:
+                    for table in (other.named, other.asked, other.heard):
+                        table.pop(key, None)
+                    other.shut(key, "that page has closed its socket")
 
     def udp_send(self, sock_id, address, port, data):
         relay = self.relay
         entry = self.udp_get(sock_id)
         if address == relay.lobby_int and port == relay.args.udp_port:
             # the discovery datagram: the lobby server learns this socket's address from it
+            if len(data) > DISCOVERY_SIZE or not self.discovery.take():
+                self.counts["udp_dropped"] += 1
+                return
             try:
                 entry.sock.sendto(data, (relay.lobby_text, port))
                 self.counts["udp_lobby"] += 1
             except OSError:
                 self.counts["udp_dropped"] += 1
             return
+        if len(data) > MAX_DATAGRAM:
+            self.counts["udp_dropped"] += 1  # larger than anything the game sends a player
+            return
         target = relay.ports.get(port) if address == relay.own_int else None
         if target is not None:
-            # another player of this relay
+            # another player of this relay: handed over inside, when that page wants to hear from this one
             other, other_sock = target
+            key, now = (address, port), time.monotonic()
+            if key not in self.paths and now - self.named.get(key, -1e9) >= NAMED_FOR:
+                self.remember(self.asked, key, MAX_ASKED)  # this page wants to hear from that one from now on
+            path = other.wanted((relay.own_int, entry.port)) if other is not self else None
+            if path is None:
+                self.counts["not_open"] += 1
+                other.counts["strangers"] += 1
+                return
+            path.heard = now
             if other.waiting() > WRITE_HIGH:
                 self.counts["udp_dropped"] += 1
                 return
+            path.back += 1
             self.counts["udp_peer"] += 1
             other.counts["udp_in"] += 1
             other.send(UDP_RECV, struct.pack(">BIH", other_sock, relay.own_int, entry.port) + data)
@@ -631,13 +928,29 @@ class Session:
 
     def name(self, address, port):
         """The lobby server named this address to the page (LobbyReader)."""
-        if self.relay.args.pages_only:
+        relay = self.relay
+        if address == relay.own_int and port in relay.ports:
+            # a player of this relay: handed over inside, and this page now wants to hear from it
+            if relay.ports[port][0] is not self:
+                self.remember(self.named, (address, port), MAX_NAMED)
             return
-        if not self.relay.outside(address):
+        if relay.args.pages_only or not relay.outside(address):
             return
-        if address == self.relay.own_int and port in self.relay.ports:
-            return  # a player of this relay: handed over inside
         self.remember(self.named, (address, port), MAX_NAMED)
+
+    def wanted(self, key):
+        """A datagram from another page of this relay, which this page knows as 'key': the
+        path it takes here, or None. This page wants to hear from that one when the lobby
+        server named it to this page, or when this page has itself sent to it within the
+        last half minute - so no page can make another page receive anything alone."""
+        path = self.paths.get(key)
+        if path is None:
+            now = time.monotonic()
+            if now - self.named.get(key, -1e9) < NAMED_FOR:
+                path = self.open(key, "another page of this relay; the lobby server named it")
+            elif now - self.asked.get(key, -1e9) < MEET_WITHIN:
+                path = self.open(key, "another page of this relay; each has sent to the other")
+        return path
 
     def open(self, key, why, real=None):
         if len(self.paths) >= MAX_PATHS:
@@ -755,6 +1068,37 @@ class Relay:
             if not 1024 <= self.udp_range[0] <= self.udp_range[1] <= 65535:
                 sys.exit("relay.py: --udp-ports wants LOW-HIGH between 1024 and 65535")
         self.udp_next = 0
+        for name in ("login_burst", "login_every", "account_burst", "account_every", "request_rate", "request_burst", "new_sessions", "connect_rate", "per_address", "max_sessions"):
+            if not getattr(args, name) > 0:
+                sys.exit("relay.py: --%s wants a number above 0 (a limit cannot be switched off; give a large number for a test)" % name.replace("_", "-"))
+        self.addresses = {}  # player address (address_key) -> Address: what its limits are kept in
+        self.said = {}
+        self.shaking = 0     # connections that have not finished their handshake
+        # a session can hold 1 + MAX_TCP + MAX_UDP descriptors
+        self.descriptors = args.max_sessions * (1 + MAX_TCP + MAX_UDP) + MAX_HANDSHAKES + 32
+        try:
+            import resource
+            soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+            if soft != resource.RLIM_INFINITY and soft < self.descriptors:
+                resource.setrlimit(resource.RLIMIT_NOFILE, (self.descriptors if hard == resource.RLIM_INFINITY else min(self.descriptors, hard), hard))
+        except (ImportError, ValueError, OSError):
+            pass
+
+    def place(self, key):
+        """The allowances of a player address; None when no more addresses can be kept."""
+        where = self.addresses.get(key)
+        if where is None:
+            if len(self.addresses) >= MAX_ADDRESSES:
+                self.rest()
+                if len(self.addresses) >= MAX_ADDRESSES:
+                    return None  # never by forgetting one that still owes: that would hand out new allowances
+            where = self.addresses[key] = Address(self.args)
+        return where
+
+    def rest(self):
+        """Addresses with nothing open and every allowance full again are forgotten."""
+        for key in [key for key, where in self.addresses.items() if where.rested()]:
+            del self.addresses[key]
 
     def outside(self, address):
         """May a datagram pass to or from this address at all (given a path)?"""
@@ -787,7 +1131,9 @@ class Relay:
         return None
 
     def gone(self, session):
-        self.sessions.discard(session)
+        if session in self.sessions:
+            self.sessions.discard(session)
+            session.where.sessions -= 1
 
     async def client(self, reader, writer):
         args = self.args
@@ -801,18 +1147,26 @@ class Relay:
             writer.write(("HTTP/1.1 %s\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n" % (status, len(body))).encode() + body)
             writer.close()
 
+        if self.shaking >= MAX_HANDSHAKES:
+            writer.close()  # connections that say nothing are not collected
+            return
+        self.shaking += 1
         try:
             head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5)
             lines = head.decode("latin-1").split("\r\n")
             method, target, _ = lines[0].split(" ", 2)
-            headers = {}
+            headers, real_ip = {}, []
             for line in lines[1:]:
                 name, colon, value = line.partition(":")
                 if colon:
                     headers[name.strip().lower()] = value.strip()
+                    if name.strip().lower() == "x-real-ip":
+                        real_ip.append(value)
         except (asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError, ConnectionError, ValueError, OSError):
             writer.close()
             return
+        finally:
+            self.shaking -= 1
         if method != "GET" or target.split("?")[0] != args.path:
             answer("404 Not Found", "not here")
             return
@@ -823,30 +1177,36 @@ class Relay:
         if args.origin and headers.get("origin") not in args.origin:
             answer("403 Forbidden", "not from this page")
             return
-        address = peer[0]
-        if args.trust_proxy and address in ("127.0.0.1", "::1"):
-            try:
-                address = str(ipaddress.ip_address(headers.get("x-real-ip", address)))
-            except ValueError:
-                pass
+        address = player_address(peer[0], real_ip, args.trust_proxy)
+        if args.trust_proxy and address == peer[0] and address in ("127.0.0.1", "::1") and (real_ip[-1].split(",")[-1].strip() if real_ip else "") != address:
+            say(self.said, "no player address", "relay: NOTE: a connection from this host came without a player address in X-Real-IP (--trust-proxy): it counts as this host itself. "
+                "The web server in front has to set that header (README.md)", 600.0)
         accept = base64.b64encode(hashlib.sha1((key + WS_GUID).encode()).digest()).decode()
         writer.write(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n" % accept).encode())
         self.count += 1
-        session = Session(self, reader, writer, address, self.count)
+        where = self.place(address_key(address))
+        session = Session(self, reader, writer, address, self.count, where)
         full = None
-        if len(self.sessions) >= args.max_sessions:
+        if where is None:
+            full = (N_FULL, "the relay is busy (it keeps count of as many addresses as it can); try again later")
+        elif len(self.sessions) >= args.max_sessions:
             full = (N_FULL, "the relay is full (%d players); try again later" % len(self.sessions))
-        elif sum(1 for other in self.sessions if other.address == address) >= args.per_address:
+        elif where.sessions >= args.per_address:
             full = (N_ADDRESS_FULL, "there are %d pages online from your address already, which is as many as the relay takes" % args.per_address)
+        elif not where.arrivals.has(1.0):
+            full = (N_LIMIT, "pages from your address have connected %g times within a minute, which is as often as the relay takes them. Wait %d seconds and try again"
+                    % (args.new_sessions, int(where.arrivals.wait(1.0)) + 1))
         if full:
             session.notice(*full)
-            log("session %d (%s) not taken: %s" % (session.number, address, full[1]))
+            say(where.said if where else self.said, "not taken", "session %d (%s) not taken: %s" % (session.number, address, full[1]))
             try:
                 writer.write(frame(8, struct.pack(">H", 1013)))
                 writer.close()
             except (ConnectionError, OSError):
                 pass
             return
+        where.arrivals.take(1.0)
+        where.sessions += 1
         self.sessions.add(session)
         log("session %d (%s) opened; %d open" % (session.number, address, len(self.sessions)))
         await session.run()
@@ -859,6 +1219,7 @@ class Relay:
                 if session.idle():
                     session.notice(N_IDLE, "nothing was sent for %d minutes; the page connects again when the game goes online" % (self.args.idle // 60))
                     session.close("idle")
+            self.rest()
 
     async def main(self):
         args = self.args
@@ -867,6 +1228,18 @@ class Relay:
         log("relay: listening on %s%s; lobby server %s (TCP ports %s, UDP %d); this host is %s to it; at most %d sessions, %d from one address%s"
             % (args.listen, args.path, self.lobby_text, args.tcp_ports, args.udp_port, self.own_text, args.max_sessions, args.per_address,
                ("; pages from " + ", ".join(args.origin)) if args.origin else "; pages from anywhere (no --origin)"))
+        log("relay: per player address (%s): %g new sessions a minute; %g log-ins at once and one more every %g s; %g new accounts at once and one more every %g s; "
+            "lobby requests %g units a second, %g at once" % ("X-Real-IP from the web server on this host" if args.trust_proxy else "the address a connection comes from",
+                                                              args.new_sessions, args.login_burst, args.login_every, args.account_burst, args.account_every, args.request_rate, args.request_burst))
+        if self.udp_range and self.udp_range[1] - self.udp_range[0] + 1 < args.max_sessions * MAX_UDP:
+            log("relay: NOTE: --udp-ports has %d ports; %d sessions could ask for %d between them (a game takes one, a page that means harm %d): the last to come would find none"
+                % (self.udp_range[1] - self.udp_range[0] + 1, args.max_sessions, args.max_sessions * MAX_UDP, MAX_UDP))
+        try:
+            import resource
+            if 0 <= resource.getrlimit(resource.RLIMIT_NOFILE)[0] < self.descriptors:
+                log("relay: NOTE: this process may hold %d open files; %d sessions can need %d" % (resource.getrlimit(resource.RLIMIT_NOFILE)[0], args.max_sessions, self.descriptors))
+        except (ImportError, ValueError, OSError):
+            pass
         if args.pages_only:
             log("relay: --pages-only: no datagram passes to or from a player outside this relay")
         else:
@@ -898,7 +1271,8 @@ def main():
     parser.add_argument("--listen", default="127.0.0.1:8975", help="address:port to listen on (default 127.0.0.1:8975)")
     parser.add_argument("--path", default="/relay", help="the path a page asks for (default /relay); anything else is 404")
     parser.add_argument("--origin", action="append", default=[], help="a page origin that may use the relay (https://host); may be given several times; none: any")
-    parser.add_argument("--trust-proxy", action="store_true", help="take the player's address from X-Real-IP when the connection comes from this host (a web server in front)")
+    parser.add_argument("--trust-proxy", action="store_true", help="take the player's address from X-Real-IP when the connection comes from this host (a web server in front, "
+                        "which has to SET that header: nginx's proxy_set_header X-Real-IP $remote_addr). Without it every player behind the web server counts as one address")
     parser.add_argument("--tcp-ports", default="40810,40910", help="the lobby server's TCP ports that may be reached (default 40810,40910: gateway and lobby)")
     parser.add_argument("--udp-port", type=int, default=10101, help="the lobby server's discovery port (default 10101)")
     parser.add_argument("--own-address", help="this host's address as the lobby server sees it (default: found by asking the system)")
@@ -910,6 +1284,15 @@ def main():
     parser.add_argument("--peer-rate", type=float, default=150, help="datagrams a second a page may send to one player outside (default 150, twice that for a moment; the game sends a player some 30)")
     parser.add_argument("--max-sessions", type=int, default=64)
     parser.add_argument("--per-address", type=int, default=4, help="sessions from one address at a time (default 4)")
+    parser.add_argument("--new-sessions", type=float, default=12, help="new sessions from one address: so many at once and so many more a minute (default 12)")
+    parser.add_argument("--login-burst", type=float, default=40, help="log-ins and account-detail requests (password checks) one address may send the lobby server at once (default 40, the lobby server's own)")
+    parser.add_argument("--login-every", type=float, default=3, help="... and one more every so many seconds (default 3, the lobby server's own)")
+    parser.add_argument("--account-burst", type=float, default=20, help="accounts one address may create at once (default 20, the lobby server's own)")
+    parser.add_argument("--account-every", type=float, default=180, help="... and one more every so many seconds (default 180, the lobby server's own)")
+    parser.add_argument("--request-rate", type=float, default=50, help="lobby requests of one address: units a second (default 50, the lobby server's requests_per_second)")
+    parser.add_argument("--request-burst", type=float, default=400, help="... and units at once (default 400, the lobby server's request_burst)")
+    parser.add_argument("--connect-rate", type=float, default=8, help="connections to the lobby server a second from one session (default 8, twice that for a moment; "
+                        "a game that cannot get through tries about five times a second)")
     parser.add_argument("--idle", type=int, default=900, help="seconds without use, and without a connection to the lobby, after which a session is closed (default 900)")
     parser.add_argument("--silent", type=int, default=60, help="seconds without any message from the page (it pings) after which the session is closed (default 60)")
     parser.add_argument("--max-message", type=int, default=8192, help="largest message taken, in bytes (default 8192)")

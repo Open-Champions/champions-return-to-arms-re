@@ -44,8 +44,8 @@ how the game draws with it, and that decides what is done.
   brighter one.
 - **Noise is left alone**: where a picture is noise from texel to texel (grass, mottled
   fills) a model draws worms; the strength is lowered there. Pictures with a side under
-  12 texels (the interface's bars) and model textures of fewer than 2,048 texels are
-  enlarged plainly.
+  12 texels (the interface's bars) and model textures and interface pictures of fewer
+  than 2,048 texels are enlarged plainly.
 - **Per kind of picture** a model and a strength (RECIPES below; chosen by eye, see the
   README).
 
@@ -92,8 +92,10 @@ RANGE_SLACK = 6      # how far a result may leave the range of the texels around
 SMALLEST = 12        # a picture with a side shorter than this gives a model nothing to go by
 # ... and so does a model texture of fewer texels than this (16 x 16 to 32 x 48: item and
 # hair pictures whose every feature is a texel or two; the model drew other shapes from them
-# and flattened their mottle. From 48 x 48 on it follows what is there)
-FEWEST = {'model': 2048}
+# and flattened their mottle. From 48 x 48 on it follows what is there), and an interface
+# picture of as few (skill icons of 32 x 32, the coin, the socket: they came out redrawn,
+# not sharper; a two-field picture counts as the one picture its fields make)
+FEWEST = {'model': 2048, 'interface': 2048}
 BLEED = 3            # texels: how far into what cannot be seen colour is replaced
 MOVED = 16           # of 255: the self-check's "this colour is no longer the game's"
 
@@ -376,7 +378,7 @@ class Job:
         h, w = self.rgb.shape[:2]
         self.box = use.box if use.box else (0, 0, w, h)
         # the bars of the interface are 6 or 8 lines high: enlarged plainly
-        # and so are the smallest model textures (FEWEST)
+        # and so are the smallest model textures and interface pictures (FEWEST)
         self.strength = self.recipe['strength'] if min(h, w) >= SMALLEST and h * w >= FEWEST.get(use.kind, 0) else 0.0
         self.alpha_values = np.unique(alpha[~unsent]) if (~unsent).any() else np.zeros(1, dtype=np.uint8)
         self.alpha_by_model = bool(self.recipe['alpha_model'] and self.cutout and len(self.alpha_values) > 1)
@@ -686,7 +688,8 @@ def main():
                 to_check.append((args.dump, args.replace, name))
             continue
         signature = [VERSION, args.scale, os.path.getsize(os.path.join(args.dump, name)), use.signature(), RECIPES[use.kind]]
-        if size.shape[0] * size.shape[1] < FEWEST.get(use.kind, 0):
+        # (the texels Job counts: of a two-field picture the lines of its two fields)
+        if (2 * use.field_rows or size.shape[0]) * size.shape[1] < FEWEST.get(use.kind, 0):
             signature.append('plain')               # (added to the signature only where it applies)
         signature = json.loads(json.dumps(signature))
         # a picture made by halving the 4x pack's counts as done for a plain --scale 2 run too

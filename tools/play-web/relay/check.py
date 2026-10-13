@@ -46,17 +46,25 @@ class Gone(Exception):
 class Client:
     """One WebSocket connection to the relay, as a browser makes it."""
 
-    def __init__(self, url, origin=None, timeout=10.0):
+    def __init__(self, url, origin=None, timeout=10.0, headers=(), receive_buffer=0):
         parts = urlparse(url)
         secure = parts.scheme == "wss"
         port = parts.port or (443 if secure else 80)
-        raw = socket.create_connection((parts.hostname, port), timeout)
+        if receive_buffer:  # a page on a thin line: set before the connection is made
+            raw = socket.socket()
+            raw.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, receive_buffer)
+            raw.settimeout(timeout)
+            raw.connect((parts.hostname, port))
+        else:
+            raw = socket.create_connection((parts.hostname, port), timeout)
         raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self.sock = ssl.create_default_context().wrap_socket(raw, server_hostname=parts.hostname) if secure else raw
         key = base64.b64encode(os.urandom(16)).decode()
         request = "GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n" % (parts.path or "/", parts.netloc, key)
         if origin:
             request += "Origin: %s\r\n" % origin
+        for name, value in headers:  # what a web server in front adds, or what a client writes itself
+            request += "%s: %s\r\n" % (name, value)
         self.sock.sendall((request + "\r\n").encode())
         self.buffer = b""
         head = b""
@@ -172,6 +180,23 @@ def player_to_player(a, b, own, size=64, count=200, gap=0.01):
     b.send(UDP_OPEN, b"\x00")
     port_a = struct.unpack(">BH", a.expect(UDP_BOUND))[1]
     port_b = struct.unpack(">BH", b.expect(UDP_BOUND))[1]
+
+    def datagram(client, body, timeout=2.0):
+        """The datagram with this content, whatever else arrives before it: its sender."""
+        deadline = time.monotonic() + timeout
+        while True:
+            got = client.expect(UDP_RECV, max(0.01, deadline - time.monotonic()))
+            if got[7:] == body:
+                return struct.unpack(">BIH", got[:7])[1:]
+
+    # The relay hands a datagram to a page only when that page wants to hear from the
+    # sender: here, when it has sent to it itself. So each sends to the other once; the
+    # first of the two is not handed over (a relay from before that rule hands it over).
+    a.send(UDP_SEND, struct.pack(">BIH", 0, own, port_b) + b"meet a")
+    a.send(PING, b"met")
+    a.expect(PONG)
+    b.send(UDP_SEND, struct.pack(">BIH", 0, own, port_a) + b"meet b")
+    datagram(a, b"meet b", 5)
     times = []
     lost = 0
     for i in range(count):
@@ -179,11 +204,11 @@ def player_to_player(a, b, own, size=64, count=200, gap=0.01):
         start = time.perf_counter()
         a.send(UDP_SEND, struct.pack(">BIH", 0, own, port_b) + body)
         try:
-            sock, address, port = struct.unpack(">BIH", b.expect(UDP_RECV, 2)[:7])
+            address, port = datagram(b, body)
             if (address, port) != (own, port_a):
                 raise Gone("the datagram came from %s:%d, not from the sender's socket %s:%d" % (ip_text(address), port, ip_text(own), port_a))
             b.send(UDP_SEND, struct.pack(">BIH", 0, own, port_a) + body)
-            a.expect(UDP_RECV, 2)
+            datagram(a, body)
             times.append((time.perf_counter() - start) * 1000)
         except Gone as error:
             if "came from" in str(error):
@@ -243,6 +268,7 @@ class StandIn:
         self.udp.bind((address, 0))
         self.udp_port = self.udp.getsockname()[1]
         self.udp.settimeout(3)
+        self.received = bytearray()  # every byte any connection has sent it
         threading.Thread(target=self.accept, daemon=True).start()
 
     def accept(self):
@@ -256,7 +282,8 @@ class StandIn:
                 data = conn.recv(4096)
                 if not data:
                     break
-                if data == b"hang up":
+                self.received += data
+                if data.endswith(b"hang up"):
                     break
                 conn.sendall(data)
         except OSError:
@@ -268,6 +295,42 @@ def lobby_message(kind, body, reply=True, result=0):
     """A lobby server's message as it is on the wire (docs/lobby-protocol.md section 2)."""
     payload = struct.pack("<HI", kind, 7 if reply else 0) + (struct.pack("<I", result) if reply else b"") + body
     return struct.pack(">I", len(payload) + 4) + payload
+
+
+def request(kind, body=b"", track=1):
+    """A request as the game sends it to the lobby server: length, kind, tracking number, version, body."""
+    payload = struct.pack("<HII", kind, track, 6) + body
+    return struct.pack(">I", len(payload) + 4) + payload
+
+
+def lobby_open(client, conn, lobby_int, port):
+    """A connection of the page to the lobby server: the relay's status (0: connected)."""
+    client.send(TCP_OPEN, struct.pack(">HIH", conn, lobby_int, port))
+    while True:
+        number, status = struct.unpack(">HB", client.expect(TCP_OPENED))
+        if number == conn:
+            return status
+
+
+def echoed(client, conn, size, timeout=6.0):
+    """What the stand-in lobby sent back on a connection (it echoes what reaches it), up to
+    'size' bytes; False when the relay closed the connection instead; None when neither."""
+    head, got, deadline = struct.pack(">H", conn), b"", time.monotonic() + timeout
+    while len(got) < size:
+        message = client.recv(max(0.01, deadline - time.monotonic()))
+        if message is None:
+            return None
+        if message[0] == R_TCP_DATA and message[1][:2] == head:
+            got += message[1][2:]
+        elif message[0] in (TCP_CLOSED, TCP_EOF) and message[1][:2] == head:
+            return False
+    return got
+
+
+def passes(client, conn, message, timeout=6.0):
+    """Sends bytes on a connection to the lobby: did they get there and come back?"""
+    client.send(TCP_DATA, struct.pack(">H", conn) + message)
+    return echoed(client, conn, len(message), timeout) == message
 
 
 def nstr(text):
@@ -300,7 +363,8 @@ def start_relay(lobby, address, *more):
     port = listen.getsockname()[1]
     listen.close()
     relay = subprocess.Popen([sys.executable, os.path.join(HERE, "relay.py"), "--lobby", address, "--listen", "127.0.0.1:%d" % port, "--tcp-ports", str(lobby.tcp_port),
-                              "--udp-port", str(lobby.udp_port), "--test-loopback", "--per-address", "3", "--origin", "http://test.invalid", "--max-message", "2048", "--silent", "6"] + list(more),
+                              "--udp-port", str(lobby.udp_port), "--test-loopback", "--per-address", "3", "--origin", "http://test.invalid", "--max-message", "2048", "--silent", "6",
+                              "--new-sessions", "200"] + list(more),
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     for _ in range(50):
         try:
@@ -385,9 +449,8 @@ def selftest():
         # TCP: there and back, the end from the server's side, the end from ours
         a.send(TCP_OPEN, struct.pack(">HIH", 1, lobby_int, lobby.tcp_port))
         check("TCP to the lobby port connects", struct.unpack(">HB", a.expect(TCP_OPENED)) == (1, 0))
-        a.send(TCP_DATA, struct.pack(">H", 1) + b"hello lobby")
-        check("TCP bytes go there and come back", a.expect(R_TCP_DATA) == struct.pack(">H", 1) + b"hello lobby")
-        a.send(TCP_DATA, struct.pack(">H", 1) + b"hang up")
+        check("TCP bytes go there and come back", passes(a, 1, request(0x42, b"hello lobby")))
+        a.send(TCP_DATA, struct.pack(">H", 1) + request(0x42, b"hang up"))
         check("the server's close arrives as an end", a.expect(TCP_EOF) == struct.pack(">H", 1))
         a.send(TCP_CLOSE, struct.pack(">H", 1))
         a.send(TCP_OPEN, struct.pack(">HIH", 2, lobby_int, lobby.tcp_port + 1 if lobby.tcp_port < 65535 else 1))
@@ -406,6 +469,25 @@ def selftest():
         check("datagrams to addresses no player can have are refused and said so", sum("datagram" in text for _, text in a.notices) == 2, repr(a.notices))
         b = Client(url, "http://test.invalid")
         b.hello()
+        # page to page: handed over only when the receiving page wants to hear from the sender
+        c = Client(url, "http://test.invalid")
+        c.hello()
+        b.send(UDP_OPEN, b"\x00")
+        port_b = struct.unpack(">BH", b.expect(UDP_BOUND))[1]
+        c.send(UDP_OPEN, b"\x00")
+        port_c = struct.unpack(">BH", c.expect(UDP_BOUND))[1]
+        a.send(UDP_SEND, struct.pack(">BIH", 0, lobby_int, port_b) + b"unasked")
+        a.send(PING, b"2")
+        a.expect(PONG)
+        check("a page alone cannot make another page receive: its datagram for a page that has not sent to it is not handed over", b.recv(0.4) is None)
+        b.send(UDP_SEND, struct.pack(">BIH", 0, lobby_int, bound[1]) + b"asked")
+        check("... until that page has sent to it as well", a.expect(UDP_RECV, 2) == struct.pack(">BIH", 0, lobby_int, port_b) + b"asked")
+        lobby_open(b, 1, lobby_int, lobby.tcp_port)
+        said_by_lobby(b, 1, wants_in((address, 1), (address, port_c)))
+        c.send(UDP_SEND, struct.pack(">BIH", 0, lobby_int, port_b) + b"named")
+        check("a page the lobby server named to another page is heard there at once", b.expect(UDP_RECV, 2) == struct.pack(">BIH", 0, lobby_int, port_c) + b"named")
+        b.send(TCP_CLOSE, struct.pack(">H", 1))
+        c.close()
         times, lost, ports = player_to_player(a, b, lobby_int, count=50, gap=0)
         check("datagrams go from one session to the other and back, with the sender's socket as their source", len(times) == 50 and lost == 0)
         check("the first session's socket is the one the lobby server saw", ports[0] == bound[1])
@@ -420,6 +502,9 @@ def selftest():
         check("... until that address has sent as well: its datagram is passed on, with its address", heard(one, b"here"))
         to(one, b"hello")
         check("... and the page's next one arrives there, from the session's socket", one.recv() == (b"hello", (address, mine)))
+        to(one, bytes(1600))
+        to(one, b"small")
+        check("a datagram larger than any the game sends a player is not sent on", one.recv() == (b"small", (address, mine)))
         two.send(b"knock", mine)
         check("a stranger alone opens no path: a datagram from outside is not passed on", a.recv(0.5) is None)
         to(two, b"come in")
@@ -491,6 +576,13 @@ def selftest():
             check("a fourth session from one address is not taken", False)
         except Gone:
             check("a fourth session from one address is not taken", True)
+        try:
+            d = Client(url, "http://test.invalid", headers=[("X-Real-IP", "198.51.100.77"), ("X-Forwarded-For", "198.51.100.77")])
+            d.send(HELLO, b"\x01")
+            d.recv(2)
+            check("... nor one that claims another address in a header: this relay was not told of a web server in front", False)
+        except Gone:
+            check("... nor one that claims another address in a header: this relay was not told of a web server in front", True)
         try:
             c.send(UDP_SEND, struct.pack(">BIH", 0, lobby_int, lobby.udp_port) + bytes(3000))
             c.recv(2)

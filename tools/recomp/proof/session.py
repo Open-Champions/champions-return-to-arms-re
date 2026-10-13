@@ -142,6 +142,11 @@ def replay_pokes(script, out, shift):
             else:
                 at = max(0, min(len(rows) - 1, at + shift))
             _, episode, tick, frame = rows[at]
+            if tick == 0 and episode >= 4:
+                # written while a level loads (the script ran on through a level change the
+                # game made): the load takes fewer frames here, so the row's frame number
+                # would never come; apply at the start of the load instead
+                frame = min(frame, 1)
             for addr, blob in groups[number]:
                 sink.write('%d %d %d %x %s\n' % (episode, tick, frame, addr, blob.hex()))
     print('%d groups of memory writes, %d the rig did not reach' % (len(groups), missing))
@@ -207,6 +212,7 @@ def main():
     parser.add_argument('--ticks', type=int)
     parser.add_argument('--frames', type=int, default=40000)
     parser.add_argument('--capture', action='store_true')
+    parser.add_argument('--no-first-tick-fix', action='store_true', help='native: leave the controller replay file as rigcompare.py writes it (cmp.py, first_tick_fix)')
     parser.add_argument('--per', type=int, default=3)
     parser.add_argument('--poke-shift', type=int, default=0, help='native: apply the memory writes this many displayed frames later (or, negative, earlier) than the first row the rig logged after it ran them')
     args = parser.parse_args()
@@ -242,7 +248,8 @@ def main():
     if args.step == 'native' and 'echo @P' in open(script).read():
         script, pokes = replay_pokes(script, out, args.poke_shift)
         native_args += ['--opt', 'proof-pokes=' + pokes]
-    cmpmod.setup(args.name, NATIVE, watches=spec.get('watch', DEFAULT_WATCHES), native_args=native_args if args.step == 'native' else ())
+    cmpmod.setup(args.name, NATIVE, watches=spec.get('watch', DEFAULT_WATCHES), native_args=native_args if args.step == 'native' else (),
+                 fix_first_tick=not args.no_first_tick_fix)
     if args.step == 'rig':
         sys.argv = ['rigcompare', 'boot-rig', '--script', script, '--more', '0', '--frames', str(args.frames)]
         return rigcompare.main()

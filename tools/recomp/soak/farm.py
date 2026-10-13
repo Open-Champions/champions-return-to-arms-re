@@ -373,7 +373,7 @@ def run_job(job, out_root, program=None, tag='', keep=False, extra_lines=(), ext
             env['RTA_NET_LINK'] = 'connect:' + paths[m]
         if job['bus'] != 'none':
             env['RTA_NET_BUS'] = '%s,seed=%d' % (job['bus'], job['seed'] * 4 + (m if m > 1 else 0))
-        env.update(extra_env or {})
+        env.update({k: v.replace('%M', str(m)) for k, v in (extra_env or {}).items()})
         sink = open(os.path.join(out, 'm%d.out' % m), 'w')
         command = ['nice', '-n', '10', program, 'boot', '--elf', os.path.join(ROOT, 'SLUS_209.73'), '--card', card]
         command += os.environ.get('SOAK_RUNTIME_OPTIONS', '').split()

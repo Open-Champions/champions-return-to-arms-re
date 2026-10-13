@@ -323,7 +323,27 @@ with anything; `fpcheck_gcc.exe` is its step 1).
 
 ## Resume here
 
-**State saved 2026-10-12 15:45.** Nothing is half-done in the sources; the tree compiles
+**Second pass, started 2026-10-12 19:50 (in progress - this block is rewritten as it goes).**
+Brief: (1) the network in `rta_app.exe` (Winsock behind one socket layer shared with the
+Mac build, a Win32 name dialogue, server address from an option or `server.txt` beside the
+program); (2) the merged graphics of `native-graphics.md` in the Windows program (settings,
+widescreen, multisampling, mip maps, the art pack read without Qt); proofs on the Mac;
+tester's folder and README. Plan and state:
+
+| Step | Files | State |
+|---|---|---|
+| socket layer | `net/sock.h` (new), `net/netdrv.cpp` (its POSIX calls replaced by the layer) | not started |
+| name dialogue, title note, set warning for Windows | `net/online_win.cpp` (new) | not started |
+| PNG reader without Qt | `render/png_read.h` (new), `render/texpack.cpp` (`read_png`, `open`) | not started |
+| settings, aspect, online options in the Windows program | `app/win_main.cpp` | not started |
+| build: new files, network, sign-in patch, stand-ins with the network | `app/build_win.py` | not started |
+| proofs: x86-64 stand-in lobby game, Mac `rta_app` lobby game, PNG reader against QImage over `local/hd-pack` | | not started |
+| tester's folder, README, this file, `native-app.md` 8, `native-recomp.md` step 6 | | not started |
+
+Rules of this pass: the local lobby only (never 167.99.183.124), builds into
+`local/recomp-out/win/` only, no git, nothing derived from the game outside `local/`.
+
+**State saved 2026-10-12 15:45 (first pass).** Nothing is half-done in the sources; the tree compiles
 (last full `build_win.py` 15:37: 70 files, three programs linked; `--standin` and
 `--reference` after it; `--compiler gcc` after those). Every file of this work is listed under "The parts that are new"
 and "Changes to existing files".
