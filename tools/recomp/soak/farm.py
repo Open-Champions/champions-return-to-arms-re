@@ -6,7 +6,10 @@ every tick of every machine compared (docs/issues/native-soak.md).
   farm.py run    --arm fix26 --out DIR --seeds 1000:400 [--instances 6] [--hours H] [--max-frames F]
   farm.py one    --arm fix26 --out DIR --seed 1007 [--frames F] [--tag T] [--program NAME]
                  [--dump TICK[,TICK...]] [--lines FILE] [--env K=V] [--keep] [--columns FILE]
+  farm.py twin   --ref s29 --arm s29f --out DIR --seeds 6100:20  the same games on two programs, each machine's
+                 tick log of the one compared with the other's row for row (twin.tsv)
   farm.py report DIR [DIR...]                                totals and coverage
+  run / one also take --strafe all|mixed|0,2 (whose driver uses the strafe mode; soakhooks.cpp, SOAK_STRAFE)
 
 An arm is a program built by build_soak.py: rta_soak-<arm> (fix26: the suggested fix set;
 nofix: the game as shipped).  A job is derived from its seed alone (make_job), so a seed
@@ -31,6 +34,7 @@ local/.  Needs RTA_DISC.  Machines run under `nice -n 19` (SOAK_NICE).  Standard
 """
 import argparse
 import json
+import math
 import os
 import random
 import re
@@ -186,6 +190,26 @@ def make_job(seed, arm, levels, trees, frames=None):
             'name': '%s-%d' % (arm, seed)}
 
 
+def with_strafe(job, how, spec=''):
+    """Which machines' drivers use the strafe mode: 'all'; 'mixed' - by the seed, at least one
+    that never does and at least one that does; 'none'.  A list of machine numbers is taken as it is."""
+    n = job['machines']
+    if not how or how == 'none':
+        return job
+    if how == 'all':
+        who = list(range(n))
+    elif how == 'mixed':
+        r = random.Random(job['seed'] * 104729 + 7)
+        who = [m for m in range(n) if r.random() < 0.5]
+        if len(who) == n:
+            who.remove(r.randrange(n))
+        if not who:
+            who = [r.randrange(n)]
+    else:
+        who = [int(x) for x in how.split(',')]
+    return dict(job, strafe=who, strafe_spec=spec)
+
+
 def describe(job):
     return '%s m%d %s L%d %s %df bus[%s] %s' % (
         job['name'], job['machines'], '+'.join('c%d(%s)' % (p['class'], ','.join(map(str, p['skills']))) for p in job['players']),
@@ -293,6 +317,8 @@ def tick_columns(local_slot, players):
              # shared state that code outside the tick can write (native-soak.md, "Save point" and
              # "Script variables"): the menu mutex, the jump gates found so far, the script's active player
              'mutex=0x4fe53c:u32', 'jgcount=0x8e3c30:s8', 'jgdests=0x8e3a50:crc480', 'actplayer=0x4d8ae4:s32',
+             # third part: the driver of the strafe mode (soakhooks.cpp): sender calls made, mode last sent
+             'l_strafesent=0xe0050:u32', 'l_strafewant=0xe0054:u32',
              'l_inp=g_localInputFrame:s32', 'l_cosmetic=g_cosmeticSeed:x32', 'l_drawframe=g_drawFrame:u32',
              'l_pause=g_pauseMenuOpen:u8', 'l_menu=g_localMenuOpen:u8', 'l_ghost=0x4027bc:x32',
              'l_c0=0xe0010:u32', 'l_c1=0xe0014:u32', 'l_c2=0xe0018:u32']
@@ -301,6 +327,8 @@ def tick_columns(local_slot, players):
         r = rec(n)
         specs += ['p%dx=%s+0x10:x32' % (n, obj), 'p%dy=%s+0x14:x32' % (n, obj), 'p%dz=%s+0x18:x32' % (n, obj),
                   'p%dangle=%s+0x38:u16' % (n, obj), 'p%dstate=%s+0x58c:s32' % (n, obj), 'p%dobjseed=%s+0x44:x32' % (n, obj),
+                  # third part: the strafe mode byte of the player object, and the yaw word that travels with the input
+                  'p%dmode=%s+0x47e:u8' % (n, obj), 'yaw%d=0x%x:u16' % (n, 0x5D0BC0 + n * 2),
                   'p%dhp=%s+0xac:x32' % (n, r), 'p%dmana=%s+0xc0:x32' % (n, r), 'p%dgold=%s+0xe4:s32' % (n, r),
                   'p%dexp=%s+0x5c:s32' % (n, r),
                   'p%dbag0=%s+0x130:crc4612' % (n, r), 'p%dbag1=%s+0x1338:crc4612' % (n, r), 'p%dbag2=%s+0x2540:crc4612' % (n, r),
@@ -397,7 +425,13 @@ def run_job(job, out_root, program=None, tag='', keep=False, extra_lines=(), ext
             env['RTA_NET_LINK'] = 'connect:' + paths[m]
         if job['bus'] != 'none':
             env['RTA_NET_BUS'] = '%s,seed=%d' % (job['bus'], job['seed'] * 4 + (m if m > 1 else 0))
+        if m in job.get('strafe', ()):      # this machine's driver sets and clears its own player's strafe mode
+            env['SOAK_STRAFE'] = '%d%s' % (job['seed'] * 16 + m + 1, job.get('strafe_spec', ''))
+            env['SOAK_STRAFE_SLOT'] = str(m)
+        if job.get('survive'):              # a directed game in which machines leave: nobody is stopped for it
+            env['SOAK_MACHINES'] = '0'
         env.update({k: v.replace('%M', str(m)) for k, v in (extra_env or {}).items()})
+        env.update(job.get('menv', {}).get(m, {}))
         sink = open(os.path.join(out, 'm%d.out' % m), 'w')
         command = ['nice', '-n', NICE, program, 'boot', '--elf', os.path.join(ROOT, 'SLUS_209.73'), '--card', card]
         command += os.environ.get('SOAK_RUNTIME_OPTIONS', '').split()
@@ -413,7 +447,7 @@ def run_job(job, out_root, program=None, tag='', keep=False, extra_lines=(), ext
             ended = now
         if abandoned():
             stopped = True
-        if stopped or (ended is not None and now - ended > 60) or now - began > limit:
+        if stopped or (ended is not None and now - ended > (900 if job.get('survive') else 60)) or now - began > limit:
             timed_out = timed_out or now - began > limit
             for p, _ in processes:
                 if p.poll() is None:
@@ -434,7 +468,7 @@ def run_job(job, out_root, program=None, tag='', keep=False, extra_lines=(), ext
         shutil.rmtree(out, ignore_errors=True)
         return result
     try:
-        result.update(analyse(out, n))
+        result.update(analyse(out, n, through_drops=bool(job.get('survive'))))
     except Exception as error:      # a machine that never wrote a log
         result.update({'ticks': 0, 'first': None, 'error': repr(error)[:300]})
     if sample_dumps:
@@ -569,17 +603,63 @@ def rows_of(path):
     return header, rows()
 
 
-def analyse(out, n):
+def bits_float(text):
+    return struct.unpack('<f', struct.pack('<I', int(text, 16)))[0]
+
+
+def analyse(out, n, through_drops=False):
     """Every pair of machines, tick by tick.  The result describes the earliest difference
-    of any pair in a deciding column; soft columns are counted on their own."""
+    of any pair in a deciding column; soft columns are counted on their own.
+    through_drops: a pair is compared on after one of the two holds a peer dropped (directed
+    games in which a machine leaves and the others play on)."""
     result = {'ticks': 0, 'first': None, 'columns': [], 'values': {}, 'pair': None, 'oos': None, 'dropped': None,
               'soft': {}, 'levels': [], 'deaths': [0] * n, 'cut_ticks': 0, 'pair_ticks': {}, 'overmax': 0,
-              'nobj_max': 0, 'last_tick': None}
+              'nobj_max': 0, 'last_tick': None,
+              # the strafe mode (third part): ticks with any player in the mode; player-ticks in the mode; of those,
+              # running ticks (state 1, moved more than a unit) and how many of them ran more than 45 and more than
+              # 135 degrees off the facing; the same two figures for players not in the mode (the check on the measure)
+              'mode_any': 0, 'mode_ticks': 0, 'run_mode': 0, 'run_side': 0, 'run_back': 0, 'run_plain': 0, 'run_plain_off': 0,
+              'mode_switches': 0, 'sent': 0}
     # what machine 0 saw
     header, rows = rows_of(os.path.join(out, 'm0.tick.tsv'))
     col = {c: i for i, c in enumerate(header)}
     alive = [True] * n
+    has_mode = 'p0mode' in col
+    before = [None] * n         # (x, y, mode) of each player in the tick before
     for tick, f in rows:
+        if has_mode:
+            any_mode = False
+            for p in range(n):
+                try:
+                    if f[col['l_p%dobj' % p]] == '00000000':
+                        before[p] = None
+                        continue
+                    x, y = bits_float(f[col['p%dx' % p]]), bits_float(f[col['p%dy' % p]])
+                    mode = int(f[col['p%dmode' % p]])
+                    facing = int(f[col['p%dangle' % p]])
+                    state = f[col['p%dstate' % p]]
+                except (ValueError, struct.error):
+                    before[p] = None
+                    continue
+                if mode:
+                    any_mode = True
+                    result['mode_ticks'] += 1
+                if before[p] is not None:
+                    if bool(before[p][2]) != bool(mode):
+                        result['mode_switches'] += 1
+                    dx, dy = x - before[p][0], y - before[p][1]
+                    if state == '1' and 1.0 < dx * dx + dy * dy < 400.0:
+                        # the game's heading: an object facing a runs along (cos a, sin a), a in 65536ths of a turn
+                        off = abs(((int(round(math.atan2(dy, dx) * 32768.0 / math.pi)) - facing + 32768) & 0xFFFF) - 32768)
+                        if mode:
+                            result['run_mode'] += 1
+                            result['run_side'] += off > 8192
+                            result['run_back'] += off > 24576
+                        else:
+                            result['run_plain'] += 1
+                            result['run_plain_off'] += off > 8192
+                before[p] = (x, y, mode)
+            result['mode_any'] += any_mode
         level = f[col['level']]
         if not result['levels'] or result['levels'][-1][1] != level:
             result['levels'].append((tick, level))
@@ -613,7 +693,7 @@ def analyse(out, n):
             for p in range(n):
                 if 'l_p%dobj' % p in ha and 'l_p%dobj' % p in hb:
                     through[p] = (ha.index('l_p%dobj' % p), hb.index('l_p%dobj' % p))
-            via_object = re.compile(r'^p(\d)(x|y|z|angle|state|objseed|armour|resist)$')
+            via_object = re.compile(r'^p(\d)(x|y|z|angle|state|objseed|armour|resist|mode)$')
             soft = [(c, ha.index(c), hb.index(c)) for c in shared if is_soft(c)]
             drop_a = [ha.index('l_dropped%d' % p) for p in range(n)]
             drop_b = [hb.index('l_dropped%d' % p) for p in range(n)]
@@ -632,7 +712,8 @@ def analyse(out, n):
                 if any(fields_a[i] == '1' for i in drop_a) or any(fields_b[i] == '1' for i in drop_b):
                     if result['dropped'] is None or tick_a < result['dropped']:
                         result['dropped'] = tick_a
-                    break
+                    if not through_drops:
+                        break
                 compared += 1
                 if result['oos'] is None and (any(fields_a[i] not in ('0', '') for i in oos_a) or
                                               any(fields_b[i] not in ('0', '') for i in oos_b)):
@@ -663,6 +744,16 @@ def analyse(out, n):
                             result['columns'] = sorted(c for c, _, _ in differing)
                             result['values'] = {c: (x, y) for c, x, y in differing}
             result['pair_ticks']['%d-%d' % (a, b)] = compared
+    for m in range(n):          # sender calls each machine's driver made (the last row's count)
+        try:
+            header_m, rows_m = rows_of(os.path.join(out, 'm%d.tick.tsv' % m))
+            last = None
+            for _, fields in rows_m:
+                last = fields
+            if last is not None and 'l_strafesent' in header_m:
+                result['sent'] += int(last[header_m.index('l_strafesent')])
+        except (OSError, ValueError):
+            pass
     result['ticks'] = min(result['pair_ticks'].values()) if result['pair_ticks'] else 0
     result['ticks_sum'] = sum(result['pair_ticks'].values())
     return result
@@ -676,7 +767,8 @@ def class_of(result):
 # ---- the farm ---------------------------------------------------------------------------------
 FIELDS = ['name', 'seed', 'machines', 'classes', 'skills', 'char_level', 'level', 'frames', 'bus', 'flags', 'mixes',
           'ticks', 'ticks_sum', 'first', 'class', 'pair', 'values', 'oos', 'dropped', 'repeats', 'soft', 'levels', 'deaths',
-          'cut_ticks', 'overmax', 'nobj_max', 'secs', 'codes', 'timed_out', 'notes', 'error', 'where']
+          'cut_ticks', 'overmax', 'nobj_max', 'secs', 'codes', 'timed_out', 'notes', 'error', 'where',
+          'strafe', 'mode_any', 'mode_ticks', 'mode_switches', 'sent', 'run_mode', 'run_side', 'run_back', 'run_plain', 'run_plain_off']
 
 
 def job_row(job, result):
@@ -696,7 +788,10 @@ def job_row(job, result):
            'overmax': result.get('overmax', 0), 'nobj_max': result.get('nobj_max', 0), 'secs': int(result.get('secs', 0)),
            'codes': ','.join(map(str, result.get('codes', []))), 'timed_out': int(bool(result.get('timed_out'))),
            'notes': '; '.join(result.get('notes', []))[:500], 'error': result.get('error', ''),
-           'where': result.get('where', '')}
+           'where': result.get('where', ''),
+           'strafe': ','.join(str(m) for m in job.get('strafe', ())) + job.get('strafe_spec', '')}
+    for key in ('mode_any', 'mode_ticks', 'mode_switches', 'sent', 'run_mode', 'run_side', 'run_back', 'run_plain', 'run_plain_off'):
+        row[key] = result.get(key, 0)
     return '\t'.join('' if row[k] is None else str(row[k]).replace('\t', ' ') for k in FIELDS)
 
 
@@ -731,7 +826,8 @@ def farm(args, levels, trees):
             sink.write('\t'.join(FIELDS) + '\n')
     gate = Gate(os.path.join(out_root, 'limit.txt'), args.instances)
     deadline = time.time() + args.hours * 3600 if args.hours else None
-    todo = [make_job(seed, args.arm, levels, trees) for seed in range(first, first + count) if seed not in done]
+    todo = [with_strafe(make_job(seed, args.arm, levels, trees), args.strafe, args.strafe_spec)
+            for seed in range(first, first + count) if seed not in done]
     if args.max_frames:     # an arm that is expected to differ early (the unpatched one) need not play long games
         todo = [shortened(job, args.max_frames) for job in todo]
     threads = []
@@ -776,6 +872,129 @@ def farm(args, levels, trees):
             gate.give(job['machines'])
             break
         thread = threading.Thread(target=work, args=(job,))
+        thread.start()
+        threads.append(thread)
+    for thread in threads:
+        thread.join()
+    return 0
+
+
+# ---- twin: one arm against another, the same games, row for row -----------------------------------
+NEW_IN_TEST = re.compile(r'^(p\dmode|l_strafe\w+)$')        # columns a reference program has no meaning for
+
+
+def compare_logs(path_a, path_b):
+    """Two tick logs of the same machine in the same game played by two programs: (rows in a,
+    rows in b, first tick at which a deciding column differs, those columns, first tick at
+    which any column differs, those columns).  Deciding: every shared column but the local
+    ones (l_...), the followed ones and the ones of NEW_IN_TEST."""
+    ha, ra = rows_of(path_a)
+    hb, rb = rows_of(path_b)
+    shared = [c for c in ha if c in hb and c != 'frame' and not NEW_IN_TEST.match(c)]
+    index = [(c, ha.index(c), hb.index(c), not c.startswith('l_') and not is_soft(c)) for c in shared]
+    count_a = count_b = 0
+    first_hard = first_any = None
+    cols_hard, cols_any = [], []
+    while True:
+        a = next(ra, None)
+        b = next(rb, None)
+        count_a += a is not None
+        count_b += b is not None
+        if a is None or b is None:
+            break
+        if first_hard is not None:
+            continue
+        if a[0] != b[0]:
+            first_hard = first_any = min(a[0], b[0])
+            cols_hard = cols_any = ['net']
+            continue
+        differing = [(c, hard) for c, x, y, hard in index if a[1][x] != b[1][y]]
+        if differing and first_any is None:
+            first_any, cols_any = a[0], [c for c, _ in differing]
+        hard = [c for c, h in differing if h]
+        if hard:
+            first_hard, cols_hard = a[0], hard
+    return count_a, count_b, first_hard, cols_hard, first_any, cols_any
+
+
+def twin(args, levels, trees):
+    """Every seed is played by --ref and by --arm; each machine's tick log of the one is compared
+    with the same machine's of the other, column by column, tick by tick."""
+    out_root = os.path.abspath(args.out)
+    os.makedirs(out_root, exist_ok=True)
+    first, count = (int(x) for x in args.seeds.split(':'))
+    path = os.path.join(out_root, 'twin.tsv')
+    done = set()
+    if os.path.exists(path):
+        done = {int(l.split('\t')[0]) for l in open(path) if l.split('\t')[0].isdigit()}
+    else:
+        with open(path, 'w') as sink:
+            sink.write('seed\tmachines\tlevel\tframes\tbus\tticks_ref\tticks_test\tfirst_in_ref\tfirst_in_test\trows\tidentical\t'
+                       'first_deciding\tcolumns\tfirst_any\tcolumns_any\tdropped\n')
+    gate = Gate(os.path.join(out_root, 'limit.txt'), args.instances)
+    ALIVE['path'] = os.path.join(out_root, 'alive')
+    ALIVE['minutes'] = args.alive_minutes
+    open(ALIVE['path'], 'a').close()
+    os.utime(ALIVE['path'])
+    threads = []
+    slots = threading.Semaphore(2)
+
+    def work(seed):
+        job = make_job(seed, args.arm, levels, trees)
+        if args.max_frames:
+            job = shortened(job, args.max_frames)
+        n = job['machines']
+        results = {}
+
+        def play(arm):
+            gate.take(n)
+            try:
+                results[arm] = run_job(dict(job, arm=arm, name='%s-%d' % (arm, seed)), out_root, keep=True)
+            finally:
+                gate.give(n)
+        pair = [threading.Thread(target=play, args=(arm,)) for arm in (args.ref, args.arm)]
+        for t in pair:
+            t.start()
+        for t in pair:
+            t.join()
+        ref, test = results.get(args.ref, {}), results.get(args.arm, {})
+        if ref.get('stopped') or test.get('stopped') or not ref or not test:
+            return
+        rows = 0
+        worst_hard = worst_any = None
+        cols_hard, cols_any = [], []
+        equal_length = True
+        for m in range(n):
+            try:
+                ca, cb, fh, ch, fa, cany = compare_logs(os.path.join(ref['dir'], 'm%d.tick.tsv' % m), os.path.join(test['dir'], 'm%d.tick.tsv' % m))
+            except (OSError, ValueError, StopIteration) as error:
+                fh, ch, fa, cany, ca, cb = -1, [repr(error)[:80]], -1, [], 0, 1
+            rows += min(ca, cb)
+            equal_length = equal_length and ca == cb
+            if fh is not None and (worst_hard is None or fh < worst_hard):
+                worst_hard, cols_hard = fh, ['m%d:%s' % (m, c) for c in ch]
+            if fa is not None and (worst_any is None or fa < worst_any):
+                worst_any, cols_any = fa, ['m%d:%s' % (m, c) for c in cany]
+        identical = worst_hard is None and equal_length
+        with LOCK:
+            with open(path, 'a') as sink:
+                sink.write('\t'.join(str(x) for x in (
+                    seed, n, job['level'], job['frames'], job['bus'], ref.get('ticks', 0), test.get('ticks', 0),
+                    ref.get('first') or '', test.get('first') or '', rows, 'yes' if identical else 'NO',
+                    '' if worst_hard is None else worst_hard, ' '.join(cols_hard)[:300],
+                    '' if worst_any is None else worst_any, ' '.join(cols_any)[:300], test.get('dropped') or '')) + '\n')
+        if identical and worst_any is None:
+            for r in (ref, test):
+                shutil.rmtree(r['dir'], ignore_errors=True)
+
+    for seed in range(first, first + count):
+        if seed in done:
+            continue
+        if os.path.exists(os.path.join(out_root, 'stop')) or abandoned():
+            break
+        # two seeds at a time: their four games share the instances the gate allows
+        slots.acquire()
+        thread = threading.Thread(target=lambda seed=seed: (work(seed), slots.release()))
         thread.start()
         threads.append(thread)
     for thread in threads:
@@ -853,7 +1072,7 @@ def report(dirs):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='command', required=True)
-    for name in ('plan', 'run', 'one'):
+    for name in ('plan', 'run', 'one', 'twin'):
         p = sub.add_parser(name)
         p.add_argument('--arm', default='fix26')
         p.add_argument('--out', default=os.path.join(OUT, 'farm'))
@@ -871,6 +1090,12 @@ def main():
         p.add_argument('--columns')
         p.add_argument('--env', action='append', default=[])
         p.add_argument('--keep', action='store_true')
+        p.add_argument('--ref', help='twin: the program the --arm program is compared with, game by game')
+        p.add_argument('--strafe', default='none', help='whose driver uses the strafe mode: all, mixed, none, or machine numbers 0,2')
+        p.add_argument('--strafe-spec', default='', help='appended to SOAK_STRAFE: ,rate=N and / or ,at=blank')
+        p.add_argument('--survive', action='store_true', help='one: machines that leave do not end the game for the others, '
+                                                              'and pairs are compared on after a drop')
+        p.add_argument('--menv', action='append', default=[], help='one: M:K=V, an environment variable for machine M alone')
         p.add_argument('--level', help='one: this start level instead of the seed\'s')
         p.add_argument('--machines', type=int, help='one: this many machines instead of the seed\'s')
         p.add_argument('--bus', help='one: this bus instead of the seed\'s (none, or delay=N,jitter=N,loss=N)')
@@ -907,6 +1132,15 @@ def main():
         if args.machines:
             players = (job['players'] * 4)[:args.machines]
             job = dict(job, machines=args.machines, players=players)
+        job = with_strafe(job, args.strafe, args.strafe_spec)
+        if args.survive:
+            job = dict(job, survive=True)
+        if args.menv:
+            menv = {}
+            for item in args.menv:
+                who, pair = item.split(':', 1)
+                menv.setdefault(int(who), {}).update([pair.split('=', 1)])
+            job = dict(job, menv=menv)
         if args.directed:
             job = dict(job, directed=[l for l in open(args.directed).read().splitlines() if l.strip() and not l.startswith('#')])
         extra = open(args.lines).read().splitlines() if args.lines else []
@@ -919,6 +1153,8 @@ def main():
         print(describe(job))
         print(job_row(job, result).replace('\t', ' | '))
         return 0
+    if args.command == 'twin':
+        return twin(args, levels, trees)
     return farm(args, levels, trees)
 
 

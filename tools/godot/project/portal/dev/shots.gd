@@ -305,7 +305,9 @@ func many_friends(count: int, long_names := false) -> Array:
 		b["joinable"] = int(b.presence) == 2 and k % 2 == 0
 		b["room_players"] = 2 + k % 3 if int(b.presence) >= 2 else 0
 		if int(b.presence) == 3 and String(b.level) == "":
-			b["level"] = "hub"
+			for other in base:              # a level's name as the session has it for somebody
+				if String(other.level) != "":
+					b["level"] = other.level
 		b["last_seen"] = int(Time.get_unix_time_from_system()) - 3600 * (1 + k * 5)
 		b["invited_me"] = false
 		if long_names and k % 2 == 0:

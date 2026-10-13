@@ -456,9 +456,14 @@ struct Pads : rta::PadSource {
         // the views that look along the ground: mouse and right stick are the look (the game
         // camera's yaw word), the character is turned to it; in the overhead views nothing
         // changes (fpcontrols.h).  The view is the one of the last draw pass.
+        // (Not while another machine's controller rows are replayed: the input is then given
+        // whole - the rows, and the yaw word the game turns from them - and the controls, which
+        // drive the yaw word themselves in shoulder and first person, stand aside.  The view is
+        // still drawn; it is the camera's own claim that is checked that way: 12.10.)
         {
+            static const bool replayed = apprt::replaying();
             const fpview::View& v = fpview::view();
-            fpcontrols::set_view(fpview::mode(), v.active && !v.fallback, v.look_pitch);
+            fpcontrols::set_view(replayed ? 0 : fpview::mode(), v.active && !v.fallback, v.look_pitch);
             fpcontrols::translate(frame, state);
             if (float pitch = fpcontrols::take_pitch(); pitch != 0) fpview::add_pitch(pitch);
         }

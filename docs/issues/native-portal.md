@@ -9,18 +9,61 @@ Nothing derived from the game is in the repository: the portal is scripts and tw
 by code. Names of characters, classes and levels on screen come from the session or the game's
 state at run time. Pictures, the staged project and logs are under `local/godot-portal/`.
 
-## STATE (2026-10-13, late afternoon)
+## STATE (2026-10-13, 14:45)
 
-- **Ran:** every screen below, in an off-screen viewport at 1920 x 1080 driven by controller and
-  keyboard events, against the online agent's mock (`tools/recomp/net2/session_mock.cpp` through
-  the extension's `RtaNet2`). The scripted walk-through first start -> name -> home -> host -> a
-  friend walks in -> ready -> start -> the game (a stand-in) -> back in the room runs end to end:
-  `local/godot-portal/pictures/walk-01 ... walk-12`.
-- **Not run:** the portal in front of the real game scene with the game library (the hand-over
-  writes the game scene's options and puts `res://main.tscn` under itself - Read against
-  `main.gd`, see "Hand-over"); a real controller (events are injected); a real service (the
-  extension is built with `NET2_NO_SERVICE`: there is no socket code in it).
-- Nothing of this work is running; test windows were 480 x 270 points, titled "AGENT TEST".
+- **Ran:** every screen below, in an off-screen viewport at 1920 x 1080 (and 1440 x 1080,
+  1280 x 720, 2560 x 1080, 3840 x 2160, 1024 x 768) driven by the same events a controller, a
+  keyboard and a mouse send, against the online agent's mock
+  (`tools/recomp/net2/session_mock.cpp` through the extension's `RtaNet2`). 95 pictures.
+- **Ran:** the scripted walk-through with a controller - first start -> the name -> home -> host
+  -> a friend walks in -> ready -> start ("finding each other", routes) -> the game (a stand-in) ->
+  back in the room with "Play again": `local/godot-portal/pictures/walk-01 ... walk-12`.
+- **Ran:** the portal in front of the REAL game scene (`res://main.tscn`, the game library of
+  14:00, interface version 6, the owner's disc image): "Play alone" put the game scene under the
+  portal, the machine booted and ran 655 vertical blanks at the game's own first screen; an
+  invitation card showed over the running game; the portal came back in front of the stopped
+  game with its picture blurred behind; the program ended through the game scene's own
+  `_finish` (machine stopped, figures printed). Pictures `real-01 ... real-05` (game output:
+  they stay under `local/`).
+- **Ran:** the portal as the project's real first scene in a window (640 x 360 test window,
+  `window-first-start.png`); and `--no-portal`: the game scene started as before the portal
+  existed (240 blanks, exit 0).
+- **Ran:** the extension from clean with the Godot agent's `CMakeLists.txt` as it stands
+  (`local/godot-portal/build/cmake-clean`: 1036 steps, 0 warnings, 0 errors; `rta_net2.cpp`,
+  `session.cpp`, `session_mock.cpp` in it), and the portal against that build.
+- **Not run:** a real controller (events are injected); a real service (the extension is built
+  with `NET2_NO_SERVICE`: there is no socket code in it); a game started from a room for real
+  (the launch is `net2/launch.cpp`'s; the portal only gets out of the way); the camera view and
+  picture settings arriving in a running game beyond "the options are written" (Read).
+- Nothing of this work is running; test windows were 480 x 270 to 640 x 360 points, titled
+  "AGENT TEST ...", without focus, in the screen's corner, silent.
+
+### Pictures to look at first (`local/godot-portal/pictures/`)
+
+- `walk-02-name-typed.png` (the one question, with a controller), `state-home.png`,
+  `friends-more-selected.png` (the list, a friend who can be joined), `walk-08-everybody-ready.png`
+  (the room), `walk-10-starting-connected.png`, `walk-12-back-in-the-room.png`.
+- `friends-none-yet.png`, `friends-eight.png`, `friends-forty.png`, `friends-long-names.png`.
+- `room-different-version.png` (the warning, only when something is wrong), `join-room-full.png`.
+- `settings-view.png`, `settings-controls.png`.
+- `ratio-4x3-room.png`, `ratio-21x9-home.png`, `ratio-720p-friends.png`, `ratio-4k-home.png`.
+- `real-03-invitation-over-the-game.png`, `real-05-friends-in-front-of-the-game.png`.
+
+### How the pictures are made
+
+```
+python3 local/godot-portal/portal.py ext        # once, and when the extension's sources change
+python3 local/godot-portal/portal.py shots NAME -- [--only walk,states,friends,room,join,settings,ratios]
+python3 local/godot-portal/check.sh             # parse-check of every script
+```
+
+`dev/shots.gd` is the test window's scene: it puts the portal into a `SubViewport` of the wanted
+size, sends `InputEventJoypadButton` / `InputEventKey` / mouse events into it, waits on the
+session's state (not on the clock) and saves the viewport's texture. `--only real` with the game
+scene's own options (`--disc`, `--test`, `--mute`, `--size`, `--data`, `--workspace`) is the run
+with the real game. `local/godot-portal/snap/` is `tools/godot` as it was at 14:20 (the second
+snapshot: the library's interface had moved from version 5 to 6 in between, and an extension
+built from the older header refuses the newer library - the game scene says so in words).
 
 ## Where things are
 
@@ -108,7 +151,7 @@ From the game: `RtaGameState` once a second while a game runs (`handover.gd`): t
 name / class / level -> "the character you played last" and `set_character`; the level's name ->
 `set_game`.
 
-## Hand-over (Read against `main.gd`; Ran with the stand-in)
+## Hand-over (Ran with the stand-in and with the real game scene)
 
 - `handover.start(intent)` instantiates `res://main.tscn` under `Portal/Game` the first time and,
   before its `_ready` reads the command line, writes into its `opt`: `disc`, `view`,
@@ -121,6 +164,8 @@ name / class / level -> "the character you played last" and `set_character`; the
   game scene is stopped (`process_mode` disabled, its sound paused) and its last picture shows
   blurred and dimmed behind the portal (`backdrop.gdshader`). **Ran** with the stand-in:
   `state-home-over-the-game`, `walk-12`.
+- **Ran** with the real game scene: start, the notice over the game, `finish("key")`, the blurred
+  picture behind, and the end of the program through `main.gd`'s own `_finish` (`quit_game`).
 - **Open** (needs the Godot agent): `main.gd` ends the program when the machine ends
   (`_finish` -> `quit`); a game that returns to the portal needs the game side to say "over"
   without quitting (the machine is one run per process). And while the portal is in front of a
@@ -135,7 +180,7 @@ name / class / level -> "the character you played last" and `set_character`; the
 | the game behind the hand-over | a **stand-in** (`dev/stub_game.gd`) in the pictures |
 | "your characters" | what the portal has seen played + `net2_local_characters` (empty until the launch code supplies the card reader); in the pictures the list is seeded by `dev/shots.gd` |
 | the character's picture | a **drawn stand-in** (`widgets.gd` `Portrait`); `Portrait.texture` takes a live viewport when the game scene can show one character |
-| settings: view | stored; given to the game at the hand-over (`opt.view`) and at once to a running game (`machine.set_option("view", ...)`) - not run with the library |
+| settings: view | stored; given to the game at the hand-over (`opt.view`) and at once to a running game (`machine.set_option("view", ...)`) - the options were written in the real run; that the view changed was not looked at |
 | settings: window / full screen, master volume | applied by the portal (never in a test) |
 | settings: sharpness, picture shape | stored; given to the game scene at its first start |
 | settings: music / effects volume | **stored only** - needs a switch on the sound side |

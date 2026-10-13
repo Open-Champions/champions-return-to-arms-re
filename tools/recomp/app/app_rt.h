@@ -22,6 +22,9 @@ void command(const std::string& text, uint64_t frame);
 // Host threads that carry one of the game's threads now, started in all, and ended by the
 // game's TerminateThread (rt/runtime.cpp).
 void thread_figures(unsigned& now, unsigned& made, unsigned& ended);
+// The controller rows of this run are another machine's, replayed (--opt pad-replay=FILE):
+// what the application's pad source answers is not what the game is given.
+bool replaying();
 // Called once when the run ends (script `quit`, --fields, the window closed), before the
 // runtime prints its report.
 void set_finish_handler(void (*handler)());

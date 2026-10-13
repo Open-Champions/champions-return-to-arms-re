@@ -37,6 +37,21 @@
 //    shadow; a change is logged with the tick, the old and new bytes and the chain of
 //    functions that were running (innermost first).  The writer is the innermost function,
 //    or the runtime if the store was a service's.
+// 4. A driver for a mode that is set by a call of a game function (third part of the notes:
+//    the strafe mode of tools/recomp/app/fp-proposed.pnach, sender 0x215c98 with the mode in
+//    a0).  Nothing of it runs unless it is asked for:
+//      SOAK_STRAFE=<seed>[,rate=N][,at=frame|blank]   this machine's driver calls the sender
+//          at random moments (about one frame in N, default 120) and when something happens
+//          to its own player - a new player object (level entry, respawn), a level change
+//          becoming pending, death, a change of action state, its menu opening or closing -
+//          with 1 and 0 in turn (now and then the value it already asked for).
+//          at=frame (default): on the main thread, in the per-frame task pass outside the
+//          tick, as game code would call it; at=blank: from the vertical-blank handler.
+//      SOAK_STRAFE_SLOT=<n>   the player slot this machine owns (the driver looks at it).
+//    A script can ask for one call by storing into the control block 0xE0040:
+//      +0 u32 address, +4 u32 a0, +8 u32 when (1 the next frame's task pass, 2 inside the
+//      next tick after the task pass, 3 the next vertical blank); the hooks clear +8.
+//      +0x10 u32 calls of the strafe sender made by this machine, +0x14 the mode last sent.
 #include "recomp.h"
 #include "funcs.h"
 
@@ -264,12 +279,97 @@ void at_finish() {
 }
 }  // namespace
 
+namespace {
+enum : u32 { CTRL = 0xE0040, G_PLAYERS = 0x4d8af0, PLAYER_REC = 0x4c30, REC_OBJECT = 0x43d8, REC_HP = 0xac, G_PENDING_LEVEL = 0x41b6d0,
+             G_LOCAL_MENU = 0x41b69d, G_NETWORK_MODE = 0x402791, STRAFE_SENDER = 0x215c98, OBJ_ACTION_STATE = 0x58c };
+struct Driver {
+    bool ready = false, on = false, at_blank = false, want = false, had_pending = false, was_dead = false;
+    int slot = 0, rate = 120, delayed = -1;
+    u64 rng = 0;
+    u32 last_object = 0, last_state = 0, sent = 0;
+    u8 last_menu = 0;
+} D;
+
+u32 draw() {                    // splitmix64
+    u64 z = (D.rng += 0x9E3779B97F4A7C15ull);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return (u32)((z ^ (z >> 31)) >> 16);
+}
+bool chance(u32 per_thousand) { return draw() % 1000u < per_thousand; }
+
+// one call of a game function with one argument, on the context that is running: what the
+// game's own code would do with a jal at this point (the registers are put back afterwards)
+void guest_call(Ctx* c, u32 address, u32 a0) {
+    Ctx saved = *c;
+    c->r[4] = (u64)(s64)(s32)a0;
+    rt_call(c, address);
+    *c = saved;
+}
+
+void send_mode(Ctx* c, u32 mode) {
+    guest_call(c, STRAFE_SENDER, mode);
+    D.want = mode != 0;
+    D.sent++;
+    wr(CTRL + 0x10, D.sent);
+    wr(CTRL + 0x14, mode);
+}
+
+void driver_setup() {
+    D.ready = true;
+    const char* spec = getenv("SOAK_STRAFE");
+    if (!spec || !*spec) return;
+    D.on = true;
+    D.rng = strtoull(spec, nullptr, 10) * 0x2545F4914F6CDD1Dull + 1;
+    if (const char* r = strstr(spec, "rate=")) D.rate = atoi(r + 5) > 0 ? atoi(r + 5) : 120;
+    D.at_blank = strstr(spec, "at=blank") != nullptr;
+    if (const char* v = getenv("SOAK_STRAFE_SLOT")) D.slot = atoi(v) & 3;
+}
+
+// where: 1 the per-frame task pass (main thread, outside the tick), 2 inside a tick, 3 the vertical blank
+void driver_step(Ctx* c, u32 where) {
+    if (!D.ready) driver_setup();
+    if (rd(CTRL + 8) == where && rd(CTRL)) {        // a script's request
+        u32 address = rd(CTRL), a0 = rd(CTRL + 4);
+        wr(CTRL + 8, 0);
+        if (address == STRAFE_SENDER) send_mode(c, a0);
+        else guest_call(c, address, a0);
+    }
+    if (!D.on || where != (D.at_blank ? 3u : 1u)) return;
+    if (!g_ram[G_NETWORK_MODE] || (s32)rd(G_NETFRAME) < 705) return;
+    u32 record = G_PLAYERS + (u32)D.slot * PLAYER_REC;
+    u32 object = rd(record + REC_OBJECT) & 0x1FFFFFFFu;
+    float hp;
+    u32 hp_bits = rd(record + REC_HP);
+    memcpy(&hp, &hp_bits, 4);
+    bool dead = !(hp > 0.0f), pending = g_ram[G_PENDING_LEVEL] != 0;
+    u32 state = object && object <= RAM_SIZE - 0x600 ? rd(object + OBJ_ACTION_STATE) : 0;
+    u8 menu = g_ram[G_LOCAL_MENU];
+    bool toggle = false;
+    if (object != D.last_object) {                  // a new player object: its mode byte is 0 on every machine
+        D.want = false;
+        if (object && chance(700)) D.delayed = (int)(draw() % 8u);
+    }
+    if (D.delayed == 0) { D.delayed = -1; send_mode(c, 1); }
+    else if (D.delayed > 0) D.delayed--;
+    if (pending && !D.had_pending && chance(800)) toggle = true;
+    if (dead && !D.was_dead && chance(800)) toggle = true;
+    if (state != D.last_state && chance(200)) toggle = true;
+    if (menu != D.last_menu && chance(300)) toggle = true;
+    if (draw() % (u32)(dead ? D.rate / 3 + 1 : D.rate) == 0) toggle = true;
+    D.last_object = object; D.had_pending = pending; D.was_dead = dead; D.last_state = state; D.last_menu = menu;
+    if (toggle) send_mode(c, chance(850) ? !D.want : D.want);
+}
+}  // namespace
+
 // tasks_run, called by the shim's hook in place of the translation: the game's task pass,
 // then - if this was a lockstep tick - the checksums, which the shim's tick log then reads
 void soak_tasks_run(Ctx* c) {
     u32 ra = (u32)c->r[31];
+    if (ra != TICK_RETURN) driver_step(c, 1);
     orig_003226e4(c);
     if (ra != TICK_RETURN) return;
+    driver_step(c, 2);
     start();
     pool_checksums();
     // SOAK_MACHINES=2: a pair in which one machine holds the other dropped (a kick, a leave,
@@ -285,5 +385,5 @@ void soak_tasks_run(Ctx* c) {
     }
 }
 
-// gfx_vblankHandler, likewise: nothing is added per frame yet
-void soak_vblank(Ctx* c) { orig_0019b6e4(c); }
+// gfx_vblankHandler, likewise: the driver's vertical-blank calls
+void soak_vblank(Ctx* c) { orig_0019b6e4(c); driver_step(c, 3); }

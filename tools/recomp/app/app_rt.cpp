@@ -32,6 +32,7 @@ void command(const std::string& text, uint64_t frame) {
     else if (g_command) g_command(text, frame);
 }
 void thread_figures(unsigned& now, unsigned& made, unsigned& ended) { u32 a = 0, b = 0, c = 0; rt_thread_figures(&a, &b, &c); now = a; made = b; ended = c; }
+bool replaying() { const char* file = rt_option("pad-replay"); return file && *file; }
 void set_finish_handler(void (*handler)()) { rt_at_finish = handler; }
 void finish(int code) { rt_finish(code); }
 
