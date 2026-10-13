@@ -421,6 +421,7 @@ void fill_view(Machine& m) {
         memcpy(d.copy_dst, c.copy_dst, sizeof d.copy_dst);
         d.scene_first = -1;
         d.scene_kind = 0;
+        d.scene_piece_first = d.scene_piece_count = 0;
     }
     m.textures.resize(l.textures.size());
     for (size_t k = 0; k < l.textures.size(); k++) m.textures[k] = {l.textures[k].id, l.textures[k].width, l.textures[k].height, l.textures[k].rgba.data()};

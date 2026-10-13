@@ -61,7 +61,9 @@ func tick() -> void:
 				potion_flash[kind] = now
 			potions_seen[kind] = have
 	var prompt: Dictionary = hud.frame.get("prompt", {}) if hud.ok else {}
-	if prompt.get("active", false):
+	# (a view that leaves the player's model out also leaves the game's own prompt out: Player_draw draws it)
+	var view: Dictionary = hud.frame.get("view", {}) if hud.ok else {}
+	if prompt.get("active", false) and (hud.own_text or view.get("hide_player", false)):
 		prompt_text = prompt.text
 		prompt_button = prompt.button
 		prompt_kind = prompt.kind
@@ -70,7 +72,7 @@ func tick() -> void:
 		prompt_alpha = move_toward(prompt_alpha, 0.0, hud.dt / 0.2)
 	selector_alpha = move_toward(selector_alpha, 1.0 if me.get("selector_open", false) else 0.0, hud.dt / 0.12)
 	# drawn again only when something shown changed or moves
-	var sig := "%d|%d|%s|%d|%.2f|%.2f" % [hud.layout, int(hud.s * 100.0), str(hud.area), feed.size(), prompt_alpha, selector_alpha]
+	var sig := "%d|%d|%s|%d|%.2f|%.2f|%d" % [hud.layout, int(hud.s * 100.0), str(hud.area), feed.size(), prompt_alpha, selector_alpha, int(hud.frame.get("boss_uid", 0)) if hud.ok else 0]
 	var busy := false
 	if not me.is_empty():
 		sig += "|%d|%d|%d|%s|%d|%d" % [me.health_potions, me.mana_potions, int(gold_shown), me.weapon, me.ammunition, me.get("selector_position", -1)]
@@ -127,9 +129,12 @@ func _draw() -> void:
 		x = maxf(x, area.position.x + 392.0 * s + 28.0 * s) if not (first or third) else x
 		x = minf(x, area.end.x - bar_w)
 		var base: float = area.end.y
+		# the game's own boss meter is drawn across the lower middle (y 414..430 of 448) and no switch hides it yet: step over it
+		if not (first or third) and int(hud.frame.get("boss_uid", 0)) != 0 and not hud.setting.get("game_meter_hidden", false):
+			base = minf(base, hud.picture.position.y + hud.picture.size.y * (406.0 / 448.0))
 		_slots(me, Vector2(x, base), k)
 		_gold(me, s, first, (64.0 * k + 34.0 * s) if (first or third) else 0.0)
-		_prompt(s, base - 64.0 * k - 60.0 * s)
+		_prompt(s, (area.end.y - 158.0 * s) if first else (base - 64.0 * k - 60.0 * s))
 		if selector_alpha > 0.01:
 			_selector(me, s)
 	hud.draw_end(t0)
@@ -203,7 +208,9 @@ func _slots(me: Dictionary, at: Vector2, s: float) -> void:
 		var label := weapon
 		if (me.weapon_class == 4 or me.weapon_class == 6) and me.ammunition > 0:
 			label += "  x%d" % me.ammunition
-		Style.text(self, Vector2(at.x, bottom - 76.0 * s), label, 13.0 * s, Style.TEXT_DIM, 0)
+		var lw: float = Style.text_width(label, 13.0 * s) + 20.0 * s
+		Style.rounded(self, Rect2(Vector2(at.x, bottom - 94.0 * s).round(), Vector2(lw, 22.0 * s).round()), 11.0 * s, Color(Style.INK, 0.62))
+		Style.text(self, Vector2(at.x + 10.0 * s, bottom - 78.0 * s), label, 13.0 * s, Style.TEXT, 0)
 
 
 func _initials(name: String) -> String:

@@ -4,6 +4,9 @@
 #ifdef RTA_GODOT_HAVE_GAMESTATE
 #include "rta_gamestate.h"
 #endif
+#ifdef RTA_GODOT_HAVE_NET2
+#include "rta_net2.h"
+#endif
 #include "rta_machine.h"
 
 #include <gdextension_interface.h>
@@ -21,6 +24,9 @@ static void initialize_rta_godot(ModuleInitializationLevel p_level) {
     GDREGISTER_CLASS(RtaDrawer);
 #ifdef RTA_GODOT_HAVE_GAMESTATE
     GDREGISTER_CLASS(RtaGameState);     // the HUD agent's: the game's state for a HUD drawn by Godot
+#endif
+#ifdef RTA_GODOT_HAVE_NET2
+    GDREGISTER_CLASS(RtaNet2);          // the portal's: the online session (compiled without its service: the mock only)
 #endif
 }
 

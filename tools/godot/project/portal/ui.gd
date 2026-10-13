@@ -170,8 +170,14 @@ static func focus_ring(ci: CanvasItem, rect: Rect2, radius: float, t: float) -> 
 	if t <= 0.01:
 		return
 	var grown := rect.grow(px(3) * t)
-	ci.draw_style_box(box(radius + px(3), Color(0, 0, 0, 0), Color(0, 0, 0, 0), 0, Color(GOLD.r, GOLD.g, GOLD.b, 0.22 * t), px(16)), grown)
 	ci.draw_style_box(box(radius + px(3), Color(0, 0, 0, 0), Color(GOLD.r, GOLD.g, GOLD.b, t), maxf(2.0, px(2.5))), grown)
+
+
+# ... and its glow, drawn BEFORE the box's own fill so that it only shows round it.
+static func focus_glow(ci: CanvasItem, rect: Rect2, radius: float, t: float) -> void:
+	if t <= 0.01:
+		return
+	ci.draw_style_box(box(radius + px(3), Color(0, 0, 0, 0), Color(0, 0, 0, 0), 0, Color(GOLD.r, GOLD.g, GOLD.b, 0.26 * t), px(18)), rect.grow(px(3) * t))
 
 
 static func rule(ci: CanvasItem, a: Vector2, b: Vector2, colour := LINE, width := 1.0) -> void:
@@ -235,7 +241,8 @@ static func label(string: String, size := 22.0, colour := TEXT, font: Font = nul
 
 # ---- small things --------------------------------------------------------------------------
 static func hue_of(key: String) -> float:
-	return float(absi(key.hash()) % 360) / 360.0
+	# well mixed: names and ids that differ in one letter get colours far apart
+	return float(key.md5_text().substr(0, 6).hex_to_int() % 360) / 360.0
 
 
 static func tint_of(key: String, saturation := 0.42, value := 0.78) -> Color:
@@ -259,6 +266,30 @@ static func ago(seconds: int) -> String:
 	if seconds < 86400 * 2:
 		return "%d h ago" % int(seconds / 3600.0)
 	return "%d days ago" % int(seconds / 86400.0)
+
+
+static func character_line(c: Dictionary) -> String:
+	# "name - level 21 class": the words are the game's own, handed on by the session
+	var name := String(c.get("name", ""))
+	if name == "":
+		return ""
+	var level := int(c.get("level", 0))
+	var cls := String(c.get("cls", ""))
+	var tail := ""
+	if level > 0:
+		tail = "level %d" % level
+	if cls != "":
+		tail = (tail + " " + cls).strip_edges()
+	return name if tail == "" else "%s - %s" % [name, tail]
+
+
+static func class_line(c: Dictionary) -> String:
+	var level := int(c.get("level", 0))
+	var cls := String(c.get("cls", ""))
+	var out := ("Level %d" % level) if level > 0 else ""
+	if cls != "":
+		out = (out + "  " + cls).strip_edges()
+	return out
 
 
 # A round mark: a filled circle with a soft halo (presence dots, ready marks).

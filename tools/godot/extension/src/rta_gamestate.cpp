@@ -33,7 +33,7 @@ static void put(float* to, const Variant& v) {
 }
 
 void RtaGameState::set_view(const Dictionary& view) {
-    if (view.is_empty() || !view.has("eye")) { rta_gs_set_view(reader, nullptr); return; }
+    if (view.is_empty() || !view.has("mode")) { rta_gs_set_view(reader, nullptr); return; }
     rta_gs_view v;
     memset(&v, 0, sizeof v);
     v.mode = (int)view.get("mode", 0);
@@ -45,10 +45,10 @@ void RtaGameState::set_view(const Dictionary& view) {
     if (view.has("valid") && !(bool)view["valid"]) { rta_gs_set_view(reader, nullptr); return; }     // RtaMachine.get_view() of a library without the view modes
     CharString why = String(view.get("fallback_why", view.get("why", ""))).utf8();
     strncpy(v.fallback_why, why.get_data(), sizeof v.fallback_why - 1);
-    put(v.eye, view["eye"]);
-    put(v.forward, view.get("forward", Vector3(1, 0, 0)));
-    put(v.up, view.get("up", Vector3(0, 0, 1)));
-    put(v.right, view.get("right", Vector3(0, -1, 0)));
+    put(v.eye, view.get("eye", Vector3()));
+    put(v.forward, view.get("forward", Vector3()));     // all zero: no camera in it (the reader then takes the game's own from memory)
+    put(v.up, view.get("up", Vector3()));
+    put(v.right, view.get("right", Vector3()));
     v.fov = (float)(double)view.get("fov", 50.0);
     if (view.has("head")) { put(v.head, view["head"]); v.have_head = (bool)view.get("have_head", true); }
     v.yaw = atan2f(v.forward[1], v.forward[0]);

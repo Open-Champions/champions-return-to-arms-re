@@ -213,61 +213,236 @@ along the facing.
 
 # Part 2. The controls of the look views
 
-`tools/recomp/app/fpcontrols.h` (the interface and the rule), `fpcontrols.cpp`,
-`look_host.h` / `look_mac.mm` (the pointer). Nothing in the simulation is changed; what
-is produced is an ordinary row and the game camera's yaw word.
+`tools/recomp/app/fpcontrols.h` (the interface and the rule), `fpcontrols.cpp` (plain C++,
+the same file for the Mac and the Windows program), `look_host.h` / `look_mac.mm` (the
+pointer), and `tools/recomp/app/fpcontrols.patch` for the files other work owns - made
+against the tree with the camera work's `fpview.patch` applied; its head has the merge
+notes. Nothing in the simulation is changed and nothing is translated again: what the
+game is given is an ordinary controller row and the game camera's yaw word.
 
-## 2.1 Look and move (Ran offline)
+"Look views" are chase, shoulder and first person. In overhead and action nothing of this
+touches a row.
 
-- **Look.** Mouse (0.12 degrees a count; `controls.mouse_sensitivity`) and right stick x
-  (220 degrees a second at full push, a curve and a short ease) turn the **game camera's
-  yaw word** directly; the view follows because every view looks along the game camera
-  (`native-first-person.md` section 4). The game's own camera-stick code is given a stick
-  at rest in these views: it would turn the same word at 82 degrees a second, and its y
-  would step the hidden zoom - so `--opt view-zoom=off` is not needed and the question of
-  that option goes away. L3 is withheld too (it would swing the word behind the
-  character). Mouse y and right stick y are pitch, handed to the view
-  (`fpview::add_pitch`, a small addition to the camera work's file); invert settings for
-  both.
+## 2.0 Why writing the yaw word is lockstep-safe (Read, then Ran)
+
+The look is driven by writing the game camera's yaw word (camera +0x68) from the mouse and
+the right stick. In a net game that word **is carried in every input record**: the sender's
+`net_main` reads it from its own camera when it samples the pad (0x133464-0x133498: bit 0
+cleared, the camera-mode flag put in its place) and stores it at record +0x0c; the packet
+codec has a channel for it (deltas, or a whole 16-bit value when it jumps by more than
+1000 units, so a flick goes through whole); every machine, the sender included, stores the
+decoded word in `g_netCamYaw[slot]` (0x13ac8c-0x13ac9c) before the tick, and `Player_move`
+reads that table. A remote player has no camera on this machine - only that word. The
+camera stick's own bytes travel too, but nothing in the simulation reads them. So a word
+written by this file is, to every machine, a player who turned the camera quickly; no
+quantising to the game's stick turn rate is needed.
+
+**Ran** (two copies in one game, section 2.7): the first-person copy's yaw word is the same
+in both tick logs tick for tick (840 to 950 different values in a run) and nothing differs.
+
+One thing follows from the codec: the word the simulation steers by wanders up to about a
+degree round the true one, even while the camera stands still (the coder keeps a small
+delta until its prediction is 200 units off). It is the same on every machine. The
+picture uses the exact word; the character is turned to the delivered one.
+
+## 2.1 Look and move (Ran)
+
+- **Look.** Mouse (0.12 degrees a count) and right stick x (220 degrees a second at full
+  push, a curve, a 70 ms ease) turn the yaw word; the view follows because every view
+  looks along the game camera. The game's own camera-stick code is handed a stick at rest
+  in these views (it would turn the same word at 82 degrees a second, and its y steps the
+  hidden zoom): **`--opt view-zoom=off` is not needed** - the zoom cannot step, and what is
+  withheld is input, not a change to the game. L3 is withheld as well (it would swing the
+  word behind the character). Mouse y and right stick y (130 degrees a second) are pitch,
+  the picture's only, handed to the view by `fpview::add_pitch` (a 12-line addition to the
+  camera work's file, in the patch). Invert settings for both.
 - **Move.** The left stick is passed on as it is: with the yaw word following the look,
-  forward is where the player looks. An analog stick gets a small dead zone of its own
-  (0.14) and is stretched over the game's range past the game's 0.32, so a light push
-  walks.
-- **Face** (first person and shoulder; `controls.face.<view>`): the turning push of 1.2,
-  pointed where the player looks,
-  - while the character stands and is more than a degree off the look;
+  forward is where the player looks, left and right are relative to it. An analog stick
+  gets a dead zone of its own (0.14) and is stretched over the game's range beyond the
+  game's 0.32, so a light push walks instead of doing nothing for the first third.
+- **Face** (first person and shoulder by default; `controls.face.<view>`): the turning
+  push of 1.2, pointed where the player looks,
+  - while the character stands and is off the look (half a degree; in a net game three
+    degrees, because of the wandering word above);
   - **before a strike**: an attack or ability pressed while the character faces more than
-    12 degrees away is held back while the push turns it, at most 6 ticks, then let
-    through (still held, or as a short press if the button is up again);
-  - in the states where the stick only turns (bow drawn, casting, blocking, the wind-up
-    of a swing) the stick is pointed at the look, at full length where the rate depends
-    on it.
-- The picture's centre in first person is turned by the 2.48 degrees of 1.2, so that the
-  middle of the screen is exactly where forward walks and an arrow without a target flies.
+    12 degrees away is held back while the push turns it - at most 6 ticks - and then let
+    through (still held, or as a two-tick press when the button is up again);
+  - in the states where the stick only turns (bow drawn, casting, blocking, the wind-up of
+    a swing) the stick is pointed at the look, full where the rate depends on its length.
+- In chase the character is left to face where it runs (the classic third-person way: the
+  camera orbits freely, the stick runs relative to it). Nothing swings the camera but the
+  player, so "left" never changes its meaning under the player's thumb.
+- In first person the picture is turned by the 2.48 degrees of 1.2, so its middle is
+  exactly where forward walks and where an arrow without a target flies.
 
-**Ran** (`work/test1.py`, first level, small test window, driven through the control
-socket; the pointer of the machine is never touched):
+**Ran offline** (`work/test1.py`, first level; a small test window driven through the
+control socket - "app view", "app fpc mouse DX DY", key and stick commands; the machine's
+own pointer and keyboard are never touched):
 
 | What | Seen |
 |---|---|
-| mouse 500 counts to the right in ten blanks | the look turned 60.00 degrees; the character followed within a degree; moved 0.0000 |
-| right stick full right, 30 blanks | 117 degrees; moved 0.0000 |
+| mouse 500 counts to the right in ten blanks | the look turned 60.00 degrees; the character followed; moved 0.0000 |
+| right stick full right for 30 blanks | 117 degrees; moved 0.0000 |
 | W for 60 blanks | 162.8 units along heading -44.78 (the look: -44.80) |
-| A for 40 blanks | ran to the left of the look, facing 90 degrees off it; on release the character turned back to the look in 7 ticks without moving |
-| S held (facing 180 degrees off), then attack | the press was held back 6 ticks while the character turned (180, 108, 65, 39, 23, 14, 8 degrees off), then the swing started toward the look |
-| chase | the look turns, the character keeps its facing (as set); shoulder: it follows |
+| A for 40 blanks | ran to the left of the look, facing 90 degrees off it; on release the character was back on the look in 7 ticks without moving |
+| S held (facing 180 degrees off), then attack | the press was held back 6 ticks while the character turned (180, 108, 65, 39, 23, 14, 8 degrees off), then the swing went toward the look |
+| chase / shoulder | chase: the look turns, the character keeps its facing; shoulder: it follows |
 
-Pictures: `local/recomp-fp-controls/work/test1/t1-*.png`.
+**Ran in a net game** (`work/pair.py --look-only`, the first-person copy only turns where
+it stands, 1,500 blanks): the character is within a degree of the look 0 to 4 ticks after
+a turn ends. It does **creep** there: a net game's speed scale is 0.75 and its stick codec
+cannot deliver the exact push (the nearest it reaches is 44/128, a step of 0.079 a tick),
+so turning on the spot moves the character about 4.7 units a second in the direction it
+faces - a circle of a few units when the look sweeps round. Figures in 2.7.
 
-## 2.2 to 2.5: aim, feel, third person, mechanics
+## 2.2 Aim and hit (Ran offline)
 
-Not run yet. What the code holds so far (`fpcontrols::hud()`, for the HUD work): the
-creature the simulation would pick for a swing and for a shot or cast by its own rules
-(1.4), the target it holds during a swing, whether a reticle means anything, the game's
-own "usable in reach" prompt with the object and its bearing, the creatures round the
-player with bearing, whether they target the player and whether they are outside the
-view, and counters for swings, hits dealt and taken, deaths.
+The game aims by itself (1.4), so there is nothing to free-aim: what matters is that the
+player sees **whom the simulation will take**. `fpcontrols::hud()` gives, every blank, by
+the simulation's own rules applied to the look:
 
-## 2.6 What the stock simulation cannot do: strafing
+- `melee`: the creature a swing would take now (inside 60 degrees, in reach, lowest
+  score); `shot`: the creature an arrow or a cast would fly at (nearest inside 10 degrees
+  either side within 340); `locked`: the target the simulation holds during a swing or
+  shot (the player's own target handle); each with position, rim distance, bearing off
+  the look and hit points. `reticle` is true only when a reticle means something: a look
+  view, playing, a bow or thrown weapon in hand or a shot or cast in progress. With a
+  melee weapon the right picture is a marker on `melee`, not a crosshair.
+- No vertical aim is offered: the simulation's only aim in height is the automatic one
+  toward a target (1.4). Pitch is for looking.
 
-To be written with the proposal.
+**Ran** (`work/test2.py valor`: to the first monsters by the pilot's route, then first
+person): with the look turned onto the monster by its bearing, `shot` and `melee` both
+named it; four swings: the simulation's `locked` target was the creature named each time,
+its hit points fell 242.2 -> 237.6 (one of the four swings hurt; the rest is the damage
+roll of a level-1 character), `hits_dealt` counted it. Looking 150 degrees away: no mark
+(nothing ahead), the monster listed as behind. Turned back and struck in the same blank,
+107 degrees off: the press was held 5 ticks (107, 64, 39, 23, 14 degrees), then the swing
+took the monster as its target at once. Blocking with the look turning: the character
+follows at the block state's 20 % a tick without moving.
+
+## 2.3 Feel
+
+- **Kick** (first person; half as much over the shoulder; `controls.kick`): a small dip
+  when a swing or shot starts, a roll when a hit lands on the simulation's target, a
+  larger kick away from the attacker when the player is hit - added to the view in the
+  `fpview::on_view` call-out, decaying to a tenth in 12 blanks. Presentation only. Built;
+  the numbers are a first guess and were not tuned by anybody playing.
+- **Swing tilt** (`controls.swing_tilt`): what is struck in first person is often at the
+  player's feet, under the picture (the first monster met, a low four-legged one in reach,
+  showed only its back at the bottom edge: `work/test2-valor/t2-in-reach.png`). While a
+  swing has a target the view tips until the target's middle is within 12 degrees of the
+  picture's middle. Built, not judged by eye.
+- **Events for a HUD and for sound or rumble**: counters in `hud()` that only grow -
+  swings started, hits dealt, hits taken (with amount and the bearing it came from),
+  deaths, respawns. **Ran**: swings 4 of 4, the hit that landed, the death.
+- **Death and respawn**: the camera work falls back to the game's own camera when no local
+  player is alive (and in cutscenes, dialogues, menus); this file then passes rows
+  unchanged and takes the look up again from wherever the game left the yaw word. **Ran**:
+  death in the fight; the level's opening cutscene after everybody died in the net game.
+- **Using things you cannot see** (doors, chests, save points, talking, loot): the game
+  already finds the nearest usable thing in a box of 48 round the player whatever way the
+  player faces and makes the prompt (1.4). `hud()` passes it on: `usable`, the game's own
+  prompt text and fade, the object and its position, and its bearing off the look - enough
+  for "Talk to ... (behind you)" and an arrow. **Ran**: at the platform of the first level
+  `usable=1 text="Talk to Firiona Vie"`, bearing 42 degrees right; looking the other way,
+  the same prompt at 137 degrees left.
+- **The weapon and hands in view.** Not done; what the controls need from the camera and
+  model work: the player's own model drawn in first person with what is nearer than about
+  14 units of the eye left out (a near plane does it: the head and shoulders go, forearms
+  and weapon stay), the eye a little ahead of the neck. That is only right when the
+  character faces the look - which it does here while standing, striking, shooting,
+  casting and blocking; while it runs sideways or backwards in the stock simulation the
+  body is turned that way and the arms would swing out of the picture (2.6 removes that).
+  `hud().facing_error` is the angle between look and body for whoever draws it.
+
+## 2.4 Third person
+
+Chase: free look, the character runs relative to the camera and faces where it runs; the
+strike hold-back is off there with the facing rule (a strike goes where the character
+faces, as in the overhead game, and the game's own target turn does the rest). Shoulder:
+the first-person rules (the character faces the look, strikes wait for the turn). The
+character between the eye and the target is the camera work's side offset; relative
+steering flipping under the thumb cannot happen because no code turns the camera but the
+player (the game's own "camera behind the character" pull is withheld with L3 and the
+rest of its stick code).
+
+## 2.5 What the new view breaks, and the data to mend it
+
+Found by the scripted fights, not by a person playing through:
+
+| What the overhead view gave | In a look view | Supplied |
+|---|---|---|
+| enemies all round are seen | an attacker behind is invisible. **Ran**: with the back turned in `valor` the first monster killed the level-1 character in two hits from 100 degrees off the look | `hud().threats[]` (nearest 16: bearing, distance, targets the player, attacking, inside the view) and `behind`, the count of those targeting the player from outside the view - for an edge-of-screen indicator |
+| the creature being struck is in the picture | it can be under the picture (2.3) | swing tilt; the `melee` / `locked` marks |
+| things to use are seen at the feet | not seen | the prompt data of 2.3 |
+| enemy wind-ups are seen from above | seen only if looked at | `threats[].attacking` (targets the player, in its reach, turned to the player) - a guess at a tell from outside the creature's own state; the per-monster attack states were not read |
+| ground effects, loot on the floor, the map | not looked at here | nothing yet: the map (R3 / Tab) is the game's own 2-D overlay and works in every view |
+
+## 2.6 What the stock simulation cannot do, and the proposal
+
+Running one way while facing another. In a look view with the stock simulation a player
+who runs left faces left; the controls turn the character back before a strike, which
+costs up to a tenth of a second, and in a net game turning on the spot creeps (2.1).
+
+`tools/recomp/app/fp-proposed.pnach` (**not in the fix set, not in the suggested
+sections**; house style; written by `local/recomp-fp-controls/work/fpasm.py`, a small
+assembler that checks each of its encoders against a word of the game) adds a **strafe
+mode**:
+
+- one byte per player object (+0x47e, which only the unreachable jump state used; the
+  constructor now clears it, so every new character starts with the mode off on every
+  machine). While it is 0, `Player_move` is the code it was.
+- While it is not 0, in the neutral state: the character turns, at the game's own 40 % a
+  tick, to **where its player's camera looks** (the heading a pushed-up stick asks for:
+  0x3e3d minus the yaw word that already travels with every row) - also when the stick is
+  at rest - and runs **along the stick's own direction** instead of along its facing, at
+  the same speed.
+- The mode travels as **game message 4, sub-type 2: {2, slot, mode}**. Message 4 exists,
+  is carried and executed in lockstep by every machine and has an empty handler
+  (0x1e01b0); the section gives it a handler that sets the byte, and a sender. So "face
+  this heading" needs **no spare bits in the pad row at all**: the heading is the yaw word
+  that is already there, and the mode is a message sent when the view changes.
+- Size: 87 words - 2 in `Player_move` (the hook at 0x1b4210), 2 in `Player_ctor`, 2 at the
+  empty handler, 45 in the unreferenced function 0x2128c8 (the move code, all of its
+  room), 36 in the unreferenced function 0x215c98 (handler and sender). It is not
+  "one word": the turn-in-place found in 1.2 is the one-word-sized answer (it needs no
+  word at all); running against the facing does not exist in the original and has to be
+  written.
+- **Every player of a game would need the section** (a machine without it runs that
+  character along its facing: out of step at the first sideways step). It belongs in the
+  fix set or nowhere; the emulator-based build would take the same words.
+
+With the section in the game, `fpcontrols` uses it by itself in the views that face the
+look (`controls.strafe`): no turning pushes, no hold-back; offline it sets the byte (what
+the handler does), in a net game the mode has to be sent by the section's sender
+(`fpcontrols::strafe_wanted()` says what to send; calling the sender from the application
+is not wired - the test did it with the script's `call`).
+
+**Ran offline** (`work/test3.py`, a program built with `app/build.py --extra-pnach
+tools/recomp/app/fp-proposed.pnach` in a second stand-in root): overhead before and after:
+A turns the character 90 degrees and runs it, as always (mode 0). First person: W, A, D, S
+for 40 blanks each ran 144.8 / 144.8 / 140.5 / 143.2 units along the look, 90 degrees
+left, 90 right and straight back, **the facing never more than 0.01 degrees off the
+look**; an attack pressed while running left started in the next tick, no hold-back;
+running right with the mouse turning (a circle strafe): 1.1 degrees behind the look at
+the end; the turning push was given 0 times in 642 steered blanks.
+
+The two-copy run is in 2.7.
+
+## 2.7 Lockstep: two copies in one game (Ran)
+
+`work/pair.py`: two copies of the window program in small test windows, through a lobby
+server instance of this work's own (ports +4000, bound to this computer; throw-away
+names), into one game; copy 1 (host, slot 0) in first person, played through its script
+with mouse turns, stick look, walking, strafing, backing, strikes, blocks, casts and
+potions; copy 2 (slot 1) overhead with `lobbypair.py`'s drawn input. Compared with
+`tools/rig/compare.py ticks` over both tick logs: shared seed, each machine's sync hash of
+the previous tick, both players' position, action state, hit points, gold, experience,
+out-of-sync flags, plus both facing words and both entries of `g_netCamYaw`.
+
+| Run | What | Result |
+|---|---|---|
+| `online/p1` | first level, 1,500 blanks of play | 1,819 ticks compared, **no shared column differs**; no checksum failure, no out-of-sync flag; 3 presses held back for the turn (18 ticks) |
+| `online/p2` | 900 blanks, then `drunare`, 3,600 blanks: the arena fight | 5,433 ticks, nothing differs; both players hit (310 and 405 different hit-point values), both died, the level was loaded again |
+| `online/p3`, `p4` | the first-person copy only turns where it stands | 1,819 ticks each, nothing differs; the creep and turn figures of 2.1 |

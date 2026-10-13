@@ -61,6 +61,34 @@ func tick() -> void:
 		queue_redraw()
 
 
+# overhead: an arrow at the edge of the picture where the attacker is beyond it
+func _edges(s: float) -> void:
+	var from: Vector2 = hud.picture.get_center()
+	var sc: Vector3 = hud.me.screen
+	if sc.z > 1.0:
+		from = hud.to_window(sc.x, sc.y) + Vector2(0, 50.0 * s)
+	var box: Rect2 = hud.picture.grow_individual(-64.0 * s, -150.0 * s, -64.0 * s, -150.0 * s)     # clear of the bars at the top and the frames at the bottom
+	from = from.clamp(box.position + Vector2(8, 8), box.end - Vector2(8, 8))
+	for w in wedges:
+		var dir := Vector2(cos(w.angle), sin(w.angle))
+		# where the ray from the character leaves the box
+		var t := 1e9
+		if dir.x > 0.0001: t = minf(t, (box.end.x - from.x) / dir.x)
+		if dir.x < -0.0001: t = minf(t, (box.position.x - from.x) / dir.x)
+		if dir.y > 0.0001: t = minf(t, (box.end.y - from.y) / dir.y)
+		if dir.y < -0.0001: t = minf(t, (box.position.y - from.y) / dir.y)
+		var p := from + dir * t
+		var a: float = w.alpha * (0.6 + 0.4 * w.near)
+		if w.attacking:
+			a *= 0.7 + 0.3 * sin(hud.now * 14.0)
+		var side := Vector2(-dir.y, dir.x)
+		var size: float = (15.0 + 7.0 * w.near) * s
+		draw_circle(p - dir * size * 0.2, size * 1.25, Color(0, 0, 0, 0.42 * a))
+		draw_arc(p - dir * size * 0.2, size * 1.25, 0, TAU, 28, Color(Style.DANGER, 0.75 * a), maxf(1.0, 1.5 * s), true)
+		draw_colored_polygon(PackedVector2Array([p + dir * size * 0.75, p - dir * size * 0.75 + side * size * 0.7, p - dir * size * 0.35, p - dir * size * 0.75 - side * size * 0.7]),
+			Color(Style.DANGER, a))
+
+
 func _draw() -> void:
 	var t0: int = hud.draw_begin()
 	if not wedges.is_empty():
@@ -69,10 +97,9 @@ func _draw() -> void:
 		var centre: Vector2 = hud.picture.get_center()
 		var radius: float = minf(hud.picture.size.x, hud.picture.size.y) * 0.30
 		if not close:
-			var sc: Vector3 = hud.me.screen
-			if sc.z > 1.0:
-				centre = hud.to_window(sc.x, sc.y) + Vector2(0, 50.0 * s)
-			radius = minf(hud.picture.size.x, hud.picture.size.y) * 0.36
+			_edges(s)
+			hud.draw_end(t0)
+			return
 		for w in wedges:
 			var a: float = w.alpha * (0.55 + 0.45 * w.near)
 			if w.attacking:

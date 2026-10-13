@@ -92,7 +92,7 @@ func tick() -> void:
 		if focus.alpha <= 0.0:
 			focus_uid = 0
 	# the game's own message
-	var text: String = hud.frame.get("message", "") if hud.ok else ""
+	var text: String = hud.frame.get("message", "") if (hud.ok and hud.own_text) else ""
 	if text != "":
 		message = text
 		message_alpha = move_toward(message_alpha, 1.0, hud.dt / 0.15)

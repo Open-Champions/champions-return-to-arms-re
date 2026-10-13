@@ -8,7 +8,7 @@ extends RefCounted
 #   Btn         a button (kinds: normal, primary, ghost, danger), optional icon
 #   Tile        a large choice with icon, title and one line of explanation (home)
 #   Choice      a setting with a few values: left / right changes it
-#   Slider      a setting from 0 to 1
+#   Gauge       a setting from 0 to 1 (a volume)
 #   Field       a line of text; typed on a keyboard, or through the on-screen keys (osk.gd)
 #   Row         a person in a list: avatar, name, what they do, the character they play, and
 #               actions that left / right walks through (one focus stop per row)
@@ -94,6 +94,8 @@ class Btn extends Focusable:
 	var badge := ""                 # a small count at the right (requests waiting)
 	var align_left := false
 	var fill_width := false
+	var fixed := false              # the size is given from outside (a key of the on-screen keys)
+	var selected := false           # a tab that is open: a gold mark at its left
 
 	func _init(p_text := "", p_icon := "", p_kind := "normal") -> void:
 		super()
@@ -106,6 +108,9 @@ class Btn extends Focusable:
 		fit()
 
 	func fit() -> void:
+		if fixed:
+			queue_redraw()
+			return
 		var w := UI.px(28.0) * 2.0
 		if text != "":
 			w += UI.text_width(text, UI.bold(), font_size)
@@ -147,12 +152,16 @@ class Btn extends Focusable:
 			line = Color(1, 1, 1, 0.05)
 		if pressed_t > 0.0:
 			r = r.grow(-UI.px(2) * pressed_t)
+		UI.focus_glow(self, r, radius, e)
 		draw_style_box(UI.box(radius, fill, line, maxf(1.0, UI.px(1))), r)
 		if kind == "primary" and not disabled:
 			UI.sheen(self, r, radius, 0.22)
 		elif not disabled:
 			UI.sheen(self, r, radius, 0.035)
 		UI.focus_ring(self, r, radius, e)
+		if selected:
+			draw_style_box(UI.box(UI.px(2), UI.GOLD), Rect2(r.position.x + UI.px(8), r.position.y + r.size.y * 0.25, UI.px(4), r.size.y * 0.5))
+			ink = UI.GOLD_HI if kind != "primary" else ink
 		var pad := UI.px(28.0)
 		var x := r.position.x + pad
 		var icon_size := UI.px(height * 0.42)
@@ -201,6 +210,7 @@ class Tile extends Focusable:
 		var alpha := 0.80 + 0.14 * e
 		if disabled:
 			alpha = 0.45
+		UI.focus_glow(self, r, radius, e)
 		draw_style_box(UI.box(radius, Color(0, 0, 0, 0), Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0.28), UI.px(16)), r)
 		draw_style_box(UI.box(radius, Color(fill.r, fill.g, fill.b, alpha), UI.LINE if e < 0.5 else Color(1, 1, 1, 0.02), maxf(1.0, UI.px(1))), r)
 		UI.sheen(self, r, radius, 0.03 + 0.03 * e)
@@ -287,6 +297,7 @@ class Choice extends Focusable:
 		var r := Rect2(Vector2.ZERO, size)
 		var radius := UI.px(12)
 		var e := eased()
+		UI.focus_glow(self, r, radius, e)
 		draw_style_box(UI.box(radius, UI.PANEL_UP.lerp(UI.PANEL_HOT, e), UI.LINE, maxf(1.0, UI.px(1))), r)
 		UI.focus_ring(self, r, radius, e)
 		var pad := UI.px(24)
@@ -311,7 +322,7 @@ class Choice extends Focusable:
 		UI.text(self, vrect, value, UI.bold(), 21, UI.GOLD.lerp(UI.GOLD_HI, e) if can else UI.DIM, HORIZONTAL_ALIGNMENT_CENTER if can else HORIZONTAL_ALIGNMENT_RIGHT)
 
 
-class Slider extends Focusable:
+class Gauge extends Focusable:
 	signal changed(value: float)
 	var title := ""
 	var value := 1.0
@@ -362,6 +373,7 @@ class Slider extends Focusable:
 		var r := Rect2(Vector2.ZERO, size)
 		var radius := UI.px(12)
 		var e := eased()
+		UI.focus_glow(self, r, radius, e)
 		draw_style_box(UI.box(radius, UI.PANEL_UP.lerp(UI.PANEL_HOT, e), UI.LINE, maxf(1.0, UI.px(1))), r)
 		UI.focus_ring(self, r, radius, e)
 		var pad := UI.px(24)
@@ -394,6 +406,7 @@ class Field extends Focusable:
 	var large := false              # a code or a name, set big
 	var height := 64.0
 	var caret_t := 0.0
+	var editing := false            # the on-screen keys are typing into it: caret and ring stay on
 
 	func _init(p_placeholder := "", p_max := 24) -> void:
 		super()
@@ -406,13 +419,18 @@ class Field extends Focusable:
 
 	func _process(delta: float) -> void:
 		super(delta)
-		if has_focus():
+		if has_focus() or editing:
 			caret_t += delta
 			set_process(true)
 			queue_redraw()
 
 	func set_text(value: String) -> void:
 		text = _clean(value)
+		queue_redraw()
+
+	func set_editing(value: bool) -> void:
+		editing = value
+		set_process(true)
 		queue_redraw()
 
 	func _clean(value: String) -> String:
@@ -474,6 +492,9 @@ class Field extends Focusable:
 		var r := Rect2(Vector2.ZERO, size)
 		var radius := UI.px(12)
 		var e := eased()
+		if editing:
+			e = 1.0
+		UI.focus_glow(self, r, radius, e)
 		draw_style_box(UI.box(radius, Color(0.02, 0.024, 0.036, 0.85), UI.LINE_STRONG, maxf(1.0, UI.px(1))), r)
 		UI.focus_ring(self, r, radius, e)
 		var pad := UI.px(22)
@@ -486,14 +507,17 @@ class Field extends Focusable:
 			align = HORIZONTAL_ALIGNMENT_CENTER
 		var area := Rect2(pad, 0, size.x - pad * 2.0, size.y)
 		var w := 0.0
+		var ghost_w := 0.0
 		if text == "":
-			UI.text(self, area, placeholder, UI.sans() if not large else font, fsize if not large else fsize * 0.62, UI.FAINT, align)
+			ghost_w = UI.text(self, area, placeholder, UI.sans() if not large else font, fsize if not large else fsize * 0.62, UI.FAINT, align)
 		else:
 			w = UI.text(self, area, text, font, fsize, UI.TEXT, align)
-		if has_focus() and fmod(caret_t, 1.0) < 0.55:
+		if (has_focus() or editing) and fmod(caret_t, 1.0) < 0.55:
 			var x := area.position.x + w + UI.px(3)
 			if align == HORIZONTAL_ALIGNMENT_CENTER:
 				x = area.position.x + (area.size.x + w) * 0.5 + UI.px(3)
+				if text == "":
+					x = area.position.x + (area.size.x - ghost_w) * 0.5 - UI.px(8)
 			var ch := UI.px(fsize * 1.1)
 			draw_rect(Rect2(x, (size.y - ch) * 0.5, maxf(2.0, UI.px(2.5)), ch), UI.GOLD)
 
@@ -696,6 +720,7 @@ class Row extends Focusable:
 		var radius := UI.px(12)
 		var e := eased()
 		var fill := UI.PANEL_UP.lerp(UI.PANEL_HOT, e)
+		UI.focus_glow(self, r, radius, e)
 		draw_style_box(UI.box(radius, Color(fill.r, fill.g, fill.b, 0.45 + 0.55 * e), Color(1, 1, 1, 0.05), maxf(1.0, UI.px(1))), r)
 		UI.focus_ring(self, r, radius, e)
 		var av := UI.px(height - 30.0)

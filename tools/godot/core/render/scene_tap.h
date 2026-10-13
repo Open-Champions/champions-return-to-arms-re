@@ -74,6 +74,12 @@ struct TapVertex {          // one per FrameList vertex of a piece
     uint16_t pad;
 };
 
+struct TapFull {            // one corner of the packet's COMPLETE geometry (see TapPiece::full_first)
+    float world[3], normal[3];
+    float uv[2];            // texels, as the list has them (the UV register / 16)
+    uint8_t rgba[4];        // the colour the program computed for the vertex (its light), as the list has it
+};
+
 struct TapPiece {
     uint8_t kind, entry, flags, pad;
     uint32_t object;        // counts set-ups: pieces with the same number are one draw of one object
@@ -83,19 +89,25 @@ struct TapPiece {
     uint32_t first;         // TapFrame::vertices (list_count of them, the same order)
     uint32_t source_first, source_count;    // TapFrame::sources
     uint32_t joints;        // TapFrame::joints: index of the first of 64 matrices (models), or of 1 (level)
+    // The packet's complete geometry: EVERY triangle of its strip, three corners each - also the ones the program's
+    // clip pass dropped whole (near the eye, or far off screen: render-pipeline.md 4.5), which never reach the draw
+    // list.  The no-draw bits used here are the strip's own, replayed from the slot rows.  list_count is 0 for a
+    // packet all of whose triangles were dropped.
+    uint32_t full_first, full_count;        // TapFrame::full
 };
 
 struct TapFrame {
     std::vector<TapPiece> pieces;
     std::vector<TapVertex> vertices;
     std::vector<TapSource> sources;
+    std::vector<TapFull> full;
     std::vector<float> joints;              // 16 floats each: object -> clip, rows as the program holds them
     bool have_camera = false;
     float world_to_view[12];                // g_cameraMatrix: four rows of three (camera = p.x r0 + p.y r1 + p.z r2 + r3)
     float view_projection[16];              // world -> clip, the depth column x 2^-50
     float proj_scale = 0;                   // g_projScale
     float near_plane = 0, far_plane = 0;    // of the projection, when the game side said (words 62 and 63 of the block); else 0
-    void clear() { pieces.clear(); vertices.clear(); sources.clear(); joints.clear(); }
+    void clear() { pieces.clear(); vertices.clear(); sources.clear(); full.clear(); joints.clear(); }
 };
 
 struct TapStats {
@@ -105,6 +117,8 @@ struct TapStats {
     uint64_t rejected_layout = 0;           // the packet is not laid out as the documents say
     uint64_t other_entries = 0;             // kicks of other programs (particles, water, trails, shadows): not tapped
     uint64_t checked = 0, off = 0;          // vertices compared with the program's own positions, and how many were off
+    uint64_t dropped_restored = 0;          // triangles in the complete geometry that the program's clip pass had dropped
+    uint64_t stitch_checked = 0, stitch_off = 0;    // strip vertices (object without the clip flag) whose no-draw bit was compared with the replay's
     uint64_t camera_blocks = 0, level_setups = 0, level_rows_equal = 0;     // set-ups whose depth and translation rows are the camera's
     double worst = 0;                       // largest difference of an accepted vertex, GS units (1/16 pixel)
 };

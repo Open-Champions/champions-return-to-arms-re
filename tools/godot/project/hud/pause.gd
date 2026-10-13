@@ -1,7 +1,8 @@
 extends Control
-# pause.gd - while the game's pause menu is open the playing HUD steps aside and two calm
-# bands frame the picture: "Paused" and the level's name above, the character in a line
-# below.  The menu itself is the game's own and stays untouched in the middle.
+# pause.gd - while the game's pause menu is open the playing HUD steps aside and one calm
+# band lies across the top of the picture: "Paused", the level's name, the character in a
+# line.  The menu itself is the game's own and stays untouched in the middle; so does the
+# foot of the picture, where the game puts its button hints.
 
 const Style := preload("res://hud/style.gd")
 const Hud := preload("res://hud/hud.gd")
@@ -24,22 +25,19 @@ func _draw() -> void:
 	var s: float = hud.s
 	var pic: Rect2 = hud.picture
 	var area: Rect2 = hud.area
-	var h: float = 58.0 * s
-	draw_rect(Rect2(pic.position, Vector2(pic.size.x, h)), Color(Style.INK, 0.86))
-	draw_rect(Rect2(Vector2(pic.position.x, pic.end.y - h), Vector2(pic.size.x, h)), Color(Style.INK, 0.86))
+	# one band across the top; the foot of the picture stays free: the game's menu puts its button hints there
+	var h: float = 76.0 * s
+	draw_rect(Rect2(pic.position, Vector2(pic.size.x, h)), Color(Style.INK, 0.88))
 	draw_rect(Rect2(Vector2(pic.position.x, pic.position.y + h), Vector2(pic.size.x, maxf(1.0, s))), Style.HAIRLINE)
-	draw_rect(Rect2(Vector2(pic.position.x, pic.end.y - h - maxf(1.0, s)), Vector2(pic.size.x, maxf(1.0, s))), Style.HAIRLINE)
-	Style.text(self, Vector2(area.position.x, pic.position.y + 38.0 * s), "Paused", 26.0 * s, Style.TEXT, 0, true)
+	Style.text(self, Vector2(area.position.x, pic.position.y + 36.0 * s), "Paused", 27.0 * s, Style.TEXT, 0, true)
 	var title: String = hud.frame.get("level_title", "")
 	if title == "":
 		title = hud.frame.get("level", "")
-	Style.text(self, Vector2(area.end.x, pic.position.y + 37.0 * s), title, 19.0 * s, Style.TEXT_DIM, 2)
+	Style.text(self, Vector2(area.end.x, pic.position.y + 35.0 * s), title, 20.0 * s, Style.TEXT, 2, true)
 	var me: Dictionary = hud.me
 	if not me.is_empty():
-		var y: float = pic.end.y - 21.0 * s
-		var x: float = area.position.x
-		x += Style.text(self, Vector2(x, y), me.name, 19.0 * s, Style.TEXT, 0, true) + 14.0 * s
-		x += Style.text(self, Vector2(x, y), "Level %d  %s" % [me.level, me.class_name], 15.0 * s, Style.TEXT_DIM) + 26.0 * s
+		var y: float = pic.position.y + 61.0 * s
+		Style.text(self, Vector2(area.position.x, y), "%s    Level %d  %s" % [me.name, me.level, me.class_name], 15.0 * s, Style.TEXT_DIM)
 		var line := "%s / %s health    %s / %s mana    %s gold" % [Style.number(me.health), Style.number(me.health_max), Style.number(me.mana), Style.number(me.mana_max),
 			Style.number(me.gold + me.gold_coming)]
 		Style.text(self, Vector2(area.end.x, y), line, 15.0 * s, Style.TEXT_DIM, 2)

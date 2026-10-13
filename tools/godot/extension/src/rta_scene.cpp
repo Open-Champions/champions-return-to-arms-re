@@ -23,7 +23,8 @@
 //     at, or set free - which shows what the game never drew for its own view.
 //
 // Options (set_scene_option): lit 0|1, shadows 0|1, ambient E (energy of the ambient light
-// with lit on), pull_back F (distance to the looked-at point times F), orbit DEGREES (round
+// with lit on), packets 0|1 (1: the packets' complete geometry, with the triangles the game's
+// programs drop near the eye; 0: the draw list's own triangles), pull_back F (distance to the looked-at point times F), orbit DEGREES (round
 // the vertical through that point), raise DEGREES (tilt), focus D (distance of that point
 // along the view axis; default: where the player stands in the game's own view, 390).
 #include "rta_drawer.h"
@@ -43,6 +44,7 @@ using namespace rta_variant;
 
 struct RtaDrawer::Scene {
     bool lit = false, shadows = false;
+    bool packets = true;                // draw the packets' complete geometry where the tap has it (false: the list's own triangles)
     double ambient = 1.0, pull_back = 1.0, orbit = 0.0, raise = 0.0, focus = 390.0;
     // this frame
     bool valid = false;
@@ -53,6 +55,8 @@ struct RtaDrawer::Scene {
     size_t casters_used = 0;
     RID caster_scenario;
     // figures
+    uint64_t packet_draws = 0;
+    int64_t packet_extra = 0;           // corners drawn beyond the list's (the triangles the programs had dropped)
     uint64_t world_draws = 0, world_vertices = 0, flat_draws = 0, frames = 0, frames_without_camera = 0, exact_draws = 0, blob_shadows_dropped = 0;
 };
 
@@ -70,6 +74,7 @@ void RtaDrawer::set_scene_option(const String& name, double value) {
     else if (name == "orbit") scene->orbit = value;
     else if (name == "raise") scene->raise = value;
     else if (name == "focus") scene->focus = value;
+    else if (name == "packets") scene->packets = value != 0;
 }
 
 RID RtaDrawer::get_world_scenario() const {
@@ -92,9 +97,10 @@ Dictionary RtaDrawer::get_scene_info() const {
     info["focus"] = scene->game_camera.origin - scene->game_camera.basis.get_column(2) * (real_t)scene->focus;
     double n = scene->frames ? (double)scene->frames : 1;
     info["figures"] = vformat("scene: %d lists (%d without a camera); per list %.1f draws and %.0f vertices in the world (%.1f of the draws from the vertex programs' inputs, "
-                              "with normals), %.1f draws of the 2-D layer, %.2f of the game's own ground shadows left out", (int64_t)scene->frames,
-                              (int64_t)scene->frames_without_camera, scene->world_draws / n, scene->world_vertices / n, scene->exact_draws / n, scene->flat_draws / n,
-                              scene->blob_shadows_dropped / n);
+                              "with normals; %.1f of them as whole packets, %.0f corners a list more than the list has: the triangles the game drops near the eye and off "
+                              "screen), %.1f draws of the 2-D layer, %.2f of the game's own ground shadows left out", (int64_t)scene->frames,
+                              (int64_t)scene->frames_without_camera, scene->world_draws / n, scene->world_vertices / n, scene->exact_draws / n, scene->packet_draws / n,
+                              (double)scene->packet_extra / n, scene->flat_draws / n, scene->blob_shadows_dropped / n);
     return info;
 }
 
@@ -149,22 +155,48 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     const bool normals = d.scene_kind == RTAG_SCENE_EXACT && sc.tap->normals != nullptr;
     const int stride = normals ? 32 : 20;
     PackedByteArray positions, attributes;
-    positions.resize((int64_t)d.count * 12);
-    attributes.resize((int64_t)d.count * stride);
-    uint8_t* p = positions.ptrw();
-    uint8_t* a = attributes.ptrw();
-    const rtag_vertex* v = f.vertices + d.first;
-    const rtag_scene_vertex* w = sc.tap->vertices + d.scene_first;
-    const float* n = normals ? sc.tap->normals + (size_t)d.scene_first * 3 : nullptr;
-    for (uint32_t k = 0; k < d.count; k++, v++, w++, p += 12, a += stride) {
-        memcpy(p, &w->x, 12);
-        memcpy(a, &v->r, 4);
-        float st[4] = {v->s, v->t, v->q, (float)v->fog / 255.0f};
-        memcpy(a + 4, st, 16);
-        if (normals) memcpy(a + 20, n + (size_t)k * 3, 12);
+    int corners = 0;
+    if (normals && sc.packets && d.scene_piece_count && d.scene_piece_first + d.scene_piece_count <= sc.tap->piece_count) {
+        // The packets' own geometry: every triangle of every strip drawn with this state - the list's triangles and the
+        // ones the game's vertex programs dropped whole near the eye (Godot clips them as triangles should be clipped).
+        const rtag_scene_piece* pieces = sc.tap->pieces + d.scene_piece_first;
+        for (uint32_t k = 0; k < d.scene_piece_count; k++) corners += (int)pieces[k].full_count;
+        positions.resize((int64_t)corners * 12);
+        attributes.resize((int64_t)corners * stride);
+        uint8_t* p = positions.ptrw();
+        uint8_t* a = attributes.ptrw();
+        for (uint32_t k = 0; k < d.scene_piece_count; k++) {
+            const rtag_scene_full* v = sc.tap->full + pieces[k].full_first;
+            for (uint32_t n = 0; n < pieces[k].full_count; n++, v++, p += 12, a += stride) {
+                memcpy(p, &v->x, 12);
+                memcpy(a, &v->r, 4);
+                float st[4] = {v->u, v->v, 1.0f, 1.0f};
+                memcpy(a + 4, st, 16);
+                memcpy(a + 20, &v->nx, 12);
+            }
+        }
+        sc.packet_draws++;
+        sc.packet_extra += corners - (int)d.count;
+    } else {
+        corners = (int)d.count;
+        positions.resize((int64_t)d.count * 12);
+        attributes.resize((int64_t)d.count * stride);
+        uint8_t* p = positions.ptrw();
+        uint8_t* a = attributes.ptrw();
+        const rtag_vertex* v = f.vertices + d.first;
+        const rtag_scene_vertex* w = sc.tap->vertices + d.scene_first;
+        const float* n = normals ? sc.tap->normals + (size_t)d.scene_first * 3 : nullptr;
+        for (uint32_t k = 0; k < d.count; k++, v++, w++, p += 12, a += stride) {
+            memcpy(p, &w->x, 12);
+            memcpy(a, &v->r, 4);
+            float st[4] = {v->s, v->t, v->q, (float)v->fog / 255.0f};
+            memcpy(a + 4, st, 16);
+            if (normals) memcpy(a + 20, n + (size_t)k * 3, 12);
+        }
     }
+    if (!corners) return true;
     RID mesh = mesh_for(pass);
-    add_surface_bytes(mesh, RenderingServer::PRIMITIVE_TRIANGLES, positions, attributes, (int)d.count, normals);
+    add_surface_bytes(mesh, RenderingServer::PRIMITIVE_TRIANGLES, positions, attributes, corners, normals);
     uint32_t extra = V_WORLD | (sc.lit ? V_LIT : 0) | (normals ? V_NORMALS : 0);
     if (normals) sc.exact_draws++;
     place(pass, material_for(d, target, false, texture, false, extra), order);

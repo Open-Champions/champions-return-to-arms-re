@@ -140,6 +140,15 @@ void take(render::FrameList& list, Frame& out) {
     out.known.assign(list.commands.size(), 0);
     std::vector<uint8_t> exact(count, 0);
     // ---- 1: the programs' inputs ----
+    static_assert(sizeof(rtag_scene_full) == sizeof(render::TapFull), "rtag_scene_full is render::TapFull");
+    out.full.resize(tap.full.size());
+    if (!tap.full.empty()) memcpy(out.full.data(), tap.full.data(), tap.full.size() * sizeof(render::TapFull));
+    out.piece_first.assign(list.commands.size(), 0);
+    out.piece_count.assign(list.commands.size(), 0);
+    size_t command_at = 0;                              // pieces and draws are both in the order they were made
+    int last_command = -1;
+    uint32_t last_object = ~0u;
+    uint8_t last_pass = 0;
     out.pieces.reserve(tap.pieces.size());
     for (const render::TapPiece& p : tap.pieces) {
         if ((size_t)p.list_first + p.list_count > count) continue;
@@ -155,6 +164,22 @@ void take(render::FrameList& list, Frame& out) {
         piece.mesh = p.mesh; piece.occurrence = p.occurrence; piece.object = p.object;
         piece.first = p.list_first; piece.count = p.list_count;
         piece.kind = p.kind; piece.flags = p.flags; piece.entry = p.entry;
+        piece.full_first = p.full_first; piece.full_count = p.full_count;
+        // whose state: the draw its list vertices are in; a packet with none (all dropped): that of the packet before it
+        piece.command = -1;
+        if (p.list_count) {
+            while (command_at < list.commands.size() &&
+                   !(list.commands[command_at].kind == render::CMD_DRAW && p.list_first >= list.commands[command_at].first &&
+                     p.list_first < list.commands[command_at].first + list.commands[command_at].count)) command_at++;
+            if (command_at < list.commands.size()) piece.command = (int32_t)command_at;
+        } else if (last_command >= 0 && last_object == p.object && last_pass == (p.flags & render::TAP_FIRST_PASS)) piece.command = last_command;
+        if (piece.command >= 0) {
+            last_command = piece.command; last_object = p.object; last_pass = p.flags & render::TAP_FIRST_PASS;
+            uint32_t index = (uint32_t)out.pieces.size();
+            if (!out.piece_count[piece.command]) out.piece_first[piece.command] = index;
+            if (out.piece_first[piece.command] + out.piece_count[piece.command] == index) out.piece_count[piece.command]++;
+            else piece.command = -1;                    // not next to the draw's other packets: left to the list's own triangles
+        }
         out.pieces.push_back(piece);
         if (g_diag && p.kind == render::TAP_LEVEL && !(p.flags & render::TAP_MIRRORED))
             for (uint32_t k = 0; k < p.list_count; k += 7) {
@@ -224,6 +249,8 @@ void fill(const Frame& frame, rtag_scene& view, rtag_draw* draws, size_t count) 
     view.normals = frame.normals.data();
     view.pieces = frame.pieces.data();
     view.piece_count = (uint32_t)frame.pieces.size();
+    view.full = frame.full.data();
+    view.full_count = (uint32_t)frame.full.size();
     memcpy(view.world_to_view, frame.world_to_view, sizeof view.world_to_view);
     memcpy(view.view_to_clip, frame.view_to_clip, sizeof view.view_to_clip);
     memcpy(view.world_to_screen, frame.world_to_screen, sizeof view.world_to_screen);
@@ -232,7 +259,10 @@ void fill(const Frame& frame, rtag_scene& view, rtag_draw* draws, size_t count) 
     view.near_plane = frame.near_plane;
     view.far_plane = frame.far_plane;
     for (size_t k = 0; k < count && k < frame.known.size(); k++)
-        if (frame.known[k]) { draws[k].scene_first = (int32_t)draws[k].first; draws[k].scene_kind = frame.known[k]; }
+        if (frame.known[k]) {
+            draws[k].scene_first = (int32_t)draws[k].first; draws[k].scene_kind = frame.known[k];
+            if (frame.known[k] == 2 && k < frame.piece_count.size()) { draws[k].scene_piece_first = frame.piece_first[k]; draws[k].scene_piece_count = frame.piece_count[k]; }
+        }
 }
 
 void report() {
@@ -245,6 +275,9 @@ void report() {
            "pixel\n", (unsigned long long)s.kicks, (unsigned long long)s.pieces, s.kicks ? 100.0 * s.pieces / s.kicks : 0.0, (unsigned long long)s.rejected_count,
            (unsigned long long)s.rejected_check, (unsigned long long)s.rejected_layout, (unsigned long long)s.other_entries, (unsigned long long)s.checked, (unsigned long long)s.off,
            s.worst);
+    printf("rtag: scene tap: complete geometry: %llu triangles the programs' clip pass had dropped are back in it; the strips' own no-draw bits against the replay's "
+           "(objects without the clip flag): %llu compared, %llu different\n", (unsigned long long)s.dropped_restored, (unsigned long long)s.stitch_checked,
+           (unsigned long long)s.stitch_off);
     printf("rtag: scene tap: the camera came with %llu frames; level set-ups whose depth and translation rows are that camera's, bit for bit: %llu of %llu\n",
            (unsigned long long)s.camera_blocks, (unsigned long long)s.level_rows_equal, (unsigned long long)s.level_setups);
     if (g_diag) printf("rtag: scene: level vertices on the quarter-unit grid the files store them on (within 0.0125 units): %.2f %% of %llu looked at\n",

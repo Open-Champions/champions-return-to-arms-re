@@ -221,6 +221,7 @@ struct Track {                  // a creature seen before
     bool named = false;
     float health = 0, health_max = 0;
     float screen[3] = {0, 0, 0};    // of the frame before
+    float head[3] = {0, 0, 0};      // the point above the head, in the world, of the frame before
     bool have_screen = false;
     u64 seen = 0;
     char name[RTA_GS_TEXT] = "";
@@ -240,6 +241,7 @@ struct PlayerTrack {
     u32 bag_def[192];
     int32_t bag_qty[192];
     float screen[3] = {0, 0, 0};
+    float head[3] = {0, 0, 0};
     bool have_screen = false;
     rta_gs_status status[RTA_GS_STATUS];
     u32 status_count = 0;
@@ -261,6 +263,7 @@ struct rta_gs_reader {
     bool baseline = false;      // the trackers hold the frame before of the same level
     float aspect = 4.0f / 3.0f;
     bool have_host_view = false;
+    bool host_camera = false;   // ... and it carries a camera (a host may hand in the mode alone: its overhead view has no camera of its own)
     rta_gs_view host_view;
     int screen_delay = 1;
     double cost = 0;
@@ -323,6 +326,17 @@ bool project(const R& r, const float p[3], float out[3]) {
     out[0] = 0.5f + F * k * x / z / 1280.0f;
     out[1] = 0.5f + F * 0.4666667f * y / z / 448.0f;
     return true;
+}
+
+// Where a point is in the picture that is SHOWN.  The picture of a blank was drawn one simulation tick before the memory
+// read at that blank (the game sends a frame's packets at the start of the next; Ran: the game's own bars in the picture
+// are one tick behind the fields, docs/issues/native-hud.md).  So the place that belongs to the picture is where the
+// thing was one update ago: with a camera handed in by the host - which is the shown frame's own - the old place under
+// that camera; with the camera read from memory - which is as new as the places - the projection made one update ago.
+void delayed(const R& r, bool have_before, const float* head_before, const float* screen_before, const float* now, float* out) {
+    if (r.screen_delay <= 0 || !have_before) { memcpy(out, now, 3 * sizeof(float)); return; }
+    if (r.host_camera) project(r, head_before, out);
+    else memcpy(out, screen_before, 3 * sizeof(float));
 }
 
 // ---- status effects ------------------------------------------------------------------------------
@@ -549,9 +563,10 @@ void read_creatures(R& r) {
         float head[3] = {c.position[0], c.position[1], c.position[2] + c.height * (scale < 1.0f ? scale : 1.0f) + 6.0f};
         float now[3];
         bool on = project(r, head, now);
-        if (r.screen_delay > 0 && t->have_screen) memcpy(c.screen, t->screen, sizeof c.screen);
-        else memcpy(c.screen, now, sizeof c.screen);
+        delayed(r, t->have_screen, t->head, t->screen, now, c.screen);
+        on = c.screen[2] >= 1.0f;
         memcpy(t->screen, now, sizeof t->screen);
+        memcpy(t->head, head, sizeof t->head);
         t->have_screen = true;
         if (on && c.screen[0] >= 0 && c.screen[0] <= 1 && c.screen[1] >= 0 && c.screen[1] <= 1 && c.screen[2] >= 1) flags |= RTA_GS_CF_ONSCREEN;
         c.flags = flags;
@@ -791,9 +806,9 @@ void read_player(R& r, int slot) {
         float head[3] = {p.position[0], p.position[1], p.position[2] + p.height + 6.0f};
         float now[3];
         project(r, head, now);
-        if (r.screen_delay > 0 && t.valid && t.have_screen) memcpy(p.screen, t.screen, sizeof p.screen);
-        else memcpy(p.screen, now, sizeof p.screen);
+        delayed(r, t.valid && t.have_screen, t.head, t.screen, now, p.screen);
         memcpy(t.screen, now, sizeof t.screen);
+        memcpy(t.head, head, sizeof t.head);
         t.have_screen = true;
     } else {
         t.have_screen = false;
@@ -1056,8 +1071,26 @@ const rta_gamestate* rta_gs_update(rta_gs_reader* reader, const uint8_t* ram) {
     s.hud_hidden = (m.i(G_MENU_OPEN_FLAG) || m.sb(G_HUD_SUPPRESSED) || m.i(G_SHOP_OPEN) || (phase & RTA_GS_PH_CAMERA_HELD)) ? 1 : 0;
 
     // ---- the camera ----
-    if (r.have_host_view) s.view = r.host_view;
-    else game_view(m, s.view);
+    r.host_camera = false;
+    if (r.have_host_view) {
+        const rta_gs_view& h = r.host_view;
+        float len = h.forward[0] * h.forward[0] + h.forward[1] * h.forward[1] + h.forward[2] * h.forward[2];
+        if (len > 0.25f) {
+            s.view = h;
+            r.host_camera = true;
+        } else {
+            // no camera in it (the overhead view is the game's own camera, untouched): which view it is from the host, the camera from memory
+            game_view(m, s.view);
+            s.view.mode = h.mode;
+            s.view.shown = h.shown;
+            s.view.blend = h.blend;
+            s.view.fallback = h.fallback;
+            s.view.hide_player = h.hide_player;
+            memcpy(s.view.fallback_why, h.fallback_why, sizeof s.view.fallback_why);
+        }
+    } else {
+        game_view(m, s.view);
+    }
 
     // ---- a new level, or time went back: nothing to compare with ----
     if (strcmp(r.level_seen, s.level) || s.sim_tick < r.tick_seen || (phase & (RTA_GS_PH_FRONTEND | RTA_GS_PH_LOADING))) {

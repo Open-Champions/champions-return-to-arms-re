@@ -1,0 +1,470 @@
+fpcontrols.patch - the controls of the views that look along the ground (chase, shoulder, first
+person): mouse and right-stick look, movement relative to the look, the character turned to the
+look, the data a HUD needs.  This file holds the changes to files other work owns;
+docs/issues/native-first-person-controls.md says what it is and what was run.
+
+Made against tools/recomp WITH app/fpview.patch applied (the camera base of 13:28; the line
+"base" below).  Apply from tools/recomp, after fpview.patch:
+
+    cd tools/recomp && patch -p1 --dry-run < app/fpcontrols.patch && patch -p1 < app/fpcontrols.patch
+
+The new files it needs are already in place and are not in the patch (nothing compiles them
+until app/build.py is patched):
+    app/fpcontrols.h  app/fpcontrols.cpp   the controls: plain C++, no window system, nothing of
+                                           the runtime but its memory (iface.h)
+    app/look_host.h  app/look_mac.mm       the pointer hidden and held as the look (macOS)
+
+Notes for the merge
+ - Nothing in hle.txt, rt/, render/, net/, sound/: no new translation, no change to the game.
+   The simulation is given ordinary controller rows and the game camera's yaw word; with the
+   view "overhead" (the default) or "action", fpcontrols::translate changes nothing in a row.
+ - app/fpview.h, fpview.cpp (the camera work's files): ONE addition, fpview::add_pitch(degrees) -
+   an atomic that is added to the selected view's pitch at the next draw pass, inside the
+   view's own limits - so that a mouse can look up and down.  12 lines; if the camera work
+   adds it itself, drop these two hunks.
+ - app/app_main.cpp: the last step of Pads::read tells fpcontrols the view of the last draw
+   pass and lets it translate the row (in a look view the right stick and L3 are withheld
+   from the game: its own camera-stick code would turn the same yaw word slowly and step the
+   hidden zoom - so --opt view-zoom=off is never needed); a call-out of fpview::on_view
+   turns the first-person picture onto the walking direction (2.48 degrees) and adds the
+   kick of swings and hits; mouse buttons and wheel of the window (not of a test window);
+   Escape gives a held pointer back; a 50 ms timer holds the pointer while a look view is
+   played in the window that has the keyboard (never in a test window, never off screen);
+   three more key names (Space = Square, Shift = R1, Tab = R3); "app fpc ..." for scripts
+   and the control socket; settings lines "controls.*"; the report's last lines.
+ - app/settings.h: "controls.*" lines are kept with the "view" lines and handed on.
+ - app/help_mac.mm: the keys panel ends with fpcontrols::help_text().
+ - app/build.py: fpcontrols.cpp and look_mac.mm are compiled; help_mac.mm is given -I rt.
+ - app/win_main.cpp, app/build_win.py (compiled and linked here with build_win.py; NOTHING
+   of it was run): fpcontrols.cpp is compiled into the Windows program; the row goes through
+   fpcontrols::translate (it passes unchanged until the Windows program has the views and
+   calls fpcontrols::set_view - fpview.patch's own note says how the views get there); raw
+   mouse input, the pointer clipped and hidden, mouse buttons and wheel, the three key
+   names, "app fpc", the report line.
+base: Tue Oct 13 13:30:22 CDT 2026
+made: Tue Oct 13 14:07:09 CDT 2026
+
+--- a/app/fpview.h
++++ b/app/fpview.h
+@@ -94,6 +94,9 @@
+ const char* mode_name(int mode);                // "overhead", "action", "chase", "shoulder", "first"
+ int mode_by_name(const char* name);             // -1 when it is not one
+ void cycle(int step = 1);                       // the key: next view
++// Looking up (+) and down (-) by other means than the camera stick (a mouse: fpcontrols.h):
++// degrees added to the selected view's pitch at the next draw pass, inside its limits.
++void add_pitch(float degrees);
+ 
+ // A per-view setting, as a line of the settings file gives it: key "view" (value = a mode
+ // name), or "view.<mode>.<name>" with <name> one of fov, near, distance, height, side,
+--- a/app/fpview.cpp
++++ b/app/fpview.cpp
+@@ -192,6 +192,7 @@
+ std::string g_settings_text;
+ 
+ std::atomic<int> g_wanted{OVERHEAD};
++std::atomic<float> g_pitch_add{0};  // add_pitch(): taken at the next draw pass
+ bool g_options_read = false, g_zoom_off = false, g_log = false;
+ 
+ // ---- state of the view (host side; the game never reads it) --------------------------------------
+@@ -523,6 +524,9 @@
+         // pad.ry is negative when the stick is pushed up (a byte of 0 is -1.0): up looks up
+         g_pitch[g_mode] = clampf(g_pitch[g_mode] - in.stick_y * s.look_speed * in.dt, s.pitch_min - s.pitch, s.pitch_max - s.pitch);
+     }
++
++    if (float more = g_pitch_add.exchange(0); more != 0 && g_mode != OVERHEAD && s.pitch_max > s.pitch_min)
++        g_pitch[g_mode] = clampf(g_pitch[g_mode] + more, s.pitch_min - s.pitch, s.pitch_max - s.pitch);
+ 
+     Pose target = pose_of(c, g_mode, in);
+     Pose shown = g_t >= 1 ? target : blend(from_pose(in), target, smooth(g_t));
+@@ -653,6 +657,10 @@
+     if (!strcmp(name, "game") || !strcmp(name, "classic")) return OVERHEAD;
+     return -1;
+ }
++void add_pitch(float degrees) {
++    float old = g_pitch_add.load();
++    while (!g_pitch_add.compare_exchange_weak(old, old + degrees)) {}
++}
+ void cycle(int step) { g_wanted = ((g_wanted.load() + step) % MODE_COUNT + MODE_COUNT) % MODE_COUNT; }
+ 
+ bool setting(const char* key, const char* value) {
+--- a/app/settings.h
++++ b/app/settings.h
+@@ -71,7 +71,7 @@
+         else if (key == "art_pack") art_pack = value;
+         else if (key == "art_memory") { art_memory = atoi(value.c_str()); if (art_memory < 64) art_memory = 64; }
+         else if (key == "frame_cap") frame_cap = atoi(value.c_str());
+-        else if (key == "view" || key.compare(0, 5, "view.") == 0) view.push_back({key, value});
++        else if (key == "view" || key.compare(0, 5, "view.") == 0 || key.compare(0, 9, "controls.") == 0) view.push_back({key, value});   // controls.*: fpcontrols::setting
+         else return false;
+         return true;
+     }
+--- a/app/app_main.cpp
++++ b/app/app_main.cpp
+@@ -86,9 +86,11 @@
+ #include "app_rt.h"
+ #include "backend_gl.h"
+ #include "control.h"
++#include "fpcontrols.h"
+ #include "fpview.h"
+ #include "gfx_rt.h"
+ #include "help_host.h"
++#include "look_host.h"
+ #include "pad_host.h"
+ #include "pipeline.h"
+ #include "present_host.h"
+@@ -100,6 +102,8 @@
+ #include <QGuiApplication>
+ #include <QImage>
+ #include <QKeyEvent>
++#include <QMouseEvent>
++#include <QWheelEvent>
+ #include <QOffscreenSurface>
+ #include <QOpenGLContext>
+ #include <QOpenGLExtraFunctions>
+@@ -374,6 +378,10 @@
+     case Qt::Key_C: return rta::PAD_R3;
+     case Qt::Key_Return: case Qt::Key_Enter: return rta::PAD_START;
+     case Qt::Key_Backspace: return rta::PAD_SELECT;
++    // second names for three buttons, where a hand on W A S D and a mouse finds them (fpcontrols.h)
++    case Qt::Key_Space: return rta::PAD_SQUARE;
++    case Qt::Key_Shift: return rta::PAD_R1;
++    case Qt::Key_Tab: return rta::PAD_R3;
+     default: return 0;
+     }
+ }
+@@ -382,7 +390,8 @@
+         {"w", Qt::Key_W}, {"a", Qt::Key_A}, {"s", Qt::Key_S}, {"d", Qt::Key_D}, {"up", Qt::Key_Up}, {"down", Qt::Key_Down},
+         {"left", Qt::Key_Left}, {"right", Qt::Key_Right}, {"i", Qt::Key_I}, {"j", Qt::Key_J}, {"k", Qt::Key_K}, {"l", Qt::Key_L},
+         {"q", Qt::Key_Q}, {"e", Qt::Key_E}, {"1", Qt::Key_1}, {"3", Qt::Key_3}, {"x", Qt::Key_X}, {"c", Qt::Key_C},
+-        {"return", Qt::Key_Return}, {"backspace", Qt::Key_Backspace}, {"escape", Qt::Key_Escape}, {"f", Qt::Key_F}, {"v", Qt::Key_V}};
++        {"return", Qt::Key_Return}, {"backspace", Qt::Key_Backspace}, {"escape", Qt::Key_Escape}, {"f", Qt::Key_F}, {"v", Qt::Key_V},
++        {"space", Qt::Key_Space}, {"shift", Qt::Key_Shift}, {"tab", Qt::Key_Tab}};
+     for (auto& n : names) if (name == n.name) return n.key;
+     return 0;
+ }
+@@ -444,6 +453,15 @@
+             else { state.lx = kb.lx; state.ly = kb.ly; }
+         }
+         if (rest(state.rx, state.ry) && have_pad) { state.rx = pad.rx; state.ry = pad.ry; }
++        // the views that look along the ground: mouse and right stick are the look (the game
++        // camera's yaw word), the character is turned to it; in the overhead views nothing
++        // changes (fpcontrols.h).  The view is the one of the last draw pass.
++        {
++            const fpview::View& v = fpview::view();
++            fpcontrols::set_view(fpview::mode(), v.active && !v.fallback, v.look_pitch);
++            fpcontrols::translate(frame, state);
++            if (float pitch = fpcontrols::take_pitch(); pitch != 0) fpview::add_pitch(pitch);
++        }
+         last_buttons = state.buttons;
+         last_sticks = state.lx | state.ly << 8 | state.rx << 16 | (uint32_t)state.ry << 24;
+     }
+@@ -460,6 +478,7 @@
+ class GameWindow : public QWindow {
+   public:
+     bool test = false;
++    bool pointer_let_go = false;        // Escape gave the pointer back; a click in the window takes it again
+     void toggle_fullscreen() { if (visibility() == QWindow::FullScreen) showNormal(); else showFullScreen(); }
+     // What the thread that draws needs to know of the window, kept here by this (the main)
+     // thread whenever it changes: size in points, device pixels per point, whether any of
+@@ -483,6 +502,7 @@
+         if (test) return;
+         if (e->key() == Qt::Key_F1 || e->key() == Qt::Key_Help) { hosthelp::toggle(); return; }
+         if (e->key() == Qt::Key_V) { fpview::cycle(e->modifiers() & Qt::ShiftModifier ? -1 : 1); log_line(std::string("view: ") + fpview::mode_name(fpview::mode())); return; }
++        if (e->key() == Qt::Key_Escape && hostlook::captured()) { pointer_let_go = true; hostlook::capture(false); return; }
+         if (e->key() == Qt::Key_F11 || (e->key() == Qt::Key_F && !(e->modifiers() & ~Qt::KeyboardModifiers(Qt::ControlModifier | Qt::MetaModifier)))) toggle_fullscreen();
+         else if (e->key() == Qt::Key_Escape && visibility() == QWindow::FullScreen) showNormal();
+     }
+@@ -491,7 +511,13 @@
+         g_key_events++;
+         if (uint32_t bit = key_bit(e->key())) g_keys &= ~bit;
+     }
+-    void focusOutEvent(QFocusEvent*) override { g_keys = 0; }       // nothing stays held when the window is left
++    void focusOutEvent(QFocusEvent*) override { g_keys = 0; fpcontrols::release_all(); hostlook::capture(false); }       // nothing stays held when the window is left
++    // the mouse (fpcontrols.h): its buttons are pad buttons in the look views.  Not in a test window: a test
++    // moves and presses through the control socket ("app fpc ..."), and a person's click on it must do nothing
++    static int mouse_index(Qt::MouseButton b) { return b == Qt::LeftButton ? 0 : b == Qt::RightButton ? 1 : b == Qt::MiddleButton ? 2 : b == Qt::BackButton ? 3 : 4; }
++    void mousePressEvent(QMouseEvent* e) override { if (test) return; pointer_let_go = false; fpcontrols::mouse_button(mouse_index(e->button()), true); }
++    void mouseReleaseEvent(QMouseEvent* e) override { if (test) return; fpcontrols::mouse_button(mouse_index(e->button()), false); }
++    void wheelEvent(QWheelEvent* e) override { if (!test) fpcontrols::mouse_wheel((float)e->angleDelta().y() / 120.0f); }
+     void resizeEvent(QResizeEvent*) override { mirror(); }
+     void exposeEvent(QExposeEvent*) override { mirror(); }
+     bool event(QEvent* e) override {
+@@ -1170,6 +1196,7 @@
+     }
+     s.report_pace(false, g_sink ? g_sink->decode_cpu_ms : 0.0);
+     apprt::films_report();
++    printf("rta_app: %s\n", fpcontrols::figures().c_str());
+     {
+         const render::GsStats& g = g_renderer->gs.stats;
+         printf("rta_app: memory %.1f MB; textures made %llu, held %llu (%.1f MB as RGBA), freed %llu; draws without their texture %llu; surface copies %llu, "
+@@ -1328,6 +1355,10 @@
+         int ww = atoi(w[1].c_str()), wh = atoi(w[2].c_str());
+         if (g_screen->window && ww >= 160 && wh >= 120)
+             QCoreApplication::postEvent(g_screen, new CallQEvent([ww, wh] { g_screen->window->resize(ww, wh); }));
++    } else if (w[0] == "fpc" && w.size() >= 2) {
++        // app fpc mouse DX DY | button left|right|middle down|up | wheel N | set KEY VALUE | hud | log on|off | figures  (fpcontrols.h)
++        printf("[frame %llu] fpc: %s\n", (unsigned long long)frame, fpcontrols::command(text.substr(text.find(w[1])), frame).c_str());
++        fflush(stdout);
+     } else if (w[0] == "view" && w.size() >= 2) {
+         if (w[1] == "next") fpview::cycle(1);
+         else if (w[1] == "set" && w.size() >= 4) { if (!fpview::setting(w[2].c_str(), w[3].c_str())) log_line("app view set: not a view setting: " + w[2]); }
+@@ -1521,7 +1552,7 @@
+         opt.aspect = opt.set.aspect;
+         opt.unpaced = opt.set.frame_cap <= 0;
+         for (auto& kv : opt.set.view)
+-            if (!fpview::setting(kv.first.c_str(), kv.second.c_str())) log_line("settings: not a view setting: " + kv.first + " = " + kv.second);
++            if (!fpview::setting(kv.first.c_str(), kv.second.c_str()) && !fpcontrols::setting(kv.first.c_str(), kv.second.c_str())) log_line("settings: not a view setting: " + kv.first + " = " + kv.second);
+         opt.set.view.clear();
+     };
+     if (!settings_later) apply_settings(opt.settings_file);
+@@ -1547,7 +1578,7 @@
+         std::string file = opt.data + "/settings.txt";
+         bool there = file_exists(file);
+         apply_settings(there ? file : std::string());
+-        if (!there && opt.test.empty() && !opt.offscreen) { app::Settings().save(file, fpview::settings_text()); first_start = true; }
++        if (!there && opt.test.empty() && !opt.offscreen) { app::Settings().save(file, (std::string(fpview::settings_text()) + "\n" + fpcontrols::settings_text()).c_str()); first_start = true; }
+     }
+     if (mode == "boot") {
+         // Something is wrong with what was given as the disc: said on the terminal, and to a
+@@ -1596,6 +1627,16 @@
+     // RTA_STALL_LOG: the main thread's event loop is watched as well - a timer that should
+     // come by every 8 ms
+     g_main_stall.start();
++    // the pointer belongs to the look while a look view is played in the window that has the keyboard
++    static QTimer pointer_watch;
++    if (opt.test.empty() && !opt.offscreen) {
++        hostlook::start();
++        QObject::connect(&pointer_watch, &QTimer::timeout, [] {
++            GameWindow* w = g_screen ? g_screen->window : nullptr;
++            hostlook::capture(w && !w->test && w->isActive() && !w->pointer_let_go && fpcontrols::wants_pointer());
++        });
++        pointer_watch.start(50);
++    }
+     static QTimer heartbeat;
+     if (g_main_stall.on) {
+         g_main_stall.after_ms += 8;
+@@ -1629,6 +1670,14 @@
+     renderer.gs.name_textures = !opt.set.art_pack.empty();
+     gfxrt::install();
+     fpview::install();
++    // the picture of a look view: its centre on the walking direction, the kick of swings and hits (fpcontrols.h)
++    fpview::on_view([](fpview::View& v, Ctx*, void*) {
++        if (v.shown != v.mode) return;
++        float forward[3] = {v.forward.x, v.forward.y, v.forward.z}, up[3] = {v.up.x, v.up.y, v.up.z};
++        fpcontrols::apply_view(v.mode, forward, up);
++        v.forward = {forward[0], forward[1], forward[2]};
++        v.up = {up[0], up[1], up[2]};
++    });
+     if (getenv("RTA_GS_LOG")) renderer.gs.log_display = true;
+     if (const char* keep = getenv("RTA_TEX_KEEP")) renderer.gs.texture_keep_frames = (uint32_t)atoi(keep);    // frames an unused texture is kept; 0 = for ever
+     g_sink = &sink;
+--- a/app/help_mac.mm
++++ b/app/help_mac.mm
+@@ -1,5 +1,6 @@
+ // help_mac.mm - see help_host.h.
+ #include "help_host.h"
++#include "fpcontrols.h"
+ 
+ #import <AppKit/AppKit.h>
+ 
+@@ -25,7 +26,8 @@
+            "It is listened to while this window is the one in front.\n"
+            "\n"
+            "To leave: close the window, or Command-Q. The game keeps your character only\n"
+-           "when it saves: at its own save points, and online by itself every few minutes.";
++           "when it saves: at its own save points, and online by itself every few minutes.\n"
++           "\n" + fpcontrols::help_text();
+ }
+ 
+ static NSPanel* g_panel = nil;
+--- a/app/build.py
++++ b/app/build.py
+@@ -85,6 +85,7 @@
+     parser.add_argument('--no-game', action='store_true')
+     parser.add_argument('--no-translation', action='store_true')
+     parser.add_argument('--as', dest='as_name', default='')
++    parser.add_argument('--extra-pnach', action='append', default=[], help='more word patches for the translation: a proposal under test (app/fp-proposed.pnach)')
+     args = parser.parse_args()
+     rt = os.path.join(RECOMP, 'rt')
+     render = os.path.join(RECOMP, 'render')
+@@ -103,6 +104,8 @@
+         signin = os.environ.get('RTA_SIGNIN_PATCH', os.path.join(ROOT, 'local', 'SLUS-20973_4028A55F_signin.pnach'))
+         if os.path.isfile(signin):
+             translate += ['--extra-pnach', signin]
++        for extra in args.extra_pnach:
++            translate += ['--extra-pnach', extra]
+         game = ['run', '--gen', args.gen, '--name', 'rta_native_fix']
+     if not args.no_game:
+         result = subprocess.run([sys.executable, os.path.join(RECOMP, 'recomp.py')] + translate, capture_output=True, text=True)
+@@ -143,6 +146,9 @@
+     jobs.append((os.path.join(HERE, 'gfx_rt.cpp'), rt_flags + ['-I', HERE], 'a_'))
+     # the view modes (fpview.h; docs/issues/native-first-person.md)
+     jobs.append((os.path.join(HERE, 'fpview.cpp'), rt_flags + ['-I', HERE], 'a_'))
++    # the controls of the look views (plain C++: the Windows program compiles the same file)
++    jobs.append((os.path.join(HERE, 'fpcontrols.cpp'), ['-std=c++17', args.opt, '-Wall', '-I', HERE, '-I', rt], 'a_'))
++    jobs.append((os.path.join(HERE, 'look_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE, '-I', rt], 'a_'))
+     if not args.original:
+         # the films: the library entry points of hle-app.txt, which only this translation leaves open
+         jobs.append((os.path.join(HERE, 'film.cpp'), rt_flags + ['-I', HERE], 'a_'))
+@@ -155,7 +161,7 @@
+     jobs.append((os.path.join(HERE, 'app_main.cpp'), app_flags + qt_flags, 'a_'))
+     jobs.append((os.path.join(HERE, 'pad_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE, '-I', rt], 'a_'))
+     jobs.append((os.path.join(HERE, 'present_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE], 'a_'))
+-    jobs.append((os.path.join(HERE, 'help_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE], 'a_'))
++    jobs.append((os.path.join(HERE, 'help_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE, '-I', rt], 'a_'))
+     # the game's objects are those of the translation's files (genfiles.py), never a listing of
+     # the object directory: a stray copy there ("c_003 2.o", as a file synchroniser leaves
+     # them) is not one of them and must not be linked a second time
+--- a/app/win_main.cpp
++++ b/app/win_main.cpp
+@@ -86,6 +86,7 @@
+ #include "backend_gl.h"
+ #include "gfx_rt.h"
+ #include "pad_host.h"
++#include "fpcontrols.h"
+ #include "pipeline.h"
+ #include "recorder.h"
+ #include "settings.h"
+@@ -305,6 +306,10 @@
+     case 'C': return rta::PAD_R3;
+     case VK_RETURN: return rta::PAD_START;
+     case VK_BACK: return rta::PAD_SELECT;
++    // second names for three buttons, where a hand on W A S D and a mouse finds them (fpcontrols.h)
++    case VK_SPACE: return rta::PAD_SQUARE;
++    case VK_SHIFT: return rta::PAD_R1;
++    case VK_TAB: return rta::PAD_R3;
+     default: return 0;
+     }
+ }
+@@ -324,7 +329,7 @@
+     std::atomic<uint32_t> last_sticks{0x80808080};
+     std::atomic<uint32_t> rumbles{0};
+     std::atomic<bool> quit{false};
+-    void read(unsigned port, uint64_t, rta::PadState& state) override {
++    void read(unsigned port, uint64_t blank, rta::PadState& state) override {
+         if (quit) apprt::finish(0);                     // the window was closed: end from the game's thread
+         state = apprt::script_pad(port);
+         if (port != 0) return;
+@@ -343,6 +348,9 @@
+             else { state.lx = kb.lx; state.ly = kb.ly; }
+         }
+         if (rest(state.rx, state.ry) && have_pad) { state.rx = pad.rx; state.ry = pad.ry; }
++        // the look views' controls (fpcontrols.h).  This program has no views yet (app/fpview.patch,
++        // "Notes for the merge"): until fpcontrols::set_view is called with one, rows pass unchanged
++        fpcontrols::translate(blank, state);
+         last_buttons = state.buttons;
+         last_sticks = state.lx | state.ly << 8 | state.rx << 16 | (uint32_t)state.ry << 24;
+     }
+@@ -355,7 +363,30 @@
+ static std::vector<std::string> g_shots_asked;           // picked up by the sink at this blank
+ 
+ // ---- the window and the main-thread side -----------------------------------------------------
+-enum { TIMER_END = 1, TIMER_MOVE = 2 };
++enum { TIMER_END = 1, TIMER_MOVE = 2, TIMER_POINTER = 3 };
++
++// The pointer as the look of a view (fpcontrols.h; the Mac's look_mac.mm): hidden, kept inside
++// the window, the mouse's own motion read as raw input.  Never in a test window.
++static bool g_pointer_held = false, g_pointer_let_go = false, g_raw_mouse = false;
++static void hold_pointer(HWND hwnd, bool on) {
++    if (on == g_pointer_held) return;
++    if (on) {
++        if (!g_raw_mouse) {
++            RAWINPUTDEVICE device = {0x01, 0x02, 0, hwnd};         // generic desktop, mouse
++            g_raw_mouse = RegisterRawInputDevices(&device, 1, sizeof device) != 0;
++        }
++        RECT r;
++        GetClientRect(hwnd, &r);
++        MapWindowPoints(hwnd, nullptr, (POINT*)&r, 2);
++        SetCursorPos((r.left + r.right) / 2, (r.top + r.bottom) / 2);
++        ClipCursor(&r);
++        ShowCursor(FALSE);
++    } else {
++        ClipCursor(nullptr);
++        ShowCursor(TRUE);
++    }
++    g_pointer_held = on;
++}
+ // asked for by a script line on the game's thread, done by the window's thread
+ enum { MSG_RESIZE = WM_APP + 1, MSG_FULLSCREEN, MSG_ART };
+ 
+@@ -477,6 +508,7 @@
+         window = CreateWindowExW(ex, wc.lpszClassName, wide(title).c_str(), style, CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top,
+                                  nullptr, nullptr, wc.hInstance, nullptr);
+         if (!window) { error = "CreateWindow failed"; return false; }
++        if (opt.test.empty()) SetTimer(window, TIMER_POINTER, 50, nullptr);        // the pointer is the look's while a look view is played
+         if (!wgl::create(window, gl, error)) return false;
+         log_line("OpenGL " + gl.version + " on " + gl.renderer);
+         if (!gl.missing.empty()) log_line("OpenGL functions this driver does not have: " + gl.missing);
+@@ -814,6 +846,7 @@
+         }
+         if (uint32_t bit = key_bit(wp)) { g_keys |= bit; return 0; }
+         if (!s || test) return 0;
++        if (wp == VK_ESCAPE && g_pointer_held) { g_pointer_let_go = true; hold_pointer(hwnd, false); return 0; }
+         if (wp == VK_F11 || wp == 'F') s->toggle_fullscreen();
+         else if (wp == VK_ESCAPE && s->is_fullscreen) s->toggle_fullscreen();
+         else if (wp == VK_F12) {
+@@ -828,7 +861,28 @@
+         return 0;
+     case WM_KILLFOCUS:
+         g_keys = 0;                                     // nothing stays held when the window is left
++        fpcontrols::release_all();
++        hold_pointer(hwnd, false);
+         return 0;
++    // the mouse (fpcontrols.h): its buttons are pad buttons in the look views, its motion the look
++    case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN:
++        if (!test) { g_pointer_let_go = false; fpcontrols::mouse_button(message == WM_LBUTTONDOWN ? 0 : message == WM_RBUTTONDOWN ? 1 : 2, true); }
++        return 0;
++    case WM_LBUTTONUP: case WM_RBUTTONUP: case WM_MBUTTONUP:
++        if (!test) fpcontrols::mouse_button(message == WM_LBUTTONUP ? 0 : message == WM_RBUTTONUP ? 1 : 2, false);
++        return 0;
++    case WM_MOUSEWHEEL:
++        if (!test) fpcontrols::mouse_wheel((float)GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA);
++        return 0;
++    case WM_INPUT:
++        if (g_pointer_held) {
++            RAWINPUT raw;
++            UINT size = sizeof raw;
++            if (GetRawInputData((HRAWINPUT)lp, RID_INPUT, &raw, &size, sizeof(RAWINPUTHEADER)) != (UINT)-1 && raw.header.dwType == RIM_TYPEMOUSE
++                && !(raw.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE))
++                fpcontrols::mouse_motion((float)raw.data.mouse.lLastX, (float)raw.data.mouse.lLastY);     // right and down positive
++        }
++        break;
+     case WM_SYSCOMMAND:
+         if ((wp & 0xFFF0) == SC_KEYMENU) return 0;      // Alt or F10 alone would stop the loop in a menu that is not there
+         break;
+@@ -841,6 +895,7 @@
+         KillTimer(hwnd, TIMER_MOVE);
+         return 0;
+     case WM_TIMER:
++        if (wp == TIMER_POINTER) { hold_pointer(hwnd, !test && GetForegroundWindow() == hwnd && !g_pointer_let_go && fpcontrols::wants_pointer()); return 0; }
+         if (wp == TIMER_END) end_now(0);
+         if (wp == TIMER_MOVE && s) { WaitForSingleObject(s->frame_event, 0); while (s->pending()) s->draw(); }
+         return 0;
+@@ -923,6 +978,7 @@
+     printf("rta_app: input: %llu key events, controller %s, %u rumble commands\n", (unsigned long long)g_key_events.load(),
+            hostpad::name().empty() ? "none" : hostpad::name().c_str(), g_pads.rumbles.load());
+     apprt::films_report();
++    printf("rta_app: %s\n", fpcontrols::figures().c_str());
+     fflush(stdout);
+ }
+ 
+@@ -966,6 +1022,9 @@
+         float v[6] = {0, 0, 0, 0, 0, 0};
+         for (size_t k = 3; k < w.size() && k < 9; k++) v[k - 3] = (float)atof(w[k].c_str());
+         hostpad::test(w[1], w.size() >= 3 ? parse_buttons(w[2]) : 0, v);
++    } else if (w[0] == "fpc" && w.size() >= 2) {
++        printf("[frame %llu] fpc: %s\n", (unsigned long long)frame, fpcontrols::command(text.substr(text.find(w[1])), frame).c_str());
++        fflush(stdout);
+     } else if (w[0] == "pads") {
+         uint32_t sticks = g_pads.last_sticks;
+         printf("[frame %llu] rta_app: controller %s (generation %u); port 1 holds buttons %04x, sticks %u %u %u %u; keyboard bits %05x\n",
+--- a/app/build_win.py
++++ b/app/build_win.py
+@@ -596,6 +596,7 @@
+              # the file's timing aid finds it by itself only on macOS
+              (FILM, rt_flags + ['-I', HERE, '-include', 'ctime'], 'a_')] if os.path.exists(FILM) and os.path.exists(FILM_HLE) and not args.original else []) + [
+              (os.path.join(HERE, 'pad_win.cpp'), app_flags, 'a_'),
++             (os.path.join(HERE, 'fpcontrols.cpp'), app_flags, 'a_'),          # the look views' controls: plain C++, the Mac's file
+              (os.path.join(WINSRC, 'wgl.cpp'), app_flags, 'a_')], objdir, search)
+         # a file given with -include is a dependency the sources do not name
+         app = [(source, flags, target, deps + ([os.path.join(NET, 'posix_win.h')] if source == ONLINE else []))

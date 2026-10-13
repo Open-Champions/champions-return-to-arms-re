@@ -47,7 +47,34 @@ inputs, (2) scene mode everywhere, (3) 60 pictures a second with proper lighting
 cleaner models, (5) plug-in points for the camera, world and HUD agents, (6) exports.
 **Kept current here; newest state first.**
 
-### State (13:55)
+### State (14:20)
+
+- **The scene's geometry is the packets' own, complete (Ran).** For every mesh packet the
+  tap now also hands over EVERY triangle of its strip (`TapPiece::full_first`,
+  `rtag_scene::full`: world position, normal, texel coordinate and the colour the
+  program computed, three corners a triangle), with the strip's own no-draw bits
+  replayed from the slot rows - not the program's, which also carry its clip pass. Scene
+  mode draws that (`set_scene_option("packets", 0)` goes back to the list's triangles).
+  Checked: the replayed no-draw bits against the program's for objects without the clip
+  flag: 63,111,105 strip vertices compared, **0 different**; 9.7 million triangles the
+  clip pass had dropped are back over the views route (about 2,650 a list in the first
+  level); over the shoulder and in first person the floor reaches the bottom of the
+  picture (`test/views-godot/g-shoulder-sun.png`). **So scene mode is now immune to
+  both of the world agent's faults** (dropped triangles near the eye: Godot clips them;
+  texturing: with perspective) - Ran in the first level's four views, not yet looked at
+  in a level with walls.
+- The extension's CMake takes two modules of other agents when their sources exist:
+  `RtaGameState` (HUD: `src/rta_gamestate.*`, `tools/recomp/app/gamestate.*`) and
+  `RtaNet2` (portal: `src/rta_net2.*`, `tools/recomp/net2/session*.cpp`, compiled with
+  `NET2_NO_SERVICE`: no socket code in the extension). A source file dropped into
+  `extension/src/` is compiled by the glob: one that needs a new include path breaks the
+  build until `CMakeLists.txt` knows it (it did twice today).
+- A test run that cannot start (no library, version mismatch, no disc) now ends with
+  exit code 2 instead of waiting with a message (two runs hung on a stale extension).
+- Speed: **not measured in this round** - the load average was 120 to 200 the whole
+  afternoon (other agents' builds); the unpaced figures in the logs (23 to 62 pictures a
+  second) say nothing. The macOS export was not re-run after the rebase.
+  `local/godot-spike/src.before-fp/` is the snapshot as it was before the rebase.
 
 - **(1) The tap at the vertex programs' inputs: done and verified (Ran).** Section
   "The scene tap" below. The 16-bit-depth route of stage 4 is now only the fallback for

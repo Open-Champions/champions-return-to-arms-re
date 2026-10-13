@@ -24,7 +24,7 @@
 extern "C" {
 #endif
 
-#define RTAG_API_VERSION 5
+#define RTAG_API_VERSION 6
 
 /* ---- start ------------------------------------------------------------------------- */
 enum { RTAG_SOUND_NONE = 0, RTAG_SOUND_PULL = 1, RTAG_SOUND_MACHINE = 2 };
@@ -119,6 +119,10 @@ typedef struct rtag_draw {
     /* ... and where its world positions are from: RTAG_SCENE_DEPTH put back by the 16-bit depth (no normals),
      * RTAG_SCENE_EXACT from the vertex programs' inputs (normals in rtag_scene::normals) */
     int32_t scene_kind;
+    /* ... and the mesh packets drawn with this draw's state: rtag_scene::pieces from scene_piece_first.  Their
+     * complete geometry (rtag_scene_piece::full_first) is what a host that has a real camera should draw
+     * instead of the list's own triangles. */
+    uint32_t scene_piece_first, scene_piece_count;
 } rtag_draw;
 enum { RTAG_SCENE_NONE = 0, RTAG_SCENE_DEPTH = 1, RTAG_SCENE_EXACT = 2 };
 
@@ -155,7 +159,20 @@ typedef struct rtag_scene_piece {
     uint8_t kind;               /* 1 level chunk, 2 model */
     uint8_t flags;              /* 1 two-pass program, 2 its first (environment-map) pass, 4 skinned, 8 mirrored, 16 clip flag */
     uint8_t entry, pad;
+    /* The packet's complete geometry (rtag_scene::full): every triangle of its strip, three corners each - also
+     * the ones the vertex program dropped whole near the eye or off screen, which are not in the draw list
+     * (`count` is 0 for a packet all of whose triangles were dropped).  `command`: the draw whose state it is
+     * drawn with (the draw its list vertices are in, or that of the packet before it of the same object), -1 none. */
+    uint32_t full_first, full_count;
+    int32_t command;
 } rtag_scene_piece;
+
+typedef struct rtag_scene_full {
+    float x, y, z;              /* world space */
+    float nx, ny, nz;           /* the game's normal, world space */
+    float u, v;                 /* texels, as rtag_vertex s, t with q = 1 */
+    uint8_t r, g, b, a;         /* the colour the game's vertex program computed (its light) */
+} rtag_scene_full;
 
 typedef struct rtag_scene {
     const rtag_scene_vertex* vertices;
@@ -163,6 +180,8 @@ typedef struct rtag_scene {
     const float* normals;       /* three per vertex, world space, unit length; zero where there is none */
     const rtag_scene_piece* pieces;
     uint32_t piece_count;
+    const rtag_scene_full* full;
+    uint32_t full_count;
     uint32_t valid;             /* 1: the camera below was found this frame */
     float world_to_view[16];    /* row-major 4 x 4: the game's camera (world to view space) */
     float view_to_clip[16];     /* the game's projection (view to its clip space) */

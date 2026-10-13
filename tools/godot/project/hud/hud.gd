@@ -102,8 +102,10 @@ var draw_usec := 0.0                    # the children's _draw calls of this fra
 var draw_total := 0.0
 var last_blank := -1
 var game_hud_asked := 0                 # 0 not yet, 1 asked off, 2 asked on
+var own_text := true                    # this HUD draws the one-line message and the interaction prompt itself (false: the game's own are in the picture)
 var said := {}
 var shots: PackedStringArray = PackedStringArray()
+var phase_blanks := {}
 var timed: Array = []                   # [level, tick, words] still to run (--hud-at)
 
 @onready var root: Control = $Root
@@ -160,10 +162,13 @@ func _parse_arguments() -> void:
 			"--hud-fake-party": command(["fake-party", value]); k += 1
 			"--hud-at":
 				# commands at chosen simulation ticks of a level, "LEVEL@TICK:words;LEVEL@TICK:words": for test runs that are
-				# not paced (there the host takes several blanks per picture and a script's "app hud" line can pass unseen)
+				# not paced (there the host takes several blanks per picture and a script's "app hud" line can pass unseen).
+				# Instead of a tick: pause, menu, dialogue, cutscene, gate - once that screen has been up for 45 blanks
+				# (the simulation's tick stands still in a paused game)
 				for part in value.split(";", false):
 					var head := part.get_slice(":", 0).strip_edges()
-					timed.append([head.get_slice("@", 0), head.get_slice("@", 1).to_int(), Array(part.substr(part.find(":") + 1).split(" ", false))])
+					var when := head.get_slice("@", 1)
+					timed.append([head.get_slice("@", 0), when.to_int() if when.is_valid_int() else when, Array(part.substr(part.find(":") + 1).split(" ", false))])
 				k += 1
 		k += 1
 
@@ -198,6 +203,10 @@ func command(w: Array) -> void:
 				music.call("scan")
 		"music-volume":
 			setting.music_volume = clampf(value.to_float(), 0.0, 1.0)
+		"delay":
+			# test aid: 1 (default) the bars above heads belong to the picture shown, 0 to the memory as it is now (one tick ahead)
+			if gs != null:
+				gs.call("set_screen_delay", value.to_int())
 		"cost":
 			print(cost_text())
 		"say":
@@ -228,6 +237,18 @@ func state_text() -> String:
 		return "no state"
 	var t := "tick %d level %s phase %x layout %d show %.2f players %d creatures %d" % [frame.get("tick", 0), frame.get("level", ""), phase, layout,
 		show, frame.get("player_count", 0), creatures.size() / C_STRIDE]
+	var prompt: Dictionary = frame.get("prompt", {})
+	if prompt.get("active", false):
+		t += " | prompt kind %d button %x \"%s\"" % [prompt.kind, prompt.button, prompt.text]
+	if frame.get("message", "") != "":
+		t += " | message \"%s\" (%d frames)" % [frame.message, frame.message_frames]
+	var view: Dictionary = frame.get("view", {})
+	t += " | view %d shown %d%s" % [view.get("mode", 0), view.get("shown", 0), (" fallback " + str(view.get("why", ""))) if view.get("fallback", false) else ""]
+	if machine != null and machine.has_method("get_view"):
+		var host_view: Dictionary = machine.call("get_view")
+		t += " (the frame's own view: valid %s, drawn at tick %d, eye %s forward %s right %s up %s fov %.1f; read from memory now: eye %s forward %s)" % [
+			str(host_view.get("valid", false)), host_view.get("tick", -1), str(host_view.get("eye")), str(host_view.get("forward")), str(host_view.get("right")),
+			str(host_view.get("up")), host_view.get("fov", 0.0), str(view.get("eye")), str(view.get("forward"))]
 	for p in players:
 		if p.get("present", false):
 			t += " | %s%s L%d hp %.2f/%.2f mana %.2f/%.2f xp %d (%d..%d) gold %d+%d potions %d/%d target %d" % [p.name, " (TEST DATA)" if p.get("fake", false) else "",
@@ -288,7 +309,14 @@ func _process(_delta: float) -> void:
 	if ok and not timed.is_empty():
 		var k := 0
 		while k < timed.size():
-			if timed[k][0] == frame.level and int(frame.tick) >= int(timed[k][1]) and (phase & PH_LEVEL) != 0:
+			var due := false
+			if timed[k][0] == frame.level and typeof(timed[k][1]) == TYPE_INT:
+				due = int(frame.tick) >= int(timed[k][1]) and (phase & PH_LEVEL) != 0
+			elif timed[k][0] == frame.level:
+				var bit: int = {"pause": PH_PAUSE_MENU, "menu": PH_MENU, "dialogue": PH_DIALOGUE, "cutscene": PH_CUTSCENE, "gate": PH_GATE_MENU}.get(timed[k][1], 0)
+				phase_blanks[bit] = (int(phase_blanks.get(bit, 0)) + 1) if (phase & bit) != 0 else 0
+				due = int(phase_blanks[bit]) >= 45
+			if due:
 				var words: Array = timed[k][2]
 				timed.remove_at(k)
 				command(words)
@@ -375,7 +403,15 @@ func _game_hud() -> void:
 	if want == game_hud_asked:
 		return
 	game_hud_asked = want
-	if machine.has_method("set_option") and machine.call("set_option", "game_hud", "on" if want == 2 else "off"):
+	# In the picture the game's HUD is two groups.  "game_hud": player status, gold, compass, minimap, spell selector (the
+	# library has the switch).  "game_hud_text": the boss meter with the one-line message (0x1d93b0) and the prompt box
+	# (0x1d99f0) - asked for, not there yet; while the game still draws those, this HUD does not draw its own message and
+	# prompt over them (with "both" it does: that mode is for comparing).
+	var can: bool = machine.has_method("set_option")
+	var text_off: bool = can and machine.call("set_option", "game_hud_text", "on" if want == 2 else "off") and want == 1
+	own_text = setting.mode == "both" or text_off
+	setting["game_meter_hidden"] = text_off
+	if can and machine.call("set_option", "game_hud", "on" if want == 2 else "off"):
 		return
 	if want == 1 and not said.has("game_hud"):
 		said["game_hud"] = true

@@ -14,10 +14,12 @@ struct Frame {
     std::vector<float> normals;                 // three per vertex of the list; zero = none
     std::vector<uint8_t> known;                 // per draw: 0 not part of the scene, 1 put back by its depth, 2 from the programs' inputs
     std::vector<rtag_scene_piece> pieces;
+    std::vector<rtag_scene_full> full;
+    std::vector<uint32_t> piece_first, piece_count;     // per draw: its pieces
     bool valid = false;
     float world_to_view[16], view_to_clip[16], world_to_screen[16], camera_position[3];
     float fov_y = 0, near_plane = 0, far_plane = 0;
-    void clear() { vertices.clear(); normals.clear(); known.clear(); pieces.clear(); valid = false; }
+    void clear() { vertices.clear(); normals.clear(); known.clear(); pieces.clear(); full.clear(); piece_first.clear(); piece_count.clear(); valid = false; }
 };
 
 void install(render::Renderer& renderer);               // before the game starts: the tap (core/render/scene_tap.h)

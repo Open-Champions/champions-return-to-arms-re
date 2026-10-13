@@ -1,6 +1,6 @@
 # How complete is it
 
-Updated at every check-in of the work. **Last update: 2026-10-13, 13:22 CDT.**
+Updated at every check-in of the work. **Last update: 2026-10-13, 14:14 CDT.**
 
 One table for the whole effort to make Champions: Return to Arms (SLUS-20973 v2.00)
 playable again, online, on today's computers. The percentages are estimates by the people
@@ -18,8 +18,8 @@ a session by hand - every test drove the game by script, on one Apple-silicon Ma
 | Mac application (the Play! emulator with this project's changes) | 98 % | 60 pictures a second at four times the resolution; the known picture faults fixed; every kind of screen looked at ([visual-check](issues/visual-check.md)); first-start faults fixed after the owner's own first start ([mac-app-start](issues/mac-app-start.md)); rolled out on fix set `073064bb` | a person playing a session through |
 | Online, two players | 96 % | 7.9 million lockstep ticks on the suggested fix set with no difference that reached a player ([native-soak](issues/native-soak.md)); two copies through the game's own level change | two computers on two networks |
 | Online, three and four players | 94 % | both causes of the failed launches found and fixed, one in the lobby server and one in the emulator ([three-players](issues/three-players.md)); on the rolled-out build three and four copies launch 3 of 3 times and stay in step | players behind a real router; a level change in a game of three or four |
-| Browser version (the same emulator as WebAssembly) | 92 % - paused | plays in Chrome and Brave, and in Safari's engine with a stall on arriving in a level ([browser-build](issues/browser-build.md)); relay with per-player limits; the page in public is on the earlier fix set `27f61e1d`, a newer page is built and tested but not rolled out | work paused on the owner's instruction; the Safari stall; Firefox and Edge never run |
-| Application and browser players in one game | 75 % - paused | two and three players in step on one Mac ([mixed-arithmetic](issues/mixed-arithmetic.md)); one browser player is one entry in the application | paused with the browser work; a relay in public that passes datagrams to players outside it |
+| Browser version (the same emulator as WebAssembly) | 92 % | plays in Chrome and Brave, and in Safari's engine with a stall on arriving in a level ([browser-build](issues/browser-build.md)); relay with per-player limits; the page in public carries fix set `073064bb` like the applications | further work paused; the Safari stall; Firefox and Edge never run |
+| Application and browser players in one game | 80 % | two and three players in step on one Mac ([mixed-arithmetic](issues/mixed-arithmetic.md)); one browser player is one entry in the application; the relay in public now passes datagrams between browser players and application players | never tried with real players on two networks |
 | Sharper art (pictures enlarged four times) | 100 % | 122,205 of 122,231 dumped pictures enlarged (the other 26 are left out by rule); a sweep of the whole pack found no unreadable, mis-sized or mixed-up picture; interface art redone under a rule that keeps the game's shapes, fonts checked in the game | head pictures, busts and some skill icons were never dumped, so never judged |
 | Native build: the game's code and its proof | 97 % | all 7,732 functions translated; 7,460 proven identical to the original, none failing; nine sessions compared tick for tick ([native-proof](issues/native-proof.md)) | two unexplained one-tick differences; shop, save point, level-up and death compared |
 | Native build: picture | 96 % | films, heat haze, fog, widescreen, the art pack; the renderer's processor side five times cheaper with the same output ([native-render-speed](issues/native-render-speed.md)); paced at exactly 60 pictures a second - in the heaviest level's fight 1,799 of 1,799 intervals on time at 640 x 448 and 1,788 of 1,798 at display resolution; an attack shows 75 to 84 ms after the press, the emulator application's 82 to 104 ([native-app](issues/native-app.md), section 11) | a person's eye on a lit display; effects compared close up; the new pacing in the Windows program |
@@ -38,6 +38,11 @@ and the Godot client are tracked in their own repositories
 
 ## Since the last update
 
+- The public relay now bridges browser players and application players, and the public
+  page carries the same fix set as the applications.
+- First person and third person: five camera views in the native build, proven in step
+  online against an overhead player; Godot draws them with its own light and shadows; a
+  first version of the new interface; our own online service has its interface and a mock.
 - Release on fix set `073064bb` (29 sections, 99 words: three sections added - a save point,
   a script read that wrote, a jump gate): the Mac application, the stable build and the
   private download. On it: two copies 12,348 lockstep frames in step with a save point and

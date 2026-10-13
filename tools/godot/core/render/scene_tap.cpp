@@ -161,11 +161,11 @@ void SceneTap::kicked(uint32_t qword, size_t before, size_t after) {
     uint32_t drawn = 0;
     for (uint32_t p = 2; p < nloop; p++) if (!(U(strip + p * nreg + nreg - 1)[3] & 0x8000)) drawn++;
     if (after - before != (size_t)drawn * 3) { stats.rejected_count++; return; }
-    if (!drawn) return;
 
     // ---- the strip, replayed from the slot rows ----
     int slot[96];
-    for (uint32_t p = 0; p < nloop; p++) slot[p] = -1;
+    bool hidden[96];                                // the strip's own no-draw bit (bit 15 of the address written to)
+    for (uint32_t p = 0; p < nloop; p++) { slot[p] = -1; hidden[p] = true; }
     auto pos = [&](uint32_t address) -> int {
         address &= 0x7FFF;
         uint32_t p = nreg == 3 ? address / 3 : (address - 1) / 4;
@@ -175,8 +175,8 @@ void SceneTap::kicked(uint32_t qword, size_t before, size_t after) {
     for (uint32_t j = 0; j < N + 2; j++) {
         const uint32_t* row = U(in + 2 * N + j);
         int from = pos(row[1] & 0xFFFF), copy = from >= 0 ? slot[from] : -1;
-        if (j >= 2) { int to = pos(row[0] & 0xFFFF); if (to >= 0) slot[to] = (int)j - 2; }
-        if (copy >= 0) { int to = pos(row[2] & 0xFFFF); if (to >= 0) slot[to] = copy; }
+        if (j >= 2) { int to = pos(row[0] & 0xFFFF); if (to >= 0) { slot[to] = (int)j - 2; hidden[to] = (row[0] & 0x8000) != 0; } }
+        if (copy >= 0) { int to = pos(row[2] & 0xFFFF); if (to >= 0) { slot[to] = copy; hidden[to] = (row[2] & 0x8000) != 0; } }
     }
     // ---- joints and weights (models), and where the copy rows are ----
     const bool model = entry == 0x42 || entry == 0x44;
@@ -218,14 +218,23 @@ void SceneTap::kicked(uint32_t qword, size_t before, size_t after) {
             const uint32_t* row = U(at + 1 + k);
             int s1 = pos(row[0] & 0xFFFF), d1 = pos(row[1] & 0xFFFF), s2 = pos(row[2] & 0xFFFF), d2 = pos(row[3] & 0xFFFF);
             int a = s1 >= 0 ? slot[s1] : -1, b = s2 >= 0 ? slot[s2] : -1;
-            if (d1 >= 0 && a >= 0) slot[d1] = a;
-            if (d2 >= 0 && b >= 0) slot[d2] = b;
+            if (d1 >= 0 && a >= 0) { slot[d1] = a; hidden[d1] = (row[1] & 0x8000) != 0; }
+            if (d2 >= 0 && b >= 0) { slot[d2] = b; hidden[d2] = (row[3] & 0x8000) != 0; }
         }
         at += 1 + copies;
     }
     for (uint32_t p = 2; p < nloop; p++)
         if (!(U(strip + p * nreg + nreg - 1)[3] & 0x8000) && (slot[p] < 0 || slot[p - 1] < 0 || slot[p - 2] < 0)) { stats.rejected_layout++; return; }
     if (!model && !have_rows) { stats.rejected_layout++; return; }
+    // the replay's no-draw bits against the program's: the same wherever the clip pass did not run
+    uint32_t complete = 0;
+    for (uint32_t p = 2; p < nloop; p++) {
+        if (slot[p] < 0) continue;
+        const bool adc = (U(strip + p * nreg + nreg - 1)[3] & 0x8000) != 0;
+        if (!clip_flag) { stats.stitch_checked++; if (adc != hidden[p]) stats.stitch_off++; }
+        if (!hidden[p] && slot[p - 1] >= 0 && slot[p - 2] >= 0) { complete++; if (adc) stats.dropped_restored++; }
+    }
+    if (!drawn && !complete) return;
 
     // ---- the vertices, through the matrices the program used ----
     struct Made { double clip[4], normal[4]; };
@@ -345,6 +354,31 @@ void SceneTap::kicked(uint32_t qword, size_t before, size_t after) {
     };
     for (uint32_t p = 2; p < nloop; p++)
         if (!(U(strip + p * nreg + nreg - 1)[3] & 0x8000)) { emit(p - 2); emit(p - 1); emit(p); }
+    // ---- the complete geometry: every triangle of the strip, with what the program wrote beside each position ----
+    piece.full_first = (uint32_t)frame.full.size();
+    if (frame.have_camera) {
+        const uint64_t regs = (uint64_t)tag[2] | (uint64_t)tag[3] << 32;
+        uint32_t uv_at = 0, rgba_at = nreg - 2;
+        for (uint32_t k = 0; k < nreg; k++) { uint32_t d = (uint32_t)(regs >> (4 * k)) & 15; if (d == 3) uv_at = k; else if (d == 1) rgba_at = k; }
+        const size_t taken = frame.vertices.size();
+        auto corner = [&](uint32_t p) {
+            emit(p);                                // (made as a list vertex, then moved: one way of computing it)
+            const TapVertex made_vertex = frame.vertices.back();
+            frame.vertices.pop_back();
+            TapFull out;
+            memcpy(out.world, made_vertex.world, 12);
+            memcpy(out.normal, made_vertex.normal, 12);
+            const uint32_t* uv = U(strip + p * nreg + uv_at);
+            const uint32_t* colour = U(strip + p * nreg + rgba_at);
+            out.uv[0] = (float)(uv[0] & 0x3FFF) * (1.0f / 16.0f); out.uv[1] = (float)(uv[1] & 0x3FFF) * (1.0f / 16.0f);
+            out.rgba[0] = (uint8_t)colour[0]; out.rgba[1] = (uint8_t)colour[1]; out.rgba[2] = (uint8_t)colour[2]; out.rgba[3] = (uint8_t)colour[3];
+            frame.full.push_back(out);
+        };
+        for (uint32_t p = 2; p < nloop; p++)
+            if (!hidden[p] && slot[p] >= 0 && slot[p - 1] >= 0 && slot[p - 2] >= 0) { corner(p - 2); corner(p - 1); corner(p); }
+        (void)taken;
+    }
+    piece.full_count = (uint32_t)frame.full.size() - piece.full_first;
     frame.pieces.push_back(piece);
     stats.pieces++;
     stats.vertices += piece.list_count;
@@ -354,6 +388,7 @@ void SceneTap::take(TapFrame& out) {
     std::swap(out.pieces, frame.pieces);
     std::swap(out.vertices, frame.vertices);
     std::swap(out.sources, frame.sources);
+    std::swap(out.full, frame.full);
     std::swap(out.joints, frame.joints);
     out.have_camera = frame.have_camera;
     memcpy(out.world_to_view, frame.world_to_view, sizeof out.world_to_view);

@@ -256,12 +256,12 @@ func _picture_size() -> Vector2i:
 
 func _start() -> void:
 	if not ClassDB.class_exists("RtaMachine"):
-		view.set("message", "The extension is not there (bin/rta_godot...): python3 tools/godot/build.py all")
+		_cannot_start("The extension is not there (bin/rta_godot...): python3 tools/godot/build.py all")
 		return
 	machine = RtaMachine.new()
 	var library := _library_path()
 	if not machine.load_library(library):
-		view.set("message", "Cannot load the game library %s:\n%s\n(python3 tools/godot/build.py lib)" % [library, machine.get_error()])
+		_cannot_start("Cannot load the game library %s:\n%s\n(python3 tools/godot/build.py lib)" % [library, machine.get_error()])
 		return
 	if OS.has_environment("RTA_CWD"):
 		machine.change_directory(OS.get_environment("RTA_CWD"))     # tools/godot/run.py: relative paths mean what they meant there
@@ -283,7 +283,7 @@ func _start() -> void:
 	}
 	var result := machine.start(config)
 	if result != 0:
-		view.set("message", "The machine did not start: " + machine.get_error())
+		_cannot_start("The machine did not start: " + machine.get_error())
 		return
 	print("rta_godot: library %s (fix set %s, films %s), mode %s, picture %d x %d, %s" % [library,
 		"applied" if machine.has("fixes") else "not applied", "linked" if machine.has("films") else "not linked", opt.mode, size.x, size.y,
@@ -321,6 +321,13 @@ func _start() -> void:
 	print("rta_godot: display %.2f Hz; one picture every %.3f ms" % [refresh, period * 1000.0])
 	started = true
 	started_usec = Time.get_ticks_usec()
+
+
+func _cannot_start(text: String) -> void:
+	view.set("message", text)
+	printerr("rta_godot: " + text)
+	if opt.test != "" or DisplayServer.get_name() == "headless":
+		get_tree().quit(2)          # a test run never waits for a person
 
 
 func _read_pad() -> void:
