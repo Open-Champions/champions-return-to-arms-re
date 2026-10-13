@@ -4242,7 +4242,33 @@ diff --git a/Source/ui_qt/main.cpp b/Source/ui_qt/main.cpp
  		try
  		{
  			w.BootCDROM();
-@@ -112,8 +129,14 @@
+@@ -67,9 +84,9 @@
+ 	}
+ 	else if(parser.isSet(disc_image_option))
+ 	{
+-		QString disc_image = parser.value(disc_image_option);
+-		w.LoadCDROM(QStringToPath(disc_image));
+-		w.BootCDROM();
++		//RTA: the image is opened for the first time aside, with the window alive (macOS
++		//may hold that opening until the person has answered its question about the folder)
++		Rta::BootDiscWhenReadable(&w, parser.value(disc_image_option).toStdString());
+ 	}
+ 	else if(parser.isSet(elf_image_option))
+ 	{
+@@ -82,6 +99,12 @@
+ 		w.BootArcadeMachine(arcade_id.toStdString() + ".arcadedef");
+ 	}
+ 
++	//RTA: closed while it was waiting for a folder to become readable
++	if(Rta::Quitting())
++	{
++		return 0;
++	}
++
+ 	if(parser.isSet(fullscreen_option))
+ 	{
+ 		w.showFullScreen();
+@@ -112,8 +135,14 @@
  	static const auto basePath =
  	    []() {
  		    fs::path result;
@@ -4277,7 +4303,20 @@ diff --git a/Source/ui_qt/mainwindow.cpp b/Source/ui_qt/mainwindow.cpp
  
  	m_continuationChecker = new CContinuationChecker(this);
  
-@@ -131,6 +133,9 @@
+@@ -97,8 +99,10 @@
+ 
+ 	m_pauseFocusLost = CAppConfig::GetInstance().GetPreferenceBoolean(PREF_UI_PAUSEWHENFOCUSLOST);
+ 	auto lastPath = CAppConfig::GetInstance().GetPreferencePath(PREF_PS2_CDROM0_PATH);
+-	std::error_code lastPathExistsErrorCode;
+-	if(fs::exists(lastPath, lastPathExistsErrorCode))
++	//RTA: the last disc image is not looked at here, before the window is shown: it may
++	//lie in a folder macOS guards (rta/Rta.h, "folders macOS guards"). Its folder is only
++	//where a file dialog starts.
++	if(!lastPath.empty())
+ 	{
+ 		m_lastPath = lastPath.parent_path();
+ 	}
+@@ -131,6 +135,9 @@
  		if(m_virtualMachine->GetStatus() == CVirtualMachine::RUNNING)
  			ui->stackedWidget->setCurrentIndex(1);
  	});
@@ -4287,7 +4326,7 @@ diff --git a/Source/ui_qt/mainwindow.cpp b/Source/ui_qt/mainwindow.cpp
  }
  
  MainWindow::~MainWindow()
-@@ -143,6 +148,7 @@
+@@ -143,6 +150,7 @@
  	if(m_virtualMachine != nullptr)
  	{
  		m_virtualMachine->Pause();
@@ -4295,7 +4334,7 @@ diff --git a/Source/ui_qt/mainwindow.cpp b/Source/ui_qt/mainwindow.cpp
  		m_qtKeyInputProvider.reset();
  		m_qtMouseInputProvider.reset();
  		m_virtualMachine->DestroyPadHandler();
-@@ -169,7 +175,8 @@
+@@ -169,7 +177,8 @@
  	SetupSoundHandler();
  
  	{
@@ -4305,7 +4344,7 @@ diff --git a/Source/ui_qt/mainwindow.cpp b/Source/ui_qt/mainwindow.cpp
  		auto padHandler = static_cast<CPH_GenericInput*>(m_virtualMachine->GetPadHandler());
  		auto profile = CAppConfig::GetInstance().GetPreferenceString(PREF_INPUT_PAD1_PROFILE);
  
-@@ -191,15 +198,20 @@
+@@ -191,15 +200,20 @@
  		bindingManager.RegisterInputProvider(std::make_shared<CInputProviderDirectInput>());
  		bindingManager.RegisterInputProvider(std::make_shared<CInputProviderXInput>());
  #endif
@@ -4327,7 +4366,7 @@ diff --git a/Source/ui_qt/mainwindow.cpp b/Source/ui_qt/mainwindow.cpp
  }
  
  void MainWindow::SetOutputWindowSize()
-@@ -270,7 +282,8 @@
+@@ -270,7 +284,8 @@
  #ifdef _WIN32
  			m_virtualMachine->CreateSoundHandler(&CSH_WaveOut::HandlerFactory);
  #else
@@ -4337,7 +4376,7 @@ diff --git a/Source/ui_qt/mainwindow.cpp b/Source/ui_qt/mainwindow.cpp
  #endif
  		}
  		catch(const std::exception& ex)
-@@ -482,6 +495,11 @@
+@@ -482,6 +497,11 @@
  		{
  			on_actionToggleFullscreen_triggered();
  		}
@@ -4349,7 +4388,7 @@ diff --git a/Source/ui_qt/mainwindow.cpp b/Source/ui_qt/mainwindow.cpp
  		return;
  	}
  	if(m_qtKeyInputProvider)
-@@ -606,6 +624,12 @@
+@@ -606,6 +626,12 @@
  	m_cpuUsageLabel->setText(QString("EE CPU: %1%").arg(static_cast<int>(eeUsageRatio)));
  
  	CStatsManager::GetInstance().ClearStats();
@@ -4362,7 +4401,7 @@ diff --git a/Source/ui_qt/mainwindow.cpp b/Source/ui_qt/mainwindow.cpp
  }
  
  void MainWindow::on_actionSettings_triggered()
-@@ -755,6 +779,8 @@
+@@ -755,6 +781,8 @@
  
  void MainWindow::closeEvent(QCloseEvent* event)
  {
@@ -4371,7 +4410,7 @@ diff --git a/Source/ui_qt/mainwindow.cpp b/Source/ui_qt/mainwindow.cpp
  	//btnRes is the answer to the "Are you sure you want to exit?" question.
  	auto resBtn = QMessageBox::Yes;
  
-@@ -827,6 +853,7 @@
+@@ -827,6 +855,7 @@
  {
  	auto about = QString("Version %1 (%2)\nQt v%3 - zlib v%4")
  	                 .arg(QString(PLAY_VERSION), __DATE__, QT_VERSION_STR, ZLIB_VERSION);
@@ -4379,7 +4418,7 @@ diff --git a/Source/ui_qt/mainwindow.cpp b/Source/ui_qt/mainwindow.cpp
  	QMessageBox::about(this, this->windowTitle(), about);
  }
  
-@@ -839,7 +866,7 @@
+@@ -839,7 +868,7 @@
  {
  	UpdateUI();
  	auto titleString = QString("Play! - [ %1 ] - %2").arg(m_virtualMachine->m_ee->m_os->GetExecutableName(), QString(PLAY_VERSION));
@@ -4388,7 +4427,7 @@ diff --git a/Source/ui_qt/mainwindow.cpp b/Source/ui_qt/mainwindow.cpp
  	ui->bootablesView->AsyncResetModel(true);
  }
  
-@@ -1110,6 +1137,9 @@
+@@ -1110,6 +1139,9 @@
  
  void MainWindow::on_actionReset_triggered()
  {

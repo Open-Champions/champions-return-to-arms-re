@@ -176,6 +176,52 @@ namespace Rta
 	// the control socket's path; empty: none
 	std::string ControlPath();
 
+	// ---- folders macOS guards, and what the window says meanwhile -------------------------
+	// (docs/issues/mac-app-start.md.) macOS stops a program inside open() or opendir()
+	// of anything under Desktop, Documents or Downloads until the person has answered its
+	// question about that folder - for minutes, if the question is overlooked. So nothing
+	// of that kind is opened on the application's own thread: the art pack's folder is
+	// listed by a thread of its own once the game is loaded, and a disc image is opened
+	// for the first time by a thread of its own while the window stays alive. The window
+	// says in plain words what is being waited for (a line across its top, and the status
+	// bar), and what could not be read is tried again every two seconds.
+	//
+	// What the window says now; empty: nothing. Any thread.
+	std::string Notice();
+	// A standing sentence under a key ("disc", "textures"); an empty text takes it away.
+	void SetNotice(const std::string& key, const std::string& text);
+	// Opens a file or a folder once for reading and closes it again: 0, or errno. This is
+	// the call macOS may hold; never on the application's own thread. 'what' says what is
+	// there, for the sentence in the window ("your disc image", "the art pack").
+	int ProbeReadable(const std::string& path, const std::string& what);
+	// "the Desktop folder" for a path under Desktop, Documents or Downloads; else empty
+	std::string GuardedFolderOf(const std::string& path);
+	// the sentence for a file or folder that may not be read (errno EACCES or EPERM)
+	std::string DeniedText(const std::string& path, const std::string& what, int error);
+	// RtaUi.cpp: waits, with the windows alive, until 'path' can be opened for reading.
+	// False: it is not there ('error' is then ENOENT or what else open() said), the
+	// application is ending, or another image was chosen (error 0). Not even the
+	// question "is it there" is put to the file system on the application's own thread.
+	bool WaitReadable(QWidget* parent, const std::string& path, const std::string& what, int* error = nullptr);
+	// RtaUi.cpp: a disc image named on the command line (play.sh): started once readable
+	void BootDiscWhenReadable(QWidget* parent, const std::string& path);
+	// RtaUi.cpp: the person closed the application while it was waiting for a folder
+	bool Quitting();
+	// vertical blanks of the machine so far
+	uint64_t FrameCount();
+
+	// ---- tests of our own windows without a screen (--rta-test-dialogs) -------------------
+	// 0: a test run shows none of our dialogs (the name comes from the control socket);
+	// 1: they are shown as for a person, behind the other windows and never active;
+	// 2: the same, built and opened as the release of 2026-10-13 morning did (for showing
+	// what went wrong there). The control socket's "ui ..." reads and works them.
+	int TestDialogs();
+	// RtaUi.cpp, the application's own thread: "windows", "main info|raise", "notice",
+	// "name info|type TEXT|press ok|notnow|escape|close", "controls info|show|close"
+	std::string UiCommand(const std::string& command);
+	// RtaMac.mm: this application's windows on the screen, front to back, as AppKit has them
+	std::string WindowOrder();
+
 	// RtaMac.mm
 	std::string BundlePath();
 	std::string BundleResourcePath();

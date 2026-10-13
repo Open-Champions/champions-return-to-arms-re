@@ -56,6 +56,7 @@
 // +0xcf8 password), the account window six (+0x8a8 name, +0xcf8 and +0x1148 password,
 // +0x1598 e-mail, +0x19e8 date of birth, +0x1e38 chat handle), 0x450 bytes apart.
 #include "RtaOnline.h"
+#include "RtaNet.h"
 
 #include <algorithm>
 #include <chrono>
@@ -793,6 +794,10 @@ std::string COnline::Describe(const Screen& s) const
 void COnline::Tick(uint8_t* ram, uint32_t ramSize, bool isGame)
 {
 	CMem mem(ram, ramSize);
+	// the network behind the adaptor is told, once a frame, whether the game is in a game's
+	// room (lobby state 6): it shows another player's disconnect half a second late there
+	// (RtaNet.cpp, "A peer's disconnect, held back")
+	CNet::NoteGame(isGame && mem.U32(A_LOBBY_STATE) == 6);
 	if(isGame && mem.U8(A_IN_FRONTEND) == 1 && mem.Str(A_LEVEL_NAME, 8) == "intro") m_frontEndSeen = true;
 
 	bool start = false, stop = false;

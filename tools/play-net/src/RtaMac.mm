@@ -53,6 +53,29 @@ std::string Rta::ApplicationSupportPath()
 	return ([paths count] != 0) ? PathText(paths[0]) : std::string();
 }
 
+// This application's windows that are on the screen, front to back, as AppKit orders them
+// (tests: which of our windows lies over which, without a picture of the screen).
+std::string Rta::WindowOrder()
+{
+	std::string text;
+	NSArray<NSNumber*>* numbers = [NSWindow windowNumbersWithOptions:0];
+	int place = 0;
+	for(NSNumber* number in numbers)
+	{
+		NSWindow* window = [NSApp windowWithWindowNumber:[number integerValue]];
+		if(!window) continue;
+		NSRect frame = [window frame];
+		NSWindow* parent = [window sheetParent];
+		char line[512];
+		snprintf(line, sizeof(line), "%s%d:\"%s\" level=%ld key=%d sheet=%d%s%s frame=%.0f,%.0f,%.0fx%.0f", text.empty() ? "" : " ; ", place++, [[window title] UTF8String] ?: "", (long)[window level],
+		         [window isKeyWindow] ? 1 : 0, [window isSheet] ? 1 : 0, parent ? " on=" : "", parent ? ([[parent title] UTF8String] ?: "") : "", frame.origin.x, frame.origin.y, frame.size.width, frame.size.height);
+		text += line;
+	}
+	NSWindow* modal = [NSApp modalWindow];
+	text += std::string(" ; modal=\"") + (modal ? ([[modal title] UTF8String] ?: "") : "") + "\" active=" + ([NSApp isActive] ? "1" : "0");
+	return text;
+}
+
 void Rta::MakeBackgroundApplication()
 {
 	[NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];

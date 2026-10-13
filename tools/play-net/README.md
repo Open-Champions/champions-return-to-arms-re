@@ -33,8 +33,8 @@ emulator, is in `tools/recomp/`
 | `src/RtaOnline.h`, `RtaOnline.cpp` | one-step online: the application presses its own way from power-on to the lobby by the game's state, makes and keeps the account ("One-step online" below; stand-alone C++) |
 | `src/RtaPad.mm` | game controllers through macOS's GameController framework: the first one attached is the pad in port 1, with nothing to bind |
 | `src/RtaSound.cpp` | the sound handler: a held reserve, counts of every fault, a WAV file on request |
-| `src/RtaUi.cpp` | what is added to the application's windows: *Help → Controls…*, the *Online* menu (Play Online, the player-name dialog, Forget online login), the disc image at the start (the remembered one, else the one found, else one window that says where to put it) |
-| `package.sh` | makes `local/dist/Play-RTA.app` of the built application: Qt inside, the patch list inside, its own name, signed for this computer; on request with a default server and "online at start" inside, and as a `.zip` (`--help`) |
+| `src/RtaUi.cpp` | what is added to the application's windows: *Help → Controls…*, the *Online* menu (Play Online, the question for the player name, Forget online login), the disc image at the start (the remembered one, else the one found, else one window that says where to put it), the line across the window that says what is being waited for, and the `ui` commands that read and work these windows in tests |
+| `package.sh` | makes `local/dist/Play-RTA.app` of the built application: Qt inside, the patch list inside, its own name, signed for this computer (ad hoc, or with an identity or a stable requirement: "Start-up" below); on request with a default server, "online at start" and the art pack's folder inside, and as a `.zip` (`--help`) |
 | `sections-suggested.txt` | the patch sections `play.sh` applies by default (the suggested set of `docs/online-setup.md`) |
 | `ctl.py` | sends commands to a running application over its control socket (buttons, memory reads, pictures) |
 | `smoke.py` | test: power-on to the lobby server's first screen, with the network's log and the speed |
@@ -77,9 +77,11 @@ it with `open` and driving it through the control socket: an image of another ga
 one of SLUS-20973 with another program are refused
 with the reason; the right one is remembered; the first level was reached at 59.99
 frames a second; a second start goes on from the remembered image. To macOS such an
-application is a program of its own: a disc image under Desktop, Documents or Downloads
-that is opened from the remembered path (not picked in the file dialog) makes macOS ask
-the person once for access to that folder.
+application is a program of its own: a disc image or an art pack under Desktop, Documents
+or Downloads that is opened from the remembered path (not picked in the file dialog)
+makes macOS ask the person for access to that folder - once per build, because an
+application signed without an identity is another program to macOS after every build
+("Start-up, and the folders macOS guards" below).
 
 **Nobody is asked to choose a file.** When no image is remembered, or the remembered
 one is gone, `Rta::FindDisc` looks without any dialog, in this order: the folder the
@@ -120,6 +122,49 @@ Homebrew need macOS 14 or later.
 ```
 tools/play-net/play.sh --disc "/path/to/your disc image.iso" [--server ADDRESS]
 ```
+
+### Start-up, and the folders macOS guards
+
+[docs/issues/mac-app-start.md](../../docs/issues/mac-app-start.md) has the whole account
+(the release of 2026-10-13 morning showed no window for eleven minutes at its first
+start) and the tests; in short:
+
+- **macOS stops a program inside its first `open()` or `opendir()` of anything under
+  Desktop, Documents or Downloads until the person has answered its question** about that
+  folder. Nothing of that kind happens on the application's own thread any more. The art
+  pack's folder is not touched before the game's program is loaded and is then listed by
+  a thread of its own (`StartTextureList` in `Rta.cpp`; the game draws its own textures
+  until the names are known, then every picture is looked for again). The disc image is
+  opened for the first time, checked and - in the packaged application - searched for by
+  a thread of its own while the window stays alive (`Rta::WaitReadable`, `RunAside` in
+  `RtaUi.cpp`).
+- **The window appears at once and says what it waits for**: a line across its top and
+  the status bar - "macOS is asking for permission to read the Desktop folder - answer the
+  question on screen. Your disc image is there (…). This goes on by itself as soon as you
+  have answered (N s)." after one second of waiting; for a folder or file that may not be
+  read, a sentence that says so and where to allow it. What could not be read is tried
+  again every two seconds and goes on by itself. `rta.log`: "window: shown N s after the
+  application started", "window says: …".
+- **Places macOS asks nothing about**: the folder the application is in and
+  `~/Library/Application Support/Play-RTA/`. The packaged application looks for the disc
+  image there first, and takes `textures/` there (`textures/replace/*.png`, for every
+  player number) as the art pack when neither `launch.ini` nor the bundle's
+  `defaults.ini` (`package.sh --default-textures DIR`) names another folder. The log says
+  when the image or the pack in use lies under a guarded folder.
+- **Why the question comes back with every build, and what keeps the permission**: the
+  designated requirement of an ad-hoc signature is the hash of that very build.
+  `package.sh --sign IDENTITY` signs with a code-signing identity of the keychain (a
+  self-signed one will do), `package.sh --stable-requirement` signs ad hoc with the
+  requirement "the identifier is ours"; either makes every build the same program to
+  macOS. The options, with the commands for making a certificate and for moving the image
+  and the pack, are in the notes; the last line of `package.sh` prints the requirement
+  the build got. (Neither option was run here: `package.sh` was only syntax-checked after
+  the change, and the two `codesign` calls were tried on a scratch bundle.)
+- Test aids: `--rta-test-folder-wait N` makes the first opening of the image and of the
+  pack's folder take N seconds, as it does while the question is unanswered;
+  `RTA_TEST_PACKAGED=DIR` in the environment makes the working build take the packaged
+  application's paths (`DIR/rta` for what the bundle holds, `DIR/support` for its folder
+  in Application Support).
 
 Without `--server` the lobby server is taken to run on this computer. `--player 2` starts
 a second copy with its own settings and memory card. `play.sh --help` lists the rest;
@@ -207,6 +252,14 @@ script does.
   frames; beside a golem both builds run at 37 to 41 frames a second under that load
   (video thread 21–25 ms a frame). The set figure in `rta.log` was 3f5b1e14 then, as before (27f61e1d since the flush
   section's third word, "Patches" below).
+
+- **After the start-up work** (2026-10-13, `docs/issues/mac-app-start.md`; one test copy
+  at 4× with the pack, load average 8 to 10): the pack's 122,205 names listed aside 0.7 s
+  after the game was loaded; title 60.00 frames a second, first level 60.00 standing and
+  60.00 walking (video thread 6.7 to 7.3 ms a frame, 259 to 323 replacements held); the
+  hub's pause menu within 3 of 255 right after it opens and identical 10 s later, a
+  paused frame identical; `fire3`: no block of noise in six pictures, 60.0 at all six
+  places.
 
 ## Sound
 
@@ -343,6 +396,25 @@ Three things beyond the rig:
 - Datagrams for another machine's own-network address (the game tries that as well as
   the address the server saw) are dropped: they exist nowhere else.
 
+**A peer's disconnect, held back in a game's room** (`RtaNet.cpp`, the same in the
+application and in the page; `docs/issues/mac-app-start.md`, "The launch hold"). The
+game's launch can leave two joiners with a wrong address for each other, which its own
+handshake cannot repair (`docs/issues/three-players.md` cause 1,
+`docs/issues/native-online.md` "The disconnect hold"). A datagram that is the game's peer
+library's disconnect (8 bytes, `00 05` …) and arrives while the game's lobby state word
+says "in a game's room" is shown to the machine 30 vertical blanks late, or as soon as the
+state has moved on: by then a joiner has filled its launch tables from connections that
+were all still there. Nothing else is ever held, and nothing during a game. The state and
+the count of vertical blanks reach the network through `CNet::NoteGame`, which
+`COnline::Tick` calls once a frame. `--rta-no-disconnect-hold` switches it off; `info`
+(`udp_held`) and `peers` (`held_disconnects`) count.
+
+**One player, one entry.** The players heard from are kept by the address and port the
+machine knows them by (not by where a datagram really came from: a relay on this
+computer sends from two of its addresses in turn), and what this copy tells a player goes
+the way the game's own datagrams to that player go. `peers` shows `from=` when the real
+source differs.
+
 **The memory card's network setting** is written directly (`WriteNetcnf` in `Rta.cpp`):
 the four files Sony's set-up program saves for "Ethernet adaptor, automatic address".
 Two are text scrambled with a key from the console's identification number, which is
@@ -390,7 +462,10 @@ format and its size.
   `info` counts them.
 - A PNG file of the same name in `<data>/textures/replace/`, **of any size**, is drawn in
   its place. `--rta-textures DIR` puts both directories somewhere else. A replacement
-  changes the picture only. The directory is listed once at start. A file is read when
+  changes the picture only. The directory is listed once, by a thread of its own, when
+  the game's program is loaded (not on the application's own thread and not before: see
+  "Start-up, and the folders macOS guards"); until then, and while the folder cannot be
+  read, the game's own textures are drawn. A file is read when
   its texture is first drawn, by three threads of their own: until it is there the
   game's own texture is drawn, so reading never holds a frame up (unpacking a
   2688 × 640 picture takes longer than a frame lasts), and at most 24 MB a frame are
@@ -836,7 +911,11 @@ characters each; the account form has six fields (name 15, password twice 15, e-
 date of birth 11, chat handle 15). "Save Login/Password?" on the game's log-in form is
 set to "No": the pair is kept by the application instead.
 
-**The account.** A player name is asked for once (a dialog, `Rta::AskPlayerName`): 3 to
+**The account.** A player name is asked for once (`Rta::AskPlayerName`: a sheet on the
+main window, so that no other window of ours can lie round it or behind it; it has no
+time limit and ends only with *Go online*, *Not now* or the application - Escape does
+not end it; the log says how it ended; `docs/issues/mac-app-start.md`, "The name
+dialog"): 3 to
 15 letters and digits - the game's name fields take 15, the server refuses a chat handle
 longer than 15 and its own rule for a name is 3 to 20. The application makes the account
 in the game's Create New Account form with: login = the name, a password of 14 random
@@ -864,7 +943,15 @@ and does nothing more. While it runs, and only then, the game is given its butto
 (`CPadHandlerRta::Override`): keyboard, controller and control-socket presses are left
 out and the sticks are at rest.
 
-**Test aids.** A background test run (`--rta-test`) can show a dialog to nobody, so:
+**The Controls help** (*Help → Controls…*) comes by itself once per data directory - not
+at the start, where it opened round the question for the name and dead under it, but when
+the game has run some seconds, nothing of ours is asking and the one-step sign-in is over.
+
+**Test aids.** `--rta-test-dialogs now|released` shows our own windows in a test run
+(behind the others, never active; `released`: built and opened as the release of
+2026-10-13 morning did), and the control socket's `ui` commands read and work them
+("Control socket and tests"). Without it a background test run (`--rta-test`) can show a
+dialog to nobody, so:
 `--rta-online-name NAME[,NAME...]` gives the player names to use (the next one when the
 server refuses one), and `online name NAME` on the control socket answers when the
 application is waiting for one (it gives up after two minutes). `online` reports the
@@ -964,7 +1051,10 @@ do in a second datagram of the same kind, at the same times and again whenever i
 changes: bytes 0, 6, the mark `RTAari1`, one byte "can do" (bit 0 Play!'s own, bit 1 the
 browser's), one byte "does now", 11 bytes. In the game's front end the application
 changes to browser arithmetic while a player is heard who cannot do Play!'s own or
-already does the browser's, and back when nobody needs it; in a running level it changes
+already does the browser's, and back when nobody needs it - but not while it is in a
+game's room: there it stays on browser arithmetic although the player it was needed for
+is silent for the moment (a silence is not a departure), unless a copy heard there cannot
+compute that way, and goes back when it has left the room. In a running level it changes
 nothing and warns. The status bar says "browser arithmetic" while it is on and warns
 about a copy that cannot follow (a copy that says nothing is taken for one that can only
 do Play!'s own); `peers` lists each player's arithmetic; `--rta-arith browser|native|auto`
@@ -1099,13 +1189,24 @@ they stay under `local/`.
   threads and semaphores the emulated kernel keeps in main memory (threads at 0x11000,
   0x38 bytes each; semaphores at 0xe000, 0x18 each) that was enough to find the stop in
   `fire3` (the table above).
+- `ui …` reads and works our own windows on the application's own thread, for tests
+  without a picture of the screen: `ui windows` (Qt's shown windows with modality and
+  place, then AppKit's own list front to back with level, key and sheet), `ui main
+  info|raise` (the main window, its page and the line across its top), `ui notice`, `ui
+  name info|type TEXT|press ok|notnow|escape|close` (the question for the player name),
+  `ui controls info|show|close` (with whether the window system has it blocked). The same
+  lines written to `<control path>.ui` are answered in `<control path>.ui.out` by the
+  application's own thread, so also before the machine runs or when it has stopped.
+  `notice` gives what the window says about a folder it waits for; `texlist` whether the
+  pack's folder has been listed and how many names it has.
 - `cpu` says where the main processor is (pc, ra, sp, idle), whether the game is taken
   to be stuck and the longest stretch without drawing; `note` gives the status bar's
   note about the game; `reset` does what Reset in the menu does; `hang N` stops the
   machine's own thread for N seconds (a stand-in for an emulator that is stuck). The
   socket is answered by that thread, so for a machine that has stopped there is a file:
   `<control path>.ui` holding `reset`, `escape` or `close` is taken up by the
-  application's own thread within a second.
+  application's own thread within a quarter of a second (any other line is a `ui`
+  command, above).
 - `info` counts, among other things: `tex_made` (textures made), `tex_by_upload` and
   `tex_by_memory` (draws that found their texture one way or the other),
   `tex_memory_read`, `tex_in_place`, `tex_short_lived`, `uploads`; `tex_held` and

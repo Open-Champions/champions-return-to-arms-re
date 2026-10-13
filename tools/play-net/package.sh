@@ -25,7 +25,26 @@
 #                                                     uploaded to a public place or put into the
 #                                                     repository. Without this option the sign-in
 #                                                     patch is never put in.
-# The two defaults are written to Contents/Resources/rta/defaults.ini; the application
+#   --default-textures DIR       RTA_DEFAULT_TEXTURES the art pack's folder (dump/ and replace/
+#                                                     below it) until the person sets another
+#                                                     (launch.ini: textures=). Without it the
+#                                                     application takes "textures" in its own
+#                                                     folder in Application Support when a pack
+#                                                     is there - a place macOS asks nothing about
+#   --sign IDENTITY              RTA_SIGN_IDENTITY    sign with this code-signing identity of
+#                                                     your keychain instead of ad hoc (a
+#                                                     self-signed one will do). macOS then takes
+#                                                     every build signed with it for the same
+#                                                     program: its permission to read Desktop,
+#                                                     Documents or Downloads is kept from one
+#                                                     build to the next
+#   --stable-requirement         RTA_SIGN_STABLE=1    ad hoc, but with the designated requirement
+#                                                     "the identifier is ours" instead of the
+#                                                     default "this very code": the same effect
+#                                                     without any certificate (untested with
+#                                                     macOS's permission store; see
+#                                                     docs/issues/mac-app-start.md)
+# The defaults are written to Contents/Resources/rta/defaults.ini; the application
 # reads them only for what its own launch.ini does not say.
 #
 # The result is for this computer and for people you hand it to yourself: it is not
@@ -37,6 +56,9 @@ DEFAULT_SERVER="${RTA_DEFAULT_SERVER:-}"
 DEFAULT_ONLINE="${RTA_DEFAULT_ONLINE:-}"
 SIGNIN="${RTA_PRIVATE_SIGNIN_PATCH:-}"
 ZIP="${RTA_ZIP:-}"
+DEFAULT_TEXTURES="${RTA_DEFAULT_TEXTURES:-}"
+SIGN_IDENTITY="${RTA_SIGN_IDENTITY:-}"
+SIGN_STABLE="${RTA_SIGN_STABLE:-}"
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--default-server) DEFAULT_SERVER="$2"; shift 2 ;;
@@ -46,6 +68,11 @@ while [ $# -gt 0 ]; do
 	--private-signin-patch) SIGNIN="$2"; shift 2 ;;
 	--private-signin-patch=*) SIGNIN="${1#*=}"; shift ;;
 	--zip) ZIP=1; shift ;;
+	--default-textures) DEFAULT_TEXTURES="$2"; shift 2 ;;
+	--default-textures=*) DEFAULT_TEXTURES="${1#*=}"; shift ;;
+	--sign) SIGN_IDENTITY="$2"; shift 2 ;;
+	--sign=*) SIGN_IDENTITY="${1#*=}"; shift ;;
+	--stable-requirement) SIGN_STABLE=1; shift ;;
 	-h|--help) sed -n '2,/^set -e$/p' "$0" | sed -e '$d' -e 's/^# \{0,1\}//'; exit 0 ;;
 	*) echo "package.sh: unknown option $1 (see --help)" >&2; exit 1 ;;
 	esac
@@ -60,6 +87,11 @@ off|false|0|no) DEFAULT_ONLINE=false ;;
 *) echo "package.sh: --default-online takes on or off" >&2; exit 1 ;;
 esac
 [ -z "$SIGNIN" ] || [ -f "$SIGNIN" ] || { echo "package.sh: --private-signin-patch: no such file" >&2; exit 1; }
+case "$DEFAULT_TEXTURES" in
+"" | /*) ;;
+*) echo "package.sh: --default-textures takes a full path" >&2; exit 1 ;;
+esac
+[ -z "$SIGN_IDENTITY" ] || [ -z "$SIGN_STABLE" ] || { echo "package.sh: --sign and --stable-requirement are two ways to the same end: give one" >&2; exit 1; }
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 NAME="${RTA_APP_NAME:-Play-RTA}"
@@ -97,11 +129,12 @@ mkdir -p "$APP/Contents/Resources/rta"
 cp "$PATCHES" "$APP/Contents/Resources/rta/SLUS-20973_4028A55F.pnach"
 cp "$SECTIONS" "$APP/Contents/Resources/rta/sections.txt"
 # what this copy does until the person says otherwise
-if [ -n "$DEFAULT_SERVER$DEFAULT_ONLINE" ]; then
+if [ -n "$DEFAULT_SERVER$DEFAULT_ONLINE$DEFAULT_TEXTURES" ]; then
 	{
 		echo "[General]"
 		[ -z "$DEFAULT_SERVER" ] || echo "server=$DEFAULT_SERVER"
 		[ -z "$DEFAULT_ONLINE" ] || echo "online=$DEFAULT_ONLINE"
+		[ -z "$DEFAULT_TEXTURES" ] || echo "textures=$DEFAULT_TEXTURES"
 	} > "$APP/Contents/Resources/rta/defaults.ini"
 fi
 # only when asked to, for a private build (see the top of this file)
@@ -143,7 +176,7 @@ NOTE
 PLIST="$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleName $NAME" "$PLIST"
 /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string $NAME" "$PLIST" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $NAME" "$PLIST"
-/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier io.github.open-champions.play-rta" "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier io.github.open-champions.play-rta" "$PLIST"   # IDENTIFIER below
 /usr/libexec/PlistBuddy -c "Delete :NSMainNibFile" "$PLIST" 2>/dev/null || true
 /usr/libexec/PlistBuddy -c "Add :NSHighResolutionCapable bool true" "$PLIST" 2>/dev/null || true
 /usr/libexec/PlistBuddy -c "Add :GCSupportsControllerUserInteraction bool true" "$PLIST" 2>/dev/null || true
@@ -158,11 +191,26 @@ if [ -n "$OUTSIDE" ]; then
 	exit 1
 fi
 
-# signed for this computer (no identity): macOS on Apple silicon runs nothing unsigned.
+# Signed: macOS on Apple silicon runs nothing unsigned. Without an identity ("ad hoc") the
+# signature's designated requirement - what macOS takes for "the same program" when it
+# looks up a permission it gave, such as reading the Desktop folder - is the hash of this
+# very build, so every new build is asked about again (docs/issues/mac-app-start.md, "The
+# permission across releases"). --sign IDENTITY makes it "our identifier, signed with that
+# certificate"; --stable-requirement makes it "our identifier" on an ad-hoc signature (the
+# nested Qt code is signed first as it is, then the bundle alone with the requirement).
 # Extended attributes (Finder's, a synced Desktop's) are not allowed inside a signed bundle.
+IDENTIFIER=io.github.open-champions.play-rta
 xattr -cr "$APP"
-codesign --force --deep --sign - "$APP" > "$DIST/codesign.log" 2>&1 || { echo "package.sh: codesign failed, see $DIST/codesign.log" >&2; exit 1; }
+if [ -n "$SIGN_IDENTITY" ]; then
+	codesign --force --deep --sign "$SIGN_IDENTITY" "$APP" > "$DIST/codesign.log" 2>&1 || { echo "package.sh: codesign with the identity '$SIGN_IDENTITY' failed, see $DIST/codesign.log" >&2; exit 1; }
+else
+	codesign --force --deep --sign - "$APP" > "$DIST/codesign.log" 2>&1 || { echo "package.sh: codesign failed, see $DIST/codesign.log" >&2; exit 1; }
+	if [ -n "$SIGN_STABLE" ]; then
+		codesign --force --sign - -r="designated => identifier \"$IDENTIFIER\"" "$APP" >> "$DIST/codesign.log" 2>&1 || { echo "package.sh: codesign with the stable requirement failed, see $DIST/codesign.log" >&2; exit 1; }
+	fi
+fi
 codesign --verify --deep --strict "$APP" || { echo "package.sh: the signature does not verify" >&2; exit 1; }
+REQUIREMENT=$(codesign -d -r- "$APP" 2>/dev/null | sed -n 's/^designated => //p')
 
 # the archive is made here too, before a synced folder can touch the bundle
 [ -z "$ZIP" ] || ditto -c -k --keepParent "$APP" "$STAGE/$NAME.zip"
@@ -175,6 +223,10 @@ APP="$FINAL"
 echo "package.sh: made $APP ($(du -sh "$APP" | cut -f1))"
 echo "            double-click it, or: open \"$APP\""
 echo "            its data: ~/Library/Application Support/$NAME/"
-[ -z "$DEFAULT_SERVER$DEFAULT_ONLINE" ] || echo "            defaults inside: ${DEFAULT_SERVER:+server $DEFAULT_SERVER }${DEFAULT_ONLINE:+go online at start $DEFAULT_ONLINE}"
+[ -z "$DEFAULT_SERVER$DEFAULT_ONLINE$DEFAULT_TEXTURES" ] || echo "            defaults inside: ${DEFAULT_SERVER:+server $DEFAULT_SERVER }${DEFAULT_ONLINE:+go online at start $DEFAULT_ONLINE }${DEFAULT_TEXTURES:+art pack $DEFAULT_TEXTURES}"
+echo "            macOS takes for the same program: $REQUIREMENT"
+case "$REQUIREMENT" in
+cdhash*) echo "            (this very build only: a disc image or art pack under Desktop, Documents or Downloads is asked about again after every new build. Kept without a question: beside the application, or in ~/Library/Application Support/$NAME/ - the pack as textures/replace there. Or sign with --sign / --stable-requirement.)" ;;
+esac
 [ -z "$ZIP" ] || echo "            archive: $DIST/$NAME.zip ($(du -h "$DIST/$NAME.zip" | cut -f1))"
 [ -z "$SIGNIN" ] || echo "            THE SIGN-IN PATCH IS INSIDE: a private copy, for people you hand it to yourself. Never publish it."

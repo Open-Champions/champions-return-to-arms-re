@@ -95,6 +95,9 @@ namespace Rta
 #else
 		uint8_t arithCan = ARITH_CAN_NATIVE;
 #endif
+		// Show another player's disconnect to a game that is in a game's room half a second
+		// late (see "A peer's disconnect, held back" in RtaNet.cpp). Needs NoteGame.
+		bool holdDisconnects = true;
 		// For tests: connections to the server's gateway port range go to this port of
 		// the server's host instead (a closed one stands for a server that is not there).
 		// 0: the port the machine asked for.
@@ -111,14 +114,19 @@ namespace Rta
 		uint64_t udpToServer = 0, udpFromServer = 0, udpToPeers = 0, udpFromPeers = 0;
 		uint64_t tcpConnections = 0, tcpBytesOut = 0, tcpBytesIn = 0;
 		uint64_t dropped = 0;
+		uint64_t heldDisconnects = 0; // disconnects shown to the machine late (in a game's room)
 		bool dhcpDone = false, dnsAnswered = false;
 	};
 
-	// Another player's emulator, as the relay knows it
+	// Another player's emulator, as the relay knows it: by the address and port the
+	// machine knows it by. One player is one entry, from whichever of this host's addresses
+	// its datagrams happen to arrive (a relay on this computer sends now from the outside
+	// address and now from the loop-back one).
 	struct NetPeer
 	{
-		uint32_t ip = 0;
+		uint32_t ip = 0;         // as shown to the machine
 		uint16_t port = 0;
+		uint32_t fromIp = 0;     // where its last datagram really came from
 		bool setKnown = false;   // it has said which patch set it has
 		uint32_t patchSet = 0;
 		uint16_t patchWords = 0;
@@ -133,6 +141,11 @@ namespace Rta
 	{
 	public:
 		CNet(const NetConfig&);
+		// What the game is doing, told once every vertical blank by whoever reads the game's
+		// memory (COnline::Tick does, in the application and in the page): whether its lobby
+		// state word says "in a game's room". It also counts the vertical blanks, the clock
+		// the disconnect hold goes by. Any thread.
+		static void NoteGame(bool inRoom);
 		// the other players heard from (machine thread, like Poll)
 		std::vector<NetPeer> Peers() const;
 		// The arithmetic this copy's machine computes with now (ARITH_NATIVE at the start,
@@ -214,6 +227,9 @@ namespace Rta
 		bool TcpFlush(Tcp&);
 		void TcpGatewayReply(Tcp&);
 		void CloseAllTcp(const char* why);
+		// where a datagram for the address the machine names really goes
+		uint32_t RealUdpAddress(uint32_t destIp, uint16_t destPort) const;
+		void ReleaseHeld();
 		void PollUdp();
 		void PollTcp();
 
@@ -232,9 +248,19 @@ namespace Rta
 		std::map<uint64_t, uint32_t> m_udpSeenAs;
 		std::map<uint32_t, uint32_t> m_udpSeenAsAny; // the same by address alone, the latest
 		std::set<uint64_t> m_noted;
+		struct Held
+		{
+			std::vector<uint8_t> data;
+			uint32_t shownIp = 0;
+			uint16_t fromPort = 0, guestPort = 0;
+			uint64_t dueField = 0; // vertical blank at which the machine gets it
+			int64_t since = 0;
+		};
+		std::deque<Held> m_held;   // disconnects waiting, oldest first
 		uint64_t m_peerOut = 0, m_peerIn = 0;
 		struct Peer
 		{
+			uint32_t fromIp = 0;    // the real source of its last datagram
 			int64_t firstHeard = 0, lastHeard = 0;
 			uint16_t localPort = 0; // the machine's UDP port it talks to
 			int told = 0;           // times our patch set was sent to it
@@ -249,7 +275,7 @@ namespace Rta
 			uint8_t arithCan = ARITH_CAN_NATIVE;
 			uint8_t arithNow = ARITH_NATIVE;
 		};
-		std::map<uint64_t, Peer> m_peers; // by address and port, as the host sees them
+		std::map<uint64_t, Peer> m_peers; // by the address shown to the machine, and the port
 #ifdef __EMSCRIPTEN__
 		std::atomic<uint8_t> m_arithNow{ARITH_BROWSER};
 #else

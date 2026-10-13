@@ -86,6 +86,11 @@ namespace
 	{
 		return (static_cast<uint64_t>(ip) << 16) | port;
 	}
+
+	// what CNet::NoteGame was told (see "A peer's disconnect, held back" below)
+	std::atomic<bool> g_gameInRoom{false};
+	std::atomic<uint64_t> g_gameFields{0};
+	const uint64_t HOLD_FIELDS = 30;
 }
 
 std::string CNet::IpText(uint32_t ip)
@@ -409,6 +414,20 @@ void CNet::OnDns(uint32_t sourceIp, uint16_t sourcePort, uint32_t destIp, const 
 	SendUdp(destIp, 53, sourceIp, sourcePort, reply.data(), reply.size());
 }
 
+// Where a datagram for the address the machine names really goes.
+uint32_t CNet::RealUdpAddress(uint32_t destIp, uint16_t destPort) const
+{
+	bool toServer = IsServer(destIp);
+	bool serverPort = toServer && m_config.serverUdpPorts.count(destPort) != 0;
+	uint32_t realIp = toServer ? m_config.serverIp : destIp;
+	// The server's address on a port that is not the server's: another emulator on the
+	// server's host, which the lobby server saw at that address. It is reached through
+	// the loop-back interface (a host firewall may drop datagrams between two local
+	// programs on the outside address).
+	if(toServer && !serverPort && m_config.loopbackPeers) realIp = INADDR_LOOPBACK;
+	return realIp;
+}
+
 // UDP: one host socket per port of the machine, for every destination.
 void CNet::OnUdp(uint16_t sourcePort, uint32_t destIp, uint16_t destPort, const uint8_t* data, uint32_t length)
 {
@@ -425,12 +444,7 @@ void CNet::OnUdp(uint16_t sourcePort, uint32_t destIp, uint16_t destPort, const 
 	}
 	bool toServer = IsServer(destIp);
 	bool serverPort = toServer && m_config.serverUdpPorts.count(destPort) != 0;
-	uint32_t realIp = toServer ? m_config.serverIp : destIp;
-	// The server's address on a port that is not the server's: another emulator on the
-	// server's host, which the lobby server saw at that address. It is reached through
-	// the loop-back interface (a host firewall may drop datagrams between two local
-	// programs on the outside address).
-	if(toServer && !serverPort && m_config.loopbackPeers) realIp = INADDR_LOOPBACK;
+	uint32_t realIp = RealUdpAddress(destIp, destPort);
 
 	auto found = m_udp.find(sourcePort);
 	if(found == m_udp.end())
@@ -552,6 +566,7 @@ std::vector<NetPeer> CNet::Peers() const
 		NetPeer peer;
 		peer.ip = static_cast<uint32_t>(entry.first >> 16);
 		peer.port = static_cast<uint16_t>(entry.first & 0xFFFF);
+		peer.fromIp = entry.second.fromIp;
 		peer.setKnown = entry.second.setKnown;
 		peer.patchSet = entry.second.patchSet;
 		peer.patchWords = entry.second.patchWords;
@@ -568,6 +583,12 @@ std::vector<NetPeer> CNet::Peers() const
 void CNet::PollUdp()
 {
 	uint8_t buffer[2048];
+	ReleaseHeld();
+	// What we tell a player goes the way the machine's own datagrams to that player go
+	// (the address the machine knows it by, carried as OnUdp carries it), not to whichever
+	// address its last datagram came from: a relay on this computer answers to the address
+	// it last heard us from, and telling it from another one made it change sides.
+	auto TellAddress = [this](uint64_t key) { return RealUdpAddress(static_cast<uint32_t>(key >> 16), static_cast<uint16_t>(key & 0xFFFF)); };
 	// our patch set, to the players heard from: a few times, as a datagram may be lost
 	if(m_config.tellPatchSet)
 	{
@@ -591,7 +612,7 @@ void CNet::PollUdp()
 			at[5] = static_cast<uint8_t>(m_config.patchWords);
 			sockaddr_in to = {};
 			to.sin_family = AF_INET;
-			to.sin_addr.s_addr = htonl(static_cast<uint32_t>(entry.first >> 16));
+			to.sin_addr.s_addr = htonl(TellAddress(entry.first));
 			to.sin_port = htons(static_cast<uint16_t>(entry.first & 0xFFFF));
 			sendto(socket->second.fd, datagram, sizeof(datagram), 0, reinterpret_cast<sockaddr*>(&to), sizeof(to));
 			if(peer.told == 1) Log("patch set %08x told to the player at %s:%u (a keep-alive of the game's UDP library with the figure after it)", m_config.patchSet, IpText(ntohl(to.sin_addr.s_addr)).c_str(), ntohs(to.sin_port));
@@ -618,7 +639,7 @@ void CNet::PollUdp()
 			datagram[sizeof(ARITH_MARK) + 1] = arithNow;
 			sockaddr_in to = {};
 			to.sin_family = AF_INET;
-			to.sin_addr.s_addr = htonl(static_cast<uint32_t>(entry.first >> 16));
+			to.sin_addr.s_addr = htonl(TellAddress(entry.first));
 			to.sin_port = htons(static_cast<uint16_t>(entry.first & 0xFFFF));
 			sendto(socket->second.fd, datagram, sizeof(datagram), 0, reinterpret_cast<sockaddr*>(&to), sizeof(to));
 			if(peer.arithTold == 1) Log("arithmetic told to the player at %s:%u: this copy computes with %s", IpText(ntohl(to.sin_addr.s_addr)).c_str(), ntohs(to.sin_port), (arithNow == ARITH_BROWSER) ? "browser arithmetic" : "Play!'s own arithmetic");
@@ -653,7 +674,7 @@ void CNet::PollUdp()
 			at[3] = static_cast<uint8_t>(OLD_COPY_FIGURE);
 			sockaddr_in to = {};
 			to.sin_family = AF_INET;
-			to.sin_addr.s_addr = htonl(static_cast<uint32_t>(entry.first >> 16));
+			to.sin_addr.s_addr = htonl(TellAddress(entry.first));
 			to.sin_port = htons(static_cast<uint16_t>(entry.first & 0xFFFF));
 			sendto(socket->second.fd, datagram, sizeof(datagram), 0, reinterpret_cast<sockaddr*>(&to), sizeof(to));
 			if(peer.oldTold == 1)
@@ -690,7 +711,11 @@ void CNet::PollUdp()
 				if(m_noted.insert(UdpKey(fromIp, fromPort) | (1ull << 62)).second)
 					Log("first datagram from another player: %s:%u -> port %u%s (%zd bytes)", IpText(fromIp).c_str(), fromPort, entry.first,
 					    shownIp == fromIp ? "" : (", shown to the machine as " + IpText(shownIp)).c_str(), n);
-				Peer& peer = m_peers[UdpKey(fromIp, fromPort)];
+				// one player, one entry: known by what the machine knows it by
+				Peer& peer = m_peers[UdpKey(shownIp, fromPort)];
+				if(peer.fromIp != fromIp && peer.fromIp != 0 && m_noted.insert(UdpKey(fromIp, fromPort) | (1ull << 61)).second)
+					Log("the player known as %s:%u is now heard from %s (before: %s): the same player, one entry", IpText(shownIp).c_str(), fromPort, IpText(fromIp).c_str(), IpText(peer.fromIp).c_str());
+				peer.fromIp = fromIp;
 				int64_t now = Now();
 				// a player back after a silence is told again
 				if(peer.firstHeard == 0 || now - peer.lastHeard > 30000)
@@ -724,9 +749,67 @@ void CNet::PollUdp()
 					peer.arithNow = doing;
 					if(!m_config.passPatchSetOn) continue; // ours, not the machine's
 				}
+				// a peer's disconnect while the game is in a game's room: half a second late
+				if(m_config.holdDisconnects && n == 8 && buffer[0] == 0x00 && buffer[1] == 0x05 && g_gameInRoom.load())
+				{
+					Held held;
+					held.data.assign(buffer, buffer + n);
+					held.shownIp = shownIp;
+					held.fromPort = fromPort;
+					held.guestPort = entry.first;
+					held.dueField = g_gameFields.load() + HOLD_FIELDS;
+					held.since = now;
+					m_held.push_back(std::move(held));
+					m_stats.heldDisconnects++;
+					Log("a disconnect from the player at %s:%u is shown to the machine half a second late (the game is in a game's room)", IpText(fromIp).c_str(), fromPort);
+					continue;
+				}
 			}
 			SendUdp(shownIp, fromPort, m_config.guestIp, entry.first, buffer, static_cast<size_t>(n));
 		}
+	}
+}
+
+// ---- A peer's disconnect, held back while the game is in a game's room ---------------------
+// The game's launch has a hole (docs/issues/three-players.md, cause 1): a joiner that takes
+// the host's START fills its launch tables from its LIVE connections to the other players
+// and then disconnects them all. A joiner reads its socket every tenth frame, so one that
+// reads later finds the disconnect of one that read earlier in the same read as START, has
+// no live connection to it any more and files a wrong address for it. The launch handshake
+// repairs one wrong entry from the datagrams that arrive - but not two joiners that are
+// wrong about each other: each sends to where the other is not (seen in a launch of four:
+// docs/issues/native-online.md, "The disconnect hold"; tools/recomp/net/netdrv.cpp has the
+// same hold). A network that delivered that one datagram half a second later would have
+// hidden the hole, and that is what is done: a datagram that is the peer library's
+// disconnect (8 bytes: 00 05, the connection's code, a reason) and arrives while the game's
+// lobby state word says "in a game's room" is kept for 30 vertical blanks of the machine, or
+// until the state has moved on - by then the tables are filled from connections that were
+// all still there. Nothing else is ever held and nothing during a game; a player who just
+// leaves a room is seen to leave half a second later. NetConfig::holdDisconnects false
+// (the application: --rta-no-disconnect-hold) switches it off.
+//
+// The lobby state and the count of vertical blanks come from NoteGame, which whoever reads
+// the game's memory calls once a frame (COnline::Tick, in the application and in the page).
+// Where nobody calls it, nothing is ever held. A held datagram that the count does not
+// release (the machine stands still) goes on after two seconds by the clock.
+void CNet::NoteGame(bool inRoom)
+{
+	g_gameInRoom = inRoom;
+	g_gameFields++;
+}
+
+void CNet::ReleaseHeld()
+{
+	if(m_held.empty()) return;
+	bool inRoom = g_gameInRoom.load();
+	uint64_t fields = g_gameFields.load();
+	int64_t now = Now();
+	while(!m_held.empty())
+	{
+		Held& first = m_held.front();
+		if(inRoom && fields < first.dueField && now - first.since < 2000) break;
+		SendUdp(first.shownIp, first.fromPort, m_config.guestIp, first.guestPort, first.data.data(), first.data.size());
+		m_held.pop_front();
 	}
 }
 

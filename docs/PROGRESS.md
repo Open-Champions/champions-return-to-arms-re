@@ -1,6 +1,6 @@
 # How complete is it
 
-Updated at every check-in of the work. **Last update: 2026-10-13, 09:18 CDT.**
+Updated at every check-in of the work. **Last update: 2026-10-13, 11:20 CDT.**
 
 One table for the whole effort to make Champions: Return to Arms (SLUS-20973 v2.00)
 playable again, online, on today's computers. The percentages are estimates by the people
@@ -37,6 +37,11 @@ and the Godot client are tracked in their own repositories
 
 ## Since the last update
 
+- Mac application, for the next build (in the tree, not rolled out): the window appears at
+  once and says what it is waiting for; the player-name question can no longer be lost
+  behind the Controls help; a rare launch failure of four players closed; one browser
+  player is one entry ([mac-app-start](issues/mac-app-start.md)). The three proposed fix
+  sections hold on the emulator too (13,123 lockstep frames, hashes equal).
 - Three further fix sections proposed and proven for the next release (a save point's
   per-machine card test, a script read that wrote, a jump gate marked from drawing):
   1.78 million more ticks in step with them on

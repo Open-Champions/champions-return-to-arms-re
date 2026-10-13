@@ -81,8 +81,23 @@ square triangle l1 l2 l3 r1 r2 r3 start select):
                              given), or into the room of the game with the given code.
                              Host and join take the character used last; "+choose" at
                              the end (host+choose) leaves the character screens alone
-    peers                    this copy's patch set and, for every other player heard
-                             from, the set its copy told (or ?), with the warning
+    peers                    this copy's patch set and arithmetic and, for every other
+                             player heard from (one entry a player; "from=" when its
+                             datagrams really come from another address), the set and
+                             arithmetic its copy told (or ?); disconnects held back in a
+                             room; whether the game is in a room; the warning
+    ui windows | main info|raise | notice
+    ui name info|type TEXT|press ok|notnow|escape|close
+    ui controls info|show|close
+                             our own windows read and worked on the application's own
+                             thread, without a picture of the screen (start with
+                             --rta-test-dialogs now): Qt's shown windows and AppKit's
+                             front-to-back list; the main window and the line across its
+                             top; the question for the player name; the Controls help.
+                             The same lines in "<socket>.ui" are answered in
+                             "<socket>.ui.out", also before the machine runs
+    notice                   what the window says about a folder it is waiting for
+    texlist                  whether the art pack's folder has been listed, and its names
     hw                       the machine's interrupt and DMA registers (what a stopped game
                              waits for): INTC, DMAC with channels 1 and 2, VIF1, GIF, GS
     cpu                      where the main processor is, whether the game is taken to be

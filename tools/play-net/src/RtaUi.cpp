@@ -2,21 +2,27 @@
 #include "Rta.h"
 
 #include <QAction>
+#include <QApplication>
 #include <QCheckBox>
+#include <QCloseEvent>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QInputDialog>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSettings>
 #include <QSpinBox>
+#include <QStackedWidget>
 #include <QMainWindow>
 #include <QMenu>
 #include <QMenuBar>
@@ -24,7 +30,12 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include <atomic>
+#include <cerrno>
+#include <chrono>
+#include <cstring>
 #include <memory>
+#include <thread>
 
 #include "AppConfig.h"
 
@@ -67,6 +78,34 @@ namespace
 
 	QPointer<QDialog> g_controls;
 	QPointer<QWidget> g_mainWindow;
+	// tests (--rta-test-dialogs): how often the Controls window was told that a modal window
+	// of ours blocks it, and whether it is so now
+	int g_controlsBlocked = 0;
+	bool g_controlsBlockedNow = false;
+	bool g_controlsWanted = false; // asked for while a question was up: shown when that is answered
+	class CBlockWatch : public QObject
+	{
+	public:
+		using QObject::QObject;
+		bool eventFilter(QObject*, QEvent* event) override
+		{
+			if(event->type() == QEvent::WindowBlocked)
+			{
+				g_controlsBlocked++;
+				g_controlsBlockedNow = true;
+			}
+			if(event->type() == QEvent::WindowUnblocked) g_controlsBlockedNow = false;
+			return false;
+		}
+	};
+	// a test run's windows say that they are one and never take the keyboard
+	void MarkTestWindow(QWidget* window)
+	{
+		if(!Rta::IsTestRun() || Rta::TestDialogs() == 0) return;
+		window->setWindowTitle(QString::fromStdString(Rta::WindowTitle(window->windowTitle().toStdString())));
+		window->setAttribute(Qt::WA_ShowWithoutActivating, true);
+	}
+	bool g_askingName = false;
 
 	// the one-step log-in's windows (further down)
 	QLineEdit* BuildPlayerName(QDialog& dialog, const std::string& why);
@@ -86,12 +125,28 @@ void Rta::ShowControls(QWidget* parent)
 	if(g_controls)
 	{
 		g_controls->raise();
-		g_controls->activateWindow();
+		if(!Rta::IsTestRun()) g_controls->activateWindow();
 		return;
 	}
+	// Never while a question of ours is up: a window opened then takes no input (the
+	// window system blocks it: its Close button is dead) and lies round the question like
+	// a second thing to deal with (docs/issues/mac-app-start.md, "The name dialog"). It
+	// comes when the question has been answered.
+	if(Rta::TestDialogs() != 2 && (g_askingName || QApplication::activeModalWidget()))
+	{
+		g_controlsWanted = true;
+		Rta::LogLine("controls: asked for while a question is up; shown when it has been answered");
+		return;
+	}
+	g_controlsWanted = false;
 	auto dialog = new QDialog(parent);
 	dialog->setAttribute(Qt::WA_DeleteOnClose, true);
 	dialog->setWindowTitle("Controls");
+	MarkTestWindow(dialog);
+	dialog->installEventFilter(new CBlockWatch(dialog));
+	g_controlsBlocked = 0;
+	g_controlsBlockedNow = false;
+	Rta::LogLine("controls: the window with the keys and the controller's buttons is shown");
 	auto layout = new QVBoxLayout(dialog);
 	auto label = new QLabel(ControlsText(), dialog);
 	label->setTextFormat(Qt::RichText);
@@ -125,6 +180,115 @@ void Rta::SetDiscBoot(const std::function<void(const std::string&)>& boot)
 	g_discBoot = boot;
 }
 
+// ---- nothing that macOS may hold runs on the application's own thread (Rta.h) --------------
+
+namespace
+{
+	std::atomic<bool> g_quitting{false};
+	int g_discSearch = 0; // counts every start of a look for the disc image: a later one ends an earlier one
+
+	// Runs 'work' on a thread of its own while the application's windows stay alive
+	// (a local event loop). False: the application is ending - the thread is then left
+	// to itself, so 'work' may hold nothing by reference.
+	template <typename T>
+	bool RunAside(const std::function<T()>& work, T& result)
+	{
+		struct Shared
+		{
+			std::atomic<bool> done{false};
+			T result{};
+		};
+		auto shared = std::make_shared<Shared>();
+		std::thread([shared, work]() {
+			shared->result = work();
+			shared->done = true;
+		}).detach();
+		QEventLoop loop;
+		QTimer timer;
+		QObject::connect(&timer, &QTimer::timeout, &loop, [&loop, shared]() {
+			if(shared->done) loop.quit();
+		});
+		timer.start(25);
+		loop.exec();
+		// a loop that ended before the work did was ended by the application's quit
+		if(!shared->done)
+		{
+			g_quitting = true;
+			return false;
+		}
+		result = shared->result;
+		return !g_quitting;
+	}
+
+	// so many milliseconds with the windows alive; false: the application is ending
+	bool Pause(int milliseconds)
+	{
+		QEventLoop loop;
+		bool timedOut = false;
+		QTimer::singleShot(milliseconds, &loop, [&]() {
+			timedOut = true;
+			loop.quit();
+		});
+		loop.exec();
+		if(!timedOut) g_quitting = true;
+		return timedOut && !g_quitting;
+	}
+}
+
+bool Rta::Quitting()
+{
+	return g_quitting;
+}
+
+bool Rta::WaitReadable(QWidget*, const std::string& path, const std::string& what, int* errorOut)
+{
+	int mine = g_discSearch;
+	bool refused = false;
+	if(errorOut) *errorOut = 0;
+	for(;;)
+	{
+		int error = 0;
+		if(!RunAside<int>([path, what]() { return Rta::ProbeReadable(path, what); }, error)) return false;
+		if(mine != g_discSearch)
+		{
+			Rta::SetNotice("disc", "");
+			return false; // another image was chosen meanwhile
+		}
+		if(error == 0)
+		{
+			if(refused) Rta::LogLine(path + " can be read now");
+			Rta::SetNotice("disc", "");
+			return true;
+		}
+		if(error != EACCES && error != EPERM)
+		{
+			Rta::LogLine(path + " cannot be opened: " + strerror(error));
+			Rta::SetNotice("disc", "");
+			if(errorOut) *errorOut = error;
+			return false;
+		}
+		if(!refused) Rta::LogLine(path + " may not be read (" + strerror(error) + "): the window says so; it is tried again every two seconds");
+		refused = true;
+		Rta::SetNotice("disc", Rta::DeniedText(path, what, error));
+		if(!Pause(2000)) return false;
+		if(mine != g_discSearch)
+		{
+			Rta::SetNotice("disc", "");
+			return false;
+		}
+	}
+}
+
+void Rta::BootDiscWhenReadable(QWidget* parent, const std::string& path)
+{
+	g_discSearch++;
+	int error = 0;
+	if(Rta::WaitReadable(parent, path, "Your disc image", &error))
+		Rta::BootDisc(path);
+	else if(error != 0)
+		Rta::SetNotice("disc", "The disc image that was named cannot be opened (" + std::string(strerror(error)) + "): " + path);
+}
+
 void Rta::BootDisc(const std::string& path)
 {
 	if(g_discBoot && !path.empty()) g_discBoot(path);
@@ -134,22 +298,41 @@ std::string Rta::ChooseDisc(QWidget* parent, const std::string& given, bool askA
 {
 	auto info = Rta::GetLaunchInfo();
 	if(!info.packaged) return std::string();
+	// Every opening of the image, and the whole search for one, runs on a thread of its
+	// own (WaitReadable, RunAside): macOS holds a program inside the first opening of
+	// anything under Desktop, Documents or Downloads until the person has answered its
+	// question, and the window has to stay alive and say so. A later call (the menu) ends
+	// an earlier one that is still waiting.
+	int mine = ++g_discSearch;
+	auto ended = [mine]() { return g_quitting || mine != g_discSearch; };
+	auto check = [](const std::string& path) {
+		std::string verdict = "the application is ending";
+		RunAside<std::string>([path]() { return Rta::CheckDisc(path); }, verdict);
+		return verdict;
+	};
 	QSettings launch(QString::fromStdString(info.root + "/launch.ini"), QSettings::IniFormat);
-	auto accept = [&launch](const QString& path) {
+	auto accept = [&launch, &info](const QString& path) {
 		launch.setValue("disc", path);
 		launch.sync();
 		Rta::LogLine("disc image accepted: " + path.toStdString());
+		std::string guarded = Rta::GuardedFolderOf(path.toStdString());
+		if(!guarded.empty())
+			Rta::LogLine("disc image: it is under " + guarded + ", which macOS lets a program read only after asking the person - again after every new build of an application signed without an identity. Beside the application or in " + info.root + " no question is asked (docs/issues/mac-app-start.md)");
 		return path.toStdString();
 	};
 	if(!askAnew)
 	{
 		// the one given, else the one remembered
 		QString candidate = given.empty() ? QString::fromStdString(info.disc) : QString::fromStdString(given);
-		if(!candidate.isEmpty() && !QFileInfo::exists(candidate))
+		int error = 0;
+		bool readable = !candidate.isEmpty() && Rta::WaitReadable(parent, candidate.toStdString(), "Your disc image", &error);
+		if(ended()) return std::string();
+		if(!candidate.isEmpty() && !readable && error == ENOENT)
 			Rta::LogLine("the disc image that was " + std::string(given.empty() ? "used last" : "named") + " is not there any more: " + candidate.toStdString() + "; looking for one");
 		else if(!candidate.isEmpty())
 		{
-			std::string verdict = Rta::CheckDisc(candidate.toStdString());
+			std::string verdict = readable ? check(candidate.toStdString()) : "'" + candidate.toStdString() + "' cannot be opened.";
+			if(ended()) return std::string();
 			if(verdict.empty()) return accept(candidate);
 			Rta::LogLine("disc image REFUSED: " + verdict);
 			// a wrong file named for a test run: nobody is there to do anything about it
@@ -162,7 +345,9 @@ std::string Rta::ChooseDisc(QWidget* parent, const std::string& given, bool askA
 		{
 			// Nobody is asked to choose a file: it is looked for. Only when there is none,
 			// one window says where to put it.
-			std::string found = Rta::FindDisc();
+			std::string found;
+			RunAside<std::string>([]() { return Rta::FindDisc(); }, found);
+			if(ended()) return std::string();
 			if(!found.empty()) return accept(QString::fromStdString(found));
 			Rta::LogLine("no disc image: the window that says where to put it (Retry, Browse)");
 			QMessageBox box(parent);
@@ -177,6 +362,7 @@ std::string Rta::ChooseDisc(QWidget* parent, const std::string& given, bool askA
 			box.addButton("Not now", QMessageBox::RejectRole);
 			box.setDefaultButton(retry);
 			box.exec();
+			if(ended()) return std::string();
 			if(box.clickedButton() == retry) continue;
 			if(box.clickedButton() != browse)
 			{
@@ -195,7 +381,9 @@ std::string Rta::ChooseDisc(QWidget* parent, const std::string& given, bool askA
 			continue;
 		}
 		launch.setValue("discdir", QFileInfo(candidate).absolutePath());
-		std::string verdict = Rta::CheckDisc(candidate.toStdString());
+		// a file the person picked in the system's own dialog: macOS lets the application read it
+		std::string verdict = check(candidate.toStdString());
+		if(ended()) return std::string();
 		if(verdict.empty()) return accept(candidate);
 		Rta::LogLine("disc image REFUSED: " + verdict);
 		// in a test run nobody is there to pick another one
@@ -431,8 +619,6 @@ namespace
 		                                    QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
 		if(answer == QMessageBox::Yes) Rta::OnlineForget();
 	}
-
-	bool g_askingName = false;
 }
 
 // The one thing the player is asked for. It reads as a name, not as an account: the
@@ -643,19 +829,186 @@ void Rta::WarnPatchSet(const std::string& text)
 	box->show(); // the game goes on
 }
 
+// The question for the player name (docs/issues/mac-app-start.md, "The name dialog").
+// As released on 2026-10-13 it was a window of its own, modal for the whole application,
+// and it ended without a name on "Not now", on Escape (or Command-period) and when its
+// window was closed; it had no time limit and nothing of ours closed it. What went wrong
+// round it: the Controls help opened by itself two seconds later - behind the question
+// (a modal panel floats above ordinary windows), larger than it on every side, and dead:
+// the window system blocks a window opened under a modal one, so its Close button did
+// nothing, and Escape, the natural key to be rid of such a window, goes to the window
+// that has the keyboard - the question - and ended it. Now the question is a sheet on the
+// main window: part of that window, in front of it, never behind or beside another
+// window of ours; and it ends in three ways only - "Go online", "Not now", or the
+// application ending. Escape and the window system's "cancel" do not end it. It has no
+// time limit. The log says how it ended.
+namespace
+{
+	class CNameDialog : public QDialog
+	{
+	public:
+		using QDialog::QDialog;
+		bool strict = true;  // false: as released (tests)
+		std::string how;     // how it ended, for the log
+		void reject() override
+		{
+			if(strict && how.empty())
+			{
+				// not one of the three ways out: Escape, or a cancel sent by the window system
+				if(!m_said) Rta::LogLine("online: the name question was asked to go away without an answer (Escape, or a cancel from the window system): it stays - 'Not now' ends it");
+				m_said = true;
+				return;
+			}
+			if(how.empty()) how = "it was dismissed (Escape, or its window was closed)";
+			QDialog::reject();
+		}
+
+	protected:
+		void keyPressEvent(QKeyEvent* event) override
+		{
+			if(event->key() == Qt::Key_Escape && !strict) how = "Escape";
+			QDialog::keyPressEvent(event);
+		}
+		void closeEvent(QCloseEvent* event) override
+		{
+			if(how.empty()) how = "its window was closed";
+			QDialog::closeEvent(event);
+		}
+
+	private:
+		bool m_said = false;
+	};
+	QPointer<CNameDialog> g_nameDialog;
+	QPointer<QLineEdit> g_nameEdit;
+}
+
 void Rta::AskPlayerName(const std::string& why)
 {
 	if(g_askingName) return;
 	g_askingName = true;
-	Rta::LogLine("online: asking for the player name (dialog)");
-	QDialog dialog(g_mainWindow);
+	bool released = (Rta::TestDialogs() == 2);
+	Rta::LogLine(released ? "online: asking for the player name (dialog, as released 2026-10-13)" : "online: asking for the player name (a sheet on the main window; no time limit)");
+	CNameDialog dialog(g_mainWindow);
+	dialog.strict = !released;
 	auto edit = BuildPlayerName(dialog, why);
+	// "Not now" is an answer; Escape is not
+	if(auto buttons = dialog.findChild<QDialogButtonBox*>())
+	{
+		QObject::disconnect(buttons, &QDialogButtonBox::rejected, &dialog, nullptr);
+		QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, [&dialog]() {
+			dialog.how = "the Not now button";
+			dialog.reject();
+		});
+	}
+	MarkTestWindow(&dialog);
+	if(!released && g_mainWindow)
+	{
+		// a sheet: part of the main window, in front of it, and never behind another window of ours
+		dialog.setWindowModality(Qt::WindowModal);
+		if(Rta::TestDialogs() == 0)
+		{
+			if(g_mainWindow->isMinimized()) g_mainWindow->showNormal();
+			g_mainWindow->raise();
+			g_mainWindow->activateWindow();
+			// the application may not be the one in front (a long start, another program
+			// used meanwhile): its Dock icon asks for attention
+			QApplication::alert(g_mainWindow);
+		}
+	}
+	g_nameDialog = &dialog;
+	g_nameEdit = edit;
 	bool accepted = dialog.exec() == QDialog::Accepted;
 	std::string name = accepted ? edit->text().toStdString() : std::string();
 	if(!Rta::OnlineCheckName(name).empty()) name.clear();
-	Rta::LogLine(name.empty() ? "online: no player name was given" : "online: a player name was given");
+	if(!accepted && dialog.how.empty()) dialog.how = g_quitting ? "the application is ending" : "its window went away without an answer";
+	Rta::LogLine(name.empty() ? ("online: no player name was given (" + (accepted ? std::string("the name was not usable") : dialog.how) + ")") : "online: a player name was given");
 	g_askingName = false;
 	Rta::OnlineGiveName(name);
+	// the Controls help that was asked for meanwhile
+	if(g_controlsWanted && g_mainWindow) QTimer::singleShot(500, g_mainWindow, []() { Rta::ShowControls(g_mainWindow); });
+}
+
+// ---- tests: our own windows read and worked without a screen (Rta.h) ------------------------
+// The control socket's "ui ..." lands here on the application's own thread, also while a
+// question is up (its local event loop runs queued calls).
+std::string Rta::UiCommand(const std::string& command)
+{
+	QStringList words = QString::fromStdString(command).split(' ', Qt::SkipEmptyParts);
+	if(words.isEmpty()) return "?";
+	auto box = [](QWidget* w) {
+		QRect g = w->frameGeometry();
+		return QString("%1,%2,%3x%4").arg(g.x()).arg(g.y()).arg(g.width()).arg(g.height());
+	};
+	if(words[0] == "windows")
+	{
+		// Qt's top-level windows that are shown, then AppKit's own order, front to back
+		QString text;
+		for(auto widget : QApplication::topLevelWidgets())
+		{
+			if(!widget->isVisible()) continue;
+			text += QString("[\"%1\" %2 modality=%3 active=%4 box=%5] ").arg(widget->windowTitle(), widget->metaObject()->className()).arg(static_cast<int>(widget->windowModality())).arg(widget->isActiveWindow() ? 1 : 0).arg(box(widget));
+		}
+		auto modal = QApplication::activeModalWidget();
+		text += QString("qt_modal=\"%1\" order: ").arg(modal ? modal->windowTitle() : QString());
+		return text.toStdString() + Rta::WindowOrder();
+	}
+	if(words[0] == "notice") return Rta::Notice();
+	if(words[0] == "main" && g_mainWindow)
+	{
+		if(words.size() >= 2 && words[1] == "raise") g_mainWindow->raise();
+		auto label = g_mainWindow->findChild<QLabel*>("rtaNotice");
+		auto stacked = g_mainWindow->findChild<QStackedWidget*>("stackedWidget");
+		return QString("visible=%1 minimized=%2 box=%3 title=\"%4\" page=%5 notice_shown=%6 notice=\"%7\"")
+		    .arg(g_mainWindow->isVisible() ? 1 : 0).arg(g_mainWindow->isMinimized() ? 1 : 0).arg(box(g_mainWindow), g_mainWindow->windowTitle()).arg(stacked ? stacked->currentIndex() : -1)
+		    .arg((label && label->isVisible()) ? 1 : 0).arg(label ? label->text() : QString()).toStdString();
+	}
+	if(words[0] == "name")
+	{
+		std::string action = (words.size() >= 2) ? words[1].toStdString() : "info";
+		if(!g_nameDialog) return "up=0 asking=" + std::string(g_askingName ? "1" : "0");
+		auto buttons = g_nameDialog->findChild<QDialogButtonBox*>();
+		auto ok = buttons ? buttons->button(QDialogButtonBox::Ok) : nullptr;
+		auto notNow = buttons ? buttons->button(QDialogButtonBox::Cancel) : nullptr;
+		if(action == "type" && g_nameEdit)
+		{
+			g_nameEdit->setText(QString::fromStdString(command.substr(command.find("type") + 4)).trimmed());
+			action = "info";
+		}
+		else if(action == "press" && words.size() >= 3)
+		{
+			if(words[2] == "ok") return (ok && ok->isEnabled()) ? (ok->click(), "pressed: Go online") : "the Go online button is not enabled";
+			if(words[2] == "notnow") return notNow ? (notNow->click(), "pressed: Not now") : "no such button";
+			if(words[2] == "escape")
+			{
+				// what the Escape key does to the window that has the keyboard
+				QKeyEvent press(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier), release(QEvent::KeyRelease, Qt::Key_Escape, Qt::NoModifier);
+				QPointer<CNameDialog> dialog = g_nameDialog;
+				QApplication::sendEvent(dialog.data(), &press);
+				if(dialog) QApplication::sendEvent(dialog.data(), &release);
+				return (dialog && dialog->isVisible()) ? "Escape sent: the question is still up" : "Escape sent: the question went away";
+			}
+			if(words[2] == "close")
+			{
+				QPointer<CNameDialog> dialog = g_nameDialog;
+				dialog->close();
+				return (dialog && dialog->isVisible()) ? "close sent: the question is still up" : "close sent: the question went away";
+			}
+			return "name press ok|notnow|escape|close";
+		}
+		if(action != "info") return "name info|type TEXT|press ok|notnow|escape|close";
+		return QString("up=1 visible=%1 title=\"%2\" modality=%3 sheet=%4 text_length=%5 ok_enabled=%6 box=%7")
+		    .arg(g_nameDialog->isVisible() ? 1 : 0).arg(g_nameDialog->windowTitle()).arg(static_cast<int>(g_nameDialog->windowModality())).arg((g_nameDialog->windowModality() == Qt::WindowModal) ? 1 : 0)
+		    .arg(g_nameEdit ? g_nameEdit->text().size() : -1).arg((ok && ok->isEnabled()) ? 1 : 0).arg(box(g_nameDialog)).toStdString();
+	}
+	if(words[0] == "controls")
+	{
+		std::string action = (words.size() >= 2) ? words[1].toStdString() : "info";
+		if(action == "show" && g_mainWindow) Rta::ShowControls(g_mainWindow);
+		if(action == "close" && g_controls) g_controls->close();
+		if(!g_controls || !g_controls->isVisible()) return std::string("up=0 wanted=") + (g_controlsWanted ? "1" : "0");
+		return QString("up=1 title=\"%1\" blocked_now=%2 times_blocked=%3 box=%4").arg(g_controls->windowTitle()).arg(g_controlsBlockedNow ? 1 : 0).arg(g_controlsBlocked).arg(box(g_controls)).toStdString();
+	}
+	return "ui windows | main info|raise | notice | name info|type TEXT|press ok|notnow|escape|close | controls info|show|close";
 }
 
 void Rta::TriggerReset()
@@ -677,8 +1030,10 @@ void Rta::SetupWindow(QWidget* window)
 	if(!mainWindow) return;
 	g_mainWindow = mainWindow;
 	// Tests: the control socket is answered by the machine's thread, so a machine that has
-	// stopped answers nothing. A file "<control path>.ui" holding "reset", "escape" or
-	// "close" is taken up here, on the application's own thread, once a second.
+	// stopped - or has not been started yet - answers nothing. A file "<control path>.ui"
+	// holding "reset", "escape" or "close" is taken up here, on the application's own
+	// thread, four times a second; any other line is a "ui" command (Rta::UiCommand)
+	// whose answer is written to "<control path>.ui.out".
 	if(!Rta::ControlPath().empty())
 	{
 		auto timer = new QTimer(mainWindow);
@@ -688,12 +1043,25 @@ void Rta::SetupWindow(QWidget* window)
 			QString command = QString::fromUtf8(file.readAll()).trimmed();
 			file.close();
 			file.remove();
-			Rta::LogLine("test: '" + command.toStdString() + "' from the .ui file");
-			if(command == "reset") Rta::TriggerReset();
-			if(command == "escape") Rta::EscapePressed();
-			if(command == "close") mainWindow->close();
+			if(command == "reset" || command == "escape" || command == "close")
+			{
+				Rta::LogLine("test: '" + command.toStdString() + "' from the .ui file");
+				if(command == "reset") Rta::TriggerReset();
+				if(command == "escape") Rta::EscapePressed();
+				if(command == "close") mainWindow->close();
+				return;
+			}
+			QString answer = QString::fromStdString(Rta::UiCommand(command.toStdString()));
+			QFile out(QString::fromStdString(Rta::ControlPath() + ".ui.out.new"));
+			if(out.open(QIODevice::WriteOnly | QIODevice::Truncate))
+			{
+				out.write((command + "\n" + answer + "\n").toUtf8());
+				out.close();
+				QFile::remove(QString::fromStdString(Rta::ControlPath() + ".ui.out"));
+				out.rename(QString::fromStdString(Rta::ControlPath() + ".ui.out"));
+			}
 		});
-		timer->start(1000);
+		timer->start(250);
 	}
 	{
 		auto onlineMenu = new QMenu("Online", mainWindow);
@@ -748,12 +1116,68 @@ void Rta::SetupWindow(QWidget* window)
 	QObject::connect(controls, &QAction::triggered, mainWindow, [mainWindow]() { Rta::ShowControls(mainWindow); });
 	helpMenu->insertAction(helpMenu->actions().isEmpty() ? nullptr : helpMenu->actions().first(), controls);
 
-	// once per data directory, a moment after the first start: the keys. Not in test runs.
+	// What the window says in plain words while a folder cannot be read yet (Rta.h,
+	// "folders macOS guards"): a line across the top of the window, above the picture or
+	// the list of games; it takes room only while there is something to say.
+	{
+		auto label = new QLabel(mainWindow);
+		label->setObjectName("rtaNotice");
+		label->setWordWrap(true);
+		label->setTextFormat(Qt::PlainText);
+		label->setMargin(10);
+		label->setStyleSheet("QLabel { background: #fff3c4; color: #1c1c1c; font-size: 14px; font-weight: 600; }");
+		label->hide();
+		auto central = mainWindow->centralWidget();
+		auto grid = central ? qobject_cast<QGridLayout*>(central->layout()) : nullptr;
+		auto stacked = mainWindow->findChild<QStackedWidget*>("stackedWidget");
+		if(grid && stacked)
+		{
+			grid->removeWidget(stacked);
+			grid->addWidget(label, 0, 0);
+			grid->addWidget(stacked, 1, 0);
+			grid->setRowStretch(1, 1);
+			grid->setVerticalSpacing(0);
+		}
+		auto timer = new QTimer(mainWindow);
+		QObject::connect(timer, &QTimer::timeout, label, [label]() {
+			QString text = QString::fromStdString(Rta::Notice());
+			if(label->text() != text) label->setText(text);
+			if(label->isVisible() != !text.isEmpty()) label->setVisible(!text.isEmpty());
+		});
+		timer->start(250);
+	}
+
+	// Once per data directory: the keys. Not at the start any more, where it came up over
+	// the question for the player name (docs/issues/mac-app-start.md): when the game has
+	// run for some seconds, nothing of ours is asking anything, and the one-step sign-in
+	// is over (it ended at the lobby, or stopped, or was never started). It is also in the
+	// Help menu. Not in test runs, unless they test just this.
 	auto& config = CAppConfig::GetInstance();
 	config.RegisterPreferenceBoolean(PREF_RTA_CONTROLS_SHOWN, false);
-	if(!config.GetPreferenceBoolean(PREF_RTA_CONTROLS_SHOWN) && !Rta::IsTestRun())
+	if(!config.GetPreferenceBoolean(PREF_RTA_CONTROLS_SHOWN) && (!Rta::IsTestRun() || Rta::TestDialogs() != 0))
 	{
-		config.SetPreferenceBoolean(PREF_RTA_CONTROLS_SHOWN, true);
-		QTimer::singleShot(2500, mainWindow, [mainWindow]() { Rta::ShowControls(mainWindow); });
+		auto shown = [mainWindow]() {
+			auto& config = CAppConfig::GetInstance();
+			config.SetPreferenceBoolean(PREF_RTA_CONTROLS_SHOWN, true);
+			// kept even if the application is ended by force later
+			config.Save();
+			Rta::ShowControls(mainWindow);
+		};
+		if(Rta::TestDialogs() == 2)
+			QTimer::singleShot(2500, mainWindow, shown); // as released
+		else
+		{
+			auto timer = new QTimer(mainWindow);
+			auto quiet = std::make_shared<int>(0);
+			QObject::connect(timer, &QTimer::timeout, mainWindow, [timer, quiet, shown]() {
+				bool free = Rta::FrameCount() > 300 && !g_askingName && !QApplication::activeModalWidget() && !Rta::OnlineActive() && Rta::Notice().empty();
+				*quiet = free ? (*quiet + 1) : 0;
+				if(*quiet < 3) return;
+				timer->stop();
+				timer->deleteLater();
+				shown();
+			});
+			timer->start(1000);
+		}
 	}
 }

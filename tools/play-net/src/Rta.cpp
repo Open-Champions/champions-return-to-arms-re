@@ -32,6 +32,7 @@
 #include <cstring>
 #include <deque>
 #include <fstream>
+#include <list>
 #include <map>
 #include <unordered_map>
 #include <mutex>
@@ -41,6 +42,7 @@
 #include <thread>
 
 #include <arpa/inet.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <ifaddrs.h>
 #include <netdb.h>
@@ -133,6 +135,9 @@ namespace
 		bool setRaw = false;     // --rta-set-raw: pass other players' patch-set datagrams on to the game as well (tests: an older copy)
 		std::string arith = "auto"; // --rta-arith auto|browser|native: the machine's arithmetic (CheckArithmetic)
 		bool netcnfProgram = false; // --rta-netcnf-program: the game's "Config" may start Sony's network settings program
+		bool holdDisconnects = true; // --rta-no-disconnect-hold switches it off (RtaNet.cpp, "A peer's disconnect, held back")
+		int testDialogs = 0;        // --rta-test-dialogs now|released (Rta::TestDialogs)
+		int testFolderWait = 0;     // --rta-test-folder-wait: seconds the first opening of a guarded folder or file takes
 	};
 
 	// The packaged application (see Rta.h, LaunchInfo)
@@ -492,6 +497,88 @@ namespace
 		return true;
 	}
 
+	// ---- opens that macOS may hold (Rta.h, "folders macOS guards") -------------------------
+	// Every open() or opendir() of a place that may lie under Desktop, Documents or
+	// Downloads is made with one of these around it, on a thread that may wait. One that
+	// has not come back after a second is what the window speaks of.
+	struct Opening
+	{
+		std::string path, what;
+		uint64 since = 0;
+	};
+	std::mutex g_openingMutex;
+	std::list<Opening> g_openings;
+	std::set<std::string> g_openedOnce;
+	std::atomic<int> g_testFolderWait{0};
+
+	class COpening
+	{
+	public:
+		COpening(const std::string& path, const std::string& what)
+		{
+			bool first = false;
+			{
+				std::lock_guard<std::mutex> lock(g_openingMutex);
+				Opening opening;
+				opening.path = path;
+				opening.what = what;
+				opening.since = ClockMicroseconds();
+				m_place = g_openings.insert(g_openings.end(), opening);
+				first = g_openedOnce.insert(path).second;
+			}
+			// test aid: the first opening of a place takes as long as a person takes to
+			// answer macOS's question
+			if(first && g_testFolderWait > 0) std::this_thread::sleep_for(std::chrono::seconds(g_testFolderWait.load()));
+		}
+		~COpening()
+		{
+			std::lock_guard<std::mutex> lock(g_openingMutex);
+			g_openings.erase(m_place);
+		}
+
+	private:
+		std::list<Opening>::iterator m_place;
+	};
+
+	// "the Desktop folder" for a path under one of the three folders macOS asks about;
+	// empty for any other
+	std::string GuardedFolder(const std::string& path)
+	{
+		const char* home = getenv("HOME");
+		if(!home || !*home) return std::string();
+		for(const char* name : {"Desktop", "Documents", "Downloads"})
+		{
+			std::string folder = std::string(home) + "/" + name;
+			if(path.compare(0, folder.size(), folder) == 0 && (path.size() == folder.size() || path[folder.size()] == '/')) return std::string("the ") + name + " folder";
+		}
+		return std::string();
+	}
+
+	// a path as a person reads it
+	std::string PathWords(const std::string& path)
+	{
+		const char* home = getenv("HOME");
+		if(home && *home && path.compare(0, strlen(home), home) == 0 && (path.size() == strlen(home) || path[strlen(home)] == '/')) return "~" + path.substr(strlen(home));
+		return path;
+	}
+
+	// the sentence for an opening that has waited more than a second; empty: none has
+	std::string OpeningNotice()
+	{
+		std::lock_guard<std::mutex> lock(g_openingMutex);
+		uint64 now = ClockMicroseconds();
+		for(const auto& opening : g_openings)
+		{
+			if(now - opening.since < 1000000) continue;
+			std::string folder = GuardedFolder(opening.path);
+			std::string seconds = Format(" (%llu s)", static_cast<unsigned long long>((now - opening.since) / 1000000));
+			if(!folder.empty())
+				return "macOS is asking for permission to read " + folder + " - answer the question on screen. " + opening.what + " is there (" + PathWords(opening.path) + "). This goes on by itself as soon as you have answered" + seconds + ".";
+			return "Waiting to read " + PathWords(opening.path) + " (" + opening.what + "). If macOS is asking for permission to read that folder, answer the question on screen; this goes on by itself" + seconds + ".";
+		}
+		return std::string();
+	}
+
 	// ---- the state ----------------------------------------------------------------------
 
 	class CPadHandlerRta;
@@ -608,6 +695,41 @@ namespace
 			return m_status;
 		}
 
+		// ---- what the window says about a folder that cannot be read yet (Rta.h) ---------
+		void SetNotice(const std::string& key, const std::string& text)
+		{
+			bool changed = false;
+			{
+				std::lock_guard<std::mutex> lock(m_logMutex);
+				auto found = m_notices.find(key);
+				if(text.empty())
+				{
+					changed = (found != m_notices.end());
+					if(changed) m_notices.erase(found);
+				}
+				else
+				{
+					changed = (found == m_notices.end()) || (found->second != text);
+					m_notices[key] = text;
+				}
+			}
+			if(changed) Log(text.empty() ? ("window: the sentence about '" + key + "' is gone") : ("window says: " + text));
+		}
+		std::string Notice()
+		{
+			std::string text = OpeningNotice();
+			// said once in the log each time it begins (the seconds in it change)
+			bool waiting = !text.empty();
+			if(waiting != m_openingSaid.exchange(waiting)) Log(waiting ? ("window says: " + text) : "window: the opening that was waited for has come back");
+			std::lock_guard<std::mutex> lock(m_logMutex);
+			for(const auto& notice : m_notices) text += (text.empty() ? "" : "   ") + notice.second;
+			return text;
+		}
+		uint64 Frame() const
+		{
+			return m_frame.load();
+		}
+
 		// ---- one-step online (RtaOnline.h) ----------------------------------------------
 		Rta::COnline online;
 
@@ -676,10 +798,10 @@ namespace
 			setup.characterFile = (base / "online-character").string();
 			setup.server = ServerKey(options.server);
 			setup.serverText = m_serverText.empty() ? "(none)" : m_serverText;
-			setup.personPresent = !options.testBackground;
+			setup.personPresent = !options.testBackground || options.testDialogs != 0;
 			setup.log = [this](const std::string& line) { Log(line); };
 			setup.askName = [this](const std::string& why) {
-				if(options.testBackground)
+				if(options.testBackground && options.testDialogs == 0)
 				{
 					Log("online: a test run - the name comes from --rta-online-name or from 'online name NAME' on the control socket");
 					return;
@@ -732,12 +854,21 @@ namespace
 			return Format("%s%016llx-%016llx-p%u-%ux%u.png", (key.kind == 1) ? "" : "mem-", static_cast<unsigned long long>(key.hash), static_cast<unsigned long long>(key.clutHash), key.psm, key.width, key.height);
 		}
 
+		// Nothing of the folder is opened here: this runs on the application's own thread
+		// before its window is shown, and macOS holds a program inside the first opening
+		// of anything under Desktop, Documents or Downloads until the person has answered
+		// its question (docs/issues/mac-app-start.md: eleven minutes without a window).
+		// The folder is listed by a thread of its own once the game is loaded
+		// (StartTextureList); until its names are known the game's own textures are drawn.
 		void StartTextures(const fs::path& base)
 		{
-			fs::path directory = options.textureDir.empty() ? (base / "textures") : fs::path(options.textureDir);
+			bool given = !options.textureDir.empty();
+			fs::path directory = given ? fs::path(options.textureDir) : (base / "textures");
 			auto dumpDirectory = directory / "dump";
 			auto replaceDirectory = directory / "replace";
 			std::error_code error;
+			// the data directory is the application's own: looking there needs nobody's leave
+			bool own = !given && fs::is_directory(replaceDirectory, error);
 			if(options.textureDump)
 			{
 				fs::create_directories(dumpDirectory, error);
@@ -760,8 +891,8 @@ namespace
 			m_textureReplaceDirectory = replaceDirectory;
 			if(options.textureMemory > 0) CGSH_OpenGL::g_textureReplaceBudget = static_cast<uint64>(options.textureMemory) * 1024 * 1024;
 			if(options.textureWhole) CGSH_OpenGL::g_textureReplaceCrop = false;
-			size_t nameCount = ListTextureReplacements();
-			if((nameCount != 0) || options.textureDump || !options.controlPath.empty())
+			m_textureHooks = given || own || options.textureDump || !options.controlPath.empty();
+			if(m_textureHooks)
 			{
 				// The files are read by threads of their own (a picture of 2688 x 640 takes
 				// longer to unpack than a frame lasts); the renderer asks again until the
@@ -811,22 +942,82 @@ namespace
 					m_texturePriority.swap(priority);
 				};
 				for(int i = 0; i < 3; i++) m_textureThreads.emplace_back([this]() { ReadTextureFiles(); });
-				if(nameCount != 0) Log(Format("textures: %zu replacement file(s) in %s", nameCount, replaceDirectory.string().c_str()));
+				if(given || own) Log("textures: replacement pictures are looked for in " + replaceDirectory.string() + " once the game is loaded (the folder is listed aside; nothing of it is opened before)");
+				std::string guarded = GuardedFolder(replaceDirectory.string());
+				if(!guarded.empty() && g_launch.packaged)
+					Log("textures: that is under " + guarded + ", which macOS lets a program read only after asking the person - again after every new build of an application signed without an identity. In " + g_launch.root + "/textures no question is asked (docs/issues/mac-app-start.md)");
 			}
 		}
 
-		size_t ListTextureReplacements()
+		// The game is loaded: now the names of the replacement pictures are wanted. Once.
+		void StartTextureList()
 		{
-			std::set<std::string> names;
-			std::error_code error;
-			if(fs::is_directory(m_textureReplaceDirectory, error))
+			if(!m_textureHooks || m_textureListStarted.exchange(true)) return;
+			m_textureListThread = std::thread([this]() { ListTexturesAside(); });
+		}
+
+		// A thread of its own: the folder is opened (macOS may hold that for as long as the
+		// person takes to answer), its names are read, and the renderer is told to look for
+		// every picture again. A folder that may not be read is tried again every two
+		// seconds, and the window says so meanwhile.
+		void ListTexturesAside()
+		{
+#ifdef __APPLE__
+			pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
+#endif
+			const std::string directory = m_textureReplaceDirectory.string();
+			bool refused = false;
+			uint64 started = ClockMicroseconds();
+			for(;;)
 			{
-				for(const auto& entry : fs::directory_iterator(m_textureReplaceDirectory, error))
+				int error = 0;
+				size_t count = ListTextureReplacements(&error);
+				if(m_textureStop) break;
+				if(error == 0)
 				{
-					auto name = entry.path().filename().string();
-					if((name.size() > 4) && (name.compare(name.size() - 4, 4, ".png") == 0)) names.insert(name);
+					Rta::SetNotice("textures", "");
+					Log(Format("textures: %zu replacement file(s) in %s (listed aside, %.1f s after the game was loaded%s)", count, directory.c_str(), (ClockMicroseconds() - started) / 1e6, refused ? "; the folder could not be read at first" : ""));
+					if(count != 0) CGSH_OpenGL::g_textureReplaceReload++;
+					break;
 				}
+				if(error != EACCES && error != EPERM)
+				{
+					Rta::SetNotice("textures", "");
+					Log("textures: " + directory + ((error == ENOENT || error == ENOTDIR) ? " is not there: no picture is replaced" : (std::string(" cannot be listed: ") + strerror(error))));
+					break;
+				}
+				if(!refused) Log("textures: " + directory + " may not be read (" + strerror(error) + "): the game's own pictures are drawn; it is tried again every two seconds");
+				refused = true;
+				Rta::SetNotice("textures", Rta::DeniedText(directory, "The art pack", error) + " The game draws its own pictures until then.");
+				std::unique_lock<std::mutex> lock(m_textureMutex);
+				if(m_textureWake.wait_for(lock, std::chrono::seconds(2), [this]() { return m_textureStop.load(); })) break;
 			}
+			m_textureListDone = true;
+		}
+
+		// 'error': errno of opening the folder (0: listed). Any thread but the application's own.
+		size_t ListTextureReplacements(int* error = nullptr)
+		{
+			std::lock_guard<std::mutex> listing(m_textureListMutex);
+			std::set<std::string> names;
+			int failed = 0;
+			DIR* directory = nullptr;
+			{
+				// the call macOS holds until the person has answered
+				COpening opening(m_textureReplaceDirectory.string(), "The art pack");
+				directory = opendir(m_textureReplaceDirectory.string().c_str());
+				if(!directory) failed = errno;
+			}
+			if(directory)
+			{
+				while(dirent* entry = readdir(directory))
+				{
+					size_t length = strlen(entry->d_name);
+					if((length > 4) && (memcmp(entry->d_name + length - 4, ".png", 4) == 0)) names.insert(std::string(entry->d_name, length));
+				}
+				closedir(directory);
+			}
+			if(error) *error = failed;
 			std::lock_guard<std::mutex> lock(m_textureMutex);
 			m_textureNames.swap(names);
 			// what was read or is being read belongs to the files as they were
@@ -912,6 +1103,14 @@ namespace
 				if(thread.joinable()) thread.join();
 			}
 			m_textureThreads.clear();
+			// the lister may still be inside the opening macOS holds: it is not waited for
+			if(m_textureListThread.joinable())
+			{
+				if(m_textureListDone)
+					m_textureListThread.join();
+				else
+					m_textureListThread.detach();
+			}
 		}
 
 		// What the game does with a picture, beside its dump as <name>.json: the size
@@ -1056,6 +1255,7 @@ namespace
 			config.patchSet = m_patchHash;
 			config.patchWords = m_patchWords;
 			config.passPatchSetOn = options.setRaw;
+			config.holdDisconnects = options.holdDisconnects;
 #ifdef FPUTILS_HAS_ARITHMETIC
 			// this copy's machine can compute as a browser copy's does (CheckArithmetic)
 			config.arithCan = Rta::ARITH_CAN_NATIVE | Rta::ARITH_CAN_BROWSER;
@@ -1202,6 +1402,8 @@ namespace
 			m_gameStuck = false;
 			online.OnExecutable(m_isGame);
 			m_activePatches.clear();
+			// the game is there: now its replacement pictures are wanted (a thread of its own)
+			if(m_isGame) StartTextureList();
 			if(m_isGame)
 			{
 				// nothing has been translated yet: the words can simply be written
@@ -1278,6 +1480,8 @@ namespace
 			bool frontEnd = m_isGame && (ram[A_IN_FRONTEND] == 1) && (memcmp(ram + A_LEVEL_NAME, "intro", 6) == 0);
 			m_frontEndNow = frontEnd;
 			uint32 fe = frontEnd ? word(A_FE_STATE) : 0, lobby = frontEnd ? word(A_LOBBY_STATE) : 0;
+			// in a game's room, or taking its start (lobby states 6 and 7): CheckArithmetic
+			m_inRoomNow = frontEnd && fe == 10 && (lobby == 6 || lobby == 7);
 			if(frontEnd && fe == 10 && lobby == 2)
 			{
 				uint32 window = word(A_WIN_NET);
@@ -1429,6 +1633,7 @@ namespace
 				REPLY,
 				SHOT,
 				SHOTWAIT,
+				UIWAIT,
 			} kind = WAIT;
 			uint32 value = 0, value2 = 0, value3 = 0;
 			std::string text;
@@ -1754,6 +1959,31 @@ namespace
 				push(Step::WAIT, 30);
 				push(Step::REPLY, 0, "ok");
 			}
+			else if(name == "ui" && words.size() >= 2)
+			{
+				// ui windows | main info|raise | notice | name info|type TEXT|press ok|notnow|escape|close |
+				// controls info|show|close: our own windows read and worked on the application's
+				// own thread (RtaUi.cpp, Rta::UiCommand), for tests without a screen
+				std::string command = Trim(line.substr(line.find("ui") + 2));
+				auto answer = std::make_shared<std::pair<std::atomic<bool>, std::string>>();
+				m_uiAnswer = answer;
+				QMetaObject::invokeMethod(QCoreApplication::instance(), [command, answer]() {
+					answer->second = Rta::UiCommand(command);
+					answer->first = true;
+				}, Qt::QueuedConnection);
+				push(Step::UIWAIT, 600);
+			}
+			else if(name == "notice")
+				push(Step::REPLY, 0, "ok " + Rta::Notice());
+			else if(name == "texlist")
+			{
+				size_t names = 0;
+				{
+					std::lock_guard<std::mutex> lock(m_textureMutex);
+					names = m_textureNames.size();
+				}
+				push(Step::REPLY, 0, Format("ok hooks=%d started=%d done=%d names=%zu", m_textureHooks ? 1 : 0, m_textureListStarted.load() ? 1 : 0, m_textureListDone.load() ? 1 : 0, names));
+			}
 			else if(name == "pads")
 				push(Step::REPLY, 4);
 			else if(name == "sound")
@@ -2026,9 +2256,9 @@ namespace
 						if(m_net)
 						{
 							const auto& s = m_net->Stats();
-							net = Format("frames_out=%llu frames_in=%llu tcp=%llu tcp_out=%llu tcp_in=%llu udp_server=%llu udp_peers_out=%llu udp_peers_in=%llu dhcp=%d dns=%d",
+							net = Format("frames_out=%llu frames_in=%llu tcp=%llu tcp_out=%llu tcp_in=%llu udp_server=%llu udp_peers_out=%llu udp_peers_in=%llu udp_held=%llu dhcp=%d dns=%d",
 							             (unsigned long long)s.framesFromGuest, (unsigned long long)s.framesToGuest, (unsigned long long)s.tcpConnections, (unsigned long long)s.tcpBytesOut, (unsigned long long)s.tcpBytesIn,
-							             (unsigned long long)s.udpToServer, (unsigned long long)s.udpToPeers, (unsigned long long)s.udpFromPeers, s.dhcpDone ? 1 : 0, s.dnsAnswered ? 1 : 0);
+							             (unsigned long long)s.udpToServer, (unsigned long long)s.udpToPeers, (unsigned long long)s.udpFromPeers, (unsigned long long)s.heldDisconnects, s.dhcpDone ? 1 : 0, s.dnsAnswered ? 1 : 0);
 						}
 						const auto& tc = CGSH_OpenGL::g_textureCounters;
 						std::string textures = Format("textures_dumped=%llu textures_replaced=%llu tex_made=%llu tex_held=%llu tex_by_upload=%llu tex_by_memory=%llu tex_memory_read=%llu tex_in_place=%llu tex_short_lived=%llu uploads=%llu tex_bytes=%llu tex_replace_on=%d tex_replacements=%llu tex_replacement_bytes=%llu tex_pending=%llu tex_dropped=%llu tex_cropped=%llu tex_regrown=%llu tex_abandoned=%llu frame_copies=%llu frame_copy_uses=%llu gs_buffer_drains=%llu gs_buffer_most=%llu tex_warmed=%llu tex_pending_area=%llu smoothed_draws=%llu scaled_points=%llu",
@@ -2172,6 +2402,17 @@ namespace
 					}
 					Reply(m_shotDone > 0 ? "ok" : "err no picture");
 				}
+				else if(step.kind == Step::UIWAIT)
+				{
+					bool done = m_uiAnswer && m_uiAnswer->first;
+					if(!done && step.value > 0)
+					{
+						step.value--;
+						break;
+					}
+					Reply(done ? ("ok " + m_uiAnswer->second) : "err the application's own thread did not answer in 600 frames");
+					m_uiAnswer.reset();
+				}
 				m_steps.pop_front();
 			}
 		}
@@ -2277,6 +2518,29 @@ namespace
 				}
 			}
 			uint8 wanted = wantBrowser ? Rta::ARITH_BROWSER : Rta::ARITH_NATIVE;
+			// Back to Play!'s own arithmetic follows the players who are in the room, not a
+			// silence: while this copy is in a game's room it stays on browser arithmetic
+			// (the room is where it was needed, and the player it was needed for may only
+			// be quiet, or be heard from another address) unless a copy heard there cannot
+			// compute that way - then staying would be the wrong side for everybody present.
+			if(options.arith == "auto" && m_arithNow == Rta::ARITH_BROWSER && !wantBrowser && m_inRoomNow)
+			{
+				bool someoneCannot = false;
+				for(const auto& peer : peers)
+				{
+					if(peer.silentFor > 15000) continue;
+					if(peer.arithKnown ? !(peer.arithCan & Rta::ARITH_CAN_BROWSER) : (peer.heardFor >= 12000)) someoneCannot = true;
+				}
+				if(!someoneCannot)
+				{
+					wanted = Rta::ARITH_BROWSER;
+					if(!m_arithHeld) Log("arithmetic: nobody heard asks for browser arithmetic at this moment, but this copy is in a game's room: it stays on browser arithmetic until it has left the room");
+					m_arithHeld = true;
+				}
+			}
+			else
+				m_arithHeld = false;
+			wantBrowser = (wanted == Rta::ARITH_BROWSER);
 			if(wanted != m_arithNow && (m_frontEndNow || options.arith != "auto"))
 			{
 				m_arithNow = wanted;
@@ -2320,7 +2584,8 @@ namespace
 			std::string text = Format("mine=%08x words=%u arith=%s", m_patchHash, m_patchWords, (m_arithNow == Rta::ARITH_BROWSER) ? "browser" : "native");
 			if(m_net)
 			{
-				for(const auto& peer : m_net->Peers()) text += Format(" [%s:%u set=%s arith=%s heard_ms=%lld silent_ms=%lld]", Rta::CNet::IpText(peer.ip).c_str(), peer.port, peer.setKnown ? Format("%08x", peer.patchSet).c_str() : "?", !peer.arithKnown ? "?" : ((peer.arithNow == Rta::ARITH_BROWSER) ? "browser" : "native"), static_cast<long long>(peer.heardFor), static_cast<long long>(peer.silentFor));
+				for(const auto& peer : m_net->Peers()) text += Format(" [%s:%u%s set=%s arith=%s heard_ms=%lld silent_ms=%lld]", Rta::CNet::IpText(peer.ip).c_str(), peer.port, (peer.fromIp != peer.ip) ? (" from=" + Rta::CNet::IpText(peer.fromIp)).c_str() : "", peer.setKnown ? Format("%08x", peer.patchSet).c_str() : "?", !peer.arithKnown ? "?" : ((peer.arithNow == Rta::ARITH_BROWSER) ? "browser" : "native"), static_cast<long long>(peer.heardFor), static_cast<long long>(peer.silentFor));
+				text += Format(" held_disconnects=%llu room=%d", static_cast<unsigned long long>(m_net->Stats().heldDisconnects), m_inRoomNow ? 1 : 0);
 			}
 			return text + " note=" + m_setNote;
 		}
@@ -2412,7 +2677,9 @@ namespace
 		std::string m_arithNote;           // what CheckArithmetic has to say
 		uint8 m_arithNow = Rta::ARITH_NATIVE; // what the machine computes with (machine's thread)
 		bool m_arithWarned = false;
+		bool m_arithHeld = false;          // kept on browser arithmetic because this copy is in a room
 		bool m_frontEndNow = false;        // the game is in its front end (WatchGame)
+		bool m_inRoomNow = false;          // ... and there in a game's room
 		std::vector<PatchWord> m_patches;       // from the patch files
 		std::vector<PatchWord> m_activePatches; // those and the display patches, while the game is loaded
 		bool m_isGame = false;
@@ -2424,6 +2691,7 @@ namespace
 		uint64 m_activity = 0, m_quietFrames = 0, m_quietMost = 0;
 		bool m_activitySeen = false;
 		std::atomic<bool> m_gameStuck{false};
+		std::atomic<bool> m_openingSaid{false};
 		std::string m_stuckWhy, m_gameNote, m_gameNoteShown;
 		// the application's thread
 		uint64 m_silentFrame = 0;
@@ -2451,7 +2719,12 @@ namespace
 		std::condition_variable m_textureWake;
 		std::vector<std::thread> m_textureThreads;
 		uint32 m_textureGeneration = 0;
-		bool m_textureStop = false;
+		std::atomic<bool> m_textureStop{false};
+		bool m_textureHooks = false;                 // the renderer asks us for replacement pictures
+		std::atomic<bool> m_textureListStarted{false}, m_textureListDone{false};
+		std::thread m_textureListThread;
+		std::mutex m_textureListMutex;               // one listing at a time
+		std::map<std::string, std::string> m_notices; // Rta::SetNotice (under m_logMutex)
 
 		std::mutex m_logMutex;
 		FILE* m_logFile = nullptr;
@@ -2466,6 +2739,7 @@ namespace
 		Rta::PadState m_pad;
 		uint32 m_padGeneration = 0, m_padSeen = 0, m_padSticksSeen = 0;
 		std::atomic<int> m_shotDone{0};
+		std::shared_ptr<std::pair<std::atomic<bool>, std::string>> m_uiAnswer; // the "ui" command's answer, from the application's thread
 		CGSH_OpenGLQt::CaptureHandler m_capture;
 		unsigned int m_burstLeft = 0, m_burstIndex = 0;
 		unsigned int m_probeRect[4] = {0, 0, 1, 1};
@@ -2594,8 +2868,14 @@ namespace
 
 // ---- what the application calls ---------------------------------------------------------
 
+namespace
+{
+	uint64 g_processStart = 0; // the clock when main() began
+}
+
 void Rta::EarlyInit(int argc, char** argv)
 {
+	g_processStart = ClockMicroseconds();
 	bool dataGiven = false;
 	int player = 0;
 	for(int i = 1; i + 1 < argc; i++)
@@ -2625,6 +2905,12 @@ void Rta::EarlyInit(int argc, char** argv)
 	// The packaged application: our patch file is inside the bundle. Its data directory
 	// has to be known before the application reads its settings, so it is found here.
 	std::string resources = Rta::BundleResourcePath() + "/rta";
+	// Test aid, for the working build started by play.sh: RTA_TEST_PACKAGED=<dir> makes it
+	// take the packaged application's paths (the disc image looked for and checked aside,
+	// launch.ini, the pack in the application's own folder) with <dir>/rta standing for
+	// what the bundle holds and <dir>/support for its folder in Application Support.
+	const char* testPackaged = getenv("RTA_TEST_PACKAGED");
+	if(testPackaged && *testPackaged) resources = std::string(testPackaged) + "/rta";
 	std::error_code error;
 	if(fs::exists(fs::path(resources) / BUNDLED_PATCH_NAME, error))
 	{
@@ -2632,7 +2918,7 @@ void Rta::EarlyInit(int argc, char** argv)
 		g_launch.resources = resources;
 		std::string name = Rta::BundleName();
 		if(name.empty()) name = "Play-RTA";
-		g_launch.root = Rta::ApplicationSupportPath() + "/" + name;
+		g_launch.root = (testPackaged && *testPackaged) ? (std::string(testPackaged) + "/support") : (Rta::ApplicationSupportPath() + "/" + name);
 		fs::create_directories(g_launch.root, error);
 		if(player <= 0) player = QSettings(QString::fromStdString(LaunchFile()), QSettings::IniFormat).value("player", 1).toInt();
 		if(player <= 0 || player > 99) player = 1;
@@ -2682,6 +2968,9 @@ void Rta::AddCommandLineOptions(QCommandLineParser& parser)
 	parser.addOption(QCommandLineOption("rta-set-raw", "Test aid: hand the other players' patch-set datagrams on to the game as well (as an older copy would)."));
 	parser.addOption(QCommandLineOption("rta-arith", "The machine's arithmetic: auto (as a browser copy's machine computes when a browser player is in the game, otherwise Play!'s own), browser, native.", "which"));
 	parser.addOption(QCommandLineOption("rta-netcnf-program", "Let \"Config\" on the game's network screen start Sony's network settings program from the disc (left out otherwise: there is nothing to configure)."));
+	parser.addOption(QCommandLineOption("rta-no-disconnect-hold", "Do not show another player's disconnect to a game that is in a game's room half a second late (for comparing: the launch of three or four can then leave two joiners with wrong addresses for each other)."));
+	parser.addOption(QCommandLineOption("rta-test-dialogs", "Test aid, with --rta-test: our own windows (the player name, Controls) are shown as for a person, behind the other windows and never active, and the control socket's 'ui' commands read and work them. 'now': as this build does it; 'released': as the release of 2026-10-13 morning did.", "which"));
+	parser.addOption(QCommandLineOption("rta-test-folder-wait", "Test aid: the first opening of the texture folder or of the disc image takes this many seconds, as it does while macOS waits for the person to answer its question about the folder.", "seconds"));
 	parser.addOption(QCommandLineOption("rta-title", "A test run that a person takes part in: the window says so in its title with this text, and is otherwise an ordinary window.", "text"));
 }
 
@@ -2730,8 +3019,16 @@ void Rta::ReadCommandLine(const QCommandLineParser& parser)
 			o.server = server.toString().trimmed().toStdString();
 			g_launch.serverFrom = bundled ? "the default this application was made with" : (server.isValid() ? "launch.ini" : "nothing set");
 		}
-		// textures=<dir> in launch.ini: what --rta-textures gives
-		if(!parser.isSet("rta-textures")) o.textureDir = launch.value("textures").toString().trimmed().toStdString();
+		// textures=<dir> in launch.ini (or, failing that, in the bundle's defaults.ini): what
+		// --rta-textures gives. Failing both: "textures" in the application's own folder
+		// (~/Library/Application Support/<name>/textures, for every player number) when a
+		// pack has been put there - a place macOS asks no question about.
+		if(!parser.isSet("rta-textures"))
+		{
+			o.textureDir = LaunchValue("textures").toString().trimmed().toStdString();
+			std::error_code exists;
+			if(o.textureDir.empty() && fs::is_directory(fs::path(g_launch.root) / "textures" / "replace", exists)) o.textureDir = g_launch.root + "/textures";
+		}
 		if(o.patchFile.empty())
 		{
 			o.patchFile = g_launch.resources + "/" + BUNDLED_PATCH_NAME;
@@ -2774,6 +3071,10 @@ void Rta::ReadCommandLine(const QCommandLineParser& parser)
 	o.setRaw = parser.isSet("rta-set-raw");
 	if(parser.isSet("rta-arith")) o.arith = parser.value("rta-arith").toStdString();
 	if(o.arith != "browser" && o.arith != "native") o.arith = "auto";
+	o.holdDisconnects = !parser.isSet("rta-no-disconnect-hold");
+	if(parser.isSet("rta-test-dialogs")) o.testDialogs = (parser.value("rta-test-dialogs") == "released") ? 2 : 1;
+	o.testFolderWait = std::max(0, std::min(parser.value("rta-test-folder-wait").toInt(), 3600));
+	g_testFolderWait = o.testFolderWait;
 	if(parser.isSet("rta-title")) o.testLabel = parser.value("rta-title").toStdString();
 	if(o.testBackground) Rta::MakeBackgroundApplication();
 }
@@ -2790,6 +3091,7 @@ void Rta::BeforeShow(QWidget* window)
 
 void Rta::AfterShow(QWidget* window)
 {
+	g_state.Log(Format("window: shown %.2f s after the application started", (ClockMicroseconds() - g_processStart) / 1e6));
 	if(!g_state.options.testBackground) return;
 	// now, and again when the picture's own window has been made
 	auto back = [window]() { Rta::SendWindowBack(reinterpret_cast<void*>(window->winId())); };
@@ -2888,7 +3190,10 @@ namespace
 	{
 		std::vector<fs::path> files, folders;
 		std::error_code error;
+		// the opening macOS may hold (FindDisc runs on a thread of its own)
+		auto opening = std::make_unique<COpening>(directory.string(), "Your disc image is looked for");
 		fs::directory_iterator entries(directory, fs::directory_options::skip_permission_denied, error);
+		opening.reset();
 		readable = !error;
 		if(error) return files;
 		for(fs::directory_iterator end; entries != end; entries.increment(error))
@@ -3059,6 +3364,53 @@ bool Rta::IsTestRun()
 	return !g_state.options.testLabel.empty() || !g_state.options.controlPath.empty();
 }
 
+int Rta::TestDialogs()
+{
+	return g_state.options.testDialogs;
+}
+
+uint64_t Rta::FrameCount()
+{
+	return g_state.Frame();
+}
+
+// ---- folders macOS guards (Rta.h) -----------------------------------------------------------
+
+std::string Rta::Notice()
+{
+	return g_state.Notice();
+}
+
+void Rta::SetNotice(const std::string& key, const std::string& text)
+{
+	g_state.SetNotice(key, text);
+}
+
+int Rta::ProbeReadable(const std::string& path, const std::string& what)
+{
+	COpening opening(path, what);
+	int fd = open(path.c_str(), O_RDONLY | O_NONBLOCK);
+	if(fd < 0) return errno;
+	close(fd);
+	return 0;
+}
+
+std::string Rta::GuardedFolderOf(const std::string& path)
+{
+	return GuardedFolder(path);
+}
+
+std::string Rta::DeniedText(const std::string& path, const std::string& what, int error)
+{
+	std::string folder = GuardedFolder(path);
+	std::string name = Rta::BundleName().empty() ? std::string("this application") : Rta::BundleName();
+	if(error == EPERM && !folder.empty())
+		return what + " is in " + folder + " (" + PathWords(path) + "), and macOS does not let this application read that folder. Allow it in System Settings > Privacy & Security > Files and Folders > " + name +
+		       "; it is tried again every two seconds and goes on by itself.";
+	return what + " cannot be read: " + PathWords(path) + " (" + strerror(error) + "). Its permissions do not allow it" + (folder.empty() ? "" : (", or macOS does not let this application read " + folder)) +
+	       "; it is tried again every two seconds and goes on by itself once it can be read.";
+}
+
 // ---- one-step online ----------------------------------------------------------------------
 
 bool Rta::OnlineStart(const std::string& mode, std::string& error)
@@ -3218,6 +3570,8 @@ void Rta::Detach()
 std::string Rta::StatusText()
 {
 	// once a second, from the application's thread
+	std::string notice = g_state.Notice();
+	if(!notice.empty()) return notice;
 	int silent = g_state.MachineSilentSeconds();
 	if(silent >= 5)
 	{
