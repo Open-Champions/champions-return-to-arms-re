@@ -19,9 +19,16 @@
 //   --opt net-loopback=on|off    other copies on this computer are reached through the
 //                                loop-back interface (default: on when the server is here)
 //   --opt net-ports=0            do not ask for host UDP ports with the game's numbers
+//   --opt net-hold-disconnects=0 do not hold a peer's disconnect back for half a second while
+//                                the game is in a game's room (netdrv.cpp, udp_receive)
 //   --opt net-set-quiet=1        do not tell the other players this copy's patch set
 //   --opt net-local-only=1       tests: nothing is sent to an address that is not this
 //                                computer's
+//   --opt net-port-shift=N       tests: a second server instance on this computer whose
+//                                ports are the usual ones plus N
+//   --opt net-arith=auto|console|browser   the arithmetic (docs/issues/mixed-arithmetic.md):
+//                                auto (default) computes as the console does and changes to a
+//                                browser's while a browser copy is heard in the lobby or a room
 //   --opt net-pace=HZ            a program without a window: vertical blanks per second of
 //                                real time (default 59.94; 0: as fast as it goes)
 //   --opt net-log=FILE           one line per event (addresses, ports, sizes; never text)
@@ -30,6 +37,10 @@
 //   --opt online=lobby|host[:CODE]|join:CODE[+choose]   go online by itself from power-on
 //   --opt online-name=NAME[,NAME...]   tests: the player name(s), instead of asking
 //   --opt online-person=0        nobody can answer a question (a background test)
+//   --opt online-commands=FILE   tests: script "app ..." lines for the network (online ..., net ...)
+//                                written to this file are carried out and the file removed
+//   --opt online-test-window=1   tests: the name question, the note and the warnings are shown
+//                                on a test window too (online_mac.mm; `app online sheet ...`)
 //
 // docs/issues/native-online.md has the design and what was run.
 #pragma once
@@ -45,6 +56,8 @@ struct Peer {
     bool set_known = false;     // it has said which patch set it has
     uint32_t patch_set = 0;
     uint16_t patch_words = 0;
+    bool arith_known = false;   // it has said which arithmetic it computes with
+    uint8_t arith_can = 0, arith_does = 0;      // bit 0 the console's, bit 1 a browser's; 0 the console's, 1 a browser's
     int64_t heard_ms = 0, silent_ms = 0;
 };
 
@@ -70,6 +83,10 @@ std::vector<Peer> peers();
 std::string ip_text(uint32_t ip);
 void log(const char* format, ...);      // to net-log and, for the lines worth it, the terminal
 void say(const char* format, ...);      // always to the terminal as well
+std::string sockets_text();             // tests: what the driver holds open, in one line
+int arithmetic();                       // 0: this copy computes as the console does, 1: as a browser copy does
+std::string arithmetic_text();          // "console (can do: both)"
+const char* option(const char* key);    // the runtime's --opt key=value, for the files that do not include rt.h
 void drop_tcp();                        // tests: the line to the server is cut
 
 // online.cpp
@@ -83,6 +100,7 @@ extern void (*ask_name)(const std::string& why);        // answer with give_name
 extern void (*show_code)(const std::string& code);
 extern void (*show_note)(const std::string& note);      // when the note changes
 extern void (*show_warning)(const std::string& text);   // another player's copy is patched differently
+extern void (*window_test)(const std::string& text);    // tests: "sheet info|type TEXT|press N|picture FILE" for the window's question
 void ask_name_on_terminal(const std::string& why);      // the fallback, for a hook that has no window
 void give_name(const std::string& name);
 void decline_name();

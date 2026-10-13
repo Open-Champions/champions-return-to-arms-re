@@ -7,6 +7,11 @@
            --pnach FILE --sections FILE   the fix set (defaults below)
            --no-game          do not translate and compile the game first (link what is there)
            --no-translation   interpret VU1 even when a translation of its programs exists
+           --as NAME          the program's name in local/recomp-out/bin (default rta_app or
+                              rta_app_orig).  A build that is to be checked before it becomes
+                              the program people start is made as rta_app_next and moved over
+                              rta_app afterwards (mv is atomic; the program finds the workspace
+                              from the directory it lies in, so it must be made in bin/)
 
 One program from five parts:
   the translated game   rta_app: translated with the suggested fix set applied - the word
@@ -77,6 +82,7 @@ def main():
     parser.add_argument('--sections', default=os.path.join(ROOT, 'tools', 'play-net', 'sections-suggested.txt'))
     parser.add_argument('--no-game', action='store_true')
     parser.add_argument('--no-translation', action='store_true')
+    parser.add_argument('--as', dest='as_name', default='')
     args = parser.parse_args()
     rt = os.path.join(RECOMP, 'rt')
     render = os.path.join(RECOMP, 'render')
@@ -173,14 +179,20 @@ def main():
                 print(err[:3000])
     if failed:
         return 1
-    out = os.path.join(OUT, 'bin', args.name)
+    out = os.path.join(OUT, 'bin', args.as_name or args.name)
+    # linked beside its place and moved there: a copy that is running or being started by
+    # somebody else never sees a half-written file
+    final, out = out, out + '.link%d' % os.getpid()
     frameworks = sum((['-framework', f] for f in ('QtCore', 'QtGui', 'GameController', 'AppKit', 'Foundation')), [])
     result = subprocess.run(['clang++', '-o', out] + objects + link + ['-F', qtlib] + frameworks + ['-Wl,-rpath,' + qtlib, '-lpthread'],
                             capture_output=True, text=True)
     if result.returncode != 0:
         print('LINK FAILED\n' + result.stderr[:6000])
+        if os.path.exists(out):
+            os.remove(out)
         return 1
-    print('compiled %d of %d files; linked %s' % (len(todo), len(jobs), out))
+    os.replace(out, final)
+    print('compiled %d of %d files; linked %s' % (len(todo), len(jobs), final))
     return 0
 
 

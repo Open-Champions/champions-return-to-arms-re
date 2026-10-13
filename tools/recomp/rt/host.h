@@ -13,6 +13,10 @@ namespace host {
 // host threads; the translation recurses as deep as the game does and each frame of it is
 // larger than the original's, so the default stack of a std::thread is not enough.
 void start_thread(void (*entry)(void*), void* argument, size_t stack_bytes);
+// A windowed application asks for this once, before the game starts: the threads made by
+// start_thread from then on are scheduled as the player's own (macOS: the user-interactive
+// class), not as background work.  A headless run never asks.
+void interactive_threads(bool on);
 
 // End the process now, without running destructors (other threads are still inside
 // translated code).

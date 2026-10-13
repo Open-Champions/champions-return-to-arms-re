@@ -292,7 +292,9 @@ other column is equal on every tick. The column was corrected (it follows the by
    page redeployed. The relay needs nothing from this work.
 4. Nothing changes in `patches/SLUS-20973_4028A55F.pnach` or `sections-suggested.txt`;
    the set stays 3f5b1e14. `tools/play-net/proposed-three-players.pnach` was not needed
-   and does not exist.
+   and does not exist. (The release of the same evening changed one section for another
+   reason - the flush section's third word, `docs/issues/native-soak.md` finding 1 - and
+   with it the figure: 27f61e1d, 91 words.)
 
 ## Where things are
 

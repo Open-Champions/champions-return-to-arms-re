@@ -14,7 +14,8 @@
 //   - script commands, for tests (the runtime's "app <text>"):
 //       app online start lobby|host[:CODE]|join:CODE[+choose]
 //       app online stop | app online name NAME | app online       (the last prints the report)
-//       app net peers | app net drop
+//       app net peers | app net drop | app net sockets | app net arith
+//       app online sheet info|type TEXT|press N|picture FILE   (the window's name question)
 //   - a name is asked for on the terminal unless an application took the question over
 //     (rtanet::ask_name); the code of a hosted game is printed, or handed to show_code.
 #include "netdrv.h"
@@ -34,6 +35,7 @@ void (*ask_name)(const std::string& why) = nullptr;
 void (*show_code)(const std::string& code) = nullptr;
 void (*show_note)(const std::string& note) = nullptr;
 void (*show_warning)(const std::string& text) = nullptr;
+void (*window_test)(const std::string& text) = nullptr;
 }
 
 namespace {
@@ -102,13 +104,14 @@ std::string peers_text() {
     std::ostringstream text;
     const rtanet::Info& I = rtanet::info();
     char figure[64];
-    snprintf(figure, sizeof(figure), "set=%08x words=%u", I.patch_set, I.patch_words);
+    snprintf(figure, sizeof(figure), "set=%08x words=%u arith=%s", I.patch_set, I.patch_words, rtanet::arithmetic() ? "browser" : "console");
     text << figure;
     for (const auto& peer : rtanet::peers()) {
-        char one[160];
-        if (peer.set_known) snprintf(one, sizeof(one), " [%s:%u set=%08x%s heard_ms=%lld silent_ms=%lld]", rtanet::ip_text(peer.ip).c_str(), peer.port, peer.patch_set,
-                                     peer.patch_set == I.patch_set ? "" : " DIFFERENT", (long long)peer.heard_ms, (long long)peer.silent_ms);
-        else snprintf(one, sizeof(one), " [%s:%u set=? heard_ms=%lld silent_ms=%lld]", rtanet::ip_text(peer.ip).c_str(), peer.port, (long long)peer.heard_ms, (long long)peer.silent_ms);
+        char one[200];
+        const char* arith = !peer.arith_known ? "?" : peer.arith_does ? "browser" : "console";
+        if (peer.set_known) snprintf(one, sizeof(one), " [%s:%u set=%08x%s arith=%s heard_ms=%lld silent_ms=%lld]", rtanet::ip_text(peer.ip).c_str(), peer.port, peer.patch_set,
+                                     peer.patch_set == I.patch_set ? "" : " DIFFERENT", arith, (long long)peer.heard_ms, (long long)peer.silent_ms);
+        else snprintf(one, sizeof(one), " [%s:%u set=? arith=%s heard_ms=%lld silent_ms=%lld]", rtanet::ip_text(peer.ip).c_str(), peer.port, arith, (long long)peer.heard_ms, (long long)peer.silent_ms);
         text << one;
     }
     return text.str();
@@ -122,12 +125,19 @@ void command(const std::string& text, u64 frame) {
         if (second == "start") start(third, false);
         else if (second == "stop") g_online.Stop("stopped by the script");
         else if (second == "name") { std::string wrong = Rta::COnline::CheckName(third); if (wrong.empty()) g_online.GiveName(third); else rtanet::say("online: %s", wrong.c_str()); }
+        else if (second == "sheet") {       // tests: the window's question (online_mac.mm)
+            size_t at = text.find("sheet");
+            if (rtanet::window_test) rtanet::window_test(text.substr(at + 5));
+            else rtanet::say("online: this program has no window question to test");
+        }
         else printf("[frame %llu] online: %s saved_login=%d\n", (unsigned long long)frame, g_online.Report().c_str(), g_online.HasLogin() ? 1 : 0);
         return;
     }
     if (first == "net") {
         if (second == "peers") printf("[frame %llu] peers: %s\n", (unsigned long long)frame, peers_text().c_str());
         else if (second == "drop") rtanet::drop_tcp();
+        else if (second == "arith") printf("[frame %llu] arithmetic: %s\n", (unsigned long long)frame, rtanet::arithmetic_text().c_str());
+        else if (second == "sockets") printf("[frame %llu] %s\n", (unsigned long long)frame, rtanet::sockets_text().c_str());
         return;
     }
     if (g_previous_command) g_previous_command(text, frame);
@@ -156,12 +166,33 @@ bool config_offered(const uint8_t* ram) {
     return state == 0 || (state == 3 && (s32)word(window + 0x4354) > 0);
 }
 
+// tests: "app ..." lines for the network from a file (online-commands=FILE), looked for twice
+// a second - a way in for a test that drives the window program by its control socket, whose
+// own "app" command goes to the window program alone
+std::string g_command_file;
+void poll_command_file(uint64_t number) {
+    if (g_command_file.empty() || number % 30 != 0) return;
+    FILE* f = fopen(g_command_file.c_str(), "r");
+    if (!f) return;
+    std::vector<std::string> lines;
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        std::string text = line;
+        while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) text.pop_back();
+        if (!text.empty()) lines.push_back(text);
+    }
+    fclose(f);
+    remove(g_command_file.c_str());
+    for (const auto& text : lines) { command(text, number); fflush(stdout); }
+}
+
 struct Pad : rta::PadSource {
     void read(unsigned port, uint64_t number, rta::PadState& state) override {
         if (g_inner) g_inner->read(port, number, state);
         else state = script_pad(port);
         if (port != 0) return;
         rtanet::per_blank(number);
+        poll_command_file(number);
         g_online.SetPlayerButtons(state.buttons);
         g_online.Tick(rta::memory(), RAM_SIZE, true);
         if (g_online.Driving()) {
@@ -241,6 +272,9 @@ void online_install() {
     script_app_command = command;
     g_previous_finish = rt_at_finish;
     rt_at_finish = finish;
+
+    value = rt_option("online-commands");
+    if (value) g_command_file = value;
 
     value = rt_option("online");
     if (value) start(value, true);

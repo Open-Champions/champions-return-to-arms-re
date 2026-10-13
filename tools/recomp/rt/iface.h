@@ -52,7 +52,9 @@ struct VideoSink {
 
     // Start of a vertical blank.  `field` is GS CSR.FIELD after the flip (0 or 1),
     // `number` counts blanks since power-on.  A windowed application presents here, and
-    // may block here: that is how it paces the game to the display.
+    // may block here: that is how it paces the game to the display.  It is called after
+    // the script has been stepped for this blank and before the controller is read
+    // (PadSource), so that what the game reads is as fresh as the wait allows.
     virtual void vblank(unsigned field, uint64_t number) { (void)field; (void)number; }
 
     // The game called gfx_dmaHandler(-1): a finished frame's eight lists of draw packets
@@ -124,11 +126,20 @@ struct PadState {
 };
 struct PadSource {
     virtual ~PadSource() {}
-    // Asked once per controller port (0, 1) at the start of every vertical blank, before
-    // the game's blank handler runs.  What it returns reaches the game's controller buffer
-    // one blank later, as on the console (the I/O processor's copy arrives during the
-    // frame); `--opt pad-delay=0` hands it over at once.  `number` counts blanks since
-    // power-on.
+    // Asked once per controller port (0, 1) at every vertical blank, after the picture sink's
+    // vblank() has returned (a sink that paces the game waits there: the controller is read
+    // when the wait is over, not before it) and before the game's blank handler runs.
+    // `number` counts blanks since power-on.
+    //
+    // When it reaches the game's controller buffer depends on whose it is.  What the script
+    // (--script, --do) holds arrives one blank later, as on the console (the I/O processor's
+    // copy arrives during the frame) and in the emulator rig, so that a script presses on the
+    // same tick here and there; `--opt pad-delay=0` hands it over at once.  Everything else
+    // in the answer - a keyboard, a controller: what a person holds - arrives at this very
+    // blank: a machine without an I/O processor need not make a player wait for one
+    // (`--opt pad-live-delay=1` gives the delay back, to measure it).  The runtime tells the
+    // two apart itself (iop.cpp, pad_sample): a source just answers with everything.
+    // Controller rows replayed from another machine (--opt pad-replay) replace both.
     virtual void read(unsigned port, uint64_t number, PadState& state) = 0;
     // The game set the two vibration motors of a port (scePadSetActDirect).
     virtual void rumble(unsigned port, uint8_t small_motor, uint8_t large_motor) { (void)port; (void)small_motor; (void)large_motor; }

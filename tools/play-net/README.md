@@ -205,7 +205,8 @@ script does.
   run and 60.0 in the side-by-side run. Heat haze in `fire3`: no block of noise in six
   pictures beside its golems, 2,024 to 2,781 pieces of the frame kept as textures in 90
   frames; beside a golem both builds run at 37 to 41 frames a second under that load
-  (video thread 21–25 ms a frame). The set figure in `rta.log` is 3f5b1e14 as before.
+  (video thread 21–25 ms a frame). The set figure in `rta.log` was 3f5b1e14 then, as before (27f61e1d since the flush
+  section's third word, "Patches" below).
 
 ## Sound
 
@@ -356,7 +357,8 @@ does with its every-frame patches, a word that is not what the patch says is wri
 again at every vertical blank. The status bar and `rta.log` show a figure for the set
 ("set xxxxxxxx", from the addresses and values of the shared sections only): every
 player in a game has to have the same. For `sections-suggested.txt` as it is now the
-line reads "patches: 26 sections, 90 words, set 3f5b1e14".
+line reads "patches: 26 sections, 91 words, set 27f61e1d" (until the evening of
+2026-10-12, before the flush section got its third word: 90 words, set 3f5b1e14).
 
 ## Texture dump and replacement
 

@@ -297,6 +297,20 @@ struct GlBackend::Impl {
         f->glBlitFramebuffer(0, 0, t.pw, t.ph, 0, 0, t.pw, t.ph, GL_COLOR_BUFFER_BIT, GL_NEAREST);
         t.dirty = false;
     }
+    // ... only a rectangle of it (pixels of the surface), for a copy out of it: the rest
+    // stays to be brought up to date when it is read (a level with heat haze copies ten
+    // small pieces of the 3-D surface a frame; resolving all of a 2619 x 1964 surface of
+    // four samples for each was most of that frame's work on the graphics card).
+    void resolve_part(Target& t, int x0, int y0, int x1, int y1) {
+        if (!t.ms_fbo || !t.dirty) return;
+        x0 = std::max(0, x0 - 2); y0 = std::max(0, y0 - 2); x1 = std::min(t.pw, x1 + 2); y1 = std::min(t.ph, y1 + 2);
+        if (x1 <= x0 || y1 <= y0) return;
+        f->glBindFramebuffer(GL_READ_FRAMEBUFFER, t.ms_fbo);
+        f->glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t.fbo);
+        f->glDisable(GL_SCISSOR_TEST);
+        f->glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        f->glBlitFramebuffer(x0, y0, x1, y1, x0, y0, x1, y1, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    }
     void drop_picture(Picture& p) {
         if (p.gl) { f->glDeleteTextures(1, &p.gl); p.gl = 0; }
         picture_bytes -= p.bytes;
@@ -597,6 +611,26 @@ void GlBackend::execute(const FrameList& frame) {
     f->glDisable(GL_CULL_FACE);
     uint32_t bound_target = 0;
     Impl::Target* target = nullptr;
+    // What the last draw left set: a call is made only for what the next draw has otherwise
+    // (most draws of a frame differ from the one before in their texture and nothing else;
+    // set one by one, the twenty-odd calls a draw were most of this thread's time).
+    struct Cache {
+        int textured = -1, tfx = -1, tcc = -1, atst = -1, blend_c = -1, wrap[2] = {-1, -1};
+        float st_scale[2] = {NAN, NAN}, tex_size[2] = {NAN, NAN}, tex_offset[2] = {NAN, NAN}, region[4] = {NAN, NAN, NAN, NAN}, weave = NAN;
+        float texa[4] = {NAN, NAN, NAN, NAN}, fog[4] = {NAN, NAN, NAN, NAN}, aref = NAN, blend[4] = {NAN, NAN, NAN, NAN}, fix = NAN;
+        GLuint texture = ~0u, sampler = ~0u;
+        int depth_func = -1, depth_mask = -1, mask_rgb = -1, mask_a = -1, blending = -1, equation = -1, scissor[4] = {-1, -1, -1, -1};
+    } cache;
+    auto set1i = [&](GLint location, int& held, int value) { if (held != value) { held = value; f->glUniform1i(location, value); } };
+    auto set1f = [&](GLint location, float& held, float value) { if (!(held == value)) { held = value; f->glUniform1f(location, value); } };
+    auto set2f = [&](GLint location, float* held, float a, float b) { if (!(held[0] == a && held[1] == b)) { held[0] = a; held[1] = b; f->glUniform2f(location, a, b); } };
+    auto set4f = [&](GLint location, float* held, float a, float b, float c2, float d) {
+        if (!(held[0] == a && held[1] == b && held[2] == c2 && held[3] == d)) { held[0] = a; held[1] = b; held[2] = c2; held[3] = d; f->glUniform4f(location, a, b, c2, d); }
+    };
+    auto bind = [&](GLuint texture, GLuint sampler) {
+        if (cache.texture != texture) { cache.texture = texture; f->glBindTexture(GL_TEXTURE_2D, texture); }
+        if (cache.sampler != sampler) { cache.sampler = sampler; f->glBindSampler(0, sampler); }
+    };
     for (size_t command = 0; command < frame.commands.size(); command++) {
         const DrawCmd& c = frame.commands[command];
         auto found = g.targets.find(c.target);
@@ -606,9 +640,11 @@ void GlBackend::execute(const FrameList& frame) {
             if (src == g.targets.end()) continue;
             Impl::Target& s = src->second;
             Impl::Target& d = found->second;
-            g.resolve(s);
-            g.resolve(d);
             float sx = (float)s.pw / s.lw, sy = (float)s.ph / s.lh, dx = (float)d.pw / d.lw, dy = (float)d.ph / d.lh;
+            g.resolve_part(s, (int)(c.copy_src[0] * sx), (int)(c.copy_src[1] * sy), (int)((c.copy_src[0] + c.copy_src[2]) * sx) + 1,
+                           (int)((c.copy_src[1] + c.copy_src[3]) * sy) + 1);
+            g.resolve(d);
+            cache = Cache();                            // the copy changes masks and bindings
             f->glBindFramebuffer(GL_READ_FRAMEBUFFER, s.fbo);
             f->glBindFramebuffer(GL_DRAW_FRAMEBUFFER, d.fbo);
             f->glDisable(GL_SCISSOR_TEST);
@@ -629,6 +665,7 @@ void GlBackend::execute(const FrameList& frame) {
                 g.resolve(source->second);
                 f->glEnable(GL_SCISSOR_TEST);
                 bound_target = 0;
+                cache = Cache();
             }
         }
         if (c.target != bound_target) {
@@ -643,7 +680,10 @@ void GlBackend::execute(const FrameList& frame) {
         int x0 = (int)(c.scissor[0] * sx + 0.5f), y0 = (int)(c.scissor[1] * sy + 0.5f);
         int x1 = (int)(c.scissor[2] * sx + 0.5f), y1 = (int)(c.scissor[3] * sy + 0.5f);
         if (c.scissor_moved) { x0 = (int)(c.scissor_x[0] * sx + 0.5f); x1 = (int)(c.scissor_x[1] * sx + 0.5f); }
-        f->glScissor(x0, y0, x1 > x0 ? x1 - x0 : 0, y1 > y0 ? y1 - y0 : 0);
+        {
+            int box[4] = {x0, y0, x1 > x0 ? x1 - x0 : 0, y1 > y0 ? y1 - y0 : 0};
+            if (memcmp(box, cache.scissor, sizeof box)) { memcpy(cache.scissor, box, sizeof box); f->glScissor(box[0], box[1], box[2], box[3]); }
+        }
         // texture
         GLuint name = 0;
         bool linear = c.linear;
@@ -651,7 +691,7 @@ void GlBackend::execute(const FrameList& frame) {
             if (c.tex_is_target) { auto t = g.targets.find(c.texture); if (t != g.targets.end()) name = t->second.colour; }
             else { auto t = g.textures.find(c.texture); if (t != g.textures.end()) name = t->second; }
         }
-        f->glUniform1i(g.u.textured, name ? 1 : 0);
+        set1i(g.u.textured, cache.textured, name ? 1 : 0);
         // a picture in its place: a replacement always, the texture's own mip-mapped pixels
         // where the game filters; a part only for a draw that stays inside it
         const Impl::Picture* picture = nullptr;
@@ -666,54 +706,58 @@ void GlBackend::execute(const FrameList& frame) {
             bool clamp_s = !picture->whole || c.wrap[0] != WRAP_REPEAT || picture->texels_w != picture->named_w;
             bool clamp_t = !picture->whole || c.wrap[1] != WRAP_REPEAT || picture->texels_h != picture->named_h;
             if (!picture->from_file) { clamp_s = !picture->whole || c.wrap[0] != WRAP_REPEAT; clamp_t = !picture->whole || c.wrap[1] != WRAP_REPEAT; }
-            f->glBindTexture(GL_TEXTURE_2D, picture->gl);
-            f->glBindSampler(0, g.mip_samplers[c.made_by != 2 ? 1 : 0][clamp_s ? 1 : 0][clamp_t ? 1 : 0]);
-            f->glUniform1i(g.u.tfx, c.tfx);
-            f->glUniform1i(g.u.tcc, c.tcc ? 1 : 0);
-            f->glUniform2f(g.u.st_scale, c.st_scale[0], c.st_scale[1]);
-            f->glUniform2f(g.u.tex_size, (float)(picture->part[2] - picture->part[0]), (float)(picture->part[3] - picture->part[1]));
-            f->glUniform2f(g.u.tex_offset, -(float)picture->part[0], -(float)picture->part[1]);
-            f->glUniform2i(g.u.wrap, c.wrap[0], c.wrap[1]);
-            f->glUniform4f(g.u.region, c.region[0], c.region[1], c.region[2], c.region[3]);
-            f->glUniform1f(g.u.weave_half, c.weave_half > 0 && picture->two_field ? -1.0f : c.weave_half);
-            f->glUniform4f(g.u.texa, 0.0f, (float)c.ta0, (float)c.ta1, 0.0f);
+            bind(picture->gl, g.mip_samplers[c.made_by != 2 ? 1 : 0][clamp_s ? 1 : 0][clamp_t ? 1 : 0]);
+            set1i(g.u.tfx, cache.tfx, c.tfx);
+            set1i(g.u.tcc, cache.tcc, c.tcc ? 1 : 0);
+            set2f(g.u.st_scale, cache.st_scale, c.st_scale[0], c.st_scale[1]);
+            set2f(g.u.tex_size, cache.tex_size, (float)(picture->part[2] - picture->part[0]), (float)(picture->part[3] - picture->part[1]));
+            set2f(g.u.tex_offset, cache.tex_offset, -(float)picture->part[0], -(float)picture->part[1]);
+            if (cache.wrap[0] != c.wrap[0] || cache.wrap[1] != c.wrap[1]) { cache.wrap[0] = c.wrap[0]; cache.wrap[1] = c.wrap[1]; f->glUniform2i(g.u.wrap, c.wrap[0], c.wrap[1]); }
+            set4f(g.u.region, cache.region, c.region[0], c.region[1], c.region[2], c.region[3]);
+            set1f(g.u.weave_half, cache.weave, c.weave_half > 0 && picture->two_field ? -1.0f : c.weave_half);
+            set4f(g.u.texa, cache.texa, 0.0f, (float)c.ta0, (float)c.ta1, 0.0f);
         } else if (name) {
-            f->glBindTexture(GL_TEXTURE_2D, name);
-            f->glBindSampler(0, g.samplers[linear ? 1 : 0][c.wrap[0] == WRAP_REPEAT ? 0 : 1][c.wrap[1] == WRAP_REPEAT ? 0 : 1]);
-            f->glUniform1i(g.u.tfx, c.tfx);
-            f->glUniform1i(g.u.tcc, c.tcc ? 1 : 0);
-            f->glUniform2f(g.u.st_scale, c.st_scale[0], c.st_scale[1]);
-            f->glUniform2f(g.u.tex_size, c.tex_size[0], c.tex_size[1]);
-            f->glUniform2f(g.u.tex_offset, c.tex_offset[0], c.tex_offset[1]);
-            f->glUniform2i(g.u.wrap, c.wrap[0], c.wrap[1]);
-            f->glUniform4f(g.u.region, c.region[0], c.region[1], c.region[2], c.region[3]);
-            f->glUniform1f(g.u.weave_half, c.weave_half);
-            f->glUniform4f(g.u.texa, c.tex_is_target ? (float)c.texa_mode : 0.0f, (float)c.ta0, (float)c.ta1, c.aem ? 1.0f : 0.0f);
+            bind(name, g.samplers[linear ? 1 : 0][c.wrap[0] == WRAP_REPEAT ? 0 : 1][c.wrap[1] == WRAP_REPEAT ? 0 : 1]);
+            set1i(g.u.tfx, cache.tfx, c.tfx);
+            set1i(g.u.tcc, cache.tcc, c.tcc ? 1 : 0);
+            set2f(g.u.st_scale, cache.st_scale, c.st_scale[0], c.st_scale[1]);
+            set2f(g.u.tex_size, cache.tex_size, c.tex_size[0], c.tex_size[1]);
+            set2f(g.u.tex_offset, cache.tex_offset, c.tex_offset[0], c.tex_offset[1]);
+            if (cache.wrap[0] != c.wrap[0] || cache.wrap[1] != c.wrap[1]) { cache.wrap[0] = c.wrap[0]; cache.wrap[1] = c.wrap[1]; f->glUniform2i(g.u.wrap, c.wrap[0], c.wrap[1]); }
+            set4f(g.u.region, cache.region, c.region[0], c.region[1], c.region[2], c.region[3]);
+            set1f(g.u.weave_half, cache.weave, c.weave_half);
+            set4f(g.u.texa, cache.texa, c.tex_is_target ? (float)c.texa_mode : 0.0f, (float)c.ta0, (float)c.ta1, c.aem ? 1.0f : 0.0f);
         }
-        f->glUniform4f(g.u.fog, (float)c.fog_colour[0], (float)c.fog_colour[1], (float)c.fog_colour[2], c.fog ? 1.0f : 0.0f);
-        f->glUniform1i(g.u.atst, c.alpha_test ? c.atst : 1);
-        f->glUniform1f(g.u.aref, (float)c.aref);
+        set4f(g.u.fog, cache.fog, (float)c.fog_colour[0], (float)c.fog_colour[1], (float)c.fog_colour[2], c.fog ? 1.0f : 0.0f);
+        set1i(g.u.atst, cache.atst, c.alpha_test ? c.atst : 1);
+        set1f(g.u.aref, cache.aref, (float)c.aref);
         // depth
-        f->glDepthFunc(c.ztst == 1 ? GL_ALWAYS : c.ztst == 2 ? GL_GEQUAL : c.ztst == 3 ? GL_GREATER : GL_NEVER);
-        f->glDepthMask(c.depth_write ? GL_TRUE : GL_FALSE);
-        f->glColorMask(!c.mask_rgb, !c.mask_rgb, !c.mask_rgb, !c.mask_a);
+        {
+            int func = c.ztst == 1 ? GL_ALWAYS : c.ztst == 2 ? GL_GEQUAL : c.ztst == 3 ? GL_GREATER : GL_NEVER;
+            if (cache.depth_func != func) { cache.depth_func = func; f->glDepthFunc((GLenum)func); }
+            if (cache.depth_mask != (int)c.depth_write) { cache.depth_mask = c.depth_write; f->glDepthMask(c.depth_write ? GL_TRUE : GL_FALSE); }
+            if (cache.mask_rgb != (int)c.mask_rgb || cache.mask_a != (int)c.mask_a) {
+                cache.mask_rgb = c.mask_rgb; cache.mask_a = c.mask_a;
+                f->glColorMask(!c.mask_rgb, !c.mask_rgb, !c.mask_rgb, !c.mask_a);
+            }
+        }
         // blend: colour = (A - B) * C + D
         if (c.blend) {
             float sc = (c.ba == 0 ? 1.0f : 0.0f) - (c.bb == 0 ? 1.0f : 0.0f), sk = c.bd == 0 ? 1.0f : 0.0f;
             float dc = (c.ba == 1 ? 1.0f : 0.0f) - (c.bb == 1 ? 1.0f : 0.0f), dk = c.bd == 1 ? 1.0f : 0.0f;
             bool src_negative = sc < 0 && sk == 0, dst_negative = dc < 0 && dk == 0;
-            f->glEnable(GL_BLEND);
-            f->glBlendFuncSeparate(GL_ONE, GL_SRC1_COLOR, GL_ONE, GL_ZERO);
-            f->glBlendEquationSeparate(dst_negative && !src_negative ? GL_FUNC_SUBTRACT : src_negative && !dst_negative ? GL_FUNC_REVERSE_SUBTRACT : GL_FUNC_ADD, GL_FUNC_ADD);
+            int equation = dst_negative && !src_negative ? GL_FUNC_SUBTRACT : src_negative && !dst_negative ? GL_FUNC_REVERSE_SUBTRACT : GL_FUNC_ADD;
+            if (cache.blending != 1) { cache.blending = 1; f->glEnable(GL_BLEND); f->glBlendFuncSeparate(GL_ONE, GL_SRC1_COLOR, GL_ONE, GL_ZERO); }
+            if (cache.equation != equation) { cache.equation = equation; f->glBlendEquationSeparate((GLenum)equation, GL_FUNC_ADD); }
             if (src_negative && dst_negative) { sc = 0; dc = 0; }
-            f->glUniform4f(g.u.blend, sc, sk, dc, dk);
-            f->glUniform1i(g.u.blend_c, c.bc);
-            f->glUniform1f(g.u.fix, (float)c.fix / 128.0f);
+            set4f(g.u.blend, cache.blend, sc, sk, dc, dk);
+            set1i(g.u.blend_c, cache.blend_c, c.bc);
+            set1f(g.u.fix, cache.fix, (float)c.fix / 128.0f);
         } else {
-            f->glDisable(GL_BLEND);
-            f->glUniform4f(g.u.blend, 0, 1, 0, 0);
-            f->glUniform1i(g.u.blend_c, 2);
-            f->glUniform1f(g.u.fix, 1.0f);
+            if (cache.blending != 0) { cache.blending = 0; f->glDisable(GL_BLEND); }
+            set4f(g.u.blend, cache.blend, 0, 1, 0, 0);
+            set1i(g.u.blend_c, cache.blend_c, 2);
+            set1f(g.u.fix, cache.fix, 1.0f);
         }
         f->glDrawArrays(c.prim == PK_TRIANGLES ? GL_TRIANGLES : c.prim == PK_LINES ? GL_LINES : GL_POINTS, (GLint)c.first, (GLsizei)c.count);
         g.draws++;

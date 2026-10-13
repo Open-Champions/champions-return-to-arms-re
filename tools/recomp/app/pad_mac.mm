@@ -227,4 +227,11 @@ void test(const std::string& command, uint16_t buttons, const float values[6]) {
     });
 }
 
+void keep_timers() {
+    static id activity;
+    if (activity) return;
+    activity = [[NSProcessInfo processInfo] beginActivityWithOptions:(NSActivityUserInitiatedAllowingIdleSystemSleep | NSActivityLatencyCritical)
+                                                              reason:@"the game is running"];
+}
+
 }  // namespace hostpad

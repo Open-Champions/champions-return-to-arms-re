@@ -180,5 +180,7 @@ void test(const std::string& command, uint16_t buttons, const float values[6]) {
     }
 }
 
+void keep_timers() {}
+
 }  // namespace hostpad
 #endif  // _WIN32

@@ -58,7 +58,8 @@ class Instance:
         self.data = data
         log = open(os.path.join(self.out, kind + '.out'), 'w')
         if kind == 'native':
-            command = [os.path.join(ROOT, 'local', 'recomp-out', 'bin', 'rta_app'), '--disc', disc, '--data', data,
+            # RTA_TOUR_APP: another build of the window program (a candidate that is being checked)
+            command = [os.environ.get('RTA_TOUR_APP', os.path.join(ROOT, 'local', 'recomp-out', 'bin', 'rta_app')), '--disc', disc, '--data', data,
                        '--test', label or 'native app tour', '--window', '320x240', '--size', size, '--control', self.socket_path]
             command += [] if paced else ['--unpaced']
             command += os.environ.get('RTA_TOUR_ARGS', '').split()      # more options for rta_app, e.g. --plain

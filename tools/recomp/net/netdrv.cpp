@@ -91,7 +91,8 @@ struct Conn {
     std::vector<u8> head;           // the first bytes from a gateway, for its reply
     u64 out = 0, in = 0;
 };
-struct UdpHost { sock::Handle fd = sock::NONE; u16 host_port = 0; };
+struct Held { u64 due_field = 0; std::vector<u8> data; u32 shown_ip = 0; u16 from_port = 0; };
+struct UdpHost { sock::Handle fd = sock::NONE; u16 host_port = 0; std::deque<Held> held; };
 struct PeerState {
     int64_t first_heard = 0, last_heard = 0;
     u16 local_port = 0;
@@ -99,7 +100,20 @@ struct PeerState {
     bool set_known = false, warned = false;
     u32 patch_set = 0;
     u16 patch_words = 0;
+    bool arith_known = false;
+    u8 arith_can = 0, arith_does = 0;   // as told: bit 0 the console's, bit 1 the browser's; 0 the console's, 1 the browser's
+    int arith_warned = -1;              // the arithmetic of ours the warning was given for
 };
+// Which arithmetic this copy computes with (docs/issues/mixed-arithmetic.md): the console's
+// (results rounded toward zero, tiny numbers taken as zero - what the other builds call
+// Play!'s own) or a browser's (to nearest, tiny numbers kept).
+enum { ARITH_CONSOLE = 0, ARITH_BROWSER = 1 };
+struct Arith {
+    bool switchable = false;            // this build can put its processor in either state
+    int fixed = -1;                     // net-arith=console|browser: -1 is auto
+    int now = ARITH_CONSOLE;
+    u8 can() const { return fixed == ARITH_CONSOLE ? 1 : fixed == ARITH_BROWSER ? 2 : switchable ? 3 : 1; }
+} A;
 
 struct Driver {
     bool ready = false;
@@ -108,7 +122,10 @@ struct Driver {
     std::string lobby_name = "con.soegames.net";
     std::set<u16> server_udp_ports = {10101};
     u16 gateway_lo = 40800, gateway_hi = 40817;
+    int port_shift = 0;                 // tests: a second server instance on this computer, its ports the usual ones plus this
     bool learn_alias = true, bind_game_ports = true, tell_set = true, local_only = false, log_all = false, write_netcnf = true;
+    bool hold_disconnects = true;       // a peer's disconnect is shown to a game in a room half a second late (udp_receive)
+    u64 held_total = 0;
     double pace = 59.94;
     std::set<u32> own_addresses;
     FILE* log_file = nullptr;
@@ -159,6 +176,30 @@ void vlog(bool terminal, const char* format, va_list args) {
     if (D.log_file) { fprintf(D.log_file, "%8lld %s\n", (long long)now_ms(), line); fflush(D.log_file); }
     if (terminal) { printf("[net] %s\n", line); fflush(stdout); }
 }
+
+// ---- the arithmetic ----------------------------------------------------------------------
+// The translated code computes with the host's own instructions and the runtime puts every
+// game thread's processor in the console's state when the thread starts (rt/runtime.cpp,
+// thread_main; rt/fpu.h).  A browser copy cannot do that, and the emulator-based application
+// changes to the browser's state when one is in the room (FpUtils::SetArithmetic).  This
+// build does the same thing in the same place: the thread that runs the game's ticks is put
+// in line at every call of the task loop and at every vertical blank.  Only where the
+// processor has the two modes and nothing does them in software.
+#if defined(__aarch64__) && !defined(RTA_SOFT_RZ) && !defined(__EMSCRIPTEN__)
+const bool ARITH_SWITCHABLE = true;
+inline void thread_arith(int mode) {
+    uint64_t fpcr;
+    __asm__ __volatile__("mrs %0, fpcr" : "=r"(fpcr));
+    uint64_t wanted = fpcr & ~((3ull << 22) | (1ull << 24));           // to nearest, tiny numbers kept
+    if (mode == ARITH_CONSOLE) wanted |= (3ull << 22) | (1ull << 24);   // toward zero, flush-to-zero
+    if (wanted != fpcr) __asm__ __volatile__("msr fpcr, %0" : : "r"(wanted));
+}
+#else
+const bool ARITH_SWITCHABLE = false;
+inline void thread_arith(int) {}
+#endif
+const char* arith_name(int mode) { return mode == ARITH_BROWSER ? "browser arithmetic" : "the console's arithmetic"; }
+const char* arith_can_name(u8 can) { return can == 3 ? "both" : can == 2 ? "the browser's" : "the console's"; }
 
 // ---- guest memory -----------------------------------------------------------------------
 u32 rd32(u32 pointer) { u32 a = guest_addr(pointer, 4), v = 0; if (a != ~0u) memcpy(&v, g_ram + a, 4); return v; }
@@ -305,9 +346,28 @@ void do_setup() {
     D.bind_game_ports = option("net-ports") != "0";
     D.tell_set = option("net-set-quiet") != "1";
     D.write_netcnf = option("net-netcnf") != "0";
+    D.hold_disconnects = option("net-hold-disconnects") != "0";
     value = option("net-pace");
     if (!value.empty()) D.pace = atof(value.c_str());
+    // tests: a second lobby server instance on this computer, with every port the usual one
+    // plus N (the gateway port is built into the game; the lobby and discovery ports are
+    // told by the server)
+    value = option("net-port-shift");
+    if (!value.empty()) {
+        D.port_shift = atoi(value.c_str());
+        D.server_udp_ports.insert((u16)(10101 + D.port_shift));
+    }
     list_own_addresses();
+    // the arithmetic: auto (the console's, a browser's while a browser copy is in the room),
+    // or fixed.  The runtime's own --opt arith=nearest leaves every thread in the host's
+    // state, which is the browser's: then that is what this copy does and says.
+    A.switchable = ARITH_SWITCHABLE;
+    value = option("net-arith");
+    if (option("arith") == "nearest") { A.fixed = ARITH_BROWSER; A.switchable = false; }
+    else if (value == "console") A.fixed = ARITH_CONSOLE;
+    else if (value == "browser" && A.switchable) A.fixed = ARITH_BROWSER;
+    else if (!value.empty() && value != "auto") rtanet::say("net-arith=%s is not auto, console or browser%s", value.c_str(), value == "browser" ? " (and this build cannot change its arithmetic)" : "");
+    A.now = A.fixed == ARITH_BROWSER ? ARITH_BROWSER : ARITH_CONSOLE;
 
     I.data_dir = option("net-data");
     if (I.data_dir.empty()) I.data_dir = (fs::path(sock::program_dir()).parent_path() / "app-data").string();
@@ -470,10 +530,42 @@ s32 udp_send(Conn& conn, const u8* data, u32 length, u32 dest_ip, u16 dest_port)
     return (s32)length;
 }
 
+// A peer's disconnect, held back while this game is in a game's room.
+//
+// The game's launch has a hole (docs/issues/three-players.md, cause 1): a joiner that takes
+// the host's START fills its launch tables from its LIVE connections to the other players
+// and then disconnects them all; a joiner reads its socket every tenth frame, so one that
+// reads later finds the disconnect of the one that read earlier in the same read as START,
+// has no live connection to it any more, and files a wrong address for it.  The launch
+// handshake repairs one wrong entry from the datagrams that arrive, but not two joiners
+// that are wrong about each other (seen: a launch of four in which two joiners never met,
+// docs/issues/native-online.md).  A network that delivered that disconnect half a second
+// later would have hidden the hole, and that is what is done here: a datagram that is the
+// peer library's disconnect (8 bytes: 00 05, the connection's code, a reason) and arrives
+// while the lobby state word says "in a game's room" (6) is kept for 30 vertical blanks, or
+// until the state has moved on - by then the tables are filled from connections that were
+// all still there.  A player who just leaves the room is seen to leave half a second late.
+// Nothing else is ever held, and nothing during a game.  --opt net-hold-disconnects=0: off.
+const u32 A_LOBBY_STATE = 0x506160;
+const u64 HOLD_FIELDS = 30;
+bool in_a_room() { return rd32(A_LOBBY_STATE) == 6; }
+bool held_due(const UdpHost& host) {
+    return !host.held.empty() && (rt_fields() >= host.held.front().due_field || !in_a_room());
+}
+
 // the next datagram for the game on this port; false: none
 bool udp_receive(u16 game_port, u8* buffer, size_t capacity, size_t& size, u32& shown_ip, u16& from_port) {
     rtanet::Info& I = D.info;
     UdpHost& host = udp_host(game_port);
+    if (held_due(host)) {
+        Held& first = host.held.front();
+        size = std::min(first.data.size(), capacity);
+        memcpy(buffer, first.data.data(), size);
+        shown_ip = first.shown_ip;
+        from_port = first.from_port;
+        host.held.pop_front();
+        return true;
+    }
     for (int tries = 0; tries < 32; tries++) {
         u32 from_ip = 0;
         int n = sock::recv_from(host.fd, buffer, capacity, from_ip, from_port);
@@ -509,14 +601,25 @@ bool udp_receive(u16 game_port, u8* buffer, size_t capacity, size_t& size, u32& 
                 continue;               // ours, not the game's
             }
             if ((size_t)n == ARITH_SIZE && memcmp(buffer, ARITH_MARK, sizeof(ARITH_MARK)) == 0) {
-                // which arithmetic the other copy computes with (docs/issues/mixed-arithmetic.md):
-                // this build has one, the console's, and says nothing - a copy that says
-                // nothing is taken for that
-                if (buffer[sizeof(ARITH_MARK) + 1] != 0 && D.noted.insert(key(from_ip, from_port) | (1ull << 60)).second) {
-                    rtanet::say("WARNING: the player at %s:%u computes with browser arithmetic, this copy with the console's: they would fall out of step",
-                                rtanet::ip_text(from_ip).c_str(), from_port);
-                    if (rtanet::show_warning) rtanet::show_warning("Another player's copy computes with a browser's arithmetic and this one with the console's. The two games would fall out of step.");
-                }
+                // which arithmetic the other copy can compute with and which it does now
+                // (docs/issues/mixed-arithmetic.md); what follows from it is check_arith's
+                u8 can = buffer[sizeof(ARITH_MARK)], does = buffer[sizeof(ARITH_MARK) + 1];
+                if (!peer.arith_known || peer.arith_can != can || peer.arith_does != does)
+                    rtanet::say("the player at %s:%u computes with %s (can do: %s)", rtanet::ip_text(from_ip).c_str(), from_port, arith_name(does ? ARITH_BROWSER : ARITH_CONSOLE), arith_can_name(can));
+                peer.arith_known = true;
+                peer.arith_can = can;
+                peer.arith_does = does;
+                continue;
+            }
+            if (D.hold_disconnects && n == 8 && buffer[0] == 0x00 && buffer[1] == 0x05 && in_a_room()) {
+                Held held;
+                held.due_field = rt_fields() + HOLD_FIELDS;
+                held.data.assign(buffer, buffer + n);
+                held.shown_ip = shown_ip;
+                held.from_port = from_port;
+                host.held.push_back(held);
+                D.held_total++;
+                rtanet::log("a disconnect from the player at %s:%u is shown to the game half a second late (it is in a game's room)", rtanet::ip_text(from_ip).c_str(), from_port);
                 continue;
             }
         }
@@ -546,15 +649,15 @@ void tell_patch_set() {
         u16 to_port = (u16)(entry.first & 0xFFFF);
         if (!allowed(to_ip)) continue;
         sock::send_to(host->second.fd, datagram, sizeof(datagram), to_ip, to_port);
-        // and the arithmetic, in the same way (docs/issues/mixed-arithmetic.md): this build
-        // computes as the console does (results rounded toward zero), which the other
-        // builds call Play!'s own, and can do nothing else: one byte "can" (1), one "does" (0)
+        // and the arithmetic, in the same way (docs/issues/mixed-arithmetic.md): one byte
+        // "can do" (bit 0 the console's, which the other builds call Play!'s own; bit 1 a
+        // browser's), one byte "does now" (0 or 1)
         u8 arithmetic[ARITH_SIZE];
         memcpy(arithmetic, ARITH_MARK, sizeof(ARITH_MARK));
-        arithmetic[sizeof(ARITH_MARK)] = 1;
-        arithmetic[sizeof(ARITH_MARK) + 1] = 0;
+        arithmetic[sizeof(ARITH_MARK)] = A.can();
+        arithmetic[sizeof(ARITH_MARK) + 1] = (u8)A.now;
         sock::send_to(host->second.fd, arithmetic, sizeof(arithmetic), to_ip, to_port);
-        if (peer.told == 1) rtanet::log("patch set %08x and the arithmetic (the console's) told to the player at %s:%u", D.info.patch_set, rtanet::ip_text(to_ip).c_str(), to_port);
+        if (peer.told == 1) rtanet::log("patch set %08x and the arithmetic (%s; can do: %s) told to the player at %s:%u", D.info.patch_set, arith_name(A.now), arith_can_name(A.can()), rtanet::ip_text(to_ip).c_str(), to_port);
     }
     for (auto& entry : D.peer) {
         PeerState& peer = entry.second;
@@ -568,6 +671,55 @@ void tell_patch_set() {
                      "The two games would fall out of step. Everyone has to play with the same patch set.", peer.patch_set, peer.patch_words, D.info.patch_set, D.info.patch_words);
             rtanet::show_warning(text);
         }
+    }
+}
+
+// The choice, by the rule of the emulator-based application (CheckArithmetic in
+// tools/play-net/src/Rta.cpp), once per vertical blank on the game's thread:
+//   - while the game is in its front end (the lobby and a game's room are there): a player
+//     heard in the last 15 s who cannot do the console's arithmetic, or already does a
+//     browser's, makes this copy change to browser arithmetic; nobody such, and it changes
+//     back.  The second condition carries the choice to copies that do not hear the browser
+//     player themselves;
+//   - once a level runs nothing is changed (every machine would have to change in the same
+//     lockstep tick): a player who cannot follow gets a warning instead;
+//   - a change is told to everybody again, from the start.
+void check_arith() {
+    int64_t now = now_ms();
+    bool front_end = g_ram[0x41B510] != 0;          // g_inFrontend
+    int want = A.now;
+    if (A.fixed >= 0) want = A.fixed;
+    else if (!A.switchable) want = ARITH_CONSOLE;
+    else if (front_end) {
+        want = ARITH_CONSOLE;
+        for (const auto& entry : D.peer) {
+            const PeerState& peer = entry.second;
+            if (!peer.arith_known || now - peer.last_heard > 15000) continue;
+            if (!(peer.arith_can & 1) || peer.arith_does == 1) want = ARITH_BROWSER;
+        }
+    }
+    if (want != A.now) {
+        A.now = want;
+        rtanet::say("arithmetic: the machine now computes %s", want == ARITH_BROWSER ? "as a browser copy's does" : "as the console does again");
+        for (auto& entry : D.peer) { entry.second.told = 0; entry.second.first_heard = now ? now : 1; }
+    }
+    thread_arith(A.now);
+    for (auto& entry : D.peer) {
+        PeerState& peer = entry.second;
+        if (now - peer.last_heard > 15000 || peer.arith_warned == A.now) continue;
+        const char* why = nullptr;
+        if (peer.arith_known) {
+            // it does something else and cannot do ours (a copy that can is on its way)
+            if (peer.arith_does != A.now && !(peer.arith_can & (1 << A.now)))
+                why = A.now == ARITH_BROWSER ? "cannot compute with browser arithmetic as this game does" : "computes with browser arithmetic and this copy cannot";
+            else if (peer.arith_does != A.now && !front_end)
+                why = "is on different arithmetic in a running game";
+        } else if (A.now == ARITH_BROWSER && peer.set_known && now - peer.first_heard > 6000)
+            why = "says nothing about its arithmetic (an older copy) while this game computes as a browser does";
+        if (!why) continue;
+        peer.arith_warned = A.now;
+        rtanet::say("WARNING: the player at %s:%u %s: the game would fall out of step - do not start it", rtanet::ip_text((u32)(entry.first >> 16)).c_str(), (unsigned)(entry.first & 0xFFFF), why);
+        if (rtanet::show_warning) rtanet::show_warning("Another player's copy does not compute the way this game does (one of the copies is a browser's and another cannot follow it). The games would fall out of step: do not start the game.");
     }
 }
 
@@ -650,19 +802,41 @@ std::vector<Peer> peers() {
         peer.set_known = entry.second.set_known;
         peer.patch_set = entry.second.patch_set;
         peer.patch_words = entry.second.patch_words;
+        peer.arith_known = entry.second.arith_known;
+        peer.arith_can = entry.second.arith_can;
+        peer.arith_does = entry.second.arith_does;
         peer.heard_ms = now - entry.second.first_heard;
         peer.silent_ms = now - entry.second.last_heard;
         list.push_back(peer);
     }
     return list;
 }
+std::string sockets_text() {
+    // what the driver holds open: for a test that plays several games in one run
+    unsigned streams = 0, open_streams = 0, datagram = 0, raw = 0;
+    for (const auto& entry : D.conns) {
+        if (entry.second.type == T_CONNECT) { streams++; if (entry.second.fd != sock::NONE && !entry.second.eof && !entry.second.failed) open_streams++; }
+        else if (entry.second.type == T_DGRAM) datagram++;
+        else raw++;
+    }
+    char text[256];
+    snprintf(text, sizeof(text), "library sockets: %u streams (%u open), %u datagram, %u raw; host UDP sockets %zu; players heard %zu; ids given %d; disconnects held back %llu",
+             streams, open_streams, datagram, raw, D.udp.size(), D.peer.size(), D.next_id - 1, (unsigned long long)D.held_total);
+    return text;
+}
 void drop_tcp() {
     for (auto& entry : D.conns)
         if (entry.second.type == T_CONNECT && entry.second.fd != sock::NONE) { sock::shut(entry.second.fd); log("TCP -> %s:%u cut (a test)", ip_text(entry.second.dest_ip).c_str(), entry.second.dest_port); }
 }
+const char* option(const char* key) { return rt_option(key); }
+int arithmetic() { return A.now; }
+std::string arithmetic_text() {
+    return std::string(A.now == ARITH_BROWSER ? "browser" : "console") + " (can do: " + arith_can_name(A.can()) + (A.fixed >= 0 ? ", fixed" : "") + ")";
+}
 void per_blank(uint64_t number) {
     ensure();
     (void)number;
+    check_arith();
     tell_patch_set();
     // a program without a window is held to real time: the lobby's time-outs count frames,
     // and the server and the other players answer in real time
@@ -752,7 +926,8 @@ void fn_00365518(Ctx* c) {                  // sceInetOpen(cd, buf, id, ms)
     conn->fd = sock::tcp();
     D.info.tcp_connections++;
     rtanet::log("TCP -> %s:%u%s", rtanet::ip_text(conn->dest_ip).c_str(), conn->dest_port, conn->real_ip == conn->dest_ip ? "" : (" (the server, at " + rtanet::ip_text(conn->real_ip) + ")").c_str());
-    int state = conn->fd == sock::NONE ? sock::FAILED : sock::connect(conn->fd, conn->real_ip, conn->dest_port);
+    u16 real_port = conn->gateway ? (u16)(conn->dest_port + D.port_shift) : conn->dest_port;
+    int state = conn->fd == sock::NONE ? sock::FAILED : sock::connect(conn->fd, conn->real_ip, real_port);
     if (state == sock::CONNECTED) { conn->connected = true; answer(c, 0); return; }
     if (state == sock::UNDER_WAY) {
         conn->connecting = true;
@@ -909,7 +1084,7 @@ void fn_003651e0(Ctx* c) {                  // sceInetPoll(cd, buf, pollfd array
                 }
             } else if (conn->type == T_DGRAM) {
                 if (events & P_OUT) revents |= P_OUT;
-                if ((events & P_IN) && sock::readable(udp_host(conn->game_port).fd)) revents |= P_IN;
+                if ((events & P_IN) && (held_due(udp_host(conn->game_port)) || sock::readable(udp_host(conn->game_port).fd))) revents |= P_IN;
             }
             wr16(at + 6, revents);
             if (revents) ready++;
@@ -1041,6 +1216,7 @@ void fn_00323dcc(Ctx* c) {                  // main(argc, argv)
 
 void fn_003226e4(Ctx* c) {                  // tasks_run: from net_frameLoop it is one lockstep tick
     u32 ra = (u32)c->r[31];
+    thread_arith(A.now);                    // the thread that runs the ticks computes as chosen
     orig_003226e4(c);
     if (ra != 0x13aee8) return;
     D.ticks++;

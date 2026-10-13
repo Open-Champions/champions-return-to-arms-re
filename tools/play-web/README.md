@@ -197,6 +197,10 @@ section 4) as buttons on the page - the same code, compiled in:
    step. That file is not in this repository (as for the desktop application: see
    `docs/play-online.md`); a page without it shows the panel and says that it cannot go
    online. Without `online.json` the page is the offline page and shows nothing of this.
+   A third key, `"mixed": false`, is for a relay run with `--pages-only` (browser
+   players with browser players, nothing to or from a player outside the relay): the
+   page's online panel then says that instead of offering games with players of the
+   Mac application.
 
 How it is put together: the console's own network stack talks to an emulated Ethernet
 adaptor; `RtaNet.cpp` (the desktop application's user-space network: address by DHCP,

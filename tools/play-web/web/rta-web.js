@@ -32,6 +32,8 @@
 // "relay" is the address of the relay's WebSocket (tools/play-web/relay), relative to the
 // page or complete; "signin" names a patch file beside the page that takes the game past
 // its sign-in step (a privately served page has one; it is not part of the repository).
+// "mixed": false says that the relay carries browser players only (relay.py --pages-only):
+// the page then says so instead of offering games with players of the Mac application.
 import Play from "./Play.js";
 
 const params = new URLSearchParams(location.search);
@@ -917,6 +919,15 @@ const online = {
 };
 const RELAY_BUFFER = 16384;
 
+// A relay that carries browser players only (online.json: "mixed": false): the page must not
+// offer what does not come about there.
+function onlinePagesOnly() {
+	const who = document.getElementById("onlineWho");
+	if(who) who.textContent = "Here browser players play with browser players: a game with players of the Mac application does not come about on this server yet (in one you would stay in the room, and the start would fail).";
+	const button = document.getElementById("onlineButton");
+	if(button) button.title = "Play with friends who also play in a browser";
+}
+
 async function onlineConfig() {
 	try {
 		const response = await fetch("online.json", { cache: "no-store" });
@@ -929,6 +940,7 @@ async function onlineConfig() {
 				online.relay = url.href;
 			}
 			if(typeof setting.signin === "string" && /^[\w.-]+$/.test(setting.signin)) online.signin = setting.signin;
+			if(setting.mixed === false) onlinePagesOnly();
 		}
 	} catch(e) { /* no such file: a page without online play */ }
 	// DEV: a relay on the developer's own computer

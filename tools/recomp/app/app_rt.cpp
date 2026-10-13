@@ -2,6 +2,7 @@
 #include "app_rt.h"
 
 #include "rt.h"
+#include "host.h"
 #include "iso9660.h"
 
 #include <cstdio>
@@ -14,6 +15,7 @@ __attribute__((weak)) void rta_films_report() {}
 
 namespace apprt {
 
+void interactive_threads() { host::interactive_threads(true); }
 bool films_linked() { return rta_films_linked(); }
 void films_report() { rta_films_report(); }
 std::string sound_figures() { return rta_sound_figures ? rta_sound_figures() : std::string(); }

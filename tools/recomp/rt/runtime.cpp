@@ -1054,7 +1054,17 @@ static void dma_start(u32 ch) {
     u32 sadr = g_hw[base + 0x80];
     g_dma_starts[ch]++;
     u32 mode = (chcr >> 2) & 3, tadr0 = tadr;
-    std::vector<u32> stream;
+    // The words of this transfer, put together from the chain.  One buffer is kept for all
+    // transfers (they never overlap: every one is made under the runtime's lock and is over
+    // when this function returns), so a frame's megabytes are not allocated, grown and
+    // freed transfer by transfer.
+    static std::vector<u32> kept;
+    static bool kept_taken = false;
+    std::vector<u32> local;
+    bool mine = !kept_taken;
+    std::vector<u32>& stream = mine ? kept : local;
+    struct Hold { bool on; ~Hold() { if (on) kept_taken = false; } } hold{mine};
+    if (mine) { kept_taken = true; kept.clear(); if (kept.capacity() > (8u << 20)) std::vector<u32>().swap(kept); }
     auto append = [&](u32 addr, u32 quadwords) {
         u8* m = phys(addr, quadwords * 16);
         if (!m) { rt_note(rt_fmt("DMA channel %u: data outside memory", ch)); return; }
@@ -1539,9 +1549,13 @@ void rt_finish(int code) { g_exit_code = code; report_and_exit(); }
 static u64 g_script_offset;                       // the script's frame numbers run this far ahead of the blank count
 static void on_vblank() {
     script_vblank(g_fields + g_script_offset);
+    // The picture sink first: an application that paces the game waits in there, and the
+    // controller is read when that wait is over, not before it (a press is then as old as
+    // the frame that uses it, not a whole wait older).  The sink touches nothing of the
+    // machine, so the order changes no tick.
+    if (g_hooks.video) g_hooks.video->vblank((g_gs_csr >> 13) & 1, g_fields);
     iop_vblank(g_fields);
     sound_vblank();
-    if (g_hooks.video) g_hooks.video->vblank((g_gs_csr >> 13) & 1, g_fields);
     if (g_log && g_log_fields) log_row(g_fields);
     if (g_fields >= g_fields_wanted) report_and_exit();
     if (g_script_given && !script_active() && g_fields_wanted == ~0ull && g_frames_wanted == ~0ull) report_and_exit();

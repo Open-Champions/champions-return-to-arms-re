@@ -1044,7 +1044,18 @@ void Gs::rebuild_state() {
         auto set = sets.find(tbp);
         bool surface_newer = surface != targets.end() && (set == sets.end() || set->second.serial < surface->second.serial);
         if (!surface_newer) t = texture_for(tex0, reg[0x3b]);
-        if (!t && !surface_newer && restore_texture && restore_tried.insert(tbp).second && restore_texture(tbp)) t = texture_for(tex0, reg[0x3b]);
+        if (!t && !surface_newer && restore_texture && restore_tried.insert(tbp).second) {
+            // The texture is sent again as GIF data of path 3, in the middle of whatever
+            // packet is being read: that packet's path is put back afterwards.  (It was not:
+            // the rest of a VU1 packet was then taken for triangles built on the CPU -
+            // DrawCmd::made_by 1 - and, in a wide picture, laid out as part of the 2-D layer
+            // for that frame.  The whole-run path, triangle_run, reads cur_path after the
+            // state is made, so this one place corrects both.)
+            int reading = cur_path;
+            bool restored = restore_texture(tbp);
+            cur_path = reading;
+            if (restored) t = texture_for(tex0, reg[0x3b]);
+        }
         cur_picture_height = t ? t->picture_height : 0;
         if (t) { c.texture = t->id; c.tex_size[0] = (float)t->width; c.tex_size[1] = (float)t->height; }
         else if (surface != targets.end() && surface->second.id != c.target) {

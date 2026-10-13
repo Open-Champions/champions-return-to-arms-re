@@ -25,6 +25,9 @@
 //   --art-pack DIR      replacement pictures named as the emulator build names textures
 //                       (tools/play-net/README.md, "Upscaled art");  --art-memory MB (3072)
 //   --frame-cap N       60 (default), 30, or 0 = --unpaced
+//   --pacing ahead|queued   how the game is held to one frame per picture (pipeline.h): let go
+//                       by a clock just ahead of each picture's moment (the default), or held
+//                       back through the picture path's hand-overs as it was until 2026-10-12
 //   --plain             all of that off: 4:3, no multisampling, no mip maps, no pack
 //   --settings FILE, --no-settings;  tests: --no-layout, --art-whole, --art-wait
 //   --volume V          0..1 (default 1); --mute = --volume 0 (the device still runs);
@@ -39,7 +42,8 @@
 //                         app gcpad connect|disconnect|set BUTTONS|none [lx ly rx ry [l2 r2]]
 //                                                  a controller made by the program, to test the map
 //                         app pads                 print the controller and what port 1 holds
-//                         app stats [reset]        print the pacing figures so far
+//                         app stats [reset]        print the pacing figures so far: how long pictures stood, and
+//                                                  what each part of the path from the game to the swap took
 //                         app window W H           give the window this size (the view follows with --aspect auto)
 //                         app fullscreen           what the F key does
 //                         app art off|on           draw with the game's own textures / with the art pack and mip maps again
@@ -64,9 +68,11 @@
 // controller macOS knows is port 1 as well (pad_mac.mm).
 //
 // Threads: the game's (the runtime, rta::run), a decoder (pipeline.h) and this one, which
-// owns the window and OpenGL.  The window paces everything: one picture per 1/60 s, locked
-// to the display's refresh when that is a multiple of 60 Hz, and the wait travels back
-// through the two hand-overs to the game.
+// owns the window and OpenGL.  One picture per 1/60 s: the game is let go by a clock just
+// ahead of the moment each picture is due on screen, and that clock is held to the
+// display's refreshes when the display's rate is a multiple of 60 Hz and its swaps wait
+// for them (pipeline.h, Pacer).  No thread waits for another across a swap: the decoder
+// hands its lists to a short queue, and a picture that is overtaken is drawn and not shown.
 #include "app_rt.h"
 #include "backend_gl.h"
 #include "control.h"
@@ -120,6 +126,7 @@ static double cpu_ms() {                                // processor time of the
 struct Options {
     int window_w = 960, window_h = 720, size_w = 0, size_h = 0, scale = 0;
     bool offscreen = false, unpaced = false, fullscreen = false, no_sound = false, emulator_timing = false, no_films = false;
+    bool queued = false;                // --pacing queued: the picture path's hand-overs hold the game back
     double volume = 1.0;
     std::string test, png, disc, data, elf, control;
     std::set<uint64_t> at;
@@ -206,7 +213,6 @@ struct Pads : rta::PadSource {
     std::atomic<bool> quit{false};
     void read(unsigned port, uint64_t frame, rta::PadState& state) override {
         if (quit) apprt::finish(0);                     // the window was closed: end from the game's thread
-        if (port == 0) control().on_blank(frame);
         state = apprt::script_pad(port);
         if (port != 0) return;
         {
@@ -298,26 +304,53 @@ class Screen : public QObject {
     GlBackend* backend = nullptr;
     bool follow_window = false;                         // the picture is drawn at the window's pixel size
     double view_aspect = 4.0 / 3.0;                     // what the game is asked to make its view for
-    // hand-over
+    // hand-over: lists wait here in order.  The decoder waits only when all places are
+    // taken (`limit`: 1 in the queued way - it then waits until the picture before is shown).
+    enum { DEPTH = 3 };
+    struct Item { FrameList frame; std::vector<std::string> shots; app::Timing timing; };
     std::mutex lock;
+    std::mutex pace_lock;                               // the figures (written here, read by whoever reports)
     std::condition_variable done;
-    FrameList slot;
-    std::vector<std::string> slot_shots;
-    bool busy = false;
+    Item items[DEPTH];
+    int head = 0, count = 0, limit = DEPTH;
     double submit_wait_ms = 0;                          // time the decoder waited for this thread
+    app::Pacer* pacer = nullptr;
     // pacing
     double refresh_hz = 60, refresh_ms = 1000.0 / 60, period_ms = 1000.0 / 60;
     int refreshes_per_picture = 1;
     bool display_locked = false;
     double last_present = 0;
+    // Does the swap wait for the display?  It does for a window on a lit display, and
+    // returns at once for a hidden one or when the display is asleep.  A swap asked for
+    // well before the picture's moment that took 2.5 ms or more is taken as one that
+    // waited (one that does not wait takes a third of a millisecond; one that waits for a
+    // refresh it knows nothing of takes 2.5 ms or more seven times out of ten).  Six more
+    // of those than of the others, and the times the swaps return at are taken as the
+    // display's refreshes (`swap_waits`); as many of the others again, and they are not.
+    int swap_evidence = 0;
+    bool swap_waits = false;
+    bool pace_log = getenv("RTA_PACE_LOG") != nullptr;  // debugging: one line per picture
+    // a test aid (RTA_FAKE_DISPLAY=HZ[,PPM[,PHASE_MS]]): a display that is not there - every
+    // swap waits until the next refresh of a display of that rate, PPM millionths fast
+    // against this computer's clock - to see the grid find a display's refreshes when the
+    // real display is asleep or the window hidden
+    double fake_refresh_ms = 0, fake_phase_ms = 0;
     // figures
     uint64_t blanks = 0;
-    double draw_ms = 0, start_ms = 0, start_cpu = 0;
+    double draw_ms = 0, start_ms = 0, start_cpu = 0, main_cpu_ms = 0;
     size_t vertices = 0, commands = 0;
     struct Pace {
-        uint64_t presents = 0, swap_waited = 0, timer_waited = 0, late_starts = 0;
+        uint64_t presents = 0, swap_waited = 0, timer_waited = 0, late_starts = 0, overtaken = 0, late = 0;
         uint64_t by_refreshes[8] = {0, 0, 0, 0, 0, 0, 0, 0};    // pictures that stood for k refreshes (7 = more)
+        uint64_t late_by[5] = {0, 0, 0, 0, 0};                  // of the late ones: the part that took longest (game, decoder, OpenGL, swap, a wait)
         double first = 0, last = 0, swap_ms = 0, worst_ms = 0;
+        // the path, per picture (milliseconds of wall time)
+        app::Figure game, slot_wait, decoder_idle, decode, queue, gl, to_swap, swap, pipe;
+        std::vector<float> slack;                               // the moment minus the time it was drawn at (negative: drawn late)
+        double slack_mean = 0, slack_low = 0;                   // filled in by report_pace
+        // processor time at the reset, to say what a picture cost since
+        double cpu0 = 0, main_cpu0 = 0, decode_cpu0 = 0;
+        uint64_t blanks0 = 0;
     } pace;
 
     QSurface* surface() { return window ? (QSurface*)window : (QSurface*)offscreen; }
@@ -402,17 +435,49 @@ class Screen : public QObject {
                  opt.unpaced ? "not paced" : display_locked ? "one picture per display refresh interval(s) below" : "paced by the clock at 59.94 pictures a second");
         log_line(text);
         if (display_locked) { snprintf(text, sizeof text, "pacing: one picture every %d refresh(es) = %.3f ms", refreshes_per_picture, period_ms); log_line(text); }
+        if (const char* fake = getenv("RTA_FAKE_DISPLAY")) {
+            double hz = 0, ppm = 0, phase = 0;
+            sscanf(fake, "%lf,%lf,%lf", &hz, &ppm, &phase);
+            if (hz >= 20 && window && !opt.unpaced) {
+                fake_refresh_ms = 1000.0 / (hz * (1.0 + ppm * 1e-6));
+                fake_phase_ms = phase;
+                refresh_hz = hz;
+                refresh_ms = 1000.0 / hz;
+                refreshes_per_picture = std::max(1, (int)std::lround(hz / 60.0));
+                display_locked = std::fabs(hz / refreshes_per_picture - 60.0) < 0.9;
+                period_ms = display_locked ? refresh_ms * refreshes_per_picture : 1000.0 / 59.94;
+                snprintf(text, sizeof text, "TEST: a display of %.3f Hz that is not there (RTA_FAKE_DISPLAY): every swap waits for its next refresh", 1000.0 / fake_refresh_ms);
+                log_line(text);
+            }
+        }
+        limit = opt.queued ? 1 : DEPTH;
+        if (pacer) {
+            pacer->mode = opt.unpaced ? app::Pacer::OFF : opt.queued ? app::Pacer::QUEUED : app::Pacer::AHEAD;
+            pacer->period_ms = period_ms;
+            pacer->most_lead_ms = 2.5 * period_ms;
+            // a drawn picture is to be there before the swap is asked for: half a refresh before
+            // its moment where the swaps are asked for inside the last refresh, 4 ms otherwise
+            // on a display, and a millisecond more; 2 ms where nothing is shown
+            pacer->margin_ms = !window ? 2.0 : 1.0 + (display_locked && refreshes_per_picture > 1 ? 0.5 * refresh_ms : 4.0);
+            if (!opt.unpaced) log_line(opt.queued ? "pacing: the picture path's hand-overs hold the game back (--pacing queued)"
+                                                  : "pacing: the game is let go by the clock, just ahead of each picture's moment");
+        }
         start_ms = now_ms();
         start_cpu = cpu_ms();
+        pace.cpu0 = start_cpu;
     }
 
-    // called on the decoder's thread: take this list to be drawn.  Returns as soon as the
-    // list before it has been drawn; the caller gets that one's vectors back to fill again.
-    void submit(FrameList& frame, std::vector<std::string>& shots) {
+    // called on the decoder's thread: take this list to be drawn.  Returns as soon as there
+    // is a place for it; the caller gets the vectors of an earlier list back to fill again.
+    void submit(FrameList& frame, std::vector<std::string>& shots, app::Timing timing) {
         std::unique_lock<std::mutex> hold(lock);
         double w0 = now_ms();
-        done.wait(hold, [this] { return !busy; });
-        submit_wait_ms += now_ms() - w0;
+        timing.decode_end = w0;
+        done.wait(hold, [this] { return count < limit; });
+        timing.queue_wait = now_ms() - w0;
+        submit_wait_ms += timing.queue_wait;
+        Item& item = items[(head + count) % DEPTH];
+        FrameList& slot = item.frame;
         std::swap(slot.vertices, frame.vertices);
         std::swap(slot.commands, frame.commands);
         std::swap(slot.textures, frame.textures);
@@ -423,17 +488,28 @@ class Screen : public QObject {
         slot.aspect = frame.aspect;
         memcpy(slot.show_rect, frame.show_rect, sizeof(slot.show_rect));
         slot.number = frame.number;
-        slot_shots.swap(shots);
+        item.shots.swap(shots);
         shots.clear();
-        busy = true;
+        item.timing = timing;
+        count++;
         QCoreApplication::postEvent(this, new QEvent(FrameEvent));
     }
 
     bool event(QEvent* e) override {
         if (e->type() == CallEvent) { static_cast<CallQEvent*>(e)->fn(); return true; }
         if (e->type() != FrameEvent) return QObject::event(e);
-        FrameList* frame = &slot;                       // ours until busy is cleared
-        double t0 = now_ms();
+        Item* item;
+        double newer_due = -1;                          // the moment of the list behind this one, when there is one
+        {
+            std::lock_guard<std::mutex> hold(lock);
+            item = &items[head];                        // ours until it is counted off below
+            if (count > 1) newer_due = items[(head + 1) % DEPTH].timing.due;
+        }
+        FrameList* frame = &item->frame;
+        app::Timing& timing = item->timing;
+        double t0 = now_ms(), cpu0 = app::thread_cpu_ms();
+        timing.draw_start = t0;
+        if (window_free > timing.decode_end) timing.blocked += std::min(t0, window_free) - timing.decode_end;
         context->makeCurrent(surface());
         QOpenGLExtraFunctions* gl = context->extraFunctions();
         if (window && opt.aspect == 0) {                // the view takes the window's shape
@@ -457,42 +533,82 @@ class Screen : public QObject {
         vertices += frame->vertices.size();
         commands += frame->commands.size();
         if (!opt.png.empty() && opt.at.count(blanks)) save(opt.png + "-" + std::to_string(blanks) + ".png");
-        for (const std::string& path : slot_shots) save(path);
-        slot_shots.clear();
-        bool shown = window && window->isExposed();
+        for (const std::string& path : item->shots) save(path);
+        item->shots.clear();
+        bool ahead = pacer && pacer->mode == app::Pacer::AHEAD && timing.due > 0;
+        // The moment this picture is due: the game's grid, or (queued, or before there is a
+        // grid) one period after the picture before.
+        double due = ahead ? timing.due : last_present + period_ms;
+        // Overtaken: the list behind this one is due as well (this thread was held up, by
+        // a swap that waited long or by anything else).  This one was drawn - the surfaces
+        // and textures the next list builds on are as they have to be - and is not shown.
+        bool overtaken = ahead && newer_due > 0 && newer_due <= now_ms() + 0.5 * refresh_ms;
+        bool shown = window && window->isExposed() && !overtaken;
         if (opt.set.frame_cap > 0 && opt.set.frame_cap <= 30 && (blanks & 1)) shown = false;        // every other picture
-        double swap_start = 0, after = 0;
-        if (shown) {
-            // with more than one refresh per picture the swap is asked for inside the last of
-            // them, so that it lands on the refresh the picture is due at
-            if (display_locked && refreshes_per_picture > 1 && last_present != 0) {
-                double ask_at = last_present + period_ms - 0.5 * refresh_ms;
-                double now = now_ms();
-                if (ask_at > now) std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(ask_at - now));
-            }
+        double after = 0;
+        bool timed = false;                             // the swap returned at a refresh of the display
+        auto to_window = [&] {
             double ratio = window->devicePixelRatio();
             gl->glBindFramebuffer(GL_FRAMEBUFFER, context->defaultFramebufferObject());
             backend->present((int)(window->width() * ratio), (int)(window->height() * ratio), frame->aspect);
-            swap_start = now_ms();
+        };
+        // Let go ahead of its moment, a picture is "drawn" when the graphics card has
+        // finished it, the window's copy included: what is left for the swap is to hand it
+        // over, and how long the path takes is known to the millisecond (the lead is made of
+        // it).  The queued way draws the window's copy after its wait, as it always did.
+        if (ahead) {
+            if (shown) to_window();
+            gl->glFinish();
+        }
+        timing.ready = now_ms();
+        if (shown) {
+            // with more than one refresh per picture the swap is asked for inside the last of
+            // them, so that it lands on the refresh the picture is due at
+            if (display_locked && refreshes_per_picture > 1 && last_present != 0) app::sleep_until_ms(due - 0.5 * refresh_ms);
+            if (!ahead) to_window();
+            timing.swap_start = now_ms();
             context->swapBuffers(window);
+            if (fake_refresh_ms > 0) {                  // the display that is not there: wait for its next refresh
+                double now = now_ms();
+                app::sleep_until_ms((std::floor((now - fake_phase_ms) / fake_refresh_ms) + 1) * fake_refresh_ms + fake_phase_ms);
+            }
             after = now_ms();
-            pace.swap_ms += after - swap_start;
-            if (after - swap_start > 1.0) pace.swap_waited++;
-        } else { gl->glFlush(); after = now_ms(); }
+            if (!opt.unpaced && due - timing.swap_start >= 3.0) {
+                swap_evidence = after - timing.swap_start >= 2.5 ? std::min(swap_evidence + 1, 12) : std::max(swap_evidence - 1, 0);
+                if (swap_evidence >= 6) swap_waits = true; else if (swap_evidence == 0) swap_waits = false;
+            }
+        } else { gl->glFlush(); after = now_ms(); timing.swap_start = after; }
         draw_ms += after - t0;
-        if (!opt.unpaced) {
+        bool clock_held = false, restarted = false;
+        if (overtaken) {}
+        else if (!opt.unpaced) {
             // One picture per period.  A swap that waited for the display returns at the
-            // refresh; one that did not (window hidden, no display lock) is held by the clock.
-            double due = last_present + period_ms;
-            if (last_present == 0 || after - due > 2 * period_ms) { if (last_present != 0) pace.late_starts++; last_present = after; }
-            else if (after < due - 1.5) {
-                std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(due - after));
-                pace.timer_waited++;
+            // refresh; one that did not (window hidden, display asleep, no display lock) is
+            // held by the clock.
+            // (`timed`: this swap's return is a refresh of the display, early or late; the grid learns from it)
+            timed = shown && display_locked && swap_waits && last_present != 0 && after - due <= 2 * period_ms;
+            if (last_present == 0 || after - due > 2 * period_ms) { restarted = last_present != 0; last_present = after; }
+            else if (after < due - 1.5 && !timed) {
+                app::sleep_until_ms(due);
+                clock_held = true;
                 last_present = due;
             } else last_present = after;
         } else last_present = after;
-        // figures: how long the picture before this one stood, in refreshes of the display
-        {
+        timing.shown = overtaken ? 0 : timed ? after : last_present;
+        if (pace_log && !overtaken) fprintf(stderr, "pace %llu due %.2f ready %.2f ask %.2f after %.2f shown-due %.2f timed %d evidence %d lead %.2f\n", (unsigned long long)frame->number,
+                                            fmod(due, 1000.0), timing.ready - due, timing.swap_start - due, after - due, timing.shown - due, (int)timed, swap_evidence,
+                                            pacer ? pacer->lead_ms.load() : 0.0);
+        timing.due = overtaken || opt.unpaced ? 0 : due;
+        main_cpu_ms += app::thread_cpu_ms() - cpu0;
+        if (pacer && !overtaken) pacer->presented(timing, timed);
+        // figures: how long the picture before this one stood, in refreshes of the display,
+        // and what each part of this one's way took
+        std::unique_lock<std::mutex> figures(pace_lock);
+        if (shown) { pace.swap_ms += after - timing.swap_start; if (after - timing.swap_start > 1.0) pace.swap_waited++; }
+        if (overtaken) pace.overtaken++;
+        if (clock_held) pace.timer_waited++;
+        if (restarted) pace.late_starts++;
+        if (!overtaken) {
             double t = opt.unpaced ? after : last_present;
             if (pace.presents) {
                 double stood = t - pace.last;
@@ -503,6 +619,30 @@ class Screen : public QObject {
             pace.last = t;
             pace.presents++;
         }
+        if (timing.released > 0 && timing.handed > 0) {
+            double parts[5] = {timing.handed - timing.released, timing.decode_end - timing.decode_start, timing.ready - timing.draw_start,
+                               after - timing.swap_start, (timing.decode_start - timing.handed) + (timing.draw_start - timing.decode_end)};
+            pace.game.add(parts[0]);
+            pace.slot_wait.add(timing.slot_wait);
+            pace.decoder_idle.add(timing.decode_start - timing.handed - timing.slot_wait);
+            pace.decode.add(parts[1]);
+            pace.queue.add(timing.draw_start - timing.decode_end);
+            pace.gl.add(parts[2]);
+            pace.to_swap.add(timing.swap_start - timing.ready);
+            pace.swap.add(parts[3]);
+            pace.pipe.add(timing.ready - timing.released - timing.blocked);
+            if (timing.due > 0) {
+                if (pace.slack.size() < 400000) pace.slack.push_back((float)(timing.due - timing.ready));
+                // late: on screen more than half a refresh after its moment
+                if (timing.shown > timing.due + 0.5 * refresh_ms) {
+                    pace.late++;
+                    int longest = 0;
+                    for (int k = 1; k < 5; k++) if (parts[k] > parts[longest]) longest = k;
+                    pace.late_by[longest]++;
+                }
+            }
+        }
+        figures.unlock();
         latency_sample(frame->number, after);
         blanks++;
         if (opt.stop_after && blanks >= opt.stop_after) {
@@ -510,10 +650,12 @@ class Screen : public QObject {
             g_pads.quit = true;                         // the game's thread prints the reports and ends the process
             QTimer::singleShot(3000, [] { fflush(stdout); _exit(0); });
         }
-        { std::lock_guard<std::mutex> hold(lock); busy = false; }
+        window_free = now_ms();
+        { std::lock_guard<std::mutex> hold(lock); head = (head + 1) % DEPTH; count--; }
         done.notify_all();
         return true;
     }
+    double window_free = 0;                             // when this thread was done with the picture before
 
     // the shown picture as a 40 x 28 grid of brightness, while a latency test runs
     void latency_sample(uint64_t number, double presented) {
@@ -550,11 +692,26 @@ class Screen : public QObject {
         log_line("wrote " + name + " (" + std::to_string(w) + " x " + std::to_string(h) + ") at vertical blank " + std::to_string(blanks));
     }
 
-    void report_pace(bool reset) {
+    // decode_cpu: the decoder's processor time so far (the sink's figure), for "since the reset"
+    void report_pace(bool reset, double decode_cpu) {
         Pace p;
-        { std::lock_guard<std::mutex> hold(lock); p = pace; if (reset) pace = Pace(); }
+        uint64_t blanks_now = blanks;
+        double cpu_now = cpu_ms(), main_cpu_now = main_cpu_ms;
+        {
+            std::lock_guard<std::mutex> hold(pace_lock);
+            p = pace;
+            if (reset) { pace = Pace(); pace.cpu0 = cpu_now; pace.main_cpu0 = main_cpu_now; pace.decode_cpu0 = decode_cpu; pace.blanks0 = blanks_now; }
+        }
         double load[3] = {0, 0, 0};
         getloadavg(load, 3);
+        if (!p.slack.empty()) {
+            double sum = 0;
+            for (float v : p.slack) sum += v;
+            p.slack_mean = sum / p.slack.size();
+            size_t at = (size_t)(0.05 * (p.slack.size() - 1) + 0.5);
+            std::nth_element(p.slack.begin(), p.slack.begin() + at, p.slack.end());
+            p.slack_low = p.slack[at];
+        }
         double span = p.last - p.first, n = p.presents > 1 ? (double)(p.presents - 1) : 1;
         printf("rta_app: pacing: %llu pictures in %.0f ms: %.3f a second (display %.2f Hz, %s); a picture stood for",
                (unsigned long long)p.presents, span, span > 0 ? 1000.0 * n / span : 0.0, refresh_hz,
@@ -563,6 +720,35 @@ class Screen : public QObject {
         printf(" longest %.1f ms; the swap waited for the display %llu times (%.2f ms on average), the clock held %llu, %llu restarts after a stall; load average %.0f\n",
                p.worst_ms, (unsigned long long)p.swap_waited, p.presents ? p.swap_ms / p.presents : 0.0, (unsigned long long)p.timer_waited,
                (unsigned long long)p.late_starts, load[0]);
+        if (!p.pipe.values.empty()) {
+            auto f = [](const app::Figure& g) {
+                static char text[8][64];
+                static int at = 0;
+                char* out = text[at++ & 7];
+                snprintf(out, 64, "%.2f / %.2f / %.1f", g.mean(), g.percentile(0.95), g.most);
+                return out;
+            };
+            printf("rta_app: path: per picture, ms of wall time (average / 95th percentile / longest): game side %s; waiting for the decoder to take it %s;",
+                   f(p.game), f(p.slot_wait));
+            printf(" in the decoder's place %s; decoder %s; to the window's thread %s; OpenGL %s; drawn, until the swap is asked for %s; in the swap %s\n",
+                   f(p.decoder_idle), f(p.decode), f(p.queue), f(p.gl), f(p.to_swap), f(p.swap));
+            printf("rta_app: path: from letting the game go to the drawn picture, without what it stood behind the picture before, %s ms", f(p.pipe));
+            if (pacer && pacer->mode == app::Pacer::AHEAD)
+                printf("; the game is let go %.2f ms ahead of the picture's moment now; a drawn picture was there %.2f ms before its moment on average "
+                       "(5th percentile %.2f); %llu of %zu were on screen more than half a refresh late - the longest part then: game %llu, decoder %llu, OpenGL %llu, "
+                       "swap %llu, a wait between them %llu; %llu drawn and not shown (overtaken); the grid was started again %llu times and moved %.1f ms toward the display in all; "
+                       "the game's thread woke %.2f ms after the time it asked for on average",
+                       pacer->lead_ms.load(), p.slack_mean, p.slack_low, (unsigned long long)p.late, p.pipe.values.size(),
+                       (unsigned long long)p.late_by[0], (unsigned long long)p.late_by[1], (unsigned long long)p.late_by[2], (unsigned long long)p.late_by[3],
+                       (unsigned long long)p.late_by[4], (unsigned long long)p.overtaken, (unsigned long long)pacer->resyncs.load(), pacer->slewed_ms.load(),
+                       pacer->wakes.load() ? pacer->woke_late_ms.load() / pacer->wakes.load() : 0.0);
+            printf("\n");
+        }
+        double pictures = blanks_now > p.blanks0 ? (double)(blanks_now - p.blanks0) : 1;
+        printf("rta_app: processor time per picture since the figures were last reset (%.0f pictures): %.2f ms over all threads; of it the decoder %.2f ms, "
+               "the window's thread (OpenGL) %.2f ms, everything else (the game, the runtime, sound, art readers) %.2f ms\n", pictures,
+               (cpu_now - p.cpu0) / pictures, (decode_cpu - p.decode_cpu0) / pictures, (main_cpu_now - p.main_cpu0) / pictures,
+               ((cpu_now - p.cpu0) - (decode_cpu - p.decode_cpu0) - (main_cpu_now - p.main_cpu0)) / pictures);
         fflush(stdout);
     }
 };
@@ -583,7 +769,7 @@ static void final_report() {                            // on the game's thread,
         printf("rta_app: per picture, by stage: game side %.2f ms of wall time (translated game, runtime, sound, the sink's copying); decoder %.2f ms of wall time, "
                "%.2f ms of its own processor time (VIF1, VU1, GS model)\n", g_sink->game_ms / b, g_sink->decode_wall_ms / b, g_sink->decode_cpu_ms / b);
     }
-    s.report_pace(false);
+    s.report_pace(false, g_sink ? g_sink->decode_cpu_ms : 0.0);
     apprt::films_report();
     {
         const render::GsStats& g = g_renderer->gs.stats;
@@ -728,7 +914,7 @@ static void app_command(const std::string& text, uint64_t frame) {
         bool on = w[1] != "off";
         QCoreApplication::postEvent(g_screen, new CallQEvent([on] { g_screen->backend->set_replacements(on); }));
     } else if (w[0] == "stats") {
-        g_screen->report_pace(w.size() >= 2 && w[1] == "reset");
+        g_screen->report_pace(w.size() >= 2 && w[1] == "reset", g_sink ? g_sink->decode_cpu_ms : 0.0);
     } else if (w[0] == "latency" && w.size() >= 2) {
         Latency& t = g_latency;
         std::lock_guard<std::mutex> hold(t.lock);
@@ -776,6 +962,9 @@ struct AppSink : app::Sink {
     std::mutex notes_lock;
     std::vector<std::pair<uint64_t, std::string>> notes;     // (blank number, path), game thread -> decoder
     void vblank(unsigned field, uint64_t number) override {
+        // the control socket's commands of this blank: a picture it asks for is this blank's,
+        // what it presses is read by the controller read that follows
+        control().on_blank(number);
         {
             std::lock_guard<std::mutex> hold(g_shot_lock);
             if (!g_shots_asked.empty()) {
@@ -836,6 +1025,7 @@ int main(int argc, char** argv) {
         else if (a == "--script" || a == "--do") { script_args.push_back(a); script_args.push_back(next()); }
         else if (a == "--offscreen") opt.offscreen = true;
         else if (a == "--unpaced") overrides.push_back({"frame_cap", "0"});
+        else if (a == "--pacing") { std::string way = next(); opt.queued = way == "queued"; if (way != "queued" && way != "ahead") { fprintf(stderr, "rta_app: --pacing ahead|queued\n"); return 2; } }
         else if (a == "--test") opt.test = next();
         else if (a == "--png") opt.png = next();
         else if (a == "--at") { std::string s = next(); for (char* p = &s[0]; *p;) { opt.at.insert(strtoull(p, &p, 10)); if (*p) p++; } }
@@ -844,7 +1034,8 @@ int main(int argc, char** argv) {
         else if (a == "--help" || a == "-h") {
             printf("picture (each also a line of <data>/settings.txt, see tools/recomp/app/settings.h):\n"
                    "        [--aspect auto|4:3|16:9|16:10|21:9|W:H] [--resolution window|WxH|Nx] [--antialiasing off|2|4|8] [--anisotropy 1..16]\n"
-                   "        [--mipmaps yes|no] [--art-pack DIR] [--art-memory MB] [--frame-cap 60|30|0] [--plain] [--settings FILE] [--no-settings]\n");
+                   "        [--mipmaps yes|no] [--art-pack DIR] [--art-memory MB] [--frame-cap 60|30|0] [--plain] [--settings FILE] [--no-settings]\n"
+                   "        [--pacing ahead|queued]\n");
             printf("rta_app --disc IMAGE [--data DIR] [--window WxH] [--fullscreen] [--scale N | --size WxH] [--volume V | --mute | --no-sound]\n"
                    "        [--emulator-timing] [--script FILE] [--do COMMAND] [--test TEXT] [--offscreen] [--unpaced] [--png PREFIX --at n,..]\n"
                    "        [--stop-after N] [-- runtime arguments]\n"
@@ -910,11 +1101,17 @@ int main(int argc, char** argv) {
         }
     }
 
+    static AppSink sink;
     static Screen screen;
     screen.opt = opt;
+    screen.pacer = &sink.pacer;
     screen.create();
     g_screen = &screen;
     hostpad::start(log_line);
+    // the picture's threads and the game's are the player's own work, not background work
+    app::interactive_thread();
+    apprt::interactive_threads();
+    hostpad::keep_timers();
 
     static Renderer renderer;
     g_renderer = &renderer;
@@ -923,7 +1120,6 @@ int main(int argc, char** argv) {
     gfxrt::install();
     if (getenv("RTA_GS_LOG")) renderer.gs.log_display = true;
     if (const char* keep = getenv("RTA_TEX_KEEP")) renderer.gs.texture_keep_frames = (uint32_t)atoi(keep);    // frames an unused texture is kept; 0 = for ever
-    static AppSink sink;
     g_sink = &sink;
     sink.renderer = &renderer;
     sink.resumed = mode == "resume";
@@ -931,7 +1127,7 @@ int main(int argc, char** argv) {
     renderer.on_frame = [](FrameList& frame) {
         static std::vector<std::string> shots;
         sink.take(frame.number, shots);
-        g_screen->submit(frame, shots);
+        g_screen->submit(frame, shots, sink.current);
     };
     sink.start();
 
@@ -989,7 +1185,7 @@ int main(int argc, char** argv) {
     g_recorder.first_frame = ~0ull;
     hooks.video = &g_recorder;
     hooks.pad = &g_pads;
-    std::thread game([] { rta::run((int)run_args.size(), run_args.data(), hooks); });
+    std::thread game([] { app::interactive_thread(); rta::run((int)run_args.size(), run_args.data(), hooks); });
     game.detach();
     return qapp.exec();
 }

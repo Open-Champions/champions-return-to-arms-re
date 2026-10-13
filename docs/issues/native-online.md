@@ -25,7 +25,232 @@ average is quoted with every run (100 to 550 on 18 cores).
 | Host / Join by code, the character used last | Ran (every pair after its first run) |
 | patch-set announcement | figure 3f5b1e14 (90 words), the application's; told and understood both ways with the emulator application; two native copies with different sets are both warned |
 | characters saved by the periodic save, loaded at the next log-in | gold written in one tick came back in a new session on both copies |
-| the name question on the window (a sheet), the note in the window's title | **built, not run**: a test window has nobody to answer, and no other window was opened on this computer |
+| the name question on the window (a sheet), the note in the window's title | **Ran** in the second round (below): shown on a test window and worked from inside the program, from no login to the game list |
+| three and four players, the window program among them; private game, chat, friends, leaving and returning, a player's program dying, a browser copy | second round, below |
+
+## Second round (2026-10-12, from 22:45): what had not been exercised
+
+Kept current while the work runs; the tables say what is **Ran**. Everything on one Mac,
+every copy at 192.168.1.123, against a lobby server instance of this work's own
+(`local/native-lobby/server/bin`: the binary built from `server/upstream` with FIXES 32,
+its own database, bound to this Mac's address, every port the usual one plus 2000; the
+lobby that was already running was not touched), throw-away names, `net-local-only=1` on
+every copy. Load average 15 to 25.
+
+**The builds tested.** `local/native-lobby/bin/rta_app_net` (window) and `rta_native_net`
+(headless): `tools/recomp/net/` as it is now, linked with a snapshot of everything else
+taken at 22:44 - the game's objects, runtime, renderer, sound and window program exactly
+as `local/recomp-out/bin/rta_app` of 19:52 was linked from (`local/native-lobby/snap/`,
+`build.sh`). So the window program is rta_app 19:52 (sha256 8ef21654...) with today's
+network files; nothing another job rebuilt went into a test.
+
+**New in `tools/recomp/net/`:** `--opt net-port-shift=N` (a second server instance whose
+ports are the usual ones plus N: the gateway port built into the game is shifted, the
+discovery port plus N counts as the server's); script command `app net sockets` (what the
+driver holds open); `lobbyparty.py` (two to four copies, window or headless, several
+launches, the scenarios below; one line per launch with the pairwise tick comparison and
+the story the tick log tells: levels, deaths, reloads).
+
+### Three and four players, with the window program
+
+`lobbyparty.py OUT --players N --kinds ... --launches 3 --port-shift 2000 --play 1500
+--level drunare --play2 3000`: drawn input on every copy, the level change written in one
+lockstep tick, and in `drunare` the three or four players die one after another in the
+arena fight; when the last one is dead the game puts everybody back (hit points full,
+state 0) - "reloads after everybody died". Compared: every pair of tick logs
+(`tools/rig/compare.py ticks`: seed, level, player count, button maps, every player's
+position, state, hit points, gold, experience, out-of-step flags, own sync hash).
+
+| Copies (host first) | Launches | All in the level | Ticks in step, each launch (every pair) | In each launch |
+|---|---|---|---|---|
+| 3 headless (first try of the set-up) | 1 | 1 | 2,719 | hub only |
+| **window**, headless, headless | 1 + 3 in a row | 4 | 2,552; 5,377; 5,322; 5,376 | hub > drunare, 3 deaths, 1 reload |
+| headless, **window**, headless | 3 in a row | 3 | 5,376; 5,344; 5,282 | hub > drunare, 3 deaths, 1 reload |
+| **window**, headless, headless, headless | 3 in a row | 3 | 4,951; 5,207; 5,315 (all 6 pairs) | hub > drunare, 1 to 4 deaths, a reload in the third |
+| headless, headless, headless, **window** | 3 in a row | **2** | 5,245; 5,206 (all 6 pairs) | hub > drunare, 4 deaths, a reload in the third; **the first launch failed for everybody** (below) |
+
+In the 16 launches that got into the level no column differed in any pair. (The launches
+from 23:21 on ran the build with the arithmetic switch described below; the earlier ones
+the build before it.)
+
+**One launch of four did not start (1 of 7 launches of four, 23:21).** All four copies
+went to lobby state 12 and none got a level within 60 s; no datagram to 0.0.0.0, nothing
+"not carried" after Start. What the logs have: the host's "Terminating known peer" lines
+read 2, 2, 1 (three different peers in a launch that works); joiner 1 took START last and
+had only the host left ("Terminating known peer 0"); joiner 3's lines read 0, 1, 1; at the
+end joiner 3 had not heard joiner 1 for 60 s (the whole launch) while it heard the host
+until the end: the two never met in the launch handshake. That is the picture of
+`three-players.md` cause 1 with BOTH of two joiners holding a wrong entry for each other,
+which the handshake's repair-from-the-datagram cannot heal (each sends to where the other
+is not). The launch tables were not in that run's log; `lobbyparty.py` prints them since
+(`launch-tables`: 0x402a37.., the port table, each player's launch record four times),
+so the next one can be read. Two other things ran on the Mac at that minute (the
+leave-and-return rounds of two window copies, and the name-question test). Not caused by
+the network driver as far as the logs go, and not explained: **open**.
+
+### The name question in the window: shown and worked
+
+`online_mac.mm` left a test window alone, so the sheet had never been up. New, for tests
+only: `--opt online-test-window=1` shows the question, the title note and the warnings on
+a test window as on any other, and the script command `app online sheet info | type TEXT |
+press N | picture FILE` reads and works the sheet from inside the program - `press` is the
+button's own `performClick`, so the sheet ends and its handler runs as after a click. No
+screen capture, no accessibility permission. The window program's control socket hands
+`app` lines to the window program alone, so the network's commands also come in through a
+file: `--opt online-commands=FILE` (looked for twice a second, carried out, removed).
+
+**Ran** (`local/native-lobby/xname.sh`: the window program in a test window, a new data
+directory, no name given, `online=lobby`):
+
+| Step | Seen (the program's own lines) |
+|---|---|
+| start, no saved login | "no saved login for this server: asking for a player name"; the game goes on to its log-in screen and waits there; `sheet: up=1 attached=1 visible=1 message="Your player name" buttons="Play online|Not now"`; the window's title: "AGENT TEST - native online n1 - server 192.168.1.123 - Going online: waiting for your player name..." |
+| "ab", *Play online* | the sheet is back with "A player name has at least 3 characters." |
+| "has space", *Play online* | back with "A player name has letters and digits only (A-Z, a-z, 0-9): ..." |
+| a made-up name, *Play online* | the account screen, "the new login for this server is saved", "done - you are in the lobby"; sheet gone; title "... Online: you are in the lobby (Game Selection and Chat). The controls are yours."; `online-login` mode 0600; the password occurs 0 times in the program's output and its network log; the server's database has the account. 4,410 vertical blanks from power-on |
+| second copy: *Not now* | "STOPPED - no player name was given (log in on the game's own screen, or choose Play Online again)"; the game stays on its log-in screen |
+| the same copy: `online start lobby` again, the first copy's name | "the server did not make the account: the name is taken, or it does not accept it"; the sheet is back with "That name is taken on this server (or the server did not accept it). Choose another one." |
+| another made-up name | the lobby |
+
+`sheet picture` writes what the sheet's view draws into a bitmap; AppKit draws only the
+text field that way (labels and buttons are on layers), so the lines above are the
+evidence, not the picture. A person has still not typed into it.
+
+### The lobby's own screens, by hand (two window copies, driven over the control socket)
+
+Two copies of the window program in test windows, `online=lobby`, then every press sent
+over `--control` (the socket of `tools/recomp/app/control.h`), text typed on the game's
+own on-screen keyboard (cursor read at keyboard window +0x5e0 = row * 14 + column; R2
+held for a capital), and the game's own picture read back (`shotfb`: the renderer's
+output written by the program, not a screen capture; pictures under
+`local/native-lobby/x/`). The helper is `local/native-lobby/xlib.py`.
+
+| Item | The original flow | What the native build did |
+|---|---|---|
+| **Chat in the lobby, both directions** | R1 to the chat pane, square *Chat*, type, L2 *Enter* (request 0x22; everybody in the room gets 0x3D) | **Ran.** A line typed on copy A appeared on A and B as `<A's handle>: hello from a 1`, one typed on B appeared on both |
+| **A private message** | `/m <handle> text` in chat, or *Private Msg* on a friend (0x21 > 0x30) | **Ran.** `/m <B> secret 2` typed on A appeared on B's *Private Chat* tab with A's handle |
+| **Who** | cross in the chat pane | **Ran.** "Players in 'Champions Reborn': ..." with both handles |
+| **Friends list** | triangle *Config* > "Chat Configuration": square *Edit Name*, type a handle, cross *Add Friend* (0x01), the list shows it; cross *Private Msg* on an entry sets the target | **Ran.** "Added to Friends List"; the list showed B's handle; the server's `UserFriendList` had the row; *Private Msg* set the target (the room's private tab then says `Msg (<B>)`). *Remove* and the status of a friend who logs off: not tried |
+| **Ignore list** | the same window, triangle *Add Ignore* (0x02) | **Ran.** B ignored A (the server's `UserIgnoredList` has the row); a public line typed by A afterwards did not appear on B; A's `/m <B> ...` got the game's box "There was an error sending a message to that person. They may be offline, or that may be an invalid chat handle." (the server's result 19) |
+| **A private game with a password** | There is no password in the game: the host form has "Public or Private?", a private game is not in anybody's list, and whoever knows its **name** finds it: triangle *Host/Search*, square *Search*, "Searching for a Private Game:" (0x56, then 0x57) | **Ran.** A hosted "Creating A Private Game" named by hand; the server logged `Create Private Game`; B's list stayed empty (0 games) over a refresh; B searched a wrong name and got the game's box "Couldn't join game: A database error occured" (the server answers 2 = not found, and that is the game's text for 2); with the right name B got the character screens and the room |
+| **Chat in a game's room, both directions** | the room has *Game Chat*, *Public Chat*, *Private Chat*; R1 to a pane, square *Chat* | **Ran.** "User '<B>' has joined the room." on the host; a line from A and one from B on both, under *Game Chat* |
+| **The private game started** | cross *Start Game* on the host | **Ran.** Both in `hub`, 2 players, ticks running |
+| **Leaving a game** | Start: pause menu (host: Return to Game, Use Gate Scroll, Load Game (grey), Options..., Kick Player, Exit Game; a joiner has no Kick Player); *Exit Game* > "Exit Game? Yes / No" | **Ran** (the joiner left): it was at the lobby's game list within a second, still logged in, back in the public chat room; **the host, alone, was put back to the game list by the game about two seconds later** (a game of two ends for both). The server logged both back in the chat room |
+| **Cancelling in the room** | circle *Cancel* > "Leaving Game", cross (0x05, 0x60) | **Ran** on a host alone in its room: back at the game list. And with a joiner still on its character screens when the host cancelled: the joiner accepted its character and landed at the game list, no box, nothing stuck |
+| **Start with a player still choosing a character** | the game refuses ("Not all players are ready to begin...") | **Ran** by accident (`late3`, first form): a third copy sat on its character screens; the host's Start presses did not start the game in 50 s |
+
+Not tried by hand: *Kick Player*, removing a friend or an ignore, the *Sort* of the game list,
+importing a memory-card character, deleting one.
+
+### Leaving and coming back without restarting the program
+
+`local/native-lobby/rounds.py` on the same two window copies (processes kept): host by a
+new code (`app online start host:CODE` through the command file), join by it, Start, both
+in `hub`, both walk, about 675 ticks, then one of them leaves by the pause menu and both
+are back at the game list. **9 games in a row in the same two processes** (1 + 5 with the
+joiner leaving, 3 with the host leaving - then it is the joiner the game puts back): every
+round started, both in the level, checksum flag 0 on both, both back at the list, 59 to
+87 s a round. Per process, read after every round (`lsof`, `ps -M`, `ps -o rss`):
+
+| | before | after 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|---|---|---|---|
+| sockets of the process | 6 | 6 | 7 | 7 | 8 | 8 | 9 | 9 | 9 |
+| threads | 28 | 28 | 32 | 35 / 36 | 38 | 42 | 46 | 50 | 54 |
+| resident memory, MB (copy A / B) | 482 / 1,458 | 509 / 1,504 | 349 / 461 | 399 / 487 | 422 / 497 | 419 / 510 | 409 / 506 | 451 / 498 | 383 / 499 |
+
+(These eight follow one earlier game and two cancelled ones in the same processes: 9
+games in all; a fresh process has 4 sockets and 20 threads at the game list.)
+
+- **Sockets: bounded.** The driver keeps one host UDP socket per UDP port of the game for
+  the whole run (so that the path the peer handshake opened is kept), and the game takes a
+  port in 4000-4004 for each game: at most five, reached after a few games (9 = 4 others
+  + 5), and it stayed at 9 for the last three games. One TCP stream to the lobby throughout; `app net sockets` after every game: "1
+  streams (1 open), 1 datagram, 0 raw". Nothing of the driver's grows with the games but
+  the list of players heard (a few bytes each).
+- **Threads: four more per game, and they stay.** Not the network's: the game ends a few
+  of its threads with `TerminateThread` at every level it leaves, and in
+  `tools/recomp/rt/runtime.cpp` (system call 0x25) that sets `kill` on a thread that is
+  waiting, while `wait_for_baton` (line 383) only looks at `kill` after the thread has been
+  given the baton - which an unlinked thread never is. Its host thread waits for ever.
+  **Needs a change in `rt/`** (wake the thread's condition variable in case 0x25 and let
+  the wait end on `kill`). Harmless for an evening (each is a parked thread with a
+  reserved, untouched stack); a few hundred games in one run would reach the system's
+  thread limit.
+- **Memory:** no growth with the games (it follows what the renderer holds: 350 to 520 MB
+  after a level; one copy stood at 1.5 GB before the rounds, after an hour of lobby
+  screens and pictures, and went back to 460 MB with the first level load).
+
+**Three players, three games in the same three processes** (`lobbyparty.py --scenario
+leave --rounds 3`, headless host, window joiner, headless joiner): in each game the last
+joiner leaves by the pause menu after 900 frames, the other joiner 600 frames later, and
+the host, alone, is put back to the game list by the game; then the host hosts by a new
+code and the two join again. All three games started and ended for every copy. A player
+who leaves on purpose is gone at once (`NET: DISCONNECTING PLAYER 2 on frame 1377`): the
+two others do not stand still as they do for a dead one. Tick logs compared game by game,
+every pair: 1,415 / 1,380 / 1,414 ticks with three players, 1,937 / 1,986 / 1,938 for the
+host and the joiner who stayed longer - nothing differs. Sockets and threads per process
+went as in the table above (headless host: 2 to 5 sockets, 9 to 19 threads over three
+games).
+
+### A player's program dying in mid-game; the host's program dying
+
+`lobbyparty.py --scenario drop` and `--scenario hostquit`, three copies (headless host,
+window joiner, headless joiner), drawn input on all; after 900 frames one PROCESS is
+killed (`kill -9`: nothing is said to anybody), the other two play on for 2,400 frames.
+
+| Killed | What the two others did | Ticks in step between the two |
+|---|---|---|
+| the last joiner, at tick 1,239 | lockstep stood still at tick 1,245 on both for **1,402 and 1,444 vertical blanks (23 to 24 s)**; the picture keeps the level and all three status bars and shows the game's connection sign in the middle (`d3/run1/j1-after-1.png`); then `NET: DISCONNECTING PLAYER 2 on frame 1258, whackHim = 1`, `NET: Done kicking!`, the dropped flag of player 2 is 1 on both, and the game goes on for the two | 2,129 (through the wait and after), nothing differs |
+| the host, at tick 1,223 | the same: 1,203 and 1,448 blanks (20 to 24 s), then player 0 dropped on both, and **the game goes on without its host** | 2,047, nothing differs |
+
+So a dead player costs the others 24 seconds of standing still, once, and nothing else.
+The lobby server times the dead copy's connection out by itself (120 s). Not tried: the
+copy coming back, a line that is only slow, a drop during a level load.
+
+### With a browser copy: the arithmetic
+
+**The gap.** `mixed-arithmetic.md` 5: every copy tells the others which arithmetic it can
+compute with and which it does; the emulator application changes to a browser's while a
+browser copy is in the room. The native build announced "can: the console's only, does:
+the console's" and could only warn. **Closed tonight, in `netdrv.cpp`:** the translated
+code computes with the host's own instructions and the runtime puts each game thread's
+processor in the console's state when it starts (`rt/runtime.cpp`, `thread_main`); the
+driver now puts the thread that runs the game's ticks in the wanted state at every call
+of the task loop (the entry it already has, 0x3226e4) and at every vertical blank -
+FPCR on ARM64: to nearest and tiny numbers kept for a browser's arithmetic, toward zero
+and flush-to-zero for the console's. The rule is the application's (`CheckArithmetic`):
+in the front end (lobby, room) a player heard in the last 15 s who cannot do the
+console's, or already does a browser's, makes this copy change, nobody such and it
+changes back; nothing changes once a level runs; a change is told again from the start;
+a copy that cannot follow gets the warning on both sides. It announces "can: both".
+`--opt net-arith=auto|console|browser` fixes it; `app net arith` and `app net peers` show
+it. Limits: ARM64 only (an x86-64 or WebAssembly build of the native game says "the
+console's only", as before); only the thread that runs the ticks and the one that reads
+the controller are changed, the game's other threads (disc reader, network set-up) stay
+as the runtime made them - they compute nothing of the simulation as far as was read;
+the runtime's own `--opt arith=nearest` is taken as "a browser's, fixed".
+
+**Ran** (`local/native-lobby/npage.py`): one native copy and one page of the browser build
+(the page that exists under `local/three-players/site`, 20:52, read only; Chrome 155 in a
+window of the test's own; the page server on 127.0.0.1 serves the page WITHOUT the disc -
+the image is handed to the page's own file input from this computer, as a player picks
+it), through `tools/play-web/relay/relay.py --lan` on this Mac pointed at this work's
+lobby instance. The native copy's lines and the page's own line are quoted.
+
+| Order | In the room | In the game | Result |
+|---|---|---|---|
+| native (headless) hosts, the page joins | native: "the player at ... computes with browser arithmetic (can do: the browser's)", "arithmetic: the machine now computes as a browser copy's does"; page: "Everyone computes the same way: 1 other player heard, the same patch set (3f5b1e14), browser arithmetic (in the Mac application)" | 3,216 lockstep frames in `hub`, both walking and swinging | the page received the native copy's sync hash for 1,778 frames it still held its own for: **all equal**; out-of-step and dropped flags 0, checksum flag 0 on both |
+| the page hosts, native (headless) joins | the same lines | 3,107 frames | 1,837 hashes equal, 0 different; flags 0 |
+| the **window** program hosts, the page joins | the same lines | 6,066 frames | 3,458 hashes equal, 0 different; flags 0 |
+| control: native with `net-arith=console` (what the build did before tonight) hosts, the page joins | page: "WARNING: another player's copy cannot compute as a browser does (an older copy of the application, or one set to its own arithmetic): the game would fall out of step - do not start it..."; native: "WARNING: the player at ... computes with browser arithmetic and this copy cannot: the game would fall out of step - do not start it" | started all the same | hashes differ from frame 3; at frame 245 the game ended the session on both (page back at the title, native in the front end, one player) |
+
+So the native build and a page play in step, both orders, and a native copy that cannot
+follow is warned about on both sides. The page calls the native copy "the Mac
+application" (it tells the two apart by nothing). Not done: a level change or a fight in
+a mixed game (a page has no tick-keyed write; the game's own gateway was not walked), a
+game of three with a page, Safari or Firefox, a relay that is not on this computer.
+The relay carried the native copy's datagrams although they leave through the loop-back
+interface (`--lan`).
 
 ## Where the cut is, and why
 
@@ -160,10 +385,16 @@ at its sign-in step. The skip is not re-implemented in any code here.
 `--opt key=value` to the runtime (after `--` for `rta_app`): `net-server`,
 `net-server-public`, `net-data`, `net-card`, `net-netcnf=0`, `net-addr`,
 `net-loopback=on|off`, `net-ports=0`, `net-set-quiet=1`, `net-local-only=1`, `net-pace=HZ`,
-`net-log=FILE`, `net-log-all=1`, `online=lobby|host[:CODE]|join:CODE[+choose]`,
-`online-name=NAME[,NAME…]`, `online-person=0`, `tick-log`, `tick-watch-file`, `tick-do`.
-`netdrv.h` describes each. Script commands: `app online start MODE`, `app online stop`,
-`app online name NAME`, `app online`, `app net peers`, `app net drop`.
+`net-log=FILE`, `net-log-all=1`, `net-arith=auto|console|browser`, `net-port-shift=N`,
+`online=lobby|host[:CODE]|join:CODE[+choose]`, `online-name=NAME[,NAME…]`,
+`online-person=0`, `online-commands=FILE`, `online-test-window=1`, `tick-log`,
+`tick-watch-file`, `tick-do`. `netdrv.h` describes each. Script commands: `app online
+start MODE`, `app online stop`, `app online name NAME`, `app online`, `app online sheet
+info|type TEXT|press N|picture FILE`, `app net peers`, `app net arith`, `app net sockets`,
+`app net drop`. From a script file they reach the network in the window program too; the
+window program's control socket hands its `app` lines to the window program only
+(`app/app_main.cpp` sets `g_control.app_command = app_command`, past the chain in
+`script_app_command`), which is what `online-commands=FILE` is for.
 
 ## What was run
 
@@ -224,9 +455,10 @@ same number unless another program on this computer held it.
 - **In the window program** (`rta_app`): the same driver; `online_mac.mm` puts the name
   question on the window as a sheet, the driver's note (where it is, the code of a hosted
   game) and the server into the window's title, and the set warning into a sheet.
-  **Not run**: a test window is left alone by design (its title stays "AGENT TEST - …",
-  the name comes from `online-name`), and no other window was opened here. What ran in the
-  window program is the game itself online, as host and as joiner.
+  A test window is left alone by design (its title stays "AGENT TEST - …", the name comes
+  from `online-name`) unless `online-test-window=1` is given: **Ran** that way in the
+  second round ("The name question in the window: shown and worked"). The window program
+  online as host and as joiner ran in both rounds.
 
 ### The save round trip
 
@@ -293,9 +525,10 @@ card directory changed after the copy's first boot.
   the body the game sends separately leave as it sends them).
 - The interface is "up" 20 vertical blanks after the game asks, where the emulator's
   stack takes its address by DHCP first.
-- The arithmetic announcement says "can do the console's only". The emulator application
-  can switch to a browser copy's arithmetic; the native build cannot, and warns when a
-  player says it computes that way. A game with a browser copy was not tried.
+- The arithmetic: as the emulator application since the second round - "can do both",
+  the console's by default, a browser's while a browser copy is heard in the lobby or a
+  room (ARM64; an x86-64 build still says "the console's only" and warns). Run with a page
+  in both orders ("With a browser copy: the arithmetic").
 - Library calls cost what they asked to wait and nothing else; on the emulator each is an
   RPC through the emulated I/O processor. Finding 2 is where that mattered.
 - Nothing is relayed for `--arg --net` (the developer LAN start) by this driver:
@@ -323,16 +556,19 @@ card directory changed after the copy's first boot.
   native with an emulator copy stayed in step with that; loss, delay and reordering on a
   real path were not tried (the loop-back interface loses nothing).
 
-**Not exercised.** Private games (0x56, 0x57); chat typed by a player, friends, ignore,
-messages; cancelling a join or a game (0x05, 0x60); deleting a character; importing a
-memory-card character into the lobby; the "save the login on the memory card?" choice; a
-third and fourth player; a player leaving a running game, the pause-menu exit back to the
-lobby, a second game in one run; the line to the server cut during the lobby or a game
-(`app net drop` exists; the loop of `live-rig.md` 19.9 was not provoked); the game without
-the sign-in patch (it should stop at its sign-in error; not run); a server that is not on
-this computer, two players on different networks, a router; a browser copy in the game;
-the window program's sheet and title note (built, not run); a real person at the
-controls.
+**Not exercised** (after the second round). Removing a friend or an ignore, what a
+friend's logging off shows; *Kick Player*; deleting a character; importing a memory-card
+character into the lobby; the "save the login on the memory card?" choice; the line to the
+server cut during the lobby or a game (`app net drop` exists; the loop of `live-rig.md`
+19.9 was not provoked); a dropped player coming back; a drop during a level load; the
+game without the sign-in patch (it should stop at its sign-in error; not run); a server
+that is not on this computer, two players on different networks, a router; a level change
+or a fight in a game with a browser copy, three players with a browser copy, a native copy
+with the emulator APPLICATION in a game of three or four (the application's builds were
+being remade that night and were left alone); a person at the controls, and a person
+typing into the name sheet. Exercised since and described above: private games, chat,
+friends, three and four players, leaving by the pause menu and playing again in the same
+run, cancelling, a player's and the host's program dying, a browser copy, the sheet.
 
 **Windows.** Done since, as far as a Mac can take it (`docs/issues/native-windows.md`, "The
 network"): the driver's socket calls are behind `tools/recomp/net/sock.h`, one header with
@@ -379,6 +615,18 @@ tools/recomp/net/play-native.sh --disc "$RTA_DISC" --host
 tools/recomp/net/play-native.sh --disc "$RTA_DISC" --player 2 --join CODE
 ```
 
+```
+# second round: three and four copies, the window program among them (a second server
+# instance on ports + 2000; leave --port-shift out for the usual lobby on this computer)
+python3 -B tools/recomp/net/lobbyparty.py OUT --players 4 --kinds window,native,native,native \
+    --launches 3 --port-shift 2000 --play 1500 --level drunare --play2 3000
+python3 -B tools/recomp/net/lobbyparty.py OUT --players 3 --scenario drop       # or hostquit, leave, late
+# the name question on a test window, worked from inside the program
+rta_app --test "name" --disc "$RTA_DISC" --data DIR -- --opt net-data=DIR --opt online=lobby \
+    --opt online-test-window=1 --opt online-commands=DIR/commands.txt
+echo "online sheet info" > DIR/commands.txt        # then: online sheet type NAME, online sheet press 0
+```
+
 A copy started by `lobbypair.py` keeps its name in `OUT/<role>/name` and its login in
 `OUT/<role>/online-login`; a run directory can be used again (the character used last is
 then taken by itself).
@@ -386,7 +634,11 @@ then taken by itself).
 ## Files
 
 `tools/recomp/net/`: `hle-online.txt`, `netdrv.h`, `netdrv.cpp`, `online.cpp`,
-`online_mac.mm`, `build_online.py`, `play-native.sh`, `lobbypair.py`, `lobbyapp.py`.
+`online_mac.mm`, `build_online.py`, `play-native.sh`, `lobbypair.py`, `lobbyapp.py`,
+`lobbyparty.py` (second round). Local to the second round, not in the repository:
+`local/native-lobby/` - `server/bin` (its lobby instance), `build.sh` and `snap/` (its
+builds), `xstart.sh`, `xname.sh`, `xlib.py`, `rounds.py` (the window copies driven by
+hand), `npage.py`, `redirect.c` (a page and the relay), the run directories.
 Changed: `tools/recomp/recomp.py` (`--hle-add`, `--extra-pnach`), `tools/recomp/app/build.py`
 (the network in `rta_app`). Linked unchanged: `tools/play-net/src/RtaOnline.cpp`.
 Everything generated or logged: `local/recomp-out/gen-online*`, `obj-rta_native_online*`,

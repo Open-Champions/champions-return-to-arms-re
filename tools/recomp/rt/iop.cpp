@@ -285,21 +285,37 @@ void pad_record(u8* r, const Pad& p, const rta::PadState& state, u32 frame) {
     if (p.mode == 0x79) { r[0x78] = 0xFF; r[0x79] = 0xFF; r[0x7A] = 3; }
 }
 
-// What a port's controller reports at this blank.  The game sees it `g_pad_delay` blanks
-// later (default 1): on the console the I/O processor reads the controller at the blank
-// and its copy reaches main memory during the frame, after the game has read the buffer
-// for that frame.  The reference run in the emulator shows the same one-tick lag.
-unsigned g_pad_delay = 1;
-rta::PadState g_pad_history[2][8];
+// What a port's controller reports at this blank.  The part of it the script holds reaches
+// the game `g_pad_delay` blanks later (default 1): on the console the I/O processor reads
+// the controller at the blank and its copy reaches main memory during the frame, after the
+// game has read the buffer for that frame.  The reference run in the emulator shows the
+// same one-tick lag, and a script written for one machine presses on the same tick on the
+// other because of it.  The rest of the answer - what a person holds: keyboard, controller
+// - is not made to wait: it is in the game's buffer at the blank it was read at
+// (`g_pad_live_delay` blanks later, default 0).  The two are told apart here: a button is
+// the script's when the script holds it too, a stick when it is where the script has it.
+// (With no source set, everything is the script's: nothing changes for a headless run.)
+unsigned g_pad_delay = 1, g_pad_live_delay = 0;
+rta::PadState g_pad_history[2][8], g_pad_live_history[2][8];
 rta::PadState g_pad_now[2];
 void pad_sample(u64 blank) {
     for (unsigned port = 0; port < 2; port++) {
-        rta::PadState state;
+        rta::PadState state, scripted = script_pad(port), live;
         if (g_hooks.pad) g_hooks.pad->read(port, blank, state);
-        else state = script_pad(port);
-        for (unsigned k = 7; k > 0; k--) g_pad_history[port][k] = g_pad_history[port][k - 1];
+        else state = scripted;
+        live.buttons = state.buttons & (u16)~scripted.buttons;
+        state.buttons &= scripted.buttons;
+        if (state.lx != scripted.lx || state.ly != scripted.ly) { live.lx = state.lx; live.ly = state.ly; state.lx = state.ly = 128; }
+        if (state.rx != scripted.rx || state.ry != scripted.ry) { live.rx = state.rx; live.ry = state.ry; state.rx = state.ry = 128; }
+        for (unsigned k = 7; k > 0; k--) { g_pad_history[port][k] = g_pad_history[port][k - 1]; g_pad_live_history[port][k] = g_pad_live_history[port][k - 1]; }
         g_pad_history[port][0] = state;
-        g_pad_now[port] = g_pad_history[port][g_pad_delay < 8 ? g_pad_delay : 7];
+        g_pad_live_history[port][0] = live;
+        rta::PadState now = g_pad_history[port][g_pad_delay < 8 ? g_pad_delay : 7];
+        const rta::PadState& held = g_pad_live_history[port][g_pad_live_delay < 8 ? g_pad_live_delay : 7];
+        now.buttons |= held.buttons;
+        if (now.lx == 128 && now.ly == 128) { now.lx = held.lx; now.ly = held.ly; }
+        if (now.rx == 128 && now.ry == 128) { now.rx = held.rx; now.ry = held.ry; }
+        g_pad_now[port] = now;
     }
 }
 
@@ -316,7 +332,8 @@ void pad_sample(u64 blank) {
 std::map<std::pair<u32, u64>, std::vector<u8>> g_replay;
 u32 g_replay_episode, g_replay_last_tick, g_replay_same;
 const std::vector<u8>* g_replay_now;
-u64 g_replay_used;
+u64 g_replay_used, g_replay_load_rows;
+int g_replay_log = -1;
 void replay_load(const char* path) {
     FILE* f = fopen(path, "r");
     if (!f) rt_die("cannot read %s", path);
@@ -333,19 +350,45 @@ void replay_load(const char* path) {
     fclose(f);
     printf("controller replay: %zu frames from %s\n", g_replay.size(), path);
 }
+// While a level loads, the frames shown are the loading screen's (its own thread:
+// loadscreen_renderLoop 0x32187c, between loadscreen_start and loadscreen_stop, flag
+// g_loadscreenActive 0x506094); the main loop's next frame after the load is the level's
+// first tick, and it goes by what the controller buffer holds then.  The other machine's
+// rows of those loading frames say what its controller held while it loaded, and it loaded
+// for a different number of frames (the rig three to eight times as many).  Followed frame
+// by frame, as the frames of a menu are, the last blank of the load here got one of the
+// other machine's loading rows instead of its first-tick row, and a level entered with the
+// stick held went another way from tick 1 (docs/issues/native-proof.md 3b.3).  So: at a
+// blank at which the loading screen is up, the row handed over is the next tick's first.
+//
+// Not for the front end's own level ("intro", the title's backdrop): after its load the
+// front end runs ten frames of its own before the first tick, and they have to see what
+// they saw on the other machine - a button held through the load there is still held,
+// and handing the first tick's row (the button let go) during the load makes it a button
+// pressed anew afterwards (Ran: the front end then goes another way from tick 222 on).
+// What is left as it was, too: a notice over a level before its first tick (the tick
+// stands on after the load) is followed by the rows of the standing tick.
 void replay_step() {
     g_replay_now = nullptr;
     if (g_replay.empty()) return;
+    if (g_replay_log < 0) g_replay_log = getenv("RTA_REPLAY_LOG") ? 1 : 0;
     u32 tick = rd(0x44FDCC);                        // g_simFrame
     if (tick < g_replay_last_tick) g_replay_episode++;
     g_replay_same = tick == g_replay_last_tick ? g_replay_same + 1 : 0;
     g_replay_last_tick = tick;
-    // The other machine showed another frame at this tick (a menu, a message box, a
-    // loading screen): this machine's next frame gets that frame's data.  Otherwise the
-    // next frame computes the next tick.
+    bool loading = g_ram[0x506094] != 0;            // g_loadscreenActive
+    // The other machine showed another frame at this tick (a menu, a message box): this
+    // machine's next frame gets that frame's data.  Otherwise - and through a level load -
+    // the next frame computes the next tick.
+    auto step = g_replay.find({g_replay_episode, (u64)(tick + 1) << 32});
     auto found = g_replay.find({g_replay_episode, ((u64)tick << 32) | (g_replay_same + 1)});
-    if (found == g_replay.end()) found = g_replay.find({g_replay_episode, (u64)(tick + 1) << 32});
+    bool load_rule = loading && step != g_replay.end() && memcmp(g_ram + 0x41B721, "intro", 6) != 0;      // g_levelName
+    if (load_rule) { if (found != g_replay.end() && found->second != step->second) g_replay_load_rows++; found = step; }
+    else if (found == g_replay.end()) found = step;
     if (found != g_replay.end()) { g_replay_now = &found->second; g_replay_used++; }
+    if (g_replay_log && (g_replay_same || tick <= 2))
+        printf("replay: blank %llu episode %u tick %u same %u loading %d -> %s\n", (unsigned long long)rt_fields(), g_replay_episode, tick, g_replay_same,
+               (int)loading, found == g_replay.end() ? "nothing" : found == step ? "the next tick's first row" : "a row of this tick");
 }
 
 void pad_refresh(unsigned port, unsigned slot, u64 blank, bool both) {
@@ -726,6 +769,7 @@ void iop_init(const IopOptions& options) {
     fs::create_directories(mc_root(0), ec);
     fs::create_directories(mc_root(1), ec);
     if (const char* delay = rt_option("pad-delay")) g_pad_delay = (unsigned)atoi(delay);
+    if (const char* delay = rt_option("pad-live-delay")) g_pad_live_delay = (unsigned)atoi(delay);
     if (const char* replay = rt_option("pad-replay")) replay_load(replay);
     // A resumed image has its controller ports open already; name their buffers to drive them.
     for (unsigned port = 0; port < 2; port++) {
@@ -803,7 +847,8 @@ void iop_report() {
            g_modules.size(), (unsigned long long)g_sectors_read, (unsigned long long)g_mc_bytes_read,
            (unsigned long long)g_mc_bytes_written, (unsigned long long)g_sif_dma_bytes);
     for (auto& m : g_modules) if (m.find("NOT ON") != std::string::npos) printf("  module %s\n", m.c_str());
-    if (!g_replay.empty()) printf("  controller replay: %llu blanks took their data from the replay file\n", (unsigned long long)g_replay_used);
+    if (!g_replay.empty()) printf("  controller replay: %llu blanks took their data from the replay file; at %llu blanks of a level load the next tick's first row was handed over "
+                                  "where the other machine's loading frame held something else\n", (unsigned long long)g_replay_used, (unsigned long long)g_replay_load_rows);
 }
 
 // ---- the three library functions the runtime supplies ------------------------------------

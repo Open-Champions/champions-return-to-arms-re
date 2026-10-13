@@ -2,6 +2,9 @@
 #include "host.h"
 
 #include <pthread.h>
+#ifdef __APPLE__
+#include <pthread/qos.h>
+#endif
 #include <unistd.h>
 #include <cstdio>
 #include <cstdlib>
@@ -9,11 +12,16 @@
 namespace host {
 
 struct Start { void (*entry)(void*); void* argument; };
+static bool g_interactive = false;
+void interactive_threads(bool on) { g_interactive = on; }
 
 void start_thread(void (*entry)(void*), void* argument, size_t stack_bytes) {
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, stack_bytes);
+#ifdef __APPLE__
+    if (g_interactive) pthread_attr_set_qos_class_np(&attr, QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
     pthread_t handle;
     Start* start = new Start{entry, argument};
     pthread_create(&handle, &attr, [](void* p) -> void* {

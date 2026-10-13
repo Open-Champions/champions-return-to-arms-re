@@ -42,6 +42,8 @@ static unsigned __stdcall thread_entry(void* p) {
     return 0;
 }
 
+void interactive_threads(bool) {}                      // nothing is asked of Windows' scheduler
+
 void start_thread(void (*entry)(void*), void* argument, size_t stack_bytes) {
     Start* start = new Start{entry, argument};
     uintptr_t handle = _beginthreadex(nullptr, (unsigned)stack_bytes, thread_entry, start, STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);

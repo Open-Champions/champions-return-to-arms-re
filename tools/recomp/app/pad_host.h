@@ -29,4 +29,11 @@ uint32_t generation();          // counts every attach and detach
 // positive, then the two triggers in 0..1).  Carried out on the main thread.
 void test(const std::string& command, uint16_t buttons, const float values[6]);
 
+// Main thread, once: tells the system that this process is doing something a person is
+// waiting for and that its timers must be kept (macOS: an activity that is user-initiated
+// and latency-critical; without it a program that is not in front is put to "App Nap" and
+// its waits are stretched by milliseconds).  It does not keep the display or the computer
+// awake.  A host without such a thing does nothing.
+void keep_timers();
+
 }  // namespace hostpad

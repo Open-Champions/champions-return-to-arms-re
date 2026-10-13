@@ -808,3 +808,235 @@ local/recomp-out/bin/rta_app --test "films" --window 320x240 --size 640x448 --un
      --data local/recomp-out/app-test/d --script local/recomp-out/app-test/film-test.rig
 sh local/recomp-out/app-test/merge/verify.sh                             # the rig comparison and every correction, default and --plain
 ```
+
+## 11. The merged program, paced (2026-10-12, night; kept current as the work goes on)
+
+Owner of `tools/recomp/rt`, `render`, `app`, `sound` from 22:40. Helpers and results of
+this section: `local/recomp-out/app-test/s11/` (nothing of it is in the repository).
+Every statement says **Ran** or **Read**. STATE and what is left: 11.9, the last lines.
+
+### 11.1 The merged tree, rebuilt and verified (Ran, 22:46 to 23:02)
+
+`python3 tools/recomp/app/build.py --as rta_app_next` (and `--original --as
+rta_app_orig_next`): the tree with the speed work (`native-render-speed.md`; the
+translator's `local/recomp-out/gen-vu/vu1_fast.cpp` is picked up) and the shared socket
+layer (`net/sock.h`). 34 s. Two things about the build itself:
+
+- `app/build.py --as NAME` makes the program under another name in `bin/` (it must lie in
+  `bin/`: it finds the workspace from there), and every link is now made beside its place
+  and moved over it, so a copy somebody is starting never sees a half-written file. A
+  build that is to be checked first is made as `rta_app_next` and moved over `rta_app`
+  afterwards.
+- **The fix set is not the one of this afternoon.** `patches/SLUS-20973_4028A55F.pnach`
+  was changed at 22:30 by other work; the translator now reports "patched: 91 words of 26
+  sections" (90 until then) and the program announces patch set 27f61e1d with 91 words
+  online (3f5b1e14 with 90 before). Every build made from now on has it; a copy built
+  before 22:30 and one built after are warned about each other in a lobby room.
+
+Checks, all against the candidate before it became `bin/rta_app`:
+
+| Check | Result |
+|---|---|
+| the fight session against the rig's log, controller rows replayed (`s11/rig.sh`: `rta_app_orig`, picture off screen, sound on the machine's clock): `--plain` with the fast renderer; `--plain` with `RTA_VU1_INTERPRET=1 RTA_GS_SLOW=1 RTA_VIF_SLOW=1`; default picture with the fast renderer | all three the same file as `merge/rig-final-compare.txt`, byte for byte (`cmp`) |
+| pictures at 11 simulation ticks (`s11/det.sh`: the speed work's tick-keyed route with seven more pictures in the fight in `valor`; 1280 x 896, no window): fast renderer, reference switches, and the previous program (`rta_app` of 19:52), each with the default picture and with `--plain` | 11 PNG files the same three ways, both settings (`s11/detcmp.py`) |
+| **the 20-level tour as a script** (`s11/mktour.py`, `s11/tour.sh`: the stops of `tour.py levels` - where the level starts and two views with the free camera - but every step counted in vertical blanks by the machine instead of sent over a socket, so that two runs make the same pictures): fast, reference, previous program; default picture, 640 x 448 | 60 PNG files the same three ways. (The socket-driven `tour.py` cannot give this: the blanks between two of its commands depend on the wall clock.) 5,534 textures made, 5,278 freed, 1,253 draws without their texture, 49 transfers inside GS memory not carried out, no approximated GS state - the same figures in all three |
+| two copies of the window program through this computer's lobby into one game (`lobbypair.py run s11/online/pair-next --host window --join window --play 1800 --level drunare --play2 1800`, `RTA_NATIVE_APP` the candidate; new accounts, new characters, throw-away names) | 4,830 ticks compared through the level change into `drunare`: "no shared column differs on any tick"; the game's own checksum exchange agreed (expected = received, `g_checksumFailed` 0) on both; each copy saw the other's patch set as its own; 161 s |
+
+The session to the fight (5,307 blanks, 1280 x 896, default picture, no window, load 30
+to 60): the previous program 144 pictures a second and 8.8 ms of processor time a picture
+over all threads (decoder 5.5 ms); the merged one 285 and 5.6 ms (decoder 1.85 ms); on the
+reference switches 105 and 11.0 ms (decoder 8.1 ms).
+
+With that `bin/rta_app` **is** the merged build (23:02; `bin/rta_app.merged` is a copy of
+it). `bin/rta_app.prev` is the program of 19:52 that was there before, `rta_app_orig.prev`
+likewise. `rta_replay` rebuilt.
+
+### 11.2 Pacing (Ran, 23:02 to 23:50)
+
+**The display of this computer was asleep the whole night** (`CGDisplayIsAsleep` 1; nobody
+had touched it for three hours), and so it was during the evening's measurements of the
+other work: a swap asked of a sleeping display returns at once (0.3 to 0.7 ms), no picture
+waits for a refresh, and every interval quoted tonight - here and in
+`native-render-speed.md` - is the program's own clock, not the glass. I did not wake the
+display. What a lit display does to a swap is stood in for by a test aid (below); **the
+first run on the lit display is the owner's**, and the last lines the program prints
+(`pacing:` and `path:`) say how it went.
+
+**Where the merged program stood** (`s11/pace.sh base-448`: the session of
+`s11/mkpace.py` - first level standing, fire3 standing, fire3 fighting -, 640 x 448 in a
+small test window, 4 samples, anisotropy 16, art pack; load average 14 to 16): 60.4 to
+63.0 pictures a second; 2,998 of 3,000 intervals 2 refreshes. Two things in it:
+
+- it ran **up to 5 % fast** (63.0 a second standing in the first level): a picture that
+  arrived within 1.5 ms of its time was taken as on time and the next period counted from
+  there;
+- the game's pace was whatever the window's thread let through: game, decoder and window
+  each held a finished picture for the next, so a press was read while three pictures
+  were still on their way, and a swap that waits long holds the game, its sound and a
+  lockstep partner back with it.
+
+**Who waits for whom** (the figures `app stats` and the final report now print, per
+picture: `path:`). In the merged program the decoder waited for the window's thread for
+most of every period (it handed a list over only when the picture before had been
+swapped), and the game waited for the decoder the same way: no part was short of time, the
+waiting was the pacing. Per picture in the fire3 fight at 640 x 448: game side 1.9 to
+2.3 ms, decoder 3.5 to 4.2 ms, OpenGL 2.1 ms of calls and 4.1 ms to `glFinish` (the
+graphics card's time: it used to be hidden in the swap), swap 0.3 to 0.4 ms when the
+card has finished before it is asked.
+
+**What it is now** (`app/pipeline.h` `Pacer`, `app/app_main.cpp` `Screen`):
+
+- **The game is let go by a clock**, one frame per period, `lead` before the moment its
+  picture is due. `lead` is what game + decoder + OpenGL (to `glFinish`) lately took - the
+  third longest of the last two seconds, with what the game's thread woke late by, without
+  the time a list stood behind the picture before it - plus a margin (half a refresh and
+  a millisecond where swaps are asked for inside the last refresh; 2.5 periods at most).
+  A picture arrives just before it is shown instead of waiting in two hand-overs.
+- **The moments are a grid** one period apart. Where the swap waits for the display, the
+  grid is moved toward the times the swaps return at (a tenth of the difference per
+  picture, half a millisecond at most); whether swaps wait is found out from how long
+  they take (2.5 ms or more when asked 3 ms or more before the moment: six more of those
+  than of the others). Where they do not wait the grid is the clock's and a picture is
+  held to its moment by the clock: exactly 60.000 a second on this 120 Hz display.
+- **No thread waits for another across a swap.** Lists go from the decoder to the
+  window's thread through a queue of three; a picture that is overtaken (the one behind
+  it is due as well) is drawn and not shown. A swap that takes long makes that picture
+  late and nothing else.
+- **The controller is read after the wait**, not before it (`rt/runtime.cpp`
+  `on_vblank`: the picture sink is called before the controller is read; the sink touches
+  nothing of the machine).
+- The picture's threads and the game's ask for the user-interactive class
+  (`pthread_set_qos_class_self_np`; `rt/host.h` `interactive_threads`), and the process
+  tells the system its timers matter (`NSActivityLatencyCritical`,
+  `app/pad_mac.mm` `keep_timers`; it does not keep the display awake).
+- `--pacing queued` is the old way (same program), for comparing.
+- Test aids: `RTA_FAKE_DISPLAY=HZ[,PPM[,PHASE_MS]]` - every swap waits for the next
+  refresh of a display that is not there; `RTA_PACE_LOG=1` - a line per picture.
+
+**Figures** (`s11/pace.sh`; small test window; 4 samples, anisotropy 16, art pack on;
+the computer was shared - load average beside each; processor time does not depend on it):
+
+| Session part | Picture drawn at | Intervals (refreshes of the 120 Hz display) | Pictures a second | Path: game / decoder / OpenGL to `glFinish`, ms | Let go ahead | Processor time a picture: all / decoder / window's thread / rest | Load |
+|---|---|---|---|---|---|---|---|
+| first level, standing (600) | 640 x 448 | not kept apart in this run | | | | | |
+| fire3, a fight (900), no display | 640 x 448 | 2: 899 of 899; longest 17.9 ms | 60.000 | 1.9 / 3.5 / 4.1 | 16.6 ms | - | 15 to 19 |
+| fire3, a fight (1,800), the display that is not there (120.036 Hz) | 640 x 448 | 2: 1,789; 1: 5; 3: 5 (five pictures one refresh late, all in OpenGL) | 60.018 (the display's) | 2.2 / 4.0 / 4.1 | 20.7 ms | - | 23 to 28 |
+| first level, standing (600), no display | 2619 x 1964 | 2: 599 of 599; longest 17.9 ms | 60.000 | 1.9 / 3.3 / 6.0 | 23.1 ms | 8.7 / 3.3 / 3.0 / 2.4 ms | 17 to 20 |
+| fire3, standing at its start (600) | 2619 x 1964 | 2: 598; 3: 1; longest 23.3 ms | 60.000 | 1.7 / 3.4 / 8.7 | 24.5 ms | 12.3 / 3.4 / 5.6 / 3.3 ms | 20 |
+| fire3, a fight (1,800) | 2619 x 1964 | 2: 1,799 of 1,799; longest 19.4 ms | 60.000 | 2.3 / 4.2 / 6.1 | 24.3 ms | 10.3 / 4.2 / 3.0 / 3.2 ms | 20 |
+
+(The whole session, power-on and level loads included, has the late pictures a load
+makes: at the display's resolution 2,760 of 2,790 intervals 2 refreshes from power-on to
+the first level.) 2619 x 1964 is the display's height at 4:3. Files: `s11/pace/a2-448`,
+`fake-448`, `a3-1964` (`out.txt`).
+
+### 11.3 Input delay (Ran, 23:45 to 23:55)
+
+**Where the blank was**: `rt/iop.cpp` `pad_sample` handed everything the pad source
+answered to the game one blank later (`g_pad_delay`, as the console's I/O processor and
+the rig do). Now only what the **script** holds is delayed (so a script still presses on
+the same tick here and in the rig); the rest of the answer - keyboard, controller, the
+control socket, the latency test's press - is in the game's buffer at the blank it was
+read at. The runtime tells the two apart itself (a button is the script's when the script
+holds it too), so no pad source had to change (`net/online.cpp` wraps the application's
+and still sees and masks every button). `--opt pad-live-delay=1` gives the delay back.
+Replayed controller rows (`pad-replay`) replace both, as before: the rig comparison is
+the same file as before, byte for byte (11.5).
+
+**Counted again** with the method of 10.9 (`s11/latency.py`: `app latency`, paced, the
+same program both ways in the same minutes, load 19; "old way" is `--pacing queued --
+--opt pad-live-delay=1`):
+
+| Press | Old way: first changed picture / ms to its present | Now |
+|---|---|---|
+| the pause menu opens (start) | the 5th blank after the press / 125 ms | **the 4th / 62 to 67 ms** |
+| a move in the pause menu (6 each) | the 7th, six times / 155 to 162 ms | **the 6th, twelve times of twelve / 94 to 101 ms** |
+| an attack in the first level (cross; 8 and 16 presses) | 6, 8, 9, 8, 9, 9, 9, 11 / 139 to 223 ms | 5, 8, 5, 9, 8, 8, 8, 6 and 6, 8, 8, 6, 10, 8, 10, 7 / 78 to 165 ms |
+
+The emulator application's figure (`tools/play-net/README.md`): an attack in picture 5 or
+6, 82 to 104 ms. The native program's earliest is now the 5th (78 and 82 ms) where it was
+the 6th; the later counts are the test waiting for the swing to outgrow the idle
+movement, in both columns. One blank less in the count is the pad delay; the rest of the
+60 ms is the pictures that no longer wait in the hand-overs and the controller being read
+after the wait. Not done: the emulator's own `latency.py` in the same scenes (a release
+agent owns the emulator copies tonight).
+
+### 11.5 The two known faults (Ran)
+
+**(a) Controller replay through a level load: fixed** (`rt/iop.cpp` `replay_step`).
+At a blank where the tick stands at T the replay hands over the other machine's next row
+of tick T if it has one, else the first row of tick T + 1. While a level loads, the frames
+shown are the loading screen's (its own thread, `loadscreen_renderLoop` 0x32187c; flag
+`g_loadscreenActive` 0x506094), and the rig showed three to eight times as many of them
+as this machine: the last blank of the load got one of the rig's loading rows, and the
+level's first tick read it. Seen blank by blank (`RTA_REPLAY_LOG=1`): the first level
+stands at tick 0 for 38 blanks, then 59 with the loading screen up, and the blank after
+those is already tick 1; `valor` 6, 46, tick 1. So: **at a blank at which the loading
+screen is up, the row handed over is the next tick's first.**
+
+- The fight session against the rig's log: the same file as before, byte for byte (no
+  loading row differs from its first-tick row there).
+- With the stick made to be held from the first tick of `valor` on in the rig's log
+  (`s11/replaytest.py`: a level entered with input held, the case of `native-proof.md`
+  3b.3): the old lookup gives the game other controller bytes at tick 1 than the rig's
+  row (10 rows of the tick log differ); the new one gives the tick log, byte for byte
+  (md5), that the old one gives with the proof work's `first_tick_fix` applied to the
+  replay file - and the same again with `first_tick_fix` applied on top of the new
+  lookup. **The workaround in `tools/recomp/proof/cmp.py` can go** (it needs
+  `bin/rta_proof` built again from `rt/iop.cpp` as it is now; `session.py NAME native
+  --no-first-tick-fix` on `h6`, `s2`, `s3` is the check in the proof work's own
+  sessions, which I did not run: that program is the proof work's).
+- **Not for the front end's own level** (`intro`, the title's backdrop). After its load
+  the front end runs ten frames of its own before tick 1, and they have to see what they
+  saw on the rig: tried with the rule on (Ran), a button the rig held through that load
+  becomes a button pressed anew after it and the front end goes another way from tick 222
+  (cosmetic seed, pool, tasks). So in that one episode the controller bytes of ticks 1
+  and 2 still differ from the rig's as they always did (`pads`, `padraw`, 2 of 1,383
+  ticks), with every simulation column identical. A notice over a level before its first
+  tick is likewise followed by the rows of the standing tick, as before.
+- The report line of a replayed run now says at how many blanks of a load the first-tick
+  row was handed over where the rig's loading row held something else.
+
+**(b) `cur_path` after a texture is sent again: a fault with a visible effect; fixed in
+one place for both paths** (`render/gs.cpp`, where `rebuild_state` calls
+`restore_texture`). The texture comes back as GIF data of path 3 in the middle of the
+VU1 packet being read, and the path was not put back: the rest of that packet was (1)
+marked as built on the CPU (`DrawCmd::made_by` 1), which keeps the backend from asking
+for the mip-mapped picture of that texture until another draw names it, and (2) **in a
+wide picture taken for part of the 2-D layer** (`layout.primitive`, the moved scissor):
+for one frame a piece of the 3-D scene is laid out as interface art. It happens whenever
+a texture that was given back (unused for 600 frames, or the budget) is drawn with again.
+`triangle_run` reads the path after the state is made, exactly as `kick()` does, so
+putting the path back at the one call corrects the fast path and the reference together;
+their lists stay the same bytes.
+
+### 11.6 The picture path's copies and the OpenGL thread (Ran)
+
+| Change | Where | What it gives (two copies of the session side by side at 2619 x 1964, same load, 45) |
+|---|---|---|
+| the words of a DMA transfer are put together in one kept buffer instead of one allocated, grown and freed per transfer (20 to 60 a frame, 4 to 5 MB) | `rt/runtime.cpp` `dma_start` | game side 2.07 to 1.71 ms a picture standing in the first level, 2.99 to 2.74 ms in the fire3 fight |
+| a draw sets only what differs from the draw before (uniforms, texture, sampler, depth, masks, blend, scissor) | `render/backend_gl.cpp` `execute` | the window's thread 3.07 to 2.80 ms of processor time a picture (first level), 3.84 to 3.72 (fight) |
+| a copy out of the multisampled 3-D surface (heat haze: about ten a frame in fire3) resolves the rectangle it copies, not the whole surface | `render/backend_gl.cpp` `resolve_part` | the window's thread 7.24 to 6.78 ms at the start of fire3; the graphics card's share could not be told apart with two copies sharing the card |
+| `glFinish` before the wait for the swap, the window's copy drawn before it | `app/app_main.cpp` | the swap itself 0.3 to 0.6 ms: the card's time is counted where it is spent |
+
+What is left in the path, by size (fire3, 2619 x 1964): the window's thread still spends
+3 to 7 ms of processor time a picture, about 9 microseconds a draw command - the cost of
+a draw call itself in Apple's OpenGL, which only fewer draws (the GS model merging more,
+or texture arrays) would lower - and `prepare_pictures` walks every vertex of every
+textured draw each frame for the art pack's parts (195,000 to 330,000 divisions); the
+vertex list is handed to the card with one `glBufferSubData` (6 to 10 MB); the sink still
+copies each transfer once into the frame's batch (the decoder's own thread needs it to
+outlive the game's frame).
+
+### 11.4 STATE 23:52 - what `bin/rta_app` is now
+
+`bin/rta_app` = candidate c2 (11.2, 11.3 and the replay fix of 11.5): made 23:44, checked
+with `s11/verify.sh` (as c1, the same sources but for `rt/iop.cpp`'s replay lookup: 11
+tick pictures and 60 tour pictures the same with the fast renderer, the reference
+switches and the previous program; rig comparison the same file three ways), the rig
+comparison with the replay fix, and a two-copy lobby game (`s11/online/pair-c2`: 4,834
+ticks through a level change, no shared column differs, checksum exchange agreed; in the
+two test windows 9,749 of 9,790 and 9,688 of 9,729 intervals 2 refreshes - the late ones
+are the game waiting for its partner). `bin/rta_app.prev` is the program of 19:52,
+`bin/rta_app.merged` the merged tree with the old pacing (11.1). In work: c3 (OpenGL
+calls, `cur_path`), the Windows folder.
