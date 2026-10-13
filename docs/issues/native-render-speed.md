@@ -1,6 +1,6 @@
 # The renderer's processor side, made cheaper
 
-Started 2026-10-12, 19:50; this state 21:20. The native build's game logic costs about 10
+Started 2026-10-12, 19:50; this state 21:36. The native build's game logic costs about 10
 million instructions a frame; the renderer's processor side (VIF1 unpacking, the VU1
 vertex programs, the GS model: everything above `render/backend.h`) cost 185 million
 natively and 312 million as WebAssembly (`docs/issues/native-web.md`, section 5). This is
@@ -14,19 +14,20 @@ the cycles, and the lists it hands the graphics backend are the same bytes** (Ra
 
 | Per picture, millions (instructions / cycles) | title | first level, standing | fire3, a fight |
 |---|---|---|---|
-| `decode_bench` on the Mac, before (the older translation of the main program) | 76.6 / 14.8 | 176.3 / 32.4 | 232.7 / 41.6 |
-| ... now | **16.9 / 4.3** | **34.1 / 9.2** | **42.8 / 10.3** |
-| ... factor | 4.5 / 3.4 | 5.2 / 3.5 | 5.4 / 4.0 |
+| `decode_bench` on the Mac, before (the older translation of the main program) | 76.6 / 13.7 to 14.8 | 176.3 / 30.4 to 32.4 | 232.7 / 38.2 to 41.6 |
+| ... now | **16.9 / 3.5 to 4.3** | **34.1 / 8.3 to 9.2** | **42.8 / 10.3 to 10.4** |
+| ... factor | 4.5 / 3.4 to 3.9 | 5.2 / 3.5 to 3.6 | 5.4 / 3.7 to 4.0 |
 | ... the reference (VU1 interpreted, GS and UNPACK the long way) | 126.0 / 23.7 | 280.0 / 51.6 | 363.4 / 66.7 |
-| as WebAssembly under node, to nearest: before | WASMOLD_T | WASMOLD_H | WASMOLD_F |
-| ... now, with WebAssembly SIMD | **26.2 / 7.9** | **56.2 / 15.6** | **68.4 / 18.6** |
+| as WebAssembly under node, to nearest: before (`native-web.md`: the older recording `hub12`, with the bench's checksum) | | 312 / 70.5 | |
+| ... now, with WebAssembly SIMD (`hub12` the same way: 63.1 / 21.3) | **26.2 / 7.9** | **56.2 / 15.6** | **68.4 / 18.6** |
 | the whole application (game, decoder, OpenGL), before | 89 / 26 | 216 / 44 to 51 | 269 to 280 / 55 to 60 |
 | ... now | **31 / 9 to 11** | **73 / 22 to 23** | **88 to 103 / 31 to 33** |
 
 (`decode_bench` rows: `speedbench.py count`, the whole process without the bench's own
-checksum, difference of runs of 3 and 9 passes, load average 185 to 215; with the checksum,
-as `native-web.md` measured, the first level is 184.4 -> 41.7. "Before" is the same
-binary on the old paths, `--old-translation` with `RTA_GS_SLOW=1 RTA_VIF_SLOW=1`; the
+checksum, difference of runs of 3 and 9 passes; measured twice, at load average 185 to
+215 and at 35: the instructions agree to 0.3 %, the cycles are given as the two values.
+With the checksum, as `native-web.md` measured, the first level is 184.4 -> 41.7.
+"Before" is the same binary on the old paths, `--old-translation` with `RTA_GS_SLOW=1 RTA_VIF_SLOW=1`; the
 binary built from the tree as copied gave 187.2 with the checksum. Application rows:
 section "The application".)
 
@@ -40,8 +41,8 @@ section "The application".)
 - **What it is** (section "What was done"): the VU1 microprograms translated ahead of time
   to straight C++ with four-wide operations (`vu1_translate.py`); a whole run of triangles
   in one loop in the GS model; one loop per UNPACK format; cheaper bookkeeping of uploads.
-- **Delivered as** `tools/recomp/render/speed.patch` (14 files of the shared tree; it
-  applies to the tree as it is at 21:15) and eight new files in `tools/recomp/render/`;
+- **Delivered as** `tools/recomp/render/speed.patch` (15 files of the shared tree; it
+  applies to the tree as it is at 21:26) and eight new files in `tools/recomp/render/`;
   nothing in the shared `local/recomp-out/` was written. Section "The patch".
 - **The reference stays**: the interpreter, the general vertex path and the general UNPACK
   are in the tree unchanged and are chosen at run time by environment variables.
@@ -106,11 +107,13 @@ renderer.
 | whole process, without the profile's counters | 80.8 | 18.6 | 187.2 | 42.8 | 249.8 | 59.9 |
 | whole process, VU1 interpreted (`--interpret`) | 130.3 | 27.3 | 290.9 | 62.2 | 380.7 | 84.3 |
 
-VU1 by program entry (first level; instructions per instruction pair): entry 0x42 679,028
-pairs a picture at 70; 0x44 495,625 at 76; 0x46 288,859 at 44; 0x48 27,536 at 62; 0x30
-14,310 at 40; all others under 0.3 % together. fire3: 0x44 486,152 pairs at 75; 0x48
-388,468 at 62; 0x42 380,000 at 76. Title: 0x46 567,784 at 43; 0x42 258,782 at 64. Over
-all entries a pair costs 83 instructions in the old translation and about 165 interpreted.
+VU1 by program entry (pairs a picture, instructions per pair): first level - entry 0x42
+543,222 at 88; 0x44 396,500 at 95; 0x46 231,087 at 56; 0x48 22,029 at 78; all others
+under 1 % together. fire3 - 0x44 388,922 at 94; 0x48 310,774 at 78; 0x42 304,000 at 95.
+Title - 0x46 454,227 at 53; 0x42 207,025 at 80. Over all entries a pair costs 83
+instructions in the old translation and about 165 interpreted. (The profile's first
+print counted the first pass's pairs too and showed a quarter more pairs at a fifth less
+each; corrected here and in `prof.h`.)
 
 Read from the table: the old measurement's 185 million is confirmed (187). The order of
 work is VU1 (over half), then the GS model's handling of what VU1 kicks (a quarter), then
@@ -233,10 +236,11 @@ RTA_VIF_SLOW=1`, or `rta_replay --reference`).
 | vertex lists and draw commands, `decode_bench` (a checksum over every vertex, another over every field of every draw command; first pass, and all of 3 passes) | 11 streams: my six (title, hub, fire3-start, fire3-fight, drunare-start, drunare-fight), the older `hub12`, `pole` (the fight whose joints held another drawer's data), `haze` (fire3 with heat haze), the graphics work's widescreen `fight169` and `hub169` (the 2-D layer's layout active) | all 11 the same (`local/recomp-speed/out/identity.sh`, `identity.txt`); every run in translated code, none finished by the interpreter |
 | whole pictures, `rta_replay --png` at 1280 x 896, blanks 3, 8 and 13 | title, hub, fire3-fight, drunare-fight, fight169 | 15 PNG files the same (`out/pictures.sh`, `pictures.txt`) |
 | whole pictures of the running application at four simulation ticks (the tick-keyed route of `app-test/pole-rec.rig`: title, first level, two in the fight in valor), 1280 x 896 | fast paths against `RTA_VU1_INTERPRET=1 RTA_GS_SLOW=1 RTA_VIF_SLOW=1` | 4 PNG files the same (`out/det.txt`) |
+| the SSE2 form end to end: `decode_bench` built for x86-64 and run under Rosetta | title, hub, fire3-fight: translated, its own reference, and the ARM build | the same checksums all three ways |
 | the four-wide operations of `vu1_simd.h` against `vu_in` / `vu_out` / `vu_add` ... of `vu1_step.h`: 22 kinds of operation, operands drawn so that exponent 0, exponent 255, results below and beyond the range and both zeros come up constantly (`vu1_fast_test.cpp`) | NEON with the processor's flush-to-zero mode; NEON masking itself; plain C++; SSE2 (x86-64 under Rosetta) | 2,000,000 sets of four operands each: 0 differences, and the same reference checksum (8f0d16669cbff80b) on ARM and x86 |
 | WebAssembly under node, to nearest, SIMD: translated against that build's interpreter | title, hub, fire3-fight, fire3-start, drunare-fight, fight169 | the same (`out/identity-wasm.txt`). (Its lists differ from the Mac's, as `native-web.md` says: that build rounds to nearest) |
 | WebAssembly with VU1 rounded toward zero in software (`-DRTA_SOFT_RZ_VU1`): translated | hub, fire3-fight | the Mac's checksums (f17b4f8de2deca9b, 503fb8869067848c): bit-identical lists, as before with the interpreter |
-| the patched shared tree built with no translation at all (`vu1_none.cpp`, `vu1_fast_none.cpp`) | hub | the same checksums |
+| the patched copy of the shared tree, built with no translation at all (`vu1_none.cpp`, `vu1_fast_none.cpp`) and with the generated file | hub; fire3-fight | the same checksums |
 
 What the proof does not cover: streams are 14 pictures each of six places plus five older
 ones; levels not recorded were not compared (a program path no stream runs is translated
@@ -272,24 +276,37 @@ level's 12.6 was 10.2 an hour earlier); instructions did not move.
 ### WebAssembly
 
 `em++` 6.0.12 and node 26 are on the machine; nothing was downloaded.
-`speedbench.py build wasm-fast --wasm --flag=-msimd128 --no-old` (40 s; the generated file
-is 336 KB of C++ and links in seconds - the older translation's one function took Binaryen
-minutes), `speedbench.py count wasm-fast STREAM --no-check`.
+`speedbench.py build wasm-fast --wasm --flag=-msimd128 --no-old` (under a minute: the
+generated file is 336 KB of C++ and links in seconds), `speedbench.py count wasm-fast
+STREAM --no-check`.
 
 | Per picture, millions (instructions / cycles), whole node process without the checksum | title | first level | fire3 fight |
 |---|---|---|---|
 | to nearest, SIMD, translated ahead of time | 26.2 / 7.9 | 56.2 / 15.6 | 68.4 / 18.6 |
 | the same build, VU1 interpreted | 134.8 / 24.6 | 288.9 / 51.1 | 368.6 / 67.7 |
-| before: no SIMD, the older translation of the main program | WASMOLD_T | WASMOLD_H | WASMOLD_F |
 | VU1 toward zero in software (`-DRTA_SOFT_RZ_VU1`; lists bit-identical to the Mac's), translated | | 151.9 / 30.8 | |
 | ... the same build interpreted | | 404.5 / 67.4 | |
 
+Against what was there before, on the stream and in the way `native-web.md` measured it
+(`hub12.rtavs`, the bench's checksum included, which is 8 million instructions and 11
+million cycles of each figure):
+
+| `hub12`, per picture, millions (instructions / cycles) | before (`native-web.md`, section 3) | now |
+|---|---|---|
+| Mac | 185 / 43.3 | 42.7 / 21.4 |
+| WebAssembly, to nearest | 312 / 70.5 (no SIMD, the older translation) | 63.1 / 21.3 (SIMD) |
+| WebAssembly, VU1 toward zero in software | 406 / 97.9 | 162.7 / 44.5, list checksum 0b7cb8dbc0366a59 as on the Mac |
+
+**Not measured: the old WebAssembly build on my three scenes.** I built it
+(`speedbench.py build wasm-old --wasm --vu old`): Binaryen had not finished the older
+translation's one function after 17 minutes and I stopped it.
+
 So the WebAssembly renderer is 1.6 times the Mac's instructions (it was 1.7), and the
 page's verdict in `native-web.md` ("what would change the verdict": a real translation
-with SIMD and a cheaper vertex path) has what it asked for: with 14 million for the game
-side the frame is about 70 million instructions where the emulator page needs 227 to
-287. **Not run: the page itself** (`web/build.py page --vu-fast FILE --flag=-msimd128` is
-written, not built). The exact-arithmetic build gains less (2.7 times) because there
+with SIMD and a cheaper vertex path) has what it asked for: the decoder is 56
+million instructions a frame as WebAssembly, where the bench measured 312 for it and the
+page's whole process was 297 (the emulator page: 227 to 287). **Not run: the page
+itself** (`web/build.py page --vu-fast FILE --flag=-msimd128` is written, not built). The exact-arithmetic build gains less (2.7 times) because there
 every add and multiply is the software family, field by field; a four-wide form of
 `soft_rz.h` is not written.
 
@@ -309,7 +326,25 @@ is played by script, not by tick), so its figures spread.
 | processor time per picture over all threads, now / as they were | 4.1, 4.4 / 10.8, 11.1 ms | 8.9, 9.4 / 14.3, 37.7 ms | 12.3, 12.8 / 20.1, 21.1 ms |
 | pictures a second not paced, now / as they were (they follow the load: two runs) | 208, 499 / 22, 80 | 111, 199 / 33, 101 | 80, 139 / 53, 68 |
 
-APPSTAGE
+The application's own figures by stage, a run from power-on with 9,000 of its 11,800
+pictures standing in the first level (`out/appstage.py`; whole-run averages):
+
+| | decoder: its own processor time per picture | decoder: wall time | pictures a second | load |
+|---|---|---|---|---|
+| not paced, now | 3.86 ms | 4.90 ms | 187 (171 in the level) | 109 |
+| not paced, as it was | 9.92 ms | 11.07 ms | 90 (81 in the level) | 44 |
+| paced at 59.94, now | 4.13 ms | 7.03 ms | 46.2; 85 % of the pictures stood their two refreshes | 74 |
+| paced at 59.94, as it was | 16.19 ms | 20.26 ms | 37.3; 59 % stood their two refreshes | 102 |
+
+The machine was never free (other agents' builds, emulators and windows), so neither
+paced run held 59.94: the pictures that were late waited in the main thread's swap
+(15 to 18 ms "in OpenGL and the swap" a picture in both runs, stalls up to 0.4 s), which
+this work does not touch. What it changed is the decoder's place in that: at load 100 the
+old decoder needed 16 ms of processor time and 20 ms of wall time a picture - more than a
+frame - and the new one 4 and 7. From the cycles, at this Mac's full clock the decoder is
+about 2.0 ms a picture in the first level and 2.3 ms in the fire3 fight, where it was 7.2
+and 9.2 (**inferred** from 9.2 / 10.3 and 32.4 / 41.6 million cycles at the 4.5 GHz
+`native-web.md` reckons with, not measured as time).
 
 Of the application's 73 million instructions in the first level the decoder is now 34,
 the game side about 10, and the rest is the main thread's OpenGL work and the copies of
@@ -363,8 +398,13 @@ In the order of what it would give (first level / fire3, of 34.6 / 42.3 million)
 ## The patch
 
 `tools/recomp/render/speed.patch`, made against the tree as copied at 19:52; **Ran**
-21:15: it applies to the shared tree as it is now (none of its 14 files had changed), and
-the patched copy builds with no translation and gives the same lists.
+21:26: it applies to a fresh copy of the shared tree as it is now (of its 15 files only
+`app/build_win.py` had changed since; its hunk applies with an offset), and the patched
+copy builds `decode_bench` without a translation and with one and gives the same lists
+(hub f17b4f8de2deca9b, fire3 503fb8869067848c). **Not built: the Windows program**
+(`build_win.py` only gains the job; the SSE2 form it would compile was built for x86-64
+macOS and run under Rosetta: translated, reference and the ARM build give the same
+checksums on title, hub and fire3-fight).
 
 | File | Change |
 |---|---|
@@ -373,7 +413,7 @@ the patched copy builds with no translation and gives the same lists.
 | `render/gs.h`, `gs.cpp` | `triangle_run` and five lines in `gif()`; `xgkick()` reads the packet where it lies; `start_transfer`'s kept block lists and `set_at`; profile scopes |
 | `render/renderer.h`, `renderer.cpp` | the four environment switches; the renderer's own VU1 memories aligned |
 | `render/replay_main.cpp` | `--reference`, `--old-translation`, the report line |
-| `render/build.py`, `app/build.py`, `web/build.py` | one more job: `gen-vu/vu1_fast.cpp` or `vu1_fast_none.cpp` (`web`: `--vu-fast FILE`) |
+| `render/build.py`, `app/build.py`, `app/build_win.py`, `web/build.py` | one more job: `gen-vu/vu1_fast.cpp` or `vu1_fast_none.cpp` (`web`: `--vu-fast FILE`) |
 | `web/decode_bench.cpp` | instruction and cycle counters, the checksum of draw commands, `--no-check`, `--list`, `--old-translation`, the profile |
 | `web/web_main.cpp` | `--interpret-vu` also switches the new translation off |
 
@@ -381,7 +421,7 @@ After merging, once: `python3 tools/recomp/render/vu1_translate.py --elf SLUS_20
 --stream local/recomp-speed/streams/fire3-fight.rtavs --stream
 local/recomp-speed/streams/hub.rtavs --out local/recomp-out/gen-vu/vu1_fast.cpp --report`,
 then `python3 tools/recomp/app/build.py`. Without that file everything builds and runs as
-before, with the three small fast paths on. Run-time switches (environment, read once):
+before, with the fast paths of the GS model and of UNPACK on. Run-time switches (environment, read once):
 `RTA_VU1_INTERPRET=1`, `RTA_VU1_OLD=1`, `RTA_GS_SLOW=1`, `RTA_VIF_SLOW=1`.
 
 ## How to repeat
@@ -430,3 +470,27 @@ sh out/mkpatch.sh                                        # speed.patch from base
   16.2 -> 12.0 million instructions); the written-blocks list of an upload kept.
 - 20:48 `vu1_fast_test.cpp`: four kinds of `vu1_simd.h`, 0 differences each.
 - 20:50 eleven streams identical (`out/identity.sh`).
+- 20:52 `render/build.py`, `app/build.py`, `web/build.py` take the translation; my
+  `rta_app` and `rta_replay` built with it.
+- 20:55 to 21:16 the application measured twice in three configurations
+  (`out/appperf.py`); its pictures at four simulation ticks the same with the fast paths
+  and the reference (`out/det-fast.rig`).
+- 21:05 the upload bookkeeping (`set_at`); cleanliness per written field in the
+  translator; `--elf` (the main program from the executable: same hash as from a stream).
+- 21:08 WebAssembly: `wasm-fast` built and measured; translated equal to interpreted in
+  it; with the software rounding the Mac's lists. 21:22 the SSE2 form built for x86-64 and
+  run under Rosetta: the ARM build's checksums.
+- 21:20 to 21:31 the application's stage times, not paced and paced, now and as it was.
+- 21:26 the patch applied to a fresh copy of the shared tree and built there (in the
+  session's scratch directory; removed again). `app/build_win.py` added to the patch: it
+  needs the new job too.
+- 21:32 final sources: `decode_bench` rebuilt, eleven streams the same once more;
+  `rta_app` and `rta_replay` rebuilt, the 15 replay pictures the same once more.
+- 21:34 the old WebAssembly build's link stopped after 17 minutes in Binaryen (by its
+  process number); the new build measured on `hub12` instead, as `native-web.md` did.
+- 21:36 the patch made a last time and compared: the eight new files and `speed.patch`
+  in `tools/recomp/render/` are the working tree's; the translator run from the shared
+  tree with the command of the patch's head writes the same `vu1_fast.cpp` byte for byte
+  as the one everything here was measured with (into `local/recomp-speed/out/check/`),
+  and refuses to write outside `local/`. Nothing of mine is running; nothing was written
+  into the shared `local/recomp-out/`.

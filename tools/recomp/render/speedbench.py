@@ -16,6 +16,8 @@ compares (docs/issues/native-render-speed.md).
   --vu none    neither: everything interpreted
   --prof       with the instruction counters of render/prof.h
   --wasm       with em++ for node (the Emscripten on the machine; nothing is downloaded)
+  --flag=-arch --flag=x86_64 --link-flag=-arch --link-flag=x86_64     on an Apple Silicon Mac: the SSE2
+               form, run under Rosetta
 
 Objects and programs go to local/recomp-out/speed/NAME/ (derived from the game).  Compiles
 at nice 10, one file at a time unless --jobs says otherwise.
@@ -53,7 +55,7 @@ def build(args):
     else:
         compiler, program = 'clang++', os.path.join(out, 'decode_bench')
         flags.append('-frounding-math')
-        link = []
+        link = list(args.link_flag)
     stamp_text = ' '.join([compiler] + flags)
     objects, todo = [], []
     for source in sources:

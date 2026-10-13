@@ -41,6 +41,7 @@ struct Vu1 {
     uint8_t* data = nullptr;            // 16 KB: 1,024 quadwords
     void (*kick)(void* user, uint32_t qword) = nullptr;    // XGKICK: a GIF packet starts at this quadword
     void* user = nullptr;
+    int round_before = 0;               // the thread's rounding mode outside the run in progress
     uint64_t instructions = 0, runs = 0, bad = 0;
     int debug_left = 0;                 // print the registers at the next instructions in [debug_lo, debug_hi]
     uint32_t debug_lo = 0, debug_hi = 0;
@@ -50,11 +51,18 @@ struct Vu1 {
 
     Vu1();
     void run(uint32_t start);
-    void micro_changed() { decoded_valid = false; }
+    // The microprogram memory changed: pairs [first, first + count), or all of it.
+    void micro_changed(uint32_t first = 0, uint32_t count = 2048);
     // The main program as C++ source (vu1.cpp); false when the file cannot be written.
     bool write_translation(const char* path, uint32_t pairs);
     bool use_translation = true;        // false: interpret even when a translation is linked
     bool translated = false;            // the linked translation matches what is in `micro`
+    // The ahead-of-time translation (vu1_fast.h, vu1_translate.py): used for every program
+    // whose bytes are in `micro` as they were when it was made; false: never.  It comes
+    // before the older translation above.
+    bool use_fast = true;
+    uint64_t fast_runs = 0;             // runs that began in a translated program
+    uint64_t fast_left = 0;             // of those, runs the interpreter had to finish
     uint32_t mac_seen() const;          // MAC flags as an instruction of this cycle reads them
     uint32_t clip_seen() const;
 
@@ -72,7 +80,12 @@ struct Vu1 {
   private:
     Ins decoded[2048];
     bool decoded_valid = false;
+    uint32_t dirty_first = 0, dirty_end = 2048;    // pairs to decode again
     void decode();
+    uint32_t fast_match = 0;            // bit k: vu1_fast_programs[k] is what `micro` holds
+    bool fast_checked = false;
+    uint32_t fast_dirty_first = 0, fast_dirty_end = 2048;
+    void fast_check();
 };
 
 }  // namespace render

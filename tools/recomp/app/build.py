@@ -6,7 +6,7 @@
   options: --opt -O1|-O2   --qt DIR (default /opt/homebrew/opt/qtbase)
            --pnach FILE --sections FILE   the fix set (defaults below)
            --no-game          do not translate and compile the game first (link what is there)
-           --no-translation   interpret VU1 even when a translation of its main program exists
+           --no-translation   interpret VU1 even when a translation of its programs exists
 
 One program from five parts:
   the translated game   rta_app: translated with the suggested fix set applied - the word
@@ -19,8 +19,8 @@ One program from five parts:
                         tick for tick with the original in the rig.
   the runtime           tools/recomp/rt/ (runtime, iop, script, host) - as it is now
   the renderer          tools/recomp/render/ (vu1, vif1, gs, renderer, the OpenGL backend,
-                        and the VU1 main program translated to C++ when
-                        local/recomp-out/gen-vu/vu1_translated.cpp exists)
+                        and the VU1 programs translated to C++ when
+                        local/recomp-out/gen-vu/vu1_fast.cpp and vu1_translated.cpp exist)
   the sound library     tools/recomp/sound/sound_rta.cpp in place of rt/sound_null.cpp
   the application       this directory: window, pacing, keyboard, game controller
 
@@ -123,6 +123,10 @@ def main():
         jobs.append((translation, render_flags, 'r_'))
     else:
         jobs.append((os.path.join(render, 'vu1_none.cpp'), render_flags, 'r_'))
+    # the VU1 microprograms translated ahead of time (render/vu1_translate.py writes the file
+    # into local/recomp-out/gen-vu/; docs/issues/native-render-speed.md)
+    fast = os.path.join(OUT, 'gen-vu', 'vu1_fast.cpp')
+    jobs.append((fast if os.path.exists(fast) and not args.no_translation else os.path.join(render, 'vu1_fast_none.cpp'), render_flags, 'r_'))
     jobs.append((os.path.join(render, 'backend_gl.cpp'), render_flags + qt_flags, 'r_'))
     jobs.append((os.path.join(render, 'texpack.cpp'), render_flags + qt_flags, 'r_'))
     jobs += [(os.path.join(rt, n), rt_flags, 'rt_') for n in RUNTIME]

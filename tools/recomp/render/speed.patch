@@ -52,8 +52,11 @@ Notes for the merge
    the old micro_changed() is "all of it"): Vif1's MPG passes the range.
  - render/renderer.h: the renderer's own VU1 memories are aligned to 16 bytes (a kicked packet
    is read in place as words).
- - app/build.py, render/build.py, web/build.py: one job more each (gen-vu/vu1_fast.cpp or
-   render/vu1_fast_none.cpp); web/build.py takes it as --vu-fast FILE, with --flag=-msimd128.
+ - app/build.py, app/build_win.py, render/build.py, web/build.py: one job more each
+   (gen-vu/vu1_fast.cpp or render/vu1_fast_none.cpp - without it the programs do not link);
+   web/build.py takes it as --vu-fast FILE, with --flag=-msimd128.  app/build_win.py had changed
+   in the shared tree by 21:26; the hunk applies with an offset.  The Windows program was not
+   built here.
  - web/decode_bench.cpp: counters, a checksum of the draw commands beside the one of the
    vertices, --no-check, --list FILE, --old-translation.
  - Windows: vu1_simd.h has SSE2 for x86-64 (tested here under Rosetta: vu1_fast_test.cpp) and
@@ -99,6 +102,22 @@ diff -ruN a/app/build.py b/app/build.py
      jobs.append((os.path.join(render, 'backend_gl.cpp'), render_flags + qt_flags, 'r_'))
      jobs.append((os.path.join(render, 'texpack.cpp'), render_flags + qt_flags, 'r_'))
      jobs += [(os.path.join(rt, n), rt_flags, 'rt_') for n in RUNTIME]
+diff -ruN a/app/build_win.py b/app/build_win.py
+--- a/app/build_win.py	2026-10-12 19:52:46
++++ b/app/build_win.py	2026-10-12 21:20:19
+@@ -367,8 +367,11 @@
+     if not args.headless:
+         translation = os.path.join(OUT, 'gen-vu', 'vu1_translated.cpp')
+         vu1 = translation if os.path.exists(translation) and not args.no_translation else os.path.join(RENDER, 'vu1_none.cpp')
++        # the VU1 microprograms translated ahead of time (render/vu1_translate.py; SSE2 on x86-64)
++        fast = os.path.join(OUT, 'gen-vu', 'vu1_fast.cpp')
++        vu1_fast = fast if os.path.exists(fast) and not args.no_translation else os.path.join(RENDER, 'vu1_fast_none.cpp')
+         app = source_jobs(
+-            [(os.path.join(RENDER, n), render_flags, 'r_') for n in RENDER_CORE] + [(vu1, render_flags, 'r_')] +
++            [(os.path.join(RENDER, n), render_flags, 'r_') for n in RENDER_CORE] + [(vu1, render_flags, 'r_'), (vu1_fast, render_flags, 'r_')] +
+             # backend_gl.cpp is written against Qt's QOpenGLExtraFunctions; app/win/ has the two headers it
+             # includes, over WGL (no Qt on Windows)
+             [(os.path.join(RENDER, 'backend_gl.cpp'), render_flags + ['-I', WINSRC], 'r_'),
 diff -ruN a/render/build.py b/render/build.py
 --- a/render/build.py	2026-10-12 19:52:46
 +++ b/render/build.py	2026-10-12 20:49:07
@@ -130,7 +149,7 @@ diff -ruN a/render/build.py b/render/build.py
      if args.what == 'replay':
 diff -ruN a/render/gs.cpp b/render/gs.cpp
 --- a/render/gs.cpp	2026-10-12 19:52:46
-+++ b/render/gs.cpp	2026-10-12 21:14:22
++++ b/render/gs.cpp	2026-10-12 21:31:51
 @@ -1,5 +1,6 @@
  // gs.cpp - see gs.h.
  #include "gs.h"
@@ -239,7 +258,7 @@ diff -ruN a/render/gs.cpp b/render/gs.cpp
 +    if (r.w <= 0 || r.h <= 0) return;
 +    // (Which blocks a rectangle writes depends on its place, size and format alone, and
 +    // the game sends the same few hundred rectangles every frame: the sorted list is made
-+    // once per kind of rectangle and kept.  It was 13,000 instructions an upload.)
++    // once per kind of rectangle and kept.)
 +    if (written_blocks.size() > 4096) written_blocks.clear();
 +    auto kept = written_blocks.try_emplace(std::make_pair((uint64_t)r.psm | (uint64_t)r.bw << 8 | (uint64_t)(uint32_t)r.x << 16 | (uint64_t)(uint32_t)r.y << 40,
 +                                                          (uint64_t)(uint32_t)r.w | (uint64_t)(uint32_t)r.h << 32));
@@ -248,7 +267,7 @@ diff -ruN a/render/gs.cpp b/render/gs.cpp
          for (int by = r.y / bhei; by <= (r.y + r.h - 1) / bhei; by++)
              for (int bx = r.x / bwid; bx <= (r.x + r.w - 1) / bwid; bx++) {
                  int x = bx * bwid, y = by * bhei;
-@@ -616,13 +648,22 @@
+@@ -616,13 +648,23 @@
                           : r.psm == PSMCT16 || r.psm == PSMCT16S ? addr16(x, y, r.bw) : addr32(x, y, r.bw);
                  written.push_back((uint32_t)(a >> 8));
              }
@@ -260,7 +279,8 @@ diff -ruN a/render/gs.cpp b/render/gs.cpp
 -        if (std::binary_search(written.begin(), written.end(), it->first - dbp)) it = sets.erase(it); else ++it;
 +    // (Every set that starts behind this one in a block the rectangle writes.  Asked of a
 +    // table of the blocks sets start at: walking the map over the rectangle's span and
-+    // searching the list for each set found there cost as much as hashing the upload.)
++    // searching the list for each set found there cost, with making the list, about
++    // 7,000 instructions an upload - as much as hashing it.)
 +    for (uint32_t block : written) {
 +        const uint32_t at = dbp + block;
 +        if (!block || at >= 0x4000 || !set_at[at]) continue;
@@ -274,7 +294,7 @@ diff -ruN a/render/gs.cpp b/render/gs.cpp
      if (!xfer.active) return;
      auto it = sets.find(xfer.dbp);
      if (it == sets.end()) { xfer.active = false; return; }
-@@ -636,6 +677,7 @@
+@@ -636,6 +678,7 @@
      if (xfer.got >= want && xfer.to_surface) {
          Rect done = r;
          std::vector<uint8_t> bytes(set.data.begin() + (std::ptrdiff_t)r.offset, set.data.end());
@@ -282,7 +302,7 @@ diff -ruN a/render/gs.cpp b/render/gs.cpp
          sets.erase(it);                                 // nothing of it is kept as a texture
          xfer.active = false;
          if (bytes.size() >= want) upload_to_surface(xfer.dbp, done, bytes.data());
-@@ -756,6 +798,7 @@
+@@ -756,6 +799,7 @@
  }
  
  Gs::Texture* Gs::texture_for(uint64_t tex0, uint64_t texa) {
@@ -290,7 +310,7 @@ diff -ruN a/render/gs.cpp b/render/gs.cpp
      uint32_t tbp = (uint32_t)tex0 & 0x3FFF, tbw = std::max<uint32_t>((uint32_t)(tex0 >> 14) & 0x3F, 1), psm = (uint32_t)(tex0 >> 20) & 0x3F;
      uint32_t tw = (uint32_t)(tex0 >> 26) & 15, th = (uint32_t)(tex0 >> 30) & 15;
      uint32_t cbp = (uint32_t)(tex0 >> 37) & 0x3FFF, cpsm = (uint32_t)(tex0 >> 51) & 15, csa = (uint32_t)(tex0 >> 56) & 31;
-@@ -791,6 +834,7 @@
+@@ -791,6 +835,7 @@
      }
  
      // ---- make it ----
@@ -298,7 +318,7 @@ diff -ruN a/render/gs.cpp b/render/gs.cpp
      const UploadSet& set = image->second;
      Scratch s;
      s.reserve(8192);
-@@ -888,6 +932,7 @@
+@@ -888,6 +933,7 @@
  static bool g_skip_draw = false;
  
  void Gs::rebuild_state() {
@@ -306,11 +326,17 @@ diff -ruN a/render/gs.cpp b/render/gs.cpp
      if (!canvases.empty()) flush_uploads();             // what was sent into a surface is there before anything is drawn
      state_dirty = false;
      uint32_t attr = (reg[0x1a] & 1) ? prim : ((prim & 7) | ((uint32_t)reg[0x1b] & 0x7F8));
-@@ -1048,12 +1093,256 @@
+@@ -1048,12 +1094,262 @@
      have_cmd = true;
  }
  
 +static const bool log_far = getenv("RTA_GS_FAR") != nullptr;    // debugging: far vertices are reported (and every vertex goes the long way)
++
++#if defined(__GNUC__) || defined(__clang__)
++#define GS_ALWAYS_INLINE __attribute__((always_inline))
++#else
++#define GS_ALWAYS_INLINE
++#endif
 +
 +// The vertex a queued one becomes (what emit_vertex() makes of it, with the texture
 +// coordinates kick() picks), for a state that is settled.
@@ -458,7 +484,7 @@ diff -ruN a/render/gs.cpp b/render/gs.cpp
 +        Vertex* o = out + out_count;
 +        Vertex* const first_out = o;
 +        const uint64_t before = vertices;
-+        auto vertex = [&](const uint32_t* w, bool with_fog) __attribute__((always_inline)) {
++        auto vertex = [&](const uint32_t* w, bool with_fog) GS_ALWAYS_INLINE {
 +            const uint32_t x = w[0] & 0xFFFF, y = w[1] & 0xFFFF;
 +            const uint32_t z = with_fog ? (w[2] >> 4) & 0xFFFFFF : w[2];
 +            const uint8_t fog = with_fog ? (uint8_t)(w[3] >> 4) : reg_fog;
@@ -1034,8 +1060,18 @@ diff -ruN a/web/build.py b/web/build.py
              sources += [os.path.join(rt, 'sound_null.cpp'), os.path.join(HERE, 'sound_none_web.cpp')]
 diff -ruN a/web/decode_bench.cpp b/web/decode_bench.cpp
 --- a/web/decode_bench.cpp	2026-10-12 19:52:46
-+++ b/web/decode_bench.cpp	2026-10-12 20:33:10
-@@ -16,9 +16,24 @@
++++ b/web/decode_bench.cpp	2026-10-12 21:20:19
+@@ -4,7 +4,8 @@
+ // node, so that the cost of this code as WebAssembly can be told from its cost natively:
+ //
+ //   clang++ -std=c++17 -O2 -fno-strict-aliasing -ffp-contract=off -frounding-math -I tools/recomp/render \
+-//       tools/recomp/web/decode_bench.cpp tools/recomp/render/{vu1,vif1,gs,renderer}.cpp <vu1_translated.cpp | vu1_none.cpp> -o decode_bench
++//       tools/recomp/web/decode_bench.cpp tools/recomp/render/{vu1,vif1,gs,renderer}.cpp <vu1_translated.cpp | vu1_none.cpp> \
++//       <vu1_fast.cpp | vu1_fast_none.cpp> -o decode_bench        (tools/recomp/render/speedbench.py does it)
+ //   em++ (the same, without -frounding-math) -sNODERAWFS=1 -sINITIAL_MEMORY=1024MB -o decode_bench.js
+ //
+ //   decode_bench <stream> [--loops N] [--interpret] [--no-vu] [--no-kick] [--times]
+@@ -16,9 +17,24 @@
  //
  // The stream is read into memory first; the first pass (textures decoded, tables filled)
  // is timed apart from the rest.  A recording is derived from the game: it stays under local/.
@@ -1060,7 +1096,7 @@ diff -ruN a/web/decode_bench.cpp b/web/decode_bench.cpp
  #include <chrono>
  #include <cstdio>
  #include <cstdlib>
-@@ -34,15 +49,38 @@
+@@ -34,15 +50,38 @@
  
  struct Record { uint32_t kind, a; uint64_t b; size_t offset, count; };
  
@@ -1101,7 +1137,7 @@ diff -ruN a/web/decode_bench.cpp b/web/decode_bench.cpp
          else if (a == "--no-vu") no_vu = true;
          else if (a == "--no-kick") no_kick = true;
          else if (a == "--times") times = true;
-@@ -62,10 +100,11 @@
+@@ -62,10 +101,11 @@
  
      static Renderer renderer;
      renderer.vif.vu.use_translation = !interpret;
@@ -1114,7 +1150,7 @@ diff -ruN a/web/decode_bench.cpp b/web/decode_bench.cpp
      std::vector<Vertex> kept;                           // the first pass's vertices, with a count per blank
      std::vector<uint32_t> kept_counts;
      bool keeping = !dump.empty() || !compare.empty();
-@@ -75,13 +114,30 @@
+@@ -75,13 +115,30 @@
          commands += frame.commands.size();
          // what a backend would be handed, folded into one number: two builds that print the
          // same one made the same lists
@@ -1147,7 +1183,7 @@ diff -ruN a/web/decode_bench.cpp b/web/decode_bench.cpp
          double t0 = now_ms();
          for (const Record& r : records) {
              const uint32_t* w = words.data() + r.offset;
-@@ -104,14 +160,30 @@
+@@ -104,14 +161,30 @@
              }
          }
          double took = now_ms() - t0;

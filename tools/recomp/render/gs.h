@@ -102,10 +102,20 @@ class Gs {
     // ---- GIF tag state per path ----
     struct Path { uint64_t regs = 0; uint32_t nloop = 0, nreg = 0, flg = 0, at = 0; bool eop = false; };
     Path paths[4];
+    void xgkick_draw(const uint32_t* buffer, uint32_t used, uint32_t qword);
     void write(uint32_t address, uint64_t value);
     void packed(uint32_t descriptor, const uint32_t* q);
     void reglist(uint32_t descriptor, uint64_t value);
     void kick(bool draw);
+    // A whole PACKED run of triangles, strips or fans (what VU1 kicks is nearly all of
+    // this kind): the same registers, queue and vertices as packed() and kick() make of
+    // it one quadword at a time.  False: not a run it takes; nothing was done.
+    bool triangle_run(const uint32_t* data, uint32_t nloop, uint32_t nreg, uint64_t regs);
+    std::vector<Vertex> run_vertices;   // where a run puts its vertices before they are added to the list
+  public:
+    bool fast_runs = true;              // false: every quadword through packed() (the reference; RTA_GS_SLOW)
+    bool copy_kicks = false;            // true: a kicked packet is copied out of VU1 memory first (the reference; RTA_GS_SLOW)
+  private:
     // ---- drawing ----
     DrawCmd cur;                        // state of the command being filled
     bool have_cmd = false;
@@ -135,6 +145,8 @@ class Gs {
     struct Rect { uint32_t psm, bw; int x, y, w, h; size_t offset, bytes; uint32_t bw_raw; };
     struct UploadSet { std::vector<Rect> rects; std::vector<uint8_t> data; uint64_t hash = 0, serial = 0; bool used = false; };
     std::map<uint32_t, UploadSet> sets;                 // by destination base pointer
+    uint8_t set_at[0x4000] = {0};                       // 1 where `sets` has an entry (start_transfer asks it block by block)
+    std::map<std::pair<uint64_t, uint64_t>, std::vector<uint32_t>> written_blocks;     // start_transfer: the blocks a kind of rectangle writes, sorted
     uint64_t serial = 1;
     struct Transfer { bool active = false; uint32_t dbp = 0; size_t rect = 0, got = 0; bool to_surface = false; } xfer;
     // Pixels the game sends straight into a displayed buffer (the film player: 16 x 16

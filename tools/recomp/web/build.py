@@ -101,6 +101,7 @@ def main():
     parser.add_argument('--define', action='append', default=[])
     parser.add_argument('--flag', action='append', default=[], help='one more compiler flag for everything but the translated game, as --flag=-msimd128; repeatable')
     parser.add_argument('--vu')
+    parser.add_argument('--vu-fast', help='the VU1 microprograms translated ahead of time (render/vu1_translate.py writes the file); give --flag=-msimd128 with it')
     parser.add_argument('--vu-arith', choices=['nearest', 'zero'], default='nearest')
     parser.add_argument('--no-sound', action='store_true')
     parser.add_argument('--profiling', action='store_true')
@@ -138,6 +139,7 @@ def main():
         headers += headers_of(render, sound, app)
         sources += [os.path.join(render, n) for n in RENDER]
         sources.append(os.path.abspath(args.vu) if args.vu else os.path.join(render, 'vu1_none.cpp'))
+        sources.append(os.path.abspath(args.vu_fast) if args.vu_fast else os.path.join(render, 'vu1_fast_none.cpp'))
         sources += [os.path.join(app, 'app_rt.cpp'), os.path.join(HERE, 'backend_webgl.cpp'), os.path.join(HERE, 'web_main.cpp')]
         if args.no_sound:
             sources += [os.path.join(rt, 'sound_null.cpp'), os.path.join(HERE, 'sound_none_web.cpp')]

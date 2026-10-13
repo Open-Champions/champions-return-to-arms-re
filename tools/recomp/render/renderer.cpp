@@ -1,5 +1,6 @@
 // renderer.cpp - see renderer.h.
 #include "renderer.h"
+#include "prof.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -19,7 +20,12 @@ Renderer::Renderer(uint8_t* vu_micro, uint8_t* vu_data) {
         r->gs.xgkick(r->vif.vu.data, qword);
     };
     gs.begin_frame();
-    if (getenv("RTA_GS_FAR")) {                         // debugging: the VIF codes that led to a far vertex, once
+    if (getenv("RTA_VU1_INTERPRET")) vif.vu.use_fast = vif.vu.use_translation = false;     // the reference: every program interpreted
+    if (getenv("RTA_VU1_OLD")) vif.vu.use_fast = false; // only the older translation of the main program (when one is linked)
+    if (getenv("RTA_GS_SLOW")) { gs.fast_runs = false; gs.copy_kicks = true; }    // ... every vertex through the general path
+    if (getenv("RTA_VIF_SLOW")) vif.fast_unpack = false;    // ... every UNPACK field by field
+    if (getenv("RTA_GS_FAR")) {
+        vif.vu.use_fast = false;                        // the registers are printed as the interpreter keeps them                         // debugging: the VIF codes that led to a far vertex, once
         vif.debug_ring = 1;
         gs.on_far_vertex = [this] {
             static bool done = false;
@@ -59,7 +65,7 @@ Renderer::Renderer(uint8_t* vu_micro, uint8_t* vu_data) {
 void Renderer::vblank(unsigned, uint64_t number) {
     blanks++;
     gs.end_frame(number);
-    if (on_frame) on_frame(gs.frame);
+    if (on_frame) { RTA_PROF_SCOPE(prof::P_HOST); on_frame(gs.frame); }
     gs.begin_frame();
 }
 

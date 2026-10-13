@@ -55,6 +55,8 @@ int main(int argc, char** argv) {
     int crop[4] = {0, 0, 0, 0};                         // --crop x,y,w,h: write only this part of the picture
     std::string translate;                              // --translate-vu <file.cpp>: write the main VU1 program as C++
     bool interpret = false;                             // --interpret: do not use a linked translation
+    bool old_translation = false;                       // --old-translation: not the ahead-of-time one (vu1_fast.h), the older one of the main program
+    bool reference = false;                             // --reference: VU1 interpreted, and the GS model and UNPACK the long way too
     int list_at = -1;                                   // --list <blank>: print that blank's command list
     unsigned vu_lo = 0, vu_hi = 0;
     int vu_n = 0;
@@ -78,6 +80,8 @@ int main(int argc, char** argv) {
         else if (a == "--crop") { std::string v = next(); sscanf(v.c_str(), "%d,%d,%d,%d", &crop[0], &crop[1], &crop[2], &crop[3]); }
         else if (a == "--translate-vu") translate = next();
         else if (a == "--interpret") interpret = true;
+        else if (a == "--old-translation") old_translation = true;
+        else if (a == "--reference") reference = true;
         else if (a == "--list") list_at = atoi(next().c_str());
         else if (a == "--target") read_target = atoi(next().c_str());
         else if (a == "--sheet") { sheet = next(); sheet_first = atoi(next().c_str()); }
@@ -109,6 +113,8 @@ int main(int argc, char** argv) {
     renderer.gs.no_interlace = !interlace;
     renderer.gs.trace = trace;
     renderer.vif.vu.use_translation = !interpret;
+    renderer.vif.vu.use_fast = !interpret && !old_translation;
+    if (reference) { renderer.vif.vu.use_translation = renderer.vif.vu.use_fast = false; renderer.gs.fast_runs = false; renderer.gs.copy_kicks = true; renderer.vif.fast_unpack = false; }
     renderer.vif.time_runs = renderer.gs.time_paths = getenv("RTA_TIME") != nullptr;
     if (getenv("RTA_NO_VU")) renderer.vif.run_programs = false;         // for telling the parts' processor time apart
     if (getenv("RTA_NO_KICK")) renderer.vif.vu.kick = nullptr;
@@ -228,7 +234,9 @@ int main(int argc, char** argv) {
         bool ok = renderer.vif.vu.write_translation(translate.c_str(), 0x74c);
         printf("%s %s\n", ok ? "wrote" : "cannot write", translate.c_str());
     }
-    printf("VU1 main program: %s\n", renderer.vif.vu.translated ? "translated" : "interpreted");
+    printf("VU1: %llu runs, %llu of them in the ahead-of-time translation (%llu finished by the interpreter); main program otherwise %s\n",
+           (unsigned long long)renderer.vif.vu.runs, (unsigned long long)renderer.vif.vu.fast_runs, (unsigned long long)renderer.vif.vu.fast_left,
+           renderer.vif.vu.translated ? "in the older translation" : "interpreted");
     {
         PictureFigures f = backend.figures();
         printf("picture: %d samples, anisotropy %d; pack files %llu, textures named %llu, found %llu, read %llu (%llu as parts), own mip-mapped parts %llu, held %llu pictures, %.1f MB\n",

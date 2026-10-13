@@ -302,7 +302,7 @@ int main(int argc, char** argv) {
     static Renderer renderer;
     g_renderer = &renderer;
     renderer.vif.time_runs = renderer.gs.time_paths = g_opt.times;
-    if (g_opt.interpret) renderer.vif.vu.use_translation = false;
+    if (g_opt.interpret) renderer.vif.vu.use_translation = renderer.vif.vu.use_fast = false;
     g_sink.renderer = &renderer;
     g_sink.waited_downstream_ms = &g_screen.submit_wait_ms;
     renderer.on_frame = [](FrameList& frame) { g_screen.submit(frame); };

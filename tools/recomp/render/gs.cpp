@@ -1,5 +1,6 @@
 // gs.cpp - see gs.h.
 #include "gs.h"
+#include "prof.h"
 #include "xxh3_64.h"
 
 #include <algorithm>
@@ -139,6 +140,7 @@ const char* const Gs::APPROX_NAMES[AP_COUNT] = {"alpha-test fail rule", "destina
                                                  "AA1", "partial FBMSK", "COLCLAMP off", "region repeat", "texture is its own target"};
 
 void Gs::begin_frame() {
+    RTA_PROF_SCOPE(prof::P_GS_FRAME);
     frame.clear(); have_cmd = false; state_dirty = true;
     // the pictures made for the uploads of the frame before
     frame.dead_textures.insert(frame.dead_textures.end(), transient_textures.begin(), transient_textures.end());
@@ -278,6 +280,7 @@ void Gs::free_unused_targets() {
 }
 
 void Gs::end_frame(uint64_t number) {
+    RTA_PROF_SCOPE(prof::P_GS_FRAME);
     layout.flush(frame.vertices);
     flush_uploads();
     if (have_cmd && cur.count) frame.commands.push_back(cur);
@@ -382,6 +385,7 @@ Gs::Target& Gs::target_at(uint32_t block, int width, int height) {
 
 // ---- GIF ------------------------------------------------------------------------------
 void Gs::gif(int path, const uint32_t* words, size_t quadwords) {
+    RTA_PROF_SCOPE(path == 0 ? prof::P_GS_VU : prof::P_GS_DIRECT);
     Path& p = paths[path];
     cur_path = path;
     size_t q = 0;
@@ -399,6 +403,11 @@ void Gs::gif(int path, const uint32_t* words, size_t quadwords) {
             if (((lo >> 46) & 1) && p.flg == 0) write(0x00, (lo >> 47) & 0x7FF);
             stats.packets++;
             q++;
+            // all of a PACKED run of triangles is here: one loop for it
+            if (p.flg == 0 && p.nloop && fast_runs && (size_t)p.nloop * p.nreg <= quadwords - q && triangle_run(words + q * 4, p.nloop, p.nreg, p.regs)) {
+                q += (size_t)p.nloop * p.nreg;
+                p.nloop = 0;
+            }
             continue;
         }
         if (p.flg == 0) {
@@ -421,8 +430,11 @@ void Gs::gif(int path, const uint32_t* words, size_t quadwords) {
 }
 
 void Gs::xgkick(const uint8_t* vu_data, uint32_t qword) {
-    uint32_t buffer[1024 * 4];
+    RTA_PROF_SCOPE(prof::P_KICK_COPY);
+    // how long the packet is, and whether it runs round the end of VU1 memory
     uint32_t at = qword & 0x3FF, used = 0;
+    const uint32_t first = at;
+    bool round = false;
     for (int guard = 0; guard < 64 && used < 1024; guard++) {
         uint32_t tag[4];
         memcpy(tag, vu_data + at * 16, 16);
@@ -430,11 +442,21 @@ void Gs::xgkick(const uint8_t* vu_data, uint32_t qword) {
         if (!nreg) nreg = 16;
         uint32_t body = flg == 0 ? nloop * nreg : flg == 1 ? (nloop * nreg + 1) / 2 : nloop;
         if (used + 1 + body > 1024) break;
-        for (uint32_t k = 0; k <= body; k++) memcpy(buffer + (used + k) * 4, vu_data + ((at + k) & 0x3FF) * 16, 16);
+        if (at + 1 + body > 0x400) round = true;
         used += 1 + body;
         at = (at + 1 + body) & 0x3FF;
         if (tag[0] & 0x8000) break;
     }
+    // It is read where it lies (nothing writes VU1 memory while the GS model works: the
+    // program that kicked it waits in its XGKICK), unless it runs round the end or the
+    // memory is not laid out for reading words.
+    if (!round && !((uintptr_t)vu_data & 3) && !copy_kicks) { xgkick_draw((const uint32_t*)(vu_data + first * 16), used, qword); return; }
+    uint32_t buffer[1024 * 4];
+    for (uint32_t k = 0; k < used; k++) memcpy(buffer + k * 4, vu_data + ((first + k) & 0x3FF) * 16, 16);
+    xgkick_draw(buffer, used, qword);
+}
+
+void Gs::xgkick_draw(const uint32_t* buffer, uint32_t used, uint32_t qword) {
     paths[0].nloop = 0;
     if (trace > 0) {
         trace--;
@@ -547,6 +569,7 @@ void Gs::write(uint32_t address, uint64_t value) {
                 dst.fbw = (uint32_t)(bb >> 48) & 0x3F;
                 dst.psm = (uint32_t)(bb >> 56) & 0x3F;
                 sets.erase(dbp);
+                set_at[dbp] = 0;
                 DrawCmd c;
                 c.kind = CMD_COPY;
                 c.texture = source_id; c.target = dst.id;
@@ -577,9 +600,11 @@ static inline size_t bits_per_pixel(uint32_t psm) {
 }
 
 void Gs::start_transfer() {
+    RTA_PROF_SCOPE(prof::P_GS_UPLOAD);
     uint64_t bb = reg[0x50], pos = reg[0x51], size = reg[0x52];
     uint32_t dbp = (uint32_t)(bb >> 32) & 0x3FFF;
     UploadSet& set = sets[dbp];
+    set_at[dbp] = 1;
     if (set.used) { set.rects.clear(); set.data.clear(); set.hash = 0; set.used = false; }
     Rect r;
     r.bw_raw = (uint32_t)(bb >> 48) & 0x3F;
@@ -607,8 +632,15 @@ void Gs::start_transfer() {
     // row, a narrow rectangle skips blocks, and the game puts other textures into the
     // blocks between - taking the whole span away lost their pictures: "image never
     // sent" for 400 to 600 draws a visit in two levels)
-    std::vector<uint32_t> written;
-    if (r.w > 0 && r.h > 0)
+    if (r.w <= 0 || r.h <= 0) return;
+    // (Which blocks a rectangle writes depends on its place, size and format alone, and
+    // the game sends the same few hundred rectangles every frame: the sorted list is made
+    // once per kind of rectangle and kept.)
+    if (written_blocks.size() > 4096) written_blocks.clear();
+    auto kept = written_blocks.try_emplace(std::make_pair((uint64_t)r.psm | (uint64_t)r.bw << 8 | (uint64_t)(uint32_t)r.x << 16 | (uint64_t)(uint32_t)r.y << 40,
+                                                          (uint64_t)(uint32_t)r.w | (uint64_t)(uint32_t)r.h << 32));
+    std::vector<uint32_t>& written = kept.first->second;
+    if (kept.second) {
         for (int by = r.y / bhei; by <= (r.y + r.h - 1) / bhei; by++)
             for (int bx = r.x / bwid; bx <= (r.x + r.w - 1) / bwid; bx++) {
                 int x = bx * bwid, y = by * bhei;
@@ -616,13 +648,23 @@ void Gs::start_transfer() {
                          : r.psm == PSMCT16 || r.psm == PSMCT16S ? addr16(x, y, r.bw) : addr32(x, y, r.bw);
                 written.push_back((uint32_t)(a >> 8));
             }
+        std::sort(written.begin(), written.end());
+    }
     if (written.empty()) return;
-    std::sort(written.begin(), written.end());
-    for (auto it = sets.upper_bound(dbp); it != sets.end() && it->first <= dbp + written.back();)
-        if (std::binary_search(written.begin(), written.end(), it->first - dbp)) it = sets.erase(it); else ++it;
+    // (Every set that starts behind this one in a block the rectangle writes.  Asked of a
+    // table of the blocks sets start at: walking the map over the rectangle's span and
+    // searching the list for each set found there cost, with making the list, about
+    // 7,000 instructions an upload - as much as hashing it.)
+    for (uint32_t block : written) {
+        const uint32_t at = dbp + block;
+        if (!block || at >= 0x4000 || !set_at[at]) continue;
+        sets.erase(at);
+        set_at[at] = 0;
+    }
 }
 
 void Gs::image_data(const uint8_t* bytes, size_t count) {
+    RTA_PROF_SCOPE(prof::P_GS_UPLOAD);
     if (!xfer.active) return;
     auto it = sets.find(xfer.dbp);
     if (it == sets.end()) { xfer.active = false; return; }
@@ -636,6 +678,7 @@ void Gs::image_data(const uint8_t* bytes, size_t count) {
     if (xfer.got >= want && xfer.to_surface) {
         Rect done = r;
         std::vector<uint8_t> bytes(set.data.begin() + (std::ptrdiff_t)r.offset, set.data.end());
+        set_at[xfer.dbp & 0x3FFF] = 0;
         sets.erase(it);                                 // nothing of it is kept as a texture
         xfer.active = false;
         if (bytes.size() >= want) upload_to_surface(xfer.dbp, done, bytes.data());
@@ -756,6 +799,7 @@ void Gs::name_texture(TextureData& out, const UploadSet& set, const uint32_t* pa
 }
 
 Gs::Texture* Gs::texture_for(uint64_t tex0, uint64_t texa) {
+    RTA_PROF_SCOPE(prof::P_GS_TEXID);
     uint32_t tbp = (uint32_t)tex0 & 0x3FFF, tbw = std::max<uint32_t>((uint32_t)(tex0 >> 14) & 0x3F, 1), psm = (uint32_t)(tex0 >> 20) & 0x3F;
     uint32_t tw = (uint32_t)(tex0 >> 26) & 15, th = (uint32_t)(tex0 >> 30) & 15;
     uint32_t cbp = (uint32_t)(tex0 >> 37) & 0x3FFF, cpsm = (uint32_t)(tex0 >> 51) & 15, csa = (uint32_t)(tex0 >> 56) & 31;
@@ -791,6 +835,7 @@ Gs::Texture* Gs::texture_for(uint64_t tex0, uint64_t texa) {
     }
 
     // ---- make it ----
+    RTA_PROF_SCOPE(prof::P_GS_TEXMAKE);
     const UploadSet& set = image->second;
     Scratch s;
     s.reserve(8192);
@@ -888,6 +933,7 @@ static bool same_state(const DrawCmd& a, const DrawCmd& b) {
 static bool g_skip_draw = false;
 
 void Gs::rebuild_state() {
+    RTA_PROF_SCOPE(prof::P_GS_STATE);
     if (!canvases.empty()) flush_uploads();             // what was sent into a surface is there before anything is drawn
     state_dirty = false;
     uint32_t attr = (reg[0x1a] & 1) ? prim : ((prim & 7) | ((uint32_t)reg[0x1b] & 0x7F8));
@@ -1048,12 +1094,262 @@ void Gs::rebuild_state() {
     have_cmd = true;
 }
 
+static const bool log_far = getenv("RTA_GS_FAR") != nullptr;    // debugging: far vertices are reported (and every vertex goes the long way)
+
+#if defined(__GNUC__) || defined(__clang__)
+#define GS_ALWAYS_INLINE __attribute__((always_inline))
+#else
+#define GS_ALWAYS_INLINE
+#endif
+
+// The vertex a queued one becomes (what emit_vertex() makes of it, with the texture
+// coordinates kick() picks), for a state that is settled.
+#define GS_MAKE_VERTEX(o, vx, vy, vz, vu_, vv_, vs_, vt_, vq_, rgba_, fog_) do { \
+        (o).x = ((float)(vx) - ofx) * (1.0f / 16.0f); \
+        (o).y = ((float)(vy) - ofy) * (1.0f / 16.0f); \
+        float zf_ = (float)(vz) * zscale; \
+        (o).z = zf_ > 0.99999994f ? 0.99999994f : zf_; \
+        if (!tme) { (o).s = (o).t = 0; (o).q = 1; } \
+        else if (fst) { (o).s = (float)(vu_) * (1.0f / 16.0f); (o).t = (float)(vv_) * (1.0f / 16.0f); (o).q = 1; } \
+        else { (o).s = (vs_); (o).t = (vt_); (o).q = (vq_); } \
+        (o).r = (rgba_)[0]; (o).g = (rgba_)[1]; (o).b = (rgba_)[2]; (o).a = (rgba_)[3]; \
+        (o).fog = (fog_); \
+    } while (0)
+
+bool Gs::triangle_run(const uint32_t* data, uint32_t nloop, uint32_t nreg, uint64_t regs) {
+    const unsigned type = prim & 7;
+    if (type < 3 || type > 5 || log_far || trace) return false;
+    uint8_t desc[16];
+    uint32_t vertex_regs = 0;
+    for (uint32_t r = 0; r < nreg; r++) {
+        desc[r] = (uint8_t)((regs >> (4 * r)) & 15);
+        if (desc[r] != 0x1 && desc[r] != 0x2 && desc[r] != 0x3 && desc[r] != 0x4 && desc[r] != 0x5 && desc[r] != 0xF) return false;
+        if (desc[r] == 0x4 || desc[r] == 0x5) vertex_regs++;
+    }
+    // Vertices are written to a piece of memory of the run's own and added to the list in
+    // one piece: at most three for every vertex register of the run.
+    const size_t most = (size_t)nloop * vertex_regs * 3;
+    if (run_vertices.size() < most) run_vertices.resize(most);
+    Vertex* const out = run_vertices.data();
+    size_t out_count = 0, emitted = 0;
+    // The vertices of the queue as they will be emitted, made when first needed: what they
+    // are made with (offsets, depth scale, which texture coordinates) is settled by the
+    // first primitive of the run that draws and does not change inside the run.
+    Vertex made[3];
+    bool have[3] = {false, false, false};
+    bool started = false, layout_each = false;
+    bool tme = false, fst = false, iip = false;
+    const uint32_t* q = data;
+    const uint32_t* const end = data + (size_t)nloop * nreg * 4;
+    uint64_t reg_writes = 0, vertices = 0, prims = 0;
+    uint32_t r = 0;
+    // ---- any run, a register at a time (and every run up to its first primitive) ----
+    for (; q < end; q += 4, r = r + 1 == nreg ? 0 : r + 1) {
+        switch (desc[r]) {
+        case 0x1:
+            cur_rgba[0] = (uint8_t)q[0]; cur_rgba[1] = (uint8_t)q[1]; cur_rgba[2] = (uint8_t)q[2]; cur_rgba[3] = (uint8_t)q[3];
+            cur_q = st_q;
+            reg_writes++;
+            continue;
+        case 0x2: memcpy(&cur_s, &q[0], 4); memcpy(&cur_t, &q[1], 4); memcpy(&st_q, &q[2], 4); reg_writes++; continue;
+        case 0x3: cur_u = q[0] & 0x3FFF; cur_v = q[1] & 0x3FFF; reg_writes++; continue;
+        case 0xF: continue;
+        default: break;                                 // XYZF2, XYZ2: a vertex
+        }
+        const int slot = vcount < 3 ? vcount : 2;
+        Queued& v = vq[slot];
+        v.x = q[0] & 0xFFFF; v.y = q[1] & 0xFFFF;
+        if (desc[r] == 0x4) { v.z = (q[2] >> 4) & 0xFFFFFF; v.fog = (uint8_t)(q[3] >> 4); }
+        else { v.z = q[2]; v.fog = cur_fog; }
+        v.s = cur_s; v.t = cur_t; v.q = cur_q; v.u = cur_u; v.v = cur_v;
+        memcpy(v.rgba, cur_rgba, 4);
+        have[slot] = false;
+        vcount++;
+        vertices++;
+        if (vcount < 3) continue;
+        if (!(q[3] & 0x8000)) {                         // drawn
+            if (!started) {
+                started = true;
+                if (state_dirty) rebuild_state();
+                // (the path is read after the state is made, as kick() reads it: making
+                // the state can send a texture again, which is GIF data of its own path)
+                const uint8_t made_by = cur_path == 0 ? 0 : 1;
+                if (!g_skip_draw && cur.made_by != made_by) {
+                    DrawCmd c = cur;
+                    c.made_by = made_by;
+                    if (cur.count) frame.commands.push_back(cur);
+                    c.first = (uint32_t)frame.vertices.size();
+                    c.count = 0;
+                    cur = c;
+                }
+                if (!g_skip_draw && cur.weave_half != 0) {
+                    DrawCmd c = cur;
+                    c.weave_half = 0;
+                    if (cur.count) frame.commands.push_back(cur);
+                    c.first = (uint32_t)frame.vertices.size();
+                    c.count = 0;
+                    cur = c;
+                }
+                // In a wide picture the 2-D layer is put back into shape primitive by
+                // primitive (layout.h): everything built on the CPU, and a 3-D figure
+                // inside a menu.  Triangles VU1 kicks otherwise are left as they are.
+                layout_each = cur_wide && layout.active() && (cur_path != 0 || layout.mode() == Layout::M_MENU3D);
+                tme = cmd_tme; fst = cmd_fst; iip = cmd_iip;
+            }
+            if (!g_skip_draw) {
+                prims++;
+                for (int k = 0; k < 3; k++) {
+                    if (have[k]) continue;
+                    const Queued& a = vq[k];
+                    GS_MAKE_VERTEX(made[k], a.x, a.y, a.z, a.u, a.v, a.s, a.t, a.q, a.rgba, a.fog);
+                    have[k] = true;
+                }
+                Vertex* o = out + out_count;
+                o[0] = made[0]; o[1] = made[1]; o[2] = made[2];
+                if (!iip) {                             // flat: the colour of the last vertex
+                    o[0].r = o[1].r = made[2].r; o[0].g = o[1].g = made[2].g; o[0].b = o[1].b = made[2].b; o[0].a = o[1].a = made[2].a;
+                }
+                out_count += 3;
+                if (layout_each) {
+                    frame.vertices.insert(frame.vertices.end(), out, out + 3);
+                    out_count = 0; emitted += 3;
+                    layout.primitive(frame.vertices, (uint32_t)frame.vertices.size() - 3, 3, cur_path, false, cur.ztst == 1, cur.texture != 0, cur.tex_is_target, prim_serial);
+                }
+            }
+        }
+        if (type == 4) { vq[0] = vq[1]; vq[1] = vq[2]; made[0] = made[1]; made[1] = made[2]; have[0] = have[1]; have[1] = have[2]; vcount = 2; }
+        else if (type == 5) { vq[1] = vq[2]; made[1] = made[2]; have[1] = have[2]; vcount = 2; }
+        else vcount = 0;
+        // A strip whose state is settled goes on below: there the queue is kept as made
+        // vertices only, and its last two are put back into the queue when the run ends.
+        if (type == 4 && started && !g_skip_draw && !layout_each && have[0] && have[1]) { q += 4; r = r + 1 == nreg ? 0 : r + 1; goto strip; }
+    }
+    goto done;
+strip:
+    {
+        // The new vertex is made where it goes, and the two before it are copied from where
+        // they lie - in the output, or beside it when the triangle they ended was not drawn:
+        // three vertices of 32 bytes per triangle, moved as blocks.  (By address on purpose:
+        // held as values the compiler kept forty separate fields in registers and shuffled
+        // them around the loop.)
+        Vertex beside[2];
+        const Vertex* p0 = &made[0];
+        const Vertex* p1 = &made[1];
+        // the last two vertices of the run, as the queue holds them
+        uint64_t left = (uint64_t)nloop * vertex_regs - vertices;       // vertices still to come
+        Queued tail[2];
+        int tails = 0;
+        const float ofx = this->ofx, ofy = this->ofy, zscale = this->zscale;
+        uint32_t u = cur_u, vv = cur_v;
+        float s = cur_s, t = cur_t, cq = cur_q, sq = st_q;
+        uint32_t rgba;                                  // the four bytes as they lie in a vertex
+        memcpy(&rgba, cur_rgba, 4);
+        const uint8_t reg_fog = cur_fog;
+        Vertex* o = out + out_count;
+        Vertex* const first_out = o;
+        const uint64_t before = vertices;
+        auto vertex = [&](const uint32_t* w, bool with_fog) GS_ALWAYS_INLINE {
+            const uint32_t x = w[0] & 0xFFFF, y = w[1] & 0xFFFF;
+            const uint32_t z = with_fog ? (w[2] >> 4) & 0xFFFFFF : w[2];
+            const uint8_t fog = with_fog ? (uint8_t)(w[3] >> 4) : reg_fog;
+            Vertex* n = o + 2;
+            const Vertex* const p0_before = p0;
+            n->x = ((float)x - ofx) * (1.0f / 16.0f);
+            n->y = ((float)y - ofy) * (1.0f / 16.0f);
+            float zf = (float)z * zscale;
+            n->z = zf > 0.99999994f ? 0.99999994f : zf;
+            if (!tme) { n->s = n->t = 0; n->q = 1; }
+            else if (fst) { n->s = (float)u * (1.0f / 16.0f); n->t = (float)vv * (1.0f / 16.0f); n->q = 1; }
+            else { n->s = s; n->t = t; n->q = cq; }
+            memcpy(&n->r, &rgba, 4);
+            const uint8_t last[4] = {fog, 0, 0, 0};
+            memcpy(&n->fog, last, 4);
+            p0 = p1;
+            if (!(w[3] & 0x8000)) {                     // drawn
+                memcpy((void*)o, (const void*)p0_before, sizeof(Vertex));
+                memcpy((void*)(o + 1), (const void*)p1, sizeof(Vertex));
+                if (!iip) { memcpy(&o[0].r, &rgba, 4); memcpy(&o[1].r, &rgba, 4); }      // flat: the colour of the last vertex
+                p1 = n;
+                o += 3;
+            } else {                                    // not drawn: out of the way of the next one
+                Vertex* keep = p1 == &beside[0] ? &beside[1] : &beside[0];
+                memcpy((void*)keep, (const void*)n, sizeof(Vertex));
+                p1 = keep;
+            }
+            if (left-- <= 2) {
+                Queued& k = tail[tails++];
+                k.x = x; k.y = y; k.z = z; k.fog = fog; k.s = s; k.t = t; k.q = cq; k.u = u; k.v = vv;
+                memcpy(k.rgba, &rgba, 4);
+            }
+        };
+        // The usual shape of a loop: texel coordinates and a colour (or only one of them, or
+        // neither), unused registers, and the vertex last.  Then a loop is read as a whole.
+        int uv_at = -1, rgba_at = -1;
+        bool usual = r == 0 && vertex_regs == 1 && (desc[nreg - 1] == 0x4 || desc[nreg - 1] == 0x5);
+        uint32_t writes_per_loop = 0;
+        for (uint32_t k = 0; usual && k + 1 < nreg; k++) {
+            if (desc[k] == 0x3) { uv_at = (int)k; writes_per_loop++; }
+            else if (desc[k] == 0x1) { rgba_at = (int)k; writes_per_loop++; }
+            else if (desc[k] != 0xF) usual = false;
+        }
+        if (usual) {
+            const bool with_fog = desc[nreg - 1] == 0x4;
+            const size_t step = (size_t)nreg * 4;
+            for (; q < end; q += step) {
+                if (uv_at >= 0) { u = q[uv_at * 4] & 0x3FFF; vv = q[uv_at * 4 + 1] & 0x3FFF; }
+                if (rgba_at >= 0) {
+                    const uint32_t* c = q + rgba_at * 4;
+                    const uint8_t bytes[4] = {(uint8_t)c[0], (uint8_t)c[1], (uint8_t)c[2], (uint8_t)c[3]};
+                    memcpy(&rgba, bytes, 4);
+                    cq = sq;
+                }
+                vertex(q + step - 4, with_fog);
+            }
+        } else {
+            for (; q < end; q += 4, r = r + 1 == nreg ? 0 : r + 1) {
+                switch (desc[r]) {
+                case 0x1: {
+                    const uint8_t bytes[4] = {(uint8_t)q[0], (uint8_t)q[1], (uint8_t)q[2], (uint8_t)q[3]};
+                    memcpy(&rgba, bytes, 4);
+                    cq = sq;
+                    reg_writes++;
+                    break;
+                }
+                case 0x2: memcpy(&s, &q[0], 4); memcpy(&t, &q[1], 4); memcpy(&sq, &q[2], 4); reg_writes++; break;
+                case 0x3: u = q[0] & 0x3FFF; vv = q[1] & 0x3FFF; reg_writes++; break;
+                case 0xF: break;
+                default: vertex(q, desc[r] == 0x4); break;
+                }
+            }
+        }
+        vertices = (uint64_t)nloop * vertex_regs - left;
+        if (usual) reg_writes += (vertices - before) * writes_per_loop;
+        prims += (size_t)(o - first_out) / 3;
+        out_count = (size_t)(o - out);
+        cur_u = u; cur_v = vv; cur_s = s; cur_t = t; cur_q = cq; st_q = sq;
+        memcpy(cur_rgba, &rgba, 4);
+        if (tails == 2) { vq[0] = tail[0]; vq[1] = tail[1]; }
+        else if (tails == 1) { vq[0] = vq[1]; vq[1] = tail[0]; }
+    }
+done:
+    if (out_count) { frame.vertices.insert(frame.vertices.end(), out, out + out_count); emitted += out_count; }
+    stats.reg_writes += reg_writes;
+    stats.vertices += vertices;
+    if (emitted) {
+        cur.count += (uint32_t)emitted;
+        stats.prims += prims;
+        if (cur.fog) stats.fogged += prims;
+        if (cur_approx) for (int k = 0; k < AP_COUNT; k++) if (cur_approx & (1u << k)) stats.approx[k] += prims;
+    }
+    return true;
+}
+#undef GS_MAKE_VERTEX
+
 void Gs::emit_vertex(const Queued& v, const DrawCmd&, float s, float t, float q, const uint8_t* rgba, uint32_t z, uint8_t fog) {
     Vertex o;
     o.x = ((float)v.x - ofx) * (1.0f / 16.0f);
     o.y = ((float)v.y - ofy) * (1.0f / 16.0f);
     {
-        static const bool log_far = getenv("RTA_GS_FAR") != nullptr;
         static int left = 40;
         if (log_far && left > 0 && (o.x > 2400 || o.y > 2000)) {
             left--;

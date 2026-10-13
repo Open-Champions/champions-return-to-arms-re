@@ -563,8 +563,11 @@ def main():
     if not args.headless:
         translation = os.path.join(OUT, 'gen-vu', 'vu1_translated.cpp')
         vu1 = translation if os.path.exists(translation) and not args.no_translation else os.path.join(RENDER, 'vu1_none.cpp')
+        # the VU1 microprograms translated ahead of time (render/vu1_translate.py; SSE2 on x86-64)
+        fast = os.path.join(OUT, 'gen-vu', 'vu1_fast.cpp')
+        vu1_fast = fast if os.path.exists(fast) and not args.no_translation else os.path.join(RENDER, 'vu1_fast_none.cpp')
         app = source_jobs(
-            [(os.path.join(RENDER, n), render_flags, 'r_') for n in RENDER_CORE] + [(vu1, render_flags, 'r_')] +
+            [(os.path.join(RENDER, n), render_flags, 'r_') for n in RENDER_CORE] + [(vu1, render_flags, 'r_'), (vu1_fast, render_flags, 'r_')] +
             # backend_gl.cpp is written against Qt's QOpenGLExtraFunctions; app/win/ has the two headers it
             # includes, over WGL (no Qt on Windows)
             [(os.path.join(RENDER, 'backend_gl.cpp'), render_flags + ['-I', WINSRC], 'r_'),

@@ -1,51 +1,60 @@
 # Three and four players do not launch from the online lobby
 
-**State (2026-10-12, 20:40 CDT): TWO causes. (1) The game's launch handshake and the
-address the lobby server tells a console as its own: fixed in the server (below), proven
-with native copies. (2) The emulator's Ethernet adaptor loses the second of two datagrams
-sent back to back - this is what leaves one player of three behind in the application
-and the browser; found in packet captures at 20:35, fix being built. Read the section
-"The second cause" and "Where the work stands". What follows is the state at 16:20:**
+**State (2026-10-12, 21:30 CDT). Two causes, both found, both fixed, both needed:**
 
-**State (2026-10-12, 16:20 CDT): the cause is found and reproduced with three native
-copies (one failing run read call by call). The fix is one change in the lobby server -
-no change to the game, to the patch set or to any player's copy. It is in the working
-tree of `server/upstream` (source and FIXES.md 32; nothing built there, the running
-lobby untouched) and was proven against a second server instance built from a copy:
-three native players 6 of 6 and four native players 4 of 4 launches in a row, all of
-them with the race gone the bad way, a few thousand ticks in step each; three copies of
-the released emulator application 1 of 1. Not tried: a page through the relay.
-Whoever continues: read "Where the work stands" at the end first.**
+1. **The game's launch handshake and the address the lobby server tells a console as its
+   own.** With players who share an address (one computer, one router, one relay) a
+   joiner that takes the host's START later than another joiner can never be reached by
+   it again; nobody gets into the level. **Fixed in the lobby server** (4 source files
+   in the working tree of `server/upstream`, FIXES.md 32). No game patch.
+2. **The emulator's Ethernet adaptor loses the second of two datagrams sent back to
+   back.** Only a game of three or four sends two in one frame during its launch; the
+   player whose keep-alive was the second one is left behind while the others go into
+   the level counting it. This is the picture the earlier report describes. **Fixed in
+   the emulated chip** (`Source/iop/Iop_Speed.cpp` / `.h` of Play!, in
+   `tools/play-net/play-net.patch`). It needs a new application build and a new page
+   build. No game patch, the patch set stays 3f5b1e14.
 
-## The defect
+Proven on one Mac, every copy at one address, against a second server instance with the
+change (the running local lobby was not rebuilt, restarted or reconfigured; nothing
+touched the public server): three and four native copies, three and four copies of the
+application built with the adaptor fix, two applications and a page through the current
+relay - the table is under "Proof". **One application and two pages: see the last rows
+of that table.** Not tried: two computers, a real router, a person playing.
 
-From [browser-build.md](browser-build.md), section "Mixed games": three players on one
-Mac reach one room through the local lobby server. At *Start Game* the launch fails for
-one machine with the game's message that some players are un-reachable. 3 of 3 tries with
-two application copies and a page; 2 of 3 with three application copies and no page and
-no relay. Two players work in every combination.
+Related: [browser-build.md](browser-build.md) section "Mixed games" (the report this
+started from), [native-online.md](native-online.md) finding 2 (the same hole in the
+launch seen with two players), `docs/lobby-protocol.md` 9, `docs/netcode.md` "Launch".
 
-## The cause (read in the code, then seen in a run)
+## The defect as reported
 
-It is the game's own code, and it needs two things at once.
+Three players on one Mac reach one room through the local lobby server. At *Start Game*
+two machines go into the first level, with three players counted; the third stays behind
+with the game's message that some players are un-reachable and the launch has failed.
+3 of 3 tries with two application copies and a page, 2 of 3 with three application
+copies. Two players work in every combination.
 
-**1. A race between the joiners at Start.** A machine that takes the host's START
-(lobby client message 0x1a, flag 0x100 at client+0x64) goes to lobby state 7 (0x324288,
+## Cause 1: the launch handshake and "my own address" (the game; healed by the server)
+
+It needs two things at once.
+
+**A race between the joiners at Start.** A machine that takes the host's START (lobby
+client message 0x1a, flag 0x100 at client+0x64) goes to lobby state 7 (0x324288,
 `case 7`). There it fills the launch tables from its *live* connections to the other
 players: 0x32e198 takes address and port from a player's first connection whose status
 is 1. Then it calls `SRSClient_shutdownUdp` 0x328770, which - with nothing left to be
 acknowledged - disconnects every player at once. A joiner reads its socket every tenth
-frame, so the two joiners take START up to 167 ms apart. The one that is first has
-closed its connection to the other before the other has filled its tables. For a player
-without a live connection 0x32e198 writes nothing, and state 7 then stores what its two
-stack variables still hold: the address and port **of the player before it in the
-table** (the host's), or 0 and a leftover for the first. The host is not affected: it
-fills its tables when it sends START.
+frame, so two joiners take START up to 167 ms apart. The one that is first has closed
+its connection to the other before the other has filled its tables. For a player without
+a live connection 0x32e198 writes nothing, and state 7 then stores what its two stack
+variables still hold: the address and port **of the player before it in the table** (the
+host's), or 0 and a leftover for the first. The host is not affected: it fills its
+tables when it sends START.
 
-**2. The launch handshake repairs a wrong address - unless the sender has this
-machine's own address.** `net_launchUpdate` 0x135638 finds the sender of a launch
-datagram by the player number inside it. When the datagram's source is not the address
-and port it has for that player (0x1358e0 - 0x1359f4):
+**The launch handshake repairs a wrong address - unless the sender has this machine's
+own address.** `net_launchUpdate` 0x135638 finds the sender of a launch datagram by the
+player number inside it. When the datagram's source is not the address and port it has
+for that player (0x1358e0 - 0x1359f4):
 - source address == this machine's own entry in the address table 0x402b3b - in a lobby
   game that is this machine's *external* address as the lobby server told it (0x3E for a
   host, 0x40 for a joiner; handlers 0x330128 and 0x32a0d0 store it at client+0xd10): the
@@ -58,35 +67,27 @@ and port it has for that player (0x1358e0 - 0x1359f4):
   (0x136ff0 onward).
 
 Between two houses the second branch repairs what the race broke, which is why the
-original game worked. **On one computer, behind one router, or through one relay, every
-other player's datagrams come from this machine's own external address**, the first
-branch is taken, and the launch never completes between the two joiners: the later
-joiner answers the earlier one at 0.0.0.0:4000. The same code also sends each contact
-attempt a second time to the second table's pair whenever a player's external address
-equals this machine's (0x1362d0 - 0x136368): in a lobby game that is 0.0.0.0:0, sent
-by every copy on one computer, harmless.
+original game worked. **On one computer, behind one router that loops traffic back, or
+through one relay, every other player's datagrams come from this machine's own external
+address**, the first branch is taken, and the launch never completes between the two
+joiners. Nobody gets into the level; 45 seconds later the launch fails.
 
-So of the candidates: **(a) in a different place than suspected** - not the accept rule
-of the peer library but the launch handshake's test against this machine's own address;
-**not (b)**: the tables and the test are untouched by any section, and the failing run
-below had the 26 suggested sections while other runs of the same build worked (no
-bisection was run: the mechanism does not involve a section); **(c) is the trigger** -
-not a time-out but which joiner reads its socket first, so load changes the odds and
-not the mechanism; **not (d)**: our network layers carry the datagrams as they should,
-and the lobby server did what the original must have done.
-
-It concerns real games: two friends behind one router (when the router loops their
-traffic back), and all browser players, who share the relay's address.
+The same repair also covers the accept rule of the peer library
+(`SRSClient_onPeerConnected` 0x32c2c0 takes an arriving connection for the first sought
+player with that *address*, whatever the port): a fourth player whose two fellow joiners
+share an address files them the wrong way round. Seen in four launches of four
+application copies (ports of players 1 and 2 swapped in the fourth copy's tables); with
+the fix all four launched and stayed in step, because the handshake goes by the player
+number in the datagram.
 
 ### The run that shows it
 
 `local/three-players/n3a/run-fail` (three headless native copies, the 26 sections, set
-3f5b1e14, local lobby server, load average 306). Nobody reached the first level. Host
-port 4000, joiner 1 port 4004, joiner 2 port 53777, all at 192.168.1.123.
+3f5b1e14, the unchanged local lobby, load average 306). Nobody reached the first level.
+Host port 4000, joiner 1 port 4004, joiner 2 port 53777, all at 192.168.1.123.
 
 - Host's log (ms): START to both joiners at 79883; joiner 1's acknowledgement and its
   disconnect (peer-library type 5) at 79971; joiner 2's acknowledgement at 80026.
-  Joiner 1 took START 88 ms after it was sent, joiner 2 143 ms after.
 - Joiner 2's log, one read of its socket at 77298: START from the host, then the
   disconnect from joiner 1 (8 bytes, `00 05`). Its own debug lines: "Got START from
   host", "Terminating known peer 0" - and no line for joiner 1, whose connection was
@@ -96,174 +97,72 @@ port 4000, joiner 1 port 4004, joiner 2 port 53777, all at 192.168.1.123.
 - Joiner 2 at 78044: a 512-byte launch datagram arrives from 192.168.1.123:4004 with
   player number 1; its answer goes to **0.0.0.0:4000**, and so does every later one (422
   datagrams not carried). Its launch record for player 1: address 00000000, port 4000,
-  state 2. Joiner 1's record for player 2 stays in state 0 (never heard). Host: both
-  records in state 8 (done).
+  state 2. Joiner 1's record for player 2 stays in state 0. Host: both records done.
 
-### A control from another job: the developer LAN start works with three and four
+The same in the released application: with the last joiner's machine held still for two
+seconds at Start Game its launch record for the other joiner reads `00000000:4000`,
+state 2, and nobody is in the level 150 s later (2 of 2).
 
-Reported by the soak work (its runs, not this work's; not repeated here): with the
-developer LAN start, three and four **native** machines launch and stay in step - three
-machines for 30,421 ticks and twice 60,000 frames (one of those with delay 10, jitter 6
-and 10 % loss), four machines for 30,000 frames; `g_numPeers` 3, nobody dropped; the 26
-sections with the proposed flush section, one run with 25. The launch packets (0xbd3e),
-the input packets on port 4000 and the kick and lead sections all work with three and
-four. To repeat: `RTA_DISC=... python3 tools/recomp/soak/farm.py one --arm fix26c --out
-<a directory of your own> --seed 3013 [--frames 6000]`.
+### The fix
 
-That fits the cause and narrows it the same way: the lockstep game and the launch
-handshake themselves are sound with three and four players. What differs on the lobby
-path is only where the launch tables come from. The LAN start (0x1e21e0) writes every
-player's address into **both** tables (0x402b3b and 0x402b4b) and port 4000 into both
-port tables from the developer's list, needs no live connection, and every machine has
-an address of its own - so neither the race of cause 1 nor the own-address branch of
-cause 2 can occur. The lobby start takes them from the peer library's connections at
-the moment START is taken (cause 1), leaves the second table empty, and the two
-non-host players learn each other's address only from the host's peer list.
+**The lobby server stops telling a Return to Arms client its own observed address.** In
+notifications 0x3E and 0x40 it sends `0.0.0.0` (the port unchanged). The game uses that
+address for one thing only: the test above. (client+0xd10 is read by state 7; it is also
+written into the peer record a machine sends about itself, from which the receivers take
+no address: 0x32ca18 case 0x1b copies the name and two bytes, 0x32a1b8 skips a player it
+already knows, and the host is known to everyone it sends to.) With 0.0.0.0 the test is
+never true and a wrong address is always repaired from the datagram.
 
-### Also read: the accept rule, which matters for four
-
-`SRSClient_onPeerConnected` 0x32c2c0 takes an arriving connection for the first sought
-player whose external address equals the source address, whatever the port. A newcomer
-to a room of three has two players on its seek list at once; with one address for all,
-whichever of the two connects first is filed under the first one's number, so the
-newcomer's launch tables have the two swapped. Before the fix that alone breaks a game
-of four on one address (the launch datagram of "player 1" comes from player 2's port:
-branch one). The launch handshake identifies players by the number in the datagram, so
-with the fix it should repair this as well. **Not yet run with four.**
-
-## The fix
-
-**The lobby server stops telling a Return to Arms client its own observed address.**
-In notifications 0x3E and 0x40 it sends `0.0.0.0` (the port unchanged) instead of the
-address it saw the client at. The game uses that address for one thing only: the
-"is this datagram from my own address" test above. (client+0xd10 is read by state 7; it
-is also written into the peer record a machine sends about itself, from which the
-receivers take no address: 0x32ca18 case 0x1b copies the name and two bytes, 0x32a1b8
-skips a player it already knows, and the host is known to everyone it sends to.) With
-0.0.0.0 the test is never true, a wrong address is always repaired from the datagram,
-and the race stops mattering.
-
-Why there: one redeploy of the server covers every copy players already have (the
-application with set 3f5b1e14, the browser page, the native build, a console); no game
-patch, so the patch-set figure does not change; no new application build, no new page.
-
-The change is in the working tree of `server/upstream` (4 source files and FIXES.md
-section 32; the files as they were before are in `local/three-players/server-before/`):
-
+In the working tree of `server/upstream` (the files as they were:
+`local/three-players/server-before/`):
 - `Include/configuration.hpp`, `Source/configuration.cpp`: a setting
-  `rta_tell_console_its_observed_address` (default 0; 1 gives the old behaviour, for
-  comparison) and `Config::OwnAddressForRta(observed)`, which returns `"0.0.0.0"` unless
-  the setting is on; the reason is written above the function.
-- `Source/Network/Event/NotifyGameDiscovered.cpp` (0x3E): for a Return to Arms client the
-  address is `Config::OwnAddressForRta(user->m_discoveryAddr)`. Champions of Norrath
-  clients are told what they were told before (that game was not read).
-- `Source/Network/Event/NotifyClientDiscovered_RTA.cpp` (0x40): the same.
-- `tools/lobby_e2e_test.py` (this repository): `observed_pair` - told 0.0.0.0, the test
-  takes the address its own datagrams leave from as what the server observed. The file
-  as it was: `local/three-players/lobby_e2e_test.py.before`.
+  `rta_tell_console_its_observed_address` (default 0; 1 gives the old behaviour) and
+  `Config::OwnAddressForRta(observed)`; the reason is written above the function.
+- `Source/Network/Event/NotifyGameDiscovered.cpp` (0x3E, Return to Arms clients only;
+  Champions of Norrath clients are told what they were told before - that game was not
+  read) and `NotifyClientDiscovered_RTA.cpp` (0x40).
+- `FIXES.md` section 32.
+- `tools/lobby_e2e_test.py` of this repository: `observed_pair` - told 0.0.0.0, the test
+  takes the address its own datagrams leave from as what the server observed (the file
+  as it was: `local/three-players/lobby_e2e_test.py.before`). 40 of 40 with `--extended`
+  against the instance with the change.
+- `docs/lobby-protocol.md`: the rows for 0x3E and 0x40 and the table in 9.2.
 
-**Nothing was built in `server/upstream` and the running local lobby was not touched:**
-its binary is the one of 11 October. The proof ran against a second instance built from
-a copy of the same source (`local/three-players/server/`).
+What other players are told about a console (0x55, 0x57, 0x65) is unchanged, and so is
+the server's check that a discovery datagram comes from the address of the session's
+connection.
 
-**Left for the owner:** rebuild (`sh build.sh` in `server/upstream`) and restart the
-local lobby; redeploy the public one; commit. `docs/lobby-protocol.md` (0x3E and 0x40 in
-section 7, the table in 9.2) still says "its own address as the server saw it" - to be
-corrected with the release. Nothing else has to be released: no application build, no
-page, no patch set.
+## Cause 2: the emulated Ethernet adaptor (the emulator; candidate (d), one layer below ours)
 
-### Tried (the raw lines are in `local/three-players/*.results`, each run's logs in `<series>/run<k>/`)
+**Seen:** on the server with fix 1, three copies of the released application with the
+last joiner held 2 s at Start Game: 0 of 3 launches - but now two copies were in the
+level counting three and one was left behind. The same happened once in three launches
+of four without any hold. The copy left behind had right addresses and had been done
+with everybody (launch state 8); what it lacked was the other joiner's word that it
+"sees everybody ready" (flag bit 8 at launch record +0x5d), which a machine asks for
+with a keep-alive every 45 frames. A machine counts down 120 frames and goes when it has
+that word from everyone; nothing tells the others.
 
-All on one Mac, every copy at 192.168.1.123, the 26 suggested sections (set 3f5b1e14).
-Load average 35 to 306 from other jobs: the times mean little, and what the load decides
-here is only which joiner reads its socket first. "Stale" = a joiner's port table
-0x402b5c had another player's entry wrong when the launch began: the race of cause 1
-went the bad way. "In step" = `tools/rig/compare.py ticks` over every pair of tick logs:
-seed, level, player count, button maps, every player's position, state, hit points, gold
-and experience, the out-of-sync flags and the machine's own sync hash of the previous
-tick, tick by tick, with drawn input on every copy (walking, fighting buttons). "Own
-address zeroed" = a test script writes 0 into client+0xd10 on every copy once it is in
-the room, which is what the server change causes. "Fixed server" = the second server
-instance with the change; there client+0xd10 read 00000000 on every copy by itself.
-
-| What | Copies | Launches tried | All in the level | Stale among them | Lockstep ticks compared, every pair |
-|---|---|---|---|---|---|
-| 3 players, no fix, local lobby | native ×3 | 7 | **3** | 4 - and exactly those 4 failed | 2,617 - 2,719 in the 3 that launched, in step |
-| 3 players, own address zeroed, local lobby | native ×3 | 3 | **3** | 3 | 2,715 - 2,719, in step |
-| 3 players, **fixed server** | native ×3 | 6 in a row | **6** | 6 (in one the joiner had no entry even for the host) | 2,529 - 2,719, in step |
-| 4 players, **fixed server** | native ×4 | 4 in a row | **4** | 4 (two or three wrong entries each) | 2,537 - 2,719 on all 6 pairs, in step |
-| 3 players, **fixed server** | emulator application ×3 (released stable build) | 1 | **1** | 0 | 2,103 consecutive frames (16 - 2118): every copy's own sync hash the same on all three, 1,714 distinct values; received hashes equal; flags 0 |
-
-All four failures without the fix show the stale joiner answering a launch datagram at
-0.0.0.0:4000. With the fix no stale launch failed: 13 of 13 on the fixed server and by
-the zeroed word.
-
-Notes:
-- The server's own test, `tools/lobby_e2e_test.py 192.168.1.123 --gateway-port 41810
-  --extended`, passes 40 of 40 against the fixed instance. It had to learn that 0x3E and
-  0x40 may say 0.0.0.0 (`observed_pair`): it used that address as "what the server
-  observed" when checking the game list and 0x65.
-- In four of the runs above (three of three players, one of four) the joiners got their
-  player numbers in the order they joined, not the order the test started them, and the
-  test's hash column then read another player's ring on those copies. In those runs that
-  one column differs and every other column is equal on every tick. The column was
-  corrected at 16:12 (it now follows the byte at 0x402a39); runs after that with the
-  numbers out of order compare clean.
-- Not counted: runs in which a lobby server did not answer a copy for 20 s, so that
-  nobody came into a room (one of the no-fix series, two of the zeroed series, one
-  attempt each of the application series). Both server instances stood still at the same
-  moments (16:04 and 16:17), so it was the Mac, not either server.
-
-### The emulator application (added 20:15)
-
-The released stable build as it is (`local/play-stable-build`), every copy with
-`--rta-test`, a data directory of its own and `--rta-server 192.168.1.123`; "in step" is
-read as in [browser-build.md](browser-build.md): every copy's ring of its own per-frame
-sync hashes compared by frame, and the rings of the others' hashes each copy received.
-Load 53 - 344 (seven application copies at once for most of it).
-
-| What | Launches tried | All in the level | Notes |
-|---|---|---|---|
-| 3 copies, no fix, local lobby | 5 | **5** | never stale: in the application the joiners took START close enough together every time; 1,120 - 2,185 frames each, in step |
-| 3 copies, no fix, local lobby, **the last joiner's machine held still for 2 s from just before Start Game** (`--hitch 2`) | 2 | **0** | both stale; the held copy's launch record for the other joiner is `00000000:4000`, state 2 - cause 2, in the application; nobody in the level after 150 s |
-| 3 copies, fixed server | 2 | **2** | not stale; 2,103 and 2,279 frames, in step |
-| 4 copies, fixed server | 3 | **2** | see below; 1,621 and 3,117 frames, in step, on all four |
-
-In two of the three launches of four the fourth copy had players 1 and 2 **swapped** in
-its tables (the accept rule: ports 53610/4000 and 56937/4004 the wrong way round). One
-of those launched and stayed in step for 3,117 frames - the handshake repaired the swap
-as predicted. Not counted: one attempt in which the fourth copy's one-step driver
-stopped at the game list and never joined.
-
-### The second cause, and the one the earlier report saw: the emulated Ethernet adaptor loses the second of two datagrams (found 20:35; fix not yet built)
-
-**Seen:** on the fixed server, with the last joiner held 2 s at Start Game, the
-application copies still failed 3 of 3 launches - but differently: two copies in the
-level counting three players, one left behind with the launch error ("two in, one out",
-which is what the earlier report describes; causes 1 and 2 leave nobody in the level).
-The same happened once without any hold in a launch of four. The copy left behind had
-right addresses and had been done with everybody (state 8); what it lacked was the other
-joiner's word that it "sees everybody ready" (flag bit 8 at record+0x5d).
-
-**Read from packet captures of all three copies** (`--rta-pcap`, kept in
-`local/three-players/app3s/app<k>.pcap`; `launchcap.py` lists the launch datagrams):
+**Read from packet captures of the copies** (`--rta-pcap`; the two joiners' captures are
+kept in `local/three-players/captures-stable/`; `launchcap.py` lists the launch
+datagrams with time, player number, type and argument):
 - A copy that has two players in state 8 sends two keep-alives in one frame, one to
-  each. In the captures of the two joiners the first of the two leaves the machine
-  **twice, with the same IP identification, and the second never leaves**: the next
-  datagram has the identification after the missing one. The left-behind copy sent 58
-  such pairs in that run and lost 58 datagrams; its keep-alive to the other joiner never
-  went out once, so it never got that joiner's answer, while its answers to the others'
-  keep-alives (single datagrams) did go out - they counted down and left.
-- It is the same for any two datagrams sent back to back (SHAKE to two players, an
-  answer and a keep-alive in one frame); the launch survives those by its retries, and
-  which datagram of a group is lost shifts when an answer is sent in the same frame -
-  which is why most launches of three got through and why it looked like load.
-- A game of two never sends two datagrams back to back in the launch: this is why two
-  players always worked. The native build has no emulated adaptor: this is why three
-  and four native copies need only the server fix.
+  each. In the joiners' captures the first of the two leaves the machine **twice, with
+  the same IP identification, and the second never leaves**: the next datagram carries
+  the identification after the missing one. The left-behind copy sent 58 such pairs in
+  that run and lost 58 datagrams; its keep-alive to the other joiner never went out
+  once. Its answers to the others' keep-alives (single datagrams) did go out - so they
+  counted down and left.
+- It is the same for any two datagrams written back to back; the launch survives the
+  others by its retries, and which datagram of a group is lost shifts when an answer is
+  sent in the same frame. That is why most launches of three got through and why it
+  looked like load.
+- A game of two never sends two datagrams back to back in the launch: two players
+  always worked. The native build has no emulated adaptor: three and four native copies
+  need only fix 1.
 
-**Where:** `Source/iop/Iop_Speed.cpp` of Play!, `CSpeed::HandleTx` (the emulated SMAP
-chip; the file is part of `tools/play-net/play-net.patch`, and the browser build
+**Where:** `CSpeed::HandleTx` in `Source/iop/Iop_Speed.cpp` of Play! (the emulated SMAP
+chip; the file is patched by `tools/play-net/play-net.patch` and the browser build
 compiles the same file). It sent each ready descriptor's frame from
 `m_txBuffer.data() + descriptor.pointer - 0x1000` and then emptied the buffer. Seen with
 a log line in a test build: the game's driver **reads the chip's transmit write pointer
@@ -271,97 +170,180 @@ a log line in a test build: the game's driver **reads the chip's transmit write 
 emulated chip had no such register (it read 0), so every descriptor said 0x1000 - right
 for one frame at a time; of two frames written before the first "send", the first went
 out twice and the second never. (For the same reason the first frame after the driver
-starts went out as the driver's own 1516-byte test pattern, which it writes at start
-and never sends.) That is candidate **(d)**, in the emulator's adaptor, below our own
-`RtaNet.cpp`. It is not a fault of the game.
+starts went out as the driver's own 1516-byte test pattern.) Not a fault of the game.
 
 **Fix:** the transmit buffer is the chip's ring of 4096 bytes with its write pointer;
-the register reads that pointer (and can be written; bit 0 of the control register
-0x10001000 empties the ring); `HandleTx` takes each ready descriptor's frame from where
-its descriptor says, oldest descriptor first, and nothing is emptied. The two files as
-changed are `local/three-players/Iop_Speed.final.cpp` and `.final.h` (from the released
-source in `local/play-stable-src`). No change to the game, to the patch set or to the
-server; it needs a new application build and a new page build.
+register 0x10001004 reads (and sets) that pointer, bit 0 of the control register
+0x10001000 empties the ring; `HandleTx` takes each ready descriptor's frame from where
+the descriptor says, oldest descriptor first, and nothing is emptied.
 
-Built: the application from a copy of the released source (`local/three-players/
-play-src`, build `play-build`), the page from a copy of `local/play-web-src`
-(`web-src`, `web-build`, test site `site`).
+- `tools/play-net/play-net.patch`: **only its two sections for `Source/iop/Iop_Speed.cpp`
+  and `Iop_Speed.h` were replaced** (the patch as it was:
+  `local/three-players/play-net.patch.before`; before replacing, the old sections were
+  checked to be byte for byte what the released source has). In those sections the new
+  parts are: `HandleTx` rewritten, a new `TxFifoWrite`, `REG_SMAP_TXFIFO_CTRL` and
+  `REG_SMAP_TXFIFO_WR_PTR` in the register enum and in `ReadRegister` / `WriteRegister`,
+  the two data paths (register and DMA) writing through `TxFifoWrite`, `Reset`, and the
+  members `TX_FIFO_SIZE`, `m_txFifoWr`. Everything the patch did to these files before
+  is still in them.
+- The two files as changed: `local/three-players/Iop_Speed.final.cpp`, `.final.h`.
+- A tree that has the old patch applied needs `tools/play-net/build.sh --reset`; the
+  page's tree has to be made anew (`tools/play-web/build.sh` says so itself).
 
-| Application copies, fixed server, last joiner held 2 s at Start Game | Launches | All in the level | Notes |
-|---|---|---|---|
-| released stable build (no adaptor fix) | 4 | **0** | each time two in the level counting three, one left behind |
-| build with the adaptor fix | 2 so far | **2** | both stale (the hold), 1,741 and 1,686 frames, in step |
+With that build: in the captures of one launch of three, 0 frames sent twice and 0
+datagrams missing among 2,255.
+
+## The candidates, answered
+
+- (a) matching by address without the port: **yes, but in another place than suspected**
+  - the launch handshake's test against this machine's own address (cause 1); the accept
+  rule's address-only match exists too and is repaired by the same handshake.
+- (b) one of the 26 sections: **no.** Neither cause involves a section; failures and
+  successes came with the same 26 sections. No bisection was run.
+- (c) a time-out a loaded machine misses: **no time-out, but timing decides** - which
+  joiner reads its socket first (cause 1), and whether an answer happens to be sent in
+  the frame of the keep-alives (cause 2). Load changes the odds, not the mechanisms.
+- (d) our own network layer or the lobby server: **cause 2 is in the emulator's adaptor
+  under our layer; `RtaNet.cpp`, `RtaOnline.cpp` and the relay carry what they are
+  given.** The server did what the original must have done; changing what it tells a
+  console about itself is the cure for cause 1, not its origin.
+
+A control from the soak work (its runs, not repeated here): with the developer LAN
+start three and four native machines launch and stay in step for 30,000 to 60,000
+frames. That fits: the LAN start writes every player's address into both tables from
+the developer's list and needs no live connection, and native copies have no adaptor.
+
+## Proof
+
+All on one Mac, every copy at 192.168.1.123, the 26 suggested sections (set 3f5b1e14),
+throw-away accounts on lobby servers on this Mac only. Load average 35 to 340 from other
+jobs throughout (what the load decides is said above). "Fixed server" is the second
+instance; on it client+0xd10 read 00000000 on every copy. "Stale" = a joiner's port
+table 0x402b5c had another player's entry wrong when the launch began (cause 1's race
+went the bad way). "Held" = the last joiner's machine stands still for 2 s from just
+before Start Game (the application's `hang` test command), which makes it stale every
+time. In step: for native copies `tools/rig/compare.py ticks` over every pair of tick
+logs (seed, level, player count, button maps, every player's position, state, hit
+points, gold, experience, out-of-sync flags, own sync hash of the previous tick), drawn
+input on every copy; for application copies and pages every machine's ring of its own
+per-frame sync hashes compared by frame, and the rings of hashes received from the
+others, players walking and swinging.
+
+| Players and copies | Server | Launches | All in the level | Lockstep frames in step, each launch | Notes |
+|---|---|---|---|---|---|
+| 3 native | no fix | 7 | **3** | 2,617 - 2,719 | the 4 failures are exactly the 4 stale ones, each with an answer to 0.0.0.0:4000 |
+| 3 native | fixed | 6 in a row | **6** | 2,529 - 2,719 | all 6 stale |
+| 4 native | fixed | 4 in a row | **4** | 2,537 - 2,719, all 6 pairs | all 4 stale, two or three wrong entries each |
+| 3 native, client+0xd10 set to 0 by the test script | no fix | 3 | **3** | 2,715 - 2,719 | all 3 stale; shows it is that one value |
+| 3 application, released build | no fix | 5 | **5** | 1,120 - 2,185 | never stale by itself |
+| 3 application, released build, held | no fix | 2 | **0** | - | nobody in the level; record `00000000:4000` |
+| 3 application, released build | fixed | 2 | **2** | 2,103 and 2,279 | not stale |
+| 3 application, released build, held | fixed | 3 | **0** | - | cause 2: two in, one left behind (twice); once the host alone |
+| 4 application, released build | fixed | 3 | **2** | 1,621 and 3,117 | the failure: three in, one left behind |
+| 3 application, **build with the adaptor fix**, held | no fix | 2 | **0** | - | nobody in the level: fix 2 alone is not enough |
+| 3 application, **build with the adaptor fix**, held | fixed | 3 in a row | **3** | 1,741, 1,686, 1,529 | all 3 stale |
+| 4 application, **build with the adaptor fix** | fixed | 4 in a row | **4** | 1,479, 2,298, 1,444, 2,918 | players 1 and 2 swapped in the fourth copy's tables in two of them |
+| 2 application + 1 page, **both with the adaptor fix**, through the relay | fixed | 3 | **3** | 2,089, 2,755, 2,074 | one stale; the application hosts; "Everyone computes the same way: 2 other players heard ... browser arithmetic" |
+| 1 application + 2 pages, **both with the adaptor fix**, through the relay | fixed | PG12-LAUNCHES | **PG12-OK** | PG12-FRAMES | PG12-NOTES |
+
+Not counted as launches (nobody was in a room): runs in which a lobby server did not
+answer a copy within 20 s (five native runs and two application runs, at moments when
+several copies logged in at once on the loaded Mac - both server instances at the same
+moments; not looked into further), two in which a copy's one-step driver stopped on a
+screen before the room, and one in which a new character's made-up name was taken.
+
+Also run: `tools/lobby_e2e_test.py 192.168.1.123 --gateway-port 41810 --extended`
+against the fixed instance, 40 of 40.
+
+In four native runs made before 16:12 the joiners had their player numbers in the order
+they joined, not the order the test started them, and the test's hash column read
+another player's ring on those copies; in those runs that one column differs and every
+other column is equal on every tick. The column was corrected (it follows the byte at
+0x402a39); later runs with the numbers out of order compare clean.
+
+## What it covers, and what it does not
+
+- **Players who share an address behind one router:** fix 1 removes the game's test that
+  broke them, for every copy (application, page, native, a console), whenever the two
+  reach each other at the router's outside address - the same path as on one computer,
+  which is what was run. Not run with a real router. A router that does not loop
+  traffic back keeps two of its players from connecting in the room at all
+  (`docs/lobby-protocol.md` 9.3); that is as it was and is not touched.
+- **Browser players behind the relay:** they all have the relay's address, so fix 1 is
+  what lets two of them (or one and a player on the relay's computer) be in a game of
+  three; run with one page (three launches) and with two pages (the last row above).
+  The server's discovery check (the datagram's source address must be the address of
+  the session's connection) is not changed and is not in the way: a page's connection
+  and its datagram both come from the relay.
+- **A copy without the adaptor fix** in a game of three or four can still be left
+  behind, and it is that copy which is at risk: every player needs the new application
+  or page. Native copies need nothing new.
+- Fix 1 does not close the hole it works around: a START that is lost and sent again,
+  so that another joiner's disconnect arrives *before* it, makes the game renumber its
+  players (0x32d098). Not seen here (nothing is lost on one computer).
+
+## To release (the owner's steps)
+
+1. **Lobby server:** `sh build.sh` in `server/upstream`, restart the local lobby,
+   redeploy the public one. Covers every copy players already have for cause 1.
+2. **Application:** a new build from `tools/play-net/play-net.patch` as it is now
+   (`build.sh --reset` on a tree that has the old patch).
+3. **Page:** a new build with the same patch (a fresh `local/play-web-src`), and the
+   page redeployed. The relay needs nothing from this work.
+4. Nothing changes in `patches/SLUS-20973_4028A55F.pnach` or `sections-suggested.txt`;
+   the set stays 3f5b1e14. `tools/play-net/proposed-three-players.pnach` was not needed
+   and does not exist.
 
 ## Where things are
 
-- scratch files of this work: `local/three-players/` (not in the repository)
-  - `nplay.py OUT --players N [--log-all] [--own-zero] [--second-server]`: N headless
-    native copies (`local/recomp-out/bin/rta_native_online`) through a lobby on this Mac
-    into one game; the host presses Start when every joiner has a character; drawn input
-    for `--play` frames; pairwise tick comparison at the end. Every copy gets
-    `net-server=<this Mac's address>` and `net-local-only=1`, and the script stops unless
-    the copy's own first line says so. Per copy: `OUT/<role>.out` (the game's own debug
-    lines appear there as `[game] ...`; the launch tables are printed at lobby state 12),
-    `OUT/<role>/net.log` (with `--log-all` every library call), `OUT/<role>.tick.tsv`.
-  - `series.sh NAME COUNT nplay-options...`: COUNT runs, one line each in
-    `NAME.results`, each run's logs kept in `NAME/run<k>/`.
-  - `analyze.py OUT`: the result line (who launched, stale tables, datagrams to
-    0.0.0.0:4000, ticks compared).
-  - `server/`: the copy of the server source with the fix, built (`sh build.sh`);
-    `server/bin/config.ini`: bound to 192.168.1.123 only, every port the usual one plus
-    1000 (gateway 41800-41817, lobby 41900/41910, discovery UDP 11101), own database.
-  - `redirect.c`, `redirect.dylib`: loaded into a TEST copy with `DYLD_INSERT_LIBRARIES`
-    (`RTA3P_ADDR=192.168.1.123 RTA3P_DISCOVERY=11101`), it turns the game's built-in
-    gateway port 4081x into 4181x and sends the discovery datagram to the second
-    instance. `nplay.py --second-server` sets it. (It must be set on the copy itself: a
-    system program such as `nice` or `sh` in between drops `DYLD_` variables.)
-  - `elfstr.py ADDR...`: the text at an address of the game's executable
-- the earlier test scripts and logs: `local/mixed-online/`
+Scratch files of this work, `local/three-players/` (not in the repository):
+
+- `nplay.py OUT --players N [--second-server] [--log-all] [--own-zero]`, `series.sh`,
+  `analyze.py`: N headless native copies through a lobby on this Mac into one game, the
+  pairwise tick comparison, one result line per run (`*.results`, logs in
+  `<series>/run<k>/`).
+- `aplay.py NAME --players N [--second-server] [--launches K] [--hitch S] [--pcap]
+  [--app BINARY]`: copies of the emulator application, each with `--rta-test`, a data
+  directory of its own and `--rta-server <this Mac>`; reads each copy's log for its
+  server line first; tables at the start of the launch; sync hashes.
+- `apppage.py up | run NAME apps=A pages=P [launches=K] [app=BINARY] | down`: the same
+  with pages in Chrome windows of the test's own, a relay on 127.0.0.1:8991 pointed at
+  the second instance and a page server on 127.0.0.1:8990 serving `site/`.
+- `launchcap.py FILE.pcap`: the launch datagrams in a copy's capture (numbers only).
+- `server/`: the copy of the server source the second instance was built from (equal to
+  `server/upstream` now), `server/bin/config.ini`: bound to 192.168.1.123, every port
+  the usual one plus 1000, own database.
+- `redirect.c`, `redirect.dylib`: loaded into a TEST copy with `DYLD_INSERT_LIBRARIES`
+  it turns the game's built-in gateway port 4081x into 4181x and sends the discovery
+  datagram to the second instance; it refuses any address but this Mac's.
+- `play-src`, `play-build`: the released application's source with the adaptor change,
+  and its build. `web-src`, `web-build`, `site`: the same for the page.
+- `captures-stable/`: the two joiners' captures from a failing launch of the released
+  build. `down.sh all`: ends everything this work started, by pid.
 
 ## How to reproduce
 
 ```
-# the failure (about one run in two or three):
+# cause 1, native copies on the unchanged local lobby (fails in about half the runs):
 python3 -B local/three-players/nplay.py local/three-players/n3a --players 3 --play 600 --limit 300 --log-all
-# a failing run ends "LAUNCHED: host=NO j1=NO j2=NO"; a joiner's net.log has "UDP to 0.0.0.0:4000 not carried"
+#   a failing run ends "LAUNCHED: host=NO j1=NO j2=NO"; a joiner's net.log has "UDP to 0.0.0.0:4000 not carried"
 
-# the second server instance (the fix), if it is not running:
-cd local/three-players/server/bin && (nohup ./champions-server > server.out 2>&1 & echo $! > server.pid)
-# its first answers came 80 s late on the loaded Mac (it accepted nothing until then); wait for that
+# cause 1 in the released application (fails every time): the unchanged local lobby, the last joiner held
+python3 -B local/three-players/aplay.py app3b --players 3 --hitch 2
 
-# a series against it:
-cd local/three-players && ./series.sh srv3 6 --players 3 --play 2400 --limit 420 --second-server --log-all
+# cause 2 in the released application (fails every time): a server with fix 1, the last joiner held, captures
+python3 -B local/three-players/aplay.py app3s --players 3 --second-server --hitch 2 --pcap
+python3 -B local/three-players/launchcap.py local/three-players/app3s/app2.pcap
 ```
-
-## Where the work stands (for whoever continues) - 20:00 CDT
-
-Done: the cause; the server change in the working tree of `server/upstream` with its
-FIXES.md entry and the adapted test client; native copies, three and four players.
-
-Running now, all started by this work (`local/three-players/down.sh all` ends every one
-of them by pid; `apppage.py down` ends the relay, the page server and the test browsers):
-- the second server instance (the fix): pid in `local/three-players/server/bin/server.pid`;
-- a relay of the test's own on 127.0.0.1:8991 pointed at that instance and a page server
-  on 127.0.0.1:8990 (`relay-fixed.pid`, `pageserver.pid`);
-- two series of emulator application copies (`aplay.py`): four copies against the fixed
-  instance (`app3s.pid`, log `app4s.log`, results `app3s.results`) and three copies on
-  the unchanged local lobby (`app3b.pid`, `app3b-2.log`, `app3b.results`).
-
-Helpers added since the list above: `aplay.py NAME --players N [--second-server]
-[--launches K] [--hitch S]` (application copies; `--hitch` holds the last joiner's
-machine still for S seconds from just before Start Game, which makes the race go the bad
-way), `apppage.py run NAME apps=A pages=P [launches=K] [fixed=0|1]` (application copies
-and pages in Chrome windows of the test's own, through the relay above).
-
-Next: (1) application copies with `--hitch 2`, with and without the fix - in the
-application the race went the good way in every launch so far, so the fix has not yet
-been exercised there; (2) two applications and a page, one application and two pages.
 
 ## Not tried
 
-Everything in the list above from 2 on; a failure rate from more than a handful of runs;
-two computers; a router; holding back the peer library's disconnect datagrams in our
-network layers as a second line of defence (it would also cover a START that is lost and
-sent again, where the disconnect arrives first and the game renumbers its players,
-0x32d098 - a hole of the original game on a lossy line, not seen here); Champions of
-Norrath clients (untouched by the change).
+Two computers; a real router; a relay on a public address; a person playing; Safari or
+Firefox; a page hosting a game of three; a level change or a long session in a game of
+three or four with the application or a page (the native runs and the earlier soak work
+cover the lockstep game itself); `lobby_fix_checks.py`, `lobby_fuzz.py` and the
+sanitizer build of the server with the change, and the setting at 1; the server change
+compiled on Linux (where the public server runs), with GCC or MSVC; Champions of Norrath
+clients (untouched by the change); holding back the peer library's disconnect datagrams
+in our network layers as a second line of defence against the race itself; why the lobby
+servers sometimes answer a log-in late on the loaded Mac.

@@ -1,5 +1,6 @@
 // vu1.cpp - see vu1.h.  Compile with -frounding-math -ffp-contract=off: the rounding mode
 // is changed while a program runs and a multiply-add must stay two rounded operations.
+#include "vu1_fast.h"
 #include "vu1_step.h"
 
 #include <cfenv>
@@ -19,8 +20,19 @@ Vu1::Vu1() {
     cyc = 16;                                           // so that "four cycles ago" never is before the start
 }
 
+void Vu1::micro_changed(uint32_t first, uint32_t count) {
+    uint32_t end = first + count > 2048 ? 2048 : first + count;
+    if (first >= end) return;
+    if (decoded_valid) { dirty_first = first; dirty_end = end; }
+    else { if (first < dirty_first) dirty_first = first; if (end > dirty_end) dirty_end = end; }
+    decoded_valid = false;
+    if (fast_checked) { fast_dirty_first = first; fast_dirty_end = end; }
+    else { if (first < fast_dirty_first) fast_dirty_first = first; if (end > fast_dirty_end) fast_dirty_end = end; }
+    fast_checked = false;
+}
+
 void Vu1::decode() {
-    for (unsigned n = 0; n < 2048; n++) {
+    for (unsigned n = dirty_first; n < dirty_end; n++) {
         uint32_t lo, up;
         memcpy(&lo, micro + n * 8, 4);
         memcpy(&up, micro + n * 8 + 4, 4);
@@ -123,6 +135,7 @@ void Vu1::decode() {
         decoded[n] = d;
     }
     decoded_valid = true;
+    dirty_first = 2048; dirty_end = 0;
 }
 
 uint32_t Vu1::mac_seen() const {
@@ -162,12 +175,63 @@ static uint64_t micro_hash(const uint8_t* micro, uint32_t pairs) {
     return h;
 }
 
-void Vu1::run(uint32_t start) {
-    if (!decoded_valid) {
-        decode();
-        translated = use_translation && vu1_translated_count && micro_hash(micro, vu1_translated_count) == vu1_translated_hash;
+// Which of the translated programs are in the microprogram memory now.  Only those the
+// change touched are looked at again: the game loads a small program behind the main one
+// every frame, and the main one is 15 KB to hash.
+void Vu1::fast_check() {
+    for (uint32_t k = 0; k < vu1_fast_program_count && k < 32; k++) {
+        const Vu1Program& p = vu1_fast_programs[k];
+        if (p.start + p.count > 2048 || p.start >= fast_dirty_end || p.start + p.count <= fast_dirty_first) continue;
+        if (micro_hash(micro + p.start * 8, p.count) == p.hash) fast_match |= 1u << k; else fast_match &= ~(1u << k);
     }
+    fast_checked = true;
+    fast_dirty_first = 2048; fast_dirty_end = 0;
+}
+
+void vu1_fast_kick(Vu1& v, uint32_t qword) {
+    if (!v.kick) return;
+    vu1_flush_off();
+    VU1_ROUND_RESTORE(v.round_before);
+    v.kick(v.user, qword);
+    VU1_ROUND_TOWARD_ZERO();
+    vu1_flush_on();
+}
+
+// Does the processor's flush-to-zero mode do what the translated programs leave to it
+// (vu1_simd.h)?  A few products and sums around the smallest normal number, by the
+// processor in that mode and by vu_in / vu_out, in the unit's rounding.
+static bool vu1_flush_works() {
+#if VU1_HARDWARE_FLUSH
+    static const uint32_t cases[][2] = {
+        {0x00800000u, 0x3F000000u}, {0x80800000u, 0x3F000000u}, {0x00C00000u, 0x80800000u}, {0x00000001u, 0x7F000000u}, {0x807FFFFFu, 0x40000000u},
+        {0x00800001u, 0x3F7FFFFFu}, {0x1E000000u, 0x1E000000u}, {0x00FFFFFFu, 0x80FFFFFEu}, {0x7F7FFFFFu, 0x00000001u}, {0x3F800000u, 0x3F800000u}};
+    bool good = true;
+    for (const auto& c : cases) {
+        volatile uint32_t a = c[0], b = c[1];           // not folded at compile time
+        V4 x = v4_splat(a), y = v4_splat(b);
+        uint32_t want[3] = {0, 0, 0}, got[3];
+        float fa = vu_in(a), fb = vu_in(b), r;
+        r = vu_out(vu_mul(fa, fb)); memcpy(&want[0], &r, 4);
+        r = vu_out(vu_add(fa, fb)); memcpy(&want[1], &r, 4);
+        r = vu_out(vu_sub(fa, fb)); memcpy(&want[2], &r, 4);
+        vu1_flush_on();
+        got[0] = v4_get(v4_out(v4_mul(v4_in(x), v4_in(y))), 0);
+        got[1] = v4_get(v4_out(v4_add(v4_in(x), v4_in(y))), 1);
+        got[2] = v4_get(v4_out(v4_sub(v4_in(x), v4_in(y))), 2);
+        vu1_flush_off();
+        if (memcmp(want, got, sizeof(want))) good = false;
+    }
+    return good;
+#else
+    return true;
+#endif
+}
+
+void Vu1::run(uint32_t start) {
+    bool micro_was_changed = !decoded_valid;
+    if (!fast_checked) fast_check();
     int old_round = fegetround();
+    round_before = old_round;
     VU1_ROUND_TOWARD_ZERO();
     runs++;
     uint32_t at = start & 2047;
@@ -175,6 +239,32 @@ void Vu1::run(uint32_t start) {
     int branch_in = -1;
     uint32_t branch_to = 0;
     const bool debugging = debug_left > 0 || debug_store > 0;
+    if (use_fast && fast_match && !debugging) {
+        static const bool flush_works = vu1_flush_works();      // (in the unit's rounding, as the programs run)
+        if (!flush_works) {
+            fprintf(stderr, "vu1: this processor's flush-to-zero mode is not what the translated programs count on - interpreting\n");
+            use_fast = false;
+        }
+        for (uint32_t k = 0; use_fast && k < vu1_fast_program_count && k < 32; k++) {
+            const Vu1Program& p = vu1_fast_programs[k];
+            if (!(fast_match & (1u << k)) || at < p.start || at >= p.start + p.count) continue;
+            vu1_flush_on();
+            int left = p.run(*this, at);
+            vu1_flush_off();
+            if (left < 0) {                             // ran to its end bit
+                fast_runs++;
+                if (q_busy) { q = q_next; q_busy = false; }
+                VU1_ROUND_RESTORE(old_round);
+                return;
+            }
+            if ((uint32_t)left != at) { fast_runs++; fast_left++; at = (uint32_t)left; break; }    // it ran some of it
+        }
+    }
+    if (!decoded_valid) {
+        decode();
+        micro_was_changed = true;
+    }
+    if (micro_was_changed) translated = use_translation && vu1_translated_count && micro_hash(micro, vu1_translated_count) == vu1_translated_hash;
     if (translated && !debugging && at < vu1_translated_count) {
         int left = vu1_translated_run(*this, at, old_round);
         if (left < 0) {                                 // ran to its end bit

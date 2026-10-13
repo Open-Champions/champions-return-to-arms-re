@@ -1,5 +1,6 @@
 // vif1.cpp - see vif1.h.
 #include "vif1.h"
+#include "prof.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -32,6 +33,13 @@ void Vif1::run_waiting() {
     if (!waiting) return;
     waiting = false;
     if (gs) gs->debug_entry = waiting_from_pc ? -1 : (int)waiting_at;
+#if RTA_PROF_ON
+    if (!waiting_from_pc) prof_entry = waiting_at;
+    prof::Scope prof_scope(prof::vu_part(prof_entry));
+    uint64_t prof_pairs = vu.instructions;
+    struct ProfCount { Vif1& v; uint64_t before; int slot; ~ProfCount() { if (!prof::state().on) return; prof::state().pairs[slot] += v.vu.instructions - before; prof::state().runs[slot]++; } }
+        prof_count{*this, prof_pairs, prof::vu_part(prof_entry) - prof::P_VU_FIRST};
+#endif
     if (run_programs && time_runs) {
         timespec a, b;
         clock_gettime(CLOCK_THREAD_CPUTIME_ID, &a);
@@ -66,6 +74,7 @@ void Vif1::start_program(uint32_t at, bool from_pc) {
 }
 
 size_t Vif1::process(const uint32_t* w, size_t n) {
+    RTA_PROF_SCOPE(prof::P_VIF);
     size_t i = 0;
     while (i < n) {
         uint32_t code = w[i];
@@ -108,7 +117,7 @@ size_t Vif1::process(const uint32_t* w, size_t n) {
         case 0x31: memcpy(col, data, 16); break;
         case 0x4A:
             memcpy(vu.micro + ((imm * 8) & 0x3FFF), data, std::min<size_t>(need * 4, 0x4000 - ((imm * 8) & 0x3FFF)));
-            vu.micro_changed();
+            vu.micro_changed(imm & 0x7FF, (uint32_t)(need / 2));
             stats.mpg++;
             break;
         case 0x50: case 0x51:
@@ -126,9 +135,79 @@ size_t Vif1::process(const uint32_t* w, size_t n) {
     return i;
 }
 
+// UNPACK without a mask and with a write cycle that skips (WL <= CL; in this game every
+// one: S, V2, V3 and V4 of 8, 16 and 32 bits, with the offset and the difference mode):
+// one loop per format instead of one decision per field.  What it writes is what unpack()
+// below writes - that function is the description, and RTA_VIF_SLOW=1 uses it for all.
+namespace {
+#if defined(__GNUC__) || defined(__clang__)
+#define VIF_INLINE inline __attribute__((always_inline))
+#else
+#define VIF_INLINE inline
+#endif
+// FIELDS elements of SIZE bytes per vector; MODE 0 as it is, 1 with the row added, 2 added and kept
+template <unsigned FIELDS, unsigned SIZE, bool USN, unsigned MODE>
+VIF_INLINE void unpack_run(const uint8_t* src, uint8_t* memory, uint32_t address, uint32_t total, uint32_t wcl, uint32_t wwl, uint32_t* row) {
+    uint32_t r[4] = {row[0], row[1], row[2], row[3]};
+    uint32_t cycle = 0;
+    for (uint32_t written = 0; written < total; address++) {
+        if (cycle < wwl) {
+            uint32_t in[4] = {0, 0, 0, 0};
+            for (unsigned f = 0; f < FIELDS; f++) {
+                if (SIZE == 4) memcpy(&in[f], src + f * 4, 4);
+                else if (SIZE == 2) { uint16_t e; memcpy(&e, src + f * 2, 2); in[f] = USN ? (uint32_t)e : (uint32_t)(int32_t)(int16_t)e; }
+                else in[f] = USN ? (uint32_t)src[f] : (uint32_t)(int32_t)(int8_t)src[f];
+            }
+            if (FIELDS == 1) in[1] = in[2] = in[3] = in[0];
+            src += FIELDS * SIZE;
+            if (MODE == 1) for (int f = 0; f < 4; f++) in[f] += r[f];
+            else if (MODE == 2) for (int f = 0; f < 4; f++) { in[f] += r[f]; r[f] = in[f]; }
+            memcpy(memory + (address & 0x3FF) * 16, in, 16);
+            written++;
+        }
+        if (++cycle >= wcl) cycle = 0;
+    }
+    if (MODE == 2) memcpy(row, r, 16);
+}
+template <unsigned FIELDS, unsigned SIZE>
+VIF_INLINE void unpack_format(bool usn, uint32_t mode, const uint8_t* src, uint8_t* memory, uint32_t address, uint32_t total, uint32_t wcl, uint32_t wwl, uint32_t* row) {
+    if (mode == 1) { if (usn) unpack_run<FIELDS, SIZE, true, 1>(src, memory, address, total, wcl, wwl, row); else unpack_run<FIELDS, SIZE, false, 1>(src, memory, address, total, wcl, wwl, row); }
+    else if (mode == 2) { if (usn) unpack_run<FIELDS, SIZE, true, 2>(src, memory, address, total, wcl, wwl, row); else unpack_run<FIELDS, SIZE, false, 2>(src, memory, address, total, wcl, wwl, row); }
+    else { if (usn) unpack_run<FIELDS, SIZE, true, 0>(src, memory, address, total, wcl, wwl, row); else unpack_run<FIELDS, SIZE, false, 0>(src, memory, address, total, wcl, wwl, row); }
+}
+}  // namespace
+
+bool Vif1::unpack_fast(uint32_t code, const uint32_t* data) {
+    uint32_t cmd = (code >> 24) & 0x7F, num = (code >> 16) & 0xFF, imm = code & 0xFFFF;
+    uint32_t vn = (cmd >> 2) & 3, vl = cmd & 3;
+    if ((cmd & 0x10) || vl == 3 || debug_unpack > 0) return false;
+    uint32_t wcl = cl ? cl : 1, wwl = wl ? wl : 1;
+    if (wwl > wcl) return false;
+    const bool usn = imm & 0x4000, flg = imm & 0x8000;
+    const uint32_t address = (imm & 0x3FF) + (flg ? tops : 0), total = num ? num : 256;
+    const uint8_t* src = (const uint8_t*)data;
+    switch (vn * 4 + vl) {
+    case 0: unpack_format<1, 4>(usn, mode, src, vu.data, address, total, wcl, wwl, row); break;
+    case 1: unpack_format<1, 2>(usn, mode, src, vu.data, address, total, wcl, wwl, row); break;
+    case 2: unpack_format<1, 1>(usn, mode, src, vu.data, address, total, wcl, wwl, row); break;
+    case 4: unpack_format<2, 4>(usn, mode, src, vu.data, address, total, wcl, wwl, row); break;
+    case 5: unpack_format<2, 2>(usn, mode, src, vu.data, address, total, wcl, wwl, row); break;
+    case 6: unpack_format<2, 1>(usn, mode, src, vu.data, address, total, wcl, wwl, row); break;
+    case 8: unpack_format<3, 4>(usn, mode, src, vu.data, address, total, wcl, wwl, row); break;
+    case 9: unpack_format<3, 2>(usn, mode, src, vu.data, address, total, wcl, wwl, row); break;
+    case 10: unpack_format<3, 1>(usn, mode, src, vu.data, address, total, wcl, wwl, row); break;
+    case 12: unpack_format<4, 4>(usn, mode, src, vu.data, address, total, wcl, wwl, row); break;
+    case 13: unpack_format<4, 2>(usn, mode, src, vu.data, address, total, wcl, wwl, row); break;
+    default: unpack_format<4, 1>(usn, mode, src, vu.data, address, total, wcl, wwl, row); break;
+    }
+    return true;
+}
+
 void Vif1::unpack(uint32_t code, const uint32_t* data) {
     uint32_t cmd = (code >> 24) & 0x7F, num = (code >> 16) & 0xFF, imm = code & 0xFFFF;
     uint32_t vn = (cmd >> 2) & 3, vl = cmd & 3;
+    RTA_PROF_SCOPE(prof::P_UNPACK);
+    if (fast_unpack && unpack_fast(code, data)) return;
     bool masked = cmd & 0x10, usn = imm & 0x4000, flg = imm & 0x8000;
     uint32_t address = (imm & 0x3FF) + (flg ? tops : 0);
     uint32_t total = num ? num : 256;

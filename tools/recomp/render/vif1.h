@@ -34,6 +34,10 @@ class Vif1 {
     std::vector<uint32_t> pending;
     size_t process(const uint32_t* w, size_t n);       // returns words consumed
     void unpack(uint32_t code, const uint32_t* data);
+    bool unpack_fast(uint32_t code, const uint32_t* data);
+  public:
+    bool fast_unpack = true;            // false: every UNPACK field by field (the reference; RTA_VIF_SLOW)
+  private:
     void start_program(uint32_t at, bool from_pc);
     // A started program runs when the VIF comes to a code that would wait for VU1 or that
     // writes where the program may read, not at its MSCAL.  On the machine the VIF goes on
@@ -44,6 +48,9 @@ class Vif1 {
     // (+0x80 and up) are carried out first; any other code runs the program before it.
     bool waiting = false, waiting_from_pc = false;
     uint32_t waiting_at = 0;
+#ifdef RTA_PROF
+    uint32_t prof_entry = 0;            // the entry of the last MSCAL (prof.h: a continued program counts for it)
+#endif
     void run_waiting();
 };
 

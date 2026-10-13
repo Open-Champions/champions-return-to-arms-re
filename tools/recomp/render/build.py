@@ -6,9 +6,12 @@
   options: --opt -O1|-O2   --qt DIR (default /opt/homebrew/opt/qtbase)   --gen DIR   --rt DIR
            --no-translation
 
-The VU1 main program runs translated when local/recomp-out/gen-vu/vu1_translated.cpp exists:
+The VU1 microprograms run translated ahead of time when local/recomp-out/gen-vu/vu1_fast.cpp
+exists (docs/issues/native-render-speed.md):
+  python3 tools/recomp/render/vu1_translate.py --stream <stream> [--stream ...] --out local/recomp-out/gen-vu/vu1_fast.cpp
+then build again.  Behind it, the older translation of the main program is used when
+local/recomp-out/gen-vu/vu1_translated.cpp exists:
   local/recomp-out/bin/rta_replay <stream> --translate-vu local/recomp-out/gen-vu/vu1_translated.cpp
-then build again.
 
 Objects go to local/recomp-out/obj-render/, programs to local/recomp-out/bin/.  Uses the
 compiler and the Qt 6 already on the machine; nothing is downloaded.  `app` links the
@@ -80,6 +83,10 @@ def main():
         jobs.append((translation, base, 'r_'))
     else:
         jobs.append((os.path.join(HERE, 'vu1_none.cpp'), base, 'r_'))
+    # the microprograms translated ahead of time (vu1_translate.py writes the file; derived
+    # from the game too)
+    fast = os.path.join(OUT, 'gen-vu', 'vu1_fast.cpp')
+    jobs.append((fast if os.path.exists(fast) and not args.no_translation else os.path.join(HERE, 'vu1_fast_none.cpp'), base, 'r_'))
     jobs += [(os.path.join(HERE, n), base + qt_flags, 'r_') for n in GL]
     link = []
     if args.what == 'replay':
