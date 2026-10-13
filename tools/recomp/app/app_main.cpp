@@ -1394,6 +1394,21 @@ static void app_command(const std::string& text, uint64_t frame) {
             image.convertToFormat(QImage::Format_RGB888).save(QString::fromStdString(path));
             log_line("wrote " + path + " (" + std::to_string(pw) + " x " + std::to_string(ph) + "), the window's picture as the Metal layer was handed it");
         });
+    } else if (w[0] == "pointer") {
+        // app pointer: is the pointer held as the look (look_host.h)?  app pointer click: a click of the left button in the window
+        bool click = w.size() >= 2 && w[1] == "click";
+        QCoreApplication::postEvent(g_screen, new CallQEvent([click] {
+            GameWindow* win = g_screen->window;
+            if (click && win) {
+                QPointF at(win->width() / 2.0, win->height() / 2.0);
+                QMouseEvent down(QEvent::MouseButtonPress, at, win->mapToGlobal(at), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                QMouseEvent up(QEvent::MouseButtonRelease, at, win->mapToGlobal(at), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+                QCoreApplication::sendEvent(win, &down);
+                QCoreApplication::sendEvent(win, &up);
+            }
+            log_line(hostlook::state() + "; the view wants it=" + (fpcontrols::wants_pointer() ? "1" : "0") + ", given back by Escape=" +
+                     (win && win->pointer_let_go ? "1" : "0") + ", view " + fpview::mode_name(fpview::mode()));
+        }));
     } else if (w[0] == "close") {
         // app close: what a click on the window's close button does (and Command-Q: the application asks its window to close)
         if (g_screen->window) QCoreApplication::postEvent(g_screen->window, new QEvent(QEvent::Close));

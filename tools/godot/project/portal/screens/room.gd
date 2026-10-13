@@ -15,6 +15,7 @@ var chat_typed := ""
 var played := false
 var room := {}
 var leaving := false
+var auto_key := ""
 
 
 func hints() -> Array:
@@ -194,9 +195,10 @@ func build() -> void:
 			"done": func(t: String) -> void:
 				chat_typed = t
 				_say()}))
-	if want_focus in ["", "main", "invite", "leave"] or want_focus.begins_with("seat"):
-		if want_focus == "" or find_key(self, want_focus) == null:
-			want_focus = "main" if not main.disabled else ("invite" if not invite.disabled else "leave")
+	# the focus rests on the one thing to press for as long as the player has not moved it elsewhere
+	if want_focus == "" or want_focus == auto_key or find_key(self, want_focus) == null:
+		auto_key = "main" if not main.disabled else ("invite" if not invite.disabled else "leave")
+		want_focus = auto_key
 
 
 func _slot_taken(members: Array, k: int) -> bool:

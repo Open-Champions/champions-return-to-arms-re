@@ -1,14 +1,15 @@
 gametitle=Champions: Return to Arms (SLUS-20973) v2.00
 
-// fp-proposed.pnach - a PROPOSAL, not part of the fix set (patches/SLUS-20973_4028A55F.pnach) and not in
-// tools/play-net/sections-suggested.txt.  docs/issues/native-first-person-controls.md 2.6 says what it is for,
-// what was run with it and what it would mean to adopt it: every player of a game needs the same set of
-// sections, so this becomes real only as a section of the fix set that everybody has.
-// Written by local/recomp-fp-controls/work/fpasm.py (kept beside the tests; the words below are its output).
+// fp-proposed.pnach - one section proposed for the fix set (patches/SLUS-20973_4028A55F.pnach), in its final form.
+// It is NOT in that file and not in tools/play-net/sections-suggested.txt until it is adopted at a release;
+// docs/issues/native-first-person-controls.md part 3 has the proof.  Every player of a game needs the same set of
+// sections.  Written by local/recomp-fp-controls/work/fpasm.py (the words below are its output; each of its
+// encoders is checked against a word of the game); tools/recomp/app/fp_section_test.py runs the section in the
+// function-level interpreter.
 
-[Proposed: strafe mode - a player can run one way and face another]
-author=first-person controls work, 2026-10-13; run on the native build only (one copy, and two copies in one lockstep game); untested on the emulator build, PCSX2 or a console
-description=The game runs a character along its facing and turns the facing to the stick: there is no way to run sideways or backwards while facing ahead, which a view from the character's eyes wants. With this section each player has a mode byte (player object +0x47E, a byte that only the unreachable jump state used). While it is 0 the game is exactly as it was. While it is not 0, in the ordinary moving state the character turns (40 % of the angle a tick, the game's own rate) to where the camera of its player looks - the heading a pushed-up stick asks for, 0x3E3D minus the yaw word that already travels with every controller row - and runs along the stick's own direction instead of along its facing, at the same speed. The mode is set by game message 4, sub-type 2 {2, slot, mode}: message 4 already exists, travels in lockstep and has an empty handler; every machine sets the byte in the same tick. Player_ctor now clears the byte, so every new character (level start, respawn) starts with the mode off on every machine. Parts: the hook in Player_move (0x1B4210); its code in the unreferenced function 0x2128C8; a sender in the unreferenced function 0x215C98 (called with the mode in a0); the handler in the unreferenced function 0x215D28, reached by a jump from the empty handler 0x1E01B0; and the two byte stores of the constructor. Every player must have this section or none.
+[Net test: strafe mode - a player can run one way and face another]
+author=first-person controls work, 2026-10-13; executed in the function-level interpreter (tools/recomp/app/fp_section_test.py); confirmed on two, three and four native copies in one lockstep game and on a native copy with an emulator-based copy (docs/issues/native-first-person-controls.md part 3); untested on PCSX2 or a console
+description=The game runs a character along its facing and turns the facing to the stick: nobody can run sideways or backwards while facing ahead, which a view from the character's eyes needs. This gives each player a mode byte (player object +0x47E, a byte only the unreachable jump state used). While the byte is 0 - for everyone who never asks for the mode - every tick is exactly as without this section. While it is not 0, in the ordinary moving state the character turns (40 % of the angle a tick, the game's own rate) to where its player's camera looks - the heading a pushed-up stick asks for, 0x3E3D minus the yaw word that already travels with every controller row - and runs along the stick's own direction instead of along its facing, at the same speed. The mode is set by game message 4, sub-type 2 {2, slot, mode}; message 4 is the game's own "null" channel, carried and executed in lockstep with an empty handler (its one sender in the game, sub-type 1 when a shop closes, is still ignored). Every machine sets the byte in the same tick. Player_ctor now clears the byte, so every new character (level start, respawn) starts with the mode off on every machine. Parts: the hook in Player_move (0x1B4210); its code in the unreferenced function 0x2128C8; a sender in the unreferenced function 0x215C98 (called with the mode in a0; only a build that offers the mode calls it); the handler in the unreferenced function 0x215D28, reached by a jump from the empty handler 0x1E01B0; and the two byte stores of the constructor. Every player must have this section or none.
 // Player_move 0x1b4210; was: 24020005 12A2007C
 // j 0x2128c8
 patch=1,EE,001B4210,word,08084A32
@@ -71,26 +72,24 @@ patch=1,EE,0021296C,word,0806D101
 patch=1,EE,00212970,word,00000000
 patch=1,EE,00212974,word,0806D087
 patch=1,EE,00212978,word,00000000
-// the sender, the unreferenced function 0x215c98 (18 words of its 36; its last word holds the three bytes sent)
-// was: 27BDFFF0 FFB00000 FFBF0008 0C085A18 0080802D 0040282D 14A00005 00000000 10000018 DFB00000 10000015 0000102D 0600000F 0000202D 00A0182D 80620000 00000000 00000000
+// the sender, the unreferenced function 0x215c98 (16 words of its 36)
+// was: 27BDFFF0 FFB00000 FFBF0008 0C085A18 0080802D 0040282D 14A00005 00000000 10000018 DFB00000 10000015 0000102D 0600000F 0000202D 00A0182D 80620000
 patch=1,EE,00215C98,word,27BDFFE0
 patch=1,EE,00215C9C,word,FFBF0010
-patch=1,EE,00215CA0,word,3C080021
-patch=1,EE,00215CA4,word,24090002
-patch=1,EE,00215CA8,word,A1095D24
-patch=1,EE,00215CAC,word,A1045D26
-patch=1,EE,00215CB0,word,0C04F87C
-patch=1,EE,00215CB4,word,00002021
-patch=1,EE,00215CB8,word,3C050021
-patch=1,EE,00215CBC,word,24A55D24
-patch=1,EE,00215CC0,word,A0A20001
-patch=1,EE,00215CC4,word,3C040087
-patch=1,EE,00215CC8,word,8C84AA60
-patch=1,EE,00215CCC,word,0C04F6CE
-patch=1,EE,00215CD0,word,24060003
-patch=1,EE,00215CD4,word,DFBF0010
-patch=1,EE,00215CD8,word,03E00008
-patch=1,EE,00215CDC,word,27BD0020
+patch=1,EE,00215CA0,word,24090002
+patch=1,EE,00215CA4,word,A3A90000
+patch=1,EE,00215CA8,word,A3A40002
+patch=1,EE,00215CAC,word,0C04F87C
+patch=1,EE,00215CB0,word,00002021
+patch=1,EE,00215CB4,word,A3A20001
+patch=1,EE,00215CB8,word,3C040087
+patch=1,EE,00215CBC,word,8C84AA60
+patch=1,EE,00215CC0,word,03A02821
+patch=1,EE,00215CC4,word,0C04F6CE
+patch=1,EE,00215CC8,word,24060003
+patch=1,EE,00215CCC,word,DFBF0010
+patch=1,EE,00215CD0,word,03E00008
+patch=1,EE,00215CD4,word,27BD0020
 // the handler, the unreferenced function 0x215d28 (17 words of its 31)
 // was: 27BDFFF0 3C020087 FFB00000 0080802D FFBF0008 0C05CDDF 244423E8 0040302D 50C00013 DFB00000 0600000C 0000282D 00C0202D 80830000 24840050 1060000B 0000102D
 patch=1,EE,00215D28,word,90880000
@@ -110,4 +109,3 @@ patch=1,EE,00215D5C,word,908A0002
 patch=1,EE,00215D60,word,A12A047E
 patch=1,EE,00215D64,word,03E00008
 patch=1,EE,00215D68,word,00000000
-patch=1,EE,00215D24,word,00000000
