@@ -116,7 +116,13 @@ size_t TexPack::waiting() const {
 
 void TexPack::work() {
 #ifdef __APPLE__
-    pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);        // reading never takes a core from the game
+    // Reading is the player's business too - a level stands in the game's own art until its
+    // pictures are in - but it never takes a core from the game: the class below the one the
+    // picture's threads ask for (user-interactive), above whatever else the computer is
+    // busy with.  (It was the utility class until 2026-10-13: on a busy computer a level's
+    // pictures then came in over seconds.  RTA_ART_QOS=utility gives that back, to compare.)
+    const char* how = getenv("RTA_ART_QOS");
+    pthread_set_qos_class_self_np(how && !strcmp(how, "utility") ? QOS_CLASS_UTILITY : QOS_CLASS_USER_INITIATED, 0);
 #elif defined(_WIN32)
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
 #endif

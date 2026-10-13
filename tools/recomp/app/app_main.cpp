@@ -1235,7 +1235,7 @@ static double memory_mb() { rusage u; getrusage(RUSAGE_SELF, &u); return (double
 static std::string info_line() {
     Screen& s = *g_screen;
     const render::GsStats& g = g_renderer->gs.stats;
-    char text[1024];
+    char text[1536];
     int n = snprintf(text, sizeof text, "ms=%.0f cpu_ms=%.0f pictures=%llu memory_mb=%.1f tex_made=%llu tex_held=%llu tex_freed=%llu tex_mb=%.1f tex_missing=%llu "
                      "copies=%llu copies_skipped=%llu vu_bad=%llu gs_unknown=%llu draws=%llu fields=%llu machine_s=%.3f",
                      now_ms() - s.start_ms, cpu_ms() - s.start_cpu, (unsigned long long)s.blanks, memory_mb(), (unsigned long long)g.textures_made,
@@ -1249,6 +1249,11 @@ static std::string info_line() {
     unsigned threads_now = 0, threads_made = 0, threads_ended = 0;
     apprt::thread_figures(threads_now, threads_made, threads_ended);
     n += snprintf(text + n, sizeof text - n, " game_threads=%u game_threads_made=%u game_threads_ended=%u", threads_now, threads_made, threads_ended);
+    {
+        PictureFigures fig = s.backend->figures();     // (counters of the drawing thread, read as they stand)
+        n += snprintf(text + n, sizeof text - n, " art_named=%llu art_found=%llu art_read=%llu art_held=%llu art_waiting=%llu", (unsigned long long)fig.named,
+                      (unsigned long long)fig.named_found, (unsigned long long)fig.replaced, (unsigned long long)fig.held, (unsigned long long)fig.pending);
+    }
     return std::string(text) + " " + apprt::sound_figures();
 }
 

@@ -39,6 +39,84 @@ game is in the repository):
 
 **Left** (in the order it would be wanted): section "Left" at the end.
 
+## SECOND ROUND (2026-10-13, from 09:30): Godot as the presentation layer
+
+The coordinator's brief after the spike: Godot becomes the presentation layer on the
+translated core. Tasks, in its order: (1) a real 3-D hand-over from the vertex programs'
+inputs, (2) scene mode everywhere, (3) 60 pictures a second with proper lighting, (4)
+cleaner models, (5) plug-in points for the camera, world and HUD agents, (6) exports.
+**Kept current here; newest state first.**
+
+### State
+
+- **(1) The tap at the vertex programs' inputs: done and verified (Ran).** Section
+  "The scene tap" below. The 16-bit-depth route of stage 4 is now only the fallback for
+  what the mesh programs do not draw.
+- Scene mode uses it: exact positions, the game's own normals (smooth, per pixel), one
+  shadow per character (the game's blob shadows are left out when Godot casts).
+  Pictures: `local/godot-spike/test/scene/scene/hub-2-shadow.png`,
+  `hub-3-shadow-light.png`, `hub-5-pulled-back.png`.
+- In work: the camera agent's views (`fpview`) through the library, the view of the
+  frame and the HUD switch for the HUD agent. Then (2), (3), (4).
+
+### The scene tap (Ran)
+
+New files, **proposed for `tools/recomp/render/`** and kept under
+`tools/godot/core/render/` until that directory's owner takes them (`build.py lib`
+copies them into the snapshot): `scene_tap.h`, `scene_tap.cpp` - renderer-independent,
+no graphics calls. Hooks, in `tools/godot/recomp.patch` (7 lines in `render/vif1.h` /
+`vif1.cpp`): `Vif1::on_program` (called before a microprogram runs), and NOP notes with
+NUM 0xA8 / 0xA9 handed to the tap; the kick is wrapped by `SceneTap::install()` without
+a source change. Both ways of running the programs call the same `Vu1::kick`, so the
+interpreter and the translation feed it alike.
+
+What it hands over for every mesh packet the four mesh programs kick (entries 0x42 /
+0x44 models, 0x46 / 0x48 level chunks - `render-pipeline.md` 4.4; packet layout from
+`docs/formats/model-texture.md`):
+
+| | From |
+|---|---|
+| object-space positions (stored 16-bit / 16) | the input half of the VIF double buffer, at `TOP`, `ITOP` vertices |
+| **normals** (stored 8-bit, both for models and level chunks: the programs light per vertex with them) | the block after the positions |
+| up to four joints and weights per vertex (models) | the weight entries, walked as the program walks them |
+| the matrices: the four rows of the set-up (level: entry 0x16; mirrored copy: 0x3c) or the 64 joint matrices in VU1 memory (models, after 0x0c / 0x1e / 0x1a) - object to the game's clip space | read when the set-up entry starts / when the packet is kicked |
+| which vertex became which vertex of the draw list | the strip is replayed from the packet's slot rows and copy rows; the GS model emits three list vertices per drawn triangle in strip order |
+| an identity: a figure over the packet's own bytes (stable from frame to frame), its occurrence number in the frame, and a number per set-up (one draw of one object) | |
+| world position and world normal | clip space back through the inverse of the game's view-projection (`g_viewProjModel`; for the level `g_viewProjWorld`, whose space is world / 4) |
+
+**The camera travels with the packets.** The library's sink puts the 62 words at
+0x44f108 (`g_projScale`, `g_cameraMatrix`, the three view-projection matrices) in front of
+the first VIF1 transfer after each vertical blank, as notes in the stream; the decoder
+has the camera the packets were made with on whatever thread it runs. This replaces the
+"one blank earlier" guess of stage 4.
+
+**It checks itself.** A packet is handed on only if the tap's own projection of its
+reconstruction lands where the program itself put the vertices in the strip. Figures
+(the whole route - power-on, title, first level, `valor`, a fight; 5,308 lists):
+
+| | |
+|---|---|
+| mesh packets kicked / handed on | 3,990,182 / 3,867,623 (the rest draw no triangle) |
+| left out: list did not grow as kicked / not where the program put them / not laid out as documented | 0 / 0 / 0 |
+| vertices compared with the programs' own positions | 211,857,142; **0 off**; largest difference 1.65 of 1/16 pixel |
+| level set-ups whose depth and translation rows are the noted camera's, bit for bit | **176,778 of 176,778** |
+| level vertices on the quarter-unit grid the files store them on (first level) | **99.75 %** (14.3 % with the depth route) |
+| the same route to the first level with every program interpreted (`RTA_VU1_INTERPRET=1`) | the same counts, 0 off |
+| the 11 fixed-tick pictures with the tap on | identical to `rta_app`'s (the tap changes nothing the renderer computes) |
+| per list in the first level | 185 draws / 92,700 vertices from the inputs with normals; under one draw by its depth (the game's ground-shadow quads) |
+| kicks of other programs (particles, water, trails, shadow sprites) | 163,146: not tapped; triangles among them go by their depth as before |
+
+Through the C interface (`rtag.h`, version 4): `rtag_scene::normals` (three per list
+vertex), `rtag_scene::pieces` (identity, occurrence, object number, kind, flags, list
+range), `rtag_draw::scene_kind` (from the inputs / by depth). The tap's own frame
+(`TapFrame`: object-space vertices, joints and weights, the matrices) is not exported
+through C yet: it is what persistent, re-posed Godot meshes will be built from (task 3).
+
+Not tapped, and why it matters: shell passes (weapon glow) are tapped as the plain mesh
+(the check passes because the tap compares with what the program drew... **not verified
+for a shell pass: none occurred in this route**); water (0x36 / 0x38), particles, trails
+and decals have their own input formats (`render-pipeline.md` 4.8 to 4.11) and no tap.
+
 ## From nothing
 
 ```
