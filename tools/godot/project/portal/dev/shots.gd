@@ -222,3 +222,361 @@ func scenario_smoke() -> void:
 	await pad(JOY_BUTTON_DPAD_DOWN)
 	print("shots: focus after two downs ", focused())
 	await shot("smoke-4-home-join")
+
+
+# What the portal "remembers" in most pictures: a name and a few characters.  The names are
+# made up here; the classes are whatever the session's friends play (text from the session,
+# none of it stored in this file).
+func remembered(extra := {}) -> Dictionary:
+	var d := {"name": "Tester", "character": {"name": "Aldric Vane", "cls": "", "level": 27},
+		"known": [{"name": "Mirelle", "cls": "", "level": 14}, {"name": "Old Harrow", "cls": "", "level": 41}, {"name": "Tam", "cls": "", "level": 3}]}
+	d.merge(extra, true)
+	return d
+
+
+func give_classes() -> void:
+	# the remembered characters get classes from what the session's friends play
+	var classes: Array = []
+	for f in portal.session.friends():
+		var cls := String(f.character.get("cls", ""))
+		if cls != "" and not classes.has(cls):
+			classes.append(cls)
+	if classes.is_empty():
+		return
+	var c: Dictionary = portal.profile.character()
+	if String(c.get("name", "")) != "":
+		c["cls"] = classes[0]
+		portal.profile.set_character(c)
+	var known: Array = portal.profile.known_characters()
+	for k in known.size():
+		known[k]["cls"] = classes[(k + 1) % classes.size()]
+	portal.profile.cfg.set_value("character", "known", known)
+	portal.profile.save()
+	portal.session.set_character(portal.profile.character())
+	portal.screen.rebuild()
+	await get_tree().process_frame
+
+
+func open_ready(size: Vector2i, extra := {}, options := {}) -> void:
+	await open_portal(size, remembered(extra), options)
+	await give_classes()
+
+
+func many_friends(count: int, long_names := false) -> Array:
+	# a list longer than the mock's, built from its friends (their classes, levels, places)
+	var base: Array = portal.session.n.call("friends")
+	var names := ["Ashgrove", "bittern", "Calloway", "dune_runner", "Eskil", "FennMoor", "Greywick", "hollowbrook", "Isolde K", "Jory", "Kestrel", "Lunn",
+		"Marrow", "nightjar", "Orrin", "Pell", "Quillon", "Rook", "Sable", "Thistle", "Umber", "Vesper", "Wick", "Yarrow", "Zephyr", "Alder", "Brindle", "Corvin",
+		"Dapple", "Ember", "Flint", "Gorse", "Heron", "Ilex", "Juniper", "Knot", "Larch", "Moss", "Nettle", "Osier"]
+	var heroes := ["Aldous", "Brenna", "Caius", "Delphine", "Edrik", "Fiora", "Garrick", "Hesper", "Ingram", "Jessamy"]
+	var out: Array = []
+	for k in count:
+		var b: Dictionary = (base[k % base.size()] as Dictionary).duplicate(true)
+		b["id"] = "%032x" % (0x5000 + k)
+		b["name"] = names[k % names.size()]
+		b["character"]["name"] = heroes[k % heroes.size()] + (" the " + ["Bold", "Quiet", "Younger", "Grey"][k % 4] if k % 3 == 0 else "")
+		b["character"]["level"] = 1 + (k * 7) % 50
+		b["presence"] = [3, 2, 1, 1, 0, 3, 2, 0, 1, 0][k % 10] if count > 8 else [3, 3, 2, 2, 1, 1, 0, 0][k % 8]
+		b["joinable"] = int(b.presence) == 2 and k % 2 == 0
+		b["room_players"] = 2 + k % 3 if int(b.presence) >= 2 else 0
+		if int(b.presence) == 3 and String(b.level) == "":
+			b["level"] = "hub"
+		b["last_seen"] = int(Time.get_unix_time_from_system()) - 3600 * (1 + k * 5)
+		b["invited_me"] = false
+		if long_names and k % 2 == 0:
+			b["name"] = ["WWWWWWWWWWWWWWWWWWWWWWWW", "The Longest Name Allowed", "xX_twentyfour_letters_Xx", "Bartholomew-Maximilian 3"][int(k / 2.0) % 4]
+			b["character"]["name"] = "Maximiliana Thunderbrow"
+		out.append(b)
+	out.sort_custom(func(a: Dictionary, c: Dictionary) -> bool: return int(a.presence) > int(c.presence) if int(a.presence) != int(c.presence) else String(a.name).naturalnocasecmp_to(String(c.name)) < 0)
+	return out
+
+
+# The scripted walk-through, with a controller: first start -> the name -> home -> host ->
+# a friend walks in -> ready -> start -> the game -> back in the room.
+func scenario_walk() -> void:
+	await open_portal(Vector2i(1920, 1080), {"pad": true})
+	await shot("walk-01-first-start")
+	await pad_type("Tester")
+	await shot("walk-02-name-typed")
+	await pad(JOY_BUTTON_START)
+	await wait(0.4)
+	await shot("walk-03-home")
+	await pad(JOY_BUTTON_DPAD_DOWN)
+	print("shots: walk focus ", focused())
+	await shot("walk-04-home-host")
+	await pad(JOY_BUTTON_A)
+	await mock(0.6)
+	await shot("walk-05-room-open")
+	await mock(3.2)
+	await shot("walk-06-friend-walked-in")
+	await mock(3.0)
+	await shot("walk-07-friend-ready")
+	await mock(7.2)
+	await shot("walk-08-everybody-ready")
+	print("shots: walk focus in room ", focused())
+	await focus_key("main")
+	await pad(JOY_BUTTON_A)
+	await wait(0.12)
+	await shot("walk-09-starting")
+	await mock(3.4)
+	await shot("walk-10-in-the-game")
+	await mock(38.0)
+	await wait(0.4)
+	await shot("walk-11-back-in-the-room")
+
+
+func scenario_states() -> void:
+	# the disc image has not been found: the sentence and its button, and home with the strip
+	await open_portal(Vector2i(1920, 1080), {"name": "Tester"}, {"stub_game": false, "mock_speed": "0.2"})
+	await shot("state-home-no-disc-no-character")
+	await focus_key("alone")
+	await key(KEY_ENTER)
+	await shot("state-disc-missing")
+	# offline: no session behind the portal
+	await open_portal(Vector2i(1920, 1080), remembered({"character": {"name": "Aldric Vane", "cls": "", "level": 27}}), {"mock": false})
+	await shot("state-home-offline")
+	portal.go("friends")
+	await shot("state-friends-offline")
+	# home, with an invitation arriving (the mock's comes 12 s in)
+	await open_ready(Vector2i(1920, 1080))
+	await shot("state-home")
+	await mock(12.0)
+	await shot("state-home-invitation")
+	UI.pad_glyphs = true
+	portal.refresh_hints()
+	portal.notices.queue_redraw()
+	await shot("state-home-invitation-controller")
+	# one press from anywhere: Y joins
+	await pad(JOY_BUTTON_Y)
+	await mock(1.0)
+	await shot("state-invitation-accepted-room")
+	# characters
+	await open_ready(Vector2i(1920, 1080), {}, {"mock_speed": "0.5"})
+	portal.go("characters")
+	await shot("state-characters")
+	await focus_key("new")
+	await key(KEY_ENTER)
+	await shot("state-characters-new")
+	await key(KEY_ESCAPE)
+	# leaving
+	portal.home()
+	await wait(0.3)
+	await key(KEY_ESCAPE)
+	await shot("state-quit-question")
+	# play alone: the hand-over, and an invitation while the game has the screen
+	await open_ready(Vector2i(1920, 1080), {"pad": true})
+	await focus_key("alone")
+	await pad(JOY_BUTTON_A)
+	await wait(0.5)
+	await shot("state-in-game")
+	await mock(12.0)
+	await shot("state-in-game-invitation")
+	# the portal in front of the game again: the game's picture blurred and dimmed behind it
+	portal.handover.finish("key")
+	await wait(0.4)
+	await shot("state-home-over-the-game")
+
+
+func scenario_friends() -> void:
+	await open_ready(Vector2i(1920, 1080), {}, {"mock_speed": "0.6"})
+	portal.go("friends")
+	await shot("friends-six")
+	# a controller on a friend who can be joined: A joins, right walks to Invite and More
+	UI.pad_glyphs = true
+	portal.refresh_hints()
+	var joinable := ""
+	var in_game := ""
+	for f in portal.session.friends():
+		if bool(f.joinable) and joinable == "":
+			joinable = String(f.id)
+		if int(f.presence) == 3 and in_game == "":
+			in_game = String(f.id)
+	await focus_key("friend:" + joinable)
+	await shot("friends-joinable-focused")
+	await pad(JOY_BUTTON_DPAD_RIGHT)
+	await pad(JOY_BUTTON_DPAD_RIGHT)
+	await shot("friends-more-selected")
+	await pad(JOY_BUTTON_A)
+	await shot("friends-more-menu")
+	await pad(JOY_BUTTON_DPAD_DOWN)
+	await pad(JOY_BUTTON_A)
+	await shot("friends-block-question")
+	await pad(JOY_BUTTON_B)
+	# a request: accept from the list
+	var req := ""
+	for r in portal.session.requests():
+		if bool(r.incoming):
+			req = String(r.id)
+	if req != "":
+		await focus_key("request:" + req)
+		await shot("friends-request-focused")
+	# adding a friend by code, with a controller: the letters on screen
+	await focus_key("add_code")
+	await pad(JOY_BUTTON_A)
+	await pad_type_entry("K7QF2MXD")
+	await shot("friends-add-code-keys")
+	await pad(JOY_BUTTON_START)
+	await wait(0.4)
+	await shot("friends-add-asked")
+	UI.pad_glyphs = false
+	portal.refresh_hints()
+	# no friends yet
+	portal.session.friends_for_pictures = []
+	for r in portal.session.requests():
+		portal.session.friend_decline(String(r.id))
+	for v in portal.session.invites():
+		portal.session.invite_dismiss(String(v.from_id))
+	await wait(0.3)
+	portal.screen.rebuild()
+	portal.top.build()
+	await shot("friends-none-yet")
+	# eight, forty, long names
+	portal.session.friends_for_pictures = many_friends(8)
+	portal.screen.rebuild()
+	portal.top.build()
+	await shot("friends-eight")
+	portal.session.friends_for_pictures = many_friends(40)
+	portal.screen.rebuild()
+	portal.top.build()
+	await shot("friends-forty")
+	var rows := (portal.session.friends_for_pictures as Array)
+	await focus_key("friend:" + String(rows[22].id))
+	await shot("friends-forty-scrolled")
+	portal.session.friends_for_pictures = many_friends(8, true)
+	portal.screen.rebuild()
+	await focus_key("friend:" + String((portal.session.friends_for_pictures as Array)[0].id))
+	await shot("friends-long-names")
+	portal.session.friends_for_pictures = null
+
+
+func pad_type_entry(text: String) -> void:
+	for ch in text:
+		await focus_key("key_" + ch)
+		await pad(JOY_BUTTON_A)
+
+
+func scenario_join() -> void:
+	await open_ready(Vector2i(1920, 1080), {}, {"mock_speed": "1"})
+	portal.go("join")
+	await shot("join-empty")
+	await type("nqpe2")
+	await shot("join-typed")
+	await key(KEY_ENTER)
+	await wait(1.2)
+	await shot("join-no-such-room")
+	for k in 5:
+		await key(KEY_BACKSPACE)
+	await type("FULL2")
+	await key(KEY_ENTER)
+	await wait(1.2)
+	await shot("join-room-full")
+	for k in 5:
+		await key(KEY_BACKSPACE)
+	await type("LATE2")
+	await key(KEY_ENTER)
+	await wait(1.2)
+	await shot("join-game-started")
+	# with a controller: the code's letters on screen
+	UI.pad_glyphs = true
+	portal.screen.device_changed()
+	await wait(0.2)
+	for k in 5:
+		await pad(JOY_BUTTON_X)
+	await pad_type_entry("H4K")
+	await shot("join-controller")
+	UI.pad_glyphs = false
+	portal.screen.device_changed()
+
+
+func scenario_room() -> void:
+	# a guest in somebody's room
+	await open_ready(Vector2i(1920, 1080), {}, {"mock_speed": "1"})
+	portal.go("join")
+	await type("H4KQ7")
+	await key(KEY_ENTER)
+	await wait(1.5)
+	await shot("room-guest")
+	await focus_key("chat")
+	await type("hello there")
+	await key(KEY_ENTER)
+	await wait(1.5)
+	await shot("room-guest-chat")
+	await focus_key("main")
+	await key(KEY_ENTER)
+	await wait(0.5)
+	await shot("room-guest-ready")
+	# a member whose game is another version: the warning, and only then
+	await open_ready(Vector2i(1920, 1080), {}, {"mock_speed": "1"})
+	portal.go("join")
+	await type("BADF2")
+	await key(KEY_ENTER)
+	await wait(1.5)
+	await shot("room-different-version")
+	# the host: choices, a seat's menu, leaving
+	await open_ready(Vector2i(1920, 1080), {"pad": true}, {"mock_speed": "4"})
+	portal.host_game()
+	await mock(3.6)
+	await focus_key("difficulty")
+	await pad(JOY_BUTTON_DPAD_RIGHT)
+	await shot("room-host-choosing")
+	await focus_key("seat1")
+	await pad(JOY_BUTTON_A)
+	await shot("room-host-seat-menu")
+	await pad(JOY_BUTTON_B)
+	await pad(JOY_BUTTON_B)
+	await shot("room-leave-question")
+	await pad(JOY_BUTTON_B)
+	await focus_key("chat")
+	await pad(JOY_BUTTON_A)
+	await pad_type_entry("gg")
+	await shot("room-chat-keys")
+
+
+func scenario_settings() -> void:
+	await open_ready(Vector2i(1920, 1080), {}, {"mock_speed": "0.3"})
+	for tab in ["view", "display", "sound", "controls", "interface", "you"]:
+		portal.stack = [{"name": "home", "args": {}}]
+		portal.go("settings", {"tab": tab})
+		await shot("settings-" + tab)
+	await focus_key("controls_which")
+	portal.stack = [{"name": "home", "args": {}}]
+	portal.go("settings", {"tab": "controls"})
+	await wait(0.3)
+	await focus_key("controls_which")
+	await key(KEY_RIGHT)
+	await shot("settings-controls-keyboard")
+	portal.stack = [{"name": "home", "args": {}}]
+	portal.go("settings", {"tab": "view"})
+	await wait(0.3)
+	await focus_key("view_first")
+	await key(KEY_ENTER)
+	await shot("settings-view-first-person")
+	portal.stack = [{"name": "home", "args": {}}]
+	portal.go("settings", {"tab": "you"})
+	await wait(0.3)
+	await focus_key("forget")
+	await key(KEY_ENTER)
+	await shot("settings-forget-question")
+
+
+func scenario_ratios() -> void:
+	for spec in [[Vector2i(1440, 1080), "4x3"], [Vector2i(1280, 720), "720p"], [Vector2i(2560, 1080), "21x9"], [Vector2i(3840, 2160), "4k"], [Vector2i(1024, 768), "4x3-small"]]:
+		await open_ready(spec[0], {}, {"mock_speed": "4"})
+		await shot("ratio-%s-home" % spec[1])
+		portal.go("friends")
+		await shot("ratio-%s-friends" % spec[1])
+		portal.home()
+		await wait(0.3)
+		portal.host_game()
+		await mock(6.5)
+		await shot("ratio-%s-room" % spec[1])
+		portal.stack = [{"name": "home", "args": {}}]
+		portal.go("settings", {"tab": "controls"})
+		await shot("ratio-%s-settings-controls" % spec[1])
+		portal.stack = [{"name": "home", "args": {}}]
+		portal.go("settings", {"tab": "view"})
+		await shot("ratio-%s-settings-view" % spec[1])
+	await open_portal(Vector2i(1440, 1080), {"pad": true})
+	await shot("ratio-4x3-first-start")
+	await open_portal(Vector2i(1280, 720), {"pad": true})
+	await shot("ratio-720p-first-start")

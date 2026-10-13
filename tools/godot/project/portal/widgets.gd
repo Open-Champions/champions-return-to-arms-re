@@ -216,11 +216,11 @@ class Tile extends Focusable:
 		UI.sheen(self, r, radius, 0.03 + 0.03 * e)
 		# a warm wash from the left on the focused tile
 		if e > 0.01:
-			var c := Color(UI.GOLD.r, UI.GOLD.g, UI.GOLD.b, 0.13 * e)
+			var c := Color(UI.GOLD.r, UI.GOLD.g, UI.GOLD.b, 0.10 * e)
 			var n := Color(UI.GOLD.r, UI.GOLD.g, UI.GOLD.b, 0.0)
-			var inset := radius * 0.6
-			var a := r.position + Vector2(inset, inset)
-			var z := r.size - Vector2(inset, inset) * 2.0
+			var inset := Vector2(radius * 0.35, maxf(2.0, UI.px(3)))
+			var a := r.position + inset
+			var z := r.size - inset * 2.0
 			draw_polygon(PackedVector2Array([a, a + Vector2(z.x * 0.7, 0), a + Vector2(z.x * 0.7, z.y), a + Vector2(0, z.y)]), PackedColorArray([c, n, n, c]))
 		UI.focus_ring(self, r, radius, e)
 		var h := r.size.y

@@ -27,6 +27,10 @@
 //                        game camera does with a pad row (its zoom index, and through it the speed
 //                        its yaw turns at): not presentation-only, off by default
 //   view-log=1           one line per second with the view's figures
+//   view-clock=counted   the draw pass of a view costs the virtual console its time like any other code
+//                        (default: it costs none, see begin_pass)
+//   tests: view-stream=off (the texture stream keeps to the game's focus), view-collide=off,
+//          view-light=off
 #include "fpview.h"
 #include "gfx_rt.h"
 
@@ -52,7 +56,7 @@ const u32 G_CAMERA_POS = 0x44F038, G_CAMERA_FOCUS = 0x44F048, G_CAMERA_MATRIX = 
 const u32 G_FAR_CLIP = 0x7D8A04;
 const u32 PLANE_NEAR_D = 0x44F104, PLANE80_NEAR_D = 0x7D5C64;   // d of the near plane in the two world-space sets (the game: -18)
 const u32 G_WORLD = 0x44FDC8, G_SIM_FRAME = 0x44FDCC, G_DRAW_FRAME = 0x44FDD0;
-const u32 G_CUTSCENE_ACTIVE = 0x44FCD0, G_LOADSCREEN_ACTIVE = 0x506094;
+const u32 G_CUTSCENE_ACTIVE = 0x44FCD0, G_LOADSCREEN_ACTIVE = 0x506094, G_WARMUP_FRAMES = 0x506048;
 const u32 G_LOCAL_ALIVE_COUNT = 0x4F8424, G_LOCAL_ALIVE = 0x4F8430;
 const u32 G_PLAYER_OBJECT = 0x4DCEC8, PLAYER_STRIDE = 0x4C30;   // g_players[slot] + 0x43d8
 const u32 OBJ_POS = 0x10, OBJ_FACING = 0x38;
@@ -183,7 +187,7 @@ ModeSettings g_set[MODE_COUNT] = {
     {50, 18, 0, 0, 0, 0, 0, 0, 0, 0, 0, false, false, false},                 // overhead: the game's
     {50, 18, 215, 55, 0, -33, -33, -33, 0, 0, 0, false, false, true},         // action
     {58, 12, 150, 62, 0, -14, -45, 25, 0, 90, 0, false, false, true},         // chase
-    {60, 8, 58, 64, 17, -6, -55, 45, 0, 100, 0, false, false, true},          // shoulder
+    {60, 8, 88, 66, 20, -8, -55, 45, 0, 100, 0, false, false, true},          // shoulder
     {70, 4, 0, 60, 0, 0, -65, 65, 7, 110, 0, false, true, false},             // first
 };
 float g_ease_seconds = 0.35f;
@@ -193,6 +197,7 @@ std::string g_settings_text;
 
 std::atomic<int> g_wanted{OVERHEAD};
 bool g_options_read = false, g_zoom_off = false, g_log = false;
+bool g_stream_follows = true, g_collide = true, g_light = true, g_free_pass = true, g_hold_rate = true;      // tests: --opt view-stream=off, view-collide=off, view-light=off
 
 // ---- state of the view (host side; the game never reads it) --------------------------------------
 View g_view;
@@ -206,21 +211,31 @@ Pose g_shown;                       // the pose of the last active frame
 bool g_shown_valid = false;
 bool g_was_fallback = true;
 float g_pitch[MODE_COUNT];          // what the stick has added, per view
+std::atomic<float> g_pitch_add{0};  // add_pitch(): taken at the next draw pass
 float g_anchor_z = 0;               // the character's height, smoothed over steps
 bool g_anchor_valid = false;
 float g_pull[MODE_COUNT];           // distance in use after pulling in for the level
+float g_raise[MODE_COUNT];          // degrees the camera has swung up over what stood in the way
 u32 g_last_tick = 0;
 bool g_in_pass = false;             // a view is in place: between begin_pass and end_pass
 u8 g_saved[SAVED_BYTES];
 u32 g_game_args[4];                 // camera_setProjection as the game last asked
 u32 g_stream_frame = ~0u;           // g_drawFrame of the pass whose view the texture stream follows
+u64 g_time_pass_end = 0, g_time_stream_in = 0, g_time_stream_out = 0, g_time_begin_in = 0, g_time_begin_out = 0;     // view-timing
+void (*g_next_frame_hook)(Ctx*, int) = nullptr;
+void timing_frame_hook(Ctx* c, int phase) {
+    (phase == 0 ? g_time_begin_in : g_time_begin_out) = rt_cycles();
+    if (g_next_frame_hook) g_next_frame_hook(c, phase);
+}
 u64 g_active_frames = 0, g_fallback_frames = 0, g_hidden_packets = 0, g_passes = 0, g_restore_differs = 0;
 
 struct Callout { void* fn; void* user; };
 std::vector<Callout> g_on_view, g_on_drawn;
 
 // the local player's packets of the frame, by display-list buffer
-struct Hidden { u32 base = 0, size = 0; u64 filled_at = 0; std::vector<std::pair<u32, u32>> ranges; };
+// (a buffer's ranges are good for the frame they were noted in and the one after, in which the list is
+// sent: the same addresses hold other packets in every later frame)
+struct Hidden { u32 base = 0, size = 0; u64 filled_at = 0; u32 draw_frame = 0; std::vector<std::pair<u32, u32>> ranges; };
 Hidden g_hidden[2];
 int g_hidden_fill = -1;
 
@@ -230,7 +245,11 @@ void read_options() {
     if (const char* o = rt_option("view")) { int m = mode_by_name(o); if (m >= 0) g_wanted = m; }
     if (const char* o = rt_option("view-zoom")) g_zoom_off = !strcmp(o, "off");
     g_log = rt_option("view-log") != nullptr;
-    for (int m = 0; m < MODE_COUNT; m++) { g_pitch[m] = 0; g_pull[m] = -1; }
+    if (const char* o = rt_option("view-stream")) g_stream_follows = strcmp(o, "off") != 0;
+    if (const char* o = rt_option("view-collide")) g_collide = strcmp(o, "off") != 0;
+    if (const char* o = rt_option("view-light")) g_light = strcmp(o, "off") != 0;
+    if (const char* o = rt_option("view-clock")) g_free_pass = g_hold_rate = strcmp(o, "counted") != 0;    // the pass at the console's price, the game's own half rate
+    for (int m = 0; m < MODE_COUNT; m++) { g_pitch[m] = 0; g_pull[m] = -1; g_raise[m] = -1; }
 }
 
 // ---- calling the game ----------------------------------------------------------------------------
@@ -270,7 +289,17 @@ void game_set_view(Ctx* c, Vec3 eye, Vec3 right, Vec3 down, Vec3 forward) {
     call.arg(1, m);
     fn_0018a2b0(c);                 // camera_setView: matrix, three view-projections, planes
 }
+// net_objOrGhost 0x13e180: the object that is on screen for a player - this machine's own player in a
+// net game is shown as its prediction copy when there is one.  Reads only.
+u32 game_drawn_object(Ctx* c, u32 object) {
+    GuestCall call(c);
+    call.arg(0, object);
+    fn_0013e180(c);
+    u32 shown = (u32)c->r[2];
+    return in_ram(shown, 0x600) ? shown : object;
+}
 void game_scene_light(Ctx* c) {
+    if (!g_light) return;
     GuestCall call(c);
     fn_00148018(c);                 // transformSceneLight: the sun and fill directions in camera space
 }
@@ -301,13 +330,14 @@ struct Inputs {
     Vec3 feet{}, anchor{};          // the character: its position, and the same with the height smoothed
     Vec3 facing_dir{};
     float facing = 0;
+    float size = 1;                 // the character's height extent (object +0x20) / 72
     float stick_x = 0, stick_y = 0;
     float dt = 0;                   // seconds of simulation since the last pass
 };
 
 float ray_between(Ctx* c, Vec3 from, Vec3 to) {
     u32 world = W(G_WORLD);
-    if (!world) return -1;
+    if (!world || !g_collide) return -1;
     Vec3 d = to - from;
     float l = length(d);
     if (l < 0.5f) return -1;
@@ -325,7 +355,7 @@ float ray_between(Ctx* c, Vec3 from, Vec3 to) {
 }
 float ground_under(Ctx* c, Vec3 p) {
     u32 world = W(G_WORLD);
-    if (!world) return -1e6f;
+    if (!world || !g_collide) return -1e6f;
     GuestCall call(c);
     u32 pos = call.put(0, p);
     call.farg(0, 6.0f);
@@ -335,41 +365,69 @@ float ground_under(Ctx* c, Vec3 p) {
     return call.fret();
 }
 
+// Is the character seen from `eye`?  Two rays of the game's own terrain query, from the head and from knee
+// height: the level's walls are blocks of its height field, so a ray that is clear means nothing of the
+// level stands between (objects - crates, pillars that are models - are not asked: they are small).
+bool sees(Ctx* c, Vec3 eye, Vec3 head, Vec3 knee) {
+    if (ray_between(c, head, eye) >= 0) return false;
+    return ray_between(c, knee, eye) < 0;
+}
+
 Pose pose_of(Ctx* c, int mode, const Inputs& in) {
     if (mode == OVERHEAD) return in.game;
     const ModeSettings& s = g_set[mode];
     Pose p;
     p.fov = s.fov;
     p.near_plane = s.near_plane;
-    float pitch = clampf(s.pitch + g_pitch[mode], std::min(s.pitch_min, s.pitch), std::max(s.pitch_max, s.pitch)) * DEG;
-    Vec3 forward = in.heading * std::cos(pitch) + v3(0, 0, std::sin(pitch));
-    aim(p, forward);
+    float size = in.size;                           // the character's height against the 72 the numbers were chosen for
+    float pitch = clampf(s.pitch + g_pitch[mode], std::min(s.pitch_min, s.pitch), std::max(s.pitch_max, s.pitch));
     Vec3 up = v3(0, 0, 1);
+    auto forward_at = [&](float degrees) { return in.heading * std::cos(degrees * DEG) + v3(0, 0, std::sin(degrees * DEG)); };
     if (mode == FIRST) {
-        p.eye = in.anchor + up * s.height + in.heading * s.eye_forward;
+        aim(p, forward_at(pitch));
+        p.eye = in.anchor + up * (s.height * size) + in.heading * (s.eye_forward * size);
         return p;
     }
-    Vec3 head = in.anchor + up * s.height;
-    Vec3 pivot = head - in.left * s.side;
-    if (s.collide && s.side != 0) {                 // the shoulder itself must not be behind a wall
+    Vec3 head = in.anchor + up * (s.height * size);
+    Vec3 knee = in.anchor + up * (22.0f * size);
+    Vec3 pivot = head - in.left * (s.side * size);
+    float want = s.distance * size;
+    if (!s.collide || !g_collide) {
+        aim(p, forward_at(pitch));
+        p.eye = pivot - p.forward * want;
+        return p;
+    }
+    if (s.side != 0) {                              // the shoulder itself must not be behind a wall
         float t = ray_between(c, head, pivot);
         if (t >= 0) pivot = mix(head, pivot, std::max(0.0f, t - 0.25f));
     }
-    float want = s.distance, use = want;
-    if (s.collide) {
-        float t = ray_between(c, pivot, pivot - p.forward * want);
-        if (t >= 0) use = std::max(8.0f, t * want - 6.0f);
-        // in at once, out slowly: no popping when a pillar passes between
-        float& pull = g_pull[mode];
-        if (pull < 0 || use < pull) pull = use;
-        else pull = std::min(use, pull + 240.0f * in.dt);
-        use = pull;
+    // 1. The level between camera and character: the camera first swings up over what is in the way (what
+    //    the game's own camera does: it raises its pitch and never comes closer), in steps, eased.
+    static const float RAISE[] = {0, 9, 18, 28, 40, 52};
+    float raise = RAISE[5];
+    for (float r : RAISE) {
+        float down = std::max(pitch - r, -80.0f);
+        if (sees(c, pivot - forward_at(down) * want, head, knee) || down <= -80.0f) { raise = pitch - down; break; }
     }
+    float& held = g_raise[mode];
+    if (held < 0) held = raise;
+    else if (raise > held) held = std::min(raise, held + 150.0f * in.dt);
+    else held = std::max(raise, held - 35.0f * in.dt);
+    aim(p, forward_at(std::max(pitch - held, -80.0f)));
+    // 2. What is still in the way of the head (a wall behind the character, a narrow corridor): come closer,
+    //    at once; go back out slowly, so that a pillar passing between does not make the picture jump.
+    float use = want;
+    float t = ray_between(c, pivot, pivot - p.forward * want);
+    if (t >= 0) use = std::max(10.0f * size, t * want - 7.0f);
+    float& pull = g_pull[mode];
+    if (pull < 0 || use < pull) pull = use;
+    else pull = std::min(use, pull + 240.0f * in.dt);
+    use = pull;
     p.eye = pivot - p.forward * use;
-    if (s.collide) {                                // never under the floor
-        float floor = ground_under(c, p.eye);
-        if (floor > -1e5f && p.eye.z < floor + 6.0f) p.eye.z = floor + 6.0f;
-    }
+    // 3. Never under the floor.  The ground query gives the top of whatever is under the point - over a wall
+    //    its lid - so only a floor near the character's own counts: the camera is not lifted onto walls.
+    float floor = ground_under(c, p.eye);
+    if (floor > -1e5f && floor < in.anchor.z + 45.0f * size && p.eye.z < floor + 7.0f) p.eye.z = floor + 7.0f;
     return p;
 }
 
@@ -402,6 +460,9 @@ Pose from_pose(const Inputs& in) {
     return p;
 }
 
+const char* const WARMUP = "warm-up (the picture is blanked)";
+const char* g_last_fallback = "";
+
 const char* fallback_reason(u32& camera, u32& object, int& slot) {
     camera = W(G_LOCAL_CAMERA);
     object = 0;
@@ -410,6 +471,13 @@ const char* fallback_reason(u32& camera, u32& object, int& slot) {
     if (!W(G_WORLD)) return "no level";
     if (g_ram[G_LOADSCREEN_ACTIVE]) return "loading";
     if (g_ram[G_CUTSCENE_ACTIVE]) return "cutscene";
+    // The warm-up after a load, a cutscene or a menu: the picture is blanked and its draw lists thrown
+    // away while the level's textures stream in, and the count starts again while the stream is busy.
+    // Offline the simulation tick stands still for its length while parts of the run pass go on, so its
+    // length is simulation timing: it must be what it is in the overhead view.  The game's camera draws
+    // (unseen) through it, asks for the textures it always asked for, and the view cuts in when the
+    // picture comes back.
+    if (W(G_WARMUP_FRAMES) != 0) return WARMUP;
     if (W(at(camera) + CAM_MODE) != 1) return "the game holds the camera (menu, dialogue, cutscene)";
     if (W(at(camera) + CAM_TRANSITION) != 0) return "camera reset";
     s32 alive = (s32)W(G_LOCAL_ALIVE_COUNT);
@@ -453,10 +521,12 @@ bool begin_pass(Ctx* c) {
         v.blend = 0;
         v.have_player = false;
         g_fallback_frames++;
+        g_last_fallback = why;
         g_was_fallback = true;
         g_shown_valid = false;
         g_anchor_valid = false;
         for (float& p : g_pull) p = -1;
+        for (float& r : g_raise) r = -1;
         return false;
     }
 
@@ -474,11 +544,14 @@ bool begin_pass(Ctx* c) {
     in.heading = normal(v3(-in.game.right.y, in.game.right.x, 0), v3(0, 1, 0));
     in.left = v3(-in.heading.y, in.heading.x, 0);
     in.yaw = std::atan2(in.heading.y, in.heading.x) / DEG;
-    u32 obj = at(object);
+    u32 drawn = game_drawn_object(c, object);
+    u32 obj = at(drawn);
     in.feet = v3(F(obj + OBJ_POS), F(obj + OBJ_POS + 4), F(obj + OBJ_POS + 8));
     // facing: the camera is "behind the character" at yaw word 0x4000 - facing (Camera_followRecenter), and a
     // growing yaw word turns the camera clockwise seen from above (Ran: stick right, heading falls).  So the
     // character's heading is the camera's heading minus ((0x4000 - facing) - yaw word)
+    float extent = F(obj + 0x20);
+    in.size = extent > 20 && extent < 400 ? clampf(extent / 72.0f, 0.6f, 2.5f) : 1.0f;
     u16 yaw_word = (u16)W(at(camera) + CAM_YAW), facing_word = (u16)W(obj + OBJ_FACING);
     float turn = (float)(s16)(u16)(0x4000 - facing_word - yaw_word) * (360.0f / 65536.0f);
     in.facing = wrap_deg(in.yaw - turn);
@@ -503,9 +576,13 @@ bool begin_pass(Ctx* c) {
         // start a transition from what is on screen now (the game's camera after a fallback)
         if (g_shown_valid && !g_was_fallback) capture_from(g_shown, in);
         else capture_from(in.game, in);
+        // after a warm-up the picture comes back from black: the view is simply there
+        bool cut = g_was_fallback && g_last_fallback == WARMUP;
         g_mode = wanted;
-        g_t = g_ease_seconds > 0.001f ? 0 : 1;
+        g_t = g_ease_seconds > 0.001f && !cut ? 0 : 1;
+        g_last_fallback = "";
         g_pull[g_mode] = -1;
+        g_raise[g_mode] = -1;
     } else if (g_t < 1) {
         g_t = g_ease_seconds > 0.001f ? std::min(1.0f, g_t + in.dt / g_ease_seconds) : 1;
     }
@@ -523,6 +600,9 @@ bool begin_pass(Ctx* c) {
         // pad.ry is negative when the stick is pushed up (a byte of 0 is -1.0): up looks up
         g_pitch[g_mode] = clampf(g_pitch[g_mode] - in.stick_y * s.look_speed * in.dt, s.pitch_min - s.pitch, s.pitch_max - s.pitch);
     }
+
+    if (float more = g_pitch_add.exchange(0); more != 0 && g_mode != OVERHEAD && s.pitch_max > s.pitch_min)
+        g_pitch[g_mode] = clampf(g_pitch[g_mode] + more, s.pitch_min - s.pitch, s.pitch_max - s.pitch);
 
     Pose target = pose_of(c, g_mode, in);
     Pose shown = g_t >= 1 ? target : blend(from_pose(in), target, smooth(g_t));
@@ -551,8 +631,10 @@ bool begin_pass(Ctx* c) {
     v.have_player = true;
     v.slot = slot;
     v.player_object = object;
+    v.drawn_object = drawn;
     v.player_pos = in.feet;
-    v.head = in.anchor + v3(0, 0, g_set[FIRST].height);
+    v.head = in.anchor + v3(0, 0, g_set[FIRST].height * in.size);
+    v.player_height = extent;
     v.head_from_pose = false;
     v.facing = in.facing;
     v.facing_dir = in.facing_dir;
@@ -582,6 +664,9 @@ bool begin_pass(Ctx* c) {
     W(PLANE_NEAR_D) = as_bits(F(PLANE_NEAR_D) + 18.0f - near_plane);
     W(PLANE80_NEAR_D) = as_bits(F(PLANE80_NEAR_D) + 18.0f - near_plane);
     game_scene_light(c);
+    // the pass costs the virtual console no time: it draws more than the console's camera ever asked
+    // for, and a frame that runs past its field makes the game step two ticks in the next
+    if (g_free_pass) rt_unit_cost(c, 0);
     g_in_pass = true;
     g_active_frames++;
 
@@ -591,6 +676,7 @@ bool begin_pass(Ctx* c) {
     g_hidden[fill].base = base;
     g_hidden[fill].size = W(G_DL_UNITS) * 8;
     g_hidden[fill].filled_at = g_passes;
+    g_hidden[fill].draw_frame = W(G_DRAW_FRAME);
     g_hidden[fill].ranges.clear();
     g_hidden_fill = fill;
 
@@ -602,6 +688,7 @@ bool begin_pass(Ctx* c) {
 }
 
 void end_pass(Ctx* c) {
+    rt_unit_cost(c, 4);
     g_in_pass = false;
     g_hidden_fill = -1;
     g_stream_frame = W(G_DRAW_FRAME);
@@ -632,6 +719,7 @@ bool dma_skip(u32 tag_address) {
     u32 a = tag_address & RAM_MASK;
     for (const Hidden& h : g_hidden) {
         if (!h.base || h.ranges.empty() || a < h.base || a - h.base >= h.size) continue;
+        if (W(G_DRAW_FRAME) - h.draw_frame > 1) continue;
         for (const auto& r : h.ranges)
             if (a >= r.first && a < r.second) { g_hidden_packets++; return true; }
     }
@@ -698,7 +786,8 @@ const char* settings_text() {
     g_settings_text += line;
     for (int m = 1; m < MODE_COUNT; m++) {
         const ModeSettings& s = g_set[m];
-        snprintf(line, sizeof line, "view.%s.fov = %g\nview.%s.near = %g\nview.%s.height = %g\n", NAMES[m], s.fov, NAMES[m], s.near_plane, NAMES[m], s.height);
+        snprintf(line, sizeof line, "view.%s.fov = %g\nview.%s.near = %g\nview.%s.far = %g\nview.%s.height = %g\n", NAMES[m], s.fov, NAMES[m], s.near_plane,
+                 NAMES[m], s.far, NAMES[m], s.height);
         g_settings_text += line;
         if (m != FIRST) {
             snprintf(line, sizeof line, "view.%s.distance = %g\nview.%s.side = %g\nview.%s.collide = %s\n", NAMES[m], s.distance, NAMES[m], s.side, NAMES[m],
@@ -715,14 +804,20 @@ const char* settings_text() {
     return g_settings_text.c_str();
 }
 
+void add_pitch(float degrees) {
+    float old = g_pitch_add.load();
+    while (!g_pitch_add.compare_exchange_weak(old, old + degrees)) {}
+}
+
 void on_view(ViewFn fn, void* user) { g_on_view.push_back({(void*)fn, user}); }
 void on_drawn(DrawnFn fn, void* user) { g_on_drawn.push_back({(void*)fn, user}); }
 float ray(Ctx* c, Vec3 from, Vec3 to) { return ray_between(c, from, to); }
 float ground(Ctx* c, Vec3 p) { return ground_under(c, p); }
 
 void install() {
-    read_options();
     rt_dma_skip = dma_skip;
+    g_next_frame_hook = rt_frame_hook;      // gfx_rt's; ours only notes the time (view-timing) and hands on
+    rt_frame_hook = timing_frame_hook;
 }
 void figures(uint64_t& active_frames, uint64_t& fallback_frames, uint64_t& hidden_packets) {
     active_frames = g_active_frames; fallback_frames = g_fallback_frames; hidden_packets = g_hidden_packets;
@@ -737,8 +832,26 @@ using namespace fpview;
 void fn_0019e798(Ctx* c) {
     bool draw_pass = (s32)c->r[4] == 0 && (s32)c->r[5] == 1;
     if (!draw_pass || g_in_pass) { orig_0019e798(c); return; }
+    static u64 last_begin = 0;
+    static const bool timing = rt_option("view-timing") != nullptr;    // a line for every frame longer than 1.2 fields of the virtual clock
+    u64 t0 = rt_cycles();
     bool active = begin_pass(c);
+    u64 t1 = rt_cycles();
     orig_0019e798(c);
+    if (timing) {
+        u64 t2 = rt_cycles();
+        const double field = 4920115.0;
+        if (last_begin && t0 - last_begin > 5900000ull)
+            fprintf(stderr, "view-timing: tick %u frame %llu: %.2f fields since the last pass began: that pass %.3f, to the texture stream %.3f, in it %.3f, "
+                    "end of frame up to gfx_beginFrame %.3f, in gfx_beginFrame %.3f, frame step + pads + run pass %.3f; view %s\n",
+                    W(G_SIM_FRAME), (unsigned long long)g_passes, (double)(t0 - last_begin) / field, (double)(g_time_pass_end - last_begin) / field,
+                    (double)(g_time_stream_in - g_time_pass_end) / field, (double)(g_time_stream_out - g_time_stream_in) / field,
+                    (double)(g_time_begin_in - g_time_stream_out) / field, (double)(g_time_begin_out - g_time_begin_in) / field,
+                    (double)(t0 - g_time_begin_out) / field, active ? NAMES[g_mode] : "game");
+        last_begin = t0;
+        g_time_pass_end = t2;
+        (void)t1;
+    }
     for (const Callout& call : g_on_drawn) ((DrawnFn)call.fn)(g_view, c, call.user);
     if (active) end_pass(c);
 }
@@ -758,7 +871,15 @@ void fn_0018a520(Ctx* c) {
 
 // worldtex_stream: the cells round the focus are kept loaded; the picture needs those round the drawn view's
 void fn_0017d830(Ctx* c) {
-    if (g_stream_frame != W(G_DRAW_FRAME) || !g_view.active) { orig_0017d830(c); return; }
+    struct Timed { Timed() { g_time_stream_in = rt_cycles(); } ~Timed() { g_time_stream_out = rt_cycles(); } } timed;
+    bool mine = g_stream_frame == W(G_DRAW_FRAME) && g_view.active;
+    // The main loop counts displayed frames in a row with the "terrain late" flag up (g_terrainLateFrames
+    // 0x5060a8) and after 21 asks for half the display rate, to give the stream time.  A view along the
+    // ground has chunks in sight whose texture cell is outside the 3 x 3 the game keeps loaded: the flag
+    // never drops and the game would run at two ticks a picture for as long as they are in sight.  The
+    // count is held at nothing while a view is drawn (it is read by the main loop only).
+    if (mine && g_hold_rate) W(0x5060A8) = 0;
+    if (!g_stream_follows || !mine) { orig_0017d830(c); return; }
     u8 focus[12];
     memcpy(focus, g_ram + G_CAMERA_FOCUS, 12);
     W(G_CAMERA_FOCUS) = as_bits(g_view.stream_focus.x);
@@ -770,7 +891,8 @@ void fn_0017d830(Ctx* c) {
 
 // Player_draw: everything it does, it does; in first person its packets are left out of the stream
 void fn_001a46c0(Ctx* c) {
-    if (!g_in_pass || !g_view.hide_player || (u32)c->r[4] != g_view.player_object) { orig_001a46c0(c); return; }
+    u32 self = (u32)c->r[4];
+    if (!g_in_pass || !g_view.hide_player || (self != g_view.player_object && self != g_view.drawn_object)) { orig_001a46c0(c); return; }
     u32 before = W(G_DL_CURSOR) & RAM_MASK;
     orig_001a46c0(c);
     record_hidden(before, W(G_DL_CURSOR) & RAM_MASK);

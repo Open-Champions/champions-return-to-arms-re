@@ -88,7 +88,7 @@ var seen_requests := {}
 var seen_invites := {}
 var last_link := -1
 var glyph_style := "xbox"
-var fade := 1.0
+var starting_since := 0             # a session start is under way (milliseconds), 0: none
 
 
 func _ready() -> void:
@@ -532,6 +532,9 @@ func _on_event(e: Dictionary) -> void:
 			if state >= Session.ROOM_OPEN and pending_invite != "":
 				session.invite(pending_invite)
 				pending_invite = ""
+			if state == Session.ROOM_IN_GAME and starting_since > 0:
+				starting_since = 0
+				handover.call("reveal")
 			if state >= Session.ROOM_JOINING and state <= Session.ROOM_OPEN and pending_room and current_name() != "room":
 				pending_room = false
 				if not shown:
@@ -540,7 +543,9 @@ func _on_event(e: Dictionary) -> void:
 			elif state == Session.ROOM_NONE and current_name() == "room":
 				home()
 		Session.EV_START:
-			handover.call("start", {"kind": "session", "session": session.game()})
+			# the game is woken under the portal; the room stays up ("finding each other") until the game runs
+			handover.call("start", {"kind": "session", "session": session.game()}, false)
+			starting_since = Time.get_ticks_msec()
 		Session.EV_GAME_OVER:
 			handover.call("finish", "over")
 			if session.in_room() and current_name() != "room":
@@ -830,6 +835,9 @@ func _process(delta: float) -> void:
 		return
 	if screen != null and shown:
 		screen.call("tick", delta)
+	if starting_since > 0 and Time.get_ticks_msec() - starting_since > 8000:
+		starting_since = 0              # the room never said "in game": get out of the way anyway
+		handover.call("reveal")
 	if session != null:
 		var link := int(session.me().get("link", 0)) if session.available() else 0
 		if link != last_link:
@@ -942,7 +950,7 @@ class TopBar extends Control:
 		var right := friends_button.position.x - UI.px(28)
 		var av := UI.px(50)
 		var code := String(me.get("friend_code", ""))
-		var nw := maxf(UI.text_width(name, UI.bold(), 20), UI.text_width(code, UI.sans(), 15))
+		var nw := maxf(UI.text_width(name, UI.bold(), 20), UI.text_width(code, UI.spaced(UI.sans(), 1.0), 15)) + UI.px(4)
 		nw = minf(nw, UI.px(280))
 		var left_limit := (back_button.position.x + back_button.size.x + UI.px(20)) if back_button != null else x + UI.px(300)
 		if right - nw - av - UI.px(14) < left_limit:

@@ -15,7 +15,7 @@ signal count_changed
 
 var items: Array = []
 var compact := false
-var top_offset := 120.0             # design pixels from the top (below the portal's bar)
+var top_offset := 8.0               # design pixels from the top: in the band of the portal's bar, in the middle
 var glyph_style := "xbox"
 var in_game_hint := ""              # how to answer while the game has the buttons ("F2")
 
@@ -102,8 +102,8 @@ func _process(delta: float) -> void:
 
 
 func _card_size(it: Dictionary) -> Vector2:
-	var w := 500.0 if not compact else 400.0
-	var h := 92.0 if not compact else 74.0
+	var w := 560.0 if not compact else 420.0
+	var h := 88.0 if not compact else 74.0
 	if not it.has("on_accept") and String(it.get("text", "")) == "":
 		h = 64.0 if not compact else 56.0
 	return UI.v2(w, h)
@@ -118,6 +118,12 @@ func _card_rects() -> Array:
 		appear = 1.0 - pow(1.0 - appear, 3.0)
 		var leave := clampf(float(it.out) / 0.16, 0.0, 1.0) if float(it.out) >= 0.0 else 0.0
 		var x := size.x - UI.px(40) - z.x + (1.0 - appear) * UI.px(60) + leave * UI.px(60)
+		if not compact:
+			# in the portal: top centre, sliding down into place
+			x = roundf((size.x - z.x) * 0.5)
+			out.append([Rect2(x, y - (1.0 - appear) * UI.px(40) - leave * UI.px(40), z.x, z.y), appear * (1.0 - leave)])
+			y += (z.y + UI.px(10)) * (1.0 - leave)
+			continue
 		out.append([Rect2(x, y, z.x, z.y), appear * (1.0 - leave)])
 		y += (z.y + UI.px(10)) * (1.0 - leave)
 	return out

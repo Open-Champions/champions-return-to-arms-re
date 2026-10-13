@@ -22,6 +22,8 @@ disc to analyze game files; basic tool checks and synthetic tests need no game d
 
 - **How complete the playable game is, part by part, updated at every check-in:
   [docs/PROGRESS.md](docs/PROGRESS.md).**
+- **Which version you can get, for which computer, and how:
+  [docs/DOWNLOADS.md](docs/DOWNLOADS.md).**
 - The executable is 3.0 MB of MIPS code in 7,732 functions. Naming coverage is tracked separately;
   [docs/STATUS.md](docs/STATUS.md) breaks that down by area.
 - The local Ghidra pass produced 7,731 successful decompilations; one function at

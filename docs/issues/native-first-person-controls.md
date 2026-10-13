@@ -404,11 +404,15 @@ mode**:
   this heading" needs **no spare bits in the pad row at all**: the heading is the yaw word
   that is already there, and the mode is a message sent when the view changes.
 - Size: 87 words - 2 in `Player_move` (the hook at 0x1b4210), 2 in `Player_ctor`, 2 at the
-  empty handler, 45 in the unreferenced function 0x2128c8 (the move code, all of its
-  room), 36 in the unreferenced function 0x215c98 (handler and sender). It is not
-  "one word": the turn-in-place found in 1.2 is the one-word-sized answer (it needs no
-  word at all); running against the facing does not exist in the original and has to be
-  written.
+  empty handler, and three functions nothing refers to (no call, jump, branch or data word
+  from outside; checked over the whole executable): 45 in 0x2128c8 (the move code, all of
+  its room), 19 in 0x215c98 (the sender, at the function's entry so that it can be
+  called), 17 in 0x215d28 (the handler, at an entry too: the native build's translator
+  turns a jump into the *middle* of another function into a call of that function's
+  entry unless the two are merged - found when the first try ran the sender in place of
+  the handler - and a jump to an entry is a tail call for any translator). It is not "one
+  word": the turn-in-place found in 1.2 is the one-word-sized answer (it needs no word at
+  all); running against the facing does not exist in the original and has to be written.
 - **Every player of a game would need the section** (a machine without it runs that
   character along its facing: out of step at the first sideways step). It belongs in the
   fix set or nowhere; the emulator-based build would take the same words.
@@ -446,3 +450,111 @@ out-of-sync flags, plus both facing words and both entries of `g_netCamYaw`.
 | `online/p1` | first level, 1,500 blanks of play | 1,819 ticks compared, **no shared column differs**; no checksum failure, no out-of-sync flag; 3 presses held back for the turn (18 ticks) |
 | `online/p2` | 900 blanks, then `drunare`, 3,600 blanks: the arena fight | 5,433 ticks, nothing differs; both players hit (310 and 405 different hit-point values), both died, the level was loaded again |
 | `online/p3`, `p4` | the first-person copy only turns where it stands | 1,819 ticks each, nothing differs; the creep and turn figures of 2.1 |
+
+## 2.8 Keyboard, mouse, controller; settings; help
+
+| | Keyboard and mouse | Controller |
+|---|---|---|
+| look | the mouse | right stick |
+| move | W A S D | left stick |
+| attack / shoot | left mouse button (also K) | Cross |
+| block | right mouse button (also E, Shift) | R1 |
+| use, talk, pick up | middle mouse button (also J, Space) | Square |
+| abilities | L, I | Circle, Triangle |
+| other weapon set | mouse wheel (also Q) | L1 |
+| potions | 3, 1 | R2, L2 |
+| map | Tab (also C) | R3 |
+| quick-spell selector, bag, pause | arrows, Backspace, Return | direction pad, Select, Start |
+| view | V | (not bound) |
+| give the pointer back | Escape; a click in the window takes it again | |
+
+The button masks are read from the game's own per-slot tables, so a remapped controller
+layout in the game's options carries over to the mouse buttons. Space, Shift and Tab are
+new second names for Square, R1 and R3 in every view.
+
+**The pointer.** While a look view is played in the window that has the keyboard, the
+pointer is hidden and held and the mouse's own motion is read (`look_mac.mm`: the pointer
+is dissociated from the mouse, deltas come from the events; `win_main.cpp`: raw input, the
+pointer clipped to the window). Never in a test window and never off screen. **Built, not
+run**: it cannot be tried on a machine somebody is using without taking their pointer;
+every test moved the look through `app fpc mouse DX DY`, which enters the same function
+the pointer code calls (`fpcontrols::mouse_motion`). The first person to play it should
+check: the pointer disappears on entering a look view, Escape gives it back, a click
+takes it again, leaving the window gives it back.
+
+**Settings** (`<data>/settings.txt`, written at a first start with every line and a
+remark; also `app fpc set NAME VALUE` while running): `controls.mouse_sensitivity`,
+`mouse_pitch_scale`, `mouse_smoothing`, `invert_y`, `invert_stick_y`, `stick_yaw`,
+`stick_pitch`, `stick_deadzone`, `stick_curve`, `stick_ease`, `move_deadzone`,
+`face.chase|shoulder|first`, `turn_before_strike`, `strike_wait`, `strike_within`,
+`idle_within`, `mouse_buttons`, `capture_pointer`, `kick`, `centre`, `swing_tilt`,
+`strafe`. **Help**: the keys panel (F1) and the text printed at a start end with the
+look views' controls (`fpcontrols::help_text()`). The settings round trip through the
+file and the panel were not run (a test window writes no settings file and shows no
+panel); `app fpc set` was.
+
+**Windows** (`app/win_main.cpp`, `app/build_win.py`): compiled and linked with
+`build_win.py` (clang for x86_64-w64-mingw32; `rta_app.exe` 27.96 MB with
+`fpcontrols.cpp` in it). Nothing of it was run. The Windows program does not have the
+views yet (`fpview.patch`'s own merge note says how they get there); until it calls
+`fpcontrols::set_view`, rows pass through unchanged, and the mouse code is in place for
+that day.
+
+## 2.9 What is not done, and what still feels wrong
+
+- Nobody has played it. Every figure here is from scripts; sensitivity, the stick curve,
+  the kick and the tilt are first guesses.
+- In a net game the stock simulation creeps while turning on the spot (2.1) and a strike
+  from a sideways run waits up to a tenth of a second for the turn; the proposal of 2.6
+  removes both, at the price of a fix-set section everybody must have.
+- In a net game the camera work's eye follows the simulated player, the picture shows the
+  prediction copy (`g_ghost` 0x4027bc): asked of the camera work.
+- The weapon and hands in view (2.3): not done.
+- Bows and spells were read, not run: the test character had no bow, and the cast that
+  was pressed in the net runs was not looked at. `reticle` and `shot` are there for them.
+- Enemy tells, ground effects and loot visibility from the ground (2.5): data for
+  attackers only.
+- A second local player: the look views fall back to the game's camera with two local
+  players (the camera work's rule), so nothing here handles port 2.
+- With the proposal: the application does not send the mode in a net game by itself (the
+  test called the section's sender from the script); mode off when leaving a look view is
+  sent the same way.
+- The pointer capture and everything on Windows: built, not run.
+
+## 2.10 How to repeat
+
+```
+# sources: tools/recomp with app/fpview.patch and app/fpcontrols.patch applied (or the
+# stand-in root of this work: local/recomp-fp-controls/root, whose tools/recomp is ../src)
+python3 local/recomp-fp-controls/root/tools/recomp/app/build.py --no-game --as rta_app_fpc
+cd local/recomp-fp-controls/work
+python3 -B facts1.py; python3 -B facts2.py          # part 1 by running (the unmodified game's stick, yaw word, turn in place)
+python3 -B test1.py                                 # look, move, face: first person, chase, shoulder
+python3 -B test2.py valor                           # usable in reach; a fight: marks, strikes, block, attackers behind, death
+(cd ../lobby && ./champions-server &)               # this work's own lobby instance, ports +4000 (config.ini there)
+python3 -B pair.py online/p1 --views first,overhead --play 1500
+python3 -B pair.py online/p2 --views first,overhead --play 900 --level drunare --play2 3600 --seed 7
+python3 -B pair.py online/p4 --views first,overhead --play 1500 --look-only --seed 3
+# the proposal
+python3 fpasm.py                                    # writes tools/recomp/app/fp-proposed.pnach
+python3 ../root2/tools/recomp/app/build.py --as rta_app_fps --extra-pnach $PWD/../../../tools/recomp/app/fp-proposed.pnach
+python3 -B test3.py
+python3 -B pair.py online/s3 --views first,overhead --play 900 --level drunare --play2 3000 --seed 11 --strafe \
+    --app ../root2/local/recomp-out/bin/rta_app_fps
+sh mkpatch.sh                                       # tools/recomp/app/fpcontrols.patch from base -> src, and the new files
+```
+
+In the running program: `--view first` (or V), then mouse and keys as in 2.8. Scripts and
+the control socket: `app fpc mouse DX DY`, `app fpc button left|right|middle down|up`,
+`app fpc wheel N`, `app fpc set NAME VALUE`, `app fpc hud` (one line of everything in
+`hud()`), `app fpc figures`, `app fpc log on`.
+
+## 2.11 Files
+
+In the repository: `tools/recomp/app/fpcontrols.h`, `fpcontrols.cpp`, `look_host.h`,
+`look_mac.mm` (new; compiled only once the patch is applied), `fpcontrols.patch`,
+`fp-proposed.pnach` (a proposal; nothing reads it unless it is named to a build), this
+document. Local (`local/recomp-fp-controls/`, game output and generated code): `base`,
+`src`, `root`, `root2` (the proposal's build), `lobby` (the server instance), `work`
+(`glue.py` - the edits to other work's files, `mkpatch.sh`, `fpasm.py`, `fpc.py`,
+`facts*.py`, `test*.py`, `pair.py`, logs, pictures, `online/` run directories).

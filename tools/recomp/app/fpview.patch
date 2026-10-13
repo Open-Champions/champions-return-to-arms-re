@@ -23,9 +23,13 @@ Notes for the merge
    pass-through; rt_dma_skip stays null).  To give it the views: add app/fpview.cpp to its job
    list beside gfx_rt.cpp, call fpview::install() after gfxrt::install() in win_main.cpp, and
    take over the --view / "app view" / V-key lines of app_main.cpp.
- - rt/rt.h, rt/runtime.cpp: one new hook point, rt_dma_skip (null unless fpview installs it):
-   a DMA tag on channel 1 whose data is left out of the stream.  With the pointer null the walk
-   is the code it was.
+ - rt/rt.h, rt/runtime.cpp: two new things, both inert unless fpview uses them.  rt_dma_skip (a
+   null pointer otherwise): a DMA tag on channel 1 whose data is left out of the stream (the
+   local player's model in first person).  rt_unit_cost(c, cycles): the price of a unit of
+   translated code on the virtual clock, 4 as before unless changed; fpview sets 0 for the
+   length of a draw pass built for a view of its own and 4 again after it.  now() and the
+   slice accounting in reschedule() go through slice_cycles(); with the price never changed
+   they compute what they computed.
  - app/gfx_rt.h, gfx_rt.cpp: two small functions for fpview (projection_args,
    set_depth_range) and one branch at the head of scaled() that is not taken unless a view
    has set a depth range.  Widescreen itself is unchanged; the views go through it (a view's
@@ -35,9 +39,12 @@ Notes for the merge
  - app/app_main.cpp: --view, --view-set, the script / control-socket command "app view ...",
    the V key (not in a test window, like F), fpview::install() after gfxrt::install().
  - Default is "overhead": with it fpview's draw-pass hook returns before reading or writing
-   anything, and the four other hooks are the plain call of the original.
+   anything, and the four other hooks are the plain call of the original.  The rig session
+   with the patched build in overhead gives merge/rig-final-compare.txt, the same file.
+ - fpview chains itself in front of rt_frame_hook (it notes two times for --opt view-timing
+   and hands on to gfx_rt's): fpview::install() must stay after gfxrt::install().
 snapshot: Tue Oct 13 13:15:39 CDT 2026
-made:     Tue Oct 13 13:28:38 CDT 2026
+made:     Tue Oct 13 14:18:45 CDT 2026
 
 --- a/hle.txt
 +++ b/hle.txt
@@ -53,7 +60,7 @@ made:     Tue Oct 13 13:28:38 CDT 2026
 +205880   # Camera_followZoomInput: can be held off in a view that uses the camera stick's y for looking up and down (off by default)
 --- a/rt/rt.h
 +++ b/rt/rt.h
-@@ -62,6 +62,10 @@
+@@ -62,6 +62,17 @@
  // front of them (render/vif1.cpp reads the ones with 0xA5..0xA7 in their NUM field).
  extern void (*rt_frame_hook)(Ctx* c, int phase);
  extern void (*rt_dma_tag)(u32 tag_address, std::vector<u32>& stream);
@@ -61,12 +68,64 @@ made:     Tue Oct 13 13:28:38 CDT 2026
 +// on channel 1; true = the tag is followed but its data (and, when the tag is a call, everything
 +// up to the matching return) is not put into the stream.  A model that is drawn but not shown.
 +extern bool (*rt_dma_skip)(u32 tag_address);
++// The price of a unit of translated code (a call or a backward branch) in cycles of the
++// virtual clock: 4, which is what makes a frame of the game take the part of a field it takes
++// on the console.  fpview sets 0 for the length of a draw pass it has put a view of its own in
++// place for: such a pass draws far more than the console's camera ever asked for, and counted
++// at 4 it runs past the field, upon which the game steps two ticks a frame as an overloaded
++// console would.  From the game's thread, with its Ctx.
++void rt_unit_cost(Ctx* c, unsigned cycles);
  
  // ---- iop.cpp ----------------------------------------------------------------------------
  struct IopOptions {
 --- a/rt/runtime.cpp
 +++ b/rt/runtime.cpp
-@@ -1135,6 +1135,11 @@
+@@ -90,11 +90,32 @@
+ static u64 g_next_vblank_start = VBLANK_PERIOD, g_next_vblank_end = VBLANK_PERIOD + VBLANK_LENGTH;
+ static u64 g_fields;
+ 
++// The price of a unit can be changed for a stretch of the running thread's slice (rt_unit_cost:
++// a draw pass built for a view of fpview's does not count against the console's field time).
++// What the slice has cost up to the last change is kept in g_slice_cycles, the units it had
++// used by then in g_slice_mark; both start again with every slice.
++static u64 g_unit_cycles = CYCLES_PER_UNIT;
++static u64 g_slice_cycles;
++static s64 g_slice_mark;
++static u64 slice_cycles(const Ctx* c) {
++    s64 used = POLL_UNITS - (c->budget < 0 ? 0 : c->budget);
++    return g_slice_cycles + (u64)(used > g_slice_mark ? used - g_slice_mark : 0) * g_unit_cycles;
++}
++
+ static u64 now(const Ctx* c) {
+     if (!c || c->budget > POLL_UNITS) return g_cycles;      // no thread, or the interrupt context
+-    return g_cycles + (u64)(POLL_UNITS - (c->budget < 0 ? 0 : c->budget)) * CYCLES_PER_UNIT;
++    return g_cycles + slice_cycles(c);
+ }
+ 
++void rt_unit_cost(Ctx* c, unsigned cycles) {
++    if (cycles == g_unit_cycles) return;
++    if (c && c->budget <= POLL_UNITS) {
++        g_slice_cycles = slice_cycles(c);
++        g_slice_mark = POLL_UNITS - (c->budget < 0 ? 0 : c->budget);
++    }
++    g_unit_cycles = cycles;
++}
++
+ // ---------------------------------------------------------------------------------------
+ // Kernel tables in guest memory (Play! layout)
+ // ---------------------------------------------------------------------------------------
+@@ -400,7 +421,9 @@
+     if (c && !gone && c->budget <= POLL_UNITS) {            // account for the part of the slice used
+         s64 used = POLL_UNITS - (c->budget < 0 ? 0 : c->budget);
+         g_units += used;
+-        g_cycles += used * CYCLES_PER_UNIT;
++        g_cycles += slice_cycles(c);
++        g_slice_cycles = 0;
++        g_slice_mark = 0;
+         c->budget = POLL_UNITS;
+     }
+     u64 idle_fields = 0;
+@@ -1135,6 +1158,11 @@
              chcr = (chcr & 0xFFFF) | ((u32)t & 0xFFFF0000u);
              bool end = false;
              if (ch == 1 && rt_dma_tag) rt_dma_tag(tadr, stream);
@@ -78,7 +137,7 @@ made:     Tue Oct 13 13:28:38 CDT 2026
              switch (id) {
              case 0: madr = addr; tadr += 16; end = true; break;                 // refe
              case 1: madr = tadr + 16; tadr = madr + n * 16; break;              // cnt
-@@ -1149,10 +1154,11 @@
+@@ -1149,15 +1177,17 @@
                  madr = tadr + 16;
                  if (asp > 0) { asp--; tadr = g_hw[base + 0x40 + asp * 0x10]; }
                  else end = true;
@@ -91,7 +150,13 @@ made:     Tue Oct 13 13:28:38 CDT 2026
                  if (tte && ch != 2) { u32 two[2]; memcpy(two, tag + 8, 8); stream.push_back(two[0]); stream.push_back(two[1]); }
                  append(madr, n);
              }
-@@ -1590,6 +1596,7 @@
+             madr += n * 16;
+             g_dma_qwords[ch] += n + 1;
++            if (end) skip_above = -1;
+             if (end || (((u32)t & 0x80000000u) && tie)) break;
+         }
+         chcr = (chcr & ~0x30u) | (asp << 4);
+@@ -1590,6 +1620,7 @@
  
  void (*rt_frame_hook)(Ctx* c, int phase);
  void (*rt_dma_tag)(u32 tag_address, std::vector<u32>& stream);

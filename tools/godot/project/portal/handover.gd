@@ -32,7 +32,7 @@ var last_level := ""
 var stub := false
 
 
-func start(p_intent: Dictionary) -> void:
+func start(p_intent: Dictionary, reveal_now := true) -> void:
 	intent = p_intent
 	stub = bool(portal.options.stub_game)
 	if game == null:
@@ -44,8 +44,15 @@ func start(p_intent: Dictionary) -> void:
 	else:
 		_wake(true)
 	running = true
-	portal.call("set_shown", false)
+	if reveal_now:
+		portal.call("set_shown", false)
 	started.emit(intent)
+
+
+func reveal() -> void:
+	# the portal gets out of the way of a game that was started with reveal_now = false
+	if running:
+		portal.call("set_shown", false)
 
 
 func _make_game() -> Node:

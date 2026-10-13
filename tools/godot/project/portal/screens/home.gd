@@ -39,7 +39,7 @@ func build() -> void:
 	var card_w := clampf(size.x * 0.33, UI.px(420), UI.px(560))
 	var left_w := size.x - card_w - gap
 	var tile_gap := UI.px(16)
-	var tile_h := minf(UI.px(150), (avail - tile_gap * 3.0) / 4.0)
+	var tile_h := minf(UI.px(172), (avail - tile_gap * 3.0) / 4.0)
 	var block_h := tile_h * 4.0 + tile_gap * 3.0
 	var top := y0 + maxf(0.0, (avail - block_h) * 0.5)
 	var me: Dictionary = portal.session.me()

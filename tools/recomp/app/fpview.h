@@ -71,8 +71,12 @@ struct View {
     // ---- the local player ----
     bool have_player = false;
     int slot = -1;              // player slot the view follows
-    uint32_t player_object = 0; // guest address of its GameObject (0 = none)
+    uint32_t player_object = 0; // guest address of its GameObject in the player record (0 = none)
+    uint32_t drawn_object = 0;  // the object that is on screen for it: in a net game the prediction copy (g_ghost
+                                // 0x4027bc, through net_objOrGhost 0x13e180) when there is one, else player_object.
+                                // Position and facing below are this object's
     Vec3 player_pos{};          // the object's position (its feet)
+    float player_height = 72;   // its height extent (object +0x20; 72 for a human-sized character): the views scale by it
     Vec3 head{};                // the eye point: head joint when the pose gives one, else feet + eye height
     bool head_from_pose = false;
     float facing = 0;           // heading of the character in the ground plane, degrees, same convention as game_yaw
@@ -94,6 +98,10 @@ int mode();
 const char* mode_name(int mode);                // "overhead", "action", "chase", "shoulder", "first"
 int mode_by_name(const char* name);             // -1 when it is not one
 void cycle(int step = 1);                       // the key: next view
+
+// Looking up (+) and down (-) by other means than the camera stick (a mouse: fpcontrols.h):
+// degrees added to the selected view's pitch at the next draw pass, inside its limits.
+void add_pitch(float degrees);
 
 // A per-view setting, as a line of the settings file gives it: key "view" (value = a mode
 // name), or "view.<mode>.<name>" with <name> one of fov, near, distance, height, side,
