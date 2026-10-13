@@ -85,6 +85,8 @@ void SceneTap::camera(const uint32_t* words, size_t count) {
     float f[CAMERA_WORDS];
     memcpy(f, words, sizeof f);
     frame.proj_scale = f[0];
+    frame.near_plane = frame.far_plane = 0;
+    if (count >= CAMERA_WORDS + 2) { memcpy(&frame.near_plane, words + CAMERA_WORDS, 4); memcpy(&frame.far_plane, words + CAMERA_WORDS + 1, 4); }
     memcpy(frame.world_to_view, f + 2, sizeof frame.world_to_view);
     // g_viewProjModel (words 46..61): world -> clip, rows as the programs hold them
     double vp[16];
@@ -357,6 +359,7 @@ void SceneTap::take(TapFrame& out) {
     memcpy(out.world_to_view, frame.world_to_view, sizeof out.world_to_view);
     memcpy(out.view_projection, frame.view_projection, sizeof out.view_projection);
     out.proj_scale = frame.proj_scale;
+    out.near_plane = frame.near_plane; out.far_plane = frame.far_plane;
     frame.clear();
     seen.clear();
     joints_at = -1;

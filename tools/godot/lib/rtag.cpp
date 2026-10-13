@@ -14,6 +14,7 @@
 
 #include "app_rt.h"
 #include "backend_gl.h"
+#include "fpview.h"
 #include "gfx_rt.h"
 #include "gl_offscreen.h"
 #include "pipeline.h"
@@ -79,10 +80,11 @@ struct OutFrame {
     int picture_w = 0, picture_h = 0;
     std::vector<std::string> shots, commands;
     uint32_t sim_tick = 0, flags = 0;
+    rtag_view view;
     scene::Frame scene;
 };
 
-struct Note { uint64_t number; uint32_t sim_tick, flags; std::vector<std::string> shots, commands; };
+struct Note { uint64_t number; uint32_t sim_tick, flags; std::vector<std::string> shots, commands; rtag_view view; };
 
 struct Machine;
 Machine* g_m;
@@ -98,6 +100,11 @@ struct GateSink : app::Sink {
     void vblank(unsigned field, uint64_t number) override;
     void vif1(const uint32_t* words, size_t count) override;
     std::vector<uint32_t> scene_codes;
+    // The view a frame is drawn with (fpview's call-out, when a draw pass has returned), and the view of the list
+    // that is being sent: a frame's packets go out at the start of the next frame, after the blank that follows its
+    // draw pass, so the view taken at the first transfer after a blank is that of the list the next blank closes.
+    rtag_view drawn_view, sent_view;
+    bool first_transfer = true;
     bool take(uint64_t number, Note& out) {
         std::lock_guard<std::mutex> hold(notes_lock);
         bool found = false;
@@ -105,6 +112,7 @@ struct GateSink : app::Sink {
             for (auto& s : notes.front().shots) out.shots.push_back(s);
             for (auto& s : notes.front().commands) out.commands.push_back(s);
             out.number = notes.front().number; out.sim_tick = notes.front().sim_tick; out.flags = notes.front().flags;
+            out.view = notes.front().view;
             notes.pop_front();
             found = true;
         }
@@ -182,6 +190,8 @@ void GateSink::vblank(unsigned field, uint64_t number) {
         memcpy(&note.sim_tick, ram + G_SIM_FRAME, 4);
         note.flags = 0;
     }
+    note.view = sent_view;
+    first_transfer = true;
     { std::lock_guard<std::mutex> hold(shots_lock); note.shots.swap(shots_asked); note.commands.swap(commands_asked); }
     { std::lock_guard<std::mutex> hold(notes_lock); notes.push_back(std::move(note)); }
     if (g_m->scene3d) scene::at_blank(rta::memory(), number);
@@ -190,11 +200,32 @@ void GateSink::vblank(unsigned field, uint64_t number) {
 }
 
 void GateSink::vif1(const uint32_t* words, size_t count) {
+    if (first_transfer) { first_transfer = false; sent_view = drawn_view; }
     if (g_m->scene3d) {                                 // the camera these packets were made with goes ahead of them
         scene::before_transfer(rta::memory(), scene_codes);
         if (!scene_codes.empty()) app::Sink::vif1(scene_codes.data(), scene_codes.size());
     }
     app::Sink::vif1(words, count);
+}
+
+// fpview's call-out, on the game's thread: a draw pass has returned, its camera still in place.
+void view_drawn(const fpview::View& v, Ctx*, void*) {
+    rtag_view& o = g_m->sink.drawn_view;
+    memset(&o, 0, sizeof o);
+    o.mode = v.mode; o.shown = v.shown; o.blend = v.blend;
+    o.active = v.active; o.fallback = v.fallback; o.hide_player = v.hide_player; o.have_head = v.head_from_pose;
+    snprintf(o.fallback_why, sizeof o.fallback_why, "%s", v.fallback_why ? v.fallback_why : "");
+    auto put = [](float* to, const fpview::Vec3& from) { to[0] = from.x; to[1] = from.y; to[2] = from.z; };
+    put(o.eye, v.eye); put(o.forward, v.forward); put(o.up, v.up); put(o.right, v.right);
+    o.fov = v.fov;
+    put(o.head, v.head);
+    o.yaw = std::atan2(v.forward.y, v.forward.x);
+    o.near_plane = v.near_plane; o.far_plane = v.far_plane;
+    put(o.player, v.player_pos);
+    o.facing = v.facing; o.look_pitch = v.look_pitch;
+    o.have_player = v.have_player; o.valid = 1;
+    o.tick = v.tick;
+    if (g_m->scene3d) scene::drawn(rta::memory(), v.near_plane, v.far_plane);
 }
 
 void app_command(const std::string& text, uint64_t frame) {
@@ -210,6 +241,11 @@ void app_command(const std::string& text, uint64_t frame) {
     if (w[0] == "shot" && w.size() >= 2) {
         std::lock_guard<std::mutex> hold(g_m->sink.shots_lock);
         g_m->sink.shots_asked.push_back(text.substr(text.find(w[1])));
+    } else if (w[0] == "view" && w.size() >= 2) {       // app view NAME | app view set KEY VALUE (as the native application's)
+        if (w[1] == "set" && w.size() >= 4) rtag_set_option(("view." + w[2]).c_str(), w[3].c_str());
+        else if (!rtag_set_option("view", w[1].c_str())) say("no such view: " + w[1]);
+    } else if (w[0] == "gamehud" && w.size() >= 2) {
+        rtag_set_option("game_hud", w[1].c_str());
     } else if (w[0] == "stats") {
         printf("[frame %llu] rtag: %s\n", (unsigned long long)frame, rtag_info());
         fflush(stdout);
@@ -236,11 +272,13 @@ void on_frame(FrameList& frame) {
     out->picture_w = out->picture_h = 0;
     Note note;
     note.sim_tick = 0; note.flags = 0;
+    memset(&note.view, 0, sizeof note.view);
     m.sink.take(frame.number, note);
     out->shots.swap(note.shots);
     out->commands.swap(note.commands);
     out->sim_tick = note.sim_tick;
     out->flags = note.flags;
+    out->view = note.view;
     if (m.scene3d) scene::take(frame, out->scene); else out->scene.clear();
     m.vertices += frame.vertices.size();
     m.commands += frame.commands.size();
@@ -315,6 +353,13 @@ void final_report() {                                   // on the game's thread,
     printf("rtag: textures made %llu, held %llu (%.1f MB as RGBA), freed %llu; draws without their texture %llu; surface copies %llu; VU1 instructions not implemented %llu\n",
            (unsigned long long)g.textures_made, (unsigned long long)g.textures_held, g.texture_bytes / 1048576.0, (unsigned long long)g.textures_freed,
            (unsigned long long)g.texture_missing, (unsigned long long)g.copies, (unsigned long long)m.renderer.vif.vu.bad);
+    {
+        uint64_t wide = 0, clamps = 0, marks = 0, active = 0, fallback = 0, hidden = 0;
+        gfxrt::figures(wide, clamps, marks);
+        fpview::figures(active, fallback, hidden);
+        printf("rtag: view modes: %llu draw passes with a view in place, %llu fell back to the game's camera; marks in the stream %llu; the game's own HUD layer %s\n",
+               (unsigned long long)active, (unsigned long long)fallback, (unsigned long long)marks, m.renderer.gs.hide_edge ? "off" : "on");
+    }
     if (m.scene3d) scene::report();
     fflush(stdout);
 }
@@ -348,6 +393,7 @@ void fill_view(Machine& m) {
     v.number = l.number;
     v.sim_tick = f.sim_tick;
     v.flags = f.flags;
+    v.view = f.view;
     m.draws.resize(l.commands.size());
     for (size_t k = 0; k < l.commands.size(); k++) {
         const render::DrawCmd& c = l.commands[k];
@@ -421,6 +467,7 @@ int rtag_has(const char* feature) {
     if (f == "films") return apprt::films_linked() ? 1 : 0;
     if (f == "picture") return 1;
     if (f == "scene3d") return 1;
+    if (f == "views") return 1;
     if (f == "network") return 0;
     return 0;
 }
@@ -466,6 +513,12 @@ int rtag_start(const rtag_config* config) {
     m->renderer.gs.layout.enabled = true;
     gfxrt::install();
     gfxrt::set_aspect(m->aspect);
+    // the view modes (tools/recomp/app/fpview.h): the game builds, culls and sends each frame for the selected view
+    memset(&m->sink.drawn_view, 0, sizeof m->sink.drawn_view);
+    memset(&m->sink.sent_view, 0, sizeof m->sink.sent_view);
+    fpview::install();
+    fpview::on_drawn(view_drawn);
+    if (config->view && *config->view) { int mode = fpview::mode_by_name(config->view); if (mode >= 0) fpview::set_mode(mode); }
     if (getenv("RTA_GS_LOG")) m->renderer.gs.log_display = true;
     if (m->scene3d) { scene::install(m->renderer); scene::set_aspect(m->aspect); }
     m->sink.renderer = &m->renderer;
@@ -560,6 +613,25 @@ void rtag_run(double hz) {
     if (!g_m) return;
     g_m->run_hz = hz > 0 ? hz : 0;
     g_m->sink.gate.set_open(hz < 0);
+}
+
+int rtag_set_option(const char* key, const char* value) {
+    if (!g_m || !key || !value) return 0;
+    std::string k = key, v = value;
+    if (k == "view") {
+        int mode = fpview::mode_by_name(value);
+        if (mode < 0) return 0;
+        fpview::set_mode(mode);
+        return 1;
+    }
+    if (k.compare(0, 5, "view.") == 0) return fpview::setting(key, value) ? 1 : 0;
+    if (k == "game_hud") {
+        bool off = v == "off" || v == "0" || v == "no";
+        gfxrt::set_hud_marks(off);                      // the marks that say what the HUD's draw functions made, also at 4:3
+        g_m->renderer.gs.hide_edge = off;               // ... and the GS model leaves those primitives out
+        return 1;
+    }
+    return 0;
 }
 
 void rtag_audio_pull(int16_t* stereo, int frames) {

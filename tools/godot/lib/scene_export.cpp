@@ -33,9 +33,15 @@ namespace scene {
 
 namespace {
 
-const float NEAR_PLANE = 18.0f, FAR_PLANE = 1800.0f;
-const float DEPTH_K = 4094.94f * FAR_PLANE;
-const float DEPTH_A = 4095.94f - DEPTH_K / (FAR_PLANE - NEAR_PLANE), DEPTH_B = DEPTH_K * NEAR_PLANE / (FAR_PLANE - NEAR_PLANE);
+const float NEAR_PLANE = 18.0f, FAR_PLANE = 1800.0f;    // the game's own; a view may bring others
+float g_depth_a = 0, g_depth_b = 0, g_near = NEAR_PLANE, g_far = FAR_PLANE;
+void depth_range(float near_plane, float far_plane) {
+    if (!(near_plane > 0) || !(far_plane > near_plane)) { near_plane = NEAR_PLANE; far_plane = FAR_PLANE; }
+    const float k = 4094.94f * far_plane;
+    g_depth_a = 4095.94f - k / (far_plane - near_plane);
+    g_depth_b = k * near_plane / (far_plane - near_plane);
+    g_near = near_plane; g_far = far_plane;
+}
 const float Y_SCALE = 0.4666667f;
 
 struct Camera {
@@ -51,8 +57,8 @@ bool g_diag = false;
 float g_k = 1.0f;               // widescreen factor: (4/3) / aspect
 std::unordered_map<uint32_t, int> g_target_width;
 // the game's thread
-bool g_first_after_blank = true;
-uint32_t g_block[render::SceneTap::CAMERA_WORDS];
+bool g_first_after_blank = true, g_have_drawn = false;
+uint32_t g_block[render::SceneTap::CAMERA_WORDS + 2];
 // figures
 uint64_t g_frames = 0, g_frames_with_camera = 0, g_exact_draws = 0, g_depth_draws = 0, g_exact_vertices = 0, g_depth_vertices = 0;
 uint64_t g_grid_n = 0, g_grid_hit = 0;
@@ -77,8 +83,8 @@ inline void to_world(const Camera& c, float px, float py, float z, float* w) {
 
 inline float depth_to_z(float list_z) {
     float zb = list_z * 65536.0f;
-    float d = zb * (1.0f / 16.0f) - DEPTH_A;
-    return d > 1e-3f ? DEPTH_B / d : FAR_PLANE * 4;
+    float d = zb * (1.0f / 16.0f) - g_depth_a;
+    return d > 1e-3f ? g_depth_b / d : g_far * 4;
 }
 
 }  // namespace
@@ -94,8 +100,22 @@ void before_transfer(const uint8_t* ram, std::vector<uint32_t>& codes) {
     codes.clear();
     if (!ram || !g_first_after_blank) return;
     g_first_after_blank = false;
-    memcpy(g_block, ram + render::SceneTap::CAMERA_ADDRESS, sizeof g_block);
-    render::SceneTap::camera_notes(g_block, render::SceneTap::CAMERA_WORDS, codes);
+    // the camera of the draw pass that built these packets (drawn()), or - a library without the view modes -
+    // the game's words as they are now, which is the same camera then
+    if (!g_have_drawn) {
+        memcpy(g_block, ram + render::SceneTap::CAMERA_ADDRESS, render::SceneTap::CAMERA_WORDS * 4);
+        float range[2] = {NEAR_PLANE, FAR_PLANE};
+        memcpy(g_block + render::SceneTap::CAMERA_WORDS, range, 8);
+    }
+    render::SceneTap::camera_notes(g_block, render::SceneTap::CAMERA_WORDS + 2, codes);
+}
+
+void drawn(const uint8_t* ram, float near_plane, float far_plane) {
+    if (!ram) return;
+    memcpy(g_block, ram + render::SceneTap::CAMERA_ADDRESS, render::SceneTap::CAMERA_WORDS * 4);
+    float range[2] = {near_plane, far_plane};
+    memcpy(g_block + render::SceneTap::CAMERA_WORDS, range, 8);
+    g_have_drawn = true;
 }
 
 void at_blank(const uint8_t*, uint64_t) { g_first_after_blank = true; }
@@ -113,6 +133,7 @@ void take(render::FrameList& list, Frame& out) {
     cam.F = tap.proj_scale;
     cam.ok = cam.F > 1.0f && cam.F < 1e6f && invert3(cam.m, cam.inverse);
     if (!cam.ok) return;
+    depth_range(tap.near_plane, tap.far_plane);
     const size_t count = list.vertices.size();
     out.vertices.resize(count);
     out.normals.assign(count * 3, 0.0f);
@@ -179,7 +200,7 @@ void take(render::FrameList& list, Frame& out) {
     memset(out.view_to_clip, 0, sizeof out.view_to_clip);
     out.view_to_clip[0] = cam.F * g_k / 640.0f;             // x: -1..1 over the 1280 pixels
     out.view_to_clip[5] = cam.F * Y_SCALE / 224.0f;         // y: -1..1 over the 448 lines (down)
-    out.view_to_clip[10] = DEPTH_A / 4096.0f; out.view_to_clip[11] = DEPTH_B / 4096.0f;      // z: the game's depth, 0..1 of 65536
+    out.view_to_clip[10] = g_depth_a / 4096.0f; out.view_to_clip[11] = g_depth_b / 4096.0f;      // z: the game's depth, 0..1 of 65536
     out.view_to_clip[14] = 1;                               // w = z
     for (int r = 0; r < 4; r++)
         for (int col = 0; col < 4; col++) {
@@ -190,8 +211,8 @@ void take(render::FrameList& list, Frame& out) {
     float origin[3] = {-cam.m[9], -cam.m[10], -cam.m[11]};
     for (int a = 0; a < 3; a++) out.camera_position[a] = origin[0] * cam.inverse[a] + origin[1] * cam.inverse[3 + a] + origin[2] * cam.inverse[6 + a];
     out.fov_y = 2.0f * std::atan(224.0f / (cam.F * Y_SCALE)) * 57.29578f;
-    out.near_plane = NEAR_PLANE;
-    out.far_plane = FAR_PLANE;
+    out.near_plane = g_near;
+    out.far_plane = g_far;
 }
 
 void fill(const Frame& frame, rtag_scene& view, rtag_draw* draws, size_t count) {

@@ -13,6 +13,8 @@
                                                # `extension --release` and the export templates, see below)
   python3 tools/godot/build.py patch           # maintenance: write recomp.patch from the snapshot as it is now
   options: --opt -O1|-O2   --refresh (snapshot: take tools/recomp as it is now, again)   --jobs N (default 8)
+           --from ROOT (snapshot: sources and compiled game from another root of the same layout, e.g. a work
+           copy in which a patch that changes the translation is applied and built: local/recomp-fp/root)
 
 What goes where.  Nothing derived from the game leaves local/:
   local/godot-spike/src/recomp.orig/   tools/recomp/{rt,render,sound,app} as they were when the snapshot was taken
@@ -67,15 +69,15 @@ RENDER_CORE = ['vu1.cpp', 'vif1.cpp', 'gs.cpp', 'renderer.cpp']
 RUNTIME = ['runtime.cpp', 'iop.cpp', 'script.cpp']
 NICE = ['nice', '-n', '10']
 EXPORTS = ['rtag_api_version', 'rtag_has', 'rtag_start', 'rtag_set_pad', 'rtag_step', 'rtag_poll', 'rtag_run', 'rtag_audio_pull',
-           'rtag_memory', 'rtag_fields', 'rtag_info', 'rtag_ended', 'rtag_exit_code', 'rtag_stop']
+           'rtag_memory', 'rtag_fields', 'rtag_info', 'rtag_ended', 'rtag_exit_code', 'rtag_stop', 'rtag_set_option']
 
 
-def copy_sources(to):
+def copy_sources(to, recomp):
     """tools/recomp/{rt,render,sound,app}: the files of each directory, not what lies below."""
     for part in PARTS:
         os.makedirs(os.path.join(to, part), exist_ok=True)
-        for name in sorted(os.listdir(os.path.join(RECOMP, part))):
-            path = os.path.join(RECOMP, part, name)
+        for name in sorted(os.listdir(os.path.join(recomp, part))):
+            path = os.path.join(recomp, part, name)
             if os.path.isfile(path) and re.search(r'\.(cpp|h|mm|inc|txt)$', name) and ' ' not in name:
                 shutil.copy2(path, os.path.join(to, part, name))
 
@@ -84,12 +86,16 @@ def snapshot(args):
     if os.path.isdir(SNAP) and not args.refresh:
         print('the snapshot is there (%s); --refresh takes tools/recomp as it is now' % SNAP)
         return 0
+    # --from ROOT: another root with the same layout (tools/recomp, local/recomp-out) - a work copy in which a patch
+    # that changes the translation (hle.txt) has been applied and built, e.g. the view modes: local/recomp-fp/root
+    root = os.path.abspath(args.source) if args.source else ROOT
+    recomp, recomp_out = os.path.join(root, 'tools', 'recomp'), os.path.join(root, 'local', 'recomp-out')
     for d in (SNAP, SNAP_ORIG):
         shutil.rmtree(d, ignore_errors=True)
-    copy_sources(SNAP_ORIG)
-    copy_sources(SNAP)
+    copy_sources(SNAP_ORIG, recomp)
+    copy_sources(SNAP, recomp)
     for game, (objects, gen) in GAMES.items():
-        source, to = os.path.join(RECOMP_OUT, objects), os.path.join(SRC, 'game-' + game)
+        source, to = os.path.join(recomp_out, objects), os.path.join(SRC, 'game-' + game)
         shutil.rmtree(to, ignore_errors=True)
         if not os.path.isdir(source):
             print('no %s: run tools/recomp/app/build.py%s first; the %s library cannot be built' % (source, ' --original' if game == 'orig' else '', game))
@@ -102,13 +108,13 @@ def snapshot(args):
                 shutil.copy2(os.path.join(source, name), os.path.join(to, name))
                 count += 1
         for name in ('funcs.h',):
-            shutil.copy2(os.path.join(RECOMP_OUT, gen, name), os.path.join(to, name))
+            shutil.copy2(os.path.join(recomp_out, gen, name), os.path.join(to, name))
         print('game-%s: %d objects from %s' % (game, count, objects))
     vu = os.path.join(SRC, 'gen-vu')
     shutil.rmtree(vu, ignore_errors=True)
     os.makedirs(vu)
     for name in ('vu1_fast.cpp', 'vu1_translated.cpp'):
-        path = os.path.join(RECOMP_OUT, 'gen-vu', name)
+        path = os.path.join(recomp_out, 'gen-vu', name)
         if os.path.exists(path):
             shutil.copy2(path, os.path.join(vu, name))
     if os.path.exists(PATCH) and os.path.getsize(PATCH):    # (the new files of tools/godot/core are copied in by `lib`)
@@ -117,7 +123,7 @@ def snapshot(args):
         if result.returncode != 0:
             print('recomp.patch does not apply to tools/recomp as it is now:\n' + result.stderr)
             return 1
-    open(os.path.join(SRC, 'SNAPSHOT.txt'), 'w').write('taken %s from %s\n' % (time.strftime('%Y-%m-%d %H:%M:%S'), RECOMP))
+    open(os.path.join(SRC, 'SNAPSHOT.txt'), 'w').write('taken %s from %s (objects: %s)\n' % (time.strftime('%Y-%m-%d %H:%M:%S'), recomp, recomp_out))
     print('snapshot taken: ' + SNAP)
     return 0
 
@@ -215,6 +221,8 @@ def build_lib(args):
     jobs.append((os.path.join(sound, 'sound_rta.cpp'), rt_flags + ['-I', sound, '-I', LIB, '-DRTA_AUDIO_HOST="audio_host.inc"'], 'rt_'))
     jobs.append((os.path.join(app, 'app_rt.cpp'), rt_flags + ['-I', app], 'a_'))
     jobs.append((os.path.join(app, 'gfx_rt.cpp'), rt_flags + ['-I', app], 'a_'))
+    if os.path.exists(os.path.join(app, 'fpview.cpp')):      # the view modes (a snapshot with tools/recomp/app/fpview.patch applied)
+        jobs.append((os.path.join(app, 'fpview.cpp'), rt_flags + ['-I', app], 'a_'))
     if not args.original:
         jobs.append((os.path.join(app, 'film.cpp'), rt_flags + ['-I', app], 'a_'))     # the films: only this translation leaves their entries open
     jobs.append((os.path.join(LIB, 'rtag.cpp'), lib_flags, 'g_'))
@@ -366,6 +374,7 @@ def main():
     parser.add_argument('--original', action='store_true')
     parser.add_argument('--release', action='store_true')
     parser.add_argument('--refresh', action='store_true')
+    parser.add_argument('--from', dest='source', default='', help='snapshot: another root (tools/recomp + local/recomp-out) to take sources and objects from')
     parser.add_argument('--jobs', type=int, default=8)
     args = parser.parse_args()
     args.jobs = max(1, min(args.jobs, 8))               # never more: other jobs share the machine

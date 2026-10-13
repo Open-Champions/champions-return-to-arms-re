@@ -1,3 +1,86 @@
+diff -ru recomp.orig/app/gfx_rt.cpp recomp/app/gfx_rt.cpp
+--- recomp.orig/app/gfx_rt.cpp
++++ recomp/app/gfx_rt.cpp
+@@ -40,6 +40,7 @@
+ 
+ enum Mode : u16 { M_NONE = 0, M_EDGE = 1, M_WORLD = 2, M_BILLBOARD = 3, M_MENU3D = 4 };
+ 
++std::atomic<bool> g_marks_always{false};    // set_hud_marks: the marks also at 4:3
+ std::atomic<float> g_wanted{1.0f};      // k = (4/3) / aspect the application asks for
+ float g_k = 1.0f;                       // of the frame being built
+ int g_menu_view = 0;                    // inside a draw task that puts a 3-D figure into a 4:3 menu
+@@ -188,7 +189,7 @@
+ }
+ struct Scope {
+     bool on;
+-    explicit Scope(Mode mode) { read_options(); on = g_tags && g_k != 1.0f; if (on) enter(mode); }
++    explicit Scope(Mode mode) { read_options(); on = g_tags && (g_k != 1.0f || g_marks_always); if (on) enter(mode); }
+     ~Scope() { if (on) leave(); }
+ };
+ 
+@@ -223,6 +224,13 @@
+         }
+         return;
+     }
++    // a tag outside the display list (the present pass, uploads) is nobody's: with the marks sent for the HUD switch
++    // it must not go on under the mark of the last thing the list drew
++    if (g_marks_always && g_stream_mark != 0 && g_stream_mark != 0xFFFF) {
++        g_stream_mark = 0;
++        stream.push_back(0x00A50000u);
++        g_marks++;
++    }
+ }
+ 
+ void frame_hook(Ctx* c, int phase) {
+@@ -298,6 +306,8 @@
+     rt_frame_hook = frame_hook;
+     rt_dma_tag = dma_tag;
+ }
++void set_hud_marks(bool on) { g_marks_always = on; }
++
+ void set_aspect(double aspect) {
+     if (aspect < 4.0 / 3.0) aspect = 4.0 / 3.0;         // narrower than the game's picture: bars, not a taller view
+     if (aspect > 4.0) aspect = 4.0;
+diff -ru recomp.orig/app/gfx_rt.h recomp/app/gfx_rt.h
+--- recomp.orig/app/gfx_rt.h
++++ recomp/app/gfx_rt.h
+@@ -22,6 +22,10 @@
+ // The aspect ratio of the 3-D view, width / height; 4/3 is the game as it is.  From any
+ // thread; the game takes it at its next frame.
+ void set_aspect(double aspect);
++// The marks that say which draw function made which packets are sent at 4:3 as well (they are only needed for the
++// wide picture's layout otherwise): for a renderer that is asked to leave the game's own HUD layer out (Gs::hide_edge).
++// From any thread; takes effect with the next frame's draw functions.
++void set_hud_marks(bool on);
+ // Figures for the report: frames built wide, calls of the screen clamp that were handed
+ // the 4:3 planes.
+ void figures(uint64_t& wide_frames, uint64_t& clamp_calls, uint64_t& marks);
+diff -ru recomp.orig/render/gs.cpp recomp/render/gs.cpp
+--- recomp.orig/render/gs.cpp
++++ recomp/render/gs.cpp
+@@ -993,6 +993,8 @@
+     if (c.ztst == 0) g_skip_draw = true;
+     // a wide picture: the scissor of 2-D things (a text box) moves with them
+     cur_wide = buffer_width == 1280;
++    // the game's own HUD layer switched off: what its draw functions put into the 3-D buffer without a depth test
++    if (hide_edge && cur_wide && c.ztst == 1 && layout.mode() == Layout::M_EDGE) g_skip_draw = true;
+     if (cur_wide && layout.active() && ((cur_path != 0 && c.ztst == 1) || layout.mode() == Layout::M_MENU3D)) {
+         float x0 = (float)c.scissor[0], x1 = (float)c.scissor[2];
+         if (layout.scissor(x0, x1)) { c.scissor_moved = true; c.scissor_x[0] = x0; c.scissor_x[1] = x1; }
+diff -ru recomp.orig/render/gs.h recomp/render/gs.h
+--- recomp.orig/render/gs.h
++++ recomp/render/gs.h
+@@ -54,6 +54,10 @@
+     bool weave = true;                  // sample two-field interface art as one picture
+     bool name_textures = false;         // work out the emulator-based build's name of every texture made (TextureData::named)
+     bool no_interlace = true;           // drop the half-line of XYOFFSET
++    // The game's own HUD layer off: primitives the game side marked as edge-anchored interface (layout.h M_EDGE: player
++    // status, gold, compass, minimap, spell selector - app/gfx_rt.cpp) are not drawn.  The marks have to be in the
++    // stream for it (gfxrt::set_hud_marks: at 4:3 they are not sent otherwise).  For a host that draws its own HUD.
++    bool hide_edge = false;
+     int trace = 0;                      // > 0: print draws to stderr
+     bool time_paths = false;
+     std::function<void()> on_far_vertex;    // debugging (RTA_GS_FAR): a vertex far outside every surface was drawn
 diff -ru recomp.orig/render/vif1.cpp recomp/render/vif1.cpp
 --- recomp.orig/render/vif1.cpp
 +++ recomp/render/vif1.cpp

@@ -94,6 +94,7 @@ struct TapFrame {
     float world_to_view[12];                // g_cameraMatrix: four rows of three (camera = p.x r0 + p.y r1 + p.z r2 + r3)
     float view_projection[16];              // world -> clip, the depth column x 2^-50
     float proj_scale = 0;                   // g_projScale
+    float near_plane = 0, far_plane = 0;    // of the projection, when the game side said (words 62 and 63 of the block); else 0
     void clear() { pieces.clear(); vertices.clear(); sources.clear(); joints.clear(); }
 };
 
@@ -113,7 +114,8 @@ class SceneTap {
     // Attach to a renderer (before anything is fed).  The renderer's kick goes through the tap from here on.
     void install(Renderer& renderer);
     // The game's camera, as the game holds it when the packets that follow were made: the 62 words at
-    // 0x44f108 (g_projScale, g_cameraMatrix, g_viewProj, g_viewProjWorld, g_viewProjModel).  Either
+    // 0x44f108 (g_projScale, g_cameraMatrix, g_viewProj, g_viewProjWorld, g_viewProjModel), and optionally two
+    // more: the projection's near and far plane as floats (a view may have its own).  Either
     // called directly, or carried in the VIF1 stream as notes (camera_notes() makes them).
     void camera(const uint32_t* words, size_t count);
     // The frame's pieces so far; the caller swaps them out at a vertical blank (after the FrameList's

@@ -3,6 +3,7 @@
 
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
+#include <godot_cpp/variant/vector3.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 #include <cstring>
@@ -67,6 +68,8 @@ int RtaMachine::start(const Dictionary& config) {
     c.scene3d = (int)config.get("scene3d", 0);
     c.sound = (int)config.get("sound", RTAG_SOUND_PULL);
     c.gain = (double)config.get("gain", 1.0);
+    std::string view = text_of(config.get("view", ""));
+    c.view = view.empty() ? nullptr : view.c_str();
     c.emulator_timing = (int)config.get("emulator_timing", 0);
     c.films = (int)config.get("films", 1);
     c.argc = (int)argv.size();
@@ -108,6 +111,39 @@ bool RtaMachine::ended() const { return started && rta_library().rtag_ended() !=
 int RtaMachine::exit_code() const { return started ? rta_library().rtag_exit_code() : 0; }
 String RtaMachine::info() const { return started ? String::utf8(rta_library().rtag_info()) : String(); }
 int64_t RtaMachine::fields() const { return started ? (int64_t)rta_library().rtag_fields() : 0; }
+
+Dictionary RtaMachine::get_view() const {
+    Dictionary d;
+    if (!frame) return d;
+    const rtag_view& v = frame->view;
+    static const char* const names[5] = {"overhead", "action", "chase", "shoulder", "first"};
+    auto vec = [](const float* f) { return Vector3(f[0], f[1], f[2]); };
+    d["valid"] = v.valid != 0;
+    d["mode"] = v.mode;
+    d["mode_name"] = String(v.mode >= 0 && v.mode < 5 ? names[v.mode] : "overhead");
+    d["shown"] = v.shown;
+    d["blend"] = v.blend;
+    d["active"] = v.active != 0;
+    d["fallback"] = v.fallback != 0;
+    d["fallback_why"] = String::utf8(v.fallback_why);
+    d["hide_player"] = v.hide_player != 0;
+    d["eye"] = vec(v.eye); d["forward"] = vec(v.forward); d["up"] = vec(v.up); d["right"] = vec(v.right);
+    d["fov"] = v.fov;
+    d["head"] = vec(v.head);
+    d["have_head"] = v.have_head != 0;
+    d["yaw"] = v.yaw;
+    d["near"] = v.near_plane; d["far"] = v.far_plane;
+    d["player"] = vec(v.player);
+    d["have_player"] = v.have_player != 0;
+    d["facing"] = v.facing;
+    d["look_pitch"] = v.look_pitch;
+    d["tick"] = (int64_t)v.tick;
+    return d;
+}
+
+bool RtaMachine::set_option(const String& key, const String& value) {
+    return started && rta_library().rtag_set_option(key.utf8().get_data(), value.utf8().get_data()) != 0;
+}
 
 PackedStringArray RtaMachine::get_shots() const {
     PackedStringArray out;
@@ -175,6 +211,8 @@ void RtaMachine::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_frame_aspect"), &RtaMachine::get_frame_aspect);
     ClassDB::bind_method(D_METHOD("get_draw_count"), &RtaMachine::get_draw_count);
     ClassDB::bind_method(D_METHOD("get_vertex_count"), &RtaMachine::get_vertex_count);
+    ClassDB::bind_method(D_METHOD("get_view"), &RtaMachine::get_view);
+    ClassDB::bind_method(D_METHOD("set_option", "key", "value"), &RtaMachine::set_option);
     ClassDB::bind_method(D_METHOD("get_shots"), &RtaMachine::get_shots);
     ClassDB::bind_method(D_METHOD("get_host_commands"), &RtaMachine::get_host_commands);
     ClassDB::bind_method(D_METHOD("get_picture"), &RtaMachine::get_picture);

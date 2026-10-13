@@ -21,6 +21,8 @@
 //   --list-frames A,B   ... and the layout of these frames (vertical blank numbers) in full
 //   --sound none|machine|pull   (default machine; pull: this program asks for 10 ms every 10 ms and throws it away)
 //   --paced             the library's own clock at 59.94 instead of as fast as it goes
+//   --view NAME         the camera view (overhead, action, chase, shoulder, first); scripts: app view NAME
+//   --no-game-hud       the game's own HUD layer is left out; scripts: app gamehud off|on
 //   --stop-after N      end after N vertical blanks
 //   --unpaced, --offscreen   accepted and ignored (rta_app's options, so that the same wrappers start both)
 // After "--": what rta_app takes there ([boot|resume] --opt key=value --fields N ...).
@@ -44,7 +46,7 @@
 
 #define RTAG_FUNCTIONS(F) \
     F(rtag_api_version) F(rtag_start) F(rtag_step) F(rtag_poll) F(rtag_run) F(rtag_audio_pull) F(rtag_info) F(rtag_ended) \
-    F(rtag_exit_code) F(rtag_stop) F(rtag_has) F(rtag_set_pad)
+    F(rtag_exit_code) F(rtag_stop) F(rtag_has) F(rtag_set_pad) F(rtag_set_option)
 struct Api {
 #define RTAG_MEMBER(name) decltype(&::name) name = nullptr;
     RTAG_FUNCTIONS(RTAG_MEMBER)
@@ -61,7 +63,8 @@ int main(int argc, char** argv) {
     std::string lib, disc = getenv("RTA_DISC") ? getenv("RTA_DISC") : "", data = here + "/host-data", workspace, script, sound = "machine";
     int width = 640, height = 448, samples = 0, anisotropy = 1, mipmaps = 0, every = 0, lists = 0, scene3d = 0;
     double aspect = 0;
-    bool paced = false, stats = false;
+    bool paced = false, stats = false, no_hud = false;
+    std::string view;
     std::set<unsigned long long> stat_frames;
     std::map<std::string, unsigned long long> combos, layouts;
     unsigned long long stop_after = 0;
@@ -89,6 +92,8 @@ int main(int argc, char** argv) {
         else if (a == "--list-frames") { std::string t = next(); for (char* q = &t[0]; *q;) { stat_frames.insert(strtoull(q, &q, 10)); if (*q) q++; } stats = true; lists = 1; }
         else if (a == "--sound") sound = next();
         else if (a == "--paced") paced = true;
+        else if (a == "--view") view = next();
+        else if (a == "--no-game-hud") no_hud = true;
         else if (a == "--stop-after") stop_after = strtoull(next().c_str(), nullptr, 10);
         else if (a == "--unpaced" || a == "--offscreen" || a == "--plain") {}
         else { fprintf(stderr, "rtag_host: unknown option %s (the head of tools/godot/lib/host_main.cpp lists them)\n", a.c_str()); return 2; }
@@ -121,6 +126,7 @@ int main(int argc, char** argv) {
     config.sound = sound == "none" ? RTAG_SOUND_NONE : sound == "pull" ? RTAG_SOUND_PULL : RTAG_SOUND_MACHINE;
     config.gain = 0;
     config.films = 1;
+    config.view = view.empty() ? nullptr : view.c_str();
     config.argc = (int)pass.size();
     config.argv = pass.data();
     int started = api.rtag_start(&config);
@@ -142,6 +148,7 @@ int main(int argc, char** argv) {
                 api.rtag_audio_pull(buffer.data(), 480);
             }
         });
+    if (no_hud) api.rtag_set_option("game_hud", "off");
     if (paced) api.rtag_run(59.94);
     unsigned long long frames = 0, vertices = 0, draws = 0, textures = 0, scene_vertices = 0, scene_frames = 0, scene_pieces = 0;
     for (;;) {

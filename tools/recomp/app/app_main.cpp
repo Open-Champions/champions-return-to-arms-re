@@ -1153,8 +1153,8 @@ static void final_report() {                            // on the game's thread,
     double wall = now_ms() - s.start_ms, cpu = cpu_ms() - s.start_cpu, n = s.blanks ? (double)s.blanks : 1;
     printf("rta_app: %llu vertical blanks in %.0f ms: %.1f pictures a second of wall time at %d x %d (%s)\n", (unsigned long long)s.blanks, wall,
            1000.0 * n / wall, s.opt.size_w, s.opt.size_h, s.opt.offscreen ? "no window" : "window");
-    printf("rta_app: per picture %.2f ms of processor time over all threads; main thread %.2f ms in OpenGL and the swap; %.0f vertices, %.0f draw commands\n",
-           cpu / n, s.draw_ms / n, s.vertices / n, s.commands / n);
+    printf("rta_app: per picture %.2f ms of processor time over all threads; the thread that draws %.2f ms in OpenGL and the swap; %.0f vertices, %.0f draw commands "
+           "sent as %.0f draw calls\n", cpu / n, s.draw_ms / n, s.vertices / n, s.commands / n, (double)s.backend->draw_calls() / n);
     if (g_sink && g_sink->blanks) {
         double b = (double)g_sink->blanks;
         printf("rta_app: per picture, by stage: game side %.2f ms of wall time (translated game, runtime, sound, the sink's copying); decoder %.2f ms of wall time, "

@@ -1,11 +1,14 @@
-Champions: Return to Arms - native build for Windows (experimental, second test build)
-=====================================================================================
+Champions: Return to Arms - native build for Windows (experimental, third test build)
+====================================================================================
 
 This program was built on a Mac and has NEVER BEEN RUN on Windows. You are the first test.
 Nothing is installed; everything it writes goes into the folder "rta-data" beside it.
 
-New in this build: playing online through a lobby server, widescreen and the other picture
-settings. None of it has been seen on Windows either.
+In the second build: playing online through a lobby server, widescreen and the other
+picture settings. New in this one (2026-10-13): the way the game is held to 60 pictures a
+second (check 3, "How even is it"), a fix for threads that were left behind after every
+online game, and the fix set every build of this day has. None of it has been seen on
+Windows either.
 
 You need
   - Windows 10 (version 1903 or later) or Windows 11, 64-bit
@@ -52,6 +55,24 @@ Five checks, in this order
      the script expects a blank memory card.)
 
   3. The game: drag the .iso onto play.bat and play for a few minutes.
+     How even is it. The game is now let go by a clock a few milliseconds ahead of the
+     moment each picture is due, and that clock is set by your display: this was written
+     for the Mac, measured there, and carried over to Windows by reading - you are the
+     first to see it. Please look at three things and say what you saw:
+       - walking through a level with the camera moving: does the picture move evenly,
+         or does it hitch (a short stop every second or so, or now and then)?
+       - drag the window by its title bar while the game runs, and make it larger and
+         smaller: the game should go on (sound too), the picture may stop while you drag;
+       - click another program so that it lies over the game's window, wait a few
+         seconds, come back: the game should have gone on, with no burst of fast motion.
+     Then close the game and look at the last lines of rta-data\rta_app-log.txt; they
+     start with "rta_app: pacing:" and "rta_app: path:". Send the log in any case. What
+     they should say on a PC that keeps up: nearly every picture "stood for" the same
+     number of refreshes (1 on a 60 Hz display, 2 on 120 Hz, 4 on 240 Hz), "the swaps
+     wait for the display", only a few pictures "more than half a refresh late" or
+     "drawn and not shown".
+     If the picture stutters, start once more with  --pacing queued  (the way the first
+     two builds held the game) and say which of the two is better; send both logs.
 
   4. The picture. The first start writes rta-data\settings.txt; every line in it says what
      it is, and you can edit it with Notepad (close the game first).
@@ -112,6 +133,7 @@ What to report
   - if it closes by itself: the last lines of rta-data\rta_app-log.txt say why
 
 When something is wrong
+  --pacing queued       the pacing of the earlier builds (see check 3)
   --no-sound            no sound device is opened
   --no-films            the films at the start are skipped
   --plain               the picture without widescreen, multisampling and mip maps

@@ -41,6 +41,12 @@ class RtaMachine : public RefCounted {
     double get_frame_aspect() const { return frame ? frame->aspect : 4.0 / 3.0; }
     int get_draw_count() const { return frame ? (int)frame->draw_count : 0; }
     int get_vertex_count() const { return frame ? (int)frame->vertex_count : 0; }
+    // The camera the frame was drawn with (rtag_view): mode, mode_name, shown, blend, active, fallback, fallback_why,
+    // eye, forward, up, right (Vector3, the game's world: z up), fov, head, hide_player, yaw, near, far, player, facing,
+    // look_pitch, tick, valid.  Empty before the first frame.
+    Dictionary get_view() const;
+    // "view" = overhead|action|chase|shoulder|first, "view.<mode>.<name>" = a view's setting, "game_hud" = on|off
+    bool set_option(const String& key, const String& value);
     PackedStringArray get_shots() const;
     PackedStringArray get_host_commands() const;
     Ref<Image> get_picture() const;         // null when the frame carries none

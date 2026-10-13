@@ -9,7 +9,7 @@
 
 #define RTAG_FUNCTIONS(F) \
     F(rtag_api_version) F(rtag_has) F(rtag_start) F(rtag_set_pad) F(rtag_step) F(rtag_poll) F(rtag_run) F(rtag_audio_pull) \
-    F(rtag_memory) F(rtag_fields) F(rtag_info) F(rtag_ended) F(rtag_exit_code) F(rtag_stop)
+    F(rtag_memory) F(rtag_fields) F(rtag_info) F(rtag_ended) F(rtag_exit_code) F(rtag_stop) F(rtag_set_option)
 
 struct RtaLibrary {
 #define RTAG_MEMBER(name) decltype(&::name) name = nullptr;

@@ -30,6 +30,9 @@ extends Node
 #   --test TEXT         a test run: small window titled "AGENT TEST - TEXT" that takes no keyboard, silent
 #   --stop-after N      quit after N vertical blanks
 #   --figures FILE      write the timing figures there at the end
+#   --view NAME         the camera view: overhead (the game's own), action, chase, shoulder, first; V cycles them
+#                       (the game builds and culls each frame for the view itself: tools/recomp/app/fpview.h)
+#   --no-game-hud       the game's own HUD layer is left out (for a HUD drawn by Godot)
 #   --light, --shadow, --pull-back F, --orbit DEG     scene mode: see scene_view.gd
 #   -- ARGS             the rest goes to the runtime as it does after rta_app's "--"
 #
@@ -83,7 +86,7 @@ var opt := {
 	"disc": "", "data": "", "workspace": "", "lib": "", "mode": "picture", "size": Vector2i.ZERO, "window": Vector2i.ZERO,
 	"aspect": 0.0, "aspect_window": false, "samples": 0, "script": "", "godot_shots": "", "unpaced": false, "mute": false,
 	"no_sound": false, "test": "", "stop_after": 0, "figures": "", "args": PackedStringArray(),
-	"light": false, "shadow": false, "pull_back": 1.0, "orbit": 0.0,
+	"view": "", "game_hud": true, "light": false, "shadow": false, "pull_back": 1.0, "orbit": 0.0,
 }
 var machine: RtaMachine
 var view: Control                       # shows the picture (view.gd)
@@ -176,6 +179,8 @@ func _parse_arguments() -> void:
 			"--test": opt.test = value; k += 1
 			"--stop-after": opt.stop_after = value.to_int(); k += 1
 			"--figures": opt.figures = value; k += 1
+			"--view": opt.view = value; k += 1
+			"--no-game-hud": opt.game_hud = false
 			"--light": opt.light = true
 			"--shadow": opt.shadow = true
 			"--pull-back": opt.pull_back = value.to_float(); k += 1
@@ -274,7 +279,7 @@ func _start() -> void:
 		"lists": 0 if own_picture else 1,
 		"picture_width": size.x if own_picture else 0, "picture_height": size.y if own_picture else 0, "picture_every_frame": 1,
 		"samples": opt.samples, "aspect": opt.aspect, "scene3d": 1 if opt.mode == "scene" else 0,
-		"sound": sound, "gain": 1.0, "films": 1, "args": opt.args,
+		"sound": sound, "gain": 1.0, "films": 1, "args": opt.args, "view": opt.view,
 	}
 	var result := machine.start(config)
 	if result != 0:
@@ -284,6 +289,8 @@ func _start() -> void:
 		"applied" if machine.has("fixes") else "not applied", "linked" if machine.has("films") else "not linked", opt.mode, size.x, size.y,
 		"not paced" if opt.unpaced else "paced"])
 	view.set("message", "")
+	if not opt.game_hud:
+		machine.set_option("game_hud", "off")
 	if own_picture:
 		picture_texture = ImageTexture.new()
 	else:
@@ -552,6 +559,17 @@ func _finish(code: int) -> void:
 		view.set("drawer", null)
 		drawer.call("release")
 	get_tree().quit(code)
+
+
+const VIEWS := ["overhead", "action", "chase", "shoulder", "first"]
+
+
+func _unhandled_key_input(event: InputEvent) -> void:
+	# V: the next camera view (not in a test window, which takes no keys)
+	var key := event as InputEventKey
+	if key != null and key.pressed and not key.echo and key.physical_keycode == KEY_V and started and opt.test == "":
+		var now: int = machine.get_view().get("mode", 0)
+		machine.set_option("view", VIEWS[(now + 1) % VIEWS.size()])
 
 
 func _notification(what: int) -> void:

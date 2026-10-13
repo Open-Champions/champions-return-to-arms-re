@@ -92,6 +92,9 @@ typedef struct rta_gs_player {
     uint8_t level_acknowledged; /* +0x58 s8: lower than level = a level-up is waiting in the character screen */
     uint8_t stat_points;        /* +0xec s8 */
     uint8_t weapon_class;       /* +0x4a86: 0 one hand, 1/2 two hand, 3 long, 4 bow, 5 unarmed, 6 thrown, 7 dual */
+    uint8_t selector_open;      /* the game's quick-cast selector is up for this player: g_spellSelectorAlpha 0x86a8d8[slot] > 0 (hud_spellSelect 0x1dd270) */
+    int8_t selector_position;   /* the position highlighted there: 0..7 clockwise from up, -1 none (0x4f66b8[slot]) */
+    uint8_t pad[2];
     int32_t class_index;        /* +0x50 */
     int32_t skill_points;       /* +0xe8 */
     float health, health_max;   /* +0xac, +0xb0 (FINDINGS G3; Ran) */
@@ -133,7 +136,8 @@ enum {
     RTA_GS_CF_FRIENDLY = 128,   /* object flag 0x1000000 / creature flag 0x4000000, or a charmed helper on the players' team */
     RTA_GS_CF_NAMED = 256,      /* has a ShowName (object +0x368): can be talked to */
     RTA_GS_CF_INERT = 512,      /* object +0x231 != 0: hidden, waiting or frozen - takes no damage, picks no target */
-    RTA_GS_CF_ONSCREEN = 1024   /* screen[] lies inside the picture */
+    RTA_GS_CF_ONSCREEN = 1024,  /* screen[] lies inside the picture */
+    RTA_GS_CF_MARKED = 2048     /* creature flag 0x80000000000 (script showOnMap): the game's own map shows it; kept in the list up to 3840 away */
 };
 
 typedef struct rta_gs_creature {
@@ -238,7 +242,14 @@ enum {
     RTA_GS_PH_CAMERA_HELD = 2048 /* the game's camera is not in follow mode (camera +0x34 != 1): the game hides its own HUD then */
 };
 
-enum { RTA_GS_NET_OK = 0, RTA_GS_NET_STALLED = 1, RTA_GS_NET_DESYNC = 2, RTA_GS_NET_CHECKSUM = 3, RTA_GS_NET_LEAVING = 4, RTA_GS_NET_ALONE = 5 };
+enum {
+    RTA_GS_NET_OK = 0,
+    RTA_GS_NET_STALLED = 1,     /* no simulation tick for more than half a second (0x40279c > 30): waiting for the others */
+    RTA_GS_NET_DESYNC = 2,      /* a peer's "out of sync" byte is set (peer +0x44d7; FINDINGS D1): net_notice_slot says who */
+    RTA_GS_NET_CHECKSUM = 3,    /* g_checksumFailed 0x4f7144 (docs/ui.md P9) */
+    RTA_GS_NET_LEAVING = 4,     /* g_netExitCountdown 0x4f6948 runs: this machine is about to leave the game */
+    RTA_GS_NET_LOST = 5         /* the stall is longer than 1200 frames, or this machine was dropped (0x4027a0) */
+};
 
 typedef struct rta_gamestate {
     uint32_t version;           /* RTA_GS_VERSION */
@@ -288,7 +299,9 @@ typedef struct rta_gamestate {
     int32_t net_stall_frames;   /* the stall counter 0x40279c: displayed frames without a tick */
     int32_t net_exit_frames;    /* g_netExitCountdown 0x4f6948 */
     int32_t chat_count;
-    char chat[RTA_GS_CHAT_LINES][96];
+    char chat[RTA_GS_CHAT_LINES][96];   /* "name: text", oldest first: the game's own log 0x8e8ac8 (8 x 0x7e bytes), lines younger than 601 ticks */
+    int8_t chat_slot[RTA_GS_CHAT_LINES];   /* who said it */
+    uint8_t pad2[2];
 } rta_gamestate;
 
 typedef struct rta_gs_reader rta_gs_reader;     /* what the reader keeps between calls */

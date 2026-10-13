@@ -621,15 +621,26 @@ void GlBackend::execute(const FrameList& frame) {
         GLuint texture = ~0u, sampler = ~0u;
         int depth_func = -1, depth_mask = -1, mask_rgb = -1, mask_a = -1, blending = -1, equation = -1, scissor[4] = {-1, -1, -1, -1};
     } cache;
-    auto set1i = [&](GLint location, int& held, int value) { if (held != value) { held = value; f->glUniform1i(location, value); } };
-    auto set1f = [&](GLint location, float& held, float value) { if (!(held == value)) { held = value; f->glUniform1f(location, value); } };
-    auto set2f = [&](GLint location, float* held, float a, float b) { if (!(held[0] == a && held[1] == b)) { held[0] = a; held[1] = b; f->glUniform2f(location, a, b); } };
+    // A draw is not sent at once: the next command is added to it when it draws the same
+    // kind of primitive from the vertices that follow and changes nothing (the same
+    // primitives in the same order, in one call: a draw call is what this thread's time
+    // goes into).  `flush` sends what waits; everything that changes state calls it first.
+    struct Waiting { GLenum mode = 0; GLint first = 0; GLsizei count = 0; } waiting;
+    auto flush = [&] {
+        if (!waiting.count) return;
+        f->glDrawArrays(waiting.mode, waiting.first, waiting.count);
+        g.draws++;
+        waiting.count = 0;
+    };
+    auto set1i = [&](GLint location, int& held, int value) { if (held != value) { flush(); held = value; f->glUniform1i(location, value); } };
+    auto set1f = [&](GLint location, float& held, float value) { if (!(held == value)) { flush(); held = value; f->glUniform1f(location, value); } };
+    auto set2f = [&](GLint location, float* held, float a, float b) { if (!(held[0] == a && held[1] == b)) { flush(); held[0] = a; held[1] = b; f->glUniform2f(location, a, b); } };
     auto set4f = [&](GLint location, float* held, float a, float b, float c2, float d) {
-        if (!(held[0] == a && held[1] == b && held[2] == c2 && held[3] == d)) { held[0] = a; held[1] = b; held[2] = c2; held[3] = d; f->glUniform4f(location, a, b, c2, d); }
+        if (!(held[0] == a && held[1] == b && held[2] == c2 && held[3] == d)) { flush(); held[0] = a; held[1] = b; held[2] = c2; held[3] = d; f->glUniform4f(location, a, b, c2, d); }
     };
     auto bind = [&](GLuint texture, GLuint sampler) {
-        if (cache.texture != texture) { cache.texture = texture; f->glBindTexture(GL_TEXTURE_2D, texture); }
-        if (cache.sampler != sampler) { cache.sampler = sampler; f->glBindSampler(0, sampler); }
+        if (cache.texture != texture) { flush(); cache.texture = texture; f->glBindTexture(GL_TEXTURE_2D, texture); }
+        if (cache.sampler != sampler) { flush(); cache.sampler = sampler; f->glBindSampler(0, sampler); }
     };
     for (size_t command = 0; command < frame.commands.size(); command++) {
         const DrawCmd& c = frame.commands[command];
@@ -638,6 +649,7 @@ void GlBackend::execute(const FrameList& frame) {
         if (c.kind == CMD_COPY) {
             auto src = g.targets.find(c.texture);
             if (src == g.targets.end()) continue;
+            flush();
             Impl::Target& s = src->second;
             Impl::Target& d = found->second;
             float sx = (float)s.pw / s.lw, sy = (float)s.ph / s.lh, dx = (float)d.pw / d.lw, dy = (float)d.ph / d.lh;
@@ -662,6 +674,7 @@ void GlBackend::execute(const FrameList& frame) {
         if (c.texture && c.tex_is_target) {
             auto source = g.targets.find(c.texture);
             if (source != g.targets.end() && source->second.ms_fbo && source->second.dirty) {
+                flush();
                 g.resolve(source->second);
                 f->glEnable(GL_SCISSOR_TEST);
                 bound_target = 0;
@@ -669,6 +682,7 @@ void GlBackend::execute(const FrameList& frame) {
             }
         }
         if (c.target != bound_target) {
+            flush();
             target = &found->second;
             f->glBindFramebuffer(GL_FRAMEBUFFER, target->ms_fbo ? target->ms_fbo : target->fbo);
             f->glViewport(0, 0, target->pw, target->ph);
@@ -682,7 +696,7 @@ void GlBackend::execute(const FrameList& frame) {
         if (c.scissor_moved) { x0 = (int)(c.scissor_x[0] * sx + 0.5f); x1 = (int)(c.scissor_x[1] * sx + 0.5f); }
         {
             int box[4] = {x0, y0, x1 > x0 ? x1 - x0 : 0, y1 > y0 ? y1 - y0 : 0};
-            if (memcmp(box, cache.scissor, sizeof box)) { memcpy(cache.scissor, box, sizeof box); f->glScissor(box[0], box[1], box[2], box[3]); }
+            if (memcmp(box, cache.scissor, sizeof box)) { flush(); memcpy(cache.scissor, box, sizeof box); f->glScissor(box[0], box[1], box[2], box[3]); }
         }
         // texture
         GLuint name = 0;
@@ -712,7 +726,7 @@ void GlBackend::execute(const FrameList& frame) {
             set2f(g.u.st_scale, cache.st_scale, c.st_scale[0], c.st_scale[1]);
             set2f(g.u.tex_size, cache.tex_size, (float)(picture->part[2] - picture->part[0]), (float)(picture->part[3] - picture->part[1]));
             set2f(g.u.tex_offset, cache.tex_offset, -(float)picture->part[0], -(float)picture->part[1]);
-            if (cache.wrap[0] != c.wrap[0] || cache.wrap[1] != c.wrap[1]) { cache.wrap[0] = c.wrap[0]; cache.wrap[1] = c.wrap[1]; f->glUniform2i(g.u.wrap, c.wrap[0], c.wrap[1]); }
+            if (cache.wrap[0] != c.wrap[0] || cache.wrap[1] != c.wrap[1]) { flush(); cache.wrap[0] = c.wrap[0]; cache.wrap[1] = c.wrap[1]; f->glUniform2i(g.u.wrap, c.wrap[0], c.wrap[1]); }
             set4f(g.u.region, cache.region, c.region[0], c.region[1], c.region[2], c.region[3]);
             set1f(g.u.weave_half, cache.weave, c.weave_half > 0 && picture->two_field ? -1.0f : c.weave_half);
             set4f(g.u.texa, cache.texa, 0.0f, (float)c.ta0, (float)c.ta1, 0.0f);
@@ -723,7 +737,7 @@ void GlBackend::execute(const FrameList& frame) {
             set2f(g.u.st_scale, cache.st_scale, c.st_scale[0], c.st_scale[1]);
             set2f(g.u.tex_size, cache.tex_size, c.tex_size[0], c.tex_size[1]);
             set2f(g.u.tex_offset, cache.tex_offset, c.tex_offset[0], c.tex_offset[1]);
-            if (cache.wrap[0] != c.wrap[0] || cache.wrap[1] != c.wrap[1]) { cache.wrap[0] = c.wrap[0]; cache.wrap[1] = c.wrap[1]; f->glUniform2i(g.u.wrap, c.wrap[0], c.wrap[1]); }
+            if (cache.wrap[0] != c.wrap[0] || cache.wrap[1] != c.wrap[1]) { flush(); cache.wrap[0] = c.wrap[0]; cache.wrap[1] = c.wrap[1]; f->glUniform2i(g.u.wrap, c.wrap[0], c.wrap[1]); }
             set4f(g.u.region, cache.region, c.region[0], c.region[1], c.region[2], c.region[3]);
             set1f(g.u.weave_half, cache.weave, c.weave_half);
             set4f(g.u.texa, cache.texa, c.tex_is_target ? (float)c.texa_mode : 0.0f, (float)c.ta0, (float)c.ta1, c.aem ? 1.0f : 0.0f);
@@ -734,9 +748,10 @@ void GlBackend::execute(const FrameList& frame) {
         // depth
         {
             int func = c.ztst == 1 ? GL_ALWAYS : c.ztst == 2 ? GL_GEQUAL : c.ztst == 3 ? GL_GREATER : GL_NEVER;
-            if (cache.depth_func != func) { cache.depth_func = func; f->glDepthFunc((GLenum)func); }
-            if (cache.depth_mask != (int)c.depth_write) { cache.depth_mask = c.depth_write; f->glDepthMask(c.depth_write ? GL_TRUE : GL_FALSE); }
+            if (cache.depth_func != func) { flush(); cache.depth_func = func; f->glDepthFunc((GLenum)func); }
+            if (cache.depth_mask != (int)c.depth_write) { flush(); cache.depth_mask = c.depth_write; f->glDepthMask(c.depth_write ? GL_TRUE : GL_FALSE); }
             if (cache.mask_rgb != (int)c.mask_rgb || cache.mask_a != (int)c.mask_a) {
+                flush();
                 cache.mask_rgb = c.mask_rgb; cache.mask_a = c.mask_a;
                 f->glColorMask(!c.mask_rgb, !c.mask_rgb, !c.mask_rgb, !c.mask_a);
             }
@@ -747,21 +762,25 @@ void GlBackend::execute(const FrameList& frame) {
             float dc = (c.ba == 1 ? 1.0f : 0.0f) - (c.bb == 1 ? 1.0f : 0.0f), dk = c.bd == 1 ? 1.0f : 0.0f;
             bool src_negative = sc < 0 && sk == 0, dst_negative = dc < 0 && dk == 0;
             int equation = dst_negative && !src_negative ? GL_FUNC_SUBTRACT : src_negative && !dst_negative ? GL_FUNC_REVERSE_SUBTRACT : GL_FUNC_ADD;
-            if (cache.blending != 1) { cache.blending = 1; f->glEnable(GL_BLEND); f->glBlendFuncSeparate(GL_ONE, GL_SRC1_COLOR, GL_ONE, GL_ZERO); }
-            if (cache.equation != equation) { cache.equation = equation; f->glBlendEquationSeparate((GLenum)equation, GL_FUNC_ADD); }
+            if (cache.blending != 1) { flush(); cache.blending = 1; f->glEnable(GL_BLEND); f->glBlendFuncSeparate(GL_ONE, GL_SRC1_COLOR, GL_ONE, GL_ZERO); }
+            if (cache.equation != equation) { flush(); cache.equation = equation; f->glBlendEquationSeparate((GLenum)equation, GL_FUNC_ADD); }
             if (src_negative && dst_negative) { sc = 0; dc = 0; }
             set4f(g.u.blend, cache.blend, sc, sk, dc, dk);
             set1i(g.u.blend_c, cache.blend_c, c.bc);
             set1f(g.u.fix, cache.fix, (float)c.fix / 128.0f);
         } else {
-            if (cache.blending != 0) { cache.blending = 0; f->glDisable(GL_BLEND); }
+            if (cache.blending != 0) { flush(); cache.blending = 0; f->glDisable(GL_BLEND); }
             set4f(g.u.blend, cache.blend, 0, 1, 0, 0);
             set1i(g.u.blend_c, cache.blend_c, 2);
             set1f(g.u.fix, cache.fix, 1.0f);
         }
-        f->glDrawArrays(c.prim == PK_TRIANGLES ? GL_TRIANGLES : c.prim == PK_LINES ? GL_LINES : GL_POINTS, (GLint)c.first, (GLsizei)c.count);
-        g.draws++;
+        {
+            GLenum mode = c.prim == PK_TRIANGLES ? GL_TRIANGLES : c.prim == PK_LINES ? GL_LINES : GL_POINTS;
+            if (waiting.count && waiting.mode == mode && waiting.first + waiting.count == (GLint)c.first) waiting.count += (GLsizei)c.count;
+            else { flush(); waiting.mode = mode; waiting.first = (GLint)c.first; waiting.count = (GLsizei)c.count; }
+        }
     }
+    flush();
     f->glBindSampler(0, 0);
     f->glDisable(GL_SCISSOR_TEST);
     f->glDisable(GL_BLEND);

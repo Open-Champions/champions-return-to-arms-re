@@ -24,7 +24,7 @@
 extern "C" {
 #endif
 
-#define RTAG_API_VERSION 4
+#define RTAG_API_VERSION 5
 
 /* ---- start ------------------------------------------------------------------------- */
 enum { RTAG_SOUND_NONE = 0, RTAG_SOUND_PULL = 1, RTAG_SOUND_MACHINE = 2 };
@@ -52,6 +52,8 @@ typedef struct rtag_config {
                                        sound) into a ring rtag_audio_pull() reads */
     double gain;                /* 0..1 applied to what rtag_audio_pull() hands out */
     /* the machine */
+    const char* view;           /* the camera view to start in: "overhead" (the game's own, default), "action", "chase",
+                                   "shoulder", "first" (tools/recomp/app/fpview.h); rtag_set_option("view", ...) changes it */
     int emulator_timing;        /* 1: the I/O processor answers as slowly as a console's (default: fast loading) */
     int films;                  /* 1: the films play (when the library was built with the film decoder) */
     int argc;                   /* more arguments for the runtime, as after "--" of rta_app: [boot|resume] --opt k=v ... */
@@ -169,6 +171,34 @@ typedef struct rtag_scene {
     float fov_y_degrees, near_plane, far_plane;
 } rtag_scene;
 
+/* The camera a frame was drawn with (tools/recomp/app/fpview.h, fpview::View): which view is selected and
+ * shown, and where the camera is.  With a view other than "overhead" the game itself builds, culls and sends
+ * the frame for that camera, so the frame's scene (rtag_scene) is already seen from here.  The first fields,
+ * up to and including `yaw`, are laid out as rta_gs_view of tools/recomp/app/gamestate.h. */
+enum { RTAG_VIEW_OVERHEAD = 0, RTAG_VIEW_ACTION = 1, RTAG_VIEW_CHASE = 2, RTAG_VIEW_SHOULDER = 3, RTAG_VIEW_FIRST = 4 };
+typedef struct rtag_view {
+    int32_t mode;               /* the view selected */
+    int32_t shown;              /* the view this frame is closest to (a transition, a fallback) */
+    float blend;                /* 0 the game's own camera .. 1 the selected view */
+    uint8_t active;             /* drawn with a camera that is not the game's own */
+    uint8_t fallback;           /* a view is selected but the game's camera has the frame */
+    uint8_t hide_player;        /* the local player's model is left out (first person) */
+    uint8_t have_head;          /* `head` is the pose's head joint (else feet + eye height) */
+    char fallback_why[16];      /* "cutscene", "dialogue", "menu", ... */
+    float eye[3], forward[3], up[3], right[3];     /* world space: z up */
+    float fov;                  /* vertical field of view, degrees (the game's own: 50) */
+    float head[3];              /* the local player's eye point */
+    float yaw;                  /* heading in the ground plane, radians: atan2(forward.y, forward.x) */
+    /* ---- beyond rta_gs_view ---- */
+    float near_plane, far_plane;
+    float player[3];            /* the local player's position (feet) */
+    float facing;               /* the character's heading, degrees */
+    float look_pitch;           /* degrees */
+    uint8_t have_player, valid; /* valid: the library has the view modes and a draw pass has run */
+    uint8_t pad[2];
+    uint32_t tick;              /* g_simFrame when the frame was drawn */
+} rtag_view;
+
 typedef struct rtag_frame {
     uint64_t number;            /* the vertical blank this frame was closed at, counted from power-on */
     uint32_t sim_tick;          /* the game's simulation tick counter at that blank */
@@ -201,6 +231,7 @@ typedef struct rtag_frame {
     const char* const* host_commands;
     uint32_t host_command_count;
     const rtag_scene* scene;            /* NULL without config.scene3d */
+    rtag_view view;                     /* the camera this frame's list was built for */
 } rtag_frame;
 enum { RTAG_FRAME_LEVEL = 1 /* a level is running (not the front end) */ };
 
@@ -216,6 +247,17 @@ int rtag_poll(int wait_ms, const rtag_frame** frame);
  * as fast as it can while frames are taken, 0 back to rtag_step.  Frames must still be taken, in order
  * (a list names the textures made by the lists before it); the machine waits when three are not. */
 void rtag_run(double hz);
+
+/* ---- options while it runs ----------------------------------------------------------- */
+/* From any thread; 1 when the key is one of:
+ *   "view"                   a view by name (overhead, action, chase, shoulder, first): eased in over a third of a second.
+ *                            The look inputs are the controller's own: the right stick turns the game's camera as it
+ *                            always did, and a view that looks up and down takes the stick's y (fpview.h).
+ *   "view.<mode>.<name>"     a setting of a view (fov, distance, height, pitch, eye_height, ... : fpview.h)
+ *   "game_hud"               "off": the game's own HUD layer (player status, gold, compass, minimap, spell selector) is
+ *                            left out of the frames, for a host that draws its own; "on" (default)
+ */
+int rtag_set_option(const char* key, const char* value);
 
 /* ---- sound --------------------------------------------------------------------------- */
 /* Exactly `frames` frames of interleaved 16-bit stereo at 48 kHz (silence where there is nothing).  With
