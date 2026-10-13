@@ -103,6 +103,7 @@ var draw_total := 0.0
 var last_blank := -1
 var game_hud_asked := 0                 # 0 not yet, 1 asked off, 2 asked on
 var said := {}
+var timed: Array = []                   # [level, tick, words] still to run (--hud-at)
 
 @onready var root: Control = $Root
 @onready var pieces: Array = [$Root/World, $Root/Threat, $Root/Status, $Root/Top, $Root/Bottom, $Root/Pause]
@@ -154,6 +155,13 @@ func _parse_arguments() -> void:
 			"--hud-view": command(["view", value]); k += 1
 			"--hud-scale": command(["scale", value]); k += 1
 			"--hud-fake-party": command(["fake-party", value]); k += 1
+			"--hud-at":
+				# commands at chosen simulation ticks of a level, "LEVEL@TICK:words;LEVEL@TICK:words": for test runs that are
+				# not paced (there the host takes several blanks per picture and a script's "app hud" line can pass unseen)
+				for part in value.split(";", false):
+					var head := part.get_slice(":", 0).strip_edges()
+					timed.append([head.get_slice("@", 0), head.get_slice("@", 1).to_int(), Array(part.substr(part.find(":") + 1).split(" ", false))])
+				k += 1
 		k += 1
 
 
@@ -260,6 +268,15 @@ func _process(_delta: float) -> void:
 		me = {}
 		events = []
 		creatures = PackedFloat32Array()
+	if ok and not timed.is_empty():
+		var k := 0
+		while k < timed.size():
+			if timed[k][0] == frame.level and int(frame.tick) >= int(timed[k][1]) and (phase & PH_LEVEL) != 0:
+				var words: Array = timed[k][2]
+				timed.remove_at(k)
+				command(words)
+			else:
+				k += 1
 	_choose_layout()
 	_visibility()
 	_game_hud()
@@ -282,7 +299,7 @@ func _measure() -> void:
 	else:
 		h = w / shape
 	picture = Rect2((window - Vector2(w, h)) * 0.5, Vector2(w, h))
-	s = clampf(h / 1080.0, 0.6, 4.0) * float(setting.scale)
+	s = clampf(h / 1080.0, 0.74, 4.0) * float(setting.scale)     # not below what keeps the small print at ten pixels
 	# safe margins: 2.5 % of the height, and the corners never farther out than a 21:9 picture's would be at 16:9 content width
 	var margin: float = maxf(12.0, 0.025 * h)
 	var content_w: float = minf(w, h * 2.0)
@@ -300,7 +317,7 @@ func _choose_layout() -> void:
 
 
 func _visibility() -> void:
-	var playing: bool = ok and (phase & PH_LEVEL) != 0 and (phase & (PH_FRONTEND | PH_LOADING | PH_MENU | PH_PAUSE_MENU | PH_CUTSCENE | PH_DIALOGUE | PH_GATE_MENU | PH_FADE)) == 0
+	var playing: bool = ok and (phase & PH_LEVEL) != 0 and (phase & (PH_FRONTEND | PH_LOADING | PH_MENU | PH_PAUSE_MENU | PH_CUTSCENE | PH_DIALOGUE | PH_GATE_MENU)) == 0
 	if ok and playing:
 		var view: Dictionary = frame.get("view", {})
 		if view.get("fallback", false) and str(view.get("why", "")) != "death":

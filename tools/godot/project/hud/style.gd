@@ -180,6 +180,21 @@ static func number(value: float) -> String:
 	return ("-" if n < 0 else "") + t + out
 
 
+# "WarBoarSmall" (how the level data names a kind of creature) -> "War Boar Small"; a name that already has spaces is left alone
+static func pretty(name: String) -> String:
+	if name.contains(" ") or name.length() < 2:
+		return name
+	var out := ""
+	for k in range(name.length()):
+		var ch := name[k]
+		if k > 0 and ch == ch.to_upper() and ch != ch.to_lower() and name[k - 1] != name[k - 1].to_upper():
+			out += " "
+		elif k > 0 and ch.is_valid_int() and not name[k - 1].is_valid_int():
+			out += " "
+		out += ch
+	return out.replace("_", " ").capitalize() if out == out.to_lower() else out.replace("_", " ")
+
+
 static func ease_out(t: float) -> float:
 	t = clampf(t, 0.0, 1.0)
 	return 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t)

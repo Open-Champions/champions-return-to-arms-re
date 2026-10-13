@@ -237,7 +237,8 @@ enum {
     RTA_GS_PH_CUTSCENE = 64,    /* g_cutsceneActive 0x44fcd0 */
     RTA_GS_PH_DIALOGUE = 128,   /* a conversation or a help / notice box is open */
     RTA_GS_PH_GATE_MENU = 256,  /* the jump-gate or the mission menu */
-    RTA_GS_PH_FADE = 512,       /* the game's own fade overlay is more than half closed */
+    RTA_GS_PH_FADE = 512,       /* g_hudFade 0x4f66ac is above half.  The level is kept between fades and the overlay is only drawn in
+                                   frames in which something steps it, so this alone does not say the picture is dark (Ran: set all through the first level) */
     RTA_GS_PH_DEAD = 1024,      /* every local player is dead */
     RTA_GS_PH_CAMERA_HELD = 2048 /* the game's camera is not in follow mode (camera +0x34 != 1): the game hides its own HUD then */
 };

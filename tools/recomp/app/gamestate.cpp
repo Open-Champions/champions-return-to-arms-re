@@ -181,7 +181,11 @@ struct Mem {
         }
         return 0;
     }
-    bool text_to(const char* key, char* out, size_t size) const {
+    bool text_to(const char* key_in, char* out, size_t size) const {
+        char key[96];                               // the game drops quotation marks from a key (a ShowName property carries them)
+        size_t n = 0;
+        for (const char* p = key_in; *p && n + 1 < sizeof key; p++) if (*p != '"') key[n++] = *p;
+        key[n] = 0;
         u32 a = text(key);
         if (!a) { out[0] = 0; return false; }
         wide(a, out, size);
@@ -228,7 +232,7 @@ struct PlayerTrack {
     bool valid = false;
     u32 object = 0;
     bool alive = false;
-    float health = 0, health_coming = 0, mana = 0;
+    float health = 0, health_max = 0, health_coming = 0, mana = 0;
     int32_t experience = 0, gold_total = 0, level = 0;
     u32 bag_sum = 0;
     int bag_n = 0;
@@ -473,7 +477,9 @@ void read_creatures(R& r) {
         u32 f = m.w(o + 0xC);
         u64 cf = m.q(o + 0xA8);
         int state = m.sh(o + 0x232);
-        bool dead = (f & 0x8) != 0 || state == 0x14;            // flag 0x8 set with hp <= 0 (0x11149c); state 0x14 for the ones loaded dead
+        // someone to talk to (ShowName, object +0x368) carries flag 0x8 as scenery does, and is not dead for that
+        bool talker = m.ok(m.w(o + 0x368), 1) && (f & 0x100000) && state != 0x14;
+        bool dead = ((f & 0x8) != 0 && !talker) || state == 0x14;   // flag 0x8 set with hp <= 0 (0x11149c); state 0x14 for the ones loaded dead
         Track* t = find_track(r, o);
         u32 type = m.w(o + 0x34);
         int8_t serial = m.sb(o + 0x230);
@@ -512,7 +518,7 @@ void read_creatures(R& r) {
         if (!dead && hostile(m, o, first_rec)) flags |= RTA_GS_CF_HOSTILE;
         if (rank == 2 || meter) flags |= RTA_GS_CF_BOSS;
         if (cf & 1) flags |= RTA_GS_CF_MINIBOSS;
-        if ((f & 0x1000000) || (cf & 0x4000000ull)) flags |= RTA_GS_CF_FRIENDLY;
+        if ((f & 0x1000000) || (cf & 0x4000000ull) || talker) flags |= RTA_GS_CF_FRIENDLY;
         if (m.b(o + 0x231)) flags |= RTA_GS_CF_INERT;
         if (cf & 0x80000000000ull) flags |= RTA_GS_CF_MARKED;
         if (state >= 6 && state <= 15) flags |= RTA_GS_CF_ATTACKING;
@@ -803,6 +809,8 @@ void read_player(R& r, int slot) {
         if (gold_total != t.gold_total) add_event(r, RTA_GS_EV_GOLD, slot, 0, (float)(gold_total - t.gold_total), head, nullptr);
         if (same_object && o) {
             float lost = t.health - p.health;
+            bool resized = fabsf(t.health_max - p.health_max) > 0.01f;     // the maximum changed (a level, an item): not a hit
+            if (resized || leveled) lost = 0;
             if (lost > 0.05f) add_event(r, RTA_GS_EV_DAMAGE_TAKEN, slot, 0, lost, head, nullptr, p.health_max > 0 && lost >= 0.2f * p.health_max);
             // healing: a potion starts (the amount it will deliver), or health jumps (a spell); slow regeneration and the
             // refill of a level-up are not events
@@ -887,6 +895,7 @@ void read_player(R& r, int slot) {
     t.object = o;
     t.alive = p.alive;
     t.health = p.health;
+    t.health_max = p.health_max;
     t.health_coming = p.health_coming;
     t.mana = p.mana;
     t.experience = p.experience;

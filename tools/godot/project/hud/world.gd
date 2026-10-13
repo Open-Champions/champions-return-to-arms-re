@@ -147,7 +147,7 @@ func _draw() -> void:
 			draw_rect(rect.grow(3.0 * s), Color(1, 1, 1, 0.55 * a), false, maxf(1.0, 1.5 * s))
 		Style.bar(self, rect, b.shown, b.ghost, Style.BOSS_A if mini else Style.ENEMY_A, Style.BOSS_B if mini else Style.ENEMY_B, s, a)
 		if mini or targeted:
-			Style.text(self, rect.position + Vector2(w * 0.5, -5.0 * s), hud.creature_name(k), 14.0 * s * near, Color(Style.TEXT, a), 1, true)
+			Style.text(self, rect.position + Vector2(w * 0.5, -5.0 * s), Style.pretty(hud.creature_name(k)), 14.0 * s * near, Color(Style.TEXT, a), 1, true)
 	# the other players: a name and a thin bar above their heads
 	var count: int = hud.players.size()
 	for slot in range(count):
