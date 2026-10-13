@@ -196,15 +196,15 @@ int net2_block(net2* n, const char* id);                /* removes the friendshi
 int net2_unblock(net2* n, const char* id);
 
 /* ---- invitations ---------------------------------------------------------------------- */
-typedef struct net2_invite {
+typedef struct net2_invite_t {
     char from_id[NET2_ID];
     char from_name[NET2_NAME];
     char room[NET2_ROOM_CODE];
     int room_players;
     net2_character character;   /* the inviter's */
     int64_t when;
-} net2_invite;
-int net2_invites(net2* n, net2_invite* out, int max);
+} net2_invite_t;
+int net2_invites(net2* n, net2_invite_t* out, int max);
 int net2_invite(net2* n, const char* friend_id);        /* to my room; they get NET2_EV_INVITE */
 int net2_invite_accept(net2* n, const char* from_id);   /* one press: joins that room */
 int net2_invite_dismiss(net2* n, const char* from_id);

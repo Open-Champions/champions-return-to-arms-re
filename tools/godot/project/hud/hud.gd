@@ -103,6 +103,7 @@ var draw_total := 0.0
 var last_blank := -1
 var game_hud_asked := 0                 # 0 not yet, 1 asked off, 2 asked on
 var said := {}
+var shots: PackedStringArray = PackedStringArray()
 var timed: Array = []                   # [level, tick, words] still to run (--hud-at)
 
 @onready var root: Control = $Root
@@ -190,6 +191,11 @@ func command(w: Array) -> void:
 			print(cost_text())
 		"say":
 			print("hud: " + state_text())
+		"shot":
+			# the window's own picture (Godot's capture of the root viewport) with the state it was drawn from beside it
+			# (FILE.txt): both of the same displayed frame, whatever the pacing
+			if value != "":
+				shots.append(value)
 		"test":
 			# test aids for pictures: events and states that a short scripted run does not reach, drawn from data
 			# that is marked as test data on screen
@@ -287,6 +293,19 @@ func _process(_delta: float) -> void:
 	cost_total += spent
 	cost_most = maxf(cost_most, spent)
 	cost_frames += 1
+	if not shots.is_empty():
+		var paths := shots
+		shots = PackedStringArray()
+		var text := state_text()
+		await RenderingServer.frame_post_draw
+		var image := get_viewport().get_texture().get_image()
+		for path in paths:
+			image.save_png(path)
+			var file := FileAccess.open(path.get_basename() + ".txt", FileAccess.WRITE)
+			if file != null:
+				file.store_string(text + "\n")
+				file.close()
+			print("hud: wrote %s (%d x %d) and its state" % [path, image.get_width(), image.get_height()])
 
 
 func _measure() -> void:

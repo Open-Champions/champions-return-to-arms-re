@@ -153,6 +153,12 @@ Backend* make_off(const net2_config& config) { return new Off(config); }
 
 using namespace net2impl;
 
+template <class T> static int copy_out(const std::vector<T>& list, T* out, int max) {
+    int count = (int)std::min<size_t>(list.size(), max < 0 ? 0 : (size_t)max);
+    if (out && count) memcpy(out, list.data(), sizeof(T) * count);
+    return out ? count : (int)list.size();      // out == NULL: how many there are
+}
+
 #ifdef NET2_NO_SERVICE
 namespace net2impl { Backend* make_service(const net2_config& config) { return make_off(config); } }
 #endif
@@ -215,16 +221,11 @@ int net2_local_characters(net2*, const char* card_dir, net2_character* out, int 
 
 int net2_delete_everything(net2* n) { return n ? n->body->delete_everything() : NET2_ERR_ARGUMENT; }
 
-template <class T> static int copy_out(const std::vector<T>& list, T* out, int max) {
-    int count = (int)std::min<size_t>(list.size(), max < 0 ? 0 : (size_t)max);
-    if (out && count) memcpy(out, list.data(), sizeof(T) * count);
-    return out ? count : (int)list.size();      // out == NULL: how many there are
-}
 int net2_friends(net2* n, net2_friend* out, int max) { return n ? copy_out(n->body->s.friends, out, max) : 0; }
 int net2_recent(net2* n, net2_friend* out, int max) { return n ? copy_out(n->body->s.recent, out, max) : 0; }
 int net2_blocked(net2* n, net2_friend* out, int max) { return n ? copy_out(n->body->s.blocked, out, max) : 0; }
 int net2_requests(net2* n, net2_request* out, int max) { return n ? copy_out(n->body->s.requests, out, max) : 0; }
-int net2_invites(net2* n, net2_invite* out, int max) { return n ? copy_out(n->body->s.invites, out, max) : 0; }
+int net2_invites(net2* n, net2_invite_t* out, int max) { return n ? copy_out(n->body->s.invites, out, max) : 0; }
 
 int net2_friend_add(net2* n, const char* friend_code) {
     if (!n) return NET2_ERR_ARGUMENT;

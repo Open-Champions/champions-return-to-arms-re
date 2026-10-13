@@ -41,7 +41,7 @@ struct State {
     net2_me_t me{};
     std::vector<net2_friend> friends, recent, blocked;
     std::vector<net2_request> requests;
-    std::vector<net2_invite> invites;
+    std::vector<net2_invite_t> invites;
     net2_room_t room{};
     net2_session_t session{};
     std::deque<net2_event> events;

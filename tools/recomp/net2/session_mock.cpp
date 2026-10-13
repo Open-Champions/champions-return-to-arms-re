@@ -196,7 +196,7 @@ struct Mock : Backend {
         }
         for (auto& f : s.friends) {
             if (f.presence != NET2_IN_ROOM || !f.joinable) continue;
-            net2_invite inv{};
+            net2_invite_t inv{};
             put(inv.from_id, f.id);
             put(inv.from_name, f.name);
             put(inv.room, f.room);
@@ -491,7 +491,7 @@ struct Mock : Backend {
             } else if (what == "block") {
                 drop_request();
                 drop_friend();
-                s.invites.erase(std::remove_if(s.invites.begin(), s.invites.end(), [&](const net2_invite& i) { return id == i.from_id; }), s.invites.end());
+                s.invites.erase(std::remove_if(s.invites.begin(), s.invites.end(), [&](const net2_invite_t& i) { return id == i.from_id; }), s.invites.end());
                 s.event(NET2_EV_INVITE);
                 for (auto& b : s.blocked)
                     if (id == b.id) return;
@@ -538,7 +538,7 @@ struct Mock : Backend {
         for (auto& i : s.invites)
             if (id == i.from_id) room = i.room;
         if (room.empty()) return s.error(NET2_ERR_NOT_FOUND, "That invitation is gone.");
-        s.invites.erase(std::remove_if(s.invites.begin(), s.invites.end(), [&](const net2_invite& i) { return id == i.from_id; }), s.invites.end());
+        s.invites.erase(std::remove_if(s.invites.begin(), s.invites.end(), [&](const net2_invite_t& i) { return id == i.from_id; }), s.invites.end());
         for (auto& f : s.friends)
             if (id == f.id) f.invited_me = 0;
         s.event(NET2_EV_INVITE);
