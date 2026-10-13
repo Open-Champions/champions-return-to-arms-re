@@ -129,6 +129,9 @@ int main(int argc, char** argv) {
         case 9: a = (a & 0x807FFFFF) | ((1 + (s & 3)) << 23); b = (a ^ ((s >> 8) & 1 ? 0x80000000u : 0)) + (uint32_t)((s >> 16) & 0xFFFFF) - 0x80000; break;   // sums around the smallest number
         }
         one(a, b);
+        // near the largest against near the largest, and against something a few exponents
+        // below (sums that come back into the range, sums that leave it): added 2026-10-13
+        if (n % 10 == 6) { one(b | 0x7E000000u, a ^ 0x80000000u); one(a, (a & 0xFF800000u) | (b & 0x007FFFFFu)); one(a ^ 0x80000000u, (b & 0x807FFFFFu) | ((240 + ((s >> 20) & 15)) << 23)); }
     }
     uint64_t total = 0;
     for (int k = 0; k < KINDS; k++) {

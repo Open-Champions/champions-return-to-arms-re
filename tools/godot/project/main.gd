@@ -22,6 +22,7 @@ extends Node
 #   --samples N         multisampling of the 3-D surface (0, 2, 4, 8)
 #   --script FILE       a script in the rig's language (tools/rig); its "app shot FILE.png" lines write pictures:
 #                       in picture mode the library's own, in the other modes Godot's capture of what it drew
+#                       ("app windowshot FILE.png": what is in the Godot window itself, the root viewport)
 #   --godot-shots DIR   write Godot's capture for every "app shot" into DIR (by file name) instead
 #   --unpaced           as fast as it goes (tests)
 #   --mute              no sound is heard (the sound side still runs)
@@ -106,6 +107,7 @@ var process_usec := 0                   # time inside _process in all
 var step_usec := 0                      # ... of it waiting in step()
 var draw_usec := 0                      # ... of it handing the list to the RenderingServer
 var quitting := false
+var window_shots: PackedStringArray = PackedStringArray()
 
 
 func _ready() -> void:
@@ -256,6 +258,8 @@ func _start() -> void:
 	if not machine.load_library(library):
 		view.set("message", "Cannot load the game library %s:\n%s\n(python3 tools/godot/build.py lib)" % [library, machine.get_error()])
 		return
+	if OS.has_environment("RTA_CWD"):
+		machine.change_directory(OS.get_environment("RTA_CWD"))     # tools/godot/run.py: relative paths mean what they meant there
 	if opt.aspect_window:
 		opt.aspect = max(float(get_window().size.x) / get_window().size.y, 4.0 / 3.0)
 	if opt.data == "":
@@ -365,6 +369,7 @@ func _host_command(text: String) -> void:
 		event.keycode = KEY_NAMES[w[2]]
 		event.pressed = w[1] == "down"
 		Input.parse_input_event(event)
+		Input.flush_buffered_events()       # now: the next controller read is this script's next line
 		key_events += 1
 	elif w.size() >= 2 and w[0] == "gcpad":
 		# a controller made by the script: connect | disconnect | set BUTTONS|none [lx ly rx ry [l2 r2]] (sticks -1..1)
@@ -381,6 +386,9 @@ func _host_command(text: String) -> void:
 			for n in range(3, min(w.size(), 9)):
 				values[n - 3] = w[n].to_float()
 			_joy_state(bits, values)
+	elif w.size() >= 2 and w[0] == "windowshot":
+		# what is in the Godot window itself (the root viewport), after the frame that is being made now
+		window_shots.append(text.substr(text.find(w[1])))
 	elif w.size() >= 1 and w[0] == "pads":
 		print("[blank %d] rta_godot: controller %s; port 1 holds buttons %04x, sticks %d %d %d %d; %d key events" % [blanks,
 			"made by the script" if test_pad else (Input.get_joy_name(Input.get_connected_joypads()[0]) if Input.get_connected_joypads().size() > 0 else "none"),
@@ -405,6 +413,7 @@ func _joy_state(bits: int, values: Array) -> void:
 		motion.axis = axes[n]
 		motion.axis_value = values[n]
 		Input.parse_input_event(motion)
+	Input.flush_buffered_events()
 
 
 func _write_pending_shots() -> void:
@@ -489,6 +498,14 @@ func _process(delta: float) -> void:
 		view.set("aspect", machine.get_frame_aspect())
 		view.queue_redraw()
 	process_usec += Time.get_ticks_usec() - t0
+	if not window_shots.is_empty():
+		var paths := window_shots
+		window_shots = PackedStringArray()
+		await RenderingServer.frame_post_draw
+		var image := get_viewport().get_texture().get_image()
+		for path in paths:
+			image.save_png(path)
+			print("rta_godot: wrote %s (%d x %d), the Godot window's own picture" % [path, image.get_width(), image.get_height()])
 	if machine.ended() and machine.poll(0) != 1:
 		_finish(machine.exit_code())
 	elif opt.stop_after > 0 and blanks >= opt.stop_after:

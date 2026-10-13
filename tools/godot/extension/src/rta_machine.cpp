@@ -7,6 +7,12 @@
 
 #include <cstring>
 #include <string>
+#ifdef _WIN32
+#include <direct.h>
+#define chdir _chdir
+#else
+#include <unistd.h>
+#endif
 #include <vector>
 
 namespace godot {
@@ -24,6 +30,8 @@ bool RtaMachine::load_library(const String& path) {
     }
     return true;
 }
+
+bool RtaMachine::change_directory(const String& path) { return chdir(path.utf8().get_data()) == 0; }
 
 bool RtaMachine::has(const String& feature) const {
     RtaLibrary& lib = rta_library();
@@ -148,6 +156,7 @@ String RtaMachine::peek_string(int64_t address, int max_bytes) const {
 
 void RtaMachine::_bind_methods() {
     ClassDB::bind_method(D_METHOD("load_library", "path"), &RtaMachine::load_library);
+    ClassDB::bind_method(D_METHOD("change_directory", "path"), &RtaMachine::change_directory);
     ClassDB::bind_method(D_METHOD("get_error"), &RtaMachine::get_error);
     ClassDB::bind_method(D_METHOD("has", "feature"), &RtaMachine::has);
     ClassDB::bind_method(D_METHOD("start", "config"), &RtaMachine::start);

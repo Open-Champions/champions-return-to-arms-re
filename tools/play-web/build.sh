@@ -106,8 +106,8 @@ grep -v '^#' "$HERE/../play-net/sections-suggested.txt" > "$SITE/sections.txt"
 # Emscripten runtime that is linked in
 LICENCES="$SITE/licences"
 mkdir -p "$LICENCES"
-cp "$SRC/License.txt" "$LICENCES/Play-LICENSE.txt"
 rm -f "$LICENCES"/*-*
+cp "$SRC/License.txt" "$LICENCES/Play-LICENSE.txt"
 for dir in "$SRC"/deps/* "$SRC"/deps/Dependencies/*; do
 	[ -d "$dir" ] || continue
 	case "$(basename "$dir")" in
@@ -120,10 +120,14 @@ for dir in "$SRC"/deps/* "$SRC"/deps/Dependencies/*; do
 	done
 done
 EMROOT=$(em-config EMSCRIPTEN_ROOT 2>/dev/null || true)
-if [ -n "$EMROOT" ] && [ -f "$EMROOT/LICENSE" ]; then
-	cp "$EMROOT/LICENSE" "$LICENCES/Emscripten-LICENSE.txt"
+if [ -n "$EMROOT" ]; then
+	# a Homebrew install keeps the licence one directory above the root
+	for dir in "$EMROOT" "$EMROOT/.."; do
+		[ -f "$dir/LICENSE" ] && cp "$dir/LICENSE" "$LICENCES/Emscripten-LICENSE.txt" && break
+	done
 	[ -f "$EMROOT/system/lib/mimalloc/LICENSE" ] && cp "$EMROOT/system/lib/mimalloc/LICENSE" "$LICENCES/mimalloc-LICENSE.txt"
 fi
+[ -f "$LICENCES/Emscripten-LICENSE.txt" ] || echo "build.sh: warning: Emscripten's licence was not found; the site's licences folder is incomplete" >&2
 cat > "$LICENCES/README.txt" <<NOTE
 This page runs the Play! PlayStation 2 emulator (https://github.com/jpd002/Play-), by
 Jean-Philip Desjardins and contributors, under the BSD 2-clause licence

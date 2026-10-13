@@ -256,9 +256,7 @@ def main():
     parser.add_argument('--frames', type=int, default=40000)
     parser.add_argument('--capture', action='store_true')
     parser.add_argument('--native-opt', action='append', default=[], help='native: one more --opt KEY=VALUE for the runtime (proof_rt.cpp: proof-watch=..., proof-watch-ticks=...); repeatable')
-    parser.add_argument('--no-first-tick-fix', action='store_true', help='native: leave the controller replay file as rigcompare.py writes it (cmp.py, first_tick_fix)')
     parser.add_argument('--no-last-tick-fix', action='store_true', help='native: do not add the bytes of the tick that ended each level to the replay file (cmp.py, last_tick_fix)')
-    parser.add_argument('--first-tick-fix', action='store_true', help='native: remove the loading rows from the replay file (cmp.py, first_tick_fix; rt/iop.cpp does the same itself since 2026-10-12 23:41)')
     parser.add_argument('--per', type=int, default=3)
     parser.add_argument('--poke-shift', type=int, default=0, help='native: apply the memory writes this many displayed frames later (or, negative, earlier) than the first row the rig logged after it ran them')
     args = parser.parse_args()
@@ -312,7 +310,7 @@ def main():
         script, pokes = replay_pokes(script, out, args.poke_shift)
         native_args += ['--opt', 'proof-pokes=' + pokes]
     cmpmod.setup(args.name, NATIVE, watches=spec.get('watch', DEFAULT_WATCHES), native_args=native_args if args.step == 'native' else (),
-                 fix_first_tick=args.first_tick_fix, fix_last_tick=not args.no_last_tick_fix)
+                 fix_last_tick=not args.no_last_tick_fix)
     if args.step == 'rig':
         sys.argv = ['rigcompare', 'boot-rig', '--script', script, '--more', '0', '--frames', str(args.frames)]
         return rigcompare.main()

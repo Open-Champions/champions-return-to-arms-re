@@ -12,6 +12,10 @@ A. Savepoint_interact 0x28dc30 with the section "save point is used on every mac
 B. vars_get 0x1ed778 with the section "reading a quest variable never adds it to the table",
    together with the game's own vars_set 0x1ed854 and C library, on a table of its own.
 
+C. JumpGate_interactPrompt 0x27d7a0 with the section "a jump gate is found only inside the
+   tick": called as Player_interact calls it, with that function's display-only argument in
+   register s7; the script, the level list and the message are stubbed and counted.
+
 PASS/FAIL lines as tools/ee_tests.py prints them.  One function on a prepared state: this
 shows what the code does there, not that the state occurs (docs/issues/native-soak.md has
 the runs on two, three and four machines).
@@ -27,6 +31,10 @@ from ee_emu import EE  # noqa: E402
 PNACH = os.path.join(HERE, 'proposed-sections.pnach')
 SEC_A = 'save point is used on every machine'
 SEC_B = 'reading a quest variable never adds it'
+SEC_C = 'a jump gate is found only inside the tick'
+GATE_PROMPT, TASK_IS_RUNNING, GET_PROP, RUN_SCRIPT, ADD_LEVEL = 0x27D7A0, 0x19E5E8, 0x14F4C0, 0x1ED694, 0x27DB60
+TEXT_LOOKUP, HUD_MESSAGE, WSTR_COPY = 0x173C84, 0x1D92A0, 0x19E854
+GATE_COUNT, ALIVE_COUNT, ALIVE_LIST = 0x8E3C30, 0x4F8420, 0x4F8440
 INTERACT, REQUEST_SAVE, LIGHT_LINK, RUN_ACTIONS = 0x28DC30, 0x2175B4, 0x148BC8, 0x14DCC8
 CARD_STATE, CARD_RESULT, CARD_3C8, MENU_MUTEX = 0x88D3A0, 0x88D3BC, 0x88D3C8, 0x4FE53C
 VARS_GET, VARS_SET, QUEST_VARS, TABLE_BYTES = 0x1ED778, 0x1ED854, 0x86DA80, 0x2000
@@ -184,6 +192,60 @@ def test_b(elf):
           'a machine with the section and one without read the same value for every name')
 
 
+# ---- C ------------------------------------------------------------------------------------------
+def gate_prompt(elf, patched, display, found=0, count=1, script=None, s7_garbage=None):
+    """One call of the prompt as Player_interact makes it (s7 = its display-only argument):
+    (result, +0x4d, levels added, messages shown, text chosen)."""
+    emu = EE(elf)
+    if patched:
+        assert emu.apply_pnach(PNACH, SEC_C) == 2
+    for a in (GATE_COUNT, ALIVE_COUNT):
+        emu.mem.map(a & ~0xFFF, 0x1000)
+    emu.mem.w8(GATE_COUNT, count)
+    emu.mem.w32(ALIVE_COUNT, 1)
+    emu.mem.w32(ALIVE_LIST, 0)
+    gate = emu.alloc(0x180)
+    text = emu.alloc(0x200)
+    emu.mem.w8(gate + 0x4D, found)
+    added, shown, texts = [], [], []
+    emu.stub(TASK_IS_RUNNING, ret=0)
+    emu.stub(GET_PROP, ret=0 if script is None else 0x547E40)
+    emu.stub(RUN_SCRIPT, ret=0 if script is None else script)
+    emu.stub(ADD_LEVEL, function=lambda e: added.append(1))
+    emu.stub(TEXT_LOOKUP, function=lambda e: texts.append(e.r[4] & M32) or 0)
+    emu.stub(HUD_MESSAGE, function=lambda e: shown.append(1))
+    emu.stub(WSTR_COPY)
+    emu.set_reg('s7', (1 if display else 0) if s7_garbage is None else s7_garbage)
+    result = emu.call(GATE_PROMPT, gate, text, 0, max_steps=20000) & M32
+    names = {0x547E90: 'activated', 0x547EA8: 'virgin', 0x547EB8: 'others too far', 0x547ED0: 'gate'}
+    return result, emu.mem.u8(gate + 0x4D), len(added), len(shown), [names.get(t, hex(t)) for t in texts if t != 0x547E90]
+
+
+def test_c(elf):
+    marked = lambda count: (0 if count == 1 else 1, 1, 1, 1, ['virgin' if count == 1 else 'gate'])
+    shown = lambda count, found: (0 if count == 1 else 1, found, 0, 0, ['virgin' if count == 1 else 'gate'])
+    for ident, count in (('C1', 1), ('C2', 2)):
+        check(ident, gate_prompt(elf, False, False, count=count) == marked(count) and gate_prompt(elf, True, False, count=count) == marked(count),
+              'from the tick, gate not found, %d destination%s: found flag set, level added, message shown - as shipped and with the section' % (
+                  count, '' if count == 1 else 's'))
+    check('C3', gate_prompt(elf, False, True, count=2) == marked(2), 'as shipped, from drawing: the same marking, on the machine that draws alone')
+    for ident, count in (('C4', 1), ('C5', 2)):
+        check(ident, gate_prompt(elf, True, True, count=count) == shown(count, 0),
+              'with the section, from drawing, %d destination%s: nothing marked, nothing added, no message; the result and the text of a found gate' % (
+                  count, '' if count == 1 else 's'))
+    for display in (False, True):
+        check('C6' + ('d' if display else 't'), gate_prompt(elf, False, display, found=1, count=2) == shown(2, 1) and
+              gate_prompt(elf, True, display, found=1, count=2) == shown(2, 1),
+              'a gate already found, from %s: no marking, as shipped and with the section' % ('drawing' if display else 'the tick'))
+    check('C7', gate_prompt(elf, False, True, script=0) == (0, 0, 0, 0, []) and gate_prompt(elf, True, True, script=0) == (0, 0, 0, 0, []) and
+          gate_prompt(elf, True, False, script=0) == (0, 0, 0, 0, []),
+          'a gate whose script says no: nothing at all, as shipped and with the section')
+    check('C8', gate_prompt(elf, True, False, script=1, count=2) == marked(2) and gate_prompt(elf, True, True, script=1, count=2) == shown(2, 0),
+          'with the section, a gate whose script says yes: marked from the tick, not from drawing')
+    a, b = gate_prompt(elf, False, True, count=1), gate_prompt(elf, False, False, found=0, count=1)
+    check('C9', a[1:3] == (1, 1), 'as shipped: the owner\'s machine has the gate found and the level added after one displayed frame, before any tick ran the prompt')
+
+
 def main(argv):
     elf = argv[0] if argv else os.path.join(ROOT, 'SLUS_209.73')
     if not os.path.isfile(elf):
@@ -191,6 +253,7 @@ def main(argv):
         return 0
     test_a(elf)
     test_b(elf)
+    test_c(elf)
     print('%d failed' % len(FAILED))
     return 1 if FAILED else 0
 

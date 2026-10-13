@@ -1,6 +1,6 @@
 # How complete is it
 
-Updated at every check-in of the work. **Last update: 2026-10-13, 07:52 CDT.**
+Updated at every check-in of the work. **Last update: 2026-10-13, 07:58 CDT.**
 
 One table for the whole effort to make Champions: Return to Arms (SLUS-20973 v2.00)
 playable again, online, on today's computers. The percentages are estimates by the people
@@ -15,10 +15,10 @@ a session by hand - every test drove the game by script, on one Apple-silicon Ma
 
 | Part | Done | Rests on | Still missing for 100 % |
 |---|---|---|---|
-| Mac application (the Play! emulator with this project's changes) | 97 % | 60 pictures a second at four times the resolution; the known picture faults fixed; every kind of screen looked at ([visual-check](issues/visual-check.md)) | a person playing it; the newest build rolled out |
+| Mac application (the Play! emulator with this project's changes) | 98 % | 60 pictures a second at four times the resolution; the known picture faults fixed; every kind of screen looked at ([visual-check](issues/visual-check.md)); the newest build rolled out (fix set `27f61e1d`) | a person playing it |
 | Online, two players | 96 % | 7.9 million lockstep ticks on the suggested fix set with no difference that reached a player ([native-soak](issues/native-soak.md)); two copies through the game's own level change | two computers on two networks |
-| Online, three and four players | 92 % | both causes of the failed launches found and fixed, one in the lobby server and one in the emulator ([three-players](issues/three-players.md)); three and four copies launch 3 of 3 times and stay in step | players behind a real router; the newest build rolled out |
-| Browser version (the same emulator as WebAssembly) | 90 % | plays in Chrome and Brave, and in Safari's engine with a stall on arriving in a level ([browser-build](issues/browser-build.md)); relay with per-player limits | the Safari stall; Firefox and Edge never run |
+| Online, three and four players | 94 % | both causes of the failed launches found and fixed, one in the lobby server and one in the emulator ([three-players](issues/three-players.md)); on the rolled-out build three and four copies launch 3 of 3 times and stay in step | players behind a real router; a level change in a game of three or four |
+| Browser version (the same emulator as WebAssembly) | 92 % | plays in Chrome and Brave, and in Safari's engine with a stall on arriving in a level ([browser-build](issues/browser-build.md)); relay with per-player limits; the newest page rolled out, two pages 2,956 frames in step | the Safari stall; Firefox and Edge never run |
 | Application and browser players in one game | 75 % | two and three players in step on one Mac ([mixed-arithmetic](issues/mixed-arithmetic.md)) | a relay in public that passes datagrams to players outside it |
 | Sharper art (pictures enlarged four times) | 99 % | 122,205 of 122,231 dumped pictures enlarged | the large interface pages and the fonts checked by eye |
 | Native build: the game's code and its proof | 97 % | all 7,732 functions translated; 7,460 proven identical to the original, none failing; nine sessions compared tick for tick ([native-proof](issues/native-proof.md)) | two unexplained one-tick differences; shop, save point, level-up and death compared |
@@ -37,9 +37,12 @@ and the Godot client are tracked in their own repositories
 
 ## Since the last update
 
-- The native build now holds exactly 60 pictures a second when paced, and its input delay
-  is one picture shorter than before - no longer behind the emulator application.
-- Two faults fixed in the native build: controller replay through a level load, and a
-  wide-picture layout fault after a texture is sent again.
-- The Windows folder rebuilt with the faster renderer (still never run on Windows).
-- A progress page (this one) added and linked from the README.
+- Release: the Mac application, the stable build, the private download and the browser
+  page all carry fix set `27f61e1d` (26 sections, 91 words), built from one pushed commit.
+  On that build: two copies through the game's own level change, three copies and four
+  copies launched three times each, all in step.
+- The lobby server with the three-player fix runs in public; the browser relay there
+  limits log-ins and account creation per player.
+- The native build holds exactly 60 pictures a second when paced, and its input delay is
+  one picture shorter than before.
+- The page's build script no longer drops Play!'s and Emscripten's licence files.

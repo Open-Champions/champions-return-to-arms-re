@@ -19,6 +19,9 @@ class RtaMachine : public RefCounted {
     GDCLASS(RtaMachine, RefCounted)
   public:
     bool load_library(const String& path);
+    // Godot moves the process into the project's directory; a run that was given relative paths (a script, a log)
+    // goes back to where it was started from before the machine starts
+    bool change_directory(const String& path);
     String get_error() const { return error; }
     bool has(const String& feature) const;
     int start(const Dictionary& config);

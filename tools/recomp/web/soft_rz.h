@@ -11,8 +11,8 @@
 // back toward zero.
 //
 //   add, subtract  the error of the nearest sum is itself a float and is computed without
-//                  error (Knuth's two-sum); the sum is beyond the truth when the error
-//                  has the other sign
+//                  error (the fast two-sum, larger operand first); the sum is beyond the
+//                  truth when the error has the other sign
 //   multiply       the product of two floats is exact in a double
 //   divide         quotient * divisor is exact in a double: compare it with the dividend
 //   square root    root * root is exact in a double: compare it with the operand
@@ -50,8 +50,12 @@ static inline float largest(float r) { return from_bits((bits(r) & 0x80000000u) 
 static inline float add(float a, float b) {
     float s = a + b;
     if (!finite(s)) return (finite(a) && finite(b)) ? largest(s) : s;
-    float bv = s - a, av = s - bv;
-    float e = (a - av) + (b - bv);                      // a + b == s + e, exactly
+    // the larger operand first: s - a is then exact and cannot leave the range.  (The
+    // symmetric two-sum, as this was until 2026-10-13, goes to infinity on the way when the
+    // operands have opposite signs and one is near the largest number, and the sum was then
+    // not stepped back: soft_rz4_test.cpp found it.)
+    if ((bits(a) & 0x7FFFFFFFu) < (bits(b) & 0x7FFFFFFFu)) { float t = a; a = b; b = t; }
+    float e = b - (s - a);                              // a + b == s + e, exactly
     if (e != 0 && ((e < 0) != (s < 0))) s = back(s);
     return s;
 }

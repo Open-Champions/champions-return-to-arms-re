@@ -119,4 +119,7 @@ uint64_t big_size(BigFile* file) { return file->size; }
 
 void sleep_us(uint64_t microseconds) { usleep((useconds_t)microseconds); }
 
+// a worker's priority is the browser's business
+void interactive_threads(bool) {}
+
 }  // namespace host

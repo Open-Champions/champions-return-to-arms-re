@@ -206,7 +206,9 @@ output written by the program, not a screen capture; pictures under
 | **Cancelling in the room** | circle *Cancel* > "Leaving Game", cross (0x05, 0x60) | **Ran** on a host alone in its room: back at the game list. And with a joiner still on its character screens when the host cancelled: the joiner accepted its character and landed at the game list, no box, nothing stuck |
 | **Start with a player still choosing a character** | the game refuses ("Not all players are ready to begin...") | **Ran** by accident (`late3`, first form): a third copy sat on its character screens; the host's Start presses did not start the game in 50 s |
 
-Not tried by hand: *Kick Player*, removing a friend or an ignore, the *Sort* of the game list,
+| **Kick Player** | the host's pause menu > "Kick which player?" with the other players' names, cross | **Ran** (a game of two, 2026-10-13): the kicked copy shows "You have been kicked out of the game!" and the connection sign, stands for about 24 s (the same wait as for a dead player), then is at the lobby's game list; the host, alone, is at the game list within three seconds |
+
+Not tried by hand: removing a friend or an ignore, the *Sort* of the game list,
 importing a memory-card character, deleting one.
 
 ### Leaving and coming back without restarting the program
@@ -645,7 +647,7 @@ card directory changed after the copy's first boot.
   real path were not tried (the loop-back interface loses nothing).
 
 **Not exercised** (after the second round). Removing a friend or an ignore, what a
-friend's logging off shows; *Kick Player*; deleting a character; importing a memory-card
+friend's logging off shows; kicking one of three or four; deleting a character; importing a memory-card
 character into the lobby; the "save the login on the memory card?" choice; the line to the
 server cut during the lobby or a game (`app net drop` exists; the loop of `live-rig.md`
 19.9 was not provoked); a dropped player coming back; a drop during a level load; the

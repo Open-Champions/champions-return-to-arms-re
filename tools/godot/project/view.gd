@@ -14,9 +14,9 @@ var message := "":
 
 
 func _picture_rect() -> Rect2:
-	var shape := size.x / max(size.y, 1.0)
-	var w := size.x
-	var h := size.y
+	var shape: float = size.x / max(size.y, 1.0)
+	var w: float = size.x
+	var h: float = size.y
 	if shape > aspect:
 		w = h * aspect
 	else:

@@ -19,6 +19,12 @@ columns:
                 one more argument for the translated game (repeatable), for instance
                 --native-arg --opt --native-arg proof-hits=FILE
 
+The controller replay file rigcompare.py writes gets one addition here (last_tick_fix:
+the bytes of the tick that ended each level).  The workaround of round 1 for the first
+tick of a level (removing a level's loading rows from the file) is gone: rt/iop.cpp
+hands over the next tick's first row itself while a loading screen is up (since
+2026-10-12 23:41; checked on the three sessions that had needed it, s2, s3 and h6).
+
 Nothing here is game data; what the runs write is, and stays under local/.
 """
 import os
@@ -31,25 +37,6 @@ import rigcompare                               # noqa: E402
 
 ROOT = rigcompare.ROOT
 BASE = os.path.join(ROOT, 'local', 'recomp-out', 'proof', 'cmp')
-
-
-def first_tick_fix(path):
-    """Drop, from a controller replay file, the rows of a level's tick 0 after the first.
-
-    rt/iop.cpp hands the game, at a vertical blank where the tick stands at T, the rig's
-    next row of tick T if there is one and else the row of tick T+1.  A level stands at
-    tick 0 while it loads, for more frames on the rig than here, so the last blank before
-    tick 1 gets one of the rig's loading rows instead of its tick-1 row: the game's first
-    tick reads stale controller bytes.  Without the loading rows every blank of the load
-    gets the tick-1 row.  Only levels after the first are touched (episodes 4 and up)."""
-    kept = []
-    for line in open(path):
-        parts = line.split()
-        if len(parts) == 4 and int(parts[0]) >= 4 and parts[1] == '0' and int(parts[2]) >= 1:
-            continue
-        kept.append(line)
-    with open(path, 'w') as sink:
-        sink.writelines(kept)
 
 
 def last_tick_fix(path):
@@ -82,7 +69,7 @@ def last_tick_fix(path):
     return added
 
 
-def setup(name, native=None, watches=(), chunks=(), native_args=(), fix_first_tick=False, fix_last_tick=True):
+def setup(name, native=None, watches=(), chunks=(), native_args=(), fix_last_tick=True):
     """Point rigcompare at its own directory; returns the directory."""
     out = os.path.join(BASE, name)
     os.makedirs(out, exist_ok=True)
@@ -98,17 +85,15 @@ def setup(name, native=None, watches=(), chunks=(), native_args=(), fix_first_ti
         prefix = parts[3] if len(parts) > 3 else 'c'
         for at in range(lo, hi, step):
             extra.append('%s%06x=0x%x:crc%d' % (prefix, at, at, min(step, hi - at)))
-    if native_args or fix_first_tick or fix_last_tick:
+    if native_args or fix_last_tick:
         real_run = subprocess.run
 
         def run(command, *args, **kwargs):
             if len(command) > 1 and str(command[1]).endswith('native.py'):
                 for item in command:
                     if str(item).startswith('pad-replay='):
-                        if fix_last_tick:           # before the other: it reads the load rows
+                        if fix_last_tick:
                             last_tick_fix(str(item)[len('pad-replay='):])
-                        if fix_first_tick:
-                            first_tick_fix(str(item)[len('pad-replay='):])
                 command = list(command) + list(native_args)
             return real_run(command, *args, **kwargs)
         subprocess.run = run

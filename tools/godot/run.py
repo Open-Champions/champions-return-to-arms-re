@@ -29,6 +29,7 @@ def environment():
     for key, name in (('XDG_CONFIG_HOME', 'config'), ('XDG_DATA_HOME', 'data'), ('XDG_CACHE_HOME', 'cache')):
         env[key] = os.path.join(home, name)
         os.makedirs(env[key], exist_ok=True)
+    env['RTA_CWD'] = os.getcwd()            # Godot moves into the project's directory; main.gd moves back
     return env
 
 
