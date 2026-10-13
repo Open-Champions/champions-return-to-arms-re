@@ -337,6 +337,32 @@ def build_standin(args):
     return ok
 
 
+def write_readme(package):
+    """README.txt for the tester, with the figures of this build in it: the two lines the
+    check script must end in (from rta-windows/boot-check-mac.txt) and the patch set every
+    copy of this build announces (from win/standin/patch-set.txt); both made by --reference."""
+    source = os.path.join(WINSRC, 'README.txt')
+    if not os.path.exists(source):
+        return
+    values = {'@FRAMES_LINE@': '(not made yet: build_win.py --reference)', '@VU0_LINE@': '(not made yet: build_win.py --reference)',
+              '@PATCH_SET@': '(not made yet: build_win.py --reference)'}
+    reference = os.path.join(package, 'boot-check-mac.txt')
+    if os.path.exists(reference):
+        for line in open(reference, errors='replace'):
+            found = re.match(r'(frames=\d+) wall=.*(fields=\d+ units=\d+)', line)
+            if found:
+                values['@FRAMES_LINE@'] = '%s wall=...: ... %s' % found.groups()
+            if line.startswith('VU0:'):
+                values['@VU0_LINE@'] = line.strip()
+    figure = os.path.join(WIN, 'standin', 'patch-set.txt')
+    if os.path.exists(figure):
+        values['@PATCH_SET@'] = open(figure).read().strip()
+    text = open(source).read()
+    for key, value in values.items():
+        text = text.replace(key, value)
+    open(os.path.join(package, 'README.txt'), 'wb').write(text.replace('\r\n', '\n').replace('\n', '\r\n').encode())
+
+
 def build_mac(args):
     """The macOS window program from this build's own translation: app/build.py's rta_app, made
     beside the Windows build instead of in the shared bin/ (other work runs tests against that).
@@ -425,6 +451,24 @@ def make_reference(args):
         if line.startswith(('frames=', 'VU0:')):
             print('reference: ' + line)
     print('wrote %s (%d lines, exit %d)' % (os.path.relpath(os.path.join(package, 'boot-check-mac.txt'), ROOT), len(text.splitlines()), done.returncode))
+    # the patch set a copy of this build announces to other players: the network driver says it
+    # at start-up (the stand-in with the network, a few frames, nothing sent anywhere)
+    online = os.path.join(WIN, 'standin', 'rta_native_online_arm64')
+    if os.path.exists(online):
+        scratch = os.path.join(WIN, 'standin', 'net-reference')
+        shutil.rmtree(scratch, ignore_errors=True)
+        os.makedirs(scratch)
+        said = subprocess.run(NICE + [online, 'boot', '--elf', os.path.join(ROOT, 'SLUS_209.73'), '--disc', disc, '--card', os.path.join(scratch, 'card'),
+                                      '--fields', '120', '--opt', 'net-data=' + scratch, '--opt', 'net-local-only=1', '--opt', 'online-person=0',
+                                      '--opt', 'net-pace=0'], capture_output=True, text=True)
+        found = re.search(r'patch set ([0-9a-f]{8}) \((\d+) words\)', said.stdout + said.stderr)
+        if found:
+            open(os.path.join(WIN, 'standin', 'patch-set.txt'), 'w').write('patch set %s (%s words)\n' % found.groups())
+            print('reference: patch set %s (%s words)' % found.groups())
+        else:
+            print('reference: the stand-in with the network did not say its patch set')
+        shutil.rmtree(scratch, ignore_errors=True)
+    write_readme(package)
     return done.returncode == 0
 
 
@@ -555,6 +599,7 @@ def main():
                     os.remove(os.path.join(package, name))
                 print('%s is from an earlier build and was left out of the folder (make it again: --compiler gcc)' % name)
         write_check_script(os.path.join(package, 'boot-check.rig'))
+        write_readme(package)
         print('the folder to give a tester: ' + os.path.relpath(package, ROOT))
     return 0 if ok else 1
 

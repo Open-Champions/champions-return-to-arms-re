@@ -704,3 +704,106 @@ it changes nothing unless `RTA_SOFT_RZ`, `RTA_SOFT_RZ_VU1` or `__EMSCRIPTEN__` i
 defined), the start-up line about the arithmetic corrected for WebAssembly, everything
 built again and the rig comparison repeated: `merge/rig-final-compare.txt` (see the last
 lines of this file for the result).
+
+### 10.9 Final figures and what is left (2026-10-12, 20:30; this replaces the "state of the work" and "partial results" above)
+
+Everything below is from the final build (`rta_app` of 16:13 from the merged tree, with
+the web agent's `shared-sources.patch`, the texture budget and, since 19:55, a lower
+threshold in the latency test), default picture settings unless `--plain` is said. The
+computer was shared the whole time; the load average is beside every figure and was
+never low while a measurement ran (the 17 of 19:50 lasted minutes), so **the speeds are
+floors under load, not the program's speed**; the counts (pictures after a press,
+requests of the sound device, textures, megabytes) do not depend on it.
+
+**The rig comparison after the last source change** (`merge/rig-final-compare.txt`,
+`--plain`, sound on the machine's clock): the same as before the merge, line for line.
+The final build's own checks again: no pole, bag and dialogue right
+(`merge/check-final.png`); the intro film now holds 96 to 112 MB of textures while it
+plays (577 MB before the budget), 545 to 575 MB of memory in all.
+
+**10.5 Speed, pacing, memory.**
+
+| What | Figure | Load average |
+|---|---|---|
+| not paced, 640 x 448, by level (`perf/find3.txt`) | valor 22, fire3 61, arachna1 75, islc1 54, honor 20, swamp1 15, drunare 32 pictures a second; four hours earlier (`find.txt`): 36, 21, 20, 77, 67, 103, 82 - the order follows the load, not the level | 269 to 349; earlier 217 to 289 |
+| fire3 (heat haze: the most surface copies a frame), not paced, 2560 x 1792 | 28 and, with `--plain`, 32 pictures a second; earlier 88 | 237, 113; earlier 135 |
+| fire3, not paced, the display's 2619 x 1964 | 88; earlier 55 | 219; earlier 92 |
+| arachna1, not paced, 2560 x 1792 | 77 | 134 |
+| fire3 paced at 2560 x 1792, 1,800 blanks (`perf/paced3.txt`) | 50.8 pictures a second; of 1,804 intervals 1,251 stood 2 refreshes of the 120 Hz display, 512 stood 3, 39 stood 4, 2 stood 5; longest 40 ms; no restart after a stall | 119 |
+| the same session: processor time | 18.6 ms a picture over all threads; decoder 11.7 ms of its own processor time (VIF1, VU1, GS model); game side 8.0 ms and decoder 26.6 ms of wall time, main thread 8.6 ms in OpenGL and the swap; 195,000 vertices and 761 draws a picture | 119 |
+| the same session: sound | 149.9 s in 14,055 requests, longest time between two 10.9 ms, none late | 119 |
+| ten level changes paced, 640 x 448 (10.8) | 99.7 % of 8,179 intervals exactly 2 refreshes | 100 falling to 40 |
+| memory over 40 level changes, final build, default picture (`mem3/run.txt`) | 600 MB in the first level; first round of 20 levels 695 to 895 MB, second round 613 to 780 MB: **the second round is not above the first**; textures held 169 to 408 (as in every earlier tour); 21,536 heat-haze copies, none dropped | 144 at the end |
+| the same before surfaces were freed and before the merge (`mem2`) | 428 MB first level, 512 to 586 then 544 to 601 MB (second round 15 MB above the first) | 380 to 500 |
+| without freeing textures, one round (`snd1/keep0.txt`) | 1,068 MB, 2,782 textures (486 MB) | 380 |
+
+The one figure that says what the program costs is the processor time: about 12 ms of
+decoder time a picture in the heaviest scene found, so the decoder alone allows some 85
+pictures a second there on a free machine; that could not be shown, because the machine
+was never free. The default picture (4 samples, mip maps) holds about 170 MB more than
+`--plain` (600 against 430 MB in the first level).
+
+**10.6 Press to picture** (`app latency`, paced, `perf/latency3.txt`; the count is in
+vertical blanks from the controller read that was given the press to the picture that
+first shows a change, so it does not depend on the load; the milliseconds do, load 320):
+
+| Press | First changed picture | Milliseconds to its present |
+|---|---|---|
+| a move in the pause menu (down / up; a still picture, so the first change of any cell counts) | the 7th blank after the press, four times out of four | 170 to 178 |
+| the pause menu opens (start) | the 5th | 142 |
+| an attack in the first level (cross; found against the idle animation's own movement) | the 6th, 9th, 9th, 6th | 162 to 327 |
+| a move in the title menu | not found: the moving backdrop changes cells more (12 to 16) than the highlight does | |
+
+The emulator build's figure (`tools/play-net/README.md`): "in a menu the first picture
+after a press shows the change"; "in the first level an attack shows in picture 5 or 6
+(82 to 104 ms)". For the attack the native application is therefore about one picture
+later (6 where the emulator has 5 or 6; the two 9s are the detection waiting for the
+swing to outgrow the idle movement). That one picture is the runtime handing the pad
+state to the game one blank after it was read (`pad-delay`, as the console and the rig
+do; `--opt pad-delay=0` hands it over at once). For the menu the two figures do not
+measure the same menu: the emulator's was a front-end menu, this one the pause menu,
+which answers a held direction two blanks later than it answers start. Running the
+emulator's own `latency.py` in the same two scenes was tried (`perf/emu_latency.py`) and
+did not finish in 14 minutes at a load of 220; it was stopped. In wall time the picture
+path adds its two hand-overs (game to decoder, decoder to the window) to the count; with
+the application reaching 50 pictures a second instead of 60 under this load the
+milliseconds above are an upper bound.
+
+**10.7 Trails in both builds** (`fx/fx.py native|emu`, `fx/cmp-swing.png`): six swings in
+the first level at the near zoom, the game paused for each picture. Both builds draw the
+swing's trail as the same faint translucent arc behind the weapon; the two do not stop at
+the same phase of the swing, so it is the same kind of picture, not the same picture.
+
+**Left, in the order a release would want it:**
+
+1. Speed on a free machine (the three `perf.py` lines above), and the emulator's
+   `latency.py` in the pause menu and for the attack, for a like-for-like count.
+2. Hit and spell effects and floor decals against the emulator close up (only the swing
+   trail was paired); the shop's lists (the script's route opens the dialogue but not the
+   shop, in both builds).
+3. A film compared picture for picture with the emulator build (it plays the film at
+   about twice its coded rate; colour and decoder were compared, 10.3).
+4. The level strips that name a 1 x 1 texture whose picture is never sent (10.2): drawn
+   without a texture here.
+5. VU1's stalls and the integer branch hazard the reference emulator models (10.1): no
+   toured scene needed them.
+6. A listening test: every run was silent (gain 0).
+7. Unchanged from section 8: the two unexplained differences from the rig (player record
+   at tick 7 of the first level, object pool in ticks 3,886 to 3,912 of `valor`; they are
+   not denormals, 10.4), the real controller, Windows, the application bundle.
+
+**How to repeat** (all under `local/recomp-out/app-test/`, `RTA_DISC` set):
+
+```
+python3 tools/recomp/app/build.py && python3 tools/recomp/app/build.py --original
+P=python3   # one with numpy and Pillow for the tour's level plans and sheets
+$P tools/recomp/app/tour.py native levels fire3 islc1 --out local/recomp-out/app-test/t/native --views 2
+$P tools/recomp/app/tour.py emu    levels fire3 islc1 --out local/recomp-out/app-test/t/emu --views 2 --settle 500
+$P tools/recomp/app/tour.py sheet  local/recomp-out/app-test/t/cmp.png local/recomp-out/app-test/t/native local/recomp-out/app-test/t/emu
+$P tools/recomp/app/tour.py native screens --out local/recomp-out/app-test/s/native
+$P tools/recomp/app/tour.py native levels valor wat1 fire1 islc1 swamp1 storm1 nit1 tormenta fay1 dis2 \
+     --out local/recomp-out/app-test/snd/real --views 0 --paced          # sound through ten level changes
+local/recomp-out/bin/rta_app --test "films" --window 320x240 --size 640x448 --unpaced \
+     --data local/recomp-out/app-test/d --script local/recomp-out/app-test/film-test.rig
+sh local/recomp-out/app-test/merge/verify.sh                             # the rig comparison and every correction, default and --plain
+```

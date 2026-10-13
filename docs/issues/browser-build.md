@@ -1054,6 +1054,196 @@ Test files (not in the repository): `local/mixed-online/` - `up.sh`, `down.sh`, 
 `scen.py` (the runs above), `sync.py`, `walk.py` (walks a player to a place by reading
 its position), `relay.log`.
 
+## The relay in public: limits per player, and a threat review (2026-10-12, evening)
+
+**State: built and tested on one Mac with stand-ins and with a lobby server of the
+test's own; NOT on the server. The scripts that would put it there are changed and were
+not run (below, "Deployment: prepared, not done").**
+
+### Why
+
+On the server the relay and the lobby server are one machine, and the lobby server sees
+every browser player at the relay's address. The lobby server limits per address (its
+`SECURITY.md`): 16 connections, a request budget, 40 password checks and 20 new accounts
+at once. For the relay's players together that is little, so the lobby server has a
+setting, `trusted_addresses`, that takes an address out of those limits - and with the
+relay as it was that would have given every page unlimited password guesses and
+accounts. The setting is therefore not set on the server. The relay now keeps those
+limits itself, per player.
+
+### The limits (per player address)
+
+| what | at once | then | over the limit |
+|---|---|---|---|
+| sessions at a time | 4 | | not taken, notice |
+| new sessions | 12 | 12 a minute | not taken, notice with the seconds to wait |
+| log-ins and account-detail requests (lobby messages 0x16 and 0x64: the two that check a password) | 40 | one every 3 s | **not passed to the lobby server**; that connection to the lobby server is closed; notice with the seconds to wait |
+| accounts created (0x06) | 20 | one every 180 s | the same |
+| request budget, each request at the lobby server's own price | 400 units | 50 a second | the requests wait in the relay, in order |
+
+The numbers for log-ins, accounts and the budget are the lobby server's own
+(`PASSWORD_CHECK_BURST`/`_SECONDS`, `ACCOUNT_CREATION_BURST`/`_SECONDS`,
+`requests_per_second`, `request_burst`, `LobbyServer::RequestCost`), each an option of
+`relay.py`; `relay/README.md` has the table with the options and what an operator must
+set. Per session: 8 connections to the lobby server a second, 10 discovery datagrams a
+second.
+
+**Where it counts, and what was checked in the lobby server's source.** The message
+numbers are right: `Include/Network/Events.hpp` maps 0x0006 to `RequestCreateAccount`,
+0x0016 to `RequestLogin`, 0x0064 to `RequestGetAccountInfo`, and those two are the only
+callers of the password check (`Database.cpp`). The direction page to server **is
+readable the same way as server to page**: `LobbyServer::ProcessFrames` takes the length
+from the first four bytes (big-endian, counting themselves; under 4 or over 2,048 closes
+the connection) and the message number from the next two (little-endian) straight from
+the bytes received, and keeps its own limits by them; only single text fields inside a
+request are encrypted. So the relay reads those six bytes of each request, on every
+connection of a page (the gateway connection too: the lobby server counts there as
+well), keeps what a page sends until a request is whole, and hands the lobby server
+whole requests only. A log-in therefore counts however it is cut up or packed; what is
+not a lobby request is not sent on.
+
+**Whose address.** The address a connection comes from; with `--trust-proxy`, for a
+connection from the relay's own host, the last value of the last `X-Real-IP` line. nginx
+is told `proxy_set_header X-Real-IP $remote_addr`, which *replaces* a header of that name
+sent by the client, so the value is what nginx saw. Checked: a client-sent
+`X-Forwarded-For`, `Forwarded` or `X-Client-IP` is not read; a second `X-Real-IP` line
+before the web server's, or a list in one line, loses to the last value; without
+`--trust-proxy`, or from another host, no header is read. It rests on the web server's
+line: without it nginx would pass a client's own `X-Real-IP` on. An IPv6 player counts by
+its /64. The allowances outlive the session.
+
+### Threat review of the relay as it stood that afternoon
+
+Found and fixed (each has a check in `check.py --selftest`, 57 checks in all):
+
+| found | now |
+|---|---|
+| log-ins, account creation and requests were not limited per player at all | the table above |
+| a page could send datagrams to **any other page**: the hand-over between sessions asked nothing, and a session's port is one of a thousand | a datagram is handed to a page only when that page wants to hear from the sender: the lobby server named the sender to it, or it has sent to the sender itself within 30 s. Host and joiner are named to each other; players introduced by the host all send to each other |
+| memory: a page that asks for answers and does not read them. The relay's ping was not counted against the message rate, a WebSocket ping was answered with its whole payload (up to 8 KiB) and never counted, and what waited for a page had no bound | pings count as messages; a WebSocket pong carries 125 bytes at most; what waits for a page is one buffer: above 256 KiB its datagrams are dropped, above 1 MiB the session is ended and the buffer thrown away; a closed session's connection is cut after 10 s whether the page took the goodbye or not |
+| time: Python 3.12's event loop keeps every unsent write as a piece of its own and adds up all their lengths at every further write. A page that did not read made every message to it cost more - a relay that had been sent 26 MB of pings by this test's first version was still busy 90 seconds later, and no other player would have been served meanwhile | a connection is given one piece at a time (to a page, and to the lobby server): what follows waits in one buffer whose length is known |
+| anything a page sent on a lobby connection was passed on as it came | whole lobby requests only (above) |
+| a session could open and close connections to the lobby server as fast as it could send messages (600 a second) | 8 a second per session |
+| discovery datagrams for the lobby server: any size, at the message rate | 10 a second, 256 bytes |
+| a page could send a player datagrams of up to 8 KiB (sent in fragments) | 1,500 bytes |
+| a session whose lobby connection the server had closed, and the page had not, was never idle | such a connection no longer counts as open |
+| a page turned away wrote a log line each time, without bound | one line a minute per address, with the number left out |
+| nothing bounded connections that had not finished their handshake; the relay's limit of open files could be below what 64 sessions can hold | 64 at most; the limit is raised at start, or a note says it could not be |
+| a path to another page stayed when that page had closed its socket (the port's next owner would have inherited it) | removed with the socket |
+
+Asked, and the answers:
+
+- **Can a page make the relay send datagrams to an address that did not ask for them?**
+  To an address *nobody* named: no. Two ways open a path. (1) The lobby server named the
+  address: that is the address it saw a logged-in player's own connection come from,
+  with the port of that player's own datagram - a player who is hosting a listed game or
+  asked to join. A page can send such a player datagrams it does not want: 150 a second
+  per path, 1,500 bytes each, bounded by the session's 600 messages and 256 KiB a
+  second, so about 1 MiB a second from one address with four sessions. The relay never
+  sends more than a page sent it (**no amplification**), and the lobby server hands that
+  address to every player anyway. (2) "Both have sent": the relay cannot tell a forged
+  source address. Someone who can forge UDP source addresses can send one datagram
+  "from" a victim to their own session's port and then send to the victim through the
+  relay, renewing it every two minutes; the victim sees the relay's address. Such a
+  sender can also send to the victim directly with any source it likes, and gains no
+  volume here. **Not fixed**: it would need a handshake the game does not have.
+  `--peer-rate` lowers the ceiling; `--pages-only` closes the road.
+- **Private or loop-back addresses without `--lan`?** No. TCP goes to the lobby server's
+  address and ports and nowhere else. A datagram goes to the lobby server's discovery
+  port, to a session of this relay, or to a public address with an open path; loop-back,
+  multicast and reserved addresses are refused, private and link-local ones (the cloud
+  host's metadata address is link-local) and other ports of the relay's own address are
+  dropped. The service's sandbox as prepared says the same once more, outside the
+  program.
+- **The UDP port range?** A session takes at most 8 sockets, 64 sessions 512; the range
+  41000-41999 has 1,000. The relay says so at the start when a range is too small for
+  its sessions. Memory: bounded per session (above); the tables per session are small
+  and fixed; 4,096 addresses' allowances at most.
+- **The logs?** Settings; sessions opened and ended with the player's address and
+  counts; paths with the other player's address and port; refused destinations; limits
+  reached. No content of any request or datagram, no header, not the path a page asked
+  for; the relay decrypts nothing and holds no key. Checked: a marker put into every
+  request of the limit checks is in none of the test relays' logs. Not the relay's, but
+  on the same host: nginx's access log for the site holds the private path of the link in
+  every line (`"$request"`), readable by root and the `adm` group - the same host has a
+  directory of that name. Players' addresses are personal data wherever they are kept.
+
+Written down, not changed:
+
+- **Sixteen addresses can hold all 64 sessions** (four each) for as long as they keep
+  them busy. `--max-sessions` and the port range can be raised together.
+- **An outside flood on the open UDP range** costs the relay time like any open port
+  (each datagram is read and dropped at the first test). The firewall is the place for
+  more.
+- **Every program on the relay's host** can connect to it and claim any player address.
+- `--origin` keeps other sites' pages off; a program that is not a browser can say what
+  it likes.
+- The sandbox cannot tell TCP from UDP by address: at system level the service could
+  open TCP to a public address. The program opens TCP to the lobby server only.
+- **For the lobby server** (not changed; `server/upstream` was being worked on): its
+  `SECURITY.md` table of what the relay covers is out of date (all four rows are covered
+  now). It checks a discovery datagram's source address against the session's
+  connection; all browser players share one address, so a browser player who knows
+  another's session id - the game hands it to the party - could give a wrong port for
+  it. And it keeps no limit per *account*: one account's password can be tried from many
+  addresses, through the relay or without it.
+
+### Tried
+
+`check.py --selftest`: 57 of 57 on the Mac (load average 120 to 250). The 30 checks of
+the afternoon are among them, two changed in form only (what is sent on a lobby
+connection is a lobby request now; the two test pages send to each other before they are
+timed). (A run against a lobby server of the test's own is being made; its result comes here.)
+
+### Deployment: prepared, not done
+
+**Nothing was sent to the server, and neither script was run.** The two local scripts
+(not in the repository) were changed so that their next run does the following.
+
+`web-setup.sh` (asks first, after listing all of it):
+
+1. Runs `check.py --selftest` on the Mac; goes on only when it passes and `relay.py` is
+   one that knows the limits.
+2. Installs the new `relay.py` and rewrites the service `champions-relay`: started with
+   `--udp-ports 41000-41999`, and the two lines that shut it into the server's own
+   addresses (`IPAddressDeny=any`, `IPAddressAllow=127.0.0.0/8 <address>`) replaced by
+   an allow list of 127.0.0.1 and the server's address and a deny list of everything
+   that is not a public IPv4 address (`relay/README.md` has the lines and the reason).
+   Every other line of the sandbox is as it was. The service is restarted: browser
+   players who are online lose the connection.
+3. Certificate, nginx site and 443/tcp: as before (nothing new; the site file is
+   written again with the same content).
+4. **Only then, and only when the relay that is now running says in its own log that it
+   limits per player address and takes that address from nginx, reaches the lobby
+   server from the server's own address, and the lobby server installed there knows the
+   setting**: adds `trusted_addresses=<the server's address>` to the lobby server's
+   `config.ini` (a copy of the file is kept beside it) and restarts `champions-lobby` -
+   every player online loses the connection. If the lobby server does not come back,
+   the file is put back and it is restarted again. `--leave-lobby` skips the step. If
+   the lobby server on the host is a build from before the setting, the step says so
+   and changes nothing: the relay then works as before, all browser players under one
+   address's limits.
+5. **The firewall for UDP 41000-41999 is not opened** unless the script is called with
+   `--open-udp`; without it the script prints a marked note with the command. This is
+   the step that still needs the owner's yes. Without it a page and one application
+   player can play where the lobby server named the player; a third player and a player
+   whose router changes ports are not reached.
+
+`web-setup.sh --check` (changes nothing, as before) now also tries, inside the service's
+sandbox, an empty datagram to the server's own addresses and to a private, a link-local
+and another loop-back address, and says which were let through.
+
+`web-update.sh` replaces the relay only when it passes its own test on the Mac, when the
+service on the server is the new one (else it says to run `web-setup.sh`), and never
+puts a relay without limits behind a lobby server whose configuration trusts it. It
+never changes the lobby server and never opens a port; at its end it says whether the
+UDP range is open.
+
+Not tried, because it needs the server: the new sandbox lines under systemd, the
+journal lines the steps look for, the lobby server's restart with the setting.
+`sh -n` passes for both scripts and for the part that runs on the server (also with
+`dash`); the lines that read the configuration file were tried on a scratch file.
+
 ## Online play from a browser: the design it was built from
 
 ### What the game's machine does on its network

@@ -84,12 +84,28 @@ upload's copy and hash, 1 to 4 % of the instructions and 3 to 9 % of the cycles.
 
 ## State and next step
 
-(20:15) Scenes recorded, profile written (above). Next: the real VU1 translator
-(`tools/recomp/render/vu1_translate.py`, output `local/.../gen-vu/vu1_fast.cpp`), then
-the GS vertex path, then UNPACK, then uploads.
+(21:05) **Step 1 works**: `vu1_translate.py` (+ `vu1_translate_gen.py`, `vu1_simd.h`,
+`vu1_fast.h`, `vu1_fast_none.cpp`) translates the three programs; `decode_bench` built by
+`speedbench.py build fast` gives the same checksums of vertices and draw commands as the
+interpreter on title, hub and fire3-fight, every run in translated code. Whole process:
+title 80.8 -> 46.9, hub 187 -> 103, fire3 249 -> 141 million instructions. Next: profile
+again, then the GS vertex path, UNPACK, uploads; then the patch, the app, WebAssembly.
+
+How to build and compare (from `local/recomp-speed/`, all at nice 10):
+
+```
+python3 -I root/tools/recomp/render/speedbench.py translate streams/fire3-fight.rtavs streams/hub.rtavs streams/title.rtavs
+python3 -I root/tools/recomp/render/speedbench.py build fast [--prof]      # root/local/recomp-out/speed/fast/decode_bench
+root/local/recomp-out/speed/fast/decode_bench streams/hub.rtavs --loops 5 [--interpret | --old-translation]
+```
 
 ## Log
 
 - 19:52 copy of `tools/recomp` (`local/recomp-speed/base`, `root/tools/recomp`).
 - 19:55 baseline `decode_bench` runs on the existing streams. The machine is very busy
   (load average 340): times mean nothing, instructions and cycles are what is compared.
+- 20:00 scenes recorded with my own build of the application (`out/record.py`).
+- 20:10 profile of the three scenes before any change.
+- 21:05 the ahead-of-time VU1 translation: identical lists on the three scenes at the first
+  build; kicks of a translated run are taken out of VU1 memory at once and drawn after the
+  run (`Gs::xgkick_take` / `xgkick_flush`), the interpreter still draws them at once.

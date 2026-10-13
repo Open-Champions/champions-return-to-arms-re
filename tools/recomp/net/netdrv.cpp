@@ -381,7 +381,9 @@ void do_setup() {
     if (!value.empty() && !option("tick-log").empty() && (D.tick_log = fopen(option("tick-log").c_str(), "w"))) {
         // one "name=expression:type" a line, as the rig's --tick-watch; the first column is
         // this machine's vertical-blank number
+#ifndef _WIN32      // (the Windows C library takes no size of 0 here, and has no line buffering: the log is flushed at the end)
         setvbuf(D.tick_log, nullptr, _IOLBF, 0);
+#endif
         fprintf(D.tick_log, "frame");
         std::ifstream in(value);
         std::string line;

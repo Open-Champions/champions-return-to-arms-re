@@ -244,6 +244,16 @@ def main():
     os.makedirs(out, exist_ok=True)
     script = script_of(args.name, spec, out)
     if args.step == 'native':
+        # a script that made the rig write a memory image inside a tick (`ontick 77 dump`,
+        # armed by `poke 0x4027ac:s32 77`): the native run writes its image at the same tick
+        head, episodes = rigcompare.episodes_of(os.path.join(out, 'boot-rig.tsv'))
+        marker = head.index('net')
+        for number, (_level, rows, _again) in enumerate(episodes):
+            hit = [t for t in sorted(rows) if rows[t][1][marker] == '77']
+            if hit:
+                native_args += ['--opt', 'proof-dump=%d:%d:%s' % (number, hit[0], os.path.join(out, 'native-dump.bin'))]
+                break
+    if args.step == 'native':
         native_args += ['--count-at', '%x=%08x' % (INIT_COUNTER_SITE, init_counter(out))]
     if args.step == 'native' and 'echo @P' in open(script).read():
         script, pokes = replay_pokes(script, out, args.poke_shift)

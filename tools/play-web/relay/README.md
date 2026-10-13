@@ -272,5 +272,10 @@ needs a game.
 ## The messages
 
 One per binary WebSocket message, a byte of kind first, numbers big-endian; the table is
-at the top of `relay.py`. The page's side is `../src/RtaWebNet.cpp` (the queues and the
+at the top of `relay.py`. A NOTICE carries a code and a sentence: 1 the relay is full,
+2 too many pages from the address, 3 idle, 4 not the relay's messages (or not a lobby
+request), 5 a destination that is not allowed, 6 more data than a game sends, 7 the
+relay is stopping, 8 a limit of the player's address. The page puts 1, 2 and 8 on the
+screen and all of them into its log (a page built before 2026-10-12 evening: the log
+only). The page's side is `../src/RtaWebNet.cpp` (the queues and the
 socket calls) and `../web/rta-web.js` (the connection).

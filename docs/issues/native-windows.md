@@ -330,15 +330,17 @@ program); (2) the merged graphics of `native-graphics.md` in the Windows program
 widescreen, multisampling, mip maps, the art pack read without Qt); proofs on the Mac;
 tester's folder and README. Plan and state:
 
-| Step | Files | State (20:55) |
+| Step | Files | State (20:20) |
 |---|---|---|
-| socket layer | `net/sock.h` (new, header only: BSD and Winsock bodies), `net/netdrv.cpp` (every POSIX socket call replaced by `sock::`) | written; both bodies compile (`-fsyntax-only`, macOS and `x86_64-w64-mingw32`); not yet run |
-| name dialogue, title note, set warning for Windows | `net/online_win.cpp`, `net/online_win.h` (new); `net/posix_win.h` (new: `fchmod`, `fsync`, `rename` for `tools/play-net/src/RtaOnline.cpp`, force-included, that file unchanged) | written, compile for Windows; `win_main.cpp` does not call them yet |
-| PNG reader without Qt | `render/png_read.h` (new), `render/texpack.cpp` (`read_png` uses it under `RTA_NO_QIMAGE`; `open` no longer returns 0 there) | written; `app/win/pngcheck.cpp` + `app/win/pngtest.py` (new): 894 made files of every PNG kind identical to QImage, 19 damaged ones refused by both, 0 different; the run over `local/hd-pack` is going (`local/recomp-out/win/standin/pngcheck-pack.log`) |
-| settings, aspect, online options in the Windows program | `app/win_main.cpp` | not started |
-| build: new files, network, sign-in patch, stand-ins with the network | `app/build_win.py` | not started (pngcheck was built by hand: the command is in the head of `pngcheck.cpp`'s build line below) |
-| proofs: x86-64 stand-in lobby game, Mac `rta_app` lobby game | | not started |
-| tester's folder, README, this file, `native-app.md` 8, `native-recomp.md` step 6 | | not started |
+| socket layer | `net/sock.h` (new, header only: BSD and Winsock bodies), `net/netdrv.cpp` (every POSIX socket call replaced by `sock::`) | written; both bodies compile; not yet run |
+| name dialogue, title note, set warning for Windows | `net/online_win.cpp`, `net/online_win.h` (new); `net/posix_win.h` (new: `fchmod`, `fsync`, `rename` for `tools/play-net/src/RtaOnline.cpp`, force-included, that file unchanged) | written, compile for Windows |
+| PNG reader without Qt | `render/png_read.h` (new), `render/texpack.cpp` (`read_png` uses it under `RTA_NO_QIMAGE`; `open` no longer returns 0 there; reader threads below normal priority on Windows) | done; `app/win/pngcheck.cpp` + `app/win/pngtest.py` (new): 894 made files of every PNG kind identical to QImage, 19 damaged ones refused by both, 0 different (48 more are 16-bit RGB with tRNS, which Qt 6 itself reads wrongly); the run over `local/hd-pack` (221,453 files) is going: `local/recomp-out/win/standin/pngcheck-pack.log` |
+| settings, aspect, online options in the Windows program | `app/win_main.cpp` (as `app_main.cpp` after the graphics merge; `--server`, `server.txt`, `--online`, `--host`, `--join`, `--choose-character`, `--player`) | written, compiles with and without `-DRTA_NET` |
+| build | `app/build_win.py`: `texpack.cpp` (`-DRTA_NO_QIMAGE`), `gfx_rt.cpp`, the four network files, `--hle-add net/hle-online.txt`, `--extra-pnach` (sign-in, when in `local/`), `-lws2_32 -liphlpapi -ladvapi32`; `--standin` also makes `rta_native_online_x64` / `_arm64`; new `--mac` (the macOS `rta_app` into `win/mac/`, and `rta_app_pngread`), `--pngcheck`, `--no-net`; README figures filled in by `--reference` | written; the first full Windows build is running (`local/recomp-out/win/build-pass2.log`) |
+| tester's texts | `app/win/README.txt` (five checks, with online), `app/win/online.bat`, `app/win/server.txt` (new) | written |
+| `net/lobbypair.py` | `RTA_NATIVE_APP` names another window program (one line) | done |
+| proofs: x86-64 stand-in lobby game, Mac `rta_app` lobby game (`build_win.py --standin`, `--mac`, then `net/lobbypair.py run OUT --program <path>`) | | not started |
+| this file's body, `native-app.md` 8, `native-recomp.md` step 6 | | not started |
 
 Rules of this pass: the local lobby only (never 167.99.183.124), builds into
 `local/recomp-out/win/` only, no git, nothing derived from the game outside `local/`.
