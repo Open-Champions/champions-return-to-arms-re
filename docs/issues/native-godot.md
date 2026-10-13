@@ -73,7 +73,10 @@ cleaner models, (5) plug-in points for the camera, world and HUD agents, (6) exp
   exit code 2 instead of waiting with a message (two runs hung on a stale extension).
 - Speed: **not measured in this round** - the load average was 120 to 200 the whole
   afternoon (other agents' builds); the unpaced figures in the logs (23 to 62 pictures a
-  second) say nothing. The macOS export was not re-run after the rebase.
+  second) say nothing. **The macOS export was re-run on the rebased library (Ran,
+  14:25)**: `build.py extension --release && build.py export`, the exported application
+  started without a window with `--view chase`, its two pictures identical to the
+  library's.
   `local/godot-spike/src.before-fp/` is the snapshot as it was before the rebase.
 
 - **(1) The tap at the vertex programs' inputs: done and verified (Ran).** Section
@@ -115,8 +118,9 @@ cleaner models, (5) plug-in points for the camera, world and HUD agents, (6) exp
   instead of the list's triangles (persistent meshes per identity, re-posed; this is
   also what makes the scene immune to the triangles the programs drop near the eye);
   60 pictures a second paced; lighting, fog, bloom, anti-aliasing as switches; the art
-  pack and model clean-up; `worldfill.h` meshes when they exist; exports (the macOS
-  export was not re-run after the rebase).
+  pack and model clean-up; `worldfill.h` meshes when they exist; the Windows
+  preparation (nothing of it is started: the DLL through `build_win.py`'s route and the
+  extension cross-built with MinGW, as stage 5 describes it).
 
 **For the world agent - is the scene immune to its two faults?** (Read, from how the
 scene is built; not looked at in a close view.)

@@ -8,7 +8,7 @@ gametitle=Champions: Return to Arms (SLUS-20973) v2.00
 
 [Proposed: strafe mode - a player can run one way and face another]
 author=first-person controls work, 2026-10-13; run on the native build only (one copy, and two copies in one lockstep game); untested on the emulator build, PCSX2 or a console
-description=The game runs a character along its facing and turns the facing to the stick: there is no way to run sideways or backwards while facing ahead, which a view from the character's eyes wants. With this section each player has a mode byte (player object +0x47E, a byte that only the unreachable jump state used). While it is 0 the game is exactly as it was. While it is not 0, in the ordinary moving state the character turns (40 % of the angle a tick, the game's own rate) to where the camera of its player looks - the heading a pushed-up stick asks for, 0x3E3D minus the yaw word that already travels with every controller row - and runs along the stick's own direction instead of along its facing, at the same speed. The mode is set by game message 4, sub-type 2 {2, slot, mode}: message 4 already exists, travels in lockstep and has an empty handler; every machine sets the byte in the same tick. Player_ctor now clears the byte, so every new character (level start, respawn) starts with the mode off on every machine. Four parts: the hook in Player_move (0x1B4210), its code in the unreferenced function 0x2128C8, the handler and a sender in the unreferenced function 0x215C98 (the sender is called with the mode in a0, at 0x215CDC), the jump from the empty handler 0x1E01B0, and the two byte stores of the constructor. Every player must have this section or none.
+description=The game runs a character along its facing and turns the facing to the stick: there is no way to run sideways or backwards while facing ahead, which a view from the character's eyes wants. With this section each player has a mode byte (player object +0x47E, a byte that only the unreachable jump state used). While it is 0 the game is exactly as it was. While it is not 0, in the ordinary moving state the character turns (40 % of the angle a tick, the game's own rate) to where the camera of its player looks - the heading a pushed-up stick asks for, 0x3E3D minus the yaw word that already travels with every controller row - and runs along the stick's own direction instead of along its facing, at the same speed. The mode is set by game message 4, sub-type 2 {2, slot, mode}: message 4 already exists, travels in lockstep and has an empty handler; every machine sets the byte in the same tick. Player_ctor now clears the byte, so every new character (level start, respawn) starts with the mode off on every machine. Parts: the hook in Player_move (0x1B4210); its code in the unreferenced function 0x2128C8; a sender in the unreferenced function 0x215C98 (called with the mode in a0); the handler in the unreferenced function 0x215D28, reached by a jump from the empty handler 0x1E01B0; and the two byte stores of the constructor. Every player must have this section or none.
 // Player_move 0x1b4210; was: 24020005 12A2007C
 // j 0x2128c8
 patch=1,EE,001B4210,word,08084A32
@@ -20,8 +20,8 @@ patch=1,EE,001A22FC,word,A6A0047C
 // sb zero,0x47e(s5)
 patch=1,EE,001A2300,word,A2A0047E
 // the empty handler of game message 4, 0x1e01b0; was: 03E00008 00000000
-// j 0x215c98
-patch=1,EE,001E01B0,word,08085726
+// j 0x215d28
+patch=1,EE,001E01B0,word,0808574A
 // nop
 patch=1,EE,001E01B4,word,00000000
 // the move code, in the unreferenced function 0x2128c8 (45 words of its 45)
@@ -71,41 +71,43 @@ patch=1,EE,0021296C,word,0806D101
 patch=1,EE,00212970,word,00000000
 patch=1,EE,00212974,word,0806D087
 patch=1,EE,00212978,word,00000000
-// the handler and the sender, in the unreferenced function 0x215c98 (35 words of its 36; the last word is the sender's three bytes)
-// was: 27BDFFF0 FFB00000 FFBF0008 0C085A18 0080802D 0040282D 14A00005 00000000 10000018 DFB00000 10000015 0000102D 0600000F 0000202D 00A0182D 80620000 00000000 00000000 00000000 1040FFF6 24630050 24840001 0204102A 00000000 00000000 00000000 5040FFF5 80620000 00101080 00501021 00021100 00A21021 DFB00000 DFBF0008 03E00008
-patch=1,EE,00215C98,word,90880000
-patch=1,EE,00215C9C,word,24090002
-patch=1,EE,00215CA0,word,1509000C
-patch=1,EE,00215CA4,word,90880001
-patch=1,EE,00215CA8,word,2D090004
-patch=1,EE,00215CAC,word,11200009
-patch=1,EE,00215CB0,word,24094C30
-patch=1,EE,00215CB4,word,01090018
-patch=1,EE,00215CB8,word,00004012
-patch=1,EE,00215CBC,word,3C09004E
-patch=1,EE,00215CC0,word,01284821
-patch=1,EE,00215CC4,word,8D29CEC8
-patch=1,EE,00215CC8,word,11200002
-patch=1,EE,00215CCC,word,908A0002
-patch=1,EE,00215CD0,word,A12A047E
-patch=1,EE,00215CD4,word,03E00008
-patch=1,EE,00215CD8,word,00000000
-patch=1,EE,00215CDC,word,27BDFFE0
-patch=1,EE,00215CE0,word,AFBF0010
-patch=1,EE,00215CE4,word,3C080021
-patch=1,EE,00215CE8,word,24090002
-patch=1,EE,00215CEC,word,A1095D24
-patch=1,EE,00215CF0,word,A1045D26
-patch=1,EE,00215CF4,word,0C04F87C
-patch=1,EE,00215CF8,word,00002021
-patch=1,EE,00215CFC,word,3C050021
-patch=1,EE,00215D00,word,24A55D24
-patch=1,EE,00215D04,word,A0A20001
-patch=1,EE,00215D08,word,3C040087
-patch=1,EE,00215D0C,word,8C84AA60
-patch=1,EE,00215D10,word,0C04F6CE
-patch=1,EE,00215D14,word,24060003
-patch=1,EE,00215D18,word,8FBF0010
-patch=1,EE,00215D1C,word,03E00008
-patch=1,EE,00215D20,word,27BD0020
+// the sender, the unreferenced function 0x215c98 (18 words of its 36; its last word holds the three bytes sent)
+// was: 27BDFFF0 FFB00000 FFBF0008 0C085A18 0080802D 0040282D 14A00005 00000000 10000018 DFB00000 10000015 0000102D 0600000F 0000202D 00A0182D 80620000 00000000 00000000
+patch=1,EE,00215C98,word,27BDFFE0
+patch=1,EE,00215C9C,word,FFBF0010
+patch=1,EE,00215CA0,word,3C080021
+patch=1,EE,00215CA4,word,24090002
+patch=1,EE,00215CA8,word,A1095D24
+patch=1,EE,00215CAC,word,A1045D26
+patch=1,EE,00215CB0,word,0C04F87C
+patch=1,EE,00215CB4,word,00002021
+patch=1,EE,00215CB8,word,3C050021
+patch=1,EE,00215CBC,word,24A55D24
+patch=1,EE,00215CC0,word,A0A20001
+patch=1,EE,00215CC4,word,3C040087
+patch=1,EE,00215CC8,word,8C84AA60
+patch=1,EE,00215CCC,word,0C04F6CE
+patch=1,EE,00215CD0,word,24060003
+patch=1,EE,00215CD4,word,DFBF0010
+patch=1,EE,00215CD8,word,03E00008
+patch=1,EE,00215CDC,word,27BD0020
+// the handler, the unreferenced function 0x215d28 (17 words of its 31)
+// was: 27BDFFF0 3C020087 FFB00000 0080802D FFBF0008 0C05CDDF 244423E8 0040302D 50C00013 DFB00000 0600000C 0000282D 00C0202D 80830000 24840050 1060000B 0000102D
+patch=1,EE,00215D28,word,90880000
+patch=1,EE,00215D2C,word,24090002
+patch=1,EE,00215D30,word,1509000C
+patch=1,EE,00215D34,word,90880001
+patch=1,EE,00215D38,word,2D090004
+patch=1,EE,00215D3C,word,11200009
+patch=1,EE,00215D40,word,24094C30
+patch=1,EE,00215D44,word,01090018
+patch=1,EE,00215D48,word,00004012
+patch=1,EE,00215D4C,word,3C09004E
+patch=1,EE,00215D50,word,01284821
+patch=1,EE,00215D54,word,8D29CEC8
+patch=1,EE,00215D58,word,11200002
+patch=1,EE,00215D5C,word,908A0002
+patch=1,EE,00215D60,word,A12A047E
+patch=1,EE,00215D64,word,03E00008
+patch=1,EE,00215D68,word,00000000
 patch=1,EE,00215D24,word,00000000

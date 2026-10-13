@@ -381,6 +381,7 @@ struct Pad : rta::PadSource {
         if (G.inner_pad) G.inner_pad->read(port, number, state);
         else state = script_pad(port);
         if (port != 0 || !G.drive_boot || G.phase != NET2_GAME_BOOTING) return;
+        if (in_front_end()) { state = rta::PadState(); return; }      // the title screen is coming up: hands off
         if (number >= G.boot_next_press) { G.boot_press_until = number + 6; G.boot_next_press = number + 46; }
         state = rta::PadState();
         if (number < G.boot_press_until) state.buttons = rta::PAD_CROSS;

@@ -18,7 +18,7 @@ func hints() -> Array:
 
 
 func build() -> void:
-	var need_disc := not portal.profile.disc_found() and not bool(portal.options.stub_game)
+	var need_disc: bool = not portal.profile.disc_found() and not bool(portal.options.stub_game)
 	var y0 := 0.0
 	if need_disc:
 		# the one sentence, with its one button
