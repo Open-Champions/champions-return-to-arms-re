@@ -104,6 +104,57 @@ sends its to the host. Each alone is repaired from the first datagram that arriv
 **The defence, in the driver ("Fix", 2026-10-13):** a peer's disconnect is shown to a
 game that is in a game's room half a second late - see "The disconnect hold" below.
 
+### The disconnect hold (the fix for the launch that did not start)
+
+**Reproduced** (2026-10-13, `lobbyparty.py --players 4 --stall j1`: four headless copies,
+the second one standing still for 5 s across the host's Start - script command `app net
+stall MS` - so that it takes START when the others have already disconnected). Launch 1
+of 6 without the hold failed exactly as the one of the night: everybody in lobby state 12,
+nobody in a level. Its launch tables (true ports: host 4004, players 1 to 3 at 56816,
+56474, 52373):
+
+- player 1 (the one that stood still): no "Terminating known peer" line - not one live
+  connection when it took START; port table 0, own, 0, 0. The handshake then gave it the
+  host (4004, state 8) and player 2 (56474, state 8); its record for player 3 stayed
+  `00000000:0`, state 0, to the end;
+- player 3: "Terminating known peer 0, 2" - two peers, not three; port table 4004, **4004**,
+  **56816**, own: the host's port filed for player 1 and player 1's port for player 2.
+  Player 2 was repaired from its datagrams (56474, state 8); its record for player 1
+  stayed `c0a8017b:4004`, state 0: it sent player 1's datagrams to the host for 60 s.
+
+Two joiners, each wrong about the other, neither entry pointing at the other machine: no
+datagram ever arrives that could repair one. In the 5 launches that worked, the joiner
+that stood still was wrong about everybody every time (0, 0, 0) and one other joiner held
+a copy of the host's port for a third - but nobody was wrong about the one that stood
+still, and the handshake repaired the rest. Across the 7 launches of four of the night
+(no stall) every one had wrong entries at Start, of both kinds: copies of the host's port
+or 0 (the race at Start, `three-players.md` cause 1) and two fellow joiners the wrong way
+round (the accept rule that goes by address).
+
+**The fix** (`netdrv.cpp`, `udp_receive`): a datagram that is the peer library's
+disconnect - 8 bytes: `00 05`, the connection's code, a reason - and arrives while the
+lobby state word says "in a game's room" (6) is kept for 30 vertical blanks, or until the
+state has moved on, before the game sees it. By then a joiner has taken START and filled
+its launch tables from connections that were all still there: the race cannot produce a
+wrong entry on a native copy any more, whatever the other players' copies are. What stays
+are swapped entries, and a swapped entry still points at a real player, who learns the
+sender's true port from the first datagram. It is what a network that delivers that one
+datagram half a second late would do; nothing else is held, and nothing during a game. A
+player who just leaves a room is seen to leave half a second later. `--opt
+net-hold-disconnects=0` turns it off; `app net sockets` counts the held ones.
+
+| 4 headless copies, joiner 1 standing still 5 s across Start | Launches | All in the level | Ticks in step | At Start |
+|---|---|---|---|---|
+| hold off (`net-hold-disconnects=0`) | 6 | **5** | 1,218 - 1,219, all 6 pairs | the joiner that stood still terminated 0 peers and had 0 for every other player, 6 of 6; another joiner held the host's port for a third, 6 of 6 |
+| hold on (the default now) | 6 in a row | **6** | 1,212 - 1,219, all 6 pairs | every joiner terminated 3 live peers, 6 of 6; 3 disconnects held on the joiner that stood still and 1 on another; no 0 and no copy of the host's port in any table; two fellow joiners the wrong way round in 5 of 6, repaired |
+
+One failure in six is a thin "before"; what carries the claim is the tables: the kind of
+wrong entry the failure needs was in every launch without the hold and in none with it.
+The emulator application and the browser page have the same hole (their network layer is
+`tools/play-net/src/RtaNet.cpp`, not this driver): **the same hold there would need a
+change in `RtaNet.cpp`** - it sees every datagram on its way to the game and knows the
+lobby state word the same way. Not done (not this work's file).
+
 ### The name question in the window: shown and worked
 
 `online_mac.mm` left a test window alone, so the sheet had never been up. New, for tests
@@ -420,12 +471,13 @@ at its sign-in step. The skip is not re-implemented in any code here.
 `net-server-public`, `net-data`, `net-card`, `net-netcnf=0`, `net-addr`,
 `net-loopback=on|off`, `net-ports=0`, `net-set-quiet=1`, `net-local-only=1`, `net-pace=HZ`,
 `net-log=FILE`, `net-log-all=1`, `net-arith=auto|console|browser`, `net-port-shift=N`,
+`net-hold-disconnects=0`,
 `online=lobby|host[:CODE]|join:CODE[+choose]`, `online-name=NAME[,NAME…]`,
 `online-person=0`, `online-commands=FILE`, `online-test-window=1`, `tick-log`,
 `tick-watch-file`, `tick-do`. `netdrv.h` describes each. Script commands: `app online
 start MODE`, `app online stop`, `app online name NAME`, `app online`, `app online sheet
 info|type TEXT|press N|picture FILE`, `app net peers`, `app net arith`, `app net sockets`,
-`app net drop`. From a script file they reach the network in the window program too; the
+`app net stall MS`, `app net drop`. From a script file they reach the network in the window program too; the
 window program's control socket hands its `app` lines to the window program only
 (`app/app_main.cpp` sets `g_control.app_command = app_command`, past the chain in
 `script_app_command`), which is what `online-commands=FILE` is for.
@@ -563,6 +615,8 @@ card directory changed after the copy's first boot.
   the console's by default, a browser's while a browser copy is heard in the lobby or a
   room (ARM64; an x86-64 build still says "the console's only" and warns). Run with a page
   in both orders ("With a browser copy: the arithmetic").
+- A peer's disconnect that arrives while the game is in a game's room is shown to it half
+  a second late ("The disconnect hold"); the emulator build shows it at once.
 - Library calls cost what they asked to wait and nothing else; on the emulator each is an
   RPC through the emulated I/O processor. Finding 2 is where that mattered.
 - Nothing is relayed for `--arg --net` (the developer LAN start) by this driver:

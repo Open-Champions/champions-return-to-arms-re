@@ -1,0 +1,603 @@
+// rtag.cpp - the library behind rtag.h.
+//
+// The pieces are tools/recomp's, unchanged (a snapshot of them: see ../build.py):
+//   rta::run()                the translated game on the runtime's threads (rt/)
+//   app::Sink (pipeline.h)    the picture path: the runtime's sink copies on the game's thread,
+//                             a decoder thread runs VIF1 / VU1 / the GS model
+//   render::Renderer          gives one FrameList per vertical blank
+//   render::GlBackend         optional: draws the lists off screen (gl_offscreen.h makes the context)
+//   sound_rta.cpp             the sound core; its "device" is the host (audio_host.inc)
+// What is new here is only the hand-over: the game's thread stands at every blank until the
+// host lets it go (Gate), finished frames wait in a short queue for the host (Outbox), and
+// the end of the run stops the machine instead of the process (host_godot.cpp).
+#include "rtag.h"
+
+#include "app_rt.h"
+#include "backend_gl.h"
+#include "gfx_rt.h"
+#include "gl_offscreen.h"
+#include "pipeline.h"
+#include "png_write.h"
+#include "scene_tap.h"
+
+#include <atomic>
+#include <cmath>
+#include <condition_variable>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <deque>
+#include <dirent.h>
+#include <mutex>
+#include <string>
+#include <sys/resource.h>
+#include <sys/stat.h>
+#include <thread>
+#include <vector>
+
+namespace rta { namespace snd { void host_audio_pull(int16_t* stereo, size_t frames, float gain); } }
+void rtag_host_set_quit(void (*fn)(int code));          // host_godot.cpp
+
+using app::now_ms;
+using render::FrameList;
+
+namespace {
+
+static_assert(sizeof(rtag_vertex) == sizeof(render::Vertex), "rtag_vertex is render::Vertex");
+static_assert(offsetof(rtag_vertex, s) == offsetof(render::Vertex, s) && offsetof(rtag_vertex, r) == offsetof(render::Vertex, r) &&
+              offsetof(rtag_vertex, fog) == offsetof(render::Vertex, fog), "rtag_vertex is render::Vertex");
+
+const uint32_t G_SIM_FRAME = 0x44FDCC;                  // symbols/engine.tsv: g_simFrame
+
+double cpu_ms() {
+    rusage u;
+    getrusage(RUSAGE_SELF, &u);
+    return (u.ru_utime.tv_sec + u.ru_stime.tv_sec) * 1000.0 + (u.ru_utime.tv_usec + u.ru_stime.tv_usec) / 1000.0;
+}
+bool file_exists(const std::string& path) { struct stat st; return stat(path.c_str(), &st) == 0; }
+void say(const std::string& line) { fprintf(stderr, "rtag: %s\n", line.c_str()); fflush(stderr); }
+
+// ---- the gate: the game's thread stands at a blank until it is let go ----------------------
+struct Gate {
+    std::mutex lock;
+    std::condition_variable changed;
+    long credits = 0;
+    bool open = false;                  // rtag_run(< 0): never waits
+    void wait() {
+        std::unique_lock<std::mutex> hold(lock);
+        changed.wait(hold, [this] { return open || credits > 0; });
+        if (!open) credits--;
+    }
+    void grant(long n) { { std::lock_guard<std::mutex> hold(lock); credits += n; if (credits > 4) credits = 4; } changed.notify_all(); }
+    void set_open(bool on) { { std::lock_guard<std::mutex> hold(lock); open = on; } changed.notify_all(); }
+};
+
+// One finished frame on its way to the host.
+struct OutFrame {
+    FrameList list;
+    std::vector<uint8_t> picture;
+    int picture_w = 0, picture_h = 0;
+    std::vector<std::string> shots, commands;
+    uint32_t sim_tick = 0, flags = 0;
+    scene::Frame scene;
+};
+
+struct Note { uint64_t number; uint32_t sim_tick, flags; std::vector<std::string> shots, commands; };
+
+struct Machine;
+Machine* g_m;
+
+// The sink of the picture path with the gate behind it, and what travels beside a frame.
+struct GateSink : app::Sink {
+    Gate gate;
+    std::mutex notes_lock;
+    std::deque<Note> notes;                             // game's thread -> decoder
+    std::mutex shots_lock;
+    std::vector<std::string> shots_asked;               // by the script, at this blank
+    std::vector<std::string> commands_asked;            // "app ..." lines that are the host's
+    void vblank(unsigned field, uint64_t number) override;
+    bool take(uint64_t number, Note& out) {
+        std::lock_guard<std::mutex> hold(notes_lock);
+        bool found = false;
+        while (!notes.empty() && notes.front().number <= number) {
+            for (auto& s : notes.front().shots) out.shots.push_back(s);
+            for (auto& s : notes.front().commands) out.commands.push_back(s);
+            out.number = notes.front().number; out.sim_tick = notes.front().sim_tick; out.flags = notes.front().flags;
+            notes.pop_front();
+            found = true;
+        }
+        return found;
+    }
+};
+
+struct Pads : rta::PadSource {
+    std::mutex lock;
+    rtag_pad held[2] = {{0, 128, 128, 128, 128}, {0, 128, 128, 128, 128}};
+    std::atomic<bool> quit{false};
+    std::atomic<uint32_t> rumbles{0};
+    void read(unsigned port, uint64_t, rta::PadState& state) override {
+        if (quit) apprt::finish(0);                     // rtag_stop(): end from the game's thread
+        state = apprt::script_pad(port);
+        if (port > 1) return;
+        rtag_pad p;
+        { std::lock_guard<std::mutex> hold(lock); p = held[port]; }
+        state.buttons |= p.buttons;
+        if (state.lx == 128 && state.ly == 128) { state.lx = p.lx; state.ly = p.ly; }
+        if (state.rx == 128 && state.ry == 128) { state.rx = p.rx; state.ry = p.ry; }
+    }
+    void rumble(unsigned, uint8_t, uint8_t) override { rumbles++; }
+};
+
+struct Machine {
+    // configuration (copies)
+    std::string disc, data, workspace, elf, script;
+    int lists = 1, picture_w = 0, picture_h = 0, every_frame = 0, samples = 0, anisotropy = 1, mipmaps = 0, sound = 0, scene3d = 0;
+    double aspect = 4.0 / 3.0, gain = 1.0;
+    std::vector<std::string> args;
+    std::vector<char*> argv;
+
+    render::Renderer renderer;
+    GateSink sink;
+    Pads pads;
+    rta::Hooks hooks;
+    double waited_downstream_ms = 0;
+    // the library's own renderer (decoder's thread)
+    render::GlBackend* backend = nullptr;
+    bool backend_failed = false;
+    // decoder -> host
+    enum { DEPTH = 3 };
+    std::mutex lock;
+    std::condition_variable changed;
+    std::deque<OutFrame*> ready;
+    std::vector<OutFrame*> spare;
+    OutFrame* held = nullptr;                           // the frame the host is looking at
+    // the host's view of it
+    rtag_frame view;
+    rtag_scene scene_view;
+    std::vector<rtag_draw> draws;
+    std::vector<rtag_texture> textures;
+    std::vector<rtag_target> targets;
+    std::vector<const char*> shot_names, command_names;
+    // the end
+    std::atomic<bool> ended{false};
+    std::atomic<int> exit_code{0};
+    // the library's own clock (rtag_run)
+    std::atomic<double> run_hz{0};
+    std::thread clock;
+    std::atomic<bool> clock_on{false};
+    // figures
+    double start_ms = 0, start_cpu = 0;
+    std::atomic<uint64_t> frames_out{0}, frames_taken{0}, vertices{0}, commands{0}, shots_written{0};
+    double backend_ms = 0;                              // decoder's thread: the library's own OpenGL calls and read-backs
+    std::string info;
+};
+
+void GateSink::vblank(unsigned field, uint64_t number) {
+    Note note;
+    note.number = number;
+    const uint8_t* ram = rta::memory();
+    if (ram) {
+        memcpy(&note.sim_tick, ram + G_SIM_FRAME, 4);
+        note.flags = 0;
+    }
+    { std::lock_guard<std::mutex> hold(shots_lock); note.shots.swap(shots_asked); note.commands.swap(commands_asked); }
+    { std::lock_guard<std::mutex> hold(notes_lock); notes.push_back(std::move(note)); }
+    if (g_m->scene3d) scene::at_blank(rta::memory(), number);
+    app::Sink::vblank(field, number);                   // hands the batch to the decoder
+    gate.wait();                                        // the host lets the next frame go; the controller is read after this
+}
+
+void app_command(const std::string& text, uint64_t frame) {
+    std::vector<std::string> w;
+    for (size_t at = 0; at < text.size();) {
+        while (at < text.size() && isspace((unsigned char)text[at])) at++;
+        size_t end = at;
+        while (end < text.size() && !isspace((unsigned char)text[end])) end++;
+        if (end > at) w.push_back(text.substr(at, end - at));
+        at = end;
+    }
+    if (w.empty()) return;
+    if (w[0] == "shot" && w.size() >= 2) {
+        std::lock_guard<std::mutex> hold(g_m->sink.shots_lock);
+        g_m->sink.shots_asked.push_back(text.substr(text.find(w[1])));
+    } else if (w[0] == "stats") {
+        printf("[frame %llu] rtag: %s\n", (unsigned long long)frame, rtag_info());
+        fflush(stdout);
+    } else {                                            // the host's (rtag_frame::host_commands)
+        std::lock_guard<std::mutex> hold(g_m->sink.shots_lock);
+        g_m->sink.commands_asked.push_back(text);
+    }
+}
+
+// The decoder's thread: one list per vertical blank.
+void on_frame(FrameList& frame) {
+    Machine& m = *g_m;
+    OutFrame* out = nullptr;
+    {
+        std::unique_lock<std::mutex> hold(m.lock);
+        double w0 = now_ms();
+        m.changed.wait(hold, [&] { return (int)m.ready.size() < Machine::DEPTH; });
+        m.waited_downstream_ms += now_ms() - w0;
+        if (!m.spare.empty()) { out = m.spare.back(); m.spare.pop_back(); }
+    }
+    if (!out) out = new OutFrame;
+    out->shots.clear();
+    out->commands.clear();
+    out->picture_w = out->picture_h = 0;
+    Note note;
+    note.sim_tick = 0; note.flags = 0;
+    m.sink.take(frame.number, note);
+    out->shots.swap(note.shots);
+    out->commands.swap(note.commands);
+    out->sim_tick = note.sim_tick;
+    out->flags = note.flags;
+    if (m.scene3d) scene::take(frame, out->scene); else out->scene.clear();
+    m.vertices += frame.vertices.size();
+    m.commands += frame.commands.size();
+    if (m.picture_w > 0 && !m.backend_failed) {
+        double t0 = now_ms();
+        if (!m.backend) {
+            std::string why;
+            if (!gl_offscreen::make_current(why)) {
+                m.backend_failed = true;
+                say("no OpenGL 4.1 context for the library's own renderer (" + why + "): no pictures from it");
+            } else {
+                m.backend = new render::GlBackend;
+                render::PictureOptions picture;
+                picture.samples = m.samples;
+                picture.anisotropy = m.anisotropy < 1 ? 1 : m.anisotropy;
+                picture.mipmaps = m.mipmaps != 0;
+                m.backend->configure(picture);
+                m.backend->set_output_size(m.picture_w, m.picture_h);
+                say("the library's own renderer: " + gl_offscreen::description() + ", picture " + std::to_string(m.picture_w) + " x " + std::to_string(m.picture_h));
+            }
+        }
+        if (m.backend) {
+            m.backend->execute(frame);
+            if (m.every_frame || !out->shots.empty()) {
+                if (!m.backend->read_shown(out->picture, out->picture_w, out->picture_h)) out->picture_w = out->picture_h = 0;
+            }
+            for (const std::string& path : out->shots) {
+                if (!out->picture_w) { say("no picture to write to " + path + " (nothing is shown)"); continue; }
+                if (png_write::rgb_from_rgba(path.c_str(), out->picture.data(), out->picture_w, out->picture_h)) {
+                    m.shots_written++;
+                    say("wrote " + path + " (" + std::to_string(out->picture_w) + " x " + std::to_string(out->picture_h) + ") at vertical blank " + std::to_string(frame.number));
+                } else say("cannot write " + path);
+            }
+        }
+        m.backend_ms += now_ms() - t0;
+    }
+    // the list goes to the host; the renderer gets an older one's vectors back to fill again
+    FrameList& slot = out->list;
+    if (m.lists) {
+        std::swap(slot.vertices, frame.vertices);
+        std::swap(slot.commands, frame.commands);
+        std::swap(slot.textures, frame.textures);
+        std::swap(slot.targets, frame.targets);
+        std::swap(slot.dead_textures, frame.dead_textures);
+        std::swap(slot.dead_targets, frame.dead_targets);
+    } else slot.clear();
+    slot.show_target = frame.show_target;
+    slot.aspect = frame.aspect;
+    memcpy(slot.show_rect, frame.show_rect, sizeof(slot.show_rect));
+    slot.number = frame.number;
+    {
+        std::lock_guard<std::mutex> hold(m.lock);
+        m.ready.push_back(out);
+        m.frames_out++;
+    }
+    m.changed.notify_all();
+}
+
+void final_report() {                                   // on the game's thread, when the run ends
+    Machine& m = *g_m;
+    double wall = now_ms() - m.start_ms, cpu = cpu_ms() - m.start_cpu;
+    double n = m.sink.blanks ? (double)m.sink.blanks : 1;
+    printf("rtag: %llu vertical blanks in %.0f ms: %.1f pictures a second of wall time\n", (unsigned long long)m.sink.blanks, wall, 1000.0 * n / wall);
+    printf("rtag: per picture %.2f ms of processor time over all threads of the process (the host's included); game side %.2f ms of wall time; decoder %.2f ms of wall "
+           "time, %.2f ms of its own processor time (VIF1, VU1, GS model%s); %.0f vertices, %.0f draw commands\n",
+           cpu / n, m.sink.game_ms / n, m.sink.decode_wall_ms / n, m.sink.decode_cpu_ms / n,
+           m.picture_w > 0 ? ", and the library's own OpenGL renderer" : "", m.vertices / n, m.commands / n);
+    if (m.picture_w > 0) printf("rtag: the library's own renderer: %.2f ms a picture on the decoder's thread (OpenGL calls, read-backs), %llu pictures written\n",
+                                m.backend_ms / n, (unsigned long long)m.shots_written.load());
+    apprt::films_report();
+    const render::GsStats& g = m.renderer.gs.stats;
+    printf("rtag: textures made %llu, held %llu (%.1f MB as RGBA), freed %llu; draws without their texture %llu; surface copies %llu; VU1 instructions not implemented %llu\n",
+           (unsigned long long)g.textures_made, (unsigned long long)g.textures_held, g.texture_bytes / 1048576.0, (unsigned long long)g.textures_freed,
+           (unsigned long long)g.texture_missing, (unsigned long long)g.copies, (unsigned long long)m.renderer.vif.vu.bad);
+    if (m.scene3d) scene::report();
+    fflush(stdout);
+}
+
+void on_quit(int code) {                                // host_godot.cpp: the runtime has ended the run
+    Machine& m = *g_m;
+    m.exit_code = code;
+    m.ended = true;
+    m.changed.notify_all();
+}
+
+void clock_loop() {
+    Machine& m = *g_m;
+    double next = now_ms();
+    while (m.clock_on) {
+        double hz = m.run_hz;
+        if (hz <= 0) { std::this_thread::sleep_for(std::chrono::milliseconds(5)); next = now_ms(); continue; }
+        next += 1000.0 / hz;
+        double now = now_ms();
+        if (now > next + 100) next = now;               // stood still (a level load, the host): no burst afterwards
+        app::sleep_until_ms(next);
+        m.sink.gate.grant(1);
+    }
+}
+
+void fill_view(Machine& m) {
+    OutFrame& f = *m.held;
+    const FrameList& l = f.list;
+    rtag_frame& v = m.view;
+    memset(&v, 0, sizeof v);
+    v.number = l.number;
+    v.sim_tick = f.sim_tick;
+    v.flags = f.flags;
+    m.draws.resize(l.commands.size());
+    for (size_t k = 0; k < l.commands.size(); k++) {
+        const render::DrawCmd& c = l.commands[k];
+        rtag_draw& d = m.draws[k];
+        memset(&d, 0, sizeof d);
+        d.kind = c.kind; d.prim = c.prim; d.made_by = c.made_by; d.scissor_moved = c.scissor_moved;
+        d.first = c.first; d.count = c.count; d.target = c.target;
+        memcpy(d.scissor, c.scissor, sizeof d.scissor);
+        d.scissor_x[0] = c.scissor_x[0]; d.scissor_x[1] = c.scissor_x[1];
+        d.texture = c.texture; d.tex_is_target = c.tex_is_target; d.linear = c.linear; d.wrap_s = c.wrap[0]; d.wrap_t = c.wrap[1];
+        memcpy(d.tex_size, c.tex_size, sizeof d.tex_size);
+        memcpy(d.tex_offset, c.tex_offset, sizeof d.tex_offset);
+        memcpy(d.st_scale, c.st_scale, sizeof d.st_scale);
+        memcpy(d.region, c.region, sizeof d.region);
+        d.tex_missing = c.tex_missing;
+        d.texa_mode = c.texa_mode; d.ta0 = c.ta0; d.ta1 = c.ta1; d.aem = c.aem;
+        d.tfx = c.tfx; d.tcc = c.tcc;
+        d.alpha_test = c.alpha_test; d.atst = c.atst; d.aref = c.aref; d.afail = c.afail;
+        d.depth_test = c.depth_test; d.ztst = c.ztst; d.depth_write = c.depth_write;
+        d.blend = c.blend; d.ba = c.ba; d.bb = c.bb; d.bc = c.bc; d.bd = c.bd; d.fix = c.fix;
+        d.mask_rgb = c.mask_rgb; d.mask_a = c.mask_a;
+        d.fog = c.fog; memcpy(d.fog_colour, c.fog_colour, 3);
+        d.weave_half = c.weave_half; d.weave_base = c.weave_base;
+        memcpy(d.copy_src, c.copy_src, sizeof d.copy_src);
+        memcpy(d.copy_dst, c.copy_dst, sizeof d.copy_dst);
+        d.scene_first = -1;
+    }
+    m.textures.resize(l.textures.size());
+    for (size_t k = 0; k < l.textures.size(); k++) m.textures[k] = {l.textures[k].id, l.textures[k].width, l.textures[k].height, l.textures[k].rgba.data()};
+    m.targets.resize(l.targets.size());
+    for (size_t k = 0; k < l.targets.size(); k++) m.targets[k] = {l.targets[k].id, l.targets[k].width, l.targets[k].height, l.targets[k].screen ? 1 : 0};
+    m.shot_names.clear();
+    for (auto& s : f.shots) m.shot_names.push_back(s.c_str());
+    v.vertices = (const rtag_vertex*)l.vertices.data(); v.vertex_count = (uint32_t)l.vertices.size();
+    v.draws = m.draws.data(); v.draw_count = (uint32_t)m.draws.size();
+    v.textures = m.textures.data(); v.texture_count = (uint32_t)m.textures.size();
+    v.targets = m.targets.data(); v.target_count = (uint32_t)m.targets.size();
+    v.dead_textures = l.dead_textures.data(); v.dead_texture_count = (uint32_t)l.dead_textures.size();
+    v.dead_targets = l.dead_targets.data(); v.dead_target_count = (uint32_t)l.dead_targets.size();
+    v.show_target = l.show_target;
+    memcpy(v.show_rect, l.show_rect, sizeof v.show_rect);
+    v.aspect = l.aspect;
+    if (f.picture_w > 0) { v.picture = f.picture.data(); v.picture_width = f.picture_w; v.picture_height = f.picture_h; }
+    v.shots = m.shot_names.data(); v.shot_count = (uint32_t)m.shot_names.size();
+    m.command_names.clear();
+    for (auto& s : f.commands) m.command_names.push_back(s.c_str());
+    v.host_commands = m.command_names.data(); v.host_command_count = (uint32_t)m.command_names.size();
+    v.scene = nullptr;
+    if (m.scene3d) {
+        scene::fill(f.scene, m.scene_view, m.draws.data(), m.draws.size());
+        v.scene = &m.scene_view;
+    }
+}
+
+}  // namespace
+
+extern "C" {
+
+int rtag_api_version(void) { return RTAG_API_VERSION; }
+
+int rtag_has(const char* feature) {
+    std::string f = feature ? feature : "";
+    if (f == "fixes") {
+#ifdef RTAG_ORIGINAL
+        return 0;
+#else
+        return 1;
+#endif
+    }
+    if (f == "films") return apprt::films_linked() ? 1 : 0;
+    if (f == "picture") return 1;
+    if (f == "scene3d") return 1;
+    if (f == "network") return 0;
+    return 0;
+}
+
+int rtag_start(const rtag_config* config) {
+    if (!config || config->struct_size != sizeof(rtag_config)) return -1;
+    if (g_m) return -4;
+    if (!config->disc || !file_exists(config->disc)) return -2;
+    if (!config->data_dir) return -1;
+    Machine* m = new Machine;
+    m->disc = config->disc;
+    m->data = config->data_dir;
+    m->workspace = config->workspace ? config->workspace : "";
+    m->elf = config->elf ? config->elf : "";
+    m->script = config->script ? config->script : "";
+    m->lists = config->lists;
+    m->picture_w = config->picture_width; m->picture_h = config->picture_height;
+    m->every_frame = config->picture_every_frame;
+    m->samples = config->samples; m->anisotropy = config->anisotropy; m->mipmaps = config->mipmaps;
+    m->aspect = config->aspect > 0 ? config->aspect : 4.0 / 3.0;
+    if (m->aspect < 4.0 / 3.0) m->aspect = 4.0 / 3.0;
+    m->scene3d = config->scene3d;
+    m->sound = config->sound;
+    m->gain = config->gain;
+    mkdir(m->data.c_str(), 0755);
+    std::string mode = "boot";
+    std::vector<std::string> pass;
+    for (int k = 0; k < config->argc; k++) pass.push_back(config->argv[k]);
+    if (!pass.empty() && (pass[0] == "boot" || pass[0] == "resume")) { mode = pass[0]; pass.erase(pass.begin()); }
+    if (mode == "boot" && m->elf.empty()) {
+        bool given = false;
+        for (auto& a : pass) if (a == "--elf") given = true;
+        if (!given) {
+            if (!m->workspace.empty() && file_exists(m->workspace + "/SLUS_209.73")) m->elf = m->workspace + "/SLUS_209.73";
+            else {
+                m->elf = m->data + "/SLUS_209.73";
+                if (!file_exists(m->elf) && !apprt::extract_from_disc(m->disc, "\\SLUS_209.73;1", m->elf)) { delete m; return -3; }
+            }
+        }
+    }
+    g_m = m;
+
+    m->renderer.gs.layout.enabled = true;
+    gfxrt::install();
+    gfxrt::set_aspect(m->aspect);
+    if (getenv("RTA_GS_LOG")) m->renderer.gs.log_display = true;
+    if (m->scene3d) scene::install(m->renderer);
+    m->sink.renderer = &m->renderer;
+    m->sink.resumed = mode == "resume";
+    m->sink.waited_downstream_ms = &m->waited_downstream_ms;
+    m->sink.pacer.mode = app::Pacer::OFF;
+    m->renderer.on_frame = on_frame;
+    m->sink.start();
+    apprt::set_command_handler(app_command);
+    apprt::set_finish_handler(final_report);
+    rtag_host_set_quit(on_quit);
+    apprt::interactive_threads();
+
+    std::vector<std::string>& args = m->args;
+    args = {"rtag", mode};
+    if (mode == "boot" && !m->elf.empty()) { args.push_back("--elf"); args.push_back(m->elf); }
+    args.push_back("--disc"); args.push_back(m->disc);
+    args.push_back("--card"); args.push_back(m->data + "/card");
+    if (config->emulator_timing) args.push_back("--emulator-timing");
+    if (apprt::films_linked() && config->films) { args.push_back("--opt"); args.push_back("films=original"); }
+    if (m->sound != RTAG_SOUND_NONE) {
+        args.push_back("--opt"); args.push_back("sound-out=device");
+        args.push_back("--opt"); args.push_back("sound-gain=1");
+        bool said = false;
+        for (auto& a : pass) if (a.compare(0, 12, "sound-clock=") == 0) said = true;
+        if (m->sound == RTAG_SOUND_PULL && !said) { args.push_back("--opt"); args.push_back("sound-clock=real"); }
+    }
+    if (!m->script.empty() && !m->workspace.empty()) {  // names for the script's expressions
+        if (file_exists(m->workspace + "/names.tsv")) { args.push_back("--sym"); args.push_back(m->workspace + "/names.tsv"); }
+        std::vector<std::string> found;
+        if (DIR* dir = opendir((m->workspace + "/symbols").c_str())) {
+            while (dirent* e = readdir(dir)) {
+                std::string name = e->d_name;
+                if (name.size() > 4 && name.compare(name.size() - 4, 4, ".tsv") == 0) found.push_back(m->workspace + "/symbols/" + name);
+            }
+            closedir(dir);
+        }
+        std::sort(found.begin(), found.end());
+        for (auto& path : found) { args.push_back("--sym"); args.push_back(path); }
+    }
+    if (!m->script.empty()) { args.push_back("--script"); args.push_back(m->script); }
+    args.insert(args.end(), pass.begin(), pass.end());
+    for (auto& a : args) m->argv.push_back(&a[0]);
+    m->hooks.video = &m->sink;
+    m->hooks.pad = &m->pads;
+    m->start_ms = now_ms();
+    m->start_cpu = cpu_ms();
+    std::thread game([m] { app::interactive_thread(); rta::run((int)m->argv.size(), m->argv.data(), m->hooks); });
+    game.detach();
+    m->clock_on = true;
+    m->clock = std::thread(clock_loop);
+    m->clock.detach();
+    return 0;
+}
+
+void rtag_set_pad(int port, const rtag_pad* pad) {
+    if (!g_m || port < 0 || port > 1 || !pad) return;
+    std::lock_guard<std::mutex> hold(g_m->pads.lock);
+    g_m->pads.held[port] = *pad;
+}
+
+int rtag_poll(int wait_ms, const rtag_frame** frame) {
+    if (frame) *frame = nullptr;
+    if (!g_m) return -1;
+    Machine& m = *g_m;
+    {
+        std::unique_lock<std::mutex> hold(m.lock);
+        auto there = [&] { return !m.ready.empty() || m.ended.load(); };
+        if (wait_ms < 0) m.changed.wait(hold, there);
+        else if (wait_ms > 0) m.changed.wait_for(hold, std::chrono::milliseconds(wait_ms), there);
+        if (m.ready.empty()) return m.ended ? -1 : 0;
+        if (m.held) m.spare.push_back(m.held);
+        m.held = m.ready.front();
+        m.ready.pop_front();
+        m.frames_taken++;
+    }
+    m.changed.notify_all();
+    fill_view(m);
+    if (frame) *frame = &m.view;
+    return 1;
+}
+
+int rtag_step(const rtag_pad* pads, int wait_ms, const rtag_frame** frame) {
+    if (frame) *frame = nullptr;
+    if (!g_m) return -1;
+    if (pads) { rtag_set_pad(0, &pads[0]); rtag_set_pad(1, &pads[1]); }
+    g_m->sink.gate.grant(1);
+    return rtag_poll(wait_ms, frame);
+}
+
+void rtag_run(double hz) {
+    if (!g_m) return;
+    g_m->run_hz = hz > 0 ? hz : 0;
+    g_m->sink.gate.set_open(hz < 0);
+}
+
+void rtag_audio_pull(int16_t* stereo, int frames) {
+    if (frames <= 0) return;
+    if (!g_m || g_m->sound == RTAG_SOUND_NONE || g_m->ended) { memset(stereo, 0, (size_t)frames * 4); return; }
+    rta::snd::host_audio_pull(stereo, (size_t)frames, (float)g_m->gain);
+}
+
+const uint8_t* rtag_memory(void) { return g_m ? rta::memory() : nullptr; }
+uint64_t rtag_fields(void) { return g_m ? apprt::fields() : 0; }
+
+const char* rtag_info(void) {
+    if (!g_m) return "";
+    Machine& m = *g_m;
+    char text[768];
+    double n = m.sink.blanks ? (double)m.sink.blanks : 1;
+    size_t queued;
+    { std::lock_guard<std::mutex> hold(m.lock); queued = m.ready.size(); }
+    snprintf(text, sizeof text, "blanks=%llu ms=%.0f cpu_ms=%.0f game_ms=%.3f decode_wall_ms=%.3f decode_cpu_ms=%.3f backend_ms=%.3f frames_out=%llu frames_taken=%llu queued=%zu "
+             "vertices=%.0f draws=%.0f tex_made=%llu tex_held=%llu tex_missing=%llu ended=%d %s",
+             (unsigned long long)m.sink.blanks, now_ms() - m.start_ms, cpu_ms() - m.start_cpu, m.sink.game_ms / n, m.sink.decode_wall_ms / n, m.sink.decode_cpu_ms / n,
+             m.backend_ms / n, (unsigned long long)m.frames_out.load(), (unsigned long long)m.frames_taken.load(), queued, m.vertices / n, m.commands / n,
+             (unsigned long long)m.renderer.gs.stats.textures_made, (unsigned long long)m.renderer.gs.stats.textures_held,
+             (unsigned long long)m.renderer.gs.stats.texture_missing, (int)m.ended.load(), apprt::sound_figures().c_str());
+    m.info = text;
+    return m.info.c_str();
+}
+
+int rtag_ended(void) { return g_m && g_m->ended ? 1 : 0; }
+int rtag_exit_code(void) { return g_m ? g_m->exit_code.load() : 0; }
+
+void rtag_stop(void) {
+    if (!g_m) return;
+    Machine& m = *g_m;
+    if (m.ended) return;
+    m.pads.quit = true;
+    m.run_hz = 0;
+    double until = now_ms() + 2000;
+    while (!m.ended && now_ms() < until) {
+        m.sink.gate.grant(1);
+        // frames still on their way are thrown away so that the decoder and the game are not held
+        {
+            std::lock_guard<std::mutex> hold(m.lock);
+            while (!m.ready.empty()) { m.spare.push_back(m.ready.front()); m.ready.pop_front(); }
+        }
+        m.changed.notify_all();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    m.clock_on = false;
+}
+
+}  // extern "C"

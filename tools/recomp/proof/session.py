@@ -34,7 +34,47 @@ NATIVE = os.environ.get('PROOF_NATIVE') or os.path.join(PROOF, 'build', 'bin', '
 DEFAULT_WATCHES = ['sseq=0x871a68:crc2432', 'eqcache=0x866388:crc88']
 
 
+DUMP_MARK = 77                  # the first marker value; the n-th image of a session is armed by DUMP_MARK + n
+
+
+def with_dumps(path, spec, out):
+    """A session with "dumps": ["level:tick", ...] gets a memory image on both machines
+    at the same tick of each: the rig writes it inside its tick hook (`ontick M dump`),
+    armed when the script pokes the marker M into g_netFrame (unused offline); the row of
+    the rig's log that shows M first says at which episode and tick, and the native run
+    writes its image there (--opt proof-dump).  The poke is put after the first `until
+    g_simFrame >= T` of the level's part of the script with T at or after the tick."""
+    dumps = spec.get('dumps') or []
+    if not dumps:
+        return path
+    lines = open(path).read().split('\n')
+    head = []
+    for n, item in enumerate(dumps):
+        level, tick = item.split(':')
+        mark = DUMP_MARK + n
+        head.append('ontick %d dump 0 0x2000000 %s' % (mark, os.path.join(out, 'rig-dump-%d.bin' % mark)))
+        inside = False
+        for at, line in enumerate(lines):
+            if line.startswith('# ---- '):
+                inside = line == '# ---- %s ----' % level
+            words = line.split()
+            if inside and words[:3] == ['until', 'g_simFrame:u32', '>='] and int(words[3]) >= int(tick) and \
+                    not lines[at + 1].startswith(('poke', 'echo')):
+                lines.insert(at + 1, 'poke 0x%x:s32 %d' % (0x4027AC, mark))
+                break
+        else:
+            raise SystemExit('no place for the image %s in %s' % (item, path))
+    target = os.path.join(out, 'session-dumps.rig')
+    with open(target, 'w') as sink:
+        sink.write('\n'.join(head + lines))
+    return target
+
+
 def script_of(name, spec, out, ticks=None):
+    return with_dumps(script_base(name, spec, out, ticks), spec, out)
+
+
+def script_base(name, spec, out, ticks=None):
     if 'script' in spec:
         return os.path.join(ROOT, spec['script'])
     path = os.path.join(out, 'session.rig')
@@ -256,11 +296,16 @@ def main():
         # armed by `poke 0x4027ac:s32 77`): the native run writes its image at the same tick
         head, episodes = rigcompare.episodes_of(os.path.join(out, 'boot-rig.tsv'))
         marker = head.index('net')
+        wanted, seen = [], set()
         for number, (_level, rows, _again) in enumerate(episodes):
-            hit = [t for t in sorted(rows) if rows[t][1][marker] == '77']
-            if hit:
-                native_args += ['--opt', 'proof-dump=%d:%d:%s' % (number, hit[0], os.path.join(out, 'native-dump.bin'))]
-                break
+            for t in sorted(rows):
+                mark = rows[t][1][marker]
+                if mark.isdigit() and int(mark) >= DUMP_MARK and mark not in seen:
+                    seen.add(mark)
+                    name = 'native-dump-%s.bin' % mark if spec.get('dumps') else 'native-dump.bin'
+                    wanted.append('%d:%d:%s' % (number, t, os.path.join(out, name)))
+        if wanted:
+            native_args += ['--opt', 'proof-dump=' + ','.join(wanted)]
     if args.step == 'native':
         native_args += ['--count-at', '%x=%08x' % (INIT_COUNTER_SITE, init_counter(out))]
     if args.step == 'native' and 'echo @P' in open(script).read():

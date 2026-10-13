@@ -105,7 +105,7 @@ struct Pacer {
     // AHEAD   as described at the head of this file (the default)
     Mode mode = OFF;
     double period_ms = 1000.0 / 59.94;
-    double margin_ms = 2.0;                 // a drawn picture is meant to be there this long before its moment
+    std::atomic<double> margin_ms{2.0};     // a drawn picture is meant to be there this long before its moment
     double most_lead_ms = 2.5 * 1000.0 / 59.94;
     std::atomic<double> lead_ms{16.0};      // from letting the game go to the picture's moment
     std::atomic<uint64_t> resyncs{0};       // the grid was started again after a stall
@@ -132,7 +132,8 @@ struct Pacer {
                 size_t n = std::min(pipe_count, (size_t)PIPES);
                 memcpy(sorted, pipes, n * sizeof(float));
                 std::nth_element(sorted, sorted + (n - 3), sorted + n);
-                lead = std::max(margin_ms + 1.0, std::min(most_lead_ms, sorted[n - 3] + margin_ms));
+                double margin = margin_ms;
+                lead = std::max(margin + 1.0, std::min(most_lead_ms, sorted[n - 3] + margin));
                 lead_ms = lead;
             } else lead = lead_ms;
         }

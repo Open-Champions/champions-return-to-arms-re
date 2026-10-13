@@ -1,6 +1,6 @@
 # How complete is it
 
-Updated at every check-in of the work. **Last update: 2026-10-13, 08:00 CDT.**
+Updated at every check-in of the work. **Last update: 2026-10-13, 07:52 CDT.**
 
 One table for the whole effort to make Champions: Return to Arms (SLUS-20973 v2.00)
 playable again, online, on today's computers. The percentages are estimates by the people
@@ -22,7 +22,7 @@ a session by hand - every test drove the game by script, on one Apple-silicon Ma
 | Application and browser players in one game | 75 % | two and three players in step on one Mac ([mixed-arithmetic](issues/mixed-arithmetic.md)) | a relay in public that passes datagrams to players outside it |
 | Sharper art (pictures enlarged four times) | 99 % | 122,205 of 122,231 dumped pictures enlarged | the large interface pages and the fonts checked by eye |
 | Native build: the game's code and its proof | 97 % | all 7,732 functions translated; 7,460 proven identical to the original, none failing; nine sessions compared tick for tick ([native-proof](issues/native-proof.md)) | two unexplained one-tick differences; shop, save point, level-up and death compared |
-| Native build: picture | 94 % | films, heat haze, fog, widescreen, the art pack; the renderer's processor side five times cheaper with the same output ([native-render-speed](issues/native-render-speed.md)) | a steady 60 pictures a second when paced; effects compared close up |
+| Native build: picture | 96 % | films, heat haze, fog, widescreen, the art pack; the renderer's processor side five times cheaper with the same output ([native-render-speed](issues/native-render-speed.md)); paced at exactly 60 pictures a second - in the heaviest level's fight 1,799 of 1,799 intervals on time at 640 x 448 and 1,788 of 1,798 at display resolution; an attack shows 75 to 84 ms after the press, the emulator application's 82 to 104 ([native-app](issues/native-app.md), section 11) | a person's eye on a lit display; effects compared close up; the new pacing in the Windows program |
 | Native build: sound | 90 % | no gaps through ten level changes; film sound in step ([native-sound](issues/native-sound.md)) | somebody listening to it |
 | Native build: online | 95 % | through the lobby with itself and with the emulator application, in step ([native-online](issues/native-online.md)) | private games, chat, leaving and coming back; three and four players in the window program |
 | Native build: Windows | 85 % | compiles and links with picture, sound, controller and online play; the same sources built for x86-64 on the Mac give byte-identical results ([native-windows](issues/native-windows.md)) | a first run on a Windows computer |
@@ -37,9 +37,9 @@ and the Godot client are tracked in their own repositories
 
 ## Since the last update
 
-- Three- and four-player launches fixed (lobby server and emulator), and proven on the
-  build that is being rolled out.
-- Suggested fix set changed: the level-load flush section now has three words; 26
-  sections, 91 words, set figure `27f61e1d`.
-- The native build's renderer made about five times cheaper; the program rebuilt with it.
-- The art enlarging finished.
+- The native build now holds exactly 60 pictures a second when paced, and its input delay
+  is one picture shorter than before - no longer behind the emulator application.
+- Two faults fixed in the native build: controller replay through a level load, and a
+  wide-picture layout fault after a texture is sent again.
+- The Windows folder rebuilt with the faster renderer (still never run on Windows).
+- A progress page (this one) added and linked from the README.

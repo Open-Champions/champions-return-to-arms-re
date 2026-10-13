@@ -1,0 +1,6 @@
+# Godot's import cache and everything built: the project is run from a staged copy
+# (tools/godot/build.py project), never from here.
+.godot/
+bin/
+*.uid
+override.cfg

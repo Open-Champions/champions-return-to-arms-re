@@ -24,8 +24,10 @@ compared at every tick in every shared column until one holds the other dropped.
 Written under DIR: jobs.tsv (one line per job, appended), calls.tsv (call counts by
 function, summed over all machines and jobs), the directory of every job that differed
 (scripts, tick logs, outputs), stop (create it to stop after the running jobs) and
-limit.txt (native instances at a time).  Everything written is game data: keep DIR under
-local/.  Needs RTA_DISC.  Machines run under `nice -n 10`.  Standard library only.
+limit.txt (native instances at a time) and alive: `run` ends by itself - no new job, the
+running machines stopped - once that file has not been touched for --alive-minutes (45), so
+touch it while you look after the farm.  Everything written is game data: keep DIR under
+local/.  Needs RTA_DISC.  Machines run under `nice -n 19` (SOAK_NICE).  Standard library only.
 """
 import argparse
 import json
@@ -75,6 +77,21 @@ COVERAGE = ['Player_castSkill', 'Player_usePotion', 'Player_meleeHit', 'Player_t
             'net_kickPeer', 'shop_openOrStock', 'shop_buy', 'shop_buySellMenu', 'workshop_input', 'recall_execute', 'save_game',
             'JumpGate_openMenu', 'missionMenu_run', 'game_loadLevel', 'net_closeLocalMenus', 'cut_advance', 'net_predictLocalPlayer']
 LOCK = threading.Lock()
+NICE = os.environ.get('SOAK_NICE', '19')
+# The farm ends by itself when nobody looks after it: `run` creates <out>/alive, and whoever
+# runs the farm touches that file now and then.  Once it is older than ALIVE_MINUTES no job is
+# started and the machines of the running jobs are stopped (their jobs are not counted).
+ALIVE = {'path': None, 'minutes': 45.0}
+
+
+def abandoned():
+    path = ALIVE['path']
+    if not path:
+        return False
+    try:
+        return time.time() - os.path.getmtime(path) > ALIVE['minutes'] * 60
+    except OSError:
+        return True
 
 
 # ---- what is read from the user's own executable: the level list and the skill trees ----------
@@ -244,13 +261,17 @@ def script_lines(job, machine, extra_lines=()):
         lines += ['until 0x44fcd0:u8 == 0 timeout 4000 continue']
     lines += ['wait 30']
     for index, (frames, groups) in enumerate(job['segments']):
+        if job.get('directed') is not None:     # a directed game: the caller's lines in place of random input
+            lines += [line.replace('%M', str(machine)) for line in job['directed']]
+            lines.append('wait %d' % frames)
+            break
         lines.append('fuzz %d %d %s' % (job['seed'] * 64 + index * 4 + machine, frames, groups))
     lines += ['wait 120', 'quit']
     return lines
 
 
 # ---- tick-log columns -------------------------------------------------------------------------
-SOFT_PREFIX = ('poolraw', 'poolfree')         # followed on their own until the mask is trusted
+SOFT_PREFIX = ('poolraw', 'poolfree', 'actplayer')         # followed on their own (the pool sums until the mask is trusted)
 SOFT_SUFFIX = ('dmg', 'trailhit', 'trailhit2', 'points')
 
 
@@ -269,6 +290,9 @@ def tick_columns(local_slot, players):
              'cut=0x44fcd0:u8', 'pending=g_pendingLevel:str12', 'qvars=g_questVars:crc2048',
              'postact=g_scriptPostAction:str16', 'jgtravel=g_jumpGateTravel:s32', 'jgstate=g_jumpGateMenuState:s8',
              'mmstate=0x8e2efc:u8',
+             # shared state that code outside the tick can write (native-soak.md, "Save point" and
+             # "Script variables"): the menu mutex, the jump gates found so far, the script's active player
+             'mutex=0x4fe53c:u32', 'jgcount=0x8e3c30:s8', 'jgdests=0x8e3a50:crc480', 'actplayer=0x4d8ae4:s32',
              'l_inp=g_localInputFrame:s32', 'l_cosmetic=g_cosmeticSeed:x32', 'l_drawframe=g_drawFrame:u32',
              'l_pause=g_pauseMenuOpen:u8', 'l_menu=g_localMenuOpen:u8', 'l_ghost=0x4027bc:x32',
              'l_c0=0xe0010:u32', 'l_c1=0xe0014:u32', 'l_c2=0xe0018:u32']
@@ -375,18 +399,21 @@ def run_job(job, out_root, program=None, tag='', keep=False, extra_lines=(), ext
             env['RTA_NET_BUS'] = '%s,seed=%d' % (job['bus'], job['seed'] * 4 + (m if m > 1 else 0))
         env.update({k: v.replace('%M', str(m)) for k, v in (extra_env or {}).items()})
         sink = open(os.path.join(out, 'm%d.out' % m), 'w')
-        command = ['nice', '-n', '10', program, 'boot', '--elf', os.path.join(ROOT, 'SLUS_209.73'), '--card', card]
+        command = ['nice', '-n', NICE, program, 'boot', '--elf', os.path.join(ROOT, 'SLUS_209.73'), '--card', card]
         command += os.environ.get('SOAK_RUNTIME_OPTIONS', '').split()
         processes.append((subprocess.Popen(command, stdout=sink, stderr=subprocess.STDOUT, env=env, cwd=ROOT), sink))
     began = time.time()
     limit = job['frames'] / 12.0 + 1500
     ended = None
     timed_out = False
+    stopped = False
     while any(p.poll() is None for p, _ in processes):
         now = time.time()
         if ended is None and any(p.poll() is not None for p, _ in processes):
             ended = now
-        if (ended is not None and now - ended > 60) or now - began > limit:
+        if abandoned():
+            stopped = True
+        if stopped or (ended is not None and now - ended > 60) or now - began > limit:
             timed_out = timed_out or now - began > limit
             for p, _ in processes:
                 if p.poll() is None:
@@ -402,7 +429,10 @@ def run_job(job, out_root, program=None, tag='', keep=False, extra_lines=(), ext
         except subprocess.TimeoutExpired:
             hub.kill()
     shutil.rmtree(link_dir, ignore_errors=True)
-    result = {'name': name, 'dir': out, 'secs': time.time() - began, 'codes': codes, 'timed_out': timed_out}
+    result = {'name': name, 'dir': out, 'secs': time.time() - began, 'codes': codes, 'timed_out': timed_out, 'stopped': stopped}
+    if stopped:         # the farm was left alone: nothing of this job is kept or counted
+        shutil.rmtree(out, ignore_errors=True)
+        return result
     try:
         result.update(analyse(out, n))
     except Exception as error:      # a machine that never wrote a log
@@ -712,11 +742,15 @@ def farm(args, levels, trees):
             # which fields outside the mask differ between machines in step (rawdiff.tsv)
             samples = sorted({int(job['frames'] * k / 6.5) for k in range(1, 7)} | {1500})
             result = run_job(job, out_root, dumps=samples, sample_dumps=True)
+            if result.get('stopped'):
+                return
             if result.get('first') is not None and not args.no_rerun:
                 # the same game again, cut off shortly after the first difference, with the pools
                 # of every machine dumped in the tick before and in the tick of the difference
                 first = result['first']
                 again = run_job(shortened(job, first + 400), out_root, tag='-again', keep=True, dumps=[first - 1, first])
+                if again.get('stopped'):
+                    return
                 result['repeats'] = 'yes' if again.get('first') == first else 'no (%s)' % again.get('first')
                 result['where'] = explain(again['dir'], first, result.get('pair') or '0-1')
             with LOCK:
@@ -730,11 +764,15 @@ def farm(args, levels, trees):
         finally:
             gate.give(job['machines'])
 
+    ALIVE['path'] = os.path.join(out_root, 'alive')
+    ALIVE['minutes'] = args.alive_minutes
+    open(ALIVE['path'], 'a').close()
+    os.utime(ALIVE['path'])
     for job in todo:
-        if os.path.exists(os.path.join(out_root, 'stop')) or (deadline and time.time() > deadline):
+        if os.path.exists(os.path.join(out_root, 'stop')) or (deadline and time.time() > deadline) or abandoned():
             break
         gate.take(job['machines'])
-        if os.path.exists(os.path.join(out_root, 'stop')) or (deadline and time.time() > deadline):
+        if os.path.exists(os.path.join(out_root, 'stop')) or (deadline and time.time() > deadline) or abandoned():
             gate.give(job['machines'])
             break
         thread = threading.Thread(target=work, args=(job,))
@@ -833,6 +871,14 @@ def main():
         p.add_argument('--columns')
         p.add_argument('--env', action='append', default=[])
         p.add_argument('--keep', action='store_true')
+        p.add_argument('--level', help='one: this start level instead of the seed\'s')
+        p.add_argument('--machines', type=int, help='one: this many machines instead of the seed\'s')
+        p.add_argument('--bus', help='one: this bus instead of the seed\'s (none, or delay=N,jitter=N,loss=N)')
+        p.add_argument('--directed', help='one: a file of script lines played after the level is entered, in place of the '
+                                          'random input (A: / B: tags for the confirming machine / the others, %%M the machine); '
+                                          '--frames frames of waiting follow')
+        p.add_argument('--alive-minutes', type=float, default=45.0,
+                       help='run: the farm stops itself when <out>/alive has not been touched for so long')
     p = sub.add_parser('report')
     p.add_argument('dirs', nargs='+')
     args = parser.parse_args()
@@ -854,6 +900,15 @@ def main():
             if args.frames > job['frames']:
                 job = dict(job, segments=job['segments'] + [(args.frames - job['frames'], job['segments'][-1][1])], frames=args.frames)
             job = shortened(job, args.frames)
+        if args.level:
+            job = dict(job, level=args.level)
+        if args.bus:
+            job = dict(job, bus=args.bus)
+        if args.machines:
+            players = (job['players'] * 4)[:args.machines]
+            job = dict(job, machines=args.machines, players=players)
+        if args.directed:
+            job = dict(job, directed=[l for l in open(args.directed).read().splitlines() if l.strip() and not l.startswith('#')])
         extra = open(args.lines).read().splitlines() if args.lines else []
         columns = [l.strip() for l in open(args.columns) if l.strip() and not l.startswith('#')] if args.columns else []
         env = dict(item.split('=', 1) for item in args.env)

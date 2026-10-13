@@ -1,0 +1,10 @@
+[configuration]
+entry_symbol = "rta_godot_init"
+compatibility_minimum = "4.5"
+reloadable = false
+
+[libraries]
+macos.debug.single = "res://bin/rta_godot.macos.template_debug.dylib"
+macos.release.single = "res://bin/rta_godot.macos.template_release.dylib"
+windows.debug.x86_64.single = "res://bin/rta_godot.windows.template_debug.x86_64.dll"
+windows.release.x86_64.single = "res://bin/rta_godot.windows.template_release.x86_64.dll"

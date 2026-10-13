@@ -1,0 +1,53 @@
+// Qt's header of this name, for a build without Qt on macOS.
+//
+// tools/recomp/render/backend_gl.cpp reaches OpenGL through
+// QOpenGLContext::currentContext()->extraFunctions() and calls f->glSomething(...).  On
+// macOS the functions of OpenGL 4.1 are plain functions of the system's framework, so the
+// two classes here only forward: backend_gl.cpp itself is not changed.  (For Windows the
+// same is done over a table of driver functions: tools/recomp/app/win/wgl.h.)
+//
+// A function the backend starts to use that is not in the list is a compile error naming
+// it ("no member named glX"): add the name.
+#pragma once
+#ifndef GL_SILENCE_DEPRECATION
+#define GL_SILENCE_DEPRECATION
+#endif
+#include <OpenGL/gl3.h>
+#include <OpenGL/gl3ext.h>
+
+#define RTA_GL_FUNCTIONS(F) \
+    F(glActiveTexture) F(glAttachShader) F(glBindAttribLocation) F(glBindBuffer) F(glBindBufferBase) F(glBindBufferRange) \
+    F(glBindFramebuffer) F(glBindRenderbuffer) F(glBindSampler) F(glBindTexture) F(glBindVertexArray) F(glBlendColor) \
+    F(glBlendEquation) F(glBlendEquationSeparate) F(glBlendFunc) F(glBlendFuncSeparate) F(glBlitFramebuffer) F(glBufferData) \
+    F(glBufferSubData) F(glCheckFramebufferStatus) F(glClear) F(glClearBufferfi) F(glClearBufferfv) F(glClearBufferiv) \
+    F(glClearBufferuiv) F(glClearColor) F(glClearDepthf) F(glClearStencil) F(glColorMask) F(glCompileShader) \
+    F(glCopyTexImage2D) F(glCopyTexSubImage2D) F(glCreateProgram) F(glCreateShader) F(glCullFace) F(glDeleteBuffers) \
+    F(glDeleteFramebuffers) F(glDeleteProgram) F(glDeleteRenderbuffers) F(glDeleteSamplers) F(glDeleteShader) \
+    F(glDeleteTextures) F(glDeleteVertexArrays) F(glDepthFunc) F(glDepthMask) F(glDepthRangef) F(glDetachShader) \
+    F(glDisable) F(glDisableVertexAttribArray) F(glDrawArrays) F(glDrawArraysInstanced) F(glDrawBuffers) F(glDrawElements) \
+    F(glDrawElementsInstanced) F(glEnable) F(glEnableVertexAttribArray) F(glFinish) F(glFlush) F(glFramebufferRenderbuffer) \
+    F(glFramebufferTexture2D) F(glFramebufferTextureLayer) F(glFrontFace) F(glGenBuffers) F(glGenFramebuffers) \
+    F(glGenRenderbuffers) F(glGenSamplers) F(glGenTextures) F(glGenVertexArrays) F(glGenerateMipmap) F(glGetAttribLocation) \
+    F(glGetError) F(glGetFloatv) F(glGetIntegerv) F(glGetProgramInfoLog) F(glGetProgramiv) F(glGetShaderInfoLog) \
+    F(glGetShaderiv) F(glGetString) F(glGetStringi) F(glGetUniformLocation) F(glIsEnabled) \
+    F(glLineWidth) F(glLinkProgram) F(glMapBufferRange) F(glPixelStorei) F(glPolygonOffset) F(glReadBuffer) F(glReadPixels) \
+    F(glRenderbufferStorage) F(glRenderbufferStorageMultisample) F(glSamplerParameterf) F(glSamplerParameteri) F(glScissor) \
+    F(glShaderSource) F(glStencilFunc) F(glStencilFuncSeparate) F(glStencilMask) F(glStencilMaskSeparate) F(glStencilOp) \
+    F(glStencilOpSeparate) F(glTexImage2D) F(glTexImage3D) F(glTexParameterf) F(glTexParameteri) \
+    F(glTexSubImage2D) F(glTexSubImage3D) F(glUniform1f) F(glUniform1fv) F(glUniform1i) F(glUniform1iv) F(glUniform1ui) \
+    F(glUniform2f) F(glUniform2fv) F(glUniform2i) F(glUniform2iv) F(glUniform3f) F(glUniform3fv) F(glUniform3i) F(glUniform4f) \
+    F(glUniform4fv) F(glUniform4i) F(glUniform4iv) F(glUniformMatrix3fv) F(glUniformMatrix4fv) F(glUnmapBuffer) \
+    F(glUseProgram) F(glValidateProgram) F(glVertexAttrib4f) F(glVertexAttribDivisor) F(glVertexAttribIPointer) \
+    F(glVertexAttribPointer) F(glViewport)
+
+struct QOpenGLExtraFunctions {
+#define RTA_GL_FORWARD(name) \
+    template <class... A> auto name(A... a) -> decltype(::name(a...)) { return ::name(a...); }
+    RTA_GL_FUNCTIONS(RTA_GL_FORWARD)
+#undef RTA_GL_FORWARD
+};
+
+struct QOpenGLContext {
+    static QOpenGLContext* currentContext() { static QOpenGLContext context; return &context; }
+    QOpenGLExtraFunctions* extraFunctions() { static QOpenGLExtraFunctions functions; return &functions; }
+};

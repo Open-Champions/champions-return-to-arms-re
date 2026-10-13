@@ -97,6 +97,7 @@
 
 #include <atomic>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -112,6 +113,61 @@
 
 using namespace render;
 using app::now_ms;
+
+// ---- the display's own refreshes ------------------------------------------------------------
+// On this system a swap does not wait for the display (Ran: 0.25 ms, display lit or not), so
+// the times swaps return at say nothing about where the refreshes lie.  The display link
+// does: its callback is handed, about 11 ms ahead, the time of the refresh the frame then
+// being made will be shown at.  The window's thread asks here for the refresh nearest to a
+// picture's moment; the pacer moves its grid onto them (pipeline.h).  It runs on a thread
+// of its own and stops ticking when the display sleeps: an answer older than a tenth of a
+// second is no answer.
+#ifdef __APPLE__
+#include <CoreGraphics/CoreGraphics.h>
+#include <CoreVideo/CVDisplayLink.h>
+#include <mach/mach_time.h>
+struct DisplayClock {
+    std::atomic<double> refresh_at{0}, period{0}, seen{0};      // a refresh (ms of now_ms()), the time between two, when that was learnt
+    std::atomic<uint64_t> ticks{0};
+    CVDisplayLinkRef link = nullptr;
+    static CVReturn tick(CVDisplayLinkRef, const CVTimeStamp* now, const CVTimeStamp* out, CVOptionFlags, CVOptionFlags*, void* user) {
+        DisplayClock& d = *(DisplayClock*)user;
+        static mach_timebase_info_data_t base;
+        if (!base.denom) mach_timebase_info(&base);
+        (void)now;
+        // host time to this program's clock: both read now
+        double host_now = (double)mach_absolute_time() * base.numer / base.denom / 1e6, mine = now_ms();
+        if (out->videoTimeScale && out->videoRefreshPeriod) d.period = 1000.0 * (double)out->videoRefreshPeriod / (double)out->videoTimeScale;
+        d.refresh_at = (double)out->hostTime * base.numer / base.denom / 1e6 + (mine - host_now);
+        d.seen = mine;
+        d.ticks++;
+        return kCVReturnSuccess;
+    }
+    bool start() {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        if (CVDisplayLinkCreateWithCGDisplay(CGMainDisplayID(), &link) != kCVReturnSuccess || !link) return false;
+        CVDisplayLinkSetOutputCallback(link, tick, this);
+        return CVDisplayLinkStart(link) == kCVReturnSuccess;
+#pragma clang diagnostic pop
+    }
+    // The refresh nearest to `moment`; false when the display says nothing now, or its
+    // refreshes are not `refresh_ms` apart (another display's rate).
+    bool nearest(double moment, double refresh_ms, double& refresh) const {
+        double at = refresh_at, p = period, when = seen;
+        if (p <= 0 || now_ms() - when > 100.0 || std::fabs(p - refresh_ms) > 0.02 * refresh_ms) return false;
+        refresh = at + std::round((moment - at) / p) * p;
+        return true;
+    }
+};
+#else
+struct DisplayClock {
+    std::atomic<uint64_t> ticks{0};
+    bool start() { return false; }
+    bool nearest(double, double, double&) const { return false; }
+};
+#endif
+static DisplayClock g_display;
 
 static const char* TITLE = "Champions: Return to Arms - native build (experimental)";
 static render::Renderer* g_renderer;
@@ -329,6 +385,17 @@ class Screen : public QObject {
     // display's refreshes (`swap_waits`); as many of the others again, and they are not.
     int swap_evidence = 0;
     bool swap_waits = false;
+    // The display's refreshes as the display link tells them (DisplayClock), used where the
+    // swaps do not wait: the picture is then handed over nine tenths of a refresh before
+    // its moment - shortly after the refresh before it, which is when the system expects a
+    // frame for the next one (the display link itself calls 11 ms ahead).
+    bool display_link = false;
+    uint64_t link_timed = 0;                            // pictures whose moment was set against the display link
+    double ask_ahead() const {                          // how long before its moment a picture's swap is asked for
+        if (!display_locked) return 0;
+        if (display_link && !swap_waits) return 0.9 * refresh_ms;
+        return refreshes_per_picture > 1 ? 0.5 * refresh_ms : 0;
+    }
     bool pace_log = getenv("RTA_PACE_LOG") != nullptr;  // debugging: one line per picture
     // a test aid (RTA_FAKE_DISPLAY=HZ[,PPM[,PHASE_MS]]): a display that is not there - every
     // swap waits until the next refresh of a display of that rate, PPM millionths fast
@@ -459,6 +526,11 @@ class Screen : public QObject {
             // its moment where the swaps are asked for inside the last refresh, 4 ms otherwise
             // on a display, and a millisecond more; 2 ms where nothing is shown
             pacer->margin_ms = !window ? 2.0 : 1.0 + (display_locked && refreshes_per_picture > 1 ? 0.5 * refresh_ms : 4.0);
+            // the real display's refreshes (not with the display that is not there, and not when told not to)
+            if (window && display_locked && fake_refresh_ms == 0 && !opt.queued && !getenv("RTA_NO_DISPLAY_LINK")) {
+                display_link = g_display.start();
+                log_line(display_link ? "pacing: the display link is asked where the display's refreshes lie" : "pacing: no display link");
+            }
             if (!opt.unpaced) log_line(opt.queued ? "pacing: the picture path's hand-overs hold the game back (--pacing queued)"
                                                   : "pacing: the game is let go by the clock, just ahead of each picture's moment");
         }
@@ -564,7 +636,8 @@ class Screen : public QObject {
         if (shown) {
             // with more than one refresh per picture the swap is asked for inside the last of
             // them, so that it lands on the refresh the picture is due at
-            if (display_locked && refreshes_per_picture > 1 && last_present != 0) app::sleep_until_ms(due - 0.5 * refresh_ms);
+            if (display_locked && last_present != 0 && (ahead ? ask_ahead() > 0 : refreshes_per_picture > 1))
+                app::sleep_until_ms(due - (ahead ? ask_ahead() : 0.5 * refresh_ms));
             if (!ahead) to_window();
             timing.swap_start = now_ms();
             context->swapBuffers(window);
@@ -595,6 +668,15 @@ class Screen : public QObject {
             } else last_present = after;
         } else last_present = after;
         timing.shown = overtaken ? 0 : timed ? after : last_present;
+        // Where the swaps do not wait, the display link says where the refresh nearest to this
+        // picture's moment lay: the grid learns from that (a picture that came late learns nothing).
+        double refresh = 0;
+        if (ahead && shown && !timed && display_link && !swap_waits && !restarted && after <= due + 1.5 && g_display.nearest(due, refresh_ms, refresh)) {
+            timed = true;
+            timing.shown = refresh;
+            link_timed++;
+        }
+        if (pacer && ahead) pacer->margin_ms = !window ? 2.0 : 1.0 + (display_locked ? std::max(ask_ahead(), refreshes_per_picture > 1 ? 0.0 : 4.0) : 4.0);
         if (pace_log && !overtaken) fprintf(stderr, "pace %llu due %.2f ready %.2f ask %.2f after %.2f shown-due %.2f timed %d evidence %d lead %.2f\n", (unsigned long long)frame->number,
                                             fmod(due, 1000.0), timing.ready - due, timing.swap_start - due, after - due, timing.shown - due, (int)timed, swap_evidence,
                                             pacer ? pacer->lead_ms.load() : 0.0);
@@ -737,11 +819,12 @@ class Screen : public QObject {
                 printf("; the game is let go %.2f ms ahead of the picture's moment now; a drawn picture was there %.2f ms before its moment on average "
                        "(5th percentile %.2f); %llu of %zu were on screen more than half a refresh late - the longest part then: game %llu, decoder %llu, OpenGL %llu, "
                        "swap %llu, a wait between them %llu; %llu drawn and not shown (overtaken); the grid was started again %llu times and moved %.1f ms toward the display in all; "
-                       "the game's thread woke %.2f ms after the time it asked for on average",
+                       "the game's thread woke %.2f ms after the time it asked for on average; %llu pictures' moments were set against the display link (%llu refreshes told by it)",
                        pacer->lead_ms.load(), p.slack_mean, p.slack_low, (unsigned long long)p.late, p.pipe.values.size(),
                        (unsigned long long)p.late_by[0], (unsigned long long)p.late_by[1], (unsigned long long)p.late_by[2], (unsigned long long)p.late_by[3],
                        (unsigned long long)p.late_by[4], (unsigned long long)p.overtaken, (unsigned long long)pacer->resyncs.load(), pacer->slewed_ms.load(),
-                       pacer->wakes.load() ? pacer->woke_late_ms.load() / pacer->wakes.load() : 0.0);
+                       pacer->wakes.load() ? pacer->woke_late_ms.load() / pacer->wakes.load() : 0.0, (unsigned long long)link_timed,
+                       (unsigned long long)g_display.ticks.load());
             printf("\n");
         }
         double pictures = blanks_now > p.blanks0 ? (double)(blanks_now - p.blanks0) : 1;

@@ -98,7 +98,14 @@ def main():
     parser.add_argument('--instrument', choices=('count', 'trace', 'none'), default='count')
     parser.add_argument('--rt', choices=('live', 'frozen'), default='live')
     parser.add_argument('--jobs', type=int, default=5)
+    parser.add_argument('--src', help='a copy of tools/recomp (recomp.py, rt/, net/netshim.cpp, net/hle-net.txt) to build from '
+                                      'instead of the live sources: for a day on which those are being changed')
     args = parser.parse_args()
+    global RECOMP, RT, NET
+    if args.src:
+        RECOMP = os.path.abspath(args.src)
+        RT = os.path.join(RECOMP, 'rt')
+        NET = os.path.join(RECOMP, 'net')
 
     gen = os.path.join(OUT, 'gen-soak-' + args.name)
     objdir = os.path.join(SOAK, 'obj-' + args.name)
@@ -117,7 +124,8 @@ def main():
         if name not in sections:
             raise SystemExit('--less: not in the set: %s' % name)
         sections.remove(name)
-    command = [sys.executable, os.path.join(RECOMP, 'recomp.py'), '--out', gen, '--hle-add', os.path.join(NET, 'hle-net.txt')]
+    command = [sys.executable, os.path.join(RECOMP, 'recomp.py'), '--out', gen, '--hle-add', os.path.join(NET, 'hle-net.txt'),
+               '--elf', os.path.join(ROOT, 'SLUS_209.73'), '--funcs', os.path.join(ROOT, 'ghidra_funcs.tsv')]
     own_hle = os.path.join(HERE, 'hle-soak.txt')
     if os.path.exists(own_hle):
         command += ['--hle-add', own_hle]
@@ -240,6 +248,11 @@ def main():
         print('LINK FAILED\n' + link.stderr[:4000])
         return 1
     with open(os.path.join(gen, 'build-info.txt'), 'w') as sink:
+        sink.write('sources %s, recomp.py sha1 %s, patch file %s sha1 %s\n' % (
+            RECOMP, sha1_file(os.path.join(RECOMP, 'recomp.py')), args.pnach, sha1_file(args.pnach)))
+        for extra in args.extra_pnach:
+            sink.write('extra patch file %s sha1 %s%s\n' % (extra, sha1_file(extra),
+                       ', sections containing: ' + '; '.join(args.extra_section) if args.extra_section else ''))
         sink.write('%s\nexecutable sha1 %s\ninstrument %s\nsections %d: %s\nflags %s\nnetshim.cpp sha1 %s\nsoakhooks.cpp sha1 %s\n' % (
             rt_note, sha1_file(os.path.join(ROOT, 'SLUS_209.73')), args.instrument, len(sections),
             '; '.join(sections + ['+ ' + os.path.basename(p) for p in args.extra_pnach]),

@@ -1,0 +1,306 @@
+#!/usr/bin/env python3
+"""build.py - the translated game as a library, and the Godot project around it.
+
+  python3 tools/godot/build.py snapshot        # copy tools/recomp's sources and the compiled game, apply recomp.patch
+  python3 tools/godot/build.py lib             # local/godot-spike/lib/librta_game.dylib and bin/rtag_host
+  python3 tools/godot/build.py lib --original  # librta_game_orig.dylib: the game as it is on the disc (the one
+                                               # that is compared tick for tick with the original in the rig)
+  python3 tools/godot/build.py extension       # the GDExtension (cmake + ninja, against the pinned godot-cpp)
+  python3 tools/godot/build.py extension --release   # ... for an exported application (template_release)
+  python3 tools/godot/build.py project         # stage the Godot project: local/godot-spike/project/
+  python3 tools/godot/build.py all             # snapshot (if there is none), lib, extension, project
+  python3 tools/godot/build.py patch           # maintenance: write recomp.patch from the snapshot as it is now
+  options: --opt -O1|-O2   --refresh (snapshot: take tools/recomp as it is now, again)   --jobs N (default 8)
+
+What goes where.  Nothing derived from the game leaves local/:
+  local/godot-spike/src/recomp.orig/   tools/recomp/{rt,render,sound,app} as they were when the snapshot was taken
+  local/godot-spike/src/recomp/        the same with tools/godot/recomp.patch applied: what is compiled
+  local/godot-spike/src/game-fix/      the compiled translated game with the fix set (objects of
+  local/godot-spike/src/game-orig/     local/recomp-out/obj-rta_native_fix, obj-run) and the headers they were made with
+  local/godot-spike/src/gen-vu/        the VU1 programs translated ahead of time
+  local/godot-spike/obj-*/             objects
+  local/godot-spike/lib/               librta_game.dylib, librta_game_orig.dylib
+  local/godot-spike/bin/rtag_host      the test host (tools/godot/lib/host_main.cpp)
+  local/godot-spike/build/             the extension's cmake directories
+  local/godot-spike/project/           the Godot project as it is run: tools/godot/project/ copied, and bin/
+                                       with the extension and the game library beside it
+Why a snapshot: tools/recomp is another agent's and changes while this is built; the library is
+made from one consistent copy, and what it needs changed there is tools/godot/recomp.patch.
+
+The translated game itself is not compiled here: `python3 tools/recomp/app/build.py` (and
+`--original`) makes it from your own disc's executable; this script takes its objects.
+Uses the compiler, cmake and ninja already on the machine; nothing is downloaded (the two
+downloads the Godot side needs - the editor and godot-cpp - are described in
+docs/issues/native-godot.md).
+"""
+import argparse
+import concurrent.futures
+import filecmp
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+RECOMP = os.path.join(ROOT, 'tools', 'recomp')
+RECOMP_OUT = os.path.join(ROOT, 'local', 'recomp-out')
+OUT = os.path.join(ROOT, 'local', 'godot-spike')
+SRC = os.path.join(OUT, 'src')
+SNAP = os.path.join(SRC, 'recomp')
+SNAP_ORIG = os.path.join(SRC, 'recomp.orig')
+LIB = os.path.join(HERE, 'lib')
+PATCH = os.path.join(HERE, 'recomp.patch')
+PARTS = ('rt', 'render', 'sound', 'app')
+GAMES = {'fix': ('obj-rta_native_fix', 'gen-app'), 'orig': ('obj-run', 'gen')}
+RENDER_CORE = ['vu1.cpp', 'vif1.cpp', 'gs.cpp', 'renderer.cpp']
+RUNTIME = ['runtime.cpp', 'iop.cpp', 'script.cpp']
+NICE = ['nice', '-n', '10']
+EXPORTS = ['rtag_api_version', 'rtag_has', 'rtag_start', 'rtag_set_pad', 'rtag_step', 'rtag_poll', 'rtag_run', 'rtag_audio_pull',
+           'rtag_memory', 'rtag_fields', 'rtag_info', 'rtag_ended', 'rtag_exit_code', 'rtag_stop']
+
+
+def copy_sources(to):
+    """tools/recomp/{rt,render,sound,app}: the files of each directory, not what lies below."""
+    for part in PARTS:
+        os.makedirs(os.path.join(to, part), exist_ok=True)
+        for name in sorted(os.listdir(os.path.join(RECOMP, part))):
+            path = os.path.join(RECOMP, part, name)
+            if os.path.isfile(path) and re.search(r'\.(cpp|h|mm|inc|txt)$', name) and ' ' not in name:
+                shutil.copy2(path, os.path.join(to, part, name))
+
+
+def snapshot(args):
+    if os.path.isdir(SNAP) and not args.refresh:
+        print('the snapshot is there (%s); --refresh takes tools/recomp as it is now' % SNAP)
+        return 0
+    for d in (SNAP, SNAP_ORIG):
+        shutil.rmtree(d, ignore_errors=True)
+    copy_sources(SNAP_ORIG)
+    copy_sources(SNAP)
+    for game, (objects, gen) in GAMES.items():
+        source, to = os.path.join(RECOMP_OUT, objects), os.path.join(SRC, 'game-' + game)
+        shutil.rmtree(to, ignore_errors=True)
+        if not os.path.isdir(source):
+            print('no %s: run tools/recomp/app/build.py%s first; the %s library cannot be built' % (source, ' --original' if game == 'orig' else '', game))
+            continue
+        os.makedirs(to)
+        count = 0
+        # the game's objects by their exact names (a file synchroniser leaves copies "c_003 2.o" beside them)
+        for name in sorted(os.listdir(source)):
+            if re.fullmatch(r'c_\d+\.o', name) or name in ('table.o', 'hle_weak.o', 'patches.o'):
+                shutil.copy2(os.path.join(source, name), os.path.join(to, name))
+                count += 1
+        for name in ('funcs.h',):
+            shutil.copy2(os.path.join(RECOMP_OUT, gen, name), os.path.join(to, name))
+        print('game-%s: %d objects from %s' % (game, count, objects))
+    vu = os.path.join(SRC, 'gen-vu')
+    shutil.rmtree(vu, ignore_errors=True)
+    os.makedirs(vu)
+    for name in ('vu1_fast.cpp', 'vu1_translated.cpp'):
+        path = os.path.join(RECOMP_OUT, 'gen-vu', name)
+        if os.path.exists(path):
+            shutil.copy2(path, os.path.join(vu, name))
+    if os.path.exists(PATCH) and os.path.getsize(PATCH):
+        result = subprocess.run(['patch', '-p1', '-d', SNAP, '-i', PATCH, '--no-backup-if-mismatch'], capture_output=True, text=True)
+        print(result.stdout.strip())
+        if result.returncode != 0:
+            print('recomp.patch does not apply to tools/recomp as it is now:\n' + result.stderr)
+            return 1
+    open(os.path.join(SRC, 'SNAPSHOT.txt'), 'w').write('taken %s from %s\n' % (time.strftime('%Y-%m-%d %H:%M:%S'), RECOMP))
+    print('snapshot taken: ' + SNAP)
+    return 0
+
+
+def make_patch(args):
+    result = subprocess.run(['diff', '-ru', 'recomp.orig', 'recomp'], cwd=SRC, capture_output=True, text=True)
+    text = re.sub(r'^(---|\+\+\+) (\S+)\t.*$', r'\1 \2', result.stdout, flags=re.M)    # no time stamps
+    open(PATCH, 'w').write(text)
+    print('wrote %s (%d lines)' % (PATCH, text.count('\n')))
+    return 0
+
+
+def includes_of(source, dirs, seen=None):
+    seen = set() if seen is None else seen
+    try:
+        text = open(source, errors='replace').read()
+    except OSError:
+        return []
+    for name in re.findall(r'^\s*#\s*include "([^"]+)"', text, re.M):
+        for d in [os.path.dirname(source)] + dirs:
+            path = os.path.normpath(os.path.join(d, name))
+            if os.path.exists(path):
+                if path not in seen:
+                    seen.add(path)
+                    includes_of(path, dirs, seen)
+                break
+    return sorted(seen)
+
+
+def compile_all(jobs, objdir, dirs, workers):
+    """jobs: (source, flags, prefix).  Returns the objects, or None when something failed."""
+    os.makedirs(objdir, exist_ok=True)
+    objects, todo = [], []
+    for source, flags, prefix in jobs:
+        target = os.path.join(objdir, prefix + os.path.splitext(os.path.basename(source))[0] + '.o')
+        objects.append(target)
+        stamp = target + '.flags'
+        deps = [source] + includes_of(source, dirs)
+        if not os.path.exists(target) or any(os.path.getmtime(p) > os.path.getmtime(target) for p in deps) \
+                or not os.path.exists(stamp) or open(stamp).read() != ' '.join(flags):
+            todo.append((source, flags, target, stamp))
+
+    def compile_one(job):
+        source, flags, target, stamp = job
+        result = subprocess.run(NICE + ['clang++'] + flags + ['-c', source, '-o', target], capture_output=True, text=True)
+        if result.returncode == 0:
+            open(stamp, 'w').write(' '.join(flags))
+        return source, result.returncode, result.stderr
+
+    failed = False
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        for source, code, err in pool.map(compile_one, todo):
+            if code != 0:
+                failed = True
+                print('FAILED %s\n%s' % (source, err[:6000]))
+            elif err.strip():
+                print(err[:3000])
+    print('compiled %d of %d files' % (len(todo), len(jobs)))
+    return None if failed else objects
+
+
+def build_lib(args):
+    if not os.path.isdir(SNAP):
+        print('no snapshot: python3 tools/godot/build.py snapshot')
+        return 1
+    game = 'orig' if args.original else 'fix'
+    game_dir = os.path.join(SRC, 'game-' + game)
+    if not os.path.isdir(game_dir):
+        print('no compiled game in %s (see `snapshot`)' % game_dir)
+        return 1
+    rt, render, sound, app = (os.path.join(SNAP, p) for p in PARTS)
+    standin = os.path.join(LIB, 'gl_standin')
+    opt = args.opt
+    render_flags = ['-std=c++17', opt, '-fno-strict-aliasing', '-ffp-contract=off', '-frounding-math', '-Wall', '-Wno-unused-function', '-I', render]
+    rt_flags = ['-std=c++17', opt, '-fno-strict-aliasing', '-fwrapv', '-w', '-ffp-contract=off', '-frounding-math', '-I', rt, '-I', game_dir]
+    lib_flags = ['-std=c++17', opt, '-Wall', '-Wno-unused-function', '-fno-strict-aliasing', '-ffp-contract=off', '-frounding-math',
+                 '-I', LIB, '-I', app, '-I', render, '-I', rt] + (['-DRTAG_ORIGINAL'] if args.original else [])
+    jobs = [(os.path.join(render, n), render_flags, 'r_') for n in RENDER_CORE]
+    vu = os.path.join(SRC, 'gen-vu')
+    translated, fast = os.path.join(vu, 'vu1_translated.cpp'), os.path.join(vu, 'vu1_fast.cpp')
+    jobs.append((translated if os.path.exists(translated) else os.path.join(render, 'vu1_none.cpp'), render_flags, 'r_'))
+    jobs.append((fast if os.path.exists(fast) else os.path.join(render, 'vu1_fast_none.cpp'), render_flags, 'r_'))
+    jobs.append((os.path.join(render, 'backend_gl.cpp'), render_flags + ['-I', standin], 'r_'))
+    jobs.append((os.path.join(render, 'texpack.cpp'), render_flags + ['-DRTA_NO_QIMAGE'], 'r_'))
+    jobs += [(os.path.join(rt, n), rt_flags, 'rt_') for n in RUNTIME]
+    jobs.append((os.path.join(LIB, 'host_godot.cpp'), rt_flags, 'rt_'))
+    jobs.append((os.path.join(sound, 'sound_rta.cpp'), rt_flags + ['-I', sound, '-I', LIB, '-DRTA_AUDIO_HOST="audio_host.inc"'], 'rt_'))
+    jobs.append((os.path.join(app, 'app_rt.cpp'), rt_flags + ['-I', app], 'a_'))
+    jobs.append((os.path.join(app, 'gfx_rt.cpp'), rt_flags + ['-I', app], 'a_'))
+    if not args.original:
+        jobs.append((os.path.join(app, 'film.cpp'), rt_flags + ['-I', app], 'a_'))     # the films: only this translation leaves their entries open
+    jobs.append((os.path.join(LIB, 'rtag.cpp'), lib_flags, 'g_'))
+    jobs.append((os.path.join(LIB, 'scene_tap.cpp'), lib_flags + ['-I', game_dir, '-w'], 'g_'))
+    jobs.append((os.path.join(LIB, 'gl_offscreen_mac.cpp'), lib_flags, 'g_'))
+    objects = compile_all(jobs, os.path.join(OUT, 'obj-' + game), [LIB, app, render, rt, sound, game_dir, vu], args.jobs)
+    if objects is None:
+        return 1
+    link = [os.path.join(game_dir, n) for n in sorted(os.listdir(game_dir)) if n.endswith('.o')]
+    os.makedirs(os.path.join(OUT, 'lib'), exist_ok=True)
+    name = 'librta_game.dylib' if game == 'fix' else 'librta_game_orig.dylib'
+    final = os.path.join(OUT, 'lib', name)
+    out = final + '.link%d' % os.getpid()
+    exports = os.path.join(OUT, 'obj-' + game, 'exports.txt')
+    open(exports, 'w').write(''.join('_%s\n' % e for e in EXPORTS))
+    result = subprocess.run(NICE + ['clang++', '-dynamiclib', '-o', out] + objects + link +
+                            ['-framework', 'OpenGL', '-lz', '-lpthread', '-Wl,-exported_symbols_list,' + exports, '-Wl,-install_name,@rpath/' + name],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        print('LINK FAILED\n' + result.stderr[:6000])
+        if os.path.exists(out):
+            os.remove(out)
+        return 1
+    os.replace(out, final)
+    print('linked %s (%d bytes)' % (final, os.path.getsize(final)))
+    # the test host
+    os.makedirs(os.path.join(OUT, 'bin'), exist_ok=True)
+    host = os.path.join(OUT, 'bin', 'rtag_host')
+    result = subprocess.run(NICE + ['clang++', '-std=c++17', '-O2', '-Wall', '-I', LIB, os.path.join(LIB, 'host_main.cpp'), '-o', host], capture_output=True, text=True)
+    if result.returncode != 0:
+        print('rtag_host FAILED\n' + result.stderr[:4000])
+        return 1
+    return 0
+
+
+def build_extension(args):
+    target = 'template_release' if args.release else 'template_debug'
+    cpp = os.path.join(OUT, 'deps', 'godot-cpp', 'src')
+    if not os.path.exists(os.path.join(cpp, 'CMakeLists.txt')):
+        print('no godot-cpp at %s: see docs/issues/native-godot.md, "From nothing"' % cpp)
+        return 1
+    build = os.path.join(OUT, 'build', 'extension-' + target)
+    command = ['cmake', '-S', os.path.join(HERE, 'extension'), '-B', build, '-G', 'Ninja', '-DGODOT_CPP_DIR=' + cpp, '-DCMAKE_BUILD_TYPE=Release',
+               '-DGODOTCPP_TARGET=' + target, '-DRTA_GODOT_OUTPUT_DIR=' + os.path.join(OUT, 'project', 'bin')]
+    for step in (command, ['cmake', '--build', build, '--parallel', str(args.jobs)]):
+        result = subprocess.run(NICE + step, capture_output=True, text=True)
+        if result.returncode != 0:
+            print((result.stdout[-6000:] + result.stderr[-3000:]))
+            return 1
+    print('extension built: %s' % os.path.join(OUT, 'project', 'bin', 'rta_godot.macos.%s.dylib' % target))
+    return 0
+
+
+def stage_project(args):
+    """The project as Godot runs it: scripts, scenes and shaders from tools/godot/project (copied, so that
+    Godot's import cache and its .uid files stay out of the repository), bin/ with the libraries."""
+    source, to = os.path.join(HERE, 'project'), os.path.join(OUT, 'project')
+    count = 0
+    for folder, dirs, files in os.walk(source):
+        dirs[:] = [d for d in dirs if d not in ('.godot', 'bin')]
+        rel = os.path.relpath(folder, source)
+        os.makedirs(os.path.join(to, rel), exist_ok=True)
+        for name in files:
+            if name.endswith(('.uid', '.import')) or name == '.DS_Store':
+                continue
+            a, b = os.path.join(folder, name), os.path.join(to, rel, name)
+            if not os.path.exists(b) or not filecmp.cmp(a, b, shallow=False):
+                shutil.copy2(a, b)
+                count += 1
+    os.makedirs(os.path.join(to, 'bin'), exist_ok=True)
+    for name in ('librta_game.dylib', 'librta_game_orig.dylib'):
+        a, b = os.path.join(OUT, 'lib', name), os.path.join(to, 'bin', name)
+        if os.path.exists(a) and (not os.path.exists(b) or os.path.getmtime(a) > os.path.getmtime(b)):
+            shutil.copy2(a, b)
+            count += 1
+    # The staged copy is the one test runs start: its window is small and says what it is from the first
+    # moment (the script gives it its final title).  An exported application is made from a copy without this.
+    open(os.path.join(to, 'override.cfg'), 'w').write(
+        '[application]\n\nconfig/name="AGENT TEST - the translated game in Godot"\n\n[display]\n\nwindow/size/viewport_width=480\n'
+        'window/size/viewport_height=360\nwindow/size/no_focus=true\n')
+    print('project staged: %s (%d files copied)' % (to, count))
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('what', choices=['snapshot', 'patch', 'lib', 'extension', 'project', 'all'])
+    parser.add_argument('--opt', default='-O2')
+    parser.add_argument('--original', action='store_true')
+    parser.add_argument('--release', action='store_true')
+    parser.add_argument('--refresh', action='store_true')
+    parser.add_argument('--jobs', type=int, default=8)
+    args = parser.parse_args()
+    args.jobs = max(1, min(args.jobs, 8))               # never more: other jobs share the machine
+    steps = {'snapshot': [snapshot], 'patch': [make_patch], 'lib': [build_lib], 'extension': [build_extension], 'project': [stage_project],
+             'all': [snapshot, build_lib, build_extension, stage_project]}[args.what]
+    for step in steps:
+        code = step(args)
+        if code:
+            return code
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

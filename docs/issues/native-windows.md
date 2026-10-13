@@ -545,6 +545,20 @@ with anything; `fpcheck_gcc.exe` is its step 1).
 
 ## Resume here
 
+**2026-10-13 07:48, by the owner of `rt/`, `render/`, `app/` since last night** (the
+passes below are as their author left them): the folder `rta-windows` was built again
+from the tree as it is now - with the render speed work (`gen-vu/vu1_fast.cpp` is found
+and compiled), the runtime's and the renderer's changes of `native-app.md` section 11,
+and the network work's `netdrv.cpp` of this morning; the patch set is now 27f61e1d with
+91 words. The stand-in checks and `--reference` were repeated: same results (tick logs
+and memory images of x86-64 and arm64 identical, `fpcheck` 2e77df4dc13ec9c5,
+`frames=2309 ... units=113069982`, `pnghash` b4ed3d8917871960). The Windows program does
+not have the Mac program's new pacing (its own window thread paces as before). Details:
+`native-app.md` 11.9. `build_win.py` now leaves out stray copies of generated and object
+files (names with a space, as a file synchroniser makes them) and links `--mac` with
+CoreVideo and CoreGraphics (the Mac program's display link).
+
+
 **State saved 2026-10-12 21:22 (second pass). Nothing is half-done in the sources.** The
 brief of this pass - the network in `rta_app.exe`, the merged graphics in it with the art
 pack read without Qt, proofs on the Mac, the tester's folder - is done as far as a Mac can

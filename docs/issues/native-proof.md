@@ -34,6 +34,68 @@ functions, 7,460 now have at least one comparable case identical to the return (
 from the sweep, 69 from recorded states), 46 only up to an instruction both sides stop
 at, 226 none; none fails.
 
+## Round 2 (2026-10-13): the open ends
+
+Kept current while the work goes on (a stop can come without warning). Built from a
+**snapshot** of the translator and runtime taken 2026-10-13 07:26
+(`local/recomp-out/proof/snap/recomp`: `rt/` as of 2026-10-12 23:48, which has the
+runtime keeper's own first-tick rule in the controller replay; `build_proof.py` builds
+from the snapshot into `local/recomp-out/proof/build/`). The sessions of round 1 were
+run again on this build where said.
+
+### R2.1 NP14 is explained: the comparison's controller replay lacked one row (Ran)
+
+**What decides the tick of a level change.** A level change the game makes itself is a
+door: `Player_run` 0x1a5030 → `Player_interact` 0x1b2640 (the nearest object with flag
+0x100000 within 48 units; fires when the *pressed-edge* word of the player's pad,
+`g_pads[slot]`+0xc, has the use button, 0x1b2b34–0x1b2b48) → `PushTrigger_interact`
+0x1ecc70 → `obj_runActionScripts` 0x14dcc8 → `script_runByName` → `scr_interpret` →
+`script_newWorld` 0x143dd0 → `script_setNextWorld` 0x1472c4, which copies the name into
+`g_pendingLevel`. The main loop acts on a non-empty `g_pendingLevel` at the top of its
+next pass (`docs/mainloop.md` section 7). So the tick is the simulation tick in which the
+press edge is seen - nothing else: no disc read, no flush, no frame counter, no I/O
+answer. Measured with the write-watch on `g_pendingLevel` and the new call-chain record
+(`proof_rt.cpp`: the calls under way are printed with every watched change): in `s2`'s
+`fay3` the one write is in the tick after 153 in the native run, with exactly that chain.
+
+**Why the native run was a tick late.** The tour script presses the use button when the
+tick reaches 152. The rig's tick log has one row per displayed frame, written at the
+head of the frame (`gfx_beginFrame`); the row of tick T shows the controller bytes the
+game read while it computed tick T. The frame that begins with the row of tick 152
+computes tick 153 with the press, the door fires, and the next row is the new level's:
+**the log has no row of tick 153, so the replay file had no bytes for it.** At that one
+blank the native run's replay found nothing and fell back on its own copy of the script,
+whose press reaches the game one blank later than the rig's did - the press was seen in
+tick 154. The missing bytes are in the log all the same: the first row of the next
+episode still shows the last bytes read (`0079ff7f…`, the use button), since nothing
+reads the controller between the last tick and the first frame of the load.
+
+**Fix, in the comparison tool only** (`cmp.py`, `last_tick_fix`, on by default in
+`session.py`): the replay file gets, for the tick after each level's last row, the bytes
+of the next episode's first row. With it (Ran, `s2w` and `s3w` = the rig logs of `s2`
+and `s3` of round 1, native run repeated):
+
+| | before | with the row added |
+|---|---|---|
+| `s2` `fay3` → `fay2` | rig leaves after tick 152, native after 153; hit points one regeneration step ahead for the remaining 16 levels | both after 152; **hit points, record and pool identical in every later level** but for one stretch of the record (R2.2) |
+| `s3` `torment3` → `torment2` | 188 against 189; record and pool different from there to the end | both after 188; record identical to the end, pool identical but for one level (R2.2) |
+
+So the two "rows 2 and 3" of 3c in `s3` (a float of the record, two pose-cache pointers)
+were consequences of the extra tick too, not separate effects.
+
+**Which side was right.** Both: each machine did what its input said. The fault was the
+harness handing the two machines different input for one tick.
+
+**Can it desync a network game?** No, not this. In a net game a press is not read from
+the controller by the tick: `net_main` puts each machine's controller sample into an
+input record for a numbered lockstep frame, and every machine applies the same record in
+the same frame (`net_frameLoop`, `docs/mainloop.md` section 5), so every machine sees the
+edge in the same tick, the door script runs in the same tick, and `net_frameLoop` skips
+its ticks on every machine while `g_pendingLevel` is non-empty. Nothing in the chain
+above reads a clock, the disc or the I/O processor. (What a native machine and an
+emulator machine in one lockstep game do was not run here; the claim is from the chain
+measured and the code read.)
+
 ## Tools added (all in `tools/recomp/proof/`, outputs under `local/recomp-out/proof/`)
 
 Nothing under `tools/recomp/rt`, `render`, `sound`, `app`, `net` and nothing in

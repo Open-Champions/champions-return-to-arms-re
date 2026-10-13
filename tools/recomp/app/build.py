@@ -185,7 +185,7 @@ def main():
     # linked beside its place and moved there: a copy that is running or being started by
     # somebody else never sees a half-written file
     final, out = out, out + '.link%d' % os.getpid()
-    frameworks = sum((['-framework', f] for f in ('QtCore', 'QtGui', 'GameController', 'AppKit', 'Foundation')), [])
+    frameworks = sum((['-framework', f] for f in ('QtCore', 'QtGui', 'GameController', 'AppKit', 'Foundation', 'CoreVideo', 'CoreGraphics')), [])
     result = subprocess.run(['clang++', '-o', out] + objects + link + ['-F', qtlib] + frameworks + ['-Wl,-rpath,' + qtlib, '-lpthread'],
                             capture_output=True, text=True)
     if result.returncode != 0:

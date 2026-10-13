@@ -199,7 +199,7 @@ def link(command, objects, libs, out):
 def game_jobs(gen, objdir, flags):
     deps = [os.path.join(RT, n) for n in ('recomp.h', 'fpu.h', 'mmi.h')] + [os.path.join(gen, 'funcs.h')]
     return [(os.path.join(gen, n), flags, os.path.join(objdir, 'g_' + n[:-4] + '.o'), deps)
-            for n in sorted(os.listdir(gen)) if n.endswith('.cpp')]
+            for n in sorted(os.listdir(gen)) if n.endswith('.cpp') and ' ' not in n]
 
 
 def source_jobs(sources, objdir, search):
@@ -414,9 +414,10 @@ def build_mac(args):
     cxx = ['clang++', '-arch', 'arm64']
     if not compile_all(common + with_qt + own, cxx, args.jobs):
         return False
+    # (objects by their own names: a stray copy such as "g_patches 2.o", as a file synchroniser leaves them, is not one)
     game = [os.path.join(shared, n) for n in sorted(os.listdir(shared))
-            if n.endswith('.o') and (n.startswith('g_') or n in ('rt_runtime.o', 'rt_iop.o', 'rt_script.o', 'rt_host_posix.o'))]
-    frameworks = sum((['-framework', f] for f in ('QtCore', 'QtGui', 'GameController', 'AppKit', 'Foundation')), [])
+            if n.endswith('.o') and ' ' not in n and (n.startswith('g_') or n in ('rt_runtime.o', 'rt_iop.o', 'rt_script.o', 'rt_host_posix.o'))]
+    frameworks = sum((['-framework', f] for f in ('QtCore', 'QtGui', 'GameController', 'AppKit', 'Foundation', 'CoreVideo', 'CoreGraphics')), [])
     libs = ['-F', qtlib] + frameworks + ['-Wl,-rpath,' + qtlib, '-lpthread']
     ok = link(cxx, game + [j[2] for j in common + with_qt], libs, os.path.join(out, 'rta_app'))
     return link(cxx, game + [j[2] for j in common + own], libs, os.path.join(out, 'rta_app_pngread')) and ok
