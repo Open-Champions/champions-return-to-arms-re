@@ -86,6 +86,7 @@
 #include "backend_gl.h"
 #include "gfx_rt.h"
 #include "pad_host.h"
+#include "fpcontrols.h"
 #include "pipeline.h"
 #include "recorder.h"
 #include "settings.h"
@@ -305,6 +306,10 @@ static uint32_t key_bit(WPARAM key) {
     case 'C': return rta::PAD_R3;
     case VK_RETURN: return rta::PAD_START;
     case VK_BACK: return rta::PAD_SELECT;
+    // second names for three buttons, where a hand on W A S D and a mouse finds them (fpcontrols.h)
+    case VK_SPACE: return rta::PAD_SQUARE;
+    case VK_SHIFT: return rta::PAD_R1;
+    case VK_TAB: return rta::PAD_R3;
     default: return 0;
     }
 }
@@ -324,7 +329,7 @@ struct Pads : rta::PadSource {
     std::atomic<uint32_t> last_sticks{0x80808080};
     std::atomic<uint32_t> rumbles{0};
     std::atomic<bool> quit{false};
-    void read(unsigned port, uint64_t, rta::PadState& state) override {
+    void read(unsigned port, uint64_t blank, rta::PadState& state) override {
         if (quit) apprt::finish(0);                     // the window was closed: end from the game's thread
         state = apprt::script_pad(port);
         if (port != 0) return;
@@ -343,6 +348,9 @@ struct Pads : rta::PadSource {
             else { state.lx = kb.lx; state.ly = kb.ly; }
         }
         if (rest(state.rx, state.ry) && have_pad) { state.rx = pad.rx; state.ry = pad.ry; }
+        // the look views' controls (fpcontrols.h).  This program has no views yet (app/fpview.patch,
+        // "Notes for the merge"): until fpcontrols::set_view is called with one, rows pass unchanged
+        fpcontrols::translate(blank, state);
         last_buttons = state.buttons;
         last_sticks = state.lx | state.ly << 8 | state.rx << 16 | (uint32_t)state.ry << 24;
     }
@@ -355,7 +363,30 @@ static std::mutex g_shot_lock;
 static std::vector<std::string> g_shots_asked;           // picked up by the sink at this blank
 
 // ---- the window and the main-thread side -----------------------------------------------------
-enum { TIMER_END = 1, TIMER_MOVE = 2 };
+enum { TIMER_END = 1, TIMER_MOVE = 2, TIMER_POINTER = 3 };
+
+// The pointer as the look of a view (fpcontrols.h; the Mac's look_mac.mm): hidden, kept inside
+// the window, the mouse's own motion read as raw input.  Never in a test window.
+static bool g_pointer_held = false, g_pointer_let_go = false, g_raw_mouse = false;
+static void hold_pointer(HWND hwnd, bool on) {
+    if (on == g_pointer_held) return;
+    if (on) {
+        if (!g_raw_mouse) {
+            RAWINPUTDEVICE device = {0x01, 0x02, 0, hwnd};         // generic desktop, mouse
+            g_raw_mouse = RegisterRawInputDevices(&device, 1, sizeof device) != 0;
+        }
+        RECT r;
+        GetClientRect(hwnd, &r);
+        MapWindowPoints(hwnd, nullptr, (POINT*)&r, 2);
+        SetCursorPos((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+        ClipCursor(&r);
+        ShowCursor(FALSE);
+    } else {
+        ClipCursor(nullptr);
+        ShowCursor(TRUE);
+    }
+    g_pointer_held = on;
+}
 // asked for by a script line on the game's thread, done by the window's thread
 enum { MSG_RESIZE = WM_APP + 1, MSG_FULLSCREEN, MSG_ART };
 
@@ -477,6 +508,7 @@ struct Screen {
         window = CreateWindowExW(ex, wc.lpszClassName, wide(title).c_str(), style, CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top,
                                  nullptr, nullptr, wc.hInstance, nullptr);
         if (!window) { error = "CreateWindow failed"; return false; }
+        if (opt.test.empty()) SetTimer(window, TIMER_POINTER, 50, nullptr);        // the pointer is the look's while a look view is played
         if (!wgl::create(window, gl, error)) return false;
         log_line("OpenGL " + gl.version + " on " + gl.renderer);
         if (!gl.missing.empty()) log_line("OpenGL functions this driver does not have: " + gl.missing);
@@ -814,6 +846,7 @@ LRESULT CALLBACK Screen::proc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         }
         if (uint32_t bit = key_bit(wp)) { g_keys |= bit; return 0; }
         if (!s || test) return 0;
+        if (wp == VK_ESCAPE && g_pointer_held) { g_pointer_let_go = true; hold_pointer(hwnd, false); return 0; }
         if (wp == VK_F11 || wp == 'F') s->toggle_fullscreen();
         else if (wp == VK_ESCAPE && s->is_fullscreen) s->toggle_fullscreen();
         else if (wp == VK_F12) {
@@ -828,7 +861,28 @@ LRESULT CALLBACK Screen::proc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_KILLFOCUS:
         g_keys = 0;                                     // nothing stays held when the window is left
+        fpcontrols::release_all();
+        hold_pointer(hwnd, false);
         return 0;
+    // the mouse (fpcontrols.h): its buttons are pad buttons in the look views, its motion the look
+    case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN:
+        if (!test) { g_pointer_let_go = false; fpcontrols::mouse_button(message == WM_LBUTTONDOWN ? 0 : message == WM_RBUTTONDOWN ? 1 : 2, true); }
+        return 0;
+    case WM_LBUTTONUP: case WM_RBUTTONUP: case WM_MBUTTONUP:
+        if (!test) fpcontrols::mouse_button(message == WM_LBUTTONUP ? 0 : message == WM_RBUTTONUP ? 1 : 2, false);
+        return 0;
+    case WM_MOUSEWHEEL:
+        if (!test) fpcontrols::mouse_wheel((float)GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA);
+        return 0;
+    case WM_INPUT:
+        if (g_pointer_held) {
+            RAWINPUT raw;
+            UINT size = sizeof raw;
+            if (GetRawInputData((HRAWINPUT)lp, RID_INPUT, &raw, &size, sizeof(RAWINPUTHEADER)) != (UINT)-1 && raw.header.dwType == RIM_TYPEMOUSE
+                && !(raw.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE))
+                fpcontrols::mouse_motion((float)raw.data.mouse.lLastX, (float)raw.data.mouse.lLastY);     // right and down positive
+        }
+        break;
     case WM_SYSCOMMAND:
         if ((wp & 0xFFF0) == SC_KEYMENU) return 0;      // Alt or F10 alone would stop the loop in a menu that is not there
         break;
@@ -841,6 +895,7 @@ LRESULT CALLBACK Screen::proc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         KillTimer(hwnd, TIMER_MOVE);
         return 0;
     case WM_TIMER:
+        if (wp == TIMER_POINTER) { hold_pointer(hwnd, !test && GetForegroundWindow() == hwnd && !g_pointer_let_go && fpcontrols::wants_pointer()); return 0; }
         if (wp == TIMER_END) end_now(0);
         if (wp == TIMER_MOVE && s) { WaitForSingleObject(s->frame_event, 0); while (s->pending()) s->draw(); }
         return 0;
@@ -923,6 +978,7 @@ static void final_report() {                            // on the game's thread,
     printf("rta_app: input: %llu key events, controller %s, %u rumble commands\n", (unsigned long long)g_key_events.load(),
            hostpad::name().empty() ? "none" : hostpad::name().c_str(), g_pads.rumbles.load());
     apprt::films_report();
+    printf("rta_app: %s\n", fpcontrols::figures().c_str());
     fflush(stdout);
 }
 
@@ -966,6 +1022,9 @@ static void app_command(const std::string& text, uint64_t frame) {
         float v[6] = {0, 0, 0, 0, 0, 0};
         for (size_t k = 3; k < w.size() && k < 9; k++) v[k - 3] = (float)atof(w[k].c_str());
         hostpad::test(w[1], w.size() >= 3 ? parse_buttons(w[2]) : 0, v);
+    } else if (w[0] == "fpc" && w.size() >= 2) {
+        printf("[frame %llu] fpc: %s\n", (unsigned long long)frame, fpcontrols::command(text.substr(text.find(w[1])), frame).c_str());
+        fflush(stdout);
     } else if (w[0] == "pads") {
         uint32_t sticks = g_pads.last_sticks;
         printf("[frame %llu] rta_app: controller %s (generation %u); port 1 holds buttons %04x, sticks %u %u %u %u; keyboard bits %05x\n",

@@ -85,6 +85,7 @@ def main():
     parser.add_argument('--no-game', action='store_true')
     parser.add_argument('--no-translation', action='store_true')
     parser.add_argument('--as', dest='as_name', default='')
+    parser.add_argument('--extra-pnach', action='append', default=[], help='more word patches for the translation: a proposal under test (app/fp-proposed.pnach)')
     args = parser.parse_args()
     rt = os.path.join(RECOMP, 'rt')
     render = os.path.join(RECOMP, 'render')
@@ -103,6 +104,8 @@ def main():
         signin = os.environ.get('RTA_SIGNIN_PATCH', os.path.join(ROOT, 'local', 'SLUS-20973_4028A55F_signin.pnach'))
         if os.path.isfile(signin):
             translate += ['--extra-pnach', signin]
+        for extra in args.extra_pnach:
+            translate += ['--extra-pnach', extra]
         game = ['run', '--gen', args.gen, '--name', 'rta_native_fix']
     if not args.no_game:
         result = subprocess.run([sys.executable, os.path.join(RECOMP, 'recomp.py')] + translate, capture_output=True, text=True)
@@ -141,6 +144,11 @@ def main():
     jobs.append((os.path.join(sound, 'sound_rta.cpp'), rt_flags + ['-I', sound], 'rt_'))
     jobs.append((os.path.join(HERE, 'app_rt.cpp'), rt_flags + ['-I', HERE], 'a_'))
     jobs.append((os.path.join(HERE, 'gfx_rt.cpp'), rt_flags + ['-I', HERE], 'a_'))
+    # the view modes (fpview.h; docs/issues/native-first-person.md)
+    jobs.append((os.path.join(HERE, 'fpview.cpp'), rt_flags + ['-I', HERE], 'a_'))
+    # the controls of the look views (plain C++: the Windows program compiles the same file)
+    jobs.append((os.path.join(HERE, 'fpcontrols.cpp'), ['-std=c++17', args.opt, '-Wall', '-I', HERE, '-I', rt], 'a_'))
+    jobs.append((os.path.join(HERE, 'look_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE, '-I', rt], 'a_'))
     if not args.original:
         # the films: the library entry points of hle-app.txt, which only this translation leaves open
         jobs.append((os.path.join(HERE, 'film.cpp'), rt_flags + ['-I', HERE], 'a_'))
@@ -153,7 +161,7 @@ def main():
     jobs.append((os.path.join(HERE, 'app_main.cpp'), app_flags + qt_flags, 'a_'))
     jobs.append((os.path.join(HERE, 'pad_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE, '-I', rt], 'a_'))
     jobs.append((os.path.join(HERE, 'present_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE], 'a_'))
-    jobs.append((os.path.join(HERE, 'help_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE], 'a_'))
+    jobs.append((os.path.join(HERE, 'help_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE, '-I', rt], 'a_'))
     # the game's objects are those of the translation's files (genfiles.py), never a listing of
     # the object directory: a stray copy there ("c_003 2.o", as a file synchroniser leaves
     # them) is not one of them and must not be linked a second time

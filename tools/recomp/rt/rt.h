@@ -62,6 +62,17 @@ const char* rt_option(const char* key);
 // front of them (render/vif1.cpp reads the ones with 0xA5..0xA7 in their NUM field).
 extern void (*rt_frame_hook)(Ctx* c, int phase);
 extern void (*rt_dma_tag)(u32 tag_address, std::vector<u32>& stream);
+// rt_dma_skip (app/fpview.cpp; null: nothing is skipped): asked for every tag of a source chain
+// on channel 1; true = the tag is followed but its data (and, when the tag is a call, everything
+// up to the matching return) is not put into the stream.  A model that is drawn but not shown.
+extern bool (*rt_dma_skip)(u32 tag_address);
+// The price of a unit of translated code (a call or a backward branch) in cycles of the
+// virtual clock: 4, which is what makes a frame of the game take the part of a field it takes
+// on the console.  fpview sets 0 for the length of a draw pass it has put a view of its own in
+// place for: such a pass draws far more than the console's camera ever asked for, and counted
+// at 4 it runs past the field, upon which the game steps two ticks a frame as an overloaded
+// console would.  From the game's thread, with its Ctx.
+void rt_unit_cost(Ctx* c, unsigned cycles);
 
 // ---- iop.cpp ----------------------------------------------------------------------------
 struct IopOptions {

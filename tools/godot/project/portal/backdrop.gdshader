@@ -5,7 +5,7 @@ shader_type canvas_item;
 
 uniform sampler2D screen : hint_screen_texture, filter_linear_mipmap, repeat_disable;
 uniform float amount = 1.0;         // 0: the game as it is ... 1: fully blurred and dimmed
-uniform float darken = 0.55;
+uniform float darken = 0.42;
 
 void fragment() {
 	float lod = 3.2 * amount;

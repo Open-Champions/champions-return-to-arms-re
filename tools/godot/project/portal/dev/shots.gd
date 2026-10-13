@@ -48,13 +48,15 @@ func _ready() -> void:
 	add_child(view)
 	DirAccess.make_dir_recursive_absolute(out_dir)
 	await get_tree().process_frame
-	for name in ["smoke", "walk", "states", "friends", "room", "join", "settings", "ratios"]:
-		if only.is_empty() and name == "smoke":
+	for name in ["smoke", "walk", "states", "friends", "room", "join", "settings", "ratios", "real"]:
+		if only.is_empty() and (name == "smoke" or name == "real"):
 			continue
 		if only.is_empty() or only.has(name):
 			print("shots: ", name)
 			await call("scenario_" + name)
 	print("shots: %d pictures in %s" % [count, out_dir])
+	if portal != null and portal.handover.quit_game():
+		return                          # the real game scene stops its machine and ends the program itself
 	get_tree().quit(0)
 
 
@@ -224,7 +226,27 @@ func scenario_smoke() -> void:
 	await pad(JOY_BUTTON_DPAD_DOWN)
 	await pad(JOY_BUTTON_DPAD_DOWN)
 	print("shots: focus after two downs ", focused())
-	await shot("smoke-4-home-join")
+	# the mouse: pointing gives the focus, a click presses
+	var tile: Control = portal.screen.find_key(portal.screen, "friends")
+	var at := tile.global_position + tile.size * 0.5
+	var move := InputEventMouseMotion.new()
+	move.position = at
+	move.global_position = at
+	await send(move)
+	await wait(0.1)
+	print("shots: mouse over the friends tile, focus ", focused())
+	for down in [true, false]:
+		var click := InputEventMouseButton.new()
+		click.button_index = MOUSE_BUTTON_LEFT
+		click.pressed = down
+		click.position = at
+		click.global_position = at
+		await send(click)
+	await wait(0.4)
+	print("shots: after the click the screen is ", portal.current_name(), "; hints for ", "a controller" if UI.pad_glyphs else "keyboard and mouse")
+	await key(KEY_ESCAPE)
+	await wait(0.3)
+	print("shots: after Esc the screen is ", portal.current_name())
 
 
 # What the portal "remembers" in most pictures: a name and a few characters.  The names are
@@ -462,6 +484,7 @@ func scenario_friends() -> void:
 	await shot("friends-forty-scrolled")
 	portal.session.friends_for_pictures = many_friends(8, true)
 	portal.screen.rebuild()
+	portal.top.build()
 	await focus_key("friend:" + String((portal.session.friends_for_pictures as Array)[0].id))
 	await shot("friends-long-names")
 	portal.session.friends_for_pictures = null
@@ -598,3 +621,27 @@ func scenario_ratios() -> void:
 	await shot("ratio-4x3-first-start")
 	await open_portal(Vector2i(1280, 720), {"pad": true})
 	await shot("ratio-720p-first-start")
+
+
+# The portal in front of the REAL game scene (res://main.tscn with the game library): asked for
+# by name only, with the game scene's own options on the command line (--disc, --test, --mute,
+# --size, --data, --workspace).  The pictures hold the game's picture: they stay under local/.
+func scenario_real() -> void:
+	await open_ready(Vector2i(1920, 1080), {}, {"stub_game": false, "mock_speed": "1"})
+	await shot("real-01-home-before")
+	await focus_key("alone")
+	await key(KEY_ENTER)
+	await wait(1.0)
+	print("shots: real: game node ", portal.handover.game, " started ", portal.handover.game.get("started") if portal.handover.game != null else null,
+		" message ", portal.handover.game.get("message") if portal.handover.game != null else "")
+	await wait(9.0)
+	await shot("real-02-the-game-after-the-hand-over")
+	await until(func() -> bool: return not portal.notices.current().is_empty(), 14.0)
+	await wait(0.3)
+	await shot("real-03-invitation-over-the-game")
+	portal.handover.finish("key")
+	await wait(0.5)
+	await shot("real-04-portal-in-front-of-the-game")
+	portal.go("friends")
+	await shot("real-05-friends-in-front-of-the-game")
+	print("shots: real: blanks ", portal.handover.game.get("blanks"))

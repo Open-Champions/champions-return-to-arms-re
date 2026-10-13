@@ -14,6 +14,9 @@
 //   art_pack     =            a folder of replacement pictures (tools/play-net/README.md,
 //                             "Upscaled art"); empty = the game's own art
 //   art_memory   = 3072       megabytes of video memory the pack may take
+//   view         = overhead   the camera: overhead (the game's own), action, chase, shoulder,
+//                             first; and view.<mode>.<name> = value for each view's own
+//                             numbers (fpview.h)
 //   frame_cap    = 60         pictures a second: 60, 30 (every other picture is shown), or
 //                             0 = no cap (the game then runs as fast as the machine: a
 //                             benchmark, not for playing).  The game itself always counts 60
@@ -23,6 +26,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace app {
 
@@ -37,6 +42,7 @@ struct Settings {
     std::string art_pack;
     int art_memory = 3072;
     int frame_cap = 60;
+    std::vector<std::pair<std::string, std::string>> view;     // "view" and "view.<mode>.<name>" lines, for fpview::setting
 
     static double parse_aspect(const std::string& text) {
         if (text == "auto" || text == "window" || text.empty()) return 0;
@@ -65,6 +71,7 @@ struct Settings {
         else if (key == "art_pack") art_pack = value;
         else if (key == "art_memory") { art_memory = atoi(value.c_str()); if (art_memory < 64) art_memory = 64; }
         else if (key == "frame_cap") frame_cap = atoi(value.c_str());
+        else if (key == "view" || key.compare(0, 5, "view.") == 0 || key.compare(0, 9, "controls.") == 0) view.push_back({key, value});   // controls.*: fpcontrols::setting
         else return false;
         return true;
     }
@@ -95,7 +102,8 @@ struct Settings {
     }
 
     // Writes the file with what is set now and a line of explanation for each key.
-    bool save(const std::string& path) const {
+    // `views`: the view settings as fpview::settings_text() gives them
+    bool save(const std::string& path, const char* views = nullptr) const {
         FILE* f = fopen(path.c_str(), "w");
         if (!f) return false;
         auto yes = [](bool b) { return b ? "yes" : "no"; };
@@ -115,6 +123,7 @@ struct Settings {
         fprintf(f, "art_pack = %s            # a folder of replacement pictures; empty: the game's own art\n", art_pack.c_str());
         fprintf(f, "art_memory = %d         # megabytes of video memory the art pack may take\n", art_memory);
         fprintf(f, "frame_cap = %d           # pictures a second: 60, 30, or 0 for no cap (the game then runs fast: for measuring only)\n", frame_cap);
+        if (views) fprintf(f, "\n# the camera (docs/issues/native-first-person.md): distances in the game's units (a character is about 60 high), angles in degrees\n%s", views);
         fclose(f);
         return true;
     }

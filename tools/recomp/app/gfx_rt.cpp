@@ -40,6 +40,7 @@ const u32 RAM_MASK = 0x01FFFFFF;                    // the display list is addre
 
 enum Mode : u16 { M_NONE = 0, M_EDGE = 1, M_WORLD = 2, M_BILLBOARD = 3, M_MENU3D = 4 };
 
+std::atomic<bool> g_marks_always{false};    // set_hud_marks: the marks also at 4:3
 std::atomic<float> g_wanted{1.0f};      // k = (4/3) / aspect the application asks for
 float g_k = 1.0f;                       // of the frame being built
 int g_menu_view = 0;                    // inside a draw task that puts a 3-D figure into a 4:3 menu
@@ -67,11 +68,28 @@ void read_options() {
     g_menu3d = !is("wide-menu3d", "off");
 }
 
+float g_near = 0, g_far = 0;             // fpview: the depth range of a view of its own (0 = the game's 18 and 1800)
+
 inline float view_k() { return (g_menu_view && g_menu3d) ? 1.0f : g_k; }
 
 // ---- the projection -----------------------------------------------------------------------
 void scaled(Ctx* c, void (*original)(Ctx*)) {
     float k = view_k();
+    if (g_near > 0 && !g_menu_view) {        // (sx, sy, scale, z near, z far, near, far): f17 and f18
+        u32 near_asked = c->f[17], far_asked = c->f[18];
+        c->f[17] = as_bits(g_near);
+        c->f[18] = as_bits(g_far);
+        if (k == 1.0f) original(c);
+        else {
+            u32 asked = c->f[12];
+            c->f[12] = as_bits(as_float(asked) * k);
+            original(c);
+            c->f[12] = asked;
+        }
+        c->f[17] = near_asked;
+        c->f[18] = far_asked;
+        return;
+    }
     if (k == 1.0f) { original(c); return; }
     u32 asked = c->f[12], wide = as_bits(as_float(asked) * k);
     c->f[12] = wide;
@@ -171,7 +189,7 @@ void leave() {
 }
 struct Scope {
     bool on;
-    explicit Scope(Mode mode) { read_options(); on = g_tags && g_k != 1.0f; if (on) enter(mode); }
+    explicit Scope(Mode mode) { read_options(); on = g_tags && (g_k != 1.0f || g_marks_always); if (on) enter(mode); }
     ~Scope() { if (on) leave(); }
 };
 
@@ -205,6 +223,13 @@ void dma_tag(u32 tag_address, std::vector<u32>& stream) {
             g_marks++;
         }
         return;
+    }
+    // a tag outside the display list (the present pass, uploads) is nobody's: with the marks sent for the HUD switch
+    // it must not go on under the mark of the last thing the list drew
+    if (g_marks_always && g_stream_mark != 0 && g_stream_mark != 0xFFFF) {
+        g_stream_mark = 0;
+        stream.push_back(0x00A50000u);
+        g_marks++;
     }
 }
 
@@ -281,6 +306,8 @@ void install() {
     rt_frame_hook = frame_hook;
     rt_dma_tag = dma_tag;
 }
+void set_hud_marks(bool on) { g_marks_always = on; }
+
 void set_aspect(double aspect) {
     if (aspect < 4.0 / 3.0) aspect = 4.0 / 3.0;         // narrower than the game's picture: bars, not a taller view
     if (aspect > 4.0) aspect = 4.0;
@@ -292,5 +319,7 @@ void figures(uint64_t& wide_frames, uint64_t& clamp_calls, uint64_t& marks) {
     wide_frames = g_wide_frames; clamp_calls = g_clamp_calls; marks = g_marks;
 }
 void list_figures(uint32_t& most, uint32_t& room) { most = g_list_most; room = g_list_room; }
+void projection_args(uint32_t out[4]) { memcpy(out, g_projection_args, sizeof g_projection_args); }
+void set_depth_range(float near_plane, float far_plane) { g_near = near_plane; g_far = far_plane; }
 
 }  // namespace gfxrt

@@ -196,7 +196,9 @@ def build_lib(args):
         print('no compiled game in %s (see `snapshot`)' % game_dir)
         return 1
     rt, render, sound, app = (os.path.join(SNAP, p) for p in PARTS)
-    # the files proposed for tools/recomp (tools/godot/core/<part>/...): into the snapshot, where they will live
+    # files proposed for tools/recomp (tools/godot/core/<part>/...) go into the snapshot, where they will live.
+    # (None now: render/scene_tap.h and .cpp were merged into tools/recomp/render on 2026-10-13 with the hooks of
+    # recomp.patch, so `snapshot` brings them; the directory need not exist, and a new proposal can lie there again.)
     core = os.path.join(HERE, 'core')
     for folder, _, files in os.walk(core):
         for name in files:

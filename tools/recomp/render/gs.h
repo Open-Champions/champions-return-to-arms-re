@@ -54,6 +54,10 @@ class Gs {
     bool weave = true;                  // sample two-field interface art as one picture
     bool name_textures = false;         // work out the emulator-based build's name of every texture made (TextureData::named)
     bool no_interlace = true;           // drop the half-line of XYOFFSET
+    // The game's own HUD layer off: primitives the game side marked as edge-anchored interface (layout.h M_EDGE: player
+    // status, gold, compass, minimap, spell selector - app/gfx_rt.cpp) are not drawn.  The marks have to be in the
+    // stream for it (gfxrt::set_hud_marks: at 4:3 they are not sent otherwise).  For a host that draws its own HUD.
+    bool hide_edge = false;
     int trace = 0;                      // > 0: print draws to stderr
     bool time_paths = false;
     std::function<void()> on_far_vertex;    // debugging (RTA_GS_FAR): a vertex far outside every surface was drawn

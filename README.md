@@ -18,12 +18,27 @@ at a time, alongside a native Mac and Windows client built with Godot.
 authored source reconstruction now lives in its dedicated repository. You need your own copy of the
 disc to analyze game files; basic tool checks and synthetic tests need no game data. See [What may not be committed](CONTRIBUTING.md#what-may-not-be-committed).
 
+## Play it
+
+The game is playable today, online, for two to four players. **Step-by-step instructions
+for each kind of computer: [docs/DOWNLOADS.md](docs/DOWNLOADS.md).** In short:
+
+| Your computer | What you use | What you do |
+|---|---|---|
+| Mac (Apple silicon, macOS 14 or later) | the Mac application | open the link you were sent, download, open the app, type a player name, host or join with a room code |
+| Windows PC, or anything else with Chrome | the browser version - nothing to install | open the link you were sent, click *Play in your browser*, pick your disc image file, type a player name, host or join with a room code |
+
+- **The link.** There is one link for both versions. It is private: you get it from the
+  person who invited you to play. It is not in this repository (see DOWNLOADS.md for why),
+  and everything needed to build either version yourself is.
+- **You need your own disc image** of the game (US release, SLUS-20973, version 2.00).
+  Nothing of the game is in this repository or behind the link.
+- Mac players and browser players can be in the same game.
+
 ## Where it stands
 
 - **How complete the playable game is, part by part, updated at every check-in:
   [docs/PROGRESS.md](docs/PROGRESS.md).**
-- **Which version you can get, for which computer, and how:
-  [docs/DOWNLOADS.md](docs/DOWNLOADS.md).**
 - The executable is 3.0 MB of MIPS code in 7,732 functions. Naming coverage is tracked separately;
   [docs/STATUS.md](docs/STATUS.md) breaks that down by area.
 - The local Ghidra pass produced 7,731 successful decompilations; one function at

@@ -90,9 +90,30 @@ static u64 g_units;                               // total units executed
 static u64 g_next_vblank_start = VBLANK_PERIOD, g_next_vblank_end = VBLANK_PERIOD + VBLANK_LENGTH;
 static u64 g_fields;
 
+// The price of a unit can be changed for a stretch of the running thread's slice (rt_unit_cost:
+// a draw pass built for a view of fpview's does not count against the console's field time).
+// What the slice has cost up to the last change is kept in g_slice_cycles, the units it had
+// used by then in g_slice_mark; both start again with every slice.
+static u64 g_unit_cycles = CYCLES_PER_UNIT;
+static u64 g_slice_cycles;
+static s64 g_slice_mark;
+static u64 slice_cycles(const Ctx* c) {
+    s64 used = POLL_UNITS - (c->budget < 0 ? 0 : c->budget);
+    return g_slice_cycles + (u64)(used > g_slice_mark ? used - g_slice_mark : 0) * g_unit_cycles;
+}
+
 static u64 now(const Ctx* c) {
     if (!c || c->budget > POLL_UNITS) return g_cycles;      // no thread, or the interrupt context
-    return g_cycles + (u64)(POLL_UNITS - (c->budget < 0 ? 0 : c->budget)) * CYCLES_PER_UNIT;
+    return g_cycles + slice_cycles(c);
+}
+
+void rt_unit_cost(Ctx* c, unsigned cycles) {
+    if (cycles == g_unit_cycles) return;
+    if (c && c->budget <= POLL_UNITS) {
+        g_slice_cycles = slice_cycles(c);
+        g_slice_mark = POLL_UNITS - (c->budget < 0 ? 0 : c->budget);
+    }
+    g_unit_cycles = cycles;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -400,7 +421,9 @@ static void reschedule(std::unique_lock<std::mutex>& lock, GThread* self, Ctx* c
     if (c && !gone && c->budget <= POLL_UNITS) {            // account for the part of the slice used
         s64 used = POLL_UNITS - (c->budget < 0 ? 0 : c->budget);
         g_units += used;
-        g_cycles += used * CYCLES_PER_UNIT;
+        g_cycles += slice_cycles(c);
+        g_slice_cycles = 0;
+        g_slice_mark = 0;
         c->budget = POLL_UNITS;
     }
     u64 idle_fields = 0;
@@ -1135,6 +1158,11 @@ static void dma_start(u32 ch) {
             chcr = (chcr & 0xFFFF) | ((u32)t & 0xFFFF0000u);
             bool end = false;
             if (ch == 1 && rt_dma_tag) rt_dma_tag(tadr, stream);
+            // rt_dma_skip: this tag's data stays out of the stream; a call that is skipped takes
+            // its whole subroutine with it (the level of the return stack it was made at is kept)
+            static int skip_above = -1;
+            bool skip = ch == 1 && rt_dma_skip && (skip_above >= 0 || rt_dma_skip(tadr));
+            if (skip && id == 5 && skip_above < 0 && asp < 2) skip_above = (int)asp;
             switch (id) {
             case 0: madr = addr; tadr += 16; end = true; break;                 // refe
             case 1: madr = tadr + 16; tadr = madr + n * 16; break;              // cnt
@@ -1149,15 +1177,17 @@ static void dma_start(u32 ch) {
                 madr = tadr + 16;
                 if (asp > 0) { asp--; tadr = g_hw[base + 0x40 + asp * 0x10]; }
                 else end = true;
+                if (skip_above >= 0 && (int)asp <= skip_above) skip_above = -1;
                 break;
             case 7: madr = tadr + 16; end = true; break;                        // end
             }
-            if (ch <= 2) {
+            if (ch <= 2 && !skip) {
                 if (tte && ch != 2) { u32 two[2]; memcpy(two, tag + 8, 8); stream.push_back(two[0]); stream.push_back(two[1]); }
                 append(madr, n);
             }
             madr += n * 16;
             g_dma_qwords[ch] += n + 1;
+            if (end) skip_above = -1;
             if (end || (((u32)t & 0x80000000u) && tie)) break;
         }
         chcr = (chcr & ~0x30u) | (asp << 4);
@@ -1590,6 +1620,7 @@ static void on_vblank() {
 
 void (*rt_frame_hook)(Ctx* c, int phase);
 void (*rt_dma_tag)(u32 tag_address, std::vector<u32>& stream);
+bool (*rt_dma_skip)(u32 tag_address);
 void fn_0019d8b0(Ctx* c) {                              // gfx_beginFrame: once per displayed frame
     if (g_log && !g_log_fields) log_row(g_frame);
     if (g_frame == g_dump_frame) {

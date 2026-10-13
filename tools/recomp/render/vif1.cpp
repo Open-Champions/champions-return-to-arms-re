@@ -33,6 +33,7 @@ void Vif1::run_waiting() {
     if (!waiting) return;
     waiting = false;
     if (gs) gs->debug_entry = waiting_from_pc ? -1 : (int)waiting_at;
+    if (on_program) on_program(tap_user, waiting_from_pc ? -1 : (int)waiting_at);
 #if RTA_PROF_ON
     if (!waiting_from_pc) prof_entry = waiting_at;
     prof::Scope prof_scope(prof::vu_part(prof_entry));
@@ -102,6 +103,7 @@ size_t Vif1::process(const uint32_t* w, size_t n) {
         switch (cmd) {
         case 0x00:                                      // NOP; with 0xA5..0xA7 in NUM a note from the game side (gs.h)
             if (num >= 0xA5 && num <= 0xA7 && gs) { run_waiting(); gs->note(num, imm); }
+            else if ((num == 0xA8 || num == 0xA9) && on_note) { run_waiting(); on_note(tap_user, num, imm); }
             break;
         case 0x01: cl = imm & 0xFF; wl = (imm >> 8) & 0xFF; break;
         case 0x02: ofst = imm & 0x3FF; dbf = false; tops = base; break;

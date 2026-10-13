@@ -596,6 +596,7 @@ def main():
              # the file's timing aid finds it by itself only on macOS
              (FILM, rt_flags + ['-I', HERE, '-include', 'ctime'], 'a_')] if os.path.exists(FILM) and os.path.exists(FILM_HLE) and not args.original else []) + [
              (os.path.join(HERE, 'pad_win.cpp'), app_flags, 'a_'),
+             (os.path.join(HERE, 'fpcontrols.cpp'), app_flags, 'a_'),          # the look views' controls: plain C++, the Mac's file
              (os.path.join(WINSRC, 'wgl.cpp'), app_flags, 'a_')], objdir, search)
         # a file given with -include is a dependency the sources do not name
         app = [(source, flags, target, deps + ([os.path.join(NET, 'posix_win.h')] if source == ONLINE else []))

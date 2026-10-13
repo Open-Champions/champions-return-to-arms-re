@@ -22,10 +22,20 @@ void install();
 // The aspect ratio of the 3-D view, width / height; 4/3 is the game as it is.  From any
 // thread; the game takes it at its next frame.
 void set_aspect(double aspect);
+// The marks that say which draw function made which packets are sent at 4:3 as well (they are only needed for the
+// wide picture's layout otherwise): for a renderer that is asked to leave the game's own HUD layer out (Gs::hide_edge).
+// From any thread; takes effect with the next frame's draw functions.
+void set_hud_marks(bool on);
 // Figures for the report: frames built wide, calls of the screen clamp that were handed
 // the 4:3 planes.
 void figures(uint64_t& wide_frames, uint64_t& clamp_calls, uint64_t& marks);
 // The game's display list: the units (of 8 bytes) the fullest frame took, and what a frame has.
 void list_figures(uint32_t& most, uint32_t& room);
+// For app/fpview.cpp (the view modes).  The four arguments of the game's last call of
+// camera_setProjection (fov, aspect, fov2, v) as raw floats; and a near and far distance
+// that mat4_setProjection x 3 are given in place of the game's 18 and 1800 while a view of
+// its own is in place (0, 0 = the game's).  Game thread only.
+void projection_args(uint32_t out[4]);
+void set_depth_range(float near_plane, float far_plane);
 
 }  // namespace gfxrt

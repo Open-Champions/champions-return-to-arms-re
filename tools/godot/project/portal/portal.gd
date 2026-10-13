@@ -26,6 +26,7 @@ extends Node
 #   --portal-test NAME      a test: nothing leaves the program (no clipboard, no file dialog, no full screen)
 #   --portal-stub-game      hand over to a stand-in instead of the game scene (dev/stub_game.gd)
 #   --portal-start SCREEN   open on this screen (tests)
+#   --portal-shot FILE --portal-quit-after SECONDS      save the window's own picture, then end (tests)
 #
 # For the HUD (tools/godot/project/hud): get_tree().get_first_node_in_group("portal") has
 #   signal notice(d)        d = {id, kind: "invite"|"request", who, title, text, accept_text}
@@ -60,7 +61,7 @@ signal notice(d: Dictionary)
 signal notice_gone(id: String)
 signal shown_changed(is_shown: bool)
 
-var options := {"test": "", "data": "", "mock": false, "service": "", "stub_game": false, "start": "", "embedded": false, "mock_speed": ""}
+var options := {"test": "", "data": "", "mock": false, "service": "", "stub_game": false, "start": "", "embedded": false, "mock_speed": "", "shot": "", "quit_after": 0.0}
 var session: Node
 var profile: RefCounted
 var handover: Node
@@ -98,6 +99,16 @@ func _ready() -> void:
 		get_tree().change_scene_to_file.call_deferred("res://main.tscn")
 		return
 	_controller_actions()
+	if test_mode() and not bool(options.embedded):
+		# a test window: named, small, out of the way, never taking the keyboard
+		var window := get_window()
+		window.title = "AGENT TEST - portal " + String(options.test)
+		window.set_flag(Window.FLAG_NO_FOCUS, true)
+		var area := DisplayServer.screen_get_usable_rect()
+		window.position = area.position + area.size - window.size - Vector2i(24, 24)
+		AudioServer.set_bus_mute(0, true)
+		if float(options.quit_after) > 0.0:
+			_end_test.call_deferred()
 	profile = Profile.new()
 	profile.load_from(String(options.data) if String(options.data) != "" else "user://")
 	game_slot = Node.new()
@@ -140,6 +151,8 @@ func _parse_arguments() -> void:
 			"--portal-service": given["service"] = value; k += 1
 			"--portal-start": given["start"] = value; k += 1
 			"--portal-mock-speed": given["mock_speed"] = value; k += 1
+			"--portal-shot": given["shot"] = value; k += 1
+			"--portal-quit-after": given["quit_after"] = value.to_float(); k += 1
 			"--portal-mock": given["mock"] = true
 			"--portal-stub-game": given["stub_game"] = true
 			"--no-portal", "--script": given["pass"] = true
@@ -160,6 +173,15 @@ func _controller_actions() -> void:
 		e.button_index = pair[1]
 		if not InputMap.action_has_event(pair[0], e):
 			InputMap.action_add_event(pair[0], e)
+
+
+func _end_test() -> void:
+	await get_tree().create_timer(float(options.quit_after)).timeout
+	if String(options.shot) != "":
+		await RenderingServer.frame_post_draw
+		get_viewport().get_texture().get_image().save_png(String(options.shot))
+		print("portal: wrote ", options.shot, " screen ", current_name(), ", link ", int(session.me().get("link", 0)), ", friends ", session.friends().size())
+	quit()
 
 
 func test_mode() -> bool:
@@ -365,6 +387,8 @@ func refresh_hints() -> void:
 		_:
 			hint_bar.left_text = "Offline - playing alone works"
 			hint_bar.left_colour = UI.FAINT
+	if not screen.call("chrome"):
+		hint_bar.left_text = ""         # the first question: nothing about a connection yet
 	notices.visible = screen.call("chrome") or not shown     # nothing interrupts the first question
 	hint_bar.queue_redraw()
 	notices.glyph_style = glyph_style
@@ -588,10 +612,10 @@ func _sync_invites() -> void:
 		now[id] = true
 		if not seen_invites.has(id):
 			var c: Dictionary = v.get("character", {})
-			var text := "invites you to play"
+			var text := "Room " + String(v.room)
 			if String(c.get("name", "")) != "":
-				text = "invites you to play - as " + UI.character_line(c)
-			var d := {"id": "invite:" + id, "kind": "invite", "who": String(v.from_name), "seed": id, "title": String(v.from_name),
+				text = "Playing " + UI.character_line(c)
+			var d := {"id": "invite:" + id, "kind": "invite", "who": String(v.from_name), "seed": id, "title": String(v.from_name) + " invites you to play",
 				"text": text, "accept_text": "Join"}
 			var item := d.duplicate()
 			item["on_accept"] = func() -> void: accept_invite(id)
@@ -741,11 +765,11 @@ func quit() -> void:
 func set_shown(value: bool, game_behind := false) -> void:
 	if shown == value:
 		backdrop.visible = game_behind and value
-		(background.material as ShaderMaterial).set_shader_parameter("dim", 0.62 if game_behind else 1.0)
+		(background.material as ShaderMaterial).set_shader_parameter("dim", 0.5 if game_behind else 1.0)
 		return
 	shown = value
 	backdrop.visible = game_behind
-	(background.material as ShaderMaterial).set_shader_parameter("dim", 0.62 if game_behind else 1.0)
+	(background.material as ShaderMaterial).set_shader_parameter("dim", 0.5 if game_behind else 1.0)
 	notices.set("compact", not value)
 	notices.queue_redraw()
 	var t := create_tween()

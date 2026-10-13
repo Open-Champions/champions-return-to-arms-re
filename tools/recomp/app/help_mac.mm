@@ -1,5 +1,6 @@
 // help_mac.mm - see help_host.h.
 #include "help_host.h"
+#include "fpcontrols.h"
 
 #import <AppKit/AppKit.h>
 
@@ -17,6 +18,7 @@ std::string keys_text() {
            "  Start (pause menu)    Return     Select      Backspace\n"
            "\n"
            "  Full screen           F or F11 (Escape leaves it)\n"
+           "  Camera view           V (overhead, action, chase, shoulder, first person)\n"
            "  This list             F1\n"
            "\n"
            "A game controller that macOS knows (PlayStation, Xbox and others, by cable or\n"
@@ -24,7 +26,8 @@ std::string keys_text() {
            "It is listened to while this window is the one in front.\n"
            "\n"
            "To leave: close the window, or Command-Q. The game keeps your character only\n"
-           "when it saves: at its own save points, and online by itself every few minutes.";
+           "when it saves: at its own save points, and online by itself every few minutes.\n"
+           "\n" + fpcontrols::help_text();
 }
 
 static NSPanel* g_panel = nil;

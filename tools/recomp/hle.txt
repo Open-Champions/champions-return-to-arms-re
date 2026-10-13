@@ -24,3 +24,9 @@
 18fe18   # particle_drawHaze
 1c1108   # inventory_drawTask: a 3-D figure inside a 4:3 menu
 1d1bc0   # stats_task
+# ---- view modes (app/fpview.cpp; docs/issues/native-first-person.md).  Without that file the weak pass-through runs: the game as it is ----
+19e798   # tasks_call (excludeMask, includeMask): (0, 1) is the draw pass of a displayed frame; the selected view is in place for its length only
+18a520   # camera_updateFocus: g_cameraFocus is read by the simulation; inside the draw pass it is made from the game's own camera
+17d830   # worldtex_stream: the texture cells kept loaded follow the view that is drawn
+1a46c0   # Player_draw: the local player's model is not shown in first person (it is still drawn: its packets are left out of the stream)
+205880   # Camera_followZoomInput: can be held off in a view that uses the camera stick's y for looking up and down (off by default)

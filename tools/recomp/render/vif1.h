@@ -18,6 +18,11 @@ class Vif1 {
     Gs* gs = nullptr;
     Vif1Stats stats;
     bool run_programs = true;
+    // The scene tap (scene_tap.h): told before a microprogram runs (entry, or -1 for a continued one), and given
+    // the notes from the game side that are its own (NOP codes with 0xA8 / 0xA9 in NUM)
+    void (*on_program)(void* user, int entry) = nullptr;
+    void (*on_note)(void* user, uint32_t num, uint32_t imm) = nullptr;
+    void* tap_user = nullptr;
     bool time_runs = false;             // add the processor time of every program run to stats.run_ms (kicks included)
     int debug_ring = 0;                 // > 0: keep the last codes and print them when vu.debug_hit is raised
     std::vector<std::string> ring;

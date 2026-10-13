@@ -25,6 +25,9 @@
 //   --art-pack DIR      replacement pictures named as the emulator build names textures
 //                       (tools/play-net/README.md, "Upscaled art");  --art-memory MB (3072)
 //   --frame-cap N       60 (default), 30, or 0 = --unpaced
+//   --view V            the camera: overhead (the game's own, the default), action, chase,
+//                       shoulder, first (fpview.h; docs/issues/native-first-person.md).  V switches
+//                       while the game runs; --view-set NAME=VALUE is a "view.<mode>.<name>" line
 //   --present metal|opengl   how a picture gets into the window (present_host.h): through a Metal
 //                       layer, drawn and handed over by a thread of its own that nothing AppKit
 //                       does to the window can hold up (the default), or by an OpenGL swap on the
@@ -50,6 +53,9 @@
 //                                                  what each part of the path from the game to the swap took
 //                         app window W H           give the window this size (the view follows with --aspect auto)
 //                         app fullscreen           what the F key does
+//                         app view NAME|next       the camera: overhead action chase shoulder first
+//                         app view set KEY VALUE   a view setting, e.g. app view set view.first.fov 75
+//                         app view info            print the view of the last frame
 //                         app art off|on           draw with the game's own textures / with the art pack and mip maps again
 //                         app latency BUTTONS [pictures [before]]   a press given to the controller read after
 //                                                  `before` (12) more pictures; app latency report, `pictures`
@@ -80,8 +86,11 @@
 #include "app_rt.h"
 #include "backend_gl.h"
 #include "control.h"
+#include "fpcontrols.h"
+#include "fpview.h"
 #include "gfx_rt.h"
 #include "help_host.h"
+#include "look_host.h"
 #include "pad_host.h"
 #include "pipeline.h"
 #include "present_host.h"
@@ -93,6 +102,8 @@
 #include <QGuiApplication>
 #include <QImage>
 #include <QKeyEvent>
+#include <QMouseEvent>
+#include <QWheelEvent>
 #include <QOffscreenSurface>
 #include <QOpenGLContext>
 #include <QOpenGLExtraFunctions>
@@ -367,6 +378,10 @@ static uint32_t key_bit(int key) {
     case Qt::Key_C: return rta::PAD_R3;
     case Qt::Key_Return: case Qt::Key_Enter: return rta::PAD_START;
     case Qt::Key_Backspace: return rta::PAD_SELECT;
+    // second names for three buttons, where a hand on W A S D and a mouse finds them (fpcontrols.h)
+    case Qt::Key_Space: return rta::PAD_SQUARE;
+    case Qt::Key_Shift: return rta::PAD_R1;
+    case Qt::Key_Tab: return rta::PAD_R3;
     default: return 0;
     }
 }
@@ -375,7 +390,8 @@ static int key_by_name(const std::string& name) {
         {"w", Qt::Key_W}, {"a", Qt::Key_A}, {"s", Qt::Key_S}, {"d", Qt::Key_D}, {"up", Qt::Key_Up}, {"down", Qt::Key_Down},
         {"left", Qt::Key_Left}, {"right", Qt::Key_Right}, {"i", Qt::Key_I}, {"j", Qt::Key_J}, {"k", Qt::Key_K}, {"l", Qt::Key_L},
         {"q", Qt::Key_Q}, {"e", Qt::Key_E}, {"1", Qt::Key_1}, {"3", Qt::Key_3}, {"x", Qt::Key_X}, {"c", Qt::Key_C},
-        {"return", Qt::Key_Return}, {"backspace", Qt::Key_Backspace}, {"escape", Qt::Key_Escape}, {"f", Qt::Key_F}};
+        {"return", Qt::Key_Return}, {"backspace", Qt::Key_Backspace}, {"escape", Qt::Key_Escape}, {"f", Qt::Key_F}, {"v", Qt::Key_V},
+        {"space", Qt::Key_Space}, {"shift", Qt::Key_Shift}, {"tab", Qt::Key_Tab}};
     for (auto& n : names) if (name == n.name) return n.key;
     return 0;
 }
@@ -437,6 +453,15 @@ struct Pads : rta::PadSource {
             else { state.lx = kb.lx; state.ly = kb.ly; }
         }
         if (rest(state.rx, state.ry) && have_pad) { state.rx = pad.rx; state.ry = pad.ry; }
+        // the views that look along the ground: mouse and right stick are the look (the game
+        // camera's yaw word), the character is turned to it; in the overhead views nothing
+        // changes (fpcontrols.h).  The view is the one of the last draw pass.
+        {
+            const fpview::View& v = fpview::view();
+            fpcontrols::set_view(fpview::mode(), v.active && !v.fallback, v.look_pitch);
+            fpcontrols::translate(frame, state);
+            if (float pitch = fpcontrols::take_pitch(); pitch != 0) fpview::add_pitch(pitch);
+        }
         last_buttons = state.buttons;
         last_sticks = state.lx | state.ly << 8 | state.rx << 16 | (uint32_t)state.ry << 24;
     }
@@ -453,6 +478,7 @@ static const QEvent::Type CallEvent = (QEvent::Type)(QEvent::User + 2);
 class GameWindow : public QWindow {
   public:
     bool test = false;
+    bool pointer_let_go = false;        // Escape gave the pointer back; a click in the window takes it again
     void toggle_fullscreen() { if (visibility() == QWindow::FullScreen) showNormal(); else showFullScreen(); }
     // What the thread that draws needs to know of the window, kept here by this (the main)
     // thread whenever it changes: size in points, device pixels per point, whether any of
@@ -475,6 +501,8 @@ class GameWindow : public QWindow {
         if (uint32_t bit = key_bit(e->key())) { g_keys |= bit; return; }
         if (test) return;
         if (e->key() == Qt::Key_F1 || e->key() == Qt::Key_Help) { hosthelp::toggle(); return; }
+        if (e->key() == Qt::Key_V) { fpview::cycle(e->modifiers() & Qt::ShiftModifier ? -1 : 1); log_line(std::string("view: ") + fpview::mode_name(fpview::mode())); return; }
+        if (e->key() == Qt::Key_Escape && hostlook::captured()) { pointer_let_go = true; hostlook::capture(false); return; }
         if (e->key() == Qt::Key_F11 || (e->key() == Qt::Key_F && !(e->modifiers() & ~Qt::KeyboardModifiers(Qt::ControlModifier | Qt::MetaModifier)))) toggle_fullscreen();
         else if (e->key() == Qt::Key_Escape && visibility() == QWindow::FullScreen) showNormal();
     }
@@ -483,7 +511,13 @@ class GameWindow : public QWindow {
         g_key_events++;
         if (uint32_t bit = key_bit(e->key())) g_keys &= ~bit;
     }
-    void focusOutEvent(QFocusEvent*) override { g_keys = 0; }       // nothing stays held when the window is left
+    void focusOutEvent(QFocusEvent*) override { g_keys = 0; fpcontrols::release_all(); hostlook::capture(false); }       // nothing stays held when the window is left
+    // the mouse (fpcontrols.h): its buttons are pad buttons in the look views.  Not in a test window: a test
+    // moves and presses through the control socket ("app fpc ..."), and a person's click on it must do nothing
+    static int mouse_index(Qt::MouseButton b) { return b == Qt::LeftButton ? 0 : b == Qt::RightButton ? 1 : b == Qt::MiddleButton ? 2 : b == Qt::BackButton ? 3 : 4; }
+    void mousePressEvent(QMouseEvent* e) override { if (test) return; pointer_let_go = false; fpcontrols::mouse_button(mouse_index(e->button()), true); }
+    void mouseReleaseEvent(QMouseEvent* e) override { if (test) return; fpcontrols::mouse_button(mouse_index(e->button()), false); }
+    void wheelEvent(QWheelEvent* e) override { if (!test) fpcontrols::mouse_wheel((float)e->angleDelta().y() / 120.0f); }
     void resizeEvent(QResizeEvent*) override { mirror(); }
     void exposeEvent(QExposeEvent*) override { mirror(); }
     bool event(QEvent* e) override {
@@ -1162,6 +1196,7 @@ static void final_report() {                            // on the game's thread,
     }
     s.report_pace(false, g_sink ? g_sink->decode_cpu_ms : 0.0);
     apprt::films_report();
+    printf("rta_app: %s\n", fpcontrols::figures().c_str());
     {
         const render::GsStats& g = g_renderer->gs.stats;
         printf("rta_app: memory %.1f MB; textures made %llu, held %llu (%.1f MB as RGBA), freed %llu; draws without their texture %llu; surface copies %llu, "
@@ -1320,6 +1355,23 @@ static void app_command(const std::string& text, uint64_t frame) {
         int ww = atoi(w[1].c_str()), wh = atoi(w[2].c_str());
         if (g_screen->window && ww >= 160 && wh >= 120)
             QCoreApplication::postEvent(g_screen, new CallQEvent([ww, wh] { g_screen->window->resize(ww, wh); }));
+    } else if (w[0] == "fpc" && w.size() >= 2) {
+        // app fpc mouse DX DY | button left|right|middle down|up | wheel N | set KEY VALUE | hud | log on|off | figures  (fpcontrols.h)
+        printf("[frame %llu] fpc: %s\n", (unsigned long long)frame, fpcontrols::command(text.substr(text.find(w[1])), frame).c_str());
+        fflush(stdout);
+    } else if (w[0] == "view" && w.size() >= 2) {
+        if (w[1] == "next") fpview::cycle(1);
+        else if (w[1] == "set" && w.size() >= 4) { if (!fpview::setting(w[2].c_str(), w[3].c_str())) log_line("app view set: not a view setting: " + w[2]); }
+        else if (w[1] == "info") {
+            const fpview::View& v = fpview::view();
+            printf("[frame %llu] view: selected %s, shown %s, blend %.2f%s%s; tick %u; eye %.1f %.1f %.1f forward %.3f %.3f %.3f fov %.1f near %.1f; "
+                   "game eye %.1f %.1f %.1f yaw %.1f zoom %d; player %.1f %.1f %.1f facing %.1f pitch %.1f\n",
+                   (unsigned long long)frame, fpview::mode_name(v.mode), fpview::mode_name(v.shown), v.blend, v.fallback ? "; the game's camera: " : "",
+                   v.fallback_why, v.tick, v.eye.x, v.eye.y, v.eye.z, v.forward.x, v.forward.y, v.forward.z, v.fov, v.near_plane, v.game_eye.x, v.game_eye.y,
+                   v.game_eye.z, v.game_yaw, v.game_zoom, v.player_pos.x, v.player_pos.y, v.player_pos.z, v.facing, v.look_pitch);
+            fflush(stdout);
+        } else if (fpview::mode_by_name(w[1].c_str()) >= 0) fpview::set_mode(fpview::mode_by_name(w[1].c_str()));
+        else log_line("app view: overhead, action, chase, shoulder, first, next, info, or set KEY VALUE");
     } else if (w[0] == "fullscreen") {
         // app fullscreen: what F does (a test window stays as it is: it must not cover the screen)
         // (RTA_TEST_FULLSCREEN_OK=1: a test that has to see full screen work asks for it, for seconds)
@@ -1447,6 +1499,8 @@ int main(int argc, char** argv) {
         else if (a == "--art-pack") overrides.push_back({"art_pack", next()});
         else if (a == "--art-memory") overrides.push_back({"art_memory", next()});
         else if (a == "--frame-cap") overrides.push_back({"frame_cap", next()});
+        else if (a == "--view") overrides.push_back({"view", next()});
+        else if (a == "--view-set") { std::string kv = next(); size_t eq = kv.find('='); if (eq != std::string::npos) overrides.push_back({kv.substr(0, eq), kv.substr(eq + 1)}); }
         else if (a == "--plain") plain = true;
         else if (a == "--settings") opt.settings_file = next();
         else if (a == "--no-settings") no_settings = true;
@@ -1472,12 +1526,13 @@ int main(int argc, char** argv) {
             printf("picture (each also a line of <data>/settings.txt, see tools/recomp/app/settings.h):\n"
                    "        [--aspect auto|4:3|16:9|16:10|21:9|W:H] [--resolution window|WxH|Nx] [--antialiasing off|2|4|8] [--anisotropy 1..16]\n"
                    "        [--mipmaps yes|no] [--art-pack DIR] [--art-memory MB] [--frame-cap 60|30|0] [--plain] [--settings FILE] [--no-settings]\n"
+                   "        [--view overhead|action|chase|shoulder|first] [--view-set view.<mode>.<name>=VALUE]   (V switches while the game runs)\n"
                    "        [--pacing ahead|queued] [--present metal|opengl]   (opengl: the way into the window used until 2026-10-13 - if the picture looks wrong)\n");
             printf("rta_app --disc IMAGE [--data DIR] [--window WxH] [--fullscreen] [--scale N | --size WxH] [--volume V | --mute | --no-sound]\n"
                    "        [--emulator-timing] [--script FILE] [--do COMMAND] [--test TEXT] [--offscreen] [--unpaced] [--png PREFIX --at n,..]\n"
                    "        [--stop-after N] [-- runtime arguments]\n"
                    "keys: W A S D left stick; arrows direction pad; I J K L triangle square cross circle; Q E L1 R1; 1 3 L2 R2; X C L3 R3;\n"
-                   "      Return Start; Backspace Select; F or F11 full screen; Escape leaves full screen; F1 shows this list beside the window\n"
+                   "      Return Start; Backspace Select; F or F11 full screen; Escape leaves full screen; V the next camera view; F1 shows this list beside the window\n"
                    "(the head of tools/recomp/app/app_main.cpp describes every option)\n");
             return 0;
         }
@@ -1496,6 +1551,9 @@ int main(int argc, char** argv) {
         opt.size_w = opt.set.size_w; opt.size_h = opt.set.size_h; opt.scale = opt.set.scale;
         opt.aspect = opt.set.aspect;
         opt.unpaced = opt.set.frame_cap <= 0;
+        for (auto& kv : opt.set.view)
+            if (!fpview::setting(kv.first.c_str(), kv.second.c_str()) && !fpcontrols::setting(kv.first.c_str(), kv.second.c_str())) log_line("settings: not a view setting: " + kv.first + " = " + kv.second);
+        opt.set.view.clear();
     };
     if (!settings_later) apply_settings(opt.settings_file);
 
@@ -1520,7 +1578,7 @@ int main(int argc, char** argv) {
         std::string file = opt.data + "/settings.txt";
         bool there = file_exists(file);
         apply_settings(there ? file : std::string());
-        if (!there && opt.test.empty() && !opt.offscreen) { app::Settings().save(file); first_start = true; }
+        if (!there && opt.test.empty() && !opt.offscreen) { app::Settings().save(file, (std::string(fpview::settings_text()) + "\n" + fpcontrols::settings_text()).c_str()); first_start = true; }
     }
     if (mode == "boot") {
         // Something is wrong with what was given as the disc: said on the terminal, and to a
@@ -1569,6 +1627,16 @@ int main(int argc, char** argv) {
     // RTA_STALL_LOG: the main thread's event loop is watched as well - a timer that should
     // come by every 8 ms
     g_main_stall.start();
+    // the pointer belongs to the look while a look view is played in the window that has the keyboard
+    static QTimer pointer_watch;
+    if (opt.test.empty() && !opt.offscreen) {
+        hostlook::start();
+        QObject::connect(&pointer_watch, &QTimer::timeout, [] {
+            GameWindow* w = g_screen ? g_screen->window : nullptr;
+            hostlook::capture(w && !w->test && w->isActive() && !w->pointer_let_go && fpcontrols::wants_pointer());
+        });
+        pointer_watch.start(50);
+    }
     static QTimer heartbeat;
     if (g_main_stall.on) {
         g_main_stall.after_ms += 8;
@@ -1601,6 +1669,15 @@ int main(int argc, char** argv) {
     renderer.gs.layout.enabled = opt.layout;
     renderer.gs.name_textures = !opt.set.art_pack.empty();
     gfxrt::install();
+    fpview::install();
+    // the picture of a look view: its centre on the walking direction, the kick of swings and hits (fpcontrols.h)
+    fpview::on_view([](fpview::View& v, Ctx*, void*) {
+        if (v.shown != v.mode) return;
+        float forward[3] = {v.forward.x, v.forward.y, v.forward.z}, up[3] = {v.up.x, v.up.y, v.up.z};
+        fpcontrols::apply_view(v.mode, forward, up);
+        v.forward = {forward[0], forward[1], forward[2]};
+        v.up = {up[0], up[1], up[2]};
+    });
     if (getenv("RTA_GS_LOG")) renderer.gs.log_display = true;
     if (const char* keep = getenv("RTA_TEX_KEEP")) renderer.gs.texture_keep_frames = (uint32_t)atoi(keep);    // frames an unused texture is kept; 0 = for ever
     g_sink = &sink;

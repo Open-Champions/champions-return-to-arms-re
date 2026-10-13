@@ -1209,34 +1209,21 @@ cap, the pacing in the Windows program, a person's first start, the smaller thin
 
 ### 12.0 STATE (rewritten at every step; read this first after a stop)
 
-**13:03.** `bin/rta_app` = **candidate n4** since 12:51 (thread fix, control socket, stall
-probe, runs without a window drawn by a thread of their own; translation of 22:45
-yesterday, set 27f61e1d). It passed `s12/verify.sh n4` (11 + 11 + 60 pictures the same as
-before, rig comparison the same file three ways) and a two-copy lobby game
-(`s12/online/pair-n4`: 4,634 ticks through the change into `drunare`, no shared column
-differs). `rta_app.prev` = c5 of 07:35 (also `rta_app_c5`); `rta_app_orig` / `.prev` likewise.
+**14:30.** `bin/rta_app` = **candidate n13** since 13:42 (everything of 12.1 to 12.8, the
+fix set of 12:19: it announces 073064bb, 99 words). `rta_app.prev` = n4 of 12:42 (also
+`rta_app_n4`), `rta_app_c5` the program of this morning; `rta_app_orig` / `.prev` likewise.
+The Windows folder was rebuilt at 13:35 from the same sources (12.5). Details: 12.9.
 
-In the sources since n4, not yet in `bin/rta_app`:
-
-- presenting through a Metal layer from a drawing thread of its own (`app/present_host.h`,
-  `present_mac.mm`; `--present metal|opengl`, `RTA_PRESENT`; default still `opengl`), the
-  system's word on when each picture was on the glass (12.3);
-- the Windows program's pacing (`app/win_main.cpp`, 12.5): compiled and linked
-  (`build_win.py --no-game`, 13:00), not run anywhere;
-- **the new fix set**: the coordinator said at 13:00 it has landed (29 sections, 99 words,
-  figure 073064bb). `app/build.py` without `--no-game` at 13:00 translated with it
-  ("patched: 99 words of 29 sections") and candidate **n7** (`bin/rta_app_n7`) announces
-  "patch set 073064bb (99 words)". The headless `bin/rta_native_fix` was rebuilt by that
-  build (13:00), with the runtime as it is now.
-
-Running now: the ten-minute fight two ways side by side in visible test windows (12.3;
-ends about 13:08). Next: `s12/verify.sh n7` + a lobby pair, then 12.6 (full screen, the cap,
-resize), 12.7 (first start), the Windows folder rebuilt on the new set.
+**Now: a new first job from the coordinator (14:25)** - merge the three patches for the
+camera views (`app/fpview.patch`, `app/fpcontrols.patch`, the core lines of
+`tools/godot/recomp.patch`), build, check, put in place, and say what line the owner's
+launcher needs: section 12.10, written as it goes. Not rebuilt before the pause: the
+headless `bin/rta_native_online` (still the program of 2026-10-12 with the old fix set;
+`net/build_online.py` makes it).
 
 Processes of this work running now: the lobby server instance `s12/lobby/champions-server`
 (pid in `s12/lobby/server.pid`; ports 42800-42817, 42900, 42910, UDP 12101, bound to
-192.168.1.123); two copies of `rta_app_n6` (pids in `s12/long.pids`) and two of
-`s12/cover/cover` (pids in `s12/cover-longa.pid`, `cover-longb.pid`).
+192.168.1.123). Nothing else.
 
 ### 12.1 Threads left behind (Ran)
 
@@ -1302,19 +1289,19 @@ the socket**: 12.7 (the walk of a person's first start sends `app online ...` an
 `app net ...` that way). `--opt online-commands=FILE` still exists; nothing needs it any
 more.
 
-### 12.3 The stalls (Ran; in progress)
+### 12.3 The stalls (Ran)
 
 **What holds the window's thread: AppKit's own work for the window, on the main thread.**
 New debugging aid, `RTA_STALL_LOG=1` (`app/app_main.cpp`, `StallWatch`): when a list that
 is ready to be drawn is not taken within 25 ms (`RTA_STALL_MS`), a thread of its own
-stops the window's thread for microseconds at a time, copies its call stack, and prints
+stops the thread that draws for microseconds at a time, copies its call stack, and prints
 the stacks with the loader's names once the list is taken; the main thread's event loop
 is watched the same way by a timer that should come by every 8 ms. The last lines of the
 run count both. No other program is involved (no `sample`, no permission asked).
 
-Three stalls caught in the first paced run with it (candidate n2, small test window,
-load average 570; `s12/pace/st1/out.txt`), each with the main thread inside the run
-loop's own callbacks, never in this program's code:
+Three stalls caught in the first paced run with it (candidate n2, main thread drawing,
+small test window, load average 570; `s12/pace/st1/out.txt`), each with the main thread
+inside the run loop's own callbacks, never in this program's code:
 
 | Waited | Where the main thread was |
 |---|---|
@@ -1328,19 +1315,77 @@ the window (layout, the title bar, the layer's display, the commit of the Core A
 transaction), and that cycle makes calls to the window server that are answered late when
 the window server is busy - a person moving windows about is exactly that. Such a cycle
 runs when something about the window changes: its first display, being covered and
-uncovered, another window ordered above it, a resize.
+uncovered, another window ordered above it, a resize, full screen.
 
-**A thread of its own for drawing: not possible with the window as an OpenGL view.**
-Tried (candidate n3): the context moved to a drawing thread (`Screen::painter_loop`,
-`draw_one`), the window's size and exposure mirrored for it by the main thread
-(`GameWindow::mirror`). Without a window it works and is now how every run without a
-window draws (11 pictures the same as before; 293 pictures a second unpaced, 285 before).
-With a window AppKit ended the program at the first resize: "-[NSOpenGLContext update]
-must be called from the main thread if the context has a view" (an exception breakpoint
-in `QCocoaGLContext::update`, called by Qt from `makeCurrent`; the crash report is
-`~/Library/Logs/DiagnosticReports/rta_app_n3-2026-10-13-123901.ips`); Qt says of itself
-that OpenGL from another thread is not supported on macOS. `RTA_PICTURE_THREAD=main`
-forces the main thread; with a window as an OpenGL view it is the only way.
+**A thread of its own for drawing is not possible with the window as an OpenGL view.**
+Tried (candidate n3): the context moved to a drawing thread. With a window AppKit ended
+the program at the first change of the view: "-[NSOpenGLContext update] must be called
+from the main thread if the context has a view" (an exception breakpoint in
+`QCocoaGLContext::update`, called by Qt from `makeCurrent`; crash report
+`~/Library/Logs/DiagnosticReports/rta_app_n3-2026-10-13-123901.ips`), and Qt says of
+itself that OpenGL from another thread is not supported on macOS.
+
+**What it is now: the window has no OpenGL in it** (`app/present_host.h`,
+`app/present_mac.mm`; `Screen::painter_loop`, `draw_one`; default on macOS,
+`--present opengl` or `RTA_PRESENT=opengl` is the way back):
+
+- the window is a Qt window with a **Metal layer** (`QSurface::MetalSurface`; Qt puts a
+  `CAMetalLayer` inside a container layer); everything AppKit does to it stays the main
+  thread's;
+- the OpenGL context has **no view** (it is made current on a surface without a window,
+  as a run without a window always did) and lives on a **drawing thread** of its own,
+  which gets the lists straight from the decoder's queue - no event of the main thread's
+  loop is in the way of a picture any more. The window's size, scale and exposure are
+  mirrored for it by the main thread (`GameWindow::mirror`);
+- the picture goes across in an **IOSurface**: OpenGL draws the window's picture into a
+  rectangle texture that is the surface (`GlBackend::present_top_down`: first row on top),
+  a **presenter thread** copies the surface into the layer's next drawable and presents
+  it. Two surfaces go round, so the drawing thread never waits for the layer either
+  (`nextDrawable` stood for 1,104 ms once, in the change to full screen: 10 pictures were
+  not shown and nothing waited); a display that is asleep makes that call stand for a
+  second at a time - which is why the presenter is a thread of its own (**Read**: the
+  display was not put to sleep, see 12.6);
+- runs without a window draw on the same drawing thread (the 11 + 60 pictures and the rig
+  comparison all go that way now).
+
+**What the system says was on the glass.** A Metal drawable tells afterwards when it was
+shown (`presentedTime`); `present_mac.mm` hands that on and the program prints it
+("on the glass ..." beside every `pacing:` line). For the first time the figures are the
+display's and not this program's clock:
+
+- in a window a picture is on the glass **16.6 ms (two refreshes of this 120 Hz display)
+  after the moment the program meant** - the compositor's own delay, the same in every
+  run; in **full screen 0.0 ms** (the picture goes to the display directly). The press-to-
+  picture figures of 11.3 and 11.7 end at the swap: in a window add those two refreshes.
+- a test window that lies behind others is **never shown at all** (0 of 1,440 in the
+  first try): every pacing figure taken from hidden test windows, here and in section 11,
+  is this program's clock only. `RTA_TEST_WINDOW_FRONT=1` (with `RTA_TEST_WINDOW_AT=X,Y`,
+  negative: from the right or lower edge) keeps a test window in front, still without
+  the keyboard; the runs below used it (a 320 x 240 window in the lower right corner).
+
+**Ten minutes of a fight, both ways side by side, another program's window being moved
+over each** (`s12/pace.sh long-metal` / `long-gl`, candidate n6, 12:55 to 13:07;
+`--fight 36000`: fire3, 36,000 frames; 640 x 448 drawn, 4 samples, anisotropy 16; two
+test windows in front, side by side, and over each a window of a helper program
+(`s12/cover/cover`: it wanders over the game's window - 3 s right over it, sliding off,
+away, back half-way and dragged about, changing its size - and repaints 125 times a
+second); load average 92 to 370):
+
+| | Metal layer, drawing thread of its own | OpenGL view, main thread draws (as until today) |
+|---|---|---|
+| intervals between pictures, the program's clock (refreshes of the 120 Hz display) | 2: **35,957 of 35,987**; 1: 17; 3: 1; 4 and more: 11; longest 90.1 ms | 2: 34,506 of 35,939; 1: 752; 3: 600; 4 and more: 78; longest 142.8 ms |
+| pictures on screen more than half a refresh late | **27 of 36,000** | 769 of 36,000 (636 of them the swap) |
+| drawn and not shown (overtaken) | 13 | 61 |
+| the swap | 0.11 ms (a hand-over) | 3.10 ms on average: in a window that is seen, the OpenGL swap does wait |
+| a ready list waited more than 25 ms for the thread that draws | **0 times** | 2 times, longest 120.7 ms |
+| the main thread away from its event loop more than 33 ms | 3 times, longest 183.8 ms - and no picture waited for it | (it draws: not comparable) |
+| on the glass, as the system told it | 33,443 shown, 238 never (the helper's window right over it); intervals 2: 31,490 (94.2 %); 1: 939; 3: 788; 4: 80; longer: 134 (the times it was covered) | not told for an OpenGL view |
+
+So the program's side is immune: the main thread was held three times, up to 184 ms, and
+no picture waited. What is left is on the system's side: with another window being
+dragged over it, about one picture in twenty reaches the glass a refresh early or late
+(the pairs of 1 and 3 above); standing still with nothing moving over it, 597 of 599
+(12.6). Files: `s12/pace/long-metal/out.txt`, `long-gl/out.txt`.
 
 ### 12.4 Build scripts, and a link that had broken (Ran)
 
@@ -1361,3 +1406,252 @@ forces the main thread; with a window as an OpenGL view it is the only way.
   "runtime 3.o" ...), `obj-rta_native_fix` three. Source listings of `rt/` and `net/`
   in those scripts leave out names with a space as well. `app/build.py --no-game` says
   so when a game object is missing instead of failing in the linker.
+- New files of the window program are in both lists (`app/build.py`, `build_win.py --mac`):
+  `present_mac.mm`, `help_mac.mm`; frameworks Metal, QuartzCore, IOSurface, OpenGL.
+
+### 12.5 The Windows program's pacing (Read and compiled; not run anywhere)
+
+`app/win_main.cpp` has the macOS program's pacing as of section 11, line for line where
+Win32 allows it (`Screen::draw` is `draw_one` with other names):
+
+- the queue of three with each picture's timing, `--pacing ahead|queued` (the old way
+  kept for comparing), the pacer in its clock-ahead mode: the game is let go `lead` before
+  each picture's moment; the swap is asked for after `glFinish`, half a refresh before the
+  moment on a display faster than 60 Hz;
+- **a late picture is drawn and not shown** (the overtaken rule), also while Windows runs
+  its own loop for a window that is being dragged (the timer of `WM_ENTERSIZEMOVE` now
+  draws every list that waits);
+- **in place of the display link**: (a) where the swap waits for the display - the
+  ordinary case under Windows with `wglSwapIntervalEXT(1)` - the times the swaps return at
+  move the grid, exactly as on a Mac whose swaps wait (found out the same way: six more
+  swaps of 2.5 ms or longer than short ones); (b) where it does not, the compositor is
+  asked where the refreshes lie: `DwmGetCompositionTimingInfo` (`qpcVBlank`,
+  `qpcRefreshPeriod`, put on this program's clock against `QueryPerformanceCounter`),
+  believed only when its period is the window's refresh and the answer is less than a
+  tenth of a second old. `DwmFlush` is not used (it would hold the window's thread for a
+  refresh) and the swap chain's present statistics do not exist for a WGL context;
+- the game's thread waits with a high-resolution waitable timer (`Pacer::sleep_until`,
+  new in `pipeline.h`: the standard library's sleep is a millisecond coarse there; the
+  timer is one per thread now - the old `sleep_ms` shared one between threads);
+- the process asks for the above-normal priority class and switches off Windows 11's
+  slowing of covered windows (`SetProcessInformation`, power throttling: execution speed
+  and timer resolution), the counterparts of the Mac's user-interactive class and
+  latency-critical activity; not for test runs;
+- the log's last lines have `pacing:` and `path:` as on the Mac (lead, late, overtaken,
+  whether the swaps wait, how often the compositor was asked and answered).
+
+What a tester must look at is check 3 of the folder's `README.txt` ("How even is it"):
+even motion while walking, the window dragged and resized, another program over it and
+back, the two kinds of line in `rta-data\rta_app-log.txt`, and `--pacing queued` to
+compare. Not carried over: the drawing thread of 12.3 (WGL does not need the window's
+thread, but nobody could see it run) and the art readers' class.
+
+**The folder `local/recomp-out/win/rta-windows`, rebuilt 13:35** (`s12/win/chain.sh`:
+`build_win.py --compiler gcc`, `build_win.py`, `--standin`, `--reference`,
+`win/standin_compare.py`, the two `fpcheck` stand-ins; all exit 0): `rta_app.exe`
+(27.9 MB, clang), `rta_app_gcc.exe` (25.6 MB), `rta_native.exe`, `fpcheck.exe`,
+`pnghash.exe`, `fpcheck_gcc.exe`, `play.bat`, `online.bat`, `server.txt` (kept),
+`boot-check.rig`, `boot-check-mac.txt`, `pngtest/`, `README.txt`. In it since the folder
+of 07:47: the thread fix, the pacing above, the network files as they are now (the
+disconnect hold and the arithmetic switch were in the 07:47 folder already; the link fix
+of 12.4 is what lets it build again), the new fix set, the joined draws of 12.8.
+
+- **Ran on the Mac** (stand-ins): the x86-64 and arm64 tick logs of the fight session
+  identical (7,798 rows), memory at ticks 300 and 3,900 identical, both comparisons with
+  the rig the same text as this morning's but for run times; `fpcheck` 2e77df4dc13ec9c5
+  on both.
+- **README figures** (`--reference`, 13:36): `frames=2309 ... fields=2413
+  units=113069192` (it was `units=113069982` with the old fix set: three more sections),
+  `VU0: 466083 microprogram calls, 26111361 instructions`, **patch set 073064bb (99
+  words)**, `pnghash` figure b4ed3d8917871960.
+
+### 12.6 Full screen, the 30-a-second cap, resize, a covered window (Ran)
+
+`s12/win4/` (`metal.rig`, `opengl.rig`, `cap30.rig`; candidate n10; test windows in
+front in the lower right corner; load average 48 to 65). **Full screen was switched on
+twice for five seconds each on this computer's display** (13:10 and 13:12, a test window
+allowed to by `RTA_TEST_FULLSCREEN_OK=1`; the game's Space took the screen for that time
+and went back).
+
+| | Through the Metal layer (the default) | `--present opengl` |
+|---|---|---|
+| standing in the first level, 600 frames | program's clock 599 of 599 at 2 refreshes; on the glass 597 of 599 | 593 of 598; longest 44.4 ms |
+| **24 resizes while walking** (`app window W H` every 25 frames, 320 x 240 to 854 x 480 and back) | no fault; 642 of 659 at 2 refreshes, longest 38.8 ms; on the glass 578 of 638, 21 pictures never shown (handed over while the layer changed size) | no fault; 640 of 658, longest 46.5 ms |
+| **full screen, 5 s** ("window: full screen, 1512 x 949 points", drawn at 3024 x 1898, the view 16:10 wide, the HUD at its edge: `win4/metal-full-presented.png` is what the layer was handed) | works; 312 of 321 at 2 refreshes while it lasted, three long ones in the change itself; on the glass 0.0 ms after the moment meant (no compositor in between) | works; 239 of 279, ten long ones in the change; the swap 4.9 ms |
+| back in the window | 297 of 299; on the glass 289 of 294 | 290 of 294 |
+| a ready list waited more than 25 ms for the thread that draws | never (one test artefact: the two pictures the script wrote in full screen took the drawing thread 1.7 s to compress) | 9 times, longest 251.9 ms, at the resizes and the changes to and from full screen |
+| **the cap at 30** (`--frame-cap 30`, Metal) | on the glass one picture every 4 refreshes: 295 of 299 standing, 317 of 329 through the 24 resizes; the game itself goes on at 60 frames a second (599 of 599) | not run |
+
+- **A window covered and uncovered**: the ten minutes of 12.3 did it fifty times (the
+  helper's window right over the game's for 3 s of every 12).
+- **Another Space and back: not run as such** - it would move the owner's desktop. The
+  change to full screen and back is a change of Space for the window (it gets its own),
+  and went through.
+- **Sleep and wake of the display: not run** - putting this computer's display to sleep
+  would blank the owner's screen and may lock the session. Read: through Metal the
+  presenter thread takes the wait (12.3); through OpenGL a swap asked of a sleeping
+  display returns at once (11.2, Ran then). Whether the display link goes on ticking
+  while the display sleeps decides only whether the grid is the display's or the clock's.
+  **The owner's check**: let the display sleep with the game running, wake it, and read
+  the last lines the program prints ("the layer's longest wait for a drawable", "restarts
+  after a stall").
+
+### 12.7 A person's first start (Ran, with what could not be)
+
+Walked with `s12/first/walk.py`, every step over the control socket (12.2), candidate n11.
+
+**A. Started as the owner's launcher starts it** (`rta_app --disc "<the launcher's
+folder>/Champions - Return to Arms (v2.00).iso"` - the link to the image in
+`~/Library/Application Support/Play-RTA/`; for the test also `--data
+s12/first/person/data`, an empty directory, `--mute` and `--control`): a real window, in
+front, for 25 seconds at 13:27. Seen, in the program's own lines:
+
+- "disc: Champions: Return to Arms, SLUS-20973 version 2.00 (figure 4028A55F): ..." - the
+  image is now looked at before anything else (below);
+- the picture through the Metal layer, drawn at 1920 x 1440 (the 960 x 720 window);
+- **the keys**: printed on the terminal the launcher opens, and - this being the first
+  start of that data directory - in a panel beside the window ("help: panel made=1
+  up=1 size=623x337 lines=19"), which takes no keyboard (the keys go on reaching the game);
+- "first start with this data directory: settings are in .../settings.txt (a text file
+  you can edit), memory cards in .../card"; `settings.txt` written (1,029 bytes);
+- the menu bar has "Online" (below) and "Help" > "Keys and Controller";
+- after 20 s, nobody pressing anything, the window shows the game's own first question,
+  "Select MEMORY CARD slot" with its cross and circle signs
+  (`s12/first/person/at-20s.png`) - which is where the panel's "Cross K, Circle L" is
+  needed;
+- closed as the close button and Command-Q close it (`app close`): exit code 0, the
+  report printed.
+
+**What was missing for a person, and is there now:**
+
+| Missing | Now |
+|---|---|
+| nothing on screen said which key is which button (only the launcher's comment and `--help`) | `app/help_host.h`, `help_mac.mm`: the list in a panel at the first start, under F1 and in the Help menu, and on the terminal at every start somebody plays |
+| a wrong or missing disc image gave one line about `--disc`, or - with the executable taken from the workspace - a game that started on another disc's files | `apprt::disc_check`: no image given / no file there (also: a link whose target is gone) / not a disc image / another game (no `SLUS_209.73`) are refused with the reason and the path, on the terminal and in a box; another version of the game (the executable's figure is not 4028A55F) is said in a box and goes on. Ran for all but the last two (no other disc image is here) |
+| **there was no way to go online without command-line options**: the one-step online and its name question were reachable only through `--opt online=...` (`play-native.sh`); a person starting the launcher had the game's own log-in screen and nothing else | an **Online menu** (`net/online_mac.mm`): the server it goes to, "Go Online (the list of games)", "Host a Game (a code for your friends is made up)", "Join a Game with a Code..." (asked for in a sheet, checked: 4 to 8 letters and digits), "Stop Going Online". Each hands the script's `online start ...` line to the game's thread (`rtanet::request`). It works from the first second: the driver presses its own way through the memory-card question and the logos |
+
+**B. Going online, two copies** (test windows that show what a person's window shows:
+`--opt online-test-window=1`; nothing given about a name or a mode; this work's own lobby
+instance on this Mac, `net-port-shift=2000`, `net-local-only=1`; throw-away names):
+
+| Step | Seen |
+|---|---|
+| "Go Online" chosen 7 s after the start | title: "... - server 192.168.1.123 - Going online: starting the game..."; the sheet "Your player name" with "Play online / Not now" |
+| "ab", Play online | the sheet again: "A player name has at least 3 characters." |
+| a made-up name | title "Going online: making your player..."; the game list (lobby state 5); the login file mode 0600; the name 0 times in the program's output |
+| a: "Host a Game" | "Your game's code: BFHA - friends choose Join and give this code."; the game's own character screens (a new player has no character: "choose your character yourself ... it goes on by itself when you have"; made with the pad); title: "Online: your game is open - tell your friends the code BFHA - and you are in its room; press cross (Start Game) when they are there. The controls are yours." |
+| b: "Join a Game with a Code...", "x!" | the sheet again: "A code has 4 to 8 letters and digits." |
+| b: the code | character screens, then "Online: you are in the room of game BFHA; the host starts it. The controls are yours." |
+| a presses cross | both in the first level, 2 players, lockstep ticks 735 / 736, checksum flags 0 / 0, each sees the other's patch set 073064bb as its own (`app net peers` over the socket) |
+| b leaves by the pause menu | both back at the game list |
+| both windows closed | exit code 0 both, no warning, no "STOPPED" |
+| a copy whose server does not answer (`s12/first/fail1.py`) | after 20 s the title: "Going online stopped: the lobby server 192.168.1.123 did not answer for 20 seconds (the game goes on trying: "Connecting"). The controls are yours." |
+
+**Could not be tested from here:** a real controller (none can be pressed; the panel's
+sentence about controllers is `pad_mac.mm`'s behaviour as section 2 describes it, with a
+made-up controller only); a person typing into the name and code sheets and clicking the
+menus (worked through the buttons' and items' own actions, not through a pointer); the
+box for a wrong disc as a box (its text Ran on the terminal); sound at a volume (the walk
+was muted); the look of the panel and of the picture through the Metal layer **on the
+glass** - the system says pictures were shown and what was handed over is right
+(`s12/metal/presented.png`), but nobody has looked at them: **the owner's first look
+should compare colours and sharpness with `--present opengl`**.
+
+### 12.8 Smaller things (Ran)
+
+- **The art pack's readers under load.** They asked for the utility class, and on a busy
+  computer a level stood in the game's own art for many seconds. They now ask for the
+  class below the picture's threads (user-initiated; `render/texpack.cpp`,
+  `RTA_ART_QOS=utility` gives the old one back). Side by side, the first level with the
+  pack at load average 183 (`s12/first/arttest.py`, the control socket's new
+  `art_named / art_found / art_read / art_held / art_waiting`): about 135 pictures are
+  asked for when the level appears; new class: none waiting 1.2 s later; old class: 92
+  waiting after 1 s, 50 after 3 s, 18 after 5 s, 7 still waiting after 12 s.
+- **The draw-call cost of the drawing thread.** `backend_gl.cpp` now joins a draw to the
+  one before it when it draws the same kind of primitive from the vertices that follow
+  and changes no state (one call, the same primitives in the same order; the pictures are
+  the same files). It joins little: 236 draw commands a picture become 230 calls in the
+  session to the fight - the GS model already merges what can be merged, and nearly every
+  remaining draw differs from the one before in its texture or a uniform. The cost is the
+  state change, not the call; fewer of those needs textures in arrays or an atlas, which
+  was not started.
+- **Runs without a window** draw on a thread of their own (12.3): 293 pictures a second
+  unpaced in the session to the fight where it was 285.
+
+### 12.9 What `bin/rta_app` is now, what is left, how to repeat
+
+**`bin/rta_app` = candidate n13** (built 13:33, in place 13:42): 12.1 to 12.8, translated
+with the fix set as it landed at 12:19 ("patched: 99 words of 29 sections"; it announces
+"patch set 073064bb (99 words)"). Checked before it was moved: `s12/verify.sh n13`
+(`s12/verify-n13.txt`: 11 tick-keyed pictures the same with the fast renderer, the
+reference switches and the program before, default picture and `--plain`; 60 tour
+pictures the same three ways, 20 levels, no time-out; the rig comparison the same file as
+`merge/rig-final-compare.txt` three ways, byte for byte - all of it drawn by the new
+drawing thread, with the joined draws); a two-copy lobby game (`s12/online/pair-n13`: two
+window copies through the Metal layer, 4,635 ticks through the change into `drunare`, no
+shared column differs, each sees the other's set 073064bb as its own); four more
+leave-and-return games in the same two processes (`leave-n13`: 1,412 / 1,406 / 1,411 /
+1,410 ticks in step; threads 19 17 16 16 16 17 16 18 16 17 17 17 16 17). The candidates
+before it: n4 (12:42, in place 12:51 to 13:42; passed the same checks), n10 (the checks
+again with the Metal layer as default; the new fix set changes none of the 71 pictures).
+`rta_app.prev` = n4, `rta_app_c5` = this morning's; `rta_app_orig` (n13) / `.prev` (n4).
+The headless by-products: `bin/rta_native_fix` rebuilt 13:00 (new set, thread fix),
+`bin/rta_native` 13:42 (thread fix; built by `tools/recomp/build.py run` out of the object
+directory with 97 strays in it); `bin/rta_native_online` NOT rebuilt (2026-10-12, old set).
+
+**Shared files changed** (outside `rt/`, `render/`, `app/`, `sound/`, `net/`):
+`tools/recomp/build.py` (the translation's files from `genfiles.py`), new
+`tools/recomp/genfiles.py`, and the notes: this section, `native-online.md`,
+`native-windows.md`, `native-graphics.md`. Inside the five directories, by file:
+`rt/runtime.cpp`, `rt/rt.h` (12.1); `render/backend_gl.cpp`, `backend_gl.h`
+(`present_top_down`, joined draws), `render/texpack.cpp`, `render/build.py`;
+`app/app_main.cpp`, `app_rt.cpp`, `app_rt.h`, `pipeline.h` (`Pacer::sleep_until`),
+`win_main.cpp`, `build.py`, `build_win.py`, `win/README.txt`, new `present_host.h`,
+`present_mac.mm`, `help_host.h`, `help_mac.mm`; `net/online.cpp`, `online_mac.mm`,
+`netdrv.h` (`rtanet::request`), `net/build_net.py`. Nothing in `sound/`.
+**For the other work**: `rt/iface.h`, `render/backend.h`, `gs.h`, `vu1*.h` are unchanged;
+`app/pipeline.h` gained one member with a default (`Pacer::sleep_until`); `apprt` gained
+`command`, `thread_figures`, `disc_check`; the Godot spike's patch still applies to
+`sound/audio_out.cpp` as it is (not built by this work: it builds from its own snapshot).
+
+**Left, in the order I would take it:**
+
+1. **The owner's eye**: the picture through the Metal layer beside `--present opengl`
+   (colours, sharpness, full screen); the keys panel; the Online menu by hand; a real
+   controller; the display sent to sleep and woken with the game running (12.6).
+2. On the glass about one picture in twenty comes a refresh early or late while another
+   window is dragged over the game's (12.3). The program hands each picture over 0.9
+   refreshes before a refresh and the compositor shows it two refreshes later; what the
+   compositor does in between is not this program's. `presentDrawable:atTime:` and
+   handing over later were not tried.
+3. In a window every picture is two refreshes (16.6 ms at 120 Hz) later on the glass than
+   the swap; full screen has none of it. The figures of 11.3 and 11.7 end at the swap.
+4. The Windows program: everything (12.5).
+5. The drawing thread's cost per state change (12.8).
+6. From 11.9, untouched: hit and spell effects, floor decals and the shop's lists beside
+   the emulator; the emulator's own `latency.py` for a like-for-like count; idle display
+   sleep while a controller is used.
+
+**How to repeat** (helpers under `local/recomp-out/app-test/s12/`; `RTA_DISC` is set
+inside them):
+
+```
+python3 tools/recomp/app/build.py --as rta_app_next && python3 tools/recomp/app/build.py --original --no-game --as rta_app_orig_next
+B=$PWD/local/recomp-out/bin; S=local/recomp-out/app-test/s12
+$S/verify.sh TAG $B/rta_app_next $B/rta_app_orig_next        # 11 + 60 pictures three ways, the rig comparison three ways -> $S/verify-TAG.txt
+(cd $S/lobby && ./champions-server > server.out 2>&1 &)      # this work's lobby instance: ports + 2000, bound to this Mac's address
+RTA_NATIVE_APP=$B/rta_app_next python3 -B tools/recomp/net/lobbyparty.py $S/online/pair-TAG --players 2 --kinds window,window \
+    --port-shift 2000 --play 1800 --level drunare --play2 1800                                    # a two-copy lobby game
+RTA_THREAD_LOG=1 RTA_NATIVE_APP=$B/rta_app_next python3 -B tools/recomp/net/lobbyparty.py $S/online/leave-TAG --players 2 \
+    --kinds window,window --scenario leave --rounds 10 --port-shift 2000 --play 900 --limit 2700  # threads over ten games: run1/resources.txt
+PACE_SCRIPT="--fight 36000 --stand 300" PACE_ENV="env RTA_STALL_LOG=1 RTA_TEST_WINDOW_FRONT=1 RTA_TEST_WINDOW_AT=-10,-10" \
+    $S/pace.sh NAME $B/rta_app_next 640x448                  # ten minutes in a window that is seen; add --present opengl to compare
+COVER_FRONT=1 $S/cover/cover X Y 320 272 700                 # the other program's window over it ($S/cover/winlist PID says where the window is)
+RTA_TEST_WINDOW_FRONT=1 RTA_TEST_WINDOW_AT=-10,-10 RTA_TEST_FULLSCREEN_OK=1 $B/rta_app_next --test "window test" --window 320x240 \
+    --data $S/win4/data --script $S/win4/metal.rig           # resizes, FIVE SECONDS OF FULL SCREEN, back; cap30.rig with --frame-cap 30
+python3 -B $S/first/walk.py online $B/rta_app_next           # the Online menu, the name question, a game, leaving, closing (two test windows)
+python3 -B $S/first/walk.py person $B/rta_app_next           # as the launcher starts it: A REAL WINDOW IN FRONT for 25 s, muted
+python3 -B $S/first/arttest.py                               # the art pack's readers, two classes side by side (the program is named inside)
+sh $S/win/chain.sh                                           # the Windows folder and its Mac checks
+mv $B/rta_app_next $B/rta_app                                # only when verify and the lobby pair passed
+```
