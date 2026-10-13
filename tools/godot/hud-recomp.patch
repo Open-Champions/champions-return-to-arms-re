@@ -1,0 +1,116 @@
+hud-recomp.patch - what the new HUD (tools/godot/project/hud, docs/issues/native-hud.md) needs changed in files
+that are other agents'.  The text before the first "---" line is notes; `patch -p1 --dry-run < tools/godot/hud-recomp.patch`
+from the workspace root applies the two hunks below (made against tools/recomp and tools/godot as they stood on
+2026-10-13 15:25 (drivers.cpp) and 15:50 (rtag.cpp); built and run in local/godot-hud/root on the 15:25 state).
+
+1. MUSIC VOLUME (the two hunks below; Ran).
+   The sound core mixes music apart from the rest: the stream driver's stream 2 is the music (speech is streams 0 and
+   1, effects are voices of their own).  tools/recomp/sound/drivers.cpp gets a host gain for stream 2 only, applied
+   where the driver's timer writes a stream's voice volume; tools/godot/lib/rtag.cpp hands it out as
+   rtag_set_option("music_volume", "0..1").  The music director (project/hud/music/music.gd) asks for it through
+   RtaMachine.set_option and, when the library answers "no such option", ducks the whole game mix by 14 dB instead.
+   Ran with only stream 2 rendered (--opt sound-solo=stream2), first level, level of the game's sound on a bus of its
+   own: 1.0 -> mean -24.5 dB, 0.0 -> silence after the driver's own fade, 0.25 -> mean -32.9 dB.  With the whole mix
+   (the narrator speaking over the music) the same three settings gave -21, -23, -24 dB: speech and effects stay.
+
+2. THE GAME'S OWN HUD, SECOND GROUP (asked for; NOT in this patch: it changes the translation).
+   rtag_set_option("game_hud", "off") hides the five wrapped HUD draws.  Three things of the game's HUD are drawn by
+   two functions that are not wrapped and still show: the boss meter and the one-line message (both in
+   hud_drawBossMeter 0x1d93b0), and the interaction prompt box (hud_drawPromptBox 0x1d99f0, also used by the spell
+   selector).  Wanted: both addresses in tools/recomp/hle.txt, wrapped in app/gfx_rt.cpp under a mark of their own that
+   keeps the default (centred) layout but can be left out, and a second option the HUD already asks for:
+       rtag_set_option("game_hud_text", "off")
+   While that option is refused the HUD does not draw its own message and prompt over the game's (mode "both" does,
+   for comparing), keeps its own boss bar at the top, and moves its quick slots above the game's meter while a boss
+   is up.  In a view that leaves the player's model out (first person) the game's prompt is not drawn at all
+   (Player_draw draws it): there the HUD always draws its own.
+
+3. THE VIEW OF A FRAME IN THE OVERHEAD VIEW (asked for; a few lines in tools/godot/lib/rtag.cpp, view_drawn).
+   rtag_frame.view has valid = 1 but eye / forward / right / up all zero while the overhead view is selected (no view
+   code runs then).  The HUD falls back to the camera read from memory for that case (gamestate.cpp).  Better: fill
+   the game's own camera of that draw pass (fpview::View.game_eye / game_forward / game_up / game_right, game_fov), so
+   that every frame carries the camera it was drawn with.
+
+4. WHAT THE CONTROLS SIDE KNOWS (asked for; tools/godot/lib/rtag.h + extension/src/rta_machine.cpp).
+   fpcontrols::hud() (tools/recomp/app/fpcontrols.h) lives on the game's thread inside the library.  The HUD looks for
+       RtaMachine.get_controls_hud() -> Dictionary
+   with the fields of fpcontrols::Hud under their own names: reticle, ranged, look, behind, hits_taken,
+   last_hit_bearing, melee / shot / locked as {valid, object, x, y, z, distance, bearing, hp, hp_max}, threats as an
+   Array of {object, x, y, z, distance, bearing, targets_me, attacking, in_view}.  Used when there (world.gd _aim,
+   threat.gd); without it the HUD derives the same from the creatures' own targets and places.
+
+5. ALREADY MERGED by the Godot agent (nothing to do): GDREGISTER_CLASS(RtaGameState) in extension/src/register.cpp
+   behind RTA_GODOT_HAVE_GAMESTATE, and the CMake lines that name tools/recomp/app for gamestate.h.
+
+6. THE ONE LINE IN THE HOST (tools/godot/project/main.gd, in _ready after `add_child(view)`):
+       add_child(load("res://hud/hud.tscn").instantiate())        # the new HUD (tools/godot/project/hud)
+
+--- a/tools/recomp/sound/drivers.cpp
++++ b/tools/recomp/sound/drivers.cpp
+@@ -5,6 +5,7 @@
+ //   stream_call()  the game's stream driver: commands 0x10 .. 0xc0
+ //   alarm()        the stream driver's 6 ms timer
+ //   advance_to()   renders, running the timer at its sample positions
++#include <atomic>
+ #include "rta_sound.h"
+ 
+ #include <chrono>
+@@ -234,10 +235,21 @@
+     case 0xC0: set_alarm(); break;                 // timer on: first after 10 ms
+     default: stats.unknown++;
+     }
++}
++
++// The host's volume for the MUSIC alone: stream 2 of the stream driver carries the music (speech is on streams 0 and
++// 1, effects are voices of their own), so a host can turn the game's music down - under music of its own, say - and
++// leave speech and effects as they are.  0..1; any thread.
++static std::atomic<int> g_music_gain{0x100}, g_music_gain_changed{0};
++void set_music_gain(float gain) {
++    int g = (int)(gain * 256.0f + 0.5f);
++    g = g < 0 ? 0 : g > 0x100 ? 0x100 : g;
++    if (g_music_gain.exchange(g) != g) g_music_gain_changed.store(1);
+ }
+ 
+ void Engine::alarm() {
+     stats.alarms++;
++    if (g_music_gain_changed.exchange(0)) force_volume_ = 1;
+     // volumes move towards their targets: down 0x20 a tick, up 0x40 (stream 0) or 0xc0
+     for (int s = 0; s < 3; s++) {
+         Stream& st = stream_[s];
+@@ -250,6 +262,7 @@
+             if (st.target < st.volume) st.volume = st.target;
+         }
+         unsigned v = (unsigned)((st.volume * st.scale) >> 8) & 0xFFFF;
++        if (s == 2) v = (v * (unsigned)g_music_gain.load()) >> 8;
+         unsigned e = voice_entry(s, 0), e2 = voice_entry(s, 1);
+         if (!(st.flags & 2)) {
+             spu.set_param(e, v); spu.set_param(e | 0x100, v);
+@@ -405,3 +418,6 @@
+ 
+ }  // namespace snd
+ }  // namespace rta
++
++// for a host outside the runtime (tools/godot/lib/rtag.cpp: option "music_volume")
++extern "C" void rta_sound_set_music_gain(float gain) { rta::snd::set_music_gain(gain); }
+--- a/tools/godot/lib/rtag.cpp
++++ b/tools/godot/lib/rtag.cpp
+@@ -615,6 +615,8 @@
+     g_m->run_hz = hz > 0 ? hz : 0;
+     g_m->sink.gate.set_open(hz < 0);
+ }
++
++extern "C" void rta_sound_set_music_gain(float gain);      // tools/recomp/sound/drivers.cpp
+ 
+ int rtag_set_option(const char* key, const char* value) {
+     if (!g_m || !key || !value) return 0;
+@@ -633,6 +635,10 @@
+         g_m->aspect = shape;
+         gfxrt::set_aspect(shape);                       // taken by the game at its next frame
+         if (g_m->scene3d) scene::set_aspect(shape);
++        return 1;
++    }
++    if (k == "music_volume") {                          // 0..1: the game's music alone (a host playing music of its own over a boss fight)
++        rta_sound_set_music_gain((float)atof(value));
+         return 1;
+     }
+     if (k == "game_hud") {

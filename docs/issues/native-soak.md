@@ -1002,6 +1002,115 @@ on through the drop.
 | a kick while in the mode (`kick.txt`, three machines) | players 1 and 2 are in the mode and running; the host calls `net_kickPeer(2)` 0x131cb8 inside a tick, as the pause menu's kick entry does (the game prints its kick line) | player 2 is dropped in tick 1,610 on both machines that stay; they play on to tick 3,774 and switch in ticks 2,428 and 2,433. **No difference** in 3,774 ticks |
 
 
+## A late save: the first real desync of the released set found by the farm (third part)
+
+Found by arm S1, and **not the strafe section's**: it is in the released set, with or
+without that section, and in the game as shipped.
+
+**Seed 7306** (`s29f`, four machines, `storm3`, every driver using the mode): from tick
+4,068 machine 2 has other values than the three others in ten columns of all four players —
+hit points, mana, two bags, the potion word, the carried weight, the button maps, the weapon
+set, the record's tail; positions and the object checksum from 4,069; **the game's own
+out-of-sync flag at 4,071**, a dropped peer at 4,073. It repeats.
+
+**The chain** (**Ran**: the game again with checksums of the four saved player blocks,
+0x879ec0 + n × 0x4c30, and "ticks since this machine's last save", 0x4f8f30, as columns;
+**Read**: `save_daemonRun`, `save_armAutosave`, `save_game`, the save screen):
+
+| Tick | What |
+|---|---|
+| 701, 1,762, 2,105, 2,176 | a level is entered; every machine fills its save buffer in that tick (ticks-since-save 0 on all four) |
+| 2,364 | the party goes from `hub` to `storm3`; machine 2 has its inventory open |
+| 2,365 | `storm3` is entered: machines 0, 1 and 3 save; **machine 2 does not** |
+| 2,388 | machine 2's inventory closes; **it saves now**, 23 ticks after the others |
+| 4,068 | all four players are dead; the game loads the level again from each machine's save buffer: machine 2 gives every player the record of tick 2,388, the others that of tick 2,365 |
+
+What the save is: `game_loadLevel` arms a countdown (`save_armAutosave` 0x217f14) and the
+run task `save_daemonRun` 0x2188a8 — in the tick, on every machine — calls
+`save_game(0, 1)` in the first tick in which nothing holds it. `save_game` fills the save
+buffer (`save_build`): **every player's record**, the quest variables, the level states —
+nothing goes to the card. That buffer is what `deathTask` → `save_reload` → `save_load`
+restores when the whole party is dead, on each machine from its own copy. So it is the
+restart point, each machine has its own copy of everybody's record, and nothing compares
+the copies: the save has to be taken in the same tick everywhere. (Restoring "what every
+machine agrees on" at the reload is not to be had: no machine knows another's buffer.)
+The other two makers of that buffer, a save point's automatic save and the script's
+`saveCheckPoint`, call `save_game` from the tick directly and are in step.
+
+**What holds the save on one machine** (every test in front of the call, 0x218934–0x2189b0):
+
+| Test | Whose state | What sets it | Standing |
+|---|---|---|---|
+| card state not idle (0x218934) | **this machine's** | the options being written after a change in the pause menu (state 5, three seconds and more) or read back (10), its own save dialog (3) | late save. Offline a card screen pauses the game, and the pause test below covers it |
+| full-screen menu flag 0x41b4f8 (0x21897c) | **this machine's** | the inventory (`menu_openInventory`, for the local slot), a shop (`shop_openOrStock`, on its owner's machine), the statistics screen (`stats_open`), the mission menu | late save — **Ran** (inventory) |
+| camera not in follow mode (0x218980–0x218990) | **this machine's** camera object | mode 0 is set by the inventory and the shop — and by `cut_start`, for a cutscene | late save for the first two; a cutscene is shared (the flag 0x44fcd0 is set in the same function) |
+| save inhibit 0x50605c, player-against-player, front end, countdown | shared | a script built-in, level clear; `save_load` sets the countdown to 99, which cancels it | in step |
+| `g_paused` | set offline only | | — |
+| not armed at all: card state 4 at the level load (`save_armAutosave`) | this machine's | the load screen, from the pause menu | **Read**, not run: no save at all for that level |
+
+Not holds, of the candidates looked at: the pause menu (it sets neither flag; the card
+screens it opens do), a dialogue (no flag, no camera mode), a cutscene "still playing on
+one machine" (the cutscene flag was equal in every tick of every soak), a slow loader (the
+save is taken in a tick, and a tick waits for every machine). One thing more follows from
+the countdown staying armed: a machine that is held keeps its late save pending, so a
+common save in between — a save point — is overwritten on that machine when its menu
+closes.
+
+**Directed game** (`local/recomp-out/soak/dir3/latesave.txt`, two machines, **the released
+set `s29`, no strafe words**): machine 1 opens its inventory; in lockstep tick 1,000 the
+level change to `hub` becomes pending; machine 1 closes the inventory 150 frames later; in
+tick 1,500 both players are given a million points of pending damage.
+
+| Tick | Machine 0 | Machine 1 |
+|---|---|---|
+| 1,001 (`hub` entered) | saves | inventory open: no save |
+| 1,098 | | inventory closed: saves |
+| 1,501 | both players dead | |
+| 1,773 (the level loaded again) | player 0's mana 0x4400b737, player 1's 0x44010947: the records of tick 1,001 | 0x440448c2 and 0x4404e9a2: those of tick 1,098 |
+
+From there the two machines hold different records for both players.
+
+### The section
+
+```
+[Net test: the save at a level's entry is taken in the same tick on every machine]
+// was: 14A40027 (bne a1,a0,0x2189d4: this machine's card state is not idle)   now: nop
+patch=1,EE,00218934,word,00000000
+// was: 14400016 (bnez v0,0x2189d8: this machine's full-screen menu flag)     now: nop
+patch=1,EE,0021897C,word,00000000
+// was: 3C020050 8C428450 8C420034 38420001 (this machine's camera is not in mode 1)
+// now: lui v0,0x45; lb v0,-0x330(v0); nop; nop (the cutscene flag 0x44fcd0)
+patch=1,EE,00218980,word,3C020045
+patch=1,EE,00218984,word,8042FCD0
+patch=1,EE,00218988,word,00000000
+patch=1,EE,0021898C,word,00000000
+```
+
+Six words in `save_daemonRun` (`tools/recomp/soak/proposed-sections.pnach`). The card test
+and the menu test go; the camera test becomes the shared cutscene flag, so the save still
+waits for the end of a cutscene, on every machine alike. What stays: the countdown, the
+script's inhibit, player-against-player, the front end, the pause. Why it is safe to drop
+the two:
+
+- Offline the inventory, the shops and every card screen pause the game, and the pause
+  test is still there (interpreter check D12): the offline game saves when it did.
+- The save only fills the buffer. The one thing that also uses the buffer is this
+  machine's save dialog while it writes: it packs its own player into block 0, writes,
+  unpacks. A level change cannot fall into that: the dialog raises a flag (0x4f8f2c) before
+  it packs and the main loop waits for the flag before it changes level (0x322cf4); the
+  dialog drops it after the unpack. So in the level's first tick no pack is outstanding.
+  **Read**; not produced in a run.
+- For the player: the "checkpoint" line can now appear while the inventory is open, and the
+  restart point is the level's first tick outside a cutscene instead of the tick the menu
+  closed.
+
+Not covered by it: the load screen at a level load (last row of the table).
+
+| Check | Without the section | With it |
+|---|---|---|
+| `tools/recomp/soak/sections_test.py` D1–D17 (25 checks; the run task on its globals, `save_game` counted) | a card screen, the menu flag or the camera out of follow mode: no save, the countdown waits; two machines, one with its inventory open for 40 ticks: restart points from ticks 1 and 41 | the save in the first tick in all three; both machines from tick 1; a cutscene, the pause, the inhibit, player-against-player, the front end hold it as before; a countdown of 99 is cancelled as before |
+| the directed game above | `s29`: the reload gives the two machines different records (table) | `s29d`: both save in tick 1,001, the reload at 1,773 restores the same records, no difference in 2,747 ticks |
+
 ## How to repeat
 
 ```

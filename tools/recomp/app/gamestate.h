@@ -161,7 +161,8 @@ typedef struct rta_gs_creature {
 /* ---- what happened since the last call --------------------------------------------------- */
 enum {
     RTA_GS_EV_DAMAGE_DEALT = 1, /* a creature lost health: amount, uid, position (its head) */
-    RTA_GS_EV_DAMAGE_TAKEN = 2, /* a player lost health: amount, slot */
+    RTA_GS_EV_DAMAGE_TAKEN = 2, /* a player lost health: amount, slot; position = where the one who did it stands (the player's last
+                                   attacker, object +0x2e4; the player's own head when there is none), uid = that creature */
     RTA_GS_EV_HEAL = 3,         /* a player (slot) or a creature (uid) gained health other than by slow regeneration */
     RTA_GS_EV_MISS = 4,         /* reserved: needs a hook in the damage function, see docs/issues/native-hud.md */
     RTA_GS_EV_EXPERIENCE = 5,   /* a player's experience grew: amount, slot */
@@ -207,8 +208,10 @@ typedef struct rta_gs_prompt {
 /* By default the game's own camera, read from memory (g_cameraPos 0x44f038, g_cameraMatrix 0x44f110,
  * g_projScale 0x44f108; docs/issues/native-first-person.md section 2).  A build with the view modes of
  * tools/recomp/app/fpview.h puts another camera in place for the draw pass only and puts the game's
- * words back, so memory never shows it: such a host hands the frame's view in with rta_gs_set_view()
- * (gamestate_fpview.h converts an fpview::View). */
+ * words back, so memory never shows it: such a host hands the frame's view in with rta_gs_set_view() (in Godot:
+ * RtaMachine.get_view(), the rtag_view of the frame, which has this layout; a native host fills it from fpview::view()).
+ * A view handed in without a camera (forward all zero: the overhead view runs no view code) gives the mode only;
+ * the camera is then read from memory as before. */
 enum { RTA_GS_VIEW_OVERHEAD = 0, RTA_GS_VIEW_ACTION = 1, RTA_GS_VIEW_CHASE = 2, RTA_GS_VIEW_SHOULDER = 3, RTA_GS_VIEW_FIRST = 4 };
 
 typedef struct rta_gs_view {

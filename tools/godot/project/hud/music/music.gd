@@ -51,6 +51,10 @@ var game_base_db := 0.0
 var game_base_known := false
 var log_lines := 0
 var rng := RandomNumberGenerator.new()
+var tap_bus := -1                       # test aid: the game's own sound on a bus of its own, to measure it (music.gd tap())
+var tap_peak := -200.0
+var tap_sum := 0.0
+var tap_n := 0
 
 
 func _ready() -> void:
@@ -253,9 +257,38 @@ func _apply() -> void:
 		game_player.volume_db = game_base_db + DUCK_DB * eased
 
 
+# Test aid ("app hud music tap"): the game's own sound goes through a bus of its own (which still ends in the master
+# bus - muted in a test, so nothing is heard) at full level, and its level is measured between two "music say" lines.
+func tap() -> void:
+	var game_player: AudioStreamPlayer = hud.host.get("player") if hud.host != null else null
+	if game_player == null or tap_bus >= 0:
+		return
+	AudioServer.add_bus()
+	tap_bus = AudioServer.bus_count - 1
+	AudioServer.set_bus_name(tap_bus, "HudGameTap")
+	AudioServer.set_bus_send(tap_bus, "Master")
+	game_player.bus = "HudGameTap"
+	game_player.volume_db = 0.0
+	game_base_known = false
+
+
+func _process(_delta: float) -> void:
+	if tap_bus >= 0:
+		var peak: float = maxf(AudioServer.get_bus_peak_volume_left_db(tap_bus, 0), AudioServer.get_bus_peak_volume_right_db(tap_bus, 0))
+		tap_peak = maxf(tap_peak, peak)
+		tap_sum += db_to_linear(peak)
+		tap_n += 1
+
+
 # for the report of a test run
 func figures() -> String:
 	var bus := AudioServer.get_bus_index(BUS)
-	return "state %s, level %.2f, track %s, own bus peak %.1f dB, game music %s" % [["idle", "loading", "playing", "leaving"][state], level,
+	var text := "state %s, level %.2f, track %s, own bus peak %.1f dB, game music %s" % [["idle", "loading", "playing", "leaving"][state], level,
 		last_track.get_file() if last_track != "" else "-", AudioServer.get_bus_peak_volume_left_db(bus, 0) if bus >= 0 else -200.0,
 		("music_volume %.2f" % (1.0 - duck_applied)) if has_music_volume == 1 else ("whole mix %+.1f dB" % (DUCK_DB * duck_applied))]
+	if tap_bus >= 0:
+		text += "; the game's own sound since the last line: peak %.1f dB, mean level %.1f dB over %d pictures" % [tap_peak, linear_to_db(maxf(1e-9, tap_sum / maxf(1.0, tap_n))), tap_n]
+		tap_peak = -200.0
+		tap_sum = 0.0
+		tap_n = 0
+	return text

@@ -17,6 +17,7 @@ var hud: Node
 var bars := {}                          # uid -> {shown, ghost, hit_at, alpha, seen, keep_until}
 var floats: Array = []                  # {world: Vector3, text, colour, size, born, dx, heavy}
 var column := 0
+var was_busy := false
 
 
 func tick() -> void:
@@ -65,8 +66,15 @@ func tick() -> void:
 			floats.remove_at(k)
 		else:
 			k += 1
-	if bars.size() > 0 or floats.size() > 0 or hud.players.size() > 1:
+	# drawn again only while there is something of the world to draw (or it has just gone)
+	var others := false
+	for pl in hud.players:
+		if pl.get("present", false) and not pl.get("local", false):
+			others = true
+	var busy: bool = bars.size() > 0 or floats.size() > 0 or others or (hud.layout != Hud.LAYOUT_OVERHEAD and not hud.me.is_empty())
+	if busy or was_busy:
 		queue_redraw()
+	was_busy = busy
 
 
 func _event(e: Dictionary) -> void:
@@ -177,9 +185,64 @@ func _draw() -> void:
 		var col: Color = f.colour
 		col.a = a
 		Style.text(self, p, f.text, f.size * s * pop, col, 1, true)
-	if first_person and not hud.me.is_empty():
+	if hud.layout != Hud.LAYOUT_OVERHEAD and not hud.me.is_empty():
+		_aim(s, first_person)
+	hud.draw_end(t0)
+
+
+# The close views: which enemy a swing or a shot would take, and a dot where the view looks.
+# The controls side knows it by the simulation's own rules (fpcontrols::Hud: locked, shot, melee, reticle); without
+# that data the creature the simulation holds now is marked (the player's own target), else the nearest enemy close
+# to the middle of the view.
+func _aim(s: float, first_person: bool) -> void:
+	var c: PackedFloat32Array = hud.creatures
+	var mark := Vector3.ZERO
+	var have := false
+	var locked := false
+	var reticle := first_person
+	var ctl: Dictionary = hud.controls
+	if not ctl.is_empty():
+		reticle = ctl.get("reticle", false)
+		for key in ["locked", "shot", "melee"]:
+			var m: Dictionary = ctl.get(key, {})
+			if key == "shot" and not ctl.get("ranged", false):
+				continue
+			if m.get("valid", false):
+				mark = hud.project(Vector3(m.x, m.y, m.z))
+				have = mark.z > 1.0
+				locked = key == "locked"
+				break
+	else:
+		var best := 1e9
+		for k in range(c.size() / Hud.C_STRIDE):
+			var o := k * Hud.C_STRIDE
+			var flags := int(c[o + Hud.C_FLAGS])
+			if (flags & Hud.CF_HOSTILE) == 0 or (flags & (Hud.CF_DEAD | Hud.CF_INERT)) != 0 or c[o + Hud.C_SZ] <= 1.0:
+				continue
+			var is_locked := (flags & Hud.CF_TARGETED) != 0
+			var off: float = Vector2(c[o + Hud.C_SX] - 0.5, (c[o + Hud.C_SY] - 0.5) * 0.6).length()
+			if not is_locked and (off > 0.16 or c[o + Hud.C_SZ] > 420.0 or not first_person):
+				continue
+			var score: float = -1.0 if is_locked else off
+			if score < best:
+				best = score
+				mark = hud.project(Vector3(c[o + Hud.C_WX], c[o + Hud.C_WY], c[o + Hud.C_WZ] + c[o + Hud.C_HEIGHT] * 0.45))
+				have = mark.z > 1.0
+				locked = is_locked
+	if have:
+		# four corners round the enemy's middle; bright while the simulation holds it, pale while it is only what would be taken
+		var p: Vector2 = hud.to_window(mark.x, mark.y)
+		var half: float = clampf(9000.0 / maxf(mark.z, 40.0), 14.0, 90.0) * s
+		var arm: float = half * 0.38
+		var col := Color(1.0, 0.92, 0.55, 0.95) if locked else Color(1, 1, 1, 0.55)
+		var w: float = maxf(1.5, 2.2 * s)
+		for sx in [-1.0, 1.0]:
+			for sy in [-1.0, 1.0]:
+				var corner := p + Vector2(sx, sy) * half
+				draw_line(corner, corner - Vector2(sx * arm, 0), col, w, true)
+				draw_line(corner, corner - Vector2(0, sy * arm), col, w, true)
+	if reticle:
 		# a small dot where the view looks: enough to aim a bow by
 		var centre: Vector2 = hud.picture.get_center()
-		draw_circle(centre, 3.0 * s, Color(0, 0, 0, 0.55))
-		draw_circle(centre, 1.8 * s, Color(1, 1, 1, 0.85))
-	hud.draw_end(t0)
+		draw_circle(centre, 3.2 * s, Color(0, 0, 0, 0.55))
+		draw_circle(centre, 1.9 * s, Color(1, 1, 1, 0.9))

@@ -663,11 +663,18 @@ def analyse(out, n, through_drops=False, only=None):
               # running ticks (moved more than a unit and less than twenty) and how many of them ran more than 45 and more than
               # 135 degrees off the facing; the same two figures for players not in the mode (the check on the measure)
               'mode_any': 0, 'mode_ticks': 0, 'run_mode': 0, 'run_side': 0, 'run_back': 0, 'run_plain': 0, 'run_plain_off': 0,
-              'mode_switches': 0, 'sent': 0}
+              'mode_switches': 0, 'sent': 0,
+              # late saves (third part): stretches of ticks in which machine 0's "ticks since save" is not another
+              # machine's (one of them built its save buffer in another tick); ticks in such stretches; party wipes
+              # (every player's hit points at zero) and how many of them fell into such a stretch
+              'late_saves': 0, 'late_ticks': 0, 'wipes': 0, 'wipes_late': 0}
+    late = set()
+    wipe_ticks = []
     # what machine 0 saw
     header, rows = rows_of(os.path.join(out, 'm0.tick.tsv'))
     col = {c: i for i, c in enumerate(header)}
     alive = [True] * n
+    all_dead = False
     has_mode = 'p0mode' in col
     before = [None] * n         # (x, y, mode) of each player in the tick before
     for tick, f in rows:
@@ -725,6 +732,9 @@ def analyse(out, n, through_drops=False, only=None):
             alive[p] = now
             if now and 0 < top < 0x80000000 and bits > top:
                 result['overmax'] += 1
+        if not any(alive) and not all_dead:
+            wipe_ticks.append(tick)
+        all_dead = not any(alive)
         result['last_tick'] = tick
     for a in range(n):
         for b in range(a + 1, n):
@@ -766,6 +776,8 @@ def analyse(out, n, through_drops=False, only=None):
                     result['oos'] = tick_a
                 for c, x, y in soft:
                     if fields_a[x] != fields_b[y]:
+                        if c == 'since' and a == 0:
+                            late.add(tick_a)
                         entry = result['soft'].setdefault(c, {'first': tick_a, 'n': 0, 'a': fields_a[x], 'b': fields_b[y],
                                                               'pair': '%d-%d' % (a, b), 'last': tick_a})
                         entry['n'] += 1
@@ -790,6 +802,10 @@ def analyse(out, n, through_drops=False, only=None):
                             result['columns'] = sorted(c for c, _, _ in differing)
                             result['values'] = {c: (x, y) for c, x, y in differing}
             result['pair_ticks']['%d-%d' % (a, b)] = compared
+    result['late_ticks'] = len(late)
+    result['late_saves'] = sum(1 for t in late if t - 1 not in late)
+    result['wipes'] = len(wipe_ticks)
+    result['wipes_late'] = sum(1 for t in wipe_ticks if t in late or t + 1 in late)
     for m in range(n):          # sender calls each machine's driver made (the last row's count)
         try:
             header_m, rows_m = rows_of(os.path.join(out, 'm%d.tick.tsv' % m))
@@ -814,7 +830,8 @@ def class_of(result):
 FIELDS = ['name', 'seed', 'machines', 'classes', 'skills', 'char_level', 'level', 'frames', 'bus', 'flags', 'mixes',
           'ticks', 'ticks_sum', 'first', 'class', 'pair', 'values', 'oos', 'dropped', 'repeats', 'soft', 'levels', 'deaths',
           'cut_ticks', 'overmax', 'nobj_max', 'secs', 'codes', 'timed_out', 'notes', 'error', 'where',
-          'strafe', 'mode_any', 'mode_ticks', 'mode_switches', 'sent', 'run_mode', 'run_side', 'run_back', 'run_plain', 'run_plain_off']
+          'strafe', 'mode_any', 'mode_ticks', 'mode_switches', 'sent', 'run_mode', 'run_side', 'run_back', 'run_plain', 'run_plain_off',
+          'late_saves', 'late_ticks', 'wipes', 'wipes_late']
 
 
 def job_row(job, result):
@@ -836,7 +853,8 @@ def job_row(job, result):
            'notes': '; '.join(result.get('notes', []))[:500], 'error': result.get('error', ''),
            'where': result.get('where', ''),
            'strafe': ','.join(str(m) for m in job.get('strafe', ())) + job.get('strafe_spec', '')}
-    for key in ('mode_any', 'mode_ticks', 'mode_switches', 'sent', 'run_mode', 'run_side', 'run_back', 'run_plain', 'run_plain_off'):
+    for key in ('mode_any', 'mode_ticks', 'mode_switches', 'sent', 'run_mode', 'run_side', 'run_back', 'run_plain', 'run_plain_off',
+                'late_saves', 'late_ticks', 'wipes', 'wipes_late'):
         row[key] = result.get(key, 0)
     return '\t'.join('' if row[k] is None else str(row[k]).replace('\t', ' ') for k in FIELDS)
 

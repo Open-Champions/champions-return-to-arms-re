@@ -54,6 +54,7 @@ struct Camera {
 render::SceneTap g_tap;
 render::TapFrame g_tap_frame;
 bool g_diag = false;
+bool g_sprites = true;          // RTA_SCENE_SPRITES=0: sprites stay in the 2-D layer, as before
 float g_k = 1.0f;               // widescreen factor: (4/3) / aspect
 std::unordered_map<uint32_t, int> g_target_width;
 // the game's thread
@@ -91,6 +92,7 @@ inline float depth_to_z(float list_z) {
 
 void install(render::Renderer& renderer) {
     g_diag = getenv("RTA_SCENE_DIAG") != nullptr;
+    if (getenv("RTA_SCENE_SPRITES")) g_sprites = atoi(getenv("RTA_SCENE_SPRITES")) != 0;
     g_tap.install(renderer);
 }
 
@@ -202,7 +204,11 @@ void take(render::FrameList& list, Frame& out) {
             g_exact_draws++; g_exact_vertices += c.count;
             continue;
         }
-        if (c.made_by > 1 || c.ztst != 2) continue;     // sprites, and what is drawn without a depth test: the 2-D layer
+        // What is drawn without a depth test is the 2-D layer.  A sprite that IS tested against the scene's depth
+        // (a particle, a glow, a spark: a camera-facing quad at a place in the world) goes into the world where its
+        // depth says it is - the host can then hide it behind what is in front of it under its own depth buffer.
+        if (c.ztst != 2 && c.ztst != 3) continue;
+        if (c.made_by > 1 && !g_sprites) continue;
         for (uint32_t i = c.first; i < c.first + c.count; i++) {
             if (exact[i]) continue;
             const render::Vertex& v = list.vertices[i];

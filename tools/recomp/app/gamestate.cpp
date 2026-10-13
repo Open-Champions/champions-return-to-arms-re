@@ -60,6 +60,7 @@ const u32 G_GOLD_FLOATERS = 0x86A900, GOLD_FLOATER_SIZE = 0x24, GOLD_FLOATERS = 
 const u32 G_GOLD_PENDING = 0x86ACE8;                    // s32[4] (hud_tickGold 0x1dcb80)
 const u32 G_POTION_NAMES = 0x4EF4C8;                    // char*[18]: 0..8 the mana potions, 9..17 the health potions (player_countPotions 0x1ba5f8)
 const u32 G_BTN_USE = 0x41B9C0;                         // u32[4] (symbols/player.tsv)
+const u32 G_SKILL_MARKER = 0x535E30;                    // the fixed name an ability record carries when it is a Skill object (docs/player.md, ability record +0x00)
 const u32 G_SKILL_TABLE = 0x41B170, SKILLS = 102;       // Skill*[102] by id; skill +0 char* name, +8 kind, +0xc s16 recast frames
 const u32 G_CLASS_KEYS[7] = {0x53E018, 0x53E048, 0x53E030, 0x53E058, 0x53E068, 0x53E078, 0x53E090};    // text keys by class index (text_getClassName 0x1eb0f8)
 const u32 G_ITEM_PREFIX = 0x400E50, ITEM_PREFIX_SIZE = 0x28, G_ITEM_SUFFIX = 0x4019E0, ITEM_SUFFIX_SIZE = 0x14;   // item name parts (0x101e48)
@@ -132,6 +133,14 @@ struct Mem {
         if (!ok(a, 1)) return false;
         size_t n = strlen(text);
         return a + n < RAM_SIZE && !memcmp(ram + a, text, n + 1);
+    }
+    bool same_at(u32 a, u32 b) const {             // two strings of the game, equal
+        if (!ok(a, 1) || !ok(b, 1)) return false;
+        for (u32 k = 0; k < 64; k++) {
+            if (ram[a + k] != ram[b + k]) return false;
+            if (!ram[a + k]) return true;
+        }
+        return false;
     }
     bool same_nocase(u32 a, u32 b) const {
         if (!ok(a, 1) || !ok(b, 1)) return false;
@@ -209,7 +218,7 @@ void copy_text(char* to, size_t size, const char* from) {
     to[n] = 0;
 }
 
-// "WarBoarSmall" as the game's level data names a kind of creature; there is no display name for ordinary
+// A kind of creature has a name in the level data ("FooBarSmall" style); there is no display name for ordinary
 // monsters anywhere in memory (the game never shows one), so the type name itself is what is handed out.
 
 struct Track {                  // a creature seen before
@@ -663,7 +672,7 @@ void read_slot(const Mem& m, u32 rec, u32 o, int which, rta_gs_player& p) {
         if (sid == id) { q.rank = m.sh(rec + 0x4B08 + k * 4 + 2); break; }
     }
     char name[40], key[56];
-    bool new_style = m.same(a, "newstyle");                         // the marker name of abilities that are Skill objects (0x535e30)
+    bool new_style = m.same_at(a, G_SKILL_MARKER);                  // the marker name of abilities that are Skill objects, compared in memory
     u32 skill = (id > 0 && id < (int)SKILLS) ? m.w(G_SKILL_TABLE + (u32)id * 4) : 0;
     float most = 0;
     if (new_style && m.ok(skill, 0x68)) {
@@ -826,7 +835,16 @@ void read_player(R& r, int slot) {
             float lost = t.health - p.health;
             bool resized = fabsf(t.health_max - p.health_max) > 0.01f;     // the maximum changed (a level, an item): not a hit
             if (resized || leveled) lost = 0;
-            if (lost > 0.05f) add_event(r, RTA_GS_EV_DAMAGE_TAKEN, slot, 0, lost, head, nullptr, p.health_max > 0 && lost >= 0.2f * p.health_max);
+            if (lost > 0.05f) {
+                // who did it: the player object's last attacker (docs/creatures.md +0x2e4); its place, for a mark of where the hit came from
+                u32 by = m.handle(o + 0x2E4), uid = 0;
+                float from[3] = {head[0], head[1], head[2]};
+                if (by) {
+                    from[0] = m.f(by + 0x10); from[1] = m.f(by + 0x14); from[2] = m.f(by + 0x18);
+                    if (Track* tr = find_track(r, by)) uid = tr->uid;
+                }
+                add_event(r, RTA_GS_EV_DAMAGE_TAKEN, slot, uid, lost, from, nullptr, p.health_max > 0 && lost >= 0.2f * p.health_max);
+            }
             // healing: a potion starts (the amount it will deliver), or health jumps (a spell); slow regeneration and the
             // refill of a level-up are not events
             float coming = p.health_coming - t.health_coming;

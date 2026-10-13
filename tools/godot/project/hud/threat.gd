@@ -16,14 +16,16 @@ const Hud := preload("res://hud/hud.gd")
 var hud: Node
 var wedges: Array = []                  # {angle (screen, radians, 0 = right, y down), attacking, near 0..1, alpha}
 var by_uid := {}
+var hits: Array = []                    # where the last hits came from: {angle, born, heavy}
 
 
 func tick() -> void:
 	wedges.clear()
 	var me: Dictionary = hud.me
 	if me.is_empty() or not me.get("alive", false):
-		if not by_uid.is_empty():
+		if not by_uid.is_empty() or not hits.is_empty():
 			by_uid.clear()
+			hits.clear()
 			queue_redraw()
 		return
 	var view: Dictionary = hud.frame.get("view", {})
@@ -31,6 +33,25 @@ func tick() -> void:
 	var fx := cos(yaw)
 	var fy := sin(yaw)
 	var close: bool = hud.layout != Hud.LAYOUT_OVERHEAD
+	# a hit taken: where it came from (the reader gives the attacker's place), shown for a moment in the close views
+	for e in hud.events:
+		if e.kind == 2 and e.slot == me.slot and close:
+			var from: Vector3 = e.position
+			var hx: float = from.x - me.position.x
+			var hy: float = from.y - me.position.y
+			if hx * hx + hy * hy > 4.0:
+				hits.append({"angle": atan2(-(hx * fx + hy * fy), hx * fy - hy * fx), "born": hud.now, "heavy": e.heavy})
+	while not hits.is_empty() and hud.now - hits[0].born > 0.7:
+		hits.pop_front()
+	var threats: Array = hud.controls.get("threats", []) if close else []
+	if not threats.is_empty():
+		# the controls side knows the attackers and their bearing from the look (degrees, right positive, beyond 90 behind)
+		for t in threats:
+			if t.get("targets_me", false) and not t.get("in_view", false):
+				wedges.append({"angle": deg_to_rad(float(t.get("bearing", 0.0))) - PI * 0.5, "attacking": t.get("attacking", false),
+					"near": clampf(1.0 - float(t.get("distance", 900.0)) / 900.0, 0.0, 1.0), "alpha": 1.0})
+		queue_redraw()
+		return
 	var c: PackedFloat32Array = hud.creatures
 	var origin: Vector3 = me.position
 	var seen := {}
@@ -57,7 +78,7 @@ func tick() -> void:
 			wedges.append({"angle": atan2(-ahead, right), "attacking": (flags & Hud.CF_ATTACKING) != 0, "near": clampf(1.0 - dist / 900.0, 0.0, 1.0), "alpha": alpha})
 	var had := not by_uid.is_empty()
 	by_uid = seen
-	if had or not wedges.is_empty():
+	if had or not wedges.is_empty() or not hits.is_empty():
 		queue_redraw()
 
 
@@ -68,6 +89,8 @@ func _edges(s: float) -> void:
 	if sc.z > 1.0:
 		from = hud.to_window(sc.x, sc.y) + Vector2(0, 50.0 * s)
 	var box: Rect2 = hud.picture.grow_individual(-64.0 * s, -150.0 * s, -64.0 * s, -150.0 * s)     # clear of the bars at the top and the frames at the bottom
+	if hud.slots_top > 0.0 and hud.slots_top - 24.0 * s < box.end.y:
+		box.size.y = maxf(40.0, hud.slots_top - 24.0 * s - box.position.y)
 	from = from.clamp(box.position + Vector2(8, 8), box.end - Vector2(8, 8))
 	for w in wedges:
 		var dir := Vector2(cos(w.angle), sin(w.angle))
@@ -91,6 +114,15 @@ func _edges(s: float) -> void:
 
 func _draw() -> void:
 	var t0: int = hud.draw_begin()
+	if not hits.is_empty():
+		# a hit: a bright flare on the ring, the way it came from
+		var centre: Vector2 = hud.picture.get_center()
+		var radius: float = minf(hud.picture.size.x, hud.picture.size.y) * 0.30
+		for h in hits:
+			var age: float = (hud.now - h.born) / 0.7
+			var a: float = (1.0 - age) * (1.0 - age)
+			var spread: float = 0.38 if h.heavy else 0.26
+			draw_arc(centre, radius - 10.0 * hud.s * age, h.angle - spread, h.angle + spread, 16, Color(1.0, 0.85, 0.80, 0.9 * a), (12.0 if h.heavy else 8.0) * hud.s, true)
 	if not wedges.is_empty():
 		var s: float = hud.s
 		var close: bool = hud.layout != Hud.LAYOUT_OVERHEAD

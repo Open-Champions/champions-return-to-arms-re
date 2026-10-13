@@ -47,6 +47,15 @@ void RtaDrawer::setup(const Ref<RtaMachine>& p_machine, const RID& p_parent_view
 
 void RtaDrawer::set_shader_code(const String& code) { shader_code = code.utf8().get_data(); }
 
+// The size the picture is drawn at, changed while it runs (the portal's "sharpness"): every surface is sized again.
+void RtaDrawer::set_output_size(const Vector2i& size) {
+    if (size.x < 16 || size.y < 16 || size == output_size) return;
+    output_size = size;
+    for (auto& entry : targets) size_target(entry.second);
+    for (auto& m : materials) rs()->free_rid(m.second.rid);     // they hold the surfaces' scale
+    materials.clear();
+}
+
 // ---- surfaces -------------------------------------------------------------------------------
 
 void RtaDrawer::size_target(Target& target) {
@@ -120,6 +129,8 @@ RID RtaDrawer::shader_for(uint32_t variant) {
     if (variant & V_LIT) code += "#define GS_LIT\n";
     if (variant & V_CASTER) code += "#define GS_CASTER\n";
     if (variant & V_NORMALS) code += "#define GS_NORMALS\n";
+    if (variant & V_NOFOG) code += "#define GS_NOFOG\n";
+    if (variant & V_NEARFADE) code += "#define GS_NEARFADE\n";
     if (stored_colours) code += "#define GS_STORED_COLOURS\n";
     code += shader_code;
     Ref<Shader> shader;
@@ -344,6 +355,12 @@ void RtaDrawer::submit() {
         if (old != textures.end()) s->free_rid(old->second);
         textures[t.id] = s->texture_2d_create(image);
         textures_made++;
+    }
+    if (scene_mode && std::fabs(f.aspect - last_aspect) > 0.001f) {     // the view's shape changed: the 3-D surface's viewport follows
+        last_aspect = f.aspect;
+        for (auto& entry : targets) if (entry.second.screen) size_target(entry.second);
+        for (auto& m : materials) s->free_rid(m.second.rid);
+        materials.clear();
     }
     for (uint32_t k = 0; k < f.target_count; k++) {
         const rtag_target& info = f.targets[k];
@@ -575,6 +592,13 @@ void RtaDrawer::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_scene_info"), &RtaDrawer::get_scene_info);
     ClassDB::bind_method(D_METHOD("get_world_scenario"), &RtaDrawer::get_world_scenario);
     ClassDB::bind_method(D_METHOD("get_world_camera"), &RtaDrawer::get_world_camera);
+    ClassDB::bind_method(D_METHOD("get_world_viewport"), &RtaDrawer::get_world_viewport);
+    ClassDB::bind_method(D_METHOD("get_world_environment"), &RtaDrawer::get_world_environment);
+    ClassDB::bind_method(D_METHOD("describe_frame", "max_lines"), &RtaDrawer::describe_frame);
+    ClassDB::bind_method(D_METHOD("get_sky_info"), &RtaDrawer::get_sky_info);
+    ClassDB::bind_method(D_METHOD("sky_reset"), &RtaDrawer::sky_reset);
+    ClassDB::bind_method(D_METHOD("set_output_size", "size"), &RtaDrawer::set_output_size);
+    ClassDB::bind_method(D_METHOD("get_output_size"), &RtaDrawer::get_output_size);
 }
 
 }  // namespace godot

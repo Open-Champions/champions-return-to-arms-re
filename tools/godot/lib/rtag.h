@@ -273,6 +273,7 @@ void rtag_run(double hz);
  *                            The look inputs are the controller's own: the right stick turns the game's camera as it
  *                            always did, and a view that looks up and down takes the stick's y (fpview.h).
  *   "view.<mode>.<name>"     a setting of a view (fov, distance, height, pitch, eye_height, ... : fpview.h)
+ *   "aspect"                 the shape of the 3-D view as a number, width / height ("1.7778"); 4:3 at the least
  *   "game_hud"               "off": the game's own HUD layer (player status, gold, compass, minimap, spell selector) is
  *                            left out of the frames, for a host that draws its own; "on" (default)
  */

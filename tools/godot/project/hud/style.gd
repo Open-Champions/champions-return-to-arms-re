@@ -1,46 +1,62 @@
 extends RefCounted
-# style.gd - the new HUD's look in one place: colours, metrics, the font, and the few
-# drawing helpers every piece uses (a panel, a bar, text with an outline, glyph icons).
+# style.gd - the HUD's THEME: everything about how it looks is here - colours, the font,
+# and the few drawing helpers every piece uses (a panel, a bar, text with an outline, a
+# button's cap, glyph icons).  The pieces never draw a shape of their own for these: they
+# call this file.
 #
-# Everything is drawn by code: no pictures, no game art.  The font is the one Godot
-# carries inside the engine (ThemeDB.fallback_font: Open Sans, SIL Open Font License);
-# the heavier cut is the same font emboldened by a FontVariation.
+# As shipped everything is drawn by code: no pictures, no game art.  The font is the one
+# Godot carries inside the engine (ThemeDB.fallback_font: Open Sans, SIL Open Font
+# License); the heavier cut is the same font emboldened by a FontVariation.
+#
+# A SKIN swaps the look without touching the pieces.  It is a script (setting "theme" of
+# hud.cfg, or --hud-theme PATH) that extends RefCounted and may have any of:
+#     func setup(style: Script) -> void      once: change colours (style.HEALTH_A = ...), set style._font / style._bold
+#     func panel(ci, rect, s, alpha, radius) -> bool
+#     func bar(ci, rect, value, ghost, a, b, s, alpha, ahead, ahead_colour) -> bool
+#     func text(ci, pos, string, size, colour, align, heavy, outline) -> float      (a width; < 0: not drawn, do it here)
+#     func status_icon(ci, kind, c, r, left, alpha) -> bool
+#     func glyph(ci, kind, c, r, colour) -> bool
+#     func flask(ci, c, r, colour) -> bool        func coin(ci, c, r, alpha) -> bool        func skull(ci, c, r, colour) -> bool
+#     func keycap(ci, pos, label, size, alpha) -> float     (the cap's width; < 0: not drawn)
+# A function that returns false (or a negative width) leaves that call to the drawing below, so a skin can take
+# over one thing at a time - say, panels and bars from the game's own art loaded at run time from the player's
+# disc - and leave the rest.  hud/dev/skin_example.gd is a small one (flat, square, another palette).
 #
 # All sizes are in "design pixels" of a picture 1080 high and are multiplied by the scale
 # hud.gd works out from the window (and the player's setting).
 
-const INK := Color(0.045, 0.05, 0.065)              # panel fill
-const PANEL_ALPHA := 0.74
-const HAIRLINE := Color(1, 1, 1, 0.13)
-const TEXT := Color(0.96, 0.96, 0.94)
-const TEXT_DIM := Color(0.74, 0.76, 0.80)
-const OUTLINE := Color(0, 0, 0, 0.85)
-const HEALTH_A := Color(0.80, 0.19, 0.17)
-const HEALTH_B := Color(0.96, 0.38, 0.27)
-const HEALTH_LOW := Color(1.0, 0.25, 0.20)
-const HEAL := Color(0.45, 0.86, 0.48)
-const MANA_A := Color(0.17, 0.40, 0.86)
-const MANA_B := Color(0.36, 0.66, 0.98)
-const XP_A := Color(0.80, 0.62, 0.16)
-const XP_B := Color(0.98, 0.84, 0.36)
-const GHOST := Color(1.0, 0.90, 0.72, 0.85)         # what a bar just lost, before it drains away
-const TRACK := Color(0, 0, 0, 0.55)                 # the empty part of a bar
-const ENEMY_A := Color(0.74, 0.14, 0.13)
-const ENEMY_B := Color(0.93, 0.30, 0.22)
-const BOSS_A := Color(0.62, 0.16, 0.50)
-const BOSS_B := Color(0.92, 0.36, 0.42)
-const FRIEND := Color(0.42, 0.80, 0.50)
-const PARTY := Color(0.42, 0.68, 0.98)
-const GOLD := Color(1.0, 0.82, 0.30)
-const DAMAGE_OUT := Color(1.0, 0.97, 0.90)
-const DAMAGE_BIG := Color(1.0, 0.80, 0.25)
-const DAMAGE_IN := Color(1.0, 0.33, 0.28)
-const XP_TEXT := Color(0.80, 0.70, 1.0)
-const WARN := Color(1.0, 0.72, 0.22)
-const DANGER := Color(1.0, 0.30, 0.26)
+static var INK := Color(0.045, 0.05, 0.065)              # panel fill
+static var PANEL_ALPHA := 0.74
+static var HAIRLINE := Color(1, 1, 1, 0.13)
+static var TEXT := Color(0.96, 0.96, 0.94)
+static var TEXT_DIM := Color(0.74, 0.76, 0.80)
+static var OUTLINE := Color(0, 0, 0, 0.85)
+static var HEALTH_A := Color(0.80, 0.19, 0.17)
+static var HEALTH_B := Color(0.96, 0.38, 0.27)
+static var HEALTH_LOW := Color(1.0, 0.25, 0.20)
+static var HEAL := Color(0.45, 0.86, 0.48)
+static var MANA_A := Color(0.17, 0.40, 0.86)
+static var MANA_B := Color(0.36, 0.66, 0.98)
+static var XP_A := Color(0.80, 0.62, 0.16)
+static var XP_B := Color(0.98, 0.84, 0.36)
+static var GHOST := Color(1.0, 0.90, 0.72, 0.85)         # what a bar just lost, before it drains away
+static var TRACK := Color(0, 0, 0, 0.55)                 # the empty part of a bar
+static var ENEMY_A := Color(0.74, 0.14, 0.13)
+static var ENEMY_B := Color(0.93, 0.30, 0.22)
+static var BOSS_A := Color(0.62, 0.16, 0.50)
+static var BOSS_B := Color(0.92, 0.36, 0.42)
+static var FRIEND := Color(0.42, 0.80, 0.50)
+static var PARTY := Color(0.42, 0.68, 0.98)
+static var GOLD := Color(1.0, 0.82, 0.30)
+static var DAMAGE_OUT := Color(1.0, 0.97, 0.90)
+static var DAMAGE_BIG := Color(1.0, 0.80, 0.25)
+static var DAMAGE_IN := Color(1.0, 0.33, 0.28)
+static var XP_TEXT := Color(0.80, 0.70, 1.0)
+static var WARN := Color(1.0, 0.72, 0.22)
+static var DANGER := Color(1.0, 0.30, 0.26)
 
 # status kinds (the numbers of rta_gs_status.kind in tools/recomp/app/gamestate.h)
-const STATUS_COLOURS := {
+static var STATUS_COLOURS := {
 	1: Color(1.0, 0.52, 0.18),      # burning
 	2: Color(0.55, 0.85, 1.0),      # chilled
 	3: Color(1.0, 0.95, 0.40),      # shocked
@@ -60,6 +76,25 @@ const STATUS_COLOURS := {
 static var _font: Font
 static var _bold: Font
 static var _boxes := {}
+static var skin: RefCounted             # the skin in use, null: this file's own drawing
+static var _has := {}                   # which of the functions above the skin has
+
+
+static func set_skin(script_path: String) -> bool:
+	skin = null
+	_has = {}
+	_boxes.clear()
+	if script_path == "":
+		return true
+	var script := load(script_path) as Script
+	if script == null:
+		return false
+	skin = script.new()
+	for name in ["panel", "bar", "text", "status_icon", "glyph", "flask", "coin", "skull", "keycap"]:
+		_has[name] = skin.has_method(name)
+	if skin.has_method("setup"):
+		skin.call("setup", load("res://hud/style.gd"))
+	return true
 
 
 static func font() -> Font:
@@ -98,6 +133,8 @@ static func _box(radius: int, fill: Color, border: Color, border_width: int) -> 
 
 # A dark, slightly see-through panel with a hairline.
 static func panel(ci: CanvasItem, rect: Rect2, s: float, alpha := 1.0, radius := 7.0) -> void:
+	if _has.get("panel", false) and skin.call("panel", ci, rect, s, alpha, radius):
+		return
 	var fill := Color(INK.r, INK.g, INK.b, PANEL_ALPHA * alpha)
 	var line := Color(HAIRLINE.r, HAIRLINE.g, HAIRLINE.b, HAIRLINE.a * alpha)
 	ci.draw_style_box(_box(int(round(radius * s)), _q(fill), _q(line), maxi(1, int(round(s)))), rect)
@@ -119,7 +156,9 @@ static func _q(c: Color) -> Color:
 # A bar: track, the part just lost (ghost), the fill in two tones with a light top edge.
 # value, ghost and ahead are 0..1; ahead is what is on its way (a potion at work), drawn in `ahead_colour`.
 static func bar(ci: CanvasItem, rect: Rect2, value: float, ghost: float, a: Color, b: Color, s: float, alpha := 1.0,
-		ahead := 0.0, ahead_colour := HEAL) -> void:
+		ahead := 0.0, ahead_colour := Color(0.45, 0.86, 0.48)) -> void:
+	if _has.get("bar", false) and skin.call("bar", ci, rect, value, ghost, a, b, s, alpha, ahead, ahead_colour):
+		return
 	var r: float = minf(rect.size.y * 0.5, 4.0 * s)
 	rounded(ci, rect.grow(maxf(1.0, s)), r + s, Color(0, 0, 0, 0.62 * alpha))
 	rounded(ci, rect, r, Color(TRACK.r, TRACK.g, TRACK.b, TRACK.a * alpha))
@@ -151,6 +190,10 @@ static func _fill(ci: CanvasItem, rect: Rect2, r: float, colour: Color) -> void:
 # Text with a dark outline: readable over grass at noon and over a cave.
 # align: 0 left, 1 centre, 2 right - of `pos`, which is on the baseline.
 static func text(ci: CanvasItem, pos: Vector2, string: String, size: float, colour: Color, align := 0, heavy := false, outline := 0.0) -> float:
+	if _has.get("text", false):
+		var done: float = skin.call("text", ci, pos, string, size, colour, align, heavy, outline)
+		if done >= 0.0:
+			return done
 	var f := bold() if heavy else font()
 	var px := maxi(8, int(round(size)))
 	var w: float = f.get_string_size(string, HORIZONTAL_ALIGNMENT_LEFT, -1, px).x
@@ -180,7 +223,7 @@ static func number(value: float) -> String:
 	return ("-" if n < 0 else "") + t + out
 
 
-# "WarBoarSmall" (how the level data names a kind of creature) -> "War Boar Small"; a name that already has spaces is left alone
+# "FooBarSmall" (how the level data names a kind of creature) -> "Foo Bar Small"; a name that already has spaces is left alone
 static func pretty(name: String) -> String:
 	if name.contains(" ") or name.length() < 2:
 		return name
@@ -217,6 +260,8 @@ static func _line(ci: CanvasItem, c: Vector2, r: float, pts: Array, colour: Colo
 
 # A status glyph in a dark disc with a coloured ring; `left` 0..1 is how much of its time is left.
 static func status_icon(ci: CanvasItem, kind: int, c: Vector2, r: float, left: float, alpha := 1.0) -> void:
+	if _has.get("status_icon", false) and skin.call("status_icon", ci, kind, c, r, left, alpha):
+		return
 	var colour: Color = STATUS_COLOURS.get(kind, STATUS_COLOURS[14])
 	colour.a = alpha
 	ci.draw_circle(c, r, Color(0, 0, 0, 0.70 * alpha))
@@ -228,6 +273,8 @@ static func status_icon(ci: CanvasItem, kind: int, c: Vector2, r: float, left: f
 
 
 static func glyph(ci: CanvasItem, kind: int, c: Vector2, r: float, colour: Color) -> void:
+	if _has.get("glyph", false) and skin.call("glyph", ci, kind, c, r, colour):
+		return
 	var w: float = maxf(1.5, r * 0.26)
 	match kind:
 		1:      # flame
@@ -269,6 +316,8 @@ static func glyph(ci: CanvasItem, kind: int, c: Vector2, r: float, colour: Color
 
 
 static func flask(ci: CanvasItem, c: Vector2, r: float, colour: Color) -> void:
+	if _has.get("flask", false) and skin.call("flask", ci, c, r, colour):
+		return
 	# a round-bottomed flask: neck, body, a lighter fill line
 	ci.draw_rect(Rect2(c + Vector2(-0.24, -1.0) * r, Vector2(0.48, 0.55) * r), Color(0.85, 0.85, 0.88, colour.a))
 	ci.draw_rect(Rect2(c + Vector2(-0.36, -1.08) * r, Vector2(0.72, 0.16) * r), Color(0.70, 0.62, 0.48, colour.a))
@@ -278,12 +327,16 @@ static func flask(ci: CanvasItem, c: Vector2, r: float, colour: Color) -> void:
 
 
 static func coin(ci: CanvasItem, c: Vector2, r: float, alpha := 1.0) -> void:
+	if _has.get("coin", false) and skin.call("coin", ci, c, r, alpha):
+		return
 	ci.draw_circle(c, r, Color(0.62, 0.44, 0.10, alpha))
 	ci.draw_circle(c, r * 0.80, Color(GOLD.r, GOLD.g, GOLD.b, alpha))
 	ci.draw_circle(c + Vector2(-0.25, -0.25) * r, r * 0.22, Color(1, 1, 1, 0.55 * alpha))
 
 
 static func skull(ci: CanvasItem, c: Vector2, r: float, colour: Color) -> void:
+	if _has.get("skull", false) and skin.call("skull", ci, c, r, colour):
+		return
 	ci.draw_circle(c + Vector2(0, -0.15) * r, r * 0.78, colour)
 	ci.draw_rect(Rect2(c + Vector2(-0.42, 0.30) * r, Vector2(0.84, 0.55) * r), colour)
 	var dark := Color(0, 0, 0, 0.85 * colour.a)
@@ -292,6 +345,10 @@ static func skull(ci: CanvasItem, c: Vector2, r: float, colour: Color) -> void:
 
 
 static func keycap(ci: CanvasItem, pos: Vector2, label: String, size: float, alpha := 1.0) -> float:
+	if _has.get("keycap", false):
+		var done: float = skin.call("keycap", ci, pos, label, size, alpha)
+		if done >= 0.0:
+			return done
 	# a key or button name in a light cap; `pos` is the cap's left centre; returns its width
 	var h: float = size * 1.5
 	var w: float = maxf(h, text_width(label, size, true) + size * 0.9)

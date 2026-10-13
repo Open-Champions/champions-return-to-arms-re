@@ -66,6 +66,19 @@ class RtaDrawer : public RefCounted {
     Dictionary get_scene_info() const;
     RID get_world_scenario() const;
     RID get_world_camera() const;
+    RID get_world_viewport() const;
+    RID get_world_environment() const;
+    // debugging: the draws of the frame taken last that go to the 3-D surface, one line each (state, where on screen,
+    // and for the scene's draws how far from the eye and at what elevation their vertices are)
+    String describe_frame(int max_lines) const;
+    // The sky as the game drew it in the frame taken last (rta_scene.cpp, "the sky"): `clear` the colour the game cleared
+    // the picture to, `dome` whether the level has a painted dome round the camera, `top` / `bottom` the elevations
+    // (radians) it reaches, `ring` 256 x 2 RGB: the colours of its upper edge (row 0) and lower edge (row 1) by
+    // direction, `version` counts changes of the ring, `sun` a direction to the brightest part of it.
+    Dictionary get_sky_info() const;
+    void sky_reset();                               // a new level: what was learnt of the dome is forgotten
+    void set_output_size(const Vector2i& size);
+    Vector2i get_output_size() const { return output_size; }
 
   protected:
     static void _bind_methods();
@@ -107,6 +120,7 @@ class RtaDrawer : public RefCounted {
     Target* shown = nullptr;
     int shown_rect[4] = {0, 0, 0, 0};
     uint64_t frames = 0;
+    float last_aspect = 0;
     // figures
     uint64_t draws_submitted = 0, vertices_submitted = 0, materials_made = 0, meshes_made = 0, passes_rendered = 0, stale_reads = 0, approximated = 0,
              depth_always_writes = 0, textures_made = 0, skipped = 0;
@@ -137,6 +151,7 @@ class RtaDrawer : public RefCounted {
     bool scene_mode = false;
     Target* world_target();
     void scene_begin(const rtag_frame& frame);
+    void scene_scan_sky(const rtag_frame& frame, const Target& world);
     bool scene_take(Pass& pass, const rtag_frame& frame, const rtag_draw& draw, const Target& target, RID texture, float order);
     void scene_end(const rtag_frame& frame);
     void scene_release();

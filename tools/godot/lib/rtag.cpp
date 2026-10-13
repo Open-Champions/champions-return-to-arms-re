@@ -626,6 +626,15 @@ int rtag_set_option(const char* key, const char* value) {
         return 1;
     }
     if (k.compare(0, 5, "view.") == 0) return fpview::setting(key, value) ? 1 : 0;
+    if (k == "aspect") {                                // the shape of the 3-D view, width / height (4:3 at the least)
+        double shape = atof(value);
+        if (!(shape > 0)) return 0;
+        if (shape < 4.0 / 3.0) shape = 4.0 / 3.0;
+        g_m->aspect = shape;
+        gfxrt::set_aspect(shape);                       // taken by the game at its next frame
+        if (g_m->scene3d) scene::set_aspect(shape);
+        return 1;
+    }
     if (k == "game_hud") {
         bool off = v == "off" || v == "0" || v == "no";
         gfxrt::set_hud_marks(off);                      // the marks that say what the HUD's draw functions made, also at 4:3

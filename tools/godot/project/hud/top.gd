@@ -188,6 +188,56 @@ func _draw() -> void:
 	hud.draw_end(t0)
 
 
+# Notices are drawn by their own item (the Notice piece shares this script's helper): they must show whatever the
+# playing HUD does - over a menu as well.
+static func draw_notice(ci: CanvasItem, hud: Node) -> void:
+	if hud.notices.is_empty():
+		return
+	var s: float = hud.s
+	var n: Dictionary = hud.notices[hud.notices.size() - 1]
+	var wall := Time.get_ticks_msec() / 1000.0
+	var age: float = wall - float(n.born)
+	var life: float = float(n.seconds)
+	var a: float = clampf(age / 0.2, 0.0, 1.0) * clampf((life + 0.5 - age) / 0.5, 0.0, 1.0)
+	var w: float = 350.0 * s
+	var h: float = 86.0 * s
+	var area: Rect2 = hud.area
+	var top: float = area.position.y + (166.0 * s if (hud.layout == Hud.LAYOUT_OVERHEAD and hud.setting.radar and hud.show > 0.0) else 0.0)
+	var o := Vector2(area.end.x - w + (1.0 - Style.ease_out(age / 0.3)) * 40.0 * s, top).round()
+	Style.panel(ci, Rect2(o, Vector2(w, h)), s, a, 8.0)
+	ci.draw_rect(Rect2(o + Vector2(0, 8.0 * s), Vector2(3.0 * s, h - 16.0 * s)), Color(Style.PARTY, a))
+	# who: a disc with the first letter
+	var c := o + Vector2(32.0, 30.0) * s
+	ci.draw_circle(c, 17.0 * s, Color(Style.PARTY.darkened(0.45), a))
+	Style.text(ci, c + Vector2(0, 7.0 * s), str(n.get("who", "?")).substr(0, 1).to_upper(), 20.0 * s, Color(Style.TEXT, a), 1, true)
+	var x: float = o.x + 60.0 * s
+	var title: String = str(n.get("title", ""))
+	while title.length() > 8 and Style.text_width(title, 15.0 * s, true) > w - 72.0 * s:
+		title = title.substr(0, title.length() - 2)
+	Style.text(ci, Vector2(x, o.y + 25.0 * s), title, 15.0 * s, Color(Style.TEXT, a), 0, true)
+	Style.text(ci, Vector2(x, o.y + 44.0 * s), str(n.get("text", "")), 13.0 * s, Color(Style.TEXT_DIM, a))
+	# how to answer: the key, or both sticks of the controller pressed together and held
+	var y: float = o.y + 68.0 * s
+	var pad := Input.get_connected_joypads().size() > 0
+	var accept: String = str(n.get("accept_text", "Accept"))
+	if pad:
+		var hold: float = clampf(hud.notice_hold / 0.5, 0.0, 1.0)
+		for k in range(2):
+			var sc := Vector2(x + 9.0 * s + 22.0 * s * k, y - 4.0 * s)
+			ci.draw_circle(sc, 8.5 * s, Color(0.10, 0.10, 0.13, 0.95 * a))
+			ci.draw_arc(sc, 8.5 * s, 0, TAU, 20, Color(1, 1, 1, 0.4 * a), 1.0, true)
+			ci.draw_circle(sc, 3.5 * s, Color(Style.TEXT, a))
+			if hold > 0.0:
+				ci.draw_arc(sc, 8.5 * s, -PI * 0.5, -PI * 0.5 + TAU * hold, 20, Color(Style.XP_B, a), 2.0 * s, true)
+		Style.text(ci, Vector2(x + 48.0 * s, y), "hold both sticks: " + accept, 12.0 * s, Color(Style.TEXT, a))
+	else:
+		var cw: float = Style.keycap(ci, Vector2(x, y - 4.0 * s), "F2", 11.0 * s, a)
+		Style.text(ci, Vector2(x + cw + 8.0 * s, y), accept, 12.0 * s, Color(Style.TEXT, a))
+	# the time it has left
+	var left: float = clampf(1.0 - age / life, 0.0, 1.0)
+	ci.draw_rect(Rect2(o + Vector2(8.0 * s, h - 4.0 * s), Vector2((w - 16.0 * s) * left, maxf(1.0, 2.0 * s))), Color(Style.PARTY, 0.8 * a))
+
+
 func _network(s: float) -> void:
 	var area: Rect2 = hud.area
 	var notice: int = hud.frame.get("net_notice", 0) if hud.ok else 0

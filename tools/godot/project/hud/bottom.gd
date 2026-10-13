@@ -132,6 +132,7 @@ func _draw() -> void:
 		# the game's own boss meter is drawn across the lower middle (y 414..430 of 448) and no switch hides it yet: step over it
 		if not (first or third) and int(hud.frame.get("boss_uid", 0)) != 0 and not hud.setting.get("game_meter_hidden", false):
 			base = minf(base, hud.picture.position.y + hud.picture.size.y * (406.0 / 448.0))
+		hud.slots_top = base - 100.0 * k
 		_slots(me, Vector2(x, base), k)
 		_gold(me, s, first, (64.0 * k + 34.0 * s) if (first or third) else 0.0)
 		_prompt(s, (area.end.y - 158.0 * s) if first else (base - 64.0 * k - 60.0 * s))

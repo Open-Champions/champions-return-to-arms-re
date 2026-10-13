@@ -154,23 +154,31 @@ func _frame(p: Dictionary) -> void:
 	Style.text(self, Vector2(right, o.y + 94.5 * s), xp_text, 12.0 * s, Style.TEXT_DIM, 2)
 	if pending:
 		Style.text(self, Vector2(o.x + 16.0 * s, o.y - 44.0 * s), "Level up - open the character screen", 14.0 * s, Color(Style.XP_B, 0.75 + 0.25 * sin(hud.now * 5.0)), 0, true)
-	_status_row(p, Vector2(o.x + 16.0 * s, o.y - 20.0 * s), s)
+	_status_row(p, Vector2(o.x + 2.0 * s, o.y - 22.0 * s), s)
 
 
 func _status_row(p: Dictionary, at: Vector2, s: float, centred := false) -> void:
+	# a glyph in a ring that empties, the seconds beside it
 	var st: PackedFloat32Array = p.status
 	var n := st.size() / 4
 	if n == 0:
 		return
-	var step: float = 34.0 * s
-	var x: float = at.x - (step * (n - 1) * 0.5 if centred else 0.0)
+	var widths: Array = []
+	var total := 0.0
+	for k in range(n):
+		var seconds: float = st[k * 4 + 2]
+		var w: float = 34.0 * s + (Style.text_width("%d" % int(ceilf(seconds)), 13.0 * s, true) + 6.0 * s if seconds >= 0.95 else 0.0)
+		widths.append(w)
+		total += w
+	var x: float = at.x + 14.0 * s - (total * 0.5 if centred else 0.0)
 	for k in range(n):
 		var seconds: float = st[k * 4 + 2]
 		var most: float = st[k * 4 + 3]
-		var c := Vector2(x + step * k, at.y)
+		var c := Vector2(x, at.y)
 		Style.status_icon(self, int(st[k * 4]), c, 14.0 * s, seconds / most if (seconds >= 0.0 and most > 0.0) else -1.0)
 		if seconds >= 0.95:
-			Style.text(self, c + Vector2(0, 26.0 * s), "%d" % int(ceilf(seconds)), 11.0 * s, Style.TEXT, 1, true)
+			Style.text(self, c + Vector2(19.0 * s, 5.0 * s), "%d" % int(ceilf(seconds)), 13.0 * s, Style.TEXT, 0, true)
+		x += widths[k]
 
 
 func _party() -> void:

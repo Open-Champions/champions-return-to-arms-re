@@ -10,6 +10,8 @@ enum : uint32_t {
     V_LIT = 128,        // ... and the surface takes Godot's lights and shadows on top of the game's own (baked) light
     V_CASTER = 256,     // ... a twin that is only drawn into Godot's shadow maps
     V_NORMALS = 512,    // ... the mesh carries the game's own normals (world space, in CUSTOM1)
+    V_NOFOG = 1024,     // ... the haze leaves it alone (the game's sky dome)
+    V_NEARFADE = 2048,  // ... it fades as it comes up to the eye (camera-facing sprites placed in the world by their depth)
 };
 
 }  // namespace rta_variant

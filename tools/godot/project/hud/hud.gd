@@ -73,7 +73,7 @@ const CF_NAMED := 256
 const CF_INERT := 512
 const CF_ONSCREEN := 1024
 
-var setting := {"mode": "both", "view": "auto", "scale": 1.0, "numbers": true, "radar": true, "fake_party": 0, "music": true, "music_volume": 0.8}
+var setting := {"mode": "both", "view": "auto", "scale": 1.0, "numbers": true, "radar": true, "fake_party": 0, "music": true, "music_volume": 0.8, "theme": ""}
 
 var host: Node                          # main.gd
 var machine: Object                     # RtaMachine
@@ -102,8 +102,13 @@ var draw_usec := 0.0                    # the children's _draw calls of this fra
 var draw_total := 0.0
 var last_blank := -1
 var game_hud_asked := 0                 # 0 not yet, 1 asked off, 2 asked on
+var slots_top := 0.0                    # window y of the top of the slot row (bottom.gd): what sits at the picture's foot stays above it
 var own_text := true                    # this HUD draws the one-line message and the interaction prompt itself (false: the game's own are in the picture)
 var said := {}
+var portal: Node                        # the portal (tools/godot/project/portal), when this game was started from it
+var notices: Array = []                 # invitations and requests to draw in the game: {id, kind, who, title, text, accept_text, born, seconds}
+var notice_hold := 0.0                  # seconds both sticks have been held down (the controller's answer)
+var controls := {}                      # what the controls side knows (fpcontrols::hud(), through machine.get_controls_hud()), empty without
 var shots: PackedStringArray = PackedStringArray()
 var phase_blanks := {}
 var timed: Array = []                   # [level, tick, words] still to run (--hud-at)
@@ -111,12 +116,15 @@ var timed: Array = []                   # [level, tick, words] still to run (--h
 @onready var root: Control = $Root
 @onready var pieces: Array = [$Root/World, $Root/Threat, $Root/Status, $Root/Top, $Root/Bottom, $Root/Pause]
 @onready var music: Node = $Music
+@onready var notice_piece: Control = $Root/Notice
 
 
 func _ready() -> void:
 	host = get_parent()
 	process_priority = 10               # after the host has taken its frame
 	_load_settings()
+	if str(setting.theme) != "":
+		Style.set_skin(str(setting.theme))
 	_parse_arguments()
 	root.modulate.a = 0.0
 	for piece in pieces:
@@ -124,6 +132,9 @@ func _ready() -> void:
 		piece.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	music.set("hud", self)
+	notice_piece.set("hud", self)
+	notice_piece.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_find_portal.call_deferred()
 	if ClassDB.class_exists("RtaGameState"):
 		gs = ClassDB.instantiate("RtaGameState")
 	else:
@@ -160,6 +171,7 @@ func _parse_arguments() -> void:
 			"--hud-view": command(["view", value]); k += 1
 			"--hud-scale": command(["scale", value]); k += 1
 			"--hud-fake-party": command(["fake-party", value]); k += 1
+			"--hud-theme": command(["theme", value]); k += 1
 			"--hud-at":
 				# commands at chosen simulation ticks of a level, "LEVEL@TICK:words;LEVEL@TICK:words": for test runs that are
 				# not paced (there the host takes several blanks per picture and a script's "app hud" line can pass unseen).
@@ -188,6 +200,16 @@ func command(w: Array) -> void:
 				setting.view = value
 		"scale":
 			setting.scale = clampf(value.to_float(), 0.5, 2.0)
+		"theme":
+			# a skin script (style.gd says what it may have); "default" or nothing: the HUD's own drawing
+			var path := "" if value == "default" else value
+			if Style.set_skin(path):
+				setting.theme = path
+				for piece in pieces:
+					piece.set("last_signature", "")
+					piece.queue_redraw()
+			else:
+				push_warning("hud: no skin at " + value)
 		"numbers":
 			setting.numbers = value != "off"
 		"radar":
@@ -201,6 +223,11 @@ func command(w: Array) -> void:
 				print("hud music: " + music.call("figures"))
 			elif value == "scan":
 				music.call("scan")
+			elif value == "tap":
+				music.call("tap")
+			elif value == "game" and w.size() > 2 and machine != null and machine.has_method("set_option"):
+				# test aid: the library's own control, directly ("app hud music game 0.25")
+				print("hud music: set_option music_volume %s -> %s" % [str(w[2]), str(machine.call("set_option", "music_volume", str(w[2])))])
 		"music-volume":
 			setting.music_volume = clampf(value.to_float(), 0.0, 1.0)
 		"delay":
@@ -216,6 +243,24 @@ func command(w: Array) -> void:
 			# (FILE.txt): both of the same displayed frame, whatever the pacing
 			if value != "":
 				shots.append(value)
+		"test-portal":
+			# a stand-in for the portal (hud/dev/portal_stub.gd), to try the notice card and its answer without a network
+			if get_tree().get_first_node_in_group("portal") == null:
+				var stub := Node.new()
+				stub.set_script(load("res://hud/dev/portal_stub.gd"))
+				get_tree().root.add_child(stub)
+				_find_portal()
+			if portal != null and portal.has_method("test_notice"):
+				portal.call("test_notice", value if value != "" else "invite")
+		"test-sticks":
+			# both sticks of a controller made by the test, down or up
+			for button in [JOY_BUTTON_LEFT_STICK, JOY_BUTTON_RIGHT_STICK]:
+				var event := InputEventJoypadButton.new()
+				event.device = 0
+				event.button_index = button
+				event.pressed = value != "up"
+				Input.parse_input_event(event)
+			Input.flush_buffered_events()
 		"test":
 			# test aids for pictures: events and states that a short scripted run does not reach, drawn from data
 			# that is marked as test data on screen
@@ -224,6 +269,70 @@ func command(w: Array) -> void:
 					piece.call("test", w.slice(1))
 		_:
 			push_warning("hud: unknown command " + " ".join(PackedStringArray(w)))
+
+
+# ---- the portal's notices ------------------------------------------------------------------------
+# An invitation or a friend request that arrives while playing is drawn by this HUD as one small card (top.gd).
+# Answering it: F2 on the keyboard (the portal's own key), and on a controller BOTH STICKS PRESSED TOGETHER for half a
+# second.  Every button of the pad is the game's; this chord is the one that costs nothing in a fight: the game sees
+# its two buttons (left stick: the camera swings behind the character; right stick: the map changes its size), no
+# action of the character is on either, and the chord cannot be hit by accident.  Not answering lets the card run out.
+func _find_portal() -> void:
+	portal = get_tree().get_first_node_in_group("portal")
+	if portal == null or not portal.has_signal("notice"):
+		portal = null
+		return
+	portal.set("draw_notices_in_game", false)
+	portal.connect("notice", _on_notice)
+	portal.connect("notice_gone", _on_notice_gone)
+
+
+func _on_notice(d: Dictionary) -> void:
+	_on_notice_gone(str(d.get("id", "")))
+	var n := d.duplicate()
+	n["born"] = Time.get_ticks_msec() / 1000.0
+	n["seconds"] = float(d.get("seconds", 20.0 if str(d.get("kind", "")) == "invite" else 14.0))
+	notices.append(n)
+
+
+func _on_notice_gone(id: String) -> void:
+	for k in range(notices.size() - 1, -1, -1):
+		if str(notices[k].get("id", "")) == id:
+			notices.remove_at(k)
+
+
+func _notices(delta: float) -> void:
+	if notices.is_empty():
+		notice_hold = 0.0
+		if notice_piece.visible:
+			notice_piece.call("tick")
+		return
+	if machine == null or area.size == Vector2.ZERO:
+		# no game picture yet (or no more): the card lays itself out in the window
+		var window := Vector2(get_viewport().get_visible_rect().size)
+		s = clampf(window.y / 1080.0, 0.74, 4.0) * float(setting.scale)
+		picture = Rect2(Vector2.ZERO, window)
+		area = picture.grow(-maxf(12.0, 0.025 * window.y))
+	notice_piece.call("tick")
+	var wall := Time.get_ticks_msec() / 1000.0
+	for k in range(notices.size() - 1, -1, -1):
+		if wall - float(notices[k].born) > float(notices[k].seconds) + 0.5:
+			notices.remove_at(k)        # the portal drops its own copy by its own clock
+	if notices.is_empty():
+		return
+	var pads := Input.get_connected_joypads()
+	var device: int = pads[0] if pads.size() > 0 else 0
+	if Input.is_joy_button_pressed(device, JOY_BUTTON_LEFT_STICK) and Input.is_joy_button_pressed(device, JOY_BUTTON_RIGHT_STICK):
+		notice_hold += delta
+		if notice_hold >= 0.5:
+			notice_hold = 0.0
+			var id := str(notices[notices.size() - 1].get("id", ""))
+			print("hud: notice %s answered with both sticks" % id)
+			if portal != null:
+				portal.call("notice_answer", id, true)
+			_on_notice_gone(id)
+	else:
+		notice_hold = 0.0
 
 
 func cost_text() -> String:
@@ -260,10 +369,11 @@ func state_text() -> String:
 	return t
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	if gs == null:
 		return
 	var t0 := Time.get_ticks_usec()
+	_notices(delta)
 	draw_total += draw_usec
 	draw_usec = 0.0
 	machine = host.get("machine")
@@ -301,6 +411,9 @@ func _process(_delta: float) -> void:
 		me = players[local] if local >= 0 and players[local].get("present", false) else {}
 		creatures = gs.call("get_creatures")
 		events = gs.call("get_events")
+		# the controls side (tools/recomp/app/fpcontrols.h, Hud): what a swing or a shot would take, whether a reticle means
+		# anything, attackers with their bearing.  Asked for as machine.get_controls_hud(); used when it is there.
+		controls = machine.call("get_controls_hud") if machine.has_method("get_controls_hud") else {}
 	else:
 		phase = 0
 		me = {}

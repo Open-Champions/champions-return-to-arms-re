@@ -11,6 +11,9 @@
 //   GS_DEPTH_WRITE      writes depth
 //   GS_LINEAR           the texture is filtered    GS_REPEAT   it repeats on both axes
 //   GS_WORLD            scene mode: the vertex is a world position under Godot's camera (see below)
+//   GS_LIT              ... and Godot's sun and lamps decide how much of the game's colour arrives (below)
+//   GS_NORMALS          ... the mesh has the game's own normals      GS_CASTER   a twin that only throws a shadow
+//   GS_NOFOG            ... the haze of atmosphere.gdshaderinc leaves it alone (the game's sky dome)
 //
 // Colours are carried in the GS's units as in tools/recomp/render/backend_gl.cpp, whose
 // fragment shader this follows line for line: 0..255, with 128 = 1.0 for alpha and for the
@@ -39,7 +42,7 @@ render_mode depth_draw_never;
 #endif
 #ifdef GS_WORLD
 #ifdef GS_LIT
-render_mode cull_disabled, specular_disabled, fog_disabled;
+render_mode cull_disabled, specular_disabled, fog_disabled, ambient_light_disabled;
 #else
 render_mode unshaded, cull_disabled, shadows_disabled, fog_disabled;
 #endif
@@ -86,6 +89,11 @@ uniform float fix = 1.0;
 uniform float mask_rgb = 0.0;                       // 1: the colour is not written
 #ifdef GS_WORLD
 uniform float depth_bias = 0.0;                     // toward the camera, in clip space: what lies on a surface is drawn on it
+#ifndef GS_CASTER
+#include "res://shaders/atmosphere.gdshaderinc"
+varying vec3 v_world;
+varying float v_haze;                               // 0: the surface as it is .. 1: lost in the haze
+#endif
 #endif
 
 varying vec3 v_st;
@@ -113,6 +121,9 @@ void vertex() {
 	NORMAL = CUSTOM1.xyz;                               // the game's own normal (the mesh is in world space)
 #endif
 	v_pos = vec2(0.0);
+#ifndef GS_CASTER
+	v_world = VERTEX;
+#endif
 	POSITION = PROJECTION_MATRIX * (MODELVIEW_MATRIX * vec4(VERTEX, 1.0));
 	POSITION.z += depth_bias * POSITION.w;
 #else
@@ -205,6 +216,25 @@ void fragment() {
 	float destination = clamp(abs(blend.z * factor + blend.w), 0.0, 1.0);
 	vec3 rgb = clamp(c.rgb / 255.0 * source, 0.0, 1.0);
 	if (mask_rgb > 0.5) { rgb = vec3(0.0); destination = 1.0; }
+	vec3 haze = vec3(0.0);
+#ifdef GS_WORLD
+	vec3 to_surface = v_world - CAMERA_POSITION_WORLD;
+	float dist = length(to_surface);
+#ifdef GS_NEARFADE
+	// A sprite the game sized for a camera far overhead (a glow, a spark, a puff) is drawn as large on the screen
+	// however near it is: one at the eye would cover the picture.  It thins out as it comes up to the eye.
+	float keep = smoothstep(18.0, 75.0, dist);
+	rgb *= keep;
+	destination = mix(1.0, destination, keep);
+#endif
+#ifndef GS_NOFOG
+	// The haze: what is drawn fades, and the haze's own colour comes in its place as far as this draw covers
+	// what is behind it (an additive glow only fades; an opaque wall becomes haze).
+	float f = rta_haze(dist, v_world.z);
+	haze = rta_haze_colour(to_surface / max(dist, 0.001)) * f * (1.0 - destination);
+	rgb *= 1.0 - f;
+#endif
+#endif
 #ifdef GS_LIT
 	// The colour the game drew - its texture times its own vertex light - is the surface's
 	// colour here; Godot's ambient light and lights (light() below) say how much of it
@@ -219,8 +249,14 @@ void fragment() {
 #endif
 	ROUGHNESS = 1.0;
 	METALLIC = 0.0;
-#endif
+	// Without Godot's ambient light (ambient_light_disabled): what arrives where no light reaches is put in as the
+	// surface's own light - the game's colour times rta_light_ambient, and the haze - so that it is exact in stored
+	// values; the sun's pass then adds its share of ALBEDO (light() below).
 	ALBEDO = to_linear(rgb);
+	EMISSION = to_linear(clamp(rgb * rta_light_ambient.rgb + haze, 0.0, 1.0));
+#else
+	ALBEDO = to_linear(clamp(rgb + haze, 0.0, 1.0));
+#endif
 #ifdef GS_BLEND_SUB
 	ALPHA = 1.0;                                        // destination - source
 #else
@@ -236,7 +272,7 @@ void fragment() {
 // with an ambient energy of 1 - e and a sun of energy e the picture is the game's where
 // the sun reaches, and darker by e in a shadow.  A point light is added on top, by distance
 // and by the triangle's facing.
-uniform float sun_wrap = 0.55;                      // how much of the sun a surface turned away from it still gets (1: all of it)
+uniform float sun_wrap = 0.72;                      // how much of the sun a surface turned away from it still gets (1: all of it)
 void light() {
 	float facing = dot(NORMAL, LIGHT);
 #ifdef GS_NORMALS

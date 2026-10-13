@@ -34,6 +34,15 @@ extends Node
 #                       (the game builds and culls each frame for the view itself: tools/recomp/app/fpview.h)
 #   --no-game-hud       the game's own HUD layer is left out (for a HUD drawn by Godot)
 #   --light, --shadow, --pull-back F, --orbit DEG     scene mode: see scene_view.gd
+#   --look K=V[,K=V...] scene mode: the look (sky, fog, sun, shadows, bloom, anti-aliasing ...): see scene_view.gd
+#   --no-hud            the new HUD (res://hud) is not added
+#   --no-portal         (read by the portal: straight to this scene)
+#
+# Under the portal (res://portal/portal.tscn is the project's first scene; this scene is then put under it):
+#   signal session_over(why)    the game is back at its own front end after a level ("frontend"), or the machine has
+#                               ended ("ended"); the portal is told (handover.finish) and the program is NOT ended
+#   hold_input(on)              the controller is not the game's while the portal is in front of a running session
+#   apply_settings(d)           settings the portal stores, for a running game: view, wide, sharpness
 #   -- ARGS             the rest goes to the runtime as it does after rta_app's "--"
 #
 # Keyboard: W A S D left stick, arrows direction pad, I J K L triangle square cross circle,
@@ -87,7 +96,15 @@ var opt := {
 	"aspect": 0.0, "aspect_window": false, "samples": 0, "script": "", "godot_shots": "", "unpaced": false, "mute": false,
 	"no_sound": false, "test": "", "stop_after": 0, "figures": "", "args": PackedStringArray(),
 	"view": "", "game_hud": true, "light": false, "shadow": false, "pull_back": 1.0, "orbit": 0.0,
+	"look": "", "hud": true,
 }
+signal session_over(why: String)
+const G_IN_FRONTEND := 0x41B510         # symbols: g_inFrontend (a byte)
+var portal: Node                        # the portal this scene runs under (null: started directly)
+var input_held := false                 # the portal is in front: the controller is its own
+var seen_level := false
+var over_said := false
+var machine_stopped := false
 var machine: RtaMachine
 var view: Control                       # shows the picture (view.gd)
 var picture_texture: ImageTexture
@@ -135,6 +152,13 @@ func _ready() -> void:
 	view.set_script(load("res://view.gd"))
 	view.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(view)
+	portal = get_tree().get_first_node_in_group("portal")
+	if portal != null and (bool(portal.get("passing")) or not portal.is_ancestor_of(self)):
+		portal = null
+	if portal != null and portal.has_signal("shown_changed"):
+		portal.connect("shown_changed", func(is_shown: bool) -> void: hold_input(is_shown))
+	if opt.hud and opt.mode != "picture" and DisplayServer.get_name() != "headless" and ResourceLoader.exists("res://hud/hud.tscn"):
+		add_child(load("res://hud/hud.tscn").instantiate())      # the HUD agent's one line (docs/issues/native-hud.md)
 	if opt.disc == "" and OS.has_environment("RTA_DISC"):
 		opt.disc = OS.get_environment("RTA_DISC")
 	if opt.disc == "":
@@ -185,8 +209,14 @@ func _parse_arguments() -> void:
 			"--shadow": opt.shadow = true
 			"--pull-back": opt.pull_back = value.to_float(); k += 1
 			"--orbit": opt.orbit = value.to_float(); k += 1
-			"--offscreen", "--plain": pass
-			_: push_warning("unknown option " + a)
+			"--look": opt.look = value; k += 1
+			"--no-hud": opt.hud = false
+			"--offscreen", "--plain", "--no-portal": pass
+			_:
+				if not (a.begins_with("--portal") or a.begins_with("--hud")):
+					push_warning("unknown option " + a)
+				elif not value.begins_with("--"):
+					k += 1
 		k += 1
 
 
@@ -294,6 +324,8 @@ func _start() -> void:
 	if own_picture:
 		picture_texture = ImageTexture.new()
 	else:
+		if opt.mode == "scene":
+			load("res://scene_view.gd").add_globals()       # the atmosphere's shader parameters, before a shader names them
 		drawer = ClassDB.instantiate("RtaDrawer")
 		drawer.call("set_shader_code", (load("res://shaders/gs_draw.gdshaderinc") as ShaderInclude).code)
 		drawer.call("setup", machine, get_viewport().get_viewport_rid(), size, opt.samples)
@@ -330,7 +362,38 @@ func _cannot_start(text: String) -> void:
 		get_tree().quit(2)          # a test run never waits for a person
 
 
+func hold_input(on: bool) -> void:
+	input_held = on
+	if on and machine != null and started:
+		machine.set_pad(0, 0, 128, 128, 128, 128)
+
+
+func apply_settings(d: Dictionary) -> void:
+	# what the portal stores, for a game that is running (at the first start the same arrive in `opt`)
+	if machine == null or not started:
+		return
+	if d.has("view"):
+		machine.set_option("view", String(d.view))
+	if d.has("wide"):
+		var shape: float = max(float(get_window().size.x) / get_window().size.y, 4.0 / 3.0) if bool(d.wide) else 4.0 / 3.0
+		opt.aspect = shape
+		machine.set_option("aspect", "%.5f" % shape)
+	if d.has("sharpness") and drawer != null:
+		var sharp: float = [0.5, 0.75, 1.0, 1.5, 2.0][clampi(int(d.sharpness), 0, 4)]
+		var pixels := Vector2(get_window().size) * sharp
+		var shape2: float = opt.aspect if opt.aspect > 0.0 else 4.0 / 3.0
+		opt.size = Vector2i(int(round(pixels.y * shape2)), int(pixels.y))
+		drawer.call("set_output_size", opt.size)
+	if scene_view != null and d.has("look"):
+		scene_view.call("set_look", String(d.look))
+
+
 func _read_pad() -> void:
+	if input_held:
+		last_buttons = 0
+		last_sticks = [128, 128, 128, 128]
+		machine.set_pad(0, 0, 128, 128, 128, 128)
+		return
 	var buttons := 0
 	for key in KEY_BUTTONS:
 		if Input.is_physical_key_pressed(key):
@@ -409,8 +472,14 @@ func _host_command(text: String) -> void:
 		print("[blank %d] rta_godot: controller %s; port 1 holds buttons %04x, sticks %d %d %d %d; %d key events" % [blanks,
 			"made by the script" if test_pad else (Input.get_joy_name(Input.get_connected_joypads()[0]) if Input.get_connected_joypads().size() > 0 else "none"),
 			last_buttons, last_sticks[0], last_sticks[1], last_sticks[2], last_sticks[3], key_events])
-	elif w.size() >= 1 and (w[0] == "light" or w[0] == "camera" or w[0] == "scene") and scene_view != null:
+	elif w.size() >= 1 and (w[0] == "light" or w[0] == "camera" or w[0] == "scene" or w[0] == "look") and scene_view != null:
 		scene_view.call("command", w)
+	elif w.size() >= 2 and w[0] == "hold":
+		hold_input(w[1] == "on")            # test aid: as the portal does while it is in front
+	elif w.size() >= 3 and w[0] == "setting":
+		apply_settings({w[1]: (w[2] == "true" if w[2] in ["true", "false"] else (w[2].to_int() if w[2].is_valid_int() else w[2]))})
+	elif w.size() >= 1 and w[0] == "hud":
+		pass                                # the HUD's own lines (res://hud/hud.gd reads them)
 	else:
 		push_warning("app command not known: " + text)
 
@@ -458,6 +527,8 @@ func _take_frame() -> void:
 		_host_command(text)
 	if drawer != null:
 		var t0 := Time.get_ticks_usec()
+		if scene_view != null:
+			scene_view.call("before_frame")
 		drawer.call("submit")
 		if scene_view != null:
 			scene_view.call("frame")
@@ -524,10 +595,51 @@ func _process(delta: float) -> void:
 		for path in paths:
 			image.save_png(path)
 			print("rta_godot: wrote %s (%d x %d), the Godot window's own picture" % [path, image.get_width(), image.get_height()])
+	_watch_session()
 	if machine.ended() and machine.poll(0) != 1:
-		_finish(machine.exit_code())
+		if portal != null and opt.script == "":
+			_end_session("ended")           # under the portal the program goes on: the portal comes back
+		else:
+			_finish(machine.exit_code())
 	elif opt.stop_after > 0 and blanks >= opt.stop_after:
 		_finish(0)
+
+
+func _watch_session() -> void:
+	# "the session is over": the game is back at its own front end after a level was played
+	if (blanks & 31) != 0 or machine == null:
+		return
+	var front := (machine.peek_u32(G_IN_FRONTEND) & 0xFF) != 0
+	if not front:
+		seen_level = true
+		over_said = false
+	elif seen_level and not over_said:
+		over_said = true
+		seen_level = false
+		_say_over("frontend")
+
+
+func _say_over(why: String) -> void:
+	print("rta_godot: the session is over (%s) at vertical blank %d%s" % [why, blanks, "" if portal != null else "; no portal to go back to"])
+	session_over.emit(why)
+	if portal != null:
+		var handover: Variant = portal.get("handover")
+		if handover is Node and (handover as Node).has_method("finish"):
+			(handover as Node).call("finish", "over")
+
+
+func _end_session(why: String) -> void:
+	# the machine has ended and the program goes on (one machine per run of the program: a new game needs a restart)
+	if machine_stopped:
+		return
+	machine_stopped = true
+	started = false
+	_write_pending_shots()
+	print(_figures())
+	machine.stop()
+	if player != null:
+		player.stop()
+	_say_over(why)
 
 
 func _figures() -> String:
@@ -549,7 +661,7 @@ func _finish(code: int) -> void:
 		return
 	quitting = true
 	_write_pending_shots()
-	if machine != null and started:
+	if machine != null and started and not machine_stopped:
 		var text := _figures()
 		machine.stop()
 		print(text)
