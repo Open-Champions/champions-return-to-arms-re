@@ -255,6 +255,9 @@ function applyPause() {
 	$("pause").textContent = pauseBits ? "Go on" : "Pause";
 	if(soundNode) soundNode.port.postMessage({ paused: !!pauseBits });
 	if(audio) (pauseBits || !$("sound").checked ? audio.suspend() : audio.resume()).catch(() => {});
+	// the game goes on at once and the sound device a moment later: what queued up meanwhile is given up, so that the
+	// sound is its 70 ms behind again and not a fifth of a second
+	if(!pauseBits && soundNode) for(const after of [400, 1200]) setTimeout(() => { if(!pauseBits) soundNode.port.postMessage({ resync: true }); }, after);
 	if(pauseBits) { keys = 0; setWord(SHARED.keys, 0); setWord(SHARED.pad, 0); setWord(SHARED.padSticks, 0x80808080); saveCard(); }
 	note(pauseBits ? "paused (" + (pauseBits & 1 ? "hidden" : "asked") + ")" : "going on");
 }

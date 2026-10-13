@@ -1,6 +1,6 @@
 # How complete is it
 
-Updated at every check-in of the work. **Last update: 2026-10-13, 11:20 CDT.**
+Updated at every check-in of the work. **Last update: 2026-10-13, 12:59 CDT.**
 
 One table for the whole effort to make Champions: Return to Arms (SLUS-20973 v2.00)
 playable again, online, on today's computers. The percentages are estimates by the people
@@ -20,7 +20,7 @@ a session by hand - every test drove the game by script, on one Apple-silicon Ma
 | Online, three and four players | 94 % | both causes of the failed launches found and fixed, one in the lobby server and one in the emulator ([three-players](issues/three-players.md)); on the rolled-out build three and four copies launch 3 of 3 times and stay in step | players behind a real router; a level change in a game of three or four |
 | Browser version (the same emulator as WebAssembly) | 92 % | plays in Chrome and Brave, and in Safari's engine with a stall on arriving in a level ([browser-build](issues/browser-build.md)); relay with per-player limits; the newest page rolled out, two pages 2,956 frames in step | the Safari stall; Firefox and Edge never run |
 | Application and browser players in one game | 75 % | two and three players in step on one Mac ([mixed-arithmetic](issues/mixed-arithmetic.md)) | a relay in public that passes datagrams to players outside it |
-| Sharper art (pictures enlarged four times) | 99 % | 122,205 of 122,231 dumped pictures enlarged | the large interface pages and the fonts checked by eye |
+| Sharper art (pictures enlarged four times) | 100 % | 122,205 of 122,231 dumped pictures enlarged (the other 26 are left out by rule); a sweep of the whole pack found no unreadable, mis-sized or mixed-up picture; interface art redone under a rule that keeps the game's shapes, fonts checked in the game | head pictures, busts and some skill icons were never dumped, so never judged |
 | Native build: the game's code and its proof | 97 % | all 7,732 functions translated; 7,460 proven identical to the original, none failing; nine sessions compared tick for tick ([native-proof](issues/native-proof.md)) | two unexplained one-tick differences; shop, save point, level-up and death compared |
 | Native build: picture | 96 % | films, heat haze, fog, widescreen, the art pack; the renderer's processor side five times cheaper with the same output ([native-render-speed](issues/native-render-speed.md)); paced at exactly 60 pictures a second - in the heaviest level's fight 1,799 of 1,799 intervals on time at 640 x 448 and 1,788 of 1,798 at display resolution; an attack shows 75 to 84 ms after the press, the emulator application's 82 to 104 ([native-app](issues/native-app.md), section 11) | a person's eye on a lit display; effects compared close up; the new pacing in the Windows program |
 | Native build: sound | 90 % | no gaps through ten level changes; film sound in step ([native-sound](issues/native-sound.md)) | somebody listening to it |
@@ -37,6 +37,10 @@ and the Godot client are tracked in their own repositories
 
 ## Since the last update
 
+- Fix set `073064bb` (29 sections, 99 words): three sections added - a save point, a
+  script read that wrote, a jump gate. Being rolled out.
+- The art pack checked as a whole and its interface pictures redone so that icons, frames
+  and runes keep the game's shapes.
 - Mac application, for the next build (in the tree, not rolled out): the window appears at
   once and says what it is waiting for; the player-name question can no longer be lost
   behind the Controls help; a rare launch failure of four players closed; one browser

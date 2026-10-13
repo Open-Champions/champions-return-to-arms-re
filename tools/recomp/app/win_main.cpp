@@ -64,9 +64,23 @@
 // Q E L1 R1, 1 3 L2 R2, X C L3 R3, Enter Start, Backspace Select, F12 a picture of the
 // game into the data directory.
 //
+//   --pacing ahead|queued   how the game is held to one frame per picture (pipeline.h): let go
+//                       by a clock just ahead of each picture's moment (the default, as in the
+//                       macOS program since 2026-10-13), or held back through the picture path's
+//                       hand-overs as this program did until then - to compare when the picture
+//                       stutters
+//
 // Threads as in app_main.cpp: the game's (rta::run), the decoder (pipeline.h) and this
-// one, which owns the window and OpenGL and paces everything: one picture per 1/60 s,
-// locked to the display's refresh when that is a multiple of 60 Hz.
+// one, which owns the window and OpenGL.  One picture per 1/60 s: the game is let go by a
+// clock just ahead of the moment each picture is due on screen (pipeline.h, Pacer); those
+// moments are a grid that is moved onto the display's refreshes - learnt from the times the
+// swaps return at where the swap waits for the display (the usual case under Windows),
+// and from the compositor's own figures (DwmGetCompositionTimingInfo) where it does not.
+// No thread waits for another across a swap: the decoder hands its lists to a queue of
+// three, and a picture that is overtaken is drawn and not shown.
+//
+// NOT RUN.  The pacing is the macOS program's (app_main.cpp, Screen::draw_one), which was
+// run; what stands in for the Mac's display link here was written by reading.
 #ifdef _WIN32
 #include "app_rt.h"
 #include "backend_gl.h"
@@ -80,6 +94,7 @@
 #include "online_win.h"                                 // tools/recomp/net: the name question and the notes on this window
 #endif
 
+#include <dwmapi.h>
 #include <mmsystem.h>
 #include <psapi.h>
 
@@ -109,6 +124,7 @@ static render::Renderer* g_renderer;
 struct Options {
     int window_w = 960, window_h = 720, size_w = 0, size_h = 0, scale = 0;
     bool offscreen = false, unpaced = false, fullscreen = false, no_sound = false, emulator_timing = false, no_log = false, no_films = false;
+    bool queued = false;                // --pacing queued: the picture path's hand-overs hold the game back
     double volume = 1.0;
     std::string test, png, disc, data, elf;
     std::set<uint64_t> at;
@@ -159,9 +175,10 @@ static double memory_mb() {
     if (!GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof pmc)) return 0;
     return (double)pmc.WorkingSetSize / 1048576.0;
 }
+// (a timer per thread: the game's thread waits for its moment while this one waits for a swap's)
 static void sleep_ms(double ms) {
     if (ms <= 0) return;
-    static HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, 0x00000002 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
+    static thread_local HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, 0x00000002 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
     if (timer) {
         LARGE_INTEGER due;
         due.QuadPart = -(LONGLONG)(ms * 10000.0);
@@ -169,6 +186,41 @@ static void sleep_ms(double ms) {
     }
     Sleep((DWORD)(ms + 0.5));
 }
+static void sleep_until(double when_ms) {
+    double now = now_ms();
+    if (when_ms > now) sleep_ms(when_ms - now);
+}
+
+// ---- the display's own refreshes ------------------------------------------------------------
+// What the display link is to the macOS program: where the refreshes lie on this
+// program's clock.  The desktop compositor says it (DwmGetCompositionTimingInfo: the
+// performance-counter time of a vertical blank and the time between two); asked only
+// where the swaps do not wait for the display, and believed only when its refreshes are
+// the window's rate apart and the answer is fresh.
+struct DisplayClock {
+    uint64_t asked = 0, told = 0;
+    bool there() {
+        BOOL on = FALSE;
+        return SUCCEEDED(DwmIsCompositionEnabled(&on)) && on;
+    }
+    bool nearest(double moment, double refresh_ms, double& refresh) {
+        asked++;
+        DWM_TIMING_INFO info;
+        memset(&info, 0, sizeof info);
+        info.cbSize = sizeof info;
+        LARGE_INTEGER frequency, counter;
+        if (FAILED(DwmGetCompositionTimingInfo(nullptr, &info)) || !info.qpcRefreshPeriod || !QueryPerformanceFrequency(&frequency) ||
+            !QueryPerformanceCounter(&counter)) return false;
+        double mine = now_ms(), to_ms = 1000.0 / (double)frequency.QuadPart;
+        double period = (double)info.qpcRefreshPeriod * to_ms;
+        double at = mine - (double)((LONGLONG)counter.QuadPart - (LONGLONG)info.qpcVBlank) * to_ms;     // that blank on this program's clock
+        if (std::fabs(period - refresh_ms) > 0.02 * refresh_ms || std::fabs(mine - at) > 100.0) return false;
+        refresh = at + std::round((moment - at) / period) * period;
+        told++;
+        return true;
+    }
+};
+static DisplayClock g_display;
 [[noreturn]] static void end_now(int code) {
     fflush(stdout);
     fflush(stderr);
@@ -320,26 +372,44 @@ struct Screen {
     DWORD normal_style = 0;
     HANDLE frame_event = nullptr;
     unsigned shot_number = 0;
-    // hand-over
+    // hand-over: lists wait here in order.  The decoder waits only when all places are
+    // taken (`limit`: 1 in the queued way - it then waits until the picture before is shown).
+    enum { DEPTH = 3 };
+    struct Item { FrameList frame; std::vector<std::string> shots; app::Timing timing; };
     std::mutex lock;
     std::condition_variable done;
-    FrameList slot;
-    std::vector<std::string> slot_shots;
-    bool busy = false;
+    Item items[DEPTH];
+    int head = 0, count = 0, limit = DEPTH;
     double submit_wait_ms = 0;                          // time the decoder waited for this thread
-    // pacing
+    app::Pacer* pacer = nullptr;
+    // pacing (as app_main.cpp's Screen; the words there apply)
     double refresh_hz = 60, refresh_ms = 1000.0 / 60, period_ms = 1000.0 / 60;
     int refreshes_per_picture = 1;
     bool display_locked = false;
-    double last_present = 0;
+    double last_present = 0, window_free = 0;
+    // Does the swap wait for the display?  Found out from how long swaps take that were asked
+    // for well before the picture's moment: six more of those that took 2.5 ms or more than
+    // of the others, and the times the swaps return at are taken as the display's refreshes.
+    int swap_evidence = 0;
+    bool swap_waits = false;
+    bool display_link = false;                          // the compositor tells where the refreshes lie (DisplayClock)
+    uint64_t link_timed = 0;
+    double ask_ahead() const {                          // how long before its moment a picture's swap is asked for
+        if (!display_locked) return 0;
+        if (display_link && !swap_waits) return 0.9 * refresh_ms;
+        return refreshes_per_picture > 1 ? 0.5 * refresh_ms : 0;
+    }
     // figures
     uint64_t blanks = 0;
     double draw_ms = 0, start_ms = 0, start_cpu = 0;
     size_t vertices = 0, commands = 0;
     struct Pace {
-        uint64_t presents = 0, swap_waited = 0, timer_waited = 0, late_starts = 0;
+        uint64_t presents = 0, swap_waited = 0, timer_waited = 0, late_starts = 0, overtaken = 0, late = 0;
         uint64_t by_refreshes[8] = {0, 0, 0, 0, 0, 0, 0, 0};    // pictures that stood for k refreshes (7 = more)
         double first = 0, last = 0, swap_ms = 0, worst_ms = 0;
+        // the path, per picture (milliseconds of wall time): sums over `timed` pictures
+        uint64_t timed = 0;
+        double game = 0, decode = 0, queue = 0, gl = 0, to_swap = 0, pipe = 0, slack = 0, pipe_most = 0;
     } pace;
 
     static LRESULT CALLBACK proc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp);
@@ -481,13 +551,40 @@ struct Screen {
         return true;
     }
 
-    // called on the decoder's thread: take this list to be drawn.  Returns as soon as the
-    // list before it has been drawn; the caller gets that one's vectors back to fill again.
-    void submit(FrameList& frame, std::vector<std::string>& shots) {
+    // Once the sink (and with it the pacer) exists, before the game starts.
+    void setup_pacer(app::Pacer* p) {
+        pacer = p;
+        limit = opt.queued ? 1 : DEPTH;
+        pacer->mode = opt.unpaced ? app::Pacer::OFF : opt.queued ? app::Pacer::QUEUED : app::Pacer::AHEAD;
+        pacer->period_ms = period_ms;
+        pacer->most_lead_ms = 2.5 * period_ms;
+        pacer->sleep_until = sleep_until;
+        // a drawn picture is to be there before the swap is asked for: half a refresh before
+        // its moment where the swaps are asked for inside the last refresh, 4 ms otherwise
+        // on a display, and a millisecond more; 2 ms where nothing is shown
+        pacer->margin_ms = opt.offscreen ? 2.0 : 1.0 + (display_locked && refreshes_per_picture > 1 ? 0.5 * refresh_ms : 4.0);
+        if (!opt.offscreen && display_locked && !opt.queued && !getenv("RTA_NO_DISPLAY_LINK")) {
+            display_link = g_display.there();
+            log_line(display_link ? "pacing: the desktop compositor is asked where the display's refreshes lie, where the swaps do not say"
+                                  : "pacing: no desktop compositor to ask for the display's refreshes");
+        }
+        if (!opt.unpaced) log_line(opt.queued ? "pacing: the picture path's hand-overs hold the game back (--pacing queued)"
+                                              : "pacing: the game is let go by the clock, just ahead of each picture's moment");
+    }
+
+    bool pending() { std::lock_guard<std::mutex> hold(lock); return count > 0; }
+
+    // called on the decoder's thread: take this list to be drawn.  Returns as soon as there
+    // is a place for it; the caller gets the vectors of an earlier list back to fill again.
+    void submit(FrameList& frame, std::vector<std::string>& shots, app::Timing timing) {
         std::unique_lock<std::mutex> hold(lock);
         double w0 = now_ms();
-        done.wait(hold, [this] { return !busy; });
-        submit_wait_ms += now_ms() - w0;
+        timing.decode_end = w0;
+        done.wait(hold, [this] { return count < limit; });
+        timing.queue_wait = now_ms() - w0;
+        submit_wait_ms += timing.queue_wait;
+        Item& item = items[(head + count) % DEPTH];
+        FrameList& slot = item.frame;
         std::swap(slot.vertices, frame.vertices);
         std::swap(slot.commands, frame.commands);
         std::swap(slot.textures, frame.textures);
@@ -498,17 +595,29 @@ struct Screen {
         slot.aspect = frame.aspect;
         memcpy(slot.show_rect, frame.show_rect, sizeof(slot.show_rect));
         slot.number = frame.number;
-        slot_shots.swap(shots);
+        item.shots.swap(shots);
         shots.clear();
-        busy = true;
+        item.timing = timing;
+        count++;
         SetEvent(frame_event);
     }
 
-    // main thread: the list in the slot is drawn, shown and paced
+    // main thread: the oldest list waiting is drawn, shown at its moment, counted.
+    // (app_main.cpp, Screen::draw_one, is the same routine with Qt's names.)
     void draw() {
-        { std::lock_guard<std::mutex> hold(lock); if (!busy) return; }
-        FrameList* frame = &slot;                       // ours until busy is cleared
+        Item* item;
+        double newer_due = -1;                          // the moment of the list behind this one, when there is one
+        {
+            std::lock_guard<std::mutex> hold(lock);
+            if (count == 0) return;
+            item = &items[head];                        // ours until it is counted off below
+            if (count > 1) newer_due = items[(head + 1) % DEPTH].timing.due;
+        }
+        FrameList* frame = &item->frame;
+        app::Timing& timing = item->timing;
         double t0 = now_ms();
+        timing.draw_start = t0;
+        if (window_free > timing.decode_end) timing.blocked += std::min(t0, window_free) - timing.decode_end;
         wgl::Functions* f = wgl::functions();
         int cw = 0, ch = 0;
         client_size(cw, ch);
@@ -533,50 +642,109 @@ struct Screen {
         vertices += frame->vertices.size();
         commands += frame->commands.size();
         if (!opt.png.empty() && opt.at.count(blanks)) save(opt.png + "-" + std::to_string(blanks) + ".png");
-        for (const std::string& path : slot_shots) save(path);
-        slot_shots.clear();
-        bool shown = !opt.offscreen && IsWindowVisible(window) && !IsIconic(window) && cw > 0 && ch > 0;
+        for (const std::string& path : item->shots) save(path);
+        item->shots.clear();
+        bool ahead = pacer && pacer->mode == app::Pacer::AHEAD && timing.due > 0;
+        // The moment this picture is due: the game's grid, or (queued, or before there is a
+        // grid) one period after the picture before.
+        double due = ahead ? timing.due : last_present + period_ms;
+        // Overtaken: the list behind this one is due as well (this thread was held up, by a
+        // swap that waited long, by Windows' own loop while the window is dragged, or by
+        // anything else).  This one was drawn - the surfaces and textures the next list
+        // builds on are as they have to be - and is not shown.
+        bool overtaken = ahead && newer_due > 0 && newer_due <= now_ms() + 0.5 * refresh_ms;
+        bool shown = !opt.offscreen && IsWindowVisible(window) && !IsIconic(window) && cw > 0 && ch > 0 && !overtaken;
         if (opt.set.frame_cap > 0 && opt.set.frame_cap <= 30 && (blanks & 1)) shown = false;        // every other picture
-        double swap_start = 0, after = 0;
+        double after = 0;
+        bool timed = false;                             // the swap returned at a refresh of the display
+        auto to_window = [&] {
+            f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            backend->present(cw, ch, frame->aspect);
+        };
+        // Let go ahead of its moment, a picture is "drawn" when the graphics card has
+        // finished it, the window's copy included: what is left for the swap is to hand it
+        // over, and how long the path takes is known (the lead is made of it).  The queued
+        // way draws the window's copy after its wait, as it always did.
+        if (ahead) {
+            if (shown) to_window();
+            f->glFinish();
+        }
+        timing.ready = now_ms();
         if (shown) {
             // with more than one refresh per picture the swap is asked for inside the last of
             // them, so that it lands on the refresh the picture is due at
-            if (display_locked && refreshes_per_picture > 1 && last_present != 0) {
-                double ask_at = last_present + period_ms - 0.5 * refresh_ms;
-                double now = now_ms();
-                if (ask_at > now) sleep_ms(ask_at - now);
-            }
-            f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
-            backend->present(cw, ch, frame->aspect);
-            swap_start = now_ms();
+            if (display_locked && last_present != 0 && (ahead ? ask_ahead() > 0 : refreshes_per_picture > 1))
+                sleep_until(due - (ahead ? ask_ahead() : 0.5 * refresh_ms));
+            if (!ahead) to_window();
+            timing.swap_start = now_ms();
             SwapBuffers(gl.dc);
             after = now_ms();
-            pace.swap_ms += after - swap_start;
-            if (after - swap_start > 1.0) pace.swap_waited++;
-        } else { f->glFlush(); after = now_ms(); }
+            if (!opt.unpaced && due - timing.swap_start >= 3.0) {
+                swap_evidence = after - timing.swap_start >= 2.5 ? std::min(swap_evidence + 1, 12) : std::max(swap_evidence - 1, 0);
+                if (swap_evidence >= 6) swap_waits = true; else if (swap_evidence == 0) swap_waits = false;
+            }
+        } else { f->glFlush(); after = now_ms(); timing.swap_start = after; }
         draw_ms += after - t0;
-        if (!opt.unpaced) {
+        bool clock_held = false, restarted = false;
+        if (overtaken) {}
+        else if (!opt.unpaced) {
             // One picture per period.  A swap that waited for the display returns at the
             // refresh; one that did not (window hidden, no display lock) is held by the clock.
-            double due = last_present + period_ms;
-            if (last_present == 0 || after - due > 2 * period_ms) { if (last_present != 0) pace.late_starts++; last_present = after; }
-            else if (after < due - 1.5) {
-                sleep_ms(due - after);
-                pace.timer_waited++;
+            // (`timed`: this swap's return is a refresh of the display, early or late; the grid learns from it)
+            timed = shown && display_locked && swap_waits && last_present != 0 && after - due <= 2 * period_ms;
+            if (last_present == 0 || after - due > 2 * period_ms) { restarted = last_present != 0; last_present = after; }
+            else if (after < due - 1.5 && !timed) {
+                sleep_until(due);
+                clock_held = true;
                 last_present = due;
             } else last_present = after;
         } else last_present = after;
-        // figures: how long the picture before this one stood, in refreshes of the display
+        timing.shown = overtaken ? 0 : timed ? after : last_present;
+        // Where the swaps do not wait, the compositor says where the refresh nearest to this
+        // picture's moment lay: the grid learns from that (a picture that came late learns nothing).
+        double refresh = 0;
+        if (ahead && shown && !timed && display_link && !swap_waits && !restarted && after <= due + 1.5 && g_display.nearest(due, refresh_ms, refresh)) {
+            timed = true;
+            timing.shown = refresh;
+            link_timed++;
+        }
+        if (pacer && ahead) pacer->margin_ms = opt.offscreen ? 2.0 : 1.0 + (display_locked ? std::max(ask_ahead(), refreshes_per_picture > 1 ? 0.0 : 4.0) : 4.0);
+        timing.due = overtaken || opt.unpaced ? 0 : due;
+        if (pacer && !overtaken) pacer->presented(timing, timed);
+        // figures: how long the picture before this one stood, in refreshes of the display,
+        // and what each part of this one's way took
         {
-            double t = opt.unpaced ? after : last_present;
-            if (pace.presents) {
-                double stood = t - pace.last;
-                long k = std::lround(stood / refresh_ms);
-                pace.by_refreshes[k < 0 ? 0 : k > 7 ? 7 : k]++;
-                if (stood > pace.worst_ms) pace.worst_ms = stood;
-            } else pace.first = t;
-            pace.last = t;
-            pace.presents++;
+            std::lock_guard<std::mutex> hold(lock);
+            if (shown) { pace.swap_ms += after - timing.swap_start; if (after - timing.swap_start > 1.0) pace.swap_waited++; }
+            if (overtaken) pace.overtaken++;
+            if (clock_held) pace.timer_waited++;
+            if (restarted) pace.late_starts++;
+            if (!overtaken) {
+                double t = opt.unpaced ? after : last_present;
+                if (pace.presents) {
+                    double stood = t - pace.last;
+                    long k = std::lround(stood / refresh_ms);
+                    pace.by_refreshes[k < 0 ? 0 : k > 7 ? 7 : k]++;
+                    if (stood > pace.worst_ms) pace.worst_ms = stood;
+                } else pace.first = t;
+                pace.last = t;
+                pace.presents++;
+            }
+            if (timing.released > 0 && timing.handed > 0) {
+                double pipe = timing.ready - timing.released - timing.blocked;
+                pace.timed++;
+                pace.game += timing.handed - timing.released;
+                pace.decode += timing.decode_end - timing.decode_start;
+                pace.queue += timing.draw_start - timing.decode_end;
+                pace.gl += timing.ready - timing.draw_start;
+                pace.to_swap += timing.swap_start - timing.ready;
+                pace.pipe += pipe;
+                if (pipe > pace.pipe_most) pace.pipe_most = pipe;
+                if (timing.due > 0) {
+                    pace.slack += timing.due - timing.ready;
+                    if (timing.shown > timing.due + 0.5 * refresh_ms) pace.late++;       // on screen more than half a refresh after its moment
+                }
+            }
         }
         blanks++;
         if (opt.stop_after && blanks >= opt.stop_after) {
@@ -584,7 +752,8 @@ struct Screen {
             g_pads.quit = true;                         // the game's thread prints the reports and ends the process
             SetTimer(window, TIMER_END, 3000, nullptr);
         }
-        { std::lock_guard<std::mutex> hold(lock); busy = false; }
+        window_free = now_ms();
+        { std::lock_guard<std::mutex> hold(lock); head = (head + 1) % DEPTH; count--; }
         done.notify_all();
     }
 
@@ -607,6 +776,21 @@ struct Screen {
         printf(" longest %.1f ms; the swap waited for the display %llu times (%.2f ms on average), the clock held %llu, %llu restarts after a stall\n",
                p.worst_ms, (unsigned long long)p.swap_waited, p.presents ? p.swap_ms / p.presents : 0.0, (unsigned long long)p.timer_waited,
                (unsigned long long)p.late_starts);
+        if (p.timed) {
+            double n2 = (double)p.timed;
+            printf("rta_app: path: per picture, ms of wall time on average: game side %.2f; decoder %.2f; to the window's thread %.2f; OpenGL (to glFinish) %.2f; "
+                   "drawn, until the swap is asked for %.2f; in the swap %.2f; from letting the game go to the drawn picture %.2f (longest %.1f)\n",
+                   p.game / n2, p.decode / n2, p.queue / n2, p.gl / n2, p.to_swap / n2, p.presents ? p.swap_ms / p.presents : 0.0, p.pipe / n2, p.pipe_most);
+            if (pacer && pacer->mode == app::Pacer::AHEAD)
+                printf("rta_app: path: the game is let go %.2f ms ahead of the picture's moment now; a drawn picture was there %.2f ms before its moment on average; "
+                       "%llu of %llu were on screen more than half a refresh late; %llu drawn and not shown (overtaken); the grid was started again %llu times and "
+                       "moved %.1f ms toward the display in all; the swaps %s; %llu pictures' moments were set against the compositor's refreshes (asked %llu times, "
+                       "answered %llu); the game's thread woke %.2f ms after the time it asked for on average\n",
+                       pacer->lead_ms.load(), p.slack / n2, (unsigned long long)p.late, (unsigned long long)p.timed, (unsigned long long)p.overtaken,
+                       (unsigned long long)pacer->resyncs.load(), pacer->slewed_ms.load(), swap_waits ? "wait for the display" : "do not wait for the display",
+                       (unsigned long long)link_timed, (unsigned long long)g_display.asked, (unsigned long long)g_display.told,
+                       pacer->wakes.load() ? pacer->woke_late_ms.load() / pacer->wakes.load() : 0.0);
+        }
         fflush(stdout);
     }
 };
@@ -658,7 +842,7 @@ LRESULT CALLBACK Screen::proc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_TIMER:
         if (wp == TIMER_END) end_now(0);
-        if (wp == TIMER_MOVE && s && WaitForSingleObject(s->frame_event, 0) == WAIT_OBJECT_0) s->draw();
+        if (wp == TIMER_MOVE && s) { WaitForSingleObject(s->frame_event, 0); while (s->pending()) s->draw(); }
         return 0;
     case WM_CLOSE:
         // the game's thread ends the run at its next vertical blank (reports, sound device);
@@ -834,6 +1018,22 @@ struct AppSink : app::Sink {
     }
 };
 
+// The picture's and the game's threads are the player's own work (what the macOS program
+// asks for with its user-interactive class and its latency-critical activity): a step ahead
+// of ordinary programs, and not slowed down or given coarse timers when the window is not
+// in front - Windows 11 does both to a process whose windows are covered unless it says
+// otherwise.  Not for test runs and runs without a window.
+static void keep_pace() {
+    SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
+    struct Throttling { ULONG version, control, state; };
+    HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
+    auto set = kernel ? (BOOL(WINAPI*)(HANDLE, int, LPVOID, DWORD))(void*)GetProcAddress(kernel, "SetProcessInformation") : nullptr;
+    if (!set) return;
+    // ProcessPowerThrottling (4): "execution speed" (1) and "ignore timer resolution" (4, Windows 11) both switched off
+    Throttling both = {1, 0x1 | 0x4, 0}, speed = {1, 0x1, 0};
+    if (!set(GetCurrentProcess(), 4, &both, sizeof both)) set(GetCurrentProcess(), 4, &speed, sizeof speed);
+}
+
 static bool file_exists(const std::string& path) {
     DWORD a = GetFileAttributesW(wide(path).c_str());
     return a != INVALID_FILE_ATTRIBUTES;
@@ -855,6 +1055,7 @@ static const char* HELP =
     "picture (each also a line of rta-data\\settings.txt, which is written with its defaults at the first start):\n"
     "        [--aspect auto|4:3|16:9|16:10|21:9|W:H] [--resolution window|WxH|Nx] [--antialiasing off|2|4|8] [--anisotropy 1..16]\n"
     "        [--mipmaps yes|no] [--art-pack FOLDER] [--art-memory MB] [--frame-cap 60|30|0] [--plain] [--settings FILE] [--no-settings]\n"
+    "        [--pacing ahead|queued]   (queued: the pacing of the first builds - try it when the picture stutters, and say so)\n"
 #ifdef RTA_NET
     "online: [--server ADDRESS] (or the first line of server.txt beside the program) [--online | --host [CODE] | --join CODE]\n"
     "        [--choose-character] [--player N] [--server-public ADDRESS] [--name NAME]\n"
@@ -901,6 +1102,7 @@ int main(int argc, char** argv) {
         else if (a == "--art-pack") overrides.push_back({"art_pack", next()});
         else if (a == "--art-memory") overrides.push_back({"art_memory", next()});
         else if (a == "--frame-cap") overrides.push_back({"frame_cap", next()});
+        else if (a == "--pacing") { std::string way = next(); opt.queued = way == "queued"; if (way != "queued" && way != "ahead") { fail("--pacing ahead|queued", own_console); return 2; } }
         else if (a == "--plain") plain = true;
         else if (a == "--settings") opt.settings_file = next();
         else if (a == "--no-settings") no_settings = true;
@@ -1071,8 +1273,10 @@ int main(int argc, char** argv) {
     renderer.on_frame = [](FrameList& frame) {
         static std::vector<std::string> shots;
         sink.take(frame.number, shots);
-        g_screen->submit(frame, shots);
+        g_screen->submit(frame, shots, sink.current);
     };
+    screen.setup_pacer(&sink.pacer);
+    if (!opt.offscreen && !opt.unpaced && opt.test.empty()) keep_pace();
     sink.start();
 
     apprt::set_command_handler(app_command);
@@ -1137,8 +1341,10 @@ int main(int argc, char** argv) {
 
     // the window's loop: a frame from the decoder, or whatever Windows has for the window
     for (;;) {
-        DWORD woke = MsgWaitForMultipleObjects(1, &screen.frame_event, FALSE, INFINITE, QS_ALLINPUT);
-        if (woke == WAIT_OBJECT_0) screen.draw();
+        // (one event may stand for several lists: while one waits, this does not; between two of
+        // them Windows' messages get their turn below)
+        DWORD woke = MsgWaitForMultipleObjects(1, &screen.frame_event, FALSE, screen.pending() ? 0 : INFINITE, QS_ALLINPUT);
+        if (screen.pending()) screen.draw();
         MSG msg;
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) end_now(0);

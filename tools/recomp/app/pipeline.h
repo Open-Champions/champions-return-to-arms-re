@@ -112,6 +112,10 @@ struct Pacer {
     std::atomic<double> slewed_ms{0};       // how far the grid has been moved toward the display, in all
     std::atomic<double> woke_late_ms{0};    // the game's thread woke this much after the time it had asked for, in all ...
     std::atomic<uint64_t> wakes{0};         // ... in this many waits
+    // How the game's thread waits for its moment.  The standard library's sleep is exact to a
+    // fraction of a millisecond on macOS; a host where it is not gives its own (Windows: a
+    // high-resolution waitable timer, app/win_main.cpp).
+    void (*sleep_until)(double when_ms) = sleep_until_ms;
 
     // ---- the game's thread ----
     double due = 0;                         // the moment of the picture whose frame is being computed
@@ -143,7 +147,7 @@ struct Pacer {
             next = now + lead;
         } else {
             slewed_ms = slewed_ms + slew;
-            sleep_until_ms(next - lead);
+            sleep_until(next - lead);
         }
         due = next;
         released = now_ms();

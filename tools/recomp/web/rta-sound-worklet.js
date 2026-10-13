@@ -30,7 +30,12 @@ class RtaRing extends AudioWorkletProcessor {
 		this.bursts = 0;        // times a burst was given up ...
 		this.givenUp = 0;       // ... stereo frames in all
 		this.most = 0;          // the most that was queued since the last report, in frames
-		this.port.onmessage = (event) => { if("muted" in event.data) this.muted = event.data.muted; if("paused" in event.data) this.paused = event.data.paused; };
+		this.resync = false;    // the page asks for the reserve to be put right now (after a pause: the game went on before the device did)
+		this.port.onmessage = (event) => {
+			if("muted" in event.data) this.muted = event.data.muted;
+			if("paused" in event.data) this.paused = event.data.paused;
+			if(event.data.resync) this.resync = true;
+		};
 	}
 
 	process(inputs, outputs) {
@@ -42,7 +47,9 @@ class RtaRing extends AudioWorkletProcessor {
 		let read = Atomics.load(words, 1);
 		let queued = ((write - read) >>> 0) >> 1; // stereo frames
 		const reserve = (sourceRate * RESERVE_MS / 1000) | 0;
-		if(queued > reserve + ((sourceRate * BURST_MS / 1000) | 0)) {
+		const tooMuch = this.resync ? reserve + (reserve >> 2) : reserve + ((sourceRate * BURST_MS / 1000) | 0);
+		this.resync = false;
+		if(queued > tooMuch) {
 			const drop = queued - reserve;
 			read = (read + drop * 2) >>> 0;
 			queued = reserve;

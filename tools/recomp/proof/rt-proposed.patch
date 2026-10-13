@@ -35,8 +35,14 @@ repository root with `patch -p1 < tools/recomp/proof/rt-proposed.patch`.
      with the host's instruction: 0).  SUB, MUL, MAX, MINI, ITOF, ABS: 0.  The emulator's
      own rule is per instruction (ADDA, SUBA, MSUB and MSUBA are not clamped at all
      there), so it cannot be both followed exactly and made independent of the host.
-   - in play it changes nothing that was seen: the measurement build counted, over the
-     sessions named in R2.7, how many operands the rule touched.
+   - operands of that kind do reach the game's own program in play: a measurement build
+     counted them over four recorded sessions (h6w, s2w, s3w, s5w; 2.8 thousand million
+     operands read by arithmetic in 328 million microprogram instructions) - 0.55 % had
+     exponent 255, 1.0 % were denormal, the same shares in every session.  They sit in
+     fields whose results the game does not read back: with the change the tick log of
+     each of the four sessions is byte for byte the log without it, and an image of all
+     32 MB taken at the same tick with and without is identical.  MAX and MINI are not
+     executed by the game's program at all.
 
 --- a/tools/recomp/rt/runtime.cpp	2026-10-13 08:46:13
 +++ b/tools/recomp/rt/runtime.cpp	2026-10-13 08:46:13

@@ -388,8 +388,22 @@ emulator 5,120 results remain different: 2,816 in ADD with an infinite or NaN se
 operand, 2,304 in FTOI of a NaN - places where the emulator itself falls back on the
 host. A header that followed the emulator there exactly would be host-dependent again.
 
-**Does it matter in play?** A measurement build (`rta_proof_vu`: the proposed header
-with counters) was run on recorded sessions; see the table in R2.4 for the counts.
+**Does it matter in play? (Ran)** A measurement build (`rta_proof_vu`: the proposed
+header with counters) was run on four recorded sessions:
+
+| Session | Microprogram instructions | Operands read by arithmetic | with exponent 255 | denormal | Tick log against the present header |
+|---|---|---|---|---|---|
+| `h6w` | 61,818,048 | 525,388,452 | 2,844,104 | 5,447,392 | byte for byte the same |
+| `s2w` | 97,116,899 | 825,632,858 | 4,856,003 | 8,553,820 | the same |
+| `s3w` | 85,328,940 | 725,145,972 | 4,053,269 | 7,522,968 | the same |
+| `s5w` | 84,047,957 | 714,236,390 | 3,961,874 | 7,378,943 | the same |
+
+So such operands are not rare - one in 180 has exponent 255 in the game's own pose
+program (stale words and integers in fields the program carries along) - but nothing
+the game reads back depends on them: besides the tick logs, an image of all 32 MB taken
+at the same tick of `h6w` with either header is identical. The game's program executes
+no MAX or MINI. The change is therefore free in these sessions, and it removes the one
+place where an ARM64 and an x86-64 build of the runtime compute different bits.
 
 ## Tools added (all in `tools/recomp/proof/`, outputs under `local/recomp-out/proof/`)
 
