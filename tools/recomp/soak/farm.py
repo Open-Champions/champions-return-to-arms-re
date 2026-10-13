@@ -332,7 +332,7 @@ def script_lines(job, machine, extra_lines=()):
 
 
 # ---- tick-log columns -------------------------------------------------------------------------
-SOFT_PREFIX = ('poolraw', 'poolfree', 'actplayer')         # followed on their own (the pool sums until the mask is trusted)
+SOFT_PREFIX = ('poolraw', 'poolfree', 'actplayer', 'since')         # followed on their own (the pool sums until the mask is trusted)
 SOFT_SUFFIX = ('dmg', 'trailhit', 'trailhit2', 'points')
 
 
@@ -356,6 +356,9 @@ def tick_columns(local_slot, players):
              'mutex=0x4fe53c:u32', 'jgcount=0x8e3c30:s8', 'jgdests=0x8e3a50:crc480', 'actplayer=0x4d8ae4:s32',
              # third part: the driver of the strafe mode (soakhooks.cpp): sender calls made, mode last sent
              'l_strafesent=0xe0050:u32', 'l_strafewant=0xe0054:u32',
+             # ticks since this machine last built its save buffer (0x4f8f30): differs when one machine saved in
+             # another tick than the others (third part, "A late save"); followed, and the first tick is kept
+             'since=0x4f8f30:s32',
              'l_inp=g_localInputFrame:s32', 'l_cosmetic=g_cosmeticSeed:x32', 'l_drawframe=g_drawFrame:u32',
              'l_pause=g_pauseMenuOpen:u8', 'l_menu=g_localMenuOpen:u8', 'l_ghost=0x4027bc:x32',
              'l_c0=0xe0010:u32', 'l_c1=0xe0014:u32', 'l_c2=0xe0018:u32']

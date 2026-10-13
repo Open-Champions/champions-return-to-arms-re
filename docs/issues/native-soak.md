@@ -986,6 +986,22 @@ New in the soak's own code for this part:
   `--pairs` and per-machine lines (`@2: …`) for games in which a machine leaves.
 
 
+## Directed games for the corners (third part)
+
+`rta_soak-s29f`, level `drundar`, no bus delay; scripts in `local/recomp-out/soak/dir3/`,
+runs in `local/recomp-out/soak/t3/`. Deciding columns as in the soak, the mode bytes and
+facings included. In the three games in which a machine goes, the two that stay are compared
+on through the drop.
+
+| Corner | What was played | Result |
+|---|---|---|
+| a player dropping while in the mode (`drop.txt`, three machines) | machine 2's player is in the mode from tick 907 and runs about; from frame 2,600 machine 2's bus loses everything | the two others mark it dropped in tick 1,830, the same tick on both, and play on to tick 6,449 with three switches of their own (ticks 4,506, 5,433, 5,436 — each in one tick on both). The dropped player's object stays, its byte 1 on both. **No difference** in 6,449 ticks |
+| the host leaving (`hostleave.txt`, three machines) | the host (machine 0) and machine 2 are in the mode (ticks 911, 909); the host starts its exit countdown, as the pause menu's exit entry does | the two others mark it dropped in tick 1,601 and play on to tick 4,382; they switch in ticks 2,437 and 3,367 (one off and the other on, in one tick, on both machines). **No difference** in 4,382 ticks |
+| two players switching in the same tick (`sametick.txt`, two machines) | both machines ask in the same frame: both on, both off, both on, one off and one on, the reverse | the two bytes change in one tick each time — 942, 1,262, 1,582, 1,602, 1,922 — on both machines. **No difference** in 2,978 ticks. (A sixth step asked each machine for two calls in one frame; the hooks' control block holds one, so the second was made.) |
+| the mode asked for by a dead player (`dead.txt`, three machines) | player 1, in the mode, is given a million points of pending damage in lockstep tick 1,000 and dies in tick 1,001; its machine asks off, on, off, on while it lies dead; the save point at the entry brings it back | the byte follows every request in the same tick on all three machines (1,065, 1,104, 1,146, 1,185); the player comes back in tick 1,248 as a new object with the byte 0 on all three, although the mode was on when it came back. **No difference** in 3,179 ticks (three pairs) |
+| a kick while in the mode (`kick.txt`, three machines) | players 1 and 2 are in the mode and running; the host calls `net_kickPeer(2)` 0x131cb8 inside a tick, as the pause menu's kick entry does (the game prints its kick line) | player 2 is dropped in tick 1,610 on both machines that stay; they play on to tick 3,774 and switch in ticks 2,428 and 2,433. **No difference** in 3,774 ticks |
+
+
 ## How to repeat
 
 ```

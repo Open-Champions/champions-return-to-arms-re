@@ -62,10 +62,15 @@ void release_all();                             // the window lost the keyboard:
 // given is put in its place.  `blank` counts vertical blanks.
 void translate(uint64_t blank, rta::PadState& state);
 
-// The proposed "strafe mode" (app/fp-proposed.pnach; docs/issues/native-first-person-controls.md 2.6): -1 when
-// the game does not have the section, else the mode this machine's player should have (0 or 1).  Offline this
-// file sets it; in a net game it has to be sent as game message 4 by the section's own sender.
+// The "strafe mode" section of the fix set (app/fp-proposed.pnach; docs/issues/native-first-person-controls.md
+// part 3): a player can run one way and face another.  strafe_wanted(): -1 when the game does not have the
+// section, else the mode this machine's player should have now (0 or 1).  take_strafe_send(): -1, or a mode the
+// application is to send NOW by calling the section's sender (STRAFE_SENDER, mode in a0) on the game's thread -
+// asked for when the view changes and again while the simulation's byte is not what is wanted (a new character
+// after a level change or a respawn starts with the mode off on every machine).
 int strafe_wanted();
+int take_strafe_send();
+const uint32_t STRAFE_SENDER = 0x215c98;
 // Degrees of pitch (up positive) the look has gained since the last call: for the view.
 float take_pitch();
 // The view about to be built (the view's on_view call-out): the picture's centre is turned

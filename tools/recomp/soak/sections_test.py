@@ -16,6 +16,10 @@ C. JumpGate_interactPrompt 0x27d7a0 with the section "a jump gate is found only 
    tick": called as Player_interact calls it, with that function's display-only argument in
    register s7; the script, the level list and the message are stubbed and counted.
 
+D. save_daemonRun 0x2188a8 with the section "the save at a level's entry is taken in the same
+   tick on every machine": the run task on its globals (card state, menu flag, camera mode,
+   cutscene flag, pause, countdown); save_game is stubbed and counted.
+
 PASS/FAIL lines as tools/ee_tests.py prints them.  One function on a prepared state: this
 shows what the code does there, not that the state occurs (docs/issues/native-soak.md has
 the runs on two, three and four machines).
@@ -246,6 +250,91 @@ def test_c(elf):
     check('C9', a[1:3] == (1, 1), 'as shipped: the owner\'s machine has the gate found and the level added after one displayed frame, before any tick ran the prompt')
 
 
+# ---- D ------------------------------------------------------------------------------------------
+SEC_D = "the save at a level's entry is taken in the same tick"
+DAEMON, SPINNER, DBG_PRINTF, SAVE_GAME = 0x2188A8, 0x222E10, 0x355490, 0x218128
+G = {'paused': 0x41B4F4, 'shop': 0x41B50C, 'local_menu': 0x41B69D, 'card': 0x88D3A0, 'countdown': 0x88D40C, 'frontend': 0x41B510,
+     'inhibit': 0x50605C, 'pvp': 0x4F7120, 'menu_flag': 0x41B4F8, 'camera': 0x4F8450, 'cutscene': 0x44FCD0, 'since': 0x4F8F30}
+
+
+class Daemon:
+    """save_daemonRun on a prepared state; save_game is stubbed and counted."""
+    def __init__(self, elf, patched, **state):
+        self.emu = EE(elf)
+        if patched:
+            assert self.emu.apply_pnach(PNACH, SEC_D) == 6
+        for address in list(G.values()) + [0x4F8EE8, 0x88D414]:
+            self.emu.mem.map(address & ~0xFFF, 0x1000)
+        self.camera = self.emu.alloc(0x100)
+        self.emu.mem.w32(G['camera'], self.camera)
+        self.set(**dict({'card': -1, 'countdown': 1, 'camera_mode': 1}, **state))
+        self.saves = []
+        self.emu.stub(SPINNER)
+        self.emu.stub(DBG_PRINTF)
+        self.emu.stub(SAVE_GAME, function=lambda e: self.saves.append((e.r[4] & M32, e.r[5] & M32)))
+
+    def set(self, **state):
+        for key, value in state.items():
+            if key == 'camera_mode':
+                self.emu.mem.w32(self.camera + 0x34, value)
+            elif key in ('local_menu', 'cutscene'):
+                self.emu.mem.w8(G[key], value)
+            else:
+                self.emu.mem.w32(G[key], value & M32)
+
+    def tick(self):
+        before = len(self.saves)
+        self.emu.call(DAEMON, max_steps=20000)
+        return len(self.saves) - before
+
+    def word(self, key):
+        return self.emu.mem.u32(G[key])
+
+
+def test_d(elf):
+    def first_tick(patched, **state):
+        d = Daemon(elf, patched, **state)
+        return d.tick(), d.word('countdown'), d.word('since'), d.saves
+    check('D1', first_tick(False) == (1, 0, 1, [(0, 1)]) and first_tick(True) == (1, 0, 1, [(0, 1)]),
+          'nothing of this machine\'s in the way: save_game(0, 1) in the first tick, countdown 0 - as shipped and with the section')
+    for ident, state, what in (('D2', {'card': 5}, 'the options being written (card state 5)'), ('D3', {'card': 3}, 'a save dialog (card state 3)'),
+                               ('D4', {'menu_flag': 1, 'camera_mode': 0, 'local_menu': 1}, 'the inventory or a shop open (menu flag, camera mode 0)'),
+                               ('D5', {'menu_flag': 1}, 'the statistics screen (menu flag alone)'),
+                               ('D6', {'camera_mode': 0}, 'the camera out of follow mode with no cutscene')):
+        check(ident, first_tick(False, **state) == (0, 1, 1, []), 'as shipped, %s: no save, the countdown waits' % what)
+        check(ident + 'p', first_tick(True, **state) == (1, 0, 1, [(0, 1)]), 'with the section, %s: the save in the first tick all the same' % what)
+    for ident, state, what in (('D7', {'cutscene': 1, 'camera_mode': 0}, 'a cutscene (shared flag; camera mode 0)'), ('D8', {'paused': 1}, 'the game paused (offline menus and card screens)'),
+                               ('D9', {'inhibit': 1}, 'the script\'s save inhibit'), ('D10', {'pvp': 1}, 'player against player'),
+                               ('D11', {'frontend': 1}, 'the front end'), ('D12', {'paused': 1, 'card': 5, 'menu_flag': 1}, 'offline, a card screen and a menu up (paused)')):
+        check(ident, first_tick(False, **state)[:2] == (0, 1) and first_tick(True, **state)[:2] == (0, 1),
+              '%s: no save, the countdown waits - as shipped and with the section' % what)
+    for patched in (False, True):
+        tag = 'with the section' if patched else 'as shipped'
+        d = Daemon(elf, patched, cutscene=1, camera_mode=0)
+        waited = [d.tick() for _ in range(5)]
+        d.set(cutscene=0, camera_mode=1)
+        check('D13' + ('p' if patched else ''), waited == [0] * 5 and d.tick() == 1 and d.tick() == 0 and d.word('since') == 7,
+              '%s: the save comes in the first tick after the cutscene, once; "ticks since save" counts every call' % tag)
+        d = Daemon(elf, patched, countdown=99)
+        check('D14' + ('p' if patched else ''), d.tick() == 0 and d.word('countdown') == 0 and d.tick() == 0,
+              '%s: a countdown of 99 (set by a reload) is cancelled without a save' % tag)
+        d = Daemon(elf, patched, countdown=0, card=5)
+        check('D15' + ('p' if patched else ''), d.tick() == 0 and d.word('since') == 1, '%s: not armed: nothing, whatever the card does' % tag)
+    # two machines enter a level; on one the inventory is open and is closed 40 ticks later
+    def machines(patched):
+        free, busy = Daemon(elf, patched), Daemon(elf, patched, menu_flag=1, camera_mode=0, local_menu=1)
+        when = [None, None]
+        for tick in range(1, 61):
+            if tick == 41:
+                busy.set(menu_flag=0, camera_mode=1, local_menu=0)
+            for index, machine in enumerate((free, busy)):
+                if machine.tick():
+                    when[index] = tick
+        return when
+    check('D16', machines(False) == [1, 41], 'as shipped, two machines, one with its inventory open for 40 ticks: restart points from ticks 1 and 41')
+    check('D17', machines(True) == [1, 1], 'with the section: both from tick 1')
+
+
 def main(argv):
     elf = argv[0] if argv else os.path.join(ROOT, 'SLUS_209.73')
     if not os.path.isfile(elf):
@@ -254,6 +343,7 @@ def main(argv):
     test_a(elf)
     test_b(elf)
     test_c(elf)
+    test_d(elf)
     print('%d failed' % len(FAILED))
     return 1 if FAILED else 0
 

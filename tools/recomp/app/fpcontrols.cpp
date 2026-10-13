@@ -87,7 +87,7 @@ struct Settings {
     bool capture = true;                // the pointer is hidden and held in a look view
     float kick = 1.0f;                  // the view kick of swings and hits, 0 = none
     bool centre = true;                 // first person: the picture's centre is the walking direction
-    bool strafe = true;                 // with the proposed "strafe mode" section in the game (fp-proposed.pnach): use it in the views that face the look
+    int strafe = 1;                     // the "strafe mode" section, when the game has it: 0 off, 1 auto (the views that face the look), 2 on (every look view)
     float swing_turn = 5.0f;            // during a swing or shot the look comes round to the simulation's target: at most this many degrees a tick (0 = never)
     float swing_turn_within = 6.0f;     // ... until the target is this near the middle of the picture
     bool swing_tilt = true;             // first person: during a swing the view tips toward a target that is above or below the picture's middle
@@ -116,7 +116,10 @@ double g_look_units = 0;            // the yaw word, kept with its fraction
 float g_stick_yaw_now = 0, g_stick_pitch_now = 0;   // degrees a second, eased
 float g_mouse_carry_x = 0, g_mouse_carry_y = 0;
 u16 g_prev_in = 0;                  // what the player held at the last blank
-std::atomic<int> g_strafe_wanted{0};  // what the mode byte should be (the application sends it in a net game)
+std::atomic<int> g_strafe_wanted{-1};  // what the mode byte should be; -1: the game has no such section
+std::atomic<int> g_strafe_send{-1};    // a mode the application is to send now (take_strafe_send)
+int g_strafe_asked_for = -1;
+uint64_t g_strafe_asked_at = 0, g_strafe_sends = 0;
 bool g_strafing = false;            // the character on screen has the mode on
 bool g_idle_turning = false;        // the standing character is being turned to the look
 int g_align_left = 0;               // ticks a press may still be held back
@@ -394,6 +397,7 @@ void mouse_wheel(float steps) { add(g_wheel, steps); }
 void release_all() { g_mouse_held = 0; }
 float take_pitch() { return g_pitch_out.exchange(0); }
 int strafe_wanted() { return g_strafe_wanted.load(); }
+int take_strafe_send() { return g_strafe_send.exchange(-1); }
 bool wants_pointer() { return g_pointer.load(); }
 const Hud& hud() { return g_hud; }
 
@@ -421,17 +425,27 @@ void translate(uint64_t blank, rta::PadState& state) {
     float wheel = g_wheel.exchange(0);
     if (look_view && set.mouse_buttons && std::fabs(wheel) >= 0.5f && g_inject_left == 0) { g_inject_buttons = swap_set; g_inject_left = 3; }
 
-    // the proposed strafe mode, when the game has the section: on while a view that faces the look is steered.
-    // Offline the byte is written here (what the section's message handler does); in a net game it must travel as
-    // game message 4 - strafe_wanted() tells the application, which calls the section's sender - and only the
-    // prediction copy, which no other machine has, is given the simulated player's byte at once
-    bool have_strafe = set.strafe && W(STRAFE_HOOK) == STRAFE_HOOK_WORD;
-    int strafe_wanted = have_strafe && steer && set.face[view] ? 1 : 0;
-    g_strafe_wanted = have_strafe ? strafe_wanted : -1;
+    // The strafe mode, when the game has the section (app/fp-proposed.pnach): on while a view that faces the look is
+    // steered, off otherwise - also while the game's own camera has the frame (cutscene, dialogue, menu, death).  The
+    // byte itself is simulation state: it is set on every machine by game message 4, which the application sends
+    // through the section's sender when take_strafe_send() says so (offline the same call runs the handler at once).
+    // Asked again after half a second while the byte is not what is wanted: a new character (level change, respawn)
+    // starts with it clear on every machine.  Only the prediction copy of a net game, which no other machine has,
+    // is given the simulated player's byte here.
+    bool have_strafe = set.strafe != 0 && W(STRAFE_HOOK) == STRAFE_HOOK_WORD;
+    bool strafe_view = set.strafe == 2 ? look_view : look_view && set.face[view];
+    int strafe_wanted = have_strafe && steer && strafe_view ? 1 : 0;
+    g_strafe_wanted = W(STRAFE_HOOK) == STRAFE_HOOK_WORD ? strafe_wanted : -1;
     g_strafing = false;
-    if (have_strafe && b.real) {
-        if (!b.net) { if (B(b.real + P_STRAFE) != strafe_wanted && ok(b.real + P_STRAFE, 1)) *at(b.real + P_STRAFE) = (u8)strafe_wanted; }
-        else if (b.object != b.real && ok(b.object + P_STRAFE, 1)) *at(b.object + P_STRAFE) = B(b.real + P_STRAFE);
+    if (W(STRAFE_HOOK) == STRAFE_HOOK_WORD && b.real && ok(b.real + P_STRAFE, 1)) {
+        int actual = B(b.real + P_STRAFE) != 0;
+        if (actual != strafe_wanted && (g_strafe_asked_for != strafe_wanted || blank >= g_strafe_asked_at + 30)) {
+            g_strafe_send = strafe_wanted;
+            g_strafe_asked_for = strafe_wanted;
+            g_strafe_asked_at = blank;
+            g_strafe_sends++;
+        } else if (actual == strafe_wanted) g_strafe_asked_for = -1;
+        if (b.net && b.object != b.real && ok(b.object + P_STRAFE, 1)) *at(b.object + P_STRAFE) = B(b.real + P_STRAFE);
         g_strafing = B(b.object + P_STRAFE) != 0;
     }
     if (!steer) {
@@ -682,7 +696,7 @@ bool setting(const char* key, const char* value) {
     else if (name == "swing_tilt") s.swing_tilt = yes;
     else if (name == "swing_turn") s.swing_turn = clampf(number, 0, 30);
     else if (name == "swing_turn_within") s.swing_turn_within = clampf(number, 0, 45);
-    else if (name == "strafe") s.strafe = yes;
+    else if (name == "strafe") s.strafe = text == "on" ? 2 : (text == "auto" || yes) ? 1 : 0;
     else if (name.compare(0, 5, "face.") == 0) {
         for (int v = 0; v < VIEW_COUNT; v++) if (name.substr(5) == views[v]) { s.face[v] = yes && v >= CHASE; return true; }
         return false;
@@ -722,10 +736,10 @@ std::string settings_text() {
              "controls.swing_tilt = %s            # first person: during a swing the view tips toward a target under or over the picture\n"
              "controls.swing_turn = %g             # during a swing or shot the look comes round to the target the game took: degrees a tick at most (0 = never)\n"
              "controls.swing_turn_within = %g      # ... until the target is this many degrees from the middle of the picture\n"
-             "controls.strafe = %s                # only with the proposed strafe section in the game (fp-proposed.pnach): run sideways and backwards facing the look\n",
+             "controls.strafe = %s                # needs the strafe section in the game: auto (first person and shoulder run sideways and backwards facing the look), on (chase too), off\n",
              s.mouse_sensitivity, s.mouse_pitch_scale, s.mouse_smoothing, yes(s.invert_y), yes(s.invert_stick_y), s.stick_yaw, s.stick_pitch, s.stick_deadzone,
              s.stick_curve, s.stick_ease, s.move_deadzone, yes(s.face[CHASE]), yes(s.face[SHOULDER]), yes(s.face[FIRST]), yes(s.turn_before_strike), s.strike_wait,
-             s.strike_within, s.idle_within, yes(s.mouse_buttons), yes(s.capture), s.kick, yes(s.centre), yes(s.swing_tilt), s.swing_turn, s.swing_turn_within, yes(s.strafe));
+             s.strike_within, s.idle_within, yes(s.mouse_buttons), yes(s.capture), s.kick, yes(s.centre), yes(s.swing_tilt), s.swing_turn, s.swing_turn_within, s.strafe == 2 ? "on" : s.strafe == 1 ? "auto" : "off");
     return text;
 }
 
@@ -784,11 +798,11 @@ std::string command(const std::string& text, uint64_t blank) {
 }
 
 std::string figures() {
-    char text[520];
+    char text[640];
     snprintf(text, sizeof text, "controls: %llu blanks steered in a look view, the turning push given at %llu, %llu presses held back for %llu ticks in all (%llu let through after "
-             "the button was up again), %llu blanks in a state where the stick only turns, the look brought round to a target in %llu",
+             "the button was up again), %llu blanks in a state where the stick only turns, the look brought round to a target in %llu, the strafe mode asked for %llu times",
              (unsigned long long)g_blanks_steered, (unsigned long long)g_nudges, (unsigned long long)g_held_back, (unsigned long long)g_held_ticks, (unsigned long long)g_released_late,
-             (unsigned long long)g_turn_states, (unsigned long long)g_assist_blanks);
+             (unsigned long long)g_turn_states, (unsigned long long)g_assist_blanks, (unsigned long long)g_strafe_sends);
     return text;
 }
 

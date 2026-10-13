@@ -34,6 +34,9 @@ Notes for the merge
    and the control socket; settings lines "controls.*"; the report's last lines.
  - app/build.py also gains --extra-pnach FILE (more word patches for the translation: how
    the proposal app/fp-proposed.pnach was built for its tests; without the option nothing changes).
+ - app/app_rt.h, app_rt.cpp: apprt::call_game(Ctx*, address, a0), a game function called from a view
+   call-out; app_main.cpp uses it in an fpview::on_drawn call-out to send the strafe mode through
+   the section's own sender when the game has the section (app/fp-proposed.pnach) - never otherwise.
  - app/settings.h: "controls.*" lines are kept with the "view" lines and handed on.
  - app/help_mac.mm: the keys panel ends with fpcontrols::help_text().
  - app/build.py: fpcontrols.cpp and look_mac.mm are compiled; help_mac.mm is given -I rt.
@@ -44,8 +47,44 @@ Notes for the merge
    mouse input, the pointer clipped and hidden, mouse buttons and wheel, the three key
    names, "app fpc", the report line.
 base: Tue Oct 13 14:27:12 CDT 2026
-made: Tue Oct 13 14:27:36 CDT 2026
+made: Tue Oct 13 15:22:57 CDT 2026
 
+--- a/app/app_rt.h
++++ b/app/app_rt.h
+@@ -8,8 +8,14 @@
+ #include <cstdint>
+ #include <string>
+ 
++struct Ctx;     // the translated code's registers (rt/recomp.h)
++
+ namespace apprt {
+ 
++// A function of the game called from a call-out that has the translated code's registers (the view's on_view /
++// on_drawn): one argument, the registers put back afterwards.
++void call_game(Ctx* c, uint32_t address, uint32_t a0);
++
+ // What the script (--script, --do) holds on a port right now.
+ rta::PadState script_pad(unsigned port);
+ 
+--- a/app/app_rt.cpp
++++ b/app/app_rt.cpp
+@@ -16,6 +16,16 @@
+ 
+ namespace apprt {
+ 
++void call_game(Ctx* c, uint32_t address, uint32_t a0) {
++    Ctx saved = *c;
++    c->r[29] = (u64)(s64)(s32)((((u32)saved.r[29]) - 0x600) & ~15u);      // a stack of its own below the caller's
++    c->r[4] = (u64)a0;
++    rt_call(c, address);
++    s64 budget = c->budget;
++    *c = saved;
++    c->budget = budget;
++}
++
+ void interactive_threads() { host::interactive_threads(true); }
+ bool films_linked() { return rta_films_linked(); }
+ void films_report() { rta_films_report(); }
 --- a/app/settings.h
 +++ b/app/settings.h
 @@ -71,7 +71,7 @@
@@ -202,7 +241,7 @@ made: Tue Oct 13 14:27:36 CDT 2026
      static QTimer heartbeat;
      if (g_main_stall.on) {
          g_main_stall.after_ms += 8;
-@@ -1629,6 +1670,14 @@
+@@ -1629,6 +1670,20 @@
      renderer.gs.name_textures = !opt.set.art_pack.empty();
      gfxrt::install();
      fpview::install();
@@ -213,6 +252,12 @@ made: Tue Oct 13 14:27:36 CDT 2026
 +        fpcontrols::apply_view(v.mode, forward, up);
 +        v.forward = {forward[0], forward[1], forward[2]};
 +        v.up = {up[0], up[1], up[2]};
++    });
++    // the strafe mode (the fix set's section, when the game has it): asked for by game message 4 through the
++    // section's own sender, from the draw pass - where the game's own HUD code sends its messages from
++    fpview::on_drawn([](const fpview::View&, Ctx* c, void*) {
++        int mode = fpcontrols::take_strafe_send();
++        if (mode >= 0) apprt::call_game(c, fpcontrols::STRAFE_SENDER, (uint32_t)mode);
 +    });
      if (getenv("RTA_GS_LOG")) renderer.gs.log_display = true;
      if (const char* keep = getenv("RTA_TEX_KEEP")) renderer.gs.texture_keep_frames = (uint32_t)atoi(keep);    // frames an unused texture is kept; 0 = for ever

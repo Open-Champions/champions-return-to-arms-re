@@ -31,3 +31,16 @@ description=The prompt of a jump gate (JumpGate_interactPrompt, 0x27D7A0) marks 
 patch=1,EE,0027D820,word,00571025
 // was: 3C02008E (lui v0,0x8e)  now: bnez v0,0x27d860 (which loads the same v0; the addiu v0,zero,1 behind it is now the delay slot and is overwritten there)
 patch=1,EE,0027D824,word,1440000E
+
+[Net test: the save at a level's entry is taken in the same tick on every machine]
+author=reverse engineering test patch; confirmed to remove the desync on native pairs and on a four-machine game (docs/issues/native-soak.md, third part, "A late save"); untested on the emulator, PCSX2 or a console
+description=When a level has been entered every machine fills its save buffer with every player's record, the quest variables and the level states: the restart point a party that is wiped out is sent back to. The run task that does it (save_daemonRun, 0x2188A8) waits while this machine's own memory-card screen is up (the options being written after a change in the pause menu, a save dialog), while this machine's full-screen menu flag is set (inventory, shop, statistics) and while this machine's camera is not in follow mode (inventory or shop again - or a cutscene). A player who has the inventory open when somebody takes the party through a door therefore gets a restart point from the tick the menu closes, not from the level's first tick; when the whole party dies before the next common save, that machine restores other hit points, mana, bags and potions for everyone than the others do, and the game is out of step from the reload on (seen: a four-machine game, the game's own out-of-sync flag three ticks after the reload). With this the card test and the menu test are gone and the camera test is the shared cutscene flag (0x44FCD0) instead: the save waits for the end of a cutscene as before, on every machine alike, and for nothing that is one machine's own. Offline nothing changes: those screens pause the game there, and the pause test stays. The save only fills the buffer; a card write in progress is not touched (a level change waits for it). mainloop.md P3, audio-save.md "Checkpoint autosave". Each machine fixes its own save; use on every machine.
+// was: 14A40027 (bne a1,a0,0x2189d4: this machine's card state is not idle)  now: nop
+patch=1,EE,00218934,word,00000000
+// was: 14400016 (bnez v0,0x2189d8: this machine's full-screen menu flag)  now: nop
+patch=1,EE,0021897C,word,00000000
+// was: 3C020050 8C428450 8C420034 38420001 (lui v0,0x50; lw v0,-0x7bb0(v0); lw v0,0x34(v0); xori v0,v0,1: this machine's camera is not in mode 1)  now: lui v0,0x45; lb v0,-0x330(v0); nop; nop (the cutscene flag)
+patch=1,EE,00218980,word,3C020045
+patch=1,EE,00218984,word,8042FCD0
+patch=1,EE,00218988,word,00000000
+patch=1,EE,0021898C,word,00000000

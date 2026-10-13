@@ -11,23 +11,27 @@ under `local/recomp-fp-controls/`.
 
 ## STATE (rewritten at every step; read this first after a stop)
 
-**2026-10-13 14:30 - delivered.**
+**2026-10-13 15:25 - the strafe section is in its final form and proven as far as part 3
+says; adopting it into the fix set is the coordinator's step.**
 
-- Part 1 (how the original moves and aims): written; the movement facts **Ran** in the
-  unmodified native build, the targeting rules **Read**.
-- Part 2: built and **Ran** - look, move and "face where you look" offline and in two-copy
-  net games (first person against overhead: in step in every run, 1,819 to 5,433 ticks,
-  with a fight); the fight in first person with the marks, the turn before a strike, the
-  look coming round to the simulation's target; the data for a HUD; the proposal for
-  strafing with its own two-copy run. **Built, not run**: the pointer capture with a real
-  mouse, everything on Windows, the settings file round trip. **Not done**: weapon and
-  hands in view, bows and spells run, nobody has played it (2.9).
+- Part 1 (how the original moves and aims): the movement facts **Ran**, targeting **Read**.
+- Part 2 (controls with the stock simulation): built and **Ran** offline and in two-copy
+  net games.
+- **Part 3 (the strafe section)**: `tools/recomp/app/fp-proposed.pnach`, 84 words, final
+  (sha256 of its `patch=` lines 3259b951fc619c0e). Interpreter test 15 of 15
+  (`tools/recomp/app/fp_section_test.py`); a no-op with the mode byte clear (a machine with
+  the section against one without, 4,805 and 4,824 ticks); the mode in use on two, three
+  and four native copies and through the drop of a strafing player (5,253 to 5,431 ticks
+  each); a native copy with an emulator-based copy through a fight. The application sends
+  the mode by itself. The soak work runs its own arm with the section.
+- **Built, not run**: pointer capture with a real mouse; everything on Windows (compiles
+  and links). **Not done**: weapon and hands in view; bows and spells run; nobody has
+  played it.
 - Deliverables: `tools/recomp/app/fpcontrols.h`, `fpcontrols.cpp`, `look_host.h`,
-  `look_mac.mm` (new files), `fpcontrols.patch` (against the tree with the camera work's
-  `fpview.patch` of 14:23 applied; it reproduces the sources that were built, checked by
-  `work/mkpatch.sh`), `fp-proposed.pnach` (a proposal, not in the fix set).
-- Sources and builds: `local/recomp-fp-controls/` (2.11). Nothing of this work is left
-  running (the lobby instance of the pair runs was stopped at the end).
+  `look_mac.mm`, `fpcontrols.patch` (against the tree with the camera work's `fpview.patch`
+  of 14:23), `fp-proposed.pnach`, `fp_section_test.py`.
+- Sources and builds: `local/recomp-fp-controls/` (2.11; `root` = the fix set as released,
+  `root2` = with the section). Nothing of this work is left running.
 
 ---
 
@@ -409,7 +413,7 @@ Found by the scripted fights, not by a person playing through:
 | enemy wind-ups are seen from above | seen only if looked at | `threats[].attacking` (targets the player, in its reach, turned to the player) - a guess at a tell from outside the creature's own state; the per-monster attack states were not read |
 | ground effects, loot on the floor, the map | not looked at here | nothing yet: the map (R3 / Tab) is the game's own 2-D overlay and works in every view |
 
-## 2.6 What the stock simulation cannot do, and the proposal
+## 2.6 What the stock simulation cannot do, and the proposal (the draft; the final section is part 3)
 
 Running one way while facing another. In a look view with the stock simulation a player
 who runs left faces left; the controls turn the character back before a strike, which
@@ -450,10 +454,9 @@ mode**:
   fix set or nowhere; the emulator-based build would take the same words.
 
 With the section in the game, `fpcontrols` uses it by itself in the views that face the
-look (`controls.strafe`): no turning pushes, no hold-back; offline it sets the byte (what
-the handler does), in a net game the mode has to be sent by the section's sender
-(`fpcontrols::strafe_wanted()` says what to send; calling the sender from the application
-is not wired - the test did it with the script's `call`).
+look (`controls.strafe`): no turning pushes, no hold-back, and the application sends the
+mode itself (3.4). This section describes the first, 87-word draft and its first runs;
+**part 3 has the final 84-word section and its proof.**
 
 **Ran offline** (`work/test3.py`, a program built with `app/build.py --extra-pnach
 tools/recomp/app/fp-proposed.pnach` in a second stand-in root): overhead before and after:
@@ -540,8 +543,9 @@ that day.
 - Nobody has played it. Every figure here is from scripts; sensitivity, the stick curve,
   the kick and the tilt are first guesses.
 - In a net game the stock simulation creeps while turning on the spot (2.1) and a strike
-  from a sideways run waits up to a tenth of a second for the turn; the proposal of 2.6
-  removes both, at the price of a fix-set section everybody must have.
+  from a sideways run waits up to a tenth of a second for the turn; the strafe section
+  (part 3) removes both - measured: 0.0000 units moved in 1,592 ticks of turning (3.6,
+  `p7`) - at the price of a fix-set section everybody must have.
 - The weapon and hands in view (2.3): not done.
 - Bows and spells were read, not run: the test character had no bow, and the cast that
   was pressed in the net runs was not looked at. `reticle` and `shot` are there for them.
@@ -549,16 +553,11 @@ that day.
   attackers only.
 - A second local player: the look views fall back to the game's camera with two local
   players (the camera work's rule), so nothing here handles port 2.
-- The proposal's program (`root2`, `rta_app_fps`) was built before the last rebase on the
-  camera work's files of 14:23; its runs stand, the rebased sources were run without it.
 - States the camera work asked about, as far as these runs reached them: death (the game's
   own camera takes the frame, rows pass unchanged, the look is taken up again on the new
   character: Ran offline and in the net fights), a cutscene (the level's opening cutscene
   after a reload in a net game: the same). Pause menu, bag, dialogue, shop, vehicle with
   these controls: not run here.
-- With the proposal: the application does not send the mode in a net game by itself (the
-  test called the section's sender from the script); mode off when leaving a look view is
-  sent the same way.
 - The pointer capture and everything on Windows: built, not run.
 
 ## 2.10 How to repeat
@@ -579,9 +578,11 @@ python3 -B pair.py online/p4 --views first,overhead --play 1500 --look-only --se
 # the proposal
 python3 fpasm.py                                    # writes tools/recomp/app/fp-proposed.pnach
 python3 ../root2/tools/recomp/app/build.py --as rta_app_fps --extra-pnach $PWD/../../../tools/recomp/app/fp-proposed.pnach
-python3 -B test3.py
-python3 -B pair.py online/s3 --views first,overhead --play 900 --level drunare --play2 3000 --seed 11 --strafe \
-    --app ../root2/local/recomp-out/bin/rta_app_fps
+python3 ../../../tools/recomp/app/fp_section_test.py # the section in the interpreter: 15 checks
+python3 -B test3.py; python3 -B test5.py            # strafing offline; the application asking for the mode by itself
+sh batch1.sh                                        # n1 n2 (no-op, cross-build), m2 m3 m4 (mode in use), d3 (drop): online/*.log, batch1.txt
+python3 runstats.py n1 n2 m2 m3 m4 d3               # the mode bytes on every machine, strafing ticks
+python3 -B mixed.py online/x2 --play 600 --play2 5400 --seed 42 --limit 1200; python3 mixedstats.py x2   # native + emulator copy
 sh mkpatch.sh                                       # tools/recomp/app/fpcontrols.patch from base -> src, and the new files
 ```
 
@@ -709,3 +710,130 @@ controls give no turning push and hold no strike back (2.6).
 | death | 0 (asked off when the game's camera took the frame); 1 again on the character of the restarted level |
 
 12 messages in the whole session.
+
+## 3.5 A no-op for everyone who does not use it (Executed, Ran)
+
+- **In the interpreter**: M1 and M2 of 3.3 - with the byte clear, and in every mode but
+  the neutral one with it set, `Player_move` leaves the same bytes with the section as
+  without. The other changed words are the handler (reached only by a message of
+  sub-type 2), the sender (called by nobody but an application that offers the mode) and
+  the constructor's third cleared byte, which the shipped code reads only together with
+  +0x47c in a state that cannot be entered.
+- **Rows of a machine with the section against rows of a machine without it, on the same
+  inputs** - two copies in one lockstep game, one built with the section and one without,
+  the mode never set; the copy with the section played first person by the stock rules
+  (`controls.strafe = off`), so `Player_move`'s hook ran on every tick of both players:
+
+| Run | Copies | Result |
+|---|---|---|
+| `online/n1` | host WITH the section (first person, strafe off), joiner WITHOUT (overhead) | 4,805 ticks through the level change, the arena fight, 2 deaths and the reload: **no shared column differs** (seed, sync hashes, positions, facing words, yaw words, action state, hit points, gold, experience, the mode bytes - 0 throughout) |
+| `online/n2` | host WITHOUT (overhead), joiner WITH (first person, strafe off) | 4,824 ticks, the same: nothing differs |
+
+  (The single-machine form of this - one scripted session replayed in both builds and the
+  two tick logs compared as files - was not run: the tick log of these builds is written by
+  the network driver. The pair is the stronger form: each row of the machine without the
+  section is that machine's own computation from the same rows of input.)
+
+## 3.6 Lockstep with the mode in use (Ran)
+
+`work/pair.py` (2.7) with the program built from the current sources and the final section
+(`root2`, `rta_app_fps`); every copy has the section, the copies in first person and
+shoulder ask for the mode by themselves (3.4), change view now and then in mid-game (the
+mode goes off and on by message), overhead and chase copies never ask. Columns compared
+between every two copies: those of 2.7 plus every player's facing word, yaw word and
+**mode byte**. `work/runstats.py` counts the ticks.
+
+| Run | Copies and views | Ticks in step | What happened |
+|---|---|---|---|
+| `m2` launch 1 | first, overhead | 5,424 | level change, arena fight, 2 deaths, reload; player 0: mode on in 2,668 ticks, switched 16 times, 272 of 554 running ticks sideways or backwards |
+| `m2` launch 2 | first, overhead | 5,431 | the same course; mode on 2,456 ticks, 14 switches, 273 of 534 |
+| `m3` | first, overhead, shoulder | 5,253 (all three pairs) | 3 deaths, reload; players 0 and 2 strafing (152 of 548 and 302 of 597 running ticks), 16 and 12 switches |
+| `m4` | first, overhead, first, chase | 5,301 (all six pairs) | level change and fight; players 0 and 2 strafing (167 of 545, 423 of 804), 15 and 13 switches |
+| `d3` | overhead, shoulder, first - **the first-person copy's process killed while strafing** | 1,854 with the killed copy, 2,752 between the two that stayed | the survivors dropped the player (dropped flag 1, no out-of-sync flag, no checksum failure) and played on in step; the shoulder player went on strafing |
+| `s3` (2.7; the 87-word draft, mode sent by the script) | first, overhead | 4,887 | fight, deaths, reload |
+| `p7` | first (turning its look where it stands, nothing else), overhead | 1,819 | **the turning creep of 2.1 is gone**: with the mode on the character followed the look for 1,592 ticks (the yaw word changing in 865 of them) and moved 0.0000 units - the simulation turns it itself, with the stick at rest; the turning push was given 5 times, all before the mode arrived |
+
+In every run **the mode bytes of all players were the same on all machines in every tick**
+(they are columns of the comparison; counted again by `runstats.py`: 0 ticks differing),
+and no run fell out of step. A player joining in mid-game: does not exist in the original.
+
+## 3.7 A native copy and an emulator-based copy (Ran)
+
+`work/mixed.py`: one native copy (the window program with the section; host, first person,
+asking for the mode by itself) and one copy of the emulator-based application
+(`tools/play-net/play.sh`, the working build, a silent test window, its own data
+directory, the suggested fix set **plus the section through `--rta-extra-patch`**;
+overhead, drawn input; it never sends the mode). The emulator application has no port
+shift, so this pair - unlike the others - went through the lobby server that already runs
+on this computer on the usual ports (the way `lobbypair.py` always does; throw-away names;
+nothing leaves this computer). The level change is made the game's own way: the native
+copy's script calls `hudmsg_sendNewWorld` 0x1d9250 (game message 3 / 7), which both copies
+execute in the same tick.
+
+The emulator copy has no tick log; it leaves samples (tick, shared seed, level, both
+players' positions as bits, hit points, gold, experience, the checksum verdict, **and the
+native player's mode byte as the emulator copy's own simulation holds it**), each looked
+up in the native copy's tick log (`work/mixedstats.py`).
+
+| Run | Native log | Emulator samples inside it | Result |
+|---|---|---|---|
+| `online/x1` | 3,472 ticks; level change at tick 947; nobody was hit (the arena's own cutscene was still running at the end) | 45 | 43 equal in every compared column (seed, level, player count, the native player's position bits, both players' hit points, gold, experience, checksum verdict, **mode byte**), 26 of them with the mode byte 1; the 2 others were taken in the tick of the level load (no player object yet on the sampled copy: zeros) |
+| `online/x2` | 4,821 ticks; level change at tick 724; **a fight**: the emulator copy's character was hit (684 different hit-point values) | 63 | 60 equal in every compared column, 41 of them with the mode byte 1 (the native player strafing: mode on in 3,042 ticks); the 3 others again in the tick of the level load |
+
+In both runs the game's own checksum exchange agreed on both copies (expected = received:
+bd96ab57, d5d4f60a; `g_checksumFailed` 0 on both; no out-of-sync flag), and both copies
+named the same patch set to each other (073064bb, 99 words: `--rta-extra-patch` words and
+the native build's `--extra-pnach` words are not counted in that figure - once the section
+is in the fix set the figure will change for everybody at once). This comparison is
+weaker than a row-for-row one - an emulator copy has no tick log - as
+`docs/issues/native-online.md` says of all mixed pairs.
+
+## 3.8 Two things ruled out by reading
+
+**The tick in which the mode takes effect.** A game message is not applied when it
+arrives. `net_sendGameMsg` appends it to the sender's message ring; `net_main` attaches
+the bytes to one of the sender's future input frames (record +0x10 offset, +0x14 count);
+they travel with that frame in every packet until it is acknowledged; and
+`net_frameLoop`, on every machine, when it simulates that frame, applies that peer's pad
+and yaw word (0x13ac84-0x13ac9c) and then reads the record's count and calls the handlers
+(0x13ac90-0x13ad24) - peers in slot order, before the run tasks of the tick
+(`docs/netcode.md`, "The tick", "Game messages"; re-read in the disassembly). So the mode
+byte changes in the same tick on every machine, the sender included, and before any
+`Player_move` of that tick. **Ran**: the mode bytes are columns of every comparison of 3.6
+and never differed in a tick, with 9 to 16 switches per strafing player and run.
+
+**The prediction copy.** Only the owner's machine has one, and only of its own player:
+other machines do not predict a remote player at all, they simulate it in ticks
+(`net_predictLocalPlayer` runs the copy through the local input frames not yet simulated).
+The copy is a clone of the simulated player (`Player_clone` 0x11e870 copies +0x47e with the
+rest), runs the same `Player_run` and so the same hooked `Player_move`, with its own byte:
+it strafes exactly as the real one will. It is not part of any compared record (the sync
+hash and the tick logs read the simulated objects of the player table). The section's move
+code writes nothing but the facing of the object it is given and two float registers, and
+reads nothing a machine could hold differently: the object's own byte, the stick of the
+lockstep pad, the per-slot yaw word. The application, on the owner's machine, copies the
+simulated player's byte to the copy each blank so that the picture does not wait for the
+next re-clone - a write to an object no other machine has.
+
+**Readers of "the way the player runs".** The velocity the game keeps for others to read
+(+0x4bc, +0x4c0, and +0x308, +0x30c, which monsters use to lead a running player) is the
+velocity `Player_move` actually computed - with the mode on, the true sideways velocity,
+so a monster's lead is right. Rush, charge and bash skills move along the facing (mode 2,
+or a vector of their own) and are untouched; in the mode the facing is the look, which is
+what a player in first person expects of a charge. Knock-back does not exist for players
+in a net game; staggered, dead, mounted and scripted players do not reach the neutral
+move. None of these is a per-machine read, so none can break the step; they could only
+feel different, and none was seen to.
+
+## 3.9 Proposed ledger rows
+
+| ID | Claim | Kind | Evidence |
+|---|---|---|---|
+| FP1 | The simulation has an exact turn in place: a left-stick push with `0.01 < S x stick` and a step under 0.0316 turns a player 40 % of the angle a tick and moves it by nothing (offline, ordinary scale: exactly 42/128 on one axis). A net game cannot deliver it (scale 0.75, even stick codec steps): the nearest push moves 0.079 a tick | Ran (native build), Read | 0x1b4228, 0x14d4b8 (the 0.001 test); docs/issues/native-first-person-controls.md 1.2, 2.1 |
+| FP2 | The yaw word of the input record is the sender's own camera yaw, written by nothing else; a machine may write its camera's yaw directly (mouse look) and every machine steers that player by the delivered word. The delivered word wanders up to about a degree round the true one while the camera stands still | Read, Ran (two to four native copies; a native and an emulator copy) | 0x133464-0x133498, 0x13ac8c-0x13ac9c; same document 2.0, 2.7 |
+| FP3 | A swing takes its target inside 60 degrees of the facing and in reach and hits that target whatever it does afterwards (line of sight only); arrows and casts fly at the nearest enemy inside 10 degrees either side within 340, with an automatic vertical part; there is no aim in height by the player | Read; the melee part Ran | 0x1a9678, 0x1b6a98, 0x1bb3c8, 0x1614f0, 0x1a8cb0, 0x1a42b8; same document 1.4, 2.2 |
+| FP4 | Game message 4 (the "null" channel, id at 0x86aa60) has an empty handler 0x1e01b0 and one sender in the game, `nullmsg_sendShopClosed` 0x1e0134 (`{1, slot}`, a shop closing in a net game); `nullmsg_send0` 0x1e0108 has no caller | Observed | W5 of tools/recomp/app/fp_section_test.py; 0x1d0b70, 0x1dc1ac |
+| FP5 | Player object +0x47e is read only by the unreachable jump state and by one test in `Player_move` that also needs +0x47c; `Player_ctor` does not initialise it | Observed | 0x1a22fc, 0x1b4020 (the 1.25 branch), state 7 of `Player_run` |
+| FP6 | The section "strafe mode" (84 words) changes nothing for a player whose mode byte is 0: `Player_move` leaves the same bytes in 1,200 of 1,200 interpreter calls; a machine with the section and a machine without it stay in step for 4,805 and 4,824 ticks through a fight with the mode never set | Executed, Ran | same test, M1, M2; runs n1, n2 (3.5) |
+| FP7 | With the mode in use, two, three and four native copies in mixed views stay in step through fights, a level change, deaths, reloads and the drop of a strafing player; the mode bytes are the same on all machines in every tick | Ran | runs m2 (two launches), m3, m4, d3 (3.6) |
+| FP8 | An emulator-based copy given the section simulates a native player who strafes: samples equal to the native tick log in every compared column, the mode byte among them, and the game's checksum exchange agrees | Ran | runs x1, x2 (3.7) |
