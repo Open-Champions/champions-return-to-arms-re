@@ -133,7 +133,12 @@ def make_patch(args):
     result = subprocess.run(['diff', '-ru', 'recomp.orig', 'recomp'], cwd=SRC, capture_output=True, text=True)
     result.stdout = ''.join(line + '\n' for line in result.stdout.splitlines() if not line.startswith('Only in '))    # the new files are in core/
     text = re.sub(r'^(---|\+\+\+) (\S+)\t.*$', r'\1 \2', result.stdout, flags=re.M)    # no time stamps
-    open(PATCH, 'w').write(text)
+    notes = ''
+    if os.path.exists(PATCH):                           # the notes at its head (what patch(1) skips) stay
+        old = open(PATCH).read()
+        cut = old.find('diff -ru ')
+        notes = old[:cut] if cut > 0 else ''
+    open(PATCH, 'w').write(notes + text)
     print('wrote %s (%d lines)' % (PATCH, text.count('\n')))
     return 0
 

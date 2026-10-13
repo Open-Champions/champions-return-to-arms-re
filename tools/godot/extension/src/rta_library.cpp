@@ -36,6 +36,9 @@ bool RtaLibrary::load(const std::string& path) {
     if (!name) { error = std::string("the library has no ") + #name; return false; }
     RTAG_FUNCTIONS(RTAG_LOAD)
 #undef RTAG_LOAD
+#define RTAG_LOAD_OPTIONAL(name) name = (decltype(name))find_symbol(handle, #name);
+    RTAG_OPTIONAL_FUNCTIONS(RTAG_LOAD_OPTIONAL)
+#undef RTAG_LOAD_OPTIONAL
     if (rtag_api_version() != RTAG_API_VERSION) {
         error = "the library speaks version " + std::to_string(rtag_api_version()) + " of the interface, this extension " + std::to_string(RTAG_API_VERSION);
         return false;

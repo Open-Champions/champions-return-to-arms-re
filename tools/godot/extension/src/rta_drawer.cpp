@@ -51,9 +51,7 @@ void RtaDrawer::set_shader_code(const String& code) { shader_code = code.utf8().
 void RtaDrawer::set_output_size(const Vector2i& size) {
     if (size.x < 16 || size.y < 16 || size == output_size) return;
     output_size = size;
-    for (auto& entry : targets) size_target(entry.second);
-    for (auto& m : materials) rs()->free_rid(m.second.rid);     // they hold the surfaces' scale
-    materials.clear();
+    for (auto& entry : targets) size_target(entry.second);     // (a material is made per scale: the old ones run out unused)
 }
 
 // ---- surfaces -------------------------------------------------------------------------------
@@ -173,7 +171,7 @@ RID RtaDrawer::material_for(const rtag_draw& d, const Target& target, bool inver
     struct Key {
         uint32_t variant; int64_t texture; uint32_t target; float scissor[4];
         uint8_t textured, tfx, tcc, wrap_s, wrap_t, texa_mode, ta0, ta1, aem, atst, aref, fog, fog_colour[3], blend_c, mask_rgb, flipped;
-        float st_scale[2], tex_size[2], tex_offset[2], region[4], weave_half, blend[4], fix;
+        float st_scale[2], tex_size[2], tex_offset[2], region[4], weave_half, blend[4], fix, scale[2];
     } key;
     memset(&key, 0, sizeof key);
     key.variant = variant; key.texture = textured ? texture.get_id() : 0; key.target = target.id;
@@ -181,6 +179,7 @@ RID RtaDrawer::material_for(const rtag_draw& d, const Target& target, bool inver
     key.textured = textured; key.atst = d.alpha_test ? d.atst : 1; key.aref = d.aref; key.fog = d.fog; memcpy(key.fog_colour, d.fog_colour, 3);
     key.blend_c = (uint8_t)blend_c; key.mask_rgb = d.mask_rgb; key.flipped = texture_flipped;
     key.blend[0] = sc; key.blend[1] = sk; key.blend[2] = dc; key.blend[3] = dk; key.fix = fix;
+    key.scale[0] = sx; key.scale[1] = sy;
     if (textured) {
         key.tfx = d.tfx; key.tcc = d.tcc; key.wrap_s = d.wrap_s; key.wrap_t = d.wrap_t;
         key.texa_mode = d.tex_is_target ? d.texa_mode : 0; key.ta0 = d.ta0; key.ta1 = d.ta1; key.aem = d.aem;
@@ -355,12 +354,25 @@ void RtaDrawer::submit() {
         if (old != textures.end()) s->free_rid(old->second);
         textures[t.id] = s->texture_2d_create(image);
         textures_made++;
+        if (scene_mode && t.width >= THUMB && t.height >= THUMB) {
+            Thumb& thumb = thumbs[t.id];
+            const int cw = t.width / THUMB, ch = t.height / THUMB;
+            for (int ty = 0; ty < THUMB; ty++)
+                for (int tx = 0; tx < THUMB; tx++) {
+                    uint32_t sum = 0;
+                    for (int y = 0; y < ch; y += 2)
+                        for (int x = 0; x < cw; x += 2) {
+                            const uint8_t* px = t.rgba + ((size_t)(ty * ch + y) * t.width + tx * cw + x) * 4;
+                            sum += px[0] * 2 + px[1] * 5 + px[2];
+                        }
+                    const int n = ((ch + 1) / 2) * ((cw + 1) / 2);
+                    thumb.lum[ty * THUMB + tx] = (uint8_t)std::min<uint32_t>(sum / (uint32_t)(n * 8), 255);
+                }
+        }
     }
     if (scene_mode && std::fabs(f.aspect - last_aspect) > 0.001f) {     // the view's shape changed: the 3-D surface's viewport follows
         last_aspect = f.aspect;
         for (auto& entry : targets) if (entry.second.screen) size_target(entry.second);
-        for (auto& m : materials) s->free_rid(m.second.rid);
-        materials.clear();
     }
     for (uint32_t k = 0; k < f.target_count; k++) {
         const rtag_target& info = f.targets[k];
@@ -506,6 +518,7 @@ void RtaDrawer::submit() {
         if (t == textures.end()) continue;
         s->free_rid(t->second);
         textures.erase(t);
+        thumbs.erase(f.dead_textures[k]);
     }
     for (uint32_t k = 0; k < f.dead_target_count; k++) {
         auto t = targets.find(f.dead_targets[k]);

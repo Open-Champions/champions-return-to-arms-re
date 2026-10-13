@@ -47,6 +47,20 @@ class RtaMachine : public RefCounted {
     Dictionary get_view() const;
     // "view" = overhead|action|chase|shoulder|first, "view.<mode>.<name>" = a view's setting, "game_hud" = on|off
     bool set_option(const String& key, const String& value);
+    // The controls of the look views (tools/recomp/app/fpcontrols.h, inside the library): what they know, with the field
+    // names of fpcontrols::Hud - blank, tick, view, look, playing, slot, player, x, y, z, look_heading, look_pitch, facing,
+    // facing_error, state, weapon_class, ranged, aligning, reticle, melee / shot / locked ({valid, object, x, y, z,
+    // distance, bearing, hp, hp_max}), usable, usable_kind, usable_fade, usable_object, usable_x/y/z, usable_bearing,
+    // usable_text, threat_count, threats (Array of {object, x, y, z, distance, bearing, targets_me, attacking, in_view}),
+    // behind, swings, hits_dealt, hits_taken, deaths, respawns, last_hit_bearing, last_hit_amount, wants_pointer.
+    // Empty when the library has no controls.
+    Dictionary get_controls_hud() const;
+    // The pointer as the look: motion since the last call (right and down positive), wheel steps; a button (0 left,
+    // 1 right, 2 middle, 3 and 4 the side buttons).  wants_pointer(): a look view is active and the player is playing -
+    // the host hides and holds the pointer while this is true and it has the keyboard.
+    void mouse(double dx, double dy, double wheel);
+    void mouse_button(int button, bool down);
+    bool wants_pointer() const;
     PackedStringArray get_shots() const;
     PackedStringArray get_host_commands() const;
     Ref<Image> get_picture() const;         // null when the frame carries none

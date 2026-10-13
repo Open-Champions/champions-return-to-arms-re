@@ -30,7 +30,8 @@ VT_PLAYER = 0x511308
 
 def vtable_names():
     names = {}
-    for line in open(os.path.join(ROOT, 'vtables.txt'), errors='replace'):
+    kit = os.environ.get('SOAK_KIT')
+    for line in open(os.path.join(kit if kit and os.path.exists(os.path.join(kit, 'vtables.txt')) else ROOT, 'vtables.txt'), errors='replace'):
         fields = line.split()
         if len(fields) >= 2 and fields[0].startswith('0x'):
             try:
@@ -73,7 +74,7 @@ def canon(value, pool, classes):
 def read_mask():
     """poolmask.txt as {virtual table or 0: {offset: bits}}, with what soakhooks.cpp has built in."""
     mask = {0: {0: 0xFFFFFFFF, 4: 0xFFFFFFFF, 8: 0xFFFFFFFF}, VT_PLAYER: {0xC: 0x200100}}
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'poolmask.txt')
+    path = os.path.join(os.environ.get('SOAK_KIT') or os.path.dirname(os.path.abspath(__file__)), 'poolmask.txt')
     if os.path.exists(path):
         for line in open(path):
             fields = line.split('#')[0].split()

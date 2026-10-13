@@ -6,7 +6,7 @@ compute what the emulator computes. This file is the farm built on it to hunt fo
 desyncs that are left: the method, what was covered, what was found, and at what rates.
 Every result says what was **Ran**; **Read** marks what comes from reading code alone.
 
-**Status: first part ended 2026-10-12 22:45. A second part (2026-10-13, below: "Second part") takes findings 2 and 3 to the bottom, corrects finding 3's reading of seed 5000 and proposes three sections; its status is at its head.**
+**Status: first part ended 2026-10-12 22:45. A second part (2026-10-13, below: "Second part") takes findings 2 and 3 to the bottom, corrects finding 3's reading of seed 5000 and proposes three sections; a third part (the same afternoon, "Third part") soaks the proposed strafe section and finds and mends a desync of the released set (a late save). Each part's status is at its head.**
 
 ## In short
 
@@ -936,7 +936,29 @@ For whoever edits `FINDINGS.md` (this document does not).
 
 # Third part, 2026-10-13 afternoon: the strafe section, soaked before it goes into the set
 
-**Status: in progress** (started 14:36; this part is rewritten as the arms report).
+**Status: ended 2026-10-13 17:43.** The farm is stopped; nothing of it is running.
+
+## In short (third part)
+
+- **The strafe section, mode never asked for (S0): exactly the released set.** Ten of the
+  morning's seeds, two, three and four machines, 286,198 ticks per program: every column
+  of every machine's tick log is identical to the released set's, row for row.
+- **The mode in use: 4.15 million ticks, nothing of the mode differs.** S1 (every
+  machine's driver) 1,842,998 ticks; mixed (some machines never set it) 765,936; with the
+  late-save section as well 1,539,086 — 64 games of two machines, 6 of three, 10 of four.
+  A player is in the mode in about 72 % of the ticks, and close to half of the running
+  ticks in the mode go sideways or backwards. Mode bytes, facings and yaw words are equal
+  on all machines in every tick. Five directed corner games (a drop, the host leaving, two
+  switches in one tick, a dead player asking, a kick): no difference.
+- **One real desync was found on the way, and it is the released set's, not the
+  section's**: a level entered while a machine's inventory is open gives that machine a
+  restart point from a later tick, and a party wipe then reloads other player records there
+  (seed 7306: the game's own out-of-sync flag). Reproduced on the released set alone.
+  A six-word section removes it; with it 2.87 million ticks without a difference.
+- **Advice.** The strafe section: nothing found against it in the native farm. The
+  late-save section: it should go out **by itself and soon** — it mends a desync players
+  can cause at will today, changes nothing offline and nothing while no menu is open, and
+  does not depend on the strafe section. The two together ran 1.54 million ticks clean.
 
 The section under test is `[Net test: strafe mode - a player can run one way and face
 another]` of `tools/recomp/app/fp-proposed.pnach` (84 words; the sha256 of its `patch=`
@@ -1134,6 +1156,145 @@ Not covered by it: the load screen at a level load (last row of the table).
 | the directed game above | `s29`: the reload gives the two machines different records (table): first difference tick 1,773, both players' mana and record tails; no out-of-sync flag in the 974 ticks that follow | `s29d`: both save in tick 1,001, the reload at 1,773 restores the same records, no difference in 2,747 ticks |
 | seed 7306, four machines, every driver using the strafe mode | `s29f`: tick 4,068, out-of-sync flag at 4,071 (above) | `s29fd` (the released set, the strafe section and this one): all four save in tick 2,365 with machine 2's inventory open; played to tick 9,446, past the wipe: no difference (six pairs, 56,676 pair-ticks) |
 
+## Arm S1, the mixed arm and the late-save arm: totals (third part)
+
+Undirected games as in the earlier parts (seeded job, random input in six mixes, the
+buses), at most six instances, `nice -n 19`. Deciding columns: the second part's, and
+every player's mode byte and the yaw word that travels with the input (the facing always
+was one). The fourth arm was added when the late-save section existed: both sections together.
+
+| Arm | Program | Whose driver uses the mode | Jobs | Ticks compared | Machines 2 / 3 / 4 (jobs, ticks) | Deciding differences |
+|---|---|---|---|---|---|---|
+| **S1** | `s29f`: the released set and the strafe section | every machine's | 31 | **1,842,998** | 26, 1,641,339 / 3, 147,476 / 2, 54,183 | 1: seed 7306 — the late save, the released set's own (above); nothing of the mode |
+| **mixed** | `s29f` | by the seed: at least one machine never, at least one does (one of two; one or two of three; two or three of four) | 17 | **765,936** | 14, 657,658 / 1, 27,349 / 2, 80,929 | 0 |
+| **late save** | `s29d`: the released set and the late-save section | — | 26 | **1,326,739** | 22, 1,175,726 / 2, 121,885 / 2, 29,128 | 0 |
+| **both sections** | `s29fd`: the released set, the strafe section and the late-save section | every machine's | 32 | **1,539,086** | 24, 1,182,440 / 2, 92,063 / 6, 264,583 | 0 |
+| the mode in use, all three arms | | | 80 | **4,148,020** | 64, 3,481,437 / 6, 266,888 / 10, 399,695 | 1 (seed 7306) |
+| the late-save section, both its arms | | | 58 | **2,865,825** | 46, 2,358,166 / 4, 213,948 / 8, 293,711 | 0 |
+
+No out-of-sync flag but seed 7306's; no time-out, no aborted game; dropped peers (a kick
+or leave from the pause menu under random input): seed 7905 of the mixed arm at tick
+26,453 and seed 7621 of the late-save arm at 1,293, no difference before either.
+
+**The mode in use.**
+
+| | S1 | mixed |
+|---|---|---|
+| ticks with at least one player in the mode | 1,327,977 = **72.1 %** | 380,260 = 49.6 % |
+| player-ticks in the mode | 1,820,373 of 3,941,838 = 46.2 % | 406,147 of 1,721,079 = 23.6 % |
+| switches of a mode byte; calls of the sender | 52,590; 70,330 | 12,418; 17,485 |
+| player-ticks in which a player in the mode moved more than a unit | 380,638 | 71,481 |
+| … more than 45 degrees off its facing (sideways or backwards) | 186,208 = **48.9 %** | 36,176 = 50.6 % |
+| … more than 135 degrees off (backwards) | 61,037 = 16.0 % | 12,875 = 18.0 % |
+| the check: players not in the mode, moving ticks more than 45 degrees off | 33,512 of 388,677 = 8.6 % | 19,302 of 216,515 = 8.9 % |
+
+The arm with both sections: a player in the mode in 1,147,513 ticks (74.6 %), 47,929
+switches, 66,145 sender calls; of 357,223 running player-ticks in the mode 166,300 (46.6 %)
+more than 45 degrees off the facing and 56,770 (15.9 %) more than 135; 27 levels, 213 level
+changes, 265 deaths; no late save in its 245 level entries, no dropped peer.
+
+The 8.6 % of the check are knock-backs, pushes and the first ticks of a turn: without the
+mode a player runs along its facing. The requests fall where the driver puts them — one
+frame in 120 at random, and on a new player object, a pending level change, a death, a
+change of action state, a menu opening or closing — so on swings, blocks, casts, hits
+taken, deaths, respawns and level changes by construction; how many fell on each was not
+counted. A shop was opened 297 times in the morning's arm and is in these games' input
+mixes as well; the shop's own message on the channel ({1, slot}) is ignored by the
+section's handler (the section's interpreter check H).
+
+S1: 28 levels, 241 level changes after the first entry, 233 deaths; by bus: none 305,352
+ticks; delay 2, jitter 2, loss 1 %: 235,597; 4, 3, 5 %: 397,933; 6, 8, 3 %: 262,684; 10, 6,
+10 %: 610,571; with an outage: 30,861. Mixed: 20 levels, 148 level changes, 245 deaths.
+Late save: 28 levels, 179 level changes, 123 deaths.
+
+**How often a late save happens in undirected games.** "Ticks since this machine's last
+save" was followed in 34 games of the released set (S1 from seed 7314 on and the mixed
+arm: 1,596,429 ticks, 312 level entries): **3 games had a late save** (seeds 7900, 7910,
+7915 — all of three or four machines; the stretches until the next common save 145, 1,725
+and 2,162 ticks), and in none did the whole party die inside the stretch. With seed 7306,
+found before the column existed: 4 of 35 games with a late save, 1 of them with a wipe
+before the next common save and so out of step. In the 22 counted games of the late-save
+arm (177 level entries): none, as the section intends.
+
+For the earlier games — the first part's 7.9 million ticks and the second's 1.78 million —
+the count cannot be given: the column did not exist and the logs of games without a
+difference were not kept. What can be said: **a wipe after a late save would not have been
+hidden there.** The reload restores the players' records, and those games compared every
+player's hit points, mana, bags, potions, weight and the record's ranges in every tick —
+the very columns seed 7306 differs in. None of those 148 games differed so, so none had a
+wipe inside a late stretch; at today's rate about one game in ten had a late save that was
+never put to the test. The farm's random input understates what players do: a player in
+the inventory stands still, so in these games a level changes with a menu open only when
+another player walks the party out — all four late saves were in games of three or four
+machines (4 of the 8 such games, seed 7306 among them), none in the 27 games of two. People who open the
+inventory at a door while a friend goes through do it at will.
+
+## What went wrong with the machine, and what the farm does about it (third part)
+
+- **15:59–16:37, no game ran.** The Mac's disk filled up (other work and this farm's logs:
+  a three-machine game of 300,000 frames leaves 1.1 GB of tick logs until it is compared),
+  and the Desktop folder, which holds the checkout, is synced: the system uploaded files and
+  took their contents off the disk. A read of such a file never returned. Hit, in this order:
+  two finished games' tick logs (the farm waited in their comparison; both games were lost:
+  seeds 7314 of S1 and 7605 of the late-save arm), `local/rig-out/p6-trees.json` (the skill
+  lists every job is drawn from), three files of the memory-card copies under
+  `local/rig-out/pair-a|b/vfs`, six `symbols/*.tsv`, `tools/recomp/soak/poolmask.txt`, the
+  runtime's frozen objects (no new program can be linked from them now) and 295 files of
+  the first part's kept logs. Nothing was fetched back.
+- **The farm now runs from a kit of its own**, `local/recomp-out/soak/farm3.nosync/kit`
+  (`SOAK_KIT`; a directory whose name ends in `.nosync` is not uploaded): the skill lists
+  rebuilt from 175 recorded jobs — every position of every class's list, no conflict in 356
+  samples, and all 175 jobs regenerate with the same classes, skills and level; the 18
+  symbols the scripts and columns use (the column for the pause-menu flag is left out: its
+  address was in a file that cannot be read); the card files from intact copies
+  (`local/recomp-out/card-test` for the 760-byte options file and the icon description);
+  and the four lines of the pool mask that the deciding checksum uses (the lines that only
+  `poolraw` uses are lost with the file, so `poolraw` is not comparable with earlier games).
+  **Checked**: seed 7306 from the kit repeats the difference at tick 4,068 with the same
+  columns, the flag at 4,071 and the drop at 4,073.
+- **What a game may write** (`farm.py`): every game is cut at 60,000 frames (about 75 MB of
+  tick log per machine while it runs); a game that has written more than 500 MB per pair of
+  machines, or that runs while less than 3 GB is free, is stopped and recorded as
+  `aborted: …` with no ticks — never as a game without a difference; no game starts with
+  less than 6 GB free. A game without a difference leaves its row and nothing else; of a
+  game with one the repeat run is kept (the logs to 400 frames past the difference, two
+  memory images per machine) and the first run's raw logs are removed.
+- **Deleted at 16:08 and 16:20, 7.4 GB**: per-tick logs of games without a difference and
+  the first runs of games that have a kept repeat run (5.3 GB with the two lost games),
+  memory images (0.4), programs, translations and objects of finished arms (1.6; each
+  arm's `build-info.txt` is kept). Kept in full: seed 7306 and the directed late-save games.
+  `local/recomp-out/soak/cleanup.py` is the script; `cleanup-1013.txt` its output.
+- The instance limit of six was passed twice for about fifteen seconds (eight machines):
+  at 15:13 and at 15:21, each time by starting a second farm process while a
+  four-machine game of the first was still running.
+- S1's first eight games ran before "ticks since save" was a column; games from seed 7314
+  on are cut at 60,000 frames.
+
+## What is left (third part)
+
+- Everything here is two to four copies of one native build on one machine, from the
+  developer LAN start: logic only. Neither section was run by this work on the emulator
+  rig, on PCSX2 or a console, or through the lobby.
+- The late-save section does not cover a machine whose **load** screen is up when a level
+  loads (it then never arms the save); and what the save dialog's unpack does if it could
+  fall after a level's first tick was read to be impossible, not produced.
+- Which requests fell on a swing, a block, a shop was not counted; the driver's calls from
+  the vertical blank (`at=blank`) were built and not run.
+- The frozen runtime objects and several inputs of the farm are evicted from the disk; the
+  kit carries what a game needs, but no new program can be linked until they are back.
+- The interpreter checks ran before `tools/ee_emu.py` was evicted (61 pass); they could not
+  be run again at the end.
+
+## Proposed ledger rows (third part)
+
+For whoever edits `FINDINGS.md` (this document does not).
+
+| Row | What to record |
+|---|---|
+| mainloop P3 / audio-save "Checkpoint autosave" (replace "never run") | **Ran**: the level-entry save (`save_daemonRun` 0x2188a8 → `save_game(0, 1)`) is taken late on a machine whose inventory is open when the level is entered — its full-screen menu flag 0x41b4f8 and its camera mode hold it, as would its card state — and a party wipe before the next common save reloads other player records on that machine. Seed 7306 (four machines, the released set 073064bb with the strafe section): save 23 ticks late at tick 2,388, wipe and reload at 4,068, ten columns of all four players differ, the game's out-of-sync flag at 4,071. Directed, the released set alone, two machines: save 97 ticks late, different mana for both players from the reload on. In undirected games: 4 of 35 with a late save, 1 with a wipe inside it. Section "the save at a level's entry is taken in the same tick on every machine" (6 words, 0x218934, 0x21897C–0x21898C): the card and menu tests go, the camera test becomes the cutscene flag 0x44fcd0. **Executed** (25 checks), **Ran** (directed game and seed 7306 clean with it; arm of 26 games, 1,326,739 ticks, 22 / 2 / 2 by machines: no difference) |
+| new (strafe section, soak) | `[Net test: strafe mode - a player can run one way and face another]` (84 words, `tools/recomp/app/fp-proposed.pnach`) on the native farm. Mode never set: 10 seeds of two, three and four machines, 286,198 ticks per program, every column of every machine's tick log identical to the released set's. Mode in use on every machine: 31 games, 1,842,998 ticks, a player in the mode in 72 % of the ticks, 48.9 % of the running ticks in the mode sideways or backwards; mixed (some machines never): 17 games, 765,936 ticks; the mode bytes, facings and yaw words equal on all machines in every tick; one difference in all, the late save above. Directed: a drop, the host leaving, two switches in one tick, a dead player asking, a kick — no difference. Two to four copies of one native build: logic only |
+| note (the Mac) | A checkout under a synced Desktop loses file contents when the disk fills; a read then blocks for ever. The farm keeps its inputs in `local/recomp-out/soak/farm3.nosync/kit` |
+
 ## How to repeat
 
 ```
@@ -1166,6 +1327,19 @@ python3 $S/farm.py one --arm s26  --out $T --seed 7001 --level drundar --bus non
 python3 $S/farm.py one --arm s26abc --out $T --seed 7001 --level drundar --bus delay=10,jitter=6,loss=100 --frames 600 \
         --directed local/recomp-out/soak/dir-gate.txt --columns local/recomp-out/soak/cols-gate.txt
 python3 $S/farm.py run --arm s26abc --out local/recomp-out/soak/farm/s26abc --seeds 6100:900 --instances 6   # touch .../alive while it runs
+# third part (the strafe section, the late save); programs by local/recomp-out/soak/build-1013b.sh
+N=local/recomp-out/soak/farm3.nosync            # not uploaded by the file-sync service
+export SOAK_KIT=$PWD/$N/kit SOAK_NO_SAMPLES=1    # the farm's own copies of its inputs
+python3 $S/farm.py twin --ref s29 --arm s29f --out $N/s0 --seeds 6100:8 --max-frames 30000      # arm S0
+python3 $S/farm.py run  --arm s29f --out $N/s1  --seeds 7300:900 --strafe all                  # arm S1
+python3 $S/farm.py run  --arm s29f --out $N/mix --seeds 7900:900 --strafe mixed
+python3 $S/farm.py run  --arm s29d --out $N/d   --seeds 7600:900                               # the late-save section
+python3 $S/farm.py one  --arm s29f --out $N/t --seed 7306 --frames 5400 --strafe all           # the late save, four machines
+python3 $S/farm.py one  --arm s29  --out $N/t --seed 7210 --machines 2 --level drundar --bus none --frames 300 \
+        --directed local/recomp-out/soak/dir3/latesave.txt                                      # the same, directed
+python3 $S/farm.py one  --arm s29f --out $N/t --seed 7205 --machines 3 --level drundar --bus none --frames 300 \
+        --directed local/recomp-out/soak/dir3/kick.txt --survive --pairs 0,1                    # a corner game
+python3 $S/sections_test.py                                                                     # now 61 checks, D1-D17 the late save
 # which function writes a word: build with --instrument trace, then
 python3 $S/farm.py one --arm fix26ct --out local/recomp-out/soak/t --seed 3103 --frames 5100 \
         --env SOAK_WATCH=86db94:10 --env SOAK_WATCH_TICKS=4650:4670 --env SOAK_WATCH_LOG=/tmp/w-%M.txt

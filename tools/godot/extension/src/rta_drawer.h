@@ -112,6 +112,11 @@ class RtaDrawer : public RefCounted {
     int samples = 0;
     std::string shader_code;
     std::unordered_map<uint32_t, RID> textures;
+    // scene mode: every texture's brightness, coarsely (THUMB x THUMB means): the level's light is painted into its
+    // textures, and where it comes from is read out of them (rta_scene.cpp, Scene::sun_sum)
+    enum { THUMB = 16 };
+    struct Thumb { uint8_t lum[THUMB * THUMB]; };
+    std::unordered_map<uint32_t, Thumb> thumbs;
     std::unordered_map<uint32_t, Target> targets;
     std::unordered_map<uint32_t, Ref<Shader>> shaders;      // by variant bits (a Shader resource: its set_code runs the preprocessor)
     struct Material { RID rid; uint64_t last_used = 0; };

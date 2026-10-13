@@ -3,6 +3,7 @@
 
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
+#include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/vector3.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
@@ -145,6 +146,62 @@ bool RtaMachine::set_option(const String& key, const String& value) {
     return started && rta_library().rtag_set_option(key.utf8().get_data(), value.utf8().get_data()) != 0;
 }
 
+Dictionary RtaMachine::get_controls_hud() const {
+    Dictionary d;
+    if (!started || !rta_library().rtag_controls_hud) return d;
+    rtag_controls c;
+    memset(&c, 0, sizeof c);
+    c.struct_size = sizeof c;
+    if (!rta_library().rtag_controls_hud(&c)) return d;
+    auto mark = [](const rtag_mark& m) {
+        Dictionary o;
+        o["valid"] = m.valid != 0; o["object"] = (int64_t)m.object; o["x"] = m.x; o["y"] = m.y; o["z"] = m.z;
+        o["distance"] = m.distance; o["bearing"] = m.bearing; o["hp"] = m.hp; o["hp_max"] = m.hp_max;
+        return o;
+    };
+    d["blank"] = (int64_t)c.blank; d["tick"] = (int64_t)c.tick; d["view"] = c.view;
+    d["look"] = c.look != 0; d["playing"] = c.playing != 0; d["slot"] = c.slot; d["player"] = (int64_t)c.player;
+    d["x"] = c.x; d["y"] = c.y; d["z"] = c.z;
+    d["look_heading"] = c.look_heading; d["look_pitch"] = c.look_pitch; d["facing"] = c.facing; d["facing_error"] = c.facing_error;
+    d["state"] = c.state; d["weapon_class"] = c.weapon_class; d["ranged"] = c.ranged != 0; d["aligning"] = c.aligning != 0;
+    d["melee"] = mark(c.melee); d["shot"] = mark(c.shot); d["locked"] = mark(c.locked);
+    d["reticle"] = c.reticle != 0;
+    d["usable"] = c.usable != 0; d["usable_kind"] = c.usable_kind; d["usable_fade"] = c.usable_fade; d["usable_object"] = (int64_t)c.usable_object;
+    d["usable_x"] = c.usable_x; d["usable_y"] = c.usable_y; d["usable_z"] = c.usable_z; d["usable_bearing"] = c.usable_bearing;
+    c.usable_text[sizeof c.usable_text - 1] = 0;
+    d["usable_text"] = String::utf8(c.usable_text);
+    Array threats;
+    for (int k = 0; k < c.threat_count && k < 16; k++) {
+        const rtag_threat& t = c.threats[k];
+        Dictionary o;
+        o["object"] = (int64_t)t.object; o["x"] = t.x; o["y"] = t.y; o["z"] = t.z; o["distance"] = t.distance; o["bearing"] = t.bearing;
+        o["targets_me"] = t.targets_me != 0; o["attacking"] = t.attacking != 0; o["in_view"] = t.in_view != 0;
+        threats.push_back(o);
+    }
+    d["threat_count"] = c.threat_count; d["threats"] = threats; d["behind"] = c.behind;
+    d["swings"] = (int64_t)c.swings; d["hits_dealt"] = (int64_t)c.hits_dealt; d["hits_taken"] = (int64_t)c.hits_taken;
+    d["deaths"] = (int64_t)c.deaths; d["respawns"] = (int64_t)c.respawns;
+    d["last_hit_bearing"] = c.last_hit_bearing; d["last_hit_amount"] = c.last_hit_amount;
+    d["wants_pointer"] = c.wants_pointer != 0;
+    return d;
+}
+
+void RtaMachine::mouse(double dx, double dy, double wheel) {
+    if (started && rta_library().rtag_mouse) rta_library().rtag_mouse((float)dx, (float)dy, (float)wheel);
+}
+
+void RtaMachine::mouse_button(int button, bool down) {
+    if (started && rta_library().rtag_mouse_button) rta_library().rtag_mouse_button(button, down ? 1 : 0);
+}
+
+bool RtaMachine::wants_pointer() const {
+    if (!started || !rta_library().rtag_controls_hud) return false;
+    rtag_controls c;
+    memset(&c, 0, sizeof c);
+    c.struct_size = sizeof c;
+    return rta_library().rtag_controls_hud(&c) && c.wants_pointer;
+}
+
 PackedStringArray RtaMachine::get_shots() const {
     PackedStringArray out;
     if (frame) for (uint32_t k = 0; k < frame->shot_count; k++) out.push_back(String::utf8(frame->shots[k]));
@@ -213,6 +270,10 @@ void RtaMachine::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_vertex_count"), &RtaMachine::get_vertex_count);
     ClassDB::bind_method(D_METHOD("get_view"), &RtaMachine::get_view);
     ClassDB::bind_method(D_METHOD("set_option", "key", "value"), &RtaMachine::set_option);
+    ClassDB::bind_method(D_METHOD("get_controls_hud"), &RtaMachine::get_controls_hud);
+    ClassDB::bind_method(D_METHOD("mouse", "dx", "dy", "wheel"), &RtaMachine::mouse);
+    ClassDB::bind_method(D_METHOD("mouse_button", "button", "down"), &RtaMachine::mouse_button);
+    ClassDB::bind_method(D_METHOD("wants_pointer"), &RtaMachine::wants_pointer);
     ClassDB::bind_method(D_METHOD("get_shots"), &RtaMachine::get_shots);
     ClassDB::bind_method(D_METHOD("get_host_commands"), &RtaMachine::get_host_commands);
     ClassDB::bind_method(D_METHOD("get_picture"), &RtaMachine::get_picture);

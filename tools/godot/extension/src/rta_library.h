@@ -11,9 +11,13 @@
     F(rtag_api_version) F(rtag_has) F(rtag_start) F(rtag_set_pad) F(rtag_step) F(rtag_poll) F(rtag_run) F(rtag_audio_pull) \
     F(rtag_memory) F(rtag_fields) F(rtag_info) F(rtag_ended) F(rtag_exit_code) F(rtag_stop) F(rtag_set_option)
 
+// added after version 6 without changing it: null when the library is older
+#define RTAG_OPTIONAL_FUNCTIONS(F) F(rtag_controls_hud) F(rtag_mouse) F(rtag_mouse_button)
+
 struct RtaLibrary {
 #define RTAG_MEMBER(name) decltype(&::name) name = nullptr;
     RTAG_FUNCTIONS(RTAG_MEMBER)
+    RTAG_OPTIONAL_FUNCTIONS(RTAG_MEMBER)
 #undef RTAG_MEMBER
     bool loaded = false;
     std::string error;

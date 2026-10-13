@@ -60,6 +60,7 @@ enum { RING = 256 };
 
 struct RtaDrawer::Scene {
     bool lit = false, shadows = false;
+    bool near_fade = false;             // cut-out cards of the level thin out near the eye (a view along the ground)
     bool sky = false;                   // asked for: Godot draws the sky
     bool sky_active = false;            // ... and does in this frame (the camera is known and the game cleared the picture)
     int fill_draw = -1;                 // this frame: the game's clearing rectangle
@@ -74,6 +75,13 @@ struct RtaDrawer::Scene {
     double bright_sum[4] = {0, 0, 0, 0};    // direction of the dome's light part, weighted
     std::unordered_map<uint32_t, SkyTexture> sky_textures;
     std::unordered_set<uint64_t> ring_done;
+    // Where the level's light comes from.  The game's levels are lit in their textures (every placed chunk has its own
+    // pre-lit texture: docs/formats/world.md), so the direction is in the picture, not in the data: per texture, how the
+    // brightness of its texels goes with the normals of the vertices that carry them (their covariance); summed over the
+    // textures of the level it points to the light.  Learnt while the level is walked, kept once there is enough of it.
+    double sun_sum[3] = {0, 0, 0};
+    double sun_weight = 0;
+    uint64_t sun_samples = 0;
     uint64_t fills_dropped = 0, dome_draws = 0, near_faded = 0;
     Scene() { memset(ring_sum, 0, sizeof ring_sum); memset(ring_n, 0, sizeof ring_n); memset(ring, 0, sizeof ring); }
     bool packets = true;                // draw the packets' complete geometry where the tap has it (false: the list's own triangles)
@@ -108,6 +116,7 @@ void RtaDrawer::set_scene_option(const String& name, double value) {
     else if (name == "focus") scene->focus = value;
     else if (name == "packets") scene->packets = value != 0;
     else if (name == "sky") scene->sky = value != 0;
+    else if (name == "near_fade") scene->near_fade = value != 0;
 }
 
 void RtaDrawer::sky_reset() {
@@ -120,6 +129,9 @@ void RtaDrawer::sky_reset() {
     sc.sky_textures.clear();
     sc.ring_done.clear();
     sc.ring_version++;
+    sc.sun_sum[0] = sc.sun_sum[1] = sc.sun_sum[2] = 0;
+    sc.sun_weight = 0;
+    sc.sun_samples = 0;
 }
 
 Dictionary RtaDrawer::get_sky_info() const {
@@ -140,6 +152,11 @@ Dictionary RtaDrawer::get_sky_info() const {
     info["ring_width"] = (int64_t)RING;
     double n = sc.bright_sum[3] > 0 ? sc.bright_sum[3] : 1;
     info["bright"] = Vector3((real_t)(sc.bright_sum[0] / n), (real_t)(sc.bright_sum[1] / n), (real_t)(sc.bright_sum[2] / n));
+    // the painted light: a vector toward it (its length says how clearly the textures agree: brightness, 0..1, per unit
+    // of normal), and how many vertices it rests on
+    double w = sc.sun_weight > 0 ? sc.sun_weight : 1;
+    info["sun"] = Vector3((real_t)(sc.sun_sum[0] / w), (real_t)(sc.sun_sum[1] / w), (real_t)(sc.sun_sum[2] / w));
+    info["sun_samples"] = (int64_t)sc.sun_samples;
     return info;
 }
 
@@ -495,6 +512,31 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
         }
         sc.packet_draws++;
         sc.packet_extra += corners - (int)d.count;
+        // the painted light (see Scene::sun_sum): level chunks with a texture whose brightness is known
+        if (pieces[0].kind == 1 && d.texture && d.depth_write && sc.sun_samples < 400000) {
+            auto thumb = thumbs.find(d.texture);
+            if (thumb != thumbs.end() && d.tex_size[0] > 0 && d.tex_size[1] > 0) {
+                double sn[3] = {0, 0, 0}, sl = 0, sln[3] = {0, 0, 0};
+                int count = 0;
+                for (uint32_t k = 0; k < d.scene_piece_count; k++) {
+                    const rtag_scene_full* v = sc.tap->full + pieces[k].full_first;
+                    for (uint32_t n = 0; n < pieces[k].full_count; n += 5) {
+                        const rtag_scene_full& q = v[n];
+                        float tx = (q.u * d.st_scale[0] + d.tex_offset[0]) / d.tex_size[0], ty = (q.v * d.st_scale[1] + d.tex_offset[1]) / d.tex_size[1];
+                        tx -= std::floor(tx); ty -= std::floor(ty);
+                        float l = thumb->second.lum[std::min((int)(ty * THUMB), THUMB - 1) * THUMB + std::min((int)(tx * THUMB), THUMB - 1)] / 255.0f;
+                        sn[0] += q.nx; sn[1] += q.ny; sn[2] += q.nz; sl += l;
+                        sln[0] += l * q.nx; sln[1] += l * q.ny; sln[2] += l * q.nz;
+                        count++;
+                    }
+                }
+                if (count >= 24) {
+                    for (int a = 0; a < 3; a++) sc.sun_sum[a] += sln[a] - sl * sn[a] / count;
+                    sc.sun_weight += count;
+                    sc.sun_samples += count;
+                }
+            }
+        }
     } else {
         corners = (int)d.count;
         positions.resize((int64_t)d.count * 12);
@@ -518,7 +560,9 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     // Godot's light falls on what is solid (writes depth); glows, the dome, decals and what else is laid over the scene
     // keep the game's colours.  The dome is not hazed; camera-facing sprites fade as they come up to the eye.
     const bool is_dome = index < sc.is_dome.size() && sc.is_dome[index];
-    const bool sprite = d.made_by == 2 && d.scene_kind == RTAG_SCENE_DEPTH;
+    const bool sprite = (d.made_by == 2 && d.scene_kind == RTAG_SCENE_DEPTH) ||
+                        // ... and the level's cut-out cards (foliage): alpha-tested chunks, thinned out near the eye
+                        (sc.near_fade && normals && d.alpha_test && d.depth_write && d.scene_piece_count && sc.tap->pieces[d.scene_piece_first].kind == 1);
     if (sprite) sc.near_faded++;
     uint32_t extra = V_WORLD | (sc.lit && d.depth_write ? V_LIT : 0) | (normals ? V_NORMALS : 0) | (is_dome ? V_NOFOG : 0) | (sprite ? V_NEARFADE : 0);
     if (normals) sc.exact_draws++;

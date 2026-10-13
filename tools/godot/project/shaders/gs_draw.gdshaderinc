@@ -223,9 +223,15 @@ void fragment() {
 #ifdef GS_NEARFADE
 	// A sprite the game sized for a camera far overhead (a glow, a spark, a puff) is drawn as large on the screen
 	// however near it is: one at the eye would cover the picture.  It thins out as it comes up to the eye.
+#ifdef GS_DEPTH_WRITE
+	// ... and so does a cut-out card of the level (the crown of a tree, which the game hangs as flat cards at head
+	// height: from above a canopy, from the ground a sheet across the eyes): it is thinned out, pixel by pixel
+	if (rta_hash(floor(FRAGCOORD.xy)) > smoothstep(20.0, 64.0, dist)) discard;
+#else
 	float keep = smoothstep(18.0, 75.0, dist);
 	rgb *= keep;
 	destination = mix(1.0, destination, keep);
+#endif
 #endif
 #ifndef GS_NOFOG
 	// The haze: what is drawn fades, and the haze's own colour comes in its place as far as this draw covers

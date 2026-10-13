@@ -30,6 +30,8 @@ extends Node
 #   --test TEXT         a test run: small window titled "AGENT TEST - TEXT" that takes no keyboard, silent
 #   --stop-after N      quit after N vertical blanks
 #   --figures FILE      write the timing figures there at the end
+#   --speed-log N       every N vertical blanks one line: pictures a second, processor time a picture over all threads
+#                       of the process (cycles do not lie, times do: read it beside the load average), late pictures
 #   --view NAME         the camera view: overhead (the game's own), action, chase, shoulder, first; V cycles them
 #                       (the game builds and culls each frame for the view itself: tools/recomp/app/fpview.h)
 #   --no-game-hud       the game's own HUD layer is left out (for a HUD drawn by Godot)
@@ -44,6 +46,10 @@ extends Node
 #   hold_input(on)              the controller is not the game's while the portal is in front of a running session
 #   apply_settings(d)           settings the portal stores, for a running game: view, wide, sharpness
 #   -- ARGS             the rest goes to the runtime as it does after rta_app's "--"
+#
+# In the views that look along the ground the pointer is the look (tools/recomp/app/fpcontrols.h, inside the library):
+# it is hidden and held while such a view is active and the window has the keyboard; Escape gives it back, a click
+# takes it again; its buttons are controller buttons there.  Never in a test window.
 #
 # Keyboard: W A S D left stick, arrows direction pad, I J K L triangle square cross circle,
 # Q E L1 R1, 1 3 L2 R2, X C L3 R3, Return Start, Backspace Select (the native application's map).
@@ -96,15 +102,22 @@ var opt := {
 	"aspect": 0.0, "aspect_window": false, "samples": 0, "script": "", "godot_shots": "", "unpaced": false, "mute": false,
 	"no_sound": false, "test": "", "stop_after": 0, "figures": "", "args": PackedStringArray(),
 	"view": "", "game_hud": true, "light": false, "shadow": false, "pull_back": 1.0, "orbit": 0.0,
-	"look": "", "hud": true,
+	"look": "", "hud": true, "speed_log": 0,
 }
+var speed := {"usec": 0, "cpu": 0.0, "blanks": 0, "last": 0, "late": 0, "worst": 0}
 signal session_over(why: String)
 const G_IN_FRONTEND := 0x41B510         # symbols: g_inFrontend (a byte)
+const G_PLAYER_OBJECT := 0x4DCEC8       # g_players + 0x43d8: the first player's object, 0 while there is none
 var portal: Node                        # the portal this scene runs under (null: started directly)
 var input_held := false                 # the portal is in front: the controller is its own
 var seen_level := false
 var over_said := false
 var machine_stopped := false
+var mouse_motion := Vector2.ZERO        # pointer counts since the last controller read
+var mouse_wheel := 0.0
+var pointer_let_go := false             # Escape gave the pointer back: until the next click
+var stored := {}                        # what was last taken from the portal's settings
+var stored_clock := 0.0
 var machine: RtaMachine
 var view: Control                       # shows the picture (view.gd)
 var picture_texture: ImageTexture
@@ -157,8 +170,14 @@ func _ready() -> void:
 		portal = null
 	if portal != null and portal.has_signal("shown_changed"):
 		portal.connect("shown_changed", func(is_shown: bool) -> void: hold_input(is_shown))
+		input_held = bool(portal.get("shown"))     # a session start keeps the room in front until everybody is in
 	if opt.hud and opt.mode != "picture" and DisplayServer.get_name() != "headless" and ResourceLoader.exists("res://hud/hud.tscn"):
-		add_child(load("res://hud/hud.tscn").instantiate())      # the HUD agent's one line (docs/issues/native-hud.md)
+		var hud: Node = load("res://hud/hud.tscn").instantiate()
+		add_child(hud)                      # the HUD agent's one line (docs/issues/native-hud.md)
+		# The new interface in place of the game's own, unless something says otherwise: --hud MODE on the command line,
+		# or the HUD's settings file (the portal's "Interface: new / original" writes it: user://hud.cfg, [hud] mode)
+		if not OS.get_cmdline_user_args().has("--hud") and not FileAccess.file_exists("user://hud.cfg") and hud.has_method("command"):
+			hud.call("command", ["mode", "new"])
 	if opt.disc == "" and OS.has_environment("RTA_DISC"):
 		opt.disc = OS.get_environment("RTA_DISC")
 	if opt.disc == "":
@@ -210,6 +229,7 @@ func _parse_arguments() -> void:
 			"--pull-back": opt.pull_back = value.to_float(); k += 1
 			"--orbit": opt.orbit = value.to_float(); k += 1
 			"--look": opt.look = value; k += 1
+			"--speed-log": opt.speed_log = value.to_int(); k += 1
 			"--no-hud": opt.hud = false
 			"--offscreen", "--plain", "--no-portal": pass
 			_:
@@ -386,9 +406,104 @@ func apply_settings(d: Dictionary) -> void:
 		drawer.call("set_output_size", opt.size)
 	if scene_view != null and d.has("look"):
 		scene_view.call("set_look", String(d.look))
+	if d.has("music") or d.has("effects"):
+		stored["music"] = d.get("music", stored.get("music", 1.0))
+		stored["effects"] = d.get("effects", stored.get("effects", 1.0))
+		_volumes(float(stored.music), float(stored.effects))
+
+
+func _pointer() -> void:
+	# the pointer as the look: held while a look view wants it and this window is the one being played in
+	if opt.test != "" or DisplayServer.get_name() == "headless":
+		return
+	var want: bool = machine.wants_pointer() and not input_held and not pointer_let_go and get_window().has_focus()
+	var held := Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
+	if want != held:
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED if want else Input.MOUSE_MODE_VISIBLE
+		mouse_motion = Vector2.ZERO
+	if want and (mouse_motion != Vector2.ZERO or mouse_wheel != 0.0):
+		machine.mouse(mouse_motion.x, mouse_motion.y, mouse_wheel)
+	mouse_motion = Vector2.ZERO
+	mouse_wheel = 0.0
+
+
+func _input(event: InputEvent) -> void:
+	if not started or opt.test != "":
+		return
+	var held := Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
+	var motion := event as InputEventMouseMotion
+	if motion != null and held:
+		mouse_motion += motion.relative
+		return
+	var button := event as InputEventMouseButton
+	if button != null:
+		if not held:
+			if button.pressed:
+				pointer_let_go = false      # a click takes the pointer again (when a look view wants it)
+			return
+		match button.button_index:
+			MOUSE_BUTTON_LEFT: machine.mouse_button(0, button.pressed)
+			MOUSE_BUTTON_RIGHT: machine.mouse_button(1, button.pressed)
+			MOUSE_BUTTON_MIDDLE: machine.mouse_button(2, button.pressed)
+			MOUSE_BUTTON_XBUTTON1: machine.mouse_button(3, button.pressed)
+			MOUSE_BUTTON_XBUTTON2: machine.mouse_button(4, button.pressed)
+			MOUSE_BUTTON_WHEEL_UP:
+				if button.pressed:
+					mouse_wheel += 1.0
+			MOUSE_BUTTON_WHEEL_DOWN:
+				if button.pressed:
+					mouse_wheel -= 1.0
+		return
+	var key := event as InputEventKey
+	if key != null and key.pressed and key.physical_keycode == KEY_ESCAPE and held:
+		pointer_let_go = true
+		get_viewport().set_input_as_handled()
+
+
+func _volumes(music: float, effects: float) -> void:
+	# The game's sound is one mix with the music apart (the stream driver's stream 2: option "music_volume").
+	# "Effects" is everything else: the game's player carries it, and the music is set against it.
+	if player != null and not (opt.mute or opt.test != ""):
+		player.volume_db = linear_to_db(clampf(effects, 0.0001, 1.0))
+	if machine != null and started:
+		var m := clampf(music / maxf(effects, 0.01), 0.0, 1.0)
+		if not machine.set_option("music_volume", "%.3f" % m) and not stored.has("music_said"):
+			stored["music_said"] = true
+			print("rta_godot: this library has no music volume of its own (the sound core lacks it): the music follows the effects volume")
+
+
+func _portal_settings(delta: float) -> void:
+	# what the portal stores, taken when it changes (the portal itself hands on the view; the rest is looked at here)
+	if portal == null:
+		return
+	stored_clock += delta
+	if stored_clock < 0.5 and not stored.is_empty():
+		return
+	stored_clock = 0.0
+	var profile: Variant = portal.get("profile")
+	if not (profile is RefCounted) or not (profile as RefCounted).has_method("setting"):
+		return
+	var now := {}
+	for key in ["view", "wide", "sharpness", "music", "effects"]:
+		now[key] = (profile as RefCounted).call("setting", key)
+	var first := not stored.has("view")
+	var changed := {}
+	for key in now:
+		if first or stored.get(key) != now[key]:
+			changed[key] = now[key]
+		stored[key] = now[key]
+	if first:
+		# (view, shape and sharpness also came with `opt` at the first start; given again here they are the same -
+		# but the sharpness is a share of the window as it is NOW, and the window may have been sized since)
+		get_viewport().size_changed.connect(func() -> void:
+			if stored.has("sharpness"):
+				apply_settings({"wide": stored.get("wide", false), "sharpness": stored.sharpness}))
+	if not changed.is_empty():
+		apply_settings(changed)
 
 
 func _read_pad() -> void:
+	_pointer()
 	if input_held:
 		last_buttons = 0
 		last_sticks = [128, 128, 128, 128]
@@ -521,8 +636,37 @@ func _write_pending_shots() -> void:
 	pending_shots = PackedStringArray()
 
 
+func _speed_log() -> void:
+	var now := Time.get_ticks_usec()
+	if speed.last != 0:
+		var gap: int = now - int(speed.last)
+		if gap > 20000:
+			speed.late += 1
+		speed.worst = max(int(speed.worst), gap)
+	speed.last = now
+	if blanks - int(speed.blanks) < int(opt.speed_log):
+		return
+	var cpu := 0.0
+	for word in machine.info().split(" "):
+		if word.begins_with("cpu_ms="):
+			cpu = word.substr(7).to_float()
+	if int(speed.usec) != 0:
+		var n := float(blanks - int(speed.blanks))
+		var view: Dictionary = machine.get_view()
+		print("rta_godot: speed: blanks %d..%d: %.1f pictures a second, %.2f ms of processor time a picture (all threads), %d later than 20 ms, the longest %.1f ms; view %s, level %s, %d draws %d vertices" % [
+			int(speed.blanks), blanks, n * 1000000.0 / float(now - int(speed.usec)), (cpu - float(speed.cpu)) / n, int(speed.late), int(speed.worst) / 1000.0,
+			str(view.get("mode_name", view.get("mode", ""))), machine.peek_string(0x41B721, 16), machine.get_draw_count(), machine.get_vertex_count()])
+	speed.usec = now
+	speed.cpu = cpu
+	speed.blanks = blanks
+	speed.late = 0
+	speed.worst = 0
+
+
 func _take_frame() -> void:
 	blanks += 1
+	if int(opt.speed_log) > 0:
+		_speed_log()
 	for text in machine.get_host_commands():
 		_host_command(text)
 	if drawer != null:
@@ -596,6 +740,7 @@ func _process(delta: float) -> void:
 			image.save_png(path)
 			print("rta_godot: wrote %s (%d x %d), the Godot window's own picture" % [path, image.get_width(), image.get_height()])
 	_watch_session()
+	_portal_settings(delta)
 	if machine.ended() and machine.poll(0) != 1:
 		if portal != null and opt.script == "":
 			_end_session("ended")           # under the portal the program goes on: the portal comes back
@@ -610,10 +755,10 @@ func _watch_session() -> void:
 	if (blanks & 31) != 0 or machine == null:
 		return
 	var front := (machine.peek_u32(G_IN_FRONTEND) & 0xFF) != 0
-	if not front:
-		seen_level = true
+	if not front and machine.peek_u32(G_PLAYER_OBJECT) != 0:
+		seen_level = true               # a level with a character in it (not the card screens before the front end)
 		over_said = false
-	elif seen_level and not over_said:
+	elif front and seen_level and not over_said:
 		over_said = true
 		seen_level = false
 		_say_over("frontend")

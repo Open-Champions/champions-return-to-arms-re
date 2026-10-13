@@ -24,6 +24,16 @@ random input (the rig's `fuzz`).  Two machines are joined by the shim's link; th
 four through hub.py.  Each machine writes the rig's tick log; every pair of machines is
 compared at every tick in every shared column until one holds the other dropped.
 
+Keep DIR out of any folder that a file-sync service uploads (on this project's Mac the Desktop is
+one: name the directory something.nosync) - a tick log that has been uploaded and evicted
+makes the comparison wait for ever on its read - and mind the disk: `run` starts no game with
+less than 6 GB free, cuts every game at 60,000 frames unless --max-frames says otherwise,
+stops a game that has written more than SOAK_GAME_CAP_MB (500, per pair of machines) or
+that runs while less than SOAK_MIN_FREE_MB (3000) is free, and records such a game as
+"aborted: ..." with no ticks.  A game without a difference leaves nothing but its row; of a
+game with one the repeat run is kept (its logs to 400 frames past the difference and two
+memory images of every machine) and the first run's raw logs are removed.
+
 Written under DIR: jobs.tsv (one line per job, appended), calls.tsv (call counts by
 function, summed over all machines and jobs), the directory of every job that differed
 (scripts, tick logs, outputs), stop (create it to stop after the running jobs) and
@@ -50,8 +60,13 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 OUT = os.path.join(ROOT, 'local', 'recomp-out', 'soak')
+KIT = os.environ.get('SOAK_KIT')        # the farm's own copies of what it reads (see skill_trees)
+ELF = os.path.join(KIT, 'SLUS_209.73') if KIT and os.path.exists(os.path.join(KIT, 'SLUS_209.73')) else os.path.join(ROOT, 'SLUS_209.73')
+BIN = os.path.join(KIT, 'bin') if KIT and os.path.isdir(os.path.join(KIT, 'bin')) else os.path.join(OUT, 'bin')
 sys.path.insert(0, os.path.join(ROOT, 'tools', 'rig'))
 sys.path.insert(0, HERE)
+if os.environ.get('SOAK_KIT'):      # the kit's copies of rig.py, poolcmp.py and hub.py come first
+    sys.path.insert(0, os.environ['SOAK_KIT'])
 import rig as riglib   # noqa: E402  (symbol files)
 
 REC = 0x4C30
@@ -86,6 +101,41 @@ NICE = os.environ.get('SOAK_NICE', '19')
 # runs the farm touches that file now and then.  Once it is older than ALIVE_MINUTES no job is
 # started and the machines of the running jobs are stopped (their jobs are not counted).
 ALIVE = {'path': None, 'minutes': 45.0}
+
+
+# What one game may leave on the disk while it runs, and how little free space the farm works with.
+# A game that passes the first, or that runs while the disk has less than the second free, is
+# stopped and recorded as aborted - never as a game without a difference.
+GAME_CAP = int(os.environ.get('SOAK_GAME_CAP_MB', '500')) * 1024 * 1024
+MIN_FREE = int(os.environ.get('SOAK_MIN_FREE_MB', '3000')) * 1024 * 1024
+FRAME_CAP = 60000       # `run` and `twin` cut every game at so many frames unless --max-frames says otherwise
+
+
+def tree_bytes(path):
+    total = 0
+    for base, _, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.lstat(os.path.join(base, name)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def strip_raw(directory, images_too=True):
+    """Remove a finished game's per-tick logs (and memory images, and card copies); its script,
+    column list, machine output and call table stay."""
+    for base, dirs, files in os.walk(directory):
+        for name in list(dirs):
+            if name.startswith('card-'):
+                shutil.rmtree(os.path.join(base, name), ignore_errors=True)
+                dirs.remove(name)
+        for name in files:
+            if name.endswith('.tick.tsv') or (images_too and name.endswith('.bin')):
+                try:
+                    os.remove(os.path.join(base, name))
+                except OSError:
+                    pass
 
 
 def abandoned():
@@ -134,7 +184,10 @@ def level_names(image):
 def skill_trees():
     """class -> active skill ids, from the rig's reading of the skill-tree tables (local file),
     without the two ids every class starts with."""
-    path = os.path.join(ROOT, 'local', 'rig-out', 'p6-trees.json')
+    # SOAK_KIT: a directory with the farm's own copies of what it reads from the checkout
+    # (trees.json, symbols.tsv, pair-a/vfs, pair-b/vfs), for a day on which those cannot be read
+    kit = os.environ.get('SOAK_KIT')
+    path = os.path.join(kit, 'trees.json') if kit else os.path.join(ROOT, 'local', 'rig-out', 'p6-trees.json')
     trees = json.load(open(path))
     return {int(c): [s for s in t['active'] if s not in (60, 61)] for c, t in trees.items()}
 
@@ -359,8 +412,8 @@ def tick_columns(local_slot, players):
              # ticks since this machine last built its save buffer (0x4f8f30): differs when one machine saved in
              # another tick than the others (third part, "A late save"); followed, and the first tick is kept
              'since=0x4f8f30:s32',
-             'l_inp=g_localInputFrame:s32', 'l_cosmetic=g_cosmeticSeed:x32', 'l_drawframe=g_drawFrame:u32',
-             'l_pause=g_pauseMenuOpen:u8', 'l_menu=g_localMenuOpen:u8', 'l_ghost=0x4027bc:x32',
+             'l_inp=g_localInputFrame:s32'] + ([] if os.environ.get('SOAK_KIT') else ['l_pause=g_pauseMenuOpen:u8']) + [ 'l_cosmetic=g_cosmeticSeed:x32', 'l_drawframe=g_drawFrame:u32',
+             'l_menu=g_localMenuOpen:u8', 'l_ghost=0x4027bc:x32',
              'l_c0=0xe0010:u32', 'l_c1=0xe0014:u32', 'l_c2=0xe0018:u32']
     for n in range(players):
         obj = '[%s+0x43d8]' % rec(n)
@@ -427,10 +480,10 @@ def run_job(job, out_root, program=None, tag='', keep=False, extra_lines=(), ext
     shutil.rmtree(out, ignore_errors=True)
     os.makedirs(out)
     n = job['machines']
-    program = program or os.path.join(OUT, 'bin', 'rta_soak-' + job['arm'])
+    program = program or os.path.join(BIN, 'rta_soak-' + job['arm'])
     if not os.path.isabs(program):
-        program = os.path.join(OUT, 'bin', program)
-    symbols = ':'.join(riglib.symbol_files())
+        program = os.path.join(BIN, program)
+    symbols = os.path.join(os.environ['SOAK_KIT'], 'symbols.tsv') if os.environ.get('SOAK_KIT') else ':'.join(riglib.symbol_files())
     link_dir = tempfile.mkdtemp(prefix='sk', dir=os.environ.get('RTA_LINK_DIR') or tempfile.gettempdir())
     paths = [os.path.join(link_dir, 'm%d.sock' % m) for m in range(n)]
     more = list(extra_lines)
@@ -440,7 +493,8 @@ def run_job(job, out_root, program=None, tag='', keep=False, extra_lines=(), ext
     processes = []
     hub = None
     if n > 2:
-        hub = subprocess.Popen([sys.executable, '-I', '-B', os.path.join(HERE, 'hub.py')] + paths,
+        hub_script = os.path.join(KIT, 'hub.py') if KIT and os.path.exists(os.path.join(KIT, 'hub.py')) else os.path.join(HERE, 'hub.py')
+        hub = subprocess.Popen([sys.executable, '-I', '-B', hub_script] + paths,
                                stdout=open(os.path.join(out, 'hub.out'), 'w'), stderr=subprocess.STDOUT,
                                env=dict(os.environ, HUB_SURVIVE='1' if job.get('survive') else '0'))
         deadline = time.time() + 20
@@ -448,7 +502,8 @@ def run_job(job, out_root, program=None, tag='', keep=False, extra_lines=(), ext
             time.sleep(0.05)
     for m in range(n):
         card = os.path.join(out, 'card-%d' % m)
-        source = os.path.join(ROOT, 'local', 'rig-out', 'pair-%s' % ('a' if m == CONFIRM else 'b'), 'vfs')
+        source = os.path.join(os.environ.get('SOAK_KIT') or os.path.join(ROOT, 'local', 'rig-out'),
+                              'pair-%s' % ('a' if m == CONFIRM else 'b'), 'vfs')
         shutil.copytree(source, card)
         script = os.path.join(out, 'm%d.rig' % m)
         with open(script, 'w') as sink:
@@ -460,7 +515,7 @@ def run_job(job, out_root, program=None, tag='', keep=False, extra_lines=(), ext
                    RTA_NET_TICKLOG=os.path.join(out, 'm%d.tick.tsv' % m), RTA_NET_WATCH=watch, RTA_NET_SCRIPT=script,
                    RTA_NET_ARG='--net', RTA_NET_ALLOW_LEVEL='1', SOAK_CALLS=os.path.join(out, 'm%d.calls.txt' % m),
                    SOAK_MACHINES=str(n))
-        mask = os.path.join(HERE, 'poolmask.txt')
+        mask = os.path.join(os.environ.get('SOAK_KIT') or HERE, 'poolmask.txt')
         if os.path.exists(mask):
             env['SOAK_MASK'] = mask
         if n == 2:      # the shim's own pair link: the confirming machine listens, as the rig pair's machine A does
@@ -477,7 +532,7 @@ def run_job(job, out_root, program=None, tag='', keep=False, extra_lines=(), ext
         env.update({k: v.replace('%M', str(m)) for k, v in (extra_env or {}).items()})
         env.update(job.get('menv', {}).get(m, {}))
         sink = open(os.path.join(out, 'm%d.out' % m), 'w')
-        command = ['nice', '-n', NICE, program, 'boot', '--elf', os.path.join(ROOT, 'SLUS_209.73'), '--card', card]
+        command = ['nice', '-n', NICE, program, 'boot', '--elf', ELF, '--card', card]
         command += os.environ.get('SOAK_RUNTIME_OPTIONS', '').split()
         processes.append((subprocess.Popen(command, stdout=sink, stderr=subprocess.STDOUT, env=env, cwd=ROOT), sink))
     began = time.time()
@@ -485,8 +540,23 @@ def run_job(job, out_root, program=None, tag='', keep=False, extra_lines=(), ext
     ended = None
     timed_out = False
     stopped = False
+    aborted = ''
+    checked = 0.0
     while any(p.poll() is None for p, _ in processes):
         now = time.time()
+        if now - checked > 5 and not aborted:
+            checked = now
+            try:
+                if shutil.disk_usage(out).free < MIN_FREE:
+                    aborted = 'aborted: no space (less than %d MB free while the game ran)' % (MIN_FREE >> 20)
+                elif tree_bytes(out) > GAME_CAP * max(1, n // 2):
+                    aborted = 'aborted: the game wrote more than %d MB' % ((GAME_CAP * max(1, n // 2)) >> 20)
+            except OSError as error:
+                aborted = 'aborted: no space (%r)' % (error,)
+            if aborted:
+                for p, _ in processes:
+                    if p.poll() is None:
+                        p.kill()
         if ended is None and any(p.poll() is not None for p, _ in processes):
             ended = now
         if abandoned():
@@ -511,8 +581,24 @@ def run_job(job, out_root, program=None, tag='', keep=False, extra_lines=(), ext
     if stopped:         # the farm was left alone: nothing of this job is kept or counted
         shutil.rmtree(out, ignore_errors=True)
         return result
+    try:                # a log that could not be written in full must not pass for a game without a difference
+        if not aborted and shutil.disk_usage(out).free < MIN_FREE // 4:
+            aborted = 'aborted: no space (the disk was nearly full when the game ended)'
+        for m in range(n):
+            if not aborted and not os.path.exists(os.path.join(out, 'm%d.tick.tsv' % m)):
+                aborted = 'aborted: machine %d left no tick log' % m
+    except OSError as error:
+        aborted = 'aborted: no space (%r)' % (error,)
+    if aborted:
+        shutil.rmtree(out, ignore_errors=True)
+        result.update({'aborted': aborted, 'error': aborted, 'ticks': 0, 'first': None})
+        return result
     try:
         result.update(analyse(out, n, through_drops=bool(job.get('survive')), only=job.get('pairs')))
+    except OSError as error:        # the disk: not a result
+        shutil.rmtree(out, ignore_errors=True)
+        result.update({'aborted': 'aborted: no space (%r)' % (error,), 'error': 'aborted: no space (%r)' % (error,), 'ticks': 0, 'first': None})
+        return result
     except Exception as error:      # a machine that never wrote a log
         result.update({'ticks': 0, 'first': None, 'error': repr(error)[:300]})
     if sample_dumps:
@@ -892,8 +978,7 @@ def farm(args, levels, trees):
     deadline = time.time() + args.hours * 3600 if args.hours else None
     todo = [with_strafe(make_job(seed, args.arm, levels, trees), args.strafe, args.strafe_spec)
             for seed in range(first, first + count) if seed not in done]
-    if args.max_frames:     # an arm that is expected to differ early (the unpatched one) need not play long games
-        todo = [shortened(job, args.max_frames) for job in todo]
+    todo = [shortened(job, args.max_frames or FRAME_CAP) for job in todo]       # what one game may write is bounded
     threads = []
 
     def work(job):
@@ -901,8 +986,15 @@ def farm(args, levels, trees):
             # six sampled ticks per game: the pools are dumped and compared word by word, which says
             # which fields outside the mask differ between machines in step (rawdiff.tsv)
             samples = sorted({int(job['frames'] * k / 6.5) for k in range(1, 7)} | {1500})
-            result = run_job(job, out_root, dumps=samples, sample_dumps=True)
+            if os.environ.get('SOAK_NO_SAMPLES') == '1':    # no memory images of games in step (disk, time)
+                samples = []
+            result = run_job(job, out_root, dumps=samples, sample_dumps=bool(samples))
             if result.get('stopped'):
+                return
+            if result.get('aborted'):       # recorded, with no ticks: not a game without a difference
+                with LOCK:
+                    with open(jobs_path, 'a') as sink:
+                        sink.write(job_row(job, result) + '\n')
                 return
             if result.get('first') is not None and not args.no_rerun:
                 # the same game again, cut off shortly after the first difference, with the pools
@@ -911,6 +1003,10 @@ def farm(args, levels, trees):
                 again = run_job(shortened(job, first + 400), out_root, tag='-again', keep=True, dumps=[first - 1, first])
                 if again.get('stopped'):
                     return
+                # the repeat run is the game to 400 frames past the difference, with the two memory
+                # images: it is what is kept; the first run's raw logs go
+                if not again.get('aborted'):
+                    strip_raw(result['dir'])
                 result['repeats'] = 'yes' if again.get('first') == first else 'no (%s)' % again.get('first')
                 result['where'] = explain(again['dir'], first, result.get('pair') or '0-1')
             with LOCK:
@@ -931,6 +1027,10 @@ def farm(args, levels, trees):
     for job in todo:
         if os.path.exists(os.path.join(out_root, 'stop')) or (deadline and time.time() > deadline) or abandoned():
             break
+        # a game's tick logs are large (about 1.2 kB a tick and machine) until it has been compared:
+        # no new game while the disk has less than 6 GB free
+        while shutil.disk_usage(out_root).free < 6 * 1024 ** 3 and not abandoned() and not os.path.exists(os.path.join(out_root, 'stop')):
+            time.sleep(30)
         gate.take(job['machines'])
         if os.path.exists(os.path.join(out_root, 'stop')) or (deadline and time.time() > deadline) or abandoned():
             gate.give(job['machines'])
@@ -1004,9 +1104,7 @@ def twin(args, levels, trees):
     slots = threading.Semaphore(2)
 
     def work(seed):
-        job = make_job(seed, args.arm, levels, trees)
-        if args.max_frames:
-            job = shortened(job, args.max_frames)
+        job = shortened(make_job(seed, args.arm, levels, trees), args.max_frames or FRAME_CAP)
         n = job['machines']
         results = {}
 
@@ -1023,6 +1121,12 @@ def twin(args, levels, trees):
             t.join()
         ref, test = results.get(args.ref, {}), results.get(args.arm, {})
         if ref.get('stopped') or test.get('stopped') or not ref or not test:
+            return
+        if ref.get('aborted') or test.get('aborted'):       # recorded as aborted, compared with nothing
+            with LOCK:
+                with open(path, 'a') as sink:
+                    sink.write('%d\t%d\t%s\t%d\t%s\t0\t0\t\t\t0\t%s\t\t\t\t\t\n' % (
+                        seed, n, job['level'], job['frames'], job['bus'], ref.get('aborted') or test.get('aborted')))
             return
         rows = 0
         worst_hard = worst_any = None
@@ -1174,7 +1278,7 @@ def main():
     args = parser.parse_args()
     if args.command == 'report':
         return report(args.dirs)
-    image = Image(os.path.join(ROOT, 'SLUS_209.73'))
+    image = Image(ELF)
     levels = level_names(image)
     trees = skill_trees()
     if args.command == 'plan':

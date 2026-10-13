@@ -39,6 +39,196 @@ game is in the repository):
 
 **Left** (in the order it would be wanted): section "Left" at the end.
 
+## THIRD ROUND (2026-10-13, from 15:25): sky, haze, light, the portal's joins, the HUD's requests
+
+A new agent on the Godot side, from the notes above and below.  **Kept current; a usage limit can stop the work
+without warning - whoever resumes reads this section first.**  Everything says **Ran** or **Read** / **not run**.
+Pictures are game output: `local/godot-spike/test/r3/` (`base/` = before, as the second round left it).
+
+### State (16:45)
+
+**Ran** (pictures: `local/godot-spike/test/r3/`; `base/` is the state the second round left)
+- **The snapshot is the shared tree** of 15:50 through a stand-in root (`local/godot-spike/root`: `tools/recomp`
+  copied, two lines added to its `hle.txt`, the game translated and compiled again there, both variants) -
+  `build.py snapshot --refresh --from local/godot-spike/root`.  `scene_tap.*` is found in `render/` (merged there).
+  Both libraries, the extension (debug and release) and the staged project are built from it.
+- **Sky for every level, haze by distance and height**, in chase, shoulder and first person through hub,
+  tormenta, valor, honor, arachna1, fire3, islsm1 (`sky2/`: first person; `look1/`: chase and shoulder, `*-w.png` =
+  the Godot window with the new HUD).  The ring dome's seam is gone (hub, tormenta), the hemisphere of islsm1
+  stands as it is, levels without a dome have a sky from their clear colour, black stays black.
+  Before / after: `base/hub-first-a.png` -> `sky2/hub-first-a.png`; `base/tormenta-first-c.png` ->
+  `sky1/tormenta-first-c.png`; `base/valor-first-c.png` -> `sky1/valor-first-c.png`; `base/arachna1-first-a.png` ->
+  `sky2/arachna1-first-a.png`.  To show: `look1/hub-chase-a-w.png`, `look1/tormenta-shoulder-a-w.png`,
+  `look1/valor-shoulder-c-w.png`, `sky2/fire3-first-a.png`, `sky2/islsm1-first-a.png`, `fight1/fight-1-first.png`.
+  **The last set, with everything of this round in it** (the sun from the level, thinned foliage, the new HUD):
+  `final/LEVEL-chase-[ac]-w.png`, `final/LEVEL-first-[ac]-w.png` - e.g. `final/arachna1-chase-a-w.png` (the cave
+  under the player's lamp), `final/valor-chase-c-w.png`; a fight over the shoulder: `fight2/fight-2-shoulder-w.png`.
+- **The overhead view is untouched by all of it**: overhead with the default look against everything switched
+  off, 6 pictures (hub, valor, arachna1), **identical pixel for pixel** (`ovdef/` against `ovplain/`,
+  `test/r3/cmp.py`; both with `aa=0`).  The one thing the default changes there is multisampling (`aa=4`: 3 to
+  4.5 % of the pixels, all along edges; `ovaa/`).
+- **Bloom and grade do something** in the Compatibility renderer on the drawer's viewport: the same tick with and
+  without (`bloomon/` against `bloomoff/`, `gradeoff/`): bloom changes 25 to 38 % of the pixels (0.1 % by more
+  than 16 of 255), the grade nearly all by at most 12.
+- **A fight in first person** (`fight1/`, the tick-keyed fight route): no "blocky cloud".  What that was: sprites
+  that are depth-tested (particles, glows, sparks) were drawn as a flat layer over everything; they are in the
+  world by their depth now and fade near the eye.  What still covers the picture in valor's forest is level art -
+  the crowns of the trees are flat cards at head height (`fight1/fight-5-first.png`); such cut-out cards are now
+  thinned out within 64 units of the eye (look switch `foliage`; `fight2/fight-5-first.png` against
+  `fight1/fight-5-first.png`: the sheet across the eyes is a stippled veil one sees through - grainy, a smoother
+  pattern would be better).
+- **The look controls are in the library** (`fpcontrols.cpp` compiled in, wired as `app_main.cpp` wires it).
+  `app fpc hud` prints their state in a Godot run.  The pointer path of `main.gd` (capture, Escape, buttons) is
+  **not run** (a test window takes no pointer).
+- **The extension builds from clean** (a fresh CMake directory, 1036 steps, exit 0; `local/godot-spike/build/clean-r3`).
+  No source file was added to `extension/src`, `CMakeLists.txt` is unchanged.
+- **The portal's joins: 17 of 17 checks pass** (`project/dev/join_test.gd`, the game scene under the real portal,
+  a script to the first level; `test/r3/join/out.txt`, pictures `join-1 .. join-4`): the game scene knows its
+  portal; view, picture shape and sharpness arrive at the first start; view, shape (4:3 -> 16:9), sharpness and
+  music volume change while the game runs; the controller is held while the portal is in front of the running
+  game and given back; "session over" brings the portal back with the game standing blurred behind it
+  (`join-4-portal-after-the-session.png`) and the program goes on; "play again" wakes the same scene.
+- **The HUD agent's requests** ("For the HUD" below): all four built; `music_volume` and `game_hud_text` are
+  accepted by the library built here.  That the boss meter / prompt box really go and that the music really gets
+  quieter was **not looked at / listened to**.
+- **Speed, paced** (`paced2/`, `paced-*/`; a 640 x 480 test window, picture 1280 x 896, first person, sound
+  pulled by Godot's mixer, load average 10 to 12): valor **60.0 pictures a second at 9.5 to 9.9 ms of processor
+  time a picture over all threads**, 0 to 5 pictures of 300 later than 20 ms; the hub's first seconds in first
+  person 44 a second with shader variants being made (164 late, once per run); the title scene (overhead, 175,000
+  vertices a list) 60 at 25 ms.  **The look costs the processor nothing measurable**: the same route with sky,
+  fog, sun, bloom, grade and multisampling all off: 9.1 to 9.7 ms (the sun with 2 splits: 9.5 to 10.4).  The time
+  is the game, the decoder (5.4 ms) and `submit()` (3 ms: a mesh per draw, rebuilt every frame).
+- **The macOS export** (`build.py extension --release && build.py export`, 201.9 MB, signature verifies): started
+  without a window - the portal passes straight on - its two pictures are identical to the second round's
+  (`test/r3/export/`).  One line at its end: "ObjectDB instances leaked at exit" (not looked into).
+
+**Found on the way**
+- The new HUD shows the word "down" in the player's frame in the tour pictures (`sun1/hub-shoulder-d-w.png`): the
+  tour route writes the game's invulnerability word (0x44f20c) - for the HUD agent to look at, not a Godot matter.
+- **The disk was full at 15:55** (under 400 MB free of 1.8 TB; not this work's) and macOS **evicted files of the
+  synchronised workspace folder** ("dataless": `ls -lO`): seven of `symbols/*.tsv`, parts of `tools/recomp`
+  (`rigcompare.py`, `sound/spu2.cpp`, `sound/audio_out.cpp`, `app/pad_mac.mm`, ...), many `tools/*.py`, some
+  `docs/issues/*.md`.  Reading one blocks (a test run stood in `script_add_symbols` for minutes); at 16:10 they
+  still did not come back within 10 s.  The test runs here need no workspace symbol files any more
+  (`test/r3/mkroute.py`, `mkfight.py` write addresses; `go.sh` gives no `--workspace`).  **Because of this the rig
+  session comparison and the 11 reference pictures were NOT run again on the new libraries** (both need
+  `rigcompare.py` / the symbol files), and a `snapshot --refresh` from the shared tree would hang.
+- **16:9 changes where the character starts** (stand-alone `rta_app`, off screen, overhead view, no input): hub,
+  tick 20: 4:3 `131.57 -96.23`, facing word 15436; 16:9 `113.79 -157.66`, 16482; the front end is one displayed
+  frame longer at 16:9.  Not the look controls.  `test/r3/wide/`.  Told to the coordinator.
+- `fire3`'s grid of dark squares in the sky is the level's own geometry (the stand-alone program draws it too).
+- Foreground `sleep` does nothing in this agent's shell: waits are `python3 -c "import time; time.sleep(N)"`.
+
+**Not done**
+- **Persistent meshes** (the tap's object-space vertices, joints and matrices through the C interface): not
+  started.  By the figures above it would take at most the 3 ms of `submit()` and part of Godot's own upload.
+- **The sun's direction from the level** is read (see "The look"), but only the first level's textures say it
+  clearly; the others take the first level's.  Not checked against the painted shadows level by level.
+- **Lights at torches**: none; a dark level gets one warm lamp carried by the player.  The game's own point
+  lights are already in the vertex colours it computes.
+- **Water, lava, heat haze**: looked at only as far as the pictures of islsm1 and fire3 go (they look as in the
+  stand-alone program).  A surface read in the middle of its own draws (the haze) still gets last frame's picture.
+- **The character alone for the portal's card** (`Portrait.texture`): not built.  The game behind the portal,
+  blurred: works through the portal's own backdrop once a game has run (`join-3`, `join-4`); the title scene
+  behind the portal before the first game: not built (the machine is not started before "Play").
+- A restart of the program for a new game after the machine has ENDED (one machine per process).
+- The pointer look, a real controller, sound: nobody has played it.
+- The rig comparison and the reference pictures on the new libraries (see above).
+
+### How to run a test here
+
+```
+. local/godot-spike/test/env.sh
+R3_SHOTS=ac local/godot-spike/test/r3/go.sh NAME VIEW "hub valor ..." [main.gd options, e.g. --look sky=off]
+#   -> local/godot-spike/test/r3/NAME/LEVEL-VIEW-[a-d].png (Godot's own capture), out-VIEW.txt, figures-VIEW.txt
+#   R3_PRE="app look fog off;app option music_volume 0.5"   host lines after the view is selected
+#   R3_DESCRIBE=1    LEVEL-VIEW-a.txt: every draw of that frame that goes to the 3-D surface (state, screen box,
+#                    distance and elevation from the eye) - RtaDrawer.describe_frame, the way the dome was found
+#   R3_HUD=--no-hud  without the new HUD
+```
+The route is the camera agent's (`native-first-person.md`, `mktour.py`): power-on by the tick-keyed script, each
+level by its name written to `g_pendingLevel`, pictures at fixed ticks (a standing, b after 90 ticks of stick up,
+c after 45 of camera stick right, d after 90 more).  Not paced, 1280 x 896, a 480 x 360 test window.
+
+### The look (`project/scene_view.gd`, `shaders/atmosphere.gdshaderinc`, `shaders/sky.gdshader`, `extension/src/rta_scene.cpp`)
+
+Switches, each `off | on | auto` (auto = only in chase, shoulder, first person - never in the game's own overhead
+view, never while the game's camera has the frame: there the picture is the game's as it was): `sky`, `fog`, `sun`,
+`lamp`, `bloom`, `grade`; `aa` = 0 / 2 / 4 / 8.  `--look sky=on,fog=off,...`, `app look KEY VALUE`, `app look info`,
+`main.apply_settings({"look": ...})`.  More keys at the head of `scene_view.gd`.
+
+- **What the game draws of a sky** (found with `describe_frame`): the first draw into the 3-D surface is a
+  rectangle over all of it in the clear colour (untextured, depth test "always", writes depth); in a level with a
+  dome, model packets without a depth write follow, before the first level chunk (hub: 7 draws, 48 packets, rings
+  at -70..-43, -43..-12, -12..+18 degrees, radius 275 to 372).  Only the segments in view are drawn.
+- **The drawer learns the dome** (`scene_scan_sky`): the clear colour from the rectangle; the dome's draws by that
+  rule; the dome's upper and lower edge as 256 directions of colour each - the packet's own texture sampled along
+  the edge's triangles through the draw's texture function and blend over the clear colour (the texture's pixels
+  from the frame that brings it, or read back once).  `RtaDrawer.get_sky_info()`; `sky_reset()` on a new level.
+- **The sky** is a sphere round the camera drawn before every draw of the list (an instance in the drawer's
+  scenario with a sorting offset of -1,000,000; `sky.gdshader`): the ring of edge colours at the dome's upper edge,
+  rising to a zenith colour (the ring's mean, deeper); below the lower edge the lower ring to a ground colour.  The
+  game's own dome is still drawn, over it - the sky continues it, so the seam has the same colour on both sides.
+  With the sky on, the game's clearing rectangle is left out (it would cover the sky).  **A level without a dome**:
+  horizon, zenith and ground are made from the clear colour (brightest channel under 0.09: "dark" - black above
+  with a breath of colour at the horizon; else "open" - paler at the horizon, deeper overhead, a glow round the
+  sun's direction).  Nothing per level is written down: all of it is read from the frame's draws at run time.
+- **The haze** is in the draw shader (`gs_draw.gdshaderinc`, `GS_WORLD`): by distance from the eye (starts at 380,
+  complete at 1350 or 0.78 of the level's far plane - the game streams 1300 to 1800 ahead), thinner above the
+  player's height, always complete over the last tenth; its colour is the sky ring's in that direction.  An
+  additive draw only fades; an opaque one becomes haze.  The dome's draws are not hazed (`GS_NOFOG`).  Global shader
+  parameters `rta_*`, set once per frame.
+- **Light**: Godot's ambient light is off in the lit variant (`ambient_light_disabled`); what arrives without the
+  sun is put in by the shader as the surface's own light - the game's colour times `rta_light_ambient`, plus the
+  haze - which is exact in stored values; the sun's pass adds the rest (energy `(1 - shade)^2.2`, the measured
+  rule of the second round).  A shadow keeps `shade` of the colour (0.64; 0.84 / 0.90 in dark levels) with 30 % of
+  the sky's tint; the sun's colour is what brings a lit, facing surface back to the game's own colour.  Only what
+  writes depth is lit (glows, the dome, decals keep the game's colours).  In a dark level the "sun" stands at 82
+  degrees (a soft shadow under things) and a warm lamp is carried by the player.
+- **Where the sun stands** is read out of the level (Ran): the game's light is painted into its textures, so per
+  texture the drawer takes the covariance of texel brightness (a 16 x 16 thumbnail of every texture, made when it
+  arrives) with the normals of the level-chunk vertices that carry it, and sums that over the level
+  (`Scene::sun_sum`, `get_sky_info().sun`): a vector toward the light whose length says how clearly the textures
+  agree.  Taken from 30,000 vertices on, kept at 150,000.  Found: hub azimuth -33 degrees, strength 0.0121 -
+  which is where the game's own sun flare stands in that level (`sun1/hub-shoulder-d-w.png`: the flare ahead, the
+  character back-lit); tormenta azimuth -75, strength 0.0159; valor 0.0011 (azimuth -31), fire3 0.0010, islsm1
+  0.0026 (azimuth -43), the title scene 0.0013 - below the bar of 0.004, so those levels take the last clear
+  direction (that of the level played before) instead of an own one.  Elevation is held between 38
+  and 62 degrees (the textures say little about it).  `sun_az` / `sun_el` of the look override.
+- **Sprites that are depth-tested** (particles, glows, sparks: `made_by` 2 with depth test "greater or equal") were
+  the 2-D layer, drawn over everything; the library now puts them into the world by their 16-bit depth
+  (`lib/scene_export.cpp`; `RTA_SCENE_SPRITES=0` turns it off) so Godot's depth hides them behind what is in front,
+  and they fade between 75 and 18 units from the eye (`GS_NEARFADE`) - the game sizes them for a camera 400 away
+  and one at the eye covers the picture.
+
+### The portal's joins (`project/main.gd`; Ran: `project/dev/join_test.gd`)
+
+- `signal session_over(why)`: "frontend" when `g_inFrontend` becomes 1 after a level was played, "ended" when the
+  machine ends.  Under the portal (the scene's ancestor in group "portal", not "passing") the portal is told
+  (`handover.finish("over")`) and **the program is not ended**; a script run still ends as before.  The machine
+  is one run per process: after "ended" a new game needs a restart of the program (not built).
+- `hold_input(on)`: the controller is neutral while the portal is in front (`portal.shown_changed`).
+- `apply_settings(d)`: `view`, `wide` (library option `aspect`, new; the 3-D surface's viewport follows),
+  `sharpness` (`RtaDrawer.set_output_size`), `music` / `effects` (`music_volume` against the player's volume),
+  `look`.  The portal's stored settings are looked at twice a second (`_portal_settings`) and applied when they
+  change, so nothing in `portal/` had to be touched.  Test aids: `app hold on|off`, `app setting KEY VALUE`.
+- The HUD's one line is in `_ready` (`--no-hud` leaves it out).
+
+### For the HUD
+
+| Asked | Done |
+|---|---|
+| `RtaMachine.get_controls_hud()` | the fields of `fpcontrols::Hud` under their own names, plus `wants_pointer`; `{}` when the library has no controls.  C side: `rtag_controls_hud`, `rtag_mouse`, `rtag_mouse_button` - **optional symbols, the interface version stays 6** |
+| the camera in `rtag_view` in the overhead view | filled from `g_cameraPos` / `g_cameraMatrix` / `g_projScale` when no view of `fpview` is in place (`rtag.cpp`, `view_drawn`) |
+| `set_option("music_volume", "0..1")` | in `rtag.cpp` when the snapshot's `sound/drivers.cpp` has `rta_sound_set_music_gain` (the HUD agent's hunk: in `recomp.patch`) |
+| `set_option("game_hud_text", "off")` | `render/layout.h` `M_TEXT`, `Gs::hide_text`, two wrappers in `app/gfx_rt.cpp`: in `recomp.patch`; **needs two lines in `tools/recomp/hle.txt` and a new translation first** (the notes at the head of `recomp.patch` say exactly what and in which order) |
+
+### Files outside `tools/godot` that need a change (for the coordinator)
+
+- `tools/recomp/hle.txt`: `1d93b0`, `1d99f0` (then translate and compile the game again), **before**
+- `tools/godot/recomp.patch` onto `tools/recomp` (`app/gfx_rt.cpp`, `render/gs.cpp`, `gs.h`, `layout.h`,
+  `sound/drivers.cpp`; `sound/audio_out.cpp` as before).
+
 ## SECOND ROUND (2026-10-13, from 09:30): Godot as the presentation layer
 
 The coordinator's brief after the spike: Godot becomes the presentation layer on the

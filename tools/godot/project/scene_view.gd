@@ -19,9 +19,10 @@ extends Node
 #   lamp      a warm point light carried by the first player (auto: in dark levels)
 #   bloom     Godot's glow on what is bright (the game's own glows, fires, the sky round the sun)
 #   grade     a little contrast and saturation
+#   foliage   the level's cut-out cards (the crowns of trees, hung at head height) thin out within 64 units of the eye
 #   aa        multisampling of the 3-D surface (0, 2, 4, 8)
 #
-# Each of sky, fog, sun, lamp, bloom, grade is  off | on | auto.  auto - the default - means: in the views that look
+# Each of sky, fog, sun, lamp, bloom, grade, foliage is  off | on | auto.  auto - the default - means: in the views that look
 # along the ground (chase, shoulder, first person: tools/recomp/app/fpview.h), not in the game's own overhead view
 # and not while the game's own camera has the frame (a cutscene, a dialogue, a menu): there the picture is the
 # game's, as it always was.
@@ -30,7 +31,8 @@ extends Node
 #   app look KEY VALUE                      from a script, at a chosen tick; "app look info" prints what is in force
 #   main.apply_settings({"look": "..."})    from the portal
 # Further keys: shade (0..1: what a shadow leaves of a colour; default by level), fog_start, fog_end (units),
-# fog_amount (0..1), sun_az, sun_el (degrees; default: by level), bloom_strength, sky_sun (0..1: the glow round the sun).
+# fog_amount (0..1), sun_az, sun_el (degrees; default: by level), bloom_strength, sky_sun (0..1: the glow round the sun),
+# shadow_splits (1, 2 or 4 shadow maps for the sun: every one is a pass over all that casts), shadow_far (units).
 # The older switches still work: --shadow (sun=on), --light (lamp=on), app scene shadow|light on|off,
 # app camera pull F | orbit DEG | raise DEG | game  (a camera that is not the game's: it shows what the game culled).
 #
@@ -43,6 +45,7 @@ const G_LEVEL_NAME := 0x41B721          # g_levelName
 const G_WORLD_LIGHT := 0x5D347C         # g_worldLightLevel: 0x80, or 0x40 / 0x20 in dark levels
 const G_FAR_CLIP := 0x7D8A04            # g_farClip
 const VIEW_CHASE := 2
+const SUN_CLEAR := 0.004                # how clearly a level's textures must say where its light comes from
 
 const GLOBALS := {
 	"rta_sky_zenith": Vector4(0, 0, 0, 0), "rta_sky_ground": Vector4(0, 0, 0, 0), "rta_sky_sun": Vector4(0, 0, 1, 0),
@@ -51,10 +54,15 @@ const GLOBALS := {
 }
 
 var look := {
-	"sky": "auto", "fog": "auto", "sun": "auto", "lamp": "auto", "bloom": "auto", "grade": "auto", "aa": "4",
+	"sky": "auto", "fog": "auto", "sun": "auto", "lamp": "auto", "bloom": "auto", "grade": "auto", "foliage": "auto", "aa": "4",
 	"shade": -1.0, "fog_start": 380.0, "fog_end": 1350.0, "fog_amount": 1.0, "sun_az": -1000.0, "sun_el": -1000.0,
-	"bloom_strength": 1.0, "sky_sun": 1.0,
+	"bloom_strength": 1.0, "sky_sun": 1.0, "shadow_splits": 4.0, "shadow_far": 1100.0,
 }
+var shadow_set := Vector2(-1, -1)
+var sun_found := Vector2(217.0, 48.0)   # azimuth and elevation of the level's light, degrees: read out of its textures
+var sun_fixed := false
+var sun_last := Vector2(217.0, 48.0)    # the last direction a level's textures gave clearly (the levels of this game are
+                                        # painted alike: the first level says -33 degrees clearly, the forest the same faintly)
 # How dark a shadow is: the part of a colour that is left where the sun does not reach.  The Compatibility renderer
 # draws a light that has a shadow map in a pass of its own and ADDS that pass to the picture as stored values, after
 # the conversion from linear light; a sun of energy (1 - shade)^2.2 therefore adds (1 - shade) of the stored colour
@@ -94,14 +102,16 @@ var said := {}
 var aa_set := -1
 
 
+static var globals_added := false
+
 static func add_globals() -> void:
 	# before any shader that names them is made (main.gd, before the drawer)
-	var have := RenderingServer.global_shader_parameter_get_list()
+	if globals_added:
+		return
+	globals_added = true
 	for name in GLOBALS:
-		if not have.has(StringName(name)):
-			RenderingServer.global_shader_parameter_add(name, RenderingServer.GLOBAL_VAR_TYPE_VEC4, GLOBALS[name])
-	if not have.has(&"rta_sky_ring"):
-		RenderingServer.global_shader_parameter_add("rta_sky_ring", RenderingServer.GLOBAL_VAR_TYPE_SAMPLER2D, RID())
+		RenderingServer.global_shader_parameter_add(name, RenderingServer.GLOBAL_VAR_TYPE_VEC4, GLOBALS[name])
+	RenderingServer.global_shader_parameter_add("rta_sky_ring", RenderingServer.GLOBAL_VAR_TYPE_SAMPLER2D, RID())
 
 
 func _ready() -> void:
@@ -188,6 +198,7 @@ func before_frame() -> void:
 	if String(look.lamp) == "auto":
 		in_force.lamp = ground and level_dark
 	drawer.call("set_scene_option", "sky", 1.0 if in_force.sky else 0.0)
+	drawer.call("set_scene_option", "near_fade", 1.0 if _wants("foliage", ground) else 0.0)
 	drawer.call("set_scene_option", "lit", 1.0 if (in_force.sun or in_force.lamp) else 0.0)
 	drawer.call("set_scene_option", "shadows", 1.0 if in_force.sun else 0.0)
 
@@ -201,6 +212,7 @@ func frame() -> void:
 		_make(world)
 	_level()
 	var info: Dictionary = drawer.call("get_sky_info")
+	_sun_from_level(info)
 	_palette(info)
 	var sky_on: bool = in_force.get("sky", false) and bool(info.get("active", false))
 	RenderingServer.instance_set_visible(sky_instance, sky_on)
@@ -217,6 +229,7 @@ func _make(to: RID) -> void:
 	environment = drawer.call("get_world_environment")
 	viewport = drawer.call("get_world_viewport")
 	aa_set = -1
+	shadow_set = Vector2(-1, -1)
 	sun = RenderingServer.directional_light_create()
 	RenderingServer.light_set_shadow(sun, true)
 	RenderingServer.light_directional_set_shadow_mode(sun, RenderingServer.LIGHT_DIRECTIONAL_SHADOW_PARALLEL_4_SPLITS)
@@ -243,6 +256,10 @@ func _make(to: RID) -> void:
 
 
 func _level() -> void:
+	var light := int(machine.peek_u32(G_WORLD_LIGHT)) & 0xFF
+	if light != level_light and light > 0:
+		level_light = light             # written when the level's options are read: after its first frames
+		sky_version = -1
 	var name := machine.peek_string(G_LEVEL_NAME, 16)
 	if name == level:
 		return
@@ -251,6 +268,8 @@ func _level() -> void:
 	sky_version = -1
 	sky_clear = Color(-1, -1, -1)
 	said.clear()
+	sun_found = sun_last            # until this level's own textures say otherwise: where the last clear one was lit from
+	sun_fixed = false
 
 
 # ---- the sky's colours -----------------------------------------------------------------------
@@ -269,7 +288,6 @@ func _palette(info: Dictionary) -> void:
 	sky_version = version
 	sky_clear = clear
 	level_dome = bool(info.get("dome", false))
-	level_light = int(machine.peek_u32(G_WORLD_LIGHT)) & 0xFF
 	var top := 0.0
 	var bottom := -0.03
 	var ground := Color.BLACK
@@ -309,11 +327,41 @@ func _palette(info: Dictionary) -> void:
 	ring_texture.update(ring_image)
 	RenderingServer.global_shader_parameter_set("rta_sky_zenith", Vector4(zenith.r, zenith.g, zenith.b, top))
 	RenderingServer.global_shader_parameter_set("rta_sky_ground", Vector4(ground.r, ground.g, ground.b, bottom))
-	if not said.has("sky"):
-		said["sky"] = true
+	var words := "%s %s %s" % [clear.to_html(false), level_dome, level_dark]
+	if said.get("sky", "") != words and in_force.get("ground", false):
+		said["sky"] = words
 		print("rta_godot: level %s: clear colour %d %d %d, %s; light level %d; sky %s: horizon %s zenith %s" % [level, int(clear.r * 255), int(clear.g * 255),
 			int(clear.b * 255), ("a dome from %.0f to %.0f degrees" % [rad_to_deg(bottom), rad_to_deg(top)]) if level_dome else "no dome", level_light,
 			"dark" if level_dark else "open", horizon.to_html(false), zenith.to_html(false)])
+
+
+func _sun_from_level(info: Dictionary) -> void:
+	# The level's light is painted into its textures; the drawer reads out of them where it comes from
+	# (RtaDrawer.get_sky_info: `sun`, a vector toward the light whose length says how clearly the textures agree).
+	# Taken once it rests on enough of the level, then kept: a sun that wanders while one walks is worse than one that
+	# is a little off.  Until then, and where the textures say nothing (a dark level): from the upper left of the view
+	# the level was painted for.
+	if sun_fixed or level_dark:
+		return
+	var samples := int(info.get("sun_samples", 0))
+	if samples < 30000:
+		return
+	var toward: Vector3 = info.get("sun", Vector3.ZERO)
+	var flat := Vector2(toward.x, toward.y)
+	sun_fixed = samples >= 150000
+	if flat.length() < SUN_CLEAR:
+		if sun_fixed:
+			print("rta_godot: level %s: the textures do not say where the light comes from (strength %.4f, toward %s; %d vertices): the default stays" % [level,
+				flat.length(), str(toward), samples])
+		return                              # no side is lighter than the other: the default stays
+	var az := rad_to_deg(atan2(flat.y, flat.x))
+	var el := clampf(rad_to_deg(atan2(toward.z, flat.length())), 38.0, 62.0)
+	sun_found = Vector2(az, el)
+	sun_last = sun_found
+	if not said.has("sun") or sun_fixed:
+		said["sun"] = true
+		print("rta_godot: level %s: the painted light comes from azimuth %.0f, elevation %.0f (%s; %d vertices; strength %.4f)" % [level, az, el,
+			"kept" if sun_fixed else "so far", samples, flat.length()])
 
 
 func _sun_direction() -> Vector3:
@@ -322,9 +370,9 @@ func _sun_direction() -> Vector3:
 	var az := float(look.sun_az)
 	var el := float(look.sun_el)
 	if el < -900.0:
-		el = 82.0 if level_dark else 48.0
+		el = 82.0 if level_dark else sun_found.y
 	if az < -900.0:
-		az = 217.0
+		az = sun_found.x
 	var e := deg_to_rad(el)
 	var a := deg_to_rad(az)
 	return -Vector3(cos(a) * cos(e), sin(a) * cos(e), sin(e))
@@ -363,6 +411,12 @@ func _lights() -> void:
 	shade = s
 	var ambient := Color(1, 1, 1)
 	var direction := _sun_direction()
+	var want := Vector2(float(look.shadow_splits), float(look.shadow_far))
+	if want != shadow_set and sun.is_valid():
+		shadow_set = want
+		RenderingServer.light_directional_set_shadow_mode(sun, RenderingServer.LIGHT_DIRECTIONAL_SHADOW_PARALLEL_4_SPLITS if want.x >= 4.0 else (
+			RenderingServer.LIGHT_DIRECTIONAL_SHADOW_PARALLEL_2_SPLITS if want.x >= 2.0 else RenderingServer.LIGHT_DIRECTIONAL_SHADOW_ORTHOGONAL))
+		RenderingServer.light_set_param(sun, RenderingServer.LIGHT_PARAM_SHADOW_MAX_DISTANCE, want.y)
 	if sun_on:
 		# what is left in a shadow takes a little of the sky's tint; the sun brings the rest back, so that a lit
 		# surface that faces it has the game's own colour
