@@ -7,7 +7,12 @@
 // when RESERVE_MS are queued, and the amount queued is held near that by reading very
 // slightly faster or slower (at most half a per cent). When the ring runs dry (the
 // machine was stopped, or is too slow) silence is played and the reserve is built again.
-const RESERVE_MS = 70;
+// More than BURST_MS above the reserve is not a clock difference but a burst (the game
+// made sound faster than it is played: while it started, loaded, or caught up after a
+// stall) and half a per cent would take minutes to play it away: it is given up at once,
+// as the desktop device's ring does (sound/audio_out.cpp), so that what is heard stays
+// RESERVE_MS behind what is computed, not half a second.
+const RESERVE_MS = 70, BURST_MS = 200;
 
 class RtaRing extends AudioWorkletProcessor {
 	constructor(options) {
@@ -21,7 +26,11 @@ class RtaRing extends AudioWorkletProcessor {
 		this.dry = 0;           // times the ring ran dry while playing
 		this.report = 0;
 		this.muted = false;
-		this.port.onmessage = (event) => { if("muted" in event.data) this.muted = event.data.muted; };
+		this.paused = false;    // the page says so: running dry is then no fault
+		this.bursts = 0;        // times a burst was given up ...
+		this.givenUp = 0;       // ... stereo frames in all
+		this.most = 0;          // the most that was queued since the last report, in frames
+		this.port.onmessage = (event) => { if("muted" in event.data) this.muted = event.data.muted; if("paused" in event.data) this.paused = event.data.paused; };
 	}
 
 	process(inputs, outputs) {
@@ -33,6 +42,16 @@ class RtaRing extends AudioWorkletProcessor {
 		let read = Atomics.load(words, 1);
 		let queued = ((write - read) >>> 0) >> 1; // stereo frames
 		const reserve = (sourceRate * RESERVE_MS / 1000) | 0;
+		if(queued > reserve + ((sourceRate * BURST_MS / 1000) | 0)) {
+			const drop = queued - reserve;
+			read = (read + drop * 2) >>> 0;
+			queued = reserve;
+			this.position = 0;
+			this.bursts++;
+			this.givenUp += drop;
+			Atomics.store(words, 1, read);
+		}
+		if(queued > this.most) this.most = queued;
 		if(!this.playing && queued >= reserve) this.playing = true;
 		if(this.playing) {
 			// hold the reserve: up to 0.5 % faster or slower
@@ -59,7 +78,7 @@ class RtaRing extends AudioWorkletProcessor {
 			if(produced < count) {
 				for(let i = produced; i < count; i++) { left[i] = 0; right[i] = 0; }
 				this.playing = false;
-				this.dry++;
+				if(!this.paused) this.dry++;
 				// what is left (less than a frame) is dropped
 				read = Atomics.load(words, 0);
 			}
@@ -69,7 +88,9 @@ class RtaRing extends AudioWorkletProcessor {
 		}
 		if(++this.report >= 375) { // about once a second
 			this.report = 0;
-			this.port.postMessage({ dry: this.dry, queuedMs: Math.round(queued * 1000 / sourceRate), playing: this.playing });
+			this.port.postMessage({ dry: this.dry, queuedMs: Math.round(queued * 1000 / sourceRate), mostMs: Math.round(this.most * 1000 / sourceRate), playing: this.playing,
+				bursts: this.bursts, givenUpMs: Math.round(this.givenUp * 1000 / sourceRate) });
+			this.most = 0;
 		}
 		return true;
 	}

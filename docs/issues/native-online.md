@@ -35,21 +35,36 @@ every copy at 192.168.1.123, against a lobby server instance of this work's own
 (`local/native-lobby/server/bin`: the binary built from `server/upstream` with FIXES 32,
 its own database, bound to this Mac's address, every port the usual one plus 2000; the
 lobby that was already running was not touched), throw-away names, `net-local-only=1` on
-every copy. Load average 15 to 25.
+every copy. Load average 15 to 25 on the night of the 12th, 100 to 480 on the morning of
+the 13th. State: 2026-10-13 09:00, nothing of this work left running.
 
-**The builds tested.** `local/native-lobby/bin/rta_app_net` (window) and `rta_native_net`
-(headless): `tools/recomp/net/` as it is now, linked with a snapshot of everything else
-taken at 22:44 - the game's objects, runtime, renderer, sound and window program exactly
-as `local/recomp-out/bin/rta_app` of 19:52 was linked from (`local/native-lobby/snap/`,
-`build.sh`). So the window program is rta_app 19:52 (sha256 8ef21654...) with today's
-network files; nothing another job rebuilt went into a test.
+**The builds tested.** Two, both `tools/recomp/net/` as it stands linked with a snapshot of
+everything else (game objects, runtime, renderer, sound, window program), so that nothing
+another job rebuilt went into a test half-way (`local/native-lobby/build.sh`):
+
+- *night build* (`snap/`, taken 22:44): what `local/recomp-out/bin/rta_app` of 2026-10-12
+  19:52 was linked from (sha256 8ef21654...), patch set 3f5b1e14 (90 words). Everything
+  below unless it says otherwise.
+- *morning build* (`snap2/`, taken 2026-10-13 08:09): what `rta_app` of 07:35:58 was linked
+  from (sha256 0b77da20...), patch set **27f61e1d (91 words)** - `patches/SLUS-20973_4028A55F.pnach`
+  got a third word in its "flush before a level load" section at 22:30. Used for the last
+  two rows of the page table and the last series of games ("The morning build").
+
+The programs are `local/native-lobby/bin/nl_window[2]` and `nl_headless[2]` - not named
+`rta_app...`, because on the morning of the 13th another job on this Mac seems to have
+ended every program of that name before its own tests (inferred from the timing: three of this work's window copies ended
+cleanly within a second of each other, 15 s after their start; one launch was lost to it
+and is not counted anywhere).
 
 **New in `tools/recomp/net/`:** `--opt net-port-shift=N` (a second server instance whose
 ports are the usual ones plus N: the gateway port built into the game is shifted, the
 discovery port plus N counts as the server's); script command `app net sockets` (what the
 driver holds open); `lobbyparty.py` (two to four copies, window or headless, several
 launches, the scenarios below; one line per launch with the pairwise tick comparison and
-the story the tick log tells: levels, deaths, reloads).
+the story the tick log tells: levels, deaths, reloads). And, described in their sections:
+the arithmetic switch (`net-arith`), the disconnect hold (`net-hold-disconnects`), the
+sheet's test commands (`online-test-window`, `app online sheet`), `online-commands=FILE`,
+`app net arith | stall`.
 
 ### Three and four players, with the window program
 
@@ -148,12 +163,51 @@ net-hold-disconnects=0` turns it off; `app net sockets` counts the held ones.
 | hold off (`net-hold-disconnects=0`) | 6 | **5** | 1,218 - 1,219, all 6 pairs | the joiner that stood still terminated 0 peers and had 0 for every other player, 6 of 6; another joiner held the host's port for a third, 6 of 6 |
 | hold on (the default now) | 6 in a row | **6** | 1,212 - 1,219, all 6 pairs | every joiner terminated 3 live peers, 6 of 6; 3 disconnects held on the joiner that stood still and 1 on another; no 0 and no copy of the host's port in any table; two fellow joiners the wrong way round in 5 of 6, repaired |
 
+With the hold, on the night build, the games as before (2026-10-13, 07:48 - 08:18):
+four copies with the window program as fourth player 4 launches, 4 in the level, 4,477 to
+5,146 ticks in step in all 6 pairs through the level change; three with the window program
+hosting 2 of 2 (5,300 and 5,208); `--scenario leave` with three (two games in the same
+processes, every pair in step game by game: 1,413 / 1,410 with three, 1,950 / 1,981 with
+two); `--scenario drop` (the two others in step for 2,097 ticks, through the wait); two
+players, window hosting.
+
 One failure in six is a thin "before"; what carries the claim is the tables: the kind of
 wrong entry the failure needs was in every launch without the hold and in none with it.
 The emulator application and the browser page have the same hole (their network layer is
 `tools/play-net/src/RtaNet.cpp`, not this driver): **the same hold there would need a
 change in `RtaNet.cpp`** - it sees every datagram on its way to the game and knows the
 lobby state word the same way. Not done (not this work's file).
+
+### The morning build (rta_app of 2026-10-13 07:35:58, patch set 27f61e1d)
+
+The same network files on the snapshot of the morning (`nl_window2`, `nl_headless2`),
+08:20 to 08:56, with the Mac at a load average of 100 to 480 from other jobs.
+
+| What | Attempts | Everybody in the room | In the level | Ticks in step |
+|---|---|---|---|---|
+| 4 copies, window hosting | 2 | 1 | 1 | 5,099, all 6 pairs; hub > drunare, 4 deaths, 1 reload |
+| 4 copies, window as third player | 2 | 2 | 2 | 5,174; 4,519, all 6 pairs |
+| 3 copies, window as second player | 2 | 1 | 1 | 5,337, all 3 pairs |
+| 2 copies, window hosting, `--scenario leave --rounds 3` (three games in the same two processes) | 1 | 1 | 3 games | 1,409; 1,412; 1,413; window program 4 to 6 sockets, 20 to 29 threads |
+| the name question, from nothing | 1 | - | - | sheet up, "x" refused, a made-up name: the lobby in 3,030 blanks; password 0 times in the output |
+| with the morning's page, both orders | 2 | 2 | 2 | above ("The morning's page") |
+
+**Two attempts never had everybody in a room, and neither is a launch** - both at load
+300 to 480, both the lobby SERVER answering late (this work's instance runs at `nice 10`,
+as every process of the work does, and gets little of a Mac that busy):
+- 08:31, four copies: the three joiners were connected to the lobby port and got no
+  answer for 20 s; the one-step driver stopped each with "the lobby server ... did not
+  answer for 20 seconds". The same thing `three-players.md` lists under "Not counted as
+  launches".
+- 08:47, three copies: both joiners sent the host their one-byte seek and the host's
+  game answered 17 and 20 s later - it connects to a joiner when the server's 0x65
+  notification names it, and that came late; the joiners' own time-out is 16 s ("Timing
+  out peer [0] ... 16334", then the game's box, and the driver's "the game shows a
+  message instead of joining game ..."). The host's net log has the joiners' two
+  disconnects held back half a second: the hold is not what was late.
+Every attempt in which all copies reached the room started and stayed in step (5 of 5).
+Not looked into further: whether the server, given its share of the processor, is ever
+that late; the game's 16 s is the original's.
 
 ### The name question in the window: shown and worked
 
@@ -331,6 +385,17 @@ lobby instance. The native copy's lines and the page's own line are quoted.
 | the **window** program hosts, the page joins | the same lines | 6,066 frames | 3,458 hashes equal, 0 different; flags 0 |
 | control: native with `net-arith=console` (what the build did before tonight) hosts, the page joins | page: "WARNING: another player's copy cannot compute as a browser does (an older copy of the application, or one set to its own arithmetic): the game would fall out of step - do not start it..."; native: "WARNING: the player at ... computes with browser arithmetic and this copy cannot: the game would fall out of step - do not start it" | started all the same | hashes differ from frame 3; at frame 245 the game ended the session on both (page back at the title, native in the front end, one player) |
 
+**The morning's page** (`local/play-web-site` of 2026-10-13 07:36, served through a
+directory of links, `local/native-lobby/site`, with an `online.json` naming this test's
+relay and a link to the sign-in patch that lies beside the three-players page; machine
+load 100 to 136):
+
+| Order | In the room | In the game | Result |
+|---|---|---|---|
+| night build (set 3f5b1e14, window) hosts, the morning's page (set 27f61e1d) joins | page: "WARNING: another player has a DIFFERENT PATCH SET (theirs 3f5b1e14, yours 27f61e1d): the game would fall out of step - do not start it..."; native: "the player at ... has patch set 27f61e1d (91 words): DIFFERENT from this copy's", "WARNING: a player (...) has patch set 27f61e1d (91 words), this copy 3f5b1e14 (90 words): they would fall out of step" - and the arithmetic change as before | started all the same: 4,549 frames in `hub` | 2,475 hashes equal, 0 different (the word that differs is in the level-load wait; no level was loaded) - the point of the row is that **the patch-set warning works between a native copy and a page, both ways** |
+| **morning build** (window) hosts, the morning's page joins | "Everyone computes the same way: 1 other player heard, the same patch set (27f61e1d), browser arithmetic (in the Mac application)"; native: "... the same as this copy", "... computes with browser arithmetic (can do: the browser's)", "arithmetic: the machine now computes as a browser copy's does" | 4,742 frames | 2,621 hashes equal, 0 different; flags 0 |
+| the morning's page hosts, **morning build** (headless) joins | the same | 4,716 frames | 2,560 hashes equal, 0 different; flags 0 |
+
 So the native build and a page play in step, both orders, and a native copy that cannot
 follow is warned about on both sides. The page calls the native copy "the Mac
 application" (it tells the two apart by nothing). Not done: a level change or a fight in
@@ -338,6 +403,40 @@ a mixed game (a page has no tick-keyed write; the game's own gateway was not wal
 game of three with a page, Safari or Firefox, a relay that is not on this computer.
 The relay carried the native copy's datagrams although they leave through the loop-back
 interface (`--lan`).
+
+### What the second round found outside `tools/recomp/net/` (nothing there was changed)
+
+1. **`tools/recomp/rt/runtime.cpp`: a host thread is left for every guest thread ended by
+   `TerminateThread`.** Case 0x25 / 0x26 of the system calls sets `kill` on the thread and
+   unlinks it; `wait_for_baton` (line 383) waits for `g_cur == self` and looks at `kill`
+   only afterwards, and an unlinked thread is never made current. Seen: 4 host threads
+   more per online game played in one process (20 at the first game list, 54 after nine
+   games; 9 to 19 in a headless copy over three). Wanted: wake the thread's condition
+   variable where `kill` is set and let the wait end on `kill`.
+2. **`tools/recomp/app/app_main.cpp`: the control socket's `app` lines do not reach the
+   network's commands.** Line 942, `g_control.app_command = app_command`, calls the window
+   program's own handler; a script file's `app` lines go through `script_app_command`,
+   where `net/online.cpp` chains itself in front. With `g_control.app_command` calling
+   `script_app_command` instead, `app online ...` and `app net ...` would work over the
+   socket and `online-commands=FILE` would not be needed.
+3. **Lobby server, request 0x57 (a private game looked for by name): result 2 for "no
+   such game" reads in the game as "Couldn't join game: A database error occured".** The
+   game has texts of its own for a join that cannot be ("Failed to join game: Player is
+   not hosting a game.", "... It has already started.", "... It is full."); which result
+   numbers show them was not looked up.
+4. **`tools/play-net/src/RtaNet.cpp`: the launch hole is open for the emulator
+   application and the page** ("The disconnect hold": the same half-second hold of a
+   peer's disconnect while the lobby state word is 6 would close it there too). Their
+   exposure is the one `three-players.md` describes; the server change covers most of it,
+   not the pair of joiners that are wrong about each other.
+5. **A file-sync client duplicates files under `local/recomp-out/`** ("c_003 2.o",
+   "a_pad_mac 2.o", "rt_host_posix 2.o", "rt_sound_null 2.o" in `obj-rta_native_fix` and
+   `obj-app`, seen 2026-10-13 08:09). `tools/recomp/build.py` links exactly its job list,
+   but `tools/recomp/app/build.py` links every `c_*.o` it finds in the game's object
+   directory: a duplicate of a game object would be linked twice.
+6. **Patch sets drift between builds made hours apart**: the pnach got a word at 22:30 on
+   the 12th; a native build from before it and a page from after it warn each other
+   (seen, "The morning's page"), as they should. Every player needs builds of one day.
 
 ## Where the cut is, and why
 
@@ -442,8 +541,11 @@ game's stack, rule for rule:
   computer and goes through the loop-back interface; what comes back is shown to the game
   as coming from the address it sent to;
 - every other player heard from is told this copy's patch set (the mark `RTAset1` after a
-  keep-alive of the game's UDP library) and its arithmetic (`RTAari1`: can do the
-  console's, does the console's); theirs are taken out before the game sees them.
+  keep-alive of the game's UDP library) and its arithmetic (`RTAari1`: can do both, does
+  the console's or - with a browser copy in the room - a browser's); theirs are taken out
+  before the game sees them;
+- a peer's disconnect that arrives while the game is in a game's room is shown to it 30
+  vertical blanks late ("The disconnect hold").
 
 ### The network setting
 

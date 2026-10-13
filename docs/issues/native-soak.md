@@ -6,7 +6,7 @@ compute what the emulator computes. This file is the farm built on it to hunt fo
 desyncs that are left: the method, what was covered, what was found, and at what rates.
 Every result says what was **Ran**; **Read** marks what comes from reading code alone.
 
-**Status: ended 2026-10-12 22:45.** The farm is stopped; nothing of it is running.
+**Status: first part ended 2026-10-12 22:45. A second part (2026-10-13, below: "Second part") takes findings 2 and 3 to the bottom, corrects finding 3's reading of seed 5000 and proposes three sections; its status is at its head.**
 
 ## In short
 
@@ -258,6 +258,10 @@ is proposed here; it is recorded because it had never been seen on a running gam
 
 ## Finding 3: the half of B9 that the section leaves — a save point used on one machine only
 
+*Corrected 2026-10-13 ("Second part", "Save point"): the game of this finding, seed 5000,
+is not the card test — its menu mutex differs from tick 6,102, a consequence of K1 that the
+set removes. The card test is real and is seed 3115's; both are worked out below.*
+
 Known from executing in isolation (FINDINGS B9: "the save point's own effect state …
 still follows each machine's card state"), now **Ran**, without fixes: seed 5000 (two
 machines, `hub2`), the first job of the unpatched arm, differs in `pool` alone at tick
@@ -449,6 +453,414 @@ For whoever edits `FINDINGS.md` (this document does not).
 | V (new) | Object pools of two native machines in step, compared word by word: live objects sit at the same addresses while the free lists' order differs; the fields that differ are listed in `docs/issues/native-soak.md`, among them the private random state (+0x44) of `Gold`, `Torch`, `JumpGate` and `AddParticle` objects and animation tracks 5 and 6 of the real player on its owner's machine. No reader in the simulation was looked for |
 | native runtime (note) | Columns read through a null player-object pointer show the runtime's own low-memory tables, which differ per machine (86 words of the first megabyte in one pair); two false "armour" differences came from that |
 
+---
+
+# Second part, 2026-10-13: the two findings to the bottom, three proposed sections
+
+**Status: in progress** (the soak arm is running; this part is written as the work goes
+and says at each point what is done). Base: the shipping set as it is in
+`patches/SLUS-20973_4028A55F.pnach` since the release (26 sections, 91 words). Neither that
+file nor `tools/play-net/sections-suggested.txt` is changed by any of this: the proposed
+sections are in `tools/recomp/soak/proposed-sections.pnach`.
+
+## In short (second part)
+
+- **Finding 3 was read wrongly in one point, and is two things.** Seed 5000 (unpatched) is
+  not the save point's card test: there the *menu mutex* (0x4fe53c) differs between the
+  machines from tick 6,102 on, and a held mutex is what makes `Savepoint_interact` do
+  nothing on one machine at tick 10,178. The section "use button works with the spell
+  selector open" (K1) alone removes it (**Ran**: no difference in 11,745 ticks). The card
+  test is real too, with the whole set on: seed 3115, tick 26,847 (**Ran**, traced on both
+  machines), and a directed game reproduces it at will.
+- **Save point, verdict: it cannot reach play with the shipped levels.** Every reader of
+  the differing fields is the save point's own effect, draw and stored-state code; none of
+  the 111 save points on the disc has an `action` script. A five-word section removes the
+  difference all the same.
+- **Script variable race, verdict: the appended name cannot reach play; the same draw-time
+  prompt can.** Over the whole disc a script started from drawing can write nothing shared
+  but the name a `getv` appends, and the table is read by name only. But the jump gate's
+  prompt *itself* marks the gate found and adds the level to the list of jump-gate
+  destinations from drawing, on the owner's machine, as many ticks early as that machine's
+  input runs ahead (**Ran**: 19 ticks in a directed game; the gate list is shared state the
+  gate's own prompt and the jump menu decide on). One word removes the append, two words
+  the early marking.
+- Three sections proposed, 8 words, each executed in the interpreter (36 checks) and each
+  shown on a native pair without and with it.
+
+## Programs of the second part
+
+All built by `tools/recomp/soak/build_soak.py --src local/recomp-out/soak/src-1013 --rt frozen`
+into `local/recomp-out/soak/bin/` (a directory of the soak's own). `src-1013` is a copy made
+2026-10-13 07:30 of `tools/recomp/*.py`, `tools/recomp/rt/`, `tools/recomp/net/netshim.cpp`
+and `hle-net.txt`, of the patch file (`shipping-26.pnach`, sha1 7fa829af…) and of the
+suggested list, so that nothing built later depends on what other work does to those:
+`recomp.py` sha1 0d8d694e…, `netshim.cpp` 19dd8d18…, `soakhooks.cpp` 94c4ad72…; the runtime's
+objects are the frozen ones of the first part (`runtime.cpp` a23ce0e2…), and the translated
+code and the shim are compiled against the runtime's headers as they were at the copy. Each program's
+`local/recomp-out/gen-soak-<name>/build-info.txt` has the list.
+
+| Program | Sections |
+|---|---|
+| `rta_soak-s26` | the 26 of the shipping set |
+| `rta_soak-s26a`, `-s26b` | the 26 and section A / section B alone |
+| `rta_soak-s26ab` | the 26, A and B (built before C was written) |
+| `rta_soak-s26abc` | the 26 and all three: **the soak arm** |
+| `rta_soak-s26t`, `-s26abt` | the same as `s26` / `s26ab`, `--instrument trace` |
+| `rta_soak-nofixa`, `-nofixp`, `-nofixpa`, `-nofixk` | no section but: A; the save-point prompt section; both; the K1 section |
+
+`s26` repeats the first part's seed 3103 exactly (quest variables differ in ticks
+4662–4665), so the new programs compute what the old ones did.
+
+`farm.py` changes of this part: machines run under `nice -n 19`; `run` ends by itself — no
+new job, the running machines stopped — once `<out>/alive` has not been touched for 45
+minutes; `one` takes `--level`, `--machines`, `--bus` and `--directed FILE` (script lines
+in place of the random input, `A:` / `B:` for the confirming machine / the others); four
+more columns: `mutex` (0x4fe53c), `jgcount` (0x8e3c30), `jgdests` (0x8e3a50, 480 bytes) —
+deciding — and `actplayer` (0x4d8ae4), followed.
+
+## Save point
+
+### The chain (Read, and Ran on both machines)
+
+`Player_run` 0x1a5030 calls `Player_interact` 0x1b2640 for every real player in every
+tick. That calls the nearest usable object's prompt (slot 13; for a save point 0x28da58)
+and, when the prompt answers 1 and the use button is in the player's lockstep pad, sets
+`g_scriptActivePlayer` and calls slot 14, `Savepoint_interact` 0x28dc30:
+
+```
+if memcard_isBusy()   (this machine: a card screen is up, or a card result is pending)  -> nothing
+if menuMutex_isHeld() (0x4fe53c)                                                        -> nothing
+save point +0x84 = 1;  memcard_requestSave(player)   (opens the dialog only on the machine
+that owns the player, and sends game message 2);  light on (+0x88);  +0xc4 = 1;
+obj_runActionScripts(this)
+```
+
+| Who | What it does with the state |
+|---|---|
+| `Savepoint_run` 0x28cdd0, in the tick | while +0x84 is set: when this machine's "card screen done" flag 0x4f8f29 is up it sends game message 5 with the save point's address and clears the flag; when +0xcc is set (by message 5, on every machine in the same tick: `hud_onMsg` → `Savepoint_startSavedEffect` 0x28cdc4) it plays the "saved" burst — a sound, an animation, +0x80 = 1, three passes of particles that draw about 33,000 values from the save point's own generator (+0x44) — and ends with +0xcc = 0, +0x84 = 0. +0x80, once set, counts every tick (the pulsing light, the "used" animation) |
+| `Savepoint_draw` 0x28d854 | reads +0x80 and +0x78 |
+| `Savepoint_saveState` 0x28dc9c | the first word of the 6 bytes the save point writes into the level's stored state is +0x84 if that is set, else +0x80 |
+| `Savepoint_loadState` 0x28dcd0 | a non-zero stored word: +0x80, light, +0xc4, the "used" animation, +0xc5 = 1 |
+| `Savepoint_clone` 0x12f768 | copies them (no caller clones a save point) |
+
+That is every load of +0x80, +0x84, +0xc4, +0xcc and +0x78 in the program
+(`tools/fieldxref.py`, class `Savepoint`; the only access from outside the class is the
+store through the address carried by message 5). The parts of `Savepoint_run` that are
+simulation — bringing a dead player back with one draw from the shared generator, the
+auto-save — read +0xc6, +0xc7, +0xc8, the players and the frame counter, none of the fields
+above. +0xc5 is read by the idle sparkle and written into the stored state only.
+`memcard_getState() == 0`, the other thing that clears +0x84, is the state of the options
+load at boot; nothing sets it during a game (**Read**: the callers of `memcard_setState`).
+
+**Ran**, seed 3115, shipping set (`s26`, and `s26t` with a watch on +0x84 and +0xcc of the
+save point of `hub`, 0x5f8bc0), columns for the save point and for each machine's card
+state:
+
+| Tick | Machine 0 | Machine 1 |
+|---|---|---|
+| 26,622 | player 0 uses the point: +0x84 = 1 (`Savepoint_interact` ← `Player_interact` ← `Player_run` ← the tick), its save dialog opens (card state 3) | +0x84 = 1, the same chain |
+| 26,726 | | player 1 uses it: its own save dialog opens (state 3) |
+| 26,796–26,798 | message 5 (`Savepoint_startSavedEffect` ← `hud_onMsg` ← `net_frameLoop`), burst, +0x84 = 0 | the same |
+| **26,847** | player 0 uses it again: **+0x84 = 1** | its card screen is still up: **nothing** (+0x84 stays 0) |
+| 26,934 | | its save is done: flag 0x4f8f29 = 1, but +0x84 is 0 here, so no message 5; the flag stays up |
+| 28,066 | | player 0 uses the point once more: +0x84 = 1, and the flag that has waited 1,132 ticks sends message 5 at once |
+| 28,081–28,083 | the burst — fifteen ticks after its own dialog opened, for a save made on the other machine | the burst |
+
++0x84 differs for 1,219 ticks; in this game the burst then ran on both machines in the same
+ticks and the private generators stayed equal. In the directed game below it runs on one
+machine only and the difference stays.
+
+### Seed 5000 is something else
+
+Finding 3 took seed 5000 (unpatched) for this mechanism. **Ran** with columns for the
+mutex, each machine's card state, the spell-selector words 0x41b818, the menu lockout and
+the pause flag: at tick 10,178 no card screen is up on machine 0; its **menu mutex is 1
+and machine 1's is 0, and has been since tick 6,102**. `nofix` plus section A, plus the
+prompt section, plus both: the same difference at tick 10,380 with the same checksums.
+`nofix` plus "use button works with the spell selector open" alone: no difference in
+11,745 ticks. So in the game as shipped a use press the owner's machine skips (K1) can
+leave the menu mutex taken on one side for the rest of the game — and with it every save
+point and, in a net game, every jump gate (`JumpGate_interact` tests the same word) dead on
+that machine. With the set on, the mutex is a deciding column of the soak arm below.
+
+In a net game the mutex is shared state: `menu_openInventory` and `inventory_close` touch
+it only offline (0x1c1600, 0x1c52a8); the other writers are `Creature_interact` and
+`Creature_trigger` (the tick), the dialog's message handler and a script built-in.
+
+### Every reader: can it reach play?
+
+| Path | Verdict |
+|---|---|
+| the save point's light, animation, sound, particles, private generator | presentation: the generator is drawn from by the burst and the idle sparkle only (`GameObject_rand` in `Savepoint_run`; nothing else of the class calls it) |
+| `obj_runActionScripts(this, 1)` — the `action` scripts | would be a script run on some machines and not others. **None of the 111 save points on the disc has an `action`** (`tools/recomp/soak/enum_drawscripts.py`, every level archive; the ledger's B7 by a second reading) |
+| the 6 bytes in the level's stored state → a reload after a party wipe, coming back to the level | `Savepoint_loadState` sets the same presentation fields; the block is 6 bytes whatever it holds |
+| message 5 | sent when the saving machine's own +0x84 is set, to every machine in the same tick; with the difference it is sent late (above) or its burst plays on some machines only |
+| `g_scriptActivePlayer` | set by `Player_interact` before the call, on every machine since the prompt section is in the set |
+| the shared seed, the sync record, a player, a monster, an item | no path: none of the functions above writes or reads them on the +0x84 / +0xcc / +0x80 side |
+
+`pool` does see it: the save point's private generator is part of that checksum, which is
+how seed 5000 was noticed.
+
+### The same test elsewhere: every prompt and every interact (enumeration)
+
+`tools/recomp/soak/enum_interact.py`: the prompt (slot 13) has 22 implementations over the
+232 classes of the object family, the interact (slot 14) has 23. Direct calls followed two
+levels; the lines were then read.
+
+| Implementation | Per-machine state it tests or uses | Reading |
+|---|---|---|
+| `Savepoint_interactPrompt` 0x28da58 | `memcard_isBusy` | removed by the set's "save-point prompt ignores this machine's card screen" |
+| | this machine's ticks since its last save (0x4f8f30) | chooses between two texts; both answers are 1 |
+| `Savepoint_interact` 0x28dc30 | `memcard_isBusy` | **section A** |
+| `JumpGate_interactPrompt` 0x27d7a0 | `task_isRunning("jumpgate")` | the menu task is started in the tick on every machine (`JumpGate_openMenu`; column `jgstate`) |
+| `Creature_interact` 0x116bd8 (76 classes), `PushTrigger_interact` 0x1ecc70 | through `shop_openOrStock`: the local slot | the shop opens on its owner's machine only, by design (`docs/script.md`, open question 7) |
+| `JumpGate_interact`, `Savepoint_interact` | `menuMutex_isHeld` | shared state (above) |
+| door, chest, switch, anchor interacts | `game_isFrozen` (in a net game `g_paused`, which is set offline only), `hud_showMessage`, `player_voice`, the gold floater | display and sound |
+| the other 11 prompts and 6 interacts | nothing of the kind within two calls | |
+
+So one implementation of 45 has a per-machine test that decides what the tick does and is
+not covered by the set: `Savepoint_interact`. Stores made by a prompt — which also runs at
+draw time — are in "Script variables" below.
+
+### Section A
+
+```
+[Net test: save point is used on every machine whatever this machine's card screen does]
+// was: 0C085D46 (jal memcard_isBusy)        now: jal menuMutex_isHeld
+patch=1,EE,0028DC44,word,0C08BF0B
+// was: 0C08BF0B (jal menuMutex_isHeld)      now: jal memcard_isBusy
+patch=1,EE,0028DC54,word,0C085D46
+// was: 1440000A (bnez v0,0x28dc88)          now: bnez v0,0x28dc68
+patch=1,EE,0028DC5C,word,14400002
+// was: 24100001 (addiu s0,zero,1)           now: jal memcard_requestSave
+patch=1,EE,0028DC64,word,0C085D6D
+// was: 0C085D6D (jal memcard_requestSave)   now: addiu s0,zero,1
+patch=1,EE,0028DC68,word,24100001
+```
+
+The two tests change places and the card one is narrowed: a held mutex still skips
+everything, as before and on every machine alike; a busy card skips only the request for
+this machine's save dialog (the branch lands on the `addiu`, which is also the delay slot
+of the call). A machine that is not busy does exactly what it did. What changes for the
+player: used while the owner's own card screen is up, the point lights up and no dialog
+opens (before: nothing on that machine, everything on the others); and a "card screen done"
+flag left from a save made through the pause menu can now be answered by the burst when
+the point is next used during a card screen — on every machine alike. It needs the set's
+prompt section to be of use (without it the busy machine never gets as far as the call).
+
+| Check | Without the section | With it |
+|---|---|---|
+| `tools/recomp/soak/sections_test.py` A1–A12 (15 checks; `memcard_isBusy` and `menuMutex_isHeld` run for real on their globals) | a card screen (states 3, 5, 10, or a pending result): nothing at all | +0x84, light, +0xc4 and the action call as on a free machine, no save request; mutex held: nothing, as before; free machine: unchanged, for players 0–3 |
+| seed 3115 (two machines, `valmedal` → `hub`, delay 6, jitter 8, loss 3 %), 28,200 frames, the save point's +0x84, +0xcc, +0x80, +0xc4, private generator and the mutex as deciding columns | `s26`: +0x84 1 against 0 from tick 26,847 (table above) | `s26a`: no difference in 29,012 ticks; the burst at 26,953 on both |
+| directed game `local/recomp-out/soak/dir-savepoint.txt` (two machines, `drundar`, no bus delay): in lockstep tick 1,000 player 0 is put beside the save point at the entry and player 1 beside the north-west one; machine 0 presses use and leaves its dialog open; machine 1 presses use, then confirms its way through its own dialog | `s26`: tick 1,170 +0x84 of the second point 0 against 1; tick 1,418 the burst on machine 1 alone (+0xcc 1 against 2, +0x80 0 against 2, private generator 0x62aa against 0x2499f167), `pool` differs from there to the end, +0xcc left at 1 on machine 0 | `s26a`: equal in every tick of 3,589, with the values machine 1 had |
+| the same directed game on three machines (`--machines 3`; the third machine idle) | `s26`: the busy machine against the two others — +0x84 0, 1, 1 at tick 1,171, the burst and `pool` on machines 1 and 2 only | `s26a`: equal on all three in every tick of 3,589 |
+| seed 5000 unpatched | not this mechanism (above) | |
+
+## Script variables and the prompts that run at draw time
+
+### The chain (Read, Ran)
+
+`Player_draw` 0x1a46c0 calls `Player_interact(player, 0, display only)` for this machine's
+own players at display rate (0x1a4800). The tests in front of the call are the tick's
+(0x1a5b98–0x1a5c1c) — pause, menu lockout, dialog, the player's camera flag — but outside
+the tick they read **this machine's current** state: the local slot's pad and flags hold
+what was sampled now, which the tick will see as many frames later as this machine's input
+runs ahead (`docs/netcode.md`, hazards 4 and 5; the camera flag, for one, is bit 0 of
+`g_netCamYaw[slot]`, 0x13e138). The position is the real player's. Which of the tests it
+was in the runs below was not isolated; the lead measured is the input lead in both.
+
+Seed 3103 again, with the players' distance to the gate of `nit2` and each machine's menu
+flag: machine 1 has its inventory open until tick 4,660; its input runs 18 frames ahead; in
+the frame after it closes the inventory its drawing runs the gate's prompt, whose script
+reads `nit_gotshard` (`vars_get` appends it, value 0). The tick would have run the same
+prompt on both machines about 18 ticks later; a trigger's script read the name first, at
+tick 4,666. So "four ticks" was an accident of that game: the lead is the input lead.
+
+### What a script started from drawing can do: the whole disc
+
+`tools/recomp/soak/enum_drawscripts.py` reads every level archive of the disc (120 level
+lumps, 18,675 objects) and follows each named entry through `callScript` and calls inside
+the script.
+
+| Started by | Objects | Entries | Built-ins reached |
+|---|---|---|---|
+| prompt, property `key` (`PushTrigger` 49, door and switch props 90: `decdoor`, `brazier`, `uwswitch`, `schest`, `cpdoor`, `hcrypt`, `faydoor`, `ptswitch`, `excal`, `wingedv`, one `TestLocation`) | 139 | 51 (3 are the value `1`, which names no entry) | `getv`, `playerHasItem`, `getMissionAvailable`, `getMissionComplete`, `countQuestItems`, `getEvil`, `demoRunning`, `getNumPlayers`, `getPlayerFlag`, `callScript`; stores to script globals in three (`HONOR`, `NITBONUS`, `VALOR`) |
+| prompt, property `script` of a jump gate (`Portal`: 38 on the disc, 10 with a script) | 10 | 6 | `getv` only (7 names) |
+| head marker, property `exclamation` (`NPC` 16, `Orc2Leader` 1) | 17 | 17 | `getv`, `playerHasItem`, `getEvil`, `callScript` |
+| map icon, `iconScript` / `iconValue` (`PushTrigger_ctor` 0x1eca64 → the map-drawing function's `script_runByName` 0x1696c4 and `vars_get` 0x1696a4) | 0 | 0 | no level uses them |
+
+- The only built-in among these that writes shared state is `getv`, and only by appending
+  a missing name. No `setv`, no `getRand`, no dialog, no level change: the six `if…` entries
+  with side effects that `docs/script.md` P1 left open are named by `action` properties and
+  by monster triggers, not by a predicate.
+- The four script globals the three entries store (`VALOR` 0x274 and 0x278, `HONOR` 0xc4,
+  `NITBONUS` 0x30) are loop counters: every entry that reads one stores it first.
+- The table (`g_questVars` 0x86da80, 8,192 bytes, no bounds test) is touched by four
+  functions: `vars_get` and `vars_set` look names up, `vars_clearAll` keeps names,
+  `vars_getByIndex` serves `save_build` alone. The 120 scripts use 239 different names,
+  3,176 bytes if every one were present: it cannot overflow. It is not in the sync record
+  (`g_randSeed` + `g_syncAcc`).
+
+**Verdict for the appended name: it cannot reach play.** Present with value 0 or absent, a
+name reads 0; what differs is the order and the length of the table, which only the save
+file shows. Besides the scripts, `shop_openOrStock` reads two variables on the owner's
+machine only (0x1c7b40, 0x1c7bc0): the same append, **Read**, not run.
+
+### What a prompt itself does at draw time (enumeration)
+
+Stores through `this` and state-changing calls in the 22 prompt implementations
+(`enum_interact.py`):
+
+| Prompt | At draw time on the owner's machine | Reading |
+|---|---|---|
+| `PhProp` (4 classes) +0x104, `ItemProp` +0x104, `UserParamProp` +0x168, `Vehicle` +0x190 | stores `g_simFrame` — outside the tick the prediction frame — as a stamp | the only loads are the classes' draw functions (the highlight) and clone: presentation. This is the `ItemProp` +0x104 of the first part's table |
+| `AutoProp` (13 classes), `AutoChest` (2), `PushTrigger`, `SpiritAnchor` | run the `key` script | the enumeration above |
+| `Savepoint` | HUD messages in a no-save zone | display |
+| **`JumpGate`** 0x27d7a0 | **gate +0x4d = 1, `jumpgate_addCurrentLevel` (0x8e3a50, count 0x8e3c30), the "activated" message**, and the script | **shared state**, below |
+| the other 11 | nothing | |
+
+### The jump gate found on one machine first — it can reach play
+
+`g_jumpGateDestCount` decides in the same prompt whether a gate can be used at all (one
+destination: the "not yet" text and answer 0) and the list is what the jump menu offers.
+**Ran**, directed game `local/recomp-out/soak/dir-gate.txt` (two machines, `drundar`, its
+gate 0x5f9640 has no script, bus delay 10, jitter 6, loss 10 %; `s26ab`): machine 1 opens
+its inventory; in lockstep tick 1,150 its player is put 31 units from the gate on both
+machines; machine 1 closes the inventory.
+
+| Tick | Machine 0 | Machine 1 (the owner) |
+|---|---|---|
+| 1,203 | gate not found, 1 destination | the same |
+| **1,204** | not found, 1 destination | **found (+0x4d), 2 destinations, list checksum 7279ff34 against ddd05d44** — from drawing |
+| 1,223 | found, 2 destinations (the tick's own prompt, on both) | |
+
+Nineteen ticks, this machine's input lead. What ends it is the tick reaching the same
+prompt. If it does not — the player dies, or the level changes, inside those ticks
+(`Player_interact` returns at once for a dead player) — the difference stays. **Ran**,
+the same game with the player's hit points written to zero in lockstep tick 1,212
+(`dir-gate-death.txt`): from tick 1,204 to the end of the game, 1,600 ticks later, machine
+1 has the gate found and two destinations, machine 0 neither. What follows from there is
+**Read**, not run: the list lives until the act changes; at a gate where the others have
+one destination and the owner's machine two, the prompt answers "not yet" on them and 1 on
+it, and the use button opens the jump menu in the tick on that machine alone. In ordinary
+play the same lead exists for one frame whenever a player walks up to an unfound gate (the
+first part's P1 note), with the same condition.
+
+The gate's private generator (+0x44) and light floats differ afterwards with or without
+the early marking: `JumpGate_run` draws from it for the light and the sparks only while the
+gate's animation state says so, and that state is advanced by drawing — the machine whose
+camera is at the gate. Presentation (classification below).
+
+### Sections B and C
+
+```
+[Net test: reading a quest variable never adds it to the table]
+// was: 0C0EE1A3 (jal libc_strcpy)   now: b 0x1ed844 (v0 is 0 on both ways in)
+patch=1,EE,001ED828,word,10000006
+
+[Net test: a jump gate is found only inside the tick]
+// was: 14400010 (bnez v0,0x27d864)  now: or v0,v0,s7
+patch=1,EE,0027D820,word,00571025
+// was: 3C02008E (lui v0,0x8e)       now: bnez v0,0x27d860
+patch=1,EE,0027D824,word,1440000E
+```
+
+B: a read of a missing name returns 0 and writes nothing; names enter the table by `setv`
+(and the loader), which run in the tick. One word covers every reader at once — gate and
+`key` predicates, head markers, the shop — and leaves every value read as it was. The table
+and the save file then hold only variables that were ever set.
+
+C: `Player_interact` keeps its display-only argument in register s7 across the call of the
+prompt (0x1b2650; the prompt is called from there and from the reflector's forwarding
+prompt 0x28e2c8, which does not touch s7; nothing calls 0x27d7a0 directly). The test
+"already found" becomes "already found, or called for display", so the marking, the list
+entry and the message happen in the tick, on every machine in the same tick. It leans on a
+register of the caller: right for this executable, to be read again for any other build.
+
+| Check | Without | With |
+|---|---|---|
+| `sections_test.py` B1–B9 (11 checks; the game's own `vars_get`, `vars_set` and C library) | a missing name is appended; a draw-time read on one machine leaves `a,gate,b` against `a,b,gate` for good | not one byte written by a read; the two tables equal byte for byte; every value read the same, also between a machine with the section and one without |
+| `sections_test.py` C1–C9 (10 checks; the prompt called with s7 as `Player_interact` leaves it) | from drawing: found flag, list entry and message on that machine | from drawing: none of the three, the answer and text of a found gate; from the tick: as before; a gate whose script says no: nothing either way |
+| seed 3103 (two machines, `nit2`, delay 6, jitter 8, loss 3 %), 5,100 frames | `s26`: quest variables differ in ticks 4662–4665 | `s26ab`: no difference in 5,930 ticks |
+| directed gate game above | `s26ab`: gate flag, destination count and list differ in ticks 1,204–1,222 | `s26abc`: found in tick 1,223 on both, no difference in the three in 2,149 ticks (the gate's private generator differs from 1,224, as it does without: presentation) |
+| the same with the player dead in tick 1,212 | `s26ab`: the three differ from tick 1,204 to the end (2,803 ticks played) | `s26abc`: no difference in any deciding column in 2,803 ticks; the gate is found on neither |
+
+## The fields that differ between machines in step, classified
+
+The first part's table said "not classified" for most of what the word-by-word comparison
+found. Each family below was looked up in the project's documents and, where they had
+nothing, read (`tools/fieldxref.py` by class, the callers of `GameObject_rand`, the
+functions named) or run. "Presentation" means: every load of the field found is in drawing,
+effect, sound or menu code, or in a copy (clone, stored state) that leads back to those.
+
+**Presentation — can be left out of the checksum for good**
+
+| Field | Why it differs | Who reads it | Source |
+|---|---|---|---|
+| handle heads +0x00/+0x04/+0x08, every object | the run and active lists hold per-machine members (the prediction copy; lights and spouts linked by their draw functions, two nodes per drawn light) | the list code | D31; first part |
+| flag 0x100 (+0x0c), every object | set by damage, cleared by drawing | drawing | `docs/creatures.md` C1 |
+| flag 0x200000, `Player` | this machine's own player | the draw pass's exclude mask | `docs/netcode.md` |
+| creature +0xa8 bit 31 | "boss bar showing", from the list of alive *local* players | the same block of `Creature_run`, a script helper that resets the bar; not saved | C3 (harmlessness Inferred there) |
+| colour quads +0x70, +0x80, +0x90…+0x9c, creatures and `Player` | glow and tint helpers called from `Creature_draw` | drawing | `draw-sim-leaks.md`, table of draw-written fields |
+| status counters 8, 10, 11 (+0x38c, +0x394, +0x398), creatures and `Player` | `Creature_draw` decrements the first non-zero counter | the glow choice in `Creature_draw` only | D12, D15. **Counters 2, 4, 7, 12, 13 are simulation inputs (D14) and must stay in** |
+| model-particle state: creature +0x328…+0x33c, and the words at +0x408, +0x40c, +0x414, +0x41c, +0x42c, +0x49c, +0x4a4 of single classes | two halfwords (+8, +0xa of an emitter record) stepped by `fx_modelParticlesNearCamera` 0x1f61c0, which tests the camera | that function (called from `Creature_run` with object + 0x320) | **Read** for +0x320; the per-class records by the same shape (Inferred) |
+| embedded lights: `Savepoint` +0x88…+0xc0, `JumpGate` +0x100…+0x128, `Torch` +0x4c…+0x84, `StaticFire` +0x80…, `AddParticle` +0x100, `Player` +0x4c8, `Lantern` | link words and computed radius of a light that is linked where it is drawn or lit | `light_link`, `light_unlink`, the light pass | D31; **Read** (the `&+K>light_link` call sites) |
+| "was drawn" / "is linked" bytes: `Torch` +0x88/+0x89, `Lantern` +0x94/+0x95 (and `Lamp`, `Candle`, `Candle2`, `WaterSpout`) | set by the draw function, which also puts the object on the run list | their run functions, which use only the object's own generator, particles and a ripple | D31, `docs/gameplay.md` 8 |
+| private generator +0x44 of `Gold` | `Gold_draw` draws from it (three sites); the only other user is the constructor | — | `draw-sim-leaks.md`; **Read** again |
+| private generator +0x44 of `Torch` | `Torch_run` (14 sites) runs only where the torch was drawn | flame and sparks | D31 |
+| private generator +0x44 of `JumpGate`, its light floats +0xd4, +0x11c…+0x128 and +0xf8, +0x130…+0x138 | `JumpGate_run` (11 sites) draws for the light's flicker and the sparks only while the gate's animation state says so, and that state is advanced where the gate is drawn | the gate's own light and particles | **Read**; **Ran**: in the directed gate game it differs from the tick after the gate is found, on the machine whose player stands at it, with section C on |
+| private generator +0x44 of `Savepoint`, +0x80, +0xcc, +0xc4, +0x58 | the burst and the sparkle; equal unless the mechanism of "Save point" | above | this part |
+| private generator +0x44 of `AddParticle`, +0x5c (emitter on), +0xfc (light on), +0xb0/+0xb4 (particle definition), +0x11c…+0x140 (light radius, halo counters) | an effect helper started and stopped from the `…LP` classes' draw and run | `AddParticle_emit`, `_updateLightAndHalo`, `_lightOn`, `_lightOff` | `docs/monsters-2.md` 6; **Read** |
+| `Gold` +0x84…+0xbc | five sparkle positions | `Gold_draw` writes and reads them | **Read** |
+| frame stamps: `PhProp` and `ItemProp` +0x104, `UserParamProp` +0x168, `Vehicle` +0x190 | the prompt stores `g_simFrame`, at draw time the prediction frame | the class's draw function (the highlight) | **Read** |
+| draw matrix of a prop: `ItemProp` and `PhProp` +0x110…+0x13c (seen: +0x13c) | written by the draw function (`mat34_setPosRotZ`); `Prop_run` lowers +0x13c together with the height while a prop sinks | drawing. `Prop_saveState` 0x158d8c writes its rotation and translation into the level's stored state and `Prop_loadState` 0x158f04 gives them back to the matrix, not to the position; `ItemProp_loadState` and `PhProp_loadState` then rebuild the matrix from the position | **Read** |
+| trail handles: `HolyBolt` +0xb4, and by the same use `LostSoul` +0xac, `FireStorm` +0xac, `HolyStrike` +0x7c | the value `trail_create` 0x190ff8 returns: a slot of the trail table, which drawing and the prediction copy use too | the trail update and release calls | **Read** (`HolyBolt` to the call; the others at the load only) |
+| `Weather` +0xac…, +0x134…, +0x1ec… | a copy of the level light and two particle definitions for rain and snow around the camera | `Weather_run` | **Read** |
+| `Player` +0x47a | a cursor byte of the item list | `itemList_input` (and `inventory_dropItem`, which clears it) | **Read**: all nine instructions with that displacement |
+| `Player` +0x464, +0x220 | `Player_draw`: gates weapon trails; the equipment draw cache | drawing | `docs/player.md`, `draw-sim-leaks.md` |
+| `JumpGate` +0xd0 | "was drawn", written by `JumpGate_draw` | `JumpGate_run`: the light, and the effects of an armed gate — which no shipped level arms | `sync-breakers.md` 5 |
+| `Savepoint` +0xc8 (byte +0xc9) | a local player is near | chooses who sees a HUD line | `docs/monsters.md` 7.6 |
+| the free lists' order | per-machine allocations (the prediction copy) | the next allocation's address; the checksums do not depend on addresses | first part |
+
+**A cache with a known route into the simulation — leave out of the checksum, watch the positions**
+
+| Field | What it is | Source |
+|---|---|---|
+| the pose pointer of every animation state (creature and `Player` +0x114; +0x4c, +0x58, +0x98, +0xd8 in simple classes) and the cache word of each track (+0x120, +0x140, +0x160 …; `Savepoint` +0x58, the `AutoProp` family +0xa4, `Gold` +0x64) | a pose is attached where the object was drawn or queried; a simulation query takes whatever is attached | D34, D40, `docs/issues/pose-cache.md`: a route exists in one pattern only; the consequence would be a position, which `pool` compares |
+
+**Not presentation, or not settled**
+
+| Field | What was found | Standing |
+|---|---|---|
+| animation tracks 5 and 6 of the real player on its owner's machine (`Player` +0x1c0…+0x1f8; also +0x198, +0x1b8) | **Ran**, seed 3005 (three machines), a watch on +0x1e8 of player 0: on the two machines that do not own the player, `SpellCyclone_run` ← `Creature_updateSpells` ← `Player_updateCast` ← `Player_run` — inside the tick — calls `anim_startBlendInOut` (ticks 3,459, 4,874, 8,740); on the owner's machine it does not, because the spell animates `net_objOrGhost`, there the prediction copy (`docs/netcode.md`, hazard 6). The real player's track 6 then holds weight 1.0 against 0.1667 until the next cast | **a risk in principle**: tracks make the pose, and casts are placed from the pose (F6). No position ever differed in 9 million ticks. Of the 17 call sites of `net_objOrGhost`, 12 are followed by particle calls only; `SpellCyclone_run` 0x2d1b04 (**Ran**) and `SpellCharge_run` 0x2c8fe0 (**Read**: `anim_startBlendInOut` and a trail point follow the call) animate what it returns; `SkillCharge_cast`, `SpellBloodLust_ctor` and `_run` were not read. In `SpellCyclone_run` the store is made for the real caster on every machine and for the copy as well where there is one (two calls of 0x16ceb0); the watch saw the real player's word change on the non-owners only, so on the owner's machine the real player's track stack already differed at that moment — not followed further. Open: that, and whether track 6 moves a joint that a cast or a hit reads while it differs |
+| `Player` +0x520…+0x52c, `RingPortal` +0x478, `GlowingCylinder` +0x68/+0x6c, `DarknessProjectile` +0x60/+0x64, `ShockProjectile` +0x14c, `PoisonBolt` +0x54, projectile caches +0xf8, +0x130…+0x170 | the last four are a heap address against 0 (a pose or trail buffer by their values); the draw-written projectile caches are named in `draw-sim-leaks.md` | not read here |
+
+So the whole-pool checksum is not yet a deciding column, and what stands between is short:
+the first table has to go into the mask by structure (the light, the animation state and
+the emitter record sit at a different offset in every class, so a list learned from
+samples keeps meeting new pairs); the second stays out as a cache; and the open rows
+have to be decided — above all the real player's animation tracks. With those, a difference in `poolraw` would mean a field nobody has
+looked at.
+
+## The soak arm: shipping set + A + B + C
+
+(running; totals below are filled in as it goes)
+
+
+## Proposed ledger rows (second part)
+
+For whoever edits `FINDINGS.md` (this document does not).
+
+| Row | What to record |
+|---|---|
+| B9 (replace the first part's "B9 (add)") | **Ran**, shipping set: `Savepoint_interact` 0x28dc30 runs in the tick on the machine whose card screen is not up and does nothing on the one whose is (`memcard_isBusy` at 0x28dc44) — seed 3115, tick 26,847, traced on both machines; a directed game (two save points, the first player's save dialog left open) repeats it: +0x84 differs, the "saved" burst then plays on one machine only, the point's private generator, +0x80 and +0xcc differ for good and `pool` with them. Every reader of those fields is the save point's own effect, draw and stored-state code; none of the 111 save points on the disc has an `action`; no path to a player, a monster, an item, a script, the shared seed or the sync record. Section "save point is used on every machine whatever this machine's card screen does" (5 words, 0x28DC44–0x28DC68): **Executed** (15 checks), **Ran** (seed 3115 and the directed game: no difference with it) |
+| K1 (add) | **Ran**, unpatched, seed 5000: the menu mutex 0x4fe53c is 1 on one machine and 0 on the other from tick 6,102 to the end of the game; a save point used at tick 10,178 does nothing on the machine that holds it (this is what the first part's finding 3 saw). With the K1 section alone: no difference in 11,745 ticks. In a net game the mutex is written only in the tick (`Creature_interact`, `Creature_trigger`), by the dialog's message handler and by a script built-in; it gates `Savepoint_interact` and `JumpGate_interact` |
+| script P1 / E (replace the first part's row) | **Ran**: the tests in front of `Player_draw`'s display-only `Player_interact` read this machine's current menu state, so a prompt runs at draw time as many ticks before the tick's as the machine's input runs ahead (18 and 19 ticks seen). Enumerated over the disc (120 level lumps, 18,675 objects): scripts started from drawing — 139 `key` objects (51 entries), 10 of 38 jump gates (6 entries), 17 `exclamation` markers, no map icon — reach only reading built-ins, `getv` (which appends a missing name) and four scratch globals that every reader stores first; the table is read by name only, holds at most 3,176 of 8,192 bytes, is not in the sync record: the appended name cannot reach play. Section "reading a quest variable never adds it to the table" (1 word, 0x1ED828): **Executed** (11 checks), **Ran** (seed 3103: no difference with it) |
+| new (jump gate) | `JumpGate_interactPrompt` 0x27d7a0 marks an unfound gate found (+0x4d), adds the level to the jump-gate destinations (0x8e3a50, count 0x8e3c30) and shows the message — also when called from drawing. **Ran**, directed game, the suggested set plus the two sections above: the owner's machine has the gate found and two destinations 19 ticks before the other; with the player's hit points written to zero inside those ticks, for the rest of the game. The count decides in the same prompt whether a gate can be used: **Read** from there on. Section "a jump gate is found only inside the tick" (2 words, 0x27D820, 0x27D824; it reads `Player_interact`'s display-only argument in register s7): **Executed** (10 checks), **Ran** (both directed games: no difference with it) |
+| new (prompts and interacts) | Enumeration: 22 prompt and 23 interact implementations over 232 classes. Per-machine tests that decide what the tick does: `Savepoint_interactPrompt` (card; removed by the set), `Savepoint_interact` (card; the section above); the shop opening on its owner's machine through `Creature_interact` and `PushTrigger_interact` is by design. Stores a prompt makes at draw time: the jump gate's (above); frame stamps in `PhProp`, `ItemProp` +0x104, `UserParamProp` +0x168, `Vehicle` +0x190, read only by the classes' draw functions |
+| V (replace the first part's "Object pools … No reader in the simulation was looked for") | The fields that differ between two native machines in step are classified in `docs/issues/native-soak.md` ("The fields that differ…"): presentation by reading for the lights, the drawn flags, the private generators of `Gold`, `Torch`, `JumpGate`, `Savepoint` and `AddParticle`, the model-particle records, status counters 8 and 10, the frame stamps, trail handles, prop draw matrices and a menu byte; the pose pointers are D34's cache. Not presentation: the real player's animation tracks 5 and 6 differ on its owner's machine because `SpellCyclone_run` (**Ran**) starts its animation on `net_objOrGhost` inside the tick; no position followed in 9 million ticks; open |
+| V (new) | Native soak, the shipping set (26 sections, 91 words) plus the three proposed sections (8 words): see the totals in `docs/issues/native-soak.md`, "The soak arm" |
+
 ## How to repeat
 
 ```
@@ -464,6 +876,23 @@ python3 $S/farm.py report local/recomp-out/soak/farm/x
 python3 $S/farm.py one  --arm fix26c --out local/recomp-out/soak/t --seed 3103 --frames 5100 --dump 4661,4662
 python3 $S/poolcmp.py local/recomp-out/soak/t/fix26c-3103 4662 --words --masked
 python3 $S/flush_test.py                                              # finding 1 in the interpreter
+# second part
+python3 $S/sections_test.py                                           # the three proposed sections, 36 checks
+python3 -I -B $S/enum_interact.py                                     # every prompt and interact: per-machine tests, draw-time stores
+python3 $S/enum_drawscripts.py "$RTA_DISC"                            # every script drawing can start, over the disc
+cp -R tools/recomp local/recomp-out/soak/src && cp patches/SLUS-20973_4028A55F.pnach local/recomp-out/soak/src/shipping-26.pnach
+B="python3 $S/build_soak.py --src local/recomp-out/soak/src --pnach local/recomp-out/soak/src/shipping-26.pnach --rt frozen"
+$B --name s26    --sections tools/play-net/sections-suggested.txt
+$B --name s26abc --sections tools/play-net/sections-suggested.txt --extra-pnach $S/proposed-sections.pnach
+$B --name s26a   --sections tools/play-net/sections-suggested.txt --extra-pnach $S/proposed-sections.pnach --extra-section "save point is used"
+T=local/recomp-out/soak/t13                 # columns and directed scripts are in local/recomp-out/soak/ (cols-*.txt, dir-*.txt)
+python3 $S/farm.py one --arm s26  --out $T --seed 3115 --frames 28200 --columns local/recomp-out/soak/cols-sp-hub.txt
+python3 $S/farm.py one --arm s26a --out $T --seed 3115 --frames 28200 --columns local/recomp-out/soak/cols-sp-hub.txt
+python3 $S/farm.py one --arm s26  --out $T --seed 7001 --level drundar --bus none --frames 1500 \
+        --directed local/recomp-out/soak/dir-savepoint.txt --columns local/recomp-out/soak/cols-drundar.txt
+python3 $S/farm.py one --arm s26abc --out $T --seed 7001 --level drundar --bus delay=10,jitter=6,loss=100 --frames 600 \
+        --directed local/recomp-out/soak/dir-gate.txt --columns local/recomp-out/soak/cols-gate.txt
+python3 $S/farm.py run --arm s26abc --out local/recomp-out/soak/farm/s26abc --seeds 6100:900 --instances 6   # touch .../alive while it runs
 # which function writes a word: build with --instrument trace, then
 python3 $S/farm.py one --arm fix26ct --out local/recomp-out/soak/t --seed 3103 --frames 5100 \
         --env SOAK_WATCH=86db94:10 --env SOAK_WATCH_TICKS=4650:4670 --env SOAK_WATCH_LOG=/tmp/w-%M.txt
@@ -472,7 +901,11 @@ python3 $S/farm.py one --arm fix26ct --out local/recomp-out/soak/t --seed 3103 -
 ## Files
 
 `tools/recomp/soak/`: `build_soak.py`, `soakhooks.cpp`, `farm.py`, `hub.py`, `poolcmp.py`,
-`poolmask.txt`, `flush_test.py`, `proposed-flush.pnach`. Everything generated, dumped or
+`poolmask.txt`, `flush_test.py`, `proposed-flush.pnach`; second part:
+`proposed-sections.pnach`, `sections_test.py`, `enum_interact.py`, `enum_drawscripts.py`
+(the second part's runs are in `local/recomp-out/soak/t13/`, its soak in
+`soak/farm/s26abc/`, the enumerations' output in `soak/enum/`, the directed scripts and
+column files beside them). Everything generated, dumped or
 logged is under `local/recomp-out/` (`gen-soak-*`, `soak/`): the farm's rows in
 `soak/farm/<arm>/jobs.tsv`, call tables in `calls.tsv`, in-step field samples in
 `rawdiff.tsv`, the kept games beside them; the runs of the findings in `soak/t/` (native)

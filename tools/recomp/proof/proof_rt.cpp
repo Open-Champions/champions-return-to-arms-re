@@ -14,7 +14,8 @@
 //                                  the simulation tick of episode E is LO..HI
 //   --opt proof-watch-log=FILE     (default: standard output)
 //   --opt proof-pokes=FILE         memory writes keyed on the game's own time: lines of
-//                                  "episode tick frame address hexbytes", applied at the
+//                                  "episode tick frame address hexbytes" (address in hex,
+//                                  or *A+B: the word at A, plus B), applied at the
 //                                  first displayed frame at or after that frame of that
 //                                  tick (frame counts the displayed frames of one tick as
 //                                  rigcompare.py's controller replay does).  session.py
@@ -24,12 +25,15 @@
 //                                  tick of episode E (an episode ends when the tick counter
 //                                  goes back: tools/recomp/rigcompare.py, episodes_of)
 //
-// A captured state is the register context and all of memory.  Memory is kept as 4 KB
+// A captured state is the register context, all of memory and the state of vector unit 0.  Memory is kept as 4 KB
 // pages in a store without duplicates (DIR/pages.bin); a state lists the pages that
 // changed since the state before it (DIR/captures.bin).  tools/recomp/proof/realproof.py
 // reads both and runs each state through the interpreter and through the translation.
 #include "rt.h"
 #include "proof.h"
+#include "vu0.h"
+
+extern Vu0 g_vu0;                       // rt/runtime.cpp (rt-proposed.patch makes it visible)
 
 #include <cstdio>
 #include <cstdlib>
@@ -85,7 +89,7 @@ static u32 store_page(const u8* p) {
 template <class T> static void put(FILE* f, T v) { fwrite(&v, sizeof(T), 1, f); }
 
 static void capture(Ctx* c, u32 number) {
-    put<u32>(g_cap_file, 0x50414350u);
+    put<u32>(g_cap_file, 0x32414350u);                  // 'PCA2': with the vector unit's state at the end
     put<u32>(g_cap_file, number);
     put<u32>(g_cap_file, g_proof_addr[number]);
     put<u32>(g_cap_file, g_proof_hits[number]);
@@ -113,6 +117,15 @@ static void capture(Ctx* c, u32 number) {
     }
     put<u32>(g_cap_file, (u32)(changed.size() / 2));
     if (!changed.empty()) fwrite(changed.data(), 4, changed.size(), g_cap_file);
+    // vector unit 0: registers, accumulator, Q, I, control registers, microprogram and data memory
+    fwrite(g_vu0.vf, 4, 128, g_cap_file);
+    fwrite(g_vu0.vi, 2, 16, g_cap_file);
+    fwrite(g_vu0.acc, 4, 4, g_cap_file);
+    fwrite(&g_vu0.q, 4, 1, g_cap_file);
+    fwrite(&g_vu0.i, 4, 1, g_cap_file);
+    fwrite(g_vu0.control, 4, 32, g_cap_file);
+    fwrite(g_vu0.micro, 1, 0x1000, g_cap_file);
+    fwrite(g_vu0.mem, 1, 0x1000, g_cap_file);
     g_captures++;
 }
 
@@ -159,7 +172,7 @@ static void watch_check(const char* kind, u32 where) {
 struct Dump { u32 episode, tick; std::string path; bool done; };
 static std::vector<Dump> g_dumps;
 
-struct Poke { u32 episode, tick, frame, addr; std::vector<u8> bytes; };
+struct Poke { u32 episode, tick, frame, addr; std::vector<u8> bytes; bool through; u32 offset; };   // through: the word at addr, plus offset
 static std::vector<Poke> g_pokes;
 static size_t g_poke_next;
 static u32 g_tick_frame;
@@ -173,7 +186,9 @@ static void per_frame() {
         const Poke& p = g_pokes[g_poke_next];
         bool due = g_episode != p.episode ? g_episode > p.episode : tick != p.tick ? tick > p.tick : g_tick_frame >= p.frame;
         if (!due) break;
-        if (p.addr < RAM_SIZE && p.bytes.size() <= RAM_SIZE - p.addr) memcpy(g_ram + p.addr, p.bytes.data(), p.bytes.size());
+        u32 at = p.addr;
+        if (p.through) at = p.addr < RAM_SIZE - 4 ? W(p.addr) + p.offset : ~0u;
+        if (at < RAM_SIZE && p.bytes.size() <= RAM_SIZE - at) memcpy(g_ram + at, p.bytes.data(), p.bytes.size());
         if (g_episode != p.episode || tick != p.tick)
             printf("proof: poke for episode %u tick %u applied late, at episode %u tick %u\n", p.episode, p.tick, g_episode, tick);
         g_poke_next++;
@@ -261,8 +276,12 @@ static void ready() {
         char line[4096];
         while (fgets(line, sizeof line, f)) {
             Poke p;
-            char hex[2048];
-            if (sscanf(line, "%u %u %u %x %2047s", &p.episode, &p.tick, &p.frame, &p.addr, hex) != 5) continue;
+            char hex[2048], where[64];
+            if (sscanf(line, "%u %u %u %63s %2047s", &p.episode, &p.tick, &p.frame, where, hex) != 5) continue;
+            p.through = where[0] == '*';
+            p.offset = 0;
+            if (p.through) { if (sscanf(where + 1, "%x+%x", &p.addr, &p.offset) < 1) continue; }
+            else if (sscanf(where, "%x", &p.addr) != 1) continue;
             for (size_t i = 0; hex[i] && hex[i + 1]; i += 2) {
                 unsigned byte;
                 sscanf(hex + i, "%2x", &byte);
@@ -329,6 +348,12 @@ static void proof_finish() {
     for (u32 n = 0; n < PROOF_ENTRIES; n++) reached += g_proof_hits[n] != 0;
     printf("proof: %u of %u entry points reached; %llu states recorded in %u pages; %llu watch events\n", reached, PROOF_ENTRIES,
            (unsigned long long)g_captures, g_store_count, (unsigned long long)g_watch_events);
+#ifdef VU0_COUNT
+    // a measurement build of the proposed rt/vu0.h (docs/issues/native-proof.md R2.7): how often its rule changed anything
+    printf("VU0 range: %llu operands read by arithmetic, %llu with exponent 255, %llu denormal; %llu MAX/MINI picks, %llu where the "
+           "host's compare would have picked the other operand\n", g_vu_count.reads, g_vu_count.big, g_vu_count.tiny, g_vu_count.picks,
+           g_vu_count.picks_differ);
+#endif
     if (g_cap_file) fclose(g_cap_file);
     if (g_pages_file) fclose(g_pages_file);
     if (g_watch_log && g_watch_log != stdout) fclose(g_watch_log);

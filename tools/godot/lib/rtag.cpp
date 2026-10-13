@@ -456,7 +456,7 @@ int rtag_start(const rtag_config* config) {
     gfxrt::install();
     gfxrt::set_aspect(m->aspect);
     if (getenv("RTA_GS_LOG")) m->renderer.gs.log_display = true;
-    if (m->scene3d) scene::install(m->renderer);
+    if (m->scene3d) { scene::install(m->renderer); scene::set_aspect(m->aspect); }
     m->sink.renderer = &m->renderer;
     m->sink.resumed = mode == "resume";
     m->sink.waited_downstream_ms = &m->waited_downstream_ms;

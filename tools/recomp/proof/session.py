@@ -32,6 +32,11 @@ NATIVE = os.environ.get('PROOF_NATIVE') or os.path.join(PROOF, 'build', 'bin', '
 # the first player, two places outside the compared simulation state that follow the
 # machines' own sound and disc timing (docs/issues/native-proof.md, part 1)
 DEFAULT_WATCHES = ['sseq=0x871a68:crc2432', 'eqcache=0x866388:crc88']
+# for sessions made from 2026-10-13 on (play.py; "watch": "sound" in the session): what the
+# game last read as the voice stream's position and the correction it applies to the
+# speaker's animation track times - the cutscene's (cut_advance) and the dialogue's
+# (dialog_syncMouth); FINDINGS D8.  They follow the machine's sound driver
+SOUND_WATCHES = DEFAULT_WATCHES + ['cutcorr=0x44fd30:x32', 'cutpos=0x83d108:s32', 'dlgcorr=0x4fdcdc:x32', 'dlgpos=0x4fdce0:s32']
 
 
 DUMP_MARK = 77                  # the first marker value; the n-th image of a session is armed by DUMP_MARK + n
@@ -49,10 +54,25 @@ def with_dumps(path, spec, out):
         return path
     lines = open(path).read().split('\n')
     head = []
+    used = {}
     for n, item in enumerate(dumps):
-        level, tick = item.split(':')
         mark = DUMP_MARK + n
         head.append('ontick %d dump 0 0x2000000 %s' % (mark, os.path.join(out, 'rig-dump-%d.bin' % mark)))
+        if item.startswith('#'):
+            # "# text": after the k-th line of the script that is this comment (k counts
+            # the earlier items of the same text) - play.py marks its scenes that way
+            wanted, seen = used.get(item, 0), 0
+            used[item] = wanted + 1
+            for at, line in enumerate(lines):
+                if line == item:
+                    if seen == wanted:
+                        lines.insert(at + 1, 'poke 0x%x:s32 %d' % (0x4027AC, mark))
+                        break
+                    seen += 1
+            else:
+                raise SystemExit('no line %r (number %d) in %s' % (item, wanted + 1, path))
+            continue
+        level, tick = item.split(':')
         inside = False
         for at, line in enumerate(lines):
             if line.startswith('# ---- '):
@@ -70,8 +90,51 @@ def with_dumps(path, spec, out):
     return target
 
 
-def script_of(name, spec, out, ticks=None):
-    return with_dumps(script_base(name, spec, out, ticks), spec, out)
+POKE_MARK = 1000                # a session with "ticked": the n-th group of memory writes is armed by POKE_MARK + n
+
+
+def with_ticked_pokes(path, spec, out):
+    """The rig's copy of a script whose memory writes are to land at the same point of the
+    same frame on both machines ("ticked": true in the session; play.py's sessions).
+
+    A `poke` in a script runs at a vertical blank, and the blank falls anywhere in a frame
+    (3b.1): the first simulation step that sees the write can differ by one between the
+    rig and the native run.  For a write of hit points that is one regeneration step; for
+    the character's position in a fight it is a different fight.  The rig can also run a
+    command inside its tick hook - the head of gfx_beginFrame, right after it has logged
+    the row (`ontick M poke ...`, armed by the script poking M into g_netFrame, which the
+    offline game does not use) - and that is exactly where the native run applies its
+    writes (proof_rt.cpp, per_frame: after the row).  So every announced group n moves to
+    the head of the script as `ontick POKE_MARK+n poke ...` lines and its place is taken
+    by the one write of the marker; the first row of the rig's log that shows the marker
+    says at which episode, tick and frame of the tick the native run applies the group."""
+    if not spec.get('ticked'):
+        return path
+    lines = open(path).read().split('\n')
+    head, kept, current = [], [], None
+    for line in lines:
+        words = line.split()
+        if words[:2] == ['echo', '@P']:
+            current = int(words[2])
+            kept.append(line)
+            kept.append('poke 0x%x:s32 %d' % (0x4027AC, POKE_MARK + current))
+        elif words[:1] == ['poke'] and current is not None:
+            head.append('ontick %d %s' % (POKE_MARK + current, line))
+        else:
+            if words and not line.startswith('#'):
+                current = None
+            kept.append(line)
+    target = os.path.join(out, 'session-ticked.rig')
+    with open(target, 'w') as sink:
+        sink.write('\n'.join(head + kept))
+    return target
+
+
+def script_of(name, spec, out, ticks=None, for_rig=False):
+    path = script_base(name, spec, out, ticks)
+    if for_rig:
+        path = with_ticked_pokes(path, spec, out)
+    return with_dumps(path, spec, out)
 
 
 def script_base(name, spec, out, ticks=None):
@@ -108,7 +171,54 @@ def poke_bytes(kind, value):
     raise ValueError('poke type %s' % kind)
 
 
-def replay_pokes(script, out, shift):
+def poke_target(text):
+    """A poke's address for pokes.txt: a number as hex, or `[A]+B` (the word at A, plus
+    B - an object reached through a pointer, resolved by proof_rt.cpp when the write is
+    applied) as *A+B."""
+    m = re.fullmatch(r'\[(0x[0-9a-fA-F]+)\](?:\+(0x[0-9a-fA-F]+|\d+))?', text)
+    if m:
+        return '*%x+%x' % (int(m.group(1), 16), int(m.group(2) or '0', 0))
+    return '%x' % int(text, 0)
+
+
+def replay_ticked(kept, groups, out):
+    """pokes.txt for a session whose groups the rig applied inside its tick hook: each at
+    the row of the rig's log that first shows the group's marker."""
+    where = {}
+    with open(os.path.join(out, 'boot-rig.tsv')) as source:
+        header = source.readline().rstrip('\n').split('\t')
+        sim, net = header.index('sim'), header.index('net')
+        episode, last, frame = 0, 0, 0
+        for line in source:
+            row = line.split('\t', max(sim, net) + 2)
+            if len(row) < max(sim, net) + 2:
+                continue
+            tick = int(row[sim])
+            if tick < last:
+                episode += 1
+            frame = frame + 1 if tick == last else 0
+            last = tick
+            mark = row[net]
+            if mark.isdigit() and int(mark) >= POKE_MARK and int(mark) - POKE_MARK not in where:
+                where[int(mark) - POKE_MARK] = (episode, tick, frame)
+    stripped = os.path.join(out, 'session-native.rig')
+    with open(stripped, 'w') as sink:
+        sink.write('\n'.join(kept))
+    pokes = os.path.join(out, 'pokes.txt')
+    missing = 0
+    with open(pokes, 'w') as sink:
+        for number in sorted(groups):
+            if number not in where:
+                missing += 1
+                continue
+            episode, tick, frame = where[number]
+            for addr, blob in groups[number]:
+                sink.write('%d %d %d %s %s\n' % (episode, tick, frame, addr, blob.hex()))
+    print('%d groups of memory writes applied inside the tick hook, %d the rig did not reach' % (len(groups), missing))
+    return stripped, pokes
+
+
+def replay_pokes(script, out, shift, ticked=False):
     """The script without its announced poke groups, and the file that tells the native run
     when to apply them: at the tick the rig applied them.  Returns (script path, pokes path)."""
     lines = open(script).read().split('\n')
@@ -123,11 +233,13 @@ def replay_pokes(script, out, shift):
             continue                            # the rig's own: a memory dump inside a tick
         elif words[:1] == ['poke'] and current is not None:
             target, kind = words[1].rsplit(':', 1)
-            groups[current].append((int(target, 0), poke_bytes(kind, words[2])))
+            groups[current].append((poke_target(target), poke_bytes(kind, words[2])))
         else:
             if words and not line.startswith('#'):
                 current = None
             kept.append(line)
+    if ticked:
+        return replay_ticked(kept, groups, out)
     ran = {}
     for line in open(os.path.join(out, 'boot-rig.out'), errors='replace'):
         m = re.match(r'\[frame (\d+)\] @P (\d+)', line)
@@ -191,7 +303,7 @@ def replay_pokes(script, out, shift):
                 # would never come; apply at the start of the load instead
                 frame = min(frame, 1)
             for addr, blob in groups[number]:
-                sink.write('%d %d %d %x %s\n' % (episode, tick, frame, addr, blob.hex()))
+                sink.write('%d %d %d %s %s\n' % (episode, tick, frame, addr, blob.hex()))
     print('%d groups of memory writes, %d the rig did not reach' % (len(groups), missing))
     return stripped, pokes
 
@@ -258,6 +370,7 @@ def main():
     parser.add_argument('--native-opt', action='append', default=[], help='native: one more --opt KEY=VALUE for the runtime (proof_rt.cpp: proof-watch=..., proof-watch-ticks=...); repeatable')
     parser.add_argument('--no-last-tick-fix', action='store_true', help='native: do not add the bytes of the tick that ended each level to the replay file (cmp.py, last_tick_fix)')
     parser.add_argument('--per', type=int, default=3)
+    parser.add_argument('--want', help='with --capture: the list of functions to record (default local/recomp-out/proof/want.txt)')
     parser.add_argument('--poke-shift', type=int, default=0, help='native: apply the memory writes this many displayed frames later (or, negative, earlier) than the first row the rig logged after it ran them')
     args = parser.parse_args()
     spec = json.load(open(os.path.join(PROOF, 'sessions.json')))[args.name]
@@ -282,11 +395,11 @@ def main():
     if args.capture:
         real = os.path.join(PROOF, 'real', args.name)
         os.makedirs(real, exist_ok=True)
-        native_args += ['--opt', 'proof-capture=' + real, '--opt', 'proof-want=' + os.path.join(PROOF, 'want.txt'),
+        native_args += ['--opt', 'proof-capture=' + real, '--opt', 'proof-want=' + (args.want or os.path.join(PROOF, 'want.txt')),
                         '--opt', 'proof-per=%d' % args.per]
     out = os.path.join(cmpmod.BASE, args.name)
     os.makedirs(out, exist_ok=True)
-    script = script_of(args.name, spec, out)
+    script = script_of(args.name, spec, out, for_rig=args.step == 'rig')
     for item in args.native_opt:
         native_args += ['--opt', item]
     if args.step == 'native':
@@ -298,7 +411,7 @@ def main():
         for number, (_level, rows, _again) in enumerate(episodes):
             for t in sorted(rows):
                 mark = rows[t][1][marker]
-                if mark.isdigit() and int(mark) >= DUMP_MARK and mark not in seen:
+                if mark.isdigit() and DUMP_MARK <= int(mark) < POKE_MARK and mark not in seen:
                     seen.add(mark)
                     name = 'native-dump-%s.bin' % mark if spec.get('dumps') else 'native-dump.bin'
                     wanted.append('%d:%d:%s' % (number, t, os.path.join(out, name)))
@@ -307,9 +420,9 @@ def main():
     if args.step == 'native':
         native_args += ['--count-at', '%x=%08x' % (INIT_COUNTER_SITE, init_counter(out))]
     if args.step == 'native' and 'echo @P' in open(script).read():
-        script, pokes = replay_pokes(script, out, args.poke_shift)
+        script, pokes = replay_pokes(script, out, args.poke_shift, ticked=bool(spec.get('ticked')))
         native_args += ['--opt', 'proof-pokes=' + pokes]
-    cmpmod.setup(args.name, NATIVE, watches=spec.get('watch', DEFAULT_WATCHES), native_args=native_args if args.step == 'native' else (),
+    cmpmod.setup(args.name, NATIVE, watches=SOUND_WATCHES if spec.get('watch') == 'sound' else spec.get('watch', DEFAULT_WATCHES), native_args=native_args if args.step == 'native' else (),
                  fix_last_tick=not args.no_last_tick_fix)
     if args.step == 'rig':
         sys.argv = ['rigcompare', 'boot-rig', '--script', script, '--more', '0', '--frames', str(args.frames)]

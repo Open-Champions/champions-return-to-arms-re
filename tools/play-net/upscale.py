@@ -46,6 +46,11 @@ how the game draws with it, and that decides what is done.
   fills) a model draws worms; the strength is lowered there. Pictures with a side under
   12 texels (the interface's bars) and model textures and interface pictures of fewer
   than 2,048 texels are enlarged plainly.
+- **Interface art keeps its shapes**: a model redraws what is a texel or two wide (a face
+  on an icon, the tines of a branch, a letter's counter). Its picture is taken only where,
+  made small again, it is the game's texels; elsewhere, and for the pictures too small
+  for a model, the picture is enlarged by a filter that draws nothing of its own
+  (smoothed along its edges, made steeper across them inside the range of the texels).
 - **Per kind of picture** a model and a strength (RECIPES below; chosen by eye, see the
   README).
 
@@ -80,9 +85,12 @@ VIDEO = 'realesr-animevideov3-x4'
 # kind -> model for colour; strength (0 plain enlargement .. 1 the model's picture); calm:
 # how much of the strength is taken away where the picture is texel noise (grass, the
 # mottled fill of bars: a model draws worms there); tone: whether the distribution of
-# brightness is matched too; alpha_model: model for alpha (None: enlarged plainly)
+# brightness is matched too; alpha_model: model for alpha (None: enlarged plainly); agree
+# (interface art): the model's picture is taken where, made small again, it is the game's
+# texels to within half of this (of 255) and not at all beyond one and a half times it;
+# what is not taken from the model is enlarged by `edged` instead of plainly
 RECIPES = {
-    'interface': dict(model=X4, strength=1.0, calm=0.8, tone=False, alpha_model=None),
+    'interface': dict(model=X4, strength=1.0, calm=0.8, tone=False, alpha_model=None, agree=12.0),
     'level':     dict(model=X4, strength=1.0, calm=0.6, tone=True, alpha_model=None),
     'model':     dict(model=X4, strength=1.0, calm=0.8, tone=False, alpha_model=None),
     'glow':      dict(model=VIDEO, strength=0.6, calm=0.8, tone=False, alpha_model=None),
@@ -94,8 +102,14 @@ SMALLEST = 12        # a picture with a side shorter than this gives a model not
 # hair pictures whose every feature is a texel or two; the model drew other shapes from them
 # and flattened their mottle. From 48 x 48 on it follows what is there), and an interface
 # picture of as few (skill icons of 32 x 32, the coin, the socket: they came out redrawn,
-# not sharper; a two-field picture counts as the one picture its fields make)
+# not sharper; a two-field picture counts as the one picture its fields make). Interface
+# pictures without the model are enlarged by `edged`, the others plainly
 FEWEST = {'model': 2048, 'interface': 2048}
+# The two pages of letters (known by their texels, whatever the palette) keep the model's
+# picture everywhere: compared glyph by glyph its letters are the game's, only heavier - it
+# makes a thin grey stroke a solid one, which `agree` takes for redrawing, and letters that
+# are crisp in patches are worse than either
+LETTERS = ('43cca13c61031291-', 'e4a4eb691339760f-')
 BLEED = 3            # texels: how far into what cannot be seen colour is replaced
 MOVED = 16           # of 255: the self-check's "this colour is no longer the game's"
 
@@ -182,6 +196,50 @@ def local_range(rgb, scale):
     around = np.stack([p[dy:dy + h, dx:dx + w] for dy in range(3) for dx in range(3)])
     low, high = around.min(axis=0), around.max(axis=0)
     return resize(low, scale, Image.BILINEAR), resize(high, scale, Image.BILINEAR)
+
+
+def read_at(a, y, x):
+    """A float picture (H x W x 3) read at places between its pixels (bilinear)."""
+    h, w = a.shape[:2]
+    y, x = np.clip(y, 0, h - 1.001), np.clip(x, 0, w - 1.001)
+    y0, x0 = y.astype(np.int32), x.astype(np.int32)
+    fy, fx = (y - y0)[..., None], (x - x0)[..., None]
+    return (a[y0, x0] * (1 - fy) * (1 - fx) + a[y0, x0 + 1] * (1 - fy) * fx
+            + a[y0 + 1, x0] * fy * (1 - fx) + a[y0 + 1, x0 + 1] * fy * fx)
+
+
+def edged(texels, plain, scale):
+    """An enlargement sharper than the plain one (`plain`: `texels` enlarged bicubically)
+    that draws nothing of its own. First it is smoothed along its edges, a texel either
+    way - the direction is that of the picture's own gradients gathered over about a
+    texel, and nothing is done where there is no clear one -, which takes the stairs out
+    of slanted outlines. Then every pixel is moved towards the nearer end of the range of
+    the texels around it (an S curve; not where that range is narrow: mottle stays
+    mottle): edges get steeper, and no pixel leaves that range, so there is no halo and
+    no ringing, a ramp stays a ramp and a thin line the colour it is. Where the picture
+    is noise from texel to texel it stays the plain one (the filter finds edges in noise
+    and joins them into blots)."""
+    low, high = local_range(texels, scale)
+    big = np.clip(plain, low, high)
+    p = np.pad(luma(big), 1, mode='edge')
+    gx, gy = (p[1:-1, 2:] - p[1:-1, :-2]) * 0.5, (p[2:, 1:-1] - p[:-2, 1:-1]) * 0.5
+    xx, yy, xy = (blur(g, 0.75 * scale) for g in (gx * gx, gy * gy, gx * gy))
+    root = np.sqrt((xx - yy) ** 2 + 4 * xy * xy)
+    most, least = (xx + yy + root) * 0.5, (xx + yy - root) * 0.5
+    angle = 0.5 * np.arctan2(2 * xy, xx - yy) + np.pi / 2        # along the edge
+    clear = ((most - least) / (most + least + 1e-3)) ** 2 * np.clip(most / 4.0, 0.0, 1.0)
+    rows, columns = np.mgrid[0:big.shape[0], 0:big.shape[1]].astype(np.float32)
+    total, weights = np.zeros_like(big), 0.0
+    for step in range(-scale, scale + 1):
+        weight = float(np.exp(-0.5 * (step / (0.5 * scale)) ** 2))
+        total += weight * read_at(big, rows + step * np.sin(angle), columns + step * np.cos(angle))
+        weights += weight
+    big = big + clear[..., None] * (total / weights - big)
+    span = high - low
+    t = np.clip((big - low) / np.maximum(span, 1e-3), 0.0, 1.0)
+    steep = np.clip((span.max(axis=2, keepdims=True) - 12.0) / 36.0, 0.0, 1.0)
+    big = big + steep * (low + span * t * t * (3 - 2 * t) - big)
+    return (big - resize(noisiness(texels), scale, Image.BILINEAR)[..., None] * (big - plain)).astype(np.float32)
 
 
 def fill_from_neighbours(rgb, known):
@@ -439,7 +497,10 @@ class Job:
         scale = self.scale
         x0, y0, x1, y1 = self.box
         plain = resize(self.rgb, scale, Image.BICUBIC)
-        out = plain
+        agree = self.recipe.get('agree') if min(self.rgb.shape[:2]) >= SMALLEST and not self.name.startswith(LETTERS) else None
+        # what is not the model's: interface art enlarged by `edged`, the rest plainly
+        own = edged(self.rgb, plain, scale) if agree else plain
+        out = own
         made = self.from_model(directories, self.recipe['model']) if self.strength > 0 else None
         if made is not None:
             base = plain[y0 * scale:y1 * scale, x0 * scale:x1 * scale]
@@ -453,11 +514,20 @@ class Job:
             # colour it is, it does not become a thinner, brighter one
             low, high = local_range(part, scale)
             mixed = np.clip(mixed, low - RANGE_SLACK, high + RANGE_SLACK)
+            if agree:
+                # the model's picture only where, made small again, it shows what the
+                # game's texels show (a texel around counts): a redrawn face, a branch
+                # with other tines, a letter with its counter closed do not
+                off = np.pad(np.abs(reduce_by(mixed, scale) - part).max(axis=2), 1, mode='edge')
+                off = blur(np.max([off[dy:dy + y1 - y0, dx:dx + x1 - x0] for dy in range(3) for dx in range(3)], axis=0), 0.6)
+                trust = 1.0 - np.clip((resize(off, scale, Image.BILINEAR) - 0.5 * agree) / agree, 0.0, 1.0)
+                kept = own[y0 * scale:y1 * scale, x0 * scale:x1 * scale]
+                mixed = kept + trust[..., None] * (mixed - kept)
             if self.use.kind == 'glow':
                 # light that is added: nothing may appear where the game's picture is dark
                 ceiling = blur(resize(self.rgb[y0:y1, x0:x1], scale, Image.BILINEAR), 0.5 * scale) * 1.6 + 2.0
                 mixed = np.minimum(mixed, ceiling)
-            out = plain.copy()
+            out = own.copy()
             out[y0 * scale:y1 * scale, x0 * scale:x1 * scale] = mixed
         out = np.clip(out + 0.5, 0, 255).astype(np.uint8)
 
@@ -691,6 +761,8 @@ def main():
         # (the texels Job counts: of a two-field picture the lines of its two fields)
         if (2 * use.field_rows or size.shape[0]) * size.shape[1] < FEWEST.get(use.kind, 0):
             signature.append('plain')               # (added to the signature only where it applies)
+        if name.startswith(LETTERS):
+            signature.append('letters')
         signature = json.loads(json.dumps(signature))
         # a picture made by halving the 4x pack's counts as done for a plain --scale 2 run too
         if not args.force and manifest.get(name) in (signature, signature + ['halved']) and os.path.exists(os.path.join(args.replace, name)):

@@ -55,39 +55,36 @@ static SOFTRZ4_INLINE U4 flush(U4 r) {
     U4 number = (U4)((I4)(r & splat(0x7F800000u)) != (I4)splat(0));
     return r & (number | splat(0x80000000u));
 }
-// what every helper ends with: infinity (a finite operation went beyond the range) is the
-// largest number - one place back - and a tiny result is zero
-static SOFTRZ4_INLINE U4 finish(U4 r) {
-    r += (U4)((I4)(r & splat(0x7FFFFFFFu)) > (I4)splat(0x7F7FFFFFu));
-    return flush(r);
-}
 
 static SOFTRZ4_INLINE U4 add(U4 a, U4 b) {
 #pragma clang fp contract(off)
-    // the operand of the larger magnitude first: then the error of the nearest sum comes out
-    // of two subtractions, exactly, and neither can leave the range (Dekker's fast two-sum;
-    // the symmetric form, Knuth's, goes to infinity on the way when the operands have
-    // opposite signs and one is near the largest number)
+    F4 s = (F4)a + (F4)b;                               // to nearest
+    // The error of that sum, exactly: with the operand of the larger magnitude first it comes
+    // out of two subtractions and neither can leave the range (Dekker's fast two-sum; the
+    // symmetric form, Knuth's, goes to infinity on the way when the operands have opposite
+    // signs and one is near the largest number).
     U4 swap = (U4)((I4)(a & splat(0x7FFFFFFFu)) < (I4)(b & splat(0x7FFFFFFFu)));
     U4 first = (a & ~swap) | (b & swap);
-    F4 x = (F4)first, y = (F4)(a ^ b ^ first);
-    F4 s = x + y;
-    F4 e = y - (s - x);                                 // x + y == s + e, exactly
+    F4 e = (F4)(a ^ b ^ first) - (s - (F4)first);       // a + b == s + e
+    // The sum lies beyond the truth when the error has the other sign: then one place back.
+    // An infinite sum (the operands are finite) is the largest number: one place back too.
     const F4 zero = {0, 0, 0, 0};
-    // beyond the truth: the error is not zero and has the other sign.  (When the sum went
-    // to infinity the error is the opposite infinity: one place back is the largest number.)
-    I4 beyond = (e != zero) & ((I4)((U4)e ^ (U4)s) >> 31);
-    return finish((U4)s + (U4)beyond);                  // one place back where beyond
+    U4 sign = (U4)s & splat(0x80000000u);
+    U4 back = (U4)((F4)((U4)e ^ sign) < zero) | (U4)((I4)((U4)s & splat(0x7FFFFFFFu)) > (I4)splat(0x7F7FFFFFu));
+    // A sum too small to be a normal number is zero.  (Such a sum of two of the unit's
+    // numbers is exact, so it is never stepped back: s itself says whether it is tiny.)
+    U4 number = (U4)((I4)((U4)s & splat(0x7F800000u)) != (I4)splat(0));
+    return ((U4)s + back) & (number | splat(0x80000000u));
 }
 static SOFTRZ4_INLINE U4 sub(U4 a, U4 b) { return add(a, b ^ splat(0x80000000u)); }
 
-// a pair of exact doubles cut to 24 places each, as two floats; `top` gets the doubles'
-// high words (sign and exponent: is the value too small for a float?)
+// A pair of exact doubles cut to 24 places each, as four floats; `top` gets the doubles'
+// high words as they were (sign and exponent: is the value in a float's range?).
 static SOFTRZ4_INLINE U4 cut(D2 low, D2 high, U4* top) {
     const Q2 keep = {~0x1FFFFFFFull, ~0x1FFFFFFFull};  // 53 - 24 places
     Q2 l = (Q2)low & keep, h = (Q2)high & keep;
     F2 rl = __builtin_convertvector((D2)l, F2), rh = __builtin_convertvector((D2)h, F2);       // exact where the value is a normal float
-    *top = __builtin_shufflevector((U4)l, (U4)h, 1, 3, 5, 7);
+    *top = __builtin_shufflevector((U4)low, (U4)high, 1, 3, 5, 7);
     return (U4)__builtin_shufflevector(rl, rh, 0, 1, 2, 3);
 }
 
@@ -98,11 +95,13 @@ static SOFTRZ4_INLINE U4 mul(U4 a, U4 b) {
     D2 high = __builtin_convertvector(__builtin_shufflevector(x, x, 2, 3), D2) * __builtin_convertvector(__builtin_shufflevector(y, y, 2, 3), D2);
     U4 top;
     U4 r = cut(low, high, &top);
-    // below 2^-126 the conversion to float rounded (it may even have reached the smallest
-    // normal number): zero, with the product's sign.  2^128 and up became infinity.
-    U4 tiny = (U4)((I4)(top & splat(0x7FFFFFFFu)) < (I4)splat(0x38100000u));
-    r &= ~tiny | splat(0x80000000u);
-    return r + (U4)((I4)(r & splat(0x7FFFFFFFu)) > (I4)splat(0x7F7FFFFFu));
+    // Below 2^-126 the conversion to float rounded (it may even have reached the smallest
+    // normal number): zero, with the product's sign.  2^128 and up became infinity: one
+    // place back is the largest number.  Both are read off the double's exponent.
+    U4 magnitude = top & splat(0x7FFFFFFFu);
+    U4 number = (U4)((I4)magnitude > (I4)splat(0x380FFFFFu));
+    U4 beyond = (U4)((I4)magnitude > (I4)splat(0x47EFFFFFu));
+    return (r + beyond) & (number | splat(0x80000000u));
 }
 
 // (float)v * scale, both steps toward zero, for a scale that is a power of two no smaller

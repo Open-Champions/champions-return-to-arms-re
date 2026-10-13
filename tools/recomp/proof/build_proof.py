@@ -35,7 +35,7 @@ def run(command):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    parser.add_argument('what', choices=('snapshot', 'translate', 'runtime', 'driver'))
+    parser.add_argument('what', choices=('snapshot', 'translate', 'runtime', 'driver', 'sites'))
     parser.add_argument('--jobs', type=int, default=6)
     parser.add_argument('--snap', default=os.path.join(OUT, 'proof', 'snap', 'recomp'))
     parser.add_argument('--define', action='append', default=[])
@@ -53,6 +53,31 @@ def main():
         shutil.copytree(os.path.join(RECOMP, 'rt'), os.path.join(snap, 'rt'))
         for name in ('recomp.py', 'build.py', 'hle.txt', 'entries.txt'):
             shutil.copy2(os.path.join(RECOMP, name), snap)
+        return 0
+    if args.what == 'sites':
+        # Where the translation counts: `BUDGET()` stands at every taken branch or jump to a
+        # target at or before it inside the same unit (recomp.py, emit_unit, go()), and
+        # every call counts (rt_test_call).  The bounded comparison (realproof.py bounded)
+        # makes the interpreter count at the same places; the branch sites come from the
+        # snapshot translator's own units.
+        sys.path.insert(0, snap)
+        import recomp
+        image = recomp.Image(os.path.join(ROOT, 'SLUS_209.73'))
+        units, _rows, _clipped = recomp.build_units(image, os.path.join(ROOT, 'ghidra_funcs.tsv'))
+        units, _merged = recomp.merge_entangled(image, units)
+        sites = set()
+        for unit in units:
+            for pc, w, kind, _dpc, _dw in recomp.walk(image, unit):
+                if kind in (None, 'jal', 'jr', 'jalr', 'bal'):
+                    continue
+                target = recomp.jump_target(pc, w) if kind == 'j' else recomp.branch_target(pc, w)
+                if unit.contains(target) and target <= pc:
+                    sites.add(pc)
+        os.makedirs(build, exist_ok=True)
+        with open(os.path.join(build, 'budget-sites.txt'), 'w') as sink:
+            sink.write('# branch and jump instructions at which the translation counts (BUDGET), from the snapshot translator\n')
+            sink.write('\n'.join('%08x' % s for s in sorted(sites)) + '\n')
+        print('%d counted branch sites in %d units' % (len(sites), len(units)))
         return 0
     # the snapshot's build.py, told where it is and where to write
     shim = ('import sys, os; sys.path.insert(0, %r); import build; build.HERE = %r; build.OUT = %r; '

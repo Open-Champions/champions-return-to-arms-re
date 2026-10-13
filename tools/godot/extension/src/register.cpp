@@ -1,5 +1,6 @@
-// register.cpp - the extension's entry: RtaMachine, RtaAudioStream (and its playback).
+// register.cpp - the extension's entry: RtaMachine, RtaAudioStream (and its playback), RtaDrawer.
 #include "rta_audio.h"
+#include "rta_drawer.h"
 #include "rta_machine.h"
 
 #include <gdextension_interface.h>
@@ -14,6 +15,7 @@ static void initialize_rta_godot(ModuleInitializationLevel p_level) {
     GDREGISTER_CLASS(RtaMachine);
     GDREGISTER_CLASS(RtaAudioPlayback);
     GDREGISTER_CLASS(RtaAudioStream);
+    GDREGISTER_CLASS(RtaDrawer);
 }
 
 static void uninitialize_rta_godot(ModuleInitializationLevel p_level) {

@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.dirname(HERE))
 import rigcompare                               # noqa: E402
 
 ROOT = rigcompare.ROOT
-TIMING = ('draw', 'net', 'cosmetic', 'pads', 'padraw', 'sseq', 'eqcache')
+TIMING = ('draw', 'net', 'cosmetic', 'pads', 'padraw', 'sseq', 'eqcache', 'cutcorr', 'cutpos', 'dlgcorr', 'dlgpos', 'cutframe', 'cutclock')
 
 
 def main():

@@ -1,0 +1,130 @@
+Proposed changes to tools/recomp/rt, from the proof work of 2026-10-13
+(docs/issues/native-proof.md, R2.6 and R2.7).  Not applied: tools/recomp/rt has a keeper.
+Made against rt/ as of 2026-10-12 23:48 (runtime.cpp) and 16:11 (vu0.h); apply from the
+repository root with `patch -p1 < tools/recomp/proof/rt-proposed.patch`.
+
+1. runtime.cpp: `g_vu0` loses `static`.
+   The proof's instrumented runtime (tools/recomp/proof/proof_rt.cpp) records the vector
+   unit's registers, microprogram and data memory with every machine state it captures, so
+   that a function that uses the unit (anim_buildPose, gfx_uploadMicrocode, sceGsSyncPath,
+   0x34f890 - the only four in the executable) can be replayed against the interpreter.
+   It needs to read the runtime's unit.  Nothing else changes; the proof builds from a
+   snapshot in which this one word is already removed.
+
+2. vu0.h: the unit's numbers.
+   What the header does today with an operand whose exponent field is 255 (an infinity or
+   a NaN to the host) or 0 with a fraction (a denormal) is the host's own arithmetic:
+   - a NaN result carries the host's sign bit (ARM64 0x7fc00000, x86-64 0xffc00000), and
+     each host hands an operand's NaN on its own way: two builds of the header disagree;
+   - it is not what the emulator computes either.  Measured in the rig (rigvu.py, 14
+     instructions x 16,384 operand pairs): the header differs from the emulator on 15,479
+     of 229,376 results - 260 with a denormal operand (MAX/MINI), 1,888 with an infinity,
+     13,331 with a NaN - and on none with finite normal operands.
+   The console's unit has no infinity, no NaN and no denormal.  The change brings what an
+   arithmetic instruction reads into that range first (exponent 255: the largest number of
+   its sign; exponent 0: zero), makes a result too small to be a number zero, and lets MAX
+   and MINI compare the two bit patterns as sign and magnitude and hand one on unchanged -
+   the rule tools/recomp/render/vu1_step.h already follows for VU1.  With it:
+   - the result no longer depends on the host: the operands are finite, the host rounds
+     toward zero, so no infinity and no NaN can arise (arith.py vu still passes on finite
+     operands; vu0ref.py's 'console' model is the written reference, 0 differences from
+     the header on the 229,376 results above);
+   - against the emulator 5,120 results still differ, all with an infinity or NaN operand:
+     2,816 in ADD (the emulator clamps the first operand of ADD only: Play! 83700b2c,
+     Source/ee/VUShared.cpp, ADD_base) and 2,304 in FTOI of a NaN (the emulator converts
+     with the host's instruction: 0).  SUB, MUL, MAX, MINI, ITOF, ABS: 0.  The emulator's
+     own rule is per instruction (ADDA, SUBA, MSUB and MSUBA are not clamped at all
+     there), so it cannot be both followed exactly and made independent of the host.
+   - in play it changes nothing that was seen: the measurement build counted, over the
+     sessions named in R2.7, how many operands the rule touched.
+
+--- a/tools/recomp/rt/runtime.cpp	2026-10-13 08:46:13
++++ b/tools/recomp/rt/runtime.cpp	2026-10-13 08:46:13
+@@ -44,7 +44,7 @@
+ u32 g_site;
+ static u8 g_spr[0x4000];
+ static u8 g_vu1micro[0x4000], g_vu1mem[0x4000];
+-static Vu0 g_vu0;
++Vu0 g_vu0;            // not static: a tool that records machine states (tools/recomp/proof/proof_rt.cpp) reads it
+ static RecompFn* g_table;
+ static u32 g_text_lo, g_text_hi;
+ bool g_rt_verbose = false;
+--- a/tools/recomp/rt/vu0.h	2026-10-13 08:46:13
++++ b/tools/recomp/rt/vu0.h	2026-10-13 08:46:13
+@@ -5,8 +5,10 @@
+ // 4 from anim_buildPose).  The interpreter below implements the instructions that program
+ // uses plus their obvious relatives, and stops with a message on anything else: nothing
+ // is guessed.  Arithmetic is the host's single-precision IEEE arithmetic in the rounding
+-// mode the runtime sets (toward zero), which is what the Play! emulator does for the
+-// vector units; multiply-add is two operations, not a fused one.  The status/MAC/clip
++// mode the runtime sets (toward zero) on operands brought into the unit's range (vu_in:
++// no infinity, no NaN, no denormal - see below); on every other operand that is what the
++// Play! emulator computes for the vector units.  Multiply-add is two operations, not a
++// fused one.  The status/MAC/clip
+ // flags are not kept (the program has no flag instruction).
+ #pragma once
+ #include <cstdio>
+@@ -32,28 +34,52 @@
+     exit(3);
+ }
+ 
++// The unit's numbers (as tools/recomp/render/vu1_step.h has them for VU1).  An exponent of
++// 255 is an ordinary exponent - the unit has no infinity and no NaN - and an exponent of 0
++// is zero whatever the fraction says.  With the host's own arithmetic an operand of
++// exponent 255 gave an infinity or a NaN, and a NaN's sign bit is the host's choice: an
++// ARM64 processor makes 0x7fc00000, an x86-64 one 0xffc00000 (and each hands an operand's
++// NaN on in its own way), so two builds of this file disagreed on such operands.  So what
++// an arithmetic instruction reads is brought into range first - the largest number of its
++// sign for exponent 255, zero for exponent 0 - and a result too small to be a number is
++// zero.  Results cannot overflow or be a NaN then: the operands are finite and the host
++// rounds toward zero while the game's threads run.  MAX and MINI compare the two bit
++// patterns as sign and magnitude and hand one of them on unchanged.
++static inline float vu_in(float f) {
++    u32 r = vu_raw(f), e = r & 0x7F800000u;
++    if (e == 0x7F800000u) return vu_flt((r & 0x80000000u) | 0x7F7FFFFFu);
++    if (e == 0) return vu_flt(r & 0x80000000u);
++    return f;
++}
++static inline float vu_out(float f) {
++    u32 r = vu_raw(f);
++    return (r & 0x7F800000u) ? f : vu_flt(r & 0x80000000u);
++}
++static inline s32 vu_key(float f) {
++    u32 r = vu_raw(f);
++    return (r & 0x80000000u) ? -(s32)(r & 0x7FFFFFFFu) : (s32)r;
++}
++
+ // arithmetic whose result depends on the processor's state: the host's own (the runtime
+ // sets toward zero and flush-to-zero), or tools/recomp/web/soft_rz.h on a host that
+ // cannot (fpu.h says more)
+ #ifdef RTA_SOFT_RZ
+-static inline float vu_add(float a, float b) { return softrz::add_fz(a, b); }
+-static inline float vu_sub(float a, float b) { return softrz::sub_fz(a, b); }
+-static inline float vu_mul(float a, float b) { return softrz::mul_fz(a, b); }
++static inline float vu_add(float a, float b) { return vu_out(softrz::add_fz(vu_in(a), vu_in(b))); }
++static inline float vu_sub(float a, float b) { return vu_out(softrz::sub_fz(vu_in(a), vu_in(b))); }
++static inline float vu_mul(float a, float b) { return vu_out(softrz::mul_fz(vu_in(a), vu_in(b))); }
+ static inline float vu_itof(s32 v) { return softrz::from_int(v); }
+-static inline bool vu_gt(float a, float b) { return softrz::flush(a) > softrz::flush(b); }  // the compare reads tiny numbers as zero
+ #else
+-static inline float vu_add(float a, float b) { return a + b; }
+-static inline float vu_sub(float a, float b) { return a - b; }
+-static inline float vu_mul(float a, float b) { return a * b; }
++static inline float vu_add(float a, float b) { return vu_out(vu_in(a) + vu_in(b)); }
++static inline float vu_sub(float a, float b) { return vu_out(vu_in(a) - vu_in(b)); }
++static inline float vu_mul(float a, float b) { return vu_out(vu_in(a) * vu_in(b)); }
+ static inline float vu_itof(s32 v) { return (float)v; }
+-static inline bool vu_gt(float a, float b) { return a > b; }
+ #endif
++static inline bool vu_gt(float a, float b) { return vu_key(a) > vu_key(b); }
+ 
+ static inline float vu_ftoi(float f, float scale) {
+-    float v = vu_mul(f, scale);
++    float v = vu_mul(f, scale);                 // never a NaN: vu_mul reads its operands through vu_in
+     s32 r;
+-    if (v != v) r = 0;
+-    else if (v >= 2147483648.0f) r = INT32_MAX;
++    if (v >= 2147483648.0f) r = INT32_MAX;
+     else if (v <= -2147483648.0f) r = INT32_MIN;
+     else r = (s32)v;                 // truncates
+     return vu_flt((u32)r);

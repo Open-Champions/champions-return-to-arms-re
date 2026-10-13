@@ -30,7 +30,7 @@ extends Node
 #   --test TEXT         a test run: small window titled "AGENT TEST - TEXT" that takes no keyboard, silent
 #   --stop-after N      quit after N vertical blanks
 #   --figures FILE      write the timing figures there at the end
-#   --light, --shadow, --pull-back X, --orbit DEG, --free-camera     scene mode: see scene_view.gd
+#   --light, --shadow, --pull-back F, --orbit DEG     scene mode: see scene_view.gd
 #   -- ARGS             the rest goes to the runtime as it does after rta_app's "--"
 #
 # Keyboard: W A S D left stick, arrows direction pad, I J K L triangle square cross circle,
@@ -83,7 +83,7 @@ var opt := {
 	"disc": "", "data": "", "workspace": "", "lib": "", "mode": "picture", "size": Vector2i.ZERO, "window": Vector2i.ZERO,
 	"aspect": 0.0, "aspect_window": false, "samples": 0, "script": "", "godot_shots": "", "unpaced": false, "mute": false,
 	"no_sound": false, "test": "", "stop_after": 0, "figures": "", "args": PackedStringArray(),
-	"light": false, "shadow": false, "pull_back": 1.0, "orbit": 0.0, "free_camera": false, "scene_debug": "",
+	"light": false, "shadow": false, "pull_back": 1.0, "orbit": 0.0,
 }
 var machine: RtaMachine
 var view: Control                       # shows the picture (view.gd)
@@ -180,8 +180,6 @@ func _parse_arguments() -> void:
 			"--shadow": opt.shadow = true
 			"--pull-back": opt.pull_back = value.to_float(); k += 1
 			"--orbit": opt.orbit = value.to_float(); k += 1
-			"--free-camera": opt.free_camera = true
-			"--scene-debug": opt.scene_debug = value; k += 1
 			"--offscreen", "--plain": pass
 			_: push_warning("unknown option " + a)
 		k += 1
@@ -202,8 +200,10 @@ func _saved_disc() -> String:
 func _ask_for_disc() -> void:
 	message = "Choose your disc image of Champions: Return to Arms (SLUS-20973 v2.00)."
 	view.set("message", message)
-	if opt.test != "":
-		view.set("message", "No disc image: give --disc IMAGE after \"--\", or set RTA_DISC.")
+	if opt.test != "" or DisplayServer.get_name() == "headless":
+		# a test run never waits for a person
+		printerr("rta_godot: no disc image: give --disc IMAGE after \"--\", or set RTA_DISC")
+		get_tree().quit(2)
 		return
 	var dialog := FileDialog.new()
 	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
@@ -288,9 +288,11 @@ func _start() -> void:
 		picture_texture = ImageTexture.new()
 	else:
 		drawer = ClassDB.instantiate("RtaDrawer")
+		drawer.call("set_shader_code", (load("res://shaders/gs_draw.gdshaderinc") as ShaderInclude).code)
 		drawer.call("setup", machine, get_viewport().get_viewport_rid(), size, opt.samples)
 		view.set("drawer", drawer)
 		if opt.mode == "scene":
+			drawer.call("set_scene_mode", true)
 			scene_view = Node.new()
 			scene_view.set_script(load("res://scene_view.gd"))
 			scene_view.set("main", self)
@@ -421,6 +423,8 @@ func _write_pending_shots() -> void:
 	if pending_shots.is_empty() or drawer == null:
 		return
 	var image: Image = drawer.call("get_shown_image")
+	if OS.has_environment("RTA_GODOT_DUMP"):
+		drawer.call("dump_surfaces", String(OS.get_environment("RTA_GODOT_DUMP")).path_join(String(pending_shots[0]).get_file().get_basename()))
 	for path in pending_shots:
 		if image == null:
 			print("rta_godot: no picture to write to " + path)
@@ -521,6 +525,8 @@ func _figures() -> String:
 	text += "rta_godot: " + machine.info() + "\n"
 	if drawer != null:
 		text += "rta_godot: " + str(drawer.call("figures")) + "\n"
+		if opt.mode == "scene":
+			text += "rta_godot: " + str(drawer.call("get_scene_info").get("figures", "")) + "\n"
 	return text
 
 

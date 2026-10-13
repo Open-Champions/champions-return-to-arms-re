@@ -13,6 +13,63 @@ agents' builds and rigs). Times are therefore inflated and are given with the lo
 **instructions retired and cycles per frame** of the whole process (which do not depend on
 the load the way times do, `docs/issues/browser-perf.md`) are what the comparison rests on.
 
+## The night of 2026-10-12/13: the page with the cheaper renderer (IN PROGRESS - kept current)
+
+(The sections below this one are the afternoon's and stand as they were written; this one
+is being filled as the work goes.  Stopped once at 22:50 after a minute's work, taken up
+again 07:53.)
+
+**Done so far (Ran):**
+
+- Snapshot `local/recomp-web/src4` = `tools/recomp` as of 2026-10-13 07:55 (the speed work
+  merged and the morning's `rt/iop.cpp`, `render/gs.cpp`, `app/pipeline.h` changes), the
+  translation `gen2` unchanged (`recomp.py`, `hle.txt`, `recomp.h`, `fpu.h`, `mmi.h` are
+  the same files).  `host_web.cpp` got the new `host::interactive_threads` (empty).
+  Builds in `local/recomp-web/build4/` (`out/build-night.sh`, `build-night2.sh`; 54 files
+  in 31 - 62 s at 10 jobs, links 9 - 17 s now that the VU1 translation is 336 KB):
+  `mac-host`, `node-nearest`, `node-zero`, and the pages `page-fast` (game and VU1 to
+  nearest), `page-zero` (game toward zero in software, VU1 to nearest), `page-exact`
+  (both toward zero in software); all pages with `--vu-fast` and `-msimd128`.
+- **Tick for tick, both arithmetics** (`out/cmp4.sh n4 fight3.rig 600`: power-on, front
+  end, first level, the fight in `valor`; 27 watches a row): node to nearest == Mac
+  `--opt arith=nearest`, node toward zero in software == Mac default: 7,901 rows each,
+  byte-identical logs (md5 1f3b8384..., 9f39323e...).
+- **A fault in `soft_rz.h` found and corrected**: `add` took the error of the sum with
+  the symmetric two-sum, whose intermediate `s - a` goes to infinity when the operands
+  have opposite signs and one is the largest number (the value the FPU model clamps to):
+  the sum was then not stepped back - one place too large.  The afternoon's test did not
+  draw that case.  Now the fast two-sum with the larger operand first; `soft_rz_test.cpp`
+  draws the case (the old header: 23,456 differences in `add` and `add, flush`; the new
+  one: 0 of 11,202,304 sets in 16 kinds, and node prints the Mac's 16 checksums).  The
+  7,901-row session never met it (same logs before and after).
+- **The four-wide software family: `web/soft_rz4.h`** (add, subtract, multiply, integer
+  conversion with a power-of-two scale; toward zero with flush-to-zero; written with the
+  compiler's vector types, so one source is NEON on the Mac and WebAssembly SIMD).
+  `soft_rz4_test.cpp` on the Mac against the processor's own toward-zero, flush-to-zero
+  mode: **22,403,136 operand sets, 10 kinds, 0 differences**; the node build prints the
+  same 10 checksums.  `render/vu1_fast_test.cpp` as WebAssembly with it: 2,000,000 sets
+  of four, 22 kinds, 0 differences, reference checksum 8f0d16669cbff80b (the ARM and x86
+  builds').  `decode_bench` with it: the Mac's list checksums (hub f17b4f8de2deca9b, fire3
+  fight 503fb8869067848c).  It needs one change outside `web/`:
+  `web/shared-sources-2.patch` (`render/vu1_simd.h`; applied in my snapshot only).
+- What it costs (`out/count-decode.sh`, whole node process per picture, load 50 - 55):
+
+  | decoder as WebAssembly, millions (instructions / cycles) | title | first level | fire3 fight |
+  |---|---|---|---|
+  | VU1 to nearest | 26.1 / 6.2 | 55.4 / 12.2 | 68.1 / 15.6 |
+  | VU1 toward zero, field by field (as it was) | 64.7 / 13.7 | 150.2 / 27.7 | 179.7 / 32.1 |
+  | VU1 toward zero, four at a time (`soft_rz4.h`) | 34.3 / 9.9 | 80.8 / 23.6 | 98.2 / 29.5 |
+  | (Mac, processor's mode) | 16.6 / 3.8 | 33.8 / 8.0 | 42.8 / 9.6 |
+
+  Honest reading: **46 % fewer instructions, but only 8 - 15 % fewer cycles** - the
+  vector form has long chains (a sum is twenty vector operations where the scalar form's
+  branches are predicted away), so exact vertices still cost about 11 - 14 million cycles
+  a picture more than rounding to nearest.
+
+**Still to do tonight** (this list shrinks): measure the pages in Chrome; sound resync;
+disc check; file picker; memory card save and load; pictures against the Mac
+application's; level change and fight; controller; pause when hidden; the online notes.
+
 ## Verdict
 
 **No: this should not replace the emulator page now.** It works - the translated game

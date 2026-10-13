@@ -8,7 +8,10 @@
 // page's speed work (local/play-web-perf-out/perf.mjs) for this page.
 //
 //   node tools/recomp/web/perf.mjs measure [--site DIR-NAME] [--scale 2] [--throttle 2,4,6]
-//        [--label TEXT] [--title-only] [--sound] [--blend basic] [--shots] [--keys] [--keep-card]
+//        [--label TEXT] [--title-only] [--sound] [--blend basic] [--shots] [--keys] [--keep-card] [--walk]
+//        [--route fight]     the tick-keyed route into the level `valor` and its fight
+//                            (local/recomp-web/out/fight3-nodump.rig) instead of the first level:
+//                            measured while the fight goes on (ticks 2300 to 4600), paced only
 //   node tools/recomp/web/perf.mjs close
 //
 // Needs the test server: tools/recomp/web/serve.py --port 8975 --site local/recomp-web/build
@@ -49,13 +52,17 @@ function bootScript() {
 		if(m && !symbols.has(m[2])) symbols.set(m[2], "0x" + m[1].replace(/^0+/, ""));
 	}
 	const out = [];
-	for(let line of fs.readFileSync(path.join(ROOT, "tools", "rig", "examples", "boot-to-hub.rig"), "utf8").split("\n")) {
+	const fight = opt("route") === "fight";
+	const source = fight ? path.join(OUT, "fight3-nodump.rig") : path.join(ROOT, "tools", "rig", "examples", "boot-to-hub.rig");
+	for(let line of fs.readFileSync(source, "utf8").split("\n")) {
 		const code = line.replace(/#.*$/, "").trimEnd();
-		if(!code.trim() || code.startsWith("show ")) continue;
+		if(!code.trim() || code.startsWith("show ") || code.startsWith("dump ")) continue;
 		out.push(code.replace(/\b[A-Za-z_][A-Za-z0-9_]*\b/g, (name) => symbols.get(name) || name));
-		if(/^until g_levelName:str8 == intro/.test(code)) out.push("wait 120", "echo AT-TITLE", "wait " + (opt("title-frames") || 1500), "echo LEAVING-TITLE");
+		// (the fight's route is keyed on simulation ticks, which run on at the title: no stop there)
+		if(!fight && /^until g_levelName:str8 == intro/.test(code)) out.push("wait 120", "echo AT-TITLE", "wait " + (opt("title-frames") || 1500), "echo LEAVING-TITLE");
+		if(fight && /^until g_levelName:str8 == valor/.test(code)) out.push("echo IN-VALOR");
 	}
-	out.push("wait 240", "echo IN-HUB");
+	out.push(fight ? "echo FIGHT-OVER" : "wait 240", fight ? "wait 1" : "echo IN-HUB");
 	return out.join("\n") + "\n";
 }
 
@@ -77,6 +84,8 @@ class Cdp {
 		return new Promise((resolve, reject) => {
 			this.pending.set(id, { resolve, reject, method });
 			this.ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+			// a page that is gone (crashed, or the Mac slept and Chrome dropped it) answers nothing: say so instead of waiting for ever
+			setTimeout(() => { if(this.pending.delete(id)) reject(new Error(method + ": no answer in 90 s (the page or the browser is gone, or the Mac slept)")); }, 90000);
 		});
 	}
 	on(listener) { this.listeners.push(listener); }
@@ -143,7 +152,7 @@ async function main() {
 	let targetId = null;
 	const result = { site, label, browser: version, when: new Date().toISOString(), load_start: load(), scale: opt("scale", "2"), sound: !!opt("sound") };
 	try {
-		const url = "http://127.0.0.1:" + PORT + "/" + site + "/index.html?title=" + encodeURIComponent("AGENT TEST - native web (" + site + (label ? " " + label : "") + ")") + "&scale=" + result.scale;
+		const url = "http://127.0.0.1:" + PORT + "/" + site + "/index.html?title=" + encodeURIComponent("AGENT TEST - native web (" + site + (label ? " " + label : "") + ")") + "&scale=" + result.scale + "&pause=0";
 		({ targetId } = await cdp.send("Target.createTarget", { url: "about:blank" }));
 		const { sessionId: page } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
 		await cdp.send("Runtime.enable", {}, page);
@@ -200,6 +209,40 @@ async function main() {
 		};
 
 		console.log("== %s  scale %s  %s  %s  load %d  %s", site, result.scale, result.visible, version, load(), label);
+		const slowed = async (rate, name, seconds) => {
+			const pid = rendererPid();
+			const child = spawn(path.join(TOOLS, "stopgo"), [String(pid), String(rate)], { stdio: ["ignore", "ignore", "pipe"] });
+			let told = "";
+			child.stderr.on("data", (d) => { told += d; });
+			await sleep(2500);
+			const row = await measure(name, seconds);
+			child.kill("SIGTERM");
+			await new Promise((r) => child.on("exit", r));
+			row.stopgo = told.trim();
+			console.log("    " + told.trim());
+			await sleep(1500);
+		};
+		if(opt("route") === "fight") {
+			await said("IN-VALOR", 400);
+			result.to_valor_s = +((Date.now() - t0) / 1000).toFixed(1);
+			for(let i = 0; i < 600 && (await evaluate("rta.info()")).sim < 2300; i++) await sleep(100);
+			const tick = async () => (await evaluate("rta.info()")).sim;
+			result.fight_ticks = [await tick()];
+			await measure("fight", 12);
+			result.fight_ticks.push(await tick());
+			if(opt("shots")) result.shot_fight = await evaluate("rta.postShot('web-fight" + (label ? "-" + label : "") + ".png')");
+			for(const [rate, seconds] of [[2, 10], [4, 8], [6, 8]]) {
+				if(!opt("throttle") || !String(opt("throttle")).split(",").includes(String(rate))) continue;
+				await slowed(rate, "fight_slow_" + rate, seconds);
+				result.fight_ticks.push(await tick());
+			}
+			result.level = (await evaluate("rta.info()")).level;
+			console.log("  level %s; simulation ticks at the ends of the measurements: %s (the fight runs from 2250 to 4620)", result.level, result.fight_ticks.join(", "));
+			const end = await evaluate("rta.info()");
+			result.end = { arith: end.arith, vu_arith: end.vu_arith, simd: end.simd, vu_fast: end.vu_fast, vu_fast_left: end.vu_fast_left, late: end.late, sound: end.sound, sound_state: end.sound_state };
+			console.log("  end: " + JSON.stringify(result.end));
+			return;
+		}
 		await said("AT-TITLE", 240);
 		result.to_title_s = +((Date.now() - t0) / 1000).toFixed(1);
 		await measure("title", 10);
@@ -249,6 +292,14 @@ async function main() {
 					await sleep(1500);
 				}
 			}
+			// (last: the character ends somewhere else, with another view)
+			if(opt("walk")) {
+				// the emulator page's "walking and striking" stretch: the left stick in five directions, a strike after each
+				await evaluate("window.walking = (async () => { const dirs = [[128, 0], [255, 128], [128, 255], [0, 128], [200, 40]]; for(let i = 0; i < 14; i++) { const d = dirs[i % 5]; rta.stick(d[0], d[1]); await new Promise((r) => setTimeout(r, 700)); rta.stick(128, 128); await rta.tap('square', 120); await new Promise((r) => setTimeout(r, 180)); } })(), 1");
+				await measure("hub_walking", 12);
+				await evaluate("window.walking");
+				if(opt("shots")) await evaluate("rta.postShot('web-hub-struck" + (label ? "-" + label : "") + ".png')");
+			}
 		}
 		if(opt("keep-card")) {
 			// the memory card: written by the game into the program's file system, kept in IndexedDB,
@@ -273,7 +324,7 @@ async function main() {
 			process.exit();
 		}
 		const end = await evaluate("rta.info()");
-		result.end = { dual: end.dual, out: end.out, feedback_copies: end.feedback_copies, disc_reads: end.disc_reads, disc_mb: +(end.disc_bytes / 1e6).toFixed(1), disc_ms: end.disc_ms, sound: end.sound, sound_state: end.sound_state, late: end.late };
+		result.end = { arith: end.arith, vu_arith: end.vu_arith, simd: end.simd, vu_fast: end.vu_fast, vu_fast_left: end.vu_fast_left, dual: end.dual, out: end.out, feedback_copies: end.feedback_copies, disc_reads: end.disc_reads, disc_mb: +(end.disc_bytes / 1e6).toFixed(1), disc_ms: end.disc_ms, sound: end.sound, sound_state: end.sound_state, late: end.late };
 		result.said = await evaluate("rta.log.filter((l) => /^(rta|sound|page)[: ]/.test(l)).slice(0, 12)");
 		for(const line of result.said) console.log("  " + line);
 		console.log("  end: " + JSON.stringify(result.end));

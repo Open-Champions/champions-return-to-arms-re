@@ -96,6 +96,174 @@ above reads a clock, the disc or the I/O processor. (What a native machine and a
 emulator machine in one lockstep game do was not run here; the claim is from the chain
 measured and the code read.)
 
+### R2.2 The other differences of 3c, located and measured (Ran)
+
+New aids: `session.py` takes `"dumps": ["level:tick", …]` (a memory image on both
+machines at the same tick, several per run) and `"watch": […]` (extra columns);
+`imgdiff.py` lists the differing words of an image pair with the object, its class and
+the offset; `proof_rt.cpp`'s write-watch prints the calls under way. Sessions `s5d`,
+`s3d`, `s2d` (images) and `s5e`, `s3e`, `s6e` (columns for the cutscene state and for
+the animation state of the objects found) are the tours of round 1 run again in the rig
+and natively.
+
+| 3c row | What it is now known to be |
+|---|---|
+| 2 — record +0x4a74, one unit apart (`s5` from its first tour level, `s2` in `nitmedal`; in `s3` it was the extra tick of NP14 and is gone) | **Ran:** written once per *displayed frame* by the draw pass (0x323284 → `tasks_call` → 0x1dbc48 → 0x1d9cd4 → return of 0x1dd380, `hud_spellSelect`), 1.0 per frame, also while the tick stands. In `nitmedal` the tick stands at 1 for 2,596 displayed frames on the rig and 2,595 natively (a notice; the script's wait runs out): one frame, one unit. A count of pictures shown, per machine; no reader outside the HUD (Read, round 1) |
+| 3 — pointers in an object's animation state (+0x120, +0x1a0 of the player in `bossgood` and the last `hub` of `s5`; a `Critter`'s +0x120) | **Ran:** the decoder-slot pointer of an animation track (state +0x0c, +0x20 per track), stored by `animtrack_decode` 0x16e468 from `animcache_alloc` 0x16e388 - "the least recently used slot" - in the run pass (`Player_run` → 0x1a3f70 → 0x1754a0 → 0x16f720 → `anim_buildPose`) and in the draw pass (`world_drawObjects` → `Creature_draw` → `model_drawShadow` → `anim_emitPose` → `anim_buildPose`). Which slot is least recently used follows every earlier use, the draw pass's included, so two machines that showed different numbers of frames, or held different numbers of tracks (row 6), hold different slot addresses with the same contents. An address, not a value |
+| 4 — `s6` boss level, two track times 0.9 apart | **Ran:** FINDINGS D8, live between these two machines. `cut_advance` 0x199214 compares the speaker's talk track with `audio_streamPosition(1)` and adds `g_cutAudioCorrection` 0x44fd30 = ±0.1 to **every track time of the speaker** per tick (0x199444–0x1995c8). Logged per tick: the rig's stream position (0x83d108) counts up from tick 346, the native build's is 0 throughout (`rt/sound_null.cpp` answers 0); the rig's correction is +0.1 in ticks 453–461, nine ticks = 0.9; the native build's is 0. The anim_advance argument round 1 took for a sound position is the object's position for sound events (0x116334); the inference there was wrong, the mechanism is this one |
+| 6 — `s5`, pool in the last two levels (was: not located) | **`islgoth`, from tick 14:** one object, the `GnomeNavigator` (0x6517c0): its track times advance 1.1 per tick on the rig and 1.0 natively from tick 14 on (logged per tick), so its long idle ends sooner there and it holds three chained tracks where the native build still holds one (image at tick 300: 10 words of that object, +0x120 to +0x178). The cutscene correction is 0 on both machines; the 0.1 is the same code a second time: `dialog_syncMouth` 0x22fdd8 does for `g_dialogFocusObj` 0x4fdcc0 what `cut_advance` does for the cutscene speaker (correction at 0x4fdcdc, loop 0x22ff04–0x22ff28) (**Read**; the two columns of that site were not logged). **`bossgood` and the return to `hub`:** two words, the player object's decoder-slot pointers +0x120 and +0x1a0 (row 3), different because the slot cache's history differs since `islgoth` |
+| `s3`, `dis2`, ticks 93–458 (new: it was hidden under the extra tick) | D8 again: three track times of one `NPC` (0x63fac0; +0x134, +0x154, +0x174) 6.5 apart; the rig's correction is +0.1 in 65 ticks (93–246), the native build's 0; stream position 2,048 and up on the rig, 0 natively |
+
+So every difference of the tours is now one of four things, each measured: the tick of a
+disc read (NP1), which sound slot was free (NP2), **what the sound driver reports as the
+voice stream's position (D8 and its twin in the dialogue code)**, and counts of displayed
+frames (the HUD value, the decoder-slot order). None is the translation.
+
+**What this says about a network game (Read, with the measurements above).** D8 is
+already in the ledger as a way for one machine's sound timing to reach object state; here
+it is seen doing so between a machine with the emulator's sound processor and one with a
+silent driver: the speaker's track times differ for the rest of the level, and with them
+when its animation ends and what it chains next (`islgoth`). Whether that reaches the
+sync hash is D10/D19's question and is not answered here; in these sessions position,
+both seeds, state and every character column of the player stayed identical through
+it. What the native build adds to the question: **a native machine with `sound_null`
+reports position 0, so it never corrects, while an emulator machine does** - a mixed
+pair is the worst case for D8, and the native application's real sound driver
+(`sound/sound_rta.cpp`) is the one whose reported position decides it. Not run here.
+
+### R2.3 The runtime keeper's first-tick rule replaces the workaround (Ran)
+
+`rt/iop.cpp` (in the snapshot) hands over the next tick's first row while a loading
+screen is up. The three sessions that had needed `cmp.py`'s `first_tick_fix` (`s2`, `s3`,
+`h6`, as `s2w`, `s3w`, `h6w`) were run on the snapshot build without it: `h6w` identical
+at every tick (49 load blanks got the first-tick row), `s2w` and `s3w` identical in
+position and seeds at every tick. `first_tick_fix` is removed from `cmp.py`;
+`last_tick_fix` (R2.1) stays, since it supplies a row the rig's log does not have.
+
+### R2.5 The 24 functions that wait: compared at a bound (Ran)
+
+**Method.** The translation counts: its budget goes down at every call and at every
+taken branch or jump to a target at or before it inside the same unit (`BUDGET()`), and
+when it is gone the test driver stops with the whole state. The interpreter was made to
+count the same events (`realproof.py`, `BoundedEE`): the counted branch sites are taken
+from the snapshot translator's own units (`build_proof.py sites`: 6,775 sites, the same
+number as `BUDGET(); goto` occurs in the generated code), a call counts where the
+translation counts it - after the delay slot, before the callee's first instruction. Both
+sides are given the same count N and stop at the same point of the same instruction
+stream; there everything is compared that the function-by-function test compares at a
+return (registers at 128 bits, HI/LO, FPU, the calls so far with their arguments, every
+byte of memory).
+
+**Result.** `realproof.py bounded` on the states of the nine sessions of round 1, each
+state with callees running and with calls replaced, at N = 16, 256, 4,096 and 32,768:
+
+| | |
+|---|---|
+| functions | 24 (the list of part 2) |
+| runs | 2,568 |
+| identical at the bound | **2,568** |
+| different | **0** |
+
+Not one of those runs reached a return: the functions do wait. **Control:** with the
+interpreter stopped one event later than the translation (`PROOF_BOUND_SKEW=1`) 139 of
+144 runs are reported different (the other five are idle loops whose extra turn changes
+nothing), so the comparison sees a shift of one loop turn.
+
+What this adds over round 1: there, only the calls made up to the limit were compared;
+now the registers and all of memory are, 32,768 loop turns and calls into each wait.
+What it does not do: it does not show what the functions do once the interrupt or the
+answer they wait for arrives - that is play (part 3), where they all run.
+
+### R2.6 The 46 "partly compared" functions, and vector unit 0 in the interpreter (Ran)
+
+**What the 46 are (Read, counted from the executable).** Not mostly vector-unit code:
+
+| Functions | Where both sides stop | Status |
+|---|---|---|
+| 36 | at their first instruction: each **is** a `BREAK` (C-library entries that are nothing else, 0x3a44d8–0x3a5190) | complete: the trap is all there is to compare |
+| 1 (0x3a2e10) | in such a `BREAK` entry it calls and then jumps to | complete in the same sense |
+| 5 (0x35c858 and the four SDK entries 0x35c8c8–0x35c8f8 that jump into it) | at the `ERET` that ends them (interrupt enable/disable in kernel mode) | complete: `ERET` is their return |
+| 1 (0x3e3a58) | at the divide check `BREAK 7` on made-up input (a zero divisor) | **open**: no session entered it, so there is no real state |
+| **3** (`gfx_uploadMicrocode` 0x19be08, 0x34f890, `sceGsSyncPath` 0x34fe78) | at a `CTC2` / `CFC2`, the first vector-unit instruction | **finished below** |
+
+The executable holds 15 vector-unit instructions in four functions: those three, and
+`anim_buildPose` 0x16ed40 (two `VCALLMS`, two `LQC2`, `QMTC2`, `CTC2`, three `QMFC2`),
+which the sweep had passed on inputs that do not reach them.
+
+**The interpreter's vector unit** is `tools/recomp/proof/vu0ref.py`: the six register
+moves, `VCALLMS`, and the microprogram instructions `rt/vu0.h` implements, written a
+second time with all arithmetic in exact integer arithmetic (`softf.py`: IEEE single
+precision rounded toward zero, denormals flushed). `realproof.py` gives it to the
+interpreter (`VuEE`); `proof_driver.cpp` runs the translation's side on `rt/vu0.h`;
+`proof_rt.cpp` records the unit's registers, microprogram and data memory with every
+state (it needs `g_vu0` of `rt/runtime.cpp` visible: item 1 of
+`tools/recomp/proof/rt-proposed.patch`; the proof's build has it in its snapshot). The
+unit's registers, accumulator, I, control registers and both memories are compared
+besides everything else.
+
+**Result** (states recorded with the unit, session `h6w`; functions that use the unit or
+call one that does):
+
+| Function | Runs | Result |
+|---|---|---|
+| `anim_buildPose` 0x16ed40 | 8 states (its 1st, 2nd, 5th, 20th … 12,500th call), callees running; 926 to 3,605 microprogram instructions each | **identical to the return** |
+| 0x1795f8 (calls it) | 7 | identical to the return |
+| `sceGsSyncPath` 0x34fe78 | 8 | identical to the return |
+| 0x34f890 | 1 | identical to the return |
+| `gfx_uploadMicrocode` 0x19be08 | 1 state: with calls replaced identical to the return; with callees running (one waits) identical at 256, 4,096, 32,768 and 262,144 counted events | identical |
+
+**Control:** a reference whose multiply is one unit of the last place off fails all eight
+`anim_buildPose` states (first difference in pose memory and `vf1`).
+
+So of the 46: 42 are complete as they stood (their stop is their end), 3 are now identical
+to the return, 1 has no real input. More states of `anim_buildPose` come with the play
+sessions (R2.4).
+
+### R2.7 The vector unit in the rig with infinities and NaNs, and what `vu0.h` should do (Ran)
+
+**Measured** (`tools/recomp/proof/rigvu.py`, the emulator at commit 83700b2c on this
+ARM64 machine): 14 upper instructions (ADD, SUB, MUL, MAX, MINI and their x-broadcast
+forms, FTOI0/4, ITOF0/12, ABS) on 128 × 128 operand patterns - 11,449 pairs finite and
+normal, 2,240 with a denormal, 472 with an infinity, 2,223 with a NaN - each as its own
+microprogram written into the unit's program memory, run with `VCALLMS` in the game's
+thread. Results that differ from the emulator's, of 229,376:
+
+| Against | finite | denormal | infinity | NaN |
+|---|---|---|---|---|
+| `rt/vu0.h` as it is | 0 | 260 | 1,888 | 13,331 |
+| `rt/vu0.h` as proposed | 0 | 0 | 476 | 4,644 |
+| `vu0ref.py`, model 'host' | 0 | 260 | 1,240 | 8,128 |
+| `vu0ref.py`, model 'console' | 0 | 0 | 476 | 4,644 |
+
+- **On finite normal operands the header is the emulator**, bit for bit (the first
+  measurement of the vector unit against the rig itself; round 1 had only the written
+  reference).
+- **The emulator does not compute with the host's infinities and NaNs.** It brings
+  operands of exponent 255 to the largest number before it multiplies or subtracts
+  (0 × ∞ = 0 there, NaN on the host), compares MAX and MINI as sign-and-magnitude
+  integers, and does so per instruction: ADD clamps its first operand only, ADDA, SUBA,
+  MSUB and MSUBA none (Read: `Source/ee/VUShared.cpp`, the `…_base` functions; the
+  comments there name the games each clamp was added for). FTOI is the host's
+  conversion (NaN gives 0).
+- **`vu0.h` today** hands the host's results on, and a NaN's sign is the host's choice
+  (ARM64 0x7fc00000, x86-64 0xffc00000): the difference the Windows build found.
+
+**The console** has neither infinity nor NaN nor denormal in the unit: exponent 255 is an
+ordinary exponent, exponent 0 is zero (the same statement `docs/issues/native-app.md`
+10.1 rests on; there is no console here to measure). **Proposal** (item 2 of
+`rt-proposed.patch`): the rule `render/vu1_step.h` already follows for VU1 - an operand
+of exponent 255 is read as the largest number of its sign, one of exponent 0 as zero, a
+result too small to be a number is zero, MAX and MINI compare bit patterns. Then the
+operands are finite, the host rounds toward zero, no infinity or NaN can arise, and the
+result does not depend on the host. It equals `vu0ref.py`'s 'console' model on all
+229,376 results (the last two rows of the table are the same numbers). Against the
+emulator 5,120 results remain different: 2,816 in ADD with an infinite or NaN second
+operand, 2,304 in FTOI of a NaN - places where the emulator itself falls back on the
+host. A header that followed the emulator there exactly would be host-dependent again.
+
+**Does it matter in play?** A measurement build (`rta_proof_vu`: the proposed header
+with counters) was run on recorded sessions; see the table in R2.4 for the counts.
+
 ## Tools added (all in `tools/recomp/proof/`, outputs under `local/recomp-out/proof/`)
 
 Nothing under `tools/recomp/rt`, `render`, `sound`, `app`, `net` and nothing in

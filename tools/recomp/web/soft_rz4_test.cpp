@@ -141,7 +141,8 @@ int main(int argc, char** argv) {
         one(a, b);
         // near the largest against near the largest, and against something a few exponents
         // below: sums that come back into the range, sums that leave it
-        if (n % 10 == 6) { one(b | 0x7E000000u, a ^ 0x80000000u); one(a, (a & 0xFF800000u) | (b & 0x007FFFFFu)); one(a ^ 0x80000000u, (b & 0x807FFFFFu) | ((240 + ((s >> 20) & 15)) << 23)); }
+        if (n % 10 == 6) { one(b | 0x7E000000u, a ^ 0x80000000u); one(a, (a & 0xFF800000u) | (b & 0x007FFFFFu)); one(a ^ 0x80000000u, (b & 0x807FFFFFu) | ((240 + ((s >> 20) & 15)) << 23));
+                           one(a, (~a & 0x80000000u) | 0x7F7FFFFFu); }       // the largest number itself, other sign: the case the symmetric two-sum lost
     }
     while (queued) one(0x3F800000, 0x3F800000);
     uint64_t total = 0;

@@ -19,8 +19,22 @@
 // jobs.bin:  u32 'PJOB', u32 count; per job u32 state number, u32 flags (1 = every call is
 //            replaced by "return 0"), s64 budget.  Jobs are in ascending state order.
 // results:   the test driver's format (difftest.py, read_results), with the runs of changed
-//            bytes carrying full 32-bit addresses.
+//            bytes carrying full 32-bit addresses, and after each job the vector unit's state.
+//
+// Vector unit 0: a state recorded since 2026-10-13 ('PCA2') carries the unit's registers,
+// microprogram and data memory; COP2 instructions run on it through rt/vu0.h (before, both
+// sides stopped at the first of them).  An older state starts with an empty unit.
 #include "recomp.h"
+
+#include <cfenv>
+#include <cstdio>
+#include <cstdlib>
+// rt/vu0.h ends the program on a microprogram instruction it does not implement; here that
+// is one more way for a run to stop (a trap at the pseudo address 0x11000000)
+[[noreturn]] void proof_vu_exit(int);
+#define exit proof_vu_exit
+#include "vu0.h"
+#undef exit
 
 #include <csetjmp>
 #include <csignal>
@@ -42,6 +56,8 @@ static u8 g_spr[0x4000], g_spr_pre[0x4000];
 static bool g_spr_dirty;
 static std::map<u32, std::vector<u8>> g_other;      // page address -> 4 KB, outside everything else
 static RecompFn* g_table;
+static Vu0 g_vu;                    // vector unit 0 as recorded with the state (rt/vu0.h is the translation's side of it)
+static const size_t VU_BLOCK = 128 * 4 + 16 * 2 + 4 * 4 + 4 + 4 + 32 * 4 + 0x1000 + 0x1000;
 static u32 g_text_lo, g_text_hi;
 
 enum Status { ST_RETURN = 0, ST_FAULT = 1, ST_BUDGET = 2, ST_TRAP = 3, ST_SIGNAL = 4, ST_BADCALL = 5 };
@@ -54,6 +70,8 @@ static void stop(u32 status, u32 info) {
     g_info = info;
     siglongjmp(g_jmp, 1);
 }
+
+void proof_vu_exit(int) { stop(ST_TRAP, 0x11000000u); }
 
 struct CallRec { u32 site, target, stubbed, pad; u64 args[8]; u32 fargs[8]; };
 static std::vector<CallRec> g_calls;
@@ -71,6 +89,9 @@ static u8* outside(u32 addr, unsigned size, bool write) {
         if (write) { g_dirty[low >> 12] = 1; g_dirty[(low + size - 1) >> 12] = 1; }
         return g_ram + low;
     }
+    // the vector unit's microprogram and data memory, as rt/runtime.cpp maps them
+    if (addr >= 0x11000000u && addr <= 0x11001000u - size) return g_vu.micro + (addr - 0x11000000u);
+    if (addr >= 0x11004000u && addr <= 0x11005000u - size) return g_vu.mem + (addr - 0x11004000u);
     if (addr >= 0x70000000u && addr - 0x70000000u <= 0x4000u - size) {
         if (write) g_spr_dirty = true;
         return g_spr + (addr - 0x70000000u);
@@ -100,7 +121,68 @@ void rt_syscall(Ctx* c, u32) { c->r[2] = 0; }
 void rt_break(Ctx*, u32 pc, u32) { stop(ST_TRAP, pc); }
 void rt_trap(Ctx*, u32 pc, const char*) { stop(ST_TRAP, pc); }
 void rt_unimpl(Ctx*, u32 pc, u32) { stop(ST_TRAP, pc); }
-void rt_cop2(Ctx*, u32 pc, u32) { stop(ST_TRAP, pc); }
+// COP2, LQC2, SQC2: rt/runtime.cpp's rt_cop2 on this driver's copy of the unit.  A
+// microprogram runs with the processor's arithmetic set as the runtime sets it for the
+// game's threads (toward zero, denormals are zero); the main processor's FPU in this build
+// (-DFPU_PS2) is integer arithmetic and does not see the mode.
+static void vu_mode(bool on) {
+    static int saved_round;
+    if (on) { saved_round = fegetround(); fesetround(FE_TOWARDZERO); }
+    else fesetround(saved_round);
+#if defined(__aarch64__)
+    u64 fpcr;
+    __asm__ volatile("mrs %0, fpcr" : "=r"(fpcr));
+    fpcr = on ? (fpcr | (1ull << 24)) : (fpcr & ~(1ull << 24));
+    __asm__ volatile("msr fpcr, %0" : : "r"(fpcr));
+#elif defined(__x86_64__)
+    unsigned csr = __builtin_ia32_stmxcsr();
+    csr = on ? (csr | 0x8040u) : (csr & ~0x8040u);
+    __builtin_ia32_ldmxcsr(csr);
+#endif
+}
+
+void rt_cop2(Ctx* c, u32 pc, u32 w) {
+    u32 op = w >> 26, rs = (w >> 21) & 31, rt = (w >> 16) & 31, rd = (w >> 11) & 31;
+    Vu0& v = g_vu;
+    if (op == 0x36 || op == 0x3E) {                     // LQC2 / SQC2 ft, offset(base)
+        u32 addr = (u32)c->r[rs] + (u32)(s32)(s16)w;
+        u64 lo, hi;
+        if (op == 0x36) {
+            if (addr <= RAM_SIZE - 16) { memcpy(&lo, g_ram + addr, 8); memcpy(&hi, g_ram + addr + 8, 8); }
+            else rt_load128(addr, &lo, &hi);
+            if (rt) { memcpy(&v.vf[rt][0], &lo, 8); memcpy(&v.vf[rt][2], &hi, 8); }
+        } else {
+            memcpy(&lo, &v.vf[rt][0], 8); memcpy(&hi, &v.vf[rt][2], 8);
+            if (addr <= RAM_SIZE - 16) {
+                memcpy(g_ram + addr, &lo, 8); memcpy(g_ram + addr + 8, &hi, 8);
+                g_dirty[addr >> 12] = 1; g_dirty[(addr + 15) >> 12] = 1;
+            } else rt_store128(addr, lo, hi);
+        }
+        return;
+    }
+    switch (rs) {
+    case 1:                                             // QMFC2
+        if (rt) { memcpy(&c->r[rt], &v.vf[rd][0], 8); memcpy(&c->rh[rt], &v.vf[rd][2], 8); }
+        return;
+    case 2:                                             // CFC2
+        if (rt) c->r[rt] = rd < 16 ? (u64)v.vi[rd] : SX32(v.control[rd]);
+        return;
+    case 5:                                             // QMTC2
+        if (rd) { memcpy(&v.vf[rd][0], &c->r[rt], 8); memcpy(&v.vf[rd][2], &c->rh[rt], 8); }
+        return;
+    case 6:                                             // CTC2
+        if (rd == 0) return;
+        if (rd < 16) v.vi[rd] = (u16)c->r[rt]; else v.control[rd] = (u32)c->r[rt];
+        return;
+    }
+    if (rs >= 16 && (w & 63) == 0x38) {                 // VCALLMS
+        vu_mode(true);
+        vu0_run(v, (w >> 6) & 0x7FFF);
+        vu_mode(false);
+        return;
+    }
+    stop(ST_TRAP, pc);
+}
 void rt_eret(Ctx*, u32 pc) { stop(ST_TRAP, pc); }
 void rt_budget(Ctx*) { stop(ST_BUDGET, 0); }
 u32 rt_mfc0(Ctx* c, u32, unsigned reg) { return c->cop0[reg]; }
@@ -154,7 +236,7 @@ static const char* g_argv[4];
 static int g_rc;
 static const u32 PAGES = (RAM_SIZE >> 12) + 4;
 
-struct State { u32 addr; Ctx ctx; };
+struct State { u32 addr; Ctx ctx; Vu0 vu; bool has_vu; };
 
 static void* run_all(void*) {
     std::string dir = g_argv[1];
@@ -168,19 +250,19 @@ static void* run_all(void*) {
     if (store == MAP_FAILED || !caps || !jobs || !out) { fprintf(stderr, "cannot open the inputs\n"); g_rc = 2; return nullptr; }
     u32 magic = 0, count = 0;
     if (fread(&magic, 4, 1, jobs) != 1 || fread(&count, 4, 1, jobs) != 1 || magic != 0x424F4A50u) { fprintf(stderr, "bad job file\n"); g_rc = 2; return nullptr; }
-    putv<u32>(out, 0x31525352);
+    putv<u32>(out, 0x32525352);                         // 'RSR2'
     putv<u32>(out, count);
 
     std::vector<u32> want(PAGES, 0), have(PAGES, ~0u);     // page -> number in the store: recorded state / in g_ram now
     long state_number = -1;
-    State state;
+    static State state;
     static Ctx ctx;
     for (u32 n = 0; n < count; n++) {
         u32 number, flags; s64 budget;
         if (fread(&number, 4, 1, jobs) != 1 || fread(&flags, 4, 1, jobs) != 1 || fread(&budget, 8, 1, jobs) != 1) { g_rc = 2; return nullptr; }
         while (state_number < (long)number) {               // read on to the wanted state
             u32 head[6]; char level[16];
-            if (fread(head, 4, 6, caps) != 6 || head[0] != 0x50414350u) { fprintf(stderr, "state %u is not in the file\n", number); g_rc = 2; return nullptr; }
+            if (fread(head, 4, 6, caps) != 6 || (head[0] != 0x50414350u && head[0] != 0x32414350u)) { fprintf(stderr, "state %u is not in the file\n", number); g_rc = 2; return nullptr; }
             fread(level, 1, 16, caps);
             memset(&state.ctx, 0, sizeof(Ctx));
             state.addr = head[2];
@@ -195,6 +277,15 @@ static void* run_all(void*) {
                 u32 pair[2];
                 if (fread(pair, 4, 2, caps) != 2) { g_rc = 2; return nullptr; }
                 if (pair[0] < PAGES) want[pair[0]] = pair[1];
+            }
+            memset(&state.vu, 0, sizeof(state.vu));
+            state.vu.vf[0][3] = 1.0f;
+            state.has_vu = head[0] == 0x32414350u;
+            if (state.has_vu) {
+                Vu0& u = state.vu;
+                fread(u.vf, 4, 128, caps); fread(u.vi, 2, 16, caps); fread(u.acc, 4, 4, caps);
+                fread(&u.q, 4, 1, caps); fread(&u.i, 4, 1, caps); fread(u.control, 4, 32, caps);
+                fread(u.micro, 1, 0x1000, caps); fread(u.mem, 1, 0x1000, caps);
             }
             state_number++;
         }
@@ -219,6 +310,7 @@ static void* run_all(void*) {
         g_info = 0;
         g_spr_dirty = false;
         g_other.clear();
+        g_vu = state.vu;
         u32 func = state.addr;
         if (sigsetjmp(g_jmp, 1) == 0) {
             if (func >= g_text_lo && func < g_text_hi && !(func & 3) && g_table[(func - g_text_lo) >> 2])
@@ -257,6 +349,10 @@ static void* run_all(void*) {
         fseek(out, count_pos, SEEK_SET);
         putv<u32>(out, runs);
         fseek(out, end_pos, SEEK_SET);
+        // the vector unit after the run (results of kind 'RSR2')
+        put(out, g_vu.vf, 512); put(out, g_vu.vi, 32); put(out, g_vu.acc, 16);
+        put(out, &g_vu.q, 4); put(out, &g_vu.i, 4); put(out, g_vu.control, 128);
+        put(out, g_vu.micro, 0x1000); put(out, g_vu.mem, 0x1000);
     }
     fclose(out);
     return nullptr;

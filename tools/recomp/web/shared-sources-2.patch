@@ -1,0 +1,79 @@
+shared-sources-2.patch - what the native page needs changed outside tools/recomp/web
+(2026-10-13; made against the shared tree as copied 07:55 that day, local/recomp-web/src4;
+apply in tools/recomp with `patch -p1 < web/shared-sources-2.patch`).  Notes:
+docs/issues/native-web.md, "The night of 2026-10-12/13".
+
+One file, render/vu1_simd.h: with RTA_SOFT_RZ_VU1 and WebAssembly SIMD the four-wide
+operations v4_add, v4_sub, v4_mul and v4_itof are web/soft_rz4.h (toward zero with
+flush-to-zero in software, four at a time) instead of falling back to plain C++ per field.
+Nothing changes for any other build: the Mac, Windows, the WebAssembly build that rounds
+to nearest, and RTA_SOFT_RZ_VU1 without SIMD (or with -DVU1_SOFT_FIELDS) compile the same
+code as before.  Proof: web/soft_rz4_test.cpp against the processor's own modes, and
+render/vu1_fast_test.cpp built with em++ -msimd128 -DRTA_SOFT_RZ_VU1 -I tools/recomp/web
+(22 kinds, 0 differences, the reference checksum of the ARM and x86 builds).
+
+--- a/render/vu1_simd.h
++++ b/render/vu1_simd.h
+@@ -11,13 +11,16 @@
+ //   NEON                    AArch64
+ //   SSE2                    x86-64 (and 32-bit x86 built with SSE2)
+ //   WebAssembly SIMD        Emscripten with -msimd128
+-//   plain C++               everything else, -DVU1_SIMD_NONE, and RTA_SOFT_RZ_VU1 (the
+-//                           WebAssembly build that rounds toward zero in software: its
+-//                           arithmetic is vu_add / vu_sub / vu_mul of vu1_step.h per field)
++//                           With RTA_SOFT_RZ_VU1 (the page that rounds toward zero in
++//                           software) add, sub, mul and itof are web/soft_rz4.h: the same
++//                           toward-zero, flush-to-zero results four at a time
++//   plain C++               everything else, -DVU1_SIMD_NONE, and RTA_SOFT_RZ_VU1 without
++//                           WebAssembly SIMD or with -DVU1_SOFT_FIELDS: the arithmetic is
++//                           vu_add / vu_sub / vu_mul of vu1_step.h per field
+ #pragma once
+ #include "vu1_step.h"
+ 
+-#if defined(RTA_SOFT_RZ_VU1) || defined(VU1_SIMD_NONE)
++#if defined(VU1_SIMD_NONE) || (defined(RTA_SOFT_RZ_VU1) && (!defined(__wasm_simd128__) || defined(VU1_SOFT_FIELDS)))
+ #define VU1_SIMD_KIND 0
+ #elif defined(__aarch64__) || defined(_M_ARM64)
+ #define VU1_SIMD_KIND 1
+@@ -28,6 +31,9 @@
+ #elif defined(__wasm_simd128__)
+ #define VU1_SIMD_KIND 3
+ #include <wasm_simd128.h>
++#if defined(RTA_SOFT_RZ_VU1)
++#include "soft_rz4.h"
++#endif
+ #else
+ #define VU1_SIMD_KIND 0
+ #endif
+@@ -176,16 +182,31 @@
+     V4 is_zero = wasm_i32x4_eq(wasm_v128_and(r, wasm_u32x4_splat(0x7F800000u)), wasm_u32x4_splat(0));
+     return wasm_v128_andnot(r, wasm_v128_andnot(is_zero, wasm_u32x4_splat(0x80000000u)));
+ }
++#if defined(RTA_SOFT_RZ_VU1)
++// toward zero in software, four at a time: the bits of vu_add / vu_sub / vu_mul and of the
++// Mac's processor in its toward-zero, flush-to-zero mode (web/soft_rz4_test.cpp).  The
++// operands are the unit's numbers already (v4_in, or results).
++static VU1_INLINE V4 v4_add(V4 a, V4 b) { return (V4)softrz4::add((softrz4::U4)a, (softrz4::U4)b); }
++static VU1_INLINE V4 v4_sub(V4 a, V4 b) { return (V4)softrz4::sub((softrz4::U4)a, (softrz4::U4)b); }
++static VU1_INLINE V4 v4_mul(V4 a, V4 b) { return (V4)softrz4::mul((softrz4::U4)a, (softrz4::U4)b); }
++#else
+ static VU1_INLINE V4 v4_add(V4 a, V4 b) { return wasm_f32x4_add(a, b); }
+ static VU1_INLINE V4 v4_sub(V4 a, V4 b) { return wasm_f32x4_sub(a, b); }
+ static VU1_INLINE V4 v4_mul(V4 a, V4 b) { return wasm_f32x4_mul(a, b); }
++#endif
+ static VU1_INLINE V4 v4_key(V4 u) {
+     V4 s = wasm_i32x4_shr(u, 31);
+     return wasm_i32x4_sub(wasm_v128_xor(wasm_v128_andnot(u, wasm_u32x4_splat(0x80000000u)), s), s);
+ }
+ static VU1_INLINE V4 v4_max(V4 a, V4 b) { return wasm_v128_bitselect(a, b, wasm_i32x4_gt(v4_key(a), v4_key(b))); }
+ static VU1_INLINE V4 v4_min(V4 a, V4 b) { return wasm_v128_bitselect(a, b, wasm_i32x4_lt(v4_key(a), v4_key(b))); }
++#if defined(RTA_SOFT_RZ_VU1)
++static VU1_INLINE V4 v4_itof(V4 a, float scale) { return (V4)softrz4::from_int_scaled((softrz4::U4)a, scale); }
++#else
+ static VU1_INLINE V4 v4_itof(V4 a, float scale) { return wasm_f32x4_mul(wasm_f32x4_convert_i32x4(a), wasm_f32x4_splat(scale)); }
++#endif
++// (the scale is a power of two: the product is exact in any rounding, or beyond the range,
++// where the conversion stops at the largest integer either way)
+ static VU1_INLINE V4 v4_ftoi(V4 a, float scale) { return wasm_i32x4_trunc_sat_f32x4(wasm_f32x4_mul(a, wasm_f32x4_splat(scale))); }
+ static VU1_INLINE V4 v4_abs(V4 a) { return wasm_v128_andnot(a, wasm_u32x4_splat(0x80000000u)); }
+ static VU1_INLINE V4 v4_mr32(V4 a) { return wasm_i32x4_shuffle(a, a, 1, 2, 3, 0); }

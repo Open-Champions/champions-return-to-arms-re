@@ -22,6 +22,15 @@
 //   arguments (the page passes them to main): --scale N | --size WxH, --unpaced,
 //   --emulator-timing, --no-sound, --script FILE, --do COMMAND, --sym FILE, --stop-after N,
 //   --basic-blend, --times, --interpret-vu, and after "--" anything for the runtime.
+//
+// A script line "app shot NAME.png" (developer tests) hands the picture of that vertical
+// blank to the page (Module.rtaShot), which posts it to the local test server: the same
+// line the Mac application writes a file for, so that the two can be compared tick by tick.
+//
+// Pause.  While the page's pause word is not zero (the tab is hidden, or the player asked)
+// the game's thread stands at its vertical blank: nothing is computed, no sound is made,
+// the machine's clock stands.  (For a game played alone.  A networked game could not do
+// this: docs/issues/native-web.md, "Online".)
 #include "app_rt.h"
 #include "backend_gl.h"
 #include "pipeline.h"
@@ -65,7 +74,11 @@ struct Shared {
     std::atomic<uint32_t> quit{0};          // 8
     std::atomic<uint32_t> held{0};          // 9  buttons a test holds (rta.tap), on top of the keys
     std::atomic<uint32_t> sticks{0x80808080};   // 10 lx | ly << 8 | rx << 16 | ry << 24 from a test
-    std::atomic<uint32_t> hidden{0};        // 11 the page is not visible (written by the page)
+    std::atomic<uint32_t> pause{0};         // 11 not 0: the game stands (bit 0 the page is hidden, bit 1 the player paused); the page writes and wakes
+    std::atomic<uint32_t> pad{0};           // 12 a controller's buttons (the page reads it through the Gamepad interface)
+    std::atomic<uint32_t> pad_sticks{0x80808080};   // 13 ... and its sticks, as word 10
+    std::atomic<uint32_t> rumble{0};        // 14 small motor | large motor << 8 | a count << 16 that changes with every call; the program writes
+    std::atomic<uint32_t> pauses{0};        // 15 how often the game has stood
 };
 static Shared g_shared;
 
@@ -83,9 +96,12 @@ struct Pads : rta::PadSource {
         if (g_shared.quit) apprt::finish(0);
         state = apprt::script_pad(port);
         if (port != 0) return;
-        uint32_t keys = g_shared.keys, sticks = g_shared.sticks;
-        state.buttons |= (uint16_t)keys | (uint16_t)g_shared.held;
+        uint32_t keys = g_shared.keys, sticks = g_shared.sticks, pad_sticks = g_shared.pad_sticks;
+        state.buttons |= (uint16_t)keys | (uint16_t)g_shared.held | (uint16_t)g_shared.pad;
         auto rest = [](uint8_t x, uint8_t y) { return x == 128 && y == 128; };
+        // a stick: the script's, else a test's, else the controller's, else the keys'
+        if (rest((uint8_t)sticks, (uint8_t)(sticks >> 8))) sticks = (sticks & 0xFFFF0000u) | (pad_sticks & 0xFFFFu);
+        if (rest((uint8_t)(sticks >> 16), (uint8_t)(sticks >> 24))) sticks = (sticks & 0xFFFFu) | (pad_sticks & 0xFFFF0000u);
         if (rest(state.lx, state.ly)) {
             if (!rest((uint8_t)sticks, (uint8_t)(sticks >> 8))) { state.lx = (uint8_t)sticks; state.ly = (uint8_t)(sticks >> 8); }
             else {
@@ -95,7 +111,10 @@ struct Pads : rta::PadSource {
         }
         if (rest(state.rx, state.ry)) { state.rx = (uint8_t)(sticks >> 16); state.ry = (uint8_t)(sticks >> 24); }
     }
-    void rumble(unsigned, uint8_t, uint8_t) override { rumbles++; }
+    void rumble(unsigned port, uint8_t small_motor, uint8_t large_motor) override {
+        uint32_t n = ++rumbles;
+        if (port == 0) g_shared.rumble = small_motor | (uint32_t)large_motor << 8 | n << 16;
+    }
 };
 static Pads g_pads;
 
@@ -108,6 +127,7 @@ struct Screen {
     std::mutex lock;
     std::condition_variable changed;
     FrameList slot;
+    std::vector<std::string> slot_shots;                // pictures a script asked for at this frame's blank
     bool busy = false;
     double submit_wait_ms = 0;                          // time the decoder waited for this thread
     // pacing
@@ -140,7 +160,7 @@ struct Screen {
         return true;
     }
     // on the decoder's thread: take this list to be drawn; returns when the one before it was
-    void submit(FrameList& frame) {
+    void submit(FrameList& frame, std::vector<std::string>& shots) {
         std::unique_lock<std::mutex> hold(lock);
         double w0 = now_ms();
         changed.wait(hold, [this] { return !busy; });
@@ -153,6 +173,8 @@ struct Screen {
         slot.show_target = frame.show_target;
         memcpy(slot.show_rect, frame.show_rect, sizeof(slot.show_rect));
         slot.number = frame.number;
+        slot_shots.swap(shots);
+        shots.clear();
         busy = true;
         changed.notify_all();
     }
@@ -178,6 +200,8 @@ struct Screen {
         if (cw <= 0 || ch <= 0) emscripten_webgl_get_drawing_buffer_size(context, &cw, &ch);
         backend->present(cw, ch, 4.0 / 3.0);
         if (g_shared.shot == 1) take_shot();
+        for (const std::string& name : slot_shots) post_shot(name);
+        slot_shots.clear();
         double after = now_ms();
         draw_us += (uint64_t)((after - t0) * 1000.0);
         if (unpaced || last_present == 0) last_present = after;
@@ -199,11 +223,74 @@ struct Screen {
         g_shared.shot_ptr = (uint32_t)(uintptr_t)shot_pixels.data();
         g_shared.shot = 2;
     }
+    // developer tests: the picture of this frame to the page, which posts it to the local
+    // test server (the pixels are copied on the page's thread before this returns)
+    void post_shot(const std::string& name) {
+        static std::vector<uint8_t> pixels;
+        int w = 0, h = 0;
+        if (!backend->read_shown(pixels, w, h)) { printf("rta: no picture for %s (nothing is shown)\n", name.c_str()); return; }
+        MAIN_THREAD_EM_ASM({ if (Module.rtaShot) Module.rtaShot(UTF8ToString($0), $1, $2, $3, $4); }, name.c_str(), pixels.data(), w, h, (double)slot.number);
+    }
 };
 static Screen g_screen;
 
-static app::Sink g_sink;
+// The picture sink of the page: app/pipeline.h's, with the pictures a script asks for
+// travelling along with their frame, and the pause.
+struct WebSink : app::Sink {
+    std::mutex notes_lock;
+    std::vector<std::pair<uint64_t, std::string>> notes;        // (blank number, name): game thread -> decoder
+    std::vector<std::string> asked;                             // by the script, on the game's thread, before this blank
+    double paused_ms = 0;
+    void vblank(unsigned field, uint64_t number) override {
+        if (!asked.empty()) {
+            std::lock_guard<std::mutex> hold(notes_lock);
+            for (auto& name : asked) notes.push_back({number, name});
+            asked.clear();
+        }
+        app::Sink::vblank(field, number);
+        if (g_shared.pause.load() && !g_shared.quit) {
+            // the game stands here until the page says go; the time is not the game's
+            double t0 = now_ms();
+            g_shared.pauses++;
+            for (uint32_t why; (why = g_shared.pause.load()) != 0 && !g_shared.quit;) emscripten_futex_wait(&g_shared.pause, why, 250.0);
+            double stood = now_ms() - t0;
+            paused_ms += stood;
+            game_ms -= stood;
+        }
+    }
+    void take(uint64_t number, std::vector<std::string>& out) {
+        std::lock_guard<std::mutex> hold(notes_lock);
+        for (size_t k = 0; k < notes.size();)
+            if (notes[k].first <= number) { out.push_back(notes[k].second); notes.erase(notes.begin() + k); } else k++;
+    }
+};
+static WebSink g_sink;
+static void app_command(const std::string& text, uint64_t) {
+    if (text.compare(0, 5, "shot ") == 0) {
+        std::string name = text.substr(5);
+        size_t cut = name.find_last_of('/');
+        if (cut != std::string::npos) name = name.substr(cut + 1);
+        g_sink.asked.push_back(name);
+    } else printf("rta: the page does not know the script line: app %s\n", text.c_str());
+}
 static render::Renderer* g_renderer;
+
+// which arithmetic this build computes with (build.py --arith, --vu-arith): the page says it
+#ifdef RTA_SOFT_RZ
+#define GAME_ARITHMETIC "zero"          // toward zero with flush-to-zero, in software: what the Mac and Windows programs compute
+#else
+#define GAME_ARITHMETIC "nearest"       // WebAssembly's own: what the emulator's page computes
+#endif
+#ifdef RTA_SOFT_RZ_VU1
+#define VU_ARITHMETIC "zero"
+#else
+#define VU_ARITHMETIC "nearest"
+#endif
+#ifdef __wasm_simd128__
+#define HAS_SIMD 1
+#else
+#define HAS_SIMD 0
+#endif
 
 // ---- what the page calls (on its own thread) -----------------------------------------------------
 extern "C" {
@@ -228,7 +315,8 @@ EMSCRIPTEN_KEEPALIVE const char* rta_web_info() {
              "\"submit_wait_ms\":%.3f,\"late\":%llu,\"vertices\":%llu,\"commands\":%llu,\"draws\":%llu,\"gl_calls\":%llu,\"gl_skipped\":%llu,"
              "\"feedback_copies\":%llu,\"dual\":%d,\"disc_reads\":%llu,\"disc_bytes\":%llu,\"disc_ms\":%.1f,\"out\":[%d,%d],"
              "\"machine_s\":%.3f,\"sim\":%u,\"level\":\"%s\",\"rumbles\":%u,\"sound\":\"%s\","
-             "\"vu_translated\":%d,\"vu_runs\":%llu,\"vu_run_ms\":%.3f,\"kick_ms\":%.3f,\"path3_ms\":%.3f,\"textures_made\":%llu,\"upload_mb\":%.1f,\"vu_bad\":%llu}",
+             "\"vu_translated\":%d,\"vu_runs\":%llu,\"vu_run_ms\":%.3f,\"kick_ms\":%.3f,\"path3_ms\":%.3f,\"textures_made\":%llu,\"upload_mb\":%.1f,\"vu_bad\":%llu,"
+             "\"vu_fast\":%llu,\"vu_fast_left\":%llu,\"paused_ms\":%.1f,\"pauses\":%u,\"arith\":\"%s\",\"vu_arith\":\"%s\",\"simd\":%d}",
              emscripten_get_now(), (unsigned long long)g_sink.blanks, (unsigned long long)g_screen.presents.load(), g_sink.game_ms,
              g_sink.decode_wall_ms, g_sink.decode_cpu_ms, g_screen.draw_us.load() / 1000.0, g_screen.submit_wait_ms,
              (unsigned long long)g_screen.late.load(), (unsigned long long)g_screen.vertices.load(), (unsigned long long)g_screen.commands.load(),
@@ -239,7 +327,9 @@ EMSCRIPTEN_KEEPALIVE const char* rta_web_info() {
              g_renderer ? (int)g_renderer->vif.vu.translated : -1, (unsigned long long)(g_renderer ? g_renderer->vif.stats.mscal : 0),
              g_renderer ? g_renderer->vif.stats.run_ms : 0.0, g_renderer ? g_renderer->gs.stats.kick_ms : 0.0, g_renderer ? g_renderer->gs.stats.path3_ms : 0.0,
              (unsigned long long)(g_renderer ? g_renderer->gs.stats.textures_made : 0), g_renderer ? g_renderer->gs.stats.upload_bytes / 1048576.0 : 0.0,
-             (unsigned long long)(g_renderer ? g_renderer->vif.vu.bad : 0));
+             (unsigned long long)(g_renderer ? g_renderer->vif.vu.bad : 0),
+             (unsigned long long)(g_renderer ? g_renderer->vif.vu.fast_runs : 0), (unsigned long long)(g_renderer ? g_renderer->vif.vu.fast_left : 0),
+             g_sink.paused_ms, g_shared.pauses.load(), GAME_ARITHMETIC, VU_ARITHMETIC, HAS_SIMD);
     (void)frontend; (void)in_frontend;
     return text;
 }
@@ -305,7 +395,12 @@ int main(int argc, char** argv) {
     if (g_opt.interpret) renderer.vif.vu.use_translation = renderer.vif.vu.use_fast = false;
     g_sink.renderer = &renderer;
     g_sink.waited_downstream_ms = &g_screen.submit_wait_ms;
-    renderer.on_frame = [](FrameList& frame) { g_screen.submit(frame); };
+    renderer.on_frame = [](FrameList& frame) {
+        static std::vector<std::string> shots;
+        g_sink.take(frame.number, shots);
+        g_screen.submit(frame, shots);
+    };
+    apprt::set_command_handler(app_command);
     g_sink.start();
 
     static std::vector<std::string> args = {"rta", "boot", "--elf", elf, "--disc", "disc", "--card", "/data/card"};

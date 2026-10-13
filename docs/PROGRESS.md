@@ -1,6 +1,6 @@
 # How complete is it
 
-Updated at every check-in of the work. **Last update: 2026-10-13, 07:58 CDT.**
+Updated at every check-in of the work. **Last update: 2026-10-13, 08:57 CDT.**
 
 One table for the whole effort to make Champions: Return to Arms (SLUS-20973 v2.00)
 playable again, online, on today's computers. The percentages are estimates by the people
@@ -24,7 +24,7 @@ a session by hand - every test drove the game by script, on one Apple-silicon Ma
 | Native build: the game's code and its proof | 97 % | all 7,732 functions translated; 7,460 proven identical to the original, none failing; nine sessions compared tick for tick ([native-proof](issues/native-proof.md)) | two unexplained one-tick differences; shop, save point, level-up and death compared |
 | Native build: picture | 96 % | films, heat haze, fog, widescreen, the art pack; the renderer's processor side five times cheaper with the same output ([native-render-speed](issues/native-render-speed.md)); paced at exactly 60 pictures a second - in the heaviest level's fight 1,799 of 1,799 intervals on time at 640 x 448 and 1,788 of 1,798 at display resolution; an attack shows 75 to 84 ms after the press, the emulator application's 82 to 104 ([native-app](issues/native-app.md), section 11) | a person's eye on a lit display; effects compared close up; the new pacing in the Windows program |
 | Native build: sound | 90 % | no gaps through ten level changes; film sound in step ([native-sound](issues/native-sound.md)) | somebody listening to it |
-| Native build: online | 95 % | through the lobby with itself and with the emulator application, in step ([native-online](issues/native-online.md)) | private games, chat, leaving and coming back; three and four players in the window program |
+| Native build: online | 98 % | through the lobby with itself, with the emulator application and with a browser page, in step; three and four players with the window program (4 of 4 launches of four after a fix, up to 5,454 ticks every pair, with level change, deaths and reload); private games, chat, friends, kick, leaving and playing again nine games in a row, a dropped player and a dropped host ([native-online](issues/native-online.md)) | a second computer; a person at the controls; one host thread left behind per ended game thread |
 | Native build: Windows | 85 % | compiles and links with picture, sound, controller and online play; the same sources built for x86-64 on the Mac give byte-identical results ([native-windows](issues/native-windows.md)) | a first run on a Windows computer |
 | Native build: in a browser | 60 % | boots and plays the first level in Chrome, tick-identical to the Mac build ([native-web](issues/native-web.md)) | rebuilt with the faster renderer; sound delay; online |
 | Native build: inside Godot | started | the translated game as the game logic under Godot, which does window, input, sound and drawing | everything; notes will be in issues/native-godot.md |
@@ -37,6 +37,9 @@ and the Godot client are tracked in their own repositories
 
 ## Since the last update
 
+- Native online play exercised end to end: three and four players, the lobby's screens,
+  leaving and returning, drops, and a game with a browser page; one launch failure of four
+  players found and fixed.
 - Release: the Mac application, the stable build, the private download and the browser
   page all carry fix set `27f61e1d` (26 sections, 91 words), built from one pushed commit.
   On that build: two copies through the game's own level change, three copies and four

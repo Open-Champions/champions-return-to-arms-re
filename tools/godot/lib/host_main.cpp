@@ -196,6 +196,11 @@ int main(int argc, char** argv) {
                 snprintf(text, sizeof text, "texture %s tfx %d tcc %d %s wrap %d %d%s%s%s", !c.texture ? "none" : c.tex_is_target ? "surface" : "texture", c.tfx, c.tcc, c.linear ? "linear" : "nearest",
                          c.wrap_s, c.wrap_t, c.weave_half != 0 ? " weave" : "", c.texa_mode ? " texa" : "", c.fog ? " fog" : "");
                 combos[c.texture ? text : "texture none"]++;
+                if (c.texture && c.tex_is_target) {
+                    snprintf(text, sizeof text, "reads a surface: into s%u, made_by %d, %s, depth %s%s, scene %s", c.target, c.made_by, key.c_str(),
+                             c.ztst == 0 ? "never" : c.ztst == 1 ? "always" : c.ztst == 2 ? ">=" : ">", c.depth_write ? "+write" : "", c.scene_first >= 0 ? "world" : "flat");
+                    combos[text]++;
+                }
                 snprintf(text, sizeof text, "prim %d made_by %d mask rgb %d a %d%s", c.prim, c.made_by, c.mask_rgb, c.mask_a, c.scissor_moved ? " scissor moved" : "");
                 combos[text]++;
             }

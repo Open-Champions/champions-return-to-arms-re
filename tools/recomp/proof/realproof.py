@@ -17,6 +17,7 @@ other memory touched.
   python3 tools/recomp/proof/realproof.py want    [--sweep FILE]
   python3 tools/recomp/proof/realproof.py replay  DIR [--jobs N] [--steps N] [--stub-steps N] [--all]
   python3 tools/recomp/proof/realproof.py report  [DIR ...] [--hits FILE ...]
+  python3 tools/recomp/proof/realproof.py bounded DIR [--events 16,256,4096] [--only ADDR,...]
 
 want    reads the sweep's report and writes local/recomp-out/proof/want.txt: the functions
         without a comparable case (and those identical only up to a common stop), with the
@@ -28,6 +29,13 @@ replay  runs the states recorded in DIR (pages.bin, captures.bin).  Each state i
         translation on real arguments and memory).  Writes DIR/results.tsv.
 report  the table: of the functions in want.txt, how many now have an identical
         comparable case, how many were never entered in any session, how many differ.
+
+bounded for the functions that never return in isolation (they wait for an interrupt or an
+        answer): both sides are stopped after the same number of counted events - the
+        translation counts every call and every taken backward branch inside a unit
+        (BUDGET), the interpreter is made to count the same (BoundedEE; the branch sites
+        come from the snapshot translator, build_proof.py sites) - and the whole state
+        is compared there: verdict pass@bound.  Writes DIR/bounded.tsv.
 
 Verdicts: pass (ran to the return, identical), pass@stop (both stopped at the same
 instruction - BREAK, a vector-unit instruction - identical up to there), FAIL (a
@@ -50,10 +58,14 @@ sys.path.insert(0, os.path.join(ROOT, 'tools'))
 import difftest                                 # noqa: E402
 import ee_emu                                   # noqa: E402
 from ee_emu import EE, EmuError                 # noqa: E402
+sys.path.insert(0, HERE)
+import vu0ref                                   # noqa: E402
 
 OUT = os.path.join(ROOT, 'local', 'recomp-out')
 PROOF = os.path.join(OUT, 'proof')
-DRIVER = os.path.join(OUT, 'bin', 'proof_driver')
+DRIVER = os.environ.get('PROOF_DRIVER') or os.path.join(PROOF, 'build', 'bin', 'proof_driver')      # built from the snapshot (build_proof.py)
+SITES = os.path.join(PROOF, 'build', 'budget-sites.txt')
+SKEW = int(os.environ.get('PROOF_BOUND_SKEW', '0'))     # a control: the interpreter stops this many events later than the translation
 RAM_PAGES = 0x02000000 >> 12
 PAGES = RAM_PAGES + 4
 SPR_PAGE = 0x70000000 >> 12
@@ -63,9 +75,16 @@ BODY = struct.Struct('<32Q32Q4Q2I32II')
 NATIVE_STATUS = difftest.NATIVE_STATUS
 
 
+VU_MODEL = os.environ.get('PROOF_VU_MODEL', 'host')      # vu0ref.py: 'host' (rt/vu0.h as it is) or 'console' (as proposed)
+
+
+class Outcome(difftest.Outcome):
+    __slots__ = ('vu',)
+
+
 class Capture:
     __slots__ = ('index', 'number', 'addr', 'hit', 'episode', 'tick', 'level', 'r', 'rh', 'hi', 'lo', 'hi1', 'lo1',
-                 'sa', 'fcr31', 'f', 'acc', 'changed')
+                 'sa', 'fcr31', 'f', 'acc', 'changed', 'vu')
 
 
 def load_captures(directory):
@@ -74,7 +93,7 @@ def load_captures(directory):
     out, pos = [], 0
     while pos + HEAD.size + BODY.size + 4 <= len(data):
         magic, number, addr, hit, episode, tick, level = HEAD.unpack_from(data, pos)
-        if magic != 0x50414350:
+        if magic not in (0x50414350, 0x32414350):
             raise ValueError('bad state record at %d' % pos)
         pos += HEAD.size
         v = BODY.unpack_from(data, pos)
@@ -91,6 +110,12 @@ def load_captures(directory):
             break                               # a run that was cut short
         cap.changed = struct.unpack_from('<%dI' % (2 * count), data, pos)
         pos += 8 * count
+        cap.vu = None
+        if magic == 0x32414350:                 # with the vector unit's state
+            if pos + vu0ref.STATE.size > len(data):
+                break
+            cap.vu = data[pos:pos + vu0ref.STATE.size]
+            pos += vu0ref.STATE.size
         out.append(cap)
     return out
 
@@ -99,11 +124,122 @@ def _syscall_stub(emu):
     emu.r[2] = 0
 
 
+class BoundReached(EmuError):
+    """The interpreter has counted as many events as the translation was given."""
+
+
+class BoundedEE(EE):
+    """The interpreter with the translation's count: the translation decrements its budget
+    at every taken branch or jump to a target at or before it inside the same unit and at
+    every call, and stops when the budget is gone (rt_budget).  Counting the same events
+    here stops both sides at the same point of the same instruction stream, whatever the
+    function is waiting for - and there the whole state can be compared.
+
+    An event is counted where the translation counts it: after the delay slot, before the
+    first instruction of the target runs.  `events` None: no bound."""
+
+    sites = frozenset()
+    events = None
+    _arrive = None
+
+    def _note(self, target):
+        self._arrive = target
+        if target not in self.hooks:
+            self.hooks[target] = BoundedEE._arrived
+
+    def _arrived(self):
+        pc = self.pc
+        if self.hooks.get(pc) is BoundedEE._arrived:
+            del self.hooks[pc]
+        if self._arrive == pc:
+            self._arrive = None
+            self._count()
+
+    def _count(self):
+        if self.events is not None:
+            self.events -= 1
+            if self.events < 0:
+                raise BoundReached('bound')
+
+    def _branch(self, taken, word, likely=False):
+        EE._branch(self, taken, word, likely)
+        if taken and self.cur in self.sites:
+            self._note(self.npc)
+
+    def _j(self, w):
+        EE._j(self, w)
+        if self.cur in self.sites:
+            self._note(self.npc)
+
+    def _enter_call(self, target):
+        self._count()
+        return EE._enter_call(self, target)
+
+
+class VuEE(BoundedEE):
+    """The interpreter with vector unit 0 (vu0ref.py): the COP2 forms the game uses, LQC2
+    and SQC2, and the unit's microprogram and data memory at 0x11000000 / 0x11004000."""
+
+    def __init__(self, *args, **kwargs):
+        BoundedEE.__init__(self, *args, **kwargs)
+        self.vu = vu0ref.Vu0(VU_MODEL)
+        for op in (0x12, 0x36, 0x3E):
+            self._ops[op] = self._vu_op
+
+    def _vu_op(self, w):
+        try:
+            self.vu.cop2(self, w)
+        except vu0ref.Unimplemented as exc:
+            self._unimplemented(w, str(exc))
+
+    def _load16(self, addr):
+        return self.mem.load(addr, 16)
+
+    def _store16(self, addr, value):
+        self.mem.store(addr, 16, value)
+
+
+def vu_diffs(out, nat):
+    """Differences between the two sides' vector unit after a run (Q is not compared: the
+    game's program does not use it and rt/vu0.h does not keep it)."""
+    if getattr(out, 'vu', None) is None or getattr(nat, 'vu', None) is None:
+        return []
+    a, b = vu0ref.STATE.unpack(out.vu), vu0ref.STATE.unpack(nat.vu)
+    diffs = []
+    for n in range(128):
+        if a[n] != b[n]:
+            diffs.append('vf%d.%s = %08x, translation %08x' % (n // 4, 'xyzw'[n % 4], a[n], b[n]))
+    for n in range(16):
+        if a[128 + n] != b[128 + n]:
+            diffs.append('vi%d = %x, translation %x' % (n, a[128 + n], b[128 + n]))
+    for n in range(4):
+        if a[144 + n] != b[144 + n]:
+            diffs.append('acc.%s = %08x, translation %08x' % ('xyzw'[n], a[144 + n], b[144 + n]))
+    if a[149] != b[149]:
+        diffs.append('I = %08x, translation %08x' % (a[149], b[149]))
+    for n in range(32):
+        if a[150 + n] != b[150 + n]:
+            diffs.append('control %d = %x, translation %x' % (n, a[150 + n], b[150 + n]))
+    for name, x, y in (('microprogram', a[182], b[182]), ('data', a[183], b[183])):
+        if x != y:
+            off = next(i for i in range(4096) if x[i] != y[i])
+            diffs.append('vector unit %s memory +%03x = %02x, translation %02x' % (name, off, x[off], y[off]))
+    return diffs
+
+
+def budget_sites():
+    if not os.path.exists(SITES):
+        raise SystemExit('no %s: run build_proof.py sites' % SITES)
+    return frozenset(int(line, 16) for line in open(SITES) if line.strip() and not line.startswith('#'))
+
+
 class RealReference:
     """The interpreter on recorded states."""
 
-    def __init__(self, directory):
-        emu = self.emu = EE(None, fpu_model='ps2')
+    def __init__(self, directory, bounded=False):
+        emu = self.emu = VuEE(None, fpu_model='ps2')
+        if bounded:
+            emu.sites = budget_sites()
         emu.mem.auto_map = True
         emu.div_zero = 'r5900'
         emu.stack_lo = emu.stack_hi = 0
@@ -120,6 +256,8 @@ class RealReference:
                 self.base[(mirror >> 12) + page] = self.pages[page]
         for k in range(4):
             self.base[SPR_PAGE + k] = self.pages[RAM_PAGES + k]
+        self.base[vu0ref.MICRO >> 12] = emu.vu.micro
+        self.base[vu0ref.MEM >> 12] = emu.vu.mem
         emu.mem.pages = dict(self.base)
         self.message = ''
 
@@ -138,8 +276,11 @@ class RealReference:
                 pages[page][:] = store[ref * 4096:ref * 4096 + 4096]
                 have[page] = ref
 
-    def run(self, cap, stub_all, budget):
+    def run(self, cap, stub_all, budget, events=None):
         emu = self.emu
+        emu.events, emu._arrive = events, None
+        fresh = vu0ref.Vu0(VU_MODEL)
+        emu.vu.load(cap.vu if cap.vu is not None else fresh.dump())
         self.materialise()
         emu.mem.pages = dict(self.base)
         emu.mem.auto_mapped = []
@@ -167,6 +308,8 @@ class RealReference:
         try:
             reason = emu.run(max_steps=budget)
             status = 'return' if reason == 'return' else 'error'
+        except BoundReached:
+            status = 'bound'
         except ee_emu.StepLimit:
             status = 'steps'
         except ee_emu.UnimplementedInstruction as exc:
@@ -178,7 +321,7 @@ class RealReference:
             status, self.message = 'fault', str(exc)
         except EmuError as exc:
             status, self.message = 'error', str(exc)
-        o = difftest.Outcome()
+        o = Outcome()
         o.status, o.info = status, (emu.cur if status in ('trap', 'unimpl') else emu.pc)
         o.r, o.rh = list(emu.r), list(emu.rh)
         o.hi, o.lo, o.hi1, o.lo1 = emu.hi, emu.lo, emu.hi1, emu.lo1
@@ -200,6 +343,7 @@ class RealReference:
             if page is not None and index not in self.base and bytes(page) != zero:
                 changed[index] = bytes(page)
         o.pages = changed
+        o.vu = emu.vu.dump() if cap.vu is not None else None
         return status, o
 
 
@@ -208,11 +352,11 @@ def read_native(path, count, pre_page):
     with open(path, 'rb') as source:
         data = source.read()
     magic, n = struct.unpack_from('<II', data, 0)
-    if magic != 0x31525352 or n != count:
+    if magic not in (0x31525352, 0x32525352) or n != count:
         raise ValueError('bad result file')
     pos, outcomes = 8, []
     for job in range(n):
-        o = difftest.Outcome()
+        o = Outcome()
         o.status, o.info = struct.unpack_from('<II', data, pos); pos += 8
         o.r = list(struct.unpack_from('<32Q', data, pos)); pos += 256
         o.rh = list(struct.unpack_from('<32Q', data, pos)); pos += 256
@@ -232,6 +376,10 @@ def read_native(path, count, pre_page):
             raw.append((addr, data[pos:pos + length]))
             pos += (length + 3) & ~3
         o.pages = raw                           # turned into pages by the caller, which has the state
+        o.vu = None
+        if magic == 0x32525352:
+            o.vu = data[pos:pos + vu0ref.STATE.size]
+            pos += vu0ref.STATE.size
         outcomes.append(o)
     return outcomes
 
@@ -260,16 +408,115 @@ def judge(status, out, nat):
     """(verdict, detail) for one run of one state."""
     native = NATIVE_STATUS[nat.status]
     if status == 'return':
-        diffs = difftest.compare(out, nat)
+        diffs = difftest.compare(out, nat) + vu_diffs(out, nat)
         return ('pass', '') if not diffs else ('FAIL', '; '.join(diffs[:4]))
     if status in ('trap', 'unimpl') and native == 'trap' and out.info == nat.info:
-        diffs = difftest.compare(out, nat, 'trap')
+        diffs = difftest.compare(out, nat, 'trap') + vu_diffs(out, nat)
         return ('pass@stop', '%x' % out.info) if not diffs else ('FAIL', 'at stop %x: %s' % (out.info, '; '.join(diffs[:4])))
     # nothing to compare at an end; the calls made so far still can be
     shared = min(len(out.calls), len(nat.calls))
     agree = all(out.calls[i] == nat.calls[i] for i in range(shared))
     detail = 'translation %s; first %d calls %s' % (native, shared, 'agree' if agree else 'DIFFER')
     return 'stop:%s' % status, detail
+
+
+def judge_bounded(status, out, nat):
+    """As judge(), for a run both sides were to stop after the same count of events."""
+    native = NATIVE_STATUS[nat.status]
+    if status == 'bound' and native == 'budget':
+        diffs = difftest.compare(out, nat, 'budget') + vu_diffs(out, nat)
+        return ('pass@bound', '') if not diffs else ('FAIL', 'at the bound: ' + '; '.join(diffs[:4]))
+    if status == 'return' and native == 'return':
+        diffs = difftest.compare(out, nat)
+        return ('pass', '') if not diffs else ('FAIL', '; '.join(diffs[:4]))
+    if status in ('trap', 'unimpl') and native == 'trap' and out.info == nat.info:
+        diffs = difftest.compare(out, nat, 'trap')
+        return ('pass@stop', '%x' % out.info) if not diffs else ('FAIL', 'at stop %x: %s' % (out.info, '; '.join(diffs[:4])))
+    if status in ('bound', 'return') or native in ('budget', 'return'):
+        # one side reached the bound or the return and the other did not: the two did not
+        # count alike, or ran differently
+        return 'FAIL', 'interpreter %s at %x, translation %s' % (status, out.info, native)
+    return 'stop:%s' % status, 'translation %s' % native
+
+
+def bounded_worker(job):
+    directory, first, last, steps, wanted, bounds, tag = job
+    caps = load_captures(directory)
+    ref = RealReference(directory, bounded=True)
+    chosen = [c for c in caps[first:last] if c.addr in wanted]
+    if not chosen:
+        return []
+    work = os.path.join(directory, 'work')
+    os.makedirs(work, exist_ok=True)
+    jobs_path = os.path.join(work, 'bjobs-%s.bin' % tag)
+    result_path = os.path.join(work, 'bresults-%s.bin' % tag)
+    plan = [(cap, stub, bound) for cap in chosen for stub in (0, 1) for bound in bounds]
+    with open(jobs_path, 'wb') as sink:
+        sink.write(struct.pack('<II', 0x424F4A50, len(plan)))
+        for cap, stub, bound in plan:
+            sink.write(struct.pack('<IIq', cap.index, stub, bound))
+    done = subprocess.run(['nice', '-n', '15', DRIVER, directory, jobs_path, result_path], capture_output=True, text=True)
+    if done.returncode != 0:
+        raise RuntimeError('proof_driver failed (%d): %s' % (done.returncode, done.stderr[:400]))
+    natives = read_native(result_path, len(plan), None)
+    os.remove(jobs_path)
+    os.remove(result_path)
+    rows, position = [], 0
+    for n, (cap, stub, bound) in enumerate(plan):
+        while position <= cap.index:
+            ref.advance(caps[position])
+            position += 1
+        nat = natives[n]
+        status, out = ref.run(cap, bool(stub), steps, events=bound + SKEW)
+        nat.pages = native_pages(nat.pages, ref)
+        verdict, detail = judge_bounded(status, out, nat)
+        rows.append((cap.index, cap.addr, cap.hit, cap.episode, cap.tick, cap.level, '%s/%d' % ('stub' if stub else 'follow', bound),
+                     verdict, ref.emu.steps, detail or ref.message[:120]))
+    return rows
+
+
+def bounded(args):
+    """The functions that wait: both sides stopped after the same number of counted events."""
+    caps = load_captures(args.dir)
+    if args.only:
+        wanted = {int(x, 16) for x in args.only.split(',')}
+    else:
+        # the functions whose every replayed state ended at the step limit
+        wanted, seen = set(), {}
+        for line in open(os.path.join(args.dir, 'results.tsv')):
+            if not line.startswith('#'):
+                p = line.rstrip('\n').split('\t')
+                seen.setdefault(int(p[1], 16), set()).add(p[7])
+        wanted = {f for f, verdicts in seen.items() if all(v.startswith('stop:') for v in verdicts)}
+    bounds = [int(x) for x in args.events.split(',')]
+    step = max(1, (len(caps) + args.jobs * 4 - 1) // (args.jobs * 4))
+    jobs = [(args.dir, at, min(len(caps), at + step), args.steps, wanted, bounds, '%d-%d' % (os.getpid(), at))
+            for at in range(0, len(caps), step)]
+    start = time.time()
+    rows = []
+    with multiprocessing.Pool(args.jobs) as pool:
+        for part in pool.imap_unordered(bounded_worker, jobs):
+            rows.extend(part)
+    rows.sort()
+    with open(os.path.join(args.dir, 'bounded.tsv'), 'w') as sink:
+        sink.write('# state\tfunction\tcall\tepisode\ttick\tlevel\tmode/events\tverdict\tsteps\tdetail\n')
+        for row in rows:
+            sink.write('%d\t%08x\t%d\t%d\t%d\t%s\t%s\t%s\t%d\t%s\n' % row)
+    counts, per = {}, {}
+    for row in rows:
+        key = row[7].split(':')[0]
+        counts[key] = counts.get(key, 0) + 1
+        per.setdefault(row[1], {}).setdefault(key, 0)
+        per[row[1]][key] += 1
+    print('%d functions, %d runs in %s, %.0f s: %s' % (len(per), len(rows), args.dir, time.time() - start,
+                                                      ', '.join('%s %d' % kv for kv in sorted(counts.items()))))
+    names = symbols()
+    for func in sorted(per):
+        print('  %08x %-28s %s' % (func, names.get(func, '')[:28], ', '.join('%s %d' % kv for kv in sorted(per[func].items()))))
+    for row in rows:
+        if row[7] == 'FAIL':
+            print('FAIL %08x state %d (%s tick %d, %s): %s' % (row[1], row[0], row[5], row[4], row[6], row[9][:300]))
+    return 1 if counts.get('FAIL') else 0
 
 
 def replay_worker(job):
@@ -333,7 +580,7 @@ def replay(args):
         for part in pool.imap_unordered(replay_worker, jobs):
             rows.extend(part)
     rows.sort()
-    with open(os.path.join(args.dir, 'results.tsv'), 'w') as sink:
+    with open(os.path.join(args.dir, args.out), 'w') as sink:
         sink.write('# state\tfunction\tcall\tepisode\ttick\tlevel\tmode\tverdict\tsteps\tdetail\n')
         for row in rows:
             sink.write('%d\t%08x\t%d\t%d\t%d\t%s\t%s\t%s\t%d\t%s\n' % row)
@@ -525,13 +772,20 @@ def main():
     p.add_argument('--steps', type=int, default=1000000)
     p.add_argument('--stub-steps', type=int, default=200000)
     p.add_argument('--all', action='store_true', help='every recorded state, not only the functions in want.txt')
+    p.add_argument('--out', default='results.tsv', help='name of the result file inside DIR')
     p.add_argument('--only', help='hex addresses, comma separated')
+    p = sub.add_parser('bounded')
+    p.add_argument('dir')
+    p.add_argument('--jobs', type=int, default=3)
+    p.add_argument('--events', default='16,256,4096', help='stop both sides after each of these counts of events')
+    p.add_argument('--steps', type=int, default=3000000, help='the interpreter gives up after this many instructions')
+    p.add_argument('--only', help='hex addresses, comma separated (default: the functions whose replayed states all ended at the step limit)')
     p = sub.add_parser('report')
     p.add_argument('dirs', nargs='*')
     p.add_argument('--hits', action='append')
     p.add_argument('--list', action='store_true')
     args = parser.parse_args()
-    return {'want': want, 'replay': replay, 'report': report}[args.command](args)
+    return {'want': want, 'replay': replay, 'report': report, 'bounded': bounded}[args.command](args)
 
 
 if __name__ == '__main__':
