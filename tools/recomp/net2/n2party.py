@@ -6,10 +6,11 @@ ticks compared, and what happens afterwards.  The proof runs of docs/issues/nati
   export RTA_DISC="/path/to/your/disc image.iso"
   python3 -B tools/recomp/net2/n2party.py OUT --players 3 [--launches K] [--play FRAMES]
           [--level NAME --play2 FRAMES] [--scenario plain|drop|hostquit|again] [--relay force|never|mixed]
-          [--service-address 127.0.0.1|<this computer's LAN address>] [--program PATH] [--limit NAME=VALUE]...
+          [--service-address 127.0.0.1|<this computer's LAN address>] [--external] [--program PATH] [--limit NAME=VALUE]...
 
 Starts a rendezvous service of its own (tools/rendezvous/rendezvous.py, on 127.0.0.1 and,
-with --service-address, on this computer's LAN address; nothing else), then the copies:
+with --service-address, on this computer's LAN address; nothing else) - or, with --external,
+uses one already running at --service-address:--port - then the copies:
 headless programs that contain the game and tools/recomp/net2/launch.cpp ($RTA_NATIVE_NET2,
 default local/recomp-net2/bin/n2_headless).  The first hosts (`--opt net2=host`); its room
 code is read from its output and the others join by it.  Every copy boots to the title
@@ -144,7 +145,7 @@ def start_copy(role, index, out, run, room, n, args):
     command = [program, 'boot', '--elf', os.path.join(ROOT, 'SLUS_209.73'), '--disc', os.environ['RTA_DISC'],
                '--card', os.path.join(directory, 'card')] + symbols + ['--script', script]
     relay = args.relay if args.relay in ('force', 'never') else ('force' if args.relay == 'mixed' and index == n - 1 else '')
-    options = {'net-data': directory, 'net-local-only': '1', 'online-person': '0', 'net-pace': str(args.pace),
+    options = {'net-data': directory, 'net-local-only': '0' if args.external else '1', 'online-person': '0', 'net-pace': str(args.pace),
                'net-log': os.path.join(run, role + '.net.log'), 'tick-log': os.path.join(run, role + '.tick.tsv'),
                'tick-watch-file': watch_file, 'tick-do': os.path.join(run, 'tick-do.txt'),
                'net2': 'host' if role == 'host' else 'join:' + room, 'net2-service': '%s:%d' % (args.service_address, args.port),
@@ -282,6 +283,7 @@ def main():
     parser.add_argument('--rounds', type=int, default=2)
     parser.add_argument('--relay', choices=('', 'force', 'never', 'mixed'), default='')
     parser.add_argument('--service-address', default='127.0.0.1', help='127.0.0.1 (default) or this computer\'s LAN address')
+    parser.add_argument('--external', action='store_true', help='use a service already running at --service-address:--port (e.g. on a server) instead of starting one')
     parser.add_argument('--port', type=int, default=41977)
     parser.add_argument('--limit-service', action='append', default=[], metavar='NAME=VALUE', help='a limit of the service, to hit it')
     parser.add_argument('--program')
@@ -305,18 +307,21 @@ def main():
     if not 2 <= args.players <= 4:
         raise SystemExit('two to four players')
     mine = own_address()
-    if args.service_address not in ('127.0.0.1', mine):
+    if not args.external and args.service_address not in ('127.0.0.1', mine):
         raise SystemExit('the service must be on this computer (127.0.0.1 or %s), not %s' % (mine, args.service_address))
     out = os.path.abspath(args.out)
     os.makedirs(out, exist_ok=True)
-    service = start_service(out, args)
-    with open(os.path.join(out, 'pids'), 'a') as pids:
-        pids.write('%d\n' % service.pid)
+    service = None if args.external else start_service(out, args)
+    if service:
+        with open(os.path.join(out, 'pids'), 'a') as pids:
+            pids.write('%d\n' % service.pid)
     good = True
     try:
         for number in range(1, args.launches + 1):
             good = one_launch(out, number, args) and good
     finally:
+        if not service:
+            return 0 if good else 1
         service.send_signal(2)
         try:
             service.wait(5)

@@ -12,6 +12,17 @@ compatibility and is not touched. Every result says whether it was **Ran** or on
 
 ## STATE (rewritten at every step; read this first after a stop)
 
+**2026-10-14 02:20. The service runs in public.** At the owner's word ("Make sure online
+works") it runs on the project's server beside the lobby: systemd unit `champions-net2`
+(no fixed user, state in its own directory, the same sandbox as the browser relay), TCP
+and UDP port 41900 open. **Ran**, from this Mac through that server, with
+`n2party.py --external`: two copies 2,104 ticks in step (the punch failed - two copies
+behind one home router that does not loop back - and the relay carried the game, as
+designed); three copies with every route forced through the relay, every pair in step for
+about 2,000 ticks. Still not done: TLS (section 8), two computers in two homes, the
+Windows program in the game. The client's built-in default stays empty: the address is
+given with `--service`, `RTA_NET2_SERVICE` or `net2-service.txt`.
+
 **2026-10-13 23:10. Done and run, game side included.** Two, three and four native copies
 get into one game through the service with no lobby screen, stay in step, change level,
 survive a dropped player and a dropped host, play a second game in the same processes and
@@ -500,7 +511,7 @@ A room with both kinds would then need the arithmetic rule of `mixed-arithmetic.
 members instead of from the lobby's keep-alive marks; the member lines carry what is
 needed (`can`, `does`).
 
-## 8. What the service would need to run in public (for the owner to decide)
+## 8. Running it in public (decided 2026-10-14: it runs on the project's server)
 
 - **One port number, TCP and UDP** (41900 by default), beside the lobby's own (which
   uses TCP 40800-40817, 20002.. and UDP 10101). `--bind <the server's address> --public`.
@@ -514,13 +525,13 @@ needed (`can`, `does`).
   player's FIRST contact travel in the clear.
 - **What it knows about people:** section 3.2, nothing else. A player deletes all of it
   with one call.
-- **Not done for public use:** TLS; a supervisor (systemd unit); log rotation; a way for
+- **Not done for public use:** TLS; log rotation (the unit logs to the journal, which rotates); a way for
   the owner to remove a player or a name; more than one process (SQLite and the in-memory
   rooms make it one machine, one process - thousands of players, not hundreds of
   thousands); IPv6; a grace time for a player whose TCP link breaks during a relayed game
   (today the service puts such a player out of its room at once and the relay stops for
   it; straight routes are not affected).
-- It was never run on anything but 127.0.0.1 here.
+- Since 2026-10-14 it runs on the project's server (STATE above).
 
 ## 9. What the old lobby still does that this does not
 
