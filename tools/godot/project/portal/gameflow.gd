@@ -92,9 +92,16 @@ func choose() -> void:
 func _process(_delta: float) -> void:
 	if not active or portal.session.n == null:
 		return
-	status = portal.session.n.call("game_status")
-	phase = int(status.get("phase", -1))
 	var room: Dictionary = portal.session.room()
+	# The game's status is asked for only while the game's machine runs: the library's net2_game_status
+	# reads the game's memory and, before the machine has started, there is none (it crashed the program
+	# that way, 2026-10-13 23:50 - reported). Until then the game is "booting".
+	var game: Node = portal.handover.game
+	if game != null and game.get("machine") != null and bool(game.get("started")):
+		status = portal.session.n.call("game_status")
+	else:
+		status = {"phase": BOOTING, "text": "the game is not started yet"}
+	phase = int(status.get("phase", -1))
 	var in_room := int(room.get("state", 0)) >= Session.ROOM_OPEN
 	if in_room and portal.handover.game == null:
 		portal.handover.call("prepare")     # boots behind the portal to its title screen

@@ -132,8 +132,12 @@ func build() -> void:
 		main.text = ("Play again - choose your character" if played else "Choose your character")
 		if not portal.gameflow.call("game_ready"):
 			main.disabled = true
-			main.text = "Your game is getting ready..."
-			note = "The game is starting behind the portal; it takes a few seconds."
+			if int(portal.gameflow.games) > 0:
+				main.text = "Back to the title screen..."
+				note = "Your game is on its way back from the last one."
+			else:
+				main.text = "Your game is getting ready..."
+				note = "The game is starting behind the portal; it takes a few seconds."
 		else:
 			note = "The game's own screens: make a character or bring one you have. Then you are back here."
 		main.activated.connect(func() -> void: portal.gameflow.call("choose"))

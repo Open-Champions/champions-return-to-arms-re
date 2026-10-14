@@ -20,32 +20,39 @@ const W := preload("res://portal/widgets.gd")
 const Cat := preload("res://gameart/catalogue.gd")
 
 const BACKDROP := "shot_lintro"
-const PORTRAIT := "shot_lhub"
+const PORTRAITS := ["shot_lhub", "shot_lbastion", "shot_lhonor", "shot_lendgood", "shot_lbossevi"]
 
 static var _portal: Node
 static var _clean := {}
+static var active := false              # the game's look is wanted and its art is (or will be) there
+static var _waiting := false
 
 
+# The skin stays installed even when the clean look is drawn: every surface then answers false, and its
+# backdrop node watches for a disc image chosen later (the portal's own disc screen) to switch over.
 static func install(portal: Node) -> void:
 	_portal = portal
 	if _clean.is_empty():
 		_clean = {"sans": UI._sans, "bold": UI._bold, "serif": UI._serif, "serif_bold": UI._serif_bold}
-	if not GA.wanted():
-		_uninstall()
+	if UI.skin == null:
+		UI.skin = load("res://gameart/portal_skin.gd").new()
+	active = GA.wanted()
+	if not active:
+		_clean_fonts()
 		return
-	UI.skin = load("res://gameart/portal_skin.gd").new()
 	if GA.ready():
 		_fonts()
-	else:
+	elif not _waiting:
+		_waiting = true
 		GA.when_ready(func() -> void:
-			if UI.skin != null:
+			_waiting = false
+			if active:
 				_fonts()
 				if is_instance_valid(_portal):
 					_portal.call("_layout"))
 
 
-static func _uninstall() -> void:
-	UI.skin = null
+static func _clean_fonts() -> void:
 	UI._sans = _clean.get("sans")
 	UI._bold = _clean.get("bold")
 	UI._serif = _clean.get("serif")
@@ -58,7 +65,9 @@ static func _fonts() -> void:
 	var title := GA.font("font_title", 0.78)
 	if text != null:
 		UI._sans = text
-		UI._bold = text
+		var bold := FontVariation.new()        # the same letters; its own object, so that small bold text can be told
+		bold.base_font = text
+		UI._bold = bold
 	if title != null:
 		UI._serif = title
 		UI._serif_bold = title
@@ -96,7 +105,51 @@ static func _tell_hud(game: bool) -> void:
 
 
 func _on() -> bool:
-	return GA.ready()
+	return active and GA.ready()
+
+
+# the game's letters are 14 texels high capitals with a dark rim baked round them: under about 15 pixels they
+# turn to grey mush, so small text keeps the clean font (and the spacing variations of it)
+const SMALLEST_GAME_TEXT := 15
+
+
+func font_at(font: Font, px: int) -> Font:
+	if not _on() or px >= SMALLEST_GAME_TEXT:
+		return font
+	var kind := _kind(font)
+	var spacing := 0
+	if kind == "" and font is FontVariation:
+		spacing = (font as FontVariation).spacing_glyph
+		kind = _kind((font as FontVariation).base_font)
+	if kind == "":
+		return font
+	var clean := _clean_font(kind)
+	return UI.spaced(clean, spacing / maxf(UI.s, 0.01)) if spacing != 0 else clean
+
+
+func _kind(font: Font) -> String:
+	if font == null:
+		return ""
+	if font == UI._sans:
+		return "sans"
+	if font == UI._bold or font == UI._serif or font == UI._serif_bold:
+		return "bold"
+	return ""
+
+
+static var _clean_cache := {}
+
+
+static func _clean_font(kind: String) -> Font:
+	if not _clean_cache.has(kind):
+		if kind == "sans":
+			_clean_cache[kind] = ThemeDB.fallback_font
+		else:
+			var v := FontVariation.new()
+			v.base_font = ThemeDB.fallback_font
+			v.variation_embolden = 0.6
+			_clean_cache[kind] = v
+	return _clean_cache[kind]
 
 
 # ---- the backdrop -------------------------------------------------------------------------------------
@@ -112,10 +165,21 @@ func decorate(portal: Node, root: Control) -> bool:
 
 class Backdrop extends Control:
 	var portal: Node
+	var _look := 0.0
+	var _skin: Script = load("res://gameart/portal_skin.gd")
 
-	func _process(_delta: float) -> void:
+	func _process(delta: float) -> void:
+		# a disc image chosen after the start (the portal's disc screen writes user://settings.cfg): look again
+		if GA.disc_path == "":
+			_look += delta
+			if _look > 2.0:
+				_look = 0.0
+				if GA.setting() != "clean":
+					GA.restart()
+					if GA.disc_path != "":
+						_skin.install(portal)
 		var behind = portal.get("backdrop")                   # the blurred picture of a game behind the portal
-		var want := UI.skin != null and GA.ready() and not (behind is CanvasItem and (behind as CanvasItem).visible)
+		var want: bool = _skin.active and GA.ready() and not (behind is CanvasItem and (behind as CanvasItem).visible)
 		if visible != want:
 			visible = want
 			queue_redraw()
@@ -173,6 +237,12 @@ func surface(ci: CanvasItem, kind: String, rect: Rect2, radius: float, e: float,
 				var p := rect.position + Vector2(inset, inset)
 				var z := rect.size - Vector2(inset, inset) * 2.0
 				ci.draw_polygon(PackedVector2Array([p, p + Vector2(z.x * 0.6, 0), p + Vector2(z.x * 0.6, z.y), p + Vector2(0, z.y)]), PackedColorArray([c, n, n, c]))
+		"seat":
+			_shadow(ci, rect, UI.px(16), 0.4)
+			_frame(ci, rect, UI.px(26), 1.0, 0.90, 0.95 + 0.2 * e)
+		"notice":
+			_shadow(ci, rect, UI.px(20), 0.5 * e)
+			_frame(ci, rect, UI.px(24), e, 0.97, 0.95)
 		"choice", "gauge", "row":
 			_frame(ci, rect, UI.px(20), a * (0.80 + 0.20 * e), 0.88, 0.92 + 0.25 * e)
 		"field":
@@ -260,6 +330,9 @@ func _button(ci: CanvasItem, rect: Rect2, kind: String, e: float, a: float) -> v
 
 # ---- the character card -------------------------------------------------------------------------------
 func portrait(ci: CanvasItem, rect: Rect2, character: Dictionary, framed: bool, empty_text: String) -> bool:
+	# a painting of the game behind the card; the same class always gets the same one
+	var key := String(character.get("cls", ""))
+	var PORTRAIT: String = PORTRAITS[0] if key == "" else PORTRAITS[key.hash() % PORTRAITS.size()]
 	if not _on() or not GA.has(PORTRAIT):
 		return false
 	var b := UI.px(26)

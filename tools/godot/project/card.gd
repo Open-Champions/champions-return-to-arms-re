@@ -56,6 +56,12 @@ func _ready() -> void:
 		light.look_at_from_position(Vector3.ZERO, -Vector3(spec[0]), Vector3(0, 0, 1))
 	_frame(64.0)
 	drawer.call("set_card_scenario", viewport.world_3d.scenario)
+	if OS.has_environment("RTA_CARD_TEST"):         # test aid: a box where the figure stands
+		var box := MeshInstance3D.new()
+		box.mesh = BoxMesh.new()
+		box.scale = Vector3(20, 20, 60)
+		box.position = Vector3(0, 0, 30)
+		viewport.add_child(box)
 
 
 func texture() -> Texture2D:
@@ -102,4 +108,4 @@ func frame(delta: float) -> void:
 
 
 func info_text() -> String:
-	return "card: %s" % str(drawer.call("get_card_info"))
+	return "card: %s; camera %s, viewport %s, world %s" % [str(drawer.call("get_card_info")), str(camera.global_transform), str(viewport.size), str(viewport.world_3d.scenario)]

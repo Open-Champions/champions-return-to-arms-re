@@ -76,14 +76,14 @@ const u32 A_NUM_PLAYERS = 0x4d8ae0, A_DIFFICULTY = 0x4f719c, A_SAVED_CONFIG = 0x
 const u32 A_SEL_TASK_NAME = 0x53ce38;       // "playerSelection"
 const u32 A_SEL_PAGE = 0x8e2c02;
 
-u8 rd8(u32 a) { return a < RAM_SIZE ? g_ram[a] : 0; }
-u32 rd32(u32 a) { u32 v = 0; if (a <= RAM_SIZE - 4) memcpy(&v, g_ram + a, 4); return v; }
-float rdf(u32 a) { float v = 0; if (a <= RAM_SIZE - 4) memcpy(&v, g_ram + a, 4); return v; }
-void wr8(u32 a, u8 v) { if (a < RAM_SIZE) g_ram[a] = v; }
-void wr32(u32 a, u32 v) { if (a <= RAM_SIZE - 4) memcpy(g_ram + a, &v, 4); }
+u8 rd8(u32 a) { return g_ram && a < RAM_SIZE ? g_ram[a] : 0; }
+u32 rd32(u32 a) { u32 v = 0; if (g_ram && a <= RAM_SIZE - 4) memcpy(&v, g_ram + a, 4); return v; }
+float rdf(u32 a) { float v = 0; if (g_ram && a <= RAM_SIZE - 4) memcpy(&v, g_ram + a, 4); return v; }
+void wr8(u32 a, u8 v) { if (g_ram && a < RAM_SIZE) g_ram[a] = v; }
+void wr32(u32 a, u32 v) { if (g_ram && a <= RAM_SIZE - 4) memcpy(g_ram + a, &v, 4); }
 std::string rdstr(u32 a, u32 limit) {
     std::string text;
-    for (u32 i = 0; i < limit && a + i < RAM_SIZE && g_ram[a + i]; i++) text += (char)g_ram[a + i];
+    for (u32 i = 0; g_ram && i < limit && a + i < RAM_SIZE && g_ram[a + i]; i++) text += (char)g_ram[a + i];
     return text;
 }
 

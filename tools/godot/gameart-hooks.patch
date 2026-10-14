@@ -103,9 +103,23 @@
  static func keycap(ci: CanvasItem, pos: Vector2, label: String, size: float, alpha := 1.0) -> float:
  	if _has.get("keycap", false):
  		var done: float = skin.call("keycap", ci, pos, label, size, alpha)
+--- a/tools/godot/project/portal/notices.gd
++++ b/tools/godot/project/portal/notices.gd
+@@ -166,8 +166,9 @@
+ 			"request": accent = UI.GOLD
+ 			"info": accent = UI.DIM
+ 		var radius := UI.px(14)
+-		draw_style_box(UI.box(radius, Color(0, 0, 0, 0), Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0.45 * a), UI.px(20)), r)
+-		draw_style_box(UI.box(radius, Color(0.085, 0.096, 0.135, (0.97 if not compact else 0.86) * a), Color(accent.r, accent.g, accent.b, 0.55 * a), maxf(1.0, UI.px(1.5))), r)
++		if not UI.skinned("surface", [self, "notice", r, radius, a, false]):
++			draw_style_box(UI.box(radius, Color(0, 0, 0, 0), Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0.45 * a), UI.px(20)), r)
++			draw_style_box(UI.box(radius, Color(0.085, 0.096, 0.135, (0.97 if not compact else 0.86) * a), Color(accent.r, accent.g, accent.b, 0.55 * a), maxf(1.0, UI.px(1.5))), r)
+ 		# the accent: a short bar at the left
+ 		draw_style_box(UI.box(UI.px(2), Color(accent.r, accent.g, accent.b, a)), Rect2(r.position.x + UI.px(10), r.position.y + UI.px(16), UI.px(4), r.size.y - UI.px(32)))
+ 		var x := r.position.x + UI.px(28)
 --- a/tools/godot/project/portal/portal.gd
 +++ b/tools/godot/project/portal/portal.gd
-@@ -236,6 +236,8 @@
+@@ -247,6 +247,8 @@
  
  # ---- the layer and its parts ---------------------------------------------------------------
  func _build_layer() -> void:
@@ -114,7 +128,7 @@
  	layer = CanvasLayer.new()
  	layer.name = "Layer"
  	layer.layer = 20
-@@ -259,6 +261,7 @@
+@@ -270,6 +272,7 @@
  	sky.shader = load("res://portal/background.gdshader")
  	background.material = sky
  	root.add_child(background)
@@ -122,7 +136,7 @@
  	top = TopBar.new()
  	top.name = "Top"
  	top.portal = self
-@@ -998,13 +1001,14 @@
+@@ -1010,13 +1013,14 @@
  		var cy := size.y * 0.5 + UI.px(6)
  		var e := UI.px(22)
  		var c := Vector2(e + UI.px(2), cy)
@@ -143,6 +157,23 @@
  		if not show_right or friends_button == null:
  			return
  		# me: the name friends see and my code
+--- a/tools/godot/project/portal/screens/room.gd
++++ b/tools/godot/project/portal/screens/room.gd
+@@ -422,8 +422,12 @@
+ 			line = Color(UI.RED.r, UI.RED.g, UI.RED.b, 0.8)
+ 		elif bool(member.get("ready", false)):
+ 			line = Color(UI.GREEN.r, UI.GREEN.g, UI.GREEN.b, 0.55)
+-		draw_style_box(UI.box(radius, Color(0, 0, 0, 0), Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0.28), UI.px(16)), r)
+-		draw_style_box(UI.box(radius, Color(UI.PANEL.r, UI.PANEL.g, UI.PANEL.b, 0.86).lerp(UI.PANEL_HOT, e * 0.6), line, maxf(1.0, UI.px(1.5))), r)
++		if UI.skinned("surface", [self, "seat", r, radius, e, false]):
++			if line != UI.LINE:                 # ready / a different version: the seat's coloured line stays
++				draw_style_box(UI.box(radius, Color(0, 0, 0, 0), line, maxf(1.0, UI.px(2))), r.grow(UI.px(2)))
++		else:
++			draw_style_box(UI.box(radius, Color(0, 0, 0, 0), Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0.28), UI.px(16)), r)
++			draw_style_box(UI.box(radius, Color(UI.PANEL.r, UI.PANEL.g, UI.PANEL.b, 0.86).lerp(UI.PANEL_HOT, e * 0.6), line, maxf(1.0, UI.px(1.5))), r)
+ 		UI.focus_ring(self, r, radius, e)
+ 
+ 	func _dashes(r: Rect2, radius: float, colour: Color) -> void:
 --- a/tools/godot/project/portal/screens/settings.gd
 +++ b/tools/godot/project/portal/screens/settings.gd
 @@ -169,10 +169,13 @@
@@ -185,6 +216,44 @@
  	var r := px(radius)
  	ci.draw_style_box(box(r, Color(0, 0, 0, 0), Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0.30 * alpha), px(18)), rect)
  	ci.draw_style_box(box(r, Color(fill.r, fill.g, fill.b, PANEL_ALPHA * alpha), Color(LINE.r, LINE.g, LINE.b, LINE.a * alpha), maxf(1.0, px(1))), rect)
+@@ -199,6 +208,7 @@
+ static func text(ci: CanvasItem, rect: Rect2, string: String, font: Font, size: float, colour: Color, align := HORIZONTAL_ALIGNMENT_LEFT, valign := 0.5) -> float:
+ 	if string == "" or rect.size.x <= 2.0:
+ 		return 0.0
++	font = font_at(font, size)
+ 	var line := TextLine.new()
+ 	line.add_string(string, font, fs(size))
+ 	line.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+@@ -214,19 +224,27 @@
+ 	return w
+ 
+ 
++# a skin's font may read badly when small: it may give another for that size
++static func font_at(font: Font, size: float) -> Font:
++	if skin != null and skin.has_method("font_at"):
++		return skin.call("font_at", font, fs(size))
++	return font
++
++
+ static func text_width(string: String, font: Font, size: float) -> float:
++	font = font_at(font, size)
+ 	return font.get_string_size(string, HORIZONTAL_ALIGNMENT_LEFT, -1, fs(size)).x
+ 
+ 
+ static func line_height(font: Font, size: float) -> float:
+-	return font.get_height(fs(size))
++	return font_at(font, size).get_height(fs(size))
+ 
+ 
+ # A Label made in the portal's type (for text that wraps or sits in a container).
+ static func label(string: String, size := 22.0, colour := TEXT, font: Font = null, wrap := false) -> Label:
+ 	var l := Label.new()
+ 	l.text = string
+-	l.add_theme_font_override("font", font if font != null else sans())
++	l.add_theme_font_override("font", font_at(font if font != null else sans(), size))
+ 	l.add_theme_font_size_override("font_size", fs(size))
+ 	l.add_theme_color_override("font_color", colour)
+ 	l.add_theme_constant_override("line_spacing", int(px(4)))
 --- a/tools/godot/project/portal/widgets.gd
 +++ b/tools/godot/project/portal/widgets.gd
 @@ -159,11 +159,15 @@

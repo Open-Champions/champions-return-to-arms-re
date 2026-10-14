@@ -9,6 +9,50 @@ Nothing derived from the game is in the repository: the portal is scripts and tw
 by code. Names of characters, classes and levels on screen come from the session or the game's
 state at run time. Pictures, the staged project and logs are under `local/godot-portal/`.
 
+## STATE (2026-10-14, 00:10): a real launch from the portal
+
+- **Ran: two portal programs WITH THE GAME through a local service, two games in a row**
+  (`python3 local/godot-portal/portal.py duo2 duo2`, 469 s). Each program: the portal as the
+  first thing, the game scene (`res://main.tscn`, the game library of 23:32 with net2) put
+  under it, its own data folder, identity and memory card; the service
+  `tools/rendezvous/rendezvous.py` on 127.0.0.1:41962. What each did, from the log:
+  first start and name -> online -> A hosts / B joins by the code -> **the game scene
+  starts behind the portal** (`--opt net2-boot=1`: it walks to its title screen by itself;
+  the room says "Your game is getting ready...") -> title: "Choose your character" ->
+  `game_choose` -> **the game's own character screens get the screen and the controller**
+  -> chosen: the portal is back in front ("Playing aaa (level 1)"), B is marked ready by
+  itself -> A's Start -> "finding each other" -> the game's own "Network Game Launch"
+  screen (both characters, "Ready!") -> **both in the hub** (tick 90+, "2 players") ->
+  B leaves by the pause menu, A's game goes back to its title -> **both portals back in
+  front, the room open, "Play again"** -> characters again -> Start -> **both in the hub a
+  second time**. The second game was not left (the run ended in it).
+  Pictures: `local/godot-portal/pictures/real2/` - `a-1-08-in-the-hub.png`,
+  `b-1-08-in-the-hub.png` (the moment both are in the hub), `a-1-05-everybody-ready.png`,
+  `a-1-07-the-games-launch-screen.png`, `b-1-09-back-in-the-room.png`, `a-2-08-in-the-hub.png`.
+- **The character screens: handed over, not driven.** The portal calls `game_choose` and gives
+  the game the screen and the controller (main.gd's `hold_input` follows the portal's
+  `shown_changed`); a player makes a character or imports one there, and the portal comes
+  back by itself when the game says CHOSEN (or TITLE with `failed`: "No character was
+  chosen"). Pressing the game's screens for the player would break on any change of them.
+  In the test the screens were walked by each copy's script (`--script`, the lines of
+  `tools/recomp/net2/n2party.py`, as the Godot agent's flow does) - a person's presses.
+- **Difficulty**: the list is cut to `game_status().difficulty_unlocked` (Easy only on a new card:
+  `a-1-05`, "More as your game unlocks them").
+- **Found: `net2_game_status()` crashes the program when it is called before the game's machine
+  runs** (SIGSEGV in the library: it reads the options record of the game's memory,
+  `rd32(A_SAVED_CONFIG)`, unconditionally; launch.cpp line 681). The portal now asks for it
+  only once `main.gd` says the machine has started and says "booting" until then
+  (`gameflow.gd`); the library should answer BOOTING by itself (for the online agent).
+  It can also answer `difficulty_unlocked` 5 (the portal caps it at 4).
+- Changed after the run: the room's line while the game goes back to its title after a game
+  says "Back to the title screen..." instead of "Your game is getting ready..." (in
+  `b-1-09` it still says the latter).
+- New: `tools/godot/project/portal/gameflow.gd` (the game's side of a room), `handover.prepare()`;
+  the extension is the Godot agent's (RtaNet2 on the library's net2) - nothing of the portal
+  is in `tools/godot/extension` any more except `rta_net2.*`, which the Godot agent now keeps.
+- Nothing of this work is running (the pids of `local/godot-portal/test/duo2/pids` are gone;
+  the service was stopped by `portal.py`).
+
 ## STATE (2026-10-13, night): on the real service
 
 The project's home is `~/champions-re` now (`docs/issues/workspace-move.md`);

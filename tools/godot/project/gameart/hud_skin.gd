@@ -129,7 +129,7 @@ func bar(ci: CanvasItem, rect: Rect2, value: float, ghost: float, a: Color, b: C
 	value = clampf(value, 0.0, 1.0)
 	ghost = clampf(ghost, 0.0, 1.0)
 	if ahead > value:
-		_paint(ci, "bar_green", Rect2(rect.position, Vector2(rect.size.x * clampf(ahead, 0.0, 1.0), rect.size.y)), Color(1, 1, 1, 0.55 * alpha))
+		_paint(ci, "bar_green", rect, rect.size.x * clampf(ahead, 0.0, 1.0), Color(1, 1, 1, 0.55 * alpha))
 	if ghost > value + 0.002:
 		style.rounded(ci, Rect2(rect.position, Vector2(rect.size.x * ghost, rect.size.y)), r, Color(1.0, 0.92, 0.76, 0.75 * alpha))
 	if value > 0.0:
@@ -137,29 +137,35 @@ func bar(ci: CanvasItem, rect: Rect2, value: float, ghost: float, a: Color, b: C
 		var tint := Color(1, 1, 1, alpha)
 		if paint == "bar_red" and a.h > 0.75 and a.h <= 0.93:
 			tint = Color(0.95, 0.62, 1.0, alpha)          # the boss's purple from the red paint
-		_paint(ci, paint, Rect2(rect.position, Vector2(w, rect.size.y)), tint)
+		_paint(ci, paint, rect, w, tint)
 	return true
 
 
-# the paint: its rounded left end once, its middle repeated along the bar (never stretched more than 1.6 x)
-func _paint(ci: CanvasItem, id: String, rect: Rect2, modulate: Color) -> void:
+# the paint, laid out over the WHOLE bar and shown up to `fill` pixels (so it does not stretch as the bar drains):
+# its rounded left end once, then its middle stretched along the bar (never more than 4 x; a longer bar takes
+# the middle again in equal pieces).  Texels 10..88 only: the paint darkens towards its ends.
+func _paint(ci: CanvasItem, id: String, rect: Rect2, fill: float, modulate: Color) -> void:
 	var size := GA.size_texels(id)
-	if size == Vector2.ZERO or rect.size.x < 1.0:
+	if size == Vector2.ZERO or fill < 0.5:
 		return
-	var tw := size.x - 6.0                        # the last texels are the game's cap block: left out
 	var h := rect.size.y
 	var px_per_texel := h / size.y
 	var cap := minf(6.0 * px_per_texel, rect.size.x)
-	GA.draw_part(ci, id, Rect2(rect.position, Vector2(cap, h)), Rect2(0, 0, cap / px_per_texel, size.y), modulate)
-	var x := rect.position.x + cap
-	var mid_tex := tw - 6.0
-	var piece := mid_tex * px_per_texel
-	var stretch := clampf(1.0, 1.0, 1.6)
-	piece *= stretch
-	while x < rect.end.x - 0.5:
-		var w := minf(piece, rect.end.x - x)
-		GA.draw_part(ci, id, Rect2(x, rect.position.y, w, h), Rect2(6.0, 0, mid_tex * (w / piece), size.y), modulate)
-		x += w
+	var mid := Rect2(10.0, 0, minf(78.0, size.x - 16.0), size.y)
+	var rest := maxf(0.0, rect.size.x - cap)
+	var n := maxi(1, int(ceil(rest / (mid.size.x * px_per_texel * 4.0))))
+	var piece := rest / n
+	var parts := [[0.0, cap, Rect2(0, 0, 6.0, size.y)]]
+	for k in range(n):
+		parts.append([cap + piece * k, piece, mid])
+	for p in parts:
+		var x: float = p[0]
+		var w: float = p[1]
+		if x >= fill or w <= 0.0:
+			break
+		var src: Rect2 = p[2]
+		var shown := minf(w, fill - x)
+		GA.draw_part(ci, id, Rect2(rect.position.x + x, rect.position.y, shown, h), Rect2(src.position, Vector2(src.size.x * shown / w, src.size.y)), modulate)
 
 
 # ---- text ---------------------------------------------------------------------------------------------

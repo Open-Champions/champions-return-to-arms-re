@@ -141,6 +141,15 @@ static func start() -> void:
 	_task = WorkerThreadPool.add_task(_build.bind(sig, t0), false, "gameart cache")
 
 
+# look again (the player has chosen a disc image since): only while there is no art and nothing is being built
+static func restart() -> void:
+	if _ready or _working:
+		return
+	_started = false
+	problem = ""
+	start()
+
+
 static func _arrived() -> void:
 	_ready = _images.size() > 0 or not _lazy.is_empty()
 	if _ready:

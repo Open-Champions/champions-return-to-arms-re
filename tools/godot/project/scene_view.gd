@@ -65,7 +65,7 @@ var look := {
 	"sky": "auto", "fog": "auto", "sun": "auto", "lamp": "auto", "bloom": "auto", "grade": "auto", "foliage": "auto", "fill": "auto", "lights": "auto", "aa": "4",
 	"shade": -1.0, "fog_start": 380.0, "fog_end": 1350.0, "fog_amount": 1.0, "sun_az": -1000.0, "sun_el": -1000.0,
 	"bloom_strength": 1.0, "sky_sun": 1.0, "shadow_splits": 4.0, "shadow_far": 1100.0,
-	"fill_light": 0.42, "fill_scale": 0.75, "light_energy": 1.0, "light_shadows": 2.0, "light_max": 8.0,
+	"fill_light": 0.42, "fill_scale": 0.45, "light_energy": 1.0, "light_shadows": 2.0, "light_max": 8.0,
 }
 var fill_sent := {}
 var card: Node                          # card.gd: the character card (the portal's Portrait.texture)

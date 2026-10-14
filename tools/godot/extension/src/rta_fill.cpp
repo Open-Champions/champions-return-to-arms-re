@@ -80,7 +80,7 @@ struct RtaDrawer::Fill {
     int learn_budget = 0;
     // switches
     bool on = false, ceilings = true, skirts = true;
-    double light = 0.42, scale = 0.75;
+    double light = 0.42, scale = 0.45;
     bool params_dirty = true;
     Ref<Shader> shader;
     // figures
@@ -337,60 +337,59 @@ void RtaDrawer::fill_learn(const rtag_scene* tap, const rtag_draw& d, const rtag
     }
     if (!kind && ground.size() >= 2) { kind = RTAG_FILL_SKIRT; tris = &ground; }
     if (!kind) return;
-    // the largest of them, and those within 48 units of it: one piece of wall (a swatch of many walls is a blur)
-    auto area = [](const rtag_scene_full* t) {
-        float ax = t[1].x - t[0].x, ay = t[1].y - t[0].y, az = t[1].z - t[0].z, bx = t[2].x - t[0].x, by = t[2].y - t[0].y, bz = t[2].z - t[0].z;
-        float cx = ay * bz - az * by, cy = az * bx - ax * bz, cz = ax * by - ay * bx;
-        return std::sqrt(cx * cx + cy * cy + cz * cz) * 0.5f;
-    };
-    const rtag_scene_full* big = (*tris)[0];
-    for (auto t : *tris) if (area(t) > area(big)) big = t;
-    const float bx = (big[0].x + big[1].x + big[2].x) / 3.0f, by = (big[0].y + big[1].y + big[2].y) / 3.0f;
-    std::vector<const rtag_scene_full*> piece;
-    for (auto t : *tris) {
-        float cx = (t[0].x + t[1].x + t[2].x) / 3.0f - bx, cy = (t[0].y + t[1].y + t[2].y) / 3.0f - by;
-        if (cx * cx + cy * cy < 48.0f * 48.0f) piece.push_back(t);
-    }
-    tris = &piece;
-    // where they lie in the texture (as gs_draw.gdshaderinc maps it: (uv x st_scale + tex_offset) / tex_size)
-    double u0 = 1e9, v0 = 1e9, u1 = -1e9, v1 = -1e9, sx = 0, sy = 0, sz = 0;
-    int corners = 0;
-    for (auto t : *tris)
-        for (int c = 0; c < 3; c++) {
-            const rtag_scene_full& q = t[c];
-            double u = (q.u * d.st_scale[0] + d.tex_offset[0]) / d.tex_size[0], v = (q.v * d.st_scale[1] + d.tex_offset[1]) / d.tex_size[1];
-            u0 = std::min(u0, u); u1 = std::max(u1, u); v0 = std::min(v0, v); v1 = std::max(v1, v);
-            sx += q.x; sy += q.y; sz += q.z;
-            corners++;
-        }
-    if (u1 - u0 >= 1.0) { u0 = 0; u1 = 1; } else { double k = std::floor(u0); u0 -= k; u1 = std::min(u1 - k, 1.0); }
-    if (v1 - v0 >= 1.0) { v0 = 0; v1 = 1; } else { double k = std::floor(v0); v0 -= k; v1 = std::min(v1 - k, 1.0); }
+    // The patch is cut from INSIDE one triangle - the one that covers most texels - so that nothing of the texture's other
+    // parts comes with it (a chunk's texture is an atlas of its faces): the parallelogram from one corner over half of
+    // each of its two edges lies within the triangle, and is mapped onto the square of the swatch.
     const CpuTexture& tex = cpu->second;
-    if ((u1 - u0) * tex.w < 6 || (v1 - v0) * tex.h < 6) return;
-    // the texture's own colours (the level's light is painted into them; the vertex light of a dark level is left out:
-    // how dark a ceiling is, is the shader's `darken`)
-    const float light[3] = {1, 1, 1};
+    auto texel = [&](const rtag_scene_full& q, double& x, double& y) {
+        double u = (q.u * d.st_scale[0] + d.tex_offset[0]) / d.tex_size[0], v = (q.v * d.st_scale[1] + d.tex_offset[1]) / d.tex_size[1];
+        x = u * tex.w; y = v * tex.h;
+    };
+    const rtag_scene_full* big = nullptr;
+    double best = 0;
+    for (auto t : *tris) {
+        double x[3], y[3];
+        for (int c = 0; c < 3; c++) texel(t[c], x[c], y[c]);
+        double area = std::fabs((x[1] - x[0]) * (y[2] - y[0]) - (x[2] - x[0]) * (y[1] - y[0])) * 0.5;
+        if (area > best) { best = area; big = t; }
+    }
+    if (!big || best < 120.0) return;   // too few texels to say anything
+    double tx0, ty0, tx1, ty1, tx2, ty2;
+    texel(big[0], tx0, ty0); texel(big[1], tx1, ty1); texel(big[2], tx2, ty2);
+    // the wrap (a repeating texture): the triangle moved into the texture by whole turns
+    double kx = std::floor(std::min(tx0, std::min(tx1, tx2)) / tex.w) * tex.w, ky = std::floor(std::min(ty0, std::min(ty1, ty2)) / tex.h) * tex.h;
+    tx0 -= kx; tx1 -= kx; tx2 -= kx; ty0 -= ky; ty1 -= ky; ty2 -= ky;
+    const double sx = (big[0].x + big[1].x + big[2].x) / 3.0, sy = (big[0].y + big[1].y + big[2].y) / 3.0, sz = (big[0].z + big[1].z + big[2].z) / 3.0;
+    const int corners = 1;
     PackedByteArray bytes;
     bytes.resize(SWATCH * SWATCH * 4);
     uint8_t* out = bytes.ptrw();
-    double lum = 0;
+    std::vector<float> rgb((size_t)SWATCH * SWATCH * 3);
+    double mean[3] = {0, 0, 0};
     for (int y = 0; y < SWATCH; y++)
         for (int x = 0; x < SWATCH; x++) {
-            double tx = (u0 + (u1 - u0) * (x + 0.5) / SWATCH) * tex.w - 0.5, ty = (v0 + (v1 - v0) * (y + 0.5) / SWATCH) * tex.h - 0.5;
-            int ix = (int)std::floor(tx), iy = (int)std::floor(ty);
-            double ax = tx - ix, ay = ty - iy;
+            double a = 0.5 * (x + 0.5) / SWATCH, b = 0.5 * (y + 0.5) / SWATCH;
+            double px_ = tx0 + (tx1 - tx0) * a + (tx2 - tx0) * b - 0.5, py_ = ty0 + (ty1 - ty0) * a + (ty2 - ty0) * b - 0.5;
+            int ix = (int)std::floor(px_), iy = (int)std::floor(py_);
+            double ax = px_ - ix, ay = py_ - iy;
             float c[3] = {0, 0, 0};
             for (int k = 0; k < 4; k++) {
-                int px = std::min(std::max(ix + (k & 1), 0), tex.w - 1), py = std::min(std::max(iy + (k >> 1), 0), tex.h - 1);
+                int qx = ((ix + (k & 1)) % tex.w + tex.w) % tex.w, qy = ((iy + (k >> 1)) % tex.h + tex.h) % tex.h;
                 double wgt = ((k & 1) ? ax : 1 - ax) * ((k >> 1) ? ay : 1 - ay);
-                const uint8_t* p = &tex.rgba[((size_t)py * tex.w + px) * 4];
+                const uint8_t* p = &tex.rgba[((size_t)qy * tex.w + qx) * 4];
                 for (int ch = 0; ch < 3; ch++) c[ch] += (float)(p[ch] * wgt);
             }
-            uint8_t* o = out + ((size_t)y * SWATCH + x) * 4;
-            for (int ch = 0; ch < 3; ch++) o[ch] = (uint8_t)std::min(std::max(c[ch] * light[ch], 0.0f), 255.0f);
-            o[3] = 255;
-            lum += (o[0] * 0.30 + o[1] * 0.59 + o[2] * 0.11) / 255.0;
+            for (int ch = 0; ch < 3; ch++) { rgb[((size_t)y * SWATCH + x) * 3 + ch] = c[ch]; mean[ch] += c[ch]; }
         }
+    for (int ch = 0; ch < 3; ch++) mean[ch] /= SWATCH * SWATCH;
+    // a ceiling seen from below is further off and less lit than the wall it was cut from: its grain is softened
+    double lum = 0;
+    for (int k = 0; k < SWATCH * SWATCH; k++) {
+        uint8_t* o = out + (size_t)k * 4;
+        for (int ch = 0; ch < 3; ch++) o[ch] = (uint8_t)std::min(std::max(mean[ch] + (rgb[(size_t)k * 3 + ch] - mean[ch]) * 0.65, 0.0), 255.0);
+        o[3] = 255;
+        lum += (o[0] * 0.30 + o[1] * 0.59 + o[2] * 0.11) / 255.0;
+    }
     lum /= SWATCH * SWATCH;
     if (lum < 0.004) return;            // black: nothing to learn from
     Ref<Image> image = Image::create_from_data(SWATCH, SWATCH, false, Image::FORMAT_RGBA8, bytes);
@@ -403,9 +402,10 @@ void RtaDrawer::fill_learn(const rtag_scene* tap, const rtag_draw& d, const rtag
     w.material = fill_material(fl, kind, w.texture);
     fl.swatches.push_back(w);
     fl.cut++;
-    UtilityFunctions::print(vformat("rta_godot: fill: swatch %d of %s for %s cut from texture %d (%d triangles, texels %.0f..%.0f x %.0f..%.0f of %d x %d) at %.0f %.0f %.0f, brightness %.3f",
+    UtilityFunctions::print(vformat("rta_godot: fill: swatch %d of %s for %s cut from texture %d (of %d triangles one of %.0f texels, %.0f..%.0f x %.0f..%.0f of %d x %d) at %.0f %.0f %.0f, brightness %.3f",
                                     (int64_t)fl.swatches.size(), String(fl.level.c_str()), kind == RTAG_FILL_CEILING ? "the ceilings" : "the skirts", (int64_t)d.texture,
-                                    (int64_t)tris->size(), u0 * tex.w, u1 * tex.w, v0 * tex.h, v1 * tex.h, tex.w, tex.h, w.x, w.y, w.z, w.lum));
+                                    (int64_t)tris->size(), best, std::min(tx0, std::min(tx1, tx2)), std::max(tx0, std::max(tx1, tx2)), std::min(ty0, std::min(ty1, ty2)),
+                                    std::max(ty0, std::max(ty1, ty2)), tex.w, tex.h, w.x, w.y, w.z, w.lum));
     if (const char* dump = getenv("RTA_GODOT_FILL_DUMP"))       // test aid: the swatches as pictures (game textures: local/ only)
         image->save_png(String(dump).path_join(vformat("%s-swatch-%d.png", String(fl.level.c_str()), (int64_t)fl.swatches.size())));
     fl.params_dirty = true;
