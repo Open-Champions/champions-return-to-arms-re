@@ -7,6 +7,10 @@ the camera system for the native build of Champions: Return to Arms (SLUS-20973 
 **Ran** (with what was seen) or only **Read**. Pictures are game output and stay under
 `local/recomp-fp/pictures/`.
 
+2026-10-14 follow-up: [first-person hands](native-first-person-hands.md) adds
+`view.first.body=off|arms|full` to this camera, with both renderer captures and
+simulation comparison evidence. The dated camera report below is preserved.
+
 ## STATE (rewritten at every step; read this first after a stop)
 
 **2026-10-13 14:23 - all five views run; the simulation is the overhead view's in each.**

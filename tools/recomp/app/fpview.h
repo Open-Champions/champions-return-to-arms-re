@@ -59,7 +59,7 @@ struct View {
     float far_plane = 1800;     // of the projection's depth range (the game's own: 1800); see cull_far
     float cull_far = 0;         // the far plane everything is culled by (g_farClip; the game caps it at 1800).  0 = leave the level's own
     Vec3 stream_focus{};        // the point the level's texture cells are kept loaded around (worldtex_stream)
-    bool hide_player = false;   // the local player's model is left out of the picture (first person)
+    bool hide_player = false;   // leave out the local model (view.first.body=off)
 
     // ---- the game's own camera of this frame (never changed) ----
     Vec3 game_eye{}, game_forward{}, game_up{}, game_right{};
@@ -112,6 +112,10 @@ void add_pitch(float degrees);
 // first-person view that looks at what the character strikes.  It is picture only: the move
 // stick keeps the meaning the game's camera gives it, so with follow on, "up" is no longer
 // into the picture once the character has turned.  View::look_yaw has the heading in use.
+// view.first.body = off|arms|full (default arms): original animated model and weapon,
+// arms clips the near 14 units (scaled by character height) and omits the model's upper
+// central/head meshes and appearance head parts; full uses view.first.near. No substitute
+// arm mesh or animation is used. Looking down can still show the lower body in arms mode.
 bool setting(const char* key, const char* value);
 // The settings as lines for the settings file.
 const char* settings_text();

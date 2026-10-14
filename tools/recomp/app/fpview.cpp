@@ -37,6 +37,7 @@
 #include "rt.h"
 #include "funcs.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -44,6 +45,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace fpview {
@@ -182,6 +184,7 @@ struct ModeSettings {
     bool hide_player;
     bool collide;           // pull in when the level is between pivot and camera
     float follow = 0;       // 0..1: how far the view turns from the game camera's heading to the character's facing
+    int body = 1;           // first person: 0 off, 1 arms (near cut), 2 full
 };
 ModeSettings g_set[MODE_COUNT] = {
     //  fov near dist height side pitch  min   max  fwd  speed far  head   hide   collide
@@ -189,7 +192,7 @@ ModeSettings g_set[MODE_COUNT] = {
     {50, 18, 215, 55, 0, -33, -33, -33, 0, 0, 0, false, false, true},         // action
     {58, 12, 150, 62, 0, -14, -45, 25, 0, 90, 0, false, false, true},         // chase
     {60, 8, 88, 66, 20, -8, -55, 45, 0, 100, 0, false, false, true},          // shoulder
-    {70, 4, 0, 60, 0, 0, -65, 65, 7, 110, 0, false, true, false},             // first
+    {70, 4, 0, 60, 0, 0, -65, 65, 7, 110, 0, false, false, false},            // first
 };
 float g_ease_seconds = 0.35f;
 const char* const NAMES[MODE_COUNT] = {"overhead", "action", "chase", "shoulder", "first"};
@@ -237,9 +240,17 @@ std::vector<Callout> g_on_view, g_on_drawn;
 // the local player's packets of the frame, by display-list buffer
 // (a buffer's ranges are good for the frame they were noted in and the one after, in which the list is
 // sent: the same addresses hold other packets in every later frame)
-struct Hidden { u32 base = 0, size = 0; u64 filled_at = 0; u32 draw_frame = 0; std::vector<std::pair<u32, u32>> ranges; };
+using Range = std::pair<u32, u32>;
+struct BodyDraw { Range tags; std::vector<Range> omit; };
+struct Hidden {
+    u32 base = 0, size = 0; u64 filled_at = 0; u32 draw_frame = 0;
+    std::vector<Range> ranges;
+    std::vector<BodyDraw> bodies;
+};
 Hidden g_hidden[2];
 int g_hidden_fill = -1;
+void (*g_previous_dma_tag)(u32, std::vector<u32>&) = nullptr;
+u32 g_filtered_tag = ~0u;
 
 void read_options() {
     if (g_options_read) return;
@@ -382,6 +393,10 @@ Pose pose_of(Ctx* c, int mode, const Inputs& in) {
     p.fov = s.fov;
     p.near_plane = s.near_plane;
     float size = in.size;                           // the character's height against the 72 the numbers were chosen for
+    // The original posed model, weapon and cast packets share the world's projection.
+    // A near cut removes the face/shoulders without changing the rig or animation. The
+    // scene tap carries this same range to Godot (including its complete triangles).
+    if (mode == FIRST && s.body == 1) p.near_plane = std::max(p.near_plane, 14.0f * size);
     float pitch = clampf(s.pitch + g_pitch[mode], std::min(s.pitch_min, s.pitch), std::max(s.pitch_max, s.pitch));
     Vec3 up = v3(0, 0, 1);
     auto forward_at = [&](float degrees) { return in.heading * std::cos(degrees * DEG) + v3(0, 0, std::sin(degrees * DEG)); };
@@ -694,6 +709,7 @@ bool begin_pass(Ctx* c) {
     g_hidden[fill].filled_at = g_passes;
     g_hidden[fill].draw_frame = W(G_DRAW_FRAME);
     g_hidden[fill].ranges.clear();
+    g_hidden[fill].bodies.clear();
     g_hidden_fill = fill;
 
     if (g_log && g_passes % 60 == 0)
@@ -731,8 +747,67 @@ void record_hidden(u32 lo, u32 hi) {
     g_hidden[g_hidden_fill].ranges.push_back({lo, hi});
 }
 
+// A near plane alone lets a long face enter the picture when an attack bends the head
+// forward. Use the model's own mesh boundaries to leave out its upper central meshes.
+// Read-only: neither the model's hide mask nor the player's pose/cache is changed.
+// Header/table layout: docs/formats/model-texture.md (.vif header and mesh records).
+void head_meshes(u32 model, bool whole, std::vector<Range>& out) {
+    model &= RAM_MASK;
+    if (!model || model > RAM_MASK - 2048) return;
+    unsigned count = g_ram[model + 0x12], tables = g_ram[model + 0x26];
+    if (!count || count > 64 || tables != 1) return;
+    u32 records = model + 0x28 + (count + 1) * 4;
+    int top = 0;
+    for (unsigned i = 0; i < count; ++i) top = std::max(top, (int)(s8)g_ram[records + i * 10 + 5]);
+    for (unsigned i = 0; i < count; ++i) {
+        const s8* box = (const s8*)(g_ram + records + i * 10);
+        // Rest-space bounds: z is up. Forearms/weapons are retained; the near cut
+        // still handles the torso. Scale is applied later by the game's draw code.
+        if (!whole && !(top > 30 && box[2] >= top * 0.74f && box[0] >= -20 && box[3] <= 20)) continue;
+        u32 lo = W(model + 0x28 + i * 4) & RAM_MASK, hi = W(model + 0x2c + i * 4) & RAM_MASK;
+        if (lo >= model && hi > lo && hi <= RAM_MASK && !(lo & 15) && !(hi & 15)) out.push_back({lo, hi});
+    }
+}
+
+// A model draw may reference several consecutive meshes in one DMA tag. Split only
+// that host stream span, at original mesh boundaries; the guest list and DMA accounting
+// stay intact. Both OpenGL and the Godot scene tap receive the same remaining packets.
+void body_dma_tag(u32 tag_address, std::vector<u32>& stream) {
+    if (g_previous_dma_tag) g_previous_dma_tag(tag_address, stream);
+    g_filtered_tag = ~0u;
+    u32 a = tag_address & RAM_MASK;
+    if (a > RAM_MASK - 16) return;
+    unsigned id = (W(a) >> 28) & 7;
+    if (id != 3 && id != 4) return; // REF/REFS only; setup and call/return stay intact
+    u32 lo = W(a + 4) & RAM_MASK, bytes = (W(a) & 0xffff) * 16;
+    if (!bytes || lo > RAM_MASK - bytes) return;
+    for (const Hidden& h : g_hidden) {
+        if (!h.base || a < h.base || a - h.base >= h.size || W(G_DRAW_FRAME) - h.draw_frame > 1) continue;
+        for (const BodyDraw& body : h.bodies) {
+            if (a < body.tags.first || a >= body.tags.second) continue;
+            std::vector<Range> cuts;
+            for (const Range& r : body.omit)
+                if (r.first < lo + bytes && r.second > lo) cuts.push_back({std::max(lo, r.first), std::min(lo + bytes, r.second)});
+            if (cuts.empty()) return;
+            std::sort(cuts.begin(), cuts.end());
+            // The tag's two VIF codes are normally transferred before its reference.
+            stream.push_back(W(a + 8)); stream.push_back(W(a + 12));
+            u32 cursor = lo;
+            for (const Range& cut : cuts) {
+                for (; cursor < cut.first; cursor += 4) stream.push_back(W(cursor));
+                cursor = std::max(cursor, cut.second);
+            }
+            for (; cursor < lo + bytes; cursor += 4) stream.push_back(W(cursor));
+            g_filtered_tag = a;
+            ++g_hidden_packets;
+            return;
+        }
+    }
+}
+
 bool dma_skip(u32 tag_address) {
     u32 a = tag_address & RAM_MASK;
+    if (a == g_filtered_tag) return true;
     for (const Hidden& h : g_hidden) {
         if (!h.base || h.ranges.empty() || a < h.base || a - h.base >= h.size) continue;
         if (W(G_DRAW_FRAME) - h.draw_frame > 1) continue;
@@ -787,7 +862,16 @@ bool setting(const char* key, const char* value) {
     else if (name == "far") s.far = clampf(number, 0, 1800);
     else if (name == "follow") s.follow = clampf(number, 0, 1);
     else if (name == "head") s.head_pose = !strcmp(value, "pose");
-    else if (name == "hide_player") s.hide_player = yes;
+    else if (name == "body" && m == FIRST) {
+        int body = !strcmp(value, "off") ? 0 : !strcmp(value, "arms") ? 1 : !strcmp(value, "full") ? 2 : -1;
+        if (body < 0) return false;
+        s.body = body;
+        s.hide_player = body == 0;
+    }
+    else if (name == "hide_player") { // accept older settings files; last setting wins
+        s.hide_player = yes;
+        if (m == FIRST) s.body = yes ? 0 : 2;
+    }
     else if (name == "collide") s.collide = yes;
     else return false;
     return true;
@@ -811,7 +895,8 @@ const char* settings_text() {
                      s.collide ? "yes" : "no");
             g_settings_text += line;
         } else {
-            snprintf(line, sizeof line, "view.%s.eye_forward = %g\nview.%s.hide_player = %s\n", NAMES[m], s.eye_forward, NAMES[m], s.hide_player ? "yes" : "no");
+            snprintf(line, sizeof line, "view.%s.eye_forward = %g\nview.first.body = %s\n", NAMES[m], s.eye_forward,
+                     s.body == 0 ? "off" : s.body == 1 ? "arms" : "full");
             g_settings_text += line;
         }
         snprintf(line, sizeof line, "view.%s.pitch = %g\nview.%s.pitch_min = %g\nview.%s.pitch_max = %g\nview.%s.look_speed = %g\nview.%s.follow = %g\n", NAMES[m],
@@ -833,6 +918,8 @@ float ground(Ctx* c, Vec3 p) { return ground_under(c, p); }
 
 void install() {
     rt_dma_skip = dma_skip;
+    g_previous_dma_tag = rt_dma_tag;
+    rt_dma_tag = body_dma_tag;
     g_next_frame_hook = rt_frame_hook;      // gfx_rt's; ours only notes the time (view-timing) and hands on
     rt_frame_hook = timing_frame_hook;
 }
@@ -906,13 +993,23 @@ void fn_0017d830(Ctx* c) {
     memcpy(g_ram + G_CAMERA_FOCUS, focus, 12);
 }
 
-// Player_draw: everything it does, it does; in first person its packets are left out of the stream
+// Player_draw still runs unchanged. Filter only the host's copy of its display packets.
 void fn_001a46c0(Ctx* c) {
     u32 self = (u32)c->r[4];
-    if (!g_in_pass || !g_view.hide_player || (self != g_view.player_object && self != g_view.drawn_object)) { orig_001a46c0(c); return; }
+    bool own = g_in_pass && (self == g_view.player_object || self == g_view.drawn_object);
+    bool arms = own && g_view.shown == FIRST && g_set[FIRST].body == 1;
+    if (!own || (!g_view.hide_player && !arms)) { orig_001a46c0(c); return; }
     u32 before = W(G_DL_CURSOR) & RAM_MASK;
     orig_001a46c0(c);
-    record_hidden(before, W(G_DL_CURSOR) & RAM_MASK);
+    u32 after = W(G_DL_CURSOR) & RAM_MASK;
+    if (g_view.hide_player) record_hidden(before, after);
+    else if (g_hidden_fill >= 0 && after > before) {
+        BodyDraw body{{before, after}, {}};
+        head_meshes(W(at(self) + 0x544), false, body.omit); // original body
+        head_meshes(W(at(self) + 0x548), true, body.omit);  // appearance head parts
+        head_meshes(W(at(self) + 0x54c), true, body.omit);
+        g_hidden[g_hidden_fill].bodies.push_back(std::move(body));
+    }
 }
 
 // Camera_followZoomInput: held off only when asked (--opt view-zoom=off) and a view looks with the stick

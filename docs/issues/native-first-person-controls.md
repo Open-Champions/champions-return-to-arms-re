@@ -9,6 +9,10 @@ the simulation (part 2). Every statement says whether it was **Ran** (with what 
 or only **Read** (with the address). Scripts, logs and pictures are game output and stay
 under `local/recomp-fp-controls/`.
 
+2026-10-14 follow-up: [first-person hands](native-first-person-hands.md) implements
+the body switch and records native/Godot swing, bow and spell captures plus the
+unchanged section 13 comparison. The dated controls report below is preserved.
+
 ## STATE (rewritten at every step; read this first after a stop)
 
 **2026-10-13 15:25 - the strafe section is in its final form and proven as far as part 3
