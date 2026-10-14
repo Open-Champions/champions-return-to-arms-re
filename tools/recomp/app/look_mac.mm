@@ -7,6 +7,9 @@
 #import <AppKit/AppKit.h>
 #import <CoreGraphics/CoreGraphics.h>
 
+#include <cstdio>
+#include <string>
+
 namespace hostlook {
 
 static id g_monitor = nil;
@@ -41,5 +44,17 @@ void capture(bool on) {
 }
 
 bool captured() { return g_captured; }
+
+std::string state() {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    bool visible = CGCursorIsVisible();
+#pragma clang diagnostic pop
+    NSWindow* key = NSApp ? [NSApp keyWindow] : nil;
+    char text[160];
+    snprintf(text, sizeof text, "pointer: held=%d shown=%d; this program in front=%d, a window of it has the keyboard=%d", (int)g_captured, (int)visible,
+             NSApp != nil && [NSApp isActive], key != nil);
+    return text;
+}
 
 }  // namespace hostlook

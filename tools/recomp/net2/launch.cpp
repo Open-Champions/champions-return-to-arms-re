@@ -137,10 +137,8 @@ bool at_title() {
 void read_character() {
     G.character = net2_character{};
     net2impl::put(G.character.name, net2impl::clean_label(rdstr(A_PLAYERS, 31).c_str(), 24));
-    static const char* CLASSES[7] = {"Barbarian", "Wood Elf Ranger", "High Elf Cleric", "Erudite Wizard", "Dark Elf Shadowknight",
-                                     "Vah Shir Berserker", "Iksar Shaman"};
     u32 cls = rd32(A_PLAYERS + PLAYER_CLASS);
-    net2impl::put(G.character.cls, cls < 7 ? CLASSES[cls] : "?");
+    net2impl::put(G.character.cls, cls < 7 ? net2impl::CLASS_WORDS[cls] : "?");
     G.character.level = (s8)rd8(A_PLAYERS + PLAYER_LEVEL);
 }
 

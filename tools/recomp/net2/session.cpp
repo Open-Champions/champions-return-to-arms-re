@@ -3,12 +3,11 @@
 #include "session_impl.h"
 
 #include <algorithm>
+#include <cstdlib>
 
 namespace net2impl {
 
 const char CODE_ALPHABET[33] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-
-int (*local_characters)(const char* card_dir, net2_character* out, int max) = nullptr;
 
 std::string code_normal(const char* text, size_t want) {
     std::string out;
@@ -160,8 +159,40 @@ template <class T> static int copy_out(const std::vector<T>& list, T* out, int m
 }
 
 #ifdef NET2_NO_SERVICE
-namespace net2impl { Backend* make_service(const net2_config& config) { return make_off(config); } }
+namespace net2impl {
+Backend* make_service(const net2_config& config) { return make_off(config); }
+n2::Carrier* carrier_of(Backend*) { return nullptr; }
+}
 #endif
+
+namespace net2impl {
+std::recursive_mutex& big_lock() {
+    static std::recursive_mutex lock;
+    return lock;
+}
+}
+#define LOCKED std::lock_guard<std::recursive_mutex> hold_(net2impl::big_lock())
+
+// Where the service is, when the program did not say: the environment, then one line in a
+// file beside the identity, then the built-in default (none: the owner has not decided
+// where the service runs).
+static const char* NET2_DEFAULT_SERVICE = "";       // "host:port" once the owner has decided where the service runs
+static std::string find_service(const net2_config& config) {
+    if (config.service && *config.service) return config.service;
+    if (const char* env = getenv("RTA_NET2_SERVICE"))
+        if (*env) return env;
+    if (config.data_dir && *config.data_dir) {
+        std::string path = std::string(config.data_dir) + "/net2-service.txt";
+        if (FILE* f = fopen(path.c_str(), "r")) {
+            char text[160] = "";
+            if (!fgets(text, sizeof text, f)) text[0] = 0;
+            fclose(f);
+            std::string line = clean_text(text, 120);
+            if (!line.empty() && line[0] != '#') return line;
+        }
+    }
+    return NET2_DEFAULT_SERVICE;
+}
 
 extern "C" {
 
@@ -169,31 +200,37 @@ net2* net2_open(const net2_config* given) {
     net2_config config{};
     if (given) memcpy(&config, given, std::min<size_t>(given->struct_size ? given->struct_size : sizeof config, sizeof config));
     net2* n = new net2;
-    bool mock = config.mock || (config.service && !strcmp(config.service, "mock"));
+    LOCKED;
+    std::string service = find_service(config);
+    bool mock = config.mock || service == "mock";
+    config.service = service.c_str();
     if (mock) n->body = make_mock(config);
-    else if (config.service && *config.service) n->body = make_service(config);
+    else if (!service.empty()) n->body = make_service(config);
     else n->body = make_off(config);
     return n;
 }
 
 void net2_close(net2* n) {
+    LOCKED;
     if (!n) return;
     delete n->body;
     delete n;
 }
 
-void net2_poll(net2* n) { if (n) n->body->poll(); }
+void net2_poll(net2* n) { LOCKED; if (n) n->body->poll(); }
 
 int net2_next_event(net2* n, net2_event* out) {
+    LOCKED;
     if (!n || n->body->s.events.empty()) return 0;
     if (out) *out = n->body->s.events.front();
     n->body->s.events.pop_front();
     return 1;
 }
 
-void net2_me(net2* n, net2_me_t* out) { if (n && out) *out = n->body->s.me; }
+void net2_me(net2* n, net2_me_t* out) { LOCKED; if (n && out) *out = n->body->s.me; }
 
 int net2_set_name(net2* n, const char* name) {
+    LOCKED;
     if (!n) return NET2_ERR_ARGUMENT;
     std::string problem = name_problem(name);
     if (!problem.empty()) return n->body->s.error(NET2_ERR_ARGUMENT, problem);
@@ -201,6 +238,7 @@ int net2_set_name(net2* n, const char* name) {
 }
 
 int net2_set_character(net2* n, const net2_character* character) {
+    LOCKED;
     if (!n) return NET2_ERR_ARGUMENT;
     if (!character) return n->body->set_character(nullptr);
     net2_character c{};
@@ -211,23 +249,32 @@ int net2_set_character(net2* n, const net2_character* character) {
 }
 
 int net2_set_game(net2* n, const char* level) {
+    LOCKED;
     return n ? n->body->set_game(clean_label(level, 20)) : NET2_ERR_ARGUMENT;
 }
 
-int net2_local_characters(net2*, const char* card_dir, net2_character* out, int max) {
-    if (!out || max <= 0 || !local_characters) return 0;
-    return local_characters(card_dir, out, max);
+int net2_local_characters(net2* n, const char* card_dir, net2_character* out, int max) {
+    LOCKED;
+    if (!out || max <= 0) return 0;
+    int count = card_characters(card_dir, out, max);
+    if (count == 0 && n && n->body->s.me.mock && (!card_dir || !*card_dir)) {
+        // the mock, asked without a card: three to draw a list with
+        static const net2_character FAKES[3] = {{"Brakka", "Barbarian", 34}, {"Lirael", "Ranger", 12}, {"Old Tessa", "Cleric", 47}};
+        for (; count < 3 && count < max; count++) out[count] = FAKES[count];
+    }
+    return count;
 }
 
-int net2_delete_everything(net2* n) { return n ? n->body->delete_everything() : NET2_ERR_ARGUMENT; }
+int net2_delete_everything(net2* n) { LOCKED; return n ? n->body->delete_everything() : NET2_ERR_ARGUMENT; }
 
-int net2_friends(net2* n, net2_friend* out, int max) { return n ? copy_out(n->body->s.friends, out, max) : 0; }
-int net2_recent(net2* n, net2_friend* out, int max) { return n ? copy_out(n->body->s.recent, out, max) : 0; }
-int net2_blocked(net2* n, net2_friend* out, int max) { return n ? copy_out(n->body->s.blocked, out, max) : 0; }
-int net2_requests(net2* n, net2_request* out, int max) { return n ? copy_out(n->body->s.requests, out, max) : 0; }
-int net2_invites(net2* n, net2_invite_t* out, int max) { return n ? copy_out(n->body->s.invites, out, max) : 0; }
+int net2_friends(net2* n, net2_friend* out, int max) { LOCKED; return n ? copy_out(n->body->s.friends, out, max) : 0; }
+int net2_recent(net2* n, net2_friend* out, int max) { LOCKED; return n ? copy_out(n->body->s.recent, out, max) : 0; }
+int net2_blocked(net2* n, net2_friend* out, int max) { LOCKED; return n ? copy_out(n->body->s.blocked, out, max) : 0; }
+int net2_requests(net2* n, net2_request* out, int max) { LOCKED; return n ? copy_out(n->body->s.requests, out, max) : 0; }
+int net2_invites(net2* n, net2_invite_t* out, int max) { LOCKED; return n ? copy_out(n->body->s.invites, out, max) : 0; }
 
 int net2_friend_add(net2* n, const char* friend_code) {
+    LOCKED;
     if (!n) return NET2_ERR_ARGUMENT;
     std::string code = code_normal(friend_code, 8);
     if (code.empty()) return n->body->s.error(NET2_ERR_ARGUMENT, "A friend code is eight letters and digits, like K7QF-2MXD.");
@@ -238,30 +285,33 @@ static int friend_op(net2* n, const char* op, const char* id) {
     if (!id_ok(id)) return n->body->s.error(NET2_ERR_ARGUMENT, "That is not a player.");
     return n->body->friend_op(op, id);
 }
-int net2_friend_add_id(net2* n, const char* id) { return friend_op(n, "add-id", id); }
-int net2_friend_accept(net2* n, const char* id) { return friend_op(n, "accept", id); }
-int net2_friend_decline(net2* n, const char* id) { return friend_op(n, "decline", id); }
-int net2_friend_remove(net2* n, const char* id) { return friend_op(n, "remove", id); }
-int net2_block(net2* n, const char* id) { return friend_op(n, "block", id); }
-int net2_unblock(net2* n, const char* id) { return friend_op(n, "unblock", id); }
+int net2_friend_add_id(net2* n, const char* id) { LOCKED; return friend_op(n, "add-id", id); }
+int net2_friend_accept(net2* n, const char* id) { LOCKED; return friend_op(n, "accept", id); }
+int net2_friend_decline(net2* n, const char* id) { LOCKED; return friend_op(n, "decline", id); }
+int net2_friend_remove(net2* n, const char* id) { LOCKED; return friend_op(n, "remove", id); }
+int net2_block(net2* n, const char* id) { LOCKED; return friend_op(n, "block", id); }
+int net2_unblock(net2* n, const char* id) { LOCKED; return friend_op(n, "unblock", id); }
 
 int net2_invite(net2* n, const char* friend_id) {
+    LOCKED;
     if (!n) return NET2_ERR_ARGUMENT;
     if (!id_ok(friend_id)) return n->body->s.error(NET2_ERR_ARGUMENT, "That is not a player.");
     if (n->body->s.room.state != NET2_ROOM_OPEN) return n->body->s.error(NET2_ERR_STATE, "You are not in a room that is open.");
     return n->body->invite(friend_id);
 }
 int net2_invite_accept(net2* n, const char* from_id) {
+    LOCKED;
     if (!n || !id_ok(from_id)) return NET2_ERR_ARGUMENT;
     if (n->body->s.room.state != NET2_ROOM_NONE) return n->body->s.error(NET2_ERR_STATE, "Leave the room you are in first.");
     return n->body->invite_answer(from_id, true);
 }
 int net2_invite_dismiss(net2* n, const char* from_id) {
+    LOCKED;
     if (!n || !id_ok(from_id)) return NET2_ERR_ARGUMENT;
     return n->body->invite_answer(from_id, false);
 }
 
-void net2_room(net2* n, net2_room_t* out) { if (n && out) *out = n->body->s.room; }
+void net2_room(net2* n, net2_room_t* out) { LOCKED; if (n && out) *out = n->body->s.room; }
 
 static net2_options clean_options(const net2_options* given) {
     net2_options o{};
@@ -270,16 +320,20 @@ static net2_options clean_options(const net2_options* given) {
         o.difficulty = given->difficulty < 0 || given->difficulty > 9 ? 0 : given->difficulty;
         o.mode = given->mode < 0 || given->mode > 9 ? 0 : given->mode;
         o.open_to = given->open_to == NET2_OPEN_FRIENDS ? NET2_OPEN_FRIENDS : NET2_OPEN_CODE;
+        o.mission = given->mission < 0 || given->mission > 13 ? 0 : given->mission;
+        o.kill_limit = given->kill_limit < 0 || given->kill_limit > 99 ? 0 : given->kill_limit;
     }
     return o;
 }
 
 int net2_host(net2* n, const net2_options* options) {
+    LOCKED;
     if (!n) return NET2_ERR_ARGUMENT;
     if (n->body->s.room.state != NET2_ROOM_NONE) return n->body->s.error(NET2_ERR_STATE, "Leave the room you are in first.");
     return n->body->host(clean_options(options));
 }
 int net2_join(net2* n, const char* code) {
+    LOCKED;
     if (!n) return NET2_ERR_ARGUMENT;
     std::string normal = code_normal(code, 5);
     if (normal.empty()) return n->body->s.error(NET2_ERR_ARGUMENT, "A room code is five letters and digits, like H4KQ7.");
@@ -287,12 +341,14 @@ int net2_join(net2* n, const char* code) {
     return n->body->join(normal);
 }
 int net2_join_friend(net2* n, const char* friend_id) {
+    LOCKED;
     if (!n) return NET2_ERR_ARGUMENT;
     if (!id_ok(friend_id)) return n->body->s.error(NET2_ERR_ARGUMENT, "That is not a player.");
     if (n->body->s.room.state != NET2_ROOM_NONE) return n->body->s.error(NET2_ERR_STATE, "Leave the room you are in first.");
     return n->body->join_friend(friend_id);
 }
 int net2_chat(net2* n, const char* text) {
+    LOCKED;
     if (!n) return NET2_ERR_ARGUMENT;
     std::string line = clean_text(text, 120);
     if (line.empty()) return NET2_ERR_ARGUMENT;
@@ -307,16 +363,19 @@ static int in_open_room(net2* n, bool host) {
     return NET2_OK;
 }
 int net2_ready(net2* n, int ready) {
+    LOCKED;
     if (!n) return NET2_ERR_ARGUMENT;
     int r = in_open_room(n, false);
     return r ? r : n->body->ready(ready != 0);
 }
 int net2_set_options(net2* n, const net2_options* options) {
+    LOCKED;
     if (!n) return NET2_ERR_ARGUMENT;
     int r = in_open_room(n, true);
     return r ? r : n->body->set_options(clean_options(options));
 }
 int net2_kick(net2* n, int slot) {
+    LOCKED;
     if (!n) return NET2_ERR_ARGUMENT;
     int r = in_open_room(n, true);
     if (r) return r;
@@ -324,21 +383,24 @@ int net2_kick(net2* n, int slot) {
     return n->body->kick(slot);
 }
 int net2_start(net2* n) {
+    LOCKED;
     if (!n) return NET2_ERR_ARGUMENT;
     int r = in_open_room(n, true);
     if (r) return r;
     if (n->body->s.room.count < 2) return n->body->s.error(NET2_ERR_STATE, "A game needs at least two players.");
     return n->body->start();
 }
-int net2_leave(net2* n) { return n ? n->body->leave() : NET2_ERR_ARGUMENT; }
+int net2_leave(net2* n) { LOCKED; return n ? n->body->leave() : NET2_ERR_ARGUMENT; }
 
-void net2_session(net2* n, net2_session_t* out) { if (n && out) *out = n->body->s.session; }
+void net2_session(net2* n, net2_session_t* out) { LOCKED; if (n && out) *out = n->body->s.session; }
 int net2_game_state(net2* n, const char* level) {
+    LOCKED;
     if (!n) return NET2_ERR_ARGUMENT;
     return n->body->game_state(clean_label(level, 20), level != nullptr);
 }
 
 int net2_debug(net2* n, const char* what, char* out, int size) {
+    LOCKED;
     if (!n || !out || size <= 0) return NET2_ERR_ARGUMENT;
     std::string text;
     int r = n->body->debug(what ? what : "", text);
@@ -346,11 +408,13 @@ int net2_debug(net2* n, const char* what, char* out, int size) {
     return r;
 }
 int net2_set(net2* n, const char* key, const char* value) {
+    LOCKED;
     if (!n || !key) return NET2_ERR_ARGUMENT;
     return n->body->set(key, value ? value : "");
 }
 
 const char* net2_error_text(int code) {
+    LOCKED;
     switch (code) {
     case NET2_OK: return "ok";
     case NET2_ERR_OFFLINE: return "no link to the service";

@@ -59,8 +59,11 @@ typedef struct net2_config {
                                    first start (mode 0600) and read afterwards.  Moving to another
                                    computer = copying that one file.  NULL: nothing is kept (a new
                                    player at every start) */
-    const char* service;        /* "host:port" of the rendezvous service; NULL or "": the mock when
-                                   `mock` is set, otherwise no service (everything says OFFLINE) */
+    const char* service;        /* "host:port" of the rendezvous service.  NULL or "": the mock when
+                                   `mock` is set; otherwise the environment variable RTA_NET2_SERVICE,
+                                   then the first line of <data_dir>/net2-service.txt, then the built-in
+                                   default (none yet: where the service runs is the owner's decision -
+                                   until then everything says OFFLINE and net2_me().problem says why) */
     int mock;                   /* 1: the mock described above; `service` is ignored */
     const char* name;           /* the display name to register with on the very first start
                                    (later: net2_set_name); NULL: "Player" */
@@ -146,8 +149,12 @@ int net2_set_character(net2* n, const net2_character* character);
 /* Where I am, for my friends: "in a game" with the level's name, or (NULL / "") not in one.
    In a room / online / offline the service knows by itself. */
 int net2_set_game(net2* n, const char* level);
-/* The characters saved on this computer's memory card (for a "characters I have" list).
-   Read locally; nothing is sent.  Returns how many were written to out. */
+/* The characters saved on this computer's memory card (for a "characters I have" list):
+   the characters in the save slots under card_dir - the native program's <data>/card, the
+   emulator application's <data>/vfs.  Read from the files; no game needed; nothing is
+   sent.  Returns how many were written to out (0: no saved game there yet - a character
+   is on the card once the player has saved at a save point).  The mock, asked with a NULL
+   card_dir, gives three made-up ones. */
 int net2_local_characters(net2* n, const char* card_dir, net2_character* out, int max);
 /* Everything the service holds about me - name, friend links both ways, requests, blocks,
    recent players, presence - is deleted there, and the identity file here.  Answered with
@@ -222,10 +229,17 @@ enum { NET2_OPEN_CODE = 0,      /* whoever has the code */
        NET2_OPEN_FRIENDS = 1 }; /* and: my friends see it as joinable and may walk in */
 
 typedef struct net2_options {
-    char level[NET2_LEVEL];     /* where the game starts; "" = the game's own start (the hub) */
-    int difficulty;             /* 1 easy .. the game's own numbers; 0 = the game's default */
-    int mode;                   /* 0 co-operative (the game's own numbers) */
+    char level[NET2_LEVEL];     /* where the game starts; "" = the game's own start (the hub).  A name of
+                                   the game's level table ("drunare"): the first level is that one */
+    int difficulty;             /* the game's own four: 1 easy, 2 normal, 3 hard, 4 harder (its menu keys
+                                   menu_easy2 .. menu_harder2); 0 = normal.  The game lets a host choose
+                                   only what its own memory card has unlocked: more is cut down by it */
+    int mode;                   /* the game's own three: 0 play missions (the campaign, co-operative),
+                                   1 arena co-operative, 2 arena versus */
     int open_to;                /* NET2_OPEN_* */
+    int mission;                /* mode 0: 0 = from the hub as the host's progress has it; 1..13 the
+                                   game's "menu_mis1".."menu_mis13" (what its own net menu offers a host) */
+    int kill_limit;             /* mode 2: 5, 10 or 25 (the game's own three); 0 = 5 */
 } net2_options;
 
 typedef struct net2_member {
@@ -242,6 +256,7 @@ typedef struct net2_member {
     uint8_t arith_can, arith_does;
     int route;                  /* NET2_ROUTE_*: how this machine reaches them (after start) */
     int rtt_ms;                 /* measured on that route; -1 not yet */
+    int phase;                  /* 0 in the room, 1 the game was started for them, 2 their game runs */
 } net2_member;
 
 typedef struct net2_chat_line {

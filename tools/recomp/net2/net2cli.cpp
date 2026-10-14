@@ -5,12 +5,13 @@
 //   net2cli --service 127.0.0.1:41900 --data DIR [--name NAME] [--fix 27f61e1d:91] [--arith 3:0]
 //
 // Commands:  me | friends | requests | invites | recent | blocked | room | session
-//            name NAME | character NAME;CLASS;LEVEL | game [LEVEL]
+//            name NAME | character NAME;CLASS;LEVEL | game [LEVEL] | cards [CARD_DIR]
 //            add CODE | add-id WHO | accept WHO | decline WHO | remove WHO | block WHO | unblock WHO
 //            invite WHO | take WHO | dismiss WHO
 //            host [friends] [LEVEL] | join CODE | join-friend WHO | chat TEXT | ready [0|1]
 //            options LEVEL DIFFICULTY [friends] | kick SLOT | start | leave
-//            running [LEVEL] | over | delete | debug WHAT | set KEY VALUE | wait SECONDS | quit
+//            running [LEVEL] | over | delete | debug WHAT | set KEY VALUE | echo TEXT | wait SECONDS | quit
+//            (debug: link | udp | send SLOT TEXT | recv)
 // WHO is a player id, or the beginning of a name in any of the lists.
 // Every event is one line: "EVENT <type> code=<n> who=<name> room=<code> text=<...>".
 #include "session.h"
@@ -133,6 +134,11 @@ static void command(net2* n, const std::string& line, bool& quit, double& wait) 
             show_character(g.players[i].character);
             printf("\n");
         }
+    } else if (verb == "cards") {
+        net2_character list[16];
+        int count = net2_local_characters(n, rest.empty() ? nullptr : rest.c_str(), list, 16);
+        printf("cards: %d\n", count);
+        for (int i = 0; i < count; i++) printf("  %s, %s %d\n", list[i].name, list[i].cls, list[i].level);
     } else if (verb == "name") r = net2_set_name(n, rest.c_str());
     else if (verb == "character") {
         net2_character c{};
@@ -186,7 +192,8 @@ static void command(net2* n, const std::string& line, bool& quit, double& wait) 
     } else if (verb == "set") {
         size_t s2 = rest.find(' ');
         r = net2_set(n, rest.substr(0, s2).c_str(), s2 == std::string::npos ? "" : rest.substr(s2 + 1).c_str());
-    } else if (verb == "wait") wait = atof(rest.c_str());
+    } else if (verb == "echo") printf("ECHO %s\n", rest.c_str());
+    else if (verb == "wait") wait = atof(rest.c_str());
     else if (verb == "quit") quit = true;
     else if (!verb.empty() && verb[0] != '#') printf("? %s\n", verb.c_str());
     if (r) printf("RESULT %s: %d (%s)\n", verb.c_str(), r, net2_error_text(r));

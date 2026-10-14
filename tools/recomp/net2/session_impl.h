@@ -7,8 +7,11 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <mutex>
 #include <string>
 #include <vector>
+
+namespace n2 { struct Carrier; }
 
 namespace net2impl {
 
@@ -101,13 +104,21 @@ struct Backend {
     virtual int set(const std::string& key, const std::string& value) { (void)key; (void)value; return NET2_ERR_ARGUMENT; }
 };
 
+// One lock for everything of net2: the calls of session.h take it, and so does the game's
+// side (launch.cpp), whose threads are not the caller's.
+std::recursive_mutex& big_lock();
+
 Backend* make_mock(const net2_config& config);
 Backend* make_service(const net2_config& config);   // session_net.cpp
 Backend* make_off(const net2_config& config);
 
-// The card directory's saved characters (launch.cpp supplies the reader when the game is
-// linked; without it the list is empty).
-extern int (*local_characters)(const char* card_dir, net2_character* out, int max);
+// the UDP socket and routes of a body that talks to the service; nullptr for the others
+n2::Carrier* carrier_of(Backend* body);
+
+// The characters in the saved games of a card directory (cardchars.cpp), and the class
+// words by the game's class number.
+int card_characters(const char* card_dir, net2_character* out, int max);
+extern const char* const CLASS_WORDS[7];
 
 }  // namespace net2impl
 

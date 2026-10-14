@@ -29,8 +29,7 @@
 namespace net2impl {
 namespace {
 
-const char* CLASSES[7] = {"Barbarian", "Wood Elf Ranger", "High Elf Cleric", "Erudite Wizard",
-                          "Dark Elf Shadowknight", "Vah Shir Berserker", "Iksar Shaman"};
+const char* const* CLASSES = CLASS_WORDS;       // the game's seven, by class number (cardchars.cpp)
 const char* LEVELS[5] = {"hub", "drunare", "blood1", "kelethin", "strife"};
 
 struct Fake {
