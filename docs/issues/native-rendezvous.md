@@ -492,6 +492,9 @@ memory card (the runs make new ones); the emulator application in a room.
 
 ## 7. The emulator application (design only)
 
+Built and run on 2026-10-14 - with one change to point 3 (a pnach section that is not in the
+fix set): `docs/issues/app-rendezvous.md`.
+
 The Mac application (Play!-based) has the game's whole network stack inside the emulated
 machine; its layer `tools/play-net/src/RtaNet.cpp` sees every datagram between the game
 and the host's sockets and already rewrites addresses. For it to sit in a rendezvous room

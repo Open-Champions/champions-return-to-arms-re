@@ -5,6 +5,7 @@
 #include "Rta.h"
 #include "RtaNet.h"
 #include "RtaOnline.h"
+#include "RtaRoom.h"
 
 #include <QCommandLineParser>
 #include <QCoreApplication>
@@ -43,6 +44,7 @@
 
 #include <arpa/inet.h>
 #include <dirent.h>
+#include <execinfo.h>
 #include <fcntl.h>
 #include <ifaddrs.h>
 #include <netdb.h>
@@ -66,6 +68,7 @@
 #include "PS2VM_Preferences.h"
 #include "PathUtils.h"
 #include "PreferenceDefs.h"
+#include "ee/EeExecutor.h"
 #include "ee/PS2OS.h"
 #include "input/PH_GenericInput.h"
 #include "GSH_OpenGLQt.h"
@@ -138,6 +141,18 @@ namespace
 		bool holdDisconnects = true; // --rta-no-disconnect-hold switches it off (RtaNet.cpp, "A peer's disconnect, held back")
 		int testDialogs = 0;        // --rta-test-dialogs now|released (Rta::TestDialogs)
 		int testFolderWait = 0;     // --rta-test-folder-wait: seconds the first opening of a guarded folder or file takes
+		// a room of our own rendezvous service (RtaRoom.h, docs/issues/app-rendezvous.md)
+		std::string room;           // --rta-room host|host:friends|join:CODE: to a room by itself from power-on
+		std::string roomService;    // --rta-room-service HOST:PORT, else launch.ini room_service, else RTA_NET2_SERVICE, else <data>/net2-service.txt
+		std::string roomName;       // --rta-room-name: the display name of a first start (else asked in a dialog)
+		int roomStartAt = 0;        // --rta-room-start N: as host, start by itself when N are in and ready
+		std::string roomRelay;      // --rta-room-relay force|never (tests)
+		std::string roomBind;       // --rta-room-bind ADDRESS:PORT (tests)
+		std::string roomLog;        // --rta-room-log FILE (tests)
+		bool roomLocal = false;     // --rta-room-local: a service on this computer only (tests)
+		bool roomOnce = false;      // --rta-room-once: no new character after a game (tests)
+		// tests: the tick log and tick-keyed writes, as the native program has them
+		std::string tickLog, tickWatch, tickDo;
 	};
 
 	// The packaged application (see Rta.h, LaunchInfo)
@@ -145,6 +160,9 @@ namespace
 	const char* BUNDLED_PATCH_NAME = "SLUS-20973_4028A55F.pnach";
 	const char* BUNDLED_SECTIONS_NAME = "sections.txt";
 	const char* BUNDLED_DEFAULTS_NAME = "defaults.ini";
+	// the section a room's start needs (patches/SLUS-20973_4028A55F.pnach; RtaRoom.h): applied
+	// beside the fix set and not counted in its figure
+	const char* ROOM_LAUNCH_SECTION = "Room launch: the developer's network start uses the modules loaded at boot";
 	struct Launch
 	{
 		bool packaged = false;
@@ -647,6 +665,9 @@ namespace
 			}
 			if(options.net) StartNet();
 			StartOnline(base);
+			if(m_net) m_net->SetCarrier(&room);
+			StartTickLog();
+			if(!options.room.empty()) StartRoomAtPowerOn();
 
 			m_executableChange = m_vm->m_ee->m_os->OnExecutableChange.Connect([this]() { OnExecutableChange(); });
 			StartTextures(base);
@@ -732,6 +753,55 @@ namespace
 
 		// ---- one-step online (RtaOnline.h) ----------------------------------------------
 		Rta::COnline online;
+
+		// ---- a room of our own (RtaRoom.h) ----------------------------------------------
+		Rta::CRoom room;
+		Rta::CTickLog tickLog;
+
+		std::string RoomDataDir()
+		{
+			return CAppConfig::GetInstance().GetBasePath().string();
+		}
+		bool OpenRoom(const std::string& name, std::string& error)
+		{
+			if(room.IsOpen()) return true;
+			Rta::RoomSetup setup;
+			setup.dataDir = RoomDataDir();
+			setup.service = options.roomService;
+			setup.name = name;
+			setup.fixSet = m_patchHash;
+			setup.fixWords = m_patchWords;
+#ifdef FPUTILS_HAS_ARITHMETIC
+			setup.arithCan = (options.arith == "browser") ? 2 : ((options.arith == "native") ? 1 : 3);
+#else
+			setup.arithCan = 1;
+#endif
+			setup.arithDoes = (m_arithNow == Rta::ARITH_BROWSER) ? 1 : 0;
+			setup.localOnly = options.roomLocal;
+			setup.relay = options.roomRelay;
+			setup.bind = options.roomBind;
+			setup.startAt = options.roomStartAt;
+			setup.again = !options.roomOnce;
+			setup.guestIp = m_net ? m_net->Config().guestIp : 0;
+			setup.cross = 1u << Button::CROSS;
+			setup.logFile = options.roomLog;
+			setup.log = [this](const std::string& line) { Log(line); };
+			bool background = options.testBackground;
+			setup.showCode = [background](const std::string& code) {
+				if(!background) QMetaObject::invokeMethod(QCoreApplication::instance(), [code]() { Rta::ShowRoomCode(code); }, Qt::QueuedConnection);
+			};
+			if(!m_net)
+			{
+				error = "the built-in network is switched off (--rta-no-net)";
+				return false;
+			}
+			if(Rta::CRoom::FirstStart(setup.dataDir) && name.empty())
+			{
+				error = "a name is needed for the first start";
+				return false;
+			}
+			return room.Open(setup, error);
+		}
 
 		// "", "lobby", "host", "host:CODE" or "join:CODE"
 		// "+choose" after host or join: the player chooses the character, although the one
@@ -1184,6 +1254,47 @@ namespace
 			if(file.open(QIODevice::WriteOnly | QIODevice::Truncate)) file.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
 		}
 
+		// ---- tests: the tick log and tick-keyed writes (RtaRoom.h, CTickLog) ---------------
+		// At the return of the tick's task pass in net_frameLoop, as the native program and
+		// the rig log a tick, through the executor's block hook (play-net.patch, EeExecutor).
+		void StartTickLog()
+		{
+			if(options.tickLog.empty() && options.tickDo.empty()) return;
+			std::string error;
+			if(!tickLog.Open(options.tickLog, options.tickWatch, options.tickDo, error))
+			{
+				Log("tick log: " + error);
+				return;
+			}
+			auto executor = dynamic_cast<CEeExecutor*>(m_vm->m_ee->m_EE.m_executor.get());
+			if(!executor)
+			{
+				Log("tick log: the machine's executor has no block hook");
+				return;
+			}
+			uint8* ram = m_vm->m_ee->m_ram;
+			executor->m_rtaBlockHook = [this, ram]() { tickLog.OnTick(ram, m_frame.load()); };
+			executor->m_rtaBlockHookAddress = 0x13AEE8;
+			Log("tick log: " + (options.tickLog.empty() ? std::string("(none)") : options.tickLog) + (options.tickDo.empty() ? "" : "; tick-keyed writes from " + options.tickDo));
+		}
+
+		void StartRoomAtPowerOn()
+		{
+			std::string error;
+			if(!OpenRoom(options.roomName, error))
+			{
+				if(Rta::CRoom::FirstStart(RoomDataDir()) && options.roomName.empty() && (!options.testBackground || options.testDialogs != 0))
+				{
+					std::string want = options.room;
+					QMetaObject::invokeMethod(QCoreApplication::instance(), [want]() { Rta::AskRoomName(want); }, Qt::QueuedConnection);
+					return;
+				}
+				Log("room: " + error);
+				return;
+			}
+			if(!room.Want(options.room, error)) Log("room: " + error);
+		}
+
 		// ---- the network ----------------------------------------------------------------
 
 		void StartNet()
@@ -1346,6 +1457,23 @@ namespace
 				Log("patches: " + m_patchSet + " from " + options.patchFile);
 				for(const auto& name : found) Log("  [" + name + "]");
 			}
+			// the room's start (not a fix: not in the figure)
+			if(!options.patchFile.empty())
+			{
+				std::set<std::string> found;
+				std::vector<PatchWord> words;
+				if(ReadPatchFile(options.patchFile, {ROOM_LAUNCH_SECTION}, false, words, found, error) && !found.empty())
+				{
+					for(const auto& word : words)
+					{
+						bool there = std::any_of(m_patches.begin(), m_patches.end(), [&](const PatchWord& w) { return w.address == word.address; });
+						if(!there) m_roomPatches.push_back(word);
+					}
+					Log(Format("patches: %zu words for the start of a room [%s], beside the fix set (not in its figure)", m_roomPatches.size(), ROOM_LAUNCH_SECTION));
+				}
+				else
+					Log(std::string("patches: the section for the start of a room is not in the patch file: a room's game cannot be started [") + ROOM_LAUNCH_SECTION + "]");
+			}
 			for(const auto& path : options.extraPatches)
 			{
 				std::set<std::string> found;
@@ -1409,6 +1537,7 @@ namespace
 				// nothing has been translated yet: the words can simply be written
 				uint8* ram = m_vm->m_ee->m_ram;
 				m_activePatches = m_patches;
+				m_activePatches.insert(m_activePatches.end(), m_roomPatches.begin(), m_roomPatches.end());
 				if(options.steadyPicture)
 				{
 					for(const auto& patch : g_displayPatches)
@@ -1660,6 +1789,19 @@ namespace
 			}
 			fcntl(m_listenFd, F_SETFL, fcntl(m_listenFd, F_GETFL, 0) | O_NONBLOCK);
 			signal(SIGPIPE, SIG_IGN);
+			// a test run that ends by a fault says where (a test aid: the crash reporter is
+			// not reached past the emulator's own handler of memory faults)
+			auto fault = [](int number) {
+				void* frames[64];
+				int count = backtrace(frames, 64);
+				const char text[] = "\nFAULT: the application ends on a signal; where:\n";
+				write(2, text, sizeof(text) - 1);
+				backtrace_symbols_fd(frames, count, 2);
+				signal(number, SIG_DFL);
+				raise(number);
+			};
+			signal(SIGSEGV, fault);
+			signal(SIGBUS, fault);
 			Log("control socket: " + options.controlPath);
 		}
 
@@ -2128,6 +2270,12 @@ namespace
 				else
 					push(Step::REPLY, 0, "err online [start [lobby|host[:CODE]|join:CODE] | stop | forget | name NAME]");
 			}
+			else if(name == "room")
+			{
+				// room [status] | host [friends] | join CODE | leave | start | chat TEXT | ready 0|1 | ...
+				std::string rest = Trim(line.substr(line.find("room") + 4));
+				push(Step::REPLY, 0, room.Command(rest));
+			}
 			else if(name == "ethdrop")
 			{
 				if(m_net) m_net->DropTcp();
@@ -2428,6 +2576,10 @@ namespace
 			if(!m_arithNote.empty()) text += m_arithNote + " | ";
 			text += online.Note();
 			if(!online.Note().empty()) text += " | ";
+			{
+				std::string roomNote = room.Note();
+				if(!roomNote.empty()) text += roomNote + " | ";
+			}
 			if(m_net)
 			{
 				const auto& s = m_net->Stats();
@@ -2516,6 +2668,8 @@ namespace
 					if(peer.silentFor > 15000 || !peer.arithKnown) continue;
 					if(!(peer.arithCan & Rta::ARITH_CAN_NATIVE) || peer.arithNow == Rta::ARITH_BROWSER) wantBrowser = true;
 				}
+				// the members of a room of our own say it in their member lines (RtaRoom.h)
+				if(room.MembersWantBrowser()) wantBrowser = true;
 			}
 			uint8 wanted = wantBrowser ? Rta::ARITH_BROWSER : Rta::ARITH_NATIVE;
 			// Back to Play!'s own arithmetic follows the players who are in the room, not a
@@ -2681,6 +2835,7 @@ namespace
 		bool m_frontEndNow = false;        // the game is in its front end (WatchGame)
 		bool m_inRoomNow = false;          // ... and there in a game's room
 		std::vector<PatchWord> m_patches;       // from the patch files
+		std::vector<PatchWord> m_roomPatches;   // the start of a room's game (ROOM_LAUNCH_SECTION)
 		std::vector<PatchWord> m_activePatches; // those and the display patches, while the game is loaded
 		bool m_isGame = false;
 		unsigned int m_patchRewrites = 0;
@@ -2776,12 +2931,12 @@ namespace
 			// bindings gave
 			auto pad = Rta::GamePadState();
 			g_state.NotePad(pad);
-			if(g_state.online.Driving())
+			if(g_state.online.Driving() || g_state.room.Driving())
 			{
 				// The application is pressing its way to the lobby: for these frames the
 				// game sees its buttons and nothing else - not the keyboard's, not the
 				// controller's, not a test script's - and both sticks at rest.
-				uint32 own = g_state.online.Buttons();
+				uint32 own = g_state.online.Driving() ? g_state.online.Buttons() : g_state.room.Buttons();
 				for(auto* listener : m_interfaces)
 				{
 					for(unsigned int i = 0; i < Button::MAX_BUTTONS; i++)
@@ -2855,6 +3010,7 @@ namespace
 		// the player's own buttons: keyboard, controller (as read a frame ago), test script
 		online.SetPlayerButtons(m_boundButtons | m_buttons | m_pad.buttons);
 		online.Tick(ram, PS2::EE_RAM_SIZE, m_isGame);
+		room.Tick(ram, frame, m_isGame);
 		pad.Override(ram);
 		std::string gameNote = GameNote();
 		if((frame % 30) == 0 || online.Note() != m_onlineNote || gameNote != m_gameNoteShown)
@@ -2971,6 +3127,18 @@ void Rta::AddCommandLineOptions(QCommandLineParser& parser)
 	parser.addOption(QCommandLineOption("rta-no-disconnect-hold", "Do not show another player's disconnect to a game that is in a game's room half a second late (for comparing: the launch of three or four can then leave two joiners with wrong addresses for each other)."));
 	parser.addOption(QCommandLineOption("rta-test-dialogs", "Test aid, with --rta-test: our own windows (the player name, Controls) are shown as for a person, behind the other windows and never active, and the control socket's 'ui' commands read and work them. 'now': as this build does it; 'released': as the release of 2026-10-13 morning did.", "which"));
 	parser.addOption(QCommandLineOption("rta-test-folder-wait", "Test aid: the first opening of the texture folder or of the disc image takes this many seconds, as it does while macOS waits for the person to answer its question about the folder.", "seconds"));
+	parser.addOption(QCommandLineOption("rta-room", "Into a room of our own rendezvous service by itself after power-on: 'host', 'host:friends' or 'join:CODE'. The game's character screens come up; the host starts the game (Room > Start the game) when everybody has a character.", "mode"));
+	parser.addOption(QCommandLineOption("rta-room-service", "The rendezvous service (HOST:PORT) for rooms; default: room_service in launch.ini, then RTA_NET2_SERVICE, then net2-service.txt in the data directory.", "address"));
+	parser.addOption(QCommandLineOption("rta-room-name", "The display name used at the very first start of a room in this data directory (instead of asking).", "name"));
+	parser.addOption(QCommandLineOption("rta-room-start", "Test aid: as the host of a room, start the game by itself when this many players are in and have characters.", "count"));
+	parser.addOption(QCommandLineOption("rta-room-relay", "Test aid: the room's routes: force (all through the service's relay) or never.", "which"));
+	parser.addOption(QCommandLineOption("rta-room-bind", "Test aid: the room's UDP socket's own address and port.", "address"));
+	parser.addOption(QCommandLineOption("rta-room-log", "Test aid: what the room says, with the vertical blank, into this file.", "file"));
+	parser.addOption(QCommandLineOption("rta-room-local", "Test aid: refuse a rendezvous service that is not on this computer."));
+	parser.addOption(QCommandLineOption("rta-room-once", "Test aid: after a game of a room, do not open the character screens again."));
+	parser.addOption(QCommandLineOption("rta-tick-log", "Test aid: one line per lockstep tick into this file (the native program's tick log; with --rta-tick-watch).", "file"));
+	parser.addOption(QCommandLineOption("rta-tick-watch", "Test aid: the tick log's columns, one name=expression:type a line (numbers only, no names).", "file"));
+	parser.addOption(QCommandLineOption("rta-tick-do", "Test aid: tick-keyed writes, '<tick> poke <expression> <text>' or '<tick> poke32 <expression> <number>' a line.", "file"));
 	parser.addOption(QCommandLineOption("rta-title", "A test run that a person takes part in: the window says so in its title with this text, and is otherwise an ordinary window.", "text"));
 }
 
@@ -3076,6 +3244,19 @@ void Rta::ReadCommandLine(const QCommandLineParser& parser)
 	o.testFolderWait = std::max(0, std::min(parser.value("rta-test-folder-wait").toInt(), 3600));
 	g_testFolderWait = o.testFolderWait;
 	if(parser.isSet("rta-title")) o.testLabel = parser.value("rta-title").toStdString();
+	o.room = parser.value("rta-room").toStdString();
+	o.roomService = parser.value("rta-room-service").toStdString();
+	if(o.roomService.empty() && g_launch.packaged) o.roomService = LaunchValue("room_service").toString().trimmed().toStdString();
+	o.roomName = parser.value("rta-room-name").toStdString();
+	o.roomStartAt = parser.value("rta-room-start").toInt();
+	o.roomRelay = parser.value("rta-room-relay").toStdString();
+	o.roomBind = parser.value("rta-room-bind").toStdString();
+	o.roomLog = parser.value("rta-room-log").toStdString();
+	o.roomLocal = parser.isSet("rta-room-local");
+	o.roomOnce = parser.isSet("rta-room-once");
+	o.tickLog = parser.value("rta-tick-log").toStdString();
+	o.tickWatch = parser.value("rta-tick-watch").toStdString();
+	o.tickDo = parser.value("rta-tick-do").toStdString();
 	if(o.testBackground) Rta::MakeBackgroundApplication();
 }
 
@@ -3485,6 +3666,49 @@ void Rta::SetOnlineAtStart(bool on)
 	launch.setValue("online", on);
 	launch.sync();
 	g_state.Log(std::string("online: going online by itself at the start is ") + (on ? "on" : "off"));
+}
+
+// ---- a room of our own (RtaRoom.h) ---------------------------------------------------------------
+
+bool Rta::RoomNeedsName()
+{
+	return !g_state.room.IsOpen() && Rta::CRoom::FirstStart(g_state.RoomDataDir());
+}
+
+std::string Rta::RoomCheckName(const std::string& name)
+{
+	return Rta::CRoom::CheckName(name);
+}
+
+std::string Rta::RoomCheckCode(const std::string& code)
+{
+	return Rta::CRoom::CheckCode(code);
+}
+
+bool Rta::RoomWant(const std::string& what, const std::string& name, std::string& error)
+{
+	if(!g_state.OpenRoom(name, error)) return false;
+	return g_state.room.Want(what, error);
+}
+
+void Rta::RoomLeave()
+{
+	g_state.room.Leave();
+}
+
+bool Rta::RoomStart(std::string& error)
+{
+	return g_state.room.StartGame(error);
+}
+
+std::string Rta::RoomCode()
+{
+	return g_state.room.Code();
+}
+
+std::string Rta::RoomNote()
+{
+	return g_state.room.Note();
 }
 
 // ---- when the machine or the game has stopped -----------------------------------------------

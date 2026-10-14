@@ -431,6 +431,16 @@ uint32_t CNet::RealUdpAddress(uint32_t destIp, uint16_t destPort) const
 // UDP: one host socket per port of the machine, for every destination.
 void CNet::OnUdp(uint16_t sourcePort, uint32_t destIp, uint16_t destPort, const uint8_t* data, uint32_t length)
 {
+	// a game started from a room of our own: its datagrams to the made-up players go the
+	// carrier's way (NetCarrier in RtaNet.h)
+	if(m_carrier && m_carrier->Owns(destIp, destPort))
+	{
+		m_carrier->Send(destIp, destPort, sourcePort, data, length);
+		m_stats.udpToPeers++;
+		if(m_noted.insert(UdpKey(destIp, destPort) | (1ull << 60)).second)
+			Log("first datagram to the room's player %s:%u: port %u, carried by the room's carrier (%u bytes)", IpText(destIp).c_str(), destPort, sourcePort, length);
+		return;
+	}
 	// Addresses of the made-up network exist nowhere else. The game does send to them:
 	// it tries another player's own-network address as well as the address the server
 	// saw. That attempt goes nowhere, as between two houses.
@@ -584,6 +594,19 @@ void CNet::PollUdp()
 {
 	uint8_t buffer[2048];
 	ReleaseHeld();
+	if(m_carrier)
+	{
+		uint32_t fromIp = 0;
+		uint16_t fromPort = 0, toPort = 0;
+		std::vector<uint8_t> data;
+		for(int i = 0; i < 64 && m_carrier->Receive(fromIp, fromPort, toPort, data); i++)
+		{
+			m_stats.udpFromPeers++;
+			if(m_noted.insert(UdpKey(fromIp, fromPort) | (1ull << 59)).second)
+				Log("first datagram from the room's player %s:%u -> port %u, carried by the room's carrier (%zu bytes)", IpText(fromIp).c_str(), fromPort, toPort, data.size());
+			SendUdp(fromIp, fromPort, m_config.guestIp, toPort, data.data(), data.size());
+		}
+	}
 	// What we tell a player goes the way the machine's own datagrams to that player go
 	// (the address the machine knows it by, carried as OnUdp carries it), not to whichever
 	// address its last datagram came from: a relay on this computer answers to the address

@@ -59,6 +59,17 @@ else
 fi
 mkdir -p "$SRC/Source/ui_qt/rta"
 cp "$HERE"/src/* "$SRC/Source/ui_qt/rta/"
+# The client of our own rendezvous service (rooms by code, punched routes, the relay), compiled
+# in as it is from the native program's tree: src/RtaRoom.cpp includes it from rta/net2, and it
+# includes the socket layer from rta/net (docs/issues/app-rendezvous.md).
+mkdir -p "$SRC/Source/ui_qt/rta/net2" "$SRC/Source/ui_qt/rta/net"
+# (tls.h / tls.cpp: the TCP link inside the operating system's TLS, where the client has it.)
+# CMake takes every .cpp file found in rta/net2.
+for file in session.h session_impl.h session.cpp session_mock.cpp session_net.cpp carrier.h carrier.cpp hash.h cardchars.cpp tls.h tls.cpp; do
+	[ -f "$ROOT/tools/recomp/net2/$file" ] || continue
+	cmp -s "$ROOT/tools/recomp/net2/$file" "$SRC/Source/ui_qt/rta/net2/$file" || cp "$ROOT/tools/recomp/net2/$file" "$SRC/Source/ui_qt/rta/net2/"
+done
+cmp -s "$ROOT/tools/recomp/net/sock.h" "$SRC/Source/ui_qt/rta/net/sock.h" || cp "$ROOT/tools/recomp/net/sock.h" "$SRC/Source/ui_qt/rta/net/"
 
 if [ ! -f "$BUILD/build.ninja" ]; then
 	cmake -G Ninja -S "$SRC" -B "$BUILD" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF \

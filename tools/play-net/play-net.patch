@@ -3970,7 +3970,7 @@ diff --git a/Source/iop/Iop_Speed.h b/Source/iop/Iop_Speed.h
 diff --git a/Source/ui_qt/CMakeLists.txt b/Source/ui_qt/CMakeLists.txt
 --- a/Source/ui_qt/CMakeLists.txt
 +++ b/Source/ui_qt/CMakeLists.txt
-@@ -279,6 +279,16 @@
+@@ -279,7 +279,23 @@ if(TARGET_PLATFORM_MACOS)
  		macos/InputProviderMacOsHid.h
  		macos/LayerFromView.mm
  		macos/LayerFromView.h
@@ -3982,18 +3982,25 @@ diff --git a/Source/ui_qt/CMakeLists.txt b/Source/ui_qt/CMakeLists.txt
 +		rta/RtaOnline.cpp
 +		rta/RtaOnline.h
 +		rta/RtaPad.mm
++		rta/RtaRoom.cpp
++		rta/RtaRoom.h
 +		rta/RtaSound.cpp
 +		rta/RtaUi.cpp
  	)
++	#RTA: the client of our own rendezvous service, copied in from tools/recomp/net2 by build.sh
++	#(whichever of its files the client is made of at the time: rta/RtaRoom.cpp)
++	FILE(GLOB RTA_NET2_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/rta/net2/*.cpp)
++	list(APPEND QT_SOURCES ${RTA_NET2_SOURCES})
  	FILE(GLOB ARCADE_DEFS ${CMAKE_CURRENT_SOURCE_DIR}/../../arcadedefs/*.arcadedef)
  	set(OSX_RES
-@@ -313,7 +323,8 @@
+ 		${CMAKE_CURRENT_SOURCE_DIR}/macos/AppIcon.icns
+@@ -313,7 +329,8 @@ if(TARGET_PLATFORM_MACOS)
  		RESOURCE "${OSX_RES}"
  	)
  	SET_SOURCE_FILES_PROPERTIES(${ARCADE_DEFS} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources/arcadedefs")
 -	list(APPEND UI_QT_PROJECT_LIBS "-framework IOKit -framework CoreFoundation")
 +	#RTA: LayerFromView.mm needs QuartzCore whether or not Vulkan is used
-+	list(APPEND UI_QT_PROJECT_LIBS "-framework IOKit -framework CoreFoundation -framework QuartzCore -framework Foundation -framework CoreVideo -framework AppKit -framework GameController")
++	list(APPEND UI_QT_PROJECT_LIBS "-framework IOKit -framework CoreFoundation -framework QuartzCore -framework Foundation -framework CoreVideo -framework AppKit -framework GameController -framework Network -framework Security")
  elseif(TARGET_PLATFORM_WIN32)
  	set(QT_SOURCES
  		${QT_SOURCES}
@@ -4437,3 +4444,59 @@ diff --git a/Source/ui_qt/mainwindow.cpp b/Source/ui_qt/mainwindow.cpp
  	try
  	{
  		if(!m_lastOpenCommand.path.empty())
+diff --git a/Source/ee/EeExecutor.cpp b/Source/ee/EeExecutor.cpp
+--- a/Source/ee/EeExecutor.cpp
++++ b/Source/ee/EeExecutor.cpp
+@@ -45,6 +45,25 @@ CEeExecutor::CEeExecutor(CMIPS& context, uint8* ram)
+ 	m_pageSize = framework_getpagesize();
+ }
+ 
++int CEeExecutor::Execute(int cycles)
++{
++#ifdef DEBUGGER_INCLUDED
++	return CGenericMipsExecutor::Execute(cycles);
++#else
++	if(m_rtaBlockHookAddress == MIPS_INVALID_PC || !m_rtaBlockHook) return CGenericMipsExecutor::Execute(cycles);
++	m_context.m_State.cycleQuota = cycles;
++	while(m_context.m_State.nHasException == 0)
++	{
++		uint32 address = m_context.m_State.nPC & m_addressMask;
++		if(address == m_rtaBlockHookAddress) m_rtaBlockHook();
++		auto block = m_blockLookup.FindBlockAt(address);
++		block->Execute();
++	}
++	m_context.m_State.nHasException &= ~MIPS_EXCEPTION_STATUS_QUOTADONE;
++	return m_context.m_State.cycleQuota;
++#endif
++}
++
+ void CEeExecutor::SetBlockFpRoundingModes(BlockFpRoundingModeMap blockFpRoundingModes)
+ {
+ 	m_blockFpRoundingModes = std::move(blockFpRoundingModes);
+diff --git a/Source/ee/EeExecutor.h b/Source/ee/EeExecutor.h
+--- a/Source/ee/EeExecutor.h
++++ b/Source/ee/EeExecutor.h
+@@ -11,6 +11,7 @@
+ #include <signal.h>
+ #endif
+ 
++#include <functional>
+ #include <optional>
+ 
+ #include "../GenericMipsExecutor.h"
+@@ -40,6 +41,15 @@ public:
+ 
+ 	BasicBlockPtr BlockFactory(CMIPS&, uint32, uint32) override;
+ 
++	//RTA: a call made from the executor's loop whenever the block that starts at this address
++	//is about to run (the application's tick log and tick-keyed writes, rta/Rta.cpp). The
++	//game's code is not changed and nothing else is: a block reached through a static link
++	//of another block does not pass the loop, so the address must be one reached by a jump
++	//through a register (a return). MIPS_INVALID_PC: none, and the loop is Play!'s own.
++	int Execute(int) override;
++	uint32 m_rtaBlockHookAddress = MIPS_INVALID_PC;
++	std::function<void()> m_rtaBlockHook;
++
+ private:
+ 	typedef std::map<CachedBlockKey, BasicBlockPtr> CachedBlockMap;
+ 	CachedBlockMap m_cachedBlocks;

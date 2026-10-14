@@ -16,6 +16,9 @@
 #                                                     the person sets another (Online menu)
 #   --default-online on|off      RTA_DEFAULT_ONLINE   "Go online at start", until the person
 #                                                     switches it (without this: on)
+#   --default-room-service HOST:PORT  RTA_DEFAULT_ROOM_SERVICE  the rendezvous service of the
+#                                                     Room menu (docs/issues/app-rendezvous.md);
+#                                                     a host name for a service inside TLS
 #   --zip                        RTA_ZIP=1            also <name>.zip beside the application,
 #                                                     for sending (the signature survives it)
 #   --private-signin-patch FILE  RTA_PRIVATE_SIGNIN_PATCH
@@ -54,6 +57,7 @@
 set -e
 DEFAULT_SERVER="${RTA_DEFAULT_SERVER:-}"
 DEFAULT_ONLINE="${RTA_DEFAULT_ONLINE:-}"
+DEFAULT_ROOM_SERVICE="${RTA_DEFAULT_ROOM_SERVICE:-}"
 SIGNIN="${RTA_PRIVATE_SIGNIN_PATCH:-}"
 ZIP="${RTA_ZIP:-}"
 DEFAULT_TEXTURES="${RTA_DEFAULT_TEXTURES:-}"
@@ -65,6 +69,8 @@ while [ $# -gt 0 ]; do
 	--default-server=*) DEFAULT_SERVER="${1#*=}"; shift ;;
 	--default-online) DEFAULT_ONLINE="$2"; shift 2 ;;
 	--default-online=*) DEFAULT_ONLINE="${1#*=}"; shift ;;
+	--default-room-service) DEFAULT_ROOM_SERVICE="$2"; shift 2 ;;
+	--default-room-service=*) DEFAULT_ROOM_SERVICE="${1#*=}"; shift ;;
 	--private-signin-patch) SIGNIN="$2"; shift 2 ;;
 	--private-signin-patch=*) SIGNIN="${1#*=}"; shift ;;
 	--zip) ZIP=1; shift ;;
@@ -79,6 +85,9 @@ while [ $# -gt 0 ]; do
 done
 case "$DEFAULT_SERVER" in
 *[!A-Za-z0-9.-]*) echo "package.sh: --default-server takes a host name or an IPv4 address" >&2; exit 1 ;;
+esac
+case "$DEFAULT_ROOM_SERVICE" in
+*[!A-Za-z0-9.:-]*) echo "package.sh: --default-room-service takes HOST:PORT" >&2; exit 1 ;;
 esac
 case "$DEFAULT_ONLINE" in
 "") ;;
@@ -129,12 +138,13 @@ mkdir -p "$APP/Contents/Resources/rta"
 cp "$PATCHES" "$APP/Contents/Resources/rta/SLUS-20973_4028A55F.pnach"
 cp "$SECTIONS" "$APP/Contents/Resources/rta/sections.txt"
 # what this copy does until the person says otherwise
-if [ -n "$DEFAULT_SERVER$DEFAULT_ONLINE$DEFAULT_TEXTURES" ]; then
+if [ -n "$DEFAULT_SERVER$DEFAULT_ONLINE$DEFAULT_TEXTURES$DEFAULT_ROOM_SERVICE" ]; then
 	{
 		echo "[General]"
 		[ -z "$DEFAULT_SERVER" ] || echo "server=$DEFAULT_SERVER"
 		[ -z "$DEFAULT_ONLINE" ] || echo "online=$DEFAULT_ONLINE"
 		[ -z "$DEFAULT_TEXTURES" ] || echo "textures=$DEFAULT_TEXTURES"
+		[ -z "$DEFAULT_ROOM_SERVICE" ] || echo "room_service=$DEFAULT_ROOM_SERVICE"
 	} > "$APP/Contents/Resources/rta/defaults.ini"
 fi
 # only when asked to, for a private build (see the top of this file)

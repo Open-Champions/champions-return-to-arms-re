@@ -137,10 +137,29 @@ namespace Rta
 		int64_t silentFor = 0;   // milliseconds since its last
 	};
 
+	// Datagrams of the machine that go another way than through a host socket: a game started
+	// from a room of our own rendezvous service (RtaRoom.cpp, docs/issues/app-rendezvous.md)
+	// is told that player k is 10.77.0.(k+1), port 4000, and what it sends there is carried by
+	// net2's carrier (punched route or relay). Machine thread, from Poll / GuestSent.
+	struct NetCarrier
+	{
+		virtual ~NetCarrier() = default;
+		// true: this datagram of the machine is the carrier's (it is then not sent anywhere else)
+		virtual bool Owns(uint32_t destIp, uint16_t destPort) = 0;
+		virtual void Send(uint32_t destIp, uint16_t destPort, uint16_t sourcePort, const uint8_t* data, size_t length) = 0;
+		// one datagram for the machine: shown as coming from fromIp:fromPort, to the machine's port toPort
+		virtual bool Receive(uint32_t& fromIp, uint16_t& fromPort, uint16_t& toPort, std::vector<uint8_t>& data) = 0;
+	};
+
 	class CNet
 	{
 	public:
 		CNet(const NetConfig&);
+		// nullptr: none (the default)
+		void SetCarrier(NetCarrier* carrier)
+		{
+			m_carrier = carrier;
+		}
 		// What the game is doing, told once every vertical blank by whoever reads the game's
 		// memory (COnline::Tick does, in the application and in the page): whether its lobby
 		// state word says "in a game's room". It also counts the vertical blanks, the clock
@@ -276,6 +295,7 @@ namespace Rta
 			uint8_t arithNow = ARITH_NATIVE;
 		};
 		std::map<uint64_t, Peer> m_peers; // by the address shown to the machine, and the port
+		NetCarrier* m_carrier = nullptr;
 #ifdef __EMSCRIPTEN__
 		std::atomic<uint8_t> m_arithNow{ARITH_BROWSER};
 #else

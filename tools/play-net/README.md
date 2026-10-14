@@ -31,6 +31,8 @@ emulator, is in `tools/recomp/`
 | `src/RtaNet.h`, `RtaNet.cpp` | the network behind the emulated Ethernet adaptor (stand-alone C++, nothing of the emulator in it) |
 | `src/Rta.h`, `Rta.cpp`, `RtaMac.mm` | what joins it to the application: patches, the memory card's network setting, display patches, settings, thread priority, the control socket |
 | `src/RtaOnline.h`, `RtaOnline.cpp` | one-step online: the application presses its own way from power-on to the lobby by the game's state, makes and keeps the account ("One-step online" below; stand-alone C++) |
+| `src/RtaRoom.h`, `RtaRoom.cpp` | rooms of our own rendezvous service, the same rooms as the native program's (menu *Room*; no lobby, account, password or sign-in patch): net2's client compiled in, the game's datagrams over its carrier, the game's own launch started by memory writes and two presses on its own menus, and the tick log of a test run ("Rooms of our own" below; [docs/issues/app-rendezvous.md](../../docs/issues/app-rendezvous.md)) |
+| `roomparty.py` | test: application and native copies in one room, through a level change, tick logs compared |
 | `src/RtaPad.mm` | game controllers through macOS's GameController framework: the first one attached is the pad in port 1, with nothing to bind |
 | `src/RtaSound.cpp` | the sound handler: a held reserve, counts of every fault, a WAV file on request |
 | `src/RtaUi.cpp` | what is added to the application's windows: *Help → Controls…*, the *Online* menu (Play Online, the question for the player name, Forget online login), the disc image at the start (the remembered one, else the one found, else one window that says where to put it), the line across the window that says what is being waited for, and the `ui` commands that read and work these windows in tests |
@@ -1167,6 +1169,36 @@ inside it back to the title; without the sign-in patch the error, circle, "stuck
 through the `.ui` file, the application ended 3.9 s later. Not tested: the question and
 the restart after it (a test run ends without asking), closing with the thread stopped,
 a real key or menu click, anything with the window in front.
+
+## Rooms of our own
+
+The menu *Room* (beside *Online*) puts the application into the rendezvous service of
+[docs/issues/native-rendezvous.md](../../docs/issues/native-rendezvous.md): *Host a room*
+shows a code, *Join a room...* takes one, and players of the native program join the same
+rooms. The first time in a data folder a sheet asks the name the others see; the player is
+then the file `net2-identity.key` there. At the title screen the game's own character screens
+come up; when everybody has a character the host chooses *Start the game* and the game's own
+launch handshake runs. The game is told that player k is 10.77.0.(k+1); its datagrams there
+go over net2's carrier (punched, or through the service's relay). The service:
+`--rta-room-service HOST:PORT`, `room_service` in `launch.ini` / `defaults.ini`
+(`package.sh --default-room-service`), `RTA_NET2_SERVICE`, or `net2-service.txt` in the data
+folder; a host name is reached inside TLS. `build.sh` copies net2's client from
+`tools/recomp/net2` (and `tools/recomp/net/sock.h`) into the tree.
+
+The start needs one section of the patch file that is not a fix and not in the fix set:
+`[Room launch: the developer's network start uses the modules loaded at boot]`; the
+application applies it by itself beside the set, and the set's figure does not change. Why,
+what the twelve plus eight words are, and the runs (application with native, application
+with application, three and four copies, relay, the public service; all in step through a
+level change): [docs/issues/app-rendezvous.md](../../docs/issues/app-rendezvous.md).
+
+Options for tests: `--rta-room host|host:friends|join:CODE` (by itself from power-on),
+`--rta-room-name`, `--rta-room-start N`, `--rta-room-relay force|never`, `--rta-room-local`,
+`--rta-room-log FILE`, `--rta-room-once`; `--rta-tick-log FILE --rta-tick-watch FILE` and
+`--rta-tick-do FILE` (the native program's tick log and tick-keyed writes, through a block
+hook of the EE executor in `play-net.patch`). Control socket: `room [status] | host | join
+CODE | leave | start | chat TEXT | ready 0|1 | difficulty N | debug WHAT | set KEY VALUE`;
+`ui roomname info|type TEXT|press ok|notnow` works the name sheet.
 
 ## Control socket and tests
 

@@ -150,6 +150,22 @@ namespace Rta
 	// RtaUi.cpp: the dialog for the player name. 'why' is empty the first time and says
 	// what was wrong with the last name otherwise.
 	void AskPlayerName(const std::string& why);
+
+	// A room of our own rendezvous service (RtaRoom.h, docs/issues/app-rendezvous.md): the
+	// same rooms as the native program's, by code, with no lobby, account or password.
+	// RoomWant takes "host", "host:friends" or "join:CODE"; the name is used only at the very
+	// first start in this data directory (RoomNeedsName), when the identity file is made.
+	bool RoomNeedsName();
+	std::string RoomCheckName(const std::string& name);
+	std::string RoomCheckCode(const std::string& code);
+	bool RoomWant(const std::string& what, const std::string& name, std::string& error);
+	void RoomLeave();
+	bool RoomStart(std::string& error);
+	std::string RoomCode();
+	std::string RoomNote();
+	// the application's own thread (RtaUi.cpp)
+	void AskRoomName(const std::string& want);
+	void ShowRoomCode(const std::string& code);
 	// RtaUi.cpp: a window with the code of the game this copy hosts, large
 	void ShowGameCode(const std::string& code);
 	// RtaUi.cpp: a window that says that another player has a different patch set (it

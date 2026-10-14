@@ -928,6 +928,145 @@ void Rta::AskPlayerName(const std::string& why)
 	if(g_controlsWanted && g_mainWindow) QTimer::singleShot(500, g_mainWindow, []() { Rta::ShowControls(g_mainWindow); });
 }
 
+// ---- a room of our own (Rta.h, RtaRoom.h) ------------------------------------------------------
+// The menu "Room", beside "Online": rooms of our own rendezvous service, the same rooms as the
+// native program's. No lobby, no account, no password: the player is a device file in the data
+// folder, and the one thing asked - once, at the very first room - is the name the others see.
+
+namespace
+{
+	QPointer<QDialog> g_roomCodeWindow;
+	QPointer<QDialog> g_roomNameDialog; // for the control socket's "ui roomname ..."
+	QPointer<QLineEdit> g_roomNameEdit;
+
+	// the name of a first start; empty: not given
+	std::string AskRoomNameNow(QWidget* parent)
+	{
+		QDialog dialog(parent);
+		dialog.setWindowTitle("Your name");
+		auto layout = new QVBoxLayout(&dialog);
+		auto text = new QLabel("The name the other players see in a room (any letters, 3 to 24 bytes; you can change it later):", &dialog);
+		text->setWordWrap(true);
+		layout->addWidget(text);
+		auto edit = new QLineEdit(&dialog);
+		edit->setMaxLength(24);
+		edit->setMinimumWidth(360);
+		layout->addWidget(edit);
+		auto hint = new QLabel(" ", &dialog);
+		hint->setWordWrap(true);
+		layout->addWidget(hint);
+		auto note = new QLabel("<small>You are asked once. There is no account and no password: who you are is a file in this application's data folder "
+		                       "(net2-identity.key); copy it to another computer to be the same player there.</small>",
+		                       &dialog);
+		note->setWordWrap(true);
+		layout->addWidget(note);
+		auto buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+		buttons->button(QDialogButtonBox::Ok)->setText("Go to the room");
+		buttons->button(QDialogButtonBox::Cancel)->setText("Not now");
+		buttons->button(QDialogButtonBox::Ok)->setEnabled(false);
+		QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+		QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+		layout->addWidget(buttons);
+		QObject::connect(edit, &QLineEdit::textChanged, &dialog, [hint, buttons](const QString& typed) {
+			std::string wrong = typed.isEmpty() ? std::string() : Rta::RoomCheckName(typed.toStdString());
+			hint->setText((wrong.empty() || typed.toUtf8().size() < 3) ? QString(" ") : QString::fromStdString(wrong));
+			buttons->button(QDialogButtonBox::Ok)->setEnabled(!typed.isEmpty() && wrong.empty());
+		});
+		MarkTestWindow(&dialog);
+		if(g_mainWindow) dialog.setWindowModality(Qt::WindowModal);
+		edit->setFocus();
+		g_roomNameDialog = &dialog;
+		g_roomNameEdit = edit;
+		Rta::LogLine("room: asking for the name the others see (once: there is no identity in this data folder yet)");
+		bool accepted = dialog.exec() == QDialog::Accepted;
+		Rta::LogLine(accepted ? "room: a name was given" : "room: no name was given");
+		if(!accepted) return std::string();
+		std::string name = edit->text().trimmed().toStdString();
+		return Rta::RoomCheckName(name).empty() ? name : std::string();
+	}
+
+	void GoToRoom(QWidget* parent, const std::string& want)
+	{
+		std::string name;
+		if(Rta::RoomNeedsName())
+		{
+			name = AskRoomNameNow(parent);
+			if(name.empty())
+			{
+				Rta::LogLine("room: no name was given; not going to a room");
+				return;
+			}
+		}
+		std::string error;
+		if(!Rta::RoomWant(want, name, error)) QMessageBox::information(parent, "Room", QString::fromStdString(error));
+	}
+
+	void JoinRoom(QWidget* parent)
+	{
+		QString typed;
+		for(;;)
+		{
+			bool ok = false;
+			typed = QInputDialog::getText(parent, "Join a room", "The room's code (the host reads it out: five letters and digits):", QLineEdit::Normal, typed, &ok).trimmed().toUpper();
+			if(!ok) return;
+			std::string wrong = Rta::RoomCheckCode(typed.toStdString());
+			if(wrong.empty()) break;
+			QMessageBox::information(parent, "Join a room", QString::fromStdString(wrong));
+		}
+		GoToRoom(parent, "join:" + typed.toStdString());
+	}
+
+	QDialog* BuildRoomCode(QWidget* parent, const std::string& code)
+	{
+		auto dialog = new QDialog(parent);
+		dialog->setWindowTitle("Your room");
+		auto layout = new QVBoxLayout(dialog);
+		layout->addWidget(new QLabel("Tell your friends this code:", dialog));
+		auto big = new QLabel(QString::fromStdString(code), dialog);
+		auto font = big->font();
+		font.setPointSize(64);
+		font.setBold(true);
+		font.setLetterSpacing(QFont::AbsoluteSpacing, 8);
+		big->setFont(font);
+		big->setAlignment(Qt::AlignCenter);
+		big->setTextInteractionFlags(Qt::TextSelectableByMouse);
+		layout->addWidget(big);
+		auto how = new QLabel("They choose <i>Room &rarr; Join a room...</i> in this application, or join it from the native program, and type it. "
+		                      "Everybody makes or chooses a character on the game's own screens; then choose <i>Room &rarr; Start the game</i>.",
+		                      dialog);
+		how->setWordWrap(true);
+		how->setMinimumWidth(420);
+		layout->addWidget(how);
+		auto status = new QLabel(" ", dialog);
+		status->setWordWrap(true);
+		layout->addWidget(status);
+		auto buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+		QObject::connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::close);
+		layout->addWidget(buttons);
+		auto timer = new QTimer(dialog);
+		QObject::connect(timer, &QTimer::timeout, status, [status]() {
+			auto note = QString::fromStdString(Rta::RoomNote());
+			if(status->text() != note) status->setText(note.isEmpty() ? QString(" ") : note);
+		});
+		timer->start(500);
+		return dialog;
+	}
+}
+
+void Rta::AskRoomName(const std::string& want)
+{
+	GoToRoom(g_mainWindow, want);
+}
+
+void Rta::ShowRoomCode(const std::string& code)
+{
+	if(g_roomCodeWindow) g_roomCodeWindow->close();
+	auto dialog = BuildRoomCode(g_mainWindow, code);
+	dialog->setAttribute(Qt::WA_DeleteOnClose, true);
+	g_roomCodeWindow = dialog;
+	dialog->show(); // not modal: the game goes on
+}
+
 // ---- tests: our own windows read and worked without a screen (Rta.h) ------------------------
 // The control socket's "ui ..." lands here on the application's own thread, also while a
 // question is up (its local event loop runs queued calls).
@@ -999,6 +1138,20 @@ std::string Rta::UiCommand(const std::string& command)
 		return QString("up=1 visible=%1 title=\"%2\" modality=%3 sheet=%4 text_length=%5 ok_enabled=%6 box=%7")
 		    .arg(g_nameDialog->isVisible() ? 1 : 0).arg(g_nameDialog->windowTitle()).arg(static_cast<int>(g_nameDialog->windowModality())).arg((g_nameDialog->windowModality() == Qt::WindowModal) ? 1 : 0)
 		    .arg(g_nameEdit ? g_nameEdit->text().size() : -1).arg((ok && ok->isEnabled()) ? 1 : 0).arg(box(g_nameDialog)).toStdString();
+	}
+	if(words[0] == "roomname")
+	{
+		// roomname info | type TEXT | press ok|notnow: the room's name question
+		if(!g_roomNameDialog) return "up=0";
+		auto buttons = g_roomNameDialog->findChild<QDialogButtonBox*>();
+		auto ok = buttons ? buttons->button(QDialogButtonBox::Ok) : nullptr;
+		if(words.size() >= 2 && words[1] == "type" && g_roomNameEdit) g_roomNameEdit->setText(QString::fromStdString(command.substr(command.find("type") + 4)).trimmed());
+		if(words.size() >= 3 && words[1] == "press")
+		{
+			if(words[2] == "ok") return (ok && ok->isEnabled()) ? (ok->click(), "pressed: Go to the room") : "the button is not enabled";
+			if(words[2] == "notnow" && buttons) return (buttons->button(QDialogButtonBox::Cancel)->click(), "pressed: Not now");
+		}
+		return QString("up=1 title=\"%1\" text_length=%2 ok_enabled=%3").arg(g_roomNameDialog->windowTitle()).arg(g_roomNameEdit ? g_roomNameEdit->text().size() : -1).arg((ok && ok->isEnabled()) ? 1 : 0).toStdString();
 	}
 	if(words[0] == "controls")
 	{
@@ -1108,6 +1261,42 @@ void Rta::SetupWindow(QWidget* window)
 			disc->setMenuRole(QAction::NoRole);
 			QObject::connect(disc, &QAction::triggered, mainWindow, [mainWindow]() { Rta::BootDisc(Rta::ChooseDisc(mainWindow, std::string(), true)); });
 		}
+	}
+	{
+		// a room of our own, beside Online
+		auto roomMenu = new QMenu("Room", mainWindow);
+		auto helpAction = mainWindow->findChild<QMenu*>("menuHelp") ? mainWindow->findChild<QMenu*>("menuHelp")->menuAction() : nullptr;
+		mainWindow->menuBar()->insertMenu(helpAction, roomMenu);
+		auto host = roomMenu->addAction("Host a room");
+		host->setMenuRole(QAction::NoRole);
+		host->setToolTip("A room of your own, named with a code for your friends - players of this application and of the native program alike.");
+		QObject::connect(host, &QAction::triggered, mainWindow, [mainWindow]() { GoToRoom(mainWindow, "host"); });
+		auto join = roomMenu->addAction("Join a room...");
+		join->setMenuRole(QAction::NoRole);
+		QObject::connect(join, &QAction::triggered, mainWindow, [mainWindow]() { JoinRoom(mainWindow); });
+		auto start = roomMenu->addAction("Start the game");
+		start->setMenuRole(QAction::NoRole);
+		QObject::connect(start, &QAction::triggered, mainWindow, [mainWindow]() {
+			std::string error;
+			if(!Rta::RoomStart(error)) QMessageBox::information(mainWindow, "Start the game", QString::fromStdString(error));
+		});
+		auto leave = roomMenu->addAction("Leave the room");
+		leave->setMenuRole(QAction::NoRole);
+		QObject::connect(leave, &QAction::triggered, mainWindow, []() { Rta::RoomLeave(); });
+		auto code = roomMenu->addAction("Show the room's code");
+		code->setMenuRole(QAction::NoRole);
+		QObject::connect(code, &QAction::triggered, mainWindow, []() {
+			std::string room = Rta::RoomCode();
+			if(!room.empty()) Rta::ShowRoomCode(room);
+		});
+		QObject::connect(roomMenu, &QMenu::aboutToShow, mainWindow, [host, join, start, leave, code]() {
+			bool in = !Rta::RoomCode().empty();
+			host->setEnabled(!in);
+			join->setEnabled(!in);
+			start->setEnabled(in);
+			leave->setEnabled(in);
+			code->setEnabled(in);
+		});
 	}
 	auto helpMenu = mainWindow->findChild<QMenu*>("menuHelp");
 	if(!helpMenu) helpMenu = mainWindow->menuBar()->addMenu("Help");

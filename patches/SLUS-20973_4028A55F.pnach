@@ -450,3 +450,39 @@ patch=1,EE,00215D5C,word,908A0002
 patch=1,EE,00215D60,word,A12A047E
 patch=1,EE,00215D64,word,03E00008
 patch=1,EE,00215D68,word,00000000
+
+[Room launch: the developer's network start uses the modules loaded at boot]
+// Not a fix of the game and not in the fix set (sections-suggested.txt does not list it, so the
+// set's figure is unchanged): the Mac application applies it by itself, beside the fix set, for
+// the start of a room of our own (docs/issues/app-rendezvous.md). That start goes through the
+// developer's branch of frontend_startNetGame, whose net_gameInit(0) calls net_loadModules
+// 0x137a10 - written for a development kit: it loads every network module again although the
+// retail boot (iop_loadModules 0x19ba98) has loaded them all, two of them from host0:, and reads
+// the network setting from mc0:/BWCONFIG with the combination "Setting 1". On the emulator the
+// second load of the modules brought the IOP down. Here the twelve module loads are left out and
+// the setting is the retail one (mc0:/BWNETCNF/BWNETCNF, "Combination1", as the application
+// writes it to the card); what the function then does - ezNetCnf, ezNetCtlInit, the interface
+// up and the wait for it - is the game's own. net_loadModules is called from nowhere else, so a
+// lobby game, an offline game and the native program are not touched.
+patch=1,EE,00137A48,word,00000000
+patch=1,EE,00137A94,word,00000000
+patch=1,EE,00137AB4,word,00000000
+patch=1,EE,00137AE4,word,00000000
+patch=1,EE,00137B10,word,00000000
+patch=1,EE,00137B70,word,00000000
+patch=1,EE,00137B90,word,00000000
+patch=1,EE,00137BD0,word,00000000
+patch=1,EE,00137BEC,word,00000000
+patch=1,EE,00137C00,word,00000000
+patch=1,EE,00137D0C,word,00000000
+patch=1,EE,00137D28,word,00000000
+// "mc0:/BWNETCNF/BWNETCNF" for "mc0:/BWCONFIG/BWCONFIG"
+patch=1,EE,0053052C,word,4E57422F
+patch=1,EE,00530530,word,4E435445
+patch=1,EE,00530534,word,57422F46
+patch=1,EE,00530538,word,4354454E
+patch=1,EE,0053053C,word,0000464E
+// "Combination1" for "Setting 1"
+patch=1,EE,00530600,word,626D6F43
+patch=1,EE,00530604,word,74616E69
+patch=1,EE,00530608,word,316E6F69
