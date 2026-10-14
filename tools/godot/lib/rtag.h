@@ -326,6 +326,39 @@ int rtag_controls_hud(rtag_controls* out);      /* 1: filled (as of the last con
 void rtag_mouse(float dx, float dy, float wheel);       /* pointer motion since the last call (right and down positive), wheel steps (up positive) */
 void rtag_mouse_button(int button, int down);           /* 0 left, 1 right, 2 middle, 3 and 4 the side buttons */
 
+/* ---- the world for a camera inside it (optional function) ---------------------------------
+ * tools/recomp/app/fpworld.h and render/worldfill.h, when the library was built with them (rtag_has("world")): at a
+ * level load the library makes geometry the level does not have - a ceiling over the walked floor of a walled level,
+ * a skirt of ground beyond the level's outer rim - from the level's own terrain (none of it is the game's art; how
+ * it looks is the host's: a vertex has a position, a normal, world-space texture coordinates and a grey level).
+ * With the scene tap (RTAG_LISTS_SCENE / scene3d) the library leaves its cut at the near plane and its textures in
+ * perspective off - the host draws the packets' complete geometry itself - and the host draws the fill.  A ceiling is
+ * for a camera under it.  rtag_set_option("world", "views|off|always"), "world.ceilings" / "world.skirts" = auto|on|off.
+ * Added after version 6 of the interface without changing it: looked up by name. */
+enum { RTAG_FILL_CEILING = 1, RTAG_FILL_SKIRT = 2 };
+typedef struct rtag_fill_vertex {
+    float position[3];          /* world space, z up, the game's units */
+    float normal[3];            /* a ceiling's looks down, a skirt's up */
+    float uv[2];                /* world x, y / 64 */
+    uint8_t rgba[4];            /* grey level: a ceiling 255 at a wall, less away from it; a skirt's alpha 128 at the rim, 0 outside */
+} rtag_fill_vertex;
+typedef struct rtag_fill_mesh {
+    uint8_t kind, pad[3];       /* RTAG_FILL_CEILING or RTAG_FILL_SKIRT */
+    uint32_t first, count;      /* vertices[first .. first + count): triangles, three vertices each */
+    float bounds[6];            /* min x, y, z, max x, y, z */
+} rtag_fill_mesh;
+typedef struct rtag_fill {
+    uint64_t serial;            /* another level or other options: another number - rebuild only when it changes */
+    const char* level;          /* the level's name */
+    const rtag_fill_vertex* vertices;
+    uint32_t vertex_count, mesh_count;
+    const rtag_fill_mesh* meshes;   /* blocks of 128 x 128 units, each with its box */
+    float bounds[6];
+} rtag_fill;
+/* 1: `out` describes the fill of the level that is loaded; its pointers stay valid until the next call of this
+ * function or rtag_stop.  0: none (a level that gets none, no level yet, or a library without it).  Any thread. */
+int rtag_fill_get(rtag_fill* out);
+
 /* ---- sound --------------------------------------------------------------------------- */
 /* Exactly `frames` frames of interleaved 16-bit stereo at 48 kHz (silence where there is nothing).  With
  * RTAG_SOUND_PULL this call is the sound side's clock: call it from the device's thread, at the device's rate. */

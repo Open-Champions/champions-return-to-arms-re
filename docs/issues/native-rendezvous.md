@@ -12,29 +12,29 @@ compatibility and is not touched. Every result says whether it was **Ran** or on
 
 ## STATE (rewritten at every step; read this first after a stop)
 
-**2026-10-13 19:20.**
+**2026-10-13 23:10. Done and run, game side included.** Two, three and four native copies
+get into one game through the service with no lobby screen, stay in step, change level,
+survive a dropped player and a dropped host, play a second game in the same processes and
+room, over punched routes (loop-back and this Mac's LAN address) and over the relay, and
+under the service's limits. Section 6 has the table.
 
 | Part | Where | State |
 |---|---|---|
-| the service | `tools/rendezvous/rendezvous.py` | written; **Ran**: its self-test `check.py`, 189 of 189 |
-| the client interface | `tools/recomp/net2/session.h` | written; plain C, checked with `clang -std=c11` |
-| its mock | `session_mock.cpp` | **Ran** through every call (`net2cli --mock`); the portal is built on it |
-| its real body | `session_net.cpp`, `carrier.cpp`, `hash.h`, `cardchars.cpp` | **Ran**: `tools/rendezvous/check_client.py`, 95 of 95 - four players through a service on loop-back, punched routes and a forced relay, datagrams both ways, the service going away and coming back, deletion |
-| the direct launch | `launch.cpp`, `game.h`, `hooks.h`; hook lines for `tools/recomp/net/netdrv.cpp` | written. **Ran** (headless, before the move): the game stands at its title screen, `net2 choose` brings the game's own character screens up with no lobby. **Not run yet**: the launch handshake between copies, a game, the proof table - the native build is being rebuilt by another agent after the project moved; nothing that needs the translated game is built until it is back |
-| `net2.patch` | `tools/recomp/net2/net2.patch` | cut, with merge notes: nine lines in `net/netdrv.cpp` (five places), seven compile jobs in `app/build.py`; applies cleanly to the files as they stand. **Not applied** to the shared tree |
+| the service | `tools/rendezvous/rendezvous.py` | **Ran**: `check.py` 189 of 189 (after the repair of 19:35, again) |
+| the client interface and its mock | `tools/recomp/net2/session.h`, `session_mock.cpp` | **Ran**; the portal is built on it |
+| its real body | `session_net.cpp`, `carrier.cpp`, `hash.h`, `cardchars.cpp`, `clicmd.cpp` | **Ran**: `check_client.py` 95 of 95 (after the last change of `carrier.cpp`, again) |
+| the direct launch | `launch.cpp`, `game.h`, `hooks.h` | **Ran**: 34 games of 2 to 4 copies launched and compared, section 6 |
+| `net2.patch` | `tools/recomp/net2/net2.patch` | nine lines in `net/netdrv.cpp`, seven compile jobs in `app/build.py`; dry run clean against today's files; the runs used exactly these lines. **Not applied** to the shared tree (the owner of `net/` and `app/` merges) |
 | `proposed.pnach` | - | does not exist: no word of the game had to be patched |
-| the stand-alone program's command line | `tools/recomp/net2/play.sh` (`--play-host`, `--play-join CODE`, `--name NAME`), runtime options `--opt net2=...` (head of `launch.cpp`) | written |
-| the proof driver | `tools/recomp/net2/n2party.py` (2 to 4 headless copies through a service of its own: room by code, character screens, chat, start, ticks compared, level change, drop, a second game, relay forced) | written |
+| the stand-alone program | `play.sh`, `--opt net2=...` | **Ran** with the window program off-screen as host and a headless joiner (pictures `local/recomp-net2/win/pictures/`) |
+| the proof driver | `n2party.py`, `local/recomp-net2/series.sh` | **Ran** |
 
-Nothing of this work is running (checked after every run: no `rendezvous.py`, no `net2cli`).
-Working directory: `~/champions-re/local/recomp-net2/` (snapshot of the native build's
-objects of 13:33, my builds, test runs); the project's home is `~/champions-re` since the
-move, nothing of mine was lost in it.
+Builds: my snapshot of the native build taken 2026-10-13 19:44 (the objects of
+`rta_app_next`, after the move), `local/recomp-net2/build.sh`. Nothing of this work is
+running; nothing listens.
 
-Next: when the native build is back - the launch between two copies on loop-back (direct
-by fixed addresses first, then through the service), then three and four, level change,
-a drop, a second game, punch and relay, the limits; `net2.patch`; the stand-alone
-program's `--play-host` / `--play-join`.
+Damage of 19:31 (a copy tool of the move put six of my files back to the last commit and
+some local files to their state before the move): repaired; nothing was lost for good.
 
 ## 1. What a lockstep game needs at its start, and what the lobby adds
 
@@ -365,15 +365,31 @@ main thread, with the tables written from the room. No word of the game is patch
 Front-end state 10 is "waiting for the lobby": with the lobby state 0 the front end draws
 its background and does nothing, and it still polls the launch.
 
-**Ran so far** (one headless copy, my snapshot build, 2026-10-13 14:06): boot to the
-title screen in 420 vertical blanks with cross pressed for the player through the card
-check and the logos; `net2 choose host` 1,800 blanks later: "the game's character screens
-are up", front-end state 10, page 1 (class) of the character screens 240 blanks after.
-One thing learned on the way: a choice made in the menu's first frames found the
-character screens' data not loaded (the page stayed 0) - hence "stable for a second" and
-the first-pass test.
+**Ran** (section 6): every step of the table. The launch handshake takes 211 or 212
+vertical blanks (3.5 s) from `net_launchTransfer` to "launched", the game's own "Network
+Game Launch" screen shows every player's character, level and "Ready!", and the first
+level is the hub. What was learned on the way:
 
-**Not run yet:** everything from "launch" down.
+1. A choice made in the title menu's first frames finds the character screens' data not
+   loaded (the screens come up and take no button): the menu must have stood for a
+   second, at boot and again when a game is over.
+2. After a net game the character screens take two leftovers of it: `g_numPlayers`
+   0x4d8ae0 (the number that was in the game: the screens then wait for a second
+   controller) and `g_difficultyIdx` 0x4f719c (above the first difficulty they take only
+   an imported character). Both are set to 1 before the screens are started. That is
+   what power-on has; the host's difficulty is applied by the handshake as before.
+3. The task `playerSelection` ends by itself once a character is chosen; the front end
+   is back at the title screen after a net game that was not started from the lobby;
+   the pause menu's "Exit Game" is where it is in a lobby game.
+4. A character just made is a summary until the launch builds its record: its class is
+   known to the room once the game runs (the label said "Barbarian" for an Iksar before).
+5. Hole punching through this Mac's LAN address failed at first and every pair went to
+   the relay: an answer came back after the next probe had gone out (the first packets
+   of a new path were slower than 200 ms) and was thrown away. Fixed in `carrier.cpp`
+   (the last 16 probes are remembered); since then those pairs are straight too.
+
+The developer path is reached from the title screen at run time: no boot argument and no
+restart are needed, and a second game follows in the same process.
 
 Why not the boot argument: `--net` skips the front end - placeholder characters, level
 `strife`, no handshake, discovery by broadcast on 192.168.1.x, and only at boot. Its
@@ -409,12 +425,45 @@ netcode is the same; its start is the wrong one for players.
 
 ## 6. Proof
 
-| What | Ran | Result |
-|---|---|---|
-| the service: `tools/rendezvous/check.py` | 2026-10-13, loop-back | **189 of 189** checks: identity (11), names, friends (30), rooms (60: join, chat, ready, start, the session description compared between four clients, relay and its refusals, game over, second start, kick, host leaving), presence, invitations and recent players (30), what is on disk, a restart, deletion, retention (16), the limits hit on purpose in three services of their own (30) |
-| the client library: `tools/rendezvous/check_client.py` | 2026-10-13, loop-back | **95 of 95**: identity file made, used again, copied to "another computer"; friends by code; presence and characters; room by code, by friend, by invitation; chat; ready; fix-set warning for a copy with another set, on every machine; start; straight routes between two, relay for a third that was forced; datagrams both ways on both; game over; second start with all routes straight; recent players; service stopped and started again (clients say so, reconnect by themselves, friends are back); block, remove; delete everything (new id, new file, the old file is a stranger); the card reader; where the service is found |
-| the mock | 2026-10-13 | every call of `session.h` through `net2cli --mock` |
-| two, three, four native copies through the service into a game; ticks compared; level change; a drop; a second game; punch and relay; the limits with games running | **not yet** | waits for the native build |
+All on this Mac, 2026-10-13 19:47-23:02. Programs: `local/recomp-net2/bin/n2_headless`
+(the game, the runtime, `netdrv.cpp` with the patch, `launch.cpp`), at most four at a
+time, `nice 10`, paced to 59.94 vertical blanks a second, `net-local-only=1`; once the
+window program (`n2_window`, off-screen). Each copy has its own data folder: identity
+file, memory card. A service of each run's own on 127.0.0.1 (and this Mac's LAN address
+for the LAN rows), nothing else. Every copy boots by itself, makes a new character on the
+game's screens (pressed by the script as a person would), sends one chat line in the room;
+the host starts when everybody has a character. "In step": `tools/rig/compare.py ticks`
+over every pair of tick logs (seed, level, player count, button maps, every player's
+position, state, hit points, gold, experience, out-of-step flags, own sync hash) - no
+column differed in any row below. Drawn input on every copy. Load average 9 to 58.
+
+| Run | Copies | Routes | Launches | In the level | Ticks in step (every pair) | What else |
+|---|---|---|---|---|---|---|
+| fixed addresses, no service (`app net2 direct`) | 2 | straight | 1 | 1 | ticks to 2,044, both players | the first launch |
+| `p2` | 2 | punched, 127.0.0.1 | 1 | 1 | 1,819 | chat line seen on both |
+| `p3` | 3 | punched | 3 in a row | 3 | 1,819 each, all 3 pairs | second and third launch log in with the identity files of the first |
+| `p4` | 4 | punched | 3 in a row | 3 | 1,818 - 1,819, all 6 pairs | |
+| `lv2` `lv3` `lv4` | 2, 3, 4 | punched | 1 each | 3 | 4,335; 4,320; 4,303 - 4,304 | hub > drunare (level change in one lockstep tick), 0 / 2 / 2 deaths in the arena fight |
+| `drop3` | 3 | punched | 1 | 1 | 2,133 between the two left (1,244 with the dropped one) | the last joiner's process killed at tick 1,244: lockstep stands about 20 s, then "DISCONNECTING PLAYER 2 on frame 1264", the game goes on |
+| `hostq3` | 3 | punched | 1 | 1 | 2,130 between the two joiners | the HOST's process killed: the game goes on without its host |
+| `again2` | 2 | punched | 2 games in the same processes and room | 2 | 1,409 and 1,219 | the joiner leaves by the pause menu, the host is put back by the game, both back at the title screen, characters again, the host starts again |
+| `again3` | 3 | punched | 2 games | 2 | game 1: 2,008 / 1,408; game 2: 1,219, all pairs | leaving one after another |
+| `relay2` (twice) | 2 | relay, forced on every copy | 1 + 1 | 2 | 1,818; 1,819 | the launch handshake (characters) and the game entirely through the service: 842 and 1,859 datagrams relayed |
+| `relay3` | 3 | relay | 2 in a row | 2 | 1,819 each, all pairs | 7,086 relayed |
+| `relay4` | 4 | relay | 2 in a row | 2 | 1,818 - 1,819, all 6 pairs | 10,301 relayed (612 kB), 3 dropped |
+| `mixed3` | 3 | two punched, the third forced to the relay | 1 | 1 | 4,321 | hub > drunare |
+| `lan3` | 3 | punched through 192.168.1.123 (after the fix of 5.5; before it: every pair relayed, 2 launches in step all the same) | 2 in a row | 2 | 1,819 each | |
+| `lan4` | 4 | punched through 192.168.1.123 | 1 | 1 | 1,718 - 1,730, all 6 pairs | load 50 |
+| window program hosting, headless joining | 2 | punched | 1 | 1 | (pictures, no tick log) | the game's character screens, the "Network Game Launch" screen with both players "Ready!", both in the hub |
+| **limits under play** | | | | | | |
+| `limrelay`: relay 10 datagrams a second, 20 at once | 2 | relay | 1 | 1 | 1,817 | the service dropped 847 of 1,370 datagrams as over the limit; the game went on in step (it repeats what was not acknowledged), slower |
+| `limhello`: hello once a second from an address, an address forgotten after 4 s | 2 | relay | 1 | 1 | 1,145 | 264 relayed datagrams dropped (to an address gone stale), 18 hellos limited; in step, slower |
+| `limlines`: 1 line a second, 5 at once | 2 | punched | 1 | 1 | 1,819 | not hit: the client says fewer lines than that |
+| `limconn`: 2 connections from one address | 3 | - | 1 | **0** | - | the third copy was refused 5 times ("Too many connections."), the room never had three, nobody started: the limit holds and nothing else breaks |
+
+Not run: two computers, a real router, a player behind a NAT that changes ports; a person
+at the controls; the window program in a visible window; a character imported from a
+memory card (the runs make new ones); the emulator application in a room.
 
 ## 7. The emulator application (design only)
 

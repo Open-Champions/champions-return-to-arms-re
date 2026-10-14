@@ -65,12 +65,12 @@ LIB = os.path.join(HERE, 'lib')
 PATCH = os.path.join(HERE, 'recomp.patch')
 PARTS = ('rt', 'render', 'sound', 'app')
 GAMES = {'fix': ('obj-rta_native_fix', 'gen-app'), 'orig': ('obj-run', 'gen')}
-RENDER_CORE = ['vu1.cpp', 'vif1.cpp', 'gs.cpp', 'renderer.cpp']
+RENDER_CORE = ['vu1.cpp', 'vif1.cpp', 'gs.cpp', 'renderer.cpp', 'worldfill.cpp']
 RUNTIME = ['runtime.cpp', 'iop.cpp', 'script.cpp']
 NICE = ['nice', '-n', '10']
 EXPORTS = ['rtag_api_version', 'rtag_has', 'rtag_start', 'rtag_set_pad', 'rtag_step', 'rtag_poll', 'rtag_run', 'rtag_audio_pull',
            'rtag_memory', 'rtag_fields', 'rtag_info', 'rtag_ended', 'rtag_exit_code', 'rtag_stop', 'rtag_set_option',
-           'rtag_controls_hud', 'rtag_mouse', 'rtag_mouse_button']
+           'rtag_controls_hud', 'rtag_mouse', 'rtag_mouse_button', 'rtag_fill_get']
 
 
 def copy_sources(to, recomp):
@@ -233,7 +233,13 @@ def build_lib(args):
     if hud_text:
         lib_flags.append('-DRTAG_HAVE_HUD_TEXT')
     gfx_flags = rt_flags + ['-I', app] + ([] if hud_text else ['-DRTA_NO_HUD_TEXT_HOOKS'])
-    jobs = [(os.path.join(render, n), render_flags, 'r_') for n in RENDER_CORE + ['scene_tap.cpp']]
+    # the world for a camera inside it (app/fpworld.cpp, render/worldfill.cpp): fpworld.cpp supplies three hooks of the
+    # translation (frustum_testBox, world_draw, world_drawChunk), so it is linked only when the translation wraps them
+    world = has(os.path.join(app, 'fpworld.cpp'), 'install') and has(os.path.join(game_dir, 'funcs.h'), 'orig_001868a4')
+    if world:
+        lib_flags.append('-DRTAG_HAVE_WORLD')
+    core = [n for n in RENDER_CORE if os.path.exists(os.path.join(render, n))]
+    jobs = [(os.path.join(render, n), render_flags, 'r_') for n in core + ['scene_tap.cpp']]
     vu = os.path.join(SRC, 'gen-vu')
     translated, fast = os.path.join(vu, 'vu1_translated.cpp'), os.path.join(vu, 'vu1_fast.cpp')
     jobs.append((translated if os.path.exists(translated) else os.path.join(render, 'vu1_none.cpp'), render_flags, 'r_'))
@@ -247,6 +253,8 @@ def build_lib(args):
     jobs.append((os.path.join(app, 'gfx_rt.cpp'), gfx_flags, 'a_'))
     if os.path.exists(os.path.join(app, 'fpview.cpp')):      # the view modes (a snapshot with tools/recomp/app/fpview.patch applied)
         jobs.append((os.path.join(app, 'fpview.cpp'), rt_flags + ['-I', app], 'a_'))
+    if world:
+        jobs.append((os.path.join(app, 'fpworld.cpp'), rt_flags + ['-I', app, '-I', render], 'a_'))
     # the look controls (fpcontrols.h): nothing of the runtime in them but iface.h; rtag.cpp finds the header by itself
     if os.path.exists(os.path.join(app, 'fpcontrols.cpp')):
         jobs.append((os.path.join(app, 'fpcontrols.cpp'), ['-std=c++17', opt, '-Wall', '-I', app, '-I', rt], 'a_'))

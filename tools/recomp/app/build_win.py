@@ -83,7 +83,7 @@ NICE = [] if ON_WINDOWS else ['nice', '-n', '10']
 # multiply-add; -frounding-math: the rounding mode is changed at run time (toward zero).
 FP = ['-fno-strict-aliasing', '-ffp-contract=off', '-frounding-math']
 WIN_DEFINES = ['-D_WIN32_WINNT=0x0A00', '-DWINVER=0x0A00', '-D_USE_MATH_DEFINES', '-DNOMINMAX', '-DWIN32_LEAN_AND_MEAN']
-RENDER_CORE = ['vu1.cpp', 'vif1.cpp', 'gs.cpp', 'renderer.cpp']
+RENDER_CORE = ['vu1.cpp', 'vif1.cpp', 'gs.cpp', 'renderer.cpp', 'worldfill.cpp']
 FILM, FILM_HLE = os.path.join(HERE, 'film.cpp'), os.path.join(HERE, 'hle-app.txt')
 RUNTIME = ['runtime.cpp', 'iop.cpp', 'script.cpp']
 WIN_LIBS = ['-lopengl32', '-lgdi32', '-luser32', '-lole32', '-lwinmm', '-lavrt', '-lshell32', '-ldwmapi']
@@ -397,13 +397,17 @@ def build_mac(args):
     objc = ['-std=c++17', opt, '-Wall', '-fobjc-arc']
     translation = os.path.join(OUT, 'gen-vu', 'vu1_translated.cpp')
     vu1 = translation if os.path.exists(translation) and not args.no_translation else os.path.join(RENDER, 'vu1_none.cpp')
+    # the VU1 programs translated ahead of time (vu1.cpp calls them; the stand-in for a missing file is vu1_fast_none.cpp)
+    fast = os.path.join(OUT, 'gen-vu', 'vu1_fast.cpp')
+    vu1_fast = fast if os.path.exists(fast) and not args.no_translation else os.path.join(RENDER, 'vu1_fast_none.cpp')
     sources = [(os.path.join(RENDER, n), render_flags, 'r_') for n in RENDER_CORE] + [
-        (vu1, render_flags, 'r_'),
+        (vu1, render_flags, 'r_'), (vu1_fast, render_flags, 'r_'),
         (os.path.join(RENDER, 'backend_gl.cpp'), render_flags + qt_flags, 'r_'),
         (os.path.join(SOUND, 'sound_rta.cpp'), rt_flags + ['-I', SOUND], 'rt_'),
         (os.path.join(HERE, 'app_rt.cpp'), rt_flags + ['-I', HERE], 'a_'),
         (os.path.join(HERE, 'gfx_rt.cpp'), rt_flags + ['-I', HERE], 'a_'),
         (os.path.join(HERE, 'fpview.cpp'), rt_flags + ['-I', HERE], 'a_'),
+        (os.path.join(HERE, 'fpworld.cpp'), rt_flags + ['-I', HERE, '-I', RENDER], 'a_'),
         (os.path.join(HERE, 'fpcontrols.cpp'), ['-std=c++17', opt, '-Wall', '-I', HERE, '-I', RT], 'a_'),
         (os.path.join(HERE, 'look_mac.mm'), objc + ['-I', HERE, '-I', RT], 'a_'),
         (FILM, rt_flags + ['-I', HERE], 'a_'),
@@ -601,6 +605,7 @@ def main():
              (os.path.join(HERE, 'pad_win.cpp'), app_flags, 'a_'),
              (os.path.join(HERE, 'fpcontrols.cpp'), app_flags, 'a_'),          # the look views' controls: plain C++, the Mac's file
              (os.path.join(HERE, 'fpview.cpp'), rt_flags + ['-I', HERE], 'a_'),  # the view modes (the Mac's file; NOT RUN on Windows)
+             (os.path.join(HERE, 'fpworld.cpp'), rt_flags + ['-I', HERE, '-I', RENDER], 'a_'),  # the world for a camera inside it (the same)
              (os.path.join(WINSRC, 'wgl.cpp'), app_flags, 'a_')], objdir, search)
         # a file given with -include is a dependency the sources do not name
         app = [(source, flags, target, deps + ([os.path.join(NET, 'posix_win.h')] if source == ONLINE else []))

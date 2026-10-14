@@ -46,7 +46,7 @@ import genfiles  # noqa: E402  (the translation's own list of files)
 ROOT = os.path.dirname(os.path.dirname(RECOMP))
 OUT = os.path.join(ROOT, 'local', 'recomp-out')
 
-RENDER_CORE = ['vu1.cpp', 'vif1.cpp', 'gs.cpp', 'renderer.cpp']
+RENDER_CORE = ['vu1.cpp', 'vif1.cpp', 'gs.cpp', 'renderer.cpp', 'worldfill.cpp']
 RUNTIME = ['runtime.cpp', 'iop.cpp', 'script.cpp', 'host_posix.cpp']
 
 
@@ -146,6 +146,8 @@ def main():
     jobs.append((os.path.join(HERE, 'gfx_rt.cpp'), rt_flags + ['-I', HERE], 'a_'))
     # the view modes (fpview.h; docs/issues/native-first-person.md)
     jobs.append((os.path.join(HERE, 'fpview.cpp'), rt_flags + ['-I', HERE], 'a_'))
+    # the world for a camera inside it (fpworld.h; docs/issues/native-first-person-world.md)
+    jobs.append((os.path.join(HERE, 'fpworld.cpp'), rt_flags + ['-I', HERE, '-I', render], 'a_'))
     # the controls of the look views (plain C++: the Windows program compiles the same file)
     jobs.append((os.path.join(HERE, 'fpcontrols.cpp'), ['-std=c++17', args.opt, '-Wall', '-I', HERE, '-I', rt], 'a_'))
     jobs.append((os.path.join(HERE, 'look_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE, '-I', rt], 'a_'))

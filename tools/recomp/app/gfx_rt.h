@@ -37,5 +37,10 @@ void list_figures(uint32_t& most, uint32_t& room);
 // its own is in place (0, 0 = the game's).  Game thread only.
 void projection_args(uint32_t out[4]);
 void set_depth_range(float near_plane, float far_plane);
+// For app/fpworld.cpp (the world for a camera inside it).  world_drawObjects 0x14b168 is this
+// file's hook (the marks for names over heads); when this pointer is set the walk is handed to
+// it, with the original to call.  Game thread only.
+struct ObjectWalk { void (*run)(void* ctx, void (*original)(void* ctx)); };
+extern ObjectWalk object_walk;
 
 }  // namespace gfxrt

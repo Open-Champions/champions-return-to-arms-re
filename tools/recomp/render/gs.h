@@ -87,6 +87,31 @@ class Gs {
     // mark for the layout of the 2-D layer), 0xA6 and 0xA7 the halves of the widescreen factor.
     void note(uint32_t kind, uint32_t value);
     Layout layout;                      // the 2-D layer of a wide picture
+    // The world for a camera that stands in it (docs/issues/native-first-person-world.md; notes
+    // 0xB0 / 0xB1, from tools/recomp/app/fpworld.cpp, say when and with what depth range).
+    // The game's mesh programs give texel coordinates, which the GS interpolates across the
+    // screen, and they drop every triangle that has a corner far off screen or behind the
+    // eye.  For strips kicked by the four mesh programs into the 3-D buffer, while `on`:
+    //   persp  the depth each vertex carries is turned back into its distance w, and the
+    //          vertex is given (u q, v q, q) with q = near / w: textures in perspective;
+    //   clip   positions are read as the floats the program left (not the 16 bits the GS
+    //          takes of them), and a triangle that crosses the near plane is cut there
+    //          instead of being dropped - the VIF side (Vif1::no_reject) then keeps the
+    //          programs from dropping it.
+    struct WorldView {
+        bool on = false, persp = false, clip = false;
+        float near_plane = 18.0f, far_plane = 1800.0f;
+        float a16 = 0, b16 = 0;         // 16-bit depth = a16 + b16 / w
+        std::vector<uint16_t> payload;  // of the notes: sixteen bits a note, a word's high half first
+        uint64_t runs = 0, triangles = 0, cut = 0, behind = 0, odd = 0;     // strips taken; triangles out; cut at the near plane; wholly behind it; with a corner on the eye's plane (left out)
+        uint64_t fill_draws = 0, fill_triangles = 0, fill_blocks = 0, fill_skipped = 0;     // draws of the level's fill; triangles and blocks drawn; draws left out (no 3-D surface in the state)
+    } world;
+    bool world_run(const uint32_t* data, uint32_t nloop, uint32_t nreg, uint64_t regs);
+    // The level's generated geometry (worldfill.h: ceilings, skirts), drawn where the note stands in
+    // the stream - in front of the frame's first level chunk - with the frame's own view-projection
+    // (the game's g_viewProj: clip = p.x row0 + p.y row1 + p.z row2 + row3; depth 1..4095.94).
+    // A ceiling is drawn only where the eye is under it: a camera that has got above one looks through it.
+    void draw_fill(const float* view_projection, const float* eye, uint32_t clear_colour, uint32_t light_level, uint32_t kinds);
     // Close the frame being built: names what the display shows.  The caller takes `frame`
     // and calls begin_frame() before feeding more.
     void end_frame(uint64_t number);

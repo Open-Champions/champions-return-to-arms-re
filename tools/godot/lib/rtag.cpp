@@ -24,6 +24,12 @@
 #include "fpcontrols.h"
 #define RTAG_HAVE_CONTROLS 1
 #endif
+// the world for a camera inside it (tools/recomp/app/fpworld.h): build.py defines RTAG_HAVE_WORLD when the snapshot has
+// app/fpworld.cpp and the translation wraps its three functions
+#ifdef RTAG_HAVE_WORLD
+#include "fpworld.h"
+#include "worldfill.h"
+#endif
 
 #include <atomic>
 #include <cmath>
@@ -197,6 +203,10 @@ struct Machine {
 
     render::Renderer renderer;
     GateSink sink;
+#ifdef RTAG_HAVE_WORLD
+    std::mutex fill_lock;
+    std::shared_ptr<const render::FillLevel> fill_held;     // what rtag_fill_get handed out last
+#endif
     Pads pads;
     rta::Hooks hooks;
     double waited_downstream_ms = 0;
@@ -259,7 +269,18 @@ void GateSink::vif1(const uint32_t* words, size_t count) {
 }
 
 // fpview's call-out, on the game's thread: a draw pass has returned, its camera still in place.
-void view_drawn(const fpview::View& v, Ctx*, void*) {
+void view_drawn(const fpview::View& v, Ctx* c, void*) {
+#ifdef RTAG_HAVE_CONTROLS
+    // the strafe mode (the fix set's section, when the game has it), asked for by the controls and sent through the
+    // section's own sender from the draw pass - as tools/recomp/app/app_main.cpp does; never while rows are replayed
+    {
+        static const bool replayed = apprt::replaying();
+        int mode = fpcontrols::take_strafe_send();
+        if (mode >= 0 && !replayed && g_m->pads.controls_on) apprt::call_game(c, fpcontrols::STRAFE_SENDER, (uint32_t)mode);
+    }
+#else
+    (void)c;
+#endif
     rtag_view& o = g_m->sink.drawn_view;
     memset(&o, 0, sizeof o);
     o.mode = v.mode; o.shown = v.shown; o.blend = v.blend;
@@ -317,6 +338,22 @@ void app_command(const std::string& text, uint64_t frame) {
 #ifdef RTAG_HAVE_CONTROLS
     } else if (w[0] == "fpc" && w.size() >= 2) {        // the look controls' own lines (fpcontrols.h), as the native application's
         printf("[frame %llu] fpc: %s\n", (unsigned long long)frame, fpcontrols::command(text.substr(text.find(w[1])), frame).c_str());
+        fflush(stdout);
+#endif
+#ifdef RTAG_HAVE_WORLD
+    } else if (w[0] == "world" && w.size() >= 2) {      // app world info | app world set KEY VALUE (fpworld.h), as the native application's
+        if (w[1] == "set" && w.size() >= 4) { if (!fpworld::setting(w[2].c_str(), w[3].c_str())) say("not a world setting: " + w[2]); }
+        else printf("[frame %llu] %s\n", (unsigned long long)frame, fpworld::info());
+        fflush(stdout);
+    } else if (w[0] == "fill") {                        // app fill: what rtag_fill_get hands a host now
+        rtag_fill f;
+        if (rtag_fill_get(&f)) {
+            unsigned ceilings = 0, skirts = 0;
+            for (uint32_t k = 0; k < f.mesh_count; k++) (f.meshes[k].kind == RTAG_FILL_CEILING ? ceilings : skirts)++;
+            printf("[frame %llu] fill: level %s, serial %llu, %u vertices (%u triangles), %u meshes (%u ceiling, %u skirt), bounds %.0f %.0f %.0f .. %.0f %.0f %.0f\n",
+                   (unsigned long long)frame, f.level, (unsigned long long)f.serial, f.vertex_count, f.vertex_count / 3, f.mesh_count, ceilings, skirts,
+                   f.bounds[0], f.bounds[1], f.bounds[2], f.bounds[3], f.bounds[4], f.bounds[5]);
+        } else printf("[frame %llu] fill: none\n", (unsigned long long)frame);
         fflush(stdout);
 #endif
     } else if (w[0] == "stats") {
@@ -542,6 +579,13 @@ int rtag_has(const char* feature) {
     if (f == "picture") return 1;
     if (f == "scene3d") return 1;
     if (f == "views") return 1;
+    if (f == "world") {
+#ifdef RTAG_HAVE_WORLD
+        return 1;
+#else
+        return 0;
+#endif
+    }
     if (f == "controls") {
 #ifdef RTAG_HAVE_CONTROLS
         return 1;
@@ -622,6 +666,14 @@ int rtag_start(const rtag_config* config) {
         v.forward = {forward[0], forward[1], forward[2]};
         v.up = {up[0], up[1], up[2]};
     });
+#endif
+#ifdef RTAG_HAVE_WORLD
+    // the world for a camera inside it: the fill (ceilings, skirts) is made at a level load and handed out by
+    // rtag_fill_get; the cut at the near plane and the textures in perspective are for a host that draws the list.  The
+    // scene tap draws the packets' complete geometry and counts their vertices, so with it both are off
+    // (tools/recomp/render/fpworld.patch, its notes).
+    fpworld::install();
+    if (m->scene3d) { fpworld::setting("world.clip", "off"); fpworld::setting("world.persp", "off"); }
 #endif
     if (config->view && *config->view) { int mode = fpview::mode_by_name(config->view); if (mode >= 0) fpview::set_mode(mode); }
     if (getenv("RTA_GS_LOG")) m->renderer.gs.log_display = true;
@@ -764,6 +816,13 @@ int rtag_set_option(const char* key, const char* value) {
         return 1;
     }
     if (k.compare(0, 5, "view.") == 0) return fpview::setting(key, value) ? 1 : 0;
+    if (k == "world" || k.compare(0, 6, "world.") == 0) {
+#ifdef RTAG_HAVE_WORLD
+        return fpworld::setting(key, value) ? 1 : 0;
+#else
+        return 0;
+#endif
+    }
     if (k == "aspect") {                                // the shape of the 3-D view, width / height (4:3 at the least)
         double shape = atof(value);
         if (!(shape > 0)) return 0;
@@ -794,6 +853,29 @@ int rtag_controls_hud(rtag_controls* out) {
     if (!g_m->pads.have_hud) return 0;
     *out = g_m->pads.hud;
     return 1;
+}
+
+int rtag_fill_get(rtag_fill* out) {
+    if (!out) return 0;
+    memset(out, 0, sizeof *out);
+#ifdef RTAG_HAVE_WORLD
+    if (!g_m) return 0;
+    static_assert(sizeof(rtag_fill_vertex) == sizeof(render::FillVertex) && sizeof(rtag_fill_mesh) == sizeof(render::FillMesh), "rtag_fill_* = render::Fill*");
+    std::shared_ptr<const render::FillLevel> level = render::current_fill();
+    std::lock_guard<std::mutex> hold(g_m->fill_lock);
+    g_m->fill_held = level;                             // the pointers handed out stay valid until the next call or rtag_stop
+    if (!level || level->meshes.empty()) return 0;
+    out->serial = level->serial;
+    out->level = level->name.c_str();
+    out->vertices = (const rtag_fill_vertex*)level->vertices.data();
+    out->vertex_count = (uint32_t)level->vertices.size();
+    out->meshes = (const rtag_fill_mesh*)level->meshes.data();
+    out->mesh_count = (uint32_t)level->meshes.size();
+    memcpy(out->bounds, level->bounds, sizeof out->bounds);
+    return 1;
+#else
+    return 0;
+#endif
 }
 
 void rtag_mouse(float dx, float dy, float wheel) {

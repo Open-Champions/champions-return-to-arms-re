@@ -1798,25 +1798,28 @@ repository). Every statement says **Ran** or **Read**.
 
 ### 13.0 STATE (rewritten at every step; read this first after a stop)
 
-**21:55 - merged, built, standing checks and the views' comparison passed; the lobby pair runs.**
+**23:05 - candidate m3 (the world work merged) is `bin/rta_app` since 23:00; checks passed;
+the Godot library and the Windows folder are rebuilt from the same tree.**
 
-- Merged into the shared tree (13.1): the controls work's delta (`apprt::call_game`, the
-  `fpview::on_drawn` call-out that sends the strafe mode), `1d93b0` and `1d99f0` in
-  `hle.txt`, then all of `tools/godot/recomp.patch`. New here: the HUD switches and the
-  music volume reachable in the stand-alone program (13.3); the replay rule also holds
-  the strafe message back (13.2).
-- Built 21:50 (the candidate m2): `bin/rta_app_next` (fix set of 20:44: "patched: 189
-  words of 31 sections"; it announces **patch set 9ac29719 (189 words)** - Ran, a short
-  run off screen) and `bin/rta_app_orig_next`. By-products `bin/rta_native_fix`,
-  `bin/rta_native` rebuilt 21:41.
-- `bin/rta_app` is still f3 of 14:37 (the owner's running copy, pid 17482, is that file).
-- Passed on m1 (the build of 21:41, before the replay rule for the message): 11 + 11
-  pictures, 60 tour pictures, the rig comparison three ways (13.2). **To repeat on m2
-  before it is put in place.** The views' comparison (13.2) was run on m2's sources.
-- Running now: `s13/pair.py online/pair-m2` (two test windows on this Mac's lobby).
-- Not yet: the switches measured (13.3), `bin/rta_app` replaced, Godot, Windows.
-- Found: **the owner's launcher file on the Desktop is evicted by iCloud** ("dataless":
-  `stat -f %Sf`; a `cat` of it hung for two minutes and was stopped): 13.5.
+- `bin/rta_app` = **m3** (built 22:10; also `rta_app_m3`): m2 (fix set 9ac29719, 189 words;
+  the strafe mode sent by the application itself; the second HUD group and the music
+  volume, 13.3) plus the world work (13.6: ceilings, skirts, the cut at the near plane,
+  textures in perspective, the object walk). `rta_app.prev` = m2 (`rta_app_m2`); f3 of
+  14:37 is `rta_app_f3`. `rta_app_orig` = m3's, `.prev` = m2's. The owner's running copy
+  (pid 17482) was never touched: each new file was moved over the name.
+- Passed on m3: 11 + 11 pictures, 60 tour pictures, the rig comparison three ways; each
+  view's comparison with the world work on, off and forced on in overhead (13.6); the
+  lobby pair with strafing (13.6); the switches (the same files as on m2). m2 passed the
+  same before (13.2, 13.3).
+- Godot (13.4, 13.6): libraries, extension, project from the merged tree; recomp.patch
+  empty; the library exports the fill (`rtag_fill_get`) and sends the strafe mode.
+- Windows (13.7): both compilers link; stand-ins agree; README figures refreshed.
+- `bin/rta_native_online` rebuilt 23:00 with the new set (`.prev` = 14:50's); a lobby game of it
+  against the window program m3 (`online/mixed-m3`): 2,826 ticks in step into `drunare`, no shared
+  column differs, each names 9ac29719 to the other.
+- Nothing of this work is running (checked 23:06); intermediate files removed (the sound files:
+  their levels are in `s13/snd/levels.txt`; the stand-in root's translation and objects).
+- **The owner's launcher file on the Desktop is evicted by iCloud**: 13.5.
 
 ### 13.1 What was merged (Ran: each dry run first)
 
@@ -1932,3 +1935,178 @@ line, settings file line, `app option` at the first blank - give the same file; 
 option gives the file of volume 1. (The HUD work measured -24.5 dB / -32.9 dB / silence
 on a Godot bus in a private library: 8.4 dB between 1 and 0.25 there, 12.0 here, where
 the file is what the sound core rendered and nothing else.)
+
+### 13.4 The Godot library from the merged tree (Ran)
+
+- `tools/godot/recomp.patch` **is empty of hunks now**: its notes say where each of its
+  three pieces went. `tools/godot/build.py` (two lines): `snapshot` hands the file to
+  `patch` only when it holds a hunk (a file of notes alone is "garbage" to `patch` and the
+  snapshot failed), and `patch` keeps a notes-only file as notes.
+- `build.py snapshot --refresh` (22:00; from the shared tree and the shared compiled game,
+  no stand-in root any more): `diff -ru recomp.orig recomp` is empty. `lib` and
+  `lib --original`: `librta_game.dylib` (23,467,856 bytes; "patched: 191 words" = the 189
+  of the set and the two of the local sign-in file), `librta_game_orig.dylib`,
+  `bin/rtag_host`. `extension` and `extension --release` (703,688 / 686,968 bytes, with
+  the saved-character reader), `project` staged.
+- The smoke test (`s13/godot/smoke`: `test/smoke/s.rig` with its pictures written here):
+  409 blanks, **both pictures identical** to this morning's. **The 11 reference pictures
+  through the library** (`s13/godot/det-lib`, `rtag_host --size 1280x896`): 11 of 11
+  identical, pixel for pixel, to the library's of this morning (`test/det/lib`) and to
+  `rta_app` m2's (`s12/det/m2-plain-fast`). The rig comparison through
+  `librta_game_orig.dylib`: `merge/rig-final-compare.txt` byte for byte.
+- The switches through the library: `app option game_hud off` + `game_hud_text off` are
+  accepted and give the picture `rta_app --plain` gives with both off (identical);
+  `music_volume` 1 / 0.25 / 0 give the same three sound files as `rta_app` (MD5; 12.0 dB,
+  silence).
+- **For the Godot side**: `tools/godot/lib/rtag.cpp` does not send the strafe mode - its
+  `view_drawn` call-out has no `fpcontrols::take_strafe_send()` / `apprt::call_game(c,
+  fpcontrols::STRAFE_SENDER, mode)` (the three lines of `app_main.cpp`, 13.1). Until it
+  has, the library plays first person by the stock rules (the controls go by the mode
+  byte the simulation really has), with the same fix set. Not run by this work: the
+  staged project in a Godot window, the export, the Godot side's own tests.
+
+### 13.5 In place; the owner's launcher (Ran)
+
+`bin/rta_app` was replaced at 22:06 by a move over the name (the files beside it:
+13.0). **The launcher needs no change** for a classic view at start, V cycling the views
+and strafing by itself in first person: run off screen with a copy of the owner's own
+`app-data/settings.txt` (written by f3 at 15:10: `view = overhead`, `controls.strafe =
+yes`, which the controls read as `auto`), the program in place started in overhead with
+the mode byte 0; `app view next` (what V does) gave action 0, chase 0, **shoulder 1,
+first 1**, overhead 0; in first person a push of the stick to the left ran the character
+sideways with the facing held on the look (132.5 degrees before and after);
+`controls.strafe` off gave 0 and auto 1 again (`s13/person/out.txt`). The explicit
+line, should a settings file ever say otherwise:
+
+```
+exec "$R/local/recomp-out/bin/rta_app" --view overhead --view-set controls.strafe=auto --disc "$(cd "$(dirname "$0")" && pwd)/Champions - Return to Arms (v2.00).iso"
+```
+
+**The launcher file itself is evicted by iCloud**: `~/Desktop/Champions - Return to Arms
+(v2.00)/Play Champions NATIVE (experimental).command` (460 bytes) and `Play
+Champions.command` beside it carry the flag `dataless` (`stat -f %Sf`). A `cat` of the
+first one by this work at 21:47 hung for two minutes and was stopped; nothing was
+written. A double click has to wait for iCloud in the same way. The folder is on the
+synchronised Desktop; the disc image in it is a link to the copy in `~/Library`, which
+is whole. Not changed by this work (the folder is the owner's).
+
+### 13.6 The world work merged (asked by the coordinator at 22:08; Ran)
+
+`tools/recomp/render/fpworld.patch` (made against this section's tree of 22:05; the
+patch as merged: `s13/fpworld.patch.as-merged`) applied after a clean dry run: 3
+addresses in `hle.txt` (`1868a4`, `189870`, `1887b8`), `app/app_main.cpp`, `build.py`,
+`gfx_rt.*`, `render/build.py`, `gs.cpp`, `gs.h`, `vif1.cpp`, `vif1.h`; the new files
+`app/fpworld.*`, `render/worldfill.*`, `worldfill_main.cpp` were in place. What the patch
+left undone, done here:
+
+- **Settings file**: `world` and `world.<part>` lines (`settings.h` keeps them with the
+  view lines; `fpworld::setting` takes them; a first start writes
+  `fpworld::settings_text()` after the controls' lines). `--world KEY=VALUE` now goes the
+  way of every command-line setting - applied after the file, so it wins over it (the
+  patch called `fpworld::setting` at once, which a settings line would then have undone).
+  Runtime options (`--opt world-clip=...`) still win over both.
+- **Windows**: `app/win_main.cpp` (`fpworld::install`, `--world`, `app world info|set`,
+  the settings lines) and `app/build_win.py` (`worldfill.cpp` among the renderer's files,
+  `fpworld.cpp` in the Windows list and in the `--mac` list).
+- **Godot**: `tools/godot/build.py` (`worldfill.cpp` among the renderer's files;
+  `fpworld.cpp` and `-DRTAG_HAVE_WORLD` when the snapshot's translation wraps the three
+  functions - funcs.h has `orig_001868a4` - so an older snapshot still links; the new
+  export in the list of exported symbols). `tools/godot/lib/rtag.cpp`, `rtag.h`, below.
+
+**Checks on m3** (`s13/verify-m3.txt`; `s13/fp/` `w-*`, `woff-*`, `walways-*`, `wi-first`):
+
+| Check | Result |
+|---|---|
+| 11 + 11 pictures, 60 tour pictures (overhead: the world work does not run) | the same files as m2's, f3's and the reference switches' |
+| the rig comparison, three ways | `merge/rig-final-compare.txt` byte for byte |
+| each view's comparison, the world work on (its default `views`: on in action, chase, shoulder, first) | **every view's tick log is the same file as m2's for that view** (all 27 columns, the pool's and the player record's sums and the cosmetic seed among them; 7,797 rows) and every result file the same as f3's and m2's. That it really ran: first person again with `app world info` on the way - 3,366 passes with it, 1.1 million object cells widened, the cut and perspective on (switches 7) - and the tick log still the same file |
+| `--world world=off` in every view | the same files |
+| overhead with `--world world=always` | `merge/rig-final-compare.txt`; tick log the same file as overhead's |
+| the lobby pair (`online/pair-m3`: host first person strafing with the world work on, joiner overhead, this Mac's lobby) | 4,287 ticks in step through `hub` into `drunare`; no shared column differs (28, the mode bytes among them); player 0's mode on in 2,445 ticks, 12 switches, 139 of 588 running ticks sideways or backwards |
+| the switches | music 0.25 and effects at 0: the same sound files as m2's; prompt with both groups off, boss meter with the second group off: the same pictures |
+
+**The Godot library and the fill** (asked: the library exports the fill's mesh list):
+
+- New in `tools/godot/lib/rtag.h` (optional, after interface version 6 - **the version
+  number stays 6**, a host looks the function up by name): `int rtag_fill_get(rtag_fill*
+  out)` with `rtag_fill { uint64_t serial; const char* level; const rtag_fill_vertex*
+  vertices; uint32_t vertex_count, mesh_count; const rtag_fill_mesh* meshes; float
+  bounds[6]; }`, `rtag_fill_vertex` = `render::FillVertex` field for field (position,
+  normal, uv, rgba; checked by a `static_assert`), `rtag_fill_mesh` = `render::FillMesh`
+  (kind `RTAG_FILL_CEILING` 1 / `RTAG_FILL_SKIRT` 2, first, count, bounds). It returns the
+  fill of the level that is loaded (`render::current_fill()`); the library holds that
+  fill until the next call or `rtag_stop`, so the pointers stay valid; `serial` changes
+  with the level or the options (rebuild meshes only then). `rtag_has("world")`;
+  `rtag_set_option("world" | "world.<part>", VALUE)`; script lines `app world info|set`,
+  `app fill`.
+- `rtag_start` installs fpworld after the controls; **with the scene tap (`scene3d`) it
+  sets `world.clip` and `world.persp` off** (the merge note: the tap counts each packet's
+  vertices and Godot draws the complete geometry itself), and the fill is still made and
+  handed out. Without the tap (the library's own renderer, Godot's list drawer - whose
+  shader divides by q) both stay on.
+- `view_drawn` now sends the strafe mode the controls ask for, as `app_main.cpp` does
+  (not while rows are replayed, not while the host has the controls off).
+- Ran (`s13/godot/fill`: the world work's route into `nitdung1`, first person):
+  `app fill` through the library: "level nitdung1, 255,582 vertices (85,194 triangles),
+  1,030 meshes (688 ceiling, 342 skirt)"; `app world info`: switches 7 without the tap,
+  **1 with `--scene3d`** (only the object walk). The four level pictures (pitch 0) through
+  the library are identical to `rta_app`'s; the two looking up differ because
+  `rtag.cpp`'s `app view set` puts "view." in front of a key that already has it (a
+  script command of the library, not the fill: for the Godot side).
+- Again on the rebuilt libraries: smoke test 2 of 2 identical, the 11 reference pictures
+  11 of 11 identical to this morning's library and to `rta_app` m3's `--plain` ones, the
+  rig comparison through `librta_game_orig.dylib` the merge file byte for byte.
+  Extension (debug, release) and project rebuilt. Not done: drawing the fill in the Godot
+  scene (`tools/godot/extension`, `project/` are the Godot side's), a Godot window, the
+  export.
+- One thing the first try taught: a picture run into a data directory that a run before
+  had played in starts from that run's memory card and goes elsewhere (exit 3, "TIMEOUT
+  until hub"); every run here gets a fresh data directory.
+
+### 13.7 Windows (compiled and linked; nothing run on Windows)
+
+`s13/win/chain.sh` (section 12's chain in the new home), on the tree with everything:
+GCC exit 0 (`rta_app_gcc.exe` 25,740,800 bytes), clang exit 0 (`rta_app.exe` 28,061,184),
+the stand-ins (x86-64 under Rosetta and arm64) built; `--reference` wrote
+`rta-windows/boot-check-mac.txt` and the README figures; the stand-in comparison ran from
+this section's stand-in root (its input, `local/recomp-out/rig/boot-rig.tsv`, was lost in
+the move; the root has the stand-in of `stand-ins.tsv`): **the x86-64 and arm64 tick logs
+identical (7,798 rows) and memory at ticks 300 and 3900 identical**, the comparison with
+the rig's log the lines of this afternoon; `fpcheck` tables the same as this afternoon's
+on both. `build_win.py --mac` links again (its list lacked the translated VU1 programs
+since they were added; `vu1_fast.cpp` added).
+
+The tester's README (`rta-windows/README.txt`) now says **patch set 9ac29719 (189
+words)**; the boot check's units 113,069,252; the PNG figure b4ed3d8917871960 as before.
+`rta-windows/pngtest` had lost 811 of its 961 made files in the move, which gave another
+figure over 150 files; the folder was made again by `app/win/pngtest.py` (a fixed seed,
+nothing of the game; the partial one is kept as `s13/win/pngtest-partial-after-move`).
+
+### 13.8 Files changed by this section, and what is left
+
+**Shared files** (outside the five directories): `tools/recomp/hle.txt` (2 + 3
+addresses), `tools/godot/recomp.patch` (notes only), `tools/godot/build.py` (the empty
+patch, the world files, the export list), `tools/godot/lib/rtag.cpp`, `rtag.h`
+(`rtag_fill_get`, the world, the strafe message). Inside: `app/app_main.cpp`, `app_rt.h`,
+`app_rt.cpp` (`call_game`, `set_music_volume`), `settings.h`, `win_main.cpp`,
+`build_win.py`, `gfx_rt.cpp`; `render/gs.cpp`, `gs.h`, `layout.h`; `sound/drivers.cpp`,
+`audio_out.cpp`; and the world patch's files as it brought them. `net/` untouched
+(`net2.patch` not merged).
+
+**For the agents that build against them**: `render/gs.h` changed twice - `Gs::hide_text`
+(a bool) and the world work's `Gs::WorldView world`, `world_run`, `draw_fill` - and
+`render/layout.h` gained `M_TEXT`, `render/vif1.h` `Vif1::no_reject`: the classes are
+larger, so **every object that includes `gs.h` or `vif1.h` must be compiled again**
+(`local/recomp-net2`, `local/recomp-fp-world` snapshots). `app/app_rt.h` gained
+`apprt::call_game` and `set_music_volume`; `app/gfx_rt.h` the world work's `ObjectWalk`.
+`rt/rt.h`, `rt/iface.h`, `app/fpview.h`, `render/backend.h` are unchanged.
+
+**Left**:
+
+1. The owner's launcher file is evicted (13.5): it opens when iCloud gives it back.
+2. Godot: draw the fill in the scene (`rtag_fill_get` is there); `app view set` in
+   `rtag.cpp`; the strafe mode in a Godot window by hand.
+3. `net2.patch` when the online work says so.
+4. The world work's own list (`native-first-person-world.md` 7.6) and the skirt never
+   seen in a picture; nobody has played first person with all of it.
+5. From 12.9: the owner's eye on the picture, a real controller, the Windows program run.

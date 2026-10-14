@@ -2,7 +2,9 @@ net2.patch - a room of our own and the direct launch for the native build: the l
 other work owns.  docs/issues/native-rendezvous.md says what it is and what was run.
 
 Made against tools/recomp/net/netdrv.cpp as it stood 2026-10-12 23:50 (unchanged on
-2026-10-13 19:30) and tools/recomp/app/build.py of 2026-10-13 14:30.  Apply from tools/recomp:
+2026-10-13 23:05) and tools/recomp/app/build.py of 2026-10-13 14:30; a dry run against
+app/build.py of 22:09 applies cleanly.  The game runs of docs/issues/native-rendezvous.md
+section 6 were made with exactly these lines (netdrv.cpp of a snapshot, patched).  Apply from tools/recomp:
 
     cd tools/recomp && patch -p1 --dry-run < net2/net2.patch && patch -p1 < net2/net2.patch
 

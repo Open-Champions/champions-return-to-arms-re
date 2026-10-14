@@ -17,6 +17,10 @@
 //   view         = overhead   the camera: overhead (the game's own), action, chase, shoulder,
 //                             first; and view.<mode>.<name> = value for each view's own
 //                             numbers (fpview.h)
+//   world        = views      the world for a camera inside it (fpworld.h): views (while a view
+//                             other than overhead is drawn), off, always; and world.clip,
+//                             world.persp, world.objects = on | off, world.ceilings,
+//                             world.skirts = auto | on | off
 //   game_hud     = yes        the game's own HUD layer (player status, gold, compass, minimap,
 //                             spell selector); no = left out of the picture (render/gs.h hide_edge)
 //   game_hud_text = yes       its second group: the boss meter, the one-line message and the
@@ -49,7 +53,7 @@ struct Settings {
     int frame_cap = 60;
     bool game_hud = true, game_hud_text = true;     // the game's own HUD layer / its boss meter, message and prompt box
     double music_volume = 1.0;                      // 0..1, the music alone
-    std::vector<std::pair<std::string, std::string>> view;     // "view" and "view.<mode>.<name>" lines, for fpview::setting
+    std::vector<std::pair<std::string, std::string>> view;     // "view", "view.<mode>.<name>", "controls.*", "world", "world.*" lines, for fpview / fpcontrols / fpworld ::setting
 
     static double parse_aspect(const std::string& text) {
         if (text == "auto" || text == "window" || text.empty()) return 0;
@@ -81,7 +85,8 @@ struct Settings {
         else if (key == "game_hud") game_hud = !(value == "off" || value == "no" || value == "0" || value == "false");
         else if (key == "game_hud_text") game_hud_text = !(value == "off" || value == "no" || value == "0" || value == "false");
         else if (key == "music_volume") { music_volume = atof(value.c_str()); music_volume = music_volume < 0 ? 0 : music_volume > 1 ? 1 : music_volume; }
-        else if (key == "view" || key.compare(0, 5, "view.") == 0 || key.compare(0, 9, "controls.") == 0) view.push_back({key, value});   // controls.*: fpcontrols::setting
+        else if (key == "view" || key.compare(0, 5, "view.") == 0 || key.compare(0, 9, "controls.") == 0 || key == "world" || key.compare(0, 6, "world.") == 0)
+            view.push_back({key, value});       // controls.*: fpcontrols::setting; world, world.*: fpworld::setting
         else return false;
         return true;
     }

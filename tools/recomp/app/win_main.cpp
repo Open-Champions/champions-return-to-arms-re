@@ -88,6 +88,7 @@
 #include "pad_host.h"
 #include "fpcontrols.h"
 #include "fpview.h"
+#include "fpworld.h"
 #include "pipeline.h"
 #include "recorder.h"
 #include "settings.h"
@@ -1065,6 +1066,18 @@ static void app_command(const std::string& text, uint64_t frame) {
         printf("[frame %llu] option: game_hud %s, game_hud_text %s%s\n", (unsigned long long)frame, gs.hide_edge ? "off" : "on", gs.hide_text ? "off" : "on",
                w[1] == "music_volume" ? (", music_volume " + w[2]).c_str() : "");
         fflush(stdout);
+    } else if (w[0] == "world" && w.size() >= 2) {
+        // app world info | app world set KEY VALUE (fpworld.h: the world for a camera inside it)
+        if (w[1] == "set" && w.size() >= 4) { if (!fpworld::setting(w[2].c_str(), w[3].c_str())) log_line("app world set: not a world setting: " + w[2]); }
+        else if (w[1] == "info") {
+            const render::Gs::WorldView& wv = g_renderer->gs.world;
+            printf("[frame %llu] %s; renderer: %llu strips, %llu triangles, %llu cut at the near plane, %llu behind it, %llu left out; fill drawn %llu times, "
+                   "%llu blocks, %llu triangles, %llu times left out\n", (unsigned long long)frame,
+                   fpworld::info(), (unsigned long long)wv.runs, (unsigned long long)wv.triangles, (unsigned long long)wv.cut, (unsigned long long)wv.behind,
+                   (unsigned long long)wv.odd, (unsigned long long)wv.fill_draws, (unsigned long long)wv.fill_blocks, (unsigned long long)wv.fill_triangles,
+                   (unsigned long long)wv.fill_skipped);
+            fflush(stdout);
+        } else log_line("app world: info, or set KEY VALUE");
     } else if (w[0] == "view" && w.size() >= 2) {
         // app view NAME|next | set KEY VALUE | info   (fpview.h; as in app_main.cpp)
         if (w[1] == "next") fpview::cycle(1);
@@ -1200,6 +1213,12 @@ int main(int argc, char** argv) {
         else if (a == "--art-memory") overrides.push_back({"art_memory", next()});
         else if (a == "--frame-cap") overrides.push_back({"frame_cap", next()});
         else if (a == "--view") overrides.push_back({"view", next()});
+        else if (a == "--world") {
+            std::string kv = next(); size_t eq = kv.find('=');
+            std::string key = eq == std::string::npos ? std::string() : kv.substr(0, eq), value = eq == std::string::npos ? std::string() : kv.substr(eq + 1);
+            if (key != "world" && key.compare(0, 6, "world.") != 0) { fprintf(stderr, "rta_app: --world world=views|off|always, world.clip|persp|objects=on|off, world.ceilings|skirts=auto|on|off\n"); return 2; }
+            overrides.push_back({key, value});
+        }
         else if (a == "--game-hud") overrides.push_back({"game_hud", next()});
         else if (a == "--game-hud-text") overrides.push_back({"game_hud_text", next()});
         else if (a == "--music-volume") overrides.push_back({"music_volume", next()});
@@ -1254,8 +1273,8 @@ int main(int argc, char** argv) {
         opt.aspect = opt.set.aspect;
         opt.unpaced = opt.set.frame_cap <= 0;
         for (auto& kv : opt.set.view)
-            if (!fpview::setting(kv.first.c_str(), kv.second.c_str()) && !fpcontrols::setting(kv.first.c_str(), kv.second.c_str()))
-                log_line("settings: not a view setting: " + kv.first + " = " + kv.second);
+            if (!fpview::setting(kv.first.c_str(), kv.second.c_str()) && !fpcontrols::setting(kv.first.c_str(), kv.second.c_str()) && !fpworld::setting(kv.first.c_str(), kv.second.c_str()))
+                log_line("settings: not a view, controls or world setting: " + kv.first + " = " + kv.second);
         opt.set.view.clear();
     };
     if (!settings_later) apply_settings(opt.settings_file);
@@ -1301,7 +1320,7 @@ int main(int argc, char** argv) {
         std::string file = opt.data + "\\settings.txt";
         bool there = file_exists(file);
         apply_settings(there ? file : std::string());
-        if (!there && opt.test.empty() && !opt.offscreen) app::Settings().save(file, (std::string(fpview::settings_text()) + "\n" + fpcontrols::settings_text()).c_str());
+        if (!there && opt.test.empty() && !opt.offscreen) app::Settings().save(file, (std::string(fpview::settings_text()) + "\n" + fpcontrols::settings_text() + "\n" + fpworld::settings_text()).c_str());
     }
 #ifdef RTA_NET
     // the lobby server: --server, else server.txt beside the program - its first line that is
@@ -1392,6 +1411,7 @@ int main(int argc, char** argv) {
         int mode = fpcontrols::take_strafe_send();
         if (mode >= 0 && !replayed) apprt::call_game(c, fpcontrols::STRAFE_SENDER, (uint32_t)mode);
     });
+    fpworld::install();     // the world for a camera inside it (the Mac's file; NOT RUN on Windows); after the controls' call-out
     if (getenv("RTA_GS_LOG")) renderer.gs.log_display = true;
     if (const char* keep = getenv("RTA_TEX_KEEP")) renderer.gs.texture_keep_frames = (uint32_t)atoi(keep);    // frames an unused texture is kept; 0 = for ever
     static AppSink sink;

@@ -31,7 +31,7 @@ import genfiles  # noqa: E402  (the translation's own list of files)
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 OUT = os.path.join(ROOT, 'local', 'recomp-out')
 
-CORE = ['vu1.cpp', 'vif1.cpp', 'gs.cpp', 'renderer.cpp']
+CORE = ['vu1.cpp', 'vif1.cpp', 'gs.cpp', 'renderer.cpp', 'worldfill.cpp']
 GL = ['backend_gl.cpp', 'texpack.cpp']
 
 

@@ -32,3 +32,7 @@
 17d830   # worldtex_stream: the texture cells kept loaded follow the view that is drawn
 1a46c0   # Player_draw: the local player's model is not shown in first person (it is still drawn: its packets are left out of the stream)
 205880   # Camera_followZoomInput: can be held off in a view that uses the camera stick's y for looking up and down (off by default)
+# ---- the world from the ground (app/fpworld.cpp; docs/issues/native-first-person-world.md).  Without that file the weak pass-through runs: the game as it is ----
+1868a4   # frustum_testBox (box, plane mask): the test every level chunk, object-grid cell and object box is culled by
+189870   # world_draw (world): the walk over the chunk tree; generated geometry is added behind it
+1887b8   # world_drawChunk (world, chunk, clip flag): one chunk into the display list (counted: drawn, texture cell not loaded)

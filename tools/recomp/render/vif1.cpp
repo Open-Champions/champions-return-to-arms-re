@@ -70,6 +70,10 @@ void Vif1::start_program(uint32_t at, bool from_pc) {
     vu.top = tops & 0x3FF;
     if (dbf) { tops = base; dbf = false; } else { tops = base + ofst; dbf = true; }
     vu.itop = itops;
+    // The clip flag of a level chunk (ITOP before entry 0x16) and of a model (before entry 0x02,
+    // kept in qword 0x3fe.w) is what sends a mesh program into its second loop, the one that
+    // drops triangles (docs/spec/render-pipeline.md 4.5).  Without the flag nothing is dropped.
+    if (no_reject && !from_pc && (at == 0x16 || at == 0x02)) vu.itop = 0;
     if (!from_pc && at < 128) entry_counts[at]++;
     waiting = true; waiting_at = at; waiting_from_pc = from_pc;
 }
@@ -104,6 +108,9 @@ size_t Vif1::process(const uint32_t* w, size_t n) {
         case 0x00:                                      // NOP; with 0xA5..0xA7 in NUM a note from the game side (gs.h)
             if (num >= 0xA5 && num <= 0xA7 && gs) { run_waiting(); gs->note(num, imm); }
             else if ((num == 0xA8 || num == 0xA9) && on_note) { run_waiting(); on_note(tap_user, num, imm); }
+            // 0xB0 / 0xB1: the world for a camera inside it (gs.h, WorldView).  The view's command also says
+            // whether the mesh programs may drop triangles (they may not when the GS model cuts them itself)
+            else if ((num == 0xB0 || num == 0xB1) && gs) { run_waiting(); if (num == 0xB1 && (imm >> 8) == 1) no_reject = (imm & 5) == 5; gs->note(num, imm); }
             break;
         case 0x01: cl = imm & 0xFF; wl = (imm >> 8) & 0xFF; break;
         case 0x02: ofst = imm & 0x3FF; dbf = false; tops = base; break;

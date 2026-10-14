@@ -256,7 +256,13 @@ void on_tasks(Ctx* c, bool from_tick) {
                 G.character = read_character(A_PLAYERS);
                 // a character just made is a summary until the launch builds its record: the
                 // name is in the summary, the level is the first
-                if (!G.character.name[0]) net2impl::put(G.character.name, net2impl::clean_label(rdstr(A_QUICK, 31).c_str(), 24));
+                if (!G.character.name[0]) {
+                    // the record is not built yet: the class word read from it would be the first
+                    // class whatever was chosen (seen: an Iksar shown as "Barbarian"); it is told
+                    // once the game runs and the record exists
+                    net2impl::put(G.character.name, net2impl::clean_label(rdstr(A_QUICK, 31).c_str(), 24));
+                    G.character.cls[0] = 0;
+                }
                 if (G.character.level < 1) G.character.level = 1;
                 char text[160];
                 snprintf(text, sizeof text, "a character is chosen: %s (%s, level %d)", G.character.name, G.character.cls, G.character.level);
@@ -456,7 +462,7 @@ void on_blank(uint64_t number) {
             if (level != G.level && !level.empty() && level != "intro") { G.level = level; tell_room(level.c_str()); }
             u32 my_slot = (u32)G.direct.my_slot;
             net2_character mine = read_character(A_PLAYERS + my_slot * PLAYER_SIZE);
-            if (G.session && mine.name[0] && (mine.level != G.character.level || strcmp(mine.name, G.character.name))) {
+            if (G.session && mine.name[0] && (mine.level != G.character.level || strcmp(mine.name, G.character.name) || strcmp(mine.cls, G.character.cls))) {
                 G.character = mine;
                 net2_set_character(G.session, &mine);
             }

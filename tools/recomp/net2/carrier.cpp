@@ -220,8 +220,12 @@ void Carrier::poll(int64_t now) {
             if (policy_ == RELAY_FORCE || size < 8) continue;
             uint64_t nonce;
             memcpy(&nonce, body, 8);
-            if (nonce != p.nonce || p.nonce == 0) continue;
-            p.rtt = (int)(now - p.nonce_sent);
+            int found = -1;
+            for (int k = 0; k < 16; k++)
+                if (nonce && p.nonces[k] == nonce) found = k;
+            if (found < 0) continue;
+            p.rtt = (int)(now - p.sent_at[found]);
+            p.nonces[found] = 0;
             p.last_heard = now;
             if (p.state != NET2_ROUTE_DIRECT) {
                 p.direct = from;
@@ -244,11 +248,13 @@ void Carrier::poll(int64_t now) {
         if (p.state != NET2_ROUTE_DIRECT && age > GIVE_UP_MS) continue;
         if (now - p.last_probe < every) continue;
         p.last_probe = now;
-        p.nonce = random64() | 1;
-        p.nonce_sent = now;
-        if (p.state == NET2_ROUTE_DIRECT) raw(p.direct, KIND_PROBE, (uint8_t)me_, session_, (const uint8_t*)&p.nonce, 8);
+        unsigned k = p.next++ % 16;
+        uint64_t nonce = random64() | 1;
+        p.nonces[k] = nonce;
+        p.sent_at[k] = now;
+        if (p.state == NET2_ROUTE_DIRECT) raw(p.direct, KIND_PROBE, (uint8_t)me_, session_, (const uint8_t*)&nonce, 8);
         else
-            for (const Endpoint& e : p.tries) raw(e, KIND_PROBE, (uint8_t)me_, session_, (const uint8_t*)&p.nonce, 8);
+            for (const Endpoint& e : p.tries) raw(e, KIND_PROBE, (uint8_t)me_, session_, (const uint8_t*)&nonce, 8);
     }
 }
 

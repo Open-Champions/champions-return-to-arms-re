@@ -1,6 +1,6 @@
 # How complete is it
 
-Updated at every check-in of the work. **Last update: 2026-10-13, 21:36 CDT.**
+Updated at every check-in of the work. **Last update: 2026-10-13, 23:04 CDT.**
 
 One table for the whole effort to make Champions: Return to Arms (SLUS-20973 v2.00)
 playable again, online, on today's computers. The percentages are estimates by the people
@@ -29,7 +29,7 @@ a session by hand - every test drove the game by script, on one Apple-silicon Ma
 | Native build: in a browser | 60 % - paused | boots and plays the first level in Chrome, tick-identical to the Mac build ([native-web](issues/native-web.md)) | paused with the browser work; rebuilt with the faster renderer; sound delay; online |
 | Native build: first person and other views | 50 % | five camera views as hooks on the game's own camera, merged into the native program (key V), the simulation identical to overhead in every view ([native-first-person](issues/native-first-person.md)); look with mouse or stick, the character turned to face the look, a strike held until it faces its target; a first-person player in step online with an overhead player through an arena fight; strafing as a section of the released fix set, proven on 4.1 million ticks on the native build and on emulator pairs ([native-first-person-controls](issues/native-first-person-controls.md)); what every level lacks from eye height, measured ([native-first-person-world](issues/native-first-person-world.md)) | ceilings for indoor levels; weapon and hands in view; nobody has played it |
 | Native build: inside Godot | 60 % | the translated game runs as a library under Godot 4.5.2; exact 3-D hand-over with the game's own normals (212 million vertices checked); the five views; Godot's light and shadows, sky continued to the zenith and distance haze in seven levels; 60 pictures a second paced in first person; a new interface drawn from the game's state with the game's own switched off (three layouts; 47 of 48 comparisons with the game's bars equal to the pixel); custom boss music from the player's own files ([native-godot](issues/native-godot.md), [native-hud](issues/native-hud.md)) | every level looked at; ceilings and torch lights; a real boss and a real second player; Windows; the regression checks re-run after the workspace move; nobody has played it |
-| Portal and our own online service | 55 % | the portal's screens in Godot (first start, home, friends with presence and characters, rooms, settings), joined to the game scene ([native-portal](issues/native-portal.md)); a rendezvous service without accounts or passwords - friend codes, presence, invitations, rooms, hole punching with a relay fallback - 189 checks, and its client, 95 checks; two and three native copies launched through it into one game with no lobby, in step ([native-rendezvous](issues/native-rendezvous.md)) | four players, drops and the relay under a real game; the portal wired to the real service instead of its mock; the service running anywhere but this Mac |
+| Portal and our own online service | 65 % | the portal's screens in Godot (first start, home, friends with presence and characters, rooms, settings), joined to the game scene ([native-portal](issues/native-portal.md)); a rendezvous service without accounts or passwords - friend codes, presence, invitations, rooms, hole punching with a relay fallback - 189 checks, its client 95 checks; two, three and four native copies launched through it into one game from the title screen with no lobby and no account, in step through level changes, drops, a second game, forced relay and limits hit on purpose - 34 games on one computer ([native-rendezvous](issues/native-rendezvous.md), section 6) | the portal wired to the real service instead of its mock; a character brought from a memory card; arena modes and missions in the launch; the service running anywhere but this Mac; two computers |
 
 What "the game" is in each row: the first five rows run the original program in an
 emulator; the "native build" rows run the game's own code translated to C++
@@ -78,6 +78,11 @@ linked document. It does not mean played by a person, or tried on two computers.
 
 ## Since the last update
 
+- Our own online service: two, three and four native players get into one game through it -
+  no lobby, no account, no password - and stay in step through level changes, drops and a
+  forced relay (34 games on one computer).
+- First person: generated ceilings over dungeons, mines, caves and arenas and skirts beyond
+  a level's rim; walls beside the eye no longer vanish.
 - Release on fix set `9ac29719` (31 sections, 189 words): the Mac application, the stable
   build, the private download and the browser page. New in it: the late level-entry save
   (a machine with a menu open at level entry saved late; a party wipe then reloaded

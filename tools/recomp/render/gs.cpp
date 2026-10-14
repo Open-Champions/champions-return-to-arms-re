@@ -1,5 +1,6 @@
 // gs.cpp - see gs.h.
 #include "gs.h"
+#include "worldfill.h"
 #include "prof.h"
 #include "xxh3_64.h"
 
@@ -260,6 +261,268 @@ void Gs::note(uint32_t kind, uint32_t value) {
         layout.set_k(frame.vertices, k);
         state_dirty = true;
     }
+    else if (kind == 0xB0) { if (world.payload.size() < 256) world.payload.push_back((uint16_t)value); }
+    else if (kind == 0xB1) {
+        std::vector<uint32_t> words;
+        for (size_t k = 0; k + 1 < world.payload.size(); k += 2) words.push_back((uint32_t)world.payload[k] << 16 | world.payload[k + 1]);
+        world.payload.clear();
+        const uint32_t command = (value >> 8) & 0xFF, low = value & 0xFF;
+        if (command == 1 && words.size() >= 2) {
+            float n, f;
+            memcpy(&n, &words[0], 4); memcpy(&f, &words[1], 4);
+            world.on = (low & 1) && n > 0 && f > n;
+            world.persp = world.on && (low & 2);
+            world.clip = world.on && (low & 4);
+            if (n > 0 && f > n) {
+                // mat4_setProjection 0x165950: depth = A + B / w, 1 at the far plane and 4095.94 at the near one
+                world.near_plane = n; world.far_plane = f;
+                const double k = 4094.94 * f;
+                world.a16 = (float)(16.0 * (4095.94 - k / (f - n)));
+                world.b16 = (float)(16.0 * (k * n / (f - n)));
+            }
+        } else if (command == 2 && words.size() >= 21) {
+            float m[16], eye[3];
+            memcpy(m, words.data(), 64);
+            memcpy(eye, &words[18], 12);
+            draw_fill(m, eye, words[16], words[17], low);
+        }
+    }
+}
+
+static bool g_skip_draw = false;
+
+// The level's fill (worldfill.h) into the list: plain triangles, depth tested and written like
+// the level's own.  A ceiling is dark, lighter by the wall it meets; a skirt has the clear
+// colour, darkened, and fades out with its alpha.
+void Gs::draw_fill(const float* m, const float* eye, uint32_t clear_colour, uint32_t light_level, uint32_t kinds) {
+    std::shared_ptr<const FillLevel> level = current_fill();
+    if (!level || level->vertices.empty()) return;
+    if (state_dirty) rebuild_state();
+    if (!have_cmd || !cur_wide || g_skip_draw) { world.fill_skipped++; return; }
+    const float wn = world.near_plane > 0 ? world.near_plane : 18.0f, far_w = world.far_plane > 0 ? world.far_plane : 1800.0f;
+    const float cx = 2048.0f - ofx * (1.0f / 16.0f), cy = 2048.0f - ofy * (1.0f / 16.0f);
+    const float light = (float)(light_level ? light_level : 128) / 128.0f;
+    const float clear[3] = {(float)(clear_colour & 0xFF), (float)((clear_colour >> 8) & 0xFF), (float)((clear_colour >> 16) & 0xFF)};
+    struct P { float x, y, z, w, c[4]; };
+    auto to_clip = [&](const float* p, P& o) {
+        o.x = p[0] * m[0] + p[1] * m[4] + p[2] * m[8] + m[12];
+        o.y = p[0] * m[1] + p[1] * m[5] + p[2] * m[9] + m[13];
+        o.z = p[0] * m[2] + p[1] * m[6] + p[2] * m[10] + m[14];
+        o.w = p[0] * m[3] + p[1] * m[7] + p[2] * m[11] + m[15];
+    };
+    if (cur.count) frame.commands.push_back(cur);
+    world.fill_draws++;
+    for (int kind = FILL_SKIRT; kind >= FILL_CEILING; kind--) {     // the skirt first: it lies behind everything
+        if (!(kinds & (1u << (kind - 1)))) continue;
+        DrawCmd c = cur;
+        c.texture = 0; c.tex_is_target = false; c.tex_missing = 0; c.weave_half = 0; c.texa_mode = 0;
+        c.alpha_test = false; c.depth_test = true; c.ztst = 2; c.depth_write = true;
+        c.blend = kind == FILL_SKIRT; c.ba = 0; c.bb = 1; c.bc = 0; c.bd = 1;
+        c.mask_rgb = c.mask_a = false; c.fog = false; c.made_by = 0; c.scissor_moved = false;
+        c.first = (uint32_t)frame.vertices.size();
+        c.count = 0;
+        for (const FillMesh& mesh : level->meshes) {
+            if (mesh.kind != kind) continue;
+            // the block against the view: behind the eye, beyond the far plane, or off one side
+            int behind = 0, beyond = 0, left = 0, right = 0, above = 0, below = 0;
+            for (int k = 0; k < 8; k++) {
+                const float p[3] = {mesh.bounds[k & 1 ? 3 : 0], mesh.bounds[k & 2 ? 4 : 1], mesh.bounds[k & 4 ? 5 : 2]};
+                P q;
+                to_clip(p, q);
+                behind += q.w < wn; beyond += q.w > far_w;
+                left += q.x < -640.0f * q.w; right += q.x > 640.0f * q.w; above += q.y < -224.0f * q.w; below += q.y > 224.0f * q.w;
+            }
+            if (behind == 8 || beyond == 8 || left == 8 || right == 8 || above == 8 || below == 8) continue;
+            if (kind == FILL_CEILING && eye[2] > mesh.bounds[5]) continue;     // the eye is over all of it
+            world.fill_blocks++;
+            for (uint32_t t = 0; t < mesh.count; t += 3) {
+                P v[3];
+                if (kind == FILL_CEILING) {     // seen from below only (its normal looks down)
+                    const FillVertex& f = level->vertices[mesh.first + t];
+                    if ((eye[0] - f.position[0]) * f.normal[0] + (eye[1] - f.position[1]) * f.normal[1] + (eye[2] - f.position[2]) * f.normal[2] <= 0) continue;
+                }
+                for (int k = 0; k < 3; k++) {
+                    const FillVertex& f = level->vertices[mesh.first + t + k];
+                    to_clip(f.position, v[k]);
+                    if (kind == FILL_CEILING) {
+                        const float g = (float)f.rgba[0] * 0.10f * light;
+                        v[k].c[0] = g; v[k].c[1] = g * 0.92f; v[k].c[2] = g * 0.85f; v[k].c[3] = 128.0f;
+                    } else {
+                        v[k].c[0] = clear[0] * 0.6f; v[k].c[1] = clear[1] * 0.6f; v[k].c[2] = clear[2] * 0.6f; v[k].c[3] = (float)f.rgba[3];
+                    }
+                }
+                const int in = (v[0].w >= wn) + (v[1].w >= wn) + (v[2].w >= wn);
+                if (!in) continue;
+                P poly[4];
+                int count = 0;
+                if (in == 3) { poly[0] = v[0]; poly[1] = v[1]; poly[2] = v[2]; count = 3; }
+                else
+                    for (int e = 0; e < 3; e++) {
+                        const P& a = v[e];
+                        const P& b = v[(e + 1) % 3];
+                        const bool ain = a.w >= wn, bin = b.w >= wn;
+                        if (ain) poly[count++] = a;
+                        if (ain != bin) {
+                            const float u = (wn - a.w) / (b.w - a.w);
+                            P n;
+                            n.x = a.x + (b.x - a.x) * u; n.y = a.y + (b.y - a.y) * u; n.z = a.z + (b.z - a.z) * u; n.w = wn;
+                            for (int ch = 0; ch < 4; ch++) n.c[ch] = a.c[ch] + (b.c[ch] - a.c[ch]) * u;
+                            poly[count++] = n;
+                        }
+                    }
+                for (int f = 1; f + 1 < count; f++) {
+                    const P* tri[3] = {&poly[0], &poly[f], &poly[f + 1]};
+                    for (int k = 0; k < 3; k++) {
+                        const P& a = *tri[k];
+                        Vertex o;
+                        o.x = a.x / a.w + cx; o.y = a.y / a.w + cy;
+                        const float zf = a.z / a.w * (1.0f / 4096.0f);
+                        o.z = zf > 0.99999994f ? 0.99999994f : zf < 0 ? 0 : zf;
+                        o.s = o.t = 0; o.q = 1;
+                        o.r = (uint8_t)std::min(255.0f, a.c[0]); o.g = (uint8_t)std::min(255.0f, a.c[1]); o.b = (uint8_t)std::min(255.0f, a.c[2]); o.a = (uint8_t)std::min(255.0f, a.c[3]);
+                        o.fog = 255;
+                        frame.vertices.push_back(o);
+                    }
+                    c.count += 3;
+                }
+            }
+        }
+        if (c.count) { frame.commands.push_back(c); world.fill_triangles += c.count / 3; stats.prims += c.count / 3; }
+    }
+    cur.first = (uint32_t)frame.vertices.size();
+    cur.count = 0;
+}
+
+// A strip of one of the mesh programs for a camera inside the world: see gs.h, WorldView.
+// The programs do not convert to integers; they add 2^19 + 2^11 to X and Y and 2^65 to the
+// depth and let the GS take the low bits (docs/spec/render-pipeline.md 4.3), so what lies in
+// VU1 memory is the whole number: a position 3,000 pixels off the centre, a depth beyond the
+// near plane, a point behind the eye (where x / w is the right projective coordinate still).
+bool Gs::world_run(const uint32_t* data, uint32_t nloop, uint32_t nreg, uint64_t regs) {
+    if ((prim & 7) != 4 || nloop < 3 || trace) return false;
+    int uv_at = -1, rgba_at = -1;
+    for (uint32_t r = 0; r + 1 < nreg; r++) {
+        const unsigned d = (unsigned)((regs >> (4 * r)) & 15);
+        if (d == 0x3 && uv_at < 0) uv_at = (int)r;
+        else if (d == 0x1 && rgba_at < 0) rgba_at = (int)r;
+        else if (d != 0xF) return false;
+    }
+    if (((regs >> (4 * (nreg - 1))) & 15) != 0x4 || uv_at < 0 || rgba_at < 0) return false;
+    if (state_dirty) rebuild_state();
+    if (!cur_wide || !cmd_tme || !cmd_fst || !cmd_iip || g_skip_draw) return false;
+    if (layout.active() && layout.mode() == Layout::M_MENU3D) return false;    // a figure inside a menu has the game's own projection
+    if (cur.made_by != 0 || cur.weave_half != 0) {
+        DrawCmd c = cur;
+        c.made_by = 0; c.weave_half = 0;
+        if (cur.count) frame.commands.push_back(cur);
+        c.first = (uint32_t)frame.vertices.size();
+        c.count = 0;
+        cur = c;
+    }
+    struct W { float x, y, w, zb, u, v, c[4], fog; uint32_t raw[4]; bool skip, bad; };
+    const float BIAS_XY = 526336.0f, BIAS_Z = 36893488147419103232.0f, Z_UNIT = 1.0f / 70368744177664.0f;
+    const float cx = 2048.0f - ofx * (1.0f / 16.0f), cy = 2048.0f - ofy * (1.0f / 16.0f);
+    const float wn = world.near_plane, a16 = world.a16, b16 = world.b16, zs = zscale;
+    const bool persp = world.persp, clip = world.clip;
+    const size_t most = (size_t)nloop * 6;
+    if (run_vertices.size() < most) run_vertices.resize(most);
+    Vertex* const out = run_vertices.data();
+    Vertex* o = out;
+    auto put = [&](const W& a) {
+        o->x = a.x + cx; o->y = a.y + cy;
+        const float zf = a.zb * zs;
+        o->z = zf > 0.99999994f ? 0.99999994f : zf < 0 ? 0 : zf;
+        const float q = persp ? wn / a.w : 1.0f;
+        o->s = a.u * q; o->t = a.v * q; o->q = q;
+        o->r = (uint8_t)a.c[0]; o->g = (uint8_t)a.c[1]; o->b = (uint8_t)a.c[2]; o->a = (uint8_t)a.c[3];
+        o->fog = (uint8_t)a.fog; o->pad[0] = o->pad[1] = o->pad[2] = 0;
+        o++;
+    };
+    W v[3];
+    uint64_t cut = 0, behind = 0, odd = 0;
+    const size_t step = (size_t)nreg * 4;
+    const uint32_t* q = data;
+    for (uint32_t k = 0; k < nloop; k++, q += step) {
+        W n;
+        const uint32_t* uv = q + uv_at * 4;
+        const uint32_t* col = q + rgba_at * 4;
+        const uint32_t* p = q + step - 4;
+        n.u = (float)(uv[0] & 0x3FFF) * (1.0f / 16.0f); n.v = (float)(uv[1] & 0x3FFF) * (1.0f / 16.0f);
+        n.c[0] = (float)(uint8_t)col[0]; n.c[1] = (float)(uint8_t)col[1]; n.c[2] = (float)(uint8_t)col[2]; n.c[3] = (float)(uint8_t)col[3];
+        n.fog = (float)(uint8_t)(p[3] >> 4);
+        n.skip = (p[3] & 0x8000) != 0;
+        memcpy(n.raw, p, 16);
+        float fx, fy, fz;
+        memcpy(&fx, &p[0], 4); memcpy(&fy, &p[1], 4); memcpy(&fz, &p[2], 4);
+        n.bad = false;
+        if (clip) {
+            n.x = fx - BIAS_XY; n.y = fy - BIAS_XY;
+            n.zb = (fz - BIAS_Z) * Z_UNIT;
+            n.bad = !(fx == fx && fy == fy && fz == fz);
+        } else {                                        // as the GS takes them
+            n.x = (float)(p[0] & 0xFFFF) * (1.0f / 16.0f) - 2048.0f; n.y = (float)(p[1] & 0xFFFF) * (1.0f / 16.0f) - 2048.0f;
+            n.zb = (float)((p[2] >> 4) & 0xFFFFFF);
+        }
+        const float d = n.zb - a16;
+        if (d > 1e-3f || d < -1e-3f) n.w = b16 / d; else { n.w = 0; n.bad = true; }
+        if (!clip && n.w < wn) n.w = wn;                // nothing comes nearer when the program has dropped what did
+        v[0] = v[1]; v[1] = v[2]; v[2] = n;
+        if (k < 2 || n.skip) continue;
+        if (v[0].bad || v[1].bad || v[2].bad) { odd++; continue; }
+        const int in = (v[0].w >= wn) + (v[1].w >= wn) + (v[2].w >= wn);
+        if (in == 3) { put(v[0]); put(v[1]); put(v[2]); continue; }
+        if (in == 0) { behind++; continue; }
+        // cut at the near plane, in the space before the division: (x w, y w, w)
+        W poly[4];
+        int count = 0;
+        for (int e = 0; e < 3; e++) {
+            const W& a = v[e];
+            const W& b = v[(e + 1) % 3];
+            const bool ain = a.w >= wn, bin = b.w >= wn;
+            if (ain) poly[count++] = a;
+            if (ain != bin) {
+                const float t = (wn - a.w) / (b.w - a.w);
+                W m;
+                const float X = a.x * a.w + (b.x * b.w - a.x * a.w) * t, Y = a.y * a.w + (b.y * b.w - a.y * a.w) * t;
+                m.w = wn; m.x = X / wn; m.y = Y / wn; m.zb = a16 + b16 / wn;
+                m.u = a.u + (b.u - a.u) * t; m.v = a.v + (b.v - a.v) * t;
+                for (int ch = 0; ch < 4; ch++) m.c[ch] = a.c[ch] + (b.c[ch] - a.c[ch]) * t;
+                m.fog = a.fog + (b.fog - a.fog) * t;
+                m.skip = m.bad = false;
+                poly[count++] = m;
+            }
+        }
+        cut++;
+        for (int f = 1; f + 1 < count; f++) { put(poly[0]); put(poly[f]); put(poly[f + 1]); }
+    }
+    // the registers and the queue as the run leaves them
+    {
+        const uint32_t* last = data + (size_t)(nloop - 1) * step;
+        cur_u = last[uv_at * 4] & 0x3FFF; cur_v = last[uv_at * 4 + 1] & 0x3FFF;
+        const uint32_t* col = last + rgba_at * 4;
+        cur_rgba[0] = (uint8_t)col[0]; cur_rgba[1] = (uint8_t)col[1]; cur_rgba[2] = (uint8_t)col[2]; cur_rgba[3] = (uint8_t)col[3];
+        cur_q = st_q;
+        for (int k = 0; k < 2; k++) {
+            Queued& t = vq[k];
+            const W& a = v[k + 1];
+            t.x = a.raw[0] & 0xFFFF; t.y = a.raw[1] & 0xFFFF; t.z = (a.raw[2] >> 4) & 0xFFFFFF; t.fog = (uint8_t)(a.raw[3] >> 4);
+            t.s = cur_s; t.t = cur_t; t.q = cur_q; t.u = (uint32_t)(a.u * 16.0f); t.v = (uint32_t)(a.v * 16.0f);
+            for (int ch = 0; ch < 4; ch++) t.rgba[ch] = (uint8_t)a.c[ch];
+        }
+        vcount = 2;
+    }
+    const size_t emitted = (size_t)(o - out);
+    if (emitted) frame.vertices.insert(frame.vertices.end(), out, o);
+    stats.reg_writes += (uint64_t)nloop * 2;
+    stats.vertices += nloop;
+    world.runs++; world.triangles += emitted / 3; world.cut += cut; world.behind += behind; world.odd += odd;
+    if (emitted) {
+        cur.count += (uint32_t)emitted;
+        stats.prims += emitted / 3;
+        if (cur.fog) stats.fogged += emitted / 3;
+        if (cur_approx) for (int k = 0; k < AP_COUNT; k++) if (cur_approx & (1u << k)) stats.approx[k] += emitted / 3;
+    }
+    return true;
 }
 
 // The same for surfaces.  The shadow surface and the heat haze's piece of the picture are
@@ -404,6 +667,13 @@ void Gs::gif(int path, const uint32_t* words, size_t quadwords) {
             stats.packets++;
             q++;
             // all of a PACKED run of triangles is here: one loop for it
+            // a strip of a mesh program, for a camera inside the world (gs.h, WorldView)
+            if (p.flg == 0 && world.on && path == 0 && (debug_entry == 0x42 || debug_entry == 0x44 || debug_entry == 0x46 || debug_entry == 0x48) &&
+                (size_t)p.nloop * p.nreg <= quadwords - q && world_run(words + q * 4, p.nloop, p.nreg, p.regs)) {
+                q += (size_t)p.nloop * p.nreg;
+                p.nloop = 0;
+                continue;
+            }
             if (p.flg == 0 && p.nloop && fast_runs && (size_t)p.nloop * p.nreg <= quadwords - q && triangle_run(words + q * 4, p.nloop, p.nreg, p.regs)) {
                 q += (size_t)p.nloop * p.nreg;
                 p.nloop = 0;
@@ -930,7 +1200,6 @@ static bool same_state(const DrawCmd& a, const DrawCmd& b) {
         && a.fog == b.fog && !memcmp(a.fog_colour, b.fog_colour, 3);
 }
 
-static bool g_skip_draw = false;
 
 void Gs::rebuild_state() {
     RTA_PROF_SCOPE(prof::P_GS_STATE);

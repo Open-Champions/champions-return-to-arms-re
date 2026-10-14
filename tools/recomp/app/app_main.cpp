@@ -93,6 +93,7 @@
 #include "control.h"
 #include "fpcontrols.h"
 #include "fpview.h"
+#include "fpworld.h"
 #include "gfx_rt.h"
 #include "help_host.h"
 #include "look_host.h"
@@ -1395,6 +1396,18 @@ static void app_command(const std::string& text, uint64_t frame) {
             fflush(stdout);
         } else if (fpview::mode_by_name(w[1].c_str()) >= 0) fpview::set_mode(fpview::mode_by_name(w[1].c_str()));
         else log_line("app view: overhead, action, chase, shoulder, first, next, info, or set KEY VALUE");
+    } else if (w[0] == "world" && w.size() >= 2) {
+        // app world info | app world set KEY VALUE (fpworld.h: the world for a camera inside it)
+        if (w[1] == "set" && w.size() >= 4) { if (!fpworld::setting(w[2].c_str(), w[3].c_str())) log_line("app world set: not a world setting: " + w[2]); }
+        else if (w[1] == "info") {
+            const render::Gs::WorldView& wv = g_renderer->gs.world;
+            printf("[frame %llu] %s; renderer: %llu strips, %llu triangles, %llu cut at the near plane, %llu behind it, %llu left out; fill drawn %llu times, "
+                   "%llu blocks, %llu triangles, %llu times left out\n", (unsigned long long)frame,
+                   fpworld::info(), (unsigned long long)wv.runs, (unsigned long long)wv.triangles, (unsigned long long)wv.cut, (unsigned long long)wv.behind,
+                   (unsigned long long)wv.odd, (unsigned long long)wv.fill_draws, (unsigned long long)wv.fill_blocks, (unsigned long long)wv.fill_triangles,
+                   (unsigned long long)wv.fill_skipped);
+            fflush(stdout);
+        } else log_line("app world: info, or set KEY VALUE");
     } else if (w[0] == "fullscreen") {
         // app fullscreen: what F does (a test window stays as it is: it must not cover the screen)
         // (RTA_TEST_FULLSCREEN_OK=1: a test that has to see full screen work asks for it, for seconds)
@@ -1541,6 +1554,13 @@ int main(int argc, char** argv) {
         else if (a == "--game-hud") overrides.push_back({"game_hud", next()});
         else if (a == "--game-hud-text") overrides.push_back({"game_hud_text", next()});
         else if (a == "--music-volume") overrides.push_back({"music_volume", next()});
+        else if (a == "--world") {
+            // a "world" / "world.<part>" line of the settings file, said on the command line (which wins over the file)
+            std::string kv = next(); size_t eq = kv.find('=');
+            std::string key = eq == std::string::npos ? std::string() : kv.substr(0, eq), value = eq == std::string::npos ? std::string() : kv.substr(eq + 1);
+            if (key != "world" && key.compare(0, 6, "world.") != 0) { fprintf(stderr, "rta_app: --world world=views|off|always, world.clip|persp|objects=on|off, world.ceilings|skirts=auto|on|off\n"); return 2; }
+            overrides.push_back({key, value});
+        }
         else if (a == "--view-set") { std::string kv = next(); size_t eq = kv.find('='); if (eq != std::string::npos) overrides.push_back({kv.substr(0, eq), kv.substr(eq + 1)}); }
         else if (a == "--plain") plain = true;
         else if (a == "--settings") opt.settings_file = next();
@@ -1594,7 +1614,8 @@ int main(int argc, char** argv) {
         opt.aspect = opt.set.aspect;
         opt.unpaced = opt.set.frame_cap <= 0;
         for (auto& kv : opt.set.view)
-            if (!fpview::setting(kv.first.c_str(), kv.second.c_str()) && !fpcontrols::setting(kv.first.c_str(), kv.second.c_str())) log_line("settings: not a view setting: " + kv.first + " = " + kv.second);
+            if (!fpview::setting(kv.first.c_str(), kv.second.c_str()) && !fpcontrols::setting(kv.first.c_str(), kv.second.c_str()) && !fpworld::setting(kv.first.c_str(), kv.second.c_str()))
+                log_line("settings: not a view, controls or world setting: " + kv.first + " = " + kv.second);
         opt.set.view.clear();
     };
     if (!settings_later) apply_settings(opt.settings_file);
@@ -1620,7 +1641,7 @@ int main(int argc, char** argv) {
         std::string file = opt.data + "/settings.txt";
         bool there = file_exists(file);
         apply_settings(there ? file : std::string());
-        if (!there && opt.test.empty() && !opt.offscreen) { app::Settings().save(file, (std::string(fpview::settings_text()) + "\n" + fpcontrols::settings_text()).c_str()); first_start = true; }
+        if (!there && opt.test.empty() && !opt.offscreen) { app::Settings().save(file, (std::string(fpview::settings_text()) + "\n" + fpcontrols::settings_text() + "\n" + fpworld::settings_text()).c_str()); first_start = true; }
     }
     if (mode == "boot") {
         // Something is wrong with what was given as the disc: said on the terminal, and to a
@@ -1734,6 +1755,7 @@ int main(int argc, char** argv) {
         int mode = fpcontrols::take_strafe_send();
         if (mode >= 0 && !replayed) apprt::call_game(c, fpcontrols::STRAFE_SENDER, (uint32_t)mode);
     });
+    fpworld::install();     // after the controls' call-out: it sees the view as it will be built
     if (getenv("RTA_GS_LOG")) renderer.gs.log_display = true;
     if (const char* keep = getenv("RTA_TEX_KEEP")) renderer.gs.texture_keep_frames = (uint32_t)atoi(keep);    // frames an unused texture is kept; 0 = for ever
     g_sink = &sink;

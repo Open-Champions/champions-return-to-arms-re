@@ -86,8 +86,9 @@ struct Carrier {
         Endpoint direct;
         std::vector<Endpoint> tries;
         int64_t since = 0, last_probe = 0, last_heard = 0;
-        uint64_t nonce = 0;
-        int64_t nonce_sent = 0;
+        uint64_t nonces[16] = {0};      // the probes in flight: an answer may come after the next probe has gone
+        int64_t sent_at[16] = {0};
+        unsigned next = 0;
         int rtt = -1;
     };
     struct Datagram { int from; std::vector<uint8_t> data; };

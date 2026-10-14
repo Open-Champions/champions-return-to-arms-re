@@ -289,7 +289,8 @@ void fn_001e71b0(Ctx* c) {
     g_clamp_calls++;
 }
 
-void fn_0014b168(Ctx* c) { Scope s(M_WORLD); orig_0014b168(c); }
+static void object_walk_original(void* ctx) { orig_0014b168((Ctx*)ctx); }
+void fn_0014b168(Ctx* c) { Scope s(M_WORLD); if (gfxrt::object_walk.run) gfxrt::object_walk.run(c, object_walk_original); else orig_0014b168(c); }
 void fn_001d9cd4(Ctx* c) { Scope s(M_EDGE); orig_001d9cd4(c); }
 void fn_001dc708(Ctx* c) { Scope s(M_EDGE); orig_001dc708(c); }
 void fn_001df720(Ctx* c) { Scope s(M_EDGE); orig_001df720(c); }
@@ -329,5 +330,6 @@ void figures(uint64_t& wide_frames, uint64_t& clamp_calls, uint64_t& marks) {
 void list_figures(uint32_t& most, uint32_t& room) { most = g_list_most; room = g_list_room; }
 void projection_args(uint32_t out[4]) { memcpy(out, g_projection_args, sizeof g_projection_args); }
 void set_depth_range(float near_plane, float far_plane) { g_near = near_plane; g_far = far_plane; }
+ObjectWalk object_walk = {nullptr};
 
 }  // namespace gfxrt
