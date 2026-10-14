@@ -160,6 +160,13 @@ def main():
         jobs += [(os.path.join(net, n), rt_flags, 'n_') for n in ('netdrv.cpp', 'online.cpp')]
         jobs.append((os.path.join(ROOT, 'tools', 'play-net', 'src', 'RtaOnline.cpp'), rt_flags, 'n_'))
         jobs.append((os.path.join(net, 'online_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', net], 'n_'))
+        # a room of our own and the direct launch (tools/recomp/net2, docs/issues/native-rendezvous.md):
+        # the session client and its datagrams need nothing of the game; launch.cpp calls into it
+        net2 = os.path.join(RECOMP, 'net2')
+        plain = ['-std=c++17', args.opt, '-Wall', '-I', net2]
+        jobs += [(os.path.join(net2, n), plain, 'n2_') for n in ('session.cpp', 'session_mock.cpp', 'session_net.cpp', 'carrier.cpp',
+                                                                    'cardchars.cpp', 'clicmd.cpp')]
+        jobs.append((os.path.join(net2, 'launch.cpp'), rt_flags + ['-I', net2], 'n2_'))
     jobs.append((os.path.join(HERE, 'app_main.cpp'), app_flags + qt_flags, 'a_'))
     jobs.append((os.path.join(HERE, 'pad_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE, '-I', rt], 'a_'))
     jobs.append((os.path.join(HERE, 'present_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE], 'a_'))

@@ -39,6 +39,7 @@
 
 #include "rt.h"
 #include "funcs.h"
+#include "../net2/hooks.h"     // tools/recomp/net2: a game started from a room of our own (docs/issues/native-rendezvous.md)
 
 #include <algorithm>
 #include <chrono>
@@ -496,6 +497,7 @@ UdpHost& udp_host(u16 game_port) {
 bool allowed(u32 real_ip) { return !D.local_only || is_own(real_ip); }
 
 s32 udp_send(Conn& conn, const u8* data, u32 length, u32 dest_ip, u16 dest_port) {
+    if (net2hook::udp_owns && net2hook::udp_owns(conn.game_port)) return net2hook::udp_send(conn.game_port, data, length, dest_ip, dest_port);
     rtanet::Info& I = D.info;
     bool made_up = (dest_ip & MADE_UP_MASK) == MADE_UP_NET && !is_server(dest_ip);
     if (made_up || dest_ip == 0xFFFFFFFF || (dest_ip >> 28) == 0xE || dest_ip == 0 || (is_loopback(dest_ip) && !is_server(dest_ip))) {
@@ -555,6 +557,7 @@ bool held_due(const UdpHost& host) {
 
 // the next datagram for the game on this port; false: none
 bool udp_receive(u16 game_port, u8* buffer, size_t capacity, size_t& size, u32& shown_ip, u16& from_port) {
+    if (net2hook::udp_owns && net2hook::udp_owns(game_port)) return net2hook::udp_receive(game_port, buffer, capacity, size, shown_ip, from_port);
     rtanet::Info& I = D.info;
     UdpHost& host = udp_host(game_port);
     if (held_due(host)) {
@@ -835,7 +838,7 @@ std::string arithmetic_text() {
 }
 void per_blank(uint64_t number) {
     ensure();
-    (void)number;
+    if (net2hook::blank) net2hook::blank(number);
     check_arith();
     tell_patch_set();
     // a program without a window is held to real time: the lobby's time-outs count frames,
@@ -1217,7 +1220,9 @@ void fn_00323dcc(Ctx* c) {                  // main(argc, argv)
 void fn_003226e4(Ctx* c) {                  // tasks_run: from net_frameLoop it is one lockstep tick
     u32 ra = (u32)c->r[31];
     thread_arith(A.now);                    // the thread that runs the ticks computes as chosen
+    if (net2hook::tasks) net2hook::tasks(c, ra == 0x13aee8);
     orig_003226e4(c);
+    if (net2hook::after) net2hook::after(c, ra == 0x13aee8);
     if (ra != 0x13aee8) return;
     D.ticks++;
     if (D.tick_log) {

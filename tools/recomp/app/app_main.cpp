@@ -75,6 +75,9 @@
 //   --unpaced           as fast as the machine goes
 //   --png PREFIX --at n,n,...   write the shown picture at these vertical blanks
 //   --stop-after N      print the figures and end after N vertical blanks
+//   --play-host, --play-join CODE   a room of our own at the rendezvous service, from power-on, with no
+//                       lobby screen (tools/recomp/net2/launch.cpp: --opt net2=host | join:CODE); --name NAME
+//                       the display name of a first start; --service HOST:PORT (else RTA_NET2_SERVICE)
 //   --control PATH      a control socket for test runs (control.h): the protocol of the emulator
 //                       build's, so that one driver walks both builds through the same places
 //
@@ -1527,6 +1530,7 @@ int main(int argc, char** argv) {
     std::vector<std::pair<std::string, std::string>> overrides;     // picture settings given on the command line
     bool plain = false, no_settings = false;
     std::vector<std::string> pass, script_args;
+    std::vector<std::string> net2_args;     // a room of our own (tools/recomp/net2, docs/issues/native-rendezvous.md): --opt net2... pairs
     std::string mode = "boot";
     if (const char* disc = getenv("RTA_DISC")) opt.disc = disc;
     if (const char* way = getenv("RTA_PRESENT")) opt.metal = !strcmp(way, "metal");
@@ -1573,6 +1577,11 @@ int main(int argc, char** argv) {
         else if (a == "--no-sound") opt.no_sound = true;
         else if (a == "--emulator-timing") opt.emulator_timing = true;
         else if (a == "--no-films") opt.no_films = true;
+        // a room of our own (tools/recomp/net2/launch.cpp; what net2/play.sh maps onto runtime options)
+        else if (a == "--play-host") { net2_args.push_back("--opt"); net2_args.push_back("net2=host"); }
+        else if (a == "--play-join") { net2_args.push_back("--opt"); net2_args.push_back("net2=join:" + next()); }
+        else if (a == "--name") { net2_args.push_back("--opt"); net2_args.push_back("net2-name=" + next()); }
+        else if (a == "--service") { net2_args.push_back("--opt"); net2_args.push_back("net2-service=" + next()); }
         else if (a == "--script" || a == "--do") { script_args.push_back(a); script_args.push_back(next()); }
         else if (a == "--offscreen") opt.offscreen = true;
         else if (a == "--unpaced") overrides.push_back({"frame_cap", "0"});
@@ -1592,7 +1601,7 @@ int main(int argc, char** argv) {
                    "        [--pacing ahead|queued] [--present metal|opengl]   (opengl: the way into the window used until 2026-10-13 - if the picture looks wrong)\n");
             printf("rta_app --disc IMAGE [--data DIR] [--window WxH] [--fullscreen] [--scale N | --size WxH] [--volume V | --mute | --no-sound]\n"
                    "        [--emulator-timing] [--script FILE] [--do COMMAND] [--test TEXT] [--offscreen] [--unpaced] [--png PREFIX --at n,..]\n"
-                   "        [--stop-after N] [-- runtime arguments]\n"
+                   "        [--stop-after N] [--play-host | --play-join CODE] [--name NAME] [--service HOST:PORT] [-- runtime arguments]\n"
                    "keys: W A S D left stick; arrows direction pad; I J K L triangle square cross circle; Q E L1 R1; 1 3 L2 R2; X C L3 R3;\n"
                    "      Return Start; Backspace Select; F or F11 full screen; Escape leaves full screen; V the next camera view; F1 shows this list beside the window\n"
                    "(the head of tools/recomp/app/app_main.cpp describes every option)\n");
@@ -1817,6 +1826,7 @@ int main(int argc, char** argv) {
         for (auto& path : found) { args.push_back("--sym"); args.push_back(path); }
     }
     args.insert(args.end(), script_args.begin(), script_args.end());
+    args.insert(args.end(), net2_args.begin(), net2_args.end());     // before what is said after "--": that wins
     args.insert(args.end(), pass.begin(), pass.end());
     static std::vector<char*> run_args;
     for (auto& a : args) run_args.push_back(&a[0]);
