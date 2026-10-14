@@ -8,8 +8,8 @@
 // draw state, its OWN copy of each texture (the game's are freed when their cell goes) - and keeps them as meshes in the
 // card's scenario (a SubViewport of the host's: scene_view.gd), with the materials of the scene (the shader's GS_WORLD /
 // GS_LIT variant: lit by the card's own lights; the game's vertex light is replaced by one neutral level, so that the
-// card looks the same in every level).  The host turns it (set_card_turn).  In first person the game leaves
-// the player out of its frames: the card keeps what it had.
+// card looks the same in every level). The host turns it (set_card_turn). In first person card.gd keeps
+// the last whole figure: the body switch can hide the player or clip it to the arms.
 #include "rta_drawer.h"
 #include "rta_variant.h"
 

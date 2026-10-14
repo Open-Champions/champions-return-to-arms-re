@@ -85,6 +85,9 @@ func before_frame() -> void:
 	var view: Dictionary = main.machine.get_view()
 	var feet: Vector3 = view.get("player", Vector3.ZERO)
 	var visible: bool = bool(view.get("valid", false)) and bool(view.get("have_player", false)) and not bool(view.get("hide_player", false))
+	# First-person body modes may expose only the near-clipped arms. Keep the last whole
+	# character portrait; do not replace it with a partial first-person packet capture.
+	visible = visible and int(view.get("shown", 0)) != 4
 	if feet.distance_to(last_feet) < 0.4:
 		still_frames += 1
 	else:
