@@ -153,11 +153,11 @@ void RtaDrawer::fill_params(Fill& fl) {
         float target = (float)(sum[w.kind] / std::max(n[w.kind], 1));
         float gain = w.lum > 0.01f ? std::min(target / w.lum, 2.5f) : 1.0f;
         s->material_set_param(w.material, "gain", gain);
-        s->material_set_param(w.material, "light", (float)fl.light);
+        s->material_set_param(w.material, "darken", (float)fl.light);
         s->material_set_param(w.material, "scale", (float)fl.scale);
     }
     for (RID m : fl.stone)
-        if (m.is_valid()) { s->material_set_param(m, "light", (float)fl.light); s->material_set_param(m, "scale", (float)fl.scale); }
+        if (m.is_valid()) { s->material_set_param(m, "darken", (float)fl.light); s->material_set_param(m, "scale", (float)fl.scale); }
     fl.params_dirty = false;
 }
 

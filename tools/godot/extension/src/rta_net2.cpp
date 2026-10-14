@@ -1,11 +1,109 @@
 // rta_net2.cpp - see rta_net2.h.  Records of session.h out as Dictionaries, calls in.
 #include "rta_net2.h"
+#include "rta_library.h"
+#include "rta_net2_api.h"
 
+#include <godot_cpp/classes/file_access.hpp>
+#include <godot_cpp/classes/os.hpp>
+#include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/char_string.hpp>
+#include <godot_cpp/variant/utility_functions.hpp>
 
 #include <cstring>
 #include <vector>
+
+// ---- where the functions come from (rta_net2_api.h) ----------------------------------------------
+static RtaNet2Api& rta_net2_api() {
+    static RtaNet2Api api;
+    return api;
+}
+
+// The game library: the one RtaMachine loaded, else the one `path` names, else where main.gd looks for it (beside
+// the extension in the project's bin/, or in the exported application's own folders).
+static bool rta_net2_resolve(const godot::String& path) {
+    RtaNet2Api& api = rta_net2_api();
+    if (api.ready) return true;
+#ifdef RTA_GODOT_NET2_LIBRARY
+    using namespace godot;
+    RtaLibrary& lib = rta_library();
+    if (!lib.loaded) {
+        String file = String("librta_game") + (OS::get_singleton()->get_name() == "Windows" ? ".dll" : ".dylib");
+        String exe = OS::get_singleton()->get_executable_path().get_base_dir();
+        PackedStringArray candidates;
+        if (path.length() > 0) candidates.push_back(path);
+        candidates.push_back(ProjectSettings::get_singleton()->globalize_path("res://bin/" + file));
+        candidates.push_back(exe.path_join(file));
+        candidates.push_back(exe.path_join("../Frameworks/" + file));
+        candidates.push_back(exe.path_join("../Resources/" + file));
+        for (int64_t k = 0; k < candidates.size() && !lib.loaded; k++)
+            if (FileAccess::file_exists(candidates[k])) lib.load(std::string(candidates[k].utf8().get_data()));
+        if (!lib.loaded) { api.error = "no game library (" + lib.error + ")"; return false; }
+    }
+#define RTA_NET2_TAKE(name) api.name = (decltype(api.name))lib.symbol(#name);
+    RTA_NET2_FUNCTIONS(RTA_NET2_TAKE)
+    RTA_NET2_GAME_FUNCTIONS(RTA_NET2_TAKE)
+#undef RTA_NET2_TAKE
+#define RTA_NET2_CHECK(name) if (!api.name) { api.error = "the game library " + lib.path + " has no " #name " (built without net2)"; return false; }
+    RTA_NET2_FUNCTIONS(RTA_NET2_CHECK)
+#undef RTA_NET2_CHECK
+    api.from_library = true;
+#else
+    (void)path;
+#define RTA_NET2_TAKE(name) api.name = &::name;
+    RTA_NET2_FUNCTIONS(RTA_NET2_TAKE)
+#undef RTA_NET2_TAKE
+#endif
+    api.ready = true;
+    return true;
+}
+
+// every call below goes through the table
+#define net2_open (rta_net2_api().net2_open)
+#define net2_close (rta_net2_api().net2_close)
+#define net2_poll (rta_net2_api().net2_poll)
+#define net2_next_event (rta_net2_api().net2_next_event)
+#define net2_me (rta_net2_api().net2_me)
+#define net2_set_name (rta_net2_api().net2_set_name)
+#define net2_set_character (rta_net2_api().net2_set_character)
+#define net2_set_game (rta_net2_api().net2_set_game)
+#define net2_local_characters (rta_net2_api().net2_local_characters)
+#define net2_delete_everything (rta_net2_api().net2_delete_everything)
+#define net2_friends (rta_net2_api().net2_friends)
+#define net2_recent (rta_net2_api().net2_recent)
+#define net2_blocked (rta_net2_api().net2_blocked)
+#define net2_requests (rta_net2_api().net2_requests)
+#define net2_friend_add (rta_net2_api().net2_friend_add)
+#define net2_friend_add_id (rta_net2_api().net2_friend_add_id)
+#define net2_friend_accept (rta_net2_api().net2_friend_accept)
+#define net2_friend_decline (rta_net2_api().net2_friend_decline)
+#define net2_friend_remove (rta_net2_api().net2_friend_remove)
+#define net2_block (rta_net2_api().net2_block)
+#define net2_unblock (rta_net2_api().net2_unblock)
+#define net2_invites (rta_net2_api().net2_invites)
+#define net2_invite (rta_net2_api().net2_invite)
+#define net2_invite_accept (rta_net2_api().net2_invite_accept)
+#define net2_invite_dismiss (rta_net2_api().net2_invite_dismiss)
+#define net2_room (rta_net2_api().net2_room)
+#define net2_host (rta_net2_api().net2_host)
+#define net2_join (rta_net2_api().net2_join)
+#define net2_join_friend (rta_net2_api().net2_join_friend)
+#define net2_chat (rta_net2_api().net2_chat)
+#define net2_ready (rta_net2_api().net2_ready)
+#define net2_set_options (rta_net2_api().net2_set_options)
+#define net2_kick (rta_net2_api().net2_kick)
+#define net2_start (rta_net2_api().net2_start)
+#define net2_leave (rta_net2_api().net2_leave)
+#define net2_session (rta_net2_api().net2_session)
+#define net2_game_state (rta_net2_api().net2_game_state)
+#define net2_debug (rta_net2_api().net2_debug)
+#define net2_set (rta_net2_api().net2_set)
+#define net2_error_text (rta_net2_api().net2_error_text)
+#define net2_game_attach (rta_net2_api().net2_game_attach)
+#define net2_game_status (rta_net2_api().net2_game_status)
+#define net2_game_choose (rta_net2_api().net2_game_choose)
+#define net2_game_launch (rta_net2_api().net2_game_launch)
+#define net2_game_stop (rta_net2_api().net2_game_stop)
 
 namespace godot {
 
@@ -98,15 +196,23 @@ RtaNet2::RtaNet2() {}
 RtaNet2::~RtaNet2() { close(); }
 
 bool RtaNet2::has_service() {
-#ifdef NET2_NO_SERVICE
-    return false;
+#ifdef RTA_GODOT_NET2_LIBRARY
+    return rta_net2_resolve(String());     // the game library's net2 talks to the real service
 #else
-    return true;
+    return false;                           // the extension's own copy: NET2_NO_SERVICE, the mock only
 #endif
 }
 
+bool RtaNet2::from_library() { return rta_net2_resolve(String()) && rta_net2_api().from_library; }
+
+String RtaNet2::get_error() { return String::utf8(rta_net2_api().error.c_str()); }
+
 bool RtaNet2::open(const Dictionary& config) {
     close();
+    if (!rta_net2_resolve(String(config.get("library", "")))) {
+        UtilityFunctions::push_warning("RtaNet2: " + get_error());
+        return false;
+    }
     CharString data_dir = String(config.get("data_dir", "")).utf8();
     CharString service = String(config.get("service", "")).utf8();
     CharString name = String(config.get("name", "")).utf8();
@@ -366,11 +472,50 @@ int RtaNet2::set_value(const String& key, const String& value) {
     return handle ? net2_set(handle, key.utf8().get_data(), value.utf8().get_data()) : NET2_ERR_ARGUMENT;
 }
 
-String RtaNet2::error_text(int code) const { return text(net2_error_text(code)); }
+String RtaNet2::error_text(int code) const { return rta_net2_api().ready ? text(net2_error_text(code)) : String(); }
+
+// ---- the game's side (game.h; only the game library has it) ----
+bool RtaNet2::has_game() { return rta_net2_resolve(String()) && net2_game_attach != nullptr; }
+
+bool RtaNet2::game_attach() {
+    if (!handle || !net2_game_attach) return false;
+    net2_game_attach(handle);
+    return true;
+}
+
+Dictionary RtaNet2::game_status() const {
+    Dictionary d;
+    if (!net2_game_status) return d;
+    net2_game_status_t s;
+    memset(&s, 0, sizeof s);
+    net2_game_status(&s);
+    d["phase"] = s.phase;
+    d["launches"] = s.launches;
+    d["failed"] = s.failed != 0;
+    d["text"] = text(s.text);
+    d["character"] = character_out(s.character);
+    d["level"] = text(s.level);
+    d["tick"] = (int64_t)s.tick;
+    d["players"] = s.players;
+    d["difficulty_unlocked"] = s.difficulty_unlocked;
+    return d;
+}
+
+int RtaNet2::game_choose(bool as_host) { return net2_game_choose ? net2_game_choose(as_host ? 1 : 0) : NET2_ERR_ARGUMENT; }
+int RtaNet2::game_launch() { return handle && net2_game_launch ? net2_game_launch(handle) : NET2_ERR_ARGUMENT; }
+int RtaNet2::game_stop() { return net2_game_stop ? net2_game_stop() : NET2_ERR_ARGUMENT; }
 
 void RtaNet2::_bind_methods() {
     ClassDB::bind_static_method("RtaNet2", D_METHOD("has_service"), &RtaNet2::has_service);
     ClassDB::bind_static_method("RtaNet2", D_METHOD("api_version"), &RtaNet2::api_version);
+    ClassDB::bind_static_method("RtaNet2", D_METHOD("from_library"), &RtaNet2::from_library);
+    ClassDB::bind_static_method("RtaNet2", D_METHOD("has_game"), &RtaNet2::has_game);
+    ClassDB::bind_static_method("RtaNet2", D_METHOD("get_error"), &RtaNet2::get_error);
+    ClassDB::bind_method(D_METHOD("game_attach"), &RtaNet2::game_attach);
+    ClassDB::bind_method(D_METHOD("game_status"), &RtaNet2::game_status);
+    ClassDB::bind_method(D_METHOD("game_choose", "as_host"), &RtaNet2::game_choose);
+    ClassDB::bind_method(D_METHOD("game_launch"), &RtaNet2::game_launch);
+    ClassDB::bind_method(D_METHOD("game_stop"), &RtaNet2::game_stop);
     ClassDB::bind_method(D_METHOD("open", "config"), &RtaNet2::open);
     ClassDB::bind_method(D_METHOD("close"), &RtaNet2::close);
     ClassDB::bind_method(D_METHOD("is_open"), &RtaNet2::is_open);

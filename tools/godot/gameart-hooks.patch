@@ -1,0 +1,292 @@
+--- a/tools/godot/project/hud/bottom.gd
++++ b/tools/godot/project/hud/bottom.gd
+@@ -177,8 +177,9 @@
+ 			var tint := Color.from_hsv(fmod(absf(float(q.skill_id)) * 0.137, 1.0), 0.45, 0.95)
+ 			if q.active:
+ 				Style.rounded(self, rect.grow(-2.0 * s), 8.0 * s, Color(tint, 0.30 + 0.15 * sin(hud.now * 10.0)), Color(tint, 0.9), maxi(1, int(2.0 * s)))
+-			var letters := _initials(name)
+-			Style.text(self, rect.get_center() + Vector2(0, 5.0 * s), letters, 26.0 * s, Color(tint, 1.0 if ready else 0.4), 1, true)
++			if not Style.slot_icon(self, rect, q, ready):
++				var letters := _initials(name)
++				Style.text(self, rect.get_center() + Vector2(0, 5.0 * s), letters, 26.0 * s, Color(tint, 1.0 if ready else 0.4), 1, true)
+ 			var small := name if Style.text_width(name, 11.0 * s) < size - 6.0 * s else name.substr(0, 9) + "."
+ 			Style.text(self, Vector2(rect.get_center().x, rect.end.y - 6.0 * s), small, 11.0 * s, Color(Style.TEXT_DIM, 1.0 if ready else 0.6), 1)
+ 			if q.cooldown > 0.0:
+@@ -231,6 +232,8 @@
+ 	if label in ["tri", "cir", "cro", "squ"]:
+ 		var r: float = size * 0.82
+ 		var c := left_centre + Vector2(r, 0)
++		if Style.face_button(self, c, r, label, alpha):
++			return 2.0 * r
+ 		draw_circle(c, r, Color(0.10, 0.10, 0.13, 0.95 * alpha))
+ 		draw_arc(c, r, 0, TAU, 24, Color(1, 1, 1, 0.35 * alpha), 1.0, true)
+ 		var w: float = maxf(1.5, size * 0.16)
+--- a/tools/godot/project/hud/compass.gd
++++ b/tools/godot/project/hud/compass.gd
+@@ -41,9 +41,10 @@
+ 
+ 
+ func _radar(c: Vector2, r: float, s: float) -> void:
+-	draw_circle(c, r + 3.0 * s, Color(0, 0, 0, 0.45))
+-	draw_circle(c, r, Color(Style.INK, 0.72))
+-	draw_arc(c, r, 0, TAU, 64, Style.HAIRLINE, maxf(1.0, s), true)
++	if not Style.socket(self, c, r + 3.0 * s, 0.9):
++		draw_circle(c, r + 3.0 * s, Color(0, 0, 0, 0.45))
++		draw_circle(c, r, Color(Style.INK, 0.72))
++		draw_arc(c, r, 0, TAU, 64, Style.HAIRLINE, maxf(1.0, s), true)
+ 	draw_arc(c, r * 0.5, 0, TAU, 48, Color(1, 1, 1, 0.06), maxf(1.0, s), true)
+ 	var me: Dictionary = hud.me
+ 	var origin: Vector3 = me.position
+--- a/tools/godot/project/hud/hud.gd
++++ b/tools/godot/project/hud/hud.gd
+@@ -126,6 +126,8 @@
+ 	_load_settings()
+ 	if str(setting.theme) != "":
+ 		Style.set_skin(str(setting.theme))
++	elif ResourceLoader.exists("res://gameart/gameart.gd") and load("res://gameart/gameart.gd").wanted():
++		Style.set_skin("res://gameart/hud_skin.gd")       # the game's own art from the player's disc (gameart.gd)
+ 	_parse_arguments()
+ 	root.modulate.a = 0.0
+ 	for piece in pieces:
+--- a/tools/godot/project/hud/status.gd
++++ b/tools/godot/project/hud/status.gd
+@@ -102,8 +102,9 @@
+ 	# the level in a ring that fills with experience
+ 	var c := o + Vector2(42.0, 42.0) * s
+ 	var r: float = 27.0 * s
+-	draw_circle(c, r, Color(0, 0, 0, 0.55))
+-	draw_arc(c, r - 2.0 * s, 0, TAU, 48, Color(1, 1, 1, 0.12), 3.0 * s, true)
++	if not Style.socket(self, c, r, 1.0):
++		draw_circle(c, r, Color(0, 0, 0, 0.55))
++		draw_arc(c, r - 2.0 * s, 0, TAU, 48, Color(1, 1, 1, 0.12), 3.0 * s, true)
+ 	if b.xp > 0.001:
+ 		draw_arc(c, r - 2.0 * s, -PI * 0.5, -PI * 0.5 + TAU * b.xp, 48, Style.XP_B, 3.0 * s, true)
+ 	var flash: float = clampf(1.0 - (hud.now - level_flash) / 3.0, 0.0, 1.0)
+--- a/tools/godot/project/hud/style.gd
++++ b/tools/godot/project/hud/style.gd
+@@ -18,6 +18,9 @@
+ #     func glyph(ci, kind, c, r, colour) -> bool
+ #     func flask(ci, c, r, colour) -> bool        func coin(ci, c, r, alpha) -> bool        func skull(ci, c, r, colour) -> bool
+ #     func keycap(ci, pos, label, size, alpha) -> float     (the cap's width; < 0: not drawn)
++#     func slot_icon(ci, rect, slot, ready) -> bool   the picture of a quick slot's ability (slot: the state's Dictionary)
++#     func face_button(ci, c, r, label, alpha) -> bool   a controller's face button ("tri", "cir", "cro", "squ")
++#     func socket(ci, c, r, alpha) -> bool        the round sockets: the level ring's ground, the radar's disc
+ # A function that returns false (or a negative width) leaves that call to the drawing below, so a skin can take
+ # over one thing at a time - say, panels and bars from the game's own art loaded at run time from the player's
+ # disc - and leave the rest.  hud/dev/skin_example.gd is a small one (flat, square, another palette).
+@@ -90,7 +93,7 @@
+ 	if script == null:
+ 		return false
+ 	skin = script.new()
+-	for name in ["panel", "bar", "text", "status_icon", "glyph", "flask", "coin", "skull", "keycap"]:
++	for name in ["panel", "bar", "text", "status_icon", "glyph", "flask", "coin", "skull", "keycap", "slot_icon", "face_button", "socket"]:
+ 		_has[name] = skin.has_method(name)
+ 	if skin.has_method("setup"):
+ 		skin.call("setup", load("res://hud/style.gd"))
+@@ -344,6 +347,19 @@
+ 	ci.draw_circle(c + Vector2(0.30, -0.15) * r, r * 0.20, dark)
+ 
+ 
++# hooks without a drawing of their own here: false = the piece draws what it always drew
++static func slot_icon(ci: CanvasItem, rect: Rect2, slot: Dictionary, ready: bool) -> bool:
++	return _has.get("slot_icon", false) and skin.call("slot_icon", ci, rect, slot, ready)
++
++
++static func face_button(ci: CanvasItem, c: Vector2, r: float, label: String, alpha := 1.0) -> bool:
++	return _has.get("face_button", false) and skin.call("face_button", ci, c, r, label, alpha)
++
++
++static func socket(ci: CanvasItem, c: Vector2, r: float, alpha := 1.0) -> bool:
++	return _has.get("socket", false) and skin.call("socket", ci, c, r, alpha)
++
++
+ static func keycap(ci: CanvasItem, pos: Vector2, label: String, size: float, alpha := 1.0) -> float:
+ 	if _has.get("keycap", false):
+ 		var done: float = skin.call("keycap", ci, pos, label, size, alpha)
+--- a/tools/godot/project/portal/portal.gd
++++ b/tools/godot/project/portal/portal.gd
+@@ -236,6 +236,8 @@
+ 
+ # ---- the layer and its parts ---------------------------------------------------------------
+ func _build_layer() -> void:
++	if ResourceLoader.exists("res://gameart/portal_skin.gd"):
++		load("res://gameart/portal_skin.gd").install(self)      # the game's art from the player's disc (gameart.gd)
+ 	layer = CanvasLayer.new()
+ 	layer.name = "Layer"
+ 	layer.layer = 20
+@@ -259,6 +261,7 @@
+ 	sky.shader = load("res://portal/background.gdshader")
+ 	background.material = sky
+ 	root.add_child(background)
++	UI.skinned("decorate", [self, root])                       # a skin's own layer over the background
+ 	top = TopBar.new()
+ 	top.name = "Top"
+ 	top.portal = self
+@@ -998,13 +1001,14 @@
+ 		var cy := size.y * 0.5 + UI.px(6)
+ 		var e := UI.px(22)
+ 		var c := Vector2(e + UI.px(2), cy)
+-		draw_colored_polygon(PackedVector2Array([c + Vector2(0, -e), c + Vector2(e * 0.72, 0), c + Vector2(0, e), c + Vector2(-e * 0.72, 0)]), Color(UI.GOLD.r, UI.GOLD.g, UI.GOLD.b, 0.16))
+-		draw_polyline(PackedVector2Array([c + Vector2(0, -e), c + Vector2(e * 0.72, 0), c + Vector2(0, e), c + Vector2(-e * 0.72, 0), c + Vector2(0, -e)]), UI.GOLD, maxf(1.5, UI.px(2)), true)
+-		draw_line(c + Vector2(0, -e * 0.55), c + Vector2(0, e * 0.55), UI.GOLD_HI, maxf(1.5, UI.px(2.5)), true)
+-		draw_line(c + Vector2(-e * 0.30, -e * 0.10), c + Vector2(e * 0.30, -e * 0.10), UI.GOLD_HI, maxf(1.5, UI.px(2.5)), true)
+ 		var x := c.x + e + UI.px(14)
+-		UI.text(self, Rect2(x, cy - UI.px(30), UI.px(300), UI.px(36)), "CHAMPIONS", UI.spaced(UI.serif_bold(), 5.0), 29, UI.GOLD_HI)
+-		UI.text(self, Rect2(x + UI.px(2), cy + UI.px(6), UI.px(300), UI.px(20)), "RETURN TO ARMS", UI.spaced(UI.bold(), 4.2), 12.5, UI.DIM)
++		if not UI.skinned("logo", [self, Rect2(0, cy - UI.px(40), UI.px(330), UI.px(80))]):
++			draw_colored_polygon(PackedVector2Array([c + Vector2(0, -e), c + Vector2(e * 0.72, 0), c + Vector2(0, e), c + Vector2(-e * 0.72, 0)]), Color(UI.GOLD.r, UI.GOLD.g, UI.GOLD.b, 0.16))
++			draw_polyline(PackedVector2Array([c + Vector2(0, -e), c + Vector2(e * 0.72, 0), c + Vector2(0, e), c + Vector2(-e * 0.72, 0), c + Vector2(0, -e)]), UI.GOLD, maxf(1.5, UI.px(2)), true)
++			draw_line(c + Vector2(0, -e * 0.55), c + Vector2(0, e * 0.55), UI.GOLD_HI, maxf(1.5, UI.px(2.5)), true)
++			draw_line(c + Vector2(-e * 0.30, -e * 0.10), c + Vector2(e * 0.30, -e * 0.10), UI.GOLD_HI, maxf(1.5, UI.px(2.5)), true)
++			UI.text(self, Rect2(x, cy - UI.px(30), UI.px(300), UI.px(36)), "CHAMPIONS", UI.spaced(UI.serif_bold(), 5.0), 29, UI.GOLD_HI)
++			UI.text(self, Rect2(x + UI.px(2), cy + UI.px(6), UI.px(300), UI.px(20)), "RETURN TO ARMS", UI.spaced(UI.bold(), 4.2), 12.5, UI.DIM)
+ 		if not show_right or friends_button == null:
+ 			return
+ 		# me: the name friends see and my code
+--- a/tools/godot/project/portal/screens/settings.gd
++++ b/tools/godot/project/portal/screens/settings.gd
+@@ -169,10 +169,13 @@
+ 	var pics := W.Choice.new("Button pictures", PackedStringArray(["Match my controller", "A  B  X  Y", "Cross  Circle  Square  Triangle"]), maxi(0, glyphs.find(String(portal.profile.setting("glyphs")))),
+ 		"Which names the hints at the bottom use.")
+ 	pics.key = "glyphs"
++	var art: Control = null
++	if ResourceLoader.exists("res://gameart/portal_skin.gd"):
++		art = load("res://gameart/portal_skin.gd").setting_row(portal)     # "Interface art: the game's own / clean"
+ 	pics.changed.connect(func(index: int) -> void:
+ 		portal.profile.set_setting("glyphs", glyphs[index])
+ 		portal.call("_detect_pad_style"))
+-	_rows(r, y, [kind, pics])
++	_rows(r, y, [kind, pics] if art == null else [kind, art, pics])
+ 
+ 
+ var address_typed := ""
+--- a/tools/godot/project/portal/ui.gd
++++ b/tools/godot/project/portal/ui.gd
+@@ -44,6 +44,13 @@
+ static var _serif_bold: Font
+ static var _spaced := {}
+ static var _boxes := {}
++# A SKIN (the game's art: res://gameart/portal_skin.gd) may draw any of the surfaces below in its own way; it may
++# also set the fonts (_sans, _bold, _serif, _serif_bold).  skinned(what, args) is false when no skin draws it.
++static var skin: RefCounted = null
++
++
++static func skinned(what: String, args: Array) -> bool:
++	return skin != null and skin.has_method(what) and bool(skin.callv(what, args))
+ 
+ 
+ static func set_scale_for(size: Vector2) -> void:
+@@ -146,6 +153,8 @@
+ 
+ # A panel: dark, slightly see-through, a hairline round it and a lighter line along its top.
+ static func panel(ci: CanvasItem, rect: Rect2, radius := 14.0, alpha := 1.0, fill := PANEL) -> void:
++	if skinned("surface", [ci, "panel", rect, radius, 0.0, false]):
++		return
+ 	var r := px(radius)
+ 	ci.draw_style_box(box(r, Color(0, 0, 0, 0), Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0.30 * alpha), px(18)), rect)
+ 	ci.draw_style_box(box(r, Color(fill.r, fill.g, fill.b, PANEL_ALPHA * alpha), Color(LINE.r, LINE.g, LINE.b, LINE.a * alpha), maxf(1.0, px(1))), rect)
+--- a/tools/godot/project/portal/widgets.gd
++++ b/tools/godot/project/portal/widgets.gd
+@@ -159,11 +159,15 @@
+ 		if pressed_t > 0.0:
+ 			r = r.grow(-UI.px(2) * pressed_t)
+ 		UI.focus_glow(self, r, radius, e)
+-		draw_style_box(UI.box(radius, fill, line, maxf(1.0, UI.px(1))), r)
+-		if kind == "primary" and not disabled:
+-			UI.sheen(self, r, radius, 0.22)
+-		elif not disabled:
+-			UI.sheen(self, r, radius, 0.035)
++		if UI.skinned("surface", [self, "button_" + kind, r, radius, e, disabled]):
++			if kind == "primary":
++				ink = UI.TEXT if not disabled else Color(UI.GOLD.r, UI.GOLD.g, UI.GOLD.b, 0.50)
++		else:
++			draw_style_box(UI.box(radius, fill, line, maxf(1.0, UI.px(1))), r)
++			if kind == "primary" and not disabled:
++				UI.sheen(self, r, radius, 0.22)
++			elif not disabled:
++				UI.sheen(self, r, radius, 0.035)
+ 		UI.focus_ring(self, r, radius, e)
+ 		if selected:
+ 			draw_style_box(UI.box(UI.px(2), UI.GOLD), Rect2(r.position.x + UI.px(8), r.position.y + r.size.y * 0.25, UI.px(4), r.size.y * 0.5))
+@@ -217,9 +221,10 @@
+ 		if disabled:
+ 			alpha = 0.45
+ 		UI.focus_glow(self, r, radius, e)
+-		draw_style_box(UI.box(radius, Color(0, 0, 0, 0), Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0.28), UI.px(16)), r)
+-		draw_style_box(UI.box(radius, Color(fill.r, fill.g, fill.b, alpha), UI.LINE if e < 0.5 else Color(1, 1, 1, 0.02), maxf(1.0, UI.px(1))), r)
+-		UI.sheen(self, r, radius, 0.03 + 0.03 * e)
++		if not UI.skinned("surface", [self, "tile", r, radius, e, disabled]):
++			draw_style_box(UI.box(radius, Color(0, 0, 0, 0), Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0.28), UI.px(16)), r)
++			draw_style_box(UI.box(radius, Color(fill.r, fill.g, fill.b, alpha), UI.LINE if e < 0.5 else Color(1, 1, 1, 0.02), maxf(1.0, UI.px(1))), r)
++			UI.sheen(self, r, radius, 0.03 + 0.03 * e)
+ 		# a warm wash from the left on the focused tile
+ 		if e > 0.01:
+ 			var c := Color(UI.GOLD.r, UI.GOLD.g, UI.GOLD.b, 0.10 * e)
+@@ -233,7 +238,8 @@
+ 		var medal := minf(h - UI.px(40), UI.px(92))
+ 		var mrect := Rect2(r.position.x + UI.px(28), r.position.y + (h - medal) * 0.5, medal, medal)
+ 		var ring := UI.GOLD.lerp(UI.GOLD_HI, e) if not disabled else UI.FAINT
+-		draw_style_box(UI.box(medal * 0.5, Color(ring.r, ring.g, ring.b, 0.10 + 0.08 * e), Color(ring.r, ring.g, ring.b, 0.55 + 0.45 * e), maxf(1.5, UI.px(2))), mrect)
++		if not UI.skinned("surface", [self, "medal", mrect, medal * 0.5, e, disabled]):
++			draw_style_box(UI.box(medal * 0.5, Color(ring.r, ring.g, ring.b, 0.10 + 0.08 * e), Color(ring.r, ring.g, ring.b, 0.55 + 0.45 * e), maxf(1.5, UI.px(2))), mrect)
+ 		UI.icon(self, icon, mrect.grow(-medal * 0.24), ring)
+ 		var x := mrect.end.x + UI.px(28)
+ 		var right := r.end.x - UI.px(30)
+@@ -304,7 +310,8 @@
+ 		var radius := UI.px(12)
+ 		var e := eased()
+ 		UI.focus_glow(self, r, radius, e)
+-		draw_style_box(UI.box(radius, UI.PANEL_UP.lerp(UI.PANEL_HOT, e), UI.LINE, maxf(1.0, UI.px(1))), r)
++		if not UI.skinned("surface", [self, "choice", r, radius, e, false]):
++			draw_style_box(UI.box(radius, UI.PANEL_UP.lerp(UI.PANEL_HOT, e), UI.LINE, maxf(1.0, UI.px(1))), r)
+ 		UI.focus_ring(self, r, radius, e)
+ 		var pad := UI.px(24)
+ 		var left := Rect2(r.position.x + pad, r.position.y, r.size.x * 0.5 - pad, r.size.y)
+@@ -380,7 +387,8 @@
+ 		var radius := UI.px(12)
+ 		var e := eased()
+ 		UI.focus_glow(self, r, radius, e)
+-		draw_style_box(UI.box(radius, UI.PANEL_UP.lerp(UI.PANEL_HOT, e), UI.LINE, maxf(1.0, UI.px(1))), r)
++		if not UI.skinned("surface", [self, "gauge", r, radius, e, false]):
++			draw_style_box(UI.box(radius, UI.PANEL_UP.lerp(UI.PANEL_HOT, e), UI.LINE, maxf(1.0, UI.px(1))), r)
+ 		UI.focus_ring(self, r, radius, e)
+ 		var pad := UI.px(24)
+ 		var left := Rect2(pad, 0, size.x * 0.5 - pad * 2.0, size.y)
+@@ -501,7 +509,8 @@
+ 		if editing:
+ 			e = 1.0
+ 		UI.focus_glow(self, r, radius, e)
+-		draw_style_box(UI.box(radius, Color(0.02, 0.024, 0.036, 0.85), UI.LINE_STRONG, maxf(1.0, UI.px(1))), r)
++		if not UI.skinned("surface", [self, "field", r, radius, e, false]):
++			draw_style_box(UI.box(radius, Color(0.02, 0.024, 0.036, 0.85), UI.LINE_STRONG, maxf(1.0, UI.px(1))), r)
+ 		UI.focus_ring(self, r, radius, e)
+ 		var pad := UI.px(22)
+ 		var font := UI.bold()
+@@ -599,6 +608,8 @@
+ 		if not has:
+ 			deep = Color(0.08, 0.09, 0.12)
+ 			glow = Color(0.6, 0.62, 0.7)
++		if UI.skinned("portrait", [self, r, character, framed, empty_text]):
++			return
+ 		if framed:
+ 			draw_style_box(UI.box(radius, Color(0.02, 0.022, 0.034, 0.9), UI.LINE_STRONG, maxf(1.0, UI.px(1))), r)
+ 		var inner := r.grow(-UI.px(3)) if framed else r
+@@ -729,7 +740,8 @@
+ 		var e := eased()
+ 		var fill := UI.PANEL_UP.lerp(UI.PANEL_HOT, e)
+ 		UI.focus_glow(self, r, radius, e)
+-		draw_style_box(UI.box(radius, Color(fill.r, fill.g, fill.b, 0.45 + 0.55 * e), Color(1, 1, 1, 0.05), maxf(1.0, UI.px(1))), r)
++		if not UI.skinned("surface", [self, "row", r, radius, e, false]):
++			draw_style_box(UI.box(radius, Color(fill.r, fill.g, fill.b, 0.45 + 0.55 * e), Color(1, 1, 1, 0.05), maxf(1.0, UI.px(1))), r)
+ 		UI.focus_ring(self, r, radius, e)
+ 		var av := UI.px(height - 30.0)
+ 		var arect := Rect2(UI.px(16), (size.y - av) * 0.5, av, av)
+@@ -856,6 +868,8 @@
+ 		return UI.text_width(glyph_label(name, glyph_style), UI.bold(), 13) + UI.px(18)
+ 
+ 	static func draw_glyph(ci: CanvasItem, rect: Rect2, name: String, glyph_style := "xbox") -> void:
++		if UI.skinned("pad_glyph", [ci, rect, name, glyph_style]):
++			return
+ 		var c := rect.position + rect.size * 0.5
+ 		var rad := minf(rect.size.x, rect.size.y) * 0.5
+ 		var face := {"a": UI.GREEN, "b": UI.RED, "x": UI.BLUE, "y": UI.GOLD}

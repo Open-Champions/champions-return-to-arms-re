@@ -39,6 +39,8 @@ extends Node
 #   --look K=V[,K=V...] scene mode: the look (sky, fog, sun, shadows, bloom, anti-aliasing ...): see scene_view.gd
 #   --no-hud            the new HUD (res://hud) is not added
 #   --no-portal         (read by the portal: straight to this scene)
+#   --net2-flow ROLE:DIR   a test: a room of our own through RtaNet2 as the portal drives it (dev/net2_flow.gd); give the
+#                       runtime "--opt net2-boot=1" after "--" so that the game walks to its title screen by itself
 #
 # Under the portal (res://portal/portal.tscn is the project's first scene; this scene is then put under it):
 #   signal session_over(why)    the game is back at its own front end after a level ("frontend"), or the machine has
@@ -102,7 +104,7 @@ var opt := {
 	"aspect": 0.0, "aspect_window": false, "samples": 0, "script": "", "godot_shots": "", "unpaced": false, "mute": false,
 	"no_sound": false, "test": "", "stop_after": 0, "figures": "", "args": PackedStringArray(),
 	"view": "", "game_hud": true, "light": false, "shadow": false, "pull_back": 1.0, "orbit": 0.0,
-	"look": "", "hud": true, "speed_log": 0,
+	"look": "", "hud": true, "speed_log": 0, "net2_flow": "",
 }
 var speed := {"usec": 0, "cpu": 0.0, "blanks": 0, "last": 0, "late": 0, "worst": 0}
 signal session_over(why: String)
@@ -231,6 +233,7 @@ func _parse_arguments() -> void:
 			"--look": opt.look = value; k += 1
 			"--speed-log": opt.speed_log = value.to_int(); k += 1
 			"--no-hud": opt.hud = false
+			"--net2-flow": opt.net2_flow = value; k += 1
 			"--offscreen", "--plain", "--no-portal": pass
 			_:
 				if not (a.begins_with("--portal") or a.begins_with("--hud")):
@@ -373,6 +376,12 @@ func _start() -> void:
 	print("rta_godot: display %.2f Hz; one picture every %.3f ms" % [refresh, period * 1000.0])
 	started = true
 	started_usec = Time.get_ticks_usec()
+	if opt.net2_flow != "":
+		var flow := Node.new()
+		flow.set_script(load("res://dev/net2_flow.gd"))
+		flow.set("main", self)
+		flow.call("setup", String(opt.net2_flow))
+		add_child(flow)
 
 
 func _cannot_start(text: String) -> void:

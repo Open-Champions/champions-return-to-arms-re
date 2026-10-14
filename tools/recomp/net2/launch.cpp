@@ -180,6 +180,17 @@ void tell_room(const char* level) {
 }
 
 // ---- carried out on the game's thread ----------------------------------------------------
+// The game's own code can reach a vertical blank, and a host that gates the blanks (the Godot library: tools/godot/lib/rtag.cpp
+// lets the game go one blank at a time) may at that moment be waiting for the big lock in a net2_* call of its own (the
+// portal's net2_poll, net2_room, net2_game_status once a frame): the lock must not be held across a call of the game.
+// do_choose and do_launch run under on_tasks' one Hold; around each call into the game it is let go and taken again.
+u64 call_unheld(Ctx* c, void (*fn)(Ctx*), u64 a0 = 0, u64 a1 = 0) {
+    net2impl::big_lock().unlock();
+    u64 r = call(c, fn, a0, a1);
+    net2impl::big_lock().lock();
+    return r;
+}
+
 void do_choose(Ctx* c, bool host) {
     // The character screens take two things from the game that was played before: for how
     // many players (g_numPlayers - after a net game the number that was in it: the screens
@@ -195,7 +206,7 @@ void do_choose(Ctx* c, bool host) {
     wr8(A_SETTINGS + 0, host ? 1 : 0);
     wr32(A_CHOSEN_POINTER, A_CHOSEN);
     wr32(A_FE_STATE, 10);
-    call(c, fn_001e3ba0);                           // frontend_startPlayerSelect
+    call_unheld(c, fn_001e3ba0);                           // frontend_startPlayerSelect
     G.failed = false;
     set_phase(NET2_GAME_CHOOSING, "the game's character screens are up");
 }
@@ -217,9 +228,9 @@ void do_launch(Ctx* c) {
     // frontend_startNetGame 0x1e21e0, its branch for "no lobby"
     wr8(A_LAUNCHING, 1);
     wr8(A_DEV_LOBBY, 0);
-    call(c, fn_0019d8a4, 10);
-    call(c, fn_0019d028);
-    call(c, fn_001397a0, 0);                        // net_gameInit(0)
+    call_unheld(c, fn_0019d8a4, 10);
+    call_unheld(c, fn_0019d028);
+    call_unheld(c, fn_001397a0, 0);                        // net_gameInit(0)
     wr32(A_LOBBY_LAUNCH, 0);
     wr8(A_SETTINGS + 7, (u8)d.count);
     wr8(A_SETTINGS + 8, 0);
@@ -233,7 +244,7 @@ void do_launch(Ctx* c) {
         wr32(A_PORT2 + k * 4, n2::GAME_PORT);
     }
     G.carrying = true;
-    call(c, fn_00134c60);                           // net_launchTransfer
+    call_unheld(c, fn_00134c60);                           // net_launchTransfer
     G.launch_blank = G.blank;
     G.told_running = false;
     char text[200];

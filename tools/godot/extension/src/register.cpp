@@ -26,7 +26,7 @@ static void initialize_rta_godot(ModuleInitializationLevel p_level) {
     GDREGISTER_CLASS(RtaGameState);     // the HUD agent's: the game's state for a HUD drawn by Godot
 #endif
 #ifdef RTA_GODOT_HAVE_NET2
-    GDREGISTER_CLASS(RtaNet2);          // the portal's: the online session (compiled without its service: the mock only)
+    GDREGISTER_CLASS(RtaNet2);          // the portal's: the online session (the game library's net2, or a mock-only copy)
 #endif
 }
 

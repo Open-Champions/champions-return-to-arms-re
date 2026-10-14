@@ -259,7 +259,7 @@ RID RtaDrawer::place(Pass& pass, RID material, float order) {
     return instance;
 }
 
-void RtaDrawer::add_surface_bytes(RID mesh, int primitive, const PackedByteArray& positions, const PackedByteArray& attributes, int count, bool normals) {
+void RtaDrawer::add_surface_bytes(RID mesh, int primitive, const PackedByteArray& positions, const PackedByteArray& attributes, int count, bool normals, const AABB* box) {
     Dictionary surface;
     surface["primitive"] = primitive;
     surface["format"] = (int64_t)(RenderingServer::ARRAY_FORMAT_VERTEX | RenderingServer::ARRAY_FORMAT_COLOR | RenderingServer::ARRAY_FORMAT_CUSTOM0 |
@@ -271,7 +271,7 @@ void RtaDrawer::add_surface_bytes(RID mesh, int primitive, const PackedByteArray
     surface["vertex_data"] = positions;
     surface["attribute_data"] = attributes;
     surface["vertex_count"] = count;
-    surface["aabb"] = EVERYWHERE;
+    surface["aabb"] = box ? *box : EVERYWHERE;
     rs()->mesh_add_surface(mesh, surface);
 }
 

@@ -35,6 +35,7 @@
 #include <godot_cpp/variant/rid.hpp>
 #include <godot_cpp/variant/transform3d.hpp>
 #include <godot_cpp/variant/vector3.hpp>
+#include <godot_cpp/variant/aabb.hpp>
 #include <godot_cpp/variant/projection.hpp>
 #include <godot_cpp/variant/vector2i.hpp>
 
@@ -165,7 +166,7 @@ class RtaDrawer : public RefCounted {
     bool scene_take(Pass& pass, const rtag_frame& frame, const rtag_draw& draw, const Target& target, RID texture, float order);
     void scene_end(const rtag_frame& frame);
     void scene_release();
-    static void add_surface_bytes(RID mesh, int primitive, const PackedByteArray& positions, const PackedByteArray& attributes, int count, bool normals = false);
+    static void add_surface_bytes(RID mesh, int primitive, const PackedByteArray& positions, const PackedByteArray& attributes, int count, bool normals = false, const AABB* box = nullptr);
     friend struct Scene;
 
     // ---- the fill (rta_fill.cpp) ----

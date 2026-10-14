@@ -4,9 +4,12 @@
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include <godot_cpp/variant/array.hpp>
+#include <godot_cpp/variant/color.hpp>
 #include <godot_cpp/variant/vector3.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <string>
 #ifdef _WIN32
@@ -253,6 +256,53 @@ int64_t RtaMachine::peek_u32(int64_t address) const {
     memcpy(&v, ram + address, 4);
     return v;
 }
+Array RtaMachine::get_lights(const Vector3& at, double radius, int max_count) const {
+    Array out;
+    const uint8_t* ram = started ? rta_library().rtag_memory() : nullptr;
+    if (!ram) return out;
+    const uint32_t GRID = 0x5D34D8, OVERFLOW_LIST = 0x5DB368, LAYER = 0x4039A4;
+    auto u32 = [&](uint32_t a) { uint32_t v = 0; if (a <= 0x2000000 - 4) memcpy(&v, ram + a, 4); return v; };
+    auto f32 = [&](uint32_t a) { float v = 0; if (a <= 0x2000000 - 4) memcpy(&v, ram + a, 4); return v; };
+    auto s16 = [&](uint32_t a) { int16_t v = 0; if (a <= 0x2000000 - 2) memcpy(&v, ram + a, 2); return (int)v; };
+    const int32_t layer = (int32_t)u32(LAYER);
+    std::vector<uint32_t> seen;
+    auto walk = [&](uint32_t node) {
+        // the game's own lists: a node's first word is the next one (the game changes them while this reads: bounded)
+        for (int guard = 0; node && guard < 256 && (int)out.size() < max_count; guard++) {
+            node &= 0x1FFFFFF;
+            if (node < 0x100000 || node > 0x2000000 - 0x40) break;
+            uint32_t next = u32(node);
+            if (std::find(seen.begin(), seen.end(), node) != seen.end()) break;
+            seen.push_back(node);
+            int8_t node_layer = (int8_t)ram[node + 8];
+            Vector3 p(f32(node + 0x30), f32(node + 0x34), f32(node + 0x38));
+            float r = f32(node + 0x1c);        // what light_collectNear reaches with (falloff +0x28 is 1 / r^2 for the level's lights)
+            if (node_layer == (int8_t)layer && std::isfinite(p.x) && std::isfinite(r) && r > 0 && r < 20000 && p.distance_to(at) < radius + r) {
+                Dictionary d;
+                d["address"] = (int64_t)node;
+                d["position"] = p;
+                d["colour"] = Color(s16(node + 0x12) / 128.0f, s16(node + 0x14) / 128.0f, s16(node + 0x16) / 128.0f, s16(node + 0x18) / 128.0f);
+                d["model_colour"] = Color(s16(node + 0x0a) / 128.0f, s16(node + 0x0c) / 128.0f, s16(node + 0x0e) / 128.0f);
+                d["radius"] = r;
+                d["radius_2"] = f32(node + 0x20);
+                d["falloff"] = f32(node + 0x28);
+                d["floor"] = f32(node + 0x2c);
+                d["layer"] = (int)node_layer;
+                out.push_back(d);
+            }
+            node = next;
+        }
+    };
+    const int cells = 90;
+    int x0 = (int)std::floor((at.x - radius + 11520.0) / 256.0), x1 = (int)std::floor((at.x + radius + 11520.0) / 256.0);
+    int y0 = (int)std::floor((at.y - radius + 11520.0) / 256.0), y1 = (int)std::floor((at.y + radius + 11520.0) / 256.0);
+    x0 = std::max(x0, 0); y0 = std::max(y0, 0); x1 = std::min(x1, cells - 1); y1 = std::min(y1, cells - 1);
+    for (int y = y0; y <= y1; y++)
+        for (int x = x0; x <= x1; x++) walk(u32(GRID + 4u * (uint32_t)(y * cells + x)));
+    walk(u32(OVERFLOW_LIST));
+    return out;
+}
+
 double RtaMachine::peek_f32(int64_t address) const {
     const uint8_t* ram = started ? rta_library().rtag_memory() : nullptr;
     if (!ram || address < 0 || address > 0x2000000 - 4) return 0;
@@ -302,6 +352,7 @@ void RtaMachine::_bind_methods() {
     ClassDB::bind_method(D_METHOD("peek_u32", "address"), &RtaMachine::peek_u32);
     ClassDB::bind_method(D_METHOD("peek_f32", "address"), &RtaMachine::peek_f32);
     ClassDB::bind_method(D_METHOD("peek_string", "address", "max_bytes"), &RtaMachine::peek_string);
+    ClassDB::bind_method(D_METHOD("get_lights", "at", "radius", "max_count"), &RtaMachine::get_lights);
 }
 
 }  // namespace godot

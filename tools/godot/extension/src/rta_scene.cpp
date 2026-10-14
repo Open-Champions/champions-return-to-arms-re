@@ -560,8 +560,17 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     }
     if (!corners) return true;
     if (d.depth_write) fill_note_level(order);              // the level begins: the fill is drawn right before it
+    // the mesh's real box: Godot pairs its lights with what they reach, and culls the shadow casters by it
+    AABB box;
+    {
+        const float* q = (const float*)positions.ptr();
+        float lo[3] = {q[0], q[1], q[2]}, hi[3] = {q[0], q[1], q[2]};
+        for (int k = 1; k < corners; k++)
+            for (int a = 0; a < 3; a++) { float v = q[k * 3 + a]; lo[a] = std::min(lo[a], v); hi[a] = std::max(hi[a], v); }
+        box = AABB(Vector3(lo[0], lo[1], lo[2]), Vector3(hi[0] - lo[0] + 0.01f, hi[1] - lo[1] + 0.01f, hi[2] - lo[2] + 0.01f));
+    }
     RID mesh = mesh_for(pass);
-    add_surface_bytes(mesh, RenderingServer::PRIMITIVE_TRIANGLES, positions, attributes, corners, normals);
+    add_surface_bytes(mesh, RenderingServer::PRIMITIVE_TRIANGLES, positions, attributes, corners, normals, &box);
     // Godot's light falls on what is solid (writes depth); glows, the dome, decals and what else is laid over the scene
     // keep the game's colours.  The dome is not hazed; camera-facing sprites fade as they come up to the eye.
     const bool is_dome = index < sc.is_dome.size() && sc.is_dome[index];
@@ -584,7 +593,6 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
         else {
             caster = s->instance_create();
             s->instance_set_scenario(caster, pass.scenario);
-            s->instance_set_ignore_culling(caster, true);
             s->instance_geometry_set_cast_shadows_setting(caster, RenderingServer::SHADOW_CASTING_SETTING_SHADOWS_ONLY);
             sc.casters.push_back(caster);
         }

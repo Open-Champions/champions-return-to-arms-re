@@ -12,6 +12,8 @@
 #include <godot_cpp/classes/ref_counted.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/packed_string_array.hpp>
+#include <godot_cpp/variant/array.hpp>
+#include <godot_cpp/variant/vector3.hpp>
 
 namespace godot {
 
@@ -68,6 +70,12 @@ class RtaMachine : public RefCounted {
     int64_t peek_u32(int64_t address) const;
     double peek_f32(int64_t address) const;
     String peek_string(int64_t address, int max_bytes) const;
+    // The game's point lights (docs/spec/render-pipeline.md 5.2): the light nodes of its 90 x 90 grid of 256-unit cells
+    // (g_lightGrid 0x5d34d8, origin -11520) and of its overflow list, of the current layer, within `radius` of `at` (the
+    // game's world: z up).  Each {address, position, colour (the level's, 0x80 = 1), model_colour, radius (+0x1c: what the
+    // game's own search reaches with), radius_2 (+0x20), falloff (+0x28: 1 / radius^2 for the level's lights), floor, layer}.  The level's light chunks (torches, braziers: 16 slots, their flicker
+    // included), LightEffect objects and spell effects are all such nodes.
+    Array get_lights(const Vector3& at, double radius, int max_count) const;
 
     const rtag_frame* current() const { return frame; }
     // The level's generated ceilings and skirts (rtag_fill_get, tools/recomp/render/worldfill.h): false when the library

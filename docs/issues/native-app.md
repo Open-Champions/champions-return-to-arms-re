@@ -2146,7 +2146,19 @@ fix-set library compiles `netdrv.cpp`, `online.cpp`, `RtaOnline.cpp`, the six se
 and `launch.cpp` (`-DRTAG_HAVE_NET2`) and **exports the 46 `net2_*` functions of
 `session.h` and `game.h` under their own names** - the one copy of net2 in the process, as
 `native-rendezvous.md` 5.1 asks (`rtag_has("net2")`, `rtag.h` says how a host uses it:
-`net2_open`, `net2_game_attach` once, `net2_game_choose`, `net2_game_status`). The
+`net2_open`, `net2_game_attach` once, `net2_game_choose`, `net2_game_status` with
+`difficulty_unlocked`). Interface versions: rtag 6 (unchanged; the new functions are looked
+up by name), net2 `NET2_API_VERSION` 1 (`session.h`). In `librta_game.dylib` of 23:14 (also
+the staged `project/bin` copy), by `nm -gU`: net2_block, net2_blocked, net2_chat,
+net2_close, net2_debug, net2_delete_everything, net2_error_text, net2_friend_accept,
+net2_friend_add, net2_friend_add_id, net2_friend_decline, net2_friend_remove, net2_friends,
+net2_game_attach, net2_game_choose, net2_game_launch, net2_game_launch_direct,
+net2_game_state, net2_game_status, net2_game_stop, net2_host, net2_invite,
+net2_invite_accept, net2_invite_dismiss, net2_invites, net2_join, net2_join_friend,
+net2_kick, net2_leave, net2_local_characters, net2_me, net2_next_event, net2_open,
+net2_poll, net2_ready, net2_recent, net2_requests, net2_room, net2_session, net2_set,
+net2_set_character, net2_set_game, net2_set_name, net2_set_options, net2_start,
+net2_unblock (46), beside the 19 `rtag_*` ones. The
 original-game library is unchanged (no network). Nothing opens a socket until a room is
 asked for: the smoke test and the 11 reference pictures through the new library are
 identical to before and to `rta_app` m4's. **For the portal agent (through the

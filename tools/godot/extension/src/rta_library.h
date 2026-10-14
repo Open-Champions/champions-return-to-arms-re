@@ -21,7 +21,10 @@ struct RtaLibrary {
 #undef RTAG_MEMBER
     bool loaded = false;
     std::string error;
+    std::string path;                   // the file it was loaded from
+    void* handle = nullptr;
     bool load(const std::string& path);
+    void* symbol(const char* name) const;   // any other function of the library by name (null: it has none)
 };
 
 // The one library of the process (one machine per process: rtag.h).

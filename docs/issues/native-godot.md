@@ -39,6 +39,41 @@ game is in the repository):
 
 **Left** (in the order it would be wanted): section "Left" at the end.
 
+## FOURTH ROUND (2026-10-13, from 23:05): ceilings, the game's lights, the character card, speed; net2 from the library
+
+**Kept current; whoever resumes reads this first.**  Pictures, logs, helpers: `local/godot-spike/test/r4/` (`go.sh`,
+`mkroute.py` as in r3, pictures into `r4/NAME`; `R3_POST="app look lights"` = lines after picture a).  `base/` = before
+this round (the library's plain dark fill in the list, no torches), five levels, first person and chase.
+
+### State (23:45)
+
+- **net2 through the library: done and run** (below, "A room of our own").  One hunk in `recomp.patch` (net2/launch.cpp).
+- **Ceilings and skirts drawn by Godot**: code in (`extension/src/rta_fill.cpp`, `shaders/fill.gdshader`, look `fill`);
+  first pictures being made (`r4/fill2/`).
+- **The game's own lights as Godot lights**: code in (`RtaMachine.get_lights`, look `lights`); being looked at.
+- Character card, persistent meshes: not started.
+
+### A room of our own: RtaNet2 on the library's net2 (Ran)
+
+- `extension/CMakeLists.txt`: `RTA_GODOT_NET2_SERVICE` (default ON) = RtaNet2 takes `net2_*` from the GAME LIBRARY (one
+  session object in the process, `docs/issues/native-rendezvous.md` 5.1); the extension compiles none of net2 and has no
+  socket code (`nm`: 0 net2 symbols; the library exports 46).  OFF: its own copy of session code with `NET2_NO_SERVICE`,
+  the mock only.  Both built from clean (1035 / 1038 steps, 0 warnings).  `src/rta_net2_api.h` is the table every call
+  goes through.  `RtaNet2.open()` loads the library itself when RtaMachine has not (config `library`, else main.gd's places).
+- New for the portal: `has_game()`, `from_library()`, `get_error()`, `game_attach()`, `game_status()` ({phase, launches,
+  failed, text, character, level, tick, players, difficulty_unlocked}), `game_choose(as_host)`, `game_launch()`, `game_stop()`.
+- **Run** (`test/r4/net2/flow.py` -> `run2/`): two Godot programs (game scene, own data folders, `--opt net2-boot=1`), a
+  service on 127.0.0.1:41950; the session side is `project/dev/net2_flow.gd` (`--net2-flow ROLE:DIR`: what the portal is
+  to do - open, game_attach, host / join(code), game_choose at TITLE, ready at CHOSEN, start when every other member is
+  ready and back); the game's screens by n2party's own script lines.  Room DYUCG: game 1 to tick 1167 (host) / 934
+  (joiner, who then left by the pause menu), both back at the title, "Play again" (choose, ready, start), game 2 past tick
+  738; both exit 0.  Tick logs NOT compared column by column.
+- **Found**: `launch.cpp` `on_tasks` held `net2impl::big_lock()` across do_launch's calls of the game; the game reached a
+  vertical blank and waited for the host's step while the host (Godot's main thread) waited for the lock in `net2_poll`:
+  both programs stood still at "the room started" (`run1`, sampled stacks).  `recomp.patch` lets the lock go around each
+  game call of do_choose / do_launch (notes at its head).  For the owner of `tools/recomp/net2`.
+- The portal does not yet call game_attach / game_choose / ready around its room (the portal agent's part).
+
 ## THIRD ROUND (2026-10-13, from 15:25): sky, haze, light, the portal's joins, the HUD's requests
 
 A new agent on the Godot side, from the notes above and below.  **Kept current; a usage limit can stop the work

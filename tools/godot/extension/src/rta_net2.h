@@ -10,13 +10,17 @@
 //   every frame:  for e in n.poll(): ...      # net2_poll, then every net2_next_event
 //                 n.me()  n.friends()  n.requests()  n.invites()  n.recent()  n.blocked()  n.room()  n.session()
 //
-// Built with tools/recomp/net2/session.cpp, session_mock.cpp and, for the real service,
-// session_net.cpp, carrier.cpp, cardchars.cpp compiled in.  With NET2_NO_SERVICE (the build
-// switch for a mock-only extension) there is no socket code in the extension at all:
-// has_service() is false and anything but the mock says "offline".
-// When the game library itself carries net2 (launch.cpp: docs/issues/native-rendezvous.md 5.1),
-// there must be ONE copy in the process: this class should then call the library's net2_*
-// through the loaded library instead of compiling its own (not done yet: no library has it).
+// Where net2 is (rta_net2_api.h): by default the GAME LIBRARY's - the one copy in the process
+// (docs/issues/native-rendezvous.md 5.1), with the real service, the mock (config "mock": true)
+// and the game's side (game_attach / game_status / game_choose / game_launch / game_stop:
+// tools/recomp/net2/game.h).  open() loads the library if RtaMachine has not yet (config
+// "library": its path; else where main.gd looks).  Built with the CMake option
+// RTA_GODOT_NET2_SERVICE=OFF the extension has its own copy of the session code with
+// NET2_NO_SERVICE instead: no socket code, the mock only, no game; has_service() false.
+//
+//   after open():  n.game_attach() once - the library then launches the room's game by itself;
+//   once a frame:  n.game_status() -> {phase (game.h NET2_GAME_*), launches, failed, text, character,
+//                                       level, tick, players, difficulty_unlocked}
 //
 // Registered by one line in register.cpp:  GDREGISTER_CLASS(RtaNet2);
 #pragma once
@@ -36,6 +40,9 @@ class RtaNet2 : public RefCounted {
     ~RtaNet2();
 
     static bool has_service();
+    static bool from_library();             // the game library's net2 (else the extension's own mock copy)
+    static bool has_game();                 // the game's side is there (game.h)
+    static String get_error();              // why the functions are not there
     static int api_version() { return NET2_API_VERSION; }
 
     // config: data_dir, service, mock (bool), name, fix_set, fix_words, arith_can, arith_does, build, local_only (bool)
@@ -81,6 +88,12 @@ class RtaNet2 : public RefCounted {
 
     Dictionary session() const;
     int game_state(const String& level, bool running);  // running false: over, or the launch failed
+
+    bool game_attach();                                 // net2_game_attach(this session): the library follows its room
+    Dictionary game_status() const;
+    int game_choose(bool as_host);                      // the game's own character screens
+    int game_launch();
+    int game_stop();
 
     String debug(const String& what) const;
     int set_value(const String& key, const String& value);

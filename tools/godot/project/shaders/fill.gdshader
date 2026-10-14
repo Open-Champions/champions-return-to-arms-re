@@ -7,7 +7,7 @@ shader_type spatial;
 // units from it (ceilings), alpha 1 at the rim and 0 at the skirt's outer edge.
 //
 // The colour is a SWATCH of the level's own texture (cut where a wall meets the ceiling, or from the lid at the rim),
-// tiled mirrored so that it has no seams, brought to one brightness (`gain`) and darkened (`light`); a ceiling gets a
+// tiled mirrored so that it has no seams, brought to one brightness (`gain`) and darkened (`darken`); a ceiling gets a
 // crease where it meets the wall and is darker toward the middle of a hall.  As in gs_draw.gdshaderinc's GS_LIT: what
 // arrives without a light is put in as the surface's own light (EMISSION), the lights add to it (light()), colours are
 // stored values (to_linear), and the haze of atmosphere.gdshaderinc lies over it.
@@ -19,7 +19,7 @@ uniform int kind = 1;                   // 1 ceiling, 2 skirt
 uniform int has_swatch = 0;
 uniform sampler2D swatch : filter_linear_mipmap, repeat_enable;
 uniform float gain = 1.0;               // the swatch to the mean brightness of the level's swatches
-uniform float light = 0.42;             // how much of that a ceiling keeps
+uniform float darken = 0.42;            // how much of that a ceiling keeps
 uniform float scale = 0.75;             // swatch repeats per 64 units
 
 varying vec3 v_world;
@@ -73,7 +73,7 @@ void fragment() {
 		float wall = clamp((1.0 - v_fill.z) / (105.0 / 255.0), 0.0, 1.0) * 200.0;
 		float crease = mix(0.40, 1.0, smoothstep(0.0, 34.0, wall));
 		float hall = mix(1.0, 0.70, smoothstep(30.0, 200.0, wall));
-		rgb = base * light * crease * hall;
+		rgb = base * darken * crease * hall;
 	} else {
 		alpha = clamp(v_fill.w, 0.0, 1.0);
 		rgb = base;

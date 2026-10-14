@@ -29,8 +29,10 @@ RtaLibrary& rta_library() {
 
 bool RtaLibrary::load(const std::string& path) {
     if (loaded) return true;
-    void* handle = open_library(path, error);
-    if (!handle) return false;
+    void* opened = open_library(path, error);
+    if (!opened) return false;
+    handle = opened;
+    this->path = path;
 #define RTAG_LOAD(name) \
     name = (decltype(name))find_symbol(handle, #name); \
     if (!name) { error = std::string("the library has no ") + #name; return false; }
@@ -46,3 +48,5 @@ bool RtaLibrary::load(const std::string& path) {
     loaded = true;
     return true;
 }
+
+void* RtaLibrary::symbol(const char* name) const { return handle ? find_symbol(handle, name) : nullptr; }

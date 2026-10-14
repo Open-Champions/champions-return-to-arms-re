@@ -367,7 +367,10 @@ def stage_project(args):
     for name in ('librta_game.dylib', 'librta_game_orig.dylib'):
         a, b = os.path.join(OUT, 'lib', name), os.path.join(to, 'bin', name)
         if os.path.exists(a) and (not os.path.exists(b) or os.path.getmtime(a) > os.path.getmtime(b)):
-            shutil.copy2(a, b)
+            # a new file put over the name (not written into the old one): a program that has the old one loaded
+            # (another agent's test, the portal's) keeps running on it
+            shutil.copy2(a, b + '.new%d' % os.getpid())
+            os.replace(b + '.new%d' % os.getpid(), b)
             count += 1
     # The staged copy is the one test runs start: its window is small and says what it is from the first
     # moment (the script gives it its final title).  An exported application is made from a copy without this.

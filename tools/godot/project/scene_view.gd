@@ -16,7 +16,12 @@ extends Node
 #   sun       a directional light with a soft shadow map: where it does not reach, the game's colours are darkened and
 #             take the sky's tint; where it does they are the game's own.  In a dark level it is a dim light from
 #             straight above (a soft shadow under everything) instead
-#   lamp      a warm point light carried by the first player (auto: in dark levels)
+#   lights    Godot point lights at the game's own lights - the light nodes of its light grid (RtaMachine.get_lights:
+#             the level's torches and braziers, LightEffect objects, spell effects), in their colour made a little
+#             warmer, their range the game's radius (whose flicker the game drives), with a slight flicker of Godot's
+#             own; the nearest `light_shadows` (2) throw shadows.  light_energy, light_max (8)
+#   lamp      a warm point light carried by the first player (auto: in dark levels, and only where none of the game's
+#             lights reaches)
 #   bloom     Godot's glow on what is bright (the game's own glows, fires, the sky round the sun)
 #   grade     a little contrast and saturation
 #   foliage   the level's cut-out cards (the crowns of trees, hung at head height) thin out within 64 units of the eye
@@ -57,12 +62,16 @@ const GLOBALS := {
 }
 
 var look := {
-	"sky": "auto", "fog": "auto", "sun": "auto", "lamp": "auto", "bloom": "auto", "grade": "auto", "foliage": "auto", "fill": "auto", "aa": "4",
+	"sky": "auto", "fog": "auto", "sun": "auto", "lamp": "auto", "bloom": "auto", "grade": "auto", "foliage": "auto", "fill": "auto", "lights": "auto", "aa": "4",
 	"shade": -1.0, "fog_start": 380.0, "fog_end": 1350.0, "fog_amount": 1.0, "sun_az": -1000.0, "sun_el": -1000.0,
 	"bloom_strength": 1.0, "sky_sun": 1.0, "shadow_splits": 4.0, "shadow_far": 1100.0,
-	"fill_light": 0.42, "fill_scale": 0.75,
+	"fill_light": 0.42, "fill_scale": 0.75, "light_energy": 1.0, "light_shadows": 2.0, "light_max": 8.0,
 }
 var fill_sent := {}
+var torches: Array = []                 # [{light, instance, address, shadow}] Godot's lights at the game's
+var torch_clock := 0.0
+var lamp_share := 0.0                   # the carried lamp, eased: 1 where none of the game's lights reaches
+var game_lights := 0                    # this frame: how many of the game's lights are near
 var shadow_set := Vector2(-1, -1)
 var sun_found := Vector2(217.0, 48.0)   # azimuth and elevation of the level's light, degrees: read out of its textures
 var sun_fixed := false
@@ -164,7 +173,15 @@ func _put(key: String, value: String) -> void:
 		look[key] = value
 
 
+func _free_torches() -> void:
+	for t in torches:
+		RenderingServer.free_rid(t.instance)
+		RenderingServer.free_rid(t.light)
+	torches.clear()
+
+
 func release() -> void:
+	_free_torches()
 	for rid in [sun_instance, lamp_instance, sky_instance, sun, lamp]:
 		if rid.is_valid():
 			RenderingServer.free_rid(rid)
@@ -198,7 +215,7 @@ func before_frame() -> void:
 			and int(view.get("shown", 0)) >= VIEW_CHASE
 	ground_amount = move_toward(ground_amount, 1.0 if ground else 0.0, 0.07)
 	in_force = {"ground": ground}
-	for key in ["sky", "fog", "sun", "lamp", "bloom", "grade", "fill"]:
+	for key in ["sky", "fog", "sun", "lamp", "bloom", "grade", "fill", "lights"]:
 		in_force[key] = _wants(key, ground)
 	# the lamp, by itself, only where it is dark
 	if String(look.lamp) == "auto":
@@ -210,8 +227,8 @@ func before_frame() -> void:
 		if fill_sent.get(key, -1.0) != float(look[key]):
 			fill_sent[key] = float(look[key])
 			drawer.call("set_scene_option", key, float(look[key]))
-	drawer.call("set_scene_option", "lit", 1.0 if (in_force.sun or in_force.lamp) else 0.0)
-	drawer.call("set_scene_option", "shadows", 1.0 if in_force.sun else 0.0)
+	drawer.call("set_scene_option", "lit", 1.0 if (in_force.sun or in_force.lamp or in_force.lights) else 0.0)
+	drawer.call("set_scene_option", "shadows", 1.0 if (in_force.sun or (in_force.lights and float(look.light_shadows) > 0.0)) else 0.0)
 
 
 # Once per list, after the drawer has taken it.
@@ -228,11 +245,13 @@ func frame() -> void:
 	var sky_on: bool = in_force.get("sky", false) and bool(info.get("active", false))
 	RenderingServer.instance_set_visible(sky_instance, sky_on)
 	_haze()
+	_torches()
 	_lights()
 	_post()
 
 
 func _make(to: RID) -> void:
+	_free_torches()
 	for rid in [sun_instance, lamp_instance, sky_instance, sun, lamp]:
 		if rid.is_valid():
 			RenderingServer.free_rid(rid)
@@ -444,7 +463,13 @@ func _lights() -> void:
 		RenderingServer.instance_set_transform(sun_instance, Transform3D(Basis(), Vector3.ZERO).looking_at(direction, Vector3(0, 0, 1)))
 	RenderingServer.global_shader_parameter_set("rta_light_ambient", Vector4(ambient.r, ambient.g, ambient.b, 1.0))
 	RenderingServer.instance_set_visible(sun_instance, sun_on)
-	RenderingServer.instance_set_visible(lamp_instance, lamp_on)
+	# the carried lamp, by itself (auto), only where none of the game's lights reaches the player
+	if String(look.lamp) == "auto":
+		lamp_share = move_toward(lamp_share, 0.0 if game_lights > 0 else 1.0, 0.03)
+	else:
+		lamp_share = 1.0
+	RenderingServer.light_set_param(lamp, RenderingServer.LIGHT_PARAM_ENERGY, 2.6 * lamp_share)
+	RenderingServer.instance_set_visible(lamp_instance, lamp_on and lamp_share > 0.01)
 	# the sky's own sun: where the light comes from, in an open sky without a painted dome
 	var glow := float(look.sky_sun) * (0.0 if (level_dark or level_dome) else 0.9)
 	var warm := Color(1.0, 0.93, 0.80).lerp(horizon, 0.35)
@@ -455,6 +480,67 @@ func _lights() -> void:
 		if object != 0:
 			var at := Vector3(machine.peek_f32(object + 0x10), machine.peek_f32(object + 0x14), machine.peek_f32(object + 0x18))
 			RenderingServer.instance_set_transform(lamp_instance, Transform3D(Basis(), at + Vector3(0, 0, 74)))
+
+
+# ---- the game's own lights ---------------------------------------------------------------------
+func _torch_slot(k: int) -> Dictionary:
+	while torches.size() <= k:
+		var light := RenderingServer.omni_light_create()
+		RenderingServer.light_set_param(light, RenderingServer.LIGHT_PARAM_ATTENUATION, 0.9)
+		RenderingServer.light_set_param(light, RenderingServer.LIGHT_PARAM_SHADOW_BIAS, 0.4)
+		RenderingServer.light_set_param(light, RenderingServer.LIGHT_PARAM_SHADOW_NORMAL_BIAS, 2.0)
+		RenderingServer.light_set_param(light, RenderingServer.LIGHT_PARAM_SHADOW_BLUR, 1.5)
+		var instance := RenderingServer.instance_create2(light, scenario)
+		RenderingServer.instance_set_visible(instance, false)
+		torches.append({"light": light, "instance": instance, "address": 0, "shadow": false})
+	return torches[k]
+
+
+func _torches() -> void:
+	var on: bool = in_force.get("lights", false)
+	game_lights = 0
+	var feet: Vector3 = machine.get_view().get("player", Vector3.ZERO)
+	var eye: Vector3 = machine.get_view().get("eye", feet)
+	var found: Array = machine.get_lights(eye, 1300.0, 96) if (on or String(look.lamp) == "auto") else []
+	for g in found:
+		if Vector3(g.position).distance_to(feet) < float(g.radius) * 0.85:
+			game_lights += 1
+	var wanted := int(look.light_max) if on else 0
+	found.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return Vector3(a.position).distance_to(eye) < Vector3(b.position).distance_to(eye))
+	torch_clock += 1.0 / 60.0
+	var shadows := int(look.light_shadows)
+	var dark_gain := 1.25 if level_dark else 0.8
+	for k in range(max(wanted, torches.size())):
+		var t := _torch_slot(k)
+		if k >= wanted or k >= found.size():
+			RenderingServer.instance_set_visible(t.instance, false)
+			continue
+		var g: Dictionary = found[k]
+		var c: Color = g.colour
+		var peak: float = max(c.r, c.g, c.b, 0.001)
+		var hue := Color(c.r / peak, c.g / peak, c.b / peak).lerp(Color(1.0, 0.70, 0.42), 0.30)
+		var phase := float(int(g.address) % 997) * 0.37
+		var flicker := 1.0 + 0.06 * sin(torch_clock * 7.3 + phase) + 0.04 * sin(torch_clock * 13.7 + phase * 1.9) + 0.03 * sin(torch_clock * 23.1 + phase * 0.7)
+		RenderingServer.light_set_color(t.light, hue)
+		RenderingServer.light_set_param(t.light, RenderingServer.LIGHT_PARAM_ENERGY, float(look.light_energy) * 2.4 * dark_gain * clampf(peak, 0.25, 1.6) * flicker)
+		RenderingServer.light_set_param(t.light, RenderingServer.LIGHT_PARAM_RANGE, clampf(float(g.radius) * 1.15, 60.0, 1400.0))
+		var shadow := k < shadows
+		if shadow != bool(t.shadow):
+			t.shadow = shadow
+			RenderingServer.light_set_shadow(t.light, shadow)
+		t.address = int(g.address)
+		RenderingServer.instance_set_transform(t.instance, Transform3D(Basis(), Vector3(g.position)))
+		RenderingServer.instance_set_visible(t.instance, true)
+
+
+func lights_text() -> String:
+	var view: Dictionary = machine.get_view()
+	var eye: Vector3 = view.get("eye", Vector3.ZERO)
+	var text := "the game's lights within 1300 of the eye:"
+	for g in machine.get_lights(eye, 1300.0, 96):
+		text += "\n  node 0x%x at %s colour %s radius %.0f (second %.2f) falloff %.6f floor %.2f; %.0f from the eye" % [int(g.address), str(g.position),
+			str(g.colour), float(g.radius), float(g.radius_2), float(g.falloff), float(g.floor), Vector3(g.position).distance_to(eye)]
+	return text
 
 
 func _post() -> void:
@@ -482,6 +568,8 @@ func command(w: PackedStringArray) -> void:
 	if w[0] == "look":
 		if w.size() >= 2 and w[1] == "info":
 			print("[blank %d] rta_godot: %s" % [main.blanks, info_text()])
+		elif w.size() >= 2 and w[1] == "lights":
+			print("[blank %d] rta_godot: %s" % [main.blanks, lights_text()])
 		elif w.size() >= 3:
 			_put(w[1], w[2])
 	elif w[0] == "scene" and w.size() >= 3:
