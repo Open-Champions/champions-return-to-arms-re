@@ -1,6 +1,6 @@
 # How complete is it
 
-Updated at every check-in of the work. **Last update: 2026-10-13, 15:50 CDT.**
+Updated at every check-in of the work. **Last update: 2026-10-13, 19:23 CDT.**
 
 One table for the whole effort to make Champions: Return to Arms (SLUS-20973 v2.00)
 playable again, online, on today's computers. The percentages are estimates by the people
@@ -27,8 +27,9 @@ a session by hand - every test drove the game by script, on one Apple-silicon Ma
 | Native build: online | 98 % | through the lobby with itself, with the emulator application and with a browser page, in step; three and four players with the window program (4 of 4 launches of four after a fix, up to 5,454 ticks every pair, with level change, deaths and reload); private games, chat, friends, kick, leaving and playing again nine games in a row, a dropped player and a dropped host ([native-online](issues/native-online.md)) | a second computer; a person at the controls; one host thread left behind per ended game thread |
 | Native build: Windows | 85 % | compiles and links with picture, sound, controller and online play; the same sources built for x86-64 on the Mac give byte-identical results ([native-windows](issues/native-windows.md)) | a first run on a Windows computer |
 | Native build: in a browser | 60 % - paused | boots and plays the first level in Chrome, tick-identical to the Mac build ([native-web](issues/native-web.md)) | paused with the browser work; rebuilt with the faster renderer; sound delay; online |
-| Native build: first person and other views | 45 % | five camera views as hooks on the game's own camera, in seven levels and a fight, the simulation identical to overhead in every view ([native-first-person](issues/native-first-person.md)); look with mouse or stick, the character turned to face the look, a strike held until it faces its target - all without changing the simulation; a first-person player in step online with an overhead player through an arena fight, 5,433 ticks ([native-first-person-controls](issues/native-first-person-controls.md)); what every level lacks from eye height, measured ([native-first-person-world](issues/native-first-person-world.md)) | the views and the look controls are merged into the native program (key V cycles them; host in first person against overhead 4,332 ticks in step); still missing: ceilings and skies; weapon and hands in view; running sideways (proposed as a fix section, not adopted); nobody has played it |
-| Native build: inside Godot | 55 % | the translated game runs as a library under Godot 4.5.2 (same result as the stand-alone program in the tick comparison); exact 3-D hand-over with the game's own normals, checked on 212 million vertices; the five camera views; Godot's light, one real shadow per character, sky continued to the zenith and distance haze; a new interface drawn from the game's state (three layouts; 47 of 48 comparisons with the game's own bars equal to the pixel) with the game's own switched off; a portal (first start, friends with presence and characters, rooms, settings) against a mock of our own online service; custom boss music from the player's own files ([native-godot](issues/native-godot.md), [native-hud](issues/native-hud.md), [native-portal](issues/native-portal.md)) | 60 pictures a second with Godot drawing; every level looked at in 3-D; ceilings; the real online service behind the portal; a real boss, a real second player; Windows; nobody has played it |
+| Native build: first person and other views | 50 % | five camera views as hooks on the game's own camera, merged into the native program (key V), the simulation identical to overhead in every view ([native-first-person](issues/native-first-person.md)); look with mouse or stick, the character turned to face the look, a strike held until it faces its target; a first-person player in step online with an overhead player through an arena fight; strafing written as a fix section and proven on 4.1 million ticks, not yet in the fix set ([native-first-person-controls](issues/native-first-person-controls.md)); what every level lacks from eye height, measured ([native-first-person-world](issues/native-first-person-world.md)) | ceilings for indoor levels; weapon and hands in view; strafing released; nobody has played it |
+| Native build: inside Godot | 60 % | the translated game runs as a library under Godot 4.5.2; exact 3-D hand-over with the game's own normals (212 million vertices checked); the five views; Godot's light and shadows, sky continued to the zenith and distance haze in seven levels; 60 pictures a second paced in first person; a new interface drawn from the game's state with the game's own switched off (three layouts; 47 of 48 comparisons with the game's bars equal to the pixel); custom boss music from the player's own files ([native-godot](issues/native-godot.md), [native-hud](issues/native-hud.md)) | every level looked at; ceilings and torch lights; a real boss and a real second player; Windows; the regression checks re-run after the workspace move; nobody has played it |
+| Portal and our own online service | 55 % | the portal's screens in Godot (first start, home, friends with presence and characters, rooms, settings), joined to the game scene ([native-portal](issues/native-portal.md)); a rendezvous service without accounts or passwords - friend codes, presence, invitations, rooms, hole punching with a relay fallback - 189 checks, and its client, 95 checks, on one computer ([native-rendezvous](issues/native-rendezvous.md)) | a game actually launched from a room; the portal wired to the real service instead of its mock; the service running anywhere but this Mac |
 
 What "the game" is in each row: the first five rows run the original program in an
 emulator; the "native build" rows run the game's own code translated to C++
@@ -77,26 +78,13 @@ linked document. It does not mean played by a person, or tried on two computers.
 
 ## Since the last update
 
-- The native program now carries the five camera views and the look controls; its window
-  is presented through a Metal layer so that the picture no longer stalls when the window
-  server holds the main thread (27 late pictures of 36,000 in a ten-minute fight, 769
-  before); an Online menu and a keys panel; leftover threads fixed.
-- The portal's screens are built in Godot against a mock of our own online service.
-- Strafing (running one way while facing another) proposed as a fix section and under
-  proof; not in the fix set yet.
-- The public relay now bridges browser players and application players, and the public
-  page carries the same fix set as the applications.
-- First person and third person: five camera views in the native build, proven in step
-  online against an overhead player; Godot draws them with its own light and shadows; a
-  first version of the new interface; our own online service has its interface and a mock.
-- Release on fix set `073064bb` (29 sections, 99 words: three sections added - a save point,
-  a script read that wrote, a jump gate): the Mac application, the stable build and the
-  private download. On it: two copies 12,348 lockstep frames in step with a save point and
-  a jump gate; three copies and four copies launched three times each, all in step.
-- The Mac application now starts with its window at once, finds the disc image and the
-  art pack in its own folder without macOS asking anything, and asks for the player name
-  in a sheet that cannot be lost.
-- Main effort from today: the native game on Mac and Windows, in C++ with Godot as the
-  layer that draws the new look - first person and several camera views, cleaner models,
-  a new interface. Browser work is paused.
-- The art pack checked as a whole; interface pictures redone to keep the game's shapes.
+- The project's working folder was moved out of an iCloud-synced Desktop after macOS began
+  evicting its files when the disk filled ([workspace-move](issues/workspace-move.md), being
+  written); building and testing are being restored in the new place.
+- Strafing: soaked for 4.1 million ticks with no difference of its own. The soak found a
+  desync in the released set instead - a level entered with a menu open saves late, and a
+  party wipe then reloads different records - and a six-word section for it, proven on 2.9
+  million ticks. Both are being verified on the emulator for the next release.
+- Godot: skies and haze in seven levels, the new interface in the scene, the portal as the
+  first screen, 60 pictures a second paced in first person.
+- Our own online service and its client are written and pass their checks on one computer.

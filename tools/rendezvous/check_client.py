@@ -48,7 +48,7 @@ class Checks:
 
 def build_cli(work):
     out = os.path.join(work, 'net2cli')
-    sources = [os.path.join(NET2, n) for n in ('session.cpp', 'session_mock.cpp', 'session_net.cpp', 'carrier.cpp', 'cardchars.cpp', 'net2cli.cpp')]
+    sources = [os.path.join(NET2, n) for n in ('session.cpp', 'session_mock.cpp', 'session_net.cpp', 'carrier.cpp', 'cardchars.cpp', 'clicmd.cpp', 'net2cli.cpp')]
     command = ['clang++', '-std=c++17', '-O1', '-Wall', '-Wextra', '-I', NET2, '-o', out] + sources + ['-lpthread']
     result = subprocess.run(['nice', '-n', '10'] + command, capture_output=True, text=True)
     if result.returncode != 0:

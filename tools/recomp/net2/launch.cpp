@@ -24,8 +24,26 @@
 //            (carrier.h).  Its datagrams on that port are carried by net2 (hooks.h).
 //
 // Nothing of the game's code is changed and no word of it is patched.
+//
+// The stand-alone program (options after "--", or tools/recomp/net2/play.sh):
+//   --opt net2=host[:friends] | join:CODE     a room at the service, by itself from power-on
+//   --opt net2-service=HOST:PORT   (else RTA_NET2_SERVICE, else <data>/net2-service.txt)
+//   --opt net2-name=NAME           the display name of a first start
+//   --opt net2-data=DIR            where the identity file is (default: the network's data folder)
+//   --opt net2-players=N           host: start by itself when N players are in and ready (default 2;
+//                                  0: never - somebody says `app net2 start`)
+//   --opt net2-level=NAME --opt net2-difficulty=N    the host's options
+//   --opt net2-again=1             after a game: choose a character and be ready again
+//   --opt net2-relay=force|never   tests: this machine's routes
+//   --opt net2-bind=ADDRESS:PORT   tests: the UDP socket's own address
+//   --opt net2-boot=0              do not press cross for the player while the game boots
+//   --opt net2-commands=FILE       tests: "net2 ..." lines written to this file are carried out
+//   --opt net2-log=FILE            what is said, with the vertical blank
+// Script / control: app net2 status | choose [host] | direct SESSION SLOT ADDR,ADDR[,..] [LEVEL] [DIFFICULTY]
+//                   | launch | and every command of clicmd.cpp (app net2 room, app net2 chat hello ...)
 #include "game.h"
 #include "carrier.h"
+#include "clicmd.h"
 #include "hooks.h"
 #include "session_impl.h"
 
@@ -39,6 +57,7 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -80,9 +99,10 @@ u64 call(Ctx* c, void (*fn)(Ctx*), u64 a0 = 0, u64 a1 = 0) {
     return result;
 }
 
+typedef std::lock_guard<std::recursive_mutex> Hold;
+
 struct Game {
     bool installed = false;
-    std::recursive_mutex lock;
     int phase = NET2_GAME_BOOTING;
     int launches = 0;
     bool failed = false;
@@ -90,22 +110,32 @@ struct Game {
     bool title_seen = false;
     // requests, carried out by the game's thread
     int want_choose = -1;               // 0 / 1: as joiner / as host
-    bool want_launch = false, want_stop = false;
+    bool want_launch = false;
     net2_direct direct{};               // the description of the launch asked for
-    bool direct_set = false;
     // the session whose datagrams are carried
-    n2::Carrier own_carrier;          // a direct launch by fixed addresses
+    n2::Carrier own_carrier;            // a direct launch by fixed addresses
     n2::Carrier* carrier = nullptr;
     bool carrying = false;
     u64 blank = 0, launch_blank = 0, boot_press_until = 0, boot_next_press = 0, title_since = 0;
     net2_options options{};
-    int count = 0, me = 0;
     net2_character character{};
-    bool quiet = false;
+    std::string level;                  // the level last told to the room
     void (*previous_command)(const std::string&, u64) = nullptr;
     rta::PadSource* inner_pad = nullptr;
     bool drive_boot = false;
     FILE* log = nullptr;
+    // the room this program is attached to
+    net2* session = nullptr;
+    bool own_session = false;           // made here (the stand-alone program): polled and its events printed here
+    uint32_t launched_session = 0;      // the start that was taken up
+    int64_t start_seen_ms = 0;
+    bool told_running = false;
+    // the stand-alone program's own way to a room
+    std::string want_room;              // "host", "host:friends", "join:CODE"
+    bool asked_room = false, asked_ready = false, again = false;
+    int want_players = 2;
+    int64_t last_start_try = 0;
+    std::string command_file, shown_code;
 } G;
 
 void say(const char* format, ...) {
@@ -134,12 +164,18 @@ bool at_title() {
            rd32(A_FE_RUNNING) == 1;
 }
 
-void read_character() {
-    G.character = net2_character{};
-    net2impl::put(G.character.name, net2impl::clean_label(rdstr(A_PLAYERS, 31).c_str(), 24));
-    u32 cls = rd32(A_PLAYERS + PLAYER_CLASS);
-    net2impl::put(G.character.cls, cls < 7 ? net2impl::CLASS_WORDS[cls] : "?");
-    G.character.level = (s8)rd8(A_PLAYERS + PLAYER_LEVEL);
+net2_character read_character(u32 record) {
+    net2_character c{};
+    net2impl::put(c.name, net2impl::clean_label(rdstr(record, 31).c_str(), 24));
+    u32 cls = rd32(record + PLAYER_CLASS);
+    net2impl::put(c.cls, cls < 7 ? net2impl::CLASS_WORDS[cls] : "?");
+    c.level = (s8)rd8(record + PLAYER_LEVEL);
+    return c;
+}
+
+// the room is told what became of its start
+void tell_room(const char* level) {
+    if (G.session) net2_game_state(G.session, level);
 }
 
 // ---- carried out on the game's thread ----------------------------------------------------
@@ -158,16 +194,15 @@ void do_choose(Ctx* c, bool host) {
 
 void do_launch(Ctx* c) {
     const net2_direct& d = G.direct;
-    G.count = d.count;
-    G.me = d.my_slot;
     G.options = d.options;
     // what the front end's state 7 does once a character is chosen
     wr8(A_SETTINGS + 10, 0xff);
     u8 bits = (u8)((d.my_slot == 0 ? 1 : 0) | ((rd8(A_QUICK + 0x29) & 3) == 0 ? 2 : 4));
     wr8(A_SETTINGS + 0, bits);
     if (d.my_slot == 0) {
-        wr8(A_SETTINGS + 2, (u8)(d.options.difficulty >= 1 && d.options.difficulty <= 5 ? d.options.difficulty : 1));
-        wr8(A_SETTINGS + 3, 0);                     // co-operative; the other modes are the game's own versus kinds
+        // the host's choices travel to the others in the handshake (the game's own way)
+        wr8(A_SETTINGS + 2, (u8)(d.options.difficulty >= 1 && d.options.difficulty <= 4 ? d.options.difficulty : 2));
+        wr8(A_SETTINGS + 3, 0);                     // play missions; the arena modes are not wired yet
         wr8(A_SETTINGS + 4, 0);
         wr8(A_SETTINGS + 5, 0);
     }
@@ -192,15 +227,16 @@ void do_launch(Ctx* c) {
     G.carrying = true;
     call(c, fn_00134c60);                           // net_launchTransfer
     G.launch_blank = G.blank;
-    char text[160];
-    snprintf(text, sizeof text, "launching: player %d of %d, settings bits %02x, character %s (%s %d)", d.my_slot + 1, d.count, bits, G.character.name,
-             G.character.cls, G.character.level);
+    G.told_running = false;
+    char text[200];
+    snprintf(text, sizeof text, "launching: player %d of %d, session %08x, settings bits %02x, character %s (%s %d)", d.my_slot + 1, d.count, d.session, bits,
+             G.character.name, G.character.cls, G.character.level);
     set_phase(NET2_GAME_LAUNCHING, text);
 }
 
 void on_tasks(Ctx* c, bool from_tick) {
     if (from_tick) return;
-    std::lock_guard<std::recursive_mutex> hold(G.lock);
+    Hold hold(net2impl::big_lock());
     if (G.want_choose >= 0 && G.phase == NET2_GAME_TITLE && at_title()) {
         int host = G.want_choose;
         G.want_choose = -1;
@@ -209,10 +245,11 @@ void on_tasks(Ctx* c, bool from_tick) {
         // the character screens are a task of the game; when it is gone the choice is made or given up
         if (call(c, fn_0019e5e8, A_SEL_TASK_NAME) == 0) {
             if (rd8(A_CHOSEN) == 1) {
-                read_character();
+                G.character = read_character(A_PLAYERS);
                 char text[160];
                 snprintf(text, sizeof text, "a character is chosen: %s (%s, level %d)", G.character.name, G.character.cls, G.character.level);
                 set_phase(NET2_GAME_CHOSEN, text);
+                if (G.session) net2_set_character(G.session, &G.character);
             } else {
                 wr32(A_FE_STATE, 0);
                 wr32(A_FE_NET, 0);
@@ -226,10 +263,20 @@ void on_tasks(Ctx* c, bool from_tick) {
     }
 }
 
+void launch_ended(bool failed, const std::string& text) {
+    G.carrying = false;
+    if (G.carrier == &G.own_carrier) G.own_carrier.end();
+    G.failed = failed;
+    G.level.clear();
+    tell_room(nullptr);
+    G.asked_ready = false;
+    set_phase(at_title() ? NET2_GAME_TITLE : NET2_GAME_BUSY, text);
+}
+
 void on_after(Ctx* c, bool from_tick) {
     (void)c;
     if (from_tick) return;
-    std::lock_guard<std::recursive_mutex> hold(G.lock);
+    Hold hold(net2impl::big_lock());
     if (G.phase != NET2_GAME_LAUNCHING || rd8(A_LAUNCHING) != 0) return;
     // net_launchUpdate has answered: 2 (launched: the front end has set the network mode and
     // left) or -1 (failed or cancelled: the front end stays)
@@ -248,16 +295,129 @@ void on_after(Ctx* c, bool from_tick) {
     } else {
         wr32(A_FE_STATE, 0);
         wr32(A_FE_NET, 0);
-        G.carrying = false;
-        G.failed = true;
-        set_phase(NET2_GAME_TITLE, "the launch did not complete (a player could not be reached, or it was cancelled)");
+        launch_ended(true, "the launch did not complete (a player could not be reached, or it was cancelled)");
     }
 }
 
+// ---- the room ------------------------------------------------------------------------------
+// A start of the room this program is attached to is taken up: once the routes stand (or
+// four seconds have passed: the relay carries what is not straight yet) the launch is asked for.
+void follow_room(int64_t now) {
+    if (!G.session) return;
+    net2_room_t room;
+    net2_session_t start;
+    net2_room(G.session, &room);
+    net2_session(G.session, &start);
+    if (room.state != NET2_ROOM_STARTING || !start.valid || start.session == G.launched_session) return;
+    if (G.start_seen_ms == 0) G.start_seen_ms = now;
+    n2::Carrier* carrier = net2impl::carrier_of(G.session->body);
+    if (!carrier) {
+        // the mock, or no service: there is nobody to play with
+        G.launched_session = start.session;
+        G.start_seen_ms = 0;
+        say("the room started, but this session has no route to anybody (a mock): no launch");
+        tell_room(nullptr);
+        return;
+    }
+    if (G.phase != NET2_GAME_CHOSEN) {
+        if (now - G.start_seen_ms < 8000) return;       // the character screens may just be closing
+        G.launched_session = start.session;
+        G.start_seen_ms = 0;
+        say("the room started but no character is chosen on this machine: not launching");
+        tell_room(nullptr);
+        return;
+    }
+    if (!carrier->routes_ready() && now - G.start_seen_ms < 4000) return;
+    G.launched_session = start.session;
+    G.start_seen_ms = 0;
+    net2_direct d{};
+    d.session = start.session;
+    d.count = start.count;
+    d.my_slot = start.my_slot;
+    d.host_slot = start.host_slot;
+    d.options = start.options;
+    for (int k = 0; k < start.count && k < NET2_PLAYERS; k++) memcpy(d.players[k].name, start.players[k].name, sizeof d.players[k].name);
+    G.direct = d;
+    G.carrier = carrier;
+    G.want_launch = true;
+    say("the room started: session %08x, %d players, I am player %d; routes: %s", start.session, start.count, start.my_slot + 1, carrier->text().c_str());
+}
+
+// The stand-alone program: to a room by itself, the character screens, ready, and for a
+// host the start when enough players are in.
+void play_by_itself(int64_t now) {
+    if (!G.session || !G.own_session) return;
+    net2_me_t me;
+    net2_room_t room;
+    net2_me(G.session, &me);
+    net2_room(G.session, &room);
+    if (me.link != NET2_LINK_ONLINE || G.want_room.empty()) return;
+    bool hosting = G.want_room.compare(0, 4, "host") == 0;
+    if (room.state == NET2_ROOM_NONE) {
+        if (G.asked_room || G.phase == NET2_GAME_BOOTING) return;
+        G.asked_room = true;
+        if (hosting) {
+            net2_options o{};
+            if (const char* level = rt_option("net2-level")) net2impl::put(o.level, level);
+            if (const char* difficulty = rt_option("net2-difficulty")) o.difficulty = atoi(difficulty);
+            o.open_to = G.want_room == "host:friends" ? NET2_OPEN_FRIENDS : NET2_OPEN_CODE;
+            net2_host(G.session, &o);
+        } else if (G.want_room.compare(0, 5, "join:") == 0) net2_join(G.session, G.want_room.c_str() + 5);
+        return;
+    }
+    if (room.state != NET2_ROOM_OPEN) return;
+    if (G.phase == NET2_GAME_TITLE && G.want_choose < 0 && (G.launches == 0 || G.again)) net2_game_choose(hosting);
+    if (G.phase != NET2_GAME_CHOSEN) return;
+    if (room.my_slot != room.host_slot) {
+        if (!G.asked_ready) { G.asked_ready = true; net2_ready(G.session, 1); }
+        return;
+    }
+    // every machine of the room must be back from the game before (its phase 0), ready, and enough of them
+    bool all_back = true;
+    for (int i = 0; i < room.count; i++) all_back &= room.members[i].phase == 0;
+    if (G.want_players >= 2 && room.count >= G.want_players && room.all_ready && all_back && now - G.last_start_try > 2000) {
+        G.last_start_try = now;
+        if (room.mismatch) say("WARNING: starting although the copies differ: %s", room.warning);
+        net2_start(G.session);
+    }
+}
+
+void run_command(const std::string& text);
+
+void poll_command_file(uint64_t number) {
+    if (G.command_file.empty() || number % 30 != 0) return;
+    FILE* f = fopen(G.command_file.c_str(), "r");
+    if (!f) return;
+    std::vector<std::string> lines;
+    char line[512];
+    while (fgets(line, sizeof line, f)) {
+        std::string text = line;
+        while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) text.pop_back();
+        if (!text.empty()) lines.push_back(text);
+    }
+    fclose(f);
+    remove(G.command_file.c_str());
+    for (const auto& text : lines) run_command(text.compare(0, 5, "net2 ") == 0 ? text.substr(5) : text);
+}
+
 void on_blank(uint64_t number) {
-    std::lock_guard<std::recursive_mutex> hold(G.lock);
+    Hold hold(net2impl::big_lock());
     G.blank = number;
-    if (G.carrier) G.carrier->poll(net2impl::steady_ms());
+    int64_t now = net2impl::steady_ms();
+    if (G.session && G.own_session) {
+        net2_poll(G.session);
+        net2_event e;
+        while (net2_next_event(G.session, &e)) {
+            if (e.type == NET2_EV_ROOM && e.room[0] && e.room != G.shown_code) {
+                G.shown_code = e.room;
+                say("ROOM CODE %s - tell it to your friends", e.room);
+                if (rtanet::show_code) rtanet::show_code(e.room);
+            }
+            net2_cli_event(e);
+        }
+    }
+    if (G.carrier) G.carrier->poll(now);
+    poll_command_file(number);
     bool front = in_front_end();
     switch (G.phase) {
     case NET2_GAME_BOOTING:
@@ -268,18 +428,24 @@ void on_blank(uint64_t number) {
         else if (number - G.title_since >= 60) { G.title_seen = true; set_phase(NET2_GAME_TITLE, "the game is at its title screen"); }
         break;
     case NET2_GAME_LOADING:
-        if (!front && rd8(A_NETWORK_MODE) == 1 && (s32)rd32(A_NET_FRAME) > 0 && rdstr(A_LEVEL_NAME, 20) != "intro") {
+    case NET2_GAME_RUNNING:
+        if (G.phase == NET2_GAME_LOADING && !front && rd8(A_NETWORK_MODE) == 1 && (s32)rd32(A_NET_FRAME) > 0 && rdstr(A_LEVEL_NAME, 20) != "intro") {
             char text[96];
             snprintf(text, sizeof text, "the game runs: level %s", rdstr(A_LEVEL_NAME, 20).c_str());
             set_phase(NET2_GAME_RUNNING, text);
         }
-        // fall through
-    case NET2_GAME_RUNNING:
-        if (front && rd8(A_NETWORK_MODE) == 0 && G.blank - G.launch_blank > 120) {
-            G.carrying = false;
-            if (G.carrier == &G.own_carrier) G.own_carrier.end();
-            set_phase(at_title() ? NET2_GAME_TITLE : NET2_GAME_BUSY, "the game is over: back at the title screen");
+        if (G.phase == NET2_GAME_RUNNING && number % 60 == 0) {
+            // presence: the level's name when it changes, the character when it gains a level
+            std::string level = rdstr(A_LEVEL_NAME, 20);
+            if (level != G.level && !level.empty() && level != "intro") { G.level = level; tell_room(level.c_str()); }
+            u32 my_slot = (u32)G.direct.my_slot;
+            net2_character mine = read_character(A_PLAYERS + my_slot * PLAYER_SIZE);
+            if (G.session && mine.name[0] && (mine.level != G.character.level || strcmp(mine.name, G.character.name))) {
+                G.character = mine;
+                net2_set_character(G.session, &mine);
+            }
         }
+        if (front && rd8(A_NETWORK_MODE) == 0 && G.blank - G.launch_blank > 120) launch_ended(false, "the game is over: back at the title screen");
         break;
     case NET2_GAME_BUSY:
         if (at_title()) set_phase(NET2_GAME_TITLE, "the game is at its title screen");
@@ -290,20 +456,23 @@ void on_blank(uint64_t number) {
     default:
         break;
     }
+    follow_room(now);
+    play_by_itself(now);
 }
 
 // ---- the game's datagrams ---------------------------------------------------------------
 bool udp_owns(uint16_t game_port) { return G.carrying && G.carrier && game_port == n2::GAME_PORT; }
 
 int32_t udp_send(uint16_t, const uint8_t* data, uint32_t length, uint32_t dest_ip, uint16_t) {
-    std::lock_guard<std::recursive_mutex> hold(G.lock);
+    Hold hold(net2impl::big_lock());
     u32 slot = dest_ip - n2::GAME_NET;
-    if (slot < NET2_PLAYERS) G.carrier->send((int)slot, data, length);
+    if (slot < NET2_PLAYERS && G.carrier) G.carrier->send((int)slot, data, length);
     return (int32_t)length;
 }
 
 bool udp_receive(uint16_t, uint8_t* buffer, size_t capacity, size_t& size, uint32_t& shown_ip, uint16_t& from_port) {
-    std::lock_guard<std::recursive_mutex> hold(G.lock);
+    Hold hold(net2impl::big_lock());
+    if (!G.carrier) return false;
     int from = 0;
     int got = G.carrier->receive(from, buffer, capacity);
     if (got < 0) {
@@ -323,32 +492,27 @@ std::string phase_name(int phase) {
     return phase >= 0 && phase <= 7 ? NAMES[phase] : "?";
 }
 
-void command(const std::string& text, u64 frame) {
+void run_command(const std::string& text) {
     std::istringstream words(text);
-    std::string first, verb;
-    words >> first;
-    if (first != "net2") {
-        if (G.previous_command) G.previous_command(text, frame);
-        else rt_note("script: app " + text + " (no application to take it)");
-        return;
-    }
+    std::string verb;
     words >> verb;
     std::string rest;
     std::getline(words, rest);
     while (!rest.empty() && rest[0] == ' ') rest.erase(0, 1);
-    std::lock_guard<std::recursive_mutex> hold(G.lock);
+    unsigned long long frame = G.blank;
     if (verb == "status") {
         net2_game_status_t s;
         net2_game_status(&s);
-        printf("[frame %llu] net2: phase=%s launches=%d failed=%d tick=%u players=%d level=%s character=%s;%s;%d fe=%u page=%u text=%s\n",
-               (unsigned long long)frame, phase_name(s.phase).c_str(), s.launches, s.failed, s.tick, s.players, s.level, s.character.name,
-               s.character.cls, s.character.level, rd32(A_FE_STATE), rd8(A_SEL_PAGE), s.text);
-        printf("[frame %llu] net2: game: in-front-end=%u level=%s fade=%.2f first-pass=%08x running=%08x lobby=%u chosen=%u launching=%u netmode=%u\n",
-               (unsigned long long)frame, rd8(A_IN_FRONTEND), rdstr(A_LEVEL_NAME, 12).c_str(), rdf(A_FE_FADE), rd32(A_FE_FIRST_PASS), rd32(A_FE_RUNNING),
-               rd32(A_LOBBY_STATE), rd8(A_CHOSEN), rd8(A_LAUNCHING), rd8(A_NETWORK_MODE));
-        if (G.carrier) printf("[frame %llu] net2: carrier: %s\n", (unsigned long long)frame, G.carrier->text().c_str());
+        printf("[frame %llu] net2: phase=%s launches=%d failed=%d tick=%u players=%d level=%s character=%s;%s;%d fe=%u page=%u text=%s\n", frame,
+               phase_name(s.phase).c_str(), s.launches, s.failed, s.tick, s.players, s.level, s.character.name, s.character.cls, s.character.level,
+               rd32(A_FE_STATE), rd8(A_SEL_PAGE), s.text);
+        printf("[frame %llu] net2: game: in-front-end=%u level=%s fade=%.2f first-pass=%08x running=%08x lobby=%u chosen=%u launching=%u netmode=%u peers=%u\n", frame,
+               rd8(A_IN_FRONTEND), rdstr(A_LEVEL_NAME, 12).c_str(), rdf(A_FE_FADE), rd32(A_FE_FIRST_PASS), rd32(A_FE_RUNNING), rd32(A_LOBBY_STATE),
+               rd8(A_CHOSEN), rd8(A_LAUNCHING), rd8(A_NETWORK_MODE), rd32(A_NUM_PEERS));
+        if (G.carrier) printf("[frame %llu] net2: carrier: %s\n", frame, G.carrier->text().c_str());
     } else if (verb == "choose") {
-        net2_game_choose(rest == "host" || rest == "1");
+        int r = net2_game_choose(rest == "host" || rest == "1");
+        if (r) printf("[frame %llu] net2: choose: %s\n", frame, net2_error_text(r));
     } else if (verb == "direct") {
         // direct SESSION MY_SLOT ADDRESS,ADDRESS[,ADDRESS[,ADDRESS]] [LEVEL] [DIFFICULTY]
         net2_direct d{};
@@ -363,23 +527,38 @@ void command(const std::string& text, u64 frame) {
         if (level != "-" && !level.empty()) net2impl::put(d.options.level, level);
         d.options.difficulty = difficulty;
         int r = net2_game_launch_direct(&d);
-        if (r) printf("[frame %llu] net2: direct: %s\n", (unsigned long long)frame, net2_error_text(r));
-    } else if (verb == "stop") {
-        net2_game_stop();
+        if (r) printf("[frame %llu] net2: direct: %s\n", frame, net2_error_text(r));
+    } else if (verb == "launch") {
+        int r = G.session ? net2_game_launch(G.session) : NET2_ERR_STATE;
+        if (r) printf("[frame %llu] net2: launch: %s\n", frame, net2_error_text(r));
+    } else if (G.session) {
+        bool quit = false;
+        double wait = 0;
+        net2_cli_command(G.session, text, quit, wait);
     } else {
-        printf("[frame %llu] net2: unknown command '%s'\n", (unsigned long long)frame, verb.c_str());
+        printf("[frame %llu] net2: '%s' needs a session (--opt net2=host | join:CODE, or net2_game_attach)\n", frame, verb.c_str());
     }
     fflush(stdout);
 }
 
+void command(const std::string& text, u64 frame) {
+    if (text.compare(0, 4, "net2") != 0 || (text.size() > 4 && text[4] != ' ')) {
+        if (G.previous_command) G.previous_command(text, frame);
+        else rt_note("script: app " + text + " (no application to take it)");
+        return;
+    }
+    Hold hold(net2impl::big_lock());
+    run_command(text.size() > 5 ? text.substr(5) : "status");
+}
+
 // the controller: while the game boots, cross is pressed for the player (the memory card
-// questions and the logos), as the one-step online does
+// questions and the logos), as the one-step online does; hands off once the front end is up
 struct Pad : rta::PadSource {
     void read(unsigned port, uint64_t number, rta::PadState& state) override {
         if (G.inner_pad) G.inner_pad->read(port, number, state);
         else state = script_pad(port);
         if (port != 0 || !G.drive_boot || G.phase != NET2_GAME_BOOTING) return;
-        if (in_front_end()) { state = rta::PadState(); return; }      // the title screen is coming up: hands off
+        if (in_front_end()) { state = rta::PadState(); return; }
         if (number >= G.boot_next_press) { G.boot_press_until = number + 6; G.boot_next_press = number + 46; }
         state = rta::PadState();
         if (number < G.boot_press_until) state.buttons = rta::PAD_CROSS;
@@ -389,22 +568,59 @@ struct Pad : rta::PadSource {
     }
 } g_pad;
 
+std::string option(const char* key, const char* fallback = "") {
+    const char* value = rt_option(key);
+    return value ? value : fallback;
+}
+
 void install() {
     if (G.installed) return;
     G.installed = true;
     G.previous_command = script_app_command;
     script_app_command = command;
     if (const char* file = rt_option("net2-log")) G.log = fopen(file, "w");
-    const char* boot = rt_option("net2-boot");
-    G.drive_boot = boot && std::string(boot) == "1";
+    G.command_file = option("net2-commands");
+    G.want_room = option("net2");
+    // cross through the boot is pressed for a player who asked for a room; a test may ask for it alone
+    G.drive_boot = option("net2-boot", G.want_room.empty() ? "0" : "1") == "1";
     if (G.drive_boot) {
         G.inner_pad = g_hooks.pad;
         g_hooks.pad = &g_pad;
     }
+    if (G.want_room.empty()) return;
+    // the stand-alone program's own session
+    const rtanet::Info& info = rtanet::info();
+    static std::string data, service, name, build;
+    data = option("net2-data", info.data_dir.c_str());
+    service = option("net2-service");
+    name = option("net2-name");
+    net2_config config{};
+    config.struct_size = sizeof config;
+    config.data_dir = data.c_str();
+    config.service = service.empty() ? nullptr : service.c_str();
+    config.name = name.empty() ? nullptr : name.c_str();
+    config.fix_set = info.patch_set;
+    config.fix_words = (uint16_t)info.patch_words;
+    config.arith_does = (uint8_t)rtanet::arithmetic();
+    config.arith_can = config.arith_does ? 2 : 1;
+    config.build = "native";
+    config.local_only = option("net-local-only") == "1";
+    G.session = net2_open(&config);
+    G.own_session = true;
+    G.again = option("net2-again") == "1";
+    G.want_players = atoi(option("net2-players", "2").c_str());
+    std::string relay = option("net2-relay");
+    if (!relay.empty()) net2_set(G.session, "relay", relay.c_str());
+    std::string bind = option("net2-bind");
+    if (!bind.empty()) net2_set(G.session, "bind", bind.c_str());
+    say("going to a room by itself: %s (fix set %08x, %u words)", G.want_room.c_str(), info.patch_set, info.patch_words);
 }
 
 void first_blank(uint64_t number) {
-    install();
+    {
+        Hold hold(net2impl::big_lock());
+        install();
+    }
     on_blank(number);
 }
 
@@ -425,7 +641,7 @@ extern "C" {
 
 void net2_game_status(net2_game_status_t* out) {
     if (!out) return;
-    std::lock_guard<std::recursive_mutex> hold(G.lock);
+    Hold hold(net2impl::big_lock());
     *out = net2_game_status_t{};
     out->phase = G.phase;
     out->launches = G.launches;
@@ -442,19 +658,19 @@ void net2_game_status(net2_game_status_t* out) {
 }
 
 int net2_game_choose(int as_host) {
-    std::lock_guard<std::recursive_mutex> hold(G.lock);
-    if (G.phase != NET2_GAME_TITLE && G.phase != NET2_GAME_BOOTING && G.phase != NET2_GAME_CHOSEN) return NET2_ERR_STATE;
+    Hold hold(net2impl::big_lock());
     if (G.phase == NET2_GAME_CHOSEN) return NET2_OK;
+    if (G.phase != NET2_GAME_TITLE && G.phase != NET2_GAME_BOOTING) return NET2_ERR_STATE;
     G.want_choose = as_host ? 1 : 0;
     return NET2_OK;
 }
 
 int net2_game_launch_direct(const net2_direct* description) {
     if (!description) return NET2_ERR_ARGUMENT;
-    std::lock_guard<std::recursive_mutex> hold(G.lock);
+    Hold hold(net2impl::big_lock());
     const net2_direct& d = *description;
     if (d.count < 2 || d.count > NET2_PLAYERS || d.my_slot < 0 || d.my_slot >= d.count) return NET2_ERR_ARGUMENT;
-    if (G.phase != NET2_GAME_CHOSEN && G.phase != NET2_GAME_CHOOSING) return NET2_ERR_STATE;
+    if (G.phase != NET2_GAME_CHOSEN) return NET2_ERR_STATE;
     n2::Endpoint where[NET2_PLAYERS];
     for (int k = 0; k < d.count; k++)
         if (!n2::parse_endpoint(d.players[k].address, where[k])) return NET2_ERR_ARGUMENT;
@@ -474,8 +690,28 @@ int net2_game_launch_direct(const net2_direct* description) {
     return NET2_OK;
 }
 
-void net2_game_attach(net2*) {}
-int net2_game_launch(net2*) { return NET2_ERR_STATE; }
-int net2_game_stop(void) { return NET2_ERR_STATE; }
+void net2_game_attach(net2* n) {
+    Hold hold(net2impl::big_lock());
+    if (G.session && G.own_session && G.session != n) net2_close(G.session);
+    G.session = n;
+    G.own_session = false;
+}
+
+int net2_game_launch(net2* n) {
+    Hold hold(net2impl::big_lock());
+    if (!n) return NET2_ERR_ARGUMENT;
+    if (G.session != n) { G.session = n; G.own_session = false; }
+    net2_session_t start;
+    net2_session(n, &start);
+    if (!start.valid) return NET2_ERR_STATE;
+    if (start.session == G.launched_session) G.launched_session = 0;       // asked for by hand: once more
+    return NET2_OK;
+}
+
+int net2_game_stop(void) {
+    // Not built: a launch under way ends by the game's own time-out or its circle button, a
+    // running game by the pause menu's "Exit Game".
+    return NET2_ERR_STATE;
+}
 
 }  // extern "C"
