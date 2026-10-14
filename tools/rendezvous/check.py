@@ -1014,7 +1014,10 @@ def own_lan_address():
         return None
     finally:
         probe.close()
-    return ip if ip and not ip.startswith('127.') and ip != '0.0.0.0' else None
+    if not ip or ip.startswith('127.') or ip == '0.0.0.0':
+        return None
+    import ipaddress
+    return ip if ipaddress.ip_address(ip).is_private else None   # on a server the route goes out a public address
 
 
 def exposure_checks(check, work):
