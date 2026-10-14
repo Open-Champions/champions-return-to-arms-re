@@ -426,8 +426,12 @@ class Seat extends W.Focusable:
 			line = Color(UI.RED.r, UI.RED.g, UI.RED.b, 0.8)
 		elif bool(member.get("ready", false)):
 			line = Color(UI.GREEN.r, UI.GREEN.g, UI.GREEN.b, 0.55)
-		draw_style_box(UI.box(radius, Color(0, 0, 0, 0), Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0.28), UI.px(16)), r)
-		draw_style_box(UI.box(radius, Color(UI.PANEL.r, UI.PANEL.g, UI.PANEL.b, 0.86).lerp(UI.PANEL_HOT, e * 0.6), line, maxf(1.0, UI.px(1.5))), r)
+		if UI.skinned("surface", [self, "seat", r, radius, e, false]):
+			if line != UI.LINE:                 # ready / a different version: the seat's coloured line stays
+				draw_style_box(UI.box(radius, Color(0, 0, 0, 0), line, maxf(1.0, UI.px(2))), r.grow(UI.px(2)))
+		else:
+			draw_style_box(UI.box(radius, Color(0, 0, 0, 0), Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0.28), UI.px(16)), r)
+			draw_style_box(UI.box(radius, Color(UI.PANEL.r, UI.PANEL.g, UI.PANEL.b, 0.86).lerp(UI.PANEL_HOT, e * 0.6), line, maxf(1.0, UI.px(1.5))), r)
 		UI.focus_ring(self, r, radius, e)
 
 	func _dashes(r: Rect2, radius: float, colour: Color) -> void:

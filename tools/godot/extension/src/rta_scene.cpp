@@ -512,21 +512,22 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
         const rtag_scene_piece* pieces = sc.tap->pieces + d.scene_piece_first;
         for (uint32_t k = 0; k < d.scene_piece_count; k++) corners += (int)pieces[k].full_count;
         if (sc.keep) {
-            // a figure over the packets' complete geometry as it is this frame (positions, normals, texels, the colours the
-            // game lit them with): four lanes of 64-bit words
+            // a figure over the packets as they are this frame: their identity, the colours the game lit them with and their
+            // texels exactly, their positions to 1/16 unit (the tap takes them back through the camera of the frame, so they
+            // differ in the last bits from frame to frame while the camera moves)
             uint64_t h[4] = {0x9E3779B97F4A7C15ull, 0xC2B2AE3D27D4EB4Full, 0x165667B19E3779F9ull, 0x27D4EB2F165667C5ull};
+            auto mix = [](uint64_t& x, uint64_t w) { x = (x ^ w) * 0x100000001B3ull; x ^= x >> 29; };
             for (uint32_t k = 0; k < d.scene_piece_count; k++) {
-                const uint8_t* bytes = (const uint8_t*)(sc.tap->full + pieces[k].full_first);
-                size_t n = (size_t)pieces[k].full_count * sizeof(rtag_scene_full), at = 0;
-                for (; at + 32 <= n; at += 32)
-                    for (int l = 0; l < 4; l++) {
-                        uint64_t w;
-                        memcpy(&w, bytes + at + l * 8, 8);
-                        h[l] = (h[l] ^ w) * 0x100000001B3ull;
-                        h[l] ^= h[l] >> 31;
-                    }
-                for (; at < n; at++) h[0] = (h[0] ^ bytes[at]) * 0x100000001B3ull;
-                h[1] ^= (uint64_t)pieces[k].full_count * 0x9E3779B97F4A7C15ull;
+                mix(h[0], pieces[k].mesh);
+                mix(h[1], ((uint64_t)pieces[k].full_count << 32) | pieces[k].kind);
+                const rtag_scene_full* v = sc.tap->full + pieces[k].full_first;
+                for (uint32_t n = 0; n < pieces[k].full_count; n++, v++) {
+                    uint32_t rgba, u, w;
+                    memcpy(&rgba, &v->r, 4); memcpy(&u, &v->u, 4); memcpy(&w, &v->v, 4);
+                    mix(h[0], ((uint64_t)u << 32) | rgba);
+                    mix(h[1], ((uint64_t)w << 32) | (uint32_t)lrintf(v->z * 16.0f));
+                    mix(h[2], ((uint64_t)(uint32_t)lrintf(v->x * 16.0f) << 32) | (uint32_t)lrintf(v->y * 16.0f));
+                }
             }
             sc.kept_key = (h[0] ^ (h[1] * 3) ^ (h[2] * 5) ^ (h[3] * 7) ^ ((uint64_t)corners << 40)) | 1;
             auto found = sc.kept.find(sc.kept_key);

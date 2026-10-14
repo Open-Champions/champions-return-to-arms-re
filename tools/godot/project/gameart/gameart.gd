@@ -6,8 +6,8 @@ extends RefCounted
 # the game library is given (--disc, $RTA_DISC, user://settings.cfg [game] disc), decoded here (the texture
 # packets of tools/play-net/disctex.py: GS transfers, swizzled 4- and 8-bit pages, palettes), and - where the
 # player has a 4x art pack (tools/play-net/README.md) - taken from the pack's enlarged file of the same name.
-# Results are cached as PNG under the player's data folder (user://gameart/cache), so a later start reads
-# no disc at all.
+# Results are cached (zstd-compressed RGBA) under the player's data folder (user://gameart/cache), so a later
+# start reads no disc at all; a cached picture is read when a skin first draws it.
 #
 #   GameArt.start()                       once (any skin calls it): finds the disc, loads or builds the cache
 #   GameArt.ready() -> bool               the art is there (the "game" look can be drawn)

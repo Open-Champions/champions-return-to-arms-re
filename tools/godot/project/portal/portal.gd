@@ -247,6 +247,8 @@ func set_service(address: String) -> void:
 
 # ---- the layer and its parts ---------------------------------------------------------------
 func _build_layer() -> void:
+	if ResourceLoader.exists("res://gameart/portal_skin.gd"):
+		load("res://gameart/portal_skin.gd").install(self)      # the game's art from the player's disc (gameart.gd)
 	layer = CanvasLayer.new()
 	layer.name = "Layer"
 	layer.layer = 20
@@ -270,6 +272,7 @@ func _build_layer() -> void:
 	sky.shader = load("res://portal/background.gdshader")
 	background.material = sky
 	root.add_child(background)
+	UI.skinned("decorate", [self, root])                       # a skin's own layer over the background
 	top = TopBar.new()
 	top.name = "Top"
 	top.portal = self
@@ -1010,13 +1013,14 @@ class TopBar extends Control:
 		var cy := size.y * 0.5 + UI.px(6)
 		var e := UI.px(22)
 		var c := Vector2(e + UI.px(2), cy)
-		draw_colored_polygon(PackedVector2Array([c + Vector2(0, -e), c + Vector2(e * 0.72, 0), c + Vector2(0, e), c + Vector2(-e * 0.72, 0)]), Color(UI.GOLD.r, UI.GOLD.g, UI.GOLD.b, 0.16))
-		draw_polyline(PackedVector2Array([c + Vector2(0, -e), c + Vector2(e * 0.72, 0), c + Vector2(0, e), c + Vector2(-e * 0.72, 0), c + Vector2(0, -e)]), UI.GOLD, maxf(1.5, UI.px(2)), true)
-		draw_line(c + Vector2(0, -e * 0.55), c + Vector2(0, e * 0.55), UI.GOLD_HI, maxf(1.5, UI.px(2.5)), true)
-		draw_line(c + Vector2(-e * 0.30, -e * 0.10), c + Vector2(e * 0.30, -e * 0.10), UI.GOLD_HI, maxf(1.5, UI.px(2.5)), true)
 		var x := c.x + e + UI.px(14)
-		UI.text(self, Rect2(x, cy - UI.px(30), UI.px(300), UI.px(36)), "CHAMPIONS", UI.spaced(UI.serif_bold(), 5.0), 29, UI.GOLD_HI)
-		UI.text(self, Rect2(x + UI.px(2), cy + UI.px(6), UI.px(300), UI.px(20)), "RETURN TO ARMS", UI.spaced(UI.bold(), 4.2), 12.5, UI.DIM)
+		if not UI.skinned("logo", [self, Rect2(0, cy - UI.px(50), UI.px(360), UI.px(96))]):
+			draw_colored_polygon(PackedVector2Array([c + Vector2(0, -e), c + Vector2(e * 0.72, 0), c + Vector2(0, e), c + Vector2(-e * 0.72, 0)]), Color(UI.GOLD.r, UI.GOLD.g, UI.GOLD.b, 0.16))
+			draw_polyline(PackedVector2Array([c + Vector2(0, -e), c + Vector2(e * 0.72, 0), c + Vector2(0, e), c + Vector2(-e * 0.72, 0), c + Vector2(0, -e)]), UI.GOLD, maxf(1.5, UI.px(2)), true)
+			draw_line(c + Vector2(0, -e * 0.55), c + Vector2(0, e * 0.55), UI.GOLD_HI, maxf(1.5, UI.px(2.5)), true)
+			draw_line(c + Vector2(-e * 0.30, -e * 0.10), c + Vector2(e * 0.30, -e * 0.10), UI.GOLD_HI, maxf(1.5, UI.px(2.5)), true)
+			UI.text(self, Rect2(x, cy - UI.px(30), UI.px(300), UI.px(36)), "CHAMPIONS", UI.spaced(UI.serif_bold(), 5.0), 29, UI.GOLD_HI)
+			UI.text(self, Rect2(x + UI.px(2), cy + UI.px(6), UI.px(300), UI.px(20)), "RETURN TO ARMS", UI.spaced(UI.bold(), 4.2), 12.5, UI.DIM)
 		if not show_right or friends_button == null:
 			return
 		# me: the name friends see and my code

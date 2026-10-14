@@ -20,7 +20,7 @@ uniform int has_swatch = 0;
 uniform sampler2D swatch : filter_linear_mipmap, repeat_enable;
 uniform float gain = 1.0;               // the swatch to the mean brightness of the level's swatches
 uniform float darken = 0.42;            // how much of that a ceiling keeps
-uniform float scale = 0.75;             // swatch repeats per 64 units
+uniform float scale = 1.0;              // swatch repeats per 64 units (rta_fill.cpp: the wall's own texel density)
 
 varying vec3 v_world;
 varying vec3 v_normal;
@@ -59,9 +59,12 @@ void fragment() {
 	vec3 base;
 	vec2 tile = v_fill.xy * scale;
 	if (has_swatch != 0) {
-		vec2 m = abs(fract(tile * 0.5) * 2.0 - 1.0);            // mirrored: no seam where it repeats
-		// the texture has no colour space of its own here: its bytes are the game's stored values
-		base = texture(swatch, m).rgb * gain;
+		// mirrored, so that it has no seam where it repeats; and a second sampling turned and scaled over it, so that the
+		// repeats of a small patch do not stand in rows (the texture's bytes are the game's stored values)
+		vec2 m = abs(fract(tile * 0.5) * 2.0 - 1.0);
+		vec2 turned = mat2(vec2(0.8, 0.6), vec2(-0.6, 0.8)) * tile * 0.61 + vec2(0.37, 0.71);
+		vec2 m2 = abs(fract(turned * 0.5) * 2.0 - 1.0);
+		base = mix(texture(swatch, m).rgb, texture(swatch, m2).rgb, 0.45) * gain;
 	} else {
 		float n = value_noise(tile * 3.0) * 0.6 + value_noise(tile * 9.0) * 0.4;
 		base = vec3(0.30, 0.27, 0.24) * (0.75 + 0.5 * n);
@@ -73,13 +76,14 @@ void fragment() {
 		float wall = clamp((1.0 - v_fill.z) / (105.0 / 255.0), 0.0, 1.0) * 200.0;
 		float crease = mix(0.40, 1.0, smoothstep(0.0, 34.0, wall));
 		float hall = mix(1.0, 0.70, smoothstep(30.0, 200.0, wall));
-		rgb = base * darken * crease * hall;
+		float grey = dot(base, vec3(0.30, 0.59, 0.11));
+		rgb = mix(vec3(grey), base, 0.72) * darken * crease * hall;      // in shadow: a little less colour
 	} else {
 		alpha = clamp(v_fill.w, 0.0, 1.0);
 		rgb = base;
 	}
-	// the haze, as for the level's own draws
-	float f = rta_haze(dist, v_world.z);
+	// the haze, as for the level's own draws - a ceiling a little less: it is seen at a slant, above what lies at that distance
+	float f = rta_haze(kind == 1 ? dist * 0.72 : dist, v_world.z);
 	vec3 haze = rta_haze_colour(to_surface / max(dist, 0.001)) * f;
 	rgb *= 1.0 - f;
 	NORMAL = normalize(FRONT_FACING ? NORMAL : -NORMAL);

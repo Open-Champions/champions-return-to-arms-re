@@ -102,8 +102,9 @@ func _frame(p: Dictionary) -> void:
 	# the level in a ring that fills with experience
 	var c := o + Vector2(42.0, 42.0) * s
 	var r: float = 27.0 * s
-	draw_circle(c, r, Color(0, 0, 0, 0.55))
-	draw_arc(c, r - 2.0 * s, 0, TAU, 48, Color(1, 1, 1, 0.12), 3.0 * s, true)
+	if not Style.socket(self, c, r, 1.0):
+		draw_circle(c, r, Color(0, 0, 0, 0.55))
+		draw_arc(c, r - 2.0 * s, 0, TAU, 48, Color(1, 1, 1, 0.12), 3.0 * s, true)
 	if b.xp > 0.001:
 		draw_arc(c, r - 2.0 * s, -PI * 0.5, -PI * 0.5 + TAU * b.xp, 48, Style.XP_B, 3.0 * s, true)
 	var flash: float = clampf(1.0 - (hud.now - level_flash) / 3.0, 0.0, 1.0)

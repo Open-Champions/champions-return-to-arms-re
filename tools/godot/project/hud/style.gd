@@ -18,6 +18,9 @@ extends RefCounted
 #     func glyph(ci, kind, c, r, colour) -> bool
 #     func flask(ci, c, r, colour) -> bool        func coin(ci, c, r, alpha) -> bool        func skull(ci, c, r, colour) -> bool
 #     func keycap(ci, pos, label, size, alpha) -> float     (the cap's width; < 0: not drawn)
+#     func slot_icon(ci, rect, slot, ready) -> bool   the picture of a quick slot's ability (slot: the state's Dictionary)
+#     func face_button(ci, c, r, label, alpha) -> bool   a controller's face button ("tri", "cir", "cro", "squ")
+#     func socket(ci, c, r, alpha) -> bool        the round sockets: the level ring's ground, the radar's disc
 # A function that returns false (or a negative width) leaves that call to the drawing below, so a skin can take
 # over one thing at a time - say, panels and bars from the game's own art loaded at run time from the player's
 # disc - and leave the rest.  hud/dev/skin_example.gd is a small one (flat, square, another palette).
@@ -90,7 +93,7 @@ static func set_skin(script_path: String) -> bool:
 	if script == null:
 		return false
 	skin = script.new()
-	for name in ["panel", "bar", "text", "status_icon", "glyph", "flask", "coin", "skull", "keycap"]:
+	for name in ["panel", "bar", "text", "status_icon", "glyph", "flask", "coin", "skull", "keycap", "slot_icon", "face_button", "socket"]:
 		_has[name] = skin.has_method(name)
 	if skin.has_method("setup"):
 		skin.call("setup", load("res://hud/style.gd"))
@@ -342,6 +345,19 @@ static func skull(ci: CanvasItem, c: Vector2, r: float, colour: Color) -> void:
 	var dark := Color(0, 0, 0, 0.85 * colour.a)
 	ci.draw_circle(c + Vector2(-0.30, -0.15) * r, r * 0.20, dark)
 	ci.draw_circle(c + Vector2(0.30, -0.15) * r, r * 0.20, dark)
+
+
+# hooks without a drawing of their own here: false = the piece draws what it always drew
+static func slot_icon(ci: CanvasItem, rect: Rect2, slot: Dictionary, ready: bool) -> bool:
+	return _has.get("slot_icon", false) and skin.call("slot_icon", ci, rect, slot, ready)
+
+
+static func face_button(ci: CanvasItem, c: Vector2, r: float, label: String, alpha := 1.0) -> bool:
+	return _has.get("face_button", false) and skin.call("face_button", ci, c, r, label, alpha)
+
+
+static func socket(ci: CanvasItem, c: Vector2, r: float, alpha := 1.0) -> bool:
+	return _has.get("socket", false) and skin.call("socket", ci, c, r, alpha)
 
 
 static func keycap(ci: CanvasItem, pos: Vector2, label: String, size: float, alpha := 1.0) -> float:

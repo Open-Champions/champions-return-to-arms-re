@@ -44,6 +44,13 @@ static var _serif: Font
 static var _serif_bold: Font
 static var _spaced := {}
 static var _boxes := {}
+# A SKIN (the game's art: res://gameart/portal_skin.gd) may draw any of the surfaces below in its own way; it may
+# also set the fonts (_sans, _bold, _serif, _serif_bold).  skinned(what, args) is false when no skin draws it.
+static var skin: RefCounted = null
+
+
+static func skinned(what: String, args: Array) -> bool:
+	return skin != null and skin.has_method(what) and bool(skin.callv(what, args))
 
 
 static func set_scale_for(size: Vector2) -> void:
@@ -146,6 +153,8 @@ static func box(radius: float, fill: Color, border := Color(0, 0, 0, 0), border_
 
 # A panel: dark, slightly see-through, a hairline round it and a lighter line along its top.
 static func panel(ci: CanvasItem, rect: Rect2, radius := 14.0, alpha := 1.0, fill := PANEL) -> void:
+	if skinned("surface", [ci, "panel", rect, radius, 0.0, false]):
+		return
 	var r := px(radius)
 	ci.draw_style_box(box(r, Color(0, 0, 0, 0), Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0.30 * alpha), px(18)), rect)
 	ci.draw_style_box(box(r, Color(fill.r, fill.g, fill.b, PANEL_ALPHA * alpha), Color(LINE.r, LINE.g, LINE.b, LINE.a * alpha), maxf(1.0, px(1))), rect)
@@ -199,6 +208,7 @@ static func fade_rule(ci: CanvasItem, a: Vector2, length: float, colour := GOLD,
 static func text(ci: CanvasItem, rect: Rect2, string: String, font: Font, size: float, colour: Color, align := HORIZONTAL_ALIGNMENT_LEFT, valign := 0.5) -> float:
 	if string == "" or rect.size.x <= 2.0:
 		return 0.0
+	font = font_at(font, size)
 	var line := TextLine.new()
 	line.add_string(string, font, fs(size))
 	line.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
@@ -214,19 +224,27 @@ static func text(ci: CanvasItem, rect: Rect2, string: String, font: Font, size: 
 	return w
 
 
+# a skin's font may read badly when small: it may give another for that size
+static func font_at(font: Font, size: float) -> Font:
+	if skin != null and skin.has_method("font_at"):
+		return skin.call("font_at", font, fs(size))
+	return font
+
+
 static func text_width(string: String, font: Font, size: float) -> float:
+	font = font_at(font, size)
 	return font.get_string_size(string, HORIZONTAL_ALIGNMENT_LEFT, -1, fs(size)).x
 
 
 static func line_height(font: Font, size: float) -> float:
-	return font.get_height(fs(size))
+	return font_at(font, size).get_height(fs(size))
 
 
 # A Label made in the portal's type (for text that wraps or sits in a container).
 static func label(string: String, size := 22.0, colour := TEXT, font: Font = null, wrap := false) -> Label:
 	var l := Label.new()
 	l.text = string
-	l.add_theme_font_override("font", font if font != null else sans())
+	l.add_theme_font_override("font", font_at(font if font != null else sans(), size))
 	l.add_theme_font_size_override("font_size", fs(size))
 	l.add_theme_color_override("font_color", colour)
 	l.add_theme_constant_override("line_spacing", int(px(4)))

@@ -177,8 +177,9 @@ func _slots(me: Dictionary, at: Vector2, s: float) -> void:
 			var tint := Color.from_hsv(fmod(absf(float(q.skill_id)) * 0.137, 1.0), 0.45, 0.95)
 			if q.active:
 				Style.rounded(self, rect.grow(-2.0 * s), 8.0 * s, Color(tint, 0.30 + 0.15 * sin(hud.now * 10.0)), Color(tint, 0.9), maxi(1, int(2.0 * s)))
-			var letters := _initials(name)
-			Style.text(self, rect.get_center() + Vector2(0, 5.0 * s), letters, 26.0 * s, Color(tint, 1.0 if ready else 0.4), 1, true)
+			if not Style.slot_icon(self, rect, q, ready):
+				var letters := _initials(name)
+				Style.text(self, rect.get_center() + Vector2(0, 5.0 * s), letters, 26.0 * s, Color(tint, 1.0 if ready else 0.4), 1, true)
 			var small := name if Style.text_width(name, 11.0 * s) < size - 6.0 * s else name.substr(0, 9) + "."
 			Style.text(self, Vector2(rect.get_center().x, rect.end.y - 6.0 * s), small, 11.0 * s, Color(Style.TEXT_DIM, 1.0 if ready else 0.6), 1)
 			if q.cooldown > 0.0:
@@ -231,6 +232,8 @@ func _button(left_centre: Vector2, label: String, size: float, alpha := 1.0) -> 
 	if label in ["tri", "cir", "cro", "squ"]:
 		var r: float = size * 0.82
 		var c := left_centre + Vector2(r, 0)
+		if Style.face_button(self, c, r, label, alpha):
+			return 2.0 * r
 		draw_circle(c, r, Color(0.10, 0.10, 0.13, 0.95 * alpha))
 		draw_arc(c, r, 0, TAU, 24, Color(1, 1, 1, 0.35 * alpha), 1.0, true)
 		var w: float = maxf(1.5, size * 0.16)

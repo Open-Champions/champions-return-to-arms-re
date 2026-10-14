@@ -126,6 +126,8 @@ func _ready() -> void:
 	_load_settings()
 	if str(setting.theme) != "":
 		Style.set_skin(str(setting.theme))
+	elif ResourceLoader.exists("res://gameart/gameart.gd") and load("res://gameart/gameart.gd").wanted():
+		Style.set_skin("res://gameart/hud_skin.gd")       # the game's own art from the player's disc (gameart.gd)
 	_parse_arguments()
 	root.modulate.a = 0.0
 	for piece in pieces:

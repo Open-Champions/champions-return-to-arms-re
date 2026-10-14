@@ -169,10 +169,13 @@ func _page_interface(r: Rect2) -> void:
 	var pics := W.Choice.new("Button pictures", PackedStringArray(["Match my controller", "A  B  X  Y", "Cross  Circle  Square  Triangle"]), maxi(0, glyphs.find(String(portal.profile.setting("glyphs")))),
 		"Which names the hints at the bottom use.")
 	pics.key = "glyphs"
+	var art: Control = null
+	if ResourceLoader.exists("res://gameart/portal_skin.gd"):
+		art = load("res://gameart/portal_skin.gd").setting_row(portal)     # "Interface art: the game's own / clean"
 	pics.changed.connect(func(index: int) -> void:
 		portal.profile.set_setting("glyphs", glyphs[index])
 		portal.call("_detect_pad_style"))
-	_rows(r, y, [kind, pics])
+	_rows(r, y, [kind, pics] if art == null else [kind, art, pics])
 
 
 var address_typed := ""

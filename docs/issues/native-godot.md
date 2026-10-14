@@ -53,6 +53,64 @@ this round (the library's plain dark fill in the list, no torches), five levels,
 - **The game's own lights as Godot lights**: code in (`RtaMachine.get_lights`, look `lights`); being looked at.
 - Character card, persistent meshes: not started.
 
+### Ceilings and skirts (`extension/src/rta_fill.cpp`, `project/shaders/fill.gdshader`; look `fill`, `fill_light`, `fill_scale`)
+
+- The level's fill comes from `rtag_fill_get` (`RtaMachine.fill()` / `get_fill_info()`): one Godot mesh and instance per
+  128-unit block, made again when the serial changes.  Drawn in the list's order right before the level's first
+  depth-writing draw (after the sky, the dome and the clearing rectangle; skirt before ceiling), depth tested and
+  written, in the transparent pass (which casts no shadow).  A ceiling block only while the eye is under its top, and a
+  ceiling seen from below only (as `Gs::draw_fill`).  The library's own plain fill in the list (the world work draws
+  it through the GS too) is recognised and left out while Godot draws it (figure "the library's own fill draws left out").
+- **Material: a swatch of the level's own texture.**  While the level is drawn, a level chunk near the eye whose wall
+  triangles reach up to the ceiling's lid (a 32-unit grid of the fill's lowest ceiling height says where; for skirts:
+  ground facing up beside the rim) gives a 64 x 64 swatch: a patch cut from INSIDE its largest triangle in texels (a
+  chunk's texture is an atlas of its faces - a bounding box of many triangles brought black parts of other faces with
+  it), its grain softened (x 0.65), brought to one brightness (0.30), mirrored-tiled in the shader (`fill_scale` 0.45 a
+  64-unit tile).  One swatch a frame at most, at most 40 a level, none within 300 (ceilings) / 420 (skirts) units of
+  another; each block takes the nearest of its kind (48 blocks re-assigned a frame; all at once when the first is cut);
+  before any is cut, a dark stone made in the shader.  The drawer keeps every texture's pixels in scene mode for this
+  (`cpu_textures`, freed with the texture).  `RTA_GODOT_FILL_DUMP=DIR` writes the swatches (game pictures: local only).
+- Shading: swatch x `fill_light` (0.42), a crease where the ceiling meets the wall (x 0.40 at the wall to 1 at 34 units),
+  darker toward the middle of a hall (to x 0.70 at 200 units); haze as the level's (a ceiling at 0.72 of its distance);
+  the ceiling keeps its own colour where no light is (EMISSION) and Godot's point lights add (light()); the sun does not
+  reach it (layer 2; the sun's cull mask is layer 1, and the shader adds nothing of a directional light to a ceiling).
+  A skirt is lit like the ground (rta_light_ambient + sun) and fades with its alpha.
+
+### The game's lights (`RtaMachine.get_lights`, `scene_view.gd` `_torches`; look `lights`, `light_energy`, `light_max`, `light_shadows`)
+
+- The game's point lights are nodes of its 90 x 90 light grid (`g_lightGrid` 0x5d34d8, 256-unit cells from -11520, the
+  first word of a node is the next; overflow list 0x5db368; `render-pipeline.md` 5.2; the walk read from the translated
+  `light_collectNear` 0x147bf0).  Fields as read (Ran, five levels): +0x08 layer (s8, against 0x4039a4), +0x12 the level
+  colour (s16 x 4, 0x80 = 1), +0x1c the radius the game's own search uses, +0x28 falloff = 1 / radius^2, +0x2c floor,
+  +0x30 position.  Found: nitdung1 and arachna1 warm (0.40, 0.30, 0.14), radius 240 (torches); inmine1 blue (0.27, 0.39,
+  1.72), radius 136..141 (it moves: the game's flicker); honor blue-white (1.13, 1.59, 1.91) at 65.5 high, radius 100..103;
+  drunare warm (1.56, 1.17, 0.39), radius 129..137; arachna1 also a white one (1.47) 8 units from the eye.
+- Each frame the nearest `light_max` (8) within 1300 units of the eye become Godot omni lights: the game's colour made
+  a little warmer (30 % toward 1.0, 0.70, 0.42), range 1.15 x the game's radius (so its flicker comes through), energy
+  `light_energy` x 2.4 x (1.25 in a dark level, 0.8 else) x the colour's peak (0.25..1.6), and a slow flicker of Godot's
+  own (three sines, +-13 %); the nearest `light_shadows` (2) throw shadows (the caster twins; their meshes now carry real
+  boxes, so Godot culls them per light).  The carried lamp (auto) fades out where one of the game's lights reaches the
+  player.  `app look lights` prints them.
+
+### The character card (`extension/src/rta_card.cpp`, `project/card.gd`)
+
+- **The call for the portal: `handover.game.call("get_character_card")` -> `Texture2D`** (main.gd; a SubViewport's
+  texture, 256 x 320, transparent background, changes by itself; `has_character_card()` says whether a figure was taken).
+- The player's model packets are those of the tap standing in a cylinder of 34 units round `rtag_view::player`, up to
+  120 above the feet; they are taken when the character has stood still 30 frames (again every 6 s while it stands),
+  copied relative to the feet with their own copies of the textures, and drawn in the card's own world with the scene's
+  materials, a warm key and a cool rim light, turning at 0.45 radians a second.  In first person the game leaves the
+  player out of its frames: the card keeps what it had (nothing, if the player has only ever been in first person).
+- Found on the way: a SubViewport with `own_world_3d` renders a COPY of its `world_3d` - instances put into
+  `world_3d.scenario` from C++ are not drawn; `find_world_3d().scenario` is the one.
+
+### Speed: kept meshes (`rta_scene.cpp`, scene option `keep`)
+
+- A draw whose packets are, by identity, exact colours and texels and positions to 1/16 unit, those of a mesh made
+  before takes that mesh (`place_mesh`: the material on the instance) instead of being built and sent again; meshes
+  nothing drew for 30 frames go.  First try keyed on the bytes: only 33 of 222 draws a list were taken in the hub (the
+  tap's world positions differ in the last bits while the camera moves).
+
 ### A room of our own: RtaNet2 on the library's net2 (Ran)
 
 - `extension/CMakeLists.txt`: `RTA_GODOT_NET2_SERVICE` (default ON) = RtaNet2 takes `net2_*` from the GAME LIBRARY (one

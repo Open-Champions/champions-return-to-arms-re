@@ -166,8 +166,9 @@ func _draw() -> void:
 			"request": accent = UI.GOLD
 			"info": accent = UI.DIM
 		var radius := UI.px(14)
-		draw_style_box(UI.box(radius, Color(0, 0, 0, 0), Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0.45 * a), UI.px(20)), r)
-		draw_style_box(UI.box(radius, Color(0.085, 0.096, 0.135, (0.97 if not compact else 0.86) * a), Color(accent.r, accent.g, accent.b, 0.55 * a), maxf(1.0, UI.px(1.5))), r)
+		if not UI.skinned("surface", [self, "notice", r, radius, a, false]):
+			draw_style_box(UI.box(radius, Color(0, 0, 0, 0), Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0.45 * a), UI.px(20)), r)
+			draw_style_box(UI.box(radius, Color(0.085, 0.096, 0.135, (0.97 if not compact else 0.86) * a), Color(accent.r, accent.g, accent.b, 0.55 * a), maxf(1.0, UI.px(1.5))), r)
 		# the accent: a short bar at the left
 		draw_style_box(UI.box(UI.px(2), Color(accent.r, accent.g, accent.b, a)), Rect2(r.position.x + UI.px(10), r.position.y + UI.px(16), UI.px(4), r.size.y - UI.px(32)))
 		var x := r.position.x + UI.px(28)

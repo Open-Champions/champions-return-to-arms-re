@@ -7,7 +7,8 @@
 // the character stands still, every few seconds), the drawer copies those packets - geometry relative to the feet, the
 // draw state, its OWN copy of each texture (the game's are freed when their cell goes) - and keeps them as meshes in the
 // card's scenario (a SubViewport of the host's: scene_view.gd), with the materials of the scene (the shader's GS_WORLD /
-// GS_LIT variant: lit by the card's own lights).  The host turns it (set_card_turn).  In first person the game leaves
+// GS_LIT variant: lit by the card's own lights; the game's vertex light is replaced by one neutral level, so that the
+// card looks the same in every level).  The host turns it (set_card_turn).  In first person the game leaves
 // the player out of its frames: the card keeps what it had.
 #include "rta_drawer.h"
 #include "rta_variant.h"
@@ -129,7 +130,10 @@ void RtaDrawer::card_take(const rtag_scene* tap, const rtag_draw& d, const rtag_
             float p[3] = {v->x - c.feet.x, v->y - c.feet.y, v->z - c.feet.z};
             for (int a = 0; a < 3; a++) { out.lo[a] = std::min(out.lo[a], p[a]); out.hi[a] = std::max(out.hi[a], p[a]); }
             memcpy(pp, p, 12);
-            memcpy(aa, &v->r, 4);
+            // the colour without the level's light (the game lit the vertex for where it stands: blue in a mine, dark
+            // in a crypt): one neutral level for every vertex, its alpha kept; the card's own lights give it its shape
+            const uint8_t neutral[4] = {0x5c, 0x5c, 0x5c, v->a};
+            memcpy(aa, neutral, 4);
             float st[4] = {v->u, v->v, 1.0f, 1.0f};
             memcpy(aa + 4, st, 16);
             memcpy(aa + 20, &v->nx, 12);

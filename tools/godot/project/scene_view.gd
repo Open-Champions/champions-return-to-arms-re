@@ -65,7 +65,7 @@ var look := {
 	"sky": "auto", "fog": "auto", "sun": "auto", "lamp": "auto", "bloom": "auto", "grade": "auto", "foliage": "auto", "fill": "auto", "lights": "auto", "aa": "4",
 	"shade": -1.0, "fog_start": 380.0, "fog_end": 1350.0, "fog_amount": 1.0, "sun_az": -1000.0, "sun_el": -1000.0,
 	"bloom_strength": 1.0, "sky_sun": 1.0, "shadow_splits": 4.0, "shadow_far": 1100.0,
-	"fill_light": 0.42, "fill_scale": 0.45, "light_energy": 1.0, "light_shadows": 2.0, "light_max": 8.0,
+	"fill_light": 0.36, "fill_scale": 1.0, "light_energy": 1.0, "light_shadows": 2.0, "light_max": 8.0,
 }
 var fill_sent := {}
 var card: Node                          # card.gd: the character card (the portal's Portrait.texture)
@@ -496,7 +496,8 @@ func _lights() -> void:
 func _torch_slot(k: int) -> Dictionary:
 	while torches.size() <= k:
 		var light := RenderingServer.omni_light_create()
-		RenderingServer.light_set_param(light, RenderingServer.LIGHT_PARAM_ATTENUATION, 0.9)
+		# Godot's fall-off is distance^-attenuation, and the game's units are small (a torch reaches 240): 0.35 (stage 4's measure)
+		RenderingServer.light_set_param(light, RenderingServer.LIGHT_PARAM_ATTENUATION, 0.35)
 		RenderingServer.light_set_param(light, RenderingServer.LIGHT_PARAM_SHADOW_BIAS, 0.4)
 		RenderingServer.light_set_param(light, RenderingServer.LIGHT_PARAM_SHADOW_NORMAL_BIAS, 2.0)
 		RenderingServer.light_set_param(light, RenderingServer.LIGHT_PARAM_SHADOW_BLUR, 1.5)
@@ -519,7 +520,7 @@ func _torches() -> void:
 	found.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return Vector3(a.position).distance_to(eye) < Vector3(b.position).distance_to(eye))
 	torch_clock += 1.0 / 60.0
 	var shadows := int(look.light_shadows)
-	var dark_gain := 1.25 if level_dark else 0.8
+	var dark_gain := 1.8 if level_dark else 0.8
 	for k in range(max(wanted, torches.size())):
 		var t := _torch_slot(k)
 		if k >= wanted or k >= found.size():

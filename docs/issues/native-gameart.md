@@ -11,18 +11,22 @@ WHERE pictures are (archive, entry, field rows, rectangle, the pack's file name)
 game. Pictures are decoded on the player's machine and cached under the player's data folder
 (`user://gameart/cache`); tests keep theirs under `local/gameart/godot-home/` (HOME is redirected there).
 
-## STATE (2026-10-14 00:30)
+## STATE (2026-10-14 01:40) - first version finished; nothing of this work is running
 
 | Part | State | How it is known |
 |---|---|---|
 | loader `gameart/gameart.gd` (GDScript only, no native helper needed) | **done** | **Ran**: all 122 catalogue pictures decoded from the disc equal, pixel for pixel, what `tools/play-net/disctex.py` + weaving give (`local/gameart/tools/compare.py`: 122 same, 0 different); every catalogue name equals the content figure the Python tool computes for that entry |
 | catalogue `gameart/catalogue.gd` (written by `local/gameart/tools/mkcatalogue.py`) | done: 122 entries, 68 with a 4x pack file on this Mac | |
-| portal skin `gameart/portal_skin.gd` | **runs** | **Ran**: 71 pictures of the portal's own picture walk (`portal/dev/shots.gd`, states, friends, room, settings, ratios) with the game's art and the same 71 clean; 0 script errors |
-| HUD skin `gameart/hud_skin.gd` | **runs** | **Ran**: a fight in `valor` at 16:9, 1920 x 1080 |
-| the switch "Interface art: the game's own / clean" | **runs** in the portal's settings (Interface page) | settings-interface pictures |
+| portal skin `gameart/portal_skin.gd` | **done** | **Ran**: the portal's own picture walk (`portal/dev/shots.gd`: states, friends, room, settings, ratios: 71 pictures) with the game's art and the same 71 clean, 0 script errors. Each of those runs was a FIRST start (empty cache): the art arrived from the thread and the portal switched over by itself |
+| HUD skin `gameart/hud_skin.gd` | **done** | **Ran**: a fight in `valor` overhead, third person and first person at 16:9 (1920 x 1080) and overhead at 4:3 with three party frames, chat and a boss bar; the same clean; 0 script errors |
+| the switch "Interface art: the game's own / clean" | **runs** in the portal's settings (Interface page); default the game's own when the disc's art is found | settings-interface pictures; **without a disc** (RTA_DISC unset, no settings file) the portal is wholly clean, `pictures/portal-no-disc-falls-back-clean.png`. **Not run**: changing the choice while the program runs (the code reinstalls the skin, relays the portal and sends `theme` to a running HUD) |
 | hooks in the portal's and the HUD's scripts | **written as a patch, not merged**: `tools/godot/gameart-hooks.patch` | applied to the staged copy only (`local/gameart/hooks.py`) |
+| a disc chosen after the start (portal's disc screen) | written: the backdrop node looks again every 2 s while there is no disc | **not run** |
 
-Pictures (before = `-clean`, after = `-game`): `local/gameart/pictures/`.
+Pictures, `local/gameart/pictures/` (before = `-clean`, after = `-game`):
+portal `state-home`, `friends-six`, `room-guest-ready`, `settings-interface`, `ratio-4x3-home`,
+`ratio-720p-friends`; HUD `hud-over169-2600/2760` (overhead), `hud-third169-2700/2760`, `hud-first169-2600/2760`,
+`hud-over43-2650` (4:3); `portal-no-disc-falls-back-clean.png`.
 
 ## What is read from where
 
@@ -89,6 +93,9 @@ Pictures (before = `-clean`, after = `-game`): `local/gameart/pictures/`.
   bar, the row's inline action chips: drawn by code paths without a hook; they read well and are left clean.
 - Status icons, skulls, the compass strip, the arrows of attackers out of sight: the game has no matching art
   (its HUD shows none of these) - clean.
+- Portal text under 15 screen pixels (`portal_skin.gd font_at`, through the hook `UI.font_at`): the clean
+  font - at 1280 x 720 the game's letters for the friends' status lines were not readable (judged in
+  `ratio-720p-friends`).
 - Text under 13 design pixels in the HUD: the game's letters are 14 texels high caps with a baked rim; below
   that size they turn to grey mush - the clean font.
 - The race portraits: not used, the portal has no race for a character.
@@ -103,7 +110,8 @@ Pictures (before = `-clean`, after = `-game`): `local/gameart/pictures/`.
 | cached start | **4-5 ms** (the index is read; nothing else) |
 | a picture's first use | read from the cache when first drawn: all 122 together 0.3 s, the small ones well under 1 ms |
 | cache size | 52 MB with the pack (zstd-compressed RGBA), less without |
-| per frame | to be measured (`app hud cost` beside the clean HUD) |
+| per frame, HUD (`app hud cost`, the same fight unpaced, 5,486 frames each) | scripts 236 us game / 249 us clean (equal within noise); drawing 288 us game / 275 us clean (+13 us, +5 %: a frame is about 10 textured rectangles and a polygon where the clean one has 2-3 style boxes). The most expensive single frame of the game run, 2.9 ms, is the first one that draws the art (pictures read from the cache, small copies made); after that none |
+| per frame, portal | not measured: the portal draws only when something changes (focus easing, a list moving); each surface is about 10 draw calls instead of 2-3 |
 
 ## What must be merged where
 
@@ -135,4 +143,7 @@ Pictures (before = `-clean`, after = `-game`): `local/gameart/pictures/`.
 ## Processes
 
 Every Godot of this work is started by `local/gameart/ga.py run`, which records its pid, waits for it and
-kills it on a time-out.
+kills it on a time-out. **Checked at the end (01:40)**: none of the pids in `local/gameart/test/*/pid` exists;
+no shell script of this work (hudset.sh, after.sh, hudrun.sh, the two log watchers) is running. The one Godot
+running then (pid 13613, `local/godot-spike/project`) is another agent's. Test homes trimmed: one cache kept
+(`local/gameart/godot-home/cache-pack`, 53 MB); `local/gameart` is 142 MB in all.

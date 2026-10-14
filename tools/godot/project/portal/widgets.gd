@@ -159,11 +159,15 @@ class Btn extends Focusable:
 		if pressed_t > 0.0:
 			r = r.grow(-UI.px(2) * pressed_t)
 		UI.focus_glow(self, r, radius, e)
-		draw_style_box(UI.box(radius, fill, line, maxf(1.0, UI.px(1))), r)
-		if kind == "primary" and not disabled:
-			UI.sheen(self, r, radius, 0.22)
-		elif not disabled:
-			UI.sheen(self, r, radius, 0.035)
+		if UI.skinned("surface", [self, "button_" + kind, r, radius, e, disabled]):
+			if kind == "primary":
+				ink = UI.TEXT if not disabled else Color(UI.GOLD.r, UI.GOLD.g, UI.GOLD.b, 0.50)
+		else:
+			draw_style_box(UI.box(radius, fill, line, maxf(1.0, UI.px(1))), r)
+			if kind == "primary" and not disabled:
+				UI.sheen(self, r, radius, 0.22)
+			elif not disabled:
+				UI.sheen(self, r, radius, 0.035)
 		UI.focus_ring(self, r, radius, e)
 		if selected:
 			draw_style_box(UI.box(UI.px(2), UI.GOLD), Rect2(r.position.x + UI.px(8), r.position.y + r.size.y * 0.25, UI.px(4), r.size.y * 0.5))
@@ -217,9 +221,10 @@ class Tile extends Focusable:
 		if disabled:
 			alpha = 0.45
 		UI.focus_glow(self, r, radius, e)
-		draw_style_box(UI.box(radius, Color(0, 0, 0, 0), Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0.28), UI.px(16)), r)
-		draw_style_box(UI.box(radius, Color(fill.r, fill.g, fill.b, alpha), UI.LINE if e < 0.5 else Color(1, 1, 1, 0.02), maxf(1.0, UI.px(1))), r)
-		UI.sheen(self, r, radius, 0.03 + 0.03 * e)
+		if not UI.skinned("surface", [self, "tile", r, radius, e, disabled]):
+			draw_style_box(UI.box(radius, Color(0, 0, 0, 0), Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0.28), UI.px(16)), r)
+			draw_style_box(UI.box(radius, Color(fill.r, fill.g, fill.b, alpha), UI.LINE if e < 0.5 else Color(1, 1, 1, 0.02), maxf(1.0, UI.px(1))), r)
+			UI.sheen(self, r, radius, 0.03 + 0.03 * e)
 		# a warm wash from the left on the focused tile
 		if e > 0.01:
 			var c := Color(UI.GOLD.r, UI.GOLD.g, UI.GOLD.b, 0.10 * e)
@@ -233,7 +238,8 @@ class Tile extends Focusable:
 		var medal := minf(h - UI.px(40), UI.px(92))
 		var mrect := Rect2(r.position.x + UI.px(28), r.position.y + (h - medal) * 0.5, medal, medal)
 		var ring := UI.GOLD.lerp(UI.GOLD_HI, e) if not disabled else UI.FAINT
-		draw_style_box(UI.box(medal * 0.5, Color(ring.r, ring.g, ring.b, 0.10 + 0.08 * e), Color(ring.r, ring.g, ring.b, 0.55 + 0.45 * e), maxf(1.5, UI.px(2))), mrect)
+		if not UI.skinned("surface", [self, "medal", mrect, medal * 0.5, e, disabled]):
+			draw_style_box(UI.box(medal * 0.5, Color(ring.r, ring.g, ring.b, 0.10 + 0.08 * e), Color(ring.r, ring.g, ring.b, 0.55 + 0.45 * e), maxf(1.5, UI.px(2))), mrect)
 		UI.icon(self, icon, mrect.grow(-medal * 0.24), ring)
 		var x := mrect.end.x + UI.px(28)
 		var right := r.end.x - UI.px(30)
@@ -304,7 +310,8 @@ class Choice extends Focusable:
 		var radius := UI.px(12)
 		var e := eased()
 		UI.focus_glow(self, r, radius, e)
-		draw_style_box(UI.box(radius, UI.PANEL_UP.lerp(UI.PANEL_HOT, e), UI.LINE, maxf(1.0, UI.px(1))), r)
+		if not UI.skinned("surface", [self, "choice", r, radius, e, false]):
+			draw_style_box(UI.box(radius, UI.PANEL_UP.lerp(UI.PANEL_HOT, e), UI.LINE, maxf(1.0, UI.px(1))), r)
 		UI.focus_ring(self, r, radius, e)
 		var pad := UI.px(24)
 		var left := Rect2(r.position.x + pad, r.position.y, r.size.x * 0.5 - pad, r.size.y)
@@ -380,7 +387,8 @@ class Gauge extends Focusable:
 		var radius := UI.px(12)
 		var e := eased()
 		UI.focus_glow(self, r, radius, e)
-		draw_style_box(UI.box(radius, UI.PANEL_UP.lerp(UI.PANEL_HOT, e), UI.LINE, maxf(1.0, UI.px(1))), r)
+		if not UI.skinned("surface", [self, "gauge", r, radius, e, false]):
+			draw_style_box(UI.box(radius, UI.PANEL_UP.lerp(UI.PANEL_HOT, e), UI.LINE, maxf(1.0, UI.px(1))), r)
 		UI.focus_ring(self, r, radius, e)
 		var pad := UI.px(24)
 		var left := Rect2(pad, 0, size.x * 0.5 - pad * 2.0, size.y)
@@ -501,7 +509,8 @@ class Field extends Focusable:
 		if editing:
 			e = 1.0
 		UI.focus_glow(self, r, radius, e)
-		draw_style_box(UI.box(radius, Color(0.02, 0.024, 0.036, 0.85), UI.LINE_STRONG, maxf(1.0, UI.px(1))), r)
+		if not UI.skinned("surface", [self, "field", r, radius, e, false]):
+			draw_style_box(UI.box(radius, Color(0.02, 0.024, 0.036, 0.85), UI.LINE_STRONG, maxf(1.0, UI.px(1))), r)
 		UI.focus_ring(self, r, radius, e)
 		var pad := UI.px(22)
 		var font := UI.bold()
@@ -599,6 +608,8 @@ class Portrait extends Control:
 		if not has:
 			deep = Color(0.08, 0.09, 0.12)
 			glow = Color(0.6, 0.62, 0.7)
+		if UI.skinned("portrait", [self, r, character, framed, empty_text]):
+			return
 		if framed:
 			draw_style_box(UI.box(radius, Color(0.02, 0.022, 0.034, 0.9), UI.LINE_STRONG, maxf(1.0, UI.px(1))), r)
 		var inner := r.grow(-UI.px(3)) if framed else r
@@ -729,7 +740,8 @@ class Row extends Focusable:
 		var e := eased()
 		var fill := UI.PANEL_UP.lerp(UI.PANEL_HOT, e)
 		UI.focus_glow(self, r, radius, e)
-		draw_style_box(UI.box(radius, Color(fill.r, fill.g, fill.b, 0.45 + 0.55 * e), Color(1, 1, 1, 0.05), maxf(1.0, UI.px(1))), r)
+		if not UI.skinned("surface", [self, "row", r, radius, e, false]):
+			draw_style_box(UI.box(radius, Color(fill.r, fill.g, fill.b, 0.45 + 0.55 * e), Color(1, 1, 1, 0.05), maxf(1.0, UI.px(1))), r)
 		UI.focus_ring(self, r, radius, e)
 		var av := UI.px(height - 30.0)
 		var arect := Rect2(UI.px(16), (size.y - av) * 0.5, av, av)
@@ -856,6 +868,8 @@ class Hints extends Control:
 		return UI.text_width(glyph_label(name, glyph_style), UI.bold(), 13) + UI.px(18)
 
 	static func draw_glyph(ci: CanvasItem, rect: Rect2, name: String, glyph_style := "xbox") -> void:
+		if UI.skinned("pad_glyph", [ci, rect, name, glyph_style]):
+			return
 		var c := rect.position + rect.size * 0.5
 		var rad := minf(rect.size.x, rect.size.y) * 0.5
 		var face := {"a": UI.GREEN, "b": UI.RED, "x": UI.BLUE, "y": UI.GOLD}

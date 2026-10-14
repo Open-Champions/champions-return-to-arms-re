@@ -159,7 +159,7 @@
  		# me: the name friends see and my code
 --- a/tools/godot/project/portal/screens/room.gd
 +++ b/tools/godot/project/portal/screens/room.gd
-@@ -422,8 +422,12 @@
+@@ -426,8 +426,12 @@
  			line = Color(UI.RED.r, UI.RED.g, UI.RED.b, 0.8)
  		elif bool(member.get("ready", false)):
  			line = Color(UI.GREEN.r, UI.GREEN.g, UI.GREEN.b, 0.55)

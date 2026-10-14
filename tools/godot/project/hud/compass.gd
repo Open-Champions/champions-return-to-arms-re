@@ -41,9 +41,10 @@ func _ground(d: Vector3) -> Vector2:
 
 
 func _radar(c: Vector2, r: float, s: float) -> void:
-	draw_circle(c, r + 3.0 * s, Color(0, 0, 0, 0.45))
-	draw_circle(c, r, Color(Style.INK, 0.72))
-	draw_arc(c, r, 0, TAU, 64, Style.HAIRLINE, maxf(1.0, s), true)
+	if not Style.socket(self, c, r + 3.0 * s, 0.9):
+		draw_circle(c, r + 3.0 * s, Color(0, 0, 0, 0.45))
+		draw_circle(c, r, Color(Style.INK, 0.72))
+		draw_arc(c, r, 0, TAU, 64, Style.HAIRLINE, maxf(1.0, s), true)
 	draw_arc(c, r * 0.5, 0, TAU, 48, Color(1, 1, 1, 0.06), maxf(1.0, s), true)
 	var me: Dictionary = hud.me
 	var origin: Vector3 = me.position

@@ -23,8 +23,8 @@
 //              its top, and a ceiling seen from below only - a camera that has got above a lid looks through it.
 //
 // Options (set_scene_option): fill 0|1 (drawn at all: scene_view.gd's look switch), fill_ceilings, fill_skirts 0|1,
-// fill_light (how much of the swatch's brightness a ceiling keeps, default 0.42), fill_scale (swatch repeats per 64
-// units, default 0.75).
+// fill_light (how much of the swatch's brightness a ceiling keeps, default 0.42), fill_scale (times the wall's own texel
+// density, default 1).
 #include "rta_drawer.h"
 
 #include <godot_cpp/classes/image.hpp>
@@ -61,6 +61,7 @@ struct RtaDrawer::Fill {
         uint8_t kind = 0;
         float x = 0, y = 0, z = 0;
         float lum = 0;                  // its mean brightness, 0..1
+        float tile = 64;                // world units one repeat of it covers: the wall's own texel density
         RID texture, material;
     };
     struct Cell { float ceiling = 1e9f; bool skirt = false; };
@@ -80,7 +81,7 @@ struct RtaDrawer::Fill {
     int learn_budget = 0;
     // switches
     bool on = false, ceilings = true, skirts = true;
-    double light = 0.42, scale = 0.45;
+    double light = 0.36, scale = 1.0;
     bool params_dirty = true;
     Ref<Shader> shader;
     // figures
@@ -152,7 +153,7 @@ void RtaDrawer::fill_params(Fill& fl) {
         float gain = std::min(std::max(SWATCH_LUM / std::max(w.lum, 0.005f), 0.5f), 8.0f);
         s->material_set_param(w.material, "gain", gain);
         s->material_set_param(w.material, "darken", (float)fl.light);
-        s->material_set_param(w.material, "scale", (float)fl.scale);
+        s->material_set_param(w.material, "scale", (float)(fl.scale * 64.0 / w.tile));
     }
     for (RID m : fl.stone)
         if (m.is_valid()) { s->material_set_param(m, "darken", (float)fl.light); s->material_set_param(m, "scale", (float)fl.scale); }
@@ -398,6 +399,12 @@ void RtaDrawer::fill_learn(const rtag_scene* tap, const rtag_draw& d, const rtag
     w.kind = kind;
     w.x = (float)(sx / corners); w.y = (float)(sy / corners); w.z = (float)(sz / corners);
     w.lum = (float)lum;
+    {
+        // the patch's size in the world (half of each of the two edges it spans): the ceiling then has the wall's texels
+        float e1 = std::sqrt((big[1].x - big[0].x) * (big[1].x - big[0].x) + (big[1].y - big[0].y) * (big[1].y - big[0].y) + (big[1].z - big[0].z) * (big[1].z - big[0].z));
+        float e2 = std::sqrt((big[2].x - big[0].x) * (big[2].x - big[0].x) + (big[2].y - big[0].y) * (big[2].y - big[0].y) + (big[2].z - big[0].z) * (big[2].z - big[0].z));
+        w.tile = std::min(std::max((e1 + e2) * 0.25f, 16.0f), 160.0f);
+    }
     w.texture = rs()->texture_2d_create(image);
     w.material = fill_material(fl, kind, w.texture);
     fl.swatches.push_back(w);

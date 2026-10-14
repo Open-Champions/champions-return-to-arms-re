@@ -29,8 +29,7 @@ var framed_height := -1.0
 func _ready() -> void:
 	viewport = SubViewport.new()
 	viewport.size = SIZE
-	viewport.own_world_3d = true
-	viewport.world_3d = World3D.new()
+	viewport.world_3d = World3D.new()          # a world of its own (own_world_3d would render a COPY of it, without the figure)
 	viewport.transparent_bg = true
 	viewport.msaa_3d = Viewport.MSAA_4X
 	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
@@ -47,7 +46,7 @@ func _ready() -> void:
 	world_environment.environment = environment
 	viewport.add_child(world_environment)
 	# a warm key light from the front left above, a cool rim light from behind (the game's world: z up)
-	for spec in [[Vector3(-0.55, -0.75, 0.55), Color(1.0, 0.88, 0.72), 0.55], [Vector3(0.45, 0.85, 0.25), Color(0.62, 0.74, 1.0), 0.45]]:
+	for spec in [[Vector3(-0.55, -0.75, 0.55), Color(1.0, 0.88, 0.72), 0.95], [Vector3(0.45, 0.85, 0.25), Color(0.62, 0.74, 1.0), 0.70]]:
 		var light := DirectionalLight3D.new()
 		light.light_color = spec[1]
 		light.light_energy = spec[2]
@@ -55,12 +54,12 @@ func _ready() -> void:
 		viewport.add_child(light)
 		light.look_at_from_position(Vector3.ZERO, -Vector3(spec[0]), Vector3(0, 0, 1))
 	_frame(64.0)
-	drawer.call("set_card_scenario", viewport.world_3d.scenario)
+	drawer.call("set_card_scenario", viewport.find_world_3d().scenario)
 	if OS.has_environment("RTA_CARD_TEST"):         # test aid: a box where the figure stands
 		var box := MeshInstance3D.new()
 		box.mesh = BoxMesh.new()
-		box.scale = Vector3(20, 20, 60)
-		box.position = Vector3(0, 0, 30)
+		box.scale = Vector3(6, 6, 6)
+		box.position = Vector3(30, 0, 3)
 		viewport.add_child(box)
 
 
@@ -74,9 +73,9 @@ func has_figure() -> bool:
 
 func _frame(height: float) -> void:
 	# the figure stands at the origin, feet at z 0: the whole of it in the picture, a little room above the head
-	var fit := height * 1.18
+	var fit := height * 1.26
 	var distance := fit * 0.5 / tan(deg_to_rad(camera.fov * 0.5))
-	var at := Vector3(0, 0, height * 0.52)
+	var at := Vector3(0, 0, height * 0.49)
 	camera.look_at_from_position(at + Vector3(0, -distance, height * 0.10), at, Vector3(0, 0, 1))
 	framed_height = height
 
