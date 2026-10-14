@@ -1798,27 +1798,25 @@ repository). Every statement says **Ran** or **Read**.
 
 ### 13.0 STATE (rewritten at every step; read this first after a stop)
 
-**23:05 - candidate m3 (the world work merged) is `bin/rta_app` since 23:00; checks passed;
-the Godot library and the Windows folder are rebuilt from the same tree.**
+**23:20 - candidate m4 (the online work's `net2.patch` merged last) is `bin/rta_app` since
+23:17; every check passed; nothing of this work is running.**
 
-- `bin/rta_app` = **m3** (built 22:10; also `rta_app_m3`): m2 (fix set 9ac29719, 189 words;
-  the strafe mode sent by the application itself; the second HUD group and the music
-  volume, 13.3) plus the world work (13.6: ceilings, skirts, the cut at the near plane,
-  textures in perspective, the object walk). `rta_app.prev` = m2 (`rta_app_m2`); f3 of
-  14:37 is `rta_app_f3`. `rta_app_orig` = m3's, `.prev` = m2's. The owner's running copy
-  (pid 17482) was never touched: each new file was moved over the name.
-- Passed on m3: 11 + 11 pictures, 60 tour pictures, the rig comparison three ways; each
-  view's comparison with the world work on, off and forced on in overhead (13.6); the
-  lobby pair with strafing (13.6); the switches (the same files as on m2). m2 passed the
-  same before (13.2, 13.3).
-- Godot (13.4, 13.6): libraries, extension, project from the merged tree; recomp.patch
-  empty; the library exports the fill (`rtag_fill_get`) and sends the strafe mode.
-- Windows (13.7): both compilers link; stand-ins agree; README figures refreshed.
-- `bin/rta_native_online` rebuilt 23:00 with the new set (`.prev` = 14:50's); a lobby game of it
-  against the window program m3 (`online/mixed-m3`): 2,826 ticks in step into `drunare`, no shared
-  column differs, each names 9ac29719 to the other.
-- Nothing of this work is running (checked 23:06); intermediate files removed (the sound files:
-  their levels are in `s13/snd/levels.txt`; the stand-in root's translation and objects).
+- `bin/rta_app` = **m4** (also `rta_app_m4`): m3 (13.6: fix set 9ac29719, strafe sent by the
+  application, the HUD switches and music volume, the world work) plus a room of our own
+  (13.9: `--play-host`, `--play-join CODE`, `--name`, `--service`). `rta_app.prev` = m3
+  (`rta_app_m3`); m2 and f3 kept as `rta_app_m2`, `rta_app_f3`. `rta_app_orig` = m4's,
+  `.prev` = m3's. The owner's running copy (pid 17482) was never touched.
+- Passed on m4: 11 + 11 pictures, 60 tour pictures, the rig comparison three ways
+  (`s13/verify-m4.txt`); the old lobby path - a two-copy game through this Mac's lobby,
+  first person strafing against overhead (13.9); two and three copies of m4 into one game
+  through the rendezvous service on loop-back; a room hosted by the Godot library and
+  joined by m4.
+- Godot: libraries, extension, project from the m4 tree; the fix-set library now holds the
+  network and net2 and exports the `net2_*` functions (13.9); `rtag_fill_get` (13.6); the
+  `app view set` fault fixed. `tools/godot/recomp.patch` empty.
+- Windows: clang and GCC link with net2 (13.9); README figures refreshed (13.7).
+- `bin/rta_native_online` rebuilt 23:00 (new set; it has no net2: `build_online.py` is not
+  in the patch); a lobby game of it against m3 in step.
 - **The owner's launcher file on the Desktop is evicted by iCloud**: 13.5.
 
 ### 13.1 What was merged (Ran: each dry run first)
@@ -2086,12 +2084,12 @@ nothing of the game; the partial one is kept as `s13/win/pngtest-partial-after-m
 
 **Shared files** (outside the five directories): `tools/recomp/hle.txt` (2 + 3
 addresses), `tools/godot/recomp.patch` (notes only), `tools/godot/build.py` (the empty
-patch, the world files, the export list), `tools/godot/lib/rtag.cpp`, `rtag.h`
-(`rtag_fill_get`, the world, the strafe message). Inside: `app/app_main.cpp`, `app_rt.h`,
+patch, the world files, net and net2 in the snapshot and the library, the export lists),
+`tools/godot/lib/rtag.cpp`, `rtag.h` (`rtag_fill_get`, the world, the strafe message,
+`rtag_has("net2")`, `app view set`). Nothing in `tools/recomp/net2` was changed. Inside: `app/app_main.cpp`, `app_rt.h`,
 `app_rt.cpp` (`call_game`, `set_music_volume`), `settings.h`, `win_main.cpp`,
 `build_win.py`, `gfx_rt.cpp`; `render/gs.cpp`, `gs.h`, `layout.h`; `sound/drivers.cpp`,
-`audio_out.cpp`; and the world patch's files as it brought them. `net/` untouched
-(`net2.patch` not merged).
+`audio_out.cpp`; and the world patch's files as it brought them. `net/netdrv.cpp` (the nine lines of `net2.patch`), `app/build.py` (its seven jobs). 
 
 **For the agents that build against them**: `render/gs.h` changed twice - `Gs::hide_text`
 (a bool) and the world work's `Gs::WorldView world`, `world_run`, `draw_fill` - and
@@ -2106,7 +2104,67 @@ larger, so **every object that includes `gs.h` or `vif1.h` must be compiled agai
 1. The owner's launcher file is evicted (13.5): it opens when iCloud gives it back.
 2. Godot: draw the fill in the scene (`rtag_fill_get` is there); `app view set` in
    `rtag.cpp`; the strafe mode in a Godot window by hand.
-3. `net2.patch` when the online work says so.
+3. The portal: take net2 from the game library (13.9); the online work's own builds against
+   this tree.
 4. The world work's own list (`native-first-person-world.md` 7.6) and the skirt never
    seen in a picture; nobody has played first person with all of it.
 5. From 12.9: the owner's eye on the picture, a real controller, the Windows program run.
+
+### 13.9 The online work's `net2.patch` merged last (asked by the coordinator at 23:05; Ran)
+
+- **What was checked first**: the shared `net/netdrv.cpp` with the patch applied is byte for
+  byte the `netdrv.cpp` the online work ran its 34 games with (`local/recomp-net2/work/net`;
+  `online.cpp`, `online_mac.mm` the same files too), and its build compiles `net2/*.cpp`
+  straight from `tools/recomp/net2` - so **the two fixes it found by running are in the shared
+  files**, not only in its snapshot: `net2/launch.cpp` waits for the title menu to have stood
+  for a second before it opens the character screens (`wait` phase, the comment at line
+  444), and sets `g_numPlayers` 0x4d8ae0 and `g_difficultyIdx` 0x4f719c to 1 before the
+  screens are started (`A_NUM_PLAYERS`, `A_DIFFICULTY`, line 75 and 186).
+- **Merged**: the nine lines in `net/netdrv.cpp` (five places), the seven compile jobs in
+  `app/build.py`, after a clean dry run. The translation is unchanged (no address), so the game
+  objects are m3's; everything that includes `gs.h`, `vif1.h`, `layout.h`, `app_rt.h` was
+  compiled here against this tree (the online work's snapshot is older: its own builds must
+  be made again before they are compared with this program).
+- **Also**: `app/app_main.cpp` takes the room itself - `--play-host`, `--play-join CODE`,
+  `--name NAME`, `--service HOST:PORT` become the runtime options of `net2/launch.cpp`
+  (`--opt net2=host | join:CODE`, `net2-name`, `net2-service`; what `net2/play.sh` passes;
+  a `--opt` said after `--` still wins). Without them nothing of net2 runs (its hooks are
+  null pointers).
+
+| Check (m4) | Result |
+|---|---|
+| without the new options: 11 + 11 pictures, 60 tour pictures, the rig comparison three ways | the same files as m3's, f3's, the reference switches'; `merge/rig-final-compare.txt` byte for byte (`s13/verify-m4.txt`) |
+| **the old path**: a two-copy game through this Mac's lobby (`online/pair-m4`; first person strafing, overhead) | 4,327 ticks in step through `hub` into `drunare`; no shared column differs (28, the mode bytes among them); player 0's mode on in 2,907 ticks |
+| **two copies of m4 by `--play-host` / `--play-join CODE`** with `rendezvous.py` on 127.0.0.1:41900 (`--data s13/n2/two/service`; the copies find it by `RTA_NET2_SERVICE=127.0.0.1:41900`, no `net2-service` option) - `tools/recomp/net2/n2party.py` as the online work runs it, with `s13/n2/as-app.py` turning its runtime options into the program's own (`--test` windows, 320 x 240, silent) | room R6XDH; the game's own character screens, "launched after 211 blanks: 2 players, first level hub"; **2,833 ticks in step through `hub` into `drunare`**, no shared column differs (22); straight routes, nothing relayed |
+| **three copies** the same way (`s13/n2/three`) | room WQ9YT; 2,815 / 2,815 / 2,816 ticks in step for all three pairs into `drunare`, no column differs (30) |
+| **a room hosted by the Godot library** (`rtag_host --paced` with `--opt net2=host`, `s13/n2/as-mixed.py`) joined by m4 | 1,219 ticks in step in the hub, no column differs |
+
+**The Godot library** (`tools/godot/build.py`): the snapshot now takes `net/` and `net2/`
+beside the four parts, and `RtaOnline.h`, `RtaOnline.cpp`, `RtaNet.h` of
+`tools/play-net/src` beside it (where `online.cpp`'s relative include finds them); the
+fix-set library compiles `netdrv.cpp`, `online.cpp`, `RtaOnline.cpp`, the six session files
+and `launch.cpp` (`-DRTAG_HAVE_NET2`) and **exports the 46 `net2_*` functions of
+`session.h` and `game.h` under their own names** - the one copy of net2 in the process, as
+`native-rendezvous.md` 5.1 asks (`rtag_has("net2")`, `rtag.h` says how a host uses it:
+`net2_open`, `net2_game_attach` once, `net2_game_choose`, `net2_game_status`). The
+original-game library is unchanged (no network). Nothing opens a socket until a room is
+asked for: the smoke test and the 11 reference pictures through the new library are
+identical to before and to `rta_app` m4's. **For the portal agent (through the
+coordinator)**: `tools/godot/extension/CMakeLists.txt` still compiles its own
+`session.cpp`, `session_mock.cpp`, `cardchars.cpp` - a second copy; for a real launch the
+extension should take the functions from the game library (`dlsym` on the handle it loads
+the library with) and leave its copies to the mock-only case. Not changed here (the
+extension is the Godot side's).
+
+**Windows** (`app/build_win.py`): the six session files and `launch.cpp` are in the
+Windows program's list; they compile with both compilers once `<algorithm>` is given for
+them (`-include algorithm`: `cardchars.cpp` uses `std::sort` without the header, which
+macOS brings in another way) and link once `-lbcrypt` is among the network libraries
+(`hash.h` uses BCrypt on Windows). clang and GCC exit 0 (`rta_app.exe` 28,346,368 bytes,
+`rta_app_gcc.exe` 26,042,880). Nothing of it was run. `build_win.py`'s link failure message
+now leaves out the type-information padding notes (they filled the message and hid the
+error).
+
+**The library's `app view set`** (`tools/godot/lib/rtag.cpp`): takes the key as the native
+program does (`view.first.pitch`), a bare one (`first.pitch`) gets its prefix; refused keys
+are said.
