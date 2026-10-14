@@ -25,15 +25,29 @@ for each kind of computer: [docs/DOWNLOADS.md](docs/DOWNLOADS.md).** In short:
 
 | Your computer | What you use | What you do |
 |---|---|---|
-| Mac (Apple silicon, macOS 14 or later) | the Mac application | open the link you were sent, download, open the app, type a player name, host or join with a room code |
-| Windows PC, or anything else with Chrome | the browser version - nothing to install | open the link you were sent, click *Play in your browser*, pick your disc image file, type a player name, host or join with a room code |
+| Mac (Apple silicon, macOS 14 or later) | the Mac application | open the link you were sent, download, open the app; then **Room → Host a room** (read the code out) or **Room → Join a room...** (type the code you were given) - or the **Online** menu for the lobby |
+| Windows PC, or anything else with Chrome | the browser version - nothing to install | open the link you were sent, click *Play in your browser*, pick your disc image file, type a player name, host or join a game in the lobby with a room code |
+
+Two ways to play together:
+
+1. **The Room menu (new, Mac application):** a room on our own room service - no lobby, no
+   account, no password. One player chooses *Room → Host a room* and reads out the code
+   it shows; the others choose *Room → Join a room...* and type it; everyone makes or
+   picks a character on the game's own screens; the host chooses *Room → Start the game*.
+   Mac-application players and players of the native program can be in the same room.
+   Rooms start from the game's title screen, so switch off *Online → Go online at start*
+   first.
+2. **The Online menu (as before):** the lobby server - a player name, then *Host a game* or
+   *Join a game...* with a room code. This is the way to play with **browser players**,
+   and the old way still works for everyone.
 
 - **The link.** There is one link for both versions. It is private: you get it from the
   person who invited you to play. It is not in this repository (see DOWNLOADS.md for why),
   and everything needed to build either version yourself is.
 - **You need your own disc image** of the game (US release, SLUS-20973, version 2.00).
   Nothing of the game is in this repository or behind the link.
-- Mac players and browser players can be in the same game.
+- Mac players and browser players can be in the same game through the lobby; Mac players
+  and native players through a room or the lobby.
 
 ## Where it stands
 
