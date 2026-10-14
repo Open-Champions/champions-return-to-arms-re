@@ -5,6 +5,7 @@
 //   stream_call()  the game's stream driver: commands 0x10 .. 0xc0
 //   alarm()        the stream driver's 6 ms timer
 //   advance_to()   renders, running the timer at its sample positions
+#include <atomic>
 #include "rta_sound.h"
 
 #include <chrono>
@@ -236,8 +237,19 @@ void Engine::stream_call(uint32_t function, const uint8_t* a, size_t size) {
     }
 }
 
+// The host's volume for the MUSIC alone: stream 2 of the stream driver carries the music (speech is on streams 0 and
+// 1, effects are voices of their own), so a host can turn the game's music down - under music of its own, say - and
+// leave speech and effects as they are.  0..1; any thread.
+static std::atomic<int> g_music_gain{0x100}, g_music_gain_changed{0};
+void set_music_gain(float gain) {
+    int g = (int)(gain * 256.0f + 0.5f);
+    g = g < 0 ? 0 : g > 0x100 ? 0x100 : g;
+    if (g_music_gain.exchange(g) != g) g_music_gain_changed.store(1);
+}
+
 void Engine::alarm() {
     stats.alarms++;
+    if (g_music_gain_changed.exchange(0)) force_volume_ = 1;
     // volumes move towards their targets: down 0x20 a tick, up 0x40 (stream 0) or 0xc0
     for (int s = 0; s < 3; s++) {
         Stream& st = stream_[s];
@@ -250,6 +262,7 @@ void Engine::alarm() {
             if (st.target < st.volume) st.volume = st.target;
         }
         unsigned v = (unsigned)((st.volume * st.scale) >> 8) & 0xFFFF;
+        if (s == 2) v = (v * (unsigned)g_music_gain.load()) >> 8;
         unsigned e = voice_entry(s, 0), e2 = voice_entry(s, 1);
         if (!(st.flags & 2)) {
             spu.set_param(e, v); spu.set_param(e | 0x100, v);
@@ -405,3 +418,6 @@ void Engine::report(FILE* out) const {
 
 }  // namespace snd
 }  // namespace rta
+
+// for a host outside the runtime (tools/godot/lib/rtag.cpp: option "music_volume")
+extern "C" void rta_sound_set_music_gain(float gain) { rta::snd::set_music_gain(gain); }

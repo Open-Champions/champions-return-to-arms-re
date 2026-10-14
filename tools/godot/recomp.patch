@@ -3,154 +3,21 @@ tools/godot/build.py applies it to its snapshot (`snapshot`), and writes it agai
 up to the first "diff -ru" line - these notes - is kept).  From the workspace root:
     patch -p1 -d tools/recomp --dry-run < tools/godot/recomp.patch
 
-What is in it, and what the coordinator has to do with each:
+NOTHING IS IN IT NOW (2026-10-13 21:40, docs/issues/native-app.md 13.1): its three pieces are merged into tools/recomp,
+so a snapshot of the shared tree needs no patch, and build.py does not hand a file without a hunk to patch(1).
+
+What was in it, and where it is now:
 
 1. sound/audio_out.cpp - the sound device is the host (RTA_AUDIO_HOST: tools/godot/lib/audio_host.inc).  Only the
-   library is compiled with the macro; nothing changes for rta_app.  Since the first round.
+   library is compiled with the macro; nothing changes for rta_app.  In tools/recomp/sound/audio_out.cpp.
 
-2. sound/drivers.cpp - THE MUSIC'S OWN VOLUME: the HUD agent's hunk, taken as it is from tools/godot/hud-recomp.patch
-   (rta_sound_set_music_gain; stream 2 of the stream driver is the music).  The library hands it out as
-   rtag_set_option("music_volume", "0..1") when the core has it (build.py looks for the function's name).
+2. sound/drivers.cpp - THE MUSIC'S OWN VOLUME (rta_sound_set_music_gain; stream 2 of the stream driver is the music).
+   In tools/recomp/sound/drivers.cpp.  The library hands it out as rtag_set_option("music_volume", "0..1"); the
+   stand-alone program as --music-volume, the settings line music_volume and "app option music_volume V".
 
-3. THE GAME'S OWN HUD, SECOND GROUP (the boss meter and one-line message, the prompt box) - four files here and
-   TWO LINES THAT ARE NOT IN THIS PATCH because they change the translation:
-       tools/recomp/hle.txt, after "1dd270   # hud_spellSelect":
-           1d93b0   # hud_drawBossMeter: the boss meter and the one-line message (a host with its own HUD can leave them out: Gs::hide_text)
-           1d99f0   # hud_drawPromptBox: the interaction prompt's box (also the spell selector's)
-   then the game has to be translated and compiled again (tools/recomp/app/build.py, and --original).
-   In this patch: render/layout.h (a mark M_TEXT = 5, laid out as unmarked 2-D things are), render/gs.h and gs.cpp
-   (Gs::hide_text: primitives under that mark, drawn into the 3-D buffer without a depth test, are left out),
-   app/gfx_rt.cpp (the two wrappers, `Scope s(M_TEXT)`, as the five HUD draws are wrapped).
-   ORDER MATTERS: gfx_rt.cpp's two wrappers define fn_001d93b0 / fn_001d99f0, which the translation itself defines
-   until the two addresses are in hle.txt - applied without the hle.txt lines the link fails with duplicate symbols.
-   A build whose translation lacks them defines RTA_NO_HUD_TEXT_HOOKS (tools/godot/build.py does so by itself: it
-   looks for orig_001d93b0 in the translation's funcs.h).  The library's switch is rtag_set_option("game_hud_text",
-   "off"), refused while the translation lacks the hooks.
-   Ran here in a stand-in root (local/godot-spike/root: the shared tree with the two lines, translated again).
+3. THE GAME'S OWN HUD, SECOND GROUP (the boss meter and one-line message, the prompt box): 1d93b0 and 1d99f0 are in
+   tools/recomp/hle.txt and both translations were made again; render/layout.h (M_TEXT), render/gs.h and gs.cpp
+   (Gs::hide_text), app/gfx_rt.cpp (the two wrappers) are in tools/recomp.  A build whose translation lacks the two
+   addresses still defines RTA_NO_HUD_TEXT_HOOKS (tools/godot/build.py does so by itself).  The library's switch is
+   rtag_set_option("game_hud_text", "off"); the stand-alone program's --game-hud-text off.
 
-diff -ru recomp.orig/app/gfx_rt.cpp recomp/app/gfx_rt.cpp
---- recomp.orig/app/gfx_rt.cpp
-+++ recomp/app/gfx_rt.cpp
-@@ -38,7 +38,7 @@
- const u32 G_CAMERA_MATRIX = 0x44F110;
- const u32 RAM_MASK = 0x01FFFFFF;                    // the display list is addressed through the 0x30000000 mirror of main memory
- 
--enum Mode : u16 { M_NONE = 0, M_EDGE = 1, M_WORLD = 2, M_BILLBOARD = 3, M_MENU3D = 4 };
-+enum Mode : u16 { M_NONE = 0, M_EDGE = 1, M_WORLD = 2, M_BILLBOARD = 3, M_MENU3D = 4, M_TEXT = 5 };
- 
- std::atomic<bool> g_marks_always{false};    // set_hud_marks: the marks also at 4:3
- std::atomic<float> g_wanted{1.0f};      // k = (4/3) / aspect the application asks for
-@@ -295,6 +295,14 @@
- void fn_001df720(Ctx* c) { Scope s(M_EDGE); orig_001df720(c); }
- void fn_001e42e0(Ctx* c) { Scope s(M_EDGE); orig_001e42e0(c); }
- void fn_001dd270(Ctx* c) { Scope s(M_EDGE); orig_001dd270(c); }
-+#ifndef RTA_NO_HUD_TEXT_HOOKS
-+// hud_drawBossMeter (the boss meter and the one-line message) and hud_drawPromptBox (the interaction prompt, also
-+// the spell selector's): marked so that a host that draws its own can leave them out (Gs::hide_text).  Their layout
-+// is the unmarked one.  Needs 1d93b0 and 1d99f0 in hle.txt; a build whose translation lacks them defines
-+// RTA_NO_HUD_TEXT_HOOKS (tools/godot/build.py does, by itself).
-+void fn_001d93b0(Ctx* c) { Scope s(M_TEXT); orig_001d93b0(c); }
-+void fn_001d99f0(Ctx* c) { Scope s(M_TEXT); orig_001d99f0(c); }
-+#endif
- void fn_001907d0(Ctx* c) { Scope s(M_BILLBOARD); orig_001907d0(c); }
- void fn_0018fe18(Ctx* c) { Scope s(M_BILLBOARD); orig_0018fe18(c); }
- void fn_001c1108(Ctx* c) { Scope s(M_MENU3D); g_menu_view++; orig_001c1108(c); g_menu_view--; }
-diff -ru recomp.orig/render/gs.cpp recomp/render/gs.cpp
---- recomp.orig/render/gs.cpp
-+++ recomp/render/gs.cpp
-@@ -995,6 +995,7 @@
-     cur_wide = buffer_width == 1280;
-     // the game's own HUD layer switched off: what its draw functions put into the 3-D buffer without a depth test
-     if (hide_edge && cur_wide && c.ztst == 1 && layout.mode() == Layout::M_EDGE) g_skip_draw = true;
-+    if (hide_text && cur_wide && c.ztst == 1 && layout.mode() == Layout::M_TEXT) g_skip_draw = true;
-     if (cur_wide && layout.active() && ((cur_path != 0 && c.ztst == 1) || layout.mode() == Layout::M_MENU3D)) {
-         float x0 = (float)c.scissor[0], x1 = (float)c.scissor[2];
-         if (layout.scissor(x0, x1)) { c.scissor_moved = true; c.scissor_x[0] = x0; c.scissor_x[1] = x1; }
-diff -ru recomp.orig/render/gs.h recomp/render/gs.h
---- recomp.orig/render/gs.h
-+++ recomp/render/gs.h
-@@ -58,6 +58,8 @@
-     // status, gold, compass, minimap, spell selector - app/gfx_rt.cpp) are not drawn.  The marks have to be in the
-     // stream for it (gfxrt::set_hud_marks: at 4:3 they are not sent otherwise).  For a host that draws its own HUD.
-     bool hide_edge = false;
-+    // ... and its second group: the boss meter, the one-line message and the prompt box (layout.h M_TEXT)
-+    bool hide_text = false;
-     int trace = 0;                      // > 0: print draws to stderr
-     bool time_paths = false;
-     std::function<void()> on_far_vertex;    // debugging (RTA_GS_FAR): a vertex far outside every surface was drawn
-diff -ru recomp.orig/render/layout.h recomp/render/layout.h
---- recomp.orig/render/layout.h
-+++ recomp/render/layout.h
-@@ -40,7 +40,9 @@
- namespace render {
- 
- struct Layout {
--    enum Mode { M_NONE = 0, M_EDGE = 1, M_WORLD = 2, M_BILLBOARD = 3, M_MENU3D = 4 };
-+    // M_TEXT: the game's boss meter, one-line message and prompt box - laid out as unmarked 2-D things are (about the
-+    // centre); the mark only says who drew them, so that a host with a HUD of its own can leave them out (Gs::hide_text)
-+    enum Mode { M_NONE = 0, M_EDGE = 1, M_WORLD = 2, M_BILLBOARD = 3, M_MENU3D = 4, M_TEXT = 5 };
-     enum Anchor { A_NONE, A_CENTRE, A_LEFT, A_RIGHT };
-     float k = 1.0f;                     // of the lists being decoded
-     uint16_t mark = 0;
-diff -ru recomp.orig/sound/audio_out.cpp recomp/sound/audio_out.cpp
---- recomp.orig/sound/audio_out.cpp
-+++ recomp/sound/audio_out.cpp
-@@ -274,7 +274,11 @@
- }  // namespace rta
- 
- // ---- macOS: AudioQueue -------------------------------------------------------------------
--#if defined(__APPLE__)
-+#if defined(RTA_AUDIO_HOST)
-+// The device is the program this is part of: it supplies open_device_sink and
-+// open_device_puller itself (tools/godot/lib/audio_host.inc: a host that asks for the sound).
-+#include RTA_AUDIO_HOST
-+#elif defined(__APPLE__)
- #include <AudioToolbox/AudioToolbox.h>
- #include <dlfcn.h>
- 
-diff -ru recomp.orig/sound/drivers.cpp recomp/sound/drivers.cpp
---- recomp.orig/sound/drivers.cpp
-+++ recomp/sound/drivers.cpp
-@@ -5,6 +5,7 @@
- //   stream_call()  the game's stream driver: commands 0x10 .. 0xc0
- //   alarm()        the stream driver's 6 ms timer
- //   advance_to()   renders, running the timer at its sample positions
-+#include <atomic>
- #include "rta_sound.h"
- 
- #include <chrono>
-@@ -236,8 +237,19 @@
-     }
- }
- 
-+// The host's volume for the MUSIC alone: stream 2 of the stream driver carries the music (speech is on streams 0 and
-+// 1, effects are voices of their own), so a host can turn the game's music down - under music of its own, say - and
-+// leave speech and effects as they are.  0..1; any thread.
-+static std::atomic<int> g_music_gain{0x100}, g_music_gain_changed{0};
-+void set_music_gain(float gain) {
-+    int g = (int)(gain * 256.0f + 0.5f);
-+    g = g < 0 ? 0 : g > 0x100 ? 0x100 : g;
-+    if (g_music_gain.exchange(g) != g) g_music_gain_changed.store(1);
-+}
-+
- void Engine::alarm() {
-     stats.alarms++;
-+    if (g_music_gain_changed.exchange(0)) force_volume_ = 1;
-     // volumes move towards their targets: down 0x20 a tick, up 0x40 (stream 0) or 0xc0
-     for (int s = 0; s < 3; s++) {
-         Stream& st = stream_[s];
-@@ -250,6 +262,7 @@
-             if (st.target < st.volume) st.volume = st.target;
-         }
-         unsigned v = (unsigned)((st.volume * st.scale) >> 8) & 0xFFFF;
-+        if (s == 2) v = (v * (unsigned)g_music_gain.load()) >> 8;
-         unsigned e = voice_entry(s, 0), e2 = voice_entry(s, 1);
-         if (!(st.flags & 2)) {
-             spu.set_param(e, v); spu.set_param(e | 0x100, v);
-@@ -405,3 +418,6 @@
- 
- }  // namespace snd
- }  // namespace rta
-+
-+// for a host outside the runtime (tools/godot/lib/rtag.cpp: option "music_volume")
-+extern "C" void rta_sound_set_music_gain(float gain) { rta::snd::set_music_gain(gain); }

@@ -38,7 +38,7 @@ const u32 MATRICES[3] = {0x44F140, 0x44F180, 0x44F1C0};             // g_viewPro
 const u32 G_CAMERA_MATRIX = 0x44F110;
 const u32 RAM_MASK = 0x01FFFFFF;                    // the display list is addressed through the 0x30000000 mirror of main memory
 
-enum Mode : u16 { M_NONE = 0, M_EDGE = 1, M_WORLD = 2, M_BILLBOARD = 3, M_MENU3D = 4 };
+enum Mode : u16 { M_NONE = 0, M_EDGE = 1, M_WORLD = 2, M_BILLBOARD = 3, M_MENU3D = 4, M_TEXT = 5 };
 
 std::atomic<bool> g_marks_always{false};    // set_hud_marks: the marks also at 4:3
 std::atomic<float> g_wanted{1.0f};      // k = (4/3) / aspect the application asks for
@@ -295,6 +295,14 @@ void fn_001dc708(Ctx* c) { Scope s(M_EDGE); orig_001dc708(c); }
 void fn_001df720(Ctx* c) { Scope s(M_EDGE); orig_001df720(c); }
 void fn_001e42e0(Ctx* c) { Scope s(M_EDGE); orig_001e42e0(c); }
 void fn_001dd270(Ctx* c) { Scope s(M_EDGE); orig_001dd270(c); }
+#ifndef RTA_NO_HUD_TEXT_HOOKS
+// hud_drawBossMeter (the boss meter and the one-line message) and hud_drawPromptBox (the interaction prompt, also
+// the spell selector's): marked so that a host that draws its own can leave them out (Gs::hide_text).  Their layout
+// is the unmarked one.  Needs 1d93b0 and 1d99f0 in hle.txt; a build whose translation lacks them defines
+// RTA_NO_HUD_TEXT_HOOKS (tools/godot/build.py does, by itself).
+void fn_001d93b0(Ctx* c) { Scope s(M_TEXT); orig_001d93b0(c); }
+void fn_001d99f0(Ctx* c) { Scope s(M_TEXT); orig_001d99f0(c); }
+#endif
 void fn_001907d0(Ctx* c) { Scope s(M_BILLBOARD); orig_001907d0(c); }
 void fn_0018fe18(Ctx* c) { Scope s(M_BILLBOARD); orig_0018fe18(c); }
 void fn_001c1108(Ctx* c) { Scope s(M_MENU3D); g_menu_view++; orig_001c1108(c); g_menu_view--; }

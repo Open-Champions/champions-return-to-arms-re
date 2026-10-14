@@ -118,7 +118,9 @@ def snapshot(args):
         path = os.path.join(recomp_out, 'gen-vu', name)
         if os.path.exists(path):
             shutil.copy2(path, os.path.join(vu, name))
-    if os.path.exists(PATCH) and os.path.getsize(PATCH):    # (the new files of tools/godot/core are copied in by `lib`)
+    # (the new files of tools/godot/core are copied in by `lib`).  A patch file that holds notes and no hunk - everything
+    # it had is merged into tools/recomp - is not handed to patch(1), which calls such a file garbage and fails.
+    if os.path.exists(PATCH) and re.search(r'^(diff -ru |--- )', open(PATCH).read(), re.M):
         result = subprocess.run(['patch', '-p1', '-d', SNAP, '-i', PATCH, '--no-backup-if-mismatch'], capture_output=True, text=True)
         print(result.stdout.strip())
         if result.returncode != 0:
@@ -137,7 +139,7 @@ def make_patch(args):
     if os.path.exists(PATCH):                           # the notes at its head (what patch(1) skips) stay
         old = open(PATCH).read()
         cut = old.find('diff -ru ')
-        notes = old[:cut] if cut > 0 else ''
+        notes = old[:cut] if cut > 0 else old if cut < 0 else ''      # no hunk in it: all of it is notes
     open(PATCH, 'w').write(notes + text)
     print('wrote %s (%d lines)' % (PATCH, text.count('\n')))
     return 0

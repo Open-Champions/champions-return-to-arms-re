@@ -1053,6 +1053,18 @@ static void app_command(const std::string& text, uint64_t frame) {
             if (g_recorder.out.open(text.substr(text.find(w[1])).c_str())) g_recorder.first_frame = 0;
             else log_line("cannot write " + w[1]);
         }
+    } else if (w[0] == "option" && w.size() >= 3) {
+        // app option game_hud on|off | game_hud_text on|off | music_volume 0..1 (the Mac program's; settings.h)
+        bool off = w[2] == "off" || w[2] == "no" || w[2] == "0";
+        render::Gs& gs = g_renderer->gs;
+        if (w[1] == "game_hud") gs.hide_edge = off;
+        else if (w[1] == "game_hud_text") gs.hide_text = off;
+        else if (w[1] == "music_volume") { if (!apprt::set_music_volume(atof(w[2].c_str()))) log_line("app option music_volume: this program has no sound library"); }
+        else { log_line("app option: game_hud on|off, game_hud_text on|off, music_volume 0..1"); return; }
+        gfxrt::set_hud_marks(gs.hide_edge || gs.hide_text);
+        printf("[frame %llu] option: game_hud %s, game_hud_text %s%s\n", (unsigned long long)frame, gs.hide_edge ? "off" : "on", gs.hide_text ? "off" : "on",
+               w[1] == "music_volume" ? (", music_volume " + w[2]).c_str() : "");
+        fflush(stdout);
     } else if (w[0] == "view" && w.size() >= 2) {
         // app view NAME|next | set KEY VALUE | info   (fpview.h; as in app_main.cpp)
         if (w[1] == "next") fpview::cycle(1);
@@ -1188,6 +1200,9 @@ int main(int argc, char** argv) {
         else if (a == "--art-memory") overrides.push_back({"art_memory", next()});
         else if (a == "--frame-cap") overrides.push_back({"frame_cap", next()});
         else if (a == "--view") overrides.push_back({"view", next()});
+        else if (a == "--game-hud") overrides.push_back({"game_hud", next()});
+        else if (a == "--game-hud-text") overrides.push_back({"game_hud_text", next()});
+        else if (a == "--music-volume") overrides.push_back({"music_volume", next()});
         else if (a == "--view-set") { std::string kv = next(); size_t eq = kv.find('='); if (eq != std::string::npos) overrides.push_back({kv.substr(0, eq), kv.substr(eq + 1)}); }
         else if (a == "--pacing") { std::string way = next(); opt.queued = way == "queued"; if (way != "queued" && way != "ahead") { fail("--pacing ahead|queued", own_console); return 2; } }
         else if (a == "--plain") plain = true;
@@ -1355,6 +1370,11 @@ int main(int argc, char** argv) {
     renderer.gs.name_textures = !opt.set.art_pack.empty();
     gfxrt::install();
     fpview::install();                                  // (after gfx_rt's: it chains itself in front of the frame hook)
+    // the game's own HUD layer and its second group left out, the music's own volume (settings.h; "app option ...")
+    renderer.gs.hide_edge = !opt.set.game_hud;
+    renderer.gs.hide_text = !opt.set.game_hud_text;
+    gfxrt::set_hud_marks(renderer.gs.hide_edge || renderer.gs.hide_text);
+    if (opt.set.music_volume < 1.0) apprt::set_music_volume(opt.set.music_volume);
     // the picture of a look view: its centre on the walking direction, the kick of swings and hits (fpcontrols.h)
     fpview::on_view([](fpview::View& v, Ctx*, void*) {
         if (v.shown != v.mode) return;
@@ -1362,6 +1382,15 @@ int main(int argc, char** argv) {
         fpcontrols::apply_view(v.mode, forward, up);
         v.forward = {forward[0], forward[1], forward[2]};
         v.up = {up[0], up[1], up[2]};
+    });
+    // the strafe mode (the fix set's section, when the game has it): asked for by game message 4 through the
+    // section's own sender, from the draw pass - where the game's own HUD code sends its messages from
+    // (Not while another machine's controller rows are replayed - the replay rule of Pads::read: a game message is
+    // input like a row, and a replay is given its input whole.  A script may then set the mode itself: 13.2.)
+    fpview::on_drawn([](const fpview::View&, Ctx* c, void*) {
+        static const bool replayed = apprt::replaying();
+        int mode = fpcontrols::take_strafe_send();
+        if (mode >= 0 && !replayed) apprt::call_game(c, fpcontrols::STRAFE_SENDER, (uint32_t)mode);
     });
     if (getenv("RTA_GS_LOG")) renderer.gs.log_display = true;
     if (const char* keep = getenv("RTA_TEX_KEEP")) renderer.gs.texture_keep_frames = (uint32_t)atoi(keep);    // frames an unused texture is kept; 0 = for ever

@@ -274,7 +274,11 @@ PullDevice* open_timer_puller(unsigned rate, AudioSource* source) { return new T
 }  // namespace rta
 
 // ---- macOS: AudioQueue -------------------------------------------------------------------
-#if defined(__APPLE__)
+#if defined(RTA_AUDIO_HOST)
+// The device is the program this is part of: it supplies open_device_sink and
+// open_device_puller itself (tools/godot/lib/audio_host.inc: a host that asks for the sound).
+#include RTA_AUDIO_HOST
+#elif defined(__APPLE__)
 #include <AudioToolbox/AudioToolbox.h>
 #include <dlfcn.h>
 

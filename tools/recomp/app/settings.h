@@ -17,6 +17,11 @@
 //   view         = overhead   the camera: overhead (the game's own), action, chase, shoulder,
 //                             first; and view.<mode>.<name> = value for each view's own
 //                             numbers (fpview.h)
+//   game_hud     = yes        the game's own HUD layer (player status, gold, compass, minimap,
+//                             spell selector); no = left out of the picture (render/gs.h hide_edge)
+//   game_hud_text = yes       its second group: the boss meter, the one-line message and the
+//                             prompt box (hide_text)
+//   music_volume = 1          0..1: the game's music alone; speech and effects stay as they are
 //   frame_cap    = 60         pictures a second: 60, 30 (every other picture is shown), or
 //                             0 = no cap (the game then runs as fast as the machine: a
 //                             benchmark, not for playing).  The game itself always counts 60
@@ -42,6 +47,8 @@ struct Settings {
     std::string art_pack;
     int art_memory = 3072;
     int frame_cap = 60;
+    bool game_hud = true, game_hud_text = true;     // the game's own HUD layer / its boss meter, message and prompt box
+    double music_volume = 1.0;                      // 0..1, the music alone
     std::vector<std::pair<std::string, std::string>> view;     // "view" and "view.<mode>.<name>" lines, for fpview::setting
 
     static double parse_aspect(const std::string& text) {
@@ -71,6 +78,9 @@ struct Settings {
         else if (key == "art_pack") art_pack = value;
         else if (key == "art_memory") { art_memory = atoi(value.c_str()); if (art_memory < 64) art_memory = 64; }
         else if (key == "frame_cap") frame_cap = atoi(value.c_str());
+        else if (key == "game_hud") game_hud = !(value == "off" || value == "no" || value == "0" || value == "false");
+        else if (key == "game_hud_text") game_hud_text = !(value == "off" || value == "no" || value == "0" || value == "false");
+        else if (key == "music_volume") { music_volume = atof(value.c_str()); music_volume = music_volume < 0 ? 0 : music_volume > 1 ? 1 : music_volume; }
         else if (key == "view" || key.compare(0, 5, "view.") == 0 || key.compare(0, 9, "controls.") == 0) view.push_back({key, value});   // controls.*: fpcontrols::setting
         else return false;
         return true;
@@ -123,6 +133,9 @@ struct Settings {
         fprintf(f, "art_pack = %s            # a folder of replacement pictures; empty: the game's own art\n", art_pack.c_str());
         fprintf(f, "art_memory = %d         # megabytes of video memory the art pack may take\n", art_memory);
         fprintf(f, "frame_cap = %d           # pictures a second: 60, 30, or 0 for no cap (the game then runs fast: for measuring only)\n", frame_cap);
+        fprintf(f, "game_hud = %s            # the game's own HUD layer (status, gold, compass, minimap, spell selector); no: left out of the picture\n", yes(game_hud));
+        fprintf(f, "game_hud_text = %s       # the game's boss meter, one-line message and prompt box\n", yes(game_hud_text));
+        fprintf(f, "music_volume = %.2f      # 0 to 1: the game's music alone (speech and effects stay as they are)\n", music_volume);
         if (views) fprintf(f, "\n# the camera (docs/issues/native-first-person.md): distances in the game's units (a character is about 60 high), angles in degrees\n%s", views);
         fclose(f);
         return true;

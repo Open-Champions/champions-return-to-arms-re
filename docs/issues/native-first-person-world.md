@@ -14,16 +14,28 @@ named) or **Read**. Pictures are game output and stay under
 
 ## STATE (rewritten at every step; read this first after a stop)
 
-**2026-10-13 14:35 - phase 1 written (sections 1 to 6); phase 2 begun.**
+**2026-10-13 22:40 - phase 1 written (sections 1 to 6); phase 2 delivered as a patch and
+new files (section 7): the level's generated ceilings and skirts, triangles cut instead of
+dropped, textures in perspective, the object walk's cell boxes.**
 
-- **Ran:** 16 levels through the camera agent's views at fixed vertical blanks, 12 pictures
-  each (`local/recomp-fp-world/pictures/before/`, sheets in `before/sheets/<level>.jpg`),
-  and before that the same levels with the game's free camera at knee height (`p1/`).
+- **Ran:** 16 levels through the camera agent's views at fixed vertical blanks
+  (`local/recomp-fp-world/pictures/before/`, sheets in `before/sheets/<level>.jpg`), and
+  before that the same levels with the game's free camera at knee height (`p1/`).
 - **Measured:** 17 levels' geometry with `tools/recomp/render/worldfill_measure.py`
   (section 2); the sky domes of five levels; which of the 111 levels has a dome at all.
-- **Phase 2 (section 7):** my snapshot is the shared tree of 13:15 with the camera agent's
-  `fpview.patch` applied (`local/recomp-fp-world/root`, program `bin/rta_fpw`). Nothing of
-  phase 2 is delivered yet.
+- **Ran, phase 2:** seven levels before and after with everything on
+  (`pictures/fp-before/`, `fp-after/`, sheet `fp-after/before-after.jpg`), on the shared
+  tree as it stood at 22:20 (views, look controls, scene tap, the integrator's merges).
+  The overhead pictures of that tour are the same files with the parts on and off.
+- **Delivered:** `tools/recomp/render/fpworld.patch` (applies to the shared tree of 22:35
+  without a reject: dry run on a copy), new files `app/fpworld.h`, `fpworld.cpp`,
+  `render/worldfill.h`, `worldfill.cpp`, `worldfill_main.cpp`, `worldfill_measure.py`.
+- **Not done:** the texture-cell window (A4), the display list's size (A7), a paced
+  measurement at display resolution, `world.*` lines in the settings file, the Windows and
+  Godot build lists. Section 7.6 has the list.
+- The move of the workspace (2026-10-13 evening): nothing of `local/recomp-fp-world/` was
+  among the files that did not come across; the snapshot was taken again from the shared
+  tree twice since (`base.stamp`).
 
 Where things are:
 
@@ -31,9 +43,12 @@ Where things are:
 |---|---|---|
 | this catalogue | `docs/issues/native-first-person-world.md` | yes |
 | the measuring tool (reads a `.world`, prints figures) | `tools/recomp/render/worldfill_measure.py` | yes |
-| my copy of the sources, my builds | `local/recomp-fp-world/root` (`tools/recomp` = sources, `local/recomp-out/bin/rta_fpw`), `base/` = the shared tree at 13:15, `base-fp/` = that with `fpview.patch` | no |
+| the game side of phase 2: switches, hooks, the fill at a level load | `tools/recomp/app/fpworld.h`, `fpworld.cpp` | yes |
+| generated geometry (ceilings, skirts) as mesh lists | `tools/recomp/render/worldfill.h`, `worldfill.cpp`; `worldfill_main.cpp` builds it from a `.world` file without the game | yes |
+| changes to files other work owns | `tools/recomp/render/fpworld.patch` (merge notes at its head) | yes |
+| my copy of the sources, my builds | `local/recomp-fp-world/root` (`tools/recomp` = sources, `local/recomp-out/bin/rta_fpw`), `base3/` = the shared tree the patch is made against | no |
 | scripts: routes, sheets, level unpacking, dome measuring | `local/recomp-fp-world/work/` (`mkview.py`, `tour.sh`, `sheet2.py`, `extract.py`, `domes.py`, `domegeo.py`; `mkground.py` = the free-camera route) | no |
-| pictures | `local/recomp-fp-world/pictures/` (`before/`, `p1/`, later `after-*`) | no |
+| pictures | `local/recomp-fp-world/pictures/` (`before/`, `p1/`: phase 1; `fp-before/`, `fp-after/`: phase 2; `x1/`, `t1/`: the cut beside a wall, textures in perspective) | no |
 | run logs | `local/recomp-fp-world/runs/` | no |
 | unpacked level files, measurements | `local/recomp-fp-world/work/levels/`, `work/measure.txt`, `measure.tsv`, `domes.txt` | no |
 
@@ -151,12 +166,12 @@ and far mountains below and around, and the top left open because it was never o
 
 | # | Seen | Cause | Evidence |
 |---|---|---|---|
-| A1 | **Holes in the ground at the feet**, wedges of sky colour at the lower corners; in chase and shoulder whole floor tiles missing beside the character (`before/valor-c0.png`, `before/citadel-c0.png`; grossly in `p1/valor-fp0.png`, `p1/storm1-fp2.png`, `p1/fire1-fp2.png`) | **The game never clips a triangle; it drops it.** When a chunk's or a model's box is not wholly inside the 80-degree plane set, the vertex program walks the finished strip and sets the no-draw bit of every vertex whose triangle has a corner more than 1000 pixels from the centre of the 1280 x 448 buffer, or behind the eye (`render-pipeline.md` 4.5, "clip rejection"). From 400 units up every floor triangle is small on screen; at eye height the floor tile under the camera reaches behind it and goes whole | Read; Ran (the pictures) |
+| A1 | **A wall one stands against is gone, and the view goes through it; a character close to the camera is a mess of shards** (`x1/cmp-nitdung1-0-f1.jpg`: first person 14 units from a dungeon wall, black where the wall is; `x1/cmp-nitdung1-0-d0.jpg`; `x1/cmp-citadel-0-c1.jpg`: the chase camera pulled in behind the character). With the free camera at knee height also holes in the floor at the feet (`p1/valor-fp0.png`, `p1/storm1-fp2.png`); **not** at the views' own heights in open ground: the wedges of `before/valor-c0.png` and `before/citadel-c0.png`, first put down to this, are a chase camera standing inside the rock | **The game never clips a triangle; it drops it.** When a chunk's or a model's box is not wholly inside the 80-degree plane set, the vertex program walks the finished strip and sets the no-draw bit of every vertex whose triangle has a corner more than 1000 pixels from the centre of the 1280 x 448 buffer, or behind the eye (`render-pipeline.md` 4.5, "clip rejection"). From 400 units up every triangle is small on screen; a wall or a floor tile beside the camera reaches behind it and goes whole | Read; Ran: with the cut of section 7.2 off and on at the same blanks, 20 to 36 % of the picture changes beside a wall and nothing in open ground |
 | A2 | Textures swim on near floors and walls as the view turns | **Texturing is not perspective-correct**: the programs send texel coordinates (`UV`), not S, T, Q, so the GS interpolates across the screen. Invisible on small triangles far away; a floor triangle that crosses half the picture bends its texture | Read (`native-godot.md` stage 4; `world.md`: the GIF tags are UV, RGBAQ, XYZF2) |
 | A3 | The near plane | The projection's depth range is a constant: **near 18, far 1800** (`camera_setView`), 16-bit depth, larger = nearer, 65535 at 18 units. The camera agent's views pass their own near (4 in first person) through `gfx_rt`. With near 4 the 16-bit depth has a step of 0.61 units at 400 and 12 units at 1800 (step = z x z / (16 B), B = 4094.94 x far x near / (far - near) = 16,416; with near 18, B = 74,453, it is 0.13 and 2.7) - **far walls and floors fight over depth** | Read; not yet measured in a picture |
 | A4 | Things pop in at a distance while walking; the far corners of a wide view end in a saw-tooth edge | **Texture cells.** A chunk whose 720-unit texture cell is not loaded is not drawn (`world_drawChunk` 0x1887b8), and only the 3 x 3 cells round one point are kept (`worldtex_stream` 0x17d830: nine slots). For the overhead camera that is everything on screen. The camera agent hands the streamer `eye + forward x 600` in a view: the level is then there **1320 to 2040 units ahead, 120 to 840 behind, and 720 to 1440 to either side of that point** - at 1300 ahead a 16:9 view of 70 degrees is 1620 wide to each side | Read |
 | A5 | The far plane | `g_farClip` 0x7d8a04 is **1800 in every level looked at** (the game's own cap); cutscenes lower it (`far clip = a x 12`). It is the plane chunks and objects are culled by. Beyond 1800 there would be more level in the big outdoor ones (fire1 is 7,000 across) but the cells of A4 end sooner | Ran (read at run time in 13 levels) |
-| A6 | Objects - creatures, props, pick-ups - vanish when the view looks up | `world_drawObjects` 0x14b168 walks the object grid (cells of 256 units) and tests each cell **as a box from the camera's height to 840 below it**. Under a camera that looks up by more than half its field of view the lower plane of the frustum rises above the camera's height and no cell passes. First person looks up to 65 degrees; half of a 70-degree view is 35 | Read; to be shown in a picture (section 7) |
+| A6 | Objects that stand **higher than the eye and more than a grid cell away** are left out when the view looks up (not seen in any picture: see the evidence column) | `world_drawObjects` 0x14b168 walks the object grid (cells of 256 units) and tests each cell **as a box from the camera's height to 840 below it**. Under a camera that looks up by more than half its field of view the lower plane of the frustum rises above the camera's height; a cell far from the camera then lies wholly under the view and its objects are never asked, whatever their own height. The cells at the camera itself still pass (the box touches the eye) | Read. Ran: first person looking 55 degrees up in hub, drunare, arachna1 and beside the boss of islsm1, the walk as it is and with the cell boxes raised (7.3): the same pictures - the boss's club stays in view either way, because he stands in the camera's own cell. No stop of the tour has a far object above the eye; the first reading of this ("every object vanishes") was wrong |
 | A7 | The display list | One frame's list holds 35,000 units; `world_draw` **returns** and the object walk stops when fewer than 3,000 are left (`native-graphics.md` 1.2). The fullest frame of the tour took 24,984 (16:9; the overhead view: 21,358). A wider or deeper view runs out, and what is lost is whatever came last: objects | Ran (the program's own report) |
 | A8 | Creatures far ahead stand still | Activity is a distance to a *player*, not the screen: 600 units for a creature (`obj_updateActive` 0x14db08), cull radius + 480 for a prop. The overhead view shows 430 to 560 units; a view along the ground shows 1300 and more. The asleep ones **are drawn** (the draw walk does not ask for activity) in their last pose | Read (`native-graphics.md` 1.3) |
 | A9 | Scenery animations, emitters and lights only where they were drawn | Emitter and light chunks run in `world_drawChunk` (they are "drawn" to run); scenery models advance in `world_draw`. All follow the frustum of the view that is drawn - more of them run under a far view, and the 16 light slots (least recently drawn is replaced) are shared by more lights | Read |
@@ -227,6 +242,7 @@ wat1, 0 in citadel, fearboss, fire1. `g_farClip` 1800 in all.
 - First person at 60 over the feet with a 70-degree view sees the floor from 86 units
   ahead; looking 30 down from 30 ahead. A1 is worst there.
 - Near 4 costs depth precision (A3).
+- With the fill on (7.1) a ceiling is drawn only where the eye is under it, so a camera above a lid is not blinded; the ceiling's height over a floor point is in `render::current_fill()`'s meshes.
 
 ## 6. For the Godot work
 
@@ -239,12 +255,171 @@ wat1, 0 in citadel, fearboss, fire1. `g_farClip` 1800 in all.
   about 1300 units (the cells of A4), start at 300 to 500; colour = the clear colour where
   there is no dome, the dome's horizon band where there is one. Interiors (clear colour
   black): fog to black is what the game's own darkness already does.
+- **Generated geometry**: `render::current_fill()` (`tools/recomp/render/worldfill.h`) gives the loaded level's ceilings and skirts as blocks of triangles in world space (position, normal, a tiling coordinate, a grey level, alpha for the skirt's fade) with a serial number per build; `app/fpworld.cpp` builds and publishes it when a level is first drawn in a view (or call `render::build_fill` on the `.world` yourself - `worldfill_main.cpp` shows how). Section 7.1 says what is in it.
 - Draw two-sided (section 2, 6); the level's light is in its textures (C2); the blob shadow
   is the game's quad (C3) and can be told apart by its texture being a surface.
 
-## 7. Phase 2: what is done about it (in progress)
+## 7. Phase 2: what is done about it
 
-Order: A1 (clipping instead of dropping), A6 (the object walk under a camera that looks
-up), A7 (the list), A4 (cells), then B1 / B5 (generated ceilings and skirts through
-`tools/recomp/render/worldfill.h`). Nothing delivered yet; this section is rewritten as
-each lands, with pictures before and after.
+All of it is switched by `world = views | off | always` (default `views`: only while a view
+other than overhead is drawn) and one switch per part; command line `--world KEY=VALUE`,
+script and control socket `app world set KEY VALUE`, `app world info` (figures), runtime
+options `--opt world-clip=off` and the like. With the overhead view selected none of it runs:
+the seven overhead pictures of the tour are the same files with everything on and with
+`world=off` (`work/cmp.py pictures/fp-before pictures/fp-after`). Nothing writes a word the
+simulation reads: the hooks are on draw functions (`frustum_testBox`, `world_draw`,
+`world_drawChunk`, the object walk) and change, for the length of a call, a box on the
+caller's stack and nothing else; the fill is built from the level's terrain by reading it.
+**Not run:** a tick-for-tick comparison with the rig (the camera work's section 5 is the
+place; the argument above is Read, not shown).
+
+### 7.1 Ceilings and skirts: `render/worldfill.h` (Ran)
+
+**What is generated, from what.** `render::build_fill` reads the level's `.world` - the
+file's bytes, or the fixed-up structure in the machine's memory - and uses only its terrain
+(the height samples every 4 units, which are the top surface of everything) and its path
+grid (where the floor is), plus the boxes of the chunk records:
+
+- the **floor** is flooded from the path nodes over ground that steps by at most 10 a
+  16-unit cell;
+- a **wall that carries a ceiling** is a cell beside the floor whose top is 70 or more over
+  it and is not itself walked (the edge of a gallery over a lower court is not a wall: the
+  first version hung the court's ceiling at the gallery's feet and hid the far side of
+  `honor`);
+- the **ceiling** over a floor cell is the lid of the nearest such wall plus half the
+  distance to it (a corridor 100 wide gets 25 at its middle, a court 1000 wide 250: with a
+  small fixed rise the far buildings of a wide hall were hidden behind the ceiling), never
+  nearer than 96 to the highest floor within 190 units, never under anything the level
+  draws there (the chunk boxes: awnings, arches, pillar crowns are drawn and not in the
+  terrain - the arena's awnings were cut off before this), smoothed, and carried 190 units
+  on over the lids and over gaps;
+- a **skirt** starts at the level's outer rim where the rim is a lid (40 or more over the
+  nearest floor, or no floor near) and runs 480 units outward, sinking 12 %, its alpha
+  falling to nothing; a floor that ends at the rim gets none.
+
+Built in 1 to 35 ms a level; 18,000 (arena) to 240,000 (honor) triangles, in blocks of
+128 x 128 units with their own boxes.
+
+**What is the game's and what is not.** None of it is the game's art: a vertex has a
+position, a normal, a place for a tiling texture (world x, y / 64) and a grey level (how
+near the next wall is; a skirt: how far out). The OpenGL program draws a ceiling plain and
+dark (grey x 0.10 x the level's base light, slightly warm: 25 of 255 at a wall, 15 in the
+middle of a hall) and a skirt in the clear colour x 0.6; **Godot takes the meshes from
+`render::current_fill()` and shades them itself.**
+
+**Which level gets what** (`app/fpworld.cpp`, `level_fill`; `world.ceilings`,
+`world.skirts` = `auto | on | off`):
+
+| | auto means | Why |
+|---|---|---|
+| ceilings | the level clears to black, has no sky dome, **and** is walled: the wall cells that would carry a ceiling make up a tenth of the walked floor's area or more | measured: dungeon 0.26, cave 0.23, arena 0.17, scrap-yard 0.13; a night swamp 0.06 and a night forest 0.01 clear to black too and must not be roofed. `citadel` (halls, but a cloud bowl and a maroon clear colour) gets none by this rule: `world.ceilings = on` forces it. Only the 17 levels of section 2 and `honor`, `inmine1` were looked at; the other 92 follow the rule unseen |
+| skirts | the level has no sky dome | a dome is a bowl of cloud under a floating level or a painted horizon: there the rim is the design |
+
+**How it reaches the picture** (OpenGL program): at a level's first drawn frame the fill is
+built and published; every frame of a view the game side puts a note in the stream in
+front of the frame's first level-chunk packet (after the sky, before everything blended)
+with the frame's own view-projection matrix, eye, clear colour and base light;
+`Gs::draw_fill` culls the blocks, cuts at the near plane and adds plain triangles to the
+list (depth tested and written like the level's own; 5,000 to 6,000 triangles a frame in
+the tour). **A ceiling is drawn only where the eye is under it**: a camera that has got
+above one (a chase camera over a lid) looks through it as before, instead of at its back.
+A recorded stream has the note but not the meshes: it plays without the fill.
+
+**Seen** (`pictures/fp-after/before-after.jpg`; pairs `fp-after/ba-<name>.jpg`; whole
+levels `fp-after/sheets/`):
+
+| Level | Before | After |
+|---|---|---|
+| nitdung1 (dungeon) | black above every wall (`fp-before/nitdung1-u1.png`) | a dark vault that meets the wall tops (`fp-after/nitdung1-u1.png`) |
+| honor (halls round a court) | black above; the far buildings stand against nothing (`fp-before/honor-f0.png`) | a tent of dark over the court, the far buildings under it (`fp-after/honor-f0.png`, `honor-s1.png`) |
+| inmine1 (mine) | black between the beams (`fp-before/inmine1-u0.png`) | closed (`fp-after/inmine1-u0.png`, `inmine1-f2.png`) |
+| arachna1 (cave) | black over walls 223 high: little of it in view | closed (`fp-after/arachna1-u1.png`) |
+| drunare (arena) | black over the awnings | a ceiling above the awnings (`fp-after/drunare-u0.png`) |
+| valor, fire1 (outdoor) | - | no ceiling (the rule); a skirt beyond the rim, not in view from the stops of the tour: **not shown in a picture** |
+
+What it does not do: it is not textured (a level chunk's texture is its own pre-lit
+picture, resident only with its cell: none can be borrowed for a ceiling); a ceiling is a
+height field like the level, so it does not go *under* an upper floor; a wide hall gets a
+tent, not architecture.
+
+### 7.2 Cut instead of drop, and textures in perspective (Ran)
+
+`render/gs.cpp`, `Gs::world_run`; `render/vif1.cpp`, `no_reject`. For strips kicked by the
+four mesh programs into the 3-D buffer, while a view is drawn:
+
+- **The vertex programs keep the whole number.** They make integers for the GS by adding
+  2^19 + 2^11 to X and Y and 2^65 to the depth and letting the GS take the low bits
+  (`render-pipeline.md` 4.3). What lies in VU1 memory at the kick is the float: a position
+  3,000 pixels off the centre, a depth beyond the near plane, a point behind the eye (where
+  x / w is still the right projective coordinate). `world_run` reads that instead of the 16
+  bits.
+- **w comes back from the depth**: depth = A + B / w with the view's own near and far
+  plane, which the game side sends with every frame (notes NUM 0xB0 / 0xB1). The float
+  keeps the depth to 1/16 of a unit of the 16-bit buffer, so w is known to 0.2 units at 1800
+  with near 18 and to 0.8 units with near 4 - enough for the texture; the depth *buffer's*
+  own step (A3) is unchanged.
+- **The programs are started without their clip flag** (`ITOP` before entry 0x16 for a
+  chunk, before 0x02 for a model), so their second loop - the one that drops - does not
+  run, and the GS model cuts every triangle that crosses the near plane, in the space
+  before the division; one wholly behind it is left out.
+- **Textures in perspective**: a vertex is given (u q, v q, q) with q = near / w; the
+  backend's shader has always divided by q, so no backend changes. Colours stay
+  interpolated across the screen.
+
+**Seen**: beside a wall, `x1/cmp-nitdung1-0-f1.jpg` (the wall is there), `cmp-nitdung1-0-d0.jpg`,
+`cmp-citadel-0-c1.jpg` (the character is whole); in the last tour 352,660 triangles cut and
+5.8 million left out as wholly behind the eye, none with a corner on the eye's plane.
+Perspective: `t1/cmp-nitdung1-d0.jpg` (the floor's stones keep their shape; mean difference
+7 of 255 over the picture). Models go the same way: a character half behind the camera is
+cut, not broken.
+
+**For Godot**: not needed (it draws the packets' complete geometry) and not compatible
+with the scene tap's count check - merge notes at the head of the patch.
+
+### 7.3 The object walk (Ran; nothing to show)
+
+`gfxrt::object_walk` hands the walk to `fpworld`; for its length a cell box that
+`frustum_testBox` is asked about is taken from 840 below the eye to **600 above it**
+(`world.objects`). About 400 boxes a frame are widened. See A6: no picture of the tour
+changes, because no stop has a far object above the eye; it is kept because it is right
+and costs nothing, and said here as unproven in a picture.
+
+### 7.4 Figures the game side counts (Ran)
+
+`app world info` prints, per pass: chunks drawn, chunks in the frustum **not** drawn
+because their texture cell is not loaded or their texture is still on its way, box tests,
+display-list units. With the shared tree of the afternoon (far plane 1800 in a view): 69
+to 226 chunks drawn and **120 to 215 not drawn for want of their texture cell** in valor,
+nitdung1 and citadel - A4 in numbers. With the tree of the evening (the camera work now
+culls nearer) the last passes of the tour have none missing. `--opt world-nocull=1` (a
+test aid) makes every box pass the frustum test: what is missing then is not culled, it is
+not there.
+
+### 7.5 Speed (Ran, on a machine that was never free)
+
+The seven-level tour, off screen, not paced, 1280 x 720, 4 samples, load average 40 to 80
+beside it: 193.8 pictures a second of wall time with `world=off`, 177.6 with everything on
+(5.2 and 5.6 ms a picture); an earlier pair of the same tour gave 235 and 204. Two-level
+runs with one part on at a time did not separate the parts from the noise (348 off, 362
+cut and perspective only, 316 fill only, 255 all - the order is not even monotonic).
+**Not measured:** paced at display resolution with the interval histogram of
+`native-app.md` section 11; processor time by thread. The fill adds 5,000 to 6,000
+triangles a frame to a list of 60,000 to 90,000.
+
+### 7.6 Left
+
+- **A4, the texture-cell window.** The streamer has nine slots and loads the 3 x 3 cells
+  round one point; chunks outside are not drawn (or, since the camera work's change, drawn
+  with whatever texture they have). A wider window means more slots than the game's
+  fixed tables hold (the slot index is a signed byte per cell at 0x41c1b8, nine pointers
+  at 0x425df8, a block map of 128 x 128 KB) - a host-side cache of whole `.TEX` files
+  (0.85 to 47 MB a level) beside the game's nine would do it, with the chunk's texture
+  header looked up there when its cell is not resident. Not started.
+- **A7, the display list** (35,000 units): the fullest frame of the last tour took 19,430.
+  Not touched.
+- **A8**: creatures beyond 600 units stand still. Left on purpose (a larger radius changes
+  the simulation).
+- The skirt was not seen in a picture; its colour in the OpenGL program is a guess.
+- `world.*` lines in the settings file; the Windows build list; the fill in recorded
+  streams.
+- Levels not looked at: 92 of 111. The ceiling rule decides for them unseen.

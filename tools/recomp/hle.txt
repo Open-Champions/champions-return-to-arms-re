@@ -20,6 +20,8 @@
 1df720   # hud_drawCompass
 1e42e0   # minimap_draw
 1dd270   # hud_spellSelect
+1d93b0   # hud_drawBossMeter: the boss meter and the one-line message (a host with its own HUD can leave them out: Gs::hide_text)
+1d99f0   # hud_drawPromptBox: the interaction prompt's box (also the spell selector's)
 1907d0   # glow_draw: screen-space quads at places in the world
 18fe18   # particle_drawHaze
 1c1108   # inventory_drawTask: a 3-D figure inside a 4:3 menu

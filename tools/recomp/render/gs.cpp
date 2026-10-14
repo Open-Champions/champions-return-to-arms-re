@@ -995,6 +995,7 @@ void Gs::rebuild_state() {
     cur_wide = buffer_width == 1280;
     // the game's own HUD layer switched off: what its draw functions put into the 3-D buffer without a depth test
     if (hide_edge && cur_wide && c.ztst == 1 && layout.mode() == Layout::M_EDGE) g_skip_draw = true;
+    if (hide_text && cur_wide && c.ztst == 1 && layout.mode() == Layout::M_TEXT) g_skip_draw = true;
     if (cur_wide && layout.active() && ((cur_path != 0 && c.ztst == 1) || layout.mode() == Layout::M_MENU3D)) {
         float x0 = (float)c.scissor[0], x1 = (float)c.scissor[2];
         if (layout.scissor(x0, x1)) { c.scissor_moved = true; c.scissor_x[0] = x0; c.scissor_x[1] = x1; }

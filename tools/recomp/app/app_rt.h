@@ -8,7 +8,13 @@
 #include <cstdint>
 #include <string>
 
+struct Ctx;     // the translated code's registers (rt/recomp.h)
+
 namespace apprt {
+
+// A function of the game called from a call-out that has the translated code's registers (the view's on_view /
+// on_drawn): one argument, the registers put back afterwards.
+void call_game(Ctx* c, uint32_t address, uint32_t a0);
 
 // What the script (--script, --do) holds on a port right now.
 rta::PadState script_pad(unsigned port);
@@ -33,6 +39,10 @@ void set_finish_handler(void (*handler)());
 
 // The game's threads started from now on are scheduled as the player's own (host.h).
 void interactive_threads();
+
+// The volume of the game's MUSIC alone, 0..1 (sound/drivers.cpp: stream 2 of the stream driver; speech and effects
+// stay as they are).  False when the program has no sound library.  Any thread.
+bool set_music_volume(double volume);
 
 bool films_linked();            // app/film.cpp is part of this program (the films play)
 void films_report();

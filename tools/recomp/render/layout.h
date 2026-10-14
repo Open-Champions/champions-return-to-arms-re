@@ -40,7 +40,9 @@
 namespace render {
 
 struct Layout {
-    enum Mode { M_NONE = 0, M_EDGE = 1, M_WORLD = 2, M_BILLBOARD = 3, M_MENU3D = 4 };
+    // M_TEXT: the game's boss meter, one-line message and prompt box - laid out as unmarked 2-D things are (about the
+    // centre); the mark only says who drew them, so that a host with a HUD of its own can leave them out (Gs::hide_text)
+    enum Mode { M_NONE = 0, M_EDGE = 1, M_WORLD = 2, M_BILLBOARD = 3, M_MENU3D = 4, M_TEXT = 5 };
     enum Anchor { A_NONE, A_CENTRE, A_LEFT, A_RIGHT };
     float k = 1.0f;                     // of the lists being decoded
     uint16_t mark = 0;

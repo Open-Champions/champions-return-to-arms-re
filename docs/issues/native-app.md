@@ -1788,3 +1788,147 @@ $B/rta_app --offscreen --unpaced --size 960x540 --aspect 16:9 --data $S/fp/look/
 (mkdir -p R/tools R/local && cp -R tools/godot R/tools/ && ln -s $PWD/tools/recomp R/tools/recomp && ln -s $PWD/local/recomp-out R/local/recomp-out \
    && python3 R/tools/godot/build.py snapshot && python3 R/tools/godot/build.py lib)    # the Godot library from the merged tree, in a stand-in root R
 ```
+
+## 13. Tonight's fix set, the strafe wiring, the second HUD group and the music volume (2026-10-13, from 21:35; kept current as the work goes on)
+
+Owner of `tools/recomp/rt`, `render`, `app`, `sound`, `net` and `tools/recomp/hle.txt` in
+place, in the new home `~/champions-re` (`docs/issues/workspace-move.md`). Helpers and
+results of this section: `local/recomp-out/app-test/s13/` (nothing of it is in the
+repository). Every statement says **Ran** or **Read**.
+
+### 13.0 STATE (rewritten at every step; read this first after a stop)
+
+**21:55 - merged, built, standing checks and the views' comparison passed; the lobby pair runs.**
+
+- Merged into the shared tree (13.1): the controls work's delta (`apprt::call_game`, the
+  `fpview::on_drawn` call-out that sends the strafe mode), `1d93b0` and `1d99f0` in
+  `hle.txt`, then all of `tools/godot/recomp.patch`. New here: the HUD switches and the
+  music volume reachable in the stand-alone program (13.3); the replay rule also holds
+  the strafe message back (13.2).
+- Built 21:50 (the candidate m2): `bin/rta_app_next` (fix set of 20:44: "patched: 189
+  words of 31 sections"; it announces **patch set 9ac29719 (189 words)** - Ran, a short
+  run off screen) and `bin/rta_app_orig_next`. By-products `bin/rta_native_fix`,
+  `bin/rta_native` rebuilt 21:41.
+- `bin/rta_app` is still f3 of 14:37 (the owner's running copy, pid 17482, is that file).
+- Passed on m1 (the build of 21:41, before the replay rule for the message): 11 + 11
+  pictures, 60 tour pictures, the rig comparison three ways (13.2). **To repeat on m2
+  before it is put in place.** The views' comparison (13.2) was run on m2's sources.
+- Running now: `s13/pair.py online/pair-m2` (two test windows on this Mac's lobby).
+- Not yet: the switches measured (13.3), `bin/rta_app` replaced, Godot, Windows.
+- Found: **the owner's launcher file on the Desktop is evicted by iCloud** ("dataless":
+  `stat -f %Sf`; a `cat` of it hung for two minutes and was stopped): 13.5.
+
+### 13.1 What was merged (Ran: each dry run first)
+
+| Piece | What went in | Note |
+|---|---|---|
+| the controls work's delta (`app/fpcontrols.patch` as rebased 15:22) | `app/app_rt.h`, `app_rt.cpp`: `apprt::call_game(Ctx*, address, a0)`; `app/app_main.cpp`: the `fpview::on_drawn` call-out that calls the section's sender (0x215c98) with the mode `fpcontrols::take_strafe_send()` asks for; the same call-out in `app/win_main.cpp` | The patch is cut against the tree BEFORE the first controls merge, so as a whole it does not apply any more: `patch --dry-run -N` takes the two `app_rt` hunks and calls the rest applied or failed (the Windows files were merged by hand at 14:43). The delta is exactly the difference between the patch as merged at 14:27 and the patch of 15:22 (39 lines; `fpcontrols.cpp`, `fpcontrols.h` of 15:22 were already in the tree, `build.py --extra-pnach` too). Afterwards the tree's `app_main.cpp`, `app_rt.*` are the controls work's own files (`local/recomp-fp-controls/src/app`) plus section 12's two additions (`apprt::replaying`, `app pointer`) |
+| `hostlook::state()` | stays: `app/look_host.h` and `look_mac.mm` as they are in the repository now (the 18 lines of 12.10 that commit 86952c7 had taken out and the restore work put back). The controls work's own copies of the two files (`local/recomp-fp-controls/src/app`, 14:23) simply do not have the function; nothing else differs between them and the tree's | `app pointer` (12.10) needs it |
+| `tools/recomp/hle.txt` | `1d93b0` (`hud_drawBossMeter`), `1d99f0` (`hud_drawPromptBox`), after `1dd270`; both translations made again | first, as the patch's notes ask |
+| `tools/godot/recomp.patch` | all six files, no reject: `app/gfx_rt.cpp` (`M_TEXT`, the two wrappers), `render/gs.cpp`, `gs.h` (`Gs::hide_text`), `render/layout.h` (`Layout::M_TEXT`), `sound/drivers.cpp` (`rta_sound_set_music_gain`), `sound/audio_out.cpp` (`RTA_AUDIO_HOST`: only a build that defines it is changed) | the patch as it was: `s13/godot-recomp.patch.before-merge` |
+| `tools/recomp/net2/net2.patch` | **not merged** (the online work is still proving it); `net/netdrv.cpp` is untouched | |
+
+### 13.2 The standing checks, the views, strafing (Ran)
+
+**The candidate m1** (21:41; `s13/verify.sh m1`, `s13/tour.sh m1` - section 12's scripts,
+the tour from the last verified route as `workspace-move.md` says):
+
+| Check | Result |
+|---|---|
+| 11 tick-keyed pictures, default picture and `--plain` | the same files with the fast renderer, the reference switches, against `det/prev-fast`, `prev-plain-fast` and against f3's (`s13/verify-m1.txt`) |
+| the tour, 20 levels | 60 pictures the same fast, reference, against `tour/prev-fast` and f3's; no time-out (`s13/tour-m1.txt`) |
+| the rig comparison, overhead (`rta_app_orig_next`: the unpatched translation with the two new HUD wrappers) | `merge/rig-final-compare.txt` byte for byte, three ways (`--plain` fast, `--plain` reference, default picture) |
+
+The new fix set changes none of the 71 pictures; the two new wrappers change nothing in
+picture or simulation.
+
+**Each view's comparison** (`s13/fp/rig.sh`, after `s12/fp/rig.sh`: the fight session,
+the rig's controller rows replayed, the view selected from power-on; `s13/fp/cols.py`
+compares two tick logs column by column). Three programs:
+
+| Program | overhead | action, chase, shoulder, first |
+|---|---|---|
+| the unpatched translation (`rta_app_orig_next`) | the result file is `merge/rig-final-compare.txt` | each view's result file is **byte for byte f3's** (`s12/fp/rig/VIEW[-f3]/compare.txt`); against overhead every simulation column is identical in all 7,797 rows, the object pool's sum and the cosmetic seed differ (12.10) |
+| the unpatched game **with the strafe section and nothing else** (`s13/root`: a stand-in root of this work, `recomp.py --section "Net test: strafe mode ..."`, 84 words; `rta_app_orig_strafe`), the mode never set | the same file | **the tick log of every view is the same file as the unpatched program's** (`cmp`, 7,797 rows x 27 columns, the player record's and the pool's sums among them). This is the single-machine form of "a no-op for everyone who does not use it" that `native-first-person-controls.md` 3.5 lists as not run |
+| the same program, **the mode switched on** at tick 30 of `valor` by the section's own sender (`call 0x215c98 1` in the script; the mode byte read back 1 at ticks 40 and 3000) | against the rig's log of the original: the four episodes before `valor` are the same lines; in `valor` the facing differs from tick 31 (the character turns to the look where it stands: 14960 -> 18625), the position from tick 1502 (the first tick it runs: along the stick instead of along the facing), then the fight goes another way (seed and hit points from tick 2411, experience from 4545) and ends in a death and a reload at tick 4994 where the original's player lived. **A rule change, as documented** (controls notes 3.1): facing and velocity direction first, everything else as a consequence | **every view is identical to overhead in every simulation column** in all 7,794 rows (pool and cosmetic seed differ, as without the mode): the views do not interact with the section |
+
+**The replay rule now covers the strafe message** (`app_main.cpp`, `win_main.cpp`, the
+`on_drawn` call-out): in the first run of the third row the mode byte was 1 for one tick
+only - the application saw a mode it had not asked for (in a replay the controls report
+the view "overhead", 12.10) and switched it off through the sender in the next draw
+pass. Playing, that is what it should do. In a replay a game message is input like a
+controller row, so the application now sends none of its own while rows are replayed
+(`apprt::replaying()`); a script may then hold the mode itself.
+
+**The lobby game** (`s13/pair.py`: the controls work's `pair.py` pointed at THIS Mac's
+lobby - the one that runs from `server/upstream-fresh` on the usual ports, pid 26138;
+`--port-shift 0`, the server given as this computer's own address, `net-local-only=1`,
+throw-away names; two small silent test windows; `s13/online/pair-m2`, candidate m2):
+
+- host in **first person**, played by the controls' test input (mouse turns, stick look,
+  walking, strafing, strikes, blocks, casts, a change of view now and then); joiner in
+  **overhead** with drawn input. Nobody tells the game to strafe: the application asks
+  for the mode itself (`controls.strafe` at its default).
+- **4,282 ticks in step, through the change from `hub` into `drunare`**, one death. Both
+  copies name the set to each other: "patch set 9ac29719 (189 words): the same as this
+  copy".
+- **No shared column differs in any tick** (`s13/paircols.py`, apart from the driver's own
+  verdict: 28 columns - seed, the previous tick's sync hash, both players' position,
+  state, hit points, gold, experience, facing word, yaw word and **mode byte**, object
+  +0x47e).
+- The strafing (`s13/runstats.py`): player 0's mode byte on in 2,548 ticks, switched 10
+  times (the application asked 10 times), 275 of its 644 running ticks sideways or
+  backwards; player 1's byte 0 throughout; the mode bytes the same on both machines in
+  every tick.
+
+### 13.3 The game's own HUD and the music's volume in the stand-alone program (Ran)
+
+The Godot patch brought the two switches and the gain; nothing in `rta_app` reached them.
+Now (`app/settings.h`, `app_main.cpp`, `win_main.cpp`, `app_rt.*`):
+
+| What | Command line | Settings file line | While running (script, control socket) |
+|---|---|---|---|
+| the game's HUD layer (status, gold, compass, minimap, spell selector) | `--game-hud on\|off` | `game_hud = yes\|no` | `app option game_hud on\|off` |
+| its second group (boss meter, one-line message, prompt box) | `--game-hud-text on\|off` | `game_hud_text = yes\|no` | `app option game_hud_text on\|off` |
+| the music alone | `--music-volume 0..1` | `music_volume = 0.25` | `app option music_volume 0.25` |
+
+The names are the library's (`rtag_set_option`). Defaults leave everything as it was
+(the 71 standing pictures are the proof). A first start writes the three lines into
+`settings.txt`; a file without them (the owner's of 15:10) means the defaults.
+`apprt::set_music_volume` is new; the marks that say who drew what are sent at 4:3 too
+while either group is left out (`gfxrt::set_hud_marks`).
+
+**The HUD switches** (candidate m2, off screen, 1280 x 896):
+
+- The 11 tick-keyed pictures with `--game-hud off`: the title picture is the same file,
+  the other ten differ (the status frame is gone: `s13/hud-hub-sheet.png`). None of the
+  eleven shows the second group, so `--game-hud-text off` changes none of them.
+- Two short routes that do show it (`s13/hudtext/`: the HUD work's routes - a few steps
+  to the character one can talk to in the first level, tick 260; a boar given the
+  MiniBoss bit in `valor`, tick 2520). Four pictures each (`prompt-sheet.png`,
+  `boss-sheet.png`), compared pixel by pixel (`hudtext/cmp.py`): `game_hud off` removes
+  the status frame and nothing else (box x 17..327, y 54..159); `game_hud_text off`
+  removes the prompt box ("Talk to Firiona Vie"; x 416..865, y 758..823) or the boss
+  meter (x 418..841, y 820..867) and nothing else; both off removes both; the same at 4:3
+  (`--plain`), where the marks are only sent because a switch asks for them.
+- **The simulation does not see the switches**: the rig comparison with both groups off
+  is `merge/rig-final-compare.txt` byte for byte, at 4:3 and in the default picture
+  (`s13/hud-m2.txt`).
+
+**The music volume** (`s13/music.sh`, `snd.sh`, `wavlevel.py`: the tick-keyed route -
+title, first level with the narrator over the music, `valor` with a fight; 88.6 s of
+sound - with everything the sound side renders written to a file on the machine's clock,
+no device opened; the whole mix, and each part alone through `sound-solo`):
+
+| Rendered | volume 1 | 0.25 | 0 |
+|---|---|---|---|
+| the music alone (stream 2) | -40.3 dB RMS, peak -11.8 dB | **-52.3 dB, peak -23.9 dB: 12.0 dB quieter** (20 log 0.25 = -12.04) | **silence**: every sample 0 |
+| speech (stream 0) | -38.8 dB | **the same file** (MD5) | **the same file** |
+| the effect voices | -26.8 dB | **the same file** | **the same file** |
+| the whole mix | -26.4 dB | -26.6 dB | -26.6 dB (67 of 88 seconds have sound, against 72) |
+
+Stream 1 is silent on this route at every volume. The three ways to say 0.25 - command
+line, settings file line, `app option` at the first blank - give the same file; no
+option gives the file of volume 1. (The HUD work measured -24.5 dB / -32.9 dB / silence
+on a Godot bus in a private library: 8.4 dB between 1 and 0.25 there, 12.0 here, where
+the file is what the sound core rendered and nothing else.)

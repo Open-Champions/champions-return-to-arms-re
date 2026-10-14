@@ -58,6 +58,8 @@ class Gs {
     // status, gold, compass, minimap, spell selector - app/gfx_rt.cpp) are not drawn.  The marks have to be in the
     // stream for it (gfxrt::set_hud_marks: at 4:3 they are not sent otherwise).  For a host that draws its own HUD.
     bool hide_edge = false;
+    // ... and its second group: the boss meter, the one-line message and the prompt box (layout.h M_TEXT)
+    bool hide_text = false;
     int trace = 0;                      // > 0: print draws to stderr
     bool time_paths = false;
     std::function<void()> on_far_vertex;    // debugging (RTA_GS_FAR): a vertex far outside every surface was drawn

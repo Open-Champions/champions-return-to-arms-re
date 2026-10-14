@@ -10,15 +10,31 @@
 #include <vector>
 
 std::string rta_sound_figures() __attribute__((weak));     // tools/recomp/sound/sound_rta.cpp
+extern "C" void rta_sound_set_music_gain(float gain) __attribute__((weak));    // tools/recomp/sound/drivers.cpp
 // tools/recomp/app/film.cpp defines these two when it is part of the program
 __attribute__((weak)) bool rta_films_linked() { return false; }
 __attribute__((weak)) void rta_films_report() {}
 
 namespace apprt {
 
+void call_game(Ctx* c, uint32_t address, uint32_t a0) {
+    Ctx saved = *c;
+    c->r[29] = (u64)(s64)(s32)((((u32)saved.r[29]) - 0x600) & ~15u);      // a stack of its own below the caller's
+    c->r[4] = (u64)a0;
+    rt_call(c, address);
+    s64 budget = c->budget;
+    *c = saved;
+    c->budget = budget;
+}
+
 void interactive_threads() { host::interactive_threads(true); }
 bool films_linked() { return rta_films_linked(); }
 void films_report() { rta_films_report(); }
+bool set_music_volume(double volume) {
+    if (!rta_sound_set_music_gain) return false;
+    rta_sound_set_music_gain((float)volume);
+    return true;
+}
 std::string sound_figures() { return rta_sound_figures ? rta_sound_figures() : std::string(); }
 rta::PadState script_pad(unsigned port) { return ::script_pad(port); }
 
