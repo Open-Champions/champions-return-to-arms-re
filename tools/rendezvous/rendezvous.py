@@ -12,7 +12,7 @@ their routers; when two machines cannot reach each other the service relays thei
 datagrams (only between members of one started room, rate-limited).
 
   python3 tools/rendezvous/rendezvous.py --data DIR [--port 41900] [--bind 127.0.0.1]...
-          [--limit NAME=VALUE]... [--quiet] [--status-every SECONDS]
+          [--tls-cert FILE --tls-key FILE | --plain] [--limit NAME=VALUE]... [--quiet] [--status-every SECONDS]
 
   --bind    an address to listen on; may be given several times.  Default 127.0.0.1 only.
             0.0.0.0 (every address of the machine) is refused unless --public is given:
@@ -20,6 +20,13 @@ datagrams (only between members of one started room, rate-limited).
   --port    one number for both: TCP (the conversation) and UDP (hello, relay).
   --data    the directory of the one file the service keeps, rendezvous.db (SQLite);
             ":memory:" keeps nothing.
+  --tls-cert, --tls-key
+            the TCP conversation inside TLS (Python's ssl module): the certificate chain
+            (PEM, the server's certificate first) and its private key.  Re-read on SIGHUP
+            (connections made after it use the new one).  Without them the conversation is
+            plain text - kept for tests on this computer and a LAN: an address that is
+            neither loop-back nor private (or 0.0.0.0) is refused without TLS unless --plain
+            is said.  The UDP side (hello, relay) is the same either way.
   --limit   one of LIMITS below, for a test that wants to hit it.
 
 Standard library only.  docs/issues/native-rendezvous.md has the wire format, what is
@@ -28,14 +35,18 @@ stored and for how long, and the limits; tools/rendezvous/check.py is the self-t
 import argparse
 import hashlib
 import hmac
+import ipaddress
 import os
 import secrets
 import selectors
+import signal
 import socket
 import sqlite3
+import ssl
 import struct
 import sys
 import time
+import unicodedata
 
 VERSION = 1
 ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'    # no I, O, 0, 1: a code can be read out
@@ -45,6 +56,7 @@ LIMITS = {
     # connections
     'connections': 2000,            # at once, all told
     'connections_per_address': 12,  # at once, from one address
+    'connects_per_minute': 60,      # new connections from one address (each may cost a TLS handshake)
     'line_bytes': 1024,             # one line of the conversation
     'lines_per_second': 20,         # per connection, sustained ...
     'lines_burst': 60,              # ... and at once
@@ -53,15 +65,19 @@ LIMITS = {
     'output_bytes': 262144,         # waiting to be read by a client; more: it is closed
     # identity
     'registrations_per_hour': 10,   # new players from one address
+    'registrations_per_hour_all': 1000,     # new players from everywhere together
     'bad_logins_per_minute': 10,    # from one address
     # players
     'name_bytes': 24,
     'label_bytes': 24,              # a character's name, a class, a level's name
     'friends': 200,                 # per player
     'requests_open': 20,            # friend requests of one player not yet answered
+    'requests_incoming': 100,       # unanswered requests TO one player (nobody is flooded with them)
     'requests_per_hour': 10,
     'blocks': 500,
     'recent': 50,                   # recent players kept per player
+    'updates_per_second': 1,        # name, character, copy, own addresses, level: each is told to friends and rooms ...
+    'updates_burst': 10,            # ... so they have a rate of their own, per connection
     'invites_per_hour': 30,
     'invite_repeat_seconds': 10,    # the same friend again
     'invite_seconds': 600,          # an invitation that nobody answered goes away
@@ -70,7 +86,7 @@ LIMITS = {
     'rooms_per_address': 4,
     'room_idle_seconds': 7200,      # an open room in which nothing happens
     'room_game_seconds': 43200,     # a started game the service still knows of
-    'bad_joins_per_minute': 10,     # wrong codes from one connection (codes are not to be guessed)
+    'bad_joins_per_minute': 10,     # wrong codes from one address (codes are not to be guessed); then that connection is closed
     'chat_bytes': 120,
     'chat_per_second': 1,
     'chat_burst': 5,
@@ -78,6 +94,7 @@ LIMITS = {
     'start_hello_seconds': 30,      # every member's UDP socket must have been seen this recently
     # datagrams
     'hello_per_second': 10,         # from one address
+    'hello_same_address': 1,        # 1: a hello counts only from the IP address of its player's TCP connection
     'seen_seconds': 60,             # an address seen by hello is forgotten after this
     'relay_per_second': 150,        # datagrams from one member, sustained ...
     'relay_burst': 300,
@@ -139,10 +156,51 @@ def parse(text):
 
 
 def clean(text, most):
-    """A label or a chat line: control characters out, cut to `most` bytes of UTF-8."""
-    text = ''.join(' ' if (ord(ch) < 0x20 or ord(ch) == 0x7f) else ch for ch in text).strip()
-    data = text.encode('utf-8')[:most]
+    """A label or a chat line: control characters become blanks, invisible format characters
+    (right-to-left overrides, zero-width spaces: a name must not pretend to be another one)
+    go - but for the zero-width joiner of emoji -, cut to `most` bytes of UTF-8."""
+    out = []
+    for ch in text:
+        o = ord(ch)
+        if o < 0x20 or 0x7f <= o < 0xa0:
+            out.append(' ')
+        elif o != 0x200d and unicodedata.category(ch) in ('Cf', 'Cs', 'Co'):
+            continue
+        else:
+            out.append(ch)
+    data = ''.join(out).strip().encode('utf-8', 'ignore')[:most]
     return data.decode('utf-8', 'ignore').strip()
+
+
+PRIVATE = [ipaddress.ip_network(n) for n in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10')]
+
+
+def private_v4(host):
+    """An address a home or carrier network gives a machine behind its router (not loop-back, not public)."""
+    try:
+        a = ipaddress.IPv4Address(host)
+    except ValueError:
+        return False
+    return any(a in n for n in PRIVATE)
+
+
+def needs_tls(bind):
+    """An address to listen on that is reachable from outside this machine and its LAN."""
+    if bind in ('', '*'):
+        return True
+    try:
+        a = ipaddress.ip_address(bind)
+    except ValueError:
+        return True
+    return not (a.is_loopback or private_v4(bind))
+
+
+def tls_context(cert, key):
+    """The server side of TLS: 1.2 or newer, the ssl module's defaults for everything else."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(cert, key)
+    return context
 
 
 def name_ok(name):
@@ -280,8 +338,11 @@ class Store:
 
 
 class Conn:
-    def __init__(self, sock, address):
+    def __init__(self, sock, address, tls=False):
         self.sock, self.address = sock, address
+        self.tls = tls
+        self.handshaking = tls      # TLS: nothing is said before the handshake is through
+        self.tls_retry = 0          # TLS: a write that has to be repeated with this many bytes
         self.inbuf, self.outbuf = b'', bytearray()
         self.nonce = secrets.token_bytes(16)
         self.pid = None
@@ -290,6 +351,7 @@ class Conn:
         self.chat = Bucket(LIMITS['chat_per_second'], LIMITS['chat_burst'])
         self.relay = Bucket(LIMITS['relay_per_second'], LIMITS['relay_burst'])
         self.relay_bytes = Bucket(LIMITS['relay_bytes_per_second'], LIMITS['relay_bytes_per_second'])
+        self.updates = Bucket(LIMITS['updates_per_second'], LIMITS['updates_burst'])
         self.udp_key = secrets.token_bytes(8)
         self.seen = None            # (ip, port) the UDP socket was seen at
         self.seen_at = 0.0
@@ -324,8 +386,9 @@ class Room:
 
 
 class Service:
-    def __init__(self, store, quiet=False):
+    def __init__(self, store, quiet=False, tls=None):
         self.store, self.quiet = store, quiet
+        self.tls = tls              # an ssl.SSLContext: the TCP conversation is inside TLS
         self.sel = selectors.DefaultSelector()
         self.listeners, self.udp = [], []
         self.conns = {}             # socket -> Conn
@@ -334,11 +397,13 @@ class Service:
         self.keys = {}              # udp key -> Conn
         self.invites = {}           # (from id, to id) -> (room code, when)
         self.per_address = {}
-        self.windows = {name: Window() for name in ('register', 'bad_login', 'request', 'invite', 'invite_same', 'bad_join', 'hello', 'room')}
-        self.hello = {}
+        self.windows = {name: Window() for name in ('register', 'register_all', 'bad_login', 'request', 'invite', 'invite_same', 'bad_join', 'hello',
+                                                    'room', 'connect')}
         self.counts = {'connections': 0, 'refused': 0, 'lines': 0, 'limited': 0, 'registered': 0, 'logins': 0, 'rooms': 0, 'starts': 0,
-                       'hello': 0, 'relayed': 0, 'relay_dropped': 0, 'relay_bytes': 0, 'stray': 0, 'deleted': 0}
+                       'hello': 0, 'relayed': 0, 'relay_dropped': 0, 'relay_bytes': 0, 'stray': 0, 'deleted': 0, 'tls': 0, 'tls_failed': 0,
+                       'hello_refused': 0}
         self.last_sweep = now()
+        self.paused = []            # listeners not watched for a moment: (socket, since)
 
     def log(self, text):
         if not self.quiet:
@@ -374,15 +439,29 @@ class Service:
     def accept(self, listener):
         try:
             sock, address = listener.accept()
-        except OSError:
+        except (BlockingIOError, InterruptedError):
             return
-        ip = address[0]
-        if len(self.conns) >= LIMITS['connections'] or self.per_address.get(ip, 0) >= LIMITS['connections_per_address']:
+        except OSError:
+            # out of file descriptors (or the like): the listener would stay readable and the loop
+            # would spin; it is not watched for a second
             self.counts['refused'] += 1
             try:
-                sock.sendall((line('bye', code=E_LIMIT, text='Too many connections.') + '\n').encode())
-            except OSError:
+                self.sel.unregister(listener)
+                self.paused.append((listener, now()))
+            except (KeyError, ValueError):
                 pass
+            return
+        ip = address[0]
+        many = len(self.conns) >= LIMITS['connections'] or self.per_address.get(ip, 0) >= LIMITS['connections_per_address']
+        if many or not self.windows['connect'].take(ip, LIMITS['connects_per_minute'], 60):
+            self.counts['refused'] += 1
+            if not self.tls:
+                # in TLS nothing is said before a handshake, and a refused connection is not worth one
+                try:
+                    sock.setblocking(False)
+                    sock.send((line('bye', code=E_LIMIT, text='Too many connections.') + '\n').encode())
+                except OSError:
+                    pass
             sock.close()
             return
         sock.setblocking(False)
@@ -390,13 +469,47 @@ class Service:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         except OSError:
             pass
-        conn = Conn(sock, ip)
+        if self.tls:
+            try:
+                sock = self.tls.wrap_socket(sock, server_side=True, do_handshake_on_connect=False)
+            except (ssl.SSLError, OSError):
+                self.counts['tls_failed'] += 1
+                sock.close()
+                return
+        conn = Conn(sock, ip, tls=self.tls is not None)
         self.conns[sock] = conn
         self.keys[conn.udp_key] = conn
         self.per_address[ip] = self.per_address.get(ip, 0) + 1
         self.counts['connections'] += 1
         self.sel.register(sock, selectors.EVENT_READ, ('conn', conn))
-        self.send(conn, line('hi', v=VERSION, nonce=conn.nonce.hex()))
+        self.send(conn, line('hi', v=VERSION, nonce=conn.nonce.hex()))      # TLS: waits for the handshake
+        if conn.tls:
+            self.handshake(conn)
+
+    def watch(self, conn, write):
+        if conn.sock in self.conns and write != conn.wants_write:
+            conn.wants_write = write
+            self.sel.modify(conn.sock, selectors.EVENT_READ | (selectors.EVENT_WRITE if write else 0), ('conn', conn))
+
+    def handshake(self, conn):
+        """TLS: one step of the handshake; when it is through, the greeting goes out."""
+        try:
+            conn.sock.do_handshake()
+        except ssl.SSLWantReadError:
+            self.watch(conn, False)
+            return
+        except ssl.SSLWantWriteError:
+            self.watch(conn, True)
+            return
+        except (ssl.SSLError, OSError):
+            self.counts['tls_failed'] += 1
+            self.drop(conn)
+            return
+        conn.handshaking = False
+        self.counts['tls'] += 1
+        self.flush(conn)
+        if conn.sock in self.conns:
+            self.read(conn)                                 # what came with the handshake's last flight
 
     def send(self, conn, text):
         if conn.closing:
@@ -408,28 +521,49 @@ class Service:
         self.flush(conn)
 
     def flush(self, conn):
+        if conn.handshaking:
+            return
         try:
-            if conn.outbuf:
+            if conn.tls:
+                # TLS: whole records of at most 16 kB; a write that could not be finished is
+                # repeated with the same bytes (they stay at the head of outbuf)
+                for _ in range(16):
+                    if not conn.outbuf:
+                        break
+                    size = conn.tls_retry or min(len(conn.outbuf), 16384)
+                    conn.tls_retry = size
+                    sent = conn.sock.send(bytes(conn.outbuf[:size]))
+                    conn.tls_retry = 0
+                    del conn.outbuf[:sent]
+            elif conn.outbuf:
                 sent = conn.sock.send(conn.outbuf)
                 del conn.outbuf[:sent]
-        except BlockingIOError:
+        except (BlockingIOError, ssl.SSLWantWriteError, ssl.SSLWantReadError):
             pass
         except OSError:
             self.drop(conn)
             return
-        want = bool(conn.outbuf)
-        if want != conn.wants_write and conn.sock in self.conns:
-            conn.wants_write = want
-            self.sel.modify(conn.sock, selectors.EVENT_READ | (selectors.EVENT_WRITE if want else 0), ('conn', conn))
+        self.watch(conn, bool(conn.outbuf))
+
+    def last_words(self, conn, text):
+        """A 'bye' before a close, after what was waiting to go (best effort: nothing waits for it)."""
+        if conn.handshaking:
+            return
+        head = bytes(conn.outbuf[:16384])
+        if len(conn.outbuf) > len(head):
+            head = head[:head.rfind(b'\n') + 1]
+        if conn.tls_retry and len(head) < conn.tls_retry:
+            return
+        try:
+            conn.sock.send(head + text.encode('utf-8') + b'\n')
+        except OSError:
+            pass
 
     def drop(self, conn, tell=True, why=None):
         if conn.sock not in self.conns:
             return
         if why and not conn.closing:
-            try:
-                conn.sock.send((line('bye', code=why[0], text=why[1]) + '\n').encode())
-            except OSError:
-                pass
+            self.last_words(conn, line('bye', code=why[0], text=why[1]))
         conn.closing = True
         del self.conns[conn.sock]
         self.keys.pop(conn.udp_key, None)
@@ -456,8 +590,14 @@ class Service:
 
     def read(self, conn):
         try:
-            data = conn.sock.recv(4096)
-        except BlockingIOError:
+            data = conn.sock.recv(16384 if conn.tls else 4096)
+            # TLS: a record already taken from the socket is not announced by select() again
+            while conn.tls and data and conn.sock.pending() and len(data) < 65536:
+                data += conn.sock.recv(conn.sock.pending())
+        except (BlockingIOError, ssl.SSLWantReadError):
+            return
+        except ssl.SSLWantWriteError:
+            self.watch(conn, True)
             return
         except OSError:
             data = b''
@@ -511,7 +651,12 @@ class Service:
         handler = getattr(self, 'cmd_' + verb, None) if verb.isalpha() else None
         if handler is None:
             return self.answer(conn, f, E_ARGUMENT, 'Unknown request.')
+        if verb in self.UPDATES and not conn.updates.take():
+            self.counts['limited'] += 1
+            return self.answer(conn, f, E_LIMIT, 'Too many changes at once. Wait a moment.')
         handler(conn, f)
+
+    UPDATES = ('name', 'char', 'copy', 'local', 'game')   # what every friend and the room is told of
 
     def do_register(self, conn, f):
         verifier, name = f.get('verifier', ''), clean(f.get('name', '') or 'Player', LIMITS['name_bytes'])
@@ -525,6 +670,9 @@ class Service:
         if not self.windows['register'].take(conn.address, LIMITS['registrations_per_hour'], 3600):
             self.counts['limited'] += 1
             return self.drop(conn, why=(E_LIMIT, 'Too many new players from this address. Try again later.'))
+        if not self.windows['register_all'].take('*', LIMITS['registrations_per_hour_all'], 3600):
+            self.counts['limited'] += 1
+            return self.drop(conn, why=(E_LIMIT, 'Too many new players at the moment. Try again later.'))
         self.store.create(verifier, name)
         self.counts['registered'] += 1
         self.welcome(conn, pid, new=1)
@@ -660,7 +808,9 @@ class Service:
                 port = int(port)
             except (OSError, ValueError):
                 continue
-            if sep and host.count('.') == 3 and 0 < port < 65536:
+            # only addresses behind a router: what this list is for (two players behind one); a
+            # public address here would only let a room member aim other members' probes anywhere
+            if sep and host.count('.') == 3 and 0 < port < 65536 and private_v4(host):
                 out.append((host, port))
         conn.local = out
         self.answer(conn, f)
@@ -747,6 +897,8 @@ class Service:
             return self.answer(conn, f, E_LIMIT, 'Your friends list is full.')
         if self.store.q('SELECT COUNT(*) FROM requests WHERE src = ?', me)[0][0] >= LIMITS['requests_open']:
             return self.answer(conn, f, E_LIMIT, 'Too many of your requests are still waiting.')
+        if self.store.q('SELECT COUNT(*) FROM requests WHERE dst = ?', other)[0][0] >= LIMITS['requests_incoming']:
+            return self.answer(conn, f, E_LIMIT, 'That player has too many requests waiting. Try again later.')
         t = int(time.time())
         self.store.q('INSERT INTO requests (src, dst, at) VALUES (?, ?, ?)', me, other, t)
         self.send(conn, self.request_line(me, me, other, t))
@@ -943,7 +1095,7 @@ class Service:
     def join(self, conn, f, room, by_friend=None):
         if room is None or self.store.blocked(room.members[0].conn.pid, conn.pid):
             conn.bad_joins += 1
-            if not self.windows['bad_join'].take(id(conn), LIMITS['bad_joins_per_minute'], 60):
+            if not self.windows['bad_join'].take(conn.address, LIMITS['bad_joins_per_minute'], 60):
                 self.counts['limited'] += 1
                 return self.drop(conn, why=(E_LIMIT, 'Too many wrong room codes.'))
             return self.answer(conn, f, E_NOT_FOUND, 'There is no such room.')
@@ -1142,6 +1294,12 @@ class Service:
             return True
         if kind == 0x20:
             t = now()
+            if LIMITS['hello_same_address'] and address[0] != conn.address:
+                # the key alone is not enough (it travels in every datagram): a hello from another
+                # IP address than the player's own TCP connection could point the relay and the
+                # other players at an address that never asked for it
+                self.counts['hello_refused'] += 1
+                return True
             if not self.windows['hello'].take(address[0], LIMITS['hello_per_second'] * 10, 10):
                 self.counts['limited'] += 1
                 return True
@@ -1202,10 +1360,11 @@ class Service:
     def status(self):
         c = self.counts
         return ('%d connections (%d players online), %d rooms (%d started); since start: %d connections, %d refused, %d lines, %d registered, '
-                '%d logins, %d rooms, %d starts, %d hello, %d relayed (%d bytes), %d relay dropped, %d limited, %d strays, %d deleted'
+                '%d logins, %d rooms, %d starts, %d hello, %d relayed (%d bytes), %d relay dropped, %d limited, %d strays, %d deleted, '
+                '%d TLS handshakes (%d failed), %d hellos from another address'
                 % (len(self.conns), len(self.online), len(self.rooms), sum(1 for r in self.rooms.values() if r.started), c['connections'],
                    c['refused'], c['lines'], c['registered'], c['logins'], c['rooms'], c['starts'], c['hello'], c['relayed'], c['relay_bytes'],
-                   c['relay_dropped'], c['limited'], c['stray'], c['deleted']))
+                   c['relay_dropped'], c['limited'], c['stray'], c['deleted'], c['tls'], c['tls_failed'], c['hello_refused']))
 
     def step(self, timeout=0.25):
         for key, mask in self.sel.select(timeout):
@@ -1216,11 +1375,18 @@ class Service:
                 for _ in range(256):
                     if not self.datagram(key.fileobj):
                         break
+            elif conn.handshaking:
+                if conn.sock in self.conns:
+                    self.handshake(conn)
             else:
                 if mask & selectors.EVENT_WRITE and conn.sock in self.conns:
                     self.flush(conn)
                 if mask & selectors.EVENT_READ and conn.sock in self.conns:
                     self.read(conn)
+        if self.paused and now() - self.paused[0][1] > 1.0:
+            for sock, _ in self.paused:
+                self.sel.register(sock, selectors.EVENT_READ, ('listen', None))
+            self.paused = []
         if now() - self.last_sweep > 1.0:
             self.last_sweep = now()
             self.sweep()
@@ -1232,6 +1398,9 @@ def main():
     parser.add_argument('--port', type=int, default=41900)
     parser.add_argument('--bind', action='append', help='an address to listen on (default 127.0.0.1); may be repeated')
     parser.add_argument('--public', action='store_true', help='allow --bind 0.0.0.0')
+    parser.add_argument('--tls-cert', help='the certificate chain (PEM): the TCP conversation is inside TLS')
+    parser.add_argument('--tls-key', help='its private key (PEM)')
+    parser.add_argument('--plain', action='store_true', help='allow an address reachable from the Internet without TLS')
     parser.add_argument('--limit', action='append', default=[], metavar='NAME=VALUE')
     parser.add_argument('--quiet', action='store_true')
     parser.add_argument('--status-every', type=float, default=0)
@@ -1244,6 +1413,17 @@ def main():
     binds = args.bind or ['127.0.0.1']
     if not args.public and any(b in ('0.0.0.0', '', '*') for b in binds):
         parser.error('--bind 0.0.0.0 listens on every address of this machine: say --public if that is meant')
+    if bool(args.tls_cert) != bool(args.tls_key):
+        parser.error('--tls-cert and --tls-key go together')
+    if not args.tls_cert and not args.plain and any(needs_tls(b) for b in binds):
+        parser.error('an address reachable from the Internet without TLS: names, friend codes, room codes, chat and a first registration '
+                     'would travel in the clear. Give --tls-cert and --tls-key, or say --plain if that is meant')
+    context = None
+    if args.tls_cert:
+        try:
+            context = tls_context(args.tls_cert, args.tls_key)
+        except (OSError, ssl.SSLError) as e:
+            parser.error('the certificate or its key cannot be used: %s' % e)
     if args.data == ':memory:':
         store = Store(':memory:')
     else:
@@ -1253,17 +1433,52 @@ def main():
             os.chmod(os.path.join(args.data, 'rendezvous.db'), 0o600)
         except OSError:
             pass
-    service = Service(store, args.quiet)
+    try:
+        # every connection is a file descriptor: as many as the process may open, less a few for
+        # itself (the soft limit is raised to the hard one first)
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if hard == resource.RLIM_INFINITY or hard > soft:
+            try:
+                resource.setrlimit(resource.RLIMIT_NOFILE, (hard if hard != resource.RLIM_INFINITY else max(soft, 65536), hard))
+                soft = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+            except (ValueError, OSError):
+                pass
+        if soft != resource.RLIM_INFINITY and LIMITS['connections'] > soft - 64:
+            LIMITS['connections'] = max(16, soft - 64)
+    except ImportError:
+        pass
+    service = Service(store, args.quiet, tls=context)
     purged = store.purge()
     for address in binds:
         port = service.listen(address, args.port)
-        service.log('listening on %s, TCP and UDP port %d' % (address, port))
+        service.log('listening on %s, TCP and UDP port %d, %s' % (address, port, 'TLS' if context else 'plain text'))
+    service.log('at most %d connections at once' % LIMITS['connections'])
     if purged:
         service.log('%d players not seen for %d days were deleted' % (purged, LIMITS['player_days']))
+    signals = {'reload': False}
+
+    def on_hup(number, frame):
+        signals['reload'] = True
+
+    def on_term(number, frame):
+        raise KeyboardInterrupt
+
+    if hasattr(signal, 'SIGHUP'):
+        signal.signal(signal.SIGHUP, on_hup)
+    signal.signal(signal.SIGTERM, on_term)
     last_status = last_purge = now()
     try:
         while True:
             service.step()
+            if signals['reload']:
+                signals['reload'] = False
+                if args.tls_cert:
+                    try:
+                        service.tls = tls_context(args.tls_cert, args.tls_key)
+                        service.log('certificate read again; new connections use it')
+                    except (OSError, ssl.SSLError) as e:
+                        service.log('the certificate could not be read again (the old one stays): %s' % e)
             if args.status_every and now() - last_status >= args.status_every:
                 last_status = now()
                 service.log(service.status())

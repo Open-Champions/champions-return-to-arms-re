@@ -12,6 +12,13 @@ compatibility and is not touched. Every result says whether it was **Ran** or on
 
 ## STATE (rewritten at every step; read this first after a stop)
 
+**2026-10-14 03:15. TLS: done on this Mac, prepared for the server.** The TCP conversation
+goes inside TLS on both sides (the service with Python's `ssl`; the client with the
+operating system's TLS - macOS run, Windows compiled only), the service was reviewed for
+strangers and got the cheap fixes, and the server's unit and steps are prepared, not run:
+[native-rendezvous-tls.md](native-rendezvous-tls.md). Once it is switched, players name the
+service by its host name, not its address.
+
 **2026-10-14 02:20. The service runs in public.** At the owner's word ("Make sure online
 works") it runs on the project's server beside the lobby: systemd unit `champions-net2`
 (no fixed user, state in its own directory, the same sandbox as the browser relay), TCP
@@ -19,8 +26,8 @@ and UDP port 41900 open. **Ran**, from this Mac through that server, with
 `n2party.py --external`: two copies 2,104 ticks in step (the punch failed - two copies
 behind one home router that does not loop back - and the relay carried the game, as
 designed); three copies with every route forced through the relay, every pair in step for
-about 2,000 ticks. Still not done: TLS (section 8), two computers in two homes, the
-Windows program in the game. The client's built-in default stays empty: the address is
+about 2,000 ticks. Still not done then: TLS (section 8; since 03:15 done here, not yet on
+the server), two computers in two homes, the Windows program in the game. The client's built-in default stays empty: the address is
 given with `--service`, `RTA_NET2_SERVICE` or `net2-service.txt`.
 
 **2026-10-13 23:10. Done and run, game side included.** Two, three and four native copies
@@ -31,9 +38,9 @@ under the service's limits. Section 6 has the table.
 
 | Part | Where | State |
 |---|---|---|
-| the service | `tools/rendezvous/rendezvous.py` | **Ran**: `check.py` 189 of 189 (after the repair of 19:35, again) |
+| the service | `tools/rendezvous/rendezvous.py` | **Ran**: `check.py` 189 of 189 (after the repair of 19:35, again); with TLS and the exposure fixes 225 of 225 (2026-10-14 03:15) |
 | the client interface and its mock | `tools/recomp/net2/session.h`, `session_mock.cpp` | **Ran**; the portal is built on it |
-| its real body | `session_net.cpp`, `carrier.cpp`, `hash.h`, `cardchars.cpp`, `clicmd.cpp` | **Ran**: `check_client.py` 95 of 95 (after the last change of `carrier.cpp`, again) |
+| its real body | `session_net.cpp`, `carrier.cpp`, `tls.cpp`, `hash.h`, `cardchars.cpp`, `clicmd.cpp` | **Ran**: `check_client.py` 95 of 95 (after the last change of `carrier.cpp`, again); with TLS 118 of 118 (2026-10-14 03:15) |
 | the direct launch | `launch.cpp`, `game.h`, `hooks.h` | **Ran**: 34 games of 2 to 4 copies launched and compared, section 6 |
 | `net2.patch` | `tools/recomp/net2/net2.patch` | nine lines in `net/netdrv.cpp`, seven compile jobs in `app/build.py`; dry run clean against today's files; the runs used exactly these lines. **Not applied** to the shared tree (the owner of `net/` and `app/` merges) |
 | `proposed.pnach` | - | does not exist: no word of the game had to be patched |
@@ -153,7 +160,8 @@ process, one thread. One port number for TCP (the conversation) and UDP (hello, 
   compiled never, run never). What this buys and what not: a proof read off the wire is
   worthless (nonce); but whoever reads the REGISTRATION on the wire, or the service's
   file, holds the verifier and can log in as that player. So: when the service runs in
-  public its TCP port belongs inside TLS (section 8), and what the identity guards is a
+  public its TCP port belongs inside TLS (section 8; built 2026-10-14,
+  `native-rendezvous-tls.md`), and what the identity guards is a
   display name and a friends list. The secret (not the verifier) stays the root, so the
   same file can seed a real key pair the day the platforms' signature functions are used.
 - A player has a **display name** (3 to 24 bytes, any text, changeable, a label: two
@@ -254,7 +262,8 @@ Routes, per pair: probes go to the address the service saw and to the addresses 
 machine says are its own; the first answer makes the route **straight**. Until then, and
 for good after 2.5 s without an answer, the game's datagrams for that player go through
 the **relay** - the game never waits for the punching. A straight route found later is
-taken. `net2_set(n, "relay", "force")` makes a machine neither probe nor answer (its
+taken (since 2026-10-14 a hello counts only from the IP address of its player's own TCP
+connection: the key travels in every datagram, `native-rendezvous-tls.md` section 1). `net2_set(n, "relay", "force")` makes a machine neither probe nor answer (its
 pairs stay on the relay): **Ran** with one of three clients forced, datagrams both ways
 on both kinds of route.
 
@@ -270,21 +279,24 @@ refusal, one by one (`check.py`).
 
 | What | Value | Hit on purpose in `check.py` |
 |---|---|---|
-| connections: all told / from one address | 2,000 / 12 | yes (7th of 6) |
+| connections: all told / from one address | 2,000 (and below the process's file limit) / 12 | yes (7th of 6; 33rd with 96 files) |
+| new connections from one address | 60 a minute | yes |
 | a line; lines per connection | 1,024 bytes; 20 a second sustained, 60 at once | yes, both: closed with a reason |
 | time to log in; silence | 10 s; 90 s | yes (1 s, 2 s) |
-| new players from one address | 10 an hour | yes |
+| new players from one address; from everywhere | 10 an hour; 1,000 an hour | yes |
 | wrong proofs from one address | 10 a minute (counted; the player is not locked out) | yes |
 | name; character name, class, level name | 24 bytes each | yes (cut, cleaned) |
 | friends per player; unanswered requests; requests | 200; 20; 10 an hour (guessing codes counts) | yes |
+| unanswered requests TO one player | 100 | yes |
+| name, character, copy, own addresses, level (told to friends and the room) | 1 a second, 10 at once | yes |
 | blocked players | 500 | yes |
 | invitations | 30 an hour, the same friend every 10 s, gone after 10 min | yes |
 | rooms: all told / made from one address | 5,000 / 4 | yes |
 | players in a room | 4 (the game's) | yes |
-| wrong room codes from one connection | 10 a minute, then closed (32^5 codes) | yes |
+| wrong room codes from one address | 10 a minute, then that connection is closed (32^5 codes) | yes |
 | chat | 120 bytes a line, 1 a second, 5 at once; the room keeps 32 | yes |
 | a room nothing happens in; a started game | closed after 2 h; 12 h | yes (2 s) |
-| hello from one address | 10 a second | yes |
+| hello from one address | 10 a second; only from its player's TCP address | yes |
 | an observed address | forgotten 60 s after the last hello | yes |
 | relay per player | 150 datagrams a second (300 at once), 256 kB a second, 2,064 bytes each | yes |
 
@@ -297,12 +309,13 @@ four players and a fast-forwarding test.
 ```
 python3 tools/rendezvous/rendezvous.py --data local/rendezvous-data            # 127.0.0.1:41900
 python3 tools/rendezvous/rendezvous.py --data DIR --bind 127.0.0.1 --bind 192.168.1.123 --port 41900 --status-every 60
+python3 tools/rendezvous/rendezvous.py --data DIR --bind ADDRESS --tls-cert CHAIN.pem --tls-key KEY.pem    # in public: TLS
 python3 tools/rendezvous/check.py -v            # the service's self-test (starts its own, loop-back, 25 s)
 python3 tools/rendezvous/check_client.py -v     # the C++ client against a service (builds net2cli, loop-back, 22 s)
 ```
 
-`--bind 0.0.0.0` is refused unless `--public` is given. So far it has only ever listened
-on 127.0.0.1.
+`--bind 0.0.0.0` is refused unless `--public` is given; an address that is neither
+loop-back nor private is refused without TLS unless `--plain` is given.
 
 ## 4. The client (`tools/recomp/net2/`)
 
@@ -312,6 +325,7 @@ on 127.0.0.1.
 | `session.cpp` | checks of what is typed, snapshots, the one lock, where the service is found |
 | `session_mock.cpp` | the mock (`config.mock = 1`): everything made up locally, for building screens |
 | `session_net.cpp` | the body that talks to the service; identity file; reconnects by itself |
+| `tls.h/.cpp` | the TCP link inside the operating system's TLS (`native-rendezvous-tls.md`) |
 | `carrier.h/.cpp` | the UDP socket: hello, probes, routes, the game's datagrams, the relay |
 | `hash.h` | SHA-256, HMAC, random bytes from the operating system |
 | `cardchars.cpp` | "characters I have": name, class, level from the save slots of a card folder (layout of `docs/audio-save.md`); needs no game. **Ran** against files the test makes to that layout; no real save slot was at hand (none of the test cards has one: a character is on a card once a player has saved at a save point) |
@@ -519,13 +533,21 @@ needed (`can`, `does`).
 - **Load:** one connection per player online; a relayed game costs the server about 30
   datagrams of 30 to 200 bytes per second per player in each direction - a few kB/s per
   relayed player; punched pairs cost nothing. The limits of 3.5 hold the rest.
-- **TLS for the TCP port** before strangers use it (3.1): a stream proxy in front
-  (stunnel, nginx `stream`, Caddy layer 4) and the operating system's TLS in the client -
-  not written. Without it: names, friend codes, room codes, chat and the verifier at a
-  player's FIRST contact travel in the clear.
+- **TLS for the TCP port** (3.1), built 2026-10-14: `--tls-cert/--tls-key` in the service
+  itself (Python's `ssl`, no proxy in front), the operating system's TLS in the client
+  (`tools/recomp/net2/tls.h`: Network.framework on macOS - run; SChannel on Windows -
+  compiled, not run), the certificate checked against the system's trust store and the host
+  name. The client takes TLS by itself for every host name and public address and stays in
+  plain text for this computer and a LAN (`tls://`, `plain://`, `RTA_NET2_TLS` override).
+  On the server: prepared, not run (`tools/rendezvous/deploy/`). Without it: names, friend
+  codes, room codes, chat and the verifier at a player's FIRST contact travel in the clear.
+  The datagrams stay outside TLS; what they expose, what was fixed (a hello from another
+  address) and what not (the game's datagrams can be read and forged on the path):
+  [native-rendezvous-tls.md](native-rendezvous-tls.md) sections 1 and 4.
 - **What it knows about people:** section 3.2, nothing else. A player deletes all of it
   with one call.
-- **Not done for public use:** TLS; log rotation (the unit logs to the journal, which rotates); a way for
+- **Not done for public use:** TLS on the server (prepared); the game's datagrams
+  authenticated; log rotation (the unit logs to the journal, which rotates); a way for
   the owner to remove a player or a name; more than one process (SQLite and the in-memory
   rooms make it one machine, one process - thousands of players, not hundreds of
   thousands); IPv6; a grace time for a player whose TCP link breaks during a relayed game
@@ -546,7 +568,8 @@ nothing but the original disc.
 
 New: `tools/rendezvous/rendezvous.py`, `check.py`, `check_client.py`;
 `tools/recomp/net2/session.h`, `session_impl.h`, `session.cpp`, `session_mock.cpp`,
-`session_net.cpp`, `carrier.h`, `carrier.cpp`, `hash.h`, `cardchars.cpp`, `clicmd.h`,
+`session_net.cpp`, `carrier.h`, `carrier.cpp`, `tls.h`, `tls.cpp` (2026-10-14),
+`hash.h`, `cardchars.cpp`, `clicmd.h`,
 `clicmd.cpp`, `net2cli.cpp`, `game.h`, `launch.cpp`, `hooks.h`, `net2.patch`, `play.sh`,
 `n2party.py`. Local, not in the repository:
 `local/recomp-net2/` (`snap/` the native build's objects and headers of 2026-10-13 13:33,

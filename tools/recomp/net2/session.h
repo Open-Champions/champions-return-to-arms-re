@@ -59,7 +59,9 @@ typedef struct net2_config {
                                    first start (mode 0600) and read afterwards.  Moving to another
                                    computer = copying that one file.  NULL: nothing is kept (a new
                                    player at every start) */
-    const char* service;        /* "host:port" of the rendezvous service.  NULL or "": the mock when
+    const char* service;        /* "host:port" of the rendezvous service ("tls://host:port" / "plain://host:port":
+                                   with TLS / without, whatever the rule of tls.h says; by default a host
+                                   name or public address is reached inside TLS).  NULL or "": the mock when
                                    `mock` is set; otherwise the environment variable RTA_NET2_SERVICE,
                                    then the first line of <data_dir>/net2-service.txt, then the built-in
                                    default (none yet: where the service runs is the owner's decision -

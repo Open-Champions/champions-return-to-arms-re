@@ -164,8 +164,9 @@ def main():
         # the session client and its datagrams need nothing of the game; launch.cpp calls into it
         net2 = os.path.join(RECOMP, 'net2')
         plain = ['-std=c++17', args.opt, '-Wall', '-I', net2]
+        # (tls.cpp: the link to the service inside TLS, with the system's Network and Security frameworks)
         jobs += [(os.path.join(net2, n), plain, 'n2_') for n in ('session.cpp', 'session_mock.cpp', 'session_net.cpp', 'carrier.cpp',
-                                                                    'cardchars.cpp', 'clicmd.cpp')]
+                                                                    'tls.cpp', 'cardchars.cpp', 'clicmd.cpp')]
         jobs.append((os.path.join(net2, 'launch.cpp'), rt_flags + ['-I', net2], 'n2_'))
     jobs.append((os.path.join(HERE, 'app_main.cpp'), app_flags + qt_flags, 'a_'))
     jobs.append((os.path.join(HERE, 'pad_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE, '-I', rt], 'a_'))
@@ -211,7 +212,7 @@ def main():
     # somebody else never sees a half-written file
     final, out = out, out + '.link%d' % os.getpid()
     frameworks = sum((['-framework', f] for f in ('QtCore', 'QtGui', 'GameController', 'AppKit', 'Foundation', 'CoreVideo', 'CoreGraphics',
-                                                     'Metal', 'QuartzCore', 'IOSurface', 'OpenGL')), [])
+                                                     'Metal', 'QuartzCore', 'IOSurface', 'OpenGL', 'Network', 'Security')), [])
     result = subprocess.run(['clang++', '-o', out] + objects + link + ['-F', qtlib] + frameworks + ['-Wl,-rpath,' + qtlib, '-lpthread'],
                             capture_output=True, text=True)
     if result.returncode != 0:

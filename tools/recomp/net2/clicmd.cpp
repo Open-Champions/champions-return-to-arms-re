@@ -9,7 +9,7 @@
 //            host [friends] [LEVEL] | join CODE | join-friend WHO | chat TEXT | ready [0|1]
 //            options LEVEL DIFFICULTY [friends] | kick SLOT | start | leave
 //            running [LEVEL] | over | delete | debug WHAT | set KEY VALUE | echo TEXT | wait SECONDS | quit
-//            (debug: link | udp | send SLOT TEXT | recv)
+//            (debug: link | udp | send SLOT TEXT | recv | tls-rule HOST:PORT)
 // WHO is a player id, or the beginning of a name in any of the lists.
 // Every event is one line: "EVENT <type> code=<n> who=<name> room=<code> text=<...>".
 #include "clicmd.h"

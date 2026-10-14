@@ -1,0 +1,71 @@
+# champions-net2.service - the room service of the native build (tools/rendezvous/rendezvous.py)
+# with its TCP conversation inside TLS, as a systemd unit.  docs/issues/native-rendezvous-tls.md
+# and STEPS.txt beside this file say how it is put in place.
+#
+# Two placeholders, filled in on the server (they are not written into the repository):
+#   <server-host>     the host name the server's Let's Encrypt certificate is for; players
+#                     name the service by it: <server-host>:41900
+#   <server-address>  the server's public IPv4 address (what --bind listens on)
+#
+# The certificate: LoadCredential= copies the chain and the key (root's, under
+# /etc/letsencrypt) into a directory only this service can read, at every start - the
+# service runs as a user made for it alone (DynamicUser) and never sees /etc/letsencrypt.
+# A renewed certificate is taken at the next start: renew-hook.sh restarts the service.
+
+[Unit]
+Description=Champions: Return to Arms - room service (rendezvous, TLS)
+Documentation=https://github.com/Open-Champions/champions-return-to-arms-re/blob/main/docs/issues/native-rendezvous-tls.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -I -u /opt/champions-net2/rendezvous.py --data %S/champions-net2 --bind <server-address> --port 41900 --status-every 300 --tls-cert %d/tls.crt --tls-key %d/tls.key
+LoadCredential=tls.crt:/etc/letsencrypt/live/<server-host>/fullchain.pem
+LoadCredential=tls.key:/etc/letsencrypt/live/<server-host>/privkey.pem
+Restart=on-failure
+RestartSec=2
+
+# who it is, and what it may touch
+DynamicUser=yes
+StateDirectory=champions-net2
+StateDirectoryMode=0700
+UMask=0077
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+# the network: IPv4 only (the service is IPv4 only); nothing to this machine's loop-back, to
+# private networks (the provider's own network included), link-local (the provider's
+# metadata address) or multicast - its datagrams only ever go to players on the Internet
+RestrictAddressFamilies=AF_INET AF_UNIX
+IPAddressDeny=localhost link-local multicast 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10
+
+# how much: 2,000 connections at most (LIMITS); a file descriptor each
+LimitNOFILE=4096
+TasksMax=16
+MemoryMax=400M
+
+[Install]
+WantedBy=multi-user.target

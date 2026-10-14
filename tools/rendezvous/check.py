@@ -11,7 +11,9 @@ decline, remove, block), presence and character labels, invitations, rooms (host
 code, by friend, by invitation; chat, ready, options, kick, start, the session description,
 game over, a second start, the host leaving), the datagrams (hello, the address seen, the
 relay and everything it refuses), every limit hit on purpose, what is on disk, what
-survives a restart, and deletion.  Nothing is sent to any other machine.
+survives a restart, and deletion; then the same conversation inside TLS (a test
+certificate authority and certificates made for this run with the openssl program, in the
+work directory, trusted by nothing but this test).  Nothing is sent to any other machine.
 
 Prints one line per check and "N of N checks passed"; the exit code is 0 when all passed.
 Standard library only.
@@ -23,13 +25,16 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import socket
 import sqlite3
+import ssl
 import struct
 import subprocess
 import sys
 import tempfile
 import time
+import warnings
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -52,15 +57,80 @@ class Checks:
         return ok
 
 
+def test_certificates(work):
+    """A certificate authority of this test alone and three server certificates it signs,
+    made with the openssl program: 'localhost' (names localhost and 127.0.0.1), 'wrong'
+    (names only wrong-name.invalid) and 'stranger' (signed by another authority).  Returns
+    the paths {'ca', 'localhost', 'localhost.key', ...}; nothing is installed anywhere."""
+    folder = os.path.join(work, 'pki')
+    os.makedirs(folder, exist_ok=True)
+    tool = shutil.which('openssl')
+    if not tool:
+        raise RuntimeError('the openssl program is needed to make the test certificates')
+    config = os.path.join(folder, 'test.cnf')
+    with open(config, 'w') as f:
+        f.write('[req]\ndistinguished_name = dn\nprompt = no\n[dn]\nCN = rta-net2 test\n'
+                '[ca]\nbasicConstraints = critical, CA:TRUE\nkeyUsage = critical, keyCertSign, cRLSign\nsubjectKeyIdentifier = hash\n'
+                '[leaf]\nbasicConstraints = critical, CA:FALSE\nkeyUsage = critical, digitalSignature\nextendedKeyUsage = serverAuth\n'
+                'subjectKeyIdentifier = hash\nauthorityKeyIdentifier = keyid\nsubjectAltName = @names\n'
+                '[names]\nDNS.1 = localhost\nIP.1 = 127.0.0.1\n'
+                '[wrongleaf]\nbasicConstraints = critical, CA:FALSE\nkeyUsage = critical, digitalSignature\nextendedKeyUsage = serverAuth\n'
+                'subjectKeyIdentifier = hash\nauthorityKeyIdentifier = keyid\nsubjectAltName = DNS:wrong-name.invalid\n')
+
+    def run(*arguments):
+        result = subprocess.run([tool] + list(arguments), capture_output=True, text=True, cwd=folder)
+        if result.returncode != 0:
+            raise RuntimeError('openssl %s: %s' % (arguments[0], result.stderr[-500:]))
+
+    def key(name):
+        run('ecparam', '-name', 'prime256v1', '-genkey', '-noout', '-out', name + '.key')
+
+    def authority(name, cn):
+        key(name)
+        run('req', '-x509', '-new', '-key', name + '.key', '-sha256', '-days', '30', '-subj', '/CN=' + cn, '-config', config,
+            '-extensions', 'ca', '-out', name + '.pem')
+
+    def leaf(name, ca, section):
+        key(name)
+        run('req', '-new', '-key', name + '.key', '-subj', '/CN=' + name, '-config', config, '-out', name + '.csr')
+        run('x509', '-req', '-in', name + '.csr', '-CA', ca + '.pem', '-CAkey', ca + '.key', '-set_serial', '0x' + secrets.token_hex(8),
+            '-days', '30', '-sha256', '-extfile', config, '-extensions', section, '-out', name + '.crt')
+        with open(os.path.join(folder, name + '.pem'), 'w') as out:      # the chain a server gives: its own, then the authority's
+            out.write(open(os.path.join(folder, name + '.crt')).read() + open(os.path.join(folder, ca + '.pem')).read())
+
+    authority('ca', 'rta-net2 test authority')
+    authority('otherca', 'some other authority')
+    leaf('localhost', 'ca', 'leaf')
+    leaf('wrong', 'ca', 'wrongleaf')
+    leaf('stranger', 'otherca', 'leaf')
+    paths = {}
+    for name in ('ca', 'otherca', 'localhost', 'wrong', 'stranger'):
+        paths[name] = os.path.join(folder, name + '.pem')
+        paths[name + '.key'] = os.path.join(folder, name + '.key')
+    return paths
+
+
+def client_context(ca, **more):
+    context = ssl.create_default_context(cafile=ca)
+    for key, value in more.items():
+        setattr(context, key, value)
+    return context
+
+
 class Service:
     """One rendezvous.py process on 127.0.0.1."""
 
-    def __init__(self, data, *limits):
+    def __init__(self, data, *limits, tls=None, more=(), port=0, files=None):
         self.out = tempfile.TemporaryFile(mode='w+')
-        command = [sys.executable, '-u', os.path.join(HERE, 'rendezvous.py'), '--data', data, '--port', '0', '--bind', '127.0.0.1']
+        command = [sys.executable, '-u', os.path.join(HERE, 'rendezvous.py'), '--data', data, '--port', str(port), '--bind', '127.0.0.1'] + list(more)
+        if tls:
+            command += ['--tls-cert', tls[0], '--tls-key', tls[1]]
         for item in limits:
             command += ['--limit', item]
-        self.process = subprocess.Popen(command, stdout=self.out, stderr=subprocess.STDOUT)
+        def few_files():
+            import resource
+            resource.setrlimit(resource.RLIMIT_NOFILE, (files, files))
+        self.process = subprocess.Popen(command, stdout=self.out, stderr=subprocess.STDOUT, preexec_fn=few_files if files else None)
         self.port = 0
         for _ in range(200):
             self.out.seek(0)
@@ -92,8 +162,9 @@ class Service:
 class Player:
     """A client: one TCP connection, one UDP socket, the device secret."""
 
-    def __init__(self, port, name=None, secret=None, connect=True):
+    def __init__(self, port, name=None, secret=None, connect=True, tls=None, host='127.0.0.1'):
         self.port, self.name = port, name
+        self.tls, self.host = tls, host     # an ssl.SSLContext: the conversation inside TLS, the certificate checked for `host`
         self.secret = secret or secrets.token_bytes(32)
         self.verifier = hmac.new(self.secret, b'rta-net2 verifier v1', hashlib.sha256).digest()
         self.id = R.player_id(self.verifier)
@@ -111,7 +182,9 @@ class Player:
             self.connect()
 
     def connect(self):
-        self.sock = socket.create_connection(('127.0.0.1', self.port), 5)
+        self.sock = socket.create_connection((self.host, self.port), 5)
+        if self.tls:
+            self.sock = self.tls.wrap_socket(self.sock, server_hostname='localhost' if self.host == '127.0.0.1' else self.host)
         self.sock.settimeout(5)
         self.buf, self.lines, self.closed = b'', [], None
         hi = self.expect('hi', 'bye')
@@ -220,8 +293,8 @@ class Player:
         self.expect('synced')
         return fields
 
-    def hello(self, sock=None):
-        (sock or self.udp).sendto(b'N2\x20\x00\x00\x00\x00\x00' + self.key, ('127.0.0.1', self.port))
+    def hello(self, sock=None, to='127.0.0.1'):
+        (sock or self.udp).sendto(b'N2\x20\x00\x00\x00\x00\x00' + self.key, (to, self.port))
         try:
             data, _ = (sock or self.udp).recvfrom(4096)
         except socket.timeout:
@@ -326,6 +399,10 @@ def identity_checks(check, port):
     kind, ans = a2.ask('name', name='Zoë ★')
     check('a name may be any text (UTF-8)', kind == 'ok' and ans.get('name') == 'Zoë ★', ans)
     check('an unknown request is answered with an error, not a close', a2.ask('frobnicate')[0] == 'err' and a2.ask('ping')[0] == 'ok')
+    check('a name with an invisible right-to-left override in it is refused (it could pass for another name)',
+          a2.ask('name', name='Alice\u202eecilA')[0] == 'err')
+    kind, ans = a2.ask('name', name='Bob\u200b\u200bby')
+    check('zero-width characters are not part of a name', kind == 'err', ans)
     for p in (a, a2, a3, a4, b, c, d, e, e2):
         p.close()
 
@@ -470,7 +547,7 @@ def room_checks(check, port):
         seen[p] = p.hello()
     check('hello: the service answers with the address it saw', all(seen[p] == ('127.0.0.1', p.udp.getsockname()[1]) for p in seen), seen)
     for p in (a, b, c, d):
-        p.ask('local', eps='192.168.1.50:%d,10.0.0.9:4000,not-an-address:1' % p.udp.getsockname()[1])
+        p.ask('local', eps='192.168.1.50:%d,203.0.113.7:4000,10.0.0.9:4000,not-an-address:1' % p.udp.getsockname()[1])
     for p in (a, b, c, d):
         p.drain()
     check('start', a.ask('start')[0] == 'ok')
@@ -491,7 +568,7 @@ def room_checks(check, port):
     same = [[(f['slot'], f['id'], f['name']) for f in peers] for _, peers in starts.values()]
     check('everybody gets the same list of players', all(x == same[0] for x in same) and [x[1] for x in same[0]] == [a.id, b.id, c.id, d.id])
     eps_b_from_a = [f for f in starts[a][1] if f['id'] == b.id][0]['eps'].split(',')
-    check('for every other player: the address the service saw, then what the player said its own addresses are',
+    check('for every other player: the address the service saw, then what the player said its own addresses are (private ones only)',
           eps_b_from_a[0] == '127.0.0.1:%d' % b.udp.getsockname()[1] and eps_b_from_a[1:] == ['192.168.1.50:%d' % b.udp.getsockname()[1], '10.0.0.9:4000'], eps_b_from_a)
     check('no address is given for oneself', [f for f in starts[a][1] if f['id'] == a.id][0]['eps'] == '')
     session = int(starts[a][0]['session'], 16)
@@ -927,6 +1004,242 @@ def limit_checks(check, work):
     check('its summary counts what was relayed, dropped and limited', bool(found) and int(found.group(3)) >= 60 and int(found.group(4)) >= 60, text[-300:])
 
 
+def own_lan_address():
+    """This computer's address toward a LAN, or None (nothing is sent: a UDP socket is only aimed)."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(('192.0.2.1', 9))
+        ip = probe.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        probe.close()
+    return ip if ip and not ip.startswith('127.') and ip != '0.0.0.0' else None
+
+
+def exposure_checks(check, work):
+    """The limits added for strangers on the Internet (docs/issues/native-rendezvous-tls.md)."""
+    service = Service(':memory:', 'connects_per_minute=5', 'registrations_per_hour=100', 'registrations_per_hour_all=3')
+    port = service.port
+    players = [Player(port) for _ in range(5)]
+    sixth = Player(port)
+    check('new connections from one address: five a minute here, the sixth is refused with a reason',
+          sixth.closed is not None and sixth.closed.get('code') == str(R.E_LIMIT), sixth.closed)
+    results = [p.register('Reg%d' % i) is not None for i, p in enumerate(players[:4])]
+    check('new players from everywhere together: three an hour here, then refused', results == [True, True, True, False], results)
+    for p in players + [sixth]:
+        p.close()
+    service.stop()
+
+    service = Service(':memory:', 'registrations_per_hour=100', 'connections_per_address=40', 'requests_incoming=2', 'updates_burst=3',
+                      'updates_per_second=1', 'bad_joins_per_minute=3', 'requests_per_hour=100')
+    port = service.port
+    target = new_player(port, 'Wanted')
+    askers = [new_player(port, 'Asker%d' % i) for i in range(3)]
+    results = [a.ask('fadd', code=target.code)[1].get('code', 'ok') for a in askers]
+    check('friend requests waiting for one player: two here, the third asker is told to wait', results == ['ok', 'ok', str(R.E_LIMIT)], results)
+    results = [target.ask('char', name='Changer', cls='Wizard', level=i)[1].get('code', 'ok') for i in range(5)]
+    check('changes that every friend is told of (name, character, level ...): a burst of three here, then "wait a moment"',
+          results[:3] == ['ok'] * 3 and str(R.E_LIMIT) in results[3:], results)
+    g1, g2 = askers[0], askers[1]
+    results = [g1.ask('join', code='ZZZZA')[0], g1.ask('join', code='ZZZZB')[0], g2.ask('join', code='ZZZZC')[0], g2.ask('join', code='ZZZZD')[0]]
+    check('wrong room codes are counted per address, not per connection: the fourth from the second connection closes it',
+          results[:3] == ['err'] * 3 and results[3] in ('bye', 'gone'), results)
+    for p in [target] + askers:
+        p.close()
+    text = service.stop()
+    check('that service ended without an error', 'Traceback' not in text, text[-600:])
+
+    # a process that may open few files: the connections are capped below that, so accept() never runs out
+    service = Service(':memory:', 'connections_per_address=100', 'connects_per_minute=1000', files=96)
+    port = service.port
+    many = [Player(port) for _ in range(32)]
+    extra = Player(port)
+    check('a process allowed 96 open files takes 32 connections and refuses the 33rd in words (no busy loop at the limit)',
+          all(p.closed is None for p in many) and extra.closed is not None and extra.closed.get('code') == str(R.E_LIMIT), extra.closed)
+    for p in many + [extra]:
+        p.close()
+    text = service.stop()
+    check('it said its cap when it started', 'at most 32 connections at once' in text, text[:300])
+
+    lan = own_lan_address()
+    if lan is None:
+        print('note: no LAN address on this computer: the check of a hello from another address was not made', flush=True)
+        return
+    free = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    free.bind((lan, 0))
+    number = free.getsockname()[1]
+    free.close()
+    service = Service(':memory:', more=['--bind', lan], port=number)
+    port = service.port
+    p = Player(port, 'Lanny', host=lan)
+    p.register()
+    p.udp.close()
+    p.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    p.udp.bind(('127.0.0.1', 0))
+    p.udp.settimeout(0.5)
+    check('a hello with a right key from another IP address than its player\'s TCP connection gets no answer and is not taken',
+          p.hello(to='127.0.0.1') is None)
+    p.udp.close()
+    p.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    p.udp.bind((lan, 0))
+    p.udp.settimeout(1.0)
+    check('from the same address it is answered', p.hello(to=lan) == (lan, p.udp.getsockname()[1]))
+    p.close()
+    text = service.stop()
+    check('the service counts the hello from another address', re.search(r'[1-9]\d* hellos from another address', text) is not None, text[-300:])
+
+
+def tls_checks(check, work):
+    try:
+        pki = test_certificates(work)
+    except RuntimeError as e:
+        return check('test certificates made with the openssl program', False, e)
+    check('test certificates made with the openssl program (an authority of this test alone)', True)
+    trusting = client_context(pki['ca'])
+    service = Service(':memory:', 'registrations_per_hour=100', 'login_seconds=2', tls=(pki['localhost'], pki['localhost.key']))
+    port = service.port
+    a = Player(port, 'Tess', tls=trusting)
+    check('TLS: the greeting comes inside TLS, the certificate checked for the name localhost', a.nonce is not None and a.sock.version() in ('TLSv1.2', 'TLSv1.3'),
+          a.sock.version())
+    w = a.register()
+    check('TLS: a registration (the verifier) and its welcome', bool(w) and w['name'] == 'Tess', w)
+    a2 = Player(port, secret=a.secret, tls=trusting)
+    check('TLS: a login with a proof', a2.login() is not None and a2.welcome['id'] == a.id)
+    b = Player(port, 'Theo', tls=trusting)
+    b.register()
+    code = a2.ask('host')[1].get('code', '')
+    check('TLS: a room, joined by its code', bool(code) and b.ask('join', code=code)[0] == 'ok')
+    b.ask('chat', text='said inside TLS')
+    check('TLS: a chat line reaches the room', a2.expect('chat', where=lambda f: f.get('text') == 'said inside TLS')[0] == 'chat')
+    a2.hello(), b.hello()
+    b.ask('ready', v=1)
+    a2.drain()
+    a2.ask('start')
+    session = int(a2.expect('start')[1].get('session', '0'), 16)
+    b.drain()
+    a2.relay(session, 1, b'a datagram while the conversation is inside TLS')
+    check('TLS: the UDP side is the same (hello, the relay)', b.heard() == b'N2\x11\x00' + struct.pack('<I', session) + b'a datagram while the conversation is inside TLS')
+    b.raw('chat n=1 text=' + 'x' * 2000)
+    check('TLS: a line that is too long: closed with the reason, inside TLS', b.expect('bye')[1].get('code') == str(R.E_LIMIT))
+    # what does not get in
+    plain = socket.create_connection(('127.0.0.1', port), 5)
+    plain.settimeout(3)
+    plain.sendall(b'ping n=1\n')
+    try:
+        got = plain.recv(4096)
+    except (socket.timeout, OSError):
+        got = b''
+    check('a client in plain text gets nothing readable (no greeting, no answer) and is closed', b'hi ' not in got and b'ok' not in got, got[:80])
+    plain.close()
+    try:
+        Player(port, tls=client_context(pki['otherca']))
+        refused = False
+    except ssl.SSLError:
+        refused = True
+    check('a client that trusts another authority refuses the service\'s certificate', refused)
+    try:
+        Player(port, tls=client_context(pki['ca']), host='127.0.0.1').sock.close()
+        named = True
+    except ssl.SSLError:
+        named = False
+    check('(the certificate also names 127.0.0.1, so a client may check it for the address)', named)
+    old = client_context(pki['ca'])
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', DeprecationWarning)
+        old.maximum_version = ssl.TLSVersion.TLSv1_1
+        old.minimum_version = ssl.TLSVersion.TLSv1
+    try:
+        Player(port, tls=old)
+        refused = False
+    except (ssl.SSLError, OSError):
+        refused = True
+    check('a client that offers nothing newer than TLS 1.1 is refused', refused)
+    silent = socket.create_connection(('127.0.0.1', port), 5)
+    silent.settimeout(5)
+    t0 = time.time()
+    try:
+        gone = silent.recv(100) == b''
+    except (socket.timeout, OSError):
+        gone = True
+    check('a connection that never starts the handshake is closed after the login time (2 s here)', gone and time.time() - t0 < 4.5, time.time() - t0)
+    silent.close()
+    for p in (a, a2, b):
+        p.close()
+    # a certificate read again on SIGHUP
+    folder = os.path.join(work, 'reload')
+    os.makedirs(folder, exist_ok=True)
+    cert, keyfile = os.path.join(folder, 'cert.pem'), os.path.join(folder, 'key.pem')
+    shutil.copy(pki['localhost'], cert)
+    shutil.copy(pki['localhost.key'], keyfile)
+    text = service.stop()
+    check('the TLS service ended without an error and counted its handshakes', 'Traceback' not in text and re.search(r'[1-9]\d* TLS handshakes \([1-9]\d* failed\)', text) is not None, text[-400:])
+    service = Service(':memory:', tls=(cert, keyfile))
+    shutil.copy(pki['wrong'], cert)
+    shutil.copy(pki['wrong.key'], keyfile)
+    service.process.send_signal(signal.SIGHUP)
+    time.sleep(0.6)
+    try:
+        Player(service.port, tls=trusting)
+        refused = False
+    except ssl.SSLError:
+        refused = True
+    check('SIGHUP: the certificate is read again (here one for another name, which a client then refuses)', refused)
+    shutil.copy(pki['localhost'], cert)
+    shutil.copy(pki['localhost.key'], keyfile)
+    service.process.send_signal(signal.SIGHUP)
+    time.sleep(0.6)
+    p = Player(service.port, tls=trusting)
+    check('and back: a client gets in again', p.nonce is not None)
+    p.close()
+    text = service.stop()
+    check('the service said so in its log', text.count('certificate read again') == 2, text[-400:])
+    # partial TLS writes: a client that reads slowly gets every line, in order
+    service = Service(':memory:', 'lines_burst=5000', 'lines_per_second=5000', 'chat_burst=5000', 'chat_per_second=5000', 'output_bytes=16777216',
+                      'registrations_per_hour=100', tls=(pki['localhost'], pki['localhost.key']))
+    raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    raw.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    slow = Player(service.port, 'Slow', tls=trusting, connect=False)
+    raw.connect(('127.0.0.1', service.port))
+    slow.sock = trusting.wrap_socket(raw, server_hostname='localhost')
+    slow.sock.settimeout(5)
+    slow.nonce = bytes.fromhex(slow.expect('hi')[1]['nonce'])
+    slow.register()
+    slow.ask('host')
+    slow.drain()
+    count = 2500
+    slow.sock.sendall(b''.join(b'chat text=%05d%s\n' % (i, b'y' * 100) for i in range(count)))
+    time.sleep(1.0)
+    texts = []
+    end = time.time() + 30
+    while len(texts) < count and time.time() < end:
+        verb, f = slow.expect('chat', timeout=2)
+        if verb is None:
+            break
+        if f.get('from') == 'Slow':
+            texts.append(f['text'][:5])
+    check('TLS: 2,500 chat lines (300 kB) to a client that reads slowly arrive whole and in order', texts == ['%05d' % i for i in range(count)],
+          (len(texts), texts[:3], texts[-3:]))
+    slow.close()
+    text = service.stop()
+    check('that service ended without an error', 'Traceback' not in text, text[-600:])
+    # starting
+    process = subprocess.run([sys.executable, os.path.join(HERE, 'rendezvous.py'), '--data', ':memory:', '--bind', '192.0.2.1', '--port', '0'],
+                             capture_output=True, text=True, timeout=20)
+    check('an address reachable from the Internet without TLS is refused (unless --plain)', process.returncode != 0 and '--plain' in process.stderr and
+          'TLS' in process.stderr, process.stderr[-300:])
+    process = subprocess.run([sys.executable, os.path.join(HERE, 'rendezvous.py'), '--data', ':memory:', '--bind', '0.0.0.0', '--public', '--port', '0'],
+                             capture_output=True, text=True, timeout=20)
+    check('so is every address (0.0.0.0) with --public but without TLS', process.returncode != 0 and '--plain' in process.stderr, process.stderr[-300:])
+    process = subprocess.run([sys.executable, os.path.join(HERE, 'rendezvous.py'), '--data', ':memory:', '--port', '0', '--tls-cert', pki['localhost'],
+                              '--tls-key', pki['wrong.key']], capture_output=True, text=True, timeout=20)
+    check('a certificate with a key that is not its own: refused at the start, in words', process.returncode != 0 and 'cannot be used' in process.stderr,
+          process.stderr[-300:])
+    process = subprocess.run([sys.executable, os.path.join(HERE, 'rendezvous.py'), '--data', ':memory:', '--port', '0', '--tls-cert', pki['localhost']],
+                             capture_output=True, text=True, timeout=20)
+    check('a certificate without its key: refused', process.returncode != 0 and 'go together' in process.stderr)
+
+
 def start_checks(check):
     process = subprocess.run([sys.executable, os.path.join(HERE, 'rendezvous.py'), '--data', ':memory:', '--bind', '0.0.0.0', '--port', '0'],
                              capture_output=True, text=True, timeout=20)
@@ -967,6 +1280,8 @@ def main():
         check('the service ran through all of it without an error', 'Traceback' not in text, text[-1500:])
         stored_checks(check, work)
         limit_checks(check, work)
+        exposure_checks(check, work)
+        tls_checks(check, work)
     finally:
         if not args.keep and not args.work:
             shutil.rmtree(work, ignore_errors=True)

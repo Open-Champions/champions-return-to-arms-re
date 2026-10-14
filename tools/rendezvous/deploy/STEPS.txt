@@ -1,0 +1,79 @@
+The room service inside TLS on the project's server: the steps.  PREPARED, NOT RUN.
+docs/issues/native-rendezvous-tls.md is the why; this is the what, in order.
+
+Placeholders (fill them in on the server and in commands; never in the repository):
+  <server-host>     the host name of the server's existing Let's Encrypt certificate
+  <server-address>  the server's public IPv4 address
+On the Mac: the repository checkout as the working directory.
+
+0. Look first (nothing changes)
+   ssh root@<server-address> 'ls -l /etc/letsencrypt/live/<server-host>/ &&
+     openssl x509 -in /etc/letsencrypt/live/<server-host>/fullchain.pem -noout -subject -ext subjectAltName -enddate &&
+     systemctl cat champions-net2 && systemd --version | head -1 && python3 --version'
+   Expect: fullchain.pem and privkey.pem; the name <server-host> among the names; systemd 250
+   or later (the unit uses %d for the credentials directory); Python 3.8 or later.
+
+1. Copy the new files to the side (the running service is not touched yet)
+   scp tools/rendezvous/rendezvous.py root@<server-address>:/opt/champions-net2/rendezvous.py.new
+   scp tools/rendezvous/check.py root@<server-address>:/opt/champions-net2/check.py
+   scp tools/rendezvous/deploy/champions-net2.service tools/rendezvous/deploy/renew-hook.sh root@<server-address>:/opt/champions-net2/
+
+2. The self-test on the server, with the new file, beside the running service
+   (it starts services of its own on 127.0.0.1 with ports the system chooses, makes test
+   certificates with openssl in a temporary directory, removes everything again)
+   ssh root@<server-address> 'cd /opt/champions-net2 && mkdir -p t && cp rendezvous.py.new t/rendezvous.py &&
+     cp check.py t/ && python3 -I t/check.py; rm -rf t'
+   Expect: "225 of 225 checks passed" (one check is skipped with a note when the server has
+   no address of a private network; then 223 of 223).
+
+3. Keep what runs now, for a way back
+   ssh root@<server-address> 'cd /opt/champions-net2 && cp -p rendezvous.py rendezvous.py.before-tls &&
+     cp -p /etc/systemd/system/champions-net2.service champions-net2.service.before-tls'
+
+4. The unit, with the placeholders filled, checked before use
+   ssh root@<server-address> 'cd /opt/champions-net2 &&
+     sed -e "s/<server-host>/HOSTNAME/g" -e "s/<server-address>/ADDRESS/g" champions-net2.service > /etc/systemd/system/champions-net2.service &&
+     systemd-analyze verify /etc/systemd/system/champions-net2.service'
+   (HOSTNAME, ADDRESS: the two values.  verify must print nothing about this unit.)
+
+5. Switch
+   ssh root@<server-address> 'cd /opt/champions-net2 && mv rendezvous.py.new rendezvous.py &&
+     systemctl daemon-reload && systemctl restart champions-net2 && sleep 2 &&
+     systemctl --no-pager status champions-net2 | head -5 && journalctl -u champions-net2 -n 5 --no-pager'
+   Expect in the journal: "listening on <server-address>, TCP and UDP port 41900, TLS" and
+   "at most 2000 connections at once".  The players' data (/var/lib/champions-net2) is kept.
+
+6. From the Mac: the certificate as a client sees it, then a real client
+   openssl s_client -connect <server-host>:41900 -servername <server-host> -verify_return_error </dev/null 2>&1 |
+     grep -E "Verify return code|^hi v=1"
+   Expect: "Verify return code: 0 (ok)" and the service's greeting "hi v=1 nonce=...".
+   printf 'wait 4\nme\ndebug link\ndelete\nwait 2\nquit\n' |
+     local/recomp-net2/bin/net2cli --service <server-host>:41900 --data "$(mktemp -d)" --name "TLS check"
+   Expect: "me: link=2 ..." and "debug: stage online, ... tls on (rule auto): TLS 1.3, certificate
+   for <server-host> checked (trusted: the system's store)".  (This registers a player and
+   deletes it again at once.)
+   Two game copies through it (the program built with TLS: local/recomp-net2/bin/n2_headless):
+   RTA_DISC=... python3 -B tools/recomp/net2/n2party.py local/recomp-net2/rv/public-tls --players 2 --external --service-address <server-host> --port 41900
+
+7. The renewal: certbot restarts the service after it has renewed this certificate
+   ssh root@<server-address> 'sed "s/<server-host>/HOSTNAME/g" /opt/champions-net2/renew-hook.sh > /etc/letsencrypt/renewal-hooks/deploy/champions-net2 &&
+     chmod 0755 /etc/letsencrypt/renewal-hooks/deploy/champions-net2 &&
+     RENEWED_LINEAGE=/etc/letsencrypt/live/HOSTNAME sh -x /etc/letsencrypt/renewal-hooks/deploy/champions-net2'
+   (The last command runs the hook once by hand: a restart of the service, as at a renewal.)
+
+8. The clients: name the service by its HOST NAME from now on
+   <server-host>:41900 - in RTA_NET2_SERVICE, net2-service.txt, --opt net2-service=, the
+   launchers, n2party --external --service-address.  By the address (<server-address>:41900)
+   a client takes TLS too (a public address) and refuses the certificate, which names the
+   host, not the address.  A program built before tls.cpp speaks plain text: the service waits
+   for a TLS handshake and closes it after 10 s ("The link to the service was lost.").
+   rta_app is rebuilt with tools/recomp/app/build.py as always (it compiles tls.cpp and links
+   the Network and Security frameworks now); the Windows program with tools/recomp/app/build_win.py.
+
+9. Back, if needed
+   ssh root@<server-address> 'cd /opt/champions-net2 && cp -p rendezvous.py.before-tls rendezvous.py &&
+     cp -p champions-net2.service.before-tls /etc/systemd/system/champions-net2.service &&
+     rm -f /etc/letsencrypt/renewal-hooks/deploy/champions-net2 && systemctl daemon-reload && systemctl restart champions-net2'
+
+Nothing else changes: the firewall already has 41900/tcp and 41900/udp open; the lobby,
+the browser page and its relay, nginx and the certificate itself are not touched.

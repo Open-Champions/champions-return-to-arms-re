@@ -12,18 +12,26 @@ character labels, a room by code / by friend / by invitation, chat, ready, the f
 warning, the start (every machine the same description; straight routes found by
 punching; a pair forced onto the relay), datagrams both ways on both kinds of route, game
 over and a second start, recent players, the service going away and coming back, and
-deleting everything.  Loop-back only.
+deleting everything.  Then the link inside TLS (tls.h: the operating system's TLS) against
+a service of its own with certificates made for this run (check.py's test authority, which
+nothing but this test trusts): the rule of when TLS is used, the same conversation inside
+it, what is refused (no trust, another name, another authority, plain text on either
+side), and what a tap between client and service sees.  Loop-back only.
 
 Prints one line per check and "N of N checks passed".  Standard library only (and the C++
 compiler of the machine for net2cli).
 """
 import argparse
+import hashlib
+import hmac
 import os
 import re
 import shutil
 import subprocess
 import sys
+import socket
 import tempfile
+import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -48,8 +56,11 @@ class Checks:
 
 def build_cli(work):
     out = os.path.join(work, 'net2cli')
-    sources = [os.path.join(NET2, n) for n in ('session.cpp', 'session_mock.cpp', 'session_net.cpp', 'carrier.cpp', 'cardchars.cpp', 'clicmd.cpp', 'net2cli.cpp')]
+    sources = [os.path.join(NET2, n) for n in ('session.cpp', 'session_mock.cpp', 'session_net.cpp', 'carrier.cpp', 'tls.cpp', 'cardchars.cpp', 'clicmd.cpp',
+                                               'net2cli.cpp')]
     command = ['clang++', '-std=c++17', '-O1', '-Wall', '-Wextra', '-I', NET2, '-o', out] + sources + ['-lpthread']
+    if sys.platform == 'darwin':
+        command += ['-framework', 'Network', '-framework', 'Security', '-framework', 'CoreFoundation']
     result = subprocess.run(['nice', '-n', '10'] + command, capture_output=True, text=True)
     if result.returncode != 0:
         raise SystemExit('net2cli did not build:\n' + result.stderr[-3000:])
@@ -57,9 +68,11 @@ def build_cli(work):
 
 
 class Service:
-    def __init__(self, data, port=0, *limits):
+    def __init__(self, data, port=0, *limits, tls=None):
         self.log = open(os.path.join(data, 'service.log'), 'a+')
         command = [sys.executable, '-u', os.path.join(HERE, 'rendezvous.py'), '--data', data, '--port', str(port), '--bind', '127.0.0.1']
+        if tls:
+            command += ['--tls-cert', tls[0], '--tls-key', tls[1]]
         for item in limits:
             command += ['--limit', item]
         self.log.seek(0, 2)
@@ -92,7 +105,7 @@ class Service:
 class Cli:
     """One net2cli process: commands in, lines out."""
 
-    def __init__(self, binary, work, name, port=None, fix='073064bb:99', data=None, env=None, service=True):
+    def __init__(self, binary, work, name, port=None, fix='073064bb:99', data=None, env=None, service=True, address=None, extra=()):
         self.name = name
         self.data = data or os.path.join(work, name)
         os.makedirs(self.data, exist_ok=True)
@@ -100,7 +113,8 @@ class Cli:
         self.out = open(self.path, 'w+')
         command = ['nice', '-n', '10', binary, '--data', self.data, '--name', name, '--fix', fix, '--arith', '3:0', '--local-only']
         if service:
-            command += ['--service', '127.0.0.1:%d' % port]
+            command += ['--service', address or '127.0.0.1:%d' % port]
+        command += list(extra)
         environment = dict(os.environ)
         environment.pop('RTA_NET2_SERVICE', None)
         environment.update(env or {})
@@ -473,6 +487,204 @@ def run(check, binary, work):
     check('the service ran through all of it without an error', 'Traceback' not in text, text[-1500:])
 
 
+class Tap:
+    """A TCP relay on 127.0.0.1 between a client and the service that keeps every byte it
+    carries, both ways: what somebody on the path would see."""
+
+    def __init__(self, to_port):
+        self.to_port = to_port
+        self.seen = bytearray()
+        self.lock = threading.Lock()
+        self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.listener.bind(('127.0.0.1', 0))
+        self.listener.listen(8)
+        self.port = self.listener.getsockname()[1]
+        self.socks = []
+        threading.Thread(target=self.accept, daemon=True).start()
+
+    def accept(self):
+        while True:
+            try:
+                a, _ = self.listener.accept()
+                b = socket.create_connection(('127.0.0.1', self.to_port), 5)
+            except OSError:
+                return
+            self.socks += [a, b]
+            threading.Thread(target=self.pump, args=(a, b), daemon=True).start()
+            threading.Thread(target=self.pump, args=(b, a), daemon=True).start()
+
+    def pump(self, src, dst):
+        while True:
+            try:
+                data = src.recv(65536)
+            except OSError:
+                data = b''
+            if not data:
+                for x in (src, dst):
+                    try:
+                        x.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                return
+            with self.lock:
+                self.seen += data
+            try:
+                dst.sendall(data)
+            except OSError:
+                return
+
+    def close(self):
+        self.listener.close()
+        for x in self.socks:
+            try:
+                x.close()
+            except OSError:
+                pass
+
+
+def verifier_of(data):
+    secret = re.search(r'secret=([0-9a-f]{64})', open(os.path.join(data, 'net2-identity.key')).read()).group(1)
+    return hmac.new(bytes.fromhex(secret), b'rta-net2 verifier v1', hashlib.sha256).hexdigest()
+
+
+def tls_run(check, binary, work):
+    import check as service_checks     # the test authority and its certificates (tools/rendezvous/check.py)
+    pki = service_checks.test_certificates(work)
+    folder = os.path.join(work, 'tls')
+    os.makedirs(folder)
+    clients, services, taps = [], [], []
+
+    def service(cert, *limits):
+        data = os.path.join(folder, 'service-%d' % len(services))
+        os.makedirs(data)
+        made = Service(data, 0, 'registrations_per_hour=1000', 'connections_per_address=64', 'connects_per_minute=1000', *limits,
+                       tls=(pki[cert], pki[cert + '.key']) if cert else None)
+        services.append(made)
+        return made
+
+    def cli(name, address, extra=(), env=None):
+        made = Cli(binary, folder, name, address=address, extra=extra, env=env)
+        clients.append(made)
+        return made
+
+    try:
+        # ---- when TLS is used (nothing is sent: the rule only) ----
+        probe = cli('Rule', '127.0.0.1:1')
+        rules = {}
+        for address in ('127.0.0.1:41900', 'localhost:41900', '192.168.1.20:41900', '10.0.0.5:41900', '172.20.0.1:41900', '100.100.1.1:41900',
+                        '203.0.113.9:41900', '8.8.8.8:41900', 'play.example.org:41900', 'tls://127.0.0.1:41900', 'plain://play.example.org:41900'):
+            found = re.search(r'debug: tls (on|off)', probe.ask('debug tls-rule ' + address))
+            rules[address] = found.group(1) if found else None
+        check('the rule (auto): plain text for this computer and for home-network addresses',
+              all(rules[a] == 'off' for a in ('127.0.0.1:41900', 'localhost:41900', '192.168.1.20:41900', '10.0.0.5:41900', '172.20.0.1:41900',
+                                               '100.100.1.1:41900')), rules)
+        check('TLS for a public address and for every host name', all(rules[a] == 'on' for a in ('203.0.113.9:41900', '8.8.8.8:41900', 'play.example.org:41900')), rules)
+        check('"tls://" and "plain://" in front of the address say it the other way', rules['tls://127.0.0.1:41900'] == 'on' and
+              rules['plain://play.example.org:41900'] == 'off', rules)
+        env_probe = cli('RuleEnv', '127.0.0.1:1', env={'RTA_NET2_TLS': 'on'})
+        check('and so does RTA_NET2_TLS=on in the environment', 'debug: tls on' in env_probe.ask('debug tls-rule 127.0.0.1:41900'))
+        # ---- the conversation inside TLS ----
+        good = service('localhost', 'login_seconds=3')
+        port = good.port
+        a = cli('Tilda', 'tls://localhost:%d' % port, env={'RTA_NET2_TLS_CA': pki['ca']})
+        b = cli('Tomas', 'localhost:%d' % port, extra=['--tls', 'on', '--tls-ca', pki['ca']])
+        ida, _, code_a, _ = me_of(a)
+        idb, _, code_b, _ = me_of(b)
+        check('inside TLS: a first start registers and comes online (the name localhost, the test authority as the only trust)', ida is not None and idb is not None,
+              a.ask('me') + b.ask('me'))
+        link = a.ask('debug link')
+        check('the link says how: TLS 1.2 or 1.3, the certificate for localhost checked, trusting that file only',
+              re.search(r'tls on \(rule on\): TLS 1\.[23], certificate for localhost checked \(trusted: only ca\.pem\)', link) is not None, link)
+        a.send('add ' + code_b)
+        b.wait(r'EVENT REQUESTS .*who=Tilda')
+        b.send('accept Tilda')
+        check('inside TLS: friends by code', a.until('friends', r'Tomas\s+\S+ \S+ online') is not None, a.ask('friends'))
+        a.send('host friends')
+        found = a.wait(r'EVENT ROOM code=0 who= room=([A-Z2-9]{5})')
+        room = found.group(1) if found else 'NONE'
+        b.send('join ' + room)
+        check('inside TLS: a room by code', b.until('room', r'state=open code=%s count=2 my_slot=1' % room) is not None, b.ask('room'))
+        b.send('chat hello inside TLS')
+        check('inside TLS: chat', a.wait(r'EVENT CHAT code=0 who=Tomas room= text=hello inside TLS') is not None)
+        b.send('ready')
+        a.until('room', r'all_ready=1')
+        a.until('debug udp', r'seen as 127\.0\.0\.1:\d+', 8)
+        b.until('debug udp', r'seen as 127\.0\.0\.1:\d+', 8)
+        b.send('set relay force')
+        a.send('start')
+        check('inside TLS: the start reaches both', all(p.wait(r'EVENT START', 10) is not None for p in (a, b)))
+        check('the datagrams are the same as ever: through the relay of the service', b.until('room', r'slot 0 .*route=relay', 10) is not None, b.ask('room'))
+        a.ask('debug send 1 a datagram beside a TLS link')
+        check('and they arrive', b.until('debug recv', r'from 0: a datagram beside a TLS link', 5) is not None)
+        for p in (a, b):
+            p.send('over')
+        # the service goes away and comes back: the client makes the TLS link again by itself
+        for p in (a, b):
+            p.at = len(p.text())
+        good.stop()
+        services.remove(good)
+        check('the TLS service is gone: the client says so', a.wait(r'EVENT LINK code=0 who= room= text=', 10) is not None)
+        data = os.path.join(folder, 'service-again')
+        os.makedirs(data)
+        again = Service(data, port, 'registrations_per_hour=1000', 'connections_per_address=64', 'connects_per_minute=1000',
+                        tls=(pki['localhost'], pki['localhost.key']))
+        services.append(again)
+        check('and back: a new TLS link, by itself (a new service file: it registers again)', a.until('me', r'link=2 ', 45) is not None, a.ask('me'))
+        # ---- what is refused ----
+        plain_side = cli('PlainOne', 'plain://127.0.0.1:%d' % port)
+        found = plain_side.until('me', r'link=1 .*problem=(\S.*)', 15)
+        check('a client in plain text does not get in to a TLS service', found is not None and 'link=2' not in plain_side.ask('me'), plain_side.ask('me'))
+        nobody = cli('NoTrust', 'tls://localhost:%d' % port)
+        found = nobody.until('me', r'link=1 .*problem=No secure link to the service: The service\'s certificate is not accepted for localhost: \S', 15)
+        check('without the test authority (the system\'s trust store only) the certificate is refused, in words', found is not None, nobody.ask('me'))
+        missing = cli('NoFile', 'tls://localhost:%d' % port, extra=['--tls-ca', os.path.join(folder, 'no-such-file.pem')])
+        check('a trust file that is not there: refused, in words', missing.until('me', r'link=1 .*problem=.*cannot be read', 15) is not None, missing.ask('me'))
+        wrong = service('wrong')
+        named = cli('WrongName', 'tls://localhost:%d' % wrong.port, extra=['--tls-ca', pki['ca']])
+        check('a certificate of the right authority for another name is refused', named.until('me', r'link=1 .*problem=.*not accepted for localhost', 15) is not None,
+              named.ask('me'))
+        stranger = service('stranger')
+        other = cli('OtherCA', 'tls://localhost:%d' % stranger.port, extra=['--tls-ca', pki['ca']])
+        check('a certificate of another authority is refused', other.until('me', r'link=1 .*problem=.*not accepted for localhost', 15) is not None, other.ask('me'))
+        plain_service = service(None)
+        mixed = cli('TlsToPlain', 'tls://localhost:%d' % plain_service.port, extra=['--tls-ca', pki['ca']])
+        check('a TLS client and a service in plain text: no link, in words', mixed.until('me', r'link=1 .*problem=\S', 15) is not None and
+              'link=2' not in mixed.ask('me'), mixed.ask('me'))
+        # ---- what a tap on the path sees ----
+        for label, address_of, target in (('TLS', lambda p: 'tls://localhost:%d' % p, again.port), ('plain', lambda p: 'plain://127.0.0.1:%d' % p, plain_service.port)):
+            tap = Tap(target)
+            taps.append(tap)
+            who = cli('Wiretap Wendy %s' % label, address_of(tap.port), extra=['--tls-ca', pki['ca']])
+            idw, _, codew, _ = me_of(who)
+            who.send('host')
+            found = who.wait(r'EVENT ROOM code=0 who= room=([A-Z2-9]{5})')
+            roomw = found.group(1) if found else 'NONE'
+            who.until('room', r'state=open')
+            who.send('chat a secret line QZXV %s' % label)
+            who.wait(r'EVENT CHAT code=0 who=Wiretap')
+            time.sleep(0.3)
+            with tap.lock:
+                seen = bytes(tap.seen)
+            secrets_on_wire = {'name': ('Wiretap%20Wendy' in seen.decode('latin-1')) or b'Wiretap Wendy' in seen, 'chat': b'QZXV' in seen,
+                               'verifier': verifier_of(who.data).encode() in seen, 'friend code': (codew or '-').encode() in seen,
+                               'room code': roomw.encode() in seen, 'id': (idw or '-').encode() in seen}
+            if label == 'TLS':
+                check('a tap between client and service sees none of it inside TLS: name, chat, the verifier of the registration, friend code, room code, id (%d bytes seen)'
+                      % len(seen), len(seen) > 1000 and not any(secrets_on_wire.values()), secrets_on_wire)
+            else:
+                check('(in plain text the same tap reads all of them: the test can see what it looks for)', all(secrets_on_wire.values()), secrets_on_wire)
+    finally:
+        for p in clients:
+            try:
+                p.quit()
+            except Exception:
+                pass
+        texts = [x.stop() for x in services]
+        for tap in taps:
+            tap.close()
+    check('the TLS services ran through all of it without an error', not any('Traceback' in t for t in texts), [t[-800:] for t in texts if 'Traceback' in t])
+
+
 def main():
     global VERBOSE
     parser = argparse.ArgumentParser()
@@ -491,6 +703,7 @@ def main():
     try:
         binary = args.cli or build_cli(work)
         run(check, binary, work)
+        tls_run(check, binary, work)
     finally:
         if made:
             shutil.rmtree(work, ignore_errors=True)

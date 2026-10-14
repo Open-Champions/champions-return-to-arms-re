@@ -6,7 +6,7 @@ ticks compared, and what happens afterwards.  The proof runs of docs/issues/nati
   export RTA_DISC="/path/to/your/disc image.iso"
   python3 -B tools/recomp/net2/n2party.py OUT --players 3 [--launches K] [--play FRAMES]
           [--level NAME --play2 FRAMES] [--scenario plain|drop|hostquit|again] [--relay force|never|mixed]
-          [--service-address 127.0.0.1|<this computer's LAN address>] [--external] [--program PATH] [--limit NAME=VALUE]...
+          [--service-address 127.0.0.1|<this computer's LAN address>] [--external] [--tls] [--program PATH] [--limit NAME=VALUE]...
 
 Starts a rendezvous service of its own (tools/rendezvous/rendezvous.py, on 127.0.0.1 and,
 with --service-address, on this computer's LAN address; nothing else) - or, with --external,
@@ -27,6 +27,10 @@ Scenarios (FRAMES are vertical blanks):
             room: --rounds games in the same processes
 --relay: force = every copy's routes go through the service's relay; mixed = the last copy's
 only; never = no relay (default: punch, relay as the fallback).
+--tls: the service of its own has its TCP conversation inside TLS, with certificates made
+for the run (tools/rendezvous/check.py's test authority, in OUT/pki; nothing else trusts
+it); the copies reach it as tls://localhost:PORT and trust that authority only
+(RTA_NET2_TLS_CA).  With --external and a host name the copies use TLS by themselves.
 
 Compared: every pair of tick logs (tools/rig/compare.py ticks: seed, level, player count,
 button maps, every player's position, state, hit points, gold, experience, out-of-step
@@ -120,6 +124,8 @@ def start_service(out, args):
                '--bind', '127.0.0.1', '--status-every', '30']
     if args.service_address != '127.0.0.1':
         command += ['--bind', args.service_address]
+    if args.tls:
+        command += ['--tls-cert', args.pki['localhost'], '--tls-key', args.pki['localhost.key']]
     for item in args.limit_service:
         command += ['--limit', item]
     process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, preexec_fn=lambda: os.nice(10))
@@ -148,7 +154,8 @@ def start_copy(role, index, out, run, room, n, args):
     options = {'net-data': directory, 'net-local-only': '0' if args.external else '1', 'online-person': '0', 'net-pace': str(args.pace),
                'net-log': os.path.join(run, role + '.net.log'), 'tick-log': os.path.join(run, role + '.tick.tsv'),
                'tick-watch-file': watch_file, 'tick-do': os.path.join(run, 'tick-do.txt'),
-               'net2': 'host' if role == 'host' else 'join:' + room, 'net2-service': '%s:%d' % (args.service_address, args.port),
+               'net2': 'host' if role == 'host' else 'join:' + room,
+               'net2-service': ('tls://localhost:%d' % args.port) if args.tls and not args.external else '%s:%d' % (args.service_address, args.port),
                'net2-name': role.capitalize() + ' of ' + os.path.basename(out)[:12], 'net2-data': directory, 'net2-players': str(n),
                'net2-log': os.path.join(run, role + '.net2.log'), 'net2-again': '1' if args.scenario == 'again' else '0'}
     if relay:
@@ -162,7 +169,10 @@ def start_copy(role, index, out, run, room, n, args):
         command += ['--opt', '%s=%s' % (key, value)]
     command += ['--seconds', str(args.limit)]
     log = open(os.path.join(run, role + '.out'), 'w')
-    return subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, preexec_fn=lambda: os.nice(10))
+    env = dict(os.environ)
+    if args.tls and not args.external:
+        env['RTA_NET2_TLS_CA'] = args.pki['ca']
+    return subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, preexec_fn=lambda: os.nice(10), env=env)
 
 
 def said(path, word):
@@ -285,6 +295,7 @@ def main():
     parser.add_argument('--service-address', default='127.0.0.1', help='127.0.0.1 (default) or this computer\'s LAN address')
     parser.add_argument('--external', action='store_true', help='use a service already running at --service-address:--port (e.g. on a server) instead of starting one')
     parser.add_argument('--port', type=int, default=41977)
+    parser.add_argument('--tls', action='store_true', help='the service of its own inside TLS, with certificates made for the run')
     parser.add_argument('--limit-service', action='append', default=[], metavar='NAME=VALUE', help='a limit of the service, to hit it')
     parser.add_argument('--program')
     parser.add_argument('--play', type=int, default=1800)
@@ -311,6 +322,10 @@ def main():
         raise SystemExit('the service must be on this computer (127.0.0.1 or %s), not %s' % (mine, args.service_address))
     out = os.path.abspath(args.out)
     os.makedirs(out, exist_ok=True)
+    if args.tls and not args.external:
+        sys.path.insert(0, os.path.join(ROOT, 'tools', 'rendezvous'))
+        import check as service_checks         # the test authority of the service's self-test
+        args.pki = service_checks.test_certificates(out)
     service = None if args.external else start_service(out, args)
     if service:
         with open(os.path.join(out, 'pids'), 'a') as pids:

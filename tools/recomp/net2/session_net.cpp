@@ -12,17 +12,18 @@
 // one in its standard library, and none is written here).  Whoever reads the registration
 // on the wire, or the service's file, holds the verifier and could log in as that player.
 // A proof read off the wire is worth nothing (the nonce is new for every connection).
-// When the service runs in public its TCP port belongs inside TLS (a standard front such
-// as stunnel or a web server's stream proxy; the client side then uses the operating
-// system's TLS) - until then this is an identity for a game among friends, and what it
-// guards is a display name and a friends list.
+// So a service on the Internet has its TCP conversation inside TLS (tls.h: the operating
+// system's own TLS, the certificate checked against the system's trust store and the host
+// name; plain text only for this computer and a LAN unless told otherwise) - what the
+// identity guards is a display name and a friends list.
 //
-// One TCP connection (lines of text), one UDP socket (carrier.h: hello, punching, the
-// game's datagrams, the relay).  Nothing blocks: a host name is looked up on a thread of
-// its own, everything else is polled.
+// One TCP connection (lines of text, inside TLS or not), one UDP socket (carrier.h: hello,
+// punching, the game's datagrams, the relay).  Nothing blocks: a host name is looked up on
+// a thread of its own, everything else is polled.
 #include "carrier.h"
 #include "hash.h"
 #include "session_impl.h"
+#include "tls.h"
 
 #include "../net/sock.h"
 
@@ -115,7 +116,11 @@ struct Net : Backend {
     uint8_t secret[32] = {0}, verifier[32] = {0};
     bool have_secret = false, registered_once = false;
     // the link
-    sock::Handle fd = sock::NONE;
+    sock::Handle fd = sock::NONE;              // the plain link; or
+    std::unique_ptr<n2::TlsLink> tls;           // the link inside TLS
+    int tls_rule = n2::TLS_AUTO;
+    std::string tls_trust;                      // "" the system's trust store; else the only certificates trusted
+    bool linked() const { return fd != sock::NONE || tls != nullptr; }
     enum { IDLE, RESOLVING, CONNECTING, GREETING, PROVING, ONLINE } stage = IDLE;
     std::shared_ptr<Resolve> resolving;
     n2::Endpoint service;
@@ -155,14 +160,21 @@ struct Net : Backend {
         put(s.me.service, service_text);
         s.me.link = NET2_LINK_CONNECTING;
         put(s.me.problem, "Connecting...");
-        size_t colon = service_text.rfind(':');
-        port = colon == std::string::npos ? 0 : (uint16_t)atoi(service_text.c_str() + colon + 1);
-        host_name = colon == std::string::npos ? service_text : service_text.substr(0, colon);
+        // "tls://host:port" and "plain://host:port" say how; "host:port" leaves it to the rule (tls.h)
+        std::string address = service_text;
+        if (address.compare(0, 6, "tls://") == 0) { tls_rule = n2::TLS_ON; address = address.substr(6); }
+        else if (address.compare(0, 8, "plain://") == 0) { tls_rule = n2::TLS_OFF; address = address.substr(8); }
+        if (const char* env = getenv("RTA_NET2_TLS"))
+            if (*env && n2::tls_rule(env) >= 0) tls_rule = n2::tls_rule(env);
+        if (const char* env = getenv("RTA_NET2_TLS_CA")) tls_trust = env;
+        size_t colon = address.rfind(':');
+        port = colon == std::string::npos ? 0 : (uint16_t)atoi(address.c_str() + colon + 1);
+        host_name = colon == std::string::npos ? address : address.substr(0, colon);
         if (!port || host_name.empty()) stop_for_good("The service's address must be host:port (it is \"" + service_text + "\").");
         load_identity();
     }
     ~Net() override {
-        if (fd != sock::NONE) { send_line("leave n=0"); flush(); sock::close(fd); }
+        if (linked()) { send_line("leave n=0"); flush(); close_link(); }
     }
 
     // ---- identity ------------------------------------------------------------------------
@@ -211,9 +223,13 @@ struct Net : Backend {
         drop_link(why, false);
         s.me.link = NET2_LINK_OFF;
     }
-    void drop_link(const std::string& why, bool retry = true) {
+    void close_link() {
         if (fd != sock::NONE) sock::close(fd);
         fd = sock::NONE;
+        tls.reset();
+    }
+    void drop_link(const std::string& why, bool retry = true) {
+        close_link();
         bool was_online = stage == ONLINE;
         stage = IDLE;
         inbuf.clear();
@@ -277,6 +293,12 @@ struct Net : Backend {
             sock::own_addresses(own);
             if ((service.ip >> 24) != 127 && !own.count(service.ip)) { stop_for_good("The service is not on this computer (local only)."); return; }
         }
+        if (n2::tls_wanted(tls_rule, host_name)) {
+            tls.reset(n2::tls_link());
+            tls->start(service.ip, service.port, host_name, tls_trust);
+            stage = CONNECTING;
+            return;
+        }
         fd = sock::tcp();
         if (fd == sock::NONE) { drop_link("No socket: " + sock::error_text(sock::error())); return; }
         int r = sock::connect(fd, service.ip, service.port);
@@ -284,13 +306,13 @@ struct Net : Backend {
         stage = CONNECTING;
     }
     void send_line(const std::string& text) {
-        if (fd == sock::NONE) return;
+        if (!linked()) return;
         outbuf += text;
         outbuf += '\n';
     }
     void flush() {
-        while (fd != sock::NONE && !outbuf.empty()) {
-            int sent = sock::send(fd, outbuf.data(), outbuf.size());
+        while (linked() && !outbuf.empty()) {
+            int sent = tls ? tls->send(outbuf.data(), outbuf.size()) : sock::send(fd, outbuf.data(), outbuf.size());
             if (sent == sock::LOST) { drop_link("The link to the service was lost."); return; }
             if (sent <= 0) return;
             outbuf.erase(0, (size_t)sent);
@@ -645,31 +667,36 @@ struct Net : Backend {
             if (state == 1) { service.ip = resolving->ip; open_socket(); }
             else if (state == 2) drop_link("The name " + host_name + " is not known.");
             else if (now - stage_since > 15000) drop_link("The name " + host_name + " was not answered.");
+        } else if (stage == CONNECTING && tls) {
+            int r = tls->state();
+            if (r == n2::TlsLink::READY) { stage = GREETING; last_heard = now; }
+            else if (r == n2::TlsLink::FAILED) drop_link("No secure link to the service: " + tls->problem());
+            else if (now - stage_since > 15000) drop_link("The service at " + service_text + " does not answer (TLS).");
         } else if (stage == CONNECTING) {
             int r = sock::connect_check(fd);
             if (r == sock::CONNECTED) { stage = GREETING; last_heard = now; }
             else if (r == sock::FAILED) drop_link("The service at " + service_text + " does not answer: " + sock::error_text(sock::error()));
             else if (now - stage_since > 10000) drop_link("The service at " + service_text + " does not answer.");
         }
-        if (fd != sock::NONE && stage >= GREETING) {
+        if (linked() && stage >= GREETING) {
             char buffer[8192];
-            for (int rounds = 0; rounds < 16 && fd != sock::NONE; rounds++) {
-                int got = sock::recv(fd, buffer, sizeof buffer);
+            for (int rounds = 0; rounds < 16 && linked(); rounds++) {
+                int got = tls ? tls->recv(buffer, sizeof buffer) : sock::recv(fd, buffer, sizeof buffer);
                 if (got == sock::AGAIN) break;
                 if (got <= 0) {
                     // what came with the close is still read (a "bye" says why)
                     read_lines();
-                    if (fd != sock::NONE) drop_link("The link to the service was lost.");
+                    if (linked()) drop_link(tls && got < 0 && !tls->problem().empty() ? tls->problem() : "The link to the service was lost.");
                     break;
                 }
                 inbuf.append(buffer, (size_t)got);
                 last_heard = now;
                 read_lines();
             }
-            if (fd != sock::NONE && stage == ONLINE) {
+            if (linked() && stage == ONLINE) {
                 if (now - last_ping > 20000) { last_ping = now; n++; send_line("ping n=" + std::to_string(n)); }
                 if (now - last_heard > 60000) drop_link("The service has gone quiet.");
-            } else if (fd != sock::NONE && now - last_heard > 15000) drop_link("The service does not answer.");
+            } else if (linked() && now - last_heard > 15000) drop_link("The service does not answer.");
             flush();
         }
         // datagrams: while in a room the service must know where this socket is seen
@@ -709,7 +736,7 @@ struct Net : Backend {
 
     void read_lines() {
         size_t end;
-        while (fd != sock::NONE && (end = inbuf.find('\n')) != std::string::npos) {
+        while (linked() && (end = inbuf.find('\n')) != std::string::npos) {
             std::string text = inbuf.substr(0, end);
             inbuf.erase(0, end + 1);
             Line l;
@@ -804,7 +831,17 @@ struct Net : Backend {
         if (what == "udp" || what == "routes") out = carrier_.is_open() ? carrier_.text() : "no UDP socket yet";
         else if (what == "link") {
             static const char* STAGES[] = {"idle", "resolving", "connecting", "greeting", "proving", "online"};
-            out = std::string("stage ") + STAGES[stage] + ", service " + service_text + ", " + std::to_string(pending.size()) + " requests open, try " + std::to_string(tries);
+            out = std::string("stage ") + STAGES[stage] + ", service " + service_text + ", tls " +
+                  (n2::tls_wanted(tls_rule, host_name) ? "on" : "off") + " (rule " + n2::tls_rule_text(tls_rule) + ")" +
+                  (tls && stage >= GREETING ? ": " + tls->summary() : "") + ", " + std::to_string(pending.size()) + " requests open, try " + std::to_string(tries);
+        } else if (what.compare(0, 9, "tls-rule ") == 0) {
+            // tests: would this link's rule put a service written so inside TLS (nothing is sent)
+            std::string address = what.substr(9);
+            int rule = tls_rule;
+            if (address.compare(0, 6, "tls://") == 0) { rule = n2::TLS_ON; address = address.substr(6); }
+            else if (address.compare(0, 8, "plain://") == 0) { rule = n2::TLS_OFF; address = address.substr(8); }
+            size_t colon = address.rfind(':');
+            out = std::string("tls ") + (n2::tls_wanted(rule, colon == std::string::npos ? address : address.substr(0, colon)) ? "on" : "off");
         } else if (what.compare(0, 5, "send ") == 0) {
             // tests: one datagram to a player of the started session, as the game would send it
             int slot = atoi(what.c_str() + 5);
@@ -830,6 +867,15 @@ struct Net : Backend {
         if (key == "bind") {            // the UDP socket's own address:port (tests; before the first room)
             if (carrier_.is_open()) return NET2_ERR_STATE;
             bind_to = value;
+            return NET2_OK;
+        }
+        if (key == "tls" || key == "tls-ca") {         // how the link is made: it is made again
+            if (key == "tls") {
+                int rule = n2::tls_rule(value);
+                if (rule < 0) return NET2_ERR_ARGUMENT;
+                tls_rule = rule;
+            } else tls_trust = value;
+            if (linked() && !fatal) { drop_link("Connecting again (" + key + " changed)..."); tries = 0; next_try = steady_ms(); }
             return NET2_OK;
         }
         if (key == "mock-speed") return NET2_OK;

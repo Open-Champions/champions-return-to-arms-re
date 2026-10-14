@@ -293,7 +293,9 @@ def build_lib(args):
         jobs += [(os.path.join(net, n), rt_flags, 'n_') for n in ('netdrv.cpp', 'online.cpp')]
         jobs.append((os.path.join(SRC, 'play-net', 'src', 'RtaOnline.cpp'), rt_flags, 'n_'))
         plain = ['-std=c++17', opt, '-Wall', '-I', net2]
-        jobs += [(os.path.join(net2, n), plain, 'n2_') for n in ('session.cpp', 'session_mock.cpp', 'session_net.cpp', 'carrier.cpp', 'cardchars.cpp', 'clicmd.cpp')]
+        # tls.cpp: the link to the service inside TLS (the system's Network and Security frameworks), when the snapshot has it
+        jobs += [(os.path.join(net2, n), plain, 'n2_') for n in ('session.cpp', 'session_mock.cpp', 'session_net.cpp', 'carrier.cpp', 'tls.cpp', 'cardchars.cpp',
+                                                                    'clicmd.cpp') if n != 'tls.cpp' or os.path.exists(os.path.join(net2, n))]
         jobs.append((os.path.join(net2, 'launch.cpp'), rt_flags + ['-I', net2], 'n2_'))
         lib_flags.append('-DRTAG_HAVE_NET2')
     jobs.append((os.path.join(LIB, 'rtag.cpp'), lib_flags, 'g_'))
@@ -310,7 +312,8 @@ def build_lib(args):
     exports = os.path.join(OUT, 'obj-' + game, 'exports.txt')
     open(exports, 'w').write(''.join('_%s\n' % e for e in EXPORTS + (NET2_EXPORTS if has_net2 else [])))
     result = subprocess.run(NICE + ['clang++', '-dynamiclib', '-o', out] + objects + link +
-                            ['-framework', 'OpenGL', '-lz', '-lpthread', '-Wl,-exported_symbols_list,' + exports, '-Wl,-install_name,@rpath/' + name],
+                            ['-framework', 'OpenGL', '-framework', 'Network', '-framework', 'Security', '-framework', 'CoreFoundation', '-lz', '-lpthread',
+                             '-Wl,-exported_symbols_list,' + exports, '-Wl,-install_name,@rpath/' + name],
                             capture_output=True, text=True)
     if result.returncode != 0:
         print('LINK FAILED\n' + result.stderr[:6000])

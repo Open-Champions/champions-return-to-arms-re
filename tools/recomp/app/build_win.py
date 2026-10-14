@@ -88,7 +88,7 @@ RENDER_CORE = ['vu1.cpp', 'vif1.cpp', 'gs.cpp', 'renderer.cpp', 'worldfill.cpp']
 FILM, FILM_HLE = os.path.join(HERE, 'film.cpp'), os.path.join(HERE, 'hle-app.txt')
 RUNTIME = ['runtime.cpp', 'iop.cpp', 'script.cpp']
 WIN_LIBS = ['-lopengl32', '-lgdi32', '-luser32', '-lole32', '-lwinmm', '-lavrt', '-lshell32', '-ldwmapi']
-NET_LIBS = ['-lws2_32', '-liphlpapi', '-ladvapi32', '-lbcrypt']     # Winsock, the list of this computer's addresses, the saved login's access list; bcrypt: net2's hashes and random numbers (hash.h)
+NET_LIBS = ['-lws2_32', '-liphlpapi', '-ladvapi32', '-lbcrypt', '-lsecur32', '-lcrypt32']     # Winsock, the list of this computer's addresses, the saved login's access list; bcrypt: net2's hashes and random numbers (hash.h); secur32, crypt32: net2's link to the service inside TLS (SChannel, tls.cpp)
 
 
 def with_net(args):
@@ -605,7 +605,7 @@ def main():
              # a room of our own and the direct launch (tools/recomp/net2, docs/issues/native-rendezvous.md; net2.patch):
              # the session client and the carrier over net/sock.h's Winsock body, the launch with the runtime's flags
              # (<algorithm> is given from here: cardchars.cpp uses std::sort and gets the header on macOS through another)
-             [(os.path.join(NET2, n), app_flags + ['-I', NET2, '-include', 'algorithm'], 'n2_') for n in ('session.cpp', 'session_mock.cpp', 'session_net.cpp', 'carrier.cpp',
+             [(os.path.join(NET2, n), app_flags + ['-I', NET2, '-include', 'algorithm'], 'n2_') for n in ('session.cpp', 'session_mock.cpp', 'session_net.cpp', 'carrier.cpp', 'tls.cpp',
                                                                                  'cardchars.cpp', 'clicmd.cpp')] +
              [(os.path.join(NET2, 'launch.cpp'), rt_flags + ['-I', NET2], 'n2_')] if net else []) + ([
              # the films (app/film.cpp, when the application has it); <ctime> is given from here:
