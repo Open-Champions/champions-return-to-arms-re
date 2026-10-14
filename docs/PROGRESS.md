@@ -1,6 +1,6 @@
 # How complete is it
 
-Updated at every check-in of the work. **Last update: 2026-10-14, 04:29 CDT.**
+Updated at every check-in of the work. **Last update: 2026-10-14, 06:03 CDT.**
 
 One table for the whole effort to make Champions: Return to Arms (SLUS-20973 v2.00)
 playable again, online, on today's computers. The percentages are estimates by the people
@@ -78,6 +78,8 @@ linked document. It does not mean played by a person, or tried on two computers.
 
 ## Since the last update
 
+- The Mac application's Room menu works from the lobby too; quitting after a room game no
+  longer crashes.
 - Release of the Mac application with the new *Room* menu (fix set `9ac29719` unchanged):
   host a room, read out the code, friends join - no lobby, no account, no sign-in - and
   Mac-application and native players play in one game. On the released build an
