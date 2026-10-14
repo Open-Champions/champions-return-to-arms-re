@@ -1,8 +1,9 @@
 gametitle=Champions: Return to Arms (SLUS-20973) v2.00
 
 // fp-proposed.pnach - one section proposed for the fix set (patches/SLUS-20973_4028A55F.pnach), in its final form.
-// It is NOT in that file and not in tools/play-net/sections-suggested.txt until it is adopted at a release;
-// docs/issues/native-first-person-controls.md part 3 has the proof.  Every player of a game needs the same set of
+// Taken into that file and into tools/play-net/sections-suggested.txt with the release of the evening of 2026-10-13
+// (31 sections, 189 words, set 9ac29719), with the same words; this file is kept as tools/recomp/app/fp_section_test.py
+// reads it.  docs/issues/native-first-person-controls.md part 3 has the proof.  Every player of a game needs the same set of
 // sections.  Written by local/recomp-fp-controls/work/fpasm.py (the words below are its output; each of its
 // encoders is checked against a word of the game); tools/recomp/app/fp_section_test.py runs the section in the
 // function-level interpreter.

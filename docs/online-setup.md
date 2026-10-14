@@ -119,11 +119,13 @@ hardware differences the other items are about:
 
 ## Suggested patch set for a first online test
 
-The set is the 29 sections of the table (`tools/play-net/sections-suggested.txt` lists
-them by title; the Mac application applies exactly these). Each only makes one machine do
-what the others already do, so a mix of patched and unpatched machines is safe, but a fix
-only holds for the machines that have it — enable them on every machine. These are the
-sections written as fixes rather than diagnostics.
+The set is the 31 sections of the table (`tools/play-net/sections-suggested.txt` lists
+them by title; the Mac application applies exactly these). Each but the last only makes
+one machine do what the others already do, so a mix of patched and unpatched machines is
+safe, but a fix only holds for the machines that have it — enable them on every machine.
+The last row, strafe mode, is not a fix but a mode a player's own program can ask for:
+every player needs it or none (it changes nothing until somebody asks). These are the
+sections written as fixes rather than diagnostics, and that one.
 
 **What the set rests on.** All of it is the two-machine rig: two copies of one Play!
 build on one host (`docs/issues/live-rig.md`). Nothing below has run in PCSX2 or on a
@@ -142,7 +144,7 @@ console, and the patch file says so section by section.
   touch handler runs for a prediction copy that walks into something" was not; its runs
   are in `docs/issues/touch-handlers.md` section 6 (FINDINGS V61) and it has not been in
   a soak. The soak also had six sections that are not suggested here.
-- The last three rows of the table (added 2026-10-13) rest on something else: the game
+- The three rows before the last two (added 2026-10-13) rest on something else: the game
   translated to native code, two to four machines on one host
   ([issues/native-soak.md](issues/native-soak.md), "Second part"). Each was shown there
   on a pair without and with it, and the 26 sections plus these three ran 26 games,
@@ -151,6 +153,26 @@ console, and the patch file says so section by section.
   sections on the emulator") a game of 13,123 lockstep frames with them stayed in step;
   the save-point and the jump-gate difference were seen without them and not with
   them, the script-variable race was not produced there.
+- The last two rows (added 2026-10-13, evening) rest on the native build as well,
+  and on the Mac application before they went in. The late save: the first desync of the
+  released set that the native soak farm found (seed 7306, four machines: a save 23
+  ticks late, the game's out-of-sync message three ticks after the reload); a directed
+  native pair without and with the section; 26 native games, 1,326,739 ticks, with it
+  and no difference ([issues/native-soak.md](issues/native-soak.md), third part). Strafe
+  mode: the function-level interpreter (1,200 of 1,200 calls of `Player_move` unchanged
+  while the mode byte is 0), two to four native copies with the mode in use, a native
+  with an emulator copy ([issues/native-first-person-controls.md](issues/native-first-person-controls.md)
+  part 3), and the native farm (the mode never asked for: every column as the released
+  set's; in use on every machine: 31 games, 1,842,998 ticks, one difference, the late
+  save). On two copies of the Mac application
+  ([issues/mac-app-start.md](issues/mac-app-start.md), "The late-save and the strafe
+  section on the emulator"): with one copy's inventory open when a level is entered both
+  save in the entry tick and a party wipe loads equal records, where without the section
+  that copy saved 254 ticks late and loaded other hit points for both players; the mode
+  byte set, cleared and cleared by a level change in the same lockstep tick on both
+  copies, position, facing and mode byte equal after every one of 937 ticks of running
+  sideways and backwards; two launches each of three and four copies with both sections,
+  2,142 to 2,621 lockstep frames, in step. Neither has run in PCSX2 or on a console.
 - The Mac application applies this set ([play-online.md](play-online.md) section 6); its
   online runs with two copies on one Mac are in section 8 there.
 
@@ -178,10 +200,12 @@ console, and the patch file says so section by section.
 | 4-player send cycle 6 -> 4 (LAG-3) | input delay with four players — **confirmed live**: 1.8 to 3.0 frames less; on a slow link the game runs at 97.9 % speed instead of 92.6 % |
 | 3-player send cycle 4 -> 3 (LAG-4) | input delay with three players — **confirmed live**: 1.3 to 2.1 frames less |
 | prediction copy starts without pending damage | G11–G13, G24 — the fault was not reproduced live; the section was on in the soak without harm (V62) |
+| equalise at once (LAG-1) | input delay staying high after a stall, which is also what widens K1 and K2 — **confirmed live**: peak 11 frames instead of 34, cleared in 10 s instead of 35 |
 | save point is used on every machine whatever this machine's card screen does | the other half of B9: a machine whose own memory-card screen is up when another player uses a save point skips the save point's code, and the point's state (its light, its active flag, six bytes of the level's stored state) then differs from the other machines' for good — **confirmed** on native pairs and on two copies of the Mac application (the state differs without it, not with it). By reading, nothing in the shipped levels reads the differing state back into play; a save point can only be used with a character from a memory card, not with one made in the lobby |
 | reading a quest variable never adds it to the table | the table of quest variables differing in content or order between machines, because a prompt drawn for this machine's own player reads a variable that does not exist yet and so appends its name — **confirmed** on a native pair; on the Mac application the section was at work but the race was not produced. By reading, the appended name cannot reach play; the section removes the difference all the same |
 | a jump gate is found only inside the tick | a jump gate being marked found, and its level added to the list of jump-gate destinations, on its finder's machine some ticks before the others (19 in a directed native game), and for good if the player dies or the level changes first — **confirmed** on a native pair and on two copies of the Mac application (found in the same frame with it, a frame apart without). It reads register s7 as this executable's `Player_interact` leaves it across the call: a patch for SLUS-20973 v2.00 only |
-| equalise at once (LAG-1) | input delay staying high after a stall, which is also what widens K1 and K2 — **confirmed live**: peak 11 frames instead of 34, cleared in 10 s instead of 35 |
+| the save at a level's entry is taken in the same tick on every machine | a machine with its inventory, a shop, the statistics screen or its own memory-card screen up when a level is entered taking its restart save late - when the screen closes - so that a party that is wiped out before the next common save is given other hit points, mana, bags and potions on that machine than on the others, and the game is out of step from the reload on — **confirmed** on native pairs and a four-machine native game (the game's own out-of-sync message without it, none with it) and on two copies of the Mac application (a save 254 ticks late and other hit points after the reload without it; the same tick and equal records with it). Six words in `save_daemonRun` (0x218934, 0x21897C–0x21898C): the card and the menu test go, the camera test becomes the shared cutscene flag. Not covered: a machine whose *load* screen is up when a level loads. Each machine fixes its own save |
+| strafe mode - a player can run one way and face another | nothing by itself: a mode byte per player (player object +0x47E) that a player's own program sets through game message 4, sub-type 2; while it is not 0 the character faces where its player's camera looks and runs along the stick. The native application's views from the character's eyes ask for it; the Mac application and the browser page never do, but must have the section to simulate a player who does — **confirmed** in the interpreter (no change at all while the byte is 0), on two to four native copies, on a native with an emulator copy, and on two copies of the Mac application (the byte changes in the same tick on both; position, facing and byte equal after every tick). 84 words: a hook in `Player_move`, code in three unreferenced functions, the handler of the game's empty message 4, and the constructor clearing the byte. **Every player needs it, or none** |
 
 **The older two-word form of the flush section must not be on before a developer LAN
 start** (boot argument `--net`; a patch file from before 2026-10-12, or a copy of it in
@@ -193,7 +217,8 @@ stuck for the whole game (held word 0x500000, left stick −1.138;
 lobby sets the netcode up in the front end and was not affected. The three-word form in
 the file now makes no pass without peers, as the original; use it, or leave the section
 off, for a LAN start. The change also changes the set's figure, as the three sections
-added on 2026-10-13 do: every player in a game needs the patch file of the same date
+added on 2026-10-13 and the two added that evening do: every player in a game needs the
+patch file of the same date
 ([play-online.md](play-online.md) section 6).
 
 Leave the "Arena diagnostic" and "Diagnostic" sections off unless you are bisecting; several

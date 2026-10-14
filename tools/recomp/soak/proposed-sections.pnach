@@ -1,8 +1,9 @@
 // Proposed sections for patches/SLUS-20973_4028A55F.pnach (docs/issues/native-soak.md,
 // findings 3 and 2; "Save point" and "Script variables" there).  Taken into the patch file
 // and the suggested list with the release of 2026-10-13 (29 sections, 99 words, set
-// 073064bb), with the same words; this file is kept as tools/recomp/soak/sections_test.py
-// reads it.
+// 073064bb), with the same words - the fourth section (the save at a level's entry) with
+// the release of that evening (31 sections, 189 words, set 9ac29719); this file is kept as
+// tools/recomp/soak/sections_test.py reads it.
 
 [Net test: save point is used on every machine whatever this machine's card screen does]
 author=reverse engineering test patch; confirmed to remove the difference on native pairs (docs/issues/native-soak.md, section "Save point"); untested on the emulator, PCSX2 or a console

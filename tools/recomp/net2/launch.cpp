@@ -72,6 +72,7 @@ const u32 A_LAUNCHING = 0x402793, A_DEV_LOBBY = 0x402792, A_NETWORK_MODE = 0x402
 const u32 A_LOBBY_STATE = 0x506160;
 const u32 A_NET_FRAME = 0x4027ac, A_NUM_PEERS = 0x4027c4, A_PEERS = 0x5bf838, PEER_SIZE = 0x44e0, PEER_DROPPED = 0x44d5;
 const u32 A_PLAYERS = 0x4d8af0, PLAYER_SIZE = 0x4c30, PLAYER_CLASS = 0x50, PLAYER_LEVEL = 0x59;
+const u32 A_NUM_PLAYERS = 0x4d8ae0, A_DIFFICULTY = 0x4f719c, A_SAVED_CONFIG = 0x4f8f38;
 const u32 A_SEL_TASK_NAME = 0x53ce38;       // "playerSelection"
 const u32 A_SEL_PAGE = 0x8e2c02;
 
@@ -180,6 +181,13 @@ void tell_room(const char* level) {
 
 // ---- carried out on the game's thread ----------------------------------------------------
 void do_choose(Ctx* c, bool host) {
+    // The character screens take two things from the game that was played before: for how
+    // many players (g_numPlayers - after a net game the number that was in it: the screens
+    // then wait for a second controller), and the difficulty (above the first they only
+    // take an imported character: seen as "the screens came up and cross did nothing" on
+    // the way into a second game).  As at power-on: one player, the first difficulty.
+    wr32(A_NUM_PLAYERS, 1);
+    wr32(A_DIFFICULTY, 1);
     memset(g_ram + A_SETTINGS, 0, SETTINGS_SIZE);
     wr32(A_FE_NET, 1);
     wr8(A_SETTINGS + 2, 1);
@@ -201,7 +209,7 @@ void do_launch(Ctx* c) {
     wr8(A_SETTINGS + 0, bits);
     if (d.my_slot == 0) {
         // the host's choices travel to the others in the handshake (the game's own way)
-        wr8(A_SETTINGS + 2, (u8)(d.options.difficulty >= 1 && d.options.difficulty <= 4 ? d.options.difficulty : 2));
+        wr8(A_SETTINGS + 2, (u8)(d.options.difficulty >= 1 && d.options.difficulty <= 4 ? d.options.difficulty : 1));
         wr8(A_SETTINGS + 3, 0);                     // play missions; the arena modes are not wired yet
         wr8(A_SETTINGS + 4, 0);
         wr8(A_SETTINGS + 5, 0);
@@ -274,7 +282,8 @@ void launch_ended(bool failed, const std::string& text) {
     G.level.clear();
     tell_room(nullptr);
     G.asked_ready = false;
-    set_phase(at_title() ? NET2_GAME_TITLE : NET2_GAME_BUSY, text);
+    G.title_since = 0;
+    set_phase(NET2_GAME_BUSY, text);        // the title screen is taken up again once it has stood for a second
 }
 
 void on_after(Ctx* c, bool from_tick) {
@@ -425,8 +434,10 @@ void on_blank(uint64_t number) {
     bool front = in_front_end();
     switch (G.phase) {
     case NET2_GAME_BOOTING:
+    case NET2_GAME_BUSY:
         // the menu must have stood for a second: it fades in, and a choice made in its first
-        // frames finds the character screens' data not loaded yet
+        // frames finds the character screens' data not loaded yet (seen at boot and again
+        // after a game: the screens came up and took no button)
         if (!at_title()) G.title_since = 0;
         else if (G.title_since == 0) G.title_since = number;
         else if (number - G.title_since >= 60) { G.title_seen = true; set_phase(NET2_GAME_TITLE, "the game is at its title screen"); }
@@ -451,9 +462,6 @@ void on_blank(uint64_t number) {
             }
         }
         if (front && rd8(A_NETWORK_MODE) == 0 && G.blank - G.launch_blank > 120) launch_ended(false, "the game is over: back at the title screen");
-        break;
-    case NET2_GAME_BUSY:
-        if (at_title()) set_phase(NET2_GAME_TITLE, "the game is at its title screen");
         break;
     case NET2_GAME_TITLE:
         if (!front && G.title_seen) set_phase(NET2_GAME_BUSY, "the game is elsewhere (an offline game)");
@@ -652,6 +660,9 @@ void net2_game_status(net2_game_status_t* out) {
     out->launches = G.launches;
     out->failed = G.failed;
     net2impl::put(out->text, G.text);
+    // what the game's own menu would let a host take (options_get4f8f38Level 0x1ec448)
+    u32 flags = rd32(A_SAVED_CONFIG);
+    out->difficulty_unlocked = (flags & 0x40) ? 5 : (flags & 0x20) ? 4 : (flags & 0x11) ? 3 : (flags & 0xc) ? 2 : 1;
     if (G.phase >= NET2_GAME_CHOSEN && G.phase <= NET2_GAME_RUNNING) out->character = G.character;
     if (G.phase == NET2_GAME_RUNNING) {
         net2impl::put(out->level, rdstr(A_LEVEL_NAME, 20));

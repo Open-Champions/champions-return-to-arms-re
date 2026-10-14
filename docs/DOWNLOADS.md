@@ -1,7 +1,7 @@
 # Get the game and play
 
 Updated with each release. **Last update: 2026-10-13.** Current release: fix set
-`073064bb` (29 sections). How complete each part is: [PROGRESS.md](PROGRESS.md).
+`9ac29719` (31 sections). How complete each part is: [PROGRESS.md](PROGRESS.md).
 
 ## 1. What you need
 
@@ -45,7 +45,7 @@ have not been tried.
   players.
 - Mac players and browser players can be in the same game.
 - **Everyone needs the same fix set.** Both versions behind the link always carry the same
-  one (now `073064bb`); if a friend's copy is older, the room says so before the game
+  one (now `9ac29719`); if a friend's copy is older, the room says so before the game
   starts - they download again.
 - More about what happens online, your account and your character:
   [play-online.md](play-online.md).

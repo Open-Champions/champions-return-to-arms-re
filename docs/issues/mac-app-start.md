@@ -365,6 +365,104 @@ touched. Scripts, logs and per-frame traces: `local/app-next/sections/`. Load 10
 - **Not reached**: a save point with a real memory-card character; a jump gate with a
   script, and the one in `blood1`.
 
+## The late-save and the strafe section on the emulator (run 2026-10-13 evening, before they went into the set)
+
+The two sections of [native-soak.md](native-soak.md) (third part, "A late save": 6 words in
+`save_daemonRun`) and [native-first-person-controls.md](native-first-person-controls.md)
+(part 3: strafe mode, 84 words) were proven on the native build. Before they were taken
+into the fix set they were given to copies of the built Mac application through
+`--rta-extra-patch` (`tools/recomp/soak/proposed-sections.pnach`,
+`tools/recomp/app/fp-proposed.pnach`; the figure stayed 073064bb, "14 more words" and "84
+more words" in each copy's log, all 90 words read back from every copy's memory). Every
+copy through `play.sh` with `--rta-test`, a data directory of its own, the lobby server on
+the same Mac; load average 12 to 100 from other work. Drivers, logs and per-tick files:
+`local/rel.nosync/r4/` (not in the repository).
+
+**Three test aids** (a local patch file of 80 words given to every copy of a run, never
+part of the set). The application's control socket has no way to call a function of the
+game, a `poke` cannot be put into the same lockstep tick on two copies, and a vertical
+blank - where the socket is served - is not a tick boundary (words sampled there differ
+between copies in about a tenth of the frames for that reason alone). So, in
+unreferenced functions that no section uses, each inert until a word is poked:
+
+- a **call stub** on the main loop's once-a-frame call at 0x323350 (after the draw pass,
+  outside the tick): calls one function with one argument - the section's sender
+  0x215C98 with the mode, as an application that offers the mode does, and the game's
+  own sender of a level change (`hudmsg_sendNewWorld` 0x1D9250);
+- a **timed hit** on `net_frameLoop`'s call of `tasks_run` (0x13AEE0): in the tick whose
+  lockstep frame equals a poked word every player object gets a poked amount of pending
+  damage, with the kill plane's own two stores - the same tick on every copy;
+- a **tick recorder** on the call of `path_service` (0x13AF3C, after the tick's run
+  tasks): lockstep frame, position, facing and mode byte (+0x47E) of one player into a
+  ring the driver reads every blank - a value per tick and copy, not per blank.
+
+All three were run in the function-level interpreter first. Patch words that hold data
+are no use for this: the application writes a changed patch word back at every blank.
+
+**The game with both sections on.**
+
+| Copies | What | Lockstep frames compared (the game's own sync hash, every frame) | Different |
+|---|---|---|---|
+| 2 | hub, both walking | 2,516 | 0 |
+| 2 | the game's own level change (Firiona, the gateway, the mission menu) into `blood1`, its 31-second opening cutscene, 35 s of play there (a character killed by monsters, on both copies alike) | 5,444 | 0 |
+| 2 | the strafe steps below | 1,210 | 0 |
+| 2 | the late-save steps below, through a party wipe and the reload | 918 + 2,180 | 0 |
+| 3 | two launches, 50 s of walking each | 2,621 and 2,531 | 0 |
+| 4 | two launches | 2,142 and 2,262 | 0 |
+
+The checksum flag stayed 0 on every copy and no copy marked a peer out of sync.
+
+**Strafe mode.** Emulator players never send the mode; they have to simulate a player
+who does.
+
+- The sender called on copy 1 (mode 1): the mode byte of that player is 1 from lockstep
+  tick 4,415 **on both copies**; called with 0: 0 from tick 4,924 on both; with 1 again:
+  tick 5,132 on both. A game message is applied in the tick its frame is simulated, on
+  the sender's machine too.
+- With the mode on that player was walked left, backwards, diagonally, forwards and to
+  the right by pad input. The recorder has **937 of 937 ticks** of the step on both
+  copies: position bits, facing and mode byte equal in every one. In the 320 ticks the
+  player moved with the mode on, the facing stood at the camera's heading (0x3E3D minus
+  the yaw word) and the movement was more than 60 degrees off it in 243 (157 sideways,
+  86 backwards); in the 249 moving ticks with the mode off it was within 30 degrees of
+  the facing in all, as the original runs.
+- **A level change clears it**: asked for with the mission menu up (1 from tick 21,936
+  on both), 0 from tick 22,006 on both - the new characters of `blood1`; 5,200 of 5,200
+  ticks of that step equal.
+- Not established: whether "use" on a person or a gateway works as before for a character
+  that faces the camera's heading with the mode on. The level change above was walked
+  with the mode off; one attempt with it on got no dialogue, and so did one with it off
+  in which the driver's walker had got stuck beside the person.
+
+**The late save.** The game's own ways from level to level do not leave another
+machine's inventory open - an NPC dialogue, the mission menu and the gate scroll close
+it, and `blood1` opens with a cutscene, for whose end the entry save waits on every
+machine - so the entry was made as in the native directed game: copy 2 opens its
+inventory in the hub, the host sends the game's level-change message for `hub` (the
+call stub), every copy enters the level in the same tick. 120 frames later every player
+loses 5 hit points (the timed hit), so that a save taken later holds other records;
+copy 2 closes its inventory five seconds after arriving; then a lethal timed hit for
+both players, and the game loads the level again from each copy's own save buffer. The
+tick of a copy's last save is read from its word 0x4F8F30.
+
+| | Without the section (set 073064bb + strafe) | With it |
+|---|---|---|
+| level entered | tick 247 | tick 409 |
+| copy 1 saves | tick 247 | tick 409 |
+| copy 2 (inventory open) saves | **tick 501**, when the inventory closes: 254 ticks late | **tick 409** |
+| after the wipe and the reload, both copies read in one frame | copy 1 gives both players 32.80 hit points, copy 2 gives both 28.49: the two players' records differ between the copies (+0xAC) | 32.80 on both copies; the two players' records equal |
+
+"Equal" leaves out six or seven bytes at +0x4A75 of each record that differ between the
+copies at the hub's start already, in both runs. In the run without the section the sync
+hash stayed equal and nothing was flagged - it covers the seed and the positions, not hit
+points - as in the native directed game; with a fight between the entry and the wipe the
+native farm got the game's out-of-sync message from the same cause.
+
+**Not reached here**: a card screen or a shop as the thing that holds the save (the
+inventory only); a save that is late and then overwritten by a save point; the mode sent
+by two players at once, or by a player being dropped (native runs only); more than one
+level change with the mode on.
+
 ## The launch hold (written and tested 2026-10-13)
 
 **The hole** is the game's (`three-players.md` cause 1; `native-online.md` "The

@@ -43,6 +43,8 @@ typedef struct net2_game_status_t {
     char level[NET2_LEVEL];     /* RUNNING: the level's name */
     uint32_t tick;              /* RUNNING: the lockstep tick */
     int players;                /* RUNNING: players still in the game */
+    int difficulty_unlocked;    /* the highest difficulty the game's own menu would offer a host on this
+                                   machine (1 on a new memory card; its options record 0x4f8f38) */
 } net2_game_status_t;
 void net2_game_status(net2_game_status_t* out);
 

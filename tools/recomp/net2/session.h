@@ -232,8 +232,9 @@ typedef struct net2_options {
     char level[NET2_LEVEL];     /* where the game starts; "" = the game's own start (the hub).  A name of
                                    the game's level table ("drunare"): the first level is that one */
     int difficulty;             /* the game's own four: 1 easy, 2 normal, 3 hard, 4 harder (its menu keys
-                                   menu_easy2 .. menu_harder2); 0 = normal.  The game lets a host choose
-                                   only what its own memory card has unlocked: more is cut down by it */
+                                   menu_easy2 .. menu_harder2); 0 = the first.  The game's own menu lets a
+                                   host choose only what its memory card has unlocked - 1 on a new card
+                                   (game.h: net2_game_status().difficulty_unlocked) */
     int mode;                   /* the game's own three: 0 play missions (the campaign, co-operative),
                                    1 arena co-operative, 2 arena versus */
     int open_to;                /* NET2_OPEN_* */

@@ -56,13 +56,14 @@ def check(ident, ok, text):
         FAILED.append(ident)
 
 
-def section_words(path, section=None):
-    """{address: word} of a patch file (one section, or all), and the "// was:" words in file order."""
+def section_words(path, section=None, skip=None):
+    """{address: word} of a patch file (one section, or all, or all but the one named by skip), and the "// was:"
+    words in file order."""
     words, was, inside = {}, [], section is None
     for line in open(path, errors='replace'):
         line = line.strip()
         if line.startswith('['):
-            inside = section is None or section in line
+            inside = (section is None or section in line) and not (skip is not None and skip in line)
         elif inside and line.startswith('patch='):
             f = line.split(',')
             words[int(f[2], 16)] = int(f[4], 16)
@@ -109,9 +110,9 @@ def test_words(elf):
     clash = []
     for other in OTHERS:
         if os.path.exists(other):
-            theirs, _ = section_words(other)
+            theirs, _ = section_words(other, skip=SECTION)     # the fix set holds this section itself since its adoption
             clash += ['%08x in %s' % (a, os.path.basename(other)) for a in theirs if a in words or any(lo <= a < hi for lo, hi in CAVES)]
-    check('W4', not clash, 'no address of the section, and none inside the three functions, is patched by any section of the fix set or of the soak\'s proposals%s' % (
+    check('W4', not clash, 'no address of the section, and none inside the three functions, is patched by any other section of the fix set or of the soak\'s proposals%s' % (
         '' if not clash else ' - CLASH %s' % clash[:4]))
     senders = [a for a in range(0x100000, 0x100000 + 3054524, 4) if word(a) in (0x0C000000 | (0x1E0134 >> 2), 0x08000000 | (0x1E0134 >> 2), 0x0C000000 | (0x1E0108 >> 2), 0x08000000 | (0x1E0108 >> 2))]
     check('W5', senders == [0x1D0B70], 'the game itself sends on this channel from one place: the jump at 0x1d0b70 to nullmsg_sendShopClosed (sub-type 1); nullmsg_send0 (sub-type 0) has no caller')

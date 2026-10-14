@@ -344,3 +344,109 @@ description=The prompt of a jump gate (JumpGate_interactPrompt, 0x27D7A0) marks 
 // was: 14400010 (bnez v0,0x27d864), 3C02008E (lui v0,0x8e)  now: or v0,v0,s7; bnez v0,0x27d860 (which loads the same v0; the addiu v0,zero,1 behind it is now the delay slot and is overwritten there)
 patch=1,EE,0027D820,word,00571025
 patch=1,EE,0027D824,word,1440000E
+
+[Net test: the save at a level's entry is taken in the same tick on every machine]
+author=reverse engineering test patch; confirmed to remove the desync on native pairs and on a four-machine game, and in a native soak of the set with it (26 games of two, three and four machines, 1,326,739 ticks, no difference: docs/issues/native-soak.md, third part, "A late save"); on two linked Play! emulator instances (docs/issues/mac-app-start.md, "The late-save and the strafe section on the emulator"): with one copy's inventory open when a level is entered both copies fill their save buffers in the entry tick and a party wipe loads the same records again, where without it that copy saved 254 ticks late and loaded other hit points for both players; untested on PCSX2 or a console
+description=When a level has been entered every machine fills its save buffer with every player's record, the quest variables and the level states: the restart point a party that is wiped out is sent back to. The run task that does it (save_daemonRun, 0x2188A8) waits while this machine's own memory-card screen is up (the options being written after a change in the pause menu, a save dialog), while this machine's full-screen menu flag is set (inventory, shop, statistics) and while this machine's camera is not in follow mode (inventory or shop again - or a cutscene). A player who has the inventory open when somebody takes the party through a door therefore gets a restart point from the tick the menu closes, not from the level's first tick; when the whole party dies before the next common save, that machine restores other hit points, mana, bags and potions for everyone than the others do, and the game is out of step from the reload on (seen: a four-machine game, the game's own out-of-sync flag three ticks after the reload). With this the card test and the menu test are gone and the camera test is the shared cutscene flag (0x44FCD0) instead: the save waits for the end of a cutscene as before, on every machine alike, and for nothing that is one machine's own. Offline nothing changes: those screens pause the game there, and the pause test stays. The save only fills the buffer; a card write in progress is not touched (a level change waits for it). mainloop.md P3, audio-save.md "Checkpoint autosave". Each machine fixes its own save; use on every machine.
+// was: 14A40027 (bne a1,a0,0x2189d4: this machine's card state is not idle), 14400016 (bnez v0,0x2189d8: this machine's full-screen menu flag), 3C020050 8C428450 8C420034 38420001 (lui v0,0x50; lw v0,-0x7bb0(v0); lw v0,0x34(v0); xori v0,v0,1: this machine's camera is not in mode 1)  now: nop; nop; lui v0,0x45; lb v0,-0x330(v0); nop; nop (the shared cutscene flag 0x44FCD0)
+patch=1,EE,00218934,word,00000000
+patch=1,EE,0021897C,word,00000000
+patch=1,EE,00218980,word,3C020045
+patch=1,EE,00218984,word,8042FCD0
+patch=1,EE,00218988,word,00000000
+patch=1,EE,0021898C,word,00000000
+
+[Net test: strafe mode - a player can run one way and face another]
+author=first-person controls work, 2026-10-13; executed in the function-level interpreter (tools/recomp/app/fp_section_test.py); confirmed on two, three and four native copies in one lockstep game and on a native copy with an emulator-based copy (docs/issues/native-first-person-controls.md part 3); in a native soak with the mode in use on every machine (31 games, 1,842,998 ticks: docs/issues/native-soak.md, third part); on two linked Play! emulator instances (docs/issues/mac-app-start.md, "The late-save and the strafe section on the emulator"): the mode set and cleared through the section's own sender on one copy, the byte changing in the same lockstep tick on both, position, facing and mode byte equal after every one of 937 ticks while that player ran sideways and backwards, a level change clearing it on both; untested on PCSX2 or a console
+description=The game runs a character along its facing and turns the facing to the stick: nobody can run sideways or backwards while facing ahead, which a view from the character's eyes needs. This gives each player a mode byte (player object +0x47E, a byte only the unreachable jump state used). While the byte is 0 - for everyone who never asks for the mode - every tick is exactly as without this section. While it is not 0, in the ordinary moving state the character turns (40 % of the angle a tick, the game's own rate) to where its player's camera looks - the heading a pushed-up stick asks for, 0x3E3D minus the yaw word that already travels with every controller row - and runs along the stick's own direction instead of along its facing, at the same speed. The mode is set by game message 4, sub-type 2 {2, slot, mode}; message 4 is the game's own "null" channel, carried and executed in lockstep with an empty handler (its one sender in the game, sub-type 1 when a shop closes, is still ignored). Every machine sets the byte in the same tick. Player_ctor now clears the byte, so every new character (level start, respawn) starts with the mode off on every machine. Parts: the hook in Player_move (0x1B4210); its code in the unreferenced function 0x2128C8; a sender in the unreferenced function 0x215C98 (called with the mode in a0; only a build that offers the mode calls it); the handler in the unreferenced function 0x215D28, reached by a jump from the empty handler 0x1E01B0; and the two byte stores of the constructor. Every player must have this section or none.
+// was: 24020005 12A2007C (Player_move 0x1b4210), A2A0047C A2A0047D (Player_ctor 0x1a22fc), 03E00008 00000000 (the empty handler of game message 4, 0x1e01b0), 27BDFFD0 3C020087 FFBF0020 FFB00010 24506C00 FFB10018 24110002 00000000 8E040000 10800004 2631FFFF 0C0D6B12 00000000 AE000000 0621FFF9 26100004 3C020087 24030002 24426C10 24420030 2463FFFF AC40FFFC AC400000 00000000 00000000 0461FFFA 244201C4 3C070087 3C040087 3C090087 24847160 24E77200 252971C0 240500A0 0000302D 0000402D 240A0040 0000582D 0C0D59BC AFA00000 DFB00010 DFB10018 DFBF0020 03E00008 27BD0030 (the unreferenced function 0x2128c8, all of its 45 words), 27BDFFF0 FFB00000 FFBF0008 0C085A18 0080802D 0040282D 14A00005 00000000 10000018 DFB00000 10000015 0000102D 0600000F 0000202D 00A0182D 80620000 (the first 16 of the 36 words of the unreferenced function 0x215c98), 27BDFFF0 3C020087 FFB00000 0080802D FFBF0008 0C05CDDF 244423E8 0040302D 50C00013 DFB00000 0600000C 0000282D 00C0202D 80830000 24840050 1060000B 0000102D (the first 17 of the 31 words of the unreferenced function 0x215d28)  now: the hook, the constructor's two stores, the jump to the handler, the move code, the sender, the handler - as noted block by block below
+// Player_move 0x1b4210: j 0x2128c8; addiu v0,zero,0x5
+patch=1,EE,001B4210,word,08084A32
+patch=1,EE,001B4214,word,24020005
+// Player_ctor 0x1a22fc: sh zero,0x47c(s5); sb zero,0x47e(s5)
+patch=1,EE,001A22FC,word,A6A0047C
+patch=1,EE,001A2300,word,A2A0047E
+// the empty handler of game message 4, 0x1e01b0: j 0x215d28; nop
+patch=1,EE,001E01B0,word,0808574A
+patch=1,EE,001E01B4,word,00000000
+// the move code, in the unreferenced function 0x2128c8 (45 words of its 45)
+patch=1,EE,002128C8,word,16A20003
+patch=1,EE,002128CC,word,24020002
+patch=1,EE,002128D0,word,0806D102
+patch=1,EE,002128D4,word,00000000
+patch=1,EE,002128D8,word,16A00026
+patch=1,EE,002128DC,word,9268047E
+patch=1,EE,002128E0,word,11000024
+patch=1,EE,002128E4,word,00000000
+patch=1,EE,002128E8,word,0C04F832
+patch=1,EE,002128EC,word,8E6403C8
+patch=1,EE,002128F0,word,24053E3D
+patch=1,EE,002128F4,word,00A22823
+patch=1,EE,002128F8,word,00052C00
+patch=1,EE,002128FC,word,00052C03
+patch=1,EE,00212900,word,3C013ECC
+patch=1,EE,00212904,word,3421CCCC
+patch=1,EE,00212908,word,44816000
+patch=1,EE,0021290C,word,3C01BF80
+patch=1,EE,00212910,word,44816800
+patch=1,EE,00212914,word,46006B86
+patch=1,EE,00212918,word,0C059B06
+patch=1,EE,0021291C,word,86640038
+patch=1,EE,00212920,word,A6620038
+patch=1,EE,00212924,word,3C013C23
+patch=1,EE,00212928,word,3421D70A
+patch=1,EE,0021292C,word,44810000
+patch=1,EE,00212930,word,46160034
+patch=1,EE,00212934,word,4500000D
+patch=1,EE,00212938,word,00000000
+patch=1,EE,0021293C,word,0C04F832
+patch=1,EE,00212940,word,8E6403C8
+patch=1,EE,00212944,word,02022021
+patch=1,EE,00212948,word,0C0599B8
+patch=1,EE,0021294C,word,24844000
+patch=1,EE,00212950,word,461605C2
+patch=1,EE,00212954,word,0C04F832
+patch=1,EE,00212958,word,8E6403C8
+patch=1,EE,0021295C,word,02022021
+patch=1,EE,00212960,word,0C05998C
+patch=1,EE,00212964,word,24844000
+patch=1,EE,00212968,word,46160602
+patch=1,EE,0021296C,word,0806D101
+patch=1,EE,00212970,word,00000000
+patch=1,EE,00212974,word,0806D087
+patch=1,EE,00212978,word,00000000
+// the sender, the unreferenced function 0x215c98 (16 words of its 36): called with the mode in a0
+patch=1,EE,00215C98,word,27BDFFE0
+patch=1,EE,00215C9C,word,FFBF0010
+patch=1,EE,00215CA0,word,24090002
+patch=1,EE,00215CA4,word,A3A90000
+patch=1,EE,00215CA8,word,A3A40002
+patch=1,EE,00215CAC,word,0C04F87C
+patch=1,EE,00215CB0,word,00002021
+patch=1,EE,00215CB4,word,A3A20001
+patch=1,EE,00215CB8,word,3C040087
+patch=1,EE,00215CBC,word,8C84AA60
+patch=1,EE,00215CC0,word,03A02821
+patch=1,EE,00215CC4,word,0C04F6CE
+patch=1,EE,00215CC8,word,24060003
+patch=1,EE,00215CCC,word,DFBF0010
+patch=1,EE,00215CD0,word,03E00008
+patch=1,EE,00215CD4,word,27BD0020
+// the handler, the unreferenced function 0x215d28 (17 words of its 31)
+patch=1,EE,00215D28,word,90880000
+patch=1,EE,00215D2C,word,24090002
+patch=1,EE,00215D30,word,1509000C
+patch=1,EE,00215D34,word,90880001
+patch=1,EE,00215D38,word,2D090004
+patch=1,EE,00215D3C,word,11200009
+patch=1,EE,00215D40,word,24094C30
+patch=1,EE,00215D44,word,01090018
+patch=1,EE,00215D48,word,00004012
+patch=1,EE,00215D4C,word,3C09004E
+patch=1,EE,00215D50,word,01284821
+patch=1,EE,00215D54,word,8D29CEC8
+patch=1,EE,00215D58,word,11200002
+patch=1,EE,00215D5C,word,908A0002
+patch=1,EE,00215D60,word,A12A047E
+patch=1,EE,00215D64,word,03E00008
+patch=1,EE,00215D68,word,00000000

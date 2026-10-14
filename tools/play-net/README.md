@@ -429,8 +429,10 @@ does with its every-frame patches, a word that is not what the patch says is wri
 again at every vertical blank. The status bar and `rta.log` show a figure for the set
 ("set xxxxxxxx", from the addresses and values of the shared sections only): every
 player in a game has to have the same. For `sections-suggested.txt` as it is now the
-line reads "patches: 29 sections, 99 words, set 073064bb" (26 sections, 91 words, set
-27f61e1d before three sections were added on 2026-10-13; 90 words, set 3f5b1e14 until
+line reads "patches: 31 sections, 189 words, set 9ac29719" (29 sections, 99 words, set
+073064bb before the late-save section and strafe mode were added on the evening of
+2026-10-13; 26 sections, 91 words, set 27f61e1d before three sections were added that
+morning; 90 words, set 3f5b1e14 until
 the evening of 2026-10-12, before the flush section got its third word).
 
 ## Texture dump and replacement
