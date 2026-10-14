@@ -1,0 +1,103 @@
+net2.patch - a room of our own and the direct launch for the native build: the lines in files
+other work owns.  docs/issues/native-rendezvous.md says what it is and what was run.
+
+Made against tools/recomp/net/netdrv.cpp as it stood 2026-10-12 23:50 (unchanged on
+2026-10-13 19:30) and tools/recomp/app/build.py of 2026-10-13 14:30.  Apply from tools/recomp:
+
+    cd tools/recomp && patch -p1 --dry-run < net2/net2.patch && patch -p1 < net2/net2.patch
+
+The new files are in place and are not in the patch (nothing compiles them until
+app/build.py is patched): net2/session.h session_impl.h session.cpp session_mock.cpp
+session_net.cpp carrier.h carrier.cpp hash.h cardchars.cpp clicmd.h clicmd.cpp game.h
+hooks.h launch.cpp (and net2cli.cpp, play.sh, which the application does not link).
+
+What the lines do, for whoever merges by hand:
+
+  net/netdrv.cpp   (five places, nine lines; all of them do nothing in a program that does
+                   not link net2/launch.cpp - the pointers of net2/hooks.h are then null)
+    - include "../net2/hooks.h"
+    - udp_send, udp_receive: first line - when net2 carries this UDP port of the game (a
+      game started from a room: port 4000 while its launch and game run) the datagram goes
+      to it and netdrv does nothing with it
+    - per_blank: net2's turn once per vertical blank (its sockets)
+    - fn_003226e4 (tasks_run): net2's turn before the pass (this is where it calls the
+      game's own functions for the character screens and the launch) and after it (where
+      it sees that the launch has completed, before the main loop loads the first level)
+
+  app/build.py     seven more compile jobs for rta_app; no new HLE address, no translator
+                   option: the translation is the one rta_app has today.
+
+Not in this patch, on purpose: nothing in rt/, render/, app/app_main.cpp.  The stand-alone
+program takes its room from runtime options (after "--"): --opt net2=host | join:CODE,
+--opt net2-name=NAME, --opt net2-service=HOST:PORT ... (the head of net2/launch.cpp lists
+them); net2/play.sh maps --play-host / --play-join CODE / --name NAME onto them.  If
+app_main.cpp is to know those three itself, it is three lines in its option loop that push
+the same "--opt" pairs onto the runtime's arguments.
+
+A headless program for tests (tools/recomp/net/build_online.py) gets the same by adding
+the seven sources as --extra files; not in the patch (tests here link a snapshot:
+local/recomp-net2/build.sh).
+
+No game patch: net2/proposed.pnach does not exist because nothing had to be patched.
+
+--- a/net/netdrv.cpp
++++ b/net/netdrv.cpp
+@@ -39,6 +39,7 @@
+ 
+ #include "rt.h"
+ #include "funcs.h"
++#include "../net2/hooks.h"     // tools/recomp/net2: a game started from a room of our own (docs/issues/native-rendezvous.md)
+ 
+ #include <algorithm>
+ #include <chrono>
+@@ -496,6 +497,7 @@
+ bool allowed(u32 real_ip) { return !D.local_only || is_own(real_ip); }
+ 
+ s32 udp_send(Conn& conn, const u8* data, u32 length, u32 dest_ip, u16 dest_port) {
++    if (net2hook::udp_owns && net2hook::udp_owns(conn.game_port)) return net2hook::udp_send(conn.game_port, data, length, dest_ip, dest_port);
+     rtanet::Info& I = D.info;
+     bool made_up = (dest_ip & MADE_UP_MASK) == MADE_UP_NET && !is_server(dest_ip);
+     if (made_up || dest_ip == 0xFFFFFFFF || (dest_ip >> 28) == 0xE || dest_ip == 0 || (is_loopback(dest_ip) && !is_server(dest_ip))) {
+@@ -555,6 +557,7 @@
+ 
+ // the next datagram for the game on this port; false: none
+ bool udp_receive(u16 game_port, u8* buffer, size_t capacity, size_t& size, u32& shown_ip, u16& from_port) {
++    if (net2hook::udp_owns && net2hook::udp_owns(game_port)) return net2hook::udp_receive(game_port, buffer, capacity, size, shown_ip, from_port);
+     rtanet::Info& I = D.info;
+     UdpHost& host = udp_host(game_port);
+     if (held_due(host)) {
+@@ -835,7 +838,7 @@
+ }
+ void per_blank(uint64_t number) {
+     ensure();
+-    (void)number;
++    if (net2hook::blank) net2hook::blank(number);
+     check_arith();
+     tell_patch_set();
+     // a program without a window is held to real time: the lobby's time-outs count frames,
+@@ -1217,7 +1220,9 @@
+ void fn_003226e4(Ctx* c) {                  // tasks_run: from net_frameLoop it is one lockstep tick
+     u32 ra = (u32)c->r[31];
+     thread_arith(A.now);                    // the thread that runs the ticks computes as chosen
++    if (net2hook::tasks) net2hook::tasks(c, ra == 0x13aee8);
+     orig_003226e4(c);
++    if (net2hook::after) net2hook::after(c, ra == 0x13aee8);
+     if (ra != 0x13aee8) return;
+     D.ticks++;
+     if (D.tick_log) {
+--- a/app/build.py
++++ b/app/build.py
+@@ -158,6 +158,13 @@
+         jobs += [(os.path.join(net, n), rt_flags, 'n_') for n in ('netdrv.cpp', 'online.cpp')]
+         jobs.append((os.path.join(ROOT, 'tools', 'play-net', 'src', 'RtaOnline.cpp'), rt_flags, 'n_'))
+         jobs.append((os.path.join(net, 'online_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', net], 'n_'))
++        # a room of our own and the direct launch (tools/recomp/net2, docs/issues/native-rendezvous.md):
++        # the session client and its datagrams need nothing of the game; launch.cpp calls into it
++        net2 = os.path.join(RECOMP, 'net2')
++        plain = ['-std=c++17', args.opt, '-Wall', '-I', net2]
++        jobs += [(os.path.join(net2, n), plain, 'n2_') for n in ('session.cpp', 'session_mock.cpp', 'session_net.cpp', 'carrier.cpp',
++                                                                    'cardchars.cpp', 'clicmd.cpp')]
++        jobs.append((os.path.join(net2, 'launch.cpp'), rt_flags + ['-I', net2], 'n2_'))
+     jobs.append((os.path.join(HERE, 'app_main.cpp'), app_flags + qt_flags, 'a_'))
+     jobs.append((os.path.join(HERE, 'pad_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE, '-I', rt], 'a_'))
+     jobs.append((os.path.join(HERE, 'present_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE], 'a_'))

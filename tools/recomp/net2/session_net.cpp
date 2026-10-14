@@ -127,7 +127,7 @@ struct Net : Backend {
     struct Pending { std::string verb, note; };
     std::map<unsigned, Pending> pending;
     // datagrams
-    n2::Carrier carrier;
+    n2::Carrier carrier_;
     std::string bind_to;
     uint8_t udp_key[8] = {0};
     bool have_key = false, local_sent = false;
@@ -607,13 +607,13 @@ struct Net : Backend {
         starting.valid = 1;
         s.session = starting;
         std::string problem;
-        if (!carrier.open(bind_to, problem)) { s.error(NET2_ERR_SERVICE, problem); return; }
-        carrier.begin(starting.session, starting.count, starting.my_slot);
-        carrier.policy(relay_policy);
+        if (!carrier_.open(bind_to, problem)) { s.error(NET2_ERR_SERVICE, problem); return; }
+        carrier_.begin(starting.session, starting.count, starting.my_slot);
+        carrier_.policy(relay_policy);
         n2::Endpoint udp_service = service;
-        carrier.relay(udp_service, udp_key);
+        carrier_.relay(udp_service, udp_key);
         for (int slot = 0; slot < starting.count; slot++)
-            if (slot != starting.my_slot) carrier.candidates(slot, start_eps[(size_t)slot]);
+            if (slot != starting.my_slot) carrier_.candidates(slot, start_eps[(size_t)slot]);
         my_phase = 1;
         s.room.state = NET2_ROOM_STARTING;
         update_routes(false);
@@ -621,12 +621,12 @@ struct Net : Backend {
     }
 
     void update_routes(bool tell) {
-        if (!carrier.active()) return;
+        if (!carrier_.active()) return;
         bool changed = false;
         for (int i = 0; i < s.room.count; i++) {
             net2_member& m = s.room.members[i];
             if (m.me) continue;
-            int route = carrier.route(m.slot), rtt = carrier.rtt(m.slot);
+            int route = carrier_.route(m.slot), rtt = carrier_.rtt(m.slot);
             if (route != m.route) changed = true;
             m.route = route;
             m.rtt_ms = rtt;
@@ -675,18 +675,18 @@ struct Net : Backend {
         // datagrams: while in a room the service must know where this socket is seen
         if (stage == ONLINE && have_key && s.room.state != NET2_ROOM_NONE && s.room.state != NET2_ROOM_JOINING) {
             std::string problem;
-            if (!carrier.is_open() && !carrier.open(bind_to, problem)) {
+            if (!carrier_.is_open() && !carrier_.open(bind_to, problem)) {
                 if (!udp_problem_told) { udp_problem_told = true; s.error(NET2_ERR_SERVICE, problem); }
             } else {
                 int64_t every = s.room.state == NET2_ROOM_OPEN ? 3000 : 1000;
-                if (now - last_hello > every) { last_hello = now; carrier.hello(service, udp_key); }
+                if (now - last_hello > every) { last_hello = now; carrier_.hello(service, udp_key); }
                 if (!local_sent) {
                     local_sent = true;
                     std::set<uint32_t> own;
                     sock::own_addresses(own);
                     std::string list;
                     int count = 0;
-                    uint16_t local_port = carrier.local().port;
+                    uint16_t local_port = carrier_.local().port;
                     for (uint32_t ip : own) {
                         if ((ip >> 24) == 127 || (ip >> 16) == 0xA9FE || count >= 3) continue;      // not loop-back, not link-local
                         n2::Endpoint e;
@@ -700,8 +700,8 @@ struct Net : Backend {
                 }
             }
         }
-        if (carrier.is_open()) {
-            carrier.poll(now);
+        if (carrier_.is_open()) {
+            carrier_.poll(now);
             update_routes(true);
         }
     }
@@ -771,7 +771,7 @@ struct Net : Backend {
     int start() override { return request("start"); }
     int leave() override {
         if (s.room.state == NET2_ROOM_NONE) return NET2_OK;
-        carrier.end();
+        carrier_.end();
         s.session = net2_session_t{};
         if (stage != ONLINE) { s.room = net2_room_t{}; s.event(NET2_EV_ROOM); return NET2_OK; }
         return request("leave");
@@ -779,7 +779,7 @@ struct Net : Backend {
     int game_state(const std::string& level, bool running) override {
         if (!running) {
             bool was = my_phase != 0;
-            carrier.end();
+            carrier_.end();
             s.session.valid = 0;
             my_phase = 0;
             if (s.room.state == NET2_ROOM_STARTING || s.room.state == NET2_ROOM_IN_GAME) {
@@ -799,8 +799,9 @@ struct Net : Backend {
         if (stage == ONLINE) { n++; send_line("gstate n=" + std::to_string(n) + " v=1 level=" + enc(level)); }
         return NET2_OK;
     }
+    n2::Carrier* carrier() override { return &carrier_; }
     int debug(const std::string& what, std::string& out) override {
-        if (what == "udp" || what == "routes") out = carrier.is_open() ? carrier.text() : "no UDP socket yet";
+        if (what == "udp" || what == "routes") out = carrier_.is_open() ? carrier_.text() : "no UDP socket yet";
         else if (what == "link") {
             static const char* STAGES[] = {"idle", "resolving", "connecting", "greeting", "proving", "online"};
             out = std::string("stage ") + STAGES[stage] + ", service " + service_text + ", " + std::to_string(pending.size()) + " requests open, try " + std::to_string(tries);
@@ -809,13 +810,13 @@ struct Net : Backend {
             int slot = atoi(what.c_str() + 5);
             size_t space = what.find(' ', 5);
             std::string text = space == std::string::npos ? "" : what.substr(space + 1);
-            out = carrier.send(slot, (const uint8_t*)text.data(), text.size()) ? "sent" : "not sent";
+            out = carrier_.send(slot, (const uint8_t*)text.data(), text.size()) ? "sent" : "not sent";
         } else if (what == "recv") {
             // tests: the next datagram that arrived for the game, "from <slot>: <text>", or "nothing"
             uint8_t buffer[n2::MOST];
             int from = 0;
-            int got = carrier.receive(from, buffer, sizeof buffer);
-            if (got < 0) { carrier.poll(steady_ms()); got = carrier.receive(from, buffer, sizeof buffer); }
+            int got = carrier_.receive(from, buffer, sizeof buffer);
+            if (got < 0) { carrier_.poll(steady_ms()); got = carrier_.receive(from, buffer, sizeof buffer); }
             out = got < 0 ? "nothing" : "from " + std::to_string(from) + ": " + std::string((const char*)buffer, (size_t)got);
         } else return NET2_ERR_ARGUMENT;
         return NET2_OK;
@@ -823,11 +824,11 @@ struct Net : Backend {
     int set(const std::string& key, const std::string& value) override {
         if (key == "relay") {
             relay_policy = value == "force" ? n2::RELAY_FORCE : value == "never" ? n2::RELAY_NEVER : n2::RELAY_AUTO;
-            carrier.policy(relay_policy);
+            carrier_.policy(relay_policy);
             return NET2_OK;
         }
         if (key == "bind") {            // the UDP socket's own address:port (tests; before the first room)
-            if (carrier.is_open()) return NET2_ERR_STATE;
+            if (carrier_.is_open()) return NET2_ERR_STATE;
             bind_to = value;
             return NET2_OK;
         }
@@ -839,10 +840,5 @@ struct Net : Backend {
 }  // namespace
 
 Backend* make_service(const net2_config& config) { return new Net(config); }
-
-n2::Carrier* carrier_of(Backend* body) {
-    Net* net = dynamic_cast<Net*>(body);
-    return net ? &net->carrier : nullptr;
-}
 
 }  // namespace net2impl
