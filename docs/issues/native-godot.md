@@ -45,13 +45,44 @@ game is in the repository):
 `mkroute.py` as in r3, pictures into `r4/NAME`; `R3_POST="app look lights"` = lines after picture a).  `base/` = before
 this round (the library's plain dark fill in the list, no torches), five levels, first person and chase.
 
-### State (23:45)
+### State (2026-10-14, 00:45)
 
-- **net2 through the library: done and run** (below, "A room of our own").  One hunk in `recomp.patch` (net2/launch.cpp).
-- **Ceilings and skirts drawn by Godot**: code in (`extension/src/rta_fill.cpp`, `shaders/fill.gdshader`, look `fill`);
-  first pictures being made (`r4/fill2/`).
-- **The game's own lights as Godot lights**: code in (`RtaMachine.get_lights`, look `lights`); being looked at.
-- Character card, persistent meshes: not started.
+Nothing of this work is running.  Pictures of the end state: `test/r4/fill7/` - `before-after-first-[ac].jpg` (left
+`base/`, right this round; honor, arachna1, nitdung1, inmine1, drunare), the chase pictures `LEVEL-chase-[ac].png`
+against `base/LEVEL-chase-[ac].png`, the character cards `LEVEL-chase-card.png`.
+
+| Asked | State | Shown |
+|---|---|---|
+| ceilings and skirts in Godot, textured from the level | **done** (Ran, five levels, two views) | `fill7/before-after-first-c.jpg`: honor grey stone, nitdung1 brown stone, inmine1 mossy rock, arachna1 dark rock, where it was black or one flat dark colour; drunare's ceiling is above its awnings, not in view |
+| lights at the game's torches, braziers, glowing things | **done**: Godot omni lights at the game's own light nodes, the nearest two with shadows; the carried lamp only where no game light reaches | modest: arachna1's lower half 16.8 -> 22.6 of 255 by the camp fire, inmine1 38.9 -> 41.4, nitdung1 none (its torches are 538 and 831 away at the stop) |
+| the portal's character card | **done**: `handover.game.call("get_character_card")` -> Texture2D | `fill7/*-chase-card.png`, `card2/hub-card.png` |
+| 60 paced at display resolution in a heavy fight, everything on | **not reached** (table below) | `speed1..5/out-chase.txt` |
+| `app view set` prefix | fixed in the library by the integrator; `app view set first.fov 62` taken without a refusal (`speed1`) | |
+| heat haze reading last frame's picture | **not done** | |
+| macOS export | **Ran**: `extension --release`, `export` (202.5 MB, signature verifies); started without a window, its two pictures identical to the third round's (`test/r4/export/`) | |
+| net2 through the library | **Ran** (below) | |
+| the merges of 0a89b9e (game-art hooks, g_ram guards) | **Ran**: snapshot refreshed, both libraries rebuilt; smoke test 2 of 2 pictures identical; the portal started without a disc (plain skin) and with one (the game's skin), no script errors (`test/r4/smoke/`, `test/r4/portal/`) | |
+
+**Speed** (paced, the tick-keyed fight route `mkfight.py`, chase, 16:9; the machine shared, load average 18 to 29 the
+whole time; processor time = all threads of the process; "fight" = blanks 3600 to 4900 of the route):
+
+| Run | Picture | Look | Fight: pictures a second | processor ms a picture | submit() over the run |
+|---|---|---|---|---|---|
+| `speed1` | 3024 x 1701 | everything on (sky, haze, sun 4 splits, 8 torch lights 2 with shadows, lamp, bloom, grade, fill, aa 4) | 20 to 32 | 41 to 63 | 9.9 ms |
+| `speed2` | 3024 x 1701 | torch shadows off, aa 0 | 25 to 38 | 36 to 53 | 6.7 ms |
+| `speed3` | 1280 x 720 | everything on | 34 to 44 | 32 to 48 | 6.1 ms |
+| `speed4` | 1280 x 720 | sun and torch lights off | 34 to 47 | 30 to 51 | 6.7 ms |
+| `speed5` | 1280 x 720 | as speed4, the tap's check off (`RTA_SCENE_CHECK=0`) | 30 to 37 | 36 to 51 | |
+
+Before the fight the same runs hold 60 (valor, 3024 x 1701, everything on: 59.4 to 59.9 a second, 19 ms).  The fight in
+chase is **processor-bound, not bound by the picture size or the lights**: up to 290,000 vertices a list; the library's
+decoder thread (VU1, GS model, scene tap) 10 to 13 ms a list on average (5.4 in the third round's first-person valor),
+the game thread 22 to 28 ms of wall time a blank, Godot's main thread 7 to 14 ms.  What this round did for it: kept
+meshes (below) - on the same five-level tour, unpaced, submit() 18.8 -> 8.0 ms a list and 20.2 -> 42.2 pictures a
+second (`base/` against `fill5/`; NOT at the same load average).  What it would take further, in this order: the
+decoder's cost per vertex (the full-geometry replay of every packet), re-posing kept model meshes from the tap's
+object-space vertices and joints (needs `TapFrame` sources and joints through `rtag.h` and the source index of each
+`TapFull` corner: a `scene_tap` change), fewer draws a list.
 
 ### Ceilings and skirts (`extension/src/rta_fill.cpp`, `project/shaders/fill.gdshader`; look `fill`, `fill_light`, `fill_scale`)
 
@@ -109,7 +140,35 @@ this round (the library's plain dark fill in the list, no torches), five levels,
 - A draw whose packets are, by identity, exact colours and texels and positions to 1/16 unit, those of a mesh made
   before takes that mesh (`place_mesh`: the material on the instance) instead of being built and sent again; meshes
   nothing drew for 30 frames go.  First try keyed on the bytes: only 33 of 222 draws a list were taken in the hub (the
-  tap's world positions differ in the last bits while the camera moves).
+  tap's world positions differ in the last bits while the camera moves).  Keyed as now: 228 of 354 draws a list on the
+  five-level tour (86,000 corners a list not sent again); in the fight 73 of 210 (the characters move).
+- Every mesh of the scene now carries its real box (it had one of +-1,000,000): Godot pairs the lights with what they
+  reach and culls the shadow casters per light.
+
+### Other changes of this round
+
+- `build.py project` puts a copied library over its name instead of writing into the old file (a Godot that has the old
+  one loaded - another agent's test - keeps running).
+- `lib/scene_export.cpp`: `RTA_SCENE_CHECK=0` (test aid) turns the tap's own check off.
+- `project/dev/net2_flow.gd`, main.gd `--net2-flow ROLE:DIR`: the room flow as the portal is to drive it.
+- New in `extension/src`: `rta_fill.cpp`, `rta_card.cpp`, the header `rta_net2_api.h`.  `CMakeLists.txt` takes them by
+  its glob and needs no new include path (only the net2 option changed).  Built from clean with everything of this
+  round in it (00:45: 1036 steps, 0 warnings; earlier the mock-only variant: 1038 steps, 0 warnings).
+
+### Still wrong / not done
+
+- The ceiling is a height field (the library's): in honor it hangs down over the court's gaps as a curtain - now
+  visible as stone where it was black.  Swatches come from what has been drawn: the first seconds of a level show the
+  shader's plain stone.  Skirts were seldom given a swatch (0 or 1 a level: their rim is rarely near the eye).
+- The torch lights are modest; where the game's own vertex light already makes the torches' pools, Godot adds little.
+  `light_energy` is the knob.
+- The card needs the character seen standing in a view other than first person (the game leaves it out there); it is
+  posed as it stood, not animated.
+- 60 in a fight in chase: not reached.  Heat haze: still last frame's picture.
+
+### Files outside `tools/godot` this round needed
+
+- `tools/recomp/net2/launch.cpp`: the lock around the game's calls - merged by the coordinator (aa7ffd6).  Nothing else.
 
 ### A room of our own: RtaNet2 on the library's net2 (Ran)
 

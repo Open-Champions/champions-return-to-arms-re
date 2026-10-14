@@ -93,6 +93,9 @@ inline float depth_to_z(float list_z) {
 void install(render::Renderer& renderer) {
     g_diag = getenv("RTA_SCENE_DIAG") != nullptr;
     if (getenv("RTA_SCENE_SPRITES")) g_sprites = atoi(getenv("RTA_SCENE_SPRITES")) != 0;
+    // test aid: RTA_SCENE_CHECK=0 - the tap hands on every packet without projecting it again against the program's own
+    // output (scene_tap.h: the check); what that costs on the decoder's thread
+    if (getenv("RTA_SCENE_CHECK")) g_tap.check = atoi(getenv("RTA_SCENE_CHECK")) != 0;
     g_tap.install(renderer);
 }
 
