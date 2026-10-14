@@ -10,9 +10,13 @@
 //   every frame:  for e in n.poll(): ...      # net2_poll, then every net2_next_event
 //                 n.me()  n.friends()  n.requests()  n.invites()  n.recent()  n.blocked()  n.room()  n.session()
 //
-// Built with tools/recomp/net2/session.cpp and session_mock.cpp compiled in.  With
-// NET2_NO_SERVICE (how the portal's own build compiles it) there is no socket code in the
-// extension at all: has_service() is false and anything but the mock says "offline".
+// Built with tools/recomp/net2/session.cpp, session_mock.cpp and, for the real service,
+// session_net.cpp, carrier.cpp, cardchars.cpp compiled in.  With NET2_NO_SERVICE (the build
+// switch for a mock-only extension) there is no socket code in the extension at all:
+// has_service() is false and anything but the mock says "offline".
+// When the game library itself carries net2 (launch.cpp: docs/issues/native-rendezvous.md 5.1),
+// there must be ONE copy in the process: this class should then call the library's net2_*
+// through the loaded library instead of compiling its own (not done yet: no library has it).
 //
 // Registered by one line in register.cpp:  GDREGISTER_CLASS(RtaNet2);
 #pragma once
@@ -65,7 +69,7 @@ class RtaNet2 : public RefCounted {
     int invite_dismiss(const String& from_id);
 
     Dictionary room() const;
-    int host(const Dictionary& options);                // level, difficulty, mode, open_to
+    int host(const Dictionary& options);                // level, difficulty, mode, open_to, mission, kill_limit
     int join(const String& code);
     int join_friend(const String& friend_id);
     int chat(const String& text);

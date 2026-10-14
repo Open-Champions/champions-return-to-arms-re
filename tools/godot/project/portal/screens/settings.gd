@@ -13,7 +13,7 @@ extends "res://portal/screen.gd"
 
 const Session := preload("res://portal/session.gd")
 const TABS := [["view", "View", "eye"], ["display", "Display", "screen"], ["sound", "Sound", "speaker"], ["controls", "Controls", "pad"],
-	["interface", "Interface", "layers"], ["you", "You", "person"]]
+	["interface", "Interface", "layers"], ["online", "Online", "people"], ["you", "You", "person"]]
 const VIEWS := [
 	["overhead", "Overhead", "The classic camera, high above."],
 	["action", "Action", "Overhead, closer to the fight."],
@@ -63,6 +63,7 @@ func build() -> void:
 		"sound": _page_sound(inner)
 		"controls": _page_controls(inner)
 		"interface": _page_interface(inner)
+		"online": _page_online(inner)
 		"you": _page_you(inner)
 	if want_focus == "":
 		want_focus = "tab_" + tab
@@ -174,6 +175,61 @@ func _page_interface(r: Rect2) -> void:
 	_rows(r, y, [kind, pics])
 
 
+var address_typed := ""
+
+
+func _page_online(r: Rect2) -> void:
+	var me: Dictionary = portal.session.me()
+	var link := int(me.get("link", 0))
+	var problem := String(me.get("problem", ""))
+	var sentence := ""
+	match link:
+		Session.LINK_ONLINE:
+			sentence = "Connected to " + String(me.get("service", "the service")) + "."
+		Session.LINK_CONNECTING:
+			sentence = ("Connecting to " + String(me.get("service", "the service")) + "...") if problem == "" else problem.trim_suffix(".") + " - trying again."
+		_:
+			sentence = problem if problem != "" else "Not connected."
+	var y := _title(r, "Online", "")
+	var w := minf(r.size.x, UI.px(860))
+	var mark := say(Rect2(r.position.x, y, w, UI.px(40)), sentence, 24, UI.GREEN if link == Session.LINK_ONLINE else (UI.GOLD if link == Session.LINK_CONNECTING and problem == "" else UI.TEXT))
+	mark.clip_text = true
+	y += UI.px(40 + 6)
+	say(Rect2(r.position.x, y, w, UI.px(28)), "Where friends meet: the address of the service, as the one who runs it gave it to you.", 18, UI.DIM)
+	y += UI.px(28 + 18)
+	if address_typed == "":
+		address_typed = String(portal.call("service_named"))
+	var field := W.Field.new("host:port, like 192.168.1.20:41900", 63)
+	field.key = "address"
+	field.height = 64.0
+	field.text = address_typed
+	put(field, Rect2(r.position.x, y, w - UI.px(230), UI.px(64)))
+	field.edited.connect(func(t: String) -> void: address_typed = t)
+	field.submitted.connect(func(_t: String) -> void: _connect())
+	field.wants_keys.connect(func() -> void:
+		ask_text({"title": "The service's address", "mode": "name", "text": address_typed, "max": 63, "done_text": "Connect",
+			"done": func(t: String) -> void:
+				address_typed = t
+				_connect()}))
+	var go_btn := W.Btn.new("Connect", "check", "primary")
+	go_btn.key = "connect"
+	go_btn.height = 64.0
+	go_btn.fixed = true
+	put(go_btn, Rect2(r.position.x + w - UI.px(216), y, UI.px(216), UI.px(64)))
+	go_btn.activated.connect(_connect)
+	y += UI.px(64 + 24)
+	say(Rect2(r.position.x, y, w, UI.px(54)), "Nothing else is needed: no account and no password. Playing alone never needs the connection.", 16, UI.FAINT, null, HORIZONTAL_ALIGNMENT_LEFT, true)
+
+
+func _connect() -> void:
+	var a := address_typed.strip_edges()
+	if a != "" and not a.contains(":"):
+		portal.call("toast", "An address ends in a port: host:port", "error")
+		return
+	portal.call("set_service", a)
+	portal.call("toast", "Connecting to " + a if a != "" else "No service named", "info")
+
+
 func _page_you(r: Rect2) -> void:
 	var me: Dictionary = portal.session.me()
 	var y := _title(r, "You", "The name your friends see. It is only a label - change it whenever you like.")
@@ -230,7 +286,7 @@ func _save_name() -> void:
 
 
 func session_changed(what: String) -> void:
-	if tab == "you" and (what == "me" or what == "link"):
+	if (tab == "you" or tab == "online") and (what == "me" or what == "link"):
 		rebuild()
 
 

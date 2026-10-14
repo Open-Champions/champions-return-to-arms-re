@@ -327,7 +327,11 @@ void app_command(const std::string& text, uint64_t frame) {
         std::lock_guard<std::mutex> hold(g_m->sink.shots_lock);
         g_m->sink.shots_asked.push_back(text.substr(text.find(w[1])));
     } else if (w[0] == "view" && w.size() >= 2) {       // app view NAME | app view set KEY VALUE (as the native application's)
-        if (w[1] == "set" && w.size() >= 4) rtag_set_option(("view." + w[2]).c_str(), w[3].c_str());
+        // the key as the native application takes it ("view.first.pitch"); a bare one ("first.pitch") is given its "view."
+        if (w[1] == "set" && w.size() >= 4) {
+            std::string key = w[2].compare(0, 5, "view.") == 0 ? w[2] : "view." + w[2];
+            if (!rtag_set_option(key.c_str(), w[3].c_str())) say("not a view setting: " + w[2]);
+        }
         else if (!rtag_set_option("view", w[1].c_str())) say("no such view: " + w[1]);
     } else if (w[0] == "gamehud" && w.size() >= 2) {
         rtag_set_option("game_hud", w[1].c_str());
@@ -607,7 +611,13 @@ int rtag_has(const char* feature) {
         return 0;
 #endif
     }
-    if (f == "network") return 0;
+    if (f == "network" || f == "net2") {                // the network driver and a room of our own (net2_* exported beside rtag_*)
+#ifdef RTAG_HAVE_NET2
+        return 1;
+#else
+        return 0;
+#endif
+    }
     return 0;
 }
 

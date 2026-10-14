@@ -189,20 +189,49 @@ func test_mode() -> bool:
 
 
 func _open_session() -> void:
-	var service := String(options.service)
-	if service == "":
-		service = String(profile.cfg.get_value("online", "service", ""))
+	# where the service is: --portal-service, else what the client finds by itself - the
+	# environment's RTA_NET2_SERVICE, then the first line of <data>/net2-service.txt (Settings -> Online)
 	var config := {
-		"mock": bool(options.mock), "service": service, "name": profile.name_shown(),
+		"mock": bool(options.mock), "service": String(options.service), "name": profile.name_shown(),
 		"data_dir": ProjectSettings.globalize_path(profile.folder), "build": "portal", "local_only": test_mode(),
 	}
 	if not session.open(config):
 		return
-	if String(options.mock_speed) != "":
+	if String(options.mock_speed) != "" and bool(options.mock):
 		session.setting("mock-speed", String(options.mock_speed))
 	var c: Dictionary = profile.character()
 	if String(c.get("name", "")) != "":
 		session.set_character(c)
+
+
+func service_file() -> String:
+	return ProjectSettings.globalize_path(profile.folder).path_join("net2-service.txt")
+
+
+func service_named() -> String:
+	# what Settings -> Online shows in its field
+	if String(options.service) != "":
+		return String(options.service)
+	if OS.has_environment("RTA_NET2_SERVICE"):
+		return OS.get_environment("RTA_NET2_SERVICE")
+	var f := FileAccess.open(service_file(), FileAccess.READ)
+	return f.get_line().strip_edges() if f != null else ""
+
+
+func set_service(address: String) -> void:
+	# kept where the client looks for it; the session is opened again with it
+	var f := FileAccess.open(service_file(), FileAccess.WRITE)
+	if f != null:
+		f.store_line(address.strip_edges())
+		f.close()
+	options.service = ""
+	seen_requests = {}
+	seen_invites = {}
+	_open_session()
+	top.call("build")
+	refresh_hints()
+	if screen != null:
+		screen.call("rebuild")
 
 
 # ---- the layer and its parts ---------------------------------------------------------------
@@ -382,10 +411,12 @@ func refresh_hints() -> void:
 			hint_bar.left_text = "Online" + ("  (practice mode: made-up friends)" if bool(me.get("mock", false)) else "")
 			hint_bar.left_colour = UI.GREEN
 		1:
-			hint_bar.left_text = "Connecting..."
+			var trouble := String(me.get("problem", ""))
+			hint_bar.left_text = "Connecting..." if trouble == "" or trouble.begins_with("Connecting") else "Connecting... (" + trouble.trim_suffix(".") + ")"
 			hint_bar.left_colour = UI.GOLD
 		_:
-			hint_bar.left_text = "Offline - playing alone works"
+			var problem := String(me.get("problem", ""))
+			hint_bar.left_text = "Offline - playing alone works" + (" (" + problem.trim_suffix(".") + ")" if problem != "" else "")
 			hint_bar.left_colour = UI.FAINT
 	if not screen.call("chrome"):
 		hint_bar.left_text = ""         # the first question: nothing about a connection yet
@@ -657,7 +688,7 @@ func play_alone() -> void:
 
 func host_game() -> void:
 	if not session.online():
-		toast("You are offline - a room needs the connection.", "error")
+		toast("You are offline - a room needs the connection.", "error", String(session.me().get("problem", "")))
 		return
 	if need_disc():
 		return
@@ -665,7 +696,7 @@ func host_game() -> void:
 		go("room")
 		return
 	pending_room = true
-	session.host({"level": "", "difficulty": 0, "mode": 0, "open_to": Session.OPEN_FRIENDS})
+	session.host({"level": "", "difficulty": 1, "mode": 0, "open_to": Session.OPEN_FRIENDS})
 	go("room")
 
 
@@ -696,7 +727,7 @@ func invite_friend(id: String, name: String) -> void:
 	# no room yet: open one, invite when it is there
 	pending_invite = id
 	pending_room = true
-	session.host({"level": "", "difficulty": 0, "mode": 0, "open_to": Session.OPEN_FRIENDS})
+	session.host({"level": "", "difficulty": 1, "mode": 0, "open_to": Session.OPEN_FRIENDS})
 	toast("Opening a room and inviting " + name, "good")
 
 
@@ -869,9 +900,12 @@ func _process(delta: float) -> void:
 		starting_since = 0              # the room never said "in game": get out of the way anyway
 		handover.call("reveal")
 	if session != null:
-		var link := int(session.me().get("link", 0)) if session.available() else 0
+		var now: Dictionary = session.me() if session.available() else {}
+		var link := int(now.get("link", 0)) + String(now.get("problem", "")).hash() * 8
 		if link != last_link:
 			last_link = link
+			if screen != null and shown:
+				screen.call("session_changed", "link")
 			refresh_hints()
 			top.call("build")
 

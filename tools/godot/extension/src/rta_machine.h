@@ -70,6 +70,11 @@ class RtaMachine : public RefCounted {
     String peek_string(int64_t address, int max_bytes) const;
 
     const rtag_frame* current() const { return frame; }
+    // The level's generated ceilings and skirts (rtag_fill_get, tools/recomp/render/worldfill.h): false when the library
+    // has none for the level that is loaded.  The pointers in `out` stay valid until the next call.
+    bool fill(rtag_fill& out) const;
+    // the same as figures: level, serial, vertices, meshes, ceilings, skirts ({} when there is none)
+    Dictionary get_fill_info() const;
 
   protected:
     static void _bind_methods();

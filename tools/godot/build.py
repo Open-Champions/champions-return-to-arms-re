@@ -63,7 +63,7 @@ SNAP = os.path.join(SRC, 'recomp')
 SNAP_ORIG = os.path.join(SRC, 'recomp.orig')
 LIB = os.path.join(HERE, 'lib')
 PATCH = os.path.join(HERE, 'recomp.patch')
-PARTS = ('rt', 'render', 'sound', 'app')
+PARTS = ('rt', 'render', 'sound', 'app', 'net', 'net2')    # net, net2: the network and a room of our own (fix-set library only)
 GAMES = {'fix': ('obj-rta_native_fix', 'gen-app'), 'orig': ('obj-run', 'gen')}
 RENDER_CORE = ['vu1.cpp', 'vif1.cpp', 'gs.cpp', 'renderer.cpp', 'worldfill.cpp']
 RUNTIME = ['runtime.cpp', 'iop.cpp', 'script.cpp']
@@ -71,11 +71,23 @@ NICE = ['nice', '-n', '10']
 EXPORTS = ['rtag_api_version', 'rtag_has', 'rtag_start', 'rtag_set_pad', 'rtag_step', 'rtag_poll', 'rtag_run', 'rtag_audio_pull',
            'rtag_memory', 'rtag_fields', 'rtag_info', 'rtag_ended', 'rtag_exit_code', 'rtag_stop', 'rtag_set_option',
            'rtag_controls_hud', 'rtag_mouse', 'rtag_mouse_button', 'rtag_fill_get']
+# A room of our own (tools/recomp/net2/session.h, game.h): the fix-set library carries the one copy of net2 in the
+# process - the session client, the carrier of the game's datagrams and the direct launch - and hands out its plain-C
+# functions under their own names, for the portal (docs/issues/native-rendezvous.md 5.1).
+NET2_EXPORTS = ['net2_block', 'net2_blocked', 'net2_chat', 'net2_close', 'net2_debug', 'net2_delete_everything', 'net2_error_text',
+                'net2_friend_accept', 'net2_friend_add', 'net2_friend_add_id', 'net2_friend_decline', 'net2_friend_remove', 'net2_friends',
+                'net2_game_attach', 'net2_game_choose', 'net2_game_launch', 'net2_game_launch_direct', 'net2_game_state', 'net2_game_status',
+                'net2_game_stop', 'net2_host', 'net2_invite', 'net2_invite_accept', 'net2_invite_dismiss', 'net2_invites', 'net2_join',
+                'net2_join_friend', 'net2_kick', 'net2_leave', 'net2_local_characters', 'net2_me', 'net2_next_event', 'net2_open', 'net2_poll',
+                'net2_ready', 'net2_recent', 'net2_requests', 'net2_room', 'net2_session', 'net2_set', 'net2_set_character', 'net2_set_game',
+                'net2_set_name', 'net2_set_options', 'net2_start', 'net2_unblock']
 
 
 def copy_sources(to, recomp):
-    """tools/recomp/{rt,render,sound,app}: the files of each directory, not what lies below."""
+    """tools/recomp/{rt,render,sound,app,net,net2}: the files of each directory, not what lies below."""
     for part in PARTS:
+        if not os.path.isdir(os.path.join(recomp, part)):
+            continue
         os.makedirs(os.path.join(to, part), exist_ok=True)
         for name in sorted(os.listdir(os.path.join(recomp, part))):
             path = os.path.join(recomp, part, name)
@@ -95,6 +107,15 @@ def snapshot(args):
         shutil.rmtree(d, ignore_errors=True)
     copy_sources(SNAP_ORIG, recomp)
     copy_sources(SNAP, recomp)
+    # the one-step online's file of the emulator application, which net/online.cpp includes as ../../play-net/src/RtaOnline.h
+    # (linked as it is, as app/build.py does): beside the snapshot where that path finds it
+    playnet = os.path.join(SRC, 'play-net', 'src')
+    shutil.rmtree(os.path.join(SRC, 'play-net'), ignore_errors=True)
+    os.makedirs(playnet)
+    for name in ('RtaOnline.h', 'RtaOnline.cpp', 'RtaNet.h'):
+        source = os.path.join(root, 'tools', 'play-net', 'src', name)
+        if os.path.exists(source):
+            shutil.copy2(source, os.path.join(playnet, name))
     for game, (objects, gen) in GAMES.items():
         source, to = os.path.join(recomp_out, objects), os.path.join(SRC, 'game-' + game)
         shutil.rmtree(to, ignore_errors=True)
@@ -203,7 +224,7 @@ def build_lib(args):
     if not os.path.isdir(game_dir):
         print('no compiled game in %s (see `snapshot`)' % game_dir)
         return 1
-    rt, render, sound, app = (os.path.join(SNAP, p) for p in PARTS)
+    rt, render, sound, app = (os.path.join(SNAP, p) for p in PARTS[:4])
     # files proposed for tools/recomp (tools/godot/core/<part>/...) go into the snapshot, where they will live.
     # (None now: render/scene_tap.h and .cpp were merged into tools/recomp/render on 2026-10-13 with the hooks of
     # recomp.patch, so `snapshot` brings them; the directory need not exist, and a new proposal can lie there again.)
@@ -262,10 +283,23 @@ def build_lib(args):
         lib_flags.append('-DRTAG_NO_CONTROLS')
     if not args.original:
         jobs.append((os.path.join(app, 'film.cpp'), rt_flags + ['-I', app], 'a_'))     # the films: only this translation leaves their entries open
+    # the network and a room of our own, as rta_app has them (app/build.py): the fix-set translation leaves the network
+    # library's entries of net/hle-online.txt to net/netdrv.cpp; net2/launch.cpp starts the game's own lockstep session
+    # from a room.  Nothing opens a socket until a host asks for a room (rtag_start "--opt net2=..." or net2_open).
+    net, net2 = os.path.join(SNAP, 'net'), os.path.join(SNAP, 'net2')
+    has_net2 = not args.original and os.path.exists(os.path.join(net2, 'launch.cpp')) and has(os.path.join(net, 'netdrv.cpp'), 'net2hook') \
+        and os.path.exists(os.path.join(SRC, 'play-net', 'src', 'RtaOnline.cpp'))
+    if has_net2:
+        jobs += [(os.path.join(net, n), rt_flags, 'n_') for n in ('netdrv.cpp', 'online.cpp')]
+        jobs.append((os.path.join(SRC, 'play-net', 'src', 'RtaOnline.cpp'), rt_flags, 'n_'))
+        plain = ['-std=c++17', opt, '-Wall', '-I', net2]
+        jobs += [(os.path.join(net2, n), plain, 'n2_') for n in ('session.cpp', 'session_mock.cpp', 'session_net.cpp', 'carrier.cpp', 'cardchars.cpp', 'clicmd.cpp')]
+        jobs.append((os.path.join(net2, 'launch.cpp'), rt_flags + ['-I', net2], 'n2_'))
+        lib_flags.append('-DRTAG_HAVE_NET2')
     jobs.append((os.path.join(LIB, 'rtag.cpp'), lib_flags, 'g_'))
     jobs.append((os.path.join(LIB, 'scene_export.cpp'), lib_flags, 'g_'))
     jobs.append((os.path.join(LIB, 'gl_offscreen_mac.cpp'), lib_flags, 'g_'))
-    objects = compile_all(jobs, os.path.join(OUT, 'obj-' + game), [LIB, app, render, rt, sound, game_dir, vu], args.jobs)
+    objects = compile_all(jobs, os.path.join(OUT, 'obj-' + game), [LIB, app, render, rt, sound, game_dir, vu, os.path.join(SNAP, 'net'), os.path.join(SNAP, 'net2')], args.jobs)
     if objects is None:
         return 1
     link = [os.path.join(game_dir, n) for n in sorted(os.listdir(game_dir)) if n.endswith('.o')]
@@ -274,7 +308,7 @@ def build_lib(args):
     final = os.path.join(OUT, 'lib', name)
     out = final + '.link%d' % os.getpid()
     exports = os.path.join(OUT, 'obj-' + game, 'exports.txt')
-    open(exports, 'w').write(''.join('_%s\n' % e for e in EXPORTS))
+    open(exports, 'w').write(''.join('_%s\n' % e for e in EXPORTS + (NET2_EXPORTS if has_net2 else [])))
     result = subprocess.run(NICE + ['clang++', '-dynamiclib', '-o', out] + objects + link +
                             ['-framework', 'OpenGL', '-lz', '-lpthread', '-Wl,-exported_symbols_list,' + exports, '-Wl,-install_name,@rpath/' + name],
                             capture_output=True, text=True)

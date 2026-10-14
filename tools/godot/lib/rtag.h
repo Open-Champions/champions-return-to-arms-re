@@ -359,6 +359,15 @@ typedef struct rtag_fill {
  * function or rtag_stop.  0: none (a level that gets none, no level yet, or a library without it).  Any thread. */
 int rtag_fill_get(rtag_fill* out);
 
+/* ---- a room of our own (optional) ------------------------------------------------------
+ * When rtag_has("net2") (the fix-set library, built with tools/recomp/net and net2): the library contains the network
+ * driver, the session client of tools/recomp/net2/session.h and the direct launch of net2/game.h, and exports their
+ * plain-C functions under their own names (net2_open, net2_game_attach, net2_game_choose, net2_game_status, ...) - the
+ * one copy of net2 in the process: a host (the portal) looks them up in this library and does not link its own.  The
+ * portal's part: net2_open, then net2_game_attach(n) once; the library follows that room by itself (launches when the
+ * room starts).  docs/issues/native-rendezvous.md 5.1.  The stand-alone way: rtag_start with the runtime arguments
+ * "--opt net2=host | join:CODE" (and net2-name, net2-service) takes the machine into a room by itself from power-on. */
+
 /* ---- sound --------------------------------------------------------------------------- */
 /* Exactly `frames` frames of interleaved 16-bit stereo at 48 kHz (silence where there is nothing).  With
  * RTAG_SOUND_PULL this call is the sound side's clock: call it from the device's thread, at the device's rate. */

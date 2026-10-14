@@ -354,6 +354,11 @@ void RtaDrawer::submit() {
         if (old != textures.end()) s->free_rid(old->second);
         textures[t.id] = s->texture_2d_create(image);
         textures_made++;
+        if (scene_mode) {                               // its pixels, for what the fill cuts out of the level's textures
+            CpuTexture& copy = cpu_textures[t.id];
+            copy.w = t.width; copy.h = t.height;
+            copy.rgba.assign(t.rgba, t.rgba + (size_t)t.width * t.height * 4);
+        }
         if (scene_mode && t.width >= THUMB && t.height >= THUMB) {
             Thumb& thumb = thumbs[t.id];
             const int cw = t.width / THUMB, ch = t.height / THUMB;
@@ -519,6 +524,7 @@ void RtaDrawer::submit() {
         s->free_rid(t->second);
         textures.erase(t);
         thumbs.erase(f.dead_textures[k]);
+        cpu_textures.erase(f.dead_textures[k]);
     }
     for (uint32_t k = 0; k < f.dead_target_count; k++) {
         auto t = targets.find(f.dead_targets[k]);
@@ -580,6 +586,8 @@ void RtaDrawer::release() {
     if (!RenderingServer::get_singleton()) return;
     RenderingServer* s = rs();
     scene_release();
+    fill_free();
+    cpu_textures.clear();
     for (Pass* pass : std::vector<Pass*>(all_passes)) free_pass(pass);
     targets.clear();
     for (auto& m : materials) s->free_rid(m.second.rid);
@@ -611,6 +619,8 @@ void RtaDrawer::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_sky_info"), &RtaDrawer::get_sky_info);
     ClassDB::bind_method(D_METHOD("sky_reset"), &RtaDrawer::sky_reset);
     ClassDB::bind_method(D_METHOD("set_output_size", "size"), &RtaDrawer::set_output_size);
+    ClassDB::bind_method(D_METHOD("set_fill_shader", "shader"), &RtaDrawer::set_fill_shader);
+    ClassDB::bind_method(D_METHOD("get_fill_info"), &RtaDrawer::get_fill_info);
     ClassDB::bind_method(D_METHOD("get_output_size"), &RtaDrawer::get_output_size);
 }
 

@@ -11,10 +11,36 @@ var player: Object = null
 var opt := {}
 
 
+var game_seconds := 0.0             # a session's game: "over" after this long (0: never)
+var clock := 0.0
+var told_running := false
+
+
 func _ready() -> void:
 	canvas = Picture.new()
 	canvas.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(canvas)
+	var args := OS.get_cmdline_user_args()
+	var at := args.find("--stub-game-seconds")
+	if at >= 0 and at + 1 < args.size():
+		game_seconds = args[at + 1].to_float()
+
+
+func _process(delta: float) -> void:
+	# standing in for tools/recomp/net2/launch.cpp: tell the room the game runs, and later that it is over
+	var portal := get_tree().get_first_node_in_group("portal")
+	if portal == null or not portal.session.available() or String(portal.handover.intent.get("kind", "")) != "session" or not portal.handover.running:
+		clock = 0.0
+		told_running = false
+		return
+	clock += delta
+	if not told_running and clock > 2.5:
+		told_running = true
+		portal.session.game_state("stand-in", true)
+	if game_seconds > 0.0 and clock > game_seconds:
+		clock = 0.0
+		told_running = false
+		portal.session.game_state("", false)
 
 
 func _finish(_code: int) -> void:

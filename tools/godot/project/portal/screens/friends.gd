@@ -46,6 +46,15 @@ func build() -> void:
 		empty.connecting = int(me.get("link", 0)) == Session.LINK_CONNECTING
 		empty.problem = String(me.get("problem", ""))
 		put(empty, Rect2(0, UI.px(76), left_w, size.y - UI.px(76)))
+		if empty.offline and not empty.connecting:
+			var set_btn := W.Btn.new("Set the address", "people", "primary")
+			set_btn.key = "set_address"
+			set_btn.height = 60.0
+			add_child(set_btn)
+			set_btn.size = set_btn.custom_minimum_size
+			set_btn.position = Vector2(roundf((left_w - set_btn.size.x) * 0.5), UI.px(76) + (size.y - UI.px(76)) * 0.72)
+			set_btn.activated.connect(func() -> void: portal.call("go", "settings", {"tab": "online"}))
+			want_focus = "set_address"
 	else:
 		var box := scroller(list_rect, 8.0)
 		if not invites.is_empty():

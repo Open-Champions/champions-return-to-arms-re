@@ -96,11 +96,13 @@ func build() -> void:
 	var options: Dictionary = room.get("options", {})
 	var can_choose := i_host and state == Session.ROOM_OPEN
 	var cw := (left_w - UI.px(14)) * 0.5
-	var difficulty := W.Choice.new("Difficulty", PackedStringArray(["Default", "1", "2", "3", "4"]), clampi(int(options.get("difficulty", 0)), 0, 4))
+	# the game's own four (net2_options.difficulty 1..4; 0 means the first). Only missions are
+	# wired into the launch today: the arena modes are not offered until they are.
+	var difficulty := W.Choice.new("Difficulty", PackedStringArray(["Easy", "Normal", "Hard", "Harder"]), clampi(int(options.get("difficulty", 1)) - 1, 0, 3))
 	difficulty.key = "difficulty"
 	difficulty.locked = not can_choose
 	put(difficulty, Rect2(0, choices_y, cw, choices_h))
-	difficulty.changed.connect(func(index: int) -> void: _set_option("difficulty", index))
+	difficulty.changed.connect(func(index: int) -> void: _set_option("difficulty", index + 1))
 	var open_to := W.Choice.new("Who can join", PackedStringArray(["Code only", "Friends too"]), clampi(int(options.get("open_to", 0)), 0, 1))
 	open_to.key = "open_to"
 	open_to.locked = not can_choose
@@ -197,7 +199,7 @@ func build() -> void:
 				_say()}))
 	# the focus rests on the one thing to press for as long as the player has not moved it elsewhere
 	if want_focus == "" or want_focus == auto_key or find_key(self, want_focus) == null:
-		auto_key = "main" if not main.disabled else ("invite" if not invite.disabled else "leave")
+		auto_key = "main" if not main.disabled else ("invite" if not invite.disabled else ("chat" if state >= Session.ROOM_STARTING else "leave"))
 		want_focus = auto_key
 
 
@@ -478,6 +480,10 @@ class SeatText extends Control:
 				_:
 					mark = "Connecting..."
 					colour = UI.DIM
+		elif int(member.get("phase", 0)) == 2 and not bool(seat.get("starting")):
+			mark = "In the game"
+			colour = UI.VIOLET
+			icon_name = "sword"
 		elif bool(member.get("host", false)):
 			mark = "Host"
 			colour = UI.GOLD

@@ -107,6 +107,7 @@ void RtaDrawer::set_scene_mode(bool on) {
 
 void RtaDrawer::set_scene_option(const String& name, double value) {
     if (!scene) scene = new Scene;
+    if (name.begins_with("fill")) { fill_option(name, value); return; }
     if (name == "lit") scene->lit = value != 0;
     else if (name == "shadows") scene->shadows = value != 0;
     else if (name == "ambient") scene->ambient = value;
@@ -470,6 +471,7 @@ void RtaDrawer::scene_begin(const rtag_frame& f) {
     s->camera_set_transform(pass->camera, camera);
     double far_plane = f.scene->far_plane * std::max(1.0, sc.pull_back) * 1.5;
     s->camera_set_perspective(pass->camera, (float)sc.fov_y, f.scene->near_plane, (float)far_plane);
+    fill_frame(f, camera.origin, pass->scenario);           // the level's generated ceilings and skirts (rta_fill.cpp)
     if (sc.lit) s->environment_set_ambient_light(pass->environment, Color(1, 1, 1), RenderingServer::ENV_AMBIENT_SOURCE_COLOR, (float)sc.ambient);
     // a camera that is not the game's sees past what the game drew: black there, not last frame's picture
     s->environment_set_background(pass->environment, sc.pull_back != 1.0 || sc.orbit != 0.0 || sc.raise != 0.0 ? RenderingServer::ENV_BG_CLEAR_COLOR : RenderingServer::ENV_BG_KEEP);
@@ -484,6 +486,7 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
         return false;
     }
     RenderingServer* s = RenderingServer::get_singleton();
+    if (fill_drops(f, d)) return true;                      // the library's plain fill: drawn here by rta_fill.cpp instead
     // the game's own ground shadows (a silhouette drawn into a small surface, then subtracted from the ground through a
     // quad the CPU projects) go when Godot throws real ones
     if (sc.shadows && d.tex_is_target && d.scene_kind == RTAG_SCENE_DEPTH && d.blend) { sc.blob_shadows_dropped++; return true; }
@@ -512,6 +515,7 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
         }
         sc.packet_draws++;
         sc.packet_extra += corners - (int)d.count;
+        if (pieces[0].kind == 1) fill_learn(sc.tap, d, pieces, d.scene_piece_count, sc.camera.origin);
         // the painted light (see Scene::sun_sum): level chunks with a texture whose brightness is known
         if (pieces[0].kind == 1 && d.texture && d.depth_write && sc.sun_samples < 400000) {
             auto thumb = thumbs.find(d.texture);
@@ -555,6 +559,7 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
         }
     }
     if (!corners) return true;
+    if (d.depth_write) fill_note_level(order);              // the level begins: the fill is drawn right before it
     RID mesh = mesh_for(pass);
     add_surface_bytes(mesh, RenderingServer::PRIMITIVE_TRIANGLES, positions, attributes, corners, normals);
     // Godot's light falls on what is solid (writes depth); glows, the dome, decals and what else is laid over the scene
@@ -598,6 +603,7 @@ void RtaDrawer::scene_end(const rtag_frame&) {
     Scene& sc = *scene;
     RenderingServer* s = RenderingServer::get_singleton();
     for (size_t k = sc.casters_used; k < sc.casters.size(); k++) s->instance_set_base(sc.casters[k], RID());
+    fill_order();
 }
 
 void RtaDrawer::scene_release() {

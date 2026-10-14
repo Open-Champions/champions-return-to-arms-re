@@ -73,6 +73,7 @@ WIN = os.path.join(OUT, 'win')
 RT, RENDER, SOUND, WINSRC = (os.path.join(RECOMP, 'rt'), os.path.join(RECOMP, 'render'), os.path.join(RECOMP, 'sound'),
                              os.path.join(HERE, 'win'))
 NET = os.path.join(RECOMP, 'net')
+NET2 = os.path.join(RECOMP, 'net2')
 ONLINE = os.path.join(ROOT, 'tools', 'play-net', 'src', 'RtaOnline.cpp')      # the one-step online, linked as it is
 NET_HLE = os.path.join(NET, 'hle-online.txt')
 QT = '/opt/homebrew/opt/qtbase'                         # --mac and --pngcheck only
@@ -87,7 +88,7 @@ RENDER_CORE = ['vu1.cpp', 'vif1.cpp', 'gs.cpp', 'renderer.cpp', 'worldfill.cpp']
 FILM, FILM_HLE = os.path.join(HERE, 'film.cpp'), os.path.join(HERE, 'hle-app.txt')
 RUNTIME = ['runtime.cpp', 'iop.cpp', 'script.cpp']
 WIN_LIBS = ['-lopengl32', '-lgdi32', '-luser32', '-lole32', '-lwinmm', '-lavrt', '-lshell32', '-ldwmapi']
-NET_LIBS = ['-lws2_32', '-liphlpapi', '-ladvapi32']     # Winsock, the list of this computer's addresses, the saved login's access list
+NET_LIBS = ['-lws2_32', '-liphlpapi', '-ladvapi32', '-lbcrypt']     # Winsock, the list of this computer's addresses, the saved login's access list; bcrypt: net2's hashes and random numbers (hash.h)
 
 
 def with_net(args):
@@ -184,7 +185,9 @@ def compile_all(jobs, cxx, max_jobs):
 def link(command, objects, libs, out):
     result = subprocess.run(command + ['-o', out] + objects + libs, capture_output=True, text=True)
     if result.returncode != 0:
-        print('LINK FAILED %s\n%s' % (out, result.stderr[:6000]))
+        # the padding notes (below) would fill the message and hide the error
+        lines = [l for l in result.stderr.splitlines() if l.strip() and not ('duplicate section' in l and '.rdata$_ZT' in l)]
+        print('LINK FAILED %s\n%s' % (out, '\n'.join(lines)[:6000]))
         return False
     # clang and GCC pad C++ type information (the _ZTS name strings, the _ZTI objects) differently;
     # ld says so for every one it merges with libstdc++'s copy ("duplicate section ... has
@@ -598,7 +601,13 @@ def main():
              (os.path.join(NET, 'netdrv.cpp'), rt_flags, 'n_'),
              (os.path.join(NET, 'online.cpp'), rt_flags, 'n_'),
              (ONLINE, rt_flags + ['-include', os.path.join(NET, 'posix_win.h')], 'n_'),
-             (os.path.join(NET, 'online_win.cpp'), app_flags + ['-I', NET], 'n_')] if net else []) + ([
+             (os.path.join(NET, 'online_win.cpp'), app_flags + ['-I', NET], 'n_')] +
+             # a room of our own and the direct launch (tools/recomp/net2, docs/issues/native-rendezvous.md; net2.patch):
+             # the session client and the carrier over net/sock.h's Winsock body, the launch with the runtime's flags
+             # (<algorithm> is given from here: cardchars.cpp uses std::sort and gets the header on macOS through another)
+             [(os.path.join(NET2, n), app_flags + ['-I', NET2, '-include', 'algorithm'], 'n2_') for n in ('session.cpp', 'session_mock.cpp', 'session_net.cpp', 'carrier.cpp',
+                                                                                 'cardchars.cpp', 'clicmd.cpp')] +
+             [(os.path.join(NET2, 'launch.cpp'), rt_flags + ['-I', NET2], 'n2_')] if net else []) + ([
              # the films (app/film.cpp, when the application has it); <ctime> is given from here:
              # the file's timing aid finds it by itself only on macOS
              (FILM, rt_flags + ['-I', HERE, '-include', 'ctime'], 'a_')] if os.path.exists(FILM) and os.path.exists(FILM_HLE) and not args.original else []) + [

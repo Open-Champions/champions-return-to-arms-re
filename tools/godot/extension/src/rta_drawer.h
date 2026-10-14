@@ -34,6 +34,7 @@
 #include <godot_cpp/variant/rect2.hpp>
 #include <godot_cpp/variant/rid.hpp>
 #include <godot_cpp/variant/transform3d.hpp>
+#include <godot_cpp/variant/vector3.hpp>
 #include <godot_cpp/variant/projection.hpp>
 #include <godot_cpp/variant/vector2i.hpp>
 
@@ -78,6 +79,10 @@ class RtaDrawer : public RefCounted {
     Dictionary get_sky_info() const;
     void sky_reset();                               // a new level: what was learnt of the dome is forgotten
     void set_output_size(const Vector2i& size);
+    // The level's generated ceilings and skirts (rta_fill.cpp): the shader they are drawn with (project/shaders/fill.gdshader),
+    // and what was done with them
+    void set_fill_shader(const Ref<Shader>& shader);
+    Dictionary get_fill_info() const;
     Vector2i get_output_size() const { return output_size; }
 
   protected:
@@ -162,6 +167,24 @@ class RtaDrawer : public RefCounted {
     void scene_release();
     static void add_surface_bytes(RID mesh, int primitive, const PackedByteArray& positions, const PackedByteArray& attributes, int count, bool normals = false);
     friend struct Scene;
+
+    // ---- the fill (rta_fill.cpp) ----
+    struct Fill;
+    Fill* fill = nullptr;
+    struct CpuTexture { int w = 0, h = 0; std::vector<uint8_t> rgba; };
+    std::unordered_map<uint32_t, CpuTexture> cpu_textures;     // scene mode: every texture's pixels, for what is cut out of them
+    void fill_build(const rtag_fill& f, RID scenario);
+    void fill_frame(const rtag_frame& f, const Vector3& eye, RID scenario);
+    void fill_learn(const rtag_scene* tap, const rtag_draw& d, const rtag_scene_piece* pieces, uint32_t piece_count, const Vector3& eye);
+    void fill_order();
+    void fill_option(const String& name, double value);
+    void fill_note_level(float order);
+    bool fill_drops(const rtag_frame& f, const rtag_draw& d);
+    void fill_release();
+    void fill_free();
+    RID fill_material(Fill& fl, uint8_t kind, RID texture);
+    void fill_params(Fill& fl);
+    friend struct Fill;
 };
 
 }  // namespace godot

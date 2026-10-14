@@ -9,7 +9,103 @@ Nothing derived from the game is in the repository: the portal is scripts and tw
 by code. Names of characters, classes and levels on screen come from the session or the game's
 state at run time. Pictures, the staged project and logs are under `local/godot-portal/`.
 
-## STATE (2026-10-13, 14:45)
+## STATE (2026-10-13, night): on the real service
+
+The project's home is `~/champions-re` now (`docs/issues/workspace-move.md`);
+`local/godot-portal/` survived the move whole (flags only: no evicted file), the snapshot of
+`tools/godot` was taken again after it (`local/godot-portal/snap/SNAPSHOT.txt`).
+
+- **Ran: two portal programs through the real service** (`tools/rendezvous/rendezvous.py` on
+  127.0.0.1:41961 with a data folder of its own; each program its own data folder, so its
+  own identity file; `python3 local/godot-portal/portal.py duo duo`, three runs, 40 s each,
+  nothing waited in vain). In order, as a person would do it (keyboard events; the
+  programs only learn what a person would read out through two files in a sync folder):
+  first start and the name on both; B types A's friend code; A gets the request card and
+  accepts it with one press (Y); both see each other online **with the character they
+  publish** (name, level, class); A hosts; **B's friends list shows A "in a room - you can
+  join"**; B joins by typing the code; chat both ways; B ready; A starts; **the routes come
+  up: "Connected - 16 ms", a direct route punched between the two programs**; the portal
+  gets out of the way; the room is open again after the game; "Play again"; B leaves; A
+  invites B from the friends list (X); B gets the invitation card and joins with one press.
+  Pictures: `local/godot-portal/pictures/real/a-01 ... a-15`, `b-01 ... b-16`.
+- **The game between "start" and "over" is the stand-in** (`dev/stub_game.gd`): the Godot game
+  library of 22:46 has no net2 game side (`nm`: no `net2_*` symbol; `launch.cpp`, the
+  network driver and the online translation are not linked into it - native-rendezvous.md
+  5.1). The stand-in says to the room what `launch.cpp` says in a program with the game:
+  `running` after 2.5 s and `over` after 8 s (`net2_game_state`). So **not run: two copies
+  landing in the hub from the portal's Start**, and "Play again" into a second real game.
+  The portal side of it is written against `session.h` (EV_START -> the room stays in front
+  until the room says "in game", then the game scene has the screen; EV_GAME_OVER -> back in
+  the room) and was run with the stand-in only.
+- **Ran: no service named** (the real client, no `--portal-service`, no `RTA_NET2_SERVICE`, no
+  `net2-service.txt`): the line at the bottom says "Offline - playing alone works (No service
+  was named)"; Friends says it in one sentence with a button "Set the address"; Settings ->
+  Online has the sentence and a field. An address typed there is written to
+  `<data>/net2-service.txt` (where the client looks) and the session is opened again; with
+  nobody listening the page says the client's own words: "The service at 127.0.0.1:41999 does
+  not answer: Connection refused - trying again." Pictures `real/noservice-01 ... 05`.
+- **The extension with the service**: `rta_net2.*` take the grown records (`mission`,
+  `kill_limit`, member `phase`). Built with `session.cpp session_mock.cpp session_net.cpp
+  carrier.cpp cardchars.cpp`, no `NET2_NO_SERVICE`: (1) by `portal.py ext` (the build switch:
+  `PORTAL_NET2=mock` for the mock only), (2) **from clean with the Godot agent's
+  `CMakeLists.txt` plus the change below** in a private copy: 1039 steps, 0 warnings, with
+  the service (`socket`, `CC_SHA256` imported) and with `-DRTA_GODOT_NET2_SERVICE=OFF`
+  (no socket code); the two-program run passed on that build.
+- Room options now as the online agent answered: difficulty Easy / Normal / Hard / Harder
+  (1..4, a new room takes 1), who may join. Mode, mission and kill limit are not shown: only
+  missions are wired into the launch. Not done: limiting the difficulties to
+  `net2_game_status().difficulty_unlocked` - that is a game-side call, absent from this
+  library.
+- Nothing of this work is running: every program was started by `portal.py` and waited for;
+  the services were stopped by `portal.py` (terminate, then waited). See "Processes".
+
+### What has to be merged for the service (Godot agent: `tools/godot/extension/CMakeLists.txt`)
+
+`local/godot-portal/cmake-proposal/CMakeLists.diff` against today's file:
+
+```cmake
+option(RTA_GODOT_NET2_SERVICE "RtaNet2 talks to the real service (socket code); OFF: the mock only" ON)
+...  # inside the RTA_GODOT_NET2 block, after cardchars.cpp:
+    if(RTA_GODOT_NET2_SERVICE AND EXISTS "${RTA_NET2_DIR}/session_net.cpp" AND EXISTS "${RTA_NET2_DIR}/carrier.cpp")
+        list(APPEND RTA_GODOT_SOURCES "${RTA_NET2_DIR}/session_net.cpp" "${RTA_NET2_DIR}/carrier.cpp")
+        set(RTA_GODOT_HAVE_NET2_SERVICE ON)
+    endif()
+...  # in place of  RTA_GODOT_HAVE_NET2=1 NET2_NO_SERVICE=1
+    target_compile_definitions(rta-godot-extension PRIVATE RTA_GODOT_HAVE_NET2=1)
+    if(NOT RTA_GODOT_HAVE_NET2_SERVICE)
+        target_compile_definitions(rta-godot-extension PRIVATE NET2_NO_SERVICE=1)
+    elseif(WIN32)
+        target_link_libraries(rta-godot-extension PRIVATE ws2_32 bcrypt)
+    endif()
+```
+
+No new include path is needed (`session_net.cpp` and `carrier.cpp` reach `../net/sock.h` by
+a relative include; CommonCrypto and `arc4random_buf` are in macOS's libSystem). The
+Windows line is Read, not built.
+
+### The next step, once the game library carries net2 (Read; written down, not built)
+
+- **One copy of net2 in the process**: `RtaNet2` must then call the library's `net2_*`
+  (resolved from the loaded library as `RtaMachine` resolves `rtag_*`) instead of its own
+  compiled copy; otherwise the game's launch and the portal look at two different session
+  objects. Until then the extension's copy is the only one and is right.
+- The portal then calls `net2_game_attach(n)` once, polls `net2_game_status()` once a frame,
+  and follows native-rendezvous.md 5.1: in a room without a character -> `net2_game_choose`
+  and hand the screen to the game (its own character screens); CHOSEN -> back in front,
+  `net2_ready(1)`; EV_START -> "finding each other" (written); LAUNCHING/LOADING/RUNNING -> out
+  of the way (written: `handover.start(..., false)` then `reveal`); TITLE after RUNNING ->
+  back in front, the room open again (written: EV_GAME_OVER). The places in the code:
+  `portal.gd` `_on_event`, `handover.gd`.
+
+### Pictures of the real flow (`local/godot-portal/pictures/real/`)
+
+`a-04-request-arrives.png`, `a-05-friends-two-is-online.png`, `b-07-friends-one-is-in-a-room.png`,
+`b-09-in-the-room.png`, `a-10-connected.png`, `a-12-back-in-the-room-play-again.png`,
+`b-15-invitation-arrives.png`, `b-16-joined-with-one-press.png`, `noservice-02-friends.png`,
+`noservice-05-nobody-there.png`.
+
+## STATE before (2026-10-13, 14:45)
+
 
 - **Ran:** every screen below, in an off-screen viewport at 1920 x 1080 (and 1440 x 1080,
   1280 x 720, 2560 x 1080, 3840 x 2160, 1024 x 768) driven by the same events a controller, a
@@ -91,7 +187,7 @@ local/godot-portal/snap/              tools/godot as it was when this work start
 
 ## What must be merged (and by whom)
 
-1. **The one line** (Godot agent, `tools/godot/project/project.godot`):
+1. **The one line** (Godot agent, `tools/godot/project/project.godot`) - merged by now:
    `run/main_scene="res://portal/portal.tscn"` in place of `res://main.tscn`.
    Everything that starts the game scene directly keeps working: with `--no-portal`, with
    `--script FILE` (every test route) or headless, `portal.gd` passes straight on to
@@ -101,9 +197,10 @@ local/godot-portal/snap/              tools/godot as it was when this work start
    `session_mock.cpp`, include path `tools/recomp/net2`, `NET2_NO_SERVICE=1`, and `register.cpp`
    needs `#include "rta_net2.h"` + `GDREGISTER_CLASS(RtaNet2);` (coordinator: already picked up).
    Nothing else in the extension is touched. Without `RtaNet2` the portal runs and says "offline".
-3. **For a real service** (online agent + Godot agent): build the extension without
-   `NET2_NO_SERVICE` and with `session_net.cpp`; give the portal the address (`--portal-service
-   HOST:PORT` or `[online] service=` in `portal.cfg`). The portal passes `local_only` in a test.
+3. **For the real service**: the CMake change above (section "What has to be merged for the
+   service"). The address: `--portal-service HOST:PORT`, else the client's own order
+   (`RTA_NET2_SERVICE`, `<data>/net2-service.txt` - what Settings -> Online writes - then the
+   built-in default). The portal passes `local_only` in a test.
 4. **For the HUD agent** (the tiny signal): `get_tree().get_first_node_in_group("portal")` has
    `signal notice(d)` (`d = {id, kind: "invite"|"request", who, seed, title, text, accept_text}`),
    `signal notice_gone(id)`, `func notice_answer(id, accept)`, and `var draw_notices_in_game`
@@ -188,10 +285,9 @@ name / class / level -> "the character you played last" and `set_character`; the
 
 ## Open questions (asked through the coordinator)
 
-1. Online agent: what the host can choose. The room shows `difficulty` as "The game's own, 1, 2,
-   3, 4" and `open_to`; `level` and `mode` are not offered. Names for the difficulties and a list
-   of start levels have to come from the game at run time.
-2. Online agent: the address of the service for players (the portal has no default).
+1. Answered (online agent): difficulty 1..4, mode / mission / kill limit not wired yet, member
+   phase; the room shows difficulty and who may join.
+2. Answered: the client finds the service itself; the owner decides the built-in default.
 3. Godot agent: can the game scene show one character alone (for the card), and may the title
    scene run behind the portal before the first game? Until then: the drawn stand-in and the
    portal's own background.

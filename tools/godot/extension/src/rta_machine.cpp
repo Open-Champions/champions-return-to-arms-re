@@ -146,6 +146,27 @@ bool RtaMachine::set_option(const String& key, const String& value) {
     return started && rta_library().rtag_set_option(key.utf8().get_data(), value.utf8().get_data()) != 0;
 }
 
+bool RtaMachine::fill(rtag_fill& out) const {
+    memset(&out, 0, sizeof out);
+    if (!started || !rta_library().rtag_fill_get) return false;
+    return rta_library().rtag_fill_get(&out) != 0 && out.vertex_count > 0;
+}
+
+Dictionary RtaMachine::get_fill_info() const {
+    Dictionary d;
+    rtag_fill f;
+    if (!fill(f)) return d;
+    int ceilings = 0, skirts = 0;
+    for (uint32_t k = 0; k < f.mesh_count; k++) (f.meshes[k].kind == RTAG_FILL_CEILING ? ceilings : skirts)++;
+    d["level"] = String(f.level ? f.level : "");
+    d["serial"] = (int64_t)f.serial;
+    d["vertices"] = (int64_t)f.vertex_count;
+    d["meshes"] = (int64_t)f.mesh_count;
+    d["ceilings"] = ceilings;
+    d["skirts"] = skirts;
+    return d;
+}
+
 Dictionary RtaMachine::get_controls_hud() const {
     Dictionary d;
     if (!started || !rta_library().rtag_controls_hud) return d;
@@ -271,6 +292,7 @@ void RtaMachine::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_view"), &RtaMachine::get_view);
     ClassDB::bind_method(D_METHOD("set_option", "key", "value"), &RtaMachine::set_option);
     ClassDB::bind_method(D_METHOD("get_controls_hud"), &RtaMachine::get_controls_hud);
+    ClassDB::bind_method(D_METHOD("get_fill_info"), &RtaMachine::get_fill_info);
     ClassDB::bind_method(D_METHOD("mouse", "dx", "dy", "wheel"), &RtaMachine::mouse);
     ClassDB::bind_method(D_METHOD("mouse_button", "button", "down"), &RtaMachine::mouse_button);
     ClassDB::bind_method(D_METHOD("wants_pointer"), &RtaMachine::wants_pointer);

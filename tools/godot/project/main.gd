@@ -798,6 +798,7 @@ func _figures() -> String:
 		text += "rta_godot: " + str(drawer.call("figures")) + "\n"
 		if opt.mode == "scene":
 			text += "rta_godot: " + str(drawer.call("get_scene_info").get("figures", "")) + "\n"
+			text += "rta_godot: " + str(drawer.call("get_fill_info").get("figures", "")) + "\n"
 	return text
 
 

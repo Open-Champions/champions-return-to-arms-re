@@ -22,6 +22,9 @@ var portal: Node
 var view: TextureRect
 var count := 0
 var run_number := 0
+var role := ""                      # duo: "a" or "b", two programs through one service
+var sync_dir := ""
+var service := ""
 
 
 func _ready() -> void:
@@ -33,13 +36,18 @@ func _ready() -> void:
 			"--portal-data": data_root = args[k + 1]; k += 1
 			"--only": only = args[k + 1].split(","); k += 1
 			"--speed": speed = args[k + 1]; k += 1
+			"--role": role = args[k + 1]; k += 1
+			"--sync": sync_dir = args[k + 1]; k += 1
+			"--service": service = args[k + 1]; k += 1
 		k += 1
 	var window := get_window()
 	window.title = "AGENT TEST - portal pictures"
 	window.set_flag(Window.FLAG_NO_FOCUS, true)
 	window.size = Vector2i(Vector2(480, 270) * DisplayServer.screen_get_scale())
 	var area := DisplayServer.screen_get_usable_rect()
-	window.position = area.position + area.size - window.size - Vector2i(24, 24)
+	window.position = area.position + area.size - window.size - Vector2i(24, 24) - (Vector2i(window.size.x + 16, 0) if role == "b" else Vector2i.ZERO)
+	if role != "":
+		window.title = "AGENT TEST - portal duo " + role
 	AudioServer.set_bus_mute(0, true)
 	view = TextureRect.new()
 	view.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -48,8 +56,8 @@ func _ready() -> void:
 	add_child(view)
 	DirAccess.make_dir_recursive_absolute(out_dir)
 	await get_tree().process_frame
-	for name in ["smoke", "walk", "states", "friends", "room", "join", "settings", "ratios", "real"]:
-		if only.is_empty() and (name == "smoke" or name == "real"):
+	for name in ["smoke", "walk", "states", "friends", "room", "join", "settings", "ratios", "real", "duo", "noservice"]:
+		if only.is_empty() and (name in ["smoke", "real", "duo", "noservice"]):
 			continue
 		if only.is_empty() or only.has(name):
 			print("shots: ", name)
@@ -98,6 +106,8 @@ func open_portal(size: Vector2i, setup := {}, options := {}) -> void:
 	if bool(o.mock) and portal.session.available():
 		await until(func() -> bool: return portal.session.online() and not portal.session.friends().is_empty())
 		await wait(0.1)
+	elif String(o.service) != "" and portal.session.available():
+		await until(func() -> bool: return portal.session.online(), 20.0)
 
 
 func close_portal() -> void:
@@ -647,3 +657,218 @@ func scenario_real() -> void:
 	portal.go("friends")
 	await shot("real-05-friends-in-front-of-the-game")
 	print("shots: real: blanks ", portal.handover.game.get("blanks"))
+
+
+# ---- two programs, one service ------------------------------------------------------------
+# portal.py duo starts a service of its own on 127.0.0.1 and two of these, --role a and
+# --role b, each with its own data folder (its own identity).  They find each other only
+# through the service; the files in --sync carry what a person would read out (a code)
+# and when to go on.
+func post(name: String, value := "1") -> void:
+	var f := FileAccess.open(sync_dir.path_join(name), FileAccess.WRITE)
+	f.store_string(value)
+	f.close()
+
+
+func fetch(name: String, most := 90.0) -> String:
+	var path := sync_dir.path_join(name)
+	await until(func() -> bool: return FileAccess.file_exists(path), most)
+	return FileAccess.get_file_as_string(path).strip_edges()
+
+
+func me_says(what: String) -> void:
+	var r: Dictionary = portal.session.room()
+	print("shots: %s %s - link %d, room %s state %d, %d in it, friends %d, requests %d, invites %d" % [role, what, int(portal.session.me().link),
+		String(r.get("code", "")), int(r.get("state", 0)), int(r.get("count", 0)), portal.session.friends().size(), portal.session.requests().size(),
+		portal.session.invites().size()])
+
+
+func room_members() -> Array:
+	return portal.session.room().get("members", [])
+
+
+func other_member() -> Dictionary:
+	for m in room_members():
+		if not bool(m.me):
+			return m
+	return {}
+
+
+func scenario_duo() -> void:
+	var mine := {"name": "Aldric Vane", "cls": "Warden", "level": 27} if role == "a" else {"name": "Corvin", "cls": "Wayfarer", "level": 12}
+	await open_portal(Vector2i(1920, 1080), {"known": [mine]}, {"mock": false, "service": service, "stub_game": true})
+	var p := "real/" + role + "-"
+	# the first start: the one question, typed
+	await shot(p + "01-first-start")
+	await type("Tester One" if role == "a" else "Tester Two")
+	await shot(p + "02-name-typed")
+	await key(KEY_ENTER)
+	await until(func() -> bool: return portal.session.online(), 20.0)
+	portal.choose_character(mine)
+	portal.screen.rebuild()
+	await wait(0.6)
+	me_says("online")
+	await shot(p + "03-home-online")
+	if role == "a":
+		post("a_code", String(portal.session.me().friend_code))
+		# B asks with my code: the request comes in, one press accepts it
+		await until(func() -> bool: return not portal.session.requests().is_empty(), 60.0)
+		await wait(0.4)
+		await shot(p + "04-request-arrives")
+		await key(KEY_Y)
+		await until(func() -> bool: return portal.session.friends().size() >= 1, 20.0)
+		await wait(0.6)
+		portal.go("friends")
+		await wait(0.6)
+		await shot(p + "05-friends-two-is-online")
+		post("a_friends")
+		# host: the room's code is what is read out
+		portal.home()
+		await wait(0.3)
+		await focus_key("host")
+		await key(KEY_ENTER)
+		await until(func() -> bool: return int(portal.session.room().state) == 2, 20.0)
+		await wait(0.4)
+		me_says("hosting")
+		await shot(p + "06-room-open")
+		post("room", String(portal.session.room().code))
+		await until(func() -> bool: return int(portal.session.room().count) >= 2, 60.0)
+		await wait(0.5)
+		await shot(p + "07-two-came-in")
+		await focus_key("chat")
+		await type("hello from one")
+		await key(KEY_ENTER)
+		await until(func() -> bool: return bool(other_member().get("ready", false)), 60.0)
+		await wait(0.6)
+		await shot(p + "08-everybody-ready")
+		await focus_key("main")
+		await key(KEY_ENTER)
+		await wait(0.25)
+		me_says("started")
+		await shot(p + "09-starting")
+		await until(func() -> bool: return int(other_member().get("route", 0)) >= 2, 20.0)
+		await wait(0.2)
+		print("shots: a route to two ", other_member().get("route"), " rtt ", other_member().get("rtt_ms"))
+		await shot(p + "10-connected")
+		await until(func() -> bool: return not portal.shown, 20.0)
+		await wait(0.5)
+		await shot(p + "11-in-the-game")
+		await until(func() -> bool: return portal.shown and int(portal.session.room().state) == 2, 40.0)
+		await wait(0.8)
+		me_says("back")
+		await shot(p + "12-back-in-the-room-play-again")
+		post("a_back")
+		# two leaves; then one invitation from the friends list, one press on the other side
+		await until(func() -> bool: return int(portal.session.room().count) == 1, 60.0)
+		await wait(0.4)
+		portal.go("friends")
+		await wait(0.6)
+		var two := ""
+		for f in portal.session.friends():
+			two = String(f.id)
+		await focus_key("friend:" + two)
+		await shot(p + "13-friends-two-online-again")
+		await key(KEY_X)
+		await wait(0.4)
+		await shot(p + "14-invitation-sent")
+		post("a_invited")
+		await until(func() -> bool: return int(portal.session.room().count) >= 2, 60.0)
+		await wait(0.6)
+		if portal.current_name() != "room":
+			portal.go("room")
+			await wait(0.4)
+		await shot(p + "15-two-back-by-invitation")
+		post("a_done")
+		await fetch("b_done", 60.0)
+	else:
+		var code := await fetch("a_code")
+		portal.go("friends")
+		await wait(0.4)
+		await focus_key("add_code")
+		await type(code)
+		await shot(p + "04-their-code-typed")
+		await key(KEY_ENTER)
+		await wait(0.8)
+		await shot(p + "05-asked")
+		await until(func() -> bool: return portal.session.friends().size() >= 1, 60.0)
+		await fetch("a_friends")
+		await wait(0.5)
+		portal.screen.rebuild()
+		await shot(p + "06-friends-one-is-online")
+		var room := await fetch("room")
+		await wait(1.0)
+		portal.screen.rebuild()
+		await wait(0.3)
+		await shot(p + "07-friends-one-is-in-a-room")
+		portal.home()
+		await wait(0.3)
+		portal.go("join")
+		await wait(0.4)
+		await type(room)
+		await shot(p + "08-code-typed")
+		await key(KEY_ENTER)
+		await until(func() -> bool: return int(portal.session.room().state) == 2, 30.0)
+		await wait(0.8)
+		me_says("joined")
+		await shot(p + "09-in-the-room")
+		await until(func() -> bool: return portal.session.room().get("chat", []).size() >= 3, 30.0)
+		await focus_key("chat")
+		await type("hi from two")
+		await key(KEY_ENTER)
+		await wait(0.4)
+		await focus_key("main")
+		await key(KEY_ENTER)
+		await wait(0.6)
+		await shot(p + "10-ready")
+		await until(func() -> bool: return int(portal.session.room().state) >= 3, 60.0)
+		await wait(0.25)
+		await shot(p + "11-starting")
+		await until(func() -> bool: return not portal.shown, 20.0)
+		await wait(0.5)
+		await shot(p + "12-in-the-game")
+		await until(func() -> bool: return portal.shown and int(portal.session.room().state) == 2, 40.0)
+		await wait(0.8)
+		await shot(p + "13-back-in-the-room")
+		await fetch("a_back")
+		await focus_key("leave")
+		await key(KEY_ENTER)
+		await wait(0.3)
+		await shot(p + "14-leave-question")
+		await key(KEY_ENTER)
+		await until(func() -> bool: return int(portal.session.room().state) == 0, 20.0)
+		await wait(0.4)
+		me_says("left")
+		await fetch("a_invited")
+		await until(func() -> bool: return not portal.session.invites().is_empty(), 30.0)
+		await wait(0.5)
+		await shot(p + "15-invitation-arrives")
+		await key(KEY_Y)
+		await until(func() -> bool: return int(portal.session.room().state) == 2, 30.0)
+		await wait(0.8)
+		me_says("joined by invitation")
+		await shot(p + "16-joined-with-one-press")
+		post("b_done")
+		await fetch("a_done", 60.0)
+
+
+# The real client with no service named (no --service, no RTA_NET2_SERVICE, no net2-service.txt):
+# what a player sees, and the one place to type an address.
+func scenario_noservice() -> void:
+	await open_portal(Vector2i(1920, 1080), remembered(), {"mock": false, "service": "", "stub_game": true})
+	await wait(1.0)
+	me_says("no service")
+	print("shots: problem: ", portal.session.me().get("problem", ""))
+	await shot("real/noservice-01-home")
+	portal.go("friends")
+	await shot("real/noservice-02-friends")
+	portal.stack = [{"name": "home", "args": {}}]
+	portal.go("settings", {"tab": "online"})
+	await shot("real/noservice-03-settings-online")
+	await focus_key("address")
+	await type("127.0.0.1:41999")
+	await shot("real/noservice-04-address-typed")
+	await key(KEY_ENTER)
+	await wait(4.0)
+	me_says("after the address")
+	print("shots: problem now: ", portal.session.me().get("problem", ""))
+	await shot("real/noservice-05-nobody-there")

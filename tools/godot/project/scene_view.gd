@@ -20,9 +20,12 @@ extends Node
 #   bloom     Godot's glow on what is bright (the game's own glows, fires, the sky round the sun)
 #   grade     a little contrast and saturation
 #   foliage   the level's cut-out cards (the crowns of trees, hung at head height) thin out within 64 units of the eye
+#   fill      the ceilings and skirts the library generates for a level (rtag_fill_get): drawn with a swatch of the level's own
+#             wall texture, darkened, a crease where they meet the wall, lit by the point lights, hazed (RtaDrawer, rta_fill.cpp;
+#             shaders/fill.gdshader).  fill_light (0..1, default 0.42), fill_scale (swatch repeats per 64 units)
 #   aa        multisampling of the 3-D surface (0, 2, 4, 8)
 #
-# Each of sky, fog, sun, lamp, bloom, grade, foliage is  off | on | auto.  auto - the default - means: in the views that look
+# Each of sky, fog, sun, lamp, bloom, grade, foliage, fill is  off | on | auto.  auto - the default - means: in the views that look
 # along the ground (chase, shoulder, first person: tools/recomp/app/fpview.h), not in the game's own overhead view
 # and not while the game's own camera has the frame (a cutscene, a dialogue, a menu): there the picture is the
 # game's, as it always was.
@@ -54,10 +57,12 @@ const GLOBALS := {
 }
 
 var look := {
-	"sky": "auto", "fog": "auto", "sun": "auto", "lamp": "auto", "bloom": "auto", "grade": "auto", "foliage": "auto", "aa": "4",
+	"sky": "auto", "fog": "auto", "sun": "auto", "lamp": "auto", "bloom": "auto", "grade": "auto", "foliage": "auto", "fill": "auto", "aa": "4",
 	"shade": -1.0, "fog_start": 380.0, "fog_end": 1350.0, "fog_amount": 1.0, "sun_az": -1000.0, "sun_el": -1000.0,
 	"bloom_strength": 1.0, "sky_sun": 1.0, "shadow_splits": 4.0, "shadow_far": 1100.0,
+	"fill_light": 0.42, "fill_scale": 0.75,
 }
+var fill_sent := {}
 var shadow_set := Vector2(-1, -1)
 var sun_found := Vector2(217.0, 48.0)   # azimuth and elevation of the level's light, degrees: read out of its textures
 var sun_fixed := false
@@ -138,6 +143,7 @@ func _ready() -> void:
 	sky_mesh.rings = 24
 	sky_material = ShaderMaterial.new()
 	sky_material.shader = load("res://shaders/sky.gdshader")
+	drawer.call("set_fill_shader", load("res://shaders/fill.gdshader"))
 	_camera_options()
 
 
@@ -192,13 +198,18 @@ func before_frame() -> void:
 			and int(view.get("shown", 0)) >= VIEW_CHASE
 	ground_amount = move_toward(ground_amount, 1.0 if ground else 0.0, 0.07)
 	in_force = {"ground": ground}
-	for key in ["sky", "fog", "sun", "lamp", "bloom", "grade"]:
+	for key in ["sky", "fog", "sun", "lamp", "bloom", "grade", "fill"]:
 		in_force[key] = _wants(key, ground)
 	# the lamp, by itself, only where it is dark
 	if String(look.lamp) == "auto":
 		in_force.lamp = ground and level_dark
 	drawer.call("set_scene_option", "sky", 1.0 if in_force.sky else 0.0)
 	drawer.call("set_scene_option", "near_fade", 1.0 if _wants("foliage", ground) else 0.0)
+	drawer.call("set_scene_option", "fill", 1.0 if in_force.fill else 0.0)
+	for key in ["fill_light", "fill_scale"]:
+		if fill_sent.get(key, -1.0) != float(look[key]):
+			fill_sent[key] = float(look[key])
+			drawer.call("set_scene_option", key, float(look[key]))
 	drawer.call("set_scene_option", "lit", 1.0 if (in_force.sun or in_force.lamp) else 0.0)
 	drawer.call("set_scene_option", "shadows", 1.0 if in_force.sun else 0.0)
 
@@ -238,6 +249,7 @@ func _make(to: RID) -> void:
 	RenderingServer.light_set_param(sun, RenderingServer.LIGHT_PARAM_SHADOW_BIAS, 0.6)
 	RenderingServer.light_set_param(sun, RenderingServer.LIGHT_PARAM_SHADOW_NORMAL_BIAS, 3.0)
 	RenderingServer.light_set_param(sun, RenderingServer.LIGHT_PARAM_SHADOW_BLUR, 2.2)
+	RenderingServer.light_set_cull_mask(sun, 1)         # not the generated ceilings (layer 2: rta_fill.cpp): the sun does not reach them
 	sun_instance = RenderingServer.instance_create2(sun, scenario)
 	lamp = RenderingServer.omni_light_create()
 	RenderingServer.light_set_color(lamp, Color(1.0, 0.74, 0.42))

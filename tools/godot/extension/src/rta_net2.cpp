@@ -43,6 +43,8 @@ Dictionary options_out(const net2_options& o) {
     d["difficulty"] = o.difficulty;
     d["mode"] = o.mode;
     d["open_to"] = o.open_to;
+    d["mission"] = o.mission;
+    d["kill_limit"] = o.kill_limit;
     return d;
 }
 
@@ -52,6 +54,8 @@ net2_options options_in(const Dictionary& d) {
     o.difficulty = (int)(int64_t)d.get("difficulty", 0);
     o.mode = (int)(int64_t)d.get("mode", 0);
     o.open_to = (int)(int64_t)d.get("open_to", 0);
+    o.mission = (int)(int64_t)d.get("mission", 0);
+    o.kill_limit = (int)(int64_t)d.get("kill_limit", 0);
     return o;
 }
 
@@ -278,6 +282,7 @@ Dictionary RtaNet2::room() const {
         e["arith_does"] = (int)m.arith_does;
         e["route"] = m.route;
         e["rtt_ms"] = m.rtt_ms;
+        e["phase"] = m.phase;
         members.push_back(e);
     }
     d["members"] = members;
