@@ -56,8 +56,8 @@ func _ready() -> void:
 	add_child(view)
 	DirAccess.make_dir_recursive_absolute(out_dir)
 	await get_tree().process_frame
-	for name in ["smoke", "walk", "states", "friends", "room", "join", "settings", "ratios", "real", "duo", "noservice"]:
-		if only.is_empty() and (name in ["smoke", "real", "duo", "noservice"]):
+	for name in ["smoke", "walk", "states", "friends", "room", "join", "settings", "ratios", "real", "duo", "noservice", "duo2"]:
+		if only.is_empty() and (name in ["smoke", "real", "duo", "noservice", "duo2"]):
 			continue
 		if only.is_empty() or only.has(name):
 			print("shots: ", name)
@@ -872,3 +872,93 @@ func scenario_noservice() -> void:
 	me_says("after the address")
 	print("shots: problem now: ", portal.session.me().get("problem", ""))
 	await shot("real/noservice-05-nobody-there")
+
+
+# ---- two programs WITH THE GAME, one service (portal.py duo2) ------------------------------------
+# The portal does the session side (gameflow.gd); the game's own screens are walked by each copy's
+# script (--script, the lines of n2party.py), as a person would press them.
+func game_phase() -> int:
+	return int(portal.gameflow.phase)
+
+
+func game_tick() -> int:
+	return int(portal.gameflow.status.get("tick", 0))
+
+
+func flow_says(what: String) -> void:
+	var st: Dictionary = portal.gameflow.status
+	print("shots: %s %s - game %s (%s), tick %d, games %d, room state %d, %d in it, portal %s" % [role, what, portal.gameflow.phase_name(),
+		String(st.get("text", "")), game_tick(), int(portal.gameflow.games), int(portal.session.room().get("state", 0)),
+		int(portal.session.room().get("count", 0)), "in front" if portal.shown else "behind the game"])
+
+
+func press_main() -> void:
+	await focus_key("main")
+	await key(KEY_ENTER)
+
+
+func scenario_duo2() -> void:
+	await open_portal(Vector2i(1920, 1080), {}, {"mock": false, "service": service, "stub_game": false})
+	var p := "real2/" + role + "-"
+	await type("Tester One" if role == "a" else "Tester Two")
+	await key(KEY_ENTER)
+	await until(func() -> bool: return portal.session.online(), 30.0)
+	print("shots: %s the game's side: %s" % [role, str(portal.gameflow.active)])
+	if role == "a":
+		await focus_key("host")
+		await key(KEY_ENTER)
+		await until(func() -> bool: return int(portal.session.room().state) == 2, 30.0)
+		post("room", String(portal.session.room().code))
+		await wait(1.0)
+		flow_says("hosting")
+		await shot(p + "01-room-the-game-gets-ready")
+	else:
+		var code := await fetch("room", 120.0)
+		portal.go("join")
+		await wait(0.4)
+		await type(code)
+		await key(KEY_ENTER)
+		await until(func() -> bool: return int(portal.session.room().state) == 2, 30.0)
+		await wait(1.0)
+		flow_says("joined")
+		await shot(p + "01-joined-the-game-gets-ready")
+	for round in 2:
+		var r := "%d" % (round + 1)
+		await until(func() -> bool: return game_phase() == 1 and portal.shown, 240.0)
+		await wait(0.8)
+		flow_says("round %s: title" % r)
+		await shot(p + r + "-02-choose-your-character")
+		await press_main()
+		await wait(4.0)
+		flow_says("character screens")
+		await shot(p + r + "-03-the-games-own-character-screens")
+		await until(func() -> bool: return game_phase() == 3 and portal.shown, 240.0)
+		await wait(1.0)
+		flow_says("chosen")
+		await shot(p + r + "-04-back-in-the-room-with-a-character")
+		if role == "a":
+			await until(func() -> bool:
+				var b: Control = portal.screen.find_key(portal.screen, "main")
+				return b != null and not bool(b.get("disabled")) and int(portal.session.room().get("count", 0)) >= 2, 240.0)
+			await wait(0.6)
+			await shot(p + r + "-05-everybody-ready")
+			await press_main()
+			await wait(0.3)
+			flow_says("start pressed")
+		await until(func() -> bool: return int(portal.session.room().state) >= 3, 240.0)
+		await wait(0.3)
+		await shot(p + r + "-06-starting")
+		await until(func() -> bool: return game_phase() == 4, 60.0)
+		await wait(1.8)
+		flow_says("launching")
+		await shot(p + r + "-07-the-games-launch-screen")
+		await until(func() -> bool: return game_phase() == 6 and game_tick() >= 90, 120.0)
+		flow_says("in the level")
+		await shot(p + r + "-08-in-the-hub")
+		post(role + "_hub" + r)
+		await until(func() -> bool: return int(portal.gameflow.games) >= round + 1 and portal.shown, 300.0)
+		await wait(1.2)
+		flow_says("back")
+		await shot(p + r + "-09-back-in-the-room")
+	post(role + "_done")
+	await fetch("b_done" if role == "a" else "a_done", 120.0)

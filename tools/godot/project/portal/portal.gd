@@ -41,6 +41,7 @@ const Session := preload("res://portal/session.gd")
 const Profile := preload("res://portal/profile.gd")
 const Notices := preload("res://portal/notices.gd")
 const Handover := preload("res://portal/handover.gd")
+const GameFlow := preload("res://portal/gameflow.gd")
 
 const SCREENS := {
 	"first": "res://portal/screens/first.gd",
@@ -65,6 +66,7 @@ var options := {"test": "", "data": "", "mock": false, "service": "", "stub_game
 var session: Node
 var profile: RefCounted
 var handover: Node
+var gameflow: Node                  # the game's side of a room (gameflow.gd)
 var draw_notices_in_game := true
 
 var layer: CanvasLayer
@@ -125,6 +127,13 @@ func _ready() -> void:
 	handover.name = "Handover"
 	handover.portal = self
 	add_child(handover)
+	gameflow = GameFlow.new()
+	gameflow.name = "GameFlow"
+	gameflow.portal = self
+	add_child(gameflow)
+	gameflow.phase_changed.connect(func(_phase: int) -> void:
+		if screen != null:
+			screen.call("session_changed", "game"))
 	if profile.first_start_done():
 		_open_session()                 # not before the one question is answered: the name is what is registered
 	get_viewport().size_changed.connect(_layout)
@@ -197,6 +206,8 @@ func _open_session() -> void:
 	}
 	if not session.open(config):
 		return
+	if gameflow != null:
+		gameflow.call("attach")
 	if String(options.mock_speed) != "" and bool(options.mock):
 		session.setting("mock-speed", String(options.mock_speed))
 	var c: Dictionary = profile.character()
@@ -589,7 +600,8 @@ func _on_event(e: Dictionary) -> void:
 				pending_invite = ""
 			if state == Session.ROOM_IN_GAME and starting_since > 0:
 				starting_since = 0
-				handover.call("reveal")
+				if not gameflow.active:
+					handover.call("reveal")     # with the game's side the game's own phases decide (gameflow.gd)
 			if state == Session.ROOM_OPEN and pending_room:
 				pending_room = false
 				if not shown:
@@ -896,7 +908,7 @@ func _process(delta: float) -> void:
 		return
 	if screen != null and shown:
 		screen.call("tick", delta)
-	if starting_since > 0 and Time.get_ticks_msec() - starting_since > 8000:
+	if starting_since > 0 and Time.get_ticks_msec() - starting_since > (60000 if gameflow.active else 8000):
 		starting_since = 0              # the room never said "in game": get out of the way anyway
 		handover.call("reveal")
 	if session != null:

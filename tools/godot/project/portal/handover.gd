@@ -49,6 +49,19 @@ func start(p_intent: Dictionary, reveal_now := true) -> void:
 	started.emit(intent)
 
 
+func prepare() -> void:
+	# the game scene behind the portal, booting (a room with the game's side: gameflow.gd); the portal stays in front
+	if game != null:
+		return
+	game = _make_game()
+	if game == null:
+		return
+	intent = {"kind": "room"}
+	portal.game_slot.add_child(game)
+	portal.call("set_shown", true, true)
+	print("portal: the game scene is starting behind the portal")
+
+
 func reveal() -> void:
 	# the portal gets out of the way of a game that was started with reveal_now = false
 	if running:
@@ -78,6 +91,12 @@ func _make_game() -> Node:
 			opt["size"] = Vector2i(int(pixels.y * (pixels.x / pixels.y if bool(profile.setting("wide")) else 4.0 / 3.0)), int(pixels.y))
 		if String(profile.setting("interface")) == "original":
 			opt["game_hud"] = true
+		if portal.gameflow.active:
+			# the game walks by itself to its title screen, where the room's character screens and launch begin
+			var more: PackedStringArray = opt.get("args", PackedStringArray())
+			if not more.has("net2-boot=1"):
+				more.append_array(PackedStringArray(["--opt", "net2-boot=1"]))
+			opt["args"] = more
 	return g
 
 
@@ -91,11 +110,11 @@ func _wake(awake: bool) -> void:
 
 
 func finish(why: String) -> void:
-	if not running:
+	if not running and not portal.gameflow.active:
 		return
 	running = false
-	if why != "room":
-		_wake(false)
+	if why != "room" and not portal.gameflow.active:
+		_wake(false)                # alone: the game stands still behind the portal; in a room it must go on
 	portal.call("set_shown", true, game != null)
 	finished.emit(why)
 	if portal.session.available():

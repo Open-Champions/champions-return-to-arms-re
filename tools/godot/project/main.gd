@@ -391,6 +391,19 @@ func _cannot_start(text: String) -> void:
 		get_tree().quit(2)          # a test run never waits for a person
 
 
+# The character card for the portal (card.gd): the local player's character alone, turning slowly - a texture that
+# changes by itself (a SubViewport's).  null outside scene mode; empty (transparent) until the character has been seen
+# standing still once.  The portal:  portrait.texture = handover.game.call("get_character_card")
+func get_character_card() -> Texture2D:
+	if scene_view == null or scene_view.get("card") == null:
+		return null
+	return scene_view.get("card").call("texture")
+
+
+func has_character_card() -> bool:
+	return scene_view != null and scene_view.get("card") != null and bool(scene_view.get("card").call("has_figure"))
+
+
 func hold_input(on: bool) -> void:
 	input_held = on
 	if on and machine != null and started:
@@ -596,7 +609,7 @@ func _host_command(text: String) -> void:
 		print("[blank %d] rta_godot: controller %s; port 1 holds buttons %04x, sticks %d %d %d %d; %d key events" % [blanks,
 			"made by the script" if test_pad else (Input.get_joy_name(Input.get_connected_joypads()[0]) if Input.get_connected_joypads().size() > 0 else "none"),
 			last_buttons, last_sticks[0], last_sticks[1], last_sticks[2], last_sticks[3], key_events])
-	elif w.size() >= 1 and (w[0] == "light" or w[0] == "camera" or w[0] == "scene" or w[0] == "look") and scene_view != null:
+	elif w.size() >= 1 and (w[0] == "light" or w[0] == "camera" or w[0] == "scene" or w[0] == "look" or w[0] == "card") and scene_view != null:
 		scene_view.call("command", w)
 	elif w.size() >= 2 and w[0] == "hold":
 		hold_input(w[1] == "on")            # test aid: as the portal does while it is in front

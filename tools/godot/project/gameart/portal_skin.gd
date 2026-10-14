@@ -54,8 +54,8 @@ static func _uninstall() -> void:
 
 
 static func _fonts() -> void:
-	var text := GA.font("font_med", 0.70)
-	var title := GA.font("font_title", 0.64)
+	var text := GA.font("font_med", 0.66)
+	var title := GA.font("font_title", 0.78)
 	if text != null:
 		UI._sans = text
 		UI._bold = text
@@ -114,7 +114,8 @@ class Backdrop extends Control:
 	var portal: Node
 
 	func _process(_delta: float) -> void:
-		var want := UI.skin != null and GA.ready() and not bool(portal.get("game_behind"))
+		var behind = portal.get("backdrop")                   # the blurred picture of a game behind the portal
+		var want := UI.skin != null and GA.ready() and not (behind is CanvasItem and (behind as CanvasItem).visible)
 		if visible != want:
 			visible = want
 			queue_redraw()
@@ -160,7 +161,7 @@ func surface(ci: CanvasItem, kind: String, rect: Rect2, radius: float, e: float,
 	var a := 0.5 if disabled else 1.0
 	match kind:
 		"panel":
-			_frame(ci, rect, UI.px(30), a, 0.93, 1.0)
+			_frame(ci, rect, UI.px(30), a, 0.90, 0.88)
 		"tile":
 			_shadow(ci, rect, UI.px(20), 0.45 * a)
 			_frame(ci, rect, UI.px(30), a, 0.90, 1.0 + 0.22 * e)
@@ -185,6 +186,9 @@ func surface(ci: CanvasItem, kind: String, rect: Rect2, radius: float, e: float,
 			GA.draw(ci, "socket", Rect2(c - Vector2(r, r) * 1.08, Vector2(r, r) * 2.16), Color(1, 1, 1, a))
 		"button_normal", "button_primary", "button_danger":
 			_button(ci, rect, kind, e, a)
+		"button_ghost":
+			# quiet controls (tabs, the top bar's buttons): the frame, faint until they have the focus
+			_frame(ci, rect, UI.px(16), a * (0.38 + 0.62 * e), 0.70, 0.85 + 0.3 * e)
 		_:
 			return false
 	return true

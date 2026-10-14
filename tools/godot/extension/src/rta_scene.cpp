@@ -85,6 +85,15 @@ struct RtaDrawer::Scene {
     uint64_t fills_dropped = 0, dome_draws = 0, near_faded = 0;
     Scene() { memset(ring_sum, 0, sizeof ring_sum); memset(ring_n, 0, sizeof ring_n); memset(ring, 0, sizeof ring); }
     bool packets = true;                // draw the packets' complete geometry where the tap has it (false: the list's own triangles)
+    // Meshes kept between frames: a draw whose packets are, byte for byte, those of a mesh made before (the level's chunks
+    // where nothing moved and no light changed: most of a frame) takes that mesh instead of being built and sent again.
+    struct Kept { RID mesh; AABB box; uint64_t used = 0; };
+    std::unordered_map<uint64_t, Kept> kept;
+    bool keep = true;
+    uint64_t kept_hits = 0, kept_misses = 0, kept_corners = 0;
+    uint64_t kept_key = 0;              // this draw's figure (0: not kept)
+    RID kept_mesh;                      // ... and the kept mesh it found
+    AABB kept_box;
     double ambient = 1.0, pull_back = 1.0, orbit = 0.0, raise = 0.0, focus = 390.0;
     // this frame
     bool valid = false;
@@ -118,6 +127,7 @@ void RtaDrawer::set_scene_option(const String& name, double value) {
     else if (name == "packets") scene->packets = value != 0;
     else if (name == "sky") scene->sky = value != 0;
     else if (name == "near_fade") scene->near_fade = value != 0;
+    else if (name == "keep") scene->keep = value != 0;
 }
 
 void RtaDrawer::sky_reset() {
@@ -426,10 +436,10 @@ Dictionary RtaDrawer::get_scene_info() const {
     info["figures"] = vformat("scene: %d lists (%d without a camera); per list %.1f draws and %.0f vertices in the world (%.1f of the draws from the vertex programs' inputs, "
                               "with normals; %.1f of them as whole packets, %.0f corners a list more than the list has: the triangles the game drops near the eye and off "
                               "screen), %.1f draws of the 2-D layer, %.2f of the game's own ground shadows left out; sky: %.2f of the game's clearing rectangles left out, %.1f dome "
-                              "draws, %.1f sprite draws placed by their depth", (int64_t)scene->frames,
+                              "draws, %.1f sprite draws placed by their depth; kept meshes: %.1f draws a list taken as they were (%.0f corners), %.1f made, %d held", (int64_t)scene->frames,
                               (int64_t)scene->frames_without_camera, scene->world_draws / n, scene->world_vertices / n, scene->exact_draws / n, scene->packet_draws / n,
                               (double)scene->packet_extra / n, scene->flat_draws / n, scene->blob_shadows_dropped / n, scene->fills_dropped / n, scene->dome_draws / n,
-                              scene->near_faded / n);
+                              scene->near_faded / n, scene->kept_hits / n, scene->kept_corners / n, scene->kept_misses / n, (int64_t)scene->kept.size());
     return info;
 }
 
@@ -492,6 +502,8 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     if (sc.shadows && d.tex_is_target && d.scene_kind == RTAG_SCENE_DEPTH && d.blend) { sc.blob_shadows_dropped++; return true; }
     const bool normals = d.scene_kind == RTAG_SCENE_EXACT && sc.tap->normals != nullptr;
     const int stride = normals ? 32 : 20;
+    sc.kept_key = 0;
+    sc.kept_mesh = RID();
     PackedByteArray positions, attributes;
     int corners = 0;
     if (normals && sc.packets && d.scene_piece_count && d.scene_piece_first + d.scene_piece_count <= sc.tap->piece_count) {
@@ -499,6 +511,34 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
         // ones the game's vertex programs dropped whole near the eye (Godot clips them as triangles should be clipped).
         const rtag_scene_piece* pieces = sc.tap->pieces + d.scene_piece_first;
         for (uint32_t k = 0; k < d.scene_piece_count; k++) corners += (int)pieces[k].full_count;
+        if (sc.keep) {
+            // a figure over the packets' complete geometry as it is this frame (positions, normals, texels, the colours the
+            // game lit them with): four lanes of 64-bit words
+            uint64_t h[4] = {0x9E3779B97F4A7C15ull, 0xC2B2AE3D27D4EB4Full, 0x165667B19E3779F9ull, 0x27D4EB2F165667C5ull};
+            for (uint32_t k = 0; k < d.scene_piece_count; k++) {
+                const uint8_t* bytes = (const uint8_t*)(sc.tap->full + pieces[k].full_first);
+                size_t n = (size_t)pieces[k].full_count * sizeof(rtag_scene_full), at = 0;
+                for (; at + 32 <= n; at += 32)
+                    for (int l = 0; l < 4; l++) {
+                        uint64_t w;
+                        memcpy(&w, bytes + at + l * 8, 8);
+                        h[l] = (h[l] ^ w) * 0x100000001B3ull;
+                        h[l] ^= h[l] >> 31;
+                    }
+                for (; at < n; at++) h[0] = (h[0] ^ bytes[at]) * 0x100000001B3ull;
+                h[1] ^= (uint64_t)pieces[k].full_count * 0x9E3779B97F4A7C15ull;
+            }
+            sc.kept_key = (h[0] ^ (h[1] * 3) ^ (h[2] * 5) ^ (h[3] * 7) ^ ((uint64_t)corners << 40)) | 1;
+            auto found = sc.kept.find(sc.kept_key);
+            if (found != sc.kept.end()) {
+                found->second.used = frames;
+                sc.kept_hits++;
+                sc.kept_corners += corners;
+                sc.kept_mesh = found->second.mesh;
+                sc.kept_box = found->second.box;
+            }
+        }
+        if (!sc.kept_mesh.is_valid()) {
         positions.resize((int64_t)corners * 12);
         attributes.resize((int64_t)corners * stride);
         uint8_t* p = positions.ptrw();
@@ -513,9 +553,11 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
                 memcpy(a + 20, &v->nx, 12);
             }
         }
+        }
         sc.packet_draws++;
         sc.packet_extra += corners - (int)d.count;
         if (pieces[0].kind == 1) fill_learn(sc.tap, d, pieces, d.scene_piece_count, sc.camera.origin);
+        else card_take(sc.tap, d, pieces, d.scene_piece_count);   // the character card (rta_card.cpp)
         // the painted light (see Scene::sun_sum): level chunks with a texture whose brightness is known
         if (pieces[0].kind == 1 && d.texture && d.depth_write && sc.sun_samples < 400000) {
             auto thumb = thumbs.find(d.texture);
@@ -562,15 +604,26 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     if (d.depth_write) fill_note_level(order);              // the level begins: the fill is drawn right before it
     // the mesh's real box: Godot pairs its lights with what they reach, and culls the shadow casters by it
     AABB box;
-    {
+    RID mesh;
+    if (sc.kept_mesh.is_valid()) {
+        box = sc.kept_box;
+        mesh = sc.kept_mesh;
+    } else {
         const float* q = (const float*)positions.ptr();
         float lo[3] = {q[0], q[1], q[2]}, hi[3] = {q[0], q[1], q[2]};
         for (int k = 1; k < corners; k++)
             for (int a = 0; a < 3; a++) { float v = q[k * 3 + a]; lo[a] = std::min(lo[a], v); hi[a] = std::max(hi[a], v); }
         box = AABB(Vector3(lo[0], lo[1], lo[2]), Vector3(hi[0] - lo[0] + 0.01f, hi[1] - lo[1] + 0.01f, hi[2] - lo[2] + 0.01f));
+        if (sc.kept_key) {
+            mesh = s->mesh_create();
+            add_surface_bytes(mesh, RenderingServer::PRIMITIVE_TRIANGLES, positions, attributes, corners, normals, &box);
+            sc.kept[sc.kept_key] = {mesh, box, frames};
+            sc.kept_misses++;
+        } else {
+            mesh = mesh_for(pass);
+            add_surface_bytes(mesh, RenderingServer::PRIMITIVE_TRIANGLES, positions, attributes, corners, normals, &box);
+        }
     }
-    RID mesh = mesh_for(pass);
-    add_surface_bytes(mesh, RenderingServer::PRIMITIVE_TRIANGLES, positions, attributes, corners, normals, &box);
     // Godot's light falls on what is solid (writes depth); glows, the dome, decals and what else is laid over the scene
     // keep the game's colours.  The dome is not hazed; camera-facing sprites fade as they come up to the eye.
     const bool is_dome = index < sc.is_dome.size() && sc.is_dome[index];
@@ -580,7 +633,8 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     if (sprite) sc.near_faded++;
     uint32_t extra = V_WORLD | (sc.lit && d.depth_write ? V_LIT : 0) | (normals ? V_NORMALS : 0) | (is_dome ? V_NOFOG : 0) | (sprite ? V_NEARFADE : 0);
     if (normals) sc.exact_draws++;
-    place(pass, material_for(d, target, false, texture, false, extra), order);
+    if (sc.kept_key) place_mesh(pass, mesh, material_for(d, target, false, texture, false, extra), order);
+    else place(pass, material_for(d, target, false, texture, false, extra), order);
     // what is opaque also throws a shadow: a twin of the same mesh that Godot only draws into its shadow maps
     if (sc.shadows && d.depth_write && (!d.blend || d.alpha_test)) {
         RID caster;
@@ -612,12 +666,20 @@ void RtaDrawer::scene_end(const rtag_frame&) {
     RenderingServer* s = RenderingServer::get_singleton();
     for (size_t k = sc.casters_used; k < sc.casters.size(); k++) s->instance_set_base(sc.casters[k], RID());
     fill_order();
+    if (Target* world = world_target()) card_end(*world);
+    // kept meshes nothing drew for half a second go
+    if ((frames & 15) == 0)
+        for (auto k = sc.kept.begin(); k != sc.kept.end();) {
+            if (frames - k->second.used > 30) { s->free_rid(k->second.mesh); k = sc.kept.erase(k); }
+            else ++k;
+        }
 }
 
 void RtaDrawer::scene_release() {
     if (!scene) return;
     RenderingServer* s = RenderingServer::get_singleton();
     if (s) for (RID caster : scene->casters) s->free_rid(caster);
+    if (s) for (auto& k : scene->kept) s->free_rid(k.second.mesh);
     delete scene;
     scene = nullptr;
 }

@@ -84,6 +84,13 @@ class RtaDrawer : public RefCounted {
     // and what was done with them
     void set_fill_shader(const Ref<Shader>& shader);
     Dictionary get_fill_info() const;
+    // The character card (rta_card.cpp): the local player's character copied out of the scene into another scenario (the
+    // portal's card: scene_view.gd makes the SubViewport); card_focus once a frame before submit (where the player stands,
+    // and whether to take the figure this frame), set_card_turn to turn it
+    void set_card_scenario(const RID& scenario);
+    void card_focus(const Vector3& feet, bool capture);
+    void set_card_turn(double radians);
+    Dictionary get_card_info() const;
     Vector2i get_output_size() const { return output_size; }
 
   protected:
@@ -93,6 +100,7 @@ class RtaDrawer : public RefCounted {
     struct Pass {                                   // one viewport
         RID viewport, scenario, camera, environment, texture;
         std::vector<RID> instances, meshes;
+        std::vector<uint8_t> overridden;            // per instance: it carries a material of its own (place_mesh)
         size_t used = 0;                            // instances with something to draw this frame
         bool drawn_once = false;
     };
@@ -154,6 +162,8 @@ class RtaDrawer : public RefCounted {
     void add_draw(Pass& pass, const rtag_frame& frame, const rtag_draw& draw, const Target& target, RID texture, bool texture_flipped, float order);
     void add_copy(Pass& pass, const rtag_draw& draw, const Target& target, const Target& source, RID texture, float order);
     RID place(Pass& pass, RID material, float order);
+    RID place_mesh(Pass& pass, RID mesh, RID material, float order);
+    RID instance_for(Pass& pass);
     RID mesh_for(Pass& pass);
 
     // ---- scene mode ----
@@ -186,6 +196,14 @@ class RtaDrawer : public RefCounted {
     RID fill_material(Fill& fl, uint8_t kind, RID texture);
     void fill_params(Fill& fl);
     friend struct Fill;
+
+    // ---- the character card (rta_card.cpp) ----
+    struct Card;
+    Card* card = nullptr;
+    void card_take(const rtag_scene* tap, const rtag_draw& d, const rtag_scene_piece* pieces, uint32_t count);
+    void card_end(const Target& world);
+    void card_clear();
+    void card_free();
 };
 
 }  // namespace godot

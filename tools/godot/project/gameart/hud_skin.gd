@@ -228,8 +228,8 @@ func slot_icon(ci: CanvasItem, rect: Rect2, slot: Dictionary, ready: bool) -> bo
 	var id: String = Cat.SKILL_ICONS.get(int(slot.get("skill_id", -1)), "icon_icblank")
 	if not GA.has(id):
 		return false
-	var side := rect.size.y * 0.74
-	var r := Rect2(rect.get_center() - Vector2(side * 0.5, side * 0.5 + rect.size.y * 0.06), Vector2(side, side))
+	var side := rect.size.y * 0.84
+	var r := Rect2(rect.get_center() - Vector2(side * 0.5, side * 0.5 + rect.size.y * 0.07), Vector2(side, side))
 	var dim := 1.0 if ready else 0.45
 	GA.draw(ci, id, r, Color(dim, dim, dim, 1.0))
 	return true

@@ -58,7 +58,7 @@ func build() -> void:
 	# ---- the bottom of the left column: choices, then the buttons ----
 	var actions_h := UI.px(76)
 	var note_h := UI.px(30)
-	var choices_h := UI.px(64)
+	var choices_h := UI.px(82 if int(portal.gameflow.call("unlocked")) < 4 else 64)
 	var bottom := size.y
 	var actions_y := bottom - actions_h
 	var note_y := actions_y - note_h - UI.px(4)
@@ -98,7 +98,10 @@ func build() -> void:
 	var cw := (left_w - UI.px(14)) * 0.5
 	# the game's own four (net2_options.difficulty 1..4; 0 means the first). Only missions are
 	# wired into the launch today: the arena modes are not offered until they are.
-	var difficulty := W.Choice.new("Difficulty", PackedStringArray(["Easy", "Normal", "Hard", "Harder"]), clampi(int(options.get("difficulty", 1)) - 1, 0, 3))
+	# ... and only those the game's own menu would offer this host (net2_game_status().difficulty_unlocked: 1 on a new card)
+	var names := PackedStringArray(["Easy", "Normal", "Hard", "Harder"]).slice(0, int(portal.gameflow.call("unlocked")))
+	var difficulty := W.Choice.new("Difficulty", names, clampi(int(options.get("difficulty", 1)) - 1, 0, names.size() - 1),
+		"" if names.size() == 4 else "More as your game unlocks them")
 	difficulty.key = "difficulty"
 	difficulty.locked = not can_choose
 	put(difficulty, Rect2(0, choices_y, cw, choices_h))
@@ -123,6 +126,17 @@ func build() -> void:
 		main.text = "Starting..."
 		main.disabled = true
 		note = _routes_text(members)
+	elif gameflow_active() and not portal.gameflow.call("has_character"):
+		# the game's side: a character for this game first, on the game's own screens
+		main.icon = "person"
+		main.text = ("Play again - choose your character" if played else "Choose your character")
+		if not portal.gameflow.call("game_ready"):
+			main.disabled = true
+			main.text = "Your game is getting ready..."
+			note = "The game is starting behind the portal; it takes a few seconds."
+		else:
+			note = "The game's own screens: make a character or bring one you have. Then you are back here."
+		main.activated.connect(func() -> void: portal.gameflow.call("choose"))
 	elif i_host:
 		main.text = "Play again" if played else "Start the game"
 		main.icon = "sword"
@@ -132,6 +146,9 @@ func build() -> void:
 		elif not waiting.is_empty():
 			main.disabled = true
 			note = "Waiting for %s to be ready." % _names(waiting)
+		elif gameflow_active() and not _all_back(members):
+			main.disabled = true
+			note = "Waiting for everybody to be back from the last game."
 		elif members.size() == 1:
 			note = "You can start alone - friends can still come in by the code."
 		else:
@@ -201,6 +218,17 @@ func build() -> void:
 	if want_focus == "" or want_focus == auto_key or find_key(self, want_focus) == null:
 		auto_key = "main" if not main.disabled else ("invite" if not invite.disabled else ("chat" if state >= Session.ROOM_STARTING else "leave"))
 		want_focus = auto_key
+
+
+func gameflow_active() -> bool:
+	return portal.gameflow != null and bool(portal.gameflow.active)
+
+
+func _all_back(members: Array) -> bool:
+	for m in members:
+		if int(m.get("phase", 0)) != 0:
+			return false
+	return true
 
 
 func _slot_taken(members: Array, k: int) -> bool:
@@ -335,7 +363,7 @@ func back() -> bool:
 
 
 func session_changed(what: String) -> void:
-	if (what == "room" or what == "chat" or what == "friends") and not leaving:
+	if (what == "room" or what == "chat" or what == "friends" or what == "game") and not leaving:
 		rebuild()
 
 

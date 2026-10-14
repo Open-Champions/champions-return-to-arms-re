@@ -243,6 +243,31 @@ RID RtaDrawer::place(Pass& pass, RID material, float order) {
     RenderingServer* s = rs();
     RID mesh = pass.meshes[pass.used];
     s->mesh_surface_set_material(mesh, 0, material);
+    RID instance = instance_for(pass);
+    if (pass.overridden[pass.used]) { s->instance_geometry_set_material_override(instance, RID()); pass.overridden[pass.used] = 0; }
+    s->instance_set_base(instance, mesh);
+    // the transparent pass draws far to near; a larger offset is "nearer": the list's order
+    s->instance_set_pivot_data(instance, order, false);
+    pass.used++;
+    return instance;
+}
+
+// The same for a mesh the scene keeps between frames (rta_scene.cpp): its material goes on the instance, the mesh may be
+// drawn with another state elsewhere.  The pool's mesh at this place is left as it is.
+RID RtaDrawer::place_mesh(Pass& pass, RID mesh, RID material, float order) {
+    RenderingServer* s = rs();
+    if (pass.used >= pass.meshes.size()) { pass.meshes.push_back(s->mesh_create()); meshes_made++; }
+    RID instance = instance_for(pass);
+    s->instance_geometry_set_material_override(instance, material);
+    pass.overridden[pass.used] = 1;
+    s->instance_set_base(instance, mesh);
+    s->instance_set_pivot_data(instance, order, false);
+    pass.used++;
+    return instance;
+}
+
+RID RtaDrawer::instance_for(Pass& pass) {
+    RenderingServer* s = rs();
     RID instance;
     if (pass.used < pass.instances.size()) instance = pass.instances[pass.used];
     else {
@@ -251,11 +276,8 @@ RID RtaDrawer::place(Pass& pass, RID material, float order) {
         s->instance_set_ignore_culling(instance, true);
         s->instance_geometry_set_cast_shadows_setting(instance, RenderingServer::SHADOW_CASTING_SETTING_OFF);
         pass.instances.push_back(instance);
+        pass.overridden.push_back(0);
     }
-    s->instance_set_base(instance, mesh);
-    // the transparent pass draws far to near; a larger offset is "nearer": the list's order
-    s->instance_set_pivot_data(instance, order, false);
-    pass.used++;
     return instance;
 }
 
@@ -587,6 +609,7 @@ void RtaDrawer::release() {
     RenderingServer* s = rs();
     scene_release();
     fill_free();
+    card_free();
     cpu_textures.clear();
     for (Pass* pass : std::vector<Pass*>(all_passes)) free_pass(pass);
     targets.clear();
@@ -621,6 +644,10 @@ void RtaDrawer::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_output_size", "size"), &RtaDrawer::set_output_size);
     ClassDB::bind_method(D_METHOD("set_fill_shader", "shader"), &RtaDrawer::set_fill_shader);
     ClassDB::bind_method(D_METHOD("get_fill_info"), &RtaDrawer::get_fill_info);
+    ClassDB::bind_method(D_METHOD("set_card_scenario", "scenario"), &RtaDrawer::set_card_scenario);
+    ClassDB::bind_method(D_METHOD("card_focus", "feet", "capture"), &RtaDrawer::card_focus);
+    ClassDB::bind_method(D_METHOD("set_card_turn", "radians"), &RtaDrawer::set_card_turn);
+    ClassDB::bind_method(D_METHOD("get_card_info"), &RtaDrawer::get_card_info);
     ClassDB::bind_method(D_METHOD("get_output_size"), &RtaDrawer::get_output_size);
 }
 

@@ -68,6 +68,7 @@ var look := {
 	"fill_light": 0.42, "fill_scale": 0.75, "light_energy": 1.0, "light_shadows": 2.0, "light_max": 8.0,
 }
 var fill_sent := {}
+var card: Node                          # card.gd: the character card (the portal's Portrait.texture)
 var torches: Array = []                 # [{light, instance, address, shadow}] Godot's lights at the game's
 var torch_clock := 0.0
 var lamp_share := 0.0                   # the carried lamp, eased: 1 where none of the game's lights reaches
@@ -153,6 +154,11 @@ func _ready() -> void:
 	sky_material = ShaderMaterial.new()
 	sky_material.shader = load("res://shaders/sky.gdshader")
 	drawer.call("set_fill_shader", load("res://shaders/fill.gdshader"))
+	card = Node.new()
+	card.set_script(load("res://card.gd"))
+	card.set("main", main)
+	card.set("drawer", drawer)
+	add_child(card)
 	_camera_options()
 
 
@@ -210,6 +216,8 @@ func _camera_options() -> void:
 
 # Before the drawer takes the frame: what this frame is drawn with.
 func before_frame() -> void:
+	if card != null:
+		card.call("before_frame")
 	var view: Dictionary = machine.get_view()
 	var ground := bool(view.get("valid", false)) and bool(view.get("active", false)) and not bool(view.get("fallback", false)) \
 			and int(view.get("shown", 0)) >= VIEW_CHASE
@@ -248,6 +256,8 @@ func frame() -> void:
 	_torches()
 	_lights()
 	_post()
+	if card != null:
+		card.call("frame", 1.0 / 60.0)
 
 
 func _make(to: RID) -> void:
@@ -585,6 +595,16 @@ func command(w: PackedStringArray) -> void:
 			if file != null:
 				file.store_string(str(drawer.call("describe_frame", w[2].to_int())))
 				file.close()
+	elif w[0] == "card" and w.size() >= 2 and card != null:
+		# app card info | app card shot FILE: the character card's picture as it is now (after this frame is drawn)
+		if w[1] == "info":
+			print("[blank %d] rta_godot: %s" % [main.blanks, card.call("info_text")])
+		elif w[1] == "shot" and w.size() >= 3:
+			var path := w[2]
+			await RenderingServer.frame_post_draw
+			var image: Image = (card.call("texture") as Texture2D).get_image()
+			image.save_png(path)
+			print("rta_godot: wrote %s (%d x %d), the character card; %s" % [path, image.get_width(), image.get_height(), card.call("info_text")])
 	elif w[0] == "camera" and w.size() >= 2:
 		if w[1] == "game":
 			pull_back = 1.0
