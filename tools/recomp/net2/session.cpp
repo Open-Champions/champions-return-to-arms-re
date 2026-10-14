@@ -161,7 +161,6 @@ template <class T> static int copy_out(const std::vector<T>& list, T* out, int m
 #ifdef NET2_NO_SERVICE
 namespace net2impl {
 Backend* make_service(const net2_config& config) { return make_off(config); }
-n2::Carrier* carrier_of(Backend*) { return nullptr; }
 }
 #endif
 

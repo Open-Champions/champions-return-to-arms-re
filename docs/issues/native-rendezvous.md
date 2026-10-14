@@ -21,7 +21,10 @@ compatibility and is not touched. Every result says whether it was **Ran** or on
 | its mock | `session_mock.cpp` | **Ran** through every call (`net2cli --mock`); the portal is built on it |
 | its real body | `session_net.cpp`, `carrier.cpp`, `hash.h`, `cardchars.cpp` | **Ran**: `tools/rendezvous/check_client.py`, 95 of 95 - four players through a service on loop-back, punched routes and a forced relay, datagrams both ways, the service going away and coming back, deletion |
 | the direct launch | `launch.cpp`, `game.h`, `hooks.h`; hook lines for `tools/recomp/net/netdrv.cpp` | written. **Ran** (headless, before the move): the game stands at its title screen, `net2 choose` brings the game's own character screens up with no lobby. **Not run yet**: the launch handshake between copies, a game, the proof table - the native build is being rebuilt by another agent after the project moved; nothing that needs the translated game is built until it is back |
-| `net2.patch`, `proposed.pnach` | - | the hook lines exist in my working copy (`local/recomp-net2/work/net/netdrv.cpp`); the patch file is cut when the launch has run. No game patch is needed so far |
+| `net2.patch` | `tools/recomp/net2/net2.patch` | cut, with merge notes: nine lines in `net/netdrv.cpp` (five places), seven compile jobs in `app/build.py`; applies cleanly to the files as they stand. **Not applied** to the shared tree |
+| `proposed.pnach` | - | does not exist: no word of the game had to be patched |
+| the stand-alone program's command line | `tools/recomp/net2/play.sh` (`--play-host`, `--play-join CODE`, `--name NAME`), runtime options `--opt net2=...` (head of `launch.cpp`) | written |
+| the proof driver | `tools/recomp/net2/n2party.py` (2 to 4 headless copies through a service of its own: room by code, character screens, chat, start, ticks compared, level change, drop, a second game, relay forced) | written |
 
 Nothing of this work is running (checked after every run: no `rendezvous.py`, no `net2cli`).
 Working directory: `~/champions-re/local/recomp-net2/` (snapshot of the native build's
@@ -301,8 +304,16 @@ on 127.0.0.1.
 | `carrier.h/.cpp` | the UDP socket: hello, probes, routes, the game's datagrams, the relay |
 | `hash.h` | SHA-256, HMAC, random bytes from the operating system |
 | `cardchars.cpp` | "characters I have": name, class, level from the save slots of a card folder (layout of `docs/audio-save.md`); needs no game. **Ran** against files the test makes to that layout; no real save slot was at hand (none of the test cards has one: a character is on a card once a player has saved at a save point) |
-| `net2cli.cpp` | the interface on a terminal (`--mock`, or `--service HOST:PORT --data DIR`) |
+| `clicmd.cpp`, `net2cli.cpp` | the interface as lines of text: on a terminal (`net2cli --mock`, or `--service HOST:PORT --data DIR`), and in the stand-alone program as `app net2 <the same commands>` |
 | `game.h`, `launch.cpp`, `hooks.h` | the direct launch (section 5); only in a program that contains the game |
+
+**How a player gets into a game** (the steps a person takes; the stand-alone program):
+one starts `tools/recomp/net2/play.sh --disc IMAGE --play-host` and reads "ROOM CODE
+H4KQ7" to the others; they start `play.sh --disc IMAGE --play-join H4KQ7`. On every
+machine the game boots to its title screen by itself and shows its own character screens:
+make a character, or press triangle ("Import") for one saved on this machine's memory
+card. When everybody has one, the host's game starts for all. With the portal the same
+happens behind its screens, plus friends, invitations and a start button.
 
 For a portal without the game: compile `session.cpp session_mock.cpp cardchars.cpp`
 with `-DNET2_NO_SERVICE` (mock only), or add `session_net.cpp carrier.cpp` (the service
@@ -367,6 +378,34 @@ the first-pass test.
 Why not the boot argument: `--net` skips the front end - placeholder characters, level
 `strife`, no handshake, discovery by broadcast on 192.168.1.x, and only at boot. Its
 netcode is the same; its start is the wrong one for players.
+
+### 5.1 For the Godot side (a note; nothing under `tools/godot/` was edited)
+
+- **One copy of net2 in the process.** Compile `tools/recomp/net2/*.cpp` once, into the
+  library that contains the game, and let the extension call its plain-C functions.
+  Two copies (one in the extension, one in the game library) would be two locks and two
+  sets of state.
+- The game library needs the network driver it does not link today
+  (`tools/recomp/net/netdrv.cpp` with the nine lines of `net2.patch`, `online.cpp`,
+  `RtaOnline.cpp`, and the translation made with `--hle-add net/hle-online.txt`, as
+  `rta_app` has it) plus `net2/launch.cpp` and the session files.
+- After `net2_open`: `net2_game_attach(n)` once. From then on `launch.cpp` follows that
+  object's room: it publishes the chosen character (`net2_set_character`), launches when
+  the room starts, tells the room `running <level>` / `over`, and keeps the character's
+  level current. The portal never calls the game.
+- What the portal does around it, with `net2_game_status()` (game.h) once a frame:
+
+  | Moment | Portal |
+  |---|---|
+  | the player is in a room and has no character yet | `net2_game_choose(is_host)`, then get out of the way: phase CHOOSING is the game's own character screens (the player needs the game's picture and the controller) |
+  | phase CHOSEN | come back; `net2_ready(n, 1)` (a host just shows Start); `status.character` is what was chosen |
+  | phase TITLE with `failed` | the screens were left without a character: offer it again |
+  | `NET2_EV_START` | "finding each other" with the routes of `net2_room()`; nothing to call |
+  | phase LAUNCHING, LOADING, RUNNING | out of the way: the game shows its own launch screen and then the level |
+  | phase TITLE again after RUNNING | the game is over on this machine: come back in front; the room is open again ("Play again" = choose, ready, start) |
+- Boot: `--opt net2-boot=1` lets `launch.cpp` press cross through the memory-card question
+  and the logos until the title screen is up (it does so by itself when the program was
+  started with `--opt net2=...`); phase BOOTING until then.
 
 ## 6. Proof
 
@@ -447,8 +486,9 @@ nothing but the original disc.
 
 New: `tools/rendezvous/rendezvous.py`, `check.py`, `check_client.py`;
 `tools/recomp/net2/session.h`, `session_impl.h`, `session.cpp`, `session_mock.cpp`,
-`session_net.cpp`, `carrier.h`, `carrier.cpp`, `hash.h`, `cardchars.cpp`, `net2cli.cpp`,
-`game.h`, `launch.cpp`, `hooks.h`. Local, not in the repository:
+`session_net.cpp`, `carrier.h`, `carrier.cpp`, `hash.h`, `cardchars.cpp`, `clicmd.h`,
+`clicmd.cpp`, `net2cli.cpp`, `game.h`, `launch.cpp`, `hooks.h`, `net2.patch`, `play.sh`,
+`n2party.py`. Local, not in the repository:
 `local/recomp-net2/` (`snap/` the native build's objects and headers of 2026-10-13 13:33,
 `work/net/` the network sources with the hook lines, `build.sh`, `bin/`, `rv/` test runs).
 Nothing in `tools/recomp/rt|render|app|net`, `tools/godot`, `patches/` or

@@ -246,6 +246,10 @@ void on_tasks(Ctx* c, bool from_tick) {
         if (call(c, fn_0019e5e8, A_SEL_TASK_NAME) == 0) {
             if (rd8(A_CHOSEN) == 1) {
                 G.character = read_character(A_PLAYERS);
+                // a character just made is a summary until the launch builds its record: the
+                // name is in the summary, the level is the first
+                if (!G.character.name[0]) net2impl::put(G.character.name, net2impl::clean_label(rdstr(A_QUICK, 31).c_str(), 24));
+                if (G.character.level < 1) G.character.level = 1;
                 char text[160];
                 snprintf(text, sizeof text, "a character is chosen: %s (%s, level %d)", G.character.name, G.character.cls, G.character.level);
                 set_phase(NET2_GAME_CHOSEN, text);
@@ -429,7 +433,8 @@ void on_blank(uint64_t number) {
         break;
     case NET2_GAME_LOADING:
     case NET2_GAME_RUNNING:
-        if (G.phase == NET2_GAME_LOADING && !front && rd8(A_NETWORK_MODE) == 1 && (s32)rd32(A_NET_FRAME) > 0 && rdstr(A_LEVEL_NAME, 20) != "intro") {
+        if (G.phase == NET2_GAME_LOADING && !front && rd8(A_NETWORK_MODE) == 1 && (s32)rd32(A_NET_FRAME) > 0 && rd8(A_LEVEL_NAME) != 0 &&
+            rdstr(A_LEVEL_NAME, 20) != "intro") {
             char text[96];
             snprintf(text, sizeof text, "the game runs: level %s", rdstr(A_LEVEL_NAME, 20).c_str());
             set_phase(NET2_GAME_RUNNING, text);

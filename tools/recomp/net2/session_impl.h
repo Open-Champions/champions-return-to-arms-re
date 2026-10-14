@@ -100,6 +100,7 @@ struct Backend {
     virtual int start() = 0;
     virtual int leave() = 0;
     virtual int game_state(const std::string& level, bool running) = 0;
+    virtual n2::Carrier* carrier() { return nullptr; }      // the UDP socket and routes, where there are any
     virtual int debug(const std::string& what, std::string& out) { out = ""; (void)what; return NET2_ERR_ARGUMENT; }
     virtual int set(const std::string& key, const std::string& value) { (void)key; (void)value; return NET2_ERR_ARGUMENT; }
 };
@@ -113,7 +114,7 @@ Backend* make_service(const net2_config& config);   // session_net.cpp
 Backend* make_off(const net2_config& config);
 
 // the UDP socket and routes of a body that talks to the service; nullptr for the others
-n2::Carrier* carrier_of(Backend* body);
+inline n2::Carrier* carrier_of(Backend* body) { return body ? body->carrier() : nullptr; }
 
 // The characters in the saved games of a card directory (cardchars.cpp), and the class
 // words by the game's class number.

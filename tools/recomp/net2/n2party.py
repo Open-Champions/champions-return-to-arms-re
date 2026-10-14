@@ -82,10 +82,10 @@ def script_lines(role, index, n, args):
     seeds = {'host': 0, 'j1': 1000, 'j2': 2000, 'j3': 3000}
     last = ROLES[n - 1]
     play = (lambda frames, salt: ['wait %d' % frames]) if args.idle else (lambda frames, salt: lobbypair.play_lines(frames, args.seed + seeds[role] + salt))
-    lines = ['# written by n2party.py: %s, scenario %s' % (role, args.scenario)] + character_lines()
-    if role != 'host':
-        lines += ['wait 60', 'app net2 chat hello from %s' % role]
-    lines += to_game_lines() + play(args.play, 0)
+    lines = ['# written by n2party.py: %s, scenario %s' % (role, args.scenario)]
+    # in the room, with the character screens just up: a line of chat before anybody is ready
+    lines += ['until %s:u8 == 1 timeout 12000' % A_PAGE, 'app net2 chat hello from %s' % role]
+    lines += character_lines() + to_game_lines() + play(args.play, 0)
     if args.scenario == 'plain':
         if args.level:
             lines += ['echo waiting-for-level', 'until g_levelName:str8 == %s timeout 12000' % args.level,
