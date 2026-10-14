@@ -163,6 +163,15 @@ namespace Rta
 	bool RoomStart(std::string& error);
 	std::string RoomCode();
 	std::string RoomNote();
+	// what the menu Room shows: busy - a room is on its way (Host and Join greyed); the code
+	// when in one; canStart - Start the game is taken now, else startText says why not;
+	// inLevel - a room now starts the game again from the disc
+	struct RoomMenu
+	{
+		bool open = false, busy = false, inRoom = false, host = false, canStart = false, inLevel = false;
+		std::string code, text, startText;
+	};
+	RoomMenu RoomMenuState();
 	// the application's own thread (RtaUi.cpp)
 	void AskRoomName(const std::string& want);
 	void ShowRoomCode(const std::string& code);

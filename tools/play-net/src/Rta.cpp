@@ -699,6 +699,10 @@ namespace
 				speed.SetEthernetFrameTxHandler(Iop::CSpeed::EthernetFrameTxHandler());
 				speed.SetEthernetPollHandler(Iop::CSpeed::EthernetPollHandler(), 0);
 			}
+			// the room's session ends here, with the machine stopped and everything it uses
+			// still there (docs/issues/app-rendezvous.md, "the quit after a room")
+			if(m_net) m_net->SetCarrier(nullptr);
+			room.Close();
 			m_net.reset();
 			if(m_listenFd >= 0)
 			{
@@ -784,6 +788,10 @@ namespace
 			setup.again = !options.roomOnce;
 			setup.guestIp = m_net ? m_net->Config().guestIp : 0;
 			setup.cross = 1u << Button::CROSS;
+			setup.circle = 1u << Button::CIRCLE;
+			// a room asked for while the game is in a level: the menu's Reset (RtaRoom.cpp,
+			// "to the title screen")
+			setup.reset = []() { QMetaObject::invokeMethod(QCoreApplication::instance(), []() { Rta::TriggerReset(); }, Qt::QueuedConnection); };
 			setup.logFile = options.roomLog;
 			setup.log = [this](const std::string& line) { Log(line); };
 			bool background = options.testBackground;
@@ -1529,6 +1537,7 @@ namespace
 			m_quietFrames = 0;
 			m_gameStuck = false;
 			online.OnExecutable(m_isGame);
+			room.OnExecutable();
 			m_activePatches.clear();
 			// the game is there: now its replacement pictures are wanted (a thread of its own)
 			if(m_isGame) StartTextureList();
@@ -3672,7 +3681,8 @@ void Rta::SetOnlineAtStart(bool on)
 
 bool Rta::RoomNeedsName()
 {
-	return !g_state.room.IsOpen() && Rta::CRoom::FirstStart(g_state.RoomDataDir());
+	// (tests: --rta-room-name gives the name of a first start)
+	return !g_state.room.IsOpen() && Rta::CRoom::FirstStart(g_state.RoomDataDir()) && g_state.options.roomName.empty();
 }
 
 std::string Rta::RoomCheckName(const std::string& name)
@@ -3687,8 +3697,32 @@ std::string Rta::RoomCheckCode(const std::string& code)
 
 bool Rta::RoomWant(const std::string& what, const std::string& name, std::string& error)
 {
-	if(!g_state.OpenRoom(name, error)) return false;
-	return g_state.room.Want(what, error);
+	if(!g_state.OpenRoom(name.empty() ? g_state.options.roomName : name, error)) return false;
+	if(!g_state.room.Want(what, error)) return false;
+	// going online (the lobby) and a room are two ways to the same game: the room wins, and
+	// the game is brought back to its title screen from the lobby by the room (RtaRoom.cpp)
+	if(g_state.online.Active())
+	{
+		g_state.Log("room: going online is stopped: a room of our own was asked for");
+		g_state.online.Stop("a room of our own was asked for (Room in the menu)");
+	}
+	return true;
+}
+
+Rta::RoomMenu Rta::RoomMenuState()
+{
+	auto state = g_state.room.Menu();
+	Rta::RoomMenu menu;
+	menu.open = state.open;
+	menu.busy = state.busy;
+	menu.inRoom = state.inRoom;
+	menu.host = state.host;
+	menu.canStart = state.canStart;
+	menu.inLevel = state.inLevel;
+	menu.code = state.code;
+	menu.text = state.text;
+	menu.startText = state.startText;
+	return menu;
 }
 
 void Rta::RoomLeave()

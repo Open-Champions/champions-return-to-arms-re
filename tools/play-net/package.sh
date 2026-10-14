@@ -220,7 +220,9 @@ else
 	fi
 fi
 codesign --verify --deep --strict "$APP" || { echo "package.sh: the signature does not verify" >&2; exit 1; }
-REQUIREMENT=$(codesign -d -r- "$APP" 2>/dev/null | sed -n 's/^designated => //p')
+# (an ad-hoc signature's requirement is the implicit one, which codesign prints as a comment:
+# "# designated => cdhash H"..."; a requirement given with -r is printed without the "# ")
+REQUIREMENT=$(codesign -d -r- "$APP" 2>&1 | sed -n 's/^#* *designated => //p' | head -n 1)
 
 # the archive is made here too, before a synced folder can touch the bundle
 [ -z "$ZIP" ] || ditto -c -k --keepParent "$APP" "$STAGE/$NAME.zip"

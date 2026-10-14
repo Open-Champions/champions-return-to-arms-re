@@ -49,6 +49,10 @@ namespace Rta
 		bool again = true;       // after a game: choose a character again while still in the room
 		uint32_t guestIp = 0;    // the emulated machine's own address (RtaNet's DHCP answer)
 		uint32_t cross = 0;      // the emulator's mask for the cross button
+		uint32_t circle = 0;     // ... and for circle (the game's "back" on its menus and the lobby's screens)
+		// the machine started again from the disc (the menu's Reset), for a game that is in a
+		// level when a room is asked for: called on the machine's thread, must not wait for it
+		std::function<void()> reset;
 		std::string logFile;     // tests: what is said, with the vertical blank
 		std::function<void(const std::string&)> log;
 		std::function<void(const std::string&)> showCode; // a room code to read out (the application's window)
@@ -66,6 +70,9 @@ namespace Rta
 		// opens the session with the service (once); false and why when it cannot
 		bool Open(const RoomSetup&, std::string& error);
 		bool IsOpen() const;
+		// the session closed (the room left), before the application ends: with the machine
+		// stopped, before anything static goes (net2's lock is one)
+		void Close();
 		// "host" | "host:friends" | "join:CODE" - also before the game has reached its title
 		// screen: the room is asked for at once, the character screens when the title is up
 		bool Want(const std::string& what, std::string& error);
@@ -87,8 +94,26 @@ namespace Rta
 		static bool FirstStart(const std::string& dataDir);
 		static std::string CheckCode(const std::string& code);
 
+		// what the menu Room shows (the application's thread)
+		struct MenuState
+		{
+			bool open = false;      // the session is open
+			bool busy = false;      // a room was asked for and is on its way (no code yet, the
+			                        // game being brought to its title screen, the character
+			                        // screens opening, the launch): Host and Join are greyed
+			bool inRoom = false;    // in a room: its code is known
+			bool host = false;      // ... as its host
+			bool canStart = false;  // the host's Start the game would be taken now
+			bool inLevel = false;   // the game is in a level (a room then starts it again: Reset)
+			std::string code;       // the room's code
+			std::string text;       // one line: where the room is
+			std::string startText;  // why Start the game is greyed (empty when it is not)
+		};
+		MenuState Menu() const;
 		// ---- the machine's thread
 		void Tick(uint8_t* ram, uint64_t frame, bool isGame);
+		// another program was loaded, or the same again (Reset): the game boots anew
+		void OnExecutable();
 		bool Driving() const
 		{
 			return m_driving;
@@ -120,6 +145,9 @@ namespace Rta
 		void Launch();
 		void FollowRoom(int64_t now);
 		void ByItself(int64_t now);
+		void LeadToTitle(uint64_t frame, bool front);
+		void AskReset(uint64_t frame, const std::string& why);
+		void Press(uint32_t mask, uint64_t frame);
 		std::string StatusLine();
 		std::string RoomLine();
 
@@ -147,7 +175,22 @@ namespace Rta
 		bool m_driving = false;
 		uint32_t m_buttons = 0;
 		uint64_t m_pressFrom = 0, m_pressUntil = 0;
+		uint32_t m_pressMask = 0;
 		uint64_t m_bootNextPress = 0;
+		// the way back to the title screen when a room is asked for elsewhere: the lobby's own
+		// back button (circle), the menus' too, the lobby's state word as at power-on; for a
+		// level, the menu's Reset
+		bool m_frontSeen = false;   // the front end was seen since the game was loaded
+		bool m_lastFront = false;   // ... and at the last blank
+		bool m_lobbySeen = false;   // the lobby's screens were opened since the game was loaded
+		bool m_lobbyNetUp = false;  // ... and went past their network screen: the network is up
+		bool m_leading = false;
+		uint64_t m_leadSince = 0, m_leadNext = 0;
+		int m_leadPresses = 0;
+		bool m_resetAsked = false;
+		uint64_t m_resetAt = 0;
+		int m_resets = 0;
+		std::string m_leadWhere;
 		// the game that was started
 		uint32_t m_launchedSession = 0;
 		int64_t m_startSeenMs = 0;

@@ -6,6 +6,7 @@ docs/issues/app-rendezvous.md.
   export RTA_DISC="/path/to/your/disc image.iso"
   python3 -B tools/play-net/roomparty.py OUT --copies app,native [--play FRAMES] [--level NAME --play2 FRAMES]
           [--relay force|never|mixed] [--external --service-address HOST --port N] [--app PATH] [--program PATH]
+          [--app-start lobby|title [--signin-patch FILE]] [--menu-start]
 
 --copies: two to four of "app" and "native", the first is the host. An app copy is the application
 built under local/ (--app, default local/app-rv/build/.../Play), started off to the side as a test
@@ -112,15 +113,25 @@ class AppCopy:
         tick_do = os.path.join(run, 'tick-do.app.txt')
         write_tick_do(os.path.join(run, 'tick-do.txt'), tick_do)
         relay = args.relay if args.relay in ('force', 'never') else ('force' if args.relay == 'mixed' and index == n - 1 else '')
+        # --app-start: the host is not sent to the room at power-on but asks for it through the menu
+        # Room (the control socket's "ui room host") from the lobby's log-in screen or from the title
+        self.menu = role == 'host' and bool(args.app_start)
+        where = []
+        if not self.menu:
+            where = ['--rta-room', 'host' if role == 'host' else 'join:' + room]
+        elif args.app_start in ('lobby', 'lobby-net'):
+            # online by itself from power-on, as the packaged application is; no name is given, so it
+            # stops at the lobby's log-in screen (nothing is typed there, no account)
+            where = ['--rta-online', 'lobby'] + (['--rta-extra-patch', args.signin_patch] if args.signin_patch else [])
         command = [args.app, '--rta-data', self.directory, '--disc', os.environ['RTA_DISC'],
                    '--rta-patch-file', os.path.join(ROOT, 'patches', 'SLUS-20973_4028A55F.pnach'), '--rta-patch-sections', '@' + args.sections_file,
-                   '--rta-test', 'room proof %s %s' % (os.path.basename(out), role), '--rta-control', self.socket_path,
-                   '--rta-room', 'host' if role == 'host' else 'join:' + room, '--rta-room-service', '%s:%d' % (args.service_address, args.port),
+                   '--rta-test', 'room proof %s %s' % (os.path.basename(out), role), '--rta-control', self.socket_path] + where + [
+                   '--rta-room-service', '%s:%d' % (args.service_address, args.port),
                    '--rta-room-name', role.capitalize() + ' app ' + os.path.basename(out)[:10], '--rta-room-log', os.path.join(run, role + '.room.log'),
                    '--rta-tick-log', os.path.join(run, role + '.tick.tsv'), '--rta-tick-watch', watch, '--rta-tick-do', tick_do, '--rta-room-once']
         if not args.external:
             command += ['--rta-room-local']
-        if role == 'host':
+        if role == 'host' and not args.menu_start:
             command += ['--rta-room-start', str(n)]
         if relay:
             command += ['--rta-room-relay', relay]
@@ -207,12 +218,16 @@ class AppCopy:
                 time.sleep(0.5)
             self.control = ctl.Control(self.socket_path, timeout=900)
             args = self.args
+            if self.menu:
+                self.ask_by_menu()
             self.say('waiting for the character screens')
             self.until('0x%x:u8 == 1' % A_PAGE, 900 * args.slow)
             self.send('room chat hello from the application, %s' % self.role)
             for text in n2party.character_lines():
                 self.line(text)
             self.say('character chosen; waiting for the launch')
+            if self.role == 'host' and args.menu_start:
+                self.start_by_menu()
             self.until('0x402793:u8 == 1', 900 * args.slow)
             self.until('g_levelName:str8 != intro', 300 * args.slow)
             self.until('g_netFrame:s32 >= 200', 300 * args.slow)
@@ -231,6 +246,8 @@ class AppCopy:
                     self.line(text)
             self.send('wait 120')
             self.say('done: %s' % self.send('room status'))
+            if self.role == 'host' and args.rehost:
+                self.rehost()
             self.done = True
         except Exception as problem:  # noqa: BLE001 - a test driver says what went wrong and ends
             self.error = str(problem)
@@ -240,6 +257,82 @@ class AppCopy:
                     self.say('status: %s' % self.control.send('room status'))
             except Exception:  # noqa: BLE001
                 pass
+
+    def ask_by_menu(self):
+        """the menu Room's Host a room, from where --app-start says"""
+        args = self.args
+        end = time.time() + 300 * args.slow
+        if args.app_start in ('lobby', 'lobby-net'):
+            # lobby: its log-in screen; lobby-net: its network screen, before the network is up
+            mark = 'online: the log-in screen (state 2' if args.app_start == 'lobby' else 'online: the network setting screen (state 0'
+            self.say('waiting for the lobby\'s %s' % ('log-in screen' if args.app_start == 'lobby' else 'network screen'))
+            while mark not in open(self.out_path, errors='replace').read():
+                if time.time() > end or self.process.poll() is not None:
+                    raise RuntimeError('"%s" was not reached' % mark)
+                time.sleep(0.05 if args.app_start == 'lobby-net' else 0.5)
+            if args.app_start == 'lobby':
+                time.sleep(args.lobby_wait)
+        else:
+            self.say('waiting for the title screen (cross through the card questions and logos)')
+            global button_gap
+            button_gap = 50
+            self.until('0x41b510:u8 == 1', 300 * args.slow, button='cross')
+            self.until('0x4f6b78:u32 == 0', 60 * args.slow)
+            self.until('0x4d8a10:f32 >= 1', 60 * args.slow)
+            time.sleep(3)
+        self.say('where the game is: front-end state %s, lobby state %s' % (self.value('0x4f6b78', 'u32'), self.value('0x506160', 'u32')))
+        self.say('ui room info -> %s' % self.control.send('ui room info'))
+        self.say('ui room host -> %s' % self.control.send('ui room host'))
+        # the menu as it is drawn while the room is on its way, each change once
+        said, end = '', time.time() + 60
+        while time.time() < end:
+            menu = self.control.send('ui room info')
+            if menu != said:
+                self.say('ui room info -> %s' % menu)
+                said = menu
+            if '[Start the game (choose your character first) (greyed)]' in menu and 'Room ' in menu and 'title screen' not in menu:
+                break
+            time.sleep(0.1)
+        self.menu_log_until = time.time() + 120
+
+    def rehost(self):
+        """--rehost: in the level of the game just played, Leave the room and Host a room again through
+        the menu: the game is started again from the disc and the new room's character screens open"""
+        self.say('ui room leave -> %s' % self.control.send('ui room leave'))
+        time.sleep(2.0)
+        self.say('ui room host -> %s' % self.control.send('ui room host'))
+        asked, said, end = time.time(), '', time.time() + 300 * self.args.slow
+        while time.time() < end:
+            menu = self.control.send('ui room info')
+            if menu != said:
+                self.say('ui room info -> %s' % menu)
+                said = menu
+            page = self.value('0x%x' % A_PAGE, 'u8')
+            if page == '1' and 'Room ' in menu and 'character screens are up' in open(self.out_path, errors='replace').read().split('ui room host')[-1]:
+                self.say('rehost: the new room\'s character screens are up %.0f s after Host a room' % (time.time() - asked))
+                self.rehosted = True
+                return
+            time.sleep(0.5)
+        raise RuntimeError('rehost: the character screens of the new room did not come up')
+
+    def start_by_menu(self):
+        """the menu Room's Start the game, when it is no longer greyed"""
+        end = time.time() + 900 * self.args.slow
+        said = ''
+        while time.time() < end:
+            if self.process.poll() is not None:
+                raise RuntimeError('the application ended (exit status %s)' % self.process.returncode)
+            menu = self.control.send('ui room info')
+            if menu != said:
+                self.say('ui room info -> %s' % menu)
+                said = menu
+            if '[Start the game]' in menu:
+                self.say('ui room start -> %s' % self.control.send('ui room start'))
+                time.sleep(1.0)
+                self.say('ui room info -> %s' % self.control.send('ui room info'))
+                return
+            time.sleep(1.0)
+        raise RuntimeError('Start the game stayed greyed')
 
     def stop(self):
         try:
@@ -251,6 +344,7 @@ class AppCopy:
             if self.process.poll() is not None:
                 break
             time.sleep(0.5)
+        self.quit_kind = 'exit %s' % self.process.returncode if self.process.poll() is not None else 'killed (did not end in 10 s)'
         if self.process.poll() is None:
             self.process.kill()
             self.process.wait()
@@ -401,6 +495,13 @@ def one_run(out, number, args):
             for line in text.splitlines():
                 if 'net2: launch' in line or 'net2: the room started' in line or 'WARNING' in line or 'TIMEOUT' in line or 'carrier:' in line:
                     print('  %s: %s' % (role, lobbyparty.brief(line.rstrip())[:400]))
+    # how each application copy ended at "quit" (docs/issues/app-rendezvous.md, the quit after a room)
+    quits = []
+    for role, kind in zip(roles, kinds):
+        if kind == 'app' and role in copies:
+            text = open(os.path.join(run, role + '.out'), errors='replace').read()
+            crashed = 'recursive_mutex' in text or 'terminating due to' in text
+            quits.append('%s=%s%s' % (role, getattr(copies[role], 'quit_kind', '?'), ' CRASH' if crashed else ''))
     games = {r: lobbyparty.split_games(os.path.join(run, r + '.tick.tsv')) for r in roles}
     ticks, same = [], True
     for i in range(n):
@@ -417,14 +518,15 @@ def one_run(out, number, args):
             ticks.append('%s(%s)/%s(%s) %s%s' % (roles[i], kinds[i], roles[j], kinds[j], found.group(1) if found else '?', '' if equal else ' DIFFER'))
             if not equal:
                 print('--- %s against %s\n%s' % (roles[i], roles[j], result[:1500]))
-    line = '%s run %d (%s; relay %s; service %s) room %s load %.0f %.0f s | launched %s | done %s | ticks in step: %s | %s' % (
-        time.strftime('%H:%M:%S'), number, args.copies, args.relay or 'auto', 'external' if args.external else args.service_address, room, os.getloadavg()[0], time.time() - started,
+    line = '%s run %d (%s; relay %s; service %s%s) room %s load %.0f %.0f s | launched %s | done %s | ticks in step: %s | quit: %s | %s' % (
+        time.strftime('%H:%M:%S'), number, args.copies, args.relay or 'auto', 'external' if args.external else args.service_address,
+        ('; host from the %s by the menu' % args.app_start if args.app_start else '') + ('; Start the game by the menu' if args.menu_start else ''), room, os.getloadavg()[0], time.time() - started,
         ' '.join('%s=%s' % (r, 'yes' if launched[r] else 'NO') for r in roles), ' '.join('%s=%s' % (r, 'yes' if done[r] else 'no') for r in roles),
-        '; '.join(ticks) or 'none', lobbyparty.story(os.path.join(run, 'host.tick.tsv'), n))
+        '; '.join(ticks) or 'none', ' '.join(quits) or '-', lobbyparty.story(os.path.join(run, 'host.tick.tsv'), n))
     print(line)
     with open(os.path.join(out, 'results.txt'), 'a') as sink:
         sink.write(line + '\n')
-    return all(launched.values()) and same and bool(ticks)
+    return all(launched.values()) and same and bool(ticks) and not any('CRASH' in q or 'killed' in q for q in quits)
 
 
 def main():
@@ -441,6 +543,11 @@ def main():
     parser.add_argument('--app-arg', action='append', default=[])
     parser.add_argument('--program', help='the native program (default: n2party.py\'s)')
     parser.add_argument('--native-window', help='the native window program (rta_app) for the native copies, off-screen, instead of the headless one')
+    parser.add_argument('--app-start', choices=('', 'lobby', 'lobby-net', 'title'), default='', help='an application host asks for its room through the menu Room ("ui room host") from the lobby\'s log-in screen (online by itself from power-on, no name given) or from the title screen, not at power-on')
+    parser.add_argument('--signin-patch', help='with --app-start lobby: the sign-in patch the lobby needs (never in the repository)')
+    parser.add_argument('--lobby-wait', type=float, default=5.0, help='seconds at the lobby\'s log-in screen before the room is asked for')
+    parser.add_argument('--rehost', action='store_true', help='after the game, the application host leaves the room in the level and hosts a new one through the menu (the way back to the title from a level)')
+    parser.add_argument('--menu-start', action='store_true', help='the application host starts the game through the menu Room ("ui room start") when that entry is no longer greyed')
     parser.add_argument('--sections', default=os.path.join(HERE, 'sections-suggested.txt'), help='the application\'s patch sections')
     parser.add_argument('--drop-section', action='append', default=[], help='a section of --sections the native translation does not carry')
     parser.add_argument('--play', type=int, default=1800)

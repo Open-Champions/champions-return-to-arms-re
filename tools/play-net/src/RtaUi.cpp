@@ -987,6 +987,31 @@ namespace
 
 	void GoToRoom(QWidget* parent, const std::string& want)
 	{
+		// the question for the lobby's player name (going online by itself at the start) is a
+		// sheet on the main window: a room is the other way to a game, so going online ends
+		// and the sheet goes; the room is asked for once it has gone
+		if(g_nameDialog && g_nameDialog->isVisible())
+		{
+			Rta::LogLine("room: the question for the lobby's player name is closed: a room was asked for instead");
+			Rta::OnlineStop();
+			g_nameDialog->how = "a room was asked for instead (Room in the menu)";
+			g_nameDialog->reject();
+			QPointer<QWidget> where = parent;
+			QTimer::singleShot(200, g_mainWindow, [where, want]() { QWidget* to = where.data(); GoToRoom(to ? to : static_cast<QWidget*>(g_mainWindow), want); });
+			return;
+		}
+		// a level is left by starting the game again: a person is asked first
+		if(Rta::RoomMenuState().inLevel && Rta::TestDialogs() == 0 && !Rta::IsTestRun())
+		{
+			auto answer = QMessageBox::question(parent, "Room",
+			                                    "The game is in a level. A room starts from the game's title screen, so the game is started again from the disc: what is not saved is lost.\n\nGo to the room?",
+			                                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+			if(answer != QMessageBox::Yes)
+			{
+				Rta::LogLine("room: not going to a room: the game is in a level and the player said no");
+				return;
+			}
+		}
 		std::string name;
 		if(Rta::RoomNeedsName())
 		{
@@ -1050,6 +1075,41 @@ namespace
 		});
 		timer->start(500);
 		return dialog;
+	}
+
+	// what can be chosen follows where the room is when the menu opens: Host and Join are
+	// greyed while a room is on its way and while in one, Start the game until the host can
+	// start, and the room's code is in the menu itself
+	void UpdateRoomMenu(QMenu* menu)
+	{
+		auto where = menu->findChild<QAction*>("rtaRoomWhere");
+		auto host = menu->findChild<QAction*>("rtaRoomHost");
+		auto join = menu->findChild<QAction*>("rtaRoomJoin");
+		auto start = menu->findChild<QAction*>("rtaRoomStart");
+		auto leave = menu->findChild<QAction*>("rtaRoomLeave");
+		auto code = menu->findChild<QAction*>("rtaRoomCode");
+		if(!where || !host || !join || !start || !leave || !code) return;
+		Rta::RoomMenu state = Rta::RoomMenuState();
+		bool free = !state.inRoom && !state.busy;
+		host->setEnabled(free);
+		join->setEnabled(free);
+		host->setText(state.inLevel && free ? "Host a room (starts the game again)" : "Host a room");
+		join->setText(state.inLevel && free ? "Join a room... (starts the game again)" : "Join a room...");
+		start->setEnabled(state.canStart);
+		start->setText(state.canStart || state.startText.empty() ? "Start the game" : QString::fromStdString("Start the game (" + state.startText + ")"));
+		leave->setEnabled(state.inRoom || state.busy);
+		leave->setText(state.inRoom ? "Leave the room" : (state.busy ? "Leave (stop going to the room)" : "Leave the room"));
+		code->setEnabled(state.inRoom);
+		code->setText(state.inRoom ? QString::fromStdString("Show the room's code: " + state.code) : "Show the room's code");
+		std::string line;
+		if(state.inRoom)
+			line = "Room " + state.code + (state.host ? " (yours)" : "") + (state.text.empty() ? "" : ": " + state.text);
+		else if(state.busy)
+			line = "Room: " + (state.text.empty() ? std::string("on its way") : state.text);
+		else
+			line = "No room";
+		if(line.size() > 90) line = line.substr(0, 87) + "...";
+		where->setText(QString::fromStdString(line));
 	}
 }
 
@@ -1153,6 +1213,46 @@ std::string Rta::UiCommand(const std::string& command)
 		}
 		return QString("up=1 title=\"%1\" text_length=%2 ok_enabled=%3").arg(g_roomNameDialog->windowTitle()).arg(g_roomNameEdit ? g_roomNameEdit->text().size() : -1).arg((ok && ok->isEnabled()) ? 1 : 0).toStdString();
 	}
+	if(words[0] == "room")
+	{
+		// room info | host | join CODE | start | leave | code: the menu Room, its entries
+		// triggered as a click does (join takes the code instead of asking for it); the answer
+		// is the menu as it is drawn when opened, before the click
+		auto menu = g_mainWindow ? g_mainWindow->findChild<QMenu*>("rtaRoomMenu") : nullptr;
+		if(!menu) return "no Room menu";
+		UpdateRoomMenu(menu);
+		QString text;
+		for(auto action : menu->actions())
+		{
+			if(action->isSeparator()) continue;
+			text += QString("[%1%2] ").arg(action->text(), action->isEnabled() ? "" : " (greyed)");
+		}
+		std::string action = (words.size() >= 2) ? words[1].toStdString() : "info";
+		auto click = [menu](const char* name) {
+			auto entry = menu->findChild<QAction*>(name);
+			if(!entry || !entry->isEnabled()) return false;
+			QTimer::singleShot(0, entry, [entry]() { entry->trigger(); });
+			return true;
+		};
+		std::string done;
+		if(action == "host") done = click("rtaRoomHost") ? "clicked: Host a room" : "Host a room is greyed";
+		if(action == "start") done = click("rtaRoomStart") ? "clicked: Start the game" : "Start the game is greyed";
+		if(action == "leave") done = click("rtaRoomLeave") ? "clicked: Leave" : "Leave is greyed";
+		if(action == "code") done = click("rtaRoomCode") ? "clicked: Show the room's code" : "Show the room's code is greyed";
+		if(action == "join" && words.size() >= 3)
+		{
+			auto entry = menu->findChild<QAction*>("rtaRoomJoin");
+			std::string wanted = words[2].toUpper().toStdString();
+			if(entry && entry->isEnabled() && Rta::RoomCheckCode(wanted).empty())
+			{
+				QTimer::singleShot(0, g_mainWindow, [wanted]() { GoToRoom(g_mainWindow, "join:" + wanted); });
+				done = "clicked: Join a room... with " + wanted;
+			}
+			else
+				done = (entry && entry->isEnabled()) ? "not a room code" : "Join a room... is greyed";
+		}
+		return (done.empty() ? std::string() : done + " | ") + "menu: " + text.trimmed().toStdString();
+	}
 	if(words[0] == "controls")
 	{
 		std::string action = (words.size() >= 2) ? words[1].toStdString() : "info";
@@ -1161,7 +1261,7 @@ std::string Rta::UiCommand(const std::string& command)
 		if(!g_controls || !g_controls->isVisible()) return std::string("up=0 wanted=") + (g_controlsWanted ? "1" : "0");
 		return QString("up=1 title=\"%1\" blocked_now=%2 times_blocked=%3 box=%4").arg(g_controls->windowTitle()).arg(g_controlsBlockedNow ? 1 : 0).arg(g_controlsBlocked).arg(box(g_controls)).toStdString();
 	}
-	return "ui windows | main info|raise | notice | name info|type TEXT|press ok|notnow|escape|close | controls info|show|close";
+	return "ui windows | main info|raise | notice | name info|type TEXT|press ok|notnow|escape|close | roomname ... | room info|host|join CODE|start|leave|code | controls info|show|close";
 }
 
 void Rta::TriggerReset()
@@ -1265,8 +1365,15 @@ void Rta::SetupWindow(QWidget* window)
 	{
 		// a room of our own, beside Online
 		auto roomMenu = new QMenu("Room", mainWindow);
+		roomMenu->setObjectName("rtaRoomMenu");
 		auto helpAction = mainWindow->findChild<QMenu*>("menuHelp") ? mainWindow->findChild<QMenu*>("menuHelp")->menuAction() : nullptr;
 		mainWindow->menuBar()->insertMenu(helpAction, roomMenu);
+		// where the room is, one line that cannot be chosen
+		auto where = roomMenu->addAction("No room");
+		where->setObjectName("rtaRoomWhere");
+		where->setMenuRole(QAction::NoRole);
+		where->setEnabled(false);
+		roomMenu->addSeparator();
 		auto host = roomMenu->addAction("Host a room");
 		host->setMenuRole(QAction::NoRole);
 		host->setToolTip("A room of your own, named with a code for your friends - players of this application and of the native program alike.");
@@ -1289,14 +1396,13 @@ void Rta::SetupWindow(QWidget* window)
 			std::string room = Rta::RoomCode();
 			if(!room.empty()) Rta::ShowRoomCode(room);
 		});
-		QObject::connect(roomMenu, &QMenu::aboutToShow, mainWindow, [host, join, start, leave, code]() {
-			bool in = !Rta::RoomCode().empty();
-			host->setEnabled(!in);
-			join->setEnabled(!in);
-			start->setEnabled(in);
-			leave->setEnabled(in);
-			code->setEnabled(in);
-		});
+		host->setObjectName("rtaRoomHost");
+		join->setObjectName("rtaRoomJoin");
+		start->setObjectName("rtaRoomStart");
+		leave->setObjectName("rtaRoomLeave");
+		code->setObjectName("rtaRoomCode");
+		QObject::connect(roomMenu, &QMenu::aboutToShow, mainWindow, [roomMenu]() { UpdateRoomMenu(roomMenu); });
+		UpdateRoomMenu(roomMenu);
 	}
 	auto helpMenu = mainWindow->findChild<QMenu*>("menuHelp");
 	if(!helpMenu) helpMenu = mainWindow->menuBar()->addMenu("Help");

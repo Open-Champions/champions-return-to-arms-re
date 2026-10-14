@@ -1178,7 +1178,13 @@ shows a code, *Join a room...* takes one, and players of the native program join
 rooms. The first time in a data folder a sheet asks the name the others see; the player is
 then the file `net2-identity.key` there. At the title screen the game's own character screens
 come up; when everybody has a character the host chooses *Start the game* and the game's own
-launch handshake runs. The game is told that player k is 10.77.0.(k+1); its datagrams there
+launch handshake runs. A room asked for elsewhere first brings the game back to its title
+screen by the game's own ways: from the lobby's screens (the packaged application goes online
+by itself at its start) and the front end's menus with circle, their "back" / *Cancel*; from a
+level by starting the game again from the disc (*Reset*; a person is asked first). Going online
+stops, and its name question goes away. The menu shows where the room is (a line that cannot be
+chosen, the code in *Show the room's code*); *Host* and *Join* are greyed while a room is on its
+way and while in one, *Start the game* until the host can start (it says why). The game is told that player k is 10.77.0.(k+1); its datagrams there
 go over net2's carrier (punched, or through the service's relay). The service:
 `--rta-room-service HOST:PORT`, `room_service` in `launch.ini` / `defaults.ini`
 (`package.sh --default-room-service`), `RTA_NET2_SERVICE`, or `net2-service.txt` in the data
@@ -1198,7 +1204,12 @@ Options for tests: `--rta-room host|host:friends|join:CODE` (by itself from powe
 `--rta-tick-do FILE` (the native program's tick log and tick-keyed writes, through a block
 hook of the EE executor in `play-net.patch`). Control socket: `room [status] | host | join
 CODE | leave | start | chat TEXT | ready 0|1 | difficulty N | debug WHAT | set KEY VALUE`;
-`ui roomname info|type TEXT|press ok|notnow` works the name sheet.
+`ui roomname info|type TEXT|press ok|notnow` works the name sheet; `ui room info|host|join
+CODE|start|leave|code` reads the menu *Room* as it is drawn and clicks its entries (join takes
+the code instead of asking). `roomparty.py --app-start lobby|lobby-net|title [--signin-patch
+FILE] [--menu-start] [--rehost]` asks for the host's room through the menu from the lobby's
+log-in screen, its network screen or the title, starts through the menu, and hosts again from
+the level after the game.
 
 ## Control socket and tests
 

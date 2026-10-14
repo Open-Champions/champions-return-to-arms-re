@@ -56,6 +56,7 @@ namespace
 	const uint32_t A_ADDR2 = 0x402b4b;
 	const uint32_t A_CHOSEN = 0x4fbbe2, A_QUICK = 0x4fdb80;
 	const uint32_t A_LAUNCHING = 0x402793, A_NETWORK_MODE = 0x402791, A_LOBBY_STATE = 0x506160;
+	const uint32_t A_MODULES_LOADED = 0x402790; // net_gameInit(0) calls net_loadModules while this is 0, then sets it
 	const uint32_t A_NET_FRAME = 0x4027ac, A_NUM_PEERS = 0x4027c4, A_PEERS = 0x5bf838, PEER_SIZE = 0x44e0, PEER_DROPPED = 0x44d5;
 	const uint32_t A_PLAYERS = 0x4d8af0, PLAYER_SIZE = 0x4c30, PLAYER_CLASS = 0x50, PLAYER_LEVEL = 0x59;
 	const uint32_t A_NUM_PLAYERS = 0x4d8ae0, A_DIFFICULTY = 0x4f719c, A_SAVED_CONFIG = 0x4f8f38;
@@ -154,12 +155,39 @@ namespace
 
 // ---- the session ----------------------------------------------------------------------------
 
-CRoom::CRoom() = default;
+// net2's lock (net2impl::big_lock) is a static object made at its first use. Made here, it is
+// made before a CRoom that lives in static memory has finished being made, and so is destroyed
+// after it: the room's session can still be closed when the application ends. (Made later - at
+// the first room - it was destroyed first, and the session's close found it gone: "recursive_mutex
+// lock failed" at every quit after a room. The application closes the room before that anyway,
+// CRoom::Close from its Detach.)
+CRoom::CRoom()
+{
+	net2impl::big_lock();
+}
 
 CRoom::~CRoom()
 {
+	// nothing is said here: what Say would write to may be gone already
+	Hold hold(net2impl::big_lock());
 	if(m_session) net2_close(m_session);
+	m_session = nullptr;
 	if(m_logFile) fclose(m_logFile);
+	m_logFile = nullptr;
+}
+
+void CRoom::Close()
+{
+	Hold hold(net2impl::big_lock());
+	m_carrying = false;
+	if(m_session)
+	{
+		net2_close(m_session);
+		m_session = nullptr;
+		Say("room: the session is closed (the application ends)");
+	}
+	if(m_logFile) fclose(m_logFile);
+	m_logFile = nullptr;
 }
 
 std::string CRoom::CheckName(const std::string& name)
@@ -242,10 +270,21 @@ bool CRoom::Want(const std::string& what, std::string& error)
 		error = "already in a room (" + std::string(room.code) + "): leave it first";
 		return false;
 	}
+	if(m_phase == LOADING || m_phase == RUNNING)
+	{
+		// the game of a room that was left: it is a level like any other (to the title screen)
+		m_carrying = false;
+		m_level.clear();
+		m_titleSince = 0;
+		SetPhase(BUSY, "the game of the room that was left is still running");
+	}
 	m_want = what;
 	m_asked = false;
 	m_readySaid = false;
-	if(m_phase == BOOTING) m_driveBoot = true;
+	m_launches = 0; // a new room: its own games (--rta-room-once counts them)
+	m_leading = false;
+	m_resets = 0;
+	if(m_phase == BOOTING && !m_frontSeen) m_driveBoot = true;
 	Say("room: asked for: %s", what.c_str());
 	return true;
 }
@@ -257,6 +296,13 @@ void CRoom::Leave()
 	net2_leave(m_session);
 	m_want.clear();
 	m_asked = false;
+	if(m_leading)
+	{
+		// the way back to the title screen ends where the game is
+		m_leading = false;
+		m_pressUntil = 0;
+	}
+	m_driveBoot = false;
 	Say("room: left");
 }
 
@@ -312,6 +358,46 @@ bool CRoom::MembersWantBrowser() const
 	return m_wantBrowser.load();
 }
 
+CRoom::MenuState CRoom::Menu() const
+{
+	Hold hold(net2impl::big_lock());
+	MenuState s;
+	s.inLevel = m_frontSeen && !m_lastFront;
+	if(!m_session) return s;
+	s.open = true;
+	net2_room_t room;
+	net2_me_t me;
+	net2_room(m_session, &room);
+	net2_me(m_session, &me);
+	s.inRoom = room.state != NET2_ROOM_NONE && room.code[0];
+	if(s.inRoom) s.code = room.code;
+	s.host = s.inRoom && room.my_slot == room.host_slot;
+	bool asked = !m_want.empty();
+	bool gameStarting = m_phase == CHOOSING || m_phase == LAUNCHING || m_phase == LOADING;
+	s.busy = (asked && !s.inRoom) || m_leading || m_resetAsked || gameStarting || room.state == NET2_ROOM_JOINING || room.state == NET2_ROOM_STARTING;
+	s.canStart = s.host && room.state == NET2_ROOM_OPEN && m_phase == CHOSEN && room.all_ready;
+	if(s.inRoom && !s.canStart)
+	{
+		if(!s.host)
+			s.startText = "the host starts the game";
+		else if(room.state != NET2_ROOM_OPEN || m_phase == LAUNCHING || m_phase == LOADING || m_phase == RUNNING)
+			s.startText = "the game is starting or running";
+		else if(m_phase != CHOSEN)
+			s.startText = "choose your character first";
+		else
+			s.startText = "waiting for the others to choose";
+	}
+	if(m_leading)
+		s.text = "bringing the game to its title screen (" + m_leadWhere + ")";
+	else if(m_resetAsked)
+		s.text = "the game is being started again";
+	else if(asked && !s.inRoom)
+		s.text = me.link != NET2_LINK_ONLINE ? "connecting to the room service" : "asking for the room";
+	else if(s.inRoom)
+		s.text = Format("%d player%s; %s", room.count, room.count == 1 ? "" : "s", m_text.c_str());
+	return s;
+}
+
 void CRoom::Say(const char* format, ...)
 {
 	char text[1024];
@@ -335,6 +421,167 @@ void CRoom::SetPhase(int phase, const std::string& text)
 	Say("room: %s", text.c_str());
 }
 
+// ---- to the title screen, from wherever the game is ------------------------------------------
+//
+// A room's character screens open from the title screen. A room asked for elsewhere - the
+// lobby's screens (the packaged application goes online by itself at its start), another menu of
+// the front end, a level - first brings the game back there, by the game's own ways:
+//   - the lobby's screens and the front end's menus: circle, the game's "back" / "Cancel" there
+//     (the log-in screen's Cancel shuts the lobby down: its state word 0x506160 becomes 13 and
+//     its task is gone, the front end is on Normal Game / Internet Game; circle there is the
+//     title screen). Every 45 blanks, at most 16 times.
+//   - at the title screen with the lobby's state word left at 13 (shut down): it is set to 0, as
+//     at power-on - the title screen's own test (AtTitle) and frontend_startNetGame's branch
+//     for "no lobby" (g_lobbyLaunch 0x4f7134) read it.
+//   - the network the lobby brought up (its network screen, netcfg_thread 0x34e068) stays up
+//     when the lobby shuts down. The room's launch calls net_gameInit(0), which then would call
+//     net_loadModules - the developer's network start, made for a machine whose interface is
+//     down - and that waits for ever for the interface to come up (Ran: the game drew nothing
+//     from the press on, pc in the BIOS's idle loop, ra in DelayThread). net_gameInit reads one
+//     thing for that: the byte 0x402790, which net_loadModules' caller sets once it has run, and
+//     which the lobby's own launch (net_gameInit(12)) never needs. With the lobby gone past its
+//     network screen it is set to 1: the room's launch then goes the lobby game's way over the
+//     network the lobby brought up (net_gameInit with 0 and with 12 differ in that branch only,
+//     Read at 0x139d9c - 0x139dc8). A lobby left on its network screen, before it had brought
+//     the network up, is not guessed at: the machine is started again instead.
+//   - a level (an offline game, or a game of the lobby): there is no way back to the title
+//     but through the game's pause menu and its questions; the machine is started again from
+//     the disc instead (the menu's Reset), and the boot's card questions and logos are passed
+//     with cross as for a room asked for at power-on.
+// What does not reach the title in 20 s is started again the same way; two starts that do
+// not reach it end the attempt (the room stays; the player can go on by hand).
+void CRoom::Press(uint32_t mask, uint64_t frame)
+{
+	m_pressMask = mask;
+	m_pressFrom = frame + 1;
+	m_pressUntil = m_pressFrom + 6;
+}
+
+void CRoom::AskReset(uint64_t frame, const std::string& why)
+{
+	if(m_resetAsked) return;
+	if(m_resets >= 2)
+	{
+		m_leading = false;
+		m_pressUntil = 0;
+		SetPhase(BUSY, "the game could not be brought to its title screen (" + why + "): go there by hand; the room's character screens then open");
+		return;
+	}
+	m_resetAsked = true;
+	m_resetAt = frame;
+	m_resets++;
+	m_pressUntil = 0;
+	Say("room: %s: the game is started again from the disc (Reset); the room goes on from its title screen", why.c_str());
+	if(m_setup.reset)
+		m_setup.reset();
+	else
+		Say("room: (no way to start the machine again is set)");
+}
+
+void CRoom::LeadToTitle(uint64_t frame, bool front)
+{
+	// (after a room's game with "no new character" - a test - the game is the player's)
+	if(m_want.empty() || (m_phase != BOOTING && m_phase != TITLE && m_phase != BUSY) || (m_launches > 0 && !m_setup.again))
+	{
+		m_leading = false;
+		return;
+	}
+	Mem m{m_ram};
+	if(m.AtTitle())
+	{
+		if(m_leading)
+		{
+			m_leading = false;
+			m_pressUntil = 0;
+			m_resets = 0;
+			m_titleSince = 0;
+			// the title screen is taken as it is at power-on: 60 blanks of it, then the room's
+			// character screens
+			SetPhase(BUSY, Format("back at the title screen (%llu blanks after leaving %s)", static_cast<unsigned long long>(frame - m_leadSince), m_leadWhere.c_str()));
+		}
+		return;
+	}
+	if(m_resetAsked)
+	{
+		// the machine is being started again (OnExecutable ends this); it may not have been
+		if(frame - m_resetAt > 600)
+		{
+			m_resetAsked = false;
+			Say("room: the machine was not started again in 10 s");
+		}
+		return;
+	}
+	if(!front && !m_frontSeen) return; // booting: the card questions and the logos (m_driveBoot)
+	uint32_t fe = m.u32(A_FE_STATE), lobby = m.u32(A_LOBBY_STATE);
+	if(front && fe == 0 && lobby == 0 && !m_leading) return; // the title screen, not taking input yet
+	std::string where = !front ? "a level (" + m.str(A_LEVEL_NAME, 20) + ")" : (fe == 10 ? Format("the lobby's screens, lobby state %u", lobby) : (fe == 0 ? "the title screen" : Format("a menu of the front end, state %u", fe)));
+	if(!m_leading)
+	{
+		m_leading = true;
+		m_leadSince = frame;
+		m_leadNext = frame + 2;
+		m_leadPresses = 0;
+		m_leadWhere = where;
+		Say("room: the game is not at its title screen but in %s: going back there", where.c_str());
+	}
+	if(!front)
+	{
+		AskReset(frame, "the game is in " + where);
+		return;
+	}
+	if(frame - m_leadSince > 1200)
+	{
+		AskReset(frame, "the title screen was not reached in 20 s (the game is in " + where + ")");
+		return;
+	}
+	if(fe == 0)
+	{
+		if(lobby == 13)
+		{
+			if(!m_lobbyNetUp)
+			{
+				AskReset(frame, "the lobby was left before it had brought the network up");
+				return;
+			}
+			m.w32(A_LOBBY_STATE, 0);
+			uint8_t had = m.u8(A_MODULES_LOADED);
+			m.w8(A_MODULES_LOADED, 1);
+			Say("room: the lobby has shut itself down (its state word is 13): set to 0, as at power-on; the network it brought up stays: 'modules loaded' 0x402790 %u -> 1, so the launch goes the lobby game's way", had);
+		}
+		return; // the title screen fading in, or its first pass
+	}
+	if(frame < m_leadNext || frame < m_pressUntil + 2) return;
+	if(m_leadPresses >= 16)
+	{
+		AskReset(frame, "circle did not lead out of " + where);
+		return;
+	}
+	m_leadPresses++;
+	m_leadNext = frame + 45;
+	Press(m_setup.circle, frame);
+	Say("room: circle (%s)", where.c_str());
+}
+
+void CRoom::OnExecutable()
+{
+	Hold hold(net2impl::big_lock());
+	m_frontSeen = false;
+	m_lastFront = false;
+	m_lobbySeen = m_lobbyNetUp = false;
+	m_titleSince = 0;
+	m_pressUntil = 0;
+	m_leading = false;
+	m_resetAsked = false;
+	if(m_phase == CHOOSING || m_phase == CHOSEN || m_phase == LAUNCHING || m_phase == LOADING || m_phase == RUNNING)
+	{
+		m_carrying = false;
+		m_level.clear();
+		if(m_session) net2_game_state(m_session, nullptr);
+	}
+	m_driveBoot = !m_want.empty();
+	if(m_phase != BOOTING) SetPhase(BOOTING, "the game is starting again");
+}
+
 // ---- the game: choose, launch -------------------------------------------------------------
 
 void CRoom::Choose()
@@ -354,6 +601,7 @@ void CRoom::Choose()
 	m_step = 1;
 	m_stepSince = m_frame;
 	m_tries = 0;
+	m_pressMask = m_setup.cross;
 	m_pressFrom = m_frame + 3;
 	m_pressUntil = m_pressFrom + 5;
 	m_failed = false;
@@ -395,6 +643,7 @@ void CRoom::Launch()
 	m_step = 10;
 	m_stepSince = m_frame;
 	m_tries = 0;
+	m_pressMask = m_setup.cross;
 	m_pressFrom = m_frame + 3;
 	m_pressUntil = m_pressFrom + 5;
 	m_launchFrame = m_frame;
@@ -548,6 +797,14 @@ void CRoom::Tick(uint8_t* ram, uint64_t frame, bool isGame)
 
 	Mem m{ram};
 	bool front = m.FrontEnd();
+	if(front) m_frontSeen = true;
+	m_lastFront = front;
+	if(front && m.u32(A_FE_STATE) == 10)
+	{
+		uint32_t lobby = m.u32(A_LOBBY_STATE);
+		if(lobby >= 1 && lobby <= 15) m_lobbySeen = true;
+		if(lobby >= 3 && lobby <= 12) m_lobbyNetUp = true;
+	}
 	switch(m_phase)
 	{
 	case BOOTING:
@@ -728,6 +985,7 @@ void CRoom::Tick(uint8_t* ram, uint64_t frame, bool isGame)
 	default:
 		break;
 	}
+	LeadToTitle(frame, front);
 	FollowRoom(now);
 	ByItself(now);
 
@@ -738,7 +996,7 @@ void CRoom::Tick(uint8_t* ram, uint64_t frame, bool isGame)
 	if(frame < m_pressUntil + 2 && m_pressUntil != 0)
 	{
 		m_driving = true;
-		if(frame >= m_pressFrom && frame < m_pressUntil) m_buttons = m_setup.cross;
+		if(frame >= m_pressFrom && frame < m_pressUntil) m_buttons = m_pressMask;
 	}
 	else if(m_driveBoot && m_phase == BOOTING && !front)
 	{
@@ -805,6 +1063,8 @@ std::string CRoom::StatusLine()
 		text = Format("room %s: %d player%s", room.code, room.count, room.count == 1 ? "" : "s");
 		if(room.mismatch) text += std::string(" - WARNING: ") + room.warning;
 	}
+	if(m_leading) text += (text.empty() ? "" : " - ") + std::string("bringing the game to its title screen (") + m_leadWhere + ")";
+	if(m_resetAsked) text += (text.empty() ? "" : " - ") + std::string("the game is being started again");
 	if(m_phase == CHOOSING || m_phase == CHOSEN || m_phase == LAUNCHING || m_phase == LOADING) text += (text.empty() ? "" : " - ") + m_text;
 	if(m_phase == CHOSEN && room.state == NET2_ROOM_OPEN) text += (room.my_slot == room.host_slot) ? (room.all_ready ? "; everybody is ready: Room > Start the game" : "; waiting for the others") : "; waiting for the host to start";
 	return text;
@@ -826,9 +1086,9 @@ std::string CRoom::Command(const std::string& line)
 		net2_me(m_session, &me);
 		n2::Carrier* carrier = net2impl::carrier_of(m_session->body);
 		Mem m{m_ram};
-		return Format("ok phase=%s launches=%d failed=%d link=%d name=%s character=%s;%s;%d fe=%u lobby=%u launching=%u netmode=%u count=%u own=%u tick=%d level=%s want=%s carrying=%d | %s | carrier: %s", PHASE_NAMES[m_phase], m_launches, m_failed ? 1 : 0, me.link, me.name,
+		return Format("ok phase=%s launches=%d failed=%d link=%d name=%s character=%s;%s;%d fe=%u lobby=%u launching=%u netmode=%u count=%u own=%u tick=%d level=%s want=%s carrying=%d leading=%d resets=%d | %s | carrier: %s", PHASE_NAMES[m_phase], m_launches, m_failed ? 1 : 0, me.link, me.name,
 		              m_character.name.c_str(), m_character.cls.c_str(), m_character.level, m.u32(A_FE_STATE), m.u32(A_LOBBY_STATE), m.u8(A_LAUNCHING), m.u8(A_NETWORK_MODE), m.u8(A_SETTINGS + 7), m.u8(A_SETTINGS + 9),
-		              static_cast<int32_t>(m.u32(A_NET_FRAME)), m.str(A_LEVEL_NAME, 12).c_str(), m_want.c_str(), m_carrying ? 1 : 0, RoomLine().c_str(), carrier ? carrier->text().c_str() : "none") +
+		              static_cast<int32_t>(m.u32(A_NET_FRAME)), m.str(A_LEVEL_NAME, 12).c_str(), m_want.c_str(), m_carrying ? 1 : 0, m_leading ? 1 : 0, m_resets, RoomLine().c_str(), carrier ? carrier->text().c_str() : "none") +
 		       " text=" + m_text;
 	}
 	if(verb == "host") return Want(rest == "friends" ? "host:friends" : "host", error) ? "ok" : "err " + error;
