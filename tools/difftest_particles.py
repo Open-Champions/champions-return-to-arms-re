@@ -148,6 +148,7 @@ class Game:
         emu.stub(RESOURCE_REF_CTOR, ret=0)
         emu.call(STATIC_INIT, 1, 0xFFFF)          # the C++ static initialiser: list heads
         emu.call(PARTICLE_INIT)
+        self.scratch = emu.alloc(0x20)
         emu.mem.w8(G_PARTICLES_OFF, 0)
         emu.mem.w8(G_GAME_STARTED, 1)
 
@@ -182,7 +183,7 @@ class Game:
 
     def spawn(self, addr, pos, vel, backdate=0.0):
         m = self.emu.mem
-        pv = self.emu.alloc(0x20)
+        pv = self.scratch
         for i in range(3):
             m.wf32(pv + 4 * i, pos[i])
             m.wf32(pv + 0x10 + 4 * i, vel[i])
@@ -562,7 +563,7 @@ def prop_pools(elf):
             elif r < 0.985 and handles:
                 h = rng.choice(handles)
                 mat = tuple(fbits(rng.uniform(-2, 2)) for _ in range(12))
-                p = g.emu.alloc(0x30)
+                p = g.scratch_mat = getattr(g, 'scratch_mat', None) or g.emu.alloc(0x30)
                 for j, v in enumerate(mat):
                     mem.w32(p + 4 * j, v)
                 g.call(GROUP_SET_MATRIX, h, p)
