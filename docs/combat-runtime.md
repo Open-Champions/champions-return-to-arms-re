@@ -44,11 +44,15 @@ was run on a console, in PCSX2 or on the live rig.
    own run (it leaves its run list at once but stays in the grid, the name table and
    every handle); the object is destroyed at the start of the next `runObjects`; only then
    do handles to it read 0. A dead player is never deleted. *Executed* (section 7).
+   **Round 2:** this holds for creatures and players. Projectiles and spell effects
+   destroy themselves (slot 1 with 3) inside their own run, so handles to them read 0 at
+   once; a deflected missile is the one deferred case (section 15.3).
 6. **Touch order is fixed per mover.** `Creature_moveBy` calls only the *other* object's
    slot 6; `obj_moveWithCollision` (players) calls the other's slot 6 and then the
    mover's own; `obj_moveAndCollide` (projectiles) the hit object's and then the
    projectile's. No loop stops early except `Creature_moveBy` when settling against its
-   target. *Executed* for `Creature_moveBy` (ref_creature); *Observed* for the other two.
+   target. *Executed* for all three (ref_creature; round 2: `difftest_combat_move`,
+   `difftest_combat_ranged`, section 15).
 7. **Targets come from the box query, in its order.** Every scan (creature target pick,
    player melee scan, ranged find-target, arc hits, cone searches) takes
    `world_collectObjectsInBox` in grid order - row, column, most recently moved first -
@@ -112,7 +116,9 @@ first hit roll, four element-chance rolls, second hit roll), a player hitting a 
 (the same, plus the stun roll every player attacker makes). `docs/spec/combat.md` 3 is the
 full list. Besides: one per object constructed (`GameObject_ctor`); in
 `Player_processDamage` one for the Strong Stance resist test whenever the flags carry a
-knock-back class (0x3c0000) and one stagger roll for every surviving hit (section 6.4).
+knock-back class (0x3c0000) and one stagger roll for a surviving hit (section 6.4) -
+round 2 (Executed): not in action states 3 or 7, not with 0x400000, not on a heavy attack,
+so a knock-back hit whose reaction set state 3 draws once, not twice.
 Creature reactions, knock-back dust and Skelight's swing choice use the object's own
 seed. *Executed* (difftests named in sections 6 and 11).
 
@@ -194,6 +200,10 @@ fires; the fixture sets its limit +0x4b2 high)**, the rumble, the pad choice,
 **`Player_idleFidget` (a shared draw while exactly four animation tracks play)**, the aura
 globals, regeneration, the kill plane, the swap / interact gate, instant abilities, and
 the tail. A rebuild must run them all; the contract only keeps the fight composable.
+**Round 2:** `ref_combat_ptick.TickRuntime` (and `ref_combat_full.FullRuntime`) run the
+real tick, `ref_player.Tick.run`, as slot 4: a standing player draws the shared seed once
+every tick in `Player_idleFidget`, and the idle voice once when its counter passes +0x4b2
+(section 15.2). The authored driver above stays as it was for round 1's pins.
 
 ## 5. Contacts and touches
 
@@ -211,7 +221,9 @@ handlers.md` 4).
 
 ### 5.2 `obj_moveWithCollision` 0x14d4b8 (players: `Player_move` -> `creature_moveSimple` 0x1186d8)
 
-*Observed* (read twice for this document; `docs/spec/movement-camera.md` 5.5 agrees):
+*Observed* (read twice for this document; `docs/spec/movement-camera.md` 5.5 agrees);
+**Executed** in round 2 (`docs/spec/combat-movement.md` 2, 3,000 cases, 0 mismatches; the
+relink is an inline copy of `obj_updateGridCell`, made twice, with no call):
 
 ```
 d = vel x DT; if 0.001 < (d.x² + d.y²) + d.z²:
@@ -236,7 +248,8 @@ order of the two calls at 0x14d9d0 and 0x14d9ec for this document.
 of +-r, +-r, +-height, limit 0x100; per object: skip 0x201, 0x20000000, itself, the owner;
 height overlap; `D.x² + D.y² < (r + o.r)²`; **the hit object's slot 6 first (0x150ddc),
 then the projectile's own (0x150df8)**; no break, no copy guard. A "hit once" rule lives
-in each projectile's handler. Not in the contract's domain.
+in each projectile's handler. **Executed** in round 2 (`docs/spec/combat-projectiles.md`
+4.1; the hit-once rule is the hit state +0xcc of `MissileWeapon_onTouch` 0x152a18).
 
 ### 5.4 Knock-back is a second contact pass
 
@@ -298,7 +311,8 @@ implementations: `docs/issues/touch-handlers.md` 2.
   take on a higher score, or an equal score and a smaller d². **`far` is not a cap**: the
   first enemy found inside the 1.4 x far box wins with score 1 against 0 whatever its
   distance (test `test_cone_search_has_no_hard_range`).
-- Other helpers (*Observed*, not executed): `Creature_hitTargetAtReach` 0x1196e8 (a point
+- Other helpers (*Observed* in round 1; all **Executed** in round 2 with corrections -
+  `docs/spec/combat-monster-death.md` 2 and 7, summarised in section 15.4): `Creature_hitTargetAtReach` 0x1196e8 (a point
   `reach` ahead, the target within 60.0 of it in 3-D and not dead), `Creature_hitTarget
   InArcEdge` 0x119850 (as `hitTargetInArc` with `creature_canSeeObjEdge` 0x10c5b8, whose
   range uses only the object's radius), `Creature_hitTargetOrPlayerInArc` 0x119a20 (the
@@ -331,7 +345,9 @@ implementations: `docs/issues/touch-handlers.md` 2.
   weapon recomputes as unarmed and adds 0x200000; a heavy attack adds 0x200000 and
   **raises the record's damage range in place** (`R+0xd0 += round(R+0xd0 x s)`, s from
   passive 0x20000) and calls `Player_hitSparks` (a shared-seed user, not read); a scale
-  multiplies the range in place; `SpellHarmTouch` may adjust min/max; then **one**
+  multiplies the range in place; `SpellHarmTouch` may adjust min/max (round 2: every
+  branch **Executed**, `docs/spec/combat-player-melee.md` 4; `Player_hitSparks` makes 200
+  shared draws); then **one**
   `damage_apply(f32(R+0xd0), f32(R+0xd4); target, P, R+0xcc, item_getModifiedField1a(
   weapon), the item's word +8, flags | extra, weapon item, 0)` (the two middle values are
   not read by `damage_apply`; all 0 unarmed).
@@ -356,7 +372,7 @@ implementations: `docs/issues/touch-handlers.md` 2.
 | Hit angle +0x2e0 | `0x4000 - atan2_16(V.x - A.x, V.y - A.y)` while hp > 0 | the same unless the new flags have 0x800000 |
 | Last attacker +0x2e4 | relinked only while hp > 0 (so it names the killer) | relinked on **every** hit with an attacker |
 | Owner rules | flag 0x80: the owner behind +0x4c; flag 0x10000000: the status source +0x360 | the same |
-| Other | visual arc +0x3b0 = 0x7fff | block (states 8, 0xb; one shared draw in state 8), Holy Shield (mana), HUD flash |
+| Other | visual arc +0x3b0 = 0x7fff | block (states 8, 0xb; one shared draw in state 8 only; a front block - half-plane - zeroes the amount, or halves it with 0x20000, and calls `Player_blockSparks`, >= 150 own draws; round 2, Executed), Holy Shield (mana pays a fraction), HUD flash |
 
 ### 6.4 Pending damage (the victim's own run)
 
@@ -388,6 +404,9 @@ implementations: `docs/issues/touch-handlers.md` 2.
   more players the other of slots 0/1 shouts; PvP kill credit or arena lives. The object
   is never deleted (it waits for respawn or resurrection; respawn re-makes it at the same
   address, FINDINGS ST2).
+  (Round 2, Executed: the knock-down clip is `knockdown{1,2}_{a,b,c,d}.anm` by weapon class
+  and bearing; the Resurrect save needs `g_numPlayers == 1` and skips E; blood draws once
+  for the real player - `docs/spec/combat-player-defence.md` 3.)
   E. survived, unless 0x400000, action state 3 or 7, or a heavy attack: **one shared
   draw**; stagger when `draw < max(0.04 - R+0xdc x 0.04, 0) x 65536` or flags & 0x4000000,
   then (not in action state 6 or 10) action state 3 and the reaction clip.
@@ -442,9 +461,11 @@ ref_arena_monsters: within pointblankrange +0x3ac all round, else within visualr
 +0x3ae inside visualarc +0x3b0; ray mode 1 when forced or the arc is 0x7fff, which every
 hit sets), `Creature_canSeeTargetIn` 0x118d40, the cone searches (6.1), the move helpers
 (`docs/spec/creature-tick.md` 9) and a hit helper on the event bit of a swing clip.
-`creature_findPlayerInCone` 0x10ca70 (*Observed*): charmed creatures use the enemy cone
-search; others take the nearest live player object of `g_players[0..n)` in the cone,
-strict arc, 2-D distance, a clear terrain ray - no team test. Skelight: section 4.2.
+`creature_findPlayerInCone` 0x10ca70 (*Observed*; **Executed** in round 2): charmed
+creatures use an inline copy of the enemy cone search; others take the nearest live player
+object of `g_players[0..n)` in the cone, strict arc, 2-D distance, a clear terrain ray from
+the creature's **full** height - no team test, no player-flag test, and here `far` **is**
+a hard cap (unlike `creature_findEnemyInCone`). Skelight: section 4.2.
 
 ## 9. The virtual slots a fight reaches
 
@@ -536,34 +557,40 @@ Proposed ledger rows (for whoever edits `FINDINGS.md`):
 |---|---|---|---|
 | new | A hit is reacted to in the victim's own run: in the tick of the hit when the victim runs after the attacker, else in the next. Hit points of a creature fall at once; a player's only in `Player_processDamage` | Executed (composition of executed functions) | 0x116638, 0x1b5330, 0x110d30, 0x1b2cc0; `test_hits_land_at_once_and_wait_for_the_victims_own_run` |
 | new | An inactive creature lands no melee hit: its animation does not advance, so the hit event never fires and its swing state never ends | Executed | 0x1162b0; `test_an_inactive_swing_never_lands` |
-| new | `Player_processDamage` draws the shared seed once for every surviving hit (the stagger roll) and once more for any hit with a knock-back class (Strong Stance), with no prediction-copy guard | Executed | 0x1b2d90-0x1b2dd8, 0x1b378c-0x1b37d0 |
+| new | `Player_processDamage` draws the shared seed once for a surviving hit (the stagger roll; not in action states 3 or 7, with 0x400000 or on a heavy attack - round 2) and once for any hit with a knock-back class (Strong Stance), with no prediction-copy guard | Executed | 0x1b2d90-0x1b2dd8, 0x1b3718-0x1b37d0 |
 | new | `creature_findEnemyInCone` has no hard maximum range: `far` only seeds the best distance | Executed | 0x10cfc4, 0x10d1d4-0x10d24c |
 
 No patch is proposed.
 
 ## 13. Not done, not known
 
+Status after round 2 (2026-10-17). What round 1 listed here and round 2 executed is struck
+from the list and named in section 15; what remains:
+
 - **Damage numbers in a net game**: `FlyingText` objects (pool block, shared draw in the
   constructor, run list, deletion) - their lifetime is not read; the contract refuses any
   pool request from `damage_apply` (also `LightEffect` on a stun, gas, disease).
-- **Player movement**: `Player_move` with a moving stick (turning, walking, modes 1, 2, 5,
-  6), the screen clamp, landing; `Player_animStep` and the clips (an authored timeline
-  stands in for `tools/ref_anim.py`); root motion.
-- **Combos and the rest of `Player_run`**: `Player_pickAttackAnim` (a shared draw;
-  refused), `Player_idleFidget`, the idle voice, regeneration, `Player_interact`,
-  instant abilities, blocking (`Player_blockSparks`), the knock-down reaction, the dead
-  state and respawn, `game_checkAllDead` and `deathTask`.
-- **Weapons and items**: weapon descriptors, dual wield, heavy attacks
-  (`Player_hitSparks`), bows and throws (projectiles: `obj_moveAndCollide` is Observed
-  only, the projectile classes' touch handlers not modelled).
-- **Creature classes other than Skelight**: their run and set-state functions,
-  `Creature_dropLoot`, corpse phases with blood decals (`Creature_deadUpdate`'s decal path
-  makes two own draws).
-- **Not executed**: `obj_moveWithCollision`, `creature_moveSimple`, the restricted
-  `Player_move`, `Player_onTouch`, the two cooldown setters, `creature_findPlayerInCone`,
-  the `hitTargetAtReach` / `Edge` / `OrPlayer` helpers, `world_notifyObjectsNear`, the
-  destructor chain. Their contract code (where it exists) follows the reading.
-- Water, spells, PvP modes, cutscenes, the prediction copy and two machines.
+- **Objects the defence path constructs**: `GutChunk` (blood, 1 draw in 8), the Holy
+  Shield's `LightEffect`, Strong Stance's object, the Resurrect phantom - refused.
+  `Player_blockSparks` with silent != 0 (a shared-seed user) is Observed only.
+- **The rest of `Player_run`** inside the composed world: regeneration, instant abilities
+  and the dead state run (ref_player, executed) but respawn, `game_checkAllDead` and
+  `deathTask` are not composed; `Player_interact` with an interactable object in reach is
+  refused.
+- **Ranged**: the arrow kinds 1, 2, 5, 6 and potion kinds 1-3, deflection, skill ranks
+  above 0 on a missile, other projectile classes (`LavaBomb`, `beetleProjectile`, ...);
+  the player's bow release in state 0 is not composed (needs `world_collectObjectsInArc`
+  wired into the tick); what `damage_apply` does with a projectile as attacker (Unknown).
+- **Spells**: three are composed (Holy Strike, Shock of Fire, Wave of Flame); the other 98
+  skills, player state 5's aim / mana / recast inside the composed world, disease entries,
+  and a creature destroyed with spells attached are refused.
+- **Monster classes**: set-states and corpse phases of the classes not yet executed
+  anywhere (Goblin's death state is executed, its other states are not);
+  `loot_generateDrops` objects are not composed. Who calls 0x118b58 (Unknown).
+- **Per-machine inputs**: `game_buildScreenEdgePlanes` 0x1e71b0 (camera frustum) stays a
+  call-out of the screen clamp.
+- Water beyond the refusals, PvP modes, cutscenes, the prediction copy and two machines.
+  Nothing was run on a console, in PCSX2 or on the live rig.
 
 ## 14. For the native client
 
@@ -584,7 +611,179 @@ What lifts the "exactly one live retained World actor" restriction of
 5. Install the service table of section 9: the base-class and Player bodies named there,
    with the call-outs this contract lists as refusals still refused.
 
+6. (Round 2) Follow section 15: move through the executed movers with their touch orders,
+   let projectiles and effects destroy themselves in their own run, run the real player
+   tick (its idle-fidget draw every standing tick and the 200-draw heavy-attack sparks
+   included), and take the executed `_full` bodies, not the round-1 contract code, where
+   15.6 lists a difference.
+
 `tools/ref_combat_runtime.py` is the executable form: `Runtime()` builds the world,
 `spawn_player` / `spawn_skelight` place actors (authored set-up), `tick()` runs one pass,
 and `Runtime.trace` / `CombatModel.calls` / `CombatModel.vcalls` give the order of every
 service call for comparison.
+
+## 15. Round 2 (2026-10-17): movement, player combat, projectiles, spells, monster death
+
+Round 2 adds to round 1 and changes none of its code, APIs or pinned vectors: every new
+body lives in its own module, subclassing `CombatModel` / `Runtime`, and every new area has
+its own document. Where a round-1 method or statement turned out short or different, the
+difference is listed in 15.6 and the executed body is in the new module; the round-1
+method stays as it was.
+
+| Target | Document | Module (model / runtime) | Difftest |
+|---|---|---|---|
+| 1. movement and collision | `docs/spec/combat-movement.md` | `ref_combat_move.py` (`MoveModel` / `MoveRuntime`) | `difftest_combat_move.py` |
+| 2. combos, armed melee | `docs/spec/combat-player-melee.md` | `ref_combat_melee.py` (`MeleeModel` / `MeleeRuntime`) | `difftest_combat_melee.py` |
+| 2. blocking, knock-downs; 7. the real player tick | `docs/spec/combat-player-defence.md` | `ref_combat_ptick.py` (`DefenceModel` / `TickRuntime`) | `difftest_combat_ptick.py` |
+| 3. projectiles and ranged | `docs/spec/combat-projectiles.md` | `ref_combat_ranged.py` (`RangedModel` / `RangedRuntime`) | `difftest_combat_ranged.py` |
+| 4. spells in combat | `docs/spec/combat-spells.md` | `ref_combat_spells.py` (`QueryModel` / `SpellRuntime`) | `difftest_combat_spells.py` |
+| 5. death, loot, destructors; 6. hit and cooldown helpers | `docs/spec/combat-monster-death.md` | `ref_combat_monsters.py` (`MonsterCombatModel` / `MonsterRuntime`) | `difftest_combat_monsters.py` |
+| all of them in one world | this section, 15.5 | `ref_combat_full.py` (`FullModel` / `FullRuntime`) | - (composition of the above) |
+
+### 15.1 Movement and touches (*Executed*)
+
+- `obj_moveWithCollision` 0x14d4b8: for every object of ONE box query, in its order, with
+  no early exit: the other's slot 6 with the mover, then the mover's own slot 6. The
+  other's call is skipped only when the **mover** is the prediction copy (0x14d9ac). The
+  grid relink is an inline copy of `obj_updateGridCell`, twice, without a call.
+- `Player_move` 0x1b4020, all modes 0..7, moving and still stick: a player moves along its
+  **facing**, which turns 40 % of the remaining angle per tick toward the stick in mode 0;
+  every call makes `dialog_isOpen`, `net_getCamYaw` and, last, `net_getCamFlag`; entering
+  water draws the shared seed once; the velocity passes through the static vector 0x8657a0.
+  A composed player walks 155.15/60 units per tick (fixture speed scale).
+- `Player_animStep` 0x1b9520 writes the root motion that `Player_move` adds once as
+  `root x 60`; `Player_clampToScreen` 0x1b3d90 runs on authored screen planes (the planes
+  themselves come from the camera, per machine).
+- Creature walking was already executed (`ref_creature`, 99.1 %); the movement document
+  maps which class states use which helper and ties root motion and footsteps to the
+  research-anim event tables.
+
+### 15.2 Player combat (*Executed*)
+
+- **The attack choice**: `Player_pickAttackAnim` 0x1bba88 draws the shared seed once and
+  ignores the value. The hit is a frame count, not an animation event: `since ==
+  trunc(16.02 / speed)` offline; the next swing may start once `since > (22.02 - trim) /
+  speed`; the swing ends after `P+0x470 x 60` frames, not divided by the speed.
+- **Armed melee**: `Player_meleeHit` 0x1b6a98, every branch - one `damage_apply` per
+  target; a blocked line of sight still hits an `AutoProp`; a bow or thrown weapon in melee
+  does fist damage with the weapon's flags; a heavy attack raises the range x1.9 in place
+  and, on a creature, costs **200 shared draws** (`Player_hitSparks` 0x1bcc20, real player
+  only). A bow or thrown combo press between 22.02 and 39.6 frames draws the seed and
+  advances the step without a swing. 12,000 executed combo ticks (classes 4, 6, 7).
+- **Blocking**: a front block (half-plane) takes nothing, or half with flag 0x20000; one
+  shared draw in state 8 only; `Player_blockSparks` walks the player's own seed by at least
+  150 draws.
+- **Knock-downs**: level >= 2 picks `knockdown{1,2}_{a,b,c,d}.anm` by class and bearing;
+  resisted calls `SkillStrongStance_trigger`; unresisted sets state 3 first.
+- **The real tick** (target 7): `TickRuntime` runs `ref_player.Tick.run` as slot 4. A
+  standing player (four tracks) draws the shared seed once every tick (`Player_idleFidget`),
+  none while a fifth track plays; the idle voice adds one when its counter passes +0x4b2 -
+  `docs/spec/player-tick.md` 10, rows 1 and 2.
+
+### 15.3 Projectiles (*Executed*)
+
+- Arrows and bolts of players and monsters are `MissileWeapon` (block 0x1c8), thrown
+  weapons `playerProjectile` (0x1d0): one shared draw in construction, linked at the
+  **front** of the every-frame list, so first run in the next tick, before older actors.
+- Flight is `obj_moveAndCollide` 0x1509f8: the hit object's slot 6, then the projectile's.
+  The hit state +0xcc lets one victim through per frame (first in box order); Penetrating
+  Arrows re-arms it and keeps a victim list at +0x124 (2 shared draws per touch for a
+  player's kind 0/3 arrow), then one deflection roll, then `damage_apply` with the owner
+  as attacker (the projectile itself if the owner handle is 0).
+- A projectile **destroys itself** in its own run (slot 1 with 3); only a deflected one
+  goes through `obj_delete`.
+
+### 15.4 Spells, monster helpers, death and destructors (*Executed*)
+
+- A cast happens in the caster's run; an effect object first runs in the next tick, a
+  player's attached spell in the tail of the same run (`Player_updateCast` calls slot 17),
+  a creature's at the start of `Creature_run`. Victims come from
+  `world_collectObjectsInArc` 0x1614f0 (creatures; first entry nearest, the rest in reverse
+  acceptance order; partnerless nodes, so a destroyed object stays listed),
+  `world_collectInSphere` 0x14ab80 and `world_damageInRadius` 0x161270 (damage at once, in
+  box order; a non-creature costs one shared draw). Burning credits the caster through the
+  status source +0x360 and flag 0x10000000. Effects destroy themselves at once.
+- Hit helpers: `hitTargetAtReach` (60 in 3-D; no arc, ray or enemy test), `hitTargetInArc
+  Edge`, `hitTargetOrPlayerInArc`, `knockbackTarget`, `world_notifyObjectsNear`, the sight
+  helpers `canSeePoint` / `canSeeObjEdge` / `canSeeTargetIn` (their differences from
+  `canSeeObj` are a table in `docs/spec/combat-monster-death.md` 1), and the cooldown
+  setters `Creature_setAttackCooldown` 0x118bf0 / `Creature_setAttackCooldownOn` 0x118b58.
+  None of them draws the shared seed.
+- Death: `Creature_deadUpdate` with its blood decal (two own draws), `Creature_dropLoot`
+  0x10f2c8 (eleven class tests, boss ranks, own-draw coins), Goblin's death state; the
+  destructor chain `GameObject_dtor`, `Creature_dtor`, `Skelight_dtor`, `Player_dtor`
+  agrees with round 1's `Runtime._slot1` order (pinned by a test), with the additions of
+  15.6.
+
+### 15.5 One world with all of it
+
+`tools/ref_combat_full.py` merges the six models into `FullModel` and composes
+`FullRuntime`, whose player slot 4 is the real tick with the executed `Player_move`,
+`Player_meleeHit`, `Player_pickAttackAnim`, `Player_takeDamage` / `Player_processDamage`
+and `Player_animStep`. It is a composition of executed bodies plus labelled fixtures;
+it refuses what any area refuses. Its scenarios and what they showed are in
+`tools/test_ref_combat_full.py` (see 15.7).
+
+### 15.6 Corrections to round 1
+
+| Where | Was | Is | Evidence |
+|---|---|---|---|
+| 1 item 5 | death never removes an object at once | creatures and players only; projectiles and effects destroy themselves in their own run | Executed (`MissileWeapon_run`, `playerProjectile_run`, effect destructors) |
+| 2.2 destructor chain | `pool_free` in `GameObject_dtor` when bit 0 | each destructor first stores its own table; the derived ones call their bases with 0 and the most derived frees the block; spells are ended through their table at +0x14 | Executed (`difftest_combat_monsters`) |
+| 2.2 `Player_dtor` | clears the record's object pointer when +0x462 is 0 ... two lights | under `g_inGhostOp` no record write (the alive list is still rebuilt); a display-only player clears 0x4ef360 instead; record words +0x43dc..+0x43ec are zeroed; an `AnimState` at +0x560 is destroyed before the lights | Executed (`playerDtor`) |
+| 2.3, FINDINGS proposal row 3 | a stagger roll for every surviving hit | not in states 3 or 7, with 0x400000, on a heavy attack; a knock-back hit draws once | Executed 0x1b3718-0x1b37c8 |
+| 6.1 cooldown setters | each calls slot 27 with 0x10, then stores +0x318 | 0x118bf0 does nothing without a target and skips slot 27 (not the store) in state 0x14; 0x118b58 does nothing for a boss or a null object | Executed |
+| 6.1 `hitTargetAtReach` | target within 60 of a point ahead, not dead | the same, in 3-D, with no arc, ray or enemy test | Executed |
+| 6.3 block | one shared draw in state 8 | and a front block zeroes or halves the hit and calls `Player_blockSparks` | Executed |
+| 6.4 D Resurrect | one player only | `g_numPlayers == 1`, and a save skips the stagger roll | Executed |
+| 8.3 `findPlayerInCone` | nearest live player in the cone | `far` is a hard cap, the ray starts at full height, no player-flag test | Executed |
+| contract code `move_with_collision` | calls `obj_updateGridCell` | the original inlines the same relink (no call); state identical | Executed (`difftest_combat_move --round1`) |
+| contract code `player_move` (still stick) | - | the original also calls `dialog_isOpen` (0x1b40c0), the target-angle `net_getCamYaw` (0x1b41ec) and `net_getCamFlag` (0x1b51e8) every call, stores 0x8657a0, stores -0.0 (0x80000000) in the track weights +0x164/+0x16c/+0x184/+0x18c of a standing player, always stores the +0x482 countdown, passes a height pointer to `water_test`; offline with no dialog only the -0.0 patterns and the 0x8657a0 store differ in state | Executed (`--round1`: all 2,748 in-domain cases differ in calls) |
+| `docs/spec/skills-35-68.md` 1.6 `world_damageInRadius` | (order not said) | raised to the minimum first, then capped at the maximum: the maximum wins when they cross | Executed |
+| `ref_skills_a.py` notes, symbol note of 0x1614f0 | arc list "nearest first" / "output format not read" | only the first entry is the nearest; the rest in reverse order of acceptance | Executed |
+
+The round-1 contract code is kept as it was so that its pinned vectors stay valid; a
+rebuild should follow the executed bodies of the round-2 modules. The other documents'
+own correction tables (`combat-movement.md` 7, `combat-player-melee.md` 8,
+`combat-player-defence.md` 7, `combat-projectiles.md` 10, `combat-spells.md` 8,
+`combat-monster-death.md` 7) have the details.
+
+Proposed ledger rows (for whoever edits `FINDINGS.md`), in addition to section 12's:
+
+| # | Finding | Kind | Evidence |
+|---|---|---|---|
+| new | A heavy attack that hits a creature makes 200 shared draws (`Player_hitSparks`), on the real player only | Executed | 0x1b6f34, 0x1bcc20 |
+| new | A standing player draws the shared seed once every tick (`Player_idleFidget`, exactly four tracks) | Executed (pieces), composed | 0x1bc3d0 |
+| new | Projectiles and spell effects destroy themselves in their own run; handles to them read 0 at once | Executed | 0x15157c-0x152510, 0x1bb368 |
+| new | Of several enemies an arrow overlaps in one frame, only the first in box order is hit (hit state +0xcc), unless it pierces | Executed | 0x152a18 |
+| new | `world_collectObjectsInArc` lists are partnerless: a destroyed object stays listed, and Holy Strike then homes on whatever object reuses its block | Inferred (from executed pieces) | 0x1614f0, `test_the_candidate_list_outlives_its_target` |
+| new | `creature_findPlayerInCone` caps the distance at `far`; `creature_findEnemyInCone` does not | Executed | 0x10ca70, 0x10cf78 |
+
+### 15.7 What was run
+
+Every difftest below was re-run at its full case count on 2026-10-17 with
+`python3 tools/difftest_combat_<area>.py <your SLUS_209.73>` (seed 20973): calls with
+arguments, every byte stored outside the stack, the shared seed and its draw count, the
+result. **157,137 cases compared, 0 mismatches** in round 2, plus 12,000 ticks of the
+original `Player_run` against `ref_player.Tick` in state 1 (combo runs, 0 mismatches);
+round 1's own difftest again 30,988 cases, 0 mismatches. Each area document has its
+coverage table; in brief:
+
+| Difftest | Entry points | Compared | Refused | Lowest coverage, and why |
+|---|---|---|---|---|
+| `combat_move` | `obj_moveWithCollision`, `creature_moveSimple`, `Player_move` (all modes; and the round-1 still-stick domain), `Player_animStep`, `Player_clampToScreen` | 18,000 | 0 | still-stick `Player_move` 825 of 1,220 (by design); moving 1,204 of 1,220 (nops, a dead delay slot) |
+| `combat_melee` | `Player_pickAttackAnim`, `Player_meleeHit` (all branches; and round 1's generator), `Player_hitSparks`; combo runs | 12,000 + 12,000 ticks | 0 | `meleeHitFull` 425 of 432 (the null-target throw, nops) |
+| `combat_ptick` | `Player_takeDamage` (block, Holy Shield), `Player_blockSparks` (silent 0), `Player_interact` (nothing in reach), `Player_processDamage` (all but object construction) | 11,606 | 394 | `blockSparks` 198 of 408 (silent != 0 not run); `interact` 142 of 416 (no interactable) |
+| `combat_ranged` | `obj_moveAndCollide`, `Projectile_ctor`, `MissileWeapon` ctor / run / onTouch / slot 17 / dtor, `playerProjectile` ctor / run / dtor | 30,000 | 0 | `MissileWeapon_run` 317 of 1,024 (kinds 1, 2, 5, 6 not run); `playerProjectile_run` 171 of 674 (potions) |
+| `combat_spells` | `world_collectObjectsInArc`, `world_collectInSphere`, `world_damageInRadius`, five effect destructors | 32,000 | 0 | all but padding |
+| `combat_monsters` | sight, hit, knock-back, cooldown and notify helpers; four destructors; `Creature_deadUpdate` with decal; `Creature_dropLoot`; Goblin death | 53,531 | 469 | Goblin set-state 233 of 613 (death state only) |
+
+Agreement with round 1 on its domain: `player_take_damage` 2,399 of 2,399 and
+`player_process_damage` 1,437 of 1,437 cases identical to the `_full` bodies; round 1's
+unarmed `player_melee_hit` identical on 3,000; round 1's `player_move` differs in calls on
+all 2,748 of its in-domain cases (15.6). `MeleeRuntime`, and the round-1 `Runtime` with
+`DefenceModel` swapped in, reproduce round 1's 80-tick duel pin.
+
+Each area also has synthetic-fixture tests (`tools/test_ref_combat_{move,melee,ptick,
+ranged,spells,monsters,full}.py`); they are evidence about the models, not about the game.
+Nothing was run on a console, in PCSX2 or on the live rig.
