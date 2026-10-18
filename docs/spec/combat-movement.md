@@ -151,7 +151,9 @@ letters; what is new or sharper here is marked **new**):
   every tick that does not land (decrement, then 0 if it went negative); on a landing in
   mode 2 with `bits & 3`, not the copy, `SpellCharge_onContact(spell, 0)` is called with
   whatever `creature_findSpellByType` returned, **0 included** (*Observed* and *Executed* as
-  a call; whether the callee tolerates 0 is *Unknown*).
+  a call). The callee's first load is the spell's word +0x48 (0x2c962c; non-zero returns at
+  once), so with a null spell it reads address 0x48; what a console holds there is
+  *Unknown*.
 - (n) `net_getCamFlag(slot)` **on every call** (**new**); with it 0 and the clamp condition of
   (k): unless the position equals `goal` in x and y, for each plane bit of `mask` with
   `(pos − old) · N < 0`, x and y go back to their values at entry.
@@ -285,8 +287,10 @@ players offline refuse without authored screen planes.
   `symbols/movement.tsv`, not executed; the clamp's planes in the contract are authored.
 - `world_slideMove`, `terrain_heightBelow`, `water_test`, `water_disturb` are call-outs here;
   the terrain kernels are `tools/ref_world.py`'s business and need a level file.
-- `SpellCharge_onContact` 0x2c95f4 with a null spell after a rush landing (3(m)): Unknown
-  whether it reads through the pointer. Settle by executing 0x2c95f4 with a0 = 0.
+- `SpellCharge_onContact` 0x2c95f4 with a null spell after a rush landing (3(m)): it loads
+  the word at address 0x48 first (0x2c962c) and returns when that is non-zero. The value on a
+  console is Unknown; whether a rush can land without its spell attached is Unknown too
+  (settle by reading who detaches the SpellCharge from the player).
 - The word 0x4d8a28 (turn rate `s × 0x3d0f5c28`): no writer found (movement-camera 4.1(d)).
 - A player under scripted control (+0x231) is walked by `Creature_moveToDest`
   (`docs/spec/player-tick.md` 1) — executed in ref_creature, not composed here.
