@@ -1,7 +1,9 @@
 # Lighting: level light, light nodes, torches, light effects, fog
 
-Status: first pass, 2026-10-17, on branch `t3/research-fx`. Read from the disassembly and a
-Ghidra decompile of `SLUS_209.73` (v2.00); nothing here was run. **Observed** (O) = read at
+Status: first pass, 2026-10-17, on branch `t3/research-fx`, read from the disassembly and a
+Ghidra decompile of `SLUS_209.73` (v2.00). Round 2, 2026-10-18: executed against the
+original in `tools/ee_emu.py` (`tools/difftest_lighting.py`, `tools/difftest_fx_props.py`);
+results and corrections in section 9. **Observed** (O) = read at
 the address given, **Inferred** (I), **Unknown** (U). Reference contract:
 `tools/ref_lighting.py`, tested by `tools/test_ref_lighting.py` on synthetic values.
 
@@ -193,7 +195,7 @@ chunk colour, both radii r, falloff 1/r², floor 0, layer 0, position = chunk tr
 math_noise(slot address × 0x19660d + g_simFrame × 16 + 0x7efe41)) << +0x22), position, glow
 colour, texture *0x4f848c, angle 0, flags 2 = additive)`, only when +0x27 is set and the
 texture pointer 0x7d8a08 is set (`game_addCoreTasks` 0x1e6f0c stores *0x4f848c there).
-The glow texture's file name was not traced (U).
+The glow texture is `fx.lmp` : `halo2.tex` (round 2, section 9).
 
 ### 3.2 Fire objects — O 0x2b1e80–0x2b3a64
 
@@ -279,7 +281,7 @@ objects' own generators. Nothing in this document feeds the simulation that was 
 
 ## 8. Open
 
-- The file of the glow texture *0x4f848c and of 0x44fe04 (U).
+- ~~The file of the glow texture *0x4f848c and of 0x44fe04~~: `halo2.tex` and `halo1.tex` (section 9).
 - Which code sets the render layer 0x4039a4 besides the screens (U).
 - `light_emitModelLightsVariant` 0x149828 and `light_pickShadowLights` 0x148c98 details
   (shadow blobs; render-pipeline 4.9).
@@ -291,3 +293,54 @@ i=s.rfind("## 7. Open"); s=s[:i]+"## 8. Open"+s[i+len("## 8. Open"):]
 open(p,'w').write(s)
 EOF
 grep -n '^## ' docs/lighting.md
+
+## 9. Round 2: run against the original (2026-10-18)
+
+`tools/difftest_lighting.py` runs `light_writeVuConstants`, `light_resetObjectLight`,
+`light_addObjectAmbient`,
+`light_setObjectAmbient`, `light_scaleObjectLight`, `light_link` + `light_collectNear`,
+`light_emitModelLights`,
+`light_sampleFloor`, `world_runLightChunk` and `LightEffect_ctor` / `_run` in
+`tools/ee_emu.py` and compares
+them with `tools/ref_lighting.py`: 6 properties, 0 mismatches (6,757 object-light
+operations, 800
+node sets, 1,500 model-light blocks, 1,500 floor tints, 170,841 light-chunk runs, 16,935
+LightEffect
+frames; colours, radii, timers and choices exact, directions within 2.5 × 10⁻⁷). The fire
+props are
+executed by `tools/difftest_fx_props.py` against the new `tools/ref_fx_props.py`
+(docs/effects.md 16.3).
+The corrections below are applied in `ref_lighting.py`; its API is unchanged.
+
+
+- The **fill** colour is trunc(**0.79999995** × ambient as set) (the constant 0x3f4ccccc),
+  so an ambient that is a multiple of 5 gives one less than 0.8 would. Its alpha is the
+  scaled sun alpha (unused). Executed ("object light").
+- `light_resetObjectLight` also: lowers the render layer 0x4039a4 by 10 when it is above 9,
+  restores the camera-space sun and fill directions (0x5d34b8 / 0x5d34c8) from the level
+  ones, and clears 0x4039a8 and 0x4039a0. `light_writeVuConstants` calls it before and
+  after rescaling. O 0x148340, Executed ("object light").
+- `LightEffect` keeps the **fractions** of its colour: the accumulators are clamped
+  (0…255, or −255…255 signed) but not truncated; the node gets trunc() of them. A rate
+  below one unit per tick therefore still changes the light (round 1's reference truncated
+  every tick and froze it). Executed ("light effect").
+- Level light chunks: the chunk translation is an **s32** (cvt.s.w at 0x18ba3c), × 0.25.
+  The 16 slots are shared: the radius a mode keeps "unchanged" is the slot's, so a chunk
+  that takes over a slot starts from the previous owner's radius
+  (`ref_lighting.LightSlots`). Executed ("light chunk", 16 slots shared by up to 20 chunks).
+- `light_emitModelLights`: the two best are tracked in one pass from an initial key
+  0x1000001f; a node whose key (trunc(D² − R²) << 7 | index) is above that is never
+  chosen (only for radii above about 840, I). A missing light reads `out[31]`, which the
+  function zeroes first. Executed ("model lights": colours exact, directions within
+  2.1 × 10⁻⁷).
+- `light_sampleFloor` and `light_collectNear` are as round 1 described. Executed.
+- The glow texture of light chunks and `Fire_run` (*0x4f848c) is `fx.lmp` : `halo2.tex`;
+  0x44fe04, the
+  status glow of `Creature_draw`, is `engine.lmp` : `halo1.tex` (docs/effects.md 14.2).
+Section 8's first item is answered.
+- **Not cosmetic:** a `LightEffect` is a `GameObject`, and its constructor draws the
+  shared seed once
+  (docs/effects.md 15.2). Section 7 ("all of it is cosmetic") holds for the light state,
+not for making
+  a LightEffect: a client must construct them in the simulation even when it does not
+light anything.
