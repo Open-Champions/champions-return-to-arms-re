@@ -409,26 +409,106 @@ TYPEINFO = {0x3C2608: 0x908130, 0x3C3AB8: 0x9083D0, 0x3CC6DC: 0x908E10, 0x3C9508
 TYPE_NAMES = {0x908130: b'Creature', 0x9083D0: b'Player', 0x908E10: b'Skelight', AUTOPROP_DESC: b'AutoProp'}
 
 
+class LiveItemDef:
+    """An item definition (0x40 bytes) as ref_combat.ItemDef, read from the image: name +0,
+    damage range +0xe/+0x10, armour +0x18, attack rating +0x1a (s16), category +0x1d,
+    subtype +0x1e, damage-type bits +0x20, flags +0x28 (the layout tools/difftest_combat.py
+    executes ref_combat with)."""
+
+    def __init__(self, mem, addr):
+        self._mem, self.addr = mem, addr
+
+    def _s16(self, off):
+        return s16(self._mem.load(self.addr + off, 2))
+
+    name = property(lambda self: '')
+    dmg_min = property(lambda self: self._s16(0xE))
+    dmg_max = property(lambda self: self._s16(0x10))
+    armor = property(lambda self: self._s16(0x18))
+    attack = property(lambda self: self._s16(0x1A))
+    category = property(lambda self: self._mem.load(self.addr + 0x1D, 1))
+    subtype = property(lambda self: self._mem.load(self.addr + 0x1E, 1))
+    dmg_type = property(lambda self: self._mem.load(self.addr + 0x20, 4))
+    flags = property(lambda self: self._mem.load(self.addr + 0x28, 8))
+
+
+class LiveItem:
+    """An item record (0x48 bytes) as ref_combat.Item, read from the image: definition +0,
+    count +4, flags +8 (u64), four modifier slots of four s16 at +0x24."""
+
+    def __init__(self, mem, addr):
+        self._mem, self.addr = mem, addr
+
+    @property
+    def defn(self):
+        return LiveItemDef(self._mem, self._mem.load(self.addr, 4))
+
+    count = property(lambda self: s16(self._mem.load(self.addr + 4, 2)))
+    flags = property(lambda self: self._mem.load(self.addr + 8, 8))
+
+    @property
+    def mods(self):
+        return [tuple(s16(self._mem.load(self.addr + 0x24 + 8 * i + 2 * j, 2)) for j in range(4))
+                for i in range(4)]
+
+    def mod(self, code, field=1):
+        return T.RB.desc_get(self.mods, code, field)
+
+
 class MeleeRuntime(T.Runtime):
     """ref_combat_runtime.Runtime with MeleeModel installed: the player's swing reaches
-    player_melee_hit_full and the combo's next swing pick_attack_anim (its shared draw).
-    Everything else is round 1's contract; an armed player is still refused by the
-    record service Player_recalcDamage with a weapon (see the document, section 6)."""
+    player_melee_hit_full, the combo's next swing pick_attack_anim (its shared draw), and
+    a weapon item is served by ref_combat's executed record rules on live views
+    (Player_recalcDamage, item_getModifiedField1a, damage_apply's weapon descriptor).
+    Refused still: bows, thrown weapons and the record-class-4 rule (they read skill
+    statistics), a second weapon (the dual-wield factor reads the class-skill table), a
+    heavy attack on a creature (Player_hitSparks needs sample points of real models)."""
 
     def __init__(self, *args, **kwargs):
         T.Runtime.__init__(self, *args, **kwargs)
         self.model = MeleeModel(self.mem, self.services)
-        # AUTHORED fixture: the type-info descriptors' name words (word 0), so that
-        # rtti_typeInfoEquals compares names as in the game; the names are the classes'
-        for desc, name in TYPE_NAMES.items():
-            text = self._alloc_fixture(16)
-            for i, b in enumerate(name + b'\0'):
-                self.mem.poke(text + i, 1, b)
-            self.mem.poke(desc, 4, text)
         self.services.table['Creature.v0'] = self.svc_Creature_v0      # before the virtual dispatcher
+        self._type_names = False
 
+    # ---- authored set-up -------------------------------------------------------------------
+    def give_weapon(self, slot, dmg=(5, 9), attack=10, subtype=0, dmg_type=1, cls=0, mods=()):
+        """AUTHORED: an item definition and an item placed in fixture memory and made the
+        primary of weapon set 0 (R+0x4434, equipment slot 0 R+0x43f0), weapon class `cls`
+        (R+0x4a86) - what inventory_equipItem leaves for a one-hand weapon (0x1c2ad4,
+        docs/spec/player-animation-dispatch.md 1.3); its idle-animation reset is not
+        modelled."""
+        poke = self.mem.poke
+        d = self._alloc_fixture(0x40)
+        poke(d + 0xE, 2, dmg[0] & 0xFFFF)
+        poke(d + 0x10, 2, dmg[1] & 0xFFFF)
+        poke(d + 0x1A, 2, attack & 0xFFFF)
+        poke(d + 0x1E, 1, subtype & 0xFF)
+        poke(d + 0x20, 4, dmg_type)
+        item = self._alloc_fixture(0x48)
+        poke(item, 4, d)
+        poke(item + 4, 2, 1)
+        slots = list(mods) + [(-1, 0, 0, 0)] * (4 - len(mods))
+        for i, slot_ in enumerate(slots):
+            for j in range(4):
+                poke(item + 0x24 + 8 * i + 2 * j, 2, slot_[j] & 0xFFFF)
+        R = G_PLAYERS + slot * REC_SIZE
+        poke(R + 0x4434, 4, item)
+        poke(R + 0x43F0, 4, item)
+        poke(R + 0x4A86, 1, cls & 0xFF)
+        return item
+
+    # ---- services ----------------------------------------------------------------------------
     def svc_Creature_v0(self):
-        """Slot 0 (the type-info getter) of the target Player_meleeHit tests."""
+        """Slot 0 (the type-info getter) of the target Player_meleeHit tests.  The
+        descriptors' name words are an AUTHORED fixture, written on first use, so that
+        rtti_typeInfoEquals compares names as in the game."""
+        if not self._type_names:
+            for desc, name in TYPE_NAMES.items():
+                text = self._alloc_fixture(16)
+                for i, b in enumerate(name + b'\0'):
+                    self.mem.poke(text + i, 1, b)
+                self.mem.poke(desc, 4, text)
+            self._type_names = True
         target = self.model.typeid_target
         fn = self.u32(self.u32(target + 0x48) + 4)
         if fn not in TYPEINFO:
@@ -438,9 +518,6 @@ class MeleeRuntime(T.Runtime):
     def svc_AutoProp_typeinfo(self):
         return AUTOPROP_DESC
 
-    def svc_item_getModifiedField1a(self, item):
-        raise Unsupported('weapon items (item_getModifiedField1a)')
-
     def svc_Player_meleeHit(self, P, target, a2, extra, scale):
         return self.model.player_melee_hit_full(P, target, a2, extra, scale)
 
@@ -449,3 +526,38 @@ class MeleeRuntime(T.Runtime):
 
     def svc_Player_hitSparks(self, P, target):
         return self.model.player_hit_sparks(P, target)
+
+    def svc_item_getModifiedField1a(self, item):
+        """item_getModifiedField1a 0x103f88: ref_combat.item_attack_rating (executed)."""
+        return T.RB.item_attack_rating(LiveItem(self.mem, item)) & M32
+
+    def svc_Player_recalcDamage(self, P, weapon, flag):
+        """Player_recalcDamage 0x1b7158: ref_combat.recalc_damage (executed) on live views,
+        with a weapon item too (the subset that reads no skill statistics)."""
+        if not weapon:
+            return T.Runtime.svc_Player_recalcDamage(self, P, weapon, flag)
+        item = LiveItem(self.mem, weapon)
+        if s8(item.defn.subtype) in (4, 6):
+            raise Unsupported('a bow or thrown weapon (skill 0x30 / 0x4f statistics)')
+        slot = s32(self.u32(P + 0x3C8))
+        if s32(self.u32(G_PLAYERS + slot * REC_SIZE + 0x50)) == 4:
+            raise Unsupported('record class 4 (skill 0x5c statistics)')
+        self._sync_rb()
+        rec = T._LivePlayerRec(self, slot)
+        self.rb.players[rec.slot] = rec
+        T.RB.recalc_damage(None, self.rb, self.live(P), item, flag)
+
+    def svc_damage_apply(self, victim, attacker, attack, a3, t0, flags, desc, no_crit, dmin, dmax):
+        """damage_apply with a weapon item as the descriptor: its four modifier slots
+        (+0x24) are the descriptor (ref_combat.Item); everything else as round 1."""
+        if not desc or isinstance(desc, tuple):
+            return T.Runtime.svc_damage_apply(self, victim, attacker, attack, a3, t0, flags, desc, no_crit,
+                                              dmin, dmax)
+        slots = LiveItem(self.mem, desc).mods
+        self._sync_rb()
+        before = len(self.rb.seed.draws)
+        self.note('damage_apply', victim, attacker, s32(attack), flags & M32)
+        result = T.RB.damage_apply(self.rb, self.live(victim), self.live(attacker) if attacker else None,
+                                   dmin, dmax, attack, flags, slots, no_crit)
+        self.note('damage_result', victim, result, tuple(self.rb.seed.draws[before:]))
+        return result

@@ -294,6 +294,86 @@ def generate(rig, key, rng):
     return (P, target, a2, extra, f32(scale))
 
 
+# ---------------------------------------------------------------------------------------
+# combo sequences: Player_run state 1 with weapon classes 4, 6 and 7 (tools/difftest_player.py)
+# ---------------------------------------------------------------------------------------
+# The combo steps of state 1 are part of ref_player.Tick, executed by tools/difftest_player.py,
+# whose random runs never entered the next swing of the bow / thrown-weapon melee
+# (0x1aad90-0x1aaf30) nor the class-7 combo window (0x1aab18).  These runs use that script's
+# world and rig unchanged and a driver that, in state 2, equips a bow, a thrown weapon or
+# two weapons and enters state 1 by writing the fields the state-2 attack writes for it
+# (AUTHORED driver; state 2's own bow/thrown punch path 0x1a79fc writes the same ones), then
+# taps attack.
+
+COMBO_BLOCKS = {'class-7 combo window 0x1aab18': (0x1AAB18, 0x1AAB1C),
+                'class 4/6 next swing 0x1aae70': (0x1AAE70, 0x1AAE74),
+                'Player_findTarget(P, 60) 0x1aaeac': (0x1AAEAC, 0x1AAEB0),
+                'class 4/6 swing started 0x1aaf00': (0x1AAF00, 0x1AAF04),
+                'state 2 at 0x1aaf30 (unreachable: since <= 39.6 and > 54)': (0x1AAF30, 0x1AAF34)}
+
+
+def combo_runs(elf, ticks, seed):
+    import difftest_player as DP
+    RP = DP.RP
+
+    class ComboDriver(DP.Driver):
+        def between(self):
+            DP.Driver.between(self)
+            rng, mem, world = self.rng, self.mem, self.world
+            P, R = world.P, world.R
+            frame = mem.u32(RP.G_SIM_FRAME)
+            if mem.s32(P + 0x58C) == 2 and rng.random() < 0.08:
+                key = rng.choice(('bow', 'thrown', 'dual', 'dual', 'bow'))
+                world.equip(world.slot, key, rng)
+                mem.w32(P + 0x58C, 1)
+                mem.w32(P + 0x448, (frame - rng.choice((0, 0, 1, 20, 41))) & M32)
+                mem.w32(P + 0x470, 0x3F666666 if key == 'bow' else 0x3FCCCCCC)
+                mem.w8(P + 0x461, 1)
+                mem.w32(P + 0x44C, 0)
+                mem.w8(P + 0x460, 0)
+                self.plan = []
+                for _ in range(rng.randrange(2, 8)):
+                    self.plan += [DP.BTN["attack"]] * rng.randrange(1, 3) + [0] * rng.randrange(15, 60)
+
+    totals = {'ticks': 0, 'state1': {}, 'bad': 0, 'examples': []}
+    hits = {k: 0 for k in COMBO_BLOCKS}
+    for n, (net, copy, machine) in enumerate(((0, 0, 0), (1, 0, 0), (0, 0, 1), (1, 1, 1))):
+        rig = DP.Rig(elf, seed + n, net, copy, machine)
+        driver = ComboDriver(rig)
+        world, mem = rig.world, rig.emu.mem
+        world.place_creatures(rig.rng)
+        for t in range(ticks):
+            driver.pad()
+            state = mem.s32(world.P + 0x58C)
+            cls = mem.s8(world.R + 0x4A86)
+            result = rig.tick(seed * 1000003 + n * 7919 + t, trace=True)
+            if result['fault']:
+                if (result['model_error'] is None) != (result['emu_error'] is None):
+                    totals['bad'] += 1
+                world.init_object(world.P, world.slot, rig.rng)
+                world.init_record(world.slot, rig.rng)
+                mem.wf32(world.R + 0xAC, 100.0)
+                driver.between()
+                continue
+            totals['ticks'] += 1
+            if state == 1:
+                totals['state1'][cls] = totals['state1'].get(cls, 0) + 1
+            for k, (lo, hi) in COMBO_BLOCKS.items():
+                if any(lo <= pc < hi for pc in rig.emu.trace or ()):
+                    hits[k] += 1
+            if not (result['calls_ok'] and result['set_ok'] and result['values_ok'] and result['seed_ok']):
+                totals['bad'] += 1
+                if len(totals['examples']) < 3:
+                    totals['examples'].append('run %d tick %d state %d class %d: calls %s set %s values %s seed %s'
+                                              % (n, t, state, cls, result['calls_ok'], result['set_ok'],
+                                                 result['values_ok'], result['seed_ok']))
+            driver.between()
+        if rig.unknown:
+            totals['bad'] += 1
+            totals['examples'].append('unknown calls %s' % {hex(a): c for a, c in rig.unknown.items()})
+    return totals, hits
+
+
 def main(argv):
     args, elf = list(argv), None
     while args:
@@ -354,6 +434,17 @@ def main(argv):
             print('    calls to unknown addresses: %s' % {('%x' % k): v for k, v in rig.unknown.items()})
             ok_all = False
         ok_all = ok_all and not failed
+    if not OPTIONS['filter'] or OPTIONS['filter'].lower() in 'combo':
+        ticks = max(OPTIONS['cases'] // 10, 30) if OPTIONS['quick'] else OPTIONS['cases']
+        totals, hits = combo_runs(elf, ticks, OPTIONS['seed'])
+        print('combo runs (Player_run vs ref_player.Tick, 4 x %d ticks): %d compared, %d failed; '
+              'state-1 ticks by weapon class %s' % (ticks, totals['ticks'], totals['bad'],
+                                                     dict(sorted(totals['state1'].items()))))
+        for k, v in hits.items():
+            print('    ticks entering %s: %d' % (k, v))
+        for e in totals['examples']:
+            print('    ' + e)
+        ok_all = ok_all and not totals['bad']
     print('%.0f s' % (time.time() - started))
     return 0 if ok_all else 1
 
