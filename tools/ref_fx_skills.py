@@ -51,6 +51,7 @@ G_WORLD = RC.G_WORLD                            # 0x44fdc8
 G_NUM_PLAYERS = 0x4D8AE0                        # s32 number of players in the session
 ZERO, ONE = C.ZERO, C.ONE
 F_2M16 = RC.F_2M16                              # 1 / 65536
+HALF_F = C.HALF
 
 # glow textures (resource words; docs/effects.md section 6 and round-2 item 7)
 G_GLOW_TEX_A = 0x4F848C                         # light-chunk / summon glow
@@ -165,8 +166,15 @@ EXTERNALS.update({
     'isNearView': Ext(0x1E77C0, 'v', 1, 'i', '(position; radius) -> 1 when the camera focus is near (per machine)'),
     'trail_addPoint': Ext(0x192550, 'iv', 0, 'n', '(handle, point)'),
     'trail_release': Ext(0x192800, 'i', 0, 'n', '(handle)'),
+    'obj_addToAlwaysDraw': Ext(0x14EDD8, 'p', 0, 'n', '(object): drawn even when not active'),
+    'path_blockNodes': Ext(0x18B6C0, 'pv', 1, 'n', '(world, position; radius): raises the block counter of the path nodes '
+                           'around (tools/ref_world.py path_block_nodes)'),
+    'mem_allocTagged': Ext(0x14FF88, 'ip', 0, 'i', '(size, tag) -> block'),
+    'Creature.v0': Ext(0, '', 0, 'i', 'table slot 0: the type-info getter of the object\'s class (typeid)'),
+    'rtti_typeInfoEquals': Ext(0x3B1250, 'ii', 0, 'i', '(type, type) -> 1 when equal'),
 })
 MODELLED = dict(SC.MODELLED)
+TYPEINFO = dict(SC.TYPEINFO, StaticFire=0x3C7318)
 SPELL_TABLES = set(SC.SPELL_TABLES) | {0x51AE58, 0x51AE28}      # HornOmen, PlanarSteel: destructors stay call-outs
 DRAW_MODELLED = {}                              # name -> address, the functions of part 3
 
@@ -928,6 +936,424 @@ _register('SpellPlanarSteelEffect_ctor', 0x2FB728)
 _register('SpellPlanarSteelEffect_run', 0x2FB9B4)
 
 
+def _cstr(mem_u8, addr, limit=256):
+    out = bytearray()
+    while len(out) < limit:
+        b = mem_u8(addr + len(out))
+        if not b:
+            break
+        out.append(b)
+    return bytes(out)
+
+
+class StaticFire:
+    """StaticFire: a fire burning on the ground (left by fire bombs and other attacks,
+    ctor 0x2c5240; or placed in a level with properties, ctor2 0x2c54f8).  It blocks path
+    nodes, has its own light (+0x80), keeps a ring of rising flame points at +0x4a4 (10-byte
+    records: x, y, z in 1/16 units, drift x, y), spawns flame particles and embers, damages
+    what stands in it every 12th frame - all of that only while isNearView(941) - and draws
+    a glow per flame point.  OWN generator (+0x44) for everything visual; ONE SHARED DRAW
+    per player it burns (the damage roll)."""
+    SF_VT = 0x50DA38
+    SF_TYPEINFO = 0x3C7318
+    SF_FLAME, SF_EMBER = 0x8E4C90, 0x8E4D30
+    LEVEL_NAME = 0x41B721                       # the current level's name
+    SF_LEVEL_CUTSCENE, SF_LEVEL_DARK = 0x54E778, 0x54E788
+    SF_PROPS = (0x54E728, 0x54E730, 0x54E740, 0x54E750, 0x54E758, 0x54E760)
+    SF_SKILL = 0x41B1A4                         # g_skillTable[13]: Fire Weapons, whose tier-2 statistic sets player burns
+
+    def _sf_light(self, obj, pos, colour, alpha_word):
+        """The light record +0x80 both constructors fill: radius 120, 1 / 120^2, the
+        given float at +0x2c, colour shorts, position = pos + (0, 0, 36)."""
+        light = obj + 0x80
+        self.w8(light + 9, 0)
+        self.wvec(obj + 0xB0, (C.add(pos[0], ZERO), pos[1], C.add(pos[2], 0x42100000)))
+        for off, value in ((0x24, 0x42F00000), (0x28, 0x3891A2B3), (0x2C, alpha_word),
+                           (0x1C, 0x42F00000), (0x20, 0x3891A2B3)):
+            self.w32(light + off, value)
+        for off, value in zip((0xA, 0xC, 0xE, 0x10, 0x12, 0x14, 0x16, 0x18), colour):
+            self.w16(light + off, value)
+        self.w8(light + 8, 0)
+        self.call('light_link', light)
+
+    def staticfire_wind(self, obj, angle):
+        """0x2c6aa8 (object, angle): the drift +0x72, +0x74 = int(3.733333 x the unit
+        vector of the angle) (s16), then one draw picks every fourth flame point of the ring
+        (index % 4 == draw % 4), whose drift takes the new drift added."""
+        c = C.cos16(angle)
+        s = C.sin16(angle)
+        r = C.rsqrt(ONE, C.add(C.mul(c, c), C.mul(s, s)))
+        self.w16(obj + 0x74, C.to_int(C.mul(C.mul(s, r), 0x406EEEEE)))
+        self.w16(obj + 0x72, C.to_int(C.mul(C.mul(c, r), 0x406EEEEE)))
+        pick = self.obj_rand(obj) & 3
+        i = self.s16(obj + 0x7A)
+        while i != self.s16(obj + 0x78):
+            rec = self.u32(obj + 0x4A4) + 10 * i
+            if i & 3 == pick:
+                self.w16(rec + 6, self.u16(rec + 6) + self.u16(obj + 0x72))
+                self.w16(rec + 8, self.u16(rec + 8) + self.u16(obj + 0x74))
+            i += 1
+            if i == self.s16(obj + 0x76):
+                i = 0
+
+    def staticfire_add_flame(self, obj):
+        """0x2c6bc0 (object): a new flame point at the ring's head when the ring is not
+        full: a unit-ball point x radius +0x1c x fade +0x64, z made positive, in 1/16 units,
+        drift ((draw / 65536 - 0.5) / 60 x 224) twice."""
+        ball = self.obj_ball(obj)
+        h = C.mul(self.u32(obj + 0x1C), self.u32(obj + 0x64))
+        x, y, z = (C.mul(b, h) for b in ball)
+        if C.lt(z, ZERO):
+            z = C.neg(z)
+        head = self.s16(obj + 0x78)
+        nxt = head + 1
+        if nxt == self.s16(obj + 0x76):
+            nxt = 0
+        if nxt == self.s16(obj + 0x7A):
+            return
+        rec = self.u32(obj + 0x4A4) + 10 * head
+        for k, v in enumerate((x, y, z)):
+            self.w16(rec + 2 * k, C.to_int(C.mul(v, 0x41800000)))
+        for k in (3, 4):
+            d = C.mul(C.mul(C.sub(C.mul(C.from_int(self.obj_rand(obj)), F_2M16), HALF_F), 0x3C888888), 0x43600000)
+            self.w16(rec + 2 * k, C.to_int(d))
+        self.w16(obj + 0x78, nxt)
+
+    def staticfire_move_flames(self, obj):
+        """0x2c6df0 (object): every flame point drifts and rises 7 (1/16 units); one that
+        reaches int(+0x58) (compared as 16-bit values) pushes the ring's tail +0x7a on."""
+        i = self.s16(obj + 0x7A)
+        while i != self.s16(obj + 0x78):
+            rec = self.u32(obj + 0x4A4) + 10 * i
+            top = C.to_int(self.u32(obj + 0x58))
+            z = (self.u16(rec + 4) + 7) & 0xFFFF
+            self.w16(rec, self.u16(rec) + self.u16(rec + 6))
+            self.w16(rec + 2, self.u16(rec + 2) + self.u16(rec + 8))
+            self.w16(rec + 4, z)
+            if not s16(z) < s16(top & 0xFFFF):
+                tail = (self.u16(obj + 0x7A) + 1) & 0xFFFF
+                self.w16(obj + 0x7A, tail)
+                if s16(tail) == self.s16(obj + 0x76):
+                    self.w16(obj + 0x7A, 0)
+            i += 1
+            if i == self.s16(obj + 0x76):
+                i = 0
+
+    def staticfire_init_common(self, obj):
+        """StaticFire_initCommon 0x2c5814: radius 16, heading 0, byte +0x28 = 60, ring
+        empty; one own draw sets the wind clock +0x4c = draw % 300; +0x68 = 25000, flags |=
+        0x40001, life +0x7c = -1, +0x54 = +0x64 = 1, +0x6c = 0; the wind (angle 0), the run
+        and always-draw lists, path_blockNodes(world, position; radius).  Ring: 250 points in
+        a 0x9c4-byte block (mem_allocTagged) and height 600 when byte +0x6f is set, else 100
+        points at +0xbc and height 480 (240 when byte +0x70 is set)."""
+        w8, w16, w32, u32 = self.w8, self.w16, self.w32, self.u32
+        w32(obj + 0x1C, 0x41800000)
+        w16(obj + 0x38, 0)
+        w8(obj + 0x28, 0x3C)
+        w16(obj + 0x78, 0)
+        w16(obj + 0x7A, 0)
+        draw = self.obj_rand(obj)
+        w32(obj + 0x68, 0x46C35000)
+        w32(obj + 0xC, u32(obj + 0xC) | 0x40001)
+        w32(obj + 0x7C, M32)
+        w32(obj + 0x54, ONE)
+        w32(obj + 0x64, ONE)
+        w8(obj + 0x6C, 0)
+        w32(obj + 0x4C, C.from_int(draw % 300))
+        self.staticfire_wind(obj, self.s16(obj + 0x38))
+        self.call('obj_runEveryFrame', obj)
+        self.call('obj_addToAlwaysDraw', obj)
+        self.call('path_blockNodes', u32(G_WORLD), self.vec(obj + 0x10), u32(obj + 0x1C))
+        if self.s8(obj + 0x6F):
+            w16(obj + 0x76, 0xFA)
+            w32(obj + 0x4A4, self.call('mem_allocTagged', 0x9C4, 0x54E768))
+            w32(obj + 0x50, 0x44160000)
+            return
+        w32(obj + 0x50, 0x43F00000)
+        w16(obj + 0x76, 100)
+        w32(obj + 0x4A4, obj + 0xBC)
+        if self.s8(obj + 0x70):
+            w32(obj + 0x50, 0x43700000)
+
+    def staticfire_ctor(self, obj, pos, life, owner, quiet, fuel, scale):
+        """StaticFire_ctor 0x2c5240 (object, position, life, owner, quiet; height f12,
+        scale f13).  GameObject_ctor (a shared draw inside); the table; the light (orange
+        0xff, 0x80 and 1.0 at +0x2c) 36 above the given position; initCommon; life +0x7c,
+        height +0x50 = f12, +0x68 x= f13, owner +0x4a8, burning +0x6e = 1; quiet: the light
+        is unlinked again.  Then every other object in the +-30 box: when not quiet and it is a
+        StaticFire (typeid), its light is unlinked; with more than three of them around the
+        life is halved."""
+        self.call('GameObject_ctor', obj, tuple(pos), 0, 0)
+        self.w32(obj + 0x48, self.SF_VT)
+        self._sf_light(obj, pos, (0xFF, 0x80, 0, 0, 0xFF, 0x80, 0, 0), ONE)
+        self.w8(obj + 0x6F, 0)
+        self.w8(obj + 0x70, 0)
+        self.staticfire_init_common(obj)
+        self.w32(obj + 0x7C, life)
+        self.w32(obj + 0x50, fuel)
+        self.w32(obj + 0x68, C.mul(self.u32(obj + 0x68), scale))
+        self.w32(obj + 0x4A8, owner)
+        self.w8(obj + 0x6E, 1)
+        if quiet:
+            self.call('light_unlink', obj + 0x80)
+        p = self.vec(obj + 0x10)
+        high = tuple(C.add(v, 0x41F00000) for v in p)
+        low = tuple(C.sub(v, 0x41F00000) for v in p)
+        found = self.call('world_collectObjectsInBox', low, high, 0x80)
+        count = 0
+        for other in found or ():
+            if other == obj:
+                continue
+            if not quiet:
+                kind = self.call('Creature.v0')
+                mine = self.call('typeinfo', self.SF_TYPEINFO)
+                if self.call('rtti_typeInfoEquals', kind, mine):
+                    self.call('light_unlink', other + 0x80)
+            count += 1
+        if count > 3:
+            self.w32(obj + 0x7C, int(self.s32(obj + 0x7C) / 2))
+
+    def staticfire_ctor2(self, obj, pos, a2, a3):
+        """StaticFire_ctor2 0x2c54f8 (object, position): a level fire.  GameObject_ctor
+        (object, position, 0, the caller's a3); the light (0xff, 0x80, -16 shorts, 0 at
+        +0x2c) 36 above the object; owner 0; properties: +0x6f and +0x70 (read before
+        initCommon), then +0x6c, radius +0x1c, particle rate +0x54, burning +0x6e (default
+        1)."""
+        self.call('GameObject_ctor', obj, tuple(pos), 0, a3)
+        self.w32(obj + 0x48, self.SF_VT)
+        self._sf_light(obj, self.vec(obj + 0x10), (0xFF, 0x80, 0, 0xFFF0, 0xFF, 0x80, 0, 0xFFF0), ZERO)
+        self.w32(obj + 0x4A8, 0)
+        name = self.SF_PROPS
+        for off, prop in ((0x6F, name[0]), (0x70, name[1])):
+            if self.call('obj_getPropStr', obj, prop, 0):
+                self.w8(obj + off, self.call('obj_getPropInt', obj, prop, 0))
+            else:
+                self.w8(obj + off, 0)
+        self.staticfire_init_common(obj)
+        if self.call('obj_getPropStr', obj, name[2], 0):
+            self.w8(obj + 0x6C, self.call('obj_getPropInt', obj, name[2], 0))
+        for off, prop in ((0x1C, name[3]), (0x54, name[4])):
+            if self.call('obj_getPropStr', obj, prop, 0):
+                self.w32(obj + off, C.from_int(self.call('obj_getPropInt', obj, prop, 0)))
+        if self.call('obj_getPropStr', obj, name[5], 0):
+            self.w8(obj + 0x6E, self.call('obj_getPropInt', obj, name[5], 0))
+        else:
+            self.w8(obj + 0x6E, 1)
+
+    def _sf_level_is(self, name):
+        return _cstr(self.u8, self.LEVEL_NAME) == _cstr(self.u8, name)
+
+    def _sf_level_has(self, name):
+        return _cstr(self.u8, name) in _cstr(self.u8, self.LEVEL_NAME)
+
+    def _sf_offset(self, obj, ball):
+        r = self.u32(obj + 0x1C)
+        fade = self.u32(obj + 0x64)
+        return tuple(C.mul(C.mul(C.mul(b, r), fade), 0x3F3168B5) for b in ball)
+
+    def staticfire_run(self, obj):
+        """StaticFire_run 0x2c595c, GameObject slot 4.  See the class docstring; in order:
+        cutscene flag +0x6d (only in the one level 0x54e778, while a cutscene runs); life
+        +0x7c (-1 = forever): counts down, fades in by 1/60 a tick and out by 1/120 over its
+        last 120 ticks, unlinks the light at 0; the wind every 61 ticks unless +0x6c; a new
+        flame point on one draw in 14 (top +0x58 = height x 0.45 x 16); the flames move.
+        Burning (+0x6e) and alive and isNearView(941): the light flickers (+0x60 between 80
+        and 108), radius (+0x60 x 0.34 + 54) x fade; int(4 x rate +0x54 x fade) flame
+        particles 0x8e4c90; on one draw in 33, int(2 fade) embers 0x8e4d30; on frames
+        divisible by 12 damage_apply to everything in the +-radius x fade box that is not
+        itself and has no flag 1 (fire entry 0x15: (1, 1) for others, for players the Fire
+        Weapons tier-2 statistic x 0.15 (at least 1) .. + 20 % of it times ONE SHARED DRAW);
+        attacker the owner +0x4a8 when it is a creature whose slot 20 accepts the victim,
+        else the fire itself for creatures.  A fire whose life is 0 and whose ring is empty
+        deletes itself."""
+        u8, u16, u32, w32 = self.u8, self.u16, self.u32, self.w32
+        cutscene = 0
+        if self._sf_level_is(self.SF_LEVEL_CUTSCENE) and self.s8(RC.G_CUTSCENE_ACTIVE):
+            cutscene = 1
+        self.w8(obj + 0x6D, cutscene)
+        life = self.s32(obj + 0x7C)
+        if life != -1:
+            unlink = life == 0
+            if life:
+                life -= 1
+                w32(obj + 0x7C, life)
+                unlink = life == 0
+                if life:
+                    fade = u32(obj + 0x64)
+                    if life < 0x78:
+                        fade = C.sub(fade, 0x3C088888)
+                        w32(obj + 0x64, fade)
+                        if C.lt(fade, ZERO):
+                            w32(obj + 0x64, ZERO)
+                    else:
+                        fade = C.add(fade, 0x3C888888)
+                        w32(obj + 0x64, fade)
+                        if C.lt(ONE, fade) or self.s8(obj + 0x6D):
+                            w32(obj + 0x64, ONE)
+            if unlink:
+                self.call('light_unlink', obj + 0x80)
+        if not self.s8(obj + 0x6C):
+            clock = u32(obj + 0x4C)
+            w32(obj + 0x4C, C.add(clock, ONE))
+            if C.lt(0x42700000, clock):
+                self.staticfire_wind(obj, self.obj_rand(obj))
+                w32(obj + 0x4C, ZERO)
+        if self.s32(obj + 0x7C) and self.obj_rand(obj) % 14 == 0:
+            top = C.mul(C.mul(u32(obj + 0x50), 0x3EE66665), 0x41800000)
+            w32(obj + 0x58, top)
+            w32(obj + 0x5C, C.div(ONE, top))
+            self.staticfire_add_flame(obj)
+        self.staticfire_move_flames(obj)
+        if self.s8(obj + 0x6E) and self.s32(obj + 0x7C) and self.call('isNearView', self.vec(obj + 0x10), 0x446B4000):
+            self._sf_burn(obj)
+        if self.s32(obj + 0x7C) == 0 and self.s16(obj + 0x7A) == self.s16(obj + 0x78):
+            self.call('obj_delete', obj)
+
+    def _sf_burn(self, obj):
+        u32, w32 = self.u32, self.w32
+        flicker = u32(obj + 0x60)
+        if C.eq(flicker, 0x42A00000):
+            if self.obj_rand(obj) % 10 == 0:
+                w32(obj + 0x60, C.add(u32(obj + 0x60), 0x41E00000))
+        else:
+            v = C.sub(flicker, 0x40000000)
+            w32(obj + 0x60, v)
+            if C.lt(v, 0x42A00000):
+                w32(obj + 0x60, 0x42A00000)
+        radius = C.mul(C.add(C.mul(u32(obj + 0x60), 0x3EAE147A), 0x42580000), u32(obj + 0x64))
+        w32(obj + 0x9C, radius)
+        w32(obj + 0xA4, radius)
+        inverse = C.div(ONE, C.mul(radius, radius))
+        w32(obj + 0xA8, inverse)
+        w32(obj + 0xA0, inverse)
+        n = C.to_int(C.mul(C.mul(u32(obj + 0x54), 0x40800000), u32(obj + 0x64)))
+        while n > 0:
+            off = self._sf_offset(obj, self.obj_ball(obj))
+            pos = self.vec(obj + 0x10)
+            p = tuple(C.add(pos[k], off[k]) for k in range(3))
+            b = self.obj_ball(obj)
+            v = [C.mul(x, 0x40A00000) for x in b]
+            if C.lt(v[2], ZERO):
+                v[2] = C.neg(v[2])
+            n -= 1
+            self.call('particle_spawn', self.SF_FLAME, p, tuple(v), ZERO)
+        if self.obj_rand(obj) % 33 == 0:
+            i = 0
+            while i < C.to_int(C.add(u32(obj + 0x64), u32(obj + 0x64))):
+                off = self._sf_offset(obj, self.obj_ball(obj))
+                pos = self.vec(obj + 0x10)
+                base = tuple(C.add(pos[k], off[k]) for k in range(3))
+                p = (C.add(base[0], ZERO), base[1], C.add(base[2], 0x41400000))
+                b = list(self.obj_ball(obj))
+                if C.lt(b[2], 0x3F4CCCCC):
+                    b[2] = 0x3F4CCCCC
+                i += 1
+                x, y, z = C.mul(b[0], 0x3E800000), C.mul(b[1], 0x3E800000), b[2]
+                r = C.rsqrt(ONE, C.add(C.add(C.mul(x, x), C.mul(y, y)), C.mul(z, z)))
+                n3 = (C.mul(x, r), C.mul(y, r), C.mul(z, r))
+                k = C.mul(C.add(C.mul(C.mul(C.from_int(self.obj_rand(obj)), F_2M16), HALF_F), HALF_F), 0x41800000)
+                self.call('particle_spawn', self.SF_EMBER, p, tuple(C.mul(v, k) for v in n3), ZERO)
+        frame = s32(u32(G_SIM_FRAME))
+        if frame - int(frame / 12) * 12:
+            return
+        h = C.mul(u32(obj + 0x1C), u32(obj + 0x64))
+        pos = self.vec(obj + 0x10)
+        found = self.call('world_collectObjectsInBox', tuple(C.sub(v, h) for v in pos),
+                          tuple(C.add(v, h) for v in pos), 0x40)
+        for victim in found or ():
+            if victim == obj or u32(victim + 0xC) & 1:
+                continue
+            if u32(victim + 0xC) & 0x40:
+                skill = u32(self.SF_SKILL)
+                level = C.to_int(u32(RC.G_LEVEL_MONSTER_LEVEL))
+                low = C.mul(C.from_int(s32(self.skill_call(skill, 11, 0, level, 0))), 0x3E199999)
+                if C.lt(low, ONE):
+                    low = ONE
+                share = C.mul(C.from_int(self.draw()), F_2M16)
+                high = C.add(low, C.mul(C.mul(low, 0x3E4CCCCC), share))
+                entry = (0x15, C.to_int(low), C.to_int(high), 0)
+            else:
+                entry = (0x15, 1, 1, 0)
+            owner = u32(obj + 0x4A8)
+            if owner and u32(owner + 0xC) & 0x20:
+                if self.vcall(owner, 20, victim):
+                    self.call('damage_apply', victim, u32(obj + 0x4A8), 100000, 0, 0, 0x100C040, SC.desc(entry), 0,
+                              ZERO, ZERO)
+            elif u32(victim + 0xC) & 0x20:
+                self.call('damage_apply', victim, obj, 100000, 0, 0, 0x100C040, SC.desc(entry), 0, ZERO, ZERO)
+
+    def staticfire_draw(self, obj):
+        """StaticFire_draw 0x2c65e8, GameObject slot 5: with isNearView(941), burning,
+        alive and no cutscene flag, one glow over the fire (26 bias, size (flicker x 59 +
+        12000) x fade, colour (0xb9, 0x68, 0x51), alpha 0x6e, texture *0x4f848c, flags 6);
+        then one glow per flame point near the view: size from 4800 toward +0x68 with the
+        point's height t = min(1, z x 1/top) (doubled for a level fire with +0x6f), colour
+        from (56 - 46 t, 56 - 43 t, 56 - 42 t) toward (188, 83, 69) as the point rises
+        (alive) or half of it (dying), dimmed toward (70, 102, 107) in levels whose name has
+        0x54e788 by the height above -480, alpha int(171 - 171 t), texture *0x4f84a0 or the
+        dim one *0x4f84a4, angle s16(+-(object + frame) x 0xb3), flags 1."""
+        u32 = self.u32
+        i = self.s16(obj + 0x7A)
+        dark = self._sf_level_has(self.SF_LEVEL_DARK)
+        near = self.call('isNearView', self.vec(obj + 0x10), 0x446B4000)
+        if near and self.s8(obj + 0x6E) and u32(obj + 0x7C) and not self.s8(obj + 0x6D):
+            size = C.mul(C.add(C.mul(u32(obj + 0x60), 0x426C0000), 0x463B8000), u32(obj + 0x64))
+            pos = self.vec(obj + 0x10)
+            p = (C.add(pos[0], ZERO), pos[1], C.add(pos[2], 0x41400000))
+            self.call('glow_add', p, 0xB9, 0x68, 0x51, 0x6E, u32(G_GLOW_TEX_A), 0, 6, 0x41D00000, size)
+        while i != self.s16(obj + 0x78):
+            rec = u32(obj + 0x4A4) + 10 * i
+            pos = self.vec(obj + 0x10)
+            p = tuple(C.add(pos[k], C.mul(C.from_int(self.s16(rec + 2 * k)), 0x3D800000)) for k in range(3))
+            if self.call('isNearView', p, 0x446B4000):
+                t = C.mul(C.from_int(self.s16(rec + 4)), u32(obj + 0x5C))
+                if C.lt(ONE, t):
+                    t = ONE
+                t0 = t
+                if self.s8(obj + 0x6F):
+                    t = C.add(t0, t0)
+                    if C.lt(ONE, t):
+                        t = ONE
+                a46, a43, a42 = C.mul(t, 0xC2380000), C.mul(t, 0xC22C0000), C.mul(t, 0xC2280000)
+                if u32(obj + 0x7C) and self.s8(obj + 0x6E):
+                    zf = C.mul(C.from_int(self.s16(rec + 4)), 0x3D800000)
+                    k = C.sub(ONE, C.fmin(ONE, C.div(zf, C.mul(u32(obj + 0x60), u32(obj + 0x64)))))
+                    r = C.add(C.add(a46, C.mul(C.sub(0x433C0000, C.add(a46, 0x42600000)), k)), 0x42600000)
+                    g = C.add(C.add(a43, C.mul(C.sub(0x42A60000, C.add(a43, 0x42600000)), k)), 0x42600000)
+                    b = C.add(C.add(a42, C.mul(C.sub(0x428A0000, C.add(a42, 0x42600000)), k)), 0x42600000)
+                else:
+                    r = C.mul(C.add(a46, 0x42600000), HALF_F)
+                    g = C.mul(C.add(a43, 0x42600000), HALF_F)
+                    b = C.mul(C.add(a42, 0x42600000), HALF_F)
+                dim = False
+                if dark:
+                    f = C.mul(C.sub(p[2], 0xC3F00000), 0x3B08D180)
+                    f = C.fmax(ZERO, C.fmin(ONE, f))
+                    r = C.add(C.mul(C.sub(r, 0x428C0000), f), 0x428C0000)
+                    g = C.add(C.mul(C.sub(g, 0x42CC0000), f), 0x42CC0000)
+                    b = C.add(C.mul(C.sub(b, 0x42D60000), f), 0x42D60000)
+                    dim = C.lt(f, 0x3F7F3A68)
+                alpha = C.to_int(C.add(C.mul(t0, 0xC32B0000), 0x432B0000))
+                spin = ((obj + s32(u32(G_SIM_FRAME))) * 0xB3) & M32
+                angle = s16((-spin) & 0xFFFF) if i & 1 else s16(spin & 0xFFFF)
+                size = C.add(C.mul(C.sub(u32(obj + 0x68), 0x45960000), t), 0x45960000)
+                tex = u32(G_GLOW_TEX_FIRE_DIM if dim else G_GLOW_TEX_FIRE)
+                self.call('glow_add', p, C.to_int(r), C.to_int(g), C.to_int(b), alpha, tex, angle, 1, 0x40A00000, size)
+            i += 1
+            if i == self.s16(obj + 0x76):
+                i = 0
+
+
+_register('StaticFire_ctor', 0x2C5240)
+_register('StaticFire_ctor2', 0x2C54F8)
+_register('StaticFire_initCommon', 0x2C5814)
+_register('StaticFire_wind', 0x2C6AA8)
+_register('StaticFire_addFlame', 0x2C6BC0)
+_register('StaticFire_moveFlames', 0x2C6DF0)
+_register('StaticFire_run', 0x2C595C)
+_register('StaticFire_draw', 0x2C65E8)
+
+
 class Model(Calls, Draws, MultiFire, FireStormFlare, Pustule, DiseaseCloud, Arena, HornOmen, PlanarSteel,
-            SC.Model):
+            StaticFire, SC.Model):
     """ref_skills_c.Model with the methods of part 3."""

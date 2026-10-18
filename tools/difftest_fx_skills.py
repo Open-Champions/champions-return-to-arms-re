@@ -48,9 +48,29 @@ DS.GROUPS.pop('stats', None)
 DS.GROUPS.pop('shared', None)
 
 
+DS.LIB_STUBBED.add(0x3B1250)                   # rtti_typeInfoEquals: a call-out (the tokens are getter addresses)
+
+
 class World(DS.World):
     def on_isNearView(self, args, view, rng):
         return Res(1 if rng.random() < 0.8 else 0)
+
+    def on_Creature_v0(self, args, view, rng):
+        return Res(rng.choice((FS.StaticFire.SF_TYPEINFO, 0x3D07B8)))
+
+    def on_rtti_typeInfoEquals(self, args, view, rng):
+        return Res(1 if args[0] == args[1] else 0)
+
+    def on_mem_allocTagged(self, args, view, rng):
+        if not hasattr(self, 'flame_block'):
+            self.flame_block = self.emu.alloc(0xA00)
+        return Res(self.flame_block)
+
+    def on_obj_getPropStr(self, args, view, rng):
+        return Res(0x00D40000 if rng.random() < 0.5 else 0)
+
+    def on_obj_getPropInt(self, args, view, rng):
+        return Res(rng.choice((0, 1, 1, 2, 8, 30)))
 
 
 DS.World = World
@@ -360,6 +380,65 @@ def scenario_planarsteel(t):
         for _tick in range(rng.choice((1, 4, 12))):
             t.tick(rng.choice((1, 1, 7, 30)))
             t.do('SpellPlanarSteelEffect_run', spell, to_vec(rand_pos(rng)))
+
+
+# ---------------------------------------------------------------------------------------
+# StaticFire
+# ---------------------------------------------------------------------------------------
+entry('StaticFire_ctor', 0x2C5240, 0x2C54F8, 'iviiiff', 'staticfire_ctor', 'staticfire')
+entry('StaticFire_ctor2', 0x2C54F8, 0x2C5770, 'ivii', 'staticfire_ctor2', 'staticfire')
+DS.body('StaticFire_initCommon', 0x2C5814, 0x2C595C, 'staticfire')
+DS.body('StaticFire_wind', 0x2C6AA8, 0x2C6BC0, 'staticfire')
+DS.body('StaticFire_addFlame', 0x2C6BC0, 0x2C6DF0, 'staticfire')
+DS.body('StaticFire_moveFlames', 0x2C6DF0, 0x2C6EA0, 'staticfire')
+entry('StaticFire_run', 0x2C595C, 0x2C65E8, 'i', 'staticfire_run', 'staticfire')
+entry('StaticFire_draw', 0x2C65E8, 0x2C6AA8, 'i', 'staticfire_draw', 'staticfire')
+
+
+def level_name(t):
+    mem, rng = t.mem, t.rng
+    cut = bytes(mem.read(FS.StaticFire.SF_LEVEL_CUTSCENE, 32)).split(b'\0')[0]
+    dark = bytes(mem.read(FS.StaticFire.SF_LEVEL_DARK, 32)).split(b'\0')[0]
+    name = rng.choice((cut, b'X' + dark + b'2', dark, b'town', b''))
+    mem.write(FS.StaticFire.LEVEL_NAME, name + b'\0')
+
+
+@scenario('staticfire', 'fires on the ground: made, burning, dying, drawn')
+def scenario_staticfire(t):
+    mem, rng, world = t.mem, t.rng, t.world
+    skills = sorted(t.skills.values())
+    for _ in range(reps(t, 60)):
+        set_frame(t)
+        world.reset_objects(rng, spread=40)
+        level_name(t)
+        mem.w32(FS.StaticFire.SF_SKILL, rng.choice(skills))
+        mem.wf32(RC.G_LEVEL_MONSTER_LEVEL, rng.choice((1.0, 7.0, 25.0)))
+        mem.w8(RC.G_CUTSCENE_ACTIVE, rng.choice((0, 0, 1)))
+        obj = fresh(t, 0x4B0)
+        world.query = None
+        pos = (2000.0 + rng.uniform(-20, 20), 3000.0 + rng.uniform(-20, 20), rng.choice((10.0, -300.0, -470.0, 300.0)))
+        if rng.random() < 0.6:
+            t.do('StaticFire_ctor', obj, to_vec(pos), rng.choice((-1, 0, 1, 60, 121, 400)),
+                 rng.choice(world.objects + [0]), rng.choice((0, 0, 1)),
+                 f32(rng.choice((240.0, 480.0, 60.0))), f32(rng.choice((1.0, 0.5, 2.0))))
+        else:
+            t.do('StaticFire_ctor2', obj, to_vec(pos), 0, rng.getrandbits(32))
+            mem.w32(obj + 0x7C, rng.choice((-1, -1, 0, 5, 200)) & M32)
+        if rng.random() < 0.5:
+            mem.w32(obj + 0x4A8, rng.choice(world.objects + [0]))
+        if rng.random() < 0.3:
+            mem.wf32(obj + 0x60, rng.choice((80.0, 108.0, 95.0)))
+        if rng.random() < 0.3:
+            mem.wf32(obj + 0x64, rng.choice((0.004, 0.5, 0.995, 1.0)))
+        if rng.random() < 0.3:                      # the ring's head and tail near its end: the wrap
+            end = mem.u16(obj + 0x76)
+            mem.w16(obj + 0x78, end - 1)
+            mem.w16(obj + 0x7A, end - 1)
+        for _tick in range(rng.choice((5, 40, 150, 300))):
+            t.tick()
+            t.do('StaticFire_run', obj)
+            if rng.random() < 0.3:
+                t.do('StaticFire_draw', obj)
 
 
 def main(argv):
