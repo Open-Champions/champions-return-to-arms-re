@@ -452,8 +452,12 @@ terrain element. Pieces nobody claimed lose their collision after the objects ar
   the largest texture coordinate of each of 1,942 chunks fits the size found here), u16
   flags at +8, and at +0x10 the offset of the pixel-data description **from the start of
   the cell** (0x179f28; in a `.tex` lump entry the same field is relative to the header).
-- The header fields and the pixel data are the texture format, described in
-  `docs/formats/model-texture.md`. Decoding cell textures to pixels was not tried here. U.
+- The header fields are the texture header of `docs/formats/model-texture.md`; the pixel
+  data is **not** a GS packet in the level file: every cell texture on the disc uses the
+  block-table form (flags 0x10c), now documented with the streaming, relocation and upload
+  path in `docs/formats/level-texture.md` (`tools/ref_leveltex.py` decodes it). The
+  "always loaded" cells above exist in code only: nothing calls the function that registers
+  one (0x17fe18), so every cell goes through the nine streaming slots.
 
 The world also refers to `waterenv.lmp` (water texture, loaded by name in `game_loadLevel`
 0x1e55c0) and to the lumps named by its model chunks.
@@ -537,8 +541,8 @@ appear to carry the baked light; the normals are there for the dynamic lights.
   +0x3a; moving piece +0x1a; why some geometry chunks have texture cell 0.
 - The emitter description beyond its size; the automap cell and tile coding; the water
   mask's bit order.
-- Whether cell textures and the automap tile texture decode with the rules of
-  `docs/formats/model-texture.md`; not tried.
+- Whether the automap tile texture decodes with the rules of `docs/formats/model-texture.md`;
+  not tried. (Cell textures do not; they are decoded in `docs/formats/level-texture.md`.)
 - Which way the axes point relative to the screen and compass. (Answered for the screen in
   `docs/spec/render-pipeline.md` section 3: the world is right-handed with z up; camera
   space has x right, y down, z forward. The compass is still open.)
