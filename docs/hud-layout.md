@@ -191,6 +191,9 @@ behavior, not a native UI sizing constraint.
 
 ## Known partial contracts and how to finish them
 
+Round 2: draw order, notices, glow, message, boss meter, gold, selector, bust and
+compass composition are in [hud-dynamic.md](hud-dynamic.md).
+
 **O / high:** pending potion overlays are untextured rectangles, not extra
 bar atlases (`0x1d9fb8–0x1da1d8`). Health Y=47..51, tint 0x80000060;
 mana Y=66..70, tint 0x805a4632. They require local ownership, the object's
