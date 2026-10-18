@@ -366,36 +366,7 @@ class MoveModel(T.CombatModel):
           1 << i, and when step . N_i < 0: a first such plane removes that component
           (step -= N_i x dot); a second makes the step 0 and ends the loop.  With a plane
           used: V = step x 60, result 1; otherwise result 0."""
-        step = [C.mul(V[i], DT) for i in range(3)]
-        mask = 0
-        self.call('game_buildScreenEdgePlanes', P + 0x10)
-        pos = P + 0x10
-        outside = False
-        for i in range(4):
-            if C.lt(self.plane_distance(G_SCREEN_POINTS + 12 * i, G_SCREEN_NORMALS + 12 * i, pos), ZERO):
-                outside = True
-                break
-        if not outside:
-            return 0, tuple(V), mask
-        used = False
-        for i in range(4):
-            N = G_SCREEN_NORMALS + 12 * i
-            if not C.lt(self.plane_distance(G_SCREEN_POINTS + 12 * i, N, pos), ZERO):
-                continue
-            mask |= 1 << i
-            n = self.vec(N)
-            dot = C.add(C.add(C.mul(step[0], n[0]), C.mul(step[1], n[1])), C.mul(step[2], n[2]))
-            if not C.lt(dot, ZERO):
-                continue
-            if used:
-                step = [ZERO, ZERO, ZERO]
-                break
-            used = True
-            proj = (C.mul(n[0], dot), C.mul(n[1], dot), C.mul(n[2], dot))
-            step = [C.sub(step[j], proj[j]) for j in range(3)]
-        if used:
-            return 1, tuple(C.mul(step[j], SIXTY) for j in range(3)), mask
-        return 0, tuple(V), mask
+        return self._clamp_on_image(P, tuple(V), None)
 
     def player_clamp_to_screen(self, P, vptr, maskptr):
         """Player_clampToScreen(P, &V, &mask) on the image.  Executed (difftest
@@ -409,8 +380,8 @@ class MoveModel(T.CombatModel):
         return result
 
     def _clamp_on_image(self, P, V, maskptr):
-        """player_clamp_to_screen_vec with the mask word stored the way the original stores
-        it (after every plane the position is outside of)."""
+        """The body; with `maskptr` the mask word is stored the way the original stores it
+        (after every plane the position is outside of)."""
         step = [C.mul(V[i], DT) for i in range(3)]
         self.call('game_buildScreenEdgePlanes', P + 0x10)
         pos = P + 0x10
@@ -423,7 +394,8 @@ class MoveModel(T.CombatModel):
             if not C.lt(self.plane_distance(G_SCREEN_POINTS + 12 * i, N, pos), ZERO):
                 continue
             mask |= 1 << i
-            self.w32(maskptr, mask)
+            if maskptr:
+                self.w32(maskptr, mask)
             n = self.vec(N)
             dot = C.add(C.add(C.mul(step[0], n[0]), C.mul(step[1], n[1])), C.mul(step[2], n[2]))
             if not C.lt(dot, ZERO):
@@ -742,6 +714,14 @@ class MoveRuntime(T.Runtime):
         self.screen_planes = screen_planes
         self.root_motion = dict(root_motion or {})
 
+    def spawn_player(self, slot, pos, facing=0, hp=100.0, level=1, strength=20, armor=0, team=0, speed_mul=1.0):
+        """T.Runtime.spawn_player plus the record's speed multiplier +0x4c20, which
+        player_initNewCharacter and player_importCharacter set to 1.0 (Observed,
+        docs/spec/movement-camera.md 4.1(b)) and without which a player cannot walk."""
+        P = T.Runtime.spawn_player(self, slot, pos, facing, hp, level, strength, armor, team)
+        self.mem.poke(G_PLAYERS + slot * REC_SIZE + 0x4C20, 4, T.f32(speed_mul))
+        return P
+
     def stick(self, slot, x, y):
         pad = T.G_PADS + slot * T.PAD_SIZE
         self.mem.poke(pad + 0x14, 4, T.f32(x))
@@ -761,6 +741,13 @@ class MoveRuntime(T.Runtime):
             self.mem.poke(root_out + 4, 4, T.f32(ry))
             self.note('anim', 'root', state, rx, ry)
         return bits
+
+    def svc_water_test(self, world, pos, height_out, radius):
+        r = self.terrain.water_test(pos, radius)
+        self.note('terrain', 'water_test', r)
+        if r:
+            raise T.Unsupported('water: the water services are not in this contract')
+        return (0, 0) if height_out else 0
 
     def svc_game_buildScreenEdgePlanes(self, pos):
         if self.screen_planes is None:
