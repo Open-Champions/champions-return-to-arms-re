@@ -33,6 +33,7 @@ import ref_combat_runtime as T                  # noqa: E402
 import ref_combat_monsters as M                 # noqa: E402
 
 f32, Ext, Res = D.f32, D.Ext, D.Res
+BaseWorld, BaseRig = D.World, D.Rig
 
 ENTRIES = {
     'canSeePoint': (0x10C238, 'ivii', 2, 'i', 'can_see_point', (0x10C238, 0x10C40C)),
@@ -46,12 +47,71 @@ ENTRIES = {
     'setCooldown': (0x118BF0, 'ii', 0, 'n', 'set_cooldown', (0x118BF0, 0x118C50)),
     'setCooldownOn': (0x118B58, 'iii', 0, 'n', 'set_cooldown_on', (0x118B58, 0x118BF0)),
     'notifyObjectsNear': (0x11A2B8, 'ivi', 1, 'n', 'notify_objects_near', (0x11A2B8, 0x11A3EC)),
+    'gameObjectDtor': (0x14CF90, 'ii', 0, 'n', 'gameobject_dtor', (0x14CF90, 0x14D238)),
+    'creatureDtor': (0x117128, 'ii', 0, 'n', 'creature_dtor', (0x117128, 0x11722C)),
+    'skelightDtor': (0x3CC67C, 'ii', 0, 'n', 'skelight_dtor', (0x3CC67C, 0x3CC6DC)),
+    'playerDtor': (0x1A1BB8, 'ii', 0, 'n', 'player_dtor', (0x1A1BB8, 0x1A1D24)),
 }
 
 EXTS = {
     'Creature.v12': Ext(0, 'pivi', 1, 'n'),
     'Creature.v27': Ext(0, 'pi', 0, 'n'),
+    'Spell.v1': Ext(0, 'pi', 0, 'n'),
+    'objNames_remove': Ext(0x14BE58, 'pp', 0, 'n'),
+    'pool_free': Ext(0x150470, 'p', 0, 'n'),
+    'AnimState_dtor': Ext(0x171098, 'pi', 0, 'n'),
+    'light_dtor': Ext(0x14A490, 'pi', 0, 'n'),
+    'sub_202500': Ext(0x202500, 'pi', 0, 'n'),
 }
+
+# property strings for GameObject_dtor's 'name=' scan (authored; not game text)
+PROP_TEXTS = (b'name=alpha', b'name=beta', b'Name=gamma', b'namex=1', b'nam', b'name', b'name=', b'nameX',
+              b'other=2', b'name==', b'')
+
+
+class World(BaseWorld):
+    def __init__(self, emu, rng):
+        BaseWorld.__init__(self, emu, rng)
+        mem = self.mem
+        self.spell_table = emu.alloc(0x40)
+        mem.w16(self.spell_table + 8, 0)
+        mem.w32(self.spell_table + 0xC, self.stub_for('Spell.v1'))
+        self.spells = [emu.alloc(0x40) for _ in range(3)]
+        for sp in self.spells:
+            mem.w32(sp + 0x14, self.spell_table)
+        self.spell_nodes = [emu.alloc(0x20) for _ in range(3)]
+        self.texts = []
+        for t in PROP_TEXTS:
+            a = emu.alloc(0x20)
+            mem.write(a, t + b'\0')
+            self.texts.append(a)
+        self.props = emu.alloc(0x40)
+
+    def on_iter_begin(self, args, view, rng):
+        count = rng.choice((0, 0, 1, 2, 3))
+        view.iter_nodes = []
+        for node, spell in list(zip(self.spell_nodes, self.spells))[:count]:
+            view.poke(node + 0xC, 4, rng.choice((spell, spell, 0)))
+            view.iter_nodes.append(node)
+        return self.on_iter_next(args, view, rng)
+
+    def on_iter_next(self, args, view, rng):
+        nodes = getattr(view, 'iter_nodes', [])
+        return Res(nodes.pop(0) if nodes else 0)
+
+
+class Rig(BaseRig):
+    def make_stub(self, name, ext):
+        inner = BaseRig.make_stub(self, name, ext)
+        if name not in ('iter_begin', 'iter_next'):
+            return inner
+
+        def stub(emu):
+            it = emu.r[4] & D.M32
+            ret = inner(emu)
+            emu.mem.w32(it + 4, ret & D.M32)
+            return ret
+        return stub
 
 
 def _install():
@@ -65,7 +125,9 @@ def _install():
 
     def on_creature_bossRank(self, args, view, rng):
         return Res(rng.choice((0, 0, 0, 1, 2)))
-    D.World.on_creature_bossRank = on_creature_bossRank
+    BaseWorld.on_creature_bossRank = on_creature_bossRank
+    D.World = World
+    D.Rig = Rig
 
 
 def generate(rig, key, rng):
@@ -125,6 +187,19 @@ def generate(rig, key, rng):
         o = rng.choice(w.everything)
         p = tuple(mem.u32(o + 0x10 + 4 * i) for i in range(3))
         return (rng.getrandbits(32), p, rng.getrandbits(32), f32(rng.choice((0.0, 60.0, 600.0))))
+    if key in ('gameObjectDtor', 'creatureDtor', 'skelightDtor', 'playerDtor'):
+        o = rng.choice(w.players) if key == 'playerDtor' else c
+        props = 0
+        if rng.random() < 0.8:
+            props = w.props
+            picks = [rng.choice(w.texts) for _ in range(rng.randrange(0, 7))]
+            for i, t in enumerate(picks):
+                mem.w32(props + 4 * i, t)
+            mem.w32(props + 4 * len(picks), 0)
+        mem.w32(o + 0x2C, props)
+        mem.w8(M.G_IN_GHOST_OP, rng.choice((0, 0, 0, 1)))
+        mem.w8(o + 0x462, rng.choice((0, 0, 0, 1)))
+        return (o, rng.choice((0, 1, 2, 3)))
     raise KeyError(key)
 
 

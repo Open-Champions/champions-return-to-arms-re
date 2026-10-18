@@ -266,3 +266,143 @@ class MonsterCombatModel(T.CombatModel):
         high = tuple(C.add(pos[i], radius) for i in range(3))
         for o in self.call('world_collectObjectsInBox', low, high, 0x80):
             self.vcall(o, 12, a, tuple(pos), b, radius)
+
+    # =====================================================================================
+    # The destructor chain (virtual slot 1).  Executed: tools/difftest_combat_monsters.py
+    # =====================================================================================
+    INTERNAL.update({'GameObject_dtor': 'gameobject_dtor', 'Creature_dtor': 'creature_dtor'})
+    MODELLED.update({'GameObject_dtor': 0x14CF90, 'Creature_dtor': 0x117128, 'Skelight_dtor': 0x3CC67C,
+                     'Player_dtor': 0x1A1BB8})
+
+    def _lower_key(self):
+        """GameObject_dtor lower-cases the static key string at 0x5321b0 in place before every
+        scan (through the C library's class table at 0x5628e1, bit 0 = upper case): a store of
+        each byte up to the terminator, even when nothing changes."""
+        a = S_NAME_KEY
+        while True:
+            ch = self.u8(a)
+            if not ch:
+                return
+            sc = s8(ch)
+            if self.u8((G_CTYPE + sc) & M32) & 1:
+                sc += 0x20
+            self.w8(a, sc & 0xFF)
+            a += 1
+
+    def _strneq(self, a, b, n):
+        """libc strncmp(a, b, n) == 0 (0x3b91d8)."""
+        for i in range(n):
+            x, y = self.u8(a + i), self.u8(b + i)
+            if x != y:
+                return False
+            if not x:
+                return True
+        return True
+
+    def _find_name(self, o, index):
+        """The value of the index-th 'name=' entry of the property list +0x2c (entries are
+        C strings; strncmp(entry, key, 4) == 0 and entry[4] == '='), or 0.  Keys are compared
+        case-sensitively after the key string is lower-cased."""
+        self._lower_key()
+        props = self.u32(o + 0x2C)
+        k = 0
+        while True:
+            entry = self.u32(props + 4 * k)
+            if not entry:
+                return 0
+            same = self._strneq(entry, S_NAME_KEY, 4)
+            if same and s8(self.u8(entry + 4)) == 0x3D:
+                index -= 1
+                if index == -1:
+                    return (entry + 5) & M32
+            k += 1
+
+    def gameobject_dtor(self, o, flags):
+        """GameObject_dtor 0x14cf90 (o, flags).  +0x48 = the GameObject table 0x5122a8.  For
+        n = 0, 1, ...: the n-th 'name=' property is looked up (twice, the same scan), and
+        objNames_remove(value, o) is called, until none is left; with no property list
+        (+0x2c == 0) no scan at all.  Then handle_clear of +8 (grid), +4 (run list), +0
+        (every handle to it) and, when bit 0 of flags is set, pool_free(o)."""
+        self.w32(o + 0x48, VT_GAMEOBJECT)
+        n = 0
+        while self.u32(o + 0x2C):
+            if not self._find_name(o, n):
+                break
+            self.call('objNames_remove', self._find_name(o, n), o)
+            n += 1
+        for off in (8, 4, 0):
+            self.call('handle_clear', o + off)
+        if flags & 1:
+            self.call('pool_free', o)
+
+    def creature_dtor(self, c, flags):
+        """Creature_dtor 0x117128 (c, flags).  +0x48 = the Creature table 0x50cc58 (so a
+        class's own slots are no longer reached from here on).  Every attached spell of the
+        list +0x364 (iterator, mask 0): spell slot 1 with 3 through the spell's table at +0x14
+        (a node whose object word is 0 is passed over); iter_end(2).  Then handle_clear of
+        +0x364, +0x360; 0x202500(+0x320, 2) (a destructor that only frees with bit 0: nothing
+        here); handle_clear of +0x2e4, +0x238, +0x234; AnimState_dtor(+0x114, 0);
+        GameObject_dtor(c, 0); pool_free(c) when bit 0 of flags is set."""
+        self.w32(c + 0x48, T.VT_CREATURE)
+        node = self.call('iter_begin', c + 0x364, 0)
+        while node:
+            spell = self.u32(node + 0xC)
+            if spell:
+                self.table_call('Spell', spell, 0x14, 1, 3)
+            node = self.call('iter_next')
+        self.call('iter_end', 2)
+        self.call('handle_clear', c + 0x364)
+        self.call('handle_clear', c + 0x360)
+        self.call('sub_202500', c + 0x320, 2)
+        for off in (0x2E4, 0x238, 0x234):
+            self.call('handle_clear', c + off)
+        self.call('AnimState_dtor', c + 0x114, 0)
+        self.call('GameObject_dtor', c, 0)
+        if flags & 1:
+            self.call('pool_free', c)
+
+    def skelight_dtor(self, c, flags):
+        """Skelight_dtor 0x3cc67c: +0x48 = 0x5174b0, Creature_dtor(c, 0), pool_free when bit 0."""
+        self.w32(c + 0x48, T.VT_SKELIGHT)
+        self.call('Creature_dtor', c, 0)
+        if flags & 1:
+            self.call('pool_free', c)
+
+    def player_dtor(self, P, flags):
+        """Player_dtor 0x1a1bb8 (P, flags).  +0x48 = 0x511308.  Unless g_inGhostOp (s8
+        0x402795): for an ordinary player (+0x462 == 0) the record's object pointer +0x43d8 is
+        zeroed, for a display-only one the byte 0x4ef360 instead; in both cases the five
+        record words +0x43dc..+0x43ec.  Then (also during a ghost operation)
+        game_rebuildAlivePlayers; handle_clear(+0x588); AnimState_dtor(+0x560, 2);
+        light_dtor(+0x504, 2), light_dtor(+0x4c8, 2); handle_clear(+0x4b8); the array of five
+        0x18-byte elements at +0x3d0 in reverse - handle_clear of +0x438, +0x420, +0x408,
+        +0x3f0, +0x3d8; Creature_dtor(P, 0); pool_free when bit 0."""
+        self.w32(P + 0x48, T.VT_PLAYER)
+        if not self.s8(G_IN_GHOST_OP):
+            R = self._rec(P)
+            if not self.s8(P + 0x462):
+                self.w32(R + REC_OBJ, 0)
+            else:
+                self.w8(G_DISPLAY_PLAYER_BYTE, 0)
+            for k in range(5):
+                self.w32(R + 0x43DC + 4 * k, 0)
+        self.call('game_rebuildAlivePlayers')
+        self.call('handle_clear', P + 0x588)
+        self.call('AnimState_dtor', P + 0x560, 2)
+        self.call('light_dtor', P + 0x504, 2)
+        self.call('light_dtor', P + 0x4C8, 2)
+        self.call('handle_clear', P + 0x4B8)
+        for off in (0x438, 0x420, 0x408, 0x3F0, 0x3D8):
+            self.call('handle_clear', P + off)
+        self.call('Creature_dtor', P, 0)
+        if flags & 1:
+            self.call('pool_free', P)
+
+
+VT_GAMEOBJECT = 0x5122A8
+S_NAME_KEY = 0x5321B0                           # the key string GameObject_dtor scans for
+G_CTYPE = 0x5628E1
+G_IN_GHOST_OP = 0x402795
+G_DISPLAY_PLAYER_BYTE = 0x4EF360                # cleared by Player_dtor for a display-only player (meaning Unknown)
+DTOR_BODIES = {0x14CF90: 'gameobject_dtor', 0x117128: 'creature_dtor', 0x3CC67C: 'skelight_dtor',
+               0x1A1BB8: 'player_dtor'}
