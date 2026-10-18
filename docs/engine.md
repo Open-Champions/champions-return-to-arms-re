@@ -569,6 +569,10 @@ the prediction copy. `recall_execute(slot)` is reached from `hud_onMsg`; it cons
 
 ## Particles, glows, trails, beams (skimmed)
 
+Read in full since: `docs/effects.md` (formats, spawn and retirement rules, emitters,
+decals, gore, skill visuals) and `docs/lighting.md` (light nodes and sources).
+
+
 - Particle definitions are static objects built by `particleDef_ctor` / `particleDef_init`.
   `particle_spawn(…, def, pos, vel)` (175 callers) takes a particle from a fixed pool and does
   nothing when the pool is empty.
