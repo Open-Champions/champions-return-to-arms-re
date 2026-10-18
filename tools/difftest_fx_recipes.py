@@ -49,6 +49,7 @@ POOL_NEW, FIRE_CTOR = 0x14FDB8, 0x2020E0
 DISINTEGRATE, SHATTER = 0x1F4340, 0x1FB240
 SAMPLE_POINT, SAMPLE_COUNT, PHPROP_CTOR = 0x178E18, 0x1799C8, 0x155A0C
 MATH_COS16 = 0x166630
+BUILD_HIDE_MASK, GUT_FROM_PROP, ATTACH_POINT = 0x179550, 0x201AD0, 0x1754A0
 G_COSMETIC_SEED, G_RAND_SEED, G_DECAL_DETAIL = 0x404460, 0x404464, 0x44FDC0
 RES_ENTRY = 0x00C0FFE0                                  # what the res_find stub answers
 
@@ -98,8 +99,13 @@ class Harness:
         e.stub(SAMPLE_COUNT, function=self._sample_count)
         e.stub(SAMPLE_POINT, function=self._sample_point)
         e.stub(PHPROP_CTOR, function=self._phprop)
+        e.stub(BUILD_HIDE_MASK, function=self._mask)
+        e.stub(GUT_FROM_PROP, function=self._gut)
+        e.stub(ATTACH_POINT, function=self._attach)
+        self.gut_block = None
         self.pos = e.alloc(16)
-        self.obj = e.alloc(0x300)
+        self.obj = e.alloc(0x500)
+        self.cls = e.alloc(0x40)
         self.blocks = [e.alloc(0x300) for _ in range(8)]
         self.model = None
         self.last_block = None
@@ -129,6 +135,41 @@ class Harness:
             return m.mem.cstr(a) if a else 0
         self.log.append(('phprop', m.f[12], vec(m, m.r[5]), name(m.r[6]), name(m.r[7]),
                          name(m.r[8]), m.r[9] & M32, m.r[10] & M32, m.r[11] & M32))
+        return 0
+
+    @staticmethod
+    def show_mask(model, variant):
+        x = ((model * 0x2545F491) ^ (variant * 0x9E3779B97F4A7C15)) & 0xFFFFFFFFFFFFFFFF
+        return (x ^ (x >> 29)) & 0xFFFFFFFFFFFFFFFF
+
+    def _check_lift(self):
+        if self.gut_block is not None:
+            if self.emu.mem.u32(self.gut_block + 0x1C4) != 0x3F800000:
+                self.log.append(('lift',))
+            self.gut_block = None
+
+    def _mask(self, m):
+        self._check_lift()
+        model, variant = m.r[4] & M32, m.r[5] & M32
+        self.log.append(('mask', model, variant))
+        v = self.show_mask(model, variant)
+        m.r[3] = v >> 32                    # a 64-bit result: v0 holds all 64 bits
+        return v
+
+    def _gut(self, m):
+        sp = m.r[29] & M32
+        self.log.append(('gut', m.f[12], vec(m, m.r[5]), C.s16(m.r[6]), m.r[7] & M32,
+                         m.r[8] & M32, m.r[9] & M32, m.r[10] & M32, m.r[11] & M32,
+                         m.mem.u64(sp), m.mem.u32(sp + 8), m.mem.u32(sp + 16)))
+        self.gut_block = m.r[4] & M32
+        m.mem.w32(self.gut_block + 0x1C4, 0x3F800000)
+        return 0
+
+    def _attach(self, m):
+        self.log.append(('attach', m.f[12], m.r[4] & M32, vec(m, m.r[5]), C.s16(m.r[6]),
+                         m.r[7] & M32, m.r[8] & M32))
+        for k in range(3):
+            m.mem.w32((m.r[9] + 4 * k) & M32, C.f32(1234.5 + k))
         return 0
 
     def flush_block(self):
@@ -352,6 +393,56 @@ def prop_shatter(h):
            'sample queries, shared seed' % chunks, examples)
 
 
+def prop_lose_part(h):
+    for name, row in R.LOSE_PART_CLASSES.items():
+        prop = 'lose part %s' % name
+        if not wanted(prop):
+            continue
+        rng = random.Random('%d/%s' % (OPTIONS['seed'], prop))
+        count = scaled(2000)
+        failures, examples, chunks = 0, [], 0
+        e = h.emu
+        for case in range(count):
+            h.begin()
+            h.model = None
+            h.gut_block = None
+            cls = [rng.getrandbits(32) for _ in range(8)]
+            c = R.Creature(variant=rng.getrandbits(32) & rng.getrandbits(32), cls=cls,
+                           pos=random_pos(rng), yaw=rng.getrandbits(16),
+                           anim=h.obj + 0x114, colour=rng.choice((0, 1, 2)),
+                           scale=C.f32(rng.uniform(0.5, 2)), kind=rng.choice((0, 0, 1)))
+            part = rng.choice((rng.randint(-1, 13), rng.randint(0, 8), rng.getrandbits(32))) & M32
+            h.pool_answer = 0 if rng.random() < 0.1 else 1
+            for i, v in enumerate(cls):
+                e.mem.w32(h.cls + 4 * i, v)
+            e.mem.w32(h.obj + 0x24, h.cls)
+            e.mem.w32(h.obj + 0xE8, c.variant)
+            for k in range(3):
+                e.mem.w32(h.obj + 0x10 + 4 * k, c.pos[k])
+            e.mem.w16(h.obj + 0x38, c.yaw)
+            e.mem.w8(h.obj + 0x3C8, c.colour)
+            e.mem.w32(h.obj + 0xDC, c.scale)
+            e.mem.w32(h.obj + 0x414, c.kind)
+            e.mem.w64(h.obj + 0x220, 0)
+            if name == 'Orc' and part in (6, 7):
+                part = 5                      # never passed (see the reference)
+            e.call(row[0], h.obj, part)
+            h._check_lift()
+            show = e.mem.u64(h.obj + 0x220)
+            want = R.lose_body_part(name, c, part, h.show_mask, pool_new=lambda size: h.pool_answer)
+            chunks += sum(1 for x in want if x[0] == 'gut')
+            problem = diff_streams(h.log, want)
+            if problem is None and e.mem.u32(h.obj + 0xE8) != c.variant:
+                problem = 'variant %08x / %08x' % (e.mem.u32(h.obj + 0xE8), c.variant)
+            if problem is None and show != c.show and want:
+                problem = 'show mask'
+            if problem:
+                failures += 1
+                examples.append('case %d part %d: %s' % (case, C.s32(part), problem))
+        report(prop, failures, count, 'call stream (%d chunks: mesh mask, launch, blood bits, '
+               'names, scale, lift), variant word, show mask' % chunks, examples)
+
+
 def find_inputs(positional):
     for item in positional:
         if os.path.isfile(item):
@@ -392,6 +483,7 @@ def main(argv=None):
     prop_fx_spawn(h)
     prop_disintegrate(h)
     prop_shatter(h)
+    prop_lose_part(h)
     failed = [name for name, ok in RESULTS if not ok]
     print('%d properties, %d failed, %.0f s' % (len(RESULTS), len(failed), time.time() - started))
     return 1 if failed else 0

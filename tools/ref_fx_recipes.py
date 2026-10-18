@@ -383,3 +383,125 @@ def shatter_to_loose_ice(model, pos, yaw, count, scale, offset, anim, shared,
             calls.append(('vtable', VT_LOOSE_ICE_CHUNK))
         count -= 1
     return calls
+
+
+# =======================================================================================
+# Losing a body part: the eight callers of GutChunk_ctorFromProp 0x201ad0
+# =======================================================================================
+#
+# Common recipe.  A model-variant bit is ORed into the creature's variant word +0xe8 (the bit
+# per part is the class's own table), the mesh show mask +0x220 is rebuilt with
+# model_buildHideMask 0x179550 (model = class data +0xc), and one GutChunk (pool block 0x268)
+# is made from the creature's OWN model, showing only the meshes of the lost part:
+#
+#   GutChunk_ctorFromProp(scale, block, creature pos (+0x10), yaw (+0x38), class data +0xc
+#       (model), creature +0x114 (anim state), class data +0 (lump), +8 (model name), +0x10
+#       (texture; Ant: +0x18 when its colour byte +0x3c8 is 1), mask64, launch, bits)
+#
+# mask64 is either "old show mask AND NOT new show mask" (the meshes that the new variant bit
+# just hid) or a constant mesh mask per part; launch is PhProp_ctor2's launch-flag argument;
+# bits go to GutChunk +0x248 (2 = yellow blood, 0 = red, docs/effects.md section 9) - with
+# gore below 2 GutChunk_ctorFromProp also sets bit 1 (an invisible drop).  Then the chunk's
+# vertical speed +0x1c4 gets + 2.0 (not BlackWidow).  GutChunk_ctorFromProp itself: +0x248 =
+# bits (| 1 when g_decalDetail < 2), table 0x50f3b8 at +0x48, +0x250 = a copy of its
+# position, +0x25c = 2 (splats left), +0x260 = 0.
+
+LOSE_PART_CLASSES = {
+    # name: (address, part -> variant bit, part -> constant mesh mask or None (= old & ~new),
+    #        launch, blood bits, lift, order) ; order 'mask-first' or 'chunk-first'
+    'Ant': (0x236B0C, {n: 2 << n for n in range(8)}, None, 0xE, 2, True, 'mask-first'),
+    'AntQueen?': (0x238360, {}, None, 0xE, 0, True, 'mask-first'),
+    'FireBeetle': (0x247130, {n: 1 << (n - 1) for n in range(2, 8)},
+                   {2: 0x4, 3: 0x6, 4: 0x40, 5: 0xC00, 6: 0x80, 7: 0x300}, 7, 2, True, 'chunk-first'),
+    'Ghoul?': (0x2672F4, {0: 2, 1: 4, 2: 8, 3: 0x10, 4: 1},
+               {0: 0x8, 1: 0x10, 2: 0x20, 3: 0x40, 4: 0x2}, 7, 0, True, 'chunk-first'),
+    'Mosquito': (0x2982CC, {1: 0x10, 2: 0x10, 3: 0x40, 4: 2, 5: 1, 6: 4, 7: 8}, None, 0xE, 2,
+                 True, 'mask-first'),
+    'Orc': (0x2A3DE0, {1: 0x10000000, 2: 0x8000000, 3: 0x4000000, 4: 0x2000000, 5: 0x1000000},
+            {1: 0x20406, 2: 0x800, 3: 0x10, 4: 0x1000, 5: 0x200}, 7, 0, True, 'chunk-first'),
+    'Scorpion': (0x2A59F0, None, None, 0xE, 2, True, 'mask-first'),
+    'BlackWidow': (0x2ACFD8, {n: 1 << n for n in range(12)}, None, 0xE, 2, False, 'mask-first'),
+}
+ORC_ATTACH_INDEX = {1: 8, 2: 6, 3: 7, 4: 4, 5: 5}
+
+
+def orc_head_mask(variant):
+    """Orc_severPart part 1 (0x2a3e30-0x2a3f28): the head chunk's mesh mask follows the head
+    variants already set in +0xe8 (bits 0-6 and 8-11)."""
+    m = 0x60406 if variant & 1 else 0x20406
+    if variant & 2:
+        m = (m ^ 2) | 0x80000
+    for bit, high in ((4, 0x300000), (8, 0xC00000), (0x10, 0x3000000), (0x20, 0xC000000),
+                      (0x40, 0x30000000)):
+        if variant & bit:
+            m = (m ^ 6) | high
+    for k in range(4):
+        if variant & (0x100 << k):
+            m |= 0x80000000 << k
+    return m
+VT_GUTCHUNK = 0x50F3B8
+
+
+class Creature:
+    """The fields the part functions read (patterns for floats)."""
+
+    def __init__(self, variant=0, cls=(0,) * 8, pos=(0, 0, 0), yaw=0, anim=0,
+                 colour=0, scale=ONE, kind=0):
+        self.variant, self.cls = variant & M32, list(cls)
+        self.pos, self.yaw, self.anim = list(pos), yaw, anim
+        self.colour, self.scale, self.kind = colour, scale, kind
+        self.show = 0
+
+
+def lose_body_part(name, c, part, show_mask, pool_new=lambda size: 1):
+    """The part function of class `name` (LOSE_PART_CLASSES) on creature c, part number
+    `part` (an unsigned 32-bit value).  show_mask(model, variant) -> 64-bit mask
+    (model_buildHideMask; model = class data +0xc).  Updates c.variant and c.show; returns
+    the call records.  Orc also asks model_getAttachPoint for the part's attach point (index
+    ORC_ATTACH_INDEX) at yaw - 0x4001 and does not use it; its parts 6 and 7 (drop a held item
+    as a PhProp) are never passed by its only caller and are not modelled.  BlackWidow does
+    nothing at all while +0x414 is 1 and makes no chunk for parts 8-11.  'AntQueen?'
+    (0x238360, in the AntQueen code) and 'Ghoul?' (0x2672f4, in the Ghoul code) have no caller
+    anywhere (no call, jump or stored address).  Difftest properties "lose part <name>"."""
+    _addr, bits, consts, launch, blood, lift, order = LOSE_PART_CLASSES[name]
+    model = c.cls[3]
+    calls = []
+    if name == 'BlackWidow' and c.kind == 1:
+        return calls
+    bit = (1 << (part & 31)) if bits is None else bits.get(part, 0)
+    if name == 'Orc':
+        chunk = 1 <= part <= 5
+    elif name == 'BlackWidow':
+        chunk = not 8 <= part <= 11
+    else:
+        chunk = True
+    mask64 = 0
+    if order == 'mask-first':
+        calls.append(('mask', model, c.variant))
+        old = show_mask(model, c.variant)
+        c.variant |= bit
+        calls.append(('mask', model, c.variant))
+        c.show = show_mask(model, c.variant)
+        mask64 = old & ~c.show & 0xFFFFFFFFFFFFFFFF
+    else:
+        if name == 'Orc' and part == 1:
+            mask64 = orc_head_mask(c.variant)
+        else:
+            mask64 = consts.get(part, 0)
+        c.variant |= bit
+        if name == 'Orc' and part in ORC_ATTACH_INDEX:
+            calls.append(('attach', ONE, model, list(c.pos), C.s16(c.yaw - 0x4001), c.anim,
+                          ORC_ATTACH_INDEX[part]))
+    if chunk:
+        calls.append(('pool_new', 0x268))
+        if pool_new(0x268):
+            tex = c.cls[6] if (name == 'Ant' and c.colour == 1) else c.cls[4]
+            scale = c.scale if name == 'BlackWidow' else ONE
+            calls.append(('gut', scale, list(c.pos), C.s16(c.yaw), model, c.anim, c.cls[0],
+                          c.cls[2], tex, mask64, launch, blood))
+            if lift:
+                calls.append(('lift',))
+    if order == 'chunk-first':
+        calls.append(('mask', model, c.variant))
+        c.show = show_mask(model, c.variant)
+    return calls
