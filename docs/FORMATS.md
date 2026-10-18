@@ -16,6 +16,12 @@ little endian unless noted. "Unknown" means nobody has looked yet.
 | `.world` level geometry | understood: header, chunk tree, render batches (ready-made VIF packets), terrain heights and flags, path grid; a few fields still open — see [formats/world.md](formats/world.md) | `tools/world_info.py` |
 | `.vif` models | understood: header, part and variant tables, attach points, meshes as VIF1 streams for the model vertex program (positions, normals, strips, texture coordinates, joint weights); the file holds no skeleton or texture name — see [formats/model-texture.md](formats/model-texture.md) | `tools/model_info.py` (can export OBJ) |
 | `.tex` textures | understood: 0x80-byte header plus one GS upload packet; 8-bit images in GS memory order, some 4-bit and 32-bit, no mipmaps | `tools/model_info.py` (can export PPM/PGM) |
+| `PICCACHE.DAT` inventory pictures | serialized header, GIF uploads, swizzle and field weave audited across 11,511 entries; visual comparison pending — [contract](formats/inventory-icons.md) | `tools/ref_inventory_icons.py` |
+| `.fnt` UI fonts | bounded header/tables, embedded texture, glyph rectangles and ASCII width; full styled text partial — [contract](formats/ui-fonts.md) | `tools/ref_ui_layout.py` |
+
+Original interface resource rectangles, tiled border assembly and base player HUD
+coordinates are documented in [hud-layout.md](hud-layout.md). This identifies
+separate frame textures; it does not invent a shared original atlas.
 
 ## GOB
 
