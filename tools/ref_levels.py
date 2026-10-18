@@ -127,8 +127,8 @@ LEVEL_FLAG_WATER_FULL_MASK = 0x8           # water_setup 0x187628 fills every ma
 LEVEL_FLAG_WATER_SPLASH = 0x10             # random splashes when drawn (cosmetic)
 LEVEL_FLAG_NO_LEVEL_STATE = 0x800          # save_storeLevelState 0x21777c stores nothing
 LEVEL_FLAG_DEADLY_WATER = 0x1000           # Player_move: lethal damage in water
-LEVEL_FLAG_LIGHT_40 = 0x04000000           # level light alpha 0x40 (0x1e60e0)
-LEVEL_FLAG_LIGHT_20 = 0x20000000           # level light alpha 0x20, tested last
+LEVEL_FLAG_LIGHT_40 = 0x04000000           # base light level 0x40; tested second, so it wins (0x1e611c)
+LEVEL_FLAG_LIGHT_20 = 0x20000000           # base light level 0x20; tested first (0x1e6108)
 
 
 def find_level_row(rows, base, sub):
@@ -171,7 +171,13 @@ def monster_level(row, difficulty, base, pvp_mode_b=False):
 
 
 def level_light_alpha(flags):
-    """0x1e60e0-0x1e6154: alpha handed to light_setLevelLight; the later test wins."""
+    """0x1e60e0-0x1e6154: the base light level handed to light_setLevelLight 0x14a2d8 as
+    its stack argument, which stores it in g_worldLightLevel 0x5d347c (docs/lighting.md).
+    Round 2 (2026-10-18): it is NOT an alpha - the two alpha bytes 0x5d3473/0x5d347b get
+    the other stack argument, 0.  0x20000000 is tested first (movn at 0x1e6108) and
+    0x04000000 second (movn at 0x1e611c), so with both bits the result is 0x40.  The name
+    is kept for API stability; base_light_level is the same function.  Executed:
+    tools/difftest_levels.py property light_level."""
     alpha = 0x80
     if flags & LEVEL_FLAG_LIGHT_20:
         alpha = 0x20
@@ -216,8 +222,9 @@ def level_manifest(base, sub='', gob_lumps=(), level_entries=(), model_lumps=(),
     order they are opened.  Inputs describe what exists:
 
       gob_lumps      lump names inside <BASE>.GOB (after GOB_RENAMES)
-      level_entries  entry names inside <base>.lmp (after lump_fixup: 'ntsc_dialog.bin' is
-                     'dialog.bin', 'pal_*' entries dropped)
+      level_entries  entry names inside <base>.lmp IN DIRECTORY ORDER (after lump_fixup:
+                     'ntsc_dialog.bin' is 'dialog.bin', 'pal_*' entries dropped; the
+                     fixup removes entries but never reorders them)
       model_lumps    the lump names of the world's flag-0x800 chunks (chunk data +0x00)
       disc_files     upper-case names of loose files on the disc (no ';1')
       loaded_lumps   lumps already resident (lump_load returns them without a read)
@@ -254,9 +261,11 @@ def level_manifest(base, sub='', gob_lumps=(), level_entries=(), model_lumps=(),
     need('7', base + '.tex', 'disc', (base + '.tex').upper() in disc,
          'first 0x5000 bytes read by world_fixup 0x181f08 while the GOB loads')
     need('7', base + '.lmp', 'gob', base + '.lmp' in lumps)
-    worlds = sorted(e for e in level_entries if e.endswith('.world'))
-    need('8', worlds[0] if worlds else '*.world', base + '.lmp', bool(worlds),
-         'first entry with extension world (0x1e5978); order is the lump order, not sorted')
+    # Round 2 (2026-10-18): lump_findNthByExtension(lmp, 'world', 0) walks the directory in
+    # its stored order; round 1 sorted the names here, against its own prose.
+    world = first_entry_with_extension(level_entries, 'world')
+    need('8', world if world is not None else '*.world', base + '.lmp', world is not None,
+         'first entry with extension world in directory order (lump_findNthByExtension 0x171fd8)')
     if not recall_leg:
         maybe('10', 'dialog.bin', base + '.lmp', 'voice directory; first record containing enttag')
     maybe('11', 'ambient.bin', base + '.lmp', 'ambient_parse(text) or ambient_parse(0)')
@@ -1171,3 +1180,178 @@ def batch_material(alpha1, test1, blend_enabled=True):
     if not blend_enabled:
         return 'opaque', cut
     return {0x02: 'opaque', 0x01: 'mix', 0x09: 'env', 0x48: 'additive'}.get(alpha1, 'unknown'), cut
+
+
+# =======================================================================================
+# Round 2 corrections and additions (2026-10-18)
+#
+# Four points round 1 left contradictory or underspecified, settled by running the
+# original code in tools/ee_emu.py (tools/difftest_levels.py; docs/level-flow.md 16):
+#   1. the WORLD entry is the first in directory order, not the first in sorted order;
+#   2. the level flag bits give the BASE LIGHT LEVEL (0x40 wins over 0x20), not an alpha;
+#      the per-chunk order 0x100, 0x2000, 0x200 of chunk_header_state is unchanged;
+#   3. the recall countdown keeps counting during a cutscene; a cutscene on the tick it
+#      reaches 0 cancels the recall (RecallCountdown);
+#   4. world_movePiece's arithmetic (move_piece).
+# Round-1 names and signatures are unchanged.
+# =======================================================================================
+
+base_light_level = level_light_alpha        # the accurate name (g_worldLightLevel 0x5d347c)
+
+
+def first_entry_with_extension(entries, ext, n=0):
+    """lump_findNthByExtension 0x171fd8 (lump, ext, n): walk the directory in its stored
+    order; for each name take the part after the LAST '.' (libc_strrchr 0x3b95d8), skip a
+    name without one, compare it with ext by exact strcmp (0x3b8534, case-sensitive), and
+    return the n-th match (n = 0: the first) or None.  game_loadLevel calls it with
+    ('world', 0) at 0x1e599c and stores entry +4 (the data pointer) in g_world 0x44fdc8
+    without a null test, so a level lump with no .world entry faults there.  Executed:
+    difftest_levels.py properties world_pick and world_pick_load."""
+    for name in entries:
+        dot = name.rfind('.')
+        if dot < 0 or name[dot + 1:] != ext:
+            continue
+        if n == 0:
+            return name
+        n -= 1
+    return None
+
+
+RECALL_TICKS = 60                           # recall_execute 0x18c3c8 stores 60
+
+RECALL_AURA = 'aura'                        # countdown was 60: aura lights started
+RECALL_FINISH = 'finish'                    # reached 0: the request is written (recall_finish)
+RECALL_DROPPED_CUTSCENE = 'dropped: cutscene'
+RECALL_DROPPED_NOBODY = 'dropped: nobody alive'
+
+
+class RecallCountdown:
+    """g_recallCountdown 0x41b51d and player_recallTick 0x1b5fa0.
+
+    player_recallTick is the first thing the run task gameMiscSync 0x1e3d60 (priority 1)
+    does, in every tick, with no game_isFrozen, cutscene or pause test in front of it.  So
+    the countdown runs on during a cutscene and while paused.  Per call:
+
+        v = s8 countdown;  v == 0: return
+        v == 60: start the aura (per alive slot: colour words, light radius 0.05)
+        countdown = (u8)(v - 1);  non-zero: return
+        clear the aura lights of every player (0x1b60a4-0x1b6110)
+        g_cutsceneActive 0x44fcd0 != 0: return       <- the recall is lost, not deferred
+        g_alivePlayerCount 0x4f8420 == 0: return      <- likewise
+        recall_finish (hub test, positions, request)
+
+    The countdown is not set again on a dropped recall and the potion (taken in
+    recall_execute) is not given back.  Executed: difftest_levels.py property
+    recall_tick."""
+
+    def __init__(self, value=0):
+        self.value = value & 0xFF
+
+    def start(self):
+        """recall_execute 0x18c230 after its checks (game message 3)."""
+        self.value = RECALL_TICKS
+
+    @property
+    def running(self):
+        """What Trigger_run, Player_takeDamage and the others test: non-zero."""
+        return self.value != 0
+
+    def tick(self, cutscene_active, alive_count):
+        """One call; cutscene_active and alive_count are the values the call reads, i.e.
+        as left by the previous tick (gameMiscSync runs before runObjects, Script,
+        Dialog and cutRunFrame, which are the places a cutscene starts or ends).
+        -> None, RECALL_AURA, RECALL_FINISH, RECALL_DROPPED_CUTSCENE or
+        RECALL_DROPPED_NOBODY."""
+        if self.value == 0:
+            return None
+        aura = self.value == RECALL_TICKS
+        self.value = (self.value - 1) & 0xFF
+        if self.value != 0:
+            return RECALL_AURA if aura else None
+        if cutscene_active:
+            return RECALL_DROPPED_CUTSCENE
+        if alive_count == 0:
+            return RECALL_DROPPED_NOBODY
+        return RECALL_FINISH
+
+
+def recall_request_tick(set_tick, set_before_run_pass):
+    """The tick whose player_recallTick writes the level request, or None for a drop.
+    set_tick is the tick in which game message 3 was executed.  In a net game messages run
+    in net_frameLoop before that frame's run pass (set_before_run_pass True), so that
+    tick's call already sees 60 and the request is written in tick set_tick + 59.  Offline,
+    net_sendGameMsg executes the message at once: from player_pollRecallButton inside
+    gameMiscSync (after player_recallTick) or from the pause menu in the draw pass, so the
+    first call to see 60 is in the next tick and the request comes in set_tick + 60.
+    Either way it is the 60th call to see the countdown non-zero."""
+    first = set_tick if set_before_run_pass else set_tick + 1
+    return first + RECALL_TICKS - 1
+
+
+K_32767 = 0x46FFFE00        # 32767.0
+K_FOUR = 0x40800000         # 4.0: world units -> quarter units
+
+
+def _cos16(angle):
+    import ref_core
+    return ref_core.cos16(angle)
+
+
+def _sin16(angle):
+    import ref_core
+    return ref_core.sin16(angle)
+
+
+def _round_s16(x):
+    """floorf(x * 32767 + 0.5) (libm_floorf 0x3a57e8), cvt.w.s, then clamped to the s16
+    range by two slt/movn pairs (0x182ddc-0x182e10)."""
+    v = W.f2i(W.floorf(W.fadd(W.fmul(x, K_32767), W.HALF)))
+    return max(-0x8000, min(0x7FFF, v))
+
+
+def move_piece(piece, offset, angle, chunk_mirrored=None):
+    """world_movePiece 0x182c98 (world, piece, offset, angle16).  offset: three float
+    patterns in world units; angle: the low 16 bits, sign-extended.  It reads only the
+    PIECE record's rest values (+0x08..+0x10 s32 translation in quarter units, +0x14/+0x16
+    s16 cos/sin), never the chunk's current ones, so a move is absolute and moves do not
+    accumulate.  chunk_mirrored: per chunk of the piece (+0x00 first index, +0x04 s16
+    count; count <= 0 writes nothing), whether its flag 0x40 is set; default one chunk with
+    piece.mirrored.  Returns per chunk the new (+0x28, +0x2c, +0x30 s32, +0x36, +0x38 s16).
+
+    With ca = math_cos16(angle), sa = math_sin16(angle), K = 0x38000100:
+        o     = offset * 4.0                                 (per axis, first)
+        cos'  = round_s16(((ca * c) * K - (sa * s) * K) * 32767)      = cos(rest + angle)
+        sin'  = round_s16(((sa * c) * K + (ca * s) * K) * 32767)      = sin(rest + angle)
+        X, Y, Z = i2f(t) + o
+        plain:     t'x = trunc(X*ca + Y*sa)     t'y = trunc(-X*sa + Y*ca)    rotate by -angle
+        mirrored:  t'x = trunc(X*ca - Y*sa)     t'y = trunc( X*sa + Y*ca)    rotate by +angle
+        t'z = trunc(Z)
+    trunc is cvt.w.s (toward zero); round_s16 is _round_s16.  The drawing rule of
+    docs/formats/world.md (translation added before the rotation) then gives, exactly in
+    real arithmetic: world = pivot + R(rest) * offset + R(angle) * (rest-pose geometry -
+    pivot), pivot = piece_pivot(piece) - so the piece turns by +angle about its pivot and
+    shifts by the offset expressed in its rest frame (mirrored: the same with the mirrored
+    rest matrix).  Executed: difftest_levels.py property move_piece."""
+    if chunk_mirrored is None:
+        chunk_mirrored = (piece.mirrored,)
+    ca, sa = _cos16(angle), _sin16(angle)
+    c, s = W.i2f(W.s16(piece.cos)), W.i2f(W.s16(piece.sin))
+    k = K_COS
+    new_cos = _round_s16(W.fsub(W.fmul(W.fmul(ca, c), k), W.fmul(W.fmul(sa, s), k)))
+    new_sin = _round_s16(W.fadd(W.fmul(W.fmul(sa, c), k), W.fmul(W.fmul(ca, s), k)))
+    o = [W.fmul(v, K_FOUR) for v in offset]
+    out = []
+    for mirrored in chunk_mirrored:
+        X = W.fadd(W.i2f(piece.tx), o[0])
+        Y = W.fadd(W.i2f(piece.ty), o[1])
+        Z = W.fadd(W.i2f(piece.tz), o[2])
+        xc, yc, ys = W.fmul(X, ca), W.fmul(Y, ca), W.fmul(Y, sa)
+        if mirrored:
+            tx = W.fsub(xc, ys)
+            ty = W.fadd(W.fmul(X, sa), yc)
+        else:
+            tx = W.fadd(xc, ys)
+            ty = W.fadd(W.fmul(W.fneg(X), sa), yc)
+        out.append((W.f2i(tx), W.f2i(ty), W.f2i(Z), new_cos, new_sin))
+    return out
+
