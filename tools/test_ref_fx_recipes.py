@@ -94,5 +94,162 @@ class FxSpawnTest(unittest.TestCase):
             self.assertTrue(-7.5 <= F(c[3][2]) - F(POS[2]) <= 7.5)
 
 
+class FakeModel:
+    def __init__(self, n=5, size=4000.0):
+        self.n = n
+        self.size = C.f32(size)
+        self.n_samples = n
+        self.attach_base = 2
+
+    def sample_count(self):
+        return self.n
+
+    def sample_point(self, scale, anim, pos, yaw, index):
+        return [C.f32(10.0 * index), C.f32(1.0), C.f32(2.0)], self.size
+
+    def transform_sample_point(self, matrix, index):
+        return C.mat34_transform_point(matrix, [C.f32(index), 0, 0]), self.size
+
+    def effect_segment(self):
+        return [0, C.f32(4.5), 0], [0, C.f32(38.0), 0]
+
+
+class DeathRecipeTest(unittest.TestCase):
+    def test_disintegrate_volume_rule(self):
+        # 4000^3 = 6.4e10 < 8.09e10: one particle per point, the remainder carries over
+        model = FakeModel(n=10, size=4000.0)
+        calls = R.disintegrate_model(model, POS, 0, C.ONE, 0, 0, 0, C.Lcg(1))
+        n = len(spawns(calls))
+        self.assertTrue(7 <= n <= 10, n)
+        self.assertEqual(calls[0], ('hide',))
+        for c in spawns(calls):
+            self.assertTrue(0 <= F(c[1]) < 0.4)
+            self.assertEqual(c[2], R.DEF_DISINTEGRATE)
+
+    def test_shatter_uses_only_the_shared_seed(self):
+        model = FakeModel(n=12)
+        shared = C.Lcg(99)
+        calls = R.shatter_to_loose_ice(model, POS, 0, C.f32(4.0), C.ONE, 0, 0, shared)
+        chunks = [c for c in calls if c[0] == 'phprop']
+        self.assertEqual(len(chunks), 4)
+        self.assertEqual([c for c in calls if c[0] == 'sample'][0][5], 3)    # step 12 // 4
+        self.assertTrue(all(c[6] in (2, 3, 4) for c in chunks))
+        draws = C.Lcg(99)
+        for _ in range(5):
+            draws.draw()
+        self.assertEqual(shared.state, draws.state)
+
+
+class LosePartTest(unittest.TestCase):
+    def mask(self, model, variant):
+        return (variant * 0x0101010101) & 0xFFFFFFFFFFFFFFFF
+
+    def test_ant_chunk_shows_the_hidden_meshes(self):
+        c = R.Creature(variant=0, cls=list(range(8)))
+        calls = R.lose_body_part('Ant', c, 3, self.mask)
+        self.assertEqual(c.variant, 0x10)
+        (gut,) = [x for x in calls if x[0] == 'gut']
+        self.assertEqual(gut[9], self.mask(3, 0) & ~self.mask(3, 0x10) & 0xFFFFFFFFFFFFFFFF)
+        self.assertEqual((gut[10], gut[11]), (0xE, 2))
+        self.assertIn(('lift',), calls)
+
+    def test_firebeetle_constant_masks_and_blackwidow(self):
+        c = R.Creature(variant=0, cls=list(range(8)))
+        calls = R.lose_body_part('FireBeetle', c, 5, self.mask)
+        self.assertEqual([x for x in calls if x[0] == 'gut'][0][9], 0xC00)
+        self.assertEqual(calls[-1][0], 'mask')
+        c = R.Creature(variant=0, cls=list(range(8)), kind=1)
+        self.assertEqual(R.lose_body_part('BlackWidow', c, 2, self.mask), [])
+        c = R.Creature(variant=0, cls=list(range(8)))
+        calls = R.lose_body_part('BlackWidow', c, 9, self.mask)
+        self.assertFalse([x for x in calls if x[0] == 'gut'])
+        self.assertEqual(c.variant, 0x200)
+
+    def test_orc_head_mask(self):
+        self.assertEqual(R.orc_head_mask(0), 0x20406)
+        self.assertEqual(R.orc_head_mask(1), 0x60406)
+        self.assertEqual(R.orc_head_mask(0x104), 0x80000000 | (0x20406 ^ 6) | 0x300000)
+
+
+class ModelRecipeTest(unittest.TestCase):
+    def test_emit_from_verts(self):
+        calls = R.emit_from_model_verts(FakeModel(), POS, 0, 0, 7, 0x1234, None, None, C.ONE, C.Lcg(5))
+        self.assertEqual(len(spawns(calls)), 7)
+
+    def test_sparkle_counts(self):
+        model = FakeModel(size=1.0)       # size^2 = 1: one particle per point
+        calls = R.model_sparkle(model, POS, 0, 0, C.ONE, 0, C.Lcg(5))
+        defs = [c[2] for c in spawns(calls)]
+        self.assertEqual(defs.count(0x870728), 17)        # round(16.59)
+        self.assertEqual(defs.count(0x870778), 4)         # round(3.76)
+        self.assertEqual(R.model_sparkle(model, POS, 0, 0, C.ONE, 0, C.Lcg(5), near=False),
+                         [('near', POS)])
+
+    def test_arcs_create_then_update(self):
+        state = R.ArcState()
+        calls = R.model_arcs(FakeModel(), POS, 0, 0, C.f32(2.0), C.ONE, 0, state, 0, C.Lcg(3),
+                             beam_create=lambda a, b: 77)
+        self.assertEqual(sum(1 for c in calls if c[0] == 'beam_create'), 3)
+        self.assertTrue(all(a[2] == 77 for a in state.arcs))
+        updates = 0
+        for seed in range(20):
+            calls = R.model_arcs(FakeModel(), POS, 0, 0, C.f32(2.0), C.ONE, 0, state, 0,
+                                 C.Lcg(seed), beam_create=lambda a, b: 77)
+            for c in calls:
+                if c[0] == 'beam_update':
+                    updates += 1
+                    self.assertEqual(c[4], 94)        # alpha clamped to 1
+        self.assertGreater(updates, 20)
+
+    def test_glow_ramp_clamps(self):
+        ramp = R.GlowRamp()
+        for _ in range(200):
+            R.model_glow(FakeModel(), 0x20, ramp, POS, 0, 0, C.ONE, 0, C.ONE, [100] * 4,
+                         [200] * 4, 0, 0, 0)
+        self.assertEqual([F(v) for v in ramp.b], [200.0] * 4)
+        for _ in range(200):
+            R.model_glow(FakeModel(), 0x20, ramp, POS, 0, 0, C.ONE, 0, C.ONE, [100] * 4,
+                         [200] * 4, 2, 0, 0)
+        self.assertEqual([F(v) for v in ramp.b], [0.0] * 4)
+
+
+class WeaponStatusTest(unittest.TestCase):
+    def run_fx(self, entries, swinging=0, amount=1.0, **kw):
+        item = R.WeaponItem((0, 0, 0, 0), (0, 0, 0, 0), entries)
+        prev = C.mat34_set_identity()
+        state = R.WeaponFxState(C.mat34_set_pos_rot_z([0, 0, 0], 0x1000))
+        calls = R.model_status_effects(C.f32(amount), C.ONE, item, FakeModel(), state, POS, 0,
+                                       None, 0, swinging, 0, None, C.Lcg(7), **kw)
+        return calls, state, item
+
+    def test_level_flag_and_dialog(self):
+        self.assertEqual(self.run_fx([(0x18, 1)], level_flags=0x10000000)[0], [])
+        self.assertEqual(self.run_fx([(0x18, 1)], dialog_open=True)[0], [('dialog_open',)])
+
+    def test_lightning_minimum_and_beam(self):
+        calls, state, _ = self.run_fx([(0x18, 1)], amount=0.01, answers={'beam_create': 9})
+        self.assertGreaterEqual(sum(1 for c in spawns(calls) if c[2] == 0x870958), 8)
+        self.assertEqual(state.beam, 9)
+
+    def test_entry_value_only_gates(self):
+        a = self.run_fx([(0x16, 1)])[0]
+        b = self.run_fx([(0x16, 100)])[0]
+        self.assertEqual(a, b)
+        self.assertEqual(spawns(self.run_fx([(0x16, 0)])[0]), [])
+
+    def test_poison_ignores_motion(self):
+        calls = self.run_fx([(0x17, 1)])[0]
+        n = sum(1 for c in spawns(calls) if c[2] == 0x870CC8)
+        self.assertEqual(n, int(26 * 0.155997))
+        self.assertEqual(spawns(calls)[0][1], 0)                 # backdate starts at 0
+
+    def test_item_colours_fade(self):
+        item = R.WeaponItem((5, -5, 1, 0), (3, 0, -1, 0), [])
+        R.model_status_effects(C.ONE, C.ONE, item, FakeModel(), R.WeaponFxState(), POS, 0, None,
+                               0, 0, 0, None, C.Lcg(7))
+        self.assertEqual(item.glow, [3, -3, 0, 0])
+        self.assertEqual(item.colour2, [1, 0, 0, 0])
+
+
 if __name__ == '__main__':
     unittest.main()
