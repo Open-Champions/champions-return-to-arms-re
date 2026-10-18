@@ -21,7 +21,14 @@ Colours are ints 0..255 in r, g, b order (alpha ignored unless stated); directio
 world-space unit vectors pointing from the lit point towards the light.
 """
 import math
+import os
+import sys
 from collections import namedtuple
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from ref_particles import f32, rz          # noqa: E402  (console rounding, toward zero)
+
+FILL_FACTOR = f32(0.79999995)  # light_resetObjectLight 0x148340: 0x3f4ccccc, just below 0.8
 
 GRID_ORIGIN = 11520          # light grid: 90 x 90 cells of 256 (light_link 0x148af8)
 GRID_CELLS = 90
@@ -88,7 +95,8 @@ class LevelLight:
     def object_state(self):
         """light_resetObjectLight 0x148340."""
         sun, amb = self.scaled()
-        fill = tuple(trunc(c * 0.8) for c in self.ambient_set[:3]) + (0,)
+        # trunc(0.79999995 x as-set): a multiple of 5 gives one less than 0.8 would (round 2)
+        fill = tuple(trunc(rz(float(c) * FILL_FACTOR)) for c in self.ambient_set[:3]) + (0,)
         return ObjectLight(list(amb), list(sun), list(fill), [1.0, 1.0, 1.0], self)
 
 
@@ -318,6 +326,45 @@ class LightChunk:
         return LightNode((0, 0, 0), self.rgba[:3], self.rgba[:3], r, r, 0.0, 0, False)
 
 
+class LightSlots:
+    """The 16 light slots of the level light chunks (0x7d3f68, 0x44 bytes each: draw stamp,
+    owner chunk, node) and world_claimLightSlot 0x18b93c.  A chunk keeps its slot while it is
+    drawn; otherwise it takes the slot with the oldest draw stamp (the first such, scanning
+    0..15, among stamps below the current g_drawFrame; slot 0 when none is older) and the
+    previous owner loses it.  The radius a mode keeps "unchanged" is the SLOT's, so a chunk
+    that takes over a slot starts from the previous owner's radius (round 2: executed)."""
+
+    def __init__(self):
+        self.owner = [None] * 16
+        self.stamp = [0] * 16
+        self.radius = [0] * 16
+        self.slot_of = {}
+
+    def claim(self, chunk, draw_frame):
+        s = self.slot_of.get(id(chunk))
+        if s is None:
+            s, oldest = 0, draw_frame
+            for i in range(16):
+                if self.stamp[i] < oldest:
+                    s, oldest = i, self.stamp[i]
+            prev = self.owner[s]
+            if prev is not None:
+                self.slot_of.pop(id(prev), None)
+            self.owner[s] = chunk
+            self.slot_of[id(chunk)] = s
+        self.stamp[s] = draw_frame
+        return s
+
+    def run(self, chunk, sim_frame, draw_frame, rnd=None):
+        """world_runLightChunk for one drawn chunk: -> (slot, LightNode or None)."""
+        s = self.claim(chunk, draw_frame)
+        chunk.radius = self.radius[s]
+        node = chunk.step(sim_frame, rnd)
+        if node is not None:
+            self.radius[s] = chunk.radius
+        return s, node
+
+
 def glow_size(base, shift, noise):
     """Light chunk glow size: +0x20 + (trunc(22 x noise) << shift)."""
     return base + (trunc(noise * 22.0) << (shift & 31))
@@ -348,23 +395,25 @@ class LightEffect:
 
     def __init__(self, start_rgba, end_rgba, radius0, radius1, seconds, now, signed=False,
                  floor=0.0, pos=(0.0, 0.0, 0.0)):
-        self.life = max(1, trunc(seconds * 60.0))
+        # single-precision work rounded toward zero, as the console does it (round 2)
+        self.life = max(1, trunc(rz(f32(seconds) * 60.0)))
         self.end = now + self.life
-        inv = 1.0 / self.life
-        self.c = [float(x) for x in start_rgba]
-        self.rate = [(e - s) * inv for s, e in zip(start_rgba, end_rgba)]
-        self.radius = float(radius0)
-        self.rrate = (radius1 - radius0) * inv
+        inv = rz(1.0 / self.life)
+        self.c = [f32(x) for x in start_rgba]
+        self.rate = [rz(rz(f32(e) - f32(s)) * inv) for s, e in zip(start_rgba, end_rgba)]
+        self.radius = f32(radius0)
+        self.rrate = rz(rz(f32(radius1) - f32(radius0)) * inv)
         self.signed, self.floor, self.pos = signed, floor, tuple(pos)
 
     def run(self, sim_frame, owner_pos=None):
         """One run call; returns (alive, LightNode)."""
-        self.c = [c + r for c, r in zip(self.c, self.rate)]
-        self.radius += self.rrate
+        self.c = [rz(c + r) for c, r in zip(self.c, self.rate)]
+        self.radius = rz(self.radius + self.rrate)
         lo = -255.0 if self.signed else 0.0
-        self.c[:3] = [float(trunc(clamp(c, lo, 255.0))) for c in self.c[:3]]
+        # the accumulators are clamped but keep their fractions (round 2: executed)
+        self.c[:3] = [clamp(c, lo, 255.0) for c in self.c[:3]]
         if owner_pos is not None:
-            self.pos = (owner_pos[0], owner_pos[1], owner_pos[2] + 36.0)
+            self.pos = (f32(owner_pos[0]), f32(owner_pos[1]), rz(f32(owner_pos[2]) + 36.0))
         rgb = tuple(trunc(c) for c in self.c[:3])
         node = LightNode(self.pos, rgb, rgb, self.radius, self.radius, self.floor, 0, False)
         return sim_frame < self.end, node

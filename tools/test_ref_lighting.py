@@ -40,12 +40,12 @@ class Level(unittest.TestCase):
         self.assertAlmostEqual(fx, -1 / math.sqrt(1.25))
         self.assertAlmostEqual(fz, 0.5 / math.sqrt(1.25))
         obj = lv.object_state()
-        self.assertEqual(obj.fill[:3], [80, 40, 8])
+        self.assertEqual(obj.fill[:3], [79, 39, 7])     # trunc(0.79999995 x as-set)
 
     def test_fill_ignores_scale(self):
         lv = L.LevelLight((0, 0, 1), (100, 100, 100, 0), (100, 100, 100, 0), scale=0.5)
         obj = lv.object_state()
-        self.assertEqual((obj.ambient[0], obj.sun[0], obj.fill[0]), (50, 50, 80))
+        self.assertEqual((obj.ambient[0], obj.sun[0], obj.fill[0]), (50, 50, 79))
 
     def test_object_modifiers(self):
         lv = L.LevelLight((0, 0, 1), (100, 100, 100, 0), (30, 30, 30, 0))
@@ -104,7 +104,7 @@ class Nodes(unittest.TestCase):
         lv = L.LevelLight((0, 0, 1), (100, 100, 100, 0), (20, 20, 20, 0))
         obj = lv.object_state()
         rgb = L.shade_model_vertex((0, 0, 1), L.model_lights((0, 0, 0), [], obj))
-        self.assertEqual(rgb, (134, 134, 134))           # 20 + 0.99 x 100 (sun) + 0.99 x 16 (fill, straight up)
+        self.assertEqual(rgb, (133, 133, 133))           # 20 + 0.99 x 100 (sun) + 0.99 x 15 (fill, straight up)
         rgb = L.shade_model_vertex((0, 0, -1), L.model_lights((0, 0, 0), [], obj))
         self.assertEqual(rgb, (20, 20, 20))
 
@@ -202,6 +202,28 @@ class Decal(unittest.TestCase):
         r, g, b = L.decal_tint((0, 0, 0), [above], lv)
         self.assertEqual(r, 15 + int(200 * 0.75))
 
+
+
+class Round2(unittest.TestCase):
+    def test_light_effect_keeps_fractions(self):
+        # a rate below one per tick still moves the colour: the accumulator is not truncated
+        le = L.LightEffect((0, 0, 0, 0), (10, 0, 0, 0), 50.0, 50.0, 0.5, 0)
+        seen = [le.run(f)[1].model_rgb[0] for f in range(1, 31)]
+        self.assertEqual(seen[0], 0)
+        self.assertGreaterEqual(seen[-1], 9)
+        self.assertEqual(sorted(seen), seen)
+
+    def test_slot_takeover_inherits_radius(self):
+        slots = L.LightSlots()
+        chunks = [L.LightChunk(100 + i, 200, 0, 0, (255, 255, 255, 0)) for i in range(16)]
+        for i, c in enumerate(chunks):
+            self.assertEqual(slots.run(c, 1, 10 + i)[0], i)
+        late = L.LightChunk(5, 9, 3, 100, (1, 2, 3, 0))      # mode 3, timer not expired
+        late.timer = 1000
+        s, node = slots.run(late, 2, 100)
+        self.assertEqual(s, 0)                               # the oldest stamp
+        self.assertEqual(node.model_radius, 100.0)           # the previous owner's radius
+        self.assertNotIn(id(chunks[0]), slots.slot_of)
 
 if __name__ == '__main__':
     unittest.main()
