@@ -521,3 +521,145 @@ each id from its callers is I. Not read: the direction terms of ids 7, 0x14, 0x1
 per tick; texture 0x4f848c; flags 0) and one particle of 0x870548 at pos + (2u.x, 2u.y,
 |2u'.z|) with velocity (2u.x, 2u.y, 2u.z + 4.8), u and u' unit-ball points from the
 object's own generator.
+
+## 11. Skill and spell visuals: how they are chosen and timed
+
+**Chosen by code, not data.** A skill id selects a `Skill` object (`g_skillTable` 0x41b170,
+`docs/skills.md`); its `cast` allocates the effect classes (a `Spell` on a creature, a
+projectile or area `GameObject`, or both), and each class draws its visual with the
+primitives of this document using the particle definitions its own source file registers
+in a static initialiser. There is no visual id, effect table or data file between a skill
+and what it shows. O (call map below; `docs/skills.md` "How the pieces fit")
+
+**Timing.** Everything a class does is tied to its gameplay calls, all inside the
+simulation tick except `draw`:
+
+| Phase | When | Visual work done there |
+|---|---|---|
+| `Skill*_cast`, `*_ctor`, `*_initCommon` | the tick the cast happens. A player's cast fires on the tick its cast animation's blend weight reaches 1.0, or 0.5 in a net game (`docs/skills.md`, "How a cast happens", 0x1ab6f4–0x1ab7dc); monsters cast from their state machine; weapon procs inside the damage function | flash `LightEffect`s, trails created, particle groups made, the class's own light node linked |
+| `*_run` (Spell slot 2 from `Creature` slot 17 / `Player_updateCast`; GameObject slot 4) | every simulated tick of the effect's life | the steady particles, trail points, beam ends, light node radius / position |
+| `*_draw` (GameObject slot 5; Spell slot 3 only for Drowsy, SummonBadger, Resurrect) | every rendered frame | glow sprites |
+| `*_onHit`, `*_onContact`, `*_explode`, `*_end`, `*_absorb`, `*_applyToHit`, `*_trigger` | the tick of the impact / expiry / absorption, in the same call that applies the damage or status | bursts (`fx_spawn`, `fx_ringBurst`), impact lights, decals |
+
+So a renderer that mirrors the simulation can start each visual on the tick the code
+does; nothing is delayed or interpolated beyond what the particle ages give. The
+particles themselves live on the particle clock (section 4), the beams and light chunks on
+`g_simFrame`, glows and decal growth on rendered frames.
+
+The call map below was made by `tools/fx_callsites.py <elf> map 2c3cd4 320000` (calls of
+each primitive per function, from the instruction stream; names from `symbols/`). Legend:
+P `particle_spawn`, L `LightEffect`, G `glow_add`, T `trail_create`, t `trail_addPoint`,
+B `beam_create`, b `beam_update`, D `decal_add`, F `fx_spawn`, R `fx_ringBurst`, V / M / m
+model-vertex emitters (`fx_emitFromModelVerts`, `fx_modelParticlesNearCamera_1f61c0` with
+light, `_1f5210`), n the class links its own light node, g a particle group, p
+`fx_impactPuffNearCamera`. A class whose functions call none of these (for example most
+passive skills) is not listed. O for the calls; which phase a helper belongs to is I from
+its name and caller.
+
+| Class | At cast (ctor / cast) | Each tick (run) | Each frame (draw) | At an event |
+|---|---|---|---|---|
+| `ShockProjectile` | n ctor | BPb run | G draw |  |
+| `StaticFire` | n ctor; n ctor2 | P run | G draw |  |
+| `GroundPoundEffect` | n ctor | DLP run |  |  |
+| `SpellCharge` | Tnt ctor | Pt run |  | FP onContact |
+| `DiseaseBolt` |  | FP run |  |  |
+| `DiseaseTrail` |  | P run |  |  |
+| `SpellDiseaseTrail` |  | P run |  |  |
+| `SpellDiseaseShield` |  | GP run |  |  |
+| `DiseaseCloud` |  | P run |  |  |
+| `DarknessProjectile` | n ctor | P run |  |  |
+| `SpellConvertEnemy` | g ctor | P run |  |  |
+| `SpellConvertUndead` | g ctor | P run |  |  |
+| `SpellCyclone` | n ctor | P updateFx |  |  |
+| `SpellHarmTouch` |  |  |  | LP applyToHit |
+| `FireStormFlare` |  | DP run |  |  |
+| `FireStorm` | L initCommon; n ctor; n ctor2 |  |  |  |
+| `SpellDiseaseEffect` |  | G run |  |  |
+| `FireArrowProjectile` | n ctor; n ctor2 | p run | G draw |  |
+| `ColdArrowProjectile` | n ctor; n ctor2 | P run |  | F onHit; P end |
+| `PoisonArrowProjectile` | n ctor; n ctor2 | P run |  | P end |
+| `SkillMultiFire` | L cast |  |  |  |
+| `MultiFireProjectile` | Tt ctor | Pt run |  | F end |
+| `ExplodeArrowProjectile` |  | P run |  | FLR explode |
+| `FireFlare` |  | P run |  |  |
+| `SpellFireFlares` | n ctor |  |  |  |
+| `SkillRiposte` |  |  |  | P counterAttack |
+| `SpellBash` |  | L run; P windupFx |  |  |
+| `SpellBlessed` | n ctor | GP run |  |  |
+| `SpellAncestralCall` | Lg ctor | BPb run; M tintAndGlow |  |  |
+| `SkillSummonSkeleton` | P cast |  |  |  |
+| `SpellLightningWeapons` | L ctor | M run |  |  |
+| `SpellFireWeapons` | n ctor | P run |  |  |
+| `SpellColdWeapons` | L ctor | P run |  |  |
+| `SpellRoot` | g ctor | P run |  |  |
+| `SpellCriticalHit` | gn ctor | P run |  |  |
+| `SpellHolyShield` | g ctor |  |  | LP absorb |
+| `SpellHealing` | g ctor | P run |  |  |
+| `SpellConeOfFrost` | n ctor | P run |  |  |
+| `SpellUndeadShield` | gn ctor | P run |  |  |
+| `SpellSecondaryUndeadShield` | g ctor | P run |  |  |
+| `HolyStrike` | Tt ctor | LPt run | G draw |  |
+| `HammerOfWrath` |  | P run |  |  |
+| `SkillHammerOfWrath` | L cast |  |  |  |
+| `SpellConeOfFire` | n ctor | P run |  |  |
+| `SpellWizardBeam` | T ctor |  |  |  |
+| `BlindingLightEffect` | L ctor | P run |  |  |
+| `SkillRepulseUndead` | L cast |  |  |  |
+| `HolyBolt` | Tnt ctor | Pt run |  | LP onHit |
+| `FrostShard` |  | FP run |  |  |
+| `ShockOfFrost` | n ctor | FP run |  |  |
+| `PoisonRain` | L ctor | LP run |  |  |
+| `SpellShieldBash` |  | L run; P windupFx |  |  |
+| `SpellPlanarSteelEffect` | n ctor | GP run |  |  |
+| `SpellHornOmenEffect` | g ctor | P run |  |  |
+| `SpellUnspokenWord` | L cast; T ctor | P run |  |  |
+| `SpellSummonAxe` | L cast; g ctor | P run |  |  |
+| `SpellSummonArrows` | L cast; g ctor | P run |  |  |
+| `SpellRoar` |  | P run |  |  |
+| `SpellBattleCry` |  | LPg run |  |  |
+| `SpellBloodLust` |  | GP run |  |  |
+| `SpellArena` |  | P run |  |  |
+| `SkillStrongStance` |  |  |  | LP trigger |
+| `SkillStunningStrike` | L spawnEffect |  |  |  |
+| `SpellGiantGrowth` | gn ctor | P emitParticles |  |  |
+| `SpellPlanarWind` | n ctor | P run |  |  |
+| `PusStorm` | Ln ctor |  |  |  |
+| `Pustule` |  | P run |  |  |
+| `SpellTagarsInsects` |  | P run; P tickVictims |  |  |
+| `SpellDrowsy` | L cast | P run |  |  |
+| `PoisonBolt` | n ctor | P run |  | P burst |
+| `SpellSummonBadger` | L cast | P run | G draw |  |
+| `SpellShadowStep` | LP ctor |  |  |  |
+| `SpellResurrect` | n ctor | V run | G draw | L onOwnerDeath |
+| `SpellRaiseArmy` | L cast | P run |  |  |
+| `SpellRetribution` | gn ctor | V run |  |  |
+| `SpellSpiritShield` | L ctor | P dissolveParticles; P reformParticles |  |  |
+| `SpellPoisonWeapons` | L ctor |  |  |  |
+| `SpellWaveOfFlame` | L ctor | P run |  |  |
+| `SpellFrostArmor` | L ctor | P run |  | F onHit |
+| `SpellDiseaseBlade` | L ctor |  |  |  |
+| `SkillFireAxe` | L cast |  |  |  |
+| `SkillColdAxe` | L cast |  |  |  |
+| `LightningStrikeSpell` | Ln ctor |  |  |  |
+| `SpellConeOfShock` | n ctor |  |  |  |
+| `SmokeGen` |  |  | G draw |  |
+
+`tools/fx_callsites.py <elf> args LightEffect 2c3cd4 320000` lists every flash with its
+start and end colour, radii, floor and duration (stack arguments as floats), and `args
+particle` the definition used at each spawn; together with `fx_particle_defs.py` that is the
+whole of a skill's look. Values are not reproduced here.
+
+### Weapon element visuals — `fx_modelStatusEffects` 0x1f6ac8 (partly read)
+
+Called from the weapon objects' updates (`Weapon1_slot21` / `_slot22`, `Weapon2_update`),
+`Player_weaponTrails` 0x1bc768, `playerProjectile_draw`, `MissileWeapon_draw`, `Cyclops_run`,
+`VampireLord_run` and `Innoruuk_run`. It looks through the four effect entries of the item
+(+0x24, 8 bytes each, the damage effect block of `docs/gameplay.md` 2.2) for the codes
+0x18 lightning, 0x16 cold, 0x15 fire, 0x17 poison and 0x26 disease, and for each one present
+emits particles at the weapon's sample points, the amount scaled by the entry's value: O
+for the codes and the definitions used per block (lightning 0x870958; cold 0x870ae8,
+0x870b38, 0x870b88; fire 0x870a48 / 0x8709f8, 0x870a98; poison 0x870cc8, 0x870d18; disease
+0x870d68, 0x870e08, 0x870db8), not read further (U for counts and placement). It also
+creates a swing trail (0.2 s, row 3, width 1000, flags 2 = paired points, colour 0x80 grey
+— 0x1f6ff0) and can call `fx_spawn(0x11)` and a glow. Level flag 0x10000000 turns it off
+(0x1f6b2c). The glowing weapon shell drawn by the model code is in render-pipeline 4.8.
