@@ -1,6 +1,10 @@
 # Level flow: which files make a level, where players start, how levels change
 
-Status 2026-10-17, SLUS-20973 v2.00. Branch `t3/research-levels`. This document gathers in
+Status 2026-10-17, SLUS-20973 v2.00. Branch `t3/research-levels`. **Round 2 (2026-10-18):
+section 16 settles four points this document left contradictory or underspecified: the
+WORLD entry, the light level, recall timing in cutscenes and the moving-piece arithmetic. It
+does so by running the original code, and marks each statement it corrects with "→ 16.x"
+where the statement stands.** This document gathers in
 one place the contracts a native client needs to load an arbitrary level and move between
 levels, which until now were spread over `docs/mainloop.md` 7, `docs/data-tables.md` 7,
 `docs/spec/object-system.md` 7, `docs/issues/arena-entry.md`, `docs/audio-save.md`,
@@ -15,7 +19,9 @@ arithmetic), with synthetic-fixture tests in `tools/test_ref_levels.py`.
 The code was read statically in `SLUS_209.73` (Ghidra exports and `tools/dis.py`). Data
 regularities come from a scan of every archive on the disc image (120 `.GOB`, 119 with an
 `objects.ob`, 120 `script.scr`, 118 with a `.world`). Only counts are reported here.
-**Nothing in this document was run on a console, in PCSX2 or in the Play! emulator.** Of
+**Nothing in this document was run on a console, in PCSX2 or in the Play! emulator.** Section
+16 alone was **Executed** function by function in `tools/ee_emu.py`
+(`tools/difftest_levels.py`). Of
 the function bodies, `world_findMovingPiece` 0x182768, `water_test` 0x189438 and the
 placement code 0x321100–0x321240 were re-read instruction by instruction while writing
 `tools/ref_levels.py`. The rest were read once, by one reader.
@@ -73,7 +79,7 @@ Fields used by a native client:
 | +0x04 | monster level: `g_levelMonsterLevel` = byte + 2. PvP mode B and difficulty 1 give 3.0. Difficulties 2–5 then overwrite it with `(byte + 2) × 0.75 + {34, 61, 88, 115}`. Finally `stomedal` = 1.0 and `innpit` = 2.0 | O 0x1e5b70–0x1e5c94 |
 | +0x08 | `g_killPlaneZ` 0x4f7188 | O; D: −100000 in every row, so it never fires |
 | +0x14 | number of **water simulation blocks** (section 12) (0x12b0 bytes each; allocation tag "water patches", `water_allocPool` 0x186dbc). Not allocated for `intro` | O; this settles the U in data-tables.md 7.1 |
-| +0x20 | level flag word 0x44fe08. Bits read here: 0x8 full water masks; 0x10 random water splashes; 0x800 no saved level state; 0x1000 deadly water; 0x04000000 and 0x20000000 level-light alpha 0x40 / 0x20 (later test wins) | O 0x187628, 0x1876e0, 0x21777c, `Player_move`, 0x1e60e0–0x1e6154 |
+| +0x20 | level flag word 0x44fe08. Bits read here: 0x8 full water masks; 0x10 random water splashes; 0x800 no saved level state; 0x1000 deadly water; 0x04000000 and 0x20000000 give base light level 0x40 / 0x20, and **0x40 when both are set** (→ 16.2: round 1 said "level-light alpha" and implied 0x20 wins) | O 0x187628, 0x1876e0, 0x21777c, `Player_move`, 0x1e60e0–0x1e6154 |
 | +0x05, +0x0c, +0x10, +0x18, +0x1c, +0x2c | stored (0x41c16c/70, 0x4f718c, 0x4f7190, 0x4f7208, 0x44f030, 0x4f7152; +0x2c read unsigned); purposes U | O stores |
 
 D: all 90 row names have a `.GOB`. 30 archives have no row of their own and take whatever
@@ -97,7 +103,7 @@ already resident is returned without a read (0x173568). All rows O.
 | 5 | loading screen, 3.1 | `L<alias>.LMP` or `LMISS.LMP`; `LOADMISC.LMP` | picture optional (falls back), loadmisc required | 0x1e5758, 0x321e60 |
 | 6 | level-table row, section 2 | – | – | 0x1e5790 |
 | 7 | `gob_loadAll("<base>.gob")`, 3.2. The `.world` fixup inside it reads the first 0x5000 bytes of `<BASE>.TEX` | `<BASE>.GOB`, `<BASE>.TEX` | required | 0x1e58e8, 0x181f08 |
-| 8 | `g_world` 0x44fdc8 = the first entry with extension `world` in `<base>.lmp`, in lump order, with no null test | `*.world` | required | 0x1e5978–0x1e59bc |
+| 8 | `g_world` 0x44fdc8 = the first entry with extension `world` in `<base>.lmp`, in lump (directory) order, with no null test (→ 16.1, Executed; round 1's `ref_levels.py` sorted instead) | `*.world` | required | 0x1e5978–0x1e59bc |
 | 9 | `g_cosmeticSeed = g_randSeed` | – | – | 0x1e59c4 |
 | 10 | not a recall leg (0x41b51c, 0x41b51e): voice directory `dialog.bin`; the first record whose name contains `enttag` starts the entry music, otherwise stream 2 is stopped | `dialog.bin` | optional in effect | 0x1e59c0–0x1e5a88 |
 | 11 | `ambient.bin` copied into a 5120-byte stack buffer (unbounded copy) and parsed; `ambient_parse(0)` when absent | `ambient.bin` | optional | 0x1e5ab4–0x1e5b3c |
@@ -117,7 +123,7 @@ already resident is returned without a read (0x173568). All rows O.
 | 30 | **`world_disableUnclaimedPieces`** (11.2); `paths_joinSegments` | – | – | 0x1e6060 |
 | 32 | `script_runPostAction`: a post action left over from the old level runs in the new script (FINDINGS E10) | – | – | 0x1e60b8 |
 | 33 | loading flag 0x4f7198 = 0 | – | – | 0x1e60d4 |
-| 34 | level light: sun direction 0x44fdf8, colours 0x44fde0; alpha from the flag word (section 2) | – | – | 0x1e60e0 |
+| 34 | level light: sun direction 0x44fdf8, colours 0x44fde0, alphas 0; the **base light level** from the flag word (section 2; → 16.2) | – | – | 0x1e60e0 |
 | 35 | `save_armAutosave`, `dialog_loadBox` | – | – | 0x1e6174 |
 | 36 | every player record +0x4c27 = 30 (hit immunity) | – | – | 0x1e61bc–0x1e61f0 |
 
@@ -501,7 +507,9 @@ not restored** (0x18b270); and every water block is released.
 ## 10. Recall, party wipe, checkpoints
 
 **Recall.** `player_recallTick` 0x1b5fa0 runs when the 60-tick countdown ends, outside a
-cutscene, with someone alive (O). The two legs:
+cutscene, with someone alive (O). Section 16.3 gives the exact timing and what a cutscene
+does to it: the countdown keeps running during a cutscene, and a cutscene on the last tick
+cancels the recall. The two legs:
 
 | Leg | Saved / restored | Request | Placement on arrival |
 |---|---|---|---|
@@ -570,7 +578,7 @@ walked through (O for each step; I for the combination; D: no shipped DoorSwing 
 - `world_movePiece(piece, offset, angle)` 0x182c98 sets an **absolute** pose relative to rest.
   Only the chunk's drawn translation and rotation are rewritten: the geometry turns by
   +angle about the pivot and shifts by the offset in the piece's rest frame (world units).
-  This is **drawing only**.
+  This is **drawing only**. The exact arithmetic is in 16.4 (Executed).
 - **Collision never moves or turns** (O). It has exactly two controls:
   - element flag 2: set means the element is absent from every terrain query
     (`world_setPieceCollision` 0x182b00);
@@ -849,6 +857,8 @@ committed, and nothing decoded was written out.
 
 ## 15. Open
 
+Round 2 settled none of the items below. What it settled is in section 16.
+
 1. Which row each of the 30 levels without a table row resolves to (2).
 2. Whether a spawn with no floor is caught before the first tick (5.3).
 3. `Player_ctor` beyond 0x1a1db4; readers of 0x41b7c1 or writers of 0x4f8b58 through computed
@@ -863,3 +873,227 @@ committed, and nothing decoded was written out.
 8. None of this has been run. A recorded run through a `PushTrigger` door, a gate, a recall
    pair and a party wipe with and without a checkpoint would confirm sections 5, 9 and 10
    (`docs/VALIDATION.md`).
+
+## 16. Round 2 corrections (2026-10-18)
+
+**Why this section exists.** The first native implementation of this contract
+(`codex/level-flow` at 1cbd5db in open-champions, report
+`work/loop-level-flow-r1-report.md` there) refused four things under its rule not to guess:
+two because this document and `tools/ref_levels.py` contradicted each other, two because
+neither gave the exact arithmetic or timing. Each is settled here by **running the original
+function** in `tools/ee_emu.py` on state the test built (**Executed**, as CONTRIBUTING.md
+defines it). The tool is `tools/difftest_levels.py`; it needs your own `SLUS_209.73` and
+exits 0 without it. Everything it compares is a 32-bit pattern. Nothing in this section
+ran on a console, in PCSX2 or in the Play! emulator.
+
+Full run, 2026-10-18, seed 20973:
+
+| Property | Cases | What the original code was run on |
+|---|---|---|
+| `light_level` | 204 | 0x1e60e0–0x1e6158, with `light_setLevelLight` 0x14a2d8 run for real |
+| `chunk_light` | 216 | 0x189008–0x189070 of `world_drawChunk` |
+| `world_pick` | 900 | `lump_findNthByExtension` 0x171fd8, with libc `strrchr`/`strcmp` run for real |
+| `world_pick_load` | 100 | `game_loadLevel` 0x1e5954–0x1e59c0, with `lump_load` stubbed |
+| `recall_tick` | 3,430 calls | `player_recallTick` 0x1b5fa0, every callee stubbed |
+| `move_piece` | 400, plus 40 under each of five other float models | `world_movePiece` 0x182c98, with `math_sin16`, `math_cos16` and `floorf` run for real |
+| `move_piece_rest` | 1 | the fixed case of 16.4 |
+
+All pass. Before trusting them, each property was checked to fail when the model is
+deliberately wrong in the way round 1 was ambiguous: sorted WORLD pick, 0x20 winning,
+recall deferred past a cutscene, mirrored sign swapped.
+
+### 16.1 Several WORLD entries: directory order (the prose was right, the reference was wrong)
+
+- `game_loadLevel` loads `<base>.lmp`, calls `lump_findNthByExtension(lmp, "world", 0)`
+  0x171fd8, and stores record +4 (the data pointer) in `g_world` 0x44fdc8 without a null
+  test (O 0x1e5978–0x1e59bc; Executed `world_pick_load`).
+- 0x171fd8 walks the directory in its stored order (u16 count at lump +0, 12-byte records
+  {name, data, size} from +4). For each name it takes the text after the **last** `.`
+  (`libc_strrchr` 0x3b95d8) and skips a name with no `.`. It compares that text with the
+  extension by exact `strcmp` 0x3b8534, so the test is case-sensitive: `a.WORLD` and
+  `a.world.bak` do not match, but `x.y.world` and `.world` do. It returns the n-th match
+  (n = 0 is the first) or 0 (O; Executed `world_pick` for n = 0, 1, 2).
+- `lump_fixup` 0x1717d0 drops entries (moving later records down) and renames
+  `ntsc_dialog.bin`. It **never reorders** them (O 0x1718d4–0x171a50). So "lump order" is
+  the file's directory order minus dropped entries.
+- D (all 119 level lumps on the disc, counts only): 118 have exactly one `.world` and 1 has
+  none. **None has two**, so shipped content never reaches this case. None of the 119
+  directories is in `strcmp` order, and none is in case-insensitive order either, so a sort
+  is not even an approximation of the stored order.
+- Side note, not followed up: `symbols/engine.tsv` describes `lump_findEntry` 0x171de4 as a
+  binary search, but the directories are not sorted. The note, or the key the search uses,
+  should be re-read (U).
+- A level lump with no `.world` makes the interpreter fault at 0x1e59ac (a read of address
+  4). What the console does with that read is U. The file stays **required**.
+- `ref_levels.first_entry_with_extension(entries, ext, n=0)` is the function.
+  `level_manifest` now uses it, and its `level_entries` argument is documented as directory
+  order. Round 1 sorted at this point.
+
+### 16.2 Light precedence: base light level, and 0x40 wins
+
+The conflict: the section 2 row read "level-light alpha 0x40 / 0x20 (later test wins)",
+which implied 0x20 wins, while `ref_levels.level_light_alpha` returned 0x40 with both bits
+set. Cross-check: `docs/lighting.md` 1 on `t3/research-fx` (d7922ef) gives "0x80, or 0x40
+with 0x04000000, or 0x20 with 0x20000000", without saying which wins. Its
+`ref_lighting.base_level` tests 0x04000000 first, so it also gives 0x40.
+
+Executed (`light_level`):
+
+```
+level = 0x80
+if flags & 0x20000000: level = 0x20      movn at 0x1e6108 (tested first)
+if flags & 0x04000000: level = 0x40      movn at 0x1e611c (tested second, so it wins)
+light_setLevelLight(dir, ..., stack[0] = 0, stack[8] = level)
+```
+
+- 0x14a2d8 stores the second stack argument in **`g_worldLightLevel` 0x5d347c**, the base
+  level of every level vertex (lighting.md 1). It is **not an alpha**. The two alpha bytes
+  0x5d3473 and 0x5d347b get the other stack argument, 0 (Executed, both bytes checked).
+- So the reference was right about precedence and the prose was wrong about both precedence
+  and name. `ref_levels.base_light_level` is the accurate name; `level_light_alpha` stays,
+  for API stability, as the same function. `ref_lighting.base_level` agrees on every input.
+- **Per-chunk light** (13.4) is unchanged and is now Executed (`chunk_light`): 0x100 gives
+  −230 and clears the flag; else 0x2000 gives +230; else 0x200 gives 0; else the chunk is
+  lit dynamically. lighting.md 2 lists the three constants without an order. With
+  **0x2200** (116 disc chunks, 13.4) the constant is **+230**, not 0.
+- **Light chunks.** The research-fx corrections to the light-chunk *data*
+  (`docs/formats/world.md` "Light chunks": +0x20 glow size, +0x22 wobble shift, +0x28
+  depth bias) touch nothing in this document, which reads no light-chunk data field. Its
+  chunk-record +0x20 (13.1, texture header offset) is the geometry meaning. For light and
+  emitter chunks the record's +0x20 is a run-time timer, as world.md's chunk table already
+  says. No conflict.
+
+### 16.3 Recall countdown: exact ticks, and what a cutscene does
+
+`g_recallCountdown` 0x41b51d is set to 60 by `recall_execute` 0x18c3c8 (game message 3).
+`player_recallTick` 0x1b5fa0 is the **first call of the run task `gameMiscSync`** 0x1e3d60
+(priority 1, `docs/mainloop.md` 2) in every tick. Nothing in front of it tests
+`game_isFrozen`, a cutscene or the pause state (O 0x1e3d70). Executed (`recall_tick`, random
+start values, cutscene flags and alive counts):
+
+```
+v = (s8) countdown;  if v == 0: return
+if v == 60: start the aura on every player
+countdown = v - 1 (byte);  if countdown != 0: return
+clear every player's aura lights                    0x1b60a4-0x1b6110
+if g_cutsceneActive 0x44fcd0 != 0: return           recall LOST
+if g_alivePlayerCount 0x4f8420 == 0: return         recall LOST
+recall_finish (10): hub test, positions, request
+```
+
+- **The countdown keeps running during a cutscene, and while paused.** Only the call that
+  takes it from 1 to 0 looks at the cutscene flag. If a cutscene is active then, the recall
+  is **cancelled, not deferred**: the countdown is already 0, nothing re-arms it, and the
+  potion that `recall_execute` took is not given back. The same happens when nobody is
+  alive. A cutscene that starts and ends within the 60 ticks changes nothing.
+- **Which tick.** The first call that sees the countdown non-zero sees 60 and starts the
+  aura. The **60th** call writes the request.
+  - Net game: messages run in `net_frameLoop` before that frame's run pass
+    (`docs/netcode.md`, "The tick"). With message 3 in frame F, the aura starts in tick F
+    and the request is written in tick **F + 59**. The pending request then idles the
+    following steps until the load.
+  - Offline: `net_sendGameMsg` runs the message at once. From `player_pollRecallButton`
+    (called in `gameMiscSync` right after `player_recallTick`, 0x1bcff4) in tick S, and
+    from the pause menu (0x18db80, draw pass), the first call is in tick S + 1 and the
+    request in tick **S + 60**.
+  - `ref_levels.recall_request_tick(set_tick, set_before_run_pass)` gives both cases.
+- **Which value of the cutscene flag the call sees.** It is set only by `cut_start`
+  0x19b57c (caller: script `cutScene` 0x143f1c). It is cleared by `cut_end` 0x19a0dc
+  (callers `cut_runFrame` 0x199f44, `frontend_stop` 0x1e2174, and the net-failure path of
+  the HUD draw task 0x1dbe64 / 0x1dc0b4) and by 0x199fbc from `game_clearLevel` 0x1e4f28
+  (O). Scripts, objects and dialog run at priorities 10–125, `cutRunFrame` at 300, and the
+  HUD draw task in the draw pass. So the recall call reads the flag **as the previous tick
+  (or the load) left it** (I, from the task order).
+  - Consequence: a `cutScene` call in the same tick as the last countdown call does not stop
+    the recall. One made in the tick before it does.
+  - The HUD draw path is per machine. A net failure that ends a cutscene exactly one tick
+    before a recall completes would diverge (I; only on that failure path).
+- Unchanged: while the countdown is non-zero, `Trigger_run` does nothing, and the damage
+  early-out and player state 0xb apply (8; `docs/player.md`).
+- `ref_levels.RecallCountdown`: `start()`, `running`, and `tick(cutscene_active,
+  alive_count)`, which returns `aura`, `finish`, `dropped: cutscene`, `dropped: nobody
+  alive` or None. Call it once per tick at the priority-1 position, with the flag values as
+  the previous tick left them. Then `recall_finish` (round 1) on `finish`.
+
+### 16.4 `world_movePiece` arithmetic
+
+`world_movePiece(world, piece, offset, angle)` 0x182c98. Executed (`move_piece`; random
+rest translations and rotations including non-unit ones, offsets, angles, 1–3 chunks of
+mixed mirroring, counts 0 and −1, index −1; every chunk field compared and **no other
+memory written** outside the stack):
+
+```
+if piece < 0: return                            (bltz on the sign-extended register)
+a  = (s16) angle;  ca = math_cos16(a);  sa = math_sin16(a)
+o  = offset * 4.0                               per axis, first (world -> quarter units)
+P  = world +0x54 + piece * 0x1c                 the PIECE record, not the chunk
+c, s = (float) P.cos (+0x14), (float) P.sin (+0x16);  K = 0x38000100
+cos' = round_s16(((ca*c)*K - (sa*s)*K) * 32767.0)
+sin' = round_s16(((sa*c)*K + (ca*s)*K) * 32767.0)
+round_s16(x) = clamp((int) floorf(x + 0.5), -32768, 32767)      floorf 0x3a57e8
+for i in 0 .. (s16) P.count (+0x04) - 1:        nothing when the count is <= 0
+    C = world +0x24 + (P.first (+0x00) + i) * 0x3c
+    X, Y, Z = (float) P.t (+0x08, +0x0c, +0x10, s32) + o        each axis: i2f then add
+    if C.flags & 0x40 (mirrored):  C.tx = trunc(X*ca - Y*sa);   C.ty = trunc(X*sa + Y*ca)
+    else:                          C.tx = trunc(X*ca + Y*sa);   C.ty = trunc((-X)*sa + Y*ca)
+    C.tz = trunc(Z);  C.cos (+0x36) = cos';  C.sin (+0x38) = sin'
+```
+
+`trunc` is `cvt.w.s` (toward zero). Products are formed in exactly the order written
+(`ref_levels.move_piece` follows it operation by operation). It agreed under all six
+float-model settings.
+
+- **Absolute.** Only the piece record's rest values are read, so repeated calls do not
+  accumulate and a call with the same arguments always gives the same fields.
+- **Angle 0 is not an identity.** `math_sin16(0)` is 2⁻²² and `math_cos16(0x4000)` is
+  ±2⁻²², not 0 (`docs/spec/core.md` 4). So the translation can move by one quarter unit
+  (0.25 world units) even with offset 0 and angle 0. Executed fixed case
+  (`move_piece_rest`): rest (400, −800, 40), cos 32767, sin 0, offset (0, 0, −256) (an
+  `AutoDoor` opening), angle 0 gives (**399**, −800, −984). After the first call, a piece is
+  therefore not necessarily drawn at its file translation, even "at rest" (I for callers
+  that pass zero).
+- **What it means geometrically.** Apply the drawing rule of `docs/formats/world.md`
+  (translation added before the rotation). In real arithmetic the moved geometry is
+  `pivot + Rrest · offset + R(angle) · (rest geometry − pivot)`, where `pivot` is
+  `ref_levels.piece_pivot` and `Rrest` is the rest matrix (mirrored for flag 0x40). So the
+  piece turns by +angle about the pivot and shifts by the offset in its rest frame, as
+  11.3 said. The plain branch rotates the translation by −angle and the mirrored branch by
+  +angle; both give +angle on screen. Checked numerically, within 0.5 units, in
+  `test_ref_levels.Round2MovePiece` (I: this is algebra, not a run).
+- For a native client, the exact route is: compute these five fields with
+  `ref_levels.move_piece`, then draw with the world.md rule. Using the identity directly
+  differs by less than one unit. Collision is not touched (11.3, now also Executed: no
+  other write).
+
+### 16.5 What changed in `tools/ref_levels.py`
+
+All round-1 names and signatures are unchanged. The new code is in its section "Round 2
+corrections and additions".
+
+| Item | Change |
+|---|---|
+| `level_manifest` | step 8 takes the first `.world` in the given order (`first_entry_with_extension`), no longer `sorted(...)[0]` |
+| `first_entry_with_extension` | new: `lump_findNthByExtension` 0x171fd8 |
+| `level_light_alpha` | unchanged result; docstring and flag-constant comments corrected (base light level, 0x20000000 tested first) |
+| `base_light_level` | new alias of the same function |
+| `RecallCountdown`, `recall_request_tick`, `RECALL_*` | new: 16.3 |
+| `move_piece` | new: 16.4 (`ref_core.cos16`/`sin16` for the angle) |
+
+Tests: `tools/test_ref_levels.py` classes `Round2*` (synthetic). Comparison with the game:
+`tools/difftest_levels.py`.
+
+### 16.6 Running the tests: `tools/dis.py` shadows the standard library
+
+`python3 -m unittest discover -s tools -p 'test_*.py'` from the repository root works. Run
+from inside `tools/` (`cd tools; python3 -m unittest test_ref_levels`), it fails before any
+test: the current directory comes first on `sys.path`, so `import inspect` inside
+`unittest` loads `tools/dis.py` instead of the standard `dis`, and stops with
+`AttributeError: module 'dis' has no attribute 'COMPILER_FLAG_NAMES'` (reproduced
+2026-10-18, Python 3.12.3). The modules' own trick of appending `tools/` to `sys.path`
+cannot help, because the import happens before they run. The native agent worked around it
+by importing `unittest` before putting `tools/` on the path.
+
+Proposed fix, written as a comment in `tools/test_ref_levels.py` and
+`tools/difftest_levels.py` and **not applied** here, because 24 tracked files name the
+script and other branches touch them: `git mv tools/dis.py tools/eedis.py` and update those
+references. No module imports it, so nothing else changes.

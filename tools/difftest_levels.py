@@ -128,9 +128,16 @@ class Rig:
         W.set_fpu(model, bias, nearest)
         C.set_fpu(model, bias, nearest)
 
+    def alloc(self, size):
+        """A zeroed block.  reset() rewinds the bump heap, and EE.alloc zeroes only pages it
+        maps for the first time, so blocks are cleared here."""
+        addr = self.emu.alloc(size)
+        self.emu.mem.write(addr, bytes(size))
+        return addr
+
     def cstring(self, text):
         raw = text.encode('ascii') + b'\0'
-        addr = self.emu.alloc(len(raw))
+        addr = self.alloc(len(raw))
         self.emu.mem.write(addr, raw)
         return addr
 
@@ -192,9 +199,9 @@ def prop_chunk_light(rig, rnd):
         rig.reset()
         seen = []
         emu.stub(A_LIGHT_CONST, function=lambda e: seen.append(W.s32(e.r[5] & M32)) or 0)
-        chunk = emu.alloc(0x40)
-        buf = emu.alloc(0x40)
-        frame = emu.alloc(0x100)
+        chunk = rig.alloc(0x40)
+        buf = rig.alloc(0x40)
+        frame = rig.alloc(0x100)
         emu.mem.w32(chunk + 0x24, flags)
         emu.mem.w32(frame, buf)                  # sp+0 holds the packet write pointer
         emu.set_reg('s0', chunk)
@@ -233,11 +240,11 @@ def random_names(rnd):
 
 def build_lump(rig, names):
     emu = rig.emu
-    lump = emu.alloc(4 + 12 * max(1, len(names)))
+    lump = rig.alloc(4 + 12 * max(1, len(names)))
     emu.mem.w16(lump, len(names))
     datas = []
     for i, name in enumerate(names):
-        data = emu.alloc(16)
+        data = rig.alloc(16)
         datas.append(data)
         emu.mem.w32(lump + 4 + 12 * i, rig.cstring(name))
         emu.mem.w32(lump + 8 + 12 * i, data)
@@ -386,7 +393,7 @@ def prop_move_piece(rig, rnd, config_index=0):
     for _ in range(count):
         rig.reset()
         n_chunks = 8
-        chunks = emu.alloc(0x3C * n_chunks)
+        chunks = rig.alloc(0x3C * n_chunks)
         flags = [rnd.getrandbits(32) & ~0x40 | (0x40 if rnd.random() < 0.4 else 0)
                  for _ in range(n_chunks)]
         for i, f in enumerate(flags):
@@ -396,7 +403,7 @@ def prop_move_piece(rig, rnd, config_index=0):
             emu.mem.w16(chunks + 0x3C * i + 0x36, 0x5A5A)
             emu.mem.w16(chunks + 0x3C * i + 0x38, 0x5A5A)
         n_pieces = rnd.randint(1, 3)
-        pieces = emu.alloc(0x1C * n_pieces)
+        pieces = rig.alloc(0x1C * n_pieces)
         models = []
         for p in range(n_pieces):
             first = rnd.randint(0, 5)
@@ -413,13 +420,13 @@ def prop_move_piece(rig, rnd, config_index=0):
             emu.mem.w16(base + 0x16, s & 0xFFFF)
             piece = L.Piece(tx, ty, tz, c, s)
             models.append((piece, first, k))
-        world = emu.alloc(0x80)
+        world = rig.alloc(0x80)
         emu.mem.w32(world + 0x24, chunks)
         emu.mem.w32(world + 0x54, pieces)
         index = rnd.randrange(n_pieces) if rnd.random() > 0.05 else -1
         offset = random_offset(rnd)
         angle = random_angle(rnd)
-        opos = emu.alloc(16)
+        opos = rig.alloc(16)
         for i, v in enumerate(offset):
             emu.mem.w32(opos + 4 * i, v)
         emu.call(A_MOVE_PIECE, world, index, opos, angle)     # sign-extended, as a caller has them
@@ -462,17 +469,17 @@ def prop_move_piece_rest(rig, rnd):
     is 2**-22, not 0, so x comes out 399, not 400."""
     emu = rig.emu
     rig.reset()
-    chunks = emu.alloc(0x3C)
-    pieces = emu.alloc(0x1C)
+    chunks = rig.alloc(0x3C)
+    pieces = rig.alloc(0x1C)
     for off, v in ((0x00, 0), (0x08, 400), (0x0C, -800), (0x10, 40)):
         emu.mem.w32(pieces + off, v & M32)
     emu.mem.w16(pieces + 0x04, 1)
     emu.mem.w16(pieces + 0x14, 32767)
-    world = emu.alloc(0x80)
+    world = rig.alloc(0x80)
     emu.mem.w32(world + 0x24, chunks)
     emu.mem.w32(world + 0x54, pieces)
     offset = (W.f32(0.0), W.f32(0.0), W.f32(-256.0))
-    opos = emu.alloc(16)
+    opos = rig.alloc(16)
     for i, v in enumerate(offset):
         emu.mem.w32(opos + 4 * i, v)
     emu.call(A_MOVE_PIECE, world, 0, opos, 0)
