@@ -158,3 +158,15 @@ def display_rgba(rgba):
     for i in range(3, len(out), 4):
         out[i] = min(255, out[i] * 2)
     return bytes(out)
+
+
+BOTTOM_PAD = 0x0800   # header +0x08 bit; only reader itemList_drawGold 0x1c7278
+
+
+def bottom_anchor_y(anchor, height, flags):
+    """Top y that bottom-aligns a picture's art at `anchor` (0x1c7278..0x1c7298).
+
+    0x0800 pictures carry one transparent row below the art (inferred from the
+    cache data), so they are moved down one line. Item grids do not do this.
+    """
+    return anchor - height + (1 if flags & BOTTOM_PAD else 0)

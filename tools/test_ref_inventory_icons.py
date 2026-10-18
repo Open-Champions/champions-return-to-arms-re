@@ -78,4 +78,10 @@ class InventoryIcons(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'unsupplied'): R.decode(data)
 
 
+class BottomPad(unittest.TestCase):
+    def test_only_0x0800_moves_the_picture_down(self):
+        self.assertEqual(R.bottom_anchor_y(100, 30, 0x44), 70)
+        self.assertEqual(R.bottom_anchor_y(100, 30, 0x844), 71)
+        self.assertEqual(R.bottom_anchor_y(100, 30, 0x1044), 70)
+
 if __name__ == '__main__': unittest.main()
