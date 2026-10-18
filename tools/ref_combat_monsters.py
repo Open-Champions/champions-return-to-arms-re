@@ -615,3 +615,15 @@ F_96 = 0x42C00000
 GOBLIN_PARTS = 0x500448                         # weapon-part tables, one of 0x80 bytes per model family
 S_GOBLIN_DEAD, S_GOBLIN_NOLOOT, S_GOBLIN_ARROWS = 0x546998, 0x5469A0, 0x5469A8
 VT_GOBLIN = 0x510260
+
+
+class MonsterRuntime(T.Runtime):
+    """ref_combat_runtime.Runtime whose model is MonsterCombatModel: the round-2 helpers are
+    reachable from the shared world (AUTHORED composition; the bodies are executed).  The
+    destructor chain stays round 1's Runtime._slot1, whose order the executed bodies confirm
+    (docs/spec/combat-monster-death.md 4); loot generation and type-info tests are call-outs
+    the runtime refuses (loot objects are outside the contract's domain)."""
+
+    def __init__(self, *args, **kwargs):
+        T.Runtime.__init__(self, *args, **kwargs)
+        self.model = MonsterCombatModel(self.mem, self.services)
