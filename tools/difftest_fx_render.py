@@ -69,6 +69,8 @@ GROUP_CREATE, GROUP_BEGIN, GROUP_END, GROUP_SETMAT = 0x18E880, 0x18E958, 0x18E9A
 ADD_SORTED, RESREF_GET, IS_FROZEN, LINE_DRAW, HAZE = 0x16B7F0, 0x17377C, 0x1EBDF8, 0x1934C0, 0x18FE18
 TRAIL_CREATE, TRAIL_ADD, TRAIL_UPDATE, TRAIL_ADD_PAIR = 0x190FF8, 0x192550, 0x192840, 0x192650
 G_TRAILS, G_TRAIL_ROW_V = 0x82CD00, 0x44FCA8
+BEAM_CREATE, BEAM_UPDATE = 0x193088, 0x1933C8
+G_BEAMS, G_DRAW_FRAME, G_NET_FRAME, G_IN_SIM_TICK, G_LIBC_REENT = 0x7E30D0, 0x44FDD0, 0x4027AC, 0x402794, 0x50C7E8
 GLOW_ADD = 0x18FC78
 VU_BOOT = 0x3E5EC0
 G_DL_BASE, G_DL_CURSOR, G_DL_CAPACITY = 0x44FE0C, 0x44FE10, 0x44FDA4
@@ -123,7 +125,8 @@ class Rig:
         emu.stub(ADD_SORTED, 0, function=lambda e: self.packets.append(
             (e.r[4] & M32, e.r[5] & M32, e.r[6] & M32)))
         emu.stub(RESREF_GET, 0, function=lambda e: self.tex.get(e.r[4] & M32, 0))
-        emu.stub(IS_FROZEN, 0)
+        self.frozen = 0
+        emu.stub(IS_FROZEN, 0, function=lambda e: self.frozen)
         emu.stub(LINE_DRAW, 0)
         emu.stub(HAZE, 0)
         emu.mem.w8(G_ENABLED, 1)
@@ -150,6 +153,7 @@ class Rig:
             pages[k][:] = v
         self.emu._heap = self.heap
         self.packets = []
+        self.frozen = 0
         self.cursor = self.scratch
         self.emu.mem.w32(G_DL_BASE, self.dl)
         self.emu.mem.w32(G_DL_CURSOR, self.dl)
@@ -443,6 +447,11 @@ def reference_trails(rig, view, proj, waitq_first=True):
         t = R.Trail.from_bytes(m.read(G_TRAILS + 0x410 * i, 0x410))
         if t.handle and t.oldest != t.newest:
             out += R.trail_vertices(t, hdr['m'], hdr['vf6'], hdr['vf7'], R.Vu(), waitq_first, row_v)
+            if waitq_first:
+                ch = R.trail_chunks(t)
+                cover('trail chunks', len(ch))
+                cover('trails over the ring end', int(any(a + n == 0x80 for a, n in ch[:-1])))
+                cover('trails with odd oldest', t.oldest & 1)
             alphas.append(R.trail_header(t, row_v)[3][0])
     return out, alphas
 
@@ -464,7 +473,7 @@ def prop_trails(rig, rnd, cases, label):
             if h:
                 trails.append((h, flags))
         pos = {h: [target[k] + rnd.uniform(-100, 100) for k in range(3)] for h, _ in trails}
-        for tick in range(rnd.randrange(1, 90)):
+        for tick in range(rnd.choice((rnd.randrange(1, 90), rnd.randrange(100, 300)))):
             for h, flags in trails:
                 if rnd.random() < 0.8:
                     p = pos[h]
@@ -493,6 +502,140 @@ def prop_trails(rig, rnd, cases, label):
         cover('trail vertices drawn', sum(1 for v in want if not v[4]))
         bad += 1 if b else 0
     report(label, bad, total, 'trail vertices (single and paired), ALPHA_1 (%d scenes)' % cases, examples)
+    return bad
+
+
+# ---------------------------------------------------------------------------------------
+# Beams
+# ---------------------------------------------------------------------------------------
+
+class RefBeam:
+    pass
+
+
+def libc_state(rig):
+    return rig.emu.mem.u64(rig.emu.mem.u32(G_LIBC_REENT) + 0xA8)
+
+
+def prop_beams(rig, rnd, cases, label):
+    bad = total = 0
+    examples = []
+    for case in range(cases):
+        rig.reset()
+        e, m = rig.emu, rig.emu.mem
+        b = 0
+        sim = rnd.randrange(1000, 1 << 20)
+        m.w32(G_SIM_FRAME, sim)
+        m.w32(G_NET_FRAME, sim + rnd.randrange(-3, 3))
+        m.w32(G_DRAW_FRAME, rnd.randrange(1 << 20))
+        e.mem.w32(G_COSMETIC_SEED, rnd.randrange(1 << 32))
+        target = [rnd.uniform(-3000, 3000), rnd.uniform(-3000, 3000), rnd.uniform(-200, 400)]
+        beams = {}
+        for _ in range(rnd.randrange(1, 5)):
+            m.w8(G_IN_SIM_TICK, rnd.randrange(2))
+            a = [target[k] + rnd.uniform(-150, 150) for k in range(3)]
+            z = [target[k] + rnd.uniform(-150, 150) for k in range(3)]
+            jitter = f2r(rnd.choice((10.0, rnd.uniform(0, 60))))
+            scale = f2r(rnd.choice((1.0, rnd.uniform(0, 20))))
+            depth = rnd.choice((0, 1, 2, 3, 4, 5, 6, 9))
+            rgba = rnd.randrange(1 << 32)
+            width = rnd.choice((1000, rnd.randrange(4, 1024)))
+            cos = C.Lcg(m.u32(G_COSMETIC_SEED))
+            libc = C.LibcRand(libc_state(rig))
+            h = rig.call(BEAM_CREATE, rig.put_floats(a), rig.put_floats(z), width, depth, rgba,
+                         fargs=(C.to_float(jitter), C.to_float(scale))) & M32
+            if not h:
+                continue
+            idx = h & 0xFF
+            rb = RefBeam()
+            rb.depth = min(depth, R.BEAM_MAX_DEPTH)
+            rb.nodes = R.beam_build_nodes(jitter, rb.depth, cos, libc)
+            rb.jitter, rb.scale = jitter, scale
+            rb.a, rb.z = [f2r(x) for x in a], [f2r(x) for x in z]
+            beams[idx] = rb
+            if cos.state != m.u32(G_COSMETIC_SEED) or libc.state != libc_state(rig):
+                b += 1
+                examples.append('case %d beam %d: seeds after create differ' % (case, idx))
+        view = random_view(rnd, target)
+        proj = f2r(rnd.choice((477.5, rnd.uniform(200, 1200))))
+        m.w32(G_PROJ_SCALE, proj)
+        vaddr = rig.put_floats(view)
+        for frame in range(rnd.randrange(1, 6)):
+            for idx, rb in beams.items():
+                if rnd.random() < 0.3:
+                    rb.a = [f2r(C.to_float(x) + rnd.uniform(-5, 5)) for x in rb.a]
+                    h = m.u32(G_BEAMS + 0x734 * idx + 0x730)
+                    rig.call(BEAM_UPDATE, h, rig.put_floats(rb.a), rig.put_floats(rb.z),
+                             rnd.randrange(256), rnd.choice((-1, rnd.randrange(1024))))
+            cos = C.Lcg(m.u32(G_COSMETIC_SEED))
+            rig.frozen = int(rnd.random() < 0.15)
+            cover('frozen beam draws', rig.frozen)
+            draw_frame = m.u32(G_DRAW_FRAME)
+            sim = m.u32(G_SIM_FRAME)
+            alive = {}
+            for idx in sorted(beams):
+                base = G_BEAMS + 0x734 * idx
+                if not m.u8(base + 0x72C):
+                    continue
+                frame_now = C.s32(m.u32(G_NET_FRAME if m.u8(base + 0x72E) else G_SIM_FRAME))
+                if C.s32(m.u32(base + 0x728)) < frame_now:
+                    continue                                    # destroyed by this draw
+                rb = beams[idx]
+                if not rig.frozen:
+                    R.beam_drift_nodes(rb.nodes, m.u32(base + 0x718), rb.depth, cos)
+                pts = R.beam_points(rb.nodes, [m.u32(base + 0x700 + 4 * k) for k in range(3)],
+                                    [m.u32(base + 0x70C + 4 * k) for k in range(3)], rb.depth,
+                                    m.u32(base + 0x71C), C.Lcg(R.beam_frame_seed(sim, idx)))
+                alive[idx] = pts
+            rig.draw(vaddr)
+            if cos.state != m.u32(G_COSMETIC_SEED):
+                b += 1
+                examples.append('case %d frame %d: cosmetic seed after the draw differs' % (case, frame))
+            for idx, rb in beams.items():
+                base = G_BEAMS + 0x734 * idx
+                active = m.u8(base + 0x72C)
+                if (idx in alive) != bool(active):
+                    b += 1
+                    examples.append('case %d beam %d: alive %s, original active %d' % (case, idx, idx in alive, active))
+                    continue
+                if not active:
+                    continue
+                total += 1
+                got = [m.u32(base + 0x1C * n + 4 * k) for n in range(len(rb.nodes)) for k in range(7)]
+                want = [w for n in rb.nodes for w in n.words()]
+                if got != want:
+                    b += 1
+                    k = next(i for i in range(len(got)) if got[i] != want[i])
+                    examples.append('case %d beam %d frame %d: nodes differ at node %d word %d: %08x vs %08x' % (
+                        case, idx, frame, k // 7, k % 7, got[k], want[k]))
+                ring, clock = R.beam_trail_points(alive[idx])
+                draw_t = m.u32(base + (0x724 if draw_frame & 1 == 0 else 0x720))
+                other = m.u32(base + (0x720 if draw_frame & 1 == 0 else 0x724))
+                t = R.Trail.from_bytes(m.read(draw_t, 0x410))
+                o = R.Trail.from_bytes(m.read(other, 0x410))
+                ring = ring[:125]
+                if (t.oldest, t.newest, t.clock) != (0, len(ring), clock) or t.points[:len(ring)] != ring:
+                    b += 1
+                    examples.append('case %d beam %d frame %d: trail %s/%s/%s %s.., reference %d %d %s..' % (
+                        case, idx, frame, t.oldest, t.newest, t.clock, t.points[:2], len(ring), clock, ring[:2]))
+                if (o.oldest, o.newest, o.clock) != (0, 0, 0):
+                    b += 1
+                    examples.append('case %d beam %d: the other trail is not empty' % (case, idx))
+                cover('beam points', len(ring))
+            m.w32(G_DRAW_FRAME, (m.u32(G_DRAW_FRAME) + 1) & M32)
+            if rnd.random() < 0.5:
+                m.w32(G_SIM_FRAME, m.u32(G_SIM_FRAME) + rnd.randrange(1, 4))
+                m.w32(G_NET_FRAME, m.u32(G_NET_FRAME) + rnd.randrange(0, 4))
+        rig.frozen = 1                          # one more draw, sent to the GS: the strips
+        view2, proj2, gs, vu = draw_scene(rig, rnd, target)
+        want, _ = reference_trails(rig, view2, proj2)
+        got = [v for v in gs.vertices if v.prim in (R.PRIM_TRAIL, R.PRIM_TRAIL_PAIRED)]
+        b += compare_vertices(got, want, 'case %d strips' % case, examples)
+        cover('beam strip vertices drawn', sum(1 for v in want if not v[4]))
+        cover('beams destroyed by expiry', sum(1 for i in beams if not m.u8(G_BEAMS + 0x734 * i + 0x72C)))
+        bad += 1 if b else 0
+    report(label, bad, total, 'beams: nodes, drift, both seeds, rebuilt trail points (%d scenes)' % cases,
+           examples)
     return bad
 
 
@@ -546,6 +689,7 @@ PROPERTIES = [
     ('particles', lambda rig, rnd, n, label: prop_particles(rig, rnd, n, label), 60),
     ('particle groups', lambda rig, rnd, n, label: prop_particles(rig, rnd, n, label, groups=True), 60),
     ('trails', prop_trails, 60),
+    ('beams', prop_beams, 80),
 ]
 
 if __name__ == '__main__':

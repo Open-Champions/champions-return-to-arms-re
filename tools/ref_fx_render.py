@@ -511,3 +511,115 @@ def trail_vertices(t, header_m, vf6, vf7, vu=None, waitq_first=True, row_v=TRAIL
         saved = chunk[-2:]
         first = False
     return out
+
+
+# ---------------------------------------------------------------------------------------
+# Beams ("lightning"): beam_create 0x193088, nodes 0x192a40, drift 0x192e80, points
+# 0x192c50, the per-draw rebuild in trail_drawAll 0x193ad0; EE side (ref_core FPU)
+# ---------------------------------------------------------------------------------------
+
+K_DRIFT = 0x3DCCCCCC            # 0.099999994
+BEAM_COUNT, BEAM_MAX_DEPTH = 20, 5
+BEAM_SEED_FRAME, BEAM_SEED_INDEX = 0x229, 0x3F3
+
+
+class BeamNode:
+    __slots__ = ('off', 'drift', 'count')
+
+    def __init__(self, off, drift, count):
+        self.off, self.drift, self.count = list(off), list(drift), count
+
+    def words(self):
+        return self.off + self.drift + [self.count & M32]
+
+
+def beam_build_nodes(jitter, depth, cosmetic, libc):
+    """beam_buildNodes 0x192a40, called by beam_create with the beam's jitter and depth
+    (clamped to 5): a binary tree of offset nodes in pre-order, 2^(depth+1) - 1 of them.
+    Per node, six draws of the COSMETIC seed (s = 2u - 1 each, u = draw / 65536), then one
+    libc rand():
+        offset = (s1, s2, s3) * jitter
+        drift  = ((s4 * jitter) - offset.x, (s5 * jitter) - offset.y, (s6 * jitter) - offset.y)
+                 * 0.099999994          (z subtracts offset.y, as the code does)
+        count  = rand() & 7    (an integer word)
+    then the two children with jitter * 0.5.  cosmetic: ref_core.Lcg; libc: ref_core.LibcRand."""
+    out = []
+
+    def node(j, d):
+        s = [cosmetic.signed_unit() for _ in range(6)]
+        off = [C.mul(s[0], j), C.mul(s[1], j), C.mul(s[2], j)]
+        drift = [C.mul(C.sub(C.mul(s[3], j), off[0]), K_DRIFT),
+                 C.mul(C.sub(C.mul(s[4], j), off[1]), K_DRIFT),
+                 C.mul(C.sub(C.mul(s[5], j), off[1]), K_DRIFT)]
+        out.append(BeamNode(off, drift, libc.rand() & 7))
+        if d != 0:
+            node(C.mul(j, C.HALF), d - 1)
+            node(C.mul(j, C.HALF), d - 1)
+    node(jitter, depth)
+    return out
+
+
+def beam_drift_nodes(nodes, jitter, depth, cosmetic):
+    """beam_driftNodes 0x192e80, once per draw while the game is not frozen (trail_drawAll):
+    in pre-order, every node moves by its drift and counts down; a node whose count was
+    below 1 picks a new target: drift = ((s * jitter) - offset) * 0.099999994 per axis
+    (three cosmetic draws, x y z, against the moved offset), count = (seed >> 21) & 7 of a
+    fourth draw.  The children use jitter * 0.5."""
+    it = iter(nodes)
+
+    def node(j, d):
+        n = next(it)
+        old = C.s32(n.count)
+        n.off = [C.add(n.off[k], n.drift[k]) for k in range(3)]
+        n.count = (old - 1) & M32
+        if old < 1:
+            s = [cosmetic.signed_unit() for _ in range(3)]
+            n.drift = [C.mul(C.sub(C.mul(s[k], j), n.off[k]), K_DRIFT) for k in range(3)]
+            cosmetic.draw()
+            n.count = (cosmetic.state >> 21) & 7
+        if d != 0:
+            node(C.mul(j, C.HALF), d - 1)
+            node(C.mul(j, C.HALF), d - 1)
+    node(jitter, depth)
+
+
+def beam_points(nodes, a, b, depth, scale, cosmetic, amplitude=ONE):
+    """beam_buildPoints 0x192c50: recursive midpoint displacement, in order from a to b.
+    For each segment (a, b), using the next node in pre-order and three cosmetic draws:
+        mid = (((a + b) * 0.5) + node.offset) + ((s * amplitude) * scale)   per axis
+    then the left half (amplitude * 0.5), the point mid, the right half.  The ends a and b
+    themselves are not points: a beam of depth d is a polyline of 2^(d+1) - 1 midpoints."""
+    it = iter(nodes)
+    out = []
+
+    def seg(amp, p, q, d):
+        s = [cosmetic.signed_unit() for _ in range(3)]
+        n = next(it)
+        mid = [C.add(C.add(C.mul(C.add(p[k], q[k]), C.HALF), n.off[k]),
+                     C.mul(C.mul(s[k], amp), scale)) for k in range(3)]
+        if d != 0:
+            seg(C.mul(amp, C.HALF), p, mid, d - 1)
+        out.append(mid)
+        if d != 0:
+            seg(C.mul(amp, C.HALF), mid, q, d - 1)
+    seg(amplitude, a, b, depth)
+    return out
+
+
+def beam_frame_seed(sim_frame, index):
+    """The seed trail_drawAll puts in g_cosmeticSeed while it rebuilds beam `index`'s points
+    (and restores afterwards): the shape changes once per simulation frame, the node drift
+    once per drawn frame."""
+    return (sim_frame * BEAM_SEED_FRAME + index * BEAM_SEED_INDEX) & M32
+
+
+def trail_point(pos, stamp):
+    """trail_addPoint 0x192550: the ring entry for a position (half units, truncated)."""
+    return tuple(C.s16(C.to_int(C.add(p, p))) for p in pos) + (C.s16(stamp),)
+
+
+def beam_trail_points(points):
+    """What a beam's drawing trail holds after the rebuild: its clock was set to 0 and goes
+    up by 1 after each point, so stamps run 1, 2, ... (trail_addPoint stamps clock + 1).
+    Returns (ring entries, clock)."""
+    return [trail_point(p, k + 1) for k, p in enumerate(points)], len(points)
