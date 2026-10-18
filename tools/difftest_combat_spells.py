@@ -38,10 +38,18 @@ ENTRIES = {
     'collectInArc': (0x1614F0, 'viii', 3, 'n', 'collect_in_arc', (0x1614F0, 0x1618D4)),
     'collectInSphere': (0x14AB80, 'vii', 1, 'n', 'collect_in_sphere', (0x14AB80, 0x14ACF8)),
     'damageInRadius': (0x161270, 'iviiii', 2, 'n', 'damage_in_radius', (0x161270, 0x1614F0)),
+    'dtorHolyStrike': (0x3CF534, 'ii', 0, 'n', 'dtor_holystrike', (0x3CF534, 0x3CF5BC)),
+    'dtorSparks': (0x3C5B90, 'ii', 0, 'n', 'dtor_sparks', (0x3C5B90, 0x3C5C14)),
+    'dtorProjectile': (0x3C2940, 'ii', 0, 'n', 'dtor_projectile', (0x3C2940, 0x3C29AC)),
+    'dtorLightEffect': (0x3C6888, 'ii', 0, 'n', 'dtor_lighteffect', (0x3C6888, 0x3C6904)),
+    'dtorSpellWaveOfFlame': (0x3D1BD8, 'ii', 0, 'n', 'dtor_spell_waveofflame', (0x3D1BD8, 0x3D1C4C)),
 }
 EXTS = {
     'handle_insertNode': Ext(0x1A19D0, 'ppp', 0, 'i'),
     'handle_addNode': Ext(0x1A1980, 'pp', 0, 'i'),
+    'GameObject_dtor': Ext(0x14CF90, 'pi', 0, 'n'),
+    'light_dtor': Ext(0x14A490, 'pi', 0, 'n'),
+    'pool_free': Ext(0x150470, 'p', 0, 'n'),
 }
 NODE_AREA = 0x400
 
@@ -156,6 +164,8 @@ def generate(rig, key, rng):
         least = rng.choice((0, 0, 1, 5, most, most + 3))
         return (attacker, pos, most, rng.choice((0x40000, 0x100900, 0x40860, 0)), least,
                 rng.choice((0, 0, 8, 0x49, 1)), f32(inner), f32(outer))
+    if key.startswith('dtor'):
+        return (rng.choice(w.everything), rng.choice((0, 1, 2, 3)))
     raise KeyError(key)
 
 

@@ -214,6 +214,52 @@ class QueryModel(T.CombatModel):
             hit.append(o)
         return hit
 
+    # ---- the effect destructors (slot 1) -------------------------------------------------
+    # Observed and executed (difftest_combat_spells.py): each stores its own table, clears
+    # its own heads, stores the base table, clears the base's heads, then GameObject_dtor
+    # (this, 0) - or for a spell nothing more - and pool_free(this) when bit 0 is set (a
+    # tail jump).  Rows: function -> (table offset, [own table, steps...], [base table,
+    # steps...], GameObject_dtor or not).  A step is a head offset or ('light', offset).
+    DTORS = {
+        0x3CF534: ('HolyStrike_dtor', 0x48, (0x51A078, 0x58, 0x54), (0x5120B8, 0x4C), True),
+        0x3C5B90: ('Sparks_dtor', 0x48, (0x50E998, ('light', 0x64)), (0x5120B8, 0x4C), True),
+        0x3C2940: ('Projectile_dtor', 0x48, (0x5120B8, 0x4C), None, True),
+        0x3C6888: ('LightEffect_dtor', 0x48, (0x50E198, 0x88, ('light', 0x4C)), None, True),
+        0x3D1BD8: ('SpellWaveOfFlame_dtor', 0x14, (0x51C330, 0x18), (0x515BA0, 4), False),
+    }
+
+    def effect_dtor(self, fn, this, flags):
+        """One of DTORS on `this` with the destructor's argument `flags`."""
+        _name, table_off, own, base, gameobject = self.DTORS[fn]
+        for part in (own, base):
+            if part is None:
+                continue
+            self.w32(this + table_off, part[0])
+            for step in part[1:]:
+                if isinstance(step, tuple):
+                    self.call('light_dtor', this + step[1], 2)
+                else:
+                    self.call('handle_clear', this + step)
+        if gameobject:
+            self.call('GameObject_dtor', this, 0)
+        if flags & 1:
+            self.call('pool_free', this)
+
+    def dtor_holystrike(self, this, flags):
+        return self.effect_dtor(0x3CF534, this, flags)
+
+    def dtor_sparks(self, this, flags):
+        return self.effect_dtor(0x3C5B90, this, flags)
+
+    def dtor_projectile(self, this, flags):
+        return self.effect_dtor(0x3C2940, this, flags)
+
+    def dtor_lighteffect(self, this, flags):
+        return self.effect_dtor(0x3C6888, this, flags)
+
+    def dtor_spell_waveofflame(self, this, flags):
+        return self.effect_dtor(0x3D1BD8, this, flags)
+
 
 # =======================================================================================
 # 2. Spells in the shared world: the skill models of ref_skills_a/b/c composed with the
@@ -241,26 +287,20 @@ SKILL_NAMES = {16: 'holystrike', 57: 'shockoffire', 95: 'waveofflame'}
 
 # Observed: the object and spell tables these skills create (slot -> function).
 VT_HOLYSTRIKE, VT_SPARKS, VT_LIGHTEFFECT, VT_SPELL_WAVEOFFLAME = 0x51A078, 0x50E998, 0x50E198, 0x51C330
+_DEFAULTS = (0x3C7EB0, 0x3C7EB8, 0x3C7EC0, 0x3C7EC8, 0x3C7EF0, 0x3C7EF8, 0x3C7F20, 0x3C7F28)  # slots 7-14
 OBJECT_TABLES = {                               # slots 0-16
-    VT_HOLYSTRIKE: (0x3CF5BC, 0x3CF534, 0x3C7E88, 0x3C7E90, 0x2EBC50, 0x2ECD90, 0x2ECAE8, 0x3C7EB0, 0x3C7EB8, 0x3C7EC0, 0x3C7EC8, 0x3C7EF0, 0x3C7EF8, 0x3C7F20, 0x3C7F28,
-                    0x11C7F8, 0x3C8120),
-    VT_SPARKS: (0x3C5C18, 0x3C5B90, 0x3C7E88, 0x3C7E90, 0x28FA3C, 0x2902E4, 0x2900C8, 0x3C7EB0, 0x3C7EB8, 0x3C7EC0, 0x3C7EC8, 0x3C7EF0, 0x3C7EF8, 0x3C7F20, 0x3C7F28,
-                0x12C668, 0x3C8120),
-    VT_LIGHTEFFECT: (0x3C6908, 0x3C6888, 0x3C7E88, 0x3C7E90, 0x1EE050, 0x3C7EA0, 0x3C7EA8, 0x3C7EB0, 0x3C7EB8, 0x3C7EC0, 0x3C7EC8, 0x3C7EF0, 0x3C7EF8, 0x3C7F20, 0x3C7F28,
-                     0x12E690, 0x3C8120),
+    VT_HOLYSTRIKE: (0x3CF5BC, 0x3CF534, 0x3C7E88, 0x3C7E90, 0x2EBC50, 0x2ECD90, 0x2ECAE8) + _DEFAULTS
+    + (0x11C7F8, 0x3C8120),
+    VT_SPARKS: (0x3C5C18, 0x3C5B90, 0x3C7E88, 0x3C7E90, 0x28FA3C, 0x2902E4, 0x2900C8) + _DEFAULTS
+    + (0x12C668, 0x3C8120),
+    VT_LIGHTEFFECT: (0x3C6908, 0x3C6888, 0x3C7E88, 0x3C7E90, 0x1EE050, 0x3C7EA0, 0x3C7EA8) + _DEFAULTS
+    + (0x12E690, 0x3C8120),
 }
 SPELL_TABLES = {VT_SPELL_WAVEOFFLAME: (0x3D1C4C, 0x3D1BD8, 0x317000, 0x3CB04C, 0x3CB054)}
 
-# Observed destructors (slot 1): the heads each clears before GameObject_dtor 0x14cf90 (or,
-# for a spell, before the Spell base clears its back list +4); 'light' is light_dtor
-# 0x14a490 on an embedded light record (presentation).  Then pool_free when bit 0 is set.
-OBJECT_DTORS = {
-    0x3CF534: ('HolyStrike_dtor', (0x58, 0x54, 0x4C)),
-    0x3C5B90: ('Sparks_dtor', ('light', 0x4C)),
-    0x3C6888: ('LightEffect_dtor', (0x88, 'light')),
-    0x3C2940: ('Projectile_dtor', (0x4C,)),
-}
-SPELL_DTORS = {0x3D1BD8: ('SpellWaveOfFlame_dtor', (0x18,))}
+OBJECT_DTORS = {fn: row for fn, row in QueryModel.DTORS.items() if row[4]}
+SPELL_DTORS = {fn: row for fn, row in QueryModel.DTORS.items() if not row[4]}
+
 # Observed: the GameObject defaults these tables keep - bare returns (value 0 where the
 # delay slot clears v0), slots 11 and 12 only copy their vector argument to the stack
 EMPTY_SLOTS = {0x3C7E88: 2, 0x3C7E90: 3, 0x3C7E98: 4, 0x3C7EA0: 5, 0x3C7EA8: 6, 0x3C7EB0: 7, 0x3C7EB8: 8,
@@ -534,18 +574,9 @@ class SpellRuntime(T.Runtime):
         return model.table_call('Spell', spell, 0x14, slot, *args)
 
     def spell_dtor(self, spell, flags, fn):
-        """An observed spell destructor: its own heads, then the Spell base (back list +4:
-        the owner's node goes), then pool_free with bit 0."""
-        name, heads = SPELL_DTORS[fn]
-        self.note('destroy_spell', spell, name)
-        for off in heads:
-            self.world.handles.clear(self.mem.head(spell + off))
-        self.world.handles.clear(self.mem.head(spell + 4))
-        if flags & 1:
-            block = self.world._block_size(spell)
-            self.world.pool.free(spell)
-            self.mem.forget_heads(spell, spell + block)
-            self.blocks.pop(spell, None)
+        """An executed spell destructor (QueryModel.DTORS) on the shared world."""
+        self.note('destroy_spell', spell, SPELL_DTORS[fn][0])
+        self.qmodel.effect_dtor(fn, spell, flags)
 
     def svc_creature_addSpell(self, creature, spell):
         """creature_addSpell 0x11a838 (executed in difftest_skills_a): with a spell,
@@ -628,17 +659,28 @@ class SpellRuntime(T.Runtime):
             self.dispatch_virtual(obj, 1, 3)
 
     def object_dtor(self, obj, flags, fn):
-        name, heads = OBJECT_DTORS[fn]
-        self.note('destroy', obj, name)
-        for off in heads:
-            if off != 'light':
-                self.world.handles.clear(self.mem.head(obj + off))
-        live = self.world.obj(obj)
-        block = self.world._block_size(obj)
-        self.world.destroy(live, flags)
-        self.kinds.pop(obj, None)
-        if flags & 1:
-            self.mem.forget_heads(obj, obj + block)
+        """An executed object destructor (QueryModel.DTORS) on the shared world."""
+        self.note('destroy', obj, OBJECT_DTORS[fn][0])
+        self.qmodel.effect_dtor(fn, obj, flags)
+
+    def svc_GameObject_dtor(self, obj, flags):
+        """GameObject_dtor 0x14cf90 (ref_objects, executed): +8, +4, +0 cleared."""
+        self.world.destroy(self.world.obj(obj), flags)
+
+    def svc_pool_free(self, addr):
+        """pool_free 0x150470 of an effect or a spell block: the block goes back to its size
+        class (last in, first out) and its handle words are dead memory."""
+        block = self.world._block_size(addr)
+        obj = self.world.objects.pop(addr, None)
+        if obj is not None:
+            obj.alive = False
+            self.kinds.pop(addr, None)
+        self.blocks.pop(addr, None)
+        self.world.pool.free(addr)
+        self.mem.forget_heads(addr, addr + block)
+
+    def svc_light_dtor(self, light, flags):
+        self.note('presentation', 'light_dtor')
 
     def dispatch_virtual(self, this, slot, *args):
         """A virtual call-out of any model: the round-1 model when it has the body, a skill
