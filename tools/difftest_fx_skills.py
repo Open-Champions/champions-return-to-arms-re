@@ -13,6 +13,12 @@ Needs your own SLUS_209.73 (US v2.00).  Without it the script says so and exits 
     --seed N      seed of the random cases (default 7337); a seed repeats exactly
     -k TEXT       only the groups whose name contains TEXT (draws, multifire, ...)
     -v            the first mismatches of a failing property, and blocks never entered
+    --table FILE  write, per entry point, the least / most / total number of each effect
+                  primitive one call of the ORIGINAL made (keep FILE local)
+    --decode MODULE [options]
+                  run another skill difftest (difftest_skills_a, _b, _c,
+                  difftest_arena_monsters) unchanged and decode the call-outs of its
+                  original runs as primitives (with --table, before --decode)
     --fpu MODEL   ps2 (default), ps2g1, chop or nearest: the adder model of both sides
     --trace-first stop at the first mismatching call and print both sides
 
@@ -452,7 +458,8 @@ def scenario_staticfire(t):
                 t.do('StaticFire_draw', obj)
 
 
-DECODED = {'calls': 0, 'effects': 0, 'bad': 0, 'examples': [], 'kinds': {}}
+DECODED = {'calls': 0, 'effects': 0, 'bad': 0, 'examples': [], 'kinds': {}, 'per': {}}
+TABLE = {'path': None}
 
 
 def decode_callouts(module):
@@ -464,12 +471,37 @@ def decode_callouts(module):
     def compare_and_decode(self, *args, **kw):
         out = original(self, *args, **kw)
         if isinstance(out, dict):
-            decode(out.get('emu_calls') or ())
+            effects = decode(out.get('emu_calls') or ())
+            tally(str(args[0]) if args else '?', effects)
         return out
     module.Rig.compare = compare_and_decode
 
 
+def tally(key, effects):
+    """Per entry point: how many calls, and per primitive the least, most and total
+    number made in one call (the executed counts of the recipe table)."""
+    per = DECODED['per'].setdefault(key, {'calls': 0, 'prims': {}})
+    per['calls'] += 1
+    counts = {}
+    for fx in effects:
+        counts[fx.primitive] = counts.get(fx.primitive, 0) + 1
+    for prim in set(counts) | set(per['prims']):
+        n = counts.get(prim, 0)
+        row = per['prims'].setdefault(prim, [0 if per['calls'] > 1 else n, n, 0])
+        row[0], row[1], row[2] = min(row[0], n), max(row[1], n), row[2] + n
+
+
+def write_table(path):
+    with open(path, 'w') as f:
+        f.write('# entry point\tcalls\tprimitive\tleast\tmost\ttotal (executed under tools/ee_emu.py)\n')
+        for key in sorted(DECODED['per']):
+            per = DECODED['per'][key]
+            for prim, (least, most, total) in sorted(per['prims'].items()):
+                f.write('%s\t%d\t%s\t%d\t%d\t%d\n' % (key, per['calls'], prim, least, most, total))
+
+
 def decode(calls):
+    effects = []
     for name, cargs in calls:
         DECODED['calls'] += 1
         if name not in FS.CALLOUTS:
@@ -481,13 +513,20 @@ def decode(calls):
                 raise ValueError('%d fields' % len(fx.fields))
             DECODED['effects'] += 1
             DECODED['kinds'][fx.primitive] = DECODED['kinds'].get(fx.primitive, 0) + 1
+            effects.append(fx)
         except Exception as exc:                # noqa: BLE001 - a decode failure is a result
             DECODED['bad'] += 1
             if len(DECODED['examples']) < 6:
                 DECODED['examples'].append('%s%r: %r' % (name, cargs, exc))
+    return effects
 
 
 def main(argv):
+    argv = list(argv)
+    if '--table' in argv:
+        i = argv.index('--table')
+        TABLE['path'] = argv[i + 1]
+        del argv[i:i + 2]
     if any(a in ('-h', '--help') for a in argv[1:]):
         print(__doc__)
         return 0
@@ -507,6 +546,8 @@ def main(argv):
 
 
 def report_decoded(report):
+    if TABLE['path']:
+        write_table(TABLE['path'])
     if DECODED['calls']:
         report('call-outs decoded as primitives', DECODED['bad'], DECODED['effects'],
                ' '.join('%s:%d' % kv for kv in sorted(DECODED['kinds'].items())), DECODED['examples'])
