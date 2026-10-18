@@ -314,6 +314,29 @@ def scenario_arena(t):
         t.do('SpellArena_run', spell, to_vec(rand_pos(rng)))
 
 
+# ---------------------------------------------------------------------------------------
+# SpellHornOmenEffect
+# ---------------------------------------------------------------------------------------
+entry('SpellHornOmenEffect_ctor', 0x2FC574, 0x2FC610, 'iiii', 'hornomen_ctor', 'hornomen')
+entry('SpellHornOmenEffect_run', 0x2FC684, 0x2FCE8C, 'iv', 'hornomen_run', 'hornomen')
+
+
+@scenario('hornomen', 'horn omen glow from start to end')
+def scenario_hornomen(t):
+    mem, rng, world = t.mem, t.rng, t.world
+    for _ in range(reps(t, 25)):
+        set_frame(t)
+        world.reset_objects(rng)
+        c = rng.choice(world.objects)
+        spell = fresh(t, 0x40)
+        t.do('SpellHornOmenEffect_ctor', spell, rng.randrange(256), c, rng.getrandbits(32))
+        if rng.random() < 0.5:
+            mem.w32(spell + 0x18, (mem.u32(spell + 0x18) - rng.choice((100, 135, 139, 140, 141, 300, 598))) & M32)
+        for _tick in range(rng.choice((1, 4, 12))):
+            t.tick(rng.choice((1, 1, 7, 30)))
+            t.do('SpellHornOmenEffect_run', spell, to_vec(rand_pos(rng)))
+
+
 def main(argv):
     if any(a in ('-h', '--help') for a in argv[1:]):
         print(__doc__)

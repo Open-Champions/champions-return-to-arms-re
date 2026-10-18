@@ -167,6 +167,7 @@ EXTERNALS.update({
     'trail_release': Ext(0x192800, 'i', 0, 'n', '(handle)'),
 })
 MODELLED = dict(SC.MODELLED)
+SPELL_TABLES = set(SC.SPELL_TABLES) | {0x51AE58, 0x51AE28}      # HornOmen, PlanarSteel: destructors stay call-outs
 DRAW_MODELLED = {}                              # name -> address, the functions of part 3
 
 
@@ -699,5 +700,84 @@ class Arena:
 _register('SpellArena_run', 0x305BBC)
 
 
-class Model(Calls, Draws, MultiFire, FireStormFlare, Pustule, DiseaseCloud, Arena, SC.Model):
+class HornOmen:
+    """SpellHornOmenEffect: a ten-second glow on a creature made by a script command
+    (caller 0x146628).  Its particles go into the spell's own particle GROUP, in model
+    space: the group matrix is the creature's position turned by its facing, set every
+    tick (mat34_setPosRotZ 0x163b30 -> particleGroup_setMatrix).  SPELL generator (+0x10)."""
+    HO_VT = 0x51AE58
+    HO_PARTICLE = 0x8E6C40
+
+    def hornomen_ctor(self, spell, kind, owner, extra):
+        """SpellHornOmenEffect_ctor 0x2fc574 (spell, kind byte, creature, word): the Spell
+        base (ONE SHARED DRAW seeds the spell generator +0x10), group +0x1c =
+        particleGroup_create(), end +0x18 = frame + 600."""
+        self.w8(spell, kind)
+        self.w32(spell + 0x14, VT_SPELL)
+        self.w32(spell + 0xC, owner)
+        self.w32(spell + 8, extra)
+        self.w32(spell + 4, 0)
+        seed = self.draw()
+        self.w32(spell + 0x14, self.HO_VT)
+        self.w32(spell + 0x10, seed)
+        self.w32(spell + 0x1C, self.call('particleGroup_create'))
+        self.w32(spell + 0x18, self.u32(G_SIM_FRAME) + 600)
+
+    def hornomen_run(self, spell, pos):
+        """SpellHornOmenEffect_run 0x2fc684, Spell slot 2 (spell, position).  Until the end
+        +0x18: a = frame - end + 600 (ticks since the start).  Below 140: tint of the
+        creature (+0x90.. and +0x98..) = int(t x (225, 20, 0, 100)) with t = a x
+        0.0071428567, and int(150 t) particles; from 140 on the tint is (225, 20, 0, 100) and
+        there are 150.  The group matrix is set and the particles go into the group: each at a
+        random sample point of the creature's model taken at the origin with facing 0 (index =
+        draw % count; none when the count is 0) + 3.0007868 x a ball point, velocity
+        30.000292 x a second ball point, definition 0x8e6c40.  At the end slot 1 (3)."""
+        u32 = self.u32
+        frame = s32(u32(G_SIM_FRAME))
+        if not frame < self.s32(spell + 0x18):
+            if spell:
+                self.table_call('Spell', spell, 0x14, 1, 3)
+            return
+        a = C.from_int(frame - self.s32(spell + 0x18) + 600)
+        c = u32(spell + 0xC)
+        early = C.lt(a, 0x430C0000)
+        if early:
+            t = C.mul(a, 0x3BEA0EA0)
+            r, g, b = (C.to_int(C.mul(t, k)) for k in (0x43610000, 0x41A00000, 0x42C80000))
+        else:
+            r, g, b = 0xE1, 0x14, 100
+        for base in (0x90, 0x98):
+            self.w16(c + base, r)
+            self.w16(c + base + 2, g)
+            self.w16(c + base + 4, 0)
+            self.w16(c + base + 6, b)
+        # mat34_setPosRotZ 0x163b30 (modelled by ref_core, runs on the stack): the matrix
+        self.call('particleGroup_setMatrix', u32(spell + 0x1C), 'stack')
+        self.call('particleGroup_begin', u32(spell + 0x1C))
+        count = s32(self.call('model_getSamplePointCount', self.vcall(u32(spell + 0xC), 16)))
+        if count:
+            i = 0
+            while True:
+                if early:
+                    if not C.lt(C.from_int(i), C.mul(C.mul(a, 0x3BEA0EA0), 0x43160000)):
+                        break
+                elif i > 0x95:
+                    break
+                model = self.vcall(u32(spell + 0xC), 16)
+                index = self.spell_rand(spell) % count
+                point = self.call('model_getSamplePoint', model, u32(spell + 0xC) + 0x114, (ZERO, ZERO, ZERO), 0,
+                                  index, 0, 0, ONE)
+                ball = self.spell_ball(spell)
+                p = tuple(C.add(point[j], C.mul(ball[j], 0x40400CE4)) for j in range(3))
+                v = tuple(C.mul(x, 0x41F00099) for x in self.spell_ball(spell))
+                self.call('particle_spawn', self.HO_PARTICLE, p, v, ZERO)
+                i += 1
+        self.call('particleGroup_end', u32(spell + 0x1C))
+
+
+_register('SpellHornOmenEffect_ctor', 0x2FC574)
+_register('SpellHornOmenEffect_run', 0x2FC684)
+
+
+class Model(Calls, Draws, MultiFire, FireStormFlare, Pustule, DiseaseCloud, Arena, HornOmen, SC.Model):
     """ref_skills_c.Model with the methods of part 3."""
