@@ -3,7 +3,9 @@
 SLUS-20973 v2.00; research 2026-10-17, branch `t3/research-ui` from `a2b145b`.
 Reference: `Font` / `parse_font` in [ref_ui_layout.py](../../tools/ref_ui_layout.py).
 Scope: unrelocated FNT data, glyph rectangles, ordinary ASCII width and the
-base HUD's selected font. Full styled/wrapped text rendering remains partial.
+base HUD's selected font. Colour, button glyphs, measuring of wide strings,
+wrapping, alignment, clipping and truncation are in [ui-text.md](ui-text.md)
+(round 2, 2026-10-17).
 No font art, glyph table contents or game text are included here.
 
 ## Addressed file layout
@@ -18,7 +20,7 @@ Unknown/inferred header fields are marked separately.
 | FNT offset | Type | Meaning / evidence |
 |---|---|---|
 | +0x00 | s16, positive in valid files | Glyph count; signed load for wide-codepoint search at `0x180b60` path |
-| +0x02 | u16 retained word | **Unknown** semantic meaning; 8 in the four audited fonts. Do not assume line height |
+| +0x02 | u16 retained word | **Unknown** semantic meaning; 8 in the four audited fonts. Not read by any text function in `0x17ffb0–0x181d30`; line height is a caller argument ([ui-text.md](ui-text.md) section 5) |
 | +0x04 | u32 | **Inferred / high:** kerning-record count including terminal row; agrees with all four table spans. Not needed by the observed unbounded width loop |
 | +0x08 | u32 | Glyph table offset from FNT base; pointer after relocation |
 | +0x0c | u32 | Kerning table offset from FNT base; pointer after relocation |
@@ -119,12 +121,13 @@ level origins in [hud-layout.md](../hud-layout.md) are these center anchors.
 Text clipping is batch GS scissor (`text_setClip` `0x1803e0`), not per-glyph
 texture cropping. `text_begin` is `0x1800b8`, `text_end` is `0x180500`.
 
-**Observed / medium**, `0x180b2c–0x180ba4`: the wide drawing path differs
-from byte width. A negative map entry for a code below 256 falls back to map
-entry 45 (FNT +0x6e). Higher codes search the glyph table's u16 codes. Newline
-uses a sentinel in this inner function. Glyph indices 0x5b..0x68 receive a
-special colour path (`0x180ca0–0x180cfc`). Do not extrapolate ASCII width
-fallback rules to all Unicode, icons, coloured text or wrapping.
+**Observed / high** (round 2), `0x180b2c–0x180ba4`: the wide drawing path
+differs from byte width. A negative map entry for a code below 256 falls back
+to the glyph index **stored in** map entry 45 (FNT +0x6e). Higher codes search
+the glyph table's u16 codes. Newline uses sentinel index 0x7ff. Glyph indices
+0x5b..0x68 are the controller button glyphs (codes 0x7b..0x88) drawn with a
+neutral tint. In the draw, kerning moves the pen by adjustment/2 pixels in
+both modes. Details and the executed comparison are in [ui-text.md](ui-text.md).
 
 ## Bounded reader and validation
 
@@ -143,10 +146,9 @@ embedded NUL, and zero/short/full/long count limits. Private results are in
 gameplay or a font-raster test. Synthetic unittests use three invented glyphs
 and invented negative kerning; they require no private data.
 
-**Unknown:** semantic meaning of +2; complete wrapping/line-height policy,
-all styled and non-ASCII rendering behavior, every screen's selected font,
-and pixel-exact field/clipping/blending in a native renderer. The binary tables,
-basic source/destination glyph rectangles and ASCII measuring contract can be
-implemented now. Completing the text renderer requires tracing the wide/wrap
-wrappers and comparing original text images; substituting a system font would
-not validate this contract.
+**Unknown:** semantic meaning of +2; every screen's selected font and
+colours; pixel-exact field placement for odd y and the frame-mode raster in a
+native renderer. Wrapping, line height (a caller argument), colour/button
+glyphs, non-ASCII lookup and clipping are now in [ui-text.md](ui-text.md).
+Comparing original text images is still required; substituting a system font
+would not validate this contract.
