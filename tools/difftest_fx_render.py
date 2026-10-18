@@ -31,11 +31,30 @@ How a property is tested
     side uses ee_emu's model (default 'ps2', repeated under 'chop'); the VU side uses
     vu1_emu's ('chop').  Neither was checked against a console.
 
+Properties
+    particles, particle groups   random definitions of every kind, spawns (back-dated too,
+                       some into groups with random matrices), ticks; every sprite and line
+                       vertex of the particle packet and the ALPHA_1 per kind
+    trails             random trails (all flag combinations, rows, widths, lifetimes),
+                       single points and pairs, ring wrap; every strip vertex, ALPHA_1
+    beams              beam_create / beam_update / several draws (frozen ones too): node
+                       memory, both random streams, the rebuilt points of the drawing trail,
+                       the emptied other trail, expiry; then the strips
+    glows              random queues (over 0x400 too), both passes: every A+D write of
+                       every packet, PRIM, sort key and texture
+    trail builders     spline_eval, trail_setSpline, trail_setCircle, trail_sweepPairs,
+                       trail_addPair: outputs and the trail ring
+    ..., vu1.cpp WAITQ the line and trail programs with tools/recomp/render/vu1.cpp's reading
+                       of `MULq | WAITQ` (vu1_emu waitq_first=False) against the reference's
+                       same option: both readings are modelled exactly; which one the
+                       machine has is Inferred (docs/effects.md)
+    After the properties the script lists how often the cases reached the paths of interest.
+
     Which order the sorted packets are drawn in is not executed here: gfx_addSortedPacket
     is replaced by a recorder and the packets are sent in the order the code that walks
     the sorted list is Inferred to use (docs: last added first within a key for different
-    textures), which matters because the trail program uses the matrix the particle packet
-    leaves in VU1.
+    textures, as gfx_dmaHandler 0x16b998 walks the lists), which matters because the trail
+    program uses the matrix the particle packet leaves in VU1.
 """
 import hashlib
 import math
@@ -344,7 +363,7 @@ def reference_particle_packet(rig, view, proj_scale, vu, stale_zw, waitq_first=T
     return out, alphas, live
 
 
-def prop_particles(rig, rnd, cases, label, groups=False, fpu_vu='chop'):
+def prop_particles(rig, rnd, cases, label, groups=False, fpu_vu='chop', waitq_first=True):
     bad = total = 0
     examples = []
     for case in range(cases):
@@ -386,10 +405,11 @@ def prop_particles(rig, rnd, cases, label, groups=False, fpu_vu='chop'):
         part = [p for p in packets if p[2] == rig.tex[0x7D8A80]]
         vu, vif, gs = rig.new_vu()
         vu.model = fpu_vu
+        vu.waitq_first = waitq_first
         stale = (vu.vf[18][2], vu.vf[18][3])
         for p in part:
             rig.send(vif, p[0])
-        want, alphas, live = reference_particle_packet(rig, view, proj, R.Vu(fpu_vu), stale)
+        want, alphas, live = reference_particle_packet(rig, view, proj, R.Vu(fpu_vu), stale, waitq_first)
         got = [v for v in gs.vertices if v.prim in (R.PRIM_SPRITE, R.PRIM_LINE)]
         for kind, in_group, cell, rec, hdr, vs in live:
             shown = int(not vs[1][4] and bool(vs[0][5][3] or vs[1][5][3]))
@@ -426,12 +446,13 @@ def prop_particles(rig, rnd, cases, label, groups=False, fpu_vu='chop'):
 # Trails
 # ---------------------------------------------------------------------------------------
 
-def draw_scene(rig, rnd, target):
+def draw_scene(rig, rnd, target, waitq_first=True):
     view = random_view(rnd, target)
     proj = f2r(rnd.choice((477.5, rnd.uniform(200, 1200))))
     rig.emu.mem.w32(G_PROJ_SCALE, proj)
     packets = rig.draw(rig.put_floats(view))
     vu, vif, gs = rig.new_vu()
+    vu.waitq_first = waitq_first
     order = ([p for p in packets if p[2] == rig.tex[0x7D8A80]] +
              [p for p in packets if p[2] not in (rig.tex[0x7D8A80], rig.tex[0x7D8A90])][::-1] +
              [p for p in packets if p[2] == rig.tex[0x7D8A90]])
@@ -458,7 +479,7 @@ def reference_trails(rig, view, proj, waitq_first=True):
     return out, alphas
 
 
-def prop_trails(rig, rnd, cases, label):
+def prop_trails(rig, rnd, cases, label, waitq_first=True):
     bad = total = 0
     examples = []
     for case in range(cases):
@@ -488,8 +509,8 @@ def prop_trails(rig, rnd, cases, label):
                     else:
                         rig.call(TRAIL_ADD, h, rig.put_floats(p))
             rig.call(TRAIL_UPDATE)
-        view, proj, gs, vu = draw_scene(rig, rnd, target)
-        want, alphas = reference_trails(rig, view, proj)
+        view, proj, gs, vu = draw_scene(rig, rnd, target, waitq_first)
+        want, alphas = reference_trails(rig, view, proj, waitq_first)
         got = [v for v in gs.vertices if v.prim in (R.PRIM_TRAIL, R.PRIM_TRAIL_PAIRED)]
         total += len(want)
         b = compare_vertices(got, want, 'case %d' % case, examples)
@@ -498,7 +519,7 @@ def prop_trails(rig, rnd, cases, label):
         if got_alpha != alphas:
             b += 1
             examples.append('case %d: trail ALPHA_1 %s, reference %s' % (case, got_alpha, alphas))
-        if want:
+        if want and waitq_first:
             old, _ = reference_trails(rig, view, proj, waitq_first=False)
             cover('trail vertices moved by the WAITQ model', sum(1 for a, c in zip(old, want) if a != c))
         cover('trail vertices drawn', sum(1 for v in want if not v[4]))
@@ -862,6 +883,8 @@ PROPERTIES = [
     ('beams', prop_beams, 80),
     ('glows', prop_glows, 120),
     ('trail builders', prop_builders, 1000),
+    ('particles, vu1.cpp WAITQ', lambda rig, rnd, n, label: prop_particles(rig, rnd, n, label, waitq_first=False), 20),
+    ('trails, vu1.cpp WAITQ', lambda rig, rnd, n, label: prop_trails(rig, rnd, n, label, waitq_first=False), 20),
 ]
 
 if __name__ == '__main__':
