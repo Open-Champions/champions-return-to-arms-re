@@ -64,10 +64,12 @@ ENTRIES = {
     'moveSimple': (0x1186D8, 'iv', 0, 'i', 'move_simple', (0x1186D8, 0x118718), (0x14D4B8,), ()),
     'playerMove': (0x1B4020, 'iiiv', 0, 'i', 'player_move', (0x1B4020, 0x1B5330), (),
                    ('creature_moveSimple', 'Player_animStep', 'Player_clampToScreen')),
+    'playerMoveStill': (0x1B4020, 'iiiv', 0, 'i', 'player_move', (0x1B4020, 0x1B5330), (),
+                        ('creature_moveSimple', 'Player_animStep', 'Player_clampToScreen')),
     'playerAnimStep': (0x1B9520, 'i', 1, 'i', 'player_anim_step', (0x1B9520, 0x1B9658), (), ()),
     'clampToScreen': (0x1B3D90, 'iii', 0, 'i', 'player_clamp_to_screen', (0x1B3D90, 0x1B4020), (0x1667D8,), ()),
 }
-ROUND1 = {'moveWithCollision', 'moveSimple', 'playerMove'}
+ROUND1 = {'moveWithCollision', 'moveSimple', 'playerMove', 'playerMoveStill'}
 OPTIONS = {'quick': False, 'seed': 20973, 'cases': 3000, 'filter': None, 'verbose': False, 'round1': False}
 
 
@@ -458,6 +460,18 @@ def generate(rig, key, rng):
         mem.w32(P + 0x3C8, M32)                                     # slot -1
     mode = rng.choice((0, 0, 0, 1, 2, 3, 4, 5, 6, 7))
     ext = tuple(f32(rng.uniform(-300, 300)) for _ in range(3))
+    if key == 'playerMoveStill':
+        # the domain of round 1's restricted body: a still stick, the modes Player_run uses
+        # for a standing (0) or swinging (3, 4) player, out of water, alone or online
+        mem.wf32(pad + 0x14, 0.0)
+        mem.wf32(pad + 0x18, 0.0)
+        mem.w8(P + 0x481, 0)
+        mem.w16(P + 0x31A, 0)
+        mem.w64(P + 0xA8, mem.u64(P + 0xA8) & ~MV.WATER_BIT & ((1 << 64) - 1))
+        mem.w32(T.G_ALIVE_COUNT, rng.choice((0, 1)))
+        mem.w8(P + 0x47D, 0)
+        mem.w32(P + 0x58C, rng.choice((1, 2)))
+        mode = 0 if mem.u32(P + 0x58C) == 2 else rng.choice((3, 4))
     return (P, mode, pad, ext)
 
 

@@ -23,7 +23,7 @@ stack, the shared seed and the result)
         player_anim_step        Player_animStep 0x1b9520 (root motion into world axes)
         player_clamp_to_screen  Player_clampToScreen 0x1b3d90 (memory form, the entry point)
         player_clamp_to_screen_vec  the same on a Python vector (the form Player_move uses)
-        plane_distance          0x1667d8 (point, normal, position) -> signed distance
+        vec3_dot_delta          0x1667d8 (point, normal, position) -> signed distance
 
     MoveRuntime(T.Runtime)
         the round-1 runtime with MoveModel as its model and the services the wider bodies
@@ -178,7 +178,7 @@ class MoveModel(T.CombatModel):
         'Player_clampToScreen': 'player_clamp_to_screen_vec',
     })
     MODELLED = dict(T.CombatModel.MODELLED)
-    MODELLED.update({'Player_animStep': 0x1B9520, 'Player_clampToScreen': 0x1B3D90, 'plane_distance': 0x1667D8})
+    MODELLED.update({'Player_animStep': 0x1B9520, 'Player_clampToScreen': 0x1B3D90, 'vec3_dotDelta': 0x1667D8})
 
     def __init__(self, mem, callbacks=None, external=(), inline_grid=True):
         T.CombatModel.__init__(self, mem, callbacks, external)
@@ -351,7 +351,7 @@ class MoveModel(T.CombatModel):
         return ev & M32
 
     # ---- Player_clampToScreen 0x1b3d90 -------------------------------------------------
-    def plane_distance(self, point, normal, pos):
+    def vec3_dot_delta(self, point, normal, pos):
         """0x1667d8 (point, normal, pos) -> N . (pos - point), as N.x dx + N.y dy, + N.z dz."""
         p, n, q = self.vec(point), self.vec(normal), self.vec(pos)
         d = [C.sub(q[i], p[i]) for i in range(3)]
@@ -385,13 +385,13 @@ class MoveModel(T.CombatModel):
         step = [C.mul(V[i], DT) for i in range(3)]
         self.call('game_buildScreenEdgePlanes', P + 0x10)
         pos = P + 0x10
-        if not any(C.lt(self.plane_distance(G_SCREEN_POINTS + 12 * i, G_SCREEN_NORMALS + 12 * i, pos), ZERO)
+        if not any(C.lt(self.vec3_dot_delta(G_SCREEN_POINTS + 12 * i, G_SCREEN_NORMALS + 12 * i, pos), ZERO)
                    for i in range(4)):
             return 0, V, 0
         used, mask = False, 0
         for i in range(4):
             N = G_SCREEN_NORMALS + 12 * i
-            if not C.lt(self.plane_distance(G_SCREEN_POINTS + 12 * i, N, pos), ZERO):
+            if not C.lt(self.vec3_dot_delta(G_SCREEN_POINTS + 12 * i, N, pos), ZERO):
                 continue
             mask |= 1 << i
             if maskptr:
