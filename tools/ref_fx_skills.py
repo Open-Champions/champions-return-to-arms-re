@@ -525,5 +525,77 @@ class FireStormFlare:
 _register('FireStormFlare_run', 0x2D33C0)
 
 
-class Model(Calls, Draws, MultiFire, FireStormFlare, SC.Model):
+class Pustule:
+    """Pustule: the falling blobs of Pus Storm (skills 80 / 100).  It falls with a dribble
+    of particles, bursts on its floor into ten drops that arc out under gravity, each
+    leaving one particle a tick, and is destroyed 300 ticks after launch or 36 ticks after
+    the burst.  OWN generator (+0x44) throughout."""
+    PUS_FALL, PUS_DROP = 0x8E7548, 0x8E74F8
+    PUS_LUMP, PUS_SOUND = 0x552328, 0x552388
+
+    def pustule_run(self, obj):
+        """Pustule_run 0x30bde0, GameObject slot 4.  Timer +0x64, burst flag +0x6c,
+        velocity +0x58, floor +0x54, drops: positions +0x70 and velocities +0xe8 (10 x 12)."""
+        u32, w32 = self.u32, self.w32
+        timer = s32(u32(obj + 0x64))
+        if u32(obj + 0x6C) and C.lt(0x420ECCFB, C.from_int(timer)):
+            if obj:
+                self.vcall(obj, 1, 3)
+            return
+        if not timer < 0x12D:
+            if obj:
+                self.vcall(obj, 1, 3)
+            return
+        if not u32(obj + 0x6C):
+            old = self.vec(obj + 0x10)
+            w32(obj + 0x60, C.add(u32(obj + 0x60), 0xBE4CCAB3))
+            d = []
+            for j in range(3):
+                now = C.add(u32(obj + 0x10 + 4 * j), u32(obj + 0x58 + 4 * j))
+                w32(obj + 0x10 + 4 * j, now)
+                d.append(C.sub(old[j], now))
+            for _ in range(3):
+                r = C.mul(C.from_int(self.obj_rand(obj)), F_2M16)
+                pos = self.vec(obj + 0x10)
+                p = tuple(C.add(pos[j], C.mul(d[j], r)) for j in range(3))
+                self.call('particle_spawn', self.PUS_FALL, p, (ZERO, ZERO, ZERO), ZERO)
+            if C.le(u32(obj + 0x18), u32(obj + 0x54)):
+                w32(obj + 0x64, 0)
+                w32(obj + 0x6C, 1)
+                self.call('sound_playAtPos', self.call('res_find', self.PUS_LUMP, self.PUS_SOUND),
+                          self.vec(obj + 0x10), ONE)
+                base = self.vec(obj + 0x10)
+                ground = self.call('terrain_height', u32(G_WORLD), self.vec(obj + 0x10), 0x41000000)
+                base = (base[0], base[1], C.add(ground, 0x41400000))
+                for i in range(10):
+                    r1 = C.mul(C.from_int(self.obj_rand(obj)), F_2M16)
+                    a = self.obj_rand(obj)
+                    x = C.add(base[0], C.mul(C.mul(r1, C.cos16(a)), 0x40C3693C))
+                    y = C.add(base[1], C.mul(C.mul(r1, C.sin16(a)), 0x40C3693C))
+                    a2 = self.obj_rand(obj)
+                    r2 = C.mul(C.mul(C.from_int(self.obj_rand(obj)), F_2M16), 0x3F49FB1E)
+                    vx = C.mul(C.mul(C.cos16(a2), r2), 0x408DAF39)
+                    vy = C.mul(C.mul(C.sin16(a2), r2), 0x408DAF39)
+                    self.wvec(obj + 0x70 + 12 * i, (x, y, base[2]))
+                    self.wvec(obj + 0xE8 + 12 * i, (vx, vy, C.mul(ONE, 0x408DAF39)))
+            if not u32(obj + 0x6C):
+                w32(obj + 0x64, u32(obj + 0x64) + 1)
+                return
+        for i in range(10):
+            p_at, v_at = obj + 0x70 + 12 * i, obj + 0xE8 + 12 * i
+            for j in range(3):
+                w32(p_at + 4 * j, C.add(u32(p_at + 4 * j), u32(v_at + 4 * j)))
+            w32(v_at + 8, C.add(u32(v_at + 8), 0xBEE1C9F7))
+            k = C.mul(C.mul(C.from_int(self.obj_rand(obj)), F_2M16), 0x40A729F7)
+            v = tuple(C.mul(u32(v_at + 4 * j), k) for j in range(3))
+            ball = self.obj_ball(obj)
+            p = tuple(C.add(C.mul(ball[j], 0x403FEE34), u32(p_at + 4 * j)) for j in range(3))
+            self.call('particle_spawn', self.PUS_DROP, p, v, ZERO)
+        w32(obj + 0x64, u32(obj + 0x64) + 1)
+
+
+_register('Pustule_run', 0x30BDE0)
+
+
+class Model(Calls, Draws, MultiFire, FireStormFlare, Pustule, SC.Model):
     """ref_skills_c.Model with the methods of part 3."""

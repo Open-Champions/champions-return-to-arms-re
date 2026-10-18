@@ -239,6 +239,31 @@ def scenario_flare(t):
             t.do('FireStormFlare_run', obj)
 
 
+# ---------------------------------------------------------------------------------------
+# Pustule
+# ---------------------------------------------------------------------------------------
+entry('Pustule_run', 0x30BDE0, 0x30C4AC, 'i', 'pustule_run', 'pusstorm')
+
+
+@scenario('pusstorm', 'Pus Storm blobs: fall, burst, drops, end')
+def scenario_pustule(t):
+    mem, rng, world = t.mem, t.rng, t.world
+    for _ in range(reps(t, 30)):
+        set_frame(t)
+        obj = fresh(t, 0x180)
+        mem.w32(obj + 0x48, world.vt_creature)
+        pos = rand_pos(rng)
+        put_vec(mem, obj + 0x10, pos)
+        put_vec(mem, obj + 0x58, (rng.uniform(-3, 3), rng.uniform(-3, 3), rng.uniform(-8, 1)))
+        mem.wf32(obj + 0x54, pos[2] - rng.choice((0.0, 5.0, 30.0, 120.0)))
+        mem.w32(obj + 0x44, rng.getrandbits(32))
+        mem.w32(obj + 0x64, rng.choice((0, 0, 10, 299, 300)))
+        mem.w32(obj + 0x6C, rng.choice((0, 0, 0, 1)))
+        for _tick in range(rng.choice((2, 20, 80))):
+            t.tick()
+            t.do('Pustule_run', obj)
+
+
 def main(argv):
     if any(a in ('-h', '--help') for a in argv[1:]):
         print(__doc__)
