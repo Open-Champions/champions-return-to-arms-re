@@ -1,0 +1,356 @@
+#!/usr/bin/env python3
+"""ref_fx_render.py - what the effect drawers of Champions: Return to Arms (SLUS_209.73, US
+v2.00) send to the GS: particle sprites and lines (VU1 program entries 0x14 / 0x17 / 0x22 /
+0x4a), particle groups, glow sprites, trails and beams.
+
+A research tool, not game code.  It extends tools/ref_particles.py (the particle system's
+state) with the geometry; docs/effects.md is the prose version.  Each function was written
+from the code at the address in its docstring and is compared with that code, executed
+under tools/ee_emu.py (EE side) and tools/vu1_emu.py (VU1 side), by
+tools/difftest_fx_render.py.  Standard library only; no game data is embedded (no
+microcode words, no particle definition values; the constants below are the immediates of
+the drawing code and of the packet headers it builds).
+
+Numbers
+    Floats are raw 32-bit patterns, as in tools/ref_core.py.  The EE side (CPU code) uses
+    ref_core's FPU (its 'ps2' model by default; C.set_fpu chooses another).  The VU side
+    uses class Vu below: the same integer arithmetic in the vector unit's form - an operand
+    with exponent 255 is read as the largest finite number, a result rounds toward zero
+    ('chop' by default, as tools/vu1_emu.py and the C++ renderer compute).
+
+Vertices
+    A drawn vertex is a GsVertex tuple (x, y, z, f, adc, rgba, uv): x and y in GS fixed
+    point (1/16 pixel, offset 0x8000 = 2048 pixels), z as the GS receives it (XYZF2: 24
+    bits), f the fog byte, adc the "do not draw" bit, rgba a 4-tuple of bytes, uv the
+    texel coordinates in 1/16 texel or None.  PRIM is given per packet (constants below).
+
+What each part mirrors
+    particle_projection, particle_matrix, group_matrix, particle_header
+                        particle_draw 0x194888 (0x1949b8-0x194a7c, the header 0x194b60-)
+    sprite_vertices     VU1 sprite loop 0x085-0x0a6 (entries 0x14 / 0x17 / 0x18)
+    line_vertices       VU1 line loop 0x0a9-0x0e3 (entry 0x22, then 0x17)
+    list_blocks         particle_emitLists 0x194450: which cells of a list are sent
+"""
+import os
+import struct
+import sys
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+import ref_core as C                                       # noqa: E402
+
+M32 = 0xFFFFFFFF
+SIGN = 0x80000000
+BIGGEST = 0x7F7FFFFF
+ONE = 0x3F800000
+TWO23 = 0x4B000000              # 2^23: colours are 2^23 + byte
+TWO23_255 = 0x4B0000FF
+
+# GIF tags of the particle packet (VU1 qwords 7 and 10 of the header): 30 vertices pairs
+PRIM_SPRITE = 0x156             # sprite, textured (UV), blended
+PRIM_LINE = 0x049               # line, Gouraud, blended, untextured
+PRIM_TRAIL = 0x154              # triangle strip, textured (UV), blended (flags without 2)
+PRIM_TRAIL_PAIRED = 0x15C       # triangle strip, Gouraud, textured, blended (flag 2)
+PRIM_GLOW = 0x15E               # sprite ... see glow_vertices
+BLOCK = 30                      # particles per VU block (a page holds 8 blocks)
+
+GsVertex = tuple                # (x, y, z, f, adc, rgba, uv)
+
+
+class Vu:
+    """The vector unit's arithmetic on raw patterns (operands: exponent 255 -> largest,
+    exponent 0 -> zero; results toward zero by default)."""
+
+    def __init__(self, model='chop'):
+        self.f = C.Fpu(model)
+
+    @staticmethod
+    def vin(u):
+        e = u & 0x7F800000
+        if e == 0x7F800000:
+            return (u & SIGN) | BIGGEST
+        if e == 0:
+            return u & SIGN
+        return u & M32
+
+    @staticmethod
+    def vout(u):
+        e = u & 0x7F800000
+        if e == 0x7F800000:
+            return (u & SIGN) | BIGGEST
+        if e == 0:
+            return u & SIGN
+        return u & M32
+
+    def add(self, a, b):
+        return self.vout(self.f.add(self.vin(a), self.vin(b)))
+
+    def sub(self, a, b):
+        return self.vout(self.f.add(self.vin(a), self.vin(b) ^ SIGN))
+
+    def mul(self, a, b):
+        return self.vout(self.f.mul(self.vin(a), self.vin(b)))
+
+    def madd(self, acc, a, b):
+        return self.add(acc, self.mul(a, b))
+
+    def div(self, a, b):
+        a, b = self.vin(a), self.vin(b)
+        if b & 0x7FFFFFFF == 0:
+            return ((a ^ b) & SIGN) | BIGGEST
+        return self.vout(self.f.div(a, b))
+
+    def rsqrt(self, a, b):
+        a, b = self.vin(a), self.vin(b)
+        if b & 0x7FFFFFFF == 0:
+            return (a & SIGN) | BIGGEST
+        return self.vout(self.f.div(a, self.vout(self.f.sqrt(b & 0x7FFFFFFF))))
+
+    def itof(self, word, shift=0):
+        r = self.vout(self.f.from_int(C.s32(word)))
+        if shift:
+            r = self.mul(r, C.f32(1.0 / (1 << shift)))
+        return r
+
+    def ftoi(self, a, shift=0):
+        if shift:
+            a = self.mul(self.vin(a), C.f32(float(1 << shift)))
+        return C.Fpu.to_int(self.vin(a)) & M32
+
+    @staticmethod
+    def key(u):
+        return -(u & 0x7FFFFFFF) if u & SIGN else u
+
+    def vmax(self, a, b):
+        return a if self.key(a) > self.key(b) else b
+
+    def vmin(self, a, b):
+        return a if self.key(a) < self.key(b) else b
+
+    def clip(self, v, w):
+        """CLIPw.xyz: the six judgement bits (x > |w|, x < -|w|, y ..., z ...)."""
+        w = self.vin(w) & 0x7FFFFFFF
+        c = 0
+        for bit, x in ((1, v[0]), (4, v[1]), (16, v[2])):
+            x = self.vin(x)
+            if C.Fpu.compare(x, w) > 0:
+                c |= bit
+            if C.Fpu.compare(x, w | SIGN) < 0:
+                c |= bit << 1
+        return c
+
+    def transform(self, m, x, y, z, w_last=True):
+        """ACC = m0*x; ACC += m1*y; then (w_last) ACC += m2*z; out = ACC + m3*1 - the
+        order of the line loop and the trail program - or (not w_last) ACC += m3*1; out =
+        ACC + m2*z - the order of the sprite loop.  m: four columns of four (vf1..vf4)."""
+        acc = [self.mul(m[0][k], x) for k in range(4)]
+        acc = [self.madd(acc[k], m[1][k], y) for k in range(4)]
+        if w_last:
+            acc = [self.madd(acc[k], m[2][k], z) for k in range(4)]
+            return [self.madd(acc[k], m[3][k], ONE) for k in range(4)]
+        acc = [self.madd(acc[k], m[3][k], ONE) for k in range(4)]
+        return [self.madd(acc[k], m[2][k], z) for k in range(4)]
+
+
+def gs_xyzf(lanes):
+    """(x, y, z, f, adc) of an XYZF2 qword (GIF packed mode)."""
+    return (lanes[0] & 0xFFFF, lanes[1] & 0xFFFF, (lanes[2] >> 4) & 0xFFFFFF,
+            (lanes[3] >> 4) & 0xFF, (lanes[3] >> 15) & 1)
+
+
+def gs_rgba(lanes):
+    return tuple(x & 0xFF for x in lanes)
+
+
+# ---------------------------------------------------------------------------------------
+# The particle packet: matrices and constants (EE side, particle_draw 0x194888)
+# ---------------------------------------------------------------------------------------
+
+PROJ_ARGS = (0x3F7FFFFF, 0x3EEEEEEE, None, ONE, 0x457FFF00, 0x41900000, 0x44E10000)
+K_COL0 = 0x3AA3D70A             # 0.00125 = 1/800, element [0][0]
+K_COL1 = 0x3B23D70A             # 0.0025 = 1/400, element [1][1]
+K_DEPTH = 0x3A000080            # 0.00048828870, elements [2][2] (then - 1.0) and [3][2]
+HEADER_SCREEN = (0x44480000, 0x43C80000, 0x5DFFFF00, ONE)        # vf6: 800, 400, depth, 1
+HEADER_OFFSET = (0x49008000, 0x49008000, 0x6007FFF8, 0)          # vf7: 2^19 + 2048, ...
+SPRITE_HALF = (0x40000000, ONE, 0, 0)                            # vf9: half extent (2h, h)
+
+
+def particle_projection(proj_scale):
+    """The projection particle_draw makes: mat4_setProjection(0x3f7fffff, 0x3eeeeeee,
+    g_projScale, 1.0, 4095.94, 18, 1800) with [0][0] * 1/800, [1][1] * 1/400,
+    [2][2] * K - 1 and [3][2] * K (0x1949b8-0x194a7c).  The vertex program multiplies x
+    and y back by 800 and 400, so a particle's centre projects as level geometry does."""
+    sx, sy, _, za, zb, near, far = PROJ_ARGS
+    m = C.mat4_set_projection(sx, sy, proj_scale, za, zb, near, far)
+    m[0] = C.mul(m[0], K_COL0)
+    m[5] = C.mul(m[5], K_COL1)
+    m[10] = C.sub(C.mul(m[10], K_DEPTH), ONE)
+    m[14] = C.mul(m[14], K_DEPTH)
+    return m
+
+
+def particle_matrix(view, proj_scale):
+    """mat4_mulMat34(view, projection): vf1..vf4 of the global list set (and of trails)."""
+    return C.mat4_mul_mat34(view, particle_projection(proj_scale))
+
+
+def group_matrix(group_m, view, proj_scale):
+    """A group's matrix (particle_draw, per live group): mat34_mul(group mat34 at +0x100,
+    view) then mat4_mulMat34 with the projection.  A group's particles are thus stored in
+    the group's own frame and drawn through it; uploaded with MSCAL 0x4a before the group's
+    lists, and the global matrix is uploaded again after the last group."""
+    return C.mat4_mul_mat34(C.mat34_mul(group_m, view), particle_projection(proj_scale))
+
+
+def columns(mat4):
+    """vf1..vf4 as the VU reads a mat4 upload: row r of the 4x4 (r = 0..3) is register
+    vf(r+1); the program multiplies x by vf1, y by vf2, z by vf3 and adds vf4."""
+    return [list(mat4[4 * r:4 * r + 4]) for r in range(4)]
+
+
+def particle_header(view, proj_scale, clock):
+    """The constants entry 0x14 loads: (matrix registers, vf5, vf6, vf7, vf9)."""
+    clock_f = C.from_int(C.s16(clock))
+    return {'m': columns(particle_matrix(view, proj_scale)),
+            'vf5': (0x20, TWO23, TWO23_255, clock_f), 'vf6': HEADER_SCREEN,
+            'vf7': HEADER_OFFSET, 'vf9': SPRITE_HALF}
+
+
+# ---------------------------------------------------------------------------------------
+# VU1: one particle
+# ---------------------------------------------------------------------------------------
+
+def _cell_lanes(cell):
+    """The two V4-16 qwords of a 16-byte particle record, sign-extended."""
+    w = struct.unpack('<8h', cell)
+    return [x & M32 for x in w[:4]], [x & M32 for x in w[4:]]
+
+
+def _colour(vu, typerec, age):
+    c0, crate = typerec[8:12], typerec[12:16]
+    out = []
+    for k in range(4):
+        c = vu.add(vu.mul(c0[k], ONE), vu.mul(crate[k], age))
+        out.append(vu.vmin(vu.vmax(c, TWO23), TWO23_255))
+    return out
+
+
+def colour_bytes(typerec, age_raw, vu=None):
+    """The four colour bytes the vertex program sends at an age (raw float)."""
+    return gs_rgba(_colour(vu or Vu(), typerec, age_raw))
+
+
+def sprite_vertices(cell, typerec, header, vu=None, stale_zw=(0, 0)):
+    """VU1 0x085-0x0a6, one particle of kind 0 or 1: the two sprite corners.
+    cell: the 16-byte record; typerec: the 16 words of its type record (+0x10..+0x4f);
+    header: particle_header() or group_header(); stale_zw: lanes z, w of vf18, which the
+    loop never writes, so the first corner's z and ADC are whatever an earlier program
+    left there (the GS ignores both for a sprite).
+
+        age   = clock - birth
+        p     = pos + vel/4096 * age ;  p.z += (g * age) * age
+        size  = size0 + rate * age
+        clip  = ((M0 * p.x + M1 * p.y) + M3) + M2 * p.z
+        Q     = 1 / clip.w ;  c = (clip.xyz * (800, 400, Kz), size) * Q ;  c.xyz += offset
+        h     = c.w ;  corner 1 = c.xy - (2h, h),  corner 2 = c.xyz + (2h, h, 0)
+        colour = clamp(c0 + crate * age, 2^23, 2^23 + 255) ; uv (u0, v0) and (u1, v1)
+    A particle outside the view cube (clip test of the 6 planes) gets ADC on corner 2."""
+    vu = vu or Vu()
+    q0, q1 = _cell_lanes(cell)
+    m, vf6, vf7, vf9 = header['m'], header['vf6'], header['vf7'], header['vf9']
+    pos = [vu.itof(x) for x in q0]
+    vel = [vu.itof(x, 12) for x in q1]
+    age = vu.sub(header['vf5'][3], pos[3])
+    vel = [vu.mul(vel[k], age) for k in range(3)]
+    g, rate, size0 = typerec[2], typerec[3], typerec[7]
+    gz = vu.mul(vu.mul(g, age), age)
+    a = [vu.add(pos[k], vel[k]) for k in range(3)]
+    z = vu.add(gz, a[2])
+    size = vu.add(vu.mul(rate, age), size0)
+    clip = vu.transform(m, a[0], a[1], z, w_last=False)
+    culled = vu.clip(clip, clip[3])
+    q = vu.div(ONE, clip[3])
+    t = [vu.mul(clip[k], vf6[k]) for k in range(3)] + [size]
+    c = [vu.mul(t[k], q) for k in range(4)]
+    c = [vu.add(c[k], vf7[k]) for k in range(3)] + [c[3]]
+    d = [vu.mul(vf9[k], c[3]) for k in range(4)]
+    v1 = [vu.sub(c[0], d[0]), vu.sub(c[1], d[1]), stale_zw[0], stale_zw[1]]
+    v2 = [vu.add(c[k], d[k]) for k in range(3)] + [M32 if culled else 0]
+    rgba = gs_rgba(_colour(vu, typerec, age))
+    uv1 = (typerec[0] & 0x3FFF, typerec[1] & 0x3FFF)
+    uv2 = (typerec[4] & 0x3FFF, typerec[5] & 0x3FFF)
+    return [gs_xyzf(v1) + (rgba, uv1), gs_xyzf(v2) + (rgba, uv2)]
+
+
+def line_vertices(cell, typerec, header, vu=None, waitq_first=True):
+    """VU1 0x0a9-0x0e3, one particle of kind 2: a Gouraud line from the position now
+    (alpha as the colour says) to the position `lag` ticks ago (the same RGB, ALPHA 0).
+
+        age  = clock - birth ;  lag = +0x1c (= sizeStart) ;  g = +0x10
+        head = pos + vel/4096 * age, z += (g * age) * age      (the same for age - lag)
+        clip = ((M0 * x + M1 * y) + M2 * z) + M3 ;  xyz = clip.xyz * (800, 400, Kz) * Q + offset
+    The head's clip test sets ADC on the TAIL (so a line whose head is outside is not
+    drawn); the head's own w lane is clip.w * Q (ADC set when that is below 1.0, which
+    does nothing on the first vertex of a line).
+    waitq_first: the tail is scaled by the `MULq | WAITQ` pair 0x0d2 one cycle after its
+    DIV.  True (default): the pair waits for the divider first and uses the tail's own
+    1/w.  False: the upper half reads the Q still in place, the head's 1/w - what
+    tools/recomp/render/vu1.cpp computes.  Which the machine does is Inferred (True)."""
+    vu = vu or Vu()
+    q0, q1 = _cell_lanes(cell)
+    m, vf6, vf7 = header['m'], header['vf6'], header['vf7']
+    pos = [vu.itof(x) for x in q0]
+    vel = [vu.itof(x, 12) for x in q1]
+    vel[3] = typerec[0]                         # MR32.w: the line gravity (+0x10)
+    age = vu.sub(header['vf5'][3], pos[3])
+    lag_age = vu.sub(age, typerec[3])
+
+    def at(t):
+        p = [vu.mul(vel[k], t) for k in range(4)]
+        p[3] = vu.mul(p[3], t)
+        p[2] = vu.add(p[2], p[3])
+        return [vu.add(p[k], pos[k]) for k in range(4)]
+    tail, head = at(lag_age), at(age)
+    ch = vu.transform(m, head[0], head[1], head[2])
+    culled = vu.clip(ch, ch[3])
+    qh = vu.div(ONE, ch[3])
+    h = [vu.mul(ch[k], vf6[k]) for k in range(3)] + [ch[3]]
+    h = [vu.mul(h[k], qh) for k in range(4)]
+    h = [vu.add(h[k], vf7[k]) for k in range(3)] + [h[3]]
+    ct = vu.transform(m, tail[0], tail[1], tail[2])
+    t = [vu.mul(ct[k], vf6[k]) for k in range(3)] + [ct[3]]
+    qt = vu.div(ONE, ct[3]) if waitq_first else qh
+    t = [vu.mul(t[k], qt) for k in range(4)]
+    t = [vu.add(t[k], vf7[k]) for k in range(3)] + [0xFFFF if culled else 0]
+    colour = _colour(vu, typerec, age)
+    rgba = gs_rgba(colour)
+    tail_rgba = rgba[:3] + (gs_rgba([vu.sub(colour[3], colour[3])])[0],)
+    return [gs_xyzf(h) + (rgba, None), gs_xyzf(t) + (tail_rgba, None)]
+
+
+# ---------------------------------------------------------------------------------------
+# Which cells a list sends (particle_emitLists 0x194450)
+# ---------------------------------------------------------------------------------------
+
+def list_blocks(pages, head, tail):
+    """The VU blocks one list sends: a list of (page index, block number, [cells]) where
+    a cell is a cell number 1..30 of the block (31 * block + ...), or None for a cell the
+    list zero-fills.  pages: the list's pages oldest first; head: the list's first live
+    cell in the first page; tail: the list cursor in the last page (next free cell).
+
+    Whole blocks are sent from the block holding `head` to the block holding the cell
+    before `tail`: the retired cells in front of `head` in its block are drawn again with
+    whatever they hold (their type field was set to 0 when they were retired, so they
+    take slot 0's record, the group definition 0x7e1d00 - Inferred to be invisible:
+    every colour of that definition is 0).  The cells from `tail` to the end of its block
+    are zero-filled by an UNPACK before the final MSCAL 0x17 (all zero: slot 0 again)."""
+    out = []
+    for n, page in enumerate(pages):
+        first = (head & ~0x1F) if n == 0 else 0
+        end = ((tail + 0x1E) & ~0x1F) if n == len(pages) - 1 else 0x100
+        for blk in range(first >> 5, end >> 5):
+            cells = []
+            for c in range(1, 31):
+                cell = blk * 32 + c
+                cells.append(None if (n == len(pages) - 1 and cell >= tail) else cell)
+            out.append((page, blk, cells))
+    return out
