@@ -140,22 +140,209 @@ def effects_of(calls):
 
 
 # ---------------------------------------------------------------------------------------
-# 2. Recipes per class (filled in below the models)
+# 2. Recipes per class
 # ---------------------------------------------------------------------------------------
-Phase = namedtuple('Phase', 'phase function addr model primitives rng note')
+# One row per function of the skill files (0x2c3cd4-0x320000) that calls an effect
+# primitive (tools/fx_callsites.py map 2c3cd4 320000), 161 of them:
+#   class, phase, function, address, model, primitive calls in the code, generators.
+# phase: cast = the constructor / cast call (the tick the effect is made); run = every
+#   simulated tick (GameObject slot 4, Spell slot 2, or a helper of them); draw = every
+#   rendered frame (GameObject slot 5, Spell slot 3); event = the tick of a hit, contact,
+#   expiry, absorption or trigger.  (From the function's slot and caller.)
+# model: the method that reproduces the function, call for call, in the module named; every
+#   one is executed against the original by that module's difftest
+#   (tools/difftest_skills_a.py, _b, _c, tools/difftest_arena_monsters.py, and
+#   tools/difftest_fx_skills.py for ref_fx_skills).
+# primitive calls: the static count of calls in the function's code (round 1's map).
+# generators: what the model's code of the function (and the helpers it calls) draws from:
+#   own = the object's generator +0x44, spell = the spell's generator +0x10, SHARED = the
+#   shared seed 0x404464 (gameplay: it is in the sync hash), SHARED(LightEffect) = the one
+#   shared draw inside each LightEffect constructor, cosmetic = 0x404460 (per machine).  Inferred from the model's source, not
+#   per particle: a SHARED draw may be a damage roll next to the visual.
+# (class, phase, function, address, model, primitive calls in the code, generators)
+_RECIPE_ROWS = (
+    ('ShockProjectile', 'cast', 'ShockProjectile_ctor', 0x2C3FE4, 'ref_skills_b.shock_ctor', 'lightLink:1', ''),
+    ('ShockProjectile', 'run', 'ShockProjectile_run', 0x2C42E4, 'ref_skills_b.shock_run', 'beam:1 beamUpdate:1 particle:2', 'SHARED own'),
+    ('ShockProjectile', 'draw', 'ShockProjectile_draw', 0x2C4E64, 'ref_fx_skills.shock_draw', 'glow:1', ''),
+    ('StaticFire', 'cast', 'StaticFire_ctor', 0x2C5240, 'ref_fx_skills.staticfire_ctor', 'lightLink:1', 'own'),
+    ('StaticFire', 'cast', 'StaticFire_ctor2', 0x2C54F8, 'ref_fx_skills.staticfire_ctor2', 'lightLink:1', 'own'),
+    ('StaticFire', 'run', 'StaticFire_run', 0x2C595C, 'ref_fx_skills.staticfire_run', 'particle:2', 'SHARED own'),
+    ('StaticFire', 'draw', 'StaticFire_draw', 0x2C65E8, 'ref_fx_skills.staticfire_draw', 'glow:2', ''),
+    ('GroundPoundEffect', 'cast', 'GroundPoundEffect_ctor', 0x2C74AC, 'ref_skills_b.groundpound_effect_ctor', 'lightLink:1', ''),
+    ('GroundPoundEffect', 'run', 'GroundPoundEffect_run', 0x2C7808, 'ref_skills_b.groundpound_effect_run', 'LightEffect:1 decal:1 particle:7', 'SHARED(LightEffect) own seed3'),
+    ('SpellCharge', 'cast', 'SpellCharge_ctor', 0x2C8CB4, 'ref_skills_b.charge_spell_ctor', 'lightLink:1 trail:1 trailPoint:1', 'SHARED'),
+    ('SpellCharge', 'run', 'SpellCharge_run', 0x2C8F2C, 'ref_skills_b.charge_run', 'particle:2 trailPoint:1', 'spell'),
+    ('SpellCharge', 'event', 'SpellCharge_onContact', 0x2C95F4, 'ref_skills_b.charge_on_contact', 'fx_spawn:1 particle:2', 'spell'),
+    ('DiseaseBolt', 'run', 'DiseaseBolt_run', 0x2CA1A8, 'ref_skills_a.diseasebolt_run', 'fx_spawn:1 particle:6', 'own'),
+    ('DiseaseTrail', 'run', 'DiseaseTrail_run', 0x2CB65C, 'ref_skills_a.diseasetrail_run', 'particle:3', 'own'),
+    ('SpellDiseaseTrail', 'run', 'SpellDiseaseTrail_run', 0x2CC248, 'ref_skills_a.diseasetrail_spell_run', 'particle:3', 'SHARED spell'),
+    ('SpellDiseaseShield', 'run', 'SpellDiseaseShield_run', 0x2CD318, 'ref_skills_a.diseaseshield_run', 'glow:1 particle:2', 'spell'),
+    ('DiseaseCloud', 'run', 'DiseaseCloud_run', 0x2CE6E0, 'ref_fx_skills.diseasecloud_run', 'particle:3', 'own'),
+    ('DarknessProjectile', 'cast', 'DarknessProjectile_ctor', 0x2CF460, 'ref_skills_b.darkness_ctor', 'lightLink:1', ''),
+    ('DarknessProjectile', 'run', 'DarknessProjectile_run', 0x2CF690, 'ref_skills_b.darkness_run', 'particle:1', 'own'),
+    ('SpellConvertEnemy', 'cast', 'SpellConvertEnemy_ctor', 0x2D0154, 'ref_skills_b.convert_spell_ctor', 'particleGroup:1', 'SHARED'),
+    ('SpellConvertEnemy', 'run', 'SpellConvertEnemy_run', 0x2D0354, 'ref_skills_b.convert_run', 'particle:1', 'SHARED'),
+    ('SpellConvertUndead', 'cast', 'SpellConvertUndead_ctor', 0x2D0CC0, 'ref_skills_b.convert_spell_ctor', 'particleGroup:1', 'SHARED'),
+    ('SpellConvertUndead', 'run', 'SpellConvertUndead_run', 0x2D0EDC, 'ref_skills_b.convert_run', 'particle:1', 'SHARED'),
+    ('SpellCyclone', 'cast', 'SpellCyclone_ctor', 0x2D17C8, 'ref_skills_b.cyclone_spell_ctor', 'lightLink:1', 'SHARED spell'),
+    ('SpellCyclone', 'run', 'SpellCyclone_updateFx', 0x2D21E0, 'ref_skills_b.cyclone_update_fx', 'particle:2', 'spell'),
+    ('SpellHarmTouch', 'event', 'SpellHarmTouch_applyToHit', 0x2D2CBC, 'ref_skills_b.harmtouch_apply_to_hit', 'LightEffect:1 particle:2', 'SHARED(LightEffect) spell'),
+    ('FireStormFlare', 'run', 'FireStormFlare_run', 0x2D33C0, 'ref_fx_skills.firestormflare_run', 'decal:1 particle:5', 'own'),
+    ('FireStorm', 'cast', 'FireStorm_ctor2', 0x2D4048, 'ref_skills_a.firestorm_ctor2', 'lightLink:1', 'SHARED SHARED(LightEffect)'),
+    ('FireStorm', 'cast', 'FireStorm_ctor', 0x2D41F8, 'ref_skills_a.firestorm_ctor', 'lightLink:1', 'SHARED SHARED(LightEffect)'),
+    ('FireStorm', 'cast', 'FireStorm_initCommon', 0x2D4480, 'ref_skills_a.firestorm_init_common', 'LightEffect:1', 'SHARED(LightEffect)'),
+    ('SpellDiseaseEffect', 'run', 'SpellDiseaseEffect_run', 0x2D5854, 'ref_skills_a.disease_spell_run', 'glow:1', 'SHARED spell'),
+    ('FireArrowProjectile', 'cast', 'FireArrowProjectile_ctor', 0x2D6238, 'ref_skills_b.firearrow_ctor', 'lightLink:1', 'SHARED'),
+    ('FireArrowProjectile', 'cast', 'FireArrowProjectile_ctor2', 0x2D6440, 'ref_skills_b.firearrow_ctor2', 'lightLink:1', 'SHARED'),
+    ('FireArrowProjectile', 'run', 'FireArrowProjectile_run', 0x2D66AC, 'ref_skills_b.firearrow_run', 'puff:1', 'own'),
+    ('FireArrowProjectile', 'draw', 'FireArrowProjectile_draw', 0x2D67E8, 'ref_fx_skills.firearrow_draw', 'glow:1', ''),
+    ('ColdArrowProjectile', 'cast', 'ColdArrowProjectile_ctor', 0x2D6FB4, 'ref_skills_b.coldarrow_ctor', 'lightLink:1', 'SHARED'),
+    ('ColdArrowProjectile', 'cast', 'ColdArrowProjectile_ctor2', 0x2D718C, 'ref_skills_b.coldarrow_ctor2', 'lightLink:1', 'SHARED'),
+    ('ColdArrowProjectile', 'run', 'ColdArrowProjectile_run', 0x2D73C8, 'ref_skills_b.coldarrow_run', 'particle:2', 'own'),
+    ('ColdArrowProjectile', 'event', 'ColdArrowProjectile_onHit', 0x2D7AAC, 'ref_skills_b.coldarrow_on_hit', 'fx_spawn:2', 'own'),
+    ('ColdArrowProjectile', 'event', 'ColdArrowProjectile_end', 0x2D7ECC, 'ref_skills_b.coldarrow_end', 'particle:3', 'own'),
+    ('PoisonArrowProjectile', 'cast', 'PoisonArrowProjectile_ctor', 0x2D8A64, 'ref_skills_b.poisonarrow_ctor', 'lightLink:1', 'SHARED'),
+    ('PoisonArrowProjectile', 'cast', 'PoisonArrowProjectile_ctor2', 0x2D8C40, 'ref_skills_b.poisonarrow_ctor2', 'lightLink:1', 'SHARED'),
+    ('PoisonArrowProjectile', 'run', 'PoisonArrowProjectile_run', 0x2D8E80, 'ref_skills_b.poisonarrow_run', 'particle:2', 'own'),
+    ('PoisonArrowProjectile', 'event', 'PoisonArrowProjectile_end', 0x2D95C8, 'ref_skills_b.poisonarrow_end', 'particle:1', ''),
+    ('SkillMultiFire', 'cast', 'SkillMultiFire_cast', 0x2D9A90, 'ref_skills_b.multifire_cast', 'LightEffect:1', 'SHARED SHARED(LightEffect) cosmetic'),
+    ('MultiFireProjectile', 'cast', 'MultiFireProjectile_ctor', 0x2DA164, 'ref_fx_skills.multifire_ctor', 'trail:1 trailPoint:1', ''),
+    ('MultiFireProjectile', 'run', 'MultiFireProjectile_run', 0x2DA2BC, 'ref_fx_skills.multifire_run', 'particle:1 trailPoint:1', 'own'),
+    ('MultiFireProjectile', 'event', 'MultiFireProjectile_end', 0x2DA928, 'ref_fx_skills.multifire_end', 'fx_spawn:2', 'own'),
+    ('ExplodeArrowProjectile', 'run', 'ExplodeArrowProjectile_run', 0x2DB17C, 'ref_skills_b.explodearrow_run', 'particle:1', 'own'),
+    ('ExplodeArrowProjectile', 'event', 'ExplodeArrowProjectile_explode', 0x2DB50C, 'ref_skills_b.explodearrow_explode', 'LightEffect:1 fx_spawn:2 ringBurst:1', 'SHARED(LightEffect) own'),
+    ('FireFlare', 'run', 'FireFlare_run', 0x2DBF10, 'ref_skills_a.fireflare_run', 'particle:5', 'own'),
+    ('SpellFireFlares', 'cast', 'SpellFireFlares_ctor', 0x2DCD40, 'ref_skills_a.fireflares_ctor', 'lightLink:1', 'SHARED'),
+    ('SkillRiposte', 'event', 'SkillRiposte_counterAttack', 0x2DDCCC, 'ref_skills_a.riposte_counter_attack', 'particle:2', 'SHARED cosmetic'),
+    ('SpellBash', 'run', 'SpellBash_run', 0x2DE7DC, 'ref_skills_b.bash_run', 'LightEffect:1', 'SHARED SHARED(LightEffect) spell'),
+    ('SpellBash', 'run', 'SpellBash_windupFx', 0x2DEDEC, 'ref_skills_b.bash_windup_fx', 'particle:1', 'spell'),
+    ('SpellBlessed', 'cast', 'SpellBlessed_ctor', 0x2DF078, 'ref_skills_a.blessed_ctor', 'lightLink:1', 'SHARED spell'),
+    ('SpellBlessed', 'run', 'SpellBlessed_run', 0x2DF4BC, 'ref_skills_a.blessed_run', 'glow:1 particle:2', 'spell'),
+    ('SpellAncestralCall', 'cast', 'SpellAncestralCall_ctor', 0x2E09B4, 'ref_skills_b.ancestralcall_spell_ctor', 'LightEffect:1 particleGroup:1', 'SHARED SHARED(LightEffect)'),
+    ('SpellAncestralCall', 'run', 'SpellAncestralCall_run', 0x2E0D10, 'ref_skills_b.ancestralcall_run', 'beam:1 beamUpdate:1 particle:1', 'spell'),
+    ('SpellAncestralCall', 'run', 'SpellAncestralCall_tintAndGlow', 0x2E15A0, 'ref_skills_b.ancestralcall_tint_and_glow', 'modelParticlesLight:1', ''),
+    ('SkillSummonSkeleton', 'cast', 'SkillSummonSkeleton_cast', 0x2E18A4, 'ref_arena_monsters.summon_cast', 'particle:2', 'SHARED cosmetic'),
+    ('SpellLightningWeapons', 'cast', 'SpellLightningWeapons_ctor', 0x2E24D8, 'ref_skills_a.weaponbuff_ctor', 'LightEffect:1', 'SHARED SHARED(LightEffect)'),
+    ('SpellLightningWeapons', 'run', 'SpellLightningWeapons_run', 0x2E2AC4, 'ref_skills_a.weaponbuff_run', 'modelParticlesLight:1', 'spell'),
+    ('SpellFireWeapons', 'cast', 'SpellFireWeapons_ctor', 0x2E34E0, 'ref_skills_a.fireweapons_ctor', 'lightLink:1', 'SHARED'),
+    ('SpellFireWeapons', 'run', 'SpellFireWeapons_run', 0x2E3B28, 'ref_skills_a.fireweapons_run', 'particle:3', 'spell'),
+    ('SpellColdWeapons', 'cast', 'SpellColdWeapons_ctor', 0x2E4F94, 'ref_skills_a.weaponbuff_ctor', 'LightEffect:1', 'SHARED SHARED(LightEffect)'),
+    ('SpellColdWeapons', 'run', 'SpellColdWeapons_run', 0x2E5578, 'ref_skills_a.weaponbuff_run', 'particle:2', 'spell'),
+    ('SpellRoot', 'cast', 'SpellRoot_ctor', 0x2E68C8, 'ref_skills_a.root_spell_ctor', 'particleGroup:1', 'SHARED'),
+    ('SpellRoot', 'run', 'SpellRoot_run', 0x2E699C, 'ref_skills_a.root_spell_run', 'particle:3', 'SHARED spell'),
+    ('SpellCriticalHit', 'cast', 'SpellCriticalHit_ctor', 0x2E7988, 'ref_skills_a.crit_spell_ctor', 'lightLink:1 particleGroup:1', 'SHARED'),
+    ('SpellCriticalHit', 'run', 'SpellCriticalHit_run', 0x2E7ACC, 'ref_skills_a.crit_spell_run', 'particle:1', 'spell'),
+    ('SpellHolyShield', 'cast', 'SpellHolyShield_ctor', 0x2E82FC, 'ref_skills_b.holyshield_spell_ctor', 'particleGroup:1', 'SHARED'),
+    ('SpellHolyShield', 'event', 'SpellHolyShield_absorb', 0x2E8534, 'ref_skills_b.holyshield_absorb', 'LightEffect:1 particle:1', 'SHARED(LightEffect) spell'),
+    ('SpellHealing', 'cast', 'SpellHealing_ctor', 0x2E8EC8, 'ref_skills_b.healing_spell_ctor', 'particleGroup:1', 'SHARED'),
+    ('SpellHealing', 'run', 'SpellHealing_run', 0x2E90B8, 'ref_skills_b.healing_run', 'particle:1', 'spell'),
+    ('SpellConeOfFrost', 'cast', 'SpellConeOfFrost_ctor', 0x2E9B08, 'ref_skills_b.coneoffrost_spell_ctor', 'lightLink:1', 'SHARED'),
+    ('SpellConeOfFrost', 'run', 'SpellConeOfFrost_run', 0x2E9D10, 'ref_skills_b.coneoffrost_run', 'particle:3', 'SHARED spell'),
+    ('SpellUndeadShield', 'cast', 'SpellUndeadShield_ctor', 0x2EA4D8, 'ref_skills_a.undeadshield_ctor', 'lightLink:1 particleGroup:1', 'SHARED'),
+    ('SpellUndeadShield', 'run', 'SpellUndeadShield_run', 0x2EA74C, 'ref_skills_a.undeadshield_run', 'particle:1', 'SHARED spell'),
+    ('SpellSecondaryUndeadShield', 'cast', 'SpellSecondaryUndeadShield_ctor', 0x2EB050, 'ref_skills_a.secondary_shield_ctor', 'particleGroup:1', 'SHARED'),
+    ('SpellSecondaryUndeadShield', 'run', 'SpellSecondaryUndeadShield_run', 0x2EB170, 'ref_skills_a.secondary_shield_run', 'particle:1', 'spell'),
+    ('HolyStrike', 'cast', 'HolyStrike_ctor', 0x2EBA48, 'ref_skills_a.holystrike_ctor', 'trail:1 trailPoint:1', 'SHARED'),
+    ('HolyStrike', 'run', 'HolyStrike_run', 0x2EBC50, 'ref_skills_a.holystrike_run', 'LightEffect:1 particle:6 trailPoint:1', 'SHARED(LightEffect) own'),
+    ('HolyStrike', 'draw', 'HolyStrike_draw', 0x2ECD90, 'ref_fx_skills.holystrike_draw', 'glow:1', ''),
+    ('HammerOfWrath', 'run', 'HammerOfWrath_run', 0x2EE068, 'ref_skills_a.hammer_run', 'particle:1', 'own seed3'),
+    ('SkillHammerOfWrath', 'cast', 'SkillHammerOfWrath_cast', 0x2EFB20, 'ref_skills_a.hammer_cast', 'LightEffect:1', 'SHARED SHARED(LightEffect)'),
+    ('SpellConeOfFire', 'cast', 'SpellConeOfFire_ctor', 0x2F00AC, 'ref_skills_a.coneoffire_ctor', 'lightLink:1', 'SHARED'),
+    ('SpellConeOfFire', 'run', 'SpellConeOfFire_run', 0x2F02FC, 'ref_skills_a.coneoffire_run', 'particle:3', 'spell'),
+    ('SpellWizardBeam', 'cast', 'SpellWizardBeam_ctor', 0x2F1528, 'ref_skills_a.wizardbeam_ctor', 'trail:7', 'SHARED spell'),
+    ('BlindingLightEffect', 'cast', 'BlindingLightEffect_ctor', 0x2F3F38, 'ref_skills_a.blindinglight_effect_ctor', 'LightEffect:1', 'SHARED SHARED(LightEffect) own'),
+    ('BlindingLightEffect', 'run', 'BlindingLightEffect_run', 0x2F42E4, 'ref_skills_a.blindinglight_effect_run', 'particle:1', 'own'),
+    ('SkillRepulseUndead', 'cast', 'SkillRepulseUndead_cast', 0x2F4D34, 'ref_skills_a.repulse_cast', 'LightEffect:1', 'SHARED(LightEffect)'),
+    ('HolyBolt', 'cast', 'HolyBolt_ctor', 0x2F5248, 'ref_skills_a.holybolt_ctor', 'lightLink:1 trail:1 trailPoint:1', 'SHARED'),
+    ('HolyBolt', 'run', 'HolyBolt_run', 0x2F57B0, 'ref_skills_a.holybolt_run', 'particle:1 trailPoint:1', 'own'),
+    ('HolyBolt', 'event', 'HolyBolt_onHit', 0x2F5FB4, 'ref_skills_a.holybolt_hit', 'LightEffect:1 particle:1', 'SHARED(LightEffect) own'),
+    ('FrostShard', 'run', 'FrostShard_run', 0x2F6B3C, 'ref_skills_a.frostshard_run', 'fx_spawn:1 particle:2', 'own'),
+    ('ShockOfFrost', 'cast', 'ShockOfFrost_ctor', 0x2F7404, 'ref_skills_a.shockoffrost_ctor', 'lightLink:1', 'SHARED'),
+    ('ShockOfFrost', 'run', 'ShockOfFrost_run', 0x2F77C0, 'ref_skills_a.shockoffrost_run', 'fx_spawn:1 particle:4', 'SHARED own'),
+    ('PoisonRain', 'cast', 'PoisonRain_ctor', 0x2F8F48, 'ref_skills_a.poisonrain_ctor', 'LightEffect:1', 'SHARED SHARED(LightEffect)'),
+    ('PoisonRain', 'run', 'PoisonRain_run', 0x2F9254, 'ref_skills_a.poisonrain_run', 'LightEffect:1 particle:2', 'SHARED(LightEffect) own'),
+    ('SpellShieldBash', 'run', 'SpellShieldBash_run', 0x2FAE80, 'ref_skills_a.shieldbash_run', 'LightEffect:1', 'SHARED SHARED(LightEffect) spell'),
+    ('SpellShieldBash', 'run', 'SpellShieldBash_windupFx', 0x2FB49C, 'ref_skills_a.shieldbash_windup_fx', 'particle:1', 'spell'),
+    ('SpellPlanarSteelEffect', 'cast', 'SpellPlanarSteelEffect_ctor', 0x2FB728, 'ref_fx_skills.planarsteel_ctor', 'lightLink:1', 'SHARED'),
+    ('SpellPlanarSteelEffect', 'run', 'SpellPlanarSteelEffect_run', 0x2FB9B4, 'ref_fx_skills.planarsteel_run', 'glow:1 particle:5', 'spell'),
+    ('SpellHornOmenEffect', 'cast', 'SpellHornOmenEffect_ctor', 0x2FC574, 'ref_fx_skills.hornomen_ctor', 'particleGroup:1', 'SHARED'),
+    ('SpellHornOmenEffect', 'run', 'SpellHornOmenEffect_run', 0x2FC684, 'ref_fx_skills.hornomen_run', 'particle:2', 'spell'),
+    ('SkillUnspokenWord', 'cast', 'SkillUnspokenWord_cast', 0x2FD030, 'ref_skills_c.unspokenword_cast', 'LightEffect:1', 'SHARED SHARED(LightEffect)'),
+    ('SpellUnspokenWord', 'cast', 'SpellUnspokenWord_ctor', 0x2FD368, 'ref_skills_c.unspokenword_spell_ctor', 'trail:2', 'SHARED'),
+    ('SpellUnspokenWord', 'run', 'SpellUnspokenWord_run', 0x2FD5D4, 'ref_skills_c.unspokenword_spell_run', 'particle:2', 'spell'),
+    ('SkillSummonAxe', 'cast', 'SkillSummonAxe_cast', 0x2FE644, 'ref_skills_c.summonaxe_cast', 'LightEffect:1', 'SHARED SHARED(LightEffect)'),
+    ('SpellSummonAxe', 'cast', 'SpellSummonAxe_ctor', 0x2FEB88, 'ref_skills_c._summon_ctor', 'particleGroup:1', 'SHARED'),
+    ('SpellSummonAxe', 'run', 'SpellSummonAxe_run', 0x2FEDDC, 'ref_skills_c.summonaxe_spell_run', 'particle:1', 'spell'),
+    ('SkillSummonArrows', 'cast', 'SkillSummonArrows_cast', 0x2FF5F4, 'ref_skills_c.summonarrows_cast', 'LightEffect:1', 'SHARED SHARED(LightEffect)'),
+    ('SpellSummonArrows', 'cast', 'SpellSummonArrows_ctor', 0x2FF87C, 'ref_skills_c._summon_ctor', 'particleGroup:1', 'SHARED'),
+    ('SpellSummonArrows', 'run', 'SpellSummonArrows_run', 0x2FFAD4, 'ref_skills_c.summonarrows_spell_run', 'particle:1', 'spell'),
+    ('SpellRoar', 'run', 'SpellRoar_run', 0x3003D8, 'ref_skills_c.roar_spell_run', 'particle:5', 'spell'),
+    ('SpellBattleCry', 'run', 'SpellBattleCry_run', 0x301A34, 'ref_skills_c.battlecry_spell_run', 'LightEffect:1 particle:5 particleGroup:1', 'SHARED(LightEffect) spell'),
+    ('SpellBloodLust', 'run', 'SpellBloodLust_run', 0x3034DC, 'ref_skills_c.bloodlust_spell_run', 'glow:4 particle:6', 'spell'),
+    ('SpellArena', 'run', 'SpellArena_run', 0x305BBC, 'ref_fx_skills.arena_run', 'particle:2', 'spell'),
+    ('SkillStrongStance', 'event', 'SkillStrongStance_trigger', 0x308578, 'ref_skills_b.strongstance_trigger', 'LightEffect:1 particle:1', 'SHARED(LightEffect) seed3'),
+    ('SkillStunningStrike', 'cast', 'SkillStunningStrike_spawnEffect', 0x308CB4, 'ref_skills_b.stunningstrike_effect', 'LightEffect:1', 'SHARED SHARED(LightEffect)'),
+    ('SpellGiantGrowth', 'cast', 'SpellGiantGrowth_ctor', 0x3090D0, 'ref_skills_b.giantgrowth_spell_ctor', 'lightLink:1 particleGroup:1', 'SHARED spell'),
+    ('SpellGiantGrowth', 'run', 'SpellGiantGrowth_emitParticles', 0x309678, 'ref_skills_b.giantgrowth_emit', 'particle:1', 'spell'),
+    ('SpellPlanarWind', 'cast', 'SpellPlanarWind_ctor', 0x309D0C, 'ref_skills_b.planarwind_spell_ctor', 'lightLink:1', 'SHARED'),
+    ('SpellPlanarWind', 'run', 'SpellPlanarWind_run', 0x30A0B0, 'ref_skills_b.planarwind_run', 'particle:3', 'SHARED spell'),
+    ('PusStorm', 'cast', 'PusStorm_ctor', 0x30AF6C, 'ref_skills_c._storm_ctor', 'LightEffect:1 lightLink:1', 'SHARED(LightEffect)'),
+    ('Pustule', 'run', 'Pustule_run', 0x30BDE0, 'ref_fx_skills.pustule_run', 'particle:2', 'own'),
+    ('SpellTagarsInsects', 'run', 'SpellTagarsInsects_run', 0x30CBC8, 'ref_arena_monsters.tagar_spell_run', 'particle:3', 'SHARED spell'),
+    ('SpellTagarsInsects', 'run', 'SpellTagarsInsects_tickVictims', 0x30D558, 'ref_arena_monsters.tagar_tick_victims', 'particle:1', 'spell'),
+    ('SkillDrowsy', 'cast', 'SkillDrowsy_cast', 0x30E1F0, 'ref_skills_c.drowsy_cast', 'LightEffect:1', 'SHARED SHARED(LightEffect)'),
+    ('SpellDrowsy', 'run', 'SpellDrowsy_run', 0x30E6F0, 'ref_skills_c.drowsy_spell_run', 'particle:2', 'spell'),
+    ('PoisonBolt', 'cast', 'PoisonBolt_ctor', 0x30F398, 'ref_skills_c.poisonbolt_ctor', 'lightLink:1', ''),
+    ('PoisonBolt', 'run', 'PoisonBolt_run', 0x30F800, 'ref_skills_c.poisonbolt_run', 'particle:2', 'own'),
+    ('PoisonBolt', 'event', 'PoisonBolt_burst', 0x3101CC, 'ref_skills_c.poisonbolt_burst', 'particle:1', 'own'),
+    ('SkillSummonBadger', 'cast', 'SkillSummonBadger_cast', 0x3106F4, 'ref_skills_c.summonbadger_cast', 'LightEffect:1', 'SHARED SHARED(LightEffect)'),
+    ('SpellSummonBadger', 'run', 'SpellSummonBadger_run', 0x310CD0, 'ref_skills_c.summonbadger_spell_run', 'particle:1', 'spell'),
+    ('SpellSummonBadger', 'draw', 'SpellSummonBadger_draw', 0x311034, 'ref_fx_skills.badger_draw', 'glow:1', ''),
+    ('SpellShadowStep', 'cast', 'SpellShadowStep_ctor', 0x311638, 'ref_skills_b.shadowstep_spell_ctor', 'LightEffect:1 particle:1', 'SHARED SHARED(LightEffect) spell'),
+    ('SpellResurrect', 'cast', 'SpellResurrect_ctor', 0x3127B4, 'ref_skills_b.resurrect_spell_ctor', 'lightLink:1', 'SHARED'),
+    ('SpellResurrect', 'run', 'SpellResurrect_run', 0x312B30, 'ref_skills_b.resurrect_run', 'modelVerts:2', ''),
+    ('SpellResurrect', 'draw', 'SpellResurrect_draw', 0x312F48, 'ref_fx_skills.resurrect_draw', 'glow:1', ''),
+    ('SpellResurrect', 'event', 'SpellResurrect_onOwnerDeath', 0x3130F4, 'ref_skills_b.resurrect_on_owner_death', 'LightEffect:1', 'SHARED SHARED(LightEffect)'),
+    ('SkillRaiseArmy', 'cast', 'SkillRaiseArmy_cast', 0x3134E4, 'ref_skills_c.raisearmy_cast', 'LightEffect:1', 'SHARED SHARED(LightEffect)'),
+    ('SpellRaiseArmy', 'run', 'SpellRaiseArmy_run', 0x31399C, 'ref_skills_c.raisearmy_spell_run', 'particle:1', 'spell'),
+    ('SpellRetribution', 'cast', 'SpellRetribution_ctor', 0x314488, 'ref_skills_c.retribution_spell_ctor', 'lightLink:1 particleGroup:1', 'SHARED'),
+    ('SpellRetribution', 'run', 'SpellRetribution_run', 0x314618, 'ref_skills_c.retribution_spell_run', 'modelVerts:1', ''),
+    ('SpellSpiritShield', 'cast', 'SpellSpiritShield_ctor', 0x31500C, 'ref_skills_c.spiritshield_spell_ctor', 'LightEffect:1', 'SHARED SHARED(LightEffect)'),
+    ('SpellSpiritShield', 'run', 'SpellSpiritShield_dissolveParticles', 0x31539C, 'ref_skills_c._spiritshield_particles', 'particle:1', 'spell'),
+    ('SpellSpiritShield', 'run', 'SpellSpiritShield_reformParticles', 0x315610, 'ref_skills_c._spiritshield_particles', 'particle:1', 'spell'),
+    ('SpellPoisonWeapons', 'cast', 'SpellPoisonWeapons_ctor', 0x315F54, 'ref_skills_a.weaponbuff_ctor', 'LightEffect:1', 'SHARED SHARED(LightEffect)'),
+    ('SpellWaveOfFlame', 'cast', 'SpellWaveOfFlame_ctor', 0x316D10, 'ref_skills_c.waveofflame_spell_ctor', 'LightEffect:1', 'SHARED SHARED(LightEffect)'),
+    ('SpellWaveOfFlame', 'run', 'SpellWaveOfFlame_run', 0x317000, 'ref_skills_c.waveofflame_spell_run', 'particle:3', 'spell'),
+    ('SpellFrostArmor', 'cast', 'SpellFrostArmor_ctor', 0x317D1C, 'ref_skills_c.frostarmor_spell_ctor', 'LightEffect:1', 'SHARED SHARED(LightEffect)'),
+    ('SpellFrostArmor', 'run', 'SpellFrostArmor_run', 0x317EC0, 'ref_skills_c.frostarmor_spell_run', 'particle:2', 'spell'),
+    ('SpellFrostArmor', 'event', 'SpellFrostArmor_onHit', 0x318264, 'ref_skills_c.frostarmor_on_hit', 'fx_spawn:1', 'SHARED'),
+    ('SpellDiseaseBlade', 'cast', 'SpellDiseaseBlade_ctor', 0x318AD4, 'ref_skills_c.diseaseblade_spell_ctor', 'LightEffect:1', 'SHARED SHARED(LightEffect)'),
+    ('SkillFireAxe', 'cast', 'SkillFireAxe_cast', 0x31979C, 'ref_skills_c.fireaxe_cast', 'LightEffect:1', 'SHARED SHARED(LightEffect)'),
+    ('SkillColdAxe', 'cast', 'SkillColdAxe_cast', 0x31A0D8, 'ref_skills_c.coldaxe_cast', 'LightEffect:1', 'SHARED SHARED(LightEffect)'),
+    ('LightningStrikeSpell', 'cast', 'LightningStrikeSpell_ctor', 0x31AE48, 'ref_skills_c._storm_ctor', 'LightEffect:1 lightLink:1', 'SHARED(LightEffect)'),
+    ('SpellConeOfShock', 'cast', 'SpellConeOfShock_ctor', 0x31BAC8, 'ref_skills_c.coneofshock_spell_ctor', 'lightLink:1', 'SHARED'),
+    ('SmokeGen', 'draw', 'SmokeGen_draw', 0x31CBF8, 'ref_fx_skills.smokegen_draw', 'glow:1', ''),
+)
+Phase = namedtuple('Phase', 'cls phase function addr model calls generators')
 RECIPES = {}
-
-
-def add_recipe(cls, phase, function, addr, model, primitives, rng='', note=''):
-    RECIPES.setdefault(cls, []).append(Phase(phase, function, addr, model, tuple(primitives.split()), rng, note))
+for _row in _RECIPE_ROWS:
+    RECIPES.setdefault(_row[0], []).append(Phase(*_row))
+PHASES = ('cast', 'run', 'draw', 'event')
 
 
 def recipe(cls):
+    """The rows of one effect class, in address order."""
     return list(RECIPES.get(cls, ()))
 
 
 def classes():
     return sorted(RECIPES)
+
+
+def model_method(row):
+    """(module name, method name) of a recipe row."""
+    module, _, method = row.model.partition('.')
+    return module, method
 
 
 # ---------------------------------------------------------------------------------------

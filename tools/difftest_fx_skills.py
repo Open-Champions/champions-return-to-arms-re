@@ -41,14 +41,7 @@ import ref_creature as RC                       # noqa: E402
 from difftest_creature import Res, f32, fl      # noqa: E402
 
 M32 = 0xFFFFFFFF
-DS.SK = FS                                      # the rig runs this module's Model
-DS.OPTIONS['seed'] = 7337
-DS.SCENARIOS[:] = []
-DS.GROUPS.pop('stats', None)
-DS.GROUPS.pop('shared', None)
-
-
-DS.LIB_STUBBED.add(0x3B1250)                   # rtti_typeInfoEquals: a call-out (the tokens are getter addresses)
+ENTRY_ROWS, BODY_ROWS, SCENARIO_ROWS = [], [], []
 
 
 class World(DS.World):
@@ -73,16 +66,34 @@ class World(DS.World):
         return Res(rng.choice((0, 1, 1, 2, 8, 30)))
 
 
-DS.World = World
+def install():
+    """Turn tools/difftest_skills_c.py's rig into this test's: ref_fx_skills as the model,
+    this world, these entry points and scenarios, and the call-out decoding."""
+    DS.SK = FS
+    DS.OPTIONS['seed'] = 7337
+    DS.SCENARIOS[:] = SCENARIO_ROWS
+    DS.GROUPS.pop('stats', None)
+    DS.GROUPS.pop('shared', None)
+    DS.LIB_STUBBED.add(0x3B1250)                # rtti_typeInfoEquals: a call-out (the tokens are getter addresses)
+    DS.World = World
+    for row in ENTRY_ROWS:
+        DS.entry(*row)
+    for row in BODY_ROWS:
+        DS.body(*row)
+    decode_callouts(DS)
 
 
 def entry(key, addr, end, kinds, method, group, ret='n'):
-    DS.entry(key, addr, end, kinds, ret, method, group)
+    ENTRY_ROWS.append((key, addr, end, kinds, ret, method, group))
+
+
+def body(key, addr, end, group):
+    BODY_ROWS.append((key, addr, end, group))
 
 
 def scenario(group, title):
     def register(function):
-        DS.SCENARIOS.append((group, title, function))
+        SCENARIO_ROWS.append((group, title, function))
         return function
     return register
 
@@ -387,10 +398,10 @@ def scenario_planarsteel(t):
 # ---------------------------------------------------------------------------------------
 entry('StaticFire_ctor', 0x2C5240, 0x2C54F8, 'iviiiff', 'staticfire_ctor', 'staticfire')
 entry('StaticFire_ctor2', 0x2C54F8, 0x2C5770, 'ivii', 'staticfire_ctor2', 'staticfire')
-DS.body('StaticFire_initCommon', 0x2C5814, 0x2C595C, 'staticfire')
-DS.body('StaticFire_wind', 0x2C6AA8, 0x2C6BC0, 'staticfire')
-DS.body('StaticFire_addFlame', 0x2C6BC0, 0x2C6DF0, 'staticfire')
-DS.body('StaticFire_moveFlames', 0x2C6DF0, 0x2C6EA0, 'staticfire')
+body('StaticFire_initCommon', 0x2C5814, 0x2C595C, 'staticfire')
+body('StaticFire_wind', 0x2C6AA8, 0x2C6BC0, 'staticfire')
+body('StaticFire_addFlame', 0x2C6BC0, 0x2C6DF0, 'staticfire')
+body('StaticFire_moveFlames', 0x2C6DF0, 0x2C6EA0, 'staticfire')
 entry('StaticFire_run', 0x2C595C, 0x2C65E8, 'i', 'staticfire_run', 'staticfire')
 entry('StaticFire_draw', 0x2C65E8, 0x2C6AA8, 'i', 'staticfire_draw', 'staticfire')
 
@@ -441,11 +452,64 @@ def scenario_staticfire(t):
                 t.do('StaticFire_draw', obj)
 
 
+DECODED = {'calls': 0, 'effects': 0, 'bad': 0, 'examples': [], 'kinds': {}}
+
+
+def decode_callouts(module):
+    """Wrap module.Rig.compare: after the rig's comparison every call-out the ORIGINAL
+    made is turned into an effect primitive with ref_fx_skills.to_primitive; a call-out
+    the table names must decode, field for field, from the arguments the original passed."""
+    original = module.Rig.compare
+
+    def compare_and_decode(self, *args, **kw):
+        out = original(self, *args, **kw)
+        if isinstance(out, dict):
+            decode(out.get('emu_calls') or ())
+        return out
+    module.Rig.compare = compare_and_decode
+
+
+def decode(calls):
+    for name, cargs in calls:
+        DECODED['calls'] += 1
+        if name not in FS.CALLOUTS:
+            continue
+        try:
+            fx = FS.to_primitive(name, cargs)
+            fields = FS.CALLOUTS[name].fields
+            if fields is not None and len(fx.fields) != len(fields):
+                raise ValueError('%d fields' % len(fx.fields))
+            DECODED['effects'] += 1
+            DECODED['kinds'][fx.primitive] = DECODED['kinds'].get(fx.primitive, 0) + 1
+        except Exception as exc:                # noqa: BLE001 - a decode failure is a result
+            DECODED['bad'] += 1
+            if len(DECODED['examples']) < 6:
+                DECODED['examples'].append('%s%r: %r' % (name, cargs, exc))
+
+
 def main(argv):
     if any(a in ('-h', '--help') for a in argv[1:]):
         print(__doc__)
         return 0
-    return DS.main(argv)
+    if len(argv) > 2 and argv[1] == '--decode':
+        # run another skill difftest unchanged, decoding the call-outs of its original runs
+        import importlib
+        module = importlib.import_module(argv[2])
+        decode_callouts(module)
+        # tools/difftest_skills_c.py takes the whole argument vector, the others argv[1:]
+        status = module.main([argv[2]] + argv[3:] if module is DS else argv[3:])
+        report_decoded(module.report if hasattr(module, 'report') else DS.report)
+        return status or (1 if DECODED['bad'] else 0)
+    install()
+    status = DS.main(argv)
+    report_decoded(DS.report)
+    return status or (1 if DECODED['bad'] else 0)
+
+
+def report_decoded(report):
+    if DECODED['calls']:
+        report('call-outs decoded as primitives', DECODED['bad'], DECODED['effects'],
+               ' '.join('%s:%d' % kv for kv in sorted(DECODED['kinds'].items())), DECODED['examples'])
 
 
 if __name__ == '__main__':
