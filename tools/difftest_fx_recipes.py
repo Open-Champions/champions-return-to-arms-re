@@ -53,6 +53,9 @@ BUILD_HIDE_MASK, GUT_FROM_PROP, ATTACH_POINT = 0x179550, 0x201AD0, 0x1754A0
 EMIT_FROM_VERTS, SPARKLE, ARCS, MODEL_GLOW = 0x1EB1E8, 0x1F5210, 0x1F61C0, 0x1F5890
 GLOW_ADD, BEAM_CREATE, BEAM_UPDATE = 0x18FC78, 0x193088, 0x1933C8
 G_SIM_FRAME = 0x44FDCC
+STATUS_FX, DIALOG_OPEN, ATTACH_MATRIX, EFFECT_SEGMENT = 0x1F6AC8, 0x22FBC0, 0x1795F8, 0x1791A0
+TRAIL_CREATE, TRAIL_PAIR, TRANSFORM_SAMPLE, BEAM_ALIVE = 0x190FF8, 0x192650, 0x1799E8, 0x193360
+G_LEVEL_FLAGS = 0x44FE08
 TEXTURE_VALUE = 0x00ABC000                              # what *0x4f848c holds in the tests
 G_COSMETIC_SEED, G_RAND_SEED, G_DECAL_DETAIL = 0x404460, 0x404464, 0x44FDC0
 RES_ENTRY = 0x00C0FFE0                                  # what the res_find stub answers
@@ -116,6 +119,22 @@ class Harness:
         e.mem.w32(self.vtable + 0x84, self.get_model)
         e.mem.w16(self.vtable + 0x80, 0)
         e.mem.w32(R.GLOW_TEXTURE_HALO2, TEXTURE_VALUE)
+        e.stub(DIALOG_OPEN, function=lambda m: (self.log.append(('dialog_open',)), self.dialog)[1])
+        e.stub(ATTACH_MATRIX, function=self._attach_matrix)
+        e.stub(EFFECT_SEGMENT, function=self._effect_segment)
+        e.stub(TRAIL_CREATE, function=lambda m: (self.log.append(
+            ('trail_create', m.f[12], m.r[4] & M32, m.r[5] & M32, m.r[6] & M32, m.r[7] & M32,
+             m.r[8] & M32, m.r[9] & M32, m.r[10] & M32)), self.answers.get('trail_create', 0))[1])
+        e.stub(TRAIL_PAIR, function=lambda m: self.log.append(
+            ('trail_pair', m.f[12], m.r[4] & M32, vec(m, m.r[5]), vec(m, m.r[6]))))
+        e.stub(TRANSFORM_SAMPLE, function=self._transform_sample)
+        e.stub(FX_SPAWN, function=lambda m: self.log.append(('fx_spawn', m.r[4] & M32, vec(m, m.r[5]))))
+        e.stub(BEAM_ALIVE, function=lambda m: (self.log.append(('beam_alive', m.r[4] & M32)),
+                                               self.answers.get('beam_alive', 0))[1])
+        self.dialog = 0
+        self.answers = {}
+        self.weapon = None
+        self.holder = None
         self.beam_answer = 0
         self.gut_block = None
         self.pos = e.alloc(16)
@@ -129,6 +148,8 @@ class Harness:
     def _sample_count(self, m):
         self.flush_block()
         self.log.append(('sample_count',))
+        if self.weapon is not None:
+            return self.weapon.sample_count()
         return self.model.sample_count()
 
     def _sample_point(self, m):
@@ -191,7 +212,32 @@ class Harness:
     def _beam_create(self, m):
         self.log.append(('beam_create', m.f[12], m.f[13], vec(m, m.r[4]), vec(m, m.r[5]),
                          m.r[6] & M32, m.r[7] & M32, m.r[8] & M32))
-        return self.beam_answer
+        return self.answers.get('beam_create', self.beam_answer)
+
+    def _attach_matrix(self, m):
+        self.log.append(('attach_matrix', m.f[12], m.r[5] & M32, C.s32(m.r[6])))
+        mat = self.holder.attach_matrix(m.f[12], m.r[5] & M32, C.s32(m.r[6]))
+        for k in range(12):
+            m.mem.w32((m.r[7] + 4 * k) & M32, mat[k])
+        return 0
+
+    def _effect_segment(self, m):
+        self.log.append(('effect_segment',))
+        a, b = self.weapon.effect_segment()
+        for k in range(3):
+            m.mem.w32((m.r[5] + 4 * k) & M32, a[k])
+            m.mem.w32((m.r[6] + 4 * k) & M32, b[k])
+        return 1
+
+    def _transform_sample(self, m):
+        mat = [m.mem.u32((m.r[5] + 4 * k) & M32) for k in range(12)]
+        index = C.s32(m.r[6])
+        self.log.append(('transform_sample', mat, index))
+        p, size = self.weapon.transform_sample_point(mat, index)
+        for k in range(3):
+            m.mem.w32((m.r[7] + 4 * k) & M32, p[k])
+        m.mem.w32(m.r[8] & M32, size)
+        return 0
 
     def _attach(self, m):
         self.log.append(('attach', m.f[12], m.r[4] & M32, vec(m, m.r[5]), C.s16(m.r[6]),
@@ -671,6 +717,156 @@ def prop_model_glow(h):
            'colour ramps' % glows, examples)
 
 
+class SyntheticWeapon:
+    """A weapon model: sample points in model space, put through the caller's matrix the way
+    model_transformSamplePoint does (here with mat34_transform_point), a blade segment, the
+    attach base byte +0x13."""
+
+    def __init__(self, rng):
+        self.n = rng.randint(1, 24)
+        self.points = [[C.f32(rng.uniform(-20, 20)) for _ in range(3)] for _ in range(self.n)]
+        self.sizes = [C.f32(rng.uniform(0, 3000)) for _ in range(self.n)]
+        self.attach_base = rng.randint(0, 255)
+        self.segment = ([C.f32(rng.uniform(-5, 5)) for _ in range(3)],
+                        [C.f32(rng.uniform(20, 60)) for _ in range(3)])
+        self.n_samples = self.n
+
+    def sample_count(self):
+        return self.n
+
+    def transform_sample_point(self, matrix, index):
+        i = index % self.n
+        return C.mat34_transform_point(matrix, self.points[i]), self.sizes[i]
+
+    def effect_segment(self):
+        return self.segment
+
+
+class SyntheticHolder:
+    def __init__(self, rng):
+        self.base = [C.f32(rng.uniform(-1.2, 1.2)) for _ in range(9)] + \
+                    [C.f32(rng.uniform(-60, 60)) for _ in range(3)]
+
+    def attach_matrix(self, scale, anim, index):
+        return [C.add(v, C.mul(C.from_int(index & 7), C.f32(0.125))) for v in self.base]
+
+
+def random_matrix(rng, near=None):
+    if near is not None and rng.random() < 0.8:
+        return [C.add(v, C.f32(rng.uniform(-0.3, 0.3) if k < 9 else rng.uniform(-25, 25)))
+                for k, v in enumerate(near)]
+    return [C.f32(rng.uniform(-1.1, 1.1)) for _ in range(9)] + \
+           [C.f32(rng.uniform(-3000, 3000)) for _ in range(3)]
+
+
+def prop_weapon_status(h):
+    name = 'weapon status'
+    if not wanted(name):
+        return
+    rng = random.Random('%d/%s' % (OPTIONS['seed'], name))
+    count = scaled(3000)
+    failures, examples, spawns = 0, [], 0
+    e = h.emu
+    codes = (R.CODE_LIGHTNING, R.CODE_COLD, R.CODE_FIRE, R.CODE_POISON, R.CODE_DISEASE, 0x10, 0)
+    for case in range(count):
+        h.begin()
+        weapon = SyntheticWeapon(rng)
+        holder = SyntheticHolder(rng) if rng.random() < 0.8 else None
+        h.weapon, h.holder, h.model = weapon, holder, None
+        amount = C.f32(rng.choice((rng.uniform(0, 1.5), 1.0, 0.0, -0.5)))
+        scale = C.f32(rng.uniform(0.6, 1.6))
+        entries = [(rng.choice(codes), rng.choice((0, 1, 5, -3))) for _ in range(4)]
+        item = R.WeaponItem([rng.choice((0, 0, rng.randint(-300, 300))) for _ in range(4)],
+                            [rng.choice((0, rng.randint(-300, 300))) for _ in range(4)], entries)
+        if rng.random() < 0.3:
+            item.glow = [0, 0, 0, 0]
+        pos, yaw = random_pos(rng), rng.getrandbits(16)
+        swinging = rng.choice((0, 1, 1))
+        joint_add = rng.randint(0, 3)
+        guess = random_matrix(rng)
+        prev = random_matrix(rng, guess)
+        if rng.random() < 0.15:
+            prev = [C.ONE, 0, 0, 0, C.ONE, 0, 0, 0, C.ONE] + [rng.choice((0, C.ONE)) for _ in range(3)]
+        sim_frame = rng.getrandbits(20)
+        state = R.WeaponFxState(prev, frame=rng.choice((sim_frame - 1, sim_frame - 3, 0)),
+                                beam=rng.choice((0, rng.getrandbits(16))),
+                                trail=rng.choice((0, rng.getrandbits(16))),
+                                counter=rng.choice((0, rng.randint(0, 100), 100)),
+                                spark_kind=rng.randint(0, 4), sparks=rng.choice((0, 0, rng.randint(1, 5))))
+        override = random_matrix(rng) if rng.random() < 0.1 else None
+        level_flags = rng.choice((0, 0, 0, 0x100, 0x10000000))
+        gore = rng.choice((0, 1, 2))
+        h.dialog = 1 if rng.random() < 0.03 else 0
+        h.answers = {'trail_create': rng.getrandbits(16), 'beam_create': rng.getrandbits(16),
+                     'beam_alive': rng.choice((0, 1))}
+        has_model = rng.random() < 0.97
+        seed = rng.getrandbits(32)
+        # memory
+        it, st, model_addr, ov, pp = h.blocks[0], h.blocks[1], h.blocks[2], h.blocks[3], h.pos
+        for k in range(4):
+            e.mem.w16(it + 0x10 + 2 * k, item.glow[k])
+            e.mem.w16(it + 0x18 + 2 * k, item.colour2[k])
+            e.mem.w16(it + 0x24 + 8 * k, entries[k][0])
+            e.mem.w16(it + 0x26 + 8 * k, entries[k][1])
+        for k in range(12):
+            e.mem.w32(st + 4 * k, prev[k])
+            if override:
+                e.mem.w32(ov + 4 * k, override[k])
+        e.mem.w32(st + 0x30, state.frame)
+        e.mem.w32(st + 0x34, state.beam)
+        e.mem.w32(st + 0x38, state.trail)
+        e.mem.w8(st + 0x3C, state.counter)
+        e.mem.w8(st + 0x3D, state.spark_kind)
+        e.mem.w8(st + 0x3E, state.sparks)
+        e.mem.w8(model_addr + 0x13, weapon.attach_base)
+        for k in range(3):
+            e.mem.w32(pp + 4 * k, pos[k])
+        e.mem.w32(G_COSMETIC_SEED, seed)
+        e.mem.w32(G_SIM_FRAME, sim_frame)
+        e.mem.w32(G_LEVEL_FLAGS, level_flags)
+        e.mem.w32(G_DECAL_DETAIL, gore)
+        sp = e.stack_hi - 0x200
+        e.mem.w32(sp, joint_add)
+        e.mem.w32(sp + 8, ov if override else 0)
+        e.f[12], e.f[13] = amount, scale
+        try:
+            e.call(STATUS_FX, it, model_addr if has_model else 0, st, pp, yaw,
+                   0x01400000 if holder else 0, 0x01234560, swinging, sp=sp)
+        except EmuError as exc:
+            failures += 1
+            examples.append('case %d: the original stopped: %s' % (case, exc))
+            continue
+        cos = C.Lcg(seed)
+        want = R.model_status_effects(amount, scale, item, weapon if has_model else None, state,
+                                      pos, yaw, holder, 0x01234560, swinging, joint_add, override,
+                                      cos, level_flags=level_flags, gore=gore, sim_frame=sim_frame,
+                                      dialog_open=bool(h.dialog), answers=h.answers)
+        spawns += sum(1 for c in want if c[0] == 'spawn')
+        problem = diff_streams(h.log, want)
+        if problem is None and e.mem.u32(G_COSMETIC_SEED) != cos.state:
+            problem = 'seed'
+        if problem is None:
+            got_state = ([e.mem.u32(st + 4 * k) for k in range(12)], e.mem.u32(st + 0x30),
+                         e.mem.u32(st + 0x34), e.mem.u32(st + 0x38), e.mem.u8(st + 0x3C),
+                         e.mem.u8(st + 0x3D), e.mem.u8(st + 0x3E))
+            want_state = (state.matrix, state.frame, state.beam, state.trail, state.counter & 0xFF,
+                          state.spark_kind & 0xFF, state.sparks & 0xFF)
+            if got_state != want_state:
+                problem = 'state %r / %r' % (got_state, want_state)
+        if problem is None:
+            got_item = ([C.s16(e.mem.u16(it + 0x10 + 2 * k)) for k in range(4)],
+                        [C.s16(e.mem.u16(it + 0x18 + 2 * k)) for k in range(4)])
+            if got_item != (item.glow, item.colour2):
+                problem = 'item colours %r / %r' % (got_item, (item.glow, item.colour2))
+        if problem:
+            failures += 1
+            examples.append('case %d: %s' % (case, problem))
+    h.weapon = None
+    h.answers = {}
+    report(name, failures, count, 'call stream (%d particle_spawn calls; trail, beam, glow, fx_spawn, '
+           'matrix queries), state block, item colours, seed' % spawns, examples)
+
+
 def find_inputs(positional):
     for item in positional:
         if os.path.isfile(item):
@@ -716,6 +912,7 @@ def main(argv=None):
     prop_sparkle(h)
     prop_arcs(h)
     prop_model_glow(h)
+    prop_weapon_status(h)
     failed = [name for name, ok in RESULTS if not ok]
     print('%d properties, %d failed, %.0f s' % (len(RESULTS), len(failed), time.time() - started))
     return 1 if failed else 0

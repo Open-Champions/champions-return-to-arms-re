@@ -736,3 +736,401 @@ def model_glow(model, obj_flags, ramp, pos, yaw, anim, scale, offset, fade, targ
         calls.append(('glow', K_GLOW_BIAS, size, list(point), rgba, GLOW_TEXTURE_HALO2,
                       C.s16((sim_frame << 22) >> 16), 3))
     return calls
+
+
+# =======================================================================================
+# Weapon and status visuals: fx_modelStatusEffects 0x1f6ac8
+# =======================================================================================
+
+CODE_LIGHTNING, CODE_COLD, CODE_FIRE, CODE_POISON, CODE_DISEASE = 0x18, 0x16, 0x15, 0x17, 0x26
+LEVEL_FLAG_NO_STATUS_FX = 0x10000000          # level flag word 0x44fe08: return at once
+LEVEL_FLAG_NO_SWING_TRAIL = 0x100             # sparks of fx_spawn 0x11 instead of the trail
+
+K_0_05 = 0x3D4CCCCC
+K_0_2 = 0x3E4CCCCC
+K_0_68 = 0x3F2E147A
+K_0_7 = 0x3F333333
+K_0_00191 = 0x3AFA58F5
+K_0_00291 = 0x3B3EB5B1
+K_1_24TH = 0x3D2AAAAA
+K_0_074 = 0x3D978D4F
+K_0_156 = 0x3E1FBDAD
+K_0_206 = 0x3E52EB5F
+K_0_229 = 0x3E6A7EF9
+K_0_556 = 0x3F0E55F3
+K_0_578 = 0x3F13F7AD
+K_0_667 = 0x3F2AC072
+K_0_785 = 0x3F48F590
+K_0_97 = 0x3F7851EB
+K_2_47 = 0x401E147A
+K_2_83 = 0x40351EB8
+K_3 = 0x40400000
+K_3_13 = 0x404851EB
+K_3_5 = 0x40600000
+K_3_974 = 0x407E5597
+K_6_388 = 0x40CC6A46
+K_6_589 = 0x40D2D916
+K_13_13 = 0x4152147A
+K_19_74 = 0x419DEB85
+K_30 = 0x41F00000
+ARC_RGBA = 0x5E808080
+SPARK_DEFS = {1: 0x870BD8, 2: 0x870C28, 3: 0x870C78}
+
+
+class WeaponFxState:
+    """The caller's 0x40-byte state (a2): +0x00 the last matrix (mat34, 12 patterns),
+    +0x30 g_simFrame of the last swing, +0x34 lightning beam handle, +0x38 swing trail
+    handle, +0x3c swing counter (s8, 0..100), +0x3d spark kind, +0x3e sparks left (s8)."""
+
+    def __init__(self, matrix=None, frame=0, beam=0, trail=0, counter=0, spark_kind=0, sparks=0):
+        self.matrix = list(matrix) if matrix else [ZERO] * 12
+        self.frame, self.beam, self.trail = frame & M32, beam & M32, trail & M32
+        self.counter, self.spark_kind, self.sparks = counter, spark_kind, sparks
+
+
+class WeaponItem:
+    """The fields of the item record (a0) it reads: +0x10 glow colour (4 s16), +0x18 a second
+    colour (4 s16) - both fade toward 0 by 2 per call - and the four effect entries at +0x24
+    (8 bytes: s16 code, s16 value, ...; docs/gameplay.md 2.2)."""
+
+    def __init__(self, glow=(0, 0, 0, 0), colour2=(0, 0, 0, 0), entries=()):
+        self.glow, self.colour2 = [C.s16(v) for v in glow], [C.s16(v) for v in colour2]
+        self.entries = [tuple(e) for e in entries] + [(0, 0)] * (4 - len(entries))
+
+    def value(self, code):
+        """The value of the first entry with this code (0 when none)."""
+        for c, v in self.entries:
+            if C.s16(c) == code:
+                return C.s16(v)
+        return 0
+
+
+def s8(x):
+    x &= 0xFF
+    return x - 0x100 if x & 0x80 else x
+
+
+def _norm_scaled(v, scale):
+    k = C.rsqrt(ONE, C.add(C.add(C.mul(v[0], v[0]), C.mul(v[1], v[1])), C.mul(v[2], v[2])))
+    return [C.mul(C.mul(v[i], k), scale) for i in range(3)]
+
+
+def _vsub(a, b):
+    return [C.sub(a[i], b[i]) for i in range(3)]
+
+
+def _vadd(a, b):
+    return [C.add(a[i], b[i]) for i in range(3)]
+
+
+def _length(v):
+    return C.sqrt(C.add(C.add(C.mul(v[0], v[0]), C.mul(v[1], v[1])), C.mul(v[2], v[2])))
+
+
+def model_status_effects(amount, scale, item, model, state, pos, yaw, holder, anim, swinging,
+                         joint_add, override, rng, level_flags=0, gore=2, sim_frame=0,
+                         dialog_open=False, answers=None):
+    """fx_modelStatusEffects 0x1f6ac8 (f12 amount, f13 scale, a0 item, a1 weapon model, a2
+    state, a3 pos*, t0 yaw16, t1 holder model, t2 holder anim, t3 swinging, stack +0 joint add,
+    stack +8 matrix override* or 0).  Called once per frame for a held weapon (Weapon1/2,
+    Player_weaponTrails, projectiles, Cyclops, VampireLord, Innoruuk).  model is the weapon
+    model adapter (sample_count, transform_sample_point(matrix, i) -> (point, size),
+    effect_segment() -> (a, b) vec3), holder the holder's model (attach_matrix(scale, anim,
+    index) -> mat34) or None.  answers: dict with 'trail_create', 'beam_create', 'beam_alive'
+    results.  Returns the call records; updates item and state.  Difftest property
+    "weapon status".  See docs/effects.md for the prose."""
+    answers = answers or {}
+    calls = []
+    if level_flags & LEVEL_FLAG_NO_STATUS_FX or model is None:
+        return calls
+    calls.append(('dialog_open',))
+    if dialog_open:
+        return calls
+    if not swinging:
+        state.counter = 0
+    elif state.counter < 100:
+        state.counter += 1
+    gated = swinging or any(item.value(c) for c in (CODE_LIGHTNING, CODE_COLD, CODE_FIRE,
+                                                     CODE_POISON, CODE_DISEASE)) \
+        or any(item.glow)
+    if not gated:
+        m = C.mat34_set_identity()
+    else:
+        if holder is not None:
+            index = s8(model.attach_base) + joint_add
+            calls.append(('attach_matrix', scale, anim, C.s32(index)))
+            m = list(holder.attach_matrix(scale, anim, index))
+        else:
+            m = C.mat34_set_identity()
+        m = C.mat34_mul(m, C.mat34_set_pos_rot_z(pos, C.s16(yaw + 0x4000)))
+    if override is not None:
+        m = list(override)
+    s = state.matrix
+    if C.eq(s[0], ONE) and C.eq(s[4], ONE) and C.eq(s[8], ONE):
+        if C.eq(s[9], s[10]):
+            copy = not C.eq(s[11], ONE)
+        else:
+            copy = not C.eq(s[11], ZERO)
+        if copy:
+            state.matrix = s = list(m)
+    cur_r1, cur_t = m[3:6], m[9:12]
+    prev_r1, prev_t = s[3:6], s[9:12]
+    if not level_flags & LEVEL_FLAG_NO_SWING_TRAIL:
+        if not swinging or override is not None:
+            state.trail = 0
+            state.spark_kind = state.sparks = 0
+        else:
+            cd = _norm_scaled(cur_r1, scale)
+            pd = _norm_scaled(prev_r1, scale)
+            calls.append(('effect_segment',))
+            seg_a, seg_b = model.effect_segment()
+            base = [C.add(cur_t[i], C.mul(cd[i], seg_a[1])) for i in range(3)]
+            tip = [C.add(cur_t[i], C.mul(cd[i], seg_b[1])) for i in range(3)]
+            w = C.mul(_length(_vsub(cd, pd)), K_0_68)
+            w = C.fmax(w, ZERO)
+            w = C.fmin(w, ONE)
+            w = C.mul(w, K_0_3)
+            w = C.fmin(w, C.mul(C.from_int(s8(state.counter)), K_0_05))
+            if state.trail == 0 or state.frame != (sim_frame - 1) & M32:
+                calls.append(('trail_create', K_0_2, 3, 1000, 2, 0x80, 0x80, 0x80, 0))
+                state.trail = answers.get('trail_create', 0) & M32
+            else:
+                mt = [C.mul(C.add(cur_t[i], prev_t[i]), C.HALF) for i in range(3)]
+                md = [C.mul(C.add(cd[i], pd[i]), C.HALF) for i in range(3)]
+                md = _norm_scaled(md, scale)
+                mbase = [C.add(mt[i], C.mul(md[i], seg_a[1])) for i in range(3)]
+                mtip = [C.add(mt[i], C.mul(md[i], seg_b[1])) for i in range(3)]
+                calls.append(('trail_pair', w, state.trail, mtip, mbase))
+            calls.append(('trail_pair', w, state.trail, tip, base))
+            c = s8(state.sparks)
+            if c != 0:
+                if gore > 0:
+                    d = _vsub(tip, base)
+                    k = C.rsqrt(ONE, C.add(C.add(C.mul(d[0], d[0]), C.mul(d[1], d[1])), C.mul(d[2], d[2])))
+                    dn2 = [C.add(C.mul(d[i], k), C.mul(d[i], k)) for i in range(3)]
+                    prev_tip = [C.add(prev_t[i], C.mul(pd[i], seg_b[1])) for i in range(3)]
+                    for i in range(max(c, 0)):
+                        d = _vsub(tip, base)
+                        q = [C.sub(tip[j], C.mul(d[j], K_0_7)) for j in range(3)]
+                        f = C.from_int(c - i)
+                        start = [C.sub(q[j], C.mul(dn2[j], f)) for j in range(3)]
+                        n2 = 2 * i
+                        fn = C.from_int(n2)
+                        step = [C.div(C.sub(prev_tip[j], tip[j]), fn) for j in range(3)]
+                        for jj in range(n2):
+                            fj = C.from_int(jj)
+                            p = [C.add(start[t], C.mul(step[t], fj)) for t in range(3)]
+                            vel = [C.mul(dn2[t], K_9) for t in range(3)]
+                            defn = SPARK_DEFS.get(s8(state.spark_kind))
+                            if defn:
+                                calls.append(('spawn', ZERO, defn, p, vel))
+                state.sparks = (c - 1) & 0xFF
+            return _finish(calls, amount, item, model, state, m, s, swinging, rng, sim_frame,
+                           gore, answers)
+    else:
+        if not swinging:
+            state.trail = 0
+            state.spark_kind = state.sparks = 0
+        else:
+            cd = _norm_scaled(cur_r1, scale)
+            pd = _norm_scaled(prev_r1, scale)
+            calls.append(('effect_segment',))
+            _seg_a, seg_b = model.effect_segment()
+            tip = [C.add(cur_t[i], C.mul(cd[i], seg_b[1])) for i in range(3)]
+            v = _length(_vsub(cd, pd))
+            v = C.add(v, v)
+            if C.lt(ONE, v):
+                v = ONE
+            if C.lt(v, ZERO):
+                v = ZERO
+            r = rng.draw()
+            div = 6 - C.s32(C.to_int(C.mul(v, K_5)))
+            if r % div == 0:
+                calls.append(('fx_spawn', 0x11, tip))
+            return _finish(calls, amount, item, model, state, m, s, swinging, rng, sim_frame,
+                           gore, answers)
+    return _finish(calls, amount, item, model, state, m, s, swinging, rng, sim_frame, gore,
+                   answers)
+
+
+def _swing_trail(calls, rng, m, s, clamp_e, k_count, defn, k_speed, doubled):
+    """The ribbon of particles along the blade between last frame and this one (cold,
+    poison and disease while swinging)."""
+    t, r = list(m[9:12]), list(m[3:6])
+    tp, rp = s[9:12], s[3:6]
+    a = [C.add(t[i], C.mul(r[i], K_36)) for i in range(3)]
+    b = [C.add(tp[i], C.mul(rp[i], K_36)) for i in range(3)]
+    d = _length(_vsub(a, b))
+    if C.lt(K_30, d):
+        d = K_30
+    whole = C.s32(C.to_int(C.mul(d, k_count)))
+    n = whole * 2 if doubled else whole
+    e = C.mul(d, clamp_e)
+    k = C.div(ONE, C.from_int(whole))
+    st = [C.mul(C.sub(tp[i], t[i]), k) for i in range(3)]
+    sr = [C.mul(C.sub(rp[i], r[i]), k) for i in range(3)]
+    for _ in range(n):
+        rr = C.add(C.mul(C.mul(C.from_int(rng.draw()), C.TWO_M16), K_30), K_6)
+        f = C.mul(C.mul(e, C.from_int(rng.draw())), C.TWO_M16)
+        p = [C.add(t[i], C.mul(r[i], rr)) for i in range(3)]
+        u = rng.in_unit_sphere()
+        vel = [C.add(C.mul(r[i], f), C.mul(u[i], k_speed)) for i in range(3)]
+        calls.append(('spawn', ZERO, defn, p, vel))
+        t = _vadd(t, st)
+        r = _vadd(r, sr)
+
+
+def _walk(calls, rng, model, mi, step, index_count, back, back_step, emit):
+    """Particles at random sample points of the weapon, the matrix walking from last frame's
+    toward this frame's by `step` per particle; emit(p) adds the particle calls."""
+    for _ in range(index_count):
+        index = rng.draw() % model.n_samples
+        calls.append(('transform_sample', list(mi), index))
+        p, size = model.transform_sample_point(mi, index)
+        f = C.mul(C.mul(size, K_1E_5), K_35_35)
+        p = [C.add(p[i], C.mul(C.sub(rng.unit(), C.HALF), f)) for i in range(3)]
+        emit(p, back)
+        mi = [C.add(mi[i], step[i]) for i in range(12)]
+        back = C.add(back, back_step)
+    return mi, back
+
+
+def _motion(calls, m, s, clamp):
+    a = C.mat34_transform_point(m, [ZERO, ZERO, K_36])
+    b = C.mat34_transform_point(s, [ZERO, ZERO, K_36])
+    d = _length(_vsub(a, b))
+    if C.lt(clamp, d):
+        d = clamp
+    return d
+
+
+def _finish(calls, amount, item, model, state, m, s, swinging, rng, sim_frame, gore, answers):
+    if any(item.glow):
+        calls.append(('sample_count',))
+        n = model.sample_count()
+        for i in range(n):
+            calls.append(('transform_sample', list(m), i))
+            p, _ = model.transform_sample_point(m, i)
+            size = C.sub(C.add(C.mul(C.sin16((sim_frame << 10) & 0xFFFF), K_250), K_10000), K_2013)
+            calls.append(('glow', K_GLOW_BIAS, size, list(p), [v & M32 for v in item.glow],
+                          GLOW_TEXTURE_HALO2, C.s16((sim_frame << 22) >> 16), 3))
+    for arr in (item.colour2, item.glow):
+        for i, v in enumerate(arr):
+            arr[i] = max(v - 2, 0) if v > 0 else (min(v + 2, 0) if v < 0 else 0)
+    # lightning
+    if item.value(CODE_LIGHTNING) == 0 or C.le(amount, ZERO):
+        state.beam = 0
+    else:
+        d = _motion(calls, m, s, K_15)
+        back = C.mul(d, K_0_00291)
+        count = C.s32(C.to_int(C.mul(C.from_int(C.s32(C.to_int(C.mul(d, K_13_13))) + 1), amount)))
+        if count < 1:
+            count = 1
+        k = C.div(ONE, C.from_int(count))
+        step = [C.mul(C.sub(m[i], s[i]), k) for i in range(12)]
+        calls.append(('sample_count',))
+        model.n_samples = model.sample_count()
+        loops = max(int(count / 4), 8)
+        back_step = C.mul(k, K_1_24TH)
+
+        def emit(p, bk):
+            u = rng.in_unit_sphere()
+            vel = [C.add(ZERO, C.mul(u[0], K_3)), C.add(ZERO, C.mul(u[1], K_3)),
+                   C.add(K_19_74, C.mul(u[2], K_3))]
+            calls.append(('spawn', bk, 0x870958, p, vel))
+        _walk(calls, rng, model, list(s), step, loops, back, back_step, emit)
+        ends = []
+        for _ in range(2):
+            index = rng.draw() % model.n_samples
+            calls.append(('transform_sample', list(m), index))
+            ends.append(model.transform_sample_point(m, index)[0])
+        alive = False
+        if state.beam != 0:
+            calls.append(('beam_alive', state.beam))
+            alive = answers.get('beam_alive', 0)
+        if state.beam == 0 or not alive:
+            calls.append(('beam_create', K_7_78, K_2_47, ends[0], ends[1], 0x6B, 4, ARC_RGBA))
+            state.beam = answers.get('beam_create', 0) & M32
+        else:
+            calls.append(('beam_update', state.beam, ends[0], ends[1],
+                          C.s32(C.to_int(C.mul(amount, K_94))), M32))
+    # cold
+    if item.value(CODE_COLD) != 0:
+        d = _motion(calls, m, s, K_20)
+        back = C.mul(d, K_0_00191)
+        count = C.s32(C.to_int(C.mul(C.from_int(C.s32(C.to_int(C.mul(d, K_3_13))) + 0x1A), amount)))
+        k = C.div(ONE, C.from_int(count))
+        step = [C.mul(C.sub(m[i], s[i]), k) for i in range(12)]
+        calls.append(('sample_count',))
+        model.n_samples = model.sample_count()
+        _walk(calls, rng, model, list(s), step, count, back, C.mul(k, K_1_24TH),
+              lambda p, bk: calls.append(('spawn', bk, 0x870AE8, p, [ZERO, ZERO, ZERO])))
+        if swinging:
+            _swing_trail(calls, rng, m, s, K_0_97, K_0_229, 0x870B38, K_2_83, True)
+            _swing_trail(calls, rng, m, s, K_0_97, K_0_229, 0x870B88, K_2_83, False)
+    # fire
+    if item.value(CODE_FIRE) != 0:
+        d = _motion(calls, m, s, K_20)
+        back = C.mul(d, K_0_00191)
+        count = C.s32(C.to_int(C.mul(C.from_int(C.s32(C.to_int(C.mul(d, K_3_13))) + 0x10), amount)))
+        k = C.div(ONE, C.from_int(count))
+        step = [C.mul(C.sub(m[i], s[i]), k) for i in range(12)]
+        calls.append(('sample_count',))
+        model.n_samples = model.sample_count()
+        counter = [0]
+
+        def emit_fire(p, bk):
+            u = rng.in_unit_sphere()
+            vel = [C.add(C.mul(u[0], K_6_589), ZERO), C.add(C.mul(u[1], K_6_589), ZERO),
+                   C.add(C.mul(u[2], K_6_589), K_19_74)]
+            calls.append(('spawn', bk, 0x870A48, list(p), vel))
+            if counter[0] & 0xF == 0:
+                calls.append(('spawn', bk, 0x8709F8, list(p), vel))
+                p2 = [p[0], p[1], C.add(p[2], K_6)]
+                w = rng.in_unit_sphere()
+                vel2 = [C.add(vel[i], C.mul(w[i], K_3_5)) for i in range(3)]
+                calls.append(('spawn', bk, 0x870A98, p2, vel2))
+            counter[0] += 1
+        _walk(calls, rng, model, list(s), step, count, back, C.mul(k, K_1_24TH), emit_fire)
+    # poison: the motion term compares this frame's matrix with itself (0)
+    if item.value(CODE_POISON) != 0:
+        d = _motion(calls, m, m, K_30)
+        back = C.mul(d, K_0_00291)
+        count = C.s32(C.to_int(C.mul(C.mul(C.from_int(C.s32(C.to_int(C.mul(d, K_13_13))) + 0x1A),
+                                           amount), K_0_156)))
+        k = C.div(ONE, C.from_int(count))
+        step = [C.mul(C.sub(m[i], s[i]), k) for i in range(12)]
+        calls.append(('sample_count',))
+        model.n_samples = model.sample_count()
+        _walk(calls, rng, model, list(s), step, count, back, C.mul(k, K_1_24TH),
+              lambda p, bk: calls.append(('spawn', bk, 0x870CC8, p, [ZERO, ZERO, ZERO])))
+        if swinging:
+            _swing_trail(calls, rng, m, s, K_0_667, K_0_206, 0x870D18, K_6_388, True)
+    # disease
+    if item.value(CODE_DISEASE) != 0:
+        d = _motion(calls, m, m, K_30)
+        back0 = C.mul(d, K_0_00291)
+        count = C.s32(C.to_int(C.mul(C.mul(C.from_int(C.s32(C.to_int(C.mul(d, K_13_13))) + 0x1A),
+                                           amount), K_0_578)))
+        fcount = C.from_int(count)
+        k = C.div(ONE, fcount)
+        step = [C.mul(C.sub(m[i], s[i]), k) for i in range(12)]
+        calls.append(('sample_count',))
+        model.n_samples = model.sample_count()
+        back_step = C.mul(k, K_1_24TH)
+        mi, _ = _walk(calls, rng, model, list(s), step, count, back0, back_step,
+                      lambda p, bk: calls.append(('spawn', bk, 0x870D68, p, [ZERO, ZERO, ZERO])))
+
+        def emit_big(p, bk):
+            u = rng.in_unit_sphere()
+            calls.append(('spawn', bk, 0x870E08, p, scaled(u, K_3_974)))
+        _walk(calls, rng, model, mi, step, C.s32(C.to_int(C.mul(fcount, K_0_074))), back0,
+              back_step, emit_big)
+        if not swinging:
+            state.matrix = list(m)
+            return calls
+        _swing_trail(calls, rng, m, s, K_0_556, K_0_785, 0x870DB8, K_3_974, True)
+    if swinging:
+        state.frame = sim_frame & M32
+    state.matrix = list(m)
+    return calls
