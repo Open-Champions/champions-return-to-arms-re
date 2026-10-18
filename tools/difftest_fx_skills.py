@@ -337,6 +337,31 @@ def scenario_hornomen(t):
             t.do('SpellHornOmenEffect_run', spell, to_vec(rand_pos(rng)))
 
 
+# ---------------------------------------------------------------------------------------
+# SpellPlanarSteelEffect
+# ---------------------------------------------------------------------------------------
+entry('SpellPlanarSteelEffect_ctor', 0x2FB728, 0x2FB924, 'iiii', 'planarsteel_ctor', 'planarsteel')
+entry('SpellPlanarSteelEffect_run', 0x2FB9B4, 0x2FC3AC, 'iv', 'planarsteel_run', 'planarsteel')
+
+
+@scenario('planarsteel', 'planar steel from start to end')
+def scenario_planarsteel(t):
+    mem, rng, world = t.mem, t.rng, t.world
+    for _ in range(reps(t, 25)):
+        set_frame(t)
+        world.reset_objects(rng)
+        c = rng.choice(world.objects)
+        spell = fresh(t, 0x80)
+        t.do('SpellPlanarSteelEffect_ctor', spell, rng.randrange(256), c, rng.getrandbits(32))
+        if rng.random() < 0.3:
+            mem.w16(spell + 0x1C, rng.choice((0, 1, 2)))
+        if rng.random() < 0.25:
+            mem.w32(spell + 0x24, (mem.u32(RC.G_SIM_FRAME) + rng.choice((0, 1, 2, 3))) & M32)
+        for _tick in range(rng.choice((1, 4, 12))):
+            t.tick(rng.choice((1, 1, 7, 30)))
+            t.do('SpellPlanarSteelEffect_run', spell, to_vec(rand_pos(rng)))
+
+
 def main(argv):
     if any(a in ('-h', '--help') for a in argv[1:]):
         print(__doc__)

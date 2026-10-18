@@ -779,5 +779,155 @@ _register('SpellHornOmenEffect_ctor', 0x2FC574)
 _register('SpellHornOmenEffect_run', 0x2FC684)
 
 
-class Model(Calls, Draws, MultiFire, FireStormFlare, Pustule, DiseaseCloud, Arena, HornOmen, SC.Model):
+class PlanarSteel:
+    """SpellPlanarSteelEffect: four seconds of steel-blue light, glows and sparks on a
+    creature, made by a script command (caller 0x1466d4).  SPELL generator (+0x10); the
+    constructor draws the shared seed once (the Spell base)."""
+    PS_VT = 0x51AE28
+    PS_BURST, PS_SPARK, PS_SPARK2, PS_FALL = 0x8E6BA0, 0x8E6B00, 0x8E6B50, 0x8E6BF0
+    PS_LUMP, PS_SOUND_START, PS_SOUND_BURST = 0x551320, 0x551328, 0x551340
+
+    def planarsteel_ctor(self, spell, kind, owner, extra):
+        """SpellPlanarSteelEffect_ctor 0x2fb728 (spell, kind byte, creature, word): the
+        Spell base (ONE SHARED DRAW), a light record at +0x30 (colour (0x4b, 0x4b, 200,
+        0xff) twice, radius 0, 1 / 0 squared, 0.65) at the creature's position, linked;
+        burst flag +0x20 = 0, end +0x24 = frame + 240, burst countdown +0x1c = int(height
+        +0x20 x 3), orbit angles +0x18 = 0 and +0x1a = 0x7fff; the start sound."""
+        w8, w16, w32, u32 = self.w8, self.w16, self.w32, self.u32
+        w8(spell, kind)
+        w32(spell + 0x14, VT_SPELL)
+        w32(spell + 4, 0)
+        seed = self.draw()
+        w32(spell + 0xC, owner)
+        w32(spell + 8, extra)
+        w32(spell + 0x10, seed)
+        w32(spell + 0x14, self.PS_VT)
+        light = spell + 0x30
+        inverse = C.div(ONE, ZERO)
+        w8(light + 9, 0)
+        self.wvec(spell + 0x60, self.vec(owner + 0x10))
+        w32(light + 0x28, inverse)
+        w32(light + 0x2C, 0x3F266666)
+        for off, value in ((0xA, 0x4B), (0xC, 0x4B), (0xE, 200), (0x10, 0xFF),
+                           (0x12, 0x4B), (0x14, 0x4B), (0x16, 200), (0x18, 0xFF)):
+            w16(light + off, value)
+        w32(light + 0x20, inverse)
+        w32(light + 0x1C, ZERO)
+        w32(light + 0x24, ZERO)
+        w8(light + 8, 0)
+        self.call('light_link', light)
+        w8(spell, kind)
+        w32(spell + 8, extra)
+        w32(spell + 0xC, owner)
+        w32(spell + 0x20, 0)
+        w32(spell + 0x24, u32(G_SIM_FRAME) + 0xF0)
+        w16(spell + 0x1C, C.to_int(C.mul(u32(owner + 0x20), 0x40400000)))
+        w16(spell + 0x18, 0)
+        w16(spell + 0x1A, 0x7FFF)
+        self.call('sound_playAtPos', self.call('res_find', self.PS_LUMP, self.PS_SOUND_START),
+                  self.vec(owner + 0x10), ONE)
+
+    def planarsteel_run(self, spell, pos):
+        """SpellPlanarSteelEffect_run 0x2fb9b4, Spell slot 2 (spell, position).  Until the
+        end +0x24, with s = sin16(frame x 1000):
+        - the light follows the creature; radius = (kind byte + 0x42) + 10 s, falloff its
+          inverse square; creature tint (+0x90..) = int(49 s + 75), int(49 s + 75),
+          int(49 s + 200), int(5 s + 15), the same at +0x98;
+        - the countdown +0x1c falls by one; the first time it is negative: 60 particles
+          0x8e6ba0 18 above the creature, velocity (100 cos a, 100 sin a, 20 r), a stepping
+          by 0x444, and a sound;
+        - two orbit points (angles +0x18, +0x1a, each -0x5dc a tick) 40 from the creature at
+          the height of the countdown: a glow each (size 4000, bias 0, colour (k, k, k + 50,
+          alpha k), k = int(40 s + 50), texture *0x4f8498, flags 2), 6 sparks 0x8e6b00
+          (velocity 0.4 x ball) and 4 sparks 0x8e6b50 (6 x ball) at the point + 2 x ball;
+        - 10 falling sparks 0x8e6bf0 within 40 of the position, 100..300 above it,
+          velocity (0, 0, -80); 10 ground sparks 0x8e6b00 within 40 of the position, 5 above
+          terrain_heightAtPoint, velocity (+-1 or 0, +-1 or 0, 0).
+        At the end slot 1 (3) destroys it."""
+        u32, w16, w32 = self.u32, self.w16, self.w32
+        frame = s32(u32(G_SIM_FRAME))
+        if not frame < self.s32(spell + 0x24):
+            if spell:
+                self.table_call('Spell', spell, 0x14, 1, 3)
+            return
+        s = C.sin16((frame * 1000) & M32)
+        c = u32(spell + 0xC)
+        self.wvec(spell + 0x60, self.vec(c + 0x10))
+        self.call('light_relink', spell + 0x30)
+        radius = C.add(C.from_int(self.s8(spell) + 0x42), C.mul(s, 0x41200000))
+        m49 = C.mul(s, 0x42440000)
+        hi = C.to_int(C.add(m49, 0x43480000))
+        low = C.to_int(C.add(C.mul(s, 0x40A00000), 0x41700000))
+        mid = C.to_int(C.add(m49, 0x42960000))
+        w32(spell + 0x4C, radius)
+        w32(spell + 0x54, radius)
+        inverse = C.div(ONE, C.mul(radius, radius))
+        c = u32(spell + 0xC)
+        for base in (0x90, 0x98):
+            w16(c + base, mid)
+            w16(c + base + 2, mid)
+            w16(c + base + 4, hi)
+            w16(c + base + 6, low)
+        w32(spell + 0x58, inverse)
+        w32(spell + 0x50, inverse)
+        count = (self.u16(spell + 0x1C) - 1) & 0xFFFF
+        w16(spell + 0x1C, count)
+        if count & 0x8000 and not u32(spell + 0x20):
+            w32(spell + 0x20, 1)
+            angle = 0
+            for _ in range(60):
+                vx = C.mul(C.cos16(angle), 0x42C80000)
+                vy = C.mul(C.sin16(angle), 0x42C80000)
+                vz = C.mul(C.mul(C.from_int(self.spell_rand(spell)), F_2M16), 0x41A00000)
+                c = u32(spell + 0xC)
+                p = (C.add(u32(c + 0x10), ZERO), u32(c + 0x14), C.add(u32(c + 0x18), 0x41900000))
+                self.call('particle_spawn', self.PS_BURST, p, (vx, vy, vz), ZERO)
+                angle = s16(angle + 0x444)
+            self.call('sound_playAtPos', self.call('res_find', self.PS_LUMP, self.PS_SOUND_BURST),
+                      self.vec(u32(spell + 0xC) + 0x10), ONE)
+        for i in range(2):
+            a = (self.u16(spell + 0x18 + 2 * i) - 0x5DC) & 0xFFFF
+            w16(spell + 0x18 + 2 * i, a)
+            x = C.mul(C.cos16(s16(a)), 0x42200000)
+            y = C.mul(C.sin16(self.s16(spell + 0x18 + 2 * i)), 0x42200000)
+            k40 = C.mul(s, 0x42200000)
+            c = u32(spell + 0xC)
+            z = C.from_int(self.s16(spell + 0x1C))
+            k = C.to_int(C.add(k40, 0x42480000))
+            blue = C.to_int(C.add(k40, 0x42C80000))
+            point = (C.add(x, u32(c + 0x10)), C.add(y, u32(c + 0x14)), C.add(z, u32(c + 0x18)))
+            self.call('glow_add', point, k, k, blue, k, u32(G_GLOW_TEX_C), 0, 2, ZERO, 0x457A0000)
+            for definition, count_, speed in ((self.PS_SPARK, 6, 0x3ECCCCCC), (self.PS_SPARK2, 4, 0x40C00000)):
+                for _ in range(count_):
+                    v = tuple(C.mul(b, speed) for b in self.spell_ball(spell))
+                    b2 = self.spell_ball(spell)
+                    p = tuple(C.add(C.add(b2[j], b2[j]), point[j]) for j in range(3))
+                    self.call('particle_spawn', definition, p, v, ZERO)
+        for _ in range(10):
+            a = s16(self.spell_rand(spell))
+            r = C.mul(C.mul(C.from_int(self.spell_rand(spell)), F_2M16), 0x42200000)
+            x = C.mul(C.cos16(a), r)
+            y = C.mul(C.sin16(a), r)
+            z = C.add(C.add(0x43480000, C.from_int(self.spell_rand(spell) % 200)), 0xC2C80000)
+            p = (C.add(x, pos[0]), C.add(y, pos[1]), C.add(z, pos[2]))
+            self.call('particle_spawn', self.PS_FALL, p, (ZERO, ZERO, 0xC2A00000), ZERO)
+        for _ in range(10):
+            a = s16(self.spell_rand(spell))
+            r = C.mul(C.mul(C.from_int(self.spell_rand(spell)), F_2M16), 0x42200000)
+            x = C.mul(C.cos16(a), r)
+            y = C.mul(C.sin16(a), r)
+            vx = C.add(C.from_int(self.spell_rand(spell) & 1), C.MINUS_ONE)
+            vy = C.add(C.from_int(self.spell_rand(spell) & 1), C.MINUS_ONE)
+            p = (C.add(x, pos[0]), C.add(y, pos[1]), C.add(ZERO, pos[2]))
+            ground = self.call('terrain_heightAtPoint', u32(G_WORLD), p)
+            p = (p[0], p[1], C.add(ground, 0x40A00000))
+            self.call('particle_spawn', self.PS_SPARK, p, (vx, vy, ZERO), ZERO)
+
+
+_register('SpellPlanarSteelEffect_ctor', 0x2FB728)
+_register('SpellPlanarSteelEffect_run', 0x2FB9B4)
+
+
+class Model(Calls, Draws, MultiFire, FireStormFlare, Pustule, DiseaseCloud, Arena, HornOmen, PlanarSteel,
+            SC.Model):
     """ref_skills_c.Model with the methods of part 3."""
