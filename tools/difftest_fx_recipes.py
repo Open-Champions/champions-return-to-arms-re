@@ -50,6 +50,10 @@ DISINTEGRATE, SHATTER = 0x1F4340, 0x1FB240
 SAMPLE_POINT, SAMPLE_COUNT, PHPROP_CTOR = 0x178E18, 0x1799C8, 0x155A0C
 MATH_COS16 = 0x166630
 BUILD_HIDE_MASK, GUT_FROM_PROP, ATTACH_POINT = 0x179550, 0x201AD0, 0x1754A0
+EMIT_FROM_VERTS, SPARKLE, ARCS, MODEL_GLOW = 0x1EB1E8, 0x1F5210, 0x1F61C0, 0x1F5890
+GLOW_ADD, BEAM_CREATE, BEAM_UPDATE = 0x18FC78, 0x193088, 0x1933C8
+G_SIM_FRAME = 0x44FDCC
+TEXTURE_VALUE = 0x00ABC000                              # what *0x4f848c holds in the tests
 G_COSMETIC_SEED, G_RAND_SEED, G_DECAL_DETAIL = 0x404460, 0x404464, 0x44FDC0
 RES_ENTRY = 0x00C0FFE0                                  # what the res_find stub answers
 
@@ -102,6 +106,17 @@ class Harness:
         e.stub(BUILD_HIDE_MASK, function=self._mask)
         e.stub(GUT_FROM_PROP, function=self._gut)
         e.stub(ATTACH_POINT, function=self._attach)
+        e.stub(GLOW_ADD, function=self._glow)
+        e.stub(BEAM_CREATE, function=self._beam_create)
+        e.stub(BEAM_UPDATE, function=lambda m: self.log.append(
+            ('beam_update', m.r[4] & M32, vec(m, m.r[5]), vec(m, m.r[6]), C.s32(m.r[7]), m.r[8] & M32)))
+        self.get_model = e.alloc(16)                     # the object's virtual "model" slot
+        e.stub(self.get_model, function=lambda m: (self.log.append(('get_model',)), 0x01230000)[1])
+        self.vtable = e.alloc(0x100)
+        e.mem.w32(self.vtable + 0x84, self.get_model)
+        e.mem.w16(self.vtable + 0x80, 0)
+        e.mem.w32(R.GLOW_TEXTURE_HALO2, TEXTURE_VALUE)
+        self.beam_answer = 0
         self.gut_block = None
         self.pos = e.alloc(16)
         self.obj = e.alloc(0x500)
@@ -164,6 +179,19 @@ class Harness:
         self.gut_block = m.r[4] & M32
         m.mem.w32(self.gut_block + 0x1C4, 0x3F800000)
         return 0
+
+    def _glow(self, m):
+        tex = m.r[9] & M32
+        self.log.append(('glow', m.f[12], m.f[13], vec(m, m.r[4]),
+                         [m.r[k] & M32 for k in (5, 6, 7, 8)],
+                         R.GLOW_TEXTURE_HALO2 if tex == TEXTURE_VALUE else tex,
+                         C.s32(m.r[10]), m.r[11] & M32))
+        return 0
+
+    def _beam_create(self, m):
+        self.log.append(('beam_create', m.f[12], m.f[13], vec(m, m.r[4]), vec(m, m.r[5]),
+                         m.r[6] & M32, m.r[7] & M32, m.r[8] & M32))
+        return self.beam_answer
 
     def _attach(self, m):
         self.log.append(('attach', m.f[12], m.r[4] & M32, vec(m, m.r[5]), C.s16(m.r[6]),
@@ -294,10 +322,11 @@ class SyntheticModel:
     """Sample points answered from a table: points scattered around the position, sizes
     in a range that makes 0-12 particles per point for the size-cubed recipes."""
 
-    def __init__(self, rng, count=None):
+    def __init__(self, rng, count=None, big=False):
         self.n = rng.randint(0, 40) if count is None else count
         self.points = [[C.f32(rng.uniform(-3000, 3000)) for _ in range(3)] for _ in range(max(self.n, 1))]
-        self.sizes = [C.f32(rng.choice((rng.uniform(0, 10000), rng.uniform(0, 800), 0.0, -50.0)))
+        top = 45000 if big else 10000
+        self.sizes = [C.f32(rng.choice((rng.uniform(0, top), rng.uniform(0, 800), 0.0, -50.0)))
                       for _ in range(max(self.n, 1))]
 
     def sample_count(self):
@@ -443,6 +472,205 @@ def prop_lose_part(h):
                'names, scale, lift), variant word, show mask' % chunks, examples)
 
 
+def _setup(h, rng, count=None, big=False):
+    h.begin()
+    model = SyntheticModel(rng, count, big)
+    h.model = model
+    return model
+
+
+def _check(name, h, want, seed_state, failures, examples, case):
+    problem = diff_streams(h.log, want)
+    if problem is None and h.emu.mem.u32(G_COSMETIC_SEED) != seed_state:
+        problem = 'seed'
+    if problem:
+        examples.append('case %d: %s' % (case, problem))
+        return failures + 1
+    return failures
+
+
+def prop_emit_from_verts(h):
+    name = 'emit from model verts'
+    if not wanted(name):
+        return
+    rng = random.Random('%d/%s' % (OPTIONS['seed'], name))
+    count = scaled(3000)
+    failures, examples, spawns = 0, [], 0
+    e = h.emu
+    for case in range(count):
+        model = _setup(h, rng, rng.randint(1, 30))
+        pos, yaw = random_pos(rng), rng.getrandbits(16)
+        n = rng.choice((0, 1, 3, rng.randint(1, 40)))
+        speed = C.f32(rng.uniform(-20, 20))
+        direction = rng.choice((None, [C.f32(rng.uniform(-1, 1)) for _ in range(3)]))
+        offset = rng.choice((None, [C.f32(rng.uniform(-50, 50)) for _ in range(3)]))
+        defn = rng.getrandbits(24)
+        seed = rng.getrandbits(32)
+        e.mem.w32(h.obj + 0x48, h.vtable)
+        for k in range(3):
+            e.mem.w32(h.obj + 0x10 + 4 * k, pos[k])
+        e.mem.w16(h.obj + 0x38, yaw)
+        dptr, optr = h.blocks[0], h.blocks[1]
+        if direction:
+            for k in range(3):
+                e.mem.w32(dptr + 4 * k, direction[k])
+        if offset:
+            for k in range(3):
+                e.mem.w32(optr + 4 * k, offset[k])
+        e.mem.w32(G_COSMETIC_SEED, seed)
+        e.f[12] = speed
+        e.call(EMIT_FROM_VERTS, h.obj, n, defn, dptr if direction else 0, optr if offset else 0)
+        rng_ref = C.Lcg(seed)
+        want = R.emit_from_model_verts(model, pos, yaw, h.obj + 0x114, n, defn, direction, offset,
+                                       speed, rng_ref)
+        spawns += sum(1 for c in want if c[0] == 'spawn')
+        failures = _check(name, h, want, rng_ref.state, failures, examples, case)
+    report(name, failures, count, 'call stream (%d particle_spawn calls), sample queries, seed'
+           % spawns, examples)
+
+
+def prop_sparkle(h):
+    name = 'model sparkle'
+    if not wanted(name):
+        return
+    rng = random.Random('%d/%s' % (OPTIONS['seed'], name))
+    count = scaled(1500)
+    failures, examples, spawns = 0, [], 0
+    e = h.emu
+    for case in range(count):
+        model = _setup(h, rng, rng.choice((0, rng.randint(1, 30))), big=True)
+        h.near_answer = 1 if rng.random() < 0.9 else 0
+        pos, yaw = random_pos(rng), rng.getrandbits(16)
+        amount = C.f32(rng.choice((rng.uniform(0, 1.5), rng.uniform(-0.2, 0.2), 0.0)))
+        offset = C.f32(rng.choice((0.0, rng.uniform(-40, 40))))
+        has_model = rng.random() < 0.95
+        anim = rng.choice((0, 0x01234560))
+        seed = rng.getrandbits(32)
+        for k in range(3):
+            e.mem.w32(h.pos + 4 * k, pos[k])
+        e.mem.w32(G_COSMETIC_SEED, seed)
+        e.f[12], e.f[13], e.f[14] = C.f32(5.0), amount, offset
+        e.call(SPARKLE, 0x01230000 if has_model else 0, anim, h.pos, yaw)
+        rng_ref = C.Lcg(seed)
+        want = R.model_sparkle(model if has_model else None, pos, yaw, anim, amount, offset,
+                               rng_ref, near=bool(h.near_answer))
+        spawns += sum(1 for c in want if c[0] == 'spawn')
+        failures = _check(name, h, want, rng_ref.state, failures, examples, case)
+    h.near_answer = 1
+    report(name, failures, count, 'call stream (%d particle_spawn calls, backdates), sample queries, '
+           'seed' % spawns, examples)
+
+
+def prop_arcs(h):
+    name = 'model arcs'
+    if not wanted(name):
+        return
+    rng = random.Random('%d/%s' % (OPTIONS['seed'], name))
+    count = scaled(1500)
+    failures, examples, spawns = 0, [], 0
+    e = h.emu
+    for case in range(count):
+        model = _setup(h, rng, rng.choice((0, rng.randint(1, 30))))
+        h.near_answer = 1 if rng.random() < 0.9 else 0
+        pos, yaw = random_pos(rng), rng.getrandbits(16)
+        alpha = C.f32(rng.uniform(0, 1.6))
+        scale = C.f32(rng.uniform(0.5, 2))
+        offset = C.f32(rng.choice((0.0, rng.uniform(-40, 40))))
+        has_model = rng.random() < 0.95
+        anim = rng.choice((0, 0x01234560))
+        rgba = rng.getrandbits(32)
+        arcs = [[rng.randint(0, 35), rng.randint(0, 35), rng.choice((0, rng.getrandbits(32)))]
+                for _ in range(3)]
+        state = h.blocks[2]
+        for i, a in enumerate(arcs):
+            e.mem.w16(state + 8 + 8 * i, a[0])
+            e.mem.w16(state + 10 + 8 * i, a[1])
+            e.mem.w32(state + 12 + 8 * i, a[2])
+        h.beam_answer = rng.choice((0, rng.getrandbits(16)))
+        seed = rng.getrandbits(32)
+        for k in range(3):
+            e.mem.w32(h.pos + 4 * k, pos[k])
+        e.mem.w32(G_COSMETIC_SEED, seed)
+        e.f[12], e.f[13], e.f[14] = alpha, scale, offset
+        e.call(ARCS, 0x01230000 if has_model else 0, anim, h.pos, yaw, state, rgba)
+        rng_ref = C.Lcg(seed)
+        st = R.ArcState(arcs)
+        want = R.model_arcs(model if has_model else None, pos, yaw, anim, alpha, scale, offset, st,
+                            rgba, rng_ref, near=bool(h.near_answer),
+                            beam_create=lambda a, b: h.beam_answer)
+        spawns += sum(1 for c in want if c[0] == 'spawn')
+        before = failures
+        failures = _check(name, h, want, rng_ref.state, failures, examples, case)
+        if failures == before and h.near_answer and has_model and model.n:
+            got_state = [[C.s16(e.mem.u16(state + 8 + 8 * i)), C.s16(e.mem.u16(state + 10 + 8 * i)),
+                          e.mem.u32(state + 12 + 8 * i)] for i in range(3)]
+            if got_state != st.arcs:
+                failures += 1
+                examples.append('case %d: state %r / %r' % (case, got_state, st.arcs))
+    h.near_answer = 1
+    report(name, failures, count, 'call stream (%d sparks, beam create/update), arc state, seed'
+           % spawns, examples)
+
+
+def prop_model_glow(h):
+    name = 'model glow'
+    if not wanted(name):
+        return
+    rng = random.Random('%d/%s' % (OPTIONS['seed'], name))
+    count = scaled(2000)
+    failures, examples, glows = 0, [], 0
+    e = h.emu
+    for case in range(count):
+        model = _setup(h, rng, rng.choice((0, rng.randint(1, 20))))
+        h.near_answer = 1 if rng.random() < 0.9 else 0
+        pos, yaw = random_pos(rng), rng.getrandbits(16)
+        scale = C.f32(rng.uniform(0.5, 2))
+        offset = C.f32(rng.choice((0.0, rng.uniform(-40, 40))))
+        fade = C.f32(rng.choice((rng.uniform(0.1, 3), 1.0)))
+        mode = rng.choice((0, 1, 2, 3))
+        ta = [rng.randint(-300, 300) & 0xFFFF for _ in range(4)]
+        tb = [rng.randint(0, 255) for _ in range(4)]
+        ramp = R.GlowRamp([C.f32(rng.uniform(-10, 300)) for _ in range(4)],
+                          [C.f32(rng.uniform(-10, 300)) for _ in range(4)])
+        flags = rng.choice((0x20, 0x21, 0, 0x10))
+        has_obj = rng.random() < 0.95
+        has_model = rng.random() < 0.95
+        size_add = rng.randint(-2000, 2000)
+        frame = rng.getrandbits(31)
+        anim = rng.choice((0, 0x01234560))
+        obj = h.blocks[3]
+        e.mem.w32(obj + 0xC, flags)
+        for k in range(4):
+            e.mem.w32(obj + 0x70 + 4 * k, ramp.a[k])
+            e.mem.w32(obj + 0x80 + 4 * k, ramp.b[k])
+            e.mem.w16(h.blocks[4] + 2 * k, ta[k])
+            e.mem.w16(h.blocks[5] + 2 * k, tb[k])
+        for k in range(3):
+            e.mem.w32(h.pos + 4 * k, pos[k])
+        e.mem.w32(G_SIM_FRAME, frame)
+        e.f[12], e.f[13], e.f[14], e.f[15] = C.f32(7.0), scale, offset, fade
+        sp = e.stack_hi - 0x200
+        e.mem.w32(sp, mode)
+        e.mem.w32(sp + 8, size_add & M32)
+        e.call(MODEL_GLOW, obj if has_obj else 0, 0x01230000 if has_model else 0, anim, h.pos, yaw,
+               0x5A5A5A5A, h.blocks[4], h.blocks[5], sp=sp)
+        want = R.model_glow(model if has_model else None, flags if has_obj else None, ramp, pos,
+                            yaw, anim, scale, offset, fade, ta, tb, mode, size_add, frame,
+                            near=bool(h.near_answer))
+        glows += sum(1 for c in want if c[0] == 'glow')
+        before = failures
+        failures = _check(name, h, want, e.mem.u32(G_COSMETIC_SEED), failures, examples, case)
+        if failures == before:
+            got = ([e.mem.u32(obj + 0x70 + 4 * k) for k in range(4)],
+                   [e.mem.u32(obj + 0x80 + 4 * k) for k in range(4)])
+            if got != (ramp.a, ramp.b):
+                failures += 1
+                examples.append('case %d: ramps %r / %r' % (case, got, (ramp.a, ramp.b)))
+    h.near_answer = 1
+    report(name, failures, count, 'call stream (%d glows: position, size, colour, texture, angle), '
+           'colour ramps' % glows, examples)
+
+
 def find_inputs(positional):
     for item in positional:
         if os.path.isfile(item):
@@ -484,6 +712,10 @@ def main(argv=None):
     prop_disintegrate(h)
     prop_shatter(h)
     prop_lose_part(h)
+    prop_emit_from_verts(h)
+    prop_sparkle(h)
+    prop_arcs(h)
+    prop_model_glow(h)
     failed = [name for name, ok in RESULTS if not ok]
     print('%d properties, %d failed, %.0f s' % (len(RESULTS), len(failed), time.time() - started))
     return 1 if failed else 0

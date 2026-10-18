@@ -505,3 +505,234 @@ def lose_body_part(name, c, part, show_mask, pool_new=lambda size: 1):
         calls.append(('mask', model, c.variant))
         c.show = show_mask(model, c.variant)
     return calls
+
+
+# =======================================================================================
+# Particles from model sample points, model arcs, model glow
+# =======================================================================================
+
+K_9 = 0x41100000
+K_10 = 0x41200000
+K_0_3 = 0x3E999999               # 0.29999998
+K_16_59 = 0x4184BFAB             # 16.593588
+K_3_76 = 0x4070B335              # 3.760938
+K_1_00597 = 0x3F80C39F           # 1.0059699
+K_1E_4 = 0x38D1B717              # 0.0001
+K_1_145E8 = 0x4CDA69C5           # 1.145114e8
+K_94 = 0x42BC0000
+K_250 = 0x437A0000
+K_2013 = 0x44FBA000
+K_10000 = 0x461C4000
+K_60 = 0x42700000
+K_GLOW_BIAS = 0xC14DB22D         # -12.856 (glow_add f12)
+GLOW_TEXTURE_HALO2 = 0x4F848C    # fx.lmp : halo2.tex (written by main 0x324028)
+
+
+def emit_from_model_verts(model, pos, yaw, anim, count, defn, direction, offset, speed, rng):
+    """fx_emitFromModelVerts 0x1eb1e8 (f12 speed, a0 obj, a1 count, a2 def, a3 dir* or 0,
+    t0 offset* or 0): `count` particles of `defn`, each at a random sample point of the
+    object's model (obj slot 0x84 / 0x80 gives the model; position obj +0x10, yaw +0x38,
+    anim +0x114, scale 1.0) plus offset, moving with dir * speed, or with a random unit-ball
+    vector * speed when dir is 0.  Per particle: the unit-ball draws (if any) come first,
+    then one draw for the sample index (draw % n; n = 0 divides by zero).  Cosmetic seed.
+    Difftest property "emit from model verts"."""
+    calls = [('get_model',), ('sample_count',)]
+    n = model.sample_count()
+    yaw = C.s16(yaw)
+    while count > 0:
+        u = direction if direction is not None else rng.in_unit_sphere()
+        vel = scaled(u, speed)
+        index = rng.draw() % n
+        calls.append(('sample', ONE, anim, list(pos), yaw, index))
+        p, _size = model.sample_point(ONE, anim, pos, yaw, index)
+        if offset is not None:
+            p = [C.add(p[k], offset[k]) for k in range(3)]
+        calls.append(('spawn', ZERO, defn, list(p), vel))
+        count -= 1
+    return calls
+
+
+def _round_half_away(a):
+    return C.s32(C.to_int(C.add(a, C.HALF) if C.le(ZERO, a) else C.sub(a, C.HALF)))
+
+
+def model_sparkle(model, pos, yaw, anim, amount, offset, rng, near=True):
+    """fx_modelParticlesNearCamera_1f5210 (f13 amount, f14 offset, a0 model, a1 anim, a2 pos*,
+    a3 yaw16; f12 unused): two passes over random sample points, camera gated
+    (isNearCameraFocus480 of pos; no model or no sample point: nothing).  Pass 0 visits
+    round(amount * 16.593588) points with definition 0x870728 and speed 10, pass 1
+    round(amount * 3.760938) points with 0x870778 and speed 9 (rounding half away from 0).
+    At each point (one draw: the index; scale = amount) p = point + (cos, sin, 0) * offset,
+    then while the running value size^2 (minus 1.145114e8 per particle) is above 0:
+
+        p   += (u - 0.5) * ((size * 1.0059699) * 0.0001)    per axis - a random walk: p is
+                                                              NOT reset between particles
+        vel  = unit-ball * speed
+        spawn(backdate = u * 0.3 s, def, p, vel)
+
+    Callers Creature_run, Demon_run, Vampire_run.  Difftest property "model sparkle"."""
+    calls = [('near', list(pos))]
+    if not near or model is None:
+        return calls
+    calls.append(('sample_count',))
+    n = model.sample_count()
+    if n == 0:
+        return calls
+    yaw = C.s16(yaw)
+    for passno, (k_count, defn, speed) in enumerate(((K_16_59, 0x870728, K_10),
+                                                      (K_3_76, 0x870778, K_9))):
+        count = _round_half_away(C.mul(amount, k_count))
+        while count > 0:
+            index = rng.draw() % n
+            calls.append(('sample', amount, anim, list(pos), yaw, index))
+            p, size = model.sample_point(amount, anim, pos, yaw, index)
+            ox, oy = C.mul(C.cos16(yaw), offset), C.mul(C.sin16(yaw), offset)
+            p = [C.add(p[0], ox), C.add(p[1], oy), C.add(p[2], ZERO)]
+            volume = C.mul(size, size)
+            while C.lt(ZERO, volume):
+                f = C.mul(C.mul(size, K_1_00597), K_1E_4)
+                d = [C.mul(C.sub(rng.unit(), C.HALF), f) for _ in range(3)]
+                p = [C.add(p[k], d[k]) for k in range(3)]
+                vel = scaled(rng.in_unit_sphere(), speed)
+                back = C.mul(rng.unit(), K_0_3)
+                calls.append(('spawn', back, defn, list(p), vel))
+                volume = C.sub(volume, K_1_145E8)
+            count -= 1
+    return calls
+
+
+K_7_78 = 0x40F8F5C2
+K_4_47 = 0x408F0A3D
+DEF_ARC_SPARK = 0x8708B8
+DEF_ARC_SPARK_SLOW = 0x870908
+
+
+class ArcState:
+    """The 0x18 bytes at t0 + 8 (three arcs): per arc, sample indices (s16) at +8 / +0xa and
+    a beam handle at +0xc, every 8 bytes."""
+
+    def __init__(self, arcs=None):
+        self.arcs = [list(a) for a in arcs] if arcs else [[0, 0, 0] for _ in range(3)]
+
+
+def model_arcs(model, pos, yaw, anim, alpha, scale, offset, state, rgba, rng, near=True,
+               beam_create=lambda *a: 0):
+    """fx_modelParticlesNearCamera_1f61c0 (f12 alpha, f13 scale, f14 offset, a0 model, a1 anim,
+    a2 pos*, a3 yaw16, t0 state, t1 rgba): three lightning arcs between pairs of sample points
+    of a model, camera gated like model_sparkle.  alpha is clamped to at most 1.  Per arc:
+    with no beam, or when a draw is below 20000 (about 30 % of the time), the arc jumps: two
+    new indices (draw % n each), and beam_create(jitter 7.78, scale 4.47, a, b, width 0xcf,
+    depth 4, rgba).  Otherwise the indices (reset to 0 when above n) are looked up again,
+    beam_update(handle, a, b, alpha 94 * alpha, -1), and each end gets a spark: velocity
+    (u.x, u.y, u.z) * 21.6 + (0, 0, 1.633) of 0x8708b8, and on one draw in ten a second one of
+    0x870908 at a quarter of that velocity (the fx_spawn id 0x13 recipe).  Ends move by
+    (cos, sin, 0) * offset when offset != 0.  Callers Creature_run, Innoruuk_run,
+    SpellHateEffect_update, JumpGate_run, jumpgate_travelEffect, SpellAncestralCall,
+    SpellLightningWeapons_run.  Difftest property "model arcs"."""
+    calls = [('near', list(pos))]
+    if not near or model is None:
+        return calls
+    calls.append(('sample_count',))
+    n = model.sample_count()
+    if n == 0:
+        return calls
+    if C.lt(ONE, alpha):
+        alpha = ONE
+    yaw = C.s16(yaw)
+
+    def ends(ia, ib):
+        out = []
+        for index in (ia, ib):
+            calls.append(('sample', scale, anim, list(pos), yaw, index))
+            out.append(model.sample_point(scale, anim, pos, yaw, index)[0])
+        if not C.eq(offset, ZERO):
+            ox, oy = C.mul(C.cos16(yaw), offset), C.mul(C.sin16(yaw), offset)
+            out = [[C.add(p[0], ox), C.add(p[1], oy), C.add(p[2], ZERO)] for p in out]
+        return out
+
+    for arc in state.arcs:
+        jump = arc[2] == 0 or rng.draw() < 20000
+        if jump:
+            arc[2] = 0
+            arc[0] = C.s16(rng.draw() % n)
+            arc[1] = C.s16(rng.draw() % n)
+            a, b = ends(arc[0], arc[1])
+            calls.append(('beam_create', K_7_78, K_4_47, a, b, 0xCF, 4, rgba))
+            arc[2] = beam_create(a, b) & M32
+        else:
+            if n < arc[0]:
+                arc[0] = 0
+            if n < arc[1]:
+                arc[1] = 0
+            a, b = ends(arc[0], arc[1])
+            calls.append(('beam_update', arc[2], a, b, C.s32(C.to_int(C.mul(alpha, K_94))), M32))
+            for p in (a, b):
+                u = rng.in_unit_sphere()
+                vel = [C.mul(u[0], K_21_6), C.mul(u[1], K_21_6), C.add(C.mul(u[2], K_21_6), K_1_633)]
+                calls.append(('spawn', ZERO, DEF_ARC_SPARK, list(p), vel))
+                if rng.draw() % 10 == 0:
+                    calls.append(('spawn', ZERO, DEF_ARC_SPARK_SLOW, list(p), scaled(vel, K_QUARTER)))
+    return calls
+
+
+class GlowRamp:
+    """Object +0x70 (four floats, ramp A) and +0x80 (four floats, ramp B: the glow colour)."""
+
+    def __init__(self, a=(ZERO,) * 4, b=(ZERO,) * 4):
+        self.a, self.b = list(a), list(b)
+
+
+def model_glow(model, obj_flags, ramp, pos, yaw, anim, scale, offset, fade, target_a, target_b,
+               mode, size_add, sim_frame, near=True):
+    """fx_drawModelGlowNearCamera 0x1f5890 (a0 obj, a1 model, a2 anim, a3 pos*, t0 yaw16, t2
+    target A (4 s16), t3 target B (4 s16), stack +0 mode, stack +8 size add (int); f13 scale,
+    f14 offset, f15 fade seconds; t1 and f12 unused), from Creature_draw and FireBeetle_draw:
+    per RENDERED frame.
+    Camera gated; nothing without the object, its flag 0x20 (+0xc), the model or a sample
+    point.  Mode 0 ramps the object's two colours up toward the targets by target / (fade *
+    60) per call (clamped at the target), mode 2 down by the same step (clamped at 0), other
+    modes hold.  Then one glow per sample point i, at point(pos moved by (cos, sin) * offset in
+    x y), bias -12.856, size ((sin16(g_simFrame << 10) * 250 + 10000) - 2013) + size_add,
+    colour (int) ramp B, texture *0x4f848c (fx.lmp : halo2.tex), angle (g_simFrame << 6)
+    as s16, flags 3 (rotated, additive).  Difftest property "model glow"."""
+    calls = [('near', list(pos))]
+    if not near or model is None:
+        return calls
+    calls.append(('sample_count',))
+    n = model.sample_count()
+    if n == 0:
+        return calls
+    yaw = C.s16(yaw)
+    p = [C.add(pos[0], C.mul(C.cos16(yaw), offset)), C.add(pos[1], C.mul(C.sin16(yaw), offset)),
+         pos[2]]
+    if obj_flags is None or not obj_flags & 0x20:
+        return calls
+    fa = [C.from_int(C.s16(v)) for v in target_a]
+    fb = [C.from_int(C.s16(v)) for v in target_b]
+    if mode == 0:
+        for k in range(4):
+            step = C.mul(fade, K_60)
+            ramp.a[k] = C.add(ramp.a[k], C.div(fa[k], step))
+            ramp.b[k] = C.add(ramp.b[k], C.div(fb[k], step))
+            if C.lt(fa[k], ramp.a[k]):
+                ramp.a[k] = fa[k]
+            if C.lt(fb[k], ramp.b[k]):
+                ramp.b[k] = fb[k]
+    elif mode == 2:
+        for k in range(4):
+            step = C.mul(fade, K_60)
+            ramp.a[k] = C.sub(ramp.a[k], C.div(fa[k], step))
+            ramp.b[k] = C.sub(ramp.b[k], C.div(fb[k], step))
+            if C.lt(ramp.a[k], ZERO):
+                ramp.a[k] = ZERO
+            if C.lt(ramp.b[k], ZERO):
+                ramp.b[k] = ZERO
+    for i in range(n):
+        calls.append(('sample', scale, anim, list(p), yaw, i))
+        point, _ = model.sample_point(scale, anim, p, yaw, i)
+        size = C.add(C.sub(C.add(C.mul(C.sin16((sim_frame << 10) & 0xFFFF), K_250), K_10000),
+                           K_2013), C.from_int(size_add))
+        rgba = [C.s32(C.to_int(v)) & M32 for v in ramp.b]
+        calls.append(('glow', K_GLOW_BIAS, size, list(point), rgba, GLOW_TEXTURE_HALO2,
+                      C.s16((sim_frame << 22) >> 16), 3))
+    return calls
