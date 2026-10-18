@@ -178,6 +178,11 @@ Radius per call, with `timer` = chunk +0x20 and the previous radius r of the slo
 | 2 | when `g_simFrame > timer`: timer = now + period; if the direction bit (chunk +4 bit 31) is set, r = low and clear it, else r = high and set it. Then, if period ≠ 0, r += (set ? −1 : +1) × trunc((high − low) / period) — **every call**, so the ramp speed follows the frame rate |
 | 3 | when `g_simFrame > timer`: timer = now + period; r = low, or high when r was low |
 | 4 | the node is not linked (the light is off); the glow is still drawn |
+
+Because the tests are `g_simFrame > timer` with `timer = now + period`, a phase lasts
+period + 1 simulation frames; at one call per frame the mode-2 ramp therefore takes
+period + 1 steps and ends one step beyond the end it heads for (below `low`, above
+`high`) before the next switch puts it back.
 | other | r unchanged |
 
 Then (modes ≠ 4) r is clamped to 0…299 and the node is written: both colours = the
