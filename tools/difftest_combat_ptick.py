@@ -75,6 +75,7 @@ ENTRIES = {
     'takeDamageFull': (0x1B5330, 'iii', 1, 'n', 'player_take_damage_full', (0x1B5330, 0x1B5790),
                        'player_take_damage'),
     'blockSparks': (0x1B9658, 'ii', 0, 'n', 'player_block_sparks', (0x1B9658, 0x1B9CB8), None),
+    'playerInteract': (0x1B2640, 'iii', 0, 'n', 'player_interact', (0x1B2640, 0x1B2CC0), None),
     'processDamageFull': (0x1B2CC0, 'i', 0, 'n', 'player_process_damage_full', (0x1B2CC0, 0x1B3900),
                           'player_process_damage'),
 }
@@ -336,6 +337,18 @@ def generate(rig, key, rng):
         mem.w32(P + 0x360, rng.choice((0, w.nodes[rng.choice(w.everything)])))
         flags = rng.choice((8, 1, 0x10000008, 0x40, 0x20000, 0x20008, 0x40001))
         return (P, attacker, flags, f32(rng.choice((0.0, 7.0, 150.0, 1.5))))
+    if key == 'playerInteract':
+        mem.w32(P + 0x540, rng.choice((0,) * 20 + (1,)))
+        mem.wf32(R + 0xAC, rng.choice((100.0, 100.0, 100.0, 0.0)))
+        mem.w32(R + T.REC_OBJ, rng.choice((P, P, P, P, 0, rng.choice(w.players))))
+        slot = mem.u32(P + 0x3C8)
+        mem.w32(PT.G_PROMPT_TIMER + 4 * slot, rng.choice((0, 3, 7, 8, 100, -5 & M32)))
+        mem.w32(PT.G_PROMPT_OWNER + 4 * slot, rng.getrandbits(32))
+        mem.w32(PT.G_PROMPT_TEXT + 0x200 * slot, rng.getrandbits(32))
+        for o in w.everything:
+            if rng.random() < 0.05:
+                mem.w32(o + 0xC, mem.u32(o + 0xC) | 0x100000)
+        return (P, 0x00A20000, 0)
     if key == 'processDamageFull':
         mem.w32(T.G_PVP_MODE_A, rng.choice((0, 0, 0, 1)))
         mem.w32(T.G_PVP_MODE_B, rng.choice((0, 0, 0, 1)))

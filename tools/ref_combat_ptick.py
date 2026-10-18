@@ -63,6 +63,7 @@ S_FX_LUMP = 0x535EF0                            # 'fx.lmp' (address passed to re
 NAME_BLOCK_SOUND = b'hit_mtlplate_bludg_med.anm'      # 0x5376d0, Player_takeDamage
 NAME_SPARK_SOUND = b'hit_mtlplate_slash_miss.anm'     # 0x5379c8, Player_blockSparks
 KNOCKDOWN_PREFIX = {True: b'knockdown2_', False: b'knockdown1_'}        # 0x537638, 0x537648
+G_PROMPT_TIMER, G_PROMPT_OWNER, G_PROMPT_TEXT = 0x4D8AC0, 0x4D8AD0, 0x864F50   # Player_interact
 G_SPARK_DEF = 0x8657C0                          # particle definition of the block sparks
 G_GUTCHUNK_SIZE = 0x268
 
@@ -102,9 +103,10 @@ class DefenceModel(T.CombatModel):
     INTERNAL = dict(T.CombatModel.INTERNAL)
     INTERNAL.update({'Player_processDamage': 'player_process_damage_full',
                      'Player_takeDamage': 'player_take_damage_full',
-                     'Player_blockSparks': 'player_block_sparks'})
+                     'Player_blockSparks': 'player_block_sparks', 'Player_interact': 'player_interact'})
     MODELLED = dict(T.CombatModel.MODELLED)
     MODELLED['Player_blockSparks'] = 0x1B9658
+    MODELLED['Player_interact'] = 0x1B2640
 
     # ---- Player_takeDamage 0x1b5330 ------------------------------------------------------
     def player_take_damage_full(self, P, attacker, flags, amount):
@@ -245,6 +247,56 @@ class DefenceModel(T.CombatModel):
             if self.u32(P + 0x11C + 0x20 * i) == (anm & M32):
                 return 1
         return 0
+
+    # ---- Player_interact 0x1b2640 ---------------------------------------------------------
+    def player_interact(self, P, pad, display_only):
+        """Player_interact 0x1b2640 (P, pad, displayOnly), restricted to the case of NOTHING
+        to interact with and displayOnly 0 - what Player_run (0x1a5c18) passes every tick
+        outside menus and dialogs for the real player.
+
+        Nothing in a vehicle (+0x540), with record hp <= 0, or without a record object.
+        One box query around the RECORD's object o = R+0x43d8: (o.x - 48, o.y - 48, o.z) to
+        (o.x + 48, o.y + 48, o.z + 60), limit 0x100; the candidates are the objects with
+        flag 0x100000, nearest in 3-D first (below 1e7 squared) - one found is refused (the
+        interaction itself is not modelled).  With none: the slot's prompt timer
+        0x4d8ac0[slot] -= 7; at or below 0: 0x4d8ad0[slot] = 0, the timer = 0, and the
+        first two halfwords of the slot's prompt text 0x864f50 + slot x 0x200 = 0.
+        (These words are written on every tick of a real player; who reads them is not
+        established - the HUD prompt, Inferred.)"""
+        u32 = self.u32
+        if display_only:
+            raise Unsupported('Player_interact with displayOnly (the HUD caller)')
+        if u32(P + 0x540):
+            return
+        R = self._rec(P)
+        if C.le(u32(R + 0xAC), ZERO):
+            return
+        o = u32(R + REC_OBJ)
+        if not o:
+            return
+        ox, oy, oz = self.vec(o + 0x10)
+        found = self.call('world_collectObjectsInBox', (C.sub(ox, 0x42400000), C.sub(oy, 0x42400000), oz),
+                          (C.add(ox, 0x42400000), C.add(oy, 0x42400000), C.add(oz, 0x42700000)), 0x100)
+        best, nearest = -1, 0x4B189680
+        for i, obj in enumerate(found):
+            if not u32(obj + 0xC) & 0x100000:
+                continue
+            dx, dy, dz = (C.sub(u32(obj + 0x10 + 4 * k), (ox, oy, oz)[k]) for k in range(3))
+            d = C.add(C.add(C.mul(dx, dx), C.mul(dy, dy)), C.mul(dz, dz))
+            if C.lt(d, nearest):
+                nearest, best = d, i
+        if best != -1:
+            raise Unsupported('Player_interact with an interactable object (flag 0x100000) in reach')
+        slot = self.s32(P + 0x3C8)
+        timer = (G_PROMPT_TIMER + 4 * slot) & M32
+        t = s32(u32(timer) - 7)
+        self.w32(timer, t)
+        if t <= 0:
+            self.w32(G_PROMPT_OWNER + 4 * slot, 0)
+            self.w32(timer, 0)
+            text = (G_PROMPT_TEXT + 0x200 * slot) & M32
+            self.w16(text, 0)
+            self.w16(text + 2, 0)
 
     # ---- Player_processDamage 0x1b2cc0 ---------------------------------------------------
     def player_process_damage_full(self, P):
@@ -413,6 +465,17 @@ class DefenceModel(T.CombatModel):
 # The real player tick as slot 4
 # =======================================================================================
 
+def lcg_steps(before, after, limit=100000):
+    """How many shared-seed draws (s = s x 0x19660d + 0x3c6ef35f) lead from `before` to
+    `after`."""
+    s = before
+    for n in range(limit + 1):
+        if s == after:
+            return n
+        s = (s * 0x19660D + 0x3C6EF35F) & M32
+    raise CompositionError('the shared seed moved by more than %d draws' % limit)
+
+
 class PlayerAnim(T.AnimTimeline):
     """AUTHORED animation for the tick runtime.  A player's animation state holds the four
     base cells player_resetIdleAnim 0x1b2470 writes (count +0x118 = 4: idle and the three
@@ -438,12 +501,13 @@ class PlayerAnim(T.AnimTimeline):
         for i in range(4):
             mem.poke(P + 0x11C + 0x20 * i, 4, 0xA0000000 + 0x44 + 8 * i)
 
-    def start(self, mem, anim, clip):
+    def start(self, mem, anim, clip, flags=0):
         if not self.is_player(anim):
             return T.AnimTimeline.start(self, mem, anim, clip)
         self.state[anim] = [clip, 0]
         mem.poke(anim + 4, 1, 5)
         mem.poke(anim + 8 + 0x20 * 4, 4, clip & M32)
+        mem.poke(anim + 8 + 0x20 * 4 + 0x1C, 2, flags & 0xFFFF)
         mem.poke(anim + 6, 2, 0x8)
 
     def advance(self, mem, anim):
@@ -459,6 +523,7 @@ class PlayerAnim(T.AnimTimeline):
             del self.state[anim]
             mem.poke(anim + 4, 1, 4)
             mem.poke(anim + 8 + 0x20 * 4, 4, 0)
+            mem.poke(anim + 8 + 0x20 * 4 + 0x1C, 2, 0)
             mem.poke(anim + 6, 2, (mem.load(anim + 6, 2) & ~0x8 & 0xFFFF) | 0x80)
         return bits
 
@@ -496,8 +561,8 @@ class TickRuntime(T.Runtime):
         Player_pickAttackAnim                    refused until plugged (one shared draw;
                                                  tools/difftest_player.py 9.10 executed only
                                                  its draw and store)
-        Player_interact                          refused unless nothing is near (see
-                                                 svc_Player_interact)
+        Player_interact                          DefenceModel (executed): nothing in
+                                                 reach; an interactable object is refused
         light_*, Player_weaponTrails, sounds     presentation (traced, ignored)
     """
 
@@ -506,8 +571,7 @@ class TickRuntime(T.Runtime):
         self.plugins = {}
         self.services = TickServices(self)
         self.model = DefenceModel(self.mem, self.services)
-        self.draws_by_player = {}               # P -> shared-seed draws made inside its slot 4, per tick
-        self.interact = None                    # AUTHORED answer for Player_interact (None: refuse)
+        self.draws_by_player = {}               # P -> [(frame, shared-seed draws of its slot 4)]
 
     def plug(self, name, fn):
         """Answer the call-out `name` with fn(*args) from now on (a model's method)."""
@@ -525,15 +589,39 @@ class TickRuntime(T.Runtime):
         return P
 
     def player_run(self, P):
-        """Slot 4 of a player: Player_run 0x1a5030 as ref_player.Tick.run models it."""
+        """Slot 4 of a player: Player_run 0x1a5030 as ref_player.Tick.run models it.  The
+        shared-seed draws of the whole slot 4 (the tick's own and those of the models it
+        calls, Player_processDamage and damage_apply included) are counted from the seed."""
         seed = self.mem.u32(T.G_RAND_SEED)
         tick = RP.Tick(self.mem, P, self.services)
         out = tick.run()
-        self.note('player_tick', P, out.returned, tick.draws)
-        self.draws_by_player.setdefault(P, []).append((self.mem.u32(T.G_SIM_FRAME), seed, tick.draws))
+        draws = lcg_steps(seed, self.mem.u32(T.G_RAND_SEED))
+        self.note('player_tick', P, out.returned, draws)
+        self.draws_by_player.setdefault(P, []).append((self.mem.u32(T.G_SIM_FRAME), draws))
         return out
 
     # ---- call-outs the real tick reaches -----------------------------------------------
+    def svc_anim_start(self, state, clip, flags, blend):
+        self.note('anim', 'start', state, clip, flags)
+        if isinstance(self.anim, PlayerAnim) and self.anim.is_player(state):
+            return self.anim.start(self.mem, state, clip, flags)
+        self.anim.start(self.mem, state, clip)
+
+    def svc_anim_startBlendInOut(self, state, clip, flags, blend_in, blend_out):
+        self.note('anim', 'blend', state, clip, flags)
+        if isinstance(self.anim, PlayerAnim) and self.anim.is_player(state):
+            return self.anim.start(self.mem, state, clip, flags)
+        self.anim.start(self.mem, state, clip)
+
+    def svc_anim_findTrackByFlag(self, state, mask):
+        """anim_findTrackByFlag 0x171178 (ref_anim.anim_find_track_by_flag, executed by
+        tools/difftest_anim.py) on the image: the first of the +4 (count) tracks whose u16
+        flags at track +0x1c has a bit of mask, else -1000000000."""
+        for i in range(max(s8(self.mem.load(state + 4, 1)), 0)):
+            if s16(self.mem.load(state + 8 + 0x20 * i + 0x1C, 2)) & mask:
+                return i
+        return -1000000000 & M32
+
     def svc_Creature_applyKnockback(self, c, scale):
         return self.model.apply_knockback(c, scale)
 
@@ -552,6 +640,8 @@ class TickRuntime(T.Runtime):
     def svc_res_find(self, lump, entry):
         """AUTHORED: a token per entry name (no level data); names given by address are
         read from the image."""
+        if isinstance(entry, tuple):                        # ('buf', text) of a libc_sprintf
+            entry = entry[1]
         name = entry if isinstance(entry, (bytes, bytearray)) else self.model._cstr(entry, 64)
         return (0xB0000000 | (sum(name) * 131 + len(name)) & 0xFFFFFF) & M32
 
@@ -582,11 +672,8 @@ class TickRuntime(T.Runtime):
         return 0
 
     def svc_Player_interact(self, P, pad, display_only):
-        """Player_interact 0x1b2640 is not modelled.  AUTHORED: with `self.interact` set,
-        its answer; otherwise refused."""
-        if self.interact is None:
-            raise Unsupported('Player_interact 0x1b2640 (not modelled; set TickRuntime.interact)')
-        return self.interact(P, pad, display_only)
+        """DefenceModel.player_interact (executed; nothing to interact with)."""
+        return self.model.player_interact(P, pad, display_only)
 
     def svc_Player_pickAttackAnim(self, P, cls):
         raise Unsupported('Player_pickAttackAnim 0x1bba88 (one shared draw; plug a model)')
