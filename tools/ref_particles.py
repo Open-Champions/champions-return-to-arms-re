@@ -61,10 +61,13 @@ TEST_REGISTER = 0x71001                  # depth greater, no depth write (partic
 
 COLOUR_BIAS = 8388608.0                  # 2^23, added to the colours of kinds 0-2
 SLOT_COUNT = 32                          # 0x82c408 / 0x82c490
+SLOT0_DEFINITION = 0x7e1d00              # particle_init 0x18e648 claims slot 0 for it for good:
+                                         # only slots 1-31 serve definitions (round-2 correction)
 PAGE_COUNT = 64                          # 0x7ec300, 0x1000 bytes each
 CELLS_PER_PAGE = 240                     # 8 blocks of 30
 CURSOR_FULL = 0x101                      # list cursor value meaning "take a new page"
 GROUP_COUNT = 16
+GROUP_IDENTITY = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (0.0, 0.0, 0.0))
 GROUP_IDLE_FREE = 31                     # freed when the idle count read is > 30 (0x18fa58)
 CLOCK_WRAP = -0x8000                     # g_particleClock 0x82cc90 is s16
 
@@ -77,6 +80,21 @@ def f32(x):
 def trunc(x):
     """cvt.w.s: float to int, toward zero."""
     return int(x)
+
+
+def rz(x):
+    """A Python float cut to single precision toward zero, as the console's FPU rounds
+    (a value below the smallest normal becomes zero).  For a product of two singles the
+    double is exact, so rz(a * b) is the console's mul.s (round 2: executed, see
+    tools/difftest_particles.py)."""
+    if x == 0.0 or x != x:
+        return 0.0
+    b = struct.unpack('<Q', struct.pack('<d', x))[0]
+    if (b >> 52) & 0x7ff < 1023 - 126:
+        return 0.0
+    b &= ~((1 << 29) - 1)
+    v = struct.unpack('<d', struct.pack('<Q', b))[0]
+    return f32(v) if abs(v) <= 3.4028234663852886e38 else math.copysign(3.4028234663852886e38, v)
 
 
 def s16(v):
@@ -110,16 +128,16 @@ class ParticleDef:
         kind = clamp(int(kind), 0, 3)
         d.kind, d.life_class, d.tile = kind, life_class, int(tile)
         d.life = LIFE_TICKS[life_class]
-        inv = f32(1.0 / d.life)
+        # float work in the console's rounding (toward zero), in the code's order
+        inv = rz(1.0 / d.life)
         d.list_index = kind * 4 + life_class
         d.slot, d.live, d.callback = -1, 0, 0
-        g = f32(gravity * f32(1.0 / 256))
+        g = rz(f32(gravity) * 0.00390625)
         d.gravity = g
-        a = f32(size_start * 100.0)
-        b = f32(size_end * 100.0)
+        a = rz(f32(size_start) * 100.0)
         if kind == KIND_LINE:
             d.line_gravity = g                       # +0x10 as a float
-            d.line_lag = f32(a * f32(0.01))          # +0x1c: sizeStart again
+            d.line_lag = rz(a * f32(0.01))           # +0x1c: sizeStart again
             d.u0 = None
             d.v0 = previous.v0 if previous else 0
             d.u1 = previous.u1 if previous else 0
@@ -131,13 +149,14 @@ class ParticleDef:
             col, row = (d.tile & 0xf) * 32, (d.tile >> 4) * 32
             d.u0, d.v0 = (col + 1) * 16, (row + 1) * 16
             d.u1, d.v1 = (col + 31) * 16, (row + 31) * 16
-            d.size_rate = f32(f32(b - a) * inv)
+            b = rz(f32(size_end) * 100.0)
+            d.size_rate = rz(rz(b - a) * inv)
         d.size0 = a
         bias = 0.0 if kind == KIND_HIDDEN else COLOUR_BIAS
         start = [int(c) for c in start_rgba]
         end = [int(c) for c in end_rgba]
-        d.c0 = tuple(f32(c + bias) for c in start)
-        d.crate = tuple(f32((e - s) * inv) for s, e in zip(start, end))
+        d.c0 = tuple(rz(rz(float(c)) + bias) for c in start)
+        d.crate = tuple(rz(rz(float(e - s)) * inv) for s, e in zip(start, end))
         return d
 
     @classmethod
@@ -154,12 +173,15 @@ class ParticleDef:
                          rec.start_rgba, rec.end_rgba, rec.life_class, rec.kind, rec.tile)
 
     def colour_at(self, age):
-        """clamp(c0 + crate * age, 0, 255) per channel, as integers 0..255."""
+        """clamp(c0 + crate * age, 0, 255) per channel, as integers 0..255.  The sum is
+        made in the vector unit's rounding (toward zero) on the 2^23-biased start, so a
+        channel whose rate is inexact can end one short of its end value (round 2)."""
         bias = 0.0 if self.kind == KIND_HIDDEN else COLOUR_BIAS
-        return tuple(int(clamp(c + r * age - bias, 0.0, 255.0)) for c, r in zip(self.c0, self.crate))
+        return tuple(int(clamp(rz(c + rz(r * age)) - bias, 0.0, 255.0))
+                     for c, r in zip(self.c0, self.crate))
 
     def size_at(self, age):
-        return self.size0 + self.size_rate * age
+        return rz(self.size0 + rz(self.size_rate * age))
 
     def record(self):
         """The 0x40-byte record the vertex program reads (+0x10..+0x4f), little-endian.
@@ -185,17 +207,18 @@ def spawn_record(d, pos, vel, clock, backdate=0.0, slot=0):
     px, py, pz = pos
     vx, vy, vz = vel
     if backdate > 0.0:
-        n = trunc(f32(backdate * 60.0))
+        # the console's float operations, in the code's order (0x18f53c-0x18f63c)
+        n = trunc(rz(f32(backdate) * 60.0))
         g = d.gravity
         nf = float(n)
-        k = f32(nf * 0.0625)
-        vz2 = f32(vz - f32(float(n << 5) * g))
-        x = f32(px - f32(vx * k))
-        y = f32(py - f32(vy * k))
-        z = f32(f32(pz - f32(vz2 * k)) - f32(f32(g * nf) * nf))
+        k = rz(nf * 0.0625)
+        vz2 = rz(f32(vz) - rz(float(n << 5) * g))
+        x = rz(f32(px) - rz(f32(vx) * k))
+        y = rz(f32(py) - rz(f32(vy) * k))
+        z = rz(rz(f32(pz) - rz(vz2 * k)) - rz(rz(g * nf) * nf))
         return Particle(s16(trunc(x)), s16(trunc(y)), s16(trunc(z)), s16(clock - n),
-                        s16(trunc(f32(vx * 256.0))), s16(trunc(f32(vy * 256.0))),
-                        s16(trunc(f32(vz2 * 256.0))), slot << 2)
+                        s16(trunc(rz(f32(vx) * 256.0))), s16(trunc(rz(f32(vy) * 256.0))),
+                        s16(trunc(rz(vz2 * 256.0))), slot << 2)
     return Particle(s16(trunc(px)), s16(trunc(py)), s16(trunc(pz)), s16(clock),
                     s16(trunc(f32(vx * 256.0))), s16(trunc(f32(vy * 256.0))),
                     s16(trunc(f32(vz * 256.0))), slot << 2)
@@ -260,8 +283,12 @@ class ParticleSystem:
         self.clock = 0
         self.free_pages = list(range(PAGE_COUNT))   # pop(0) = the head of 0x82c400
         self.slots = [None] * SLOT_COUNT
+        self.slots[0] = SLOT0_DEFINITION         # held from particle_init on (round 2)
         self.global_set = [_List() for _ in range(16)]
         self.groups = {}                            # handle -> [lists, matrix, idle]
+        # the 16 group slots own their lists for good (0x7e1d50 + i * 0x138): a slot's lists
+        # are reset by group_free and by the level reset, not by group_create (round 2)
+        self.group_lists = [[_List() for _ in range(16)] for _ in range(GROUP_COUNT)]
         self.group_seq = 1                          # 0x44fc9c
         self.current = self.global_set
         self.dropped = 0
@@ -273,9 +300,15 @@ class ParticleSystem:
             if i not in used:
                 h = (self.group_seq << 8) | i
                 self.group_seq += 1
-                self.groups[h] = [[_List() for _ in range(16)], None, 0]
+                self.groups[h] = [self.group_lists[i], GROUP_IDENTITY, 0]
                 return h
         return 0
+
+    def group_set_matrix(self, h, matrix):
+        """particleGroup_setMatrix 0x18e9e8: copies the mat34 (four rows of x, y, z) into
+        the group when the handle is live."""
+        if h in self.groups:
+            self.groups[h][1] = tuple(tuple(r) for r in matrix)
 
     def group_begin(self, h):
         if h in self.groups:
@@ -538,7 +571,7 @@ def emitter_run(rec, pos, now, rng, yaw=0, neg_x=False, neg_y=False, swap_xy=Fal
             rec.on = 1
         else:
             d = rec.off_time if rec.on else rec.on_time
-            rec.next = trunc(f32(float(now + d) + f32((rng.r() - 0.5) * d)))
+            rec.next = trunc(rz(rz(float(now + d)) + rz((rng.r() - 0.5) * d)))
             rec.on = 0 if rec.on else 1
     if not rec.on or count <= 0:
         return []

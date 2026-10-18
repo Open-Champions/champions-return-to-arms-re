@@ -45,7 +45,8 @@ class Definition(unittest.TestCase):
     def test_colour_clamp_and_bias(self):
         d = make(life_class=1, start=(0x80, 0x40, 0x20, 0x80), end=(0, 0x40, 0xff, 0))
         self.assertEqual(d.colour_at(0), (0x80, 0x40, 0x20, 0x80))
-        self.assertEqual(d.colour_at(30), (0, 0x40, 0xff, 0))
+        # (0xff - 0x20) / 30 is inexact and cut toward zero: the blue ends one short
+        self.assertEqual(d.colour_at(30), (0, 0x40, 0xfe, 0))
         self.assertEqual(d.colour_at(60), (0, 0x40, 255, 0))     # clamped, not wrapped
         self.assertEqual(d.c0[0], 0x80 + 2 ** 23)
         hidden = make(kind=P.KIND_HIDDEN)
@@ -141,9 +142,12 @@ class Pools(unittest.TestCase):
         s = P.ParticleSystem()
         defs = [make(tile=i) for i in range(P.SLOT_COUNT + 1)]
         got = [s.spawn(x, (0, 0, 0), (0, 0, 0)) for x in defs]
-        self.assertTrue(all(got[:P.SLOT_COUNT]))
+        # slot 0 belongs to the definition particle_init claims (0x7e1d00): 31 are left
+        self.assertTrue(all(got[:P.SLOT_COUNT - 1]))
+        self.assertIsNone(got[P.SLOT_COUNT - 1])
         self.assertIsNone(got[-1])
-        self.assertEqual([x.slot for x in defs[:3]], [0, 1, 2])
+        self.assertEqual([x.slot for x in defs[:3]], [1, 2, 3])
+        self.assertEqual(s.slots[0], P.SLOT0_DEFINITION)
 
     def test_fifo_per_list(self):
         s = P.ParticleSystem()
@@ -181,8 +185,42 @@ class Pools(unittest.TestCase):
         s.spawn(d, (0, 0, 0), (0, 0, 0))
         s.group_end(h)
         s.group_free(h)
-        self.assertEqual((d.live, d.slot), (1, 0))
+        self.assertEqual((d.live, d.slot), (1, 1))
         self.assertEqual(len(s.free_pages), P.PAGE_COUNT)
+
+    def test_freed_group_lists_are_inherited(self):
+        # a list set left current after its group is freed keeps receiving particles; the
+        # next group created in that slot inherits them (particleGroup_create does not reset)
+        s = P.ParticleSystem()
+        h = s.group_create()
+        d = make(life_class=3)
+        s.group_begin(h)
+        s.group_free(h)
+        s.spawn(d, (5, 0, 0), (0, 0, 0))
+        s.group_end(h)                       # stale handle: no effect
+        self.assertIs(s.current, s.group_lists[0])
+        h2 = s.group_create()
+        self.assertEqual(h2 & 0xff, 0)
+        self.assertEqual([p.x for p, _ in s.live()], [5])
+
+    def test_group_matrix(self):
+        s = P.ParticleSystem()
+        h = s.group_create()
+        self.assertEqual(s.groups[h][1], P.GROUP_IDENTITY)
+        m = ((0, 1, 0), (-1, 0, 0), (0, 0, 1), (10, 20, 30))
+        s.group_set_matrix(h, m)
+        self.assertEqual(s.groups[h][1][3], (10, 20, 30))
+        s.group_set_matrix(h + 0x100, ((0,) * 3,) * 4)    # stale handle: ignored
+        self.assertEqual(s.groups[h][1][3], (10, 20, 30))
+
+    def test_rz_rounds_toward_zero(self):
+        self.assertEqual(P.rz(1.0 / 3.0), 0.3333333134651184)
+        self.assertEqual(P.rz(-1.0 / 3.0), -0.3333333134651184)
+        self.assertEqual(P.rz(1e-40), 0.0)
+        # 60 * (17 / 60) is just below 17 in single precision: the console back-dates 16 ticks
+        d = make(life_class=3)
+        p = P.spawn_record(d, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 100, backdate=17 / 60.0)
+        self.assertEqual(p.birth, 100 - 16)
 
     def test_clock_rebase(self):
         s = P.ParticleSystem()
