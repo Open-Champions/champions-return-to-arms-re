@@ -38,6 +38,14 @@ for media layouts and `docs/issues/native-sound.md` for the recompiled-build stu
    0x213ea0 checks this generation and stops matching voices. `sound_release`
    0x213438 on a sequence makes it repeat at clip duration until stopped; it does
    **not** mean release the tail (`soundSeq_updateAll` 0x2147c0).
+
+   **Observed table constants:** for the 0–98 groups present in the NTSC disc,
+   `g_soundGroupLimit` at 0x4f8a28 is 2 except group 14 = 9 and groups 50/51 = 8.
+   Group 0's sequence-concurrency check is bypassed despite its stored byte being 2.
+   The same table bounds animation sound events per drawn frame at 0x16d9d8
+   (`docs/spec/animation.md` 161). These are limits on starts, not a voice-stealing
+   priority. **Unknown:** a separate priority system beyond the free-voice scan at
+   0x2169f8; no evidence here establishes one.
 5. Direct samples and sequence events use 43 effect voices, round robin among free
    voices (`voice_alloc` 0x2169f8). Their records are 43 × 0x14 at 0x872880;
    +0x00 sample, +0x04 flags (4 in use, 0x10 looping, 2 frozen, 8 play while frozen),
