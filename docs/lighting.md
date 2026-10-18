@@ -115,8 +115,10 @@ grid goes on the overflow list 0x5db368 (I: such a node is never collected, sinc
 `light_collectNear(pos, out, 32)` walks the cells within ±300 units of pos and returns
 (at most 31) nodes of the current layer whose cube of half-size **model radius** around
 the node contains pos. `light_collectInBox` 0x147de0 does the same for a box (level
-chunks). Since every light source clamps its radius below 300 (or uses 240 or less), the
-±300 cell window loses nothing (I).
+chunks). The level slots and `AddParticle` clamp their radius to 299 and the fire objects
+stay below 300, so for them the ±300 cell window loses nothing; `LightEffect` radii are not
+clamped, so one above 300 would be cut off at the window edge (I; no such constant was
+looked for).
 
 ### What a model gets — O `light_emitModelLights` 0x149268
 
