@@ -115,7 +115,7 @@ Particle record, 16 bytes, signed 16-bit fields — O 0x18f518–0x18f6bc:
 | +0x0, +0x2, +0x4 | position x, y, z, world units (`cvt.w.s`: truncated toward zero) |
 | +0x6 | birth tick (particle clock) |
 | +0x8, +0xa, +0xc | velocity × 256 (truncated) |
-| +0xe | slot × 4 (the qword address of its type record in VU memory); 0 once dead |
+| +0xe | slot × 4 (the qword address of its type record in VU memory). Set to 0 when the particle is retired (0x18f82c); slot 0 also gives 0 and nothing tests the field, so it is not a dead marker (I) |
 
 With `backdate ≤ 0`: position = pos, birth = clock, velocity = vel.
 
@@ -175,6 +175,11 @@ once per simulated tick, when 0x44fa80 is 0, 0x4039c0 is set and `game_isFrozen(
    0x82c408[slot] = −1). Emptied pages go back to the free list. O 0x18f7a0–0x18f918
 3. A group whose lists were all empty on more than 31 consecutive ticks is freed (32nd empty
    tick); during a cutscene the count is held at 0. O 0x18fa2c–0x18fa90
+4. `particleGroup_free` 0x18ea90 gives a group's pages back but does not lower the live
+   counts of the definitions whose particles were in it, so a group freed by its owner
+   while it still holds particles keeps those definitions resident (their slots stay used)
+   until the level reset 0x18ebb8 clears slots 1–31. O for the code; that an owner frees a
+   non-empty group was not looked for (U)
 
 So a particle has **no per-particle lifetime**: it lives exactly 11, 30, 60 or 90 ticks
 after its (possibly back-dated) birth, and its end colour and size are reached at that age.
