@@ -47,6 +47,7 @@ from ref_skills_c import *                      # noqa: E402,F401,F403 - the dif
 from ref_creature import Ext, M32, s16, s32     # noqa: E402
 
 G_SIM_FRAME = RC.G_SIM_FRAME                    # 0x44fdcc
+G_WORLD = RC.G_WORLD                            # 0x44fdc8
 G_NUM_PLAYERS = 0x4D8AE0                        # s32 number of players in the session
 ZERO, ONE = C.ZERO, C.ONE
 F_2M16 = RC.F_2M16                              # 1 / 65536
@@ -446,5 +447,83 @@ _register('MultiFireProjectile_run', 0x2DA2BC)
 _register('MultiFireProjectile_end', 0x2DA928)
 
 
-class Model(Calls, Draws, MultiFire, SC.Model):
+class FireStormFlare:
+    """FireStormFlare: the falling fire balls of Fire Storm (skill 7).  Every particle is
+    placed with the flare's OWN generator (+0x44); nothing here draws the shared seed."""
+    FSF_PARTICLES = (0x8E5640, 0x8E5690, 0x8E56E0)
+    FSF_LUMP, FSF_SOUND = 0x54F110, 0x54F138
+
+    def _fsf_trail(self, obj, nv, per_scale, definition, speed=None, z_extra=None):
+        """One of the three trail streams of a falling flare: while i < scale x per_scale,
+        p = unit-ball x (scale x 8.7999935) + position, moved back along the velocity by r
+        (one draw / 65536); velocity = a second ball point, scaled by `speed` (z once more
+        by z_extra), or the raw point."""
+        u32 = self.u32
+        i = 0
+        while C.lt(C.from_int(i), C.mul(u32(obj + 0x4C), per_scale)):
+            ball = self.obj_ball(obj)
+            k = C.mul(u32(obj + 0x4C), 0x410CCCC6)
+            pos = self.vec(obj + 0x10)
+            p = [C.add(C.mul(ball[j], k), pos[j]) for j in range(3)]
+            share = C.mul(C.from_int(self.obj_rand(obj)), F_2M16)
+            p = tuple(C.add(p[j], C.mul(nv[j], share)) for j in range(3))
+            v = self.obj_ball(obj)
+            if speed is not None:
+                v = (C.mul(v[0], speed), C.mul(v[1], speed), C.mul(C.mul(v[2], speed), z_extra))
+            self.call('particle_spawn', definition, p, tuple(v), ZERO)
+            i += 1
+
+    def firestormflare_run(self, obj):
+        """FireStormFlare_run 0x2d33c0, GameObject slot 4.
+
+        Falling (landed +0x50 = 0 and frame < expiry +0x68): vz += -0.39999998, position +=
+        velocity +0x5c..+0x64; three particle streams with the reversed velocity (scale
+        +0x4c): x30 of 0x8e5640 (speed 10.419806, z x 10.261909), x18 of 0x8e5690 (5.0619698,
+        z x 7.171931), x4 of 0x8e56e0 (raw ball); then terrain_height(world, position;
+        radius +0x1c): less than 16 above the ground lands it (+0x50 = 1) with a sound.
+        Landed, while the ring +0x58 (s16) is below radius x 3 x scale: ring += 7 and 85
+        pairs of particles (0x8e5640 and 0x8e5690, the same point and velocity) at angle =
+        one draw, ring x (cos16, sin16) + 6.76 x a ball point + position, velocity a second
+        ball point.  Then: one draw % 100 < 33 lowers z by 6 and lays a scorch decal (type 9,
+        no growth, size = scale, angle = s16 of one more draw); slot 1 (3) destroys it."""
+        u32, w32 = self.u32, self.w32
+        if not u32(obj + 0x50) and s32(u32(G_SIM_FRAME)) < self.s32(obj + 0x68):
+            w32(obj + 0x64, C.add(u32(obj + 0x64), 0xBECCCCCC))
+            for j in range(3):
+                w32(obj + 0x10 + 4 * j, C.add(u32(obj + 0x10 + 4 * j), u32(obj + 0x5C + 4 * j)))
+            nv = tuple(C.neg(u32(obj + 0x5C + 4 * j)) for j in range(3))
+            self._fsf_trail(obj, nv, 0x41F00000, self.FSF_PARTICLES[0], 0x4126B786, 0x412430C7)
+            self._fsf_trail(obj, nv, 0x41900000, self.FSF_PARTICLES[1], 0x40A1FBA8, 0x40E58075)
+            self._fsf_trail(obj, nv, 0x40800000, self.FSF_PARTICLES[2])
+            ground = self.call('terrain_height', u32(G_WORLD), self.vec(obj + 0x10), u32(obj + 0x1C))
+            if C.lt(C.sub(u32(obj + 0x18), ground), 0x41800000):
+                w32(obj + 0x50, 1)
+                self.call('sound_playOnObject', self.call('res_find', self.FSF_LUMP, self.FSF_SOUND), obj, ONE)
+            return
+        if C.lt(C.from_int(self.s16(obj + 0x58)), C.mul(C.mul(u32(obj + 0x1C), 0x40400000), u32(obj + 0x4C))):
+            self.w16(obj + 0x58, self.u16(obj + 0x58) + 7)
+            for _ in range(0x55):
+                draw = self.obj_rand(obj)
+                cx = C.mul(C.cos16(draw), C.from_int(self.s16(obj + 0x58)))
+                sy = C.mul(C.sin16(draw), C.from_int(self.s16(obj + 0x58)))
+                ring = (cx, sy, ZERO)
+                ball = self.obj_ball(obj)
+                pos = self.vec(obj + 0x10)
+                p = tuple(C.add(C.add(ring[j], C.mul(ball[j], 0x40D851EB)), pos[j]) for j in range(3))
+                v = self.obj_ball(obj)
+                self.call('particle_spawn', self.FSF_PARTICLES[0], p, v, ZERO)
+                self.call('particle_spawn', self.FSF_PARTICLES[1], p, v, ZERO)
+            return
+        if self.obj_rand(obj) % 100 < 0x21:
+            w32(obj + 0x18, C.sub(u32(obj + 0x18), 0x40C00000))
+            draw = self.obj_rand(obj)
+            self.call('decal_add', self.vec(obj + 0x10), s16(draw), 9, 0, u32(obj + 0x4C))
+        if obj:
+            self.vcall(obj, 1, 3)
+
+
+_register('FireStormFlare_run', 0x2D33C0)
+
+
+class Model(Calls, Draws, MultiFire, FireStormFlare, SC.Model):
     """ref_skills_c.Model with the methods of part 3."""

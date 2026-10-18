@@ -213,6 +213,32 @@ def scenario_multifire(t):
         t.do('MultiFireProjectile_end', obj, rng.choice((0, 1, 2)))
 
 
+# ---------------------------------------------------------------------------------------
+# FireStormFlare
+# ---------------------------------------------------------------------------------------
+entry('FireStormFlare_run', 0x2D33C0, 0x2D4048, 'i', 'firestormflare_run', 'firestorm')
+
+
+@scenario('firestorm', 'Fire Storm flares from the sky to the scorch mark')
+def scenario_flare(t):
+    mem, rng, world = t.mem, t.rng, t.world
+    for _ in range(reps(t, 30)):
+        frame = set_frame(t)
+        obj = fresh(t, 0x80)
+        mem.w32(obj + 0x48, world.vt_creature)
+        put_vec(mem, obj + 0x10, rand_pos(rng))
+        put_vec(mem, obj + 0x5C, (rng.uniform(-6, 6), rng.uniform(-6, 6), rng.uniform(-12, 2)))
+        mem.w32(obj + 0x44, rng.getrandbits(32))
+        mem.wf32(obj + 0x4C, rng.choice((0.25, 0.5, 1.0, 1.3, 2.0, 0.0)))
+        mem.wf32(obj + 0x1C, rng.choice((8.0, 12.0, 20.0)))
+        mem.w32(obj + 0x68, (frame + rng.choice((0, 5, 40, 200))) & M32)
+        mem.w32(obj + 0x50, rng.choice((0, 0, 0, 1)))
+        mem.w16(obj + 0x58, rng.choice((0, 0, 30, 200)))
+        for _tick in range(rng.choice((2, 10, 60))):
+            t.tick()
+            t.do('FireStormFlare_run', obj)
+
+
 def main(argv):
     if any(a in ('-h', '--help') for a in argv[1:]):
         print(__doc__)
