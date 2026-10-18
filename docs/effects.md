@@ -661,5 +661,7 @@ for the codes and the definitions used per block (lightning 0x870958; cold 0x870
 0x870b38, 0x870b88; fire 0x870a48 / 0x8709f8, 0x870a98; poison 0x870cc8, 0x870d18; disease
 0x870d68, 0x870e08, 0x870db8), not read further (U for counts and placement). It also
 creates a swing trail (0.2 s, row 3, width 1000, flags 2 = paired points, colour 0x80 grey
-— 0x1f6ff0) and can call `fx_spawn(0x11)` and a glow. Level flag 0x10000000 turns it off
-(0x1f6b2c). The glowing weapon shell drawn by the model code is in render-pipeline 4.8.
+— 0x1f76e4) and can call `fx_spawn(0x11)` and a glow. Level flag 0x10000000 (level flag word
+0x44fe08) makes it return at once, as does a null second argument (decompile of the
+first lines). The glowing weapon shell drawn by the model code is in render-pipeline 4.7
+("Shell mode") and 6 ("Weapon glow shell").
