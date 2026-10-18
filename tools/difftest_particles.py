@@ -44,6 +44,9 @@ Properties
     pools           random sequences of spawn, update ticks, groups (create, begin, end, set
                     matrix, free), cutscene ticks and the clock wrap: the whole pool state
                     against ParticleSystem after every operation
+    emitter definition
+                    the level emitter type's definition, built in world_fixup from the record's
+                    first 17 bytes, against ParticleDef.from_emitter_record
     flipbook        the step of particle_draw (0x1948f0-0x194990) on random resident
                     records and frame numbers against flipbook_step
     emitter         emitter_run 0x195400 on random records, positions, yaws, flips and weather:
@@ -81,6 +84,7 @@ GROUP_CREATE, GROUP_BEGIN, GROUP_END, GROUP_SET_MATRIX, GROUP_FREE = (
     0x18E880, 0x18E958, 0x18E9A0, 0x18E9E8, 0x18EA90)
 EMITTER_RUN = 0x195400
 STATIC_INIT, RESOURCE_REF_CTOR = 0x195D30, 0x173768
+FIXUP_DEF_LO, FIXUP_DEF_HI, WORLD_EMITTER_DEFS = 0x1820D4, 0x182164, 0x7D3630
 FLIP_LO, FLIP_HI, FLIP_FROZEN = 0x1948E0, 0x194990, 0x194998
 TASK_ADD, ASSERT_FAIL, IS_FROZEN = 0x19E4A0, 0x17FD48, 0x1EBDF8
 G_CLOCK, G_SLOT_USED, G_TYPES = 0x82CC90, 0x82C408, 0x82C490
@@ -594,6 +598,39 @@ def prop_pools(elf):
            % ops_total, ex)
 
 
+def prop_emitter_definition(elf):
+    if not wanted('emitter definition'):
+        return
+    rng = random.Random(OPTIONS['seed'] * 31 + 7)
+    g = Game(elf)
+    e, mem = g.emu, g.emu.mem
+    fails, ex = 0, []
+    n = scaled(2000)
+    rec = e.alloc(0x48)
+    for _ in range(n):
+        r = P.EmitterRecord.new(start_rgba=tuple(rng.randint(0, 255) for _ in range(4)),
+                                end_rgba=tuple(rng.randint(0, 255) for _ in range(4)),
+                                size_start=rng.randint(-50, 300), size_end=rng.randint(-50, 300),
+                                gravity=rng.randint(-2000, 2000), life_class=rng.randint(0, 6),
+                                kind=rng.randint(0, 5), tile=rng.randint(0, 255))
+        mem.write(rec, r.pack())
+        idx = rng.randrange(16)
+        addr = WORLD_EMITTER_DEFS + 0x98 * idx
+        mem.write(addr, bytes(0x50))
+        mem.w32(addr + 4, M32)
+        e.r[18], e.r[17] = rec, idx
+        e.r[31] = e.RETURN_ADDR
+        e.run(start=FIXUP_DEF_LO, until=[FIXUP_DEF_HI])
+        d = P.ParticleDef.from_emitter_record(r)
+        d.slot = -1
+        ok, w, _, _ = compare_def(mem.read(addr, 0x50), def_image(d, addr), d.kind)
+        if not ok or w:
+            fails += 1
+            ex.append('%r' % (r.pack()[:0x11].hex(),))
+    report('emitter definition', fails, n, 'world_fixup 0x1820d4-0x182164 (the level emitter type: '
+           'the 17 record bytes to particleDef_set) vs ParticleDef.from_emitter_record, bit for bit', ex)
+
+
 def prop_flipbook(elf):
     if not wanted('flipbook'):
         return
@@ -759,6 +796,7 @@ def main(argv=None):
     prop_redefine(elf)
     prop_spawn_record(elf)
     prop_pools(elf)
+    prop_emitter_definition(elf)
     prop_flipbook(elf)
     prop_emitter(elf)
     if COVER:
