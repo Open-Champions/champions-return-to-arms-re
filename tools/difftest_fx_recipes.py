@@ -46,6 +46,9 @@ FX_SPAWN = 0x1EF270
 PARTICLE_SPAWN, PARTICLE_DEF_CTOR = 0x18F3F8, 0x18F3D0
 NEAR_CAMERA, SPRINTF, RES_FIND, SOUND_AT_POS = 0x1EBD90, 0x3B7EF0, 0x17365C, 0x214428
 POOL_NEW, FIRE_CTOR = 0x14FDB8, 0x2020E0
+DISINTEGRATE, SHATTER = 0x1F4340, 0x1FB240
+SAMPLE_POINT, SAMPLE_COUNT, PHPROP_CTOR = 0x178E18, 0x1799C8, 0x155A0C
+MATH_COS16 = 0x166630
 G_COSMETIC_SEED, G_RAND_SEED, G_DECAL_DETAIL = 0x404460, 0x404464, 0x44FDC0
 RES_ENTRY = 0x00C0FFE0                                  # what the res_find stub answers
 
@@ -92,14 +95,67 @@ class Harness:
         e.stub(SOUND_AT_POS, function=self._sound)
         e.stub(POOL_NEW, function=self._pool_new)
         e.stub(FIRE_CTOR, function=lambda m: self.log.append(('fire', vec(m, m.r[5]))))
+        e.stub(SAMPLE_COUNT, function=self._sample_count)
+        e.stub(SAMPLE_POINT, function=self._sample_point)
+        e.stub(PHPROP_CTOR, function=self._phprop)
         self.pos = e.alloc(16)
+        self.obj = e.alloc(0x300)
+        self.blocks = [e.alloc(0x300) for _ in range(8)]
+        self.model = None
+        self.last_block = None
+
+    # ---- model queries answered from a synthetic model -------------------------------
+    def _sample_count(self, m):
+        self.flush_block()
+        self.log.append(('sample_count',))
+        return self.model.sample_count()
+
+    def _sample_point(self, m):
+        self.flush_block()
+        if m.r[11] & M32:
+            self.log.append(('sample t3?', m.r[11] & M32))
+        yaw = C.s16(m.r[7])
+        self.log.append(('sample', m.f[12], m.r[5] & M32, vec(m, m.r[6]), yaw, C.s32(m.r[8])))
+        point, size = self.model.sample_point(m.f[12], m.r[5] & M32, vec(m, m.r[6]), yaw,
+                                              C.s32(m.r[8]))
+        for k in range(3):
+            m.mem.w32((m.r[9] + 4 * k) & M32, point[k])
+        m.mem.w32(m.r[10] & M32, size)
+        return 0
+
+    def _phprop(self, m):
+        def name(a):
+            a &= M32
+            return m.mem.cstr(a) if a else 0
+        self.log.append(('phprop', m.f[12], vec(m, m.r[5]), name(m.r[6]), name(m.r[7]),
+                         name(m.r[8]), m.r[9] & M32, m.r[10] & M32, m.r[11] & M32))
+        return 0
+
+    def flush_block(self):
+        if self.last_block is not None:
+            v = self.emu.mem.u32(self.last_block + 0x48)
+            if v:
+                self.log.append(('vtable', v))
+            self.last_block = None
+
+    def begin(self):
+        self.emu.reset_log()
+        self.log = []
+        self.last_block = None
+        for b in self.blocks:
+            self.emu.mem.write(b, bytes(0x300))
+        self.block_index = 0
 
     def _near(self, m):
         self.log.append(('near', vec(m, m.r[4])))
         return self.near_answer
 
     def _res_find(self, m):
-        self.log.append(('res_find', m.mem.cstr(m.r[4] & M32)))
+        a1 = m.r[5] & M32
+        if a1 == 0 or a1 >= 0x01000000:          # a name formatted on the stack (stubbed sprintf)
+            self.log.append(('res_find', m.mem.cstr(m.r[4] & M32)))
+        else:
+            self.log.append(('res_find', m.mem.cstr(m.r[4] & M32), m.mem.cstr(a1)))
         return RES_ENTRY
 
     def _sound(self, m):
@@ -109,8 +165,15 @@ class Harness:
         return 0
 
     def _pool_new(self, m):
+        self.flush_block()
         self.log.append(('pool_new', m.r[4] & M32))
-        return 0x01800000 if self.pool_answer else 0
+        if not self.pool_answer:
+            return 0
+        if self.model is None:
+            return 0x01800000
+        self.last_block = self.blocks[self.block_index % len(self.blocks)]
+        self.block_index += 1
+        return self.last_block
 
     def fx_spawn(self, fx_id, pos, cosmetic, shared, near, gore, made):
         e = self.emu
@@ -186,6 +249,109 @@ def prop_fx_spawn(h):
                % spawns, examples)
 
 
+class SyntheticModel:
+    """Sample points answered from a table: points scattered around the position, sizes
+    in a range that makes 0-12 particles per point for the size-cubed recipes."""
+
+    def __init__(self, rng, count=None):
+        self.n = rng.randint(0, 40) if count is None else count
+        self.points = [[C.f32(rng.uniform(-3000, 3000)) for _ in range(3)] for _ in range(max(self.n, 1))]
+        self.sizes = [C.f32(rng.choice((rng.uniform(0, 10000), rng.uniform(0, 800), 0.0, -50.0)))
+                      for _ in range(max(self.n, 1))]
+
+    def sample_count(self):
+        return self.n
+
+    def sample_point(self, scale, anim, pos, yaw, index):
+        i = index % len(self.points)
+        p = [C.add(self.points[i][k], C.mul(scale, pos[k])) for k in range(3)]
+        return p, self.sizes[i]
+
+
+def prop_disintegrate(h):
+    name = 'disintegrate'
+    if not wanted(name):
+        return
+    rng = random.Random('%d/%s' % (OPTIONS['seed'], name))
+    count = scaled(1500)
+    failures, examples, spawns = 0, [], 0
+    for case in range(count):
+        h.begin()
+        model = SyntheticModel(rng)
+        h.model = model
+        pos = random_pos(rng)
+        yaw = rng.getrandbits(16)
+        scale = C.f32(rng.choice((1.0, rng.uniform(0.5, 2.0))))
+        offset = C.f32(rng.choice((0.0, 0.0, -0.0, rng.uniform(-40, 40))))
+        alternate = rng.choice((0, 1))
+        anim = rng.choice((0, 0x01234560))
+        seed = rng.getrandbits(32)
+        e = h.emu
+        for k in range(3):
+            e.mem.w32(h.pos + 4 * k, pos[k])
+        e.mem.w32(h.obj + 0xC, 0x10)
+        e.mem.w32(G_COSMETIC_SEED, seed)
+        e.fset(12, C.to_float(scale))
+        e.f[13] = offset
+        e.call(DISINTEGRATE, h.obj, 0x01230000, anim, h.pos, yaw, alternate)
+        got = h.log
+        if e.mem.u32(h.obj + 0xC) == 0x12:
+            got = [('hide',)] + got
+        cos = C.Lcg(seed)
+        want = R.disintegrate_model(model, pos, yaw, scale, offset, alternate, anim, cos)
+        spawns += sum(1 for c in want if c[0] == 'spawn')
+        problem = diff_streams(got, want)
+        if problem is None and e.mem.u32(G_COSMETIC_SEED) != cos.state:
+            problem = 'seed'
+        if problem:
+            failures += 1
+            examples.append('case %d: %s' % (case, problem))
+    report(name, failures, count, 'call stream (%d particle_spawn calls, backdates), sample queries, '
+           'hide flag, seed' % spawns, examples)
+
+
+def prop_shatter(h):
+    name = 'ice shatter'
+    if not wanted(name):
+        return
+    rng = random.Random('%d/%s' % (OPTIONS['seed'], name))
+    count = scaled(3000)
+    failures, examples, chunks = 0, [], 0
+    for case in range(count):
+        h.begin()
+        model = SyntheticModel(rng)
+        h.model = model
+        pos = random_pos(rng)
+        yaw = rng.getrandbits(16)
+        n = C.f32(rng.choice((rng.randint(1, 12), rng.uniform(0.6, 15.0))))
+        if C.s32(C.to_int(n)) == 0:
+            n = C.f32(1.0)                       # the original divides by the count
+        scale = C.f32(rng.uniform(0.5, 2.0))
+        offset = C.f32(rng.choice((0.0, rng.uniform(-40, 40))))
+        anim = rng.choice((0, 0x01234560))
+        seed = rng.getrandbits(32)
+        h.pool_answer = 0 if rng.random() < 0.1 else 1
+        e = h.emu
+        for k in range(3):
+            e.mem.w32(h.pos + 4 * k, pos[k])
+        e.mem.w32(G_RAND_SEED, seed)
+        e.f[12], e.f[13], e.f[14] = n, scale, offset
+        e.call(SHATTER, 0x01230000, anim, h.pos, yaw)
+        h.flush_block()
+        shared = C.Lcg(seed)
+        want = R.shatter_to_loose_ice(model, pos, yaw, n, scale, offset, anim, shared,
+                                      pool_new=lambda size: h.pool_answer)
+        chunks += sum(1 for c in want if c[0] == 'phprop')
+        problem = diff_streams(h.log, want)
+        if problem is None and e.mem.u32(G_RAND_SEED) != shared.state:
+            problem = 'seed'
+        if problem:
+            failures += 1
+            examples.append('case %d: %s' % (case, problem))
+    report(name, failures, count, 'call stream (%d chunks: position, part mask, names, flags, table), '
+           'sample queries, shared seed' % chunks, examples)
+
+
 def find_inputs(positional):
     for item in positional:
         if os.path.isfile(item):
@@ -224,6 +390,8 @@ def main(argv=None):
     print('executable %s, seed %d' % (elf, OPTIONS['seed']))
     h = Harness(elf)
     prop_fx_spawn(h)
+    prop_disintegrate(h)
+    prop_shatter(h)
     failed = [name for name, ok in RESULTS if not ok]
     print('%d properties, %d failed, %.0f s' % (len(RESULTS), len(failed), time.time() - started))
     return 1 if failed else 0

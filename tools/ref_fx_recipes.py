@@ -273,3 +273,113 @@ def fx_spawn(fx_id, pos, cosmetic, shared, near=True, gore=2, made=None,
             uz = C.fabs(u[2]) if C.lt(u[2], ZERO) else u[2]
             spawn(defn, pos, [C.mul(u[0], k), C.mul(u[1], k), C.mul(C.mul(uz, k), kz)])
     return calls
+
+
+# =======================================================================================
+# Deaths: disintegrate, ice shatter
+# =======================================================================================
+#
+# These read the model only through its sample points.  `model` is any object with
+#     sample_count()                                   model_getSamplePointCount 0x1799c8
+#     sample_point(scale, anim, pos, yaw, index) -> (point, size)
+#                                                      model_getSamplePoint 0x178e18: the world
+#                                                      position of sample point `index` of the
+#                                                      posed model at pos/yaw, and its size value
+# (patterns throughout).  The recipe records each query as ('sample', scale, anim, pos, yaw, i).
+
+K_1E_5 = 0x3727C5AC             # 1e-05
+K_35_35 = 0x420D6666
+K_8_09E10 = 0x5196B020          # 8.09e10: "volume" per particle
+K_3_14 = 0x4048F5C2
+K_0_4 = 0x3ECCCCCC
+DEF_DISINTEGRATE = 0x870638
+DEF_DISINTEGRATE_ALT = 0x870688
+DISINTEGRATE_SOUND = 'spel_dsrptn_afteraffct.anm'
+SHATTER_SOUND_FORMAT = 'expl_ice%d.anm'
+ICE_CHUNK_MODEL, ICE_CHUNK_TEXTURE = 'icechunk.vif', 'icechunk.tex'
+ICE_CHUNK_LAUNCH_FLAGS = 0x30A
+VT_LOOSE_ICE_CHUNK = 0x50F328
+
+
+def _offset_by_yaw(p, yaw, dist):
+    """p + (cos(yaw), sin(yaw), 0) * dist, z gets + 0.0 (so -0 becomes +0)."""
+    return [C.add(p[0], C.mul(C.cos16(yaw), dist)), C.add(p[1], C.mul(C.sin16(yaw), dist)),
+            C.add(p[2], ZERO)]
+
+
+def disintegrate_model(model, pos, yaw, scale, offset, alternate, anim, rng):
+    """fx_disintegrateModel 0x1f4340 (a0 obj, a1 model, a2 anim, a3 pos*, t0 yaw16, t1 alternate,
+    f12 scale, f13 offset): the caller hides the object first (obj +0xc |= 2, done here only
+    when there is a model), then the sound spel_dsrptn_afteraffct.anm (fx.lmp) at pos, then for
+    every sample point i its size cubed is added to a running total and one particle is made
+    per 8.09e10 of it (the remainder carries over to the next point):
+
+        f      = (size * 1e-5) * 35.35
+        p      = point + (u - 0.5) * f              per axis (draws x, y, z)
+        vel    = (u - 0.5) * 3.14                   per axis (draws x, y, z)
+        p     += (cos yaw, sin yaw, 0) * offset     when offset != 0
+        spawn(backdate = u * 0.4 seconds, 0x870688 if alternate else 0x870638, p, vel)
+
+    Cosmetic seed only (rng).  Difftest property "disintegrate"."""
+    yaw = C.s16(yaw)
+    calls = [('hide',), ('res_find', BLOOD_SOUND_LUMP, DISINTEGRATE_SOUND), ('sound', ONE, list(pos))]
+    n = model.sample_count()
+    calls.append(('sample_count',))
+    total = ZERO
+    for i in range(n):
+        calls.append(('sample', scale, anim, list(pos), yaw, i))
+        point, size = model.sample_point(scale, anim, pos, yaw, i)
+        total = C.add(total, C.mul(C.mul(size, size), size))
+        while C.lt(ZERO, total):
+            total = C.sub(total, K_8_09E10)
+            f = C.mul(C.mul(size, K_1E_5), K_35_35)
+            p = [C.add(C.mul(C.add(rng.unit(), K_MINUS_HALF), f), point[k]) for k in range(3)]
+            vel = [C.mul(C.add(rng.unit(), K_MINUS_HALF), K_3_14) for _ in range(3)]
+            if not C.eq(offset, ZERO):
+                p = _offset_by_yaw(p, yaw, offset)
+            back = C.mul(rng.unit(), K_0_4)
+            calls.append(('spawn', back, DEF_DISINTEGRATE_ALT if alternate else DEF_DISINTEGRATE,
+                          p, vel))
+    return calls
+
+
+def shatter_to_loose_ice(model, pos, yaw, count, scale, offset, anim, shared,
+                         pool_new=lambda size: 1):
+    """fx_shatterToLooseIce 0x1fb240 (f12 count, f13 scale, f14 offset, a0 model, a1 anim,
+    a2 pos*, a3 yaw16): the frozen creature breaks into `count` (truncated) LooseIceChunk
+    props.  SHARED seed (g_randSeed 0x404464): one draw for the sound expl_ice<1-3>.anm
+    (fx.lmp), then one per chunk for its size.  step = sample_count // count (a count of 0
+    divides by zero in the original); with step 0 no chunk.  Chunk k (k = 1..count) sits at
+    sample point (k * step) mod n (n queried again each time), moved by (cos, sin) * offset
+    when offset != 0, and is PhProp_ctor 0x155a0c(1.0, pos, fx.lmp, icechunk.vif,
+    icechunk.tex, part mask 2 / 3 / 4 for draw % 10 = 0 / 1-2 / 3-9, launch flags 0x30a, no
+    item) with the LooseIceChunk table 0x50f328 at +0x48.  The chunk's own constructor draws
+    more (GameObject_ctor; not part of this recipe).  Difftest property "ice shatter"."""
+    yaw = C.s16(yaw)
+    count = C.s32(C.to_int(count))
+    calls = [('sample_count',)]
+    n = model.sample_count()
+    step = int(n / count)                         # div: toward zero
+    calls.append(('sound_name', shared.draw() % 3 + 1))
+    calls.append(('res_find', BLOOD_SOUND_LUMP))
+    calls.append(('sound', ONE, list(pos)))
+    if step == 0 or count <= 0:
+        return calls
+    index = 0
+    while count > 0:
+        calls.append(('sample_count',))
+        n = model.sample_count()
+        index = (index + step) % n if n > 0 else None
+        calls.append(('sample', scale, anim, list(pos), yaw, index))
+        point, _size = model.sample_point(scale, anim, pos, yaw, index)
+        k = shared.draw() % 10
+        mask = 2 if k == 0 else (3 if k < 3 else 4)
+        if not C.eq(offset, ZERO):
+            point = _offset_by_yaw(point, yaw, offset)
+        calls.append(('pool_new', 0x248))
+        if pool_new(0x248):
+            calls.append(('phprop', ONE, list(point), BLOOD_SOUND_LUMP, ICE_CHUNK_MODEL,
+                          ICE_CHUNK_TEXTURE, mask, ICE_CHUNK_LAUNCH_FLAGS, 0))
+            calls.append(('vtable', VT_LOOSE_ICE_CHUNK))
+        count -= 1
+    return calls
