@@ -7,7 +7,16 @@ model's own logic against the rules written in docs/level-flow.md; nothing here 
 that the model matches the game.
 
   python3 -m unittest discover -s tools -p 'test_ref_levels.py'
+
+Run it from the repository root as above.  With tools/ as the current directory,
+`python3 -m unittest test_ref_levels` fails before any test runs: the current directory is
+first on sys.path, so `import inspect` inside unittest picks up tools/dis.py instead of the
+standard library's dis (AttributeError: COMPILER_FLAG_NAMES).  Appending tools/ below does
+not help there.  Proposed fix, not applied in this branch because 24 tracked files name the
+script: `git mv tools/dis.py tools/eedis.py` and update those references (no module
+imports it).  docs/level-flow.md 16.6.
 """
+import math
 import os
 import sys
 import unittest
@@ -607,3 +616,147 @@ class Textures(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+# ---- round 2 (2026-10-18): docs/level-flow.md section 16 ---------------------------------
+
+class Round2WorldEntry(unittest.TestCase):
+    def test_directory_order_not_sorted(self):
+        entries = ['zeta.world', 'alpha.world', 'objects.ob']
+        self.assertEqual(L.first_entry_with_extension(entries, 'world'), 'zeta.world')
+        m = L.level_manifest('leva', gob_lumps=['leva.lmp', 'waterenv.lmp'],
+                             level_entries=entries,
+                             disc_files=['LEVA.GOB', 'LEVA.TEX', 'LOADMISC.LMP', 'FX.LMP',
+                                         'HUD.LMP', 'MAPICONS.LMP', 'ICONS.LMP',
+                                         'GOODDOG.LMP', 'SKELE_B.LMP'])
+        self.assertEqual([r.name for r in m if r.step == '8'], ['zeta.world'])
+
+    def test_extension_after_last_dot_exact(self):
+        f = L.first_entry_with_extension
+        self.assertIsNone(f(['world', 'a.WORLD', 'a.world.bak', 'a.worlds'], 'world'))
+        self.assertEqual(f(['x.y.world'], 'world'), 'x.y.world')
+        self.assertEqual(f(['.world'], 'world'), '.world')
+        self.assertEqual(f(['a.world', 'b.ob', 'c.world'], 'world', 1), 'c.world')
+        self.assertIsNone(f(['a.world'], 'world', 1))
+
+    def test_no_world_is_required(self):
+        with self.assertRaises(L.MissingResource):
+            L.level_manifest('leva', gob_lumps=['leva.lmp', 'waterenv.lmp'],
+                             level_entries=['objects.ob'],
+                             disc_files=['LEVA.GOB', 'LEVA.TEX', 'LOADMISC.LMP', 'FX.LMP',
+                                         'HUD.LMP', 'MAPICONS.LMP', 'ICONS.LMP'])
+
+
+class Round2Light(unittest.TestCase):
+    def test_base_level_0x40_wins(self):
+        both = L.LEVEL_FLAG_LIGHT_20 | L.LEVEL_FLAG_LIGHT_40
+        self.assertIs(L.base_light_level, L.level_light_alpha)
+        self.assertEqual(L.base_light_level(both), 0x40)
+        self.assertEqual(L.base_light_level(L.LEVEL_FLAG_LIGHT_40), 0x40)
+        self.assertEqual(L.base_light_level(0xFFFFFFFF & ~L.LEVEL_FLAG_LIGHT_40), 0x20)
+
+    def test_chunk_constant_order(self):
+        self.assertEqual(L.chunk_header_state(0x2200)[3], 230)     # 0x2000 before 0x200
+        self.assertEqual(L.chunk_header_state(0x2300)[3], -230)    # 0x100 first
+        self.assertEqual(L.chunk_header_state(0x200)[3], 0)
+
+
+class Round2Recall(unittest.TestCase):
+    def run_ticks(self, rc, n, cut=lambda t: False, alive=lambda t: 1):
+        return [rc.tick(cut(t), alive(t)) for t in range(n)]
+
+    def test_sixty_calls(self):
+        rc = L.RecallCountdown()
+        rc.start()
+        events = self.run_ticks(rc, 61)
+        self.assertEqual(events[0], L.RECALL_AURA)
+        self.assertEqual(events[1:59], [None] * 58)
+        self.assertEqual(events[59], L.RECALL_FINISH)
+        self.assertEqual(events[60], None)
+        self.assertFalse(rc.running)
+
+    def test_cutscene_only_matters_on_the_last_call(self):
+        rc = L.RecallCountdown()
+        rc.start()
+        events = self.run_ticks(rc, 60, cut=lambda t: t < 59)
+        self.assertEqual(events[59], L.RECALL_FINISH)
+        rc.start()
+        events = self.run_ticks(rc, 70, cut=lambda t: t == 59)
+        self.assertEqual(events[59], L.RECALL_DROPPED_CUTSCENE)
+        self.assertEqual(events[60:], [None] * 10)              # lost, not deferred
+        self.assertEqual(rc.value, 0)
+
+    def test_nobody_alive_drops(self):
+        rc = L.RecallCountdown(1)
+        self.assertEqual(rc.tick(False, 0), L.RECALL_DROPPED_NOBODY)
+        rc = L.RecallCountdown(1)
+        self.assertEqual(rc.tick(True, 0), L.RECALL_DROPPED_CUTSCENE)   # cutscene tested first
+
+    def test_odd_start_values(self):
+        self.assertEqual(L.RecallCountdown(1).tick(False, 1), L.RECALL_FINISH)   # no aura
+        rc = L.RecallCountdown(61)
+        self.assertEqual(rc.tick(False, 1), None)
+        self.assertEqual(rc.tick(False, 1), L.RECALL_AURA)
+        rc = L.RecallCountdown(0x80)                             # s8 -128: counts down too
+        self.assertEqual(rc.tick(False, 1), None)
+        self.assertEqual(rc.value, 0x7F)
+
+    def test_request_tick(self):
+        self.assertEqual(L.recall_request_tick(100, True), 159)   # net game: message before tasks
+        self.assertEqual(L.recall_request_tick(100, False), 160)  # offline: after recallTick
+
+
+class Round2MovePiece(unittest.TestCase):
+    def test_absolute_and_unrotated_nudge(self):
+        p = L.Piece(400, -800, 40, 32767, 0)
+        open_ = (F(0.0), F(0.0), F(-256.0))
+        first = L.move_piece(p, open_, 0)
+        self.assertEqual(first, [(399, -800, -984, 32767, 0)])   # sin16(0) = 2**-22
+        self.assertEqual(L.move_piece(p, open_, 0), first)       # rest values only
+        self.assertEqual(L.move_piece(p, (F(0.0), F(0.0), F(0.0)), 0)[0][2], 40)
+
+    def test_quarter_turn(self):
+        p = L.Piece(400, -800, 40, 32767, 0)
+        (tx, ty, tz, c, s), = L.move_piece(p, (F(0.0), F(0.0), F(0.0)), 0x4000)
+        self.assertEqual((c, s), (0, 32767))
+        self.assertEqual((tx, ty, tz), (-800, -399, 40))          # R(-90 deg) of (400, -800)
+
+    def test_mirrored_rotates_the_other_way(self):
+        p = L.Piece(400, 0, 0, 32767, 0)
+        plain, mirrored = L.move_piece(p, (F(0.0), F(0.0), F(0.0)), 0x4000, (False, True))
+        self.assertEqual(plain[:2], (0, -400))                   # R(-90 deg) of (400, 0)
+        self.assertEqual(mirrored[:2], (0, 400))                 # R(+90 deg)
+        self.assertEqual(L.move_piece(p, (F(0.0),) * 3, 0x4000, ()), [])
+
+    def test_rotation_clamped_and_rounded(self):
+        p = L.Piece(0, 0, 0, -0x8000, -0x8000)                   # not a unit vector
+        (_, _, _, c, s), = L.move_piece(p, (F(0.0),) * 3, 0x2000)
+        self.assertEqual(c, 0)
+        self.assertEqual(s, -0x8000)                             # -46341 clamped to -32768
+
+    def test_turns_about_pivot_and_shifts_in_rest_frame(self):
+        def draw(t, cos16, sin16, mirrored, local):
+            px, py = (local[0] + t[0]) / 4.0, (local[1] + t[1]) / 4.0
+            c, s = cos16 / 32767.0, sin16 / 32767.0
+            if mirrored:
+                return px * c + py * s, px * s - py * c
+            return px * c - py * s, px * s + py * c
+        for mirrored in (False, True):
+            p = L.Piece(1200, -400, 0, 23170, 23170, mirrored)
+            off, angle = (12.0, -5.0), 0x1555
+            (tx, ty, _, c, s), = L.move_piece(p, (F(off[0]), F(off[1]), F(0.0)), angle)
+            r = 23170 / 32767.0
+            m = ((r, r), (r, -r)) if mirrored else ((r, -r), (r, r))
+            pivot = draw((p.tx, p.ty), p.cos, p.sin, mirrored, (0, 0))
+            a = angle / 65536.0 * 2 * math.pi
+            for local in ((0, 0), (160, 0), (0, 160), (-80, 240)):
+                rest = draw((p.tx, p.ty), p.cos, p.sin, mirrored, local)
+                rel = (rest[0] - pivot[0], rest[1] - pivot[1])
+                want = (pivot[0] + m[0][0] * off[0] + m[0][1] * off[1]
+                        + math.cos(a) * rel[0] - math.sin(a) * rel[1],
+                        pivot[1] + m[1][0] * off[0] + m[1][1] * off[1]
+                        + math.sin(a) * rel[0] + math.cos(a) * rel[1])
+                got = draw((tx, ty), c, s, mirrored, local)
+                self.assertAlmostEqual(got[0], want[0], delta=0.5)
+                self.assertAlmostEqual(got[1], want[1], delta=0.5)
+

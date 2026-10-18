@@ -28,6 +28,7 @@ Properties (docs/level-flow.md section 16):
   move_piece       world_movePiece 0x182c98 with math_sin16/math_cos16/floorf run for
                    real: the five fields of every chunk of the piece, and nothing else
                    written, against move_piece
+  move_piece_rest  one fixed case: angle 0 still moves x by a quarter unit (sin16(0) != 0)
 
 Floats are compared as 32-bit patterns.  The default floating-point model gets the full
 sample; with alternates on, a tenth of move_piece is repeated under the other adder models
@@ -455,9 +456,37 @@ def prop_move_piece(rig, rnd, config_index=0):
     report(name, total, fails, 'chunk translation and rotation words, nothing else written')
 
 
+def prop_move_piece_rest(rig, rnd):
+    """One fixed case: an unrotated piece (cos 32767, sin 0) at quarter-unit translation
+    (400, -800, 40), opened like an AutoDoor (offset (0, 0, -256), angle 0).  math_sin16(0)
+    is 2**-22, not 0, so x comes out 399, not 400."""
+    emu = rig.emu
+    rig.reset()
+    chunks = emu.alloc(0x3C)
+    pieces = emu.alloc(0x1C)
+    for off, v in ((0x00, 0), (0x08, 400), (0x0C, -800), (0x10, 40)):
+        emu.mem.w32(pieces + off, v & M32)
+    emu.mem.w16(pieces + 0x04, 1)
+    emu.mem.w16(pieces + 0x14, 32767)
+    world = emu.alloc(0x80)
+    emu.mem.w32(world + 0x24, chunks)
+    emu.mem.w32(world + 0x54, pieces)
+    offset = (W.f32(0.0), W.f32(0.0), W.f32(-256.0))
+    opos = emu.alloc(16)
+    for i, v in enumerate(offset):
+        emu.mem.w32(opos + 4 * i, v)
+    emu.call(A_MOVE_PIECE, world, 0, opos, 0)
+    got = (emu.mem.s32(chunks + 0x28), emu.mem.s32(chunks + 0x2C), emu.mem.s32(chunks + 0x30),
+           emu.mem.s16(chunks + 0x36), emu.mem.s16(chunks + 0x38))
+    want = L.move_piece(L.Piece(400, -800, 40, 32767, 0), offset, 0)[0]
+    fails = [] if got == want == (399, -800, -984, 32767, 0) else ['game %r, model %r' % (got, want)]
+    report('move_piece_rest', 1, fails, 'angle 0 still moves x by one quarter unit')
+
+
 PROPERTIES = (('light_level', prop_light_level), ('chunk_light', prop_chunk_light),
               ('world_pick', prop_world_pick), ('world_pick_load', prop_world_pick_load),
-              ('recall_tick', prop_recall_tick), ('move_piece', prop_move_piece))
+              ('recall_tick', prop_recall_tick), ('move_piece', prop_move_piece),
+              ('move_piece_rest', prop_move_piece_rest))
 
 
 def main(argv):
