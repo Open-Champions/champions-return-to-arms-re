@@ -13,7 +13,7 @@
 0010c410	creature_objInArcRange	(range, this, obj, arc): obj within arc of facing and within range, with a terrain ray
 0010c5b8	creature_canSeeObjEdge	(minR, maxR, lead, this, obj, facing, arc, rayMode): as creature_canSeeObj but the range test adds only the target radius
 0010c810	creature_canSeeObj	(minR, maxR, lead, this, obj, facing, arc, rayMode): arc + range (radii subtracted) + terrain ray; lead uses the target velocity +0x308
-0010ca70	creature_findPlayerInCone	(minR, maxR, this, facing, arc): uncharmed creatures scan g_players[0..n) for the nearest visible live player; charmed ones use the enemy scan
+0010ca70	creature_findPlayerInCone	(minR, maxR, this, facing, arc): uncharmed creatures scan g_players[0..n) for the nearest visible live player; charmed ones use the enemy scan; executed (difftest_combat_monsters): far caps the distance (unlike the enemy cone), the ray starts at full height, any object a record names (no flag test); charmed: an inline copy of findEnemyInCone
 0010cf78	creature_findEnemyInCone	(minR, maxR, this, facing, arc): box query, slot 20 score, +1 last attacker, +1 current target, nearest wins; needs a clear terrain ray
 0010d2a8	creature_isBlockedBy	(this, other): other is blocking (player +0x47f or cflag 0x200) and this stands in front of it
 0010d390	creature_inKnockdownAnim	true while the animation is one of the eight knockdown*.anm clips
@@ -286,3 +286,6 @@
 00131570	StrongStancePhantom_clone	slot 15 of StrongStancePhantom: copy constructor into a new 0x3d8-byte block; base chain GameObject > Creature
 00131b00	net_sendMsgToPeers	(type, peerMask, buf, len): net games only; remote peers get it through the UDP connection, a local slot gets the handler table 0x5d14e0 called directly. Sits after the clone functions, outside the Creature code
 00131cb8	net_kickPeer	(peer): for a remote peer not already flagged: prints the NET KICK line, sets peer +0x44d6 and a pending word at 0x5d1450
+00118bf0	Creature_setAttackCooldown	(c, frames): nothing without a target; slot 27 with 0x10 unless state 0x14; +0x318 = frames. Executed (difftest_combat_monsters)
+00118b58	Creature_setAttackCooldownOn	(c, frames, obj): nothing for a boss or a null obj; target handle = obj; then as 0x118bf0; no direct caller found. Executed (difftest_combat_monsters)
+00202500	Creature_attachState_dtor	(p, flags): frees p only when bit 0 is set; Creature_dtor calls it on +0x320 with 2. Observed (name Inferred)

@@ -327,7 +327,7 @@
 001ecf3c	Trigger_run	tests g_players[i].obj against the rectangle; sets g_scriptActivePlayer
 001ed694	script_runByName	
 00143d04	newWorld_netGate	net game: refuses newWorld while active player's +0x4bca cooldown runs, else sets it to 600
-001509f8	obj_moveAndCollide	projectile step; collisions via world_collectObjectsInBox
+001509f8	obj_moveAndCollide	projectile step (obj, vel*) -> 1 terrain, 2 overlap: step 1/60, terrain back-off in tenths, box query +-r,+-r,+-height limit 0x100, slot 6 of the hit object then of the mover, no break, no copy guard; executed (difftest_combat_ranged)
 0016a964	Spell_rand	per-spell LCG at spell+0x10
 002d470c	FireStorm_run	
 002d33c0	FireStormFlare_run	
