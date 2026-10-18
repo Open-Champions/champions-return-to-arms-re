@@ -79,11 +79,11 @@
 001f4340	fx_disintegrateModel	hides the object (flag 2), plays the disruption sound and turns model vertices into particles; cosmetic seed
 001f4758	fx_disintegrateModelB	variant of 0x1f4340 without sound; no caller found
 001f4ad8	Shooter_run	vtable slot 4: active within 720 of any player; scans four directions for players with line of sight and fires arrows or darts
-001f5210	fx_modelParticlesNearCamera_1f5210	model-vertex particle effect, camera gated, cosmetic seed; callers Creature_run and monsters
+001f5210	fx_burnModel	(name as the skill models use it) (f13 amount, f14 offset, a0 model, a1 anim, a2 pos*, a3 yaw): two passes of round(amount*16.59) and round(amount*3.76) random sample points, particles 0x870728 / 0x870778, camera gated; was fx_modelParticlesNearCamera_1f5210; executed (difftest_fx_recipes model sparkle)
 001f5890	fx_drawModelGlowNearCamera	draw-time sprite glow on model vertices, camera gated; called from Creature_draw
 001f5c70	fx_modelParticlesNearCamera_1f5c70	no caller found
 001f5e18	fx_modelParticlesNearCamera_1f5e18	no caller found
-001f61c0	fx_modelParticlesNearCamera_1f61c0	model-vertex particles plus light, camera gated, cosmetic seed; 7 callers
+001f61c0	fx_shockModel	(name as the skill models use it) (f12 alpha, f13 scale, f14 offset, a0 model, a1 anim, a2 pos*, a3 yaw, t0 state, t1 rgba): three beam arcs between random sample points with end sparks (fx_spawn 0x13 recipe, 0x8708b8 / 0x870908); was fx_modelParticlesNearCamera_1f61c0 ("plus light" was wrong: beams); executed (model arcs)
 001f6910	fx_modelParticles_1f6910	no caller found
 001f6ac8	fx_modelStatusEffects	17 KB: per-vertex particle/glow effects on a model for item and status visuals; cosmetic seed, calls fx_spawn; 11 callers
 001faf40	IceChunk_run	vtable slot 4
