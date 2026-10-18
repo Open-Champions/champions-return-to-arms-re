@@ -53,7 +53,11 @@ ENTRIES = {
     'playerDtor': (0x1A1BB8, 'ii', 0, 'n', 'player_dtor', (0x1A1BB8, 0x1A1D24)),
     'deadUpdate': (0x1108A0, 'iivi', 1, 'n', 'dead_update', (0x1108A0, 0x110B58)),
     'dropLoot': (0x10F2C8, 'ivii', 6, 'n', 'drop_loot', (0x10F2C8, 0x110760)),
+    'goblinDeath': (0x26CCFC, 'ii', 0, 'n', 'goblin_set_state', (0x26CCFC, 0x26D690)),
 }
+# creature-base pieces that run for real inside the entry points (Creature_filterState and
+# the three timer tests it calls; executed models in tools/ref_creature.py, ref_arena_monsters.py)
+REAL_EXTRA = {0x10A9C0, 0x1195E0, 0x119608, 0x1195F0}
 
 EXTS = {
     'Creature.v12': Ext(0, 'pivi', 1, 'n'),
@@ -67,6 +71,8 @@ EXTS = {
     'loot_generateDrops': Ext(0x100D54, 'viii', 6, 'n'),
     'rtti_typeInfoEquals': Ext(0x3B1250, 'pp', 0, 'i'),
     'Creature.v0': Ext(0, '', 0, 'i'),
+    'Creature.v28': Ext(0, 'pi', 0, 'n'),
+    'Holder.v11': Ext(0, 'pipii', 0, 'n'),
 }
 EXTS.update({name: Ext(addr, '', 0, 'i') for name, addr in M.TYPEINFO_GETTERS.items()})
 TI_TOKENS = {name: 0x00E00000 + 0x100 * i for i, name in enumerate(sorted(M.TYPEINFO_GETTERS))}
@@ -93,6 +99,13 @@ class World(BaseWorld):
             mem.write(a, t + b'\0')
             self.texts.append(a)
         self.props = emu.alloc(0x40)
+        self.goblin = emu.alloc(0x500)
+        self.holder = emu.alloc(0x20)
+        self.holder_table = emu.alloc(8 * 32)
+        for slot in range(32):
+            mem.w32(self.holder_table + 8 * slot + 4, self.stub_for('Holder.v%d' % slot))
+        mem.w32(self.holder, self.holder_table)
+        self.loot_class = 0
 
     def on_iter_begin(self, args, view, rng):
         count = rng.choice((0, 0, 1, 2, 3))
@@ -143,6 +156,7 @@ def _install():
     D.T = shim
     D.ENTRIES = ENTRIES
     D.EXTS.update(EXTS)
+    D.REAL_OTHER = set(D.REAL_OTHER) | REAL_EXTRA
 
     def on_creature_bossRank(self, args, view, rng):
         return Res(rng.choice((0, 0, 0, 1, 2)))
@@ -242,6 +256,25 @@ def generate(rig, key, rng):
         floats = tuple(f32(v) for v in (36.0, rng.choice((2.0, 3.0)), rng.choice((1.6, 2.8, 0.0)),
                                        rng.choice((0.6, 3.0)), rng.choice((1.4, 3.0, -1.0)), rng.choice((0.25, 1.0))))
         return (c, p, rng.choice((0, 0x1234, 0xFFFF8000)), rng.choice((0, 0, 1, 7))) + floats
+    if key == 'goblinDeath':
+        g = w.goblin
+        for off in range(0, 0x500, 4):
+            mem.w32(g + off, mem.u32(c + off) if off < 0x400 else 0)
+        mem.w32(g + 0x50, rng.choice((w.holder, w.holder, 0)))
+        mem.w8(g + 0x490, rng.choice((0, 1)))
+        mem.w32(g + 0x3D4, rng.choice((0, 1, 4, 4, 5)))
+        mem.w32(g + 0x2DC, rng.choice((0, 0x40000, 8)))
+        mem.w32(g + 0xC, rng.choice((0x29, 0x2B, 0x28, 0x20)))
+        mem.w64(g + 0xA8, rng.choice((0, 0x200, 0x100000000, 1, 0x40000)))
+        for off in (0x314, 0x318, 0x31A, 0x31C):
+            mem.w16(g + off, rng.choice((0, 0, 30)))
+        mem.w8(g + 0x231, rng.choice((0, 0, 1)))
+        mem.w32(0x503890, rng.choice((0, 0, 1)))
+        mem.w32(0x503894, 0)
+        mem.w32(T.G_PVP_MODE_B, rng.choice((0, 0, 0, 1)))
+        mem.w32(T.G_PVP_MODE_A, 0)
+        w.loot_class = rng.choice(list(TI_TOKENS.values()) + [0x00E0F000] * 12)
+        return (g, rng.choice((0x14,) * 6 + (0x18, 0x20)))
     raise KeyError(key)
 
 

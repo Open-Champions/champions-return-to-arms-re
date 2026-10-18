@@ -514,6 +514,66 @@ class MonsterCombatModel(T.CombatModel):
             self._gen(pos, angle, filt, 0, z, throw, gs, gc, q, ic)
 
 
+    # =====================================================================================
+    # A corpse-phase class's death: Goblin_setState 0x26ccfc, state 0x14 only
+    # =====================================================================================
+    MODELLED.update({'Goblin_setState': 0x26CCFC})
+
+    def goblin_set_state(self, c, state):
+        """Goblin_setState 0x26ccfc (c, state), slot 27 of Goblin (table 0x510260) -
+        DEATH ONLY: any filtered state below 0x18 other than 0x14 is refused.
+
+        Creature_filterState (refused: return, +0x232 untouched); creature flag 0x200
+        cleared.  State 0x14:
+          1. without the 'dead' property (0x546998): one box query of +-96 around the
+             goblin, limit 0x80; when 3 or more of the objects have flags & 0x68 == 0x28
+             (creature, dead, not a player) +0x488 = 1 (this corpse will sink and be deleted,
+             Goblin_run state 0x14);
+          2. unless object flag 2: object flag 1 is CLEARED, and the weapon holder (+0x50)
+             drops hand 1 then hand 2 (holder slot 11 with (hand, c, part table 0x500448 +
+             family +0x490 x 0x80, 0));
+          3. the 'dead' property again: set -> object flag 1;
+          4. the death clip (definition +0x44, flags 6, blend 0.3) - the same call whether or
+             not the pending flags +0x2dc carry a knock-back class (both branches, 0x26d514);
+          5. unless creature flag 0x100000000: Creature_dropLoot(c, position, facing, 0;
+             36, 2, 1.8, 0.6, 2, 0.25); then an archer (role +0x3d4 == 4) with an OWN DRAW
+             below 6000 (of 65536) and no 'noloot' property drops the named item 'arrows'
+             (loot_spawnNamedItem);
+          6. slot 28 (on death) with 0;
+        then +0x232 = the state."""
+        refused, state = self.filter_state(c, state)
+        if refused:
+            return
+        self.w64(c + 0xA8, self.u64(c + 0xA8) & ~0x200 & T.M64)
+        if state < 0x18 and state != 0x14:
+            raise Unsupported('Goblin_setState state 0x%x (only the death branch is in this contract)' % state)
+        if state == 0x14:
+            u32 = self.u32
+            if not self.call('obj_getPropInt', c, S_GOBLIN_DEAD, 0):
+                x, y, z = self.vec(c + 0x10)
+                found = self.call('world_collectObjectsInBox', (C.sub(x, F_96), C.sub(y, F_96), C.sub(z, F_96)),
+                                  (C.add(x, F_96), C.add(y, F_96), C.add(z, F_96)), 0x80)
+                if sum(1 for o in found if u32(o + 0xC) & 0x68 == 0x28) >= 3:
+                    self.w32(c + 0x488, 1)
+            if not u32(c + 0xC) & 2:
+                self.w32(c + 0xC, u32(c + 0xC) & ~1 & M32)
+                for hand in (1, 2):
+                    holder = u32(c + 0x50)
+                    if holder:
+                        self.holder_call(holder, 11, hand, c, (GOBLIN_PARTS + s8(self.u8(c + 0x490)) * 0x80) & M32, 0)
+            if self.call('obj_getPropInt', c, S_GOBLIN_DEAD, 0):
+                self.w32(c + 0xC, u32(c + 0xC) | 1)
+            self.call('anim_start', c + 0x114, self.clip(c, 0x44), 6, 0x3E999999)
+            if not self.u64(c + 0xA8) & 0x100000000:
+                self.call('Creature_dropLoot', c, self.vec(c + 0x10), self.s16(c + 0x38), 0,
+                          0x42100000, F2, 0x3FE66666, 0x3F199999, F2, F_QUARTER)
+                if self.s32(c + 0x3D4) == 4 and (self.obj_rand(c) & M32) < 0x1770:
+                    if not self.call('obj_getPropInt', c, S_GOBLIN_NOLOOT, 0):
+                        self.call('loot_spawnNamedItem', self.vec(c + 0x10), S_GOBLIN_ARROWS)
+            self.vcall(c, 28, 0)
+        self.w16(c + 0x232, state & 0xFFFF)
+
+
 VT_GAMEOBJECT = 0x5122A8
 S_NAME_KEY = 0x5321B0                           # the key string GameObject_dtor scans for
 G_CTYPE = 0x5628E1
@@ -550,3 +610,8 @@ TYPEINFO_GETTERS = {
     'CloudGiant_typeinfo': 0x3CA4AC, 'Minion_typeinfo': 0x3CBA24, 'MummyKing_typeinfo': 0x3CC29C,
     'Innoruuk_typeinfo': 0x3CB1A0, 'Zek_typeinfo': 0x3CCD64,
 }
+
+F_96 = 0x42C00000
+GOBLIN_PARTS = 0x500448                         # weapon-part tables, one of 0x80 bytes per model family
+S_GOBLIN_DEAD, S_GOBLIN_NOLOOT, S_GOBLIN_ARROWS = 0x546998, 0x5469A0, 0x5469A8
+VT_GOBLIN = 0x510260
