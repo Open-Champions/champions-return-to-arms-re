@@ -67,7 +67,8 @@ STATIC_INIT, RESREF_CTOR, PARTICLE_INIT, TASK_ADD = 0x195D30, 0x173768, 0x18E648
 DEF_INIT, SPAWN, UPDATE_TASK, DRAW = 0x18EE70, 0x18F3F8, 0x18F970, 0x194888
 GROUP_CREATE, GROUP_BEGIN, GROUP_END, GROUP_SETMAT = 0x18E880, 0x18E958, 0x18E9A0, 0x18E9E8
 ADD_SORTED, RESREF_GET, IS_FROZEN, LINE_DRAW, HAZE = 0x16B7F0, 0x17377C, 0x1EBDF8, 0x1934C0, 0x18FE18
-TRAIL_CREATE, TRAIL_ADD, TRAIL_UPDATE = 0x190FF8, 0x192550, 0x192840
+TRAIL_CREATE, TRAIL_ADD, TRAIL_UPDATE, TRAIL_ADD_PAIR = 0x190FF8, 0x192550, 0x192840, 0x192650
+G_TRAILS, G_TRAIL_ROW_V = 0x82CD00, 0x44FCA8
 GLOW_ADD = 0x18FC78
 VU_BOOT = 0x3E5EC0
 G_DL_BASE, G_DL_CURSOR, G_DL_CAPACITY = 0x44FE0C, 0x44FE10, 0x44FDA4
@@ -416,6 +417,84 @@ def prop_particles(rig, rnd, cases, label, groups=False, fpu_vu='chop'):
 
 
 # ---------------------------------------------------------------------------------------
+# Trails
+# ---------------------------------------------------------------------------------------
+
+def draw_scene(rig, rnd, target):
+    view = random_view(rnd, target)
+    proj = f2r(rnd.choice((477.5, rnd.uniform(200, 1200))))
+    rig.emu.mem.w32(G_PROJ_SCALE, proj)
+    packets = rig.draw(rig.put_floats(view))
+    vu, vif, gs = rig.new_vu()
+    order = ([p for p in packets if p[2] == rig.tex[0x7D8A80]] +
+             [p for p in packets if p[2] not in (rig.tex[0x7D8A80], rig.tex[0x7D8A90])][::-1] +
+             [p for p in packets if p[2] == rig.tex[0x7D8A90]])
+    for p in order:
+        rig.send(vif, p[0])
+    return view, proj, gs, vu
+
+
+def reference_trails(rig, view, proj, waitq_first=True):
+    m = rig.emu.mem
+    hdr = R.particle_header(view, proj, 0)
+    row_v = tuple(C.to_float(m.u32(G_TRAIL_ROW_V + 4 * k)) for k in range(10))
+    out, alphas = [], []
+    for i in range(64):
+        t = R.Trail.from_bytes(m.read(G_TRAILS + 0x410 * i, 0x410))
+        if t.handle and t.oldest != t.newest:
+            out += R.trail_vertices(t, hdr['m'], hdr['vf6'], hdr['vf7'], R.Vu(), waitq_first, row_v)
+            alphas.append(R.trail_header(t, row_v)[3][0])
+    return out, alphas
+
+
+def prop_trails(rig, rnd, cases, label):
+    bad = total = 0
+    examples = []
+    for case in range(cases):
+        rig.reset()
+        e = rig.emu
+        target = [rnd.uniform(-3000, 3000), rnd.uniform(-3000, 3000), rnd.uniform(-200, 400)]
+        trails = []
+        for _ in range(rnd.randrange(1, 6)):
+            flags = rnd.choice((0, 0, 2, 2, 4, 6, 8, 0x10, 0x14, 1, 0xA))
+            life = rnd.choice((0.2, 0.5, 1.0, rnd.uniform(0.05, 3.0)))
+            col = [rnd.randrange(256) for _ in range(4)]
+            h = rig.call(TRAIL_CREATE, rnd.randrange(9), rnd.choice((1000, rnd.randrange(1, 1024))),
+                         flags, *col, fargs=(life,)) & 0xFFFF
+            if h:
+                trails.append((h, flags))
+        pos = {h: [target[k] + rnd.uniform(-100, 100) for k in range(3)] for h, _ in trails}
+        for tick in range(rnd.randrange(1, 90)):
+            for h, flags in trails:
+                if rnd.random() < 0.8:
+                    p = pos[h]
+                    p = [p[k] + rnd.uniform(-20, 20) for k in range(3)]
+                    pos[h] = p
+                    if flags & 2:
+                        q = [p[k] + rnd.uniform(-30, 30) for k in range(3)]
+                        rig.call(TRAIL_ADD_PAIR, h, rig.put_floats(p), rig.put_floats(q),
+                                 fargs=(rnd.choice((1.0, rnd.random(), 0.5)),))
+                    else:
+                        rig.call(TRAIL_ADD, h, rig.put_floats(p))
+            rig.call(TRAIL_UPDATE)
+        view, proj, gs, vu = draw_scene(rig, rnd, target)
+        want, alphas = reference_trails(rig, view, proj)
+        got = [v for v in gs.vertices if v.prim in (R.PRIM_TRAIL, R.PRIM_TRAIL_PAIRED)]
+        total += len(want)
+        b = compare_vertices(got, want, 'case %d' % case, examples)
+        # the ALPHA_1 of each trail's header (after the particle packet's two)
+        got_alpha = [ev[2] for ev in gs.events if ev[0] == 'reg' and ev[1] == 'ALPHA_1'][2:]
+        if got_alpha != alphas:
+            b += 1
+            examples.append('case %d: trail ALPHA_1 %s, reference %s' % (case, got_alpha, alphas))
+        if want:
+            old, _ = reference_trails(rig, view, proj, waitq_first=False)
+            cover('trail vertices moved by the WAITQ model', sum(1 for a, c in zip(old, want) if a != c))
+        cover('trail vertices drawn', sum(1 for v in want if not v[4]))
+        bad += 1 if b else 0
+    report(label, bad, total, 'trail vertices (single and paired), ALPHA_1 (%d scenes)' % cases, examples)
+    return bad
+
 
 def main(argv):
     args = []
@@ -466,6 +545,7 @@ def main(argv):
 PROPERTIES = [
     ('particles', lambda rig, rnd, n, label: prop_particles(rig, rnd, n, label), 60),
     ('particle groups', lambda rig, rnd, n, label: prop_particles(rig, rnd, n, label, groups=True), 60),
+    ('trails', prop_trails, 60),
 ]
 
 if __name__ == '__main__':

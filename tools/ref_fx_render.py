@@ -354,3 +354,160 @@ def list_blocks(pages, head, tail):
                 cells.append(None if (n == len(pages) - 1 and cell >= tail) else cell)
             out.append((page, blk, cells))
     return out
+
+
+# ---------------------------------------------------------------------------------------
+# Trails: trail_drawAll 0x193ad0 (EE side) and VU1 entries 0x28 (per trail), 0x26 (a chunk
+# of single points) and 0x79e (a chunk of point pairs, a program trail_drawAll loads with
+# MPG from 0x404150 every frame)
+# ---------------------------------------------------------------------------------------
+
+TRAIL_ROW_V = (0.0, 32.0, 64.0, 96.0, 128.0, 224.0, 256.0, 288.0, 351.0, 447.0)   # 0x44fca8
+TRAIL_CHUNK = 32                # points per VU chunk
+UV_BASE = 0x49000000            # 524288.0 = 2^19: u = 2^19 + age * 128 / lifetime
+
+
+class Trail:
+    """The fields of one 0x410-byte trail (0x82cd00 + i * 0x410) that drawing reads."""
+    __slots__ = ('points', 'handle', 'clock', 'oldest', 'newest', 'row', 'flags', 'lifetime',
+                 'rgba', 'width4')
+
+    @classmethod
+    def from_bytes(cls, b):
+        t = cls()
+        t.points = [struct.unpack_from('<4h', b, 8 * k) for k in range(128)]
+        t.handle, t.clock, t.oldest, t.newest, t.row, t.flags, t.lifetime = \
+            struct.unpack_from('<HhBBbBh', b, 0x400)
+        t.rgba = tuple(b[0x40A:0x40E])
+        t.width4 = b[0x40F]
+        return t
+
+
+def trail_header(t, row_v=TRAIL_ROW_V):
+    """The six qwords trail_drawAll 0x193b64 uploads to VU1 0..5 before MSCAL 0x28: the
+    strip's GIF tag, a tag for RGBAQ + A+D, the colour, ALPHA_1, then (2^19, v0 + 2^19 +
+    0.5, 128 / lifetime, width byte * 40) and (0, 0, (oldest & 1) + 1, clock)."""
+    paired = bool(t.flags & 2)
+    tag = (0x801E, 0x50AE4000 if paired else 0x40AA4000, 0x43431 if paired else 0x4343, 0)
+    v0, v1 = C.f32(row_v[t.row]), C.f32(row_v[t.row + 1])
+    vrange = C.sub(C.sub(v1, v0), ONE)
+    alpha = 0x09 if t.flags & 8 else 0x48 if t.flags & 4 else 0x44
+    q4 = (UV_BASE, C.add(v0, 0x49000008), C.div(0x43000000, C.from_int(t.lifetime)),
+          C.from_int(t.width4 * 40))
+    return [tag, (1, 0x20000000, 0xE1, vrange), tuple(t.rgba), (alpha, 0, 0x42, 0), q4,
+            (0, 0, (t.oldest & 1) + 1, C.from_int(t.clock))]
+
+
+def trail_chunks(t):
+    """The chunks trail_drawAll sends for one trail: (first ring index, count, itop
+    parity).  The run starts at the oldest point rounded DOWN to even (so a single-point
+    trail whose oldest index is odd draws the slot before it, a point already dropped),
+    goes to the newest, at most 32 points per chunk and never across the ring's end."""
+    start = t.oldest & 0xFE
+    left = (t.newest - start) & 0x7F
+    out = []
+    while left > 0:
+        n = min(left, TRAIL_CHUNK, 0x80 - start)
+        out.append((start, n))
+        left -= n
+        start = (start + n) & 0x7F
+    return out
+
+
+def _gs_xyzf_words(lanes):
+    return gs_xyzf(lanes)
+
+
+def trail_vertices(t, header_m, vf6, vf7, vu=None, waitq_first=True, row_v=TRAIL_ROW_V):
+    """Every vertex the trail programs send for trail t, in order (GsVertex tuples with
+    rgba as the GS holds it when the vertex arrives; uv in 1/16 texel).  header_m: the
+    matrix registers vf1..vf4 VU1 holds - those of the particle packet, which is drawn just
+    before (Inferred from the sorted-list order); vf6, vf7 likewise.
+
+    Single points (flags without 2), program 0x26, per point p (positions are half units):
+        clip = ((M0 x + M1 y) + M2 z) + M3 ;  n = clip * (1 / clip.w)     (all four lanes)
+        d    = n - n_previous (n_previous = 0 for a trail's first point) ;  L = d.x^2 + d.y^2
+        side = (d.y, -d.x) * (1 / clip.w) * (width*40 / sqrt(L)), then side.x * 2
+        c    = n.xyz * (800, 400, Kz) + offset ;  vertices c + side and c - side
+        u    = 2^19 + (clock - stamp) * 128 / lifetime ; v = v0 (first) and v0 + range
+    The first point of the trail (and of every chunk's re-sent last point) carries ADC; so
+    does a point outside the view cube.  waitq_first=False reproduces vu1.cpp, where the
+    second scaling of `side` reads 1 / clip.w again (`MULq | WAITQ` at 0x1ca) and the width
+    is lost.
+    Pairs (flags 2), program 0x79e, per pair (a, b): both projected (a with its own 1/w,
+    b with its own), colour = trail RGB with ALPHA = low byte of b's stamp field (written
+    as alpha * 255 by trail_addPair 0x192650), u from a's stamp, v0 for a and v0 + range
+    for b; ADC on both when any of the last four clip judgements (this pair and the one
+    before in the same chunk) is outside."""
+    vu = vu or Vu()
+    hdr = trail_header(t, row_v)
+    q4, clock_f = hdr[4], hdr[5][3]
+    paired = bool(t.flags & 2)
+    out = []
+    vi10 = (0x8000 + hdr[5][1]) & 0xFFFF
+    prev = [0, 0, 0, 0]
+    rgba = tuple(x & 0xFF for x in hdr[2])
+    saved = None
+    first = True
+
+    def mfir(v):
+        return (v - 0x10000 if v & 0x8000 else v) & M32
+
+    def proj(p):
+        x, y, z = (vu.mul(vu.itof(c, 4), 0x41000000) for c in p[:3])
+        return vu.transform(header_m, x, y, z)
+    for start, n in trail_chunks(t):
+        pts = [t.points[(start + k) & 0x7F] for k in range(n)]
+        if not first:
+            out += saved
+        chunk = []
+        if not paired:
+            for p in pts:
+                clip = proj(p)
+                culled = vu.clip(clip, clip[3])
+                q = vu.div(ONE, clip[3])
+                w = mfir(0x8000 if culled else vi10)
+                nd = [vu.mul(clip[k], q) for k in range(4)]
+                d = [vu.sub(nd[k], prev[k]) for k in range(4)]
+                prev = nd
+                sq = [vu.mul(d[k], d[k]) for k in range(4)]
+                ln = vu.add(sq[0], sq[1])
+                side = [d[1], vu.sub(0, d[0]), 0, 0]
+                side = [vu.mul(side[k], q) for k in range(4)]
+                q2 = vu.rsqrt(q4[3], ln) if waitq_first else q
+                side = [vu.mul(side[k], q2) for k in range(4)]
+                side[0] = vu.add(side[0], side[0])
+                vi10 = (vi10 - 1) & 0xFFFF
+                c = [vu.add(vu.mul(nd[k], vf6[k]), vf7[k]) for k in range(3)]
+                left = [vu.add(c[k], side[k]) for k in range(3)] + [w]
+                right = [vu.sub(c[k], side[k]) for k in range(3)] + [w]
+                age = vu.mul(vu.sub(clock_f, vu.itof(p[3])), q4[2])
+                u = vu.add(q4[0], age) & 0x3FFF
+                v0 = q4[1] & 0x3FFF
+                v1 = vu.add(q4[1], hdr[1][3]) & 0x3FFF
+                chunk += [gs_xyzf(left) + (rgba, (u, v0)), gs_xyzf(right) + (rgba, (u, v1))]
+        else:
+            flags = 0
+            for k in range(0, n - 1, 2):
+                a, b = pts[k], pts[k + 1]
+                ca, cb = proj(a), proj(b)
+                flags = ((flags << 6) | vu.clip(ca, ca[3])) & 0xFFFFFF
+                flags = ((flags << 6) | vu.clip(cb, cb[3])) & 0xFFFFFF
+                qa, qb = vu.div(ONE, ca[3]), vu.div(ONE, cb[3])
+                w = mfir(0x8000 if flags else vi10)
+                pa = [vu.add(vu.mul(vu.mul(ca[j], qa), vf6[j]), vf7[j]) for j in range(3)] + [w]
+                pb = [vu.add(vu.mul(vu.mul(cb[j], qb), vf6[j]), vf7[j]) for j in range(3)] + [w]
+                vi10 = (vi10 - 1) & 0xFFFF
+                age = vu.mul(vu.sub(clock_f, vu.itof(a[3])), q4[2])
+                u = vu.add(q4[0], age) & 0x3FFF
+                v0 = q4[1] & 0x3FFF
+                v1 = vu.add(q4[1], hdr[1][3]) & 0x3FFF
+                col = rgba[:3] + (b[3] & 0xFF,)
+                chunk += [gs_xyzf(pa) + (col, (u, v0)), gs_xyzf(pb) + (col, (u, v1))]
+                rgba_last = col
+            if n & 1:
+                raise ValueError('a paired trail chunk with an odd number of points')
+        out += chunk
+        saved = chunk[-2:]
+        first = False
+    return out
