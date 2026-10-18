@@ -494,7 +494,7 @@ class MoveModel(T.CombatModel):
         if mode == 2 or s32(u32(P + 0x58C)) == 1:
             s = ONE
         # (f) water
-        self._water(P, s)
+        self._player_water(P, s)
         # (g), (h) the velocity of the mode
         if mode == 0:
             ev = self._locomotion(P, s)
@@ -603,7 +603,7 @@ class MoveModel(T.CombatModel):
                         break
         return ev
 
-    def _water(self, P, s):
+    def _player_water(self, P, s):
         """4.1(f).  In water (+0xa8 bit 61): every 16th frame on a level with flag 0x1000,
         damage_apply on itself (attack 100000000, flags 0x1000030, range 1e8); water_disturb
         (300, 12) every frame while s >= 0.01, else every 16th; the bit cleared when that

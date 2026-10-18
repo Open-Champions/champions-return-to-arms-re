@@ -417,3 +417,19 @@ class Composed(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class CreatureKnockbackInMoveRuntime(unittest.TestCase):
+    """Regression: MoveModel's Player_move water helper once had the name of ref_creature's
+    Creature_moveBy water helper and hid it, so a creature knocked back in a MoveRuntime
+    failed.  Same expectations as round 1's knock-back test."""
+
+    def test_a_creature_knock_back_reaches_the_creature_water_helper(self):
+        rt = MV.MoveRuntime()
+        c = rt.spawn_skelight((0.0, 0.0, 0.0), cflags=0)
+        rt.mem.poke(c + 0x2E8, 4, C.f32(100.0))
+        shared = rt.u32(T.G_RAND_SEED)
+        rt.model.apply_knockback(c, C.f32(0.7))
+        self.assertEqual(rt.u32(T.G_RAND_SEED), shared)
+        self.assertEqual(rt.u32(c + 0x2E8), C.f32(98.0))
+        self.assertGreater(rt.u32(c + 0x10), 0)

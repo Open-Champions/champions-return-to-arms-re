@@ -146,8 +146,7 @@ VTABLE_BODIES = _check_vtable_bodies()
 #   same body            cstr, handle_obj (RangedModel's copies read the same bytes)
 #   superset bodies      _cstr (longer limit), dead_update (with the decal), move_simple,
 #                        move_with_collision, player_move (executed bodies replace round 1's)
-#   different helpers    _water: see FullModel._water
-REVIEWED_SHADOWS = {'COMBAT_BODIES', 'DTORS', 'INTERNAL', 'MODELLED', '_cstr', '_water', 'call', 'cstr',
+REVIEWED_SHADOWS = {'COMBAT_BODIES', 'DTORS', 'INTERNAL', 'MODELLED', '_cstr', 'call', 'cstr',
                     'dead_update', 'handle_obj', 'knows', 'move_simple', 'move_with_collision', 'player_move',
                     'vcall'}
 
@@ -197,15 +196,6 @@ class FullModel(MV.MoveModel, ML.MeleeModel, PT.DefenceModel, RG.RangedModel, MO
 
     def call(self, name, *args):
         return MV.MoveModel.call(self, name, *args)        # the move rule, then the merged INTERNAL
-
-    def _water(self, *args):
-        """Two helpers share this name: ref_creature.Model._water(c) (Creature_moveBy's water
-        state) and MoveModel._water(P, s) (Player_move's water test), which shadows the first
-        in MoveModel - a creature knocked back in a MoveRuntime reaches the player's helper
-        with one argument and fails.  Dispatched here by the call form."""
-        if len(args) == 1:
-            return RC.Model._water(self, *args)
-        return MV.MoveModel._water(self, *args)
 
     def vcall(self, obj, slot, *args):
         """RangedModel's dispatch (projectile destructors to the runtime, the projectile
