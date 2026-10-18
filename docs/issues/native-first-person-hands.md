@@ -40,7 +40,7 @@ the partial figure. Existing strafe controls are unchanged.
 Evidence root, abbreviated `W` below:
 
 ```
-/Users/syndicatemike/Projects/champions-re-first-person-hands/local/first-person-hands
+~/Projects/champions-re-first-person-hands/local/first-person-hands
 ```
 
 The executable and generated game inputs were read from the owner's checkout;
