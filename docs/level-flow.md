@@ -1,0 +1,865 @@
+# Level flow: which files make a level, where players start, how levels change
+
+Status 2026-10-17, SLUS-20973 v2.00. Branch `t3/research-levels`. This document gathers in
+one place the contracts a native client needs to load an arbitrary level and move between
+levels, which until now were spread over `docs/mainloop.md` 7, `docs/data-tables.md` 7,
+`docs/spec/object-system.md` 7, `docs/issues/arena-entry.md`, `docs/audio-save.md`,
+`docs/formats/world.md` and `docs/monsters-2.md`. It adds what those leave out, and section
+14 lists the corrections it makes to them.
+
+`tools/ref_levels.py` is the executable form (stdlib plus `tools/ref_world.py`'s float
+arithmetic), with synthetic-fixture tests in `tools/test_ref_levels.py`.
+
+## How this was established
+
+The code was read statically in `SLUS_209.73` (Ghidra exports and `tools/dis.py`). Data
+regularities come from a scan of every archive on the disc image (120 `.GOB`, 119 with an
+`objects.ob`, 120 `script.scr`, 118 with a `.world`). Only counts are reported here.
+**Nothing in this document was run on a console, in PCSX2 or in the Play! emulator.** Of
+the function bodies, `world_findMovingPiece` 0x182768, `water_test` 0x189438 and the
+placement code 0x321100–0x321240 were re-read instruction by instruction while writing
+`tools/ref_levels.py`. The rest were read once, by one reader.
+
+Tags as in CONTRIBUTING.md: **O** observed at the address given; **D** a regularity in the
+disc data with its count, no code read for it; **I** inferred; **U** unknown, with what
+would settle it.
+
+---
+
+## 1. Names
+
+| Buffer | Address | Size | Meaning | Tag |
+|---|---|---|---|---|
+| `g_pendingLevel` | 0x41b6d0 | 0x50 | requested level, `name` or `name_sub`; non-empty means a change is pending | O |
+| orientation byte | 0x41b720 | 1 | written by every requester; see 6.3 | O |
+| `g_levelName` | 0x41b721 | 0x50 | current level, part before the first `_` | O |
+| `g_levelSubName` | 0x41b771 | 0x50 | part after the first `_`, may be empty | O |
+| orientation copy | 0x41b7c1 | 1 | the loader's copy of 0x41b720; no reader found | O |
+| `g_prevLevelName` | 0x41b7c2 | 0x50 | the level just left, qualified (`a_b` or `a`) | O 0x321030–0x32105c |
+| `g_levelTexName` | 0x44fe18 | | copy of the base name, used for `.TEX`/`.VAT` and the loading picture | O 0x321110 |
+
+- The request is split at the **first** `_` (O 0x321064–0x3210f8). `level_getQualifiedName`
+  0x1ec0f0 rebuilds `base_sub`, or `base` when the sub-name is empty.
+- **Every file name is built from the base name.** The sub-name only selects the
+  level-table row (2), keys the saved state (7.3) and the jump-gate list (9), and goes into
+  `g_prevLevelName` (O 0x1e5794–0x1e57b4, 0x1e5f88, 0x217978).
+- No upper- or lower-casing happens on this path. `cd_findFile` 0x1724fc upper-cases the
+  name and appends `;1` before an exact compare with the disc directory, so disc files are
+  effectively case-insensitive. Entries inside a lump are found with an exact `strcmp`
+  (`lump_findEntry` 0x171de4, `res_find` 0x17365c), so they are case-sensitive (O).
+- All name buffers are 0x50 bytes, copied with `strcpy` and no length check (O).
+- D: all 163 `newWorld` calls in the shipped scripts pass a plain name; **none uses
+  `name_sub`**. So with shipped content the sub-name is always empty, unless a save header
+  carries one.
+
+## 2. Level table row (`g_levelTable` 0x4f7210)
+
+There are 90 rows of 0x30 bytes, ended by a null name. The terminator row doubles as the
+**default row** (`docs/data-tables.md` 7.1 has the field list). `game_loadLevel` searches the
+table three times, taking the first match of each pass in table order (O 0x1e5790–0x1e58c8):
+
+1. `strcmp(row, base + "_" + sub) == 0`. The `_` is always appended, so a plain name never
+   matches here;
+2. the row starts with `base` (`strncmp(base, row, strlen(base))`);
+3. the row occurs inside `base` (`strstr(base, row)`);
+4. otherwise the default row: monster level byte 1, +5 = 2, kill plane −100000,
+   +0x0c/+0x10 = −100000/100000, water pool 48, +0x18 = 0, +0x1c = 1.0, flags 0, sound 0,
+   +0x2c = 0 (O, data at 0x4f7210 + 90 × 0x30).
+
+Fields used by a native client:
+
+| Row | Use | Tag |
+|---|---|---|
+| +0x04 | monster level: `g_levelMonsterLevel` = byte + 2. PvP mode B and difficulty 1 give 3.0. Difficulties 2–5 then overwrite it with `(byte + 2) × 0.75 + {34, 61, 88, 115}`. Finally `stomedal` = 1.0 and `innpit` = 2.0 | O 0x1e5b70–0x1e5c94 |
+| +0x08 | `g_killPlaneZ` 0x4f7188 | O; D: −100000 in every row, so it never fires |
+| +0x14 | number of **water simulation blocks** (section 12) (0x12b0 bytes each; allocation tag "water patches", `water_allocPool` 0x186dbc). Not allocated for `intro` | O; this settles the U in data-tables.md 7.1 |
+| +0x20 | level flag word 0x44fe08. Bits read here: 0x8 full water masks; 0x10 random water splashes; 0x800 no saved level state; 0x1000 deadly water; 0x04000000 and 0x20000000 level-light alpha 0x40 / 0x20 (later test wins) | O 0x187628, 0x1876e0, 0x21777c, `Player_move`, 0x1e60e0–0x1e6154 |
+| +0x05, +0x0c, +0x10, +0x18, +0x1c, +0x2c | stored (0x41c16c/70, 0x4f718c, 0x4f7190, 0x4f7208, 0x44f030, 0x4f7152; +0x2c read unsigned); purposes U | O stores |
+
+D: all 90 row names have a `.GOB`. 30 archives have no row of their own and take whatever
+row passes 2–3 or the default give them. Which row each of the 30 resolves to was not
+tabulated (U: run `ref_levels.find_level_row` over the real table).
+
+## 3. Manifest: the files of a level, in load order
+
+`game_loadLevel(base)` 0x1e55c0–0x1e6234. **Required** means the game crashes when the file is
+missing: `lump_load` 0x173558 prints an error and stores to address 0
+(0x173630–0x17363c), and the raw CD read 0x1729e8 does the same (0x172a4c–0x172a64). A lump
+already resident is returned without a read (0x173568). All rows O.
+
+| # | Step | File | Required? | Address |
+|---|---|---|---|---|
+| 1 | clear medal/ack words; loading flag 0x4f7198 = 1 (script `levelLoading`) | – | – | 0x1e55f0–0x1e5638 |
+| 3 | `game_clearLevel(1)`: every object destroyed, keep-level-0 lumps unloaded | – | – | 0x1e5674 |
+| 4a | not `intro`, `hud.lmp` not resident: unload to keep 9; item resources (223 shared draws); `fx.lmp`, `hud.lmp`, `mapicons.lmp`, `icons.lmp`; raise keep to 10 | 4 lumps | required | 0x1e56a0–0x1e5704 |
+| 4b | not `intro`: `game_loadPlayerLumps` 0x1e5148 (12 race lumps, table 0x4f71a8 or the low-detail table 0x4f71d8 with ≥ 2 players; hair, beard and body from `select.lmp`/`select2.lmp`). If it reloads anything, the level is cleared again. `g_gameLevelLoaded` 0x4f85b0 = 1 | player lumps | required | 0x1e5708–0x1e5728 |
+| 4c | `intro`: `g_gameLevelLoaded` = 0, unload to keep 10, release the equipment cache | – | – | 0x1e5730 |
+| 5 | loading screen, 3.1 | `L<alias>.LMP` or `LMISS.LMP`; `LOADMISC.LMP` | picture optional (falls back), loadmisc required | 0x1e5758, 0x321e60 |
+| 6 | level-table row, section 2 | – | – | 0x1e5790 |
+| 7 | `gob_loadAll("<base>.gob")`, 3.2. The `.world` fixup inside it reads the first 0x5000 bytes of `<BASE>.TEX` | `<BASE>.GOB`, `<BASE>.TEX` | required | 0x1e58e8, 0x181f08 |
+| 8 | `g_world` 0x44fdc8 = the first entry with extension `world` in `<base>.lmp`, in lump order, with no null test | `*.world` | required | 0x1e5978–0x1e59bc |
+| 9 | `g_cosmeticSeed = g_randSeed` | – | – | 0x1e59c4 |
+| 10 | not a recall leg (0x41b51c, 0x41b51e): voice directory `dialog.bin`; the first record whose name contains `enttag` starts the entry music, otherwise stream 2 is stopped | `dialog.bin` | optional in effect | 0x1e59c0–0x1e5a88 |
+| 11 | `ambient.bin` copied into a 5120-byte stack buffer (unbounded copy) and parsed; `ambient_parse(0)` when absent | `ambient.bin` | optional | 0x1e5ab4–0x1e5b3c |
+| 12 | row fields (section 2) | – | – | 0x1e5b54–0x1e5c94 |
+| 13 | not `intro`: water pool, row +0x14 | – | – | 0x1e5ca4–0x1e5cd8 |
+| 14 | `arena_init` (only in PvP mode B: `arena.lmp`, `pvpfont.lmp`) | 2 lumps | required in PvP B | 0x1e5cdc |
+| 15 | not `intro`: `gooddog.lmp`, `skele_b.lmp` | 2 lumps | required | 0x1e5cf4–0x1e5d0c |
+| 16 | `world_prepare` 0x182360: `<name>.lmp` for every chunk with flag 0x800 (scenery model); always-loaded texture cells; segment cache (section 13) | model lumps; `.TEX` | required | 0x1e5d2c, 0x182390–0x1823e8 |
+| 17 | 0x44f030 = row +0x1c; `dome.lmp` if resident (0 otherwise) | `dome.lmp` | optional | 0x1e5d40–0x1e5d68 |
+| 18 | `waterenv.lmp`; `water_setup` with its first `.tex` entry, without a null test | `waterenv.lmp` | required | 0x1e5d60–0x1e5d84 |
+| 20 | kill plane and the other row floats; potion counters and level timer 0x4f85cc = 0; sound set-up | – | – | 0x1e5da0–0x1e5df8 |
+| 24 | `g_levelBounds` 0x86aee8 = union of all chunk bounds | – | – | 0x1e5f14–0x1e5f6c |
+| 26 | `hub` only: `msel.lmp` | `msel.lmp` | required in hub | 0x1e5fc8–0x1e5fe8 |
+| 27 | `objects_levelReset`; outside the front end, reload `monsters.bal` | balance lump | – | 0x1e5fec |
+| 28 | `level_loadScriptAndObjects`, 3.3 | `script.scr`, `objects.ob` | script optional, objects required | 0x1e6000 |
+| 29 | `arena_begin` (PvP B) | – | – | 0x1e6028 |
+| 30 | **`world_disableUnclaimedPieces`** (11.2); `paths_joinSegments` | – | – | 0x1e6060 |
+| 32 | `script_runPostAction`: a post action left over from the old level runs in the new script (FINDINGS E10) | – | – | 0x1e60b8 |
+| 33 | loading flag 0x4f7198 = 0 | – | – | 0x1e60d4 |
+| 34 | level light: sun direction 0x44fdf8, colours 0x44fde0; alpha from the flag word (section 2) | – | – | 0x1e60e0 |
+| 35 | `save_armAutosave`, `dialog_loadBox` | – | – | 0x1e6174 |
+| 36 | every player record +0x4c27 = 30 (hit immunity) | – | – | 0x1e61bc–0x1e61f0 |
+
+Then `mainloop_loadRequestedWorld` places the players (section 5). The main loop runs the
+warm-up, the deferred calls, the network barrier and shop stock, and after the load uploads
+the environment texture of `env.lmp` if it is resident (`docs/mainloop.md` 7 steps 7–11).
+
+### 3.1 Loading picture (`loadscreen_start` 0x321e60) — O
+
+The base name first passes an alias table (`loadscreen_selectWorldAlias` 0x321c9c; first match
+wins):
+
+| Rule | Result |
+|---|---|
+| contains `blo` | `blood1` |
+| equals `innovat2` | `innova2` |
+| contains `val` | `valor` |
+| contains `bas` | `bastion1` |
+| contains `nitdung` | `nitdung1/2/4` become `nitdun1/2/4`; other names unchanged |
+| contains `torme` | `tormenta/tormentb/torment2/torment3` become `torma/tormb/torm2/torm3`; others unchanged |
+| equals `pvpfire2` | `pvpfir2` |
+| otherwise | the name itself |
+
+The file is `"l" + alias`, **cut to 8 characters**, then `.lmp`. If it is absent the same name
+is tried once more, and then `lmiss.lmp` is used. The picture is the entry `shot.tex`. The
+title texture comes from `loadmisc.lmp` and is chosen by `g_language`. D: on the disc 32
+names are long enough to be cut, and 18 levels have no picture of their own and fall back to
+`LMISS.LMP`.
+
+### 3.2 Archives (`gob_loadAll` 0x1737d8) — O, D
+
+- Directory: 0x800 bytes of 0x28-byte records (name, size at +0x24), ended by an empty name.
+  **The record's offset field is ignored**: lumps are read back to back from file offset
+  0x800, each rounded up to 0x800 (0x173890–0x1738a8). D: all 120 disc archives are laid out
+  that way, so both readings agree on shipped files.
+- Each lump is fixed up on arrival (`lump_fixup` 0x1717d0: `ntsc_dialog.bin` is renamed
+  `dialog.bin` and `pal_*` entries are dropped). Two archive lumps are renamed:
+  `gaydark1/2.lmp` become `faydark1/2.lmp` (0x173908–0x1739e8).
+- D: every archive holds `<name>.lmp`, `env.lmp` and `waterenv.lmp`; 21 also hold `dome.lmp`.
+  None of those three exists as a loose file, so they must come from the archive. 9 archives
+  have no `.TEX` and 4 no `.VAT`; loading one of the 9 would crash in the world fixup (I).
+  All 33 model-chunk lump names exist in their archive or in `DATA/`.
+- `.VAT` is never opened by the load. It is opened by name (`stream_levelFileName` 0x216820)
+  when a level voice stream plays (O for the name; I for the timing).
+- Keep levels: 10 for fonts, interface and the four HUD lumps; 5 for player lumps; 0 for
+  everything of the level (O).
+
+### 3.3 Script and objects (`level_loadScriptAndObjects(base, qualified)` 0x217978) — O
+
+```
+look up qualified in the saved-state directory (10 entries; 7.3)
+lmp = lump_load(base + ".lmp")
+script machine = entry "script.scr" if present and non-empty, else none
+g_playerStartRank 0x4f7108 = g_loadedFromSave 0x8e1ad6 ? 3 : 0;  g_loadedFromSave = 0
+run "preStart"
+if a saved state exists:
+    build the saved object records first (world_loadRecords(saved, filterOnly 0)),
+    then the decals, then the explored map
+world_loadRecords(objects.ob, filterOnly = saved state exists)
+run "start"
+```
+
+- With a saved state, only the 18 save-filter classes are built from `objects.ob`
+  (`world_saveFilter` 0x15d9c8, list 0x403a68, case-insensitive exact): lights, fire pots,
+  bombs, `Blocker`, `Line`, `customVars`, `clearColor`, `zzRoutepoint` and a few more (the
+  list is in `ref_levels.SAVE_FILTER_CLASSES`). Everything else, start markers included,
+  comes back from the saved records. Those records are written in grid order, not file
+  order, so among several `default` markers a re-entry can pick a different one from the
+  first visit (I; U until a level with several markers is saved and re-entered).
+- Records are built strictly in file order, and the objects deleted in their constructor are
+  flushed at the end of `world_loadRecords` (0x14ea0c–0x14ea5c).
+- The skip byte 0x4f8b58 tested before both script entries has no writer (two scans), so
+  `preStart` and `start` always run (I; U through a computed pointer).
+
+## 4. Where a new game, an act and a mission start
+
+- **There is no "starting floor" field** in any table (level, act, mission, `objects.ob`
+  header) (O).
+- A new game starts in **`hub`**. `frontend_startPlayerSelect` 0x1e3ba0 sets the
+  destination to `hub`, or to the arena level in PvP mode B. `playerSel_finish` 0x22a360
+  copies it to the request and replaces `hub` with `game_getHubName()` 0x1ec300, which gives
+  `hub2` only when the decision was made, the player is evil and mission 1 is complete
+  (O 0x22a450–0x22a4b4).
+- Story start of each mission: mission table row +0x08 (+0x0c when non-null and evil), chosen
+  in `missionMenu_run` state 8 (`docs/data-tables.md` 7.4; O 0x2321c4–0x2322d4).
+- The 13 act lists (`g_actLevelTables` 0x4f8e48, counts 0x4f8e10, `g_actCount` 0x4f8e7c) all
+  start with `hub`. They size saved states and decide act changes (7.2); they never choose
+  where to start (O).
+- Boot writes `strife` (`main` 0x323edc); the front end writes `intro`.
+
+**What "starting floor" amounts to in practice is the spawn height rule (5.3):** a player
+starts on the **highest** terrain sample within 12 units of the chosen spot. The marker's own
+height is ignored.
+
+## 5. Start markers and player placement
+
+### 5.1 State
+
+| Address | Layout | Writers (O) |
+|---|---|---|
+| `g_spawnPos` 0x4f70d0 | 4 × (x, y, z) floats | `Player1_ctor`, `JumpGate_ctor` 0x27ca44, `save_load` 0x221f28, placement 0x3211b4 / 0x321204 / 0x32130c / 0x321368 |
+| `g_spawnFacing` 0x4f8410 | 4 × u16 (65536 = full turn, I) | `Player1_ctor` 0x158b9c, `JumpGate_ctor` 0x27ca70, `save_load` 0x221eec, placement 0x321364 |
+| `g_playerStartRank` 0x4f7108 | s8 | 3.3 (0 or 3), `Player1_ctor`, `JumpGate_ctor` (3) |
+| `g_entranceName` 0x4f8468 | string | script `setEntrance` 0x142a94 and `game_resetState` 0x1e6fc4 only. **A level change does not clear it** |
+| 0x41b51c | s8 | "returning from recall": set by `player_recallTick` 0x1b628c, cleared at 0x3211c4 |
+| 0x41b51e | s8 | "going to the hub by recall": set at 0x1b6260, cleared at the end of placement 0x3214c0 |
+| 0x41b520 | 4 × xyz | recall return positions |
+
+All of these are 0 in the executable's data (O). **Nothing resets the spawn positions or
+facings between levels.**
+
+### 5.2 Which marker places the players
+
+Markers rank themselves while the records are built, in file order. `Player1_ctor` 0x158928
+(O; `docs/spec/object-system.md` 7.3 and `ref_objects.World.player1_marker` agree):
+
+| Test, in this order | Result |
+|---|---|
+| rank is already 3 | nothing |
+| rank ≤ 0 | take, rank 1 |
+| rank is 1 and `default` is a non-zero integer | take, rank 1 |
+| `from` equals `g_prevLevelName` and not 0x41b51e | take, rank 2 |
+| otherwise, 0x41b51e set and `from` is `gate` | take, rank 3 |
+| `name` equals `g_entranceName` and not 0x41b51e | take, rank 3 |
+
+A marker that takes fills **all four** slots, whatever the player count: for each slot
+`world_findFreeSpot(marker, spread 36, radius 24, anyHeight 0)` and one shared draw,
+`facing = angle + (draw >> 16) % 4000 − 2000`. Consequences:
+
+- among `default` markers, or several whose `from` matches, the **last** in the file wins;
+- among rank-3 markers, the **first** wins;
+- every taking marker spends four searches and four draws, even when a later marker
+  overwrites the result.
+
+Other rank-3 sources (O):
+
+- **Gate arrival.** `JumpGate_ctor` 0x27c694 (classes `Portal`, `PortalHurt`) acts when the
+  travel state 0x500ae8 ≠ 0 and the gate menu was not given a fixed destination
+  (0x8e3c34 = 0). For each slot below the player count it calls
+  `world_findFreeSpot(gate, 36, 24, anyHeight 1)` and sets the facing to a full shared draw
+  `>> 16`. It then sets rank 3 without testing the rank (0x27c974–0x27ca84).
+- **Load from a save.** `save_load` writes the saved positions and angles and makes the start
+  rank 3.
+
+If no marker takes (rank 0 after the objects), the spawn slots keep the **previous level's**
+values (O: no writer resets them).
+
+D (119 levels):
+
+- `Player1` markers: 18 levels have none, 61 have one, 40 have more than one (up to 9);
+  182 records in all.
+- Properties on them: `from` 87, `name` 51, `default=1` 28, none 73. One record has the
+  misspelt `defualt=1`, which does nothing.
+- **No marker has `from=gate`**, and **no object of any class has `orientation=`**.
+- The 18 levels without a marker are the front end, two cutscene archives and the 15
+  `comp*`/`pvp*` arenas. The arenas place players through `ArenaPlayerStart` (15 records) and
+  `ArenaPlayerAlternate` (232) instead, via 0x30503c and `arena_pickSpawnPoint` 0x3050a4 (not
+  traced; U).
+- 38 levels have one `Portal` each.
+- Of 72 (`setEntrance`, `newWorld`) pairs, 58 have a matching `name` marker in the destination.
+  The other 14 fall back to the `from`/default rules.
+
+### 5.3 Placement after the load (`mainloop_loadRequestedWorld` 0x321160–0x3214c0) — O
+
+```
+if 0x41b51c:  for slot < numPlayers: spawn[slot].x, .y = 0x41b520[slot].x, .y   (z not copied)
+              0x41b51c = 0
+for slot < numPlayers:
+    spawn[slot].z = terrain_height(radius 12.0, spawn[slot])          (0x321220)
+if g_gameLevelLoaded and not g_pvpModeB:
+    for slot < numPlayers, in order:
+        if slot != 0 and rank != 3:
+            spawn[slot] = world_findFreeSpot(spawn[slot], 36, 14, anyHeight 0)
+            facing[slot] += 8000;  spawn[slot].z = terrain_height(12.0, spawn[slot])
+        if record hp > 0 and peer active and (no medal mission or slot == medal slot):
+            Player_ctor(pool_new(0x590), spawn[slot], facing[slot], slot)
+        if act changed and card state != 4 and no deathTask: record +0x24 = "None"
+0x41b51e = 0
+```
+
+- `terrain_height` 0x183820 returns the **highest** sample whose cell centre lies within the
+  radius, and **never reads the query's z**. With no floor it returns −1000000.0. The
+  height-respecting `terrain_heightBelow` 0x1834a8 is not used here. So on a bridge or a
+  walkway over a floor, the player starts on the top surface (O for the calls; I for the
+  consequence).
+- The scattered positions and the extra 8000 of facing are **written back** to the globals,
+  so a later level without a marker inherits them and adds 8000 again (O).
+- Players are created only inside the "real level, not PvP B" test, and in a medal mission
+  only the medal slot is created. `docs/mainloop.md` 7 step 6 and
+  `docs/issues/arena-entry.md` 2 leave this out (section 14).
+- U: what `Player_ctor` 0x1a1d28 does with the position after 0x1a1db4, and whether a spawn
+  with no floor dies on the first tick (read the kill-plane test in `Player_run`).
+
+## 6. Requesting a level change
+
+### 6.1 Who writes the request (O unless marked)
+
+| Writer | Name written | Orientation | Condition |
+|---|---|---|---|
+| scripts `newWorld` 7 / `newWorldAlways` 8 → `script_setNextWorld` 0x1472c4 | argument | `orientation=` of the selected object (last wins), else 0xff | `newWorld_netGate` 0x143d04 unless in a post action |
+| `newWorldParameter` 107 0x1471fc | the selected object's `level=` | as above | no gate |
+| `simpleNewWorld` 6 0x143e70 | argument | 0xff | same gate |
+| dialog end 0x22f7c4–0x22f7ec | the `newWorldPost` buffer 0x4fdcf0, if non-empty | 0xff | then the post action |
+| pause-menu level warp (messages 7, 11; 0x1d9004, 0x18cb80) | menu entry | 0xff | only with `g_debugCheats` (`docs/ui.md`) |
+| `player_recallTick` 0x1b6264–0x1b62fc | hub name, or player 0's record +0x24 | 0xfd | section 10 |
+| `deathTask` 0x1e76c4 | `g_levelTexName` (base; sub dropped) | 0xfd | party wipe in a level outside every act |
+| `save_load` 0x2220f4 | header name (`a_b` when the sub is set) | 0xfd | reload or card load |
+| `game_openMissionMenu` 0x1eb5b4 | hub name | 0xff | pause-menu "exit mission" (message 8, then a countdown), medal-screen cancel, or the medal player's slot dropping |
+| `script_runMedalSuccess` 0x141b98 / `runMedalFail` 0x141e24 | `g_levelName` (retry) | 0xff | medal player's confirm |
+| `missionMenu_run` 0x232220 | mission row +0x08 / +0x0c / +0x10 / +0x14 | 0xff | chooser's lockstep pad |
+| `jumpgate_menuRun` state 5 0x27e1d0 | the menu's fixed destination, else the selected list entry | 0xff | section 9 |
+| `arena_runTask` 0x306cb8 | arena rotation | 0xff | PvP only (U: table not followed) |
+| `net_launchUpdate` 0x137560 | hub name or the PvP arena | 0xff | net launch |
+| front end 0x1e20ac, 0x1e24f4; `main` 0x323ef4; `playerSel_finish` 0x22a424 | `intro`, `strife`, new-game destination | 0xff | — |
+| front end "Start Net Game" 0x1e17d8 | `kelethin` | 0xff | debug entry; there is no `KELETHIN.GOB` (U whether it is reachable) |
+
+Two places clear the request:
+
+- the per-frame cancel (`mainloop_runSession` 0x322c00–0x322ca8). It fires when a level is
+  loaded, the front end is not running, this machine's card is not busy, PvP B is off and
+  **no player record has hp above 0**. It runs outside the lockstep and reads per-machine
+  card state (`docs/mainloop.md` P1);
+- the loader itself, after it splits the name.
+
+### 6.2 The `newWorld` gate
+
+`newWorld_netGate` 0x143d04 (`docs/spec/script-builtins.md` 1.10): in a net game with an active
+player, the change is refused while that player's 600-tick cooldown (record +0x4bca) runs and
+at least two players are alive. Otherwise the cooldown is set to 600. Offline it always passes.
+
+### 6.3 The orientation byte does nothing in v2.00
+
+The only reader of 0x41b720 is the loader. It copies the byte to 0x41b7c1 and writes 0xfe back
+(O 0x321118–0x321138, re-read). Two static scans found no reader of 0x41b7c1. D: no object on
+the disc has an `orientation=` property. A native client may keep the byte but must not act on
+it. U: a read through a computed pointer; settle with a read watchpoint on 0x41b7c1 across a
+level change.
+
+### 6.4 How exits are authored (D, 120 scripts and 119 object files)
+
+- **Exits are scripts.** Except for recall, gates, party wipes, medal screens and the mission
+  menu, the engine never chooses a destination.
+- Following each trigger's script through `callScript` (depth ≤ 6) to a `newWorld` call:
+
+  | Exit | Count |
+  |---|---|
+  | `PushTrigger` whose `action` snippet calls `newWorld` directly | 79 |
+  | the same, preceded by `setEntrance` | 41 |
+  | `PushTrigger` through `callScript` (without / with `setEntrance`) | 9 / 7 |
+  | rectangle `Trigger` (direct without / with `setEntrance`; through `callScript`) | 11 / 1; 4 |
+
+- Built-in call counts: `newWorld` 163 calls in 71 scripts, `setEntrance` 76 in 30,
+  `simpleNewWorld` 4, `newWorldPost` 5, `saveCheckPoint` 16. `newWorldAlways`,
+  `newWorldParameter` and `loadCheckPoint` are never called.
+
+## 7. The change itself, and what survives it
+
+### 7.1 Sequence, request to first tick
+
+Steps marked † are not in `docs/mainloop.md` 7.
+
+1. Inside tick N a writer of 6.1 fills the request. In a net game the rest of that
+   `net_frameLoop` does nothing (`docs/netcode.md`).
+2. Next main-loop pass: the cancel test (6.1). In a net game, the save wait and
+   `net_flushBeforeLoad`. Then `g_simFrame = 0`, the ambient countdown is set to 60 (unless on
+   a recall leg), and the display is blanked and the camera reset.
+3. `mainloop_loadRequestedWorld` 0x320edc (O):
+   1. unless `deathTask` runs: `save_storeLevelState(qualified old name)` (7.3); † if a medal
+      mission used `savePlayer`, the player record is restored (0x320f60);
+   2. act check (7.2). On an act change, unless the card latch 0x4f8f28 is set or `deathTask`
+      runs: clear the save buffer, reset the gate list to [hub name], clear quests, remove
+      items with flag 39, zero every quest value (the names stay);
+   3. `playerSel_applyPending`;
+   4. `g_prevLevelName` = qualified old name; split the request; clear the request;
+      `g_levelTexName` = base; † orientation copied and set to 0xfe; sound muted for 0.05 s;
+   5. `game_loadLevel(base)` (section 3);
+   6. placement (5.3), including † the recall x/y copy, † the medal-slot filter, † the write-back
+      of scattered positions, and † `None` in every record's recall destination on an act
+      change;
+   7. if the level had no saved state, the idle-voice countdown is set to 300.
+4. Warm-up loop, deferred calls once, network barrier, shop stock, loading screen off
+   (`docs/mainloop.md` 7 steps 7–11). The first tick is F0 = N + 1 on every machine
+   (`docs/issues/arena-entry.md` 1.3).
+
+### 7.2 Acts
+
+`save_findAct(name)` 0x217d30 matches a row when the name **starts with** the row name
+(`strncmp(row, name, strlen(row))`), searching the current act first and then acts 0–12; it
+returns −1 if nothing matches. `save_actChanged` 0x217f70 switches to the found act when it
+differs from the current one. A session starts at act −1 (`save_setAct(-1)` 0x1e6f14), so its
+first real level is always an act change (O; I for the consequence). The 13 lists, with the
+size of each level's saved state, are read from the executable at 0x4f8e48. A native client
+should take them from there rather than copy them.
+
+### 7.3 Saved level states (`save_storeLevelState` 0x21777c) — O
+
+- Nothing is stored while this machine's card state is 4 or the level has flag 0x800.
+- The size comes from the act table: `hub*` uses row 0 of the current act, and any other
+  level must be an exact row of the **current** act. Levels outside it are not stored, and so
+  are never restored and never checkpointed. With byte 0x4f85c5 set, the size is fixed at
+  35000.
+- The directory `g_saveLevelDir` 0x8ab590 has 10 entries of {char[0x14] key, u32 size}. The
+  key is the qualified name. The data area runs from save buffer +0x16118 to 0x4bc78.
+- An entry is created even when the data will not fit. With all 10 entries used and no
+  match, the code writes an 11th entry over the 0x18 bytes before the data (I: unreachable
+  with shipped acts, whose longest list has 10 levels).
+- What is saved: object records with their state bytes, decals, the explored map
+  (`docs/audio-save.md`). `save_build` 0x221914 also stores the current level's state, so
+  every checkpoint includes it.
+
+### 7.4 Kept and reset
+
+| Kept across a change | Notes |
+|---|---|
+| player records (0x4c30 each): stats, hp, bags, gold, medals, quest list, recall destination +0x24 / +0x44, `newWorld` cooldown +0x4bca | the Player objects are destroyed and rebuilt |
+| quest variables, gate list, save buffer and level states | cleared only on an act change |
+| post action | runs in the new level (FINDINGS E10) |
+| `g_entranceName` | never cleared by a change |
+| jump-gate travel state 0x500ae8 and its tasks | only while travelling (`jumpgate_removeTasksIfIdle` 0x27dac8) |
+| `g_spawnPos`, `g_spawnFacing` | never reset |
+| recall flags and positions | consumed by the load |
+
+`game_clearLevel` 0x1e4e88 resets the rest (O). That covers objects, the name table, the pool,
+decals, paths, particles, the recall countdown, alternate death, save inhibit, deferred script
+calls, dialog, `g_paused`, and the keep-level-0 lumps. It also resets the world's pieces and
+water: all pieces are released, back at their rest pose with collision on, but **element z is
+not restored** (0x18b270); and every water block is released.
+
+## 8. Triggers and interactables
+
+- **`Trigger`** (0x70 bytes; `Trigger_ctor` 0x1ecdf4). An axis-aligned rectangle from (x, y)
+  to (x + w, y − h), stored as min/max, from the integer properties `w` and `h`. Its script
+  is the property `t`; the angle is ignored. `Trigger_contains` 0x1ed238 tests x and y
+  inclusively, with no height (O). `Trigger_run` 0x1ecf3c is edge-driven on "somebody
+  inside". The first player in slot order inside becomes the active player; entering runs
+  `t` and leaving runs `"not" + t`; nothing happens while a recall counts down. It runs on
+  one of the fifteen 15-frame lists. Its saved state is 5 bytes: the delay +0x64 and the
+  inside flag +0x60 (O; `docs/spec/script-builtins.md` 1.9). D: 95 triggers in 48 levels,
+  properties only `w`, `h` and `t`, every angle 0; no script defines a `"not"+t` entry.
+- **`PushTrigger`** (0x4c bytes; ctor 0x1ec900). An interactable, never run.
+  `PushTrigger_prompt` 0x1eca94: in a net game a `netHostOnly` object is usable only by the
+  first active slot. Then every `key` predicate must return non-zero. `PushTrigger_interact`
+  0x1ecc70 refuses `shop` objects while another player is busy, runs every `action=` (raw
+  unless `offOnly`), and deletes the object when `once` is set (O). D: 205 in 74 levels.
+- **`MonsterTrigger`** (radius 60 by default; `radius` overrides) counts creatures. It is
+  never an exit (O; D 201 in 8 levels).
+- The active player for an interact is the presser (`Player_interact` 0x1b2b70). The prompt
+  predicates also run from `Player_draw` on the owner's machine (`docs/script.md` P1).
+
+## 9. Jump gates
+
+- **Destinations.** 0x8e3a50 holds 15 × char[0x20] qualified names; the count byte is at
+  0x8e3c30. `jumpgate_addCurrentLevel` 0x27db60 appends the current qualified name unless it
+  is already listed. After an append it removes the first entry that contains `hub` but is
+  not the current hub name (the stale hub after the hub-to-hub2 switch). **There is no bound
+  check**: a 16th append would overwrite the count byte (O; D: no act has that many gates).
+  `jumpgate_resetDestinations` 0x27db00 (act change only, not while the card latch is set)
+  resets the list to [hub name]. The list is saved at save +0x134 (count u32 + 0x1e0 bytes;
+  `docs/audio-save.md`).
+- **Prompt.** `JumpGate_interactPrompt` 0x27d7a0, ordinary gates only:
+  - no prompt while the gate menu is open or the gate's `script` predicate returns 0;
+  - the first prompt marks the gate found (+0x4d) and adds the level;
+  - with only the hub listed, the text is `JumpGateVirgin` and the gate cannot be used;
+  - every other alive player must be within 96 units, otherwise `JumpGateNeedPlayers`.
+
+  This also runs from the draw path, so the gate can be marked found up to a frame early on
+  the owner's machine (`docs/online-setup.md`).
+- **Menu.** `JumpGate_openMenu` 0x27da24 and `jumpgate_menuRun` 0x27dd74:
+  - the current level cannot be chosen;
+  - offline the game is paused while choosing;
+  - after confirm the travel state counts from 1 to 181 (180 ticks), then the request is
+    written (orientation 0xff);
+  - the travel state survives the load, so the destination gate's constructor places
+    everyone at that gate (5.2);
+  - the task clears the travel state on the first or second tick of the new level.
+
+  The menu's pad test has the per-machine pause-menu branch already listed as FINDINGS U2.
+- D: 38 `Portal` objects, one per level, with properties `lump` (37) and `script` (10). No
+  gate has `hurt` or `destination`, so the fixed-destination path is unused.
+
+## 10. Recall, party wipe, checkpoints
+
+**Recall.** `player_recallTick` 0x1b5fa0 runs when the 60-tick countdown ends, outside a
+cutscene, with someone alive (O). The two legs:
+
+| Leg | Saved / restored | Request | Placement on arrival |
+|---|---|---|---|
+| level → hub | each record +0x44 = its player's position (or a free spot near the first alive player); +0x24 = qualified level; set 0x41b51e | hub name, 0xfd | `from`/`name` ranks disabled; no marker says `from=gate`, so the hub's `default` or first marker wins |
+| hub → level | set 0x41b51c; copy every +0x44 to 0x41b520 | player 0's +0x24 (for everyone), 0xfd | markers rank normally, then x/y are replaced by the saved positions, z from terrain; slots 1–3 still scatter unless rank 3 |
+
+`clearRecall` and an act change set +0x24 to `None`. Both recall legs skip the entry-music
+step.
+
+**Party wipe.** `game_checkAllDead` 0x1e7438, then `deathTask` 0x1e75e8 (O):
+
+- alternate death (`setAlternateDeath`): wait until someone is alive;
+- a level outside every act (`save_findAct(g_levelTexName) == −1`): every record's hp is set
+  to max and the level restarts by base name, with ordinary marker ranking;
+- otherwise `save_reload` = `save_load` of the last save buffer: the saved level, saved
+  positions, saved quest variables, saved gate list and rank 3, so players stand exactly
+  where the save put them.
+
+**Checkpoint.** `saveCheckPoint` calls `save_game(0, 0, 1)` 0x218128. In a level outside every
+act it shows the HUD line and **saves nothing**. Otherwise it builds the header (qualified
+name, act, difficulty), the camera, the gate list, the players with their positions, the
+quest variables and the current level's state.
+
+## 11. Moving pieces (doors, bridges, stairs)
+
+The record layout is in `docs/formats/world.md` ("Moving pieces"). Added here:
+
+| Fact | Tag |
+|---|---|
+| +0x08..+0x16 (rest translation, cos, sin) equal the first chunk's own fields in all 178 pieces; +0x1a equals the collision element's z (the rest collision height); nothing in the piece API reads it | D; O for the absence in 0x182768–0x182f24 |
+| chunk count 1 in every piece; chunk flags 0x20 (173) or 0x60 = mirrored (5), never the quarter-turn code | D |
+| 123 of 178 pieces have texture cell 0: collision-only pieces whose visible part is the claiming object's own model | D |
+| every piece function returns at once for index < 0 (`getPieceHeight` returns 0, `getPieceBounds` zeros) | O 0x182914, 0x182940, 0x182b00, 0x182b74, 0x182bb4, 0x182bf4, 0x182c98 |
+
+### 11.1 Claiming (`world_findMovingPiece` 0x182768) — O, re-read
+
+```
+best = 6400.0 (80²);  bestIndex = -1
+for each piece i, in file order:
+    t = rest translation × 0.25;  c, s = rest cos, sin × 0x38000100
+    pivot.x, .y = (t.x·c − t.y·s, t.x·s + t.y·c)       mirrored (chunk flag 0x40): (t.x·c + t.y·s, t.x·s − t.y·c)
+    pivot.z = t.z
+    d2 = (dx² + dy²) + dz²         full 3-D, against the object's position
+    if not (best < d2): best = d2; bestIndex = i
+if bestIndex < 0 or piece[bestIndex] is claimed: return -1     no fallback to the next piece
+claim it; return bestIndex
+```
+
+- 80 is inclusive, and the **later** of two equally near pieces wins.
+- An unrotated piece's cosine becomes 0x3f7fffff, slightly less than 1, so pivots are a hair
+  short of the stored translation (`tools/test_ref_levels.py`
+  `test_nearest_inclusive_80_later_wins_ties`).
+- D: every claim on the disc is unique; claim distances are 0–60.
+
+### 11.2 After the objects: unclaimed pieces lose collision
+
+`world_disableUnclaimedPieces` 0x1826ec runs at 0x1e6060 (O). That is after the saved states
+have been applied, after objects deleted in their constructor have been flushed (their
+destructor released the claim), and after `start`. It turns collision off for every piece
+still unclaimed. One consequence: a `DoorSwing` with `disable` is drawn closed but can be
+walked through (O for each step; I for the combination; D: no shipped DoorSwing has
+`disable`).
+
+### 11.3 Moving and collision
+
+- `world_movePiece(piece, offset, angle)` 0x182c98 sets an **absolute** pose relative to rest.
+  Only the chunk's drawn translation and rotation are rewritten: the geometry turns by
+  +angle about the pivot and shifts by the offset in the piece's rest frame (world units).
+  This is **drawing only**.
+- **Collision never moves or turns** (O). It has exactly two controls:
+  - element flag 2: set means the element is absent from every terrain query
+    (`world_setPieceCollision` 0x182b00);
+  - element z: truncated to an integer (`world_setPieceHeight` 0x182bb4).
+
+  `tools/ref_world.py` models both.
+- The world layer does nothing per tick for pieces (O: no task touches the table). Each call
+  takes effect at once, inside the calling object's run, so later objects in the same tick
+  see it.
+- The load-time wall rewrite of piece height fields (samples with flag 1 become height 2000)
+  is in `world_fixup` 0x181e2c–0x181ec0 and is modelled by `ref_world.Level`.
+
+### 11.4 Who claims pieces on the disc (D)
+
+- 178 pieces in 19 levels; 174 claimed, 4 unclaimed (actintro 1, arachna1 2, blood1 1;
+  3 of the 4 stay drawn but can be walked through).
+- **167 claims come from `AutoProp` objects with the property `AutoDoor`** (`AutoProp_ctor`
+  0x23c868). Open means collision off and the piece drawn 256 lower; closed means collision
+  on and the rest pose (`AutoProp_setPassable` 0x23d7ac).
+- Only 7 come from the `WorldPart` family: the `DoorSwing`s of `islgoth`.
+- `Switch`, `FloorSwitch`, `DoorSecret`, `RollDoor`, `FallPlatform`, `GothTrap`, `HateHole`
+  and `HateBridge` are never placed, and `FallPlatform` has no factory entry at all. Shipped
+  content does not need them. What was read, for completeness (O):
+
+  | Class | Behaviour |
+  |---|---|
+  | `Switch` 0x28a8f0 | one use: draws the piece 8 units along its local x, runs every `action=` (raw) |
+  | `FloorSwitch` 0x28b56c | box = piece bounds with max z + 6; pressed by any object without flag 1 (or only by the `keyObject` name). Sinks 1 unit in 0.25 steps, setting element z = trunc(rest − depth). Runs the actions with 1 or `not<action>` (with `onOnly`/`offOnly`). Saves 1 byte |
+  | `DoorSecret` 0x28b370 | after use: recess 5 units in 20 frames, slide 100 units along local +y over frames 121–180, collision off from frame 181. Loading an open one drops it 300 under the floor. Saves 1 byte |
+  | `RollDoor` 0x28e01c | never moves its piece (the rolling stone is its own model); collision off after 120 frames |
+  | `FallPlatform` 0x28bb5c | shakes, falls with gravity 8.999999 to 720 below (element z follows), rises back spinning; the only caller of the flash flag 0x100 |
+- `DoorSwing` (run 0x28af54) is the one WorldPart a native client needs:
+  - each tick the angle (s16) grows by the speed, which is 600 on open and then multiplied
+    by 0.98;
+  - past 0x637c it bounces back with speed × −0.74;
+  - it stops below |speed| 1;
+  - on open, collision goes off and the swing direction comes from which side of the hinge
+    the player stood;
+  - the gothic variant (`gothic` in the level name) is dead: no level name contains it;
+  - saved state: 8 bytes, the u16 angle, s16 direction and f32 speed (`saveState`
+    0x28ae3c, `loadState` 0x28ae74).
+
+## 12. Water
+
+| Rule | Tag |
+|---|---|
+| **`water_test(radius, pos, &height)`** 0x189438 is simulation. Box: x and y from (p − r) − 1 to (p + r) + 1, z from pos.z − 1 to pos.z + 60. The collector 0x189240 is called with cap 2, so only the **first** water tile overlapping in chunk-tree walk order counts (split nodes without bit 14 are skipped; the second child is visited first). Height = that tile's bounds.min.z (chunk +0x10). The 32 × 32 mask is not read. So a point more than 60 below the surface is "not in water" | O, re-read |
+| **`water_disturb(strength, radius, pos)`** 0x189514: its return value is simulation. It is the number (≤ 15, cap 16) of tiles overlapping x, y ± r (no +1), z from −1 to +60, or 0 while a cutscene is skipped. It is counted whether or not the tile has a ripple grid. The ripples themselves are cosmetic | O |
+| Water is entered with `water_test(12)` and left when `water_disturb` returns 0: one unit of horizontal hysteresis | O (`Creature_moveBy` 0x113c48, `Player_move` 0x1b4020) |
+| A player entering water advances `g_randSeed` once. Level flag 0x1000 gives lethal damage (1e8) every 16th frame in water; D: only `fire3`, `fire4`, `fire5` have it. There is no swim mode | O; D |
+| Ripple pool: row +0x14 blocks of 0x12b0 bytes (32 × 32 s16 heights and velocities), handed out least-recently-used **when a tile is drawn**, freed after 200 undrawn ticks; 8-neighbour step with 1/128 damping (0x196088); random bumps from `g_cosmeticSeed`. Per machine and cosmetic | O 0x186dbc, 0x1876e0, 0x186e38 |
+| Water chunk data: neighbours in the order **−y, +y, −x, +x**. Mask: two 64-byte halves (rows 0–15, 16–31); the u16 at byte 2·col is column col (along y); bit 15 − (row mod 16) is row (along x). The ripple step uses row r + 1's bit for row r, a cosmetic off-by-one | O; D: 84 % agreement with the terrain under the surface in two levels |
+| Drawing: texture = first `.tex` of `waterenv.lmp`. Chunk flag 0x1000 selects the second colour/alpha/wave set, which level settings can set (`waterColor2`, `waterWavyness2`; defaults 0). Alpha v ≥ 0 gives `ALPHA_1` (Cs − Cd)·FIX + Cd; v < 0 gives Cs·FIX + Cd. Drawn at z = chunk translation z / 4 | O 0x1875d4, 0x1876e0, 0x22e714 |
+
+## 13. Material and texture addressing of WORLD geometry
+
+Builds on `docs/formats/world.md` ("Textures of geometry chunks", "Level texture file") and
+`docs/spec/render-pipeline.md` 4.6, 6, 13. Its headline corrects a long-standing open item:
+**`<LEVEL>.TEX` holds one texture format only, and the "packing" is a per-block Huffman code,
+not a swizzle.** What a native client was missing is the decoder of 13.3. There is no
+collection of unsupported formats behind it.
+
+### 13.1 Directory and cells
+
+- `world_fixup` reads the first 0x5000 bytes of `<LEVEL>.TEX` (0x181efc–0x181f28). The
+  leading u32 is skipped unread. Records are 12 bytes, {s32 cell id, u32 file offset, u32
+  size}, up to an id of −1 or −2; the test is `(unsigned)(id + 2) < 2`, so both end the list
+  alike (O 0x181f88, 0x181fd8). A first id of 0 skips the fill. Ids are not checked against
+  the world's lowest/highest cell (O). D: 111 files, all end with −2, leading word 0.
+- Before the fill every world table entry is set to {0, 0x40}; then `table[id − lowest] =
+  {offset, size}` (O 0x181f3c–0x181fd0).
+- **Cell id** = `row × 100 + column`, with `column = floorf(x / size) + 50` and
+  `row = floorf(y / size) + 50`. `size` is world +0x68, which is 720 in every file; 0 would
+  mean 960 (O 0x17d8e0–0x17d930, 0x18224c).
+- **Streaming** (per machine, drawing only):
+  - the game keeps the 3 × 3 cells around `g_cameraFocus` in 9 slots and reads the missing
+    cell nearest the focus first, one at a time (O 0x17d934–0x17dbe0);
+  - cells are read in 128 KB blocks into a segment cache whose blocks need not be
+    contiguous. An offset inside a cell maps through the slot's block list as
+    `cache + map[off >> 17] × 0x20000 + (off & 0x1ffff)` (`tex_relocateInCell` 0x179f28; O);
+  - world +0x60 is −1 in the file. `world_prepare` replaces it with the worst 3 × 3 window's
+    total in 128 KB blocks (O 0x1823f0–0x1825bc). D: 9 to 91 blocks, median 47.
+- The "always loaded" list exists (0x7d3560, at most 8 cells; `worldtex_loadAlwaysPages`
+  0x17d680), but its only adder 0x17fe18 has **no caller**. Every world texture streams
+  (O for the absence; I for "never").
+- A chunk is not drawn when its cell is not resident, or when its texture's GS packet is not
+  built yet; in the second case an upload is queued (0x17fc78) and the chunk appears a frame
+  or more later (O 0x1887b8). A PC client can hold every cell and ignore this.
+- **Cell layout**: u32 texture count at +0, zeros to +0x40, then 0x40-byte headers at
+  0x40 × (i + 1). A geometry chunk's +0x20 is the byte offset of its header (O 0x1887b8,
+  0x17dffc). D: 4,808 cells in 111 files, 4 to 148 per level, at most 252 textures and
+  2.2 MB per cell.
+
+### 13.2 Texture header (0x40 bytes, in a cell)
+
+| Offset | Type | Value | Meaning | Tag |
+|---|---|---|---|---|
+| +0x00, +0x02 | u16 | width, height | the used size; every chunk's UVs fit it | D |
+| +0x04 | u16 | GS blocks to allocate | = 5 + the highest GS block address among the stored blocks, in all 157,820 textures | O use `texcache_alloc` 0x179bb0; D |
+| +0x06 | u16 | 0 | upload length in qwords, computed by relocation | O 0x179fb0–0x17a0b0 |
+| +0x08 | u16 | 0x010c in every texture | 0x0100 = this block form; 0x0004 = 8-bit palette; 0x0008 no reader found (U); 0x0001 selects a vector-quantised form (decoder 0x17e6c0) that **no disc texture uses** | O 0x179fa8, 0x17cba8; D |
+| +0x0c | u32 | TEX0 bits 14–45 | PSM 0x13 (PSMT8), TBW = 2·ceil(w/128), TW = TH = 10 (1024), TCC 1, TFX 0 (modulate) | O 0x16c308; D all |
+| +0x10 | u32 | | cell offset of the texture's **record block** (13.3); a pointer after relocation | O 0x179f38 |
+| +0x14 | u32 | 0 | run time: the built GS packet (0 = not built) | O 0x1887b8 |
+| +0x1c | u32 | 0 | run time: −1 after relocation, then last-used frame | O 0x179f48 |
+
+### 13.3 The decoder (worker 0x17ca58, block path 0x17cbe0–0x17d678) — O; D 157,820 of 157,820
+
+Record block, at cell + header +0x10:
+
+```
+u32 codebook offset                                     (cell-relative)
+repeat:  s8 x0, y0, x1, y1                              x0 == -1 ends; inclusive, in 16-texel blocks
+         u32 stream offset per block, y outer, x inner  (cell-relative)
+```
+
+Code book, at cell + codebook offset (O 0x17cd84–0x17d03c):
+
+| Offset | Size | Content |
+|---|---|---|
+| 0x000 | 0x400 | palette, 256 × RGBA8, stored in GS CLUT order (entry i at position i with bits 3 and 4 exchanged) |
+| 0x400 | 0x800 | successor table `succ[previous][k]`, 256 × 8 |
+| 0xc00 | 4 + 2N | u32 N, then N u16 symbols |
+| then | 2 × 18 × 4 | s32 `base[18]`, s32 `limit[18]` |
+
+Codes are canonical Huffman. A code value c of length L is valid when `c ≤ limit[L]`, and its
+symbol is `sym[base[L] + c]`.
+
+Each 16 × 16 block decodes on its own:
+
+- The stream is little-endian u16 words read most-significant bit first. The window is the
+  next 16 bits. Lengths 1–8 go through a 256-entry table built per code book (0x17cf88);
+  then length 9; then 10 and up.
+- Symbols:
+  - below 0x100: a literal palette index;
+  - 0x100–0x104: copy an earlier texel of the same block at −1, −16, −17, −15 or −2 (left,
+    up, up-left, up-right, two left; s8 table 0x41c1a0, re-read);
+  - 0x105–0x10c: `succ[previous texel][symbol − 0x105]`.
+- The previous texel starts at 0 in every block (O 0x17d238–0x17d3cc; thresholds at
+  0x17d370, 0x17d37c re-read).
+- The game writes each block through a permutation (0x7d3040, built by 0x17a0c0). That
+  permutation is exactly the standard placement of 8-bit texels in a block uploaded as
+  32-bit, so **the decoded 256 bytes are already plain row-major**. Block (bx, by) holds
+  texels (16·bx … 16·bx + 15, 16·by … 16·by + 15). No swizzle is needed natively (O for the
+  table; I for the GS equivalence, all 256 entries checked).
+- Blocks that no record lists are never written. On the console they hold stale GS memory.
+  D: no UV of any chunk falls into such a block.
+
+The code books that a texture header's record block points at are shared by several
+textures of one cell (D: 73,823 books for 157,820 textures).
+
+How the decoder was checked (D, private, counts only):
+
+- all 157,820 textures decode with no out-of-range symbol, no code over 16 bits and no
+  reference before a block start;
+- across 8.3 M consecutive stream pairs, no stream runs into the next;
+- header +0x04 matches the rule above in every texture;
+- neighbouring texels are closer in palette colour than random pairs in 157,452 textures.
+
+No decoded image was looked at. `ref_levels.decode_texture` was compared with the agent's
+private decoder texel by texel on three levels (section 13.6).
+
+### 13.4 Per-chunk material (`world_drawChunk` 0x1887b8)
+
+The chunk header the drawer writes (O) starts with `TEXFLUSH` and a `TEX0_1` that the DMA
+handler patches with TBP = block + 4, CBP = block, CPSM CT32, CLD 2 (O 0x16bff0–0x16c044,
+0x16c308–0x16c330). Then:
+
+| Chunk flags | ALPHA_1 | ALPHA_2 | TEST_1 |
+|---|---|---|---|
+| 0x10 (environment-mapped) | 0x09 | 0x2a | 0x582f5 if 0x400, else 0x587f4 |
+| else 0x10000 | 0x48 | — | as above |
+| else 0x200 or 0x400 | 0x01 | — | as above |
+| else | 0x02 | — | 0x587f4 |
+
+Lighting is tested in this order (O 0x18900c–0x18904c, re-read):
+
+1. 0x100: constant −230, and the flag is cleared;
+2. 0x2000: constant +230;
+3. 0x200: constant 0;
+4. otherwise up to four point lights.
+
+The sort layer is 4 with 0x200, otherwise 0. `TEX1`, `CLAMP` and the mip registers are not
+written. They come from frame state: bilinear, repeat, no mip maps (`render-pipeline.md` 6).
+
+**The packet's own DIRECT blocks override this, batch by batch** (last write wins). D: seven
+state sequences occur:
+
+| Sequence | Chunks |
+|---|---|
+| {ALPHA 2, TEST 587f4} | 106,795 |
+| {1, 582f5} | 19,269 |
+| {2a/9, 587f4} | 14,344 |
+| {2a/9} then {2} | 10,642 |
+| {2} then {1, 582f5} | 5,106 |
+| {1, 587f4} | 1,244 |
+| {2a/9}, {2}, {1, 582f5} | 420 |
+
+The GIF tag's ABE bit turns blending off for 0x308e4000 tags. Those occur only in packets
+that carry a {1, 582f5} block (D).
+
+**Texel alpha** (0..0x80; **0 is opaque** under these equations). D over the 2.70 billion
+texels that UVs actually reach:
+
+| Chunk group | Textures | A = 0 | 1–0x2e | 0x2f–0x7f | 0x80 | So |
+|---|---|---|---|---|---|---|
+| no blend flags | 106,795 | 100 % | 0 | 0 | 0 | opaque |
+| 0x400 | 24,375 | 51.6 % | 13.2 % | 25.8 % | 9.4 % | cut-out (A ≥ 0x2f discarded) with a blended soft edge |
+| 0x200, 0x2200 | 1,244 | 13.0 % | 7.9 % | 60.8 % | 18.3 % | genuinely translucent, drawn in layer 4 |
+| 0x10, 0x410 | 25,406 | 45.3 % | 53.2 % | 1.5 % | 0.04 % | alpha is the reflection strength |
+
+A material a Godot client can follow (`ref_levels.chunk_header_state`, `batch_material`). In
+every row the colour is `texel.rgb × vertex colour / 128` (vertex colour = base level plus the
+light rule); a = A / 128; depth test is ≥.
+
+| Batch state | Blend | Depth write |
+|---|---|---|
+| ALPHA 2 | opaque | yes |
+| ALPHA 1, ABE on | `mix(src, dst, a)`: alpha 0 opaque, 0x80 invisible | yes (I for layer 4) |
+| ALPHA 1, ABE off | opaque | yes |
+| TEST 0x582f5 | discard where A ≥ 0x2f (no colour, no depth) | — |
+| ALPHA 9 after the context-2 pass | pass 1 writes `env(uv2).rgb × c / 128` opaque; pass 2 adds the base: `base + pass1 × a` | yes |
+| ALPHA 0x48 | additive `dst + src × a`; no disc chunk | — |
+
+- UV: `u = U / (16 × width)`, `v = V / (16 × height)`. D: every UV lies inside the size and
+  inside a stored block, and none reaches 1024, so **clamp-to-edge** is the faithful
+  sampler. Use bilinear filtering and no mip maps (I).
+- Environment texture: `envtex.etex` in the archive's `env.lmp`, a 128 × 128 PSMCT32 lump
+  texture decodable with `docs/formats/model-texture.md`. It is uploaded after the load and
+  bound as `TEX0_2`, and repeats (O per `render-pipeline.md` 6, 13). Its coordinates are
+  computed in VU1 program 0x48 from the camera-space normal (`render-pipeline.md` 4.6). With
+  level flag bit 2 they scroll by `(g_simFrame & 0x3ff) / 4`.
+- `waterenv.lmp` holds one 64 × 64 PSMT8 texture used by the water drawer, not by geometry
+  (D, two archives).
+- D, chunk flags of the 157,820 drawn chunks (bits 0x1 and 0x40 ignored): 0: 106,200;
+  0x10: 24,980; 0x400: 24,375; 0x200: 1,128; 0x4: 493; 0x410: 420; 0x2200: 116; 0x20: 54;
+  0x20000: 48; 0x14: 6; 0x10000: 0. Flags 0x4, 0x20 and 0x20000 have no material effect in
+  0x1887b8 (O).
+- 988 geometry chunks have cell 0 and are never drawn (O, D). 123 of them are moving pieces
+  (11.4).
+
+### 13.5 Automap tile texture (world +0x6c)
+
+D over 118 worlds: a lump-style header with flags 0x2450, PSMT4 with an 8 × 2 CT32 palette,
+sent as plain 4-bit rows. The height is 160 (140 or 150 in two worlds), the width 10 to 210 in
+steps of 10. It should decode with the lump rules (not run). Which tile an automap cell code
+selects is still U.
+
+### 13.6 Private comparison
+
+`ref_levels.decode_texture` against the agent's scratch decoder (kept under `local/`, not
+committed), on every drawn chunk of `drundar`, `islgoth` and `disbonus`: 7,464 drawn chunks, 7,464 resolved
+through the directory and header, 7,464 decoded without error and identical texel for texel
+(D, 2026-10-17). In the same run `ref_levels.find_moving_piece`, applied in record order to
+the objects that claim pieces (`AutoDoor` set, or a WorldPart class), claimed all 57 pieces of
+the three levels (5 + 7 + 45, as in 11.4). These are private counts. The scripts are not
+committed, and nothing decoded was written out.
+
+## 14. Corrections to other documents
+
+| Document | Was | Now |
+|---|---|---|
+| `docs/mainloop.md` 7 step 6 | Players are built for every slot with hp > 0 and an active peer | only inside the "real level, not PvP B" test, and only the medal slot in a medal mission (0x32125c–0x3213b4). Also missing: the recall x/y copy (0x321160), the write-back of the scatter, the orientation copy (0x321118), `None` in record +0x24 on an act change (0x32141c) |
+| `docs/issues/arena-entry.md` 2, bullet 4 | the same | the same gate and medal condition |
+| `docs/data-tables.md` 7.1 +0x14 | pool contents Unknown | water simulation blocks (12) |
+| `docs/data-tables.md` 7.2 | the loading picture is Inferred; GOB holds `<name>.lmp`, `env.lmp`, `waterenv.lmp` | observed with the alias table and the 8-character cut (3.1); 21 archives also hold `dome.lmp`; `.TEX` is read during the GOB load |
+| `docs/FORMATS.md`, GOB | records carry offsets | the game ignores them and reads lumps back to back from 0x800 (3.2) |
+| `docs/script.md` / `docs/spec/script-builtins.md` 1.10 | "entrance orientation" | it has no reader beyond the loader's copy (6.3) |
+| `docs/spec/object-system.md` 7.3 | — | add: no marker on the disc has `from=gate`; `g_entranceName` survives level changes |
+| `docs/formats/world.md` | piece +0x1a U; water mask bit order U | +0x1a = the element's rest z (D); bit order and neighbour order (12) |
+| `docs/FORMATS.md`, `tools/play-net/disctex.py` | a `.TEX` unpacker is open; cell textures are "stored packed" | the per-block Huffman decoder of 13.3; the 0x7d3040 permutation is only the standard 8-bit GS block placement |
+| `docs/formats/world.md`, level texture file | −1/−2 terminators; always-loaded cells; +0x10 "pixel-data description"; decoding U | treated alike; the list's adder has no caller; +0x10 is the record block; decoded (13) |
+| `docs/spec/render-pipeline.md` 11, level texture alpha | open | settled by the counts of 13.4 |
+| `docs/monsters-2.md` 6.1 / 6.2 | 0x182bf4 "shake"; tolerance of −1 not read; DoorSwing `disable` leaves closed geometry | 0x182bf4 toggles the one-frame flash flag 0x100 (only `FallPlatform` calls it); every piece function ignores −1; a disabled DoorSwing's piece loses its collision (11.2) |
+| `names.tsv` 0x189240 | `world_collectChunksInBox`, "keeps chunks with flag 0x80" | correct; add that it descends only into split nodes with bit 14 (water below), visits the second child first, and stops at cap − 1 hits (not renamed here) |
+
+## 15. Open
+
+1. Which row each of the 30 levels without a table row resolves to (2).
+2. Whether a spawn with no floor is caught before the first tick (5.3).
+3. `Player_ctor` beyond 0x1a1db4; readers of 0x41b7c1 or writers of 0x4f8b58 through computed
+   pointers (watchpoints).
+4. Marker order after a re-entry from a saved state (3.3).
+5. Whether a piece's changed element z survives into a reload of the same level (7.4):
+   check whether `<level>.lmp` is always re-read.
+6. Arena placement (`arena_pickSpawnPoint` 0x3050a4) and the arena rotation table.
+7. Texture: what −1 vs −2 and header flag 0x0008 mean; the edge rules of the unused
+   flag-1 form; the look of environment-mapped chunks and whether layer-4 chunks write
+   depth (compare a GS frame dump); the automap tile mapping.
+8. None of this has been run. A recorded run through a `PushTrigger` door, a gate, a recall
+   pair and a party wipe with and without a checkpoint would confirm sections 5, 9 and 10
+   (`docs/VALIDATION.md`).
