@@ -11,6 +11,7 @@ port, live-game run or public-server contact was performed. The owning live
 | A: last Skills-A constructor | **Fully documented in the admitted domain.** [Constructor contract](gameobject-constructor.md), `tools/ref_gameobject_ctor.py`, `tools/test_ref_gameobject_ctor.py`, `tools/difftest_gameobject_ctor.py`. Ordered prefix, hidden-grid move, stale/incoming properties, names, quotes, tombstones and shared RNG. No change to pinned `ref_skills_a.py`; native count remains its owner's responsibility. |
 | B: rendered creature animation | **Partial overall.** [Animation handoff](rendered-creature-animation.md), `tools/ref_creature_animation.py`, `tools/test_ref_creature_animation.py`, `tools/difftest_creature_animation.py`. Index pairing, hierarchy, transform layout, blending, skinning, root-motion handoff, shared events and complete existing SmallSpider dispatch route are documented. Reuses `ref_anim`/`ref_core`/`ref_monsters_1`; no claim that every other creature/player dispatch is now executable or Godot rendering verified. |
 | C: water | **Fully documented services in the admitted domain.** [Water contract](water-services.md), `tools/ref_water_services.py`, `tools/test_ref_water_services.py`, `tools/difftest_water_services.py`. Includes original spatial query, order, capacities, duplicates, raw32 grid mapping and ordered ripple writes. Grid lifecycle/simulation/rendering remain outside this service contract. |
+| B (round 3): creature and player dispatch | **Documented for clip selection, events and consumers; partial for conditions.** [Dispatch contract](creature-animation-dispatch.md), [every class](creature-animation-dispatch-classes.md), [player](player-animation-dispatch.md); `tools/scan_anim_dispatch.py`, `tools/ref_creature_dispatch.py` + `_data.py`, `tools/test_ref_creature_dispatch.py`, `tools/difftest_creature_dispatch.py`. 73 classes in five groups; unchanged round-2 APIs. See the round-3 section below. |
 | C: model 0x46 | **Unknown original row producer.** [Evidence boundary](model-46-row-boundary.md). The level setup is documented, but the exceptional model's reachable STROW producer is not established. Preserve the native refusal. |
 
 ## Reproduce checks
@@ -51,3 +52,25 @@ The native owner should pin the local research commit before porting these
 supplements, preserve existing corpus baselines, and generate new native
 synthetic traces. A passing research function test is not a completed native
 port or an original-asset visual check.
+
+## Round 3 — 2026-10-17: exhaustive dispatch
+
+Branch `t3/research-anim` on `2502e2b`. Research only; no native port, push, PR, live game,
+recompiled-build run or server contact. Model 0x46 was left to `t3/research-textures`.
+
+- `tools/scan_anim_dispatch.py local/SLUS_209.73` executes every catalogue class's
+  setState (requests 0…0x2f; rand residues; one-word probes), constructors (event tables,
+  initial clips, class definition) and, with `--runs`, run functions (one event mask at a
+  time). Its JSON stays in `local/`; `--emit` writes the committed numeric table.
+- Result: 47 classes on the root-motion base, 10 on the steered base, 10 own state
+  machines, 6 without setState dispatch (section 5 of the contract); 55 classes with
+  event consumers; one consumer with no installer (SpiderQueen camera shake on 0x8).
+- Cross-checks: the table agrees with the independently written class bodies of
+  `ref_monsters_1` (SmallSpider, Gnaw, Mosquito, Scorpion, Badger) and
+  `ref_arena_monsters` (Horsemen, Skelight, Zek) on every recorded state and residue
+  (synthetic test, no ELF); `difftest_creature_dispatch.py` re-executes 1,404 original
+  setState calls against the table (log `local/dispatch-differential.log`).
+- Player: by reading (sub-agent draft reviewed, two claims re-checked at 0x1a2380 and
+  0x1b34b0); player-tick §0 track-field names corrected.
+- Native owner: keep round-2 vectors; add `ref_creature_dispatch.select/apply_ops/
+  install_events` traces. Conditions beyond one-word probes stay with each class body.

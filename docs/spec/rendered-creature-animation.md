@@ -117,6 +117,14 @@ variant. This delivery establishes pairing/dispatch mechanisms and the
 SmallSpider route, **not all 73 class state machines**. Unsupported classes
 must remain explicit until their own class body is contracted.
 
+**Round 3 (2026-10-17):** the setState clip dispatch, constructor event tables and run-side
+event consumers of all 73 catalogue classes are now Executed and tabulated in
+[creature-animation-dispatch](creature-animation-dispatch.md) (data
+`tools/ref_creature_dispatch_data.py`, contract `tools/ref_creature_dispatch.py`), and the
+player's in [player-animation-dispatch](player-animation-dispatch.md). That is the clip
+*selection* contract; the full per-class AI (targeting, timers, every draw) still needs each
+class body, as before.
+
 ### Mutable event tables are part of the class contract
 
 **Observed, `creature_setDefEntryParams` `0x118378–0x1183cc`:** for each of
