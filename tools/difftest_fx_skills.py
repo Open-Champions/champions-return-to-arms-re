@@ -293,6 +293,27 @@ def scenario_cloud(t):
             t.do('DiseaseCloud_run', obj)
 
 
+# ---------------------------------------------------------------------------------------
+# SpellArena
+# ---------------------------------------------------------------------------------------
+entry('SpellArena_run', 0x305BBC, 0x305E9C, 'iv', 'arena_run', 'arena')
+
+
+@scenario('arena', 'the arena spell over its counter')
+def scenario_arena(t):
+    mem, rng, world = t.mem, t.rng, t.world
+    spell = fresh(t, 0x40)
+    for _ in range(reps(t, 300)):
+        set_frame(t)
+        world.reset_objects(rng)
+        c = rng.choice(world.objects)
+        mem.w32(spell + 0xC, c)
+        mem.w32(spell + 0x10, rng.getrandbits(32))
+        mem.w16(FS.Arena.G_ARENA_COUNTER, rng.choice((0, 29, 30, 31, 60, 61, 100, 180, 200, 400,
+                                                     rng.randrange(-100, 400))) & 0xFFFF)
+        t.do('SpellArena_run', spell, to_vec(rand_pos(rng)))
+
+
 def main(argv):
     if any(a in ('-h', '--help') for a in argv[1:]):
         print(__doc__)

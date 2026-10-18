@@ -652,5 +652,52 @@ class DiseaseCloud:
 _register('DiseaseCloud_run', 0x2CE6E0)
 
 
-class Model(Calls, Draws, MultiFire, FireStormFlare, Pustule, DiseaseCloud, SC.Model):
+class Arena:
+    """SpellArena: the spell an arena puts on a fighter while the arena counter 0x5038c8
+    (s16) runs.  Placement uses the SPELL's own generator (+0x10, Spell_rand)."""
+    G_ARENA_COUNTER = 0x5038C8
+    ARENA_PARTICLES = (0x8E71E0, 0x8E7190)
+    ARENA_TINT = (0x56, 0x35, 0x21, 0x3D)
+
+    def arena_run(self, spell, pos):
+        """SpellArena_run 0x305bbc, Spell slot 2 (spell, position).  On the creature +0xc:
+        object flag 2 is set when the counter is 61 or more, cleared below.  From counter 30
+        on: f = 1 - (counter - 30) x 0.0066666664; int(23 f) particles, each at a random
+        sample point of the creature's model (index = draw % count) moved back by v x
+        7.5742016, velocity v = (cos16, sin16, 0)(one draw) x (1 - f) x 10; every fourth
+        (i % 4 == 0) of definition 0x8e71e0, the rest 0x8e7190.  Then both tint colours
+        (+0x90.. and +0x98..) are set to (0x56, 0x35, 0x21, 0x3d)."""
+        u32 = self.u32
+        counter = self.s16(self.G_ARENA_COUNTER)
+        c = u32(spell + 0xC)
+        flags = u32(c + 0xC)
+        self.w32(c + 0xC, (flags & ~2) if counter < 0x3D else (flags | 2))
+        if counter < 0x1E:
+            return
+        f = C.sub(ONE, C.mul(C.sub(C.from_int(counter), 0x41F00000), 0x3BDA740D))
+        count = s32(self.call('model_getSamplePointCount', self.vcall(u32(spell + 0xC), 16)))
+        n = C.to_int(C.mul(f, 0x41B80000))
+        i = 0
+        while i < n:
+            model = self.vcall(u32(spell + 0xC), 16)
+            draw = self.spell_rand(spell)
+            c = u32(spell + 0xC)
+            index = s32(draw) % count if count else 0
+            point, _extra = self.call('model_getSamplePoint', model, c + 0x114, self.vec(c + 0x10), self.s16(c + 0x38),
+                                      index, 1, 0, ONE)
+            k = C.mul(C.sub(ONE, f), 0x41200000)
+            a = self.spell_rand(spell)
+            v = (C.mul(C.cos16(a), k), C.mul(C.sin16(a), k), C.mul(ZERO, k))
+            p = tuple(C.sub(point[j], C.mul(v[j], 0x40F25FDC)) for j in range(3))
+            self.call('particle_spawn', self.ARENA_PARTICLES[0 if i & 3 == 0 else 1], p, v, ZERO)
+            i += 1
+        c = u32(spell + 0xC)
+        for k, value in enumerate(self.ARENA_TINT + self.ARENA_TINT):
+            self.w16(c + 0x90 + 2 * k, value)
+
+
+_register('SpellArena_run', 0x305BBC)
+
+
+class Model(Calls, Draws, MultiFire, FireStormFlare, Pustule, DiseaseCloud, Arena, SC.Model):
     """ref_skills_c.Model with the methods of part 3."""
