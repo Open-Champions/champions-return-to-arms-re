@@ -132,9 +132,9 @@ v     = (vel.x, vel.y, vz')
 
 (g = def+0x18.) O 0x18f53c–0x18f63c. Most callers pass 0.
 
-Fields are 16-bit: positions beyond ±32767 wrap, which no level reaches (levels are at most
-90 × 256 = 23040 units; `docs/lighting.md` 4). Velocities above 127.99 units per 16 ticks
-wrap (I: a caller would have to pass one).
+Fields are 16-bit: positions beyond ±32767 wrap. I: no level reaches that, since the light
+grid, which must hold every lit place, spans ±11520 (`docs/lighting.md` 4). Velocities of
+128 units per 16 ticks or more wrap; whether any caller passes one was not checked (U).
 
 ## 4. Motion, size, colour, death
 
@@ -387,7 +387,7 @@ tick); a beam not updated is destroyed by the next draw after that frame. O
 3. A cell takes a block from 64 blocks of 0x180 bytes (0x840450, free list through +0x170)
    and holds at most 15 decals; a full cell or no free block drops the decal.
 4. The decal is three qwords (0x18 bytes of s16): colour = the **light at the position**
-   (0x148ff0, `docs/lighting.md` 7; alpha 0x80), centre × 4 with z + 3 units, a "counted"
+   (0x148ff0, `docs/lighting.md` 6; alpha 0x80), centre × 4 with z + 3 units, a "counted"
    flag (1 for types < 3), (cos, sin) × size × 4, and the VU address of its texture
    rectangle, 0x3d3 + 2 × type. The colour is taken once, when the decal is made. O
 5. `grow` ≠ 0 registers the decal in one of 16 growing slots (0x840310, 0x14 bytes): its
@@ -518,9 +518,10 @@ each id from its callers is I. Not read: the direction terms of ids 7, 0x14, 0x1
 
 100 ticks. Each tick one glow (bias 5, size 8000 + 250 × sin(g_simFrame × 1024), colour
 (255, 150, 0), alpha 60, fading in over the first 20 ticks and out over the last 20 by 3
-per tick; texture 0x4f848c; flags 0) and one particle of 0x870548 at pos + (2u.x, 2u.y,
-|2u'.z|) with velocity (2u.x, 2u.y, 2u.z + 4.8), u and u' unit-ball points from the
-object's own generator.
+per tick; texture 0x4f848c; flags 0) and one particle of 0x870548 at pos + (2u'.x, 2u'.y,
+|2u'.z|) with velocity (2u.x, 2u.y, 2u.z + 4.8), u and then u' unit-ball points from the
+object's own generator. The glow is queued from `run`, so it is drawn by the next draw
+task.
 
 ## 11. Skill and spell visuals: how they are chosen and timed
 
