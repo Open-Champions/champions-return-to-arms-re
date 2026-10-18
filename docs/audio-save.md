@@ -248,10 +248,11 @@ camera's right vector (0x44f110, 0x44f11c, 0x44f128).
 
 ### Streams (`g_streams` 0x876c10, 3 × 0x1c4)
 
-Stream 2 is music (every music call uses it) and stream 1 is speech (dialog); what plays
-on stream 0 was not established here. `docs/formats/anim-audio.md` section 3.4 has since
-found: ambience one-shots go to stream 2 as well, not to stream 0 as the symbol file had
-inferred, and stream 0 was seen only for the intro movie's soundtrack. Each stream has an
+Stream 2 is music (every music call uses it) and stream 1 is speech (dialog).
+`docs/audio-playback.md` now establishes stream 0 for the intro movie soundtrack and
+the first matching level `amb_` entry when idle (0x322640–0x3226c4). The
+`ambient.bin` one-shots go to stream 2 when no music is active; they are a separate
+path (0x2149d0). Each stream has an
 8-entry queue at +0x40 (0x30 bytes per entry: file name, offset, length, three driver
 parameters, flags) with the count at +0x1c0. The three parameters are, per
 `docs/formats/anim-audio.md` 3.4: the sample rate (passed to the driver, which stores and

@@ -105,8 +105,9 @@ for any different disc revision rather than fabricating effect presets.
 **Observed** (`g_streams` 0x876c10, 3 × 0x1c4; `stream_serviceQueues` 0x211df8;
 HELLO.IRX RPC server 0x163a5): each stream has an eight-entry EE queue at +0x40,
 with 0x30-byte entries and count at +0x1c0. The driver has rings of 0x19000,
-0x1e000 and 0x40000 bytes for streams 0, 1 and 2. Stream 0 was seen for the intro
-movie soundtrack (`splash_introMovie` 0x321788); stream 1 serves voice and dialog
+0x1e000 and 0x40000 bytes for streams 0, 1 and 2. Stream 0 serves the intro
+movie soundtrack (`splash_introMovie` 0x321788) and level `amb_` entries
+(`mainloop_pollAmbientAudio` 0x322650–0x3226c4); stream 1 serves voice and dialog
 (0x196788, 0x22ec9c, 0x1b7ba8); stream 2 serves music and, only when no music is
 active/queued, ambient one-shots (`ambient_update` 0x2149d0). Streams 0 and 2 each
 use two SPU voices; stream 1 uses one. `audio_streamStatus` 0x211b20 and
@@ -134,18 +135,53 @@ stream 2, then calls `music_playGlobal(name, 0x103)`; `creature_stopBossMusic`
 0x1192f8 queues stream 2 stop. `script_applyCFlag` 0x1445fc triggers that boss path
 when cflag bit 0 changes (`docs/script.md` 749). A cutscene dialog key type 7
 releases a held stream-2 entry and queues the following level-directory entry
-(`cut_execKey` 0x196788; `docs/engine.md` 509). Menu/title music is a global VAT
-stream: a recompiled-build title capture had stream 2 playing a stereo entry and
-matched the emulator (`docs/issues/native-sound.md` 4.3).
+(`cut_execKey` 0x196788; `docs/engine.md` 509). The front-end task
+`frontend_run` 0x1e08f0 queues global `mx_maintheme_l.vag` on stream 2 at
+0x1e09b0/0x1e09c4 (flags 1 or 5 according to its state byte 0x4f701a), and
+also requeues it at 0x1e10b8/0x1e114c. The title capture matched the
+emulator with this stereo stream (`docs/issues/native-sound.md` 4.3).
+
+**Observed boss-name mapping** (`creature_bossMusicName` 0x10dbe0–0x10de0c):
+the creature type name at +0x34 is compared without case (`libc_strcasecmp`
+0x3b81a0). The two cyclops cases also compare the object's `name` property
+(`obj_getPropStr` 0x14f4c0). No match returns no boss music name.
+
+| Creature type | Additional `name` | Global `MOUTH.VAT` entry |
+|---|---|---|
+| `cazicavatar` | — | `mx_ba_avataroffear_l.vag` |
+| `fatcyclops` | `broon` | `mx_ba_broon_l.vag` |
+| `fatcyclops` | `droon` | `mx_ba_droon_l.vag` |
+| `cyclops` | `proon` | `mx_ba_proon_l.vag` |
+| `cazicthule` | — | `mx_ba_cazicthule_l.vag` |
+| `reddragon` | — | `mx_ba_dozekar_l.vag` |
+| `ironguardian` | — | `mx_ba_ironguardian_l.vag` |
+| `mattmarr` | — | `mx_ba_matanielmarr_l.vag` |
+| `raloszek` | — | `mx_ba_ralloszek_l.vag` |
+| `vampirelord` | — | `mx_ba_vanerhost_l.vag` |
+| `snowboss` | — | `mx_ba_whitetormentor_l.vag` |
+
+**Observed level poll** (`mainloop_pollAmbientAudio` 0x322520–0x3226dc,
+`libc_strstr` 0x3b96a8): once per displayed frame a countdown at 0x4f608c is
+decremented. At zero it is reset to 14,400–21,599 frames (240–360 seconds at
+60 Hz) using `g_cosmeticSeed` 0x404460. If stream 2's queued flags lack 0x20,
+the routine walks the current level's `dialog.bin` directory in order and queues
+the first name containing `_env_` or `mx_theme` through
+`music_playLevel(name, 0x102)` at 0x322634. Separately, every 16th displayed
+frame, if stream 0 is idle, it queues the first level-directory name containing
+`amb_` through `stream_queueLevelIndex(0, index, 3)` at 0x3226c0. This corrects
+the earlier **inference** in `docs/formats/anim-audio.md` 3.4 and
+`docs/audio-save.md` that stream 0 was only seen for the intro. The `amb_` scan
+is separate from `ambient.bin` one-shots (`ss_*`), which use stream 2 only
+when no music is active or queued (0x2149d0).
 
 `music_updateDucking` 0x212500 reads stream 1 status; when its 0x20 bit is set it
 sets the duck target to about 0.2, then eases its scalar by 1/60 per update and
 applies it through `music_applyVolume` 0x215e78. `g_musicVolume` is 0x4f8944;
 `audio_setChannelVolume` 0x216690 and `audio_sendVolumes` 0x2166e0 send stream
-scales and stereo option. **Unknown:** the complete level-by-level and menu music
-choice table, ordering of every boss override, and any additional transition path;
-the per-level script/stream directory and caller path must be inspected before a
-native client selects specific names. `game_loadLevel` 0x1e55c0 has an `enttag`
+scales and stereo option. **Unknown:** ordering of simultaneous boss
+overrides and any additional transition path; level scripts and cutscene keys can
+also queue named tracks, so the poll's first match is not an exhaustive level
+playlist. `game_loadLevel` 0x1e55c0 has an `enttag`
 first-entry path, but no NTSC directory contains that tag (`docs/formats/anim-audio.md`
 3.6). Never infer a track from the level name alone.
 

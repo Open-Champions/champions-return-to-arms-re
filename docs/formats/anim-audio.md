@@ -479,7 +479,7 @@ stream 1 one voice (mono) — `voicesStream` = {0, 0, 1, 2, 2}, SPU voices 19–
 
 | Stream | Used for | Evidence |
 |---|---|---|
-| 0 | intro movie soundtrack `porko_l.vag` (queued held, released when the movie is ready) | **O** `splash_introMovie` 0x321788; other users not traced |
+| 0 | intro movie soundtrack `porko_l.vag` (queued held, released when the movie is ready); first level-directory `amb_` entry when idle, checked every 16th displayed frame | **O** `splash_introMovie` 0x321788; `mainloop_pollAmbientAudio` 0x322640–0x3226c4 (2026-10-17 correction) |
 | 1 | all speech: cutscene and NPC dialog lines, script `startAudio`, player voice lines | **O** 0x196788, 0x22ec9c, 0x146ba4, `player_voice` 0x1b7ba8 |
 | 2 | music, and the ambience one-shots of `ambient.bin` when no music entry is active or queued | **O** `music_playGlobal` 0x2110e0, `ambient_update` 0x2149d0 |
 
@@ -527,7 +527,7 @@ the voice is not playing: 0x800 bytes of mono, or 0x400 + 0x400 of stereo, or th
 ### 3.6 Not established
 
 - Whether the pitch of 0x7fe instead of 0x800 is deliberate.
-- Queue flags 0x40 and 0x100; every user of stream 0.
+- Queue flags 0x40 and 0x100; any additional users of stream 0 beyond the intro and the level `amb_` poll.
 - The loop restart field (+0x4c) was never seen non-zero, so its unit is read from code only.
 - `game_loadLevel` (0x1e55c0) starts as level music the first directory entry whose name
   contains `enttag`; no NTSC directory has such a name, so that path does nothing here.
