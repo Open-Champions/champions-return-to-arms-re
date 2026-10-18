@@ -24,6 +24,20 @@ How a property is tested
     generator states and the stores the function makes to the memory it owns.  "Bit for
     bit" means identical under the interpreter's floating-point model (its default "ps2"
     adder); the effects are cosmetic, so the other adder models are not repeated here.
+
+Properties
+    fx_spawn id N         fx_spawn 0x1ef270 for every id 0..0x16 and two outside the table
+    disintegrate          fx_disintegrateModel 0x1f4340
+    ice shatter           fx_shatterToLooseIce 0x1fb240 (shared seed)
+    lose part <class>     the eight callers of GutChunk_ctorFromProp 0x201ad0
+    emit from model verts fx_emitFromModelVerts 0x1eb1e8
+    model sparkle         fx_modelParticlesNearCamera_1f5210
+    model arcs            fx_modelParticlesNearCamera_1f61c0
+    model glow            fx_drawModelGlowNearCamera 0x1f5890
+    weapon status         fx_modelStatusEffects 0x1f6ac8
+    Models are synthetic: their sample points, attach matrices and blade segment are answered
+    by the recorders from made-up tables, so the recipes are compared in terms of those
+    queries (what a native client gets from its own model code).
 """
 import hashlib
 import os
@@ -128,7 +142,6 @@ class Harness:
         e.stub(TRAIL_PAIR, function=lambda m: self.log.append(
             ('trail_pair', m.f[12], m.r[4] & M32, vec(m, m.r[5]), vec(m, m.r[6]))))
         e.stub(TRANSFORM_SAMPLE, function=self._transform_sample)
-        e.stub(FX_SPAWN, function=lambda m: self.log.append(('fx_spawn', m.r[4] & M32, vec(m, m.r[5]))))
         e.stub(BEAM_ALIVE, function=lambda m: (self.log.append(('beam_alive', m.r[4] & M32)),
                                                self.answers.get('beam_alive', 0))[1])
         self.dialog = 0
@@ -767,6 +780,7 @@ def prop_weapon_status(h):
     count = scaled(3000)
     failures, examples, spawns = 0, [], 0
     e = h.emu
+    e.stub(FX_SPAWN, function=lambda m: h.log.append(('fx_spawn', m.r[4] & M32, vec(m, m.r[5]))))
     codes = (R.CODE_LIGHTNING, R.CODE_COLD, R.CODE_FIRE, R.CODE_POISON, R.CODE_DISEASE, 0x10, 0)
     for case in range(count):
         h.begin()
@@ -861,6 +875,7 @@ def prop_weapon_status(h):
         if problem:
             failures += 1
             examples.append('case %d: %s' % (case, problem))
+    e.unhook(FX_SPAWN)
     h.weapon = None
     h.answers = {}
     report(name, failures, count, 'call stream (%d particle_spawn calls; trail, beam, glow, fx_spawn, '
