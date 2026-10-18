@@ -71,7 +71,8 @@ TRAIL_CREATE, TRAIL_ADD, TRAIL_UPDATE, TRAIL_ADD_PAIR = 0x190FF8, 0x192550, 0x19
 G_TRAILS, G_TRAIL_ROW_V = 0x82CD00, 0x44FCA8
 BEAM_CREATE, BEAM_UPDATE = 0x193088, 0x1933C8
 G_BEAMS, G_DRAW_FRAME, G_NET_FRAME, G_IN_SIM_TICK, G_LIBC_REENT = 0x7E30D0, 0x44FDD0, 0x4027AC, 0x402794, 0x50C7E8
-GLOW_ADD = 0x18FC78
+GLOW_ADD, GLOW_DRAW = 0x18FC78, 0x1907D0
+G_GLOW_QUEUE, G_GLOW_COUNT, G_CAMERA, G_VIEWPROJ = 0x7D8B00, 0x82CC94, 0x44F110, 0x44F140
 VU_BOOT = 0x3E5EC0
 G_DL_BASE, G_DL_CURSOR, G_DL_CAPACITY = 0x44FE0C, 0x44FE10, 0x44FDA4
 G_PROJ_SCALE, G_ENABLED, G_PCLOCK = 0x44F108, 0x4039C0, 0x82CC90
@@ -639,6 +640,76 @@ def prop_beams(rig, rnd, cases, label):
     return bad
 
 
+# ---------------------------------------------------------------------------------------
+# Glows
+# ---------------------------------------------------------------------------------------
+
+def prop_glows(rig, rnd, cases, label):
+    bad = total = 0
+    examples = []
+    for case in range(cases):
+        rig.reset()
+        e, m = rig.emu, rig.emu.mem
+        target = [rnd.uniform(-3000, 3000), rnd.uniform(-3000, 3000), rnd.uniform(-200, 400)]
+        view = random_view(rnd, target)
+        proj = C.mat4_set_projection(0x3F7FFFFF, 0x3EEEEEEE, f2r(rnd.uniform(300, 900)), R.ONE,
+                                     0x457FFF00, 0x41900000, 0x44E10000)
+        vp = C.mat4_mul_mat34(view, proj)
+        for k in range(12):
+            m.w32(G_CAMERA + 4 * k, view[k])
+        for k in range(16):
+            m.w32(G_VIEWPROJ + 4 * k, vp[k])
+        texs = {}
+        for _ in range(rnd.randrange(1, 4)):
+            t = rig.alloc(0x40)
+            w, h = rnd.choice(((32, 32), (64, 64), (rnd.randrange(1, 300), rnd.randrange(1, 300))))
+            m.w16(t, w)
+            m.w16(t + 2, h)
+            texs[t] = (w, h)
+        n = rnd.choice((rnd.randrange(1, 40), rnd.randrange(1, 300), 1030 if rnd.random() < 0.05 else 3))
+        for _ in range(n):
+            pos = [target[k] + rnd.uniform(-400, 400) for k in range(3)]
+            bias = rnd.choice((0.0, 5.0, rnd.uniform(-50, 200)))
+            size = rnd.choice((8000.0, rnd.uniform(0, 20000), rnd.uniform(0, 300)))
+            col = [rnd.randrange(256) for _ in range(4)]
+            tex = rnd.choice(list(texs) + [0] * (1 if rnd.random() < 0.1 else 0))
+            rig.call(GLOW_ADD, rig.put_floats(pos), *col, tex, rnd.randrange(1 << 16),
+                     rnd.choice((0, 1, 2, 3, 4, 5, 6, 7, rnd.randrange(1 << 16))),
+                     fargs=(bias, size))
+        count = m.u32(G_GLOW_COUNT)
+        queue = [R.Glow.from_bytes(m.read(G_GLOW_QUEUE + 0x20 * i, 0x20)) for i in range(count)]
+        b = 0
+        if count != min(n, R.GLOW_MAX):
+            b += 1
+            examples.append('case %d: %d glows queued, reference %d' % (case, count, min(n, R.GLOW_MAX)))
+        for pass_ in (1, 0):
+            rig.packets = []
+            rig.call(GLOW_DRAW, pass_)
+            want = R.glow_packets(queue, pass_, view, vp, texs)
+            got = list(rig.packets)
+            if [(k, t) for _, k, t in got] != [(k, t) for k, t, _, _ in want]:
+                b += 1
+                examples.append('case %d pass %d: packets %s, reference %s' % (
+                    case, pass_, [(k, hex(t)) for _, k, t in got], [(k, hex(t)) for k, t, _, _ in want]))
+                continue
+            for (addr, _, _), (key, tex, prim, ev) in zip(got, want):
+                vu, vif, gs = rig.new_vu()
+                rig.send(vif, addr)
+                total += 1
+                if gs.raw != ev or gs.tags[0][3] != prim or not gs.tags[0][2]:
+                    b += 1
+                    k = next((i for i in range(min(len(gs.raw), len(ev))) if gs.raw[i] != ev[i]), None)
+                    examples.append('case %d pass %d: packet differs at write %s: %s vs %s (%d/%d writes)' % (
+                        case, pass_, k, gs.raw[k] if k is not None else '', ev[k] if k is not None else '',
+                        len(gs.raw), len(ev)))
+                cover('glow sprites drawn', sum(1 for r, _ in ev if r == 0x05) // 2 if prim == 0x15E else 0)
+                cover('glow quads drawn', sum(1 for r, _ in ev if r == 0x0D) // 2 if prim == 0x15C else 0)
+        bad += 1 if b else 0
+    report(label, bad, total, 'glow packets: every A+D write, PRIM, sort key, texture (%d scenes)' % cases,
+           examples)
+    return bad
+
+
 def main(argv):
     args = []
     i = 1
@@ -690,6 +761,7 @@ PROPERTIES = [
     ('particle groups', lambda rig, rnd, n, label: prop_particles(rig, rnd, n, label, groups=True), 60),
     ('trails', prop_trails, 60),
     ('beams', prop_beams, 80),
+    ('glows', prop_glows, 120),
 ]
 
 if __name__ == '__main__':

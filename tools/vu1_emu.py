@@ -824,6 +824,7 @@ class GifReader:
         self.events = []
         self.vertices = []
         self.tags = []
+        self.raw = []                   # (register address, 64-bit value) of REGLIST / A+D writes
 
     def path1(self, vu, qword):
         """XGKICK: a packet in VU1 data memory starting at qword."""
@@ -887,6 +888,7 @@ class GifReader:
             self._write(addr, w[0], w[1], False, path=path)
             return
         value = lo | (hi << 32)
+        self.raw.append((addr, value))
         if addr == 0x00:
             self.prim = value & 0x7FF
         elif addr == 0x01:

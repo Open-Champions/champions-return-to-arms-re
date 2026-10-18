@@ -623,3 +623,134 @@ def beam_trail_points(points):
     up by 1 after each point, so stamps run 1, 2, ... (trail_addPoint stamps clock + 1).
     Returns (ring entries, clock)."""
     return [trail_point(p, k + 1) for k, p in enumerate(points)], len(points)
+
+
+# ---------------------------------------------------------------------------------------
+# Glow sprites: glow_add 0x18fc78 (the queue) and glow_draw 0x1907d0 (EE side, ref_core FPU)
+# ---------------------------------------------------------------------------------------
+
+GLOW_MAX = 0x400
+K_SIXTEEN = 0x41800000
+K_DEPTH_MIN, K_X_LIMIT, K_Y_LIMIT = 0x41A00000, 0x442F0000, 0x43960000     # 20, 700, 300
+GLOW_DIMX_ON, GLOW_DIMX_OFF = 0x1212303012123030, 0x3131757531317575
+M64 = (1 << 64) - 1
+
+
+class Glow:
+    """One 0x20-byte record of g_glowQueue 0x7d8b00: pos (3 raw floats) +0, size +0xc,
+    bias +0x10, r g b a +0x14..+0x17, texture +0x18, angle (u16) +0x1c, flags (s16) +0x1e.
+    glow_add(bias f12, size f13, pos a0, r a1, g a2, b a3, a t0, texture t1, angle t2,
+    flags t3) fills one, unless 0x400 are queued already (the 0x401st is dropped)."""
+    __slots__ = ('pos', 'size', 'bias', 'rgba', 'tex', 'angle', 'flags')
+
+    def __init__(self, pos, size, bias, rgba, tex, angle, flags):
+        self.pos, self.size, self.bias = list(pos), size, bias
+        self.rgba, self.tex = tuple(x & 0xFF for x in rgba), tex
+        self.angle, self.flags = angle & 0xFFFF, C.s16(flags)
+
+    @classmethod
+    def from_bytes(cls, b):
+        pos = list(struct.unpack_from('<3I', b, 0))
+        size, bias = struct.unpack_from('<II', b, 0xC)
+        tex, angle, flags = struct.unpack_from('<IHh', b, 0x18)
+        return cls(pos, size, bias, tuple(b[0x14:0x18]), tex, angle, flags)
+
+
+GS_REG = {'PRIM': 0x00, 'RGBAQ': 0x01, 'UV': 0x03, 'XYZ2': 0x05, 'TEX0_1': 0x06, 'XYZ3': 0x0D,
+          'TEX1_1': 0x14, 'TEXFLUSH': 0x3F, 'ALPHA_1': 0x42, 'DIMX': 0x44, 'TEST_1': 0x47}
+
+
+def _ad(value, reg):
+    """One A+D write: (GS register address, 64-bit value)."""
+    return (GS_REG[reg], value & M64)
+
+
+def glow_project(g, cam, viewproj):
+    """The screen position of one glow, or None when it is not drawn.
+    cam: g_cameraMatrix 0x44f110 (mat34, 12 raw floats); viewproj: g_viewProj 0x44f140.
+        fwd   = column 2 of the camera matrix
+        p'    = pos - fwd * bias            (per axis: y, z, x in the code's order)
+        q, w  = g_viewProj * p' ;  depth = w + bias
+        drawn when 20 <= depth, |q.x| <= depth * 700, |q.y| <= depth * 300
+        X = int(q.x * (1/depth) * 16) + 0x8000, Y likewise, Z = int(q.z * (1/(depth - bias)) * 16)
+        H = int((size * 16) * (1/depth))
+    Returns (X, Y, Z, H) as integers."""
+    fwd = (cam[2], cam[5], cam[8])
+    p = [C.sub(g.pos[k], C.mul(fwd[k], g.bias)) for k in range(3)]
+    q, w = C.mat4_transform_point(viewproj, p)
+    depth = C.add(w, g.bias)
+    if C.lt(depth, K_DEPTH_MIN):
+        return None
+    if C.lt(C.mul(depth, K_X_LIMIT), C.fabs(q[0])) or C.lt(C.mul(depth, K_Y_LIMIT), C.fabs(q[1])):
+        return None
+    inv = C.div(ONE, depth)
+    invz = C.div(ONE, C.sub(depth, g.bias))
+    x, y, z = C.mul(q[0], inv), C.mul(q[1], inv), C.mul(q[2], invz)
+    X = C.s32(C.to_int(C.mul(x, K_SIXTEEN))) + 0x8000
+    Y = C.s32(C.to_int(C.mul(y, K_SIXTEEN))) + 0x8000
+    Z = C.s32(C.to_int(C.mul(z, K_SIXTEEN)))
+    H = C.s32(C.to_int(C.mul(C.mul(g.size, K_SIXTEEN), inv)))
+    return X, Y, Z, H
+
+
+def _xyz(x, y, z):
+    return (x | (y << 16) | (z << 32)) & M64
+
+
+def glow_vertices(g, X, Y, Z, H, tex_w, tex_h):
+    """The GIF A+D writes of one glow: RGBAQ (Q = 0), then
+    flags bit 0 clear: a SPRITE from (X - 2H, Y - H) to (X + 2H, Y + H), UV from texel
+        (1, 1) to (width - 1, height - 1) of the texture header (+0, +2);
+    flags bit 0 set: a quad (triangle strip, first two vertices by XYZ3) turned by the
+        angle: C = int(cos16(angle) * float(H)), S = int(sin16(angle) * float(H)),
+        corners (X - 2C, Y - S), (X + 2S, Y - C), (X - 2S, Y + C), (X + 2C, Y + S) with UV
+        (1,1), (w-1,1), (1,h-1), (w-1,h-1).
+    X, Y and Z are packed into one 64-bit value with 32-bit arithmetic, so an X - 2H below
+    0 spills its sign into Y and Z (as the code does; such sprites are off screen anyway)."""
+    rgba = g.rgba[0] | g.rgba[1] << 8 | g.rgba[2] << 16 | g.rgba[3] << 24
+    rgba = rgba - (1 << 32) if rgba & SIGN else rgba
+    out = [_ad(rgba & M32, 'RGBAQ')]
+    u1 = ((tex_w - 1) << 4)
+    v1 = ((tex_h - 1) << 20)
+    if not g.flags & 1:
+        out += [_ad(0x100010, 'UV'), _ad(_xyz(X - 2 * H, Y - H, Z), 'XYZ2'),
+                _ad(u1 | v1, 'UV'), _ad(_xyz(X + 2 * H, Y + H, Z), 'XYZ2')]
+        return out
+    hf = C.from_int(H)
+    c = C.s32(C.to_int(C.mul(C.cos16(g.angle), hf)))
+    s = C.s32(C.to_int(C.mul(C.sin16(g.angle), hf)))
+    out += [_ad(0x100010, 'UV'), _ad(_xyz(X - 2 * c, Y - s, Z), 'XYZ3'),
+            _ad(u1 | 0x100000, 'UV'), _ad(_xyz(X + 2 * s, Y - c, Z), 'XYZ3'),
+            _ad(v1 | 0x10, 'UV'), _ad(_xyz(X - 2 * s, Y + c, Z), 'XYZ2'),
+            _ad(u1 | v1, 'UV'), _ad(_xyz(X + 2 * c, Y + s, Z), 'XYZ2')]
+    return out
+
+
+def glow_packets(queue, pass_, cam, viewproj, tex_dims):
+    """glow_draw(pass): one packet per (texture, flags) in queue order, for the records
+    whose flags bit 2 equals pass.  Returns [(sort key, texture, events)].  The packet is
+    handed to gfx_addSortedPacket with key 4 for pass 1 (drawn after the particle packet)
+    and key 3 for pass 0 (before every key-4 packet).  Events: the A+D register writes
+    TEXFLUSH, TEX0 (0 here: gfx_dmaHandler 0x16b998 patches packet +0x30 with the
+    texture's TEX0), TEX1 0x61 (bilinear), TEST 0x71001, DIMX, ALPHA_1 (flags bit 1:
+    0x48 additive, else 0x44), PRIM by the tag (0x15e sprite / 0x15c strip, Gouraud,
+    textured, blended, UV), the glows, DIMX back.  Records are consumed (texture field
+    cleared) by the packet that takes them, drawn or culled; queue: Glow list, modified."""
+    out = []
+    while True:
+        first = next((i for i, g in enumerate(queue) if g.tex and ((g.flags >> 2) & 1) == pass_), None)
+        if first is None:
+            return out
+        tex, flags = queue[first].tex, queue[first].flags
+        ev = [_ad(0, 'TEXFLUSH'), _ad(0, 'TEX0_1'), _ad(0x61, 'TEX1_1'), _ad(0x71001, 'TEST_1'),
+              _ad(GLOW_DIMX_ON, 'DIMX'), _ad(0x48 if flags & 2 else 0x44, 'ALPHA_1')]
+        prim = 0x15C if flags & 1 else 0x15E
+        for g in queue[first:]:
+            if g.tex != tex or g.flags != flags:
+                continue
+            g.tex = 0
+            sp = glow_project(g, cam, viewproj)
+            if sp is not None:
+                ev += glow_vertices(g, *sp, *tex_dims[tex])
+        ev.append(_ad(GLOW_DIMX_OFF, 'DIMX'))
+        out.append((4 if pass_ else 3, tex, prim, ev))
