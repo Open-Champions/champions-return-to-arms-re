@@ -422,7 +422,13 @@ def build_mac(args):
         (os.path.join(HERE, 'pad_mac.mm'), objc + ['-I', HERE, '-I', RT], 'a_'),
         (os.path.join(HERE, 'present_mac.mm'), objc + ['-I', HERE], 'a_'),
         (os.path.join(HERE, 'help_mac.mm'), objc + ['-I', HERE, '-I', RT], 'a_')]
-    search = [HERE, RENDER, RT, SOUND, NET, gen]
+    # Match the Windows program's room service and direct launch. Without these
+    # objects the net2 hooks remain null, so --mac cannot join its Windows peer.
+    sources += [(os.path.join(NET2, n), app_flags + ['-I', NET2, '-include', 'algorithm'], 'n2_')
+                for n in ('session.cpp', 'session_mock.cpp', 'session_net.cpp', 'carrier.cpp', 'tls.cpp',
+                          'cardchars.cpp', 'clicmd.cpp')]
+    sources += [(os.path.join(NET2, 'launch.cpp'), rt_flags + ['-I', NET2], 'n2_')]
+    search = [HERE, RENDER, RT, SOUND, NET, NET2, gen]
     common = source_jobs(sources, objdir, search)
     with_qt = source_jobs([(os.path.join(RENDER, 'texpack.cpp'), render_flags + qt_flags, 'r_')], objdir, search)
     own = source_jobs([(os.path.join(RENDER, 'texpack.cpp'), render_flags + ['-DRTA_NO_QIMAGE'], 'rp_')], objdir, search)
@@ -432,7 +438,7 @@ def build_mac(args):
     # (objects by their own names: a stray copy such as "g_patches 2.o", as a file synchroniser leaves them, is not one)
     game = genfiles.objects(gen, shared, 'g_') + [os.path.join(shared, n) for n in ('rt_runtime.o', 'rt_iop.o', 'rt_script.o', 'rt_host_posix.o')]
     frameworks = sum((['-framework', f] for f in ('QtCore', 'QtGui', 'GameController', 'AppKit', 'Foundation', 'CoreVideo', 'CoreGraphics',
-                                                     'Metal', 'QuartzCore', 'IOSurface', 'OpenGL')), [])
+                                                     'Metal', 'QuartzCore', 'IOSurface', 'OpenGL', 'Network', 'Security')), [])
     libs = ['-F', qtlib] + frameworks + ['-Wl,-rpath,' + qtlib, '-lpthread']
     ok = link(cxx, game + [j[2] for j in common + with_qt], libs, os.path.join(out, 'rta_app'))
     return link(cxx, game + [j[2] for j in common + own], libs, os.path.join(out, 'rta_app_pngread')) and ok
