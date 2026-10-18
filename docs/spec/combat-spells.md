@@ -255,9 +255,9 @@ callers). The order is deterministic, so this is not a sync risk.
     shared draw**.
   - Flag 0x10000000 keeps the burn tick from setting the status again (`damage_apply`).
   - It makes `Creature_takeDamage` link +0x2e4 to the status source +0x360 (0x116638).
-    That test comes after the one for an attacker with object flag 0x80, whose owner is
-    linked instead; the burning creature is its own attacker, so the flag-0x80 test is about
-    the victim itself.
+    That branch comes after the one for an attacker with object flag 0x80 (its owner is
+    linked instead). The burning creature is its own attacker and has no flag 0x80, so the
+    status-source branch applies.
   - *Executed* in ref_creature and ref_combat.
 - **Status source.** The status setter 0x118950 relinks +0x360 with `handle_clear` and
   `handle_link`. The source is the attacker when it is a creature

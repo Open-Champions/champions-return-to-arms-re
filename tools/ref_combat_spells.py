@@ -24,9 +24,21 @@ What is new here and what is reused
     runs them in the shared run lists, finds victims through the shared grid and damages
     them through damage_apply into the victim's slot 2 - the path of round 1.
 
+    and the five destructors of the effects composed here (HolyStrike, Sparks, Projectile,
+    LightEffect, SpellWaveOfFlame: QueryModel.DTORS / effect_dtor).
+
 Section 1 is a subclass of ref_combat_runtime.CombatModel (QueryModel); its methods use the
-model's call-outs for the box query, the handle-list insertion and damage_apply, so the
-difftest can compare every call.  Nothing in ref_combat_runtime.py changes.
+model's call-outs for the box query, the handle-list functions, damage_apply and the
+destructor steps, so the difftest can compare every call.
+
+Section 2: SpellRuntime, a subclass of ref_combat_runtime.Runtime.  Composed skills: 16
+Holy Strike (ref_skills_a), 57 Shock of Fire (ref_skills_b), 95 Wave of Flame
+(ref_skills_c).  AUTHORED: the Skill objects' statistics (give_skill), the cast point
+(queue_cast: the end of the caster's run stands in for Player_run state 5), the player's
+aim point for its spell walk.  OBSERVED, not executed: the object, spell and Skill table
+words, LightEffect_ctor's simulation part and LightEffect_run's end test.  Refused: a
+victim carrying a spell damage_apply asks about, a disease entry, a creature destroyed with
+attached spells, any virtual slot without a body.  Nothing in ref_combat_runtime.py changes.
 """
 import os
 import sys
