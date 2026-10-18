@@ -721,8 +721,38 @@ method stays as it was.
 `FullRuntime`, whose player slot 4 is the real tick with the executed `Player_move`,
 `Player_meleeHit`, `Player_pickAttackAnim`, `Player_takeDamage` / `Player_processDamage`
 and `Player_animStep`. It is a composition of executed bodies plus labelled fixtures;
-it refuses what any area refuses. Its scenarios and what they showed are in
-`tools/test_ref_combat_full.py` (see 15.7).
+it refuses what any area refuses. The six models' routing tables are merged explicitly
+and checked at import (no name or vtable function routed two ways; every method one area
+shadows in another is listed as reviewed). Choices made there (*Authored*): object
+construction and destruction always go through the shared world (so projectile and effect
+destructors keep the world's lists and pool); type-info names in mangled form; the spells
+runtime's authored player spell walk is dropped because the real tick's tail calls slot 17;
+queued casts run just before the tick's tail; the timed-modifier id list 0x537c08 is an
+empty fixture. Scenarios (`tools/test_ref_combat_full.py`, 13 tests; evidence about the
+model):
+
+- **Round 1's 80-tick duel** in `FullRuntime`: the player makes exactly one more shared
+  draw per tick (the idle fidget) on every tick except 31-50, while the swing's fifth track
+  plays. With those draws injected into round 1's runtime, the damage calls, their results,
+  the final seed and the Skelight's hit points are identical; the one remaining difference is
+  the player record 0.68 higher - the real tick's regeneration, 0.01 for each of 68 ticks
+  below the maximum. Final seed 0xa2e1c5fe (round 1's pin 0x60792ed2, which is unchanged in
+  round 1's `Runtime`).
+- **Walk and combo kill**: the touch order is the Skelight's slot 6 with the player, then
+  the player's own; the player is held at the sum of the radii; the kill lands in tick N,
+  `obj_delete` in the Skelight's run in N+1, destruction in the flush of N+2.
+- **Arrow kill**: missile run, `damage_apply`, Skelight run, `obj_delete`; next tick the
+  flush destroys the Skelight and the missile runs and destroys itself.
+- **Burn kill**: damage on frames with `frame & 0x1f == 0`, flags 0x1180c040; the last
+  attacker at death is the caster, experience is given, the spell detaches itself.
+- **Two players, two monsters**: each tick's seed advance equals the sum of the actors'
+  draws; a monster's are its `damage_apply` rolls, a player's are its damage rolls plus the
+  fidget, stagger, idle voice and attack choice (all four seen).
+- A 200-tick mixed scenario is pinned (seed 0x7d6b07d5).
+
+The integration found one defect in a round-2 module, fixed: `MoveModel`'s water helper
+hid `ref_creature`'s helper of the same name, so a creature knock-back in `MoveRuntime`
+failed (regression test in `tools/test_ref_combat_move.py`).
 
 ### 15.6 Corrections to round 1
 
