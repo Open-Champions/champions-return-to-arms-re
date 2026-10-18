@@ -597,5 +597,60 @@ class Pustule:
 _register('Pustule_run', 0x30BDE0)
 
 
-class Model(Calls, Draws, MultiFire, FireStormFlare, Pustule, SC.Model):
+class DiseaseCloud:
+    """DiseaseCloud: a growing ball of disease particles that also hurts.  Every 30th
+    frame it damages what is in its box (gameplay: damage_apply with a disease entry and
+    NO attacker).  Particles use the cloud's OWN generator (+0x44)."""
+    DC_PARTICLES = (0x8E5320, 0x8E5370, 0x8E53C0)
+
+    def diseasecloud_run(self, obj):
+        """DiseaseCloud_run 0x2ce6e0, GameObject slot 4.  Until frame reaches +0x54: the
+        radius +0x5c grows by 0.5 while below the integer +0x58; three streams of +0x58 / 10
+        particles each at radius x a unit-ball point around the position, velocity a second
+        ball point x 6, x 6 and x 12; on frames divisible by 30, every object in the box
+        position -+ int(radius) other than the owner (+0x4c) - two players are skipped -
+        takes damage_apply(victim, 0, 100000, 0, 0, 0x1000040, entry (0x26, +0x60, +0x60, 0),
+        0; 0, 0).  At the end slot 1 (3) destroys it."""
+        u32, w32 = self.u32, self.w32
+        frame = s32(u32(G_SIM_FRAME))
+        if not frame < self.s32(obj + 0x54):
+            if obj:
+                self.vcall(obj, 1, 3)
+            return
+        if C.lt(u32(obj + 0x5C), C.from_int(self.s32(obj + 0x58))):
+            w32(obj + 0x5C, C.add(u32(obj + 0x5C), C.HALF))
+        for definition, speed in zip(self.DC_PARTICLES, (0x40C00000, 0x40C00000, 0x41400000)):
+            i = 0
+            while i < int(self.s32(obj + 0x58) / 10):
+                ball = self.obj_ball(obj)
+                radius = u32(obj + 0x5C)
+                pos = self.vec(obj + 0x10)
+                p = tuple(C.add(C.mul(ball[j], radius), pos[j]) for j in range(3))
+                v = tuple(C.mul(b, speed) for b in self.obj_ball(obj))
+                self.call('particle_spawn', definition, p, v, ZERO)
+                i += 1
+        if frame - int(frame / 30) * 30:
+            return
+        h = C.from_int(C.to_int(u32(obj + 0x5C)))
+        pos = self.vec(obj + 0x10)
+        low = tuple(C.sub(pos[j], h) for j in range(3))
+        high = tuple(C.add(pos[j], h) for j in range(3))
+        found = self.call('world_collectObjectsInBox', low, high, 0x40)
+        for victim in found or ():
+            node = u32(obj + 0x4C)
+            if not node:
+                continue
+            owner = u32(node + 0xC)
+            if owner == victim:
+                continue
+            if u32(owner + 0xC) & 0x40 and u32(victim + 0xC) & 0x40:
+                continue
+            v = u32(obj + 0x60)
+            self.call('damage_apply', victim, 0, 100000, 0, 0, 0x1000040, SC.desc((0x26, v, v, 0)), 0, ZERO, ZERO)
+
+
+_register('DiseaseCloud_run', 0x2CE6E0)
+
+
+class Model(Calls, Draws, MultiFire, FireStormFlare, Pustule, DiseaseCloud, SC.Model):
     """ref_skills_c.Model with the methods of part 3."""

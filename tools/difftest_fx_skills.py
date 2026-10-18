@@ -264,6 +264,35 @@ def scenario_pustule(t):
             t.do('Pustule_run', obj)
 
 
+# ---------------------------------------------------------------------------------------
+# DiseaseCloud
+# ---------------------------------------------------------------------------------------
+entry('DiseaseCloud_run', 0x2CE6E0, 0x2CEF7C, 'i', 'diseasecloud_run', 'diseasecloud')
+
+
+@scenario('diseasecloud', 'disease clouds growing, hurting, ending')
+def scenario_cloud(t):
+    mem, rng, world = t.mem, t.rng, t.world
+    node = fresh(t, 0x20)
+    for _ in range(reps(t, 30)):
+        frame = set_frame(t)
+        world.reset_objects(rng)
+        obj = fresh(t, 0x80)
+        mem.w32(obj + 0x48, world.vt_creature)
+        put_vec(mem, obj + 0x10, (2000.0 + rng.uniform(-50, 50), 3000.0 + rng.uniform(-50, 50), 10.0))
+        mem.w32(obj + 0x44, rng.getrandbits(32))
+        mem.w32(obj + 0x54, (frame + rng.choice((0, 3, 40, 100))) & M32)
+        mem.w32(obj + 0x58, rng.choice((0, 9, 10, 25, 60, 120)))
+        mem.wf32(obj + 0x5C, rng.choice((0.0, 10.0, 59.5, 200.0)))
+        mem.w32(obj + 0x60, rng.randrange(0, 70000))
+        owner = rng.choice(world.objects)
+        mem.w32(node + 0xC, owner)
+        mem.w32(obj + 0x4C, node if rng.random() < 0.85 else 0)
+        for _tick in range(rng.choice((2, 31, 61))):
+            t.tick()
+            t.do('DiseaseCloud_run', obj)
+
+
 def main(argv):
     if any(a in ('-h', '--help') for a in argv[1:]):
         print(__doc__)
