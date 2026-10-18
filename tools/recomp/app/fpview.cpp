@@ -27,6 +27,7 @@
 //                        game camera does with a pad row (its zoom index, and through it the speed
 //                        its yaw turns at): not presentation-only, off by default
 //   view-log=1           one line per second with the view's figures
+//   view-body-dump=N     every Nth pass, the meshes of the own figure in first person (arms) and which are left out
 //   view-clock=counted   the draw pass of a view costs the virtual console its time like any other code
 //                        (default: it costs none, see begin_pass)
 //   tests: view-stream=off (the texture stream keeps to the game's focus), view-collide=off,
@@ -201,6 +202,8 @@ std::string g_settings_text;
 
 std::atomic<int> g_wanted{OVERHEAD};
 bool g_options_read = false, g_zoom_off = false, g_log = false;
+float g_stream_ahead = 300;     // view-stream-ahead=N: the texture cells are kept round the point N units ahead of the eye
+int g_body_dump = 0;        // view-body-dump=N: every Nth pass, the own figure's meshes and what was decided (a test aid)
 bool g_stream_follows = true, g_collide = true, g_light = true, g_free_pass = true, g_hold_rate = true;      // tests: --opt view-stream=off, view-collide=off, view-light=off
 
 // ---- state of the view (host side; the game never reads it) --------------------------------------
@@ -241,7 +244,7 @@ std::vector<Callout> g_on_view, g_on_drawn;
 // (a buffer's ranges are good for the frame they were noted in and the one after, in which the list is
 // sent: the same addresses hold other packets in every later frame)
 using Range = std::pair<u32, u32>;
-struct BodyDraw { Range tags; std::vector<Range> omit; };
+struct BodyDraw { Range tags; u32 body; u32 heads[2]; bool dump; };   // the body model, the appearance head parts
 struct Hidden {
     u32 base = 0, size = 0; u64 filled_at = 0; u32 draw_frame = 0;
     std::vector<Range> ranges;
@@ -258,6 +261,8 @@ void read_options() {
     if (const char* o = rt_option("view")) { int m = mode_by_name(o); if (m >= 0) g_wanted = m; }
     if (const char* o = rt_option("view-zoom")) g_zoom_off = !strcmp(o, "off");
     g_log = rt_option("view-log") != nullptr;
+    if (const char* o = rt_option("view-stream-ahead")) g_stream_ahead = clampf((float)atof(o), 0, 1200);
+    if (const char* o = rt_option("view-body-dump")) g_body_dump = std::max(1, atoi(o));
     if (const char* o = rt_option("view-stream")) g_stream_follows = strcmp(o, "off") != 0;
     if (const char* o = rt_option("view-collide")) g_collide = strcmp(o, "off") != 0;
     if (const char* o = rt_option("view-light")) g_light = strcmp(o, "off") != 0;
@@ -403,6 +408,29 @@ Pose pose_of(Ctx* c, int mode, const Inputs& in) {
     if (mode == FIRST) {
         aim(p, forward_at(pitch));
         p.eye = in.anchor + up * (s.height * size) + in.heading * (s.eye_forward * size);
+        // Standing against a wall puts the eye, and the near plane ahead of it, into the wall: the
+        // wall is cut away and the level behind it (or the inside of the block) shows.  Along the
+        // heading and the picture's two side edges, the level (the terrain query: walls are blocks
+        // of it) must be at least the near plane and a margin away; if not, the eye goes back
+        // along the heading, at most to a little behind the head (in arms mode nothing of the
+        // body is drawn there).
+        if (g_collide) {
+            Vec3 head = in.anchor + up * (s.height * size);
+            float back = 16.0f * size, need = p.near_plane + 5.0f * size;
+            Vec3 from = head - in.heading * back;
+            float tb = ray_between(c, head, from);
+            if (tb >= 0) { back *= std::max(0.0f, tb - 0.05f); from = head - in.heading * back; }
+            float ahead = back + s.eye_forward * size;      // where the eye stands, measured from `from`
+            float half = std::min(35.0f, s.fov * 0.5f) * DEG, allowed = ahead;
+            for (float side : {0.0f, -1.0f, 1.0f}) {
+                float a = side * half, ca = std::cos(a), sa = std::sin(a);
+                Vec3 dir = v3(in.heading.x * ca - in.heading.y * sa, in.heading.x * sa + in.heading.y * ca, 0);
+                float reach = (ahead + need) / ca;
+                float t = ray_between(c, from, from + dir * reach);
+                if (t >= 0) allowed = std::min(allowed, t * reach * ca - need);
+            }
+            if (allowed < ahead) p.eye = from + in.heading * std::max(0.0f, allowed); 
+        }
         return p;
     }
     Vec3 head = in.anchor + up * (s.height * size);
@@ -652,7 +680,11 @@ bool begin_pass(Ctx* c) {
     v.near_plane = shown.near_plane;
     v.far_plane = 1800;
     v.cull_far = s.far;
-    v.stream_focus = shown.eye + shown.forward * 600.0f;
+    // The texture stream keeps the 3 x 3 cells (720 units) round this point.  600 ahead of the eye, as
+    // it was, swung across cells with every turn and left the ground just ahead of the eye without its
+    // cells (chunks are not drawn without them: sky through the ground in valor's fight); 300 ahead,
+    // along the level, keeps the near ground and still reaches 1,000 and more ahead.
+    v.stream_focus = shown.eye + v3(shown.forward.x, shown.forward.y, 0) * g_stream_ahead;
     v.hide_player = s.hide_player && g_t >= 0.5f;
     v.game_eye = in.game.eye; v.game_forward = in.game.forward; v.game_right = in.game.right; v.game_up = in.game.down * -1.0f;
     v.game_fov = in.game.fov;
@@ -748,25 +780,140 @@ void record_hidden(u32 lo, u32 hi) {
 }
 
 // A near plane alone lets a long face enter the picture when an attack bends the head
-// forward. Use the model's own mesh boundaries to leave out its upper central meshes.
-// Read-only: neither the model's hide mask nor the player's pose/cache is changed.
-// Header/table layout: docs/formats/model-texture.md (.vif header and mesh records).
-void head_meshes(u32 model, bool whole, std::vector<Range>& out) {
-    model &= RAM_MASK;
-    if (!model || model > RAM_MASK - 2048) return;
-    unsigned count = g_ram[model + 0x12], tables = g_ram[model + 0x26];
-    if (!count || count > 64 || tables != 1) return;
-    u32 records = model + 0x28 + (count + 1) * 4;
-    int top = 0;
-    for (unsigned i = 0; i < count; ++i) top = std::max(top, (int)(s8)g_ram[records + i * 10 + 5]);
-    for (unsigned i = 0; i < count; ++i) {
-        const s8* box = (const s8*)(g_ram + records + i * 10);
-        // Rest-space bounds: z is up. Forearms/weapons are retained; the near cut
-        // still handles the torso. Scale is applied later by the game's draw code.
-        if (!whole && !(top > 30 && box[2] >= top * 0.74f && box[0] >= -20 && box[3] <= 20)) continue;
-        u32 lo = W(model + 0x28 + i * 4) & RAM_MASK, hi = W(model + 0x2c + i * 4) & RAM_MASK;
-        if (lo >= model && hi > lo && hi <= RAM_MASK && !(lo & 15) && !(hi & 15)) out.push_back({lo, hi});
+// forward, and worn armour (shoulder plates, collars, sleeves) is drawn as parts of its own
+// beside the body.  Every model reference in the player's packets is therefore traced to its
+// model (the header whose mesh table holds the referenced address) and each of its meshes is
+// placed in the body's rest space from the model's own records: the body's meshes as they are,
+// a part on an attach slot (+0x13) at that slot's origin in the body's attach table, a part with
+// no slot (skinned on the body's joints) as it is.  Meshes above the elbows that are not far out
+// in front - head, neck, collar, shoulders, upper arms, the chest - are left out; forearms,
+// hands, the weapon and effects stay.  Read-only: neither a model's hide mask nor the player's
+// pose/cache is changed.  Header/table layout: docs/formats/model-texture.md.
+struct Box { float lo[3], hi[3]; };
+
+bool model_header(u32 m) {
+    if (m < 0x100000 || m > RAM_MASK - 0x80) return false;
+    unsigned count = g_ram[m + 0x12];
+    return count && count <= 64 && g_ram[m + 0x26] == 1;
+}
+inline u32 mesh_start(u32 m, unsigned i) { return W(m + 0x28 + i * 4) & RAM_MASK; }
+
+// the mesh of model m that starts at `lo`, or -1
+int mesh_at(u32 m, u32 lo) {
+    if (!model_header(m)) return -1;
+    unsigned count = g_ram[m + 0x12];
+    if (mesh_start(m, 0) <= m || mesh_start(m, count) < lo) return -1;
+    for (unsigned i = 0; i < count; ++i) if (mesh_start(m, i) == lo) return (int)i;
+    return -1;
+}
+
+// the model whose mesh table holds `lo` (models are 16-byte aligned, their header before their meshes)
+u32 model_of(u32 lo) {
+    static std::vector<Range> cache;     // (mesh address, model)
+    static size_t next = 0;
+    for (const Range& e : cache) if (e.first == lo && mesh_at(e.second, lo) >= 0) return e.second;
+    for (u32 m = (lo - 16) & ~15u; m >= 0x100000 && lo - m < (1u << 20); m -= 16) {
+        if (mesh_at(m, lo) < 0) continue;
+        if (cache.size() < 512) cache.push_back({lo, m});
+        else cache[next++ % cache.size()] = {lo, m};
+        return m;
     }
+    return 0;
+}
+
+Box rest_box(u32 m, unsigned i) {
+    unsigned count = g_ram[m + 0x12];
+    const s8* r = (const s8*)(g_ram + m + 0x28 + (count + 1) * 4 + i * 10);
+    return Box{{(float)r[0], (float)r[1], (float)r[2]}, {(float)r[3], (float)r[4], (float)r[5]}};
+}
+
+// a part's mesh box in the body's rest space; false when the part's slot cannot be read
+bool in_body_space(u32 body, u32 m, Box& b) {
+    s8 slot = (s8)g_ram[m + 0x13];
+    if (m == body || slot < 0) return true;
+    if (!model_header(body) || !(g_ram[body + 0x10] & 0x04) || slot > 15) return false;
+    u32 rec = body + g_ram[body + 0x22] * 16 + slot * 0x34;
+    if (!g_ram[body + 0x22] || rec > RAM_MASK - 0x34) return false;
+    float R[9], o[3], c[3], e[3], nc[3], ne[3];
+    for (int k = 0; k < 9; ++k) R[k] = F(rec + 4 + k * 4);
+    for (int k = 0; k < 3; ++k) {
+        o[k] = F(rec + 0x28 + k * 4);
+        c[k] = (b.lo[k] + b.hi[k]) * 0.5f;
+        e[k] = (b.hi[k] - b.lo[k]) * 0.5f;
+        if (!std::isfinite(o[k]) || std::fabs(o[k]) > 500) return false;
+    }
+    for (int k = 0; k < 3; ++k) {   // rows of R carry the part's axes
+        nc[k] = o[k] + c[0] * R[0 + k] + c[1] * R[3 + k] + c[2] * R[6 + k];
+        ne[k] = e[0] * std::fabs(R[0 + k]) + e[1] * std::fabs(R[3 + k]) + e[2] * std::fabs(R[6 + k]);
+        if (!std::isfinite(nc[k]) || !std::isfinite(ne[k])) return false;
+        b.lo[k] = nc[k] - ne[k];
+        b.hi[k] = nc[k] + ne[k];
+    }
+    return true;
+}
+
+// the figure's height in rest space (the top of the body's meshes), 0 if unknown
+float body_top(u32 body) {
+    if (!model_header(body)) return 0;
+    float top = 0;
+    for (unsigned i = 0, n = g_ram[body + 0x12]; i < n; ++i) top = std::max(top, rest_box(body, i).hi[2]);
+    return top;
+}
+
+// Rest space: z up, the figure stands on z = 0 facing -y, arms hanging out and down from the
+// shoulders.  What is kept of the figure's own meshes (the body, and worn parts skinned on its
+// joints) is what reaches out to the side below the elbows: forearms, hands, gloves.  Head, neck,
+// collar, shoulder plates, upper arms, chest, belt, legs and feet are left out, so neither an
+// attack that bends the figure nor a look down brings them into the eye.  A part on an attach
+// slot (a held weapon, a shield, a quiver, a helmet) is kept unless it sits above the elbows.
+bool upper_body(const Box& b, float top) {
+    return (b.lo[2] + b.hi[2]) * 0.5f >= 0.62f * top && b.lo[1] >= -0.40f * top;
+}
+bool arm_mesh(const Box& b, float top) {
+    float reach = std::max(-b.lo[0], b.hi[0]);
+    float mid_z = (b.lo[2] + b.hi[2]) * 0.5f;
+    return reach >= 0.22f * top && mid_z < 0.62f * top && mid_z > 0.30f * top;
+}
+// true: leave the mesh out of the picture
+bool omit_mesh(const Box& b, float top, bool on_slot) {
+    if (top < 30) return false;                 // not a figure that was understood: draw it all
+    return on_slot ? upper_body(b, top) : !arm_mesh(b, top);
+}
+
+
+// A left-out mesh's packets with the vertex register of their GIF tags changed from XYZF2 /
+// XYZ2 (a vertex, and a drawing kick) to XYZF3 / XYZ3 (a vertex, no kick): the tags are the
+// UNPACK V4-32 of each packet (docs/formats/model-texture.md, "Packet layout", step 7).
+// Collected as (address, word to send instead); false if a VIF code is met that a model mesh
+// does not hold.
+using Patch = std::pair<u32, u32>;
+bool no_kick(u32 from, u32 to, std::vector<Patch>& out) {
+    for (u32 p = from; p < to;) {
+        u32 code = W(p), cmd = (code >> 24) & 0x7f, num = (code >> 16) & 0xff, imm = code & 0xffff;
+        p += 4;
+        if (cmd >= 0x60) {                           // UNPACK: num elements of (vn + 1) components of 32 >> vl bits
+            unsigned vn = (cmd >> 2) & 3, vl = cmd & 3, n = num ? num : 256;
+            if (vl == 3 && vn != 3) return false;
+            u32 bits = vl == 3 ? 16 : (vn + 1) * (32u >> vl);
+            u32 words = (n * bits + 31) / 32;
+            if (vn == 3 && vl == 0)
+                for (u32 q = p; q + 16 <= std::min(to, p + words * 4); q += 16) {
+                    u32 w1 = W(q + 4), nreg = w1 >> 28, regs = W(q + 8), patched = regs;
+                    if ((w1 >> 26) & 3) continue;    // not PACKED: not a strip's tag
+                    for (u32 r = 0; r < nreg && r < 8; ++r) {
+                        u32 d = (regs >> (4 * r)) & 15;
+                        if (d == 0x4 || d == 0x5) patched |= 8u << (4 * r);
+                    }
+                    if (patched != regs) out.push_back({q + 8, patched});
+                }
+            p += words * 4;
+        } else if (cmd == 0x20) p += 4;              // STMASK
+        else if (cmd == 0x30 || cmd == 0x31) p += 16; // STROW, STCOL
+        else if (cmd == 0x50 || cmd == 0x51) p += (imm ? imm : 0x10000) * 16;
+        else if (cmd == 0x4a) p += (num ? num : 256) * 8;
+        else if (cmd > 0x17 || (cmd >= 0x08 && cmd <= 0x0f) || cmd == 0x12 || cmd == 0x16) return false;
+    }
+    return true;
 }
 
 // A model draw may reference several consecutive meshes in one DMA tag. Split only
@@ -786,18 +933,46 @@ void body_dma_tag(u32 tag_address, std::vector<u32>& stream) {
         for (const BodyDraw& body : h.bodies) {
             if (a < body.tags.first || a >= body.tags.second) continue;
             std::vector<Range> cuts;
-            for (const Range& r : body.omit)
-                if (r.first < lo + bytes && r.second > lo) cuts.push_back({std::max(lo, r.first), std::min(lo + bytes, r.second)});
+            u32 m = model_of(lo);
+            if (body.dump)
+                fprintf(stderr, "view-body: tag %06x id %u ref %06x bytes %u vif %08x %08x model %06x first %08x %08x %08x %08x last %08x %08x %08x %08x\n", a, id, lo, bytes,
+                        W(a + 8), W(a + 12), m, W(lo), W(lo + 4), W(lo + 8), W(lo + 12), W(lo + bytes - 16), W(lo + bytes - 12), W(lo + bytes - 8), W(lo + bytes - 4));
+            if (!m) return;
+            bool head = m == body.heads[0] || m == body.heads[1];     // appearance head parts: whole
+            float top = body_top(body.body);
+            unsigned count = g_ram[m + 0x12];
+            for (int i = mesh_at(m, lo); i >= 0 && i < (int)count && mesh_start(m, i) < lo + bytes; ++i) {
+                u32 s0 = mesh_start(m, i), s1 = mesh_start(m, i + 1);
+                Box rest = rest_box(m, i), b = rest;
+                bool placed = in_body_space(body.body, m, b);
+                bool omit = head || (placed && omit_mesh(b, top, m != body.body && (s8)g_ram[m + 0x13] >= 0));
+                if (body.dump)
+                    fprintf(stderr, "view-body: model %06x%s slot %d flags %02x mesh %2d/%u joint %2u tris %4u rest %4.0f %4.0f %4.0f .. %4.0f %4.0f %4.0f"
+                            " body %6.1f %6.1f %6.1f .. %6.1f %6.1f %6.1f top %.0f %s\n", m, m == body.body ? " body" : head ? " head" : "",
+                            (s8)g_ram[m + 0x13], g_ram[m + 0x10], i, count, g_ram[m + 0x28 + (count + 1) * 4 + i * 10 + 6],
+                            (unsigned)(g_ram[m + 0x28 + (count + 1) * 4 + i * 10 + 8] | g_ram[m + 0x28 + (count + 1) * 4 + i * 10 + 9] << 8),
+                            rest.lo[0], rest.lo[1], rest.lo[2], rest.hi[0], rest.hi[1], rest.hi[2], b.lo[0], b.lo[1], b.lo[2], b.hi[0], b.hi[1], b.hi[2], top,
+                            !placed ? "unplaced" : omit ? "OMIT" : "keep");
+                static const int test = rt_option("view-body-test") ? atoi(rt_option("view-body-test")) : 0;
+                if (((test & 1) && m == body.body) || ((test & 2) && m != body.body && !head) || ((test & 4) && head)) omit = false;
+                if (omit && s1 > s0) cuts.push_back({std::max(lo, s0), std::min(lo + bytes, s1)});
+            }
             if (cuts.empty()) return;
-            std::sort(cuts.begin(), cuts.end());
+            // A left-out mesh is still sent and every packet runs the vertex program as before
+            // (each MSCAL swaps VU1's double buffer: leaving out an odd number of packets put
+            // every later model and the level into the wrong half), but its strips are written
+            // to the GS without a drawing kick: nothing of it is drawn, by OpenGL or the scene tap.
+            std::vector<Patch> patches;
+            for (const Range& cut : cuts)
+                if (!no_kick(cut.first, cut.second, patches)) return;   // not understood: drawn as it is
+            std::sort(patches.begin(), patches.end());
             // The tag's two VIF codes are normally transferred before its reference.
             stream.push_back(W(a + 8)); stream.push_back(W(a + 12));
-            u32 cursor = lo;
-            for (const Range& cut : cuts) {
-                for (; cursor < cut.first; cursor += 4) stream.push_back(W(cursor));
-                cursor = std::max(cursor, cut.second);
+            size_t f = 0;
+            for (u32 cursor = lo; cursor < lo + bytes; cursor += 4) {
+                while (f < patches.size() && patches[f].first < cursor) ++f;
+                stream.push_back(f < patches.size() && patches[f].first == cursor ? patches[f].second : W(cursor));
             }
-            for (; cursor < lo + bytes; cursor += 4) stream.push_back(W(cursor));
             g_filtered_tag = a;
             ++g_hidden_packets;
             return;
@@ -1004,11 +1179,13 @@ void fn_001a46c0(Ctx* c) {
     u32 after = W(G_DL_CURSOR) & RAM_MASK;
     if (g_view.hide_player) record_hidden(before, after);
     else if (g_hidden_fill >= 0 && after > before) {
-        BodyDraw body{{before, after}, {}};
-        head_meshes(W(at(self) + 0x544), false, body.omit); // original body
-        head_meshes(W(at(self) + 0x548), true, body.omit);  // appearance head parts
-        head_meshes(W(at(self) + 0x54c), true, body.omit);
-        g_hidden[g_hidden_fill].bodies.push_back(std::move(body));
+        BodyDraw body{{before, after}, W(at(self) + 0x544) & RAM_MASK,                  // the body
+                      {W(at(self) + 0x548) & RAM_MASK, W(at(self) + 0x54c) & RAM_MASK}, // appearance head parts
+                      g_body_dump > 0 && g_passes % g_body_dump == 0};
+        if (body.dump) fprintf(stderr, "view-body: pass %llu tick %u handles %06x %06x %06x %06x %06x %06x\n", (unsigned long long)g_passes, W(G_SIM_FRAME),
+                               W(at(self) + 0x544) & RAM_MASK, W(at(self) + 0x548) & RAM_MASK, W(at(self) + 0x54c) & RAM_MASK,
+                               W(at(self) + 0x550) & RAM_MASK, W(at(self) + 0x554) & RAM_MASK, W(at(self) + 0x558) & RAM_MASK);
+        g_hidden[g_hidden_fill].bodies.push_back(body);
     }
 }
 

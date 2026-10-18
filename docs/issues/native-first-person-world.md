@@ -422,4 +422,183 @@ triangles a frame to a list of 60,000 to 90,000.
 - The skirt was not seen in a picture; its colour in the OpenGL program is a guess.
 - `world.*` lines in the settings file; the Windows build list; the fill in recorded
   streams.
-- Levels not looked at: 92 of 111. The ceiling rule decides for them unseen.
+- Levels not looked at: 92 of 111. The ceiling rule decides for them unseen. (2026-10-17: all walked
+  at eye height, section 8.)
+
+## 8. 2026-10-17: every level at eye height (Ran)
+
+Evidence root `local/fp-ready/` (not tracked).
+
+**The driver** is `tools/recomp/app/tour.py native fpwalk LEVEL... --out DIR` (summary:
+`tour.py fpreport DIR...`). It goes from power-on to the first level. Each level is then
+asked for by name, the way the game's own level change does it. The driver answers what
+holds the game (memory-card question, film, loading screen) and waits out the fade-in. It
+then stands at the start and at three places the character walks to (the stick, so the
+game's own movement and collision apply). At each place it turns through eight headings
+with the look controls (`app fpc mouse`), then looks 40° up and 40° down. That gives 40
+pictures at 480×270 per level. Each picture is measured against the level's clear colour
+(`g_backgroundColor`):
+
+* `hole`: clear colour in the lower third of a level look, or anywhere in the look down.
+* `open`: clear colour in the upper half of a look up, in a level that gets the generated
+  ceilings.
+* `void`: more than half of a level look is clear colour.
+* `inside`: a flat picture.
+
+`app world info` adds the most chunks left undrawn for want of their texture cell. Four
+processes run off screen and unpaced. A level that does not load restarts the program.
+
+**Generic causes found and fixed (`app/fpview.cpp`):**
+
+1. **The eye in the wall.** Standing against a wall put the eye (7 ahead of the head) and the
+   near plane (14 in arms mode) inside it. The wall was cut away, and the dark inside of the
+   block or the room behind showed (`walk-test/nitdung1/p1-*`: black with a strip of the next
+   room). The eye now goes back along the heading, at most 16 behind the head. It moves just
+   far enough that the level, by the terrain query along the heading and both picture edges,
+   is the near plane plus 5 away (`walk-test2/nitdung1/p1-*`: the wall is drawn). This uses
+   `terrain_raycast` like the chase camera does. It changes one presentation pointer in the
+   object pool (the rig's `pool` column, 1,465 rows); the simulation columns and both
+   comparison reports are unchanged (hands document, 2026-10-17).
+2. **Sky through the ground near the eye** (valor's boar fight; `hole1/attack-2400.png`, also in
+   Godot, `g-c4`). The texture stream's point was 600 ahead of the eye. Every turn swung it
+   across 720-unit cells, and the ground just ahead lost its cells (17 chunks without a cell,
+   18 still loading). It is now 300 ahead, measured along the level, not along the view
+   (`--opt view-stream-ahead=N`). The same frame then has no gaps (`hole-final/`,
+   `hole-a250/`, `hole-a400/`). Far chunks without a cell remain (100 to 300 a frame in big
+   levels: A4, still open). `world-nocull`, `world-clip=off` and `view-stream=off` were tried
+   and did not help.
+
+**Results.** The table is from the final build (`final-walk.tsv`). "fixed" means the walk with
+the current `rta_app` flagged it and the final build does not. Only 32 levels were walked with
+`rta_app` before the run was stopped (`before-walk.tsv`), so "ok" can include levels that
+were already fine. The "Looked at" column marks the levels of sections 1 to 7. The flags are
+measures, not verdicts. Twelve of the flagged levels were looked at in contact sheets
+(`rows.py`); their "What" column is a description. For the rest, the column holds the raw flag.
+In levels that clear to black or a dark colour, night ground and dark floors give false `hole`
+flags.
+
+| Level | Looked at before | Result | What |
+| --- | --- | --- | --- |
+| airarena |  | n/a | no place for a character in this game kind (arena/pvp start) |
+| arachna1 | yes | fault | hole=3(p0-h2@-388,2661,-360) |
+| bastion1 |  | fault | the start stands at the floor's rim: beyond it nothing (B5); ground present (peek) |
+| blomedal |  | ok |  |
+| blood1 |  | ok |  |
+| boar1 |  | fault | hole=1(p0-h5@-3648,-2780,0) |
+| bossevil |  | ok |  |
+| bossgood |  | fixed | before: hole=9(p0-h1@-500,168,2) |
+| citadel | yes | ok |  |
+| compblo |  | n/a | no place for a character in this game kind (arena/pvp start) |
+| compdis |  | fault | hole=1(p3-h2@-145,243,73) void=1(p3-h2@-145,243,73) |
+| compsto |  | ok |  |
+| compval |  | ok |  |
+| compwat |  | n/a | no place for a character in this game kind (arena/pvp start) |
+| dis2 | yes | fault | dark olive clear colour matches the gorge floor |
+| disbonus |  | fixed | before: hole=11(p0-h0@938,-2352,0) void=2(p0-h1@938,-2352,0) |
+| dismedal |  | not walked | the run was stopped before this level |
+| drunare | yes | ok |  |
+| drunarm |  | fixed | before: hole=9(p2-h0@-2568,-215,0) |
+| drundar |  | ok |  |
+| endbad |  | ok |  |
+| endgood |  | ok |  |
+| fay1 |  | ok |  |
+| fay2 |  | fault | hole=4(p0-h0@-555,1732,119) |
+| fay3 |  | ok |  |
+| faybonus |  | fault | hole=3(p1-h6@1608,1241,0) |
+| fearboss | yes | ok |  |
+| firbonus |  | ok |  |
+| fire1 | yes | ok |  |
+| fire2 |  | ok |  |
+| fire3 | yes | ok |  |
+| fire4 |  | ok |  |
+| fire5 |  | ok |  |
+| firmedal |  | ok |  |
+| honor | yes | ok |  |
+| honor2 |  | ok |  |
+| hub | yes | ok |  |
+| hub2 |  | fault | hole=1(p0-h2@-288,379,2) |
+| inmine1 | yes | fault | hole=6(p2-h2@2623,-1344,23) |
+| inmine2 |  | ok |  |
+| innmedal |  | ok |  |
+| innovat1 | yes | fault | hole=2(p0-h1@2370,-682,24) |
+| innovat2 |  | fault | black above the yard (no ceiling by the rule) |
+| innpit |  | ok |  |
+| intro |  | n/a | not-entered |
+| islc1 |  | ok |  |
+| islc2 |  | ok |  |
+| islcave1 |  | ok |  |
+| islgnome |  | ok |  |
+| islgoth |  | fault | hole=1(p3-h6@-5201,3888,0) |
+| islsm1 | yes | ok |  |
+| islsm2a |  | ok |  |
+| islsm2b |  | ok |  |
+| islsm3a |  | ok |  |
+| islsm3b |  | fault | night |
+| nit1 | yes | ok |  |
+| nit2 |  | fault | hole=36(p0-h0@-96,-623,2) |
+| nitbon2 |  | ok |  |
+| nitbonus |  | fault | hole=1(p2-h3@167,-3051,-42) void=1(p2-h3@167,-3051,-42) |
+| nitdung1 | yes | ok |  |
+| nitdung2 |  | ok |  |
+| nitdung3 |  | fault | floor in front and under the feet black (brightened picture): not resolved |
+| nitdung4 |  | fault | hole=9(p0-h4@-1477,766,48) |
+| nitmar1 |  | ok |  |
+| nitmedal |  | fault | hole=36(p0-h0@-3490,-1960,3) |
+| obsfor1 |  | ok |  |
+| obsidian |  | fault | night level; ground between the feet and the far rocks black: not resolved |
+| pvparena |  | n/a | no place for a character in this game kind (arena/pvp start) |
+| pvpbas |  | n/a | no place for a character in this game kind (arena/pvp start) |
+| pvpblo |  | n/a | no place for a character in this game kind (arena/pvp start) |
+| pvpblo2 |  | n/a | no place for a character in this game kind (arena/pvp start) |
+| pvpfire |  | n/a | no place for a character in this game kind (arena/pvp start) |
+| pvpfire2 |  | n/a | no place for a character in this game kind (arena/pvp start) |
+| pvpinn |  | ok |  |
+| pvpnit |  | fault | night; dark |
+| pvptor |  | n/a | no place for a character in this game kind (arena/pvp start) |
+| pvpval |  | n/a | no place for a character in this game kind (arena/pvp start) |
+| shame1 |  | fault | hole=3(p2-h5@-6372,912,16) |
+| stobonus |  | ok |  |
+| stomedal |  | ok |  |
+| storm1 | yes | ok |  |
+| storm1a |  | fault | hole=4(p2-h4@-408,-648,15) |
+| storm1b |  | fault | night sky; flags on dark wall bases |
+| storm1c |  | fault | all ten looks the same picture: a scene held the game camera (driver) |
+| storm2 |  | fault | hole=20(p0-h0@453,-5604,-3) |
+| storm3 |  | fault | hole=2(p2-h1@-1507,-987,6) |
+| storm4 |  | ok |  |
+| storm5 |  | ok |  |
+| strife |  | ok |  |
+| swamp1 | yes | fault | void=1(p2-h7@-55,-134,64) |
+| swamp2 |  | fault | night swamp, water not seen as water (C6) |
+| torbonus |  | ok |  |
+| tormedal |  | ok |  |
+| torment0 |  | ok |  |
+| torment2 |  | ok |  |
+| torment3 |  | ok |  |
+| tormenta | yes | ok |  |
+| tormentb |  | ok |  |
+| valmedal |  | fault | night arena; flags on black under the arches |
+| valor | yes | ok |  |
+| valor2 |  | ok |  |
+| wat1 | yes | ok |  |
+| watbonus |  | ok |  |
+| wate2a |  | ok |  |
+| wate2b |  | not walked | the run was stopped before this level |
+| wate2c |  | ok |  |
+| water1 |  | fault | hole=1(p2-h4@-98,-140,23) void=6(p1-h3@140,150,9) |
+| watg2a |  | ok |  |
+| watg2b |  | not walked | the run was stopped before this level |
+| watg2c |  | ok |  |
+| watmedal |  | fault | hole=7(p0-h3@-2085,2453,19) void=7(p0-h4@-2085,2453,19) |
+
+Summary: 108 levels walked (3 not reached before the stop: listed "not walked"), 62 ok,
+3 fixed, 31 flagged, 12 not applicable (arena and PvP levels without a single-player start,
+and `intro`). Of the flagged levels, the ones looked at are:
+
+* **Real and not fixed:** `nitdung3` (black floor ahead and under the feet), `obsidian`
+  (black ground before the far rocks), and probably more of the dark-level flags. Next step:
+  `--opt world-nocull=1` and `view-stream-ahead=0` at those places.
+* **Driver:** `storm1c` (a scene held the camera).
+* **By design:** `bastion1` (start at the floor's rim, B5).
+
+The flags of the other dark levels were not each confirmed.

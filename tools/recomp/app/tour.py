@@ -7,6 +7,8 @@ laid side by side stop for stop.
   tour.py native|emu levels NAME [NAME ...] --out DIR [--views N] [--paced] [--size WxH]
   tour.py native|emu screens --out DIR
   tour.py sheet OUT.png DIR_A DIR_B [--width W] [--cols N] [--only PREFIX]
+  tour.py native fpwalk NAME [NAME ...] --out DIR [--points N] [--size WxH]
+  tour.py fpreport DIR [DIR ...]
 
 `levels`: from power-on to the first level, then every named level is asked for the way
 the game's own level changes ask (the name written to g_pendingLevel 0x41b6d0); a picture
@@ -16,6 +18,15 @@ local/play-out/tourplan.py does, when that helper is there).  A line of figures 
 memory, textures held, pictures a second, what the GS model approximated.
 `screens`: the first level's pause menu, the bag's pages, the automap, a dialogue.
 `sheet`: pictures of the same name from two directories, one above the other.
+`fpwalk`: every named level in first person at eye height: where the level starts and N more
+places the character walks to from there (the stick, the game's own movement and collision),
+at each a turn through eight headings (the look controls, as a mouse turns them), one look 40 degrees up and
+one 40 down, small pictures.  Each picture is measured against the level's clear colour
+(g_backgroundColor): `hole` = clear colour in the lower third of a level look or anywhere in the
+look down (no ground there), `open` = clear colour above in a level the ceilings are made for,
+`void` = more than half of a level look is clear colour (walls gone), `inside` = the picture is
+one flat colour (the eye inside something).  One line per level in <out>/fpwalk.tsv.
+`fpreport`: the levels of those files, by fault.
 
 Pictures and logs are game output: DIR must be under local/.  Test windows are titled
 "AGENT TEST - ...", small, behind the others, silent.  Standard library (and PIL for
@@ -56,7 +67,7 @@ class Instance:
         self.socket_path = '/tmp/rta-tour-%s-%d.sock' % (kind, os.getpid())
         data = os.path.join(self.out, 'data-%s-%d' % (kind, os.getpid()))
         self.data = data
-        log = open(os.path.join(self.out, kind + '.out'), 'w')
+        log = open(os.path.join(self.out, kind + '.out'), 'a')
         if kind == 'native':
             # RTA_TOUR_APP: another build of the window program (a candidate that is being checked)
             command = [os.environ.get('RTA_TOUR_APP', os.path.join(ROOT, 'local', 'recomp-out', 'bin', 'rta_app')), '--disc', disc, '--data', data,
@@ -369,9 +380,170 @@ def run_sheet(args):
     print('%s: %s' % (args.sheet, ' '.join(names)))
 
 
+# ---- first person at eye height, every level ----------------------------------------------------
+G_BACKGROUND, G_DOME_LUMP = 0x506044, 0x86AF54
+G_CUTSCENE_ACTIVE, G_LOADSCREEN_ACTIVE = 0x44FCD0, 0x506094
+FP_HEADINGS = 8
+FP_COUNT = 0.12                 # degrees of turn per mouse count of the look controls (app/fpcontrols.h)
+
+
+def measure(path, clear, interior):
+    """Fractions of a picture: clear colour in the lower third, in the upper half, in all of it;
+    and how flat it is (the spread of its brightness)."""
+    from PIL import Image, ImageStat
+    image = Image.open(path).convert('RGB').resize((160, 90))
+    w, h = image.size
+    pixels = list(image.getdata())
+    top_hud = h // 7                                         # the game's own HUD sits in the top band
+
+    def near(c):
+        return abs(c[0] - clear[0]) <= 2 and abs(c[1] - clear[1]) <= 2 and abs(c[2] - clear[2]) <= 2
+    rows = [pixels[y * w:(y + 1) * w] for y in range(h)]
+    low = [near(c) for row in rows[h * 2 // 3:] for c in row]
+    high = [near(c) for row in rows[top_hud:h // 2] for c in row]
+    every = [near(c) for row in rows[top_hud:] for c in row]
+    spread = ImageStat.Stat(image.convert('L').crop((0, top_hud, w, h))).stddev[0]
+    return sum(low) / len(low), sum(high) / len(high), sum(every) / len(every), spread
+
+
+def run_fpwalk(args):
+    done = set()
+    table = os.path.join(os.path.abspath(args.out), 'fpwalk.tsv')
+    if os.path.exists(table):
+        done = {line.split('\t')[0] for line in open(table) if line.strip()}
+    names = [n for n in args.names if n not in done]
+    while names:
+        m = Instance('native', args.out, args.disc, size=args.size, label='first person level walk',
+                     extra=['--view', 'first', '--no-settings'] + list(args.app_arg))
+        try:
+            m.to_hub()
+            while names:
+                name = names[0]
+                row = walk_level(m, name, args)
+                with open(table, 'a') as handle:
+                    handle.write('\t'.join(str(x) for x in row) + '\n')
+                print('\t'.join(str(x) for x in row), flush=True)
+                names.pop(0)
+                if row[1] == 'not-entered':                 # whatever held it may hold the next: a fresh start
+                    break
+        except (OSError, SystemExit, RuntimeError) as error:   # the build stopped or a level hung it: on with the next
+            if names:
+                name = names.pop(0)
+                with open(table, 'a') as handle:
+                    handle.write('%s\tstopped\t%s\n' % (name, str(error).replace('\t', ' ')[:200]))
+        finally:
+            m.quit()
+
+
+def walk_level(m, name, args):
+    pics = os.path.join(m.out, name)
+    os.makedirs(pics, exist_ok=True)
+    if not m.enter(name, timeout=args.enter_timeout):
+        return [name, 'not-entered']
+    m.free_camera()
+    # what holds the game after a level starts: a menu (the memory card's save question), a film or
+    # a flight of the camera over the level, the fade-in.  Answered until the simulation runs with no
+    # film or loading screen.
+    for _ in range(40):
+        tick = int(m.peek(G_SIM_FRAME))
+        m.wait(20)
+        running = int(m.peek(G_SIM_FRAME)) > tick
+        held = m.peek(G_CUTSCENE_ACTIVE) != '0' or m.peek(G_LOADSCREEN_ACTIVE) != '0'
+        if running and not held:
+            break
+        m.tap('cross', 6, 30)
+    m.c.ok('app view set view first')
+    m.c.ok('app view set view.first.pitch 0')
+    m.wait(args.fade)
+    if m.position()[2] < -50000:                             # no place for a character of this game kind (the arenas)
+        return [name, 'no-player']
+    bg = int(m.peek(G_BACKGROUND))
+    clear = (bg & 255, (bg >> 8) & 255, (bg >> 16) & 255)
+    dome = m.peek(G_DOME_LUMP) != '0'
+    ceiling = world_info(m).get('ceiling', 0) > 0
+    cam = '[0x%x]' % G_CAMERA
+    counts = {'hole': 0, 'open': 0, 'void': 0, 'inside': 0}
+    worst = {}
+    shots = 0
+    interior = ceiling                                       # the level gets the generated ceilings (fpworld: walled, black, no dome)
+    uncelled = 0
+    for point in range(args.points + 1):
+        if point:                                            # walk on from here: the stick up, the camera turned a third
+            m.c.ok('app fpc mouse %.1f 0' % (130.0 / FP_COUNT))   # a third of a turn and a bit
+            m.wait(4)
+            m.c.ok('stick l 128 0')
+            m.wait(args.walk)
+            m.c.ok('stick l 128 128')
+            m.wait(20)
+        x, y, z = m.position()
+        looks = [(360.0 / FP_HEADINGS if k else 0, 0) for k in range(FP_HEADINGS)] + [(360.0 / FP_HEADINGS, 40), (0, -40)]
+        for k, (turn, pitch) in enumerate(looks):
+            if turn:
+                m.c.ok('app fpc mouse %.1f 0' % (turn / FP_COUNT))
+            m.c.ok('app view set view.first.pitch %d' % pitch)
+            m.wait(args.settle)
+            tag = 'p%d-%s' % (point, ('h%d' % k) if not pitch else ('up' if pitch > 0 else 'down'))
+            path = os.path.join(pics, tag + '.png')
+            m.shot(os.path.join(name, tag))
+            shots += 1
+            low, high, every, spread = measure(path, clear, interior)
+            uncelled = max(uncelled, world_info(m).get('no_cell', 0))
+            faults = []
+            if (pitch == 0 and low > 0.03) or (pitch < 0 and every > 0.03):
+                faults.append('hole')
+            if pitch > 0 and interior and high > 0.25:
+                faults.append('open')
+            if pitch == 0 and every > 0.5:
+                faults.append('void')
+            if spread < 6 and pitch <= 0 and every < 0.5:
+                faults.append('inside')
+            for f in faults:
+                counts[f] += 1
+                if f not in worst:
+                    worst[f] = '%s@%.0f,%.0f,%.0f' % (tag, x, y, z)
+    m.c.ok('app view set view.first.pitch 0')
+    verdict = 'ok' if not any(counts.values()) else 'fault'
+    detail = ' '.join('%s=%d(%s)' % (f, counts[f], worst[f]) for f in counts if counts[f])
+    return [name, verdict, 'clear=%02x%02x%02x' % clear, ('dome' if dome else 'nodome') + (' ceiling' if ceiling else ''), 'shots=%d' % shots, detail or '-',
+            'chunks without their texture cell: %d at most' % uncelled]
+
+
+def world_info(m):
+    """The figures of `app world info` (printed by the build to its output)."""
+    m.c.ok('app world info')
+    m.wait(1)
+    path = os.path.join(m.out, 'native.out')
+    with open(path, 'rb') as handle:
+        handle.seek(max(0, os.path.getsize(path) - 20000))
+        lines = [l for l in handle.read().decode('latin-1').splitlines() if 'chunks drawn' in l]
+    out = {}
+    if lines:
+        found = re.search(r'(\d+) chunks drawn, (\d+) not \(texture cell', lines[-1])
+        if found:
+            out['chunks'], out['no_cell'] = int(found.group(1)), int(found.group(2))
+        found = re.search(r'fill of \S+: ceiling (\d+)', lines[-1])
+        if found:
+            out['ceiling'] = int(found.group(1))
+    return out
+
+
+def run_fpreport(args):
+    rows = []
+    for directory in [args.what] + args.names:
+        for line in open(os.path.join(directory, 'fpwalk.tsv')):
+            if line.strip():
+                rows.append(line.rstrip('\n').split('\t'))
+    for row in sorted(rows):
+        print(' | '.join(row[:6]))
+    verdicts = {}
+    for row in rows:
+        verdicts[row[1]] = verdicts.get(row[1], 0) + 1
+    print(verdicts)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('build', choices=['native', 'emu', 'sheet'])
+    parser.add_argument('build', choices=['native', 'emu', 'sheet', 'fpreport'])
     parser.add_argument('what')
     parser.add_argument('names', nargs='*')
     parser.add_argument('--out')
@@ -383,8 +555,14 @@ def main():
     parser.add_argument('--width', type=int, default=320)
     parser.add_argument('--cols', type=int, default=4)
     parser.add_argument('--only')
+    parser.add_argument('--points', type=int, default=3, help='fpwalk: places walked to besides the start')
+    parser.add_argument('--walk', type=int, default=150, help='fpwalk: vertical blanks of walking between two places')
+    parser.add_argument('--enter-timeout', type=int, default=3600)
+    parser.add_argument('--fade', type=int, default=300, help='fpwalk: vertical blanks after a level runs before the first picture')
     parser.add_argument('--app-arg', action='append', default=[], help='one more argument for rta_app (repeatable; --app-arg=--opt ...)')
     args = parser.parse_args()
+    if args.build == 'fpreport':
+        return run_fpreport(args)
     if args.build == 'sheet':
         args.sheet, args.a, args.b = args.what, args.names[0], args.names[1]
         return run_sheet(args)
@@ -396,7 +574,11 @@ def main():
         return run_levels(args)
     if args.what == 'screens':
         return run_screens(args)
-    raise SystemExit('tour: levels or screens')
+    if args.what == 'fpwalk':
+        if args.settle == 50:
+            args.settle = 12
+        return run_fpwalk(args)
+    raise SystemExit('tour: levels, screens or fpwalk')
 
 
 if __name__ == '__main__':

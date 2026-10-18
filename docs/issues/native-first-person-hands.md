@@ -153,3 +153,73 @@ Godot and OpenGL retain their existing lighting, transparency and particle-brigh
 differences. A complete character-card refresh cycle, live controller feel,
 Windows and multiplayer were not exercised by this presentation change. No public
 server was contacted; nothing was pushed or published.
+
+## 2026-10-17: worn armour, every character, the double buffer
+
+Evidence root `local/fp-ready/` (pictures, rigs, logs; nothing of it is tracked).
+
+### What was wrong (Ran)
+
+* **Worn parts were never filtered.** The arms filter knew the body model (+0x544) and the two
+  appearance head parts (+0x548, +0x54c). A character's armour is drawn as separate part models
+  (`Player_drawEquipped`): torso plate, skirt, leggings, held weapon. Their meshes went through
+  whole. A dump of the own figure's references (`--opt view-body-dump=N`) shows, per character,
+  body + head + 3 to 4 worn parts + the weapon on an attach slot.
+* **Dropping a mesh's packets broke later models and the level.** Each mesh packet ends with
+  `MSCAL`, and each `MSCAL` swaps VU1's double buffer. If an odd number of packets is cut, every
+  later packet is unpacked into the wrong half. With the Wood Elf Ranger the whole level then
+  rendered magenta (yellow when only parts were cut) and the figure and the boar went missing
+  (`a-c4/`, first run; `t1-c4/` against `t2-c4/`, `t3-c4/`). Head meshes alone had an even count
+  by luck.
+* **The "shoulder piece" in the bow-draw and spell pictures was the boar.** It is the same with
+  `view.first.body=off` (`o-c4/attack-2415.png`, `o-c8/idle-2480.png`: the purple, frozen boar).
+  The ground gaps around it were real; see the world document, section 8.
+
+### What it does now (`app/fpview.cpp`)
+
+* The host stream of the own player's `Player_draw` is checked **per model reference**. Each
+  referenced address is traced to its model (the header whose mesh table holds it, found
+  16 bytes at a time up to 1 MB back, cached by address). Each mesh's rest-space box comes
+  from its record. A part on an attach slot (+0x13) is moved to that slot's origin in the
+  body's attach table; a part with no slot is skinned on the body's joints and used as it is.
+* **Kept:** body or skinned-part meshes that reach out to the side (at least 0.22 of the
+  figure's height) with their middle between 0.30 and 0.62 of it: forearms, hands, gloves.
+  Parts on a slot are kept unless they sit above 0.62 and not far forward. That keeps
+  weapons, bows and shields and drops helmets. **Left out:** everything else, including the
+  head, neck, shoulders, upper arms, chest, torso armour, belt, skirt, legs and feet. A
+  look down shows hands and weapon, not legs.
+* A left-out mesh is **still sent**, so every packet runs the vertex program and the double
+  buffer stays in step. Only the vertex register of its strips' GIF tags changes, from
+  XYZF2/XYZ2 to XYZF3/XYZ3 (a vertex with no drawing kick). Neither the OpenGL GS model nor the
+  scene tap gets a triangle from it; the tap rejects such a strip by its count check. If a
+  VIF code is not understood, the mesh is drawn as it is.
+* Effects, other creatures and objects are not touched. A model that cannot be traced is
+  drawn.
+
+### Checked (Ran)
+
+Six characters from the character screen (0, 2, 4, 6, 8, 10 presses right: Iksar Shaman,
+Barbarian Warrior, Wood Elf Ranger, High Elf Cleric, Erudite Wizard, Dark Elf Shadow Knight). All
+used the same route to the valor boar (`mkrig.py`): melee (cross held), cast (circle), idle,
+run, look down 55 degrees, attack while looking down. That is 43 pictures each.
+
+| | Before (`rta_app`) | After (`rta_app_next`) |
+| --- | --- | --- |
+| Sheet, six characters × seven moments | (b-c4, b-c8) | `local/fp-ready/final-hands.png` |
+| Ranger bow draw | `b-c4/attack-2415.png` | `f-c4/attack-2415.png` |
+| Wizard cast / idle | `b-c8/cast-2455.png`, `b-c8/idle-2480.png` | `f-c8/cast-2455.png`, `f-c8/idle-2480.png` |
+| Look down (legs, kilt) | `b-c8/down-2537.png` | `f-c8/down-2537.png` |
+| Godot scene mode, Ranger | - | `g-c4/` (the hands work's capture project with this library: same as OpenGL, hand and bow only) |
+
+Simulation: `local/fp-ready/rig/check_rig.py` (the hands work's driver) on
+`rta_orig_fpnext`. The first-person comparison report is byte-identical to section 13's
+(SHA-256 `ba217b43…0deb`, as above), and the overhead report to the reference
+(`9cdc53c1…c5ff5c5`). Against the hands work's final arms TSV, every column is identical except
+`pool` in 1,465 rows. The cause is one word in the object pool (0x6c89d4, a pointer into the
+render lists) that follows what was drawn. With `--opt view-collide=off` the whole TSV is
+identical: it comes from the eye being kept out of walls (world document section 8), not from
+the mesh filter. It is the same presentation-cache kind as the 2,603 rows of off → arms above.
+
+Limits: the 0.22/0.30/0.62 figures were chosen on these six figures and their default
+equipment. Other armour sets and transformations were not seen. Hands can still leave the
+picture in the game's own animation.
