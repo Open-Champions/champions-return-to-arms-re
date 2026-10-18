@@ -279,3 +279,245 @@ order above is the order of the code (0x195610–0x195a2c). Its three callers ar
 
 Note: because the level runner is reached from drawing, an emitter that is not on screen
 emits nothing and its on/off timer does not advance (I).
+
+### Getting the definitions
+
+The 362 static definitions take constant arguments, so their values can be read from the
+executable instead of copied: `python3 -I tools/fx_particle_defs.py SLUS_209.73 [--json]`
+prints every call site of `particleDef_ctor` / `particleDef_init` / `particleDef_set`
+with the definition address, the 16 arguments and their meaning. On v2.00 it resolves 369
+of the 380 call sites; the other 11 take their values from data at run time (level
+emitters 0x18215c, `AddParticle` 0x24043c, `particles_configure` 0x202b5c, weather
+0x1d7bd8 … 0x1d879c, script `setParticle` 0x146e08, and the three inside the particle code
+itself). Keep its output under `local/`. Counts on v2.00 (resolved definitions): kind 0
+128, kind 1 172, kind 2 53, kind 3 19; life class 11 ticks 36, 30 ticks 135, 60 ticks 142,
+90 ticks 59. Colour arguments are plain ints and some lie outside 0–255 (start alpha
+300, end colour −77 occur); the clamp of section 4 handles them. O for the counts (tool
+output), I that the 19 kind-3 definitions are never visible.
+
+## 6. Glow sprites — O `glow_add` 0x18fc78, `glow_draw` 0x1907d0
+
+`glow_add(bias f12, size f13, pos a0, r a1, g a2, b a3, a t0, texture t1, angle t2,
+flags t3)` appends a 0x20-byte record to `g_glowQueue` 0x7d8b00 (count 0x82cc94, at most
+0x400 per frame; the 0x401st is dropped). The queue is drawn and emptied by the particle
+draw task: `glow_draw(1)` before the particle packet (sort key 4), `glow_draw(0)` after it
+(sort key 3); flags bit 2 picks the pass.
+
+Per glow:
+
+```
+p'  = pos − cameraForward × bias          # cameraForward = column 2 of g_cameraMatrix
+q   = g_viewProj · p' ;  depth = q.w + bias
+drop unless depth ≥ 20, |q.x| ≤ 700·depth, |q.y| ≤ 300·depth
+centre = (q.x, q.y) / depth ;  Z from p'          # bias moves only the depth value, toward the camera
+h   = size / depth                                 # pixels of the 1280 × 448 buffer
+flags bit 0 clear: sprite from centre − (2h, h) to centre + (2h, h)
+flags bit 0 set:   quad turned by `angle`: corners centre + (∓2h·c, ∓h·s), (±2h·s, ∓h·c)  (c, s of angle16)
+UV: texel (1, 1) to (width − 1, height − 1) of the texture
+```
+
+Colour = the four bytes as the vertex colour (0x80 = unmodified texel; modulate). Flags
+bit 1: `ALPHA_1` 0x48 (additive), else 0x44. `TEST_1` 0x71001, bilinear (`TEX1_1` 0x61).
+Records with the same texture and flags are drawn in one packet. O 0x1907d0–0x190fe8.
+
+`glow_add` is called from draw code and from some run functions (Fire, below); a record
+queued during a tick is drawn at the next draw-task call.
+
+## 7. Trails and beams
+
+### Trails — O 0x190ff8–0x192840
+
+64 trails of 0x410 bytes at 0x82cd00:
+
+| Offset | Type | Meaning |
+|---|---|---|
+| +0x000 | 128 × {s16 2x, 2y, 2z, s16 stamp} | ring of points; positions in half units |
+| +0x400 | u16 | handle (generation << 8 \| index), 0 = free |
+| +0x402 | s16 | trail clock (+1 per tick) |
+| +0x404, +0x405 | u8 | oldest point, next free point (ring of 128) |
+| +0x406 | s8 | texture row (below) |
+| +0x407 | u8 | flags: 1 the update does not age it; 2 points come in pairs; 4 additive (`ALPHA_1` 0x48); 8 `ALPHA_1` 0x09 (`src + dst × As`); else 0x44; 0x10 the clock does not advance |
+| +0x408 | s16 | point lifetime, ticks = trunc(60 × seconds) |
+| +0x40a…+0x40d | u8 × 4 | colour |
+| +0x40f | u8 | width / 4 |
+
+- `trail_create(lifetime s f12, row a0, width a1, flags a2, r a3, g t0, b t1, a t2)` →
+  handle or 0 when all 64 are used. `trail_setColor` 0x191100, `trail_setWidth` 0x1911a8,
+  `trail_release` 0x192800 (frees at once).
+- `trail_addPoint(handle, pos)`: stamp = clock + 1; the point is not added when the ring
+  would be within two of full.
+- `trail_updateAll` 0x192840, from `particle_updateTask` each tick: for every live trail
+  without flag 1, clock += 1 unless flag 0x10, then oldest points are dropped while
+  `clock − stamp ≥ lifetime` (two at a time with flag 2). A trail that has **no point
+  left** — or never had one — is freed by this update. So a trail lives as long as its
+  owner keeps adding points.
+- Drawing (`trail_drawAll` 0x193ad0 → 0x193b64, VU 0x28, 0x26 or the separate program at
+  0x79e for flag 2): the texture is `engine.lmp` : `trail.tex`. Across the trail the v
+  range is row r of the table at 0x44fca8: rows start at texel 0, 32, 64, 96, 128, 224,
+  256, 288, 351 and each ends one texel before the next start (row 8 ends at 446).
+  Along the trail u = age × 128 / lifetime. The width constant handed to the program is
+  40 × (+0x40f) (0x193b64); the half-width on screen is that over w (render-pipeline 4.11,
+  I for the unit). O for the table and the flags.
+
+### Beams — O 0x193088–0x193440, 0x192a40–0x193040
+
+20 beams of 0x734 bytes at 0x7e30d0. `beam_create(jitter f12, scale f13, from a0, to a1,
+width a2, depth a3, rgba t0)` makes two trails (lifetime 1 s, row 0, flags 5) and a tree
+of offset nodes (0x1c bytes each: offset xyz, drift xyz, frames until the next target);
+depth is clamped to 5. The node offsets start in ±jitter and halve per level; the counter
+of each node comes from libc `rand() & 7` (a third generator, cosmetic). Every draw
+(unless frozen) each node drifts by its drift and, when its counter runs out, picks a new
+target in ±jitter (cosmetic seed) and sets drift = (target − offset) × 0.1, counter =
+`(seed >> 21) & 7`. The beam is rebuilt each draw by recursive midpoint displacement:
+midpoint = (a + b) / 2 + node offset + (2r − 1) × amplitude × scale, amplitude halving per
+level; points go into one trail on even `g_drawFrame` and the other on odd. `beam_update
+(handle, from, to, alpha, width)` moves the ends, sets both trails' alpha and keeps the
+beam alive until `g_simFrame + 2` (`g_netFrame` if it was created inside a simulation
+tick); a beam not updated is destroyed by the next draw after that frame. O
+
+## 8. Floor decals — O `decal_add` 0x19f110, `decal_drawTask` 0x19f4e8
+
+`decal_add(size f12, pos a0, angle16 a1, type a2, grow a3)`.
+
+1. **Option gate** (`g_decalDetail` 0x44fdc0, the user's gore / detail setting, 0–2):
+   at 0 only types ≥ 3 are made; at 1 every type but 0; at 2 all. O 0x19f174–0x19f198
+2. **Grid**: cell = ((trunc(x) + 3840) >> 8, (trunc(y) + 3840) >> 8), both must be 0…29.
+   So decals exist only inside the square ±3840 around the world origin; one outside is
+   dropped. O 0x19f1a0–0x19f1d0
+3. A cell takes a block from 64 blocks of 0x180 bytes (0x840450, free list through +0x170)
+   and holds at most 15 decals; a full cell or no free block drops the decal.
+4. The decal is three qwords (0x18 bytes of s16): colour = the **light at the position**
+   (0x148ff0, `docs/lighting.md` 7; alpha 0x80), centre × 4 with z + 3 units, a "counted"
+   flag (1 for types < 3), (cos, sin) × size × 4, and the VU address of its texture
+   rectangle, 0x3d3 + 2 × type. The colour is taken once, when the decal is made. O
+5. `grow` ≠ 0 registers the decal in one of 16 growing slots (0x840310, 0x14 bytes): its
+   size starts at 0 and `decal_drawTask` adds 0.2 (grow 1) or 0.05 (grow 2) per draw-task
+   call while the game is not frozen, until it reaches `size`. O 0x19f45c, 0x19f540–0x19f5f0
+
+Drawing: texture `engine.lmp` : `floorsprite.tex`, 256 × 128 texels used; modulate,
+`ALPHA_1` 0x44, `TEST_1` 0x5001d (alpha > 1, depth ≥) with depth writes masked, bilinear;
+corners `centre ± (c, s, 0)` and `centre ± (s, −c, 0)` (render-pipeline 4.12). Cells are
+culled with boxes from 480 below the camera height up to the camera height (0x44f040)
+— I: a decal more than 480 units below the camera, or above it, is not drawn.
+
+Texture rectangle per type (texels, from the table uploaded at 0x19f5f8–0x19f6c0; the
+first texel is inset by half a texel) and who makes it:
+
+| Type | Rectangle | Size | Made by (O call sites) | Reading (I) |
+|---|---|---|---|---|
+| 0 | (0, 0)–(64, 64) | 64 | `GutChunk_run` at rest (red), `Creature_deadUpdate` for cflag 0x40000, `Player_run` (grow 1) | red pool |
+| 1, 2 | (64, 64)–(96, 96), (64, 96)–(96, 128) | 32 | `GutChunk_run`, `Creature_processDamage` (1 + rand&1), `Critter_run` | red splats |
+| 3 | (64, 0)–(128, 64) | 64 | `GutChunk_run` at rest (green), `Creature_deadUpdate` cflag 0x2000 | green pool |
+| 4, 5 | (96, 64)–(128, 96), (96, 96)–(128, 128) | 32 | the same, green; `SpiderQueen_run`, `PoisonProjectile_run` | green splats |
+| 6 | (128, 0)–(192, 64) | 64 | `GutChunk_run` at rest (yellow), `Creature_deadUpdate` cflag 0x1000, `SmallSpider_setState` | yellow pool |
+| 7, 8 | (128, 64)–(160, 96), (128, 96)–(160, 128) | 32 | the same, yellow; `DiseaseProjectile_run`, `Critter_run` | yellow splats |
+| 9 | (0, 64)–(64, 128) | 64 | 18 sites: player and monster projectiles, chests and containers, `Clockwork`, `Droid`, `Zek`, `GroundPoundEffect`, `FireStormFlare`, `FireBomblet` | scorch / impact mark |
+| 10 | (192, 0)–(256, 64) | 64 | `Creature_deadUpdate` cflag 0x4000 (grow 1), script `addExpandingPool` (grow 2) | pool of the 0x4000 material |
+
+Decals are saved with the level (`decal_serialize` 0x19ee10, `decal_loadList` 0x1a00b0).
+
+## 9. Gore, hits and deaths
+
+### Body material
+
+The creature flags (cflags, creature +0xa8, `docs/creatures.md`) choose the hit and death
+visuals. From the branches of `Creature_processDamage` 0x110d30 and `Creature_deadUpdate`
+0x1108a0 (O for the branches; the colour names are I from the definitions they use):
+
+| cflag | Hit burst (`fx_spawn`) | Gib / drop bits | Corpse pool | Colour |
+|---|---|---|---|---|
+| 0x40000 | 0 (or none at gore 0 offline) | 0 / 1 | type 0, grow 1 | red |
+| 0x1000 | 9 | 3 | type 6 | yellow |
+| 0x2000 | 3 | 5 | type 3 | green |
+| 0x4000 | 10 | — | type 10 | ice-blue (I: the frost burst) |
+| 0x8000 | 0xb | — | — | dark smoke |
+| 0x10000 | 2 | — | — | dust |
+| 0x20000 | — (sound, then 50 kind-2 sparks of definition 0x5bf608) | — | — | metal sparks |
+
+The corpse pool is laid on the animation event 0x80 of the dead creature, at position +
+offset, size = height + (own draw % 10), angle from the creature's own generator; never
+when the caller passes "no blood". O 0x110a00–0x110b00
+
+### GutChunk — O 0x201958, 0x1edb18, 0x201b88
+
+A `PhProp` (physics prop) using `gutchunks.vif`, made by `Creature_processDamage` (bits 5,
+3, 1 or 0), `Player_processDamage` (1), `Gnaw` / `GnawSpawn` and, through
+`GutChunk_ctorFromProp` 0x201ad0, by eight monster "lose a body part" functions. Bits at
++0x248:
+
+| Bit | Meaning |
+|---|---|
+| 1 | an invisible blood drop: never drawn; deleted on its first bounce. **Forced on when `g_decalDetail` < 2** |
+| 2 | yellow (particles 0x870408, splats 7/8, pool 6) |
+| 4 | green (particles 0x870458, splats 4/5, pool 3); neither: red (0x8703b8, 1/2, 0) |
+| 8 | no decals |
+
+Each run: physics; while the vertical speed (+0x1c4) is above 1 and gore ≥ 1, on one call
+in three (own generator) one particle of its colour at its position, velocity 0; a
+bit-1 drop lays one splat (size 12) as it comes down; on a bounce (vertical speed turning
+from negative to positive) a sound when the impact was faster than 1, then a bit-1 drop
+deletes itself, otherwise a splat (size 12) while +0x25c (starts at 2) lasts; once at
+rest (both horizontal speeds below 0.1) one pool (size 12, grow 1). Splats need ground
+below (`terrain_height` radius 8 above −10000). `GutChunk_draw` draws the prop only when
+bit 1 is clear and (gore ≠ 0 or offline).
+
+So with gore below 2 nobody sees a gib: the chunks become invisible drops that leave a
+particle trail and one splat. Gore 0 (offline) also removes the type 0–2 decals and the
+blood bursts 0 and 1.
+
+### Other death visuals
+
+`fx_disintegrateModel` 0x1f4340 (hides the model, plays a sound, turns its vertices into
+particles), `fx_shatterToLooseIce` 0x1fb240 (frozen creatures; draws the shared seed —
+`docs/gameplay.md`), and the per-class "lose part" functions above. Not read further (U
+for their particle recipes; their definitions are listed by `fx_particle_defs.py`).
+
+## 10. One-shot effects: `fx_spawn(id, pos)` 0x1ef270
+
+Every id but 5 returns at once unless `pos` is within 480 units of the camera focus
+(`isNearCameraFocus480`, per machine and cosmetic). The 23 definitions it uses are made
+on first call (0x1ef2a8–0x1efe5c). Common recipe, O for each case:
+
+```
+centre = pos + (rand % J − J/2) per axis  [+ z lift]      # integer jitter from the seed's top half
+repeat N:
+    u = random point in the unit ball (rejection: three draws 2r − 1 until |u| ≤ 1)
+    vel = u × S            (some ids add a common direction, below)
+    p   = centre + (rand % P − P/2) per axis
+    particle_spawn(0, def, p, vel)
+```
+
+| id | Callers (examples) | J (z) | N × definition, S, P |
+|---|---|---|---|
+| 0, 1 | `Creature_processDamage` (red blood). Return at gore 0 | 12 | 300 × 0x8704a8 (id 0) or 0x8704f8 (id 1, same look, 90 ticks); vel = u × 7.86 + d × r, d = one random unit vector × 34 (+4 z); P 0; plays one of four sounds |
+| 9 | yellow blood | 12 | as id 0 with 0x86fc38 |
+| 2 | dust: projectiles, `LavaBomb`, `Skelight`, `FatCyclops`, cflag 0x10000 | 24 (z 36) | 150 × 0x4f8710, S 10.45, P 12 |
+| 3, 6 | green blood (`Creature_processDamage`, `MummySnake`, `SpiderQueen`); 6 `PoisonProjectile` | 12 (z +18) | 150 × 0x86fcd8, S 10.16 (id 6: y and z × 16) |
+| 4 | — | 12 (z +18) | 150 × 0x86fd28, S 16, P 24 |
+| 5 | `MissileWeapon`, `LooseFire_ctor` | 12 (z 0…17) | 3 or 4 `Fire` objects; **shared seed** (`docs/gameplay.md`) |
+| 7 | `Skeleton`, `Skelight`, `Zek` | — | 3 × 0x86fd78, S 4.75 |
+| 8 | fire arrows / multi-fire / missiles | 24 (z 36) | 300 × 0x86fe18, S 10.45, P 24 |
+| 10 | frost: `IceBall`, `SnowballSpell`, `ColdArrow`, `FrostShard`, `ShockOfFrost`, `FrostArmor`, cflag 0x4000 | 12 (z +18) | 25 × 0x86fe68 S 5.45 P 24, then 80 × 0x86feb8 S 20 P 24 |
+| 0xb, 0xc | cflag 0x8000; `DiseaseBolt` | 12 (z +18) | 15 × 0x86ff08 S 5.45, 20 × 0x86ff58 S 40 (P 24); id 0xb adds 5 × 0x86ffa8 |
+| 0xd, 0xe, 0xf | `MummySnake`, model-vertex spawners | point within 15 | 1 × 0x86fff8 / 0x870048 / 0x870098, vel 0 |
+| 0x10 | `Creature_run` | point within 15 | 1 × 0x8700e8, vel 0 |
+| 0x11 | knockback, `MissileWeapon`, `Player_run`, props | — | 1 × 0x870188 at pos, vel 0 |
+| 0x12 | `Creature_run` | point within 15 | 1 × 0x870138 |
+| 0x13 | `LightningBolt`, `LightningRod` | — | 1 × 0x8701d8 (kind 2) S 21.6, then 0x870228 at a quarter of that speed |
+| 0x14 | `LavaMonster` | — | 3 × 0x86fdc8, S 4.75 |
+| 0x15 | `RedDragon` | — | 5 × 0x870278 and 5 × 0x8702c8 (S 24) |
+| 0x16 | `Droid` | — | 0x870318 (vel × 5, z × 25) and 0x870368 (× 1.28, z × 24.7) |
+
+"point within 15": a random angle and radius r × 15 in x y and (r − 0.5) × 15 in z.
+`fx_spawn` reads `rand % J` from `seed >> 16` (integer modulo), not from the float r().
+O for the counts, speeds, jitters and definitions (decompile of 0x1ef270); the reading of
+each id from its callers is I. Not read: the direction terms of ids 7, 0x14, 0x15 and
+0x16 beyond their speeds (U).
+
+### Fire — O `Fire_run` 0x1f34e0, `Fire_ctor` 0x2020e0
+
+100 ticks. Each tick one glow (bias 5, size 8000 + 250 × sin(g_simFrame × 1024), colour
+(255, 150, 0), alpha 60, fading in over the first 20 ticks and out over the last 20 by 3
+per tick; texture 0x4f848c; flags 0) and one particle of 0x870548 at pos + (2u.x, 2u.y,
+|2u'.z|) with velocity (2u.x, 2u.y, 2u.z + 4.8), u and u' unit-ball points from the
+object's own generator.
