@@ -1,0 +1,590 @@
+# Combat runtime: several live actors in one world
+
+US `SLUS_209.73` v2.00. This document is for a rebuild (the native C++/Godot client in
+particular) that must let **more than one live actor** share one world while they fight:
+one memory, one identity scheme, one grid, one contact loop, one damage path, and the
+order in which the original calls each service. It is the prose of
+`tools/ref_combat_runtime.py`, which composes the existing executed models
+(`tools/ref_objects.py`, `tools/ref_creature.py`, `tools/ref_arena_monsters.py`,
+`tools/ref_combat.py`, `tools/ref_player.py`) on one shared memory image and adds the
+bodies that none of them had.
+
+Evidence labels, as everywhere in the project: **Executed** = the original instructions
+were run one function at a time in `tools/ee_emu.py` (an instruction interpreter, not a
+console) on constructed state and agreed with the model; the test is named. **Observed** =
+read at the address given. **Inferred**. **Unknown**. **Authored** = a choice of this
+contract (a fixture, a refusal, a driver), not a statement about the game. Nothing here
+was run on a console, in PCSX2 or on the live rig.
+
+## 1. The contract in brief
+
+1. **Identity is the pool address; references that outlive a call are handles.** A handle
+   word holds a node of the one handle pool (6,096 nodes at 0x847268); node +0xc is the
+   object. Destroying an object clears its head +0, which unlinks every node that pointed
+   at it, so every handle word to it reads 0 from then on. Freed blocks are handed out
+   again last-in first-out, so the next object of the same size class gets the address of
+   the last one destroyed. *Executed* (ref_objects / ref_core; and in this contract's
+   tests, section 11).
+2. **Lists link at the front and are walked front to back**, so the actor linked last runs
+   first. A player is linked to the every-frame list by its constructor; a summoned
+   Skelight too; level monsters that join a 60-frame list in their constructor
+   (`docs/spec/object-system.md` 2.3) move to the every-frame list when they become active. *Executed* (ref_objects, `docs/spec/object-system.md` 5).
+3. **Inactive creatures do not animate**, so their attack events never fire and a swing
+   never ends: no activity centre (no player, camera not used) means no melee from
+   monsters at all. *Executed* (ref_creature `Creature_stepAnim`; contract test
+   `test_an_inactive_swing_never_lands`).
+4. **A hit is applied at once and reacted to later.** `damage_apply` calls the victim's
+   virtual slot 2 inside the attacker's run: a creature loses hit points there and then;
+   a player only accumulates pending damage. The reaction - knock-back speed, hit
+   reaction state, death - happens in the **victim's own** pending-damage function, on its
+   next run: later in the same tick when the victim runs after the attacker, in the next
+   tick when it ran before. *Executed* (test `test_hits_land_at_once_and_wait_for_the_
+   victims_own_run`).
+5. **Death never removes an object at once.** A dying Skelight calls `obj_delete` in its
+   own run (it leaves its run list at once but stays in the grid, the name table and
+   every handle); the object is destroyed at the start of the next `runObjects`; only then
+   do handles to it read 0. A dead player is never deleted. *Executed* (section 7).
+6. **Touch order is fixed per mover.** `Creature_moveBy` calls only the *other* object's
+   slot 6; `obj_moveWithCollision` (players) calls the other's slot 6 and then the
+   mover's own; `obj_moveAndCollide` (projectiles) the hit object's and then the
+   projectile's. No loop stops early except `Creature_moveBy` when settling against its
+   target. *Executed* for `Creature_moveBy` (ref_creature); *Observed* for the other two.
+7. **Targets come from the box query, in its order.** Every scan (creature target pick,
+   player melee scan, ranged find-target, arc hits, cone searches) takes
+   `world_collectObjectsInBox` in grid order - row, column, most recently moved first -
+   and breaks ties by list position. *Executed*.
+8. **All lockstep randomness is two kinds**: the shared seed 0x404464 (constructors,
+   `damage_apply`, the player's pending-damage rolls) and each object's own seed +0x44
+   (creature reactions, knock-back dust, Skelight's swing choice). The cosmetic seed
+   0x404460 and the third generator 0x404468 are per machine. *Executed*.
+
+## 2. One memory, one identity
+
+### 2.1 What the actors share
+
+| Field | Of | Written by | Read by |
+|---|---|---|---|
+| +0x0, +0x4, +0x8 | every object | the list functions | everything; +0 is "who refers to me" |
+| +0xc flags | every object | constructors, `Creature_processDamage` (0x100, 9, 0x2000), `Player_processDamage` (0x100, 8, 1), Skelight death (2), `obj_delete` callers (0x4002) | box query, iterators (exclude mask), every enemy test |
+| +0x10 position, +0x1c radius, +0x20 height | every object | movers, slides | box query, contact loops, cone and arc tests |
+| +0x38 facing | creatures, players | turning, `Creature_moveBy` (root yaw) | arc and cone tests, the player melee scan |
+| +0x44 own seed | every object | `GameObject_ctor` (one shared draw), `GameObject_rand` | reactions, dust, Skelight swing clip |
+| +0x48 table | every object | constructors, destructors | every virtual call (section 9) |
+| +0xc8 pending damage, +0x2dc pending flags | creatures, players | slot 2 | pending-damage functions |
+| +0x228 hit points | creatures; for a player a copy of record +0xac made at the top of its run (0x1a527c-0x1a5280) | `Creature_takeDamage`, `Player_run` | `damage_apply` (cold status), death tests |
+| +0x234 target, +0x2e4 last attacker, +0x238 ally, +0x360 status source | creatures, players | slot 23, slot 2, status setter | target logic, kill credit |
+| +0x232 AI state / +0x58c action state | creatures / players | set-state functions | the run functions |
+| record +0xac hit points, +0xcc/+0xd0/+0xd4 attack and damage | players (`g_players` 0x4d8af0 + slot x 0x4c30) | `Player_processDamage`, `Player_recalcDamage` | `damage_apply`, kill experience |
+
+In the contract all of these are bytes of one image (`SharedMemory`); the object model,
+the creature model and the damage model read and write the same bytes, and the handle
+words are views of the one node pool. No field is copied between models, so there is no
+import/publish step and no window in which two copies disagree. *Authored* (the design);
+the fields are *Observed*/*Executed* in the documents named in each row of section 9.
+
+### 2.2 Handles and what nulls them
+
+- `handle_link(head, back, obj)` 0x1a1738 takes two nodes, links one at the front of
+  `head` carrying `obj` and its partner at the front of `back` (the target's head +0).
+  *Executed* (ref_core).
+- The destructor chain clears, in this order: for a creature (`Creature_dtor` 0x117128)
+  the attached spells (slot 1 of each, through an iterator), +0x364, +0x360, the
+  attachment state at +0x320 (0x202500, not read), +0x2e4, +0x238, +0x234, the animation
+  state, then `GameObject_dtor` 0x14cf90: +8 (grid), +4 (run list), +0 (every handle to
+  it), and `pool_free` when bit 0 of the argument is set. `Skelight_dtor` 0x3cc67c only
+  restores its table and calls `Creature_dtor`. `Player_dtor` 0x1a1bb8 first clears the
+  record's object pointer (when +0x462 is 0), calls `game_rebuildAlivePlayers`, clears
+  +0x588, two lights, +0x4b8 and the five heads +0x438, +0x420, +0x408, +0x3f0, +0x3d8 (in
+  that order), then `Creature_dtor`.
+  *Observed* (read for this document).
+- So an actor's *own* handle fields are released when it is destroyed, and every handle
+  *to* it reads 0 at the same moment. Between `obj_delete` and the flush (section 7) all
+  of them are still live.
+- `Creature_takeDamage` and `Player_takeDamage` link the last-attacker handle to whatever
+  pointer they are given (FINDINGS ST3); the contract refuses a pointer that is not a live
+  object (*Authored*).
+
+### 2.3 Shared draws in a fight
+
+Per hit through `damage_apply` (offline, damage-number option 0, no spells, no item
+effects): a monster hitting a player made 7 shared draws in the composed duel (roll,
+first hit roll, four element-chance rolls, second hit roll), a player hitting a monster 8
+(the same, plus the stun roll every player attacker makes). `docs/spec/combat.md` 3 is the
+full list. Besides: one per object constructed (`GameObject_ctor`); in
+`Player_processDamage` one for the Strong Stance resist test whenever the flags carry a
+knock-back class (0x3c0000) and one stagger roll for every surviving hit (section 6.4).
+Creature reactions, knock-back dust and Skelight's swing choice use the object's own
+seed. *Executed* (difftests named in sections 6 and 11).
+
+## 3. The world: lists, grid, queries (summary)
+
+All *Executed* by `tools/difftest_objects.py`; `docs/spec/object-system.md` has the full
+text. What a fight depends on:
+
+- **Run order**: `runObjects` 0x14b910 (run task, priority 10) first destroys everything
+  on the delete list (last deleted first), samples the pool, reaps when short, then runs
+  slot 4 of the every-frame list, then `g_runLists15[frame % 15]`, then
+  `g_runLists60[frame % 60]`, skipping flag 0x8000 and whatever `g_excludeMask` names.
+  Front to back; an object linked during a walk to the list being walked is not run by
+  that walk.
+- **Activity**: `Creature_updateActive` 0x10c0f0 moves a creature to the front of the
+  every-frame list when it comes within max(+0x3c4, +0x3ac, +0x3ae) of an activity centre
+  (each player object, set by `gameSetObjectVis` at priority 0) - or of the camera focus
+  while `g_cullByCamera` is set - and to the next 60-frame list when it leaves.
+- **Box query** `world_collectObjectsInBox` 0x14a928: grid A only, cells of the box grown
+  by 96, rows then columns ascending, inside a cell the most recently linked or moved
+  first; at most `limit - 1` results, the first in walk order; never an object with
+  0x20000; skips whatever the exclude mask names (the creature target scan sets it to 8,
+  dead, for that one call).
+- **Grid membership**: an object is in exactly one grid list from construction to
+  destruction; every position change must be followed by `obj_updateGridCell` (relink at
+  the front of the cell's list, even the same cell).
+
+## 4. One tick, in order
+
+### 4.1 The run pass
+
+Offline, `tasks_run` 0x3226e4 runs the run tasks in priority order (`docs/mainloop.md` 2):
+`runwater` and `gameSetObjectVis` (0), `gameMiscSync` (1), **`runObjects` (10)**, camera
+(11), ..., `deathTask` (20, only after a party wipe), HUD (50), arena (100), Script (125).
+Then `g_simFrame += 1`, the pads' edge words are cleared, and the end of tick runs
+`game_rebuildAlivePlayers` 0x1e72f8 and `game_checkAllDead` 0x1e7438. *Executed*
+(object-system 6). The contract composes `gameSetObjectVis`, `runObjects` and the end of
+tick only (*Authored*); a party wipe is refused (`deathTask` is not read).
+
+### 4.2 A monster's tick (Skelight, `Skelight_run` 0x2a8b84)
+
+*Executed* (`tools/difftest_arena_monsters.py`; `docs/spec/arena-monsters.md` 4.3). The
+class run calls the base pieces in this order:
+
+1. `Creature_processDamage(c, model)` 0x110d30 unless state 0x17 (rising) - **pending
+   damage of the previous runs is handled first**;
+2. `Creature_run(c, model)` 0x112948 - timers (attack cooldown +0x318 counts down here),
+   status effects, burn and damage-over-time ticks (`damage_apply` on itself every 32nd
+   frame), the corpse scavenger, an inactive sunk corpse deleted (cflag 0x1000000);
+3. `Creature_updateActive(c)`;
+4. the weapon holder (none in the contract);
+5. `ev = Creature_stepAnim(c; 1.0)` - animation advances only while active; `ev` bit 0 is
+   the hit event;
+6. `Creature_applyKnockback(c; 0.7)` 0x115eb8 - **a second contact pass** (section 5.4);
+7. slot 23 `Creature_pickTarget(c, 0)` 0x10ded0 (section 8.1);
+8. the state switch; state 6 (the swing): with a target and `ev & 1`,
+   `Creature_hitTargetInArc(0.0, 48.0; c, facing, 6000, +0xd0, +0xd2, +0xd4, flags 8,
+   holder descriptor)`; while the clip plays (+0x11a & 8) `Creature_turnToTarget`;
+   otherwise +0xf4 counts down and at 0 the state becomes 3 (chase).
+
+Other monster classes call the same pieces in their own order (`docs/monsters.md` 1.3);
+the base class's own slot 4 is empty.
+
+### 4.3 A player's tick (`Player_run` 0x1a5030)
+
+*Observed and executed* in `docs/spec/player-tick.md` (`tools/difftest_player.py`). The
+parts that matter for combat, in order: `Creature_run(P, P+0x544)` (call at 0x1a5248),
+`Creature_applyKnockback(P; 1.0)` (0x1a5254; players are knocked back offline only),
+P+0x228 = record hit points (0x1a527c), the hit-immunity countdown R+0x4c27 and spawn protection +0x4b4, ...,
+`Player_processDamage(P)` 0x1b2cc0 (unless dead), the action-state switch: state 2
+(neutral: attack button and `P+0x48c x 60 <= frames since +0x448` start a swing, state
+1), state 1 (melee, section 6.2), state 3 (staggered), state 4 (dead).
+
+The contract's player slot 4 is an **authored driver**: it runs exactly those steps and
+then ref_player's own executed state switch for states 1, 2 and 3, and refuses the rest.
+Left out (each modelled in ref_player, each run every tick by the original): the breath
+puff (own draws, cold levels), the white light, the **idle voice (a shared draw when it
+fires; the fixture sets its limit +0x4b2 high)**, the rumble, the pad choice,
+**`Player_idleFidget` (a shared draw while exactly four animation tracks play)**, the aura
+globals, regeneration, the kill plane, the swap / interact gate, instant abilities, and
+the tail. A rebuild must run them all; the contract only keeps the fight composable.
+
+## 5. Contacts and touches
+
+### 5.1 `Creature_moveBy` 0x113c48 (monsters; players in knock-back and scripted walks)
+
+*Executed* (ref_creature; `docs/spec/creature-tick.md` 8). One box query (+-r, +-r,
++-1000, limit 0x10) after the terrain slide; per object in list order: skip flag 1 and
+itself; 2-D overlap `dist + 0.001 < r + o.r`; the stand-on rule when either has flag 0x10;
+a push-out slide (mask 3) unless o has 0x200 or the mover 0x401; then **bit 2, the other
+object's slot 6 with the mover**, and the object joins the touched list; the loop stops
+only when settling (flag 0x8000000) against the mover's own target. After gravity:
+slot 10 (slid) and slot 11 with the touched list. The mover's own slot 6 is never called
+here. The call at 0x114220 does not test for the prediction copy (`docs/issues/touch-
+handlers.md` 4).
+
+### 5.2 `obj_moveWithCollision` 0x14d4b8 (players: `Player_move` -> `creature_moveSimple` 0x1186d8)
+
+*Observed* (read twice for this document; `docs/spec/movement-camera.md` 5.5 agrees):
+
+```
+d = vel x DT; if 0.001 < (d.x² + d.y²) + d.z²:
+    mask = 1, 3 for a creature, 5 for a player; bits = slide(...) ? 1 : 0; relink (inline copy)
+box query (+-r, +-r, +-1000), limit 0x40;  top = z + height (once);  stand = -100000
+for o in list order (no break):
+    skip flag 1, the mover, `ignore`, a creature when skipCreatures
+    skip unless dist + 0.001 < r + o.r (2-D, from the position after earlier push-outs)
+    if either has flag 0x10: skip when entirely below or above; within 5 of o's top:
+        touch only when o has 0x200 or the mover 0x400, else stand on it (no touch)
+    push-out (slide mask 1, relink, bits |= 2) unless o has 0x200 / mover 0x400 / dist <= 0.001
+    TOUCH: o.slot6(o, mover) unless the MOVER has 0x20000 (0x14d9ac);  mover.slot6(mover, o)
+ground = max(terrain_heightBelow, stand); vz -= 8.999999; z += vz x DT; land (bits |= 4)
+```
+
+Bit 2 means "pushed", not "touched" (a touch without a push leaves it clear). Verified
+order of the two calls at 0x14d9d0 and 0x14d9ec for this document.
+
+### 5.3 `obj_moveAndCollide` 0x1509f8 (projectiles)
+
+*Observed*: position += vel x DT, one relink; a ground hit backs off in tenths; box query
+of +-r, +-r, +-height, limit 0x100; per object: skip 0x201, 0x20000000, itself, the owner;
+height overlap; `D.x² + D.y² < (r + o.r)²`; **the hit object's slot 6 first (0x150ddc),
+then the projectile's own (0x150df8)**; no break, no copy guard. A "hit once" rule lives
+in each projectile's handler. Not in the contract's domain.
+
+### 5.4 Knock-back is a second contact pass
+
+`Creature_applyKnockback` 0x115eb8 (*Executed*, `tools/difftest_combat_runtime.py`):
+
+```
+player and (g_networkMode or g_pvpModeB): +0x2e8 = 0; return
+if not (0 < scale) or +0x2e8 == 0 or flag 2: return
+v = (cos16(+0x2e0) x speed x scale, sin16(+0x2e0) x speed x scale, 0)
+save root (+0xbc, 8 bytes) and root yaw (+0xc4); zero both
+bits = Creature_moveBy(c, v)                  contact loop and slot-6 calls included
+restore root and yaw;  speed -= 2.0 while positive, floored at 0
+dust unless creature flags 0x2000000000100000 (in water / bit 20) or bits & 3:
+    two puffs; each: spot = (x - r/2 + rand % int(r), y - r/2 + rand % int(r), z + rand % 10)
+    (signed remainders), a unit-ball point from triples of own draws, x 10.45, a jitter of
+    three own draws % 12 - 6; fx_spawn(0x11) on cold levels else particle_spawn(0x4f8710)
+```
+
+All draws are the object's own seed - simulation state, so their count must match. The
+knock-back speed +0x2e8 and angle +0x2e0 come from the pending-damage functions (6.4).
+
+### 5.5 Touch handlers met in a fight
+
+`Creature_onTouch` 0x11a418 sets creature flag bit 59 when the toucher is a player (read by
+`Creature_run` 4.13 for charmed creatures). `Player_onTouch` 0x1beaf0 does nothing for the
+prediction copy or outside action state 9 (the rush, `SpellCharge_onContact`; that the
+first touched object in list order uses up the charge contact is *Inferred*; not in the
+domain). 38 other
+implementations: `docs/issues/touch-handlers.md` 2.
+
+## 6. The damage path
+
+### 6.1 Monster attacks
+
+*Executed* (`tools/difftest_combat_runtime.py`, entry points `canSeeObj`,
+`hitTargetInArc`, `hitAllEnemiesInArc`, `findEnemyInCone`).
+
+- `creature_canSeeObj` 0x10c810 (near, far, lead; c, obj, facing, arc, rayMode): no object
+  -> 0. Target point = obj position, plus its last velocity (+0x308, +0x30c) x lead for a
+  creature when lead != 0. `|s16(atan2_16(v.y, v.x) - facing)| < arc` (strict).
+  `d = sqrt((c.x - p.x)² + (c.y - p.y)²)`; need `(d - obj.r) - c.r < far` and
+  `near <= (d + obj.r) - c.r`. One terrain ray from half the creature's height along `v`,
+  length factor 0x3f8ccccc, mask 3 when rayMode is 0 else 0; seen when `t < 0` or `1 < t`.
+- `Creature_hitTargetInArc` 0x119938 (near, far; c, facing, arc, min, max, attack, flags,
+  descriptor): no target -> 0; `creature_canSeeObj` on the target (lead 0, rayMode 0);
+  then `damage_apply(f32(min), f32(max); target, c, attack, 0, 0, flags, descriptor, 0)`
+  and its result. No enemy test and **no dead test**: a creature whose target handle still
+  names a dying actor (section 7) can hit it.
+- `Creature_hitAllEnemiesInArc` 0x119b58 (same arguments): one box query of
+  `+-1.4 x far` (0x3fb33333) on all three axes, limit 0x80, the exclude mask as it is;
+  for each object in list order: slot 20 non-zero, `creature_canSeeObj`, `damage_apply` -
+  **at once, per candidate, in box order**; 1 when any landed.
+- `creature_findEnemyInCone` 0x10cf78 (near, far; c, facing, arc): bestD = far², the box
+  half-size `single(double(far) x 1.4)` through the soft doubles (1.4 is the double at
+  0x52fc80); per object: score = slot 20, skip 0; skip 3-D d² < near²; arc test
+  `|s16(s16(0x4000 - atan2_16(v.x, v.y)) - facing)| <= arc` (inclusive), with `v` aimed at
+  half heights; skip when a terrain ray (mask 3, from the creature's full height) gives
+  `0 <= t <= 1`; +1 when nearer than the best so far, +1 last attacker, +1 current target;
+  take on a higher score, or an equal score and a smaller d². **`far` is not a cap**: the
+  first enemy found inside the 1.4 x far box wins with score 1 against 0 whatever its
+  distance (test `test_cone_search_has_no_hard_range`).
+- Other helpers (*Observed*, not executed): `Creature_hitTargetAtReach` 0x1196e8 (a point
+  `reach` ahead, the target within 60.0 of it in 3-D and not dead), `Creature_hitTarget
+  InArcEdge` 0x119850 (as `hitTargetInArc` with `creature_canSeeObjEdge` 0x10c5b8, whose
+  range uses only the object's radius), `Creature_hitTargetOrPlayerInArc` 0x119a20 (the
+  target through `creature_canSeePoint` 0x10c238, else `creature_findPlayerInCone`
+  0x10ca70), `Creature_knockbackTarget` 0x119d10 (target +0x2e8 = speed, +0x2e0 = the
+  bearing), and two cooldown setters without names: 0x118bf0 (c, frames) and 0x118b58
+  (c, frames, obj; also relinks the target), each calling slot 27 with 0x10 before storing
+  +0x318.
+
+### 6.2 Player attacks
+
+- **Melee scan and hit frame** (`Player_run` state 1, 0x1a9678; *Executed* in
+  `docs/spec/player-tick.md` state 1): on frame 1 of the swing, or without a target
+  handle: box (+-48 or +-58, +-72), limit 0x100; candidates not flagged 0x49 or
+  0x1000000 and, for a creature, not charmed and not friendly (or a PvP enemy); in front
+  (`n . f >= 0`) - linked into the sweep list +0x4b8 for a class-2 weapon on combo step 3;
+  within the 60° cone (`n . f >= 0.5`) and `distance - radius < reach`: the lowest
+  `d - n.f x 32` wins (ties to the later); a creature winner's slot 12 is called with 3.
+  The hit lands on `t == trunc(16.02 / speed)` offline (frame 16 at speed 1.0), and in a
+  net game on frame 1 only when +0x55c is 0.
+- **`Player_meleeHit`** 0x1b6a98 (scale; P, target, unused, extra flags) - *Executed*
+  for an unarmed player with scale 0 (`playerMeleeHit`); the weapon, dual-wield, bow,
+  heavy-attack and scale branches are *Observed*: nothing for the prediction copy; with scale 0
+  a terrain ray (mask 0, length 1.0) from 36 above P along the 3-D difference, a hit
+  (`t >= 0`) refuses the attack unless the target is an `AutoProp`; dual wield (both hands
+  and the passive 0x40000 on an odd combo step) picks the second weapon; then
+  `Player_recalcDamage(P, weapon, 0)`; flags = the weapon definition's damage bits (+0x20)
+  or 1 unarmed; 0x1000 for weapon class 1 after 60 frames; knock-back class 0x40000, or
+  0x80000 with a scale or a long weapon (class 3) after 60 frames; a bow or thrown
+  weapon recomputes as unarmed and adds 0x200000; a heavy attack adds 0x200000 and
+  **raises the record's damage range in place** (`R+0xd0 += round(R+0xd0 x s)`, s from
+  passive 0x20000) and calls `Player_hitSparks` (a shared-seed user, not read); a scale
+  multiplies the range in place; `SpellHarmTouch` may adjust min/max; then **one**
+  `damage_apply(f32(R+0xd0), f32(R+0xd4); target, P, R+0xcc, item_getModifiedField1a(
+  weapon), the item's word +8, flags | extra, weapon item, 0)` (the two middle values are
+  not read by `damage_apply`; all 0 unarmed).
+  The record values stay as written until the next `Player_recalcDamage`. A landed hit on
+  a creature sets the trail's material (R+0x4ac5 + hand x 0x40) and a 5-frame timer.
+- **`Player_findTarget`** 0x1bb3c8 (reach; P) - *Executed* (`playerFindTarget`): used by
+  bows, throws and the class 4/6 combo. Nothing at all on a level whose name contains
+  `stomedal` (a substring test). Box (+-reach, +-reach, +-72), limit 0x100, +0x4b8
+  cleared; candidates: not P, flags & 0x49 clear, flag 0x20, charm 0 (so never another
+  player); the 60° cone; `distance - radius < reach`; a terrain ray (mask 0, length 1.0)
+  from 36 above P that must miss (`t < 0`); lowest `edge - dot x 32`, ties to the later;
+  +0x234 cleared and relinked to the winner.
+
+### 6.3 Take-damage (virtual slot 2)
+
+| | `Creature_takeDamage` 0x116638 | `Player_takeDamage` 0x1b5330 |
+|---|---|---|
+| Evidence | Executed (ref_creature) | Executed (`playerTakeDamage`) |
+| Early exits | inert +0x231; IgnoreDamage (timers zeroed) | recall countdown, spawn protection, vehicle, level `actintro`, jump-gate travel, menu lock-out, exit countdown; hit immunity R+0x4c27 (HUD flash only) |
+| Hit points | **subtracted now** (`+0x228 -= amount`) | not touched; record +0xac changes in `Player_processDamage` |
+| Pending | +0xc8 += amount, +0x2dc \|= flags, +0x304 = frame | +0xc8 += amount, +0x2dc \|= flags |
+| Hit angle +0x2e0 | `0x4000 - atan2_16(V.x - A.x, V.y - A.y)` while hp > 0 | the same unless the new flags have 0x800000 |
+| Last attacker +0x2e4 | relinked only while hp > 0 (so it names the killer) | relinked on **every** hit with an attacker |
+| Owner rules | flag 0x80: the owner behind +0x4c; flag 0x10000000: the status source +0x360 | the same |
+| Other | visual arc +0x3b0 = 0x7fff | block (states 8, 0xb; one shared draw in state 8), Holy Shield (mana), HUD flash |
+
+### 6.4 Pending damage (the victim's own run)
+
+- **`Creature_processDamage`** 0x110d30 - *Executed* (ref_creature; creature-tick 3):
+  nothing pending: knock-back speed and maybe a reaction; pending: +0xc8 = 0, a corpse
+  returns with its flags kept, flag 0x100, the hit effect, survive (knock-back speed,
+  hit reaction state 0x12 by own draws) or **die**: flags 9, statuses clamped, ice or
+  gibs, knock-back speed, **slot 27 with 0x14** (the class's set-state), flag 0x2000,
+  then (unless `Dead` or creature flag 0x100000000) the kill experience for every player
+  (`docs/spec/combat.md` 5) and the skill-0x3b orb roll (own draw).
+- **`Player_processDamage`** 0x1b2cc0 - *Executed* for the domain (`playerProcessDamage`):
+  A. unless +0x2dc has 0x20000000, a cutscene or an open dialog drops everything.
+  B. with flags & 0x3c0000 and action state not 6 or 10: slot 39 (rank of skill 0x3e),
+  `SkillStrongStance_getStat0`, **one shared draw**, resist = `draw % 100 < stat`;
+  +0x2e8 = 100 / 150 / 200 / 250 and level 1 / 2 / 3 / 3 for the first of 0x40000,
+  0x80000, 0x100000, 0x200000 (halved, one level less, in PvP mode A); level > 0: blocking
+  with `|s16(+0x2e0 - facing)| >= 0x6000` costs a level (the attacker in front,
+  *Inferred*); level < 2 or not resisted: action state 3
+  (+0x448 = frame, ghost rebase when local, a voice); level < 2: the small reaction clip
+  unless 0x400000; level >= 2: the knock-down clip by bearing (or `SkillStrongStance_
+  trigger` when resisted - not in the contract).
+  C. pending <= 0 or action state 4: flags dropped, **pending kept**; debug invulnerability
+  zeroes pending; **record +0xac -= pending**; blood (and one shared draw, a `GutChunk` 1 in
+  8) only with `g_decalDetail > 0` or in a net game when flags & 0xd; flag 0x10 and hp <= 0
+  disintegrates; pending = 0; flag 0x100.
+  D. hp <= 0: a Resurrect spell may save (one player only); hp = 0, **flag 8**; a held spell (+0x588) is
+  destroyed; the death clip; **action state 4**, +0x448 = frame, **flag 1**;
+  `game_rebuildAlivePlayers` **at once**; local: menus closed, ghost rebase; with two or
+  more players the other of slots 0/1 shouts; PvP kill credit or arena lives. The object
+  is never deleted (it waits for respawn or resurrection; respawn re-makes it at the same
+  address, FINDINGS ST2).
+  E. survived, unless 0x400000, action state 3 or 7, or a heavy attack: **one shared
+  draw**; stagger when `draw < max(0.04 - R+0xdc x 0.04, 0) x 65536` or flags & 0x4000000,
+  then (not in action state 6 or 10) action state 3 and the reaction clip.
+
+## 7. Death and removal timing
+
+| Tick | Attacker's run | Victim's run | Others in the same tick |
+|---|---|---|---|
+| T | the hit: `damage_apply` -> victim slot 2 (creature hp falls now) | if it runs **after** the attacker: its pending damage is handled in T | see full hp loss at once; no reaction yet |
+| T or T+1 | | `Creature_processDamage` -> die: flags 9, slot 27 (0x14); Skelight: flag 2, `obj_delete` - **the rest of its run still executes** (`Creature_run`, activity, `stepAnim`, knock-back returns at flag 2, target pick, state 0x14 -> `Creature_deadUpdate`) | the corpse is still in the grid and the box query, but flag 1 (not solid) keeps it out of contact loops, flag 8 out of every enemy test and out of the creature target scan (mask 8); target handles to it are **still set** (`Creature_pickTarget` sends a creature with a dead target to state 0 and leaves the handle to the set-state) |
+| next `runObjects` | | destroyed in the delete-list flush, before any object runs | every handle to it reads 0; the block is the next one its size class hands out |
+
+*Executed* end to end in the contract (`test_kill_delete_destroy_in_three_ticks`) on top of
+the executed pieces. Classes with a corpse phase do not delete at once: their set-state
+calls `Creature_dropLoot` and slot 28 (`docs/issues/kill-loot-xp.md` 2, *Observed*);
+slot 28 is `Creature_onDeath` 0x10beb8 (*Executed* in ref_arena_monsters: death script,
+drop item, a hidden creature finished at once, PvP kill credit, boss music);
+`Creature_deadUpdate` 0x1108a0 (*Executed* without its blood decal)
+sinks a corpse with creature flag 0x1000000 by 0.35 per call once the death clip has
+ended and deletes it when the sink exceeds its height (hold 0), or deletes it when the
+clip has ended with one track left (hold 1); `Creature_run` deletes an **inactive** corpse
+with that flag (0x113bc4). Players: section 6.4 D. FINDINGS D23 records the Skelight case.
+
+## 8. How AI creatures pick targets and attack
+
+### 8.1 Target choice - `Creature_pickTarget` 0x10ded0 (slot 23)
+
+*Executed* (ref_creature; creature-tick 6). No draws. Inert: nothing; no-target timer or
+friendly: handle cleared; a dead current target: set-state 0. The current target is kept
+while slot 20 says enemy, except on a scan (every 32nd frame staggered by the serial byte
++0x230, or forced): box of +-HomeRange (+0x3c0) on all axes with the exclude mask forced
+to 8, limit 0xc0; score = slot 20 (+1 last attacker, +1 current target); higher score,
+then smaller 2-D distance (starting at HomeRange²); the leash refuses candidates outside
+HomeRange of home and farther from home than the creature unless within 60 + both radii
+(off for 480 frames after any hit).
+
+### 8.2 The enemy test - slot 20
+
+| Table | Body | Rule |
+|---|---|---|
+| Creature (and every monster class) | `Creature_isEnemy` 0x119328, Executed | 0 for none, itself, no 0x60 flag, flags 0x20008, cflags 0x4000800; else slot 37 of both (team byte +0x310; for a player record +0x4c24): equal 0, different 1 or 4 (cflag 0x100000000000) |
+| Player | `Player_isEnemy` 0x1b5ea8, Executed | 0 for itself, no 0x20, flags 8 or 0x1000000, cflags 0x4000800; another player only in PvP mode A by record team; a creature: 1 unless charmed, a charmed one only in PvP mode A by team |
+
+So, by these rules, an uncharmed monster is always a player's enemy, and a monster calls
+a player an enemy when the monster's team byte +0x310 differs from the player record's
++0x4c24 (that the shipped values make every monster hostile is *Inferred*).
+
+### 8.3 Seeing and attacking
+
+A class's states combine slot 25 (`Creature_canSeeTarget` 0x10e658, *Executed* in
+ref_arena_monsters: within pointblankrange +0x3ac all round, else within visualrange
++0x3ae inside visualarc +0x3b0; ray mode 1 when forced or the arc is 0x7fff, which every
+hit sets), `Creature_canSeeTargetIn` 0x118d40, the cone searches (6.1), the move helpers
+(`docs/spec/creature-tick.md` 9) and a hit helper on the event bit of a swing clip.
+`creature_findPlayerInCone` 0x10ca70 (*Observed*): charmed creatures use the enemy cone
+search; others take the nearest live player object of `g_players[0..n)` in the cone,
+strict arc, 2-D distance, a clear terrain ray - no team test. Skelight: section 4.2.
+
+## 9. The virtual slots a fight reaches
+
+Function words of the three tables (*Observed*: read from the executable for this
+document; the bodies' evidence as stated):
+
+| Slot | Meaning | Creature 0x50cc58 | Player 0x511308 | Skelight 0x5174b0 | Called by, in a fight |
+|---|---|---|---|---|---|
+| 1 | destructor (3) | 0x117128 | 0x1a1bb8 | 0x3cc67c | the delete-list flush |
+| 2 | take damage (attacker, flags; amount) | 0x116638 Executed | 0x1b5330 Executed | = Creature | `damage_apply` |
+| 4 | run | 0x3c7e98 (empty) | 0x1a5030 | 0x2a8b84 Executed | `runObjects` |
+| 6 | touched by (other) | 0x11a418 Executed | 0x1beaf0 Observed | = Creature | the three movers (5) |
+| 10, 11 | slid / touched list | 0x11a3f0, 0x11a448 (empty) | = Creature | = Creature | `Creature_moveBy` |
+| 12 | nearby event (a, &pos, b; R) | 0x11a290 (empty) | = Creature | = Creature | `world_notifyObjectsNear` 0x11a2b8 (one player: 600 around a hit creature), the player melee scan (kind 3) |
+| 17 | spells follow | 0x11a868 | = Creature | = Creature | `Creature_run` |
+| 20 | is enemy | 0x119328 Executed | 0x1b5ea8 Executed | = Creature | target pick, arc hits, cone search, touch handlers |
+| 23 | pick target (force) | 0x10ded0 Executed | = Creature | = Creature | class runs |
+| 25 | can see target (force) | 0x10e658 Executed | = Creature | = Creature | class runs |
+| 26 | turn toward (mode, point) | 0x10bb08 Executed | = Creature | = Creature | turn-to-target, the player melee scan |
+| 27 | set state | 0x3c2688 (store only) | 0x1b5d68 | 0x2a91b8 Executed | every state change, death |
+| 28 | on death (quiet) | 0x10beb8 Executed | = Creature | = Creature (not called) | class set-states |
+| 30 | stun (frames, flash) | 0x118a58 Executed | 0x3c3b10 (empty) | = Creature | `damage_apply` stun |
+| 37 | team | 0x3c2730 (+0x310) | 0x3c3b18 (record +0x4c24) | = Creature | slot 20 |
+| 39 | skill rank (id) | - | 0x3c3b40 (`player_getSkillRank`) | - | `Player_processDamage` |
+
+`world_notifyObjectsNear` (*Observed*): a box of +-R on all three axes, limit 0x80, and
+slot 12 of every object in list order - the hit creature itself included; ten monster
+classes override slot 12 (for example Goblins called to a hurt Goblin).
+
+## 10. What reads per-machine state on this path
+
+For online play (`docs/OVERVIEW.md`): activity (camera focus while `g_cullByCamera`,
+FINDINGS D6) decides whether a creature animates and so whether it lands hits;
+`Player_takeDamage` reads `g_localMenuOpen` and `net_isLocalSlot` only for a screen tint;
+`Player_processDamage` uses `net_isLocalSlot` for menus and the ghost-rebase flag; the
+swing sound uses the third generator; `damage_apply` reads the camera focus for a counter
+nobody reads and, offline only, the damage-number option; blood needs `g_decalDetail`
+offline but runs (with a shared draw) on every machine in a net game. In a net game every
+damage number is a `FlyingText` object (a pool block, a shared draw, a run-list entry) -
+not in the contract (section 13).
+
+## 11. What was run
+
+- `python3 -m unittest discover -s tools -p 'test_*.py'`: 679 tests, all pass;
+  `tools/test_ref_combat_runtime.py` adds 27 synthetic-fixture tests (shared image and
+  handles, one seed, run order, damage timing, the inactive swing, target choice, death,
+  deletion and destruction, a dead player, player take-damage / pending damage /
+  find-target, contact order and the prediction-copy guard, arc hits in box order, the
+  cone search without a hard range, ray modes, knock-back dust, refusals, and a self-pin
+  of an 80-tick duel - the last is evidence about the model only).
+- `python3 tools/difftest_combat_runtime.py <your SLUS_209.73>` (seed 20973, 3,000 cases
+  per entry point): **30,988 cases compared, 0 mismatches** - calls with arguments, every
+  byte stored outside the stack, the shared seed, the result. Cases the model refuses as
+  outside the domain are not run (2,012, all `Player_meleeHit` with a blocked line of
+  sight or a heavy attack). Instructions of each body executed:
+
+| Entry point | Compared | Instructions executed |
+|---|---|---|
+| `creature_canSeeObj` | 3,000 | 151 of 151 |
+| `Creature_hitTargetInArc` | 3,000 | 58 of 58 |
+| `Creature_hitAllEnemiesInArc` | 3,000 | 109 of 109 |
+| `creature_findEnemyInCone` | 3,000 | 203 of 203 |
+| `Creature_applyKnockback` | 3,000 | 252 of 254 |
+| `Creature_deadUpdate` | 3,000 | 110 of 174 (no blood decal) |
+| `Player_isEnemy` | 3,000 | 60 of 62 |
+| `Player_takeDamage` | 3,000 | 144 of 280 (no block, no Holy Shield) |
+| `Player_findTarget` | 3,000 | 212 of 212 |
+| `Player_processDamage` | 3,000 | 450 of 784 (no knock-down, blood, PvP, Resurrect) |
+| `Player_meleeHit` | 988 | 203 of 431 (unarmed) |
+
+  A quick run with `--seed 7` also passes. The pieces they compose have their own
+  difftests (objects, creature, arena monsters, combat, player).
+- Not run: anything on a console, PCSX2 or the live rig.
+
+## 12. Corrections
+
+| Where | Was | Is | Evidence |
+|---|---|---|---|
+| a reading made for this document | `Player_findTarget` reads past its candidate list after a cone or range reject (the loop test using the word at 0x20) | No defect: the delay slot of the non-likely branch at 0x1bb52c always computes the next entry's address, so the rejects that branch to 0x1bb698 test the right word | Executed (`playerFindTarget`, 3,000 cases with the word at 0x20 both 0 and non-zero) |
+| `docs/spec/movement-camera.md` 4.1(g) | `ev & (0x3f199999 <= s ? 4 : 1)` | the same, and with `s < 0.6` the soft-double routine 0x3af9b8 is called with `s` and the double at 0x5376a8 (0.3) and its result discarded (0x1b4934-0x1b4948) | Observed |
+| `docs/spec/creature-tick.md` 18, `docs/spec/arena-monsters.md` call-outs | `Creature_applyKnockback`, `Creature_deadUpdate`, `Creature_hitTargetInArc`, `Creature_hitAllEnemiesInArc`, `creature_canSeeObj`, `creature_findEnemyInCone` not modelled | modelled and executed here | section 11 |
+| `docs/spec/player-tick.md` 14 | `Player_meleeHit`, `Player_findTarget`, `Player_processDamage` callbacks, not models | modelled and executed (meleeHit unarmed, processDamage restricted) | section 11 |
+| `symbols/player.tsv` note of `Player_findTarget` | "links it at +0x234; clears +0x4b8" | also: no virtual call, no draw; nothing at all on a `stomedal` level | Executed |
+| `symbols/player.tsv` note of `Player_meleeHit` | "(scale, player, target, a, flags)" | the third argument is never read (overwritten at 0x1b6a9c); the fourth ORs into the flags | Observed, Executed |
+
+Proposed ledger rows (for whoever edits `FINDINGS.md`):
+
+| # | Finding | Kind | Evidence |
+|---|---|---|---|
+| new | A hit is reacted to in the victim's own run: in the tick of the hit when the victim runs after the attacker, else in the next. Hit points of a creature fall at once; a player's only in `Player_processDamage` | Executed (composition of executed functions) | 0x116638, 0x1b5330, 0x110d30, 0x1b2cc0; `test_hits_land_at_once_and_wait_for_the_victims_own_run` |
+| new | An inactive creature lands no melee hit: its animation does not advance, so the hit event never fires and its swing state never ends | Executed | 0x1162b0; `test_an_inactive_swing_never_lands` |
+| new | `Player_processDamage` draws the shared seed once for every surviving hit (the stagger roll) and once more for any hit with a knock-back class (Strong Stance), with no prediction-copy guard | Executed | 0x1b2d90-0x1b2dd8, 0x1b378c-0x1b37d0 |
+| new | `creature_findEnemyInCone` has no hard maximum range: `far` only seeds the best distance | Executed | 0x10cfc4, 0x10d1d4-0x10d24c |
+
+No patch is proposed.
+
+## 13. Not done, not known
+
+- **Damage numbers in a net game**: `FlyingText` objects (pool block, shared draw in the
+  constructor, run list, deletion) - their lifetime is not read; the contract refuses any
+  pool request from `damage_apply` (also `LightEffect` on a stun, gas, disease).
+- **Player movement**: `Player_move` with a moving stick (turning, walking, modes 1, 2, 5,
+  6), the screen clamp, landing; `Player_animStep` and the clips (an authored timeline
+  stands in for `tools/ref_anim.py`); root motion.
+- **Combos and the rest of `Player_run`**: `Player_pickAttackAnim` (a shared draw;
+  refused), `Player_idleFidget`, the idle voice, regeneration, `Player_interact`,
+  instant abilities, blocking (`Player_blockSparks`), the knock-down reaction, the dead
+  state and respawn, `game_checkAllDead` and `deathTask`.
+- **Weapons and items**: weapon descriptors, dual wield, heavy attacks
+  (`Player_hitSparks`), bows and throws (projectiles: `obj_moveAndCollide` is Observed
+  only, the projectile classes' touch handlers not modelled).
+- **Creature classes other than Skelight**: their run and set-state functions,
+  `Creature_dropLoot`, corpse phases with blood decals (`Creature_deadUpdate`'s decal path
+  makes two own draws).
+- **Not executed**: `obj_moveWithCollision`, `creature_moveSimple`, the restricted
+  `Player_move`, `Player_onTouch`, the two cooldown setters, `creature_findPlayerInCone`,
+  the `hitTargetAtReach` / `Edge` / `OrPlayer` helpers, `world_notifyObjectsNear`, the
+  destructor chain. Their contract code (where it exists) follows the reading.
+- Water, spells, PvP modes, cutscenes, the prediction copy and two machines.
+
+## 14. For the native client
+
+What lifts the "exactly one live retained World actor" restriction of
+`SESSION_CREATURE.md` without inventing behaviour:
+
+1. Keep every actor in the one object World with its pool address as identity and route
+   every cross-actor reference through handles of the one node pool; let destruction,
+   not death, null them (2.2).
+2. Run actors by the list discipline of section 3 and give each its class's slot 4 in the
+   order of 4.2 / 4.3; allow the box query to return any number of actors and keep its
+   order.
+3. Use the three movers with their exact touch orders (5); run knock-back as the second
+   `Creature_moveBy` pass.
+4. Deliver hits through `damage_apply` to the victim's slot 2 at once and leave the
+   reaction to the victim's own next run (6); delete in the victim's run and destroy in
+   the next flush (7).
+5. Install the service table of section 9: the base-class and Player bodies named there,
+   with the call-outs this contract lists as refusals still refused.
+
+`tools/ref_combat_runtime.py` is the executable form: `Runtime()` builds the world,
+`spawn_player` / `spawn_skelight` place actors (authored set-up), `tick()` runs one pass,
+and `Runtime.trace` / `CombatModel.calls` / `CombatModel.vcalls` give the order of every
+service call for comparison.
