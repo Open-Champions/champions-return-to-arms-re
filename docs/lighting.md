@@ -270,7 +270,7 @@ flicker draws of mode 1 (cosmetic seed), the ramp of mode 2 (per call) and the f
 objects' own generators. Nothing in this document feeds the simulation that was found;
 `docs/engine.md` P2 already lists the torch/lantern/lamp noise.
 
-## 7. Open
+## 8. Open
 
 - The file of the glow texture *0x4f848c and of 0x44fe04 (U).
 - Which code sets the render layer 0x4039a4 besides the screens (U).
