@@ -72,6 +72,7 @@ G_TRAILS, G_TRAIL_ROW_V = 0x82CD00, 0x44FCA8
 BEAM_CREATE, BEAM_UPDATE = 0x193088, 0x1933C8
 G_BEAMS, G_DRAW_FRAME, G_NET_FRAME, G_IN_SIM_TICK, G_LIBC_REENT = 0x7E30D0, 0x44FDD0, 0x4027AC, 0x402794, 0x50C7E8
 GLOW_ADD, GLOW_DRAW = 0x18FC78, 0x1907D0
+SPLINE_EVAL, TRAIL_SET_SPLINE, TRAIL_SWEEP, TRAIL_CIRCLE = 0x1911E8, 0x1918A0, 0x191EA0, 0x1920E0
 G_GLOW_QUEUE, G_GLOW_COUNT, G_CAMERA, G_VIEWPROJ = 0x7D8B00, 0x82CC94, 0x44F110, 0x44F140
 VU_BOOT = 0x3E5EC0
 G_DL_BASE, G_DL_CURSOR, G_DL_CAPACITY = 0x44FE0C, 0x44FE10, 0x44FDA4
@@ -710,6 +711,104 @@ def prop_glows(rig, rnd, cases, label):
     return bad
 
 
+# ---------------------------------------------------------------------------------------
+# Trail builders
+# ---------------------------------------------------------------------------------------
+
+def rvec(rnd, scale=300.0):
+    return [f2r(rnd.choice((rnd.uniform(-scale, scale), 0.0, float(rnd.randrange(-50, 50))))) for _ in range(3)]
+
+
+def trail_state(rig, h):
+    return R.Trail.from_bytes(rig.emu.mem.read(G_TRAILS + 0x410 * (h & 0xFF), 0x410))
+
+
+def prop_builders(rig, rnd, cases, label):
+    bad = total = 0
+    examples = []
+    m = rig.emu.mem
+    for case in range(cases):
+        rig.reset()
+        kind = case % 5
+        b = 0
+        if kind == 0:                                   # spline_eval
+            count = rnd.randrange(2, 9)
+            pts = [rvec(rnd) for _ in range(count + 1)]
+            addr = rig.put_floats([x for p in pts for x in p])
+            t = rnd.choice((rnd.uniform(-0.2, 1.2), 0.0, 1.0, rnd.random()))
+            outp, outt = rig.alloc(16), rig.alloc(16)
+            wp, wt = rnd.random() < 0.8, rnd.random() < 0.8
+            rig.call(SPLINE_EVAL, addr, count, outp if wp else 0, outt if wt else 0, fargs=(t,))
+            pos, tan = R.spline_eval(f2r(t), pts, count, wp, wt)
+            got_p = [m.u32(outp + 4 * k) for k in range(3)] if wp else None
+            got_t = [m.u32(outt + 4 * k) for k in range(3)] if wt else None
+            if got_p != pos or got_t != tan:
+                b += 1
+                examples.append('case %d spline_eval t=%r: %s %s vs %s %s' % (case, t, got_p, got_t, pos, tan))
+            total += 1
+            bad += 1 if b else 0
+            continue
+        h = rig.call(TRAIL_CREATE, rnd.randrange(9), 1000, 2 if kind == 3 else 0, 1, 2, 3, 4,
+                     fargs=(rnd.uniform(0.1, 2.0),)) & 0xFFFF
+        old = trail_state(rig, h)
+        for _ in range(rnd.randrange(0, 5)):            # leave something in the ring first
+            rig.call(TRAIL_ADD, h, rig.put_floats(rvec(rnd)))
+        if kind == 1:                                   # trail_setSpline
+            count = rnd.randrange(2, 7)
+            pts = [rvec(rnd) for _ in range(count)]
+            steps = rnd.choice((rnd.randrange(1, 60), 40, rnd.randrange(60, 125)))
+            st, en = rnd.choice((0.0, rnd.random())), rnd.choice((1.0, rnd.random(), 0.5))
+            rig.call(TRAIL_SET_SPLINE, h, rig.put_floats([x for p in pts for x in p]), count, steps,
+                     fargs=(st, en))
+            want_pts, life = R.trail_set_spline(f2r(st), f2r(en), pts, count, steps)
+            want_pts = want_pts[:126]
+            want = [R.trail_point(p, k + 1) for k, p in enumerate(want_pts)]
+        elif kind == 2:                                 # trail_setCircle
+            n = rvec(rnd, 1.0) if rnd.random() < 0.7 else [R.ONE, 0, 0]
+            if all(x & 0x7FFFFFFF == 0 for x in n):
+                n = [R.ONE, f2r(0.01), 0]
+            steps = rnd.choice((rnd.randrange(1, 126), 32, 130))
+            radius = rnd.uniform(0, 200)
+            centre = rvec(rnd)
+            rig.call(TRAIL_CIRCLE, h, rig.put_floats(centre), rig.put_floats(n), steps, fargs=(radius,))
+            want_pts = R.trail_set_circle(f2r(radius), centre, n, steps)[:126]
+            want = [R.trail_point(p, k + 1) for k, p in enumerate(want_pts)]
+            life = old.lifetime
+        else:                                           # trail_sweepPairs (3) / addPair (4)
+            steps = rnd.randrange(3, 70)
+            centre, axis, pa, pb = rvec(rnd), rvec(rnd, 1.0), rvec(rnd, 50.0), rvec(rnd, 50.0)
+            if all(x & 0x7FFFFFFF == 0 for x in axis):
+                axis = [0, 0, R.ONE]
+            if kind == 3:
+                rig.call(TRAIL_SWEEP, h, rig.put_floats(centre), rig.put_floats(axis), rig.put_floats(pa),
+                         rig.put_floats(pb), steps)
+                pairs, life = R.trail_sweep_pairs(centre, axis, pa, pb, steps)
+                want = []
+                for k, (p0, p1) in enumerate(pairs[:63]):
+                    want += R.trail_pair(R.ONE, p0, p1, k)
+            else:
+                t0 = trail_state(rig, h)
+                alpha = rnd.choice((1.0, rnd.random(), 0.0, 1.5))
+                rig.call(TRAIL_ADD_PAIR, h, rig.put_floats(pa), rig.put_floats(pb), fargs=(alpha,))
+                full = (t0.newest + 1) & 0x7F == t0.oldest or (t0.newest + 2) & 0x7F == t0.oldest
+                want = t0.points[:t0.newest] + ([] if full else R.trail_pair(f2r(alpha), pa, pb, t0.clock))
+                life = t0.lifetime
+        t = trail_state(rig, h)
+        got = t.points[t.oldest:t.newest] if t.newest >= t.oldest else None
+        if got != want or t.lifetime != life or (kind != 4 and t.clock != len(want) // (2 if kind == 3 else 1)):
+            b += 1
+            k = next((i for i in range(min(len(got or []), len(want))) if got[i] != want[i]), None)
+            examples.append('case %d kind %d: ring %d..%d clock %d life %d vs %d points life %d; first diff %s: %s vs %s'
+                            % (case, kind, t.oldest, t.newest, t.clock, t.lifetime, len(want), life, k,
+                               got[k] if k is not None else '', want[k] if k is not None else ''))
+        cover('builder points', len(want))
+        total += 1
+        bad += 1 if b else 0
+    report(label, bad, total, 'spline_eval, trail_setSpline / setCircle / sweepPairs / addPair (%d calls)'
+           % cases, examples)
+    return bad
+
+
 def main(argv):
     args = []
     i = 1
@@ -762,6 +861,7 @@ PROPERTIES = [
     ('trails', prop_trails, 60),
     ('beams', prop_beams, 80),
     ('glows', prop_glows, 120),
+    ('trail builders', prop_builders, 1000),
 ]
 
 if __name__ == '__main__':

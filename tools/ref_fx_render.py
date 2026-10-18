@@ -754,3 +754,122 @@ def glow_packets(queue, pass_, cam, viewproj, tex_dims):
                 ev += glow_vertices(g, *sp, *tex_dims[tex])
         ev.append(_ad(GLOW_DIMX_OFF, 'DIMX'))
         out.append((4 if pass_ else 3, tex, prim, ev))
+
+
+# ---------------------------------------------------------------------------------------
+# Trail builders (EE side): trail_addPair 0x192650, spline_eval 0x1911e8, trail_setSpline
+# 0x1918a0, trail_sweepPairs 0x191ea0, trail_setCircle 0x1920e0, trail_clear 0x191e58
+# ---------------------------------------------------------------------------------------
+
+K_NEAR_X = 0x3A83126E           # 0.0009999999: "normal is (1, 0, 0)" in trail_setCircle
+THREE, SIX, MINUS_TWO, MINUS_SIX = 0x40400000, 0x40C00000, 0xC0000000, 0xC0C00000
+
+
+def trail_pair(alpha, a, b, clock):
+    """trail_addPair(alpha f12, handle, a, b): two ring entries, the first stamped clock + 1,
+    the second's stamp field holding int(alpha * 255) - the alpha the pair program sends."""
+    return [trail_point(a, clock + 1), trail_point(b, C.to_int(C.mul(alpha, 0x437F0000)))]
+
+
+def _tangent(p, q, r):
+    """((q - p) + (r - q)) * 0.5 per axis, as the spline code forms a Catmull-Rom tangent."""
+    return [C.mul(C.add(C.sub(q[k], p[k]), C.sub(r[k], q[k])), C.HALF) for k in range(3)]
+
+
+def spline_eval(t, pts, count, want_pos=True, want_tangent=True):
+    """spline_eval 0x1911e8 (t f12, points a0, count a1, position out a2, tangent out a3,
+    either may be 0): a Catmull-Rom spline through `count` points, Hermite segments.
+        t = min(max(t, 0), 1) ;  f = t * (count - 1) ;  i = int(f) ;  s = f - i
+        m0 = 0 for i < 1, else ((p[i] - p[i-1]) + (p[i+1] - p[i])) * 0.5
+        m1 = 0 for i >= count - 2, else ((p[i+2] - p[i+1]) + (p[i+1] - p[i])) * 0.5
+        position = vec3_hermite(s, p[i], p[i+1], m0, m1), tangent its derivative
+    At t = 1, i = count - 1 and p[i+1] is read one point past the array: pts may hold more
+    than `count` points to stand for that memory."""
+    t = C.fmin(C.fmax(t, C.ZERO), ONE)
+    f = C.mul(t, C.from_int(count - 1))
+    i = C.s32(C.to_int(f))
+    s = C.sub(f, C.from_int(i))
+    m0 = [0, 0, 0] if i < 1 else [C.mul(C.add(C.sub(pts[i][k], pts[i - 1][k]),
+                                                C.sub(pts[i + 1][k], pts[i][k])), C.HALF)
+                                   for k in range(3)]
+    m1 = [0, 0, 0] if i >= count - 2 else [C.mul(C.add(C.sub(pts[i + 2][k], pts[i + 1][k]),
+                                                         C.sub(pts[i + 1][k], pts[i][k])), C.HALF)
+                                            for k in range(3)]
+    pos = C.vec3_hermite(s, pts[i], pts[i + 1], m0, m1) if want_pos else None
+    tan = C.vec3_hermite_derivative(s, pts[i], pts[i + 1], m0, m1) if want_tangent else None
+    return pos, tan
+
+
+def trail_set_spline(start_t, end_t, pts, count, steps):
+    """trail_setSpline 0x1918a0 (start f12, end f13, handle a0, points a1, count a2, steps
+    a3): empties the trail, sets its lifetime to per * (count - 1) with per = steps //
+    (count - 1), and adds per points along each Hermite segment (tangents as spline_eval),
+    at t = (1 / per) * k: k from int(start * per) in the first segment, to below
+    int(end * per) in the last, otherwise 0 .. per - 1.  The trail clock goes up by 1
+    after each point (stamps 1, 2, ...).  Returns (positions, lifetime)."""
+    per = C.s32(steps) // (count - 1) if steps >= 0 else -((-steps) // (count - 1))
+    out = []
+    perf = C.from_int(per)
+    inv = C.div(ONE, perf)
+    for i in range(count - 1):
+        if i < 1:
+            m0, k0 = [0, 0, 0], C.s32(C.to_int(C.mul(start_t, perf)))
+        else:
+            m0, k0 = [C.mul(C.add(C.sub(pts[i][k], pts[i - 1][k]), C.sub(pts[i + 1][k], pts[i][k])),
+                            C.HALF) for k in range(3)], 0
+        if i < count - 2:
+            m1, k1 = [C.mul(C.add(C.sub(pts[i + 2][k], pts[i + 1][k]), C.sub(pts[i + 1][k], pts[i][k])),
+                            C.HALF) for k in range(3)], per
+        else:
+            m1, k1 = [0, 0, 0], C.s32(C.to_int(C.mul(end_t, perf)))
+        for k in range(k0, k1):
+            out.append(C.vec3_hermite(C.mul(inv, C.from_int(k)), pts[i], pts[i + 1], m0, m1))
+    return out, C.s16(per * (count - 1))
+
+
+def trail_sweep_pairs(centre, axis, a, b, steps):
+    """trail_sweepPairs 0x191ea0 (handle a0, centre a1, axis a2, a a3, b t0, steps t1):
+    empties the trail, steps = min(steps, 60) is also the lifetime; q = quat_fromAxisAngle
+    (axis, s16(0x10000 // (steps - 2))); then `steps` times: the pair (a + centre, b +
+    centre) with alpha 1.0, a and b turned by q (quat_rotateVec), clock + 1.
+    Returns ([(p0, p1)], lifetime)."""
+    steps = min(steps, 60)
+    q = C.quat_from_axis_angle(axis[0], axis[1], axis[2], C.s16(0x10000 // (steps - 2)))
+    out = []
+    for _ in range(steps):
+        out.append(([C.add(a[k], centre[k]) for k in range(3)], [C.add(b[k], centre[k]) for k in range(3)]))
+        a = C.quat_rotate_vec(q, a)
+        b = C.quat_rotate_vec(q, b)
+    return out, steps
+
+
+def trail_set_circle(radius, centre, normal, steps):
+    """trail_setCircle 0x1920e0 (radius f12, handle a0, centre a1, normal a2, steps a3):
+    empties the trail (its lifetime is left as it was) and adds min(steps, 120) points on
+    the circle round `centre` in the plane of `normal`:
+        r = (1, 0, 0), or (0, 0, 1) when |normal - (1, 0, 0)|^2 < 0.001
+        u = normalize(normal x r) ; v = normalize(u x normal)   (rsqrt.s(1, |.|^2))
+        point k = (centre + u * radius * cos16(A)) + v * radius * sin16(A),
+        A = 0, then A + 0xffff // steps as a 16-bit angle.
+    Returns the positions."""
+    steps = min(steps, 120)
+    n = normal
+    test = C.add(C.add(C.mul(C.sub(n[0], ONE), C.sub(n[0], ONE)), C.mul(n[1], n[1])), C.mul(n[2], n[2]))
+    r = [0, 0, ONE] if C.lt(test, K_NEAR_X) else [ONE, 0, 0]
+    u = [C.sub(C.mul(n[1], r[2]), C.mul(n[2], r[1])), C.sub(C.mul(n[2], r[0]), C.mul(n[0], r[2])),
+         C.sub(C.mul(n[0], r[1]), C.mul(n[1], r[0]))]
+    inv = C.rsqrt(ONE, C.add(C.add(C.mul(u[0], u[0]), C.mul(u[1], u[1])), C.mul(u[2], u[2])))
+    u = [C.mul(x, inv) for x in u]
+    v = [C.sub(C.mul(u[1], n[2]), C.mul(u[2], n[1])), C.sub(C.mul(u[2], n[0]), C.mul(u[0], n[2])),
+         C.sub(C.mul(u[0], n[1]), C.mul(u[1], n[0]))]
+    inv = C.rsqrt(ONE, C.add(C.add(C.mul(v[0], v[0]), C.mul(v[1], v[1])), C.mul(v[2], v[2])))
+    v = [C.mul(C.mul(x, inv), radius) for x in v]
+    u = [C.mul(x, radius) for x in u]
+    step = 0xFFFF // steps
+    angle = 0
+    out = []
+    for _ in range(steps):
+        c, s = C.cos16(angle), C.sin16(angle)
+        out.append([C.add(C.add(centre[k], C.mul(u[k], c)), C.mul(v[k], s)) for k in range(3)])
+        angle = C.s16(angle + step)
+    return out
