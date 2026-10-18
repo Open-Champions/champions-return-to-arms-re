@@ -49,6 +49,7 @@ from ref_creature import Ext, M32, s16, s32     # noqa: E402
 G_SIM_FRAME = RC.G_SIM_FRAME                    # 0x44fdcc
 G_NUM_PLAYERS = 0x4D8AE0                        # s32 number of players in the session
 ZERO, ONE = C.ZERO, C.ONE
+F_2M16 = RC.F_2M16                              # 1 / 65536
 
 # glow textures (resource words; docs/effects.md section 6 and round-2 item 7)
 G_GLOW_TEX_A = 0x4F848C                         # light-chunk / summon glow
@@ -363,5 +364,87 @@ _register('SpellResurrect_draw', 0x312F48)
 _register('SmokeGen_draw', 0x31CBF8)
 
 
-class Model(Calls, Draws, SC.Model):
+class MultiFire:
+    """MultiFireProjectile (the arrows of Multi Fire): a projectile with a grey trail and
+    a stream of particles, all placed with the arrow's OWN generator (+0x44)."""
+    MF_VT = 0x519128
+    MF_PARTICLE = 0x8E5910
+    MF_LUMP, MF_SOUND_FIRE, MF_SOUND_DUST = 0x54F560, 0x54F598, 0x54F5B0
+    LEVEL_FLAGS = 0x44FE08                      # level flag word; 0x40000 selects the fire burst
+
+    def multifire_ctor(self, obj, pos, angle, owner, level, skill):
+        """MultiFireProjectile_ctor 0x2da164 (object, position, angle, owner, level, skill).
+        Projectile_ctor(object, position, owner, 0) (one shared draw inside); angle s16
+        +0x64, table, radius +0x1c = 8, skill +0x70, level +0x68; speed = skill slot 13 (1,
+        level, owner handle +0x4c, 10); velocity +0x54 = speed x (cos16, sin16)(angle), 0;
+        age +0x6c and ended +0x60 = 0; trail_create(row 1, width 0x7a, flags 0, grey 0x80,
+        alpha 0x20; 0.15 s) -> +0x74, its first point at the position; the run list."""
+        u32, w32 = self.u32, self.w32
+        angle = s16(angle)
+        self.call('Projectile_ctor', obj, tuple(pos), owner, 0)
+        self.w16(obj + 0x64, angle)
+        w32(obj + 0x48, self.MF_VT)
+        w32(obj + 0x1C, 0x41000000)
+        w32(obj + 0x70, skill)
+        w32(obj + 0x68, level)
+        speed = C.from_int(s32(self.skill_call(skill, 13, 1, level, obj + 0x4C, 10)))
+        w32(obj + 0x54, C.mul(C.cos16(self.s16(obj + 0x64)), speed))
+        sine = C.sin16(self.s16(obj + 0x64))
+        w32(obj + 0x5C, 0)
+        w32(obj + 0x6C, 0)
+        w32(obj + 0x60, 0)
+        w32(obj + 0x58, C.mul(sine, speed))
+        handle = self.call('trail_create', 1, 0x7A, 0, 0x80, 0x80, 0x80, 0x20, 0x3E199999)
+        w32(obj + 0x74, handle)
+        self.call('trail_addPoint', handle, self.vec(obj + 0x10))
+        self.call('obj_runEveryFrame', obj)
+
+    def multifire_run(self, obj):
+        """MultiFireProjectile_run 0x2da2bc, GameObject slot 4.  Nothing once ended.  A trail
+        point at the position, age + 1, obj_moveAndCollide with the velocity; terrain (bit
+        1): end(1); age 601 or more: end(0); else ten particles 0x8e5910: v = 8 x a unit-ball
+        point, position + v x r (r = one more draw / 65536), velocity v."""
+        u32 = self.u32
+        if u32(obj + 0x60):
+            return
+        self.call('trail_addPoint', u32(obj + 0x74), self.vec(obj + 0x10))
+        self.w32(obj + 0x6C, u32(obj + 0x6C) + 1)
+        result = self.call('obj_moveAndCollide', obj, self.vec(obj + 0x54))
+        if result & 1:
+            return self.multifire_end(obj, 1)
+        if not self.s32(obj + 0x6C) < 0x259:
+            return self.multifire_end(obj, 0)
+        for _ in range(10):
+            ball = self.obj_ball(obj)
+            v = tuple(C.mul(b, 0x41000000) for b in ball)
+            share = C.mul(C.from_int(self.obj_rand(obj)), F_2M16)
+            step = tuple(C.mul(v[k], share) for k in range(3))
+            p = self.vec(obj + 0x10)
+            self.call('particle_spawn', self.MF_PARTICLE, tuple(C.add(p[k], step[k]) for k in range(3)), v, ZERO)
+
+    def multifire_end(self, obj, reason):
+        """MultiFireProjectile_end 0x2da928 (object, reason), once (ended +0x60).  The trail
+        is released; with a reason, one own draw picks one of four impact sounds and
+        fx_spawn(8) at the position when level flag 0x40000 is set, else fx_spawn(2) (dust),
+        then the sound on the object; obj_delete; ended = 1."""
+        u32 = self.u32
+        if u32(obj + 0x60):
+            return
+        self.call('trail_release', u32(obj + 0x74))
+        if reason:
+            fire = u32(self.LEVEL_FLAGS) & 0x40000
+            draw = self.obj_rand(obj)
+            text = self.call('libc_sprintf', self.MF_SOUND_FIRE if fire else self.MF_SOUND_DUST, (draw & 3) + 1)
+            self.call('fx_spawn', 8 if fire else 2, self.vec(obj + 0x10))
+            self.call('sound_playOnObject', self.call('res_find', self.MF_LUMP, text), obj, ONE)
+        self.call('obj_delete', obj)
+        self.w32(obj + 0x60, 1)
+
+
+_register('MultiFireProjectile_ctor', 0x2DA164)
+_register('MultiFireProjectile_run', 0x2DA2BC)
+_register('MultiFireProjectile_end', 0x2DA928)
+
+
+class Model(Calls, Draws, MultiFire, SC.Model):
     """ref_skills_c.Model with the methods of part 3."""

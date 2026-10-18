@@ -178,6 +178,41 @@ def scenario_smoke(t):
         t.do('SmokeGen_draw', obj)
 
 
+# ---------------------------------------------------------------------------------------
+# MultiFireProjectile
+# ---------------------------------------------------------------------------------------
+entry('MultiFireProjectile_ctor', 0x2DA164, 0x2DA2BC, 'iviiii', 'multifire_ctor', 'multifire')
+entry('MultiFireProjectile_run', 0x2DA2BC, 0x2DA550, 'i', 'multifire_run', 'multifire')
+entry('MultiFireProjectile_end', 0x2DA928, 0x2DAA4C, 'ii', 'multifire_end', 'multifire')
+
+
+def to_vec(values):
+    return tuple(f32(v) for v in values)
+
+
+@scenario('multifire', 'arrows of Multi Fire from launch to end')
+def scenario_multifire(t):
+    mem, rng, world = t.mem, t.rng, t.world
+    skills = sorted(t.skills.values())
+    for _ in range(reps(t, 40)):
+        set_frame(t)
+        world.reset_objects(rng)
+        obj = fresh(t, 0x80)
+        owner = rng.choice(world.objects + [0])
+        mem.w32(FS.MultiFire.LEVEL_FLAGS, rng.choice((0, 0x40000, 0x10040000)))
+        t.do('MultiFireProjectile_ctor', obj, to_vec(rand_pos(rng)), rng.randrange(0x10000),
+             owner, rng.randrange(0, 41), rng.choice(skills))
+        if rng.random() < 0.4:
+            mem.w32(obj + 0x6C, rng.choice((590, 598, 599, 600)))
+        for _tick in range(rng.choice((3, 10, 30, 700))):
+            if mem.u32(obj + 0x60):
+                break
+            t.tick()
+            t.do('MultiFireProjectile_run', obj)
+        mem.w32(obj + 0x60, 0)
+        t.do('MultiFireProjectile_end', obj, rng.choice((0, 1, 2)))
+
+
 def main(argv):
     if any(a in ('-h', '--help') for a in argv[1:]):
         print(__doc__)
