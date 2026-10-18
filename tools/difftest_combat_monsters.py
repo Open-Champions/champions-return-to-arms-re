@@ -52,6 +52,7 @@ ENTRIES = {
     'skelightDtor': (0x3CC67C, 'ii', 0, 'n', 'skelight_dtor', (0x3CC67C, 0x3CC6DC)),
     'playerDtor': (0x1A1BB8, 'ii', 0, 'n', 'player_dtor', (0x1A1BB8, 0x1A1D24)),
     'deadUpdate': (0x1108A0, 'iivi', 1, 'n', 'dead_update', (0x1108A0, 0x110B58)),
+    'dropLoot': (0x10F2C8, 'ivii', 6, 'n', 'drop_loot', (0x10F2C8, 0x110760)),
 }
 
 EXTS = {
@@ -63,7 +64,12 @@ EXTS = {
     'AnimState_dtor': Ext(0x171098, 'pi', 0, 'n'),
     'light_dtor': Ext(0x14A490, 'pi', 0, 'n'),
     'sub_202500': Ext(0x202500, 'pi', 0, 'n'),
+    'loot_generateDrops': Ext(0x100D54, 'viii', 6, 'n'),
+    'rtti_typeInfoEquals': Ext(0x3B1250, 'pp', 0, 'i'),
+    'Creature.v0': Ext(0, '', 0, 'i'),
 }
+EXTS.update({name: Ext(addr, '', 0, 'i') for name, addr in M.TYPEINFO_GETTERS.items()})
+TI_TOKENS = {name: 0x00E00000 + 0x100 * i for i, name in enumerate(sorted(M.TYPEINFO_GETTERS))}
 
 # property strings for GameObject_dtor's 'name=' scan (authored; not game text)
 PROP_TEXTS = (b'name=alpha', b'name=beta', b'Name=gamma', b'namex=1', b'nam', b'name', b'name=', b'nameX',
@@ -95,6 +101,20 @@ class World(BaseWorld):
             view.poke(node + 0xC, 4, rng.choice((spell, spell, 0)))
             view.iter_nodes.append(node)
         return self.on_iter_next(args, view, rng)
+
+    def on_Creature_v0(self, args, view, rng):
+        return Res(self.loot_class)
+
+    def on_rtti_typeInfoEquals(self, args, view, rng):
+        return Res(1 if args[0] == args[1] else 0)
+
+    def on_obj_getPropInt(self, args, view, rng):
+        return Res(rng.choice((0, 0, 0, 0, 1)))
+
+    def respond(self, name, args, view, rng):
+        if name in TI_TOKENS:
+            return Res(TI_TOKENS[name])
+        return BaseWorld.respond(self, name, args, view, rng)
 
     def on_iter_next(self, args, view, rng):
         nodes = getattr(view, 'iter_nodes', [])
@@ -211,6 +231,17 @@ def generate(rig, key, rng):
         off = tuple(f32(rng.choice((0.0, 0.0, 3.5, -12.0))) for _ in range(3))
         return (c, rng.choice((0, 0x80, 1, 0x81)), off, rng.choice((0, 0, 1)),
                 f32(rng.choice((20.0, 0.0, 44.0, -1.0))))
+    if key == 'dropLoot':
+        w.loot_class = rng.choice(list(TI_TOKENS.values()) + [0x00E0F000] * 6)
+        mem.w64(c + 0xA8, rng.choice((0, 0, 0, 1, 0x100000000, 0x100000001)))
+        mem.w8(c + 0xA0, rng.choice((0, 0, 3, 0xFF)))
+        mem.w32(c + 0x3D8, rng.choice((0, 0x1234)))
+        mem.w32(T.G_PVP_MODE_B, rng.choice((0, 0, 1)))
+        mem.w32(T.G_NUM_PLAYERS, rng.choice((0, 1, 2, 3, 4)))
+        p = tuple(mem.u32(c + 0x10 + 4 * i) for i in range(3))
+        floats = tuple(f32(v) for v in (36.0, rng.choice((2.0, 3.0)), rng.choice((1.6, 2.8, 0.0)),
+                                       rng.choice((0.6, 3.0)), rng.choice((1.4, 3.0, -1.0)), rng.choice((0.25, 1.0))))
+        return (c, p, rng.choice((0, 0x1234, 0xFFFF8000)), rng.choice((0, 0, 1, 7))) + floats
     raise KeyError(key)
 
 

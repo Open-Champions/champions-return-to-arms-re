@@ -431,6 +431,89 @@ class MonsterCombatModel(T.CombatModel):
             self.call('obj_delete', c)
 
 
+    # =====================================================================================
+    # Creature_dropLoot 0x10f2c8.  Executed: tools/difftest_combat_monsters.py ('dropLoot')
+    # =====================================================================================
+    INTERNAL.update({'Creature_dropLoot': 'drop_loot'})
+    MODELLED.update({'Creature_dropLoot': 0x10F2C8})
+
+    def _gen(self, pos, angle, filt, force, z, throw, gs, gc, q, ic):
+        self.call('loot_generateDrops', pos, angle, filt, force, z, throw, gs, gc, q, ic)
+
+    def _is_class(self, c, typeinfo_name):
+        """One exact-class test: typeid(*c) (virtual slot 0 - called with whatever the
+        previous call left in a0, so its `this` is not meaningful) against the class's
+        type-info getter, through rtti_typeInfoEquals 0x3b1250."""
+        mine = self.call('Creature.v0')
+        theirs = self.call(typeinfo_name)
+        return self.call('rtti_typeInfoEquals', mine, theirs)
+
+    def drop_loot(self, c, pos, angle, filt, z, throw, gs, gc, q, ic):
+        """Creature_dropLoot 0x10f2c8 (c, &pos, angle, filter; zOffset, throwSpeed,
+        goldScale, goldChance, qualityRow, itemChance).  Every drop is a call of
+        loot_generateDrops 0x100d54 (&copy of pos, angle, filter or 0, forcePreset; six
+        floats) - tools/ref_items.py models that generator.  In order:
+
+          1. nothing for creature flag 0x100000000, or the 'noloot' property (key 0x52ffd8)
+             outside PvP mode B (0x4f7120);
+          2. eleven exact-class tests in the order of LOOT_CLASSES; the first class that
+             matches (SeaMonster only with creature flag bit 0, CloudGiant only with the
+             word +0x3d8 non-zero - otherwise the next test runs) makes its fixed calls and
+             RETURNS: optionally the ordinary call (the caller's filter and six numbers), two
+             or three richer calls, then one call per player slot 0..g_numPlayers-1 that
+             forces a preset item either always or when an OWN DRAW (GameObject_rand,
+             float(value) x 2^-16) is below 0.5;
+          3. otherwise creature_bossRank: rank 2 adds the ordinary call, two richer calls and
+             a per-player coin (0.5); else a second creature_bossRank call, and rank 1 adds
+             two calls and a per-player coin of 0.25;
+          4. then a tint preset (s8 +0xa0 != 0) multiplies goldScale by 3 and qualityRow by
+             4, and the ordinary call is made when creature flag bit 0 (MiniBoss) is clear.
+        No shared draw; the own draws are one per player slot in a coin loop."""
+        u32 = self.u32
+        if self.u64(c + 0xA8) & 0x100000000:
+            return
+        if self.call('obj_getPropInt', c, S_NOLOOT, 0) and not u32(G_PVP_MODE_B):
+            return
+        ordinary = (filt, 0, z, throw, gs, gc, q, ic)
+
+        def per_player(kind, q_extra, ic_extra):
+            for _slot in range(max(self.s32(G_NUM_PLAYERS), 0)):
+                force = 1
+                if kind != 'always':
+                    draw = self.obj_rand(c)
+                    force = 1 if C.lt(C.mul(C.from_int(s32(draw)), 0x37800000), kind) else 0
+                self._gen(pos, angle, 0, force, z, throw, ZERO, ZERO, q_extra, ic_extra)
+            return
+
+        for name, cond, has_ord, extras, loop in LOOT_CLASSES:
+            if not self._is_class(c, name):
+                continue
+            if cond == 'miniboss' and not self.u64(c + 0xA8) & 1:
+                continue
+            if cond == 'word3d8' and not u32(c + 0x3D8):
+                continue
+            if has_ord:
+                self._gen(pos, angle, *ordinary)
+            for e_gs, e_gc, e_q, e_ic in extras:
+                self._gen(pos, angle, 0, 0, z, throw, e_gs, e_gc, e_q, e_ic)
+            per_player(*loop)
+            return
+        rank = s32(self.call('creature_bossRank', c))
+        if rank == 2:
+            self._gen(pos, angle, *ordinary)
+            for e_gs, e_gc, e_q, e_ic in ((F4, F1, F6, F2), (F5, F1, F7, F2)):
+                self._gen(pos, angle, 0, 0, z, throw, e_gs, e_gc, e_q, e_ic)
+            per_player(F_HALF, F8_5, F2)
+        elif s32(self.call('creature_bossRank', c)) == 1:
+            for e_gs, e_gc, e_q, e_ic in ((F4, F1, F3, F1_5), (F5, F1, F5, F1_5)):
+                self._gen(pos, angle, 0, 0, z, throw, e_gs, e_gc, e_q, e_ic)
+            per_player(F_QUARTER, F7, F1_5)
+        if self.s8(c + 0xA0):
+            gs, q = C.mul(gs, F3), C.mul(q, F4)
+        if not u32(c + 0xA8) & 1:
+            self._gen(pos, angle, filt, 0, z, throw, gs, gc, q, ic)
+
+
 VT_GAMEOBJECT = 0x5122A8
 S_NAME_KEY = 0x5321B0                           # the key string GameObject_dtor scans for
 G_CTYPE = 0x5628E1
@@ -438,3 +521,32 @@ G_IN_GHOST_OP = 0x402795
 G_DISPLAY_PLAYER_BYTE = 0x4EF360                # cleared by Player_dtor for a display-only player (meaning Unknown)
 DTOR_BODIES = {0x14CF90: 'gameobject_dtor', 0x117128: 'creature_dtor', 0x3CC67C: 'skelight_dtor',
                0x1A1BB8: 'player_dtor'}
+
+G_PVP_MODE_B = T.G_PVP_MODE_B
+S_NOLOOT = 0x52FFD8                             # the property key string 'noloot'
+F_QUARTER, F_HALF, F1, F1_5, F2, F3, F4 = 0x3E800000, 0x3F000000, 0x3F800000, 0x3FC00000, 0x40000000, 0x40400000, 0x40800000
+F5, F6, F7, F7_5, F8, F8_5, F15, F20 = 0x40A00000, 0x40C00000, 0x40E00000, 0x40F00000, 0x41000000, 0x41080000, 0x41700000, 0x41A00000
+_STD = ((F4, F1, F6, F2), (F5, F1, F7, F2))
+# Creature_dropLoot's class tests, in order (Observed, 0x10f384-0x110424):
+#   (type-info getter, condition, ordinary call first, richer calls (goldScale, goldChance,
+#    qualityRow, itemChance), per-player call (force: 'always' or a coin threshold,
+#    qualityRow, itemChance))
+LOOT_CLASSES = (
+    ('SpiderQueen_typeinfo', None, True, _STD, (F_HALF, F8, F2)),         # 0x10f3b0
+    ('AntQueen_typeinfo', None, True, _STD, ('always', F8, F2)),         # 0x10f548
+    ('UndeadKnight_typeinfo', None, True, _STD, (F_HALF, F8, F2)),       # 0x10f698
+    ('VampireLord_typeinfo', None, True, _STD, (F_HALF, F8, F2)),        # 0x10f830
+    ('Arenabeast_typeinfo', None, True, _STD, (F_HALF, F8, F2)),         # 0x10f9c8
+    ('SeaMonster_typeinfo', 'miniboss', False, ((F4, F1, F5, F2), (F5, F1, F6, F2)), (F_HALF, F7_5, F2)),  # 0x10fb60
+    ('CloudGiant_typeinfo', 'word3d8', True, _STD, ('always', F8, F2)),  # 0x10fce0
+    ('Minion_typeinfo', None, True, _STD, ('always', F8, F2)),           # 0x10fe38
+    ('MummyKing_typeinfo', None, True, _STD, (F_HALF, F8, F2)),          # 0x10ff88
+    ('Innoruuk_typeinfo', None, True, ((F15, F1, F6, F2), (F20, F1, F7, F2)), (F_HALF, F8, F2)),  # 0x110120
+    ('Zek_typeinfo', None, False, ((F4, F1, F4, F2), (F4, F1, F5, F2), (F6, F1, F7, F2)), (F_HALF, F8_5, F2)),  # 0x1102b8
+)
+TYPEINFO_GETTERS = {
+    'SpiderQueen_typeinfo': 0x3C4888, 'AntQueen_typeinfo': 0x3C3C78, 'UndeadKnight_typeinfo': 0x3CC938,
+    'VampireLord_typeinfo': 0x3CCA98, 'Arenabeast_typeinfo': 0x3C9330, 'SeaMonster_typeinfo': 0x3CC568,
+    'CloudGiant_typeinfo': 0x3CA4AC, 'Minion_typeinfo': 0x3CBA24, 'MummyKing_typeinfo': 0x3CC29C,
+    'Innoruuk_typeinfo': 0x3CB1A0, 'Zek_typeinfo': 0x3CCD64,
+}
