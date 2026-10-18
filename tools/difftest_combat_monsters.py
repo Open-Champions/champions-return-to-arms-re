@@ -51,6 +51,7 @@ ENTRIES = {
     'creatureDtor': (0x117128, 'ii', 0, 'n', 'creature_dtor', (0x117128, 0x11722C)),
     'skelightDtor': (0x3CC67C, 'ii', 0, 'n', 'skelight_dtor', (0x3CC67C, 0x3CC6DC)),
     'playerDtor': (0x1A1BB8, 'ii', 0, 'n', 'player_dtor', (0x1A1BB8, 0x1A1D24)),
+    'deadUpdate': (0x1108A0, 'iivi', 1, 'n', 'dead_update', (0x1108A0, 0x110B58)),
 }
 
 EXTS = {
@@ -200,6 +201,16 @@ def generate(rig, key, rng):
         mem.w8(M.G_IN_GHOST_OP, rng.choice((0, 0, 0, 1)))
         mem.w8(o + 0x462, rng.choice((0, 0, 0, 1)))
         return (o, rng.choice((0, 1, 2, 3)))
+    if key == 'deadUpdate':
+        mem.w64(c + 0xA8, rng.choice((0, 0x1000000, 0x1000, 0x2000, 0x4000, 0x40000, 0x3000, 0x44000,
+                                      0x1001000)))
+        mem.w16(c + 0x11A, rng.choice((0, 0x80, 0x88)))
+        mem.w8(c + 0x118, rng.choice((1, 2)))
+        mem.wf32(c + 0x2F4, rng.choice((0.0, 10.0, 71.9)))
+        mem.w32(c + 0xC, rng.choice((0x29, 0x2B, 0x29)))
+        off = tuple(f32(rng.choice((0.0, 0.0, 3.5, -12.0))) for _ in range(3))
+        return (c, rng.choice((0, 0x80, 1, 0x81)), off, rng.choice((0, 0, 1)),
+                f32(rng.choice((20.0, 0.0, 44.0, -1.0))))
     raise KeyError(key)
 
 

@@ -399,6 +399,38 @@ class MonsterCombatModel(T.CombatModel):
             self.call('pool_free', P)
 
 
+    # =====================================================================================
+    # Creature_deadUpdate 0x1108a0 with its blood decal (round 1 refused the decal)
+    # =====================================================================================
+    BLOOD_KINDS = ((0x1000, 6), (0x2000, 3), (0x4000, 0xA), (0x40000, 0))
+
+    def dead_update(self, c, events, offset, hold, size):
+        """Creature_deadUpdate 0x1108a0 (size; c, events, &offset, hold), the whole body.
+
+        The sinking corpse (creature flag 0x1000000) and the final delete test are round 1's
+        (ref_combat_runtime.CombatModel.dead_update, executed).  The blood decal, new here:
+        with events & 0x80, object flag 2 clear, 0 < size and hold 0, the FIRST of the
+        creature-flag bits 0x1000, 0x2000, 0x4000, 0x40000 that is set picks decal kind 6, 3,
+        0xa or 0; then TWO OWN DRAWS (GameObject_rand on +0x44): angle = s16(first), and
+        decal_add(position + offset, angle, kind, 1; size + float(second % 10)) (an unsigned
+        remainder).  No bit set: no draw, no decal."""
+        u32 = self.u32
+        cf = self.u64(c + 0xA8)
+        if cf & 0x1000000:
+            return T.CombatModel.dead_update(self, c, events, offset, hold, size)
+        if events & 0x80 and not u32(c + 0xC) & 2 and C.lt(ZERO, size) and not hold:
+            for bit, kind in self.BLOOD_KINDS:
+                if cf & bit:
+                    x, y, z = self.vec(c + 0x10)
+                    pos = (C.add(x, offset[0]), C.add(y, offset[1]), C.add(z, offset[2]))
+                    angle = s16(self.obj_rand(c))
+                    extra = (self.obj_rand(c) & M32) % 10
+                    self.call('decal_add', pos, angle, kind, 1, C.add(size, C.from_int(extra)))
+                    break
+        if self.u64(c + 0x118) & 0x8000FF == 0x800001 and hold:
+            self.call('obj_delete', c)
+
+
 VT_GAMEOBJECT = 0x5122A8
 S_NAME_KEY = 0x5321B0                           # the key string GameObject_dtor scans for
 G_CTYPE = 0x5628E1
