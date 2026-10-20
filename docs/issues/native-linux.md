@@ -13,6 +13,40 @@ Nothing derived from the game is in the repository: the translation
 (`local/recomp-out/linux/gen-app`, `gen-orig`), objects, programs, logs and the tester's
 folders are under `local/recomp-out/linux/`.
 
+## STATE (2026-10-20, morning): the combat mode, the world work, the installer
+
+**What changed.** `linux_main.cpp` (and `win_main.cpp`) now call the souls-style combat mode
+exactly where `app_main.cpp` does (`docs/issues/native-souls-combat.md`): `soulscombat::blank`
+after the controls' `translate`, `overlay` before `backend->execute`, the camera in
+`fpview::on_drawn`, `--combat souls|off`, `combat.*` settings, `app souls ...`, the figures in
+the final report; `build_linux.py` compiles `app/soulscombat.cpp`. The first-person world work
+of 2026-10-20 (`fpworld.cpp`: the decoder-slot guard, the box margin, the texture shelf
+`rt_shelf` in `rt/runtime.cpp`) and the view and controls settings were already shared files:
+rebuilt, nothing to wire. **Ran** (both architectures, `build_linux.py --docker both --original`):
+x86-64 and aarch64 88 + 71 files, exit 0 (47 s wall: only what changed was compiled).
+
+| Check (all **Ran**, 2026-10-20 09:55 to 10:05) | Result |
+|---|---|
+| `fpcheck`, aarch64 / x86-64 | byte for byte the 54 lines of macOS arm64 / macOS x86-64; `2e77df4dc13ec9c5` |
+| boot check (`boot-check.rig`), aarch64 and x86-64, against the Mac arm64 headless program rebuilt from the current sources | the same 692 lines apart from the `frames= wall=` line (frames 2309, fields 2413, units 113069252; VU0 466083 calls, 26111361 instructions); the rebuilt Mac program is itself the same as the 2026-10-19 reference |
+| rig comparison, `rta_app_orig` (now with the combat mode linked in, off), aarch64 and x86-64 | **`rig-final-compare.txt` line for line** both: the mode off changes nothing |
+| a room with the mode on: host the Linux aarch64 `rta_app --combat souls` in the container, joiner the Mac's `rta_app_combat` (no option: it took the host's choice, "the host plays with the souls-style combat mode on: so does this copy now"); our own `rendezvous.py` on 127.0.0.1:41979 (container through 192.168.5.2), `local/souls-combat/net/n2souls.py --external` (`online/souls1`) | room HV4B2, launched both, **5,016 ticks in step** hub > drunare, the arena fight there: 2 deaths and the reload after everybody died; `tools/rig/compare.py ticks`: **no shared column differs on any tick** (64 shared columns, the game's and the mode's; only `l_inp`, `l_drawframe` are per machine); the mode on in every row on both; player 0: 4 dodges, 35 light, 1,717 ticks blocking; player 1: 6 dodges, 1 heavy, 30 light, 5 presses refused with an empty bar, stamina at 0 in 148 ticks; 1 hit not landed (a dodge), 1 blocked hit paid; routes direct both ways (16 / 17 ms) |
+
+**The installer: `tools/install/install-linux.sh`** (with `tools/install/fromdisc.py`, shared
+with the Mac and Windows scripts): installs `clang g++ python3 libsdl2-dev libssl-dev` (apt;
+dnf, pacman, zypper lines for Fedora, Arch, openSUSE - those three Read, not Ran) after asking,
+takes the disc image (zenity / kdialog / typed), copies `SLUS_209.73` out of the ISO 9660 image
+and checks its checksum 4028A55F, runs `build_linux.py`, writes `local/install.txt` and
+`rta-native.desktop` into `~/.local/share/applications` and the desktop. **Ran** in a fresh
+`ubuntu:24.04` container (Docker Hub's official image, arm64, as root; the repository's
+tracked files copied into an empty folder): apt from the Ubuntu archive, the translation (51
+files), 88 files compiled in 35 s, `rta_app`, `rta_native`, `fpcheck` linked, the launcher
+written; then in the same container `fpcheck` byte for byte the Mac arm64 lines and the boot
+check the same 692 lines as the Mac (189 words of the fix set: the sign-in patch is not in a
+fresh folder, as for every player). 56 s from an empty container to the end. **Not run**: the
+launcher by a person on a desktop, `zenity`/`kdialog`, `sudo`, x86-64 (the same script),
+other distributions.
+
 ## STATE (2026-10-19, evening)
 
 | | x86-64 | aarch64 |

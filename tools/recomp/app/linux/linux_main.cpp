@@ -39,6 +39,7 @@
 #include "gfx_rt.h"
 #include "pad_host.h"
 #include "fpcontrols.h"
+#include "soulscombat.h"
 #include "fpview.h"
 #include "fpworld.h"
 #include "pipeline.h"
@@ -254,6 +255,7 @@ struct Pads : rta::PadSource {
             fpcontrols::set_view(replayed ? 0 : fpview::mode(), v.active && !v.fallback, v.look_pitch);
             fpcontrols::translate(blank, state);
             if (float pitch = fpcontrols::take_pitch(); pitch != 0) fpview::add_pitch(pitch);
+            soulscombat::blank(blank);          // the souls-style combat mode (soulscombat.h): off unless asked for
         }
         last_buttons = state.buttons;
         last_sticks = state.lx | state.ly << 8 | state.rx << 16 | (uint32_t)state.ry << 24;
@@ -513,6 +515,7 @@ struct Screen {
             int h = 448 * opt.scale, w = (int)std::lround(640 * opt.scale * frame->aspect / (4.0 / 3.0));
             if (h != opt.size_h || w != opt.size_w) { opt.size_w = w; opt.size_h = h; backend->set_output_size(w, h); }
         }
+        soulscombat::overlay(*frame);           // the souls mode's stamina bar and lock-on marker (nothing when it is off)
         backend->execute(*frame);
         vertices += frame->vertices.size();
         commands += frame->commands.size();
@@ -697,6 +700,7 @@ static void final_report() {
            hostpad::name().empty() ? "none" : hostpad::name().c_str(), g_pads.rumbles.load());
     apprt::films_report();
     printf("rta_app: %s\n", fpcontrols::figures().c_str());
+    if (soulscombat::wanted() || soulscombat::active()) printf("rta_app: %s\n", soulscombat::figures().c_str());
     fflush(stdout);
 }
 
@@ -739,6 +743,10 @@ static void app_command(const std::string& text, uint64_t frame) {
         float v[6] = {0, 0, 0, 0, 0, 0};
         for (size_t k = 3; k < w.size() && k < 9; k++) v[k - 3] = (float)atof(w[k].c_str());
         hostpad::test(w[1], w.size() >= 3 ? parse_buttons(w[2]) : 0, v);
+    } else if (w[0] == "souls") {
+        // app souls info | on | off | lock | set NAME VALUE  (soulscombat.h)
+        printf("[frame %llu] %s\n", (unsigned long long)frame, soulscombat::command(w.size() >= 2 ? text.substr(text.find(w[1])) : std::string()).c_str());
+        fflush(stdout);
     } else if (w[0] == "fpc" && w.size() >= 2) {
         printf("[frame %llu] fpc: %s\n", (unsigned long long)frame, fpcontrols::command(text.substr(text.find(w[1])), frame).c_str());
         fflush(stdout);
@@ -846,7 +854,7 @@ static const char* HELP =
     "picture (each also a line of rta-data/settings.txt, which is written with its defaults at the first start):\n"
     "        [--aspect auto|4:3|16:9|16:10|21:9|W:H] [--resolution window|WxH|Nx] [--antialiasing off|2|4|8] [--anisotropy 1..16]\n"
     "        [--mipmaps yes|no] [--art-pack FOLDER] [--art-memory MB] [--frame-cap 60|30|0] [--plain] [--settings FILE] [--no-settings]\n"
-    "        [--pacing ahead|queued] [--view overhead|action|chase|shoulder|first] [--view-set view.<mode>.<name>=VALUE]\n"
+    "        [--pacing ahead|queued] [--view overhead|action|chase|shoulder|first] [--view-set view.<mode>.<name>=VALUE] [--combat souls|off]\n"
 #ifdef RTA_NET
     "online: [--server ADDRESS] (or the first line of server.txt beside the program) [--online | --host [CODE] | --join CODE]\n"
     "        [--choose-character] [--player N] [--server-public ADDRESS] [--name NAME]\n"
@@ -878,6 +886,7 @@ int main(int argc, char** argv) {
         else if (a == "--disc") opt.disc = next();
         else if (a == "--data") opt.data = next();
         else if (a == "--elf") opt.elf = next();
+        else if (a == "--combat") overrides.push_back({"combat.mode", next()});        // souls | off (soulscombat.h)
         else if (a == "--window") overrides.push_back({"window", next()});
         else if (a == "--size") overrides.push_back({"resolution", next()});
         else if (a == "--scale") overrides.push_back({"resolution", next() + "x"});
@@ -954,7 +963,8 @@ int main(int argc, char** argv) {
         opt.aspect = opt.set.aspect;
         opt.unpaced = opt.set.frame_cap <= 0;
         for (auto& kv : opt.set.view)
-            if (!fpview::setting(kv.first.c_str(), kv.second.c_str()) && !fpcontrols::setting(kv.first.c_str(), kv.second.c_str()) && !fpworld::setting(kv.first.c_str(), kv.second.c_str()))
+            if (!fpview::setting(kv.first.c_str(), kv.second.c_str()) && !fpcontrols::setting(kv.first.c_str(), kv.second.c_str()) && !fpworld::setting(kv.first.c_str(), kv.second.c_str()) &&
+                !soulscombat::setting(kv.first.c_str(), kv.second.c_str()))
                 log_line("settings: not a view, controls or world setting: " + kv.first + " = " + kv.second);
         opt.set.view.clear();
     };
@@ -1085,8 +1095,17 @@ int main(int argc, char** argv) {
         v.forward = {forward[0], forward[1], forward[2]};
         v.up = {up[0], up[1], up[2]};
     });
-    fpview::on_drawn([](const fpview::View&, Ctx* c, void*) {
+    fpview::on_drawn([](const fpview::View& v, Ctx* c, void*) {
         static const bool replayed = apprt::replaying();
+        {
+            soulscombat::Camera cam;            // the souls mode's lock-on marker is placed with the camera the frame was drawn with
+            cam.valid = true;
+            const fpview::Vec3* vs[4] = {&v.eye, &v.forward, &v.up, &v.right};
+            float* outs[4] = {cam.eye, cam.forward, cam.up, cam.right};
+            for (int k = 0; k < 4; k++) { outs[k][0] = vs[k]->x; outs[k][1] = vs[k]->y; outs[k][2] = vs[k]->z; }
+            cam.fov = v.fov;
+            soulscombat::set_camera(cam);
+        }
         int mode = fpcontrols::take_strafe_send();
         if (mode >= 0 && !replayed) apprt::call_game(c, fpcontrols::STRAFE_SENDER, (uint32_t)mode);
     });

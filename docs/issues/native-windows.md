@@ -545,6 +545,47 @@ with anything; `fpcheck_gcc.exe` is its step 1).
 
 ## Resume here
 
+**2026-10-20, the combat mode, a room of our own, the installer** (nothing of it run on
+Windows; a Windows 11 ARM virtual machine is being set up for that).
+
+- `win_main.cpp` now has what `app_main.cpp` and `linux_main.cpp` have: the souls-style
+  combat mode (`soulscombat::blank` after the controls' `translate`, `overlay` before
+  `backend->execute`, the camera in `fpview::on_drawn`, `--combat souls|off`, `combat.*`
+  settings, `app souls ...`, the figures in the final report; `docs/issues/native-souls-combat.md`)
+  and the room options of net2 (`--play-host`, `--play-join CODE`, `--service HOST:PORT` or a
+  `service=` line in `server.txt`, `--name` also as the room name), which only the macOS and
+  Linux programs had. `build_win.py` compiles `app/soulscombat.cpp` (also for `--mac`). The
+  first-person world work (`fpworld.cpp`, the shelf in `rt/runtime.cpp`) and the view and
+  controls settings were shared files already. **Built**: `rta-windows/rta_app.exe` 28.46 MB,
+  `rta_native.exe` 26.46 MB, `fpcheck.exe`, `pnghash.exe` (Homebrew mingw-w64 sysroot, the Mac's
+  clang; 91 files in 37 s). The import table as before (no new DLL).
+- **The installer `tools/install/install-windows.bat`** (it runs `install-windows.ps1`): Python 3
+  (found as `py -3`, `python`; if missing, `winget install Python.Python.3.12` after asking),
+  llvm-mingw from its official GitHub release (the `ucrt-x86_64` or, on Windows on ARM, the
+  `ucrt-aarch64` archive of the latest release or of `-LlvmMingwTag`; size checked, SHA-256
+  printed) unpacked into `local\toolchain`, a file window for the disc image, then
+  `tools/install/fromdisc.py`: `SLUS_209.73` copied out of the ISO and checked (4028A55F), the
+  main VU1 program translated, `build_win.py`, a desktop shortcut to `rta-windows\rta_app.exe
+  --disc "<image>"`. On Windows `build_win.py` now takes `x86_64-w64-mingw32-clang++` first (so
+  an ARM64 Windows also builds the x86-64 program, which runs under Windows' emulation) and
+  `x86_64-w64-mingw32-windres`. **Not run** (no Windows here): the scripts themselves, PowerShell
+  5.1's handling of them, winget, the download, the build on Windows.
+- **What was run instead (on the Mac)**: the same build with llvm-mingw 20261006 (its macOS
+  release, `x86_64-w64-mingw32-clang++` with libc++ and lld, what the installer fetches for
+  Windows) through `build_win.py`'s own steps into `local/recomp-out/win-llvm-mingw/`. It found
+  two faults, both fixed: `net2/session_mock.cpp` used `atof` without `<cstdlib>` (libc++ does not
+  bring it in through another header), and `clock_gettime` (winpthreads) was not linked
+  (`-lpthread` added to `WIN_LIBS`; GCC's libstdc++ had pulled it in). Then **Built**: all 91
+  files, `rta_app.exe` 27.58 MB, `rta_native.exe` 25.61 MB, the same DLL imports as the
+  Homebrew build (plus `api-ms-win-crt-multibyte`). The Homebrew build was linked again after the
+  change: unchanged otherwise.
+- For the virtual machine: `local/recomp-out/win/rta-windows/` (the cross build, as before) and
+  `local/recomp-out/win-llvm-mingw/rta-windows/` (what the installer makes) are both there;
+  the test plan above applies to either, plus: `rta_app.exe --combat souls`, and a room
+  (`rta_app.exe --play-host --service HOST:PORT` on one machine, `--play-join CODE` on the
+  other) against a Mac or Linux copy.
+
+
 **2026-10-13 14:53, by the owner of `rt/`, `render/`, `app/`, `net/`** (`native-app.md`
 12.5 and 12.10 have the detail): the folder `rta-windows` was rebuilt twice this afternoon
 (13:35, and 14:46 with the camera views) - `rta_app.exe` 27.99 MB (clang),

@@ -24,6 +24,7 @@
 #include "session_impl.h"
 
 #include <algorithm>
+#include <cstdlib>     // atof (libc++, llvm-mingw: not brought in by another header)
 #include <functional>
 
 namespace net2impl {

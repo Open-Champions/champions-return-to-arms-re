@@ -2180,3 +2180,29 @@ error).
 **The library's `app view set`** (`tools/godot/lib/rtag.cpp`): takes the key as the native
 program does (`view.first.pitch`), a bare one (`first.pitch`) gets its prefix; refused keys
 are said.
+
+## 14. Built from the player's own disc: `tools/install/install-mac.command` (2026-10-20)
+
+The game's code is never distributed, so each player translates it from their own disc:
+`tools/install/install-mac.command` (double-click) checks Apple's command line tools (the
+compiler `app/build.py` has always used), Homebrew and Homebrew's `qtbase` (installing what is
+missing after asking), takes the disc image in a file window, and runs
+`tools/install/fromdisc.py`: `SLUS_209.73` copied out of the ISO 9660 image and checked
+(PCSX2's checksum 4028A55F, the file the fix set is made for), the main VU1 program translated
+(`render/vu1_translate.py --elf`; the two small ones stay interpreted), `app/build.py`,
+`local/install.txt`, and **Champions RTA Native.app** on the desktop (a bundle whose script starts
+`local/recomp-out/bin/rta_app --disc <image>`, its output into `local/recomp-out/app-data/rta_app-log.txt`).
+Homebrew's `llvm` is not needed: the build is the one every Mac result was made with (Apple clang).
+
+**Ran** (end to end, in a fresh folder holding only the repository's tracked files, nice 10, load
+average about 15): 32 s wall - `SLUS_209.73` copied (5,777,312 bytes, 4028A55F), the VU1
+translation, the game translated and compiled (55 files in 24 s), `rta_app` (38 files) linked, the
+launcher written. Then: the boot check with the fresh `rta_native_fix` is the same 692 lines as the
+workspace's Mac program apart from the timing line and "189 words" (the workspace build has the
+local sign-in patch's two more); the launcher's script started the fresh `rta_app` offscreen
+(the memory card screen at frames 1200 to 2800); and the fresh `rta_app` and the workspace's
+`rta_app_combat` driven by the same boot script into the first level drew **the same picture, byte
+for byte**, at frames 2300 and 2400 (640 x 448: the hub with the player's character), so the VU1
+translation made from the executable alone draws what the one made from recorded streams draws.
+**Not run**: the script's install paths (command line tools, Homebrew, qtbase were already there),
+the file window (the test gave `--disc`), Finder's first-start question, an Intel Mac.

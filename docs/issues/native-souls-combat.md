@@ -25,8 +25,10 @@ either is in the repository.
   first person (4.1); offline every mechanic (4.2); two and three copies in one room with the
   mode on, the host's choice taken up by the joiners, through a level change and fights, every
   pair of tick logs equal in every column including the mode's own (4.3); the pictures (4.4).
-- **Not done**: Windows (`win_main.cpp` does not call the mode: it compiles without it, the
-  setting is ignored there); the emulator application (the mode is native C++ only, no pnach
+- **2026-10-20**: wired into the Windows and Linux programs as in `app_main.cpp`; on Linux Ran
+  (mode off: the rig byte for byte; a Linux + Mac room with the mode through the drunare fight,
+  5,016 ticks in step: `docs/issues/native-linux.md`), on Windows Built only.
+- **Not done**: Windows run (built, never started); the emulator application (the mode is native C++ only, no pnach
   section); an online game through the old lobby (the mode stays off there by design, 2.2);
   nobody has played it with hands; the Godot HUD part was parsed by Godot 4.5.2
   (`--check-only`) but not seen in a running Godot build (the library would need

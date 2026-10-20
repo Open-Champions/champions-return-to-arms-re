@@ -133,7 +133,8 @@ def build(args):
              (os.path.join(LSRC, 'pad_linux.cpp'), app_flags, 'a_'),
              (os.path.join(HERE, 'fpcontrols.cpp'), app_flags, 'a_'),
              (os.path.join(HERE, 'fpview.cpp'), rt_flags + ['-I', HERE], 'a_'),
-             (os.path.join(HERE, 'fpworld.cpp'), rt_flags + ['-I', HERE, '-I', RENDER], 'a_')] +
+             (os.path.join(HERE, 'fpworld.cpp'), rt_flags + ['-I', HERE, '-I', RENDER], 'a_'),
+             (os.path.join(HERE, 'soulscombat.cpp'), rt_flags + ['-I', HERE, '-I', RENDER], 'a_')] +
             ([(os.path.join(NET, 'netdrv.cpp'), rt_flags, 'n_'),
               (os.path.join(NET, 'online.cpp'), rt_flags, 'n_'),
               (bw.ONLINE, rt_flags, 'n_')] +

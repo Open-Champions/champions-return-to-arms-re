@@ -87,7 +87,7 @@ WIN_DEFINES = ['-D_WIN32_WINNT=0x0A00', '-DWINVER=0x0A00', '-D_USE_MATH_DEFINES'
 RENDER_CORE = ['vu1.cpp', 'vif1.cpp', 'gs.cpp', 'renderer.cpp', 'worldfill.cpp']
 FILM, FILM_HLE = os.path.join(HERE, 'film.cpp'), os.path.join(HERE, 'hle-app.txt')
 RUNTIME = ['runtime.cpp', 'iop.cpp', 'script.cpp']
-WIN_LIBS = ['-lopengl32', '-lgdi32', '-luser32', '-lole32', '-lwinmm', '-lavrt', '-lshell32', '-ldwmapi']
+WIN_LIBS = ['-lopengl32', '-lgdi32', '-luser32', '-lole32', '-lwinmm', '-lavrt', '-lshell32', '-ldwmapi', '-lpthread']     # -lpthread: clock_gettime (winpthreads), which llvm-mingw's libc++ does not pull in by itself
 NET_LIBS = ['-lws2_32', '-liphlpapi', '-ladvapi32', '-lbcrypt', '-lsecur32', '-lcrypt32']     # Winsock, the list of this computer's addresses, the saved login's access list; bcrypt: net2's hashes and random numbers (hash.h); secur32, crypt32: net2's link to the service inside TLS (SChannel, tls.cpp)
 
 
@@ -123,10 +123,14 @@ def includes_of(source, dirs, seen=None):
 def find_toolchain(want):
     """(compile command, link command, windres, description) for Windows x86-64."""
     if ON_WINDOWS:
-        cxx = shutil.which('clang++' if want == 'clang' else 'g++') or shutil.which('g++') or shutil.which('clang++')
+        # llvm-mingw (tools/install/install-windows.ps1 puts its bin first on the PATH): the x86-64 driver by its
+        # target name, so that an ARM64 Windows builds the same x86-64 program; else what MSYS2 has
+        cxx = (shutil.which('x86_64-w64-mingw32-clang++') if want != 'gcc' else None) or \
+            shutil.which('clang++' if want == 'clang' else 'g++') or shutil.which('g++') or shutil.which('clang++')
         if not cxx:
-            sys.exit('no g++ or clang++ on the PATH (MSYS2: pacman -S mingw-w64-ucrt-x86_64-gcc)')
-        return [cxx], [cxx], shutil.which('windres'), 'on Windows: ' + cxx
+            sys.exit('no x86_64-w64-mingw32-clang++, g++ or clang++ on the PATH (tools/install/install-windows.ps1 fetches llvm-mingw)')
+        windres = shutil.which('x86_64-w64-mingw32-windres') or shutil.which('windres') or shutil.which('llvm-windres')
+        return [cxx], [cxx], windres, 'on Windows: ' + cxx
     gxx = shutil.which('x86_64-w64-mingw32-g++')
     if not gxx:
         sys.exit('x86_64-w64-mingw32-g++ is not installed (macOS: brew install mingw-w64)')
@@ -411,6 +415,7 @@ def build_mac(args):
         (os.path.join(HERE, 'gfx_rt.cpp'), rt_flags + ['-I', HERE], 'a_'),
         (os.path.join(HERE, 'fpview.cpp'), rt_flags + ['-I', HERE], 'a_'),
         (os.path.join(HERE, 'fpworld.cpp'), rt_flags + ['-I', HERE, '-I', RENDER], 'a_'),
+        (os.path.join(HERE, 'soulscombat.cpp'), rt_flags + ['-I', HERE, '-I', RENDER], 'a_'),
         (os.path.join(HERE, 'fpcontrols.cpp'), ['-std=c++17', opt, '-Wall', '-I', HERE, '-I', RT], 'a_'),
         (os.path.join(HERE, 'look_mac.mm'), objc + ['-I', HERE, '-I', RT], 'a_'),
         (FILM, rt_flags + ['-I', HERE], 'a_'),
@@ -615,6 +620,7 @@ def main():
              (os.path.join(HERE, 'fpcontrols.cpp'), app_flags, 'a_'),          # the look views' controls: plain C++, the Mac's file
              (os.path.join(HERE, 'fpview.cpp'), rt_flags + ['-I', HERE], 'a_'),  # the view modes (the Mac's file; NOT RUN on Windows)
              (os.path.join(HERE, 'fpworld.cpp'), rt_flags + ['-I', HERE, '-I', RENDER], 'a_'),  # the world for a camera inside it (the same)
+             (os.path.join(HERE, 'soulscombat.cpp'), rt_flags + ['-I', HERE, '-I', RENDER], 'a_'),  # the souls-style combat mode (the same)
              (os.path.join(WINSRC, 'wgl.cpp'), app_flags, 'a_')], objdir, search)
         # a file given with -include is a dependency the sources do not name
         app = [(source, flags, target, deps + ([os.path.join(NET, 'posix_win.h')] if source == ONLINE else []))

@@ -1,6 +1,6 @@
 # Get the game and play
 
-Updated with each release. **Last update: 2026-10-14.** Current release: fix set
+Updated with each release. **Last update: 2026-10-20** (section 8: the native version from your own disc). Current release: fix set
 `9ac29719` (31 sections), and in the Mac application the new **Room** menu (section 4).
 How complete each part is: [PROGRESS.md](PROGRESS.md).
 
@@ -111,11 +111,57 @@ button. Everything else is here, and you can build each version yourself with yo
 | Browser version | released; further work paused | [tools/play-web](../tools/play-web/README.md) |
 | Lobby server (the Online menu, browser players) | running | [online-setup.md](online-setup.md) |
 | Room service (the Room menu; no account) | running, encrypted | [tools/rendezvous](../tools/rendezvous), [issues/native-rendezvous-tls.md](issues/native-rendezvous-tls.md); in the Mac application: [issues/app-rendezvous.md](issues/app-rendezvous.md) |
-| Native build for Mac (the game's code translated to C++, no emulator) | experimental; plays offline and online, joins rooms | [issues/native-recomp.md](issues/native-recomp.md), [issues/native-app.md](issues/native-app.md) |
-| Native build for Windows | experimental; builds, never run on a Windows computer | [issues/native-windows.md](issues/native-windows.md) |
+| Native build for Mac (the game's code translated to C++, no emulator) | experimental; plays offline and online, joins rooms | section 8; [issues/native-recomp.md](issues/native-recomp.md), [issues/native-app.md](issues/native-app.md) |
+| Native build for Windows | experimental; builds, never run on a Windows computer | section 8; [issues/native-windows.md](issues/native-windows.md) |
+| Native build for Linux | experimental; runs in a container (x86-64, aarch64), plays in a room with the Mac | section 8; [issues/native-linux.md](issues/native-linux.md) |
 | Native build in Godot (first person and other views, new interface, portal) | in development; nothing to download yet | [issues/native-godot.md](issues/native-godot.md), [issues/native-first-person.md](issues/native-first-person.md) |
 
-## 8. If something goes wrong
+## 8. Native version: build it from your own disc
+
+The native version is the game's own code translated to C++ and built into a program for
+your computer - no emulator, no BIOS. Because that code comes from the game, it can never be
+handed out: **every player translates it from their own disc**. One script per system does
+all of it: it checks (and, after you say yes, installs) the compiler, asks for your disc
+image, copies the game's executable `SLUS_209.73` out of it, translates and builds, and puts
+**Champions RTA Native** on your desktop. Your disc image is only read; nothing is uploaded
+and nothing of the game is in this repository or comes with the script.
+
+**First**, get this repository: on GitHub click **Code → Download ZIP** and unzip it (or
+`git clone https://github.com/Open-Champions/champions-return-to-arms-re`). Keep the
+folder: the program is built inside it, in `local/` - never share that folder, it holds
+the translated game.
+
+You need your disc image of the **US release, SLUS-20973, version 2.00** as an `.iso` file
+(the script refuses any other: it checks the executable's checksum `4028A55F`).
+
+| | Mac (Apple silicon; Intel not tried) | Windows 10 / 11 (x86-64 or ARM) | Linux (x86-64 or aarch64) |
+|---|---|---|---|
+| **Run** | double-click `tools/install/install-mac.command` | double-click `tools/install/install-windows.bat` | `sh tools/install/install-linux.sh` in a terminal |
+| **Installs if missing (asks first)** | Apple's command line tools (Apple's own prompt), [Homebrew](https://brew.sh), Homebrew's Qt 6 (`qtbase`) | Python 3 (with `winget`, from python.org) and the portable compiler [llvm-mingw](https://github.com/mstorsjo/llvm-mingw/releases) (its official GitHub release, unpacked into `local\toolchain`; nothing installed into Windows) | your distribution's `clang`, C++ library, `python3`, SDL 2 and OpenSSL development packages (apt, dnf, pacman or zypper; `sudo` asks for your password) |
+| **Disc image** | a file window | a file window | a file window (zenity / kdialog), else typed |
+| **Time** | 1 to 30 minutes | 5 to 40 minutes | 1 to 40 minutes |
+| **Then start** | **Champions RTA Native** on the desktop | **Champions RTA Native** on the desktop | **Champions RTA Native** in the applications menu and on the desktop, or `play.sh` |
+| **State** | tested from a fresh folder ([issues/native-app.md](issues/native-app.md) 14) | **not yet run on Windows** | tested in a fresh Ubuntu 24.04 container |
+
+- The first time on a Mac, Finder may say the script is from the Internet: right-click it,
+  choose **Open**, then **Open** again. In a terminal: `bash tools/install/install-mac.command`.
+- Running the script again rebuilds from the same folder (quick: only what changed).
+  `--disc FILE` (Mac, Linux) or `-Disc FILE` (Windows) skips the file window.
+- The keys, the views (V), the souls-style combat mode (`--combat souls`) and playing in a
+  room with other native players are described in
+  [issues/native-app.md](issues/native-app.md), [issues/native-souls-combat.md](issues/native-souls-combat.md)
+  and section 4. Windows and Linux players start a room from the command line
+  (`rta_app --play-host` / `--play-join CODE`, with the room service's address as
+  `--service HOST:PORT` or a `service=` line in `server.txt` beside the program; `rta_app --help`).
+- **Sharper textures (optional)** are a separate step: an art pack of *your own* textures,
+  dumped from your copy of the game and enlarged. Nothing of it comes with the repository;
+  how to make one and use it (`--art-pack FOLDER`) is in
+  [issues/native-graphics.md](issues/native-graphics.md), section 3 "The art pack".
+- What was run on each system, and what was not: [issues/native-app.md](issues/native-app.md)
+  (Mac), [issues/native-windows.md](issues/native-windows.md),
+  [issues/native-linux.md](issues/native-linux.md).
+
+## 9. If something goes wrong
 
 - **The Mac app shows a bar saying macOS is asking for permission**: answer the question
   macOS put on screen (Allow). The game goes on by itself.
