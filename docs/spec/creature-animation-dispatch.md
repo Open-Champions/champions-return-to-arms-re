@@ -282,6 +282,10 @@ What a group shares, and therefore what one native implementation can cover:
 
 ### 5.3 Own state machines (10 classes)
 
+The run switch, timers, target tests and seed draws are executed in
+[own-state-machines](own-state-machines.md). The rows below stay the clip
+contract for the state that switch requests.
+
 | class | base states that differ | own states (role) | attack flags | hit 0x12 choice | death 0x14 choice | consumers (run) |
 |---|---|---|---|---|---|---|
 | AntQueen | 0x1 idle, 0x3 idle, 0x10 none, 0x14 action | 0x6 action, 0x7 action?, 0x8 action, 0x9 action, 0xa action, 0x17 action, 0x18 action, 0x19 action | ACT | fixed | fixed | Creature_hitTargetOrPlayerInArc |
@@ -336,11 +340,15 @@ clips are chosen inline by `Player_run` 0x1a5030's action switch (`+0x58c`),
 
 ## 7. Open and unknown
 
-- **Two-field and out-of-probe conditions** (**Unknown**): the setState scan sets one word
-  at a time to 13 values. Precedence between two conditions on one word (Agony's
-  0x380000 knockback against 0x40000 hit reaction is read in `docs/monsters-2.md`; most
-  are not), and thresholds on values outside the probes, need the class's own reading.
-  `ref_creature_dispatch.select` refuses an unrecorded condition rather than guessing.
+- **Two-field and out-of-probe conditions** (**Unknown** for classes other than the
+  ten own machines): the setState scan sets one word at a time to 13 values. Precedence
+  between two conditions on one word (Agony's 0x380000 knockback against 0x40000 hit
+  reaction is read in `docs/monsters-2.md`; most are not), and thresholds on values
+  outside the probes, need the class's own reading. `ref_creature_dispatch.select`
+  refuses an unrecorded condition rather than guessing. The ten own-machine *run*
+  switches, including combinations such as AntQueen's queue and sight test, are
+  executed in [own-state-machines](own-state-machines.md); that does not extend the
+  setState condition table.
 - **Random choices**: periodic residues are exact for the probed draws (0…11 and eight
   large values); a choice that is not periodic is kept as executed points
   (`rand_points`). The *order* of several draws in one case (timer draw before clip draw)
