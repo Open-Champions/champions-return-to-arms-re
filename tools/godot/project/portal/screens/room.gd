@@ -98,31 +98,49 @@ func build() -> void:
 	# the souls-style combat mode (tools/recomp/app/soulscombat.h): a room option of the game library's - the host's
 	# choice, taken up by every copy that has it; a copy without it makes the room refuse to start (the warning above)
 	var combat := gameflow_active() and bool(portal.gameflow.call("combat_available"))
-	var columns := 3 if combat else 2
+	var columns := (3 if combat else 2) + 1
 	var cw := (left_w - UI.px(14) * (columns - 1)) / columns
-	# the game's own four (net2_options.difficulty 1..4; 0 means the first). Only missions are
-	# wired into the launch today: the arena modes are not offered until they are.
+	# the game's own four (net2_options.difficulty 1..4; 0 means the first).
 	# ... and only those the game's own menu would offer this host (net2_game_status().difficulty_unlocked: 1 on a new card)
 	var names := PackedStringArray(["Easy", "Normal", "Hard", "Harder"]).slice(0, int(portal.gameflow.call("unlocked")))
 	var difficulty := W.Choice.new("Difficulty", names, clampi(int(options.get("difficulty", 1)) - 1, 0, names.size() - 1),
 		"" if names.size() == 4 else ("More as you play" if gameflow_active() and bool(portal.gameflow.call("combat_available")) else "More as your game unlocks them"))
 	difficulty.key = "difficulty"
 	difficulty.locked = not can_choose
+	difficulty.narrow = columns > 3
 	put(difficulty, Rect2(0, choices_y, cw, choices_h))
 	difficulty.changed.connect(func(index: int) -> void: _set_option("difficulty", index + 1))
 	var column := 1
+	# the game's own three modes (net2_options.mode 0 missions, 1 arena co-operative, 2 arena versus; versus with the
+	# game's own kill limits 5, 10, 25): the library's launch puts them where the game's net menu does
+	var game_index := 0
+	var mode_now := int(options.get("mode", 0))
+	if mode_now == 1:
+		game_index = 1
+	elif mode_now == 2:
+		game_index = {10: 3, 25: 4}.get(int(options.get("kill_limit", 5)), 2)
+	var game_kind := W.Choice.new("Game", PackedStringArray(["Missions", "Arena", "Versus 5", "Versus 10", "Versus 25"]), game_index,
+		["The story, together", "Waves, together", "Kill limit 5", "Kill limit 10", "Kill limit 25"][game_index])
+	game_kind.key = "game"
+	game_kind.locked = not can_choose
+	game_kind.narrow = columns > 3
+	put(game_kind, Rect2((cw + UI.px(14)) * column, choices_y, cw, choices_h))
+	game_kind.changed.connect(func(index: int) -> void: _set_game(index))
+	column += 1
 	if combat:
 		var souls := _souls_of(mine) if i_host else _souls_of(host_member)
 		var mode := W.Choice.new("Combat", PackedStringArray(["Classic", "Souls-style"]), 1 if souls else 0,
 			"Stamina, dodge, lock-on" if souls else "")
 		mode.key = "combat"
 		mode.locked = not can_choose
+		mode.narrow = columns > 3
 		put(mode, Rect2((cw + UI.px(14)) * column, choices_y, cw, choices_h))
 		mode.changed.connect(func(index: int) -> void: portal.gameflow.call("set_combat", index == 1))
 		column += 1
 	var open_to := W.Choice.new("Who can join", PackedStringArray(["Code only", "Friends too"]), clampi(int(options.get("open_to", 0)), 0, 1))
 	open_to.key = "open_to"
 	open_to.locked = not can_choose
+	open_to.narrow = columns > 3
 	put(open_to, Rect2((cw + UI.px(14)) * column, choices_y, cw, choices_h))
 	open_to.changed.connect(func(index: int) -> void: _set_option("open_to", index))
 	# ---- start / ready ----
@@ -362,6 +380,13 @@ func _member_actions(m: Dictionary, i_host: bool, state: int) -> Array:
 func _set_option(key: String, value: int) -> void:
 	var options: Dictionary = (room.get("options", {}) as Dictionary).duplicate()
 	options[key] = value
+	portal.session.set_options(options)
+
+
+func _set_game(index: int) -> void:
+	var options: Dictionary = (room.get("options", {}) as Dictionary).duplicate()
+	options["mode"] = [0, 1, 2, 2, 2][clampi(index, 0, 4)]
+	options["kill_limit"] = [0, 0, 5, 10, 25][clampi(index, 0, 4)]
 	portal.session.set_options(options)
 
 

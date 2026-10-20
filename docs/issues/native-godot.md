@@ -9,6 +9,160 @@ Nothing derived from the game is in the repository. `tools/godot/` holds glue, b
 scripts, the Godot project's scripts and shaders. The translated code, the libraries, the
 staged project, exported applications, pictures and logs are under `local/godot-spike/`.
 
+## SEVENTH ROUND (2026-10-20, afternoon): cleaner models, the game's own screens, an export without the game, room modes
+
+**Read this first.**  Built into `local/godot-r7/` (`RTA_GODOT_OUT=local/godot-r7`; the sixth round's snapshot of
+`tools/recomp`, with this round's `recomp.patch` hunk applied).  Pictures, logs and test scripts: `local/godot-r7/test/`
+(`models.sh`, `mkmodels.py`, `screens.sh`, `mkscreens.py`, `probe.sh`, `mkprobe.py`, `fight.sh`, `room7.py`,
+`memcard/`), `local/godot-r7/levels/`, `local/godot-r7/linux-test/`, `local/fresh-r7/` (the fresh-folder run).
+
+| Asked | State | Shown |
+|---|---|---|
+| cleaner models | **done, Ran**: per-pixel form light, rim light, finer texture sampling, PN-triangle curving of skinned models, contact shadows (below) | `test/m4/sheet-{hub,valor}-{front,side}.jpg` (5 characters x 2 levels, off above / on below), `test/f1/sheet.jpg` (the boars in valor) |
+| the shop and the other screens | **Ran**: the dialogue to "Enter Shop", the shop's Buy / Sell page, its Sell grid, back out; pause (all entries), the bag's four pages (equipment, items, the character sheet, quests); in the chase and overhead views | `test/s2/*.png` (`s1` is the same route before a fix) |
+| the 7 unchecked levels, islc1, storm4 | **looked at, Ran** (below) | `test/p1/sheet.jpg`, `levels/seven/` |
+| arenas without ground | **done, Ran**: the backdrop | `levels/arenas3/sheet.jpg`, `levels/arenas6/sheet.jpg` |
+| an export without the game | **done**: macOS, Windows, Linux arm64 and x86-64 built; macOS and Linux arm64 run end to end (below) | `local/fresh-r7/pictures/`, `test/export1/sheet.jpg`, `linux-test/sheet.jpg` |
+| a character from a memory card | **written, reader Ran on a made-up card; a real save not run** (below) | `test/memcard/` |
+| arena and versus in a room launch | **done, Ran**: two Godot portals, the room's new "Game" choice, the game's own arena (Wave 1) and versus (Fight!) in pvparena, in step | `test/arena1/`, `test/arena2/` |
+
+### Cleaner models (`rta_scene.cpp`, `gs_draw.gdshaderinc` GS_MODEL / GS_CONTACT, `scene_view.gd` keys `models`, `model_*`, `contact`)
+
+Nothing the game computes changes: only how Godot draws what the tap hands over.  The model draws are the packets of
+kind 2 (characters, creatures, props, weapons), solid ones (depth write, opaque or alpha-tested), not the sky dome.
+
+- **Per-pixel form light** (`model_form`, 0.7): the game lit the model per vertex; the same normals per pixel give a
+  soft key light from where the level's light comes from (`rta_sky_sun`), 0.8 .. 1.14 of the colour, wrapped.
+- **Rim light** (`model_rim`, 0.35) in the sky's horizon colour, lighter (a warm one in dark levels).
+- **Finer texture** (`model_sharp`, 0.6): the footprint the mip level is chosen from is scaled down for models (the
+  art pack's pictures are sharp enough to take it; the level keeps its own).
+- **PN triangles** (`model_smooth` 2, `model_crease` 0.35, `model_near` 520): every triangle of a *skinned* packet within
+  520 units of the eye becomes 2 x 2 curved triangles (Vlachos et al. 2001), built on the CPU as the mesh is built; the
+  normals the curve follows are welded over the frame by position (1/8 unit), so neighbouring triangles and the
+  packets of one body meet without cracks; an edge whose welded normals part by more than the crease stays straight.
+  Colours, texels and shading normals are interpolated.  Kept meshes take it (the smoothing level is in their figure).
+- **Contact shadows** (`contact`, 0.55): the drawer finds the frame's standing figures (skinned objects' boxes, pieces of
+  one figure merged, at most 16: `get_sky_info().contacts`); the level's solid draws (GS_CONTACT) darken softly within
+  each figure's radius at its feet's height.
+- **Found and fixed on the way**: a two-pass model (a face, a shoulder piece) was curved in its first pass and not in its
+  second (blended, no depth write): the two fought in the depth buffer and the face showed dark specks (`test/s1`
+  dialogue pictures).  The curve is now decided by the packet, never by the draw's state (`test/s2`: clean).
+- **Cost** (the fourth round's fight route, chase, 1280 x 720, unpaced, `test/f1`..`f3`): `submit()` 2.98 ms a list with
+  the models off, 8.8 ms with the first version, **6.1 ms** now (grid points made once per patch, the weld table
+  reserved, nothing curved beyond 520 units); 141,685 curved corners a list in the fight; 63.6 -> 59.5 pictures a
+  second unpaced.  The cost is on Godot's main thread: at 3024 x 1701 paced it was not measured again.
+- How it looks: a little more shape and a lighter edge; textures crisper; the silhouettes rounder at shoulders, heads,
+  tails.  Low-poly hands and feet stay what they are (2 x 2 does not add detail, it rounds).  Before/after pictures are 6
+  frames apart (the idle animation moves a little between them).  `--look models=off` is the sixth round's look.
+- The five characters: the class screen taken 0, 1, 3, 5, 8 times to the right (an Iksar, a Vah Shir, two Barbarians,
+  an Elf); each other tap is lost there, so 1/2, 3/4 ... give the same class (`mkmodels.py`).
+
+### The game's own screens (`test/s2`, `mkscreens.py`)
+
+The sixth round's route never reached the shop: a press on the "More..." page went to the choice page before the
+script pressed "down", and its "cross" then took "End".  Now: cross on "More...", wait for the choice page, down, cross:
+**the shop opens** (Buy / Sell); down and cross open Sell, the bag's grid with "Sell / Back"; back out to the hub (Buy's list itself was not opened by the route).  All
+of it is the game's own screen drawn by Godot in scene mode, pixel-clean.  What is left to say of them: the game's
+full-screen menus are 4:3 and stand between black bars in a 16:9 window (as the game drew them); the 3-D scene is
+not drawn behind them by the game.  Pause: all five entries; the bag: four pages (equipment with an item's card, the
+items, the character sheet - level, experience, health, mana, armour, attack, damage, the four abilities, resistances
+- the quest page).  Nothing drew wrong except the face specks above.
+
+### The seven levels, islc1, storm4 (`test/p1`, `mkprobe.py`; `levels/seven`)
+
+- `blood1`, `bossevil`, `bossgood`, `dis2`: a scripted opening holds the game's camera ("fallback cutscene"); tapped
+  through (cross, start, circle), **the chase view along the ground is there** in each (pictures `*-2-forced.png`), with
+  the presets of the sixth round in force: they look right (dark with torches, the purple sky, the forest at night).
+- `endbad`, `endgood`, `intro`: films of the game's own camera with **no local player** ("fallback no local player",
+  "camera reset"): `endbad` and `endgood` go on to the title, `intro` is the title's own fly-over.  There is no view
+  along the ground to have; the game's camera is right there.
+- `islc1` is in a ground view in the walk now; `storm4` at its last stop.
+
+### The backdrop for arenas (`scene_view.gd` `backdrop`, `shaders/backdrop.gdshader`)
+
+Of 16 arenas walked alone (`levels/arenas`), four put the character where the level is not: `pvpblo`, `pvpblo2`,
+`pvpfire` hold the player at z = -100000 (the arena's own placement waits for a versus game), `pvpfire2` lets him walk
+off its edge and fall.  The drawer now counts the solid draws whose box reaches under the player's feet
+(`get_sky_info().ground_near`); after half a second without any, in a view along the ground, a plane of flagstones is
+laid at the feet (colour from the level's sky, a soft shadow under the character, into the haze), drawn after the sky
+and before every draw of the list; it follows the feet (a falling character stands on it), and goes a second after
+ground is under the feet again.  `pvpinn` and the hub: never shown (`levels/arenas6`, `ground_near` 3..4).
+
+### An export without the game (`build.py export --platform macos|windows|linux`, `project/gamelib.gd`, `fromdisc.py --godot`)
+
+- **What an export holds** (checked by `build.py` after each export: no `librta_game*`, no `levels.cfg`): Godot's
+  official 4.5.2 release template (from the archive of the official release, already here), our extension built for
+  that platform, the project's scripts and shaders.  macOS `RtaGodot.app` 179.8 MB (8 files); Windows `RtaGodot.exe` +
+  `.pck` + `rta_godot.windows.template_release.x86_64.dll` 94.2 MB (MinGW-w64 cross build from this Mac,
+  `extension/cmake/mingw-x86_64.cmake`; it needs only Windows' own DLLs); Linux arm64 63.1 MB (built in the colima `rta`
+  profile, image `rta-godot-linux:arm64` = the Linux build's image with cmake, ninja, git); Linux x86-64 69.6 MB, the same
+  through the container's emulation (`rta-godot-linux:amd64`): it starts and loads the extension (headless, no disc).  The look presets made from the game's pictures (`levels.cfg`) are
+  not in an export (`--with-game` makes the old private export with them and the library).
+- **First start**: the game library is found by `res://gamelib.gd` (used by `main.gd`, the portal's profile and the
+  extension's net2): `--lib`, the one chosen once (`user://settings.cfg [game] library`), beside the extension or the
+  executable, **the installer's per-user place** (macOS `~/Library/Application Support/Open Champions/RTA Godot/`, Linux
+  `$XDG_DATA_HOME/open-champions/rta-godot/`, Windows `%APPDATA%\Open Champions\RTA Godot\`).  The portal's disc screen
+  now has a second state: the disc is there, the library is not - it says the installer builds it and offers to
+  choose it.  `rta_net2.cpp` looked for `.dylib` on Linux too: fixed (`.so`), and it asks `gamelib.gd` first.
+- **The installer**: `tools/install/fromdisc.py --godot` (on by default in `install-mac.command`, `--no-godot` to
+  leave it out): after the native build, `build.py snapshot --refresh` and `lib` into `local/godot-install/`, the
+  library copied to the per-user place; on Linux `tools/godot/build_lib_linux.py --here` (new, by a helper agent:
+  arm64 and x86-64 built and dlopen-tested in the container, 66 exports each).  Windows: no Godot library build yet.
+- **Ran, macOS, from a fresh folder** (`local/fresh-r7/`: the working tree's tracked and new files copied, a HOME of the
+  test's own): `fromdisc.py --platform mac --godot` - the executable out of the disc, the translation, the native
+  program, the Godot library - **about 2.5 minutes**; the clean `RtaGodot.app` then found the library by itself, booted
+  to the title, the hub, valor (`pictures/1-title`, `2-hub`, `3-valor`); and **two copies of the exported application
+  in a room on a local service** (`tools/rendezvous/rendezvous.py` on 127.0.0.1; `room7.py export1` with `ROOM_EXPORT`):
+  friends, invitation, room, the game's character screens, Start, both in the hub, 250 ticks compared, "no shared
+  column differs on any tick" (`test/export1/sheet.jpg`).
+- **Ran, Linux arm64** in the container (Xvfb, Godot's OpenGL renderer on llvmpipe): the clean export with the Linux
+  library in the per-user place: title, hub (`linux-test/sheet.jpg`), 9 pictures a second in software.
+- **Windows: built, not run** (no Windows here).
+
+### Room modes (`portal/screens/room.gd` "Game", `recomp.patch` hunk in `net2/launch.cpp`, `dev/shots.gd` RTA_SHOTS_GAME)
+
+The room has a "Game" choice: Missions / Arena / Versus 5 / Versus 10 / Versus 25 (`net2_options.mode` 0, 1, 2 and
+`kill_limit`).  The library's direct launch wrote 0 into the settings block's mode, mission and kill-limit bytes; the
+hunk writes the room's (+3 mode, +4 mission for missions, +5 the kill limit's entry 0/1/2 - that the byte is the entry
+and not the number is not checked).  **Ran** (`room7.py arena1` / `arena2`, two Godot portals, local service): Arena ->
+the game loads `pvparena` and says "Wave 1"; Versus 5 -> `pvparena`, "Fight!", the two players marked friend and foe;
+both in step (223 and 235 ticks compared, no shared column differs).  The choices fit four in a row now (`Choice.narrow`).
+
+### A character from a memory card (`portal/memcard.gd`, `screens/characters.gd` "From a memory card")
+
+The characters screen has a card "From a memory card": a PCSX2 memory card file (`.ps2`, with or without the 16
+bytes of error correction a page) or a folder of save directories; the directories of this game (`BASLUS-20973*`) and
+of the first game (`BASLUS-20565*`, which the game's own Import lists) are copied into the copy's card folder
+(`DATA/card/mc0/`), then the game's own character screen opens, where Import (triangle) takes one.  **Ran**: the reader
+on a card file made by the test (`test/memcard/mkcard.py`: the card's file system with made-up files, a 5,000-byte file
+over five clusters): both of the game's folders taken, the other left, every byte equal.  **Not run**: a real card
+(none here) and the import itself - no card here holds a saved character (a save needs a save point: the autosave
+fills the buffer only, docs/audio-save.md), and the scripted runs make new characters.
+
+### Files changed this round (tracked)
+
+`tools/godot/build.py` (extension and export per platform, the clean export and its check), `extension/src/rta_scene.cpp`,
+`rta_drawer.cpp`, `rta_variant.h`, `rta_net2.cpp`, `extension/cmake/mingw-x86_64.cmake` (new), `project/shaders/gs_draw.gdshaderinc`,
+`project/shaders/backdrop.gdshader` (new), `project/scene_view.gd`, `project/main.gd`, `project/gamelib.gd` (new),
+`project/rta_godot.gdextension`, `project/export_presets.cfg`, `project/portal/{portal,profile,widgets}.gd`,
+`project/portal/memcard.gd` (new), `project/portal/screens/{characters,disc,first,home,room}.gd`, `project/portal/dev/shots.gd`,
+`recomp.patch`, `build_lib_linux.py` and `lib/gl_offscreen_linux.cpp` (new, the helper agent), `tools/install/fromdisc.py`,
+`tools/install/install-mac.command`, this file, `native-hud.md`, `native-portal.md`.  Nothing in `tools/recomp`.
+
+### For the coordinator (tools/recomp)
+
+- Merge `tools/godot/recomp.patch` (net2/launch.cpp: the room's mode, mission, kill limit into the settings block).
+
+### Still wrong / not done
+
+- PN curving costs about 3 ms of Godot's main thread a list in a fight (6.1 against 2.98); not measured paced at full
+  resolution.  It could move to the drawer's own thread, or be kept for meshes whose pose did not change.
+- The kill limit's byte: entry or number - not checked (a versus game was not played to its end).
+- A real memory card and the import: not run (above).  Windows: built only.  Linux x86-64: built, started headless only (no game run under emulation).
+- The 4:3 full-screen menus between black bars in 16:9 (the game's own); nothing behind them.
+- The look presets are not in a clean export (made from the game's pictures): a player's export uses the defaults and
+  `tuning.cfg`; the installer could make them (`presets.py walk` + `make`, about half an hour) - not wired.
+
 ## SIXTH ROUND (2026-10-20): the souls mode in the library and the room, look presets for all 111 levels, the HUD in five views
 
 **Read this first.**  Built into `local/godot-r6/` (`RTA_GODOT_OUT=local/godot-r6`; snapshot of `tools/recomp` taken

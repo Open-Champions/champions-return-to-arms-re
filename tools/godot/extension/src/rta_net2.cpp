@@ -1,6 +1,8 @@
 // rta_net2.cpp - see rta_net2.h.  Records of session.h out as Dictionaries, calls in.
 #include "rta_net2.h"
 #include "rta_library.h"
+#include <godot_cpp/classes/resource.hpp>
+#include <godot_cpp/classes/resource_loader.hpp>
 #include "rta_net2_api.h"
 
 #include <godot_cpp/classes/file_access.hpp>
@@ -28,10 +30,17 @@ static bool rta_net2_resolve(const godot::String& path) {
     using namespace godot;
     RtaLibrary& lib = rta_library();
     if (!lib.loaded) {
-        String file = String("librta_game") + (OS::get_singleton()->get_name() == "Windows" ? ".dll" : ".dylib");
+        String os_name = OS::get_singleton()->get_name();
+        String file = String("librta_game") + (os_name == "Windows" ? ".dll" : (os_name == "macOS" ? ".dylib" : ".so"));
         String exe = OS::get_singleton()->get_executable_path().get_base_dir();
         PackedStringArray candidates;
         if (path.length() > 0) candidates.push_back(path);
+        // where the project's own search finds it (res://gamelib.gd: the one chosen once, the installer's per-user place)
+        Ref<Resource> finder = ResourceLoader::get_singleton()->load("res://gamelib.gd");
+        if (finder.is_valid()) {
+            String found = finder->call("find", path);
+            if (found.length() > 0) candidates.push_back(found);
+        }
         candidates.push_back(ProjectSettings::get_singleton()->globalize_path("res://bin/" + file));
         candidates.push_back(exe.path_join(file));
         candidates.push_back(exe.path_join("../Frameworks/" + file));

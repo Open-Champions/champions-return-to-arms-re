@@ -3,7 +3,12 @@ tools/godot/build.py applies it to its snapshot (`snapshot`), and writes it agai
 up to the first "diff -ru" line - these notes - is kept).  From the workspace root:
     patch -p1 -d tools/recomp --dry-run < tools/godot/recomp.patch
 
-ONE HUNK IN IT (2026-10-13 23:35, the Godot side, docs/issues/native-godot.md "FOURTH ROUND"): net2/launch.cpp - the big
+ONE HUNK IN IT NOW (2026-10-20, the seventh Godot round, docs/issues/native-godot.md): net2/launch.cpp do_launch - the
+room's game mode (net2_options.mode 0 missions, 1 arena co-operative, 2 arena versus), its mission and versus's kill limit
+go into the game's settings block (+3, +4, +5) where its own net menu leaves them; before, +3..+5 were written as 0
+("the arena modes are not wired yet").  For the coordinator to merge into tools/recomp/net2/launch.cpp.
+
+EARLIER: ONE HUNK (2026-10-13 23:35, the Godot side, docs/issues/native-godot.md "FOURTH ROUND"): net2/launch.cpp - the big
 lock is let go around the game's own calls in do_choose / do_launch.  Found in a Godot program running a room through
 RtaNet2: on_tasks held net2impl::big_lock() while do_launch called the game (fn_0019d028), the game reached a vertical
 blank and waited for the host's next step (the library gates every blank, rtag.cpp), and the host - Godot's main thread
@@ -28,3 +33,24 @@ What was in it, and where it is now:
    (Gs::hide_text), app/gfx_rt.cpp (the two wrappers) are in tools/recomp.  A build whose translation lacks the two
    addresses still defines RTA_NO_HUD_TEXT_HOOKS (tools/godot/build.py does so by itself).  The library's switch is
    rtag_set_option("game_hud_text", "off"); the stand-alone program's --game-hud-text off.
+diff -ru recomp.orig/net2/launch.cpp recomp/net2/launch.cpp
+--- recomp.orig/net2/launch.cpp
++++ recomp/net2/launch.cpp
+@@ -221,9 +221,14 @@
+     if (d.my_slot == 0) {
+         // the host's choices travel to the others in the handshake (the game's own way)
+         wr8(A_SETTINGS + 2, (u8)(d.options.difficulty >= 1 && d.options.difficulty <= 4 ? d.options.difficulty : 1));
+-        wr8(A_SETTINGS + 3, 0);                     // play missions; the arena modes are not wired yet
+-        wr8(A_SETTINGS + 4, 0);
+-        wr8(A_SETTINGS + 5, 0);
++        // the game's own three modes (net2_options.mode: 0 play missions, 1 arena co-operative, 2 arena versus), the
++        // mission (mode 0: 0 = from the hub; else the net menu's 1..13) and versus's kill limit, as its net menu
++        // (states 7 to 9, docs/ui.md) leaves them in the settings block: the mode, the entry chosen, the limit's entry
++        const int mode = d.options.mode >= 0 && d.options.mode <= 2 ? d.options.mode : 0;
++        const int limit = d.options.kill_limit >= 25 ? 2 : (d.options.kill_limit >= 10 ? 1 : 0);
++        wr8(A_SETTINGS + 3, (u8)mode);
++        wr8(A_SETTINGS + 4, (u8)(mode == 0 ? (d.options.mission >= 0 && d.options.mission <= 13 ? d.options.mission : 0) : 0));
++        wr8(A_SETTINGS + 5, (u8)(mode == 2 ? limit : 0));
+     }
+     // frontend_startNetGame 0x1e21e0, its branch for "no lobby"
+     wr8(A_LAUNCHING, 1);

@@ -1061,6 +1061,8 @@ func scenario_room5() -> void:
 	if OS.get_environment("RTA_SHOTS_COMBAT") == "souls":
 		if await combat_souls(p):
 			return
+	if OS.has_environment("RTA_SHOTS_GAME"):
+		await game_kind(p, int(OS.get_environment("RTA_SHOTS_GAME")))
 	# the game: characters on its own screens, Start, launch, the hub
 	await until(func() -> bool: return game_phase() == 1 and portal.shown, 300.0)
 	await wait(0.8)
@@ -1082,7 +1084,7 @@ func scenario_room5() -> void:
 		flow_says("start pressed")
 	await until(func() -> bool: return int(portal.session.room().state) >= 3, 300.0)
 	await until(func() -> bool: return game_phase() == 6 and game_tick() >= 90, 180.0)
-	flow_says("in the level")
+	flow_says("in the level " + String(portal.gameflow.status.get("level", "")))
 	await wait(1.0)
 	await shot(p + "08-in-the-hub")
 	var card: Variant = portal.call("character_card")
@@ -1098,6 +1100,27 @@ func scenario_room5() -> void:
 	await fetch("b_done" if role == "a" else "a_done", 300.0)
 	await wait(2.0)
 	flow_says("end")
+
+
+# room5 with RTA_SHOTS_GAME=N: the host picks the N-th entry of the room's "Game" choice (0 missions, 1 arena,
+# 2..4 versus to 5, 10, 25); both wait until the room's options say so
+func game_kind(p: String, index: int) -> void:
+	if portal.current_name() != "room":
+		portal.go("room")
+	await wait(0.8)
+	var mode: int = [0, 1, 2, 2, 2][clampi(index, 0, 4)]
+	if role == "a":
+		await focus_key("game")
+		for k in index:
+			await key(KEY_RIGHT)
+			await wait(0.3)
+		flow_says("game choice pressed %d times" % index)
+	await until(func() -> bool: return int((portal.session.room().get("options", {}) as Dictionary).get("mode", -1)) == mode, 120.0)
+	await wait(0.8)
+	portal.screen.rebuild()
+	await wait(0.4)
+	flow_says("game mode agreed: %s" % str(portal.session.room().get("options", {})))
+	await shot(p + "04e-game-mode")
 
 
 # room5 with RTA_SHOTS_COMBAT=souls: the host picks the souls-style combat mode on the room screen (the "combat" choice);

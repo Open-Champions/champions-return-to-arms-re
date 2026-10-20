@@ -14,6 +14,9 @@
 //   GS_LIT              ... and Godot's sun and lamps decide how much of the game's colour arrives (below)
 //   GS_NORMALS          ... the mesh has the game's own normals      GS_CASTER   a twin that only throws a shadow
 //   GS_NOFOG            ... the haze of atmosphere.gdshaderinc leaves it alone (the game's sky dome)
+//   GS_MODEL            ... a solid model: form light per pixel by the game's own normals, a rim light, a sharper
+//                       texture (rta_model; scene_view.gd "models")
+//   GS_CONTACT          ... a solid piece of the level: darkened under the figures standing on it (rta_contacts)
 //
 // Colours are carried in the GS's units as in tools/recomp/render/backend_gl.cpp, whose
 // fragment shader this follows line for line: 0..255, with 128 = 1.0 for alpha and for the
@@ -101,6 +104,28 @@ uniform float depth_bias = 0.0;                     // toward the camera, in cli
 #include "res://shaders/atmosphere.gdshaderinc"
 varying vec3 v_world;
 varying float v_haze;                               // 0: the surface as it is .. 1: lost in the haze
+#if defined(GS_MODEL) || defined(GS_CONTACT)
+global uniform vec4 rta_model;                      // rim light, form light, texture footprint scale (< 1 sharper), contact shadow
+global uniform vec4 rta_model_rim;                  // rgb: the rim light's colour
+#endif
+#ifdef GS_CONTACT
+global uniform sampler2D rta_contacts : filter_nearest;    // 16 x 1: x, y, z of a standing figure's feet, w its radius (0: no more)
+// what is left of a colour on the ground under the figures: a soft dark patch round each one's feet, as a body takes
+// the light of the sky from what is right under it
+float rta_contact_keep(vec3 p) {
+	float keep = 1.0;
+	for (int i = 0; i < 16; i++) {
+		vec4 c = texelFetch(rta_contacts, ivec2(i, 0), 0);
+		if (c.w <= 0.0) break;
+		float h = p.z - c.z;
+		if (h < -30.0 || h > 30.0) continue;
+		float d = length(p.xy - c.xy) / c.w;
+		float a = (1.0 - smoothstep(0.1, 1.0, d)) * (1.0 - smoothstep(3.0, 24.0, abs(h)));
+		keep *= 1.0 - rta_model.w * a * a;
+	}
+	return keep;
+}
+#endif
 #endif
 #endif
 
@@ -206,7 +231,12 @@ void fragment() {
 #ifdef GS_WORLD
 		// the footprint from the coordinates before they were wrapped: no seam where a wrap jumps
 		vec2 raw = (v_st.xy / v_st.z * st_scale + tex_offset) / tex_size;
+#ifdef GS_MODEL
+		// a model is small on the screen: a smaller footprint keeps its texture's detail (the mip one step finer)
+		vec4 t = textureGrad(tex, uv, dFdx(raw) * rta_model.z, dFdy(raw) * rta_model.z) * 255.0;
+#else
 		vec4 t = textureGrad(tex, uv, dFdx(raw), dFdy(raw)) * 255.0;
+#endif
 #else
 		vec4 t = textureLod(tex, uv, 0.0) * 255.0;
 #endif
@@ -248,6 +278,21 @@ void fragment() {
 	vec3 rgb = clamp(c.rgb / 255.0 * source, 0.0, 1.0);
 	if (mask_rgb > 0.5) { rgb = vec3(0.0); destination = 1.0; }
 	vec3 haze = vec3(0.0);
+#ifdef GS_MODEL
+	{
+		// the game lit the model per vertex; the same normals per pixel give it its form back between them: a soft key
+		// light from where the level's light comes from, and a rim where the surface turns away from the eye
+		vec3 n = normalize(FRONT_FACING ? NORMAL : -NORMAL);
+		vec3 key = normalize((VIEW_MATRIX * vec4(rta_sky_sun.xyz, 0.0)).xyz);
+		float wrap = clamp(dot(n, key) * 0.5 + 0.5, 0.0, 1.0);
+		rgb *= mix(1.0, 0.8 + 0.34 * wrap * wrap, rta_model.y);
+		float rim = pow(1.0 - clamp(abs(dot(n, VIEW)), 0.0, 1.0), 3.0);
+		rgb = min(rgb + rta_model_rim.rgb * rim * rta_model.x * (0.35 + 0.65 * wrap), vec3(1.0));
+	}
+#endif
+#ifdef GS_CONTACT
+	rgb *= rta_contact_keep(v_world);
+#endif
 #ifdef GS_WORLD
 	vec3 to_surface = v_world - CAMERA_POSITION_WORLD;
 	float dist = length(to_surface);

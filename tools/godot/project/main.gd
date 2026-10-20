@@ -14,7 +14,8 @@ extends Node
 #   --disc IMAGE        your disc image of SLUS-20973 v2.00 (or $RTA_DISC; else a file dialog asks once)
 #   --data DIR          memory cards (default: user://data)
 #   --workspace DIR     where SLUS_209.73, names.tsv and symbols/ are (names for scripts); optional
-#   --lib FILE          the game library (default: librta_game beside the extension in bin/)
+#   --lib FILE          the game library (default: res://gamelib.gd - beside the extension in bin/, beside the program,
+#                       the installer's per-user place; the first start of an export asks once)
 #   --mode picture|draw|scene      (default picture)
 #   --size WxH          the size the picture is drawn at (default: the window's own pixels)
 #   --window WxH        the window's size in points
@@ -324,18 +325,32 @@ func _ask_for_disc() -> void:
 
 
 func _library_path() -> String:
-	if opt.lib != "" and opt.lib.contains("/"):
-		return opt.lib
-	var name: String = opt.lib if opt.lib != "" else "librta_game"
-	var file := name + (".dll" if OS.get_name() == "Windows" else ".dylib")
-	# beside the extension: res://bin in the project, the application's own folder when exported
-	var candidates := [ProjectSettings.globalize_path("res://bin/" + file), OS.get_executable_path().get_base_dir().path_join(file),
-		OS.get_executable_path().get_base_dir().path_join("../Frameworks/" + file),
-		OS.get_executable_path().get_base_dir().path_join("../Resources/" + file)]
-	for path in candidates:
-		if FileAccess.file_exists(path):
-			return path
-	return candidates[0]
+	# res://gamelib.gd: --lib, the one chosen once, beside the extension / the executable, the installer's per-user place
+	var Lib: GDScript = load("res://gamelib.gd")
+	return Lib.find(String(opt.lib))
+
+
+func _ask_for_library() -> void:
+	# the first start of an exported application: the game library is made by the installer from the player's disc
+	var Lib: GDScript = load("res://gamelib.gd")
+	message = "The game library is not on this computer yet.\n" + String(Lib.explain())
+	view.set("message", message)
+	printerr("rta_godot: no game library: " + ", ".join(Lib.candidates(String(opt.lib))))
+	if opt.test != "" or DisplayServer.get_name() == "headless":
+		get_tree().quit(2)
+		return
+	var dialog := FileDialog.new()
+	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	dialog.access = FileDialog.ACCESS_FILESYSTEM
+	dialog.use_native_dialog = true
+	dialog.title = "The game library the installer built from your disc (%s)" % Lib.file_name()
+	dialog.filters = PackedStringArray(["*.dylib, *.so, *.dll ; Game library"])
+	dialog.file_selected.connect(func(path: String) -> void:
+		Lib.save(path)
+		opt.lib = path
+		_start())
+	add_child(dialog)
+	dialog.popup_centered_ratio(0.7)
 
 
 func _picture_size() -> Vector2i:
@@ -355,8 +370,11 @@ func _start() -> void:
 	if not ClassDB.class_exists("RtaMachine"):
 		_cannot_start("The extension is not there (bin/rta_godot...): python3 tools/godot/build.py all")
 		return
-	machine = RtaMachine.new()
 	var library := _library_path()
+	if library == "":
+		_ask_for_library()
+		return
+	machine = RtaMachine.new()
 	if not machine.load_library(library):
 		_cannot_start("Cannot load the game library %s:\n%s\n(python3 tools/godot/build.py lib)" % [library, machine.get_error()])
 		return

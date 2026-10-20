@@ -689,7 +689,7 @@ func notice_answer(id: String, accept: bool) -> void:
 # ---- things several screens do -------------------------------------------------------------
 func need_disc() -> bool:
 	# true: the disc image is not there yet and the player has been taken to the screen that says so
-	if profile.disc_found() or bool(options.stub_game):
+	if profile.game_ready() or bool(options.stub_game):
 		return false
 	go("disc")
 	return true
@@ -788,6 +788,26 @@ func choose_disc(done: Callable) -> void:
 	dialog.filters = PackedStringArray(["*.iso ; Disc images"])
 	dialog.file_selected.connect(func(path: String) -> void:
 		profile.set_disc_path(path)
+		dialog.queue_free()
+		done.call())
+	dialog.canceled.connect(dialog.queue_free)
+	add_child(dialog)
+	dialog.popup_centered_ratio(0.7)
+
+
+func choose_library(done: Callable) -> void:
+	if test_mode() or DisplayServer.get_name() == "headless":
+		toast("A test never opens a file dialog", "info")
+		return
+	var Lib: GDScript = load("res://gamelib.gd")
+	var dialog := FileDialog.new()
+	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	dialog.access = FileDialog.ACCESS_FILESYSTEM
+	dialog.use_native_dialog = true
+	dialog.title = "The game library built from your disc (%s)" % Lib.file_name()
+	dialog.filters = PackedStringArray(["*.dylib, *.so, *.dll ; Game library"])
+	dialog.file_selected.connect(func(path: String) -> void:
+		Lib.save(path)
 		dialog.queue_free()
 		done.call())
 	dialog.canceled.connect(dialog.queue_free)

@@ -6,19 +6,21 @@
 #   2. asks for your disc image (.iso) of the US release, SLUS-20973 v2.00;
 #   3. copies SLUS_209.73 out of it, translates the game's code to C++ and builds the program
 #      (tools/install/fromdisc.py; 10 to 30 minutes);
-#   4. puts "Champions RTA Native" on your desktop.
+#   4. puts "Champions RTA Native" on your desktop;
+#   5. builds the game library of the Godot application from the same translation (--no-godot: not).
 # Nothing of the game comes with this repository and nothing of yours leaves this Mac: the disc image is
 # read here and the program is built here, into this folder's local/ (never share that folder).
-# Options for a terminal:  install-mac.command [--disc FILE] [--desktop DIR] [--yes]
+# Options for a terminal:  install-mac.command [--disc FILE] [--desktop DIR] [--yes] [--no-godot]
 set -u
 cd "$(dirname "$0")/../.." || exit 1
 WORK=$PWD
-DISC=""; DESKTOP=""; YES=0
+DISC=""; DESKTOP=""; YES=0; GODOT=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --disc) DISC=$2; shift 2;;
     --desktop) DESKTOP=$2; shift 2;;
     --yes) YES=1; shift;;
+    --no-godot) GODOT=0; shift;;
     *) echo "unknown option $1"; exit 2;;
   esac
 done
@@ -75,8 +77,9 @@ fi
 say "Building (10 to 30 minutes; the Mac stays usable - the compiler runs at a lower priority)"
 ARGS=(--platform mac --disc "$DISC")
 [ -n "$DESKTOP" ] && ARGS+=(--desktop "$DESKTOP")
+[ $GODOT = 1 ] && ARGS+=(--godot)
 if nice -n 10 "$PY" -B tools/install/fromdisc.py "${ARGS[@]}"; then
-  finish "Done. Start the game with \"Champions RTA Native\" on your desktop (the log is in local/recomp-out/app-data/rta_app-log.txt)."
+  finish "Done. Start the game with \"Champions RTA Native\" on your desktop (the log is in local/recomp-out/app-data/rta_app-log.txt); the Godot application (RtaGodot.app) finds its game library by itself."
 else
   finish "The build did not finish; the lines above say why." 1
 fi

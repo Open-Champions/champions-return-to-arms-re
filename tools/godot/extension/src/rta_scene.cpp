@@ -101,6 +101,26 @@ struct RtaDrawer::Scene {
     RID kept_mesh;                      // ... and the kept mesh it found
     AABB kept_box;
     double ambient = 1.0, pull_back = 1.0, orbit = 0.0, raise = 0.0, focus = 390.0;
+    // Cleaner models (the owner: "cleaner models"): what Godot does to the game's models without changing a thing the
+    // game computes.  model_look: solid model draws take the variant GS_MODEL (per-pixel form light by the game's own
+    // normals, a rim light, a sharper texture: shaders/gs_draw.gdshaderinc); model_smooth N: every triangle of a
+    // skinned model (a character, a creature) is made N x N curved triangles (PN triangles, Vlachos et al. 2001: a
+    // cubic patch through the corners that follows the normals there), on the CPU as the mesh is built; the normals the
+    // curve follows are welded over the frame (all skinned packets' corners at one point share one normal: no cracks
+    // between triangles or between a body's packets), and an edge whose two normals part by more than model_crease
+    // (cosine) is left straight (a hard edge stays hard).  contacts: the frame's standing figures (skinned models'
+    // feet), handed to scene_view.gd for the contact shadows on the level (GS_CONTACT).
+    bool model_look = true;
+    int model_smooth = 2;
+    double model_crease = 0.35;
+    double model_near = 520.0;          // curved only within this distance of the eye (units; a character is about 65 high)
+    bool contacts_on = true;
+    std::unordered_map<uint64_t, Vector3> weld;     // this frame: quantised position -> sum of the skinned packets' normals there
+    std::vector<float> contacts;                    // this frame: x, y, z (feet), radius per standing figure
+    uint64_t smoothed_draws = 0, smoothed_corners = 0, model_draws = 0;
+    int level_draws = 0, level_draws_last = 0;      // this frame / the last whole frame: draws of the level's own chunks
+    int ground_near = 0, ground_near_last = 0;      // ... of them, those whose box reaches under the player's feet
+    Vector3 feet;                                   // where the player stands (scene_view.gd: options feet_x, feet_y, feet_z)
     // this frame
     bool valid = false;
     const rtag_scene* tap = nullptr;
@@ -134,7 +154,124 @@ void RtaDrawer::set_scene_option(const String& name, double value) {
     else if (name == "sky") scene->sky = value != 0;
     else if (name == "near_fade") scene->near_fade = value != 0;
     else if (name == "keep") scene->keep = value != 0;
+    else if (name == "model_look") scene->model_look = value != 0;
+    else if (name == "model_smooth") scene->model_smooth = std::max(1, std::min(4, (int)value));
+    else if (name == "model_crease") scene->model_crease = value;
+    else if (name == "model_near") scene->model_near = value;
+    else if (name == "contacts") scene->contacts_on = value != 0;
+    else if (name == "feet_x") scene->feet.x = (real_t)value;
+    else if (name == "feet_y") scene->feet.y = (real_t)value;
+    else if (name == "feet_z") scene->feet.z = (real_t)value;
 }
+
+// ---- cleaner models ---------------------------------------------------------------------------------------------------
+static inline uint64_t weld_key(float x, float y, float z) {
+    uint64_t a = (uint32_t)(int32_t)lrintf(x * 8.0f), b = (uint32_t)(int32_t)lrintf(y * 8.0f), c = (uint32_t)(int32_t)lrintf(z * 8.0f);
+    uint64_t h = a * 0x9E3779B97F4A7C15ull;
+    h = (h ^ (h >> 31) ^ b) * 0xBF58476D1CE4E5B9ull;
+    h = (h ^ (h >> 29) ^ c) * 0x94D049BB133111EBull;
+    return h ^ (h >> 32);
+}
+
+// The welded normals and the standing figures of this frame: one pass over the skinned packets of the tap.
+static void scene_models_scan(const rtag_scene* tap, std::unordered_map<uint64_t, Vector3>& weld, std::vector<float>& contacts, bool want_weld) {
+    weld.clear();
+    if (want_weld) weld.reserve(1 << 15);
+    contacts.clear();
+    struct Box { float lo[3], hi[3]; uint32_t object; };
+    std::vector<Box> boxes;
+    for (uint32_t k = 0; k < tap->piece_count; k++) {
+        const rtag_scene_piece& piece = tap->pieces[k];
+        if (piece.kind != 2 || !(piece.flags & 4) || !piece.full_count || piece.full_first + piece.full_count > tap->full_count) continue;
+        const rtag_scene_full* v = tap->full + piece.full_first;
+        Box b = {{v->x, v->y, v->z}, {v->x, v->y, v->z}, piece.object};
+        for (uint32_t n = 0; n < piece.full_count; n++, v++) {
+            if (want_weld) weld[weld_key(v->x, v->y, v->z)] += Vector3(v->nx, v->ny, v->nz);
+            b.lo[0] = std::min(b.lo[0], v->x); b.lo[1] = std::min(b.lo[1], v->y); b.lo[2] = std::min(b.lo[2], v->z);
+            b.hi[0] = std::max(b.hi[0], v->x); b.hi[1] = std::max(b.hi[1], v->y); b.hi[2] = std::max(b.hi[2], v->z);
+        }
+        if (!boxes.empty() && boxes.back().object == piece.object) {
+            Box& o = boxes.back();
+            for (int a = 0; a < 3; a++) { o.lo[a] = std::min(o.lo[a], b.lo[a]); o.hi[a] = std::max(o.hi[a], b.hi[a]); }
+        } else boxes.push_back(b);
+    }
+    // the pieces of one figure (body, head, what it wears) are objects of their own: boxes whose middles are near merge
+    std::vector<Box> figures;
+    for (const Box& b : boxes) {
+        float cx = (b.lo[0] + b.hi[0]) * 0.5f, cy = (b.lo[1] + b.hi[1]) * 0.5f;
+        bool merged = false;
+        for (Box& f : figures) {
+            float fx = (f.lo[0] + f.hi[0]) * 0.5f, fy = (f.lo[1] + f.hi[1]) * 0.5f;
+            if (std::fabs(fx - cx) < 24.0f && std::fabs(fy - cy) < 24.0f && b.lo[2] < f.hi[2] + 8.0f && b.hi[2] > f.lo[2] - 8.0f) {
+                for (int a = 0; a < 3; a++) { f.lo[a] = std::min(f.lo[a], b.lo[a]); f.hi[a] = std::max(f.hi[a], b.hi[a]); }
+                merged = true;
+                break;
+            }
+        }
+        if (!merged) figures.push_back(b);
+    }
+    for (const Box& f : figures) {
+        float h = f.hi[2] - f.lo[2], wx = f.hi[0] - f.lo[0], wy = f.hi[1] - f.lo[1];
+        if (h < 6.0f || wx > 400.0f || wy > 400.0f) continue;        // a flat thing, or something as large as a room
+        float r = std::max(10.0f, std::min(60.0f, 0.5f * std::max(wx, wy) * 0.8f + 4.0f));
+        contacts.push_back((f.lo[0] + f.hi[0]) * 0.5f);
+        contacts.push_back((f.lo[1] + f.hi[1]) * 0.5f);
+        contacts.push_back(f.lo[2]);
+        contacts.push_back(r);
+        if (contacts.size() >= 16 * 4) break;
+    }
+}
+
+// One triangle of a skinned model as n x n PN triangles: corners c[0..2], welded normals wn[0..2] (unit or zero).
+// Writes n*n*3 corners: positions (12 bytes each) and attributes (stride 32: colour, s, t, 1, 1, normal).
+static void pn_triangle(const rtag_scene_full* c[3], const Vector3 wn[3], int n, double crease, uint8_t*& p, uint8_t*& a) {
+    Vector3 P[3], N[3];
+    for (int i = 0; i < 3; i++) { P[i] = Vector3(c[i]->x, c[i]->y, c[i]->z); N[i] = wn[i]; }
+    // the edge's two inner control points; straight where the normals part (a hard edge) or one is missing
+    auto inner = [&](int i, int j) {
+        bool curved = N[i].length_squared() > 0.25f && N[j].length_squared() > 0.25f && N[i].dot(N[j]) >= (real_t)crease;
+        if (!curved) return (P[i] * 2 + P[j]) / 3;
+        real_t w = (P[j] - P[i]).dot(N[i]);
+        return (P[i] * 2 + P[j] - N[i] * w) / 3;
+    };
+    Vector3 b210 = inner(0, 1), b120 = inner(1, 0), b021 = inner(1, 2), b012 = inner(2, 1), b102 = inner(2, 0), b201 = inner(0, 2);
+    Vector3 E = (b210 + b120 + b021 + b012 + b102 + b201) / 6, V = (P[0] + P[1] + P[2]) / 3;
+    Vector3 b111 = E + (E - V) / 2;
+    // the patch's points once each ((n + 1)(n + 2) / 2 of them), then the triangles from them
+    struct Point { float pos[3]; uint8_t rgba[4]; float st[4]; float nf[3]; };
+    Point grid[15];                     // n <= 4
+    auto at = [n](int i, int j) { return i * (n + 1) - i * (i - 1) / 2 + j; };
+    const uint8_t* c0 = &c[0]->r; const uint8_t* c1 = &c[1]->r; const uint8_t* c2 = &c[2]->r;
+    for (int i = 0; i <= n; i++)
+        for (int j = 0; j <= n - i; j++) {
+            // barycentric: u toward c[1], v toward c[2], w toward c[0]
+            float u = (float)i / n, v = (float)j / n, w = 1.0f - u - v;
+            Point& g = grid[at(i, j)];
+            Vector3 q = P[0] * (w * w * w) + P[1] * (u * u * u) + P[2] * (v * v * v) + b210 * (3 * w * w * u) + b120 * (3 * w * u * u) +
+                        b201 * (3 * w * w * v) + b021 * (3 * u * u * v) + b102 * (3 * w * v * v) + b012 * (3 * u * v * v) + b111 * (6 * w * u * v);
+            g.pos[0] = (float)q.x; g.pos[1] = (float)q.y; g.pos[2] = (float)q.z;
+            for (int k = 0; k < 4; k++) g.rgba[k] = (uint8_t)std::min(255.0f, std::max(0.0f, c0[k] * w + c1[k] * u + c2[k] * v + 0.5f));
+            g.st[0] = c[0]->u * w + c[1]->u * u + c[2]->u * v; g.st[1] = c[0]->v * w + c[1]->v * u + c[2]->v * v; g.st[2] = 1.0f; g.st[3] = 1.0f;
+            Vector3 nn = Vector3(c[0]->nx, c[0]->ny, c[0]->nz) * w + Vector3(c[1]->nx, c[1]->ny, c[1]->nz) * u + Vector3(c[2]->nx, c[2]->ny, c[2]->nz) * v;
+            if (nn.length_squared() > 1e-12f) nn.normalize();
+            g.nf[0] = (float)nn.x; g.nf[1] = (float)nn.y; g.nf[2] = (float)nn.z;
+        }
+    auto corner = [&](int i, int j) {
+        const Point& g = grid[at(i, j)];
+        memcpy(p, g.pos, 12);
+        memcpy(a, g.rgba, 4);
+        memcpy(a + 4, g.st, 16);
+        memcpy(a + 20, g.nf, 12);
+        p += 12;
+        a += 32;
+    };
+    for (int i = 0; i < n; i++)
+        for (int j = 0; j < n - i; j++) {
+            corner(i, j); corner(i + 1, j); corner(i, j + 1);
+            if (i + j < n - 1) { corner(i + 1, j); corner(i + 1, j + 1); corner(i, j + 1); }
+        }
+}
+
 
 void RtaDrawer::sky_reset() {
     if (!scene) return;
@@ -156,6 +293,12 @@ Dictionary RtaDrawer::get_sky_info() const {
     if (!scene) return info;
     const Scene& sc = *scene;
     info["active"] = sc.sky_active;
+    PackedFloat32Array contacts;
+    contacts.resize((int64_t)sc.contacts.size());
+    for (size_t k = 0; k < sc.contacts.size(); k++) contacts.set((int64_t)k, sc.contacts[k]);
+    info["contacts"] = contacts;
+    info["level_draws"] = sc.level_draws_last;
+    info["ground_near"] = sc.ground_near_last;
     info["have_clear"] = sc.have_clear;
     info["clear"] = Color(sc.clear[0], sc.clear[1], sc.clear[2]);
     info["dome"] = sc.dome;
@@ -446,6 +589,8 @@ Dictionary RtaDrawer::get_scene_info() const {
                               (int64_t)scene->frames_without_camera, scene->world_draws / n, scene->world_vertices / n, scene->exact_draws / n, scene->packet_draws / n,
                               (double)scene->packet_extra / n, scene->flat_draws / n, scene->blob_shadows_dropped / n, scene->fills_dropped / n, scene->dome_draws / n,
                               scene->near_faded / n, scene->kept_hits / n, scene->kept_corners / n, scene->kept_misses / n, scene->kept_updates / n, (int64_t)scene->kept.size());
+    info["figures"] = String(info["figures"]) + vformat("; models: %.1f solid model draws a list in the cleaner look, %.1f of them curved (%d x %d), %.0f curved corners a list",
+                              scene->model_draws / n, scene->smoothed_draws / n, (int64_t)scene->model_smooth, (int64_t)scene->model_smooth, scene->smoothed_corners / n);
     return info;
 }
 
@@ -460,10 +605,17 @@ void RtaDrawer::scene_begin(const rtag_frame& f) {
     sc.sky_active = false;
     sc.fill_draw = -1;
     sc.is_dome.clear();
+    sc.contacts.clear();
+    sc.level_draws_last = sc.level_draws;
+    sc.level_draws = 0;
+    sc.ground_near_last = sc.ground_near;
+    sc.ground_near = 0;
     Target* world = world_target();
     if (!sc.valid || !world) { if (!sc.valid) sc.frames_without_camera++; return; }
     scene_scan_sky(f, *world);
     sc.sky_active = sc.sky && sc.fill_draw >= 0;
+    if (sc.packets && f.scene->full && (sc.model_smooth > 1 || sc.contacts_on)) scene_models_scan(f.scene, sc.weld, sc.contacts, sc.model_look && sc.model_smooth > 1);
+    else { sc.weld.clear(); sc.contacts.clear(); }
     Pass* pass = world->passes[0];
     // The game's camera space is x right, y down, z forward; Godot's is x right, y up, z back.  world_to_view's
     // rows are the camera's axes in the world.
@@ -509,6 +661,7 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     if (sc.shadows && d.tex_is_target && d.scene_kind == RTAG_SCENE_DEPTH && d.blend) { sc.blob_shadows_dropped++; return true; }
     const bool normals = d.scene_kind == RTAG_SCENE_EXACT && sc.tap->normals != nullptr;
     const int stride = normals ? 32 : 20;
+    bool model = false;
     sc.kept_key = 0;
     sc.kept_mesh = RID();
     PackedByteArray positions, attributes;
@@ -517,7 +670,21 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
         // The packets' own geometry: every triangle of every strip drawn with this state - the list's triangles and the
         // ones the game's vertex programs dropped whole near the eye (Godot clips them as triangles should be clipped).
         const rtag_scene_piece* pieces = sc.tap->pieces + d.scene_piece_first;
-        for (uint32_t k = 0; k < d.scene_piece_count; k++) corners += (int)pieces[k].full_count;
+        // a solid model: the cleaner look, and its skinned packets curved (PN triangles, see Scene::model_smooth)
+        const bool dome_draw = index < sc.is_dome.size() && sc.is_dome[index];
+        // the curve is the packet's, whatever the draw's state: a two-pass model's second pass (blended, no depth write)
+        // must lie exactly on its first, or the two fight in the depth buffer (seen: a face in specks)
+        const bool any_model = sc.model_look && pieces[0].kind == 2 && !dome_draw;
+        model = any_model && d.depth_write && (!d.blend || d.alpha_test);
+        int smooth = any_model && !sc.weld.empty() ? sc.model_smooth : 1;
+        if (smooth > 1 && pieces[0].full_count && pieces[0].full_first < sc.tap->full_count) {
+            // only near the eye: far away a figure is a few dozen pixels high and its curve costs what it does near
+            const rtag_scene_full& v0 = sc.tap->full[pieces[0].full_first];
+            if (Vector3(v0.x, v0.y, v0.z).distance_to(sc.camera.origin) > (real_t)sc.model_near) smooth = 1;
+        }
+        auto curved = [&](const rtag_scene_piece& piece) { return smooth > 1 && (piece.flags & 4) && piece.full_count % 3 == 0; };
+        for (uint32_t k = 0; k < d.scene_piece_count; k++) corners += (int)pieces[k].full_count * (curved(pieces[k]) ? smooth * smooth : 1);
+        if (model) sc.model_draws++;
         if (sc.keep) {
             // a figure over the packets as they are this frame: their identity, the colours the game lit them with and their
             // texels exactly, their positions to 1/16 unit (the tap takes them back through the camera of the frame, so they
@@ -536,6 +703,7 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
                     mix(h[2], ((uint64_t)(uint32_t)lrintf(v->x * 16.0f) << 32) | (uint32_t)lrintf(v->y * 16.0f));
                 }
             }
+            mix(h[3], (uint64_t)smooth * 0x51ED27u + (any_model ? 7 : 0));
             sc.kept_key = (h[0] ^ (h[1] * 3) ^ (h[2] * 5) ^ (h[3] * 7) ^ ((uint64_t)corners << 40)) | 1;
             uint64_t id = 0xA24BAED4963EE407ull ^ ((uint64_t)corners << 32) ^ (normals ? 1 : 0);
             for (uint32_t k = 0; k < d.scene_piece_count; k++) {
@@ -561,6 +729,19 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
         uint8_t* a = attributes.ptrw();
         for (uint32_t k = 0; k < d.scene_piece_count; k++) {
             const rtag_scene_full* v = sc.tap->full + pieces[k].full_first;
+            if (curved(pieces[k])) {
+                for (uint32_t n = 0; n < pieces[k].full_count; n += 3) {
+                    const rtag_scene_full* c[3] = {v + n, v + n + 1, v + n + 2};
+                    Vector3 wn[3];
+                    for (int i = 0; i < 3; i++) {
+                        auto w = sc.weld.find(weld_key(c[i]->x, c[i]->y, c[i]->z));
+                        wn[i] = w != sc.weld.end() && w->second.length_squared() > 1e-8f ? w->second.normalized() : Vector3(c[i]->nx, c[i]->ny, c[i]->nz);
+                    }
+                    pn_triangle(c, wn, smooth, sc.model_crease, p, a);
+                }
+                sc.smoothed_corners += pieces[k].full_count * smooth * smooth;
+                continue;
+            }
             for (uint32_t n = 0; n < pieces[k].full_count; n++, v++, p += 12, a += stride) {
                 memcpy(p, &v->x, 12);
                 memcpy(a, &v->r, 4);
@@ -570,8 +751,10 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
             }
         }
         }
+        if (smooth > 1) sc.smoothed_draws++;
         sc.packet_draws++;
         sc.packet_extra += corners - (int)d.count;
+        if (pieces[0].kind == 1) sc.level_draws++;
         if (pieces[0].kind == 1) fill_learn(sc.tap, d, pieces, d.scene_piece_count, sc.camera.origin);
         else card_take(sc.tap, d, pieces, d.scene_piece_count);   // the character card (rta_card.cpp)
         // the painted light (see Scene::sun_sum): level chunks with a texture whose brightness is known
@@ -652,6 +835,13 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
             add_surface_bytes(mesh, RenderingServer::PRIMITIVE_TRIANGLES, positions, attributes, corners, normals, &box);
         }
     }
+    // the level under the player's feet (scene_view.gd's backdrop, for a level that has none there)
+    // (any solid draw that is not a model's: the level is drawn in packets, and in places through the CPU's own projection)
+    if (d.depth_write && !(d.scene_piece_count && sc.tap->pieces[d.scene_piece_first].kind == 2)) {
+        const Vector3 lo = box.position, hi = box.position + box.size;
+        if (sc.feet.x > lo.x - 60 && sc.feet.x < hi.x + 60 && sc.feet.y > lo.y - 60 && sc.feet.y < hi.y + 60 && sc.feet.z > lo.z - 80 && sc.feet.z < hi.z + 400)
+            sc.ground_near++;
+    }
     // Godot's light falls on what is solid (writes depth); glows, the dome, decals and what else is laid over the scene
     // keep the game's colours.  The dome is not hazed; camera-facing sprites fade as they come up to the eye.
     const bool is_dome = index < sc.is_dome.size() && sc.is_dome[index];
@@ -659,7 +849,10 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
                         // ... and the level's cut-out cards (foliage): alpha-tested chunks, thinned out near the eye
                         (sc.near_fade && normals && d.alpha_test && d.depth_write && d.scene_piece_count && sc.tap->pieces[d.scene_piece_first].kind == 1);
     if (sprite) sc.near_faded++;
-    uint32_t extra = V_WORLD | (sc.lit && d.depth_write ? V_LIT : 0) | (normals ? V_NORMALS : 0) | (is_dome ? V_NOFOG : 0) | (sprite ? V_NEARFADE : 0);
+    // the level's solid pieces take the contact shadows of the figures standing on them
+    const bool ground = sc.contacts_on && normals && d.depth_write && !is_dome && d.scene_piece_count && sc.tap->pieces[d.scene_piece_first].kind == 1;
+    uint32_t extra = V_WORLD | (sc.lit && d.depth_write ? V_LIT : 0) | (normals ? V_NORMALS : 0) | (is_dome ? V_NOFOG : 0) | (sprite ? V_NEARFADE : 0) |
+                     (model ? V_MODEL : 0) | (ground ? V_CONTACT : 0);
     if (normals) sc.exact_draws++;
     if (sc.kept_key) place_mesh(pass, mesh, material_for(d, target, false, texture, false, extra), order);
     else place(pass, material_for(d, target, false, texture, false, extra), order);

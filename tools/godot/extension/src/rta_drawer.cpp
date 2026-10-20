@@ -133,6 +133,8 @@ RID RtaDrawer::shader_for(uint32_t variant) {
     if (variant & V_NORMALS) code += "#define GS_NORMALS\n";
     if (variant & V_NOFOG) code += "#define GS_NOFOG\n";
     if (variant & V_NEARFADE) code += "#define GS_NEARFADE\n";
+    if (variant & V_MODEL) code += "#define GS_MODEL\n";
+    if (variant & V_CONTACT) code += "#define GS_CONTACT\n";
     if (stored_colours) code += "#define GS_STORED_COLOURS\n";
     code += shader_code;
     Ref<Shader> shader;

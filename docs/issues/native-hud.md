@@ -12,6 +12,16 @@ the game's memory while it runs. No game art, no game font: every shape is drawn
 the font is the one inside Godot (Open Sans, SIL Open Font License). Pictures, memory
 images, routes, logs and the test tones are under `local/godot-hud/`.
 
+## STATE (2026-10-20, later): the shop reached
+
+Seventh Godot round (`native-godot.md`, SEVENTH ROUND; `local/godot-r7/test/s2`, route `mkscreens.py`): with the new
+HUD in "new" mode, chase and overhead views - the dialogue's "More..." page, its choice page (End / Enter Shop), **Enter
+Shop**, the shop's Buy / Sell page, Sell's grid of the bag, out again to the hub; the pause menu with its cursor on each
+of the five entries; the bag's four pages (equipment with an item's card, items, the character sheet, quests).  The
+sixth round's script lost the choice because a press on "More..." already brought the choice page up.  All of it is
+the game's own screen, whole.  The full-screen menus are 4:3 between black bars in a 16:9 window, as the game draws
+them.  Still not seen: Buy's list, a dialogue in first person.
+
 ## STATE (2026-10-20): the five views, the souls mode, the game's own screens
 
 Built in `local/godot-r6/` (the sixth Godot round, `native-godot.md`). **Ran** with Godot's own window capture

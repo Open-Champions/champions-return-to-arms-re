@@ -17,7 +17,12 @@ translated here, from the executable on the player's own disc.
   3. runs the platform's build: tools/recomp/app/build.py (macOS), build_linux.py (Linux),
      build_win.py (Windows) - the translation (recomp.py) and the compile;
   4. writes local/install.txt (where the disc image is and which program to start) and a
-     launcher on the desktop.
+     launcher on the desktop;
+  5. (--godot) the game library of the Godot application (tools/godot/build.py snapshot + lib, macOS;
+     tools/godot/build_lib_linux.py on Linux) from the same translation, put where the Godot
+     application looks for it (tools/godot/project/gamelib.gd): macOS ~/Library/Application Support/
+     Open Champions/RTA Godot/, Linux ~/.local/share/open-champions/rta-godot/.  The Godot application
+     itself holds only our code; this library is the game, made here, and stays on this computer.
 
 Everything made from the game (the executable, the translation, objects, programs, the
 player's data) stays under this workspace's local/ folder and SLUS_209.73 at its top, both
@@ -145,6 +150,53 @@ def build(target, jobs):
     return program
 
 
+# ---- the Godot application's game library ------------------------------------------------------
+def godot_folder(target):
+    """Where the Godot application looks for the library (tools/godot/project/gamelib.gd, standard_folder)."""
+    if target == 'mac':
+        return os.path.join(os.path.expanduser('~'), 'Library', 'Application Support', 'Open Champions', 'RTA Godot')
+    if target == 'windows':
+        return os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'Open Champions', 'RTA Godot')
+    data = os.environ.get('XDG_DATA_HOME') or os.path.join(os.path.expanduser('~'), '.local', 'share')
+    return os.path.join(data, 'open-champions', 'rta-godot')
+
+
+def godot_library(target, jobs):
+    """The game as the library the Godot application loads, from the translation the native build has just compiled."""
+    py = sys.executable
+    out = os.path.join(ROOT, 'local', 'godot-install')
+    env = dict(os.environ, RTA_GODOT_OUT=out)
+    build = os.path.join(ROOT, 'tools', 'godot', 'build.py')
+    if target == 'mac':
+        steps = [[py, build, 'snapshot', '--refresh'], [py, build, 'lib', '--jobs', str(min(jobs, 8))]]
+        made, name = os.path.join(out, 'lib', 'librta_game.dylib'), 'librta_game.dylib'
+    elif target == 'linux' and os.path.exists(os.path.join(ROOT, 'tools', 'godot', 'build_lib_linux.py')):
+        arch = {'x86_64': 'x86_64', 'amd64': 'x86_64', 'aarch64': 'arm64', 'arm64': 'arm64'}.get(platform.machine().lower(), platform.machine())
+        steps = [[py, os.path.join(ROOT, 'tools', 'godot', 'build_lib_linux.py'), '--here', '--arch', arch]]
+        made, name = None, 'librta_game.so'
+    else:
+        say('the Godot application\'s game library is not made for %s yet (docs/issues/native-godot.md); the native program is' % target)
+        return None
+    for step in steps:
+        say('running: ' + ' '.join(os.path.relpath(c, ROOT) if os.path.isabs(c) and c.startswith(ROOT) else c for c in step))
+        if subprocess.run(step, cwd=ROOT, env=env).returncode != 0:
+            say('the Godot library did not build: the lines above say why (the native program is built all the same)')
+            return None
+    if made is None:
+        found = [os.path.join(d, f) for d, _, fs in os.walk(os.path.join(ROOT, 'local', 'godot-install')) for f in fs if f == name]
+        made = max(found, key=os.path.getmtime) if found else ''
+    if not made or not os.path.exists(made):
+        say('the Godot library is not where it should be: %s' % made)
+        return None
+    folder = godot_folder(target)
+    os.makedirs(folder, exist_ok=True)
+    final = os.path.join(folder, name)
+    shutil.copy2(made, final + '.part')
+    os.replace(final + '.part', final)
+    say('the Godot application\'s game library: ' + final)
+    return final
+
+
 # ---- the launcher -----------------------------------------------------------------------------
 def desktop_dir(given):
     if given:
@@ -223,6 +275,7 @@ def main():
     parser.add_argument('--disc', required=True, help='your own disc image of Champions: Return to Arms (SLUS-20973, v2.00)')
     parser.add_argument('--desktop', help='where the launcher goes (default: this user\'s desktop)')
     parser.add_argument('--no-launcher', action='store_true')
+    parser.add_argument('--godot', action='store_true', help='also the game library of the Godot application (tools/godot)')
     parser.add_argument('--jobs', type=int, default=max(1, min(8, os.cpu_count() or 4)))
     args = parser.parse_args()
     disc = os.path.abspath(os.path.expanduser(args.disc))
@@ -241,9 +294,10 @@ def main():
     program = build(args.platform, args.jobs)
     if not program:
         return 1
+    library = godot_library(args.platform, args.jobs) if args.godot else None
     os.makedirs(os.path.join(ROOT, 'local'), exist_ok=True)
     with open(os.path.join(ROOT, 'local', 'install.txt'), 'w') as f:
-        f.write('disc=%s\nprogram=%s\n' % (disc, program))
+        f.write('disc=%s\nprogram=%s\n' % (disc, program) + ('godot_library=%s\n' % library if library else ''))
     say('built: ' + program)
     if not args.no_launcher:
         desktop = desktop_dir(args.desktop)

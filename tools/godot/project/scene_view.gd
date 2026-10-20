@@ -29,6 +29,18 @@ extends Node
 #             wall texture, darkened, a crease where they meet the wall, lit by the point lights, hazed (RtaDrawer, rta_fill.cpp;
 #             shaders/fill.gdshader).  fill_light (0..1, default 0.42), fill_scale (swatch repeats per 64 units)
 #   aa        multisampling of the 3-D surface (0, 2, 4, 8)
+#   models    cleaner models (on by default, in every view): the game's solid models are drawn with a form light per pixel
+#             by the game's own normals (model_form 0..1), a rim light in the sky's colour (model_rim 0..1), a texture
+#             sampled one mip step finer (model_sharp: footprint scale, 1 = as the level), and their skinned packets
+#             (characters, creatures) curved: every triangle made model_smooth x model_smooth PN triangles (1 = as the game
+#             has them; an edge whose normals part by more than model_crease, a cosine, stays hard; only within model_near units
+#             of the eye: RtaDrawer, rta_scene.cpp)
+#   backdrop  a ground for a level that shows none (off | on | auto: auto = in a view along the ground when the frame has
+#             had none of the level's own draws for half a second - the arenas some levels are, entered alone, put the
+#             character in the clear colour): flagstones at the character's feet in a colour from the level's sky
+#             (shaders/backdrop.gdshader), fading into the haze
+#   contact   contact shadows (0..1, 0 = none): a soft dark patch on the level under every standing figure, from the
+#             figures' feet the drawer finds in the frame (get_sky_info().contacts)
 #
 # Each of sky, fog, sun, lamp, bloom, grade, foliage, fill is  off | on | auto.  auto - the default - means: in the views that look
 # along the ground (chase, shoulder, first person: tools/recomp/app/fpview.h), not in the game's own overhead view
@@ -59,6 +71,7 @@ const GLOBALS := {
 	"rta_sky_zenith": Vector4(0, 0, 0, 0), "rta_sky_ground": Vector4(0, 0, 0, 0), "rta_sky_sun": Vector4(0, 0, 1, 0),
 	"rta_sky_sun_colour": Vector4(1, 1, 1, 0), "rta_fog_range": Vector4(400, 1350, 0, 200), "rta_fog_amount": Vector4(0, 0.5, 1, 0),
 	"rta_fog_colour": Vector4(0, 0, 0, 0), "rta_light_ambient": Vector4(1, 1, 1, 0),
+	"rta_model": Vector4(0, 0, 1, 0), "rta_model_rim": Vector4(0, 0, 0, 0),
 }
 
 var look := {
@@ -67,6 +80,7 @@ var look := {
 	"bloom_strength": 1.0, "sky_sun": 1.0, "shadow_splits": 4.0, "shadow_far": 1100.0,
 	"fill_light": 0.36, "fill_scale": 1.0, "light_energy": 1.0, "light_shadows": 2.0, "light_max": 8.0,
 	"sun_gain": 1.0, "saturation": 1.10, "contrast": 1.06, "brightness": 1.0, "preset": "on", "balance": "0.6",
+	"backdrop": "auto", "models": "on", "model_smooth": 2.0, "model_crease": 0.35, "model_near": 520.0, "model_rim": 0.35, "model_form": 0.7, "model_sharp": 0.6, "contact": 0.55,
 }
 # Per level presets (tools/godot/presets.py): the look keys above, by level, picked from what the level's own colours
 # are (its clear colour, its dome, its light level, the game's light nodes, the picture the game's own camera gives) by
@@ -131,6 +145,16 @@ var ground_amount := 0.0                # 0: the game's own view .. 1: a view al
 var in_force := {}
 var said := {}
 var aa_set := -1
+var contact_image: Image                # 16 x 1, RGBA float: the frame's standing figures (x, y, z of the feet, radius)
+var contact_texture: ImageTexture
+var contacts_now := 0
+var model_sent := {}
+var backdrop_mesh: PlaneMesh
+var backdrop_material: ShaderMaterial
+var backdrop_instance: RID
+var backdrop_bare := 0                  # frames in a row without the level's own draws
+var backdrop_z := 0.0
+var backdrop_on := false
 
 
 static var globals_added := false
@@ -143,6 +167,7 @@ static func add_globals() -> void:
 	for name in GLOBALS:
 		RenderingServer.global_shader_parameter_add(name, RenderingServer.GLOBAL_VAR_TYPE_VEC4, GLOBALS[name])
 	RenderingServer.global_shader_parameter_add("rta_sky_ring", RenderingServer.GLOBAL_VAR_TYPE_SAMPLER2D, RID())
+	RenderingServer.global_shader_parameter_add("rta_contacts", RenderingServer.GLOBAL_VAR_TYPE_SAMPLER2D, RID())
 
 
 func _ready() -> void:
@@ -165,6 +190,9 @@ func _ready() -> void:
 	ring_image = Image.create(256, 2, false, Image.FORMAT_RGB8)
 	ring_texture = ImageTexture.create_from_image(ring_image)
 	RenderingServer.global_shader_parameter_set("rta_sky_ring", ring_texture.get_rid())
+	contact_image = Image.create(16, 1, false, Image.FORMAT_RGBAF)
+	contact_texture = ImageTexture.create_from_image(contact_image)
+	RenderingServer.global_shader_parameter_set("rta_contacts", contact_texture.get_rid())
 	RenderingServer.directional_shadow_atlas_set_size(4096, true)
 	RenderingServer.directional_soft_shadow_filter_set_quality(RenderingServer.SHADOW_QUALITY_SOFT_MEDIUM)
 	sky_mesh = SphereMesh.new()
@@ -251,15 +279,17 @@ func _free_torches() -> void:
 
 func release() -> void:
 	_free_torches()
-	for rid in [sun_instance, lamp_instance, sky_instance, sun, lamp]:
+	for rid in [sun_instance, lamp_instance, sky_instance, sun, lamp, backdrop_instance]:
 		if rid.is_valid():
 			RenderingServer.free_rid(rid)
+	backdrop_instance = RID()
 	sun_instance = RID()
 	lamp_instance = RID()
 	sky_instance = RID()
 	sun = RID()
 	lamp = RID()
 	RenderingServer.global_shader_parameter_set("rta_sky_ring", RID())
+	RenderingServer.global_shader_parameter_set("rta_contacts", RID())
 
 
 func takes_input() -> bool:
@@ -298,6 +328,19 @@ func before_frame() -> void:
 		if fill_sent.get(key, -1.0) != float(look[key]):
 			fill_sent[key] = float(look[key])
 			drawer.call("set_scene_option", key, float(look[key]))
+	# cleaner models: the drawer's part (which draws, how many curved triangles); the shader's part in _models()
+	var models_on := _wants("models", true)
+	in_force["models"] = models_on
+	var model_options := {"model_look": 1.0 if models_on else 0.0, "model_smooth": float(look.model_smooth) if models_on else 1.0,
+		"model_crease": float(look.model_crease), "model_near": float(look.model_near), "contacts": 1.0 if models_on and float(look.contact) > 0.0 else 0.0}
+	for key in model_options:
+		if model_sent.get(key, -1.0) != model_options[key]:
+			model_sent[key] = model_options[key]
+			drawer.call("set_scene_option", key, model_options[key])
+	var feet_now: Vector3 = view.get("player", Vector3.ZERO)
+	drawer.call("set_scene_option", "feet_x", feet_now.x)
+	drawer.call("set_scene_option", "feet_y", feet_now.y)
+	drawer.call("set_scene_option", "feet_z", feet_now.z)
 	drawer.call("set_scene_option", "lit", 1.0 if (in_force.sun or in_force.lamp or in_force.lights) else 0.0)
 	drawer.call("set_scene_option", "shadows", 1.0 if (in_force.sun or (in_force.lights and float(look.light_shadows) > 0.0)) else 0.0)
 
@@ -318,6 +361,8 @@ func frame() -> void:
 	_haze()
 	_torches()
 	_lights()
+	_models(info)
+	_backdrop(info)
 	_post()
 	if card != null:
 		card.call("frame", 1.0 / 60.0)
@@ -325,9 +370,11 @@ func frame() -> void:
 
 func _make(to: RID) -> void:
 	_free_torches()
-	for rid in [sun_instance, lamp_instance, sky_instance, sun, lamp]:
+	for rid in [sun_instance, lamp_instance, sky_instance, sun, lamp, backdrop_instance]:
 		if rid.is_valid():
 			RenderingServer.free_rid(rid)
+	backdrop_instance = RID()
+	backdrop_on = false
 	scenario = to
 	environment = drawer.call("get_world_environment")
 	viewport = drawer.call("get_world_viewport")
@@ -634,6 +681,64 @@ func lights_text() -> String:
 	return text
 
 
+func _backdrop(info: Dictionary) -> void:
+	# bare: none of the level's own pieces reaches under the player's feet (some arenas, entered alone, put the
+	# character where the game has no ground at all)
+	var bare := int(info.get("ground_near", 1)) == 0
+	backdrop_bare = maxi(backdrop_bare, 0) + 1 if bare else mini(backdrop_bare, 0) - 1
+	var mode := String(look.backdrop)
+	# on after half a second without ground under the feet, off after a second with it again
+	var want: bool = mode == "on" or (mode == "auto" and in_force.get("ground", false) and (backdrop_bare > 30 or (backdrop_on and backdrop_bare > -60)))
+	if want and not backdrop_instance.is_valid():
+		backdrop_mesh = PlaneMesh.new()
+		backdrop_mesh.size = Vector2(9000, 9000)
+		backdrop_mesh.orientation = PlaneMesh.FACE_Z      # the game's world is z up
+		backdrop_material = ShaderMaterial.new()
+		backdrop_material.shader = load("res://shaders/backdrop.gdshader")
+		backdrop_instance = RenderingServer.instance_create2(backdrop_mesh.get_rid(), scenario)
+		RenderingServer.instance_geometry_set_material_override(backdrop_instance, backdrop_material.get_rid())
+		RenderingServer.instance_geometry_set_cast_shadows_setting(backdrop_instance, RenderingServer.SHADOW_CASTING_SETTING_OFF)
+		RenderingServer.instance_set_pivot_data(backdrop_instance, -900000.0, false)   # after the sky, before every draw of the list
+	if not backdrop_instance.is_valid():
+		return
+	if want:
+		var view: Dictionary = machine.get_view()
+		var feet: Vector3 = view.get("player", Vector3.ZERO)
+		# under the feet, where they are: a character the game lets fall through nothing stands on it all the same
+		backdrop_z = feet.z if not backdrop_on else move_toward(backdrop_z, feet.z, maxf(2.0, absf(feet.z - backdrop_z) * 0.5))
+		RenderingServer.instance_set_transform(backdrop_instance, Transform3D(Basis(), Vector3(feet.x, feet.y, backdrop_z - 0.5)))
+		var tint := horizon.lerp(Color(0.5, 0.48, 0.45), 0.55)
+		var stone := Color(tint.r, tint.g, tint.b) * (0.42 if level_dark else 0.62)
+		backdrop_material.set_shader_parameter("stone", Vector3(stone.r, stone.g, stone.b))
+		backdrop_material.set_shader_parameter("feet", feet)
+		if not backdrop_on:
+			print("rta_godot: level %s: no ground of its own under the character: the backdrop is laid at z %.1f" % [level, backdrop_z])
+	RenderingServer.instance_set_visible(backdrop_instance, want)
+	backdrop_on = want
+
+
+func _models(info: Dictionary) -> void:
+	var on: bool = in_force.get("models", false)
+	RenderingServer.global_shader_parameter_set("rta_model", Vector4(float(look.model_rim) if on else 0.0, float(look.model_form) if on else 0.0,
+		float(look.model_sharp) if on else 1.0, float(look.contact) if on else 0.0))
+	# the rim: the sky's colour at the horizon, lighter; a dark level's a little warm, as from the torches
+	var rim := horizon.lerp(Color(1, 1, 1), 0.45)
+	if level_dark or max(horizon.r, horizon.g, horizon.b) < 0.2:
+		rim = Color(0.62, 0.52, 0.42)
+	RenderingServer.global_shader_parameter_set("rta_model_rim", Vector4(rim.r, rim.g, rim.b, 0.0))
+	var found: PackedFloat32Array = info.get("contacts", PackedFloat32Array())
+	var n := mini(found.size() / 4, 16)
+	if n == 0 and contacts_now == 0:
+		return
+	for k in 16:
+		if k < n:
+			contact_image.set_pixel(k, 0, Color(found[k * 4], found[k * 4 + 1], found[k * 4 + 2], found[k * 4 + 3]))
+		else:
+			contact_image.set_pixel(k, 0, Color(0, 0, 0, 0))
+	contact_texture.update(contact_image)
+	contacts_now = n
+
+
 func _post() -> void:
 	if not environment.is_valid():
 		return
@@ -662,11 +767,12 @@ func stats_text() -> String:
 		sum += Color(g.colour)
 	var n: int = maxi(found.size(), 1)
 	var toward: Vector3 = info.get("sun", Vector3.ZERO)
-	return "level=%s clear=%.4f,%.4f,%.4f have_clear=%d dome=%d dark=%d light=%d far=%.0f horizon=%s zenith=%s sun=%.1f,%.1f,%.5f,%d lights=%d lights_colour=%.3f,%.3f,%.3f shade=%.3f preset=%s ground=%d" % [
+	return "level=%s clear=%.4f,%.4f,%.4f have_clear=%d dome=%d dark=%d light=%d far=%.0f horizon=%s zenith=%s sun=%.1f,%.1f,%.5f,%d lights=%d lights_colour=%.3f,%.3f,%.3f shade=%.3f preset=%s ground=%d level_draws=%d ground_near=%d feet=%s backdrop=%d" % [
 		level, clear.r, clear.g, clear.b, 1 if bool(info.get("have_clear", false)) else 0, 1 if level_dome else 0, 1 if level_dark else 0, level_light,
 		machine.peek_f32(G_FAR_CLIP), horizon.to_html(false), zenith.to_html(false), sun_found.x, sun_found.y, Vector2(toward.x, toward.y).length(),
 		int(info.get("sun_samples", 0)), found.size(), sum.r / n, sum.g / n, sum.b / n, shade, preset_applied if preset_applied != "" else "-",
-		1 if in_force.get("ground", false) else 0]
+		1 if in_force.get("ground", false) else 0, int(info.get("level_draws", -1)), int(info.get("ground_near", -1)),
+		str(view.get("player", Vector3.ZERO)).replace(" ", ""), 1 if backdrop_on else 0]
 
 
 func info_text() -> String:
@@ -709,6 +815,7 @@ func command(w: PackedStringArray) -> void:
 			print("rta_godot: wrote %s (%d x %d), the character card; %s" % [path, image.get_width(), image.get_height(), card.call("info_text")])
 	elif w[0] == "camera" and w.size() >= 2:
 		if w[1] == "game":
+			drawer.call("set_scene_option", "focus", 390.0)
 			pull_back = 1.0
 			orbit = 0.0
 			raise = 0.0
@@ -718,4 +825,17 @@ func command(w: PackedStringArray) -> void:
 			orbit = w[2].to_float()
 		elif w.size() >= 3 and w[1] == "raise":
 			raise = w[2].to_float()
+		elif w.size() >= 3 and w[1] == "focus":
+			drawer.call("set_scene_option", "focus", w[2].to_float())
+		elif w.size() >= 3 and w[1] == "around":
+			# app camera around DEG [PULL [RAISE]]: round the local player (the turn's point is the player's chest, not the
+			# overhead view's 390 units out): to see a character from the front, close
+			var view: Dictionary = machine.get_view()
+			var eye: Vector3 = view.get("eye", Vector3.ZERO)
+			var forward: Vector3 = view.get("forward", Vector3(0, 1, 0))
+			var feet: Vector3 = view.get("player", eye)
+			drawer.call("set_scene_option", "focus", maxf((feet + Vector3(0, 0, 34) - eye).dot(forward), 20.0))
+			orbit = w[2].to_float()
+			pull_back = w[3].to_float() if w.size() >= 4 else 1.0
+			raise = w[4].to_float() if w.size() >= 5 else 0.0
 		_camera_options()

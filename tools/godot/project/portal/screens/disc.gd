@@ -1,5 +1,5 @@
 extends "res://portal/screen.gd"
-# disc.gd - the disc image has not been found: one plain sentence and one button.
+# disc.gd - the disc image, or the game library built from it, has not been found: one plain sentence and one button.
 # (The game is not in this program: it plays from the player's own disc image, chosen once.
 # The path is kept where the game scene reads it: user://settings.cfg, [game] disc.)
 
@@ -22,23 +22,31 @@ func build() -> void:
 	y += UI.px(120 + 36)
 	var missing := String(portal.profile.disc_path())
 	var sentence := "To play, choose your disc image of Champions: Return to Arms (version 2.00) - once; it is remembered."
-	if missing != "":
+	if missing != "" and not portal.profile.disc_found():
 		sentence = "Your disc image is no longer where it was - choose it again; it is remembered."
+	var library: bool = portal.profile.disc_found() and not portal.profile.library_found()
+	if library:
+		# the disc is there; the game library made from it is not (the installer builds it on this computer)
+		sentence = "The game is built on this computer from your disc by the installer (install-mac.command, install-linux.sh or install-windows.bat), once. Run it, then come back - or choose the library if you built it elsewhere."
 	say(Rect2(x, y, cw, UI.px(120)), sentence, 34, UI.TEXT, UI.serif(), HORIZONTAL_ALIGNMENT_CENTER, true)
 	y += UI.px(120 + 44)
-	var b := W.Btn.new("Choose the disc image", "disc", "primary")
+	var b := W.Btn.new("Choose the game library" if library else "Choose the disc image", "disc", "primary")
 	b.height = 68.0
 	b.font_size = 24.0
 	b.key = "choose"
 	add_child(b)
 	b.size = b.custom_minimum_size
 	b.position = Vector2(roundf((size.x - b.size.x) * 0.5), y)
-	b.activated.connect(func() -> void: portal.call("choose_disc", _chosen))
+	b.activated.connect(func() -> void: portal.call("choose_library" if library else "choose_disc", _chosen))
 
 
 func _chosen() -> void:
-	portal.call("toast", "Disc image found", "good")
-	portal.call("back")
+	if portal.profile.game_ready():
+		portal.call("toast", "Ready to play", "good")
+		portal.call("back")
+	else:
+		portal.call("toast", "Disc image found" if portal.profile.disc_found() else "Still missing", "info")
+		portal.call("go", "disc", {}, true)
 
 
 class Medal extends Control:

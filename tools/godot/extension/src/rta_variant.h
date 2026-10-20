@@ -12,6 +12,8 @@ enum : uint32_t {
     V_NORMALS = 512,    // ... the mesh carries the game's own normals (world space, in CUSTOM1)
     V_NOFOG = 1024,     // ... the haze leaves it alone (the game's sky dome)
     V_NEARFADE = 2048,  // ... it fades as it comes up to the eye (camera-facing sprites placed in the world by their depth)
+    V_MODEL = 4096,     // ... a solid model (a character, a creature, a prop): per-pixel form light, rim light, sharper texture
+    V_CONTACT = 8192,   // ... a solid piece of the level: darkened under the characters standing on it (contact shadows)
 };
 
 }  // namespace rta_variant

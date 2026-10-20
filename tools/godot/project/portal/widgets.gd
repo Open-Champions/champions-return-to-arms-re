@@ -268,6 +268,7 @@ class Choice extends Focusable:
 	var options: PackedStringArray = PackedStringArray()
 	var index := 0
 	var locked := false             # shown, cannot be changed (a guest sees the host's choice)
+	var narrow := false             # may be narrower than the usual 360 points (four choices side by side)
 
 	func _init(p_title := "", p_options: PackedStringArray = PackedStringArray(), p_index := 0, p_note := "") -> void:
 		super()
@@ -278,7 +279,7 @@ class Choice extends Focusable:
 
 	func _ready() -> void:
 		super()
-		custom_minimum_size = Vector2(UI.px(360), UI.px(82 if note != "" else 64))
+		custom_minimum_size = Vector2(0.0 if narrow else UI.px(360), UI.px(82 if note != "" else 64))
 
 	func step(by: int) -> void:
 		if locked or options.size() < 2:

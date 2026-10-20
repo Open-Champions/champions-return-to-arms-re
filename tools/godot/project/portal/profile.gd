@@ -113,6 +113,22 @@ func disc_found() -> bool:
 	return path != "" and FileAccess.file_exists(path)
 
 
+# the game library (res://gamelib.gd): built on this computer from the player's disc by the installer
+func library_path() -> String:
+	var args := OS.get_cmdline_user_args()
+	var at := args.find("--lib")
+	return (load("res://gamelib.gd") as GDScript).call("find", args[at + 1] if at >= 0 and at + 1 < args.size() else "")
+
+
+func library_found() -> bool:
+	return library_path() != ""
+
+
+# both: the disc image and the library made from it
+func game_ready() -> bool:
+	return disc_found() and library_found()
+
+
 func set_disc_path(path: String) -> void:
 	var game := ConfigFile.new()
 	game.load(folder + "settings.cfg")

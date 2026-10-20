@@ -5,6 +5,8 @@ extends "res://portal/screen.gd"
 # played (read from the game's own state while it runs) and those the session can read
 # from the memory card (session.h, net2_local_characters).  Making a character stays the
 # game's own screen for now: the portal hands over to it and is back afterwards.
+# "From a memory card": the player's saves on a PlayStation 2 memory card file (PCSX2's .ps2) or in a folder are
+# copied into this copy's card (portal/memcard.gd); the game's own character screen then imports one (its "Import").
 
 
 func hints() -> Array:
@@ -38,9 +40,9 @@ func build() -> void:
 	var top := UI.px(108)
 	var gap := UI.px(18)
 	var most := clampi(int((size.x + gap) / UI.px(300)), 3, 6)
-	var cols := clampi(list.size() + 1, mini(4, most), most)
+	var cols := clampi(list.size() + 2, mini(4, most), most)
 	var cw := (size.x - gap * (cols - 1)) / cols
-	var rows := int(ceil((list.size() + 1) / float(cols)))
+	var rows := int(ceil((list.size() + 2) / float(cols)))
 	var ch := minf(UI.px(430), (size.y - top - gap * (rows - 1)) / maxf(rows, 1))
 	ch = maxf(ch, UI.px(250))
 	var holder: Control = self
@@ -53,7 +55,7 @@ func build() -> void:
 		holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		box.add_child(holder)
 		top = 0.0
-	for k in list.size() + 1:
+	for k in list.size() + 2:
 		var card := Card.new()
 		var r := Rect2((k % cols) * (cw + gap), top + int(k / float(cols)) * (ch + gap), cw, ch)
 		if k < list.size():
@@ -67,9 +69,13 @@ func build() -> void:
 				portal.call("back"))
 			if card.current and want_focus == "":
 				want_focus = card.key
-		else:
+		elif k == list.size():
 			card.key = "new"
 			card.activated.connect(_new)
+		else:
+			card.key = "memory-card"
+			card.bring = true
+			card.activated.connect(_bring)
 		holder.add_child(card)
 		card.position = r.position.round()
 		card.size = r.size.round()
@@ -83,8 +89,47 @@ func _new() -> void:
 				portal.handover.call("start", {"kind": "create"}))
 
 
+func _bring() -> void:
+	if bool(portal.call("test_mode")) or DisplayServer.get_name() == "headless":
+		portal.call("toast", "A test never opens a file dialog", "info")
+		return
+	var dialog := FileDialog.new()
+	dialog.file_mode = FileDialog.FILE_MODE_OPEN_ANY
+	dialog.access = FileDialog.ACCESS_FILESYSTEM
+	dialog.use_native_dialog = true
+	dialog.title = "A memory card file (.ps2) or a folder with your saves"
+	dialog.filters = PackedStringArray(["*.ps2 ; Memory card files"])
+	var take := func(path: String) -> void:
+		dialog.queue_free()
+		bring_from(path)
+	dialog.file_selected.connect(take)
+	dialog.dir_selected.connect(take)
+	dialog.canceled.connect(dialog.queue_free)
+	add_child(dialog)
+	dialog.popup_centered_ratio(0.7)
+
+
+# the saves of PATH into this copy's card; then the game's own screen, where "Import" takes one
+func bring_from(path: String) -> Dictionary:
+	var MemCard: GDScript = load("res://portal/memcard.gd")
+	var result: Dictionary = MemCard.call("bring", path, card_dir().path_join("card").path_join("mc0"))
+	print("portal: memory card %s: %s" % [path, str(result)])
+	if not bool(result.ok):
+		portal.call("toast", String(result.error), "bad")
+		return result
+	var names: Array = result.copied + result.skipped
+	portal.call("toast", "%d save folder%s from the card" % [names.size(), "" if names.size() == 1 else "s"], "good")
+	rebuild()
+	portal.call("confirm", "Bring a character in", "Your saves are on this copy's card now. In the game's own screen choose Import (triangle) and pick the character.",
+		"Open the game", func() -> void:
+			if not portal.call("need_disc"):
+				portal.handover.call("start", {"kind": "create"}))
+	return result
+
+
 class Card extends W.Focusable:
 	var character := {}
+	var bring := false
 	var current := false
 	var portrait: Control
 
@@ -118,9 +163,9 @@ class Card extends W.Focusable:
 			var m := UI.px(76)
 			var c := Vector2(size.x * 0.5, size.y * 0.40)
 			draw_style_box(UI.box(m * 0.5, Color(UI.GOLD.r, UI.GOLD.g, UI.GOLD.b, 0.08 + 0.1 * e), Color(UI.GOLD.r, UI.GOLD.g, UI.GOLD.b, 0.6 + 0.4 * e), maxf(1.5, UI.px(2))), Rect2(c - Vector2(m, m) * 0.5, Vector2(m, m)))
-			UI.icon(self, "plus", Rect2(c - Vector2(m, m) * 0.22, Vector2(m, m) * 0.44), UI.GOLD_HI)
-			UI.text(self, Rect2(UI.px(10), c.y + m * 0.5 + UI.px(20), size.x - UI.px(20), UI.px(34)), "New character", UI.serif_bold(), 26, UI.TEXT, HORIZONTAL_ALIGNMENT_CENTER)
-			UI.text(self, Rect2(UI.px(10), c.y + m * 0.5 + UI.px(56), size.x - UI.px(20), UI.px(26)), "Made in the game's own screen", UI.sans(), 16, UI.DIM, HORIZONTAL_ALIGNMENT_CENTER)
+			UI.icon(self, "disc" if bring else "plus", Rect2(c - Vector2(m, m) * 0.22, Vector2(m, m) * 0.44), UI.GOLD_HI)
+			UI.text(self, Rect2(UI.px(10), c.y + m * 0.5 + UI.px(20), size.x - UI.px(20), UI.px(34)), "From a memory card" if bring else "New character", UI.serif_bold(), 26, UI.TEXT, HORIZONTAL_ALIGNMENT_CENTER)
+			UI.text(self, Rect2(UI.px(10), c.y + m * 0.5 + UI.px(56), size.x - UI.px(20), UI.px(26)), "Your saves, then Import in the game" if bring else "Made in the game's own screen", UI.sans(), 16, UI.DIM, HORIZONTAL_ALIGNMENT_CENTER)
 			return
 		draw_style_box(UI.box(radius, Color(0, 0, 0, 0), Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0.28), UI.px(16)), r)
 		draw_style_box(UI.box(radius, Color(UI.PANEL.r, UI.PANEL.g, UI.PANEL.b, 0.86).lerp(UI.PANEL_HOT, e * 0.7), Color(UI.GOLD.r, UI.GOLD.g, UI.GOLD.b, 0.6) if current else UI.LINE, maxf(1.0, UI.px(1.5))), r)

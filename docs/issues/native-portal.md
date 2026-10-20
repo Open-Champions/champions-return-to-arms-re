@@ -9,6 +9,21 @@ Nothing derived from the game is in the repository: the portal is scripts and tw
 by code. Names of characters, classes and levels on screen come from the session or the game's
 state at run time. Pictures, the staged project and logs are under `local/godot-portal/`.
 
+## STATE (2026-10-20): game modes in the room, a character from a memory card, the portal in an export of our code only
+
+Seventh Godot round (`native-godot.md`, SEVENTH ROUND).
+- **Ran: Arena and Versus from a room** - the room screen's new "Game" choice (Missions / Arena / Versus 5 / 10 / 25,
+  `net2_options.mode` and `kill_limit`; `tools/godot/recomp.patch` puts them where the game's net menu does).  Two Godot
+  portals through a local service (`local/godot-r7/test/room7.py arena1`, `arena2`; `RTA_SHOTS_GAME=N` in
+  `dev/shots.gd` makes the host pick it): Arena -> `pvparena`, "Wave 1"; Versus 5 -> `pvparena`, "Fight!"; in step.
+- **Ran: the portal from the exported application** (our code only; the library made by the installer in a fresh
+  folder and found in the per-user place): two copies, friends, invitation, room, character screens, Start, both in the
+  hub, in step (`local/godot-r7/test/export1`).
+- The disc screen has a second state: the disc is there, the game library is not (the installer builds it; or choose it).
+- **Written, not run with a real save**: the characters screen's "From a memory card" (a `.ps2` card file or a folder;
+  `portal/memcard.gd` copies this game's and the first game's save directories into the copy's card, then the game's
+  own screen imports one).  The reader Ran on a card file the test made; no card here holds a saved character.
+
 ## STATE (2026-10-19): the whole way on the real service, the game in scene mode, in step through a level change
 
 - **Ran: two portal programs WITH THE GAME IN SCENE MODE through a service of their own** (`local/godot-r5/test/room.py

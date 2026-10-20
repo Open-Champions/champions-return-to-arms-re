@@ -118,7 +118,7 @@ func _continue() -> void:
 		note.text = problem() if problem() != "" else "Type a name first."
 		return
 	portal.call("set_name_shown", typed.strip_edges())
-	if portal.profile.disc_found() or bool(portal.options.stub_game):
+	if portal.profile.game_ready() or bool(portal.options.stub_game):
 		portal.call("go", "home", {}, true)
 	else:
 		portal.call("go", "home", {}, true)
