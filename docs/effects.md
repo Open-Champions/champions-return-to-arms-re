@@ -728,7 +728,7 @@ Each needs the user's own `SLUS_209.73` (v2.00, SHA-256 checked) and exits 0 wit
 | Tool | Properties | Compared | Mismatches |
 |---|---|---|---|
 | `tools/difftest_particles.py` | definition, redefine, spawn record, pools, emitter definition, flipbook, emitter | 4,000 + 1,500 definitions (44,699 floats), 6,000 spawn records, 60 pool sequences of 27,164 operations (spawn bursts to the slot and page limits, groups, cutscene ticks, the clock wrap) compared state by state, 2,000 emitter types, 3,000 flipbook steps, 4,000 emitter runs (positions within 4 × 10⁻⁵ relative: `math.cos` against `math_cos16`) | 0 |
-| `tools/difftest_lighting.py` | object light, collect, model lights, floor tint, light chunk, light effect | 6,757 object-light operations, 800 node sets × 4 positions, 1,500 model-light blocks (directions within 2.5 × 10⁻⁷), 1,500 floor tints, 170,841 light-chunk runs, 16,935 LightEffect frames | 0 |
+| `tools/difftest_lighting.py` | object light, collect, model lights, floor tint, light chunk, light effect, level light | 6,757 object-light operations, 800 node sets × 4 positions, 1,500 model-light blocks (directions within 2.5 × 10⁻⁷), 1,500 floor tints, 170,841 light-chunk runs, 16,935 LightEffect frames; level light 28 cases (colours and base level exact, direction within 1e-5) | 0 |
 | `tools/difftest_decals.py` | decals | 80 sequences, 48,100 operations (10,888 decals made, 25,176 dropped, 12,036 growth steps) | 0 |
 | `tools/difftest_fx_props.py` | props | 400 objects, 30,013 ticks, 47,843 spawns, light node and generator every tick | 0 |
 | `tools/difftest_fx_render.py` | particles, particle groups, trails, beams, glows, trail builders (EE side under the ps2 and chop FPU models), and particles / trails under vu1.cpp's WAITQ reading | particle cells 16,440 (ps2) + 4,560 (chop), of them in groups 10,950 + 2,910; trail vertices 13,000 + 3,384; under vu1.cpp's reading 2,820 cells and 6,470 vertices; 693 beam-frames; 1,912 glow packets; 1,250 builder calls | 0 |
@@ -736,7 +736,7 @@ Each needs the user's own `SLUS_209.73` (v2.00, SHA-256 checked) and exits 0 wit
 | `tools/difftest_fx_skills.py` | 21 properties over 25 functions (390 of 398 basic blocks), plus every call-out of the four existing skill difftests decoded as a primitive | 16,716 calls; 568,467 call-outs | 0 |
 
 Synthetic unit tests (no game data): `test_vu1_emu.py`, `test_ref_fx_render.py`,
-`test_ref_fx_recipes.py`, `test_ref_fx_skills.py`, `test_fx_skill_recipes.py`,
+`test_ref_fx_recipes.py`, `test_ref_fx_skills.py`, `test_fx_skill_recipes.py`, `test_fx_level_lights.py`,
 `test_ref_decals.py`, `test_ref_fx_props.py`, and the updated `test_ref_particles.py`,
 `test_ref_lighting.py`.
 
@@ -751,6 +751,10 @@ Synthetic unit tests (no game data): `test_vu1_emu.py`, `test_ref_fx_render.py`,
 - Values stay out of the repository: `fx_particle_defs.py --json` (definitions) and
   `fx_skill_recipes.py --json` (the constant effect arguments per class, plus embedded light
   records) read them from the user's executable at start-up.
+- **Per-level light.** `fx_level_lights.py --json ELF` reads `g_levelTable` 0x4f7210
+  (name, flag word, base level) and the default marker colours. Optional `objects.ob`,
+  lump or GOB arguments add that file's marker sun, ambient and direction. The
+  executable has no per-level colour or direction array (`docs/lighting.md` section 10).
 - **`light_records`** (optional top-level object in the same JSON): the colour shorts, radius,
   falloff and +0x2c float the three constructors below store into their embedded 0x3c-byte light
   node before `light_link` (layout: **O** `docs/lighting.md` section 2; the same fields

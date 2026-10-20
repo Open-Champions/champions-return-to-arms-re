@@ -102,7 +102,8 @@ class LevelLight:
 
 def base_level(level_flags):
     """g_worldLightLevel: 0x80, 0x40 with flag 0x04000000, 0x20 with 0x20000000
-    (render-pipeline 5.1)."""
+    (render-pipeline 5.1).  Both flags set yields 0x40: the load tail at 0x1e60e0
+    applies 0x04000000 after 0x20000000."""
     if level_flags & 0x04000000:
         return 0x40
     if level_flags & 0x20000000:

@@ -26,6 +26,7 @@ class Level(unittest.TestCase):
         self.assertEqual(L.base_level(0x01000000), 0x80)
         self.assertEqual(L.base_level(0x04000000), 0x40)
         self.assertEqual(L.base_level(0x20000000), 0x20)
+        self.assertEqual(L.base_level(0x04000000 | 0x20000000), 0x40)
 
     def test_scale_and_layer(self):
         lv = L.LevelLight((0, 0, 1), (200, 100, 50, 0), (40, 40, 40, 0), scale=1.5)

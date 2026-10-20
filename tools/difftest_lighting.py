@@ -34,6 +34,9 @@ Properties
                     node and glow arguments against LightChunk.step / glow_size
     light effect    LightEffect_ctor 0x201bd8 + LightEffect_run 0x1ee050 frame by frame: node
                     colours, radius, falloff, position, deletion frame against LightEffect
+    level light     marker constructors 0x158bcc / 0x158c6c / 0x158d0c, the default stores
+                    in world_loadRecords 0x14e808, and the load tail 0x1e60e0 against
+                    LevelLight.from_markers / base_level
 """
 import hashlib
 import math
@@ -614,6 +617,126 @@ def prop_light_effect(elf):
            '1e-3, deletion frame exact' % frames, ex)
 
 
+def prop_level_light(elf):
+    """The load tail reads the marker block and the flag word.  Colours and the base
+    level match from_markers; the stored direction matches within 1e-5."""
+    if not wanted('level light'):
+        return
+    e = EE(elf)
+    e.record_writes = False
+    e.record_calls = False
+    e.stub(RECALC_SUN, ret=0)
+    e.stub(RESET_OBJ, ret=0)
+
+    def stub_go(emu):
+        obj = emu.r[4] & M32
+        src = emu.r[5] & M32
+        for i in range(3):
+            emu.mem.w32(obj + 0x10 + 4 * i, emu.mem.u32(src + 4 * i))
+        return 0
+
+    e.stub(GAMEOBJECT_CTOR, function=stub_go)
+    obj = e.alloc(0x80)
+    pos = e.alloc(16)
+    blob = e.alloc(64)
+    e.mem.w16(blob, 0)
+    e.mem.w16(blob + 2, 0)
+    e.mem.w32(blob + 4, 8)
+
+    def stop(emu):
+        emu.jump(emu.RETURN_ADDR)
+
+    e.hook(0x14E8B0, stop)
+    e.hook(0x14E9F8, stop)
+
+    def write_defaults():
+        e.set_reg('a0', blob)
+        e.set_reg('sp', 0x01F02000)
+        e.set_reg('ra', e.RETURN_ADDR)
+        reason = e.run(0x14E808, max_steps=20000)
+        if reason != 'return':
+            raise EmuError('default stores stopped: %s at 0x%08x' % (reason, e.pc))
+
+    def apply_markers(ambient, sun, direction):
+        write_defaults()
+        for ctor, xyz in ((0x158BCC, ambient), (0x158C6C, sun), (0x158D0C, direction)):
+            if xyz is None:
+                continue
+            e.mem.write(pos, struct.pack('<fff', *(f32(c) for c in xyz)))
+            e.call(ctor, obj, pos, sp=0x01F02000)
+
+    def run_tail(flags):
+        e.mem.w32(0x44FE08, flags & M32)
+        e.set_reg('fp', 0x450000)
+        e.set_reg('sp', 0x01F01000)
+        e.set_reg('ra', e.RETURN_ADDR)
+        reason = e.run(0x1E60E0, until=(0x1E615C,), max_steps=8000)
+        if reason != 'stop':
+            raise EmuError('load tail stopped: %s at 0x%08x' % (reason, e.pc))
+
+    def read_back():
+        m = e.mem
+        direction = tuple(m.f32(G_SUN_DIR + 4 * i) for i in range(3))
+        sun = tuple(m.u8(G_SUN_SET + i) for i in range(4))
+        amb = tuple(m.u8(G_AMB_SET + i) for i in range(4))
+        return direction, sun, amb, m.u32(G_LEVEL)
+
+    rng = random.Random(OPTIONS['seed'])
+    cases = [
+        (None, None, None, 0),
+        ((20.0, 40.0, 60.0), (80.0, 100.0, 120.0), (0.0, -2.0, 2.0), 0x24000000),
+        ((100.0, 60.0, 41.0), (300.0, 200.0, 100.0), (0.0, 0.0, 5.0), 0x20000000),
+        ((0.1, 1.0, 41.0), None, None, 0x04000000),
+    ]
+    for _ in range(scaled(24)):
+        def component():
+            return f32(rng.uniform(0.0, 400.0))
+        direction = tuple(f32(rng.uniform(-2.0, 2.0)) for _ in range(3))
+        if direction == (0.0, 0.0, 0.0):
+            direction = (0.0, -1.0, 1.0)
+        flags = rng.choice([0, 0x04000000, 0x20000000, 0x04000000 | 0x20000000, 0x01000000])
+        ambient = tuple(component() for _ in range(3)) if rng.random() < 0.85 else None
+        sun = tuple(component() for _ in range(3)) if rng.random() < 0.85 else None
+        cases.append((ambient, sun, direction, flags))
+
+    fails, examples = 0, []
+    for case, (ambient, sun, direction, flags) in enumerate(cases):
+        try:
+            apply_markers(ambient, sun, direction)
+            m = e.mem
+            if ambient is not None:
+                got = tuple(m.s32(0x44FDE0 + 4 * i) for i in range(3))
+                expect = tuple(L.trunc(c * 0.5) for c in ambient)
+                if got != expect:
+                    raise EmuError('ambient marker %r vs %r' % (got, expect))
+            if direction is not None:
+                got = tuple(m.f32(0x44FDE0 + 24 + 4 * i) for i in range(3))
+                expect = tuple(f32(c) for c in direction)
+                if got != expect:
+                    raise EmuError('direction marker %r vs %r' % (got, expect))
+            run_tail(flags)
+            got_dir, got_sun, got_amb, got_level = read_back()
+            model = L.LevelLight.from_markers(ambient, sun, direction, flags)
+            bad = None
+            if got_level != model.level:
+                bad = 'level %r vs %r' % (got_level, model.level)
+            elif got_sun != model.sun_set:
+                bad = 'sun %r vs %r' % (got_sun, model.sun_set)
+            elif got_amb != model.ambient_set:
+                bad = 'ambient %r vs %r' % (got_amb, model.ambient_set)
+            elif any(abs(a - b) > 1e-5 for a, b in zip(got_dir, model.sun_dir)):
+                bad = 'direction %r vs %r' % (got_dir, model.sun_dir)
+            if bad:
+                fails += 1
+                examples.append('case %d: %s' % (case, bad))
+        except EmuError as err:
+            fails += 1
+            examples.append('case %d: %s' % (case, err))
+    report('level light', fails, len(cases),
+           'constructors, default marker stores and the load tail; colours and base level '
+           'exact, direction within 1e-5', examples)
+
+
 def find_elf(positional):
     for p in positional + [os.path.join(ROOT, 'SLUS_209.73')]:
         if p and os.path.isfile(p):
@@ -652,6 +775,7 @@ def main(argv=None):
     prop_floor_tint(elf)
     prop_light_chunk(elf)
     prop_light_effect(elf)
+    prop_level_light(elf)
     if COVER:
         print('reached: ' + '; '.join('%s %d' % kv for kv in sorted(COVER.items())))
     failed = [name for name, ok in RESULTS if not ok]

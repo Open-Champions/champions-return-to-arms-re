@@ -3,7 +3,8 @@
 Status: first pass, 2026-10-17, on branch `t3/research-fx`, read from the disassembly and a
 Ghidra decompile of `SLUS_209.73` (v2.00). Round 2, 2026-10-18: executed against the
 original in `tools/ee_emu.py` (`tools/difftest_lighting.py`, `tools/difftest_fx_props.py`);
-results and corrections in section 9. **Observed** (O) = read at
+results and corrections in section 9. Round 3, 2026-10-20: the per-level light record
+(section 10). **Observed** (O) = read at
 the address given, **Inferred** (I), **Unknown** (U). Reference contract:
 `tools/ref_lighting.py`, tested by `tools/test_ref_lighting.py` on synthetic values.
 
@@ -44,7 +45,9 @@ stores, at 0x5d3448:
 position = direction), with defaults ambient 0x20 grey, sun 0x44 grey, direction (0, −1,
 1), alphas 0 (render-pipeline 5.1, O 0x1e60e0–0x1e6154). The base level is 0x80, or 0x40
 with level flag 0x04000000, or 0x20 with 0x20000000 (the level flag word 0x44fe08,
-`docs/data-tables.md`). Before any level `light_init` 0x1489c0 uses direction (−0.577,
+`docs/data-tables.md`). Both of those flags set yields 0x40. The executable has no
+per-level colour or direction array; section 10 is the index, the marker record and the
+defaults. Before any level `light_init` 0x1489c0 uses direction (−0.577,
 −0.577, 0.577), sun (0x40, 0x46, 0x50), ambient 0x20 grey, level 0x80.
 
 **Each frame** `light_writeVuConstants` 0x148728 writes the scaled copies: channel =
@@ -285,14 +288,6 @@ objects' own generators. Nothing in this document feeds the simulation that was 
 - Which code sets the render layer 0x4039a4 besides the screens (U).
 - `light_emitModelLightsVariant` 0x149828 and `light_pickShadowLights` 0x148c98 details
   (shadow blobs; render-pipeline 4.9).
-EOF
-cd ~/Projects/champions-re-wt/research-fx && python3 - <<'EOF'
-p='docs/lighting.md'; s=open(p).read()
-s=s.replace("## 7. Per-machine notes","## 7. Per-machine notes",1)
-i=s.rfind("## 7. Open"); s=s[:i]+"## 8. Open"+s[i+len("## 8. Open"):]
-open(p,'w').write(s)
-EOF
-grep -n '^## ' docs/lighting.md
 
 ## 9. Round 2: run against the original (2026-10-18)
 
@@ -344,3 +339,74 @@ Section 8's first item is answered.
 not for making
   a LightEffect: a client must construct them in the simulation even when it does not
 light anything.
+
+## 10. Per-level light record (2026-10-20)
+
+The executable does not store a sun colour, an ambient colour or a sun direction for each
+level. The level table's rows are 0x30 bytes (`docs/data-tables.md` 7.1). The only
+lighting field in a row is the flag word at +0x20. **Observed.** On the US v2.00
+executable the 90 rows and the default row select base level 0x80 or 0x40. The load
+tail still contains the 0x20 store.
+
+What does vary per level:
+
+1. **Index.** `g_levelTable` 0x4f7210, 90 rows of 0x30 plus the null-name row, which is
+   also the default. `game_loadLevel` 0x1e55c0 selects a row by name: `strcpy` of the
+   level name, `strcat` of the literal `"_"` at 0x53da70 and of `g_levelSubName`
+   0x41b771, then `strcmp` (call at 0x1e57ec); then `strncmp` of the plain name against
+   each row over the name's length (call at 0x1e584c); then `strstr` of the plain name
+   for a row name (call at 0x1e58b8). The row pointer advances by 48. The first hit
+   wins. **Observed.** `tools/fx_level_lights.py` `lookup_level` is that order, tested
+   on synthetic names.
+
+2. **Base level.** The load tail 0x1e60e0 reads the selected flag word from 0x44fe08
+   (fp 0x450000, offset −504). The value starts at 0x80. Flag 0x20000000 stores 0x20.
+   Flag 0x04000000 stores 0x40 and wins when both are set. **Observed**, same rule as
+   `ref_lighting.base_level`. Executed.
+
+3. **Sun, ambient, direction.** `world_loadRecords` 0x14e808 writes the defaults into
+   the marker block 0x44fde0 before objects: ambient ints 0x20, 0x20, 0x20 at +0, sun
+   ints 0x44, 0x44, 0x44 at +12, direction floats (0, −1, 1) at +24. **Observed** and
+   executed. Each marker object then overwrites its slot. `charAmbient_Light` 0x158bcc
+   stores trunc(position × 0.5) at +0; `charDirectional_Light` 0x158c6c the same at +12;
+   `charDirectional_LightD` 0x158d0c stores the position floats at +24. **Observed** and
+   executed. The three class-name strings are referenced by the factory compare at
+   0x159c94 and by typeinfo. They are not an array of colours in the executable.
+
+4. **The record the renderer reads** is the one `light_setLevelLight` 0x14a2d8 writes
+   at 0x5d3448 (section 1). The load tail copies the marker ints through the low 8 bits,
+   the direction, both alphas 0, and the base level, then calls it (0x1e60e0–0x1e6158).
+   **Observed.** Executed against `LevelLight.from_markers` (`difftest_lighting.py`,
+   property "level light").
+
+Marker block 0x44fde0, 36 bytes:
+
+| Offset | Meaning |
+|---|---|
+| +0 | ambient r, g, b as signed ints; the byte stored later is the low 8 bits |
+| +12 | sun r, g, b as signed ints |
+| +24 | direction x, y, z floats, not normalised here |
+
+Runtime record 0x5d3448 (`light_getLevelLight` 0x1484c8):
+
+| Offset | Meaning |
+|---|---|
+| +0 | sun direction, 3 floats, unit length, towards the light |
+| +0x2c | sun rgba bytes (0x5d3474) |
+| +0x30 | ambient rgba bytes (0x5d3478) |
+| +0x34 | base level word (0x5d347c) |
+
+`tools/fx_level_lights.py --json ELF` reads the table from the user's executable and
+prints each row's name, flags and base level, plus these defaults. Optional `objects.ob`,
+lump or GOB arguments add the marker colours from those files and attach them to the row
+whose name matches the file stem. Retail values stay out of this repository.
+
+`light_setLevelLightFromRecord` 0x14a260 unpacks a different record (colour bytes and a
+trailing word) and has no caller in the cross-reference. **Unknown** whether anything
+reaches it. The other callers of `light_setLevelLight` pass fixed screen and inventory
+colours, not a row of this table. **Observed.**
+
+**Inferred.** A client lights a real level by reading that level's flag word for the
+base level and the three marker objects from its `objects.ob`, and by using the defaults
+above when a marker is absent. The colours are the marker objects. The executable's
+per-level contribution is the flag word and those defaults.
