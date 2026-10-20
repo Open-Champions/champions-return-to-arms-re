@@ -8,11 +8,13 @@ to the font/text documents; this file only names the calls and their arguments.
 
 **Status:** the order of every HUD drawer, the notice lines, the level-up glow and
 status text colours, the one-line message, the boss meter, the gold counter and
-floaters and the quick-cast selector are documented and function-executed. The bust
-panel, flying damage numbers, net-status lines and the compass are partly documented.
-The minimap, the help/notice boxes, the arena overlay, the medal and net-camera
-prompts are **unknown** beyond their entry points. Nothing here was run on a game;
-"Executed" means `tools/ee_emu.py` ran the original function on constructed state.
+floaters and the quick-cast selector are documented and function-executed. Round 3
+(2026-10-20) adds the flying-number lifetime, the minimap mode tables and blip
+colours, the compass anchor, the help and notice boxes, the arena step gate, and
+the medal and net-camera prompts. The bust submission order was re-read. The
+minimap's blip projector `0x168cac` and the compass mesh extents are still open.
+Nothing here was run on a game; "Executed" means `tools/ee_emu.py` ran the
+original function on constructed state.
 
 O = observed at the addresses given, I = inferred, U = unknown. Coordinates are the
 640 x 448 API arguments. Plain sprites (`ui_drawSprite` 0x17fb68) gain one row inside
@@ -32,7 +34,7 @@ arenaDraw 100, dialog 110, textMessageDraw 125, cutscene 300.
 |---|---|---|
 | 1 | `hud_drawGold` 0x1dc708 | not 0x41b4f8, not `g_hudSuppressed` |
 | 2 | `hud_drawPlayerStatus` 0x1d9cd4 for slot 0, 1, ... `g_numPlayers`-1 | its own gates (hud-layout.md) |
-| 3 | `arena_drawHud` 0x305904 | U inside |
+| 3 | `arena_drawHud` 0x305904 | section 9 |
 | 4 | 0x1d93b0: one-line message, then boss meter | section 4 |
 | 5 | `hud_drawBust` 0x1dfb6c | 0x4f66d4 set |
 | 6 | `hud_drawCompass` 0x1df720 | section 7 |
@@ -250,7 +252,7 @@ products. s = `sin16(g_drawFrame << 10)`. Icons come from the skill's icon metho
 the blank resref 0x86aa40. After the ring: name/`AssignCast` text, `hud_drawPromptBox`
 0x1d99f0 and `spellbookparch.tex` — **U** in detail.
 
-## 7. Partly documented elements
+## 7. Bust, flying numbers, compass, net status
 
 **Bust panel (O / medium, 0x1dfb6c).** Shown while 0x4f66d4 is set (script
 `showBust`). Fade ±0.08445 per frame toward 0 while latch 0x4f66a9 is set (by
@@ -264,24 +266,49 @@ With a maximum (0x86ab34 != -1): `fieldmeter.tex` at (511,371), then
 521 + round_half_away(value/max * texture width) - 2 (left-to-right). Without a
 maximum: the value as text centred at (542,371) and `fieldnumber.tex` at (510,370).
 Portrait (name at 0x4f6b48) at (499 - w/2, frame h - portrait h + 366), then
-`frame.tex` at (499 - w/2, 369), both layer 6 (bust.lmp). Exact submission order
-of all branches is only partly checked; not executed.
+`frame.tex` at (499 - w/2, 369), both layer 6 (bust.lmp). Submission order, re-read
+2026-10-20: one text batch (wrapped line, and either the centred value or the
+second wrap), then the meter branch (clipped `bar_yellow` at `0x17fb88`, then
+`fieldmeter.tex` at (511, 371)) or the number branch (`fieldnumber.tex`), then
+the portrait, then the frame. Same layer, so the frame is the first thing
+painted. Not executed as a whole.
 
-**Flying numbers (O / medium, `FlyingText_draw` 0x1f3830).** Only with the
-damage-number option 0x44fcf8 and camera mode 1. Default font, layer 5, alpha +0x94.
-Colour 0x602060 for kind 1, 0x406e40 for kind 2 without +0x84, 0x408080 when +0x84 is
-set, otherwise 0x323c3c (kinds 1/2 also force x offset +0x78 = 5 and raise the anchor by
-60 / 12 units over the +72 head offset). Position: `mat4_transformPoint` with 0x44f140;
-x = +0x78 + trunc(0.5*x/w) + 320, y = +0x7c + trunc(y/w) + 224 (I that 0x44f140 maps to
-1280-wide GS units, hence the half). Wide (+0x90) or byte text via 0x181c30 / 0x181b78.
+**Flying numbers (O / high for the lifetime and the draw arithmetic).**
+Constructor `0x202158` stores kind at +0x8c, the crit word at +0x84, random drift
+`(rand % 60) - 30` at +0x78 and +0x7c, alpha +0x94 = 0x80, and life +0x96 = 180
+when kind != 0 else 30. It registers the object with `obj_runEveryFrame`
+`0x14f248`, so the lifetime is a simulation object: `FlyingText_run` `0x2022a8`
+runs on every machine. Each tick subtracts 1 from life. While the incoming
+signed life is below 31, alpha subtracts 3 (a negative result is stored as 0).
+When the new signed life is <= 0 the object calls the destructor at vtable+8.
+A plain number therefore lasts 30 sim ticks and fades on all of them; any other
+kind lasts 180 and fades only over the last 30. **Executed**, 30 and 180 ticks.
 
-**Compass (O / medium, 0x1df720).** Needs 0x4f8424, a compass player 0x4f841c >= 0
-with an object, no dialog, and 0x4f66d5. A 3D model (`compass.vif` / `compass.tex`
-in compass.lmp) placed in the camera matrix 0x44f140 at offset (-0.11399, 0.15699,
--5.7548) plus 0x44f038, turned about Z by `atan2_16(target 0x86a8f0 - player) - 0x8000`,
-drawn twice at sort layer 5. Label 0x86aaf0 through `text_drawWrappedCentered` with raw arguments
-(65, 394, label, 131, -100, 500, 18), small font, layer 5, colour 0x632f6159.
-Screen footprint depends on projection: **I** only.
+`FlyingText_draw` `0x1f3830` returns immediately unless option `0x44fcf8` is set
+and the camera mode at `g_localCamera`+0x34 is 1, so a network game still
+simulates the number on a machine that is not drawing it. Default font, layer 5.
+Colour `0x602060` for kind 1; `0x406e40` for kind 2 with +0x84 clear; when +0x84
+is set (any kind other than the kind-1 path) the colour is `alpha<<24 | 0x008080`
+(the low 16 bits only — not `0x408080`); otherwise `0x323c3c`. Kind 1 does not
+read +0x84. Kind 1 and kind 2 without the crit word write +0x78 = 5 on the draw
+and add 60 or 12 to a head offset of 72. Position: `mat4_transformPoint` with
+`0x44f140`; x = +0x78 + trunc(0.5*x/w) + 320, y = +0x7c + trunc(y/w) + 224
+(I that `0x44f140` maps to 1280-wide GS units, hence the half). Wide (+0x90) or
+byte text via `0x181c30` / `0x181b78`. **Executed** for four (kind, crit) pairs
+with the transform stubbed.
+
+**Compass (O / high for the anchor and the label; the mesh rectangle is U).**
+Needs `0x4f8424`, a compass player `0x4f841c` >= 0 with an object, no dialog, and
+`0x4f66d5`. The model origin is `g_cameraPos` `0x44f038` plus the xyz from
+`0x165fc0` applied to offset (-0.113998, 0.156996, -5.75479) and `g_viewProj`
+`0x44f140` (`0x1df7dc–0x1df8e0`). `0x165fc0` uses rows of 16 consecutive floats
+and discards w. **Executed** on one non-identity matrix. The model
+(`compass.vif` / `compass.tex`) is then turned about axis 2 by
+`atan2_16(target 0x86a8f0 - player) - 0x8000` and drawn twice at sort layer 5.
+Its screen rectangle depends on the mesh, which this function does not hold.
+Label `0x86aaf0` through `text_drawWrappedCentered` (65, 394, width 131, top
+-100, bottom 500, line 18), small font, layer 5, colour `0x632f6159`. That
+label call is the screen footprint that does not depend on the mesh.
 
 **Net status (O / high, 0x1dbcec–0x1dc0c8).** "Net Checksum Failure" at (10,300) and
 one out-of-sync line per peer at (10, 320+18i): default font, layer 7, 0x80404080.
@@ -307,16 +334,102 @@ blinking with bit 0x20 of `g_drawFrame`; after 1,201 calls a cable help box or a
 selectors and the message, which is why the latch hides it. Widescreen anchoring
 is not original (hud-layout.md).
 
-## 9. Unknown and how to settle it
+## 9. Minimap, boxes, arena, prompts
 
-- `minimap_draw` 0x1e42e0 (3D automap, layer 5, modes `g_minimapMode` 0x4f8400 cycled by
-  raw pads, stick zoom 0x4f71a0) — trace its matrix and sprite calls.
-- `help_task` 0x1dcc78 boxes, `g_uiPulse` readers 0x1a09c8–0x1a0ea0, `arena_drawHud`,
-  medal and net-camera prompts, pending-potion overlays in execution (round 1 has
-  them O only).
-- Selector prompt tail and bust submission order — extend the private traces.
-- Exact raster parity of any of this: requires original frame captures (see the
-  parity method document of this round, if present).
+**Minimap (O / high for the mode tables and the chase; the projector is U).**
+`minimap_applyMode` `0x1e3ff0` writes five floats. With `players < 2` the byte
+offsets are `mode<<3` and `(mode<<3)+4`; otherwise `(mode<<3)+0x18` and
+`(mode<<3)+0x1c`. From `0x53e1b8` and `0x53e218`:
+
+| mode | players | 0x86af58 scale | 0x86af5c | 0x86af60 | 0x86af64 | 0x86af68 |
+|---|---|---|---|---|---|---|
+| 0 | either | 0.9 | 0 | 0 | 320 | 224 |
+| 1 | 1 | 0.7 | 200 | -120 | 120 | 100 |
+| 1 | 2+ | 0.7 | -240 | 140 | 120 | 100 |
+| 2 | 1 | 0 | 180 | -120 | 0 | 0 |
+| 2 | 2+ | 0 | -240 | 140 | 0 | 0 |
+
+**Executed** for those six calls (`0x168990` stubbed; the stores do not use it).
+`minimap_draw` `0x1e42e0` chases each of the four offsets toward that target:
+snap when the gap is below 0.005, otherwise add a quarter of the gap
+(`0x1e4664–0x1e46a8`, and the same step for the other three). It then calls
+`0x168cac` with zoom = scale × `0x4f71a0`, the four offsets, and two more
+floats from `0x53e1f8[mode]` (16, 10, 10) and `0x53e208[mode]` (6, 5, 5).
+What `0x168cac` does with them is **U**.
+
+`minimap_blipColor` `0x1e40a8` writes three bytes to its out-pointers from the
+word at object +0x3c8, which is also the player index whose health at +0xac
+gates the blink (multiply at `0x1e4144`). Health <= 0 draws only when
+`g_simFrame` bit 0x20 is set. The three bytes are (0xb6, 0x2f, 0x3a),
+(0, 0xbf, 0), (0xb4, 0xb2, 0), (0x1d, 0x20, 0xa1) for 0..3. A non-player whose
+flag word +0xc masked with 0x28 equals 0x20, and whose flags at +0xa8 have bit
+43 set, uses (0xe7, 0xc1, 0x52). The grey (0xc8, 0xc8, 0xc8) with the scale
+out-float set to 0.5 is the other flag arm (`0x1e424c`).
+
+**Help box (O / high, `help_task` 0x1dcc78).** While `g_helpMessageOpen`
+`0x41b928` is set, an offline game sets `g_paused`. The draw is skipped when
+fewer than 3,000 display-list units are free. Title centred at (324, 100) if
+the pointer at `0x86aa64` is set, colour `color_scale(0x8028444e, g_uiPulse)`,
+font `0x4f7100`, layer 6. Body `text_drawWrapped` at (132, 130), width 404, top
+0, bottom 448, line 21, colour `color_scale(0x80464646, pulse)`. The button
+alpha is clamp(128 − closeDelay×10, 0, 128) over rgb `0x464646`, then scaled.
+The '%c' glyph (byte `0x41b978`) is at x = 324 − halfWidth − 25; the
+`Affirmation` string is left-aligned at 324 − halfWidth; both use y = wrap
+height + 139. Frame `0x17fbb8` at (116, 94), size 416 by (height + 76), tint
+`color_scale(0x80808080)`. Inner `ui_drawFrameImpl` at (124, 104), same width,
+height = the wrap height, tint word `0x3f000000`, layer 6. Confirm on a raw
+pad stores close delay 60, clears the open flag, and (offline) runs the post
+action. The delay decrement at the top of the function only blocks that input.
+
+**Notice box (O / high, same function from 0x1dd008).** Per slot while
+`g_playerNoticeOpen` is set. The word at `0x86aa98[slot]` times 320 is the
+column. Title at (column+160, 100). Body at (column+36, 130), width 256, line
+21. Button at (column+135, height+135); the affirmation string at
+(column+160, same y). Frame at (column+26, 94), size 268 by (height+76).
+Rectangle (column+34, 102) to (column+302, height+178), colour word
+`0x3f000000`. Dismiss is the released-then-pressed latch already described in
+docs/ui.md; this read adds no network test around `script_runPostAction`.
+
+**Arena overlay (O / high for the gate, partial for the point).**
+`arena_drawHud` `0x305904` requires `g_pvpModeB`, not `g_pvpModeA`, not
+`g_inFrontend`, not `g_localMenuOpen`. A player whose float at
+`0x5038a0 + slot×12` is below 2 contributes up to five centred `arenaBonus`
+strings, layer 6. Step k draws when max(0, timer − k×0.03) <= 1 (`max.s` at
+`0x305ac0`). `fx_pulseColor` is called as (128 − 16k, 2000 − 200k). Step 0 uses
+font `0x4f7100`; the later steps use `0x4f7104`. The position is the
+`vec3_hermite` at `0x162310` of the anchors built just above that call; the
+resulting point is **U** until that call is executed with the gold-table inputs.
+
+**Medal prompt (O / high, `0x1e0698`).** Skipped while `pauseMenu` runs, and
+unless word `0x4f66b0` is set. While `missionmenudraw` runs it calls
+`hud_drawMessageBox` with keys `MedalRound` and either `MedalRoundPick` or,
+when networked and `net_localIsFirstActive` is 0, `MedalRoundPickNet`.
+Arguments: a2 0, a3 0x80, t0 0, t1 0x7c, t2 0, t3 −1, stack −28 and 1. The
+message-box prologue turns that into x 320, y 192, width 520, layer 6. The
+list `menuList_draw` at (320, 220) runs whenever the prompt is armed.
+
+**Net-camera prompt (O / high, `0x1e01b8`).** Offline returns. Otherwise the
+local slot's record is `g_players + slot×0x4c30` (the multiply at `0x1e01f4`).
+`Camera_cycleSpectated(cam, 0)` runs when `0x1ec580` is nonzero, or when health
++0xac is 0 and (the object at +0x43d8 is missing or `g_playerDeadCountdown` is
+0) and `g_alivePlayerCount` is nonzero. Dialog, a cutscene or the pause menu
+then return without text, after that cycle. Confirm on the slot's raw pad
+(`0x4028dc + slot×0x58`) cycles with argument 1. The spectated name is
+`text_drawAsciiCentered` at (320, 352), layer 6, colour `player_slotColor`.
+When two or more players are alive, `netCamToggle` is centred at (320, 372)
+in colour `0x804d4d4d`.
+
+## 10. Unknown and how to settle it
+
+- `0x168cac`, the minimap projector: the floats it receives are in section 9;
+  its sprite or matrix output is not.
+- Compass mesh extents, so the model footprint in pixels. The label rectangle
+  and the world anchor are known.
+- The hermite point of `arena_drawHud`. The step gate is known.
+- Selector prompt tail. Bust submission order is now read; the function is
+  still not executed as a whole.
+- Exact raster parity of any of this: requires original frame captures
+  ([ui-parity.md](ui-parity.md)).
 
 ## Validation
 
@@ -326,3 +439,9 @@ frames, 480 gold frames, 560 selector frames (558 with draws), 288 status frames
 (1,358 notice submissions). Callees outside the function were stubbed except the
 original sine/cosine/smoothstep, strstr and strcpy. No game, emulator or native
 build was run.
+
+Round 3, `tools/difftest_ui_r3.py`: `minimap_applyMode` for six (mode, player)
+pairs; `FlyingText_run` for 30 and 180 ticks; `FlyingText_draw` for four
+(kind, crit) pairs with the transform and text calls stubbed; `0x165fc0` on
+one matrix; the present-gain slice `0x19ce3c–0x19cf08`; `color_scale`
+`0x19ecac` at factors 1 and 0.5. All matched the reference.

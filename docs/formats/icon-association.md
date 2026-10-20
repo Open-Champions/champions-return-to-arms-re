@@ -204,8 +204,19 @@ place a decoded picture, not a full inventory-screen contract:
 - `tools/test_ref_icon_assoc.py`: 15 synthetic tests (invented names, tables
   and index), no game input.
 
-**Not done / U:** the four calls above are every `jal` to `0x108358` /
-`0x1083a4` in `.text` (O, text scan; pointer calls not searched); which screens
-reach them (shop, trade, equipment) was not traced; which `bodyType` a spectator view passes;
-screenshots of the original inventory against a native one (the parity
-method for this needs a capture of the original grid with a known item list).
+**Screens (O / high for direct calls, 2026-10-20).** The two `jal`s to
+`item_getPicture` are inside `itemList_drawGrid` and `itemList_draw`.
+`itemList_drawGrid` is called only from `itemList_draw` (`0x1cd8f0`,
+`0x1cd914`). `itemList_draw`'s only caller is `itemList_update` `0x1d14c8`
+at `0x1d1520`. That update is called from `inventory_runPanel` `0x1c00b8`
+(itself called by `inventory_runTask` `0x1c56a8`) and from `shop_run`
+`0x1c74c0` (called by `shop_task` `0x1c6068`). `0x1c7908` also calls the
+update and has no `jal` caller (U whether a task pointer reaches it). The
+dimension function is also called from `0x1cbbe8`, which
+`inventory_pollResources`, `inventory_refreshPanelModel` and `shop_run` call.
+No stats or equipment function calls `item_getPicture`; equipment models go
+through the eqcache. Pointer calls were not searched.
+
+**Not done / U:** which `bodyType` a spectator view passes; screenshots of
+the original inventory against a native one (the parity method for this
+needs a capture of the original grid with a known item list).

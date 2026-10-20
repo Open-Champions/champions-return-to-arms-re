@@ -20,7 +20,7 @@ Unknown/inferred header fields are marked separately.
 | FNT offset | Type | Meaning / evidence |
 |---|---|---|
 | +0x00 | s16, positive in valid files | Glyph count; signed load for wide-codepoint search at `0x180b60` path |
-| +0x02 | u16 retained word | **Unknown** semantic meaning; 8 in the four audited fonts. Not read by any text function in `0x17ffb0–0x181d30`; line height is a caller argument ([ui-text.md](ui-text.md) section 5) |
+| +0x02 | u16 retained word | **Unknown** semantic meaning; 8 in the four audited fonts. Not read by any text function in `0x17ffb0–0x181d30`; a 2026-10-20 scan found no reader of this word (the offset-2 loads in that neighbourhood are glyph fields or a TEX header). Line height is a caller argument ([ui-text.md](ui-text.md) section 5) |
 | +0x04 | u32 | **Inferred / high:** kerning-record count including terminal row; agrees with all four table spans. Not needed by the observed unbounded width loop |
 | +0x08 | u32 | Glyph table offset from FNT base; pointer after relocation |
 | +0x0c | u32 | Kerning table offset from FNT base; pointer after relocation |

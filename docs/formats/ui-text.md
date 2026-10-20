@@ -169,7 +169,11 @@ No right-aligned wrapper exists in the module (callers compute their own x).
 **Line height is a caller argument**, not a font field. The constants passed
 to the two wrappers are 17 and 21 at most sites, also 14, 15, 16, 18, 19, 20 and
 31 (argument tally, I / high). The FNT +2 word is not read anywhere in
-`0x17ffb0–0x181d30` (O / high). Its meaning remains **U**.
+`0x17ffb0–0x181d30` (O / high). A 2026-10-20 scan of every `lh`/`lhu` with
+offset 2 in `0x17f000–0x182800` finds glyph fields and, at `0x17ffa0` /
+`0x17ffa8`, the width and height of a TEX header (the callers at
+`0x3218f0–0x321aa8` pass a sprite into `ui_drawSprite`). Relocate `0x181a20`
+still fixes only +8, +0xc and +0x10. The header word's meaning remains **U**.
 
 ### Wrapping algorithm (both drawers)
 

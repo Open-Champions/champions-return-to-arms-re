@@ -57,9 +57,15 @@ composite of the same draws. All buffer facts are **O** in render-pipeline.md
 section 8 (0x19c8fc, 0x19bf04, 0x19cbb0); their consequences are **I**.
 
 1. **16-bit draw buffer with dither** (`PSMCT16`, `DTHE` 1). Each channel keeps
-   5 bits: up to 7 lost per channel, plus the dither offset. The dither matrix
-   (`DIMX`) value the game sets is **U** in this pass; GS dither entries lie in
-   −4..+3. Alpha is one bit in the buffer: compare RGB only.
+   5 bits: up to 7 lost per channel, plus the dither offset. The matrix is the
+   GS register `DIMX` (id `0x44`). The game builds `0x3131757531317575` at
+   `0x19c46c` (init), `0x17b210` (sprite path), `0x177fcc` (model option bit
+   `0x02`) and `0x190664`, and stores it as that register's data. Low nibble
+   first, the signed 3-bit entries are the rows (−3, −1, −3, −1), (+1, +3, +1,
+   +3), repeated. **O.** Per frame, `gfx_emitFrameSetup` `0x19c9a4` writes
+   `DTHE` (`0x45`) = 1 and `COLCLAMP` (`0x46`) = 1 and does not rewrite `DIMX`.
+   `dither5` in the reference is the inferred clamp-then-shift to 5 bits; it is
+   not applied by `composite()`. Alpha is one bit in the buffer: compare RGB only.
 2. **1280 × 448 buffer.** Logical x is doubled; the present pass box-filters
    2 × 2 into the display. Two GS columns per logical pixel make the horizontal
    filter neutral for 2D art (I).
@@ -72,11 +78,21 @@ section 8 (0x19c8fc, 0x19bf04, 0x19cbb0); their consequences are **I**.
    doubled**, not the woven picture. Which screen rows take which field also
    depends on the sprite's top row parity (the recompiled renderer models this
    as `field_shift`, tools/recomp/render/gs.cpp:1688).
-4. **Present colour.** The present pass multiplies colour by
-   `2 × v × (0.8 × brightness + 0.2)` (0x19cbb0, O) and may blend with the last
-   displayed image (`gfx_setScreenDarken`). The Play! notes measured a clear
-   colour shown ×0x99/0x80 (tools/play-net/README.md, "Along the top of the menu
-   screens"). A capture taken after present is **not** the draw buffer.
+4. **Present colour.** `gfx_present` `0x19cbb0` multiplies each channel by
+   `2 × v × (0.8 × brightness + 0.2)` (`0x19ce3c–0x19cef4`, O). The double is an
+   add of the product with itself; the result is truncated toward zero and
+   clamped to 0..255. Brightness is the float at `0x44fd80`. The reset path
+   `0x1e6260` stores 0.5 when its argument is −1, which makes the gain 0.6 and
+   a channel of 128 into 153. **Executed** for (128, 0, 255) at that
+   brightness. v is the word at `0x44fd8c` / `0x44fd90` / `0x44fd94` when
+   `gfx_present`'s third argument is 0, and 128 otherwise (`0x19cc4c`). Those
+   three words then step toward 128 by 4, snapping across 124..132
+   (`0x19cf0c–0x19cf94`). The packed word is R, G, B in bits 0, 8, 16. The
+   pass may also blend with the last displayed image (`gfx_setScreenDarken`).
+   The Play! notes measured a clear colour shown ×0x99/0x80
+   (tools/play-net/README.md, "Along the top of the menu screens"). A capture
+   taken after present is **not** the draw buffer. 0x99/0x80 = 153/128, which
+   is the 0.5-brightness result above.
 5. **Edges.** Line 0 and the outermost pixels are often not drawn by menus
    (tools/play-net/README.md, same row): a television hides them. Mask them.
 
@@ -207,9 +223,10 @@ composition from `ref_ui_layout.hud_base_layers`, comparator tolerance, mask,
 slack and record diffs.
 
 **U / left:**
-- the `DIMX` dither matrix the game sets; the exact weave of normal-mode
-  captures for odd sprite tops; the caller of the 0x17a5a0 header;
-- the present gain at each brightness setting measured on a capture;
+- the exact weave of normal-mode captures for odd sprite tops; the caller of
+  the 0x17a5a0 header (no direct `jal`; pointer calls were not searched);
+- a capture at a brightness other than the 0.5 default, to confirm the gain
+  formula on real pixels (the formula itself is executed);
 - the API-level log in the translation (proposed in §3);
 - any run of tier A over whole frames or of tier B against `shotfb`. The
   tolerance of §5 is a proposal until one original capture and one reference
