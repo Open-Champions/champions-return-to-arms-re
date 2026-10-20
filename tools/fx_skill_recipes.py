@@ -23,7 +23,10 @@ placement) are the models named in each row; tools/ref_fx_skills.py explains how
 call-outs map to primitives.
 
 Standard library only; reads ghidra_funcs.tsv and the symbol files of this repository for
-function bounds and names.  Keep the output local.
+function bounds and names.  When that table lists no start in the requested range, bounds
+are inferred from jal targets, prologues and the recipe-table addresses (without any
+bounds the scan keeps no calls).  A constant that is live on a branch around an earlier
+call is filled in when the straight-line walk left that slot empty.  Keep the output local.
 """
 import hashlib
 import json
@@ -92,13 +95,39 @@ def class_of(name):
     return name.split('_', 1)[0] if name else ''
 
 
+def recipe_addresses(recipes=None):
+    recipes = FS.RECIPES if recipes is None else recipes
+    return [p.addr for phases in recipes.values() for p in phases]
+
+
+def function_starts(words, base, listed, lo, hi, extra=()):
+    """Use listed bounds when any start falls in [lo, hi); otherwise infer them.
+
+    An empty start list makes owner() drop every call (0 calls in the JSON).  Observed
+    when the tool is run from a copy of tools/ that has no ghidra_funcs.tsv.
+    """
+    if any(lo <= s < hi for s in listed):
+        return listed
+    return FC.infer_starts(words, base, extra)
+
+
 def scan(words, base, starts, names, read_u32=None, lo=SKILL_LO, hi=SKILL_HI):
-    """Every effect call in [lo, hi): (function, name, site, primitive, args)."""
-    rows = []
+    """Every effect call in [lo, hi): (function, name, site, primitive, args).
+
+    The straight-line walk is the source of a value it already recovered.  path_states
+    fills a register, float or stack slot that walk left empty, from the first path that
+    reaches the call without falling through an earlier call.
+    """
+    raw = []
     for site, target, t in FC.scan_calls(words, base, set(FC.PRIMITIVES), read_u32):
         f = FC.owner(starts, site)
         if f is None or not lo <= f < hi:
             continue
+        raw.append((f, site, target, t))
+    paths = FC.path_states(words, base, starts, set(FC.PRIMITIVES), read_u32, lo, hi)
+    rows = []
+    for f, site, target, t in raw:
+        FC.fill_unknown(t, paths.get(site))
         prim = FC.PRIMITIVES[target]
         rows.append((f, names.get(f, ''), site, prim, structured_args(prim, t)))
     return rows
@@ -273,7 +302,9 @@ def run(path, lo=SKILL_LO, hi=SKILL_HI, root=None):
     def read_u32(va):
         return None if e.in_text(va) else e.u32(va)
 
-    rows = scan(words, addr, FC.load_funcs(root), FC.load_names(root), read_u32, lo, hi)
+    listed = FC.load_funcs(root)
+    starts = function_starts(words, addr, listed, lo, hi, recipe_addresses())
+    rows = scan(words, addr, starts, FC.load_names(root), read_u32, lo, hi)
     classes = build(rows)
     lights = scan_light_records(words, addr, read_u32)
     out = {'executable_sha256': hashlib.sha256(e.d).hexdigest(), 'range': [lo, hi],

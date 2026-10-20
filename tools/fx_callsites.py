@@ -13,9 +13,12 @@ address range (hex), e.g. 2c3cd4 320000 for the skill files.
 Reads your own executable, ghidra_funcs.tsv (function bounds) and the symbol files of this
 repository (names); prints addresses, names and the constant register / stack values at
 each call, nothing else.  Function bounds: the call belongs to the function in
-ghidra_funcs.tsv whose start is the highest one at or below the call.  Arguments use the
-constant tracker of fx_particle_defs.py (straight-line code only; unknown values print
-as `?`).  Keep the output local.
+ghidra_funcs.tsv whose start is the highest one at or below the call.  When that file
+lists no start in the requested range, bounds are inferred (infer_starts).  Arguments use
+the constant tracker of fx_particle_defs.py.  scan_calls walks straight-line code only
+(unknown values print as `?`).  path_states is a separate per-function walk that recovers
+a constant the straight-line walk lost; fx_skill_recipes uses it to fill empty slots.
+Keep the output local.
 """
 import bisect
 import os
@@ -73,6 +76,34 @@ def load_funcs(root):
     return sorted(starts)
 
 
+def infer_starts(words, base, extra=()):
+    """Function starts when ghidra_funcs.tsv is not available.
+
+    A start is a jal target, an address in extra that lands on an instruction, or the
+    first non-zero word after jr ra when that word is addiu/daddiu sp, sp, -N.  Observed:
+    with no starts at all, scan_calls still finds calls but owner() drops every one.
+    """
+    n = len(words)
+    text_lo, text_hi = base, base + 4 * n
+    starts = set()
+    for addr in extra:
+        if text_lo <= addr < text_hi and (addr - base) % 4 == 0:
+            starts.add(addr)
+    for i, w in enumerate(words):
+        pc = base + 4 * i
+        if w >> 26 == 3:                                 # jal
+            tgt = (pc & 0xF0000000) | ((w & 0x3FFFFFF) << 2)
+            if text_lo <= tgt < text_hi:
+                starts.add(tgt)
+        if w == 0x03E00008:                              # jr ra
+            j = i + 2
+            while j < n and words[j] == 0:
+                j += 1
+            if j < n and (words[j] & 0xFFFF8000) in (0x27BD8000, 0x67BD8000):
+                starts.add(base + 4 * j)
+    return sorted(starts)
+
+
 def owner(starts, addr):
     i = bisect.bisect_right(starts, addr) - 1
     return starts[i] if i >= 0 else None
@@ -116,6 +147,119 @@ def scan_calls(words, base, targets, read_u32=None):
         i += 2
 
 
+def _clone_tracker(t):
+    n = FD.Tracker(t.read_u32)
+    n.r, n.f, n.stack = dict(t.r), dict(t.f), dict(t.stack)
+    return n
+
+
+def _branch_index(pc, word, base):
+    imm = word & 0xFFFF
+    simm = imm - 0x10000 if imm & 0x8000 else imm
+    return (pc + 4 + simm * 4 - base) // 4
+
+
+def path_states(words, base, starts, targets, read_u32=None, lo=0, hi=1 << 32):
+    """Per-function walk.  Returns {call site: tracker after the delay slot}.
+
+    The straight-line walk falls into a call that a branch skips, then forget_call drops
+    registers that are still live on the branch.  This walk does not replace that result:
+    the first path to reach an instruction wins, and the caller copies a value only into
+    a slot the straight-line walk left empty.  A function is one span between consecutive
+    starts.  jal is not followed.  jr ends the path.  An unconditional beq/beql (both
+    registers the same) does not fall through.
+    """
+    n = len(words)
+    text_lo, text_hi = base, base + 4 * n
+    bounds = sorted(s for s in set(starts) if text_lo <= s < text_hi and (s - base) % 4 == 0)
+    if not bounds:
+        return {}
+    bounds.append(text_hi)
+    targets = set(targets)
+    out = {}
+    for b0, b1 in zip(bounds, bounds[1:]):
+        if b1 <= lo or b0 >= hi:
+            continue
+        _walk_paths(words, base, (b0 - base) // 4, (b1 - base) // 4, targets, read_u32, out)
+    return out
+
+
+def _walk_paths(words, base, i0, i1, targets, read_u32, out):
+    seen = set()
+    work = [(i0, FD.Tracker(read_u32))]
+    budget = max(1, (i1 - i0) * 4 + 8)
+    while work and budget > 0:
+        i, t = work.pop()
+        while i0 <= i < i1 and i not in seen and budget > 0:
+            budget -= 1
+            seen.add(i)
+            w = words[i]
+            pc = base + 4 * i
+            if (w >> 26) == 0 and (w & 0x3F) == 8:       # jr
+                if i + 1 < i1:
+                    t.step(words[i + 1])
+                break
+            br = FD.branch_kind(w)
+            if br is not None:
+                likely, eq = br
+                op = w >> 26
+                rs, rt = (w >> 21) & 31, (w >> 16) & 31
+                dest = _branch_index(pc, w, base)
+                taken = _clone_tracker(t)
+                if i + 1 < i1:
+                    taken.step(words[i + 1])
+                if i0 <= dest < i1 and dest not in seen:
+                    work.append((dest, taken))
+                if op in (0x04, 0x14) and rs == rt:      # always taken
+                    break
+                if not likely and i + 1 < i1:
+                    t.step(words[i + 1])
+                if eq is not None:
+                    a, b = eq
+                    if t.r.get(a) is None and t.r.get(b) is not None:
+                        t.setr(a, t.r[b])
+                    elif t.r.get(b) is None and t.r.get(a) is not None:
+                        t.setr(b, t.r[a])
+                i += 2
+                continue
+            res = t.step(w)
+            if res is None:
+                i += 1
+                continue
+            kind, target = res
+            if i + 1 < i1:
+                t.step(words[i + 1])
+            if kind == 'call':
+                if target in targets:
+                    out[pc] = _clone_tracker(t)
+                t.forget_call()
+                i += 2
+                continue
+            if kind == 'jump':
+                dest_addr = (pc & 0xF0000000) | (target & 0x0FFFFFFF)
+                di = (dest_addr - base) // 4
+                if i0 <= di < i1 and di not in seen:
+                    i = di
+                    continue
+                break
+            i += 2
+
+
+def fill_unknown(dest, src):
+    """Copy constants into slots dest does not already have."""
+    if src is None:
+        return
+    for key, value in src.r.items():
+        if key not in dest.r and value is not None:
+            dest.r[key] = value
+    for key, value in src.f.items():
+        if key not in dest.f and value is not None:
+            dest.f[key] = value
+    for key, value in src.stack.items():
+        if key not in dest.stack and value is not None:
+            dest.stack[key] = value
+
+
 def describe_args(prim, t):
     fregs, iregs, stack = SIGNATURES.get(prim, ((), (), ()))
     parts = []
@@ -144,6 +288,8 @@ def run(path, mode, prim=None, lo=0, hi=1 << 32, root=None):
     words = list(struct.unpack_from('<%dI' % (size // 4), e.d, off))
     names = load_names(root)
     starts = load_funcs(root)
+    if not any(lo <= s < hi for s in starts):
+        starts = infer_starts(words, addr)
 
     def read_u32(va):
         return None if e.in_text(va) else e.u32(va)

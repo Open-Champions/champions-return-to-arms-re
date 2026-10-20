@@ -44,6 +44,11 @@ def swc1(ft, off, base):
     return T.i_type(0x39, base, ft, off)
 
 
+def beq(rs, rt, here, target):
+    """beq at instruction index `here` to instruction index `target`."""
+    return T.i_type(4, rs, rt, target - (here + 1))
+
+
 def fill_light_record(light_off=0x80, colours=(0x11, 0x22, 0x33, 0x44), radius=16.0, extra=0.5,
                       falloff=0.125):
     """Minimal ctor body: a0 at BASE; light at a0+light_off; constant fields only."""
@@ -113,6 +118,58 @@ class LightRecords(unittest.TestCase):
                                    (('Synth_ctor', BASE, BASE + len(words) * 4, 0x80, True),))
         self.assertIn('Synth_ctor', out)
         json.dumps(out)                         # serialisable floats
+
+
+class PathFill(unittest.TestCase):
+    """A branch around an earlier call keeps constants the straight-line walk drops.
+
+    Shape of SpellArena_run's two particle calls (0x305e08–0x305e28): the fall-through
+    call uses one a0, an unconditional branch skips the next call, and that next call's
+    a0 is an addiu from a register set before the first call.  f12 is set before both.
+    Immediates here are synthetic.
+    """
+
+    def test_second_call_keeps_a0_and_f12(self):
+        w = [T.lui(8, 0x12), T.addiu(4, 8, 100), T.mtc1(0, 12), beq(0, 0, 3, 9), T.NOP,
+             T.jal(0x18F3F8), T.NOP, beq(0, 0, 7, 12), T.NOP, T.addiu(4, 8, 200),
+             T.jal(0x18F3F8), T.NOP, T.NOP]
+        rows = R.scan(w, BASE, [BASE], {BASE: 'Synth_run'}, lo=BASE, hi=BASE + 0x100)
+        self.assertEqual([row[3] for row in rows], ['particle', 'particle'])
+        self.assertEqual(rows[0][4]['a0'], 0x120000 + 100)
+        self.assertEqual(rows[0][4]['f12'], 0.0)
+        self.assertEqual(rows[1][4]['a0'], 0x120000 + 200)
+        self.assertEqual(rows[1][4]['f12'], 0.0)
+
+    def test_straight_line_value_wins_over_the_other_path(self):
+        # Fall-through sets a0 to 5.  The always-taken branch would leave the lui value.
+        w = [T.lui(4, 1), beq(0, 0, 1, 4), T.NOP, T.addiu(4, 0, 5), T.jal(0x18F3F8), T.NOP]
+        rows = R.scan(w, BASE, [BASE], {BASE: 'Synth_run'}, lo=BASE, hi=BASE + 0x100)
+        self.assertEqual(rows[0][4]['a0'], 5)
+
+    def test_no_bounds_drops_every_call(self):
+        words = [T.addiu(29, 29, -32), T.jal(0x18F3F8), T.NOP, 0x03E00008, T.NOP]
+        self.assertEqual(R.scan(words, BASE, [], {BASE: 'Foo_run'}, lo=BASE, hi=BASE + 64), [])
+
+    def test_inferred_prologue_keeps_the_call(self):
+        # The prologue is the instruction after the previous function's jr ra.
+        words = [0x03E00008, T.NOP, T.addiu(29, 29, -32), T.jal(0x18F3F8), T.NOP,
+                 0x03E00008, T.NOP]
+        start = BASE + 8
+        starts = R.function_starts(words, BASE, [], BASE, BASE + 64, extra=())
+        self.assertIn(start, starts)
+        rows = R.scan(words, BASE, starts, {start: 'Foo_run'}, lo=BASE, hi=BASE + 64)
+        self.assertEqual([(row[0], row[3]) for row in rows], [(start, 'particle')])
+
+    def test_listed_bounds_are_not_replaced(self):
+        words = [T.addiu(29, 29, -32), T.jal(0x18F3F8), T.NOP]
+        listed = [BASE + 4]
+        self.assertEqual(R.function_starts(words, BASE, listed, BASE, BASE + 64), listed)
+
+    def test_extra_outside_the_image_is_ignored(self):
+        words = [T.jal(BASE + 8), T.NOP, T.NOP, T.NOP]
+        starts = R.function_starts(words, BASE, [], BASE, BASE + 32, extra=(BASE + 0x10000,))
+        self.assertIn(BASE + 8, starts)
+        self.assertNotIn(BASE + 0x10000, starts)
 
 
 if __name__ == '__main__':

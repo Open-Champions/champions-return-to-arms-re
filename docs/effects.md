@@ -764,6 +764,28 @@ Synthetic unit tests (no game data): `test_vu1_emu.py`, `test_ref_fx_render.py`,
   `StaticFire_ctor` 0x2c5240–0x2c54f8, light at object +0x80; `StaticFire_ctor2`
   0x2c54f8–0x2c5770, +0x80; `SpellPlanarSteelEffect_ctor` 0x2fb728–0x2fb924, spell +0x30
   (radius 0 at cast; falloff omitted). Synthetic coverage: `tools/test_fx_skill_recipes.py`.
+- **Function bounds.** A call is reported only when its site belongs to a function whose
+  start lies in the requested range. Those starts are the first column of `ghidra_funcs.tsv`.
+  When that file is missing, or it lists no start in the range, the tool infers starts from
+  `jal` targets, from the instruction after `jr ra` when it is an `addiu`/`daddiu sp, sp, -N`
+  prologue, and from the addresses in `ref_fx_skills.RECIPES`. With an empty start list the
+  JSON still has the class and phase rows and has no calls. **Observed** for the pinned
+  scanner run from a `tools/` copy that did not contain `ghidra_funcs.tsv`.
+- **Constants live on a skipped path.** `scan_calls` walks fall-through only, and a call
+  clears the caller-saved registers. **Observed** in `SpellArena_run` 0x305bbc: `andi` of
+  the particle index with 3 at 0x305d88, `beq` at 0x305e08. The index not divisible by four
+  falls through to the particle call at 0x305e10; a multiple of four branches to the call
+  at 0x305e28. An unconditional branch at 0x305e18 skips that second call on the
+  fall-through. The straight-line walk therefore reaches 0x305e28 only after the first
+  call has cleared `a0` and `f12`, and the JSON has those two slots null. They are the
+  pair the native loader requires for that class (`needs()` ordinal 1, keys `a0` and
+  `f12`). The tool fills a slot the straight-line walk left empty from the first path
+  that reaches the call. A slot that walk already holds a value for is copied through
+  unchanged. The same fill recovers `a0` and `f12` at `SpellPlanarWind_run` 0x30a71c
+  and `a0` at `SpellTagarsInsects_run` 0x30d430. On the US v2.00 executable those five
+  slots are the only ones that change. Address order of the arena calls is rest, then
+  every fourth. The native comment labels ordinal 0 "every fourth" and ordinal 1
+  "rest". **Observed.**
 - **SpellHornOmenEffect group matrix** (**O** `SpellHornOmenEffect_run` 0x2fc684 calls
   `mat34_setPosRotZ` 0x163b30 then `particleGroup_setMatrix` 0x18e9e8 on the spell's group
   +0x1c): each tick the group matrix is the creature owner's world position (+0x10) and
@@ -1452,7 +1474,9 @@ E (gameplay, recorded here because the visual function does it).
 **SpellArena_run** 0x305bbc: driven by the s16 at 0x5038c8 (I: the arena's countdown);
 sets/clears object flag 2 of the fighter at 61; from 30 on int(23 f) particles at random
 model sample points (spell generator), every fourth of a second definition, and the
-fighter's two tint colours fixed.
+fighter's two tint colours fixed. The two particle calls are at 0x305e10 (the index
+masked with 3 is not 0) and 0x305e28 (the index is a multiple of four). **O** 0x305d88,
+0x305e08.
 
 **SpellHornOmenEffect** (ctor 0x2fc574, run 0x2fc684; made by a script command, caller
 0x146628): the Spell base (ONE SHARED DRAW), a particle group, 600 ticks. Each tick the
