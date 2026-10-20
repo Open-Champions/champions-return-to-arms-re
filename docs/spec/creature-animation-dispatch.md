@@ -50,8 +50,8 @@ reports *which entry* it was given and every virtual call *which slot*.
    global the case read is then set, **one at a time**, to 13 probe values (small
    integers, the pending-damage bits 0x40000…0x380000, floats 1, 100, −1, all ones).
    An outcome is the ordered list of animation and virtual calls plus the u16 stored at
-   `+0x232`. Conditions combining two fields, or values outside the probes, are not
-   explored (section 7).
+   `+0x232`. Each probe sets one field. Two fields set together are a later executed
+   pass (section 7); values outside the probes are still not explored.
 2. **constructor** (each listed constructor, variant argument 0, 1, 2 in every later
    register): `creature_setDefEntryParams` 0x118378 calls (entry, four raw32 seconds,
    four masks), animation calls, direct calls of the class's own setState, and the class
@@ -335,20 +335,28 @@ clips are chosen inline by `Player_run` 0x1a5030's action switch (`+0x58c`),
   hash intervals (9,216 calls; ad-hoc script, not kept, see that document 3.4).
 - **Correction** folded into `docs/spec/player-tick.md` §0: track +8 is weight and +0x10
   life (the old note swapped the names; offsets were right).
-- Open: clips of skill-driven states 6, 9, 0xe and the jump state 7; the bow/thrown war-cry
-  name buffer that is never written; stale fields left by `player_resetIdleAnim`.
+- Open: who writes player state 7; the bow/thrown war-cry name buffer that is never
+  written; stale fields left by `player_resetIdleAnim`. States 6, 9 and 0xe are executed
+  in [player-animation-dispatch](player-animation-dispatch.md) section 6.
 
 ## 7. Open and unknown
 
-- **Two-field and out-of-probe conditions** (**Unknown** for classes other than the
-  ten own machines): the setState scan sets one word at a time to 13 values. Precedence
-  between two conditions on one word (Agony's 0x380000 knockback against 0x40000 hit
-  reaction is read in `docs/monsters-2.md`; most are not), and thresholds on values
-  outside the probes, need the class's own reading. `ref_creature_dispatch.select`
-  refuses an unrecorded condition rather than guessing. The ten own-machine *run*
-  switches, including combinations such as AntQueen's queue and sight test, are
-  executed in [own-state-machines](own-state-machines.md); that does not extend the
-  setState condition table.
+- **Two fields set together** (**Executed**, 2026-10-20): `select` still records one
+  field at a time and still raises on any other condition, including an OR of two
+  recorded values. `ref_field_precedence` is the combination contract, re-executed by
+  `difftest_field_precedence.py`. Agony setState 0x234168 request 0x12, word +0x2dc:
+  any bit of 0x380000 (0x80000, 0x100000 or 0x200000) selects blend entry 0xd; otherwise
+  bit 0x40000 selects entry 9; otherwise entry 0xa. Both a knockback bit and 0x40000
+  follow 0xd. Where the two conditions are on different words, one field's clip wins:
+  FemaleDarkElf 0x12 takes +0x2dc bit 0x80000 over
+  form +0x3c8 = 1; Horsemen death takes form +0x3c8 = 1 (stores state 0, no clip) over
+  +0x470 = 3; VampireLord states 3, 5 and 0x11 take +0x3c8 = 1 over +0x3cc = 1;
+  Clockwork death takes form +0x3c8 over object flag +0xc = 2. A field compared for
+  equality is not a mask: Clockwork +0x3c8 is a form index, so 1|2 plays form 3 and
+  2|4 passes a null clip. Thresholds on values outside the original 13 probes are still
+  **Unknown**. The ten own-machine run switches stay in
+  [own-state-machines](own-state-machines.md); their setState rows had no second field
+  condition for this pass to combine.
 - **Random choices**: periodic residues are exact for the probed draws (0…11 and eight
   large values); a choice that is not periodic is kept as executed points
   (`rand_points`). The *order* of several draws in one case (timer draw before clip draw)
@@ -374,6 +382,8 @@ clips are chosen inline by `Player_run` 0x1a5030's action switch (`+0x58c`),
 ```sh
 python3 -m unittest discover -s tools -p 'test_*.py'
 python3 tools/difftest_creature_dispatch.py local/SLUS_209.73        # needs your executable
+python3 tools/difftest_field_precedence.py local/SLUS_209.73       # two fields at once
+python3 tools/difftest_skill_anim.py local/SLUS_209.73             # player states 6, 9, 0xe
 # regenerate (private outputs stay under local/):
 python3 tools/scan_anim_dispatch.py local/SLUS_209.73 local/anim-dispatch-scan.json
 python3 tools/scan_anim_dispatch.py --runs local/SLUS_209.73 local/runs-anim-dispatch.json

@@ -1,7 +1,9 @@
 """Creature animation dispatch contract, SLUS-20973 v2.00 (round 3).
 
 See docs/spec/creature-animation-dispatch.md.  Extends ref_creature_animation (round 2)
-without changing it.  The per-class numbers live in ref_creature_dispatch_data, which
+without changing it.  Round 4 leaves `select` and these rows alone: player states
+6, 7, 9 and 0xe are `ref_skill_anim`, and two fields set together are
+`ref_field_precedence`.  The per-class numbers live in ref_creature_dispatch_data, which
 `tools/scan_anim_dispatch.py --emit` regenerates from the user's own executable; every
 row is an Executed single-function result (stubbed callees), not a run of the game.
 

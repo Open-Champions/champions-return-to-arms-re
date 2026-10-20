@@ -276,5 +276,7 @@ bit). The phase gate and the branch on that bit are executed.
 - Soul thrown-state hits, and the particle rejection bound.
 - NPC `we_king` particles.
 - GnomeNavigator's level-name damage skip.
-- Anything setState does beyond the round-3 clip rows (loot, flags, the
-  held-soul filter) was not run again.
+- Clip choice when two setState fields are both set is in
+  [creature-animation-dispatch](creature-animation-dispatch.md) section 7
+  (`ref_field_precedence`). These ten setState rows had no second field condition.
+  Other setState side effects (loot, flags, the held-soul filter) were not run again.

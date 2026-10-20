@@ -122,7 +122,7 @@ Blend raw: 0x3dcccccc = 0.1 s, 0x3e4ccccc = 0.2, 0x3e999999 = 0.3, 0x3f000000 = 
 | 0xb block move | 0xa4 (`evade`) | BIO | 3dcccccc / 3e999999 | 0x808 | swap pressed while blocking; `+0x481 = 47` | 0x1bf218 | O |
 | 0xb leave | — | released: top and below life rate 0xbdaaaaaa | — | — | flag 8 gone → 8 (held) or 2 | PT state 0xb | O |
 | 0xc war cry | `<prefix>_warcry` by name: cls 0 ohw, 5 nw, 2 dha, 1 dhs, 3 l, 7 dw; **cls 4/6: the stack buffer is never written** | BIO | 3dcccccc / 3dcccccc | 0x22 | older id 0xe, `P+0x374==0`; `P+0x374=0x30c`; leave when flag 0x20 gone | 0x1a70c0–0x1a71b4 | O |
-| (war cry, spell) | same names, cls 4/6 → `nw_warcry` | BIO | 3dcccccc / 3dcccccc | 0x22 | `SpellAncestralCall_ctor` on the caster; no state change | 0x2e0a6c–0x2e0b6c | O |
+| (war cry, spell) | `ohw_warcry` on a class-0 caster; cls 4/6 not re-run | BIO | 3dcccccc / 3dcccccc | 0x22 | `SpellAncestralCall_ctor`; state becomes 6 at 0x2e0c58, after this blend | 0x2e0a6c–0x2e0c58 | O / X (§6) |
 | 0xd riding | `nw_seated` if the lump has it, else `nw_idlea` (by name) | start | 3dcccccc | 0x3 | when no `nw_seated` track and level name ≠ `bronzeht` | 0x1a5f10–0x1a5f78 | O |
 | fidget (state 2) | `<prefix>_idled` (cls 1 dhs, 2 dha, 3 l, 4 b, 5 nw, 7 dw, else ohw) by name, lump of the record's object | start | 3f000000 | 0x1 | §3.3 | 0x1bc508, 0x1bc540 | O |
 | any (`Player_setNeutral`) | — | top life 1.0, life rate 0xbdaaaaaa; state 2 | — | — | helper | 0x1bebb8 | O |
@@ -285,12 +285,73 @@ at top time ≥ 4.02.
 | swing sound / shout t = 6, 9 | always | only non-local slot or the copy | 0x1aa6f4 |
 | state 3 / 4 entry | — | local slot sets `g_forceGhostRebase` | 0x1b2ee0, processDamage death tail |
 
-## 6. Open / unknown
+## 6. Skill-driven states 6, 7, 9 and 0xe
+
+2026-10-20. `Player_run` starts no clip for states 6 and 0xe (0x1a6a28). State 9 only
+rewrites locomotion cell 3 (0x1a6bf0, section 2). The clips below come from the skill
+constructors. Each constructor was called in `tools/ee_emu.py` on a zeroed player with
+object flag 0x40, weapon class reading as 0, and every callee stubbed. The soft-float
+band was not followed: following it never reaches the state store. Weapon classes 4 and
+6 were not varied, so a class-0 name (`ohw_`, `bash`, `cyclone1`) is what ran. Rows:
+`ref_skill_anim`. Re-run: `difftest_skill_anim.py`.
+
+### 6.1 State 6
+
+All seven store action state 6 and start one clip. Blends are raw32 0x3dcccccc (0.1 s)
+where a blend is passed. A name in the last column is looked up and is not a second
+player clip.
+
+| Constructor | State store | Clip and call | Flags | Also looked up |
+|---|---|---|---|---|
+| `SkillCyclone_cast` 0x2d17c8 | 0x2d18f8 | `cyclone1.anm`, `anim_push` 0x2d1980 | 0x23 | `spel_bw_cyclone.anm` at 0x2d19f0 |
+| `SpellBash_ctor` 0x2de640 | 0x2de6c4 | `bash.anm`, blend 0x2de6ec | 0x812 | — |
+| `SpellAncestralCall_ctor` 0x2e09b4 | 0x2e0c58, after the blend | `ohw_warcry.anm`, blend 0x2e0b6c | 0x22 | `spel_bw_ancestral.anm` at 0x2e0a38 |
+| `SpellShieldBash_ctor` 0x2face4 | 0x2fad68 | `bash.anm`, blend 0x2fad90 | 0x812 | — |
+| roar 0x30016c | 0x300204 | `ohw_roar.anm`, blend 0x300374 | 0x22 | `spel_vb_roar.anm` at 0x300388 |
+| battle cry 0x301714 | 0x3017e0 | `ohw_battlecry.anm`, blend 0x301944 | 0x22 | `spel_vb_battlecry.anm` at 0x301958 |
+| blood lust 0x303254 | 0x303318 | `ohw_bloodlust.anm`, blend 0x30344c | 0x822 | — |
+
+`SpellAncestralCall_ctor` does store state 6. The blend itself is the range
+0x2e0a6c–0x2e0b6c; the store is the later instruction. On this player the war-cry name
+is the class-0 `ohw_warcry`. The same scan of `+0x58c` shows a constant 2 near each of
+these stores (0x2d1bf8, 0x2ded6c, 0x2e0df4, 0x2fb41c, 0x300540, 0x301bc4, 0x303660).
+Those leave stores were not executed this round. `docs/player.md` already reads them as
+the return to state 2.
+
+### 6.2 State 9
+
+`SkillCharge_cast` 0x2c8864 stores 9 at 0x2c88e8 and again at 0x2c88f0 when object flag
+0x40 is set. With that flag clear the state stays 0. Neither call starts a clip.
+**Executed.** The cell-3 weight rate, life and double step at 0x1a6bf0 stay the
+Observed reading in section 2. That address sits inside `Player_run`; calling it as its
+own entry did not reproduce the stores, and it was not re-executed as part of `Player_run`.
+
+### 6.3 State 0xe
+
+`SpellShadowStep_ctor` 0x311638 stores 14 at 0x31173c and ORs 0x5 into the object flags
+(0x40 becomes 0x45). It looks up `spel_de_shadowstep.anm` at 0x31179c and calls 0x214428
+(from 0x3117cc). That helper's `anim_push` at 0x21451c uses flags 0x4 and blend 1.0
+(raw32 0x3f800000). The constructor then loops; the run was stopped after the push.
+Destructor 0x311da0, on the skill whose constructor had stored the player at skill+0xc,
+stores state 2 (the constant at 0x311dfc) and returns the flags to 0x40. **Executed.**
+
+### 6.4 State 7
+
+An executed scan of `.text` found 64 direct stores through offset 0x58c. None is the
+immediate 7. The constants include the state-6, state-9 and state-0xe stores above, plus
+zeros (0x1a7b54, 0x1a7cec, 0x1b5e00, 0x1b5e30) and the landing store of 2 at 0x1b5168.
+0x11f15c copies `+0x58c` from one player to another (load at 0x11f150, store at
+0x11f15c). The other unresolved store is 0x1abd10, inside `Player_run`, which writes a
+register; nothing in the 48 instructions above it puts 7 there. The addiu of 7 at
+0x1a9cfc is stored to the stack (0x1a9d04), not to the player. Who enters state 7 is **Unknown**. The handler that waits until the top
+track's time is at least 4.02 (0x1a5f98) is unchanged from section 2.
+
+### 6.5 Still open
 
 | Item | How to settle |
 |---|---|
-| Clips for states 6, 9 (beyond the cell-3 tweak), 0xe and 7: started by skill code. Scan hits (**I**, flags read heuristically): 0x2d1980 `anim_push` flags 0x23; 0x2de6ec, 0x2fad90 BIO 0x812; 0x300374 BIO 0x22; 0x301944 BIO; 0x30344c BIO 0x822 | read each skill's cast/spell ctor near the state stores listed in player.md |
-| Who sets state 7 and which clip it waits on (top time 4.02) | find the computed store to `+0x58c` |
+| Who sets state 7, and which clip the 4.02 s wait is measured on | a path that puts 7 in the register stored at 0x1abd10, or a writer outside a direct `+0x58c` store |
+| War-cry and roar names for weapon classes 4 and 6 | re-run the constructors with `+0x4a86` set to 4 and 6 |
 | Whether all `atakseq1..5`, `knockdown*`, `*_warcry`, `*_idled`, `nw_seated` exist in each lump (a missing name resolves to 0; what `anim_start` does with a null clip was not read) | list the lumps' clip names from a disc; read `anim_start` 0x16cfe0 for a null test |
 | What the stale stack buffer holds for the cls 4/6 war cry in `Player_run` | execute 0x1a70b4 with a known stack in `tools/ee_emu.py` |
 | Rates, times and slot pointers that `player_resetIdleAnim` leaves stale in cells 0–3 — can a stale cell-0 weight rate drift the idle weight? | execute a sequence (attack, then reset) through `anim_advance` |
