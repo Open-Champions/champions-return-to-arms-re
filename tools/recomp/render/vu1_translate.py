@@ -366,7 +366,7 @@ def main():
     parser.add_argument('--report', action='store_true', help='print what the analysis found')
     args = parser.parse_args()
     for path in (args.out, args.listing):
-        if path and '/local/' not in os.path.abspath(path) + '/':
+        if path and '/local/' not in os.path.abspath(path).replace(os.sep, '/') + '/':     # Windows: backslashes
             raise SystemExit('%s: what is made from the game\'s programs must be written under local/' % path)
     found = Programs()
     if args.elf:

@@ -4,18 +4,25 @@ Started 2026-10-12. The native application (`docs/issues/native-app.md`: the gam
 code translated to C++, with our runtime, renderer, sound library and input) ran on macOS
 only. This is its build for Windows x86-64, made on the Mac with a cross-compiler.
 
-**Nothing here has been run on Windows.** There is no Windows machine, and nothing on this
-Mac executes Windows programs (no Wine; `qemu-system-x86_64` and Docker are installed but
-there is no Windows to start in them, and nothing may be downloaded). Every statement
-below says **Built** (compiles and links), **Ran on the Mac** (the same sources as an
-x86-64 macOS program under Rosetta, or as arm64), **Read** (seen in the linked program or
-the source), or **Not run**. The test plan at the end is for a person with a Windows PC.
+**First run on Windows: 2026-10-20, in a Windows 11 virtual machine on this Mac** (Windows 11
+Pro for ARM, the x86-64 programs under Windows' own x86-64 emulation, no graphics chip):
+section "First run on Windows" below. Until then nothing here had run on Windows, and the
+sections written before it say so. Every statement says **Ran on Windows (VM)**, **Built**
+(compiles and links), **Ran on the Mac** (the same sources as an x86-64 macOS program under
+Rosetta, or as arm64), **Read** (seen in the linked program or the source), or **Not run**.
+The test plan at the end is still for a person with a Windows PC: a real Intel or AMD
+processor and a real OpenGL driver have not run it.
 
 Nothing derived from the game is in the repository. The generated game code
 (`local/recomp-out/gen-app`), the objects and the programs are under `local/recomp-out/`;
 a Windows build is made by the builder from the builder's own disc.
 
-STATE: see "Resume here" at the end (kept current while the work goes on).
+STATE (2026-10-20, 17:05): the tester's folder and the installer were run in a Windows 11 ARM
+virtual machine: floating-point table, boot check, a headless play run and the PNG check give
+the Mac's figures; the window program draws (with a software OpenGL); a Windows copy and the
+Mac's `rta_app` played in one room through a rendezvous service on this Mac, in step through a
+level change, also with `--combat souls`; `install-windows.bat` built a working program from
+nothing (one Windows-only fix). Details: "First run on Windows"; open ends: "Resume here".
 
 ## What is built
 
@@ -543,7 +550,145 @@ game that reaches the room but never starts points at the datagrams between the 
 to be tried only if `rta_app.exe` does not start at all (its arithmetic was not compared
 with anything; `fpcheck_gcc.exe` is its step 1).
 
+## First run on Windows (2026-10-20, a virtual machine on this Mac)
+
+**The machine.** UTM 5.0.8 on this Mac (Apple M5 Pro): Windows 11 Pro for ARM, version
+10.0.26300.9457, 8 virtual processors (4 for the first checks), 8 GB, 64 GB disk, the shared
+network of UTM (the virtual machine 192.168.64.2, the Mac 192.168.64.1). The programs are
+x86-64: Windows runs them under its own x86-64 emulation, so - as with Rosetta - the
+processor that computed is not an Intel or AMD one. There is no graphics chip: Windows has
+its basic display adapter and OpenGL 1.1 (GDI). Everything of the virtual machine is under
+`local/winvm/` (not in the repository); the disc image was copied into it and nowhere else.
+
+**How it was set up, unattended** (the Mac's screen was locked: no click, no key): Microsoft's
+Windows 11 ARM64 ISO rebuilt with `xorriso` (Homebrew) as a new ISO with the EFI boot image that
+does not wait for a key (`efi/microsoft/boot/efisys_noprompt.bin`), `install.wim` split into two
+`.swm` parts with `wimlib` (Homebrew; the ISO has no UDF, and a file over 4 GB cannot be in it),
+an `autounattend.xml` (Windows 11 Pro chosen with Microsoft's generic installation key - the
+"I don't have a product key" path, no activation; the licence accepted, as the owner had done
+in the first try; disk 0 wiped; one local administrator `tester` without a password and with
+automatic log-on; `BypassNRO`; no account or privacy pages), and, in the same ISO, the UTM guest
+tools' drivers and installer and the Win32-OpenSSH MSI (its official GitHub release, ARM64,
+10.0.0.0p2). `SetupComplete.cmd` installs the network driver (`pnputil`), OpenSSH with this
+Mac's public key as the administrators' key, a firewall rule for port 22, and switches sleep
+off; the first log-on installs the guest tools. The disk comes first in the boot order (UTM
+gives the drives boot indexes in their order), so the CD without the key prompt starts only
+while the disk is empty. A QEMU monitor on 127.0.0.1 gave screen dumps and keys
+(`screendump`, `sendkey`) to see what Setup did. From the first boot to `ssh` working: 13
+minutes, to the desktop 17. Two things that did not work at first: an `<InstallFrom><Path>` in the answer file
+(Windows 11 24H2's new Setup: "Unable to find wim specified in unattend", 0x80070490 -
+0x4002C; without the element it finds `install.swm` by itself), and the guest tools' own CD,
+which carries an `Autounattend.xml` of its own (not attached; its files are in the new ISO).
+
+**Ran on Windows (VM)**, the tester's folder as it is (`local/recomp-out/win/rta-windows`, the
+cross build of 10:06) and the llvm-mingw build made on the Mac
+(`local/recomp-out/win-llvm-mingw/rta-windows`), the README's checks over `ssh`:
+
+| Check | Cross build (`rta-windows`) | llvm-mingw build | Against |
+|---|---|---|---|
+| 1. `fpcheck.exe` | "must agree everywhere" **2e77df4dc13ec9c5**; all 56 lines the same as the Mac's x86-64 stand-in under Rosetta except `sizeof(long) 4` (Windows' LLP64); against the arm64 table only the five `vu_* any` lines differ (the NaN sign and payload of "Arithmetic") | the same file, byte for byte | `standin/fpcheck_x64`, `fpcheck_arm64.txt` |
+| 2. boot check (`rta_native.exe boot ... --script boot-check.rig`) | `frames=2309 ... fields=2413 units=113069252`, `VU0: 466083 microprogram calls, 26111361 instructions`; `fc` against `boot-check-mac.txt`: only the `wall=` line (9.7 s, 4 processors) | the same (15.1 s) | `boot-check-mac.txt` |
+| headless play run: the boot check, then 3,600 vertical blanks of drawn input in the hub (`lobbypair.play_lines`, six seeds), the player's level, position, state, hit points, gold, experience shown every 600 | the same values as the arm64 Mac build; four of the seven lines print a position's ninth digit differently (-34.1419106 against -34.1419105 and three more: the same bit patterns, `c2089151` etc. - the GCC libraries' `printf` rounds the last digit differently); `units=256907238` | identical text apart from `wall=` | `standin/rta_native_fix_arm64`, same script |
+| 4. `pnghash.exe pngtest` | 961 files, 942 read, 19 refused, **figure b4ed3d8917871960** | the same | `png-hash.txt` |
+
+**The window program** (`rta_app.exe`). With Windows' own OpenGL it stops at once with its
+message ("the OpenGL driver cannot make a core profile context (it says: 1.1.0) ...") - the
+error path works and says what to do. With Mesa 26.2.4's `opengl32.dll` and
+`libgallium_wgl.dll` (the mesa-dist-win release on GitHub, x64) put beside the program:
+
+- the D3D12 driver over WARP (Mesa's default there): OpenGL 4.6, then the process ends after
+  about 10 s with exit code 0x80070057 before its first picture, with and without `--plain`
+  and `--no-films`, in the `ssh` session and on the desktop;
+- llvmpipe (`GALLIUM_DRIVER=llvmpipe`): exit code 0xC000001D (illegal instruction): Mesa's JIT
+  makes AVX code the emulation does not take; with `GALLIUM_OVERRIDE_CPU_CAPS=sse4.1` (128-bit
+  code) it **works**: the memory-card screen and the hub's loading picture look as on the Mac
+  (pictures looked at; kept under `local/`), the scripts walked the title and the character
+  screens, and the boot script reaches the hub in the window; 36 pictures a second in a 320 x 240 window, 42 without a window
+  (8 processors), about 5 at 960 x 720 with 4 samples (4 processors, the installer compiling beside it);
+- softpipe: OpenGL 3.3 only; the shaders (`#version 410`) are refused with a clear log line and
+  the program goes on to its end without a picture.
+
+Neither crash printed the line `host: the program failed: exception ...` that
+`rt/host_win32.cpp`'s exception filter writes; probably a DLL loaded later (LLVM inside the
+OpenGL driver) installs a filter of its own over it (**not proven**). A tester whose driver
+crashes would get no line either.
+
+**A room of our own: a Windows copy and the Mac in one game (Ran).** `tools/rendezvous/rendezvous.py`
+on this Mac, plain, bound to 127.0.0.1 and 192.168.64.1 (port 41977); the Mac's
+`local/recomp-out/bin/rta_app` (arm64, no window) hosting with `--play-host`, the tester
+folder's `rta_app.exe` (llvmpipe as above, `--plain --resolution 320x224`) joining with
+`--play-join CODE --service 192.168.64.1:41977`; each driven by `n2party.py`'s own scripts (a
+chat line, a new character on the game's screens, drawn play) with `tick-log` and the same
+`tick-do` line; `tools/rig/compare.py ticks` over the two tick logs. Both copies said
+`patch set 9ac29719 (189 words)`; the route was direct (punched; 31 to 53 ms), nothing relayed;
+the launch handshake took 211 blanks on both, as between two Macs.
+
+| Run | Ticks compared | What |
+|---|---|---|
+| `room2` | 1,338 | hub; no shared column differs (the level change was not reached before the host's script gave up) |
+| `room5` | **1,359** | hub, the level changed to drunare at tick 1,000 in one lockstep tick on both, 360 ticks there; **no shared column differs on any tick**; the Windows copy ended by itself, exit code 0 |
+| `room3`, `--combat souls` on both | **522** | "souls-style combat: on for this game" on both; hub; no shared column differs |
+
+The games went at the Windows copy's pace: 1 to 2 lockstep ticks a second (the Mac copy
+waited). Not the network: the Windows program's main thread was inside Mesa's LLVM in three of
+four stack samples (`lldb` of the x86-64 llvm-mingw release attached to the process): llvmpipe
+compiles shader variants on the drawing thread, under emulation, and a two-player game kept
+it compiling. On a PC with an OpenGL driver of its graphics chip this does not apply; it is
+the reason the runs are short.
+
+**The installer** (`tools/install/install-windows.bat`) in a fresh folder: the repository at
+HEAD (4c9a48f, `git archive`) unpacked into `C:\fresh\champions-re`, then
+`install-windows.bat -Disc ... -Yes -Desktop C:\fresh\desk` on the desktop session. It
+installed Python 3.12.10 for ARM64 with winget (from python.org, hash checked by winget; no
+question was left open), downloaded llvm-mingw 20261006 `ucrt-aarch64` from its GitHub release
+(177 MB, SHA-256 9A835D51...), copied `SLUS_209.73` out of the image (4028A55F), translated and
+built (`x86_64-w64-mingw32-clang++` of the ARM64 toolchain: 91 of 91 files in 375 s at 4
+jobs), made the desktop shortcut; 24 min 49 s, exit code 0. Its programs give the same
+`fpcheck` file as the Mac's llvm-mingw build, the same boot check and headless play run as the
+Mac (`units=113069252` and `256907238`) and the same PNG figure; they say `patched: 189 words`
+where today's working-tree builds say 191 (HEAD's fix set).
+
+One fault, Windows only, **fixed**: `render/vu1_translate.py` refused its output path
+("what is made from the game's programs must be written under local/") because it looked for
+`/local/` in a path with backslashes; the installer then went on with VU1 interpreted. The test
+now turns `os.sep` into `/` first (one line; on macOS and Linux nothing changes). The installer
+run again with the fix: "wrote ...\gen-vu\vu1_fast.cpp: 1 programs", one file compiled,
+`rta_app.exe` 26,971,136 bytes instead of 26,845,184, 2.5 minutes.
+
+On the way: started with its input from a pipe (`echo.| install-windows.bat`), Windows
+PowerShell 5.1 waited before its first line and never went on; with the input from `nul` it
+ran. Someone who double-clicks the file is not affected.
+
+**Not run in the virtual machine:** sound (the machine has no sound device: `--no-sound`
+throughout), a controller, the name dialogue and the lobby server (`online.bat`), the
+`--pacing` comparison on a real display, the full-screen and wide-window checks by eye, the GCC
+programs, a real OpenGL driver, a real x86-64 processor, TLS to the public service (never
+pointed at).
+
 ## Resume here
+
+**2026-10-20 17:05, the first run on Windows** (a virtual machine; "First run on Windows" above
+has everything). Ran there: checks 1, 2 and 4 of the README with both builds, a headless play
+run, the window program with Mesa's llvmpipe, three games in one room with the Mac's `rta_app`
+(1,359 ticks in step through a level change; 522 with `--combat souls`), the installer from a
+fresh folder. Changed in the sources: `render/vu1_translate.py`, one line (the path test with
+backslashes). Open, in the order they matter:
+
+1. A real PC: an Intel or AMD processor (the figures above came through Windows' emulation on
+   ARM) and a real OpenGL driver; sound, controller, the pacing by eye, full screen.
+2. The exception filter of `rt/host_win32.cpp` printed nothing when the program died inside
+   the OpenGL driver: probably replaced by the driver's DLL. A vectored handler, or setting the
+   filter again after the context is made, would keep the line.
+3. Mesa's D3D12 driver over WARP ends the program with 0x80070057 before the first picture;
+   not looked into (a driver of a virtual machine, but the same Mesa layer is what Windows on
+   ARM laptops use for OpenGL through Microsoft's compatibility pack).
+4. A long game with a Windows copy: these were short because llvmpipe under emulation made the
+   lockstep slow, not because of the network.
+5. `online.bat`, the name dialogue and the lobby server on Windows; TLS on Windows.
+
+The virtual machine stays as it is (`ssh tester@192.168.64.2` with this Mac's key; the scripts
+used are in `local/winvm/tools/`), with the folders, the installer's tree, Mesa and the disc
+image inside it.
 
 **2026-10-20, the combat mode, a room of our own, the installer** (nothing of it run on
 Windows; a Windows 11 ARM virtual machine is being set up for that).
