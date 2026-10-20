@@ -33,6 +33,10 @@
 //                       box) left out of the picture; --music-volume 0..1 the game's music alone
 //                       (speech and effects stay).  Lines of the settings file too; while running:
 //                       "app option game_hud|game_hud_text on|off", "app option music_volume V"
+//   --boss-music on|off, --boss-music-dir DIR, --boss-music-volume 0..1   the player's own music for
+//                       boss fights: files he puts in <data>/music/boss/ (.ogg .mp3 .wav; bossmusic.h).
+//                       Lines music.boss, music.boss_dir, music.boss_volume of the settings file;
+//                       while running: "app music info|on|off|volume V|dir PATH|rescan"
 //   --present metal|opengl   how a picture gets into the window (present_host.h): through a Metal
 //                       layer, drawn and handed over by a thread of its own that nothing AppKit
 //                       does to the window can hold up (the default), or by an OpenGL swap on the
@@ -96,6 +100,7 @@
 #include "control.h"
 #include "fpcontrols.h"
 #include "soulscombat.h"
+#include "bossmusic.h"
 #include "fpaim.h"
 #include "fpview.h"
 #include "fpworld.h"
@@ -478,6 +483,7 @@ struct Pads : rta::PadSource {
             fpcontrols::translate(frame, state);
             if (float pitch = fpcontrols::take_pitch(); pitch != 0) fpview::add_pitch(pitch);
             soulscombat::blank(frame);          // the souls-style combat mode (soulscombat.h): off unless asked for
+            bossmusic::blank(frame);            // the player's own boss music (bossmusic.h): reads the game's state, plays nothing without files
             fpaim::blank(frame);                // aiming by looking (fpaim.h): off unless asked for
         }
         last_buttons = state.buttons;
@@ -1217,6 +1223,7 @@ static void final_report() {                            // on the game's thread,
     apprt::films_report();
     printf("rta_app: %s\n", fpcontrols::figures().c_str());
     if (soulscombat::wanted() || soulscombat::active()) printf("rta_app: %s\n", soulscombat::figures().c_str());
+    printf("rta_app: %s\n", bossmusic::figures().c_str());
     if (fpaim::wanted() || fpaim::active()) printf("rta_app: %s\n", fpaim::figures().c_str());
     {
         const render::GsStats& g = g_renderer->gs.stats;
@@ -1380,6 +1387,10 @@ static void app_command(const std::string& text, uint64_t frame) {
         // app aim info | on | off  (fpaim.h)
         printf("[frame %llu] %s\n", (unsigned long long)frame, fpaim::command(w.size() >= 2 ? text.substr(text.find(w[1])) : std::string()).c_str());
         fflush(stdout);
+    } else if (w[0] == "music") {
+        // app music info | on | off | volume V | dir PATH | rescan | engage on|off|auto  (bossmusic.h)
+        printf("[frame %llu] %s\n", (unsigned long long)frame, bossmusic::command(w.size() >= 2 ? text.substr(text.find(w[1])) : std::string()).c_str());
+        fflush(stdout);
     } else if (w[0] == "souls") {
         // app souls info | on | off | lock | set NAME VALUE  (soulscombat.h)
         printf("[frame %llu] %s\n", (unsigned long long)frame, soulscombat::command(w.size() >= 2 ? text.substr(text.find(w[1])) : std::string()).c_str());
@@ -1395,7 +1406,7 @@ static void app_command(const std::string& text, uint64_t frame) {
         render::Gs& gs = g_renderer->gs;
         if (w[1] == "game_hud") gs.hide_edge = off;
         else if (w[1] == "game_hud_text") gs.hide_text = off;
-        else if (w[1] == "music_volume") { if (!apprt::set_music_volume(atof(w[2].c_str()))) log_line("app option music_volume: this program has no sound library"); }
+        else if (w[1] == "music_volume") { if (!bossmusic::game_music_volume(atof(w[2].c_str()))) log_line("app option music_volume: this program has no sound library"); }
         else { log_line("app option: game_hud on|off, game_hud_text on|off, music_volume 0..1"); return; }
         gfxrt::set_hud_marks(gs.hide_edge || gs.hide_text);        // the marks that say who drew what are needed at 4:3 too while either is left out
         printf("[frame %llu] option: game_hud %s, game_hud_text %s%s\n", (unsigned long long)frame, gs.hide_edge ? "off" : "on", gs.hide_text ? "off" : "on",
@@ -1575,6 +1586,9 @@ int main(int argc, char** argv) {
         else if (a == "--game-hud") overrides.push_back({"game_hud", next()});
         else if (a == "--game-hud-text") overrides.push_back({"game_hud_text", next()});
         else if (a == "--music-volume") overrides.push_back({"music_volume", next()});
+        else if (a == "--boss-music") overrides.push_back({"music.boss", next()});                 // on | off (bossmusic.h)
+        else if (a == "--boss-music-dir") overrides.push_back({"music.boss_dir", next()});
+        else if (a == "--boss-music-volume") overrides.push_back({"music.boss_volume", next()});
         else if (a == "--world") {
             // a "world" / "world.<part>" line of the settings file, said on the command line (which wins over the file)
             std::string kv = next(); size_t eq = kv.find('=');
@@ -1615,6 +1629,7 @@ int main(int argc, char** argv) {
                    "        [--mipmaps yes|no] [--art-pack DIR] [--art-memory MB] [--frame-cap 60|30|0] [--plain] [--settings FILE] [--no-settings]\n"
                    "        [--view overhead|action|chase|shoulder|first] [--view-set view.<mode>.<name>=VALUE]   (V switches while the game runs)\n"
                    "        [--game-hud on|off] [--game-hud-text on|off] [--music-volume 0..1]   (the game's own HUD layer; its boss meter, message and prompt box; the music alone)\n"
+                   "        [--boss-music on|off] [--boss-music-dir DIR] [--boss-music-volume 0..1]   (your own music for boss fights: files in <data>/music/boss/)\n"
                    "        [--pacing ahead|queued] [--present metal|opengl]   (opengl: the way into the window used until 2026-10-13 - if the picture looks wrong)\n");
             printf("rta_app --disc IMAGE [--data DIR] [--window WxH] [--fullscreen] [--scale N | --size WxH] [--volume V | --mute | --no-sound]\n"
                    "        [--emulator-timing] [--script FILE] [--do COMMAND] [--test TEXT] [--offscreen] [--unpaced] [--png PREFIX --at n,..]\n"
@@ -1641,7 +1656,8 @@ int main(int argc, char** argv) {
         opt.unpaced = opt.set.frame_cap <= 0;
         for (auto& kv : opt.set.view)
             if (!fpview::setting(kv.first.c_str(), kv.second.c_str()) && !fpcontrols::setting(kv.first.c_str(), kv.second.c_str()) && !fpworld::setting(kv.first.c_str(), kv.second.c_str()) &&
-                !fpaim::setting(kv.first.c_str(), kv.second.c_str()) && !soulscombat::setting(kv.first.c_str(), kv.second.c_str()))
+                !fpaim::setting(kv.first.c_str(), kv.second.c_str()) && !soulscombat::setting(kv.first.c_str(), kv.second.c_str()) &&
+                !bossmusic::setting(kv.first.c_str(), kv.second.c_str()))
                 log_line("settings: not a view, controls or world setting: " + kv.first + " = " + kv.second);
         opt.set.view.clear();
     };
@@ -1668,7 +1684,7 @@ int main(int argc, char** argv) {
         std::string file = opt.data + "/settings.txt";
         bool there = file_exists(file);
         apply_settings(there ? file : std::string());
-        if (!there && opt.test.empty() && !opt.offscreen) { app::Settings().save(file, (std::string(fpview::settings_text()) + "\n" + fpcontrols::settings_text() + "\n" + fpworld::settings_text()).c_str()); first_start = true; }
+        if (!there && opt.test.empty() && !opt.offscreen) { app::Settings().save(file, (std::string(fpview::settings_text()) + "\n" + fpcontrols::settings_text() + "\n" + fpworld::settings_text() + "\n" + bossmusic::settings_text()).c_str()); first_start = true; }
     }
     if (mode == "boot") {
         // Something is wrong with what was given as the disc: said on the terminal, and to a
@@ -1764,7 +1780,8 @@ int main(int argc, char** argv) {
     renderer.gs.hide_edge = !opt.set.game_hud;
     renderer.gs.hide_text = !opt.set.game_hud_text;
     gfxrt::set_hud_marks(renderer.gs.hide_edge || renderer.gs.hide_text);
-    if (opt.set.music_volume < 1.0) apprt::set_music_volume(opt.set.music_volume);
+    if (opt.set.music_volume < 1.0) bossmusic::game_music_volume(opt.set.music_volume);
+    bossmusic::set_data_folder(opt.data);              // the player's boss music: <data>/music/boss/ unless music.boss_dir says otherwise
     // the picture of a look view: its centre on the walking direction, the kick of swings and hits (fpcontrols.h)
     fpview::on_view([](fpview::View& v, Ctx*, void*) {
         if (v.shown != v.mode) return;

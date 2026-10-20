@@ -356,11 +356,18 @@ bool Engine::rpc(uint32_t server, uint32_t function, const uint8_t* send, size_t
     return true;
 }
 
+// A host's own sound added to the output (app/bossmusic.cpp: the player's music for boss fights): called with every
+// block AFTER the chip has made it, before it goes to the WAV file or the device.  Nothing of the chip, the drivers
+// or what the game is told depends on it.  Any thread sets it; it runs on whichever thread renders.
+static std::atomic<void (*)(int16_t*, size_t)> g_host_mix{nullptr};
+void set_host_mix(void (*mix)(int16_t*, size_t)) { g_host_mix.store(mix, std::memory_order_release); }
+
 void Engine::render(uint64_t frames) {
     int16_t buffer[1024 * 2];
     while (frames) {
         size_t n = frames > 1024 ? 1024 : (size_t)frames;
         spu.render(buffer, n);
+        if (auto mix = g_host_mix.load(std::memory_order_acquire)) mix(buffer, n);
         if (sink_) sink_->write(buffer, n);
         position_ += n;
         frames -= n;
@@ -421,3 +428,5 @@ void Engine::report(FILE* out) const {
 
 // for a host outside the runtime (tools/godot/lib/rtag.cpp: option "music_volume")
 extern "C" void rta_sound_set_music_gain(float gain) { rta::snd::set_music_gain(gain); }
+// a host's own sound mixed into the output (app/bossmusic.cpp); nullptr: none
+extern "C" void rta_sound_set_host_mix(void (*mix)(int16_t* stereo, size_t frames)) { rta::snd::set_host_mix(mix); }

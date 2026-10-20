@@ -88,6 +88,7 @@
 #include "pad_host.h"
 #include "fpcontrols.h"
 #include "soulscombat.h"
+#include "bossmusic.h"
 #include "fpview.h"
 #include "fpworld.h"
 #include "pipeline.h"
@@ -361,6 +362,7 @@ struct Pads : rta::PadSource {
             fpcontrols::translate(blank, state);
             if (float pitch = fpcontrols::take_pitch(); pitch != 0) fpview::add_pitch(pitch);
             soulscombat::blank(blank);          // the souls-style combat mode (soulscombat.h): off unless asked for
+            bossmusic::blank(blank);            // the player's own boss music (bossmusic.h): reads the game's state, plays nothing without files
         }
         last_buttons = state.buttons;
         last_sticks = state.lx | state.ly << 8 | state.rx << 16 | (uint32_t)state.ry << 24;
@@ -997,6 +999,7 @@ static void final_report() {                            // on the game's thread,
     apprt::films_report();
     printf("rta_app: %s\n", fpcontrols::figures().c_str());
     if (soulscombat::wanted() || soulscombat::active()) printf("rta_app: %s\n", soulscombat::figures().c_str());
+    printf("rta_app: %s\n", bossmusic::figures().c_str());
     fflush(stdout);
 }
 
@@ -1040,6 +1043,10 @@ static void app_command(const std::string& text, uint64_t frame) {
         float v[6] = {0, 0, 0, 0, 0, 0};
         for (size_t k = 3; k < w.size() && k < 9; k++) v[k - 3] = (float)atof(w[k].c_str());
         hostpad::test(w[1], w.size() >= 3 ? parse_buttons(w[2]) : 0, v);
+    } else if (w[0] == "music") {
+        // app music info | on | off | volume V | dir PATH | rescan | engage on|off|auto  (bossmusic.h)
+        printf("[frame %llu] %s\n", (unsigned long long)frame, bossmusic::command(w.size() >= 2 ? text.substr(text.find(w[1])) : std::string()).c_str());
+        fflush(stdout);
     } else if (w[0] == "souls") {
         // app souls info | on | off | lock | set NAME VALUE  (soulscombat.h)
         printf("[frame %llu] %s\n", (unsigned long long)frame, soulscombat::command(w.size() >= 2 ? text.substr(text.find(w[1])) : std::string()).c_str());
@@ -1068,7 +1075,7 @@ static void app_command(const std::string& text, uint64_t frame) {
         render::Gs& gs = g_renderer->gs;
         if (w[1] == "game_hud") gs.hide_edge = off;
         else if (w[1] == "game_hud_text") gs.hide_text = off;
-        else if (w[1] == "music_volume") { if (!apprt::set_music_volume(atof(w[2].c_str()))) log_line("app option music_volume: this program has no sound library"); }
+        else if (w[1] == "music_volume") { if (!bossmusic::game_music_volume(atof(w[2].c_str()))) log_line("app option music_volume: this program has no sound library"); }
         else { log_line("app option: game_hud on|off, game_hud_text on|off, music_volume 0..1"); return; }
         gfxrt::set_hud_marks(gs.hide_edge || gs.hide_text);
         printf("[frame %llu] option: game_hud %s, game_hud_text %s%s\n", (unsigned long long)frame, gs.hide_edge ? "off" : "on", gs.hide_text ? "off" : "on",
@@ -1232,6 +1239,9 @@ int main(int argc, char** argv) {
         else if (a == "--game-hud") overrides.push_back({"game_hud", next()});
         else if (a == "--game-hud-text") overrides.push_back({"game_hud_text", next()});
         else if (a == "--music-volume") overrides.push_back({"music_volume", next()});
+        else if (a == "--boss-music") overrides.push_back({"music.boss", next()});                 // on | off (bossmusic.h)
+        else if (a == "--boss-music-dir") overrides.push_back({"music.boss_dir", next()});
+        else if (a == "--boss-music-volume") overrides.push_back({"music.boss_volume", next()});
         else if (a == "--view-set") { std::string kv = next(); size_t eq = kv.find('='); if (eq != std::string::npos) overrides.push_back({kv.substr(0, eq), kv.substr(eq + 1)}); }
         else if (a == "--pacing") { std::string way = next(); opt.queued = way == "queued"; if (way != "queued" && way != "ahead") { fail("--pacing ahead|queued", own_console); return 2; } }
         else if (a == "--plain") plain = true;
@@ -1288,7 +1298,8 @@ int main(int argc, char** argv) {
         opt.unpaced = opt.set.frame_cap <= 0;
         for (auto& kv : opt.set.view)
             if (!fpview::setting(kv.first.c_str(), kv.second.c_str()) && !fpcontrols::setting(kv.first.c_str(), kv.second.c_str()) && !fpworld::setting(kv.first.c_str(), kv.second.c_str()) &&
-                !soulscombat::setting(kv.first.c_str(), kv.second.c_str()))
+                !soulscombat::setting(kv.first.c_str(), kv.second.c_str()) &&
+                !bossmusic::setting(kv.first.c_str(), kv.second.c_str()))
                 log_line("settings: not a view, controls or world setting: " + kv.first + " = " + kv.second);
         opt.set.view.clear();
     };
@@ -1335,7 +1346,7 @@ int main(int argc, char** argv) {
         std::string file = opt.data + "\\settings.txt";
         bool there = file_exists(file);
         apply_settings(there ? file : std::string());
-        if (!there && opt.test.empty() && !opt.offscreen) app::Settings().save(file, (std::string(fpview::settings_text()) + "\n" + fpcontrols::settings_text() + "\n" + fpworld::settings_text()).c_str());
+        if (!there && opt.test.empty() && !opt.offscreen) app::Settings().save(file, (std::string(fpview::settings_text()) + "\n" + fpcontrols::settings_text() + "\n" + fpworld::settings_text() + "\n" + bossmusic::settings_text()).c_str());
     }
 #ifdef RTA_NET
     // the lobby server: --server, else server.txt beside the program - its first line that is
@@ -1409,7 +1420,8 @@ int main(int argc, char** argv) {
     renderer.gs.hide_edge = !opt.set.game_hud;
     renderer.gs.hide_text = !opt.set.game_hud_text;
     gfxrt::set_hud_marks(renderer.gs.hide_edge || renderer.gs.hide_text);
-    if (opt.set.music_volume < 1.0) apprt::set_music_volume(opt.set.music_volume);
+    if (opt.set.music_volume < 1.0) bossmusic::game_music_volume(opt.set.music_volume);
+    bossmusic::set_data_folder(opt.data);              // the player's boss music: <data>/music/boss/ unless music.boss_dir says otherwise
     // the picture of a look view: its centre on the walking direction, the kick of swings and hits (fpcontrols.h)
     fpview::on_view([](fpview::View& v, Ctx*, void*) {
         if (v.shown != v.mode) return;

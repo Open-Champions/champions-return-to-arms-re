@@ -157,6 +157,12 @@ You need your disc image of the **US release, SLUS-20973, version 2.00** as an `
   dumped from your copy of the game and enlarged. Nothing of it comes with the repository;
   how to make one and use it (`--art-pack FOLDER`) is in
   [issues/native-graphics.md](issues/native-graphics.md), section 3 "The art pack".
+- **Your own boss music (optional)**: put your own music files in `<data>/music/boss/`
+  (`<data>` is the program's data folder, the one with its memory cards in `card/`; `.ogg`,
+  `.mp3` or `.wav`). During a boss fight one of them fades in over the game's music, which
+  comes back after the fight. Nothing comes with the program; `--boss-music off` or a
+  `music.boss = off` line in `settings.txt` switches it off
+  ([issues/native-hud.md](issues/native-hud.md) section 13).
 - What was run on each system, and what was not: [issues/native-app.md](issues/native-app.md)
   (Mac), [issues/native-windows.md](issues/native-windows.md),
   [issues/native-linux.md](issues/native-linux.md).

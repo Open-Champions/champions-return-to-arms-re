@@ -154,6 +154,9 @@ def main():
     jobs.append((os.path.join(HERE, 'soulscombat.cpp'), rt_flags + ['-I', HERE, '-I', render], 'a_'))
     # aiming by looking (fpaim.h; docs/issues/native-first-person-aim.md): the same kind of module
     jobs.append((os.path.join(HERE, 'fpaim.cpp'), rt_flags + ['-I', HERE], 'a_'))
+    # the player's own boss music (bossmusic.h; docs/issues/native-hud.md): the state reader and the decoders, plain C++
+    jobs.append((os.path.join(HERE, 'gamestate.cpp'), ['-std=c++17', args.opt, '-Wall', '-I', HERE], 'a_'))
+    jobs.append((os.path.join(HERE, 'bossmusic.cpp'), ['-std=c++17', args.opt, '-Wall', '-I', HERE, '-I', rt], 'a_'))
     jobs.append((os.path.join(HERE, 'look_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE, '-I', rt], 'a_'))
     if not args.original:
         # the films: the library entry points of hle-app.txt, which only this translation leaves open

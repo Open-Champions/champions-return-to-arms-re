@@ -26,6 +26,9 @@
 //   game_hud_text = yes       its second group: the boss meter, the one-line message and the
 //                             prompt box (hide_text)
 //   music_volume = 1          0..1: the game's music alone; speech and effects stay as they are
+//   music.boss   = on         the player's own music for boss fights (bossmusic.h): on | off;
+//                             music.boss_dir = the folder (empty: <data>/music/boss/),
+//                             music.boss_volume = 0..1
 //   frame_cap    = 60         pictures a second: 60, 30 (every other picture is shown), or
 //                             0 = no cap (the game then runs as fast as the machine: a
 //                             benchmark, not for playing).  The game itself always counts 60
@@ -53,7 +56,7 @@ struct Settings {
     int frame_cap = 60;
     bool game_hud = true, game_hud_text = true;     // the game's own HUD layer / its boss meter, message and prompt box
     double music_volume = 1.0;                      // 0..1, the music alone
-    std::vector<std::pair<std::string, std::string>> view;     // "view", "view.<mode>.<name>", "controls.*", "world", "world.*" lines, for fpview / fpcontrols / fpworld ::setting
+    std::vector<std::pair<std::string, std::string>> view;     // "view", "view.<mode>.<name>", "controls.*", "world", "world.*", "music.*" lines, for fpview / fpcontrols / fpworld / bossmusic ::setting
 
     static double parse_aspect(const std::string& text) {
         if (text == "auto" || text == "window" || text.empty()) return 0;
@@ -85,8 +88,9 @@ struct Settings {
         else if (key == "game_hud") game_hud = !(value == "off" || value == "no" || value == "0" || value == "false");
         else if (key == "game_hud_text") game_hud_text = !(value == "off" || value == "no" || value == "0" || value == "false");
         else if (key == "music_volume") { music_volume = atof(value.c_str()); music_volume = music_volume < 0 ? 0 : music_volume > 1 ? 1 : music_volume; }
-        else if (key == "view" || key.compare(0, 5, "view.") == 0 || key.compare(0, 9, "controls.") == 0 || key.compare(0, 7, "combat.") == 0 || key == "world" || key.compare(0, 6, "world.") == 0)
-            view.push_back({key, value});       // controls.*: fpcontrols::setting; world, world.*: fpworld::setting
+        else if (key == "view" || key.compare(0, 5, "view.") == 0 || key.compare(0, 9, "controls.") == 0 || key.compare(0, 7, "combat.") == 0 || key == "world" || key.compare(0, 6, "world.") == 0 ||
+                 key.compare(0, 6, "music.") == 0)
+            view.push_back({key, value});       // controls.*: fpcontrols::setting; world, world.*: fpworld::setting; music.*: bossmusic::setting
         else return false;
         return true;
     }

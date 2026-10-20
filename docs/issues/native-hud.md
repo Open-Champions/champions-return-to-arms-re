@@ -278,6 +278,8 @@ at tick 2422 -> loaded -> level 0.98 with the game's music at 0.00 -> held throu
 fight -> back after the boss died; with an empty folder no line but "0 track(s)". Nobody
 listened: test runs are muted; the levels are the mixer's own figures.
 
+The native program does the same: section 13.
+
 ## 9. Theme
 
 All drawing of panels, bars, text, key caps and glyphs is in `style.gd`; the pieces draw
@@ -320,8 +322,9 @@ What Godot's renderer then spends on the HUD's canvas items is not in these figu
    `tools/recomp/sound/drivers.cpp` and `tools/godot/lib/rtag.cpp`; and its notes 2 to 4
    as requests: the second HUD group hideable (two addresses in `hle.txt`), the camera in
    the overhead view's `rtag_view`, `get_controls_hud()`.
-4. The native application (`rta_app`) can use the same reader: `rta_gs_update(reader,
-   rta::memory())` from its frame hook; nothing of that is written.
+4. The native application (`rta_app`) uses the same reader for its boss music
+   (`rta_gs_update(reader, rta::memory())` at the controller read; section 13). Nothing
+   of the HUD itself is drawn there yet.
 
 ## 12. Left
 
@@ -337,6 +340,79 @@ What Godot's renderer then spends on the HUD's canvas items is not in these figu
 - The controls data and the real portal, once the library and the portal run with it.
 - Paced at a steady 60 on a free machine with a person looking at motion; nobody has
   looked at the HUD moving, only at pictures at fixed ticks.
+
+## 13. Custom music in the native program (2026-10-20)
+
+The native C++ program (`tools/recomp/app`, Mac, Windows, Linux) plays the player's own boss
+music the way `music.gd` does in Godot (section 8). The files: `app/bossmusic.{h,cpp}`,
+three single-file decoders in `app/vendor/` (README.txt there: versions, sources, licences),
+and small hooks in `app_main.cpp`, `win_main.cpp`, `linux/linux_main.cpp`, `settings.h`,
+`sound/drivers.cpp` and the three build scripts. Nothing is shipped and nothing is fetched;
+no music and no test tone is in the repository.
+
+**The folder.** `<data>/music/boss/` (`<data>` = the folder the memory cards are in,
+`--data`), or `music.boss_dir`. `.ogg` (stb_vorbis), `.mp3` (dr_mp3), `.wav` (dr_wav); any
+rate and channel count, converted to 48 kHz stereo; at most 20 minutes of a track are kept.
+Read when the program starts and at every level start. A file the decoders cannot read is
+said once on the terminal and left out. An empty or missing folder changes nothing - the
+game's state is not even read then.
+
+**When.** Read from the game's state with `app/gamestate.h` (the reader of the Godot HUD;
+compiled into the program now), at the vertical blank, the same rule as `music.gd`: a level
+is up, no load, not every local player dead, and either the game's own boss meter is up
+(`boss_uid`), or a boss (rank 2) that is hostile, alive and not inert is after a player, is
+aimed at by one, or is hurt. In the souls-style combat mode a lock-on on a boss counts as
+well (`soulscombat.h`'s local block: `+0x180` on, `+0x184` the object, matched to the
+reader's creature). Then: the next track of a shuffle (every one once before any again, never
+the same twice in a row across two rounds) is decoded on a thread of its own, fades in over
+1.6 s (smooth step) and loops; the game's music goes down along the same curve. Four seconds
+after no boss is engaged it crosses back over 3 s; a boss engaged again in those seconds
+brings it back up.
+
+**How it reaches the sound.** The track is added to the output after the sound chip has made
+its samples: `rta_sound_set_host_mix()` (`sound/drivers.cpp`, `Engine::render`), before the
+block goes to the device or a WAV file; on the device's thread when the sound runs on its own
+clock, on the game's thread on the machine's clock. The game's music alone is turned down
+with the stream driver's host gain for stream 2 - the control of the `music_volume` setting
+(`apprt::set_music_volume`), which the director now multiplies: `music_volume x (1 - level)`.
+Speech and effects stay. Nothing goes over the network; online, each player hears his own
+files or none.
+
+**Settings** (lines of `<data>/settings.txt`, the command line, or `app music ...` while it
+runs):
+
+| setting | command line | default | |
+|---|---|---|---|
+| `music.boss = on` | `--boss-music on\|off` | on | off: never (a track that plays crosses back) |
+| `music.boss_dir =` | `--boss-music-dir DIR` | `<data>/music/boss/` | |
+| `music.boss_volume = 0.8` | `--boss-music-volume V` | 0.8 | 0..1, the player's track |
+| `music.boss_engage = auto` | `--view-set music.boss_engage=on` | auto | test aid: on = engaged whatever the game says, off = never |
+
+`app music info | on | off | volume V | dir PATH | rescan | engage on|off|auto`; the final
+report has a `boss music:` line (state, level, track, peak of what was added, the game's music
+gain, frames mixed, blanks engaged, tracks played).
+
+**Ran** (`local/recomp-out/app-test/bossmusic/`: `run.sh`, `rig.sh`, `tone.py`; the route is
+the Godot boss route `local/godot-hud/test/boss/route.rig`: power-on to `valor`, a boar given
+the MiniBoss bit at tick 2420 so that the game shows its meter, the boar killed; off screen,
+not paced, sound on the machine's clock into a WAV; tones made here with ffmpeg, 4 s sines at
+-18 dB: 330 Hz `.ogg`, 523 Hz `.mp3`, 784 Hz `.wav` mono, and a `broken.mp3` that is text):
+
+| run | what was seen |
+|---|---|
+| `wav-solo`: the `.wav` tone, only the game's music rendered (`sound-solo=stream2`) | `boss engaged at tick 2422` -> `playing tone-c-784.wav` at 2423 -> level 0.06, 0.37, 0.58, 0.99 at 8, 38, 58, 98 blanks, game music 0.98, 0.68, 0.37, 0.00 -> held at 1.00 (own peak -20.0 dB = -18 dB x 0.8) -> no boss from tick 2769 -> `the fight is over` at 3009 -> `the game's music has the stage again` at 3189. In the WAV (`tone.py`, 1 s windows): 784 Hz below -64 dB before, -26.7 / -20.1 dB in the two seconds of the fade, -20.0 dB held; the game's music -35 to -45 dB before, at the floor (-98.6 dB) while held, back to -41 dB as the tone falls (-22.6, -31.1, -56.9 dB) |
+| `cycle-mix`: all four files, the whole mix, engaged by hand (`app music engage on/off` at ticks 300-2100), then the real boss | the `.mp3` decoded and played (523 Hz -23.5 dB held, faded in 20-22 s, out 32-34 s); `broken.mp3`: `cannot play broken.mp3 (not a file of that kind the decoders read): left out`, the `.ogg` loaded two blanks later and played (330 Hz -23.0 dB); engaged again while crossing back -> back up; the real boss at 2422 held it, back at 3009 / 3189 as above. Speech and effects stay in the mix (-11 to -19 dB during the fight) |
+| `boss-mix`: the `.wav` tone, the whole mix | the same lines and ticks as `wav-solo` (2422 / 2423 / 2769 / 3009 / 3189; 347 blanks engaged); 784 Hz -26.4, -20.2 dB in the fade, -20.0 dB held, -22.5, -31.1, -52 dB crossing back; the rest of the game (effects of the fight, -11 to -24 dB) stays |
+| `none-solo` (empty folder) against the program before (`rta_app`, same route) | `sound.wav` the same file (md5 `301beaad...`); one line `0 track(s)` |
+| `boss-off`: the tone there, `--boss-music off` | `sound.wav` the same file as `none-solo` and the program before (md5 `301beaad...`); 0 frames mixed |
+| the rig comparison (`rig.sh`: `fight3.rig` replayed against the rig's log, the unpatched translation built as `rta_app_music_orig`) without music, and with the tones and `music.boss_engage=on` (a track mixed and the game's music at 0 from the first blanks to the end) | both the same file as `merge/rig-final-compare.txt`, line for line |
+
+The decoders and the mixer were compiled for Windows as well (`x86_64-w64-mingw32-g++`,
+objects only, no warning); the Windows and Linux programs were **not** built or run with
+them. **Not run**: the souls-mode lock-on path (no real rank-2 boss reached: the test's boar
+is a mini boss with the meter), paced play with the sound on its own clock (the same mixer on
+the device's thread), a person listening (test runs are silent; the levels are measured in the
+WAV).
 
 ## How it is built and run here
 
