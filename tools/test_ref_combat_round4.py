@@ -158,5 +158,70 @@ class PotionTests(unittest.TestCase):
             RR.RangedModel(mem, Callbacks()).thrown_run(OBJ)
 
 
+SPELL, CASTER, SKILL, MODEL = 0x5000, 0x6000, 0x7000, 0x8000
+
+
+class ShieldCallbacks:
+    def __init__(self, points=4, stat=100, pool=BLOCK):
+        self.points, self.stat, self.pool, self.calls = points, stat, pool, []
+
+    def get(self, name):
+        def answer(*args):
+            self.calls.append((name, args))
+            if name == 'Creature.v16':
+                return MODEL
+            if name == 'model_getSamplePointCount':
+                return self.points
+            if name == 'model_getSamplePoint':
+                return ((C.f32(1.0), C.f32(2.0), C.f32(3.0)), 0)
+            if name == 'pool_new':
+                return self.pool
+            if name == 'Skill.v10':
+                return self.stat
+            return 0
+        return answer
+
+
+def shield(cooldown=0, level=1, **kw):
+    mem = RC.Memory()
+    mem.store(SPELL + 0x8, 4, SKILL)
+    mem.store(SPELL + 0xC, 4, CASTER)
+    mem.store(SPELL + 0x10, 4, 1)
+    mem.store(SPELL + 0x1C, 4, cooldown)
+    mem.store(SPELL + 0x24, 4, 0xD0)
+    mem.poke(SPELL, 1, level)
+    mem.store(CASTER + 0x10, 4, C.f32(10.0))
+    mem.store(CASTER + 0x14, 4, C.f32(20.0))
+    mem.store(CASTER + 0x18, 4, C.f32(30.0))
+    cb = ShieldCallbacks(**kw)
+    return R4.ShieldModel(mem, cb), mem, cb
+
+
+class ShieldTests(unittest.TestCase):
+    def test_a_due_shield_lays_241_particles_and_a_light(self):
+        m, mem, cb = shield(0, stat=100)
+        got = m.holy_shield_absorb(SPELL)
+        flames = [c for c in cb.calls if c[0] == 'particle_spawn']
+        self.assertEqual(len(flames), 241)
+        self.assertEqual(flames[0][1][0], R4.P_HOLY)
+        self.assertEqual(flames[0][1][3], 0)
+        self.assertTrue([c for c in cb.calls if c[0] == 'LightEffect_ctor'])
+        self.assertEqual(mem.load(SPELL + 0x1C, 4), R4.F_COOLDOWN)
+        self.assertEqual(got, C.mul(C.from_int(100), R4.F_HUNDREDTH))
+
+    def test_a_live_cooldown_skips_the_light(self):
+        m, mem, cb = shield(C.ONE, stat=0)
+        got = m.holy_shield_absorb(SPELL)
+        self.assertFalse([c for c in cb.calls if c[0] == 'pool_new'])
+        self.assertEqual(mem.load(SPELL + 0x1C, 4), C.ONE)
+        self.assertEqual(got, 0)
+
+    def test_a_refused_pool_still_starts_the_cooldown(self):
+        m, mem, cb = shield(0, pool=0, stat=10)
+        m.holy_shield_absorb(SPELL)
+        self.assertFalse([c for c in cb.calls if c[0] == 'LightEffect_ctor'])
+        self.assertEqual(mem.load(SPELL + 0x1C, 4), R4.F_COOLDOWN)
+
+
 if __name__ == '__main__':
     unittest.main()

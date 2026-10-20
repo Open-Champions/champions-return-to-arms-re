@@ -72,20 +72,45 @@ Coverage of the 674-instruction function, 40 cases each: kind 1 is 452, kind 2 i
 kind 3 is 325. Kind 1's entry does not run the gas or blast tails. Kind 2's entry does
 not run the flame or the blast. Kind 3's entry does not run the flame or the gas.
 
-## 2. Not in this section yet
+## 2. Holy Shield absorb
+
+`SpellHolyShield_absorb` `0x2e8534` (*Executed*, `difftest_combat_round4.py`, seed 20973,
+40 cases, 0 mismatches, 206 of 206 instructions). The only caller named in the symbol
+table is `Player_takeDamage` `0x1b5658`.
+
+Slot 16 of the caster at `+0xc` is called twice. The first return is the model passed
+to `model_getSamplePointCount`. The second is the model the points are read from.
+`particleGroup_begin` / `particleGroup_end` of the handle at `+0x24` bracket 241
+particles. Each particle draws `Spell_rand` (`0x16a964`, the spell's generator at
+`+0x10`, followed for real) once for the index, that draw modulo the count, then the
+same generator until a unit ball is accepted. The particle is definition `0x8e5ff0`,
+at the sample point, direction the ball times 37, speed 0. The scale given to the
+sample is 1. A count of 0 is not modelled: the original divides by it.
+
+When the float at `+0x1c` is at most 0, `pool_new(0xbc)` and, with a block,
+`LightEffect_ctor` at the caster's position with 60 added to z. The eight register
+floats are 64, 64, 125, 0, 0, 0, 0, 0. The four stack floats are 120, 60, 0.5 and
+`0x3e86a832`. With or without a block, `+0x1c` becomes that last pattern. A positive
+value skips the pool and leaves `+0x1c` alone.
+
+The result is slot 10 of the skill at `+0x8`, called with 0 and the level byte, times
+`0x3c23d70a`.
+
+## 3. Not in this section yet
 
 - Deflection inside the runtime. Round 2's `missile_on_touch` has the branch.
   `RangedRuntime` still refuses `item_parseDescriptor`.
 - The player's bow release in state 0.
-- Holy Shield's `LightEffect`, and `Player_blockSparks` with silent ≠ 0.
+- `Player_blockSparks` with silent ≠ 0.
 - Death states beyond the classes already executed.
 - Combat paths of the remaining skills.
 
-## 3. What was run
+## 4. What was run
 
-`python3 tools/difftest_combat_round4.py <your SLUS_209.73>` (seed 20973, and seed 7).
-Calls, bytes outside the stack, the shared seed, the result. `sprintf`, `strcasecmp`
-and the soft-double helpers run for real. They are the C library.
+`python3 tools/difftest_combat_round4.py <your SLUS_209.73>` (seed 20973, and seed 7
+for the potions). Calls, bytes outside the stack, the shared seed, the result.
+`sprintf`, `strcasecmp` and the soft-double helpers run for real, and so does
+`Spell_rand` on the shield. They are not recorded calls.
 
 `python3 -m unittest tools.test_ref_combat_round4` — synthetic fixtures. Those tests
 are evidence about the model. `RangedModel.thrown_run` still refuses a potion.

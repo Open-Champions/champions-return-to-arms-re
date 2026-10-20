@@ -871,6 +871,7 @@ each, 0 mismatches; seed 7 the same):
 | `playerProjectile_run` kind 1 | `0x1ba940` | 452 of 674 |
 | `playerProjectile_run` kind 2 | `0x1ba940` | 203 of 674 |
 | `playerProjectile_run` kind 3 | `0x1ba940` | 325 of 674 |
+| `SpellHolyShield_absorb` | `0x2e8534` | 206 of 206 |
 
 Kind 1 draws the shared seed inline for two flame particles and one more, every run.
 A hit or an expiry lays five `LooseFire` objects and five decals. Kind 2 lays one
@@ -879,6 +880,11 @@ Kind 3 lays a ring and `world_damageInRadius` with flags `0x40840`, skipped when
 level name is `innpit`, then a decal only when the ground is strictly within 4, and a
 light. A potion does not clear bit 1 of the move result. The stone-hit effect stays
 kinds 0, 4, 5 and 6.
+
+`SpellHolyShield_absorb` draws the spell's own generator, not the shared seed. It lays
+241 particles. A light is made only when `+0x1c` is at most 0, and that word then
+becomes `0x3e86a832`. The result is the skill's slot 10 times `0x3c23d70a`. A sample
+count of 0 is not modelled.
 
 `python3 -m unittest tools.test_ref_combat_round4`: the fixtures only.
 `RangedModel.thrown_run` still refuses a potion.

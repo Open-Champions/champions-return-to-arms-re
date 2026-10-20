@@ -41,11 +41,14 @@ Ext = RC.Ext
 OPTIONS = {'quick': False, 'seed': 20973, 'cases': 40, 'filter': None, 'verbose': False}
 
 BODY = (0x1BA940, 0x1BB3C8)
+SHIELD = (0x2E8534, 0x2E886C)
 ENTRIES = {
     'potionKind1': (0x1BA940, 'i', 0, 'n', 'thrown_run', BODY),
     'potionKind2': (0x1BA940, 'i', 0, 'n', 'thrown_run', BODY),
     'potionKind3': (0x1BA940, 'i', 0, 'n', 'thrown_run', BODY),
+    'holyShield': (0x2E8534, 'i', 0, 'f', 'holy_shield_absorb', SHIELD),
 }
+FN_MODEL, FN_STAT = 0x3E0100, 0x3E0120
 KINDS = {'potionKind1': 1, 'potionKind2': 2, 'potionKind3': 3}
 
 EXTS = {
@@ -61,6 +64,12 @@ EXTS = {
     'fx_ringBurst': Ext(0x1F3D00, 'v', 1, 'n'),
     'world_damageInRadius': Ext(0x161270, 'iviiii', 2, 'n'),
     'Creature.v1': Ext(0, 'pi', 0, 'n'),
+    'Creature.v16': Ext(FN_MODEL, 'p', 0, 'i'),
+    'Skill.v10': Ext(FN_STAT, 'pii', 0, 'i'),
+    'model_getSamplePointCount': Ext(0x1799C8, 'p', 0, 'i'),
+    'model_getSamplePoint': Ext(0x178E18, 'ppviiOWO', 1, 'n'),
+    'particleGroup_begin': Ext(0x18E958, 'i', 0, 'n'),
+    'particleGroup_end': Ext(0x18E9A0, 'i', 0, 'n'),
 }
 _LIGHT = Ext(0x201BD8, 'ivii', 8, 'n')
 _LIGHT.stack = 4
@@ -76,8 +85,8 @@ def shape(ext, res):
 
 
 class Res:
-    def __init__(self, ret=0, f=0):
-        self.ret, self.f = ret, f
+    def __init__(self, ret=0, f=0, outs=()):
+        self.ret, self.f, self.outs = ret, f, list(outs)
 
 
 class World:
@@ -93,9 +102,17 @@ class World:
         self.blocks = {0x54: emu.alloc(0x60), 0x70: emu.alloc(0x80), 0xBC: emu.alloc(0xC0)}
         self.world = emu.alloc(0x10)
         self.mem.w32(RR.G_WORLD, self.world)
+        self.spell, self.caster, self.skill = emu.alloc(0x40), emu.alloc(0x140), emu.alloc(0x80)
+        self.anim = emu.alloc(0x20)
+        self.model_ptr = emu.alloc(0x10)
+        self.vt_caster, self.vt_skill = emu.alloc(0x90), emu.alloc(0x60)
+        self.mem.w32(self.vt_caster + 0x84, FN_MODEL)
+        self.mem.w32(self.vt_skill + 0x54, FN_STAT)
         self.collide = 0
         self.height = 0
         self.give = True
+        self.points = 4
+        self.stat = 0
         self.dtor = 0x3C6468
 
     def respond(self, name, args, view, rng):
@@ -107,6 +124,17 @@ class World:
             return Res(self.blocks.get(args[0], 0) if self.give else 0)
         if name == 'res_find':
             return Res(0x00A10000)
+        if name == 'Creature.v16':
+            return Res(self.model_ptr)
+        if name == 'model_getSamplePointCount':
+            return Res(self.points)
+        if name == 'model_getSamplePoint':
+            base, index = args[2], args[4]
+            point = (C.add(base[0], C.from_int(index & 3)), base[1],
+                     C.add(base[2], C.from_int(index & 1)))
+            return Res(0, 0, [point, C.ZERO])
+        if name == 'Skill.v10':
+            return Res(self.stat)
         return Res()
 
 
@@ -115,7 +143,7 @@ class Rig:
         emu = self.emu = EE(elf, fpu_model='ps2')
         emu.div_zero = 'r5900'
         self.world = World(emu)
-        self.real = {0x1BA940}
+        self.real = {0x1BA940, 0x2E8534, R4.SPELL_RAND}
         emu.follow = type('Follow', (), {'__contains__': lambda _s, t: t in self.real or LIB_LO <= t < LIB_HI})()
         self.names = {}
         for name, ext in EXTS.items():
@@ -146,13 +174,18 @@ class Rig:
         return out
 
     def decode(self, ext, emu):
-        mem, canon = emu.mem, []
-        for kind in ext.ints:
-            reg = emu.r[4 + len(canon)] & M32
+        mem, canon, outs = emu.mem, [], []
+        for i, kind in enumerate(ext.ints):
+            reg = emu.r[4 + i] & M32
             if kind == 'v':
                 canon.append(tuple(mem.u32(reg + 4 * j) for j in range(3)))
             elif kind == 'S':
                 canon.append(('str', mem.cstr(reg, 64).encode('latin1')))
+            elif kind in 'OW':
+                canon.append(1 if reg else 0)
+                outs.append((kind, reg))
+            elif kind in 'ow':
+                outs.append((kind, reg))
             else:
                 canon.append(reg)
         for j in range(ext.floats):
@@ -160,13 +193,21 @@ class Rig:
         sp = emu.r[29] & M32
         for j in range(getattr(ext, 'stack', 0)):
             canon.append(mem.u32(sp + 8 * j))
-        return tuple(canon)
+        return tuple(canon), outs
 
     def make_stub(self, name, ext):
         def stub(emu):
-            canon = self.decode(ext, emu)
+            canon, outs = self.decode(ext, emu)
             self.calls.append((name, canon))
             res = self.world.respond(name, canon, self.eview, self.script_rng)
+            given = list(res.outs)
+            for kind, ptr in outs:
+                value = given.pop(0) if given else ((0, 0, 0) if kind in 'oO' else 0)
+                if kind in 'oO' and ptr:
+                    for j in range(3):
+                        emu.mem.w32(ptr + 4 * j, value[j])
+                elif kind in 'wW' and ptr:
+                    emu.mem.w32(ptr, value)
             if ext.ret == 'f':
                 emu.f[0] = res.f & M32
             return res.ret
@@ -179,6 +220,8 @@ class Rig:
         def get(self, name):
             def answer(*args):
                 res = self.rig.world.respond(name, args, None, self.rig.script_rng)
+                if res.outs:
+                    return tuple(res.outs) if len(res.outs) > 1 else res.outs[0]
                 return shape(EXTS.get(name), res)
             return answer
 
@@ -187,7 +230,8 @@ class Rig:
         emu, mem = self.emu, self.emu.mem
         seed_before = mem.u32(RC.G_RAND_SEED)
         mview = D.ModelView(mem)
-        model = R4.PotionModel(mview, Rig.Callbacks(self))
+        cls = R4.ShieldModel if method == 'holy_shield_absorb' else R4.PotionModel
+        model = cls(mview, Rig.Callbacks(self))
         try:
             mret = getattr(model, method)(*args)
         except EmuError as exc:
@@ -232,6 +276,8 @@ class Rig:
                 model.draws, mem.u32(RC.G_RAND_SEED), mview.load(RC.G_RAND_SEED, 4)))
         if ret_kind == 'i' and (eret & M32) != ((mret or 0) & M32):
             problems.append('result %08x / %08x' % (eret & M32, (mret or 0) & M32))
+        if ret_kind == 'f' and (emu.f[0] & M32) != ((mret or 0) & M32):
+            problems.append('result %08x / %08x' % (emu.f[0] & M32, (mret or 0) & M32))
         for a, byte in mview.bytes.items():
             mem.store(a, 1, byte)
         return problems
@@ -251,6 +297,8 @@ def _cstr(mem, addr, text):
 
 
 def generate(rig, key, rng, n=0):
+    if key == 'holyShield':
+        return _shield(rig, rng, n)
     w, mem = rig.world, rig.emu.mem
     frame = rng.randrange(1, 1 << 20)
     mem.w32(RC.G_SIM_FRAME, frame)
@@ -312,6 +360,49 @@ def generate(rig, key, rng, n=0):
     return (obj,)
 
 
+def _shield(rig, rng, n):
+    w, mem = rig.world, rig.emu.mem
+    spell, caster, skill = w.spell, w.caster, w.skill
+    _zero(mem, spell, 0x40)
+    _zero(mem, caster, 0x130)
+    _zero(mem, skill, 0x70)
+    mem.w32(spell + 0x8, skill)
+    mem.w32(spell + 0xC, caster)
+    mem.w32(spell + 0x10, rng.getrandbits(32) or 1)
+    mem.w32(spell + 0x24, 0x00D00010)
+    mem.w32(caster + 0x48, w.vt_caster)
+    mem.w32(caster + 0x114, w.anim)
+    mem.w32(skill + 0x60, w.vt_skill)
+    for i in range(3):
+        mem.w32(caster + 0x10 + 4 * i, f32(rng.uniform(-80, 80)))
+    mem.w16(caster + 0x38, rng.choice((0, 0x4000, 0x1234, 0xFFFF)))
+    w.points, w.stat, w.give = 4, 0, True
+    cool = C.ZERO
+    if n == 0:
+        w.stat = 100
+    elif n == 1:
+        cool = C.ONE
+        w.stat = 0
+        w.points = 1
+    elif n == 2:
+        cool = 0xBF800000
+        w.give = False
+        w.stat = 10
+        w.points = 7
+    elif n == 3:
+        w.stat = 1
+        w.points = 3
+        mem.w8(spell, 5)
+    else:
+        cool = rng.choice((C.ZERO, C.ZERO, C.ONE, 0xBF800000, f32(0.26)))
+        w.give = rng.choice((True, True, False))
+        w.points = rng.choice((1, 3, 7, 12))
+        w.stat = rng.choice((0, 1, 10, 100, 250))
+        mem.w8(spell, rng.choice((0, 1, 4, 9)))
+    mem.w32(spell + 0x1C, cool)
+    return (spell,)
+
+
 def main(argv):
     args, elf = list(argv), None
     while args:
@@ -360,7 +451,7 @@ def main(argv):
                 failed += 1
                 if len(shown) < 4:
                     shown.append('case %d: %s' % (n, problems if isinstance(problems, str) else '; '.join(problems)))
-        start, end = BODY
+        start, end = ENTRIES[key][5]
         hit = len({pc for pc in rig.pcs if start <= pc < end})
         print('%-22s %8d %8d  %d of %d instructions' % (key, compared, failed, hit, (end - start) // 4))
         for line in shown:

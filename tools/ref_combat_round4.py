@@ -20,6 +20,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import ref_core as C                            # noqa: E402
 import ref_creature as RC                       # noqa: E402
 import ref_combat_ranged as RR                  # noqa: E402
+import ref_combat_runtime as T                  # noqa: E402
 from ref_creature import M32, s8, s16, s32      # noqa: E402
 
 # playerProjectile_run 0x1ba940, the potion tail.  Flight particles are definitions in
@@ -52,8 +53,20 @@ F_ONE_TWENTY_EIGHT = 0x43000000
 F_THIRD = 0x3EB33333                            # 0.34999999
 D_FOUR = 0x4010000000000000                     # 4.0, the decal's height gate
 
+# SpellHolyShield_absorb 0x2e8534.  The particle definition and the two floats the
+# light stores (the cooldown, and the fraction of a hit taken from mana).
+P_HOLY = 0x8E5FF0
+F_THIRTY_SEVEN = 0x42140000
+F_SIXTY_FOUR = 0x42800000
+F_ONE_TWENTY_FIVE = 0x42FA0000
+F_ONE_TWENTY = 0x42F00000
+F_COOLDOWN = 0x3E86A832                         # 0.263, written when the light is due
+F_HUNDREDTH = 0x3C23D70A                        # the slot-10 result, times this
+SPELL_RAND = 0x16A964
+
 MODELLED = {
     'playerProjectile_run': 0x1BA940,
+    'SpellHolyShield_absorb': 0x2E8534,
 }
 
 
@@ -214,3 +227,73 @@ class PotionModel(RR.RangedModel):
         else:
             self._end_blast(this, owner)
         self.vcall(this, 1, 3)
+
+
+class ShieldModel(RR.RangedModel):
+    """SpellHolyShield_absorb.  The caster's slot 16 and the skill's slot 10 stay
+    call-outs.  Spell_rand is the spell's own generator, not a call."""
+
+    def spell_rand(self, spell):
+        seed = (self.u32(spell + 0x10) * 0x19660D + 0x3C6EF35F) & M32
+        self.w32(spell + 0x10, seed)
+        return seed >> 16
+
+    def _signed(self, draw):
+        unit = C.mul(C.from_int(draw), F_INV65536)
+        return C.sub(C.add(unit, unit), C.ONE)
+
+    def _ball(self, spell):
+        while True:
+            v = [self._signed(self.spell_rand(spell)) for _axis in range(3)]
+            size = C.add(C.add(C.mul(v[0], v[0]), C.mul(v[1], v[1])), C.mul(v[2], v[2]))
+            if not C.lt(C.ONE, size):
+                return v
+
+    def holy_shield_absorb(self, spell):
+        """SpellHolyShield_absorb 0x2e8534 (spell) -> float.
+
+        Slot 16 of the caster at +0xc, twice: the first return is the model whose
+        sample-point count is taken, the second is the model the points are read from.
+        One particle group (+0x24) brackets 241 particles.  Each one takes one Spell_rand
+        draw for the point index (that draw modulo the count) and then draws of the same
+        generator until a unit ball is accepted.  The particle is definition 0x8e5ff0 at
+        the sample point, direction the ball times 37, speed 0.  The scale passed to the
+        sample is 1.
+
+        When the float at +0x1c is <= 0, pool_new(0xbc) and, with a block, a light at the
+        caster's position with 60 added to z.  Either way that float becomes 0.263.
+        The result is slot 10 of the skill at +0x8, called with (0, the level byte),
+        times 0.01.  A count of 0 is not modelled: the original divides by it."""
+        caster = self.u32(spell + 0xC)
+        counted = self.vcall(caster, 16)
+        count = s32(self.call('model_getSamplePointCount', counted))
+        if count == 0:
+            raise T.Unsupported('SpellHolyShield_absorb divides by a sample count of 0')
+        model = self.vcall(caster, 16)
+        group = self.u32(spell + 0x24)
+        self.call('particleGroup_begin', group)
+        facing = self.s16(caster + 0x38) & M32
+        pos = self.vec(caster + 0x10)
+        for _particle in range(0xF1):
+            index = (self.spell_rand(spell) % count) & M32
+            point, _weight = self.call('model_getSamplePoint', model, (caster + 0x114) & M32, pos,
+                                       facing, index, 1, 1, 0, C.ONE)
+            ball = self._ball(spell)
+            direction = tuple(C.mul(axis, F_THIRTY_SEVEN) for axis in ball)
+            self.call('particle_spawn', P_HOLY, point, direction, C.ZERO)
+        self.call('particleGroup_end', group)
+        if C.le(self.u32(spell + 0x1C), C.ZERO):
+            block = self.call('pool_new', 0xBC)
+            if block:
+                spot = list(pos)
+                spot[2] = C.add(spot[2], F_SIXTY)
+                self.call('LightEffect_ctor', block, tuple(spot), 0, 0,
+                          F_SIXTY_FOUR, F_SIXTY_FOUR, F_ONE_TWENTY_FIVE, C.ZERO,
+                          C.ZERO, C.ZERO, C.ZERO, C.ZERO,
+                          F_ONE_TWENTY, F_SIXTY, C.HALF, F_COOLDOWN)
+            self.w32(spell + 0x1C, F_COOLDOWN)
+        skill = self.u32(spell + 0x8)
+        table = self.u32(skill + 0x60)
+        this = (skill + self.s16(table + 8 * 10)) & M32
+        stat = self.call('Skill.v10', this, 0, s8(self.u8(spell)) & M32)
+        return C.mul(C.from_int(s32(stat)), F_HUNDREDTH)
