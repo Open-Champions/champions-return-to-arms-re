@@ -46,9 +46,15 @@ F_24 = 0x41C00000
 F_10 = 0x41200000
 F_5 = 0x40A00000
 
-# MissileWeapon kind 2 (exploding).  The impact sample at 0x5324e0 is shared with kind 1
-# and is played before the kind-0 stone visual, which kind 2 never reaches.
+# MissileWeapon impact samples, played before the kind-0 stone visual.  Kinds 0 and 3
+# never reach these.  Kind 5's flight then spawns 32 particles from definition 0x6e00c0.
 S_KIND12_IMPACT = 0x5324E0
+S_KIND5_IMPACT = 0x5324F8
+S_KIND6_IMPACT = 0x532518
+P_KIND5 = 0x6E00C0
+F_INV65536 = 0x37800000
+F_KIND5_DRAG = 0x3DA3D70A
+F_KIND5_DIR = 0x41421062
 F_RING2 = 0x40000000
 F_LIGHT_A = 0x437F0000
 F_LIGHT_B = 0x431B0000
@@ -240,30 +246,53 @@ class Model(SA.Model):
 
 
 class ArrowModel(RR.RangedModel):
-    """MissileWeapon_run for kind 2.  Kinds 0 and 3 stay on RangedModel.  obj_moveAndCollide
-    stays a call-out here: the ranged difftest runs that body for real, and this class
-    must not grow a second copy of it."""
+    """MissileWeapon_run for kinds 2 and 5.  Kinds 0 and 3 stay on RangedModel.
+    obj_moveAndCollide stays a call-out: the ranged difftest runs that body for real."""
 
     def __init__(self, mem, callbacks=None, external=()):
         if 'obj_moveAndCollide' not in external:
             external = tuple(external) + ('obj_moveAndCollide',)
         RR.RangedModel.__init__(self, mem, callbacks, external)
 
-    def missile_run(self, this):
-        """MissileWeapon_run 0x15153c while the word at +0xd0 is 2.
+    def _spread(self, obj):
+        """One coordinate of the rejection ball: draw/65536, doubled, then minus 1."""
+        unit = C.mul(C.from_int(self.obj_rand(obj)), F_INV65536)
+        return C.sub(C.add(unit, unit), C.ONE)
 
-        A carried arrow (handle +0x128) and an arrow whose splash byte is already set
-        take the same exits kinds 0 and 3 take.  In flight, a nonzero move result plays
-        res_find of 0x532478 and 0x5324e0, then sound_playOnObject, and stores 0 at
-        +0xec.  Only a result of exactly 1 also plays the sample at +0x1bc.  Kind 2 then
-        skips the stone-hit effect (that effect is kinds 0 and 3): fx_ringBurst at scale
-        2, pool_new(0xbc) and LightEffect_ctor when a block comes back, then
-        world_damageInRadius of the owner at +0x4c (or 0) for the word at +0xd8, inner
-        24 and outer 72.  Hit or miss, the position is copied to +0x1a4 and light_relink
-        runs on +0x174.  There is no cold puff and no trail.  Slot 1 with 3 runs when
-        the frame is no longer strictly below +0xec, so a hit (which stored 0 there)
-        destroys the arrow on that same frame."""
-        if s32(self.u32(this + 0xD0)) != 2:
+    def _ball(self, obj):
+        """Three coordinates whose squared length is not strictly above 1.  The object's
+        own generator at +0x44, the same one GameObject_rand advances."""
+        while True:
+            x, y, z = self._spread(obj), self._spread(obj), self._spread(obj)
+            length = C.add(C.add(C.mul(x, x), C.mul(y, y)), C.mul(z, z))
+            if not C.lt(C.ONE, length):
+                return x, y, z
+
+    def missile_run(self, this):
+        """MissileWeapon_run 0x15153c while +0xd0 is 2 or 5.
+
+        A carried arrow and an arrow whose splash byte is already set take the same
+        exits as kinds 0 and 3.  A nonzero move result plays the kind's impact sample
+        (0x5324e0 for kind 2, 0x5324f8 for kind 5) and stores 0 at +0xec.  A result of
+        exactly 1 also plays the sample at +0x1bc.  The stone-hit effect is kinds 0 and
+        3 only.
+
+        Kind 2 then: fx_ringBurst at scale 2, pool_new(0xbc) and LightEffect_ctor when a
+        block comes back, world_damageInRadius of the owner at +0x4c (or 0) for the word
+        at +0xd8, inner 24 and outer 72.
+
+        Kind 5 then: fx_spawn 10, the same pool and a LightEffect whose first colour
+        word is 0 and whose third is 0x437f0000.  No radius damage.  Every frame, hit or
+        miss, kind 5 emits 32 particles from 0x6e00c0.  Each particle's position is the
+        arrow position plus its velocity times 0x3da3d70a plus a rejection-ball direction
+        times 10; the particle direction is a second ball times 0x41421062; the speed
+        argument is 0.
+
+        Both kinds then copy the position to +0x1a4 and light_relink +0x174.  No cold
+        puff and no trail.  Slot 1 with 3 runs when the frame is no longer strictly
+        below +0xec, so a hit destroys the arrow on that same frame."""
+        kind = s32(self.u32(this + 0xD0))
+        if kind not in (2, 5):
             return RR.RangedModel.missile_run(self, this)
         u32 = self.u32
         if u32(this + 0x128):
@@ -291,7 +320,8 @@ class ArrowModel(RR.RangedModel):
         if s8(self.u8(this + 0xCC)):
             res |= 2
         if res:
-            hit = self.call('res_find', RR.S_FX_LUMP, S_KIND12_IMPACT)
+            sample = S_KIND12_IMPACT if kind == 2 else S_KIND5_IMPACT
+            hit = self.call('res_find', RR.S_FX_LUMP, sample)
             self.call('sound_playOnObject', hit, this, C.ONE)
             self.w32(this + 0xEC, 0)
             if res == 1:
@@ -299,15 +329,34 @@ class ArrowModel(RR.RangedModel):
                 if impact:
                     self.call('sound_playSample', impact, self.vec(this + 0x10), C.ONE, C.ONE, C.ZERO)
             pos = self.vec(this + 0x10)
-            self.call('fx_ringBurst', pos, F_RING2)
-            block = self.call('pool_new', 0xBC)
-            if block:
-                self.call('LightEffect_ctor', block, pos, 0, 0,
-                          F_LIGHT_A, F_LIGHT_B, C.ZERO, F_LIGHT_C, C.ZERO, C.ZERO, C.ZERO, C.ZERO,
-                          F_LIGHT_D, F_LIGHT_E, C.ONE, C.ONE)
-            node = u32(this + 0x4C)
-            attacker = u32(node + 0xC) if node else 0
-            self.call('world_damageInRadius', attacker, pos, u32(this + 0xD8), 0, 0, 0, F_24, F_OUTER72)
+            if kind == 2:
+                self.call('fx_ringBurst', pos, F_RING2)
+                block = self.call('pool_new', 0xBC)
+                if block:
+                    self.call('LightEffect_ctor', block, pos, 0, 0,
+                              F_LIGHT_A, F_LIGHT_B, C.ZERO, F_LIGHT_C, C.ZERO, C.ZERO, C.ZERO, C.ZERO,
+                              F_LIGHT_D, F_LIGHT_E, C.ONE, C.ONE)
+                node = u32(this + 0x4C)
+                attacker = u32(node + 0xC) if node else 0
+                self.call('world_damageInRadius', attacker, pos, u32(this + 0xD8), 0, 0, 0, F_24, F_OUTER72)
+            else:
+                self.call('fx_spawn', 10, pos)
+                block = self.call('pool_new', 0xBC)
+                if block:
+                    self.call('LightEffect_ctor', block, pos, 0, 0,
+                              C.ZERO, F_LIGHT_B, F_LIGHT_A, F_LIGHT_C, C.ZERO, C.ZERO, C.ZERO, C.ZERO,
+                              F_LIGHT_D, F_LIGHT_E, C.ONE, C.ONE)
+        if kind == 5:
+            pos = self.vec(this + 0x10)
+            vel = self.vec(this + 0x1B0)
+            shifted = tuple(C.add(pos[i], C.mul(vel[i], F_KIND5_DRAG)) for i in range(3))
+            for _count in range(32):
+                x, y, z = self._ball(this)
+                centre = (C.add(shifted[0], C.mul(x, F_10)), C.add(shifted[1], C.mul(y, F_10)),
+                          C.add(shifted[2], C.mul(z, F_10)))
+                dx, dy, dz = self._ball(this)
+                direction = (C.mul(dx, F_KIND5_DIR), C.mul(dy, F_KIND5_DIR), C.mul(dz, F_KIND5_DIR))
+                self.call('particle_spawn', P_KIND5, centre, direction, C.ZERO)
         self.wvec(this + 0x1A4, self.vec(this + 0x10))
         self.call('light_relink', this + 0x174)
         if not s32(u32(RC.G_SIM_FRAME)) < s32(u32(this + 0xEC)):

@@ -53,6 +53,7 @@ ENTRIES = {
     'stancePhantomCtor': (0x1618D4, 'iiiii', 0, 'n', 'strongstance_phantom_ctor', (0x1618D4, 0x161A50)),
     'stancePhantomRun': (0x161A54, 'i', 0, 'n', 'strongstance_phantom_run', (0x161A54, 0x161AD8)),
     'missileKind2': (0x15153C, 'i', 0, 'n', 'missile_run', (0x15153C, 0x15253C)),
+    'missileKind5': (0x15153C, 'i', 0, 'n', 'missile_run', (0x15153C, 0x15253C)),
 }
 REAL = {0x14CB10, 0x1509D0}
 REAL_SPANS = ((0x14CB10, 0x14CF84),)
@@ -75,6 +76,7 @@ EXTS = {
     'obj_delete': Ext(0x14F200, 'p', 0, 'n'),
     'Creature.v1': Ext(0, 'ii', 0, 'n'),
     'obj_moveAndCollide': Ext(0x1509F8, 'iv', 0, 'i'),
+    'fx_spawn': Ext(0x1EF270, 'iv', 0, 'n'),
     'fx_ringBurst': Ext(0x1F3D00, 'v', 1, 'n'),
     'pool_new': Ext(0x14FDB8, 'i', 0, 'i'),
     'sound_playOnObject': Ext(0x214230, 'pp', 1, 'n'),
@@ -290,7 +292,7 @@ class Rig:
         seed_before = mem.u32(SA.G_SIM_FRAME) and mem.u32(RC.G_RAND_SEED)
         seed_before = mem.u32(RC.G_RAND_SEED)
         mview = D.ModelView(mem)
-        cls = R3.ArrowModel if key == 'missileKind2' else R3.Model
+        cls = R3.ArrowModel if key.startswith('missileKind') else R3.Model
         model = cls(mview, Rig.Callbacks(self, D.View(mview.load, mview.poke), random.Random(call_seed)))
         try:
             mret = getattr(model, method)(*args)
@@ -455,7 +457,7 @@ def generate(rig, key, rng, n=0):
         mem.w32(obj + 0xC, rng.choice((0, 0x20)))
         mem.w64(obj + 0xA8, rng.choice((0, 1)))
         return (obj, target, 0x550100, rng.choice((0, 1, 4, -2 & M32)), rng.choice((0, 0, 1)))
-    if key == 'missileKind2':
+    if key in ('missileKind2', 'missileKind5'):
         obj = rng.choice(w.missiles)
         _zero(mem, obj, 0x1E0)
         frame = mem.u32(SA.G_SIM_FRAME) or 1
@@ -467,7 +469,8 @@ def generate(rig, key, rng, n=0):
             mem.w32(obj + 0x10 + 4 * i, pos[i])
             mem.w32(obj + 0x1B0 + 4 * i, vel[i])
         mem.w32(obj + 0x48, RR.VT_MISSILE)
-        mem.w32(obj + 0xD0, 2)
+        mem.w32(obj + 0xD0, 5 if key == 'missileKind5' else 2)
+        mem.w32(obj + 0x44, rng.getrandbits(32))
         mem.w32(obj + 0xD8, rng.choice((1, 12, 40, 100)))
         mem.w32(obj + 0xEC, (frame + 80) & M32)
         mem.w16(obj + 0xFA, 0)

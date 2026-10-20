@@ -183,12 +183,13 @@ class ArrowCallbacks:
         return answer
 
 
-def plant_arrow(mem, end=1000, damage=40, spin=0, impact=0, owner=0, frame=60):
+def plant_arrow(mem, end=1000, damage=40, spin=0, impact=0, owner=0, frame=60, kind=2):
     mem.store(RC.G_SIM_FRAME, 4, frame)
     mem.store(MISSILE + 0x48, 4, ARROW_VT)
     mem.store(ARROW_VT + 8, 2, 0)
     mem.store(ARROW_VT + 12, 4, 0x151454)
-    mem.store(MISSILE + 0xD0, 4, 2)
+    mem.store(MISSILE + 0xD0, 4, kind)
+    mem.store(MISSILE + 0x44, 4, 0x1234)
     mem.store(MISSILE + 0xD8, 4, damage)
     mem.store(MISSILE + 0xEC, 4, end)
     for i, word in enumerate((C.f32(1.0), C.f32(2.0), C.f32(3.0))):
@@ -255,6 +256,27 @@ class ArrowTests(unittest.TestCase):
         plant_arrow(mem, impact=7)
         m.missile_run(MISSILE)
         self.assertTrue([c for c in cb.calls if c[0] == 'sound_playSample'])
+
+    def test_kind5_spawns_thirty_two_particles_and_a_different_light(self):
+        C.set_fpu('ps2')
+        m, mem, cb = self.arrow(collide=0)
+        plant_arrow(mem, kind=5)
+        m.missile_run(MISSILE)
+        spawned = [args for name, args in cb.calls if name == 'particle_spawn']
+        self.assertEqual(len(spawned), 32)
+        self.assertEqual(spawned[0][0], R3.P_KIND5)
+        self.assertEqual(spawned[0][3], 0)
+        self.assertFalse([c for c in cb.calls if c[0] == 'fx_spawn'])
+
+        m, mem, cb = self.arrow(collide=1, pool=LIGHT)
+        plant_arrow(mem, kind=5)
+        m.missile_run(MISSILE)
+        self.assertEqual([args for name, args in cb.calls if name == 'res_find'][0],
+                         (RR.S_FX_LUMP, R3.S_KIND5_IMPACT))
+        self.assertEqual([args for name, args in cb.calls if name == 'fx_spawn'][0][0], 10)
+        light = [args for name, args in cb.calls if name == 'LightEffect_ctor'][0]
+        self.assertEqual(light[4:8], (0, R3.F_LIGHT_B, R3.F_LIGHT_A, R3.F_LIGHT_C))
+        self.assertFalse([c for c in cb.calls if c[0] == 'world_damageInRadius'])
 
 
 if __name__ == '__main__':
