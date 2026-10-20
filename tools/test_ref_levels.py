@@ -24,7 +24,9 @@ import unittest
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.append(_HERE)
+import ref_core as C                            # noqa: E402
 import ref_levels as L                          # noqa: E402
+import ref_objects as Obj                       # noqa: E402
 import ref_world as W                           # noqa: E402
 
 F = W.f32
@@ -759,4 +761,209 @@ class Round2MovePiece(unittest.TestCase):
                 got = draw((tx, ty), c, s, mirrored, local)
                 self.assertAlmostEqual(got[0], want[0], delta=0.5)
                 self.assertAlmostEqual(got[1], want[1], delta=0.5)
+
+
+def _level(origin, size, field, elements):
+    return W.Level(W.build_world_file(origin, size, [field], elements))
+
+
+def _flat(x0, y0, w, h, height, element_z=0, element_xy=(0, 0)):
+    samples = [height * 16] * (w * h)
+    # Grid origin is negative so a point just below 0 is still a real cell.  A grid
+    # that starts at 0 drops those points and terrain_height returns the sentinel.
+    level = _level((-2, -2), (8, 8), (x0, y0, w, h, samples),
+                   [(0, 0, element_xy[0], element_xy[1], element_z, 32767, 0)])
+    return level
+
+
+class Round3Placement(unittest.TestCase):
+    """The start is the spawn slot, then the highest sample within 12.  A floor more than
+    12 above z = 0 is still ground.  Acts do not choose the slot; a previous level name,
+    an entrance name, a gate and a recall do, and none of them clears a stale xy."""
+
+    def test_radius_word_is_twelve(self):
+        self.assertEqual(L.PLACEMENT_RADIUS, F(12.0))
+        self.assertEqual(L.PLACEMENT_RADIUS, 0x41400000)
+
+    def test_snap_keeps_xy_and_a_floor_above_twelve(self):
+        spawn = L.SpawnState()
+        spawn.pos[0] = [F(3.0), F(-4.0), F(0.0)]
+        spawn.pos[1] = [F(9.0), F(9.0), F(1.0)]
+        spawn.facing = [100, 200, 300, 400]
+        spawn.rank = 1
+        seen = []
+
+        def height(radius, pos):
+            seen.append((radius, pos))
+            return F(20.0)
+
+        def spot(*_args):
+            raise AssertionError('slot 0 is not searched')
+
+        L.place_players(spawn, 1, height, spot)
+        self.assertEqual(seen, [(12.0, (F(3.0), F(-4.0), F(0.0)))])
+        self.assertEqual(spawn.pos[0], [F(3.0), F(-4.0), F(20.0)])
+        self.assertEqual(spawn.pos[1], [F(9.0), F(9.0), F(1.0)])   # other slots stay
+        self.assertEqual(spawn.facing, [100, 200, 300, 400])
+        self.assertEqual(spawn.rank, 1)
+
+    def test_high_floor_fails_the_origin_below_test_and_passes_the_snap(self):
+        level = _flat(-4, -4, 8, 8, 0, element_z=20)
+        origin = (F(0.0), F(0.0), F(0.0))
+        self.assertEqual(W.terrain_height_below(level, F(4.0), origin), W.NO_FLOOR)
+        self.assertEqual(W.terrain_height(level, F(4.0), origin), F(20.0))
+        self.assertEqual(W.terrain_height(level, L.PLACEMENT_RADIUS, origin), F(20.0))
+        spawn = L.SpawnState()
+
+        def height(radius, pos):
+            return W.terrain_height(level, F(radius), tuple(F(v) for v in pos))
+
+        L.place_players(spawn, 1, height, lambda *a: a[0])
+        self.assertEqual(spawn.pos[0], [0.0, 0.0, F(20.0)])
+
+    def test_radius_twelve_reaches_a_sample_radius_four_misses(self):
+        # Nearest sample sits 8 world units out: inside 12, outside 4.
+        level = _flat(2, 0, 4, 2, 30)
+        origin = (F(0.0), F(0.0), F(0.0))
+        self.assertEqual(W.terrain_height(level, F(4.0), origin), W.NO_FLOOR)
+        self.assertEqual(W.terrain_height(level, L.PLACEMENT_RADIUS, origin), F(30.0))
+        marker = (F(400.0), F(0.0), F(0.0))
+        far = _flat(0, 0, 4, 4, 0, element_z=8, element_xy=(400, 0))
+        self.assertEqual(W.terrain_height(far, L.PLACEMENT_RADIUS, origin), W.NO_FLOOR)
+        self.assertEqual(W.terrain_height(far, L.PLACEMENT_RADIUS, marker), F(8.0))
+
+    def test_search_rejects_a_floor_six_above_and_the_snap_still_takes_it(self):
+        level = _flat(-40, -40, 80, 80, 0, element_z=20)
+        centre = (F(0.0), F(0.0), F(0.0))
+        world = Obj.World()
+        world.shared = C.SharedRandom(20973)
+        pos, ok = world.find_free_spot(
+            centre, 36, 24, False,
+            lambda r, p: W.terrain_test_flag1(level, r, p),
+            lambda r, p: W.terrain_height(level, r, p))
+        self.assertEqual(ok, 0)
+        self.assertEqual(pos, [F(0.0), F(0.0), F(0.0)])
+        spawn = L.SpawnState()
+        spawn.pos[0] = list(pos)
+        L.place_players(spawn, 1, lambda r, p: W.terrain_height(level, F(r), p),
+                        lambda *a: a[0])
+        self.assertEqual(spawn.pos[0][2], F(20.0))
+        self.assertEqual(L.player_ctor_z(tuple(spawn.pos[0]), L.PLACEMENT_RADIUS,
+                                         lambda r, p: W.terrain_height(level, r, p)),
+                         F(20.0))
+
+    def test_a_floor_under_six_is_accepted_and_six_exactly_is_not(self):
+        def search(height):
+            level = _flat(-40, -40, 80, 80, 0, element_z=height)
+            world = Obj.World()
+            world.shared = C.SharedRandom(1)
+            return world.find_free_spot(
+                (F(0.0), F(0.0), F(0.0)), 36, 24, False,
+                lambda r, p: W.terrain_test_flag1(level, r, p),
+                lambda r, p: W.terrain_height(level, r, p))
+        low, ok_low = search(5)
+        high, ok_high = search(6)
+        self.assertEqual(ok_low, 1)
+        self.assertEqual(low[2], F(5.0))
+        self.assertEqual(ok_high, 0)
+        self.assertEqual(high[2], F(0.0))
+
+    def test_ctor_snap_uses_the_stored_radius_and_ignores_z(self):
+        seen = []
+
+        def height(radius, pos):
+            seen.append((radius, pos[2]))
+            return F(4.0)
+
+        z = L.player_ctor_z((F(1.0), F(2.0), F(99.0)), L.PLACEMENT_RADIUS, height)
+        self.assertEqual(z, F(4.0))
+        self.assertEqual(seen, [(L.PLACEMENT_RADIUS, F(99.0))])
+
+    def test_from_marker_beats_the_origin_and_recall_keeps_its_own_xy(self):
+        records = [rec('Player1', 'default=1', x=0.0, y=0.0, z=0.0),
+                   rec('Player1', 'from=hub', x=50.0, y=8.0, z=1.0)]
+        spawn = L.SpawnState()
+        spawn.pos[0] = [F(9.0), F(9.0), F(9.0)]          # previous level, not cleared
+        took = L.run_markers(spawn, records, 'hub', '', False, lambda c, *_a: c, lambda: 0)
+        self.assertEqual(len(took), 2)                   # default, then from, last wins
+        self.assertEqual(spawn.pos[0][:2], [50.0, 8.0])
+        self.assertEqual(spawn.rank, 2)
+        L.place_players(spawn, 1, lambda r, p: F(3.0), lambda *a: a[0],
+                        restore_xy=[(F(1.5), F(2.5), F(0.0))])
+        self.assertEqual(spawn.pos[0], [F(1.5), F(2.5), F(3.0)])
+
+    def test_gate_sets_rank_three_then_the_same_snap(self):
+        gate = rec('Portal', x=12.0, y=0.0, z=40.0)
+        spawn = L.SpawnState()
+        seen = []
+
+        def spot(centre, spread, radius, any_height):
+            seen.append((spread, radius, any_height, centre))
+            return centre
+
+        L.run_markers(spawn, [gate], '', '', False, spot, lambda: 0x1111,
+                      gate_arrival=True, num_players=1)
+        self.assertEqual(spawn.rank, 3)
+        self.assertEqual(seen, [(36, 24, True, (12.0, 0.0, 40.0))])
+        L.place_players(spawn, 1, lambda r, p: F(7.0),
+                        lambda *a: (_ for _ in ()).throw(AssertionError('rank 3')))
+        self.assertEqual(spawn.pos[0], [12.0, 0.0, F(7.0)])
+        self.assertEqual(spawn.pos[1], [0.0, 0.0, 0.0])
+
+    def test_no_marker_keeps_the_stale_slot(self):
+        spawn = L.SpawnState()
+        spawn.pos[0] = [F(4.0), F(5.0), F(6.0)]
+        spawn.facing[0] = 99
+        L.run_markers(spawn, [rec('Lantern')], 'hub', 'door', False, lambda *a: a[0], lambda: 0)
+        L.place_players(spawn, 1, lambda r, p: F(1.0), lambda *a: a[0])
+        self.assertEqual(spawn.rank, 0)
+        self.assertEqual(spawn.pos[0], [F(4.0), F(5.0), F(1.0)])
+        self.assertEqual(spawn.facing[0], 99)
+
+
+class Round3Arena(unittest.TestCase):
+    def test_ring_angle(self):
+        self.assertEqual(L.arena_ring_angle(0, 1), 0)          # s16(65535) * 0
+        self.assertEqual(L.arena_ring_angle(1, 1), W.s16(-1))
+        self.assertEqual(L.arena_ring_angle(2, 4), W.s16(16383 * 2))
+        self.assertEqual(L.arena_ring_angle(2, 3), W.s16(21845 * 2))
+        with self.assertRaises(ValueError):
+            L.arena_ring_angle(0, 0)
+
+    def test_first_search_and_the_wider_retry(self):
+        entry = (F(10.0), F(-4.0), F(2.0))
+        calls = []
+
+        def search(centre, spread, radius, any_height):
+            calls.append((spread, radius, any_height, centre))
+            if spread == L.ARENA_FIRST_SPREAD:
+                return centre, 0
+            return (centre[0], centre[1], F(6.0)), 1
+
+        pos, facing, ok = L.arena_initial_place(
+            entry, 0, 1, False, search, table_facing=True, table_angle=0x1000)
+        self.assertEqual([c[0] for c in calls], [36, 240])
+        self.assertEqual(calls[0][1:], (24, False, calls[1][3]))
+        self.assertEqual(ok, 1)
+        self.assertEqual(pos[2], F(6.0))
+        self.assertEqual(facing, (0x1000 - 0x4000 - 0x8000) & 0xFFFF)
+        calls.clear()
+        pos, facing, ok = L.arena_initial_place(
+            entry, 0, 1, True, lambda c, s, r, a: (c, 1), table_facing=True, table_angle=0x1000)
+        self.assertEqual(ok, 1)
+        self.assertEqual(facing, (0x1000 - 0x4000) & 0xFFFF)   # mode A: no extra half-turn
+        self.assertEqual(pos[2], entry[2])
+
+    def test_facing_from_the_offset_when_the_flag_is_clear(self):
+        entry = (F(0.0), F(0.0), F(0.0))
+
+        def search(centre, spread, radius, any_height):
+            self.assertEqual(spread, 36)
+            return (F(3.0), F(4.0), centre[2]), 1
+
+        _pos, facing, ok = L.arena_initial_place(entry, 1, 4, True, search)
+        dx, dy = F(3.0), F(4.0)
+        want = W.s16(-0x4000 - C.atan2_16(dx, dy)) & 0xFFFF
+        self.assertEqual(ok, 1)
+        self.assertEqual(facing, want)
 

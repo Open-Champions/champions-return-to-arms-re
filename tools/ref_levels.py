@@ -22,7 +22,8 @@ generator) and tools/ref_world.py (terrain_height) or a test double.
 Sections: 1 names, 2 level table, 3 manifest, 4 objects.ob, 5 start markers and
 placement, 6 level-change requests, 7 acts, saved level states and the change itself,
 8 triggers, 9 jump gates, 10 recall and party wipe, 11 moving pieces, 12 water,
-13 texture addressing and materials.
+13 texture addressing and materials.  Round 3 (placement on a floor the origin
+test misses, and the arena's first search) is at the bottom of the file.
 """
 import os
 import struct
@@ -468,7 +469,9 @@ def place_players(spawn, num_players, terrain_height, find_free_spot, level_load
 
       restore_xy (recall return, flag 0x41b51c): x, y of slot < num_players from it; z not
       every slot < num_players: z = terrain_height(12.0, pos)   highest sample within 12,
-                                    pos.z ignored, -1000000.0 when there is no floor
+                                    pos.z ignored, -1000000.0 when there is no floor.
+                                    Player_ctor stores this same radius and snaps again
+                                    (player_ctor_z, section 17); this pass does not search.
       when a real level and not PvP mode B, for slot < num_players in order:
           slot > 0 and rank != 3: pos = find_free_spot(pos, 36, 14, False); facing += 8000;
                                   z = terrain_height(12.0, pos)   (written back: persists)
@@ -1354,4 +1357,84 @@ def move_piece(piece, offset, angle, chunk_mirrored=None):
             ty = W.fadd(W.fmul(W.fneg(X), sa), yc)
         out.append((W.f2i(tx), W.f2i(ty), W.f2i(Z), new_cos, new_sin))
     return out
+
+
+# =======================================================================================
+# Round 3. Placement when the floor is not under the origin
+# =======================================================================================
+
+PLACEMENT_RADIUS = 0x41400000       # 12.0 in f12 at 0x32120c and again from object +0x1c
+ARENA_RING_MODE_A = 0x43340000      # 180.0 when g_pvpModeA is set
+ARENA_RING_MODE_B = 0x42100000      # 36.0 otherwise
+ARENA_FIRST_SPREAD = 36
+ARENA_RETRY_SPREAD = 240            # 0xF0, only when the first search's ok byte is 0
+ARENA_SEARCH_RADIUS = 24
+
+
+def player_ctor_z(pos, radius, terrain_height):
+    """The store at the end of Player_ctor (0x1a2450-0x1a245c).
+
+    radius is the word at object +0x1c.  0x1a2244 writes PLACEMENT_RADIUS there.  No
+    instruction from there to this call stores offset 0x1c through $21, the player, so
+    the radius is 12.0.  The call is terrain_height, which ignores pos.z and returns
+    the sentinel when the disc is empty.  This function does not test the sentinel and does not move x or y.
+    terrain_height is the same callback shape as place_players: (radius, pos) -> z.
+    Executed: difftest_levels_r3.py properties player_radius and player_snap."""
+    return terrain_height(radius, pos)
+
+
+def arena_ring_angle(slot, active_count):
+    """The angle math_cos16 receives in arena_pickSpawnPoint (0x3050e8-0x305138).
+
+    active_count is what net_countActiveSlots returned.  The code divides by that word,
+    or by a zero word when the count is not greater than 0; a non-positive count is
+    refused here because that MIPS division has no defined quotient.  The quotient of
+    the signed division 65535 / count is sign-extended from 16 bits and multiplied by
+    the slot, and the low 16 bits are the angle."""
+    if active_count <= 0:
+        raise ValueError('arena_ring_angle divides by the active-slot count')
+    quot = W.s16(65535 // int(active_count))
+    return W.s16(W.s32(quot * W.s32(slot)))
+
+
+def arena_ring_centre(entry, slot, active_count, mode_a):
+    """Entry 0 plus the ring offset (0x305130-0x30519c).  mode_a selects 180 or 36.
+    z is entry 0's z, not a terrain query.  entry is three float patterns."""
+    import ref_core
+    angle = arena_ring_angle(slot, active_count)
+    radius = ARENA_RING_MODE_A if mode_a else ARENA_RING_MODE_B
+    ox = W.fmul(ref_core.cos16(angle), radius)
+    oy = W.fmul(ref_core.sin16(angle), radius)
+    return (W.fadd(entry[0], ox), W.fadd(entry[1], oy), entry[2])
+
+
+def arena_initial_place(entry, slot, active_count, mode_a, search, table_facing=False,
+                        table_angle=0):
+    """arena_pickSpawnPoint 0x3050a4 when its first argument is not 0 (the wave start).
+
+    search(centre, spread, radius, any_height) -> (pos, ok), the pair world_findFreeSpot
+    returns.  The first search uses spread 36 and radius 24 with any_height false.  When
+    its ok byte is 0, the same centre is searched again with spread 240.  There is no
+    third search.
+
+    Facing, low 16 bits: when the word at 0x4f7124 is nonzero, table[slot].angle - 0x4000.
+    Otherwise -0x4000 minus atan2(pos.x - entry.x, pos.y - entry.y).  When g_pvpModeA is
+    clear, that facing then loses another half-turn (0x8000).  The position's z is
+    whatever the search returned; Player_ctor replaces it afterwards (player_ctor_z).
+    Executed: difftest_levels_r3.py property arena_initial."""
+    import ref_core
+    centre = arena_ring_centre(entry, slot, active_count, mode_a)
+    pos, ok = search(centre, ARENA_FIRST_SPREAD, ARENA_SEARCH_RADIUS, False)
+    if not ok:
+        pos, ok = search(centre, ARENA_RETRY_SPREAD, ARENA_SEARCH_RADIUS, False)
+    pos = list(pos)
+    if table_facing:
+        facing = W.s16((int(table_angle) & 0xFFFF) - 0x4000)
+    else:
+        dx = W.fsub(pos[0], entry[0])
+        dy = W.fsub(pos[1], entry[1])
+        facing = W.s16(-0x4000 - ref_core.atan2_16(dx, dy))
+    if not mode_a:
+        facing = W.s16(facing - 0x8000)
+    return pos, facing & 0xFFFF, int(bool(ok))
 
