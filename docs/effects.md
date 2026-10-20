@@ -749,8 +749,28 @@ Synthetic unit tests (no game data): `test_vu1_emu.py`, `test_ref_fx_render.py`,
   part recipes), `tools/ref_fx_skills.py` (the 21 skill functions round 2 modelled; the
   other 140 are in the skill references), `tools/ref_decals.py`, `tools/ref_fx_props.py`.
 - Values stay out of the repository: `fx_particle_defs.py --json` (definitions) and
-  `fx_skill_recipes.py --json` (the constant effect arguments per class) read them from the
-  user's executable at start-up.
+  `fx_skill_recipes.py --json` (the constant effect arguments per class, plus embedded light
+  records) read them from the user's executable at start-up.
+- **`light_records`** (optional top-level object in the same JSON): the colour shorts, radius,
+  falloff and +0x2c float the three constructors below store into their embedded 0x3c-byte light
+  node before `light_link` (layout: **O** `docs/lighting.md` section 2; the same fields
+  `ref_skills_c.light_record` writes). Position at +0x30 is filled at run time and is not
+  emitted. Keys are the function names; each value has:
+  - `colour`: eight unsigned shorts — model quad +0x0a..+0x10, level quad +0x12..+0x18;
+  - `radius`: float at +0x1c (and +0x24, observed equal);
+  - `falloff`: float at +0x20 (and +0x28); **StaticFire_ctor** and **StaticFire_ctor2** only;
+  - `extra`: float at +0x2c (floor term for level geometry in `light_collectNear`).
+  Scanned by straight-line constant tracking over the constructor bodies (**O** addresses):
+  `StaticFire_ctor` 0x2c5240–0x2c54f8, light at object +0x80; `StaticFire_ctor2`
+  0x2c54f8–0x2c5770, +0x80; `SpellPlanarSteelEffect_ctor` 0x2fb728–0x2fb924, spell +0x30
+  (radius 0 at cast; falloff omitted). Synthetic coverage: `tools/test_fx_skill_recipes.py`.
+- **SpellHornOmenEffect group matrix** (**O** `SpellHornOmenEffect_run` 0x2fc684 calls
+  `mat34_setPosRotZ` 0x163b30 then `particleGroup_setMatrix` 0x18e9e8 on the spell's group
+  +0x1c): each tick the group matrix is the creature owner's world position (+0x10) and
+  facing (`creature` +0x38, s16 angle passed to `mat34_setPosRotZ`). Particles are spawned in
+  model space (sample points at origin, facing 0) and drawn through that matrix (13.2). The
+  research model records the matrix argument as the token `'stack'` because the mat34 is
+  built on the stack inside the callee, not passed as a constant.
 - **Not everything here is cosmetic** (section 17): skill effect classes place particles
   with the object's or spell's own generator, which also rolls damage, every `LightEffect`
   (a `GameObject`) draws the shared seed in its constructor, `fx_spawn` id 5 and the ice
