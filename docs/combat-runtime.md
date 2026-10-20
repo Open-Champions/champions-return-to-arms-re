@@ -565,7 +565,9 @@ No patch is proposed.
 ## 13. Not done, not known
 
 Status after round 2 (2026-10-17). What round 1 listed here and round 2 executed is struck
-from the list and named in section 15; what remains:
+from the list and named in section 15. Round 3 (section 16) executed DiseaseCloud,
+GutChunk, the Strong Stance phantom, and `MissileWeapon_run` kinds 1, 2, 5 and 6. What
+remains:
 
 - **Damage numbers in a net game**: `FlyingText` objects (pool block, shared draw in the
   constructor, run list, deletion) - their lifetime is not read; the contract refuses any
@@ -817,3 +819,39 @@ all 2,748 of its in-domain cases (15.6). `MeleeRuntime`, and the round-1 `Runtim
 Each area also has synthetic-fixture tests (`tools/test_ref_combat_{move,melee,ptick,
 ranged,spells,monsters,full}.py`); they are evidence about the models, not about the game.
 Nothing was run on a console, in PCSX2 or on the live rig.
+
+## 16. Round 3 (2026-10-20)
+
+`docs/spec/combat-round3.md` is the prose. `tools/ref_combat_round3.py` adds the bodies.
+Round 1 and round 2 modules, APIs and pinned vectors are unchanged. `ArrowModel`
+subclasses `RangedModel` and calls it for kinds 0 and 3.
+
+Executed against the original (`tools/difftest_combat_round3.py`, seed 20973, 40 cases
+each, 0 mismatches):
+
+| Entry | Address | Instructions |
+|---|---|---|
+| `DiseaseCloud_ctor` | `0x2ce610` | 52 of 52 |
+| `DiseaseCloud_run` | `0x2ce6e0` | 547 of 551 (the occupied descriptor-slot arm was not taken) |
+| `GutChunk_ctor` | `0x201958` | 53 of 53 |
+| `StrongStancePhantom_ctor` | `0x1618d4` | 95 of 95 |
+| `StrongStancePhantom_run` | `0x161a54` | 33 of 33 |
+| `MissileWeapon_run` kind 1 | `0x15153c` | 392 of 1,024 |
+| `MissileWeapon_run` kind 2 | `0x15153c` | 201 of 1,024 |
+| `MissileWeapon_run` kind 5 | `0x15153c` | 326 of 1,024 |
+| `MissileWeapon_run` kind 6 | `0x15153c` | 247 of 1,024 |
+
+The cloud's `damage_apply` has no attacker, which agrees with research-fx
+`docs/effects.md` section 17. `disease_attach` (`0x1e9e28`) is composed onto the
+already-executed disease-effect constructor; it is not a slice of `damage_apply`.
+`PhProp_ctor` and `Creature_ctor` stay callbacks. A hit on kinds 1, 2, 5 and 6 stores
+0 at `+0xec` and destroys the arrow on that frame, after `light_relink`. The stone-hit
+effect remains kinds 0 and 3.
+
+Not executed this round: potion kinds 1–3 (`playerProjectile_run` `0x1ba940`; kind 1
+draws the shared seed inline), deflection inside the runtime, the bow release in
+player state 0, the Holy Shield light, `Player_blockSparks` with silent != 0, further
+monster death states, and combat paths of the remaining skills.
+
+`python3 -m unittest tools.test_ref_combat_round3`: 13 tests, the fixtures only.
+
