@@ -16,9 +16,11 @@ default range is the skill files, 0x2c3cd4-0x320000.
 
 This is how a native client gets the VALUES at run time without anyone copying them into
 a repository: run it on the user's executable, keep the JSON outside the checkout, load the
-particle definitions it names with tools/fx_particle_defs.py --json.  The rules (counts,
-timings, placement) are the models named in each row; tools/ref_fx_skills.py explains how
-their call-outs map to primitives.
+particle definitions it names with tools/fx_particle_defs.py --json, and the embedded light
+records the StaticFire and SpellPlanarSteelEffect constructors fill (optional
+`light_records` in the same JSON; see docs/effects.md 12.2).  The rules (counts, timings,
+placement) are the models named in each row; tools/ref_fx_skills.py explains how their
+call-outs map to primitives.
 
 Standard library only; reads ghidra_funcs.tsv and the symbol files of this repository for
 function bounds and names.  Keep the output local.
@@ -38,6 +40,17 @@ from ps2elf import Elf                          # noqa: E402
 
 SKILL_LO, SKILL_HI = 0x2C3CD4, 0x320000
 REG_NAMES = {4: 'a0', 5: 'a1', 6: 'a2', 7: 'a3', 8: 't0', 9: 't1', 10: 't2', 11: 't3'}
+
+# Symbolic object base for straight-line scans (a0 at entry).
+_OBJ_BASE = 0x10000000
+
+# Constructor functions whose embedded light nodes the native client reads from
+# light_records (docs/lighting.md section 2; ref_skills_c.light_record).
+LIGHT_CONSTRUCTORS = (
+    ('StaticFire_ctor', 0x2C5240, 0x2C54F8, 0x80, True),
+    ('StaticFire_ctor2', 0x2C54F8, 0x2C5770, 0x80, True),
+    ('SpellPlanarSteelEffect_ctor', 0x2FB728, 0x2FB924, 0x30, False),
+)
 
 # what each argument means, per primitive (the order of fx_callsites.SIGNATURES)
 MEANING = {
@@ -117,6 +130,140 @@ def definitions(classes):
     return sorted(out)
 
 
+class _LightStoreTracker(FD.Tracker):
+    """Constant tracker that also records stores into a synthetic object image."""
+
+    def __init__(self, read_u32=None):
+        super().__init__(read_u32)
+        self.mem = {}
+
+    def _store(self, addr, size, value):
+        if value is None:
+            return
+        self.mem[addr & 0xffffffff] = (size, value & ((1 << (8 * size)) - 1))
+
+    def step(self, word):
+        op = word >> 26
+        rs, rt, rd = (word >> 21) & 31, (word >> 16) & 31, (word >> 11) & 31
+        imm = word & 0xffff
+        simm = imm - 0x10000 if imm & 0x8000 else imm
+        g = self.r.get
+        if op == 0x28:                                 # sb
+            base = g(rs)
+            if base is not None:
+                self._store(base + simm, 1, g(rt))
+        elif op == 0x29:                               # sh
+            base = g(rs)
+            if base is not None:
+                self._store(base + simm, 2, g(rt))
+        elif op in (0x2b, 0x3f):                        # sw, sd
+            base = g(rs)
+            if base is not None and rs != SP:
+                self._store(base + simm, 4, g(rt))
+            elif rs == SP:
+                self.stack[simm] = g(rt)
+        elif op == 0x39:                                # swc1
+            base = g(rs)
+            if base is not None and rs != SP:
+                self._store(base + simm, 4, self.f.get(rt))
+            elif rs == SP:
+                self.stack[simm] = self.f.get(rt)
+        return super().step(word)
+
+
+SP = 29
+
+
+def _walk_function(words, base, lo, hi, read_u32):
+    """Straight-line scan of one function body (same branch rules as fx_callsites)."""
+    i0 = (lo - base) // 4
+    i1 = (hi - base) // 4
+    chunk = words[i0:i1]
+    t = _LightStoreTracker(read_u32)
+    t.setr(4, _OBJ_BASE)
+    i, n = 0, len(chunk)
+    while i < n:
+        w = chunk[i]
+        br = FD.branch_kind(w)
+        if br is not None:
+            likely, eq = br
+            if not likely and i + 1 < n:
+                t.step(chunk[i + 1])
+            if eq is not None:
+                a, b = eq
+                if t.r.get(a) is None and t.r.get(b) is not None:
+                    t.setr(a, t.r[b])
+                elif t.r.get(b) is None and t.r.get(a) is not None:
+                    t.setr(b, t.r[a])
+            i += 2
+            continue
+        res = t.step(w)
+        if res is not None:
+            kind, target = res
+            if i + 1 < n:
+                t.step(chunk[i + 1])
+            if kind == 'call':
+                t.forget_call()
+            elif kind == 'jump':
+                t = _LightStoreTracker(read_u32)
+                t.setr(4, _OBJ_BASE)
+            i += 2
+            continue
+        i += 1
+    return t.mem
+
+
+def _u16(mem, light_base, off):
+    addr = light_base + off
+    if addr not in mem or mem[addr][0] != 2:
+        return None
+    return mem[addr][1] & 0xffff
+
+
+def _u32(mem, light_base, off):
+    addr = light_base + off
+    if addr not in mem or mem[addr][0] != 4:
+        return None
+    return mem[addr][1]
+
+
+def decode_light_record(mem, light_offset, need_falloff):
+    """Decode a 0x3c-byte embedded light node (position at +0x30 is runtime; omitted)."""
+    lb = _OBJ_BASE + light_offset
+    colour = [_u16(mem, lb, 0x0A + 2 * k) for k in range(4)]
+    colour += [_u16(mem, lb, 0x12 + 2 * k) for k in range(4)]
+    if any(v is None for v in colour):
+        return None
+    radius = _u32(mem, lb, 0x1C)
+    if radius is None:
+        radius = _u32(mem, lb, 0x24)
+    if radius is None:
+        return None
+    extra = _u32(mem, lb, 0x2C)
+    if extra is None:
+        return None
+    out = {'colour': colour, 'radius': FD.f32bits(radius), 'extra': FD.f32bits(extra)}
+    if need_falloff:
+        falloff = _u32(mem, lb, 0x20)
+        if falloff is None:
+            falloff = _u32(mem, lb, 0x28)
+        if falloff is None:
+            return None
+        out['falloff'] = FD.f32bits(falloff)
+    return out
+
+
+def scan_light_records(words, text_base, read_u32=None, constructors=LIGHT_CONSTRUCTORS):
+    """Read constant light-record fields from each listed constructor (observed stores)."""
+    out = {}
+    for name, lo, hi, light_off, need_falloff in constructors:
+        mem = _walk_function(words, text_base, lo, hi, read_u32)
+        rec = decode_light_record(mem, light_off, need_falloff)
+        if rec is not None:
+            out[name] = rec
+    return out
+
+
 def run(path, lo=SKILL_LO, hi=SKILL_HI, root=None):
     root = root or os.path.dirname(HERE)
     e = Elf(path)
@@ -128,8 +275,12 @@ def run(path, lo=SKILL_LO, hi=SKILL_HI, root=None):
 
     rows = scan(words, addr, FC.load_funcs(root), FC.load_names(root), read_u32, lo, hi)
     classes = build(rows)
-    return {'executable_sha256': hashlib.sha256(e.d).hexdigest(), 'range': [lo, hi],
-            'classes': classes, 'particle_definitions': definitions(classes)}
+    lights = scan_light_records(words, addr, read_u32)
+    out = {'executable_sha256': hashlib.sha256(e.d).hexdigest(), 'range': [lo, hi],
+           'classes': classes, 'particle_definitions': definitions(classes)}
+    if lights:
+        out['light_records'] = lights
+    return out
 
 
 def fmt(v):

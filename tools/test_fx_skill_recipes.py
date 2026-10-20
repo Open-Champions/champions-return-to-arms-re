@@ -28,6 +28,43 @@ def particle_call(definition):
             T.jal(0x18F3F8), T.NOP]
 
 
+def sh(rt, off, base):
+    return T.i_type(0x29, base, rt, off)
+
+
+def sw(rt, off, base):
+    return T.i_type(0x2b, base, rt, off)
+
+
+def sb(rt, off, base):
+    return T.i_type(0x28, base, rt, off)
+
+
+def swc1(ft, off, base):
+    return T.i_type(0x39, base, ft, off)
+
+
+def fill_light_record(light_off=0x80, colours=(0x11, 0x22, 0x33, 0x44), radius=16.0, extra=0.5,
+                      falloff=0.125):
+    """Minimal ctor body: a0 at BASE; light at a0+light_off; constant fields only."""
+    w = [T.addiu(2, 4, light_off)]
+    for k, value in enumerate(colours):
+        w.append(T.addiu(3, 0, value & 0xFFFF))
+        w.append(sh(3, 0x0A + 2 * k, 2))
+        w.append(sh(3, 0x12 + 2 * k, 2))
+    w += T.load_float(12, radius)
+    w.append(swc1(12, 0x1C, 2))
+    w.append(swc1(12, 0x24, 2))
+    w += T.load_float(12, falloff)
+    w.append(swc1(12, 0x20, 2))
+    w.append(swc1(12, 0x28, 2))
+    w += T.load_float(12, extra)
+    w.append(swc1(12, 0x2C, 2))
+    w.append(sb(0, 8, 2))
+    w.append(sb(0, 9, 2))
+    return w
+
+
 class Scan(unittest.TestCase):
     def setUp(self):
         self.words = glow_call() + particle_call(0x8E5910) + particle_call(0x8E5910) + particle_call(0x8E5960)
@@ -61,6 +98,21 @@ class Scan(unittest.TestCase):
     def test_class_of(self):
         self.assertEqual(R.class_of('SpellHealing_run'), 'SpellHealing')
         self.assertEqual(R.class_of(''), '')
+
+
+class LightRecords(unittest.TestCase):
+    def test_decode_and_scan(self):
+        words = fill_light_record()
+        mem = R._walk_function(words, BASE, BASE, BASE + len(words) * 4, None)
+        rec = R.decode_light_record(mem, 0x80, True)
+        self.assertEqual(rec['colour'], [0x11, 0x22, 0x33, 0x44] * 2)
+        self.assertEqual(rec['radius'], 16.0)
+        self.assertEqual(rec['falloff'], 0.125)
+        self.assertEqual(rec['extra'], 0.5)
+        out = R.scan_light_records(words, BASE, None,
+                                   (('Synth_ctor', BASE, BASE + len(words) * 4, 0x80, True),))
+        self.assertIn('Synth_ctor', out)
+        json.dumps(out)                         # serialisable floats
 
 
 if __name__ == '__main__':
