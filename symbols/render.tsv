@@ -56,5 +56,5 @@
 00193ad0	trail_drawAll	rebuilds beam trails, then one VIF packet for all trails (MSCAL 0x28 per trail, 0x26 or 0x79e per chunk of points)
 00194888	particle_draw	body of the particle draw task: trails, glows, the particle packet (MSCAL 0x14, then lists by blend mode), lines, heat haze
 00194450	particle_emitLists	(dl, listSet): DMA references to the particle pages of one list set, grouped by blend mode; ends each list with MSCAL 0x17
-0018fe18	particle_drawHaze	mode-3 particles on the CPU: copies a piece of the draw buffer into a texture and draws it back as a fan
+0018fe18	particle_drawHaze	mode-3 particles on the CPU: copies a piece of the draw buffer into a texture and draws it back as a fan; circle index trunc(slot[+0x2c] + slot[+0x3c]*float(clock-cell[+6])) & 63, one pair from g_hazeCircle, no blend (docs/spec/trig16.md)
 0019f4e8	decal_drawTask	draw task "drawFloorSprites": uploads g_vu1DecalProgram and draws the visible decal cells

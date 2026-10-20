@@ -551,3 +551,26 @@ rows (kind *Executed in isolation*):
   the undead-shield strikes are not modelled.
 - Real skill statistics were not connected: the model takes them as callbacks.
 - Who sets word 0x4f713c and word 0x4d8ae8 (both only read here).
+
+## 14. The angle calls inside a hit
+
+`damage_apply` and the other hit, block, knockback and shot functions call `math_cos16`
+0x166630 and `math_sin16` 0x1666e0. The routines are the half-angle polynomial in section
+1.1 and `docs/spec/core.md` section 4, not a table and not the host libm. The operation
+order, the precision of each step, and every call site are in `docs/spec/trig16.md`
+section 5.3. `tools/ref_combat.cos16` is that polynomial (equal to `tools/ref_trig.cos16`
+on all 65,536 angles). The damage difftest already runs the original `damage_apply`, so
+the block dot and the sparks are covered there; this pass did not add a second combat
+difftest.
+
+What this pass read at the call, on top of step 11:
+
+- The block pair 0x1e87c0 / 0x1e87cc and the PvP pair 0x1ea8f0 / 0x1ea8fc take the
+  victim's facing halfword at +0x38. The PvP pair is the text test at 0x1ea8c0 (player
+  state +0x58c is 8 or 11), not the block in step 11.
+- The spark pair 0x1e886c / 0x1e8898 does not reload `a0` in its delay slot. The facing
+  times 10 is the executed model, not a new trace of the gap.
+- `Creature_applyKnockback` takes the halfword at +0x2e0. `Player_takeDamage`,
+  `Player_findTarget` and `Creature_hitTargetAtReach` take facing +0x38.
+  `Player_blockSparks`'s angle was not recovered. `Creature_processDamage` has four
+  pairs; their formulas were not reduced.

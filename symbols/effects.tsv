@@ -38,6 +38,7 @@
 0082cc90	g_particleClock	s16 tick count of the particle system, +1 per particle_updateTask; rebased at -0x8000
 0082c408	g_particleSlotUsed	s32[32]: -1 free; resident type slots
 0082c490	g_particleTypeTable	32 x 0x40: the VU records of resident definitions, uploaded to VU1 qwords 0-127 by particle_draw
+007ec0e0	g_hazeCircle	64 s32 pairs (sine, cosine), stride 8; particle_init 0x18e670 writes trunc(sin16(i<<10)*5), trunc(cos16(i<<10)*5); read only by particle_drawHaze 0x190378 and 0x1903ac; BSS, not in the executable (docs/spec/trig16.md)
 007ec300	g_particlePages	64 pages of 0x1000 bytes: 8 blocks of (VIF header, 30 particles of 16 bytes, MSCAL)
 007d8b00	g_glowQueue	0x400 records of 0x20 bytes queued by glow_add; count 0x82cc94
 0082cc94	g_glowCount	glows queued this frame (at most 0x400)

@@ -46,8 +46,8 @@
 00166480	quat_mul	(out, a, b)
 00166550	quat_normalize	
 001665f0	math_log2Floor	
-00166630	math_cos16	cosine of a 16-bit angle (half-angle polynomial); never returns 0 - the quarter-turn values are +-2^-22 (docs/spec/core.md section 4, executed over all 65536 angles); script built-in cos1000 calls it
-001666e0	math_sin16	math_cos16(angle - 0x4000); script built-in sin1000 calls it
+00166630	math_cos16	cosine of a 16-bit angle (half-angle polynomial, no table); never returns 0 - the quarter-turn values are +-2^-22 (docs/spec/core.md section 4, docs/spec/trig16.md; executed over all 65536 angles); script built-in cos1000 calls it
+001666e0	math_sin16	copy of the cosine body after addiu v1, a0, -0x4000; does not call math_cos16 (docs/spec/trig16.md); script built-in sin1000 calls it
 00166798	math_atan2_16	atan2f(f12, f13) * 65536 / 2pi, returned as s16
 001667d8	vec3_dotDelta	(a, n, b) -> dot(n, b - a): signed distance of b from the plane through a
 00166820	vec2_dotDelta	two-component version of vec3_dotDelta
@@ -216,7 +216,7 @@
 0018e494	pauseMenu_drawBuildInfo	position, build date and free memory text
 # ---- particles, glows, trails, beams (0x18e628-0x196087) ----
 0018e628	particle_drawTask	draw task priority 0x41, name drawParticles
-0018e648	particle_init	registers updateParticles (flags 2, priority 15) and drawParticles; caller engine_init
+0018e648	particle_init	registers updateParticles (flags 2, priority 15) and drawParticles; builds g_hazeCircle (64 pairs, angle i<<10, trunc(sin16*5) then trunc(cos16*5)); caller engine_init
 0018e880	particleGroup_create	-> handle or 0 (16 groups of 0x138 bytes at 0x7e1d50)
 0018e958	particleGroup_begin	(handle) following particle_spawn calls go into the group
 0018e9a0	particleGroup_end	(handle) back to the global lists

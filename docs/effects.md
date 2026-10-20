@@ -1681,3 +1681,26 @@ section 9.
 - Effect classes outside the skill files (monster files, weapon procs, props other than the
   fire props of 16.3) were not covered by the recipe difftests.
 - `light_emitModelLightsVariant` 0x149828 and `light_pickShadowLights` 0x148c98 (lighting).
+
+## 19. `math_cos16` in this subsystem (2026-10-20)
+
+The two routines, the operation order, and every caller are in `docs/spec/trig16.md`.
+Short form, for this document:
+
+- **Polynomial, not a table.** `math_cos16` 0x166630 and `math_sin16` 0x1666e0 take a
+  16-bit angle. The sine is a copy of the body after subtracting 0x4000. Coefficients are
+  immediates. Each multiply and add truncates toward zero. **Executed** over all 65,536
+  angles (`tools/difftest_trig.py`).
+- **The one table is the haze circle** `g_hazeCircle` 0x7ec0e0. `particle_init` writes 64
+  pairs, angle `i << 10`, `trunc(sin16 * 5)` then `trunc(cos16 * 5)`. The words are not in
+  the ELF. `particle_drawHaze` reads one pair: index
+  `trunc(slot[+0x2c] + slot[+0x3c] * float(clock − cell[+6])) & 63`, no blend. Those two
+  slot fields are the start alpha and the alpha rate (section 2). **Executed** for the 64
+  pairs; the reader is Observed.
+- **Beams do not call either function.** Glows, `trail_setCircle`, the emitter yaw and the
+  emitter's eight `mat34_rotateAxis` calls do. `trail_sweepPairs` goes through
+  `quat_fromAxisAngle`. Sites and the decal and fx helpers: the spec, sections 5.1 and 5.2.
+- `tools/ref_particles.py` `_cs` is still the host cosine. The schedule does not read it.
+  At yaw 0 an x offset of 100 stays on the x axis in that model; the original gains a y of
+  `−100 × 2⁻²²`, because `sin16(0)` is `+2⁻²²`. The other effect references already call
+  the polynomial, so those results do not move.
