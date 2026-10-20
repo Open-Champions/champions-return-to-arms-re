@@ -382,7 +382,7 @@ cell the same header is 0x40 bytes and the packet offset is relative to the cell
 | 0x08 | u16 | flags, below | |
 | 0x0a | u16 | 0 in the file; `tex_relocate` stores 0xa7fb | O |
 | 0x0c | u32 | bits 14–45 of the GS `TEX0` register: buffer width ÷ 64 (6 bits), pixel format (6), log2 width (4), log2 height (4), TCC (1), TFX (2). The handler builds `TEX0 = (block + 4) \| fragment << 14 \| block << 37 \| 2 << 61` | O |
-| 0x10 | u32 | offset of the upload packet from the start of the header; 0x80 in every lump entry. A pointer after `tex_relocate` | O |
+| 0x10 | u32 | offset of the upload packet from the start of the header; 0x80 in every lump `.tex` entry. An embedded font page is not a lump entry and stores a different offset ([ui-fonts.md](ui-fonts.md)). A pointer after `tex_relocate` | O |
 | 0x14 | u32 | 0 in the file. Run time: streaming state of level textures | O |
 | 0x18 | s16 | 0 in the file. Run time: first GS block given to the texture, 0 = not in GS memory | O |
 | 0x1a | s16 | run time: slot in the 16-entry ring of resident textures | O |
@@ -396,8 +396,8 @@ D (it matches the pixel format in +0x0c in all 3,236 files).
 | Bit | Meaning | Files | Status |
 |---|---|---|---|
 | 0x0001, 0x0100 | level-texture forms handled by `tex_relocate` / `tex_relocateInCell`; never set in a lump | 0 | O (code only) |
-| 0x0004 | 8-bit, 256-colour palette. The handler patches the image destination at packet +0x474 | 2,537 | O |
-| 0x2000 | 4-bit, 16-colour palette. Destination patched at packet +0xb4 | 537 | O |
+| 0x0004 | 8-bit, 256-colour palette. The handler writes the image DBP (BITBLTBUF bits 32–47) at packet +0x474, and the palette DBP at packet +0x14 | 2,537 | O |
+| 0x2000 | 4-bit, 16-colour palette. Image DBP patched at packet +0xb4; palette DBP still at packet +0x14 | 537 | O |
 | 0x0020 | 32-bit, no palette | 160 | D |
 | 0x0080 | no pixels: the packet is one empty GIF tag. `blank.tex`, `bigblank.tex` of `ENGINE.LMP` (16-bit surfaces the engine draws into) | 2 | D |
 | 0x0010 | model texture: set on the texture of every model (2,323 of 2,323) and on 11 alternative skins of models, nothing else. TFX = 3 in all but one | 2,334 | D |

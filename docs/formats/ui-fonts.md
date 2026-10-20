@@ -49,11 +49,12 @@ the current index matches. Apply the first row whose previous index matches,
 then stop. Terminal/current-index mismatch ends a group. The original loop
 does not bounds-check this; a native reader should.
 
-The embedded texture is a normal TEX with its own used dimensions and packet
+The embedded texture is a TEX with its own used dimensions and packet
 offset. **Its packet offset is relative to the embedded TEX, not to the FNT.**
 Evidence: FNT fixup `0x181a4c`, texture fixup `0x179e20–0x179e40`.
-Use the existing [texture format contract](model-texture.md), not the narrow
-inventory-only decoder for arbitrary font textures.
+The packet does not start at 0x80. The page layout is the next section.
+Pixel order inside the packet is the PSMT8 upload in
+[model-texture.md](model-texture.md), not the inventory-only decoder.
 
 ## Resource pairing and private structural audit
 
@@ -76,6 +77,73 @@ gamefontsmall; the small font pointer is `0x4f7104` (register setup at
 and selects layer 6 at `0x1da3a4–0x1da3c8` and `0x1da5d8–0x1da5f0`.
 The medium font is also installed as the default at `0x323fa4`.
 Screen-by-screen PvP font selection is **unknown** in this contract.
+
+## Embedded font page
+
+Reference: `parse_font_page` / `decode_font_page` in
+[ref_font_page.py](../../tools/ref_font_page.py). `parse_font` is unchanged
+and still returns this suffix. `parse_texture` still requires packet offset
+0x80 and is the lump-entry reader.
+
+**Observed**, `tex_relocate` `0x179e10`, executed by `difftest_ui_r4`:
+the u32 at TEX +0x10 is the GIF packet, measured from the TEX header.
+Relocation adds the TEX base to that word, stores `0xa7fb` at +0x0a and −1
+at +0x1c, and returns without the block-table walk when flags include
+neither `0x0001` nor `0x0100`. A second call sees the −1 and changes
+nothing. The qword count at +0x06 stays as it was. All eight pages use
+flags `0x0044` (8-bit `0x0004` plus interface `0x0040`), so only that prefix
+runs.
+
+**Observed** in all eight files: +0x0a is 0, so the page is not already
+relocated. Bytes from +0x14 up to the packet are 0. The packet is 16-byte
+aligned in the FNT entry. The header-relative offsets are `0x44`, `0x64`,
+`0x74`, `0x94` and `0xb4`. Three of those sit below `0x80`
+(`PVPFONT.LMP/pvpfontbig.fnt` `0x44`, `PVPFONT.LMP/pvpfontsmall.fnt` `0x74`,
+`PPVPFONT.LMP/pvpfontbig.fnt` `0x64`). A reader that measures the packet from
+a fixed 0x80 header reports a length past the end of those three files. The
+other five fit that length and then fail an "offset must be 0x80" test.
+The file ends on the last packet qword in all eight.
+
+**Observed** in all eight packets, and the stores `gfx_dmaHandler` performs
+at `0x16c048–0x16c08c` (executed on synthetic packets): one 16×16 PSMCT32
+palette, then one PSMCT32 image rectangle at (0, 0) into a buffer of width
+TBW/2. The palette BITBLTBUF value is at packet +0x10, so the halfword at
+packet +0x14 is its destination base (DBP, bits 32–47). The image BITBLTBUF
+value is at packet +0x470, so its DBP halfword is at packet +0x474. On the
+non-streaming path the handler writes the cached GS block at +0x14 and
+block+4 at +0x474 when flag `0x0004` is set. The +4 is the 1024-byte
+palette, four blocks of 256. The store goes through the uncached alias of
+the packet pointer (`0x20000000` or). Flag `0x2000` would write block+4 at
+packet +0xb4 instead; no font page sets it. Flag `0x0004` is tested first.
+
+TEX0 PSM is `0x13`, TCC 1, TFX 0. Used width and height are the u16s at +0
+and +2. Every used texel of all eight pages is inside the uploaded rectangle
+(private count: 8 pages, 0 uncovered texels). In these files the image is
+128 pixels wide and its height is ceil(used height / 2) + 1. That height is
+a property of the files. The decoder reads the rectangle from the packet.
+
+**Inferred:** flag `0x0040` is the interface/field class from the texture
+contract. Glyph rectangles below are in the woven field space.
+`decode_font_page(..., weave=True)` applies that interleave. Stored alpha
+follows the lump scale: `0x80` becomes 255.
+
+Header +2 is 8 in all eight files as well as the four in the table above.
+Its meaning is still **unknown**.
+
+| Lump / entry | Glyphs | Kerns | TEX from FNT | Used | Packet offset | Qwords | Blocks | Image rect |
+|---|---|---|---|---|---|---|---|---|
+| FONT.LMP / gamefontmed.fnt | 147 | 1 | 0xb4c | 256×178 | 0xb4 | 2957 | 196 | 128×90 |
+| FONT.LMP / gamefontsmall.fnt | 147 | 1 | 0xb4c | 256×130 | 0xb4 | 2189 | 186 | 128×66 |
+| PVPFONT.LMP / pvpfontbig.fnt | 152 | 28 | 0xc3c | 256×478 | 0x44 | 7757 | 508 | 128×240 |
+| PVPFONT.LMP / pvpfontsmall.fnt | 149 | 28 | 0xc0c | 256×228 | 0x74 | 3757 | 258 | 128×115 |
+| PFONT.LMP / gamefontmed.fnt | 147 | 1 | 0xb4c | 256×172 | 0xb4 | 2861 | 194 | 128×87 |
+| PFONT.LMP / gamefontsmall.fnt | 147 | 1 | 0xb4c | 256×132 | 0xb4 | 2221 | 186 | 128×67 |
+| PPVPFONT.LMP / pvpfontbig.fnt | 150 | 28 | 0xc1c | 256×458 | 0x64 | 7437 | 506 | 128×230 |
+| PPVPFONT.LMP / pvpfontsmall.fnt | 147 | 28 | 0xbec | 256×252 | 0x94 | 4141 | 260 | 128×127 |
+
+PFONT and PPVPFONT FNT positions in their lumps: gamefontmed `0x80`,
+gamefontsmall `0xbf80`, pvpfontbig `0x80`, pvpfontsmall `0x1de00`. Which
+screen selects those lumps is **unknown**, as for the PvP fonts above.
 
 ## Logical glyph rectangles and width
 

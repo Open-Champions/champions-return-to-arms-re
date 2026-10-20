@@ -223,6 +223,54 @@ points include `0x1d93b0` (boss/message), `0x1dc708` (gold), `0x1dd270`
 `0x1da840–0x1dacc0` for status adjuncts. Their resource names alone are not
 layout evidence. They require further addressed tracing and visual comparison.
 
+## Round 4: catalogue page versus the drawn crop (2026-10-20)
+
+The original-art set is 34 textures in `HUD.LMP` and `INTERFAC.LMP`:
+`bar_red00.tex`–`bar_red10.tex`, `bar_blue00.tex`–`bar_blue10.tex` (22),
+`hud_statusbar00.tex`, `hud_statusbar00glow.tex`, `button.tex`, the eight
+32×32 frame tiles (`tilebot`, `tilebotleft`, `tilebotright`, `tileleft`,
+`tileright`, `tiletop`, `tiletopleft`, `tiletopright`) and `tilecenter.tex`.
+Comparing the TEX used size to the catalogue `page` matched 9 (the nine
+frame pieces) and missed 25.
+
+**Executed.** `difftest_ui_r4` runs `tex_relocate` `0x179e10`,
+`ui_drawSpriteImpl` `0x17b590` and the clipped drawer `0x17b8b0` on the five
+distinct sizes below. A private pass ran the same three functions on all 34
+real headers. Relocation leaves +0 and +2 unchanged (34/34). Both drawers
+pass source origin `(0, 0)` and the header width and height to
+`ui_emitSpriteQuad` `0x17ab50` (34/34). The plain drawer adds 1 to
+destination y; the clipped drawer does not. A tighter destination clip does
+not change the source span. A horizontal flip exchanges the U endpoints and
+keeps the span. The difftest sets field byte `0x44fdd4` to 0, which selects
+the arm that does not adjust destination y; the source load is after the two
+arms join (`0x17bb84`).
+
+The source crop is therefore the used rectangle. It is not the GIF image
+rectangle, and it is not the health/mana fill clip in the table above.
+
+| Group | n | Used size and source crop | GIF image rectangle | Field rows |
+|---|---|---|---|---|
+| red and blue bars, frames 00–10 | 22 | 100×8, `(0,0,100,8)` | 104×8, direct 4-bit | 4 |
+| status frame and its glow | 2 | 160×46, `(0,0,160,46)` | 80×24 PSMCT32 (8-bit page, buffer width 2) | 23 |
+| button | 1 | 83×38, `(0,0,83,38)` | 88×40, direct 4-bit | 19 |
+| frame borders | 8 | 32×32, `(0,0,32,32)` | 32×32 | 16 |
+| frame center | 1 | 320×224, `(0,0,320,224)` | 320×224 | 112 |
+
+**Observed** in every file of the group (34/34 upload rectangles). The 4-bit
+uploads are wider or taller than the used size; those extra texels are
+outside the rectangle the drawers sample. The status upload is the swizzled
+8-bit page, and that 80×24 rectangle covers the 160×46 used texels. The old
+catalogue `page` was the 4-bit upload for the bars and the button, and
+160×48 for the status frames. Field rows were already half the used height.
+The bar and status used sizes in the table above already matched these
+headers. `bar_green` is not one of the 34 and was not remeasured.
+
+The marked block in `tools/godot/project/gameart/catalogue.gd` sets `page`
+and `rect` to the used crop for `bar_blue`, `bar_red`, `button`, `statusbar`
+and `statusbar_glow`. `name` and `pack` still name the older art-pack files
+and were not regenerated. Frames 00–09 are the same sizes as frame 10; this
+catalogue names frame 10.
+
 ## Validation
 
 **Executed:** `local/trace_frames.py` executes `0x17c118` in `tools/ee_emu.py`,
@@ -243,3 +291,9 @@ new synthetic tests across the two new test modules. Evidence:
 No symbol edits, game process, original UI screenshot, native/Godot UI build,
 or in-game visual comparison in this pass. Private inputs and traces remain
 under `local/`; there are no game bytes or raw code exports in these documents.
+
+**Executed (2026-10-20):** `difftest_ui_r4` matched `tex_relocate`, the
+font-page DBP stores and both sprite drawers. A private pass decoded all 8
+embedded font pages (0 uncovered texels) and drew all 34 HUD headers
+(34/34 source rectangles equal to the used size). Counts only; no image
+was written.
