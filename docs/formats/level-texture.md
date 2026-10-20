@@ -187,8 +187,11 @@ and the 8 × 4 block table of `model-texture.md` (D, all 157,820). `ref_leveltex
 block (the last record that does, as later uploads overwrite); otherwise the texture has no
 data there (the reference returns index 0 and reports the texel uncovered). Colour =
 palette entry, in index order after the bit-3/4 exchange. Alpha and blending are the level
-chunk's business (`docs/spec/render-pipeline.md` section 6: modulate, `ALPHA_1` 2 or 1 or
-0x48 by chunk flags, no mip maps, repeat wrapping, bilinear in layer 0). The GS replay
+chunk's business: which `ALPHA` and `TEST` the drawer writes, the sort layer, the
+environment-map rows and the automap tile codes are executed in
+`docs/formats/level-draw.md` (`docs/spec/render-pipeline.md` section 6 has the blend
+equations: modulate, `ALPHA_1` 2 or 1 or 0x48 by chunk flags, no mip maps, repeat wrapping,
+bilinear in layer 0). The GS replay
 (`decode_texture_via_gs`) gives the same indices as this shortcut on every synthetic and real
 texture tried; it exists to prove the shortcut.
 

@@ -469,8 +469,9 @@ The world also refers to `waterenv.lmp` (water texture, loaded by name in `game_
   `automap_loadGrid` (0x168894) into a 216 × 216 run-time grid. A world position maps to
   cell (x0 + x / 120, y0 + y / 120) — O 0x168cac.
 - Cell: bits 12–15 are 0 in the file and hold the explored level at run time (O 0x16865c,
-  0x1686c4, `automap_revealAll`). Bits 5–7 take all eight values and bits 0–4 and 8–11 are
-  small indices (D); I: orientation and tile selection. Exact tile lookup: U.
+  0x1686c4, `automap_revealAll`). Bits 0–4 are the atlas column, bits 5–7 one of eight
+  orientations, bits 8–11 the atlas row. The quad uses the bottom-right cell's tile.
+  Executed from the drawer's VU1 microcode; `docs/formats/level-draw.md` section 4.
 
 ## Bit grid (header +0x3c … +0x4c)
 
@@ -539,8 +540,8 @@ appear to carry the baked light; the normals are there for the dynamic lights.
   section 4.6.)
 - The bit grid's layout and purpose; header +0x74; chunk flags 0x2, 0x4, 0x20000; chunk
   +0x3a; moving piece +0x1a; why some geometry chunks have texture cell 0.
-- The emitter description beyond its size; the automap cell and tile coding; the water
-  mask's bit order.
+- The emitter description beyond its size; the water mask's bit order. The automap cell
+  and tile coding is now `docs/formats/level-draw.md` section 4.
 - Whether the automap tile texture decodes with the rules of `docs/formats/model-texture.md`;
   not tried. (Cell textures do not; they are decoded in `docs/formats/level-texture.md`.)
 - Which way the axes point relative to the screen and compass. (Answered for the screen in

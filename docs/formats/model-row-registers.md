@@ -44,7 +44,7 @@ None of `model_draw` 0x1779b0, `model_emitDrawSetup` 0x175670, `model_drawPart` 
 `model_emitMeshRefs` 0x179260, `world_drawModelChunk` 0x187eac or `game_drawBackdrop`
 0x1e78d0 emits a `STROW`.
 
-## 3. What that means for the one model (I, with the U that remains)
+## 3. What that means for the one model (I for the rows, O and D for the loader)
 
 The only `.vif` with a 0x46 packet on the disc is `dome.vif` of the top-level `D_SWAMP.LMP`
 (59 packets, `model-texture.md`). Drawn through `model_draw`, its positions would receive the
@@ -58,21 +58,20 @@ honest options, and `ref_model_rows.rows_for_model` names them:
   to invent them);
 - refuse, as the native client does today.
 
-Whether the question ever arises on the retail disc is **U**, leaning no:
+Whether the question ever arises on the retail disc is settled, and it does not
+(`docs/formats/level-draw.md` section 5):
 
-- the executable contains no string naming `D_SWAMP.LMP` or any of the eighteen top-level
-  `D_*.LMP` files (byte search for `d_swamp`, `d_torm`, `d_air` in either case: none);
+- the executable contains the string `dome.lmp` and no `dome.vif`, `domeLump`, `D_SWAMP`
+  or `d_swamp` (byte search, either case). O;
 - `game_drawBackdrop` draws only the lump found under the name `dome.lmp`
-  (`lump_findLoaded`, 0x1e5d48–0x1e5d68, stored at 0x86af54), i.e. the `dome.lmp` inside a
-  level's GOB; `SWAMP1.GOB` and `SWAMP2.GOB` contain no `dome.lmp`, and the measured dome
-  survey of the first-person work (`docs/issues/native-first-person-world.md`) lists
-  `swamp1` and `swamp2` as "no dome";
-- the swamp archives (`SWAMP1/2.GOB`, `LSWAMP1/2.LMP`, `W_SWAMP.LMP`) contain no `d_swamp`
-  bytes either.
+  (`lump_findLoaded`, 0x1e5d48–0x1e5d68, stored at 0x86af54). O. Ten of the eighteen
+  top-level `D_*.LMP` files are byte-for-byte that member inside 21 level GOBs. D.
+  `D_SWAMP.LMP` is not one of them, `dome.vif` occurs only inside it, and `SWAMP1.GOB`
+  and `SWAMP2.GOB` have no `dome.lmp`.
 
-So no loader of `D_SWAMP.LMP` was found. If none exists, the model is unreferenced content
-and the native refusal costs nothing visible. What would settle it: a run of the two swamp
-levels on the live rig with a DMA log, looking for a 0x46 `MSCAL` in a model packet.
+The 59 `MSCAL 0x46` packets are unreferenced. The native refusal of model form 0x46 has
+no retail picture. The three choices above stay available for a file that is opened
+some other way; no such open was found.
 
 ## 4. Contract for the reference (`tools/ref_model_rows.py`)
 
