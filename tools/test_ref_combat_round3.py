@@ -14,10 +14,12 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import ref_core as C                            # noqa: E402
 import ref_creature as RC                       # noqa: E402
 import ref_skills_a as SA                       # noqa: E402
+import ref_combat_ranged as RR                  # noqa: E402
 import ref_combat_round3 as R3                  # noqa: E402
 
 CLOUD, VICTIM, OWNER, NODE, OTHER = 0x2000, 0x3000, 0x4000, 0x5000, 0x6000
 TABLE, SPELL = 0x7000, 0x8000
+MISSILE, ARROW_VT, LIGHT = 0x9000, 0x9100, 0x9300
 
 
 class Callbacks:
@@ -162,6 +164,97 @@ class Round3Tests(unittest.TestCase):
         m.strongstance_phantom_run(CLOUD)
         self.assertEqual(mem.load(CLOUD + 0x3CC, 4), C.f32(1.0))
         self.assertFalse([c for c in cb.calls if c[0] == 'obj_delete'])
+
+
+class ArrowCallbacks:
+    def __init__(self, collide=0, pool=0):
+        self.collide, self.pool, self.calls = collide, pool, []
+
+    def get(self, name):
+        def answer(*args):
+            self.calls.append((name, args))
+            if name == 'obj_moveAndCollide':
+                return self.collide
+            if name == 'pool_new':
+                return self.pool
+            if name == 'res_find':
+                return 0xA10000
+            return 0
+        return answer
+
+
+def plant_arrow(mem, end=1000, damage=40, spin=0, impact=0, owner=0, frame=60):
+    mem.store(RC.G_SIM_FRAME, 4, frame)
+    mem.store(MISSILE + 0x48, 4, ARROW_VT)
+    mem.store(ARROW_VT + 8, 2, 0)
+    mem.store(ARROW_VT + 12, 4, 0x151454)
+    mem.store(MISSILE + 0xD0, 4, 2)
+    mem.store(MISSILE + 0xD8, 4, damage)
+    mem.store(MISSILE + 0xEC, 4, end)
+    for i, word in enumerate((C.f32(1.0), C.f32(2.0), C.f32(3.0))):
+        mem.store(MISSILE + 0x10 + 4 * i, 4, word)
+    mem.store(MISSILE + 0x1B0, 4, C.f32(4.0))
+    mem.store(MISSILE + 0xFA, 2, spin)
+    mem.store(MISSILE + 0x1BC, 4, impact)
+    if owner:
+        mem.store(MISSILE + 0x4C, 4, NODE)
+        mem.store(NODE + 0xC, 4, owner)
+
+
+class ArrowTests(unittest.TestCase):
+    def arrow(self, collide=0, pool=0):
+        mem = RC.Memory()
+        cb = ArrowCallbacks(collide, pool)
+        return R3.ArrowModel(mem, cb), mem, cb
+
+    def test_miss_follows_the_light_and_does_not_explode(self):
+        m, mem, cb = self.arrow()
+        plant_arrow(mem)
+        m.missile_run(MISSILE)
+        names = [name for name, _args in cb.calls]
+        self.assertEqual(names, ['obj_moveAndCollide', 'light_relink'])
+        self.assertEqual(mem.load(MISSILE + 0x1A4, 4), C.f32(1.0))
+        self.assertEqual(mem.load(MISSILE + 0x1AC, 4), C.f32(3.0))
+        self.assertEqual(cb.calls[-1][1], (MISSILE + 0x174,))
+
+    def test_hit_damages_in_a_ring_and_ends_the_arrow(self):
+        m, mem, cb = self.arrow(collide=1, pool=LIGHT)
+        plant_arrow(mem, impact=0)
+        m.missile_run(MISSILE)
+        names = [name for name, _args in cb.calls]
+        self.assertEqual(names, [
+            'obj_moveAndCollide', 'res_find', 'sound_playOnObject', 'fx_ringBurst', 'pool_new',
+            'LightEffect_ctor', 'world_damageInRadius', 'light_relink', 'Creature.v1'])
+        self.assertEqual(cb.calls[1][1], (RR.S_FX_LUMP, R3.S_KIND12_IMPACT))
+        ring = cb.calls[3][1]
+        self.assertEqual(ring[0], (C.f32(1.0), C.f32(2.0), C.f32(3.0)))
+        self.assertEqual(ring[1], R3.F_RING2)
+        light = cb.calls[5][1]
+        self.assertEqual(light[0], LIGHT)
+        self.assertEqual(light[4:12], (R3.F_LIGHT_A, R3.F_LIGHT_B, 0, R3.F_LIGHT_C, 0, 0, 0, 0))
+        self.assertEqual(light[12:], (R3.F_LIGHT_D, R3.F_LIGHT_E, C.ONE, C.ONE))
+        damage = cb.calls[6][1]
+        self.assertEqual(damage[0], 0)
+        self.assertEqual(damage[2:6], (40, 0, 0, 0))
+        self.assertEqual(damage[6:], (R3.F_24, R3.F_OUTER72))
+        self.assertEqual(mem.load(MISSILE + 0xEC, 4), 0)
+        self.assertEqual(cb.calls[-1][1], (MISSILE, 3))
+
+    def test_a_failed_light_pool_still_damages_and_the_owner_is_the_attacker(self):
+        m, mem, cb = self.arrow(collide=1, pool=0)
+        plant_arrow(mem, owner=OWNER, impact=7)
+        m.missile_run(MISSILE)
+        names = [name for name, _args in cb.calls]
+        self.assertNotIn('LightEffect_ctor', names)
+        self.assertIn('sound_playSample', names)
+        damage = [args for name, args in cb.calls if name == 'world_damageInRadius'][0]
+        self.assertEqual(damage[0], OWNER)
+
+    def test_only_a_ground_hit_plays_the_impact_sample(self):
+        m, mem, cb = self.arrow(collide=3, pool=0)
+        plant_arrow(mem, impact=7)
+        m.missile_run(MISSILE)
+        self.assertTrue([c for c in cb.calls if c[0] == 'sound_playSample'])
 
 
 if __name__ == '__main__':

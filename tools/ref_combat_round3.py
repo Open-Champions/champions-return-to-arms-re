@@ -19,8 +19,10 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import ref_core as C                            # noqa: E402
+import ref_creature as RC                       # noqa: E402
 import ref_skills_a as SA                       # noqa: E402
-from ref_creature import M32, s32               # noqa: E402
+import ref_combat_ranged as RR                  # noqa: E402
+from ref_creature import M32, s8, s16, s32      # noqa: E402
 
 # DiseaseCloud (table 0x5186f0, 0x64 bytes; symbols/runtime.tsv names that table).
 # Cross-checked with research-fx docs/effects.md section 17: the cloud's damage_apply
@@ -43,6 +45,17 @@ F_240 = 0x43700000
 F_24 = 0x41C00000
 F_10 = 0x41200000
 F_5 = 0x40A00000
+
+# MissileWeapon kind 2 (exploding).  The impact sample at 0x5324e0 is shared with kind 1
+# and is played before the kind-0 stone visual, which kind 2 never reaches.
+S_KIND12_IMPACT = 0x5324E0
+F_RING2 = 0x40000000
+F_LIGHT_A = 0x437F0000
+F_LIGHT_B = 0x431B0000
+F_LIGHT_C = 0xC2000000
+F_LIGHT_D = 0x43580000
+F_LIGHT_E = 0x42F00000
+F_OUTER72 = 0x42900000
 
 MODELLED = {
     'DiseaseCloud_ctor': 0x2CE610, 'DiseaseCloud_run': 0x2CE6E0,
@@ -224,3 +237,78 @@ class Model(SA.Model):
         self.w32(obj + 0x3CC, left)
         if C.lt(left, C.ONE):
             self.call('obj_delete', obj)
+
+
+class ArrowModel(RR.RangedModel):
+    """MissileWeapon_run for kind 2.  Kinds 0 and 3 stay on RangedModel.  obj_moveAndCollide
+    stays a call-out here: the ranged difftest runs that body for real, and this class
+    must not grow a second copy of it."""
+
+    def __init__(self, mem, callbacks=None, external=()):
+        if 'obj_moveAndCollide' not in external:
+            external = tuple(external) + ('obj_moveAndCollide',)
+        RR.RangedModel.__init__(self, mem, callbacks, external)
+
+    def missile_run(self, this):
+        """MissileWeapon_run 0x15153c while the word at +0xd0 is 2.
+
+        A carried arrow (handle +0x128) and an arrow whose splash byte is already set
+        take the same exits kinds 0 and 3 take.  In flight, a nonzero move result plays
+        res_find of 0x532478 and 0x5324e0, then sound_playOnObject, and stores 0 at
+        +0xec.  Only a result of exactly 1 also plays the sample at +0x1bc.  Kind 2 then
+        skips the stone-hit effect (that effect is kinds 0 and 3): fx_ringBurst at scale
+        2, pool_new(0xbc) and LightEffect_ctor when a block comes back, then
+        world_damageInRadius of the owner at +0x4c (or 0) for the word at +0xd8, inner
+        24 and outer 72.  Hit or miss, the position is copied to +0x1a4 and light_relink
+        runs on +0x174.  There is no cold puff and no trail.  Slot 1 with 3 runs when
+        the frame is no longer strictly below +0xec, so a hit (which stored 0 there)
+        destroys the arrow on that same frame."""
+        if s32(self.u32(this + 0xD0)) != 2:
+            return RR.RangedModel.missile_run(self, this)
+        u32 = self.u32
+        if u32(this + 0x128):
+            active = self.obj_update_active(this, s8(self.u8(this + 0xCD)), 0x1E0)
+            self.w8(this + 0xCD, active)
+            host = self.handle_obj(this + 0x128)
+            if u32(host + 0xC) & 0x20 and self.u64(host + 0xA8) & (1 << 41):
+                self.call('obj_delete', this)
+                return
+            model = self.model_of(host)
+            if model:
+                point, _w = self.sample_point(model, host, u32(this + 0xF4), True, False, False)
+                for i in range(3):
+                    self.mem.poke(this + 0x10 + 4 * i, 4, point[i] & M32)
+            self.call('obj_updateGridCell', this)
+            return
+        if s8(self.u8(this + 0xCC)):
+            self.vcall(this, 1, 3)
+            return
+        spin = self.u16(this + 0xFA)
+        if s16(spin):
+            self.w16(this + 0xFC, self.u16(this + 0xFC) + spin)
+        result = self.call('obj_moveAndCollide', this, self.vec(this + 0x1B0))
+        res = result & ~2 & M32
+        if s8(self.u8(this + 0xCC)):
+            res |= 2
+        if res:
+            hit = self.call('res_find', RR.S_FX_LUMP, S_KIND12_IMPACT)
+            self.call('sound_playOnObject', hit, this, C.ONE)
+            self.w32(this + 0xEC, 0)
+            if res == 1:
+                impact = u32(this + 0x1BC)
+                if impact:
+                    self.call('sound_playSample', impact, self.vec(this + 0x10), C.ONE, C.ONE, C.ZERO)
+            pos = self.vec(this + 0x10)
+            self.call('fx_ringBurst', pos, F_RING2)
+            block = self.call('pool_new', 0xBC)
+            if block:
+                self.call('LightEffect_ctor', block, pos, 0, 0,
+                          F_LIGHT_A, F_LIGHT_B, C.ZERO, F_LIGHT_C, C.ZERO, C.ZERO, C.ZERO, C.ZERO,
+                          F_LIGHT_D, F_LIGHT_E, C.ONE, C.ONE)
+            node = u32(this + 0x4C)
+            attacker = u32(node + 0xC) if node else 0
+            self.call('world_damageInRadius', attacker, pos, u32(this + 0xD8), 0, 0, 0, F_24, F_OUTER72)
+        self.wvec(this + 0x1A4, self.vec(this + 0x10))
+        self.call('light_relink', this + 0x174)
+        if not s32(u32(RC.G_SIM_FRAME)) < s32(u32(this + 0xEC)):
+            self.vcall(this, 1, 3)

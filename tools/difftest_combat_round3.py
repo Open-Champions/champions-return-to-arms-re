@@ -30,6 +30,7 @@ from ee_emu import EE, EmuError                 # noqa: E402
 import ref_core as C                            # noqa: E402
 import ref_creature as RC                       # noqa: E402
 import ref_skills_a as SA                       # noqa: E402
+import ref_combat_ranged as RR                  # noqa: E402
 import ref_combat_round3 as R3                  # noqa: E402
 import difftest_combat_runtime as D             # noqa: E402
 import difftest_creature as DC                  # noqa: E402
@@ -51,6 +52,7 @@ ENTRIES = {
     'gutChunkCtor': (0x201958, 'ivii', 0, 'n', 'gutchunk_ctor', (0x201958, 0x201A2C)),
     'stancePhantomCtor': (0x1618D4, 'iiiii', 0, 'n', 'strongstance_phantom_ctor', (0x1618D4, 0x161A50)),
     'stancePhantomRun': (0x161A54, 'i', 0, 'n', 'strongstance_phantom_run', (0x161A54, 0x161AD8)),
+    'missileKind2': (0x15153C, 'i', 0, 'n', 'missile_run', (0x15153C, 0x15253C)),
 }
 REAL = {0x14CB10, 0x1509D0}
 REAL_SPANS = ((0x14CB10, 0x14CF84),)
@@ -72,7 +74,17 @@ EXTS = {
     'Creature_moveBy': Ext(0x113C48, 'pv', 0, 'n'),
     'obj_delete': Ext(0x14F200, 'p', 0, 'n'),
     'Creature.v1': Ext(0, 'ii', 0, 'n'),
+    'obj_moveAndCollide': Ext(0x1509F8, 'iv', 0, 'i'),
+    'fx_ringBurst': Ext(0x1F3D00, 'v', 1, 'n'),
+    'pool_new': Ext(0x14FDB8, 'i', 0, 'i'),
+    'sound_playOnObject': Ext(0x214230, 'pp', 1, 'n'),
+    'sound_playSample': Ext(0x2134E8, 'iv', 3, 'i'),
+    'light_relink': Ext(0x14A528, 'p', 0, 'n'),
+    'world_damageInRadius': Ext(0x161270, 'iviiii', 2, 'n'),
 }
+_LIGHT = Ext(0x201BD8, 'ivii', 8, 'n')
+_LIGHT.stack = 4
+EXTS['LightEffect_ctor'] = _LIGHT
 
 
 def desc_canon(mem, addr):
@@ -106,14 +118,20 @@ class World:
         self.targets = [emu.alloc(0x40) for _ in range(2)]
         self.class_def = emu.alloc(0x20)
         self.victims = [emu.alloc(0x30) for _ in range(4)]
+        self.missiles = [emu.alloc(0x200) for _ in range(2)]
+        self.light = emu.alloc(0xC0)
+        self.owners = [emu.alloc(0x20) for _ in range(2)]
+        self.collide = 0
+        self.give_light = 0
         self.nodes = {}
-        for obj in self.clouds + self.guts + self.phantoms + self.targets + self.victims:
+        for obj in self.clouds + self.guts + self.phantoms + self.targets + self.victims + self.owners:
             node = emu.alloc(0x10)
             self.mem.w32(node + 0xC, obj)
             self.nodes[obj] = node
         self.case_pool = list(self.victims)
         dtor = emu.mem.u32(R3.DC_VT + 0xC)
         self.dtor = dtor
+        self.missile_dtor = emu.mem.u32(RR.VT_MISSILE + 0xC)
         self.link_node = emu.alloc(0x10)
 
     def respond(self, name, args, view, rng):
@@ -140,6 +158,12 @@ class World:
         view.poke(obj + 0x24, 4, class_def)
         return Res()
 
+    def on_obj_moveAndCollide(self, args, view, rng):
+        return Res(self.collide)
+
+    def on_pool_new(self, args, view, rng):
+        return Res(self.light if self.give_light else 0)
+
 
 class Rig:
     def __init__(self, elf):
@@ -157,6 +181,10 @@ class Rig:
                 continue
             self.names[addr] = name
             emu.stub(addr, function=self.make_stub(name, ext), name=name)
+        missile = self.world.missile_dtor
+        if missile and missile not in self.names and missile not in self.real:
+            self.names[missile] = 'Creature.v1'
+            emu.stub(missile, function=self.make_stub('Creature.v1', EXTS['Creature.v1']), name='Creature.v1')
         self.calls, self.unknown, self.pcs = [], {}, set()
         self.partial, self.partial_ops = [], {}
         spans = list(REAL_SPANS) + [entry[5] for entry in ENTRIES.values()]
@@ -221,6 +249,9 @@ class Rig:
                 canon.append(reg)
         for j in range(ext.floats):
             canon.append(emu.f[12 + j] & M32)
+        sp = emu.r[29] & M32
+        for j in range(getattr(ext, 'stack', 0)):
+            canon.append(mem.u32(sp + 8 * j))
         return tuple(canon), outs
 
     def make_stub(self, name, ext):
@@ -259,7 +290,8 @@ class Rig:
         seed_before = mem.u32(SA.G_SIM_FRAME) and mem.u32(RC.G_RAND_SEED)
         seed_before = mem.u32(RC.G_RAND_SEED)
         mview = D.ModelView(mem)
-        model = R3.Model(mview, Rig.Callbacks(self, D.View(mview.load, mview.poke), random.Random(call_seed)))
+        cls = R3.ArrowModel if key == 'missileKind2' else R3.Model
+        model = cls(mview, Rig.Callbacks(self, D.View(mview.load, mview.poke), random.Random(call_seed)))
         try:
             mret = getattr(model, method)(*args)
         except EmuError as exc:
@@ -423,6 +455,54 @@ def generate(rig, key, rng, n=0):
         mem.w32(obj + 0xC, rng.choice((0, 0x20)))
         mem.w64(obj + 0xA8, rng.choice((0, 1)))
         return (obj, target, 0x550100, rng.choice((0, 1, 4, -2 & M32)), rng.choice((0, 0, 1)))
+    if key == 'missileKind2':
+        obj = rng.choice(w.missiles)
+        _zero(mem, obj, 0x1E0)
+        frame = mem.u32(SA.G_SIM_FRAME) or 1
+        mem.w32(SA.G_SIM_FRAME, frame)
+        mem.w32(RC.G_LEVEL_FLAGS, 0)
+        pos = _pos(rng)
+        vel = _pos(rng)
+        for i in range(3):
+            mem.w32(obj + 0x10 + 4 * i, pos[i])
+            mem.w32(obj + 0x1B0 + 4 * i, vel[i])
+        mem.w32(obj + 0x48, RR.VT_MISSILE)
+        mem.w32(obj + 0xD0, 2)
+        mem.w32(obj + 0xD8, rng.choice((1, 12, 40, 100)))
+        mem.w32(obj + 0xEC, (frame + 80) & M32)
+        mem.w16(obj + 0xFA, 0)
+        mem.w16(obj + 0xFC, rng.randrange(0x10000))
+        mem.w32(obj + 0x1BC, 0)
+        mem.w32(obj + 0x4C, 0)
+        w.collide = 0
+        w.give_light = 0
+        if n == 0:
+            return (obj,)
+        if n == 1:
+            w.collide, w.give_light = 1, 1
+            return (obj,)
+        if n == 2:
+            owner = w.owners[0]
+            w.collide, w.give_light = 1, 0
+            mem.w32(obj + 0x4C, w.nodes[owner])
+            mem.w32(obj + 0x1BC, 0x11)
+            mem.w16(obj + 0xFA, 0x100)
+            return (obj,)
+        if n == 3:
+            w.collide, w.give_light = 1, 1
+            mem.w32(obj + 0x4C, w.nodes[w.owners[1]])
+            return (obj,)
+        w.collide = rng.choice((0, 0, 1, 1, 1, 3))
+        w.give_light = rng.choice((0, 1))
+        if rng.random() < 0.5:
+            mem.w32(obj + 0x4C, w.nodes[rng.choice(w.owners)])
+        if rng.random() < 0.4:
+            mem.w32(obj + 0x1BC, rng.choice((1, 7, 0x11)))
+        if rng.random() < 0.3:
+            mem.w16(obj + 0xFA, rng.choice((1, 0x100, 0x7FFF, 0x8000)))
+        if rng.random() < 0.1:
+            mem.w8(obj + 0xCC, 1)
+        return (obj,)
     obj = rng.choice(w.phantoms)
     _zero(mem, obj, 0x3E0)
     mem.w32(obj + 0x3CC, f32(rng.choice((0.0, 0.5, 1.0, 1.5, 2.0, 75.0, 240.0))))
@@ -489,8 +569,11 @@ def main(argv):
         size = (body[1] - body[0]) // 4
         print('%-22s %8d %8d  %s' % (key, compared, failed, '' if not shown else shown[0][:120]))
         missed = [pc for pc in range(body[0], body[1], 4) if pc not in rig.pcs]
+        shown_miss = ' '.join('%x' % pc for pc in missed[:16])
+        if len(missed) > 16:
+            shown_miss += ' +%d' % (len(missed) - 16)
         print('%-22s %s' % ('', 'instructions %d/%d%s' % (
-            covered, size, '' if not missed else '  missed %s' % ' '.join('%x' % pc for pc in missed))))
+            covered, size, '' if not missed else '  missed %s' % shown_miss)))
         if OPTIONS['verbose']:
             for line in shown:
                 print('   ', line[:400])
