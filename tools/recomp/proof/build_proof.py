@@ -51,8 +51,22 @@ def main():
             raise SystemExit('%s exists; a snapshot is taken once (move it away to take another)' % snap)
         os.makedirs(snap)
         shutil.copytree(os.path.join(RECOMP, 'rt'), os.path.join(snap, 'rt'))
-        for name in ('recomp.py', 'build.py', 'hle.txt', 'entries.txt'):
-            shutil.copy2(os.path.join(RECOMP, name), snap)
+        for name in ('recomp.py', 'build.py', 'hle.txt', 'entries.txt', 'genfiles.py'):
+            if os.path.exists(os.path.join(RECOMP, name)):
+                shutil.copy2(os.path.join(RECOMP, name), snap)
+        # Two adjustments the instrumented runtime needs, made in the snapshot only:
+        # build.py links the files genfiles.py names, and instrument.py's index of entry
+        # points (proof_index.cpp) is one more of them; proof_rt.cpp records vector unit 0's
+        # state, which runtime.cpp keeps in a file-static variable.
+        gf = os.path.join(snap, 'genfiles.py')
+        if os.path.exists(gf):
+            text = open(gf).read()
+            text = text.replace("FIXED = ('hle_weak.cpp', 'patches.cpp', 'table.cpp')",
+                                "FIXED = ('hle_weak.cpp', 'patches.cpp', 'table.cpp', 'proof_index.cpp')")
+            open(gf, 'w').write(text)
+        rtc = os.path.join(snap, 'rt', 'runtime.cpp')
+        text = open(rtc).read()
+        open(rtc, 'w').write(text.replace('\nstatic Vu0 g_vu0;', '\nVu0 g_vu0;            // not static in the proof snapshot: proof_rt.cpp reads it', 1))
         return 0
     if args.what == 'sites':
         # Where the translation counts: `BUDGET()` stands at every taken branch or jump to a

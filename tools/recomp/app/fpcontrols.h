@@ -165,6 +165,9 @@ std::string figures();                  // counters for the report at the end of
 // and the strafe mode is asked for in every look view.
 void set_souls(bool on);
 void lock_toggle();                     // any thread: at the next blank
+// Aiming by looking (app/fpaim.h) is on: a shot no longer turns the look to the target the game took (the arrow
+// goes where the player looks, so the look is the player's).
+void set_aim(bool on);
 
 // Mouse buttons and extra keys as controller buttons (rta::PadButton bits), given the view.
 uint16_t mouse_buttons_as_pad();

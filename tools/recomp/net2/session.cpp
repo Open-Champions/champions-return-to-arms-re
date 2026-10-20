@@ -108,6 +108,12 @@ void State::room_checks() {
                      (m.fix_words & 0x8000) ? "on" : "off", m.name, (first->fix_words & 0x8000) ? "on" : "off", first->name);
             room.mismatch = 1;
             put(room.warning, text);
+        } else if ((m.fix_words & 0x4000) != (first->fix_words & 0x4000)) {
+            // aiming by looking (tools/recomp/app/fpaim.h), the same kind of room option
+            snprintf(text, sizeof text, "Aiming by looking is %s for %s and %s for %s: every copy must have it. Do not start.",
+                     (m.fix_words & 0x4000) ? "on" : "off", m.name, (first->fix_words & 0x4000) ? "on" : "off", first->name);
+            room.mismatch = 1;
+            put(room.warning, text);
         } else if (m.fix_set != first->fix_set || m.fix_words != first->fix_words) {
             snprintf(text, sizeof text, "%s has a different fix set (%08x, %u words) from %s (%08x, %u words): the game would fall out of step. Do not start.",
                      m.name, m.fix_set, m.fix_words, first->name, first->fix_set, first->fix_words);
@@ -398,6 +404,9 @@ int net2_start(net2* n) {
     for (int i = 1; i < room.count; i++)
         if ((room.members[i].fix_words & 0x8000) != (room.members[0].fix_words & 0x8000))
             return n->body->s.error(NET2_ERR_REFUSED, "Not every copy in the room plays with the souls-style combat mode.");
+    for (int i = 1; i < room.count; i++)
+        if ((room.members[i].fix_words & 0x4000) != (room.members[0].fix_words & 0x4000))
+            return n->body->s.error(NET2_ERR_REFUSED, "Not every copy in the room aims by looking.");
     return n->body->start();
 }
 int net2_leave(net2* n) { LOCKED; return n ? n->body->leave() : NET2_ERR_ARGUMENT; }

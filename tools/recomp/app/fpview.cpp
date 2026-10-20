@@ -39,6 +39,7 @@
 #include "funcs.h"
 
 #include <algorithm>
+#include <chrono>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -353,7 +354,9 @@ struct Inputs {
     float dt = 0;                   // seconds of simulation since the last pass
 };
 
+u64 g_rays = 0;     // terrain queries made (the eye dump says how many a placement took)
 float ray_between(Ctx* c, Vec3 from, Vec3 to) {
+    g_rays++;
     u32 world = W(G_WORLD);
     if (!world || !g_collide) return -1;
     Vec3 d = to - from;
@@ -391,6 +394,8 @@ bool sees(Ctx* c, Vec3 eye, Vec3 head, Vec3 knee) {
     return ray_between(c, knee, eye) < 0;
 }
 
+float g_arms_near = 14.0f;     // view.arms-near N: the near cut of arms mode (a test aid)
+int g_eye_dump = 0;     // view.eye-dump N: the first-person eye's placement of the next N passes to the output (a test aid)
 Pose pose_of(Ctx* c, int mode, const Inputs& in) {
     if (mode == OVERHEAD) return in.game;
     const ModeSettings& s = g_set[mode];
@@ -401,7 +406,7 @@ Pose pose_of(Ctx* c, int mode, const Inputs& in) {
     // The original posed model, weapon and cast packets share the world's projection.
     // A near cut removes the face/shoulders without changing the rig or animation. The
     // scene tap carries this same range to Godot (including its complete triangles).
-    if (mode == FIRST && s.body == 1) p.near_plane = std::max(p.near_plane, 14.0f * size);
+    if (mode == FIRST && s.body == 1) p.near_plane = std::max(p.near_plane, g_arms_near * size);
     float pitch = clampf(s.pitch + g_pitch[mode], std::min(s.pitch_min, s.pitch), std::max(s.pitch_max, s.pitch));
     Vec3 up = v3(0, 0, 1);
     auto forward_at = [&](float degrees) { return in.heading * std::cos(degrees * DEG) + v3(0, 0, std::sin(degrees * DEG)); };
@@ -409,27 +414,72 @@ Pose pose_of(Ctx* c, int mode, const Inputs& in) {
         aim(p, forward_at(pitch));
         p.eye = in.anchor + up * (s.height * size) + in.heading * (s.eye_forward * size);
         // Standing against a wall puts the eye, and the near plane ahead of it, into the wall: the
-        // wall is cut away and the level behind it (or the inside of the block) shows.  Along the
-        // heading and the picture's two side edges, the level (the terrain query: walls are blocks
-        // of it) must be at least the near plane and a margin away; if not, the eye goes back
-        // along the heading, at most to a little behind the head (in arms mode nothing of the
-        // body is drawn there).
+        // wall is cut away and the level behind it (or the inside of the block) shows.  The near plane is
+        // a rectangle `near` ahead of the eye, as wide as the picture: at 16:9 and a field of view of 70
+        // its edges are 51 degrees off the heading (until 2026-10-20 the test stopped at 35 - the
+        // vertical half-angle - and a wall at the picture's side edge was cut: a strip of nothing along
+        // the edge, nitdung1, shame1, wate2c).  Two steps, with the terrain query (walls are blocks of it):
+        //  1. sideways: a wall closer to the head than the near plane's half width (and a margin) moves
+        //     the eye away from it, at most 12 units (a wall alongside is not helped by going back);
+        //  2. back along the heading, at most a little behind the head (in arms mode nothing of the body
+        //     is drawn there), until the way from the head to the near plane's middle, both its ends and
+        //     its two lower corners is clear; in a corner, with a nearer near plane (below).
         if (g_collide) {
+            const u64 rays_before = g_rays;
+            const auto time_before = std::chrono::steady_clock::now();
             Vec3 head = in.anchor + up * (s.height * size);
-            float back = 16.0f * size, need = p.near_plane + 5.0f * size;
-            Vec3 from = head - in.heading * back;
-            float tb = ray_between(c, head, from);
-            if (tb >= 0) { back *= std::max(0.0f, tb - 0.05f); from = head - in.heading * back; }
-            float ahead = back + s.eye_forward * size;      // where the eye stands, measured from `from`
-            float half = std::min(35.0f, s.fov * 0.5f) * DEG, allowed = ahead;
-            for (float side : {0.0f, -1.0f, 1.0f}) {
-                float a = side * half, ca = std::cos(a), sa = std::sin(a);
-                Vec3 dir = v3(in.heading.x * ca - in.heading.y * sa, in.heading.x * sa + in.heading.y * ca, 0);
-                float reach = (ahead + need) / ca;
-                float t = ray_between(c, from, from + dir * reach);
-                if (t >= 0) allowed = std::min(allowed, t * reach * ca - need);
+            Vec3 side = v3(in.heading.y, -in.heading.x, 0);              // the picture's right, on the ground
+            const float tan_v = std::tan(clampf(p.fov, 10, 120) * 0.5f * DEG);
+            float tan_h = std::min(tan_v * gfxrt::view_aspect(), 2.0f);
+            float need = p.near_plane + 5.0f * size;                     // the near plane and a margin, ahead
+            float half = need * tan_h;                                   // its half width there
+            // 1. sideways
+            float reach = half + 2.0f * size, limit = 12.0f * size;
+            float tr = ray_between(c, head, head + side * reach), tl = ray_between(c, head, head - side * reach);
+            float dr = tr >= 0 ? tr * reach : reach, dl = tl >= 0 ? tl * reach : reach;
+            float shift = 0;                                             // + = to the right
+            if (dr < reach && dl < reach) shift = (dr - dl) * 0.5f;      // between two walls: the middle
+            else if (dr < reach) shift = -(reach - dr);
+            else if (dl < reach) shift = reach - dl;
+            shift = clampf(shift, -limit, limit);
+            if (std::fabs(shift) > 0.25f) {
+                float t = ray_between(c, head, head + side * shift);     // never through a wall
+                if (t >= 0) shift *= std::max(0.0f, t - 0.1f);
+                head = head + side * shift;
             }
-            if (allowed < ahead) p.eye = from + in.heading * std::max(0.0f, allowed); 
+            // 2. back along the heading
+            float back = 16.0f * size;
+            float tb = ray_between(c, head, head - in.heading * back);
+            if (tb >= 0) back *= std::max(0.0f, tb - 0.05f);
+            // The first place, from the front, whose near plane is clear.  In a corner (a wall ahead and one
+            // beside, both closer than the near plane's reach) there is none: the near plane is then brought
+            // in, step by step, as far as 5 units (a little more of the own figure may show; the wall cut
+            // away showed the level behind it - storm1a, 2026-10-20).  If even that is not clear: the first
+            // place whose middle is (going further back does not help against a wall alongside).
+            float ahead = s.eye_forward * size, step = 3.0f * size, mid_clear = -back - 1, chosen = -back - 1;
+            float nears[4] = {p.near_plane, 10.0f * size, 7.0f * size, 5.0f * size}, used = p.near_plane;
+            for (int n = 0; n < 4 && chosen < -back; n++) {
+                if (n && nears[n] >= nears[0] - 0.01f) continue;
+                float nd = nears[n] + 5.0f * size, nh = nd * tan_h;
+                for (float e = ahead; e > -back - 0.01f; e -= step) {
+                    Vec3 mid = head + in.heading * (e + nd);
+                    if (ray_between(c, head, mid) >= 0) continue;
+                    if (!n && mid_clear < -back) mid_clear = e;
+                    // the two ends at eye height, then the two lower corners (a ledge below the eye: compblo)
+                    const Vec3 low = mid - up * (nd * tan_v);
+                    if (ray_between(c, head, mid + side * nh) < 0 && ray_between(c, head, mid - side * nh) < 0 &&
+                        ray_between(c, head, low + side * nh) < 0 && ray_between(c, head, low - side * nh) < 0) { chosen = e; used = nears[n]; break; }
+                }
+            }
+            if (chosen < -back) chosen = mid_clear >= -back ? mid_clear : -back;
+            p.eye = head + in.heading * chosen;
+            p.near_plane = used;
+            if (g_eye_dump > 0) {
+                g_eye_dump--;
+                const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - time_before).count();
+                fprintf(stderr, "view eye: %llu rays, %.1f us; head %.1f %.1f %.1f heading %.3f %.3f near %.1f (of %.1f) need %.1f half %.1f (tan %.3f) right %.1f left %.1f shift %.1f back %.1f chosen %.1f mid-clear %.1f\n",
+                        (unsigned long long)(g_rays - rays_before), us, head.x, head.y, head.z, in.heading.x, in.heading.y, p.near_plane, nears[0], need, half, tan_h, dr, dl, shift, back, chosen, mid_clear);
+            }
         }
         return p;
     }
@@ -1013,6 +1063,8 @@ bool setting(const char* key, const char* value) {
     if (!key || !value) return false;
     std::lock_guard<std::mutex> hold(g_settings_lock);
     if (!strcmp(key, "view")) { int m = mode_by_name(value); if (m < 0) return false; g_wanted = m; return true; }
+    if (!strcmp(key, "view.arms-near")) { g_arms_near = clampf((float)atof(value), 1, 40); return true; }
+    if (!strcmp(key, "view.eye-dump")) { g_eye_dump = atoi(value); return true; }     // a test aid: the eye's placement, N passes
     if (!strcmp(key, "view.ease")) { g_ease_seconds = clampf((float)atof(value), 0, 3); return true; }
     if (strncmp(key, "view.", 5)) return false;
     const char* dot2 = strchr(key + 5, '.');

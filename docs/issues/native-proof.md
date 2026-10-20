@@ -27,6 +27,7 @@ Nothing of this work is still running.)
 | 1. The two differences against the rig | both located to the byte, the writing code and the cause — the completion time of a disc read, and which sound-sequence slot was free — measured on both machines. Neither is a translation error |
 | 2. The 301 functions without a comparable case | **69 now identical to their return on states recorded in the running game, 6 more identical up to a common stop, 0 different.** 24 are entered and cannot return in isolation (they wait for an interrupt or the I/O processor). 202 were entered by no session; 137 of those are library and C++ runtime code offline play does not call, 20 are named by no call, jump or data word |
 | 3. Coverage of play | nine sessions compared with the rig tick for tick (79,547 ticks, 93 levels besides the first, all seven classes): **2,987 of 7,732 functions (38.6 %)** ran. Four tours (34,995 ticks) agree in every column at every tick; in the others position, both seeds, state and all character columns agree at every tick and the pool or record checksum differs for causes located to bytes and writer (3c), one of them not explained. The set was still growing when the round ended |
+| Round 3 (2026-10-20, today's build) | the two one-tick differences (NP14) re-measured: the replay's missing row, gone with it and back without it; shop, save point, load, level-up, deaths and restarts identical in 15 play sessions (83,952 ticks), three after removing causes outside the game's code (R3.1, R3.2) |
 | 4. Arithmetic corner cases | FPU: 24 instructions × 1,980,400 operand sets, **0 differences** in both builds against their references; integer, multiply/divide and multimedia: 156 instruction words × 250,000 sets, **0**; vector unit 0: 225 forms × 21,000,000 lane results in two modes, **0**; the host model against the rig itself: 15 instructions × 16,384 pairs, **0** with flush-to-zero. One gap found in the runtime (no flush-to-zero) — since fixed by the runtime's keeper |
 
 Across everything: **no difference found is a translation error.** Of the 7,732
@@ -404,6 +405,99 @@ the game reads back depends on them: besides the tick logs, an image of all 32 M
 at the same tick of `h6w` with either header is identical. The game's program executes
 no MAX or MINI. The change is therefore free in these sessions, and it removes the one
 place where an ARM64 and an x86-64 build of the runtime compute different bits.
+
+## Round 3 (2026-10-20): the open ends on the current build
+
+Built from a **new snapshot** of the translator and runtime as they are on 2026-10-20
+(`build_proof.py snapshot`, then `translate` and `runtime`; the round-2 snapshot and build
+were moved aside as `snap-1013` and `build-1013`). `snapshot` now also copies
+`genfiles.py` and makes, in the snapshot only, the two adjustments the instrumented
+runtime needs (the entry-point index `proof_index.cpp` is linked; vector unit 0's state is
+not file-static); before, a fresh snapshot of today's tree did not link. The native runs
+take about 23 s each now (the round-2 figure was minutes under a load of 300-500); the
+rig logs are those of round 2, unchanged.
+
+### R3.1 The two one-tick differences: the cause measured again, on today's build (Ran)
+
+The PROGRESS row's "two unexplained one-tick differences" are NP14: at two of the seven
+level changes the game made itself (`s2`'s `fay3`, `s3`'s `torment3`) the native run left
+the old level one tick after the rig. R2.1 traced them to the comparison's controller
+replay, which had no row for the tick in which the door fires. Run again on today's build
+against the round-2 rig logs (sessions `s2v`, `s3v` = `s2w`, `s3w` with the kept scripts):
+
+| | `fay3` last tick, rig / native | `torment3` last tick, rig / native | ticks where every column agrees |
+|---|---|---|---|
+| replay **without** the added row (`session.py … native --no-last-tick-fix`) | 152 / **153** | 188 / **189** | 4,781 of 11,049; 3,577 of 8,861 |
+| replay **with** the added row (`last_tick_fix`, the default) | 152 / 152 | 188 / 188 | 10,597 of 11,049; 8,500 of 8,861 |
+
+With the row, position, both seeds, state, hit points, mana, statistics, bag, equipment,
+abilities and skills agree at every tick of both tours. What is left is one tick of the
+weapon-trail matrix at hub tick 7 (NP1), the HUD's per-frame value in `nitmedal` (R2.2
+row 2), the dialogue speaker's track times in `dis2` (D8, R2.2) and the write rows of the
+tour's own memory writes. **So the one-tick differences are explained with evidence and
+need no fix in the game or the runtime:** removing one replay row brings them back,
+adding it removes them, on the build of today. In a network game the press reaches every
+machine through the input record of a numbered frame (R2.1), so the mechanism does not
+exist there.
+
+### R3.2 Shop, save point, level-up, death and restart: all compared (Ran)
+
+The sessions of R2.4 (made by `play.py`) were run natively on today's build against
+their round-2 rig logs. Every one gives the same summary as on 2026-10-13:
+
+| Session | What it does | Ticks | Result on today's build |
+|---|---|---|---|
+| `pt6` | both potions, the shop (talk, buy twice, the sell list, equip and unequip there, **sell**), the inventory screen, the **save point** (new save, "Save Successful"), **Load Game** | 3,841 | identical in every simulation column at every tick |
+| `pf1`, `pf3`, `pf5`, `pf6` | per class three levels of fights, the **level-up** screen with points spent, potions, a chest, a **death** and the **restart** | 31,461 | identical in every simulation column at every tick |
+| `pp0`-`pp6` | the seven characters as created, one level each, killed by a creature, **restart** | 26,213 | identical in every simulation column at every tick |
+| `pf2` | storm1, fay1, nit1, death in nit1 and the restart | 7,688 | differed from tick 2 of the restart; **identical once the harness's cause is removed** (below) |
+| `pf4` | islsm1, innovat1, islc1 | 7,779 | differed from tick 42 of innovat1; **identical once the machine-timing cause is removed** (below) |
+| `pf0` | valor, wat1, bossevil | 6,970 | differed from tick 373 of valor (R2.4); identical with the warm-up made equal, as in R2.4, on today's build too |
+
+"Identical in every simulation column" means position, facing, both seeds, state, hit
+points, mana, gold, experience, statistics, bag, equipment, abilities and skills; the
+player record and the pool differ for the causes of R2.2 (frame counts and the voice
+stream's position), and the hub's tick 7 for NP1. In all 15 sessions together:
+**83,952 ticks of shop, save, load, level-up, chests, potions, fights, deaths and
+restarts with no simulation difference that the game's code causes.**
+
+**`pf2`: the restart (the harness).** Logged per frame (rig and native tick logs, episode
+of the restart, tick 0, which stands while the level loads): the rig's load lasts 120
+frames, the native build's 36. The script's writes for the next leg (the character's
+position at 615.98, -877.18 and the hit points) are timed on the rig's frames 48-120 of
+that standing tick. On the rig they land before the game's own placement: at frame 94 the
+game puts the character at the restart point (x = -1431.7, state 2) over them. The native
+build places the character at frame 36 and leaves the tick; the writes it has not reached
+are applied late, at tick 2, and move the character to 615.98 - from there the run parts.
+Run again with nothing changed but those 19 writes left out (`PROOF_DROP_POKES=7:0:37`,
+a new experiment switch of `session.py`, native only): the restart agrees with the rig at
+every tick of its 274 in every simulation column. So the game's death and restart are the
+same on both machines; the script wrote into a load that is shorter natively.
+
+**`pf4`: a teleport and the warm-up (the machines' streaming).** At tick 41 of innovat1 the
+script puts the character beside a creature; the new surroundings are streamed in and
+`g_warmupFrames` 0x506048 (logged per frame natively, session `pf4x`) is held at 10 for
+130 frames, then counts down: the tick stands for 142 displayed frames natively and 153 on
+the rig. The script's presses (cross, circle) are timed on the rig's frames of that stand;
+on the rig they all fall into the frozen frames, natively the next tick begins while the
+rig's row still holds cross, and the native run's tick 42 sees an attack press the rig's
+did not (`padraw` differs in that one row; from tick 43 the shared seed). Run again with
+nothing changed but `g_warmupFrames` held at 10 for 5, 10, 11 or 12 more frames at the
+end of the native stand (`PROOF_EXTRA_POKES`): innovat1 and islc1 then agree with the rig
+at every tick in every simulation column. The same mechanism as `pf0` (R2.4), started by a
+teleport instead of a menu.
+
+**What it says.** Offline, a machine's streaming speed decides how many displayed frames
+a warm-up lasts, and input is read per displayed frame, so a scripted press can land in a
+frozen frame on one machine and in a live tick on the other. That is a property of the
+original program on any two machines with different drives, not of the translation. In
+a network game input is applied per lockstep tick (R2.1, R2.4), so it does not arise.
+**Not reached** still: the workshop (R2.4).
+
+**Tool limit found.** `session.py`'s tour sessions regenerate their script with
+`tour.py`, which needs `local/rig-out/p6-trees.json`; that file is not in the workspace
+since the move. The kept scripts of the round-2 rig runs were used instead (`s2v`, `s3v`:
+`{"script": …}` entries).
 
 ## Tools added (all in `tools/recomp/proof/`, outputs under `local/recomp-out/proof/`)
 
@@ -933,12 +1027,11 @@ python3 tools/recomp/proof/rigvu.py                     # needs local/rig-out/st
   comparison, in which `anim_buildPose` runs every frame.
 - **4,745 functions ran in no compared session.** About 2,880 of them lie in the
   libraries, the C++ runtime and the lobby client; the others are monsters, skills,
-  menus and the save path not visited: no shop, workshop, save point, level-up or death
-  was reached, and the executed set was still growing.
-- **Two differences in the tours are not explained** (3c rows 5 and 6: one tick more of
-  the old level at two level changes the game made; a pool checksum) and two are
-  explained by reading, not by measurement (rows 3 and 4). In all four every simulation
-  column other than the one named agrees at every tick.
+  menus and the save path not visited (round 1; since R2.4 and R3.2 the shop, save point,
+  load, level-up, death and restart are compared - only the workshop is not reached).
+- (Superseded by R2.1, R2.2 and R3.1: the 3c rows 5 and 6 are explained by measurement -
+  the replay's missing row, re-measured on the build of 2026-10-20, and the dialogue
+  correction of D8; rows 3 and 4 were measured in R2.2.)
 - **Tool limits found:** the controller replay's first tick of a level (3b.3: worked
   around in `cmp.py`, the replay in `rt/iop.cpp` is unchanged); a scripted memory write
   costs one row of difference in what it writes (3b.1).
@@ -965,7 +1058,10 @@ python3 tools/recomp/proof/rigvu.py                     # needs local/rig-out/st
 | NP11 | The controller replay of `rt/iop.cpp` hands the game, at the first tick of a level, a row of the rig's loading frames; a level that starts with input held then diverges from the rig at tick 1. Removing the loading rows from the replay file removes the divergence in all three sessions that had it | Ran | `--opt pad-replay`; `tools/recomp/proof/cmp.py` `first_tick_fix` |
 | NP12 | Record +0x4a74 is written only by `hud_spellSelect` and the HUD function 0x1de8c4 and differs between machines by one unit in two tours | Ran (bytes), Read (writers), cause Inferred | 0x1dd270, 0x1de8c4 |
 | NP13 | In a boss level two animation track times of one creature start 0.9 apart on the two machines and stay so; written by `anim_advance` from `Creature_stepAnim` | Ran (bytes, writer), cause Inferred | 0x16d748, 0x1163a4 |
-| NP14 | At two of seven level changes the game made itself the native run stays one tick longer in the old level than the rig (hit points regenerate one step more); unexplained | Ran | — |
+| NP14 | At two of seven level changes the game made itself the native run stayed one tick longer in the old level than the rig. Cause: the comparison's controller replay had no row for the tick in which the door fires (R2.1); with the row added both machines leave after the same tick, without it the difference returns (R3.1, today's build) | Ran | `cmp.py` `last_tick_fix` |
+| NP15 | Shop (buy, sell, equip), save point, load, level-up, chests, potions, deaths and restarts: 15 play sessions, 83,952 ticks, identical to the rig in every simulation column at every tick on the build of 2026-10-20, three of them after removing a cause outside the game's code (NP16, NP17, and `pf0` of R2.4) | Ran | `play.py`, `session.py`, R3.2 |
+| NP16 | A restart's load lasts 120 frames on the rig and 36 natively; scripted writes timed in the rig's load frames reach the native game at tick 2 and part the runs. Left out, the restart is identical | Ran | `PROOF_DROP_POKES`, `pf2` |
+| NP17 | After a teleport the warm-up (`g_warmupFrames` 0x506048) holds the tick for 153 displayed frames on the rig and 142 natively; a press timed in the rig's frozen frames reaches a live tick natively. Held 5-12 frames longer natively, the runs are identical | Ran | `PROOF_EXTRA_POKES`, `pf4` |
 
 ## Working notes
 

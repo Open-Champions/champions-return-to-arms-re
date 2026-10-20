@@ -416,6 +416,7 @@ def build_mac(args):
         (os.path.join(HERE, 'fpview.cpp'), rt_flags + ['-I', HERE], 'a_'),
         (os.path.join(HERE, 'fpworld.cpp'), rt_flags + ['-I', HERE, '-I', RENDER], 'a_'),
         (os.path.join(HERE, 'soulscombat.cpp'), rt_flags + ['-I', HERE, '-I', RENDER], 'a_'),
+        (os.path.join(HERE, 'fpaim.cpp'), rt_flags + ['-I', HERE], 'a_'),         # aiming by looking: app_main.cpp calls it
         (os.path.join(HERE, 'fpcontrols.cpp'), ['-std=c++17', opt, '-Wall', '-I', HERE, '-I', RT], 'a_'),
         (os.path.join(HERE, 'look_mac.mm'), objc + ['-I', HERE, '-I', RT], 'a_'),
         (FILM, rt_flags + ['-I', HERE], 'a_'),

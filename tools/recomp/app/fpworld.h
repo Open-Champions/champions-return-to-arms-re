@@ -20,7 +20,9 @@
 //   world.cells    textures of cells the game no longer keeps: a texture of a resident cell,
 //                  once prepared, is copied to the runtime's shelf (rt_shelf), and a chunk of a
 //                  cell that is not resident is drawn with that copy (the game keeps nine cells
-//                  of 720 x 720 round one point; a view along the ground sees 1,800 units).
+//                  of 720 x 720 round one point; a view along the ground sees 1,800 units).  A chunk of a
+//                  resident cell whose texture the game has not prepared (its texture thread's page pool
+//                  keeps what the last frames drew; a view draws far more) is drawn with the copy too.
 //   world.sweep    (off by default) a second stream focus: while the view is still and chunks in
 //                  sight have no cell, the texture stream is pointed 1,300 units ahead for a while,
 //                  so far cells are loaded, drawn and shelved.  Off: a turn right after a sweep

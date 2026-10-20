@@ -12,7 +12,9 @@
 // world-clip=on|off, world-persp=on|off, world-objects=on|off, world-ceilings=auto|on|off,
 // world-skirts=auto|on|off, world-cells=on|off, world-sweep=on|off, world-box-xy=N (default 256),
 // world-box-z=N (default 0); world-log=1; world-nocull=1 (a
-// test aid: every box passes the frustum test).  They are read at the first frame (before that
+// test aid: every box passes the frustum test).  Test aids also as "app world set": world.nocull on|off,
+// world.box-xy N, world.box-z N, world.dump N (every chunk of the next N level walks to the output: its box
+// test, cell, slot, texture header and what it put into the list).  They are read at the first frame (before that
 // rt_option has nothing: until 2026-10-19 they were read at install() and none of them took).
 #include "fpworld.h"
 #include "fpview.h"
@@ -51,6 +53,7 @@ inline u32 as_bits(float f) { u32 b; memcpy(&b, &f, 4); return b; }
 inline u32 at(u32 address) { return address & RAM_MASK; }     // a guest address as an offset into main memory
 
 float g_box_margin = 0, g_box_xy = 256;   // world-box-z=N, world-box-xy=N: what a level box is widened by in a view (fn_001868a4)
+int g_dump = 0, g_dumping = 0;     // world.dump N: the chunks of the next N level walks to the output (a test aid)
 int g_nocull = 0;       // a test aid: 1 = every box passes the frustum test (what is missing then is not culled, it is not there)
 bool is_on(const char* v) { return !strcmp(v, "on") || !strcmp(v, "yes") || !strcmp(v, "1"); }
 bool is_off(const char* v) { return !strcmp(v, "off") || !strcmp(v, "no") || !strcmp(v, "0"); }
@@ -228,7 +231,7 @@ void object_walk(void* ctx, void (*original)(void*)) {
 }
 
 // ---- figures of a pass --------------------------------------------------------------------------------
-struct Counts { u32 chunks = 0, no_cell = 0, cell_loading = 0, tests = 0, shelved = 0; } g_counts, g_last;
+struct Counts { u32 chunks = 0, no_cell = 0, cell_loading = 0, tests = 0, shelved = 0, unprepared_shelved = 0; } g_counts, g_last;
 
 // ---- texture cells kept on the shelf (A4) -------------------------------------------------------------
 // The game keeps the level's textures of nine cells of 720 x 720 units (the 3 x 3 round g_cameraFocus,
@@ -563,6 +566,10 @@ bool setting(const char* key, const char* value) {
         (k == "world.ceilings" ? g_ceilings : g_skirts) = mode;
         return true;
     }
+    if (k == "world.dump") { g_dump = atoi(value); return true; }
+    if (k == "world.nocull") { g_nocull = is_on(value) ? 1 : 0; return true; }      // test aids, not in the settings file
+    if (k == "world.box-xy") { g_box_xy = (float)atof(value); return true; }
+    if (k == "world.box-z") { g_box_margin = (float)atof(value); return true; }
     std::atomic<bool>* part = k == "world.clip" ? &g_clip : k == "world.persp" ? &g_persp : k == "world.objects" ? &g_objects
                             : k == "world.cells" ? &g_cells : k == "world.sweep" ? &g_sweep_on : nullptr;
     if (!part) return false;
@@ -602,9 +609,9 @@ const char* info() {
     }
     {
         char more[360];
-        snprintf(more, sizeof more, "; shelf: %u textures of %zu cells, %.1f of %u MB%s, %u chunks drawn from it last pass (%llu in all), %llu refused; "
+        snprintf(more, sizeof more, "; shelf: %u textures of %zu cells, %.1f of %u MB%s, %u chunks drawn from it last pass (%u of a resident cell; %llu in all), %llu refused; "
                  "%llu asked for; far focus %s, %llu times (%llu cut short); level boxes widened %llu",
-                 g_shelf_textures, g_shelf.size(), g_shelf_used / 1048576.0, SHELF_BYTES >> 20, g_shelf_full ? " (full)" : "", g_last.shelved,
+                 g_shelf_textures, g_shelf.size(), g_shelf_used / 1048576.0, SHELF_BYTES >> 20, g_shelf_full ? " (full)" : "", g_last.shelved, g_last.unprepared_shelved,
                  (unsigned long long)g_shelf_drawn, (unsigned long long)g_shelf_refused, (unsigned long long)g_shelf_asked, g_sw.far_ ? "now" : "not now",
                  (unsigned long long)g_sw.sweeps, (unsigned long long)g_sw.cut_short, (unsigned long long)g_boxes_widened);
         strncat(line, more, sizeof line - strlen(line) - 1);
@@ -635,7 +642,14 @@ void install() {
 using namespace fpworld;
 
 // frustum_testBox(box, mask): box = min x, max x, min y, max y, min z, max z; 0 = outside
+static void test_box(Ctx* c);
 void fn_001868a4(Ctx* c) {
+    u32 ra = (u32)c->r[31], chunk = (u32)c->r[16];
+    test_box(c);
+    if (g_dumping && ra == 0x189CAC)
+        fprintf(stderr, "world dump: test %x %s\n", chunk, c->r[2] ? "in" : "out");
+}
+static void test_box(Ctx* c) {
     g_counts.tests++;
     if (g_in_object_walk) {
         u32 box = (u32)c->r[4];
@@ -699,6 +713,11 @@ void fn_001868a4(Ctx* c) {
 // world_draw(world)
 void fn_00189870(Ctx* c) {
     g_counts = Counts();
+    g_dumping = 0;
+    if (g_dump > 0) {
+        g_dump--; g_dumping = 1;
+        fprintf(stderr, "world dump: pass %s eye %.0f %.0f %.0f\n", g_pass.active ? "view" : "game", g_pass.eye[0], g_pass.eye[1], g_pass.eye[2]);
+    }
     u32 world = (u32)c->r[4];
     if (g_pass.active && world && world == W(G_WORLD) && g_cells.load()) shelve_cells(world);
     if (g_pass.active && world && world == W(G_WORLD) && g_ram[at(0x44F054)] != 0) {      // g_worldPiecesDrawn: the level is whole
@@ -715,6 +734,8 @@ void fn_00189870(Ctx* c) {
     orig_00189870(c);
     g_in_world_draw = false;
     g_last = g_counts;
+    if (g_dumping) fprintf(stderr, "world dump: end\n");
+    g_dumping = 0;
 }
 
 // world_drawChunk(world, chunk, clip flag): a geometry chunk whose texture cell is not loaded, or
@@ -734,7 +755,16 @@ void fn_001887b8(Ctx* c) {
             } else if (slot == -1) g_counts.no_cell++;
             else {
                 u32 header = W(at(0x425DF8 + slot * 4)) + W(at(chunk) + 0x20);
-                if (!header || W(at(header) + 0x14) == 0) g_counts.cell_loading++; else g_counts.chunks++;
+                if (header && W(at(header) + 0x14) != 0) g_counts.chunks++;
+                // The cell is resident but this texture is not prepared (or no longer: the texture thread's page
+                // pool holds what the last frames drew, and a view along the ground draws far more than the
+                // overhead camera: 43 chunks of storm1a's pit floor stayed unprepared for 400 frames and more,
+                // with the textures on the shelf, 2026-10-20).  The game leaves such a chunk out until it is.  When the shelf has the
+                // texture it is drawn from there, the same way as a chunk of a cell that is not resident.
+                else if (g_pass.active && g_cells.load() && shelved_header(cell, W(at(chunk) + 0x20), shelf_table)) {
+                    g_counts.shelved++; g_counts.unprepared_shelved++;
+                    shelf_cell = cell;
+                } else g_counts.cell_loading++;
             }
         }
     }
@@ -753,6 +783,18 @@ void fn_001887b8(Ctx* c) {
         g_ram[G_CELL_SLOT + shelf_cell] = slot_was;
         g_shelf_drawn++;
     } else orig_001887b8(c);
+    if (g_dumping) {
+        s16 cell = (s16)(W(at(chunk) + 0x34) & 0xFFFF);
+        s8 sl = cell > 0 ? (s8)g_ram[at(G_CELL_SLOT + cell)] : -1;
+        u32 off = W(at(chunk) + 0x20), hdr = sl >= 0 && sl < 9 ? (W(at(0x425DF8 + sl * 4)) & RAM_MASK) + off : 0;
+        auto it = g_shelf.find(cell);
+        int have = it == g_shelf.end() || off < 0x40 || off / 0x40 - 1 >= it->second.count ? -1 : it->second.have[off / 0x40 - 1];
+        fprintf(stderr, "world dump: tex %x hdr %x prep %x have %d q %u/%u\n", chunk, hdr, hdr ? W(hdr + 0x14) : 0, have, W(G_TEXQ_WRITE), W(G_TEXQ_READ));
+        fprintf(stderr, "world dump: draw %x flags %x cell %d slot %d shelf %d box %.0f %.0f %.0f  %.0f %.0f %.0f list +%u\n", chunk, flags, cell,
+                cell > 0 ? (int)(s8)g_ram[at(G_CELL_SLOT + cell)] : -9, shelf_cell ? 1 : 0, as_float(W(at(chunk) + 8)), as_float(W(at(chunk) + 12)),
+                as_float(W(at(chunk) + 16)), as_float(W(at(chunk) + 20)), as_float(W(at(chunk) + 24)), as_float(W(at(chunk) + 28)),
+                ((W(G_DL_CURSOR) & RAM_MASK) - before) >> 3);
+    }
     if (first) {
         u32 after = W(G_DL_CURSOR) & RAM_MASK;
         if (after > before) { b.fill_lo = before; b.fill_hi = after; }

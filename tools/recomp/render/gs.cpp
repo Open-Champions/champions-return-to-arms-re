@@ -291,9 +291,9 @@ void Gs::note(uint32_t kind, uint32_t value) {
 
 static bool g_skip_draw = false;
 
-// The level's fill (worldfill.h) into the list: plain triangles, depth tested and written like
-// the level's own.  A ceiling is dark, lighter by the wall it meets; a skirt has the clear
-// colour, darkened, and fades out with its alpha.
+// The level's fill (worldfill.h) into the list: plain triangles, depth tested like the level's
+// own (a ceiling also writes depth, a skirt does not: it is the background).  A ceiling is dark,
+// lighter by the wall it meets; a skirt has the clear colour, darkened, and fades out with its alpha.
 void Gs::draw_fill(const float* m, const float* eye, uint32_t clear_colour, uint32_t light_level, uint32_t kinds) {
     std::shared_ptr<const FillLevel> level = current_fill();
     if (!level || level->vertices.empty()) return;
@@ -316,7 +316,12 @@ void Gs::draw_fill(const float* m, const float* eye, uint32_t clear_colour, uint
         if (!(kinds & (1u << (kind - 1)))) continue;
         DrawCmd c = cur;
         c.texture = 0; c.tex_is_target = false; c.tex_missing = 0; c.weave_half = 0; c.texa_mode = 0;
-        c.alpha_test = false; c.depth_test = true; c.ztst = 2; c.depth_write = true;
+        // A skirt is a background: ground where the level has none, fading to nothing at its outer edge.  It
+        // is drawn at the farthest depth and writes none, so it shows only where nothing of the level is drawn,
+        // before it or after.  Until 2026-10-20 it had its own depth and wrote it: a sheet hanging over level
+        // geometry the terrain it is made from does not have (firbonus's lava sea below the cliffs) hid that
+        // geometry, and where its alpha was low the clear colour showed through - a band of nothing.
+        c.alpha_test = false; c.depth_test = true; c.ztst = 2; c.depth_write = kind != FILL_SKIRT;
         c.blend = kind == FILL_SKIRT; c.ba = 0; c.bb = 1; c.bc = 0; c.bd = 1;
         c.mask_rgb = c.mask_a = false; c.fog = false; c.made_by = 0; c.scissor_moved = false;
         c.first = (uint32_t)frame.vertices.size();
@@ -377,7 +382,7 @@ void Gs::draw_fill(const float* m, const float* eye, uint32_t clear_colour, uint
                         Vertex o;
                         o.x = a.x / a.w + cx; o.y = a.y / a.w + cy;
                         const float zf = a.z / a.w * (1.0f / 4096.0f);
-                        o.z = zf > 0.99999994f ? 0.99999994f : zf < 0 ? 0 : zf;
+                        o.z = kind == FILL_SKIRT ? 0.0f : zf > 0.99999994f ? 0.99999994f : zf < 0 ? 0 : zf;     // a skirt: the farthest depth
                         o.s = o.t = 0; o.q = 1;
                         o.r = (uint8_t)std::min(255.0f, a.c[0]); o.g = (uint8_t)std::min(255.0f, a.c[1]); o.b = (uint8_t)std::min(255.0f, a.c[2]); o.a = (uint8_t)std::min(255.0f, a.c[3]);
                         o.fog = 255;

@@ -14,6 +14,13 @@ named) or **Read**. Pictures are game output and stay under
 
 ## STATE (rewritten at every step; read this first after a stop)
 
+**2026-10-20 - section 8.8.** The eight levels flagged in every walk were looked at. Three general causes
+were fixed: the eye's near plane in a wall beside it (`app/fpview.cpp`: sideways step, the picture's real width,
+a nearer near plane in a corner), ground of resident cells left out for want of a prepared texture (drawn from
+the shelf, `app/fpworld.cpp`), and the skirt hiding level geometry (drawn as a background, `render/gs.cpp`). The
+fourth, looking over a rim into the void, is the levels' design. All 111 walked again: 93 ok (was 70), 7 flagged
+(was 24). The simulation is identical (rig, both views).
+
 **2026-10-19/20 - section 8.1 to 8.7.** The measure is now the clear-colour swap: coverage, not
 colour, checked against the game's overhead view. The changes are in `app/fpworld.cpp` and
 `rt/runtime.cpp`: a texture shelf for cells the game has unloaded, a guard against the decoder
@@ -757,3 +764,111 @@ walks, because the character's route depends on the fight and the timing; `storm
   margin is a margin, not the cause (which boxes are wrong, and by how much, was not measured).
   Not looked at in the Godot drawer. Not measured paced: what the shelf,
   and the wider tests cost a frame.
+
+### 8.8 2026-10-20: the eight that kept their flags (Ran)
+
+Evidence root `local/fp-world3/` (not tracked): walks `walk8-a` to `walk8-c` (the eight levels, after each
+step), `all-2` (all 111 with the final build), probes `p-*`, `s*-*`, `nb*-*` beside them, sheets in
+`sheets/` (`<level>-before.png` and `<level>-after.png`: the forty looks of a walk, undrawn pixels magenta;
+the pairs beside them), scripts in `work/` (`probe.py`: the walk's start, chosen headings, variants given as
+control lines; `spot2.py`, `spot3.py`: the player put at a place; `dumpan.py`: the chunk dump by distance and
+angle; `flags.py`: every look a walk flags).
+
+`firbonus`, `fire5`, `storm2`, `storm3`, `wate2c`, `nitdung1`, `shame1` and `storm1a` were flagged in every
+walk of 8.6. Their pictures were looked at and the flagged places probed with switches changed one at a time
+(`app world set`, `app view set`; the test aids are below). Four causes, three of them general:
+
+1. **The near plane in a wall beside the eye** (`nitdung1`, `shame1`, `wate2c`, `storm1a`, `storm3`). **Ran:**
+   a strip of nothing along a side edge of the picture, or a wedge in a lower corner, where a wall alongside or
+   a corner stands closer than the near plane reaches (`sheets/nitdung1-w.png`, `shame1-w.png`, `wate2c-w.png`;
+   `nd1-probe.png`). With the near plane at 4 every one of them closes (`body full`, `near 4`), and with every
+   box passing (`world.nocull`) none does. **Read** (`app/fpview.cpp`, 8, cause 1): the eye placement tested the
+   level along the heading and at 35 degrees to each side. 35 is the vertical half-angle of the view of 70; the
+   picture's side edges are at 43 degrees at 4:3 and at 51 at 16:9. A wall alongside is also not helped by going
+   back. **Fix:** the placement now (1) steps sideways, at most 12 units, away from a wall that is nearer to the
+   head than the near plane's half width; (2) goes back along the heading (at most 16 behind the head, as
+   before) until the way from the head to the near plane's middle, both ends and both lower corners is clear,
+   at the picture's real width (`gfxrt::view_aspect()`, new); (3) in a corner where no place is clear, brings the
+   near plane in (14, 10, 7, 5). `storm1a` at (-192, -490), 16 headings: two headings with 14 and 12 % of the
+   lower third undrawn with steps 1 and 2 alone (`s-storm1a/`); none with step 3 (`s4-storm1a/`; the look
+   with near planes 14, 8 and 4: `s3-s1a.png`). The placement takes 8 terrain queries at a free
+   place and 18 near a wall, 20 to 45 microseconds (`view.eye-dump`).
+2. **Ground of a resident cell left out for want of its texture** (`storm1a`'s pit floor beside the start).
+   **Ran:** `world.dump` at that look: 43 chunks of resident cells put nothing into the list; their texture header
+   (+0x14) was empty, and the shelf had all 43. Waiting 400 frames, or the far focus, changed nothing; the
+   overhead view of the same place has none of them. **Inferred:** the texture thread's page pool keeps what
+   the last frames drew and a view draws far more, so a texture is prepared, pushed out and asked for again.
+   The thread's queue drains (`work/qprobe.py`: 0 to 4 waiting). **Fix (`app/fpworld.cpp`):** such a chunk is drawn
+   from its shelf copy the way a chunk of a non-resident cell is. Undrawn share of the lower third: 0.23 before,
+   0 after. `app world info` counts these chunks ("of a resident cell").
+3. **The skirt hid level geometry** (`firbonus`, every flag of it). **Ran:** a band of the clear colour between the
+   cliffs and the lava sea below them (`sheets/firbonus-w.png`). With `world.skirts off` it is gone
+   (`fb-skirt.png`). **Read** (`render/gs.cpp`, `Gs::draw_fill`): the skirt is drawn before the frame's first plain
+   level chunk, blended, and it wrote its depth. It is made from the terrain, which does not have the lava sea
+   (water-kind chunks). So it hung over the lava nearer to the eye, hid what was drawn behind it later, and
+   where its alpha was low the clear colour showed. **Fix:** a skirt is drawn at the farthest depth and writes
+   none. It is a background, seen only where nothing of the level is drawn (`fb-skirt3.png`: the lava is
+   there). The OpenGL program only: the Godot drawer takes the meshes itself (not looked at, `tools/godot` is
+   another work).
+4. **Beyond the rim, the level's own** (`fire5`, `storm2`; also `torment2`, `fay2` and `pvpfire2` in the full
+   walk). **Ran:** looking over the edge of floating ground into the chasm or the void below
+   (`c-storm2.png`, `c-fire5.png`, `all2-rest.png`). The game's overhead view shows the same void beside the
+   character at most of those places (`as-overhead`). The levels are made that way. Not changed.
+
+**Before and after, the eight** (looks flagged of 40; the walks route the character by the fight, so the
+places differ from walk to walk):
+
+| Level | 10-19 (8.6) | after 1 (`walk8-a`) | after 1+2 (`walk8-b`) | all four (`walk8-c`) | all 111 (`all-2`) |
+| --- | --- | --- | --- | --- | --- |
+| firbonus | 13 | 13 | 13 | ok | ok |
+| fire5 | 6, +11 as overhead | 7 | game | 4, +6 as overhead | game |
+| storm2 | 2, +6 as overhead | 2 | 2 | 2 | 2, +6 as overhead |
+| storm3 | 7 | 5 | 2 | ok | 1, +4 as overhead |
+| wate2c | 6 | 5 | ok | ok | ok |
+| nitdung1 | 5 | 3 | ok | ok | ok |
+| shame1 | 5 | 2 | ok | ok | ok |
+| storm1a | 4 | 4 | ok | ok | ok |
+
+"after 1" is the first placement change (sideways and the real width, without the nearer near plane), "after
+1+2" adds the nearer near plane in a corner and the shelf for unprepared textures, "all four" adds the skirt
+change. The full walk is the final build (with the lower corners).
+
+**All 111 levels (`all-2`, the final build):** 93 ok, 3 `game` (`bastion1`, `fire5`, `nitdung3`), 7 flagged, 2
+`held` (the two endings), 6 n/a (five arena and PvP kinds without a single-player start, and `intro`). The
+10-19 walk (8.6): 70 ok, 3 `game`, 24 flagged, 3 `held`, 11 n/a. `compval`, `pvparena`, `pvpinn`, `pvpval` and
+`pvpfire2`, n/a then, had a start this time and were walked; `nit2`, `held` then, walked (ok). Of the 24, 20 are now ok or `game`. The 7:
+
+| Level | 10-19 | now | What |
+| --- | --- | --- | --- |
+| storm2 | flagged | 2 looks | beyond the rim (4) |
+| storm3 | flagged | 1 look | 6 % of the lower third at one place; not looked at further |
+| torment2 | flagged | 3 hole and 1 void | beyond the rim: floating halls over the void (4) |
+| fay2 | `game` | 6 hole and 1 void, +27 as overhead | beyond the rim; the places differ from 10-19's |
+| pvpfire2 | n/a | 17 hole and 8 void, +9 as overhead | floating islands, beyond the rim; walked this time (a start was found) |
+| stobonus | ok | 1 look | 4 % at one place |
+| nitbonus | ok | 8 hole and 4 void | one place (248, 3322): nothing below a canopy-like surface ahead. The same with the program as it is (`rta_app`) and with the old skirt (`nbs-*`); not the changes of this section, not looked at further |
+
+The endings: after `endgood`'s scene the walk went on in the game's save menu ("overwrite save game?") and
+every later look was that menu. Those rows were thrown away and the levels walked again from a fresh start,
+`endgood` last.
+
+**Simulation (Ran, `local/fp-ready/rig/check_rig.py` on `rta_fpw_orig3`, the unpatched game with these
+sources).** The first-person comparison report is byte-identical to section 13's (SHA-256 `ba217b43…`), and the
+overhead report to the reference (`9cdc53c1…`). The first-person TSV is identical in all 28 columns to the
+hands work's arms run (`rig-arms`), and so to the run with the eye collision off (`rig-nocol`). Against 8.7's
+run (`rig-cells-first`) only `pool` differs, at 1,465 rows: the rows the old eye placement changed (8, cause 1)
+are back to the arms run's values. The overhead TSV is identical to 8.7's and to the hands work's in every
+column. Everything changed here is drawing: where the eye stands and how near its near plane is, which texture
+copy a chunk is drawn with, and the depth of the skirt.
+
+**Test aids added** (not in the settings file): `app world set world.dump N` (the chunks of the next N level
+walks to the output: box test, cell, slot, texture header, words put into the list), `world.nocull on|off`,
+`world.box-xy N`, `world.box-z N` (until now options only); `app view set view.eye-dump N` (the eye placement of
+the next N passes: distances to the walls, shift, place, near plane, queries, time), `view.arms-near N` (the
+near cut of arms mode, default 14).
+
+**Left:** the rims (4) are the levels' design; a fill under them would be a new part, as the skirt is for the
+outer rim. `nitbonus` at (248, 3322) is not explained. With the nearer near plane in a corner, more of the
+own figure can show in an attack (not looked for). The skirt was still not seen in a picture where it fills
+anything (fire1 and storm1a, eight headings at the start: skirt on and off differ in under 450 pixels of
+129,600). Not measured paced.

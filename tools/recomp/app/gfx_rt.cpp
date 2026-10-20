@@ -330,6 +330,11 @@ void figures(uint64_t& wide_frames, uint64_t& clamp_calls, uint64_t& marks) {
 void list_figures(uint32_t& most, uint32_t& room) { most = g_list_most; room = g_list_room; }
 void projection_args(uint32_t out[4]) { memcpy(out, g_projection_args, sizeof g_projection_args); }
 void set_depth_range(float near_plane, float far_plane) { g_near = near_plane; g_far = far_plane; }
+float view_aspect() {
+    float a = as_float(g_projection_args[1]);
+    if (!(a > 0.5f && a < 4.0f)) a = 4.0f / 3.0f;
+    return a / (g_k > 0.1f ? g_k : 1.0f);
+}
 ObjectWalk object_walk = {nullptr};
 
 }  // namespace gfxrt

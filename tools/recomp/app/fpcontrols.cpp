@@ -109,6 +109,7 @@ std::atomic<u32> g_mouse_held{0};
 std::atomic<float> g_pitch_out{0};
 std::atomic<bool> g_pointer{false};
 std::atomic<bool> g_souls{false};
+std::atomic<bool> g_aim{false};       // aiming by looking (fpaim.h): a shot is not turned to the game's own target
 std::atomic<int> g_lock_toggle{0};
 
 void add(std::atomic<float>& a, float v) {
@@ -544,7 +545,7 @@ void translate(uint64_t blank, rta::PadState& state) {
     // character to it; a view that kept looking where it looked would have the fight beside the picture.  While
     // a swing or shot holds a target, the look comes round to it: a quarter of what is left a tick, bounded, and
     // only as far as `swing_turn_within` of the middle.  It is the yaw word that turns - input like any other.
-    if (set.swing_turn > 0 && set.face[view] && (b.state == 1 || b.state == 0) && g_hud.locked.valid && g_hud.blank + 1 == blank) {
+    if (set.swing_turn > 0 && set.face[view] && (b.state == 1 || (b.state == 0 && !g_aim.load())) && g_hud.locked.valid && g_hud.blank + 1 == blank) {
         float off = g_hud.locked.bearing, excess = std::fabs(off) - set.swing_turn_within;
         if (excess > 0) { turn += (off > 0 ? 1.0f : -1.0f) * std::min(excess * 0.25f, set.swing_turn); g_assist_blanks++; }
     }
@@ -879,6 +880,7 @@ std::string figures() {
 }
 
 void set_souls(bool on) { g_souls = on; }
+void set_aim(bool on) { g_aim = on; }
 void lock_toggle() { g_lock_toggle = 1; }
 
 uint16_t mouse_buttons_as_pad() {

@@ -34,4 +34,9 @@ inline int (*souls_wanted)() = nullptr;
 inline void (*souls_want)(bool on) = nullptr;
 inline uint32_t (*souls_figure)() = nullptr;
 inline void (*souls_room)(int on) = nullptr;
+// Aiming by looking (tools/recomp/app/fpaim.h), a room option the same way: fix_words bit 0x4000.
+inline int (*aim_wanted)() = nullptr;
+inline void (*aim_want)(bool on) = nullptr;
+inline uint32_t (*aim_figure)() = nullptr;
+inline void (*aim_room)(int on) = nullptr;
 }  // namespace net2hook

@@ -438,6 +438,14 @@ def main():
             rows.sort(key=lambda r: (int(r[0]), int(r[1]), int(r[2])))
             with open(pokes, 'w') as sink:
                 sink.write(''.join(' '.join(r) + '\n' for r in rows))
+        drop = os.environ.get('PROOF_DROP_POKES')      # an experiment: "E:T:F,..." leaves out the writes the rig applied
+        if drop:                                        # in episode E, tick T, at frame F of that tick or later (native only)
+            cuts = [tuple(int(v) for v in item.split(':')) for item in drop.split(',') if item]
+            rows = [line.split() for line in open(pokes) if line.strip()]
+            kept = [r for r in rows if not any(int(r[0]) == e and int(r[1]) == t and int(r[2]) >= f for e, t, f in cuts)]
+            print('PROOF_DROP_POKES: %d of %d writes left out' % (len(rows) - len(kept), len(rows)))
+            with open(pokes, 'w') as sink:
+                sink.write(''.join(' '.join(r) + '\n' for r in kept))
         native_args += ['--opt', 'proof-pokes=' + pokes]
     cmpmod.setup(args.name, NATIVE, watches=SOUND_WATCHES if spec.get('watch') == 'sound' else spec.get('watch', DEFAULT_WATCHES), native_args=native_args if args.step == 'native' else (),
                  fix_last_tick=not args.no_last_tick_fix)

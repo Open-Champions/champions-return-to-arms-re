@@ -294,6 +294,7 @@ void on_tasks(Ctx* c, bool from_tick) {
 
 void launch_ended(bool failed, const std::string& text) {
     if (net2hook::souls_room) net2hook::souls_room(-1);     // the room's game is over: the souls mode is this copy's setting again
+    if (net2hook::aim_room) net2hook::aim_room(-1);         // ... and so is aiming by looking
     G.carrying = false;
     if (G.carrier == &G.own_carrier) G.own_carrier.end();
     G.failed = failed;
@@ -336,18 +337,23 @@ void on_after(Ctx* c, bool from_tick) {
 // a copy without the mode says nothing of it, and the room then shows a mismatch and does not start.
 void souls_describe(uint32_t& set, uint16_t& words) {
     if (net2hook::souls_wanted && net2hook::souls_wanted() == 1) { words |= 0x8000; if (net2hook::souls_figure) set ^= net2hook::souls_figure(); }
+    // aiming by looking (app/fpaim.h), the same way: bit 0x4000
+    if (net2hook::aim_wanted && net2hook::aim_wanted() == 1) { words |= 0x4000; if (net2hook::aim_figure) set ^= net2hook::aim_figure(); }
 }
 void follow_souls() {
-    if (!G.session || !net2hook::souls_wanted || !net2hook::souls_want) return;
+    if (!G.session) return;
     net2_room_t room;
     net2_room(G.session, &room);
     if (room.state != NET2_ROOM_OPEN || room.my_slot == room.host_slot) return;
     const net2_member* host = nullptr;
     for (int k = 0; k < room.count; k++) if (room.members[k].host) host = &room.members[k];
     if (!host || (host->fix_set == 0 && host->fix_words == 0)) return;
-    bool host_on = (host->fix_words & 0x8000) != 0;
-    if (host_on == (net2hook::souls_wanted() == 1)) return;
-    net2hook::souls_want(host_on);
+    bool host_on = (host->fix_words & 0x8000) != 0, host_aim = (host->fix_words & 0x4000) != 0;
+    bool souls = net2hook::souls_wanted && net2hook::souls_want && host_on != (net2hook::souls_wanted() == 1);
+    bool aim = net2hook::aim_wanted && net2hook::aim_want && host_aim != (net2hook::aim_wanted() == 1);
+    if (!souls && !aim) return;
+    if (souls) net2hook::souls_want(host_on);
+    if (aim) net2hook::aim_want(host_aim);
     const rtanet::Info& info = rtanet::info();
     uint32_t set = info.patch_set;
     uint16_t words = (uint16_t)info.patch_words;
@@ -355,7 +361,8 @@ void follow_souls() {
     char text[64];
     snprintf(text, sizeof text, "fix=%08x words=%u", set, words);
     net2_set(G.session, "copy", text);
-    say("the host plays with the souls-style combat mode %s: so does this copy now", host_on ? "on" : "off");
+    if (souls) say("the host plays with the souls-style combat mode %s: so does this copy now", host_on ? "on" : "off");
+    if (aim) say("the host plays with aiming by looking %s: so does this copy now", host_aim ? "on" : "off");
 }
 
 // ---- the room ------------------------------------------------------------------------------
@@ -410,6 +417,20 @@ void follow_room(int64_t now) {
         }
         net2hook::souls_room(all ? 1 : 0);
         say("souls-style combat: %s for this game", all ? "on" : "off");
+    }
+    // aiming by looking (app/fpaim.h) likewise
+    if (net2hook::aim_room) {
+        bool all = room.count > 0, any = false;
+        for (int k = 0; k < room.count; k++) { bool on = (room.members[k].fix_words & 0x4000) != 0; all = all && on; any = any || on; }
+        if (any && !all) {
+            G.launched_session = start.session;
+            G.start_seen_ms = 0;
+            say("the room started, but its copies do not all aim by looking: not launching");
+            tell_room(nullptr);
+            return;
+        }
+        net2hook::aim_room(all ? 1 : 0);
+        say("aiming by looking: %s for this game", all ? "on" : "off");
     }
     G.direct = d;
     G.carrier = carrier;

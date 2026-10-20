@@ -152,6 +152,8 @@ def main():
     jobs.append((os.path.join(HERE, 'fpcontrols.cpp'), ['-std=c++17', args.opt, '-Wall', '-I', HERE, '-I', rt], 'a_'))
     # the souls-style combat mode (soulscombat.h; docs/issues/native-souls-combat.md): reaches the game's memory and its overlay the frame list
     jobs.append((os.path.join(HERE, 'soulscombat.cpp'), rt_flags + ['-I', HERE, '-I', render], 'a_'))
+    # aiming by looking (fpaim.h; docs/issues/native-first-person-aim.md): the same kind of module
+    jobs.append((os.path.join(HERE, 'fpaim.cpp'), rt_flags + ['-I', HERE], 'a_'))
     jobs.append((os.path.join(HERE, 'look_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE, '-I', rt], 'a_'))
     if not args.original:
         # the films: the library entry points of hle-app.txt, which only this translation leaves open

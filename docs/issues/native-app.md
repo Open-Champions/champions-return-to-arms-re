@@ -276,7 +276,9 @@ units; the unpatched translation is byte-identical to before (`diff -r`). `--pna
 - **The two unexplained differences from the rig**: the player record at tick 7 of the
   first level (bytes 0x4a00 to 0x4aff, one tick), and the object pool in 27 consecutive
   ticks of the fight (3,886 to 3,912), every other column identical throughout. Both are
-  unchanged by renderer and sound; neither was located.
+  unchanged by renderer and sound; neither was located. (Since located to the byte and the writer:
+  the completion time of a disc read and which sound slot was free - `native-proof.md`
+  part 1, NP1 and NP2; neither is the translation.)
 - **ERX modules** (`LIBINSCK`, `NG_INSCK`, `DNAS_NET`): relocatable code the network
   set-up loads; not translated (`native-recomp.md`, step 4). (Since found to serve the
   sign-in step only, which the lobby path does not reach: `native-online.md`.)
@@ -789,9 +791,10 @@ the same phase of the swing, so it is the same kind of picture, not the same pic
 5. VU1's stalls and the integer branch hazard the reference emulator models (10.1): no
    toured scene needed them.
 6. A listening test: every run was silent (gain 0).
-7. Unchanged from section 8: the two unexplained differences from the rig (player record
-   at tick 7 of the first level, object pool in ticks 3,886 to 3,912 of `valor`; they are
-   not denormals, 10.4), the real controller, Windows, the application bundle.
+7. Unchanged from section 8: the two differences from the rig (player record at tick 7 of
+   the first level, object pool in ticks 3,886 to 3,912 of `valor`; they are not
+   denormals, 10.4; since located, `native-proof.md` NP1 and NP2), the real controller,
+   Windows, the application bundle.
 
 **How to repeat** (all under `local/recomp-out/app-test/`, `RTA_DISC` set):
 

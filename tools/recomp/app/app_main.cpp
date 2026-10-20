@@ -96,6 +96,7 @@
 #include "control.h"
 #include "fpcontrols.h"
 #include "soulscombat.h"
+#include "fpaim.h"
 #include "fpview.h"
 #include "fpworld.h"
 #include "gfx_rt.h"
@@ -477,6 +478,7 @@ struct Pads : rta::PadSource {
             fpcontrols::translate(frame, state);
             if (float pitch = fpcontrols::take_pitch(); pitch != 0) fpview::add_pitch(pitch);
             soulscombat::blank(frame);          // the souls-style combat mode (soulscombat.h): off unless asked for
+            fpaim::blank(frame);                // aiming by looking (fpaim.h): off unless asked for
         }
         last_buttons = state.buttons;
         last_sticks = state.lx | state.ly << 8 | state.rx << 16 | (uint32_t)state.ry << 24;
@@ -1215,6 +1217,7 @@ static void final_report() {                            // on the game's thread,
     apprt::films_report();
     printf("rta_app: %s\n", fpcontrols::figures().c_str());
     if (soulscombat::wanted() || soulscombat::active()) printf("rta_app: %s\n", soulscombat::figures().c_str());
+    if (fpaim::wanted() || fpaim::active()) printf("rta_app: %s\n", fpaim::figures().c_str());
     {
         const render::GsStats& g = g_renderer->gs.stats;
         printf("rta_app: memory %.1f MB; textures made %llu, held %llu (%.1f MB as RGBA), freed %llu; draws without their texture %llu; surface copies %llu, "
@@ -1373,6 +1376,10 @@ static void app_command(const std::string& text, uint64_t frame) {
         int ww = atoi(w[1].c_str()), wh = atoi(w[2].c_str());
         if (g_screen->window && ww >= 160 && wh >= 120)
             QCoreApplication::postEvent(g_screen, new CallQEvent([ww, wh] { g_screen->window->resize(ww, wh); }));
+    } else if (w[0] == "aim") {
+        // app aim info | on | off  (fpaim.h)
+        printf("[frame %llu] %s\n", (unsigned long long)frame, fpaim::command(w.size() >= 2 ? text.substr(text.find(w[1])) : std::string()).c_str());
+        fflush(stdout);
     } else if (w[0] == "souls") {
         // app souls info | on | off | lock | set NAME VALUE  (soulscombat.h)
         printf("[frame %llu] %s\n", (unsigned long long)frame, soulscombat::command(w.size() >= 2 ? text.substr(text.find(w[1])) : std::string()).c_str());
@@ -1551,6 +1558,7 @@ int main(int argc, char** argv) {
         else if (a == "--data") opt.data = next();
         else if (a == "--elf") opt.elf = next();
         else if (a == "--combat") overrides.push_back({"combat.mode", next()});        // souls | off (soulscombat.h)
+        else if (a == "--aim") overrides.push_back({"combat.aim", next()});           // look | off (fpaim.h)
         else if (a == "--window") overrides.push_back({"window", next()});
         else if (a == "--size") overrides.push_back({"resolution", next()});
         else if (a == "--scale") overrides.push_back({"resolution", next() + "x"});
@@ -1633,7 +1641,7 @@ int main(int argc, char** argv) {
         opt.unpaced = opt.set.frame_cap <= 0;
         for (auto& kv : opt.set.view)
             if (!fpview::setting(kv.first.c_str(), kv.second.c_str()) && !fpcontrols::setting(kv.first.c_str(), kv.second.c_str()) && !fpworld::setting(kv.first.c_str(), kv.second.c_str()) &&
-                !soulscombat::setting(kv.first.c_str(), kv.second.c_str()))
+                !fpaim::setting(kv.first.c_str(), kv.second.c_str()) && !soulscombat::setting(kv.first.c_str(), kv.second.c_str()))
                 log_line("settings: not a view, controls or world setting: " + kv.first + " = " + kv.second);
         opt.set.view.clear();
     };
@@ -1782,6 +1790,7 @@ int main(int argc, char** argv) {
         }
         int mode = fpcontrols::take_strafe_send();
         if (mode >= 0 && !replayed) apprt::call_game(c, fpcontrols::STRAFE_SENDER, (uint32_t)mode);
+        if (!replayed) fpaim::drawn(c, v.mode, v.active && !v.fallback && v.shown == v.mode, v.look_pitch);   // aiming by looking: this machine's aim, by game message 4
     });
     fpworld::install();     // after the controls' call-out: it sees the view as it will be built
     if (getenv("RTA_GS_LOG")) renderer.gs.log_display = true;

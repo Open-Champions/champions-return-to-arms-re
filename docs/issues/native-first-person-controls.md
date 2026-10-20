@@ -333,7 +333,8 @@ the simulation's own rules applied to the look:
   view, playing, a bow or thrown weapon in hand or a shot or cast in progress. With a
   melee weapon the right picture is a marker on `melee`, not a crosshair.
 - No vertical aim is offered: the simulation's only aim in height is the automatic one
-  toward a target (1.4). Pitch is for looking.
+  toward a target (1.4). Pitch is for looking. (2026-10-20: [aiming by looking](native-first-person-aim.md)
+  adds it as an option, a room option online: arrows and bolts leave at the look's heading and pitch.)
 
 **Ran** (`work/test2.py valor`: to the first monsters by the pilot's route, then first
 person): with the look turned onto the monster by its bearing, `shot` and `melee` both
