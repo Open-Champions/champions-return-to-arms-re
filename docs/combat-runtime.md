@@ -573,8 +573,8 @@ remains:
   constructor, run list, deletion) - their lifetime is not read; the contract refuses any
   pool request from `damage_apply` (also `LightEffect` on a stun, gas, disease).
 - **Objects the defence path constructs**: GutChunk and the Strong Stance phantom are
-  executed in section 16. The Holy Shield's `LightEffect` and `Player_blockSparks` with
-  silent != 0 are still not executed.
+  executed in section 16. Holy Shield's light and `Player_blockSparks` with silent != 0
+  are executed in section 17. `DefenceModel` still refuses a nonzero silent.
 - **The rest of `Player_run`** inside the composed world: regeneration, instant abilities
   and the dead state run (ref_player, executed) but respawn, `game_checkAllDead` and
   `deathTask` are not composed; `Player_interact` with an interactable object in reach is
